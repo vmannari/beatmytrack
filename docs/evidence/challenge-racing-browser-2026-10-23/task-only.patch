@@ -1,0 +1,974 @@
+diff --git a/game/ui/challenges_page.gd b/game/ui/challenges_page.gd
+--- a/game/ui/challenges_page.gd
++++ b/game/ui/challenges_page.gd
+@@ -2,6 +2,9 @@
+ extends VBoxContainer
+ signal stage_requested(index: int)
+ var selected_stage: int = 0
++var detail_tab: int = 0
++var browser_scope: String = ""
++var inbox_scroll: int = 0
+ signal mode_requested(mode: String)
+ signal folder_requested(folder: String)
+ signal selected_requested(code: String)
+@@ -64,7 +67,14 @@
+ 	header.name = "ChallengeHeader"
+ 	header.add_theme_constant_override("separation",12)
+ 	main.add_child(header)
+-	var title := MenuStyle.label("CHALLENGES" if landing_view and not result_view else "CHALLENGE CLUB",34)
++	if not result_view and not landing_view:
++		var back := _action(header,"Back",func() -> void: landing_requested.emit())
++		back.name = "ChallengeBrowseBack"
++		back.tooltip_text = "Back to Challenges"
++		back.custom_minimum_size.x = 52
++		back.disabled = false
++	var title := MenuStyle.label("CHALLENGES" if landing_view else "CHALLENGE RESULTS" if result_view else "YOUR CHALLENGES" if folder == "sent" else "FIND & PLAY",34)
++	title.name = "ChallengeBrowseTitle"
+ 	title.text_overrun_behavior = TextServer.OVERRUN_TRIM_ELLIPSIS
+ 	title.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+ 	header.add_child(title)
+@@ -74,28 +84,13 @@
+ 		_landing(main)
+ 		return
+ 	else:
+-		var back := _action(header,"Back",func() -> void: landing_requested.emit())
+-		back.name = "ChallengeBrowseBack"
+-		back.disabled = false
+-		_action(header,"Create challenge",_request_creation,true)
++		if folder == "sent": _action(header,"Create another",_request_creation)
+ 		var refresh := _action(header,"",func() -> void: refresh_requested.emit())
++		refresh.name = "ChallengeRefresh"
+ 		refresh.icon = MenuIcon.texture("restart")
+ 		refresh.tooltip_text = "Refresh challenges"
+ 		refresh.custom_minimum_size.x = 52
+-	if not result_view:
+-		var intro := MenuStyle.label("Find your next rival. Set a time. Make it count.",17,true)
+-		intro.name = "ChallengeIntroduction"
+-		main.add_child(intro)
+-		var tabs := HBoxContainer.new()
+-		tabs.add_theme_constant_override("separation",8)
+-		main.add_child(tabs)
+-		for id: String in ["discover","friends","received","sent"]:
+-			var caption: String = {"discover":"Discover","friends":"Friends","received":"Joined","sent":"Created"}[id]
+-			var button := MenuStyle.tab(caption,func() -> void: folder_requested.emit(id),folder == id)
+-			button.name = "ChallengeTab_"+id
+-			button.custom_minimum_size.y = 52
+-			button.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+-			tabs.add_child(button)
++		_browser_controls(main)
+ 	if not error.is_empty():
+ 		var notice := MenuStyle.label(error,17,true)
+ 		notice.name = "ChallengeNotice"
+@@ -106,28 +101,90 @@
+ 	body.add_theme_constant_override("separation",18)
+ 	body.size_flags_vertical = Control.SIZE_EXPAND_FILL
+ 	main.add_child(body)
+-	if not result_view: _inbox(body)
++	if not result_view and (not items.is_empty() or not selected.is_empty()): _inbox(body)
+ 	if not selected.is_empty():
+ 		if result_view: _detail(body)
+ 		else: _hub_detail(body)
+-	elif signed_in or folder == "discover":
+-		var blank := _panel(body)
+-		blank.name = "ChallengeEmptyState"
+-		blank.add_child(MenuStyle.label("Choose your next race" if not items.is_empty() else "Finding challenges…" if busy else "Start something worth chasing",30))
+-		var scene := TextureRect.new()
+-		scene.texture = TrackTile.scenery_texture("pine")
+-		scene.expand_mode = TextureRect.EXPAND_IGNORE_SIZE
+-		scene.stretch_mode = TextureRect.STRETCH_KEEP_ASPECT_COVERED
+-		scene.size_flags_vertical = Control.SIZE_EXPAND_FILL
+-		blank.add_child(scene)
+-		var help := MenuStyle.label("No matches. Try a different search or car." if not search.is_empty() or mode_filter != "all" or not vehicle_filter.is_empty() else "Your friends' public challenges appear here." if folder == "friends" else "Browse Discover and join a race directly." if folder == "received" else "Create a public challenge and let your next rival find you.",19,true)
+-		help.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+-		blank.add_child(help)
+-		_action(blank,"Create challenge" if signed_in else "Sign in to compete",_request_creation,true)
+-	else:
+-		var blank := _panel(body)
+-		blank.add_child(MenuStyle.label("Bring your friends. Find your rivals.",30))
+-		_action(blank,"Sign in",func() -> void: sign_in_requested.emit(),true)
++	elif not result_view: _browse_empty(body)
++
++func _browser_controls(parent: Control) -> void:
++	var row := HBoxContainer.new()
++	row.name = "ChallengeBrowseNavigation"
++	row.add_theme_constant_override("separation",8)
++	parent.add_child(row)
++	var folders: Array = ["sent"] if folder == "sent" else ["discover","friends","received"]
++	for id: String in folders:
++		var caption: String = {"discover":"Discover","friends":"Friends","received":"Joined","sent":"Created"}[id]
++		var tab := MenuStyle.tab(caption,func() -> void: folder_requested.emit(id),folder == id)
++		tab.name = "ChallengeTab_"+id
++		tab.custom_minimum_size = Vector2(108,52)
++		row.add_child(tab)
++	var spacer := Control.new()
++	spacer.size_flags_horizontal = Control.SIZE_EXPAND_FILL
++	row.add_child(spacer)
++	_search = LineEdit.new()
++	_search.name = "ChallengeSearch"
++	_search.placeholder_text = "Search tracks or drivers"
++	_search.text = search
++	_search.max_length = 80
++	_search.clear_button_enabled = true
++	_search.custom_minimum_size = Vector2(260,52)
++	_search.size_flags_horizontal = Control.SIZE_EXPAND_FILL
++	_search.text_submitted.connect(func(_value: String) -> void: _apply_filters())
++	row.add_child(_search)
++	var find := _action(row,"Search",_apply_filters)
++	find.name = "ChallengeFind"
++	var filters := HBoxContainer.new()
++	filters.name = "ChallengeFilters"
++	filters.visible = false
++	filters.add_theme_constant_override("separation",8)
++	parent.add_child(filters)
++	var filter_count: int = int(mode_filter != "all")+int(not vehicle_filter.is_empty())+int(sort_order != "ending" and folder in ["discover","friends"])
++	var toggle := _action(row,"Filters"+(" · "+str(filter_count) if filter_count > 0 else ""),func() -> void: filters.visible = not filters.visible)
++	toggle.name = "ChallengeToggleFilters"
++	toggle.disabled = false
++	_mode = _choice(filters,"ChallengeModeFilter",["All formats","Time attack","Group race","3×3 series"],["all","beat","group","3x3"],mode_filter)
++	_vehicle = _choice(filters,"ChallengeCarFilter",["All cars","Compact","Pickup","Classic","Formula","Kart"],["","compact","pickup","classic","formula","kart"],vehicle_filter)
++	_sort = _choice(filters,"ChallengeSort",["Ending soon","Newest first"] if folder in ["discover","friends"] else ["Newest first"],["ending","newest"] if folder in ["discover","friends"] else ["newest"],sort_order)
++	if not search.is_empty() or mode_filter != "all" or not vehicle_filter.is_empty():
++		var clear := _action(filters,"Clear",_clear_filters)
++		clear.name = "ChallengeClearFilters"
++		clear.disabled = false
++
++func _clear_filters() -> void:
++	filters_requested.emit("","all","","ending" if folder in ["discover","friends"] else "newest")
++
++func _browse_empty(parent: Control) -> void:
++	var panel := _panel(parent)
++	panel.name = "ChallengeEmptyState"
++	var center := CenterContainer.new()
++	center.size_flags_vertical = Control.SIZE_EXPAND_FILL
++	panel.add_child(center)
++	var copy := VBoxContainer.new()
++	copy.custom_minimum_size.x = 400
++	copy.add_theme_constant_override("separation",16)
++	center.add_child(copy)
++	var icon := TextureRect.new()
++	icon.texture = MenuIcon.texture("target",true)
++	icon.custom_minimum_size = Vector2(64,64)
++	icon.expand_mode = TextureRect.EXPAND_IGNORE_SIZE
++	icon.stretch_mode = TextureRect.STRETCH_KEEP_ASPECT_CENTERED
++	icon.modulate = MenuStyle.ACCENT
++	copy.add_child(icon)
++	var filtered: bool = not search.is_empty() or mode_filter != "all" or not vehicle_filter.is_empty()
++	var caption: String = "Finding challenges…" if busy else "Challenges unavailable" if not error.is_empty() else "Pick your next race" if not items.is_empty() else "No matching challenges" if filtered else "No friends racing yet" if folder == "friends" else "No joined challenges yet" if folder == "received" else "No challenges right now"
++	var heading := MenuStyle.label(caption,32)
++	heading.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
++	copy.add_child(heading)
++	var help := MenuStyle.label("Choose a track on the left to see the race." if not items.is_empty() else "Looking for your next opponent." if busy else "Try a different track, driver, format or car." if filtered else "Discover a challenge and join a race to find it here." if folder == "received" else "Your friends' public challenges appear here." if folder == "friends" else "Refresh to look for available races.",18,true)
++	help.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
++	help.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
++	copy.add_child(help)
++	if not busy and items.is_empty():
++		if not signed_in and folder != "discover": _action(copy,"Sign in",func() -> void: sign_in_requested.emit(),true)
++		elif filtered: _action(copy,"Clear filters",_clear_filters,true)
++		elif folder != "discover": _action(copy,"Browse Discover",func() -> void: folder_requested.emit("discover"),true)
++		else: _action(copy,"Retry" if not error.is_empty() else "Refresh",func() -> void: refresh_requested.emit())
+ 
+ func _landing(parent: Control) -> void:
+ 	var intro := MenuStyle.label("Find a challenge to race, or start one of your own.",19,true)
+@@ -200,31 +257,17 @@
+ func _inbox(parent: Control) -> void:
+ 	var column := VBoxContainer.new()
+ 	column.name = "ChallengeInbox"
+-	column.custom_minimum_size.x = 290
++	column.custom_minimum_size.x = 336
+ 	column.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+-	column.size_flags_stretch_ratio = 0.62
+-	column.add_theme_constant_override("separation",12)
++	column.size_flags_stretch_ratio = 0.98
++	column.add_theme_constant_override("separation",10)
+ 	parent.add_child(column)
+-	var search_row := HBoxContainer.new()
+-	search_row.add_theme_constant_override("separation",6)
+-	column.add_child(search_row)
+-	_search = LineEdit.new()
+-	_search.name = "ChallengeSearch"
+-	_search.placeholder_text = "Find a track or driver"
+-	_search.text = search
+-	_search.max_length = 80
+-	_search.custom_minimum_size.y = 52
+-	_search.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+-	_search.text_submitted.connect(func(_value: String) -> void: _apply_filters())
+-	search_row.add_child(_search)
+-	var find := _action(search_row,"Find",_apply_filters)
+-	find.name = "ChallengeFind"
+-	var filters := HBoxContainer.new()
+-	filters.add_theme_constant_override("separation",6)
+-	column.add_child(filters)
+-	_mode = _choice(filters,"ChallengeModeFilter",["All races","Beat a time","Group races","3×3"],["all","beat","group","3x3"],mode_filter)
+-	_vehicle = _choice(filters,"ChallengeCarFilter",["Any car","Compact","Pickup","Classic","Formula","Kart"],["","compact","pickup","classic","formula","kart"],vehicle_filter)
+-	_sort = _choice(filters,"ChallengeSort",["Ending soon","Newest first"] if folder in ["discover","friends"] else ["Newest first"],["ending","newest"] if folder in ["discover","friends"] else ["newest"],sort_order)
++	var context := HBoxContainer.new()
++	column.add_child(context)
++	var caption := MenuStyle.label("YOUR RACES" if folder == "received" else "FRIENDS' RACES" if folder == "friends" else "YOUR CHALLENGES" if folder == "sent" else "ON THE GRID",16,true)
++	caption.size_flags_horizontal = Control.SIZE_EXPAND_FILL
++	context.add_child(caption)
++	context.add_child(MenuStyle.label("Invitation" if items.is_empty() and not selected.is_empty() else str(items.size())+("+ challenges" if has_more else " challenge" if items.size() == 1 else " challenges"),15,true))
+ 	var scroll := ScrollContainer.new()
+ 	scroll.name = "ChallengeInboxScroll"
+ 	scroll.horizontal_scroll_mode = ScrollContainer.SCROLL_MODE_DISABLED
+@@ -232,65 +275,38 @@
+ 	column.add_child(scroll)
+ 	var gutter := MarginContainer.new()
+ 	gutter.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+-	gutter.add_theme_constant_override("margin_right",16)
++	gutter.add_theme_constant_override("margin_right",12)
+ 	scroll.add_child(gutter)
+ 	var list := VBoxContainer.new()
+ 	list.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+-	list.add_theme_constant_override("separation",10)
++	list.add_theme_constant_override("separation",12)
+ 	gutter.add_child(list)
+-	for item: Dictionary in items:
+-		var target: Variant = _target_ms(item)
+-		var tile := MenuStyle.button("",func() -> void: selected_requested.emit(str(item.code)))
++	var grid := GridContainer.new()
++	grid.name = "ChallengeRaceGrid"
++	grid.size_flags_horizontal = Control.SIZE_EXPAND_FILL
++	grid.add_theme_constant_override("h_separation",12)
++	grid.add_theme_constant_override("v_separation",12)
++	list.add_child(grid)
++	grid.resized.connect(func() -> void: grid.columns = 2 if grid.size.x >= 468 else 1)
++	var races: Array[Dictionary] = items
++	if races.is_empty() and not selected.is_empty(): races = [selected]
++	for item: Dictionary in races:
++		var tile := preload("res://ui/challenge_race_card.gd").new()
+ 		tile.name = "ChallengeCard_"+str(item.code)
+-		tile.custom_minimum_size.y = 154
+-		tile.clip_contents = true
+-		tile.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+-		list.add_child(tile)
+-		var fill := MarginContainer.new()
+-		MenuStyle.fill(fill)
+-		for side: String in ["left","right","top","bottom"]: fill.add_theme_constant_override("margin_"+side,12)
+-		fill.mouse_filter = Control.MOUSE_FILTER_IGNORE
+-		tile.add_child(fill)
+-		var row := HBoxContainer.new()
+-		row.add_theme_constant_override("separation",12)
+-		row.mouse_filter = Control.MOUSE_FILTER_IGNORE
+-		fill.add_child(row)
+-		var image := TextureRect.new()
+-		image.texture = TrackTile.scenery_texture(str(item.entry.get("theme","pine")))
+-		image.expand_mode = TextureRect.EXPAND_IGNORE_SIZE
+-		image.stretch_mode = TextureRect.STRETCH_KEEP_ASPECT_COVERED
+-		image.custom_minimum_size.x = 80
+-		image.mouse_filter = Control.MOUSE_FILTER_IGNORE
+-		row.add_child(image)
+-		var route := LapRouteView.new()
+-		route.miniature = true
+-		route.mouse_filter = Control.MOUSE_FILTER_IGNORE
+-		MenuStyle.fill(route)
+-		route.route = _card_outline(item.entry.points)
+-		image.add_child(route)
+-		var info := VBoxContainer.new()
+-		info.add_theme_constant_override("separation",2)
+-		info.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+-		info.mouse_filter = Control.MOUSE_FILTER_IGNORE
+-		row.add_child(info)
+-		var competition: String = "TIME ATTACK" if item.mode == "beat" else "3×3" if item.mode == "3x3" else "GROUP RACE"
+-		var performance: String = MenuStyle.time_text(float(target)/1000.0) if target != null else "Set the first time"
+-		var lines: Array = [[competition+" · "+_remaining_text(item),14],[item.entry.name,25],[str(item.creator),15],[performance,24],[_reward_caption(item),15]]
+-		for data: Array in lines:
+-			var label := MenuStyle.label(str(data[0]),int(data[1]),int(data[1]) < 20)
+-			label.text_overrun_behavior = TextServer.OVERRUN_TRIM_ELLIPSIS
+-			label.mouse_filter = Control.MOUSE_FILTER_IGNORE
+-			info.add_child(label)
+-			if int(data[1]) == 24 or str(data[0]) == _reward_caption(item): label.add_theme_color_override("font_color",MenuStyle.ACCENT)
+-		if str(item.code) == str(selected.get("code","")):
+-			var style := MenuStyle.box(Color("1b3443"),10)
+-			style.border_color = MenuStyle.ACCENT
+-			style.border_width_left = 3
+-			style.border_width_top = 1
+-			style.border_width_bottom = 1
+-			style.border_width_right = 1
+-			tile.add_theme_stylebox_override("normal",style)
+-	if has_more: _action(list,"More",func() -> void: more_requested.emit())
++		tile.item = item
++		tile.chosen = str(item.code) == str(selected.get("code",""))
++		tile.target_ms = _target_ms(item)
++		tile.remaining = _remaining_text(item)
++		tile.reward = _reward_caption(item)
++		tile.scenery = TrackTile.scenery_texture(str(item.entry.get("theme","pine")))
++		tile.route = _card_outline(item.entry.points)
++		tile.pressed.connect(func() -> void: selected_requested.emit(str(item.code)))
++		grid.add_child(tile)
++	if has_more:
++		var more := _action(list,"More challenges",func() -> void: more_requested.emit())
++		more.name = "ChallengeMore"
++	if inbox_scroll > 0:
++		get_tree().process_frame.connect(scroll.set_deferred.bind("scroll_vertical",inbox_scroll),CONNECT_ONE_SHOT)
+ 
+ func _stage_picker(parent: Control) -> void:
+ 	if selected.get("mode") != "3x3": return
+@@ -309,84 +325,128 @@
+ 	return selected.stages[selected_stage] if selected.get("mode") == "3x3" else selected
+ 
+ func _hub_detail(parent: Control) -> void:
+-	# Race browsing has its own composition; post-race feedback keeps _detail.
++	# Racing owns one selected destination and a pinned start action.
+ 	var panel := _panel(parent)
+ 	panel.name = "ChallengeDetail"
++	panel.size_flags_stretch_ratio = 1.08
++	var views := TabContainer.new()
++	views.name = "ChallengeRaceViews"
++	views.size_flags_vertical = Control.SIZE_EXPAND_FILL
++	views.add_theme_stylebox_override("panel",MenuStyle.box(Color.TRANSPARENT,0))
++	panel.add_child(views)
++	var tabs: TabContainer = views
++	tabs.add_theme_font_override("font",MenuStyle.DISPLAY)
++	tabs.add_theme_font_size_override("font_size",19)
++	tabs.add_theme_color_override("font_selected_color",MenuStyle.ACCENT)
++	tabs.add_theme_color_override("font_unselected_color",MenuStyle.MUTED)
++	var active_tab := MenuStyle.box(Color("1a303d"),8)
++	active_tab.border_color = MenuStyle.ACCENT
++	active_tab.border_width_bottom = 2
++	tabs.add_theme_stylebox_override("tab_selected",active_tab)
++	tabs.add_theme_stylebox_override("tab_unselected",MenuStyle.box(Color.TRANSPARENT,8))
++	tabs.add_theme_stylebox_override("tab_hovered",MenuStyle.box(Color("233d4b"),8))
+ 	var content_scroll := ScrollContainer.new()
+ 	content_scroll.name = "ChallengeDetailScroll"
+ 	content_scroll.horizontal_scroll_mode = ScrollContainer.SCROLL_MODE_DISABLED
+ 	content_scroll.size_flags_vertical = Control.SIZE_EXPAND_FILL
+-	panel.add_child(content_scroll)
++	views.add_child(content_scroll)
++	views.set_tab_title(0,"Race details")
++	var standings_view := VBoxContainer.new()
++	standings_view.name = "ChallengeStandingsView"
++	standings_view.add_theme_constant_override("separation",10)
++	views.add_child(standings_view)
++	views.set_tab_title(1,"Standings")
++	views.current_tab = clampi(detail_tab,0,1)
+ 	var column := VBoxContainer.new()
+ 	column.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+-	column.add_theme_constant_override("separation",8)
++	column.add_theme_constant_override("separation",10)
+ 	content_scroll.add_child(column)
+ 	_stage_picker(column)
+-	var heading := MenuStyle.label(str(_stage_data().entry.name),32)
+-	heading.text_overrun_behavior = TextServer.OVERRUN_TRIM_ELLIPSIS
+-	column.add_child(heading)
+-	var identity := HBoxContainer.new()
+-	column.add_child(identity)
+-	var competition: String = "Your challenge" if selected.mode == "beat" and selected.creator_id == selected.self_id else "Beat "+str(selected.creator)+"'s time" if selected.mode == "beat" else "Group challenge · "+str(selected.creator)
+-	var creator := MenuStyle.label(competition,17,true)
+-	creator.text_overrun_behavior = TextServer.OVERRUN_TRIM_ELLIPSIS
+-	creator.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+-	identity.add_child(creator)
+-	_clock = MenuStyle.label("",16,true)
+-	identity.add_child(_clock)
++	var preview := PanelContainer.new()
++	preview.name = "ChallengeTrackPreview"
++	preview.custom_minimum_size.y = 112
++	preview.clip_contents = true
++	preview.add_theme_stylebox_override("panel",MenuStyle.box(Color("0c1d28"),0))
++	column.add_child(preview)
++	var art := TextureRect.new()
++	art.texture = TrackTile.scenery_texture(str(_stage_data().entry.get("theme","pine")))
++	art.expand_mode = TextureRect.EXPAND_IGNORE_SIZE
++	art.stretch_mode = TextureRect.STRETCH_KEEP_ASPECT_COVERED
++	preview.add_child(art)
++	var shade := ColorRect.new()
++	shade.color = Color(0.015,0.045,0.065,0.56)
++	preview.add_child(shade)
++	var inset := MarginContainer.new()
++	for side: String in ["left","right","top","bottom"]: inset.add_theme_constant_override("margin_"+side,12)
++	preview.add_child(inset)
++	var hero := HBoxContainer.new()
++	hero.add_theme_constant_override("separation",12)
++	inset.add_child(hero)
++	var identity := VBoxContainer.new()
++	identity.size_flags_horizontal = Control.SIZE_EXPAND_FILL
++	identity.add_theme_constant_override("separation",4)
++	hero.add_child(identity)
++	var meta := HBoxContainer.new()
++	identity.add_child(meta)
++	var format := MenuStyle.label("TIME ATTACK" if selected.mode == "beat" else "3×3 SERIES" if selected.mode == "3x3" else "GROUP RACE",15)
++	format.add_theme_color_override("font_color",MenuStyle.ACCENT)
++	meta.add_child(format)
++	_clock = MenuStyle.label("",15,true)
++	_clock.size_flags_horizontal = Control.SIZE_EXPAND_FILL
++	_clock.horizontal_alignment = HORIZONTAL_ALIGNMENT_RIGHT
++	meta.add_child(_clock)
+ 	_update_clock()
+ 	var timer := Timer.new()
+ 	timer.wait_time = 1.0
+ 	timer.autostart = true
+ 	timer.timeout.connect(_update_clock)
+ 	add_child(timer)
+-	var preview := HBoxContainer.new()
+-	preview.name = "ChallengeTrackPreview"
+-	preview.custom_minimum_size.y = 118
+-	preview.add_theme_constant_override("separation",0)
+-	column.add_child(preview)
+-	var scenery := PanelContainer.new()
+-	scenery.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+-	scenery.clip_contents = true
+-	scenery.add_theme_stylebox_override("panel",MenuStyle.box(Color("102632"),10))
+-	preview.add_child(scenery)
+-	var art := TextureRect.new()
+-	art.texture = TrackTile.scenery_texture(str(_stage_data().entry.get("theme","pine")))
+-	art.expand_mode = TextureRect.EXPAND_IGNORE_SIZE
+-	art.stretch_mode = TextureRect.STRETCH_KEEP_ASPECT_COVERED
+-	art.modulate = Color(0.83,0.87,0.9)
+-	scenery.add_child(art)
++	var space := Control.new()
++	space.size_flags_vertical = Control.SIZE_EXPAND_FILL
++	identity.add_child(space)
++	var heading := MenuStyle.label(str(_stage_data().entry.name),32)
++	heading.text_overrun_behavior = TextServer.OVERRUN_TRIM_ELLIPSIS
++	identity.add_child(heading)
++	var creator := MenuStyle.label("by "+str(selected.creator),15,true)
++	creator.text_overrun_behavior = TextServer.OVERRUN_TRIM_ELLIPSIS
++	identity.add_child(creator)
+ 	var route := LapRouteView.new()
+ 	route.name = "ChallengeRoute"
++	route.custom_minimum_size.x = 148
+ 	route.miniature = true
+ 	for point: Array in _stage_data().entry.points: route.route.append(Vector2(point[0],point[1]))
+-	scenery.add_child(route)
++	hero.add_child(route)
+ 	var performance := PanelContainer.new()
+-	performance.custom_minimum_size.x = 242
+-	performance.add_theme_stylebox_override("panel",MenuStyle.box(Color("122a38"),12))
+-	preview.add_child(performance)
++	performance.add_theme_stylebox_override("panel",MenuStyle.box(Color("122634"),12))
++	column.add_child(performance)
++	var timing := HBoxContainer.new()
++	timing.add_theme_constant_override("separation",16)
++	performance.add_child(timing)
+ 	var time_box := VBoxContainer.new()
++	time_box.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+ 	time_box.add_theme_constant_override("separation",2)
+-	time_box.size_flags_vertical = Control.SIZE_SHRINK_CENTER
+-	performance.add_child(time_box)
++	timing.add_child(time_box)
+ 	var target: Variant = _target_ms(selected)
+ 	time_box.add_child(MenuStyle.label("Time to beat" if selected.mode == "beat" else "Leading total" if selected.mode == "3x3" and target != null else "Leading time" if target != null else "3×3 total" if selected.mode == "3x3" else "Group challenge",16,true))
+-	var clock := MenuStyle.label(MenuStyle.time_text(float(target)/1000.0) if target != null else "Set the first time",44 if target != null else 28)
++	var clock := MenuStyle.label(MenuStyle.time_text(float(target)/1000.0) if target != null else "Set the first time",40 if target != null else 28)
+ 	clock.name = "ChallengeTargetTime"
+ 	clock.add_theme_color_override("font_color",MenuStyle.ACCENT)
+ 	time_box.add_child(clock)
+ 	var own: Dictionary = _own_standing()
+ 	if own.get("ms") != null:
++		var personal := VBoxContainer.new()
++		personal.size_flags_vertical = Control.SIZE_SHRINK_CENTER
++		timing.add_child(personal)
+ 		var best := MenuStyle.label("Your best  "+MenuStyle.time_text(float(own.ms)/1000.0),17)
+ 		best.name = "ChallengePersonalBest"
+-		time_box.add_child(best)
++		personal.add_child(best)
+ 		if target != null:
+ 			var difference: int = int(own.ms)-int(target)
+ 			var shared_lead: bool = selected.mode != "beat" and selected.standings.any(func(row: Dictionary) -> bool: return row.get("ms") != null and int(row.ms) == int(target) and str(row.id) != str(selected.self_id))
+ 			var gap := MenuStyle.label("Target beaten" if difference < 0 and selected.mode == "beat" else "Joint lead" if difference == 0 and shared_lead else "You lead" if difference == 0 and selected.mode != "beat" else "Tied with target" if difference == 0 else "%+.3f s" % (float(difference)/1000.0),18,true)
+ 			gap.name = "ChallengePersonalGap"
+ 			if difference < 0 or (difference == 0 and selected.mode != "beat"): gap.add_theme_color_override("font_color",MenuStyle.POSITIVE)
+-			time_box.add_child(gap)
++			personal.add_child(gap)
+ 	var facts := HBoxContainer.new()
+ 	column.add_child(facts)
+ 	var car := MenuStyle.label("5 laps · "+VehicleCatalog.title(str(selected.vehicle_id)),16,true)
+@@ -398,7 +458,7 @@
+ 	var heading_gutter := MarginContainer.new()
+ 	heading_gutter.add_theme_constant_override("margin_left",6)
+ 	heading_gutter.add_theme_constant_override("margin_right",30)
+-	column.add_child(heading_gutter)
++	standings_view.add_child(heading_gutter)
+ 	var labels := HBoxContainer.new()
+ 	labels.name = "ChallengeStandingsHeader"
+ 	heading_gutter.add_child(labels)
+@@ -408,7 +468,7 @@
+ 	scroll.custom_minimum_size.y = 80
+ 	scroll.horizontal_scroll_mode = ScrollContainer.SCROLL_MODE_DISABLED
+ 	scroll.size_flags_vertical = Control.SIZE_EXPAND_FILL
+-	column.add_child(scroll)
++	standings_view.add_child(scroll)
+ 	var gutter := MarginContainer.new()
+ 	gutter.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+ 	gutter.add_theme_constant_override("margin_right",12)
+@@ -434,14 +494,16 @@
+ 	actions.name = "ChallengeActions"
+ 	actions.add_theme_constant_override("separation",8)
+ 	panel.add_child(actions)
+-	var share := _action(actions,"Share",func() -> void: share_requested.emit())
+-	share.icon = MenuIcon.texture("share")
++	if folder == "sent":
++		var share := _action(actions,"Share",func() -> void: share_requested.emit())
++		share.icon = MenuIcon.texture("share")
+ 	if is_instance_valid(safety_client) and str(selected.creator_id) != str(selected.self_id):
+ 		var report := _action(actions,"…",func() -> void: preload("res://ui/community_safety_ui.gd").open(self,safety_client,"player",{"reported_player_id":str(selected.creator_id),"name":str(selected.creator)}))
++		report.name = "ChallengeSafety"
+ 		report.tooltip_text = "Report / block creator"
+ 	var winning: bool = own.get("ticks") != null and (int(own.rank) == 1 if selected.mode != "beat" else int(own.ticks) < int(selected.target_ticks))
+-	if winning and selected.mode != "3x3": _action(actions,"Rematch",func() -> void: rematch_requested.emit())
+-	if str(selected.creator_id) == str(selected.self_id) and selected.state == "active":
++	if folder == "sent" and winning and selected.mode != "3x3": _action(actions,"Rematch",func() -> void: rematch_requested.emit())
++	if folder == "sent" and str(selected.creator_id) == str(selected.self_id) and selected.state == "active":
+ 		var cancel := _action(actions,"",func() -> void: cancel_requested.emit())
+ 		cancel.icon = MenuIcon.texture("close")
+ 		cancel.tooltip_text = "Cancel challenge"
+@@ -452,6 +514,7 @@
+ 	var caption: String = "No tries left" if exhausted else "Challenge ended" if selected.state != "active" else "Waiting for opponent" if creator_target else "Full" if full else "Race" if selected.joined else "Join & race" if signed_in else "Try track"
+ 	var race := _action(actions,caption,func() -> void: race_requested.emit(),true)
+ 	race.name = "ChallengeRace"
++	race.custom_minimum_size.y = 58
+ 	race.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+ 	race.disabled = busy or exhausted or full or selected.state != "active" or creator_target
+ 
+@@ -497,7 +560,7 @@
+ 	var rewards: Dictionary = item.get("rewards",{})
+ 	if rewards.is_empty(): return
+ 	if item.mode == "beat" and str(item.creator_id) == str(item.self_id):
+-		var invitation := MenuStyle.label("Your target is listed in Discover. Let your next rival come to you." if item.get("visibility","private") == "public" else "Share the invitation link to find an opponent for your target.",17,true)
++		var invitation := MenuStyle.label("Your target is live. Waiting for an opponent." if folder != "sent" else "Your target is listed in Discover. Let your next rival come to you." if item.get("visibility","private") == "public" else "Share the invitation link to find an opponent for your target.",17,true)
+ 		invitation.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+ 		parent.add_child(invitation)
+ 		return
+@@ -509,23 +572,26 @@
+ 		var earned: bool = bool(rewards.get("finish_earned" if index == 0 else "goal_earned",false))
+ 		var card := PanelContainer.new()
+ 		card.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+-		var style := MenuStyle.box(Color("193c36") if earned else Color("263329"),8)
+-		style.border_color = MenuStyle.POSITIVE if earned else Color("706238")
++		var style := MenuStyle.box(Color("182e2b") if earned else Color("142633"),8)
++		style.border_color = MenuStyle.POSITIVE if earned else Color("415563")
+ 		style.border_width_left = 3
+ 		card.add_theme_stylebox_override("panel",style)
+ 		goals.add_child(card)
+-		var lines := VBoxContainer.new()
+-		lines.add_theme_constant_override("separation",0)
++		var lines := HBoxContainer.new()
++		lines.add_theme_constant_override("separation",8)
+ 		card.add_child(lines)
+ 		var goal: String = "Finish five laps" if index == 0 else "Beat the target" if item.mode == "beat" else "Outrun a rival & lead"
+ 		var heading := MenuStyle.label(goal,15,true)
++		heading.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+ 		heading.text_overrun_behavior = TextServer.OVERRUN_TRIM_ELLIPSIS
+ 		lines.add_child(heading)
+ 		var amount := MenuStyle.label("Earned" if earned else "Ended" if item.state != "active" else "Daily limit" if signed_in and not rewards.get("eligible",false) else "+%d Coins" % int(rewards.get("finish" if index == 0 else "goal",0)),23)
+ 		amount.add_theme_color_override("font_color",MenuStyle.POSITIVE if earned else MenuStyle.ACCENT)
+ 		lines.add_child(amount)
+-	var explanation := MenuStyle.label("Sign in to earn Coins for verified races." if not signed_in else "Daily reward limit reached. Return tomorrow for more Coins." if not rewards.get("eligible",false) else "Verified races · Rewards once each · %d new reward challenges left today (UTC)" % int(rewards.get("remaining_today",0)),14,true)
++	goals.tooltip_text = "Rewards once per challenge · %d more reward challenges today" % int(rewards.get("remaining_today",0))
++	var explanation := MenuStyle.label("Sign in to earn Coins for verified races." if not signed_in else "Daily reward limit reached. Return tomorrow for more Coins.",14,true)
+ 	explanation.name = "ChallengeRewardRules"
++	explanation.visible = not signed_in or not rewards.get("eligible",false)
+ 	explanation.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+ 	parent.add_child(explanation)
+ 
+diff --git a/game/ui/challenge_race_card.gd b/game/ui/challenge_race_card.gd
+--- /dev/null
++++ b/game/ui/challenge_race_card.gd
+@@ -0,0 +1,83 @@
++extends Button
++## One bounded, keyboard-accessible race destination; no live world per card.
++var item: Dictionary
++var chosen: bool = false
++var target_ms: Variant
++var remaining: String
++var reward: String
++var route: PackedVector2Array
++var scenery: Texture2D
++var _route_size := Vector2(-1,-1)
++var _route_points: PackedVector2Array
++
++func _ready() -> void:
++	custom_minimum_size = Vector2(218,226)
++	size_flags_horizontal = Control.SIZE_EXPAND_FILL
++	clip_contents = true
++	text = str(item.entry.name)
++	tooltip_text = text+" · "+str(item.creator)+" · "+VehicleCatalog.title(str(item.vehicle_id))+" · "+remaining
++	mouse_default_cursor_shape = Control.CURSOR_POINTING_HAND
++	texture_filter = CanvasItem.TEXTURE_FILTER_LINEAR_WITH_MIPMAPS
++	set_meta("audio_cue","select")
++	for state: String in ["font_color","font_hover_color","font_focus_color","font_pressed_color"]:
++		add_theme_color_override(state,Color.TRANSPARENT)
++	add_theme_font_size_override("font_size",1)
++	var style := MenuStyle.box(Color("101f2a"),0)
++	style.border_color = MenuStyle.ACCENT if chosen else Color("344653")
++	style.set_border_width_all(2 if chosen else 1)
++	add_theme_stylebox_override("normal",style)
++	var hover := style.duplicate() as StyleBoxFlat
++	hover.border_color = MenuStyle.ACCENT if chosen else Color("a4bac7")
++	add_theme_stylebox_override("hover",hover)
++	add_theme_stylebox_override("pressed",hover)
++	resized.connect(queue_redraw)
++	mouse_entered.connect(queue_redraw)
++	mouse_exited.connect(queue_redraw)
++
++func _draw() -> void:
++	if scenery == null: return
++	var art := Rect2(3,3,size.x-6,96)
++	var source := Rect2(Vector2.ZERO,scenery.get_size())
++	var ratio: float = art.size.x/art.size.y
++	if source.size.x/source.size.y > ratio:
++		source.position.x = (source.size.x-source.size.y*ratio)*0.5
++		source.size.x = source.size.y*ratio
++	else:
++		source.position.y = (source.size.y-source.size.x/ratio)*0.5
++		source.size.y = source.size.x/ratio
++	draw_texture_rect_region(scenery,art,source,Color.WHITE if is_hovered() else Color(0.85,0.9,0.94))
++	draw_rect(art,Color(0.015,0.045,0.065,0.3))
++	_project_route(art.size)
++	if _route_points.size() > 1:
++		draw_polyline(_route_points,Color("08131bcc"),5,true)
++		draw_polyline(_route_points,Color("f4eee0"),2,true)
++	var format: String = "TIME ATTACK" if item.mode == "beat" else "3×3 SERIES" if item.mode == "3x3" else "GROUP RACE"
++	var badge_width: float = MenuStyle.DISPLAY.get_string_size(format,HORIZONTAL_ALIGNMENT_LEFT,-1,14).x+16
++	draw_style_box(MenuStyle.box(Color("08151eeb"),0),Rect2(10,10,badge_width,24))
++	draw_string(MenuStyle.DISPLAY,Vector2(18,28),format,HORIZONTAL_ALIGNMENT_LEFT,badge_width-12,14,MenuStyle.TEXT)
++	if chosen:
++		draw_circle(Vector2(size.x-20,22),8,MenuStyle.ACCENT,true,-1,true)
++		draw_texture_rect(MenuIcon.texture("check",true),Rect2(size.x-25,17,10,10),false,MenuStyle.INK)
++	draw_string(MenuStyle.DISPLAY,Vector2(14,125),str(item.entry.name),HORIZONTAL_ALIGNMENT_LEFT,size.x-28,23,MenuStyle.TEXT)
++	draw_string(MenuStyle.BODY,Vector2(14,145),"by "+str(item.creator),HORIZONTAL_ALIGNMENT_LEFT,size.x-28,14,MenuStyle.MUTED)
++	var target: String = MenuStyle.time_text(float(target_ms)/1000.0) if target_ms != null else "Set the first time"
++	draw_string(MenuStyle.DISPLAY,Vector2(14,177),target,HORIZONTAL_ALIGNMENT_LEFT,size.x-28,29 if target_ms != null else 24,MenuStyle.ACCENT)
++	var car: String = VehicleCatalog.title(str(item.vehicle_id))
++	draw_string(MenuStyle.BODY,Vector2(14,198),car+" · "+("3 tracks" if item.mode == "3x3" else "5 laps"),HORIZONTAL_ALIGNMENT_LEFT,size.x-28,14,MenuStyle.MUTED)
++	draw_string(MenuStyle.BODY,Vector2(14,218),remaining,HORIZONTAL_ALIGNMENT_LEFT,size.x-28,13,MenuStyle.MUTED)
++	var remaining_width: float = MenuStyle.BODY.get_string_size(remaining,HORIZONTAL_ALIGNMENT_LEFT,-1,13).x
++	if size.x >= 250 and remaining_width+MenuStyle.BODY.get_string_size(reward,HORIZONTAL_ALIGNMENT_LEFT,-1,13).x+36 <= size.x:
++		var reward_width: float = minf(size.x*0.55,MenuStyle.BODY.get_string_size(reward,HORIZONTAL_ALIGNMENT_LEFT,-1,13).x)
++		draw_string(MenuStyle.BODY,Vector2(size.x-14-reward_width,218),reward,HORIZONTAL_ALIGNMENT_LEFT,reward_width,13,MenuStyle.POSITIVE)
++
++func _project_route(art_size: Vector2) -> void:
++	if _route_size == art_size: return
++	_route_size = art_size
++	_route_points = PackedVector2Array()
++	if route.size() < 2: return
++	var bounds := Rect2(Vector2(route[0].x,-route[0].y),Vector2.ZERO)
++	for point: Vector2 in route: bounds = bounds.expand(Vector2(point.x,-point.y))
++	var area := Rect2(22,40,art_size.x-38,48)
++	var scale: float = minf(area.size.x/maxf(1,bounds.size.x),area.size.y/maxf(1,bounds.size.y))
++	for point: Vector2 in route: _route_points.append(area.get_center()+(Vector2(point.x,-point.y)-bounds.get_center())*scale)
++	if _route_points[0].distance_to(_route_points[-1]) > 0.01: _route_points.append(_route_points[0])
+diff --git a/game/ui/challenge_race_card.gd.uid b/game/ui/challenge_race_card.gd.uid
+--- /dev/null
++++ b/game/ui/challenge_race_card.gd.uid
+@@ -0,0 +1 @@
++uid://cq3sqt0t0bylg
+diff --git a/game/core/app.gd b/game/core/app.gd
+--- a/game/core/app.gd
++++ b/game/core/app.gd
+@@ -1563,6 +1563,9 @@
+ 
+ func _browse_challenges() -> void:
+ 	challenge_browsing = true
++	if challenges.folder not in ["discover","friends","received"]:
++		challenges.select_folder("discover")
++		return
+ 	_challenges()
+ 	if not challenges.busy: challenges.refresh()
+ 
+@@ -1586,6 +1589,23 @@
+ 
+ func _challenges(parent: VBoxContainer = null) -> void:
+ 	if parent == null: parent = content
++	var detail_tab: int = 0
++	var inbox_scroll: int = 0
++	var draft_query: String = challenges.search
++	var query_focus: bool = false
++	var query_caret: int = 0
++	var previous: ChallengesPage = parent.find_child("ChallengesPage",true,false)
++	if previous != null and previous.browser_scope == challenges.scope():
++		if str(previous.selected.get("code","")) == str(challenges.selected.get("code","")):
++			var views: TabContainer = previous.find_child("ChallengeRaceViews",true,false)
++			if views != null: detail_tab = views.current_tab
++		if [previous.folder,previous.search,previous.mode_filter,previous.vehicle_filter,previous.sort_order] == [challenges.folder,challenges.search,challenges.mode_filter,challenges.vehicle_filter,challenges.sort_order]:
++			var inbox: ScrollContainer = previous.find_child("ChallengeInboxScroll",true,false)
++			if inbox != null: inbox_scroll = inbox.scroll_vertical
++			if previous._search != null:
++				draft_query = previous._search.text
++				query_focus = previous._search.has_focus()
++				query_caret = previous._search.caret_column
+ 	for child: Node in parent.get_children():
+ 		parent.remove_child(child)
+ 		child.queue_free()
+@@ -1593,6 +1613,9 @@
+ 	page.safety_client = online.client
+ 	page.items = challenges.items
+ 	page.selected = challenges.selected
++	page.detail_tab = detail_tab
++	page.browser_scope = challenges.scope()
++	page.inbox_scroll = inbox_scroll
+ 	page.selected_stage = challenges.selected_stage
+ 	page.stage_requested.connect(challenges.select_stage)
+ 	page.folder = challenges.folder
+@@ -1628,7 +1651,7 @@
+ 			_share_challenge())
+ 	page.cancel_requested.connect(_cancel_challenge_dialog)
+ 	page.refresh_requested.connect(func() -> void:
+-		if not challenges.selected.is_empty(): challenges.open(str(challenges.selected.code))
++		if challenges.folder == "sent" and not challenges.selected.is_empty(): challenges.open(str(challenges.selected.code))
+ 		else: challenges.refresh())
+ 	page.more_requested.connect(func() -> void: challenges.refresh(true))
+ 	page.sign_in_requested.connect(_open_account)
+@@ -1637,6 +1660,11 @@
+ 		_clear_challenge_game()
+ 		_open_challenges(true))
+ 	parent.add_child(page)
++	if page._search != null:
++		page._search.text = draft_query
++		if query_focus:
++			page._search.grab_focus()
++			page._search.caret_column = mini(query_caret,draft_query.length())
+ 	_keep_race_mode_rail_fixed(page)
+ 
+ func _clear_challenge_game() -> void:
+@@ -2400,7 +2428,7 @@
+ 	var loading: RaceLoading = _open_race_loading()
+ 	var loading_id: int = loading.get_instance_id()
+ 	loading.configure("Parking hall","night_city",PackedVector2Array(),true)
+-	loading.facts_label.text = "Free drive · 240 × 160 m"
++	loading.facts_label.text = "P1 parking hall · Free drive · 120 × 72 m"
+ 	loading.stage("Opening parking hall…")
+ 	cloud_starting = true
+ 	await _present_race_loading()
+diff --git a/game/backend/challenges_client.gd b/game/backend/challenges_client.gd
+--- a/game/backend/challenges_client.gd
++++ b/game/backend/challenges_client.gd
+@@ -242,7 +242,7 @@
+ 	var capabilities: Variant = client.get("_capabilities")
+ 	if folder in ["discover","friends"] and capabilities is Dictionary and not discovery_supported():
+ 		items.clear()
+-		error = "Challenge discovery needs the updated online service. Joined and Created are still available."
++		error = "Challenge discovery needs the updated online service. Your joined races are still available."
+ 		changed.emit()
+ 		return
+ 	busy = true
+diff --git a/game/tests/test_challenge_discovery.gd b/game/tests/test_challenge_discovery.gd
+--- a/game/tests/test_challenge_discovery.gd
++++ b/game/tests/test_challenge_discovery.gd
+@@ -45,6 +45,7 @@
+ 
+ func capture(label: String) -> void:
+ 	if DisplayServer.get_name() != "headless":
++		await settle()
+ 		check(root.get_texture().get_image().save_png(output.path_join(label+".png")) == OK,"capture "+label)
+ 
+ func bounds(node: Control, detail: String) -> void:
+@@ -100,7 +101,7 @@
+ 	adapter.selected = sample()
+ 	var calls: int = client.paths.size()
+ 	await adapter.refresh()
+-	check(client.paths.size() == calls and adapter.error.contains("updated online service"),"older services get actionable discovery availability")
++	check(client.paths.size() == calls and adapter.error.contains("updated online service") and not adapter.error.contains("Created"),"older services get actionable racing availability without creation navigation")
+ 	check(not adapter.selected.is_empty(),"older services retain a directly opened private invitation")
+ 	adapter.queue_free()
+ 	cloud.queue_free()
+@@ -135,9 +136,19 @@
+ 		app._challenges()
+ 		await settle()
+ 		var page: ChallengesPage = app.root_ui.find_child("ChallengesPage",true,false)
+-		for identity: String in ["ChallengeHeader","ChallengeTab_discover","ChallengeTab_friends","ChallengeTab_received","ChallengeTab_sent","ChallengeSearch","ChallengeActions"]:
++		for identity: String in ["ChallengeHeader","ChallengeTab_discover","ChallengeTab_friends","ChallengeTab_received","ChallengeSearch","ChallengeActions"]:
+ 			bounds(page.find_child(identity,true,false),identity)
+ 		check(page.find_children("*","Button",true,false).all(func(button: Button) -> bool: return button.text != "Enter code"),"discovery has no code-entry action")
++		check(page.find_child("ChallengeTab_sent",true,false) == null,"racing navigation has no Created management tab")
++		check(page.find_children("*","Button",true,false).all(func(button: Button) -> bool: return button.text not in ["Create challenge","Create another","Share","Rematch"] and button.tooltip_text != "Cancel challenge"),"Find & play excludes creation and management actions")
++		var filters_row: Control = page.find_child("ChallengeFilters",true,false)
++		check(not filters_row.visible,"filters leave room for racing until requested")
++		(page.find_child("ChallengeToggleFilters",true,false) as Button).pressed.emit()
++		check(filters_row.visible,"filters reveal the existing format/car/sort choices")
++		await capture("filters-%dx%d" % [dimensions.x,dimensions.y])
++		(page.find_child("ChallengeToggleFilters",true,false) as Button).pressed.emit()
++		check(not filters_row.visible,"filters collapse without changing the selected race")
++		check(page.find_child("ChallengeRaceGrid",true,false) != null,"races use the new scenic gallery")
+ 		check((page.find_child("ChallengeRace",true,false) as Button).text == "Join & race","public race joins directly")
+ 		check(page.find_child("ChallengeRewards",true,false) != null,"both concrete reward goals appear")
+ 		check(page._reward_caption(sample()) == "Up to 150 Coins","card reward matches server amounts")
+@@ -153,6 +164,20 @@
+ 		await settle()
+ 		bounds(page.find_child("ChallengeRewards",true,false),"reward goals after scroll")
+ 		await capture("rewards-%dx%d" % [dimensions.x,dimensions.y])
++		var gallery: ScrollContainer = page.find_child("ChallengeInboxScroll",true,false)
++		gallery.scroll_vertical = 16
++		await settle()
++		var saved_scroll: int = gallery.scroll_vertical
++		page._search.text = "Unsent search"
++		page._search.grab_focus()
++		(page.find_child("ChallengeRaceViews",true,false) as TabContainer).current_tab = 1
++		app._challenges()
++		await settle()
++		page = app.root_ui.find_child("ChallengesPage",true,false)
++		check((page.find_child("ChallengeRaceViews",true,false) as TabContainer).current_tab == 1,"refresh retains the selected race's standings view")
++		check((page.find_child("ChallengeInboxScroll",true,false) as ScrollContainer).scroll_vertical == saved_scroll,"refresh retains the gallery position")
++		check(page._search.text == "Unsent search" and page._search.has_focus(),"background replies preserve an unsent search and its focus")
++		await capture("standings-%dx%d" % [dimensions.x,dimensions.y])
+ 		app.challenges.selected.rewards.finish_earned = true
+ 		app.challenges.selected.rewards.goal_earned = true
+ 		app.challenges.selected.joined = true
+diff --git a/game/tests/test_challenge_entry.gd b/game/tests/test_challenge_entry.gd
+--- a/game/tests/test_challenge_entry.gd
++++ b/game/tests/test_challenge_entry.gd
+@@ -106,6 +106,13 @@
+ 		app._open_challenges()
+ 		await settle()
+ 		check(page(app).landing_view,"repeated Challenges activation resets to the choice")
++		app.challenges.folder = "sent"
++		app._challenges()
++		await settle()
++		await click(page(app).find_child("ChallengeFindAndPlay",true,false))
++		check(app.challenges.folder == "discover" and page(app).find_child("ChallengeTab_sent",true,false) == null,"Find & play leaves prior creation management for discovery")
++		app.challenges.selected = fixture()
++		app.challenges.items.assign([fixture()])
+ 		app._receive_challenge("AB12CD34EF56AB78")
+ 		await settle()
+ 		check(not page(app).landing_view,"invitation links bypass the choice")
+diff --git a/game/tests/test_challenge_tab.gd b/game/tests/test_challenge_tab.gd
+--- a/game/tests/test_challenge_tab.gd
++++ b/game/tests/test_challenge_tab.gd
+@@ -4,6 +4,7 @@
+ var failures: int = 0
+ var selection: String = ""
+ var races: int = 0
++var capture_output: String = ""
+ 
+ func _initialize() -> void: call_deferred("run")
+ 
+@@ -39,6 +40,11 @@
+ 	page.queue_free()
+ 	await process_frame
+ 
++func capture_state(label: String) -> void:
++	if capture_output.is_empty() or DisplayServer.get_name() == "headless": return
++	await RenderingServer.frame_post_draw
++	check(root.get_texture().get_image().save_png(capture_output.path_join(label+".png")) == OK,"capture "+label)
++
+ func bounds(page: ChallengesPage, name: String) -> void:
+ 	var node: Control = page.find_child(name,true,false)
+ 	var rectangle: Rect2 = node.get_global_rect()
+@@ -46,6 +52,10 @@
+ 	check(rectangle.position.x >= -1 and rectangle.position.y >= -1 and rectangle.end.x <= viewport.end.x+1 and rectangle.end.y <= viewport.end.y+1,name+" fits "+str(viewport.size))
+ 
+ func run() -> void:
++	capture_output = OS.get_environment("BMT_CHALLENGE_BROWSER_STATES_OUTPUT")
++	if not capture_output.is_empty():
++		capture_output = capture_output.path_join(DisplayServer.get_name()+"-"+RenderingServer.get_current_rendering_method())
++		DirAccess.make_dir_recursive_absolute(capture_output)
+ 	for dimensions: Vector2i in [Vector2i(1280,720),Vector2i(960,540),Vector2i(1600,720)]:
+ 		root.size = dimensions
+ 		var value: Dictionary = fixture()
+@@ -58,7 +68,13 @@
+ 		check(own.get_theme_stylebox("panel").bg_color == MenuStyle.ACCENT,"player standing retains yellow highlight")
+ 		var row: HBoxContainer = own.get_child(0)
+ 		check((row.get_child(2) as Label).text == "01:39.250" and (row.get_child(3) as Label).text == "+1.000","standings give comparable times and signed gaps")
+-		for name: String in ["ChallengeHeader","ChallengeTrackPreview","ChallengeActions","ChallengeStandingsHeader"]: bounds(page,name)
++		for name: String in ["ChallengeHeader","ChallengeTrackPreview","ChallengeActions"]: bounds(page,name)
++		var views: TabContainer = page.find_child("ChallengeRaceViews",true,false)
++		views.current_tab = 1
++		await settle()
++		bounds(page,"ChallengeStandingsHeader")
++		views.current_tab = 0
++		await settle()
+ 		var race: Button = page.find_child("ChallengeRace",true,false)
+ 		check(not race.disabled and race.text == "Race","joined recipient can race")
+ 		var card: Button = page.find_child("ChallengeCard_"+str(value.code),true,false)
+@@ -84,11 +100,14 @@
+ 		value = fixture(true)
+ 		page = page_for(value)
+ 		await settle()
++		(page.find_child("ChallengeRaceViews",true,false) as TabContainer).current_tab = 1
++		await settle()
+ 		var scroll: ScrollContainer = page.find_child("ChallengeStandingsScroll",true,false)
+ 		check(scroll.get_v_scroll_bar().max_value > scroll.size.y,"all twenty drivers remain scrollable")
+ 		scroll.scroll_vertical = int(scroll.get_v_scroll_bar().max_value)
+ 		await settle()
+ 		check(page.find_child("ChallengeDriver_driver_19",true,false).get_global_rect().intersects(scroll.get_global_rect()),"final group driver is reachable")
++		if dimensions == Vector2i(1280,720): await capture_state("group-final-driver")
+ 		await remove_page(page)
+ 	var value: Dictionary = fixture(true)
+ 	for row: Dictionary in value.standings:
+@@ -127,6 +146,7 @@
+ 	page = page_for(value)
+ 	await settle()
+ 	for name: String in ["ChallengeHeader","ChallengeTrackPreview","ChallengeActions"]: bounds(page,name)
++	await capture_state("long-track-and-driver-names")
+ 	await remove_page(page)
+ 	for state: String in ["complete","cancelled","settling","exhausted","creator","busy","guest","unjoined"]:
+ 		value = fixture()
+@@ -152,5 +172,48 @@
+ 	var labels: Array[Node] = page.find_children("*","Label",true,false)
+ 	check(labels.any(func(node: Node) -> bool: return node.text == "Finding challenges…"),"initial refresh does not claim an empty inbox")
+ 	await remove_page(page)
++	# Recovery and winning/owner selections cannot reopen creation from racing.
++	for scenario: String in ["empty","filtered","error","friends","won","owner"]:
++		var browse := ChallengesPage.new()
++		browse.signed_in = scenario != "friends"
++		if scenario == "filtered": browse.search = "No matching track"
++		if scenario == "error": browse.error = "Could not connect. Try again."
++		if scenario == "friends": browse.folder = "friends"
++		if scenario in ["won","owner"]:
++			browse.selected = fixture()
++			browse.items.assign([browse.selected])
++			if scenario == "won":
++				browse.selected.standings[1].ticks = 11000
++				browse.selected.standings[1].ms = 91667
++			else: browse.selected.creator_id = "self"
++		root.add_child(browse)
++		MenuStyle.fill(browse)
++		await settle()
++		await capture_state(scenario)
++		check(browse.find_children("*","Button",true,false).all(func(button: Button) -> bool: return button.text not in ["Create challenge","Create another","Share","Rematch"] and button.tooltip_text != "Cancel challenge"),scenario+" keeps racing separate from creation")
++		check(browse.find_child("ChallengeTab_sent",true,false) == null,scenario+" excludes Created")
++		if scenario == "filtered":
++			var intent: Array = []
++			browse.filters_requested.connect(func(query: String, mode: String, car: String, order: String) -> void: intent.assign([query,mode,car,order]))
++			var reset: Button
++			for button: Button in browse.find_children("*","Button",true,false):
++				if button.text == "Clear filters": reset = button
++			reset.pressed.emit()
++			check(intent == ["","all","","ending"],"no-match recovery clears the complete filter scope")
++		if scenario == "friends":
++			check(browse.find_children("*","Button",true,false).any(func(button: Button) -> bool: return button.text == "Sign in"),"private racing offers the existing sign-in action")
++		await remove_page(browse)
++	var manage := ChallengesPage.new()
++	manage.folder = "sent"
++	manage.signed_in = true
++	manage.selected = fixture()
++	manage.selected.creator_id = "self"
++	root.add_child(manage)
++	MenuStyle.fill(manage)
++	await settle()
++	check(manage.find_child("ChallengeTab_sent",true,false) != null,"explicit creation management retains Created")
++	check(manage.find_children("*","Button",true,false).any(func(button: Button) -> bool: return button.tooltip_text == "Cancel challenge"),"owner retains cancellation in creation management")
++	await capture_state("owner-management")
++	await remove_page(manage)
+ 	print("CHALLENGE TAB: %d checks, %d failures" % [checks,failures])
+ 	quit(1 if failures else 0)
+diff --git a/game/tests/test_challenges.gd b/game/tests/test_challenges.gd
+--- a/game/tests/test_challenges.gd
++++ b/game/tests/test_challenges.gd
+@@ -252,6 +252,9 @@
+ 		await process_frame
+ 		await process_frame
+ 		page = app.root_ui.find_child("ChallengesPage",true,false)
++		(page.find_child("ChallengeRaceViews",true,false) as TabContainer).current_tab = 1
++		await process_frame
++		await process_frame
+ 		var scroll: ScrollContainer = page.find_child("ChallengeStandingsScroll",true,false)
+ 		check(scroll.get_v_scroll_bar().max_value > scroll.size.y,"twenty-driver standings scroll within the detail panel")
+ 		check((page.find_child("ChallengeDriver_self",true,false) as PanelContainer).get_theme_stylebox("panel").bg_color == MenuStyle.ACCENT,"player row uses the established yellow highlight")
+diff --git a/DEVELOPMENT_STATUS.md b/DEVELOPMENT_STATUS.md
+--- a/DEVELOPMENT_STATUS.md
++++ b/DEVELOPMENT_STATUS.md
+@@ -1,3 +1,5 @@
++2026-10-23 FBR01-FBR04/R01/G01/Q01: Find & play is now a dedicated racing browser with Discover/Friends/Joined, scenic route cards, explicit search/collapsible filters and a focused race hero. Create/Created/share/rematch/cancel management stays outside finding; explicit Created and result flows retain their actions. Race details and Standings separate target information from the complete table while Race remains pinned. Account/folder/filter-fenced draft search/focus, gallery position and detail-tab restoration survive replies; Refresh reads the catalogue. Browser92headless/110Compatibility/110desktopMobile, gates76/88/79, entry87, integrated216, series30 and parser1028 pass. Native before/after, filters, empty/error/guest/long-name/owner views, corrections, commands and scoped checkpoint: docs/evidence/challenge-racing-browser-2026-10-23/report.json. Owner appearance/touch acceptance remains. No phone attachment check/device test, APK, live account/backend mutation, social send or deployment. Concurrent work preserved.
++
+ 2026-10-23 KST01-KST03/R01/Q01: Retain recorded cobblestone kerb clatter and restore a subtle recorded body thud underneath, six pulses/second at native pitch with small level variations. Layer RMS0.38 of clatter; matched decoded loudness-18.48LUFS versus previous-18.49. Native89/loops208, continuity42 and12-capture review pass; repeat60audio hashes exact, all58other WAV/Ogg files preserved. Initial actual-Game fixture ran before asynchronous preparation; corrected readiness wait retains crossing assertions. Commands, applied preview, provenance and scoped checkpoint: docs/KERB_SUBTLE_THUD_2026_10_23.md. PC restart and owner listening acceptance remain. No phone/tablet attachment check/device test, APK/export/install, live mutation or deployment by this task; concurrent work preserved.
+ 
+ 2026-10-23 GPH01-GPH04/R01/G01/Q01: Garage Test drive opens an untimed 240x160m parking hall with a 200m marked straight, clear turning circle, slalom and parking bays. All five real cars retain normal handling, paint/parts, camera and touch controls; reset/pause/background/retained Garage return work without race proof, tickets, rewards, PB or saved-condition writes. Sliding actions cannot launch the hall; short-window entry and the separate speed display remain visible. Focused364headless/380Compatibility/380desktopMobile, driving72, practice54, Garage152/sidebar415 and App141 pass. Native views, initial viewport/speed/clipping/slide corrections, original-method control, actual commands and scoped Git-checkable patch: docs/PARKING_HALL_2026_10_23.md and docs/evidence/parking-hall-2026-10-23/report.json. Client restart and owner/device size/appearance/sustained acceptance remain; no phone/tablet attachment check, physical-device test, APK, live mutation or deployment. Concurrent work preserved.
+diff --git a/docs/PHASE_0_PLAN.md b/docs/PHASE_0_PLAN.md
+--- a/docs/PHASE_0_PLAN.md
++++ b/docs/PHASE_0_PLAN.md
+@@ -1,3 +1,5 @@
++2026-10-23 FBR01-FBR04/R01/G01/Q01: Find & play is now a dedicated racing browser with Discover/Friends/Joined, scenic route cards, explicit search/collapsible filters and a focused race hero. Create/Created/share/rematch/cancel management stays outside finding; explicit Created and result flows retain their actions. Race details and Standings separate target information from the complete table while Race remains pinned. Account/folder/filter-fenced draft search/focus, gallery position and detail-tab restoration survive replies; Refresh reads the catalogue. Browser92headless/110Compatibility/110desktopMobile, gates76/88/79, entry87, integrated216, series30 and parser1028 pass. Native before/after, filters, empty/error/guest/long-name/owner views, corrections, commands and scoped checkpoint: docs/evidence/challenge-racing-browser-2026-10-23/report.json. Owner appearance/touch acceptance remains. No phone attachment check/device test, APK, live account/backend mutation, social send or deployment. Concurrent work preserved.
++
+ 2026-10-23 KST01-KST03/R01/Q01: Retain recorded cobblestone kerb clatter and restore a subtle recorded body thud underneath, six pulses/second at native pitch with small level variations. Layer RMS0.38 of clatter; matched decoded loudness-18.48LUFS versus previous-18.49. Native89/loops208, continuity42 and12-capture review pass; repeat60audio hashes exact, all58other WAV/Ogg files preserved. Initial actual-Game fixture ran before asynchronous preparation; corrected readiness wait retains crossing assertions. Commands, applied preview, provenance and scoped checkpoint: docs/KERB_SUBTLE_THUD_2026_10_23.md. PC restart and owner listening acceptance remain. No phone/tablet attachment check/device test, APK/export/install, live mutation or deployment by this task; concurrent work preserved.
+ 
+ 2026-10-23 GPH01-GPH04/R01/G01/Q01: Garage Test drive opens an untimed 240x160m parking hall with a 200m marked straight, clear turning circle, slalom and parking bays. All five real cars retain normal handling, paint/parts, camera and touch controls; reset/pause/background/retained Garage return work without race proof, tickets, rewards, PB or saved-condition writes. Sliding actions cannot launch the hall; short-window entry and the separate speed display remain visible. Focused364headless/380Compatibility/380desktopMobile, driving72, practice54, Garage152/sidebar415 and App141 pass. Native views, initial viewport/speed/clipping/slide corrections, original-method control, actual commands and scoped Git-checkable patch: docs/PARKING_HALL_2026_10_23.md and docs/evidence/parking-hall-2026-10-23/report.json. Client restart and owner/device size/appearance/sustained acceptance remain; no phone/tablet attachment check, physical-device test, APK, live mutation or deployment. Concurrent work preserved.

@@ -1,0 +1,327 @@
+--- a/game/backend/session_vault.gd
++++ b/game/backend/session_vault.gd
+@@ -11,7 +11,12 @@
+ 		adapter = ClassDB.instantiate("BmtSecureSession")
+ 
+ func available() -> bool:
+-	return is_instance_valid(adapter) and adapter.has_method("sealSession") and adapter.has_method("openSession")
++	if not is_instance_valid(adapter): return false
++	# Android JNISingleton methods are registered separately from Object methods.
++	# Object.has_method alone hides a working Keystore and disables persistence.
++	if adapter.has_method("has_java_method"):
++		return bool(adapter.call("has_java_method","sealSession")) and bool(adapter.call("has_java_method","openSession"))
++	return adapter.has_method("sealSession") and adapter.has_method("openSession")
+ 
+ func seal(text: String, context: String) -> String:
+ 	if not available(): return ""
+--- a/game/backend/account_controller.gd
++++ b/game/backend/account_controller.gd
+@@ -68,6 +68,12 @@
+ 
+ func needs_username() -> bool:
+ 	return client.signed_in() and bool(client.player.get("needs_username", false))
++
++func needs_country() -> bool:
++	return client.signed_in() and PlayerCountry.valid_code(str(client.player.get("country_code",""))).is_empty()
++
++func profile_ready() -> bool:
++	return client.signed_in() and not needs_username() and not needs_country()
+ 
+ func _signed_in_message() -> String:
+ 	return "Choose the name other racers will see." if needs_username() else "Signed in as " + player_name() + "."
+--- a/game/core/app.gd
++++ b/game/core/app.gd
+@@ -145,6 +145,7 @@
+ var editor_retry_original: bool = false
+ var online: AccountController
+ var account_button: Button
++var _account_setup_pending: bool = false
+ var startup_complete: bool = false
+ var profile_root: String
+ var guest_records: LocalRecords
+@@ -451,7 +452,7 @@
+ 	else:
+ 		await online.start_session()
+ 		await _prepare_garage_covered()
+-		_show_screen("rivalry" if online.client.signed_in() and not online.needs_username() else "account")
++		_show_screen("rivalry" if online.profile_ready() else "account")
+ 	startup_complete = true
+ 	_telemetry_observe("menu_ready",{},"ready")
+ 	_prefetch_discovery()
+@@ -1207,8 +1208,11 @@
+ 		_remember_publication_news()
+ 	if is_instance_valid(account_button):
+ 		account_button.text = online.player_name() if online.client.signed_in() else "Guest"
++	var completed_sign_in: bool = screen == "account" and _account_setup_pending and not online.busy and online.profile_ready()
+ 	if previous_profile != active_profile and startup_complete and not is_instance_valid(game) and is_instance_valid(root_ui):
+-		_rebuild_profile_menu("account" if not online.client.signed_in() else "drafts" if screen == "create" else screen)
++		_rebuild_profile_menu("rivalry" if completed_sign_in else "account" if not online.client.signed_in() else "drafts" if screen == "create" else screen)
++	elif completed_sign_in:
++		_show_screen("rivalry")
+ 	_prefetch_discovery()
+ 	_prefetch_rivalry()
+ 
+@@ -1314,6 +1318,7 @@
+ 	online.refresh_options()
+ 
+ func _account() -> void:
++	_account_setup_pending = not online.profile_ready()
+ 	var background := preload("res://ui/account_backdrop.gd").new()
+ 	MenuStyle.fill(background)
+ 	root_ui.add_child(background)
+--- a/game/ui/account_panel.gd
++++ b/game/ui/account_panel.gd
+@@ -133,8 +133,6 @@
+ 		account.changed.emit()
+ 		return
+ 	await account.save_username(username.text,country_picker.country_code)
+-	if account.client.signed_in() and not account.needs_username():
+-		continue_requested.emit()
+ 
+ func _confirm_deletion() -> void:
+ 	if account.busy or not account.client.signed_in(): return
+@@ -167,7 +165,7 @@
+ 	var signed_in: bool = account.client.signed_in()
+ 	var onboarding: bool = account.needs_username()
+ 	var waiting: bool = account.waiting_for_google
+-	title.text = "Choose your name" if onboarding else ("You're signed in" if signed_in else "Sign in")
++	title.text = "Sign in" if not signed_in else "Choose your name" if onboarding else "Choose your country" if account.needs_country() else "Your account"
+ 	subtitle.text = "This is the name other racers will see." if onboarding else (account.player_name() if signed_in else "Your racing profile. Your next personal best.")
+ 	username.visible = onboarding
+ 	username.editable = not account.busy
+--- a/game/tests/test_account.gd
++++ b/game/tests/test_account.gd
+@@ -84,6 +84,20 @@
+ 	online._development_key = key
+ 	await online.sign_in_developer()
+ 	check(online.client.signed_in() and online.player_name() == "Beat my track", "actual server authenticates developer")
++	while app.screen == "restoring": await process_frame
++	check(app.screen == "account" and online.needs_country(),"first sign-in stays only for the missing country")
++	var country_restart: Node = (load("res://core/app.tscn") as PackedScene).instantiate()
++	country_restart.records = LocalRecords.new(folder.path_join("records.json"))
++	country_restart.library = TrackLibrary.new(folder)
++	root.add_child(country_restart)
++	while not country_restart.startup_complete: await process_frame
++	check(country_restart.online.client.signed_in() and country_restart.screen == "account" and country_restart.online.needs_country(),"restart remembers sign-in while still requiring the first country")
++	check(not country_restart.root_ui.find_child("GoogleSignIn",true,false).visible,"missing-country startup does not ask the player to sign in again")
++	await capture("missing-country-startup")
++	country_restart.queue_free()
++	await process_frame
++	await online.save_country("")
++	check(app.screen == "account" and online.needs_country(),"invalid country cannot dismiss unfinished setup")
+ 	var country_choice: Button = app.root_ui.find_child("PlayerCountryPicker",true,false)
+ 	check(country_choice != null and country_choice.visible,"signed-in account exposes country selection")
+ 	country_choice._open()
+@@ -92,7 +106,12 @@
+ 	country_choice._choose(0)
+ 	await online.save_country(country_choice.country_code)
+ 	check(online.client.player.country_code == "FI" and online.player_name() == "Beat my track","country saves through real HTTP without renaming developer")
++	while app.screen == "restoring": await process_frame
++	check(app.screen == "rivalry","saving the first country opens the menu without signed-in confirmation")
+ 	await capture("country-developer")
++	app._open_account()
++	while online.busy: await process_frame
++	check(app.screen == "account" and not app._account_setup_pending,"explicit account management stays accessible after sign-in")
+ 	await online.refresh_options()
+ 	check(online.client.signed_in() and online.player_name() == "Beat my track", "account refresh checks authenticated profile")
+ 	check(online.client.player.country_code == "FI","refresh preserves saved country")
+@@ -176,14 +195,18 @@
+ 	after_logout.queue_free()
+ 	await process_frame
+ 	await online.sign_out()
++	while app.screen == "restoring": await process_frame
+ 	check(not online.client.signed_in() and online.client.player.is_empty(), "sign out clears session")
+ 	await online.sign_in_developer()
++	while app.screen == "restoring": await process_frame
+ 	check(online.client.player.id == player_id, "repeated development sign-in reuses the account")
+ 	check(app.records.path == developer_records_path and app.records.settings.track_ratings.profile_test == 5, "switching back restores developer data")
+ 	await online.sign_out()
++	while app.screen == "restoring": await process_frame
+ 	online.open_browser = open_fixture_browser
+ 	await online.sign_in_google()
+ 	check(online.client.signed_in() and online.needs_username(), "Google authenticates before name selection")
++	while app.screen == "restoring": await process_frame
+ 	check(app.records.path != developer_records_path and app.records.settings.get("track_ratings",{}).is_empty(), "Google player cannot inherit developer ratings")
+ 	check(app.library.load_wip(owned_document.id).is_empty() and app.document.is_empty(), "Google player cannot inherit developer draft or editor state")
+ 	check(app.root_ui.find_child("PlayerUsername", true, false).visible, "only new authenticated players see name field")
+@@ -204,14 +227,21 @@
+ 	app.root_ui.find_child("PlayerCountryPicker",true,false).set_country("JP")
+ 	await onboarding_panel._save_name()
+ 	check(online.player_name() == "Chosen racer" and not online.needs_username(), "profile saves chosen name after Google authentication")
++	while app.screen == "restoring": await process_frame
++	check(app.screen == "rivalry","saving a new Google name and country enters the menu directly")
+ 	check(online.client.player.country_code == "JP","name and country persist together during onboarding")
+ 	check(online.client.player.id != player_id, "Google identity is independent of developer")
+ 	await capture("google-player-960")
+ 	await online.sign_out()
++	while app.screen == "restoring": await process_frame
+ 	await online.sign_in_google()
+ 	check(online.player_name() == "Chosen racer" and not online.needs_username(), "returning Google player skips name selection")
+ 	check(online.client.player.country_code == "JP","returning Google player retains country")
+-	await online.sign_out()
++	while app.screen == "restoring": await process_frame
++	check(app.screen == "rivalry" and app.root_ui.find_child("PlayerCountryPicker",true,false) == null,"returning Google sign-in skips country and signed-in windows")
++	await capture("returning-google-menu")
++	await online.sign_out()
++	while app.screen == "restoring": await process_frame
+ 	browser_mode = "cancel"
+ 	await online.sign_in_google()
+ 	check(not online.client.signed_in() and not online.busy, "cancelled Google login stays signed out")
+--- /dev/null
++++ b/game/tests/test_sign_in_startup.gd
+@@ -0,0 +1,68 @@
++extends SceneTree
++## Android exposes Java capabilities separately; desktop uses native Object methods.
++const Vault = preload("res://backend/session_vault.gd")
++const Account = preload("res://backend/account_controller.gd")
++var checks: int = 0
++var failures: int = 0
++
++class JavaVault extends RefCounted:
++	var methods: Array[String] = ["sealSession","openSession"]
++	var queried: Array[String] = []
++	func has_java_method(method: String) -> bool:
++		queried.append(method)
++		return method in methods
++
++class NativeVault extends RefCounted:
++	func sealSession(_text: String, _context: String) -> PackedByteArray: return PackedByteArray()
++	func openSession(_bytes: PackedByteArray, _context: String) -> String: return ""
++
++func _initialize() -> void: run.call_deferred()
++
++func check(value: bool, message: String) -> void:
++	checks += 1
++	if not value:
++		failures += 1
++		print("FAIL: "+message)
++
++func run() -> void:
++	var source: Script = Vault
++	if "--original-vault" in OS.get_cmdline_user_args():
++		source = load("res://../docs/evidence/sign-in-startup-2026-10-23/before/game/backend/session_vault.gd")
++	var vault: RefCounted = source.new()
++	var java := JavaVault.new()
++	vault.adapter = java
++	check(not java.has_method("sealSession") and not java.has_method("openSession"),"fixture matches Android's separate Java method registry")
++	check(vault.available(),"Android Keystore remains available through Java methods")
++	check(java.queried == ["sealSession","openSession"],"both Java vault operations are checked")
++	java.methods = ["sealSession"]
++	check(not vault.available(),"incomplete Android vault is unavailable")
++	java.methods = ["openSession"]
++	check(not vault.available(),"Android vault must also provide sealing")
++	vault.adapter = NativeVault.new()
++	check(vault.available(),"desktop native vault retains its ordinary method check")
++	vault.adapter = RefCounted.new()
++	check(not vault.available(),"unrelated adapter cannot persist credentials")
++	vault.adapter = null
++	check(not vault.available(),"missing platform adapter stays unavailable")
++	check(vault.seal("fictional","context").is_empty(),"unavailable vault has no plaintext fallback")
++
++	var account := Account.new()
++	check(not account.profile_ready(),"guest profile cannot complete sign-in")
++	account.client._access_token = "fictional-access"
++	account.client.player = {"id":"fictional-player","needs_username":true,"country_code":"FI"}
++	check(account.needs_username() and not account.profile_ready(),"existing country cannot bypass unfinished name selection")
++	account.client.player.needs_username = false
++	account.client.player.country_code = ""
++	check(account.needs_country() and not account.profile_ready(),"missing country requires one setup step")
++	account.client.player.country_code = "XX"
++	check(account.needs_country() and not account.profile_ready(),"invalid country cannot complete setup")
++	account.client.player.country_code = "FI"
++	check(account.profile_ready() and not account.needs_country(),"saved country completes sign-in without another prompt")
++	account.client.player.country_code = "jp"
++	check(account.profile_ready(),"supported country is normalized by shared validation")
++	account.client._access_token = ""
++	check(not account.profile_ready() and not account.needs_country(),"stale player metadata never authenticates a guest")
++	account.client.free()
++	account.free()
++	print("SIGN_IN_STARTUP: %d checks, %d failures" % [checks,failures])
++	quit(1 if failures else 0)
+--- /dev/null
++++ b/game/tests/test_session_vault_original_control.gd
+@@ -0,0 +1,6 @@
++extends "res://tests/test_medium_communication.gd"
++## Run unchanged communication assertions with the task-original vault.
++func make_client(url: String = "http://127.0.0.1:1") -> FakeClient:
++	var client: FakeClient = super.make_client(url)
++	client.session_vault = load("res://../docs/evidence/sign-in-startup-2026-10-23/before/game/backend/session_vault.gd").new()
++	return client
+--- a/AGENTS.md
++++ b/AGENTS.md
+@@ -1,5 +1,8 @@
+ ## Whole-row challenge carousel end animation override (2026-10-23)
+ 2026-10-23 CEB01/R01/G01/Q01: Challenge car carousel now uses the shared scroll-strip/inner-row structure, so end elasticity moves all five cards together. Explicit row sizing retains full-width cards and narrow paging. Native touch/wheel tests cover every wide-screen starting card, both narrow ends, intermediate spring alignment, exact return positions and no accidental selection. Task-original238/28 failures; final238headless/282Compatibility/282desktopMobile, integrated216 and parser1015 pass. Commands, retained initial anchoring and concurrent landing_view interruption, native captures and scoped checkpoint: docs/evidence/challenge-carousel-edges-2026-10-23/report.json. Owner/device acceptance remains; no phone attachment check/device test, APK, live mutation or deployment. Concurrent work preserved.
++
++## Remembered tablet sign-in and direct menu override (2026-10-23)
++2026-10-23 ASI01-ASI03/B01/B19/R01/G01/Q01: Android vault capability checks use the JNI Java method registry, retaining desktop native checks and encrypted session/refresh/logout/account fences. Completed sign-in and first profile save enter Race directly; saved country skips setup and signed-in confirmation, while explicit account management remains. Focused16, real HTTP75headless/88Compatibility, rotation17 and App141 pass. Original vault reproduces2 registry failures; communication retains4 publication failures with identical original-vault control. Native views, commands, initial harness correction, hashes and scoped checkpoint: docs/evidence/sign-in-startup-2026-10-23/report.json and docs/REMEMBERED_SIGN_IN.md. ADB sandbox initialization failed; no successful attachment check/device test, APK, install, live mutation or deployment. Updated tablet build and owner cold-restart acceptance remain. Concurrent work preserved.
+ 
+ ## Exact gameplay queries, bounded evidence and worker road cache override (2026-10-23)
+ 2026-10-23 GPA-F13/F16/F19/F24/R01/G01/Q01: Reuse ordered spatial candidates within atomic, value-validated driving/presentation scopes; preserve full-scan arithmetic, first matches, object order and distant-bump spring semantics. A monotonic216000-input budget bounds proof/incidents and rejects truncated uploads or unusable paid resumes while local driving continues. Release diagnostics use a4KiB packed ring; debug/full opt-in remains. Production road cache verification/decompression/serialization uses owned CPU workers and numeric arrays, with sliced main-thread installation and scoped receipt cleanup. Focused4303headless/4303Compatibility/4303desktopMobile, exact five-biome geometry5 per mode, speed-bumps9046/hazards212, rewind591+61/ghost38, hitch47/lifecycle79/App141/recovery28/loading1343 and parser1011 pass. Three legacy golden/planning-cache/reward fixtures reproduce with captured pre-task methods; assertions remain. Final desktop synthetic query7.868ms to1.017ms per eight-query tick is not Android FPS. Commands, limits, fingerprints and scoped checkpoint: docs/GAMEPLAY_F13_F16_F19_F24_2026_10_23.md and docs/evidence/gameplay-f13-f16-f19-f24-2026-10-23/report.json. Client restart and owner/physical-device sustained acceptance remain; no phone attachment check/device test, APK, native binary change, backend mutation or deployment. Concurrent work preserved.
+--- a/DEVELOPMENT_STATUS.md
++++ b/DEVELOPMENT_STATUS.md
+@@ -1,4 +1,6 @@
+ 2026-10-23 CEB01/R01/G01/Q01: Challenge car carousel now uses the shared scroll-strip/inner-row structure, so end elasticity moves all five cards together. Explicit row sizing retains full-width cards and narrow paging. Native touch/wheel tests cover every wide-screen starting card, both narrow ends, intermediate spring alignment, exact return positions and no accidental selection. Task-original238/28 failures; final238headless/282Compatibility/282desktopMobile, integrated216 and parser1015 pass. Commands, retained initial anchoring and concurrent landing_view interruption, native captures and scoped checkpoint: docs/evidence/challenge-carousel-edges-2026-10-23/report.json. Owner/device acceptance remains; no phone attachment check/device test, APK, live mutation or deployment. Concurrent work preserved.
++
++2026-10-23 ASI01-ASI03/B01/B19/R01/G01/Q01: Repair Android remembered sign-in through the JNI vault method registry. Completed sign-in/first country save go directly to Race; saved country skips setup and the signed-in confirmation, with Profile account management retained. Focused16, real HTTP75headless/88Compatibility, rotation17 and App141 pass; original reproduces2 registry failures and the unchanged4 publication-fixture failures. Native views/commands/hashes/scoped checkpoint: docs/evidence/sign-in-startup-2026-10-23/report.json; details: docs/REMEMBERED_SIGN_IN.md. No successful tablet attachment check/device test, APK/install, live mutation or deployment. Updated tablet build and owner cold-restart acceptance remain; concurrent work preserved.
+ 
+ 2026-10-23 GPA-F13/F16/F19/F24/R01/G01/Q01: Reuse ordered spatial candidates within atomic, value-validated driving/presentation scopes; preserve full-scan arithmetic, first matches, object order and distant-bump spring semantics. A monotonic216000-input budget bounds proof/incidents and rejects truncated uploads or unusable paid resumes while local driving continues. Release diagnostics use a4KiB packed ring; debug/full opt-in remains. Production road cache verification/decompression/serialization uses owned CPU workers and numeric arrays, with sliced main-thread installation and scoped receipt cleanup. Focused4303headless/4303Compatibility/4303desktopMobile, exact five-biome geometry5 per mode, speed-bumps9046/hazards212, rewind591+61/ghost38, hitch47/lifecycle79/App141/recovery28/loading1343 and parser1011 pass. Three legacy golden/planning-cache/reward fixtures reproduce with captured pre-task methods; assertions remain. Final desktop synthetic query7.868ms to1.017ms per eight-query tick is not Android FPS. Commands, limits, fingerprints and scoped checkpoint: docs/GAMEPLAY_F13_F16_F19_F24_2026_10_23.md and docs/evidence/gameplay-f13-f16-f19-f24-2026-10-23/report.json. Client restart and owner/physical-device sustained acceptance remain; no phone attachment check/device test, APK, native binary change, backend mutation or deployment. Concurrent work preserved.
+ 
+--- a/docs/PHASE_0_PLAN.md
++++ b/docs/PHASE_0_PLAN.md
+@@ -1,4 +1,6 @@
+ 2026-10-23 CEB01/R01/G01/Q01: Challenge car carousel now uses the shared scroll-strip/inner-row structure, so end elasticity moves all five cards together. Explicit row sizing retains full-width cards and narrow paging. Native touch/wheel tests cover every wide-screen starting card, both narrow ends, intermediate spring alignment, exact return positions and no accidental selection. Task-original238/28 failures; final238headless/282Compatibility/282desktopMobile, integrated216 and parser1015 pass. Commands, retained initial anchoring and concurrent landing_view interruption, native captures and scoped checkpoint: docs/evidence/challenge-carousel-edges-2026-10-23/report.json. Owner/device acceptance remains; no phone attachment check/device test, APK, live mutation or deployment. Concurrent work preserved.
++
++2026-10-23 ASI01-ASI03/B01/B19/R01/G01/Q01: Tablet sign-in persistence now checks Android JNI vault operations correctly. Saved country and completed sign-in bypass setup/confirmation and enter Race; explicit account management remains. Focused16, HTTP75headless/88Compatibility, rotation17 and App141 pass. Original-registry and publication-fixture controls, native views, initial harness correction, commands and scoped checkpoint: docs/evidence/sign-in-startup-2026-10-23/report.json. No successful tablet attachment check/device test, APK/install, live mutation or deployment; updated tablet build and owner cold-restart acceptance remain. Concurrent work preserved.
+ 
+ 2026-10-23 GPA-F13/F16/F19/F24/R01/G01/Q01: Reuse ordered spatial candidates within atomic, value-validated driving/presentation scopes; preserve full-scan arithmetic, first matches, object order and distant-bump spring semantics. A monotonic216000-input budget bounds proof/incidents and rejects truncated uploads or unusable paid resumes while local driving continues. Release diagnostics use a4KiB packed ring; debug/full opt-in remains. Production road cache verification/decompression/serialization uses owned CPU workers and numeric arrays, with sliced main-thread installation and scoped receipt cleanup. Focused4303headless/4303Compatibility/4303desktopMobile, exact five-biome geometry5 per mode, speed-bumps9046/hazards212, rewind591+61/ghost38, hitch47/lifecycle79/App141/recovery28/loading1343 and parser1011 pass. Three legacy golden/planning-cache/reward fixtures reproduce with captured pre-task methods; assertions remain. Final desktop synthetic query7.868ms to1.017ms per eight-query tick is not Android FPS. Commands, limits, fingerprints and scoped checkpoint: docs/GAMEPLAY_F13_F16_F19_F24_2026_10_23.md and docs/evidence/gameplay-f13-f16-f19-f24-2026-10-23/report.json. Client restart and owner/physical-device sustained acceptance remain; no phone attachment check/device test, APK, native binary change, backend mutation or deployment. Concurrent work preserved.
+ 
+--- a/docs/REMEMBERED_SIGN_IN.md
++++ b/docs/REMEMBERED_SIGN_IN.md
+@@ -1,4 +1,46 @@
+ # Startup and remembered sign-in
++
++## Tablet persistence and direct menu entry, 2026-10-23
++
++ASI01-ASI03/B01/B19/R01/G01/Q01: Android's `JNISingleton` exposes plugin
++operations through `has_java_method`; checking only `Object.has_method` made
++the working Keystore adapter appear unavailable and prevented remembered
++sign-in. The vault now checks that Java registry on Android and retains the
++ordinary native method check on desktop. Encrypted storage, backend/profile
++binding, refresh rotation, explicit logout and account-change fences remain.
++See the [Godot JNI method documentation](https://docs.godotengine.org/en/4.6/classes/class_jnisingleton.html).
++
++Successful sign-in and first name/country saving now enter the Race menu
++directly. A restored account asks for a country only when its server profile
++has no valid country. A saved country bypasses both country setup and the
++former signed-in confirmation. Profile → Manage account remains available
++for country changes, sign-out and deletion, with the heading Your account.
++
++Actual validation: focused capability/profile checks 16/0; real HTTP account
++integration 75/0 headless and 88/0 native Compatibility, including restart
++before country selection, restart after saving, returning Google identity,
++name conflicts, cancellation and explicit account management; shared session
++rotation 17/0; full App 141/0. The captured original vault reproduces two
++Android-registry failures. The broader communication fixture retains four
++publication-cooldown failures, identical with the original vault; its secure
++storage assertions pass. The initial account harness timeout came from
++reading controls during the existing asynchronous profile rebuild; the final
++harness waits for that screen transition without changing assertions.
++
++[Missing-country startup](evidence/sign-in-startup-2026-10-23/native/missing-country-startup.png)
++and [returning-player menu](evidence/sign-in-startup-2026-10-23/native/returning-google-menu.png)
++were captured and inspected in the native game. The fixture's Rivalry service
++is deliberately unavailable; those screenshots demonstrate routing, not live
++Rivalry availability. Commands, source hashes, logs and the scoped checkpoint
++are in [the evidence report](evidence/sign-in-startup-2026-10-23/report.json).
++
++No successful tablet attachment check or device test was performed: ADB could
++not initialize its user directory in the sandbox, and no local ADB server was
++running. No APK, install, live backend/account mutation or deployment occurred.
++An updated tablet build and owner cold-restart acceptance remain. If the old
++build never saved a session, sign in once after updating. The historical
++plaintext/future-vault notes below describe the original implementation;
++current storage uses the existing platform-protected vault.
+ 
+ 2026-10-04 renewal repair: clients sharing the private session file coordinate refresh and the following authenticated retry. Saves add noncredential `login_id` and `player_id` metadata; old saves gain these on successful renewal. A different explicit login is preserved rather than silently adopted. See [PC rivalry logout repair](RIVALRY_SESSION_FIX.md).
+ 

@@ -1,0 +1,1220 @@
+--- a/game/core/app.gd
++++ b/game/core/app.gd
+@@ -2393,11 +2393,76 @@
+ 	page.size_flags_vertical = Control.SIZE_EXPAND_FILL
+ 	page.vehicle_selected.connect(_select_vehicle)
+ 	page.race_requested.connect(func() -> void: _start_race(selected_track,false))
++	page.free_drive_requested.connect(_start_garage_free_drive)
+ 	page.news_race_requested.connect(_race_news_story)
+ 	page.news_share_requested.connect(_share_track_link)
+ 	page.circuit_requested.connect(_open_library.bind("all"))
+ 	page.save_failed.connect(func() -> void: _notice("Garage changes could not be saved. Check free storage space."))
+ 	parent.add_child(page)
++
++func _start_garage_free_drive() -> void:
++	if screen != "garage" or cloud_starting or is_instance_valid(game) or is_instance_valid(race_loading): return
++	var original_scope: String = lifecycle.scope()
++	var navigation: int = _navigation_generation
++	var vehicle: String = VehicleCatalog.selected
++	var selection: NativeTrack = selected_track
++	var loading: RaceLoading = _open_race_loading()
++	var loading_id: int = loading.get_instance_id()
++	loading.configure("Parking hall","night_city",PackedVector2Array(),true)
++	loading.facts_label.text = "Free drive · 240 × 160 m"
++	loading.stage("Opening parking hall…")
++	cloud_starting = true
++	await _present_race_loading()
++	if _race_preparation_changed(loading_id,original_scope,navigation,"garage",vehicle,selection): return
++	_stop_menu_page_motion()
++	root_ui.hide()
++	game = preload("res://garage/parking_hall_drive.tscn").instantiate()
++	game.process_mode = Node.PROCESS_MODE_DISABLED
++	game.cooperative_preparation = true
++	game.preparation_current = _race_installation_current.bind(loading_id,original_scope,navigation,"garage",vehicle,selection)
++	game.vehicle_id = vehicle
++	game.preference_records = records
++	game.exit_requested.connect(_leave_race)
++	add_child(game)
++	var prepared_game: Node = game
++	while is_instance_valid(prepared_game) and game == prepared_game and not prepared_game.preparation_complete:
++		await get_tree().process_frame
++		if _race_preparation_changed(loading_id,original_scope,navigation,"garage",vehicle,selection):
++			_discard_preparing_game(prepared_game)
++			return
++	if not is_instance_valid(prepared_game) or game != prepared_game: return
++	var touch: TouchControls = game.hud.touch
++	touch.control_scale = ui_touch_scale
++	touch.left_handed = ui_left_handed
++	touch.haptic_strength = float(records.settings.get("steering_haptics",0.2))
++	touch.layout = ControlLayout.from_settings(records.settings)
++	touch.show_labels = bool(records.settings.get("control_labels",true))
++	game.call("_process",0.0)
++	await _present_race_loading()
++	if _race_preparation_changed(loading_id,original_scope,navigation,"garage",vehicle,selection):
++		_discard_preparing_game(prepared_game)
++		return
++	game.preparation_current = Callable()
++	game.process_mode = Node.PROCESS_MODE_INHERIT
++	_close_race_loading(loading_id)
++
++func _leave_garage_free_drive() -> void:
++	var previous_game: Node = game
++	game = null
++	previous_game.cancel_preparation()
++	remove_child(previous_game)
++	previous_game.queue_free()
++	if product_telemetry != null: product_telemetry.set_transport_allowed(true)
++	root_ui.show()
++	GameSoundtrack.instance().show_menu()
++	if not _queued_track_link.is_empty():
++		var value: String = _queued_track_link
++		_queued_track_link = ""
++		_receive_track_link.call_deferred(value)
++	elif not challenge_queued_invitation.is_empty():
++		var value: String = challenge_queued_invitation
++		challenge_queued_invitation = ""
++		_receive_challenge.call_deferred(value)
+ 
+ func _race_news_story(story: Dictionary) -> void:
+ 	if screen != "garage" or not is_instance_valid(_retained_garage) or _retained_garage.section != "news" or cloud_starting or is_instance_valid(race_loading): return
+@@ -4091,6 +4156,9 @@
+ 		canvas.refresh()
+ 
+ func _leave_race() -> void:
++	if is_instance_valid(game) and game.get("free_drive_mode") == true:
++		_leave_garage_free_drive()
++		return
+ 	if race_ad_breaks != null and race_ad_breaks.blocking: return
+ 	if is_instance_valid(game) and game.preparation_complete and not cloud_ticket.is_empty() and bool(game.get("track_session").finished):
+ 		_results()
+--- a/game/core/game.gd
++++ b/game/core/game.gd
+@@ -30,6 +30,7 @@
+ var initial_track: NativeTrack
+ var production_mode: bool = false
+ var editor_test: bool = false
++var free_drive_mode: bool = false
+ var attempt_practice: bool = false
+ var countdown_ticks: int = 0
+ var cooperative_preparation: bool = false
+@@ -287,6 +288,7 @@
+ 	hud = PlaygroundHUD.new()
+ 	hud.production_mode = production_mode
+ 	hud.editor_test = editor_test
++	hud.free_drive_mode = free_drive_mode
+ 	hud.community_client = resume_client
+ 	hud.config = handling
+ 	hud.driver = driver
+@@ -395,7 +397,7 @@
+ 		LaunchStart.initialize(sim.state,frame.launch_start)
+ 		if not rewind_history.entries.is_empty() and int(rewind_history.entries[0].tick) == 0:
+ 			rewind_history.entries[0].state = RewindHistory.pack_state(sim.state)
+-	if production_mode and not attempt_evidence.overflow and (not editor_test or not practice_validation.finished):
++	if production_mode and not free_drive_mode and not attempt_evidence.overflow and (not editor_test or not practice_validation.finished):
+ 		attempt_evidence.append_input(online_frames,frame)
+ 		if attempt_evidence.overflow:
+ 			race_proof.overflow = true
+--- a/game/ui/garage_page.gd
++++ b/game/ui/garage_page.gd
+@@ -3,6 +3,7 @@
+ ## Car discovery and selected-car tools share one local showroom.
+ signal vehicle_selected(index: int)
+ signal race_requested
++signal free_drive_requested
+ signal circuit_requested
+ signal save_failed
+ signal account_requested
+@@ -362,6 +363,14 @@
+ 
+ func _present_menu_layout() -> void:
+ 	if size.x <= 0 or main.size.x <= 0: return
++	# Reserve the carousel and action row on short landscape windows too.
++	# The parent may already exceed its viewport because of our minimum height.
++	var available_height: float = get_viewport_rect().end.y-global_position.y-16.0
++	var preview_height: float = clampf(available_height-224.0,160.0,250.0) if section == "cars" else 250.0
++	if not is_equal_approx(_preview_slot.custom_minimum_size.y,preview_height):
++		_preview_slot.custom_minimum_size.y = preview_height
++		preview.custom_minimum_size.y = preview_height
++		_sync_menu_minimums()
+ 	if preview.visible: _place_menu_panel(preview,_slot_rect(_preview_slot),"")
+ 	_place_menu_panel(rail,_slot_rect(_rail_slot),"left")
+ 	if tools_panel.visible: _place_menu_panel(tools_panel,_slot_rect(_tools_slot),"right")
+@@ -745,6 +754,7 @@
+ 		select_button.add_theme_color_override("font_focus_color", MenuStyle.INK)
+ 		select_button.add_theme_color_override("font_pressed_color", MenuStyle.INK)
+ 		actions.add_child(select_button)
++		_add_test_drive_action()
+ 		_start_menu_move()
+ 		return
+ 	if section not in ["customise","tuning","records","news","achievements"]: tools.add_child(MenuStyle.label(section.to_upper(), 20))
+@@ -752,6 +762,7 @@
+ 	back.name = "GarageBack"
+ 	back.custom_minimum_size = Vector2(240, 60)
+ 	actions.add_child(back)
++	if section in ["customise","tuning","care"]: _add_test_drive_action()
+ 	if _customisation_locked:
+ 		_build_wash_requirement()
+ 	elif section == "customise":
+@@ -795,6 +806,20 @@
+ 	else:
+ 		tools.add_child(MenuStyle.label("Coming later", 18, true))
+ 	_start_menu_move()
++
++func _add_test_drive_action() -> void:
++	var button := MenuStyle.button("Test drive", _request_free_drive)
++	button.name = "GarageTestDrive"
++	button.tooltip_text = "Drive freely in a 240 × 160 m parking hall"
++	button.custom_minimum_size = Vector2(180,60)
++	actions.add_child(button)
++
++func _request_free_drive() -> void:
++	if not is_visible_in_tree() or _menu_motion != null or section not in ["cars","customise","tuning","care"]: return
++	_finish_tools()
++	_selected_vehicle_id = vehicle_id
++	vehicle_selected.emit(VehicleCatalog.IDS.find(vehicle_id))
++	free_drive_requested.emit()
+ 
+ func _build_wash_requirement() -> void:
+ 	var title: Label = MenuStyle.label("WASH REQUIRED",26)
+--- a/game/ui/playground_hud.gd
++++ b/game/ui/playground_hud.gd
+@@ -15,6 +15,7 @@
+ 
+ var production_mode: bool = false
+ var editor_test: bool = false
++var free_drive_mode: bool = false
+ var map_ready: bool = false
+ var community_client: Node
+ var map_track: NativeTrack
+@@ -148,13 +149,15 @@
+ 		var practice := HBoxContainer.new()
+ 		practice.position = Vector2(24, 20)
+ 		root.add_child(practice)
+-		practice_status = _label("Practice (untimed)", 20)
++		practice_status = _label("Parking hall · Free drive" if free_drive_mode else "Practice (untimed)", 20)
+ 		practice.add_child(practice_status)
+-		_button(top, "Restart", func() -> void: restart_requested.emit())
++		_button(top, "Reset car" if free_drive_mode else "Restart", func() -> void: restart_requested.emit())
+ 		top.get_child(top.get_child_count() - 1).name = "PracticeRestart"
+-		_button(top, "Edit here", func() -> void: edit_here_requested.emit())
++		_button(top, "Garage" if free_drive_mode else "Edit here", func() -> void:
++			if free_drive_mode: exit_requested.emit()
++			else: edit_here_requested.emit())
+ 		var edit_button := top.get_child(top.get_child_count() - 1) as Button
+-		edit_button.name = "EditHere"
++		edit_button.name = "ReturnToGarage" if free_drive_mode else "EditHere"
+ 		edit_button.custom_minimum_size.x = 124
+ 		var accent := RaceHUDStyle.panel(true)
+ 		accent.bg_color = RaceHUDStyle.GOLD
+@@ -191,16 +194,22 @@
+ 	panel.offset_right = 114
+ 	panel.offset_top = -156
+ 	panel.offset_bottom = -42
++	if free_drive_mode:
++		panel.set_anchors_and_offsets_preset(Control.PRESET_TOP_LEFT)
++		panel.offset_left = 24
++		panel.offset_right = 188
++		panel.offset_top = 62
++		panel.offset_bottom = 164
+ 	panel.add_theme_stylebox_override("panel", _panel_style())
+ 	panel.mouse_filter = Control.MOUSE_FILTER_IGNORE
+-	panel.visible = not editor_test
++	panel.visible = not editor_test or free_drive_mode
+ 	root.add_child(panel)
+ 	instrument = HUDFrame.attach(panel,"speed")
+ 	var info := VBoxContainer.new()
+ 	info.add_theme_constant_override("separation", 0)
+ 	panel.add_child(info)
+ 	info.alignment = BoxContainer.ALIGNMENT_END
+-	speed_label = _label("0", 44)
++	speed_label = _label("0", 36 if free_drive_mode else 44)
+ 	speed_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+ 	info.add_child(speed_label)
+ 	var units := _label("km/h", 18)
+--- a/game/ui/race_pause_menu.gd
++++ b/game/ui/race_pause_menu.gd
+@@ -80,15 +80,15 @@
+ 
+ func show_main() -> void:
+ 	_clear("PAUSED")
+-	_row("Resume","Continue the race","play",func() -> void: hud.pause_requested.emit(), MenuStyle.ACCENT)
+-	_row("Restart","Start this race again","restart",func() -> void: hud.restart_requested.emit())
++	_row("Resume","Continue driving" if hud.free_drive_mode else "Continue the race","play",func() -> void: hud.pause_requested.emit(), MenuStyle.ACCENT)
++	_row("Restart","Return the car to the hall entrance" if hud.free_drive_mode else "Start this race again","restart",func() -> void: hud.restart_requested.emit())
+ 	_row("Settings","Camera, sound and controls","gear",_settings)
+ 	if hud.map_track != null and hud.map_track.metadata.has("cloud_version") and is_instance_valid(hud.community_client):
+ 		_row("Report track","Send a private content report","flag",func() -> void: preload("res://ui/community_safety_ui.gd").open(self,hud.community_client,"report",preload("res://ui/community_safety_ui.gd").track_target(hud.map_track)))
+ 		_row("Track creator","Report or block this player","flag",func() -> void: preload("res://ui/community_safety_ui.gd").open(self,hud.community_client,"player",preload("res://ui/community_safety_ui.gd").track_target(hud.map_track)))
+ 	_row("Help","Driving tips and controls","help",_help)
+ 	column.add_child(HSeparator.new())
+-	_row("Quit","Return to editor" if hud.editor_test else "Return to main menu","quit",func() -> void: hud.exit_requested.emit(),Color("ef6268"))
++	_row("Quit","Return to garage" if hud.free_drive_mode else "Return to editor" if hud.editor_test else "Return to main menu","quit",func() -> void: hud.exit_requested.emit(),Color("ef6268"))
+ 
+ func _row(title: String, subtitle: String, icon: String, action: Callable, accent: Color = Color("91a8b8")) -> Button:
+ 	var button := Button.new()
+@@ -147,6 +147,8 @@
+ 	_clear("DRIVING HELP")
+ 	var text := MenuStyle.label("Steer with the on-screen controls or A / D and the arrow keys.\n\nUse the accelerator to drive and the brake to slow down or reverse. Keyboard: W / S and Space.\n\nPass every checkpoint in order. If you miss one, return to it to continue your lap.\n\nPress C to cycle camera views. Esc opens and closes this menu. Restart begins a fresh attempt.",20)
+ 	text.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
++	if hud.free_drive_mode:
++		text.text = "Drive freely with the on-screen controls or W / A / S / D and the arrow keys. Brake to slow down or reverse; Space applies the handbrake.\n\nExplore the parking bays, slalom and open turning area. The long marked lane is for acceleration and braking. There is no timer or lap target.\n\nReset car returns to the entrance. Press C to cycle cameras and Esc to pause. Garage returns to your car."
+ 	column.add_child(text)
+ 	_row("Back","Return to pause menu","arrow",show_main)
+ 
+--- a/AGENTS.md
++++ b/AGENTS.md
+@@ -1,3 +1,6 @@
++## Garage parking hall free drive override (2026-10-23)
++2026-10-23 GPH01-GPH04/R01/G01/Q01: Garage Test drive opens an untimed 240x160m parking hall with a 200m marked straight, clear turning circle, slalom and parking bays. All five real cars retain normal handling, paint/parts, camera and touch controls; reset/pause/background/retained Garage return work without race proof, tickets, rewards, PB or saved-condition writes. Sliding actions cannot launch the hall; short-window entry and the separate speed display remain visible. Focused364headless/380Compatibility/380desktopMobile, driving72, practice54, Garage152/sidebar415 and App141 pass. Native views, initial viewport/speed/clipping/slide corrections, original-method control, actual commands and scoped Git-checkable patch: docs/PARKING_HALL_2026_10_23.md and docs/evidence/parking-hall-2026-10-23/report.json. Client restart and owner/device size/appearance/sustained acceptance remain; no phone/tablet attachment check, physical-device test, APK, live mutation or deployment. Concurrent work preserved.
++
+ ## Later-lap tyre-mark visibility update (2026-10-23)
+ 2026-10-23 LLS01-LLS02/R01/Q01: Investigate owner tablet later-lap stutter. Installed-source-identical tyre visibility re-encoded whole selected pages; encode-on-arrival plus native packed-page copies retain exact ring/order/bounds/appearance and one draw. Synthetic fifth-lap Compatibility callback median8.419 to1.438ms; this is not tablet FPS or confirmed device attribution. Focused1789headless/1795Compatibility/1795desktopMobile, bridge8, actual loading26 and parser1025 pass; native pixels are exact. Read-only tablet thermal status0 and a short steady50Hz compositor sample did not capture the reported symptom. First-activation/per-mark costs, fixture/headless corrections, private device limits, commands and scoped checkpoint: docs/LATER_LAP_STUTTER_2026_10_23.md and docs/evidence/later-lap-stutter-2026-10-23/report.json. Updated tablet build and sustained owner/device acceptance remain; no APK/install, active-race input/interruption, backend/native mutation or deployment. Concurrent work preserved.
+ 
+--- a/DEVELOPMENT_STATUS.md
++++ b/DEVELOPMENT_STATUS.md
+@@ -1,3 +1,5 @@
++2026-10-23 GPH01-GPH04/R01/G01/Q01: Garage Test drive opens an untimed 240x160m parking hall with a 200m marked straight, clear turning circle, slalom and parking bays. All five real cars retain normal handling, paint/parts, camera and touch controls; reset/pause/background/retained Garage return work without race proof, tickets, rewards, PB or saved-condition writes. Sliding actions cannot launch the hall; short-window entry and the separate speed display remain visible. Focused364headless/380Compatibility/380desktopMobile, driving72, practice54, Garage152/sidebar415 and App141 pass. Native views, initial viewport/speed/clipping/slide corrections, original-method control, actual commands and scoped Git-checkable patch: docs/PARKING_HALL_2026_10_23.md and docs/evidence/parking-hall-2026-10-23/report.json. Client restart and owner/device size/appearance/sustained acceptance remain; no phone/tablet attachment check, physical-device test, APK, live mutation or deployment. Concurrent work preserved.
++
+ 2026-10-23 LLS01-LLS02/R01/Q01: Investigate tablet later-lap stutter; tyre visibility now encodes marks on arrival and copies packed pages, retaining exact ring/order/bounds/pixels and one draw. Synthetic fifth-lap Compatibility callback8.419 to1.438ms; no tablet-FPS/symptom-attribution claim. Focused1789headless/1795Compatibility/1795desktopMobile, bridge8/loading26/parser1025 pass. Read-only connected-tablet status0 and short steady50Hz sample did not capture stutter. Initial costs/corrections, actual commands, limits and scoped checkpoint: docs/LATER_LAP_STUTTER_2026_10_23.md and docs/evidence/later-lap-stutter-2026-10-23/report.json. Tablet update and sustained owner acceptance remain; no APK/install, active-race input/interruption, native/backend mutation or deployment. Concurrent work preserved.
+ 
+ 2026-10-23 CGR01/R01/G01/Q01: Owner reverts CAS01 to the Garage setting for the challenge hero and all five cards. Scoped reverse patch removes the abstract mode/scene/shader and its live asset entry; ChallengeCreate, CarShowroom and focused test sources match their exact pre-abstract text. Whole-row spring, full-width cards, quiet loading, fixed camera, original reveal and PB/exact-result flow remain. Native Compatibility282 and parser1025 pass; captures, commands and scoped checkpoint: docs/evidence/challenge-garage-restored-2026-10-23/report.json. Client reload and owner/device acceptance remain; no phone attachment check/device test, APK, live mutation or deployment. Concurrent work preserved.
+--- a/docs/PHASE_0_PLAN.md
++++ b/docs/PHASE_0_PLAN.md
+@@ -1,3 +1,5 @@
++2026-10-23 GPH01-GPH04/R01/G01/Q01: Garage Test drive opens an untimed 240x160m parking hall with a 200m marked straight, clear turning circle, slalom and parking bays. All five real cars retain normal handling, paint/parts, camera and touch controls; reset/pause/background/retained Garage return work without race proof, tickets, rewards, PB or saved-condition writes. Sliding actions cannot launch the hall; short-window entry and the separate speed display remain visible. Focused364headless/380Compatibility/380desktopMobile, driving72, practice54, Garage152/sidebar415 and App141 pass. Native views, initial viewport/speed/clipping/slide corrections, original-method control, actual commands and scoped Git-checkable patch: docs/PARKING_HALL_2026_10_23.md and docs/evidence/parking-hall-2026-10-23/report.json. Client restart and owner/device size/appearance/sustained acceptance remain; no phone/tablet attachment check, physical-device test, APK, live mutation or deployment. Concurrent work preserved.
++
+ 2026-10-23 LLS01-LLS02/R01/Q01: Investigate tablet later-lap stutter; tyre visibility now encodes marks on arrival and copies packed pages, retaining exact ring/order/bounds/pixels and one draw. Synthetic fifth-lap Compatibility callback8.419 to1.438ms; no tablet-FPS/symptom-attribution claim. Focused1789headless/1795Compatibility/1795desktopMobile, bridge8/loading26/parser1025 pass. Read-only connected-tablet status0 and short steady50Hz sample did not capture stutter. Initial costs/corrections, actual commands, limits and scoped checkpoint: docs/LATER_LAP_STUTTER_2026_10_23.md and docs/evidence/later-lap-stutter-2026-10-23/report.json. Tablet update and sustained owner acceptance remain; no APK/install, active-race input/interruption, native/backend mutation or deployment. Concurrent work preserved.
+ 
+ 2026-10-23 CGR01/R01/G01/Q01: Owner reverts CAS01 to the Garage setting for the challenge hero and all five cards. Scoped reverse patch removes the abstract mode/scene/shader and its live asset entry; ChallengeCreate, CarShowroom and focused test sources match their exact pre-abstract text. Whole-row spring, full-width cards, quiet loading, fixed camera, original reveal and PB/exact-result flow remain. Native Compatibility282 and parser1025 pass; captures, commands and scoped checkpoint: docs/evidence/challenge-garage-restored-2026-10-23/report.json. Client reload and owner/device acceptance remain; no phone attachment check/device test, APK, live mutation or deployment. Concurrent work preserved.
+--- /dev/null
++++ b/docs/PARKING_HALL_2026_10_23.md
+@@ -0,0 +1,23 @@
++# Garage parking hall — 2026-10-23
++
++Garage **Test drive** opens a local, untimed 240 × 160 metre concrete parking hall with the previewed car. The 200 metre marked straight supports acceleration/braking checks; the 56 metre diameter clear turning area, slalom markers and empty parking bays support steering, drifting, reversing and parking practice. Reset car returns to the entrance; Garage or the pause menu returns to the same retained garage.
++
++| Requirement | Implementation |
++| --- | --- |
++| GPH01 | Test drive is available in car browsing, Customise, Tuning and Care. It commits the current garage tools and selects the previewed car. Sliding/hidden controls cannot start the hall. Short landscape windows reserve room for the action row. |
++| GPH02 | One local geometry resource supplies 240 × 160 m wall bounds and 26 exact cylindrical pillar bounds to both simulation and presentation. The straight and turning circle remain clear. Painted lines and flexible slalom markers are cosmetic. |
++| GPH03 | Reuse the real five cars, saved paint/parts, locked normal handling, quantized controls, skid marks, audio, approved overhead camera and camera preferences. No canonical simulation or physics version changes. |
++| GPH04 | Start immediately without countdown, laps, results, rewards, tickets, ghosts, paid resumes or stored race inputs/proof. Saved car condition and PBs are unchanged. Reset/pause/background/input release work normally. |
++| R01 / G01 / Q01 | Preserve unrelated work; retain real logs, corrections, screenshots, source hashes and a task-only Git-checkable patch. Device and owner acceptance remain explicit. |
++
++`game/garage/parking_hall_data.gd` contains the local facility geometry. `parking_hall_visual.gd` builds the original concrete floor, painted bays/markers, circular columns, perimeter ventilation and strip fixtures. `parking_hall_floor.gdshader` supplies quiet concrete grain/joints. Repeated box fixtures use one MultiMesh per material; there are no per-bay dynamic lights. The ceiling is presented as a cutaway so the normal overhead camera can see the car. No downloaded or generated bitmap asset, external service or new dependency is used.
++
++`parking_hall_drive.gd` inherits the existing Game composition and overrides the local ground, indoor lighting and condition persistence. Its free-drive flag suppresses the shared race evidence recorder. App owns covered, scope/navigation/car-fenced loading and the retained-menu return. Existing editor practice continues to expose Edit here; the hall exposes Garage and an unobstructed speed display.
++
++Changed shared sources are `game/core/app.gd`, `game/core/game.gd`, `game/ui/garage_page.gd`, `game/ui/playground_hud.gd` and `game/ui/race_pause_menu.gd`. The focused harness is `game/tests/test_parking_hall.gd`. Captured original Garage-method fixtures retain the existing carousel assertions for control comparisons. The evidence report lists every checkpoint source and its SHA-256.
++
++Validation uses pinned Godot `4.7.2.stable.official.ed1daf0bf`, isolated workspace APPDATA and disposable records/libraries. Commands and complete logs are under [the evidence directory](evidence/parking-hall-2026-10-23/). The final report contains the actual counts. Existing driving, editor practice, garage carousel and App regressions are also recorded. Native captures cover 960 × 540, 1280 × 720 and 1600 × 900 in Compatibility and desktop Mobile/Vulkan.
++
++Corrections retained in evidence: the first PowerShell invocation needed process-only execution-policy bypass; sandboxed Godot could not read the Windows certificate store, so approved native runs used isolated test data outside that sandbox. The first headless layout assertion mixed physical and logical viewport sizes. Native review then exposed a speed/handbrake overlap and the short-window Garage action row clipping. The old carousel fixture exposed an accidental free-drive activation during a menu slide; the final guard fixes that, with its assertions retained. An original-method control had one Patterns timing failure; the final current carousel passes all 152 checks. Initial failure logs and the speed-overlap image remain in evidence.
++
++Restart the client to load the new scripts. Owner acceptance of the hall's size, indoor appearance and driving feel remains. Phone/tablet attachment was not checked, and no physical-device test, APK export/install, live backend/account mutation, social send or deployment was performed. Desktop renderer results do not certify mobile FPS, memory or sustained thermal performance. Concurrent challenge/menu/editor/gameplay/backend work remains in place and is excluded from the task patch.
+--- /dev/null
++++ b/game/garage/parking_hall_data.gd
+@@ -0,0 +1,19 @@
++extends PlaygroundData
++## Local, untimed test facility. Visuals consume these exact wall/pillar bounds.
++const SIZE := Vector2(240.0,160.0)
++const PILLAR_RADIUS: float = 0.8
++const STRAIGHT_Y: float = -48.0
++const TURNING_CENTER := Vector2(-56.0,23.0)
++const TURNING_RADIUS: float = 28.0
++
++func _init() -> void:
++	identity = "garage-parking-hall-v1"
++	half_extent = SIZE * 0.5
++	spawn = Vector2(-100.0,STRAIGHT_Y)
++	spawn_heading = PI * 0.5
++	islands = []
++	for x: float in [-108.0,-84.0,-60.0,-36.0,-12.0,12.0,36.0,60.0,84.0,108.0]:
++		for y: float in [-66.0,66.0]: islands.append(Vector3(x,y,PILLAR_RADIUS))
++	# Leave a broad turning area and an uninterrupted 200 m straight.
++	for x: float in [-108.0,0.0,24.0,48.0,72.0,108.0]:
++		islands.append(Vector3(x,0.0,PILLAR_RADIUS))
+--- /dev/null
++++ b/game/garage/parking_hall_data.gd.uid
+@@ -0,0 +1 @@
++uid://clryrrsxiy3l8
+--- /dev/null
++++ b/game/garage/parking_hall_drive.gd
+@@ -0,0 +1,41 @@
++extends "res://core/game.gd"
++## Reuses the real car, canonical handling, input, audio and camera. No race sink.
++const HallData = preload("res://garage/parking_hall_data.gd")
++const HallVisual = preload("res://garage/parking_hall_visual.gd")
++
++func _init() -> void:
++	production_mode = true
++	editor_test = true
++	free_drive_mode = true
++	yard = HallData.new()
++
++func _build_ground(world: Node3D) -> void:
++	# Command-line handling-track fixtures cannot replace the garage facility.
++	native_track = null
++	yard = HallData.new()
++	bridge_presentation = null
++	var visual := HallVisual.new()
++	world.add_child(visual)
++	visual.build(yard)
++	track_ground = visual
++
++func _update_weather() -> void:
++	biome_light.rotation_degrees = Vector3(-78,-20,0)
++	biome_light.light_color = Color("dce7eb")
++	biome_light.light_energy = 0.65
++	biome_environment.background_color = Color("252e34")
++	biome_environment.ambient_light_color = Color("bfcbd1")
++	biome_environment.ambient_light_energy = 0.75
++
++func restart() -> void:
++	super.restart()
++	hud.title.text = "Parking hall"
++	hud.message_label.text = ""
++
++func _save_condition(_background: bool = false) -> void:
++	# Experimenting in the hall never overwrites the garage's saved condition.
++	condition_save_elapsed = 0.0
++
++func toggle_pause(capture: bool = true) -> void:
++	super.toggle_pause(capture)
++	if hud != null: hud.message_label.text = ""
+--- /dev/null
++++ b/game/garage/parking_hall_drive.gd.uid
+@@ -0,0 +1 @@
++uid://bnbv84f4k05d6
+--- /dev/null
++++ b/game/garage/parking_hall_drive.tscn
+@@ -0,0 +1,5 @@
++[gd_scene load_steps=2 format=3]
++[ext_resource type="Script" path="res://garage/parking_hall_drive.gd" id="1"]
++[node name="ParkingHallDrive" type="Node"]
++script = ExtResource("1")
++[node name="World" type="Node3D" parent="."]
+--- /dev/null
++++ b/game/garage/parking_hall_floor.gdshader
+@@ -0,0 +1,14 @@
++shader_type spatial;
++render_mode diffuse_burley, specular_disabled;
++varying vec2 floor_point;
++void vertex() { floor_point = (MODEL_MATRIX * vec4(VERTEX,1.0)).xz; }
++void fragment() {
++	vec2 p = floor_point;
++	float grain = fract(sin(dot(floor(p*36.0),vec2(127.1,311.7)))*43758.5453);
++	vec2 joint = abs(fract((p+vec2(1.0))/8.0)-0.5)*8.0;
++	float seam = 1.0-smoothstep(0.018,0.065,min(joint.x,joint.y));
++	float lane = 1.0-smoothstep(6.8,7.0,abs(p.y-48.0));
++	vec3 concrete = mix(vec3(0.31,0.34,0.35),vec3(0.255,0.285,0.30),lane);
++	ALBEDO = concrete + (grain-0.5)*0.012 - seam*0.035;
++	ROUGHNESS = 0.94;
++}
+--- /dev/null
++++ b/game/garage/parking_hall_floor.gdshader.uid
+@@ -0,0 +1 @@
++uid://cbcier13i4cos
+--- /dev/null
++++ b/game/garage/parking_hall_visual.gd
+@@ -0,0 +1,101 @@
++extends Node3D
++## Original concrete parking hall, presented as a cutaway for the overhead camera.
++## Repeated fixtures are batched; there are no per-bay lights or physics bodies.
++const HallData = preload("res://garage/parking_hall_data.gd")
++var _batches: Dictionary = {}
++var _materials: Dictionary = {}
++
++func build(data: PlaygroundData) -> void:
++	name = "ParkingHall"
++	_materials = {
++		"concrete":VisualGeometry.material(Color("7c8587")),
++		"dark":VisualGeometry.material(Color("253239")),
++		"white":VisualGeometry.material(Color("c0c4ba")),
++		"yellow":VisualGeometry.material(Color("d4b565")),
++		"blue":VisualGeometry.material(Color("436a7c")),
++		"red":VisualGeometry.material(Color("a65d4a")),
++		"lamp":VisualGeometry.material(Color("dce8df"))}
++	_materials.lamp.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
++	var floor_material := ShaderMaterial.new()
++	floor_material.shader = preload("res://garage/parking_hall_floor.gdshader")
++	VisualGeometry.box(self,Vector3(240,0.18,160),Vector3(0,-0.09,0),floor_material)
++	# Inner faces exactly match PlaygroundData's enclosing wall bounds.
++	for side: float in [-1.0,1.0]:
++		_box("concrete",Vector3(0.8,4.8,161.6),Vector3(side*120.4,2.4,0))
++		_box("concrete",Vector3(240,4.8,0.8),Vector3(0,2.4,side*80.4))
++		_box("blue",Vector3(0.04,0.8,160),Vector3(side*119.98,1.3,0))
++		_box("blue",Vector3(240,0.8,0.04),Vector3(0,1.3,side*79.98))
++		# Perimeter roof/ventilation reveals imply a ceiling without hiding the car.
++		_box("dark",Vector3(2.8,0.5,160),Vector3(side*118.6,5.0,0))
++		_box("dark",Vector3(240,0.5,2.8),Vector3(0,5.0,side*78.6))
++		for x: int in range(-108,109,24):
++			_box("dark",Vector3(8,1.8,0.08),Vector3(x,2.9,side*79.9))
++			for louver: int in range(5):
++				_box("concrete",Vector3(7.8,0.08,0.12),Vector3(x,2.2+louver*0.3,side*79.82))
++	for pillar: Vector3 in data.islands:
++		var point := Vector3(pillar.x,0,-pillar.y)
++		# Round columns and their painted base share the exact swept-circle radius.
++		VisualGeometry.cylinder(self,pillar.z,5.4,point+Vector3.UP*2.7,_materials.concrete)
++		VisualGeometry.cylinder(self,pillar.z+0.002,0.8,point+Vector3.UP*0.4,_materials.yellow)
++		_box("dark",Vector3(3.6,0.25,0.7),point+Vector3.UP*5.3)
++		_box("lamp",Vector3(3.2,0.04,0.35),point+Vector3(0,5.44,0))
++		for stripe: int in range(3):
++			_box("dark",Vector3(0.7,0.12,0.04),point+Vector3(0,0.2+stripe*0.23,0.805))
++	# Empty parking bays have a 7 m approach and 3.2 m widths.
++	for side: float in [-1.0,1.0]:
++		for x: int in range(-112,113,8):
++			for bay: int in range(2):
++				var bx: float = x+bay*3.2
++				_box("white",Vector3(0.1,0.012,5.8),Vector3(bx,0.016,side*73.0))
++				_box("white",Vector3(3.2,0.012,0.1),Vector3(bx+1.6,0.016,side*75.85))
++	# 200 m clear acceleration/braking lane. No collision or checkpoint on paint.
++	for side: float in [-1.0,1.0]:
++		_box("yellow",Vector3(208,0.012,0.12),Vector3(0,0.018,48+side*6))
++	for x: int in range(-100,101,20):
++		_box("white",Vector3(0.18,0.012,10),Vector3(x,0.02,48))
++		_label(str(x+100)+" m",Vector2(x,-39),0.7)
++	_label("ACCELERATION / BRAKING",Vector2(-68,-58),0.85)
++	_label("PARKING HALL",Vector2(-99,-27),1.0)
++	_label("FREE DRIVE",Vector2(-99,-32),0.7)
++	var center := Vector3(HallData.TURNING_CENTER.x,0.024,-HallData.TURNING_CENTER.y)
++	for radius: float in [12.0,20.0,HallData.TURNING_RADIUS]:
++		VisualGeometry.ring(self,center,radius,0.12,_materials.white)
++	_label("TURNING AREA",HallData.TURNING_CENTER,1.0)
++	# Flexible markers are deliberately cosmetic; solid columns have yellow bases.
++	for index: int in range(8):
++		var point := Vector3(61+(-3.0 if index%2 == 0 else 3.0),0,-(8+index*6.0))
++		_box("dark",Vector3(0.7,0.08,0.7),point+Vector3.UP*0.04)
++		var cone := VisualGeometry.cylinder(self,0.28,0.6,point+Vector3.UP*0.34,_materials.red)
++		(cone.mesh as CylinderMesh).top_radius = 0.06
++	_label("SLALOM",Vector2(61,59),0.9)
++	_label("PARKING",Vector2(35,-69),0.85)
++	# Flush boxes into one instanced draw per material rather than hundreds of nodes.
++	for key: String in _batches:
++		var mesh := BoxMesh.new()
++		mesh.size = Vector3.ONE
++		var batch := MultiMesh.new()
++		batch.transform_format = MultiMesh.TRANSFORM_3D
++		batch.mesh = mesh
++		batch.instance_count = _batches[key].size()
++		for index: int in range(batch.instance_count): batch.set_instance_transform(index,_batches[key][index])
++		var instance := MultiMeshInstance3D.new()
++		instance.name = key.capitalize()+"Fixtures"
++		instance.multimesh = batch
++		instance.material_override = _materials[key]
++		add_child(instance)
++	_batches.clear()
++
++func _box(material: String, dimensions: Vector3, point: Vector3) -> void:
++	if not _batches.has(material): _batches[material] = []
++	_batches[material].append(Transform3D(Basis.from_scale(dimensions),point))
++
++func _label(text: String, point: Vector2, scale_factor: float) -> void:
++	var label := Label3D.new()
++	label.text = text
++	label.font_size = 64
++	label.pixel_size = 0.02*scale_factor
++	label.modulate = Color("b8beb7")
++	label.outline_size = 0
++	label.rotation.x = -PI*0.5
++	label.position = Vector3(point.x,0.035,-point.y)
++	add_child(label)
+--- /dev/null
++++ b/game/garage/parking_hall_visual.gd.uid
+@@ -0,0 +1 @@
++uid://dem02p4agsbq2
+--- /dev/null
++++ b/game/tests/fixtures/parking_hall_before/app.gd
+@@ -0,0 +1,30 @@
++extends "res://core/app.gd"
++
++func _garage(parent: Control = null) -> void:
++	if parent == null: parent = content
++	if is_instance_valid(_retained_garage) and _retained_garage.records != records:
++		_retained_garage.get_parent().remove_child(_retained_garage)
++		_retained_garage.queue_free()
++		_retained_garage = null
++	if is_instance_valid(_retained_garage) and _retained_garage.records == records:
++		if _retained_garage.get_parent() != parent: _retained_garage.reparent(parent,false)
++		_retained_garage.refresh_selection()
++		_retained_garage.circuit_title = track_title(selected_track).to_upper()
++		return
++	var page := preload("res://tests/fixtures/parking_hall_before/garage_page.gd").new()
++	_retained_garage = page
++	page.achievements = achievements
++	page.news_client = online.client.news
++	page.account_requested.connect(_open_account)
++	page.records = records
++	page.economy = cosmetic_economy
++	page.circuit_title = track_title(selected_track).to_upper()
++	page.size_flags_vertical = Control.SIZE_EXPAND_FILL
++	page.vehicle_selected.connect(_select_vehicle)
++	page.race_requested.connect(func() -> void: _start_race(selected_track,false))
++	page.news_race_requested.connect(_race_news_story)
++	page.news_share_requested.connect(_share_track_link)
++	page.circuit_requested.connect(_open_library.bind("all"))
++	page.save_failed.connect(func() -> void: _notice("Garage changes could not be saved. Check free storage space."))
++	parent.add_child(page)
++
+--- /dev/null
++++ b/game/tests/fixtures/parking_hall_before/app.gd.uid
+@@ -0,0 +1 @@
++uid://btwa1ep1kj6vs
+--- /dev/null
++++ b/game/tests/fixtures/parking_hall_before/app.tscn
+@@ -0,0 +1,4 @@
++[gd_scene load_steps=2 format=3]
++[ext_resource type="Script" path="res://tests/fixtures/parking_hall_before/app.gd" id="1"]
++[node name="CircuitApp" type="Node"]
++script = ExtResource("1")
+--- /dev/null
++++ b/game/tests/fixtures/parking_hall_before/garage_page.gd
+@@ -0,0 +1,128 @@
++extends "res://ui/garage_page.gd"
++## Captured task-original presentation methods; all legacy assertions retained.
++
++func _show_section(next: String) -> void:
++	if next == "car": next = "customise"
++	if next not in ["cars", "customise", "care", "tuning", "trophies", "records", "news", "achievements"]: return
++	_finish_tools()
++	_customisation_locked = next in ["customise","tuning"] and not _clean_for_customisation()
++	if not _customisation_locked and next=="customise" and section=="customise" and is_instance_valid(livery_menu) and _retained_livery_vehicle==vehicle_id:
++		livery_menu.show_tab(_customise_tab)
++		return
++	_prepare_menu_move()
++	_set_customise_layout(next in ["customise","tuning","records"])
++	section = next
++	_update_wash_status()
++	# The newspaper takes the desk. Keep the live car attached and dormant so
++	# leaving News restores the same car, camera, condition and reflection rig.
++	preview.visible = next not in ["news","achievements"]
++	_preview_slot.visible = next not in ["news","achievements"]
++	_actions_slot.visible = next not in ["news","achievements"]
++	actions.visible = next not in ["news","achievements"]
++	_tools_slot.size_flags_vertical = Control.SIZE_EXPAND_FILL if next in ["news","achievements"] or is_instance_valid(customise_layout) else Control.SIZE_FILL
++	tools.size_flags_vertical = Control.SIZE_EXPAND_FILL if next in ["news","achievements"] or is_instance_valid(customise_layout) else Control.SIZE_FILL
++	if next == "news": tools_panel.add_theme_stylebox_override("panel",StyleBoxEmpty.new())
++	elif next == "achievements": tools_panel.add_theme_stylebox_override("panel",MenuStyle.card(8))
++	if next == "cars": _car_menu_open = false
++	elif next not in ["trophies","records","news","achievements"]: _car_menu_open = true
++	showroom.set_trophy_view(next == "trophies")
++	showroom.set_record_view(next == "records")
++	heading.text = "RECORD PLAYER" if next == "records" else "TROPHY WALL" if next == "trophies" else VehicleCatalog.title(vehicle_id)
++	preview.get_node("GarageViewControls").visible = next not in ["trophies","records"]
++	preview.get_node("GarageViewControls/GarageTopView").visible = next in ["customise","tuning"]
++	pickers.clear()
++	wash_button = null
++	_presets = null
++	_sticker_board = null
++	_sticker_choice = null
++	_sticker_sliders.clear()
++	_sticker_values.clear()
++	livery_menu = null
++	select_button = null
++	records_menu = null
++	gallery_slot.visible = section == "cars"
++	tools_panel.visible = section not in ["cars", "care", "trophies"]
++	_build_rail()
++	if section == "cars":
++		_refresh_thumbnails()
++		select_button = MenuStyle.button("SELECT", _confirm_car, true)
++		select_button.name = "GarageSelectCar"
++		select_button.icon = MenuIcon.texture("arrow")
++		select_button.icon_alignment = HORIZONTAL_ALIGNMENT_RIGHT
++		for state: String in ["icon_normal_color", "icon_hover_color", "icon_focus_color"]:
++			select_button.add_theme_color_override(state, MenuStyle.INK)
++		select_button.size_flags_horizontal = Control.SIZE_EXPAND_FILL
++		select_button.custom_minimum_size.y = 60
++		select_button.add_theme_color_override("font_focus_color", MenuStyle.INK)
++		select_button.add_theme_color_override("font_pressed_color", MenuStyle.INK)
++		actions.add_child(select_button)
++		_start_menu_move()
++		return
++	if section not in ["customise","tuning","records","news","achievements"]: tools.add_child(MenuStyle.label(section.to_upper(), 20))
++	var back := MenuStyle.button("Trophy Room" if section == "achievements" else "Back to cars", _show_section.bind("trophies" if section == "achievements" else "cars"))
++	back.name = "GarageBack"
++	back.custom_minimum_size = Vector2(240, 60)
++	actions.add_child(back)
++	if _customisation_locked:
++		_build_wash_requirement()
++	elif section == "customise":
++		_build_customise()
++	elif section == "care":
++		wash_button = MenuStyle.button("Wash", _toggle_wash, true)
++		wash_button.name = "GarageWash"
++		wash_button.size_flags_horizontal = Control.SIZE_EXPAND_FILL
++		wash_button.custom_minimum_size.y = 60
++		wash_button.add_theme_color_override("font_focus_color", MenuStyle.INK)
++		wash_button.add_theme_color_override("font_pressed_color", MenuStyle.INK)
++		actions.add_child(wash_button)
++	elif section == "trophies":
++		_achievement_button = MenuStyle.button("Achievements",_show_section.bind("achievements"),true)
++		_achievement_button.name = "GarageAchievements"
++		_achievement_button.size_flags_horizontal = Control.SIZE_EXPAND_FILL
++		actions.add_child(_achievement_button)
++		_achievements_changed()
++	elif section == "achievements":
++		if achievements != null:
++			var album := preload("res://ui/achievements_menu.gd").new()
++			album.service = achievements
++			album.trophy_room_requested.connect(_show_section.bind("trophies"))
++			tools.add_child(album)
++	elif section == "tuning":
++		_build_tuning()
++	elif section == "news":
++		var news_menu := preload("res://ui/garage_news_menu.gd").new()
++		news_menu.page = self
++		news_menu.service = news_client
++		tools.add_child(news_menu)
++	elif section == "records":
++		records_menu = preload("res://ui/garage_records_menu.gd").new()
++		records_menu.records = records
++		records_menu.browse_index = record_browse_index
++		records_menu.changed.connect(func() -> void: showroom.update_records(records.settings))
++		records_menu.browsed.connect(func(index: int) -> void: record_browse_index = index)
++		records_menu.flipping.connect(showroom.browse_records)
++		records_menu.save_failed.connect(func() -> void: save_failed.emit())
++		tools.add_child(records_menu)
++	else:
++		tools.add_child(MenuStyle.label("Coming later", 18, true))
++	_start_menu_move()
++
++func _present_menu_layout() -> void:
++	if size.x <= 0 or main.size.x <= 0: return
++	if preview.visible: _place_menu_panel(preview,_slot_rect(_preview_slot),"")
++	_place_menu_panel(rail,_slot_rect(_rail_slot),"left")
++	if tools_panel.visible: _place_menu_panel(tools_panel,_slot_rect(_tools_slot),"right")
++	_place_menu_panel(actions,_slot_rect(_actions_slot),"bottom")
++	if section == "cars":
++		var target: Rect2 = _slot_rect(gallery_slot)
++		target.position.x += (target.size.x-gallery.size.x)*0.5
++		target.size = gallery.size
++		_place_menu_panel(gallery,target,"bottom")
++	elif _gallery_departing:
++		var target: Rect2 = _menu_starts[gallery]
++		target.position.y = size.y+16
++		_place_menu_panel(gallery,target,"bottom")
++	for entry: Dictionary in _departures:
++		entry.panel.position = entry.start.position.lerp(entry.finish.position,minf(1.0,_menu_weight/0.45))
++	_layout_presented = true
++
+--- /dev/null
++++ b/game/tests/fixtures/parking_hall_before/garage_page.gd.uid
+@@ -0,0 +1 @@
++uid://bs8jpf0145ak6
+--- /dev/null
++++ b/game/tests/fixtures/parking_hall_before/test_garage_original.gd
+@@ -0,0 +1,296 @@
++extends SceneTree
++## Actual Garage navigation/input with isolated per-car local saves and captures.
++var checks: int = 0
++var failures: int = 0
++var app: Node
++var page: GaragePage
++var gallery_motion: bool = false
++var output: String = "res://../docs/evidence/parking-hall-2026-10-23/legacy-original"
++
++func _initialize() -> void: _run.call_deferred()
++
++func check(value: bool, label: String) -> void:
++	checks += 1
++	if not value:
++		failures += 1
++		print("FAIL: " + label)
++
++func settle() -> void:
++	await create_timer(0.25).timeout
++	for i: int in range(4): await process_frame
++	if DisplayServer.get_name() != "headless": await RenderingServer.frame_post_draw
++
++func capture(label: String) -> void:
++	if DisplayServer.get_name() == "headless": return
++	await settle()
++	check(root.get_texture().get_image().save_png(output.path_join(label + ".png")) == OK, "capture " + label)
++
++func wash_exterior() -> void:
++	page.showroom.weathering.wash(Vector3(-0.9,0.5,0.1),0.1)
++	page._cleanliness.is_clean(page.showroom)
++	page.showroom.weathering.begin_wash_batch()
++	for point: Vector3 in page._cleanliness.points: page.showroom.weathering.wash(point,8.0)
++	page.showroom.weathering.end_wash_batch()
++	page._save_condition()
++	page._show_section("customise")
++
++func touch(point: Vector2, down: bool, canceled: bool = false) -> void:
++	var event := InputEventScreenTouch.new()
++	event.position = point
++	event.index = 0
++	event.pressed = down
++	event.canceled = canceled
++	root.push_input(event, true)
++
++func tap(control: Control) -> void:
++	var point: Vector2 = control.get_global_rect().get_center()
++	touch(point, true)
++	await process_frame
++	touch(point, false)
++	await settle()
++
++func swipe(control: Control, distance: float, canceled: bool = false) -> void:
++	var point: Vector2 = control.get_global_rect().get_center()
++	touch(point, true)
++	await process_frame
++	var event := InputEventScreenDrag.new()
++	event.index = 0
++	event.position = point + Vector2(distance, 0)
++	event.relative = Vector2(distance, 0)
++	root.push_input(event, true)
++	await process_frame
++	touch(event.position, false, canceled)
++	await settle()
++
++func _run() -> void:
++	OS.set_environment("BMT_API_URL", "")
++	for argument: String in OS.get_cmdline_user_args():
++		if argument.begins_with("--evidence-root="): output = argument.trim_prefix("--evidence-root=")
++		if argument.begins_with("--capture-gallery-motion="):
++			output = argument.trim_prefix("--capture-gallery-motion=")
++			gallery_motion = true
++	output = ProjectSettings.globalize_path(output)
++	if "--mobile-evidence" in OS.get_cmdline_user_args(): output = output.path_join("mobile")
++	DirAccess.make_dir_recursive_absolute(output)
++	var directory: String = "user://garage_carousel_" + TrackLibrary.unique_id()
++	DirAccess.make_dir_recursive_absolute(directory)
++	app = load("res://tests/fixtures/parking_hall_before/app.tscn").instantiate()
++	app.records = LocalRecords.new(directory.path_join("records.json"))
++	app.library = TrackLibrary.new(directory)
++	app.cloud_root_override = directory.path_join("cloud")
++	root.add_child(app)
++	while not app.startup_complete: await process_frame
++	await settle()
++	check(app.records.settings.get("vehicle_conditions", {}).is_empty(), "preparing a clean Garage creates no cosmetic save")
++	VehicleCatalog.selected = "compact"
++	var dirty: Dictionary = VehicleWeathering.new().snapshot()
++	dirty.dirt = 0.85
++	dirty.mud = 0.85
++	check(VehicleCondition.save(app.records, "compact", dirty) == OK, "seed local compact dirt")
++	var pb_key: String = app.records.key_for(app.selected_track, VehicleCatalog.config("compact"))
++	app._show_screen("garage")
++	await settle()
++	page = app.root_ui.find_child("GaragePage", true, false)
++	var shell: Control = app.root_ui
++	check(page.section == "cars" and page.gallery_slot.visible, "Garage opens the car carousel")
++	check(page.select_button.text == "SELECT" and page.select_button.get_global_rect().position.y >= page.gallery.get_global_rect().end.y, "SELECT occupies the action row below the carousel")
++	for id: String in VehicleCatalog.IDS:
++		var model: CarShowroom = page.thumbnails[id]
++		check(model.car.vehicle_id == id and model.read_only and not model.is_processing(), id + " carousel contains actual static 3D model")
++		if DisplayServer.get_name() != "headless":
++			check(model.showroom_viewport.render_target_update_mode == SubViewport.UPDATE_ONCE, id + " thumbnail requests one render rather than continuous updates")
++	if DisplayServer.get_name() != "headless":
++		var frozen: Dictionary = {}
++		for id: String in VehicleCatalog.IDS:
++			var model: CarShowroom = page.thumbnails[id]
++			frozen[id] = model.showroom_viewport.get_texture().get_image().get_data()
++			model.car.rotation.y = 0.5
++		await settle()
++		for id: String in VehicleCatalog.IDS:
++			var model: CarShowroom = page.thumbnails[id]
++			check(model.showroom_viewport.get_texture().get_image().get_data() == frozen[id], id + " model change does not continuously redraw thumbnail")
++			model.refresh_thumbnail()
++		await settle()
++		for id: String in VehicleCatalog.IDS:
++			var model: CarShowroom = page.thumbnails[id]
++			check(model.showroom_viewport.get_texture().get_image().get_data() != frozen[id], id + " explicit refresh renders changed 3D geometry")
++			model.car.rotation.y = 0.0
++			model.refresh_thumbnail()
++		await settle()
++	check(page.showroom.garage_mode and page.showroom.turntable.is_ancestor_of(page.showroom.car), "actual car is supported by the turnable pedestal")
++	var room: Node3D = page.showroom.showroom_viewport.find_child("GarageArchitecture", true, false)
++	check(room != null and room.find_child("GarageWorkbench", true, false) != null and room.find_child("GarageToolStorage", true, false) != null, "actual workshop contains prepared architecture and furniture")
++	var camera_pose: Transform3D = page.showroom.camera.transform
++	var room_pose: Transform3D = room.transform
++	var clean_state: Dictionary = page.showroom.weathering.snapshot()
++	var deck_pose: Transform3D = page.showroom.turntable.transform
++	var backdrop: PackedByteArray
++	if DisplayServer.get_name() != "headless":
++		backdrop = page.showroom.showroom_viewport.get_texture().get_image().get_region(Rect2i(8,90,80,40)).get_data()
++	page.showroom.rotate_view(Vector2(60,0))
++	await settle()
++	check(page.showroom.turntable.transform != deck_pose and page.showroom.camera.transform == camera_pose and room.transform == room_pose, "horizontal drag turns car and pedestal while camera and garage stay fixed")
++	check(page.showroom.weathering.snapshot() == clean_state, "pedestal rotation does not change cosmetic condition")
++	if DisplayServer.get_name() != "headless":
++		check(page.showroom.showroom_viewport.get_texture().get_image().get_region(Rect2i(8,90,80,40)).get_data() == backdrop, "garage backdrop remains pixel-exact during turntable rotation")
++	await capture("pedestal-turned")
++	page.showroom.reset_view()
++	await settle()
++	check(is_equal_approx(page.showroom.turntable.rotation.y, CarShowroom.DEFAULT_YAW - CarShowroom.GARAGE_CAMERA_YAW), "Reset restores pedestal pose")
++	check(page.rail.position.x < page.preview.get_global_rect().position.x and page.rail.size.x == 60, "Garage uses the Free Race left rail width")
++	check(page.cards.get_child_count() == 5 and page.find_child("VehicleSelector", true, false) == null, "all five cars replace the old dropdown")
++	check(page.find_child("GarageWash", true, false) == null and page.pickers.is_empty(), "overview exposes car selection before care/customise")
++	check(page.gallery.get_h_scroll_bar().max_value > page.gallery.size.x, "car carousel has scrollable content")
++	check(app.root_ui.get_node("MenuPageSwipe")._owns_gesture(app.root_ui, page.gallery.get_global_rect().get_center()), "car carousel owns its gestures")
++	await swipe(page.gallery, -180)
++	check(app.screen == "garage" and page.section == "cars" and VehicleCatalog.selected == "compact", "swiping cards never opens a car or changes menu page")
++	check(page.gallery.scroll_horizontal == page.tile_stride, "swipe settles on a complete card")
++	await swipe(page.gallery, 180)
++	await swipe(page.gallery, 180)
++	check(page.gallery.scroll_horizontal == 0 and app.screen == "garage", "carousel first edge retains gesture ownership")
++	await swipe(page.cards.get_child(0), 0, true)
++	check(page.section == "cars", "canceled tap cannot open a car")
++	check(page.telemetry_exposures().size() >= 4 and page.telemetry_exposures().all(func(entry: Dictionary) -> bool: return entry.car_id != "kart"), "only visible car cards count as existing car exposures")
++	(page.cards.get_child(4) as Control).grab_focus()
++	await settle()
++	check(page.gallery.get_global_rect().encloses((page.cards.get_child(4) as Control).get_global_rect()), "keyboard focus reveals the last car")
++	page.gallery.scroll_horizontal = 0
++	if "--capture-turntable" in OS.get_cmdline_user_args():
++		root.size = Vector2i(960,540)
++		await settle()
++		var frames: String = ProjectSettings.globalize_path("res://../build/garage-pedestal-motion-2026-10-12")
++		DirAccess.make_dir_recursive_absolute(frames)
++		for frame: int in range(120):
++			page.showroom.rotate_view(Vector2(TAU / (120.0 * 0.012),0))
++			await RenderingServer.frame_post_draw
++			check(root.get_texture().get_image().save_png(frames.path_join("turntable-%03d.png" % frame)) == OK, "actual turntable frame " + str(frame))
++		page.showroom.reset_view()
++		await settle()
++	for dimensions: Vector2i in [Vector2i(960,540), Vector2i(1280,720), Vector2i(1600,720)]:
++		root.size = dimensions
++		await settle()
++		check(app.root_ui.get_global_rect().encloses(page.gallery.get_global_rect()), "carousel fits " + str(dimensions))
++		check((roundi(page.gallery.size.x) + 12) % page.tile_stride == 0, "only complete cards " + str(dimensions))
++		await capture("cars-" + str(dimensions.x))
++		await tap(page.cards.get_child(1))
++		check(page.section == "cars" and page.showroom.car.vehicle_id == "pickup" and VehicleCatalog.selected == "compact", "card tap previews car without confirming or leaving carousel")
++		app._refresh_cached_menu_page("garage", app.content)
++		check(page.vehicle_id == "pickup", "background refresh preserves unconfirmed car preview")
++		await tap(page.cards.get_child(0))
++		await tap(page.select_button)
++		check(page.telemetry_exposures().is_empty(), "car menus do not report hidden carousel impressions")
++		check(page.section == "customise" and not page.gallery_slot.visible and app.root_ui == shell, "Select car confirms and opens left-rail tools without rebuilding shell")
++		for name: String in ["GarageCustomise", "GarageCare", "GarageTuning", "GarageBack"]:
++			var button: Control = page.find_child(name, true, false)
++			check(button != null and app.root_ui.get_global_rect().encloses(button.get_global_rect()), name + " fits " + str(dimensions))
++		await capture("car-menu-" + str(dimensions.x))
++		var car_view: Transform3D = page.showroom.camera.transform
++		var car_state: Dictionary = page.showroom.weathering.snapshot()
++		await tap(page.find_child("GarageTrophies", true, false))
++		await create_timer(0.55).timeout
++		check(page.section == "trophies" and page.showroom.trophy_view, "trophy rail selects the dedicated camera view")
++		check(page.showroom.camera.position.distance_to(GarageDetails.TROPHY_CAMERA) < 0.01, "camera reaches actual trophy wall")
++		check(page.showroom.camera.global_position.distance_to(GarageDetails.TROPHY_CENTER) < car_view.origin.distance_to(GarageDetails.TROPHY_CENTER), "trophy selection moves closer to wall")
++		check(page.showroom.weathering.snapshot() == car_state and not page.showroom.wash_mode, "trophy viewing does not change the car condition")
++		await capture("trophy-wall-" + str(dimensions.x))
++		await tap(page.find_child("GarageCare", true, false))
++		await tap(page.find_child("GarageTrophies", true, false))
++		await tap(page.find_child("GarageCustomise", true, false))
++		await create_timer(0.55).timeout
++		check(not page.showroom.trophy_view and page.showroom.camera.transform.is_equal_approx(car_view), "rapid mode changes cancel stale camera motion and return to the car")
++		await tap(page.find_child("GarageCustomise", true, false))
++		check(page._customisation_locked and page.tools.find_child("GarageWashRequired",true,false) != null,"dirty car clearly requires washing before customisation")
++		var original_paint: Dictionary = page.draft.duplicate(true)
++		page._select_livery(0)
++		check(page.draft == original_paint,"dirty livery attempt retains saved paint")
++		# Continue the original editing/navigation regressions with a car whose
++		# actual exterior has been manually scrubbed; historical dirt stays 0.85.
++		wash_exterior()
++		await tap(page.find_child("LiveryMenu_livery", true, false))
++		check(page.section == "customise" and page.livery_menu.pattern_tiles.size() == GaragePage.LIVERY_NAMES.size()+LiveryCatalog.patterns.size(), "Patterns opens the named design browser")
++		page._select_livery(0)
++		var saved_livery: Dictionary = VehicleLivery.for_car(app.records.settings, "compact")
++		check(saved_livery.colors.body == "273b50" and saved_livery.colors.accent == "ced7dc", "selecting Midnight persists both paint slots")
++		check(page.showroom.car.paint_materials.body.albedo_color.to_html(false) == "273b50", "Midnight updates actual model")
++		check(VehicleCondition.read(app.records, "compact").dirt == 0.85, "livery leaves accumulated dirt intact")
++		page._set_customise_tab("colours")
++		await settle()
++		check(page.pickers.size() == VehicleLivery.SLOTS.size(), "Colours exposes all three independent paint roles")
++		check(app.root_ui.get_global_rect().encloses(page.pickers.body.get_global_rect()), "colours fit " + str(dimensions))
++		await capture("customise-" + str(dimensions.x))
++		page._preview_color(Color("417585"), "body")
++		await tap(page.find_child("GarageCare", true, false))
++		check(VehicleLivery.for_car(app.records.settings, "compact").colors.body == "417585", "leaving Customise saves unclosed colour preview")
++		await tap(page.find_child("GarageCare", true, false))
++		check(page.section == "care" and not page.showroom.wash_mode, "Care waits for explicit Wash action")
++		check(VehicleCondition.save(app.records,"compact",dirty) == OK,"seed fresh dirt for original partial-wash navigation check")
++		page._process(0.0)
++		await tap(page.wash_button)
++		check(page.showroom.wash_mode and page.wash_button.text == "Done", "Care enters manual Wash")
++		await capture("care-" + str(dimensions.x))
++		# Wash one real body patch; navigation must commit the partial mask.
++		var before: PackedByteArray = page.showroom.weathering.wash_image.get_data()
++		page.showroom.weathering.wash(Vector3(-0.9, 0.5, 0.1), 0.8)
++		check(page.showroom.weathering.wash_image.get_data() != before, "Care changes a local dirt patch")
++		await tap(page.find_child("GarageTuning", true, false))
++		check(not page.showroom.wash_mode and not page.showroom.washing, "leaving Care stops the brush")
++		check(VehicleCondition.read(app.records, "compact").wash == page.showroom.weathering.snapshot().wash, "leaving Care commits exact partial wash")
++		await tap(page.find_child("GarageTuning", true, false))
++		check(page.section == "tuning" and not page.tools.find_children("*", "Range", true, false).any(func(control: Node) -> bool: return (control is Slider or control is SpinBox) and (control as Control).is_visible_in_tree()), "Tuning exposes no driving or handling sliders")
++		check(app.records.key_for(app.selected_track, VehicleCatalog.config("compact")) == pb_key, "garage tools preserve canonical PB key")
++		await capture("tuning-" + str(dimensions.x))
++		await tap(page.find_child("GarageBack", true, false))
++		check(page.section == "cars", "Back returns to car browsing with Select car")
++		check(page.thumbnails.compact.car.paint_materials.body.albedo_color.to_html(false) == "417585", "3D carousel reflects locally customised paint")
++		# Reapply seed between independent viewport checks.
++		check(VehicleCondition.save(app.records, "compact", dirty) == OK, "restore independent dirty-view fixture")
++		await settle()
++	for index: int in range(VehicleCatalog.IDS.size()):
++		page.open_car(index)
++		await settle()
++		var id: String = VehicleCatalog.IDS[index]
++		check(VehicleCatalog.selected == id and app.records.settings.selected_car == id and page.showroom.car.vehicle_id == id, id + " selection persists and switches actual model")
++		page._show_section("customise")
++		if page._customisation_locked: wash_exterior()
++		page._select_livery(0)
++		page._show_section("care")
++		check(page.showroom.weathering.dirt_amount == (0.85 if id == "compact" else 0.0), id + " independent local dirt")
++		page._show_section("cars")
++	var reopened := LocalRecords.new(app.records.path)
++	reopened.load_records()
++	check(reopened.settings.selected_car == "kart", "selected car survives local restart")
++	for id: String in VehicleCatalog.IDS:
++		check(VehicleLivery.for_car(reopened.settings, id).colors.body == "273b50", id + " livery survives local restart")
++	check(VehicleCondition.read(reopened, "compact").dirt == 0.85 and float(VehicleCondition.read(reopened, "kart").get("dirt", 0.0)) == 0.0, "cosmetic conditions remain separate on restart")
++	page.open_car(4)
++	page._show_section("care")
++	page._toggle_wash()
++	page.hide()
++	check(page.telemetry_exposures().is_empty(), "hidden cached Garage emits no car impressions")
++	check(not page.showroom.wash_mode, "hidden cached Garage ends Wash")
++	page.show()
++	check(page.wash_button.text == "Wash", "returning Care offers Wash after the brush was stopped")
++	var escape := InputEventKey.new()
++	escape.keycode = KEY_ESCAPE
++	escape.pressed = true
++	root.push_input(escape, true)
++	await settle()
++	check(page.section == "cars", "Escape returns from Care to the car carousel")
++	page._show_section("cars")
++	check(page.wash_button == null, "returning carousel has no stale Wash control")
++	if gallery_motion or "--capture-gallery-motion" in OS.get_cmdline_user_args():
++		root.size = Vector2i(960,540)
++		page.open_car(0)
++		await create_timer(0.8).timeout
++		var frames: String = ProjectSettings.globalize_path("res://../build/garage-trophy-motion-2026-10-12")
++		DirAccess.make_dir_recursive_absolute(frames)
++		for frame: int in range(120):
++			if frame == 15: page._show_section("trophies")
++			if frame == 75: page._show_section("customise")
++			await create_timer(1.0/30.0).timeout
++			await RenderingServer.frame_post_draw
++			check(root.get_texture().get_image().save_png(frames.path_join("turntable-%03d.png" % frame)) == OK, "actual trophy camera frame " + str(frame))
++	app.queue_free()
++	await process_frame
++	print("GARAGE_CAROUSEL: %d checks, %d failures" % [checks, failures])
++	quit(1 if failures else 0)
+--- /dev/null
++++ b/game/tests/fixtures/parking_hall_before/test_garage_original.gd.uid
+@@ -0,0 +1 @@
++uid://dqw1sox4b4jxs
+--- /dev/null
++++ b/game/tests/test_parking_hall.gd
+@@ -0,0 +1,210 @@
++extends SceneTree
++## Real Garage entry/return, all five cars, collisions, input and native captures.
++const HallData = preload("res://garage/parking_hall_data.gd")
++var checks: int = 0
++var failures: int = 0
++var app: Node
++var output: String = ""
++
++func _initialize() -> void: run.call_deferred()
++
++func check(ok: bool, message: String) -> void:
++	checks += 1
++	if not ok:
++		failures += 1
++		print("FAIL: "+message)
++
++func frame() -> void:
++	await process_frame
++	if DisplayServer.get_name() != "headless": await RenderingServer.frame_post_draw
++
++func capture(label: String) -> void:
++	if output.is_empty() or DisplayServer.get_name() == "headless": return
++	check(root.get_texture().get_image().save_png(output.path_join(label+".png")) == OK,"capture "+label)
++
++func resize(dimensions: Vector2i) -> void:
++	root.size = dimensions
++	root.content_scale_size = dimensions
++
++func settle(page: GaragePage) -> void:
++	for index: int in range(5): await frame()
++	while page._menu_motion != null: await frame()
++	for index: int in range(3): await frame()
++
++func click(button: Button, touch: bool = false) -> void:
++	check(button.is_visible_in_tree(),"action is visible: "+button.name)
++	var point: Vector2 = button.get_global_rect().get_center()
++	for pressed: bool in [true,false]:
++		if touch:
++			var event := InputEventScreenTouch.new()
++			event.index = 3
++			event.position = point
++			event.pressed = pressed
++			root.push_input(event,true)
++		else:
++			var event := InputEventMouseButton.new()
++			event.button_index = MOUSE_BUTTON_LEFT
++			event.position = point
++			event.pressed = pressed
++			root.push_input(event,true)
++		await frame()
++
++func physics_contract() -> void:
++	var hall := HallData.new()
++	check(hall.half_extent*2 == Vector2(240,160),"240 by 160 metre hall")
++	check(hall.islands.size() == 26,"bounded shared pillar layout")
++	for id: String in VehicleCatalog.IDS:
++		var config: HandlingConfig = VehicleCatalog.config(id,HandlingSelection.ORIGINAL_PLUS_INDEX)
++		var sim := VehicleSimulation.new(config)
++		sim.reset(hall.spawn,hall.spawn_heading)
++		for tick: int in range(480): sim.step(DriveFrame.sample(0,1,0),hall)
++		check(sim.state.position.x > hall.spawn.x+30,"useful acceleration distance: "+id)
++		check(sim.state.collision_count == 0,"uninterrupted straight: "+id)
++		for direction: Vector2 in [Vector2.RIGHT,Vector2.LEFT,Vector2.UP,Vector2.DOWN]:
++			sim.reset(Vector2(10,-24))
++			sim.state.velocity = direction*200
++			sim.state.position += direction*500
++			hall.resolve(sim.state,Vector2(10,-24),config)
++			check(absf(sim.state.position.x) <= hall.half_extent.x-config.collision_radius and absf(sim.state.position.y) <= hall.half_extent.y-config.collision_radius,"wall contains swept car: "+id+str(direction))
++		var pillar: Vector3 = hall.islands[0]
++		var center := Vector2(pillar.x,pillar.y)
++		var start: Vector2 = center-Vector2(6,0)
++		sim.reset(start,PI*0.5)
++		sim.state.velocity = Vector2(200,0)
++		sim.state.position = center+Vector2(6,0)
++		hall.resolve(sim.state,start,config)
++		check(sim.state.position.x < center.x and sim.state.position.distance_to(center) >= pillar.z+config.collision_radius,"swept pillar stops tunnelling: "+id)
++		for pillar_point: Vector3 in hall.islands:
++			check(Vector2(pillar_point.x,pillar_point.y).distance_to(HallData.TURNING_CENTER) > HallData.TURNING_RADIUS+pillar_point.z+config.collision_radius,"clear turning circle: "+id)
++
++func run() -> void:
++	OS.set_environment("BMT_API_URL","")
++	for argument: String in OS.get_cmdline_user_args():
++		if argument.begins_with("--evidence-root="): output = ProjectSettings.globalize_path(argument.trim_prefix("--evidence-root="))
++	if not output.is_empty(): DirAccess.make_dir_recursive_absolute(output)
++	physics_contract()
++	resize(Vector2i(1280,720))
++	var directory: String = ProjectSettings.globalize_path("res://../build/parking-hall/fixtures/"+TrackLibrary.unique_id())
++	DirAccess.make_dir_recursive_absolute(directory)
++	app = load("res://core/app.tscn").instantiate()
++	app.records = LocalRecords.new(directory.path_join("records.json"))
++	app.library = TrackLibrary.new(directory)
++	app.cloud_root_override = directory.path_join("cloud")
++	root.add_child(app)
++	var deadline: int = Time.get_ticks_msec()+60000
++	while not app.startup_complete and Time.get_ticks_msec() < deadline: await frame()
++	check(app.startup_complete,"app ready within deadline")
++	if not app.startup_complete: quit(1); return
++	var paint: Dictionary = VehicleLivery.defaults("compact")
++	paint.colors.body = "843f36"
++	app.records.settings.vehicle_liveries = {"compact":paint}
++	app.records.settings.vehicle_customisation = {"compact":{"version":1,"hood":"louvres","aero":"lip","rims":"five","body":"street"}}
++	check(app.records.save_records() == OK,"isolated saved cosmetic fixture")
++	app._show_screen("garage")
++	var page: GaragePage = app._retained_garage
++	await settle(page)
++	var original_ui: Control = app.root_ui
++	var original_track: NativeTrack = app.selected_track
++	var original_records: Dictionary = app.records.records.duplicate(true)
++	var original_condition: Dictionary = app.records.settings.get("vehicle_conditions",{}).duplicate(true)
++	page._show_section("care")
++	page.find_child("GarageTestDrive",true,false).pressed.emit()
++	check(not is_instance_valid(app.game) and not is_instance_valid(app.race_loading),"moving Garage action cannot accidentally launch a hall")
++	await settle(page)
++	page._show_section("cars")
++	await settle(page)
++	for dimensions: Vector2i in [Vector2i(960,540),Vector2i(1280,720),Vector2i(1600,900)]:
++		resize(dimensions)
++		await settle(page)
++		var action: Button = page.find_child("GarageTestDrive",true,false)
++		check(action != null and root.get_visible_rect().encloses(action.get_global_rect()),"Garage action fits viewport "+str(dimensions))
++		await capture("garage-"+str(dimensions.x))
++		page._car_menu_open = true
++		for section: String in ["customise","care","tuning"]:
++			page._show_section(section)
++			await settle(page)
++			action = page.find_child("GarageTestDrive",true,false)
++			check(root.get_visible_rect().encloses(action.get_global_rect()),"selected-car test drive fits viewport "+section+str(dimensions))
++			check(not action.get_global_rect().intersects(page.find_child("GarageBack",true,false).get_global_rect()),"test drive and Back do not overlap "+section+str(dimensions))
++		page._show_section("cars")
++		await settle(page)
++	resize(Vector2i(1280,720))
++	for index: int in range(VehicleCatalog.IDS.size()):
++		var id: String = VehicleCatalog.IDS[index]
++		page.preview_car(index)
++		await settle(page)
++		await click(page.find_child("GarageTestDrive",true,false),index%2 == 1)
++		deadline = Time.get_ticks_msec()+45000
++		while (not is_instance_valid(app.game) or not app.game.preparation_complete or is_instance_valid(app.race_loading)) and Time.get_ticks_msec() < deadline: await frame()
++		check(is_instance_valid(app.game) and app.game.preparation_complete and not is_instance_valid(app.race_loading),"Garage enters prepared hall: "+id)
++		if not is_instance_valid(app.game): break
++		var game: Node = app.game
++		game.process_mode = Node.PROCESS_MODE_DISABLED
++		check(game.vehicle_id == id and game.car.vehicle_id == id,"previewed car enters: "+id)
++		check(game.car.livery == VehicleLivery.for_car(app.records.settings,id),"saved paint: "+id)
++		check(game.car.customisation == VehicleCustomisation.for_car(app.records.settings,id),"saved parts: "+id)
++		check(game.free_drive_mode and game.native_track == null and game.countdown_ticks == 0,"untimed immediate start: "+id)
++		check(app.cloud_ticket.is_empty() and game.ghost_store == null,"no ticket or personal ghost: "+id)
++		check(game.hud.find_child("EditHere",true,false) == null,"no editor action: "+id)
++		check(game.hud.find_child("SpeedCard",true,false).is_visible_in_tree(),"speed visible: "+id)
++		var spawn: Vector2 = game.sim.state.position
++		var pedal: Vector2 = game.hud.touch.zones()[3].get_center()
++		var touch := InputEventScreenTouch.new()
++		touch.index = 22
++		touch.position = pedal
++		touch.pressed = true
++		game.process_mode = Node.PROCESS_MODE_INHERIT
++		root.push_input(touch,true)
++		check(game.driver.sample().throttle > 0,"native touch reaches accelerator: "+id)
++		game.process_mode = Node.PROCESS_MODE_DISABLED
++		for tick: int in range(240): game._advance_physics(VehicleSimulation.STEP)
++		game.hud.touch.release_all()
++		game.driver.clear()
++		check(game.sim.state.position.distance_to(spawn) > 5,"normal controls drive car: "+id)
++		check(game.online_frames.is_empty() and game.race_proof.samples.is_empty(),"free driving retains no race proof: "+id)
++		check(game.track_session.elapsed_ticks == 0 and not game.track_session.finished,"driving never finishes a race: "+id)
++		game.call("_process",0.0)
++		if index == 0:
++			for dimensions: Vector2i in [Vector2i(960,540),Vector2i(1280,720),Vector2i(1600,900)]:
++				resize(dimensions)
++				for pose: Array in [["entry",HallData.new().spawn],["turning",HallData.TURNING_CENTER],["slalom",Vector2(61,28)],["bays",Vector2(32,-70)]]:
++					game.sim.reset(pose[1],PI*0.5)
++					game.previous_position = game.sim.state.position
++					game.camera.follow(game.sim.state.position,Vector2.ZERO,game.sim.state.heading,0,true)
++					game.call("_process",0.0)
++					for wait_frame: int in range(3): await frame()
++					var back: Button = game.hud.find_child("ReturnToGarage",true,false)
++					check(Rect2(Vector2.ZERO,Vector2(root.size)).encloses(back.get_global_rect()),"Garage HUD action fits "+str(dimensions))
++					var speed: Rect2 = game.hud.find_child("SpeedCard",true,false).get_global_rect()
++					for zone: Rect2 in game.hud.touch.zones(): check(not speed.intersects(zone),"speed does not cover driving controls "+str(dimensions))
++					await capture(str(pose[0])+"-"+str(dimensions.x))
++			resize(Vector2i(1280,720))
++		game.toggle_pause(false)
++		var paused_tick: int = game.sim.state.tick
++		game._advance_physics(VehicleSimulation.STEP)
++		check(game.sim.state.tick == paused_tick and not game.hud.touch.enabled,"pause stops driving and touch: "+id)
++		if index == 0: await capture("paused")
++		game.hud.pause_menu.column.get_node("Restart").pressed.emit()
++		check(not game.paused and game.sim.state.position == game.yard.spawn and game.sim.state.velocity == Vector2.ZERO,"reset from pause: "+id)
++		game.driver.set_touch(25,&"accelerate")
++		game._notification(Node.NOTIFICATION_APPLICATION_FOCUS_OUT)
++		check(game.paused and game.driver.touches.is_empty(),"background pauses and releases inputs: "+id)
++		game.toggle_pause(false)
++		if index == 0: game.hud.find_child("ReturnToGarage",true,false).pressed.emit()
++		else:
++			game.toggle_pause(false)
++			game.hud.pause_menu.column.get_node("Quit").pressed.emit()
++		await settle(page)
++		check(not is_instance_valid(app.game) and app.root_ui == original_ui and original_ui.visible,"return restores retained Garage: "+id)
++		check(app._retained_garage == page and page.vehicle_id == id,"same Garage car: "+id)
++		check(app.selected_track == original_track and app.records.records == original_records,"track and PBs unchanged: "+id)
++		check(app.records.settings.get("vehicle_conditions",{}) == original_condition,"saved condition unchanged: "+id)
++	# Cancellation before construction keeps the menu and cannot create a late hall.
++	app._start_garage_free_drive()
++	app._show_screen("settings")
++	for wait_frame: int in range(10): await frame()
++	check(not is_instance_valid(app.game) and not is_instance_valid(app.race_loading) and app.screen == "settings","navigation cancels pending hall entry")
++	app.queue_free()
++	for wait_frame: int in range(90): await frame()
++	print("PARKING_HALL: %d checks, %d failures" % [checks,failures])
++	quit(1 if failures else 0)

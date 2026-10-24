@@ -1,0 +1,966 @@
+diff --git a/backend/bmt_backend/rivalry.py b/backend/bmt_backend/rivalry.py
+index 635472e40..28351accb 100644
+--- a/backend/bmt_backend/rivalry.py
++++ b/backend/bmt_backend/rivalry.py
+@@ -7,7 +7,7 @@ from datetime import datetime, timezone
+ 
+ from fastapi import APIRouter, HTTPException, Query, Request
+ from pydantic import BaseModel, ConfigDict, Field
+-from sqlalchemy import case, func, or_, select, update
++from sqlalchemy import case, func, literal_column, or_, select, update
+ from sqlalchemy.exc import IntegrityError
+ from sqlalchemy.orm import aliased
+ 
+@@ -373,30 +373,20 @@ def join(payload: Join, request: Request, session: DB, player: Auth, key: Key):
+     # Expensive candidate selection is read work outside the cohort reservation.
+     prepared_slots = selected_slots(session,request,active,payload.vehicle_id,payload.test_population)
+     band = min(9, skill // 100) if skill is not None else -1
+-    lock_id = digest({"week": start, "contract": contract, "band": band})
+-    if session.get(OperationState, lock_id) is None:
+-        try:
+-            with session.begin_nested():
+-                session.add(OperationState(id=lock_id))
+-                session.flush()
+-        except IntegrityError:
+-            pass
+-    session.scalar(select(OperationState).where(OperationState.id == lock_id).with_for_update())
+-    groups = session.scalars(select(RivalryGroup).where(RivalryGroup.week_start == start,
+-        RivalryGroup.contract_key == contract, RivalryGroup.skill_band == band,
+-        RivalryGroup.member_count < GROUP_CAPACITY).order_by(RivalryGroup.created_at).limit(100)).all()
+-    random.shuffle(groups)
+-    group = None
+-    for candidate in groups:
+-        candidate = session.scalar(select(RivalryGroup).where(RivalryGroup.id == candidate.id).with_for_update())
+-        # The conditional increment also protects the capacity on SQLite,
+-        # whose SELECT FOR UPDATE has no effect. A failed reservation retries
+-        # another open group; membership and reservation commit together.
+-        reserved = session.execute(update(RivalryGroup).where(RivalryGroup.id == candidate.id,
+-            RivalryGroup.member_count < GROUP_CAPACITY).values(member_count=RivalryGroup.member_count+1)).rowcount
+-        if reserved:
+-            group = candidate
+-            break
++    group = reserve_open_group(session, start, contract, band)
++    if group is None:
++        # Only creation takes a guard. A busy open group must fill before another
++        # is created; ordinary joins lock their group, never the whole skill band.
++        lock_id = digest({"purpose": "rivalry-create-v2", "week": start, "contract": contract, "band": band})
++        if session.get(OperationState, lock_id) is None:
++            try:
++                with session.begin_nested():
++                    session.add(OperationState(id=lock_id))
++                    session.flush()
++            except IntegrityError:
++                pass
++        session.scalar(select(OperationState).where(OperationState.id == lock_id).with_for_update())
++        group = reserve_open_group(session, start, contract, band)
+     if group is None:
+         if len(prepared_slots) < TRACK_COUNT:
+             raise HTTPException(409, "NOT_ENOUGH_ELIGIBLE_TRACKS")
+@@ -421,6 +411,40 @@ def join(payload: Join, request: Request, session: DB, player: Auth, key: Key):
+     return commit_join(session,player.id,key,body,group.id)
+ 
+ 
++def open_group_candidates(start, contract, band):
++    # Literal predicate also permits the partial index in PostgreSQL generic plans.
++    return select(RivalryGroup.id).where(RivalryGroup.week_start == start,
++        RivalryGroup.contract_key == contract, RivalryGroup.skill_band == band,
++        RivalryGroup.member_count < literal_column("20")).order_by(
++            RivalryGroup.created_at, RivalryGroup.id).limit(100)
++
++
++def reserve_open_group(session, start, contract, band):
++    candidates = list(session.scalars(open_group_candidates(start, contract, band)))
++    random.shuffle(candidates)
++    for identity in candidates:
++        candidate = session.scalar(select(RivalryGroup).where(RivalryGroup.id == identity,
++            RivalryGroup.member_count < GROUP_CAPACITY).with_for_update(skip_locked=True))
++        if candidate is None:
++            continue
++        # SQLite has no row locks; the conditional write still enforces capacity.
++        reserved = session.execute(update(RivalryGroup).where(RivalryGroup.id == identity,
++            RivalryGroup.member_count < GROUP_CAPACITY).values(member_count=RivalryGroup.member_count + 1)).rowcount
++        if reserved:
++            return candidate
++    if candidates:
++        # All open candidates may be locked by in-flight joins. Wait for one
++        # group's exact capacity decision instead of fragmenting a 20-driver
++        # field into many smaller groups. Other open groups were tried first.
++        candidate = session.scalar(select(RivalryGroup).where(RivalryGroup.id == candidates[0],
++            RivalryGroup.member_count < GROUP_CAPACITY).with_for_update())
++        if candidate is not None and session.execute(update(RivalryGroup).where(
++                RivalryGroup.id == candidate.id, RivalryGroup.member_count < GROUP_CAPACITY)
++                .values(member_count=RivalryGroup.member_count + 1)).rowcount:
++            return candidate
++    return None
++
++
+ @router.get("/rivalry/{group_id}")
+ def view(group_id: str, request: Request, session: BoardDB, player: Auth):
+     group, _ = require_member(session, group_id, player.id, request)
+diff --git a/backend/bmt_backend/rivalry_models.py b/backend/bmt_backend/rivalry_models.py
+index f9bede89e..72625e47f 100644
+--- a/backend/bmt_backend/rivalry_models.py
++++ b/backend/bmt_backend/rivalry_models.py
+@@ -1,5 +1,5 @@
+ """Pinned weekly fields; results are written only by canonical verification."""
+-from sqlalchemy import JSON, Boolean, ForeignKey, Index, Integer, String, UniqueConstraint, false
++from sqlalchemy import JSON, Boolean, ForeignKey, Index, Integer, String, UniqueConstraint, false, text
+ from sqlalchemy.orm import Mapped, mapped_column
+ 
+ from .db import Base
+@@ -8,7 +8,11 @@ from .track_models import new_id, now
+ 
+ class RivalryGroup(Base):
+     __tablename__ = "rivalry_groups"
+-    __table_args__ = (Index("ix_rivalry_matching", "week_start", "contract_key", "skill_band"),)
++    __table_args__ = (
++        Index("ix_rivalry_matching", "week_start", "contract_key", "skill_band"),
++        Index("ix_rivalry_open_matching", "week_start", "contract_key", "skill_band", "created_at", "id",
++              postgresql_where=text("member_count < 20"), sqlite_where=text("member_count < 20")),
++    )
+     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+     week_start: Mapped[int] = mapped_column(Integer)
+     ends_at: Mapped[int] = mapped_column(Integer)
+diff --git a/backend/bmt_backend/achievement_models.py b/backend/bmt_backend/achievement_models.py
+index bc5d97339..5814c507c 100644
+--- a/backend/bmt_backend/achievement_models.py
++++ b/backend/bmt_backend/achievement_models.py
+@@ -56,3 +56,23 @@ class AchievementRecord(Base):
+     ticks: Mapped[int] = mapped_column(Integer)
+     since: Mapped[int] = mapped_column(Integer)
+     due_at: Mapped[int] = mapped_column(Integer)
++
++
++class CreatorAchievementPartition(Base):
++    """Shared intake / exclusive erasure fences; reducers use NO KEY UPDATE."""
++    __tablename__ = "creator_achievement_partitions"
++    id: Mapped[int] = mapped_column(Integer, primary_key=True)
++
++
++class CreatorAchievementEvent(Base):
++    """Pending effects only. CoinReward is the permanent accepted-run receipt."""
++    __tablename__ = "creator_achievement_events"
++    __table_args__ = (
++        Index("ix_creator_achievement_pending", "partition", "stamp", "id"),
++        Index("ix_creator_achievement_owner", "creator_id", "stamp", "id"),
++    )
++    id: Mapped[str] = mapped_column(String(36), primary_key=True)  # accepted run
++    partition: Mapped[int] = mapped_column(Integer)
++    creator_id: Mapped[str] = mapped_column(String(36))  # no Player FK/key locks
++    stamp: Mapped[int] = mapped_column(Integer)
++    reach: Mapped[int] = mapped_column(BigInteger, default=0)
+diff --git a/backend/bmt_backend/achievements.py b/backend/bmt_backend/achievements.py
+index a3b290a78..c75393112 100644
+--- a/backend/bmt_backend/achievements.py
++++ b/backend/bmt_backend/achievements.py
+@@ -54,20 +54,21 @@ def enroll(session, player_id):
+         count(session, player_id, "__eligible")
+ 
+ 
+-def state(session, player_id, scope):
++def state(session, player_id, scope, *, skip_locked=False, accepted_creator=False):
+     # Conditional insert fences concurrent account erasure without a second Player lock.
+     table = AchievementState.__table__.c
+     values = {"player_id": player_id, "scope": scope, "metrics": {}, "unlocked": {}, "featured": [], "revision": 0,
+               "rarity_pending": False, "rarity_counted": []}
+-    source = select(*(literal(value, type_=table[key].type) for key, value in values.items())).where(
+-        select(Player.id).where(Player.id == player_id, Player.disabled.is_(False),
+-            Player.deleted_at.is_(None), Player.is_test_driver.is_(False)).exists())
++    allowed = select(Player.id).where(Player.id == player_id, Player.deleted_at.is_(None))
++    if not (accepted_creator and scope == "creator"):
++        allowed = allowed.where(Player.disabled.is_(False), Player.is_test_driver.is_(False))
++    source = select(*(literal(value, type_=table[key].type) for key, value in values.items())).where(allowed.exists())
+     session.execute(insert(session, AchievementState).from_select(list(values), source).on_conflict_do_nothing())
+     return session.scalar(select(AchievementState).where(AchievementState.player_id == player_id,
+-        AchievementState.scope == scope).with_for_update().execution_options(populate_existing=True))
++        AchievementState.scope == scope).with_for_update(skip_locked=skip_locked).execution_options(populate_existing=True))
+ 
+ 
+-def save(session, row, metrics, stamp):
++def save(session, row, metrics, stamp, *, flush=True):
+     if row is None:
+         return
+     unlocked = dict(row.unlocked)
+@@ -84,7 +85,8 @@ def save(session, row, metrics, stamp):
+         row.rarity_pending = True
+     row.metrics, row.unlocked = metrics, unlocked
+     row.revision += 1
+-    session.flush()
++    if flush:
++        session.flush()
+ 
+ 
+ def bump(metrics, key, amount=1):
+@@ -196,11 +198,8 @@ def capture_race(session, run, previous, *, incident_free=False, acceptance=None
+     if previous[0] == 0 or run.time_ticks < previous[0]:
+         observe_record(session, board.id, run.finished_at)
+     if track.owner_id != run.player_id:
+-        creator = state(session, track.owner_id, "creator")
+-        if creator is not None:
+-            values = dict(creator.metrics)
+-            bump(values, "creator_plays")
+-            save(session, creator, values, run.finished_at)
++        from .creator_achievements import enqueue
++        enqueue(session, run, track.owner_id)
+ 
+ 
+ def capture_publication(session, track, player, stamp):
+@@ -211,13 +210,12 @@ def capture_publication(session, track, player, stamp):
+         save(session, row, metrics, stamp)
+ 
+ 
+-def capture_reach(session, track, reach, stamp):
++def capture_reach(session, track, reach, run_id):
+     from .news_models import TrackRacer
+     owner = session.get(TrackRacer, (track.id, track.owner_id))
+     value = max(0, reach.racers - int(owner is not None))
+-    row = state(session, track.owner_id, "creator")
+-    if row and value > row.metrics.get("creator_reach", 0):
+-        save(session, row, {**row.metrics, "creator_reach": value}, stamp)
++    from .creator_achievements import capture_reach as enqueue_reach
++    enqueue_reach(session, run_id, track.owner_id, value)
+ 
+ 
+ def leaders(session, board_id):
+@@ -244,8 +242,22 @@ def observe_record(session, board_id, stamp):
+ 
+ 
+ def process_due(app, *, clock=None):
+-    """Idle worker: at most one group (<=20 entrants) or one held record."""
++    """Fair bounded turns: competitions, rarity, held records and creator effects."""
+     stamp = now() if clock is None else clock
++    from .creator_achievements import process_one as project_creator
++    roles = (process_competition, process_rarity, process_record, None)
++    cursor = getattr(app.state, "achievement_role", 0)
++    for offset in range(len(roles)):
++        index = (cursor + offset) % len(roles)
++        # Advance before execution, including failures, so a broken role cannot
++        # permanently exclude later classes on the next service iteration.
++        app.state.achievement_role = (index + 1) % len(roles)
++        if (roles[index](app, stamp) if roles[index] else project_creator(app)):
++            return True
++    return False
++
++
++def process_competition(app, stamp):
+     with app.state.session_factory() as session:
+         job = session.scalar(select(AchievementCompetition).where(AchievementCompetition.done.is_(False),
+             AchievementCompetition.due_at <= stamp).order_by(AchievementCompetition.due_at,
+@@ -254,6 +266,11 @@ def process_due(app, *, clock=None):
+             finalize_competition(session, job, stamp)
+             session.commit()
+             return True
++    return False
++
++
++def process_rarity(app, stamp):
++    with app.state.session_factory() as session:
+         # Rarity is a coalesced projection in the existing idle worker. Racing
+         # never waits on a global counter, even when playing each other's tracks.
+         row = session.scalar(select(AchievementState).where(AchievementState.rarity_pending.is_(True))
+@@ -268,6 +285,11 @@ def process_due(app, *, clock=None):
+             row.rarity_pending = False
+             session.commit()
+             return True
++    return False
++
++
++def process_record(app, stamp):
++    with app.state.session_factory() as session:
+         record = session.scalar(select(AchievementRecord).where(AchievementRecord.due_at <= stamp)
+             .order_by(AchievementRecord.due_at, AchievementRecord.board_id).limit(1).with_for_update(skip_locked=True))
+         if record:
+@@ -283,10 +305,10 @@ def process_due(app, *, clock=None):
+     return False
+ 
+ 
+-def drive_idle(app):
++def drive_idle(app, *, force=False):
+     """No timers/services: share the existing worker with bounded idle SQL cost."""
+     current = time.monotonic()
+-    if current < getattr(app.state, "achievement_check_after", 0):
++    if not force and current < getattr(app.state, "achievement_check_after", 0):
+         return False
+     worked = process_due(app)
+     app.state.achievement_check_after = current + (0.25 if worked else 60.0)
+@@ -398,6 +420,9 @@ def feature(body: Featured, session: DB, player: Auth):
+ 
+ def erase_private(session, player_id):
+     """Called after the account is fenced; decrement rarity only once."""
++    from .creator_achievements import erase_pending
++    if not erase_pending(session, player_id):
++        return False
+     rows = session.scalars(select(AchievementState).where(AchievementState.player_id == player_id)
+         .order_by(AchievementState.scope).with_for_update()).all()
+     cohort = session.get(AchievementCohort, player_id)
+@@ -411,3 +436,4 @@ def erase_private(session, player_id):
+     # Fact collection caps at 1125 per player; no race-history receipt table.
+     session.execute(delete(AchievementFact).where(AchievementFact.player_id == player_id))
+     session.execute(delete(AchievementRecord).where(AchievementRecord.player_id == player_id))
++    return True
+diff --git a/backend/bmt_backend/creator_achievements.py b/backend/bmt_backend/creator_achievements.py
+new file mode 100644
+index 000000000..f0203be99
+--- /dev/null
++++ b/backend/bmt_backend/creator_achievements.py
+@@ -0,0 +1,94 @@
++"""Transactional pending creator effects, separate from race acceptance locks.
++
++The permanent CoinReward receipt fences race intake. Only unapplied effects are
++retained here, committed/deleted atomically with the creator projection. Intake
++and reduction share partition KEY SHARE locks; erasure alone takes FOR UPDATE.
++Reducer NO KEY UPDATE locks exclude other reducers without blocking intake.
++"""
++from collections import defaultdict
++
++from sqlalchemy import case, delete, literal, select, text, update
++
++from .achievement_models import CreatorAchievementEvent as Event
++from .achievement_models import CreatorAchievementPartition as Partition
++from .identity_models import Player
++
++PARTITIONS = 16
++BATCH = 100
++
++
++def partition_for(creator_id):
++    return sum(creator_id.encode()) % PARTITIONS
++
++
++def enqueue(session, run, creator_id):
++    from .achievements import insert
++    partition = partition_for(creator_id)
++    session.scalar(select(Partition).where(Partition.id == partition).with_for_update(read=True, key_share=True))
++    values = {"id": run.id, "partition": partition, "creator_id": creator_id, "stamp": run.finished_at, "reach": 0}
++    columns = Event.__table__.c
++    source = select(*(literal(value, type_=columns[key].type) for key, value in values.items())).where(
++        select(Player.id).where(Player.id == creator_id, Player.disabled.is_(False),
++            Player.deleted_at.is_(None), Player.is_test_driver.is_(False)).exists())
++    session.execute(insert(session, Event).from_select(list(values), source).on_conflict_do_nothing())
++
++
++def capture_reach(session, run_id, creator_id, value):
++    # Same transaction as enqueue: a reach change cannot create a second play.
++    session.execute(update(Event).where(Event.id == run_id, Event.creator_id == creator_id).values(reach=value))
++
++
++def process_one(app):
++    from .achievements import bump, save, state
++    cursor = getattr(app.state, "creator_achievement_partition", 0)
++    with app.state.session_factory() as session:
++        partition = session.scalar(select(Partition).where(select(Event.id).where(
++            Event.partition == Partition.id).exists()).order_by(
++                case((Partition.id >= cursor, 0), else_=1), Partition.id)
++            .limit(1).with_for_update(skip_locked=True, key_share=True))
++        if partition is None:
++            return False
++        app.state.creator_achievement_partition = (partition.id + 1) % PARTITIONS
++        if session.bind.dialect.name == "postgresql":
++            # A concurrent first publication can still own an uncommitted unique
++            # state insert. Keep that rare wait bounded; rollback retains effects.
++            session.execute(text("SET LOCAL lock_timeout = '250ms'"))
++        events = session.scalars(select(Event).where(Event.partition == partition.id)
++            .order_by(Event.stamp, Event.id).limit(BATCH)).all()
++        creators = defaultdict(list)
++        for effect in events:
++            creators[effect.creator_id].append(effect)
++        applied = []
++        for creator_id, contributions in creators.items():
++            player = session.get(Player, creator_id)
++            if player is not None and player.deleted_at is None:
++                # Eligibility was attested at intake. A later suspension/test
++                # identity change must not erase already accepted contributions;
++                # account erasure is the permanent cancellation fence.
++                row = state(session, creator_id, "creator", skip_locked=True, accepted_creator=True)
++                if row is None:
++                    continue  # Busy projection: retain every contribution.
++                # Preserve threshold timestamps/revisions with one state UPDATE
++                # per creator, including batches containing many distinct owners.
++                with session.no_autoflush:
++                    for effect in contributions:
++                        metrics = dict(row.metrics)
++                        bump(metrics, "creator_plays")
++                        save(session, row, metrics, effect.stamp, flush=False)
++                        if effect.reach > metrics.get("creator_reach", 0):
++                            save(session, row, {**metrics, "creator_reach": effect.reach}, effect.stamp, flush=False)
++            applied.extend(effect.id for effect in contributions)
++        session.execute(delete(Event).where(Event.id.in_(applied)))
++        session.commit()
++        return bool(applied)
++
++
++def erase_pending(session, creator_id):
++    # After the account is fenced, no late enqueue/reducer can cross this lock.
++    # Bounded chunks avoid turning deletion of a prolific creator into a sweep.
++    session.scalar(select(Partition).where(Partition.id == partition_for(creator_id)).with_for_update())
++    ids = list(session.scalars(select(Event.id).where(Event.creator_id == creator_id)
++        .order_by(Event.stamp, Event.id).limit(BATCH)))
++    if ids:
++        session.execute(delete(Event).where(Event.id.in_(ids)))
++    return len(ids) < BATCH
+diff --git a/backend/bmt_backend/news.py b/backend/bmt_backend/news.py
+index ac0c973f6..672a5c078 100644
+--- a/backend/bmt_backend/news.py
++++ b/backend/bmt_backend/news.py
+@@ -112,7 +112,7 @@ def capture_verified(session, run, board, version, track, player):
+         reach.racers += 1
+         if track.owner_id != player.id:
+             from .achievements import capture_reach
+-            capture_reach(session, track, reach, run.finished_at)
++            capture_reach(session, track, reach, run.id)
+         for threshold in MILESTONES:
+             if reach.milestone < threshold <= reach.racers:
+                 reach.milestone = threshold
+diff --git a/backend/bmt_backend/privacy.py b/backend/bmt_backend/privacy.py
+index 3f59f353a..ab2dd2f5d 100644
+--- a/backend/bmt_backend/privacy.py
++++ b/backend/bmt_backend/privacy.py
+@@ -356,7 +356,9 @@ def finish_cleanup(app, session, job, *, final=True):
+             session.commit()
+             return True
+     from .achievements import erase_private as erase_achievements
+-    erase_achievements(session, job.player_id)
++    if not erase_achievements(session, job.player_id):
++        session.commit()
++        return True
+     from .admin_models import AdminAudit
+     from .commerce_models import Purchase
+     from .community_models import CommunityAcceptance, PlayerBlock
+diff --git a/backend/bmt_backend/worker.py b/backend/bmt_backend/worker.py
+index 6bdaf15fc..9327e7e84 100644
+--- a/backend/bmt_backend/worker.py
++++ b/backend/bmt_backend/worker.py
+@@ -98,19 +98,8 @@ def process_one(app, *, refresh_histograms=False) -> bool:
+                 return True
+             if publish_one(app):
+                 return True
+-            if refresh_histograms:
+-                from .achievements import drive_idle as progress_achievements
+-                if progress_achievements(app):
+-                    return True
+-                from .news import process_requested
+-                if process_requested(app):
+-                    return True
+-                from .lap_bests import backfill_one
+-                if backfill_one(app.state.session_factory)["worked"]:
+-                    return True
+-                from .histogram_snapshots import refresh_one as refresh_histogram
+-                if refresh_histogram(app, active_only=True):
+-                    return True
++            if refresh_histograms and process_background(app):
++                return True
+             driver_work = getattr(app.state, "driver_work", None)
+             if driver_work is not None:
+                 return driver_work.poll()
+@@ -357,6 +346,28 @@ def finalize(app, run_id, token, pinned_manifest, result, failure, rejected, per
+     return True
+ 
+ 
++def process_background(app, *, reserved=False):
++    """Rotate bounded roles, including when the first class never empties."""
++    from .achievements import drive_idle
++    from .histogram_snapshots import refresh_one
++    from .lap_bests import backfill_one
++    from .news import process_requested
++    roles = [lambda: drive_idle(app, force=reserved), lambda: process_requested(app)]
++    if not reserved:
++        roles.extend((lambda: backfill_one(app.state.session_factory)["worked"],
++                      lambda: refresh_one(app, active_only=True)))
++    attribute = "reserved_presentation_role" if reserved else "idle_background_role"
++    cursor = getattr(app.state, attribute, 0)
++    for offset in range(len(roles)):
++        if stopping(app):
++            return False
++        index = (cursor + offset) % len(roles)
++        setattr(app.state, attribute, (index + 1) % len(roles))
++        if roles[index]():
++            return True
++    return False
++
++
+ def process_worker_job(app) -> bool:
+     # The long-running service performs background presentation work. Explicit
+     # single-race diagnostic calls retain their verification-only behavior.
+@@ -366,11 +377,20 @@ def process_worker_job(app) -> bool:
+         count = (getattr(app.state, "privacy_work_count", 0) + 1) % 16
+         app.state.privacy_work_count = count
+         if count == 0:
++            from .histogram_snapshots import refresh_one
+             from .privacy import cleanup_one
+-            cleanup_one(app)
+-            if not stopping(app):
+-                from .histogram_snapshots import refresh_one
+-                refresh_one(app, active_only=True)
++            tasks = (("privacy", lambda: cleanup_one(app)),
++                     ("histograms", lambda: refresh_one(app, active_only=True)),
++                     ("presentation", lambda: process_background(app, reserved=True)))
++            for role, task in tasks:
++                if stopping(app):
++                    break
++                try:
++                    task()
++                except Exception:
++                    # A failed housekeeping class must not consume every other
++                    # role's reserved turn. Each job retains its own transaction.
++                    logger.exception("reserved_background_failed role=%s", role)
+         return True
+     from .privacy import cleanup_one
+     return cleanup_one(app)
+diff --git a/backend/tests/test_achievements.py b/backend/tests/test_achievements.py
+index d6c1781ec..b26f5c524 100644
+--- a/backend/tests/test_achievements.py
++++ b/backend/tests/test_achievements.py
+@@ -89,10 +89,10 @@ def test_idle_worker_checks_at_most_once_a_minute_when_empty(domain, monkeypatch
+         assert not drive_idle(domain.app)
+         for _ in range(100):
+             assert not drive_idle(domain.app)
+-        assert len(statements) == 3
++        assert len(statements) == 4  # Includes one bounded pending-creator probe.
+         stamp[0] += 60
+         assert not drive_idle(domain.app)
+-        assert len(statements) == 6
++        assert len(statements) == 8
+     finally:
+         event.remove(domain.app.state.engine, "before_cursor_execute", record)
+ 
+@@ -160,6 +160,8 @@ def test_creator_completion_and_unique_reach_exclude_owner_and_repeat_racers(dom
+     race(domain, version, "Alice", frames=50)
+     race(domain, version, "Alice", frames=60)
+     race(domain, version, "Bob", frames=50)
++    while process_due(domain.app):
++        pass
+     before = collection(domain, "Creator")["states"]["creator"]["metrics"]
+     assert before["creator_plays"] == 3 and before["creator_reach"] == 2
+     race(domain, version, "Creator", frames=30)
+diff --git a/backend/README.md b/backend/README.md
+index b5e1927c3..781bd6e73 100644
+--- a/backend/README.md
++++ b/backend/README.md
+@@ -1,5 +1,13 @@
+ # Beat my track backend
+ 
++Local priority scalability fixes (2026-10-23, `0054_priority_scaling`): Rivalry matching reads at most 100 open group IDs through a partial index, skips busy groups when another open group is available, and keeps the exact 20-driver capacity. If every candidate is busy, it waits on one group before creating another; only new-group creation uses the band guard. Closed groups no longer accumulate in the matching scan. Membership, pinned tracks, skill scoring and retries retain their existing contracts.
++
++Accepted ordinary races now commit a pending creator-achievement effect alongside the permanent coin receipt. Both play counts and first-time racer reach are projected later, in batches of at most 100 effects, coalesced by creator. Racer achievements remain immediate. Sixteen partition fences allow race intake during reduction while excluding account erasure; busy creator states retain their effects for retry. New intake checks creator eligibility; later suspension/test-identity changes preserve accepted effects, while account deletion cancels them. Pending rows contain only the creator ID, accepted run ID, partition, timestamp and reach, and are deleted atomically with projection. CoinReward remains the durable replay fence; do not independently replay historical accepted races into this outbox. Creator deletion drains indexed 100-row chunks before completing achievement erasure.
++
++The service worker reserves privacy, histogram and one rotating achievement/Trackside turn every 16 completed jobs. With both presentation classes continuously busy, each gets a turn within 32 job completions; achievement competitions, rarity, held records and creator effects rotate internally. Idle presentation/lap/histogram work also rotates. These are work-count guarantees, not a wall-clock deadline or throughput certification. Long verifications still delay a turn. Size worker capacity against pending-effect age, requested-news latency and database load on representative traffic; a reserved share alone does not prove one-million-DAU capacity.
++
++Roll out `0054` with matching API and worker code after draining/stopping old writers and taking a recoverable backup. Existing creator totals are retained with no historical rebuild. The open-group index is built transactionally by the ordinary migration; measure its lock/build time on representative data or use an operator-reviewed concurrent-index cutover before recording the equivalent revision. Drain the creator outbox with the matching worker before downgrade: the migration refuses to discard pending effects. Restart the matching service after migration; do not run legacy synchronous creator writers concurrently with the new reducer. [Tests, query plans, review refinements and task-only checkpoint](../docs/evidence/backend-priority-fixes-2026-10-23/report.json). No live rollout or physical-device test was performed for this backend change.
++
+ Local discovery redesign (2026-10-22): `/v1/discovery/v3/tracks` and `/v1/discovery/v3/random` replace whole matching-catalogue snapshots. A request sends `{"query":{"sort":"name"}}`, then only `{"cursor":"..."}` for later pages. Twenty-item pages expose `total: null`, `has_more`, `page_cursor`, `next_cursor` and `previous_cursor`. The matching client uses a bounded sliding window and labels loaded cards. A selected revision can open an anchored window with `locate_version`; that window starts at the selected track and continues forward. Refresh opens the ordinary feed. Arbitrary offsets and a selected track's exact global ordinal are retired. The v2 endpoints return HTTP426; overload never falls back to building a catalogue.
+ 
+ Migration `0050_discovery_indexed` installs transactional source receipts before the independent `bmt_backend.discovery_worker` backfills metadata and recent driver pairs. Sixteen independently locked partitions retain changed ranking/filter rows for the 30-minute cursor lifetime plus a cleanup margin. Unchanged rows are shared; no periodic whole-generation copies are made. Current visibility, account restrictions and blocks override frozen ordering before delivery. Candidate page spans remain frozen: removing a track shortens its page without pulling in a card from the next cached page or reweaving recommendations. Personal favourite/device-raced collections and bounded block sets are indexed, scoped and expiring; block/unblock changes identify a new view immediately. Rank updates coalesce for roughly 60 seconds; cursors freeze ordering, filter values and published revision, while display statistics and author identity are current. New views return retryable HTTP503 while preparing, after a worker outage, or when pending source receipts are over 120 seconds old. The worker logs bounded partition health samples every minute.
+diff --git a/backend/bmt_backend/migrations/versions/0054_priority_scaling.py b/backend/bmt_backend/migrations/versions/0054_priority_scaling.py
+new file mode 100644
+index 000000000..4fa07adca
+--- /dev/null
++++ b/backend/bmt_backend/migrations/versions/0054_priority_scaling.py
+@@ -0,0 +1,43 @@
++"""Bounded open-group matching and transactional creator achievement effects.
++
++Drain old writers before cutover. No history replay: existing creator totals and
++CoinReward receipts remain authoritative. Large live rivalry indexes require a
++reviewed concurrent-index rollout before the equivalent migration is recorded.
++"""
++import sqlalchemy as sa
++from alembic import op
++
++revision = "0054_priority_scaling"
++down_revision = "0053_discovery_short_search"
++branch_labels = None
++depends_on = None
++
++
++def upgrade():
++    # The historical Rivalry migration creates tables from current metadata on
++    # fresh installs; an existing deployment still needs this additive index.
++    indexes = {item["name"] for item in sa.inspect(op.get_bind()).get_indexes("rivalry_groups")}
++    if "ix_rivalry_open_matching" not in indexes:
++        op.create_index("ix_rivalry_open_matching", "rivalry_groups",
++                        ["week_start", "contract_key", "skill_band", "created_at", "id"],
++                        postgresql_where=sa.text("member_count < 20"), sqlite_where=sa.text("member_count < 20"))
++    partitions = op.create_table("creator_achievement_partitions", sa.Column("id", sa.Integer(), primary_key=True))
++    op.bulk_insert(partitions, [{"id": index} for index in range(16)])
++    op.create_table("creator_achievement_events",
++        sa.Column("id", sa.String(36), primary_key=True),
++        sa.Column("partition", sa.Integer(), nullable=False),
++        sa.Column("creator_id", sa.String(36), nullable=False),
++        sa.Column("stamp", sa.Integer(), nullable=False),
++        sa.Column("reach", sa.BigInteger(), nullable=False))
++    op.create_index("ix_creator_achievement_pending", "creator_achievement_events", ["partition", "stamp", "id"])
++    op.create_index("ix_creator_achievement_owner", "creator_achievement_events", ["creator_id", "stamp", "id"])
++
++
++def downgrade():
++    # Dropping committed but unapplied effects silently loses awards. Operators
++    # must first stop new writers and drain the outbox with the matching worker.
++    if op.get_bind().scalar(sa.text("SELECT EXISTS (SELECT 1 FROM creator_achievement_events)")):
++        raise RuntimeError("Drain creator achievement events before downgrading 0054")
++    op.drop_table("creator_achievement_events")
++    op.drop_table("creator_achievement_partitions")
++    op.drop_index("ix_rivalry_open_matching", table_name="rivalry_groups")
+diff --git a/backend/tests/test_priority_scaling.py b/backend/tests/test_priority_scaling.py
+new file mode 100644
+index 000000000..92d412abb
+--- /dev/null
++++ b/backend/tests/test_priority_scaling.py
+@@ -0,0 +1,359 @@
++"""P1 regressions: open-group indexing, independent creator intake, fair worker turns."""
++import json
++import os
++import uuid
++from concurrent.futures import ThreadPoolExecutor
++from pathlib import Path
++from types import SimpleNamespace
++
++import pytest
++from alembic import command
++from sqlalchemy import func, inspect, select, text
++from test_achievements import collection, course
++from test_domains import domain as _domain_fixture
++from test_domains import race
++from test_rivalry import join, seed
++
++from bmt_backend import worker
++from bmt_backend.achievement_models import (
++    AchievementState,
++    CreatorAchievementEvent,
++    CreatorAchievementPartition,
++)
++from bmt_backend.achievements import CATALOG, erase_private, process_due, save, state
++from bmt_backend.creator_achievements import BATCH, enqueue, partition_for
++from bmt_backend.creator_achievements import process_one as project_creator
++from bmt_backend.economy import accept_verified, previous_bests
++from bmt_backend.identity_models import Player
++from bmt_backend.migrate import configuration, upgrade
++from bmt_backend.rivalry import open_group_candidates
++from bmt_backend.rivalry_models import RivalryGroup, RivalryMember
++from bmt_backend.track_models import OperationState, Run, digest
++
++domain = _domain_fixture
++
++
++def drain(app):
++    for _ in range(200):
++        if not process_due(app):
++            return
++    raise AssertionError("bounded fixture did not drain")
++
++
++def test_open_group_index_excludes_closed_groups(domain):
++    indexes = inspect(domain.app.state.engine).get_indexes("rivalry_groups")
++    index = next((item for item in indexes if item["name"] == "ix_rivalry_open_matching"), None)
++    assert index is not None
++    assert index["column_names"] == ["week_start", "contract_key", "skill_band", "created_at", "id"]
++    assert "member_count < 20" in str(next(iter(index["dialect_options"].values())))
++
++
++def test_creator_plays_and_reach_are_deferred_exactly_once(domain):
++    version = course(domain)
++    before = collection(domain, "Creator")["states"]["creator"]
++    race(domain, version, "Alice", frames=50)
++    race(domain, version, "Alice", frames=60)
++    race(domain, version, "Bob", frames=50)
++    assert collection(domain, "Creator")["states"]["creator"] == before
++    drain(domain.app)
++    after = collection(domain, "Creator")["states"]["creator"]
++    assert after["metrics"]["creator_plays"] == 3
++    assert after["metrics"]["creator_reach"] == 2
++    drain(domain.app)
++    assert collection(domain, "Creator")["states"]["creator"] == after
++    assert collection(domain)["states"]["race"]["metrics"]["races"] == 2
++
++
++def test_busy_foreground_reserves_both_presentation_classes(domain, monkeypatch):
++    calls = {key: 0 for key in ("achievements", "news", "histograms", "privacy")}
++    def work(key):
++        def execute(*args, **kwargs):
++            calls[key] += 1
++            return True
++        return execute
++    monkeypatch.setattr(worker, "process_one", lambda *args, **kwargs: True)
++    monkeypatch.setattr("bmt_backend.achievements.drive_idle", work("achievements"))
++    monkeypatch.setattr("bmt_backend.news.process_requested", work("news"))
++    monkeypatch.setattr("bmt_backend.histogram_snapshots.refresh_one", work("histograms"))
++    monkeypatch.setattr("bmt_backend.privacy.cleanup_one", work("privacy"))
++    for _ in range(128):
++        assert worker.process_worker_job(domain.app)
++    assert calls == {"achievements": 4, "news": 4, "histograms": 8, "privacy": 8}
++
++
++def test_idle_roles_and_achievement_roles_are_fair_even_when_all_busy(domain, monkeypatch):
++    calls = []
++    def work(name):
++        return lambda *args, **kwargs: calls.append(name) or True
++    monkeypatch.setattr("bmt_backend.achievements.drive_idle", work("achievements"))
++    monkeypatch.setattr("bmt_backend.news.process_requested", work("news"))
++    monkeypatch.setattr("bmt_backend.lap_bests.backfill_one", lambda *args: {"worked": work("laps")()})
++    monkeypatch.setattr("bmt_backend.histogram_snapshots.refresh_one", work("histograms"))
++    for _ in range(8):
++        assert worker.process_background(domain.app)
++    assert calls == ["achievements", "news", "laps", "histograms"] * 2
++    calls.clear()
++    for role in ("competition", "rarity", "record"):
++        monkeypatch.setattr("bmt_backend.achievements.process_" + role, work(role))
++    monkeypatch.setattr("bmt_backend.creator_achievements.process_one", work("creator"))
++    for _ in range(8):
++        assert process_due(domain.app)
++    assert calls == ["competition", "rarity", "record", "creator"] * 2
++
++
++def test_failed_cleanup_does_not_consume_other_reserved_turns(domain, monkeypatch, caplog):
++    calls = []
++    def fail(*args, **kwargs):
++        raise RuntimeError("injected housekeeping failure")
++    monkeypatch.setattr(worker, "process_one", lambda *args, **kwargs: True)
++    monkeypatch.setattr("bmt_backend.privacy.cleanup_one", fail)
++    monkeypatch.setattr("bmt_backend.histogram_snapshots.refresh_one", lambda *args, **kwargs: calls.append("histogram"))
++    monkeypatch.setattr("bmt_backend.achievements.drive_idle", lambda *args, **kwargs: calls.append("achievement") or True)
++    monkeypatch.setattr("bmt_backend.news.process_requested", lambda *args, **kwargs: calls.append("news") or True)
++    for _ in range(32):
++        assert worker.process_worker_job(domain.app)
++    assert calls == ["histogram", "achievement", "histogram", "news"]
++    assert caplog.text.count("reserved_background_failed role=privacy") == 2
++
++
++def test_creator_effects_roll_back_and_permanent_reward_receipt_prevents_replay(domain, monkeypatch):
++    version = course(domain)
++    owner = domain.players["Creator"]
++    fake = SimpleNamespace(id=str(uuid.uuid4()), finished_at=111)
++    with domain.factory() as session:
++        enqueue(session, fake, owner)
++        session.rollback()
++        assert session.get(CreatorAchievementEvent, fake.id) is None
++    race(domain, version, "Alice", frames=50)
++    with domain.factory() as session:
++        run_id = session.scalar(select(Run.id).where(Run.player_id == domain.players["Alice"]))
++        assert session.get(CreatorAchievementEvent, run_id).reach == 1
++    original_save = save
++    def fail_after_state_write(*args, **kwargs):
++        original_save(*args, **kwargs)
++        args[0].flush()
++        raise RuntimeError("injected projection failure")
++    monkeypatch.setattr("bmt_backend.achievements.save", fail_after_state_write)
++    with pytest.raises(RuntimeError, match="injected projection failure"):
++        project_creator(domain.app)
++    with domain.factory() as session:
++        assert session.get(CreatorAchievementEvent, run_id) is not None
++        assert session.get(AchievementState, (owner, "creator")).metrics == {"publications": 1}
++    monkeypatch.setattr("bmt_backend.achievements.save", original_save)
++    assert project_creator(domain.app)
++    with domain.factory() as session:
++        accepted = session.get(Run, run_id)
++        accept_verified(session, accepted, previous_bests(session, accepted))
++        session.commit()
++        assert session.get(CreatorAchievementEvent, run_id) is None
++        assert session.get(AchievementState, (owner, "creator")).metrics["creator_plays"] == 1
++
++
++def test_creator_batches_preserve_exact_unlock_timestamps_and_bounded_erasure(domain):
++    owner = domain.players["Creator"]
++    with domain.factory() as session:
++        row = state(session, owner, "creator")
++        save(session, row, {"creator_plays": 99}, 100)
++        for index in range(BATCH + 1):
++            enqueue(session, SimpleNamespace(id=str(uuid.uuid4()), finished_at=200 + index), owner)
++        session.commit()
++    assert project_creator(domain.app)
++    with domain.factory() as session:
++        assert session.scalar(select(func.count()).select_from(CreatorAchievementEvent)) == 1
++        row = session.get(AchievementState, (owner, "creator"))
++        assert row.metrics["creator_plays"] == 99 + BATCH
++        family = next(f for f in CATALOG["families"] if f["metric"] == "creator_plays")
++        for index, threshold in enumerate(family["tiers"]):
++            if 100 <= threshold <= 99 + BATCH:
++                assert row.unlocked[family["id"] + "/" + str(index + 1)] == 200 + threshold - 100
++        # The deletion fence is permanent account state, not a queue tombstone.
++        session.get(Player, owner).deleted_at = 999
++        for index in range(BATCH):
++            session.add(CreatorAchievementEvent(id=str(uuid.uuid4()), creator_id=owner,
++                partition=partition_for(owner), stamp=500 + index, reach=0))
++        session.commit()
++        assert not erase_private(session, owner)
++        session.commit()
++        assert session.scalar(select(func.count()).select_from(CreatorAchievementEvent)) == 1
++        assert erase_private(session, owner)
++        session.commit()
++        enqueue(session, SimpleNamespace(id=str(uuid.uuid4()), finished_at=1000), owner)
++        session.commit()
++        assert session.scalar(select(func.count()).select_from(CreatorAchievementEvent)) == 0
++        assert session.get(AchievementState, (owner, "creator")) is None
++
++
++@pytest.mark.parametrize("restriction", ["disabled", "is_test_driver"])
++def test_creator_restriction_preserves_accepted_effects_but_rejects_new_intake(domain, restriction):
++    owner = domain.players["Creator"]
++    # Historical published tracks need not already have an achievement state.
++    with domain.factory() as session:
++        enqueue(session, SimpleNamespace(id=str(uuid.uuid4()), finished_at=123), owner)
++        session.commit()
++        setattr(session.get(Player, owner), restriction, True)
++        session.commit()
++        enqueue(session, SimpleNamespace(id=str(uuid.uuid4()), finished_at=124), owner)
++        session.commit()
++        assert session.scalar(select(func.count()).select_from(CreatorAchievementEvent)) == 1
++    assert project_creator(domain.app)
++    with domain.factory() as session:
++        assert session.get(AchievementState, (owner, "creator")).metrics["creator_plays"] == 1
++        assert session.scalar(select(func.count()).select_from(CreatorAchievementEvent)) == 0
++
++
++def test_migration_refuses_pending_effect_loss_and_roundtrips_when_drained(domain):
++    owner = domain.players["Creator"]
++    config = configuration(domain.app.state.engine)
++    # Only this migration: later concurrently developed migrations are unrelated.
++    command.downgrade(config, "0054_priority_scaling")
++    with domain.factory() as session:
++        enqueue(session, SimpleNamespace(id=str(uuid.uuid4()), finished_at=1), owner)
++        session.commit()
++    with pytest.raises(RuntimeError, match="Drain creator achievement events"):
++        command.downgrade(config, "0053_discovery_short_search")
++    assert project_creator(domain.app)
++    command.downgrade(config, "0053_discovery_short_search")
++    assert "creator_achievement_events" not in inspect(domain.app.state.engine).get_table_names()
++    upgrade(domain.app.state.engine)
++    with domain.factory() as session:
++        assert session.scalar(select(func.count()).select_from(CreatorAchievementPartition)) == 16
++        assert session.get(AchievementState, (owner, "creator")).metrics["creator_plays"] == 1
++
++
++def test_postgres_busy_creator_projection_does_not_block_two_race_acceptances(domain):
++    if not domain.postgres:
++        pytest.skip("Real independent PostgreSQL transactions required")
++    first = course(domain)
++    second = {"version_id": seed(domain, 1)[0]}
++    owner = domain.players["Creator"]
++    with ThreadPoolExecutor(max_workers=2) as pool, domain.factory() as held:
++        held.scalar(select(AchievementState).where(AchievementState.player_id == owner,
++            AchievementState.scope == "creator").with_for_update())
++        # Same partition's reducer lock also remains compatible with intake.
++        held.scalar(select(CreatorAchievementPartition).where(
++            CreatorAchievementPartition.id == partition_for(owner)).with_for_update(key_share=True))
++        # Each simulated worker replica owns its own process-local finalization
++        # state, sharing only the actual database/verifier/blob adapters.
++        replicas = [SimpleNamespace(**{**vars(domain), "app": SimpleNamespace(state=SimpleNamespace(
++            **{**domain.app.state._state, "pending_finalization": None, "worker_id": str(uuid.uuid4())}))})
++            for _ in range(2)]
++        jobs = [pool.submit(race, replica, version, who, frames=50)
++                for replica, version, who in zip(replicas, (first, second), ("Alice", "Bob"), strict=True)]
++        try:
++            for job in jobs:
++                job.result(timeout=6)
++        finally:
++            held.rollback()
++    drain(domain.app)
++    metrics = collection(domain, "Creator")["states"]["creator"]["metrics"]
++    assert metrics["creator_plays"] == 2 and metrics["creator_reach"] == 1
++
++
++def test_postgres_busy_creator_reducer_skips_and_retains_effects(domain):
++    if not domain.postgres:
++        pytest.skip("Real independent PostgreSQL transactions required")
++    version = course(domain)
++    race(domain, version, "Alice", frames=50)
++    owner = domain.players["Creator"]
++    with domain.factory() as held:
++        held.scalar(select(AchievementState).where(AchievementState.player_id == owner,
++            AchievementState.scope == "creator").with_for_update())
++        assert not project_creator(domain.app)
++        held.rollback()
++    with domain.factory() as session:
++        assert session.scalar(select(func.count()).select_from(CreatorAchievementEvent)) == 1
++    assert project_creator(domain.app)
++
++
++def test_postgres_parallel_intake_reduction_and_erasure_remain_exact(domain):
++    if not domain.postgres:
++        pytest.skip("Real independent PostgreSQL transactions required")
++    owner = domain.players["Creator"]
++    with domain.factory() as session:
++        save(session, state(session, owner, "creator"), {}, 1)
++        session.commit()
++    def intake():
++        for _ in range(10):
++            with domain.factory() as session:
++                effect = SimpleNamespace(id=str(uuid.uuid4()), finished_at=100)
++                enqueue(session, effect, owner)
++                enqueue(session, effect, owner)  # same transactional receipt
++                session.commit()
++    def reduce():
++        for _ in range(30):
++            project_creator(domain.app)
++    with ThreadPoolExecutor(max_workers=6) as pool:
++        jobs = [pool.submit(intake) for _ in range(4)] + [pool.submit(reduce) for _ in range(2)]
++        for job in jobs:
++            job.result(timeout=20)
++    drain(domain.app)
++    with domain.factory() as session:
++        assert session.get(AchievementState, (owner, "creator")).metrics["creator_plays"] == 40
++        enqueue(session, SimpleNamespace(id=str(uuid.uuid4()), finished_at=200), owner)
++        session.get(Player, owner).deleted_at = 999
++        session.commit()
++    def erase():
++        with domain.factory() as session:
++            assert erase_private(session, owner)
++            session.commit()
++    with ThreadPoolExecutor(max_workers=2) as pool:
++        for job in (pool.submit(erase), pool.submit(reduce)):
++            job.result(timeout=20)
++    with domain.factory() as session:
++        assert session.get(AchievementState, (owner, "creator")) is None
++        assert session.scalar(select(func.count()).select_from(CreatorAchievementEvent)) == 0
++
++
++def test_postgres_rivalry_skips_busy_group_and_old_band_lock(domain):
++    if not domain.postgres:
++        pytest.skip("Real independent PostgreSQL transactions required")
++    seed(domain)
++    first = join(domain)
++    with domain.factory() as session:
++        group = session.get(RivalryGroup, first["group_id"])
++        old_lock = digest({"week": group.week_start, "contract": group.contract_key, "band": group.skill_band})
++        session.add(OperationState(id=old_lock))
++        session.add(RivalryGroup(week_start=group.week_start, ends_at=group.ends_at, vehicle_id=group.vehicle_id,
++            contract_key=group.contract_key, skill_band=group.skill_band, tracks=group.tracks, member_count=0))
++        session.commit()
++    with ThreadPoolExecutor(max_workers=1) as pool, domain.factory() as held:
++        held.scalar(select(OperationState).where(OperationState.id == old_lock).with_for_update())
++        held.scalar(select(RivalryGroup).where(RivalryGroup.id == first["group_id"]).with_for_update())
++        job = pool.submit(join, domain, "Bob")
++        try:
++            second = job.result(timeout=6)
++            assert second["group_id"] != first["group_id"]
++            third = pool.submit(join, domain, "Carol").result(timeout=6)
++            assert third["group_id"] == second["group_id"]
++        finally:
++            held.rollback()
++    with domain.factory() as session:
++        for group in session.scalars(select(RivalryGroup)):
++            assert 1 <= group.member_count <= 20
++            assert session.scalar(select(func.count()).select_from(RivalryMember).where(
++                RivalryMember.group_id == group.id)) == group.member_count
++
++
++def test_matching_plan_uses_partial_index_with_many_closed_groups(domain):
++    from sqlalchemy import insert
++    with domain.factory() as session:
++        session.execute(insert(RivalryGroup), [{"id": str(uuid.uuid4()), "week_start": 1, "ends_at": 2,
++            "vehicle_id": "compact", "contract_key": "index-probe", "skill_band": 0, "member_count": 20,
++            "tracks": [], "created_at": index} for index in range(100000)])
++        session.add(RivalryGroup(id="open", week_start=1, ends_at=2, vehicle_id="compact",
++            contract_key="index-probe", skill_band=0, member_count=1, tracks=[], created_at=10001))
++        session.commit()
++        query = open_group_candidates(1, "index-probe", 0).compile(session.bind, compile_kwargs={"literal_binds": True})
++        if domain.postgres:
++            session.execute(text("ANALYZE rivalry_groups"))
++            plan = session.execute(text("EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON) " + str(query))).scalar()
++            assert "ix_rivalry_open_matching" in str(plan)
++        else:
++            plan = session.execute(text("EXPLAIN QUERY PLAN " + str(query))).all()
++            assert "ix_rivalry_open_matching" in str(plan)
++        assert list(session.scalars(open_group_candidates(1, "index-probe", 0))) == ["open"]
++        if folder := os.environ.get("BMT_PRIORITY_EVIDENCE_DIR"):
++            result = {"closed_groups": 100000, "open_groups": 1, "query": str(query),
++                      "plan": plan if domain.postgres else [list(row) for row in plan]}
++            name = "postgres" if domain.postgres else "sqlite"
++            (Path(folder) / (name + "-matching-plan.json")).write_text(json.dumps(result, indent=2) + "\n")

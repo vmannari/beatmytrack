@@ -1,0 +1,57 @@
+﻿extends SceneTree
+const _NATIVE_TRACK = preload("res://track/native_track.gd")
+func _initialize() -> void: call_deferred("run")
+func clear_contact(_p: Vector2, _r: float, _layer: bool) -> Vector3: return Vector3.ZERO
+func bench_soft(count: int) -> void:
+	var objects: Array = []
+	for i: int in range(count): objects.append({"kind":"cone","position":[20.0+(i%12)*4,20.0+(i/12)*4],"rotation":0.0,"scale":1.0})
+	var times: Array[float] = []
+	for repeat: int in range(3):
+		var state := VehicleState.new()
+		for warm: int in range(5): LightProps.step(state,objects,clear_contact,Vector2.ZERO,1.0/120.0,1000.0,1.0)
+		var start: int = Time.get_ticks_usec()
+		for i: int in range(600): LightProps.step(state,objects,clear_contact,Vector2.ZERO,1.0/120.0,1000.0,1.0)
+		times.append((Time.get_ticks_usec()-start)/600.0)
+	times.sort()
+	print("AUDIT_SOFT count=",count," separated_idle_us_per_tick_median3=",times[1])
+func bench_tyres(count: int, dense: bool = false) -> void:
+	var origins := PackedVector2Array()
+	for i: int in range(count): origins.append(Vector2(20+(i%24)*2,20+(i/24)*2) if not dense else Vector2(40,40))
+	var config := HandlingConfig.new()
+	var times: Array[float] = []
+	for repeat: int in range(3):
+		var state := VehicleState.new()
+		LooseTyres.step(state,origins,clear_contact,Vector2.ZERO,config,1.0/120.0)
+		var ticks: int = 120 if not dense else 1
+		var start: int = Time.get_ticks_usec()
+		for i: int in range(ticks):
+			if dense:
+				state.loose_tyres.clear()
+			LooseTyres.step(state,origins,clear_contact,Vector2.ZERO,config,1.0/120.0)
+		times.append((Time.get_ticks_usec()-start)/ticks)
+	times.sort()
+	print("AUDIT_TYRES count=",count," dense=",dense," us_per_tick_median3=",times[1])
+func bench_history(tyres: int, samples: int) -> void:
+	var state := VehicleState.new()
+	for i: int in range(tyres): state.loose_tyres.append([float(i),0.0,0.0,0.0,0.0])
+	var session := TrackSession.new()
+	var telemetry := LapTelemetry.new()
+	for i: int in range(samples): telemetry.samples.append({"elapsed":i/20.0,"progress":float(i)/maxi(1,samples),"position":Vector2.ZERO})
+	var history := RewindHistory.new()
+	var before: int = OS.get_static_memory_usage()
+	var start: int = Time.get_ticks_usec()
+	for i: int in range(101):
+		state.tick = i*12
+		history.capture(state,session,false,telemetry)
+		telemetry.samples.append({"elapsed":i/10.0,"progress":0.5,"position":Vector2.ZERO})
+	print("AUDIT_HISTORY tyres=",tyres," telemetry_samples=",samples," entries=",history.entries.size()," us_per_snapshot=",(Time.get_ticks_usec()-start)/101.0," retained_static_bytes_delta=",OS.get_static_memory_usage()-before)
+func run() -> void:
+	for count: int in [0,24,96]: bench_soft(count)
+	for count: int in [0,96,576]: bench_tyres(count)
+	for count: int in [24,96]: bench_tyres(count,true)
+	bench_history(0,400)
+	bench_history(576,400)
+	bench_history(576,2048)
+	print("AUDIT_SCOPE synthetic_windows_headless_with_noop_world_contact; excludes real collision grid/render/audio/input and Android")
+	quit()
+

@@ -1,0 +1,25 @@
+$ErrorActionPreference='Stop'
+$repoRoot=Split-Path -Parent (Split-Path -Parent $PSScriptRoot)
+$dev=Join-Path $repoRoot 'scripts/dev.ps1'
+$logs=Join-Path $repoRoot 'docs/evidence/bass-snow-thump-2026-10-23/logs'
+New-Item -ItemType Directory -Force -Path $logs | Out-Null
+function Save-TestReceipt([string]$Label) {
+    $source=Join-Path $repoRoot "build/logs/TestScript-$PID"
+    Copy-Item -LiteralPath (Join-Path $source 'test-script.log') -Destination (Join-Path $logs "$Label.log")
+    Copy-Item -LiteralPath (Join-Path $source 'client-build-identity.json') -Destination (Join-Path $logs "$Label-build.json")
+}
+& $dev -Action Import -RenderingMethod gl_compatibility *> (Join-Path $logs 'import.log')
+if ($LASTEXITCODE -ne 0) { throw 'Snow import failed.' }
+$captureArguments=@('--output-dir=res://../docs/evidence/bass-snow-thump-2026-10-23/audition','--before-file=res://../docs/evidence/bass-snow-thump-2026-10-23/before/game/assets/audio/vehicles/snow_hit.wav','--variants-dir=res://../build/bass-snow-thump-2026-10-23/variants')
+& $dev -Action TestScript -ScriptPath res://tests/capture_original_snow_impact.gd -Graphical -RenderingMethod gl_compatibility -TestArgument $captureArguments
+Save-TestReceipt 'capture'
+if ($LASTEXITCODE -ne 0) { throw 'Snow comparison capture failed.' }
+& $dev -Action TestScript -ScriptPath res://tests/test_snow_audio_response.gd -Graphical -RenderingMethod gl_compatibility
+Save-TestReceipt 'response-compatibility'
+if ($LASTEXITCODE -ne 0) { throw 'Native snow response failed.' }
+& $dev -Action TestScript -ScriptPath res://tests/test_snow_audio_response.gd
+Save-TestReceipt 'response-headless'
+if ($LASTEXITCODE -ne 0) { throw 'Headless snow response failed.' }
+& $dev -Action TestScript -ScriptPath res://tests/test_script_parse.gd
+Save-TestReceipt 'parser'
+if ($LASTEXITCODE -ne 0) { throw 'Parser check failed.' }

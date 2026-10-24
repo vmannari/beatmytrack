@@ -1,0 +1,770 @@
+From 63d7011a97ec4a280bb61977191a22d736c8014a Mon Sep 17 00:00:00 2001
+From: Codex <codex@local>
+Date: Fri, 23 Oct 2026 16:52:45 +0300
+Subject: [PATCH] Analyze creator object capacity and tyre thresholds
+
+---
+ docs/CREATOR_OBJECT_LIMIT_2026_10_23.md       | 121 +++++++++++
+ .../checkpoint.py                             |  51 +++++
+ .../creator-object-limit-2026-10-23/run.ps1   |  46 +++++
+ .../summarize.py                              | 121 +++++++++++
+ .../index.py                                  |  41 ++++
+ game/tests/profile_creator_object_limit.gd    | 194 ++++++++++++++++++
+ .../tests/profile_creator_object_limit.gd.uid |   1 +
+ .../profile_creator_object_limit_bootstrap.gd |  11 +
+ ...file_creator_object_limit_bootstrap.gd.uid |   1 +
+ .../profile_creator_object_limit_higher.gd    |  92 +++++++++
+ 10 files changed, 679 insertions(+)
+ create mode 100644 docs/CREATOR_OBJECT_LIMIT_2026_10_23.md
+ create mode 100644 docs/evidence/creator-object-limit-2026-10-23/checkpoint.py
+ create mode 100644 docs/evidence/creator-object-limit-2026-10-23/run.ps1
+ create mode 100644 docs/evidence/creator-object-limit-2026-10-23/summarize.py
+ create mode 100644 docs/evidence/creator-object-limit-higher-2026-10-23/index.py
+ create mode 100644 game/tests/profile_creator_object_limit.gd
+ create mode 100644 game/tests/profile_creator_object_limit.gd.uid
+ create mode 100644 game/tests/profile_creator_object_limit_bootstrap.gd
+ create mode 100644 game/tests/profile_creator_object_limit_bootstrap.gd.uid
+ create mode 100644 game/tests/profile_creator_object_limit_higher.gd
+
+diff --git a/docs/CREATOR_OBJECT_LIMIT_2026_10_23.md b/docs/CREATOR_OBJECT_LIMIT_2026_10_23.md
+new file mode 100644
+index 0000000..51d41d0
+--- /dev/null
++++ b/docs/CREATOR_OBJECT_LIMIT_2026_10_23.md
+@@ -0,0 +1,121 @@
++# Creator object capacity analysis — 2026-10-23
++
++COL-A01 traces the current limits and publication contract. COL-A02 measures desktop document, editor, tyre simulation and rendering costs. COL-A03 recommends a capacity policy. COL-A04 extends the analysis beyond the owner's initial tenfold guess. This is an analysis; the shipping 96-object limit remains unchanged.
++
++**Revised recommendation: aim for 4,096 authored objects in the next implementation, and design toward 8,192, with separate allowances for scene complexity and actual simulated tyre stacks.** These are approximately 43 and 85 times the current count. The owner's 10× estimate was an initial guess, not a desired ceiling. The first 960-object probes are a baseline; the higher-count probes below supersede 960 as the recommendation. These are engineering targets, not a claim that arbitrary mixtures of these counts already run well on phones. The owner already reports tyre-heavy tracks working well; the measured ordinary tyre fixtures agree. Deliberately overlapping piles are kept separate from the recommendation.
++
++Before enabling the larger allowance, address the native tyre solver's 4,096-body fallback boundary, split tyre rendering into spatial batches, reduce or budget the editor's retained copies of complex prop geometry, and make single-object updates scale with the changed object. A useful implementation should preserve the freedom to build long tyre runs instead of imposing the cost of castles or trees on every tyre. Until the solver boundary is addressed, count a tyre-stack object as one simulated body and a six-stack wall as six; remain at or below 4,096 bodies, including mixtures. This is a concrete implementation boundary, not a phone performance guarantee. A lower arbitrary blanket object cap would not solve the differences between object families.
++
++## Higher counts without the tenfold assumption
++
++The additional COL-A04 probe passes forty assertions and tests 2,048, 4,096, 8,192 and 16,384 entries without changing the production cap. The new headless results, log and source fingerprints are in [the higher-count report](evidence/creator-object-limit-higher-2026-10-23/report.json). It reuses the isolated component runner and original PNG bootstrap described below. Full-detail geometry stress is limited to lightweight grass patches and instanced tyres; thousands of castles or trees are not allocated.
++
++| Authored entries | Fractional-position grass document | Integer-position flag document | Retained steps after 40 object edits |
++| --- | ---: | ---: | ---: |
++| 960 | 77,930 bytes | 48,296 bytes | 40 |
++| 2,048 | 171,736 bytes | 102,067 bytes | 39 |
++| 4,096 | 345,734 bytes | 203,282 bytes | 19 |
++| 8,192 | 688,974 bytes | 405,616 bytes | 9 |
++| 16,384 | 1,400,966 bytes | 810,386 bytes | 4 |
++
++The common document ceiling is 524,288 bytes. Thus 4,096 entries leave about 174 KiB for roads, paint and other authoring data in the fractional fixture. An 8,192-entry document can fit for compact integer-position flags, but this is not a robust capacity promise for richer coordinates, longer kind names, properties or paint. 16,384 entries exceed the allowance in both examples. Raising the byte contract would need coordinated client/backend changes. Compilation is intentionally skipped for the fractional fixtures exceeding the byte limit; their geometry measurements are explicitly component-only.
++
++| Full-detail component | Extra Godot static allocation | Build | Move one |
++| --- | ---: | ---: | ---: |
++| 2,048 tyre-stack objects | 1.9 MiB | 8 ms | 4.8 ms |
++| 4,096 tyre-stack objects | 3.2 MiB | 12 ms | 10.1 ms |
++| 8,192 tyre-stack objects | 6.3 MiB | 20 ms | 19.0 ms |
++| 2,048 grass patches | 46.3 MiB | 541 ms | 133.4 ms |
++| 4,096 grass patches | 91.1 MiB | 1,250 ms | 296.4 ms |
++| 8,192 grass patches | 180.6 MiB | 2,727 ms | 1,082.6 ms |
++
++The grass meshes themselves are modest: 4,096 patches contain 245,760 triangles. The expensive single-object update shows that the current retained editor path does too much work around a small edit even for simple geometry. This is an implementation issue to improve, not evidence that thousands of small props are inherently unreasonable. The 8 MiB history budget still holds, but an edit serializes the entire objects field and consequently retains fewer undo states; per-object history sharing/deltas should accompany the higher target.
++
++The 60-step single-stack impact probe takes median 1.51 ms for 2,048 bodies and 2.97 ms for 4,096. At 4,097 bodies the existing script fallback raises the median to 19.71 ms; 8,192 takes 42.28 ms. Ordinary static-prop/hazard component scans also rise from 1.01 ms at 2,048 to 2.63 ms at 4,096 and 7.63 ms at 8,192. Filtered/spatial preparation is therefore relevant even for decorative objects that should not need hazard work. None of these timings includes a complete race, GPU execution or phone thermal behavior.
++
++**4,096 is a useful next implementation target under the current file allowance. 8,192 is a plausible subsequent target after the specific editor, history, document-size and runtime changes above.** There is no measured justification for treating 960 as an architectural maximum, and no measured basis yet for certifying a universal 8,192- or 16,384-object phone limit. Resource budgets should determine how much of the higher count a particular mix can use.
++
++## What the current limit counts
++
++The limit is **96 authored object entries per document**, shared by scenery, barriers, movable props and hazards. One `tyre_stack` entry produces one simulated stack with two visible rubber tyres; a `tyre_wall` entry produces six such stacks. The present maximum is therefore anywhere from 96 to 576 authored simulated stacks when the document consists entirely of tyres. Automatically generated scenery is separate from this authored count, although adopting it into the editable document consumes an entry.
++
++The count is repeated in `TrackDocument.validate`, the editor canvas (place/adopt/run), App (confirm run/duplicate), `RoadPieces.barrier_run`, `ObjectPopulation.MAX_OBJECTS`, the creator-v5 JSON schema and the backend native runner's shape gate. Changing just the placement message or one constant would leave import, save or publication rejecting larger tracks. The population tool also has a separate density target of 24–80 new placements, which should be considered independently.
++
++The backend Python verifier retains a 524,288-byte document allowance and delegates document acceptance to the canonical Godot runner. The matching client/schema/canonical backend package must agree before larger tracks can publish. Existing road-section/route/helper limits of 96 are different contracts and should not be raised by a broad replacement of `96`.
++
++## Measured ordinary tyre layouts
++
++Pinned engine: `4.7.2.stable.official.ed1daf0bf`. These are local Windows desktop measurements with the current native solver, not phone frame rates. Props are distributed across a 192 m square inside the editing bounds, with no intentional overlap. The impact probe starts the car moving at 12 m/s toward the first stack and runs 120 successive tyre-solver steps. It excludes the rest of the vehicle simulation and rendering. Medians below are from the retained final runs; maxima and all samples are in the JSON evidence.
++
++| Authored objects | Simulated stacks | Tyre solver median per impact tick |
++| --- | ---: | ---: |
++| 96 single-stack objects | 96 | 0.270 ms |
++| 960 single-stack objects | 960 | 0.788 ms |
++| 96 six-stack walls | 576 | 0.463 ms |
++| 480 six-stack walls | 2,880 | 1.190 ms |
++| 640 six-stack walls, boundary probe | 3,840 | 1.502 ms |
++| 682 six-stack walls, boundary probe | 4,092 | 1.652 ms |
++| 683 six-stack walls, boundary probe | 4,098 | 21.477 ms |
++| 960 six-stack walls, boundary probe | 5,760 | 33.204 ms |
++
++The abrupt increase is explained by `native/track_geometry/tyre_contacts.hpp`: `step` returns false above 4,096 bodies. The adapter then executes the exact GDScript fallback. Live native work statistics confirm 4,092 bodies were prepared for 682 walls, while zero were prepared for 683 walls. The boundary probe has five passing assertions. No density/overlap rejection or driving change was introduced.
++
++At 120 Hz, a full simulation tick has 8.33 ms for all work. The larger fallback measurements exceed that allowance on this desktop. They are ordinary separated-wall layouts, not deliberately coincident piles. The independent coincident-body experiment is retained in the raw results as a separate worst case; it does not justify retaining the 96-object cap for ordinary tracks.
++
++Rewind is also proportional to simulated bodies: the packed state is 47,324 bytes for 960 single-stack objects, versus 277,724 bytes for 960 walls. The ten-second, ten-snapshot-per-second window can retain approximately 4.6 versus 26.8 MiB of those state bytes at 101 entries, before session, telemetry and container overhead. These are calculated byte estimates, not measured process-memory peaks.
++
++## Rendering and editor memory
++
++Tyres share geometry and are cheap to construct in the editor: 960 single-stack objects add about 0.82 MiB of Godot static allocation, with a 5.4 ms initial build and a 2.7 ms single-object update in the headless component probe. 960 walls add about 1.19 MiB, with a 10.3 ms build and a 5.4 ms update. Those figures do not include roads, ground, the complete app, GPU allocations or driver compilation.
++
++However, the tyre mesh contains 1,200 triangles per simulated stack. The current editor and race presentation each put the tyres in one MultiMesh. In an isolated 1280×720 desktop Mobile viewport, the 40 m local camera and 240 m camera both submit every tyre triangle in one draw:
++
++| Authored objects | Submitted tyre triangles in either view |
++| --- | ---: |
++| 96 single-stack objects | 115,200 |
++| 960 single-stack objects | 1,152,000 |
++| 96 six-stack walls | 691,200 |
++| 960 six-stack walls | 6,912,000 |
++
++This is actual renderer counter evidence on the desktop RTX 3090, not GPU execution time or Android throughput. The all-or-none visibility is also the documented [Godot MultiMesh behavior](https://github.com/godotengine/godot-docs/blob/master/tutorials/performance/using_multimesh.rst). Spatial tyre batches would let distant stacks be culled while preserving the original close-up models and physics. The twelve exact primitive-count assertions plus the unchanged shipping-cap assertion pass.
++
++Other props have much larger active editor geometry costs:
++
++| Full-detail editor fixture | Additional Godot static allocation | Initial build | Move one object |
++| --- | ---: | ---: | ---: |
++| 96 trees | 25.3 MiB | 207 ms | 7.8 ms |
++| 960 trees | 247.0 MiB | 1,938 ms | 71.5 ms |
++| 960 concrete barriers | 82.1 MiB | 781 ms | 62.9 ms |
++| 960 mixed nature/barrier props | 146.6 MiB | 1,248 ms | 54.2 ms |
++| 96 snow castles | 47.1 MiB | 1,201 ms | 15.6 ms |
++| 288 snow castles | 139.2 MiB | 3,373 ms | 24.7 ms |
++
++These are isolated full-detail editor props, not a complete road scene. The editor overview reduces draw detail but retains the underlying exact models. Existing cache-retention allowances do not cap all live prop geometry. CPU/GPU stream estimates are separately recorded and must not be confused with these measured static-allocation deltas or added to them as if they were distinct RSS allocations. 960 castles were intentionally not allocated; the 288-object measurement already demonstrates substantial cost. No result above extrapolates a measured phone limit.
++
++A complexity allowance should use actual generated geometry/active memory and simulated stacks, with a concise actionable explanation when it binds. Exact numeric mobile memory/visible-triangle allowances still need reference-device measurement. Giving every family a nominal count of one hides the main costs. Hazard-heavy fixtures also differ: 960 oil entries take about 6.39 ms in the current prop/hazard component loop even when distant, while 960 static tree entries take about 0.59 ms. Relevant scans are candidates for filtered/spatial preparation before allowing arbitrary hazard saturation.
++
++## Documents, history and integration
++
++The 960-object mixed document is 73,850 bytes of compact JSON, comfortably within 512 KiB when it has no large paint payload. Forty successive object-move histories retain all forty steps and account for 3,894,304 bytes under the shared 8 MiB allowance. Validation has a median of 8.28 ms; the final full compile median is 622 ms versus 221 ms for 96 objects. Both counts expand to the same 222,768-cell grid in this fixture. The compile includes the unchanged route/raster/native preparation and is not an input-handler or frame-time measurement. Near-maximum paint can still consume the common byte allowance; raising the object count does not require raising the JSON limit.
++
++The original baseline probe creates a validator in memory changing only the object-count comparison to 960; the higher-count extension uses 16,384 for its analysis guard. Each checks its document with that validator before compiling with an in-memory copy whose original validation gate is bypassed. Every other validation rule remains; production scripts and schema are not patched. The harnesses check that the shipping validator still rejects 97 entries. This does not demonstrate that the unmodified production editor can place/save/publish the expanded counts.
++
++Source/contract work for an implementation includes centralizing the object allowance, replacing each placement/adoption/duplicate/run guard, deciding the population tool's density behavior, updating creator-v5 schema and native backend shape checks, and exercising save/reload/undo/practice/publication boundaries. Matching backend acceptance and target-device cold/thermal/long-session checks remain required before treating the expanded policy as supported.
++
++## Commands and evidence
++
++Repeat all final probes with:
++
++```powershell
++powershell -ExecutionPolicy Bypass -File docs/evidence/creator-object-limit-2026-10-23/run.ps1
++```
++
++`Headless`, `Boundary` and `Mobile` can also run separately using `-Mode`. Run the higher-count extension with `-Mode Higher`; it writes to the separate higher-count evidence directory. Each uses disposable APPDATA and `BMT_API_URL=audit-disabled`. The runner creates a component-probe project under `build/creator-object-limit`, referencing the original source and assets with directory junctions, a copied class/extension cache, and no application autoloads. The live project's configuration/imports are not edited. The direct pinned-engine fallback is used because the attempted `scripts/dev.ps1 -Action TestScript -ScriptPath res://tests/profile_creator_object_limit.gd -CommandTimeoutSeconds 240` stopped at the sandbox's existing Windows certificate-store error. Unexpected script/runtime diagnostics remain failures.
++
++The initial probe exposed two harness mistakes: a new dictionary key written through dot syntax became a StringName rejected by the strict authoring validator; and primitive meshes do not expose the ArrayMesh-only array-length shortcut. Explicit String keys and `surface_get_arrays` corrected the fixtures/counter collection. Initial logs remain as `initial-headless.log` and `initial-mesh-fixed.log`; their results are superseded. They were never used as passing validation evidence.
++
++A later direct repeat encountered 1,024 compressed-image `get_pixel` errors in the unrelated Desert static luminance sampler during application autoload initialization. Its 38 assertions passed but the diagnostic gate rejected that run; `initial-compressed-texture.log` retains it. Loading the bootstrap in the full app alone did not avoid the earlier autoload. The final component project removes those autoloads and the bootstrap binds the same original Desert PNG pixels before loading NativeTrackVisual. This changes only the probe's resource loading, preserves exact Pine/Winter geometry, and does not fix or conceal the production Desert startup issue. The runner's diagnostic filter also excludes PowerShell's truncated exception-wrapper lines while retaining actual engine error lines.
++
++The original headless component probe passes 38 assertions, the native threshold probe passes five, and the graphical Mobile tyre probe passes thirteen; the higher-count extension adds forty passing assertions. Logs, measurements, source fingerprints and the isolated task checkpoint are indexed by [report.json](evidence/creator-object-limit-2026-10-23/report.json). The follow-up ran only the new higher-count mode; the original baseline receipts remain intact. Added source is confined to the diagnostic harnesses/bootstrap and evidence runner; runtime capacity policy is unchanged. The build entry point can refresh generated build identity amid concurrent work; it is outside this analysis checkpoint. Existing unrelated workspace edits are preserved.
++
++No phone attachment check, physical-device test, APK, live account/backend mutation or deployment was performed. GPU frame times, Android PSS, touch/thermal behavior, complete race/editor acceptance and publishing of expanded tracks remain unmeasured.
+diff --git a/docs/evidence/creator-object-limit-2026-10-23/checkpoint.py b/docs/evidence/creator-object-limit-2026-10-23/checkpoint.py
+new file mode 100644
+index 0000000..737926f
+--- /dev/null
++++ b/docs/evidence/creator-object-limit-2026-10-23/checkpoint.py
+@@ -0,0 +1,51 @@
++"""Make and verify an analysis-only Git checkpoint without touching the repo index."""
++import hashlib
++import json
++import shutil
++import subprocess
++import tempfile
++from pathlib import Path
++
++HERE = Path(__file__).resolve().parent
++ROOT = HERE.parents[2]
++work = ROOT / "build/creator-object-limit"
++work.mkdir(parents=True, exist_ok=True)
++snapshot = Path(tempfile.mkdtemp(prefix="checkpoint-", dir=work))
++verify = Path(tempfile.mkdtemp(prefix="verify-", dir=work))
++paths = ["docs/CREATOR_OBJECT_LIMIT_2026_10_23.md",
++         "game/tests/profile_creator_object_limit.gd",
++         "game/tests/profile_creator_object_limit_higher.gd",
++         "game/tests/profile_creator_object_limit_bootstrap.gd"]
++paths += [str(p.relative_to(ROOT)).replace("\\", "/") for p in
++          (ROOT / "game/tests").glob("profile_creator_object_limit*.uid")]
++paths += [str((HERE/name).relative_to(ROOT)).replace("\\", "/")
++          for name in ("run.ps1", "summarize.py", "checkpoint.py")]
++paths.append("docs/evidence/creator-object-limit-higher-2026-10-23/index.py")
++
++def git(directory, *args):
++    return subprocess.run(["git", "-C", str(directory), *args], check=True, capture_output=True).stdout
++
++for directory in (snapshot, verify):
++    git(directory, "init", "--quiet", "--initial-branch=analysis")
++    git(directory, "config", "core.autocrlf", "false")
++for path in paths:
++    target = snapshot/path
++    target.parent.mkdir(parents=True, exist_ok=True)
++    shutil.copyfile(ROOT/path, target)
++git(snapshot, "add", "--all")
++git(snapshot, "-c", "user.name=Codex", "-c", "user.email=codex@local",
++    "commit", "--quiet", "-m", "Analyze creator object capacity and tyre thresholds")
++git(snapshot, "diff", "HEAD", "--check")
++patch = HERE / "task-only.patch"
++patch.write_bytes(git(snapshot, "format-patch", "--root", "--stdout", "HEAD"))
++git(verify, "apply", "--check", str(patch))
++git(verify, "apply", str(patch))
++for path in paths:
++    assert (verify/path).read_bytes() == (ROOT/path).read_bytes(), path
++result = {"commit": git(snapshot, "rev-parse", "HEAD").decode().strip(),
++          "snapshot": str(snapshot.relative_to(ROOT)), "verified": str(verify.relative_to(ROOT)),
++          "patch_sha256": hashlib.sha256(patch.read_bytes()).hexdigest(),
++          "files": paths, "apply_check": True, "exact_readback": True,
++          "main_repository_index_untouched": True}
++(HERE/"checkpoint.json").write_text(json.dumps(result, indent=2)+"\n", encoding="utf-8")
++print(json.dumps(result))
+diff --git a/docs/evidence/creator-object-limit-2026-10-23/run.ps1 b/docs/evidence/creator-object-limit-2026-10-23/run.ps1
+new file mode 100644
+index 0000000..7cac36e
+--- /dev/null
++++ b/docs/evidence/creator-object-limit-2026-10-23/run.ps1
+@@ -0,0 +1,46 @@
++param([ValidateSet('All','Headless','Boundary','Mobile','Higher')][string]$Mode='All')
++$ErrorActionPreference='Stop'
++$capacityRoot=(Resolve-Path (Join-Path $PSScriptRoot '../../..')).Path
++$capacityEngine='C:/apps/Godot 4.7.2/Godot_v4.7.2-stable_win64_console.exe'
++$capacityPin=[System.IO.File]::ReadAllText((Join-Path $capacityRoot 'godot-version.txt')).Trim()
++if ((& $capacityEngine --version | Out-String).Trim() -ne $capacityPin) { throw 'Pinned engine mismatch' }
++$env:APPDATA=Join-Path $capacityRoot 'build/creator-object-limit/appdata'
++$env:BMT_API_URL='audit-disabled'
++New-Item -ItemType Directory -Path $env:APPDATA -Force | Out-Null
++$capacityProject=Join-Path $capacityRoot 'build/creator-object-limit/probe-project'
++New-Item -ItemType Directory -Path $capacityProject -Force | Out-Null
++# Reuse source/assets without touching the live project's autoloads or imports.
++foreach ($capacityDirectory in Get-ChildItem -LiteralPath (Join-Path $capacityRoot 'game') -Directory | Where-Object Name -ne '.godot') {
++    $capacityLink=Join-Path $capacityProject $capacityDirectory.Name
++    if (-not (Test-Path -LiteralPath $capacityLink)) { New-Item -ItemType Junction -Path $capacityLink -Target $capacityDirectory.FullName | Out-Null }
++}
++$capacityConfig=[System.IO.File]::ReadAllText((Join-Path $capacityRoot 'game/project.godot'))
++$capacityConfig=[regex]::Replace($capacityConfig,'(?ms)^\[autoload\]\r?\n.*?(?=^\[|\z)','')
++[System.IO.File]::WriteAllText((Join-Path $capacityProject 'project.godot'),$capacityConfig)
++$capacityCache=Join-Path $capacityProject '.godot'
++New-Item -ItemType Directory -Path $capacityCache -Force | Out-Null
++foreach ($capacityCacheName in @('global_script_class_cache.cfg','uid_cache.bin','extension_list.cfg')) {
++    $capacityCacheSource=Join-Path $capacityRoot ('game/.godot/'+$capacityCacheName)
++    if (Test-Path -LiteralPath $capacityCacheSource) { Copy-Item -LiteralPath $capacityCacheSource -Destination (Join-Path $capacityCache $capacityCacheName) }
++}
++if (-not (Test-Path -LiteralPath (Join-Path $capacityCache 'imported'))) { New-Item -ItemType Junction -Path (Join-Path $capacityCache 'imported') -Target (Join-Path $capacityRoot 'game/.godot/imported') | Out-Null }
++$capacityModes=if ($Mode -eq 'All') { @('Headless','Boundary','Mobile') } else { @($Mode) }
++foreach ($capacityMode in $capacityModes) {
++	$capacityOutput=if ($capacityMode -eq 'Higher') { Join-Path $PSScriptRoot '../creator-object-limit-higher-2026-10-23' } else { $PSScriptRoot }
++	New-Item -ItemType Directory -Path $capacityOutput -Force | Out-Null
++    $capacityArgs=@('--path',$capacityProject,'--audio-driver','Dummy','--script','res://tests/profile_creator_object_limit_bootstrap.gd')
++    if ($capacityMode -eq 'Mobile') { $capacityArgs+=@('--rendering-method','mobile') }
++    else { $capacityArgs=@('--headless')+$capacityArgs }
++    $capacityArgs+=@('--',('--capacity-output='+$capacityOutput))
++    if ($capacityMode -eq 'Mobile') { $capacityArgs+='--gpu-tyres' }
++    if ($capacityMode -eq 'Boundary') { $capacityArgs+='--tyre-boundary' }
++    if ($capacityMode -eq 'Higher') { $capacityArgs+='--higher-counts' }
++    $capacityLog=Join-Path $capacityOutput ($capacityMode.ToLower()+'.log')
++    $ErrorActionPreference='Continue'
++    & $capacityEngine @capacityArgs *> $capacityLog
++    $capacityExit=$LASTEXITCODE
++    $ErrorActionPreference='Stop'
++    $capacityErrors=@(Get-Content -LiteralPath $capacityLog | Where-Object { $_ -match '(^| : )(SCRIPT ERROR:|ERROR:|Parse Error:)|^FAIL ' -and $_ -notmatch 'Failed to read the root certificate store|^ERROR: Access denied$' })
++    if ($capacityExit -ne 0 -or $capacityErrors.Count -gt 0) { throw ($capacityMode+' failed: exit '+$capacityExit+', unexpected diagnostics '+$capacityErrors.Count) }
++    Write-Output ($capacityMode+' complete; '+$capacityLog)
++}
+diff --git a/docs/evidence/creator-object-limit-2026-10-23/summarize.py b/docs/evidence/creator-object-limit-2026-10-23/summarize.py
+new file mode 100644
+index 0000000..89b9fa6
+--- /dev/null
++++ b/docs/evidence/creator-object-limit-2026-10-23/summarize.py
+@@ -0,0 +1,121 @@
++"""Index completed capacity probes and keep the analysis tables exact."""
++import hashlib
++import json
++import re
++from pathlib import Path
++
++HERE = Path(__file__).resolve().parent
++ROOT = HERE.parents[2]
++data = {name: json.loads((HERE / f"results-{name}.json").read_text())
++        for name in ("headless", "boundary", "mobile")}
++for name, expected in (("headless", 38), ("boundary", 5), ("mobile", 13)):
++    assert data[name]["checks"] == expected and data[name]["failures"] == 0, name
++    assert data[name]["rows"][-1]["stage"] == "complete", name
++higher_dir = HERE.parent / "creator-object-limit-higher-2026-10-23"
++if (higher_dir / "results-higher.json").exists():
++    data["higher"] = json.loads((higher_dir / "results-higher.json").read_text())
++    assert data["higher"]["checks"] == 40 and data["higher"]["failures"] == 0
++    assert data["higher"]["rows"][-1]["stage"] == "complete"
++
++def row(stage, count, **fields):
++    return next(r for r in data["headless"]["rows"] if r["stage"] == stage
++                and r.get("count") == count and all(r[k] == v for k, v in fields.items()))
++
++doc_path = ROOT / "docs/CREATOR_OBJECT_LIMIT_2026_10_23.md"
++doc = doc_path.read_text(encoding="utf-8")
++for kind, count, label in (("tyre_stack", 96, "96 single-stack objects"),
++                           ("tyre_stack", 960, "960 single-stack objects"),
++                           ("tyre_wall", 96, "96 six-stack walls"),
++                           ("tyre_wall", 480, "480 six-stack walls")):
++    r = row("tyre_impact", count, kind=kind)
++    doc = re.sub(rf"^\| {label} \| [\d,]+ \| [\d.]+ ms \|$",
++                 f"| {label} | {r['bodies']:,} | {r['ticks']['median_ms']:.3f} ms |", doc, flags=re.M)
++for r in data["boundary"]["rows"]:
++    if r["stage"] != "tyre_solver_boundary":
++        continue
++    label = f"{r['wall_objects']} six-stack walls, boundary probe"
++    doc = re.sub(rf"^\| {label} \| [\d,]+ \| [\d.]+ ms \|$",
++                 f"| {label} | {r['bodies']:,} | {r['ticks']['median_ms']:.3f} ms |", doc, flags=re.M)
++for scenario, count, label in (("trees", 96, "96 trees"), ("trees", 960, "960 trees"),
++                                ("barriers", 960, "960 concrete barriers"),
++                                ("mixed", 960, "960 mixed nature/barrier props"),
++                                ("winter_castles", 96, "96 snow castles"),
++                                ("winter_castles", 288, "288 snow castles")):
++    r = row("editor_props", count, scenario=scenario)
++    doc = re.sub(rf"^\| {label} \| .*? \|$",
++                 f"| {label} | {r['static_allocation_delta']/1048576:.1f} MiB | "
++                 f"{r['initial_build_ms']:,.0f} ms | {r['move_one_ms']:.1f} ms |", doc, flags=re.M)
++stacks = row("editor_props", 960, scenario="tyre_stacks")
++walls = row("editor_props", 960, scenario="tyre_walls")
++doc = re.sub(r"Tyres share geometry.*?Those figures do not include roads, ground, the complete app, GPU allocations or driver compilation\.",
++             f"Tyres share geometry and are cheap to construct in the editor: 960 single-stack objects add about "
++             f"{stacks['static_allocation_delta']/1048576:.2f} MiB of Godot static allocation, with a "
++             f"{stacks['initial_build_ms']:.1f} ms initial build and a {stacks['move_one_ms']:.1f} ms single-object update "
++             f"in the headless component probe. 960 walls add about {walls['static_allocation_delta']/1048576:.2f} MiB, "
++             f"with a {walls['initial_build_ms']:.1f} ms build and a {walls['move_one_ms']:.1f} ms update. "
++             "Those figures do not include roads, ground, the complete app, GPU allocations or driver compilation.", doc)
++oil = row("prop_physics", 960, kind="oil")["warm_ticks"]["median_ms"]
++trees = row("prop_physics", 960, kind="tree")["warm_ticks"]["median_ms"]
++doc = re.sub(r"960 oil entries take about [\d.]+ ms", f"960 oil entries take about {oil:.2f} ms", doc)
++doc = re.sub(r"960 static tree entries take about [\d.]+ ms", f"960 static tree entries take about {trees:.2f} ms", doc)
++large = row("document", 960)
++small = row("document", 96)
++doc = re.sub(r"Validation is about .*? Both counts expand", f"Validation has a median of "
++             f"{large['validation']['median_ms']:.2f} ms; the final full compile median is "
++             f"{large['compile']['median_ms']:.0f} ms versus {small['compile']['median_ms']:.0f} ms for 96 objects. Both counts expand", doc)
++doc_path.write_text(doc, encoding="utf-8", newline="\n")
++
++sources = ["godot-version.txt", "game/tests/profile_creator_object_limit.gd",
++           "game/tests/profile_creator_object_limit_higher.gd",
++           "game/tests/profile_creator_object_limit_bootstrap.gd", "game/editor/track_document.gd",
++           "game/editor/placed_object_batches.gd", "game/editor/editor_detail.gd", "game/editor/track_compiler.gd",
++           "game/editor/editor_history.gd", "game/editor/creator_catalog.gd", "game/editor/road_pieces.gd",
++           "game/editor/object_population.gd", "game/editor/editor_canvas.gd", "game/core/app.gd",
++           "game/track/native_track_visual.gd", "game/vehicle/loose_tyres.gd", "game/vehicle/tyre_contacts.gd",
++           "game/race/rewind_history.gd", "game/backend/runner.gd", "backend/bmt_backend/verifier.py",
++           "native/track_geometry/tyre_contacts.hpp", "game/platform/track_geometry/track_geometry.gdextension",
++           "docs/schemas/creator-track-v5.schema.json", "docs/CREATOR_OBJECT_LIMIT_2026_10_23.md"]
++extension = (ROOT / "game/platform/track_geometry/track_geometry.gdextension").read_text()
++for library in set(re.findall(r'"res://([^"\n]+\.dll)"', extension)):
++    sources.append("game/" + library)
++
++def fingerprint(path):
++    raw = path.read_bytes()
++    return {"bytes": len(raw), "sha256": hashlib.sha256(raw).hexdigest()}
++
++report = {
++    "task": "Creator object count capacity analysis", "date": "2026-10-23",
++    "requirements": {"COL-A01": "Count/contract trace", "COL-A02": "Component capacity probes",
++                     "COL-A03": "Recommendation and limits", "COL-A04": "Higher counts without a tenfold ceiling"},
++    "recommendation": {"target_authored_objects": 4096, "subsequent_target": 8192, "shipping_limit_unchanged": 96,
++                       "native_tyre_body_ceiling": 4096, "wall_body_cost": 6,
++                       "conditions": ["spatial tyre rendering", "native fallback boundary handling",
++                                      "complex prop active-memory/geometry policy", "incremental editor/object history",
++                                      "filtered hazard scans", "document byte allowance for higher target", "matching client/backend guards",
++                                      "reference-device acceptance"]},
++    "final_checks": {k: {"checks": v["checks"], "failures": v["failures"]} for k, v in data.items()},
++    "commands": [{"command": "powershell -ExecutionPolicy Bypass -File scripts/dev.ps1 -Action TestScript -ScriptPath res://tests/profile_creator_object_limit.gd -CommandTimeoutSeconds 240",
++                  "outcome": "exit 1: existing certificate-store error gate"},
++                 {"command": "powershell -ExecutionPolicy Bypass -File docs/evidence/creator-object-limit-2026-10-23/run.ps1 -Mode All",
++                  "outcome": "baseline 38/5/13 assertions; logs indexed below"},
++                 {"command": "powershell -ExecutionPolicy Bypass -File docs/evidence/creator-object-limit-2026-10-23/run.ps1 -Mode Higher",
++                  "outcome": "40 additional assertions; no full baseline rerun in the follow-up"}],
++    "scope": "Windows desktop synthetic components, native body threshold and isolated RTX 3090 Mobile-renderer counters; not full app/device/FPS certification",
++    "probe_isolation": "copied project settings without autoloads; source/asset junctions; original Desert PNG resource bound before NativeTrackVisual loads; no production asset or capacity-policy edit",
++    "initial_corrections": ["strict String key versus dot-created StringName", "PrimitiveMesh array API",
++                            "unrelated compressed Desert static sampler in full-app autoload; original failure retained",
++                            "bootstrap alone runs after autoload; final probe project omits autoloads",
++                            "ignore PowerShell exception wrapper, preserve actual runtime error gate"],
++    "remaining": ["phone/touch/cold/thermal/long-session/PSS acceptance", "full expanded-editor/race workflows",
++                  "matching expanded-track publication/backend release", "production compressed Desert sampler remains outside scope"],
++    "not_performed": ["phone attachment check", "device test", "APK", "live backend/account mutation", "deployment"],
++    "sources": {p: fingerprint(ROOT/p) for p in sources},
++    "artifacts": {p.name: fingerprint(p) for p in HERE.iterdir() if p.is_file() and p.name != "report.json"},
++}
++if "higher" in data:
++    report["higher_count_evidence"] = str(higher_dir.relative_to(ROOT)).replace("\\", "/")
++    report["higher_count_artifacts"] = {p.name: fingerprint(p) for p in higher_dir.iterdir() if p.is_file()}
++if (HERE/"checkpoint.json").exists():
++    report["checkpoint"] = json.loads((HERE/"checkpoint.json").read_text())
++(HERE / "report.json").write_text(json.dumps(report, indent=2)+"\n", encoding="utf-8")
++print(json.dumps(report["final_checks"]))
+diff --git a/docs/evidence/creator-object-limit-higher-2026-10-23/index.py b/docs/evidence/creator-object-limit-higher-2026-10-23/index.py
+new file mode 100644
+index 0000000..e4feb8c
+--- /dev/null
++++ b/docs/evidence/creator-object-limit-higher-2026-10-23/index.py
+@@ -0,0 +1,41 @@
++"""Index the higher-count follow-up without replacing the baseline evidence."""
++import hashlib
++import json
++from pathlib import Path
++
++HERE = Path(__file__).resolve().parent
++ROOT = HERE.parents[2]
++data = json.loads((HERE/"results-higher.json").read_text())
++assert data["checks"] == 40 and data["failures"] == 0
++assert data["rows"][-1]["stage"] == "complete"
++def sha(path):
++    return hashlib.sha256(path.read_bytes()).hexdigest()
++sources = ["game/tests/profile_creator_object_limit_higher.gd",
++           "game/tests/profile_creator_object_limit.gd",
++           "game/tests/profile_creator_object_limit_bootstrap.gd",
++           "docs/evidence/creator-object-limit-2026-10-23/run.ps1",
++           "game/editor/track_document.gd", "game/editor/placed_object_batches.gd",
++           "game/editor/editor_history.gd", "game/vehicle/tyre_contacts.gd",
++           "game/vehicle/loose_tyres.gd", "native/track_geometry/tyre_contacts.hpp"]
++report = {
++    "date": "2026-10-23", "requirement": "COL-A04",
++    "intent": "Owner's tenfold guess is not a capacity ceiling; measure higher counts",
++    "recommendation": {"next_engineering_target": 4096, "subsequent_target": 8192,
++                       "arbitrary_mix_device_certified": False, "shipping_limit_unchanged": 96},
++    "command": "powershell -ExecutionPolicy Bypass -File docs/evidence/creator-object-limit-2026-10-23/run.ps1 -Mode Higher",
++    "exit_code": 0, "checks": data["checks"], "failures": data["failures"],
++    "document_counts": [960, 2048, 4096, 8192, 16384],
++    "body_counts": [960, 2048, 4096, 4097, 8192],
++    "visual_counts": [2048, 4096, 8192],
++    "current_byte_limit": 524288, "native_body_ceiling": 4096,
++    "scope": "Headless isolated desktop component probe; count-only in-memory validator; no runtime policy edit; oversized fractional documents compile-skipped and visual components explicitly marked",
++    "remaining": ["incremental editor updates", "per-object history sharing", "spatial tyre batches",
++                  "native fallback boundary", "filtered hazard work", "higher document contract",
++                  "matching backend/client acceptance", "device cold/thermal/touch/PSS acceptance"],
++    "not_performed": ["phone attachment check", "physical device test", "APK", "live account/backend mutation", "deployment"],
++    "source_sha256": {name: sha(ROOT/name) for name in sources},
++    "artifacts": {p.name: sha(p) for p in HERE.iterdir() if p.is_file() and p.name != "report.json"},
++    "baseline": "baseline-report.json retains the original 960-target report and its original checkpoint",
++}
++(HERE/"report.json").write_text(json.dumps(report, indent=2)+"\n", encoding="utf-8")
++print("Higher-count report: 40 assertions passed; next target 4096, subsequent target 8192.")
+diff --git a/game/tests/profile_creator_object_limit.gd b/game/tests/profile_creator_object_limit.gd
+new file mode 100644
+index 0000000..b98539a
+--- /dev/null
++++ b/game/tests/profile_creator_object_limit.gd
+@@ -0,0 +1,194 @@
++extends SceneTree
++## COL-A01/A02/A03: local capacity analysis; shipping limits stay unchanged.
++const OUT: String = "res://../docs/evidence/creator-object-limit-2026-10-23/"
++const HISTORY = preload("res://editor/editor_history.gd")
++const BYTES = preload("res://editor/cache_bytes.gd")
++var output_dir: String=OUT
++var rows: Array = []
++var compiler: GDScript
++var validator: GDScript
++var checks: int = 0
++var failures: int = 0
++
++func _initialize() -> void: run.call_deferred()
++
++func check(value: bool, label: String) -> void:
++	checks += 1
++	if not value: failures += 1; print("FAIL ",label)
++
++func record(row: Dictionary) -> void:
++	rows.append(row)
++	print("OBJECT_CAPACITY ",JSON.stringify(row))
++	var mode: String="boundary" if "--tyre-boundary" in OS.get_cmdline_user_args() else "headless" if DisplayServer.get_name()=="headless" else RenderingServer.get_current_rendering_method()
++	var file := FileAccess.open(output_dir+"results-"+mode+".json",FileAccess.WRITE)
++	file.store_string(JSON.stringify({"engine":Engine.get_version_info().string,"checks":checks,"failures":failures,"scope":"desktop synthetic component timings; no device/FPS certification; in-memory count gate substitution only","rows":rows},"\t")+"\n")
++
++func stats(values: Array) -> Dictionary:
++	var sorted: Array = values.duplicate(); sorted.sort()
++	return {"median_ms":sorted[sorted.size()/2],"max_ms":sorted.back(),"samples_ms":values}
++
++func fixture(count: int, kinds: Array, theme: String = "pine") -> Dictionary:
++	var doc: Dictionary = TrackDocument.create_default().duplicate(true)
++	doc.id = "object_capacity_probe"; doc.theme = theme; doc["automatic_scenery"] = false
++	var columns: int = ceili(sqrt(float(maxi(count,2))))
++	for index: int in range(count):
++		var position := Vector2(-96.0+192.0*float(index%columns)/maxi(columns-1,1),-96.0+192.0*float(index/columns)/maxi(ceili(float(count)/columns)-1,1))
++		doc.objects.append({"kind":kinds[index%kinds.size()],"position":[position.x,position.y],"rotation":0.0})
++	return doc
++
++func contract_and_compile() -> void:
++	# Keep every other domain check. The production file and schema are untouched.
++	validator = GDScript.new()
++	var source: String = FileAccess.get_file_as_string("res://editor/track_document.gd").replace("\r\n","\n")
++	check(source.count("data.objects.size() > 96")==1,"exact count guard found")
++	validator.source_code = source.replace("class_name TrackDocument\n","").replace("data.objects.size() > 96","data.objects.size() > 960")
++	check(validator.reload()==OK,"candidate validator loads")
++	compiler = GDScript.new()
++	source = FileAccess.get_file_as_string("res://editor/track_compiler.gd").replace("\r\n","\n")
++	check(source.count("if not TrackDocument.validate(document).is_empty():")==1,"exact compiler validation gate found")
++	compiler.source_code = source.replace("class_name TrackCompiler\n","").replace("if not TrackDocument.validate(document).is_empty():","if false: # probe validates with count-only candidate first")
++	check(compiler.reload()==OK,"probe compiler loads")
++	for count: int in [0,96,288,480,960]:
++		var doc: Dictionary = fixture(count,["tree","barrier","pebbles","broadleaf"])
++		check(validator.validate(doc).is_empty(),"candidate accepts valid fixture "+str(count)+str(validator.validate(doc)))
++		check(TrackDocument.validate(doc).is_empty()==(count<=96),"shipping count remains unchanged "+str(count))
++		var encoded: String = JSON.stringify(doc,"",true)
++		var timings: Array = []; var validations: Array = []; var copies: Array = []; var captures: Array = []
++		var track: NativeTrack
++		for repeat: int in range(3):
++			var start: int = Time.get_ticks_usec(); validator.validate(doc); validations.append((Time.get_ticks_usec()-start)/1000.0)
++			start = Time.get_ticks_usec(); doc.duplicate(true); copies.append((Time.get_ticks_usec()-start)/1000.0)
++			start = Time.get_ticks_usec(); HISTORY.capture(doc); captures.append((Time.get_ticks_usec()-start)/1000.0)
++			start = Time.get_ticks_usec(); track = compiler.compile(doc); timings.append((Time.get_ticks_usec()-start)/1000.0)
++		check(track!=null and track.hazard_objects.size()==count,"compiler retains every object")
++		var history: Array = []
++		for revision: int in range(40):
++			if count>0: doc.objects[0].rotation = float(revision)
++			history.append(HISTORY.capture(doc,history.back() if not history.is_empty() else {})); HISTORY.trim(history,[])
++		record({"stage":"document","count":count,"json_bytes":encoded.to_utf8_buffer().size(),"binary_bytes":var_to_bytes(doc).size(),"validation":stats(validations),"copy":stats(copies),"history_capture":stats(captures),"compile":stats(timings),"grid_cells":track.cells.size(),"history_40_edits_bytes":HISTORY.bytes_used([history]),"history_steps_retained":history.size()})
++		await process_frame
++	check(not validator.validate(fixture(961,["tree"])).is_empty(),"candidate still bounded")
++
++func clear_contact(_p: Vector2,_r: float,_e: bool) -> Vector3: return Vector3.ZERO
++
++func physics() -> void:
++	var config: HandlingConfig = load("res://resources/balanced.tres")
++	var world := NativeTrack.new(); world.grid_width=512; world.grid_height=512; world.cell_size=0.5; world.half_extent=Vector2(128,128); world.cells.resize(512*512); world.cells.fill(1)
++	for kind: String in ["tree","cone","oil","tyre_stack","tyre_wall"]:
++		for count: int in [96,288,480,960]:
++			var doc: Dictionary = fixture(count,[kind]); var state := VehicleState.new(); state.position=Vector2(-105,-105)
++			var origins: PackedVector2Array = LooseTyres.positions(doc)
++			var samples: Array = []
++			var first: float = 0.0
++			for repeat: int in range(41):
++				var start: int = Time.get_ticks_usec()
++				LooseTyres.step(state,origins,world._contact,state.position,config,VehicleSimulation.STEP)
++				LightProps.step(state,doc.objects,world._contact,state.position,VehicleSimulation.STEP,config.mass,config.collision_radius)
++				TrackHazards.factors(state,doc.objects); TrackHazards.launch(state,state.position,doc.objects); TrackHazards.ramp_pitch(state.position,Vector2.UP,doc.objects)
++				var elapsed: float = (Time.get_ticks_usec()-start)/1000.0
++				if repeat==0: first=elapsed
++				else: samples.append(elapsed)
++			record({"stage":"prop_physics","kind":kind,"count":count,"tyre_bodies":origins.size(),"first_tick_ms":first,"warm_ticks":stats(samples),"snapshot_bytes":var_to_bytes(state.snapshot()).size(),"rewind_state_bytes":var_to_bytes(RewindHistory.pack_state(state)).size(),"scope":"separated stationary props; no car impact; native contact grid"})
++			await process_frame
++	for kind: String in ["tyre_stack","tyre_wall"]:
++		for count: int in [96,288,480,960]:
++			var doc: Dictionary=fixture(count,[kind]); var origins: PackedVector2Array=LooseTyres.positions(doc)
++			var state:=VehicleState.new(); state.position=origins[0]-Vector2(2,0); state.velocity=Vector2(12,0)
++			var samples: Array=[]
++			for repeat: int in range(120):
++				var previous: Vector2=state.position; state.position+=state.velocity*VehicleSimulation.STEP
++				var start: int=Time.get_ticks_usec(); LooseTyres.step(state,origins,world._contact,previous,config,VehicleSimulation.STEP); samples.append((Time.get_ticks_usec()-start)/1000.0)
++			record({"stage":"tyre_impact","kind":kind,"count":count,"bodies":origins.size(),"ticks":stats(samples),"scope":"120 sequential tyre solver ticks; initially moving car into first stack; excludes full vehicle and render work"})
++			await process_frame
++	for count: int in [96,288,576]:
++		var origins := PackedVector2Array(); origins.resize(count); origins.fill(Vector2.ZERO)
++		var samples: Array = []
++		for repeat: int in range(3):
++			var state := VehicleState.new(); state.position=Vector2(-105,-105)
++			var start: int=Time.get_ticks_usec(); LooseTyres.step(state,origins,world._contact,state.position,config,VehicleSimulation.STEP); samples.append((Time.get_ticks_usec()-start)/1000.0)
++		record({"stage":"overlapping_tyres","bodies":count,"first_tick":stats(samples),"scope":"fresh coincident bodies; intentionally excludes 5760-body pathological allocation"})
++		await process_frame
++
++func geometry(node: Node) -> Dictionary:
++	var result: Dictionary = {"nodes":1,"geometry_nodes":0,"triangles":0,"lamps":0}
++	if node is OmniLight3D: result.lamps=1
++	var mesh: Mesh; var instances: int=1
++	if node is MeshInstance3D: mesh=node.mesh
++	elif node is MultiMeshInstance3D: mesh=node.multimesh.mesh; instances=node.multimesh.instance_count
++	if mesh!=null:
++		result.geometry_nodes=1
++		for surface: int in range(mesh.get_surface_count()):
++			var arrays: Array=mesh.surface_get_arrays(surface)
++			result.triangles+=instances*(arrays[Mesh.ARRAY_INDEX].size() if arrays[Mesh.ARRAY_INDEX]!=null and not arrays[Mesh.ARRAY_INDEX].is_empty() else arrays[Mesh.ARRAY_VERTEX].size())/3
++	for child: Node in node.get_children():
++		var part: Dictionary=geometry(child)
++		for key: String in result: result[key]+=part[key]
++	return result
++
++func visuals() -> void:
++	for scenario: Dictionary in [{"name":"tyre_stacks","kinds":["tyre_stack"],"theme":"pine","counts":[96,288,960]},{"name":"tyre_walls","kinds":["tyre_wall"],"theme":"pine","counts":[96,288,960]},{"name":"trees","kinds":["tree"],"theme":"pine","counts":[96,288,960]},{"name":"barriers","kinds":["barrier"],"theme":"pine","counts":[96,288,960]},{"name":"mixed","kinds":["tree","broadleaf","bush","barrier","guardrail","fence","pebbles","flag"],"theme":"pine","counts":[96,288,960]},{"name":"winter_castles","kinds":["snow_castle"],"theme":"winter","counts":[96,288]}]:
++		for count: int in scenario.counts:
++			var doc: Dictionary=fixture(count,scenario.kinds,scenario.theme)
++			var track:=NativeTrack.new(); track.metadata={"creator_document":doc,"scenery_objects":[]}; track.content_hash="probe"; track.tyre_origins=LooseTyres.positions(doc)
++			var kit:=NativeTrackVisual.new(); kit.theme_id=scenario.theme; kit.colors=TrackTheme.palette(scenario.theme); root.add_child(kit)
++			var before: int=OS.get_static_memory_usage(); var start: int=Time.get_ticks_usec()
++			await kit.refresh_editor_objects(track,false,false)
++			var build_ms: float=(Time.get_ticks_usec()-start)/1000.0
++			var allocation: int=OS.get_static_memory_usage()-before
++			var details: Dictionary=geometry(kit)
++			var estimated_bytes: int=BYTES.scene(kit)
++			doc.objects[count/2].position[0]+=0.125
++			start=Time.get_ticks_usec(); await kit.refresh_editor_objects(track,false,false)
++			var edit_ms: float=(Time.get_ticks_usec()-start)/1000.0
++			check(kit.editor_objects._editor_authored_batches.sources.size()==count,"editor retains all authored props")
++			record({"stage":"editor_props","scenario":scenario.name,"count":count,"initial_build_ms":build_ms,"move_one_ms":edit_ms,"geometry":details,"estimated_scene_bytes":estimated_bytes,"static_allocation_delta":allocation,"scope":"full-detail props only; no roads, cover, LOD, GPU timing or whole-app peak"})
++			kit.free(); CreatorPropVisual.trim_cache()
++			await process_frame; await process_frame
++
++func tyre_render_probe() -> void:
++	for kind: String in ["tyre_stack","tyre_wall"]:
++		for count: int in [96,288,960]:
++			var viewport:=SubViewport.new(); viewport.size=Vector2i(1280,720); viewport.own_world_3d=true; viewport.render_target_update_mode=SubViewport.UPDATE_ALWAYS; root.add_child(viewport)
++			var kit:=NativeTrackVisual.new(); kit.theme_id="pine"; kit.colors=TrackTheme.palette("pine"); viewport.add_child(kit)
++			var doc: Dictionary=fixture(count,[kind]); var track:=NativeTrack.new(); track.metadata={"creator_document":doc,"scenery_objects":[]}; track.tyre_origins=LooseTyres.positions(doc)
++			var camera:=Camera3D.new(); camera.projection=Camera3D.PROJECTION_ORTHOGONAL; viewport.add_child(camera); camera.current=true
++			camera.position=Vector3(-90,50,90); camera.look_at(Vector3(-90,0,90),Vector3.FORWARD)
++			var light:=DirectionalLight3D.new(); light.rotation_degrees=Vector3(-65,15,0); viewport.add_child(light)
++			await kit.refresh_editor_objects(track,false,false)
++			for view_size: float in [40.0,240.0]:
++				camera.size=view_size
++				for frame: int in range(8): await process_frame; await RenderingServer.frame_post_draw
++				var rid: RID=viewport.get_viewport_rid()
++				var primitives: int=RenderingServer.viewport_get_render_info(rid,RenderingServer.VIEWPORT_RENDER_INFO_TYPE_VISIBLE,RenderingServer.VIEWPORT_RENDER_INFO_PRIMITIVES_IN_FRAME)
++				check(primitives==track.tyre_origins.size()*1200,"all tyre triangles submitted in both views")
++				record({"stage":"tyre_render","kind":kind,"count":count,"bodies":track.tyre_origins.size(),"view_size_m":view_size,"draw_calls":RenderingServer.viewport_get_render_info(rid,RenderingServer.VIEWPORT_RENDER_INFO_TYPE_VISIBLE,RenderingServer.VIEWPORT_RENDER_INFO_DRAW_CALLS_IN_FRAME),"rendered_primitives":primitives,"scope":"1280x720 isolated tyre viewport; no road, car, shadows or GPU-time/FPS claim"})
++			viewport.free(); await process_frame
++
++func tyre_boundary_probe() -> void:
++	var config: HandlingConfig=load("res://resources/balanced.tres")
++	var world:=NativeTrack.new(); world.grid_width=512; world.grid_height=512; world.cell_size=0.5; world.half_extent=Vector2(128,128); world.cells.resize(512*512); world.cells.fill(1)
++	for count: int in [640,682,683,960]:
++		var doc: Dictionary=fixture(count,["tyre_wall"]); var origins: PackedVector2Array=LooseTyres.positions(doc)
++		var state:=VehicleState.new(); state.position=origins[0]-Vector2(2,0); state.velocity=Vector2(12,0)
++		var samples: Array=[]
++		for repeat: int in range(120):
++			var previous: Vector2=state.position; state.position+=state.velocity*VehicleSimulation.STEP
++			var start: int=Time.get_ticks_usec(); LooseTyres.step(state,origins,world._contact,previous,config,VehicleSimulation.STEP); samples.append((Time.get_ticks_usec()-start)/1000.0)
++		var work: Dictionary=state.get_meta(&"native_tyre_contacts").work_stats()
++		check(int(work.bodies)==(origins.size() if origins.size()<=4096 else 0),"native body threshold matches live library")
++		record({"stage":"tyre_solver_boundary","wall_objects":count,"bodies":origins.size(),"native_prepared_bodies":work.bodies,"ticks":stats(samples),"scope":"same 120-step ordinary separated-wall impact fixture; no density or overlap rejection"})
++		await process_frame
++
++func run() -> void:
++	for argument: String in OS.get_cmdline_user_args():
++		if argument.begins_with("--capacity-output="): output_dir=argument.trim_prefix("--capacity-output=").replace("\\","/")+"/"
++	DirAccess.make_dir_recursive_absolute(ProjectSettings.globalize_path(output_dir))
++	if "--gpu-tyres" in OS.get_cmdline_user_args(): await tyre_render_probe()
++	elif "--tyre-boundary" in OS.get_cmdline_user_args(): await tyre_boundary_probe()
++	else:
++		await contract_and_compile()
++		await physics()
++		await visuals()
++	check(TrackDocument.validate(fixture(97,["tree"])).size()>0,"shipping cap unchanged after probe")
++	record({"stage":"complete","checks":checks,"failures":failures})
++	quit(1 if failures else 0)
+diff --git a/game/tests/profile_creator_object_limit.gd.uid b/game/tests/profile_creator_object_limit.gd.uid
+new file mode 100644
+index 0000000..e7f4b7b
+--- /dev/null
++++ b/game/tests/profile_creator_object_limit.gd.uid
+@@ -0,0 +1 @@
++uid://b2n3uotboq66g
+diff --git a/game/tests/profile_creator_object_limit_bootstrap.gd b/game/tests/profile_creator_object_limit_bootstrap.gd
+new file mode 100644
+index 0000000..25bd82d
+--- /dev/null
++++ b/game/tests/profile_creator_object_limit_bootstrap.gd
+@@ -0,0 +1,11 @@
++extends SceneTree
++## Keep this Pine/Winter probe independent of the shared texture import cache.
++## NativeTrackVisual's unrelated Desert static luminance sample reads pixels
++## without decompressing the imported image. Use the same original PNG pixels
++## for that resource before loading the profiling script; no asset is edited.
++func _initialize() -> void:
++	var texture := ImageTexture.create_from_image(Image.load_from_file("res://assets/textures/desert_compacted_road_v3.png"))
++	texture.take_over_path("res://assets/textures/desert_compacted_road_v3.png")
++	var probe: Script = load("res://tests/profile_creator_object_limit_higher.gd" if "--higher-counts" in OS.get_cmdline_user_args() else "res://tests/profile_creator_object_limit.gd")
++	set_script(probe)
++	call_deferred("run")
+diff --git a/game/tests/profile_creator_object_limit_bootstrap.gd.uid b/game/tests/profile_creator_object_limit_bootstrap.gd.uid
+new file mode 100644
+index 0000000..100723d
+--- /dev/null
++++ b/game/tests/profile_creator_object_limit_bootstrap.gd.uid
+@@ -0,0 +1 @@
++uid://cjt5lelvqp5qf
+diff --git a/game/tests/profile_creator_object_limit_higher.gd b/game/tests/profile_creator_object_limit_higher.gd
+new file mode 100644
+index 0000000..5ada50a
+--- /dev/null
++++ b/game/tests/profile_creator_object_limit_higher.gd
+@@ -0,0 +1,92 @@
++extends "res://tests/profile_creator_object_limit.gd"
++## COL-A04: remove the initial tenfold assumption; no shipping-limit change.
++
++func record(row: Dictionary) -> void:
++	rows.append(row); print("HIGHER_CAPACITY ",JSON.stringify(row))
++	var file:=FileAccess.open(output_dir+"results-higher.json",FileAccess.WRITE)
++	file.store_string(JSON.stringify({"engine":Engine.get_version_info().string,"checks":checks,"failures":failures,"scope":"desktop components, higher-count analysis; unchanged production capacity; no device certification","rows":rows},"\t")+"\n")
++
++func documents() -> void:
++	validator=GDScript.new()
++	var source: String=FileAccess.get_file_as_string("res://editor/track_document.gd").replace("\r\n","\n")
++	check(source.count("data.objects.size() > 96")==1,"exact shipping count guard")
++	validator.source_code=source.replace("class_name TrackDocument\n","").replace("data.objects.size() > 96","data.objects.size() > 16384")
++	check(validator.reload()==OK,"higher count-only candidate loads")
++	compiler=GDScript.new()
++	source=FileAccess.get_file_as_string("res://editor/track_compiler.gd").replace("\r\n","\n")
++	check(source.count("if not TrackDocument.validate(document).is_empty():")==1,"exact compiler gate")
++	compiler.source_code=source.replace("class_name TrackCompiler\n","").replace("if not TrackDocument.validate(document).is_empty():","if false: # count-only candidate checked before compiling")
++	check(compiler.reload()==OK,"higher compiler loads")
++	for count: int in [960,2048,4096,8192,16384]:
++		var doc: Dictionary=fixture(count,["grass_clump"])
++		var start: int=Time.get_ticks_usec(); var errors: Array=validator.validate(doc); var validation_ms: float=(Time.get_ticks_usec()-start)/1000.0
++		check(errors.is_empty(),"higher fixture domain checks "+str(count))
++		check(not TrackDocument.validate(doc).is_empty(),"shipping cap unchanged "+str(count))
++		var encoded_bytes: int=JSON.stringify(doc,"",true).to_utf8_buffer().size()
++		var compact: Dictionary=fixture(count,["flag"])
++		for index: int in range(count):
++			compact.objects[index].position=[index%200-100,index/200-100]
++			compact.objects[index].rotation=0
++		check(validator.validate(compact).is_empty(),"compact fixture domain checks")
++		var compact_bytes: int=JSON.stringify(compact,"",true).to_utf8_buffer().size()
++		var compile_ms: float=-1.0; var compiled_objects: int=0
++		if encoded_bytes<=TrackDocument.MAX_BYTES:
++			start=Time.get_ticks_usec(); var track: NativeTrack=compiler.compile(doc); compile_ms=(Time.get_ticks_usec()-start)/1000.0
++			compiled_objects=track.hazard_objects.size(); check(compiled_objects==count,"all higher objects survive compile")
++		var history: Array=[]
++		start=Time.get_ticks_usec()
++		for revision: int in range(40):
++			doc.objects[0].rotation=float(revision)
++			history.append(HISTORY.capture(doc,history.back() if not history.is_empty() else {})); HISTORY.trim(history,[])
++		check(HISTORY.bytes_used([history])<=HISTORY.BUDGET,"higher history remains byte bounded")
++		record({"stage":"higher_documents","count":count,"fractional_grass_json_bytes":encoded_bytes,"integer_flag_json_bytes":compact_bytes,"document_byte_limit":TrackDocument.MAX_BYTES,"fractional_fixture_fits":encoded_bytes<=TrackDocument.MAX_BYTES,"compact_fixture_fits":compact_bytes<=TrackDocument.MAX_BYTES,"validation_ms":validation_ms,"compile_ms":compile_ms,"compiled_objects":compiled_objects,"forty_history_ms":(Time.get_ticks_usec()-start)/1000.0,"history_steps":history.size(),"history_bytes":HISTORY.bytes_used([history])})
++		await process_frame
++	check(not validator.validate(fixture(16385,["flag"])).is_empty(),"probe has a finite count guard")
++
++func higher_physics() -> void:
++	var config: HandlingConfig=load("res://resources/balanced.tres")
++	var world:=NativeTrack.new(); world.grid_width=512; world.grid_height=512; world.cell_size=0.5; world.half_extent=Vector2(128,128); world.cells.resize(512*512); world.cells.fill(1)
++	for count: int in [960,2048,4096,4097,8192]:
++		var doc: Dictionary=fixture(count,["tyre_stack"]); var origins: PackedVector2Array=LooseTyres.positions(doc)
++		var state:=VehicleState.new(); state.position=origins[0]-Vector2(2,0); state.velocity=Vector2(12,0)
++		var timings: Array=[]
++		for tick: int in range(60):
++			var previous: Vector2=state.position; state.position+=state.velocity*VehicleSimulation.STEP
++			var start: int=Time.get_ticks_usec(); LooseTyres.step(state,origins,world._contact,previous,config,VehicleSimulation.STEP); timings.append((Time.get_ticks_usec()-start)/1000.0)
++		var work: Dictionary=state.get_meta(&"native_tyre_contacts").work_stats()
++		check(int(work.bodies)==(count if count<=4096 else 0),"live native boundary at higher count")
++		record({"stage":"higher_tyre_physics","count":count,"native_prepared_bodies":work.bodies,"impact_ticks":stats(timings),"packed_rewind_bytes":var_to_bytes(RewindHistory.pack_state(state)).size(),"scope":"60 sequential solver steps; car initially hits one separated stack; no full-race/GPU cost"})
++		await process_frame
++	for count: int in [2048,4096,8192]:
++		var doc: Dictionary=fixture(count,["grass_clump"]); var state:=VehicleState.new(); state.position=Vector2(-105,-105)
++		var timings: Array=[]
++		for tick: int in range(31):
++			var start: int=Time.get_ticks_usec()
++			LightProps.step(state,doc.objects,world._contact,state.position,VehicleSimulation.STEP,config.mass,config.collision_radius)
++			TrackHazards.factors(state,doc.objects); TrackHazards.launch(state,state.position,doc.objects); TrackHazards.ramp_pitch(state.position,Vector2.UP,doc.objects)
++			if tick>0: timings.append((Time.get_ticks_usec()-start)/1000.0)
++		record({"stage":"higher_static_scans","count":count,"ticks":stats(timings),"scope":"current retained prop/hazard scans on decorative objects; not a full physics tick"})
++		await process_frame
++
++func higher_visuals() -> void:
++	for kind: String in ["tyre_stack","grass_clump"]:
++		for count: int in [2048,4096,8192]:
++			var doc: Dictionary=fixture(count,[kind]); var track:=NativeTrack.new(); track.metadata={"creator_document":doc,"scenery_objects":[]}; track.content_hash="higher"; track.tyre_origins=LooseTyres.positions(doc)
++			var kit:=NativeTrackVisual.new(); kit.theme_id="pine"; kit.colors=TrackTheme.palette("pine"); root.add_child(kit)
++			var before: int=OS.get_static_memory_usage(); var start: int=Time.get_ticks_usec(); await kit.refresh_editor_objects(track,false,false)
++			var build_ms: float=(Time.get_ticks_usec()-start)/1000.0; var allocation: int=OS.get_static_memory_usage()-before
++			var detail: Dictionary=geometry(kit); var scene_bytes: int=BYTES.scene(kit)
++			doc.objects[count/2].position[0]+=0.125
++			start=Time.get_ticks_usec(); await kit.refresh_editor_objects(track,false,false); var move_ms: float=(Time.get_ticks_usec()-start)/1000.0
++			check(kit.editor_objects._editor_authored_batches.sources.size()==count,"higher editor retains every object")
++			record({"stage":"higher_editor_props","kind":kind,"count":count,"build_ms":build_ms,"move_one_ms":move_ms,"static_allocation_delta":allocation,"estimated_scene_bytes":scene_bytes,"geometry":detail,"scope":"headless full-detail props; no roads, GPU execution, app peak or device claim; oversized JSON fixtures are component-only"})
++			kit.free(); CreatorPropVisual.trim_cache(); await process_frame; await process_frame
++
++func run() -> void:
++	for argument: String in OS.get_cmdline_user_args():
++		if argument.begins_with("--capacity-output="): output_dir=argument.trim_prefix("--capacity-output=").replace("\\","/")+"/"
++	DirAccess.make_dir_recursive_absolute(ProjectSettings.globalize_path(output_dir))
++	await documents(); await higher_physics(); await higher_visuals()
++	check(TrackDocument.validate(fixture(97,["tree"])).size()>0,"shipping cap unchanged after higher probe")
++	record({"stage":"complete","checks":checks,"failures":failures})
++	quit(1 if failures else 0)
+-- 
+2.54.0.windows.1
+

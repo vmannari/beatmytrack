@@ -1,0 +1,97 @@
+{
+  "date": "2026-10-23",
+  "requirements": {
+    "CBH01": "Keep the Create challenge Back caption fully visible through hover, press and keyboard focus.",
+    "R01": "Run existing challenge flow checks.",
+    "G01": "Retain native before/after captures.",
+    "Q01": "Preserve concurrent changes and retain a scoped Git-checkable patch."
+  },
+  "cause": "The transparent normal style reserved 4px per side while shared hover/pressed/focus used 12px. Godot sized Back to 45px from normal, leaving insufficient space for the hovered caption (Ba).",
+  "change": "Use the shared default 12px padding for the transparent normal style. Button is now 61x52 with an unchanged right edge and stable dimensions across states.",
+  "changed_files": [
+    "game/ui/challenge_create.gd",
+    "DEVELOPMENT_STATUS.md",
+    "docs/PHASE_0_PLAN.md",
+    "docs/evidence/challenge-back-hover-2026-10-23/"
+  ],
+  "engine": "4.7.2.stable.official.ed1daf0bf",
+  "commands": [
+    "$env:BMT_BACK_HOVER_PHASE = \"before\"; powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1 -Action TestScript -ScriptPath res://tests/capture_challenge_back_hover.gd -Graphical -RenderingMethod gl_compatibility -CommandTimeoutSeconds 120",
+    "$env:BMT_BACK_HOVER_PHASE = \"after\"; powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1 -Action TestScript -ScriptPath res://tests/capture_challenge_back_hover.gd -Graphical -RenderingMethod gl_compatibility -CommandTimeoutSeconds 120",
+    "$env:BMT_CHALLENGE_CAPTURE_DIR = \"res://../docs/evidence/challenge-back-hover-2026-10-23/regression\"; powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1 -Action TestScript -ScriptPath res://tests/test_challenge_cards.gd -Graphical -RenderingMethod gl_compatibility -CommandTimeoutSeconds 180"
+  ],
+  "capture_helper": "capture.gd is the temporary helper archived after capture; copy into game/tests/capture_challenge_back_hover.gd to reproduce. No new production test was added.",
+  "results": {
+    "before": "BACK_HOVER_CAPTURE: 12 states captured; hovered Back visibly clipped to Ba at all three sizes.",
+    "after": "BACK_HOVER_CAPTURE: 12 states captured; full Back caption visible in normal, hover, pressed and focus at all three sizes.",
+    "regression": "CHALLENGE_CARDS: 211 checks, 0 failures; exit code 0.",
+    "viewport_sizes": [
+      "1280x720",
+      "844x390",
+      "390x844"
+    ],
+    "capture_save_results": "All 24 native PNG writes returned OK.",
+    "glyph_measurements": [
+      {
+        "phase": "before",
+        "dimensions": "1280x720",
+        "normal_glyph_pixels": 221,
+        "hover_glyph_pixels": 129,
+        "changed_glyph_pixels": 258
+      },
+      {
+        "phase": "before",
+        "dimensions": "844x390",
+        "normal_glyph_pixels": 221,
+        "hover_glyph_pixels": 129,
+        "changed_glyph_pixels": 258
+      },
+      {
+        "phase": "before",
+        "dimensions": "390x844",
+        "normal_glyph_pixels": 221,
+        "hover_glyph_pixels": 129,
+        "changed_glyph_pixels": 258
+      },
+      {
+        "phase": "after",
+        "dimensions": "1280x720",
+        "normal_glyph_pixels": 221,
+        "hover_glyph_pixels": 224,
+        "changed_glyph_pixels": 3
+      },
+      {
+        "phase": "after",
+        "dimensions": "844x390",
+        "normal_glyph_pixels": 221,
+        "hover_glyph_pixels": 224,
+        "changed_glyph_pixels": 3
+      },
+      {
+        "phase": "after",
+        "dimensions": "390x844",
+        "normal_glyph_pixels": 221,
+        "hover_glyph_pixels": 224,
+        "changed_glyph_pixels": 3
+      }
+    ]
+  },
+  "logs": {
+    "before": "before.log (build/logs/TestScript-22568/test-script.log)",
+    "after": "after.log (build/logs/TestScript-18872/test-script.log)",
+    "regression": "challenge-cards.log (build/logs/TestScript-8712/test-script.log)"
+  },
+  "tooling_corrections": [
+    "Initial direct dev.ps1 invocation was blocked by the shell execution policy; process-scoped -ExecutionPolicy Bypass succeeded.",
+    "The first sandboxed Godot launch could not open the normal user:// log; approved normal log access succeeded.",
+    "Optional Python/Pillow glyph analysis was unavailable; Windows System.Drawing performed the analysis without installing dependencies."
+  ],
+  "code_sha256": "d159b25610958ff3851a8d5b147b7419d84f88791a53fafb77dc086ac1eff708",
+  "checkpoint": "task.patch includes only the known Back padding delta and the two status notes. Concurrent challenge flow changes made after the initial source snapshot are excluded. Reverse-apply validation is recorded in checkpoint-check.log. No index change or commit.",
+  "limitations": [
+    "Owner hover/appearance acceptance remains.",
+    "No phone attachment check or physical-device test was performed.",
+    "Desktop Compatibility captures are not a physical-device acceptance claim.",
+    "No APK, live account/backend mutation, social send or deployment."
+  ]
+}

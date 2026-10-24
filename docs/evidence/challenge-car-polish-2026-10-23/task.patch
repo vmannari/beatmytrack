@@ -1,0 +1,396 @@
+--- a/game/ui/challenge_create.gd
++++ b/game/ui/challenge_create.gd
+@@ -53,13 +53,9 @@
+ var _custom_button: Button
+ var _slot_row: HBoxContainer
+ var _browser: TrackBrowser
+-var _car_main: BoxContainer
+ var _car_stage: Control
+ var _car_art: CarShowroom
+ var _car_models: Dictionary = {}
+-var _car_title: Label
+-var _car_description: Label
+-var _car_lock: Label
+ var _car_scroll: ScrollContainer
+ var _car_cards: Array[Button] = []
+ var _time: Label
+@@ -272,49 +268,29 @@
+ 	_refresh_tracks()
+ 
+ func _build_cars() -> void:
+-	_car_main = BoxContainer.new()
+-	_car_main.size_flags_vertical = Control.SIZE_EXPAND_FILL
+-	_car_main.add_theme_constant_override("separation",24)
+-	_car_page.add_child(_car_main)
+ 	_car_stage = Control.new()
+ 	_car_stage.name = "ChallengeCarHero"
+ 	_car_stage.custom_minimum_size.y = 180
+ 	_car_stage.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+ 	_car_stage.size_flags_vertical = Control.SIZE_EXPAND_FILL
+-	_car_main.add_child(_car_stage)
+-	var facts := _page(_car_main,"ChallengeCarFacts")
+-	facts.custom_minimum_size.x = 260
+-	facts.size_flags_horizontal = Control.SIZE_FILL
+-	facts.size_flags_vertical = Control.SIZE_SHRINK_CENTER
+-	_car_title = MenuStyle.label("",34)
+-	facts.add_child(_car_title)
+-	_car_description = MenuStyle.label("",18,true)
+-	_car_description.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+-	facts.add_child(_car_description)
+-	_car_lock = MenuStyle.label("Car fixed to your finished race",16,true)
+-	_car_lock.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+-	_car_lock.add_theme_color_override("font_color",MenuStyle.POSITIVE)
+-	facts.add_child(_car_lock)
+-	_summary_time = MenuStyle.label("",15,true)
+-	facts.add_child(_summary_time)
+-	_time = MenuStyle.label("",42)
+-	_time.name = "ChallengeFinishedTime"
+-	_time.add_theme_color_override("font_color",MenuStyle.ACCENT)
+-	facts.add_child(_time)
++	_car_page.add_child(_car_stage)
+ 	_car_scroll = preload("res://ui/track_carousel.gd").new()
+ 	_car_scroll.name = "ChallengeCarCarousel"
+ 	_car_scroll.custom_minimum_size.y = 140
+ 	_car_scroll.horizontal_scroll_mode = ScrollContainer.SCROLL_MODE_SHOW_NEVER
+ 	_car_scroll.vertical_scroll_mode = ScrollContainer.SCROLL_MODE_DISABLED
+ 	_car_scroll.follow_focus = false
++	_car_scroll.resized.connect(_layout_car_cards)
+ 	_car_page.add_child(_car_scroll)
+ 	var cards := HBoxContainer.new()
++	cards.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+ 	cards.add_theme_constant_override("separation",12)
+ 	_car_scroll.add_child(cards)
+ 	for id: String in VehicleCatalog.IDS:
+ 		var card := _button(cards,"",_select_car.bind(id),"ChallengeCar_"+id)
+ 		card.tooltip_text = VehicleCatalog.title(id)
+ 		card.custom_minimum_size = Vector2(216,140)
++		card.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+ 		card.clip_contents = true
+ 		var content := VBoxContainer.new()
+ 		content.mouse_filter = Control.MOUSE_FILTER_IGNORE
+@@ -338,6 +314,8 @@
+ 	model.name = "ChallengeCarModel_"+id
+ 	model.vehicle_id = id
+ 	model.read_only = true
++	model.garage_mode = true
++	model.framing_scale = 0.84
+ 	var settings: Dictionary = records.settings if records != null else {}
+ 	model.livery = VehicleLivery.for_car(settings,id)
+ 	model.customisation = VehicleCustomisation.for_car(settings,id)
+@@ -348,13 +326,14 @@
+ 	# Prepare menu worlds only on the car step; unchanged source checks reuse them.
+ 	if _step != CAR: return
+ 	var id: String = _vehicle_id()
+-	if _car_art == null or _car_art.vehicle_id != id:
+-		if _car_art != null:
+-			_car_stage.remove_child(_car_art)
+-			_car_art.queue_free()
++	if _car_art == null:
+ 		_car_art = _car_model(id)
++		_car_art.framing_scale = 0.96
+ 		_car_stage.add_child(_car_art)
+ 		MenuStyle.fill(_car_art)
++	elif _car_art.vehicle_id != id:
++		var settings: Dictionary = records.settings if records != null else {}
++		_car_art.replace_car(id,VehicleLivery.for_car(settings,id),VehicleCondition.read(records,id),VehicleCustomisation.for_car(settings,id))
+ 	if locked_result() or not _car_models.is_empty(): return
+ 	for index: int in range(_car_cards.size()):
+ 		var car_id: String = VehicleCatalog.IDS[index]
+@@ -451,6 +430,17 @@
+ 	_tries_note = MenuStyle.label("Each start uses a try, including restarts.",12,true)
+ 	_tries_note.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+ 	copy.add_child(_tries_note)
++	var source_time := HBoxContainer.new()
++	source_time.name = "ChallengeTimeSource"
++	source_time.custom_minimum_size.y = 24
++	source_time.add_theme_constant_override("separation",12)
++	copy.add_child(source_time)
++	_summary_time = MenuStyle.label("",16,true)
++	source_time.add_child(_summary_time)
++	_time = MenuStyle.label("",20)
++	_time.name = "ChallengeFinishedTime"
++	_time.add_theme_color_override("font_color",MenuStyle.ACCENT)
++	source_time.add_child(_time)
+ 	_rules_button = _button(summary,"Edit rules  ›",_open_rules,"ChallengeAdjustRules")
+ 	_rules_button.add_theme_stylebox_override("normal",MenuStyle.box(Color.TRANSPARENT,4))
+ 	var actions := BoxContainer.new()
+@@ -502,7 +492,7 @@
+ 	var serial: int = _serial
+ 	_source.clear()
+ 	_checking = false
+-	if _entry().is_empty() or (mode == 1 and not locked_result()): _update(); return
++	if _entry().is_empty() or (selected_format == "three" and not locked_result()): _update(); return
+ 	if adapter.scope() != _source_scope:
+ 		_source = {"status":"unavailable","error":"Sign in again to create this challenge."}
+ 		_update()
+@@ -528,16 +518,19 @@
+ 	var ready: bool = _chosen_entries.size() == _required_tracks()
+ 	_create_button.disabled = _submitting or not current or (_step in [TRACKS,CAR] and not ready)
+ 	if _step == CAR:
+-		_create_button.disabled = _create_button.disabled or _checking or ((locked_result() or mode == 0) and not verified) or (selected_format == "three" and not adapter.series_supported())
+-	_create_button.text = "Next" if _step != CAR else "Create & race" if mode == 1 else "Create & share"
++		_create_button.disabled = _create_button.disabled or ((locked_result() or mode == 0) and (_checking or not verified)) or (selected_format == "three" and not adapter.series_supported())
++	var personal_best: bool = _step == CAR and not locked_result() and selected_format != "three" and verified
++	_create_button.text = "Next" if _step != CAR else "Create & race" if mode == 1 else "Use personal best" if personal_best else "Create & share"
+ 	_create_button.icon = MenuIcon.texture("arrow") if _step != CAR or mode == 1 else MenuIcon.texture("share")
+ 	_create_button.add_theme_color_override("icon_normal_color",MenuStyle.INK)
+ 	_create_button.add_theme_color_override("icon_hover_color",MenuStyle.INK)
+-	_race.visible = _step == CAR and not locked_result() and mode == 0 and ready and _source.get("status") == "not_set" and not _checking
++	_race.visible = _step == CAR and not locked_result() and mode == 0 and ready and (_source.get("status") == "not_set" or verified) and not _checking
++	_race.text = "Race again" if verified else "Race to set a time"
+ 	_race.disabled = _submitting or not current
+-	_create_button.visible = not _race.visible
++	_create_button.visible = not _race.visible or verified
+ 	_share.visible = _step == CAR and mode == 1
+-	_share.disabled = _create_button.disabled
++	_share.text = "Use personal best" if personal_best else "Checking personal best…" if _checking and not locked_result() else "Create & share"
++	_share.disabled = _create_button.disabled or (_checking and not locked_result())
+ 	_close_button.disabled = _submitting
+ 	_rules_button.visible = _step == CAR and selected_format != "three"
+ 	_rules_button.disabled = _submitting
+@@ -545,12 +538,11 @@
+ 	var total: float = float(result_context.get("total",0.0)) if locked_result() else 0.0
+ 	if verified: total = float(_source.get("ms",0))/1000.0
+ 	_time.text = MenuStyle.time_text(total) if total > 0 else ""
+-	_time.visible = not _time.text.is_empty() and (mode == 0 or locked_result())
+-	_summary_time.text = "Your exact finish time" if locked_result() else "Your verified best" if mode == 0 and total > 0 else "Five laps. Then invite your rival." if mode == 0 else "One car for all three tracks" if selected_format == "three" else "Fastest time wins"
++	_time.visible = _step == CAR and not _time.text.is_empty()
++	_summary_time.text = "Your exact finish time" if locked_result() else "Personal best" if personal_best or mode == 0 else "Fastest time wins"
++	_summary_time.visible = _time.visible
++	_summary_time.get_parent().visible = _step == CAR and (locked_result() or selected_format != "three")
+ 	_update_car_models()
+-	_car_title.text = VehicleCatalog.title(_vehicle_id())
+-	_car_description.text = VehicleCatalog.description(_vehicle_id())
+-	_car_lock.visible = locked_result()
+ 	_car_scroll.visible = not locked_result()
+ 	for index: int in range(_car_cards.size()): _selection(_car_cards[index],VehicleCatalog.IDS[index] == _vehicle_id())
+ 	for card: FormatCard in _format_buttons:
+@@ -599,11 +591,21 @@
+ 	if _formats == null: return
+ 	_formats.columns = 3 if size.x >= 720 else 1
+ 	_rules_fields.columns = 2 if size.x >= 850 else 1
+-	_car_main.vertical = size.x < 680
+ 	_action_layout.vertical = size.x < 850
+ 	_final_actions.vertical = size.x < 560
+ 	for button: Button in [_race,_share,_create_button]: button.custom_minimum_size.x = 180 if size.x < 1100 else 210
+-	if _car_scroll != null: _car_scroll.set("snap_stride",228)
++	_layout_car_cards()
++
++func _layout_car_cards() -> void:
++	if _car_scroll == null or _car_scroll.size.x <= 0: return
++	var slots: int = clampi(floori((_car_scroll.size.x+12.0)/228.0),1,VehicleCatalog.IDS.size())
++	var stride: float = (_car_scroll.size.x+12.0)/slots
++	var usable: int = floori(_car_scroll.size.x)-12*(slots-1)
++	var width: int = floori(float(usable)/slots)
++	var remainder: int = usable-width*slots
++	_car_scroll.call("_stop_snap")
++	_car_scroll.set("snap_stride",roundi(stride))
++	for index: int in range(_car_cards.size()): _car_cards[index].custom_minimum_size.x = width+(1 if index%slots < remainder else 0)
+ 
+ func _create(and_race: bool = false) -> void:
+ 	if _step != CAR or _create_button.disabled or _submitting: return
+@@ -633,7 +635,7 @@
+ 			_update()
+ 			return
+ 		payload.source_ticket_id = initial_ticket
+-	elif mode == 0 and _source.get("status") == "verified": payload.source_run_id = str(_source.run_id)
++	elif not and_race and selected_format != "three" and _source.get("status") == "verified": payload.source_run_id = str(_source.run_id)
+ 	await adapter.create_challenge(payload)
+ 	if not is_instance_valid(self): return
+ 	_submitting = false
+--- a/game/ui/car_showroom.gd
++++ b/game/ui/car_showroom.gd
+@@ -172,6 +172,7 @@
+ 	car_motion.tween_callback(_exchange_pedestals)
+ 	car_motion.tween_method(incoming_reveal.set_visibility,0.0,1.0,CAR_REVEAL_SECONDS).set_trans(Tween.TRANS_CUBIC).set_ease(Tween.EASE_OUT)
+ 	car_motion.tween_callback(finish_car_transition)
++	if read_only: set_process(true)
+ 
+ func apply_customisation(value: Dictionary) -> void:
+ 	if vehicle_id != "compact" or not VehicleCustomisation.valid(value): return
+@@ -225,6 +226,7 @@
+ func finish_car_transition() -> void:
+ 	if car_motion != null: car_motion.kill()
+ 	car_motion = null
++	if read_only: set_process(false)
+ 	if incoming_reveal != null: incoming_reveal.restore()
+ 	if outgoing_reveal != null: outgoing_reveal.restore()
+ 	incoming_reveal = null
+@@ -258,6 +260,7 @@
+ 	if is_instance_valid(roof): roof.visible = camera.position.y < GarageEnvironment.ROOF_CUTAWAY_HEIGHT
+ 
+ func _reflection_visibility() -> void:
++	if read_only and not is_visible_in_tree(): finish_car_transition()
+ 	if reflections != null: reflections.set_visible(is_visible_in_tree())
+ 	invalidate_render()
+ 
+@@ -535,6 +538,9 @@
+ 		washing = false
+ 		return
+ 	var animated: bool = (camera_motion != null and camera_motion.is_running()) or (car_motion != null and car_motion.is_running())
++	if read_only:
++		if animated or _render_dirty: _request_render()
++		return
+ 	if is_instance_valid(record_station):
+ 		var music: GameSoundtrack = GameSoundtrack.instance()
+ 		var bus: int = AudioServer.get_bus_index("Music")
+--- a/game/tests/test_challenge_cards.gd
++++ b/game/tests/test_challenge_cards.gd
+@@ -139,13 +139,34 @@
+ 	check(page._car_art.car is CarVisual and page._car_art.car.vehicle_id == "compact","hero uses the actual race model")
+ 	check(page._car_art.car.livery == paint and page._car_art.car.customisation == parts,"hero retains the saved paint and body options")
+ 	check(page._car_models.size() == VehicleCatalog.IDS.size(),"all five selectable cards use 3D model views")
++	check(page.find_child("ChallengeCarFacts",true,false) == null,"car preview has no right-hand label or description panel")
++	var hero: CarShowroom = page._car_art
++	var camera_pose: Transform3D = hero.camera.transform
++	var environment: Node = hero.camera.get_parent().find_child("GarageArchitecture",true,false)
++	var viewport: SubViewport = hero.showroom_viewport
+ 	for id: String in VehicleCatalog.IDS:
+ 		var model: CarShowroom = page._car_models[id]
+ 		check(model.car is CarVisual and model.car.vehicle_id == id and model.read_only and model.mouse_filter == Control.MOUSE_FILTER_IGNORE,"card model matches its vehicle and passes input to "+id)
+ 		check(not model.is_processing(),"card model has no continuous frame work for "+id)
+ 	check(page._share.is_visible_in_tree() and page.get_ok_button().text == "Create & race","group offers sharing and immediate racing on the car page")
++	(page.find_child("ChallengeCar_pickup",true,false) as Button).pressed.connect(func() -> void: hero.car_motion.pause(),CONNECT_ONE_SHOT)
+ 	await click(page.find_child("ChallengeCar_pickup",true,false))
+ 	check(page._vehicle_id() == "pickup" and page._car_art.car.vehicle_id == "pickup","native car selection updates the 3D hero and actual vehicle")
++	check(page._car_art == hero and hero.showroom_viewport == viewport and environment == hero.camera.get_parent().find_child("GarageArchitecture",true,false),"car selection retains the same hero viewport and environment")
++	check(hero.camera.transform.is_equal_approx(camera_pose),"changing to the pickup preserves the exact camera position")
++	check(hero.car_motion != null and hero.incoming_reveal != null and hero.outgoing_reveal != null and hero.is_processing(),"challenge uses the garage light-sweep transition with bounded active rendering")
++	hero.car_motion.pause()
++	hero.car_motion.custom_step(CarShowroom.CAR_HIDE_SECONDS*0.5)
++	hero.invalidate_render()
++	check(hero.outgoing_reveal.visibility > 0 and hero.outgoing_reveal.visibility < 1 and not hero.turntable.visible,"outgoing car disappears before the incoming car is shown")
++	await capture("transition-disappearing")
++	hero.car_motion.custom_step(CarShowroom.CAR_HIDE_SECONDS)
++	hero.invalidate_render()
++	check(hero.turntable.visible and hero.incoming_reveal.visibility > 0 and hero.incoming_reveal.visibility < 1,"incoming car uses the same garage reveal")
++	await capture("transition-appearing")
++	hero.car_motion.custom_step(CarShowroom.CAR_REVEAL_SECONDS)
++	await settle()
++	check(hero.car_motion == null and hero.outgoing_pedestal == null and not hero.is_processing(),"completed transition releases the outgoing car and returns to one-shot rendering")
+ 	var retained_model: CarShowroom = page._car_art
+ 	var render_requests: int = retained_model.render_requests
+ 	page._update()
+@@ -154,12 +175,20 @@
+ 	for id: String in VehicleCatalog.IDS:
+ 		await click(page.find_child("ChallengeCar_"+id,true,false))
+ 		check(page._vehicle_id() == id and page._car_art.car.vehicle_id == id,"native card selection keeps the 3D hero in sync for "+id)
++		check(hero.camera.transform.is_equal_approx(camera_pose) and hero.showroom_viewport == viewport,"camera and environment stay fixed for "+id)
++		hero.finish_car_transition()
+ 		await capture("model-"+id+"-1280x720")
+ 	await click(page.find_child("ChallengeCar_pickup",true,false))
++	hero.finish_car_transition()
+ 	for dimensions: Vector2i in [Vector2i(1280,720),Vector2i(960,540),Vector2i(390,844),Vector2i(844,390)]:
+ 		root.size = dimensions
+ 		await settle()
+ 		inside(page.find_child("ChallengeCreateActions",true,false),"car dock "+str(dimensions))
++		var slots: int = clampi(floori((page._car_scroll.size.x+12.0)/228.0),1,5)
++		var covered: float = 12.0*(slots-1)
++		for index: int in range(slots): covered += page._car_cards[index].size.x
++		check(absf(covered-page._car_scroll.size.x) <= 1,"visible car cards occupy the entire width at "+str(dimensions)+" (cards="+str(covered)+", available="+str(page._car_scroll.size.x)+")")
++		check(absf(page._car_stage.size.x-page._car_page.size.x) <= 1,"hero occupies the full available page width at "+str(dimensions))
+ 		await capture("cars-"+str(dimensions.x)+"x"+str(dimensions.y))
+ 	# A successful final action carries its race intent through the actual adapter.
+ 	var receipt: Dictionary = {}
+@@ -206,6 +235,25 @@
+ 	check(raced.car == "pickup" and raced.limit == 5 and raced.configuration.step == ChallengeCreate.CAR,"source drive remembers car, rules and return page")
+ 	page.queue_free()
+ 	await settle()
++	# Both ordinary formats can seed their actual selected track/car with a verified PB.
++	for format_id: String in ["duel","group"]:
++		client.answer = {"ok":true,"data":{"status":"verified","run_id":"personal-best-"+format_id,"ms":88900}}
++		var best_page := ChallengeCreate.new()
++		best_page.adapter = adapter
++		best_page.entries = tracks
++		best_page.initial_configuration = {"tracks":[tracks[0]],"format":format_id,"mode":0 if format_id == "duel" else 1,"step":ChallengeCreate.CAR}
++		root.add_child(best_page)
++		MenuStyle.fill(best_page)
++		await settle()
++		var use_best: Button = best_page.get_ok_button() if format_id == "duel" else best_page._share
++		check(use_best.text == "Use personal best" and not use_best.disabled,"verified PB is an explicit choice for "+format_id)
++		check(best_page._time.text == MenuStyle.time_text(88.9),"personal best time is shown in the action dock for "+format_id)
++		await capture("personal-best-"+format_id)
++		client.answer = {"ok":true,"data":invitation(format_id == "group")}
++		await click(use_best)
++		check(client.payload.get("source_run_id") == "personal-best-"+format_id and not best_page.start_after_create,"personal best creation does not require a new race for "+format_id)
++		best_page.queue_free()
++		await settle()
+ 	client.answer = {"ok":true,"data":{"status":"verified","run_id":"exact-finish","ms":88900}}
+ 	var finished := ChallengeCreate.new()
+ 	finished.adapter = adapter
+--- a/game/tests/test_challenges_http.gd
++++ b/game/tests/test_challenges_http.gd
+@@ -64,6 +64,18 @@
+ 			await create_timer(0.15).timeout
+ 		check(prior_status.get("status") == "verified","a real recorded faster PB is verified before the slower source race")
+ 		app._clear_challenge_game()
++		app._create_challenge_dialog(str(metadata.version_id),"compact")
++		var best_form: ChallengeCreate = app.root_ui.find_child("ChallengeCreate",true,false)
++		best_form._advance()
++		best_form._select_track(metadata)
++		best_form._advance()
++		while best_form._checking: await process_frame
++		check(best_form.get_ok_button().text == "Use personal best" and not best_form.get_ok_button().disabled,"one-to-one offers the actual verified personal best without racing again")
++		best_form.get_ok_button().pressed.emit()
++		while app.challenges.busy or (is_instance_valid(best_form) and best_form._submitting): await process_frame
++		check(app.challenges.selected.target_ticks == fixture.time_ticks and app.challenges.selected.standings[0].run_id == prior_status.run_id and app.game == null,"personal-best duel creates directly with the exact canonical source and no race")
++		for popup: Node in app.root_ui.get_children():
++			if popup is AcceptDialog: popup.queue_free()
+ 	if seed_flow:
+ 		app.cloud.entries.assign([metadata])
+ 		app._open_challenges()
+@@ -221,12 +233,27 @@
+ 	group_form._advance()
+ 	while group_form._checking: await process_frame
+ 	check(not group_form.get_ok_button().disabled,"group creation works independently of a target time")
+-	group_form.confirmed.emit()
++	var group_best: String = str(group_form._source.get("run_id",""))
++	check(group_form._share.text == "Use personal best" and not group_form._share.disabled and not group_best.is_empty(),"group creation offers the actual verified personal best")
++	group_form._share.pressed.emit()
++	while app.challenges.busy or (is_instance_valid(group_form) and group_form._submitting): await process_frame
++	check(app.challenges.selected.mode == "group" and app.challenges.selected.target_ticks == null and app.challenges.selected.standings[0].run_id == group_best and app.game == null,"group personal-best choice seeds its exact verified standing without starting a race")
++	await capture("group-personal-best",app)
++	for popup: Node in app.root_ui.get_children():
++		if popup is AcceptDialog: popup.queue_free()
++	app._create_challenge_dialog(str(metadata.version_id),"compact")
++	group_form = app.root_ui.find_child("ChallengeCreate",true,false)
++	group_form._choose_format("group")
++	group_form._advance()
++	group_form._select_track(metadata)
++	group_form._advance()
++	while group_form._checking: await process_frame
++	group_form.get_ok_button().pressed.emit()
+ 	while app.challenges.busy or (is_instance_valid(group_form) and group_form._submitting): await process_frame
+ 	check(app.challenges.selected.mode == "group" and app.challenges.selected.target_ticks == null and app.challenges.selected.standings[0].ticks == null,"new group has no invented target or historical attempt score")
+ 	for popup: Node in app.root_ui.get_children():
+ 		if popup is AcceptDialog: popup.queue_free()
+-	await app._start_challenge_race()
++	while app.game == null or not app.game.preparation_complete: await process_frame
+ 	check(app.game != null and app.challenge_racing,"group creator can start a verified group attempt")
+ 	_drive(app.game,fixture.replay.frames)
+ 	app._results()
+--- a/AGENTS.md
++++ b/AGENTS.md
+@@ -1,3 +1,6 @@
++## Challenge car layout, retained garage transition and personal best override (2026-10-23)
++2026-10-23 CCP01-CCP05/R01/G01/Q01: Challenge car cards fill the available width; the right-hand copy is removed. One retained Garage showroom keeps its exact camera/environment and reuses the original light-sweep car transition. Both ordinary formats offer Use personal best with the verified selected track/car source; group Create & race starts unseeded, while finished-result tickets remain exact. Focused133headless/155Compatibility/155desktopMobile, integrated216, original garage transition23, real canonical HTTP53+52 (2 passed) and parser1005 pass. Commands, corrections, native views and scoped checkpoint: docs/evidence/challenge-car-polish-2026-10-23/report.json. Owner/device acceptance remains; no phone attachment check/device test, APK, live mutation, social send or deployment. Concurrent work preserved.
++
+ ## Editor T11–T15 and current import policy override (2026-10-23)
+ 2026-10-23 T11-T15/R01/Q01: Reverify exact Winter grouping; editor session/gesture ownership, revision-fenced analysis and shared piece descriptors isolate authoring state. Private CPU prop tools publish only on the owning main thread after gestures, with selection/biome/detach fences; the encoded-wreck optional warm-up stays skipped. Current imports accept creator-track-v5/native surface-grid-v2 only; Coast/native-v1 import support and the newly introduced small-scene memory exemption are removed; older-format conversion is not offered. Concurrent 4096-object/1MiB capacity work is retained with one 128MiB prop estimate. Focused305headless/305Compatibility/305desktopMobile, roads377, final object51/55/55 with exact Winter and final four-biome PNGs, preparation269/279/279, workflow254, App141, earlier-editor899/321, recovery69, practice54, local-publication31 and parser1004 pass. Original road377/24 and an unchanged reward-animation fixture failure are retained; the latter reproduces with the original App. One initial Mobile Grass two-channel delta1 is non-repeatable in three paired controls and final images; assertions remain exact. Commands, initial type/coordinate/audio/concurrent-integration corrections, hashes and scoped Git checkpoint: docs/EDITOR_T11_T15_2026_10_23.md and docs/evidence/editor-t11-t15-2026-10-23/report.json. Atomic GPU publication can exceed a frame; no reference-device/FPS claim. Client reload, matching canonical validation sources and sustained device/owner acceptance remain. No phone attachment check/device test, APK, live mutation or deployment; concurrent work preserved.
+ 
+--- a/DEVELOPMENT_STATUS.md
++++ b/DEVELOPMENT_STATUS.md
+@@ -1,3 +1,5 @@
++2026-10-23 CCP01-CCP05/R01/G01/Q01: Challenge car cards fill the available width; the right-hand copy is removed. One retained Garage showroom keeps its exact camera/environment and reuses the original light-sweep car transition. Both ordinary formats offer Use personal best with the verified selected track/car source; group Create & race starts unseeded, while finished-result tickets remain exact. Focused133headless/155Compatibility/155desktopMobile, integrated216, original garage transition23, real canonical HTTP53+52 (2 passed) and parser1005 pass. Commands, corrections, native views and scoped checkpoint: docs/evidence/challenge-car-polish-2026-10-23/report.json. Owner/device acceptance remains; no phone attachment check/device test, APK, live mutation, social send or deployment. Concurrent work preserved.
++
+ 2026-10-23 T11-T15/R01/Q01: Reverify exact Winter grouping; editor session/gesture ownership, revision-fenced analysis and shared piece descriptors isolate authoring state. Private CPU prop tools publish only on the owning main thread after gestures, with selection/biome/detach fences; the encoded-wreck optional warm-up stays skipped. Current imports accept creator-track-v5/native surface-grid-v2 only; Coast/native-v1 import support and the newly introduced small-scene memory exemption are removed; older-format conversion is not offered. Concurrent 4096-object/1MiB capacity work is retained with one 128MiB prop estimate. Focused305headless/305Compatibility/305desktopMobile, roads377, final object51/55/55 with exact Winter and final four-biome PNGs, preparation269/279/279, workflow254, App141, earlier-editor899/321, recovery69, practice54, local-publication31 and parser1004 pass. Original road377/24 and an unchanged reward-animation fixture failure are retained; the latter reproduces with the original App. One initial Mobile Grass two-channel delta1 is non-repeatable in three paired controls and final images; assertions remain exact. Commands, initial type/coordinate/audio/concurrent-integration corrections, hashes and scoped Git checkpoint: docs/EDITOR_T11_T15_2026_10_23.md and docs/evidence/editor-t11-t15-2026-10-23/report.json. Atomic GPU publication can exceed a frame; no reference-device/FPS claim. Client reload, matching canonical validation sources and sustained device/owner acceptance remain. No phone attachment check/device test, APK, live mutation or deployment; concurrent work preserved.
+ 
+ 2026-10-23 C3D01-C3D02/R01/G01/Q01: Challenge hero and five selection cards now show actual 3D race cars with saved cosmetics, using existing on-demand CarShowroom views prepared only on the car step. Finished-result car pinning remains. Focused107headless/125Compatibility/125desktopMobile, integrated216 and parser1001 pass. Commands, native views, limitations and scoped checkpoint: docs/evidence/challenge-3d-cars-2026-10-23/report.json. Owner/device acceptance remains; no phone attachment check/device test, APK, live mutation or deployment. Concurrent work preserved.
+--- a/docs/PHASE_0_PLAN.md
++++ b/docs/PHASE_0_PLAN.md
+@@ -1,3 +1,5 @@
++2026-10-23 CCP01-CCP05/R01/G01/Q01: Challenge car cards fill the available width; the right-hand copy is removed. One retained Garage showroom keeps its exact camera/environment and reuses the original light-sweep car transition. Both ordinary formats offer Use personal best with the verified selected track/car source; group Create & race starts unseeded, while finished-result tickets remain exact. Focused133headless/155Compatibility/155desktopMobile, integrated216, original garage transition23, real canonical HTTP53+52 (2 passed) and parser1005 pass. Commands, corrections, native views and scoped checkpoint: docs/evidence/challenge-car-polish-2026-10-23/report.json. Owner/device acceptance remains; no phone attachment check/device test, APK, live mutation, social send or deployment. Concurrent work preserved.
++
+ 2026-10-23 T11-T15/R01/Q01: Reverify exact Winter grouping; editor session/gesture ownership, revision-fenced analysis and shared piece descriptors isolate authoring state. Private CPU prop tools publish only on the owning main thread after gestures, with selection/biome/detach fences; the encoded-wreck optional warm-up stays skipped. Current imports accept creator-track-v5/native surface-grid-v2 only; Coast/native-v1 import support and the newly introduced small-scene memory exemption are removed; older-format conversion is not offered. Concurrent 4096-object/1MiB capacity work is retained with one 128MiB prop estimate. Focused305headless/305Compatibility/305desktopMobile, roads377, final object51/55/55 with exact Winter and final four-biome PNGs, preparation269/279/279, workflow254, App141, earlier-editor899/321, recovery69, practice54, local-publication31 and parser1004 pass. Original road377/24 and an unchanged reward-animation fixture failure are retained; the latter reproduces with the original App. One initial Mobile Grass two-channel delta1 is non-repeatable in three paired controls and final images; assertions remain exact. Commands, initial type/coordinate/audio/concurrent-integration corrections, hashes and scoped Git checkpoint: docs/EDITOR_T11_T15_2026_10_23.md and docs/evidence/editor-t11-t15-2026-10-23/report.json. Atomic GPU publication can exceed a frame; no reference-device/FPS claim. Client reload, matching canonical validation sources and sustained device/owner acceptance remain. No phone attachment check/device test, APK, live mutation or deployment; concurrent work preserved.
+ 
+ 2026-10-23 C3D01-C3D02/R01/G01/Q01: Challenge selection reuses the real 3D cars for the hero and five cards, with saved cosmetics and deferred/on-demand menu worlds. Exact finished cars and creation flow remain. Focused107headless/125Compatibility/125desktopMobile, integrated216 and parser1001 pass. Actual commands, views, limitations and scoped checkpoint: docs/evidence/challenge-3d-cars-2026-10-23/report.json. Owner/device acceptance remains; no phone attachment check/device test, APK, live mutation or deployment. Concurrent work preserved.

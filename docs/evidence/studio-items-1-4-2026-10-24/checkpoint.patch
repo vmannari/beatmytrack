@@ -1,0 +1,1974 @@
+diff --git a/backend/bmt_backend/admin.py b/backend/bmt_backend/admin.py
+--- a/backend/bmt_backend/admin.py
++++ b/backend/bmt_backend/admin.py
+@@ -63,7 +63,7 @@
+ 
+ @router.get("/admin/assets/{name}", include_in_schema=False)
+ def asset(name: str):
+-    if name not in ("app.js", "commerce.js", "support.js", "studio.js", "product_analytics.js", "operations.js", "style.css", "catalogue.js", "catalogue.css", "monitor.js", "network.js", "monitor.css", "monitor_views.js", "monitor_views.css", "insights.js", "insights.css", "platform.js", "platform.css", "game_config.js", "game_config.css"):
++    if name not in ("app.js", "commerce.js", "support.js", "studio.js", "product_analytics.js", "operations.js", "style.css", "catalogue.js", "catalogue.css", "monitor.js", "network.js", "monitor.css", "monitor_views.js", "monitor_views.css", "insights.js", "insights.css", "platform.js", "platform.css", "game_config.js", "game_config.css", "ranking.js"):
+         raise HTTPException(404)
+     return FileResponse(UI / name)
+ 
+@@ -116,6 +116,7 @@
+     q: str = Query("", max_length=100),
+     state: str = Query("", max_length=32),
+     failure_code: str = Query("", max_length=64),
++    time_field: str = "created_at",
+     offset: int = Query(0, ge=0, le=1000000),
+     limit: int = Query(25, ge=1, le=100),
+     cursor: str = Query("", max_length=2048),
+@@ -123,7 +124,12 @@
+     if kind not in FIELDS:
+         raise HTTPException(404)
+     model, fields = FIELDS[kind]
+-    conditions = during(model.created_at, window)
++    if time_field not in ("created_at", "finished_at") or (time_field == "finished_at" and kind not in ("races", "jobs")):
++        raise HTTPException(422, "INVALID_TIME_FIELD")
++    timestamp = getattr(model, time_field)
++    conditions = during(timestamp, window)
++    if time_field == "finished_at":
++        conditions.append(timestamp.is_not(None))
+     if kind == "tracks" and request.app.state.settings.local_drafts_only:
+         conditions.append(TrackVersion.state == "published")
+     if q:
+@@ -149,9 +155,10 @@
+             conditions.append(getattr(model, "state" if kind == "tracks" else "status") == state)
+     with request.app.state.session_factory() as db:
+         selected, paging = page(db, select(model).where(*conditions).options(
+-            load_only(*(getattr(model, field) for field in fields.split()))), model.created_at, model.id,
++            load_only(*(getattr(model, field) for field in fields.split()))), timestamp, model.id,
+             scope=digest({"kind": kind, "window": window, "q": q, "state": state,
+-                          "failure": failure_code, "published": request.app.state.settings.local_drafts_only}),
++                          "failure": failure_code, "time_field": time_field,
++                          "published": request.app.state.settings.local_drafts_only}),
+             cursor=cursor, offset=offset, limit=limit, descending=True, numeric=True)
+         rows = [row[0] for row in selected]
+         items = [record(kind, row) for row in rows]
+diff --git a/backend/bmt_backend/app.py b/backend/bmt_backend/app.py
+--- a/backend/bmt_backend/app.py
++++ b/backend/bmt_backend/app.py
+@@ -133,6 +133,8 @@
+         app.include_router(studio_analysis.router)
+         app.include_router(studio_metrics.router)
+         app.include_router(studio_jobs.router)
++        from . import studio_ranking
++        app.include_router(studio_ranking.router)
+         app.include_router(studio_incidents.router)
+         app.include_router(studio_finance.router)
+         app.include_router(studio_experiments.router)
+diff --git a/backend/bmt_backend/admin_ui/app.js b/backend/bmt_backend/admin_ui/app.js
+--- a/backend/bmt_backend/admin_ui/app.js
++++ b/backend/bmt_backend/admin_ui/app.js
+@@ -15,7 +15,9 @@
+  const [path,qs]=target.split('?'),query=new URLSearchParams(qs);
+  const scope=params||reporting;
+  if(!query.has('all')&&scope){
+-  for(const field of ['since','until']){const value=scope instanceof URLSearchParams?scope.get(field):scope[field];if(value!=null&&!query.has(field))query.set(field,value);}
++  const fields=['since','until'];
++  if(['product','quality'].includes(path.split('/')[0]))fields.push('build_id','baseline','platform','mode','population','device_model','os_version','track_version_id','render_context_key');
++  for(const field of fields){const value=scope instanceof URLSearchParams?scope.get(field):(scope.filters?.[field]??scope[field]);if(value!=null&&!query.has(field))query.set(field,value);}
+  }
+  return '#'+path+(query.size?'?'+query:'');
+ }
+@@ -47,12 +49,12 @@
+ 
+ function playerType(value){return value===true?'Artificial':value===false?'Real':'Unavailable';}
+ const columns={players:['display_name','id','is_test_driver','disabled','created_at'],tracks:['name','state','hidden','number','rating_count','owner_id'],races:['id','player_id','status','time_ticks','attempts','created_at'],jobs:['id','status','attempts','failure_code','created_at'],audit:['action','entity_id','actor','reason','created_at'],grants:['id','player_id','source','quantity','created_at']};
+-function cell(kind,k,v,row){if(k==='is_test_driver')return esc(playerType(v));if(k==='created_at')return esc(date(v));if(k==='id'||k==='name'||k==='display_name')return link(kind,row.id,v);if(k==='player_id'||k==='owner_id')return link('players',v);if(k==='status'||k==='state')return status(v);if(k==='disabled')return status(row.deleted_at?'removed':v?'disabled':'active');if(k==='hidden')return status(v?'hidden':'visible');return esc(v);}
++function cell(kind,k,v,row){if(k==='is_test_driver')return esc(playerType(v));if(k.endsWith('_at'))return esc(date(v));if(k==='id'||k==='name'||k==='display_name')return link(kind,row.id,v);if(k==='player_id'||k==='owner_id')return link('players',v);if(k==='status'||k==='state')return status(v);if(k==='disabled')return status(row.deleted_at?'removed':v?'disabled':'active');if(k==='hidden')return status(v?'hidden':'visible');return esc(v);}
+ async function listing(kind,params){
+  const query=new URLSearchParams({q:params.get('q')||'',state:params.get('state')||''});
+- for(const name of ['since','until','failure_code','cursor','offset'])if(params.has(name))query.set(name,params.get(name));
+- const d=await api('entities/'+kind+'?'+query),cols=columns[kind],states=kind==='players'?['active','disabled','removed']:kind==='tracks'?['draft','tested','published']:['queued','verifying','verified','rejected','failed'];
+- return `<section class="card"><form id="filters" class="console-toolbar"><label for="filter">Search</label><input id="filter" name="q" value="${esc(query.get('q'))}" placeholder="Name or stable identifier">${['players','tracks','races','jobs'].includes(kind)?`<label for="state">State</label><select name="state" id="state"><option value="">All states</option>${states.map(s=>`<option ${s===query.get('state')?'selected':''}>${s}</option>`).join('')}</select>`:''}<button class="btn">Apply filters</button></form><div class="console-table"><table><thead><tr>${cols.map(c=>`<th>${esc(c==='is_test_driver'?'Player type':c.replaceAll('_',' '))}</th>`).join('')}</tr></thead><tbody>${d.items.map(row=>`<tr>${cols.map(k=>`<td>${cell(kind,k,row[k],row)}</td>`).join('')}</tr>`).join('')}</tbody></table>${!d.items.length?'<p class="console-empty">No matching records.</p>':''}</div><div class="console-pager"><span>${d.items.length?d.offset+1:0}–${d.offset+d.items.length} · ${d.items.length} records shown</span><button class="btn" data-page-cursor="${esc(d.previous_cursor||'')}" ${d.previous_cursor?'':'disabled'}>Previous</button><button class="btn" data-page-cursor="${esc(d.next_cursor||'')}" ${d.next_cursor?'':'disabled'}>Next</button></div></section>`;
++ for(const name of ['since','until','failure_code','cursor','offset','time_field'])if(params.has(name))query.set(name,params.get(name));
++ const d=await api('entities/'+kind+'?'+query),cols=query.get('time_field')==='finished_at'?[...columns[kind],'finished_at']:columns[kind],states=kind==='players'?['active','disabled','removed']:kind==='tracks'?['draft','tested','published']:['queued','verifying','verified','rejected','failed'];
++ return `${query.get('time_field')==='finished_at'?'<p class="platform-scope">Filtered by verification terminal time, using the exact linked operating interval.</p>':''}<section class="card"><form id="filters" class="console-toolbar"><label for="filter">Search</label><input id="filter" name="q" value="${esc(query.get('q'))}" placeholder="Name or stable identifier">${['players','tracks','races','jobs'].includes(kind)?`<label for="state">State</label><select name="state" id="state"><option value="">All states</option>${states.map(s=>`<option ${s===query.get('state')?'selected':''}>${s}</option>`).join('')}</select>`:''}<button class="btn">Apply filters</button></form><div class="console-table"><table><thead><tr>${cols.map(c=>`<th>${esc(c==='is_test_driver'?'Player type':c.replaceAll('_',' '))}</th>`).join('')}</tr></thead><tbody>${d.items.map(row=>`<tr>${cols.map(k=>`<td>${cell(kind,k,row[k],row)}</td>`).join('')}</tr>`).join('')}</tbody></table>${!d.items.length?'<p class="console-empty">No matching records.</p>':''}</div><div class="console-pager"><span>${d.items.length?d.offset+1:0}–${d.offset+d.items.length} · ${d.items.length} records shown</span><button class="btn" data-page-cursor="${esc(d.previous_cursor||'')}" ${d.previous_cursor?'':'disabled'}>Previous</button><button class="btn" data-page-cursor="${esc(d.next_cursor||'')}" ${d.next_cursor?'':'disabled'}>Next</button></div></section>`;
+ }
+ function routeMap(preview){
+  const points=(preview.points||[]).filter(p=>Array.isArray(p)&&p.length>=2&&Number.isFinite(p[0])&&Number.isFinite(p[1]));
+@@ -107,7 +109,7 @@
+   else if(section==='analytics')html=intro('Race evidence','Inspect submitted results and their verification outcomes.','INVESTIGATE')+await listing('races',params);
+   else html=intro('Page not found','Use the navigation to choose a workspace.');
+   if(ticket!==generation)return;
+-  if(['tracks','publications','competitions'].includes(section))html=pTabs([['tracks','Track catalogue'],['publications','Publication requests'],['competitions','Competitions']],section,params)+html;if(['cases','players','races'].includes(section))html=pTabs([['cases','Support cases'],['players','Player directory'],['races','Race evidence']],section,params)+html;html='<div class="platform-actions"><button class="btn" id="platform-save">Save view</button>'+(section==='product'?'<button class="btn" id="platform-export">Export activity in scope</button>':'')+'</div>'+html;$('#main').innerHTML=html;
++  if(['tracks','publications','competitions'].includes(section))html=pTabs([['tracks','Track catalogue'],['publications','Publication requests'],['competitions','Competitions']],section,params)+html;if(['cases','players','races'].includes(section))html=pTabs([['cases','Support cases'],['players','Player directory'],['races','Race evidence']],section,params)+html;html='<div class="platform-actions"><button class="btn" id="platform-save">Save view</button>'+pExportAction(section,params)+'</div>'+html;$('#main').innerHTML=html;
+   if(lastRenderedRoute!==raw){window.scrollTo({top:0,behavior:'instant'});lastRenderedRoute=raw;}
+   $('#role').textContent=role+' access';$('#environment').textContent=d.environment;
+   $('#connection').textContent=location.host;$('#connection').title=location.origin;
+diff --git a/backend/bmt_backend/admin_ui/index.html b/backend/bmt_backend/admin_ui/index.html
+--- a/backend/bmt_backend/admin_ui/index.html
++++ b/backend/bmt_backend/admin_ui/index.html
+@@ -23,6 +23,7 @@
+   <script src="/admin/assets/insights.js" defer></script>
+   <script src="/admin/assets/platform.js" defer></script>
+   <script src="/admin/assets/game_config.js" defer></script>
++  <script src="/admin/assets/ranking.js" defer></script>
+   <script src="/admin/assets/app.js" defer></script>
+ </head>
+ <body>
+diff --git a/backend/bmt_backend/admin_ui/platform.js b/backend/bmt_backend/admin_ui/platform.js
+--- a/backend/bmt_backend/admin_ui/platform.js
++++ b/backend/bmt_backend/admin_ui/platform.js
+@@ -12,18 +12,52 @@
+ function pScope(d){return `<p class="platform-scope">${esc(date(d.since))} to ${esc(date(d.until))} · end excluded · UTC calendar days · ${esc(d.filters?.population||'all')} players</p>`;}
+ function pOptions(values,selected,empty){const list=[...new Set(values.filter(Boolean))].sort();return `<option value="">${esc(empty)}</option>${selected&&!list.includes(selected)?`<option selected value="${esc(selected)}">${esc(selected)} · no matching observations</option>`:''}${list.map(v=>`<option value="${esc(v)}" ${v===selected?'selected':''}>${esc(v)}</option>`).join('')}`;}
+ function pFilters(d,params,quality=false){
+- const options=d.options||[];
+- return `<form id="filters" class="platform-filters"><label>Build<select name="build_id">${pOptions(quality?d.builds:options.map(v=>v.build_id),params.get('build_id'),'All builds')}</select></label>${quality?`<label>Baseline<select name="baseline">${pOptions(d.builds,params.get('baseline'),'Choose baseline')}</select></label>`:''}<label>Platform<select name="platform">${pOptions(quality?['android','ios','windows','linux','macos']:options.map(v=>v.platform),params.get('platform'),'All platforms')}</select></label>${quality?'':`<label>Mode<select name="mode">${pOptions(options.map(v=>v.mode),params.get('mode'),'All modes')}</select></label><label>Population<select name="population"><option value="all">All players</option>${d.business_cohorts_enabled?`<option value="real" ${params.get('population')==='real'?'selected':''}>Real players</option><option value="artificial" ${params.get('population')==='artificial'?'selected':''}>Artificial drivers</option>`:''}</select></label>`}<button class="btn btn-primary">Apply scope</button></form>`;
+-}
++ const options=d.options||[],select=(name,label,values,empty)=>`<label>${esc(label)}<select name="${name}">${pOptions(values,params.get(name),empty)}</select></label>`;
++ return `<form id="filters" class="platform-filters">`+
++ select('build_id','Build',quality?d.builds:options.map(v=>v.build_id),'All builds')+
++ (quality?select('baseline','Baseline',d.builds,'Choose baseline'):'')+
++ select('platform','Platform',quality?['android','ios','windows','linux','macos']:options.map(v=>v.platform),'All platforms')+
++ (quality?select('device_model','Device',options.map(v=>v.device_model),'All devices')+
++ select('os_version','OS version',options.map(v=>v.os_version),'All OS versions')+
++ select('track_version_id','Track version',options.map(v=>v.track_version_id),'All track versions')+
++ select('render_context_key','Render context',options.map(v=>v.render_context_key),'All render contexts'):
++ select('mode','Mode',options.map(v=>v.mode),'All modes')+
++ `<label>Population<select name="population"><option value="all">All players</option>${d.business_cohorts_enabled?`<option value="real" ${params.get('population')==='real'?'selected':''}>Real players</option><option value="artificial" ${params.get('population')==='artificial'?'selected':''}>Artificial drivers</option>`:''}</select></label>`)+
++ `<button class="btn btn-primary">Apply scope</button></form>`;
++}
++function pScopeNote(params,quality=false){
++ const unsupported=(quality?['mode','population']:['baseline','device_model','os_version','track_version_id','render_context_key']).filter(k=>params.get(k)&&params.get(k)!=='all');
++ return unsupported.length?pNotice('Scope carried for your investigation',`This report does not apply ${unsupported.map(k=>k.replaceAll('_',' ')).join(', ')}. These selections remain in the link for returning to the other workspace. ${quality?'Quality package totals include all reporting players.':'Only the filters shown for this report affect its totals.'}`):'';
++}
++function pReportFreshness(c,asOf){
++ const stamp=c.processed_through,latest=c.latest_client_at??c.latest_package_at;
++ const old=latest&&asOf-latest>900,disabled=c.collection_enabled===false,pending=c.pending_events;
++ const title=disabled?'Collection is disabled':!stamp?'Projection watermark unavailable':pending>0?'Observations are waiting for projection':old?'Source observations are older than 15 minutes':'Source freshness';
++ const message=`Processed through ${date(stamp)}. Latest observation ${date(latest)}. ${pending==null?'Pending count unavailable.':pNumber(pending)+' observations pending.'} `+
++ (old?'Old evidence can reflect quiet traffic or delayed collection; this does not establish a failed collector. ':'')+
++ `Queried ${date(asOf)}. Current UTC days and partly covered days are incomplete.`;
++ return `<div data-report-watermark="${esc(stamp||'')}">${pNotice(title,message,disabled||old||pending>0||!stamp?'warning':'')}</div>`;
++}
++function pExportAction(section,params){
++ const view=section==='product'?(['retention','journey','engagement'].includes(params.get('tab'))?params.get('tab'):'activity'):
++ section==='quality'&&(!params.get('tab')||params.get('tab')==='compare')?'releases':null;
++ return view?`<button class="btn" id="platform-export" data-view="${view}">Export ${view==='releases'?'release comparison':view==='journey'?'first-race journey':view} CSV</button><span id="platform-export-status" role="status"></span>`:'';
++}
++function pExportNote(){return '<p class="platform-method">CSV downloads run a new query of the selected report and filters. Each row includes the query time, source watermark, effective dates and scope so it can be reconciled with this view.</p>';}
++
++
+ function pQuery(params,allowed){const q=new URLSearchParams();for(const name of ['since','until',...allowed])if(params.has(name))q.set(name,params.get(name));return q;}
+ 
+ async function platformOverview(d,params){
+- const [incidents,metrics]=await Promise.all([api('incidents?limit=6'),api('metrics')]);
+- const actionable=(incidents.counts.open||0)+(incidents.counts.acknowledged||0),coverage=metrics.coverage;
++ const reads=await Promise.allSettled([api('incidents?limit=6'),api('metrics')]);
++ const incidents=reads[0].status==='fulfilled'?reads[0].value:null,metrics=reads[1].status==='fulfilled'?reads[1].value:null;
++ const coverage=metrics?.coverage||{},actionable=incidents?(incidents.counts.open||0)+(incidents.counts.acknowledged||0):null;
++ const failure=(label)=>pNotice(label+' is unavailable','Other successful sources remain visible. Refresh to retry this source.','warning');
++ const pulse='races?state=verified&time_field=finished_at&since='+d.pulse_since+'&until='+(d.pulse_until+1);
+  return intro('Know what needs attention.','Start with player impact, then follow the evidence into a focused workspace.','GAME OPERATIONS')+
+- `<div class="platform-stats">${pStat('Active incidents',pNumber(actionable),'Open and acknowledged occurrences','alarms')}${pStat('Verification jobs',pNumber(d.pending),'Current shared verification queue','system/jobs')}${pStat('Verified results',pNumber(d.states.verified||0),'Last five minutes - all players','races?state=verified')}${pStat('Reporting data age',coverage.latest_client_at?Math.max(0,Math.floor((Date.now()/1000-coverage.latest_client_at)/60))+' min':'Unavailable','Latest received client observation','product')}</div>`+
+- card('React and recover',incidents.items.length?incidents.items.map(r=>`<article class="platform-row"><div><span class="platform-tag ${esc(r.severity)}">${esc(r.state)}</span><h3>${esc(r.title)}</h3><p>${esc(r.evidence.evidence)}</p></div>${pLink('alarms/'+r.id,'Investigate',params)}</article>`).join(''):pNotice('No retained incidents',incidents.sources.length?'No actionable occurrences in the current detector history. Check monitor freshness before concluding the service is healthy.':'No continuous monitor observations have arrived. Configure and start the independent watchdog.','warning'))+
+- `<div class="platform-grid">${card('Understand player behaviour','<p>Follow activity, exact-day returns and the first-race journey. Read population and follow-up coverage before interpreting changes.</p>'+pLink('product','Explore behaviour',params))}${card('Protect game quality','<p>Compare a release with a baseline, find affected devices and follow a track into its diagnostic evidence.</p>'+pLink('quality','Compare releases',params))}${card('Optimise monetisation','<p>Review provider earnings, purchase delivery and Coin sources and sinks as separate measures.</p>'+pLink('economy','Review monetisation',params))}${card('Can these numbers be trusted?',`<dl class="platform-definitions"><dt>Client observations</dt><dd>${coverage.latest_client_at?esc(date(coverage.latest_client_at)):'Unavailable'}</dd><dt>Reporting watermark</dt><dd>${esc(date(coverage.processed_through))}</dd><dt>Monetary revenue import</dt><dd>${esc(date(coverage.latest_finance_import))}</dd><dt>Guests / crash stacks / Play Vitals</dt><dd>Unavailable</dd></dl>`+pLink('studio','Inspect definitions & coverage',params))}</div>`;
++ `<div class="platform-stats">${pStat('Active incidents',pNumber(actionable),'Open and acknowledged occurrences','alarms')}${pStat('Verification jobs',pNumber(d.pending),'Current shared verification queue','system/jobs')}${pStat('Verified results',pNumber(d.states.verified||0),'Last five minutes - verification terminal time',pulse)}${pStat('Reporting data age',coverage.latest_client_at?Math.max(0,Math.floor((Date.now()/1000-coverage.latest_client_at)/60))+' min':'Unavailable','Latest received client observation','product')}</div>`+
++ (incidents?card('React and recover',incidents.items.length?incidents.items.map(r=>`<article class="platform-incident"><span class="platform-tag ${esc(r.severity)}">${esc(r.state)}</span><h3>${esc(r.title)}</h3><p>${esc(r.evidence.evidence)}</p>${pLink('alarms/'+r.id,'Investigate',params)}</article>`).join(''):'<p>No retained actionable incidents. Check source coverage before inferring a healthy service.</p>'):failure('Incident evidence'))+
++ `<div class="platform-grid">${card('Understand player behaviour','<p>Follow activity, exact-day returns and the first-race journey. Read population and follow-up coverage before interpreting changes.</p>'+pLink('product','Explore behaviour',params))}${card('Protect game quality','<p>Compare a release with a baseline, find affected devices and follow a track into its diagnostic evidence.</p>'+pLink('quality','Compare releases',params))}${card('Optimise monetisation','<p>Review provider earnings, purchase delivery and Coin sources and sinks as separate measures.</p>'+pLink('economy','Review monetisation',params))}${metrics?card('Can these numbers be trusted?',`<dl class="platform-definitions"><dt>Client observations</dt><dd>${esc(date(coverage.latest_client_at))}</dd><dt>Reporting watermark</dt><dd>${esc(date(coverage.processed_through))}</dd><dt>Monetary revenue import</dt><dd>${esc(date(coverage.latest_finance_import))}</dd><dt>Guests / crash stacks / Play Vitals</dt><dd>Unavailable</dd></dl>`+pLink('studio','Inspect definitions & coverage',params)):failure('Metric coverage')}</div>`;
+ }
+ 
+ async function platformBehaviour(params){
+@@ -43,26 +77,41 @@
+   body=card('Where does the first race journey break?',`<p>${pNumber(f.eligible)} eligible first-observed players · 24 hours plus 10 minutes follow-up. ${f.truncated_profiles?pNumber(f.truncated_profiles)+' truncated profiles prevent a complete funnel.':''}</p><ol class="platform-journey">${f.steps.map((s,i)=>`<li><span>${i+1}. ${esc(s.name.replaceAll('_',' '))}</span><strong>${pNumber(s.players)}</strong><div class="platform-track"><span style="width:${Math.min(100,100*(s.players||0)/max)}%"></span></div></li>`).join('')}</ol><p>Client finish and authoritative acceptance are distinct steps. Investigate telemetry coverage before treating an observed drop as player abandonment.</p>`);
+  }else{
+   body=`<div class="platform-stats">${pStat('Observed active players',coverage.available?pNumber(d.active_players):'Unavailable','Distinct signed-in players in scope')}${pStat('Race starts',coverage.available?pNumber(c.race_started):'Unavailable','Client observations')}${pStat('Accepted results',coverage.available?pNumber(c.race_accepted):'Unavailable','Authoritative server facts')}${pStat('Foreground time',coverage.available?(c.foreground_ms/3600000).toFixed(1)+' h':'Unavailable','Reported intervals; missing intervals excluded')}</div>`+
+-  card('Activity by day',pTable(['UTC day','Active players','Starts','Observed finishes','Accepted results'],d.daily.map(r=>[esc(new Date(r.day*86400000).toISOString().slice(0,10)),pNumber(r.players),pNumber(r.starts),pNumber(r.finishes),pNumber(r.accepted)])))+
++  card('Activity by day',pTable(['UTC day','Active players','Starts','Observed finishes','Accepted results','Coverage'],d.daily.map(r=>[esc(new Date(r.day*86400000).toISOString().slice(0,10)),pNumber(r.players),pNumber(r.starts),pNumber(r.finishes),pNumber(r.accepted),esc(r.coverage_state==='partial'?'In progress':r.coverage_state==='unobserved'?'Not observed':'Observed')])))+
+   card('Next questions',`<div class="console-actions">${pLink('product?tab=retention','Are players returning?',params)}${pLink('product?tab=journey','Where do first races stop?',params)}${pLink('quality','Does release quality explain a drop?',params)}</div>`);
+  }
+- return head+pFilters(d,params)+pScope(d)+(coverage.collection_enabled===false?pNotice('Collection is disabled','Retained observations remain available. They do not establish current player activity.','warning'):'')+(coverage.available?'':pNotice('Client coverage is unavailable','No client observations have reached this analytical projection. Server activity alone does not establish complete behaviour coverage.','warning'))+body+
+- `<details class="platform-method"><summary>Definition, freshness and limits</summary><p>Analysis began ${esc(date(coverage.started_at))}; processed through ${esc(date(coverage.processed_through))}. ${pNumber(coverage.pending_events)} observations pending.</p><p>${esc(coverage.definition)}</p><p>${esc(coverage.foreground)}</p><p>Guests are unavailable. These totals include artificial drivers unless an explicitly enabled population filter is selected. Existing historical totals remain available separately.</p>${d.options_truncated?'<p>Build selector is limited to 200 combinations; metrics use the full selected scope.</p>':''}</details>`;
++ return head+pFilters(d,params)+pScope(d)+pScopeNote(params)+pReportFreshness(coverage,d.as_of)+(coverage.collection_enabled===false?pNotice('Collection is disabled','Retained observations remain available. They do not establish current player activity.','warning'):'')+(coverage.available?'':pNotice('Client coverage is unavailable','No client observations have reached this analytical projection. Server activity alone does not establish complete behaviour coverage.','warning'))+body+
++ `${pExportNote()}<details class="platform-method"><summary>Definition, freshness and limits</summary><p>Analysis began ${esc(date(coverage.started_at))}; processed through ${esc(date(coverage.processed_through))}. ${pNumber(coverage.pending_events)} observations pending.</p><p>${esc(coverage.definition)}</p><p>${esc(coverage.foreground)}</p><p>Guests are unavailable. These totals include artificial drivers unless an explicitly enabled population filter is selected. Existing historical totals remain available separately.</p>${d.options_truncated?'<p>Build selector is limited to 200 combinations; metrics use the full selected scope.</p>':''}</details>`;
+ }
+ 
+ async function platformQuality(params){
+- if(params.get('tab')&&params.get('tab')!=='compare')return monitorQualityView(params);
+- const d=await api('analysis/releases?'+pQuery(params,['build_id','baseline','platform']));
+- const one=(r,label)=>r?card(label,`<h3>${esc(r.build_id)}</h3><dl class="platform-definitions"><dt>Observed completion</dt><dd>${pPercent(r.finished,r.attempts)} <small>${pNumber(r.finished)} / ${pNumber(r.attempts)} packages</small></dd><dt>Frames over 34 ms</dt><dd>${pPercent(r.slow_frames,r.frames)} <small>${pNumber(r.slow_frames)} / ${pNumber(r.frames)} frames</small></dd><dt>Reporting players</dt><dd>${pNumber(r.reporting_players)}</dd><dt>Players reporting slow frames</dt><dd>${pNumber(r.affected_players)} <small>Analysis v1 coverage only</small></dd></dl>`):card(label,'<p>Choose a build to inspect its reporting population.</p>');
+- return intro('Game quality','Compare a candidate build with its baseline, then investigate the affected devices.','PROTECT')+
+- pTabs([['quality','Release comparison'],['quality?tab=diagnostics','Track & device diagnostics'],['studio?tab=releases','Release registry']], 'quality',params)+pFilters(d,params,true)+pScope(d)+
+- (!d.builds.length?pNotice('No race-statistics packages in this window','Quality is unavailable for this scope. Confirm capture, consent, client build and worker projection before drawing conclusions.','warning'):'')+
++ if(params.get('tab')&&params.get('tab')!=='compare')return pTabs([['quality','Release comparison'],['quality?tab=diagnostics','Track & device diagnostics']],'quality?tab=diagnostics',params)+pScopeNote(params,true)+await monitorQualityView(params);
++ const fields=['build_id','baseline','platform','device_model','os_version','track_version_id','render_context_key'];
++ const d=await api('analysis/releases?'+pQuery(params,fields));
++ const rate=(n,total)=>n==null||!total?'Unavailable':pPercent(n,total)+` <small>${pNumber(n)} / ${pNumber(total)}</small>`;
++ const delta=value=>value==null?'Unavailable':(value>0?'+':'')+(value*100).toFixed(2)+' pp';
++ const one=(r,label)=>r?card(label,`<h3>${esc(r.build_id)}</h3>`+
++ (!r.attempts?pNotice('No package coverage','No packages match this build and scope. Zero affected users is not inferred.','warning'):
++ !r.sample_sufficient?pNotice('Small exploratory sample',`Below ${d.sample_policy.minimum_packages} packages or ${d.sample_policy.minimum_frames} frames. This is not a release decision.`,'warning'):'')+
++ `<dl class="platform-definitions"><dt>Observed completion</dt><dd>${rate(r.finished,r.attempts)}</dd><dt>Frames over 34 ms</dt><dd>${rate(r.slow_frames,r.frames)}</dd><dt>Reporting players</dt><dd>${pNumber(r.reporting_players)}</dd><dt>Players reporting slow frames</dt><dd>${pNumber(r.affected_players)}</dd><dt>Last selected package</dt><dd>${esc(date(r.latest_package_at))}</dd></dl>`+
++ (r.player_coverage!=='available'?'<p>Player coverage is unavailable for this scope. Package and frame counters have their own denominator.</p>':'')+
++ pLink('quality?tab=frames&'+pQuery(new URLSearchParams({...Object.fromEntries(params),build_id:r.build_id}),fields),'Inspect these frame samples',params)):
++ card(label,'<p>Choose a build to inspect its reporting population.</p>');
++ const diagnostic=(r,build,tab)=>{const q=new URLSearchParams(params);q.set('tab',tab);q.set('build_id',build);for(const k of ['platform','device_model','os_version','render_context_key'])r[k]?q.set(k,r[k]):q.delete(k);return pLink('quality?'+q,(tab==='frames'?'Frame times':'Track heatmap'),params);};
++ const source={...d.source,latest_package_at:d.candidate?.latest_package_at??d.baseline?.latest_package_at};
++ return intro('Game quality','Compare the same build, device, OS and track scope, then follow the evidence.','PROTECT')+
++ pTabs([['quality','Release comparison'],['quality?tab=diagnostics','Track & device diagnostics'],['studio?tab=releases','Release registry']],'quality',params)+
++ pFilters(d,params,true)+pScope(d)+pScopeNote(params,true)+pReportFreshness(source,d.as_of)+
+  `<div class="platform-grid">${one(d.candidate,'Candidate')}${one(d.baseline,'Baseline')}</div>`+
+- (d.comparison?pNotice('Observed completion difference',(d.comparison.completion_change*100).toFixed(1)+' percentage points. This descriptive comparison does not control for player, track or device mix.'):'')+
+- card('Candidate devices to investigate',pTable(['Device','OS','Render context','Packages','Slow frames'],d.segments.map(r=>[esc(r.device_model),esc(r.os_version),esc(r.render_context_key||'Unavailable'),pNumber(r.attempts),pNumber(r.slow_frames)]))+`<p>${d.segments_truncated?'Showing the 20 largest device segments. ':''}${esc(d.coverage)}</p>`);
++ (d.comparison?pNotice('Descriptive differences',`Completion ${delta(d.comparison.completion_change)}; frames over 34 ms ${delta(d.comparison.slow_frame_change)}. ${d.comparison.sample_sufficient?'':'Samples are small. '}Unselected player, device, render setup and track mix can differ. No rollout verdict or causal claim is made.`,d.comparison.completion_change<0||d.comparison.slow_frame_change>0?'warning':''):'')+
++ card('Candidate devices to investigate',pTable(['Device / platform','OS / render context','Packages','Candidate slow frames','Baseline slow frames','Difference','Investigate'],d.segments.map(r=>[
++ `${esc(r.device_model)}<small>${esc(r.platform)}</small>`,`${esc(r.os_version)}<small>${esc(r.render_context_key||'Unknown context')}</small>`,pNumber(r.attempts),rate(r.slow_frames,r.frames),rate(r.baseline_slow_frames,r.baseline_frames),esc(delta(r.slow_change))+(r.sample_sufficient?'':'<small>Small / missing comparison sample</small>'),diagnostic(r,d.filters.build_id,'frames')+' '+diagnostic(r,d.filters.build_id,'heatmap')]))+
++ `<p>${d.segments_truncated?'Showing 20 device segments with the highest observed slow-frame shares. ':''}${esc(d.coverage)}</p>`)+
++ pExportNote()+`<p class="platform-method">Exploratory sample policy: ${d.sample_policy.minimum_packages} packages and ${d.sample_policy.minimum_frames} frames per build. These are visibility warnings, not validated launch thresholds.</p>`;
+ }
+ 
+ function platformOpsTabs(current,params){return pTabs([['alarms','Incidents'],['alarms?tab=checks','Current checks'],['alarms?tab=history','Monitor history'],['alarms?tab=notifications','Notifications'],['system/jobs','Worker queues'],['system','Service health'],['analytics','Result submissions']],current,params);}
++
+ async function platformIncidents(id,params){
+  if(params.get('tab')==='notifications'){
+   const d=await api('notifications?state='+encodeURIComponent(params.get('state')||'dead'));
+@@ -96,16 +145,17 @@
+  const d=await api('jobs?'+pQuery(params,['state','kind','cursor']));
+  return intro('Worker queues','See which work is waiting and where players may be affected.','OPERATE')+platformOpsTabs('system/jobs',params)+
+  `<form id="filters" class="platform-filters"><label>State<select name="state">${['pending','failed','all'].map(s=>`<option ${params.get('state')===s?'selected':''}>${s}</option>`).join('')}</select></label><label>Worker kind<select name="kind">${pOptions(d.summary.map(s=>s.kind),params.get('kind'),'All worker kinds')}</select></label><button class="btn">Apply</button></form>`+
+- card('All work, one view',pTable(['Worker kind','Pending','Oldest','Failed / exhausted'],d.summary.map(s=>[esc(s.kind),pNumber(s.pending),esc(date(s.oldest_at)),pNumber(s.failed)])))+
++ card('All work, one view',pTable(['Worker kind','Pending','Oldest','Failed / exhausted'],d.summary.map(s=>[esc(s.kind),(s.pending_capped?'At least ':'')+pNumber(s.pending),esc(date(s.oldest_at)),(s.failed_capped?'At least ':'')+pNumber(s.failed)])))+
+  card('Activity projection',`<p>${pNumber(d.projection?.pending)} pending ${d.projection?.capped?'(count capped)':''} · processed through ${esc(date(d.projection?.processed_through))}</p>`)+
+  card('Oldest matching work',pTable(['Kind','State','Record','Time'],d.items.map(r=>[esc(r.kind),esc(r.status),['race','publication'].includes(r.kind)?link(r.kind==='race'?'races':'publications',r.id):esc(r.id),esc(date(r.created_at))]))+`<p>${esc(d.scope)}</p><div class="console-actions">${params.has('cursor')?pLink('system/jobs?'+pQuery(params,['state','kind']),'First page',params):''}${d.next_cursor?pLink('system/jobs?'+pQuery(params,['state','kind'])+'&cursor='+encodeURIComponent(d.next_cursor),'Next oldest work',params):''}</div>`);
+ }
+ 
+ async function platformCompetitions(params){
++ if(params.get('kind')==='ranking')return rankingWorkspace(params);
+  const kind=params.get('kind')==='challenge'?'challenge':'rivalry',q=new URLSearchParams({kind,offset:params.get('offset')||'0',state:params.get('state')||'all',q:params.get('q')||''});
+  const d=await api('competitions?'+q),page=offset=>{const next=new URLSearchParams(q);next.set('offset',offset);return 'competitions?'+next;};
+  return intro('Competitions','Find the event, then inspect its pinned rules and accepted-result evidence.','INVESTIGATE')+
+- pTabs([['competitions?kind=rivalry','Weekly Rivalry'],['competitions?kind=challenge','Challenges']],'competitions?kind='+kind,params)+
++ pTabs([['competitions?kind=rivalry','Weekly Rivalry'],['competitions?kind=challenge','Challenges'],['competitions?kind=ranking','World Ranking']],'competitions?kind='+kind,params)+
+  (kind==='rivalry'?await rivalryCalendar(params):'')+
+  `<form id="filters" class="platform-filters"><label>State<select name="state">${['all','active','ended'].map(s=>`<option ${q.get('state')===s?'selected':''}>${s}</option>`).join('')}</select></label><label>Stable identifier<input name="q" value="${esc(q.get('q'))}" maxlength="100"></label><button class="btn">Find competition</button></form>`+
+  card(kind==='rivalry'?'Weekly groups':'Player challenges',pTable(['Competition','Context','Ends','Entrants','Action'],d.items.map(r=>[`<b>${kind==='rivalry'?'Week of '+new Date(r.week_start*1000).toISOString().slice(0,10):esc(r.name)}</b><small>${esc(r.id)}</small>`,kind==='rivalry'?esc(r.vehicle_id)+(r.archived?' · Archived':''):`${esc(r.mode)}<small>Created by ${esc(r.creator_name)}</small>`,esc(date(r.ends_at)),pNumber(r.member_count),pLink('competitions/'+r.id+'?kind='+kind,'Inspect event',params)])))+
+@@ -134,7 +184,7 @@
+  if(tab==='config')return head+await gameConfigView(params);
+  if(tab==='experiments')return head+await gameConfigExperiments(params);
+  if(tab==='saved'){
+-  const d=await api('saved-views');return head+card('Saved reporting views',pTable(['Name','Workspace','Updated','Action'],d.items.map(r=>[esc(r.name),esc(r.route),esc(date(r.updated_at)),pLink(r.route+'?'+new URLSearchParams(r.filters),'Open view',null)])))+'<p>Use “Save view” in a workspace to retain its date and analysis filters. Shared legacy keys share a view owner.</p>';
++  const d=await api('saved-views');return head+card('Saved reporting views',pTable(['Name','Location','Updated','Actions'],d.items.map(r=>[esc(r.name),esc(r.route),esc(date(r.updated_at)),pLink(r.route+'?'+new URLSearchParams(r.filters),'Open view',null)+` <button class="btn" data-saved-rename="${esc(JSON.stringify(r))}">Rename</button> <button class="btn" data-saved-delete="${esc(JSON.stringify(r))}">Delete</button>`])))+'<p>Saved locations retain supported record IDs, queue destinations, dates and filters. Shared legacy keys share a view owner.</p>';
+  }
+  if(tab==='access'){
+   const d=await api('staff');return head+card('Your access',`<dl class="platform-definitions"><dt>Signed in as</dt><dd>${esc(d.display_name)}</dd><dt>Actor</dt><dd>${esc(d.actor)}</dd><dt>Role</dt><dd>${esc(d.role)}</dd><dt>Named sign-in</dt><dd>${d.named_signin_configured?'Configured':'Not configured'}</dd><dt>Legacy keys</dt><dd>${d.legacy_keys_enabled?'Enabled':'Disabled'}</dd><dt>MFA claim policy</dt><dd>${d.mfa_required?'Required for named sign-in':'Not required'}</dd></dl><p>Named sign-in accepts only separately configured staff audiences and explicitly authorised subjects. Game sign-in does not grant staff access.</p>`)+card('Known staff',pTable(['Name','Role','Last seen'],d.items.map(r=>[esc(r.display_name),esc(r.role),esc(date(r.last_seen_at))])));
+@@ -150,8 +200,8 @@
+  card('Observed source coverage',`<dl class="platform-definitions">${Object.entries(d.coverage).map(([k,v])=>`<dt>${esc(k.replaceAll('_',' '))}</dt><dd>${k.endsWith('_at')||k==='processed_through'?esc(date(v)):esc(v==null?'Unavailable':v)}</dd>`).join('')}</dl>`)+pLink('studio?tab=legacy','Detailed historical coverage',params);
+ }
+ 
+-function pCommand(title,fields,perform){
+- modal(`<h2>${esc(title)}</h2><form id="platform-command">${fields}<p id="platform-command-error" class="console-error" hidden></p><div class="console-actions"><button class="btn" type="button" data-close>Cancel</button><button class="btn btn-primary">Save</button></div></form>`);
++function pCommand(title,fields,perform,actionLabel='Save'){
++ modal(`<h2>${esc(title)}</h2><form id="platform-command">${fields}<p id="platform-command-error" class="console-error" hidden></p><div class="console-actions"><button class="btn" type="button" data-close>Cancel</button><button class="btn btn-primary" type="submit">${esc(actionLabel)}</button></div></form>`);
+  const token=dialogToken();$('#platform-command').onsubmit=async e=>{e.preventDefault();const form=e.currentTarget,submit=form.querySelector('[type=submit]')||form.querySelector('button.btn-primary');submit.disabled=true;
+   try{await perform(new FormData(form));if(!dialogIsCurrent(token))return;$('#dialog').close();await render();}
+   catch(error){if(dialogIsCurrent(token)){$('#platform-command-error').hidden=false;$('#platform-command-error').textContent=error.message;submit.disabled=false;}}
+@@ -160,6 +210,8 @@
+ const pReason='<label>Reason<textarea name="reason" minlength="3" maxlength="500" required></textarea></label>';
+ function wirePlatform(params){
+  wireRivalryCalendar(params);
++ wireRanking();
++ wireSavedReporting(params);
+  document.querySelectorAll('[data-notification]').forEach(button=>button.onclick=()=>{const commandId=crypto.randomUUID();pCommand(button.dataset.notification==='retry'?'Retry stored notification':'Dismiss exhausted delivery',pReason,data=>api('notifications/'+button.dataset.id+'/commands',{command_id:commandId,expected_attempts:Number(button.dataset.attempts),action:button.dataset.notification,reason:data.get('reason')}));});
+  document.querySelectorAll('[data-case-triage]').forEach(button=>button.onclick=async()=>{
+   const current=JSON.parse(button.dataset.triage),staff=await api('staff'),commandId=crypto.randomUUID();
+@@ -172,12 +224,45 @@
+   if(action==='suppress')fields='<label>Notification pause<select name="suppress_seconds"><option value="3600">1 hour</option><option value="14400">4 hours</option><option value="86400">24 hours</option><option value="0">Resume now</option></select></label>'+fields;
+   const commandId=crypto.randomUUID();pCommand(action==='clear'?'Clear recovered issue':action,fields,data=>api('incidents/'+identity+'/commands',{command_id:commandId,expected_revision:revision,action,reason:data.get('reason'),assignee:data.get('assignee')||'',suppress_seconds:Number(data.get('suppress_seconds')||0)}));
+  });
+- if($('#platform-save'))$('#platform-save').onclick=()=>{const route=(location.hash.slice(1).split('?')[0]||'overview').split('/')[0],id=crypto.randomUUID(),commandId=crypto.randomUUID(),filters=Object.fromEntries([...params].filter(([k])=>['since','until','build_id','baseline','platform','mode','population','tab','q','state','kind','failure_code'].includes(k)));pCommand('Save reporting view','<label>Name<input name="name" maxlength="100" required></label>',data=>api('saved-views',{command_id:commandId,id,expected_revision:0,name:data.get('name'),route,filters}));};
+- if($('#platform-export'))$('#platform-export').onclick=async()=>{const response=await fetch('/v1/admin/exports/activity.csv?'+pQuery(params,['build_id','platform','mode','population']),{headers:{Authorization:'Bearer '+key},signal:readController.signal});if(!response.ok){modal('<h2>Export unavailable</h2><p>Narrow the reporting dates and try again.</p>');return;}const url=URL.createObjectURL(await response.blob()),a=document.createElement('a');a.href=url;a.download='observed-activity.csv';a.click();setTimeout(()=>URL.revokeObjectURL(url),1000);};
+  if($('#platform-release'))$('#platform-release').onclick=()=>{const commandId=crypto.randomUUID();pCommand('Record a release','<label>Exact build ID<input name="build_id" maxlength="80" required></label><label>Release name<input name="name" maxlength="100" required></label><label>Stage<select name="state"><option>testing</option><option>canary</option><option>production</option><option>rolled_back</option></select></label><label>Current revision (0 for new)<input name="expected_revision" type="number" min="0" value="0" required></label><label>Notes<textarea name="notes" maxlength="500"></textarea></label>'+pReason,data=>api('releases',{...Object.fromEntries(data),command_id:commandId,expected_revision:Number(data.get('expected_revision'))}));};
+  if($('#platform-experiment'))$('#platform-experiment').onclick=()=>{const commandId=crypto.randomUUID();pCommand('Create a presentation experiment','<label>Name<input name="name" maxlength="100" required></label><label>Control onboarding message<input name="control" maxlength="160" required></label><label>Variant onboarding message<input name="variant" maxlength="160" required></label><label>Follow-up days<input name="days" type="number" min="1" max="30" value="7" required></label><label>Minimum mature players per variant<input name="minimum" type="number" min="100" max="100000" value="500" required></label>'+pReason,data=>api('experiments',{command_id:commandId,name:data.get('name'),reason:data.get('reason'),primary_metric:'return_on_target_day',followup_days:Number(data.get('days')),minimum_per_variant:Number(data.get('minimum')),allocation:{control:5000,variant:5000},variants:{control:{onboarding_message:data.get('control')},variant:{onboarding_message:data.get('variant')}}}));};
+  document.querySelectorAll('[data-experiment-state]').forEach(button=>button.onclick=()=>{const commandId=crypto.randomUUID();pCommand('Change experiment state',pReason,data=>api('experiments/'+button.dataset.id+'/state',{command_id:commandId,expected_revision:Number(button.dataset.revision),state:button.dataset.experimentState,reason:data.get('reason')}));});
+  document.querySelectorAll('[data-scorecard]').forEach(button=>button.onclick=async()=>{const d=await api('experiments/'+button.dataset.scorecard+'/scorecard');modal('<h2>'+esc(d.experiment.name)+'</h2>'+pNotice('Decision: hold',d.decision)+pTable(['Variant','Exposed','Mature','Returned','Rate'],d.variants.map(r=>[esc(r.id),pNumber(r.exposed),pNumber(r.eligible),pNumber(r.returned),pPercent(r.returned,r.eligible)]))+`<p>Sample ratio check: ${d.sample_ratio.p_value==null?'Insufficient expected counts':d.sample_ratio.failed?'Mismatch detected':'No mismatch detected'} · p=${esc(d.sample_ratio.p_value)}</p><p>Crash-free and verified revenue guardrails are unavailable. No winner is declared automatically.</p>`);});
++}
++
++function wireSavedReporting(params){
++ const keys=['since','until','build_id','baseline','platform','mode','population','tab','q','state','kind','failure_code','all','status','time_field','device_model','os_version','track_version_id','version','renderer','render_context_key','context_state','car_detail','category','metric','theme','visibility','origin','sort','direction','min_rating','min_finishers','limit','view','draft'];
++ const save=$('#platform-save');if(save)save.onclick=()=>{
++  const route=location.hash.slice(1).split('?')[0]||'overview',id=crypto.randomUUID(),commandId=crypto.randomUUID();
++  const filters=Object.fromEntries([...params].filter(([key])=>keys.includes(key)));
++  pCommand('Save this investigation location','<label>Name<input name="name" maxlength="100" required></label>',data=>api('saved-views',{command_id:commandId,id,expected_revision:0,name:data.get('name'),route,filters}));
++ };
++ document.querySelectorAll('[data-saved-rename]').forEach(button=>button.onclick=()=>{
++  const saved=JSON.parse(button.dataset.savedRename),commandId=crypto.randomUUID();
++  pCommand('Rename saved view',`<label>Name<input name="name" maxlength="100" value="${esc(saved.name)}" required></label>`,data=>api('saved-views',{command_id:commandId,id:saved.id,expected_revision:saved.revision,name:data.get('name'),route:saved.route,filters:saved.filters}));
++ });
++ document.querySelectorAll('[data-saved-delete]').forEach(button=>button.onclick=()=>{
++  const saved=JSON.parse(button.dataset.savedDelete),commandId=crypto.randomUUID();
++  pCommand('Delete saved view',`<p>Remove ${esc(saved.name)} from your saved locations.</p>`,()=>api('saved-views/'+saved.id+'/delete',{command_id:commandId,expected_revision:saved.revision}),'Delete view');
++ });
++ const button=$('#platform-export');if(!button)return;
++ button.onclick=async()=>{
++  const auth=authGeneration,page=generation,credential=key,view=button.dataset.view;
++  const current=()=>auth===authGeneration&&page===generation&&credential===key;
++  const fields=view==='releases'?['build_id','baseline','platform','device_model','os_version','track_version_id','render_context_key']:['build_id','platform','mode','population'];
++  const q=pQuery(params,fields);if(view!=='releases')q.set('view',view);
++  button.disabled=true;$('#platform-export-status').textContent='Preparing report…';
++  try{
++   const response=await fetch('/v1/admin/exports/'+(view==='releases'?'releases':'activity')+'.csv?'+q,{headers:{Authorization:'Bearer '+credential},signal:readController.signal});
++   if(!current())return;
++   if(!response.ok){let detail='Export could not be prepared.';try{const data=await response.json();if(typeof data.detail==='string')detail=data.detail;}catch{}throw Error(detail);}
++   const blob=await response.blob();if(!current())return;
++   const url=URL.createObjectURL(blob),a=document.createElement('a');a.href=url;a.download='observed-'+view+'.csv';a.click();setTimeout(()=>URL.revokeObjectURL(url),1000);
++   const shown=$('[data-report-watermark]')?.dataset.reportWatermark,downloaded=response.headers.get('X-BMT-Report-Watermark');
++   $('#platform-export-status').textContent=shown&&downloaded&&shown!==downloaded?'Downloaded a newer source snapshot. Refresh to reconcile the screen; the CSV includes its source time.':'Report downloaded with query time, source watermark and filters.';
++  }catch(error){if(current()&&error.name!=='AbortError')$('#platform-export-status').textContent='Export failed: '+error.message;}
++  finally{if(current())button.disabled=false;}
++ };
+ }
+ 
+ let rivalryCalendarState=null;
+diff --git a/backend/bmt_backend/admin_ui/ranking.js b/backend/bmt_backend/admin_ui/ranking.js
+--- /dev/null
++++ b/backend/bmt_backend/admin_ui/ranking.js
+@@ -0,0 +1,45 @@
++'use strict';
++async function rankingWorkspace(params){
++ const d=await api('studio/ranking');
++ const launch=d.launch_week?date(d.launch_week):'Not configured';
++ const fields={state:d.state,launch_week:launch,published_snapshot:d.published_snapshot??'No publication',
++  published_week:d.published_week?date(d.published_week):'Unavailable',published_at:d.published_at,
++  working_snapshot:d.working_snapshot,branch:d.branch_id,phase:d.phase,mode:d.mode,
++  processed_player_key:d.processed_through,archive_part:d.part,
++  worker_last_seen:date(d.worker_last_seen_at),last_progress:date(d.progress_at),retrying:d.retrying,error_kind:d.error_kind||'None reported'};
++ const incomplete=d.pending&&(!d.worker_last_seen_at||d.as_of-d.worker_last_seen_at>=180);
++ return intro('World Ranking operations','Follow publication, settlement progress and accountable corrections.','COMPETITION OPERATIONS')+
++ pTabs([['competitions?kind=rivalry','Weekly Rivalry'],['competitions?kind=challenge','Challenges'],['competitions?kind=ranking','World Ranking']],'competitions?kind=ranking',params)+
++ (!d.enabled?pNotice('World Ranking launch is not configured','No settlement or publication is expected until a launch is explicitly configured.'):
++ d.state==='scheduled'?pNotice('Prospective launch',`Launch is ${launch}. Scheduled inactivity before week close is expected.`):
++ incomplete?pNotice('Worker activity is not established','Settlement is pending and its heartbeat is missing or older than three minutes. Inspect the supervised worker and its logs.','warning'):
++ d.retrying?pNotice('Settlement is retrying',`Last error category: ${d.error_kind}. The previous published snapshot remains authoritative.`,'warning'):'')+
++ `<div class="platform-stats">${pStat('Published generation',pNumber(d.published_snapshot),'Atomic published snapshot')}${pStat('Ranked players',pNumber(d.published_ranked),'Published generation only')}${pStat('Settlement',d.state,d.phase||'No active phase')}${pStat('Worker last seen',d.worker_last_seen_at?Math.max(0,d.as_of-d.worker_last_seen_at)+' s ago':'Unknown','Separate low-priority worker')}</div>`+
++ card('Generation and worker evidence',kv(fields)+`<p>The progress cursor is a player key, not a timestamp or a completion percentage. Heartbeats are recorded between batches at most once per 15 seconds. Reads do not execute settlement or infer a healthy worker from a published snapshot.</p><div class="console-actions">${pLink('system/jobs?kind=ranking','Inspect ranking queue',params)}${pLink('alarms','Inspect operations & alarms',params)}${pLink('system/audit?q=world_ranking_correction','Inspect correction audit',params)}</div>`)+
++ card('Recent Compact Circuits',pTable(['Circuit','Week starts UTC','Original snapshot','Pinned tracks'],d.circuits.map(c=>[pNumber(c.id),esc(new Date(c.week_start*1000).toISOString().slice(0,10))+(c.closed?' · closed':' · open'),pNumber(c.original_snapshot),(c.tracks||[]).map(t=>t.version_id?link('tracks',t.version_id,t.name||t.version_id):esc(t.board_id||'Pinned contract')).join('<br>')]))+`${d.circuits_truncated?'<p>Latest 26 circuits shown.</p>':''}`)+
++ card('Correction history',pTable(['When','Circuit','Correction / player','Actor','Reason / command'],d.history.map(r=>[esc(date(r.created_at)),pNumber(r.circuit_id),esc(r.kind.replaceAll('_',' '))+(r.player_id?'<br>'+link('players',r.player_id,'Inspect player'):''),esc(r.actor),`${esc(r.reason)}<small>${esc(r.command_id)}</small>`]))+`<p>${esc(d.history_scope)} ${d.history_truncated?'More history is available in the audit directory.':''}</p>`)+
++ (role==='owner'&&d.enabled&&d.circuits.some(c=>c.closed)?card('Preview a correction','<p>A correction excludes one player from a closed circuit or voids that circuit. An accepted correction rebuilds affected generations; it does not change canonical race proofs.</p><button class="btn" id="ranking-correction">Prepare correction</button>'):'');
++}
++
++function wireRanking(){
++ const button=$('#ranking-correction');if(!button)return;
++ button.onclick=async()=>{
++  const d=await api('studio/ranking'),commandId=crypto.randomUUID();
++  modal(`<h2>Preview ranking correction</h2><form id="ranking-preview"><label>Closed circuit<select name="circuit_id">${d.circuits.filter(c=>c.closed).map(c=>`<option value="${c.id}">${c.id} · ${new Date(c.week_start*1000).toISOString().slice(0,10)}</option>`).join('')}</select></label><label>Correction<select name="kind"><option value="player">Exclude one player</option><option value="week">Void whole week</option></select></label><label>Player ID (required for a player exclusion)<input name="player_id" maxlength="36"></label><label>Recorded reason<textarea name="reason" minlength="8" maxlength="500" required></textarea></label><p id="ranking-error" role="alert"></p><div class="console-actions"><button class="btn" type="button" data-close>Cancel</button><button class="btn btn-primary" type="submit">Preview impact</button></div></form>`);
++  const token=dialogToken();
++  $('#ranking-preview').onsubmit=async event=>{
++   event.preventDefault();const form=new FormData(event.target),submit=event.target.querySelector('[type=submit]');submit.disabled=true;
++   const body={command_id:commandId,expected_snapshot:d.published_snapshot||0,circuit_id:Number(form.get('circuit_id')),player_id:form.get('kind')==='week'?'':form.get('player_id').trim(),void_week:form.get('kind')==='week',reason:form.get('reason').trim()};
++   try{
++    const preview=await api('studio/ranking/correction-preview',body);if(!dialogIsCurrent(token))return;
++    modal(`<h2>Confirm ranking correction</h2><p>${esc(preview.effect)}</p>${kv({kind:preview.kind,circuit:body.circuit_id,player:body.player_id||'Whole week',expected_published_snapshot:body.expected_snapshot,reason:preview.reason})}<form id="ranking-confirm"><label><input type="checkbox" required> I confirm this audited correction to live ranking records.</label><p id="ranking-error" role="alert"></p><div class="console-actions"><button class="btn" type="button" data-close>Cancel</button><button class="btn btn-primary" type="submit">Apply correction</button></div></form>`);
++    const confirmation=dialogToken();
++    $('#ranking-confirm').onsubmit=async event=>{
++     event.preventDefault();const submit=event.target.querySelector('[type=submit]');submit.disabled=true;
++     try{await api('ranking/corrections',body);if(dialogIsCurrent(confirmation)){$('#dialog').close();render();}}
++     catch(error){if(dialogIsCurrent(confirmation)){$('#ranking-error').textContent=error.message;submit.disabled=false;}}
++    };
++   }catch(error){if(dialogIsCurrent(token)){$('#ranking-error').textContent=error.message;submit.disabled=false;}}
++  };
++ };
++}
+diff --git a/backend/bmt_backend/studio_analysis.py b/backend/bmt_backend/studio_analysis.py
+--- a/backend/bmt_backend/studio_analysis.py
++++ b/backend/bmt_backend/studio_analysis.py
+@@ -322,6 +322,20 @@
+             for day, offset, count in returned:
+                 returns[int(offset)][day] = count
+         watermark = state.processed_through if state else None
++        # Calendar gaps describe observed activity, not proof that every client
++        # reported. Never turn pre-collection/expired days into observed zeros.
++        daily_values = {row[0]: row[1:] for row in daily}
++        daily_rows = []
++        if view in ("activity", "all"):
++            for day in range(first // DAY, until // DAY):
++                covered = bool(state and state.latest_client_at and day >= retained_floor and (day + 1) * DAY > state.started_at
++                               and watermark and day * DAY <= watermark and day * DAY <= at)
++                partial = covered and ((day + 1) * DAY > min(at, watermark)
++                                       or day * DAY < state.started_at)
++                values = daily_values.get(day, (0, 0, 0, 0, 0) if covered else (None,) * 5)
++                daily_rows.append(dict(zip(
++                    ("day", "players", "foreground_ms", "starts", "finishes", "accepted"), (day, *values)),
++                    coverage_state="partial" if partial else "observed" if covered else "unobserved"))
+         retention = []
+         for day, size in sorted(sizes.items()):
+             item = {
+@@ -367,17 +381,7 @@
+             "options_truncated": len(options) > 200,
+             "active_players": players,
+             "counters": counts,
+-            "daily": [
+-                {
+-                    "day": day,
+-                    "players": n,
+-                    "foreground_ms": duration,
+-                    "starts": starts,
+-                    "finishes": finishes,
+-                    "accepted": accepted,
+-                }
+-                for day, n, duration, starts, finishes, accepted in daily
+-            ],
++            "daily": daily_rows,
+             "view": view,
+             "engagement": engagement,
+             "retention": retention,
+diff --git a/backend/bmt_backend/studio_governance.py b/backend/bmt_backend/studio_governance.py
+--- a/backend/bmt_backend/studio_governance.py
++++ b/backend/bmt_backend/studio_governance.py
+@@ -1,24 +1,20 @@
+ """Staff-owned saved views, case assignment, releases and bounded CSV exports."""
+ 
+-import csv
+-import io
+-from datetime import datetime, timezone
++import re
++from typing import Literal
+ from uuid import UUID
+ 
+ from fastapi import APIRouter, HTTPException, Query, Request
+-from fastapi.responses import Response
+ from pydantic import BaseModel, ConfigDict, Field
+-from sqlalchemy import case, event, func, select
++from sqlalchemy import event, func, select
+ 
+ from .admin import Access, Window
+ from .admin_models import AdminAudit
+-from .admin_ranges import calendar_range
+ from .middleware import ParsedJSONRoute
+ from .studio_access import actor
+ from .studio_case_models import StudioCase, StudioCaseEvent
+ from .studio_cases import begin, owner, safe_text
+ from .studio_platform_models import (
+-    AnalysisDay,
+     StudioCaseTriage,
+     StudioIncident,
+     StudioRelease,
+@@ -42,6 +38,7 @@
+     "players",
+     "cases",
+     "studio",
++    "races", "audit", "jobs", "grants",
+ }
+ FILTERS = {
+     "since",
+@@ -56,6 +53,10 @@
+     "state",
+     "kind",
+     "failure_code",
++    "all", "status", "time_field", "device_model", "os_version", "track_version_id", "version",
++    "renderer", "render_context_key", "context_state", "car_detail", "category", "metric",
++    "theme", "visibility", "origin", "sort", "direction", "min_rating", "min_finishers", "limit",
++    "view", "draft",
+ }
+ 
+ 
+@@ -110,8 +111,33 @@
+     id: UUID
+     expected_revision: int = Field(ge=0)
+     name: str = Field(min_length=1, max_length=100)
+-    route: str = Field(max_length=40)
++    route: str = Field(max_length=100)
+     filters: dict[str, str]
++
++
++def saved_location(route, filters):
++    """Store a validated subpath in JSON; retain the existing VARCHAR(40) schema."""
++    parts = route.split("/")
++    if parts[0] not in ROUTES or len(parts) > 2:
++        raise HTTPException(422, "INVALID_SAVED_VIEW")
++    if len(parts) == 2:
++        root, leaf = parts
++        valid = ((root == "system" and leaf in ("jobs", "audit", "access"))
++                 or (root in ("players", "tracks", "races", "cases", "competitions")
++                     and re.fullmatch(r"[a-fA-F0-9]{8}(?:-[a-fA-F0-9]{4}){3}-[a-fA-F0-9]{12}", leaf))
++                 or (root == "alarms" and re.fullmatch(r"[a-zA-Z0-9_-]{1,64}", leaf)))
++        if not valid:
++            raise HTTPException(422, "INVALID_SAVED_VIEW")
++    return parts[0], {**filters, **({"_path": parts[1]} if len(parts) == 2 else {})}
++
++
++def saved_value(row):
++    data = value(row, "id name route filters revision updated_at")
++    data["filters"] = dict(data["filters"])
++    leaf = data["filters"].pop("_path", None)
++    if leaf:
++        data["route"] += "/" + leaf
++    return data
+ 
+ 
+ @router.get("/v1/admin/saved-views")
+@@ -120,7 +146,7 @@
+         read_snapshot(db)
+         return {
+             "items": [
+-                value(r, "id name route filters revision updated_at")
++                saved_value(r)
+                 for r in db.scalars(
+                     select(StudioSavedView)
+                     .where(StudioSavedView.owner == actor(role))
+@@ -134,11 +160,11 @@
+ @router.post("/v1/admin/saved-views")
+ def save(body: Saved, request: Request, role: Access):
+     if (
+-        body.route not in ROUTES
+-        or not set(body.filters) <= FILTERS
++        not set(body.filters) <= FILTERS
+         or any(len(v) > 160 for v in body.filters.values())
+     ):
+         raise HTTPException(422, "INVALID_SAVED_VIEW")
++    route, filters = saved_location(body.route, body.filters)
+     fingerprint = digest(body.model_dump(mode="json"))
+     with request.app.state.session_factory() as db:
+         begin(db, str(UUID(digest({"saved_owner": actor(role)})[:32])))
+@@ -164,8 +190,8 @@
+                 id=str(body.id),
+                 owner=actor(role),
+                 name=body.name,
+-                route=body.route,
+-                filters=body.filters,
++                route=route,
++                filters=filters,
+                 revision=0,
+             )
+             db.add(row)
+@@ -174,12 +200,12 @@
+         before = value(row, "id name route filters revision")
+         row.name, row.route, row.filters, row.updated_at, row.revision = (
+             safe_text(body.name, 100),
+-            body.route,
+-            body.filters,
++            route,
++            filters,
+             now(),
+             row.revision + 1,
+         )
+-        after = value(row, "id name route filters revision updated_at")
++        after = saved_value(row)
+         audited(
+             db,
+             request,
+@@ -192,6 +218,33 @@
+             after,
+             fingerprint,
+         )
++        db.commit()
++        return after
++
++
++class DeleteSaved(BaseModel):
++    model_config = ConfigDict(extra="forbid")
++    command_id: UUID
++    expected_revision: int = Field(ge=1)
++
++
++@router.post("/v1/admin/saved-views/{identity}/delete")
++def delete_saved(identity: UUID, body: DeleteSaved, request: Request, role: Access):
++    fingerprint = digest({"id": str(identity), **body.model_dump(mode="json")})
++    with request.app.state.session_factory() as db:
++        begin(db, str(UUID(digest({"saved_owner": actor(role)})[:32])))
++        previous = replay(db, body.command_id, fingerprint)
++        if previous is not None:
++            return previous
++        row = db.get(StudioSavedView, str(identity))
++        if row is None or row.owner != actor(role):
++            raise HTTPException(404, "SAVED_VIEW_NOT_FOUND")
++        if row.revision != body.expected_revision:
++            raise HTTPException(409, "VIEW_REVISION_CHANGED")
++        after = {"id": str(identity), "deleted": True}
++        audited(db, request, role, body.command_id, "saved_view_delete", row.id,
++                "Delete saved reporting view", saved_value(row), after, fingerprint)
++        db.delete(row)
+         db.commit()
+         return after
+ 
+@@ -367,58 +420,30 @@
+     platform: str = Query("", max_length=12),
+     mode: str = Query("", max_length=24),
+     population: str = "all",
++    view: Literal["activity", "retention", "journey", "engagement", "dimensions"] = "dimensions",
+ ):
+-    first, until = window or calendar_range(7)
+-    from .studio_analysis import population_conditions
+-
+-    conditions = [
+-        AnalysisDay.day >= first // 86400,
+-        AnalysisDay.day <= (until - 1) // 86400,
+-        *population_conditions(request.app.state.settings, AnalysisDay, population),
+-    ]
+-    for field, value_ in (("build_id", build_id), ("platform", platform), ("mode", mode)):
+-        if value_:
+-            conditions.append(getattr(AnalysisDay, field) == value_)
+-    with request.app.state.session_factory() as db:
+-        read_snapshot(db)
+-        fields = (AnalysisDay.day, AnalysisDay.build_id, AnalysisDay.platform)
+-        rows = db.execute(
+-            select(
+-                *fields,
+-                func.count(
+-                    func.distinct(
+-                        case((AnalysisDay.counters["active"].as_integer() > 0, AnalysisDay.player_id))
+-                    )
+-                ),
+-                func.coalesce(func.sum(AnalysisDay.counters["race_started"].as_integer()), 0),
+-            )
+-            .where(*conditions)
+-            .group_by(*fields)
+-            .order_by(*fields)
+-            .limit(1001)
+-        ).all()
+-        if len(rows) > 1000:
+-            raise HTTPException(422, "EXPORT_TOO_LARGE_NARROW_DATES")
+-        stream = io.StringIO(newline="")
+-        writer = csv.writer(stream)
+-        writer.writerow(("utc_day", "build_id", "platform", "active_players", "race_starts"))
+-        writer.writerows(
+-            [
+-                [
+-                    datetime.fromtimestamp(row[0] * 86400, timezone.utc).date().isoformat(),
+-                    *[csv_cell(v) for v in row[1:]],
+-                ]
+-                for row in rows
+-            ]
+-        )
+-        return Response(
+-            stream.getvalue(),
+-            media_type="text/csv",
+-            headers={
+-                "Content-Disposition": 'attachment; filename="observed-activity.csv"',
+-                "Cache-Control": "no-store",
+-            },
+-        )
++    from .studio_exports import behaviour_export
++    return behaviour_export(request, role, window,
++        {'build_id': build_id, 'platform': platform, 'mode': mode, 'population': population}, view, csv_cell)
++
++
++@router.get("/v1/admin/exports/releases.csv")
++def export_releases(
++    request: Request, role: Access, window: Window,
++    build_id: str = Query("", max_length=80), baseline: str = Query("", max_length=80),
++    platform: str = Query("", max_length=12), device_model: str = Query("", max_length=80),
++    os_version: str = Query("", max_length=80), track_version_id: str = Query("", max_length=36),
++    render_context_key: str = Query("", max_length=64),
++):
++    from .studio_exports import csv_report
++    from .studio_release_reports import release_report
++    data = release_report(request, role, window, build_id, baseline, platform, device_model,
++                          os_version, track_version_id, render_context_key)
++    data['coverage'] = data['source']
++    rows = [{**data[k], 'comparison_role': k} for k in ('candidate', 'baseline') if data[k]]
++    return csv_report(data, 'release-comparison', rows,
++        ['comparison_role', 'build_id', 'attempts', 'finished', 'frames', 'slow_frames',
++         'completion', 'slow_fraction', 'reporting_players', 'affected_players', 'player_coverage', 'sample_sufficient'], csv_cell)
+ 
+ 
+ # Existing case commands also retain the named actor in their append-only history.
+diff --git a/backend/bmt_backend/studio_exports.py b/backend/bmt_backend/studio_exports.py
+--- /dev/null
++++ b/backend/bmt_backend/studio_exports.py
+@@ -0,0 +1,90 @@
++"""Small, synchronous exports of the same bounded reporting queries as Studio."""
++
++import csv
++import io
++import json
++from datetime import datetime, timezone
++
++from fastapi import HTTPException
++from fastapi.responses import Response
++from sqlalchemy import case, func, select
++
++from .studio_analysis import DAY, behaviour, interval, population_conditions
++from .studio_platform_models import AnalysisDay, AnalysisState
++from .track_models import now
++
++
++def utc_day(day):
++    return datetime.fromtimestamp(day * DAY, timezone.utc).date().isoformat()
++
++
++def dimensions(request, role, window, filters):
++    """Preserve the original dimension CSV contract on the isolated reader."""
++    _requested, (first, until) = interval(window)
++    conditions = [AnalysisDay.day >= first // DAY, AnalysisDay.day < until // DAY,
++                  *population_conditions(request.app.state.settings, AnalysisDay, filters['population'])]
++    for field in ('build_id', 'platform', 'mode'):
++        if filters[field]:
++            conditions.append(getattr(AnalysisDay, field) == filters[field])
++    with request.app.state.studio_reporting.snapshot(
++        request.app.state.session_factory, request_id=request.state.request_id
++    ) as (db, storage):
++        state = db.get(AnalysisState, 1)
++        fields = (AnalysisDay.day, AnalysisDay.build_id, AnalysisDay.platform)
++        rows = db.execute(select(*fields,
++            func.count(func.distinct(case((AnalysisDay.counters['active'].as_integer() > 0, AnalysisDay.player_id)))),
++            func.coalesce(func.sum(AnalysisDay.counters['race_started'].as_integer()), 0))
++            .where(*conditions).group_by(*fields).order_by(*fields).limit(1001)).all()
++        if len(rows) > 1000:
++            raise HTTPException(422, 'EXPORT_TOO_LARGE_NARROW_DATES')
++        return {'as_of': now(), 'since': first, 'until': until, 'filters': filters,
++                'coverage': {'processed_through': state.processed_through if state else None,
++                             'reporting_storage': storage, 'collection_enabled': request.app.state.settings.telemetry_enabled},
++                'rows': [dict(zip(('utc_day', 'build_id', 'platform', 'active_players', 'race_starts'),
++                                 (utc_day(row[0]), *row[1:]))) for row in rows]}
++
++
++def csv_report(data, kind, rows, fields, safe):
++    """Repeat provenance per row so CSV sorting never separates it from facts."""
++    metadata = {'report': kind, 'definition_version': 1, 'queried_at': data['as_of'],
++                'since': data['since'], 'until_exclusive': data['until'], 'timezone': 'UTC',
++                'processed_through': data.get('coverage', {}).get('processed_through'),
++                'collection_enabled': data.get('coverage', {}).get('collection_enabled'),
++                'projection_available': data.get('coverage', {}).get('available'),
++                'scope': json.dumps(data.get('filters', {}), sort_keys=True, separators=(',', ':')),
++                'query_semantics': 'new_query_at_download'}
++    stream = io.StringIO(newline='')
++    writer = csv.writer(stream)
++    writer.writerow([*fields, *metadata])
++    # Metadata-only reports still carry provenance when there are no eligible rows.
++    for row in rows or [{}]:
++        writer.writerow([safe('' if row.get(k) is None else row[k]) for k in fields]
++                        + [safe('' if v is None else v) for v in metadata.values()])
++    return Response(stream.getvalue(), media_type='text/csv', headers={
++        'Content-Disposition': f'attachment; filename="observed-{kind}.csv"',
++        'Cache-Control': 'no-store', 'X-BMT-Report-As-Of': str(data['as_of']),
++        'X-BMT-Report-Watermark': str(metadata['processed_through'] or ''),
++    })
++
++
++def behaviour_export(request, role, window, filters, view, safe):
++    if view == 'dimensions':
++        data = dimensions(request, role, window, filters)
++        return csv_report(data, view, data['rows'],
++                          ['utc_day', 'build_id', 'platform', 'active_players', 'race_starts'], safe)
++    data = behaviour(request=request, role=role, window=window, **filters, view=view)
++    if view == 'activity':
++        fields = ['utc_day', 'coverage_state', 'players', 'starts', 'finishes', 'accepted', 'foreground_ms']
++        rows = [{**r, 'utc_day': utc_day(r['day'])} for r in data['daily']]
++    elif view == 'retention':
++        fields = ['cohort_day', 'cohort_players', 'followup_days', 'eligible', 'returned', 'mature', 'finalised']
++        rows = [{'cohort_day': r['day'], 'cohort_players': r['players'], 'followup_days': day, **r['d'+str(day)]}
++                for r in data['retention'] for day in (1, 7, 30)]
++    elif view == 'journey':
++        fields = ['step', 'players', 'eligible', 'truncated_profiles']
++        rows = [{'step': r['name'], 'players': r['players'], 'eligible': data['first_race']['eligible'],
++                 'truncated_profiles': data['first_race']['truncated_profiles']} for r in data['first_race']['steps']]
++    else:
++        fields = ['sessions', 'sessions_with_duration', 'foreground_ms']
++        rows = [data['engagement']]
++    return csv_report(data, view, rows, fields, safe)
+diff --git a/backend/bmt_backend/studio_metrics.py b/backend/bmt_backend/studio_metrics.py
+--- a/backend/bmt_backend/studio_metrics.py
++++ b/backend/bmt_backend/studio_metrics.py
+@@ -4,11 +4,8 @@
+ from sqlalchemy import BigInteger, case, cast, func, select
+ 
+ from .admin import Access, Window
+-from .admin_ranges import calendar_range
+-from .quality_models import QualityFact
+ from .race_statistics_models import RaceStatisticsDay as Race
+-from .studio_analysis import DAY
+-from .studio_platform_models import AnalysisDay, AnalysisState, StudioFinanceEvent
++from .studio_platform_models import AnalysisState, StudioFinanceEvent
+ from .studio_queries import read_snapshot
+ from .telemetry_models import ProductState
+ from .track_models import now
+@@ -161,107 +158,12 @@
+ 
+ @router.get("/v1/admin/analysis/releases")
+ def compare(
+-    request: Request,
+-    role: Access,
+-    window: Window,
+-    build_id: str = Query("", max_length=80),
+-    baseline: str = Query("", max_length=80),
+-    platform: str = Query("", max_length=12),
++    request: Request, role: Access, window: Window,
++    build_id: str = Query("", max_length=80), baseline: str = Query("", max_length=80),
++    platform: str = Query("", max_length=12), device_model: str = Query("", max_length=80),
++    os_version: str = Query("", max_length=80), track_version_id: str = Query("", max_length=36),
++    render_context_key: str = Query("", max_length=64),
+ ):
+-    first, until = window or calendar_range(7)
+-    conditions = [Race.day >= first // DAY, Race.day <= (until - 1) // DAY]
+-    if platform:
+-        conditions.append(Race.platform == platform)
+-    with request.app.state.session_factory() as db:
+-        read_snapshot(db)
+-        builds = list(
+-            db.scalars(select(Race.build_id).where(*conditions).distinct().order_by(Race.build_id).limit(201))
+-        )
+-
+-        def one(build):
+-            if not build:
+-                return None
+-            scope = [*conditions, Race.build_id == build]
+-            result = quality_totals(db, scope)
+-            result["build_id"] = build
+-            affected = [
+-                AnalysisDay.day >= first // DAY,
+-                AnalysisDay.day <= (until - 1) // DAY,
+-                AnalysisDay.build_id == build,
+-                AnalysisDay.counters["quality_attempts"].as_integer() > 0,
+-            ]
+-            if platform:
+-                affected.append(AnalysisDay.platform == platform)
+-            reporting, slow = db.execute(select(
+-                func.count(func.distinct(AnalysisDay.player_id)),
+-                func.count(func.distinct(case((AnalysisDay.counters["quality_slow_frames"].as_integer() > 0,
+-                                               AnalysisDay.player_id))))).where(*affected)).one()
+-            result["reporting_players"], result["affected_players"] = reporting, slow
+-            return result
+-
+-        candidate, control = one(build_id), one(baseline)
+-        segment_fields = (Race.device_model, Race.os_version, Race.render_context_key)
+-        segments = (
+-            db.execute(
+-                select(
+-                    *segment_fields,
+-                    func.sum(Race.races).label("attempts"),
+-                    func.sum(
+-                        sum(
+-                            (cast(Race.frame_buckets[i].as_string(), BigInteger) for i in range(5, 8)),
+-                            start=0,
+-                        )
+-                    ).label("slow_frames"),
+-                )
+-                .where(*conditions, Race.build_id == build_id)
+-                .group_by(*segment_fields)
+-                .order_by(func.sum(Race.races).desc(), *segment_fields)
+-                .limit(21)
+-            ).all()
+-            if build_id
+-            else []
+-        )
+-        diagnostic = dict(
+-            db.execute(
+-                select(
+-                    *[
+-                        func.coalesce(func.sum(getattr(QualityFact, name)), 0).label(name)
+-                        for name in ("reports", "samples", "slow")
+-                    ]
+-                ).where(
+-                    QualityFact.kind == "quality_summary",
+-                    QualityFact.day >= first // DAY,
+-                    QualityFact.day <= (until - 1) // DAY,
+-                )
+-            )
+-            .mappings()
+-            .one()
+-        )
+-        return {
+-            "role": role,
+-            "since": first // DAY * DAY,
+-            "until": ((until - 1) // DAY + 1) * DAY,
+-            "as_of": now(),
+-            "builds": builds[:200],
+-            "builds_truncated": len(builds) > 200,
+-            "candidate": candidate,
+-            "baseline": control,
+-            "comparison": {
+-                "completion_change": candidate["completion"] - control["completion"],
+-                "descriptive_only": True,
+-            }
+-            if candidate
+-            and control
+-            and candidate["completion"] is not None
+-            and control["completion"] is not None
+-            else None,
+-            "segments": [
+-                dict(
+-                    zip(("device_model", "os_version", "render_context_key", "attempts", "slow_frames"), row)
+-                )
+-                for row in segments[:20]
+-            ],
+-            "segments_truncated": len(segments) > 20,
+-            "historical_diagnostic_totals": diagnostic,
+-            "coverage": "Full filtered SQL aggregates. Release comparisons describe reporting populations and are not causal. Affected-player coverage starts at analysis migration; no client crash-free denominator is inferred.",
+-        }
++    from .studio_release_reports import release_report
++    return release_report(request, role, window, build_id, baseline, platform, device_model,
++                          os_version, track_version_id, render_context_key)
+diff --git a/backend/bmt_backend/studio_release_reports.py b/backend/bmt_backend/studio_release_reports.py
+--- /dev/null
++++ b/backend/bmt_backend/studio_release_reports.py
+@@ -0,0 +1,102 @@
++"""Exact release aggregates on isolated reporting storage, with honest coverage."""
++
++from sqlalchemy import BigInteger, Float, case, cast, func, select
++
++from .race_statistics_models import RaceStatisticsDay as Race
++from .studio_analysis import DAY, interval
++from .studio_platform_models import AnalysisDay, AnalysisState
++from .track_models import now
++
++
++def release_report(request, role, window, build_id, baseline, platform, device_model,
++                   os_version, track_version_id, render_context_key):
++    from .studio_metrics import quality_totals
++
++    requested, (first, until) = interval(window)
++    filters = {'build_id': build_id, 'baseline': baseline, 'platform': platform, 'device_model': device_model,
++               'os_version': os_version, 'track_version_id': track_version_id, 'render_context_key': render_context_key}
++    conditions = [Race.day >= first // DAY, Race.day < until // DAY]
++    for key in ('platform', 'device_model', 'os_version', 'track_version_id', 'render_context_key'):
++        if filters[key]:
++            conditions.append(getattr(Race, key) == filters[key])
++    with request.app.state.studio_reporting.snapshot(
++        request.app.state.session_factory, request_id=request.state.request_id
++    ) as (db, storage):
++        state = db.get(AnalysisState, 1)
++        builds = list(db.scalars(select(Race.build_id).where(*conditions)
++                                .distinct().order_by(Race.build_id).limit(201)))
++        option_fields = (Race.device_model, Race.os_version, Race.track_version_id, Race.render_context_key)
++        options = db.execute(select(*option_fields).where(Race.day >= first // DAY, Race.day < until // DAY)
++                             .distinct().order_by(*option_fields).limit(201)).all()
++
++        def one(build):
++            if not build:
++                return None
++            scope = [*conditions, Race.build_id == build]
++            result = quality_totals(db, scope)
++            result['build_id'] = build
++            result['latest_package_at'] = db.scalar(select(func.max(Race.latest_received_at)).where(*scope))
++            affected = [AnalysisDay.day >= first // DAY, AnalysisDay.day < until // DAY,
++                        AnalysisDay.build_id == build, AnalysisDay.counters['quality_attempts'].as_integer() > 0]
++            for key in ('platform', 'device_model', 'os_version'):
++                if filters[key]:
++                    affected.append(getattr(AnalysisDay, key) == filters[key])
++            # Per-player days have no track or exact rendering-context grain.
++            # An unavailable denominator must never be shown as zero users.
++            reporting, slow = (None, None)
++            if not track_version_id and not render_context_key:
++                reporting, slow = db.execute(select(func.count(func.distinct(AnalysisDay.player_id)),
++                    func.count(func.distinct(case((AnalysisDay.counters['quality_slow_frames'].as_integer() > 0,
++                                                   AnalysisDay.player_id))))).where(*affected)).one()
++                if not reporting:
++                    reporting, slow = None, None
++            result.update(reporting_players=reporting, affected_players=slow,
++                          player_coverage='available' if reporting is not None else 'unavailable_for_selected_scope',
++                          sample_sufficient=result['attempts'] >= 30 and result['frames'] >= 1000)
++            return result
++
++        candidate, control = one(build_id), one(baseline)
++        segment_fields = (Race.platform, Race.device_model, Race.os_version, Race.render_context_key)
++        frames = sum((cast(Race.frame_buckets[i].as_string(), BigInteger) for i in range(8)), start=0)
++        slow_frames = sum((cast(Race.frame_buckets[i].as_string(), BigInteger) for i in range(5, 8)), start=0)
++        candidate_frames = func.sum(case((Race.build_id == build_id, frames), else_=0))
++        candidate_slow = func.sum(case((Race.build_id == build_id, slow_frames), else_=0))
++        baseline_frames = func.sum(case(((Race.build_id == baseline) & bool(baseline), frames), else_=0))
++        baseline_slow = func.sum(case(((Race.build_id == baseline) & bool(baseline), slow_frames), else_=0))
++        segment_rows = db.execute(select(*segment_fields,
++            func.sum(case((Race.build_id == build_id, Race.races), else_=0)),
++            candidate_frames, candidate_slow, baseline_frames, baseline_slow)
++            .where(*conditions, Race.build_id.in_([build_id, baseline]))
++            .group_by(*segment_fields)
++            .having(candidate_frames > 0)
++            .order_by((cast(candidate_slow, Float) / func.nullif(candidate_frames, 0)).desc(),
++                      candidate_frames.desc(), *segment_fields).limit(21)).all() if build_id else []
++        segments = []
++        for row in segment_rows[:20]:
++            item = dict(zip(('platform', 'device_model', 'os_version', 'render_context_key', 'attempts',
++                             'frames', 'slow_frames', 'baseline_frames', 'baseline_slow_frames'), row))
++            item['slow_fraction'] = item['slow_frames'] / item['frames'] if item['frames'] else None
++            item['baseline_slow_fraction'] = item['baseline_slow_frames'] / item['baseline_frames'] if item['baseline_frames'] else None
++            item['slow_change'] = item['slow_fraction'] - item['baseline_slow_fraction'] if item['baseline_slow_fraction'] is not None else None
++            item['sample_sufficient'] = item['frames'] >= 1000 and item['baseline_frames'] >= 1000
++            segments.append(item)
++        comparison = None
++        if candidate and control and candidate['attempts'] and control['attempts']:
++            comparison = {'completion_change': candidate['completion'] - control['completion'],
++                          'slow_frame_change': candidate['slow_fraction'] - control['slow_fraction']
++                          if candidate['slow_fraction'] is not None and control['slow_fraction'] is not None else None,
++                          'sample_sufficient': candidate['sample_sufficient'] and control['sample_sufficient'],
++                          'descriptive_only': True}
++        return {'schema': 'bmt-studio-releases-v2', 'definition_version': 1, 'role': role, 'as_of': now(),
++                'requested_since': requested[0], 'requested_until': requested[1],
++                'since': first, 'until': until, 'filters': filters,
++                'builds': builds[:200], 'builds_truncated': len(builds) > 200,
++                'options': [dict(zip(('device_model', 'os_version', 'track_version_id', 'render_context_key'), r)) for r in options[:200]],
++                'options_truncated': len(options) > 200,
++                'candidate': candidate, 'baseline': control, 'comparison': comparison,
++                'segments': segments, 'segments_truncated': len(segment_rows) > 20,
++                'sample_policy': {'minimum_packages': 30, 'minimum_frames': 1000,
++                                  'purpose': 'Exploratory sample warning, not a validated rollout or significance threshold.'},
++                'source': {'reporting_storage': storage, 'processed_through': state.processed_through if state else None,
++                           'collection_enabled': request.app.state.settings.client_quality_enabled},
++                'coverage': 'Exact selected package/frame aggregates. Player counts use analysis-v1 build/device/OS days; unavailable at track/render-context grain. Comparisons remain descriptive; unselected device, track and player mix can differ.'}
+diff --git a/backend/bmt_backend/studio_ranking.py b/backend/bmt_backend/studio_ranking.py
+--- /dev/null
++++ b/backend/bmt_backend/studio_ranking.py
+@@ -0,0 +1,132 @@
++"""Bounded ranking operations metadata; GETs never run settlement or repairs."""
++
++from uuid import UUID
++
++from fastapi import APIRouter, HTTPException, Request
++from sqlalchemy import select
++
++from .admin import Access
++from .admin_models import AdminAudit
++from .middleware import ParsedJSONRoute
++from .studio_queries import read_snapshot
++from .track_models import OperationState, now
++from .world_ranking import WEEK, Correct
++from .world_ranking_models import (
++    Circuit,
++    RankingBranch,
++    RankingControl,
++    RankingCorrection,
++    RankingPlayer,
++    RankingSnapshot,
++)
++
++router = APIRouter(route_class=ParsedJSONRoute, tags=['Studio ranking operations'])
++HEARTBEAT_ID = 'studio-ranking-worker'
++
++
++def ranking_status(db, settings):
++    at = now()
++    control = db.get(RankingControl, 1)
++    launch = control.launch_week if control else settings.world_ranking_launch_week
++    result = {'as_of': at, 'launch_week': launch, 'enabled': bool(launch), 'pending': False,
++              'state': 'disabled' if not launch else 'scheduled' if launch > at else 'awaiting_first_settlement',
++              'worker_last_seen_at': None, 'progress_at': None, 'retrying': False, 'oldest_at': None}
++    heartbeat = db.get(OperationState, HEARTBEAT_ID)
++    if heartbeat:
++        result.update(worker_last_seen_at=heartbeat.updated_at, progress_at=heartbeat.details.get('progress_at'),
++                      worker_error_kind=heartbeat.details.get('error_kind', ''))
++    if not control:
++        result.update(pending=bool(launch and at >= launch + WEEK),
++                      oldest_at=launch + WEEK if launch else None)
++        return result
++    branch = db.get(RankingBranch, control.running_branch)
++    published = db.get(RankingSnapshot, control.published_id) if control.published_id else None
++    if not branch:
++        result.update(state='branch_unavailable', pending=True)
++        return result
++    pending = branch.phase != 'idle' or branch.mode == 'rebuild' or at >= branch.next_week + WEEK
++    result.update(state='scheduled' if launch > at else 'retrying' if branch.failure else 'settling' if pending else 'ready',
++                  pending=pending, oldest_at=None if branch.mode == 'rebuild' else branch.next_week + WEEK,
++                  branch_id=branch.id, published_snapshot=control.published_id,
++                  published_at=published.published_at if published else None,
++                  published_week=published.week_start if published else None,
++                  published_field=published.field_size if published else None,
++                  published_ranked=published.ranked_count if published else None,
++                  phase=branch.phase, mode=branch.mode, week_start=branch.next_week,
++                  processed_through=branch.cursor, part=branch.part, working_snapshot=branch.snapshot_id,
++                  retrying=bool(branch.failure), error_kind=branch.failure.split(':', 1)[0] if branch.failure else '')
++    return result
++
++
++def record_worker_heartbeat(factory, *, worked=False, error_kind=''):
++    """Called at most once per 15s between batches on the existing one-connection worker."""
++    with factory() as db:
++        at = now()
++        row = db.get(OperationState, HEARTBEAT_ID)
++        control = db.get(RankingControl, 1)
++        branch = db.get(RankingBranch, control.running_branch) if control else None
++        progress = [branch.id, branch.phase, branch.cursor, branch.part, branch.snapshot_id] if branch else None
++        prior = row.details if row else {}
++        details = {'progress': progress, 'progress_at': at if progress != prior.get('progress') else prior.get('progress_at'),
++                   'worked': bool(worked), 'error_kind': error_kind[:80]}
++        if row:
++            row.updated_at, row.details = at, details
++        else:
++            db.add(OperationState(id=HEARTBEAT_ID, updated_at=at, details=details))
++        db.commit()
++
++
++@router.get('/v1/admin/studio/ranking')
++def inspect_ranking(request: Request, role: Access):
++    with request.app.state.session_factory() as db:
++        read_snapshot(db)
++        data = ranking_status(db, request.app.state.settings)
++        circuits = list(db.scalars(select(Circuit).order_by(Circuit.week_start.desc()).limit(27)))
++        history = list(db.execute(select(RankingCorrection, AdminAudit.actor, RankingPlayer.player_id).select_from(RankingCorrection)
++            .outerjoin(AdminAudit, AdminAudit.command_id == RankingCorrection.command_id)
++            .outerjoin(RankingPlayer, RankingPlayer.key == RankingCorrection.player_key)
++            .where(RankingCorrection.circuit_id.in_([c.id for c in circuits[:26]]))
++            .order_by(RankingCorrection.created_at.desc(), RankingCorrection.command_id).limit(26))) if circuits else []
++        data.update(circuits=[{'id': c.id, 'week_start': c.week_start, 'original_snapshot': c.original_snapshot,
++                               'closed': c.week_start + WEEK <= data['as_of'], 'tracks': c.tracks} for c in circuits[:26]],
++                    history=[{'command_id': r.command_id, 'circuit_id': r.circuit_id, 'kind': 'void_week' if not r.player_key else 'exclude_player',
++                              'actor': actor or r.actor, 'player_id': player, 'reason': r.reason,
++                              'created_at': r.created_at} for r, actor, player in history[:25]],
++                    history_truncated=len(history)>25, circuits_truncated=len(circuits)>26,
++                    history_scope='Latest 25 corrections within the 26 latest circuits.', role=role)
++        return data
++
++
++@router.post('/v1/admin/studio/ranking/correction-preview')
++def preview_correction(body: Correct, request: Request, role: Access):
++    """Advisory only. The existing command rechecks its locked snapshot at commit."""
++    if role != 'owner':
++        raise HTTPException(403, 'OWNER_REQUIRED')
++    try:
++        UUID(body.command_id)
++        if body.player_id:
++            UUID(body.player_id)
++    except ValueError:
++        raise HTTPException(422, 'INVALID_CORRECTION_IDENTIFIER') from None
++    if bool(body.player_id) == body.void_week or len(body.reason.strip()) < 8:
++        raise HTTPException(422, 'CHOOSE_PLAYER_OR_VOID_WEEK')
++    with request.app.state.session_factory() as db:
++        read_snapshot(db)
++        control = db.get(RankingControl, 1)
++        if not control or (control.published_id or 0) != body.expected_snapshot:
++            raise HTTPException(409, 'RANKING_CHANGED_REFRESH_REQUIRED')
++        branch = db.get(RankingBranch, control.running_branch)
++        if not branch or branch.phase != 'idle' or branch.mode == 'rebuild':
++            raise HTTPException(409, 'RANKING_SETTLEMENT_BUSY_RETRY')
++        circuit = db.get(Circuit, body.circuit_id)
++        current = db.get(RankingSnapshot, control.published_id) if control.published_id else None
++        if circuit is None or circuit.week_start + WEEK > now():
++            raise HTTPException(422, 'CIRCUIT_NOT_CLOSED')
++        unpublished_void = body.void_week and circuit.original_snapshot is None
++        if not unpublished_void and (current is None or circuit.week_start > current.week_start or circuit.original_snapshot is None):
++            raise HTTPException(422, 'CIRCUIT_NOT_PUBLISHED')
++        if body.player_id and db.scalar(select(RankingPlayer.key).where(RankingPlayer.player_id == body.player_id)) is None:
++            raise HTTPException(404, 'PLAYER_NOT_FOUND')
++        return {'command': body.model_dump(), 'previous_snapshot': control.published_id,
++                'effect': 'Queue a whole-week void.' if unpublished_void else 'Rebuild ranking generations from launch through the published week. The previous publication remains visible until atomic replacement.',
++                'kind': 'void_week' if body.void_week else 'exclude_player', 'reason': body.reason.strip()}
+diff --git a/backend/bmt_backend/studio_jobs.py b/backend/bmt_backend/studio_jobs.py
+--- a/backend/bmt_backend/studio_jobs.py
++++ b/backend/bmt_backend/studio_jobs.py
+@@ -4,8 +4,14 @@
+ import json
+ 
+ from fastapi import APIRouter, HTTPException, Query, Request
+-from sqlalchemy import Integer, String, cast, func, or_, select
+-
++from sqlalchemy import Integer, String, case, cast, func, literal, or_, select
++
++from .achievement_models import (
++    AchievementCompetition,
++    AchievementRecord,
++    AchievementState,
++    CreatorAchievementEvent,
++)
+ from .admin import Access
+ from .news_models import NewsDemand
+ from .privacy_models import AccountDeletion
+@@ -14,6 +20,7 @@
+ from .studio_queries import read_snapshot
+ from .telemetry_models import ProductEvent, ProductState
+ from .track_models import HistogramSnapshot, Run, TrackValidation, now
++from .world_ranking_models import RankingBranch, RankingControl
+ 
+ router = APIRouter(tags=["Studio worker queues"])
+ 
+@@ -30,6 +37,7 @@
+ ):
+     if state not in ("pending", "failed", "all"):
+         raise HTTPException(422, "INVALID_JOB_STATE")
++    at = now()
+     specs = (
+         (
+             "race",
+@@ -91,6 +99,20 @@
+             StudioDelivery.state == "pending",
+             StudioDelivery.state == "dead",
+         ),
++        ("ranking", RankingBranch, cast(RankingBranch.id, String),
++         case((RankingBranch.mode == 'rebuild', 0), else_=RankingBranch.next_week + 604800),
++         (RankingBranch.id == select(RankingControl.running_branch).where(RankingControl.id == 1).scalar_subquery())
++         & ((RankingBranch.phase != 'idle') | (RankingBranch.mode == 'rebuild') | (RankingBranch.next_week + 604800 <= at)),
++         (RankingBranch.id == select(RankingControl.running_branch).where(RankingControl.id == 1).scalar_subquery())
++         & (RankingBranch.failure != '')),
++        ("achievement_competition", AchievementCompetition, AchievementCompetition.kind + '~' + AchievementCompetition.id,
++         AchievementCompetition.due_at, AchievementCompetition.done.is_(False) & (AchievementCompetition.due_at <= at), False),
++        ("achievement_record", AchievementRecord, AchievementRecord.board_id, AchievementRecord.due_at,
++         AchievementRecord.due_at <= at, False),
++        ("achievement_rarity", AchievementState, AchievementState.player_id + '~' + AchievementState.scope,
++         literal(0), AchievementState.rarity_pending.is_(True), False),
++        ("creator_achievement", CreatorAchievementEvent, CreatorAchievementEvent.id, CreatorAchievementEvent.stamp,
++         literal(True), False),
+     )
+     if kind and kind not in {row[0] for row in specs}:
+         raise HTTPException(422, "INVALID_JOB_KIND")
+@@ -114,15 +136,25 @@
+         for label, model, identity, created, pending, failed in specs:
+             if kind and label != kind:
+                 continue
+-            summary = db.execute(
+-                select(func.count(), func.min(created)).select_from(model).where(pending)
+-            ).one()
++            bounded = label in ('ranking', 'achievement_competition', 'achievement_record', 'achievement_rarity', 'creator_achievement')
++            if bounded:
++                count = db.scalar(select(func.count()).select_from(select(identity).where(pending).limit(10001).subquery()))
++                oldest = db.scalar(select(created).where(pending).order_by(created).limit(1))
++                failed_count = db.scalar(select(func.count()).select_from(select(identity).where(failed).limit(10001).subquery()))
++                summary = (min(count, 10000), oldest)
++            else:
++                summary = db.execute(select(func.count(), func.min(created)).select_from(model).where(pending)).one()
++                failed_count = db.scalar(select(func.count()).select_from(model).where(failed))
+             summaries.append(
+                 {
+                     "kind": label,
+                     "pending": summary[0],
+-                    "oldest_at": summary[1],
+-                    "failed": db.scalar(select(func.count()).select_from(model).where(failed)),
++                    "oldest_at": summary[1] or None,
++                    "failed": min(failed_count, 10000) if bounded else failed_count,
++                    "capped": bounded and (count > 10000 or failed_count > 10000),
++                    "pending_capped": bounded and count > 10000,
++                    "failed_capped": bounded and failed_count > 10000,
++                    "age_known": bool(summary[1]) or not summary[0],
+                 }
+             )
+             conditions = [pending] if state == "pending" else [failed] if state == "failed" else []
+@@ -136,7 +168,7 @@
+                 select(
+                     identity,
+                     created,
+-                    getattr(model, "status", getattr(model, "state", created)).label("status"),
++                    getattr(model, "status", getattr(model, "state", getattr(model, "phase", created))).label("status"),
+                 )
+                 .where(*conditions)
+                 .order_by(created, identity)
+@@ -156,6 +188,8 @@
+                     }
+                 )
+         product = db.get(ProductState, 1)
++        from .studio_ranking import ranking_status
++        ranking = ranking_status(db, request.app.state.settings)
+         ordered = sorted(items, key=lambda x: (x["created_at"], x["kind"], x["id"]))
+         next_cursor = None
+         if len(ordered) > limit:
+@@ -179,6 +213,7 @@
+             "role": role,
+             "as_of": now(),
+             "summary": summaries,
++            "ranking": ranking,
+             "projection": {
+                 "pending": product.pending_events,
+                 "capped": product.pending_capped,
+@@ -196,5 +231,5 @@
+             "items": ordered[:limit],
+             "next_cursor": next_cursor,
+             "truncated": len(items) > limit,
+-            "scope": "Complete current per-kind counts, oldest first paged records. News uses the requested UTC day; histograms use the scheduled refresh time. No worker lease credentials are exposed.",
++            "scope": "Current per-kind queue counts and oldest-first records. New ranking/achievement counts are bounded at 10,000 and labelled if capped. Rarity enqueue time is unavailable; news uses the requested UTC day. Ranking uses the week-close schedule. No worker lease credentials are exposed.",
+         }
+diff --git a/backend/bmt_backend/studio_watchdog.py b/backend/bmt_backend/studio_watchdog.py
+--- a/backend/bmt_backend/studio_watchdog.py
++++ b/backend/bmt_backend/studio_watchdog.py
+@@ -233,15 +233,21 @@
+         "histogram": 180,
+         "news": None,
+         "notification": 300,
++        "ranking": 3600,
++        "achievement_competition": 900,
++        "achievement_record": 900,
++        "achievement_rarity": None,
++        "creator_achievement": 900,
+     }
+     summaries = {row["kind"]: row for row in value["summary"]}
+-    if set(summaries) != set(limits):
++    legacy = {'race', 'publication', 'validation', 'erasure', 'histogram', 'news', 'notification'}
++    if not legacy <= set(summaries):
+         raise ValueError("INCOMPLETE_QUEUE_COVERAGE")
+     result = []
+     for kind, threshold in limits.items():
+-        row = summaries[kind]
+-        pending = row["pending"]
+-        oldest = row["oldest_at"]
++        row = summaries.get(kind, {})
++        pending = row.get("pending")
++        oldest = row.get("oldest_at")
+         known = type(pending) is int and pending >= 0 and (pending == 0 or bool(oldest and threshold))
+         age = max(0, at - oldest) if oldest and threshold else None
+         result.append(
+@@ -265,6 +271,17 @@
+                 target="system/jobs",
+             )
+         )
++    ranking = value.get('ranking')
++    if ranking and ranking.get('enabled'):
++        seen, progress = ranking.get('worker_last_seen_at'), ranking.get('progress_at')
++        pending = ranking.get('pending')
++        result.append(Signal(
++            key='ranking_worker', active=(bool(ranking.get('retrying')) or at-seen >= 180
++                or bool(progress and at-progress >= 600)) if pending and seen else None if pending else False,
++            severity='warning', title='World Ranking worker needs attention',
++            evidence='State: '+ranking.get('state', 'unknown')+'; heartbeat: '+str(seen or 'unknown')+'; progress: '+str(progress or 'unknown'),
++            next_step='Inspect ranking phase, cursor, retry state and published generation. Scheduled inactivity before week close is expected.',
++            target='competitions?kind=ranking'))
+     projection = value.get("projection") or {}
+     oldest = projection.get("oldest_receipt_at")
+     result.append(
+diff --git a/backend/bmt_backend/world_ranking_worker.py b/backend/bmt_backend/world_ranking_worker.py
+--- a/backend/bmt_backend/world_ranking_worker.py
++++ b/backend/bmt_backend/world_ranking_worker.py
+@@ -3,6 +3,7 @@
+ import logging
+ import signal
+ import threading
++import time
+ from dataclasses import replace
+ 
+ from .config import Settings
+@@ -25,15 +26,25 @@
+     for signum in (signal.SIGINT, signal.SIGTERM):
+         signal.signal(signum, lambda *_: stopped.set())
+     logging.basicConfig(level=logging.INFO)
++    next_heartbeat = 0.0
+     try:
+         while not stopped.is_set():
++            error_kind = ''
+             try:
+                 worked = step(factory, blobs, settings)
+-            except Exception:
++            except Exception as error:
++                error_kind = type(error).__name__
+                 log.exception("world_ranking_step_failed")
+                 worked = False
+                 if args.once:
+                     raise
++            if time.monotonic() >= next_heartbeat:
++                from .studio_ranking import record_worker_heartbeat
++                try:
++                    record_worker_heartbeat(factory, worked=worked, error_kind=error_kind)
++                except Exception:
++                    log.exception('world_ranking_heartbeat_failed')
++                next_heartbeat = time.monotonic() + 15.0
+             if args.once:
+                 break
+             stopped.wait(settings.world_ranking_pause_ms/1000 if worked else 10.0)
+diff --git a/backend/tests/test_studio_review_fixes.py b/backend/tests/test_studio_review_fixes.py
+--- /dev/null
++++ b/backend/tests/test_studio_review_fixes.py
+@@ -0,0 +1,235 @@
++"""Report provenance, exact navigation contracts and bounded ranking operations."""
++# Imported pytest fixtures intentionally share their parameter names.
++# ruff: noqa: F811
++
++import csv
++import io
++import json
++from uuid import uuid4
++
++import pytest
++from sqlalchemy import event, func, select
++from test_studio import evidence  # noqa: F401
++from test_studio_platform import ANALYST, OWNER, platform  # noqa: F401
++from test_studio_reporting import reports  # noqa: F401
++
++from bmt_backend.admin_models import AdminAudit
++from bmt_backend.race_statistics_models import RaceStatisticsDay
++from bmt_backend.studio_platform_models import AnalysisDay, AnalysisState
++from bmt_backend.studio_ranking import record_worker_heartbeat
++from bmt_backend.studio_watchdog import queue_signals
++from bmt_backend.track_models import Run, now
++from bmt_backend.world_ranking_models import (
++    Circuit,
++    RankingBranch,
++    RankingControl,
++    RankingCorrection,
++    RankingPlayer,
++    RankingSnapshot,
++)
++
++
++@pytest.mark.parametrize('view', ['dimensions', 'activity', 'retention', 'journey', 'engagement'])
++def test_export_uses_only_guarded_reporting_storage_and_carries_its_scope(reports, view):
++    app, client, _engine = reports
++    primary = []
++    event.listen(app.state.engine, 'before_cursor_execute', lambda _c, _u, statement, *_: primary.append(statement))
++    response = client.get('/v1/admin/exports/activity.csv', params={'view': view}, headers=OWNER)
++    assert response.status_code == 200, response.text
++    rows = list(csv.DictReader(io.StringIO(response.text)))
++    assert rows and rows[0]['query_semantics'] == 'new_query_at_download'
++    assert rows[0]['report'] == view and rows[0]['timezone'] == 'UTC'
++    assert 'processed_through' in rows[0] and json.loads(rows[0]['scope'])['population'] == 'all'
++    assert not any('studio_analysis' in q or 'race_statistics_days' in q for q in primary)
++    if view in ('activity', 'dimensions'):
++        assert sum(int(r.get('starts') or r.get('race_starts') or 0) for r in rows) == 3
++    with app.state.studio_reporting.snapshot(app.state.session_factory):
++        assert client.get('/v1/admin/exports/activity.csv', params={'view': view}, headers=OWNER).status_code == 503
++
++
++def test_unconfigured_exports_fail_closed_without_primary_fact_reads(auth_app, auth_client):
++    from dataclasses import replace
++    auth_app.state.settings = replace(auth_app.state.settings, admin_owner_key='o'*40)
++    for path in ('exports/activity.csv', 'exports/releases.csv', 'analysis/releases'):
++        response = auth_client.get('/v1/admin/'+path, headers=OWNER)
++        assert response.status_code == 503 and 'BMT_STUDIO_ANALYSIS_DATABASE_URL' in response.json()['detail']
++
++
++@pytest.mark.parametrize('route,filters', [
++    ('players/'+str(uuid4()), {'all': '1'}), ('races/'+str(uuid4()), {'time_field': 'finished_at'}),
++    ('system/jobs', {'kind': 'ranking', 'state': 'failed'}),
++    ('cases', {'status': 'appealed'}), ('quality', {'device_model': 'Test device', 'os_version': '14'}),
++    ('studio', {'tab': 'config', 'view': 'draft', 'draft': str(uuid4())}),
++])
++def test_saved_location_round_trip_rename_delete_and_actor_fences(platform, route, filters):
++    _app, client, _player, _auth = platform
++    body = {'command_id': str(uuid4()), 'id': str(uuid4()), 'expected_revision': 0,
++            'name': 'Exact investigation', 'route': route, 'filters': filters}
++    saved = client.post('/v1/admin/saved-views', headers=OWNER, json=body)
++    assert saved.status_code == 200, saved.text
++    assert saved.json()['route'] == route and saved.json()['filters'] == filters
++    assert client.get('/v1/admin/saved-views', headers=OWNER).json()['items'][0]['route'] == route
++    rename = {**body, 'command_id': str(uuid4()), 'expected_revision': 1, 'name': 'Renamed'}
++    assert client.post('/v1/admin/saved-views', headers=OWNER, json=rename).json()['revision'] == 2
++    deletion = {'command_id': str(uuid4()), 'expected_revision': 2}
++    endpoint = '/v1/admin/saved-views/'+body['id']+'/delete'
++    assert client.post(endpoint, headers=ANALYST, json=deletion).status_code == 404
++    assert client.post(endpoint, headers=OWNER, json={**deletion, 'expected_revision': 1}).status_code == 409
++    for _ in range(2):
++        assert client.post(endpoint, headers=OWNER, json=deletion).json()['deleted']
++    assert not client.get('/v1/admin/saved-views', headers=OWNER).json()['items']
++
++
++@pytest.mark.parametrize('route', ['https://example.org', '../system', 'players/../system', 'system/unknown'])
++def test_saved_location_rejects_unsupported_paths(platform, route):
++    _app, client, _player, _auth = platform
++    response = client.post('/v1/admin/saved-views', headers=OWNER, json={
++        'command_id': str(uuid4()), 'id': str(uuid4()), 'expected_revision': 0,
++        'name': 'Unsafe location', 'route': route, 'filters': {}})
++    assert response.status_code == 422
++
++
++def test_calendar_gap_coverage_never_invents_precollection_zero(platform):
++    app, client, player, _auth = platform
++    at = now()
++    day = at//86400
++    with app.state.session_factory() as db:
++        state = db.get(AnalysisState, 1)
++        state.started_at, state.processed_through, state.latest_client_at = (day-2)*86400, at, at
++        db.add(AnalysisDay(day=day, player_id=player, dimension='gap-fixture', build_id='fixture',
++                           counters={'active': 1}, first_at=at, last_at=at))
++        db.commit()
++    data = client.get('/v1/admin/analysis/behaviour', headers=OWNER,
++                      params={'since': (day-3)*86400, 'until': at+1}).json()
++    by_day = {r['day']: r for r in data['daily']}
++    assert by_day[day-3]['coverage_state'] == 'unobserved' and by_day[day-3]['players'] is None
++    assert by_day[day-1]['coverage_state'] == 'observed' and by_day[day-1]['players'] == 0
++    assert by_day[day]['coverage_state'] == 'partial' and by_day[day]['players'] == 1
++    with app.state.session_factory() as db:
++        db.get(AnalysisState, 1).latest_client_at = None
++        db.commit()
++    unknown = client.get('/v1/admin/analysis/behaviour', headers=OWNER).json()
++    assert not unknown['coverage']['available']
++    assert all(row['coverage_state'] == 'unobserved' for row in unknown['daily'])
++
++
++def test_terminal_time_drilldown_reconciles_late_verification(evidence):
++    client, app, ids = evidence
++    at = now()
++    with app.state.session_factory() as db:
++        run = db.get(Run, ids['run'])
++        run.created_at, run.finished_at = at-3600, at-1
++        db.commit()
++    scope = {'state': 'verified', 'since': at-300, 'until': at+1}
++    pulse = client.get('/v1/admin/overview', headers=OWNER).json()
++    assert pulse['states']['verified'] == 1
++    assert not client.get('/v1/admin/entities/races', headers=OWNER, params=scope).json()['items']
++    rows = client.get('/v1/admin/entities/races', headers=OWNER, params={**scope, 'time_field':'finished_at'}).json()['items']
++    assert len(rows) == 1 and rows[0]['id'] == ids['run']
++
++
++def test_release_comparison_and_export_are_isolated_and_coverage_is_honest(reports):
++    from sqlalchemy.orm import Session
++    app, client, engine = reports
++    at = now()
++    with Session(engine) as db:
++        for build, slow in [('a', 100), ('b', 500)]:
++            db.add(RaceStatisticsDay(day=at//86400, dimension=build, track_version_id='track-one',
++                build_id=build, platform='android', device_class='phone', device_model='Phone A', os_version='14',
++                outcome='finished', races=40, frame_buckets=[10000-slow,0,0,0,0,slow,0,0], latest_received_at=at))
++        db.commit()
++    queries = []
++    event.listen(app.state.engine, 'before_cursor_execute', lambda _c, _u, statement, *_: queries.append(statement))
++    params = {'build_id':'a', 'baseline':'b', 'device_model':'Phone A', 'os_version':'14', 'track_version_id':'track-one'}
++    response = client.get('/v1/admin/analysis/releases', headers=OWNER, params=params)
++    assert response.status_code == 200, response.text
++    data = response.json()
++    assert data['candidate']['reporting_players'] is None
++    assert data['candidate']['sample_sufficient'] and data['comparison']['slow_frame_change'] == pytest.approx(-.04)
++    segment = data['segments'][0]
++    assert segment['frames'] == 10000 and segment['baseline_frames'] == 10000 and segment['slow_change'] == pytest.approx(-.04)
++    exported = client.get('/v1/admin/exports/releases.csv', headers=OWNER, params=params)
++    assert exported.status_code == 200
++    rows = list(csv.DictReader(io.StringIO(exported.text)))
++    assert int(rows[0]['frames']) == data['candidate']['frames'] and rows[0]['reporting_players'] == ''
++    assert not any('race_statistics_days' in q or 'studio_analysis' in q for q in queries)
++    missing = client.get('/v1/admin/analysis/releases', headers=OWNER, params={**params,'baseline':'missing'}).json()
++    assert missing['baseline']['reporting_players'] is None and not missing['baseline']['sample_sufficient']
++
++
++def seed_ranking(app, player):
++    at = now()
++    week = (at//604800)*604800-2*604800
++    with app.state.session_factory() as db:
++        circuit = Circuit(week_start=week, contract_key='x'*64, policy='test', tracks=[])
++        branch = RankingBranch(next_week=at, mode='active')
++        db.add_all([circuit, branch])
++        db.flush()
++        snapshot = RankingSnapshot(branch_id=branch.id, circuit_id=circuit.id, week_start=week,
++                                   state='published', published_at=at, field_size=100, ranked_count=80)
++        db.add(snapshot)
++        db.flush()
++        circuit.original_snapshot = snapshot.id
++        db.add(RankingControl(id=1, launch_week=week, published_id=snapshot.id, running_branch=branch.id))
++        db.add(RankingPlayer(player_id=player))
++        db.commit()
++        return circuit.id, snapshot.id
++
++
++def test_ranking_inspection_preview_and_queue_monitoring_do_not_settle(platform):
++    app, client, player, _auth = platform
++    circuit, snapshot = seed_ranking(app, player)
++    record_worker_heartbeat(app.state.session_factory)
++    with app.state.session_factory() as db:
++        original_audits = db.scalar(select(func.count()).select_from(AdminAudit))
++    data = client.get('/v1/admin/studio/ranking', headers=ANALYST).json()
++    assert data['published_snapshot'] == snapshot and data['worker_last_seen_at'] and not data['pending']
++    body = {'command_id': str(uuid4()), 'expected_snapshot':snapshot, 'circuit_id':circuit,
++            'player_id':player, 'void_week':False, 'reason':'Owned test exclusion'}
++    assert client.post('/v1/admin/studio/ranking/correction-preview', headers=ANALYST, json=body).status_code == 403
++    response = client.post('/v1/admin/studio/ranking/correction-preview', headers=OWNER, json=body)
++    assert response.status_code == 200, response.text
++    assert response.json()['kind'] == 'exclude_player'
++    assert client.post('/v1/admin/studio/ranking/correction-preview', headers=OWNER,
++                       json={**body, 'expected_snapshot':snapshot+1}).status_code == 409
++    with app.state.session_factory() as db:
++        assert db.scalar(select(func.count()).select_from(RankingCorrection)) == 0
++        assert db.scalar(select(func.count()).select_from(AdminAudit)) == original_audits
++    jobs = client.get('/v1/admin/jobs', headers=OWNER).json()
++    assert {'ranking','achievement_competition','achievement_rarity','achievement_record','creator_achievement'} <= {r['kind'] for r in jobs['summary']}
++    jobs['ranking'].update(pending=True, worker_last_seen_at=now()-200, progress_at=now()-200)
++    signals = {s.key:s.active for s in queue_signals(jobs,at=now())}
++    assert signals['ranking_worker'] is True and signals['pipeline_achievement_rarity'] is False
++
++
++def test_correction_history_retains_named_audit_actor_and_replay_fence(platform):
++    from bmt_backend.admin import access
++    from bmt_backend.studio_access import StaffRole
++    app, client, player, _auth = platform
++    circuit, snapshot = seed_ranking(app, player)
++    app.dependency_overrides[access] = lambda: StaffRole('owner','staff-fixture','Fixture staff')
++    body = {'command_id': str(uuid4()), 'expected_snapshot':snapshot, 'circuit_id':circuit,
++            'player_id':player, 'void_week':False, 'reason':'Owned correction lifecycle'}
++    first = client.post('/v1/admin/ranking/corrections', headers=OWNER, json=body)
++    assert first.status_code == 200, first.text
++    assert client.post('/v1/admin/ranking/corrections', headers=OWNER, json=body).json() == first.json()
++    data = client.get('/v1/admin/studio/ranking', headers=OWNER).json()
++    assert data['mode'] == 'rebuild' and data['oldest_at'] is None
++    assert data['history'][0]['actor'] == 'staff-fixture' and data['history'][0]['player_id'] == player
++    with app.state.session_factory() as db:
++        assert db.scalar(select(func.count()).select_from(RankingCorrection)) == 1
++
++
++def test_new_queue_counts_are_bounded_and_rarity_age_is_unknown(platform):
++    from bmt_backend.achievement_models import AchievementState
++    app, client, _player, _auth = platform
++    with app.state.session_factory() as db:
++        db.execute(AchievementState.__table__.insert(), [
++            {'player_id': f'pending-{i:05}', 'scope':'all', 'rarity_pending':True} for i in range(10001)])
++        db.commit()
++    data = client.get('/v1/admin/jobs', headers=OWNER).json()
++    rarity = next(r for r in data['summary'] if r['kind'] == 'achievement_rarity')
++    assert rarity['pending'] == 10000 and rarity['pending_capped'] and not rarity['failed_capped']
++    assert rarity['oldest_at'] is None and not rarity['age_known']
++    signals = {s.key:s.active for s in queue_signals(data,at=now())}
++    assert signals['pipeline_achievement_rarity'] is None
+diff --git a/backend/tests/test_studio_reporting.py b/backend/tests/test_studio_reporting.py
+--- a/backend/tests/test_studio_reporting.py
++++ b/backend/tests/test_studio_reporting.py
+@@ -63,7 +63,7 @@
+ 
+ def test_engine_injection_requires_explicit_test_environment(auth_app):
+     with pytest.raises(ValueError, match="test environment"):
+-        create_app(auth_app.state.settings, engine=auth_app.state.engine,
++        create_app(replace(auth_app.state.settings, environment="development"), engine=auth_app.state.engine,
+                    analysis_engine=auth_app.state.engine)
+ 
+ 
+diff --git a/scripts/test_studio_review_fixes_console.py b/scripts/test_studio_review_fixes_console.py
+--- /dev/null
++++ b/scripts/test_studio_review_fixes_console.py
+@@ -0,0 +1,284 @@
++"""Studio items 1–4 acceptance against a newly owned loopback fixture only."""
++
++import argparse
++import csv
++import io
++import json
++import secrets
++import socket
++import sqlite3
++import subprocess
++import sys
++import time
++from dataclasses import replace
++from pathlib import Path
++from uuid import uuid4
++
++ROOT = Path(__file__).resolve().parents[1]
++sys.path[:0] = [str(ROOT/'backend'), str(ROOT/'backend/tests'), str(ROOT/'scripts')]
++OUTPUT = ROOT/'docs/evidence/studio-items-1-4-2026-10-24/browser'
++
++
++def serve(folder, port):
++    import uvicorn
++    from bmt_backend.db import make_engine
++    from bmt_backend.studio_ranking import record_worker_heartbeat
++    from bmt_backend.studio_reporting import StudioReporting
++    from bmt_backend.track_models import now
++    from studio_catalogue_browser_checks import seed_catalogue
++    from test_studio_platform_console import serve as platform_serve
++    from test_studio_review_fixes import seed_ranking
++
++    run = uvicorn.run
++
++    def seeded(app, **kwargs):
++        fixture = json.loads((folder/'fixture.json').read_text())
++        with app.state.session_factory() as db:
++            fixture.update(seed_catalogue(db, fixture['player_id'], now()))
++            db.commit()
++        circuit, snapshot = seed_ranking(app, fixture['player_id'])
++        fixture.update(circuit_id=circuit, snapshot_id=snapshot)
++        record_worker_heartbeat(app.state.session_factory)
++        (folder/'fixture.json').write_text(json.dumps(fixture))
++        with sqlite3.connect(folder/'database.sqlite') as source, sqlite3.connect(folder/'reporting.sqlite') as target:
++            source.backup(target)
++        app.state.settings = replace(app.state.settings, environment='test', studio_legacy_keys_enabled=True,
++                                     dev_auth_enabled=False, purchase_simulation_enabled=False)
++        app.state.studio_reporting.close()
++        app.state.studio_reporting = StudioReporting(app.state.settings,
++            engine=make_engine('sqlite:///'+(folder/'reporting.sqlite').as_posix()))
++        run(app, **kwargs)
++
++    uvicorn.run = seeded
++    platform_serve(folder, port)
++
++
++def main():
++    parser = argparse.ArgumentParser(description=__doc__)
++    parser.add_argument('--serve', type=Path)
++    parser.add_argument('--port', type=int)
++    parser.add_argument('--output', type=Path, default=OUTPUT)
++    args = parser.parse_args()
++    if args.serve:
++        return serve(args.serve, args.port)
++    import httpx
++    from playwright.sync_api import expect, sync_playwright
++
++    folder = ROOT/'build'/('studio-items-owned-'+uuid4().hex[:8])
++    folder.mkdir(parents=True)
++    output = args.output.resolve()
++    output.mkdir(parents=True, exist_ok=True)
++    config = {key: secrets.token_urlsafe(32) for key in ('owner','analyst','development','monitor')}
++    (folder/'config.private.json').write_text(json.dumps(config))
++    with socket.socket() as sock:
++        sock.bind(('127.0.0.1',0))
++        port = sock.getsockname()[1]
++    base = f'http://127.0.0.1:{port}'
++    result = {'scope':'Synthetic owned loopback fixtures; no production or physical-device activity.',
++              'checks':[], 'pages':[], 'javascript_errors':[], 'downloads':[]}
++    with (folder/'server.log').open('w',encoding='utf-8') as log:
++        process = subprocess.Popen([sys.executable,str(Path(__file__).resolve()),'--serve',str(folder),'--port',str(port)],
++                                   stdout=log,stderr=log,creationflags=subprocess.CREATE_NO_WINDOW)
++        try:
++            with httpx.Client(base_url=base,timeout=20) as http:
++                for _ in range(100):
++                    if process.poll() is not None:
++                        raise RuntimeError('Owned fixture startup failed; inspect '+str(folder/'server.log'))
++                    try:
++                        if http.get('/health').status_code == 200:
++                            break
++                    except httpx.ConnectError:
++                        pass
++                    time.sleep(.2)
++                fixture = json.loads((folder/'fixture.json').read_text())
++                with sync_playwright() as driver:
++                    browser = driver.chromium.launch(headless=True,executable_path='C:/Program Files (x86)/Microsoft/Edge/Application/msedge.exe')
++                    page = browser.new_page(viewport={'width':1440,'height':1000},accept_downloads=True)
++                    page.on('pageerror',lambda error:result['javascript_errors'].append(str(error)))
++                    page.goto(base+'/admin')
++                    page.locator('#key').fill(config['owner'])
++                    page.locator('#login button').click()
++                    page.wait_for_function("()=>lastRenderedRoute==='overview' && document.querySelector('#main').getAttribute('aria-busy')!=='true'")
++
++                    def settled():
++                        page.wait_for_function("()=>document.querySelector('#main').getAttribute('aria-busy')!=='true' && (lastRenderedRoute===(location.hash.slice(1)||'overview') || document.querySelector('#main').innerText.includes('Unable to load records'))",timeout=20000)
++                        assert 'Unable to load records' not in page.locator('#main').inner_text(), page.locator('#main').inner_text()
++
++                    def visit(route, width=1440, height=1000, shot=None):
++                        page.set_viewport_size({'width':width,'height':height})
++                        if page.url.split('#')[-1] == route:
++                            page.locator('#refresh').evaluate('(x)=>x.click()')
++                        else:
++                            page.evaluate('route=>location.hash=route',route)
++                        page.wait_for_timeout(60)
++                        settled()
++                        expect(page.locator('#main')).not_to_contain_text('Unable to load records')
++                        overflow=page.evaluate('document.documentElement.scrollWidth>innerWidth+1')
++                        assert not overflow,(route,width,'global overflow')
++                        result['pages'].append({'route':route,'width':width,'height':height,'global_overflow':overflow})
++                        if shot:
++                            page.screenshot(path=str(output/shot),full_page=True)
++
++                    def check(label):
++                        result['checks'].append(label)
++
++                    scope='build_id=release-a&platform=android&mode=free_race&population=real'
++                    visit('product?'+scope)
++                    page.get_by_role('link',name='Are players returning?',exact=True).click()
++                    settled()
++                    assert all(pair in page.url for pair in scope.split('&'))
++                    page.get_by_role('link',name='Activity',exact=True).click()
++                    settled()
++                    page.get_by_role('link',name='Does release quality explain a drop?',exact=True).click()
++                    settled()
++                    assert all(pair in page.url for pair in scope.split('&'))
++                    expect(page.locator('#main')).to_contain_text('This report does not apply mode, population')
++                    check('Guided report links preserve supported filters and explicitly disclose unsupported scope')
++
++                    visit('overview')
++                    href=page.locator('.platform-stat').filter(has_text='Verified results').get_attribute('href')
++                    assert 'time_field=finished_at' in href
++                    from urllib.parse import parse_qs
++                    times=parse_qs(href.split('?',1)[1])
++                    assert int(times['until'][0])-int(times['since'][0]) == 301
++                    page.locator('.platform-stat').filter(has_text='Verified results').click()
++                    settled()
++                    expect(page.locator('#main')).to_contain_text('verification terminal time')
++                    check('Five-minute KPI drilldown uses its exact interval and terminal-time semantics')
++
++                    page.route('**/v1/admin/metrics',lambda r:r.fulfill(status=503,content_type='application/json',body='{"detail":"owned source fault"}'))
++                    visit('overview',shot='overview-partial-metrics.png')
++                    expect(page.locator('#main')).to_contain_text('Metric coverage is unavailable')
++                    expect(page.locator('#main')).to_contain_text('Results are waiting for a worker')
++                    expect(page.locator('#main')).to_contain_text('Verification jobs')
++                    page.unroute('**/v1/admin/metrics')
++                    page.route('**/v1/admin/incidents?*',lambda r:r.fulfill(status=503,content_type='application/json',body='{"detail":"owned incident fault"}'))
++                    visit('overview',shot='overview-partial-incidents.png')
++                    expect(page.locator('#main')).to_contain_text('Incident evidence is unavailable')
++                    expect(page.locator('#main')).to_contain_text('Can these numbers be trusted?')
++                    page.unroute('**/v1/admin/incidents?*')
++                    check('Metrics-only and incidents-only outages retain other successful overview cards')
++
++                    def stale(route):
++                        data=route.fetch().json()
++                        data['coverage']['latest_client_at']=int(time.time())-3*86400
++                        data['coverage']['processed_through']=int(time.time())-2*86400
++                        route.fulfill(json=data)
++                    page.route('**/v1/admin/analysis/behaviour?*',stale)
++                    visit('product',shot='activity-stale-source.png')
++                    expect(page.get_by_text('Source observations are older than 15 minutes',exact=True)).to_be_visible()
++                    assert not page.locator('details.platform-method').evaluate('(x)=>x.open')
++                    page.unroute('**/v1/admin/analysis/behaviour?*')
++                    visit('product')
++                    expect(page.locator('#main')).to_contain_text('In progress')
++                    check('Source age is visible with collapsed details; current-day coverage is marked incomplete')
++
++                    for view in ('activity','retention','journey','engagement'):
++                        visit('product?tab='+view+'&build_id=release-a')
++                        with page.expect_download() as download:
++                            page.locator('#platform-export').click()
++                        destination=output/('export-'+view+'.csv')
++                        download.value.save_as(destination)
++                        rows=list(csv.DictReader(io.StringIO(destination.read_text(encoding='utf-8'))))
++                        assert rows[0]['report']==view and json.loads(rows[0]['scope'])['build_id']=='release-a'
++                        assert rows[0]['processed_through'] and rows[0]['query_semantics']=='new_query_at_download'
++                        result['downloads'].append({'view':view,'rows':len(rows),'file':destination.name})
++                    check('Every behaviour tab downloads its own report with scope, source time and query provenance')
++
++                    def save_location(route,name):
++                        visit(route)
++                        page.locator('#platform-save').click()
++                        page.locator('#dialog [name=name]').fill(name)
++                        page.locator('#platform-command [type=submit]').click()
++                        expect(page.locator('#dialog')).not_to_be_visible()
++                        settled()
++                        visit('studio?tab=saved')
++                        row=page.locator('tbody tr').filter(has_text=name)
++                        row.get_by_role('link',name='Open view',exact=True).click()
++                        settled()
++                        assert page.url.split('#',1)[1].split('?')[0]==route.split('?')[0]
++                        for key,value in parse_qs(route.split('?',1)[1] if '?' in route else '').items():
++                            assert parse_qs(page.url.split('?',1)[1])[key]==value
++
++                    save_location('players/'+fixture['player_id']+'?all=1','Owned exact player')
++                    save_location('races/'+fixture['run_id'],'Owned exact race')
++                    save_location('system/jobs?kind=ranking&state=pending','Owned ranking queue')
++                    save_location('cases?status=open','Owned open cases')
++                    visit('studio?tab=saved')
++                    row=page.locator('tbody tr').filter(has_text='Owned exact player')
++                    row.get_by_role('button',name='Rename',exact=True).click()
++                    page.locator('#dialog [name=name]').fill('Owned renamed player')
++                    page.locator('#platform-command [type=submit]').click()
++                    expect(page.locator('#dialog')).not_to_be_visible()
++                    settled()
++                    row=page.locator('tbody tr').filter(has_text='Owned renamed player')
++                    row.get_by_role('button',name='Delete',exact=True).click()
++                    page.locator('#platform-command [type=submit]').click()
++                    expect(page.locator('#dialog')).not_to_be_visible()
++                    settled()
++                    expect(page.locator('#main')).not_to_contain_text('Owned renamed player')
++                    check('Player/race/queue/case saved locations round-trip; rename and deletion are usable')
++
++                    quality='quality?build_id=release-a&baseline=release-b&device_model=Fixture+phone&os_version=14'
++                    visit(quality,shot='quality-comparison-desktop.png')
++                    expect(page.locator('#main')).to_contain_text('Small exploratory sample')
++                    expect(page.locator('#main')).to_contain_text('Frames over 34 ms')
++                    expect(page.locator('#main')).to_contain_text('Player coverage is unavailable')
++                    with page.expect_download() as download:
++                        page.locator('#platform-export').click()
++                    destination=output/'export-releases.csv'
++                    download.value.save_as(destination)
++                    rows=list(csv.DictReader(io.StringIO(destination.read_text(encoding='utf-8'))))
++                    assert [r['comparison_role'] for r in rows]==['candidate','baseline']
++                    page.locator('tbody tr').first.get_by_role('link',name='Frame times',exact=True).click()
++                    settled()
++                    assert 'build_id=release-a' in page.url and 'device_model=Fixture+phone' in page.url and 'os_version=14' in page.url
++                    page.get_by_role('link',name='Release comparison',exact=True).click()
++                    settled()
++                    assert 'baseline=release-b' in page.url
++                    visit('quality?build_id=release-a&baseline=missing',shot='quality-missing-baseline.png')
++                    expect(page.locator('#main')).to_contain_text('No package coverage')
++                    check('Release comparison exposes sample/coverage warnings, scoped diagnostics and its own CSV')
++
++                    visit('competitions?kind=ranking',shot='ranking-operations-desktop.png')
++                    expect(page.locator('#main')).to_contain_text('Published generation')
++                    expect(page.locator('#main')).to_contain_text('Worker last seen')
++                    page.locator('#ranking-correction').click()
++                    page.locator('#ranking-preview [name=player_id]').fill(fixture['player_id'])
++                    page.locator('#ranking-preview [name=reason]').fill('Owned browser preview only')
++                    page.locator('#ranking-preview [type=submit]').click()
++                    expect(page.get_by_role('heading',name='Confirm ranking correction')).to_be_visible()
++                    assert not page.locator('#ranking-confirm input[type=checkbox]').is_checked()
++                    page.screenshot(path=str(output/'ranking-correction-preview.png'))
++                    page.locator('#dialog [data-close]').click()
++                    with sqlite3.connect(folder/'database.sqlite') as db:
++                        assert db.execute('SELECT count(*) FROM world_ranking_corrections').fetchone()[0]==0
++                    check('Ranking progress/history are inspectable; correction preview requires separate explicit confirmation and cancellation writes nothing')
++
++                    for width,height in ((1440,1000),(1280,800),(390,844)):
++                        for route,label in [('overview','overview'),('product','activity'),('product?tab=retention','retention'),(quality,'quality'),('competitions?kind=ranking','ranking'),('system/jobs','queues'),('studio?tab=saved','saved')]:
++                            visit(route,width,height,label+'-'+str(width)+'.png')
++                    check('Changed workflows remain contained at desktop, compact and phone-width viewports')
++
++                    page.locator('#logout').click()
++                    page.locator('#key').fill(config['analyst'])
++                    page.locator('#login button').click()
++                    page.wait_for_timeout(80)
++                    settled()
++                    visit('competitions?kind=ranking')
++                    assert page.locator('#ranking-correction').count()==0
++                    visit('product?tab=retention')
++                    assert page.locator('#platform-export').count()==1
++                    check('Analysts can inspect ranking and download reports while correction controls remain owner-only')
++                    assert not result['javascript_errors'],result['javascript_errors']
++                    browser.close()
++        finally:
++            process.terminate()
++            process.wait(timeout=15)
++            (output/'browser.json').write_text(json.dumps(result,indent=2),encoding='utf-8')
++    print(json.dumps({'checks':len(result['checks']),'pages':len(result['pages']),
++                      'javascript_errors':result['javascript_errors'],'output':str(output)}))
++
++
++if __name__ == '__main__':
++    main()
+diff --git a/backend/README.md b/backend/README.md
+--- a/backend/README.md
++++ b/backend/README.md
+@@ -26,6 +26,23 @@
+ `POST /v1/discovery/v3/tracks` and `/v1/discovery/v3/random`; retired protocol routes
+ return HTTP426. See [current client/window behavior](../docs/DISCOVERY_PAGING.md).
+ The sections below retain detailed configuration and dated implementation evidence.
++
++Studio review items 1–4 (local, 2026-10-24): report-specific CSV exports and release
++comparisons use the isolated reporting reader. Downloads identify a new query and
++include effective UTC dates, scope, query time and source watermark. Guided links
++retain compatible filters; verification KPI drilldowns use terminal time and their
++exact five-minute interval. Source age, partial days and unavailable coverage are
++visible; individual overview feed failures retain other successful cards. Saved
++locations preserve record IDs and queue subpaths, with actor-scoped rename/delete.
++Content & competitions includes World Ranking status, published/working generations,
++worker/progress timestamps and audited correction preview/confirmation. Queue coverage
++includes bounded ranking and achievement projections. Release comparisons add
++device/OS/track/render-context scope, frame-rate differences, independent player
++coverage, sample warnings and scoped diagnostic links. The exploratory 30-package /
++1,000-frame warning is not a certified rollout threshold. See
++[implementation, native browser evidence and actual checks](../docs/evidence/studio-items-1-4-2026-10-24/report.html).
++Matching API/UI/ranking-worker/watchdog rollout, reporting-reader grants and production
++calibration remain required; this change has not been deployed.
+ 
+ Discovery resource guards (`0057_discovery_resource_guards`, 2026-10-23): discovery POSTs use a nonblocking account fence, including pre-body authentication and the final commit check. A busy account returns `503 DISCOVERY_ACCOUNT_BUSY` promptly; revocation, account removal and erasure serialization remain authoritative. Discovery executions share at most `max(1, min(3, database_pool_size - 1))` local query slots, across both small and bulk bodies, leaving a pooled connection for other gameplay when the configured pool has more than one connection.
+ 
+diff --git a/backend/deploy/README.md b/backend/deploy/README.md
+--- a/backend/deploy/README.md
++++ b/backend/deploy/README.md
+@@ -340,7 +340,7 @@
+ Small discovery requests have a separate bounded query pool; large bodies and
+ expensive searches retain their narrower allowances.
+ 
+-Broad Studio behaviour reports require `BMT_STUDIO_ANALYSIS_DATABASE_URL` pointing
++Broad Studio behaviour/release reports and their CSV exports require `BMT_STUDIO_ANALYSIS_DATABASE_URL` pointing
+ to a dedicated PostgreSQL hot standby with matching database/schema and a read-only
+ credential. There is no primary fallback: an unconfigured, mismatched, catching-up or
+ unavailable replica produces an actionable 503. The reader allows one report per
+@@ -355,12 +355,34 @@
+ pg_catalog.pg_control_system()` on the primary; the grants replicate to the
+ standby. The reporting reader also needs schema `USAGE` and `SELECT` on
+ `studio_analysis_state`, `studio_analysis_people`, `studio_analysis_days`,
+-`studio_analysis_sessions` and `product_state`; configure its search path to
++`studio_analysis_sessions`, `race_statistics_days` and `product_state`; configure its search path to
+ match the API schema. An absent privilege fails closed. Last replayed transaction
+ age is coverage metadata; a quiet, fully caught-up replica remains available.
+ Exact arbitrary-window distinct/cohort queries still do linear
+ analytical work on the replica and can hit the deadline; they no longer consume
+ gameplay-database scan resources. Provision and load-test this replica separately.
++
++For the 2026-10-24 Studio items 1–4 update, roll out matching API and admin assets
++together: directory cursors include the selected timestamp field; CSV schemas now
++carry provenance and support report-specific views. The default activity CSV keeps
++its dimensional rows. Downloads are new queries, not durable frozen snapshots.
++Saved record/subroute locations use the existing JSON filters column; no migration
++is introduced by this Studio change. Current source still requires its independently
++managed World Ranking and concurrent schema migrations.
++
++Roll out the matching ranking worker to record its bounded metadata heartbeat
++between batches (at most once per 15 seconds), and the matching independent watchdog
++to inspect ranking and achievement queue coverage. Ranking status reads do not
++execute settlement. A heartbeat older than 180 seconds or unchanged progress for
++600 seconds while settlement is pending raises a warning; queued week settlement
++uses a 3,600-second initial warning allowance. Rarity work has no enqueue timestamp
++and remains unknown-age rather than inferred healthy. Historical correction rebuilds
++also have unknown schedule age; heartbeat/progress evidence supplies their worker
++check. New projection counts cap at 10,000 and expose independent cap flags.
++Calibrate these warnings against the deployed worker and workload before operational
++acceptance. Validate a controlled outage/recovery and notification delivery through
++the separately configured monitoring chain. No monitoring host, notification receiver,
++launch date, provider account or rollout was activated by the local implementation.
+ 
+ Migrations `0055_bounded_rank_reads` and `0056_bounded_retention` must precede the
+ matching API/worker rollout. The rank migration seeds exact public/all time
+diff --git a/AGENTS.md b/AGENTS.md
+--- a/AGENTS.md
++++ b/AGENTS.md
+@@ -1,3 +1,6 @@
++## Studio reporting and operations items 1-4 override (2026-10-24)
++2026-10-24 BSI01-BSI04/R01/G01/Q01: Address Studio review items 1-4 with isolated report-specific CSV/release reads, explicit provenance/freshness/partial days, preserved scope and terminal-time KPI links, partial-source overview cards, exact saved locations with actor-scoped rename/delete, bounded World Ranking/achievement monitoring and owner correction preview/confirmation, and comparable release scopes/rates/sample warnings/diagnostic links. Final focused/regression133pass/2skip (25 explicitly deselected), coverage1 and browser10checks/45views with zero JS errors/global overflow; Ruff and all UI JavaScript parsing pass. The discovery-budget migration assertion reproduces with task-original edited modules and the same concurrent migration tree; it remains intact. Initial auth-fixture/helper and explicit non-test injection-fixture corrections are retained. PostgreSQL/Docker unavailable; no production/load/device certification. Actual commands, source hashes, screenshots and scoped Git-checkable checkpoint: docs/evidence/studio-items-1-4-2026-10-24/report.json and report.html. Matching API/UI/ranking-worker/watchdog rollout, reader grants, calibration and owner acceptance remain. No phone/tablet attachment check/device test, APK, live account/backend mutation, notification/purchase or deployment. Concurrent authentication/configuration/discovery/game work and owner processes preserved.
++
+ ## Desert scenery visibility regression override (2026-10-24)
+ 2026-10-24 DVR01-DVR03/R01/G01/Q01: Restore missing Desert pyramids/Egyptian scenery by repairing stale draw ranges after relief subdivision (79098→89883 corners), retaining complete stale sources and advancing the visual cache key. Fix invisible sand source leases and use longer muted terrain-hue wisps within six sites/48quads/96triangles. Actual App cold/cache regression22headless/28Mobile/28Compatibility, wind55/68/68, mesh71, Egyptian79, five-biome exact geometry5, Desert87, biomes108, App141 and parser1044 pass. Ordinary driving sand>=1% contrast 15/18 Mobile/16/18 Compatibility; stricter>=2% 12/18/9/18. All784 roof pixels exact. Original mismatch and rejected colour trials retained. Commands, native captures, limits and scoped checkpoint: docs/DESERT_VISIBILITY_REGRESSION_2026_10_24.md and docs/evidence/desert-visibility-regression-2026-10-24/report.json. Local restart and owner/affected-track/device appearance/cost acceptance remain; no phone/tablet check/test, APK, live mutation or deployment. Concurrent work and owner processes preserved.
+ 
+diff --git a/DEVELOPMENT_STATUS.md b/DEVELOPMENT_STATUS.md
+--- a/DEVELOPMENT_STATUS.md
++++ b/DEVELOPMENT_STATUS.md
+@@ -1,3 +1,5 @@
++2026-10-24 BSI01-BSI04/R01/G01/Q01: Address Studio review items 1-4 with isolated report-specific CSV/release reads, explicit provenance/freshness/partial days, preserved scope and terminal-time KPI links, partial-source overview cards, exact saved locations with actor-scoped rename/delete, bounded World Ranking/achievement monitoring and owner correction preview/confirmation, and comparable release scopes/rates/sample warnings/diagnostic links. Final focused/regression133pass/2skip (25 explicitly deselected), coverage1 and browser10checks/45views with zero JS errors/global overflow; Ruff and all UI JavaScript parsing pass. The discovery-budget migration assertion reproduces with task-original edited modules and the same concurrent migration tree; it remains intact. Initial auth-fixture/helper and explicit non-test injection-fixture corrections are retained. PostgreSQL/Docker unavailable; no production/load/device certification. Actual commands, source hashes, screenshots and scoped Git-checkable checkpoint: docs/evidence/studio-items-1-4-2026-10-24/report.json and report.html. Matching API/UI/ranking-worker/watchdog rollout, reader grants, calibration and owner acceptance remain. No phone/tablet attachment check/device test, APK, live account/backend mutation, notification/purchase or deployment. Concurrent authentication/configuration/discovery/game work and owner processes preserved.
++
+ # Development status and checkpoint history
+ 
+ For the current implementation start with the [documentation index](docs/README.md)

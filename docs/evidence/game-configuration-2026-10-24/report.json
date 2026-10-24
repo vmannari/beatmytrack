@@ -1,0 +1,230 @@
+{
+  "date": "2026-10-24",
+  "status": "implemented and locally verified; rollout and owner/device acceptance remain",
+  "authorization": "Owner changed design-only scope to implement app, backend and Studio; A/B testing explicitly required.",
+  "requirements": [
+    "RGC01",
+    "RGC02",
+    "RGC03",
+    "RGC04",
+    "RGC05",
+    "RGC06",
+    "RGC07",
+    "RGC08",
+    "RGC09",
+    "RGC10",
+    "RGC11",
+    "R01",
+    "G01",
+    "Q01"
+  ],
+  "implementation": "../../GAME_CONFIGURATION_IMPLEMENTATION_2026_10_24.md",
+  "studio_routes": [
+    "/admin#studio?tab=config",
+    "/admin#studio?tab=experiments"
+  ],
+  "contracts": {
+    "migration": "0060_game_configuration",
+    "subsequent_concurrent_migrations": [
+      "0061_security_authority",
+      "0062_retire_discovery_cache"
+    ],
+    "protocol": 1,
+    "registered_settings": 16,
+    "built_in_cadence": "3 completed races OR 600 active foreground seconds",
+    "remote_ad_permission_default": false,
+    "experiment_arms": "2-4",
+    "guest_experiment_assignment": false
+  },
+  "verification": [
+    {
+      "command": "(backend/) ../.tools/backend-venv/Scripts/python.exe -m pytest tests/test_game_config.py tests/test_studio_platform.py tests/test_product_analytics.py -k \"not postgres\" -q --tb=short --junitxml=../docs/evidence/game-configuration-2026-10-24/backend-final.xml",
+      "result": "60 passed, 1 deselected; 60.34 seconds",
+      "evidence": "backend-final.xml",
+      "note": "The deselected PostgreSQL product concurrency test was run in the owned fixture."
+    },
+    {
+      "command": ".tools/backend-venv/Scripts/python.exe scripts/test_game_configuration_postgres.py --include-product",
+      "result": "4 passed; 5.36 seconds",
+      "evidence": [
+        "postgres-with-product.xml",
+        "postgres-with-product.log"
+      ],
+      "scope": "Owned labelled PostgreSQL 17 container on loopback; own container removed afterward."
+    },
+    {
+      "command": ".tools/backend-venv/Scripts/python.exe scripts/test_game_configuration_console.py --output docs/evidence/game-configuration-2026-10-24/final-acceptance --native",
+      "result": "12 browser workflows, zero page errors; actual native HTTP 17 checks, zero failures",
+      "evidence": [
+        "final-acceptance/report.json",
+        "final-acceptance/native-http.log"
+      ],
+      "scope": "Owned temporary SQLite HTTP fixture and Edge/Playwright; no existing service mutations."
+    },
+    {
+      "command": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1 TestScript -ScriptPath res://tests/<name>.gd -CommandTimeoutSeconds 180",
+      "cases": [
+        {
+          "name": "configuration",
+          "source": "build/logs/TestScript-31864/test-script.log",
+          "result": "GAME_CONFIGURATION: 40 checks, 0 failures",
+          "sha256": "aa17ed064233b397234b059d287cef6c43472eaba5c9064cb5224f76d990cdd4"
+        },
+        {
+          "name": "configuration-app",
+          "source": "build/logs/TestScript-29236/test-script.log",
+          "result": "GAME_CONFIGURATION_APP: 13 checks, 0 failures",
+          "sha256": "45a51547f182aad9d923dec11aea1160ec6ed5629fda938fd1cfb79bf75a6537"
+        },
+        {
+          "name": "configuration-app-compatibility",
+          "source": "build/logs/TestScript-31364/test-script.log",
+          "result": "GAME_CONFIGURATION_APP: 16 checks, 0 failures",
+          "sha256": "1512a4be037c7b2da9f774c0d43bd7493ac5c5867385f1bcbf15b5b72ab8ed84"
+        },
+        {
+          "name": "configuration-app-mobile",
+          "source": "build/logs/TestScript-4632/test-script.log",
+          "result": "GAME_CONFIGURATION_APP: 16 checks, 0 failures",
+          "sha256": "fe3c2ed262f08f1a446b1617e204bb951488e34f1a3cc4e5029d2f6bd03479ec"
+        },
+        {
+          "name": "race-ads",
+          "source": "build/logs/TestScript-12384/test-script.log",
+          "result": "RACE_AD_BREAKS: 57 checks, 0 failures",
+          "sha256": "5a9d967141697ebbd403b06d71030a5686f6526c0b50e35517c7dbb0b4b1986b"
+        },
+        {
+          "name": "admob",
+          "source": "build/logs/TestScript-31800/test-script.log",
+          "result": "ADMOB_DEVELOPMENT_TESTS: 44 checks, 0 failures",
+          "sha256": "0785b1d079648f19aa60343958e97de91c082f1489e151034a3d7609aa719832"
+        },
+        {
+          "name": "telemetry",
+          "source": "build/logs/TestScript-18868/test-script.log",
+          "result": "PRODUCT_TELEMETRY: 55 checks, 0 failures",
+          "sha256": "378e4bf33afbac15515f26e92dbd523143f496598fbee93f059a34d2d57fa02b"
+        },
+        {
+          "name": "store-telemetry",
+          "source": "build/logs/TestScript-14944/test-script.log",
+          "result": "PRODUCT_STORE_TELEMETRY: 15 checks, 0 failures",
+          "sha256": "3903997fb1fbfffa45c9ebec3af7d51ff3a47d0d4b942e911d6b3637eb727a2d"
+        },
+        {
+          "name": "store-reference",
+          "source": "build/logs/TestScript-29416/test-script.log",
+          "result": "STORE_REFERENCE: 104 checks, 0 failures",
+          "sha256": "b9f9efe98f9ddfe3ae55f0f74079d3e8be076579cc7282bf9d602c343b25b485"
+        },
+        {
+          "name": "app",
+          "source": "build/logs/TestApp-24188/app-tests.log",
+          "result": "APP_TESTS: 141 checks, 0 failures",
+          "sha256": "214331a97c4b2c7e5c287d84796d9fa90ede497aad01ce9062b6b176f79c91e6"
+        },
+        {
+          "name": "driving",
+          "source": "build/logs/TestDriving-34932/driving-tests.log",
+          "result": "DRIVING_TESTS: 72 checks, 0 failures",
+          "sha256": "ca5e5197e5405744f58526e5d8f79705317441873b1690aed4e62b5734545112"
+        },
+        {
+          "name": "parser",
+          "source": "build/logs/TestScript-29748/test-script.log",
+          "result": "SCRIPT_PARSE: 1058 scripts, 0 failures",
+          "sha256": "cf91df84885e4c7027a2c79dda180b732ce6340aeead4a96399614ce9f68c948"
+        }
+      ],
+      "scope": "Separate task APPDATA directories; fixture APIs disabled or loopback only."
+    },
+    {
+      "command": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1 TestScript -ScriptPath res://tests/test_game_configuration_app.gd -Graphical -RenderingMethod <gl_compatibility|mobile> -TestArgument --capture-game-config=<evidence/native-renderer> -CommandTimeoutSeconds 180",
+      "result": "16 checks per renderer; zero failures; three native PNGs per renderer",
+      "scope": "Desktop RTX 3090, Godot 4.7.2. The subsequent permission-only change passed headless App and actual HTTP tests."
+    },
+    {
+      "command": "(game/android/build/) gradlew.bat --offline compileStandardDebugJavaWithJavac",
+      "result": "BUILD SUCCESSFUL in 26s; 16 actionable tasks",
+      "scope": "Existing JDK17 and Android SDK/dependency cache; Java compile only, no APK/export. Receipt is the actual tool output; a full build log was not captured."
+    },
+    {
+      "command": ".tools/backend-venv/Scripts/python.exe -m ruff check <configuration source/tests/helpers> --select E4,E7,E9,F,B,I,UP",
+      "result": "All checks passed"
+    },
+    {
+      "command": ".tools/backend-venv/Lib/site-packages/playwright/driver/node.exe --check <game_config.js|app.js|platform.js>",
+      "result": "All three parsed successfully"
+    },
+    {
+      "command": "Python json.tool on both schema files; compare game-config schema setting keys to DEFAULTS",
+      "result": "Parsed; registry/schema setting keys match",
+      "scope": "The optional jsonschema package is absent; no dependency was installed."
+    }
+  ],
+  "evidence": {
+    "native_log_sources": "log-sources.json",
+    "screenshots": [
+      "final-acceptance/settings-desktop.png",
+      "final-acceptance/experiments-desktop.png",
+      "final-acceptance/overview-narrow.png",
+      "native-compatibility/notice-1280x720.png",
+      "native-compatibility/notice-960x540.png",
+      "native-compatibility/notice-540x960.png",
+      "native-mobile/notice-1280x720.png",
+      "native-mobile/notice-960x540.png",
+      "native-mobile/notice-540x960.png"
+    ],
+    "source_manifest": "source-hashes.json",
+    "initial_failure_log": [
+      {
+        "source": "build/logs/TestScript-7004/test-script.log",
+        "evidence": "logs/telemetry-initial-expiry-failure.log"
+      }
+    ]
+  },
+  "checkpoint": {
+    "files": 52,
+    "reverse_check": "passed against working source",
+    "forward_check": "passed in owned synthetic-base Git directory (core.autocrlf=false)",
+    "reconstructed_source_hashes": "all exact",
+    "directory": ".tools/game-config-checkpoint-be91dd0421",
+    "patch_sha256": "41c9ef802dd2a6a7ce4f5c66886ad41588da343c0eb7fd49ea669f1ee399bb18",
+    "base_zip_sha256": "c01d908abdc63df85ab34a8a2facc980a7b4feb0cf498dd3fd1caf41d44c0ac8",
+    "patch": "checkpoint.patch",
+    "base": "checkpoint-base.zip",
+    "builder": "build_checkpoint.py",
+    "scope": "52 selected task files; no staging, commit, reset or mixed-workspace checkout. Existing files use a synthetic task-reversal base preserving concurrent changes. Forward application reconstructs all 52 exact source hashes.",
+    "before_capture_limit": "The before/ folder is retained evidence, not a pristine checkout. Telemetry/projection/worker/erasure snapshots were captured after early hooks; the builder explicitly reverses those hooks. Concurrent security, ranking, reporting and legacy cleanup are retained."
+  },
+  "initial_corrections": [
+    "Development fixtures explicitly enable legacy Studio keys and use environment=test; production authority checks remain intact.",
+    "Generic PostgreSQL fixture pointed at a stopped shared port; final tests use a labelled owned loopback database.",
+    "Native JSON number conversion and queued node disposal corrected in fixtures; no invariant weakened.",
+    "Browser selectors, scrolling, emergency labels and multi-platform/capability editing corrected.",
+    "A product telemetry 24-hour-expiry assertion failed once in parallel. Preserved original-source control and unchanged-current repeats passed; no production pruning change or assertion weakening.",
+    "Initial direct PowerShell wrapper invocation was rejected by execution policy; project command uses explicit -ExecutionPolicy Bypass.",
+    "An empty-script CheckScript invocation started the isolated main scene. Its exact task-owned child/parent were verified and stopped; the correct parser passed.",
+    "Checkpoint generation corrected newline preservation and disabled autocrlf in its owned verification Git directory. Final forward/reverse checks pass.",
+    "Final review added result-screen emergency-lease renewal for races longer than 120 seconds; focused native and actual HTTP tests pass."
+  ],
+  "limitations": [
+    "Local verification only; no cloud, large-population, sustained-device, revenue or experiment-winner certification.",
+    "Reporting-account delivery counts exclude guest/offline/unmeasured installs; telemetry observations cannot prove billing or reward fulfillment.",
+    "Reward amounts, monthly publishing allowances, prices, new task/event formats and localized message catalogs are outside the registered policy.",
+    "Production advertising still needs provider/consent/release-client/signed reward prerequisites. Existing provider bridge remains debug/demo only.",
+    "Matching migrations, gameplay API, private named-MFA Studio, worker, reporting grants and client rollout remain. No collection setting was enabled on an existing service.",
+    "Owner UI/behavior review and physical-device sustained acceptance remain."
+  ],
+  "not_performed": [
+    "phone/tablet attachment check",
+    "physical-device test",
+    "APK/export/install",
+    "live account or policy mutation",
+    "purchase",
+    "deployment",
+    "owner process restart"
+  ],
+  "concurrent_work_preserved": true
+}

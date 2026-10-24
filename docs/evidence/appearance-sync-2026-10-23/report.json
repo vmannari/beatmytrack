@@ -1,0 +1,147 @@
+{
+  "date": "2026-10-23",
+  "requirements": [
+    "ALS01",
+    "ALS02",
+    "ALS03",
+    "ALS04",
+    "ALS05",
+    "R01",
+    "Q01"
+  ],
+  "outcome": "Implemented and locally verified; matching client/backend rollout and two-device owner acceptance remain",
+  "cause": "Garage appearance was local-only; Rivalry only uploaded selected-car snapshots. Cosmetic economy retained its initial records object after profile selection.",
+  "tests": [
+    {
+      "name": "Focused native sync and recovery",
+      "checks": 52,
+      "failures": 0,
+      "log": "focused.log"
+    },
+    {
+      "name": "Real native HTTP including App sign-in/out",
+      "checks": 31,
+      "failures": 0,
+      "log": "http-headless.log"
+    },
+    {
+      "name": "Real native HTTP Compatibility including retained Garage screenshots",
+      "checks": 33,
+      "failures": 0,
+      "log": "http-compatibility.log"
+    },
+    {
+      "name": "Existing App",
+      "checks": 141,
+      "failures": 0,
+      "log": "app.log"
+    },
+    {
+      "name": "Existing cosmetic ownership/purchase recovery",
+      "checks": 56,
+      "failures": 0,
+      "log": "economy.log"
+    },
+    {
+      "name": "SQLite API plus legacy appearance and simultaneous file-SQLite CAS",
+      "passed": 28,
+      "failed": 0,
+      "deselected_postgres": 28,
+      "log": "backend-sqlite.xml"
+    },
+    {
+      "name": "All GDScript compile",
+      "scripts": 1023,
+      "failures": 0,
+      "log": "parser.log"
+    },
+    {
+      "name": "Ruff on new Python files",
+      "result": "passed"
+    },
+    {
+      "name": "PostgreSQL API",
+      "result": "7 fixture setup errors: configured localhost test database timed out; assertions did not run"
+    }
+  ],
+  "policy": {
+    "cars": 5,
+    "local_commit_debounce_ms": 750,
+    "remote_refresh_seconds": 30,
+    "initial_adoption": "Existing remote car takes precedence; authored local cars missing online upload",
+    "conflicts": "First accepted remote same-car edit wins; different cars merge; own lost-reply writes preserve newer local edits",
+    "durability": "Atomic local appearance/baseline/attempted values; versions normalized for strict wire validation",
+    "exclusions": [
+      "car dirt/wash condition",
+      "canonical simulation/PB contracts",
+      "device selection/preferences",
+      "money/ownership grants"
+    ]
+  },
+  "initial_corrections": [
+    "Used powershell -NoProfile -ExecutionPolicy Bypass for the established dev entry point",
+    "Owner log writes and Windows certificate-store initialization were blocked in sandbox; approved native executions used isolated workspace APPDATA",
+    "The initial stalled certificate-store test process was identified and stopped by its exact owned PID tree",
+    "Selected the existing backend-secure-venv and explicit PYTHONPATH; no dependencies installed",
+    "Fixed JSON int/float dictionary normalization and the account-erasure fixture signature without weakening assertions",
+    "Added durable attempted values after reviewing lost replies followed by newer local edits; the combined restart regression passes"
+  ],
+  "commands": [
+    "With isolated APPDATA: powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1 -Action TestScript -ScriptPath res://tests/test_appearance_sync.gd -CommandTimeoutSeconds 120",
+    "PYTHONPATH=<workspace>/backend; .tools/backend-secure-venv/Scripts/python.exe -m pytest backend/tests/test_appearance_sync.py backend/tests/test_rivalry_appearance.py -q -k 'sqlite or simultaneous' --basetemp build/appearance-sync-2026-10-23/backend-final --junitxml=build/appearance-sync-2026-10-23/backend-final.xml",
+    "Same Python/PYTHONPATH: -m pytest backend/tests/test_appearance_sync_http.py -q -s --basetemp build/appearance-sync-2026-10-23/http-app",
+    "Final headless HTTP: same pytest -q --basetemp build/appearance-sync-2026-10-23/http-final-headless",
+    "Same pytest with BMT_APPEARANCE_CAPTURE=<workspace>/docs/evidence/appearance-sync-2026-10-23/native and --basetemp build/appearance-sync-2026-10-23/http-graphical --junitxml=build/appearance-sync-2026-10-23/http-graphical.xml",
+    "scripts/dev.ps1 -Action TestApp -CommandTimeoutSeconds 180 (isolated regression APPDATA)",
+    "scripts/dev.ps1 -Action TestScript -ScriptPath res://tests/test_earned_coins.gd -TestArgument --evidence-root=res://../build/appearance-sync-2026-10-23/economy (isolated APPDATA)",
+    "scripts/dev.ps1 -Action TestScript -ScriptPath res://tests/test_script_parse.gd -CommandTimeoutSeconds 150 (isolated final parse APPDATA)",
+    "Same Python/PYTHONPATH: -m pytest backend/tests/test_appearance_sync.py -q -k postgres --basetemp build/appearance-sync-2026-10-23/backend-postgres (fixture connection timeout)",
+    "Same Python: -m ruff check backend/bmt_backend/appearance_routes.py backend/tests/test_appearance_sync.py backend/tests/test_appearance_sync_http.py",
+    "git apply --reverse --check --ignore-space-change docs/evidence/appearance-sync-2026-10-23/task-only.patch"
+  ],
+  "native_images": [
+    "native/before-device-update.png",
+    "native/after-device-update.png"
+  ],
+  "limitations": [
+    "No PostgreSQL pass; configured local test DB unavailable",
+    "HTTP fixture has no discovery daemon/population, and unrelated prefetch returns 503",
+    "Older clients still use their legacy unconditional Rivalry writer",
+    "Matching backend and client release required",
+    "Physical-device and sustained two-device owner acceptance remain"
+  ],
+  "actions_not_performed": [
+    "phone attachment check",
+    "physical-device test",
+    "APK/export/install",
+    "live production account/backend mutation",
+    "deployment"
+  ],
+  "checkpoint": {
+    "file": "task-only.patch",
+    "reverse_check": true,
+    "construction": "Undo only this task's identifiable hunks from current shared files to reconstruct its scoped parent; preserve concurrent work"
+  },
+  "source_sha256": {
+    "AGENTS.md": "ba2c9eee9dcf03c88c6ad054c8583c17ea0db6c9efd0e164f88d536921118e9f",
+    "DEVELOPMENT_STATUS.md": "9f49e2cd9ae8edb404b3012292a66e298871da1cdb23021644341ab797ec1262",
+    "backend/bmt_backend/app.py": "259f9ab2bb106149a2eed5e6cdcaa35a37cc84fe1823460bf01d5098952c141c",
+    "backend/bmt_backend/appearance_routes.py": "394fb4d0bc2d60105b1b77a86df461ffeb4c65f0eff59f729cce03989a22ca8e",
+    "backend/bmt_backend/rivalry.py": "b0230779d496441dbc8c35fe3e7c17e3c43c5a9da5a2f8d9d81c6dfe4d9a79c8",
+    "backend/schemas/vehicle-appearance-sync-v1.schema.json": "98969611ee9d0672d9178fcf9642f0b696a690b9f8238fa73c6e06ad563e2d00",
+    "backend/tests/test_appearance_sync.py": "b2a11fd0f8877c82879ce76bdd41d1ba59fde22caddf7f8756a79eb0fd55009f",
+    "backend/tests/test_appearance_sync_http.py": "26ef56dd718c1b9a065a67a37c75daf1cac552e74c06b84a07f5ae40b1b99c45",
+    "docs/GARAGE_APPEARANCE_SYNC_2026_10_23.md": "f356f94aea0fd558e75348980fab57381ef705dd98c5d279c6a69158cdc0f7dd",
+    "docs/PHASE_0_PLAN.md": "ad773b80f01992a15c46f4ac6d5773ad96b06f1844620b2a10dc5a5882a22726",
+    "game/backend/appearance_sync.gd": "538d8ac7af88cea8d1defae20198454cc4318782836eef46708d6bfff63fff5d",
+    "game/backend/backend_client.gd": "b45139764a10d8d8b5919668faa1aca5be107569b035e2a060c44030c5af7c3a",
+    "game/backend/cosmetic_economy.gd": "1d47fa122a90455ba15bc974939bc4edc3b2063ba67d50c871753d48ee72260e",
+    "game/backend/weekly_rivalry_client.gd": "c19ac66a09ebc9206b1b66f211d2f12cb0989e9a7a2018f9f19aab298a8bdc8a",
+    "game/core/app.gd": "4936fd9d2bc904e719dce2d6197c786a426d873d6e4279ba72fe342889310ba2",
+    "game/persistence/appearance_state.gd": "04cbe9fb9250242f2c99c86af1fd6424007cecc3f4da7ce4ac7d1fd02145018f",
+    "game/persistence/local_records.gd": "1a5dcee7f97b102e112e0c7d8746ebf66c4a70a31fed91516ab01b0b2210c2ac",
+    "game/tests/test_appearance_sync.gd": "34325a84b15ae0710e4b12cb16ca94e1f66394ff42805179c59f14b5d02f1a7f",
+    "game/tests/test_appearance_sync_http.gd": "a423b67ad01665278d04a19dcc00eef95fc7915bba508a84bdb2f29f4a0c5b74",
+    "game/ui/garage_page.gd": "84bf9bc366ff5975ab601b1ef4eda497ad24a4811d55ce2eae76781a84f32dcb"
+  }
+}

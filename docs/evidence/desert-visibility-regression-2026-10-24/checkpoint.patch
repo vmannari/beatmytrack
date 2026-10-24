@@ -1,0 +1,611 @@
+diff --git a/game/track/native_track_visual.gd b/game/track/native_track_visual.gd
+--- a/game/track/native_track_visual.gd
++++ b/game/track/native_track_visual.gd
+@@ -2,7 +2,7 @@
+ extends Node3D
+ ## Original matte track kit derived solely from native surface geometry.
+ 
+-const VERSION: String = "track-kit-212-winter-bank-winding"
++const VERSION: String = "track-kit-213-desert-prop-ranges"
+ var desert_relief: RefCounted
+ const GRASS_VERGE = preload("res://track/grass_road_verge.gd")
+ const ROAD_HEIGHT = preload("res://track/road_surface_height.gd")
+diff --git a/game/track/desert_road_relief.gd b/game/track/desert_road_relief.gd
+--- a/game/track/desert_road_relief.gd
++++ b/game/track/desert_road_relief.gd
+@@ -145,6 +145,7 @@
+ 				var key: String = hash.finish().hex_encode()
+ 				if _reusable_meshes.has(key):
+ 					node.mesh = _reusable_meshes[key]
++					_refresh_spatial_ranges(node)
+ 					for child: Node in node.get_children(): await _apply_node(child,inverse,sliced)
+ 					return
+ 				var worker = get_script().new()
+@@ -170,10 +171,25 @@
+ 				mesh.set_meta("desert_road_relief",VERSION)
+ 				mesh.set_meta("editor_relief_source",key); node.mesh = mesh
+ 			else: node.mesh = deform(node.mesh,to_world,refine)
++		_refresh_spatial_ranges(node)
+ 		if sliced and node.is_inside_tree():
+ 			if race_install: await installer._yield_build()
+ 			else: await node.get_tree().process_frame
+ 	for child: Node in node.get_children(): await _apply_node(child,inverse,sliced)
++
++func _refresh_spatial_ranges(node: MeshInstance3D) -> void:
++	if not node.has_meta("spatial_object_ends"): return
++	var ends: PackedInt32Array = node.get_meta("spatial_object_ends")
++	var count: int = 0
++	for surface: int in range(node.mesh.get_surface_count()):
++		var corners: int = node.mesh.surface_get_array_index_len(surface)
++		count += corners if corners > 0 else node.mesh.surface_get_array_len(surface)
++	if not ends.is_empty() and ends[-1] == count: return
++	# Subdivision inserts triangles into the ordered prop stream. Its old object
++	# boundaries no longer describe that stream. Keep the complete assembly in
++	# one draw, preserving every face and its ordering instead of using stale IDs.
++	node.set_meta("spatial_object_ends", PackedInt32Array([count]))
++	node.set_meta("spatial_object_centres", PackedVector3Array([node.mesh.get_aabb().get_center()]))
+ 
+ func _current_node(node: Node) -> bool:
+ 	if not is_instance_valid(node) or not node.is_inside_tree(): return false
+diff --git a/game/track/spatial_mesh_chunks.gd b/game/track/spatial_mesh_chunks.gd
+--- a/game/track/spatial_mesh_chunks.gd
++++ b/game/track/spatial_mesh_chunks.gd
+@@ -32,6 +32,12 @@
+ 	var groups: Dictionary = {}
+ 	var object_ends: PackedInt32Array = source.get_meta("spatial_object_ends",PackedInt32Array())
+ 	var object_centres: PackedVector3Array = source.get_meta("spatial_object_centres",PackedVector3Array())
++	if not object_ends.is_empty() and not _valid_object_ranges(object_ends,object_centres,count):
++		# Older cached/prepared meshes can carry ranges from before deformation.
++		# Keep their complete drawable geometry attached rather than losing the
++		# whole family when a detached staged source cannot be partitioned safely.
++		_attach(parent,source)
++		return [source]
+ 	while true:
+ 		groups.clear()
+ 		for start: int in range(0,count,3):
+@@ -135,3 +141,11 @@
+ 
+ static func _attach(parent: Node3D, source: MeshInstance3D) -> void:
+ 	if source.get_parent() != parent: parent.add_child(source)
++
++static func _valid_object_ranges(ends: PackedInt32Array, centres: PackedVector3Array, count: int) -> bool:
++	if ends.size() != centres.size() or ends[-1] != count: return false
++	var previous: int = 0
++	for index: int in range(ends.size()):
++		if ends[index] <= previous or ends[index] % 3 != 0 or not centres[index].is_finite(): return false
++		previous = ends[index]
++	return true
+diff --git a/game/track/desert_sand_wind.gd b/game/track/desert_sand_wind.gd
+--- a/game/track/desert_sand_wind.gd
++++ b/game/track/desert_sand_wind.gd
+@@ -119,7 +119,13 @@
+ 	# Keep sites until their entire hop envelope is beyond the visible fade.
+ 	# Crossing a collection-cell boundary must not relocate a visible burst.
+ 	for source: Vector2 in previous:
+-		if source.distance_squared_to(focus) < 36.0 * 36.0: sources.append(source)
++		# Match the shader's visible radius and full downwind hop. A radial 36m
++		# lease kept invisible upwind sites occupying all six slots while driving.
++		var along: Vector2 = WIND.rotated((_hash(source) - 0.5) * 0.30)
++		var tip: Vector2 = source + along * 12.0
++		var nearest: Vector2 = Geometry2D.get_closest_point_to_segment(focus, source, tip)
++		# 6m bounds the billboard half-diagonal plus its lateral scatter.
++		if nearest.distance_squared_to(focus) < 26.0 * 26.0: sources.append(source)
+ 	var candidates: Array[Vector2] = []
+ 	if not anchor_heights.is_empty():
+ 		for source: Vector2 in anchor_heights:
+diff --git a/game/track/desert_sand_wind.gdshader b/game/track/desert_sand_wind.gdshader
+--- a/game/track/desert_sand_wind.gdshader
++++ b/game/track/desert_sand_wind.gdshader
+@@ -23,7 +23,7 @@
+     float local_time = mod(clock, period);
+     float event_seed = sand_hash(seed * 39.0 + cycle * 7.0);
+     float start = 0.8 + event_seed * 1.3;
+-    float duration = mix(1.8, 4.2, sand_hash(event_seed + 9.0));
++    float duration = min(mix(2.8, 4.6, sand_hash(event_seed + 9.0)), period - start - 0.15);
+     return step(0.10, event_seed) * smoothstep(start, start + 0.25, local_time)
+         * (1.0 - smoothstep(start + duration - 0.45, start + duration, local_time));
+ }
+@@ -45,8 +45,8 @@
+     vec3 facing = normalize(INV_VIEW_MATRIX[2].xyz);
+     vec3 along_view = normalize(wind - facing * dot(wind, facing));
+     vec3 across_view = normalize(cross(facing, along_view));
+-    vec3 at = center + along_view * VERTEX.x * mix(1.2, 4.8, u)
+-        + across_view * VERTEX.y * mix(0.65, 2.8, u);
++    vec3 at = center + along_view * VERTEX.x * mix(2.0, 8.5, u)
++        + across_view * VERTEX.y * mix(0.8, 3.0, u);
+     VERTEX = transpose(mat3(MODEL_MATRIX)) * (at - MODEL_MATRIX[3].xyz);
+     NORMAL = vec3(0.0, 1.0, 0.0);
+     world_position = at;
+@@ -84,14 +84,21 @@
+     // Airborne sunlit powder keeps the terrain hue while lifting its value
+     // enough to read against similarly coloured ground at the driving zoom.
+     float pigment_value = 1.35;
++    float pigment_saturation = 0.55;
++    float opacity = 0.23;
+ #if CURRENT_RENDERER == RENDERER_COMPATIBILITY
+     // Stay below this renderer's bright-channel clipping point, preserving hue.
+     pigment_value = 1.0;
++    pigment_saturation = 0.65;
++    opacity = 0.24;
+ #endif
+-    ALBEDO = sand_color.rgb * pigment_value * mix(0.97, 1.02, density.r);
++    // Fine airborne grains scatter a little more neutral light than the
++    // settled pigment. Preserve its warm hue without dense yellow cores.
++    vec3 pigment = mix(vec3(dot(sand_color.rgb, vec3(0.2126, 0.7152, 0.0722))), sand_color.rgb, pigment_saturation);
++    ALBEDO = pigment * pigment_value * mix(0.97, 1.02, density.r);
+     ROUGHNESS = 1.0;
+     SPECULAR = 0.0;
+-    // Preserve light, broken wisps at driving scale instead of losing them
+-    // below a display pixel. The lower ceiling keeps dense cores translucent.
+-    ALPHA = 0.20 * strength * presence * sqrt(shape) * distance_fade * intersection;
++    // Preserve broken wisps at driving scale; sparse cores need contrast
++    // against sunlit dune detail while their feathered tails stay transparent.
++    ALPHA = opacity * strength * presence * sqrt(shape) * distance_fade * intersection;
+ }
+diff --git a/game/tests/test_desert_sand_wind.gd b/game/tests/test_desert_sand_wind.gd
+--- a/game/tests/test_desert_sand_wind.gd
++++ b/game/tests/test_desert_sand_wind.gd
+@@ -6,6 +6,8 @@
+ var out: String = "res://../docs/evidence/desert-sand-gameplay-2026-10-23/focused/"
+ 
+ func _initialize() -> void:
++	for argument: String in OS.get_cmdline_user_args():
++		if argument.begins_with("--evidence="): out = argument.trim_prefix("--evidence=").trim_suffix("/") + "/"
+ 	run.call_deferred()
+ 
+ func check(ok: bool, label: String) -> void:
+diff --git a/game/tests/test_desert_visibility_regression.gd b/game/tests/test_desert_visibility_regression.gd
+--- /dev/null
++++ b/game/tests/test_desert_visibility_regression.gd
+@@ -0,0 +1,215 @@
++extends SceneTree
++## Full Desert deformation/partition/cache integration, including Egyptian props.
++var checks: int = 0
++var failures: int = 0
++const OUT: String = "res://../docs/evidence/desert-visibility-regression-2026-10-24/"
++var app: Node
++
++func _initialize() -> void: run.call_deferred()
++
++func check(ok: bool, message: String) -> void:
++	checks += 1
++	if not ok: failures += 1; print("FAIL: ", message)
++
++func circuit() -> NativeTrack:
++	var doc: Dictionary = TrackDocument.create_blank()
++	doc.theme = "desert"
++	doc["automatic_scenery"] = false
++	var point := Vector2(-28, -18)
++	var heading: float = 0.0
++	for kind: String in ["straight", "hairpin", "straight", "hairpin"]:
++		var piece: Dictionary = RoadPieces.create(kind, point, heading)
++		piece.length = 56.0 if kind == "straight" else 0.0
++		piece.radius = 18.0
++		doc.pieces.append(piece)
++		var pose: Dictionary = RoadPieces.end_pose(piece)
++		point = pose.position; heading = pose.heading
++	doc.objects = []
++	for row: Array in [["egypt_pyramid", -38, 0], ["egypt_pyramid", 38, 0], ["egypt_obelisk", 0, 0], ["egypt_column", 15, 3], ["egypt_wall", -15, 3], ["rock", 0, 26]]:
++		doc.objects.append({"kind":row[0], "position":[row[1],row[2]], "rotation":0.0, "scale":1.0})
++	var routed: Dictionary = RoadPieces.route_from_pieces(doc)
++	print("DOCUMENT_VALIDATION: ", TrackDocument.validate(routed.document))
++	check(TrackDocument.validate(routed.document).is_empty(), "regression circuit is a valid current-format Desert document")
++	return TrackCompiler.compile(routed.document)
++
++func run() -> void:
++	var track: NativeTrack = circuit()
++	if track == null: quit(1); return
++	var canonical: PackedByteArray = var_to_bytes([track.cells, track.deck_cells, track.route, track.metadata, track.content_hash])
++	check(track.metadata.get("theme") == "desert", "compile keeps Desert biome")
++	var visual := NativeTrackVisual.new()
++	visual.theme_id = "desert"; visual.colors = TrackTheme.DESERT.duplicate()
++	visual.preserve_relief_surfaces = true
++	root.add_child(visual)
++	var bridge := BridgePresentation.new(track)
++	visual.ground_support = bridge.road_surface; visual.desert_relief = bridge.visual_relief
++	await visual._build_placed_objects(track)
++	var egypt: MeshInstance3D = visual.get_node_or_null("EgyptianStonework")
++	check(egypt != null, "all authored Egyptian objects build before world preparation")
++	if egypt == null: quit(1); return
++	var before: int = egypt.mesh.surface_get_array_index_len(0)
++	var original_mesh: Mesh = egypt.mesh
++	var ends: PackedInt32Array = egypt.get_meta("spatial_object_ends")
++	print("DESERT_PROP_BEFORE: corners=", before, " range_end=", ends[-1])
++	check(ends[-1] == before, "source assembly ranges cover the complete prop stream")
++	await visual.desert_relief.apply(visual, true)
++	var after: int = egypt.mesh.surface_get_array_index_len(0)
++	ends = egypt.get_meta("spatial_object_ends")
++	print("DESERT_PROP_AFTER: corners=", after, " range_end=", ends[-1])
++	check(ends[-1] == after, "Desert deformation preserves ordered prop assembly ranges")
++	var original_script := GDScript.new()
++	original_script.source_code = FileAccess.get_file_as_string(OUT + "before/desert_road_relief.gd")
++	check(original_script.reload() == OK, "task-original Desert deformation compiles for exact control")
++	var original_relief: RefCounted = original_script.new(track)
++	var reference: Mesh = original_relief.deform(original_mesh, Transform3D.IDENTITY, true)
++	check(reference.surface_get_arrays(0) == egypt.mesh.surface_get_arrays(0), "range repair preserves every original deformed vertex, index and attribute")
++	# Do not enter an invalid range assertion in the downstream partitioner.
++	if ends[-1] == after:
++		await visual._partition_bank_meshes()
++		check(not visual.find_children("EgyptianStonework*", "MeshInstance3D", true, false).is_empty(), "pyramid family remains attached after spatial preparation")
++	# A stale older packet must still attach its complete source, even before
++	# the deformation-side repair has had a chance to refresh its ranges.
++	var stale := MeshInstance3D.new()
++	stale.mesh = reference; stale.material_override = PropEgypt.material()
++	stale.set_meta("spatial_object_ends", PackedInt32Array([before]))
++	stale.set_meta("spatial_object_centres", PackedVector3Array([Vector3.ZERO]))
++	var retained: Array[MeshInstance3D] = SpatialMeshChunks.add(visual, stale, true, false, false)
++	check(retained == [stale] and stale.get_parent() == visual and stale.mesh == reference, "stale ranges retain the complete staged mesh without losing geometry")
++	visual.queue_free()
++	await process_frame
++	var lease_test := DesertSandWind.new()
++	root.add_child(lease_test); lease_test.configure(track)
++	var focus := Vector2(0, -18)
++	# All six are outside the shader fade including their downwind hop, but
++	# inside the old radial 36m lease that exhausted the bounded source pool.
++	lease_test.sources = PackedVector2Array([focus+Vector2(26,-20),focus+Vector2(30,-12),focus+Vector2(33,-4),focus+Vector2(33,4),focus+Vector2(30,12),focus+Vector2(26,20)])
++	lease_test.center = (focus / DesertSandWind.SPACING).floor() * DesertSandWind.SPACING
++	lease_test._place(focus)
++	var nearest: float = INF
++	for source: Vector2 in lease_test.sources: nearest = minf(nearest, source.distance_to(focus))
++	check(nearest < 20.0, "invisible retained sites release slots for nearby driving sand")
++	lease_test.queue_free(); await process_frame
++	await actual_app(track)
++	track.metadata.erase("cloud_version")
++	check(canonical == var_to_bytes([track.cells, track.deck_cells, track.route, track.metadata, track.content_hash]), "geometry repair and complete race presentation preserve canonical track data")
++	print("DESERT_VISIBILITY_REGRESSION: %d checks, %d failures" % [checks, failures])
++	quit(1 if failures else 0)
++
++func actual_app(track: NativeTrack) -> void:
++	OS.set_environment("BMT_API_URL", "")
++	# Published-track marker used by the existing offline App install fixtures.
++	track.metadata.cloud_version = "desert-visibility-local-fixture"
++	var folder: String = "user://desert_visibility_" + TrackLibrary.unique_id()
++	DirAccess.make_dir_recursive_absolute(folder)
++	app = load("res://core/app.tscn").instantiate()
++	app.library = TrackLibrary.new(folder)
++	app.records = LocalRecords.new(folder.path_join("records.json"))
++	app.cloud_root_override = folder.path_join("cloud")
++	NativeTrackVisual.ROAD_DISK_CACHE.directory = folder.path_join("roads")
++	root.add_child(app)
++	while not app.startup_complete: await process_frame
++	NativeTrackVisual.PREPARED_WORLDS.entries.clear()
++	var cold_mesh: Mesh
++	for pass_index: int in range(2):
++		app._show_screen("tracks")
++		app.selected_track = track
++		await app._start_race(track, false, true)
++		check(is_instance_valid(app.game) and app.game.preparation_complete, "actual App race installation completes: " + str(pass_index))
++		if not is_instance_valid(app.game): break
++		var game: Node = app.game
++		game.set_physics_process(false); game.set_process(false)
++		check(game.track_ground != null and game.track_ground.world_built, "actual App publishes a complete Desert world: " + str(pass_index))
++		var families: Array[Node] = game.track_ground.find_children("EgyptianStonework*", "MeshInstance3D", true, false)
++		check(not families.is_empty(), "actual App retains pyramids and Egyptian scenery: " + str(pass_index))
++		if not families.is_empty():
++			if pass_index == 0: cold_mesh = families[0].mesh
++			else: check(families[0].mesh == cold_mesh, "cached race retains the actual prepared pyramid mesh")
++		var fx: DesertSandWind = game.desert_sand_wind
++		check(fx != null and not fx.anchor_heights.is_empty(), "actual App wind retains prepared crest support: " + str(pass_index))
++		check(game.process_mode == Node.PROCESS_MODE_INHERIT, "loading releases the actual race process mode")
++		if DisplayServer.get_name() != "headless": await capture(game, track, pass_index)
++		app._leave_race()
++		await process_frame
++	app.queue_free()
++	await process_frame
++
++func draw(game: Node) -> void:
++	game.paused = false
++	game.hud.pause_menu.hide(); game.hud.message_label.hide()
++	game.desert_sand_wind.notification(Node.NOTIFICATION_APPLICATION_RESUMED)
++	game.desert_ambience.notification(Node.NOTIFICATION_APPLICATION_RESUMED)
++	await RenderingServer.frame_post_draw
++
++func capture(game: Node, track: NativeTrack, pass_index: int) -> void:
++	var folder: String = OUT + RenderingServer.get_current_rendering_method() + "/"
++	DirAccess.make_dir_recursive_absolute(ProjectSettings.globalize_path(folder))
++	root.size = Vector2i(1280, 720)
++	game.race_cues.hide()
++	var families: Array[Node] = game.track_ground.find_children("EgyptianStonework*", "MeshInstance3D", true, false)
++	for side: int in [-1, 1]:
++		var target := Vector2(side * 38.0, 0)
++		var at: Vector2 = track.route[0]
++		for point: Vector2 in track.route:
++			if point.distance_squared_to(target) < at.distance_squared_to(target): at = point
++		game.sim.state.position = at; game.previous_position = at
++		game.sim.state.velocity = Vector2.ZERO
++		game.call("_process", 0.0)
++		game.camera.follow(at, Vector2.ZERO, 0.0, 0.0, true)
++		for settle: int in range(3): await draw(game)
++		var visible_image: Image = root.get_texture().get_image()
++		for family: Node3D in families: family.hide()
++		for settle: int in range(3): await draw(game)
++		var hidden_image: Image = root.get_texture().get_image()
++		check(changes(visible_image, hidden_image) > 1000, "pyramid is actually drawn from the road: pass%d side%d" % [pass_index, side])
++		visible_image.save_png(folder + "pyramid-%d-%d.png" % [pass_index, side])
++		for family: Node3D in families: family.show()
++	if pass_index != 1: return
++	game.desert_ambience.rng.seed = 231023; game.desert_ambience.reset()
++	var fx: DesertSandWind = game.desert_sand_wind
++	fx.reset()
++	var cumulative := PackedFloat32Array([0.0])
++	for index: int in range(track.route.size()): cumulative.append(cumulative[-1] + track.route[index].distance_to(track.route[(index + 1) % track.route.size()]))
++	var rows: Array[Dictionary] = []
++	var visible_samples: int = 0
++	var clear_samples: int = 0
++	var peak: int = 0
++	var clear_peak: int = 0
++	for sample: int in range(18):
++		for step: int in range(15):
++			var distance: float = fposmod((sample + float(step) / 15.0) * 14.0, cumulative[-1])
++			var index: int = clampi(cumulative.bsearch(distance) - 1, 0, track.route.size() - 1)
++			var from: Vector2 = track.route[index]; var to: Vector2 = track.route[(index + 1) % track.route.size()]
++			var at: Vector2 = from.lerp(to, (distance - cumulative[index]) / maxf(0.0001, cumulative[index + 1] - cumulative[index]))
++			game.sim.state.position = at; game.previous_position = at; game.sim.state.velocity = (to - from).normalized() * 14.0
++			game.sim.state.heading = atan2(game.sim.state.velocity.x, game.sim.state.velocity.y); game.previous_heading = game.sim.state.heading
++			await draw(game)
++			game.call("_process", 1.0 / 15.0)
++		fx.hide()
++		for settle: int in range(3): await draw(game)
++		var before: Image = root.get_texture().get_image()
++		fx.show()
++		for settle: int in range(3): await draw(game)
++		var after: Image = root.get_texture().get_image()
++		var pixels: int = changes(before, after)
++		var clear_pixels: int = changes(before, after, 0.02)
++		if pixels >= 1000: visible_samples += 1
++		if clear_pixels >= 1000: clear_samples += 1
++		clear_peak = maxi(clear_peak, clear_pixels)
++		if pixels > peak:
++			peak = pixels
++			after.save_png(folder + "sand-in-race.png")
++			before.save_png(folder + "sand-hidden.png")
++		rows.append({"seconds": sample + 1, "pixels": pixels, "clear_pixels": clear_pixels, "wind": game.desert_ambience.strength, "sources": fx.sources.size()})
++	check(visible_samples >= 9 and peak >= 3000, "cached App race shows readable natural-wind sand along the route")
++	check(clear_samples >= 9 and clear_peak >= 3000, "natural-wind sand retains clear contrast in at least half the driving samples")
++	print("APP_DESERT_SAND: samples=", visible_samples, "/18 peak=", peak, " clear_samples=", clear_samples, " clear_peak=", clear_peak)
++	var receipt := FileAccess.open(folder + "race.json", FileAccess.WRITE)
++	receipt.store_string(JSON.stringify({"visible_samples": visible_samples, "peak_pixels": peak, "clear_samples": clear_samples, "clear_peak": clear_peak, "samples": rows}, "\t")); receipt.close()
++
++func changes(a: Image, b: Image, threshold: float = 0.01) -> int:
++	var pixels: int = 0
++	for y: int in range(a.get_height()):
++		for x: int in range(a.get_width()):
++			var first: Color = a.get_pixel(x, y); var second: Color = b.get_pixel(x, y)
++			if maxf(absf(first.r - second.r), maxf(absf(first.g - second.g), absf(first.b - second.b))) >= threshold: pixels += 1
++	return pixels
+diff --git a/docs/DESERT_VISIBILITY_REGRESSION_2026_10_24.md b/docs/DESERT_VISIBILITY_REGRESSION_2026_10_24.md
+--- /dev/null
++++ b/docs/DESERT_VISIBILITY_REGRESSION_2026_10_24.md
+@@ -0,0 +1,47 @@
++# Desert scenery and wind visibility — 2026-10-24
++
++Requirements: DVR01 restore missing Egyptian scenery; DVR02 make ordinary wind readable while driving; DVR03 verify the actual App's cold/cached race path; R01 canonical isolation; G01 native visual evidence; Q01 scoped checkpoint.
++
++## Confirmed regression and repair
++
++Desert relief subdivided the Egyptian family from 79,098 to 89,883 draw corners, leaving `spatial_object_ends` at 79,098. Subsequent spatial preparation detached that family and could fail on the invalid range, losing pyramids and other Egyptian props. The task-original valid-document control fails the exact coverage assertion (`original-headless.log`, 5 checks/1 failure).
++
++Refresh invalidated ranges after deformation, retaining the complete ordered assembly as one draw. Defensively attach the original drawable mesh if a stale prepared packet reaches spatial splitting. Advance the prepared-world visual key to `track-kit-213-desert-prop-ranges`. Exact array comparison against the captured original deformer confirms unchanged vertices, indices and attributes. This repairs presentation metadata; it does not change authored objects or canonical geometry.
++
++Invisible sand sources could also retain all six slots within a radial 36m lease. Retire a site only after its downwind path, lateral scatter and full billboard envelope leave the shader's visible radius. A six-slot starvation regression now checks this explicitly. Lengthen the existing feathered wisps (maximum 8.5m along wind, 3m across) and independent bursts (2.8–4.6s, bounded to fade before cycle rollover). Keep the terrain pigment hue, with muted airborne scattering calibrated per renderer. Final opacity is 0.23 Mobile/0.24 Compatibility. The same six sites, 48 quads/96 triangles, low lift and depth/roof exclusion remain.
++
++## Actual checks
++
++Godot 4.7.2.stable.official.ed1daf0bf, desktop NVIDIA RTX 3090. Commands and exact outcomes are in [report.json](evidence/desert-visibility-regression-2026-10-24/report.json).
++
++| Retained log | Checks/scripts | Failures |
++|---|---:|---:|
++| app-headless.log | 22 | 0 |
++| app-mobile.log | 28 | 0 |
++| app-compatibility.log | 28 | 0 |
++| wind-headless.log | 55 | 0 |
++| wind-mobile.log | 68 | 0 |
++| wind-compatibility.log | 68 | 0 |
++| chunks-headless.log | 71 | 0 |
++| egypt-headless.log | 79 | 0 |
++| geometry-headless.log | 5 | 0 |
++| desert-headless.log | 87 | 0 |
++| biomes-headless.log | 108 | 0 |
++| app-suite.log | 141 | 0 |
++| parser.log | 1044 | 0 |
++
++The new fixture enters the real App using isolated temporary records, real CPU preparation and production Game installation. It checks fresh and cached worlds, actual pyramid pixels from both road sides, shared cached mesh resources, prepared sand anchors and released loading barriers. It then advances normal seeded ambience and the ordinary camera along a scripted 50km/h route for 18 seconds. Physics/countdown stay frozen only in the owned capture fixture; this is a presentation diagnostic, not an autonomous driver or FPS benchmark.
++
++Sand at >=1% channel contrast: Mobile 15/18 samples, peak 7620 pixels; Compatibility 16/18, peak 10104. The additional stricter >=2% check passes in 12/18 and 9/18 samples respectively. Each qualifying sample needs at least 1,000 pixels; each renderer must have at least nine qualifying samples and a 3,000-pixel peak. The original 1% checks remain. Pixel metrics establish visibility under this fixture, not owner recognition.
++
++The earlier fixed-scenery/original-sand App capture had 10/18 samples and a 3,104-pixel peak on Mobile. Strong-opacity trials were rejected because they violated existing saturation/soft-core invariants. Retained `opacity-*`, `long-wisp-initial-*` and `mobile-saturation-initial.log` document those failures; the final source passes the original thresholds. The initial fixture lacked the offline published-track marker, so the App correctly refused to race; that was a fixture correction, not a runtime bypass. The initial document-key fixture correction is retained separately.
++
++Both renderers preserve all 784 checked opaque roof pixels exactly, with zero bright specks. Pause, background, retry, finish, biome removal and canonical state checks pass. Exact synchronous/cooperative geometry and materials match in all five biomes. Capture logs contain expected hitch diagnostics from explicit GPU readbacks and pixel loops; they are not game frame-rate measurements.
++
++## Review and scope
++
++[Native preview](evidence/desert-visibility-regression-2026-10-24/preview.html) shows the restored pyramids and the exact same driving frame with sand on/off. Its motion links use actual native Game frames with the normal driving camera. No AI-generated screenshots or edited imagery are used.
++
++Changed runtime files: `game/track/native_track_visual.gd` (cache key only), `desert_road_relief.gd` (metadata refresh), `spatial_mesh_chunks.gd` (stale-range retention), `desert_sand_wind.gd` (source leases), `desert_sand_wind.gdshader` (wisps/cadence/scattering). New regression fixture: `game/tests/test_desert_visibility_regression.gd`; existing wind fixture gains an optional evidence-output argument. Status documents and this report record the task. `checkpoint.patch` is relative to task-entry snapshots, preserving the pre-existing dirty tree; reverse application is checked against the working files. Hashes and source snapshots are retained in this evidence directory.
++
++The repaired subdivided Egyptian family uses a complete aggregate draw when its old boundaries are no longer valid. This favours correct complete geometry; reference-device fragment/vertex cost is not measured. Sand has broader transparent coverage at the same instance/triangle budget. Owner recognition on the affected track and physical-device appearance/cost remain to be accepted. The owner has not identified the affected track/platform in this turn. No phone/tablet attachment check, physical-device test, APK/export/install, live account/backend mutation or deployment was performed. Existing owner game/editor processes were preserved. Local game restart is needed to load source changes; installed phone/tablet builds have not been updated.
+diff --git a/AGENTS.md b/AGENTS.md
+--- a/AGENTS.md
++++ b/AGENTS.md
+@@ -1,3 +1,6 @@
++## Desert scenery visibility regression override (2026-10-24)
++2026-10-24 DVR01-DVR03/R01/G01/Q01: Restore missing Desert pyramids/Egyptian scenery by repairing stale draw ranges after relief subdivision (79098→89883 corners), retaining complete stale sources and advancing the visual cache key. Fix invisible sand source leases and use longer muted terrain-hue wisps within six sites/48quads/96triangles. Actual App cold/cache regression22headless/28Mobile/28Compatibility, wind55/68/68, mesh71, Egyptian79, five-biome exact geometry5, Desert87, biomes108, App141 and parser1044 pass. Ordinary driving sand>=1% contrast 15/18 Mobile/16/18 Compatibility; stricter>=2% 12/18/9/18. All784 roof pixels exact. Original mismatch and rejected colour trials retained. Commands, native captures, limits and scoped checkpoint: docs/DESERT_VISIBILITY_REGRESSION_2026_10_24.md and docs/evidence/desert-visibility-regression-2026-10-24/report.json. Local restart and owner/affected-track/device appearance/cost acceptance remain; no phone/tablet check/test, APK, live mutation or deployment. Concurrent work and owner processes preserved.
++
+ ## Store reference layout override (2026-10-24)
+ 2026-10-24 STR01-STR03/R01/G01/Q01: Store follows the owner reference with featured permanent/monthly ad-free offers, separate publishing packs, service-driven prices/account status, per-slot value and responsive 52-unit actions. All five actions fit the desktop viewport; narrow layouts scroll. Pending recovery, passive scoped reads, account fencing, double-press guards and both-group impressions remain. Focused104headless/113Compatibility/113desktopMobile, telemetry15, Store cache9, App141 and parser1044 pass. Broader menu313 retains30 unchanged Garage-washing assertion failures; no broad pass is claimed. Initial clipping, debug-row height, sandbox certificate and fixture Ogg-shutdown corrections are retained. Actual commands, native views, hashes and scoped checkpoint: docs/STORE_REFERENCE_2026_10_24.md and docs/evidence/store-reference-2026-10-24/report.json. Client reload and owner/device acceptance remain. No phone/tablet attachment check, physical-device test, APK, live mutation, purchase or deployment. Concurrent work preserved.
+ 
+diff --git a/DEVELOPMENT_STATUS.md b/DEVELOPMENT_STATUS.md
+--- a/DEVELOPMENT_STATUS.md
++++ b/DEVELOPMENT_STATUS.md
+@@ -1,3 +1,5 @@
++2026-10-24 DVR01-DVR03/R01/G01/Q01: Restore missing Desert pyramids/Egyptian scenery by repairing stale draw ranges after relief subdivision (79098→89883 corners), retaining complete stale sources and advancing the visual cache key. Fix invisible sand source leases and use longer muted terrain-hue wisps within six sites/48quads/96triangles. Actual App cold/cache regression22headless/28Mobile/28Compatibility, wind55/68/68, mesh71, Egyptian79, five-biome exact geometry5, Desert87, biomes108, App141 and parser1044 pass. Ordinary driving sand>=1% contrast 15/18 Mobile/16/18 Compatibility; stricter>=2% 12/18/9/18. All784 roof pixels exact. Original mismatch and rejected colour trials retained. Commands, native captures, limits and scoped checkpoint: docs/DESERT_VISIBILITY_REGRESSION_2026_10_24.md and docs/evidence/desert-visibility-regression-2026-10-24/report.json. Local restart and owner/affected-track/device appearance/cost acceptance remain; no phone/tablet check/test, APK, live mutation or deployment. Concurrent work and owner processes preserved.
++
+ 2026-10-24 STR01-STR03/R01/G01/Q01: Store follows the owner reference with featured permanent/monthly ad-free offers, separate publishing packs, service-driven prices/account status, per-slot value and responsive 52-unit actions. All five actions fit the desktop viewport; narrow layouts scroll. Pending recovery, passive scoped reads, account fencing, double-press guards and both-group impressions remain. Focused104headless/113Compatibility/113desktopMobile, telemetry15, Store cache9, App141 and parser1044 pass. Broader menu313 retains30 unchanged Garage-washing assertion failures; no broad pass is claimed. Initial clipping, debug-row height, sandbox certificate and fixture Ogg-shutdown corrections are retained. Actual commands, native views, hashes and scoped checkpoint: docs/STORE_REFERENCE_2026_10_24.md and docs/evidence/store-reference-2026-10-24/report.json. Client reload and owner/device acceptance remain. No phone/tablet attachment check, physical-device test, APK, live mutation, purchase or deployment. Concurrent work preserved.
+ 
+ 2026-10-23 WRI01-WRI08/R01/G01/Q01: World Ranking implemented with a pinned public Compact Circuit, three free official resumes, exact best12/26 and best6/13 scoring, career facts/Garage honors and demand-only native views. Separate one-connection worker, bounded batches/sorts, foreground backlog yield, atomic snapshots and compact archive retention keep global settlement off race acceptance and driving. Initial1m member scan timeout corrected to bounded previous/current member streams. Final local1m players/26m awards settles and cleans1120.8s; ranking-page median18.5/p9555.2ms;3.22GiB ranking SQL allocation includes reusable work pages. Broad backend125pass/1skip, ranking28pass/1skip, recovery2, config36 and canonical1 pass. Focused25headless/26graphical, App141 and existing Rivalry/achievement checks pass their stated assertions; one detail/three publication-retry failures reproduce with original controls. Actual commands, source hashes, native views and scoped checkpoint: docs/WORLD_RANKING_IMPLEMENTATION_2026_10_23.md and docs/evidence/world-ranking-implementation-2026-10-23/report.json. No cloud/DAU/Android FPS claim. Prospective launch, matching0059/API/worker/client rollout and owner/device/production acceptance remain. No phone/tablet attachment check/device test, APK, live mutation or deployment. Concurrent work preserved.
+diff --git a/docs/PHASE_0_PLAN.md b/docs/PHASE_0_PLAN.md
+--- a/docs/PHASE_0_PLAN.md
++++ b/docs/PHASE_0_PLAN.md
+@@ -1,3 +1,5 @@
++2026-10-24 DVR01-DVR03/R01/G01/Q01: Restore missing Desert pyramids/Egyptian scenery by repairing stale draw ranges after relief subdivision (79098→89883 corners), retaining complete stale sources and advancing the visual cache key. Fix invisible sand source leases and use longer muted terrain-hue wisps within six sites/48quads/96triangles. Actual App cold/cache regression22headless/28Mobile/28Compatibility, wind55/68/68, mesh71, Egyptian79, five-biome exact geometry5, Desert87, biomes108, App141 and parser1044 pass. Ordinary driving sand>=1% contrast 15/18 Mobile/16/18 Compatibility; stricter>=2% 12/18/9/18. All784 roof pixels exact. Original mismatch and rejected colour trials retained. Commands, native captures, limits and scoped checkpoint: docs/DESERT_VISIBILITY_REGRESSION_2026_10_24.md and docs/evidence/desert-visibility-regression-2026-10-24/report.json. Local restart and owner/affected-track/device appearance/cost acceptance remain; no phone/tablet check/test, APK, live mutation or deployment. Concurrent work and owner processes preserved.
++
+ 2026-10-24 STR01-STR03/R01/G01/Q01: Store follows the owner reference with featured permanent/monthly ad-free offers, separate publishing packs, service-driven prices/account status, per-slot value and responsive 52-unit actions. All five actions fit the desktop viewport; narrow layouts scroll. Pending recovery, passive scoped reads, account fencing, double-press guards and both-group impressions remain. Focused104headless/113Compatibility/113desktopMobile, telemetry15, Store cache9, App141 and parser1044 pass. Broader menu313 retains30 unchanged Garage-washing assertion failures; no broad pass is claimed. Initial clipping, debug-row height, sandbox certificate and fixture Ogg-shutdown corrections are retained. Actual commands, native views, hashes and scoped checkpoint: docs/STORE_REFERENCE_2026_10_24.md and docs/evidence/store-reference-2026-10-24/report.json. Client reload and owner/device acceptance remain. No phone/tablet attachment check, physical-device test, APK, live mutation, purchase or deployment. Concurrent work preserved.
+ 
+ 2026-10-23 CIR01-CIR03/R01/G01/Q01: Owner prefers the earlier scenic challenge artwork and rejects the native-diagram replacement. Five original v2 image_gen edits retain forest driving, garage planning, duel, six-car grid and three closed circuits/three lights each, with calmer lighting, cleaner materials and corrected props/vehicle geometry. A targeted cleanup removes the garage car badge/lettering. The 3x3 card fits all three circuits and starts above its caption; other scene posters remain full frame. Scenic browser/picker/detail/invitation art returns, with dedicated Find & play and exact rules/targets/account/verification/car selection preserved. Entry92/92native, browser110Compatibility, final cards270Compatibility/270desktopMobile, integrated216, FreeRace233 and parser1040 pass. Native previews, exact prompts/provenance, source hashes and scoped checkpoint: docs/evidence/challenge-art-refinement-2026-10-23/report.json and game/assets/menu/challenges/refinement-v2.json. Initial badge/crop corrections retained. Client reload and owner appearance/device acceptance remain; no phone/tablet attachment check, physical-device test, APK/export/install, account/backend mutation, social send or deployment. Concurrent work preserved.
+diff --git a/docs/evidence/desert-visibility-regression-2026-10-24/finish_receipt.py b/docs/evidence/desert-visibility-regression-2026-10-24/finish_receipt.py
+--- /dev/null
++++ b/docs/evidence/desert-visibility-regression-2026-10-24/finish_receipt.py
+@@ -0,0 +1,138 @@
++"""Build the task-scoped receipt from actual retained logs and native captures."""
++from pathlib import Path
++import difflib
++import hashlib
++import json
++import re
++import subprocess
++
++ROOT = Path(__file__).resolve().parents[3]
++E = Path(__file__).resolve().parent
++BASE = "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1"
++tests = []
++
++def test(log, script=None, rendering=None, action="TestScript", timeout=300, focused=False):
++    command = f"{BASE} -Action {action}"
++    if script:
++        command += f" -ScriptPath res://tests/{script}.gd"
++    if rendering:
++        command += f" -Graphical -RenderingMethod {rendering}"
++    if focused and rendering:
++        command += " -TestArgument '--evidence=res://../docs/evidence/desert-visibility-regression-2026-10-24/focused'"
++    command += f" -CommandTimeoutSeconds {timeout}"
++    raw = (E / log).read_bytes()
++    content = raw.decode("utf-16" if raw.startswith((b"\xff\xfe", b"\xfe\xff")) else "utf-8-sig")
++    result = re.findall(r"([A-Z_]+): (\d+) (checks|scripts), (\d+) failures", content)[-1]
++    row = dict(log=log, command=command, name=result[0], checks=int(result[1]), failures=int(result[3]))
++    assert row["failures"] == 0, row
++    tests.append(row)
++
++test("app-headless.log", "test_desert_visibility_regression", timeout=240)
++test("app-mobile.log", "test_desert_visibility_regression", "mobile")
++test("app-compatibility.log", "test_desert_visibility_regression", "gl_compatibility")
++test("wind-headless.log", "test_desert_sand_wind", timeout=180)
++test("wind-mobile.log", "test_desert_sand_wind", "mobile", focused=True)
++test("wind-compatibility.log", "test_desert_sand_wind", "gl_compatibility", focused=True)
++test("chunks-headless.log", "test_cooperative_mesh_chunks", timeout=180)
++test("egypt-headless.log", "test_egypt_props", timeout=180)
++test("geometry-headless.log", "test_race_install_geometry")
++test("desert-headless.log", action="TestDesert", timeout=180)
++test("biomes-headless.log", action="TestBiomes", timeout=180)
++test("app-suite.log", action="TestApp", timeout=180)
++test("parser.log", "test_script_parse", timeout=240)
++
++renderers = {}
++for renderer in ("mobile", "gl_compatibility"):
++    renderers[renderer] = json.loads((E / renderer / "race.json").read_text())
++    renderers[renderer]["palette"] = json.loads((E / "focused" / renderer / "palette.json").read_text())
++
++runtime = [f"game/track/{name}" for name in (
++    "native_track_visual.gd", "desert_road_relief.gd", "spatial_mesh_chunks.gd",
++    "desert_sand_wind.gd", "desert_sand_wind.gdshader")]
++wind_test = "game/tests/test_desert_sand_wind.gd"
++original_wind_test = (ROOT / wind_test).read_text().replace(
++    '\tfor argument: String in OS.get_cmdline_user_args():\n\t\tif argument.begins_with("--evidence="): out = argument.trim_prefix("--evidence=").trim_suffix("/") + "/"\n', "")
++if not (E / "before" / "test_desert_sand_wind.gd").exists():
++    (E / "before" / "test_desert_sand_wind.gd").write_text(original_wind_test, encoding="utf-8")
++
++doc = "docs/DESERT_VISIBILITY_REGRESSION_2026_10_24.md"
++table = "\n".join(f"| {row['log']} | {row['checks']} | {row['failures']} |" for row in tests)
++description = f"""# Desert scenery and wind visibility — 2026-10-24
++
++Requirements: DVR01 restore missing Egyptian scenery; DVR02 make ordinary wind readable while driving; DVR03 verify the actual App's cold/cached race path; R01 canonical isolation; G01 native visual evidence; Q01 scoped checkpoint.
++
++## Confirmed regression and repair
++
++Desert relief subdivided the Egyptian family from 79,098 to 89,883 draw corners, leaving `spatial_object_ends` at 79,098. Subsequent spatial preparation detached that family and could fail on the invalid range, losing pyramids and other Egyptian props. The task-original valid-document control fails the exact coverage assertion (`original-headless.log`, 5 checks/1 failure).
++
++Refresh invalidated ranges after deformation, retaining the complete ordered assembly as one draw. Defensively attach the original drawable mesh if a stale prepared packet reaches spatial splitting. Advance the prepared-world visual key to `track-kit-213-desert-prop-ranges`. Exact array comparison against the captured original deformer confirms unchanged vertices, indices and attributes. This repairs presentation metadata; it does not change authored objects or canonical geometry.
++
++Invisible sand sources could also retain all six slots within a radial 36m lease. Retire a site only after its downwind path, lateral scatter and full billboard envelope leave the shader's visible radius. A six-slot starvation regression now checks this explicitly. Lengthen the existing feathered wisps (maximum 8.5m along wind, 3m across) and independent bursts (2.8–4.6s, bounded to fade before cycle rollover). Keep the terrain pigment hue, with muted airborne scattering calibrated per renderer. Final opacity is 0.23 Mobile/0.24 Compatibility. The same six sites, 48 quads/96 triangles, low lift and depth/roof exclusion remain.
++
++## Actual checks
++
++Godot 4.7.2.stable.official.ed1daf0bf, desktop NVIDIA RTX 3090. Commands and exact outcomes are in [report.json](evidence/desert-visibility-regression-2026-10-24/report.json).
++
++| Retained log | Checks/scripts | Failures |
++|---|---:|---:|
++{table}
++
++The new fixture enters the real App using isolated temporary records, real CPU preparation and production Game installation. It checks fresh and cached worlds, actual pyramid pixels from both road sides, shared cached mesh resources, prepared sand anchors and released loading barriers. It then advances normal seeded ambience and the ordinary camera along a scripted 50km/h route for 18 seconds. Physics/countdown stay frozen only in the owned capture fixture; this is a presentation diagnostic, not an autonomous driver or FPS benchmark.
++
++Sand at >=1% channel contrast: Mobile {renderers['mobile']['visible_samples']}/18 samples, peak {renderers['mobile']['peak_pixels']} pixels; Compatibility {renderers['gl_compatibility']['visible_samples']}/18, peak {renderers['gl_compatibility']['peak_pixels']}. The additional stricter >=2% check passes in {renderers['mobile']['clear_samples']}/18 and {renderers['gl_compatibility']['clear_samples']}/18 samples respectively. Each qualifying sample needs at least 1,000 pixels; each renderer must have at least nine qualifying samples and a 3,000-pixel peak. The original 1% checks remain. Pixel metrics establish visibility under this fixture, not owner recognition.
++
++The earlier fixed-scenery/original-sand App capture had 10/18 samples and a 3,104-pixel peak on Mobile. Strong-opacity trials were rejected because they violated existing saturation/soft-core invariants. Retained `opacity-*`, `long-wisp-initial-*` and `mobile-saturation-initial.log` document those failures; the final source passes the original thresholds. The initial fixture lacked the offline published-track marker, so the App correctly refused to race; that was a fixture correction, not a runtime bypass. The initial document-key fixture correction is retained separately.
++
++Both renderers preserve all 784 checked opaque roof pixels exactly, with zero bright specks. Pause, background, retry, finish, biome removal and canonical state checks pass. Exact synchronous/cooperative geometry and materials match in all five biomes. Capture logs contain expected hitch diagnostics from explicit GPU readbacks and pixel loops; they are not game frame-rate measurements.
++
++## Review and scope
++
++[Native preview](evidence/desert-visibility-regression-2026-10-24/preview.html) shows the restored pyramids and the exact same driving frame with sand on/off. Its motion links use actual native Game frames with the normal driving camera. No AI-generated screenshots or edited imagery are used.
++
++Changed runtime files: `game/track/native_track_visual.gd` (cache key only), `desert_road_relief.gd` (metadata refresh), `spatial_mesh_chunks.gd` (stale-range retention), `desert_sand_wind.gd` (source leases), `desert_sand_wind.gdshader` (wisps/cadence/scattering). New regression fixture: `game/tests/test_desert_visibility_regression.gd`; existing wind fixture gains an optional evidence-output argument. Status documents and this report record the task. `checkpoint.patch` is relative to task-entry snapshots, preserving the pre-existing dirty tree; reverse application is checked against the working files. Hashes and source snapshots are retained in this evidence directory.
++
++The repaired subdivided Egyptian family uses a complete aggregate draw when its old boundaries are no longer valid. This favours correct complete geometry; reference-device fragment/vertex cost is not measured. Sand has broader transparent coverage at the same instance/triangle budget. Owner recognition on the affected track and physical-device appearance/cost remain to be accepted. The owner has not identified the affected track/platform in this turn. No phone/tablet attachment check, physical-device test, APK/export/install, live account/backend mutation or deployment was performed. Existing owner game/editor processes were preserved. Local game restart is needed to load source changes; installed phone/tablet builds have not been updated.
++"""
++(ROOT / doc).write_text(description, encoding="utf-8")
++
++status = (
++    f"2026-10-24 DVR01-DVR03/R01/G01/Q01: Restore missing Desert pyramids/Egyptian scenery by repairing stale draw ranges after relief subdivision (79098→89883 corners), retaining complete stale sources and advancing the visual cache key. Fix invisible sand source leases and use longer muted terrain-hue wisps within six sites/48quads/96triangles. Actual App cold/cache regression22headless/28Mobile/28Compatibility, wind55/68/68, mesh71, Egyptian79, five-biome exact geometry5, Desert87, biomes108, App141 and parser1044 pass. Ordinary driving sand>=1% contrast {renderers['mobile']['visible_samples']}/18 Mobile/{renderers['gl_compatibility']['visible_samples']}/18 Compatibility; stricter>=2% {renderers['mobile']['clear_samples']}/18/{renderers['gl_compatibility']['clear_samples']}/18. All784 roof pixels exact. Original mismatch and rejected colour trials retained. Commands, native captures, limits and scoped checkpoint: {doc} and docs/evidence/desert-visibility-regression-2026-10-24/report.json. Local restart and owner/affected-track/device appearance/cost acceptance remain; no phone/tablet check/test, APK, live mutation or deployment. Concurrent work and owner processes preserved.\n\n"
++)
++status_paths = ["AGENTS.md", "DEVELOPMENT_STATUS.md", "docs/PHASE_0_PLAN.md"]
++for relative in status_paths:
++    path = ROOT / relative
++    before = E / "before" / relative.replace("/", "__")
++    if not before.exists():
++        before.write_bytes(path.read_bytes())
++    if not path.read_text(encoding="utf-8").startswith("## Desert scenery visibility regression" if relative == "AGENTS.md" else "2026-10-24 DVR01"):
++        prefix = ("## Desert scenery visibility regression override (2026-10-24)\n" if relative == "AGENTS.md" else "") + status
++        path.write_bytes(prefix.encode("utf-8") + path.read_bytes())
++
++relative_e = E.relative_to(ROOT).as_posix()
++files = runtime + [wind_test, "game/tests/test_desert_visibility_regression.gd", doc] + status_paths + [relative_e + "/finish_receipt.py", relative_e + "/preview.html"]
++manifest = []
++patch = []
++(E / "after").mkdir(exist_ok=True)
++for relative in files:
++    path = ROOT / relative
++    if relative in runtime or relative == wind_test:
++        before = E / "before" / path.name
++    elif relative in status_paths:
++        before = E / "before" / relative.replace("/", "__")
++    else:
++        before = None
++    after = path.read_text(encoding="utf-8")
++    old = before.read_text(encoding="utf-8") if before else ""
++    manifest.append(dict(path=relative, sha256=hashlib.sha256(path.read_bytes()).hexdigest(), before_sha256=hashlib.sha256(before.read_bytes()).hexdigest() if before else None))
++    (E / "after" / relative.replace("/", "__")).write_bytes(path.read_bytes())
++    patch.append(f"diff --git a/{relative} b/{relative}\n")
++    patch.extend(difflib.unified_diff(old.splitlines(True), after.splitlines(True), fromfile="a/"+relative if before else "/dev/null", tofile="b/"+relative))
++(E / "checkpoint.patch").write_bytes("".join(patch).encode("utf-8"))
++git_checks = []
++for command in (["git", "diff", "--check", "--"] + files, ["git", "apply", "--reverse", "--check", str(E / "checkpoint.patch")]):
++    run = subprocess.run(command, cwd=ROOT, capture_output=True, text=True)
++    git_checks.append(dict(command=command, returncode=run.returncode, output=run.stdout+run.stderr))
++    assert run.returncode == 0, git_checks[-1]
++report = dict(date="2026-10-24", requirements=["DVR01","DVR02","DVR03","R01","G01","Q01"], engine="4.7.2.stable.official.ed1daf0bf", gpu="desktop NVIDIA RTX 3090", tests=tests, native=renderers, changed_files=manifest, git_checks=git_checks, baseline=dict(log="original-headless.log", checks=5, failures=1, old_range=79098, deformed_corners=89883), limitations=["Owner affected track/platform unknown", "Owner visual recognition pending", "No physical-device appearance or cost measurement", "No device attachment check, APK, install or deployment", "Coalesced subdivided Egyptian draw and broader transparent sand require device acceptance", "Owner processes and concurrent changes preserved"])
++(E / "report.json").write_text(json.dumps(report, indent=2)+"\n", encoding="utf-8")
++print(json.dumps({"tests":len(tests), "failures":sum(row["failures"] for row in tests), "git_checks":[row["returncode"] for row in git_checks], "report":str(E / "report.json")}))
+diff --git a/docs/evidence/desert-visibility-regression-2026-10-24/preview.html b/docs/evidence/desert-visibility-regression-2026-10-24/preview.html
+--- /dev/null
++++ b/docs/evidence/desert-visibility-regression-2026-10-24/preview.html
+@@ -0,0 +1,11 @@
++<!doctype html>
++<html lang="en"><meta charset="utf-8"><title>Desert scenery and sand — native game capture</title>
++<style>body{background:#172129;color:#edf1f3;font:16px system-ui;max-width:1280px;margin:28px auto;padding:0 20px}img{width:100%;display:block;margin:12px 0}button,select,a{font:inherit;color:inherit}button,select{background:#35434e;border:1px solid #778692;padding:8px 14px;margin:8px 6px 8px 0}a{margin-right:20px}p{line-height:1.5}</style>
++<h1>Desert scenery and sand</h1>
++<p>Actual native App race: fresh and cached world loading, ordinary driving camera and normal seeded wind. Captured on desktop; phone/tablet builds have not been updated.</p>
++<label>Renderer <select id="renderer"><option value="mobile">Mobile / Vulkan</option><option value="gl_compatibility">Compatibility / OpenGL</option></select></label>
++<h2>Restored pyramid</h2><img id="pyramid" alt="Restored pyramid beside the road after cached race loading">
++<h2>Wind-lifted sand at driving scale</h2><p>Toggle the effect in the exact same captured frame. The ground, camera, car and lighting stay fixed in this comparison.</p>
++<button id="toggle">Hide sand</button><span id="state">Sand visible</span><img id="sand" alt="Native driving frame with terrain-coloured windblown sand">
++<p><a id="motion" href="focused/mobile/motion.html">Actual sand motion</a><a href="report.json">Checks and source receipt</a></p>
++<script>let visible=true;const renderer=document.getElementById('renderer'),sand=document.getElementById('sand'),pyramid=document.getElementById('pyramid'),motion=document.getElementById('motion'),state=document.getElementById('state'),toggle=document.getElementById('toggle');function update(){const r=renderer.value;pyramid.src=r+'/pyramid-1--1.png';sand.src=r+'/'+(visible?'sand-in-race.png':'sand-hidden.png');motion.href='focused/'+r+'/motion.html';state.textContent=visible?'Sand visible':'Sand hidden';toggle.textContent=visible?'Hide sand':'Show sand'}renderer.onchange=update;toggle.onclick=()=>{visible=!visible;update()};update();</script></html>

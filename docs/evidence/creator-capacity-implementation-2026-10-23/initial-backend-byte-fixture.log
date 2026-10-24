@@ -1,0 +1,39 @@
+.F                                                                       [100%]
+================================== FAILURES ===================================
+_______ test_real_canonical_accepts_expanded_object_and_tyre_boundaries _______
+
+    @pytest.mark.godot
+    def test_real_canonical_accepts_expanded_object_and_tyre_boundaries():
+        binary = Path(os.environ.get("BMT_GODOT_BIN") or os.environ.get("GODOT_BIN")
+                      or r"C:\apps\Godot 4.7.2\Godot_v4.7.2-stable_win64_console.exe")
+        if not binary.is_file():
+            pytest.skip("Pinned Godot unavailable")
+        verifier = GodotVerifier(SimpleNamespace(godot_bin=str(binary), game_project=os.environ.get("BMT_GAME_PROJECT", ROOT / "game"),
+                                               verifier_timeout_seconds=90))
+        base = json.loads((ROOT / "backend/tests/fixtures/verified_oval.json").read_text())["document"]
+        document = copy.deepcopy(base)
+        document["objects"] = [{"kind": "grass_clump", "position": [i % 100 - 50, i // 100 - 20], "rotation": 0}
+                               for i in range(4096)]
+        manifest = verifier.validate_track(document)
+        assert manifest["track_schema"] == "creator-track-v5"
+        document["objects"].append(document["objects"][0])
+        with pytest.raises(VerificationError, match="Malformed creator document structure"):
+            verifier.validate_track(document)
+        document["objects"].pop()
+        points = [[-100.0 + (i % 100) * 2.0, -100.0 + (i // 100) * 2.0] for i in range(512)]
+        document["paint"] = [{"surface": 1, "width": 1.0, "shape": "round", "points": points} for _ in range(32)]
+>       assert 524_288 < len(_json_bytes(document, MAX_TRACK_BYTES)) < MAX_TRACK_BYTES
+E       assert 524288 < 456588
+E        +  where 456588 = len(b'{"base_track":"","corners":["sharp","sharp","sharp","sharp","sharp","sharp","sharp","sharp","sharp","sharp","sharp",...0,10.0,10.0,10.0,10.0,10.0,10.0,10.0,10.0,10.0,10.0,10.0,10.0,10.0,10.0,10.0,10.0,10.0,10.0,10.0,10.0,10.0,10.0,10.0]}')
+E        +    where b'{"base_track":"","corners":["sharp","sharp","sharp","sharp","sharp","sharp","sharp","sharp","sharp","sharp","sharp",...0,10.0,10.0,10.0,10.0,10.0,10.0,10.0,10.0,10.0,10.0,10.0,10.0,10.0,10.0,10.0,10.0,10.0,10.0,10.0,10.0,10.0,10.0,10.0]}' = _json_bytes({'base_track': '', 'corners': ['sharp', 'sharp', 'sharp', 'sharp', 'sharp', 'sharp', ...], 'creator': 'Backend tests', 'id': 'backend_oval', ...}, 1048576)
+
+tests\test_creator_capacity.py:45: AssertionError
+============================== warnings summary ===============================
+..\.tools\backend-secure-venv\Lib\site-packages\fastapi\testclient.py:1
+  C:\Codes\Godot\Beat my track\.tools\backend-secure-venv\Lib\site-packages\fastapi\testclient.py:1: StarletteDeprecationWarning: Using `httpx` with `starlette.testclient` is deprecated; install `httpx2` instead.
+    from starlette.testclient import TestClient as TestClient  # noqa
+
+-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
+=========================== short test summary info ===========================
+FAILED tests/test_creator_capacity.py::test_real_canonical_accepts_expanded_object_and_tyre_boundaries
+1 failed, 1 passed, 1 warning in 4.24s

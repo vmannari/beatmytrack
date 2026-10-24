@@ -1,0 +1,23 @@
+--- a/game/editor/road_pieces.gd
++++ b/game/editor/road_pieces.gd
+@@ -3,8 +3,7 @@
+ ## Bounded, independent road sections. Heading uses Vector2 degrees (+X = 0).
+ ## Road pieces are geometry; race routing is an explicit, separate operation.
+ 
+-const CATALOG = preload("res://editor/road_piece_catalog.gd")
+-const KINDS: Array[String] = CATALOG.KINDS
++const KINDS: Array[String] = ["straight", "taper", "curve", "s_bend", "hairpin", "bridge", "spline"]
+ const KEYS: Array[String] = ["kind", "position", "heading", "length", "radius", "width", "flip"]
+ const S_END_LENGTH: float = 2.0
+ const MAX_PIECES: int = 96
+@@ -14,9 +13,8 @@
+ 
+ 
+ static func create(kind: String, position: Vector2, heading: float = 0.0, width: float = 10.0) -> Dictionary:
+-	if kind not in KINDS: return {}
+ 	var piece: Dictionary = {"kind":kind, "position":[position.x,position.y], "heading":fposmod(heading,360.0),
+-		"length":CATALOG.DESCRIPTORS[kind].length, "radius":CATALOG.DESCRIPTORS[kind].radius,
++		"length":48.0 if kind == "bridge" else 28.0 if kind == "straight" else 0.0 if kind in ["hairpin","curve"] else S_END_LENGTH, "radius":12.0 if kind == "hairpin" else 16.0,
+ 		"width":clampf(width,6.0,20.0), "flip":false}
+ 	if kind == "taper":
+ 		piece.length = 28.0

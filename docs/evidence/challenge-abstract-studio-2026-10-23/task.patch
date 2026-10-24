@@ -1,0 +1,268 @@
+--- a/game/ui/challenge_create.gd
++++ b/game/ui/challenge_create.gd
+@@ -322,7 +322,7 @@
+ 	model.name = "ChallengeCarModel_"+id
+ 	model.vehicle_id = id
+ 	model.read_only = true
+-	model.garage_mode = true
++	model.abstract_mode = true
+ 	model.framing_scale = 0.84
+ 	var settings: Dictionary = records.settings if records != null else {}
+ 	model.livery = VehicleLivery.for_car(settings,id)
+--- a/game/ui/car_showroom.gd
++++ b/game/ui/car_showroom.gd
+@@ -3,6 +3,7 @@
+ ## Menu-only orbit camera over the actual race model. No simulation ownership.
+ signal condition_changed
+ signal trophy_tapped(position: Vector2)
++const AbstractStudio = preload("res://ui/challenge_studio.gd")
+ var _wall_press := Vector2.INF
+ var _wall_pointer: int = -2
+ var condition: Dictionary = {}
+@@ -18,6 +19,7 @@
+ var vehicle_id: String = "compact"
+ var read_only: bool = false
+ var garage_mode: bool = false
++var abstract_mode: bool = false
+ var turntable: Node3D
+ var roof: Node3D
+ var reflections: GarageReflections
+@@ -63,7 +65,7 @@
+ const CAR_REVEAL_SECONDS: float = 0.38
+ 
+ func _ready() -> void:
+-	if garage_mode: elevation = atan(0.16)
++	if garage_mode or abstract_mode: elevation = atan(0.16)
+ 	stretch = true
+ 	mouse_filter = Control.MOUSE_FILTER_IGNORE if read_only else Control.MOUSE_FILTER_STOP
+ 	var viewport := SubViewport.new()
+@@ -90,11 +92,12 @@
+ 	viewport.add_child(world)
+ 	car = CarVisual.new()
+ 	car.vehicle_id = vehicle_id
+-	car.editable_kits = garage_mode and vehicle_id=="compact"
++	car.editable_kits = (garage_mode or abstract_mode) and vehicle_id=="compact"
+ 	car.livery = livery
+ 	car.customisation = customisation
+ 	world.add_child(car)
+-	if garage_mode: turntable = GarageEnvironment.build(world, car, read_only)
++	if abstract_mode: turntable = AbstractStudio.build(world,car)
++	elif garage_mode: turntable = GarageEnvironment.build(world, car, read_only)
+ 	else: ShowroomStudio.build(world,car)
+ 	if garage_mode: roof = world.find_child("GarageRoof",true,false)
+ 	if garage_mode and not read_only: record_station = world.find_child("GarageRecordStation",true,false)
+@@ -145,11 +148,11 @@
+ 	customisation = parts.duplicate(true) if VehicleCustomisation.valid(parts) else VehicleCustomisation.defaults()
+ 	car = CarVisual.new()
+ 	car.vehicle_id = id
+-	car.editable_kits = garage_mode and id=="compact"
++	car.editable_kits = (garage_mode or abstract_mode) and id=="compact"
+ 	car.livery = livery
+ 	car.customisation = customisation
+ 	world.add_child(car)
+-	turntable = GarageEnvironment.build_pedestal(world,car)
++	turntable = AbstractStudio.build_pedestal(world,car) if abstract_mode else GarageEnvironment.build_pedestal(world,car)
+ 	if reflections != null: reflections.mark_stage(turntable)
+ 	weathering = VehicleWeathering.new()
+ 	weathering.configure(car,"pine",VehicleCatalog.config(id))
+@@ -214,7 +217,7 @@
+ func _prepare_car_reveal(reveal: GarageCarReveal, model: CarVisual, deck: Node3D) -> void:
+ 	reveal.prepare(model)
+ 	for child: Node in deck.get_children():
+-		if child is MeshInstance3D and child.position.y >= GarageEnvironment.DECK_HEIGHT:
++		if child is MeshInstance3D and child.position.y >= (AbstractStudio.DECK_HEIGHT if abstract_mode else GarageEnvironment.DECK_HEIGHT):
+ 			var material: Material = child.get_active_material(0)
+ 			if material is ShaderMaterial and material.shader == preload("res://ui/studio_contact.gdshader"):
+ 				reveal.prepare(child)
+@@ -239,16 +242,16 @@
+ func _orbit() -> void:
+ 	if wash_effect != null: wash_effect.reset()
+ 	var distance: float = (8.5 if vehicle_id == "pickup" else 5.5 if vehicle_id == "compact" else 7.1 if vehicle_id != "kart" else 4.9) * sqrt(1.0 + 0.32 * 0.32) * framing_scale
+-	if garage_mode:
++	if garage_mode or abstract_mode:
+ 		distance = (8.5 if read_only else 5.5 * 1.48) * sqrt(1.0 + 0.32 * 0.32) * framing_scale
+ 		if garage_distance == 0.0: garage_distance = distance
+ 		distance = garage_distance
+ 	distance *= zoom
+ 	var horizontal: float = cos(elevation) * distance
+-	var angle: float = GARAGE_CAMERA_YAW if garage_mode else yaw
+-	var target_height: float = 0.55 + (GarageEnvironment.DECK_HEIGHT if garage_mode else 0.0)
++	var angle: float = GARAGE_CAMERA_YAW if garage_mode or abstract_mode else yaw
++	var target_height: float = 0.55 + (AbstractStudio.DECK_HEIGHT if abstract_mode else GarageEnvironment.DECK_HEIGHT if garage_mode else 0.0)
+ 	if garage_mode and not read_only: target_height += 0.45
+-	if garage_mode and is_instance_valid(turntable): turntable.rotation.y = yaw - GARAGE_CAMERA_YAW
++	if (garage_mode or abstract_mode) and is_instance_valid(turntable): turntable.rotation.y = yaw - GARAGE_CAMERA_YAW
+ 	if not trophy_view and not record_view:
+ 		if camera_motion != null and camera_motion.is_running(): camera_motion.kill()
+ 		camera.position = Vector3(sin(angle)*horizontal, target_height + sin(elevation)*distance, -cos(angle)*horizontal)
+@@ -377,7 +380,7 @@
+ 
+ func reset_view() -> void:
+ 	yaw = DEFAULT_YAW
+-	elevation = atan(0.16) if garage_mode else atan(0.32)
++	elevation = atan(0.16) if garage_mode or abstract_mode else atan(0.32)
+ 	zoom = 1.0
+ 	garage_distance = 0.0
+ 	_clear_gesture()
+--- a/game/tests/test_challenge_cards.gd
++++ b/game/tests/test_challenge_cards.gd
+@@ -224,18 +224,20 @@
+ 	check(page.find_child("ChallengeCarFacts",true,false) == null,"car preview has no right-hand label or description panel")
+ 	var hero: CarShowroom = page._car_art
+ 	var camera_pose: Transform3D = hero.camera.transform
+-	var environment: Node = hero.camera.get_parent().find_child("GarageArchitecture",true,false)
++	var environment: Node = hero.camera.get_parent().find_child("ChallengeAbstractStudio",true,false)
++	check(environment != null and hero.camera.get_parent().find_child("GarageArchitecture",true,false) == null,"hero uses the abstract studio without garage architecture")
+ 	var viewport: SubViewport = hero.showroom_viewport
+ 	for id: String in VehicleCatalog.IDS:
+ 		var model: CarShowroom = page._car_models[id]
+ 		check(model.car is CarVisual and model.car.vehicle_id == id and model.read_only and model.mouse_filter == Control.MOUSE_FILTER_IGNORE,"card model matches its vehicle and passes input to "+id)
+ 		check(not model.is_processing(),"card model has no continuous frame work for "+id)
++		check(model.abstract_mode and not model.garage_mode and model.showroom_viewport.find_child("GarageArchitecture",true,false) == null,"card uses the same abstract studio for "+id)
+ 	await carousel_edges(page)
+ 	check(page._share.is_visible_in_tree() and page.get_ok_button().text == "Create & race","group offers sharing and immediate racing on the car page")
+ 	(page.find_child("ChallengeCar_pickup",true,false) as Button).pressed.connect(func() -> void: hero.car_motion.pause(),CONNECT_ONE_SHOT)
+ 	await click(page.find_child("ChallengeCar_pickup",true,false))
+ 	check(page._vehicle_id() == "pickup" and page._car_art.car.vehicle_id == "pickup","native car selection updates the 3D hero and actual vehicle")
+-	check(page._car_art == hero and hero.showroom_viewport == viewport and environment == hero.camera.get_parent().find_child("GarageArchitecture",true,false),"car selection retains the same hero viewport and environment")
++	check(page._car_art == hero and hero.showroom_viewport == viewport and environment == hero.camera.get_parent().find_child("ChallengeAbstractStudio",true,false),"car selection retains the same hero viewport and abstract environment")
+ 	check(hero.camera.transform.is_equal_approx(camera_pose),"changing to the pickup preserves the exact camera position")
+ 	check(hero.car_motion != null and hero.incoming_reveal != null and hero.outgoing_reveal != null and hero.is_processing(),"challenge uses the garage light-sweep transition with bounded active rendering")
+ 	hero.car_motion.pause()
+--- a/AGENTS.md
++++ b/AGENTS.md
+@@ -1,3 +1,6 @@
++## Abstract challenge car showroom override (2026-10-23)
++2026-10-23 CAS01/R01/G01/Q01: Challenge hero and all five car cards use an original charcoal/petrol abstract cove with restrained curved bands and a slim satin plinth. The retained fixed camera, original car-reveal animation, actual models/cosmetics, whole-row spring, quiet lookups and PB/exact-ticket behavior remain. The ordinary Garage keeps its existing environment. Focused244headless/288Compatibility/288desktopMobile, integrated216, Garage transition23, import and parser1020 pass. Source/asset provenance, native views, commands, retained integrated thread-cleanup warning and scoped checkpoint: docs/evidence/challenge-abstract-studio-2026-10-23/report.json. Owner/device appearance acceptance remains; no phone attachment check/device test, APK, live mutation or deployment. Concurrent work preserved.
++
+ ## Free Race preloading and loaded-end scrolling override (2026-10-23)
+ 2026-10-23 RFP01-RFP02/R01/G01/Q01: Free Race preloads from the visible card range with two viewports of reserve (20-60 cards), one owned read and completion-driven continuation. The list and carousel expose actual loaded cards only; slow/failed replies stop at the loaded end. Dense presentation coordinates retain exact revisions, telemetry fetch positions and row/column anchors through bounded cursor-cache eviction. Focused228headless/253Compatibility/253desktopMobile, cursor106, legacy paging269, FreeRace233, challenges216, App141 and parser1015 pass. Commands, native pending/loaded views, initial harness corrections and task-only Git-checkable patch: docs/FREE_RACE_PRELOAD_2026_10_23.md and docs/evidence/free-race-preload-2026-10-23/report.json. Tablet/owner sustained scrolling acceptance remains; no phone/tablet attachment check, physical-device test, APK, live mutation or deployment. Concurrent work preserved.
+ 
+--- a/DEVELOPMENT_STATUS.md
++++ b/DEVELOPMENT_STATUS.md
+@@ -1,3 +1,5 @@
++2026-10-23 CAS01/R01/G01/Q01: Challenge hero and all five car cards use an original charcoal/petrol abstract cove with restrained curved bands and a slim satin plinth. The retained fixed camera, original car-reveal animation, actual models/cosmetics, whole-row spring, quiet lookups and PB/exact-ticket behavior remain. The ordinary Garage keeps its existing environment. Focused244headless/288Compatibility/288desktopMobile, integrated216, Garage transition23, import and parser1020 pass. Source/asset provenance, native views, commands, retained integrated thread-cleanup warning and scoped checkpoint: docs/evidence/challenge-abstract-studio-2026-10-23/report.json. Owner/device appearance acceptance remains; no phone attachment check/device test, APK, live mutation or deployment. Concurrent work preserved.
++
+ 2026-10-23 CEM01-CEM03/R01/G01/Q01: Challenges now opens with Find & play and Create a challenge. Native illustrated choices lead to the existing browser or format-first creator; explicit entry resets the choice, creation cancel returns to its origin, and invitation/result/created-challenge flows retain direct access. Ordinary browsing reads start after selection. Focused83headless/88Compatibility/88desktopMobile, integrated216, discovery68, action-gates60 and parser1017 pass. Native previews, actual commands, initial harness/callback corrections, preserved concurrent changes and scoped patch: docs/evidence/challenge-entry-choice-2026-10-23/report.json. Owner appearance/touch acceptance remains. No phone attachment check/device test, APK, live account/backend mutation, social send or deployment.
+ 
+ 2026-10-23 RFP01-RFP02/R01/G01/Q01: Free Race preloads from the visible card range with two viewports of reserve (20-60 cards), one owned read and completion-driven continuation. The list and carousel expose actual loaded cards only; slow/failed replies stop at the loaded end. Dense presentation coordinates retain exact revisions, telemetry fetch positions and row/column anchors through bounded cursor-cache eviction. Focused228headless/253Compatibility/253desktopMobile, cursor106, legacy paging269, FreeRace233, challenges216, App141 and parser1015 pass. Commands, native pending/loaded views, initial harness corrections and task-only Git-checkable patch: docs/FREE_RACE_PRELOAD_2026_10_23.md and docs/evidence/free-race-preload-2026-10-23/report.json. Tablet/owner sustained scrolling acceptance remains; no phone/tablet attachment check, physical-device test, APK, live mutation or deployment. Concurrent work preserved.
+--- a/docs/PHASE_0_PLAN.md
++++ b/docs/PHASE_0_PLAN.md
+@@ -1,3 +1,5 @@
++2026-10-23 CAS01/R01/G01/Q01: Challenge hero and all five car cards use an original charcoal/petrol abstract cove with restrained curved bands and a slim satin plinth. The retained fixed camera, original car-reveal animation, actual models/cosmetics, whole-row spring, quiet lookups and PB/exact-ticket behavior remain. The ordinary Garage keeps its existing environment. Focused244headless/288Compatibility/288desktopMobile, integrated216, Garage transition23, import and parser1020 pass. Source/asset provenance, native views, commands, retained integrated thread-cleanup warning and scoped checkpoint: docs/evidence/challenge-abstract-studio-2026-10-23/report.json. Owner/device appearance acceptance remains; no phone attachment check/device test, APK, live mutation or deployment. Concurrent work preserved.
++
+ 2026-10-23 CEM01-CEM03/R01/G01/Q01: Challenges now opens with Find & play and Create a challenge. Native illustrated choices lead to the existing browser or format-first creator; explicit entry resets the choice, creation cancel returns to its origin, and invitation/result/created-challenge flows retain direct access. Ordinary browsing reads start after selection. Focused83headless/88Compatibility/88desktopMobile, integrated216, discovery68, action-gates60 and parser1017 pass. Native previews, actual commands, initial harness/callback corrections, preserved concurrent changes and scoped patch: docs/evidence/challenge-entry-choice-2026-10-23/report.json. Owner appearance/touch acceptance remains. No phone attachment check/device test, APK, live account/backend mutation, social send or deployment.
+ 
+ 2026-10-23 RFP01-RFP02/R01/G01/Q01: Free Race preloads from the visible card range with two viewports of reserve (20-60 cards), one owned read and completion-driven continuation. The list and carousel expose actual loaded cards only; slow/failed replies stop at the loaded end. Dense presentation coordinates retain exact revisions, telemetry fetch positions and row/column anchors through bounded cursor-cache eviction. Focused228headless/253Compatibility/253desktopMobile, cursor106, legacy paging269, FreeRace233, challenges216, App141 and parser1015 pass. Commands, native pending/loaded views, initial harness corrections and task-only Git-checkable patch: docs/FREE_RACE_PRELOAD_2026_10_23.md and docs/evidence/free-race-preload-2026-10-23/report.json. Tablet/owner sustained scrolling acceptance remains; no phone/tablet attachment check, physical-device test, APK, live mutation or deployment. Concurrent work preserved.
+--- a/licenses/ASSETS.md
++++ b/licenses/ASSETS.md
+@@ -1,3 +1,5 @@
++Abstract challenge showroom (2026-10-23, CAS01): game/ui/challenge_studio.gd and challenge_studio.gdshader are original project-authored procedural geometry, palette, analytic curved bands and studio lighting. The scene reuses the project-authored seamless cove, contact shadows, fictional vehicle models and existing reveal shader. No external model/texture, copied reference pixels, generated-provider bitmap, runtime media service or new dependency. Actual native previews, fingerprints and acceptance limits: docs/evidence/challenge-abstract-studio-2026-10-23/report.json.
++
+ Garage sidebar artwork (2026-10-19, GSI01-GSI03): original project-authored SVG path data in game/ui/garage_mode_icons.gd for the car silhouette, paintbrush, cleaning droplet, wrench, musical notes, trophy and newspaper. Shared rounded strokes and native Godot SVG rasterisation; no downloaded/copied icon library, generated-provider image, external asset or new dependency. Actual native views and task-only checkpoint: docs/GARAGE_SIDEBAR_2026_10_19.md.
+ 
+ Ice Compact sculpture (2026-10-19, ICS01-ICS03): original procedural derivative of the project fictional Compact analytical coachwork in game/vehicle/compact_coachwork.gd, authored in game/track/prop_ice_compact.gd. The snow-covered pedestal reuses the existing winter_snow_v1.png and world-snow shader treatment, retaining that asset's recorded provenance. Original carved ice finish, wheel/fitting details and pedestal geometry; no third-party model/bitmap, generated-provider asset, copied reference pixels or new dependency. Source/capture hashes and actual verification: docs/ICE_COMPACT_SCULPTURE_2026_10_19.md and its evidence/report.json.
+--- /dev/null
++++ b/game/ui/challenge_studio.gd
+@@ -0,0 +1,66 @@
++extends RefCounted
++## Original abstract challenge display; no workshop assets or live reflections.
++const DECK_HEIGHT: float = 0.22
++
++static func build(world: Node3D, car: CarVisual) -> Node3D:
++	var studio := Node3D.new()
++	studio.name = "ChallengeAbstractStudio"
++	world.add_child(studio)
++	var environment := WorldEnvironment.new()
++	environment.environment = Environment.new()
++	environment.environment.background_mode = Environment.BG_COLOR
++	environment.environment.background_color = Color("101b24")
++	environment.environment.ambient_light_source = Environment.AMBIENT_SOURCE_COLOR
++	environment.environment.ambient_light_color = Color("c6d2d8")
++	environment.environment.ambient_light_energy = 0.48
++	studio.add_child(environment)
++	var key := DirectionalLight3D.new()
++	key.rotation_degrees = Vector3(-48,-35,0)
++	key.light_color = Color("fff0dc")
++	key.light_energy = 0.94
++	studio.add_child(key)
++	var fill := DirectionalLight3D.new()
++	fill.rotation_degrees = Vector3(-22,145,0)
++	fill.light_color = Color("a7c9d8")
++	fill.light_energy = 0.38
++	studio.add_child(fill)
++	ShowroomStudio._cove(studio)
++	var backdrop: MeshInstance3D = studio.get_node("SeamlessStudioCove")
++	backdrop.name = "AbstractBackdrop"
++	var finish := ShaderMaterial.new()
++	finish.shader = preload("res://ui/challenge_studio.gdshader")
++	backdrop.material_override = finish
++	ShowroomStudio._contact(studio,Vector3(0,0.002,0),Vector2.ONE*7.6,0.42)
++	return build_pedestal(world,car)
++
++static func build_pedestal(world: Node3D, car: CarVisual) -> Node3D:
++	var stage := Node3D.new()
++	stage.name = "Turntable"
++	world.add_child(stage)
++	_disc(stage,3.22,0.08,0.04,Color("101c25"))
++	_disc(stage,3.19,0.08,0.12,Color("75674e"))
++	_disc(stage,3.17,0.06,0.19,Color("243743"))
++	car.reparent(stage)
++	car.position.y = DECK_HEIGHT
++	ShowroomStudio._studio_glass(car,{})
++	ShowroomStudio._contact(stage,Vector3(0,DECK_HEIGHT+0.003,0),Vector2(2.4,4.7)*HandlingConfig.BODY_SCALE,0.44)
++	for wheel: Vector3 in car.wheel_rest_positions:
++		ShowroomStudio._contact(stage,Vector3(wheel.x*HandlingConfig.BODY_SCALE,DECK_HEIGHT+0.006,wheel.z*HandlingConfig.BODY_SCALE),Vector2(0.6,0.8),0.68)
++	return stage
++
++static func _disc(parent: Node3D, radius: float, height: float, center: float, color: Color) -> void:
++	var disc := MeshInstance3D.new()
++	var mesh := CylinderMesh.new()
++	mesh.top_radius = radius
++	mesh.bottom_radius = radius
++	mesh.height = height
++	mesh.radial_segments = 64
++	disc.mesh = mesh
++	disc.position.y = center
++	var surface := StandardMaterial3D.new()
++	surface.albedo_color = color
++	surface.roughness = 0.82
++	surface.metallic = 0.12
++	disc.material_override = surface
++	disc.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
++	parent.add_child(disc)
+--- /dev/null
++++ b/game/ui/challenge_studio.gd.uid
+@@ -0,0 +1 @@
++uid://lrwje17f4lv5
+--- /dev/null
++++ b/game/ui/challenge_studio.gdshader
+@@ -0,0 +1,24 @@
++shader_type spatial;
++render_mode unshaded, fog_disabled;
++// Original quiet, continuous graphic bands across the floor and curved backdrop.
++uniform vec4 ink : source_color = vec4(0.055,0.085,0.11,1.0);
++uniform vec4 slate : source_color = vec4(0.13,0.20,0.25,1.0);
++uniform vec4 petrol : source_color = vec4(0.16,0.29,0.32,1.0);
++uniform vec4 brass : source_color = vec4(0.46,0.40,0.28,1.0);
++varying vec3 studio_position;
++
++void vertex() { studio_position = VERTEX; }
++
++void fragment() {
++	vec2 p = vec2(studio_position.x,studio_position.z+studio_position.y*0.65);
++	float diagonal = smoothstep(-12.0,16.0,p.x+p.y*0.55);
++	vec2 pool_position = (p-vec2(-3.0,4.0))*vec2(0.085,0.065);
++	float pool = exp(-dot(pool_position,pool_position));
++	float arc = length((p-vec2(3.5,3.0))*vec2(0.78,1.0));
++	float ribbon = 1.0-smoothstep(1.7,2.4,abs(arc-10.0));
++	float trace = 1.0-smoothstep(0.035,0.085,abs(arc-7.7));
++	vec3 color = mix(ink.rgb,slate.rgb,diagonal*0.68);
++	color = mix(color,petrol.rgb,pool*0.34+ribbon*0.22);
++	color = mix(color,brass.rgb,trace*0.27);
++	ALBEDO = color;
++}
+--- /dev/null
++++ b/game/ui/challenge_studio.gdshader.uid
+@@ -0,0 +1 @@
++uid://7tsenj3aaaa7

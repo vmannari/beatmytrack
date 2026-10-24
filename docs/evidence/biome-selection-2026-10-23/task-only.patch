@@ -1,0 +1,329 @@
+diff --git a/game/core/app.gd b/game/core/app.gd
+--- a/game/core/app.gd
++++ b/game/core/app.gd
+@@ -1118,10 +1118,7 @@
+ 				circuit.tooltip_text = title+". "+circuit.description
+ 				circuit.queue_redraw()
+ 	elif destination == "biome" and str(column.get_meta("biome_theme","")) != str(document.get("theme",TrackDocument.THEMES[0])):
+-		for child: Node in column.get_children():
+-			column.remove_child(child)
+-			child.queue_free()
+-		_choose_biome(column,true)
++		_update_creation_biome(column,str(document.get("theme",TrackDocument.THEMES[0])))
+ 
+ func _navigate_menu_page(next: String) -> void:
+ 	# Explicit refreshes still use _show_screen. User navigation promotes the same
+@@ -5123,9 +5120,16 @@
+ 	editor_status.text=CreatorObjects.description(kind)+" / tap to place; Objects > Select to adjust"
+ 
+ 
++const CREATION_BIOME_DESCRIPTIONS: Dictionary = {
++	"pine":"Lush forests, open fields and classic racing character. A balanced environment with clear visibility and a broad variety of scenery.",
++	"desert":"Sunset canyons, compacted sand roads and dense lingering dust. Build fast, flowing routes through warm open terrain.",
++	"night_city":"A moonlit waterfront city with warm street lamps and deep shadows. Shape technical routes that come alive after dark.",
++	"winter":"Snow-covered forests, frozen scenery and low-grip ice. Create bright alpine circuits where smooth driving matters.",
++	"storm":"Dark forest valleys, heavy rain and lightning over wet asphalt. Design dramatic routes with reduced grip and changing visibility."
++}
++
+ func _choose_biome(parent: VBoxContainer = null, preview: bool = false) -> void:
+ 	if parent == null: parent = content
+-	parent.set_meta("biome_theme",str(document.get("theme",TrackDocument.THEMES[0])))
+ 	if not preview and screen != "biome": return
+ 	if document.is_empty() and not preview:
+ 		document = TrackDocument.create_blank()
+@@ -5147,6 +5151,7 @@
+ 	heading_row.add_child(load_track)
+ 	var selected_biome: String = str(document.get("theme",TrackDocument.THEMES[0]))
+ 	if selected_biome not in TrackDocument.THEMES: selected_biome = TrackDocument.THEMES[0]
++	parent.set_meta("biome_theme",selected_biome)
+ 	var cards := HBoxContainer.new()
+ 	cards.name = "BiomePicker"
+ 	cards.add_theme_constant_override("separation",16)
+@@ -5204,6 +5209,7 @@
+ 		icon.mouse_filter = Control.MOUSE_FILTER_IGNORE
+ 		label_row.add_child(icon)
+ 		var label := MenuStyle.label(TrackTheme.title(biome).to_upper(),26)
++		label.name = "BiomeTitle"
+ 		label.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
+ 		if selected: label.add_theme_color_override("font_color",MenuStyle.INK)
+ 		label_row.add_child(label)
+@@ -5233,20 +5239,15 @@
+ 	summary_icon.expand_mode = TextureRect.EXPAND_IGNORE_SIZE
+ 	summary_icon.stretch_mode = TextureRect.STRETCH_KEEP_ASPECT_CENTERED
+ 	summary_title.add_child(summary_icon)
+-	summary_title.add_child(MenuStyle.label(TrackTheme.title(selected_biome).to_upper(),28))
+-	var descriptions: Dictionary = {
+-		"pine":"Lush forests, open fields and classic racing character. A balanced environment with clear visibility and a broad variety of scenery.",
+-		"desert":"Sunset canyons, compacted sand roads and dense lingering dust. Build fast, flowing routes through warm open terrain.",
+-		"night_city":"A moonlit waterfront city with warm street lamps and deep shadows. Shape technical routes that come alive after dark.",
+-		"winter":"Snow-covered forests, frozen scenery and low-grip ice. Create bright alpine circuits where smooth driving matters.",
+-		"storm":"Dark forest valleys, heavy rain and lightning over wet asphalt. Design dramatic routes with reduced grip and changing visibility."
+-	}
+-	var description := MenuStyle.label(str(descriptions.get(selected_biome,"Choose a setting for your new track.")),18,true)
++	var title := MenuStyle.label(TrackTheme.title(selected_biome).to_upper(),28)
++	title.name = "BiomeSummaryTitle"
++	summary_title.add_child(title)
++	var description := MenuStyle.label(str(CREATION_BIOME_DESCRIPTIONS[selected_biome]),18,true)
+ 	description.name = "BiomeDescription"
+ 	description.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+ 	copy.add_child(description)
+ 	summary_row.add_child(VSeparator.new())
+-	var create := MenuStyle.button("CREATE TRACK",_select_creation_biome.bind(selected_biome),true)
++	var create := MenuStyle.button("CREATE TRACK",func() -> void: _select_creation_biome(str(parent.get_meta("biome_theme"))),true)
+ 	create.name = "CreateTrack"
+ 	create.icon = MenuIcon.texture("create")
+ 	create.add_theme_color_override("icon_normal_color",MenuStyle.INK)
+@@ -5260,7 +5261,37 @@
+ func _preview_creation_biome(biome: String) -> void:
+ 	if screen != "biome" or biome not in TrackDocument.THEMES: return
+ 	document.theme = biome
+-	_show_screen("biome")
++	_update_creation_biome(content,biome)
++
++func _update_creation_biome(parent: VBoxContainer, biome: String) -> void:
++	var previous: String = str(parent.get_meta("biome_theme",""))
++	if previous == biome or biome not in TrackDocument.THEMES: return
++	# Selection owns only these existing controls. Keep the shell, focus and
++	# prepared swipe pages alive; no navigation or page warming runs on a tap.
++	var cards: HBoxContainer = parent.find_child("BiomePicker",true,false)
++	for id: String in [previous,biome]:
++		var card: Button = cards.get_node_or_null("Biome_"+id)
++		if card == null: continue
++		var selected: bool = id == biome
++		var picture: TextureRect = card.get_node("BiomePicture")
++		picture.modulate = Color.WHITE if selected else Color(0.62,0.68,0.72)
++		var band: PanelContainer = card.get_node("BiomeLabelOverlay")
++		var style: StyleBoxFlat = band.get_theme_stylebox("panel")
++		style.bg_color = MenuStyle.ACCENT if selected else Color("091720f2")
++		var icon: TextureRect = card.find_child("BiomeIcon",true,false)
++		icon.modulate = MenuStyle.INK if selected else (Color("c7dfff") if id != "night_city" else Color("f1f4f3"))
++		var label: Label = card.find_child("BiomeTitle",true,false)
++		label.add_theme_color_override("font_color",MenuStyle.INK if selected else MenuStyle.TEXT)
++	var summary: PanelContainer = parent.find_child("BiomeSummary",true,false)
++	var summary_icon: TextureRect = summary.find_child("BiomeSummaryIcon",true,false)
++	var chosen_icon: TextureRect = cards.get_node("Biome_"+biome).find_child("BiomeIcon",true,false)
++	summary_icon.texture = chosen_icon.texture
++	summary_icon.modulate = Color("c7dfff") if biome != "night_city" else Color("f1f4f3")
++	var title: Label = summary.find_child("BiomeSummaryTitle",true,false)
++	title.text = TrackTheme.title(biome).to_upper()
++	var description: Label = summary.find_child("BiomeDescription",true,false)
++	description.text = str(CREATION_BIOME_DESCRIPTIONS[biome])
++	parent.set_meta("biome_theme",biome)
+ 
+ func _select_creation_biome(biome: String) -> void:
+ 	if screen != "biome" or biome not in TrackDocument.THEMES: return
+diff --git a/game/tests/test_biome_selection_latency.gd b/game/tests/test_biome_selection_latency.gd
+new file mode 100644
+--- /dev/null
++++ b/game/tests/test_biome_selection_latency.gd
+@@ -0,0 +1,127 @@
++extends SceneTree
++## Exercise real menu taps, retained swipe pages and the final Create action.
++var checks: int = 0
++var failures: int = 0
++var rows: Array[Dictionary] = []
++var output: String = ""
++
++func _initialize() -> void: run.call_deferred()
++
++func check(ok: bool, label: String) -> void:
++	checks += 1
++	if not ok:
++		failures += 1
++		print("FAIL: ",label)
++
++func run() -> void:
++	OS.set_environment("BMT_API_URL", "")
++	root.size = Vector2i(1280,720)
++	for argument: String in OS.get_cmdline_user_args():
++		if argument.begins_with("--out="): output = ProjectSettings.globalize_path(argument.trim_prefix("--out="))
++	if not output.is_empty(): DirAccess.make_dir_recursive_absolute(output)
++	var directory: String = "user://biome_selection_"+TrackLibrary.unique_id()
++	var app: Node = load("res://core/app.tscn").instantiate()
++	app.library = TrackLibrary.new(directory)
++	app.records = LocalRecords.new(directory.path_join("records.json"))
++	app.cloud_root_override = directory.path_join("cloud")
++	root.add_child(app)
++	var deadline: int = Time.get_ticks_msec()+20000
++	while not app.startup_complete and Time.get_ticks_msec()<deadline: await process_frame
++	check(app.startup_complete,"covered startup completes")
++	app._new_document()
++	await create_timer(0.5).timeout
++	await capture("initial")
++	var original_document: Dictionary = app.document.duplicate(true)
++	for biome: String in ["desert","winter","night_city","storm","pine"]:
++		var shell: Node = app.root_ui
++		var body: Node = app.menu_body
++		var picker: Node = app.content.find_child("BiomePicker",true,false)
++		var summary: Node = app.content.find_child("BiomeSummary",true,false)
++		var create: Button = app.content.find_child("CreateTrack",true,false)
++		var choice: Button = picker.get_node("Biome_"+biome)
++		var neighbors: Dictionary = app.menu_neighbors.duplicate()
++		var generation: int = app._navigation_generation
++		choice.grab_focus()
++		var nodes_before: int = int(Performance.get_monitor(Performance.OBJECT_NODE_COUNT))
++		var began: int = Time.get_ticks_usec()
++		choice.pressed.emit()
++		var elapsed: float = (Time.get_ticks_usec()-began)/1000.0
++		rows.append({"biome":biome,"callback_ms":elapsed,"new_nodes":int(Performance.get_monitor(Performance.OBJECT_NODE_COUNT))-nodes_before})
++		check(app.document.theme == biome and app.screen == "biome","tap commits "+biome+" immediately")
++		check(app.root_ui == shell and app.menu_body == body,"tap retains menu shell and body: "+biome)
++		check(is_instance_valid(picker) and picker == app.content.find_child("BiomePicker",true,false),"tap retains biome cards: "+biome)
++		check(is_instance_valid(summary) and summary == app.content.find_child("BiomeSummary",true,false),"tap retains summary: "+biome)
++		check(is_instance_valid(create) and create == app.content.find_child("CreateTrack",true,false),"tap retains Create action: "+biome)
++		check(app._navigation_generation == generation and app.menu_neighbors == neighbors,"tap preserves warmed swipe pages: "+biome)
++		check(root.gui_get_focus_owner() == choice,"tap preserves keyboard focus: "+biome)
++		check(app.content.get_meta("biome_theme") == biome,"cached page records latest biome: "+biome)
++		check(app.content.find_child("BiomeDescription",true,false).text.contains({"pine":"Lush forests","desert":"Sunset canyons","night_city":"moonlit","winter":"Snow-covered","storm":"heavy rain"}[biome]),"summary describes selected biome: "+biome)
++		for other: String in TrackDocument.THEMES:
++			var card: Node = app.content.find_child("Biome_"+other,true,false)
++			var band: StyleBoxFlat = card.find_child("BiomeLabelOverlay",true,false).get_theme_stylebox("panel")
++			check(band.bg_color == (MenuStyle.ACCENT if other == biome else Color("091720f2")),"exact selected label band: "+biome+"/"+other)
++		await process_frame
++		if biome in ["winter","storm"]: await capture(biome)
++	var expected: Dictionary = original_document.duplicate(true)
++	expected.theme = "pine"
++	check(app.document == expected and app.history.is_empty() and app.redo_history.is_empty(),"preview changes only biome and leaves editing history untouched")
++	var shell: Node = app.root_ui
++	var generation: int = app._navigation_generation
++	app._preview_creation_biome("pine")
++	app._preview_creation_biome("coast")
++	check(app.root_ui == shell and app._navigation_generation == generation and app.document == expected,"same or invalid biome does no navigation")
++	app._preview_creation_biome("storm")
++	app._preview_creation_biome("winter")
++	check(app.document.theme == "winter" and app.root_ui == shell,"rapid taps retain the latest choice without rebuilding")
++	tap(app.content.find_child("Biome_storm",true,false))
++	check(app.document.theme == "storm" and app.root_ui == shell,"viewport touch selects Storm without rebuilding")
++	tap(app.content.find_child("Biome_winter",true,false))
++	check(app.document.theme == "winter" and app.root_ui == shell,"second viewport touch immediately selects Winter")
++	# A new draft can reuse this cached page after resetting its biome.
++	var picker: Node = app.content.find_child("BiomePicker",true,false)
++	app.document.theme = "desert"
++	app._refresh_cached_menu_page("biome",app.content)
++	check(app.content.find_child("BiomePicker",true,false) == picker and app.content.get_meta("biome_theme") == "desert","cached-page refresh updates existing controls")
++	app._navigate_menu_page("garage")
++	await create_timer(0.4).timeout
++	app._navigate_menu_page("biome")
++	await create_timer(0.4).timeout
++	check(app.root_ui == shell and app.document.theme == "desert" and app.content.get_meta("biome_theme") == "desert","Garage return preserves selection and shell")
++	app._new_document()
++	check(app.document.theme == "pine" and app.content.get_meta("biome_theme") == "pine","new draft resets the retained picker")
++	app._preview_creation_biome("winter")
++	var create: Button = app.content.find_child("CreateTrack",true,false)
++	create.pressed.emit()
++	check(app.screen == "create" and app.document.theme == "winter","retained Create action opens the latest biome")
++	app._preview_creation_biome("desert")
++	check(app.document.theme == "winter","biome cannot change after entering editor")
++	deadline = Time.get_ticks_msec()+15000
++	while (app.editor_preview_thread != null or app.canvas.preparing) and Time.get_ticks_msec()<deadline: await process_frame
++	check(not app.canvas.preparing,"selected editor finishes preparing")
++	app.queue_free()
++	await process_frame
++	GameSoundtrack.instance().queue_free()
++	for i: int in range(3): await process_frame
++	# Retire the menu decoder on the mixer thread before engine shutdown.
++	await create_timer(0.25).timeout
++	var result: Dictionary = {"checks":checks,"failures":failures,"renderer":"headless" if DisplayServer.get_name() == "headless" else RenderingServer.get_current_rendering_method(),"selections":rows}
++	print("BIOME_SELECTION: ",JSON.stringify(result))
++	if not output.is_empty():
++		var file := FileAccess.open(output.path_join("results.json"),FileAccess.WRITE)
++		file.store_string(JSON.stringify(result,"\t"))
++	quit(1 if failures else 0)
++
++func tap(button: Button) -> void:
++	var point: Vector2 = button.get_global_rect().get_center()
++	for pressed: bool in [true,false]:
++		var event := InputEventScreenTouch.new()
++		event.index = 0
++		event.position = point
++		event.pressed = pressed
++		root.push_input(event,true)
++
++func capture(label: String) -> void:
++	if output.is_empty() or DisplayServer.get_name() == "headless": return
++	await RenderingServer.frame_post_draw
++	await RenderingServer.frame_post_draw
++	root.get_texture().get_image().save_png(output.path_join(label+".png"))
+diff --git a/game/tests/test_biome_selection_latency.gd.uid b/game/tests/test_biome_selection_latency.gd.uid
+new file mode 100644
+--- /dev/null
++++ b/game/tests/test_biome_selection_latency.gd.uid
+@@ -0,0 +1 @@
++uid://bnoxcv0nisqsk
+diff --git a/docs/BIOME_SELECTION_2026_10_23.md b/docs/BIOME_SELECTION_2026_10_23.md
+new file mode 100644
+--- /dev/null
++++ b/docs/BIOME_SELECTION_2026_10_23.md
+@@ -0,0 +1,44 @@
++# Immediate creator biome selection — 2026-10-23
++
++Selecting a biome now updates the existing cards and summary synchronously. Previously every tap called `_show_screen("biome")`, destroying the menu shell and scheduling reconstruction of the neighboring pages. The selection handler now updates only the previous and new card, the summary icon/title/description, and the cached page's selected biome. Create reads that current selection instead of a value captured when the button was constructed.
++
++| Requirement | Result |
++| --- | --- |
++| BSL01 | Selection retains the shell, body, cards, summary, keyboard focus and prepared swipe pages. |
++| BSL02 | Rapid selections and the retained Create button use the latest biome; entering the editor still fixes the biome. |
++| BSL03 | Cached-page return and New track update the existing picker, including resetting a fresh draft to Grass. Same/invalid choices do no navigation. |
++| R01 | Existing original artwork, layout, colours and copy are preserved. The initial, Winter and Storm Compatibility captures match the original PNGs exactly. |
++| Q01 | Actual App regression, viewport touch, all-biome workflow, script parsing and original-code failure controls are recorded below. |
++
++Production changes are confined to `game/core/app.gd`. `game/tests/test_biome_selection_latency.gd` and its UID add the regression. This document, the three project status notes and [the evidence report](evidence/biome-selection-2026-10-23/report.json) record the delivery. Concurrent challenge, editor, gameplay and audio changes are preserved.
++
++The five measured selections use the real card's pressed signal. These are local desktop CPU callback timings, with startup complete and neighboring pages prepared; they exclude hardware input and presentation latency. The original and final runs are separate processes on the same desktop, not a phone benchmark.
++
++| Mode | Original median / maximum | Final median / maximum |
++| --- | --- | --- |
++| Headless | 4.525 / 13.476 ms | 0.146 / 0.248 ms |
++| Desktop Compatibility | 15.375 / 18.417 ms | 0.149 / 0.183 ms |
++| Desktop Mobile renderer | Not measured | 0.121 / 0.191 ms |
++
++The final focused regression passes **82 checks in each of headless, Compatibility and desktop Mobile**, with clean final exits. It checks all five biomes, retained control identity/focus/swipe pages, exact label states, untouched track geometry/history, same/invalid choices, rapid changes, real viewport touches, Garage return, new-draft reset, latest-choice creation and completed editor preparation. Existing `test_biomes.gd` passes **108 checks** headlessly; project parsing passes **987 scripts**. Original focused runs fail 34 of their 79 checks, demonstrating the page reconstruction.
++
++Two broader tests remain limited by failures reproduced against the captured task-original App: `test_menu_quality.gd` accesses a missing hero title at line 33; `test_menu_page_swipe.gd` fails three live-slide checks and then calls `pause` on null at line 324. Both stop before biome selection. Their assertions were retained. The original-code probe sources and logs are saved in the evidence directory; temporary executable probes were removed.
++
++After the successful focused runs and 108-check biome run, two additional biome-workflow receipt runs stopped before `APP_READY` with `Can't get_pixel() on compressed image`, in both headless and Compatibility. The existing static Desert artwork sampler reads pixels without decompressing its image (`native_track_visual.gd:38`). Shared texture import/export work was active at that time; this task made no texture/import or sampler changes. These later interruptions are retained separately from the earlier passing runs.
++
++Initial test launches needed the process execution-policy option and access to Windows runtime resources outside the sandbox; all successful runs used isolated workspace AppData. The evidence output path was corrected to an absolute path. Earlier graphical runs passed their 79 assertions but reported an 87,380-byte GL texture at immediate editor teardown, including on the original App. The final harness waits for the selected editor to finish preparing and lets the menu decoder retire before quitting. Final graphical runs exit cleanly; production audio and rendering were not changed for this task.
++
++Actual commands use the pinned `4.7.2.stable.official.ed1daf0bf` engine through `scripts/dev.ps1`. Before each run, `APPDATA` points inside `build/biome-selection-2026-10-23/<run>/appdata`; the focused test disables its backend and uses a fresh local library/profile. Representative final commands, with the exact run variants and results in `report.json`:
++
++```powershell
++powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1 -Action TestScript -ScriptPath res://tests/test_biome_selection_latency.gd -TestArgument '--out=res://../docs/evidence/biome-selection-2026-10-23/final-headless'
++powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1 -Action TestScript -ScriptPath res://tests/test_biome_selection_latency.gd -Graphical -RenderingMethod gl_compatibility -TestArgument '--out=res://../docs/evidence/biome-selection-2026-10-23/final-compatibility'
++powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1 -Action TestScript -ScriptPath res://tests/test_biome_selection_latency.gd -Graphical -RenderingMethod mobile -TestArgument '--out=res://../docs/evidence/biome-selection-2026-10-23/final-mobile'
++powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1 -Action TestScript -ScriptPath res://tests/test_biomes.gd
++powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1 -Action TestScript -ScriptPath res://tests/test_menu_quality.gd
++powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1 -Action TestScript -ScriptPath res://tests/test_menu_page_swipe.gd
++powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1 -Action TestScript -ScriptPath res://tests/test_script_parse.gd
++git apply --reverse --check docs/evidence/biome-selection-2026-10-23/task-only.patch
++```
++
++Restart/reload the local client to use the change. Owner feel and physical-device input acceptance remain. No phone attachment check or device test, APK, live backend/account mutation, social send or deployment was performed.
+diff --git a/AGENTS.md b/AGENTS.md
+--- a/AGENTS.md
++++ b/AGENTS.md
+@@ -1,3 +1,6 @@
++## Immediate creator biome selection override (2026-10-23)
++2026-10-23 BSL01-BSL03/R01/Q01: Creator biome taps update existing cards and summary without rebuilding the menu or prepared swipe pages; retained Create uses the latest selection. Cached returns, fresh-draft reset, focus and editor biome fences remain. Desktop Compatibility callback median15.375ms to0.149ms; exact original initial/Winter/Storm PNGs remain. Focused82headless/82Compatibility/82desktopMobile, biomes108 and parser987 pass. Two broader menu failures reproduce on the captured original App; early graphical teardown is corrected in the final harness. Commands, native views, hashes and task-only checkpoint: docs/BIOME_SELECTION_2026_10_23.md and docs/evidence/biome-selection-2026-10-23/report.json. Later biome receipt repeats hit an existing compressed-texture startup error before APP_READY; both interruptions are retained. Client reload, owner feel and physical-device acceptance remain. No phone attachment check/device test, APK, live backend/account mutation or deployment; concurrent work preserved.
++
+ ## Reference-coloured Desert wind powder override (2026-10-23)
+ 2026-10-23 RSP01-RSP03/G01/R01/Q01: Owner rejects yellow Desert flecks and supplies a fine windblown-sand reference. Muted beige-grey diffuse powder replaces grains, with soft advected density and independent bursts from actual prepared bank crests. One48-quad/96-triangle batch and an original mipmapped256-square density texture retain six separated stable sites, depth, lifecycle, camera and exact driving/canonical guards. Crest preparation inspects at most8192 vertices and retains512anchors. Focused55headless/68Compatibility/68desktopMobile, Desert87, ambience111, biomes108, parser987 and import pass. Native colour probes have zero bright specks, mean saturation0.034/0.093 and contrast p990.071/0.192; all784roof pixels remain exact. The new reference supersedes grain-only appearance and its coverage ceiling. Actual commands, retained colour/opacity/capture corrections, native previews, hashes and Git-checked task-only checkpoint: docs/DESERT_SAND_REFERENCE_2026_10_23.md and docs/evidence/desert-sand-reference-2026-10-23/report.json. Local client reload, owner appearance and physical-device cost/appearance acceptance remain. No phone attachment check/device test, APK, live backend/account mutation or deployment; concurrent work preserved.
+ 
+diff --git a/DEVELOPMENT_STATUS.md b/DEVELOPMENT_STATUS.md
+--- a/DEVELOPMENT_STATUS.md
++++ b/DEVELOPMENT_STATUS.md
+@@ -1,3 +1,5 @@
++2026-10-23 BSL01-BSL03/R01/Q01: Creator biome taps update existing cards and summary without rebuilding the menu or prepared swipe pages; retained Create uses the latest selection. Cached returns, fresh-draft reset, focus and editor biome fences remain. Desktop Compatibility callback median15.375ms to0.149ms; exact original initial/Winter/Storm PNGs remain. Focused82headless/82Compatibility/82desktopMobile, biomes108 and parser987 pass. Two broader menu failures reproduce on the captured original App; early graphical teardown is corrected in the final harness. Commands, native views, hashes and task-only checkpoint: docs/BIOME_SELECTION_2026_10_23.md and docs/evidence/biome-selection-2026-10-23/report.json. Later biome receipt repeats hit an existing compressed-texture startup error before APP_READY; both interruptions are retained. Client reload, owner feel and physical-device acceptance remain. No phone attachment check/device test, APK, live backend/account mutation or deployment; concurrent work preserved.
++
+ 2026-10-23 RSP01-RSP03/G01/R01/Q01: Owner rejects yellow Desert flecks and supplies a fine windblown-sand reference. Muted beige-grey diffuse powder replaces grains, with soft advected density and independent bursts from actual prepared bank crests. One48-quad/96-triangle batch and an original mipmapped256-square density texture retain six separated stable sites, depth, lifecycle, camera and exact driving/canonical guards. Crest preparation inspects at most8192 vertices and retains512anchors. Focused55headless/68Compatibility/68desktopMobile, Desert87, ambience111, biomes108, parser987 and import pass. Native colour probes have zero bright specks, mean saturation0.034/0.093 and contrast p990.071/0.192; all784roof pixels remain exact. The new reference supersedes grain-only appearance and its coverage ceiling. Actual commands, retained colour/opacity/capture corrections, native previews, hashes and Git-checked task-only checkpoint: docs/DESERT_SAND_REFERENCE_2026_10_23.md and docs/evidence/desert-sand-reference-2026-10-23/report.json. Local client reload, owner appearance and physical-device cost/appearance acceptance remain. No phone attachment check/device test, APK, live backend/account mutation or deployment; concurrent work preserved.
+ 
+ 2026-10-23 CFL01-CFL05/R01/G01/Q01: Challenge creation now runs format -> tracks -> car with Next actions. Three original built-in imagegen posters depict a duel, a pack and three circuits/three starts; bounded1024-long-side mipmapped imports replace biome-only illustrations. Custom rules occupy the full page with transactional Back/Next. The actual Free Race TrackBrowser supplies virtual cards, Search/Filters/Random/refresh and bounded discovery, without a mode rail, downloads or a race action in selection mode. Single-track selection removes the redundant top button; 3x3 has functional outlined slot tabs. A dedicated five-car page offers creation/sharing, group Create & race, and the original verified source drive. Race intent waits for the folder read and cancels on account/selection/navigation changes. Focused80headless/93Compatibility/93desktopMobile, integrated255, discovery68, shared FreeRace233, race-intent8, App141 and parser987 pass. Actual commands, native views, asset prompts/provenance, scoped hashes and checkpoint: docs/evidence/challenge-flow-polish-2026-10-23/report.json. Owner appearance/flow and physical-device acceptance remain; existing3x3 matching-server rollout is unchanged. No phone attachment check/device test, APK, live backend/account mutation, social send or deployment. Concurrent work preserved.
+diff --git a/docs/PHASE_0_PLAN.md b/docs/PHASE_0_PLAN.md
+--- a/docs/PHASE_0_PLAN.md
++++ b/docs/PHASE_0_PLAN.md
+@@ -1,3 +1,5 @@
++2026-10-23 BSL01-BSL03/R01/Q01: Creator biome taps update existing cards and summary without rebuilding the menu or prepared swipe pages; retained Create uses the latest selection. Cached returns, fresh-draft reset, focus and editor biome fences remain. Desktop Compatibility callback median15.375ms to0.149ms; exact original initial/Winter/Storm PNGs remain. Focused82headless/82Compatibility/82desktopMobile, biomes108 and parser987 pass. Two broader menu failures reproduce on the captured original App; early graphical teardown is corrected in the final harness. Commands, native views, hashes and task-only checkpoint: docs/BIOME_SELECTION_2026_10_23.md and docs/evidence/biome-selection-2026-10-23/report.json. Later biome receipt repeats hit an existing compressed-texture startup error before APP_READY; both interruptions are retained. Client reload, owner feel and physical-device acceptance remain. No phone attachment check/device test, APK, live backend/account mutation or deployment; concurrent work preserved.
++
+ 2026-10-23 RSP01-RSP03/G01/R01/Q01: Owner rejects yellow Desert flecks and supplies a fine windblown-sand reference. Muted beige-grey diffuse powder replaces grains, with soft advected density and independent bursts from actual prepared bank crests. One48-quad/96-triangle batch and an original mipmapped256-square density texture retain six separated stable sites, depth, lifecycle, camera and exact driving/canonical guards. Crest preparation inspects at most8192 vertices and retains512anchors. Focused55headless/68Compatibility/68desktopMobile, Desert87, ambience111, biomes108, parser987 and import pass. Native colour probes have zero bright specks, mean saturation0.034/0.093 and contrast p990.071/0.192; all784roof pixels remain exact. The new reference supersedes grain-only appearance and its coverage ceiling. Actual commands, retained colour/opacity/capture corrections, native previews, hashes and Git-checked task-only checkpoint: docs/DESERT_SAND_REFERENCE_2026_10_23.md and docs/evidence/desert-sand-reference-2026-10-23/report.json. Local client reload, owner appearance and physical-device cost/appearance acceptance remain. No phone attachment check/device test, APK, live backend/account mutation or deployment; concurrent work preserved.
+ 
+ 2026-10-23 CFL01-CFL05/R01/G01/Q01: Challenge creation now runs format -> tracks -> car with Next actions. Three original built-in imagegen posters depict a duel, a pack and three circuits/three starts; bounded1024-long-side mipmapped imports replace biome-only illustrations. Custom rules occupy the full page with transactional Back/Next. The actual Free Race TrackBrowser supplies virtual cards, Search/Filters/Random/refresh and bounded discovery, without a mode rail, downloads or a race action in selection mode. Single-track selection removes the redundant top button; 3x3 has functional outlined slot tabs. A dedicated five-car page offers creation/sharing, group Create & race, and the original verified source drive. Race intent waits for the folder read and cancels on account/selection/navigation changes. Focused80headless/93Compatibility/93desktopMobile, integrated255, discovery68, shared FreeRace233, race-intent8, App141 and parser987 pass. Actual commands, native views, asset prompts/provenance, scoped hashes and checkpoint: docs/evidence/challenge-flow-polish-2026-10-23/report.json. Owner appearance/flow and physical-device acceptance remain; existing3x3 matching-server rollout is unchanged. No phone attachment check/device test, APK, live backend/account mutation, social send or deployment. Concurrent work preserved.

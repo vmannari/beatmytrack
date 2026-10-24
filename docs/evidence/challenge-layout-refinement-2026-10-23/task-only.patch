@@ -1,0 +1,443 @@
+--- a/game/ui/challenge_create.gd
++++ b/game/ui/challenge_create.gd
+@@ -56,7 +56,7 @@
+ var _rule_title: Label
+ var _rule_details: Label
+ var _rules_button: Button
+-var _footer: Label
++var _action_layout: BoxContainer
+ var _ticket_row: BoxContainer
+ var _context_buttons: Array[Button] = []
+ var _track_picker: AcceptDialog
+@@ -87,7 +87,8 @@
+ 	var body := VBoxContainer.new()
+ 	body.name = "ChallengeCreationBody"
+ 	body.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+-	body.add_theme_constant_override("separation",10)
++	body.size_flags_vertical = Control.SIZE_EXPAND_FILL
++	body.add_theme_constant_override("separation",12)
+ 	scroll.add_child(body)
+ 	var header := HBoxContainer.new()
+ 	header.name = "ChallengeCreateHeader"
+@@ -111,7 +112,8 @@
+ 	_formats.name = "ChallengeFormats"
+ 	_formats.columns = 4
+ 	_formats.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+-	_formats.add_theme_constant_override("h_separation",12)
++	_formats.size_flags_vertical = Control.SIZE_EXPAND_FILL
++	_formats.add_theme_constant_override("h_separation",16)
+ 	_formats.add_theme_constant_override("v_separation",12)
+ 	body.add_child(_formats)
+ 	for key: String in ["duel","group","three","custom"]:
+@@ -125,7 +127,6 @@
+ 		card.pressed.connect(_choose_format.bind(key))
+ 		_formats.add_child(card)
+ 		_format_buttons.append(card)
+-	_build_rule_summary(body)
+ 	_status = HBoxContainer.new()
+ 	add_child(_status)
+ 	_notice = MenuStyle.label("",17,true)
+@@ -137,13 +138,7 @@
+ 	_retry.name = "RetryChallengeSource"
+ 	_retry.custom_minimum_size.y = 52
+ 	_status.add_child(_retry)
+-	var actions := HBoxContainer.new()
+-	actions.name = "ChallengeCreateActions"
+-	add_child(actions)
+-	_footer = MenuStyle.label("Your time is set. The next move is theirs.",17,true)
+-	_footer.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+-	_footer.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+-	actions.add_child(_footer)
++	var actions: HBoxContainer = _build_rule_summary()
+ 	_race = MenuStyle.button("Race to set a time",_race_to_set,true)
+ 	_race.name = "RaceToSetChallenge"
+ 	_race.custom_minimum_size = Vector2(260,56)
+@@ -166,7 +161,7 @@
+ 	_panel = PanelContainer.new()
+ 	_panel.name = "ChallengeCreatePanel"
+ 	_panel.clip_contents = true
+-	_panel.add_theme_stylebox_override("panel",MenuStyle.card(14))
++	_panel.add_theme_stylebox_override("panel",MenuStyle.card(12))
+ 	parent.add_child(_panel)
+ 	_preview_art = TextureRect.new()
+ 	_preview_art.expand_mode = TextureRect.EXPAND_IGNORE_SIZE
+@@ -183,7 +178,7 @@
+ 	_preview_route = LapRouteView.new()
+ 	_preview_route.name = "ChallengeFinishedRoute"
+ 	_preview_route.miniature = true
+-	_preview_route.custom_minimum_size = Vector2(130,90)
++	_preview_route.custom_minimum_size = Vector2(140,96)
+ 	_preview_route.size_flags_vertical = Control.SIZE_EXPAND_FILL
+ 	_ticket_row.add_child(_preview_route)
+ 	var details := VBoxContainer.new()
+@@ -215,12 +210,20 @@
+ 			var control := MenuStyle.button(str(item[0])+"  ›",_open_picker.bind(str(item[1])))
+ 			control.name = "ChallengePick_"+str(item[1])
+ 			control.custom_minimum_size = Vector2(80,52)
+-			control.add_theme_font_size_override("font_size",18)
+-			control.add_theme_stylebox_override("normal",MenuStyle.box(Color.TRANSPARENT,0))
++			control.add_theme_font_size_override("font_size",17)
++			var context_style := MenuStyle.box(Color("0a202acc"),10)
++			context_style.border_color = Color("4c6370")
++			context_style.set_border_width_all(1)
++			control.add_theme_stylebox_override("normal",context_style)
+ 			edit.add_child(control)
+ 			_context_buttons.append(control)
+ 	_target_panel = PanelContainer.new()
+-	_target_panel.add_theme_stylebox_override("panel",MenuStyle.box(Color.TRANSPARENT,0))
++	var target_style := MenuStyle.box(Color("071820bd"),0)
++	target_style.content_margin_left = 20
++	target_style.content_margin_right = 10
++	target_style.border_width_left = 1
++	target_style.border_color = Color("49616b")
++	_target_panel.add_theme_stylebox_override("panel",target_style)
+ 	_ticket_row.add_child(_target_panel)
+ 	var target := VBoxContainer.new()
+ 	target.add_theme_constant_override("separation",2)
+@@ -237,33 +240,45 @@
+ 	_summary_time.horizontal_alignment = HORIZONTAL_ALIGNMENT_RIGHT
+ 	target.add_child(_summary_time)
+ 
+-func _build_rule_summary(parent: Control) -> void:
++func _build_rule_summary() -> HBoxContainer:
+ 	var panel := PanelContainer.new()
+-	panel.name = "ChallengeRuleSummary"
+-	panel.add_theme_stylebox_override("panel",MenuStyle.card(10))
+-	parent.add_child(panel)
++	panel.name = "ChallengeCreateActions"
++	var dock_style := MenuStyle.card(14)
++	dock_style.bg_color = Color("091d28")
++	dock_style.border_color = Color("4b6470")
++	panel.add_theme_stylebox_override("panel",dock_style)
++	add_child(panel)
++	_action_layout = BoxContainer.new()
++	_action_layout.add_theme_constant_override("separation",20)
++	panel.add_child(_action_layout)
+ 	var row := HBoxContainer.new()
+-	panel.add_child(row)
++	row.name = "ChallengeRuleSummary"
++	row.size_flags_horizontal = Control.SIZE_EXPAND_FILL
++	row.add_theme_constant_override("separation",14)
++	_action_layout.add_child(row)
+ 	var text := VBoxContainer.new()
+ 	text.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+ 	text.add_theme_constant_override("separation",3)
+ 	row.add_child(text)
+-	_rule_title = MenuStyle.label("",19)
++	_rule_title = MenuStyle.label("CHALLENGE RULES",12,true)
+ 	_rule_title.add_theme_font_override("font",MenuStyle.DISPLAY)
+ 	text.add_child(_rule_title)
+-	_rule_details = MenuStyle.label("",14,true)
++	_rule_details = MenuStyle.label("",17)
+ 	_rule_details.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+ 	text.add_child(_rule_details)
+ 	_tries_note = MenuStyle.label("Each start uses a try, including restarts.",12,true)
+ 	_tries_note.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+ 	_tries_note.add_theme_color_override("font_color",Color("dfcb98"))
+ 	text.add_child(_tries_note)
+-	_rules_button = MenuStyle.button("Tweak the rules  ›",_open_rules)
++	_rules_button = MenuStyle.button("Edit rules  ›",_open_rules)
+ 	_rules_button.name = "ChallengeAdjustRules"
+-	_rules_button.custom_minimum_size = Vector2(155,52)
++	_rules_button.custom_minimum_size = Vector2(120,52)
+ 	_rules_button.add_theme_font_size_override("font_size",18)
+ 	_rules_button.add_theme_stylebox_override("normal",MenuStyle.box(Color.TRANSPARENT,2))
+ 	row.add_child(_rules_button)
++	var actions := HBoxContainer.new()
++	_action_layout.add_child(actions)
++	return actions
+ 
+ func _build_pickers() -> void:
+ 	_track_picker = AcceptDialog.new()
+@@ -407,9 +422,10 @@
+ 	_formats.columns = 4 if size.x >= 850 else 2 if size.x >= 430 else 1
+ 	_ticket_row.vertical = size.x < 740
+ 	_preview_route.visible = size.x >= 740
+-	_time.add_theme_font_size_override("font_size",54 if size.x >= 850 else 44)
++	_time.add_theme_font_size_override("font_size",60 if size.x >= 850 else 44)
+ 	var narrow: bool = size.x < 600
+-	_footer.visible = not narrow
++	_action_layout.vertical = size.x < 740
++	(_create_button.get_parent() as Control).size_flags_horizontal = Control.SIZE_EXPAND_FILL if _action_layout.vertical else Control.SIZE_SHRINK_END
+ 	_create_button.custom_minimum_size.x = 210 if narrow else 260
+ 	_race.custom_minimum_size.x = _create_button.custom_minimum_size.x
+ 	_create_button.size_flags_horizontal = Control.SIZE_EXPAND_FILL if narrow else Control.SIZE_SHRINK_END
+@@ -455,18 +471,15 @@
+ 	_time.visible = mode == 0 or locked_result()
+ 	_time_caption.text = "CAN THEY BEAT" if mode == 0 and total > 0 else "FIRST, SET THE TARGET" if mode == 0 else "YOUR OPENING TIME" if locked_result() else "BRING THE CREW"
+ 	_summary_time.text = "Your exact finish time" if locked_result() else "Your verified best" if mode == 0 and total > 0 else "Five laps. Then invite your rival." if mode == 0 else "Fastest time wins"
+-	_rule_title.text = FORMAT_TITLES[selected_format]
+ 	var duration_text: String = "24 hours" if duration == 86400 else "3 days" if duration == 259200 else "7 days"
+ 	var tries_text: String = "Unlimited tries" if attempt_limit == 0 else str(attempt_limit)+(" try" if attempt_limit == 1 else " tries")+" per driver"
+ 	_rule_details.text = duration_text+" · "+tries_text+" · Best time wins"
+ 	if selected_format == "custom": _rule_details.text = ("You + one rival" if mode == 0 else "Up to 20 drivers")+" · "+_rule_details.text
+ 	if adapter.discovery_supported(): _rule_details.text += " · "+("Public" if adapter.creation_visibility == "public" else "Invitation only")
+ 	_tries_note.visible = attempt_limit > 0
+-	_footer.text = "Your time is set. The next move is theirs." if locked_result() else "Set a time first. Your challenge will be waiting." if _race.visible else "Create the challenge, then share the invitation."
+ 	for card: FormatCard in _format_buttons:
+ 		card.chosen = card.format_id == selected_format
+ 		card.scenery = _preview_art.texture
+-		card.vehicle_art = VehicleCatalog.artwork(car) if car == "kart" else load("res://assets/news/vehicles/"+car+".png") as Texture2D
+ 		card.disabled = _submitting
+ 		if card.format_id == "custom" and selected_format == "custom":
+ 			card.audience = "You + one rival" if mode == 0 else "Up to 20 drivers"
+--- a/game/ui/challenge_format_card.gd
++++ b/game/ui/challenge_format_card.gd
+@@ -1,5 +1,5 @@
+ extends Button
+-## Four ordinary focusable buttons, with bounded original menu graphics.
++## Focusable format posters: one optical grid, original vector art, no extra textures.
+ var format_id: String = "duel"
+ var caption: String = "Head to head"
+ var description: PackedStringArray = ["One rival. Your time to beat."]
+@@ -7,13 +7,12 @@
+ var tries: String = "Unlimited tries"
+ var chosen: bool = false
+ var scenery: Texture2D
+-var vehicle_art: Texture2D
+ 
+ func _ready() -> void:
+-	custom_minimum_size = Vector2(180,190)
++	custom_minimum_size = Vector2(180,226)
+ 	size_flags_horizontal = Control.SIZE_EXPAND_FILL
++	size_flags_vertical = Control.SIZE_EXPAND_FILL
+ 	text = caption
+-	tooltip_text = caption+". "+" ".join(description)+" "+audience+". "+tries
+ 	for state: String in ["font_color","font_hover_color","font_focus_color","font_pressed_color","font_disabled_color"]:
+ 		add_theme_color_override(state,Color.TRANSPARENT)
+ 	add_theme_font_size_override("font_size",1)
+@@ -24,13 +23,14 @@
+ 
+ func refresh() -> void:
+ 	tooltip_text = caption+". "+" ".join(description)+" "+audience+". "+tries
+-	var style := MenuStyle.box(Color("183039") if chosen else Color("122936"),0)
+-	style.border_color = MenuStyle.ACCENT if chosen else Color("48616d")
++	var style := MenuStyle.box(Color("172c36") if chosen else Color("10232f"),0)
++	style.set_corner_radius_all(7)
++	style.border_color = MenuStyle.ACCENT if chosen else Color("3b5462")
+ 	style.set_border_width_all(2 if chosen else 1)
+ 	add_theme_stylebox_override("normal",style)
+ 	var hover := style.duplicate() as StyleBoxFlat
+-	hover.bg_color = Color("203b45")
+-	hover.border_color = MenuStyle.ACCENT if chosen else Color("91abb5")
++	hover.bg_color = Color("1c3540")
++	hover.border_color = MenuStyle.ACCENT if chosen else Color("9bb4be")
+ 	add_theme_stylebox_override("hover",hover)
+ 	add_theme_stylebox_override("pressed",hover)
+ 	var inactive := style.duplicate() as StyleBoxFlat
+@@ -39,48 +39,92 @@
+ 	button_pressed = chosen
+ 	queue_redraw()
+ 
++func artwork_rect() -> Rect2:
++	return Rect2(3,3,size.x-6,maxf(92,size.y-133))
++
+ func _draw() -> void:
+-	var inset: float = 14.0
+-	var art_height: float = 70.0
+-	var available: float = size.x-inset*2.0
++	var inset: float = 19 if size.x >= 250 else 15
++	var available: float = size.x-inset*2
+ 	var tint := Color(1,1,1,0.45 if disabled else 1.0)
++	var art: Rect2 = artwork_rect()
+ 	if scenery != null:
+-		draw_texture_rect(scenery,Rect2(3,3,size.x-6,art_height),false,Color(0.7,0.8,0.85,0.32)*tint)
+-	draw_rect(Rect2(3,3,size.x-6,art_height),Color(0.03,0.08,0.11,0.56))
+-	var center := Vector2(size.x*0.5,art_height*0.5+4)
++		# Crop instead of squeezing an entire biome into a shallow strip.
++		var source := Rect2(Vector2.ZERO,scenery.get_size())
++		var ratio: float = art.size.x/art.size.y
++		if source.size.x/source.size.y > ratio:
++			source.position.x = (source.size.x-source.size.y*ratio)*0.5
++			source.size.x = source.size.y*ratio
++		else:
++			source.position.y = (source.size.y-source.size.x/ratio)*0.5
++			source.size.y = source.size.x/ratio
++		draw_texture_rect_region(scenery,art,source,Color(0.65,0.75,0.78,0.22)*tint)
++	draw_rect(art,Color(0.025,0.065,0.09,0.48))
++	for side: int in [-1,1]:
++		var x: float = size.x*0.5+side*minf(88,size.x*0.30)
++		draw_line(Vector2(x,33),Vector2(x,art.end.y-10),Color(0.57,0.72,0.76,0.12),1,true)
++	var index: int = ["duel","group","three","custom"].find(format_id)+1
++	draw_string(MenuStyle.DISPLAY,Vector2(inset,25),"0"+str(index),HORIZONTAL_ALIGNMENT_LEFT,-1,15,MenuStyle.ACCENT*tint if chosen else Color("78929e")*tint)
++	var center := Vector2(size.x*0.5,art.position.y+art.size.y*0.55)
++	var graphic_scale: float = minf(1.65,minf((art.size.y-18)/88.0,(size.x-40)/205.0))
+ 	match format_id:
+ 		"duel":
+-			var extent := Vector2(minf(78.0,size.x*0.28),51)
+-			if vehicle_art != null:
+-				draw_texture_rect(vehicle_art,Rect2(center-Vector2(extent.x+18,extent.y*0.5),extent),false,tint)
+-				draw_texture_rect(vehicle_art,Rect2(center+Vector2(18,-extent.y*0.5),extent),false,tint)
+-			draw_string(MenuStyle.DISPLAY,center+Vector2(-11,7),"VS",HORIZONTAL_ALIGNMENT_LEFT,-1,23,MenuStyle.ACCENT*tint)
++			_draw_car(center+Vector2(-55*graphic_scale,1),-0.13,graphic_scale*0.84,Color("d7dfda")*tint)
++			_draw_car(center+Vector2(55*graphic_scale,-1),PI-0.13,graphic_scale*0.84,Color("819fac")*tint)
++			draw_string(MenuStyle.DISPLAY,center+Vector2(-16,12),"VS",HORIZONTAL_ALIGNMENT_LEFT,-1,31,MenuStyle.ACCENT*tint)
+ 		"group":
+-			for index: int in range(6):
+-				var origin := center+Vector2((index%3-1)*42-14,(index/3)*28-24)
+-				var color: Color = MenuStyle.ACCENT if index == 0 else MenuStyle.MUTED
+-				draw_line(origin+Vector2(0,19),origin+Vector2(30,19),color*0.7,1.5,true)
+-				draw_texture_rect(MenuIcon.texture("car"),Rect2(origin+Vector2(4,0),Vector2(24,20)),false,color*tint)
++			for i: int in range(4):
++				var point := center+Vector2((i%2)*62-31,(i/2)*45-22)
++				point.y += -5 if i%2 == 0 else 5
++				draw_line(point+Vector2(-18,22),point+Vector2(18,22),Color("607a85")*0.6,1,true)
++				_draw_car(center+(point-center)*graphic_scale,0,graphic_scale*0.42,(Color("d7dfda") if i == 0 else Color("819fac"))*tint)
+ 		"three":
+-			for index: int in range(3):
+-				var rect := Rect2(center+Vector2((index-1)*43-18,-23),Vector2(36,43))
+-				var color: Color = MenuStyle.ACCENT if index == 2 else MenuStyle.MUTED
+-				draw_rect(rect,color*0.6,false,1.0)
+-				draw_string(MenuStyle.DISPLAY,rect.position+Vector2(5,32),"0"+str(index+1),HORIZONTAL_ALIGNMENT_LEFT,-1,29,color*tint)
++			for i: int in range(3):
++				var rect := Rect2(center+Vector2((i-1)*51-22,-34)*graphic_scale,Vector2(44,68)*graphic_scale)
++				var color: Color = MenuStyle.ACCENT if i == 2 else Color("b2c6cc")
++				draw_rect(rect,Color(0.03,0.08,0.11,0.8))
++				draw_rect(rect,color*0.65,false,1.5)
++				draw_line(rect.position+Vector2(6,7),rect.position+Vector2(rect.size.x-6,7),color,2,true)
++				draw_string(MenuStyle.DISPLAY,rect.position+Vector2(10,rect.size.y-12),str(i+1),HORIZONTAL_ALIGNMENT_LEFT,-1,int(46*graphic_scale),color*tint)
+ 		"custom":
+-			draw_texture_rect(MenuIcon.texture("settings",true),Rect2(center-Vector2(23,23),Vector2(46,46)),false,MenuStyle.TEXT*tint)
+-	var font_size: int = 29 if size.x >= 250 else 25
+-	draw_string(MenuStyle.DISPLAY,Vector2(inset,art_height+36),caption,HORIZONTAL_ALIGNMENT_LEFT,available,font_size,(MenuStyle.ACCENT if chosen else MenuStyle.TEXT)*tint)
+-	var y: float = art_height+58
++			for i: int in range(3):
++				var y: float = center.y+(i-1)*24*graphic_scale
++				var half: float = 69*graphic_scale
++				draw_line(Vector2(center.x-half,y),Vector2(center.x+half,y),Color("8ea8b2")*tint,3,true)
++				var knob := Vector2(center.x+[-30,28,-6][i]*graphic_scale,y)
++				draw_circle(knob,9*graphic_scale,Color("10232f"),true,-1,true)
++				draw_circle(knob,7*graphic_scale,(MenuStyle.ACCENT if i == 1 else Color("d7e1df"))*tint,true,-1,true)
++	var title_y: float = art.end.y+31
++	draw_string(MenuStyle.DISPLAY,Vector2(inset,title_y),caption,HORIZONTAL_ALIGNMENT_LEFT,available,31 if size.x >= 250 else 26,(MenuStyle.ACCENT if chosen else MenuStyle.TEXT)*tint)
++	var copy_y: float = title_y+23
+ 	for line: String in description:
+-		draw_string(MenuStyle.BODY,Vector2(inset,y),line,HORIZONTAL_ALIGNMENT_LEFT,available,12,MenuStyle.MUTED*tint)
+-		y += 16
+-	var base: float = size.y-28
+-	draw_line(Vector2(inset,base-11),Vector2(size.x-inset,base-11),Color("39515a"),1.0)
+-	draw_string(MenuStyle.BODY,Vector2(inset,base+5),audience,HORIZONTAL_ALIGNMENT_LEFT,available,11,MenuStyle.MUTED*tint)
+-	draw_string(MenuStyle.BODY,Vector2(inset,base+20),tries,HORIZONTAL_ALIGNMENT_LEFT,available,11,MenuStyle.TEXT*tint)
+-	var marker := Vector2(size.x-17,17)
+-	draw_circle(marker,9,MenuStyle.ACCENT if chosen else Color("102631"),true,-1,true)
++		draw_string(MenuStyle.BODY,Vector2(inset,copy_y),line,HORIZONTAL_ALIGNMENT_LEFT,available,14 if size.x >= 250 else 12,Color("acc1cb")*tint)
++		copy_y += 18
++	var base: float = size.y-46
++	draw_line(Vector2(inset,base-13),Vector2(size.x-inset,base-13),Color("354f5b"),1)
++	draw_string(MenuStyle.BODY,Vector2(inset,base+3),audience,HORIZONTAL_ALIGNMENT_LEFT,available,13 if size.x >= 250 else 11,Color("a7bfca")*tint)
++	draw_string(MenuStyle.DISPLAY,Vector2(inset,base+26),tries,HORIZONTAL_ALIGNMENT_LEFT,available,17 if size.x >= 250 else 15,MenuStyle.TEXT*tint)
+ 	if chosen:
+-		draw_texture_rect(MenuIcon.texture("check"),Rect2(marker-Vector2(6,6),Vector2(12,12)),false,MenuStyle.INK)
+-	else: draw_arc(marker,9,0,TAU,24,Color("718c98"),1,true)
++		var marker := Vector2(size.x-21,21)
++		draw_circle(marker,10,MenuStyle.ACCENT,true,-1,true)
++		draw_texture_rect(MenuIcon.texture("check",true),Rect2(marker-Vector2(6,6),Vector2(12,12)),false,MenuStyle.INK)
++
++func _draw_car(center: Vector2, angle: float, extent: float, color: Color) -> void:
++	draw_set_transform(center,angle,Vector2.ONE*extent)
++	var body := PackedVector2Array([Vector2(-12,-41),Vector2(12,-41),Vector2(17,-29),Vector2(18,30),Vector2(13,40),Vector2(-13,40),Vector2(-18,30),Vector2(-17,-29)])
++	draw_colored_polygon(body,Color(0.015,0.035,0.045,0.9))
++	for side: int in [-1,1]:
++		draw_rect(Rect2(side*18-3,-24,6,14),Color("050e14"))
++		draw_rect(Rect2(side*18-3,18,6,14),Color("050e14"))
++	var painted := body.duplicate()
++	for i: int in range(painted.size()): painted[i] *= Vector2(0.88,0.95)
++	draw_colored_polygon(painted,color)
++	var outline := painted.duplicate()
++	outline.append(outline[0])
++	draw_polyline(outline,color,1.0,true)
++	draw_colored_polygon(PackedVector2Array([Vector2(-11,-16),Vector2(11,-16),Vector2(13,-6),Vector2(-13,-6)]),Color("213d4b"))
++	draw_rect(Rect2(-11,-3,22,21),color.darkened(0.14))
++	draw_colored_polygon(PackedVector2Array([Vector2(-12,20),Vector2(12,20),Vector2(10,27),Vector2(-10,27)]),Color("213d4b"))
++	draw_line(Vector2(-9,-31),Vector2(9,-31),color.lightened(0.35),2,true)
++	draw_line(Vector2(-12,33),Vector2(-7,33),Color("b87b68"),2,true)
++	draw_line(Vector2(7,33),Vector2(12,33),Color("b87b68"),2,true)
++	draw_set_transform(Vector2.ZERO)
+--- a/game/tests/test_challenge_cards.gd
++++ b/game/tests/test_challenge_cards.gd
+@@ -64,7 +64,9 @@
+ 	# Exercise actual logical sizes instead of comparing window pixels against
+ 	# the project's expanded 1280-unit canvas.
+ 	root.content_scale_size = Vector2i.ZERO
+-	output = ProjectSettings.globalize_path("res://../docs/evidence/challenge-cards-native-2026-10-23/"+DisplayServer.get_name()+"-"+RenderingServer.get_current_rendering_method())
++	var evidence_root: String = OS.get_environment("BMT_CHALLENGE_CARDS_OUTPUT")
++	if evidence_root.is_empty(): evidence_root = "res://../docs/evidence/challenge-cards-native-2026-10-23"
++	output = ProjectSettings.globalize_path(evidence_root.path_join(DisplayServer.get_name()+"-"+RenderingServer.get_current_rendering_method()))
+ 	DirAccess.make_dir_recursive_absolute(output)
+ 	var client := StubClient.new()
+ 	root.add_child(client)
+@@ -91,6 +93,22 @@
+ 	check(page._preview_route.route.size() == 5,"ticket displays actual track geometry")
+ 	check(page.get_ok_button().text == "Create & share","one explicit create and share action")
+ 	await capture("menu-head-to-head-1280")
++	# Tall windows should spend their space on the cards; the rules and primary
++	# action remain one nearby dock rather than two separated footer regions.
++	for dimensions: Vector2i in [Vector2i(1280,720),Vector2i(1440,900),Vector2i(1600,900)]:
++		root.size = dimensions
++		await settle()
++		var dock: Control = page.find_child("ChallengeCreateActions",true,false)
++		var summary: Control = page.find_child("ChallengeRuleSummary",true,false)
++		var cards_rect: Rect2 = page._formats.get_global_rect()
++		inside(dock,"rules/action dock "+str(dimensions))
++		check(dock.get_global_rect().encloses(summary.get_global_rect()) and dock.get_global_rect().encloses(page._create_button.get_global_rect()),"rules and primary action occupy one nearby dock")
++		check(dock.global_position.y-cards_rect.end.y >= 0 and dock.global_position.y-cards_rect.end.y <= 16,"cards meet their action dock without a dead gap "+str(dimensions))
++		for card: Button in page._format_buttons:
++			check(card.size.y >= 226 and card.artwork_rect().size.y >= 92,"cards reserve substantial space for format artwork")
++		await capture("composition-"+str(dimensions.x)+"x"+str(dimensions.y))
++	root.size = Vector2i(1280,720)
++	await settle()
+ 	page._choose_duration(259200)
+ 	var identity: Dictionary = page._entry().duplicate(true)
+ 	for key: String in ["group","three","duel"]:
+--- a/game/tests/test_challenges.gd
++++ b/game/tests/test_challenges.gd
+@@ -212,7 +212,7 @@
+ 	await process_frame
+ 
+ func _page_tests() -> void:
+-	for dimensions: Vector2i in [Vector2i(1280,720),Vector2i(960,540),Vector2i(1600,720)]:
++	for dimensions: Vector2i in [Vector2i(1280,720),Vector2i(960,540),Vector2i(1600,720),Vector2i(1440,900)]:
+ 		root.size = dimensions
+ 		await process_frame
+ 		var folder: String = "user://challenge_menu_"+TrackLibrary.unique_id()
+--- a/AGENTS.md
++++ b/AGENTS.md
+@@ -1,3 +1,6 @@
++## Challenge card composition refinement override (2026-10-23)
++2026-10-23 CCL01-CCL03/G01/R01/Q01: Refine the owner-supplied challenge screenshot with an adaptive four-poster grid, larger original vector format illustrations, cropped shared scenery, stronger type/selection states and a single nearby rules/action dock. Remove the repeated selected-mode panel and detached footer copy; circuit/car choices are explicit secondary controls and the actual target has a quiet inset. Existing Custom rules, exact completed-ticket results, verification/account fences, source drive, finite tries and sharing remain. Focused118headless/133Compatibility/133desktopMobile, integrated native challenge235 including the taller1440x900 window, and parser944 pass. Native views, actual commands, source fingerprints, limitations and task-only checkpoint: docs/evidence/challenge-layout-refinement-2026-10-23/report.json. Owner visual/feel and physical-device touch/readability acceptance remain; no phone attachment check/device test, APK, live account/backend mutation, social send or deployment. Concurrent work is preserved.
++
+ ## Discovery resource-exhaustion fixes override (2026-10-23)
+ 2026-10-23 REX01-REX04/R01/Q01: Discovery account fences fail promptly under contention; shared actor work credits, cross-replica expensive-operation leases and escalating timeout cooldowns cover cursors, Random and non-text filters while preserving ordinary-page capacity. Captured-ID filtering and transactional actor/sixteen-stripe storage caps bound personal copies; migration0057 preserves legacy members through bounded backfill, expiry and erasure. Anonymous IPv6 /64 budgets, bursts and two-per-network/four-per-process receivers retain exact cursor scope and independent signed-in players. Broad SQLite57pass/2skip, earlier PostgreSQL55pass/1skip, final resource SQLite21pass/3skip/PostgreSQL20pass/1skip, receiver3SQLite/2PostgreSQL and security106 pass; Ruff and real Uvicorn/h11 framing pass. Local pool4 probe rejects three busy-account requests in25.13ms with only the holder connection occupied; another player reads in8.62ms. Local5001-track warm-page median47.19ms is not cloud/DAU certification. Commands, corrections, fingerprints and rollout limits: docs/evidence/discovery-resource-fixes-2026-10-23/report.json. Coordinated0057/API/worker release, old-writer drain, representative migration/load and capacity tuning remain; no live migration/account mutation/deployment, phone attachment check/device test or APK action. Concurrent work is preserved.
+ 
+--- a/DEVELOPMENT_STATUS.md
++++ b/DEVELOPMENT_STATUS.md
+@@ -1,3 +1,5 @@
++2026-10-23 CCL01-CCL03/G01/R01/Q01: Refine the owner-supplied challenge screenshot with an adaptive four-poster grid, larger original vector format illustrations, cropped shared scenery, stronger type/selection states and a single nearby rules/action dock. Remove the repeated selected-mode panel and detached footer copy; circuit/car choices are explicit secondary controls and the actual target has a quiet inset. Existing Custom rules, exact completed-ticket results, verification/account fences, source drive, finite tries and sharing remain. Focused118headless/133Compatibility/133desktopMobile, integrated native challenge235 including the taller1440x900 window, and parser944 pass. Native views, actual commands, source fingerprints, limitations and task-only checkpoint: docs/evidence/challenge-layout-refinement-2026-10-23/report.json. Owner visual/feel and physical-device touch/readability acceptance remain; no phone attachment check/device test, APK, live account/backend mutation, social send or deployment. Concurrent work is preserved.
++
+ 2026-10-23 REX01-REX04/R01/Q01: Discovery account fences fail promptly under contention; shared actor work credits, cross-replica expensive-operation leases and escalating timeout cooldowns cover cursors, Random and non-text filters while preserving ordinary-page capacity. Captured-ID filtering and transactional actor/sixteen-stripe storage caps bound personal copies; migration0057 preserves legacy members through bounded backfill, expiry and erasure. Anonymous IPv6 /64 budgets, bursts and two-per-network/four-per-process receivers retain exact cursor scope and independent signed-in players. Broad SQLite57pass/2skip, earlier PostgreSQL55pass/1skip, final resource SQLite21pass/3skip/PostgreSQL20pass/1skip, receiver3SQLite/2PostgreSQL and security106 pass; Ruff and real Uvicorn/h11 framing pass. Local pool4 probe rejects three busy-account requests in25.13ms with only the holder connection occupied; another player reads in8.62ms. Local5001-track warm-page median47.19ms is not cloud/DAU certification. Commands, corrections, fingerprints and rollout limits: docs/evidence/discovery-resource-fixes-2026-10-23/report.json. Coordinated0057/API/worker release, old-writer drain, representative migration/load and capacity tuning remain; no live migration/account mutation/deployment, phone attachment check/device test or APK action. Concurrent work is preserved.
+ 
+ 2026-10-23 GPA-F01/GPA-F01-R/GPA-F02/GPA-F03/R01/Q01: Fix audit F01-F03 with a profile-owned background cosmetic sidecar, one shared exact paint-exclusion mask with cooperative cancellation, and retained deterministic tyre/prop work. Paired desktop 10k-PB update391.634ms to0.415ms enqueue; 576 resting tyres1.808ms to0.217ms/tick; fallback exclusions539.405ms to14.058ms. Focused31/59/16924 headless and desktopMobile, earlier31/59/1924 Compatibility, tyre13200, native482/old-library482, cars105/handling88, records54, graphical hitch47/ghost38/wash1402 and parser942 pass. Existing oil-placement1 and historical physics689 failures reproduce unchanged. Commands, corrected attempts, native binaries, scope checkpoint and acceptance limits: docs/GAMEPLAY_F01_F03_2026_10_23.md. Driving, compiler/physics versions, local-only cosmetics, PB/achievement commits and concurrent work remain preserved. Full client restart and sustained Android acceptance remain; no phone attachment check/device test, APK, live mutation or deployment.
+--- a/docs/PHASE_0_PLAN.md
++++ b/docs/PHASE_0_PLAN.md
+@@ -1,3 +1,5 @@
++2026-10-23 CCL01-CCL03/G01/R01/Q01: Refine the owner-supplied challenge screenshot with an adaptive four-poster grid, larger original vector format illustrations, cropped shared scenery, stronger type/selection states and a single nearby rules/action dock. Remove the repeated selected-mode panel and detached footer copy; circuit/car choices are explicit secondary controls and the actual target has a quiet inset. Existing Custom rules, exact completed-ticket results, verification/account fences, source drive, finite tries and sharing remain. Focused118headless/133Compatibility/133desktopMobile, integrated native challenge235 including the taller1440x900 window, and parser944 pass. Native views, actual commands, source fingerprints, limitations and task-only checkpoint: docs/evidence/challenge-layout-refinement-2026-10-23/report.json. Owner visual/feel and physical-device touch/readability acceptance remain; no phone attachment check/device test, APK, live account/backend mutation, social send or deployment. Concurrent work is preserved.
++
+ 2026-10-23 GPA-F01/GPA-F01-R/GPA-F02/GPA-F03/R01/Q01: Audit F01-F03 implemented with isolated cosmetic persistence, shared exact/cancellable paint preparation and retained deterministic prop/tyre data. Paired desktop10k-PB main callback391.634ms to0.415ms, 576 resting tyres1.808ms to0.217ms/tick, fallback exclusion539.405ms to14.058ms. Focused31/59/16924 headless/desktopMobile and earlier31/59/1924 Compatibility, exact tyre13200, native482 plus old-library482, full-lap cars105/handling88, records54, graphical lifecycle/ghost/wash and parser942 pass. The same oil-placement1/historical physics689 failures reproduce on original source. Actual commands, corrections, hashes and scoped checkpoint: docs/GAMEPLAY_F01_F03_2026_10_23.md. Other audit findings, dense active piles and physical-device sustained acceptance remain. No phone attachment check/device test, APK, live mutation or deployment; concurrent work retained.
+ 
+ 2026-10-23 CCR01-CCR04/G01/R01/Q01: Apply the approved HTML challenge-card direction to the native menu: Choose your challenge, Head to head, Group race, Three tries and a fourth Custom rules card. Optional rules commit/cancel race type, 24-hour/3-day/7-day duration, 1/3/5/unlimited tries and supported public/invitation visibility; preset changes retain duration and visibility. Actual route/car/time lead the page, with fixed completed-ticket results, verification/errors/account fences, five laps, verified-PB menu sources and target-free groups retained. Race-first return preserves the selected format; an account-fenced frozen invitation precedes explicit system sharing. Focused97headless/109Compatibility/109desktopMobile, native challenge195, discovery68/source27/tab60/App141 and parser939 pass. Commands, initial environment/fixture/layout corrections, native views, hashes and task-only checkpoint: docs/evidence/challenge-cards-native-2026-10-23/report.json. Owner appearance and physical-device touch acceptance remain; no phone attachment check/device test, APK, live backend/account mutation, social send or deployment.
+--- a/docs/CHALLENGE_PAGE.md
++++ b/docs/CHALLENGE_PAGE.md
+@@ -1,3 +1,13 @@
++# Challenge composition refinement — 2026-10-23
++
++2026-10-23 CCL01-CCL03/G01/R01/Q01: Refine the owner-supplied challenge screenshot with an adaptive four-poster grid, larger original vector format illustrations, cropped shared scenery, stronger type/selection states and a single nearby rules/action dock. Remove the repeated selected-mode panel and detached footer copy; circuit/car choices are explicit secondary controls and the actual target has a quiet inset. Existing Custom rules, exact completed-ticket results, verification/account fences, source drive, finite tries and sharing remain. Focused118headless/133Compatibility/133desktopMobile, integrated native challenge235 including the taller1440x900 window, and parser944 pass. Native views, actual commands, source fingerprints, limitations and task-only checkpoint: docs/evidence/challenge-layout-refinement-2026-10-23/report.json. Owner visual/feel and physical-device touch/readability acceptance remain; no phone attachment check/device test, APK, live account/backend mutation, social send or deployment. Concurrent work is preserved.
++
++This presentation pass replaces the shallow thumbnail strips and separated summary/footer with taller adaptable format cards and one action dock. Each format uses original native vector artwork; existing scenic images are cropped without distortion. No additional raster asset, live scene, frame target or polling timer is introduced. The four format choices, supported rules and authoritative source/result contracts remain as described below.
++
++[Refined full menu at the owner’s taller aspect ratio](evidence/challenge-layout-refinement-2026-10-23/integrated-gl_compatibility/menu-create-1440x900.png). [Detailed evidence and remaining acceptance](evidence/challenge-layout-refinement-2026-10-23/report.json).
++
++---
++
+ # Native card refinement — 2026-10-23
+ 
+ 2026-10-23 CCR01-CCR04/G01/R01/Q01: Apply the approved HTML challenge-card direction to the native menu: Choose your challenge, Head to head, Group race, Three tries and a fourth Custom rules card. Optional rules commit/cancel race type, 24-hour/3-day/7-day duration, 1/3/5/unlimited tries and supported public/invitation visibility; preset changes retain duration and visibility. Actual route/car/time lead the page, with fixed completed-ticket results, verification/errors/account fences, five laps, verified-PB menu sources and target-free groups retained. Race-first return preserves the selected format; an account-fenced frozen invitation precedes explicit system sharing. Focused97headless/109Compatibility/109desktopMobile, native challenge195, discovery68/source27/tab60/App141 and parser939 pass. Commands, initial environment/fixture/layout corrections, native views, hashes and task-only checkpoint: docs/evidence/challenge-cards-native-2026-10-23/report.json. Owner appearance and physical-device touch acceptance remain; no phone attachment check/device test, APK, live backend/account mutation, social send or deployment.

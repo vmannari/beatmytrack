@@ -1,0 +1,126 @@
+--- a/game/editor/editor_canvas.gd
++++ b/game/editor/editor_canvas.gd
+@@ -107,16 +107,10 @@
+ var fit_pending_native: bool = false
+ var native_preview: NativeTrack
+ var visual_preview: NativeTrack
+-var gesture = preload("res://editor/editor_gesture.gd").new()
+-var _gesture_document: Dictionary:
+-	get: return gesture.before
+-var _gesture_absent: Array[String]:
+-	get: return gesture.absent
+-var _gesture_ghost: Dictionary:
+-	get: return gesture.ghost
+-var _navigation_only: bool:
+-	get: return gesture.phase == gesture.Phase.NAVIGATION
+-	set(value): gesture.phase = gesture.Phase.NAVIGATION if value else gesture.Phase.IDLE
++var _gesture_document: Dictionary = {}
++var _navigation_only: bool = false
++var _gesture_absent: Array[String] = []
++var _gesture_ghost: Dictionary = {}
+ var _run_edge_hint: bool = false
+ 
+ func _ready() -> void:
+@@ -202,7 +196,7 @@
+ 	pending_start_flip = false
+ 	bump_end_drag = -1
+ 	_navigation_only = false
+-	gesture.clear()
++	_gesture_document.clear(); _gesture_absent.clear(); _gesture_ghost.clear()
+ 
+ func _gui_input(event: InputEvent) -> void:
+ 	if document.is_empty(): return
+@@ -237,7 +231,6 @@
+ 			if touches.size() == 1: _begin(event.position, event.index)
+ 			else:
+ 				_rollback_navigation_edit()
+-				_navigation_only = true
+ 				pending_road_tap = false
+ 				pending_piece_accept = false
+ 				pending_start_flip = false
+@@ -295,7 +288,9 @@
+ func _rollback_navigation_edit() -> void:
+ 	bump_end_drag = -1
+ 	if not changed_in_gesture: return
+-	if gesture.rollback(document):
++	if not _gesture_document.is_empty() or not _gesture_absent.is_empty():
++		for key: String in _gesture_absent: document.erase(key)
++		for key: String in _gesture_document: document[key] = _gesture_document[key].duplicate(true) if _gesture_document[key] is Array or _gesture_document[key] is Dictionary else _gesture_document[key]
+ 		document_changed.emit()
+ 		edit_cancelled.emit()
+ 	ghost = _gesture_ghost.duplicate(true)
+@@ -303,7 +298,21 @@
+ 	selection_changed.emit()
+ 
+ func _start_edit() -> void:
+-	gesture.capture(document,mode)
++	# Selection/navigation do not snapshot anything. Capture only domains that
++	# this tool can change, before history listeners or the first mutation.
++	if _gesture_document.is_empty() and _gesture_absent.is_empty():
++		var keys: Array = ["route_override"]
++		match mode:
++			"road": keys.append_array(["pieces","start_line"])
++			"objects","place","run": keys.append_array(["objects","hidden_scenery"])
++			"start": keys.append("practice_start")
++			"start_line": keys.append("start_line")
++			"paint": keys.append("paint")
++			_: keys.append_array(["points","widths","corners"])
++		for key: String in keys:
++			if not document.has(key): _gesture_absent.append(key); continue
++			var value: Variant = document[key]
++			_gesture_document[key] = value.duplicate(true) if value is Array or value is Dictionary else value
+ 	edit_started.emit()
+ 
+ func _begin(point: Vector2, pointer: int) -> void:
+@@ -313,7 +322,10 @@
+ 	press_position = point
+ 	pointer_origin = to_world(point)
+ 	changed_in_gesture = false
+-	gesture.begin(ghost,preparing)
++	_gesture_document = {}
++	_gesture_absent.clear()
++	_gesture_ghost = ghost.duplicate(true)
++	_navigation_only = preparing
+ 	if _navigation_only:
+ 		panning = true; dragging = false
+ 		return
+@@ -571,7 +583,7 @@
+ func _end(pointer: int) -> void:
+ 	if pointer != active_pointer: return
+ 	if _navigation_only:
+-		gesture.clear(); panning = false; active_pointer = -99
++		_navigation_only = false; panning = false; active_pointer = -99
+ 		return
+ 	if pending_paint_accept:
+ 		pending_paint_accept = false
+@@ -620,7 +632,7 @@
+ 		active_pointer = int(touches.keys()[0])
+ 		previous_pointer = touches[active_pointer]
+ 		panning = true
+-	gesture.clear()
++	_gesture_document.clear(); _gesture_absent.clear(); _gesture_ghost.clear()
+ 	queue_redraw()
+ 
+ func _notification(what: int) -> void:
+@@ -1131,8 +1143,19 @@
+ 	return Rect2(to_screen(points[points.size()/4 if piece.kind != "bridge" else points.size()/2])-Vector2(28,28),Vector2(56,56))
+ 
+ func geometry_keys(piece: Dictionary) -> Array[String]:
+-	return preload("res://editor/road_piece_catalog.gd").handles(str(piece.kind))
+-
++	if piece.kind == "spline": return []
++	if piece.kind == "straight": return ["width"]
++	if piece.kind == "taper": return ["width","narrow_width","length"]
++	if piece.kind == "curve": return ["width","curvature","angle"]
++	if piece.kind == "s_bend": return ["width","radius","height"]
++	if piece.kind == "hairpin": return ["width","radius","length"]
++	var keys: Array[String] = ["width"]
++	if piece.kind != "s_bend": keys.push_front("length")
++	if piece.kind not in ["straight","bridge"]: keys.append("radius")
++	if piece.kind == "s_bend": keys.append("height")
++	if piece.kind == "curve": keys.append("angle")
++	keys.append("heading")
++	return keys
+ 
+ func geometry_caption(piece: Dictionary, key: String) -> String:
+ 	var title: String = "Rotate" if key == "heading" else "Narrow width" if key == "narrow_width" else "Straight" if key == "length" and piece.kind not in ["straight","taper","bridge"] else key.capitalize()

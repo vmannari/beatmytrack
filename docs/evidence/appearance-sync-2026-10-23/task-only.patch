@@ -1,0 +1,1265 @@
+diff --git a/AGENTS.md b/AGENTS.md
+--- a/AGENTS.md
++++ b/AGENTS.md
+@@ -1,3 +1,6 @@
++## Account-synced Garage appearance override (2026-10-23)
++2026-10-23 ALS01-ALS05/R01/Q01: All five cars sync pigments, patterns, hood/roof stickers and supported cosmetic parts through private authenticated appearance reads and per-car compare-and-swap writes. Atomic acknowledged/attempted values retain offline, restart, lost-reply/new-edit and storage recovery. Real App account switches bind sync and cosmetic ownership to the selected profile; retained Garage models refresh. Focused52, real HTTP31headless/33Compatibility, App141, ownership56, SQLite API28 and parser1023 pass; simultaneous file-SQLite writers accept one update and reject the stale one. PostgreSQL setup times out; no PostgreSQL pass is claimed. Commands, initial corrections, native before/after views, hashes and scoped checkpoint: docs/evidence/appearance-sync-2026-10-23/report.json; details: docs/GARAGE_APPEARANCE_SYNC_2026_10_23.md. Matching backend/client rollout and sustained owner/two-device acceptance remain. No phone attachment check/device test, APK, install, live production mutation or deployment. Concurrent work preserved.
++
+ ## Tablet sign-in update deployment (2026-10-23)
+ 2026-10-23 ASID01/R01/V05/Q01: Owner-requested sign-in update installed and launched on OnePlus Pad 2 from frozen source, build 0.3.0-creator.e95ede05a79a60625f44b8dd97c6f84b (APK SHA256 1DE95F8B23F65DDE99D42A5A5414D0842495B9B1C410FB643C64BBFB6E3569DD). Pinned import/startup, driving72/catalog21/menu41 pass; installed version/hash match, APP_READY and zero matched startup errors. install -r preserves firstInstallTime/data; no uninstall/data clear, track sync or backend deployment. Actual native running Grass race/HUD captured; owner sign-in/cold-restart acceptance remains, with no agent provider interaction or active-race interruption. Commands, source manifest, receipts and limits: docs/evidence/tablet-sign-in-deployment-2026-10-23/report.json. Concurrent work preserved.
+ 
+diff --git a/DEVELOPMENT_STATUS.md b/DEVELOPMENT_STATUS.md
+--- a/DEVELOPMENT_STATUS.md
++++ b/DEVELOPMENT_STATUS.md
+@@ -1,4 +1,6 @@
+ 2026-10-23 KCB01-KCB03/G01/R01/Q01: Owner clarifies cobblestone-street character for kerbs. Shared loop now uses cleared actual compact-car cobblestone recording, preserving uneven contacts with sub-bass reduction and matched loudness; synthetic pulse train and rejected preview sources are replaced. Original physics-contact start/gain/pitch/gates/cache/voices/canonical behavior and concurrent snow/shared-output work remain. Native88, vehicle1469, loops208, Desert67, continuity42 and12-capture review pass; decoded36.74dB SNR/-18.44LUFS, repeat60assets exact. Initial loudness calibration failure retained; no invariant weakened. Commands, applied preview, source provenance and scoped checkpoint: docs/KERB_COBBLESTONE_2026_10_23.md. PC restart and owner/device listening remain; no phone attachment check/device test, updated APK, live mutation or deployment.
++
++2026-10-23 ALS01-ALS05/R01/Q01: All five cars sync pigments, patterns, hood/roof stickers and supported cosmetic parts through private authenticated appearance reads and per-car compare-and-swap writes. Atomic acknowledged/attempted values retain offline, restart, lost-reply/new-edit and storage recovery. Real App account switches bind sync and cosmetic ownership to the selected profile; retained Garage models refresh. Focused52, real HTTP31headless/33Compatibility, App141, ownership56, SQLite API28 and parser1023 pass; simultaneous file-SQLite writers accept one update and reject the stale one. PostgreSQL setup times out; no PostgreSQL pass is claimed. Commands, initial corrections, native before/after views, hashes and scoped checkpoint: docs/evidence/appearance-sync-2026-10-23/report.json; details: docs/GARAGE_APPEARANCE_SYNC_2026_10_23.md. Matching backend/client rollout and sustained owner/two-device acceptance remain. No phone attachment check/device test, APK, install, live production mutation or deployment. Concurrent work preserved.
+ 
+ 2026-10-23 CEA01-CEA02/R01/G01/Q01: Owner rejects reused challenge-format pictures on the entry menu. Two new original built-in imagegen illustrations now distinguish Find & play (forest-circuit drive) from Create a challenge (race-planning workbench). Existing format posters remain exact. Original generated PNGs use1024px mipmapped imports. Existing focused83headless/88Compatibility checks and import pass; native previews, exact prompts/paths, provenance, hashes and scoped patch: docs/evidence/challenge-entry-artwork-2026-10-23/report.json. Owner appearance acceptance remains. No phone attachment check/device test, APK, live account/backend mutation, social send or deployment. Concurrent work preserved.
+ 
+diff --git a/backend/bmt_backend/app.py b/backend/bmt_backend/app.py
+--- a/backend/bmt_backend/app.py
++++ b/backend/bmt_backend/app.py
+@@ -27,6 +27,7 @@
+         admin_player_grants,
+         admin_purchase_controls,
+         admin_support,
++        appearance_routes,
+         browser_auth,
+         challenges,
+         commerce,
+@@ -158,6 +159,7 @@
+     app.include_router(commerce.router, prefix="/v1")
+     app.include_router(publications.router, prefix="/v1")
+     app.include_router(rivalry.router, prefix="/v1")
++    app.include_router(appearance_routes.router, prefix="/v1")
+     app.include_router(challenges.router, prefix="/v1")
+     app.include_router(challenges.preview_router)
+     app.include_router(track_links.router)
+diff --git a/backend/bmt_backend/appearance_routes.py b/backend/bmt_backend/appearance_routes.py
+new file mode 100644
+--- /dev/null
++++ b/backend/bmt_backend/appearance_routes.py
+@@ -0,0 +1,54 @@
++"""Private garage recovery with per-car optimistic concurrency, outside race rules."""
++from fastapi import APIRouter, HTTPException
++from sqlalchemy import select, update
++
++from .identity_models import Player
++from .middleware import ParsedJSONRoute
++from .tracks import DB, Auth
++from .vehicle_appearance import Appearance, Cosmetic
++
++router = APIRouter(route_class=ParsedJSONRoute, tags=["garage"])
++
++
++class SaveAppearance(Cosmetic):
++    appearance: Appearance
++    previous: Appearance | None
++
++
++def owner_for_write(session, player_id):
++    # A no-op row UPDATE also serializes SQLite writers, where FOR UPDATE is
++    # ignored. PostgreSQL holds the same row lock through the eventual commit.
++    locked = session.execute(update(Player).where(
++        Player.id == player_id, Player.deleted_at.is_(None), Player.disabled.is_(False),
++    ).values(id=Player.id))
++    if locked.rowcount != 1:
++        raise HTTPException(401, "INVALID_SESSION")
++    return session.scalar(select(Player).where(Player.id == player_id)
++                          .execution_options(populate_existing=True))
++
++
++@router.get("/me/appearances")
++def get_appearances(session: DB, player: Auth):
++    # This authenticated endpoint only exposes the current player's five cars.
++    owner = session.scalar(select(Player).where(
++        Player.id == player.id, Player.deleted_at.is_(None), Player.disabled.is_(False),
++    ).execution_options(populate_existing=True))
++    if owner is None:
++        raise HTTPException(401, "INVALID_SESSION")
++    return {"appearances": owner.vehicle_appearances}
++
++
++@router.put("/me/appearances")
++def save_appearance(payload: SaveAppearance, session: DB, player: Auth):
++    value = payload.appearance.model_dump()
++    previous = payload.previous.model_dump() if payload.previous is not None else None
++    if previous is not None and previous["vehicle_id"] != value["vehicle_id"]:
++        raise HTTPException(422, "APPEARANCE_VEHICLE_MISMATCH")
++    owner = owner_for_write(session, player.id)
++    current = owner.vehicle_appearances.get(value["vehicle_id"])
++    # Repeating a committed write after a lost reply is an acknowledgement.
++    if current != value and current != previous:
++        raise HTTPException(409, "APPEARANCE_CHANGED")
++    owner.vehicle_appearances = {**owner.vehicle_appearances, value["vehicle_id"]: value}
++    session.commit()
++    return value
+diff --git a/backend/bmt_backend/rivalry.py b/backend/bmt_backend/rivalry.py
+--- a/backend/bmt_backend/rivalry.py
++++ b/backend/bmt_backend/rivalry.py
+@@ -11,6 +11,7 @@
+ from sqlalchemy.exc import IntegrityError
+ from sqlalchemy.orm import aliased
+ 
++from .appearance_routes import owner_for_write
+ from .contracts import build_contract
+ from .identity_models import Player
+ from .middleware import ParsedJSONRoute
+@@ -57,10 +58,7 @@
+ @router.put("/rivalry/appearance")
+ def save_appearance(payload: Appearance, session: DB, player: Auth):
+     # Serialize per-player car updates with other devices and account erasure.
+-    owner = session.scalar(select(Player).where(Player.id == player.id).with_for_update()
+-                           .execution_options(populate_existing=True))
+-    if owner is None or owner.deleted_at is not None or owner.disabled:
+-        raise HTTPException(401, "INVALID_SESSION")
++    owner = owner_for_write(session, player.id)
+     value = payload.model_dump()
+     owner.vehicle_appearances = {**owner.vehicle_appearances, payload.vehicle_id: value}
+     session.commit()
+diff --git a/backend/schemas/vehicle-appearance-sync-v1.schema.json b/backend/schemas/vehicle-appearance-sync-v1.schema.json
+new file mode 100644
+--- /dev/null
++++ b/backend/schemas/vehicle-appearance-sync-v1.schema.json
+@@ -0,0 +1,219 @@
++{
++  "$defs": {
++    "Appearance": {
++      "additionalProperties": false,
++      "properties": {
++        "vehicle_id": {
++          "enum": [
++            "compact",
++            "pickup",
++            "classic",
++            "formula",
++            "kart"
++          ],
++          "title": "Vehicle Id",
++          "type": "string"
++        },
++        "livery": {
++          "$ref": "#/$defs/Livery"
++        },
++        "customisation": {
++          "$ref": "#/$defs/Parts"
++        }
++      },
++      "required": [
++        "vehicle_id",
++        "livery",
++        "customisation"
++      ],
++      "title": "Appearance",
++      "type": "object"
++    },
++    "Livery": {
++      "additionalProperties": false,
++      "properties": {
++        "version": {
++          "const": 2,
++          "title": "Version",
++          "type": "integer"
++        },
++        "colors": {
++          "$ref": "#/$defs/Pigments"
++        },
++        "pattern": {
++          "maxLength": 40,
++          "minLength": 1,
++          "title": "Pattern",
++          "type": "string"
++        },
++        "stickers": {
++          "$ref": "#/$defs/Panels"
++        }
++      },
++      "required": [
++        "version",
++        "colors",
++        "pattern",
++        "stickers"
++      ],
++      "title": "Livery",
++      "type": "object"
++    },
++    "Panels": {
++      "additionalProperties": false,
++      "properties": {
++        "hood": {
++          "$ref": "#/$defs/Sticker"
++        },
++        "roof": {
++          "$ref": "#/$defs/Sticker"
++        }
++      },
++      "required": [
++        "hood",
++        "roof"
++      ],
++      "title": "Panels",
++      "type": "object"
++    },
++    "Parts": {
++      "additionalProperties": false,
++      "properties": {
++        "version": {
++          "const": 1,
++          "title": "Version",
++          "type": "integer"
++        },
++        "hood": {
++          "maxLength": 40,
++          "minLength": 1,
++          "title": "Hood",
++          "type": "string"
++        },
++        "aero": {
++          "maxLength": 40,
++          "minLength": 1,
++          "title": "Aero",
++          "type": "string"
++        },
++        "rims": {
++          "maxLength": 40,
++          "minLength": 1,
++          "title": "Rims",
++          "type": "string"
++        },
++        "body": {
++          "maxLength": 40,
++          "minLength": 1,
++          "title": "Body",
++          "type": "string"
++        }
++      },
++      "required": [
++        "version",
++        "hood",
++        "aero",
++        "rims",
++        "body"
++      ],
++      "title": "Parts",
++      "type": "object"
++    },
++    "Pigments": {
++      "additionalProperties": false,
++      "properties": {
++        "body": {
++          "pattern": "^[0-9a-f]{6}$",
++          "title": "Body",
++          "type": "string"
++        },
++        "accent": {
++          "pattern": "^[0-9a-f]{6}$",
++          "title": "Accent",
++          "type": "string"
++        },
++        "detail": {
++          "pattern": "^[0-9a-f]{6}$",
++          "title": "Detail",
++          "type": "string"
++        }
++      },
++      "required": [
++        "body",
++        "accent",
++        "detail"
++      ],
++      "title": "Pigments",
++      "type": "object"
++    },
++    "Sticker": {
++      "additionalProperties": false,
++      "properties": {
++        "id": {
++          "maxLength": 40,
++          "minLength": 1,
++          "title": "Id",
++          "type": "string"
++        },
++        "x": {
++          "maximum": 1,
++          "minimum": 0,
++          "title": "X",
++          "type": "number"
++        },
++        "y": {
++          "maximum": 1,
++          "minimum": 0,
++          "title": "Y",
++          "type": "number"
++        },
++        "size": {
++          "maximum": 0.95,
++          "minimum": 0.2,
++          "title": "Size",
++          "type": "number"
++        },
++        "rotation": {
++          "maximum": 180,
++          "minimum": -180,
++          "title": "Rotation",
++          "type": "number"
++        }
++      },
++      "required": [
++        "id",
++        "x",
++        "y",
++        "size",
++        "rotation"
++      ],
++      "title": "Sticker",
++      "type": "object"
++    }
++  },
++  "additionalProperties": false,
++  "properties": {
++    "appearance": {
++      "$ref": "#/$defs/Appearance"
++    },
++    "previous": {
++      "anyOf": [
++        {
++          "$ref": "#/$defs/Appearance"
++        },
++        {
++          "type": "null"
++        }
++      ]
++    }
++  },
++  "required": [
++    "appearance",
++    "previous"
++  ],
++  "title": "SaveAppearance",
++  "type": "object",
++  "$schema": "https://json-schema.org/draft/2020-12/schema",
++  "$id": "urn:bmt:vehicle-appearance-sync-v1",
++  "description": "PUT /v1/me/appearances; previous is the last acknowledged car or null. Catalog IDs receive additional runtime validation. GET returns a private appearances map with at most the five known vehicle IDs."
++}
+diff --git a/backend/tests/test_appearance_sync.py b/backend/tests/test_appearance_sync.py
+new file mode 100644
+--- /dev/null
++++ b/backend/tests/test_appearance_sync.py
+@@ -0,0 +1,106 @@
++"""Private multi-device garage recovery, compare-and-swap and existing erasure."""
++import copy
++from concurrent.futures import ThreadPoolExecutor
++from uuid import uuid4
++
++import pytest
++from test_domains import domain as _domain_fixture
++from test_domains import headers
++from test_rivalry_appearance import appearance
++
++from bmt_backend.identity_models import Player
++from bmt_backend.privacy import remove_account
++
++domain = _domain_fixture
++
++
++def put(d, value, previous=None, player="Alice"):
++    return d.client.put("/v1/me/appearances", headers=headers(d, player),
++                        json={"appearance": value, "previous": previous})
++
++
++def read(d, player="Alice"):
++    return d.client.get("/v1/me/appearances", headers=headers(d, player))
++
++
++def test_private_five_car_recovery_and_independent_devices(domain):
++    assert read(domain).json() == {"appearances": {}}
++    saved = {}
++    for vehicle in ("compact", "pickup", "classic", "formula", "kart"):
++        value = appearance(vehicle)
++        if vehicle == "compact":
++            value["customisation"]["body"] = "wide"
++            value["livery"]["stickers"]["roof"].update(id="crest", rotation=77.0)
++        assert put(domain, value).status_code == 200
++        saved[vehicle] = value
++    assert read(domain).json() == {"appearances": saved}
++    assert read(domain, "Bob").json() == {"appearances": {}}
++    old = saved["compact"]
++    changed = copy.deepcopy(old)
++    changed["livery"]["colors"]["body"] = "112233"
++    assert put(domain, changed, old).json() == changed
++    assert put(domain, changed, old).json() == changed  # Lost reply, same operation.
++    stale = copy.deepcopy(old)
++    stale["customisation"]["hood"] = "scoop"
++    assert put(domain, stale, old).status_code == 409
++    saved["compact"] = changed
++    assert read(domain).json() == {"appearances": saved}
++
++
++def test_existing_rivalry_snapshot_and_concurrent_legacy_write(domain):
++    old = appearance()
++    assert domain.client.put("/v1/rivalry/appearance", headers=headers(domain, "Alice"), json=old).status_code == 200
++    assert read(domain).json()["appearances"]["compact"] == old
++    changed = copy.deepcopy(old)
++    changed["livery"]["colors"]["body"] = "123456"
++    assert put(domain, changed).status_code == 409
++    assert put(domain, changed, old).status_code == 200
++    assert domain.client.put("/v1/rivalry/appearance", headers=headers(domain, "Alice"), json=old).status_code == 200
++    assert put(domain, changed, changed).status_code == 409
++
++
++@pytest.mark.parametrize("field,value", [
++    ("vehicle_id", "unknown"), ("condition", {}), ("balance", 99999),
++    ("livery", {"version": 1}),
++])
++def test_invalid_appearance_never_changes_account(domain, field, value):
++    body = appearance()
++    body[field] = value
++    assert put(domain, body).status_code == 422
++    assert read(domain).json() == {"appearances": {}}
++
++
++def test_auth_vehicle_scope_and_erasure(domain):
++    assert domain.client.get("/v1/me/appearances").status_code == 401
++    assert domain.client.put("/v1/me/appearances", json={"appearance": appearance(), "previous": None}).status_code == 401
++    assert put(domain, appearance(), appearance("kart")).status_code == 422
++    assert put(domain, appearance()).status_code == 200
++    with domain.factory() as session:
++        remove_account(session, domain.players["Alice"], "a" * 64, str(uuid4()))
++        session.commit()
++    assert put(domain, appearance()).status_code == 401
++    assert read(domain).status_code == 401
++    with domain.factory() as session:
++        assert session.get(Player, domain.players["Alice"]).vehicle_appearances == {}
++
++
++def test_simultaneous_devices_accept_one_same_car_write(auth_client, sign_in):
++    # The auth fixture uses file-backed SQLite, with independent connections.
++    login = sign_in(analytics=False)
++    auth = {"Authorization": "Bearer " + login["access_token"]}
++    original = appearance()
++    assert auth_client.put("/v1/me/appearances", headers=auth,
++                           json={"appearance": original, "previous": None}).status_code == 200
++    versions = [copy.deepcopy(original), copy.deepcopy(original)]
++    for value, colour in zip(versions, ("112233", "aabbcc"), strict=True):
++        value["livery"]["colors"]["body"] = colour
++
++    def write(value):
++        return auth_client.put("/v1/me/appearances", headers=auth,
++                               json={"appearance": value, "previous": original})
++
++    with ThreadPoolExecutor(max_workers=2) as pool:
++        responses = list(pool.map(write, versions))
++    assert sorted(row.status_code for row in responses) == [200, 409]
++    winner = next(row.json() for row in responses if row.status_code == 200)
++    assert auth_client.get("/v1/me/appearances", headers=auth).json() == {"appearances": {"compact": winner}}
+diff --git a/backend/tests/test_appearance_sync_http.py b/backend/tests/test_appearance_sync_http.py
+new file mode 100644
+--- /dev/null
++++ b/backend/tests/test_appearance_sync_http.py
+@@ -0,0 +1,61 @@
++"""Two native clients and restart recovery against a disposable real HTTP server."""
++import os
++import socket
++import subprocess
++import threading
++import time
++from pathlib import Path
++
++import pytest
++import uvicorn
++from test_domains import FakeVerifier
++
++from bmt_backend.app import create_app
++from bmt_backend.config import Settings
++from bmt_backend.migrate import upgrade
++
++
++@pytest.mark.godot
++def test_native_cross_device_appearance_sync(tmp_path):
++    root = Path(__file__).resolve().parents[2]
++    key = "isolated-appearance-fixture-key-2026"
++    listener = socket.socket()
++    listener.bind(("127.0.0.1", 0))
++    url = f"http://127.0.0.1:{listener.getsockname()[1]}"
++    app = create_app(Settings(
++        environment="development", dev_auth_enabled=True, dev_auth_key=key,
++        database_url=f"sqlite:///{(tmp_path / 'garage.sqlite').as_posix()}",
++        object_dir=str(tmp_path / "objects"), rate_limit_per_minute=1000,
++        write_limit_per_minute=1000, public_base_url=url,
++    ), verifier=FakeVerifier())
++    upgrade(app.state.engine)
++    server = uvicorn.Server(uvicorn.Config(app, log_level="error", access_log=False))
++    thread = threading.Thread(target=server.run, kwargs={"sockets": [listener]}, daemon=True)
++    thread.start()
++    try:
++        for _ in range(100):
++            if server.started:
++                break
++            time.sleep(0.05)
++        assert server.started
++        data = tmp_path / "appdata"
++        data.mkdir()
++        env = {**os.environ, "APPDATA": str(data), "BMT_API_URL": url, "BMT_DEV_AUTH_KEY": key}
++        command = [
++            "powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", str(root / "scripts/dev.ps1"),
++            "-Action", "TestScript", "-ScriptPath", "res://tests/test_appearance_sync_http.gd",
++            "-CommandTimeoutSeconds", "90",
++        ]
++        if env.get("BMT_APPEARANCE_CAPTURE"):
++            command += ["-Graphical", "-RenderingMethod", "gl_compatibility"]
++        result = subprocess.run(command, env=env, cwd=root, capture_output=True,
++                                text=True, timeout=110, check=False)
++        (tmp_path / "native.log").write_text(result.stdout + result.stderr, encoding="utf-8")
++        print(result.stdout)
++        assert result.returncode == 0, result.stdout + result.stderr
++        assert "APPEARANCE_SYNC_HTTP:" in result.stdout and "0 failures" in result.stdout
++    finally:
++        server.should_exit = True
++        thread.join(timeout=10)
++        listener.close()
++        app.state.engine.dispose()
+diff --git a/docs/GARAGE_APPEARANCE_SYNC_2026_10_23.md b/docs/GARAGE_APPEARANCE_SYNC_2026_10_23.md
+new file mode 100644
+--- /dev/null
++++ b/docs/GARAGE_APPEARANCE_SYNC_2026_10_23.md
+@@ -0,0 +1,19 @@
++# Garage appearance sync — 2026-10-23
++
++ALS01–ALS05/R01/Q01 implement the owner's report that car liveries and related customizations do not follow the account between devices. The previous Garage saved only local settings; Rivalry uploaded a selected-car snapshot but never restored the player's cars. The shop also retained its initial records object when the App selected an account profile.
++
++All five cars now sync their body/accent/detail pigments, livery pattern, hood/roof sticker transforms and supported cosmetic parts. Sign-in restores saved designs, successful local commits schedule a 750 ms coalesced sync, and a 30 second timer checks for changes/retries. Rivalry delegates to the same adapter. The retained Garage updates its current model, thumbnails and controls without interrupting an uncommitted paint/sticker gesture. Ownership reads and purchase recovery now bind to the selected account's records.
++
++ALS01: private authenticated `GET /v1/me/appearances` reads the existing bounded `Player.vehicle_appearances` map. `PUT` accepts one `appearance` and its `previous` acknowledged value (or null). Existing strict appearance validation restricts the five vehicles, known patterns/stickers, colors, transforms and Compact-only parts. No database migration is needed. Both the new endpoint and legacy Rivalry writes serialize on the owner row. A stale same-car write returns 409; repeating an already committed value succeeds without changing another car. The new wire schema is in `backend/schemas/vehicle-appearance-sync-v1.schema.json`.
++
++ALS02: acknowledged values and attempted uploads live in the same atomic local save as the car edits. Lost replies, a second edit while a request is pending, a restart and acknowledgement-storage failure retain recovery information. JSON versions are normalized back to integers before sending strict API requests. Clean cars never upload defaults, and an unchanged refresh does not rewrite the profile.
++
++ALS03: separate cars merge independently. On first adoption, an existing server car takes precedence over an unversioned local car; locally authored cars missing online are uploaded. If two devices edit the same car from the same acknowledged value, the first accepted online edit wins and the other device restores it. An acknowledged pending upload is distinguished from an unrelated remote edit so a newer local change after a lost reply survives. Older client releases can still use their legacy unconditional Rivalry writer; matching client updates are needed for the complete concurrency policy.
++
++ALS04/R01: account/origin and records-generation checks fence every HTTP completion. Real App sign-in binds both sync and shop to the account profile; sign-out restores Guest and exposes no account paint. Existing server account erasure clears the same appearance map. Purchased unlocks continue through the existing authoritative economy API; appearance sync does not mint ownership or money. Dirt/washing condition, personal bests, device settings and canonical race contracts retain their existing local/separate behavior.
++
++ALS05/Q01: focused native sync tests cover all five cars, exact designs, independent and conflicting edits, automatic commit scheduling, offline/restart/lost-reply recovery, new edits during HTTP, acknowledgement-storage failure, identity fences and invalid local/wire data. A disposable real Uvicorn/SQLite API verifies two independent authenticated native sessions, the actual App's sign-in/sign-out wiring and a retained Garage model update. Native Compatibility before/after images are under `docs/evidence/appearance-sync-2026-10-23/native/`.
++
++Validation and actual commands are recorded in `docs/evidence/appearance-sync-2026-10-23/report.json`, alongside the scoped Git patch. Initial test corrections included Windows execution policy/isolated APPDATA and approved certificate-store access, the existing Python environment's import path, JSON numeric normalization and the account-erasure fixture signature. Assertions remain intact. PostgreSQL setup timed out at the configured local test database; no PostgreSQL pass is claimed. The HTTP fixture intentionally has no discovery population/daemon, so its unrelated discovery prefetch returns 503.
++
++Matching backend/client rollout and sustained two-device owner acceptance remain. No phone attachment check, physical-device test, APK, install, production account/backend mutation or deployment was performed. Concurrent workspace changes are preserved.
+diff --git a/docs/PHASE_0_PLAN.md b/docs/PHASE_0_PLAN.md
+--- a/docs/PHASE_0_PLAN.md
++++ b/docs/PHASE_0_PLAN.md
+@@ -2379,3 +2379,5 @@
+ 2026-10-23 RMI01-RMI03/R01/Q01: Race mode rail responds on press, preventing lost selections when the temporary rail ends its slide. One scope-fenced retained Rivalry page preserves actual podium cars between visits, hidden/inactive with subviewports stopped. Paired local headless repeated Rivalry dispatch404.026-486.345ms becomes21.417-34.562ms; no phone/FPS claim. Final input57headless/62Compatibility/62desktopMobile, carousel42, delayed entry66, standings44, Weekly Rivalry1115, App141 and parser979 pass. Broad swipe3/assertion-plus-nil-tween and menu-medium30washing failures reproduce with task-original App; assertions remain. Actual commands, native reused-page views, limitations and task-only Git-checked patch: docs/RACE_MODE_INPUT_2026_10_23.md and docs/evidence/race-mode-input-2026-10-23/report.json. Owner feel and physical-device acceptance remain; no phone attachment check/device test, APK, live mutation or deployment. Concurrent editor/challenge/backend work preserved.
+ 
+ 2026-10-23 R01/V05/Q01 tablet deployment: installed/launch Success on OnePlus Pad 2 f0ba474a using a frozen workspace snapshot, build 0.3.0-creator.818d522b47ad4c696e2850c0c3c77355 (APK F9F256F9FB50DB24DB516DF79D264BFFF7EB32012FBFD440C75E82A833C28352). Import/startup and driving72/catalog21/menu41 pass; installed APK hash matches, APP_READY and actual running Grass race/HUD captured with zero matched startup errors. Update used install -r; no uninstall/data clear, track sync or backend deployment. Earlier exports were superseded after concurrent edits; commands, corrections, logs and limits: docs/evidence/tablet-deployment-2026-10-23/report.json. Owner controls/audio/full-race/sustained device acceptance and later concurrent edits remain. Concurrent work preserved.
++
++2026-10-23 ALS01-ALS05/R01/Q01: All five cars sync pigments, patterns, hood/roof stickers and supported cosmetic parts through private authenticated appearance reads and per-car compare-and-swap writes. Atomic acknowledged/attempted values retain offline, restart, lost-reply/new-edit and storage recovery. Real App account switches bind sync and cosmetic ownership to the selected profile; retained Garage models refresh. Focused52, real HTTP31headless/33Compatibility, App141, ownership56, SQLite API28 and parser1023 pass; simultaneous file-SQLite writers accept one update and reject the stale one. PostgreSQL setup times out; no PostgreSQL pass is claimed. Commands, initial corrections, native before/after views, hashes and scoped checkpoint: docs/evidence/appearance-sync-2026-10-23/report.json; details: docs/GARAGE_APPEARANCE_SYNC_2026_10_23.md. Matching backend/client rollout and sustained owner/two-device acceptance remain. No phone attachment check/device test, APK, install, live production mutation or deployment. Concurrent work preserved.
+diff --git a/game/backend/appearance_sync.gd b/game/backend/appearance_sync.gd
+new file mode 100644
+--- /dev/null
++++ b/game/backend/appearance_sync.gd
+@@ -0,0 +1,124 @@
++extends Node
++## Account-owned garage sync. Acknowledgements and pending edits survive restart.
++signal changed
++const State = preload("res://persistence/appearance_state.gd")
++var records: LocalRecords
++var client: Node
++var busy: bool = false
++var status: String = ""
++var _scope: String = ""
++var _epoch: int = 0
++var _applying: bool = false
++var _debounce: Timer
++var _poll: Timer
++
++func _ready() -> void:
++	_debounce = Timer.new()
++	_debounce.one_shot = true
++	_debounce.wait_time = 0.75
++	_debounce.timeout.connect(refresh)
++	add_child(_debounce)
++	_poll = Timer.new()
++	_poll.wait_time = 30.0
++	_poll.timeout.connect(refresh)
++	add_child(_poll)
++	_poll.start()
++
++func scope() -> String:
++	return client.base_url()+"/"+str(client.player.get("id","")) if client != null and client.signed_in() else ""
++
++func bind_records(value: LocalRecords) -> void:
++	var next: String = scope()
++	if records == value and _scope == next: return
++	if records != null and records.appearance_committed.is_connected(_committed): records.appearance_committed.disconnect(_committed)
++	records = value
++	_scope = next
++	_epoch += 1
++	busy = false
++	status = ""
++	if records != null: records.appearance_committed.connect(_committed)
++	if is_instance_valid(_debounce): _debounce.stop()
++
++func _committed() -> void:
++	if not _applying and not scope().is_empty() and _scope == scope(): _debounce.start()
++
++func _current(epoch: int, owner: LocalRecords) -> bool:
++	return epoch == _epoch and records == owner and not _scope.is_empty() and _scope == scope()
++
++func _save(base: Dictionary, value: Dictionary = {}, pending: Dictionary = {}) -> bool:
++	# A colour/part edit made while HTTP was in flight remains pending.
++	_applying = true
++	if not value.is_empty(): State.apply(records.settings,value)
++	records.settings[State.KEY] = {"version":1,"baseline":base.duplicate(true),"pending":pending.duplicate(true)}
++	var error: Error = records.save_records()
++	_applying = false
++	if error != OK: status = "Garage changes could not be saved. Check storage."
++	return error == OK
++
++func refresh() -> void:
++	if records == null or busy or _scope.is_empty() or scope() != _scope: return
++	var epoch: int = _epoch
++	var owner: LocalRecords = records
++	busy = true
++	var response: Dictionary = await client.request_api("/me/appearances",HTTPClient.METHOD_GET,{},"",true)
++	if not _current(epoch,owner): return
++	if not response.get("ok",false) or not State.valid_collection(response.get("data",{}).get("appearances")):
++		status = "Garage sync needs a server update." if response.get("status",0) == 404 else "Garage changes saved on this device. Sync will retry."
++		busy = false
++		changed.emit()
++		return
++	status = ""
++	var remote: Dictionary = State.normalized_collection(response.data.appearances)
++	var initialized: bool = records.settings.has(State.KEY)
++	var base: Dictionary = State.baseline(records.settings)
++	var pending: Dictionary = State.pending(records.settings)
++	for id: String in VehicleCatalog.IDS:
++		var local: Dictionary = State.car(records.settings,id)
++		var previous: Variant = base.get(id)
++		var server: Variant = remote.get(id)
++		# A lost reply can precede a second local edit. A durable attempted value
++		# identifies our own accepted write without discarding that newer edit.
++		if pending.has(id) and server == pending[id]:
++			base[id] = server.duplicate(true)
++			previous = base[id]
++			pending.erase(id)
++			if not _save(base,{},pending): break
++		var dirty: bool = State.authored(records.settings,id) and (previous == null or local != previous)
++		# On first adoption an existing online car is authoritative. On later
++		# conflicts the accepted online edit wins; untouched cars never upload.
++		if server != null and (not initialized or not dirty or server != previous):
++			if previous != server or local != server:
++				base[id] = server.duplicate(true)
++				pending.erase(id)
++				if not _save(base,server,pending): break
++			continue
++		if not dirty:
++			if pending.has(id):
++				pending.erase(id)
++				if not _save(base,{},pending): break
++			continue
++		var operation: Dictionary = {"appearance":local.duplicate(true),"previous":previous}
++		pending[id] = local.duplicate(true)
++		if not _save(base,{},pending): break
++		response = await client.request_api("/me/appearances",HTTPClient.METHOD_PUT,operation,"",true)
++		if not _current(epoch,owner): return
++		if response.get("ok",false) and State.valid_car(response.get("data")) and State.normalized_car(response.data) == local:
++			base[id] = local.duplicate(true)
++			pending.erase(id)
++			if not _save(base,{},pending): break
++		elif int(response.get("status",0)) == 409:
++			# Re-read before any further attempt; never rebase an old write blindly.
++			status = "Garage changed on another device. Refreshing."
++			_debounce.start()
++			break
++		else:
++			status = "Garage changes saved on this device. Sync will retry."
++			break
++	if status.is_empty() and not records.settings.has(State.KEY): _save(base,{},pending)
++	busy = false
++	if status.is_empty():
++		for id: String in VehicleCatalog.IDS:
++			if State.authored(records.settings,id) and State.car(records.settings,id) != base.get(id):
++				_debounce.start()
++				break
++	changed.emit()
+diff --git a/game/backend/backend_client.gd b/game/backend/backend_client.gd
+--- a/game/backend/backend_client.gd
++++ b/game/backend/backend_client.gd
+@@ -1069,6 +1069,8 @@
+ static func valid_response(path: String, method: HTTPClient.Method, data: Variant) -> bool:
+ 	if not data is Dictionary: return false
+ 	var endpoint: String = path.get_slice("?",0)
++	if endpoint == "/me/appearances":
++		return preload("res://persistence/appearance_state.gd").valid_car(data) if method == HTTPClient.METHOD_PUT else data.size() == 1 and preload("res://persistence/appearance_state.gd").valid_collection(data.get("appearances"))
+ 	if endpoint == "/economy": return preload("res://persistence/cosmetic_catalog.gd").valid_wallet(data)
+ 	if endpoint == "/economy/purchases":
+ 		return _text(data.get("item_id")) and _whole(data.get("charged")) and preload("res://persistence/cosmetic_catalog.gd").valid_wallet(data.get("wallet"))
+diff --git a/game/backend/cosmetic_economy.gd b/game/backend/cosmetic_economy.gd
+--- a/game/backend/cosmetic_economy.gd
++++ b/game/backend/cosmetic_economy.gd
+@@ -17,9 +17,7 @@
+ var _timer: Timer
+ 
+ func _ready() -> void:
+-	if not records.settings.has("cosmetic_legacy"):
+-		records.settings.cosmetic_legacy = Shop.legacy(records.settings)
+-		if records.save_records() != OK: status = "Could not save cosmetic ownership."
++	_remember_legacy()
+ 	if client != null: client.identity_changed.connect(sync_identity)
+ 	sync_identity()
+ 	_timer = Timer.new()
+@@ -28,6 +26,18 @@
+ 		if not pending.is_empty() and not busy: refresh())
+ 	add_child(_timer)
+ 	_timer.start()
++
++func bind_records(value: LocalRecords) -> void:
++	if records == value: return
++	records = value
++	_remember_legacy()
++	scope = ""
++	sync_identity()
++
++func _remember_legacy() -> void:
++	if not records.settings.has("cosmetic_legacy"):
++		records.settings.cosmetic_legacy = Shop.legacy(records.settings)
++		if records.save_records() != OK: status = "Could not save cosmetic ownership."
+ 
+ func authenticated() -> bool:
+ 	return client != null and client.signed_in()
+diff --git a/game/backend/weekly_rivalry_client.gd b/game/backend/weekly_rivalry_client.gd
+--- a/game/backend/weekly_rivalry_client.gd
++++ b/game/backend/weekly_rivalry_client.gd
+@@ -3,6 +3,7 @@
+ signal changed
+ var client: Node
+ var appearance_provider: Callable
++var appearance_sync: Callable
+ var _synced_appearance: String = ""
+ var model := WeeklyRivalry.new()
+ var busy: bool = false
+@@ -147,6 +148,9 @@
+ 	return model.sample or (snapshot_scope == scope() and model.received_msec > 0 and (not model.tracks.is_empty() or not busy))
+ 
+ func _sync_appearance() -> void:
++	if appearance_sync.is_valid():
++		await appearance_sync.call()
++		return
+ 	if not appearance_provider.is_valid() or not client.signed_in(): return
+ 	var value: Variant = appearance_provider.call(VehicleCatalog.selected)
+ 	if not value is Dictionary or not value.has_all(["vehicle_id","livery","customisation"]): return
+diff --git a/game/core/app.gd b/game/core/app.gd
+--- a/game/core/app.gd
++++ b/game/core/app.gd
+@@ -24,6 +24,7 @@
+ var _retained_rivalry_page: WeeklyRivalryPage
+ var _retained_rivalry_scope: String = ""
+ var cosmetic_economy: Node
++var appearance_sync: Node
+ var achievements: Node
+ var race_ad_breaks: Node
+ var _ad_input_blocker: Control
+@@ -334,6 +335,11 @@
+ 	cosmetic_economy.records = records
+ 	cosmetic_economy.client = online.client
+ 	add_child(cosmetic_economy)
++	appearance_sync = preload("res://backend/appearance_sync.gd").new()
++	appearance_sync.client = online.client
++	add_child(appearance_sync)
++	appearance_sync.bind_records(records)
++	appearance_sync.changed.connect(_garage_appearance_changed)
+ 	achievements = preload("res://backend/achievements_client.gd").new()
+ 	achievements.client = online.client
+ 	achievements.records = records
+@@ -361,6 +367,7 @@
+ 	cloud.load_cached()
+ 	rivalry = preload("res://backend/weekly_rivalry_client.gd").new()
+ 	rivalry.client = online.client
++	rivalry.appearance_sync = appearance_sync.refresh
+ 	rivalry.appearance_provider = func(id: String) -> Dictionary:
+ 		return {"vehicle_id":id,"livery":VehicleLivery.for_car(records.settings,id),"customisation":VehicleCustomisation.for_car(records.settings,id)}
+ 	rivalry.cache_directory = cloud.cache_root().path_join("menu/rivalry")
+@@ -1193,6 +1200,12 @@
+ 		if startup_complete: _telemetry_observe("menu_ready",{},"ready")
+ 	var previous_profile: String = active_profile
+ 	_select_player_storage()
++	if cosmetic_economy != null:
++		cosmetic_economy.bind_records(records)
++		cosmetic_economy.refresh()
++	if appearance_sync != null:
++		appearance_sync.bind_records(records)
++		appearance_sync.refresh()
+ 	if achievements != null:
+ 		achievements.records = records
+ 		achievements.sync_identity()
+@@ -2344,6 +2357,10 @@
+ 	await _prepare_garage_covered()
+ 	if not is_inside_tree() or generation != _navigation_generation or owner_records != records or is_instance_valid(game): return
+ 	_show_screen(destination)
++
++func _garage_appearance_changed() -> void:
++	if is_instance_valid(_retained_garage) and _retained_garage.records == records:
++		_retained_garage.refresh_cosmetics()
+ 
+ func _garage(parent: Control = null) -> void:
+ 	if parent == null: parent = content
+diff --git a/game/persistence/appearance_state.gd b/game/persistence/appearance_state.gd
+new file mode 100644
+--- /dev/null
++++ b/game/persistence/appearance_state.gd
+@@ -0,0 +1,58 @@
++extends RefCounted
++## The acknowledged server values live in the same atomic save as local edits.
++const KEY: String = "vehicle_appearance_sync"
++
++static func car(settings: Dictionary, id: String) -> Dictionary:
++	return normalized_car({"vehicle_id":id,"livery":VehicleLivery.for_car(settings,id),"customisation":VehicleCustomisation.for_car(settings,id)})
++
++static func normalized_car(value: Dictionary) -> Dictionary:
++	var result: Dictionary = value.duplicate(true)
++	result.livery.version = VehicleLivery.VERSION
++	result.customisation.version = VehicleCustomisation.VERSION
++	for panel: String in VehicleLivery.SURFACES:
++		for field: String in ["x","y","size","rotation"]:
++			result.livery.stickers[panel][field] = float(result.livery.stickers[panel][field])
++	return result
++
++static func normalized_collection(value: Dictionary) -> Dictionary:
++	var result: Dictionary = {}
++	for id: String in value: result[id] = normalized_car(value[id])
++	return result
++
++static func authored(settings: Dictionary, id: String) -> bool:
++	return settings.get("vehicle_liveries",{}).has(id) or settings.get("vehicle_customisation",{}).has(id)
++
++static func valid_car(value: Variant) -> bool:
++	if not value is Dictionary or value.size() != 3 or value.get("vehicle_id") not in VehicleCatalog.IDS: return false
++	if not VehicleLivery.valid(value.get("livery")) or value.livery.version != VehicleLivery.VERSION: return false
++	if not VehicleCustomisation.valid(value.get("customisation")): return false
++	if value.vehicle_id != "compact":
++		for category: String in VehicleCustomisation.CATEGORIES:
++			if value.customisation[category] != "stock": return false
++	return true
++
++static func valid_collection(value: Variant) -> bool:
++	if not value is Dictionary or value.size() > VehicleCatalog.IDS.size(): return false
++	for id: Variant in value:
++		if not id is String or not valid_car(value[id]) or value[id].vehicle_id != id: return false
++	return true
++
++static func valid(value: Variant) -> bool:
++	if not value is Dictionary or value.size() not in [2,3] or value.get("version") != 1 or not valid_collection(value.get("baseline")): return false
++	return value.size() == 2 or (value.has("pending") and valid_collection(value.pending))
++
++static func baseline(settings: Dictionary) -> Dictionary:
++	return normalized_collection(settings.get(KEY,{}).get("baseline",{}))
++
++static func pending(settings: Dictionary) -> Dictionary:
++	return normalized_collection(settings.get(KEY,{}).get("pending",{}))
++
++static func apply(settings: Dictionary, value: Dictionary) -> void:
++	var id: String = value.vehicle_id
++	var liveries: Dictionary = settings.get("vehicle_liveries",{}).duplicate(true)
++	liveries[id] = value.livery.duplicate(true)
++	settings.vehicle_liveries = liveries
++	if id == "compact":
++		var parts: Dictionary = settings.get("vehicle_customisation",{}).duplicate(true)
++		parts[id] = value.customisation.duplicate(true)
++		settings.vehicle_customisation = parts
+diff --git a/game/persistence/local_records.gd b/game/persistence/local_records.gd
+--- a/game/persistence/local_records.gd
++++ b/game/persistence/local_records.gd
+@@ -2,6 +2,7 @@
+ extends RefCounted
+ ## Local, unverified PBs. Persistence and recovery stay outside canonical physics.
+ signal achievement_progress_committed
++signal appearance_committed
+ 
+ const SCHEMA: int = 2
+ const MAX_BYTES: int = 4194304
+@@ -157,8 +158,10 @@
+ 	records = document.records
+ 	settings = document.settings
+ 	var awards_changed: bool = settings.get("achievements",{}).get("unlocked",{}) != _committed_settings.get("achievements",{}).get("unlocked",{})
++	var appearance_changed: bool = settings.get("vehicle_liveries",{}) != _committed_settings.get("vehicle_liveries",{}) or settings.get("vehicle_customisation",{}) != _committed_settings.get("vehicle_customisation",{})
+ 	_remember_committed()
+ 	if awards_changed: achievement_progress_committed.emit()
++	if appearance_changed: appearance_committed.emit()
+ 	return OK
+ 
+ 
+@@ -219,6 +222,8 @@
+ 			if not VehicleCondition.valid_collection(preferences[field]): return {}
+ 		elif field == "vehicle_liveries":
+ 			if not VehicleLivery.valid_collection(preferences[field]): return {}
++		elif field == "vehicle_appearance_sync":
++			if not preload("res://persistence/appearance_state.gd").valid(preferences[field]): return {}
+ 		elif field == "vehicle_customisation":
+ 			if not VehicleCustomisation.valid_collection(preferences[field]): return {}
+ 		elif field == "camera_mode":
+diff --git a/game/tests/test_appearance_sync.gd b/game/tests/test_appearance_sync.gd
+new file mode 100644
+--- /dev/null
++++ b/game/tests/test_appearance_sync.gd
+@@ -0,0 +1,191 @@
++extends SceneTree
++const Sync = preload("res://backend/appearance_sync.gd")
++const State = preload("res://persistence/appearance_state.gd")
++const Client = preload("res://backend/backend_client.gd")
++var checks: int = 0
++var failures: int = 0
++var directory: String
++
++class FakeClient extends Node:
++	var player: Dictionary = {"id":"alice"}
++	var online: bool = true
++	var available: bool = true
++	var saved: Dictionary = {}
++	var delay_put: bool = false
++	var delay_get: bool = false
++	var lost: bool = false
++	var puts: int = 0
++	func signed_in() -> bool: return online
++	func base_url() -> String: return "http://fixture.invalid"
++	func request_api(_path: String, method: int = 0, body: Dictionary = {}, _key: String = "", auth: bool = false) -> Dictionary:
++		if not auth or not available: return {"ok":false,"status":503,"data":{}}
++		var result: Dictionary
++		if method == HTTPClient.METHOD_GET:
++			result = {"ok":true,"status":200,"data":{"appearances":saved.duplicate(true)}}
++			while delay_get: await get_tree().process_frame
++		else:
++			puts += 1
++			var value: Dictionary = body.appearance.duplicate(true)
++			var current: Variant = saved.get(value.vehicle_id)
++			if current != value and current != body.previous: return {"ok":false,"status":409,"data":{}}
++			saved[value.vehicle_id] = value
++			result = {"ok":true,"status":200,"data":value}
++			while delay_put: await get_tree().process_frame
++			if lost:
++				lost = false
++				return {"ok":false,"status":0,"data":{}}
++		return result
++
++func _initialize() -> void: run.call_deferred()
++func check(ok: bool, label: String) -> void:
++	checks += 1
++	if not ok:
++		failures += 1
++		print("FAIL: "+label)
++
++func store(name: String) -> LocalRecords:
++	var value := LocalRecords.new(directory.path_join(name+".json"))
++	value.load_records()
++	return value
++
++func sync_for(records: LocalRecords, client: Node) -> Node:
++	var node: Node = Sync.new()
++	node.client = client
++	root.add_child(node)
++	node.bind_records(records)
++	return node
++
++func edit(records: LocalRecords, id: String, colour: String) -> void:
++	var value: Dictionary = State.car(records.settings,id)
++	value.livery.colors.body = colour
++	value.livery.pattern = "offset_gt"
++	value.livery.stickers.hood = {"id":LiveryCatalog.stickers[0].id,"x":0.12,"y":0.86,"size":0.71,"rotation":-73.0}
++	if id == "compact": value.customisation.body = "wide"
++	State.apply(records.settings,value)
++	check(records.save_records() == OK,"atomic paint/parts commit "+id)
++
++func run() -> void:
++	directory = "user://appearance_sync_"+TrackLibrary.unique_id()
++	DirAccess.make_dir_recursive_absolute(directory)
++	var fake := FakeClient.new()
++	root.add_child(fake)
++	var a: LocalRecords = store("device-a")
++	var b: LocalRecords = store("device-b")
++	for id: String in VehicleCatalog.IDS: edit(a,id,"c94026")
++	a.settings.selected_car = "kart"
++	check(a.save_records() == OK,"selected car local setting")
++	var sa: Node = sync_for(a,fake)
++	await sa.refresh()
++	check(fake.saved.size() == 5,"all five authored cars upload without opening Rivalry")
++	var sb: Node = sync_for(b,fake)
++	await sb.refresh()
++	for id: String in VehicleCatalog.IDS:
++		check(State.car(a.settings,id) == State.car(b.settings,id),"other device restores exact design "+id)
++	check(not b.settings.has("selected_car") and not b.settings.has("vehicle_conditions"),"device preferences and condition excluded")
++	var writes: int = fake.puts
++	await sb.refresh()
++	check(fake.puts == writes,"clean fresh device never uploads defaults")
++	edit(b,"pickup","123456")
++	await sb.refresh()
++	await sa.refresh()
++	check(State.car(a.settings,"pickup").livery.colors.body == "123456","running first device downloads edits")
++	# Independent cars are retained when both devices edit offline.
++	edit(a,"compact","abcdef")
++	edit(b,"kart","fedcba")
++	await sb.refresh()
++	await sa.refresh()
++	await sb.refresh()
++	check(State.car(b.settings,"compact").livery.colors.body == "abcdef" and State.car(a.settings,"kart").livery.colors.body == "fedcba","independent car edits merge")
++	# The older offline car cannot overwrite a newer accepted online car.
++	edit(a,"pickup","111111")
++	edit(b,"pickup","222222")
++	await sb.refresh()
++	await sa.refresh()
++	check(State.car(a.settings,"pickup").livery.colors.body == "222222","same-car conflict retains accepted online value")
++	fake.available = false
++	edit(a,"formula","333333")
++	await sa.refresh()
++	check(not sa.status.is_empty(),"offline save retains retry status")
++	sa.free()
++	a = store("device-a")
++	sa = sync_for(a,fake)
++	fake.available = true
++	await sa.refresh()
++	check(fake.saved.formula.livery.colors.body == "333333","restart retries persisted local edit against original baseline")
++	fake.lost = true
++	edit(a,"classic","444444")
++	await sa.refresh()
++	check(fake.saved.classic.livery.colors.body == "444444" and not sa.status.is_empty(),"lost reply retains committed remote write")
++	await sa.refresh()
++	check(sa.status.is_empty() and State.baseline(a.settings).classic == fake.saved.classic,"lost reply recovery acknowledges exact remote car")
++	fake.lost = true
++	edit(a,"classic","454545")
++	await sa.refresh()
++	edit(a,"classic","464646")
++	sa.free()
++	a = store("device-a")
++	sa = sync_for(a,fake)
++	await sa.refresh()
++	check(sa.status.is_empty() and fake.saved.classic.livery.colors.body == "464646","lost reply plus newer local edit survives restart without a false conflict")
++	# A local edit while a write is pending must remain dirty after acknowledgement.
++	fake.delay_put = true
++	edit(a,"kart","555555")
++	sa.refresh()
++	await process_frame
++	check(sa.busy,"write delayed")
++	edit(a,"kart","666666")
++	fake.delay_put = false
++	await process_frame
++	check(State.car(a.settings,"kart").livery.colors.body == "666666","late acknowledgement preserves new local edit")
++	await sa.refresh()
++	check(fake.saved.kart.livery.colors.body == "666666","new local edit uploads after acknowledgement")
++	edit(a,"classic","778899")
++	await create_timer(1.0).timeout
++	check(fake.saved.classic.livery.colors.body == "778899","local commit automatically schedules debounced sync")
++	edit(a,"formula","8899aa")
++	sa._debounce.stop()
++	var original_path: String = a.path
++	fake.delay_put = true
++	sa.refresh()
++	await process_frame
++	a.path = directory.path_join("blocked-records")
++	DirAccess.make_dir_recursive_absolute(a.path)
++	fake.delay_put = false
++	await process_frame
++	check(not sa.status.is_empty() and State.car(a.settings,"formula").livery.colors.body == "8899aa","failed acknowledgement save retains last committed local edit")
++	a.path = original_path
++	await sa.refresh()
++	check(sa.status.is_empty() and State.baseline(a.settings).formula == fake.saved.formula,"retry recovers failed acknowledgement storage")
++	# Fresh device with legacy defaults adopts server data before any upload.
++	var legacy: LocalRecords = store("legacy")
++	edit(legacy,"compact","000000")
++	var sl: Node = sync_for(legacy,fake)
++	writes = fake.puts
++	await sl.refresh()
++	check(fake.puts == writes and State.car(legacy.settings,"compact") == fake.saved.compact,"first adoption preserves existing server appearance")
++	# A response from another identity or origin can never touch the new profile.
++	fake.delay_get = true
++	sa.refresh()
++	await process_frame
++	var other: LocalRecords = store("bob")
++	fake.player.id = "bob"
++	sa.bind_records(other)
++	fake.delay_get = false
++	await process_frame
++	check(not sa.busy and other.settings.is_empty(),"late old-account read is fenced")
++	fake.online = false
++	sa.bind_records(other)
++	await sa.refresh()
++	check(other.settings.is_empty(),"guest does not import or upload account cars")
++	# Wire and local recovery validation reject malformed/unbounded cars.
++	check(Client.valid_response("/me/appearances",HTTPClient.METHOD_GET,{"appearances":fake.saved}),"wire accepts exact catalog appearance")
++	for invalid: Variant in [null,[],{"compact":{}},{"unknown":fake.saved.compact}]:
++		check(not Client.valid_response("/me/appearances",HTTPClient.METHOD_GET,{"appearances":invalid}),"wire rejects malformed collection")
++	var bad: Dictionary = State.car(a.settings,"compact")
++	bad.livery.colors.body = "invalid"
++	check(not Client.valid_response("/me/appearances",HTTPClient.METHOD_PUT,bad),"wire rejects invalid pigment")
++	other.settings[State.KEY] = {"version":1,"baseline":{"compact":bad}}
++	check(other.save_records() == ERR_INVALID_DATA and other.settings.is_empty(),"invalid sync recovery rolls back atomically")
++	for node: Node in [sa,sb,sl,fake]: node.free()
++	print("APPEARANCE_SYNC: %d checks, %d failures" % [checks,failures])
++	quit(0 if failures == 0 else 1)
+diff --git a/game/tests/test_appearance_sync_http.gd b/game/tests/test_appearance_sync_http.gd
+new file mode 100644
+--- /dev/null
++++ b/game/tests/test_appearance_sync_http.gd
+@@ -0,0 +1,127 @@
++extends SceneTree
++const Client = preload("res://backend/backend_client.gd")
++const Sync = preload("res://backend/appearance_sync.gd")
++const State = preload("res://persistence/appearance_state.gd")
++var checks: int = 0
++var failures: int = 0
++var directory: String
++
++func _initialize() -> void: run.call_deferred()
++func check(ok: bool, label: String) -> void:
++	checks += 1
++	if not ok:
++		failures += 1
++		print("FAIL: "+label)
++
++func records_for(name: String) -> LocalRecords:
++	var value := LocalRecords.new(directory.path_join(name+".json"))
++	value.load_records()
++	return value
++
++func sync_for(records: LocalRecords, client: Node) -> Node:
++	var node: Node = Sync.new()
++	node.client = client
++	root.add_child(node)
++	node.bind_records(records)
++	return node
++
++func edit(records: LocalRecords, id: String, colour: String) -> void:
++	var value: Dictionary = State.car(records.settings,id)
++	value.livery.colors.body = colour
++	value.livery.pattern = "offset_gt"
++	value.livery.stickers.hood = {"id":"crest","x":0.13,"y":0.77,"size":0.4,"rotation":123.0}
++	if id == "compact": value.customisation = {"version":1,"hood":"scoop","aero":"wing","rims":"mesh","body":"wide"}
++	State.apply(records.settings,value)
++	check(records.save_records() == OK,"saved authored design "+id)
++
++func run() -> void:
++	root.size = Vector2i(1280,720)
++	root.content_scale_size = root.size
++	directory = "user://appearance_http_"+TrackLibrary.unique_id()
++	DirAccess.make_dir_recursive_absolute(directory)
++	var first: Node = Client.new()
++	var second: Node = Client.new()
++	for node: Node in [first,second]:
++		root.add_child(node)
++		check(node.configure(OS.get_environment("BMT_API_URL")) == OK,"configured isolated HTTP service")
++		var login: Dictionary = await node.developer_login(OS.get_environment("BMT_DEV_AUTH_KEY"))
++		check(login.ok,"real independent authenticated session")
++	check(first.player.id == second.player.id,"both device sessions belong to same account")
++	var a: LocalRecords = records_for("a")
++	for id: String in VehicleCatalog.IDS: edit(a,id,"c94026")
++	var sa: Node = sync_for(a,first)
++	await sa.refresh()
++	check(sa.status.is_empty(),"first device uploads through real validated API")
++	var b: LocalRecords = records_for("b")
++	var sb: Node = sync_for(b,second)
++	await sb.refresh()
++	check(sb.status.is_empty(),"second device downloads through real validated API")
++	for id: String in VehicleCatalog.IDS:
++		check(State.car(a.settings,id) == State.car(b.settings,id),"all appearance fields restore exactly "+id)
++	check(not b.settings.has("vehicle_conditions") and not b.settings.has("guest_coins") and not b.settings.has("selected_car"),"sync excludes dirt, money and device selection")
++	edit(b,"pickup","abcdef")
++	await sb.refresh()
++	await sa.refresh()
++	check(sa.status.is_empty() and State.car(a.settings,"pickup").livery.colors.body == "abcdef","live device restores second-device change")
++	# Real API refuses a stale write and leaves other cars intact.
++	var previous: Dictionary = State.car(a.settings,"pickup")
++	edit(b,"pickup","aabbcc")
++	await sb.refresh()
++	var stale: Dictionary = previous.duplicate(true)
++	stale.livery.colors.body = "000000"
++	var rejected: Dictionary = await first.request_api("/me/appearances",HTTPClient.METHOD_PUT,{"appearance":stale,"previous":previous},"",true)
++	check(not rejected.ok and rejected.status == 409,"real server rejects stale car compare-and-swap")
++	await sa.refresh()
++	check(State.car(a.settings,"pickup").livery.colors.body == "aabbcc","conflict re-read restores winning car")
++	sa.free()
++	a = records_for("a")
++	sa = sync_for(a,first)
++	await sa.refresh()
++	check(sa.status.is_empty() and State.car(a.settings,"compact") == State.car(b.settings,"compact"),"restart baseline JSON retains integer wire versions")
++	# The retained Garage's current model also receives a remote design.
++	var garage := GaragePage.new()
++	garage.records = a
++	root.add_child(garage)
++	MenuStyle.fill(garage)
++	for i: int in range(3): await process_frame
++	await capture("before-device-update")
++	edit(b,"compact","224466")
++	await sb.refresh()
++	await sa.refresh()
++	garage.refresh_cosmetics()
++	check(garage.showroom.livery == VehicleLivery.for_car(a.settings,"compact") and garage.showroom.customisation == VehicleCustomisation.for_car(a.settings,"compact"),"retained live Garage presents restored paint and fitted parts")
++	await capture("after-device-update")
++	garage.free()
++	# Exercise the actual sign-in composition, including its profile-owned shop.
++	var app: Node = load("res://core/app.tscn").instantiate()
++	app.records.path = directory.path_join("guest.json")
++	app.library = TrackLibrary.new(directory.path_join("guest-tracks"))
++	app.cloud_root_override = directory.path_join("cloud")
++	root.add_child(app)
++	var deadline: int = Time.get_ticks_msec()+15000
++	while not app.startup_complete and Time.get_ticks_msec() < deadline: await process_frame
++	check(app.startup_complete,"actual app startup completes")
++	await app.online.sign_in_developer()
++	deadline = Time.get_ticks_msec()+10000
++	while (app.appearance_sync.busy or app.screen == "restoring") and Time.get_ticks_msec() < deadline: await process_frame
++	check(app.records != app.guest_records and app.cosmetic_economy.records == app.records and app.appearance_sync.records == app.records,"real sign-in binds sync and ownership to the account profile")
++	await app.appearance_sync.refresh()
++	check(State.car(app.records.settings,"compact") == State.car(b.settings,"compact"),"real signed-in app restores saved appearance")
++	await app.online.sign_out()
++	check(app.records == app.guest_records and app.cosmetic_economy.records == app.guest_records and app.appearance_sync.records == app.guest_records,"sign-out restores guest bindings")
++	check(not app.guest_records.settings.has("vehicle_liveries"),"signed-out Guest never inherits account paint")
++	deadline = Time.get_ticks_msec()+10000
++	while app.screen == "restoring" and Time.get_ticks_msec() < deadline: await process_frame
++	app.queue_free()
++	for node: Node in [sa,sb,first,second]: node.queue_free()
++	for i: int in range(20): await process_frame
++	print("APPEARANCE_SYNC_HTTP: %d checks, %d failures" % [checks,failures])
++	quit(0 if failures == 0 else 1)
++
++func capture(name: String) -> void:
++	var folder: String = OS.get_environment("BMT_APPEARANCE_CAPTURE")
++	if folder.is_empty() or DisplayServer.get_name() == "headless": return
++	for i: int in range(6): await process_frame
++	await RenderingServer.frame_post_draw
++	DirAccess.make_dir_recursive_absolute(folder)
++	check(root.get_texture().get_image().save_png(folder.path_join(name+".png")) == OK,"native screenshot "+name)
+diff --git a/game/ui/garage_page.gd b/game/ui/garage_page.gd
+--- a/game/ui/garage_page.gd
++++ b/game/ui/garage_page.gd
+@@ -662,7 +662,7 @@
+ 	if _selected_vehicle_id == VehicleCatalog.selected:
+ 		# A retained page can outlive a race. Refresh changed thumbnail cosmetics
+ 		# even when the confirmed car did not change; meshes/worlds stay intact.
+-		_refresh_thumbnails()
++		refresh_cosmetics()
+ 		return
+ 	_finish_tools()
+ 	vehicle_id = VehicleCatalog.selected
+@@ -671,6 +671,25 @@
+ 	_replace_showroom_car()
+ 	_show_section("cars")
+ 	_update_cards()
++
++func refresh_cosmetics() -> void:
++	if not is_instance_valid(showroom): return
++	_refresh_thumbnails()
++	# Do not interrupt an uncommitted colour picker or sticker gesture.
++	if draft != _livery_saved: return
++	var paint: Dictionary = VehicleLivery.for_car(records.settings,vehicle_id)
++	if draft != paint:
++		draft = paint
++		_livery_saved = paint.duplicate(true)
++		showroom.apply_livery(paint)
++		_update_pickers()
++	var parts: Dictionary = VehicleCustomisation.for_car(records.settings,vehicle_id)
++	if kit_draft != parts:
++		kit_draft = parts
++		showroom.apply_customisation(parts)
++		if is_instance_valid(kit_cards):
++			for index: int in range(kit_cards.get_child_count()):
++				(kit_cards.get_child(index) as CompactKitThumbnail).set_selected(kit_draft[kit_category] == VehicleCustomisation.OPTIONS[kit_category][index][0])
+ 
+ func _show_section(next: String) -> void:
+ 	if next == "car": next = "customise"

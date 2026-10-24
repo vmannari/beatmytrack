@@ -1,0 +1,101 @@
+"""Measure and retain the actual previous/new snow thump audition."""
+from pathlib import Path
+import hashlib
+import json
+import wave
+
+import numpy as np
+
+ROOT = Path.cwd()
+OUT = ROOT / 'docs/evidence/bass-snow-thump-2026-10-23'
+BUILD = ROOT / 'build/bass-snow-thump-2026-10-23'
+
+
+def sha(path):
+    return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def load(path):
+    with wave.open(str(path), 'rb') as source:
+        rate, channels = source.getframerate(), source.getnchannels()
+        assert source.getsampwidth() == 2
+        values = np.frombuffer(source.readframes(source.getnframes()), '<i2').astype(float) / 32768
+    return values.reshape(-1, channels), rate
+
+
+def measure(path, capture=False):
+    values, rate = load(path)
+    mono = values.mean(axis=1)
+    start = int(np.flatnonzero(abs(mono) > max(abs(mono)) * .001)[0]) if capture else 0
+    event = mono[start:]
+    power = abs(np.fft.rfft(event)) ** 2
+    hz = np.fft.rfftfreq(len(event), 1 / rate)
+    energy = np.cumsum(event ** 2)
+    peak = max(abs(event))
+    return dict(sha256=sha(path), seconds=len(values) / rate,
+                rms_dbfs=float(20 * np.log10(np.sqrt(np.mean(event ** 2)))),
+                early_100ms_dbfs=float(20 * np.log10(np.sqrt(np.mean(event[:round(rate * .1)] ** 2)))),
+                peak_dbfs=float(20 * np.log10(peak)),
+                strong_onset_ms=float(np.flatnonzero(abs(event) >= peak * .5)[0] / rate * 1000),
+                bass_below_220hz_fraction=float(power[hz < 220].sum() / power.sum()),
+                bass_energy=float(2 * power[(hz > 0) & (hz < 220)].sum() / len(event) / rate),
+                above_900hz_fraction=float(power[hz > 900].sum() / power.sum()),
+                spectral_centroid_hz=float((power * hz).sum() / power.sum()),
+                energy_90_time_seconds=float(np.searchsorted(energy, energy[-1] * .90) / rate),
+                energy_99_time_seconds=float(np.searchsorted(energy, energy[-1] * .99) / rate),
+                energy_after_150ms_fraction=float((event[round(rate * .15):] ** 2).sum() / energy[-1]),
+                silent_end=bool(np.max(abs(values[-round(rate * .025):])) == 0) if capture else bool(values[0, 0] == values[-1, 0] == 0))
+
+
+samples = {
+    'before': measure(OUT / 'before/game/assets/audio/vehicles/snow_hit.wav'),
+    'thump': measure(ROOT / 'game/assets/audio/vehicles/snow_hit.wav'),
+}
+captures = {name: measure(OUT / 'audition' / (name + '.wav'), capture=True) for name in ['before', 'packed']}
+old, new = samples.values()
+before, thump = captures.values()
+checks = dict(
+    longer_entry=new['seconds'] >= old['seconds'] * 1.5 and new['seconds'] < .6,
+    peak_at_least_3db_softer=new['peak_dbfs'] < old['peak_dbfs'] - 3,
+    quieter_first_100ms=new['early_100ms_dbfs'] < old['early_100ms_dbfs'] - 1,
+    bass_energy_increased=new['bass_energy'] > old['bass_energy'] * 1.15,
+    predominantly_bass=new['bass_below_220hz_fraction'] > .9,
+    much_less_high_crunch=new['above_900hz_fraction'] < old['above_900hz_fraction'] * .15,
+    longer_audible_body=new['energy_90_time_seconds'] > old['energy_90_time_seconds'] * 3,
+    longer_recorded_tail=new['energy_after_150ms_fraction'] > old['energy_after_150ms_fraction'] * 10,
+    prompt_entry=new['strong_onset_ms'] <= 5,
+    bounded_pcm_and_endpoints=new['peak_dbfs'] < -6 and new['silent_end'],
+    continuous_loop_exact=sha(ROOT / 'game/assets/audio/vehicles/snow.wav') == sha(OUT / 'before/game/assets/audio/vehicles/snow.wav'),
+    vehicle_mixer_source_exact=sha(ROOT / 'game/vehicle/vehicle_audio.gd') == sha(OUT / 'before/game/vehicle/vehicle_audio.gd'),
+    windows_output_source_exact=sha(ROOT / 'game/platform/windows_audio_output.gd') == sha(OUT / 'before/game/platform/windows_audio_output.gd'),
+    powder_alternative_exact=sha(BUILD / 'variants/powder.wav') == sha(ROOT / 'docs/evidence/original-snow-impact-2026-10-23/variants/powder.wav'),
+    bank_alternative_exact=sha(BUILD / 'variants/bank.wav') == sha(ROOT / 'docs/evidence/original-snow-impact-2026-10-23/variants/bank.wav'),
+    actual_master_peak_softer=thump['peak_dbfs'] < before['peak_dbfs'] - 3,
+    actual_master_entry_softer=thump['early_100ms_dbfs'] < before['early_100ms_dbfs'] - 1,
+    actual_master_bass_energy_increased=thump['bass_energy'] > before['bass_energy'] * 1.15,
+    actual_master_body_longer=thump['energy_90_time_seconds'] > before['energy_90_time_seconds'] * 3,
+    actual_master_tail_finishes=before['silent_end'] and thump['silent_end'],
+)
+analysis = dict(samples=samples, native_master_captures=captures, checks=checks, failures=sum(not v for v in checks.values()))
+(OUT / 'analysis.json').write_text(json.dumps(analysis, indent=2) + '\n')
+
+# Same captured mixer gain/pitch, no separate normalization of either cut.
+cuts = []
+for name in ['before', 'packed']:
+    values, rate = load(OUT / 'audition' / (name + '.wav'))
+    for _ in range(2):
+        cuts.extend([values, np.zeros((round(rate * .35), 2))])
+    cuts.append(np.zeros((round(rate * .5), 2)))
+pcm = np.round(np.clip(np.concatenate(cuts), -1, .999) * 32768).astype('<i2')
+with wave.open(str(OUT / 'comparison.wav'), 'wb') as output:
+    output.setparams((2, 2, rate, len(pcm), 'NONE', 'not compressed'))
+    output.writeframes(pcm.tobytes())
+(OUT / 'review.html').write_text('''<!doctype html><meta charset="utf-8"><title>Snow bass thump</title>
+<style>body{font:18px system-ui;max-width:740px;margin:50px auto;padding:20px;background:#17232e;color:#eaf0f4}audio{width:100%;margin-bottom:25px}</style>
+<h1>Softer, longer snow thump</h1><p>Actual game event pool captures at identical gain (0.65) and pitch (0.90), through the Vehicle compressor and Master limiter.</p>
+<p>Previous impact</p><audio controls src="audition/before.wav"></audio>
+<p>New bass thump</p><audio controls src="audition/packed.wav"></audio>
+<p>Comparison: two previous hits, then two new hits</p><audio controls src="comparison.wav"></audio>
+<p>Owner listening remains the sound-character acceptance. Desktop capture does not certify device response.</p>''', encoding='utf8')
+print(json.dumps(analysis, indent=2))
+assert analysis['failures'] == 0

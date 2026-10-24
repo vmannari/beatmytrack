@@ -1,0 +1,2286 @@
+diff --git a/backend/bmt_backend/app.py b/backend/bmt_backend/app.py
+--- a/backend/bmt_backend/app.py
++++ b/backend/bmt_backend/app.py
+@@ -18,7 +18,8 @@
+ from .storage import make_blob_store
+ 
+ 
+-def create_app(settings: Settings | None = None, *, engine=None, verifier=None, identity_verifier=None):
++def create_app(settings: Settings | None = None, *, engine=None, verifier=None, identity_verifier=None,
++               analysis_engine=None):
+     from . import (
+         achievements,
+         admin,
+@@ -79,6 +80,7 @@
+                 await run_in_threadpool(adapter.manifest)
+             yield
+         finally:
++            await run_in_threadpool(application.state.studio_reporting.close)
+             await run_in_threadpool(application.state.run_signals.close)
+             try:
+                 await application.state.readiness.close()
+@@ -98,6 +100,8 @@
+     app.state.settings = settings
+     app.state.engine = engine if engine is not None else make_engine(settings.database_url, settings)
+     app.state.session_factory = make_session_factory(app.state.engine)
++    from .studio_reporting import StudioReporting
++    app.state.studio_reporting = StudioReporting(settings, engine=analysis_engine)
+     from .run_signals import RunSignals
+     app.state.run_signals = RunSignals(app.state.engine, capacity=settings.run_wait_capacity)
+     app.state.engine._bmt_run_signals = app.state.run_signals
+diff --git a/backend/bmt_backend/config.py b/backend/bmt_backend/config.py
+--- a/backend/bmt_backend/config.py
++++ b/backend/bmt_backend/config.py
+@@ -12,6 +12,8 @@
+     studio_staff_subjects: str = ""
+     studio_staff_require_mfa: bool = True
+     studio_business_cohorts: bool = False
++    studio_analysis_database_url: str = ""
++    studio_analysis_statement_timeout_ms: int = 5000
+     studio_monitor_source_tokens: str = ""
+     studio_monitor_external_notifiers: tuple[str, ...] = ()
+     studio_monitor_webhook_url: str = ""
+@@ -77,6 +79,7 @@
+     database_pool_timeout_seconds: int = 3
+     database_statement_timeout_ms: int = 10000
+     upload_concurrency: int = 2
++    telemetry_http_concurrency: int = 4
+     edge_limit_per_minute: int = 12000
+     pre_auth_limit_per_minute: int = 600
+     trusted_proxy_networks: tuple[str, ...] = field(default_factory=tuple)
+@@ -104,6 +107,12 @@
+             raise ValueError("Legacy remote drafts are available only to explicit compatibility test fixtures")
+         if self.client_quality_enabled and not self.telemetry_enabled:
+             raise ValueError("Client quality requires bounded product telemetry transport")
++        if (self.studio_analysis_database_url
++                and not self.studio_analysis_database_url.startswith("postgresql+psycopg://")):
++            raise ValueError("Studio analysis requires a dedicated PostgreSQL read replica")
++        if (type(self.studio_analysis_statement_timeout_ms) is not int
++                or not 100 <= self.studio_analysis_statement_timeout_ms <= 30000):
++            raise ValueError("Studio analysis timeout must be between 100 and 30000 milliseconds")
+         if (not 50 <= self.telemetry_client_backlog <= 1000000
+                 or not 1 <= self.telemetry_processor_batch <= 1000
+                 or not 1 <= self.telemetry_raw_days <= 30 or not 14 <= self.telemetry_fact_days <= 366):
+@@ -141,13 +150,15 @@
+             "retention_days",
+             "privacy_backup_days", "privacy_purchase_days",
+             "database_pool_size", "database_pool_timeout_seconds", "database_statement_timeout_ms",
+-            "upload_concurrency", "edge_limit_per_minute", "pre_auth_limit_per_minute", "verifier_recycle_jobs",
++            "upload_concurrency", "telemetry_http_concurrency", "edge_limit_per_minute", "pre_auth_limit_per_minute", "verifier_recycle_jobs",
+         ):
+             value = getattr(self, name)
+             if type(value) is not int or value <= 0:
+                 raise ValueError(f"BMT_{name.upper()} must be a positive integer")
+         if self.database_pool_overflow < 0 or self.upload_concurrency > 8:
+             raise ValueError("Invalid pool overflow or upload concurrency")
++        if self.telemetry_http_concurrency > 16:
++            raise ValueError("Telemetry HTTP concurrency cannot exceed 16 bounded request trees")
+         if self.run_wait_capacity > 64:
+             raise ValueError("Run wait capacity must leave room for ordinary HTTP requests")
+         if self.refresh_recovery_seconds > 300 or self.transport_profile not in ("legacy", "compact"):
+diff --git a/backend/bmt_backend/economy_models.py b/backend/bmt_backend/economy_models.py
+--- a/backend/bmt_backend/economy_models.py
++++ b/backend/bmt_backend/economy_models.py
+@@ -1,5 +1,5 @@
+ """Earned coins and permanent cosmetic ownership, separate from paid commerce/resumes."""
+-from sqlalchemy import JSON, BigInteger, CheckConstraint, ForeignKey, Integer, String
++from sqlalchemy import JSON, BigInteger, Boolean, CheckConstraint, ForeignKey, Index, Integer, String, text
+ from sqlalchemy.orm import Mapped, mapped_column
+ 
+ from .db import Base
+@@ -49,3 +49,28 @@
+     metric: Mapped[str] = mapped_column(String(4), primary_key=True)
+     node: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+     total: Mapped[int] = mapped_column(BigInteger)
++
++
++class LeaderboardRankCount(Base):
++    """Disjoint ordinary/test prefixes; artificial reads combine both."""
++    __tablename__ = "leaderboard_rank_counts"
++    __table_args__ = (CheckConstraint("total >= 0"),)
++    board_id: Mapped[str] = mapped_column(ForeignKey("boards.id"), primary_key=True)
++    population: Mapped[str] = mapped_column(String(6), primary_key=True)
++    node: Mapped[int] = mapped_column(BigInteger, primary_key=True)
++    total: Mapped[int] = mapped_column(BigInteger)
++
++
++class LeaderboardTieNode(Base):
++    """Compressed radix tree; singleton ties consume just one leaf."""
++    __tablename__ = "leaderboard_tie_nodes"
++    __table_args__ = (CheckConstraint("total > 0"),
++                      Index("ix_leaderboard_tie_children", "board_id", "time_ticks", "parent", "prefix"),
++                      Index("ix_leaderboard_visible_order", "board_id", "time_ticks", "prefix",
++                            postgresql_where=text("leaf IS TRUE"), sqlite_where=text("leaf IS 1")))
++    board_id: Mapped[str] = mapped_column(ForeignKey("boards.id"), primary_key=True)
++    time_ticks: Mapped[int] = mapped_column(Integer, primary_key=True)
++    prefix: Mapped[str] = mapped_column(String(36), primary_key=True)
++    leaf: Mapped[bool] = mapped_column(Boolean, primary_key=True)
++    parent: Mapped[str | None] = mapped_column(String(36), nullable=True)
++    total: Mapped[int] = mapped_column(BigInteger)
+diff --git a/backend/bmt_backend/leaderboard_ranks.py b/backend/bmt_backend/leaderboard_ranks.py
+new file mode 100644
+--- /dev/null
++++ b/backend/bmt_backend/leaderboard_ranks.py
+@@ -0,0 +1,65 @@
++"""Exact order statistics with fixed-domain prefix reads.
++
++Time prefixes need at most 63 counters per population. Tie positions use a compressed UUID
++radix tree: at most 36 ancestors, each with at most 16 UUID children. Its storage
++is N..2N-1 nodes for N PBs, rather than one row for every UUID prefix.
++"""
++from sqlalchemy import and_, func, or_, select
++
++from .economy_models import LeaderboardRankCount, LeaderboardTieNode
++from .reward_ranks import TREE_SIZE
++
++
++def prefix_nodes(end):
++    """Fenwick nodes for integer times strictly below end, including extremes."""
++    node = min(TREE_SIZE, max(0, end - 1))
++    result = []
++    while node:
++        result.append(node)
++        node -= node & -node
++    return result
++
++
++def time_counts_many(session, probes, *, artificial=False):
++    """Return exact (faster, tied, slower) for each (board,ticks), in one read."""
++    if not probes:
++        return {}
++    paths = {bid: (prefix_nodes(ticks), prefix_nodes(ticks + 1)) for bid, ticks in probes}
++    rows = session.execute(select(LeaderboardRankCount.board_id, LeaderboardRankCount.node,
++        LeaderboardRankCount.total).where(LeaderboardRankCount.population.in_(("public", "test") if artificial else ("public",)),
++        or_(*(and_(LeaderboardRankCount.board_id == bid,
++                   LeaderboardRankCount.node.in_({TREE_SIZE, *before, *through}))
++              for bid, (before, through) in paths.items())))).all()
++    values = {}
++    for bid, node, total in rows:
++        values[bid, node] = values.get((bid, node), 0) + total
++    result = {}
++    for bid, (before, through) in paths.items():
++        faster = sum(values.get((bid, node), 0) for node in before)
++        inclusive = sum(values.get((bid, node), 0) for node in through)
++        result[bid] = (faster, inclusive - faster, values.get((bid, TREE_SIZE), 0) - inclusive)
++    return result
++
++
++def time_counts(session, board_id, ticks):
++    return time_counts_many(session, [(board_id, ticks)])[board_id]
++
++
++def tied_before(session, board_id, ticks, player_id, *, inclusive=False):
++    # Exact-match prefix probes include only the player's ancestor path. Sum
++    # left siblings; compressed edges on the path itself must not be counted.
++    paths = [player_id[:length] for length in range(len(player_id) + 1)]
++    nodes = LeaderboardTieNode
++    result = session.scalar(select(func.coalesce(func.sum(nodes.total), 0)).where(
++        nodes.board_id == board_id, nodes.time_ticks == ticks,
++        nodes.parent.in_(paths), nodes.prefix < player_id,
++        or_(nodes.leaf.is_(True), nodes.prefix.not_in(paths))))
++    # A stale cursor may precede the tree's compressed root. The root itself is
++    # a left subtree in that case; no matching parent-prefix probe reaches it.
++    root = session.execute(select(nodes.prefix, nodes.total, nodes.leaf).where(nodes.board_id == board_id,
++        nodes.time_ticks == ticks, nodes.parent.is_(None))).first()
++    if root is not None and root.prefix < player_id and (root.leaf or root.prefix not in paths):
++        result += root.total
++    if inclusive:
++        result += int(session.get(nodes, (board_id, ticks, player_id, True)) is not None)
++    return int(result)
+diff --git a/backend/bmt_backend/maintenance.py b/backend/bmt_backend/maintenance.py
+--- a/backend/bmt_backend/maintenance.py
++++ b/backend/bmt_backend/maintenance.py
+@@ -3,12 +3,12 @@
+ import argparse
+ import json
+ 
+-from sqlalchemy import String, cast, delete, or_, select, union_all, update
++from sqlalchemy import String, cast, delete, or_, select, text, union_all, update
+ 
+ from .challenge_models import Challenge, ChallengeMember, ChallengeTicket
+ from .config import Settings
+ from .db import make_engine, make_session_factory
+-from .identity_models import BrowserLogin, LoginChallenge, RateBucket, SessionFamily, now
++from .identity_models import BrowserLogin, LoginChallenge, RateBucket, SessionFamily, SessionToken, now
+ from .object_models import ObjectPin
+ from .publication_models import PublicationIntent, PublicationUpload
+ from .publication_storage import retire_evidence, retired_candidates
+@@ -186,7 +186,15 @@
+         return count
+ 
+ 
+-def cleanup(factory) -> dict:
++def cleanup(factory, *, batch_limit=1000) -> dict:
++    """One bounded expiry batch; repeat while ``more`` is true.
++
++    Session families can contain arbitrary rotation history. Delete at most one
++    batch of their tokens before deleting only empty, locked expired families;
++    a single parent deletion can therefore never cascade an unbounded history.
++    """
++    if type(batch_limit) is not int or not 1 <= batch_limit <= 1000:
++        raise ValueError("INVALID_IDENTITY_CLEANUP_BUDGET")
+     current = now()
+     with factory() as session:
+         result = {}
+@@ -194,24 +202,58 @@
+             ("browser_logins", BrowserLogin),
+             ("rate_buckets", RateBucket),
+             ("login_challenges", LoginChallenge),
+-            ("session_families", SessionFamily),
+         ):
+-            result[name] = session.execute(delete(model).where(model.expires_at < current)).rowcount
+-        result["worker_heartbeats"] = session.execute(delete(OperationState).where(OperationState.id.startswith("worker:"), OperationState.updated_at < current-86400)).rowcount
++            key = next(iter(model.__table__.primary_key.columns))
++            ids = session.scalars(select(key).where(model.expires_at < current)
++                .order_by(model.expires_at).limit(batch_limit)).all()
++            result[name] = session.execute(delete(model).where(key.in_(ids), model.expires_at < current)).rowcount if ids else 0
++        families = session.scalars(select(SessionFamily.id).where(SessionFamily.expires_at < current)
++            .order_by(SessionFamily.expires_at).limit(batch_limit).with_for_update(skip_locked=True)).all()
++        tokens = session.scalars(select(SessionToken.id).where(SessionToken.family_id.in_(families))
++            .limit(batch_limit)).all() if families else []
++        result["session_tokens"] = session.execute(delete(SessionToken).where(SessionToken.id.in_(tokens))).rowcount if tokens else 0
++        empty = ~select(SessionToken.id).where(SessionToken.family_id == SessionFamily.id).exists()
++        result["session_families"] = session.execute(delete(SessionFamily).where(
++            SessionFamily.id.in_(families), SessionFamily.expires_at < current, empty)).rowcount if families else 0
++        heartbeats = session.scalars(select(OperationState.id).where(text("id LIKE 'worker:%'"),
++            OperationState.updated_at < current-86400).order_by(OperationState.updated_at).limit(batch_limit)).all()
++        result["worker_heartbeats"] = session.execute(delete(OperationState).where(OperationState.id.in_(heartbeats),
++            OperationState.updated_at < current-86400)).rowcount if heartbeats else 0
+         # Only versioned expiring keys can be removed. Legacy retry identities
+         # and permanent provider/store ResumeGrant IDs are never discarded.
+         keys = session.execute(select(IdempotencyRecord.player_id,IdempotencyRecord.scope,IdempotencyRecord.key)
+             .where(IdempotencyRecord.key.startswith("v2."),IdempotencyRecord.created_at < current-92*86400)
+-            .order_by(IdempotencyRecord.created_at).limit(1000)).all()
++            .order_by(IdempotencyRecord.created_at).limit(batch_limit)).all()
+         for player,scope,key in keys:
+             session.execute(delete(IdempotencyRecord).where(IdempotencyRecord.player_id==player,
+                 IdempotencyRecord.scope==scope,IdempotencyRecord.key==key))
+         result["expired_retry_keys"] = len(keys)
+-        expired_pins = session.scalars(select(ObjectPin.digest).where(ObjectPin.expires_at < current-86400).limit(1000)).all()
++        expired_pins = session.scalars(select(ObjectPin.digest).where(ObjectPin.expires_at < current-86400).limit(batch_limit)).all()
+         session.execute(delete(ObjectPin).where(ObjectPin.digest.in_(expired_pins),ObjectPin.expires_at < current-86400))
+         result["expired_object_pins"] = len(expired_pins)
++        # A skipped owner is busy, not absent. Keep the CLI backlog signal true
++        # even when every expired family was locked by a concurrent operation.
++        result["more"] = any(result.values()) or session.scalar(select(SessionFamily.id)
++            .where(SessionFamily.expires_at < current).limit(1)) is not None
++        result["batch_limit"] = batch_limit
+         session.commit()
+         return result
++
++
++def cleanup_batches(factory, *, batches=100, batch_limit=1000) -> dict:
++    """Drain a finite CLI budget, releasing locks after every expiry batch."""
++    if type(batches) is not int or not 1 <= batches <= 1000:
++        raise ValueError("INVALID_IDENTITY_CLEANUP_BATCHES")
++    totals = {}
++    for completed in range(1, batches + 1):
++        result = cleanup(factory, batch_limit=batch_limit)
++        for name, amount in result.items():
++            if name not in ("more", "batch_limit"):
++                totals[name] = totals.get(name, 0) + amount
++        if not result["more"]:
++            break
++    return {**totals, "more": result["more"], "batches": completed, "batch_limit": batch_limit,
++            "budget_exhausted": result["more"] and completed == batches}
+ 
+ 
+ def backfill_discovery(factory, blobs, limit: int = 100) -> dict:
+@@ -238,6 +280,8 @@
+     parser.add_argument("--object-cursor", type=json.loads, help="next_object_cursor from the previous retention batch")
+     parser.add_argument("--backfill-discovery", action="store_true", help="Backfill at most 100 legacy preview projections")
+     parser.add_argument("--backfill-laps", action="store_true", help="Backfill at most 200 accepted lap records; repeat until complete")
++    parser.add_argument("--identity-batches", type=int, default=100,
++                        help="Identity expiry: 1-1000 transactions of at most 1000 rows per class (default 100); repeat if more")
+     args = parser.parse_args()
+     settings = Settings.from_env()
+     engine = make_engine(settings.database_url,settings)
+@@ -251,7 +295,7 @@
+     elif args.retention or args.apply_retention:
+         print(json.dumps(retain(factory,blobs,settings.retention_days,apply=args.apply_retention,offline=args.offline,online=args.online,object_cursor=args.object_cursor)))
+     else:
+-        print(json.dumps(cleanup(factory)))
++        print(json.dumps(cleanup_batches(factory, batches=args.identity_batches)))
+     engine.dispose()
+ 
+ 
+diff --git a/backend/bmt_backend/middleware.py b/backend/bmt_backend/middleware.py
+--- a/backend/bmt_backend/middleware.py
++++ b/backend/bmt_backend/middleware.py
+@@ -131,7 +131,11 @@
+     def __init__(self, app, settings, session_factory):
+         self.app, self.settings, self.session_factory = app, settings, session_factory
+         self.parsers = asyncio.Semaphore(settings.upload_concurrency)
+-        self.telemetry_parsers = asyncio.Semaphore(1)
++        # A telemetry tree is capped at 64 KiB on the wire. Allow independent
++        # requests while retaining a fixed live-tree bound and, where possible,
++        # leaving one pooled connection available to ordinary gameplay.
++        self.telemetry_parsers = asyncio.Semaphore(min(
++            settings.telemetry_http_concurrency, max(1, settings.database_pool_size - 1)))
+         self.discovery_parsers = asyncio.Semaphore(1)
+         # Large collection bodies retain their original single-tree allowance.
+         # Tiny requests buffer independently, then enter a bounded query pool;
+diff --git a/backend/bmt_backend/migrations/versions/0055_bounded_rank_reads.py b/backend/bmt_backend/migrations/versions/0055_bounded_rank_reads.py
+new file mode 100644
+--- /dev/null
++++ b/backend/bmt_backend/migrations/versions/0055_bounded_rank_reads.py
+@@ -0,0 +1,282 @@
++"""Exact bounded public/artificial time counts and compressed tie ordinals.
++
++The one-time seed reads existing PBs. Quiesce writers and measure migration
++storage/time on a representative copy before rollout; no lazy partial index is
++served. Compressed tie trees store N..2N-1 rows per N visible PBs.
++"""
++import sqlalchemy as sa
++from alembic import op
++
++revision = "0055_bounded_rank_reads"
++down_revision = "0054_priority_scaling"
++branch_labels = None
++depends_on = None
++SIZE = 2147483648
++
++
++def sql(statement):
++    op.execute(sa.text(statement))
++
++
++def visible(ref, population):
++    return f"NOT {ref}.disabled AND " + (f"NOT {ref}.is_test_driver" if population == "public" else f"{ref}.is_test_driver")
++
++
++def sqlite_prefixes(ref):
++    return f"""WITH RECURSIVE path(prefix,n) AS (SELECT '',0 UNION ALL
++        SELECT substr({ref},1,n+1),n+1 FROM path WHERE n<length({ref})) SELECT prefix FROM path"""
++
++
++def sqlite_tie_triggers():
++    # A request is consumed inside the same trigger/transaction. It also lets
++    # one visibility change dispatch each PB without relying on Python UDFs.
++    sql("""CREATE TABLE leaderboard_tie_work (
++        board_id VARCHAR(64) NOT NULL,time_ticks INTEGER NOT NULL,player_id VARCHAR(36) NOT NULL,
++        delta INTEGER NOT NULL,ancestor VARCHAR(36),child VARCHAR(36),child_leaf BOOLEAN,branch VARCHAR(36),
++        old_parent VARCHAR(36),PRIMARY KEY(board_id,time_ticks,player_id))""")
++    match = "board_id=NEW.board_id AND time_ticks=NEW.time_ticks"
++    work = "board_id=NEW.board_id AND time_ticks=NEW.time_ticks AND player_id=NEW.player_id"
++    ancestor = f"(SELECT ancestor FROM leaderboard_tie_work WHERE {work})"
++    child = f"(SELECT child FROM leaderboard_tie_work WHERE {work})"
++    child_leaf = f"(SELECT child_leaf FROM leaderboard_tie_work WHERE {work})"
++    branch = f"(SELECT branch FROM leaderboard_tie_work WHERE {work})"
++    paths = sqlite_prefixes("NEW.player_id")
++    sql(f"""CREATE TRIGGER leaderboard_tie_add AFTER INSERT ON leaderboard_tie_work WHEN NEW.delta=1 BEGIN
++        UPDATE leaderboard_tie_work SET ancestor=(SELECT prefix FROM leaderboard_tie_nodes
++            WHERE {match} AND NOT leaf AND prefix IN ({paths}) ORDER BY length(prefix) DESC LIMIT 1) WHERE {work};
++        UPDATE leaderboard_tie_work SET (child,child_leaf)=(SELECT prefix,leaf FROM leaderboard_tie_nodes WHERE {match}
++            AND (parent={ancestor} AND substr(prefix,1,length({ancestor})+1)=substr(NEW.player_id,1,length({ancestor})+1)
++                 OR {ancestor} IS NULL AND parent IS NULL) LIMIT 1) WHERE {work};
++        UPDATE leaderboard_tie_work SET branch=(WITH RECURSIVE lengths(n) AS (SELECT 0 UNION ALL
++            SELECT n+1 FROM lengths WHERE n<length(NEW.player_id)) SELECT substr(NEW.player_id,1,MAX(n)) FROM lengths
++            WHERE substr({child},1,n)=substr(NEW.player_id,1,n)) WHERE {work} AND child IS NOT NULL;
++        UPDATE leaderboard_tie_nodes SET total=total+1 WHERE {match} AND NOT leaf AND prefix IN ({paths});
++        INSERT INTO leaderboard_tie_nodes(board_id,time_ticks,prefix,leaf,parent,total)
++            SELECT NEW.board_id,NEW.time_ticks,{branch},FALSE,{ancestor},total+1 FROM leaderboard_tie_nodes
++            WHERE {match} AND prefix={child} AND leaf={child_leaf};
++        UPDATE leaderboard_tie_nodes SET parent={branch} WHERE {match} AND prefix={child} AND leaf={child_leaf};
++        INSERT INTO leaderboard_tie_nodes(board_id,time_ticks,prefix,leaf,parent,total)
++            VALUES(NEW.board_id,NEW.time_ticks,NEW.player_id,TRUE,CASE WHEN {child} IS NULL THEN {ancestor} ELSE {branch} END,1);
++        DELETE FROM leaderboard_tie_work WHERE {work};
++        END""")
++    sql(f"""CREATE TRIGGER leaderboard_tie_remove AFTER INSERT ON leaderboard_tie_work WHEN NEW.delta=-1 BEGIN
++        UPDATE leaderboard_tie_work SET ancestor=(SELECT parent FROM leaderboard_tie_nodes
++            WHERE {match} AND prefix=NEW.player_id AND leaf) WHERE {work};
++        UPDATE leaderboard_tie_work SET old_parent=(SELECT parent FROM leaderboard_tie_nodes
++            WHERE {match} AND prefix={ancestor} AND NOT leaf) WHERE {work};
++        UPDATE leaderboard_tie_nodes SET total=total-1 WHERE {match} AND NOT leaf AND prefix IN ({paths});
++        DELETE FROM leaderboard_tie_nodes WHERE {match} AND prefix=NEW.player_id AND leaf;
++        UPDATE leaderboard_tie_nodes SET parent=(SELECT old_parent FROM leaderboard_tie_work WHERE {work})
++            WHERE {match} AND parent={ancestor} AND (SELECT COUNT(*) FROM leaderboard_tie_nodes
++                WHERE {match} AND parent={ancestor})=1;
++        DELETE FROM leaderboard_tie_nodes WHERE {match} AND prefix={ancestor} AND NOT leaf
++            AND NOT EXISTS(SELECT 1 FROM leaderboard_tie_nodes WHERE {match} AND parent={ancestor});
++        DELETE FROM leaderboard_tie_work WHERE {work};
++        END""")
++
++
++def sqlite_time_delta(ref, population, delta):
++    eligibility = visible("p", population)
++    path = f"""WITH RECURSIVE nodes(node) AS (SELECT {ref}.time_ticks WHERE EXISTS(
++        SELECT 1 FROM players p WHERE p.id={ref}.player_id AND {eligibility})
++        UNION ALL SELECT node+(node & -node) FROM nodes WHERE node<{SIZE}) SELECT node FROM nodes"""
++    if delta < 0:
++        return f"""UPDATE leaderboard_rank_counts SET total=total-1 WHERE board_id={ref}.board_id
++            AND population='{population}' AND node IN ({path});"""
++    return f"""INSERT INTO leaderboard_rank_counts(board_id,population,node,total)
++        SELECT {ref}.board_id,'{population}',node,1 FROM ({path}) WHERE 1
++        ON CONFLICT(board_id,population,node) DO UPDATE SET total=total+1;"""
++
++
++def sqlite_triggers():
++    sqlite_tie_triggers()
++    for event in ("INSERT", "UPDATE", "DELETE"):
++        body = ""
++        for ref, delta in (("OLD", -1), ("NEW", 1)):
++            if (event == "INSERT" and ref == "OLD") or (event == "DELETE" and ref == "NEW"):
++                continue
++            for population in ("public", "test"):
++                body += sqlite_time_delta(ref, population, delta)
++            body += f"""INSERT INTO leaderboard_tie_work(board_id,time_ticks,player_id,delta)
++                SELECT {ref}.board_id,{ref}.time_ticks,{ref}.player_id,{delta}
++                WHERE EXISTS(SELECT 1 FROM players p WHERE p.id={ref}.player_id AND {visible('p', 'public')});"""
++        guard = "" if event != "UPDATE" else "WHEN (OLD.board_id,OLD.player_id,OLD.time_ticks) IS NOT (NEW.board_id,NEW.player_id,NEW.time_ticks)"
++        sql(f"CREATE TRIGGER zz_leaderboard_pb_{event.lower()} AFTER {event} ON personal_bests {guard} BEGIN {body} END")
++    body = ""
++    for population in ("public", "test"):
++        delta = f"(CASE WHEN {visible('NEW', population)} THEN 1 ELSE 0 END)-(CASE WHEN {visible('OLD', population)} THEN 1 ELSE 0 END)"
++        paths = f"""WITH RECURSIVE nodes(board_id,node) AS (SELECT board_id,time_ticks FROM personal_bests WHERE player_id=NEW.id
++            UNION ALL SELECT board_id,node+(node & -node) FROM nodes WHERE node<{SIZE}) SELECT board_id,node FROM nodes"""
++        # A player contributes at most once per board; disjoint PB board keys
++        # make a set-based visibility update exact.
++        body += f"""INSERT INTO leaderboard_rank_counts(board_id,population,node,total)
++            SELECT board_id,'{population}',node,({delta}) FROM ({paths}) WHERE ({delta})>0
++            ON CONFLICT(board_id,population,node) DO UPDATE SET total=total+({delta});
++            UPDATE leaderboard_rank_counts SET total=total+({delta}) WHERE population='{population}'
++            AND ({delta})<0 AND (board_id,node) IN ({paths});"""
++        if population == "public":
++            body += f"""INSERT INTO leaderboard_tie_work(board_id,time_ticks,player_id,delta)
++                SELECT board_id,time_ticks,NEW.id,({delta}) FROM personal_bests WHERE player_id=NEW.id AND ({delta})<>0;"""
++    # BEFORE follows reward rank's lock/visibility convention: later PB erasure
++    # triggers see the new eligibility and cannot subtract a second time.
++    sql(f"CREATE TRIGGER zz_leaderboard_player BEFORE UPDATE OF disabled,is_test_driver ON players BEGIN {body} END")
++
++
++def postgres_triggers():
++    sql(f"""CREATE FUNCTION bmt_leaderboard_time(bid text,pop text,ticks integer,delta integer,exclude_ticks integer DEFAULT NULL)
++        RETURNS void LANGUAGE plpgsql AS $$
++        DECLARE idx bigint; path bigint[]:=ARRAY[]::bigint[]; omitted bigint[]:=ARRAY[]::bigint[];
++        BEGIN
++            IF ticks<=0 THEN RAISE EXCEPTION 'Invalid leaderboard ticks'; END IF;
++            idx:=exclude_ticks;
++            WHILE idx IS NOT NULL AND idx<={SIZE} LOOP omitted:=array_append(omitted,idx);idx:=idx+(idx & -idx);END LOOP;
++            idx:=ticks;
++            WHILE idx<={SIZE} LOOP
++                IF NOT idx=ANY(omitted) THEN path:=array_append(path,idx);END IF;
++                idx:=idx+(idx & -idx);
++            END LOOP;
++            IF delta>0 THEN
++                INSERT INTO leaderboard_rank_counts(board_id,population,node,total)
++                    SELECT bid,pop,n,delta FROM unnest(path) n ORDER BY n
++                    ON CONFLICT(board_id,population,node) DO UPDATE SET total=leaderboard_rank_counts.total+EXCLUDED.total;
++            ELSE
++                UPDATE leaderboard_rank_counts SET total=total+delta WHERE board_id=bid AND population=pop AND node=ANY(path);
++            END IF;
++        END $$""")
++    sql("""CREATE FUNCTION bmt_leaderboard_tie(bid text,ticks integer,pid text,delta integer)
++        RETURNS void LANGUAGE plpgsql AS $$
++        DECLARE ancestor text; child text; child_leaf boolean; branch text; old_parent text; quantity bigint; prefixes text[];
++        BEGIN
++            SELECT array_agg(substr(pid,1,n)) INTO prefixes FROM generate_series(0,length(pid)) n;
++            IF delta>0 THEN
++                SELECT prefix INTO ancestor FROM leaderboard_tie_nodes
++                    WHERE board_id=bid AND time_ticks=ticks AND NOT leaf AND prefix=ANY(prefixes) ORDER BY length(prefix) DESC LIMIT 1;
++                SELECT prefix,total,leaf INTO child,quantity,child_leaf FROM leaderboard_tie_nodes WHERE board_id=bid AND time_ticks=ticks
++                    AND (parent=ancestor AND substr(prefix,1,length(ancestor)+1)=substr(pid,1,length(ancestor)+1)
++                         OR ancestor IS NULL AND parent IS NULL) LIMIT 1;
++                IF child IS NOT NULL THEN
++                    SELECT substr(pid,1,MAX(n)) INTO branch FROM generate_series(0,length(pid)) n
++                        WHERE substr(pid,1,n)=substr(child,1,n);
++                END IF;
++                UPDATE leaderboard_tie_nodes SET total=total+1 WHERE board_id=bid AND time_ticks=ticks AND NOT leaf AND prefix=ANY(prefixes);
++                IF child IS NOT NULL THEN
++                    INSERT INTO leaderboard_tie_nodes VALUES(bid,ticks,branch,FALSE,ancestor,quantity+1);
++                    UPDATE leaderboard_tie_nodes SET parent=branch WHERE board_id=bid AND time_ticks=ticks AND prefix=child AND leaf=child_leaf;
++                END IF;
++                INSERT INTO leaderboard_tie_nodes VALUES(bid,ticks,pid,TRUE,CASE WHEN child IS NULL THEN ancestor ELSE branch END,1);
++            ELSE
++                SELECT parent INTO ancestor FROM leaderboard_tie_nodes WHERE board_id=bid AND time_ticks=ticks AND prefix=pid AND leaf;
++                SELECT parent INTO old_parent FROM leaderboard_tie_nodes WHERE board_id=bid AND time_ticks=ticks AND prefix=ancestor AND NOT leaf;
++                UPDATE leaderboard_tie_nodes SET total=total-1 WHERE board_id=bid AND time_ticks=ticks AND NOT leaf AND prefix=ANY(prefixes);
++                DELETE FROM leaderboard_tie_nodes WHERE board_id=bid AND time_ticks=ticks AND prefix=pid AND leaf;
++                SELECT COUNT(*) INTO quantity FROM leaderboard_tie_nodes WHERE board_id=bid AND time_ticks=ticks AND parent=ancestor;
++                IF quantity=1 THEN
++                    UPDATE leaderboard_tie_nodes SET parent=old_parent WHERE board_id=bid AND time_ticks=ticks AND parent=ancestor;
++                    DELETE FROM leaderboard_tie_nodes WHERE board_id=bid AND time_ticks=ticks AND prefix=ancestor AND NOT leaf;
++                END IF;
++            END IF;
++        END $$""")
++    sql("""CREATE FUNCTION bmt_leaderboard_pb() RETURNS trigger LANGUAGE plpgsql AS $$
++        DECLARE pop text; old_visible boolean; new_visible boolean; skip_old integer; skip_new integer;
++        BEGIN
++            IF TG_OP='UPDATE' AND (OLD.board_id,OLD.player_id,OLD.time_ticks) IS NOT DISTINCT FROM
++                (NEW.board_id,NEW.player_id,NEW.time_ticks) THEN RETURN NULL;END IF;
++            FOREACH pop IN ARRAY ARRAY['test','public'] LOOP
++                old_visible:=false;new_visible:=false;skip_old:=NULL;skip_new:=NULL;
++                IF TG_OP<>'INSERT' THEN SELECT NOT disabled AND (is_test_driver=(pop='test')) INTO old_visible FROM players WHERE id=OLD.player_id;END IF;
++                IF TG_OP<>'DELETE' THEN SELECT NOT disabled AND (is_test_driver=(pop='test')) INTO new_visible FROM players WHERE id=NEW.player_id;END IF;
++                IF TG_OP='UPDATE' AND old_visible AND new_visible AND OLD.board_id=NEW.board_id THEN skip_old:=NEW.time_ticks;skip_new:=OLD.time_ticks;END IF;
++                IF old_visible THEN
++                    PERFORM bmt_leaderboard_time(OLD.board_id,pop,OLD.time_ticks,-1,skip_old);
++                    IF pop='public' THEN PERFORM bmt_leaderboard_tie(OLD.board_id,OLD.time_ticks,OLD.player_id,-1);END IF;
++                END IF;
++                IF new_visible THEN
++                    PERFORM bmt_leaderboard_time(NEW.board_id,pop,NEW.time_ticks,1,skip_new);
++                    IF pop='public' THEN PERFORM bmt_leaderboard_tie(NEW.board_id,NEW.time_ticks,NEW.player_id,1);END IF;
++                END IF;
++            END LOOP;
++            RETURN NULL;
++        END $$""")
++    sql("CREATE TRIGGER zz_leaderboard_pb AFTER INSERT OR UPDATE OR DELETE ON personal_bests FOR EACH ROW EXECUTE FUNCTION bmt_leaderboard_pb()")
++    sql("""CREATE FUNCTION bmt_leaderboard_player() RETURNS trigger LANGUAGE plpgsql AS $$
++        DECLARE item record; pop text; delta integer;
++        BEGIN
++            IF (OLD.disabled,OLD.is_test_driver) IS NOT DISTINCT FROM (NEW.disabled,NEW.is_test_driver) THEN RETURN NEW;END IF;
++            PERFORM 1 FROM boards WHERE id IN (SELECT board_id FROM personal_bests WHERE player_id=NEW.id) ORDER BY id FOR UPDATE;
++            FOREACH pop IN ARRAY ARRAY['test','public'] LOOP
++                delta:=(NOT NEW.disabled AND (NEW.is_test_driver=(pop='test')))::integer
++                     -(NOT OLD.disabled AND (OLD.is_test_driver=(pop='test')))::integer;
++                IF delta=0 THEN CONTINUE;END IF;
++                FOR item IN SELECT board_id,time_ticks FROM personal_bests WHERE player_id=NEW.id ORDER BY board_id LOOP
++                    PERFORM bmt_leaderboard_time(item.board_id,pop,item.time_ticks,delta);
++                    IF pop='public' THEN PERFORM bmt_leaderboard_tie(item.board_id,item.time_ticks,NEW.id,delta);END IF;
++                END LOOP;
++            END LOOP;
++            RETURN NEW;
++        END $$""")
++    sql("CREATE TRIGGER zz_leaderboard_player BEFORE UPDATE OF disabled,is_test_driver ON players FOR EACH ROW EXECUTE FUNCTION bmt_leaderboard_player()")
++
++
++def upgrade():
++    postgres = op.get_bind().dialect.name == "postgresql"
++    if postgres:
++        sql("LOCK TABLE players,personal_bests IN SHARE ROW EXCLUSIVE MODE")
++    op.create_table("leaderboard_rank_counts",
++        sa.Column("board_id", sa.String(64), sa.ForeignKey("boards.id"), primary_key=True),
++        sa.Column("population", sa.String(6), primary_key=True),
++        sa.Column("node", sa.BigInteger(), primary_key=True),
++        sa.Column("total", sa.BigInteger(), nullable=False),
++        sa.CheckConstraint("total>=0"),sa.CheckConstraint(f"node>0 AND node<={SIZE}"))
++    op.create_table("leaderboard_tie_nodes",
++        sa.Column("board_id", sa.String(64), sa.ForeignKey("boards.id"), primary_key=True),
++        sa.Column("time_ticks", sa.Integer(), primary_key=True),
++        sa.Column("prefix", sa.String(36), primary_key=True),
++        sa.Column("leaf", sa.Boolean(), primary_key=True),
++        sa.Column("parent", sa.String(36), nullable=True),
++        sa.Column("total", sa.BigInteger(), nullable=False),sa.CheckConstraint("total>0"))
++    op.create_index("ix_leaderboard_tie_children", "leaderboard_tie_nodes", ["board_id","time_ticks","parent","prefix"])
++    op.create_index("ix_leaderboard_visible_order", "leaderboard_tie_nodes", ["board_id","time_ticks","prefix"],
++                    postgresql_where=sa.text("leaf IS TRUE"), sqlite_where=sa.text("leaf IS 1"))
++    if postgres:
++        postgres_triggers()
++    else:
++        sqlite_triggers()
++    for population in ("public", "test"):
++        sql(f"""INSERT INTO leaderboard_rank_counts(board_id,population,node,total)
++            WITH RECURSIVE frequencies AS (SELECT b.board_id,b.time_ticks,COUNT(*) AS total
++                FROM personal_bests b JOIN players p ON p.id=b.player_id WHERE {visible('p', population)} GROUP BY b.board_id,b.time_ticks),
++            nodes(board_id,node,total) AS (SELECT board_id,CAST(time_ticks AS BIGINT),total FROM frequencies
++                UNION ALL SELECT board_id,node+(node & -node),total FROM nodes WHERE node<{SIZE})
++            SELECT board_id,'{population}',node,SUM(total) FROM nodes GROUP BY board_id,node""")
++    # Stream the existing leaves in bounded driver batches; the compressed tree
++    # path itself is bounded. SQL writer locks cover the complete seed.
++    rows = op.get_bind().execute(sa.text(
++        "SELECT b.board_id,b.time_ticks,b.player_id FROM personal_bests b JOIN players p ON p.id=b.player_id "
++        "WHERE NOT p.disabled AND NOT p.is_test_driver ORDER BY b.board_id,b.time_ticks,b.player_id")
++        .execution_options(stream_results=True))
++    try:
++        for batch in rows.partitions(1000):
++            if postgres:
++                statement = sa.text("SELECT bmt_leaderboard_tie(:bid,:ticks,:pid,1)")
++            else:
++                statement = sa.text("INSERT INTO leaderboard_tie_work(board_id,time_ticks,player_id,delta) VALUES(:bid,:ticks,:pid,1)")
++            op.get_bind().execute(statement, [{"bid":bid,"ticks":ticks,"pid":pid} for bid,ticks,pid in batch])
++    finally:
++        rows.close()
++
++
++def downgrade():
++    postgres = op.get_bind().dialect.name == "postgresql"
++    if postgres:
++        sql("DROP TRIGGER zz_leaderboard_pb ON personal_bests")
++        sql("DROP TRIGGER zz_leaderboard_player ON players")
++        for signature in ("bmt_leaderboard_pb()", "bmt_leaderboard_player()", "bmt_leaderboard_tie(text,integer,text,integer)",
++                          "bmt_leaderboard_time(text,text,integer,integer,integer)"):
++            sql("DROP FUNCTION " + signature)
++    else:
++        for event in ("insert", "update", "delete"):
++            sql(f"DROP TRIGGER zz_leaderboard_pb_{event}")
++        sql("DROP TRIGGER zz_leaderboard_player")
++        op.drop_table("leaderboard_tie_work")
++    op.drop_table("leaderboard_tie_nodes")
++    op.drop_table("leaderboard_rank_counts")
+diff --git a/backend/bmt_backend/migrations/versions/0056_bounded_retention.py b/backend/bmt_backend/migrations/versions/0056_bounded_retention.py
+new file mode 100644
+--- /dev/null
++++ b/backend/bmt_backend/migrations/versions/0056_bounded_retention.py
+@@ -0,0 +1,43 @@
++"""Indexed analytical expiry without a historical cohort rewrite.
++
++NULL deadlines are backfilled under actor fences by bounded worker batches.
++PostgreSQL indexes are concurrent and retry-safe after partial DDL completion.
++"""
++import sqlalchemy as sa
++from alembic import op
++
++revision = "0056_bounded_retention"
++down_revision = "0055_bounded_rank_reads"
++branch_labels = None
++depends_on = None
++
++
++def upgrade():
++    connection = op.get_bind()
++    if "last_day" not in {column["name"] for column in sa.inspect(connection).get_columns("studio_analysis_people")}:
++        op.add_column("studio_analysis_people", sa.Column("last_day", sa.Integer(), nullable=True))
++    indexes = [("ix_analysis_person_expiry", "studio_analysis_people", ["last_day", "player_id"], {}),
++               ("ix_worker_heartbeat_expiry", "operation_state", ["updated_at", "id"],
++                {"postgresql_where": sa.text("id LIKE 'worker:%'")})]
++    if connection.dialect.name == "postgresql":
++        with op.get_context().autocommit_block():
++            for name, table, columns, options in indexes:
++                valid = connection.scalar(sa.text("SELECT i.indisvalid FROM pg_index i "
++                    "JOIN pg_class c ON c.oid=i.indexrelid JOIN pg_namespace n ON n.oid=c.relnamespace "
++                    "WHERE n.nspname=current_schema() AND c.relname=:name"), {"name": name})
++                if valid is True:
++                    continue
++                if valid is False:
++                    op.drop_index(name, table_name=table, postgresql_concurrently=True)
++                op.create_index(name, table, columns, postgresql_concurrently=True, **options)
++    else:
++        for name, table, columns, options in indexes:
++            if name not in {index["name"] for index in sa.inspect(connection).get_indexes(table)}:
++                sqlite_options = {"sqlite_where": options["postgresql_where"]} if options else {}
++                op.create_index(name, table, columns, **sqlite_options)
++
++
++def downgrade():
++    op.drop_index("ix_worker_heartbeat_expiry", table_name="operation_state")
++    op.drop_index("ix_analysis_person_expiry", table_name="studio_analysis_people")
++    op.drop_column("studio_analysis_people", "last_day")
+diff --git a/backend/bmt_backend/network_health.py b/backend/bmt_backend/network_health.py
+--- a/backend/bmt_backend/network_health.py
++++ b/backend/bmt_backend/network_health.py
+@@ -131,6 +131,7 @@
+         .where(NetworkHealthDay.day < at // 86400 - fact_days).order_by(NetworkHealthDay.day, NetworkHealthDay.dimension).limit(limit)).all()
+     if keys:
+         session.execute(delete(NetworkHealthDay).where(tuple_(NetworkHealthDay.day, NetworkHealthDay.dimension).in_(keys)))
++    return bool(keys)
+ 
+ 
+ @router.get("/v1/admin/network-health")
+diff --git a/backend/bmt_backend/queueing.py b/backend/bmt_backend/queueing.py
+--- a/backend/bmt_backend/queueing.py
++++ b/backend/bmt_backend/queueing.py
+@@ -1,19 +1,33 @@
+ """Transactional capacity slots without a globally serialized counter."""
+ import time
++from random import sample
+ 
+ from fastapi import HTTPException
+ from sqlalchemy import func, select
+ from sqlalchemy.dialects.postgresql import insert as pg_insert
+ from sqlalchemy.dialects.sqlite import insert as sqlite_insert
+ 
+-from .track_models import QueueCapacity, QueueLimit, QueuePlayer, QueueReservation
++from .track_models import QueueLimit, QueuePlayer, QueueReservation
+ 
+ 
+ def check_capacity(session, player_id: str, capacity: int) -> None:
+-    pending = session.scalar(select(QueueCapacity.pending))
++    """Bounded owner/availability hint; the job trigger enforces capacity exactly.
++
++    Counting every occupied slot is unnecessary and cannot reserve capacity.
++    Probe at most64 independently sampled slots before external object writes.
++    A large, nearly full queue can conservatively return busy even with an
++    unsampled vacancy. This hint never reserves capacity; admission always
++    relies on the transactional slot reservation after ``admit``.
++    """
+     owner = session.get(QueuePlayer, player_id)
+-    if pending >= capacity or (owner is not None and owner.pending >= 8):
++    if owner is not None and owner.pending >= 8:
+         raise HTTPException(429, "Verification queue is full; retry this saved attempt later")
++    slots = sample(range(capacity), min(64, capacity))
++    occupied = session.scalars(select(QueueReservation.slot).where(QueueReservation.slot.in_(slots))).all()
++    if len(occupied) == len(slots):
++        if capacity <= 64:
++            raise HTTPException(429, "Verification queue is full; retry this saved attempt later")
++        raise HTTPException(503, "VERIFICATION_CAPACITY_BUSY", headers={"Retry-After": "1"})
+ 
+ 
+ def admit(session, player_id: str, capacity: int) -> None:
+@@ -45,8 +59,6 @@
+         .on_conflict_do_nothing(index_elements=[QueuePlayer.player_id]))
+     owner = session.scalar(select(QueuePlayer).where(QueuePlayer.player_id == player_id)
+         .with_for_update().execution_options(populate_existing=True))
+-    if session.scalar(select(QueueCapacity.pending)) >= capacity:
+-        raise HTTPException(429, "Verification capacity reached; retry this saved attempt later")
+     if owner.pending >= 8:
+         raise HTTPException(429, "Verification queue is full for this player; retry after a pending result completes")
+ 
+diff --git a/backend/bmt_backend/race_statistics.py b/backend/bmt_backend/race_statistics.py
+--- a/backend/bmt_backend/race_statistics.py
++++ b/backend/bmt_backend/race_statistics.py
+@@ -201,6 +201,7 @@
+ 
+ 
+ def cleanup(session, at, limit, fact_days):
++    more = False
+     for model, fields, predicate, ordering in (
+         (RaceStatisticsReceipt, (RaceStatisticsReceipt.player_id, RaceStatisticsReceipt.race_id), RaceStatisticsReceipt.received_at < at - 8 * 86400,
+             (RaceStatisticsReceipt.received_at, RaceStatisticsReceipt.player_id, RaceStatisticsReceipt.race_id)),
+@@ -208,7 +209,10 @@
+             (RaceStatisticsDay.day, RaceStatisticsDay.dimension)),
+     ):
+         keys = session.execute(select(*fields).where(predicate).order_by(*ordering).limit(limit)).all()
+-        if keys: session.execute(delete(model).where(tuple_(*fields).in_(keys)))
++        if keys:
++            session.execute(delete(model).where(tuple_(*fields).in_(keys)))
++            more = True
++    return more
+ 
+ 
+ def preview(version):
+diff --git a/backend/bmt_backend/rivalry.py b/backend/bmt_backend/rivalry.py
+--- a/backend/bmt_backend/rivalry.py
++++ b/backend/bmt_backend/rivalry.py
+@@ -7,7 +7,7 @@
+ 
+ from fastapi import APIRouter, HTTPException, Query, Request
+ from pydantic import BaseModel, ConfigDict, Field
+-from sqlalchemy import case, func, literal_column, or_, select, update
++from sqlalchemy import func, literal_column, or_, select, update
+ from sqlalchemy.exc import IntegrityError
+ from sqlalchemy.orm import aliased
+ 
+@@ -19,7 +19,6 @@
+ from .test_population import check_scope, contract_scope
+ from .track_models import (
+     Board,
+-    BoardTimeCount,
+     IdempotencyRecord,
+     OperationState,
+     PersonalBest,
+@@ -159,20 +158,15 @@
+         .order_by(PersonalBest.achieved_at.desc(), Board.id).limit(20)).all()
+     if not own:
+         return None
+-    count = BoardTimeCount.all_count if test_population else BoardTimeCount.public_count
+-    frequencies = {bid: (slower or 0, tied or 0) for bid, slower, tied in session.execute(
+-        select(BoardTimeCount.board_id,
+-            func.sum(case((BoardTimeCount.time_ticks > PersonalBest.time_ticks, count), else_=0)),
+-            func.sum(case((BoardTimeCount.time_ticks == PersonalBest.time_ticks, count), else_=0)))
+-        .join(PersonalBest, PersonalBest.board_id == BoardTimeCount.board_id)
+-        .where(PersonalBest.player_id == player_id, BoardTimeCount.board_id.in_([b.id for _, b in own]))
+-        .group_by(BoardTimeCount.board_id))}
++    from .leaderboard_ranks import time_counts_many
++    frequencies = time_counts_many(session, [(board.id, best.time_ticks) for best, board in own],
++                                   artificial=test_population)
+     scores = []
+     for best, board in own:
+         total = board.all_count if test_population else board.public_count
+         if total < 5:
+             continue
+-        slower, tied = frequencies.get(board.id, (0, 0))
++        _, tied, slower = frequencies.get(board.id, (0, 0, 0))
+         scores.append(round(1000 * (slower + (tied - 1) / 2) / (total - 1)))
+     return round(statistics.median(scores)) if len(scores) >= 3 else None
+ 
+diff --git a/backend/bmt_backend/runs.py b/backend/bmt_backend/runs.py
+--- a/backend/bmt_backend/runs.py
++++ b/backend/bmt_backend/runs.py
+@@ -9,7 +9,7 @@
+ 
+ from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query, Request, Response
+ from pydantic import BaseModel, ConfigDict, Field
+-from sqlalchemy import Integer, case, cast, func, literal, or_, select, text, tuple_
++from sqlalchemy import Integer, and_, case, cast, func, literal, or_, select, text, tuple_
+ from sqlalchemy.exc import IntegrityError
+ from sqlalchemy.orm import Session
+ from starlette.concurrency import run_in_threadpool
+@@ -18,8 +18,10 @@
+ from .contracts import current_manifest
+ from .cursors import decode_cursor, encode_cursor
+ from .db import get_session
++from .economy_models import LeaderboardTieNode
+ from .histogram_population import SNAPSHOT_OWN_LIMIT, HistogramPopulation
+ from .identity_models import Player
++from .leaderboard_ranks import tied_before, time_counts
+ from .middleware import ParsedJSONRoute
+ from .queueing import admit, check_capacity
+ from .security import bearer, current_player
+@@ -429,12 +431,33 @@
+     return session.scalar(select(func.count()).select_from(population(board_id).where(*conditions).subquery()))
+ 
+ 
++def population_window(board_id, limit, *, offset=0, anchor=None, before=False):
++    """Limit visible indexed keys before any authoritative PB/player joins.
++
++    Hidden PBs and compressed internal nodes never consume a candidate slot.
++    The leaf projection and authority changes commit in the same transaction;
++    both the key window and the joins use this statement's database snapshot.
++    """
++    node = LeaderboardTieNode
++    keys = select(node.time_ticks, node.prefix.label("player_id")).where(
++        node.board_id == board_id, node.leaf.is_(True))
++    if anchor is not None:
++        cursor = tuple_(node.time_ticks, node.prefix)
++        keys = keys.where(cursor < anchor if before else cursor > anchor)
++    order = (node.time_ticks.desc(), node.prefix.desc()) if before else (node.time_ticks, node.prefix)
++    window = keys.order_by(*order).offset(offset).limit(limit).subquery()
++    order = (PersonalBest.time_ticks.desc(), PersonalBest.player_id.desc()) if before else (
++        PersonalBest.time_ticks, PersonalBest.player_id)
++    return population(board_id).join(window, and_(PersonalBest.time_ticks == window.c.time_ticks,
++        PersonalBest.player_id == window.c.player_id)).order_by(*order)
++
++
+ def rank_rows(session, board_id, rows, first_position):
+     result, previous_time, rank = [], None, 0
+     for index, source in enumerate(rows):
+         row = dict(source)
+         if row["time_ticks"] != previous_time:
+-            rank = (tick_count(session, board_id, BoardTimeCount.time_ticks < row["time_ticks"]) + 1
++            rank = (time_counts(session, board_id, row["time_ticks"])[0] + 1
+                     if index == 0 else first_position + index)
+             previous_time = row["time_ticks"]
+         result.append({**row, "rank": rank, "position": first_position + index})
+@@ -451,19 +474,19 @@
+ ) -> dict:
+     board = public_board(session, board_id)
+     count = population_count(session, board_id)
+-    statement = population(board_id)
++    anchor = None
+     if cursor:
+         position = decode_cursor(cursor)
+         if type(position.get("ticks")) is not int or not isinstance(position.get("player"), str) or len(position["player"]) > 36:
+             raise HTTPException(422, "INVALID_CURSOR")
+-        before = tuple_(PersonalBest.time_ticks, PersonalBest.player_id) <= (position["ticks"], position["player"])
++        anchor = (position["ticks"], position["player"])
+         if position.get("board") == board_id and position.get("revision") == board.stats_revision and type(position.get("position")) is int:
+             offset = position["position"]
+         else:
+-            offset = tick_count(session, board_id, BoardTimeCount.time_ticks < position["ticks"]) + population_count(
+-                session, board_id, PersonalBest.time_ticks == position["ticks"], PersonalBest.player_id <= position["player"])
+-        statement = statement.where(~before)
+-    raw = session.execute(statement.order_by(PersonalBest.time_ticks, PersonalBest.player_id).offset(0 if cursor else offset).limit(limit+1)).mappings().all()
++            offset = time_counts(session, board_id, position["ticks"])[0] + tied_before(
++                session, board_id, position["ticks"], position["player"], inclusive=True)
++    raw = session.execute(population_window(board_id, limit+1, offset=0 if cursor else offset,
++                                            anchor=anchor)).mappings().all()
+     rows = rank_rows(session, board_id, raw[:limit], offset + 1)
+     return {
+         "board_id": board_id,
+@@ -504,15 +527,12 @@
+             "faster_than_percent": None,
+         }
+     ticks = own["time_ticks"]
+-    before = tuple_(PersonalBest.time_ticks, PersonalBest.player_id) < (ticks, player.id)
+-    after = tuple_(PersonalBest.time_ticks, PersonalBest.player_id) > (ticks, player.id)
+-    position = tick_count(session, board_id, BoardTimeCount.time_ticks < ticks) + population_count(
+-        session, board_id, PersonalBest.time_ticks == ticks, PersonalBest.player_id < player.id) + 1
+-    predecessors = session.execute(population(board_id).where(before).order_by(PersonalBest.time_ticks.desc(), PersonalBest.player_id.desc()).limit(radius)).mappings().all()
+-    successors = session.execute(population(board_id).where(after).order_by(PersonalBest.time_ticks, PersonalBest.player_id).limit(radius)).mappings().all()
++    faster, _, slower = time_counts(session, board_id, ticks)
++    position = faster + tied_before(session, board_id, ticks, player.id) + 1
++    predecessors = session.execute(population_window(board_id, radius, anchor=(ticks, player.id), before=True)).mappings().all()
++    successors = session.execute(population_window(board_id, radius, anchor=(ticks, player.id))).mappings().all()
+     rows = rank_rows(session, board_id, list(reversed(predecessors)) + [own] + list(successors), position - len(predecessors))
+     own = rows[len(predecessors)]
+-    slower = tick_count(session, board_id, BoardTimeCount.time_ticks > ticks)
+     return {
+         "board_id": board_id,
+         "population": count,
+diff --git a/backend/bmt_backend/studio_analysis.py b/backend/bmt_backend/studio_analysis.py
+--- a/backend/bmt_backend/studio_analysis.py
++++ b/backend/bmt_backend/studio_analysis.py
+@@ -5,12 +5,11 @@
+ from typing import Literal
+ 
+ from fastapi import APIRouter, HTTPException, Query, Request
+-from sqlalchemy import BigInteger, Integer, case, cast, delete, func, select, tuple_
++from sqlalchemy import BigInteger, Integer, case, cast, func, select, tuple_
+ 
+ from .admin import Access, Window
+ from .admin_ranges import calendar_range
+ from .studio_platform_models import AnalysisDay, AnalysisPerson, AnalysisSession, AnalysisState
+-from .studio_queries import read_snapshot
+ from .telemetry_models import ProductState
+ from .track_models import digest, now
+ 
+@@ -50,7 +49,7 @@
+     if state is None:
+         raise RuntimeError("STUDIO_ANALYSIS_MIGRATION_REQUIRED")
+     grouped, contexts, session_groups = {}, {}, {}
+-    active_events, client_first = {}, {}
++    active_events, client_first, latest_days = {}, {}, {}
+     for event in events:
+         props = event.properties or {}
+         context = {
+@@ -63,6 +62,7 @@
+             "renderer": (props.get("render_context") or {}).get("renderer", ""),
+         }
+         key = event.occurred_at // DAY, event.player_id, digest(context)
++        latest_days[event.player_id] = max(latest_days.get(event.player_id, key[0]), key[0])
+         contexts[key] = context
+         entry = grouped.setdefault(
+             key, {"counts": Counter(), "first": event.occurred_at, "last": event.occurred_at}
+@@ -142,6 +142,7 @@
+             row = AnalysisPerson(
+                 player_id=identity,
+                 first_at=event.occurred_at,
++                last_day=event.occurred_at // DAY,
+                 first_build=event.build_id or "",
+                 first_platform=event.platform or "",
+                 first_mode=str((event.properties or {}).get("mode", ""))[:24],
+@@ -158,6 +159,8 @@
+             )
+             row.first_mode = str((event.properties or {}).get("mode", ""))[:24]
+     for identity, row in people.items():
++        if identity in latest_days and row.last_day is not None:
++            row.last_day = max(row.last_day, latest_days[identity])
+         if identity in client_first:
+             row.first_client_at = min(row.first_client_at or client_first[identity], client_first[identity])
+         profile = profiles.get(identity)
+@@ -208,25 +211,10 @@
+ 
+ 
+ def cleanup(session, at, limit, fact_days):
+-    for model, keys, timestamp in (
+-        (AnalysisDay, (AnalysisDay.day, AnalysisDay.player_id, AnalysisDay.dimension), AnalysisDay.day),
+-        (AnalysisSession, (AnalysisSession.player_id, AnalysisSession.session_id), AnalysisSession.last_at),
+-    ):
+-        floor = at // DAY - fact_days if model is AnalysisDay else at - fact_days * DAY
+-        expired = session.execute(select(*keys).where(timestamp < floor).order_by(*keys).limit(limit)).all()
+-        if expired:
+-            session.execute(delete(model).where(tuple_(*keys).in_(expired)))
+-    expired_people = session.scalars(
+-        select(AnalysisPerson.player_id)
+-        .where(
+-            AnalysisPerson.first_at < (at // DAY - fact_days) * DAY,
+-            ~select(AnalysisDay.player_id).where(AnalysisDay.player_id == AnalysisPerson.player_id).exists(),
+-        )
+-        .order_by(AnalysisPerson.player_id)
+-        .limit(limit)
+-    ).all()
+-    if expired_people:
+-        session.execute(delete(AnalysisPerson).where(AnalysisPerson.player_id.in_(expired_people)))
++    # Keep legacy callers on the same bounded owner fences as the staged worker.
++    from .telemetry_erasure import expire_people
++    from .telemetry_queue_models import TelemetryControl
++    return expire_people(session, at, fact_days, min(limit, 16), session.get(TelemetryControl, 1))
+ 
+ 
+ def sums(model, names=COUNTERS):
+@@ -262,8 +250,9 @@
+ ):
+     requested, (first, until) = interval(window)
+     at = now()
+-    with request.app.state.session_factory() as session:
+-        read_snapshot(session)
++    with request.app.state.studio_reporting.snapshot(
++        request.app.state.session_factory, request_id=request.state.request_id
++    ) as (session, replica):
+         state, product = session.get(AnalysisState, 1), session.get(ProductState, 1)
+         retained_floor = at // DAY - (product.fact_days if product else 180)
+         conditions = [AnalysisDay.day >= first // DAY, AnalysisDay.day < until // DAY]
+@@ -401,6 +390,7 @@
+                 "retained_from": retained_floor * DAY,
+                 "latest_client_at": state.latest_client_at if state else None,
+                 "pending_events": product.pending_events if product else None,
++                "reporting_storage": replica,
+                 "available": bool(
+                     state
+                     and state.latest_client_at
+@@ -412,6 +402,6 @@
+                 "foreground": "Sum of client-reported foreground intervals; missing final intervals and concurrent devices affect coverage.",
+                 "retention": "Exact UTC D1/D7/D30, any return build; follow-up is provisional for seven additional days.",
+                 "guest": "Unavailable; no guest/account linking",
+-                "totals": "Full filtered SQL aggregates; detail option limits do not truncate metrics",
++                "totals": "Exact filtered SQL aggregates on isolated reporting storage; detail option limits do not truncate metrics",
+             },
+         }
+diff --git a/backend/bmt_backend/studio_platform_models.py b/backend/bmt_backend/studio_platform_models.py
+--- a/backend/bmt_backend/studio_platform_models.py
++++ b/backend/bmt_backend/studio_platform_models.py
+@@ -28,9 +28,13 @@
+ 
+ class AnalysisPerson(Base):
+     __tablename__ = "studio_analysis_people"
+-    __table_args__ = (Index("ix_analysis_cohort", "first_at", "player_id"),)
++    __table_args__ = (Index("ix_analysis_cohort", "first_at", "player_id"),
++                     Index("ix_analysis_person_expiry", "last_day", "player_id"))
+     player_id: Mapped[str] = mapped_column(String(36), primary_key=True)
+     first_at: Mapped[int] = mapped_column(Integer)
++    # Nullable only for the bounded, lazy upgrade of retained historical rows.
++    # Cohort membership remains first_at; expiry follows the newest fact day.
++    last_day: Mapped[int | None] = mapped_column(Integer, nullable=True)
+     first_build: Mapped[str] = mapped_column(String(80), default="")
+     first_platform: Mapped[str] = mapped_column(String(12), default="")
+     first_mode: Mapped[str] = mapped_column(String(24), default="")
+diff --git a/backend/bmt_backend/studio_reporting.py b/backend/bmt_backend/studio_reporting.py
+new file mode 100644
+--- /dev/null
++++ b/backend/bmt_backend/studio_reporting.py
+@@ -0,0 +1,175 @@
++"""Isolate exact, population-dependent Studio reports from gameplay storage."""
++
++import logging
++import threading
++import time
++from contextlib import contextmanager
++
++from fastapi import HTTPException
++from sqlalchemy import create_engine, event, text
++from sqlalchemy.exc import SQLAlchemyError
++from sqlalchemy.orm import Session
++
++from .observability import dependency_failure
++from .studio_queries import read_snapshot
++
++
++class ReportDeadline(TimeoutError):
++    pass
++
++
++def unavailable(code):
++    return HTTPException(503, code, headers={"Retry-After": "5"})
++
++
++class StudioReporting:
++    """One bounded reader per process, never a fallback to the primary.
++
++    Exact distinct users across arbitrary windows cannot be obtained by summing
++    daily counts. These analyses retain their SQL semantics on a dedicated hot
++    standby, with a total SQL deadline and a request-start primary WAL fence.
++    """
++
++    def __init__(self, settings, *, engine=None):
++        self.settings = settings
++        self._slot = threading.BoundedSemaphore(1)
++        self._closed = False
++        self._injected = engine is not None
++        if self._injected and settings.environment != "test":
++            raise ValueError("Studio analysis engine injection requires the test environment")
++        self._owned = engine is None
++        self.engine = engine
++        if engine is None and settings.studio_analysis_database_url:
++            self.engine = create_engine(
++                settings.studio_analysis_database_url,
++                hide_parameters=True,
++                pool_pre_ping=True,
++                pool_size=1,
++                max_overflow=0,
++                pool_timeout=0.1,
++                connect_args={
++                    "connect_timeout": 3,
++                    "options": (
++                        "-c default_transaction_read_only=on "
++                        f"-c statement_timeout={settings.studio_analysis_statement_timeout_ms} "
++                        "-c lock_timeout=1000 -c idle_in_transaction_session_timeout=10000"
++                    ),
++                },
++            )
++        if self.engine is not None:
++            event.listen(self.engine, "before_cursor_execute", self._budget)
++
++    @staticmethod
++    def _remaining(deadline):
++        remaining = int((deadline - time.monotonic()) * 1000)
++        if remaining < 1:
++            raise ReportDeadline("Studio analysis deadline elapsed")
++        return remaining
++
++    @staticmethod
++    def _budget(connection, cursor, _statement, _parameters, _context, _many):
++        deadline = connection.info.get("bmt_studio_report_deadline")
++        if deadline is None:
++            return
++        remaining = StudioReporting._remaining(deadline)
++        if connection.dialect.name == "postgresql":
++            # Direct DBAPI execution avoids recursively invoking this listener.
++            # LOCAL restores the ordinary pool connection's settings on rollback.
++            cursor.execute(f"SET LOCAL statement_timeout = {remaining}")
++
++    def _fence(self, primary_factory, deadline):
++        if self._injected:
++            return None
++        with primary_factory() as primary:
++            # One fixed-size metadata read, never analytical facts on primary.
++            primary.connection()  # Include bounded pool checkout in the budget.
++            remaining = self._remaining(deadline)
++            primary.execute(text(f"SET LOCAL statement_timeout = {remaining}"))
++            # Insert position also covers acknowledged asynchronous commits
++            # whose WAL has not reached the writer/replica yet.
++            return dict(primary.execute(text(
++                "SELECT pg_current_wal_insert_lsn()::text AS lsn, "
++                "(pg_control_system()).system_identifier::text AS cluster_id, "
++                "current_database() AS database, current_schema() AS schema"
++            )).mappings().one())
++
++    def _replica(self, connection, fence, *, deadline=None):
++        if self._injected:
++            return {"source": "explicit_test_engine", "last_replayed_transaction_at": None,
++                    "last_replayed_transaction_age_seconds": None}
++        wait_until = min(deadline, time.monotonic() + 0.25) if deadline else None
++        while True:
++            row = connection.execute(text(
++                "SELECT pg_is_in_recovery() AS standby, "
++                "current_setting('transaction_read_only')::boolean AS read_only, "
++                "(pg_control_system()).system_identifier::text AS cluster_id, "
++                "current_database() AS database, current_schema() AS schema, "
++                "EXTRACT(EPOCH FROM pg_last_xact_replay_timestamp()) AS replayed_at, "
++                "EXTRACT(EPOCH FROM clock_timestamp()) AS observed_at, "
++                "pg_last_wal_replay_lsn() >= CAST(:fence AS pg_lsn) AS fenced"
++            ), {"fence": fence["lsn"]}).mappings().one()
++            if not row["standby"] or not row["read_only"]:
++                raise unavailable("STUDIO_ANALYSIS_REQUIRES_READ_ONLY_REPLICA")
++            if any(row[key] != fence[key] for key in ("cluster_id", "database", "schema")):
++                raise unavailable("STUDIO_ANALYSIS_REPLICA_IDENTITY_MISMATCH")
++            if row["fenced"]:
++                break
++            if wait_until is None or time.monotonic() >= wait_until:
++                raise unavailable("STUDIO_ANALYSIS_REPLICA_CATCHING_UP")
++            connection.rollback()
++            time.sleep(min(0.02, max(0, wait_until - time.monotonic())))
++        # A matching request-start WAL fence proves completeness even when no
++        # transactions have committed recently. Transaction age is coverage
++        # metadata; treating it as replication lag would reject idle replicas.
++        replayed = row["replayed_at"]
++        age = max(0.0, float(row["observed_at"] - replayed)) if replayed is not None else None
++        return {"source": "read_only_replica",
++                "last_replayed_transaction_at": int(replayed) if replayed is not None else None,
++                "last_replayed_transaction_age_seconds": round(age, 3) if age is not None else None,
++                "request_start_fence_applied": True}
++
++    @contextmanager
++    def snapshot(self, primary_factory, *, request_id=""):
++        if self.engine is None:
++            raise unavailable(
++                "STUDIO_ANALYSIS_REPLICA_NOT_CONFIGURED: configure "
++                "BMT_STUDIO_ANALYSIS_DATABASE_URL with a dedicated PostgreSQL hot standby"
++            )
++        if not self._slot.acquire(blocking=False):
++            raise unavailable("STUDIO_ANALYSIS_BUSY")
++        deadline = time.monotonic() + self.settings.studio_analysis_statement_timeout_ms / 1000
++        try:
++            fence = self._fence(primary_factory, deadline)
++            with self.engine.connect() as connection:
++                connection.info["bmt_studio_report_deadline"] = deadline
++                try:
++                    metadata = self._replica(connection, fence, deadline=deadline)
++                    # The WAL fence must be satisfied BEFORE opening the report
++                    # snapshot. A snapshot opened before catch-up could retain
++                    # a contribution erased before this request began.
++                    connection.rollback()
++                    with Session(bind=connection, expire_on_commit=False) as session:
++                        read_snapshot(session)
++                        if not self._injected and not session.scalar(text("SELECT pg_is_in_recovery()")):
++                            raise unavailable("STUDIO_ANALYSIS_REQUIRES_READ_ONLY_REPLICA")
++                        yield session, metadata
++                        self._remaining(deadline)
++                finally:
++                    if not connection.closed:
++                        connection.info.pop("bmt_studio_report_deadline", None)
++        except ReportDeadline:
++            raise unavailable("STUDIO_ANALYSIS_TIMEOUT") from None
++        except SQLAlchemyError as error:
++            dependency_failure(logging.getLogger("bmt.studio_analysis"), error, request_id, "studio_analysis")
++            cancelled = getattr(getattr(error, "orig", None), "sqlstate", None) == "57014"
++            code = "STUDIO_ANALYSIS_TIMEOUT" if cancelled else "STUDIO_ANALYSIS_UNAVAILABLE"
++            raise unavailable(code) from None
++        finally:
++            self._slot.release()
++
++    def close(self):
++        if self.engine is not None and not self._closed:
++            self._closed = True
++            event.remove(self.engine, "before_cursor_execute", self._budget)
++            if self._owned:
++                self.engine.dispose()
+diff --git a/backend/bmt_backend/telemetry_erasure.py b/backend/bmt_backend/telemetry_erasure.py
+--- a/backend/bmt_backend/telemetry_erasure.py
++++ b/backend/bmt_backend/telemetry_erasure.py
+@@ -62,11 +62,12 @@
+ 
+ def expire_people(session, at, fact_days, limit, control):
+     floor = at // 86400 - fact_days
+-    retired = 0
++    retired, more = 0, False
+     for model, criterion in ((ProductPlayerDay, ProductPlayerDay.day < floor),
+                              (AnalysisDay, AnalysisDay.day < floor),
+                              (AnalysisSession, AnalysisSession.last_at < at - fact_days * 86400)):
+         rows = session.scalars(select(model).where(criterion).limit(limit)).all()
++        more = more or bool(rows)
+         # One owner at a time, no waiting on an active analytical batch.
+         for row in sorted(rows, key=lambda r: partition(r.player_id)):
+             owner = session.scalar(select(TelemetryActor).where(TelemetryActor.id == partition(row.player_id))
+@@ -80,20 +81,31 @@
+                     session.delete(current)
+                     retired += 1
+     session.flush()
+-    # Bound candidates before testing activity. Filtering a whole old cohort
+-    # with NOT EXISTS can scan millions of still-active people to find one
+-    # expired person. A durable keyset cursor spreads that work across passes.
+-    rows = session.scalars(select(AnalysisPerson).where(AnalysisPerson.player_id > control.person_cursor)
+-        .order_by(AnalysisPerson.player_id).limit(limit)).all()
+-    control.person_cursor = rows[-1].player_id if rows else ""
++    # A NULL deadline is upgraded once, lazily. The expiry index supplies both
++    # legacy and due candidates; retained active cohorts are never swept again.
++    rows = session.scalars(select(AnalysisPerson).where(AnalysisPerson.last_day.is_(None))
++        .order_by(AnalysisPerson.last_day, AnalysisPerson.player_id).limit(limit)).all()
++    rows += session.scalars(select(AnalysisPerson).where(AnalysisPerson.last_day < floor)
++        .order_by(AnalysisPerson.last_day, AnalysisPerson.player_id).limit(limit)).all()
++    more = more or bool(rows)
+     for row in sorted(rows, key=lambda r: partition(r.player_id)):
+-        if row.first_at >= floor * 86400:
+-            continue
+         owner = session.scalar(select(TelemetryActor).where(TelemetryActor.id == partition(row.player_id))
+             .with_for_update(skip_locked=True))
+-        # Recheck after ownership acquisition, including a concurrent first insertion.
+-        if owner is not None and session.scalar(select(AnalysisDay.player_id)
+-                .where(AnalysisDay.player_id == row.player_id).limit(1)) is None:
+-            session.delete(row)
++        if owner is None:
++            continue
++        current = session.get(AnalysisPerson, row.player_id, populate_existing=True)
++        if current is None:
++            continue
++        # The indexed latest day is one lookup, even for an old active cohort.
++        # Refresh after ownership acquisition so a late activity update cannot
++        # be erased using the candidate's stale deadline.
++        latest = session.scalar(select(AnalysisDay.day).where(AnalysisDay.player_id == row.player_id)
++            .order_by(AnalysisDay.day.desc()).limit(1))
++        current.last_day = max(current.last_day if current.last_day is not None else current.first_at // 86400,
++                               latest if latest is not None else current.first_at // 86400)
++        if current.last_day < floor and latest is None:
++            session.delete(current)
+             retired += 1
+-    return retired, bool(rows)
++    # This legacy cursor is retained for mixed-schema diagnostics, not revisited.
++    control.person_cursor = ""
++    return retired, more
+diff --git a/backend/bmt_backend/telemetry_processing.py b/backend/bmt_backend/telemetry_processing.py
+--- a/backend/bmt_backend/telemetry_processing.py
++++ b/backend/bmt_backend/telemetry_processing.py
+@@ -212,7 +212,7 @@
+ 
+ 
+ def maintenance(factory, at=None, raw_days=7, fact_days=180, limit=500, force=False):
+-    """Expiry runs separately from owner transactions, at most once per minute."""
++    """Bound expiry separately; drain backlogs and check idle data once a minute."""
+     stamp = now() if at is None else at
+     with factory() as session:
+         control = session.scalar(select(TelemetryControl).where(TelemetryControl.id == 1)
+@@ -231,12 +231,13 @@
+         for model, field, threshold in ((QualityFact, QualityFact.day, floor),
+                 (ProductMetric, ProductMetric.day, floor), (ProductPlayerDay, ProductPlayerDay.day, floor),
+                 (AnalysisDay, AnalysisDay.day, floor), (AnalysisSession, AnalysisSession.last_at, stamp - fact_days * 86400),
+-                (AnalysisPerson, AnalysisPerson.first_at, floor * 86400),
+                 (RaceStatisticsReceipt, RaceStatisticsReceipt.received_at, stamp - 8 * 86400),
+                 (RaceStatisticsDay, RaceStatisticsDay.day, floor), (NetworkHealthDay, NetworkHealthDay.day, floor),
+                 (ProductPublication, ProductPublication.published_at, floor * 86400),
+                 (TelemetryMetric, TelemetryMetric.day, floor)):
+             probes.append(select(field).select_from(model).where(field < threshold).exists())
++        probes.append(select(AnalysisPerson.player_id).where(AnalysisPerson.last_day.is_(None)).exists())
++        probes.append(select(AnalysisPerson.player_id).where(AnalysisPerson.last_day < floor).exists())
+         if not session.scalar(select(or_(*probes))):
+             control.maintenance_at = stamp
+             session.commit()
+@@ -262,8 +263,8 @@
+             if rows:
+                 session.execute(delete(model).where(tuple_(*keys).in_(rows)))
+                 aggregate_more = True
+-        race_statistics.cleanup(session, stamp, limit, fact_days)
+-        network_health.cleanup(session, stamp, limit, fact_days)
++        race_more = race_statistics.cleanup(session, stamp, limit, fact_days)
++        network_more = network_health.cleanup(session, stamp, limit, fact_days)
+         from .telemetry_erasure import expire_people
+         private_retired, people_more = expire_people(session, stamp, fact_days, min(limit, 16), control)
+         partial_more = expire_partials(session, stamp // 86400 - fact_days, min(limit, 16))
+@@ -271,7 +272,8 @@
+             ProductPublication.published_at < (stamp // 86400 - fact_days) * 86400).limit(limit)).all()
+         if ids:
+             session.execute(delete(ProductPublication).where(ProductPublication.version_id.in_(ids)))
+-        more = bool(expired or old_server or aggregate_more or private_retired or people_more or partial_more or ids)
++        more = bool(expired or old_server or aggregate_more or race_more or network_more or
++                    private_retired or people_more or partial_more or ids)
+         control.maintenance_at = 0 if more else stamp
+         session.commit()
+         return {"retired_client_events": len(expired), "compacted_server_receipts": len(old_server), "more": more}
+diff --git a/backend/bmt_backend/track_models.py b/backend/bmt_backend/track_models.py
+--- a/backend/bmt_backend/track_models.py
++++ b/backend/bmt_backend/track_models.py
+@@ -19,6 +19,7 @@
+     Integer,
+     String,
+     UniqueConstraint,
++    text,
+ )
+ from sqlalchemy.exc import IntegrityError
+ from sqlalchemy.orm import Mapped, Session, mapped_column
+@@ -272,6 +273,9 @@
+ 
+ class OperationState(Base):
+     __tablename__ = "operation_state"
++    __table_args__ = (Index("ix_worker_heartbeat_expiry", "updated_at", "id",
++                           sqlite_where=text("id LIKE 'worker:%'"),
++                           postgresql_where=text("id LIKE 'worker:%'")),)
+     id: Mapped[str] = mapped_column(String(80), primary_key=True)
+     updated_at: Mapped[int] = mapped_column(Integer, default=now, index=True)
+     details: Mapped[dict] = mapped_column(JSON, default=dict)
+diff --git a/backend/deploy/README.md b/backend/deploy/README.md
+--- a/backend/deploy/README.md
++++ b/backend/deploy/README.md
+@@ -276,6 +276,14 @@
+ This default authentication cleanup does not delete track or race history. Opt-in
+ reference-aware race/object retention is described above. Account deletion and
+ shared-content retirement still require separate policies.
++
++Identity expiry commits batches of at most 1,000 rows per class, including session
++tokens before their empty expired families. The CLI performs at most 100 batches
++by default; `--identity-batches` accepts 1–1,000. Check `more` and
++`budget_exhausted` in its JSON receipt and schedule another invocation promptly
++while work remains. Size that schedule from measured expiry arrivals and drain
++rate; the budget is a work limit, not a daily capacity guarantee. Expired sessions
++are rejected immediately even while their records await cleanup.
+ 
+ ## Migration to cloud
+ 
+@@ -323,6 +331,55 @@
+ 
+ API pools default to four connections with zero overflow; worker pools use two. Connection/pool waits are three seconds; PostgreSQL statements are bounded. Budget all API/worker/migration/backup/admin pools against the configured 40 database connections before scaling. A worker caches only immutable tracks; its pinned engine is recycled and its process remains separate from HTTP. Measure verification service time and queue age on the NAS before selecting worker count. Increasing replicas without enough CPU or memory reduces capacity.
+ 
++`BMT_TELEMETRY_HTTP_CONCURRENCY` defaults to four and accepts 1–16. Each API process
++uses the smaller of that value and `max(1, BMT_DATABASE_POOL_SIZE - 1)` telemetry
++slots, independent of the race-upload allowance. Requests retain the 64 KiB
++decoded-body limit and hold their slot through response serialization. This
++removes the unconditional single-handler ceiling while bounding live trees;
++measure CPU, memory and pool contention before increasing either setting.
++Small discovery requests have a separate bounded query pool; large bodies and
++expensive searches retain their narrower allowances.
++
++Broad Studio behaviour reports require `BMT_STUDIO_ANALYSIS_DATABASE_URL` pointing
++to a dedicated PostgreSQL hot standby with matching database/schema and a read-only
++credential. There is no primary fallback: an unconfigured, mismatched, catching-up or
++unavailable replica produces an actionable 503. The reader allows one report per
++API process with its own one-connection pool. The total SQL budget is
++`BMT_STUDIO_ANALYSIS_STATEMENT_TIMEOUT_MS` (default 5,000; range 100–30,000).
++Connection checkout/connect waits have their separate bounded timeouts, so this
++is an SQL budget rather than a strict HTTP wall-clock deadline.
++Before the report snapshot opens, a constant-size primary WAL-insertion-position read
++fences replica replay so an already committed privacy deletion is visible.
++Primary and standby system identifier, database and current schema must match.
++Grant both the API role and reporting reader `EXECUTE ON FUNCTION
++pg_catalog.pg_control_system()` on the primary; the grants replicate to the
++standby. The reporting reader also needs schema `USAGE` and `SELECT` on
++`studio_analysis_state`, `studio_analysis_people`, `studio_analysis_days`,
++`studio_analysis_sessions` and `product_state`; configure its search path to
++match the API schema. An absent privilege fails closed. Last replayed transaction
++age is coverage metadata; a quiet, fully caught-up replica remains available.
++Exact arbitrary-window distinct/cohort queries still do linear
++analytical work on the replica and can hit the deadline; they no longer consume
++gameplay-database scan resources. Provision and load-test this replica separately.
++
++Migrations `0055_bounded_rank_reads` and `0056_bounded_retention` must precede the
++matching API/worker rollout. The rank migration seeds exact public/all time
++counts and compressed UUID tie trees from existing PBs while writers are
++quiesced; rehearse its duration, locks and storage on a representative copy.
++Tie trees store between N and 2N−1 nodes for N visible PBs, rather than one node
++per UUID prefix. The retention migration adds indexed last-activity deadlines;
++workers upgrade legacy NULL deadlines in bounded batches without changing
++first-observed cohort dates. Verification admissions use independent transactional
++slots as their exact shared-capacity fence and no longer count all reservations
++in preflight. Before external object writes, preflight probes at most 64 randomly
++sampled slot keys. A full queue rejects immediately; an occupied sample on a
++larger queue returns retryable 503 even if an unsampled vacancy exists. With one
++vacancy, a 64-slot sample succeeds with probability `64 / capacity`; size queues
++from measured worker service capacity to avoid retry amplification near saturation.
++The database trigger remains the exact admission fence. Slot allocation still
++depends on the configured finite queue size;
++measure it before materially increasing `BMT_MAX_QUEUED_RUNS`.
++
+ Public track validation always queues. `BMT_ALLOW_SYNC_TRACK_VALIDATION=true` is only for explicitly configured non-production tests/development. New clients negotiate compact inputs/gzip/batched status from bootstrap; unadvertised servers receive legacy canonical frames and individual polling. Update API/worker together, then verify the client contract; no deployment is included in this task.
+ 
+ `python -m bmt_backend.maintenance --retention --apply-retention --online` uses shared publication pins and bounded resumable batches. Closed weeks archive after the retention interval, keeping scores and membership while releasing optional evidence; public PBs, creator proofs and immutable track versions stay protected. `--offline` remains an alternative with all writers stopped. Dry-run remains the default. Run another complete object scan after a changing-directory cleanup. Timestamped v2 retry keys expire; legacy keys and permanent fulfillment/grant identities remain protected.
+diff --git a/backend/tests/test_bounded_leaderboard_ranks.py b/backend/tests/test_bounded_leaderboard_ranks.py
+new file mode 100644
+--- /dev/null
++++ b/backend/tests/test_bounded_leaderboard_ranks.py
+@@ -0,0 +1,206 @@
++"""Exact public positions/percentiles and transactional compressed-tree upkeep."""
++# ruff: noqa: F811
++import random
++import uuid
++
++import pytest
++from alembic import command
++from sqlalchemy import delete, event, func, select, text
++from test_domains import domain, headers, public_course  # noqa: F401
++
++from bmt_backend.cursors import encode_cursor
++from bmt_backend.economy_models import LeaderboardTieNode
++from bmt_backend.identity_models import Player
++from bmt_backend.leaderboard_ranks import tied_before, time_counts_many
++from bmt_backend.migrate import configuration, upgrade
++from bmt_backend.track_models import PersonalBest, Run, RunTicket, now
++
++
++def add_field(domain, board, count=40, *, identities=None):
++    rng = random.Random(948)
++    ids = list(identities) if identities is not None else [str(uuid.UUID(int=rng.getrandbits(128))) for _ in range(count)]
++    rng.shuffle(ids)
++    with domain.factory() as session:
++        for index, identity in enumerate(ids):
++            session.add(Player(id=identity, display_name=f"Ordinal {index}"))
++            session.flush()
++            ticket = RunTicket(player_id=identity, board_id=board, expires_at=now()+100)
++            session.add(ticket)
++            session.flush()
++            run = Run(ticket_id=ticket.id, player_id=identity, board_id=board,
++                      replay_hash="0"*64, status="verified", time_ticks=150)
++            session.add(run)
++            session.flush()
++            session.add(PersonalBest(board_id=board, player_id=identity, run_id=run.id, time_ticks=150))
++        session.commit()
++    return ids
++
++
++def exact(session, board):
++    for artificial in (False, True):
++        criteria = [PersonalBest.board_id == board, Player.disabled.is_(False)]
++        if not artificial:
++            criteria.append(Player.is_test_driver.is_(False))
++        rows = session.execute(select(PersonalBest.player_id, PersonalBest.time_ticks)
++                               .join(Player).where(*criteria)).all()
++        for ticks in (1, 149, 150, 151, 300, 2147483647):
++            expected = tuple(sum(1 for _, value in rows if predicate(value, ticks))
++                             for predicate in (lambda a,b:a<b, lambda a,b:a==b, lambda a,b:a>b))
++            assert time_counts_many(session, [(board, ticks)], artificial=artificial)[board] == expected
++        if not artificial:
++            for identity in [row[0] for row in rows] + ["0"*36, "f"*36, "7"*36]:
++                expected = sum(ticks == 150 and pid < identity for pid, ticks in rows)
++                assert tied_before(session, board, 150, identity) == expected
++                assert tied_before(session, board, 150, identity, inclusive=True) == expected + int((identity,150) in rows)
++            node_count = session.scalar(select(func.count()).select_from(LeaderboardTieNode).where(
++                LeaderboardTieNode.board_id == board))
++            assert len(rows) <= node_count <= 2*len(rows) - 1
++
++
++def test_exact_random_inserts_ties_visibility_correction_deletes_and_rollback(domain):
++    _, board = public_course(domain)
++    ids = add_field(domain, board)
++    rng = random.Random(927)
++    with domain.factory() as session:
++        exact(session, board)
++        for index, identity in enumerate(ids):
++            player = session.get(Player, identity)
++            if index % 4 == 0:
++                player.disabled = True
++            elif index % 4 == 1:
++                player.is_test_driver = True
++            elif index % 4 == 2:
++                session.get(PersonalBest, (board, identity)).time_ticks = rng.choice((1,149,151,2147483647))
++            else:
++                session.execute(delete(PersonalBest).where(PersonalBest.board_id == board, PersonalBest.player_id == identity))
++            session.flush()
++            if index % 7 == 0:
++                exact(session, board)
++        exact(session, board)
++        session.rollback()
++        exact(session, board)
++        # Visibility toggling must restore exact totals and all compressed edges.
++        for identity in ids[:10]:
++            session.get(Player, identity).disabled = True
++        session.flush()
++        for identity in ids[:10]:
++            session.get(Player, identity).disabled = False
++        session.flush()
++        exact(session, board)
++
++
++def test_stale_cursor_and_around_me_keep_exact_absolute_tie_positions(domain):
++    _, board = public_course(domain)
++    ids = add_field(domain, board, 24)
++    ordered = sorted(ids)
++    identity = ordered[12]
++    around = domain.client.get(f"/v1/boards/{board}/around-me", headers={"x-test-player":identity}).json()
++    assert around["player"]["rank"] == 1
++    assert around["player"]["position"] == 13
++    assert [row["position"] for row in around["items"]] == list(range(10,17))
++    stale = encode_cursor({"ticks":150,"player":identity,"board":board,"revision":-1,"position":0})
++    page = domain.client.get(f"/v1/boards/{board}", params={"cursor":stale,"limit":3}).json()
++    assert [row["player_id"] for row in page["items"]] == ordered[13:16]
++    assert [row["position"] for row in page["items"]] == [14,15,16]
++
++
++def test_bounded_read_sql_has_no_population_aggregate_or_frequency_scan(domain):
++    _, board = public_course(domain)
++    ids = add_field(domain, board)
++    captured = []
++    def record(_c,_cur,statement,*_args):
++        captured.append(statement)
++    event.listen(domain.app.state.engine,"before_cursor_execute",record)
++    try:
++        with domain.factory() as session:
++            time_counts_many(session, [(board, 150)])
++            tied_before(session, board, 150, sorted(ids)[20])
++    finally:
++        event.remove(domain.app.state.engine,"before_cursor_execute",record)
++    assert len(captured) == 3
++    assert not any("personal_bests" in sql or "board_time_counts" in sql or "players" in sql for sql in captured)
++    assert " IN (" in captured[0] and "parent IN (" in captured[1]
++    if not domain.postgres:
++        with domain.factory() as session:
++            assert session.scalar(text("SELECT COUNT(*) FROM leaderboard_tie_work")) == 0
++
++
++def test_rank_migration_seeds_existing_pbs_and_reverses_only_its_schema(domain):
++    _, board = public_course(domain)
++    add_field(domain, board, 16)
++    # Never cross the separately irreversible telemetry protocol cutover0051.
++    command.downgrade(configuration(domain.app.state.engine), "0054_priority_scaling")
++    upgrade(domain.app.state.engine)
++    with domain.factory() as session:
++        exact(session, board)
++
++
++def test_prefix_ids_short_stale_cursors_and_leaf_branch_collapse(domain):
++    _, board = public_course(domain)
++    ids = add_field(domain, board, identities=["a", "aa", "aaa", "ab", "b", "ba", "bac", "bb", "a"*35, "a"*36])
++    with domain.factory() as session:
++        exact(session, board)
++        # Some stale cursors point to an internal prefix with no matching leaf.
++        for cursor in ("", "b", "bax", "a"*34):
++            expected = sum(identity <= cursor for identity in ids)
++            assert tied_before(session, board, 150, cursor, inclusive=True) == expected
++        for identity in sorted(ids, reverse=True):
++            session.execute(delete(PersonalBest).where(PersonalBest.board_id == board, PersonalBest.player_id == identity))
++            exact(session, board)
++
++
++def test_visible_windows_limit_keys_before_joining_hidden_pbs(domain):
++    from bmt_backend.runs import population_window
++    _, board = public_course(domain)
++    ids = add_field(domain, board, 80)
++    with domain.factory() as session:
++        for identity in ids[:70]:
++            session.get(Player, identity).disabled = True
++        for identity in ids[70:75]:
++            session.get(Player, identity).is_test_driver = True
++        session.commit()
++        rows = session.execute(population_window(board, 3)).mappings().all()
++        assert [row["player_id"] for row in rows] == sorted(ids[75:])[:3]
++        statement = str(population_window(board, 3).compile(session.bind, compile_kwargs={"literal_binds":True}))
++        if domain.postgres:
++            # Small fixture may prefer a sequential scan. Disabling it reveals
++            # the exact partial-index path used for a populated production tree.
++            session.execute(text("SET LOCAL enable_seqscan=off"))
++            plan = "\n".join(session.scalars(text("EXPLAIN " + statement)))
++        else:
++            plan = "\n".join(row[3] for row in session.execute(text("EXPLAIN QUERY PLAN " + statement)))
++        assert "ix_leaderboard_visible_order" in plan
++        assert "LIMIT" in statement.upper()
++
++
++def test_concurrent_tie_moves_visibility_changes_and_deletion_are_exact(domain):
++    if not domain.postgres:
++        pytest.skip("Independent PostgreSQL writers exercise board/tree lock ordering")
++    from concurrent.futures import ThreadPoolExecutor
++    from threading import Barrier
++    _, board = public_course(domain)
++    ids = add_field(domain, board, 30)
++    for action in ("join_tie", "leave_tie", "hide", "show", "delete"):
++        ready = Barrier(2)
++        def change(identity, operation, ready=ready):
++            with domain.factory() as session:
++                player = session.scalar(select(Player).where(Player.id == identity).with_for_update())
++                ready.wait(timeout=10)
++                best = session.get(PersonalBest, (board, identity))
++                if operation == "join_tie":
++                    best.time_ticks = 149
++                elif operation == "leave_tie":
++                    best.time_ticks = 150
++                elif operation == "hide":
++                    player.disabled = True
++                elif operation == "show":
++                    player.disabled = False
++                else:
++                    session.delete(best)
++                session.commit()
++        with ThreadPoolExecutor(max_workers=2) as pool:
++            futures = [pool.submit(change, identity, action) for identity in ids[:2]]
++            for future in futures:
++                future.result(timeout=15)
++        with domain.factory() as session:
++            exact(session, board)
+diff --git a/backend/tests/test_bounded_retention.py b/backend/tests/test_bounded_retention.py
+new file mode 100644
+--- /dev/null
++++ b/backend/tests/test_bounded_retention.py
+@@ -0,0 +1,241 @@
++"""Backlogs drain in bounded transactions without revisiting retained cohorts."""
++# ruff: noqa: F811
++from uuid import uuid4
++
++import pytest
++from alembic import command
++from sqlalchemy import event, func, or_, select, text
++from test_auth_postgres import postgres_auth  # noqa: F401
++
++from bmt_backend.identity_models import LoginChallenge, Player, RateBucket, SessionFamily, SessionToken
++from bmt_backend.maintenance import cleanup, cleanup_batches
++from bmt_backend.migrate import configuration, upgrade
++from bmt_backend.network_models import NetworkHealthDay
++from bmt_backend.race_statistics_models import RaceStatisticsDay, RaceStatisticsReceipt
++from bmt_backend.studio_platform_models import AnalysisDay, AnalysisPerson
++from bmt_backend.telemetry_processing import maintenance
++from bmt_backend.telemetry_queue import activate, partition
++from bmt_backend.telemetry_queue_models import TelemetryActor
++from bmt_backend.track_models import now
++
++
++@pytest.fixture(params=["sqlite", "postgres"])
++def retention_app(request):
++    if request.param == "postgres":
++        return request.getfixturevalue("postgres_auth")[0]
++    return request.getfixturevalue("auth_app")
++
++
++def prepare(app):
++    with app.state.session_factory() as db:
++        activate(db)
++        db.commit()
++
++
++@pytest.mark.parametrize("model", [RaceStatisticsReceipt, RaceStatisticsDay, NetworkHealthDay])
++def test_isolated_expired_diagnostic_backlog_drains_without_a_minute_pause(retention_app, model):
++    prepare(retention_app)
++    stamp = now()
++    with retention_app.state.session_factory() as db:
++        for index in range(7):
++            if model is RaceStatisticsReceipt:
++                row = model(player_id=str(uuid4()), race_id=str(uuid4()), event_id=str(uuid4()),
++                            payload_hash="f" * 64, received_at=stamp - 9 * 86400)
++            else:
++                values = {"day": stamp // 86400 - 181, "dimension": str(index), "build_id": "",
++                          "platform": "android", "device_model": "", "os_version": ""}
++                if model is RaceStatisticsDay:
++                    values.update(device_class="phone", outcome="finished")
++                else:
++                    values["category"] = "telemetry"
++                row = model(**values)
++            db.add(row)
++        db.commit()
++    for remaining in (4, 1, 0):
++        result = maintenance(retention_app.state.session_factory, at=stamp, limit=3)
++        assert result["more"] is True
++        with retention_app.state.session_factory() as db:
++            assert db.scalar(select(func.count()).select_from(model)) == remaining
++    assert not maintenance(retention_app.state.session_factory, at=stamp, limit=3).get("more")
++
++
++def test_legacy_people_are_upgraded_once_and_current_old_cohorts_are_not_swept(retention_app):
++    prepare(retention_app)
++    stamp, identities = now(), [str(uuid4()) for _ in range(35)]
++    with retention_app.state.session_factory() as db:
++        db.add_all([AnalysisPerson(player_id=identity, first_at=stamp - 181 * 86400)
++                    for identity in identities])
++        db.add_all([AnalysisDay(day=stamp // 86400, player_id=identity, dimension="current", counters={},
++                               first_at=stamp, last_at=stamp) for identity in identities])
++        db.commit()
++    for _ in range(3):
++        assert maintenance(retention_app.state.session_factory, at=stamp, limit=16)["more"]
++    with retention_app.state.session_factory() as db:
++        assert db.scalar(select(func.count()).select_from(AnalysisPerson).where(
++            AnalysisPerson.last_day == stamp // 86400)) == 35
++    statements = []
++
++    def record(_connection, _cursor, statement, _parameters, _context, _executemany):
++        if "FROM studio_analysis_people" in statement:
++            statements.append(statement)
++
++    event.listen(retention_app.state.engine, "before_cursor_execute", record)
++    try:
++        for offset in (1, 62, 123):
++            assert not maintenance(retention_app.state.session_factory, at=stamp + offset).get("more")
++    finally:
++        event.remove(retention_app.state.engine, "before_cursor_execute", record)
++    # The existence probe can inspect the expiry index; no person page is read.
++    assert statements and all("EXISTS" in statement for statement in statements)
++    with retention_app.state.session_factory() as db:
++        assert db.scalar(select(func.count()).select_from(AnalysisPerson)) == 35
++
++
++def test_due_people_recheck_retained_days_and_preserve_exact_floor(retention_app):
++    prepare(retention_app)
++    stamp, floor = now(), now() // 86400 - 180
++    stale, current, boundary = (str(uuid4()) for _ in range(3))
++    with retention_app.state.session_factory() as db:
++        db.add_all([AnalysisPerson(player_id=identity, first_at=(floor - 10) * 86400,
++                                   last_day=day) for identity, day in
++                    ((stale, floor - 1), (current, floor - 1), (boundary, floor))])
++        db.add(AnalysisDay(day=floor + 1, player_id=current, dimension="late", counters={},
++                           first_at=(floor + 1) * 86400, last_at=(floor + 1) * 86400))
++        db.commit()
++    maintenance(retention_app.state.session_factory, at=stamp)
++    with retention_app.state.session_factory() as db:
++        assert db.get(AnalysisPerson, stale) is None
++        assert db.get(AnalysisPerson, current).last_day == floor + 1
++        assert db.get(AnalysisPerson, boundary) is not None
++
++
++def test_expiry_migration_preserves_cohorts_and_upgrades_rows_lazily(retention_app):
++    app, identity, stamp = retention_app, str(uuid4()), now()
++    command.downgrade(configuration(app.state.engine), "0055_bounded_rank_reads")
++    with app.state.engine.begin() as connection:
++        connection.execute(text("INSERT INTO studio_analysis_people "
++            "(player_id,first_at,first_build,first_platform,first_mode,artificial,journey) "
++            "VALUES (:identity,:stamp,'old','android','ordinary',false,'{}')"),
++            {"identity": identity, "stamp": stamp})
++    upgrade(app.state.engine)
++    with app.state.session_factory() as db:
++        row = db.get(AnalysisPerson, identity)
++        assert row.first_at == stamp and row.first_build == "old" and row.last_day is None
++    prepare(app)
++    maintenance(app.state.session_factory, at=stamp)
++    with app.state.session_factory() as db:
++        row = db.get(AnalysisPerson, identity)
++        assert row.first_at == stamp and row.first_build == "old" and row.last_day == stamp // 86400
++
++
++def test_identity_cleanup_bounds_each_class_and_rotation_history(retention_app):
++    factory, stamp = retention_app.state.session_factory, now()
++    with factory() as db:
++        player = Player(display_name="Bounded cleanup")
++        db.add(player)
++        db.flush()
++        family = SessionFamily(player_id=player.id, expires_at=stamp - 1)
++        live = SessionFamily(player_id=player.id, expires_at=stamp + 86400)
++        db.add_all([family, live])
++        db.flush()
++        family_id, live_id, player_id = family.id, live.id, player.id
++        for index in range(7):
++            db.add(SessionToken(family_id=family_id, access_hash=f"expired-access-{index}",
++                                refresh_hash=f"expired-refresh-{index}", access_expires_at=stamp - 1))
++            db.add(LoginChallenge(nonce_hash=str(index), expires_at=stamp - 1))
++            db.add(RateBucket(key=str(index), expires_at=stamp - 1))
++        db.add(SessionToken(family_id=live_id, access_hash="live-access", refresh_hash="live-refresh",
++                            access_expires_at=stamp + 100))
++        db.commit()
++    for remaining in (4, 1, 0):
++        result = cleanup(factory, batch_limit=3)
++        assert result["session_tokens"] <= 3 and result["login_challenges"] <= 3 and result["rate_buckets"] <= 3
++        assert result["more"]
++        with factory() as db:
++            assert db.scalar(select(func.count()).select_from(SessionToken).where(
++                SessionToken.family_id == family_id)) == remaining
++            assert (db.get(SessionFamily, family_id) is not None) == bool(remaining)
++            assert db.get(SessionFamily, live_id) is not None and db.get(Player, player_id) is not None
++    assert cleanup(factory, batch_limit=3)["more"] is False
++
++
++@pytest.mark.parametrize("budget", [0, 1001, True, 1.0])
++def test_cleanup_rejects_an_unbounded_budget(auth_app, budget):
++    with pytest.raises(ValueError, match="INVALID_IDENTITY_CLEANUP_BUDGET"):
++        cleanup(auth_app.state.session_factory, batch_limit=budget)
++
++
++def test_identity_cli_budget_reports_backlog_and_stops_when_empty(auth_app):
++    factory = auth_app.state.session_factory
++    with factory() as db:
++        db.add_all([LoginChallenge(nonce_hash=str(index), expires_at=now() - 1) for index in range(7)])
++        db.commit()
++    first = cleanup_batches(factory, batches=2, batch_limit=3)
++    assert first["login_challenges"] == 6 and first["more"] and first["budget_exhausted"]
++    second = cleanup_batches(factory, batches=100, batch_limit=3)
++    assert second["login_challenges"] == 1 and second["batches"] == 2
++    assert not second["more"] and not second["budget_exhausted"]
++
++
++@pytest.mark.postgres
++def test_identity_cleanup_skips_locked_family_but_reports_its_backlog(postgres_auth):
++    app, _client = postgres_auth
++    factory = app.state.session_factory
++    with factory() as db:
++        player = Player(display_name="Locked expiry")
++        db.add(player)
++        db.flush()
++        family = SessionFamily(player_id=player.id, expires_at=now() - 1)
++        db.add(family)
++        db.commit()
++        identity = family.id
++    with factory() as owner:
++        owner.scalar(select(SessionFamily).where(SessionFamily.id == identity).with_for_update())
++        result = cleanup(factory)
++        assert result["session_families"] == 0 and result["more"]
++    assert cleanup(factory)["session_families"] == 1
++
++
++@pytest.mark.postgres
++def test_person_expiry_skips_an_owned_actor_and_retries_after_release(postgres_auth):
++    app, _client = postgres_auth
++    prepare(app)
++    factory, identity, stamp = app.state.session_factory, str(uuid4()), now()
++    with factory() as db:
++        db.add(AnalysisPerson(player_id=identity, first_at=stamp - 181 * 86400,
++                              last_day=stamp // 86400 - 181))
++        db.commit()
++    with factory() as owner:
++        owner.scalar(select(TelemetryActor).where(TelemetryActor.id == partition(identity)).with_for_update())
++        assert maintenance(factory, at=stamp)["more"]
++        with factory() as db:
++            assert db.get(AnalysisPerson, identity) is not None
++    maintenance(factory, at=stamp)
++    with factory() as db:
++        assert db.get(AnalysisPerson, identity) is None
++
++
++@pytest.mark.postgres
++def test_current_only_person_expiry_uses_two_indexed_existence_probes(postgres_auth):
++    app, _client = postgres_auth
++    stamp, factory = now(), app.state.session_factory
++    with factory() as db:
++        db.execute(AnalysisPerson.__table__.insert(), [
++            {"player_id": str(uuid4()), "first_at": stamp - 181 * 86400, "last_day": stamp // 86400}
++            for _ in range(10000)])
++        db.commit()
++        db.execute(text("ANALYZE studio_analysis_people"))
++        query = select(or_(select(AnalysisPerson.player_id).where(AnalysisPerson.last_day.is_(None)).exists(),
++                           select(AnalysisPerson.player_id).where(AnalysisPerson.last_day < stamp // 86400 - 180).exists()))
++        sql = str(query.compile(app.state.engine, compile_kwargs={"literal_binds": True}))
++        plan = db.execute(text("EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON) " + sql)).scalar_one()[0]["Plan"]
++
++        def nodes(node):
++            yield node
++            for child in node.get("Plans", []):
++                yield from nodes(child)
++
++        accesses = [node for node in nodes(plan) if node.get("Relation Name") == "studio_analysis_people"]
++        assert len(accesses) == 2
++        assert all(node.get("Index Name") == "ix_analysis_person_expiry" for node in accesses)
++        assert all(node["Actual Rows"] == 0 for node in accesses)
+diff --git a/backend/tests/test_product_analytics.py b/backend/tests/test_product_analytics.py
+--- a/backend/tests/test_product_analytics.py
++++ b/backend/tests/test_product_analytics.py
+@@ -641,7 +641,8 @@
+             await release.wait()
+             live[kind] -= 1
+             await JSONResponse({"ok": True})(scope, receive, send)
+-        boundary = RequestBoundary(handler, replace(auth_app.state.settings, upload_concurrency=2), auth_app.state.session_factory)
++        boundary = RequestBoundary(handler, replace(auth_app.state.settings,
++            upload_concurrency=2, telemetry_http_concurrency=1), auth_app.state.session_factory)
+         async with httpx.AsyncClient(transport=httpx.ASGITransport(app=boundary), base_url="http://test") as client:
+             first = asyncio.create_task(client.post("/v1/telemetry/batches", json={}))
+             await asyncio.wait_for(telemetry_started.wait(), 2)
+diff --git a/backend/tests/test_scalability_admission.py b/backend/tests/test_scalability_admission.py
+new file mode 100644
+--- /dev/null
++++ b/backend/tests/test_scalability_admission.py
+@@ -0,0 +1,169 @@
++"""Bounded HTTP admission and exact queue enforcement without backlog counts."""
++import asyncio
++from dataclasses import replace
++
++import httpx
++import pytest
++from sqlalchemy import event, select
++from starlette.responses import JSONResponse
++from test_domains import domain as domain_fixture
++from test_domains import headers, public_course, ticket
++from test_queue_capacity_slots import pending
++
++from bmt_backend.config import Settings
++from bmt_backend.middleware import RequestBoundary
++from bmt_backend.queueing import admit, check_capacity
++from bmt_backend.track_models import QueueCapacity, QueueReservation, Run, new_id
++
++domain = domain_fixture
++
++
++@pytest.mark.parametrize("pool,requested,allowed", [(4, 4, 3), (4, 2, 2), (1, 4, 1)])
++def test_telemetry_concurrency_is_bounded_and_preserves_race_slots(monkeypatch,
++                                                                pool, requested, allowed):
++    monkeypatch.setattr("bmt_backend.middleware.check_budget", lambda *_a, **_k: True)
++
++    async def exercise():
++        release, ready, race_ready = asyncio.Event(), asyncio.Event(), asyncio.Event()
++        live = {"telemetry": 0, "races": 0}
++
++        async def handler(scope, receive, send):
++            kind = "telemetry" if scope["path"] == "/v1/telemetry/batches" else "races"
++            live[kind] += 1
++            if live["telemetry"] == allowed:
++                ready.set()
++            if live["races"] == 2:
++                race_ready.set()
++            try:
++                await release.wait()
++                await JSONResponse({"ok": True})(scope, receive, send)
++            finally:
++                live[kind] -= 1
++
++        settings = Settings(database_pool_size=pool,
++                           telemetry_http_concurrency=requested, upload_concurrency=2)
++        boundary = RequestBoundary(handler, settings, None)
++        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=boundary), base_url="http://test") as client:
++            active = [asyncio.create_task(client.post("/v1/telemetry/batches", json={}))
++                      for _ in range(allowed)]
++            races = []
++            try:
++                await asyncio.wait_for(ready.wait(), 2)
++                races = [asyncio.create_task(client.post("/v1/runs", json={})) for _ in range(2)]
++                await asyncio.wait_for(race_ready.wait(), 2)
++                busy = await client.post("/v1/telemetry/batches", json={})
++                assert busy.status_code == 503
++                assert busy.json()["detail"] == "REQUEST_VALIDATION_BUSY"
++                assert live == {"telemetry": allowed, "races": 2}
++            finally:
++                release.set()
++                completed = await asyncio.gather(*active, *races)
++            assert all(response.status_code == 200 for response in completed)
++            assert boundary.telemetry_parsers._value == allowed
++            assert boundary.parsers._value == 2
++
++    asyncio.run(exercise())
++
++
++def test_queue_preflight_and_admission_do_not_count_the_backlog(domain):
++    _version, board = public_course(domain)
++    with domain.factory() as session:
++        for _ in range(8):
++            admit(session, domain.players["Alice"], 128)
++            pending(session, domain, board)
++        session.commit()
++    statements = []
++
++    def capture(_conn, _cursor, statement, _parameters, _context, _many):
++        statements.append(statement.lower())
++
++    event.listen(domain.app.state.engine, "before_cursor_execute", capture)
++    try:
++        with domain.factory() as session:
++            check_capacity(session, domain.players["Bob"], 128)
++            admit(session, domain.players["Bob"], 128)
++            pending(session, domain, board, owner="Bob")
++            session.commit()
++    finally:
++        event.remove(domain.app.state.engine, "before_cursor_execute", capture)
++    assert not any("queue_capacity" in query for query in statements)
++    assert not any("count(" in query and "queue_reservations" in query for query in statements)
++    with domain.factory() as session:
++        assert session.scalar(select(QueueCapacity.pending)) == 9
++
++
++def test_committed_full_queue_returns_429_and_saved_retry_recovers(domain):
++    version, board = public_course(domain)
++    domain.app.state.settings = replace(domain.app.state.settings, max_queued_runs=1)
++    issued = ticket(domain, version, "Bob")
++    with domain.factory() as session:
++        admit(session, domain.players["Alice"], 1)
++        occupied = pending(session, domain, board)
++        occupied_id = occupied.id
++        session.commit()
++    key = new_id()
++    body = {"ticket_id": issued["ticket_id"],
++            "replay": {"schema": "bmt-replay-v1", "frames": [[0, 255, 0]] * 20}}
++    response = domain.client.post("/v1/runs", json=body, headers=headers(domain, "Bob", key))
++    assert response.status_code == 429, response.text
++    with domain.factory() as session:
++        assert session.scalar(select(QueueCapacity.pending)) == 1
++        session.get(Run, occupied_id).status = "failed"
++        session.commit()
++    accepted = domain.client.post("/v1/runs", json=body, headers=headers(domain, "Bob", key))
++    assert accepted.status_code == 202, accepted.text
++    repeated = domain.client.post("/v1/runs", json=body, headers=headers(domain, "Bob", key))
++    assert repeated.json() == accepted.json()
++
++
++@pytest.mark.parametrize("occupied", [64, 128])
++def test_bounded_queue_probe_suppresses_external_writes_and_retries_a_missed_vacancy(domain, monkeypatch,
++                                                                                  occupied):
++    version, _board = public_course(domain)
++    issued = ticket(domain, version, "Bob")
++    with domain.factory() as session:
++        session.add_all([QueueReservation(kind="probe", job_id=new_id(), player_id=domain.players["Alice"],
++                                         slot=index) for index in range(occupied)])
++        session.commit()
++    writes = []
++    original = domain.app.state.blobs.put_json
++
++    def record(value):
++        writes.append(value)
++        return original(value)
++
++    monkeypatch.setattr(domain.app.state.blobs, "put_json", record)
++    monkeypatch.setattr("bmt_backend.queueing.sample", lambda _domain, size: list(range(size)))
++    key = new_id()
++    body = {"ticket_id": issued["ticket_id"],
++            "replay": {"schema": "bmt-replay-v1", "frames": [[0, 255, 0]] * 20}}
++    response = domain.client.post("/v1/runs", json=body, headers=headers(domain, "Bob", key))
++    assert response.status_code == 503 and response.json()["detail"] == "VERIFICATION_CAPACITY_BUSY"
++    assert response.headers["retry-after"] == "1" and writes == []
++    with domain.factory() as session:
++        assert session.scalar(select(QueueCapacity.pending)) == occupied  # Hint cannot reserve anything.
++        if occupied == 128:
++            session.delete(session.scalar(select(QueueReservation).where(QueueReservation.slot == 64)))
++            session.commit()
++    monkeypatch.setattr("bmt_backend.queueing.sample", lambda _domain, size: list(range(64, 64 + size)))
++    accepted = domain.client.post("/v1/runs", json=body, headers=headers(domain, "Bob", key))
++    assert accepted.status_code == 202, accepted.text
++    assert len(writes) == 1
++    repeated = domain.client.post("/v1/runs", json=body, headers=headers(domain, "Bob", key))
++    assert repeated.json() == accepted.json() and len(writes) == 1
++
++
++@pytest.mark.parametrize("value", [0, -1, 17, True])
++def test_telemetry_http_setting_has_a_fixed_tree_limit(value):
++    with pytest.raises(ValueError):
++        Settings(telemetry_http_concurrency=value)
++
++
++@pytest.mark.parametrize("settings", [
++    {"studio_analysis_database_url": "sqlite://"},
++    {"studio_analysis_statement_timeout_ms": 99},
++    {"studio_analysis_statement_timeout_ms": 30001},
++])
++def test_studio_analysis_settings_require_bounded_replica_reads(settings):
++    with pytest.raises(ValueError):
++        Settings(**settings)
+diff --git a/backend/tests/test_studio_platform.py b/backend/tests/test_studio_platform.py
+--- a/backend/tests/test_studio_platform.py
++++ b/backend/tests/test_studio_platform.py
+@@ -35,6 +35,8 @@
+ 
+ @pytest.fixture
+ def platform(auth_app, auth_client, sign_in):
++    from bmt_backend.studio_reporting import StudioReporting
++
+     auth_app.state.settings = replace(
+         auth_app.state.settings,
+         admin_owner_key="o" * 40,
+@@ -42,6 +44,10 @@
+         telemetry_enabled=True,
+         client_quality_enabled=True,
+         studio_monitor_source_tokens=json.dumps({"fixture": "m" * 40}),
++    )
++    auth_app.state.studio_reporting.close()
++    auth_app.state.studio_reporting = StudioReporting(
++        replace(auth_app.state.settings, environment="test"), engine=auth_app.state.engine
+     )
+     signed = sign_in("studio-platform")
+     return (
+diff --git a/backend/tests/test_studio_reporting.py b/backend/tests/test_studio_reporting.py
+new file mode 100644
+--- /dev/null
++++ b/backend/tests/test_studio_reporting.py
+@@ -0,0 +1,191 @@
++"""Broad exact reports cannot borrow gameplay database resources."""
++
++from dataclasses import replace
++from types import SimpleNamespace
++
++import pytest
++from fastapi import HTTPException
++from sqlalchemy import event, text
++from sqlalchemy.exc import DBAPIError
++from test_domains import domain  # noqa: F401
++
++from bmt_backend.app import create_app
++from bmt_backend.config import Settings
++from bmt_backend.db import make_engine
++from bmt_backend.migrate import upgrade
++from bmt_backend.studio_platform_models import AnalysisDay
++from bmt_backend.studio_reporting import StudioReporting
++from bmt_backend.track_models import now
++
++OWNER = {"Authorization": "Bearer " + "o" * 40}
++URL = "/v1/admin/analysis/behaviour"
++FENCE = {"lsn": "0/ABCD", "cluster_id": "fixture-cluster", "database": "fixture-db", "schema": "public"}
++
++
++@pytest.fixture
++def reports(auth_app, auth_client, tmp_path):
++    settings = replace(auth_app.state.settings, environment="test", admin_owner_key="o" * 40)
++    auth_app.state.settings = settings
++    engine = make_engine(f"sqlite:///{(tmp_path / 'reporting.sqlite').as_posix()}")
++    upgrade(engine)
++    auth_app.state.studio_reporting.close()
++    auth_app.state.studio_reporting = StudioReporting(settings, engine=engine)
++    stamp = now()
++    with engine.begin() as connection:
++        connection.execute(AnalysisDay.__table__.insert(), [{
++            "day": stamp // 86400, "player_id": "report-only-player", "dimension": "one",
++            "build_id": "separate-reporting-storage", "platform": "android", "mode": "free_race",
++            "counters": {"active": 1, "race_started": 3}, "first_at": stamp, "last_at": stamp,
++        }])
++    yield auth_app, auth_client, engine
++    auth_app.state.studio_reporting.close()
++    engine.dispose()
++
++
++def test_unconfigured_report_is_actionable_without_fact_reads_or_primary_fallback(auth_app, auth_client):
++    auth_app.state.settings = replace(auth_app.state.settings, admin_owner_key="o" * 40)
++    queries = []
++
++    def capture(_conn, _cursor, statement, *_args):
++        queries.append(statement)
++
++    event.listen(auth_app.state.engine, "before_cursor_execute", capture)
++    try:
++        response = auth_client.get(URL, headers=OWNER)
++    finally:
++        event.remove(auth_app.state.engine, "before_cursor_execute", capture)
++    assert response.status_code == 503
++    assert "BMT_STUDIO_ANALYSIS_DATABASE_URL" in response.json()["detail"]
++    assert response.headers["retry-after"] == "5"
++    assert not any("studio_analysis" in statement for statement in queries)
++    assert auth_client.get("/v1/admin/overview", headers=OWNER).status_code == 200
++
++
++def test_engine_injection_requires_explicit_test_environment(auth_app):
++    with pytest.raises(ValueError, match="test environment"):
++        create_app(auth_app.state.settings, engine=auth_app.state.engine,
++                   analysis_engine=auth_app.state.engine)
++
++
++def test_exact_report_reads_only_separate_storage(reports):
++    app, client, _engine = reports
++    queries = []
++
++    def capture(_conn, _cursor, statement, *_args):
++        queries.append(statement)
++
++    event.listen(app.state.engine, "before_cursor_execute", capture)
++    try:
++        response = client.get(URL, headers=OWNER)
++    finally:
++        event.remove(app.state.engine, "before_cursor_execute", capture)
++    assert response.status_code == 200, response.text
++    data = response.json()
++    assert data["active_players"] == 1 and data["counters"]["race_started"] == 3
++    assert data["options"][0]["build_id"] == "separate-reporting-storage"
++    assert data["coverage"]["reporting_storage"]["source"] == "explicit_test_engine"
++    assert not any("studio_analysis" in statement or "product_state" in statement for statement in queries)
++
++
++def test_saturated_reports_fail_promptly_and_release_their_slot(reports):
++    app, client, _engine = reports
++    with app.state.studio_reporting.snapshot(app.state.session_factory):
++        response = client.get(URL, headers=OWNER)
++        assert response.status_code == 503 and response.json()["detail"] == "STUDIO_ANALYSIS_BUSY"
++    assert client.get(URL, headers=OWNER).status_code == 200
++
++
++def test_total_deadline_does_not_restart_with_each_query_and_recovers(reports, monkeypatch):
++    import bmt_backend.studio_reporting as module
++
++    app, _client, _engine = reports
++    clock = [0.0]
++    monkeypatch.setattr(module, "time", SimpleNamespace(monotonic=lambda: clock[0]))
++    with (pytest.raises(HTTPException) as caught,
++          app.state.studio_reporting.snapshot(app.state.session_factory) as (session, _meta)):
++        assert session.scalar(text("SELECT 1")) == 1
++        clock[0] = 4.0
++        assert session.scalar(text("SELECT 1")) == 1
++        clock[0] = 6.0
++        session.scalar(text("SELECT 1"))
++    assert caught.value.status_code == 503 and caught.value.detail == "STUDIO_ANALYSIS_TIMEOUT"
++    with app.state.studio_reporting.snapshot(app.state.session_factory) as (session, _meta):
++        assert session.scalar(text("SELECT 1")) == 1
++
++
++def test_database_failure_does_not_poison_report_slot(reports):
++    app, client, _engine = reports
++    with (pytest.raises(HTTPException) as caught,
++          app.state.studio_reporting.snapshot(app.state.session_factory) as (session, _meta)):
++        session.execute(text("SELECT * FROM missing_report_table"))
++    assert caught.value.detail == "STUDIO_ANALYSIS_UNAVAILABLE"
++    assert client.get(URL, headers=OWNER).status_code == 200
++
++
++@pytest.mark.parametrize("values,code", [
++    ({"standby": False}, "STUDIO_ANALYSIS_REQUIRES_READ_ONLY_REPLICA"),
++    ({"read_only": False}, "STUDIO_ANALYSIS_REQUIRES_READ_ONLY_REPLICA"),
++    ({"fenced": False}, "STUDIO_ANALYSIS_REPLICA_CATCHING_UP"),
++    ({"cluster_id": "another-cluster"}, "STUDIO_ANALYSIS_REPLICA_IDENTITY_MISMATCH"),
++    ({"database": "another-database"}, "STUDIO_ANALYSIS_REPLICA_IDENTITY_MISMATCH"),
++    ({"schema": "another-schema"}, "STUDIO_ANALYSIS_REPLICA_IDENTITY_MISMATCH"),
++])
++def test_replica_rejects_unsafe_or_unverifiable_snapshots(values, code):
++    reporting = StudioReporting(Settings())
++    row = {**FENCE, "standby": True, "read_only": True, "fenced": True,
++           "replayed_at": 990, "observed_at": 1000, **values}
++    seen = []
++
++    class Connection:
++        def execute(self, statement, parameters):
++            seen.append((str(statement), parameters))
++            return SimpleNamespace(mappings=lambda: SimpleNamespace(one=lambda: row))
++
++    with pytest.raises(HTTPException) as caught:
++        reporting._replica(Connection(), FENCE)
++    assert caught.value.detail == code
++    assert seen[0][1] == {"fence": "0/ABCD"}
++    assert "pg_last_wal_replay_lsn()" in seen[0][0]
++
++
++@pytest.mark.parametrize("replayed_at,age", [(990, 10.0), (100, 900.0), (None, None)])
++def test_fenced_replica_exposes_transaction_age_without_rejecting_quiet_replicas(replayed_at, age):
++    reporting = StudioReporting(Settings())
++    row = {**FENCE, "standby": True, "read_only": True, "fenced": True,
++           "replayed_at": replayed_at, "observed_at": 1000}
++    connection = SimpleNamespace(execute=lambda *_args: SimpleNamespace(
++        mappings=lambda: SimpleNamespace(one=lambda: row)))
++    assert reporting._replica(connection, FENCE) == {
++        "source": "read_only_replica", "last_replayed_transaction_at": replayed_at,
++        "last_replayed_transaction_age_seconds": age,
++        "request_start_fence_applied": True,
++    }
++
++
++def test_postgres_budget_uses_remaining_total_time(monkeypatch):
++    import bmt_backend.studio_reporting as module
++
++    monkeypatch.setattr(module, "time", SimpleNamespace(monotonic=lambda: 2.0))
++    calls = []
++    connection = SimpleNamespace(info={"bmt_studio_report_deadline": 5.0},
++                                 dialect=SimpleNamespace(name="postgresql"))
++    StudioReporting._budget(connection, SimpleNamespace(execute=calls.append), "SELECT 1", None, None, False)
++    assert calls == ["SET LOCAL statement_timeout = 3000"]
++
++
++def test_real_postgres_primary_is_rejected_and_reader_is_server_read_only(domain):  # noqa: F811
++    if domain.app.state.engine.dialect.name != "postgresql":
++        pytest.skip("Requires disposable PostgreSQL")
++    reporting = StudioReporting(replace(
++        domain.app.state.settings,
++        studio_analysis_database_url=domain.app.state.settings.database_url,
++    ))
++    try:
++        with pytest.raises(HTTPException) as caught, reporting.snapshot(domain.factory):
++            pytest.fail("A primary must not execute analytical facts")
++        assert caught.value.detail == "STUDIO_ANALYSIS_REQUIRES_READ_ONLY_REPLICA"
++        with pytest.raises(DBAPIError) as denied, reporting.engine.begin() as connection:
++            connection.execute(text("CREATE SCHEMA bmt_studio_report_forbidden"))
++        assert denied.value.orig.sqlstate == "25006"
++    finally:
++        reporting.close()
+diff --git a/backend/tests/test_studio_simulator.py b/backend/tests/test_studio_simulator.py
+--- a/backend/tests/test_studio_simulator.py
++++ b/backend/tests/test_studio_simulator.py
+@@ -127,12 +127,18 @@
+ 
+ 
+ def test_simulator_ordinary_players_projection_balanced_economy_and_workflows(domain):  # noqa: F811
++    from bmt_backend.studio_reporting import StudioReporting
++
+     sim = prepared(domain)
+     domain.app.state.settings = replace(
+         domain.app.state.settings,
+         admin_owner_key="o" * 40,
+         telemetry_enabled=True,
+         client_quality_enabled=True,
++    )
++    domain.app.state.studio_reporting.close()
++    domain.app.state.studio_reporting = StudioReporting(
++        domain.app.state.settings, engine=domain.app.state.engine
+     )
+     with domain.factory() as db:
+         original = {

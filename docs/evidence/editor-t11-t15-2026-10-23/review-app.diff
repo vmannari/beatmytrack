@@ -1,0 +1,176 @@
+--- before/game/core/app.gd
+
++++ game/core/app.gd
+
+@@ -51,6 +51,11 @@
+
+ var document: Dictionary = {}
+ const EDITOR_HISTORY = preload("res://editor/editor_history.gd")
+-var history: Array[Dictionary] = []
+-var redo_history: Array[Dictionary] = []
++var editor_session = preload("res://editor/editor_session.gd").new()
++var history: Array[Dictionary]:
++	get: return editor_session.undo
++	set(value): editor_session.undo = value
++var redo_history: Array[Dictionary]:
++	get: return editor_session.redo
++	set(value): editor_session.redo = value
+ var canvas: EditorCanvas
+ var editor_status: Label
+@@ -101,8 +106,16 @@
+
+ var editor_memory = preload("res://editor/editor_memory.gd").new()
+ var _editor_exiting: bool = false
+-var editor_commits = preload("res://editor/commit_queue.gd").new()
+-var editor_validation_document: Dictionary = {}
+-var editor_validation_errors: Array[String] = []
+-var editor_workflow_presentation: Dictionary = {}
++var editor_commits:
++	get: return editor_session.commits
++	set(value): editor_session.commits = value
++var editor_validation_document: Dictionary:
++	get: return editor_session.validated
++	set(value): editor_session.validated = value
++var editor_validation_errors: Array[String]:
++	get: return editor_session.errors
++	set(value): editor_session.errors = value
++var editor_workflow_presentation: Dictionary:
++	get: return editor_session.workflow
++	set(value): editor_session.workflow = value
+ var editor_writes = preload("res://editor/write_queue.gd").new()
+ var editor_saved_snapshot: Dictionary = {}
+@@ -116,6 +129,10 @@
+
+ var editor_pending_tools: Dictionary = {}
+ var editor_pending_id: String = ""
+-var editor_gesture_history: Array[Dictionary] = []
+-var editor_gesture_redo: Array[Dictionary] = []
++var editor_gesture_history: Array[Dictionary]:
++	get: return editor_session.gesture_undo
++	set(value): editor_session.gesture_undo = value
++var editor_gesture_redo: Array[Dictionary]:
++	get: return editor_session.gesture_redo
++	set(value): editor_session.gesture_redo = value
+ var editor_issue_cursor: int = -1
+ var editor_hint_generation: int = 0
+@@ -2543,7 +2560,5 @@
+
+ 	canvas.native_changed.connect(editor_world.show_track)
+ 	canvas.edit_started.connect(func() -> void:
+-		editor_gesture_history = history.duplicate()
+-		editor_gesture_redo = redo_history.duplicate()
+-		_remember()
++		editor_session.begin_gesture(document)
+ 		if canvas.mode in ["move","add"]: document.route_override = true)
+ 	canvas.document_changed.connect(func() -> void:
+@@ -2554,11 +2569,7 @@
+
+ 	canvas.edit_finished.connect(func() -> void:
+ 		_save_draft(true)
+-		editor_gesture_history.clear()
+-		editor_gesture_redo.clear())
++		editor_session.finish_gesture())
+ 	canvas.edit_cancelled.connect(func() -> void:
+-		history = editor_gesture_history.duplicate()
+-		redo_history = editor_gesture_redo.duplicate()
+-		editor_gesture_history.clear()
+-		editor_gesture_redo.clear()
++		editor_session.cancel_gesture()
+ 		canvas.selected_object = mini(canvas.selected_object,document.objects.size()-1)
+ 		_save_draft(true)
+@@ -3000,5 +3011,5 @@
+
+ 	var browsing: bool = category=="objects" and not (canvas.selected_object>=0 and canvas.mode=="objects")
+ 	object_browser.visible = browsing
+-	object_browser.set_rotation(canvas.stamp_rotation)
++	object_browser.set_stamp_rotation(canvas.stamp_rotation)
+ 	object_browser.rotation_button.disabled = canvas.mode == "run"
+ 	editor_palette.visible = not browsing
+@@ -3014,6 +3025,6 @@
+
+ 		if piece.is_empty():
+ 			_context_button("Start line","race",canvas.choose_start_line)
+-			for pair: Array in [["straight","Straight"],["taper","Taper"],["curve","Curve"],["s_bend","S-bend"],["hairpin","Hairpin"],["bridge","Bridge"],["spline","Spline"]]:
+-				_context_button(pair[1],pair[0],canvas.choose_piece.bind(pair[0]))
++			for kind: String in RoadPieces.KINDS:
++				_context_button(preload("res://editor/road_piece_catalog.gd").title(kind),kind,canvas.choose_piece.bind(kind))
+ 			editor_status.text = "Choose a section · drag empty ground to pan · pinch to zoom"
+ 		elif editor_geometry != "" and piece.kind == "bridge":
+@@ -3079,5 +3090,7 @@
+
+ 			editor_status.text=CreatorObjects.description(document.objects[canvas.selected_object].kind)
+ 			_context_button("Rotate","rotate",_rotate_object).tooltip_text = "Rotate by 22.5°"
+-			_context_button(preload("res://editor/object_rotation.gd").angle_text(_object_rotation()),"rotate",_object_rotation_dialog).tooltip_text = "16 orientations or Free rotation"
++			var rotation_choice: Button = _context_button(preload("res://editor/object_rotation.gd").angle_text(_object_rotation()),"rotate",_object_rotation_dialog)
++			rotation_choice.name = "ObjectRotation"
++			rotation_choice.tooltip_text = "16 orientations or Free rotation"
+ 			_context_button("Copy","objects",_duplicate_object)
+ 			if document.objects[canvas.selected_object].kind == "speed_bump":
+@@ -3263,5 +3276,5 @@
+
+ 		_commit_selection()
+ 	else: _build_editor_tools()
+-	object_browser.set_rotation(angle)
++	object_browser.set_stamp_rotation(angle)
+ 
+ func _object_rotation_dialog() -> void:
+@@ -3278,4 +3291,5 @@
+
+ 		if not is_instance_valid(owner_canvas) or canvas != owner_canvas or screen != "create": return
+ 		if not is_same(document,source) or canvas.selected_object != selection or canvas.stamp_kind != kind: return
++		if dialog.free_rotation: dialog.field.apply()
+ 		_set_object_rotation(dialog.angle))
+ 	_own_dialog(dialog)
+@@ -3333,7 +3347,5 @@
+
+ 
+ func _remember() -> void:
+-	history.append(EDITOR_HISTORY.capture(document,history.back() if not history.is_empty() else {}))
+-	redo_history.clear()
+-	EDITOR_HISTORY.trim(history,redo_history)
++	editor_session.remember(document)
+ 
+ func _set_document_value(key: String, value: Variant) -> void:
+@@ -3346,14 +3358,10 @@
+
+ func _undo() -> void:
+ 	if history.is_empty(): return
+-	redo_history.append(EDITOR_HISTORY.capture(document,history.back()))
+-	document = EDITOR_HISTORY.restore(history.pop_back())
+-	EDITOR_HISTORY.trim(history,redo_history)
++	document = editor_session.restore(document,true)
+ 	_restore_editor_history()
+ 
+ func _redo() -> void:
+ 	if redo_history.is_empty(): return
+-	history.append(EDITOR_HISTORY.capture(document,redo_history.back()))
+-	document = EDITOR_HISTORY.restore(redo_history.pop_back())
+-	EDITOR_HISTORY.trim(history,redo_history)
++	document = editor_session.restore(document,false)
+ 	_restore_editor_history()
+ 
+@@ -3415,5 +3423,5 @@
+
+ 		# revision's recovery write. Analysis and writes both preserve order.
+ 		if not receipt.has("error"): editor_writes.enqueue(receipt.storage,receipt.document)
+-		if receipt.storage != library or receipt.source != document: continue
++		if not editor_session.accept(receipt,library,document): continue
+ 		if receipt.has("error"):
+ 			editor_save_error = receipt.error; editor_save_message = "Could not prepare the draft for saving. Use Save to retry."
+@@ -3423,7 +3431,4 @@
+
+ 		for key: String in ["points","widths","corners","route_override"]:
+ 			document[key] = receipt.document[key]
+-		editor_validation_document = receipt.document.duplicate(true)
+-		editor_validation_errors.assign(receipt.errors)
+-		editor_workflow_presentation = receipt.workflow
+ 		if not editor_retry_original: editor_save_error = OK; editor_save_message = ""
+ 		if not _editor_exiting and is_inside_tree() and is_instance_valid(canvas) and canvas.is_inside_tree() and canvas.document == document:
+@@ -3450,5 +3455,5 @@
+
+ 		if document.is_empty(): return ERR_INVALID_DATA
+ 		_stamp_creator()
+-		editor_commits.enqueue(library,document,lifecycle._root() if lifecycle != null else "")
++		editor_session.enqueue(library,document,lifecycle._root() if lifecycle != null else "")
+ 		editor_commits.poll()
+ 		test_button.disabled = true; publish_button.disabled = true; share_button.disabled = true

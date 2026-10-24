@@ -1,0 +1,39 @@
+extends SceneTree
+## Audit-only scene lifetime probe; unscored, offline, disposable caches.
+const FOLDER: String = "res://../docs/evidence/gameplay-audit-2026-10-23"
+var rows: Array[Dictionary] = []
+func _initialize() -> void: run.call_deferred()
+func record(cycle: int, theme: String, phase: String) -> void:
+	rows.append({"cycle":cycle,"theme":theme,"phase":phase,"static_bytes":OS.get_static_memory_usage(),"nodes":get_node_count(),"resources":Performance.get_monitor(Performance.OBJECT_RESOURCE_COUNT),"objects":Performance.get_monitor(Performance.OBJECT_COUNT),"video_bytes":Performance.get_monitor(Performance.RENDER_VIDEO_MEM_USED)})
+func run() -> void:
+	GameSoundtrack.instance().output_enabled = false
+	NativeTrackVisual.ROAD_DISK_CACHE.directory = ProjectSettings.globalize_path("res://../build/gameplay-audit-2026-10-23/cycle-roads")
+	root.size = Vector2i(1280,720)
+	var scene: PackedScene = load("res://core/game.tscn")
+	for wait_frame: int in range(3): await process_frame
+	record(-1,"none","baseline")
+	for cycle: int in range(15):
+		var theme: String = ["pine","winter","desert","night_city","storm"][cycle%5]
+		var track: NativeTrack = NativeTrack.read("res://resources/tracks/starter_circuit.json")
+		track.metadata.theme = theme
+		var game: Node = scene.instantiate()
+		game.initial_track = track
+		game.production_mode = true
+		game.attempt_practice = true
+		game.hitch_diagnostics_enabled = false
+		game.process_mode = Node.PROCESS_MODE_DISABLED
+		root.add_child(game)
+		game._process(0.0)
+		for wait_frame: int in range(3): await RenderingServer.frame_post_draw
+		record(cycle,theme,"active")
+		root.remove_child(game)
+		game.free()
+		game = null
+		track = null
+		for wait_frame: int in range(3): await process_frame
+		record(cycle,theme,"freed")
+	var output := FileAccess.open(FOLDER+"/resource-cycles.json",FileAccess.WRITE)
+	output.store_string(JSON.stringify({"engine":Engine.get_version_info().string,"adapter":RenderingServer.get_video_adapter_name(),"renderer":RenderingServer.get_current_rendering_method(),"scope":"15 frozen race scene builds/frees, same native fixture across five biomes, no simulation/input/recording/owner profiles/network. Static counters are not Android PSS or proof of no leaks; caches may warm. Graphics counters can lag.","rows":rows},"\t"))
+	output.close()
+	print("RESOURCE_CYCLES ",JSON.stringify(rows.filter(func(row: Dictionary) -> bool: return row.phase != "active")))
+	quit()

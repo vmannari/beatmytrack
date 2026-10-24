@@ -1,0 +1,859 @@
+--- a/backend/bmt_backend/discovery_v3.py
++++ b/backend/bmt_backend/discovery_v3.py
+@@ -3,6 +3,7 @@
+ import hashlib
+ import hmac
+ import json
++import re
+ import secrets
+ import time
+ import uuid
+@@ -134,10 +135,11 @@
+ 
+ def boundary(db, view, positions, phase, previous=None, anchor=None):
+     identity = digest([view.id, positions, phase, previous, anchor])
+-    db.execute(insert(db, DiscoveryBoundary).values(id=identity, session_id=view.id,
++    created = db.scalar(insert(db, DiscoveryBoundary).values(id=identity, session_id=view.id,
+         expires_at=view.expires_at, positions=positions, phase=phase,
+-        previous_id=previous, anchor_version=anchor).on_conflict_do_nothing(index_elements=["id"]))
+-    return db.get(DiscoveryBoundary, identity)
++        previous_id=previous, anchor_version=anchor).on_conflict_do_nothing(index_elements=["id"])
++        .returning(DiscoveryBoundary))
++    return created if created is not None else db.get(DiscoveryBoundary, identity)
+ 
+ 
+ def collection(db, request, actor, query, stamp, deadline, blocks, epochs, anonymous):
+@@ -181,20 +183,23 @@
+ 
+ 
+ def new_session(db, request, actor, player, query, stamp, anchor, deadline):
+-    partitions = list(db.scalars(select(DiscoveryPartition).order_by(DiscoveryPartition.id)))
+-    bootstrap = db.get(DiscoveryBootstrap, 1)
+-    if len(partitions) != PARTITIONS or not all(p.ready for p in partitions) or not bootstrap or not bootstrap.ready:
++    check_deadline(db, deadline)
++    # Sixteen bounded index probes, one network round trip. Never GROUP/COUNT
++    # the journal: an arbitrarily large backlog must not slow admission checks.
++    oldest = select(DiscoveryChange.created_at).where(
++        DiscoveryChange.partition == DiscoveryPartition.id, DiscoveryChange.processed_at.is_(None)
++        ).order_by(DiscoveryChange.id).limit(1).correlate(DiscoveryPartition).scalar_subquery()
++    health = list(db.execute(select(DiscoveryPartition, oldest, DiscoveryBootstrap.ready)
++        .join(DiscoveryBootstrap, DiscoveryBootstrap.id == 1).order_by(DiscoveryPartition.id)))
++    partitions = [row[0] for row in health]
++    if len(partitions) != PARTITIONS or not all(p.ready and ready for p, _, ready in health):
+         raise HTTPException(503, "DISCOVERY_INDEX_PREPARING", headers={"Retry-After": "2"})
+     if any(p.checked_at < (stamp - 120) * 1_000_000_000 for p in partitions):
+         raise HTTPException(503, "DISCOVERY_INDEX_STALE", headers={"Retry-After": "2"})
+     # A running consumer can still fall behind. Inspect one indexed pending
+     # receipt per partition rather than counting or scanning the journal.
+-    for shard in partitions:
+-        check_deadline(db, deadline)
+-        oldest = db.scalar(select(DiscoveryChange.created_at).where(
+-            DiscoveryChange.partition == shard.id, DiscoveryChange.processed_at.is_(None))
+-            .order_by(DiscoveryChange.id).limit(1))
+-        if oldest is not None and oldest < stamp - 120:
++    for _, pending_at, _ in health:
++        if pending_at is not None and pending_at < stamp - 120:
+             raise HTTPException(503, "DISCOVERY_INDEX_STALE", headers={"Retry-After": "2"})
+     if query.section == "saved" and player is None:
+         raise HTTPException(401, "AUTH_REQUIRED")
+@@ -225,11 +230,12 @@
+     check_deadline(db, deadline)
+     collection_id = collection(db, request, actor, query, stamp, deadline, blocks,
+         [p.epoch for p in partitions], player is None)
+-    db.execute(insert(db, DiscoverySession).values(id=identity, scope=actor, created_at=stamp,
++    view = db.scalar(insert(db, DiscoverySession).values(id=identity, scope=actor, created_at=stamp,
+         expires_at=stamp + LIFETIME, secret=secrets.token_hex(32), query=values,
+         epochs=[p.epoch for p in partitions], slots=[p.slots for p in partitions],
+-        collection_id=collection_id).on_conflict_do_nothing(index_elements=["id"]))
+-    view = db.get(DiscoverySession, identity)
++        collection_id=collection_id).on_conflict_do_nothing(index_elements=["id"]).returning(DiscoverySession))
++    if view is None:
++        view = db.get(DiscoverySession, identity)
+     return view, boundary(db, view, {}, 0, anchor=anchor or None)
+ 
+ 
+@@ -271,7 +277,7 @@
+     return or_(*options)
+ 
+ 
+-def conditions(view, player, authority=True):
++def conditions(view, player, authority=True, postgres=False):
+     q = view.query
+     result = [E.visible.is_(True)]
+     if authority:
+@@ -301,6 +307,13 @@
+     term = q["search"].strip()
+     if term:
+         name, creator = E.name.icontains(term, autoescape=True), E.creator.icontains(term, autoescape=True)
++        if postgres and not re.search(r"[^\W_]{3}", term):
++            # Trigrams cannot accelerate these patterns. The immutable SQL
++            # function uses database lower()/characters, including punctuation;
++            # ILIKE remains the exact final substring predicate.
++            grams = func.discovery_short_grams(term)
++            name = and_(func.discovery_short_grams(E.name).op("@>")(grams), name)
++            creator = and_(func.discovery_short_grams(E.creator).op("@>")(grams), creator)
+         result.append(name if q["search_kind"] == 1 else creator if q["search_kind"] == 2 else or_(name, creator))
+     def member(kind):
+         return exists(select(DiscoveryMember.track_id).where(DiscoveryMember.collection_id == view.collection_id,
+@@ -317,17 +330,22 @@
+     return and_(E.partition == shard, E.epoch <= epoch, or_(E.until.is_(None), E.until > epoch))
+ 
+ 
+-def base():
+-    return (select(E).join(Track, Track.id == E.track_id).join(Player, Player.id == Track.owner_id)
+-        .join(TrackVersion, TrackVersion.id == E.version_id))
++def base(authority=True, columns=None):
++    statement = select(*(columns if columns is not None else (E,)))
++    if authority:
++        statement = (statement.join(Track, Track.id == E.track_id).join(Player, Player.id == Track.owner_id)
++            .join(TrackVersion, TrackVersion.id == E.version_id))
++    return statement
+ 
+ 
+ def fetch(db, view, player, fields, after=None, official=None, limit=PAGE + 1, extra=(), inclusive=False, authority=True):
+-    predicates = conditions(view, player, authority)
++    predicates = conditions(view, player, authority, db.bind.dialect.name == "postgresql")
++    names = dict.fromkeys(["track_id", "version_id", "official", *(n for n, _ in fields)])
++    columns = [getattr(E, name) for name in names]
+     orders = [getattr(E, n).desc() if desc else getattr(E, n).asc() for n, desc in fields]
+     pieces = []
+     for shard, epoch in enumerate(view.epochs):
+-        statement = base().where(at_epoch(shard, epoch), *predicates, seek(fields, after, inclusive), *extra)
++        statement = base(authority, columns).where(at_epoch(shard, epoch), *predicates, seek(fields, after, inclusive), *extra)
+         if official is not None:
+             statement = statement.where(E.official == official)
+         sub = statement.order_by(*orders).limit(limit).subquery()
+@@ -427,18 +445,13 @@
+                         draws.append((shard, value + 1))
+                         break
+                     value -= count
+-            rows = list(db.execute(base().join(DiscoveryHead, DiscoveryHead.track_id == E.track_id)
++            rows = list(db.execute(base(columns=(E.track_id, E.version_id,
++                DiscoveryHead.partition.label("sample_partition"), DiscoveryHead.slot.label("sample_slot")))
++                .join(DiscoveryHead, DiscoveryHead.track_id == E.track_id)
+                 .where(tuple_(DiscoveryHead.partition, DiscoveryHead.slot).in_(draws),
+                     or_(*(at_epoch(p, epoch) for p, epoch in enumerate(view.epochs))),
+-                    *conditions(view, player), E.track_id != exclude)).mappings())
+-            by_slot = {}
+-            # E does not expose slot; bounded head lookup maps the sampled IDs.
+-            heads = {h.track_id: (h.partition, h.slot) for h in db.scalars(select(DiscoveryHead)
+-                .where(tuple_(DiscoveryHead.partition, DiscoveryHead.slot).in_(draws)))}
+-            for row in rows:
+-                value = row.get(E, row)
+-                mapped = {c.name: getattr(value, c.name) for c in E.__table__.columns} if isinstance(value, E) else dict(value)
+-                by_slot[heads[mapped["track_id"]]] = mapped
++                    *conditions(view, player, postgres=db.bind.dialect.name == "postgresql"), E.track_id != exclude)).mappings())
++            by_slot = {(row["sample_partition"], row["sample_slot"]): row for row in rows}
+             selected = next(([by_slot[d]] for d in draws if d in by_slot), [])
+             if selected:
+                 break
+--- a/backend/bmt_backend/discovery_projection.py
++++ b/backend/bmt_backend/discovery_projection.py
+@@ -234,6 +234,7 @@
+ 
+ def cleanup(db, stamp):
+     """Every transaction bounds deletion output, including collection members."""
++    removed = 0
+     for model, predicate, fields in (
+         (DiscoveryEntry, DiscoveryEntry.retired_at < stamp - LIFETIME - 120, (DiscoveryEntry.track_id, DiscoveryEntry.epoch)),
+         (DiscoveryBoundary, DiscoveryBoundary.expires_at < stamp, (DiscoveryBoundary.id,)),
+@@ -245,22 +246,28 @@
+         keys = list(db.execute(select(*fields).where(predicate).limit(BATCH).with_for_update(skip_locked=True)))
+         if keys:
+             db.execute(delete(model).where(tuple_(*fields).in_([tuple(r) for r in keys])))
++            removed += len(keys)
+     from .discovery import DiscoverySnapshot
+     expired_v2 = db.scalar(select(DiscoverySnapshot.id).where(DiscoverySnapshot.expires_at < stamp)
+         .limit(1).with_for_update(skip_locked=True))
+     if expired_v2:
+         db.execute(delete(DiscoverySnapshot).where(DiscoverySnapshot.id == expired_v2))
++        removed += 1
+     expired = db.scalar(select(DiscoveryCollection).where(DiscoveryCollection.expires_at < stamp)
+         .order_by(DiscoveryCollection.expires_at, DiscoveryCollection.id).limit(1).with_for_update(skip_locked=True))
+     if expired:
+         keys = list(db.execute(select(DiscoveryMember.kind, DiscoveryMember.track_id)
+             .where(DiscoveryMember.collection_id == expired.id).limit(BATCH * 4)))
+         if keys:
+-            retention.erase_members(db, expired, keys)
++            if retention.erase_members(db, expired, keys):
++                removed += len(keys)
+         else:
+             if expired.member_rows or expired.member_bytes:
+                 raise RuntimeError("Discovery empty collection retains a storage charge")
+             db.delete(expired)
++            removed += 1
++    return removed
++
+ 
+ def step(factory, *, clock=None):
+     stamp = now() if clock is None else clock
+@@ -328,8 +335,7 @@
+         force.update(affected)
+         deltas.update(owner_deltas)
+         expired = list(db.scalars(select(DiscoveryDriver).where(DiscoveryDriver.partition == shard.id,
+-            DiscoveryDriver.expires_at < stamp).order_by(DiscoveryDriver.expires_at,
+-                DiscoveryDriver.track_id, DiscoveryDriver.player_id).limit(BATCH)))
++            DiscoveryDriver.expires_at < stamp).order_by(DiscoveryDriver.expires_at).limit(BATCH)))
+         for row in expired:
+             deltas[row.track_id] -= int(row.counted)
+             db.delete(row)
+@@ -355,9 +361,9 @@
+         changed = publish(db, shard, force | due, stamp)
+         for event in events:
+             event.processed_at = stamp
+-        cleanup(db, stamp)
++        removed = cleanup(db, stamp)
+         db.commit()
+-        return bool(bootstrap_work or storage_work or events or force or due or expired or affected or owner_deltas or changed)
++        return bool(bootstrap_work or storage_work or events or force or due or expired or affected or owner_deltas or changed or removed)
+ 
+ 
+ def settle_for_diagnostics(factory, *, clock=None, maximum=10000):
+@@ -404,16 +410,32 @@
+     with factory() as db:
+         budget(db)
+         bootstrap = db.get(DiscoveryBootstrap, 1)
+-        partitions = list(db.scalars(select(DiscoveryPartition).order_by(DiscoveryPartition.id)))
++        pending_at = select(DiscoveryChange.created_at).where(DiscoveryChange.partition == DiscoveryPartition.id,
++            DiscoveryChange.processed_at.is_(None)).order_by(DiscoveryChange.id).limit(1).correlate(DiscoveryPartition).scalar_subquery()
++        expired_at = select(DiscoveryDriver.expires_at).where(DiscoveryDriver.partition == DiscoveryPartition.id,
++            DiscoveryDriver.expires_at < stamp).order_by(DiscoveryDriver.expires_at).limit(1).correlate(DiscoveryPartition).scalar_subquery()
++        due_at = select(DiscoveryHead.due_at).where(DiscoveryHead.partition == DiscoveryPartition.id,
++            DiscoveryHead.due_at > 0, DiscoveryHead.due_at <= stamp).order_by(DiscoveryHead.due_at).limit(1).correlate(DiscoveryPartition).scalar_subquery()
++        partitions = list(db.execute(select(DiscoveryPartition, pending_at, expired_at, due_at).order_by(DiscoveryPartition.id)))
+         values = []
+-        for shard in partitions:
+-            pending = db.scalar(select(DiscoveryChange.created_at).where(
+-                DiscoveryChange.partition == shard.id, DiscoveryChange.processed_at.is_(None))
+-                .order_by(DiscoveryChange.id).limit(1))
++        for shard, pending, expired, due in partitions:
+             values.append({"partition":shard.id,"ready":shard.ready,"epoch":shard.epoch,
+                 "slots":shard.slots,"checked_age_seconds":max(0,stamp-shard.checked_at//1_000_000_000),
+-                "pending_age_seconds":max(0,stamp-pending) if pending is not None else 0})
++                "pending_age_seconds":max(0,stamp-pending) if pending is not None else 0,
++                "expired_pair_age_seconds":max(0,stamp-expired) if expired is not None else 0,
++                "rank_due_age_seconds":max(0,stamp-due) if due is not None else 0})
++        cleanup_age = {}
++        for name, column, grace in (
++            ("entries", DiscoveryEntry.retired_at, LIFETIME + 120),
++            ("boundaries", DiscoveryBoundary.expires_at, 0),
++            ("sessions", DiscoverySession.expires_at, 0),
++            ("receipts", DiscoveryChange.processed_at, 120),
++            ("collections", DiscoveryCollection.expires_at, 0),
++        ):
++            oldest = db.scalar(select(column).where(column < stamp - grace).order_by(column).limit(1))
++            cleanup_age[name] = max(0, stamp - grace - oldest) if oldest is not None else 0
+         return {"population_backfill_ready":bool(bootstrap and bootstrap.ready),"partitions":values,
++                "cleanup_oldest_age_seconds": cleanup_age,
+                 "storage_backfill_ready": bool(db.scalar(select(DiscoveryStorageBootstrap.ready)
+                     .where(DiscoveryStorageBootstrap.id == 1))),
+                 "storage_partitions": [{"partition": row.id, "member_rows": row.member_rows,
+--- a/backend/bmt_backend/discovery_models.py
++++ b/backend/bmt_backend/discovery_models.py
+@@ -100,7 +100,7 @@
+     last_at: Mapped[int] = mapped_column(BigInteger)
+     expires_at: Mapped[int] = mapped_column(BigInteger)
+     counted: Mapped[bool] = mapped_column(Boolean)
+-    __table_args__ = (Index("ix_discovery_driver_expire", "partition", "expires_at", "track_id", "player_id"),
++    __table_args__ = (Index("ix_discovery_driver_expire", "partition", "expires_at"),
+                       Index("ix_discovery_driver_player", "player_id", "track_id"))
+ 
+ 
+--- a/backend/bmt_backend/middleware.py
++++ b/backend/bmt_backend/middleware.py
+@@ -25,6 +25,7 @@
+ from .client_address import ClientAddress, anonymous_network
+ from .identity_models import RateBucket
+ 
++DISCOVERY_BODY_STALL_SECONDS = 2.0
+ from .discovery_guard import costly
+ from .json_data import parse_json as parse_body
+ from .observability import dependency_failure
+@@ -142,6 +143,9 @@
+         # Large collection bodies retain their original single-tree allowance.
+         # Tiny requests buffer independently, then enter a bounded query pool;
+         # an unfinished anonymous upload cannot own the query capacity.
++        self.discovery_receivers = asyncio.Semaphore(8)
++        self.discovery_receiving_keys = set()
++        self.discovery_small_parsers = asyncio.Semaphore(max(1, min(3, settings.database_pool_size - 1)))
+         self.discovery_queries = threading.BoundedSemaphore(max(1, min(3, settings.database_pool_size - 1)))
+         self.discovery_expensive = threading.BoundedSemaphore(1)
+         self.read_leases = OrderedDict()
+@@ -266,6 +270,8 @@
+         response_started = False
+         acquired = False
+         acquired_pool = None
++        discovery_receiving = False
++        discovery_receive_key = None
+         identity_admitted = False
+         wire_bytes, decoded_bytes, response_bytes = 0, 0, 0
+ 
+@@ -408,7 +414,20 @@
+             if encoding not in (b"identity", b"gzip"):
+                 return await error(415, "UNSUPPORTED_CONTENT_ENCODING")
+             discovery = path in ("/v1/discovery/tracks", "/v1/discovery/random", "/v1/discovery/v3/tracks", "/v1/discovery/v3/random")
+-            if upload:
++            small_discovery = discovery and length is not None and declared <= 16384 and encoding == b"identity"
++            if small_discovery:
++                limit = min(limit, 16384)
++                try:
++                    await asyncio.wait_for(self.discovery_receivers.acquire(), timeout=0.1)
++                    discovery_receiving = True
++                    discovery_receive_key = ("player", scope["state"]["budget_player_id"]) if identity_admitted else ("peer", peer)
++                    if discovery_receive_key in self.discovery_receiving_keys:
++                        discovery_receive_key = None
++                        return await error(503, "DISCOVERY_UPLOAD_BUSY", {"Retry-After": "1"})
++                    self.discovery_receiving_keys.add(discovery_receive_key)
++                except (asyncio.TimeoutError, TimeoutError):
++                    return await error(503, "REQUEST_VALIDATION_BUSY")
++            elif upload:
+                 try:
+                     acquired_pool = (self.telemetry_parsers if path == "/v1/telemetry/batches" else
+                                      self.discovery_parsers if discovery
+@@ -421,10 +440,10 @@
+             body = bytearray()
+             wire_bytes = 0
+             try:
+-                body_deadline = time.monotonic() + 30
++                body_deadline = time.monotonic() + (5 if small_discovery else 30)
+                 while True:
+                     remaining = max(0, body_deadline - time.monotonic())
+-                    message = await asyncio.wait_for(receive(), remaining)
++                    message = await asyncio.wait_for(receive(), min(DISCOVERY_BODY_STALL_SECONDS, remaining) if discovery else remaining)
+                     if message["type"] == "http.disconnect":
+                         return
+                     chunk = message.get("body", b"")
+@@ -450,6 +469,16 @@
+             if inflater is not None and (not inflater.eof or inflater.unused_data or inflater.unconsumed_tail):
+                 return await error(400, "INVALID_GZIP")
+             decoded_bytes = len(body)
++            if small_discovery:
++                try:
++                    acquired_pool = self.discovery_small_parsers
++                    await asyncio.wait_for(acquired_pool.acquire(), timeout=0.1)
++                    acquired = True
++                except (asyncio.TimeoutError, TimeoutError):
++                    return await error(503, "REQUEST_VALIDATION_BUSY")
++                self.discovery_receivers.release()
++                self.discovery_receiving_keys.discard(discovery_receive_key)
++                discovery_receiving = False
+             if body:
+                 if headers.get(b"content-type", b"").split(b";")[0].strip().lower() != b"application/json":
+                     return await error(415, "JSON_REQUIRED")
+@@ -507,6 +536,9 @@
+                 self.discovery_queries.release()
+             if acquired:
+                 acquired_pool.release()
++            if discovery_receiving:
++                self.discovery_receivers.release()
++                self.discovery_receiving_keys.discard(discovery_receive_key)
+             if scope.get("state", {}).pop("discovery_search_admitted", False):
+                 self.discovery_expensive.release()
+             # Template paths only: never log ID tokens, credentials, raw paths or query strings.
+--- a/game/backend/discovery_windows.gd
++++ b/game/backend/discovery_windows.gd
+@@ -19,6 +19,8 @@
+ var cache_directory: String = ""
+ var coordinate_shift: int = 0
+ var has_more: bool = false
++var retry_at_msec: int = 0
++var failure_count: int = 0
+ var snapshot_cache = preload("res://backend/menu_snapshot_cache.gd").new()
+ const PAGE_SIZE: int = 20
+ const MAX_PAGES: int = 13
+@@ -35,6 +37,11 @@
+ func begin(filters: Dictionary, favorites: Array = [], raced: Array = [], fresh: bool = false) -> void:
+ 	var body: Dictionary = payload(filters,favorites,raced)
+ 	var key: String = JSON.stringify(body)
++	var same_query: bool = key == query_key and origin == scope()
++	if same_query and Time.get_ticks_msec() < retry_at_msec: return
++	if not same_query:
++		retry_at_msec = 0
++		failure_count = 0
+ 	if not fresh and key == query_key and origin == scope():
+ 		if loading: return
+ 		if total >= 0 and error.is_empty() and Time.get_ticks_msec()-last_used < 60000:
+@@ -68,7 +75,7 @@
+ 	has_more = false
+ 
+ func _fetch(page_number: int, _fresh: bool = false) -> void:
+-	if loading or query.is_empty(): return
++	if loading or query.is_empty() or Time.get_ticks_msec() < retry_at_msec: return
+ 	var body: Dictionary = {}
+ 	var numbers: Array = pages.keys()
+ 	if not cursor.is_empty():
+@@ -88,17 +95,20 @@
+ 	if serial != generation or origin != scope(): return
+ 	loading = false
+ 	if not result.ok:
+-		error = _error_message(result)
++		_failed(result)
+ 		changed.emit()
+ 		return
+ 	var data: Dictionary = result.data
+ 	if not _valid_page(data):
++		_failed({"status":0})
+ 		error = "Could not load this track page. Refresh to retry."
+ 		changed.emit()
+ 		return
+ 	if cursor.is_empty(): pages.clear()
+ 	_install(page_number,data)
+ 	error = ""
++	retry_at_msec = 0
++	failure_count = 0
+ 	locate_version = ""
+ 	last_used = Time.get_ticks_msec()
+ 	if page_number == 0 and data.get("previous_cursor") == null:
+@@ -155,9 +165,15 @@
+ 	if status == 429 or status == 503: return "Track search is busy. Retry or narrow your filters."
+ 	return "Could not load tracks. Retry when connected."
+ 
++func _failed(result: Dictionary) -> void:
++	error = _error_message(result)
++	failure_count = mini(6,failure_count+1)
++	var delay_seconds: int = maxi(int(result.get("retry_after",0)),mini(30,1 << (failure_count-1)))
++	retry_at_msec = Time.get_ticks_msec()+delay_seconds*1000+randi_range(0,250)
++
+ func request_visible(index: int) -> void:
+ 	desired_index = clampi(index,0,maxi(0,total-1))
+-	if loading or total < 0: return
++	if loading or total < 0 or not error.is_empty(): return
+ 	var number: int = desired_index/PAGE_SIZE
+ 	if not pages.has(number):
+ 		_fetch(number)
+@@ -190,19 +206,21 @@
+ 	return "%d tracks loaded%s" % [entries().size()," · more available" if has_more else ""]
+ 
+ func random_entry(exclude: String) -> Dictionary:
+-	if loading: return {}
++	if loading or Time.get_ticks_msec() < retry_at_msec: return {}
+ 	var serial: int = generation
+ 	var body: Dictionary = {"cursor":cursor} if not cursor.is_empty() else {"query":query.duplicate(true)}
+ 	body.exclude = exclude.trim_prefix("cloud_")
+ 	var response: Dictionary = await client.request_discovery(body,get_instance_id(),true)
+ 	if serial != generation or origin != scope(): return {}
+ 	if not response.ok:
+-		error = _error_message(response)
++		_failed(response)
+ 		changed.emit()
+ 		return {}
+ 	if not response.data.get("items") is Array or response.data.items.is_empty(): return {}
+ 	var chosen: Dictionary = response.data.items[0]
+ 	if str(chosen.get("version_id","")).length() != 36: return {}
++	retry_at_msec = 0
++	failure_count = 0
+ 	generation += 1
+ 	client.cancel_public_reads(get_instance_id())
+ 	_reset_window()
+--- a/game/tests/test_discovery_windows.gd
++++ b/game/tests/test_discovery_windows.gd
+@@ -13,6 +13,7 @@
+ 	var starts: Dictionary = {}
+ 	var hold_once: bool = false
+ 	var busy_once: bool = false
++	var busy_retry_after: int = 0
+ 	var missing_card: int = -1
+ 	func metadata(number: int) -> Dictionary:
+ 		return {"track_id":"fixture-track-"+str(number),"version_id":"00000000-0000-4000-8000-"+str(number+1).pad_zeros(12),"content_hash":hash_value,"name":"Course %04d" % number,"creator":"Discovery Fixture","creator_id":"fixture-owner","theme":"pine","points":document.points,"rating_average":null,"rating_count":0,"verified_finishers":0,"published_at":5000-number}
+@@ -21,7 +22,7 @@
+ 		if busy_once:
+ 			busy_once = false
+ 			await get_tree().process_frame
+-			return {"ok":false,"status":503,"data":{"detail":"DISCOVERY_QUERY_BUDGET"},"error":"busy"}
++			return {"ok":false,"status":503,"data":{"detail":"DISCOVERY_QUERY_BUDGET"},"error":"busy","retry_after":busy_retry_after}
+ 		var view: int
+ 		var offset: int = 0
+ 		if body.has("cursor"):
+@@ -73,7 +74,8 @@
+ 	if DisplayServer.get_name() == "headless": return
+ 	await create_timer(0.2).timeout
+ 	await RenderingServer.frame_post_draw
+-	var folder: String = ProjectSettings.globalize_path("res://../docs/evidence/discovery-indexed-2026-10-22")
++	var folder: String = OS.get_environment("BMT_DISCOVERY_EVIDENCE_DIR")
++	if folder.is_empty(): folder = ProjectSettings.globalize_path("res://../docs/evidence/discovery-indexed-2026-10-22")
+ 	check(root.get_texture().get_image().save_png(folder.path_join(RenderingServer.get_current_rendering_method()+"-"+label+".png")) == OK,"native capture "+label)
+ 
+ func run() -> void:
+@@ -116,8 +118,16 @@
+ 	check(not chosen.is_empty() and chosen.track_id == "fixture-track-4347" and pages.entries()[0].track_id == chosen.track_id,"Random opens a bounded window at the exact chosen revision")
+ 	var before: Array = pages.entries().duplicate(true)
+ 	client.busy_once = true
++	client.busy_retry_after = 5
++	var failed_request_started: int = Time.get_ticks_msec()
+ 	await pages._fetch(int(pages.pages.keys().max())+1)
+ 	check(not pages.error.is_empty() and pages.entries() == before,"budget exhaustion retains cards and shows a retry state")
++	check(pages.retry_at_msec >= failed_request_started+5000,"the server Retry-After is the minimum retry delay")
++	var failed_request_count: int = client.requests.size()
++	pages.request_visible(int(pages.pages.keys().max())*20+10)
++	await cloud.query_discovery({"sort":"name"},[],[],true)
++	check(client.requests.size() == failed_request_count,"failed prefetch and immediate manual refresh respect the retry deadline")
++	pages.retry_at_msec = 0 # Advance the local test clock past the retry deadline.
+ 	await cloud.query_discovery({"sort":"name"},[],[],true)
+ 	client.hold_once = true
+ 	pages._fetch(1)
+--- /dev/null
++++ b/backend/bmt_backend/migrations/versions/0053_discovery_short_search.py
+@@ -0,0 +1,42 @@
++"""Index exact short substrings and compact the bounded pair-expiry work index.
++
++Expression GIN indexes contain distinct one/two-character grams, not positions.
++The query retains ILIKE to reject false positives. Large live tables require the
++operator's reviewed concurrent-index rollout; ordinary migration is transactional.
++"""
++from alembic import op
++
++revision = "0053_discovery_short_search"
++down_revision = "0052_histogram_demand"
++branch_labels = None
++depends_on = None
++
++
++def upgrade():
++    # Expiry owns its partition and needs no tie order. Removing both UUID keys
++    # also permits PostgreSQL B-tree deduplication of equal expiry timestamps.
++    op.drop_index("ix_discovery_driver_expire", table_name="discovery_drivers")
++    op.create_index("ix_discovery_driver_expire", "discovery_drivers", ["partition", "expires_at"])
++    if op.get_bind().dialect.name != "postgresql":
++        return
++    op.execute("""CREATE FUNCTION discovery_short_grams(text) RETURNS text[]
++        LANGUAGE sql IMMUTABLE STRICT PARALLEL SAFE AS $$
++        SELECT ARRAY(SELECT DISTINCT substr(lower($1), position, width)
++            FROM generate_series(1, char_length(lower($1))) AS position
++            CROSS JOIN generate_series(1, 2) AS width
++            WHERE position + width - 1 <= char_length(lower($1)) ORDER BY 1)
++        $$""")
++    for field in ("name", "creator"):
++        op.execute(f"CREATE INDEX ix_discovery_entry_{field}_short ON discovery_entries "
++                   f"USING gin (discovery_short_grams({field}))")
++
++
++def downgrade():
++    op.drop_index("ix_discovery_driver_expire", table_name="discovery_drivers")
++    op.create_index("ix_discovery_driver_expire", "discovery_drivers",
++                    ["partition", "expires_at", "track_id", "player_id"])
++    if op.get_bind().dialect.name != "postgresql":
++        return
++    for field in ("name", "creator"):
++        op.drop_index(f"ix_discovery_entry_{field}_short", table_name="discovery_entries")
++    op.execute("DROP FUNCTION discovery_short_grams(text)")
+--- /dev/null
++++ b/backend/tests/test_discovery_hardening.py
+@@ -0,0 +1,286 @@
++"""Availability, bounded maintenance and query-shape regressions from DF01-DF07."""
++import asyncio
++import threading
++import time
++from dataclasses import replace
++
++import httpx
++from sqlalchemy import event, func, select, text, update
++from starlette.responses import JSONResponse
++from test_attack_resistance import isolated_scope
++from test_discovery_v3 import auth_app as auth_app_fixture
++from test_discovery_v3 import browse
++from test_discovery_v3 import indexed as indexed_fixture
++
++from bmt_backend.config import Settings
++from bmt_backend.discovery_models import (
++    WINDOW,
++    DiscoveryBoundary,
++    DiscoveryDriver,
++    DiscoveryHead,
++    DiscoveryPartition,
++)
++from bmt_backend.discovery_projection import BATCH, health, step
++from bmt_backend.middleware import RequestBoundary
++from bmt_backend.track_models import TrackVersion
++
++auth_app = auth_app_fixture
++indexed = indexed_fixture
++
++
++def test_small_and_bulk_queries_share_the_database_capacity(monkeypatch):
++    monkeypatch.setattr("bmt_backend.middleware.check_budget",lambda *_args,**_kwargs:True)
++
++    async def exercise():
++        ready,release = asyncio.Event(),asyncio.Event()
++        live = 0
++
++        async def handler(scope,receive,send):
++            nonlocal live
++            live += 1
++            if live == 2: ready.set()
++            try:
++                await release.wait()
++                await JSONResponse({"ok":True})(scope,receive,send)
++            finally:
++                live -= 1
++
++        boundary = RequestBoundary(handler,replace(Settings(),database_pool_size=3),None)
++        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=boundary),base_url="http://test") as client:
++            tasks = [asyncio.create_task(client.post("/v1/discovery/v3/tracks",json=body))
++                for body in ({"cursor":"fixture"},{"query":{},"padding":"x"*32769})]
++            try:
++                await asyncio.wait_for(ready.wait(),3)
++                denied = await client.post("/v1/discovery/v3/tracks",json={"cursor":"fixture"})
++                assert denied.status_code == 503 and denied.json()["detail"] == "DISCOVERY_QUERY_BUSY"
++                assert live == 2
++            finally:
++                release.set()
++                assert all(r.status_code==200 for r in await asyncio.gather(*tasks))
++            assert (await client.post("/v1/discovery/v3/tracks",json={"cursor":"fixture"})).status_code==200
++
++    asyncio.run(exercise())
++
++
++def test_unfinished_small_and_bulk_bodies_do_not_own_discovery_query_capacity(indexed):
++    d = indexed
++    first = browse(d, {"sort": "name"})
++
++    async def exercise():
++        reached, release = asyncio.Event(), asyncio.Event()
++        arrivals = 0
++
++        async def receive():
++            nonlocal arrivals
++            arrivals += 1
++            if arrivals == 2:
++                reached.set()
++            await release.wait()
++            return {"type": "http.request", "body": b'{"query":{}}', "more_body": False}
++
++        async def send(_message):
++            pass
++
++        scopes = [isolated_scope("/v1/discovery/v3/tracks") for _ in range(2)]
++        scopes[0]["headers"][-1] = (b"content-length", b"12")
++        scopes[1]["headers"][-1] = (b"content-length", b"32769")
++        tasks = [asyncio.create_task(d.app(scope, receive, send)) for scope in scopes]
++        try:
++            await asyncio.wait_for(reached.wait(), 3)
++            async with httpx.AsyncClient(transport=httpx.ASGITransport(app=d.app, client=("testclient", 50000)), base_url="http://test") as client:
++                response = await client.post("/v1/discovery/v3/tracks", json={"cursor": first["page_cursor"]})
++            assert response.status_code == 200, response.text
++            assert len(response.json()["items"]) == 20
++        finally:
++            release.set()
++            await asyncio.wait_for(asyncio.gather(*tasks), 5)
++
++    asyncio.run(exercise())
++
++
++def test_one_anonymous_peer_cannot_fill_all_small_body_receivers(indexed, monkeypatch):
++    from bmt_backend import middleware
++    monkeypatch.setattr(middleware, "DISCOVERY_BODY_STALL_SECONDS", .1)
++    d = indexed
++
++    async def exercise():
++        reached = asyncio.Event()
++        messages = []
++
++        async def receive():
++            reached.set()
++            await asyncio.Event().wait()
++
++        async def send(message):
++            messages.append(message)
++
++        scope = isolated_scope("/v1/discovery/v3/tracks")
++        task = asyncio.create_task(d.app(scope, receive, send))
++        try:
++            await asyncio.wait_for(reached.wait(), 3)
++            async with httpx.AsyncClient(transport=httpx.ASGITransport(app=d.app,client=("192.0.2.44", 50000)),base_url="http://test") as client:
++                denied = await client.post("/v1/discovery/v3/tracks",json={"query":{}})
++                assert denied.status_code == 503 and denied.json()["detail"] == "DISCOVERY_UPLOAD_BUSY"
++            await asyncio.wait_for(task, 3)
++            assert next(m["status"] for m in messages if m["type"] == "http.response.start") == 408
++            # Timeout must release both the actor ownership and receiver permit.
++            async with httpx.AsyncClient(transport=httpx.ASGITransport(app=d.app,client=("192.0.2.44", 50000)),base_url="http://test") as client:
++                assert (await client.post("/v1/discovery/v3/tracks",json={"query":{}})).status_code == 200
++        finally:
++            task.cancel()
++            await asyncio.gather(task,return_exceptions=True)
++
++    asyncio.run(exercise())
++
++
++def test_valid_players_behind_same_nat_have_independent_body_ownership(indexed, sign_in):
++    d = indexed
++    other = sign_in("Another NAT user")
++
++    async def exercise():
++        reached, release = asyncio.Event(), asyncio.Event()
++
++        async def receive():
++            reached.set()
++            await release.wait()
++            return {"type":"http.request", "body":b'{"query":{}}', "more_body":False}
++
++        async def send(_message):
++            pass
++
++        scope = isolated_scope("/v1/discovery/v3/tracks",credential="Bearer "+d.token)
++        task = asyncio.create_task(d.app(scope,receive,send))
++        try:
++            await asyncio.wait_for(reached.wait(),3)
++            async with httpx.AsyncClient(transport=httpx.ASGITransport(app=d.app,client=("192.0.2.44",50000)),base_url="http://test") as client:
++                response = await client.post("/v1/discovery/v3/tracks",headers={"Authorization":"Bearer "+other["access_token"]},json={"query":{}})
++                assert response.status_code == 200, response.text
++        finally:
++            release.set()
++            await asyncio.wait_for(task,5)
++
++    asyncio.run(exercise())
++
++
++def test_expensive_initial_and_saved_searches_cannot_exclude_ordinary_pages(indexed, monkeypatch):
++    from bmt_backend import discovery_v3
++    d = indexed
++    ordinary = browse(d, {"sort": "name"})
++    searched = browse(d, {"sort": "name", "search": "Circuit"})
++    reached, release = threading.Event(), threading.Event()
++    original = discovery_v3.page
++
++    def held(*args):
++        if args[1].headers.get("x-review-hold") == "1":
++            reached.set()
++            assert release.wait(5)
++        return original(*args)
++
++    monkeypatch.setattr(discovery_v3, "page", held)
++
++    async def exercise():
++        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=d.app, client=("testclient", 50000)), base_url="http://test") as client:
++            task = asyncio.create_task(client.post("/v1/discovery/v3/tracks", headers={"X-Review-Hold": "1"},
++                json={"cursor": searched["page_cursor"]}))
++            try:
++                assert await asyncio.to_thread(reached.wait, 3)
++                for body in ({"query": {"search": "Circuit"}}, {"cursor": searched["next_cursor"]}):
++                    denied = await client.post("/v1/discovery/v3/tracks", json=body)
++                    assert denied.status_code == 503 and denied.json()["detail"] == "DISCOVERY_SEARCH_BUSY"
++                normal = await client.post("/v1/discovery/v3/tracks", json={"cursor": ordinary["next_cursor"]})
++                assert normal.status_code == 200, normal.text
++            finally:
++                release.set()
++                assert (await task).status_code == 200
++            # Every exit releases the gate, including the rejected cursor.
++            assert (await client.post("/v1/discovery/v3/tracks", json={"cursor": searched["next_cursor"]})).status_code == 200
++
++    asyncio.run(exercise())
++
++
++def test_freshness_checks_share_one_statement_and_candidates_use_only_projection(indexed):
++    statements = []
++
++    def capture(_connection, _cursor, sql, *_args):
++        statements.append(sql)
++
++    event.listen(indexed.app.state.engine, "before_cursor_execute", capture)
++    try:
++        first = browse(indexed, {"sort": "name"})
++        assert sum("discovery_changes.created_at" in sql for sql in statements) == 1
++        statements.clear()
++        browse(indexed, cursor=first["next_cursor"])
++        candidates = [sql for sql in statements if "discovery_entries" in sql and sql.startswith("SELECT")]
++        assert len(candidates) == 1
++        assert "JOIN tracks" not in candidates[0] and "JOIN players" not in candidates[0]
++        assert "discovery_entries.name," not in candidates[0]  # narrow key/revision projection
++    finally:
++        event.remove(indexed.app.state.engine, "before_cursor_execute", capture)
++
++
++def test_cleanup_keeps_worker_active_until_expired_boundary_backlog_drains(indexed):
++    factory = indexed.app.state.session_factory
++    stamp = int(time.time())
++    with factory() as db:
++        db.execute(update(DiscoveryPartition).values(audit_at=stamp+3600))
++        db.execute(DiscoveryBoundary.__table__.insert(), [{"id":f"{index:064x}", "session_id":"retired",
++            "expires_at":stamp-60, "positions":{}, "phase":0} for index in range(3*BATCH+5)])
++        db.commit()
++    assert health(factory)["cleanup_oldest_age_seconds"]["boundaries"] >= 60
++    for _ in range(4):
++        assert step(factory, clock=stamp), "Maintenance must not be reported as idle work"
++    with factory() as db:
++        assert db.scalar(select(func.count()).select_from(DiscoveryBoundary)) == 0
++    assert not step(factory, clock=stamp)
++    assert health(factory)["cleanup_oldest_age_seconds"]["boundaries"] == 0
++
++
++def test_compact_expiry_index_drains_equal_timestamps_in_bounded_exact_batches(indexed):
++    import uuid
++
++    from bmt_backend.identity_models import Player
++    d = indexed
++    count, stamp = 3*BATCH+7, int(time.time())
++    track_id = d.tracks[0]["id"]
++    with d.app.state.session_factory() as db:
++        db.execute(update(DiscoveryPartition).values(audit_at=stamp+3600))
++        shard = db.get(DiscoveryHead,track_id)
++        shard.popularity = count
++        for index in range(count):
++            player_id = str(uuid.uuid4())
++            db.add(Player(id=player_id,username_key=f"expiry actor {index}",display_name=f"Expiry actor {index}"))
++            db.add(DiscoveryDriver(track_id=track_id,player_id=player_id,partition=shard.partition,
++                last_at=stamp-WINDOW-1,expires_at=stamp-1,counted=True))
++        db.commit()
++    assert max(row["expired_pair_age_seconds"] for row in health(d.app.state.session_factory)["partitions"]) >= 1
++    previous = count
++    for _ in range(4):
++        assert step(d.app.state.session_factory,clock=stamp)
++        with d.app.state.session_factory() as db:
++            remaining = db.scalar(select(func.count()).select_from(DiscoveryDriver))
++            assert 0 < previous-remaining <= BATCH
++            assert db.get(DiscoveryHead,track_id).popularity == remaining
++            previous = remaining
++    assert previous == 0
++
++
++def test_short_and_punctuation_searches_keep_exact_substring_semantics(indexed):
++    from bmt_backend.discovery_projection import settle_for_diagnostics
++    d = indexed
++    special = "A_B% Straße İ猫😺"
++    with d.app.state.session_factory() as db:
++        db.execute(update(TrackVersion).where(TrackVersion.id == d.versions[0]["id"]).values(name=special))
++        db.commit()
++    settle_for_diagnostics(d.app.state.session_factory)
++    for term in ("Ci", "i", "_B", "%", "猫", "😺", "İ", "a_b", "e İ", "zz", "___"):
++        with d.app.state.session_factory() as db:
++            expected = set(db.scalars(select(TrackVersion.id).where(TrackVersion.name.icontains(term, autoescape=True))))
++        result = browse(d, {"sort": "name", "search_kind": 1, "search": term})
++        actual = {row["version_id"] for row in result["items"]}
++        assert actual <= expected and len(actual) == min(20, len(expected)), (term, actual, expected)
++    if d.app.state.engine.dialect.name == "postgresql":
++        with d.app.state.engine.connect() as db:
++            db.execute(text("SET LOCAL enable_seqscan=off"))
++            plan = db.execute(text("EXPLAIN SELECT track_id FROM discovery_entries "
++                "WHERE discovery_short_grams(name) @> discovery_short_grams('zz')")).all()
++            assert "ix_discovery_entry_name_short" in str(plan)
+--- a/AGENTS.md
++++ b/AGENTS.md
+@@ -1,3 +1,6 @@
++## Discovery availability, short search and cost hardening override (2026-10-23)
++2026-10-23 DHF01-DHF06/R01/Q01: Discovery separates bounded small receivers from large uploads, fences incomplete-body ownership, and pauses automatic failed-page fetches with Retry-After/backoff. Batched freshness, narrow frozen candidates, RETURNING checkpoints and joined Random slots retain current authority and exact windows/sampling. Short-gram GIN indexes preserve exact short substrings; cleanup work keeps the daemon awake, with rank/pair/retention lag health. Compact expiry keys retain exact bounded expiration. With matching shared guards, paired100001-track/10000-creator warm pages78.966ms to48.666ms and fresh Name SQL59 to26; the earlier million-row core miss503/1564.035ms becomes200/96.876ms. Paired200000-row ledgers shrink26.89-28.17%. Core71pass/1SQLite-lock skip, final guarded17, expiry2, integrated106 and real native HTTP2 pass; native82headless/85Compatibility/85desktopMobile, legacy269/list233/challenge68/App141/parser939 pass. Measurements are local, not DAU/cloud certification. Commands, transient concurrent migration/compiler/fixture corrections, plans/WAL/storage and scoped checkpoint: docs/evidence/discovery-hardening-2026-10-23/report.json. Matching migration/API/worker/client rollout, representative migration/load and owner/device acceptance remain; no phone attachment check/device test, APK, live backend/account mutation or deployment.
++
+ ## Native challenge cards and Custom rules override (2026-10-23)
+ 2026-10-23 CCR01-CCR04/G01/R01/Q01: Apply the approved HTML challenge-card direction to the native menu: Choose your challenge, Head to head, Group race, Three tries and a fourth Custom rules card. Optional rules commit/cancel race type, 24-hour/3-day/7-day duration, 1/3/5/unlimited tries and supported public/invitation visibility; preset changes retain duration and visibility. Actual route/car/time lead the page, with fixed completed-ticket results, verification/errors/account fences, five laps, verified-PB menu sources and target-free groups retained. Race-first return preserves the selected format; an account-fenced frozen invitation precedes explicit system sharing. Focused97headless/109Compatibility/109desktopMobile, native challenge195, discovery68/source27/tab60/App141 and parser939 pass. Commands, initial environment/fixture/layout corrections, native views, hashes and task-only checkpoint: docs/evidence/challenge-cards-native-2026-10-23/report.json. Owner appearance and physical-device touch acceptance remain; no phone attachment check/device test, APK, live backend/account mutation, social send or deployment.
+ 
+--- a/DEVELOPMENT_STATUS.md
++++ b/DEVELOPMENT_STATUS.md
+@@ -1,3 +1,5 @@
++2026-10-23 DHF01-DHF06/R01/Q01: Discovery separates bounded small receivers from large uploads, fences incomplete-body ownership, and pauses automatic failed-page fetches with Retry-After/backoff. Batched freshness, narrow frozen candidates, RETURNING checkpoints and joined Random slots retain current authority and exact windows/sampling. Short-gram GIN indexes preserve exact short substrings; cleanup work keeps the daemon awake, with rank/pair/retention lag health. Compact expiry keys retain exact bounded expiration. With matching shared guards, paired100001-track/10000-creator warm pages78.966ms to48.666ms and fresh Name SQL59 to26; the earlier million-row core miss503/1564.035ms becomes200/96.876ms. Paired200000-row ledgers shrink26.89-28.17%. Core71pass/1SQLite-lock skip, final guarded17, expiry2, integrated106 and real native HTTP2 pass; native82headless/85Compatibility/85desktopMobile, legacy269/list233/challenge68/App141/parser939 pass. Measurements are local, not DAU/cloud certification. Commands, transient concurrent migration/compiler/fixture corrections, plans/WAL/storage and scoped checkpoint: docs/evidence/discovery-hardening-2026-10-23/report.json. Matching migration/API/worker/client rollout, representative migration/load and owner/device acceptance remain; no phone attachment check/device test, APK, live backend/account mutation or deployment.
++
+ 2026-10-23 CCR01-CCR04/G01/R01/Q01: Apply the approved HTML challenge-card direction to the native menu: Choose your challenge, Head to head, Group race, Three tries and a fourth Custom rules card. Optional rules commit/cancel race type, 24-hour/3-day/7-day duration, 1/3/5/unlimited tries and supported public/invitation visibility; preset changes retain duration and visibility. Actual route/car/time lead the page, with fixed completed-ticket results, verification/errors/account fences, five laps, verified-PB menu sources and target-free groups retained. Race-first return preserves the selected format; an account-fenced frozen invitation precedes explicit system sharing. Focused97headless/109Compatibility/109desktopMobile, native challenge195, discovery68/source27/tab60/App141 and parser939 pass. Commands, initial environment/fixture/layout corrections, native views, hashes and task-only checkpoint: docs/evidence/challenge-cards-native-2026-10-23/report.json. Owner appearance and physical-device touch acceptance remain; no phone attachment check/device test, APK, live backend/account mutation, social send or deployment.
+ 
+ 2026-10-23 SVI01-SVI03/G01/R01/Q01: Owner finds granular Desert wind barely visible. Raise ordinary/gust strength to0.30/0.95 with square-root opacity, rounded matte flecks, denser wider local bursts and shorter unequal gaps. Six fixed irregular sites, minimum8m separation, low hops and lifecycle/depth/canonical fences remain. One bounded4608-instance/9216-triangle batch increases the previous grain pool fourfold; physical-device cost is unmeasured. Actual normal-driving-camera peaks303/277 to2190/2130pixels, calm1901/1891, quiet0 and783exact roof pixels pass. Focused52headless/62Compatibility/62desktopMobile, Desert87, ambience111, biomes108, parser934 and scoped whitespace pass. Commands, retained initial visibility/style corrections, native ordinary-camera motion/views and task-only checkpoint: docs/DESERT_SAND_VISIBILITY_2026_10_23.md. Local client reload, owner appearance and device performance acceptance remain; no phone attachment check/device test, APK, backend/account mutation or deployment.
+--- a/backend/README.md
++++ b/backend/README.md
+@@ -1,4 +1,12 @@
+ # Beat my track backend
++
++Discovery hardening (`0053_discovery_short_search`, 2026-10-23, DHF01-DHF06): small identity-encoded discovery bodies with a declared length of at most 16 KiB use eight bounded receivers and a separate parser/query allowance. Large, compressed and length-unknown collection uploads retain one large-tree slot. One unfinished small body per verified player or anonymous peer, a two-second inter-chunk stall bound and a five-second small-body deadline prevent one slow uploader from occupying query capacity. All discovery queries share the bounded pool; the integrated resource guards reserve ordinary gameplay capacity and separately admit expensive work. A busy response carries Retry-After. The native v3 window pauses automatic fetching after failure, honors that delay with bounded backoff/jitter on explicit retries, and resets retry ownership on account/query changes.
++
++Freshness uses sixteen bounded indexed receipt probes in one SQL round trip. Frozen pages select narrow revision/order keys from the projection; current track/account/block authority remains checked during hydration. INSERT RETURNING avoids extra session/checkpoint reads, and Random retrieves sampled slot coordinates with its candidate rows. Exact sampling, frozen spans, current restrictions, private caches and twenty-item pages remain. Short searches retain exact case-insensitive substring behavior: PostgreSQL adds GIN indexes over distinct one/two-character grams, including literal punctuation, then applies the original ILIKE predicate. Arbitrary selective filters still have a finite work budget and can explicitly retry.
++
++Cleanup progress now keeps the discovery daemon active until bounded expired work drains. Health includes pending receipt, rank-due, expired-pair and retained-state cleanup ages. The seven-day pair expiry index stores only partition/expiry: the consumer needs no tie ordering while it owns the partition. Exact latest-pair refresh, expiration and counter deltas remain. Paired 200,000-row local probes reduce total pair-ledger allocation by 26.9–28.2%; these are physical PostgreSQL measurements, not a cloud price or DAU forecast.
++
++Apply `0053` before matching API/worker code; the current shared migration chain and admission/storage guards must also match the artifact being released. Review the rating-sum change from `0050`, backups, source backfill and old-client update together. A fresh projection builds the new indexes while empty. On a populated projection or pair ledger, ordinary transactional DROP/CREATE index builds block writers and can exceed the migration connection's default statement timeout. Measure a representative copy and choose a controlled maintenance window or an operator-reviewed concurrent-index cutover with equivalent schema verification before recording the revision. Do not run old expiry workers across a populated index cutover. Neither API requests nor workers run migrations. [Actual tests, paired SQL plans, WAL/storage measurements, limitations and scoped checkpoint](../docs/evidence/discovery-hardening-2026-10-23/report.json). No live rollout or device test was performed.
+ 
+ Local priority scalability fixes (2026-10-23, `0054_priority_scaling`): Rivalry matching reads at most 100 open group IDs through a partial index, skips busy groups when another open group is available, and keeps the exact 20-driver capacity. If every candidate is busy, it waits on one group before creating another; only new-group creation uses the band guard. Closed groups no longer accumulate in the matching scan. Membership, pinned tracks, skill scoring and retries retain their existing contracts.
+ 

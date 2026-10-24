@@ -1,0 +1,13 @@
+# Soundsnap snow-impact source - 2026-10-23
+
+SSN01-SSN02: the owner requests recordings from [this snow-falling-heavy search](https://www.soundsnap.com/search/audio?query=snow+falling+heavy), with a stronger snowbank impact than the current sound. The intended direction is a heavier snow compression/drop with a prompt attack, retaining the existing contact callback, low-latency routes and mix controls.
+
+The public catalogue identifies eight **Snow - impact - falling or dropping - heavy** variations by **InspectorJ**, numbered 1-8. Their IDs are 539523-539530. [Heavy 2](https://www.soundsnap.com/snow_impact_falling_or_dropping_heavy_2) and [Heavy 5](https://www.soundsnap.com/snow_impact_falling_or_dropping_heavy_5) are direct examples; these are candidates, not audition-approved selections. Catalogue metadata lists stereo 96 kHz/24-bit WAV sources.
+
+The site's configuration labels Raw WAV downloads **subscribed**. Its [license, section 4](https://www.soundsnap.com/sound-effects/license) states that account/subscription access governs downloads. These tools have no authenticated Soundsnap session or downloaded licensed original. A narrow top-level Downloads filename check for snow/candidate IDs found no matching local file. The source WAVs or their local path are required before replacing the game asset.
+
+Actual access checks: the web tool could not render the supplied dynamic page; ordinary HTTPS through Python urllib retrieved its public HTML and Heavy 2's detail page with HTTP 200. The site's public frontend search returned nine results: one avalanche and the eight impact variations. Eight ordinary public-preview requests returned identical 98,638-byte MP3 responses; these were not accepted as distinct valid recordings or imported. No subscriber endpoint was accessed, account opened, purchase made or access gate bypassed. No alternative author's recording was substituted.
+
+The current `snow_hit.wav` is revision 2 of the existing recorded landing, 0.28 seconds long, with a strong attack at 0.58957 ms. It remains unchanged. Neither the continuous ploughing bed nor game code, gain, bus routing or native libraries were changed. No game/device test, APK/export/install or backend/deployment action was performed for this source lookup.
+
+Public source identities and the pending dependency are recorded in [selection.json](evidence/soundsnap-snow-source-2026-10-23/selection.json). Public-page lookup files remain in the task's private build folder; no source audio or frontend search key is included in the source-selection evidence. Only this document and source-selection evidence/checkpoint are added, preserving concurrent work.

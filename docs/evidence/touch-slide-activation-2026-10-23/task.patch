@@ -1,0 +1,483 @@
+diff --git a/game/ui/touch_controls.gd b/game/ui/touch_controls.gd
+--- a/game/ui/touch_controls.gd
++++ b/game/ui/touch_controls.gd
+@@ -24,6 +24,8 @@
+ 		queue_redraw()
+ var owners: Dictionary = {}
+ var touch_origins: Dictionary = {}
++# Include fingers that began outside a button, so drags can enter its hit area.
++var fingers_down: Dictionary = {}
+ var safe_override := Rect2()
+ var analog_value: float = 0.0
+ var thumb: Control
+@@ -46,6 +48,7 @@
+ 		for finger: Variant in owners: driver.release_touch(int(finger))
+ 	owners.clear()
+ 	touch_origins.clear()
++	fingers_down.clear()
+ 	analog_value = 0.0
+ 	pedal_value = 0.0
+ 	steering_finger = -1
+@@ -296,9 +299,14 @@
+ 	if event is InputEventScreenTouch:
+ 		if not event.pressed or event.canceled:
+ 			_release_finger(event.index)
++			fingers_down.erase(event.index)
+ 		elif enabled and is_visible_in_tree():
++			fingers_down[event.index] = true
+ 			var local: Vector2 = get_global_transform_with_canvas().affine_inverse()*event.position
+ 			var action: StringName = action_at(local)
++			if not analog_controls() or action == &"handbrake":
++				_update_button(event.index,local)
++				return
+ 			if action != &"":
+ 				if analog_controls() and action != &"handbrake":
+ 					var steering: bool = action in [&"steer_left",&"steer_right"]
+@@ -313,11 +321,44 @@
+ 				_update_finger(event.index,local)
+ 				if action in [&"steer_left", &"steer_right"]:
+ 					SteeringHaptics.press(haptic_strength)
+-	elif event is InputEventScreenDrag and enabled and is_visible_in_tree() and driver.touches.has(event.index):
++	elif event is InputEventScreenDrag and enabled and is_visible_in_tree():
++		if not fingers_down.has(event.index) and not driver.touches.has(event.index): return
++		var local: Vector2 = get_global_transform_with_canvas().affine_inverse()*event.position
++		var action: StringName = owners.get(event.index,driver.touches.get(event.index,&""))
++		if not analog_controls() or action not in [&"steer_left",&"steer_right",&"accelerate",&"brake"]:
++			_update_button(event.index,local)
++			return
+ 		# Diagnostic/platform adapters may seed a touch directly through DriverInput.
+ 		if not owners.has(event.index): owners[event.index] = driver.touches[event.index]
+-		if not touch_origins.has(event.index): touch_origins[event.index] = get_global_transform_with_canvas().affine_inverse()*event.position
+-		_update_finger(event.index,get_global_transform_with_canvas().affine_inverse()*event.position)
++		if not touch_origins.has(event.index): touch_origins[event.index] = local
++		_update_finger(event.index,local)
++
++func _update_button(finger: int, point: Vector2) -> void:
++	var action: StringName = action_at(point)
++	var previous: StringName = owners.get(finger,&"")
++	# Relative axes keep their first-contact origin and capture until release.
++	if analog_controls() and action != &"" and action != &"handbrake":
++		_release_finger(finger)
++		return
++	if action == &"":
++		# Keep the existing small edge tolerance, but a different button wins
++		# immediately whenever the finger enters its actual or padded hit area.
++		if previous != &"":
++			var index: int = ACTIONS.find(previous)
++			var target: Rect2 = touch_zones()[index]
++			if target.grow(28).has_point(point):
++				var strength: float = 1.0
++				if not layout.is_empty() and index in [2,3]:
++					strength = clampf((target.end.y+28-point.y)/28.0,0.0,1.0)
++				driver.set_touch(finger,previous,strength)
++				return
++		_release_finger(finger)
++		return
++	owners[finger] = action
++	touch_origins[finger] = point
++	driver.set_touch(finger,action)
++	if action != previous and action in [&"steer_left",&"steer_right"]:
++		SteeringHaptics.press(haptic_strength)
+ 
+ func _update_finger(finger: int, point: Vector2) -> void:
+ 	var action: StringName = owners[finger]
+@@ -333,22 +374,7 @@
+ 		pedal_value = TouchSteering.axis(origin.y-point.y,rect.size.y*TouchSteering.FULL_TRAVEL_RATIO)
+ 		driver.set_touch(finger,&"accelerate" if pedal_value >= 0 else &"brake",absf(pedal_value))
+ 		return
+-	var index: int = ACTIONS.find(action)
+-	var target: Rect2 = touch_zones()[index]
+-	# Small excursions retain ownership; crossing to a different pedal never transfers it.
+-	var held: bool = target.grow(28).has_point(point)
+-	var next: StringName = action_at(point)
+-	if action in [&"steer_left",&"steer_right"]:
+-		if next in [&"steer_left",&"steer_right"]:
+-			action = next
+-			owners[finger] = action
+-			held = true
+-	if next != &"" and next != action: held = false
+-	# The whole expanded pedal target is a full press; fade only beyond its lower edge.
+-	var strength: float = 1.0
+-	if not layout.is_empty() and index in [2,3]:
+-		strength = clampf((target.end.y+28-point.y)/28.0,0.0,1.0)
+-	driver.set_touch(finger,action,strength if held else 0.0)
++	_update_button(finger,point)
+ 
+ 
+ func _touch_pressed(action: StringName) -> bool:
+@@ -372,7 +398,7 @@
+ 		thumb.visible = analog_controls()
+ 		pedal_thumb.visible = thumb.visible
+ 		if thumb.visible:
+-			if driver != null and driver.touches.is_empty():
++			if driver != null and driver.touches.is_empty() and not owners.is_empty():
+ 				release_all()
+ 			var steering: Rect2 = group_rects()[layout.steering_type]
+ 			var pedal: Rect2 = group_rects().accelerator
+diff --git a/game/tests/test_touch_target_padding.gd b/game/tests/test_touch_target_padding.gd
+--- a/game/tests/test_touch_target_padding.gd
++++ b/game/tests/test_touch_target_padding.gd
+@@ -118,7 +118,7 @@
+ 	control.release_all()
+ 	press(control,1,originals[3].get_center())
+ 	drag(control,1,originals[2].get_center())
+-	check(control.driver.sample().throttle == 0 and control.driver.sample().brake == 0,"sliding a captured pedal cannot activate its neighbour")
++	check(control.driver.sample().throttle == 0 and control.driver.sample().brake == 255,"sliding from gas to brake transfers input in the same event")
+ 	press(control,2,originals[2].get_center())
+ 	check(control.driver.sample().brake == 255 and control.driver.sample().throttle == 0,"neighbour button stays independently reachable")
+ 	control.release_all()
+diff --git a/AGENTS.md b/AGENTS.md
+--- a/AGENTS.md
++++ b/AGENTS.md
+@@ -1,3 +1,9 @@
++## Softer, longer snow bass thump override (2026-10-23)
++2026-10-23 SBT01-SBT02/R01/Q01: Owner requests a softer, longer bass thump. Packed snow becomes a540ms recorded40-320Hz body with a3ms curved attack and longer quiet decay. Actual same-gain/pitch master peak falls4.30dB, first100ms1.63dB; integrated bass rises33% and90%-energy duration38to178ms. Strong raw onset2.132ms retains the5ms guard. Continuous/powder/heavy-bank samples and playback sources remain exact. Native capture13, response29headless/35Compatibility, asset/capture20 and parser1041 pass. Commands, before/after WAVs, provenance and scoped checkpoint: docs/SNOW_BASS_THUMP_2026_10_23.md and docs/evidence/bass-snow-thump-2026-10-23/report.json. Client restart and owner/device listening remain; no phone/tablet attachment check, physical-device test, APK/export/install, native rebuild, account/backend mutation, purchase or deployment. Concurrent work preserved.
++
++## Slide-activated driving touch buttons override (2026-10-23)
++2026-10-23 TSA01-TSA03/R01/G01/Q01: Driving buttons follow current finger position, including slide entry from outside and direct transfers among steering, gas, brake and handbrake. Independent fingers, enlarged target arbitration, existing edge tolerance/pedal fade, relative analog origins and lifecycle fences remain. Focused1253headless/1259Compatibility/1259desktopMobile, padding1218, analog1642, layout407 including viewport90, mobile747 and driving72 pass. Native views, initial execution/userdata/edge-fade corrections, shutdown/certificate diagnostics, actual commands, hashes and scoped checkpoint: docs/TOUCH_SLIDE_ACTIVATION_2026_10_23.md and docs/evidence/touch-slide-activation-2026-10-23/report.json. Client reload and owner/device feel remain; no phone/tablet attachment check, physical-device test, APK, live mutation or deployment. Concurrent work preserved.
++
+ ## Compact bridge-impact timing correction (2026-10-23)
+ 2026-10-23 CBT01-CBT03/R01/Q01: Compact head-on bridge-end delay reproduced on cached Knot. Duplicate edge endpoints exhausted128 outline probes before the detailed Compact perimeter was covered; shared endpoints now belong to the next edge, retaining full coverage in116 probes. Original coverage160/4 failures (detailed Compact only); final160headless/160Compatibility/160desktopMobile, paired168-case matrix/review2034, wall167/bridge42184/escalation65/bridge physics16/trace9/kerb26/parser1039 pass. Actual Windows rendered-contact-to-process-output slow case155.98 to19.98ms; physical ticks/states remain exact. This removes the reproduced detection delay, not Windows output buffering or kerb latency. Original-method controls, native view, initial shell/trace-fixture corrections, commands and scoped checkpoint: docs/COMPACT_BRIDGE_AUDIO_2026_10_23.md and docs/evidence/compact-bridge-impact-2026-10-23/report.json. Owner reports no tablet delay; actual tablet model mode was not checked. New Windows client reload and owner listening remain; no phone/tablet check/test, microphone/owner-process capture, APK, native rebuild, live mutation or deployment. Concurrent work preserved.
+ 
+diff --git a/DEVELOPMENT_STATUS.md b/DEVELOPMENT_STATUS.md
+--- a/DEVELOPMENT_STATUS.md
++++ b/DEVELOPMENT_STATUS.md
+@@ -1,3 +1,7 @@
++2026-10-23 SBT01-SBT02/R01/Q01: Owner requests a softer, longer bass thump. Packed snow becomes a540ms recorded40-320Hz body with a3ms curved attack and longer quiet decay. Actual same-gain/pitch master peak falls4.30dB, first100ms1.63dB; integrated bass rises33% and90%-energy duration38to178ms. Strong raw onset2.132ms retains the5ms guard. Continuous/powder/heavy-bank samples and playback sources remain exact. Native capture13, response29headless/35Compatibility, asset/capture20 and parser1041 pass. Commands, before/after WAVs, provenance and scoped checkpoint: docs/SNOW_BASS_THUMP_2026_10_23.md and docs/evidence/bass-snow-thump-2026-10-23/report.json. Client restart and owner/device listening remain; no phone/tablet attachment check, physical-device test, APK/export/install, native rebuild, account/backend mutation, purchase or deployment. Concurrent work preserved.
++
++2026-10-23 TSA01-TSA03/R01/G01/Q01: Driving buttons follow current finger position, including slide entry from outside and direct transfers among steering, gas, brake and handbrake. Independent fingers, enlarged target arbitration, existing edge tolerance/pedal fade, relative analog origins and lifecycle fences remain. Focused1253headless/1259Compatibility/1259desktopMobile, padding1218, analog1642, layout407 including viewport90, mobile747 and driving72 pass. Native views, initial execution/userdata/edge-fade corrections, shutdown/certificate diagnostics, actual commands, hashes and scoped checkpoint: docs/TOUCH_SLIDE_ACTIVATION_2026_10_23.md and docs/evidence/touch-slide-activation-2026-10-23/report.json. Client reload and owner/device feel remain; no phone/tablet attachment check, physical-device test, APK, live mutation or deployment. Concurrent work preserved.
++
+ 2026-10-23 CBT01-CBT03/R01/Q01: Compact head-on bridge-end delay reproduced on cached Knot. Duplicate edge endpoints exhausted128 outline probes before the detailed Compact perimeter was covered; shared endpoints now belong to the next edge, retaining full coverage in116 probes. Original coverage160/4 failures (detailed Compact only); final160headless/160Compatibility/160desktopMobile, paired168-case matrix/review2034, wall167/bridge42184/escalation65/bridge physics16/trace9/kerb26/parser1039 pass. Actual Windows rendered-contact-to-process-output slow case155.98 to19.98ms; physical ticks/states remain exact. This removes the reproduced detection delay, not Windows output buffering or kerb latency. Original-method controls, native view, initial shell/trace-fixture corrections, commands and scoped checkpoint: docs/COMPACT_BRIDGE_AUDIO_2026_10_23.md and docs/evidence/compact-bridge-impact-2026-10-23/report.json. Owner reports no tablet delay; actual tablet model mode was not checked. New Windows client reload and owner listening remain; no phone/tablet check/test, microphone/owner-process capture, APK, native rebuild, live mutation or deployment. Concurrent work preserved.
+ 
+ 2026-10-23 SSI01/R01/Q01: Soften packed snow with less high crunch, a rounded1.2ms fade and lower final trim. Actual same-gain/pitch master peak falls1.60dB and first100ms0.77dB; strong onset remains0.408ms. Continuous/powder/heavy-bank samples and mixer source stay byte-exact. Native capture13, response29headless/35Compatibility, asset/capture12 and parser1037 pass. Reusable capture paths preserve earlier auditions. Commands, before/after WAVs, sources and scoped Git-checkable checkpoint: docs/SOFT_SNOW_IMPACT_2026_10_23.md and docs/evidence/soft-snow-impact-2026-10-23/report.json. Client restart and owner/device listening remain; no phone/tablet attachment check, physical-device test, APK/export/install, native rebuild, account/backend mutation, purchase or deployment. Concurrent work preserved.
+diff --git a/game/tests/test_touch_slide_activation.gd b/game/tests/test_touch_slide_activation.gd
+new file mode 100644
+--- /dev/null
++++ b/game/tests/test_touch_slide_activation.gd
+@@ -0,0 +1,213 @@
++extends SceneTree
++## TSA01-TSA03: occupancy-driven buttons, independent fingers and lifecycle fences.
++const EVIDENCE := "res://../docs/evidence/touch-slide-activation-2026-10-23"
++var checks: int = 0
++var failures: int = 0
++
++func _initialize() -> void: call_deferred("run")
++
++func check(value: bool, message: String) -> void:
++	checks += 1
++	if not value:
++		failures += 1
++		push_error(message)
++
++func press(control: TouchControls, finger: int, point: Vector2, down: bool = true, canceled: bool = false) -> void:
++	var event := InputEventScreenTouch.new()
++	event.index = finger
++	event.position = control.get_global_transform_with_canvas()*point
++	event.pressed = down
++	event.canceled = canceled
++	root.push_input(event,true)
++
++func drag(control: TouchControls, finger: int, point: Vector2) -> void:
++	var event := InputEventScreenDrag.new()
++	event.index = finger
++	event.position = control.get_global_transform_with_canvas()*point
++	root.push_input(event,true)
++
++func only_action(control: TouchControls, finger: int, index: int) -> bool:
++	return control.driver.touches.get(finger) == TouchControls.ACTIONS[index] and control.driver.touch_strengths.get(finger) == 1.0 and control.pressed_mask() == 1 << index
++
++func run() -> void:
++	root.size = Vector2i(1280,720)
++	root.content_scale_size = root.size
++	var control := TouchControls.new()
++	control.driver = DriverInput.new()
++	control.haptic_strength = 0.0
++	root.add_child(control)
++	await process_frame
++	for dimensions: Vector2 in [Vector2(960,540),Vector2(1280,720),Vector2(1600,720)]:
++		control.size = dimensions
++		for mirrored: bool in [false,true]:
++			for scale_value: float in [0.65,1.0,1.6]:
++				control.layout = ControlLayout.preset(mirrored,scale_value)
++				_test_buttons(control)
++	control.size = Vector2(1280,720)
++	control.layout = {}
++	_test_buttons(control)
++	control.layout = ControlLayout.preset(true)
++	control.safe_override = Rect2(44,24,1210,660)
++	control.position = Vector2(17,23)
++	control.scale = Vector2(0.8,0.8)
++	_test_buttons(control)
++	control.position = Vector2.ZERO
++	control.scale = Vector2.ONE
++	control.safe_override = Rect2()
++	control.layout = ControlLayout.preset()
++	_test_multitouch(control)
++	_test_lifecycle(control)
++	await _test_analog_handbrake(control)
++	control.queue_free()
++	await process_frame
++	if DisplayServer.get_name() != "headless": await _capture()
++	print("TOUCH_SLIDE_ACTIVATION: %d checks, %d failures" % [checks,failures])
++	quit(0 if failures == 0 else 1)
++
++func _test_buttons(control: TouchControls) -> void:
++	var outside := Vector2(control.size.x*0.5,100)
++	check(control.action_at(outside) == &"","slide begins outside all driving targets")
++	var faces: Array[Rect2] = control.zones()
++	for source: int in range(faces.size()):
++		press(control,1,outside)
++		check(control.driver.touches.is_empty(),"outside press is neutral")
++		drag(control,1,faces[source].get_center())
++		check(only_action(control,1,source),"sliding from elsewhere activates each button at full strength")
++		drag(control,1,outside)
++		check(control.driver.touches.is_empty() and control.pressed_mask() == 0,"leaving a button releases its action")
++		drag(control,1,faces[source].get_center())
++		check(only_action(control,1,source),"same finger can reenter without another press")
++		press(control,1,outside,false)
++		check(control.driver.touches.is_empty() and control.fingers_down.is_empty(),"release outside clears tracked finger")
++		for destination: int in range(faces.size()):
++			press(control,1,faces[source].get_center())
++			drag(control,1,faces[destination].get_center())
++			check(only_action(control,1,destination),"each button can transfer directly to every other button")
++			press(control,1,faces[destination].get_center(),false)
++		# Invisible enlarged margins use the same arbitration on slide as on press.
++		var margin := Vector2(faces[source].get_center().x,faces[source].position.y-24)
++		press(control,1,outside)
++		drag(control,1,margin)
++		check(only_action(control,1,source),"sliding into padded target activates the intended button")
++		press(control,1,margin,false,true)
++		check(control.driver.touches.is_empty() and control.fingers_down.is_empty(),"cancellation releases a slide-acquired action")
++
++func _test_multitouch(control: TouchControls) -> void:
++	var faces: Array[Rect2] = control.zones()
++	var outside := Vector2(640,100)
++	for finger: int in [1,2,3]: press(control,finger,outside)
++	drag(control,1,faces[0].get_center())
++	drag(control,2,faces[3].get_center())
++	drag(control,3,faces[3].get_center())
++	check(control.driver.sample().steer == -127 and control.driver.sample().throttle == 255,"independent slides activate steering and two fingers on gas")
++	drag(control,2,faces[2].get_center())
++	check(control.driver.sample().throttle == 255 and control.driver.sample().brake == 255,"one finger crossing pedals preserves the other finger's gas")
++	press(control,3,outside,false)
++	check(control.driver.sample().throttle == 0 and control.driver.sample().brake == 255 and control.driver.sample().steer == -127,"release removes only that finger's action")
++	drag(control,1,faces[1].get_center())
++	check(control.driver.sample().steer == 127 and control.driver.sample().brake == 255,"same-event steering reversal preserves independent brake")
++	press(control,2,outside,false,true)
++	check(control.driver.sample().brake == 0 and control.driver.sample().steer == 127,"cancellation preserves the remaining steering finger")
++	control.release_all()
++	# Two fingers can hold the same button; exiting one does not cancel the other.
++	press(control,1,faces[3].get_center())
++	press(control,2,faces[3].get_center())
++	drag(control,1,outside)
++	check(control.driver.sample().throttle == 255,"leaving shared button preserves other occupant")
++	control.release_all()
++
++func _test_lifecycle(control: TouchControls) -> void:
++	var gas: Vector2 = control.zones()[3].get_center()
++	var outside := Vector2(640,100)
++	for boundary: String in ["release","cancel","disable","hide","focus","pause","layout","resize","clear"]:
++		press(control,1,outside)
++		drag(control,1,gas)
++		press(control,2,outside)
++		match boundary:
++			"release":
++				press(control,1,outside,false)
++				press(control,2,outside,false)
++			"cancel":
++				press(control,1,outside,false,true)
++				press(control,2,outside,false,true)
++			"disable":
++				control.enabled = false
++				press(control,3,gas)
++				control.enabled = true
++			"hide":
++				control.hide()
++				press(control,3,gas)
++				control.show()
++			"focus": control._notification(Node.NOTIFICATION_APPLICATION_FOCUS_OUT)
++			"pause": control._notification(Node.NOTIFICATION_APPLICATION_PAUSED)
++			"layout": control.layout = ControlLayout.preset()
++			"resize": control.size.x += 1
++			"clear": control.release_all()
++		check(control.driver.touches.is_empty() and control.owners.is_empty() and control.fingers_down.is_empty(),"lifecycle clears active and outside fingers: "+boundary)
++		for finger: int in [1,2,3]: drag(control,finger,gas)
++		check(control.driver.touches.is_empty(),"late drags cannot restore cleared input: "+boundary)
++	# A completed finger ID can be reused for a fresh gesture.
++	press(control,1,outside)
++	drag(control,1,gas)
++	check(control.driver.sample().throttle == 255,"new contact after lifecycle reset can slide in")
++	control.release_all()
++
++func _test_analog_handbrake(control: TouchControls) -> void:
++	for method: String in ["horizontal","joystick"]:
++		control.layout = ControlLayout.preset()
++		control.layout.steering_type = method
++		var outside := Vector2(640,100)
++		press(control,1,outside)
++		await process_frame
++		drag(control,1,control.zones()[4].get_center())
++		check(control.driver.sample().handbrake == 255,"analog mode's separate handbrake supports slide entry")
++		drag(control,1,outside)
++		check(control.driver.sample().handbrake == 0,"analog handbrake releases on exit")
++		var steering: Rect2 = control.group_rects()[method]
++		drag(control,1,steering.get_center())
++		check(control.driver.touches.is_empty(),"slide entry does not change relative analog origins")
++		press(control,1,outside,false)
++		press(control,2,steering.get_center())
++		drag(control,2,steering.get_center()+Vector2(steering.size.x*0.5,0))
++		check(control.driver.sample().steer == 127,"relative steering keeps its captured origin")
++		control.release_all()
++
++func _capture() -> void:
++	root.size = Vector2i(1280,720)
++	root.content_scale_size = root.size
++	var game: Node = load("res://core/game.tscn").instantiate()
++	game.set("production_mode",true)
++	root.add_child(game)
++	game.set_physics_process(false)
++	var control: TouchControls = game.get("hud").touch
++	control.layout = ControlLayout.preset()
++	control.haptic_strength = 0.0
++	await process_frame
++	await process_frame
++	var faces: Array[Rect2] = control.zones()
++	var output: String = ProjectSettings.globalize_path(EVIDENCE.path_join(RenderingServer.get_current_rendering_method()))
++	DirAccess.make_dir_recursive_absolute(output)
++	press(control,1,Vector2(640,100))
++	press(control,2,Vector2(640,100))
++	drag(control,1,faces[0].get_center())
++	drag(control,2,faces[3].get_center())
++	await _save(output.path_join("slide-left-gas.png"))
++	check(control.driver.sample().steer == -127 and control.driver.sample().throttle == 255 and control.last_pressed_mask == 9,"native artwork shows slide-acquired left and gas")
++	var draws: int = control.draw_count
++	drag(control,2,faces[2].get_center())
++	await _save(output.path_join("slide-left-brake.png"))
++	check(control.driver.sample().throttle == 0 and control.driver.sample().brake == 255 and control.last_pressed_mask == 5,"native artwork transfers gas to brake")
++	drag(control,1,Vector2(640,100))
++	drag(control,2,Vector2(640,100))
++	await _save(output.path_join("slide-exit-neutral.png"))
++	check(control.driver.touches.is_empty() and control.last_pressed_mask == 0 and control.draw_count == draws,"exit clears native artwork without redrawing geometry")
++	control.release_all()
++	game.queue_free()
++	await process_frame
++	await create_timer(0.4).timeout
++
++func _save(path: String) -> void:
++	await process_frame
++	await process_frame
++	await RenderingServer.frame_post_draw
++	check(root.get_texture().get_image().save_png(path) == OK,"native gameplay capture: "+path.get_file())
+diff --git a/game/tests/test_touch_slide_activation.gd.uid b/game/tests/test_touch_slide_activation.gd.uid
+new file mode 100644
+--- /dev/null
++++ b/game/tests/test_touch_slide_activation.gd.uid
+@@ -0,0 +1 @@
++uid://de01liwou4818
+diff --git a/docs/TOUCH_SLIDE_ACTIVATION_2026_10_23.md b/docs/TOUCH_SLIDE_ACTIVATION_2026_10_23.md
+new file mode 100644
+--- /dev/null
++++ b/docs/TOUCH_SLIDE_ACTIVATION_2026_10_23.md
+@@ -0,0 +1,79 @@
++# Driving buttons follow finger position — 2026-10-23
++
++The owner requests steering, gas and brake activation whenever a finger enters a
++button area, including a finger that first touched elsewhere on the screen.
++
++## Requirements and implementation
++
++- **TSA01:** Track every touch begun while driving controls are enabled and
++  visible, including touches outside the driving targets. On every button drag,
++  resolve the current target using the existing safe bounds, original-face
++  priority and nearest-face arbitration for enlarged hit areas. Entering a target
++  applies full input immediately. Direct transfers between all five buttons,
++  including gas/brake and handbrake, release the previous action in the same event.
++- **TSA02:** Keep independent per-finger input, shared-button occupancy, immediate
++  steering reversal, pressed artwork and steering haptics. Leaving and returning
++  works without another touch-down. Preserve the existing 28-unit exit tolerance
++  and lower pedal fade; a different button's resolved target always takes priority.
++- **TSA03:** Release/cancellation, disabling, hiding, focus loss, backgrounding,
++  layout replacement, resize and explicit release clear tracked state. Late drags
++  cannot resurrect a cleared gesture. Horizontal/joystick steering and the shared
++  relative gas/brake axis retain their first-contact origins and captured drag
++  behavior. Their separate handbrake button supports slide entry.
++- **R01/G01/Q01:** Preserve canonical driving and existing artwork/layout. Add
++  focused viewport-input coverage, actual native screenshots and a scoped patch.
++
++Runtime change: `game/ui/touch_controls.gd`. Regression coverage:
++`game/tests/test_touch_slide_activation.gd`. The existing padding test changes
++only its old prohibition on gas-to-brake transfer, which the owner's request
++supersedes. The existing layout and device-probe edge-fade assertions remain.
++
++## Actual validation
++
++Godot 4.7.2, Windows, with separate workspace APPDATA directories:
++
++| Check | Result |
++| --- | --- |
++| Slide activation, headless | 1,253 checks, zero failures |
++| Slide activation, Compatibility/OpenGL | 1,259 checks, zero failures |
++| Slide activation, desktop Mobile/Vulkan | 1,259 checks, zero failures |
++| Existing target padding | 1,218 checks, zero failures |
++| Existing relative axes | 1,642 checks, zero failures |
++| Existing mobile controls | 747 checks, zero failures |
++| Existing control layout, including viewport probe | 407 checks, zero failures |
++| Existing driving/replay | 72 checks, zero failures |
++| Full project script parser | 1,041 scripts, zero failures |
++
++The focused test covers all source/destination button pairs, outside entry,
++exit/reentry, cancellation, multiple occupants, simultaneous steering/pedals,
++three aspect ratios, three sizes, mirroring, legacy layout, transformed canvas,
++safe insets and lifecycle resets. Both native renderers capture slide-acquired
++left/gas, a direct gas-to-brake transfer and neutral artwork after exit. These are
++synthetic viewport events on Windows, not physical touchscreen gestures.
++
++Repeat each check with:
++
++```powershell
++powershell -NoProfile -ExecutionPolicy Bypass -File docs/evidence/touch-slide-activation-2026-10-23/run_validation.ps1 -Test test_touch_slide_activation -Mode headless
++```
++
++Use `gl_compatibility` or `mobile` for native captures. The same runner accepts the
++existing test names listed in `report.json`. Logs, source hashes, screenshots,
++initial interruptions and the Git-checkable task patch are under
++`docs/evidence/touch-slide-activation-2026-10-23/`.
++
++## Corrections and remaining acceptance
++
++The first script launch hit Windows execution policy; the repeat used the normal
++process-scoped Bypass flag. Initial layout/driving tests lacked isolated writable
++APPDATA and stopped at their file assertions; those processes were stopped and
++the complete tests passed with workspace-only user data. An initial change
++removed the old pedal edge fade; the existing viewport probe caught it, and the
++fade and its original assertions were restored. Final native assertions pass;
++their shutdown logs retain four ObjectDB instances/one resource still in use.
++Sandboxed launches also report unavailable root-certificate-store access. No
++network behavior or production shutdown behavior was changed for this task.
++
++Client reload and owner/device slide feel remain. No phone/tablet attachment
++check, physical-device test, APK export/install, account/backend mutation or
++deployment was performed. Concurrent work is preserved.
+diff --git a/docs/evidence/touch-slide-activation-2026-10-23/run_validation.ps1 b/docs/evidence/touch-slide-activation-2026-10-23/run_validation.ps1
+new file mode 100644
+--- /dev/null
++++ b/docs/evidence/touch-slide-activation-2026-10-23/run_validation.ps1
+@@ -0,0 +1,18 @@
++param(
++    [string]$Test = 'test_touch_slide_activation',
++    [ValidateSet('headless', 'gl_compatibility', 'mobile')][string]$Mode = 'headless'
++)
++$ErrorActionPreference = 'Stop'
++$taskRepo = (Resolve-Path (Join-Path $PSScriptRoot '../../..')).Path
++$env:APPDATA = Join-Path $taskRepo "build/touch-slide-activation-2026-10-23/$Test-$Mode/appdata"
++New-Item -ItemType Directory -Force -Path $env:APPDATA | Out-Null
++$engine = 'C:\apps\Godot 4.7.2\Godot_v4.7.2-stable_win64_console.exe'
++$testArgs = @('--path', (Join-Path $taskRepo 'game'), '--log-file', (Join-Path $PSScriptRoot "$Test-$Mode.log"), '--script', "res://tests/$Test.gd")
++if ($Mode -eq 'headless') {
++    $testArgs += '--headless'
++} else {
++    $testArgs += @('--rendering-method', $Mode, '--audio-driver', 'Dummy', '--max-fps', '60')
++    if ($Mode -eq 'mobile') { $testArgs += @('--rendering-driver', 'vulkan') }
++}
++& $engine @testArgs
++exit $LASTEXITCODE

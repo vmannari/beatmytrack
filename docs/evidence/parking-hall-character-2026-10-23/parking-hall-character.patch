@@ -1,0 +1,533 @@
+--- a/game/garage/parking_hall_data.gd
++++ b/game/garage/parking_hall_data.gd
+@@ -1,19 +1,30 @@
+ extends PlaygroundData
+ ## Local, untimed test facility. Visuals consume these exact wall/pillar bounds.
+-const SIZE := Vector2(240.0,160.0)
+-const PILLAR_RADIUS: float = 0.8
+-const STRAIGHT_Y: float = -48.0
+-const TURNING_CENTER := Vector2(-56.0,23.0)
+-const TURNING_RADIUS: float = 28.0
++const SIZE := Vector2(120.0,72.0)
++const PILLAR_RADIUS: float = 0.65
++const STRAIGHT_Y: float = -18.0
++const STRAIGHT_LENGTH: float = 90.0
++const TURNING_CENTER := Vector2(-24.0,8.0)
++const TURNING_RADIUS: float = 12.0
++const PARKED_CARS: Array[Dictionary] = [
++	{"position":Vector2(-31.5,-31),"vehicle":"compact","colour":"85877b","half_length":2.0},
++	{"position":Vector2(22.5,31),"vehicle":"pickup","colour":"485a60","half_length":2.5},
++	{"position":Vector2(37.5,-31),"vehicle":"classic","colour":"805849","half_length":2.0}]
++var columns: Array[Vector3] = []
+ 
+ func _init() -> void:
+-	identity = "garage-parking-hall-v1"
++	identity = "garage-parking-hall-v2"
+ 	half_extent = SIZE * 0.5
+-	spawn = Vector2(-100.0,STRAIGHT_Y)
++	spawn = Vector2(-44.0,STRAIGHT_Y)
+ 	spawn_heading = PI * 0.5
+ 	islands = []
+-	for x: float in [-108.0,-84.0,-60.0,-36.0,-12.0,12.0,36.0,60.0,84.0,108.0]:
+-		for y: float in [-66.0,66.0]: islands.append(Vector3(x,y,PILLAR_RADIUS))
+-	# Leave a broad turning area and an uninterrupted 200 m straight.
+-	for x: float in [-108.0,0.0,24.0,48.0,72.0,108.0]:
+-		islands.append(Vector3(x,0.0,PILLAR_RADIUS))
++	for x: float in [-48.0,-36.0,-24.0,-12.0,0.0,12.0,24.0,36.0,48.0]:
++		for y: float in [-26.0,26.0]: columns.append(Vector3(x,y,PILLAR_RADIUS))
++	# A clear west-end manoeuvring area joins the two parking aisles.
++	for x: float in [-48.0,0.0,12.0,24.0,36.0,48.0]:
++		columns.append(Vector3(x,0.0,PILLAR_RADIUS))
++	islands.assign(columns)
++	# Two overlapping circles form each parked vehicle's conservative capsule.
++	for parked: Dictionary in PARKED_CARS:
++		for offset: float in [1.0-float(parked.half_length),float(parked.half_length)-1.0]:
++			islands.append(Vector3(parked.position.x,parked.position.y+offset,1.0))
+--- a/game/garage/parking_hall_visual.gd
++++ b/game/garage/parking_hall_visual.gd
+@@ -1,75 +1,35 @@
+ extends Node3D
+-## Original concrete parking hall, presented as a cutaway for the overhead camera.
+-## Repeated fixtures are batched; there are no per-bay lights or physics bodies.
++## Original P1 parking hall with an open driving view; no roof or ceiling.
+ const HallData = preload("res://garage/parking_hall_data.gd")
+ var _batches: Dictionary = {}
+ var _materials: Dictionary = {}
++var column_count: int = 0
++var bay_count: int = 0
++var parked_count: int = 0
+ 
+ func build(data: PlaygroundData) -> void:
+ 	name = "ParkingHall"
+ 	_materials = {
+-		"concrete":VisualGeometry.material(Color("7c8587")),
+-		"dark":VisualGeometry.material(Color("253239")),
+-		"white":VisualGeometry.material(Color("c0c4ba")),
+-		"yellow":VisualGeometry.material(Color("d4b565")),
+-		"blue":VisualGeometry.material(Color("436a7c")),
+-		"red":VisualGeometry.material(Color("a65d4a")),
+-		"lamp":VisualGeometry.material(Color("dce8df"))}
+-	_materials.lamp.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
++		"concrete":VisualGeometry.material(Color("8c908a")),
++		"cream":VisualGeometry.material(Color("c0beb0")),
++		"dark":VisualGeometry.material(Color("283238")),
++		"white":VisualGeometry.material(Color("c8c7b5")),
++		"yellow":VisualGeometry.material(Color("c7aa59")),
++		"teal":VisualGeometry.material(Color("39756f")),
++		"red":VisualGeometry.material(Color("995c49"))}
++	_materials["arrow"] = VisualGeometry.material(Color("c8c7b5"))
++	_materials.arrow.cull_mode = BaseMaterial3D.CULL_DISABLED
+ 	var floor_material := ShaderMaterial.new()
+ 	floor_material.shader = preload("res://garage/parking_hall_floor.gdshader")
+-	VisualGeometry.box(self,Vector3(240,0.18,160),Vector3(0,-0.09,0),floor_material)
+-	# Inner faces exactly match PlaygroundData's enclosing wall bounds.
+-	for side: float in [-1.0,1.0]:
+-		_box("concrete",Vector3(0.8,4.8,161.6),Vector3(side*120.4,2.4,0))
+-		_box("concrete",Vector3(240,4.8,0.8),Vector3(0,2.4,side*80.4))
+-		_box("blue",Vector3(0.04,0.8,160),Vector3(side*119.98,1.3,0))
+-		_box("blue",Vector3(240,0.8,0.04),Vector3(0,1.3,side*79.98))
+-		# Perimeter roof/ventilation reveals imply a ceiling without hiding the car.
+-		_box("dark",Vector3(2.8,0.5,160),Vector3(side*118.6,5.0,0))
+-		_box("dark",Vector3(240,0.5,2.8),Vector3(0,5.0,side*78.6))
+-		for x: int in range(-108,109,24):
+-			_box("dark",Vector3(8,1.8,0.08),Vector3(x,2.9,side*79.9))
+-			for louver: int in range(5):
+-				_box("concrete",Vector3(7.8,0.08,0.12),Vector3(x,2.2+louver*0.3,side*79.82))
+-	for pillar: Vector3 in data.islands:
+-		var point := Vector3(pillar.x,0,-pillar.y)
+-		# Round columns and their painted base share the exact swept-circle radius.
+-		VisualGeometry.cylinder(self,pillar.z,5.4,point+Vector3.UP*2.7,_materials.concrete)
+-		VisualGeometry.cylinder(self,pillar.z+0.002,0.8,point+Vector3.UP*0.4,_materials.yellow)
+-		_box("dark",Vector3(3.6,0.25,0.7),point+Vector3.UP*5.3)
+-		_box("lamp",Vector3(3.2,0.04,0.35),point+Vector3(0,5.44,0))
+-		for stripe: int in range(3):
+-			_box("dark",Vector3(0.7,0.12,0.04),point+Vector3(0,0.2+stripe*0.23,0.805))
+-	# Empty parking bays have a 7 m approach and 3.2 m widths.
+-	for side: float in [-1.0,1.0]:
+-		for x: int in range(-112,113,8):
+-			for bay: int in range(2):
+-				var bx: float = x+bay*3.2
+-				_box("white",Vector3(0.1,0.012,5.8),Vector3(bx,0.016,side*73.0))
+-				_box("white",Vector3(3.2,0.012,0.1),Vector3(bx+1.6,0.016,side*75.85))
+-	# 200 m clear acceleration/braking lane. No collision or checkpoint on paint.
+-	for side: float in [-1.0,1.0]:
+-		_box("yellow",Vector3(208,0.012,0.12),Vector3(0,0.018,48+side*6))
+-	for x: int in range(-100,101,20):
+-		_box("white",Vector3(0.18,0.012,10),Vector3(x,0.02,48))
+-		_label(str(x+100)+" m",Vector2(x,-39),0.7)
+-	_label("ACCELERATION / BRAKING",Vector2(-68,-58),0.85)
+-	_label("PARKING HALL",Vector2(-99,-27),1.0)
+-	_label("FREE DRIVE",Vector2(-99,-32),0.7)
+-	var center := Vector3(HallData.TURNING_CENTER.x,0.024,-HallData.TURNING_CENTER.y)
+-	for radius: float in [12.0,20.0,HallData.TURNING_RADIUS]:
+-		VisualGeometry.ring(self,center,radius,0.12,_materials.white)
+-	_label("TURNING AREA",HallData.TURNING_CENTER,1.0)
+-	# Flexible markers are deliberately cosmetic; solid columns have yellow bases.
+-	for index: int in range(8):
+-		var point := Vector3(61+(-3.0 if index%2 == 0 else 3.0),0,-(8+index*6.0))
+-		_box("dark",Vector3(0.7,0.08,0.7),point+Vector3.UP*0.04)
+-		var cone := VisualGeometry.cylinder(self,0.28,0.6,point+Vector3.UP*0.34,_materials.red)
+-		(cone.mesh as CylinderMesh).top_radius = 0.06
+-	_label("SLALOM",Vector2(61,59),0.9)
+-	_label("PARKING",Vector2(35,-69),0.85)
+-	# Flush boxes into one instanced draw per material rather than hundreds of nodes.
++	VisualGeometry.box(self,Vector3(HallData.SIZE.x,0.18,HallData.SIZE.y),Vector3(0,-0.09,0),floor_material)
++	_build_enclosure(data)
++	_build_columns(data)
++	_build_bays()
++	_build_aisles()
++	_build_services()
++	_build_parked_cars()
++	# Static cylindrical parts are merged; live player car is outside this node.
++	VisualGeometry.batch_static_parts(self)
+ 	for key: String in _batches:
+ 		var mesh := BoxMesh.new()
+ 		mesh.size = Vector3.ONE
+@@ -85,17 +45,160 @@
+ 		add_child(instance)
+ 	_batches.clear()
+ 
+-func _box(material: String, dimensions: Vector3, point: Vector3) -> void:
++func _build_enclosure(data: PlaygroundData) -> void:
++	var extent: Vector2 = data.half_extent
++	for side: float in [-1.0,1.0]:
++		_box("concrete",Vector3(0.6,3.6,HallData.SIZE.y+1.2),Vector3(side*(extent.x+0.3),1.8,0))
++		_box("concrete",Vector3(HallData.SIZE.x,3.6,0.6),Vector3(0,1.8,side*(extent.y+0.3)))
++		_box("cream",Vector3(0.03,1.5,HallData.SIZE.y),Vector3(side*(extent.x-0.02),2.25,0))
++		_box("cream",Vector3(HallData.SIZE.x,1.5,0.03),Vector3(0,2.25,side*(extent.y-0.02)))
++		_box("teal",Vector3(0.04,0.38,HallData.SIZE.y),Vector3(side*(extent.x-0.045),1.1,0))
++		_box("teal" if side < 0 else "red",Vector3(HallData.SIZE.x,0.38,0.04),Vector3(0,1.1,side*(extent.y-0.045)))
++		_box("dark",Vector3(HallData.SIZE.x,0.12,0.12),Vector3(0,0.12,side*(extent.y-0.07)))
++		_box("yellow",Vector3(HallData.SIZE.x-2,0.012,0.12),Vector3(0,0.017,side*34.6))
++		for x: int in [-48,-24,0,24,48]:
++			_box("dark",Vector3(3.5,0.95,0.08),Vector3(x,2.5,side*35.9))
++			for slat: int in range(5):
++				_box("concrete",Vector3(3.4,0.07,0.13),Vector3(x,2.12+slat*0.18,side*35.8))
++			_wall_label("P1",Vector3(x+6,1.9,side*35.91),0.021,PI if side > 0 else 0.0)
++	for x: float in [-59.8,59.8]:
++		for z: float in [-35.7,35.7]:
++			_box("yellow",Vector3(0.18,1.25,0.55),Vector3(x,0.625,z))
++
++func _build_columns(data: PlaygroundData) -> void:
++	for pillar: Vector3 in data.get("columns"):
++		var point := Vector3(pillar.x,0,-pillar.y)
++		var zone: String = "teal" if pillar.y >= 0 else "red"
++		VisualGeometry.cylinder(self,pillar.z,3.6,point+Vector3.UP*1.8,_materials.concrete)
++		VisualGeometry.cylinder(self,pillar.z+0.003,1.55,point+Vector3.UP*0.775,_materials[zone])
++		VisualGeometry.cylinder(self,pillar.z+0.006,0.24,point+Vector3.UP*0.12,_materials.dark)
++		_box("dark",Vector3(1.18,0.3,0.12),point+Vector3(0,0.55,0.61))
++		for stripe: int in range(4):
++			_box("yellow",Vector3(0.13,0.29,0.03),point+Vector3(-0.43+stripe*0.28,0.55,0.69),-0.35)
++		var letter: String = "A" if pillar.y >= 0 else "B"
++		_wall_label(letter,point+Vector3(0,1.14,0.66),0.011)
++		_wall_label(letter,point+Vector3(0,1.14,-0.66),0.011,PI)
++		column_count += 1
++
++func _build_bays() -> void:
++	for side: float in [-1.0,1.0]:
++		for index: int in range(36):
++			var x: float = -54.0+index*3.0
++			_box("white",Vector3(0.1,0.012,5.4),Vector3(x,0.018,side*31.6))
++			_box("white",Vector3(3,0.012,0.1),Vector3(x+1.5,0.018,side*34.25))
++			if index%2 == 0:
++				_floor_label(("A" if side < 0 else "B")+"%02d" % (index+1),Vector2(x+1.5,-side*28.0),0.36)
++			bay_count += 1
++	for index: int in range(14):
++		var x: float = 5.0+index*3.0
++		for side: float in [-1.0,1.0]:
++			_box("white",Vector3(0.1,0.012,5.1),Vector3(x,0.02,side*4.0))
++			if index%2 == 0: _floor_label("C%02d" % (index+1+(14 if side > 0 else 0)),Vector2(x+1.5,-side*7.5),0.32)
++			bay_count += 1
++	for stripe: int in range(9):
++		_box("white",Vector3(2.6,0.012,0.48),Vector3(-51,0.022,-30+stripe*1.0))
++	_floor_label("STAIRS",Vector2(-51,22),0.46)
++
++func _build_aisles() -> void:
++	# Discreet aisle paint replaces the old proving-ground grid and target rings.
++	for side: float in [-1.0,1.0]:
++		for x: int in range(-42,49,18):
++			_arrow(Vector2(x,side*18),-PI*0.5 if side < 0 else PI*0.5)
++	for x: int in range(-45,46,15):
++		_box("yellow",Vector3(0.12,0.012,0.7),Vector3(x,0.024,24.0))
++		_floor_label(str(x+45),Vector2(x,-25.0),0.29)
++	_floor_label("P1",Vector2(-44,-12),1.65,Color("d1cbb1"))
++	_floor_label("NORTH GARAGE",Vector2(-43,-15),0.38)
++	_floor_label("KEEP CLEAR",Vector2(-24,8),0.55)
++	for index: int in range(5):
++		var point := Vector3(30+(-2.2 if index%2 == 0 else 2.2),0,-(11+index*2.7))
++		_box("dark",Vector3(0.5,0.07,0.5),point+Vector3.UP*0.035)
++		var cone := VisualGeometry.cylinder(self,0.22,0.5,point+Vector3.UP*0.29,_materials.red)
++		(cone.mesh as CylinderMesh).top_radius = 0.04
++	for index: int in range(10):
++		_box("yellow",Vector3(0.12,0.012,3.0),Vector3(-51+index*0.55,0.023,4.5),-0.5)
++
++func _build_services() -> void:
++	_box("dark",Vector3(0.09,3.1,6.0),Vector3(-59.91,1.55,18.0))
++	for slat: int in range(18):
++		_box("concrete",Vector3(0.12,0.075,5.8),Vector3(-59.83,0.15+slat*0.16,18.0))
++	_box("yellow",Vector3(0.2,0.18,6.1),Vector3(-59.7,3.12,18.0))
++	_box("teal",Vector3(2.1,2.7,0.12),Vector3(-51,1.35,-35.9))
++	_box("dark",Vector3(0.12,0.7,0.04),Vector3(-50.2,1.1,-35.81))
++	_box("teal",Vector3(2.6,0.55,0.18),Vector3(-51,2.98,-35.75))
++	_wall_label("EXIT  ↑",Vector3(-51,2.98,-35.63),0.006)
++	for x: float in [-42.0,42.0]:
++		_box("red",Vector3(0.8,1.1,0.18),Vector3(x,1.0,-35.85))
++		_box("white",Vector3(0.44,0.55,0.025),Vector3(x,1.12,-35.74))
++		_wall_label("F",Vector3(x,1.15,-35.71),0.005,0.0,Color("9a4434"))
++		_box("red",Vector3(0.08,2.8,0.09),Vector3(x-0.65,1.4,-35.82))
++	_sign("P1  /  A",Vector2(-36,35.8),"teal")
++	_sign("EXIT  →",Vector2(-48,-35.8),"teal")
++	_sign("B  /  PARKING",Vector2(30,-35.8),"red")
++	_sign("←  STAIRS",Vector2(18,35.8),"dark")
++
++func _build_parked_cars() -> void:
++	for parked: Dictionary in HallData.PARKED_CARS:
++		var car := CarVisual.new()
++		car.name = "Parked_"+str(parked.vehicle)
++		car.vehicle_id = parked.vehicle
++		car.simple_model = true
++		car.livery = VehicleLivery.defaults(parked.vehicle)
++		car.livery.colors.body = parked.colour
++		car.position = Vector3(parked.position.x,0,-parked.position.y)
++		car.rotation.y = PI if parked.position.y < 0 else 0.0
++		add_child(car)
++		car.process_mode = Node.PROCESS_MODE_DISABLED
++		parked_count += 1
++
++func _box(material: String, dimensions: Vector3, point: Vector3, angle: float = 0.0) -> void:
+ 	if not _batches.has(material): _batches[material] = []
+-	_batches[material].append(Transform3D(Basis.from_scale(dimensions),point))
+-
+-func _label(text: String, point: Vector2, scale_factor: float) -> void:
++	var basis: Basis = Basis(Vector3.UP,angle)*Basis.from_scale(dimensions)
++	_batches[material].append(Transform3D(basis,point))
++
++func _floor_label(text: String, point: Vector2, scale_factor: float, colour: Color = Color("babba9")) -> void:
+ 	var label := Label3D.new()
+ 	label.text = text
+ 	label.font_size = 64
+ 	label.pixel_size = 0.02*scale_factor
+-	label.modulate = Color("b8beb7")
++	label.modulate = colour
+ 	label.outline_size = 0
+ 	label.rotation.x = -PI*0.5
+ 	label.position = Vector3(point.x,0.035,-point.y)
+ 	add_child(label)
++
++func _wall_label(text: String, point: Vector3, pixel_size: float, yaw: float = 0.0, colour: Color = Color("e1ddca"), parent: Node3D = null) -> void:
++	var label := Label3D.new()
++	label.text = text
++	label.font_size = 64
++	label.pixel_size = pixel_size
++	label.modulate = colour
++	label.outline_size = 0
++	label.position = point
++	label.rotation.y = yaw
++	(self if parent == null else parent).add_child(label)
++
++func _arrow(point: Vector2, angle: float) -> void:
++	var center := Vector3(point.x,0.024,-point.y)
++	var points := PackedVector3Array([Vector3(0,0,-1.6),Vector3(-0.65,0,-0.45),Vector3(-0.2,0,-0.45),Vector3(-0.2,0,1),Vector3(0.2,0,1),Vector3(0.2,0,-0.45),Vector3(0.65,0,-0.45)])
++	var surface := SurfaceTool.new()
++	surface.begin(Mesh.PRIMITIVE_TRIANGLES)
++	var basis := Basis(Vector3.UP,angle)
++	for index: int in [0,2,1,0,5,2,0,6,5,2,4,3,2,5,4]:
++		surface.set_normal(Vector3.UP)
++		surface.add_vertex(center+basis*points[index])
++	var arrow := MeshInstance3D.new()
++	arrow.mesh = surface.commit()
++	arrow.name = "AisleArrow"
++	arrow.material_override = _materials.arrow
++	arrow.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
++	add_child(arrow)
++
++func _sign(text: String, point: Vector2, colour: String) -> void:
++	var sign := Node3D.new()
++	sign.name = "WallSign"
++	sign.position = Vector3(point.x,2.15,-point.y)
++	if point.y < 0: sign.rotation.y = PI
++	add_child(sign)
++	VisualGeometry.box(sign,Vector3(4.3,0.9,0.16),Vector3.ZERO,_materials[colour])
++	_wall_label(text,Vector3(0,0,0.09),0.009,0.0,Color("e7e5ce"),sign)
+--- a/game/garage/parking_hall_floor.gdshader
++++ b/game/garage/parking_hall_floor.gdshader
+@@ -4,11 +4,17 @@
+ void vertex() { floor_point = (MODEL_MATRIX * vec4(VERTEX,1.0)).xz; }
+ void fragment() {
+ 	vec2 p = floor_point;
+-	float grain = fract(sin(dot(floor(p*36.0),vec2(127.1,311.7)))*43758.5453);
+-	vec2 joint = abs(fract((p+vec2(1.0))/8.0)-0.5)*8.0;
+-	float seam = 1.0-smoothstep(0.018,0.065,min(joint.x,joint.y));
+-	float lane = 1.0-smoothstep(6.8,7.0,abs(p.y-48.0));
+-	vec3 concrete = mix(vec3(0.31,0.34,0.35),vec3(0.255,0.285,0.30),lane);
+-	ALBEDO = concrete + (grain-0.5)*0.012 - seam*0.035;
++	float grain = fract(sin(dot(floor(p*38.0),vec2(127.1,311.7)))*43758.5453);
++	vec2 joint = abs(fract((p+vec2(0.0,2.0))/6.0)-0.5)*6.0;
++	float seam = 1.0-smoothstep(0.012,0.038,min(joint.x,joint.y));
++	float edge_bays = smoothstep(27.8,28.0,abs(p.y));
++	float central_bays = (1.0-smoothstep(7.0,7.2,abs(p.y)))*smoothstep(2.5,3.0,p.x);
++	vec3 concrete = mix(vec3(0.285,0.30,0.285),vec3(0.205,0.27,0.25),edge_bays);
++	concrete = mix(concrete,vec3(0.26,0.285,0.26),central_bays);
++	float tracks = exp(-pow((abs(p.y)-18.0)/2.5,2.0))*0.035;
++	float stains = sin(p.x*0.13+sin(p.y*0.19))*sin(p.y*0.23+p.x*0.06)*0.009;
++	float pool = pow(max(0.0,cos((p.x-4.0)*0.523599)),6.0)*exp(-pow((abs(p.y)-18.0)/3.7,2.0));
++	ALBEDO = concrete + (grain-0.5)*0.009 + stains - seam*0.018 - tracks;
++	EMISSION = vec3(0.06,0.064,0.052)*pool;
+ 	ROUGHNESS = 0.94;
+ }
+--- a/game/garage/parking_hall_drive.gd
++++ b/game/garage/parking_hall_drive.gd
+@@ -22,10 +22,10 @@
+ func _update_weather() -> void:
+ 	biome_light.rotation_degrees = Vector3(-78,-20,0)
+ 	biome_light.light_color = Color("dce7eb")
+-	biome_light.light_energy = 0.65
++	biome_light.light_energy = 0.48
+ 	biome_environment.background_color = Color("252e34")
+ 	biome_environment.ambient_light_color = Color("bfcbd1")
+-	biome_environment.ambient_light_energy = 0.75
++	biome_environment.ambient_light_energy = 0.63
+ 
+ func restart() -> void:
+ 	super.restart()
+--- a/game/tests/test_parking_hall.gd
++++ b/game/tests/test_parking_hall.gd
+@@ -51,14 +51,15 @@
+ 
+ func physics_contract() -> void:
+ 	var hall := HallData.new()
+-	check(hall.half_extent*2 == Vector2(240,160),"240 by 160 metre hall")
+-	check(hall.islands.size() == 26,"bounded shared pillar layout")
++	check(hall.half_extent*2 == Vector2(120,72),"compact 120 by 72 metre hall")
++	check(HallData.SIZE.x*HallData.SIZE.y < 240.0*160.0*0.25,"less than one quarter of the former floor area")
++	check(hall.columns.size() == 24 and hall.islands.size() == 30,"shared columns and parked-car capsules")
+ 	for id: String in VehicleCatalog.IDS:
+ 		var config: HandlingConfig = VehicleCatalog.config(id,HandlingSelection.ORIGINAL_PLUS_INDEX)
+ 		var sim := VehicleSimulation.new(config)
+ 		sim.reset(hall.spawn,hall.spawn_heading)
+-		for tick: int in range(480): sim.step(DriveFrame.sample(0,1,0),hall)
+-		check(sim.state.position.x > hall.spawn.x+30,"useful acceleration distance: "+id)
++		for tick: int in range(240): sim.step(DriveFrame.sample(0,1,0),hall)
++		check(sim.state.position.x > hall.spawn.x+10,"useful acceleration distance: "+id)
+ 		check(sim.state.collision_count == 0,"uninterrupted straight: "+id)
+ 		for direction: Vector2 in [Vector2.RIGHT,Vector2.LEFT,Vector2.UP,Vector2.DOWN]:
+ 			sim.reset(Vector2(10,-24))
+@@ -76,6 +77,14 @@
+ 		check(sim.state.position.x < center.x and sim.state.position.distance_to(center) >= pillar.z+config.collision_radius,"swept pillar stops tunnelling: "+id)
+ 		for pillar_point: Vector3 in hall.islands:
+ 			check(Vector2(pillar_point.x,pillar_point.y).distance_to(HallData.TURNING_CENTER) > HallData.TURNING_RADIUS+pillar_point.z+config.collision_radius,"clear turning circle: "+id)
++		for parked: Dictionary in HallData.PARKED_CARS:
++			var parked_center: Vector2 = parked.position
++			var approach: Vector2 = parked_center-Vector2(5,0)
++			sim.reset(approach,PI*0.5)
++			sim.state.velocity = Vector2(100,0)
++			sim.state.position = parked_center+Vector2(5,0)
++			hall.resolve(sim.state,approach,config)
++			check(sim.state.position.x < parked_center.x,"parked cars are solid: "+id+str(parked.vehicle))
+ 
+ func run() -> void:
+ 	OS.set_environment("BMT_API_URL","")
+@@ -147,6 +156,7 @@
+ 		check(app.cloud_ticket.is_empty() and game.ghost_store == null,"no ticket or personal ghost: "+id)
+ 		check(game.hud.find_child("EditHere",true,false) == null,"no editor action: "+id)
+ 		check(game.hud.find_child("SpeedCard",true,false).is_visible_in_tree(),"speed visible: "+id)
++		check(game.track_ground.column_count == 24 and game.track_ground.bay_count == 100 and game.track_ground.parked_count == 3,"parking architecture and occupied spaces: "+id)
+ 		var spawn: Vector2 = game.sim.state.position
+ 		var pedal: Vector2 = game.hud.touch.zones()[3].get_center()
+ 		var touch := InputEventScreenTouch.new()
+@@ -167,7 +177,7 @@
+ 		if index == 0:
+ 			for dimensions: Vector2i in [Vector2i(960,540),Vector2i(1280,720),Vector2i(1600,900)]:
+ 				resize(dimensions)
+-				for pose: Array in [["entry",HallData.new().spawn],["turning",HallData.TURNING_CENTER],["slalom",Vector2(61,28)],["bays",Vector2(32,-70)]]:
++				for pose: Array in [["entry",HallData.new().spawn],["turning",HallData.TURNING_CENTER],["slalom",Vector2(30,18)],["bays",Vector2(-31.5,-24)],["stairs",Vector2(-53,24)],["arrows",Vector2(-12,-18)]]:
+ 					game.sim.reset(pose[1],PI*0.5)
+ 					game.previous_position = game.sim.state.position
+ 					game.camera.follow(game.sim.state.position,Vector2.ZERO,game.sim.state.heading,0,true)
+@@ -178,12 +188,21 @@
+ 					var speed: Rect2 = game.hud.find_child("SpeedCard",true,false).get_global_rect()
+ 					for zone: Rect2 in game.hud.touch.zones(): check(not speed.intersects(zone),"speed does not cover driving controls "+str(dimensions))
+ 					await capture(str(pose[0])+"-"+str(dimensions.x))
++					if DisplayServer.get_name() != "headless" and pose[0] == "arrows":
++						var painted_point: Vector2 = game.camera.unproject_position(Vector3(-6.5,0.028,18))
++						var plain_point: Vector2 = game.camera.unproject_position(Vector3(-6.5,0.028,19))
++						var pixels: Image = root.get_texture().get_image()
++						var painted: Color = pixels.get_pixelv(Vector2i(painted_point))
++						var plain: Color = pixels.get_pixelv(Vector2i(plain_point))
++						check(painted.r+painted.g+painted.b > plain.r+plain.g+plain.b+0.45,"filled arrow paint is visible from above "+str(dimensions))
+ 			resize(Vector2i(1280,720))
+ 		game.toggle_pause(false)
+ 		var paused_tick: int = game.sim.state.tick
+ 		game._advance_physics(VehicleSimulation.STEP)
+ 		check(game.sim.state.tick == paused_tick and not game.hud.touch.enabled,"pause stops driving and touch: "+id)
+-		if index == 0: await capture("paused")
++		if index == 0:
++			await frame()
++			await capture("paused")
+ 		game.hud.pause_menu.column.get_node("Restart").pressed.emit()
+ 		check(not game.paused and game.sim.state.position == game.yard.spawn and game.sim.state.velocity == Vector2.ZERO,"reset from pause: "+id)
+ 		game.driver.set_touch(25,&"accelerate")
+--- a/game/core/app.gd
++++ b/game/core/app.gd
+@@ -2428,7 +2428,7 @@
+ 	var loading: RaceLoading = _open_race_loading()
+ 	var loading_id: int = loading.get_instance_id()
+ 	loading.configure("Parking hall","night_city",PackedVector2Array(),true)
+-	loading.facts_label.text = "Free drive · 240 × 160 m"
++	loading.facts_label.text = "P1 parking hall · Free drive · 120 × 72 m"
+ 	loading.stage("Opening parking hall…")
+ 	cloud_starting = true
+ 	await _present_race_loading()
+--- a/game/ui/garage_page.gd
++++ b/game/ui/garage_page.gd
+@@ -810,7 +810,7 @@
+ func _add_test_drive_action() -> void:
+ 	var button := MenuStyle.button("Test drive", _request_free_drive)
+ 	button.name = "GarageTestDrive"
+-	button.tooltip_text = "Drive freely in a 240 × 160 m parking hall"
++	button.tooltip_text = "Drive freely in the 120 × 72 m P1 parking hall"
+ 	button.custom_minimum_size = Vector2(180,60)
+ 	actions.add_child(button)
+ 
+--- a/docs/PARKING_HALL_2026_10_23.md
++++ b/docs/PARKING_HALL_2026_10_23.md
+@@ -1,22 +1,23 @@
+ # Garage parking hall — 2026-10-23
+ 
+-Garage **Test drive** opens a local, untimed 240 × 160 metre concrete parking hall with the previewed car. The 200 metre marked straight supports acceleration/braking checks; the 56 metre diameter clear turning area, slalom markers and empty parking bays support steering, drifting, reversing and parking practice. Reset car returns to the entrance; Garage or the pause menu returns to the same retained garage.
++Garage **Test drive** opens a local, untimed **120 × 72 metre P1 basement garage** with the previewed car. Owner feedback supersedes the original 240 × 160 m test facility: the revised floor area is 77.5% smaller. Two parking aisles, a 90 m run and a clear 24 m diameter manoeuvring area retain acceleration/braking, steering, drifting, reversing and parking practice. Reset car returns to the entrance; Garage or the pause menu returns to the same retained garage. See [the character revision](PARKING_HALL_CHARACTER_2026_10_23.md).
+ 
+ | Requirement | Implementation |
+ | --- | --- |
+ | GPH01 | Test drive is available in car browsing, Customise, Tuning and Care. It commits the current garage tools and selects the previewed car. Sliding/hidden controls cannot start the hall. Short landscape windows reserve room for the action row. |
+-| GPH02 | One local geometry resource supplies 240 × 160 m wall bounds and 26 exact cylindrical pillar bounds to both simulation and presentation. The straight and turning circle remain clear. Painted lines and flexible slalom markers are cosmetic. |
++| GPH02 / GPC01 | Local facility version2 shares 120 × 72 m wall bounds, 24 cylindrical column bounds and conservative capsules for three parked cars with presentation. The aisle and manoeuvring area remain clear. Painted lines and flexible slalom markers are cosmetic. |
++| GPC02–GPC03 | P1 identity, A/B colour bands, numbered bays, parked cars, wall-mounted stair/exit signs, shutter, safety cabinets, wall ventilation/pipes and restrained concrete wear. The owner explicitly removed the roof/ceiling and all overhead beams/fixtures. Filled floor arrows follow the two aisle directions. |
+ | GPH03 | Reuse the real five cars, saved paint/parts, locked normal handling, quantized controls, skid marks, audio, approved overhead camera and camera preferences. No canonical simulation or physics version changes. |
+ | GPH04 | Start immediately without countdown, laps, results, rewards, tickets, ghosts, paid resumes or stored race inputs/proof. Saved car condition and PBs are unchanged. Reset/pause/background/input release work normally. |
+ | R01 / G01 / Q01 | Preserve unrelated work; retain real logs, corrections, screenshots, source hashes and a task-only Git-checkable patch. Device and owner acceptance remain explicit. |
+ 
+-`game/garage/parking_hall_data.gd` contains the local facility geometry. `parking_hall_visual.gd` builds the original concrete floor, painted bays/markers, circular columns, perimeter ventilation and strip fixtures. `parking_hall_floor.gdshader` supplies quiet concrete grain/joints. Repeated box fixtures use one MultiMesh per material; there are no per-bay dynamic lights. The ceiling is presented as a cutaway so the normal overhead camera can see the car. No downloaded or generated bitmap asset, external service or new dependency is used.
++`game/garage/parking_hall_data.gd` contains the local facility geometry. `parking_hall_visual.gd` builds the original basement architecture and reuses three existing static fictional car models. `parking_hall_floor.gdshader` supplies concrete grain, joints, epoxy zones, aisle wear and restrained light pools. There is no roof/ceiling geometry or cutaway shader; signs mount to the walls. Repeated box fixtures use one MultiMesh per material and static cylindrical parts are merged; there are no per-bay dynamic lights. No downloaded or generated bitmap asset, external service or new dependency is used.
+ 
+ `parking_hall_drive.gd` inherits the existing Game composition and overrides the local ground, indoor lighting and condition persistence. Its free-drive flag suppresses the shared race evidence recorder. App owns covered, scope/navigation/car-fenced loading and the retained-menu return. Existing editor practice continues to expose Edit here; the hall exposes Garage and an unobstructed speed display.
+ 
+ Changed shared sources are `game/core/app.gd`, `game/core/game.gd`, `game/ui/garage_page.gd`, `game/ui/playground_hud.gd` and `game/ui/race_pause_menu.gd`. The focused harness is `game/tests/test_parking_hall.gd`. Captured original Garage-method fixtures retain the existing carousel assertions for control comparisons. The evidence report lists every checkpoint source and its SHA-256.
+ 
+-Validation uses pinned Godot `4.7.2.stable.official.ed1daf0bf`, isolated workspace APPDATA and disposable records/libraries. Commands and complete logs are under [the evidence directory](evidence/parking-hall-2026-10-23/). The final report contains the actual counts. Existing driving, editor practice, garage carousel and App regressions are also recorded. Native captures cover 960 × 540, 1280 × 720 and 1600 × 900 in Compatibility and desktop Mobile/Vulkan.
++Validation uses pinned Godot `4.7.2.stable.official.ed1daf0bf`, isolated workspace APPDATA and disposable records/libraries. Current commands, counts and native captures are in [the character revision evidence](evidence/parking-hall-character-2026-10-23/report.json). Native views cover 960 × 540, 1280 × 720 and 1600 × 900 in Compatibility and desktop Mobile/Vulkan, with image probes checking that filled arrow paint renders above the floor. Initial cutaway/car-visibility comparisons remain historical evidence; the owner superseded that design by removing the ceiling. [The original evidence](evidence/parking-hall-2026-10-23/report.json) retains the first implementation and its existing driving/practice/Garage regressions.
+ 
+ Corrections retained in evidence: the first PowerShell invocation needed process-only execution-policy bypass; sandboxed Godot could not read the Windows certificate store, so approved native runs used isolated test data outside that sandbox. The first headless layout assertion mixed physical and logical viewport sizes. Native review then exposed a speed/handbrake overlap and the short-window Garage action row clipping. The old carousel fixture exposed an accidental free-drive activation during a menu slide; the final guard fixes that, with its assertions retained. An original-method control had one Patterns timing failure; the final current carousel passes all 152 checks. Initial failure logs and the speed-overlap image remain in evidence.
+ 
+--- a/AGENTS.md
++++ b/AGENTS.md
+@@ -1,3 +1,6 @@
++## Compact P1 hall, corrected arrows and no ceiling override (2026-10-23)
++2026-10-23 GPC01-GPC03/GPH01-GPH04/R01/G01/Q01: Owner reduces the hall and requests more parking-garage character, then explicitly removes the ceiling and fixes arrows. P1 is120x72m (77.5% less floor), with24 coloured columns, numbered parking banks,3 solid parked cars, wall signs, shutter/stair/safety/ventilation details and quieter concrete/aisle paint. No roof, overhead beams/ducts/fixtures or cutaway shader remains. Filled two-sided arrows have corrected winding and opposing aisle directions, with native paint-versus-concrete probes. Focused441headless/466Compatibility/466desktopMobile, App141 and full parser pass; exact counts and source hashes are in docs/evidence/parking-hall-character-2026-10-23/report.json. Initial ceiling sources/views, owner screenshot correction and a concurrent ChallengeGraphic class-cache interruption/import refresh are retained. Normal handling/camera, free-drive isolation and saved records/condition remain. Restart and owner/device acceptance remain; no phone/tablet attachment check, physical-device test, APK, live mutation or deployment. Concurrent work preserved.
++
+ ## Terrain-matched Desert sand cadence override (2026-10-23)
+ 2026-10-23 STC01-STC02/G01/R01/Q01: Owner likes the RSP sand preview and requests closer terrain colour and slightly more frequent appearances. Share the existing loose-sand palette with brightness compensation; shorten independent periods6-11s to5-9s and skips12% to10% (about24% more nominal starts). Accepted soft shape, drift, lift, opacity, six separated crest sites and48-quad/96-triangle batch remain. Focused55headless/68Compatibility/68desktopMobile, Desert87, ambience111, biomes108 and parser1031 pass. Original mutedness/contrast/roof/canonical/lifecycle guards remain; native hue errors0.0021/0.0175, zero bright specks and784exact roof pixels pass. Commands, updated HTML previews, hashes and scoped Git-checkable patch: docs/DESERT_SAND_TERRAIN_2026_10_23.md and docs/evidence/desert-sand-terrain-2026-10-23/report.json. Client reload and owner/device colour/cadence/cost acceptance remain. No phone/tablet attachment check, physical-device test, APK, live account/backend mutation or deployment. Concurrent work preserved.
+ 
+--- a/DEVELOPMENT_STATUS.md
++++ b/DEVELOPMENT_STATUS.md
+@@ -1,3 +1,5 @@
++2026-10-23 GPC01-GPC03/GPH01-GPH04/R01/G01/Q01: Owner reduces the hall and requests more parking-garage character, then explicitly removes the ceiling and fixes arrows. P1 is120x72m (77.5% less floor), with24 coloured columns, numbered parking banks,3 solid parked cars, wall signs, shutter/stair/safety/ventilation details and quieter concrete/aisle paint. No roof, overhead beams/ducts/fixtures or cutaway shader remains. Filled two-sided arrows have corrected winding and opposing aisle directions, with native paint-versus-concrete probes. Focused441headless/466Compatibility/466desktopMobile, App141 and full parser pass; exact counts and source hashes are in docs/evidence/parking-hall-character-2026-10-23/report.json. Initial ceiling sources/views, owner screenshot correction and a concurrent ChallengeGraphic class-cache interruption/import refresh are retained. Normal handling/camera, free-drive isolation and saved records/condition remain. Restart and owner/device acceptance remain; no phone/tablet attachment check, physical-device test, APK, live mutation or deployment. Concurrent work preserved.
++
+ 2026-10-23 STC01-STC02/G01/R01/Q01: Owner likes the RSP sand preview and requests closer terrain colour and slightly more frequent appearances. Share the existing loose-sand palette with brightness compensation; shorten independent periods6-11s to5-9s and skips12% to10% (about24% more nominal starts). Accepted soft shape, drift, lift, opacity, six separated crest sites and48-quad/96-triangle batch remain. Focused55headless/68Compatibility/68desktopMobile, Desert87, ambience111, biomes108 and parser1031 pass. Original mutedness/contrast/roof/canonical/lifecycle guards remain; native hue errors0.0021/0.0175, zero bright specks and784exact roof pixels pass. Commands, updated HTML previews, hashes and scoped Git-checkable patch: docs/DESERT_SAND_TERRAIN_2026_10_23.md and docs/evidence/desert-sand-terrain-2026-10-23/report.json. Client reload and owner/device colour/cadence/cost acceptance remain. No phone/tablet attachment check, physical-device test, APK, live account/backend mutation or deployment. Concurrent work preserved.
+ 
+ 2026-10-23 LLSD01/LLS01-LLS02/R01/V05/Q01: Owner-approved tyre-visibility fix deployed to OnePlus Pad 2, build0.3.0-creator.3ae28a749c83e1a138e1c689731c58b2. Frozen installed source changes one gameplay file; native libraries exact. Focused1789/import/startup/driving72/catalog21/menu41 pass. Installed APK hash/version and firstInstallTime verified; awake APP_READY, zero matched game errors, actual signed-in Race menu/results retained. Initial asleep-launch/EGL and receipt-encoding corrections are documented. Data-preserving install-r; no uninstall/clear/track sync/backend deployment or driving/provider input. Sustained later-lap owner acceptance remains. Commands, native view, hashes and scoped checkpoint: docs/evidence/tablet-lap-stutter-deployment-2026-10-23/report.json. Concurrent work preserved.
+--- a/docs/PHASE_0_PLAN.md
++++ b/docs/PHASE_0_PLAN.md
+@@ -1,3 +1,5 @@
++2026-10-23 GPC01-GPC03/GPH01-GPH04/R01/G01/Q01: Owner reduces the hall and requests more parking-garage character, then explicitly removes the ceiling and fixes arrows. P1 is120x72m (77.5% less floor), with24 coloured columns, numbered parking banks,3 solid parked cars, wall signs, shutter/stair/safety/ventilation details and quieter concrete/aisle paint. No roof, overhead beams/ducts/fixtures or cutaway shader remains. Filled two-sided arrows have corrected winding and opposing aisle directions, with native paint-versus-concrete probes. Focused441headless/466Compatibility/466desktopMobile, App141 and full parser pass; exact counts and source hashes are in docs/evidence/parking-hall-character-2026-10-23/report.json. Initial ceiling sources/views, owner screenshot correction and a concurrent ChallengeGraphic class-cache interruption/import refresh are retained. Normal handling/camera, free-drive isolation and saved records/condition remain. Restart and owner/device acceptance remain; no phone/tablet attachment check, physical-device test, APK, live mutation or deployment. Concurrent work preserved.
++
+ 2026-10-23 STC01-STC02/G01/R01/Q01: Owner likes the RSP sand preview and requests closer terrain colour and slightly more frequent appearances. Share the existing loose-sand palette with brightness compensation; shorten independent periods6-11s to5-9s and skips12% to10% (about24% more nominal starts). Accepted soft shape, drift, lift, opacity, six separated crest sites and48-quad/96-triangle batch remain. Focused55headless/68Compatibility/68desktopMobile, Desert87, ambience111, biomes108 and parser1031 pass. Original mutedness/contrast/roof/canonical/lifecycle guards remain; native hue errors0.0021/0.0175, zero bright specks and784exact roof pixels pass. Commands, updated HTML previews, hashes and scoped Git-checkable patch: docs/DESERT_SAND_TERRAIN_2026_10_23.md and docs/evidence/desert-sand-terrain-2026-10-23/report.json. Client reload and owner/device colour/cadence/cost acceptance remain. No phone/tablet attachment check, physical-device test, APK, live account/backend mutation or deployment. Concurrent work preserved.
+ 
+ 2026-10-23 LLSD01/LLS01-LLS02/R01/V05/Q01: Owner-approved tyre-visibility fix deployed to OnePlus Pad 2, build0.3.0-creator.3ae28a749c83e1a138e1c689731c58b2. Frozen installed source changes one gameplay file; native libraries exact. Focused1789/import/startup/driving72/catalog21/menu41 pass. Installed APK hash/version and firstInstallTime verified; awake APP_READY, zero matched game errors, actual signed-in Race menu/results retained. Initial asleep-launch/EGL and receipt-encoding corrections are documented. Data-preserving install-r; no uninstall/clear/track sync/backend deployment or driving/provider input. Sustained later-lap owner acceptance remains. Commands, native view, hashes and scoped checkpoint: docs/evidence/tablet-lap-stutter-deployment-2026-10-23/report.json. Concurrent work preserved.
+--- /dev/null
++++ b/docs/PARKING_HALL_CHARACTER_2026_10_23.md
+@@ -0,0 +1,20 @@
++# Compact P1 parking hall — 2026-10-23
++
++The owner found the first hall too large and lacking the character of a parking garage. This revision replaces its open proving-ground layout with a 120 × 72 m P1 basement, 77.5% less floor area. The mode still offers free, untimed driving with the existing five cars and controls.
++
++| Requirement | Delivered behaviour |
++| --- | --- |
++| GPC01 | Compact local facility v2, 90 m clear aisle run and 12 m clear manoeuvring radius. Shared authored wall/column geometry and solid parked-car capsules. Existing handling/camera/records rules remain. |
++| GPC02 | North Garage/P1 identity; muted teal A and brick-red B bands; numbered perimeter/central parking banks; three static existing car models; pedestrian crossing; stair door, wall-mounted exit signs and shutter; fire cabinets, wall vents and wall service pipes. |
++| GPC03 | The owner's screenshot feedback explicitly removes roof/ceiling, overhead beams, ducts and fixtures. The unused ceiling shader and presentation updater are removed. Floor arrows use a solid head/shaft, corrected winding and two-sided paint, with the south aisle pointing east and the north aisle west. |
++| GPH01–GPH04 / R01 / G01 / Q01 | Retain Garage entry/reset/pause/background/return, saved cosmetics and unchanged PB/condition. Isolated local evidence, scoped patch and explicit owner/device limits. |
++
++The solid geometry lives in `game/garage/parking_hall_data.gd`. Twenty-four round column bounds are also used by the renderer. Three parked cars reuse the existing Compact, Pickup and Classic models in static simplified form; two overlapping circles per car form conservative rounded collision capsules. Paint, arrows, cones and service details are presentation only. The facility identity changes to `garage-parking-hall-v2`; shared physics, race rules and server track formats do not change.
++
++The visual builder batches repeated fixtures by material and merges compatible static cylindrical/car parts. An original floor shader supplies restrained concrete joints/wear, epoxy parking zones and soft light pools. No generated bitmap, downloaded asset, network media service, new dependency or dynamic light per space is introduced.
++
++The focused native harness covers all five cars, real pointer/touch entry, saved cosmetic parts/paint, acceleration, all four enclosing walls, swept columns and parked cars, a clear manoeuvring area, reset/pause/background input release and retained Garage return. It retains the original no-proof/no-ticket/no-PB/no-condition-write checks. Screenshots use the ordinary gameplay camera at entry, manoeuvring space, slalom, bays and stairs, across three landscape window sizes in Compatibility and desktop Mobile/Vulkan.
++
++The initial revised hall passed423 headless and445 Compatibility checks. Native review then centred parked cars inside their spaces and moved the stair capture clear of a column. The owner rejected the arrows and ceiling in a supplied screenshot. Roof/ceiling construction and its shader/updater were removed, hanging signs moved to the walls, and the floor-arrow geometry, winding and direction were corrected. Native image probes now compare arrow paint against adjacent concrete so invisible/cull-rejected triangles cannot pass unnoticed. Earlier ceiling comparisons are retained only as superseded evidence. Initial images/logs and the rejected ceiling source are preserved. Final results, commands, hashes and checkpoint validation are recorded in [report.json](evidence/parking-hall-character-2026-10-23/report.json). The reproducible runner is retained beside that report.
++
++Restart the local client to load the revision. Owner size, atmosphere and driving-feel acceptance remains. Phone/tablet attachment was not checked; no physical-device test, APK export/install, live backend/account mutation or deployment was performed. Desktop renderer checks are not mobile FPS, memory or thermal measurements. Concurrent workspace work and earlier evidence are preserved.
+--- /dev/null
++++ b/game/tests/test_parking_hall.gd.uid
+@@ -0,0 +1 @@
++uid://jnywilkfuyhc

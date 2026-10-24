@@ -1,0 +1,160 @@
+"""Retain this task's actual captures, receipts and independently scoped Git diff."""
+import hashlib
+import json
+from pathlib import Path
+import re
+import shutil
+import statistics
+import subprocess
+
+ROOT = Path.cwd().resolve()
+OUT = ROOT / "docs/evidence/surface-audio-latency-2026-10-23"
+BUILD = ROOT / "build/surface-audio-latency-2026-10-23"
+
+
+def sha(path):
+    return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def save(name, data):
+    (OUT / name).write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
+
+
+for phase in ["before", "after", "controls"]:
+    target = OUT / ("timing-" + phase if phase != "controls" else phase)
+    target.mkdir(parents=True, exist_ok=True)
+    for path in (BUILD / phase).iterdir():
+        if path.is_file() and path.name != "armed":
+            shutil.copyfile(path, target / path.name)
+save("initial-after-summary.json", dict(median_ms=60.351625, minimum_ms=58.72675, maximum_ms=64.26825,
+    provenance="Initial successful tool/console measurement. Final after pass retains the full raw packets/PCM; initial raw files were replaced by that pass."))
+
+receipts = {
+    "focus-headless": "25756", "focus-original-five-failures": "31232", "focus-compatibility": "34340",
+    "focus-desktop-mobile": "6680", "windows-impacts": "17720", "collision-attack": "14392",
+    "snow-response": "35928", "vehicles": "22692", "kerbs": "29788", "continuity": "2120",
+    "snowbank": "9336", "loops": "9660", "soundtrack": "25288",
+    "initial-inherited-name": "4748", "initial-headless-continuity": "19644",
+    "initial-recorder-placement": "29188", "initial-compressed-image": "10136",
+    "initial-concurrent-test-preload": "11656", "initial-preload-after-import": "26392",
+}
+receipts["parser-final"] = "13000" # This task's final 990-script run, not a concurrent scan.
+logs = OUT / "logs"
+logs.mkdir(exist_ok=True)
+results = []
+for name, identity in receipts.items():
+    path = ROOT / f"build/logs/TestScript-{identity}/test-script.log"
+    shutil.copyfile(path, logs / (name + ".log"))
+    identity_path = path.parent / "client-build-identity.json"
+    if identity_path.exists(): shutil.copyfile(identity_path, logs / (name + "-build.json"))
+    lines = [row for row in path.read_text(encoding="utf-8").splitlines() if re.search(r"checks,|SCRIPT_PARSE:|FAIL:|ERROR:", row)]
+    results.append(dict(label=name, source=str(path.relative_to(ROOT)), summary=lines))
+shutil.copyfile(BUILD / "final-import.log", logs / "final-import.log")
+
+artifacts = []
+for directory in ["vehicles", "kerbs", "continuity"]:
+    for path in (BUILD / directory).iterdir():
+        if path.is_file():
+            artifacts.append(dict(path=str(path.relative_to(ROOT)), sha256=sha(path), bytes=path.stat().st_size))
+            if directory == "kerbs" or path.name.startswith("compact-"):
+                target = OUT / "audition" / directory / path.name
+                target.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copyfile(path, target)
+save("artifacts.json", artifacts)
+
+timing = {}
+for phase in ["before", "after"]:
+    directory = BUILD / phase
+    report = json.loads((directory / "timing-report.json").read_text())
+    events = json.loads((directory / "events.json").read_text())
+    report["by_clip_median_ms"] = {clip: statistics.median(row["latency_ms"] for row, event in zip(report["rows"], events) if event["clip"] == clip) for clip in sorted({event["clip"] for event in events})}
+    timing[phase] = report
+controls = json.loads((BUILD / "controls/control-report.json").read_text())
+continuity = (logs / "continuity.log").read_text()
+stats = []
+for line in continuity.splitlines():
+    if line.startswith("CONTINUOUS_OUTPUT_STATS:"):
+        label, serialized = line.removeprefix("CONTINUOUS_OUTPUT_STATS: ").split(" ", 1)
+        stats.append(dict(car=label, stats=json.loads(serialized)))
+save("continuous-output.json", stats)
+
+subprocess.run(["C:/msys64/mingw64/bin/objdump.exe", "-p", str(ROOT / "game/platform/windows/bmt_windows_audio_v6.1f55238709ec.dll")], stdout=(logs / "native-imports.txt").open("w"), check=True)
+shipped = ROOT / "game/platform/windows/bmt_windows_audio_v6.1f55238709ec.dll"
+assert sha(shipped) == sha(ROOT / "build/windows_audio/bmt_windows_audio_v6.dll")
+assert not controls["failures"] and len(stats) == 5 and all(row["stats"]["overflows"] == 0 for row in stats)
+
+report = dict(schema="bmt-surface-audio-latency-evidence-v1", date="2026-10-23",
+    requirements={"SAL01":"Measure common driving-sound delay", "SAL02":"Transfer finished Windows mix through bounded RAW output while retaining DSP/controls/fallback", "SAL03":"Start kerb rolling on actual first physics contact", "R01":"Regression, real native output and sustained playback checks", "Q01":"Source/binary provenance and scoped Git checkpoint"},
+    engine="4.7.2.stable.official.ed1daf0bf", timing=timing,
+    controls=dict(checks=len(controls["checks"]), failures=controls["failures"], report="controls/control-report.json"),
+    sustained=stats, receipts=results,
+    binary=dict(path=str(shipped.relative_to(ROOT)), sha256=sha(shipped), bytes=shipped.stat().st_size,
+        bindings="e83fd0904c13356ed1d4c3d09f8bb9132bdc6b77", system_imports=["AVRT.dll","CRYPT32.dll","KERNEL32.dll","msvcrt.dll","ole32.dll"]),
+    commands=[
+        "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/probe_surface_audio_output.ps1 -Phase before",
+        "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1 -Action BuildWindowsAudio",
+        "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1 -Action Import -RenderingMethod gl_compatibility",
+        "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/probe_surface_audio_output.ps1 -Phase after (initial and final passes)",
+        "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/probe_surface_audio_output.ps1 -Controls (initial failures retained; corrected final pass)",
+        "scripts/dev.ps1 -Action TestScript -ScriptPath res://tests/test_surface_audio_response.gd [-TestArgument --baseline | -Graphical -RenderingMethod gl_compatibility | -Graphical -RenderingMethod mobile]",
+        "scripts/dev.ps1 -Action TestScript -ScriptPath res://tests/{test_windows_impact_audio,test_collision_attack,test_snow_audio_response}.gd -Graphical -RenderingMethod gl_compatibility (each separately)",
+        "scripts/dev.ps1 -Action TestScript -ScriptPath res://tests/{test_vehicle_audio,test_grass_kerb_audio,test_vehicle_audio_continuity}.gd -Graphical -RenderingMethod gl_compatibility -TestArgument --evidence-dir=res://../build/surface-audio-latency-2026-10-23/{vehicles,kerbs,continuity} (each separately)",
+        "scripts/dev.ps1 -Action TestScript -ScriptPath res://tests/{test_audio_loops,test_snow_bank_audio,test_soundtrack,test_script_parse}.gd (each separately)",
+        "scripts/dev.ps1 -Action TestWindowsAudioExport; Python zipfile inventory: 4041 entries, no platform/windows/ entries; content ZIP only",
+        "C:/msys64/mingw64/bin/objdump.exe -p game/platform/windows/bmt_windows_audio_v6.1f55238709ec.dll",
+        "git diff --check on task paths; independent index task-only patch and reverse apply checks (checkpoint.json)"],
+    corrections=[
+        "Inherited OUT name renamed to RESPONSE_OUT; original first-contact assertions still reproduce five failures.",
+        "Native-only continuity was initially invoked headlessly; native rerun passes all 53 assertions.",
+        "First controls capture rejected a timestamp gap. Its Tires-only solo stage was already silent in upstream Godot PCM; final fixture explicitly solos the full Tires/Vehicle chain without changing production mixing.",
+        "Normal fallback compared with separate original Godot output reference to preserve OS processing; no-duplicate and exact gain assertions retained.",
+        "Recorder insertion synchronized before recording begins and cleanup uses effect identity.",
+        "Current compressed textures required decompression of the local CPU image before static pixel reads; concurrent GPU import settings retained.",
+        "Concurrent rendering test added a non-global script name without a preload. Import refresh was insufficient; one test-local preload restores its unchanged assertions.",
+        "A running process held the prototype DLL. Build now selects a content-addressed final DLL without terminating that process."],
+    limits=["Own-process Windows output only; no physical speaker/headphone/Bluetooth latency claim", "Other-platform/headless/custom output/unsupported format/rate/older-DLL fallback retained; old-DLL guard and actual headless/disabled/unsupported-rate paths covered at different levels", "Physical device switching/unplug/long-session listening untested", "Full client restart and owner listening remain", "No phone attachment check/device test, APK, live account/backend mutation or deployment; no owner editor/game terminated", "Concurrent workspace changes preserved; shared Git index not committed", "Initial after run retains summary only; final run retains full PCM/packets. Full five-car recordings remain in build with hashes; selected auditions retained here."])
+save("report.json", report)
+
+# Use an independent index without a commit. Current shared documents are the
+# effective baseline with only this task's own addition removed, preserving edits
+# that other work may have made since the task-start snapshots.
+current = {str(path.relative_to(OUT / "before")).replace("\\", "/"): path for path in (OUT / "before").rglob("*") if path.is_file()}
+for path in (OUT / "doc-base").rglob("*"):
+    if path.is_file(): current[str(path.relative_to(OUT / "doc-base")).replace("\\", "/")] = path
+for path in (OUT / "effective-before").rglob("*"):
+    if path.is_file(): current[str(path.relative_to(OUT / "effective-before")).replace("\\", "/")] = path
+new = ["game/platform/windows_audio_output.gd", "game/platform/windows_audio_output.gd.uid", "native/windows_audio/mix_bindings_profile.json", "native/windows_audio/mix_output.h", "scripts/build_windows_mix_bindings.py", "scripts/probe_surface_audio_output.ps1", "scripts/review_mixed_audio_output.py", "game/tests/probe_surface_audio_output.gd", "game/tests/probe_surface_audio_output.gd.uid", "game/tests/probe_mixed_audio_output.gd", "game/tests/probe_mixed_audio_output.gd.uid", "game/tests/test_surface_audio_response.gd", "game/tests/test_surface_audio_response.gd.uid", str(shipped.relative_to(ROOT)).replace("\\", "/"), "docs/SURFACE_AUDIO_LATENCY_2026_10_23.md"]
+stage = BUILD / "checkpoint"
+assert stage.resolve().is_relative_to(BUILD.resolve())
+stage.mkdir(exist_ok=True)
+
+
+def git(*args, output=False):
+    return subprocess.run(["git", "-C", str(stage), *args], check=True, stdout=subprocess.PIPE if output else subprocess.DEVNULL).stdout
+
+
+git("init", "-q")
+git("config", "core.autocrlf", "false")
+git("config", "core.whitespace", "blank-at-eol,blank-at-eof,space-before-tab,cr-at-eol")
+for name, before in current.items():
+    target = stage / name
+    target.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copyfile(before, target)
+git("add", "--", *current)
+manifest = []
+for name in [*current, *new]:
+    target = stage / name
+    target.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copyfile(ROOT / name, target)
+    before = current.get(name)
+    if not before or before.read_bytes() != target.read_bytes():
+        manifest.append(dict(path=name, before_sha256=sha(before) if before else None, after_sha256=sha(target), bytes=target.stat().st_size))
+git("add", "-N", "--", *new)
+patch = OUT / "workspace-task-only.patch"
+patch.write_bytes(git("diff", "--binary", "--no-ext-diff", output=True))
+git("diff", "--check")
+git("apply", "--reverse", "--check", str(patch))
+subprocess.run(["git", "apply", "--reverse", "--check", str(patch)], cwd=ROOT, check=True)
+save("checkpoint.json", dict(schema="bmt-workspace-checkpoint-v1", baseline="Saved task-start sources plus current shared-document bases; independent index, no commit", git_commit_created=False, shared_index_modified=False, patch_sha256=sha(patch), files=manifest, whitespace_check="pass", staged_reverse_check="pass", shared_workspace_reverse_check="pass"))
+shutil.copyfile(Path(__file__), OUT / "finish-evidence.py.txt")
+print("SURFACE_AUDIO_EVIDENCE:", len(manifest), "scoped files;", len(controls["checks"]), "capture checks; task-only binary patch verified")

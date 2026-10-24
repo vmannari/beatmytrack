@@ -1,0 +1,971 @@
+diff --git a/game/vehicle/trail_visibility.gd b/game/vehicle/trail_visibility.gd
+--- a/game/vehicle/trail_visibility.gd
++++ b/game/vehicle/trail_visibility.gd
+@@ -56,6 +56,9 @@
+ 		for item: int in range(1,PAGE_SIZE): _bounds[page] = _bounds[page].merge(_transforms[page*PAGE_SIZE+item]*_mesh_bounds)
+ 	_all_bounds = _all_bounds.merge(box) if _has_bounds else box
+ 	_has_bounds = true
++	# Keep ring-order GPU values current as each mark arrives. View changes can
++	# then copy whole contiguous pages without re-encoding every visible mark.
++	_pack(index,colors,custom)
+ 	# One resource and one draw: no additional batches or altered ring ordering.
+ 	var slot: int = _offsets[page]+index%PAGE_SIZE if _packed and _offsets[page] >= 0 else (-1 if _packed else index)
+ 	if slot >= 0:
+@@ -76,6 +79,7 @@
+ 			_valid[page] = true
+ 			_all_bounds = _all_bounds.merge(box) if _has_bounds else box
+ 			_has_bounds = true
++			_pack(index,colors,custom)
+ 	var pose: Transform3D = camera.global_transform
+ 	var projection: Projection = camera.get_camera_projection()
+ 	# One metre of conservative padding covers a half-metre camera refresh
+@@ -107,14 +111,19 @@
+ 	if selection == full and not _packed: return
+ 	_offsets.fill(-1)
+ 	var drawn: int = 0
++	var draw_buffer := PackedFloat32Array()
+ 	for page: int in range(_bounds.size()):
+ 		if selection & (1 << page) == 0: continue
+ 		_offsets[page] = drawn
+-		for index: int in range(page*PAGE_SIZE,mini((page+1)*PAGE_SIZE,retained_count)):
+-			_pack(drawn,index,colors,custom)
+-			drawn += 1
++		var end: int = mini((page+1)*PAGE_SIZE,retained_count)
++		draw_buffer.append_array(_buffer.slice(page*PAGE_SIZE*20,end*20))
++		drawn += end-page*PAGE_SIZE
+ 	# Unused slots are zero-area and never included in visible_instance_count.
+-	instances.buffer = _buffer
++	# Keep a separate submitted view: renderer ownership must not make the next
++	# ring write copy the entire buffer. Native packed-array copies also avoid
++	# hundreds of thousands of script assignments on late-lap view changes.
++	draw_buffer.resize(instances.instance_count*20)
++	instances.buffer = draw_buffer
+ 	instances.visible_instance_count = drawn
+ 	instances.custom_aabb = _all_bounds.grow(0.005)
+ 	_packed = selection != full
+@@ -126,8 +135,8 @@
+ 	var count: int = _offsets[last]+(retained_count-1)%PAGE_SIZE+1
+ 	if instances.visible_instance_count != count: instances.visible_instance_count = count
+ 
+-func _pack(slot: int, index: int, colors: PackedColorArray, custom: PackedColorArray) -> void:
+-	var at: int = slot*20
++func _pack(index: int, colors: PackedColorArray, custom: PackedColorArray) -> void:
++	var at: int = index*20
+ 	var pose: Transform3D = _transforms[index]
+ 	_buffer[at] = pose.basis.x.x; _buffer[at+1] = pose.basis.y.x; _buffer[at+2] = pose.basis.z.x; _buffer[at+3] = pose.origin.x
+ 	_buffer[at+4] = pose.basis.x.y; _buffer[at+5] = pose.basis.y.y; _buffer[at+6] = pose.basis.z.y; _buffer[at+7] = pose.origin.y
+diff --git a/game/tests/test_later_lap_trails.gd b/game/tests/test_later_lap_trails.gd
+new file mode 100644
+--- /dev/null
++++ b/game/tests/test_later_lap_trails.gd
+@@ -0,0 +1,153 @@
++extends SceneTree
++## Frozen implementation comparison. Disposable presentation fixtures only.
++const BASELINE = "res://tests/fixtures/later_lap_stutter_before/trail_visibility.gd.txt"
++var checks: int = 0
++var failures: int = 0
++var output: String = "res://../build/later-lap-stutter-2026-10-23"
++var camera: Camera3D
++var rows: Array[Dictionary] = []
++var old_script: GDScript
++var fixtures: Array[Dictionary] = []
++
++func _initialize() -> void: run.call_deferred()
++func check(ok: bool, label: String) -> void:
++	checks += 1
++	if not ok: failures += 1; print("FAIL: ",label)
++
++func fixture(legacy: bool) -> Dictionary:
++	var encoder := SkidTrails.new(); root.add_child(encoder); encoder.set_process(false)
++	var visibility: RefCounted = old_script.new(encoder.instances,encoder.mark_transforms) if legacy else encoder.trail_visibility
++	return {"encoder":encoder,"view":visibility,"written":0,"loop_pages":32}
++
++func write(row: Dictionary, count: int) -> void:
++	var encoder: SkidTrails = row.encoder
++	var view: RefCounted = row.view
++	for n: int in range(count):
++		var index: int = int(row.written)%SkidTrails.CAPACITY
++		var page: int = index/TrailVisibility.PAGE_SIZE
++		var local: int = index%TrailVisibility.PAGE_SIZE
++		var angle: float = local*TAU/512.0
++		var point := Vector3((page%int(row.loop_pages))*60.0+sin(angle)*8.0,0.03,cos(angle)*8.0)
++		encoder.mark_transforms[index] = Transform3D(Basis(Vector3(0.15,0,0),Vector3(0.15,0.01,0),Vector3(0.0,0.0,0.32)),point)
++		encoder.mark_colors[index] = Color(0.32,0.205,0.11,0.15+(local%7)*0.1)
++		encoder.mark_custom[index] = Color(float(local%11)/10.0,0.35,1.0,0.65)
++		if view.active: view.record(index,encoder.mark_colors,encoder.mark_custom)
++		else:
++			encoder.instances.set_instance_transform(index,encoder.mark_transforms[index])
++			encoder.instances.set_instance_color(index,encoder.mark_colors[index])
++			encoder.instances.set_instance_custom_data(index,encoder.mark_custom[index])
++			encoder.instances.visible_instance_count = mini(SkidTrails.CAPACITY,encoder.instances.visible_instance_count+1)
++		row.written += 1
++
++func present(row: Dictionary, world: Transform3D = Transform3D.IDENTITY) -> float:
++	var encoder: SkidTrails = row.encoder
++	var start: int = Time.get_ticks_usec()
++	row.view.present(camera,encoder.mark_colors,encoder.mark_custom,world)
++	return (Time.get_ticks_usec()-start)/1000.0
++
++func same(label: String) -> void:
++	var a: Dictionary = fixtures[0]; var b: Dictionary = fixtures[1]
++	var first: MultiMesh = a.encoder.instances; var second: MultiMesh = b.encoder.instances
++	check(a.view.retained_count == b.view.retained_count and a.view._selection == b.view._selection,label+" retained population and frustum pages")
++	check(first.visible_instance_count == second.visible_instance_count,label+" submitted population")
++	check(first.buffer.slice(0,first.visible_instance_count*20) == second.buffer.slice(0,second.visible_instance_count*20),label+" exact submitted transforms, pigment and endpoint pressure")
++	check(first.custom_aabb == second.custom_aabb,label+" exact culling bounds")
++
++func move_to(x: float) -> void:
++	camera.position = Vector3(x,24,18); camera.look_at(Vector3(x,0,0))
++
++func stats(values: Array[float]) -> Dictionary:
++	values.sort()
++	return {"median_ms":values[values.size()/2],"p95_ms":values[mini(values.size()-1,int(values.size()*0.95))],"max_ms":values[-1]}
++
++func run() -> void:
++	for argument: String in OS.get_cmdline_user_args():
++		if argument.begins_with("--output="): output = argument.trim_prefix("--output=")
++	DirAccess.make_dir_recursive_absolute(ProjectSettings.globalize_path(output))
++	old_script = GDScript.new()
++	old_script.source_code = FileAccess.get_file_as_string(BASELINE).replace("\r\n","\n").replace("class_name TrailVisibility\n","")
++	check(old_script.reload()==OK,"frozen original compiles")
++	root.size = Vector2i(960,540)
++	camera = Camera3D.new(); root.add_child(camera)
++	camera.projection = Camera3D.PROJECTION_ORTHOGONAL; camera.size = 30
++	move_to(0)
++	fixtures = [fixture(true),fixture(false)]
++	for target: int in [511,1023,1024,1536,4096,16384,16385,16896,32768,32805]:
++		for row: Dictionary in fixtures: write(row,target-int(row.written)); present(row)
++		same("ring at "+str(target))
++		for x: float in [0.0,60.0,900.0,1860.0,4000.0,0.0]:
++			move_to(x)
++			for row: Dictionary in fixtures: present(row)
++			same("camera "+str(x)+" ring "+str(target))
++	# Repeat a travelling camera over a late-race full ring. Each view change
++	# happens in both implementations, with alternating timing order.
++	for size: float in [30.0,180.0,1200.0]:
++		camera.size = size
++		var timings: Array = [[],[]]
++		for step: int in range(96):
++			move_to(float(step%32)*60.0)
++			for k: int in range(2):
++				var which: int = (step+k)%2
++				timings[which].append(present(fixtures[which]))
++			same("moving late ring "+str(size)+" step "+str(step))
++		var before: Array[float] = []; before.assign(timings[0])
++		var after: Array[float] = []; after.assign(timings[1])
++		rows.append({"camera_size":size,"original":stats(before),"current":stats(after)})
++	var emission: Array[float] = []
++	for row: Dictionary in fixtures:
++		var started: int = Time.get_ticks_usec()
++		write(row,SkidTrails.CAPACITY)
++		emission.append((Time.get_ticks_usec()-started)/float(SkidTrails.CAPACITY))
++	for row: Dictionary in fixtures: present(row)
++	same("complete active ring overwrite")
++	rows.append({"append_original_us_per_mark":emission[0],"append_current_us_per_mark":emission[1]})
++	# Several laps revisit the same road. Older pages therefore remain visible
++	# together instead of being distributed over a wider and wider world.
++	for row: Dictionary in fixtures:
++		row.encoder.instances.visible_instance_count = 0; row.view.clear(); row.written = 0; row.loop_pages = 8
++	camera.size = 180
++	for lap: int in range(5):
++		for row: Dictionary in fixtures: write(row,3276)
++		var timings: Array = [[],[]]
++		for step: int in range(16):
++			move_to(float(step%8)*60.0)
++			for k: int in range(2):
++				var which: int = (step+k)%2
++				timings[which].append(present(fixtures[which]))
++			same("repeated route lap "+str(lap+1)+" step "+str(step))
++		var before: Array[float] = []; before.assign(timings[0])
++		var after: Array[float] = []; after.assign(timings[1])
++		rows.append({"lap":lap+1,"retained_marks":fixtures[1].view.retained_count,"original":stats(before),"current":stats(after)})
++	# Direct/full, compacted, offscreen append, partial page growth and retry.
++	camera.size = 30; move_to(0)
++	for row: Dictionary in fixtures:
++		row.encoder.instances.visible_instance_count = 0; row.view.clear(); row.written = 0; row.loop_pages = 32
++	for target: int in [1024,1025,1026,1535,1536,2049]:
++		for row: Dictionary in fixtures: write(row,target-int(row.written)); present(row)
++		same("retry growth "+str(target))
++	for projection: int in [Camera3D.PROJECTION_PERSPECTIVE,Camera3D.PROJECTION_ORTHOGONAL]:
++		camera.projection = projection
++		for row: Dictionary in fixtures: present(row,Transform3D(Basis.IDENTITY,Vector3(60,0,0)))
++		same("projection and world transform "+str(projection))
++	if DisplayServer.get_name() != "headless": await pixels()
++	for row: Dictionary in fixtures: row.encoder.free()
++	var report: Dictionary = {"checks":checks,"failures":failures,"renderer":RenderingServer.get_current_rendering_method(),"engine":Engine.get_version_info().string,"measurements":rows,"scope":"Desktop presentation-path comparison; not Android FPS"}
++	FileAccess.open(output.path_join("report.json"),FileAccess.WRITE).store_string(JSON.stringify(report,"\t"))
++	print("LATER_LAP_TRAILS ",JSON.stringify(report))
++	quit(1 if failures else 0)
++
++func pixels() -> void:
++	var light := DirectionalLight3D.new(); root.add_child(light); light.rotation_degrees = Vector3(-60,-30,0)
++	var ground := MeshInstance3D.new(); ground.mesh = PlaneMesh.new(); ground.mesh.size = Vector2(32,32)
++	ground.material_override = VisualGeometry.material(Color(0.6,0.62,0.63)); root.add_child(ground)
++	move_to(2)
++	for row: Dictionary in fixtures: present(row)
++	check(fixtures[0].encoder.instances.visible_instance_count > 0,"native pixel comparison contains visible tyre marks")
++	same("native pixel view")
++	var images: Array[Image] = []
++	for index: int in range(2):
++		fixtures[0].encoder.visible = index == 0; fixtures[1].encoder.visible = index == 1
++		for frame: int in range(4): await RenderingServer.frame_post_draw
++		var image: Image = root.get_texture().get_image(); images.append(image)
++		image.save_png(output.path_join("trails-"+("original" if index==0 else "current")+".png"))
++	check(images[0].get_data()==images[1].get_data(),"original and current native rendered pixels exact")
+diff --git a/game/tests/fixtures/later_lap_stutter_before/trail_visibility.gd.txt b/game/tests/fixtures/later_lap_stutter_before/trail_visibility.gd.txt
+new file mode 100644
+--- /dev/null
++++ b/game/tests/fixtures/later_lap_stutter_before/trail_visibility.gd.txt
+@@ -0,0 +1,137 @@
++class_name TrailVisibility
++extends RefCounted
++## Preserve the renderer's single MultiMesh and full ring; compact only its draw view.
++const PAGE_SIZE: int = 512
++var active: bool = false
++var _retained_count: int = 0
++var retained_count: int:
++	get: return _retained_count if active else instances.visible_instance_count
++var instances: MultiMesh
++var _transforms: Array[Transform3D]
++var _bounds: Array[AABB] = []
++var _valid: Array[bool] = []
++var _all_bounds := AABB()
++var _has_bounds: bool = false
++var _offsets := PackedInt32Array()
++var _selection: int = -1
++var _packed: bool = false
++var _buffer := PackedFloat32Array()
++var _view_dirty: bool = true
++var _view_pose := Transform3D(Basis.IDENTITY,Vector3.INF)
++var _view_projection := Projection()
++var _mesh_bounds: AABB
++
++func _init(resource: MultiMesh, transforms: Array[Transform3D]) -> void:
++	instances = resource
++	_mesh_bounds = resource.mesh.get_aabb()
++	_transforms = transforms
++	for page: int in range(ceili(float(instances.instance_count)/PAGE_SIZE)):
++		_bounds.append(AABB())
++		_valid.append(false)
++	_offsets.resize(_bounds.size())
++	_offsets.fill(-1)
++	_buffer.resize(instances.instance_count*20)
++
++func clear() -> void:
++	_retained_count = 0
++	active = false
++	_valid.fill(false)
++	_offsets.fill(-1)
++	_has_bounds = false
++	_selection = -1
++	_packed = false
++	_view_dirty = true
++	instances.custom_aabb = AABB()
++
++func record(index: int, colors: PackedColorArray, custom: PackedColorArray) -> void:
++	_retained_count = mini(instances.instance_count,_retained_count+1)
++	var page: int = index/PAGE_SIZE
++	if _selection & (1 << page) == 0: _view_dirty = true
++	var box: AABB = _transforms[index]*_mesh_bounds
++	_bounds[page] = _bounds[page].merge(box) if _valid[page] else box
++	_valid[page] = true
++	if index%PAGE_SIZE == PAGE_SIZE-1:
++		_view_dirty = true
++		_bounds[page] = _transforms[page*PAGE_SIZE]*_mesh_bounds
++		for item: int in range(1,PAGE_SIZE): _bounds[page] = _bounds[page].merge(_transforms[page*PAGE_SIZE+item]*_mesh_bounds)
++	_all_bounds = _all_bounds.merge(box) if _has_bounds else box
++	_has_bounds = true
++	# One resource and one draw: no additional batches or altered ring ordering.
++	var slot: int = _offsets[page]+index%PAGE_SIZE if _packed and _offsets[page] >= 0 else (-1 if _packed else index)
++	if slot >= 0:
++		instances.set_instance_transform(slot,_transforms[index])
++		instances.set_instance_color(slot,colors[index])
++		instances.set_instance_custom_data(slot,custom[index])
++	if not _packed: instances.visible_instance_count = retained_count
++
++func present(camera: Camera3D, colors: PackedColorArray, custom: PackedColorArray, world: Transform3D = Transform3D.IDENTITY) -> void:
++	if camera == null or retained_count < PAGE_SIZE*2: return
++	if not active:
++		_retained_count = instances.visible_instance_count
++		active = true
++		for index: int in range(_retained_count):
++			var page: int = index/PAGE_SIZE
++			var box: AABB = _transforms[index]*_mesh_bounds
++			_bounds[page] = _bounds[page].merge(box) if _valid[page] else box
++			_valid[page] = true
++			_all_bounds = _all_bounds.merge(box) if _has_bounds else box
++			_has_bounds = true
++	var pose: Transform3D = camera.global_transform
++	var projection: Projection = camera.get_camera_projection()
++	# One metre of conservative padding covers a half-metre camera refresh
++	# interval. Pose/projection changes and newly occupied groups refresh now.
++	if not _view_dirty and pose.basis == _view_pose.basis and projection == _view_projection and pose.origin.distance_squared_to(_view_pose.origin) < 0.25:
++		_update_count()
++		return
++	_view_dirty = false
++	_view_pose = pose
++	_view_projection = projection
++	var planes: Array[Plane] = camera.get_frustum()
++	var selection: int = 0
++	for page: int in range(_bounds.size()):
++		if not _valid[page]: continue
++		var box: AABB = world * _bounds[page].grow(1.0)
++		var visible: bool = true
++		for plane: Plane in planes:
++			if plane.distance_to(box.get_center()) > (box.size*0.5).dot(plane.normal.abs()):
++				visible = false
++				break
++		if visible: selection |= 1 << page
++	# Small rings and fully visible rings keep the renderer's direct uploads.
++	var full: int = (1 << ceili(float(retained_count)/PAGE_SIZE))-1
++	if retained_count < PAGE_SIZE*2 or selection == full: selection = full
++	if selection == _selection:
++		_update_count()
++		return
++	_selection = selection
++	if selection == full and not _packed: return
++	_offsets.fill(-1)
++	var drawn: int = 0
++	for page: int in range(_bounds.size()):
++		if selection & (1 << page) == 0: continue
++		_offsets[page] = drawn
++		for index: int in range(page*PAGE_SIZE,mini((page+1)*PAGE_SIZE,retained_count)):
++			_pack(drawn,index,colors,custom)
++			drawn += 1
++	# Unused slots are zero-area and never included in visible_instance_count.
++	instances.buffer = _buffer
++	instances.visible_instance_count = drawn
++	instances.custom_aabb = _all_bounds.grow(0.005)
++	_packed = selection != full
++
++func _update_count() -> void:
++	if not _packed: return
++	var last: int = (retained_count-1)/PAGE_SIZE
++	if _offsets[last] < 0: return
++	var count: int = _offsets[last]+(retained_count-1)%PAGE_SIZE+1
++	if instances.visible_instance_count != count: instances.visible_instance_count = count
++
++func _pack(slot: int, index: int, colors: PackedColorArray, custom: PackedColorArray) -> void:
++	var at: int = slot*20
++	var pose: Transform3D = _transforms[index]
++	_buffer[at] = pose.basis.x.x; _buffer[at+1] = pose.basis.y.x; _buffer[at+2] = pose.basis.z.x; _buffer[at+3] = pose.origin.x
++	_buffer[at+4] = pose.basis.x.y; _buffer[at+5] = pose.basis.y.y; _buffer[at+6] = pose.basis.z.y; _buffer[at+7] = pose.origin.y
++	_buffer[at+8] = pose.basis.x.z; _buffer[at+9] = pose.basis.y.z; _buffer[at+10] = pose.basis.z.z; _buffer[at+11] = pose.origin.z
++	for channel: int in range(4):
++		_buffer[at+12+channel] = colors[index][channel]
++		_buffer[at+16+channel] = custom[index][channel]
+diff --git a/docs/LATER_LAP_STUTTER_2026_10_23.md b/docs/LATER_LAP_STUTTER_2026_10_23.md
+new file mode 100644
+--- /dev/null
++++ b/docs/LATER_LAP_STUTTER_2026_10_23.md
+@@ -0,0 +1,39 @@
++# Later-lap stutter investigation, 2026-10-23
++
++LLS01: investigate work that increases during a race. LLS02: remove confirmed tyre-mark visibility spikes while retaining the complete mark ring, exact appearance and driving behavior. R01/Q01: preserve concurrent work and record actual validation and device limits.
++
++The owner reports smooth early tablet laps followed by stuttering. A confirmed source-side hotspot is present in the installed sign-in build: changing visible tyre-mark pages re-encodes every submitted transform, pigment and pressure value in GDScript, then submits the complete 1,310,720-byte MultiMesh buffer. More laps retain more overlapping mark pages. The frozen baseline is byte-identical to this file in the installed build's frozen source.
++
++`game/vehicle/trail_visibility.gd` now encodes each mark once when it arrives. Camera selection copies contiguous packed pages using native array operations. A separate submitted buffer prevents renderer sharing from making the next canonical ring-buffer write duplicate the whole submitted view. There is still one MultiMesh, one draw, 16,384 retained slots, the same chronological page order, shader, bounds, sample spacing and overwrite behavior. Physics, records and lap rules are untouched.
++
++These are desktop measurements of the visibility callback, not complete frame times or tablet FPS. The repeated-route fixture adds 3,276 marks per synthetic lap and revisits the same eight regions. It measures both implementations with alternating call order. Final Compatibility medians:
++
++| Fixture lap | Retained marks | Original callback | Revised callback |
++|---|---:|---:|---:|
++| 1 | 3,276 | 2.405 ms | 1.196 ms |
++| 2 | 6,552 | 4.032 ms | 1.131 ms |
++| 3 | 9,828 | 5.221 ms | 1.347 ms |
++| 4 | 13,104 | 6.907 ms | 1.624 ms |
++| 5 | 16,380 | 8.419 ms | 1.438 ms |
++
++The final desktop Mobile fifth-lap median is 7.616 to 0.715 ms; headless is 9.366 to 0.798 ms. The larger, deliberately wide stress view drops 11.285 to 1.547 ms in Compatibility. This does not establish how often each selection occurs on a real track. A single first activation in the repeated-route fixture encodes 3,276 existing marks and costs 5.426 ms versus the original 3.459 ms maximum; normal activation starts at 1,024 marks. Some desktop Mobile outliers remain and are retained in the reports. Encoding on arrival adds approximately 0.78 microseconds per mark in the Compatibility emission block. Full-buffer GPU submission and transparent overdraw remain; there is no graphics-quality reduction or claim to eliminate every possible stutter.
++
++Actual tablet diagnostics were read without game input, restart, install or data changes. The original process remained PID 27442. Thermal status was 0 and reported cooling devices were inactive at the snapshot. One memory snapshot reported 788,461 KiB total PSS and 187,785 KiB swap PSS; this is insufficient to infer a leak or growth trend. A 126-timestamp compositor sample had 125 intervals of 19.998386–19.999375 ms, with no interval over 25 ms. It did **not** capture the reported later-lap stutter. The only saved hitch file was from an earlier process, with a 590.392 ms tick-zero event, so it does not explain the symptom. The existing monitor's 100 ms threshold also cannot exclude smaller stalls. Raw app hitch and thermal/memory copies remain private under `build/later-lap-stutter-2026-10-23`.
++
++Validation used pinned Godot `4.7.2.stable.official.ed1daf0bf` through `scripts/dev.ps1`:
++
++- `-Action TestScript -ScriptPath res://tests/test_later_lap_trails.gd`: final 1,789 checks, zero failures.
++- Same with `-Graphical -RenderingMethod gl_compatibility`: 1,795 checks, zero failures.
++- Same with `-Graphical -RenderingMethod mobile -RenderingDriver vulkan`: 1,795 checks, zero failures.
++- `-Action TestScript -ScriptPath res://tests/test_bridge_trails.gd -Graphical -RenderingMethod gl_compatibility -TestArgument '--folder=res://../build/later-lap-stutter-2026-10-23/bridge'`: 8 checks, zero failures; under-bridge protection retains zero protected-roof pixels against a 9,809-pixel unprotected control.
++- `-Action TestScript -ScriptPath res://tests/test_trail_render_preparation.gd`: 26 checks, zero failures, including actual App loading and untouched race ring.
++- `-Action TestScript -ScriptPath res://tests/test_script_parse.gd`: 1,025 scripts, zero failures.
++- `git diff --check -- game/vehicle/trail_visibility.gd`: passes.
++
++The focused test compares exact submitted transform/color/pressure buffers, populations and culling bounds against the frozen original through threshold activation, all camera regions, full rings, two overwrites, hidden/visible page growth, retry, projection changes and synthetic laps. Both native backends render byte-identical original/revised images containing actual tyre marks. See [Compatibility comparison](evidence/later-lap-stutter-2026-10-23/final-compatibility/trails-current.png) and [desktop Mobile comparison](evidence/later-lap-stutter-2026-10-23/final-desktop-mobile/trails-current.png).
++
++Initial interruptions remain recorded: sandbox runtime log/ADB initialization failures were resolved using reviewed access; the first native pixel fixture retained a cached offscreen selection after an isolated world-transform probe, and was corrected by moving the camera while retaining the nonempty-draw assertion. The first bridge test was incorrectly invoked headless and waited for a draw signal; only that owned process was stopped, then its required graphical run passed. No production assertion was weakened. The original/current control before the code change passed 1,465 checks and had similar callback timings on both sides.
++
++Changed task sources: `game/vehicle/trail_visibility.gd`, `game/tests/test_later_lap_trails.gd`, `game/tests/fixtures/later_lap_stutter_before/trail_visibility.gd.txt`; this note, task evidence, and the three repository status receipts. The generated task-only checkpoint excludes unrelated workspace changes.
++
++Tablet symptom attribution and sustained owner driving acceptance remain pending with an updated build. This task performed read-only tablet diagnostics, not a driving/performance acceptance test. No APK was built or installed, no native library/backend was changed or deployed, and no active race was interrupted.
+diff --git a/AGENTS.md b/AGENTS.md
+--- a/AGENTS.md
++++ b/AGENTS.md
+@@ -1,3 +1,6 @@
++## Later-lap tyre-mark visibility update (2026-10-23)
++2026-10-23 LLS01-LLS02/R01/Q01: Investigate owner tablet later-lap stutter. Installed-source-identical tyre visibility re-encoded whole selected pages; encode-on-arrival plus native packed-page copies retain exact ring/order/bounds/appearance and one draw. Synthetic fifth-lap Compatibility callback median8.419 to1.438ms; this is not tablet FPS or confirmed device attribution. Focused1789headless/1795Compatibility/1795desktopMobile, bridge8, actual loading26 and parser1025 pass; native pixels are exact. Read-only tablet thermal status0 and a short steady50Hz compositor sample did not capture the reported symptom. First-activation/per-mark costs, fixture/headless corrections, private device limits, commands and scoped checkpoint: docs/LATER_LAP_STUTTER_2026_10_23.md and docs/evidence/later-lap-stutter-2026-10-23/report.json. Updated tablet build and sustained owner/device acceptance remain; no APK/install, active-race input/interruption, backend/native mutation or deployment. Concurrent work preserved.
++
+ ## Restored challenge Garage setting override (2026-10-23)
+ 2026-10-23 CGR01/R01/G01/Q01: Owner reverts CAS01 to the Garage setting for the challenge hero and all five cards. Scoped reverse patch removes the abstract mode/scene/shader and its live asset entry; ChallengeCreate, CarShowroom and focused test sources match their exact pre-abstract text. Whole-row spring, full-width cards, quiet loading, fixed camera, original reveal and PB/exact-result flow remain. Native Compatibility282 and parser1025 pass; captures, commands and scoped checkpoint: docs/evidence/challenge-garage-restored-2026-10-23/report.json. Client reload and owner/device acceptance remain; no phone attachment check/device test, APK, live mutation or deployment. Concurrent work preserved.
+ 
+diff --git a/DEVELOPMENT_STATUS.md b/DEVELOPMENT_STATUS.md
+--- a/DEVELOPMENT_STATUS.md
++++ b/DEVELOPMENT_STATUS.md
+@@ -1,3 +1,5 @@
++2026-10-23 LLS01-LLS02/R01/Q01: Investigate tablet later-lap stutter; tyre visibility now encodes marks on arrival and copies packed pages, retaining exact ring/order/bounds/pixels and one draw. Synthetic fifth-lap Compatibility callback8.419 to1.438ms; no tablet-FPS/symptom-attribution claim. Focused1789headless/1795Compatibility/1795desktopMobile, bridge8/loading26/parser1025 pass. Read-only connected-tablet status0 and short steady50Hz sample did not capture stutter. Initial costs/corrections, actual commands, limits and scoped checkpoint: docs/LATER_LAP_STUTTER_2026_10_23.md and docs/evidence/later-lap-stutter-2026-10-23/report.json. Tablet update and sustained owner acceptance remain; no APK/install, active-race input/interruption, native/backend mutation or deployment. Concurrent work preserved.
++
+ 2026-10-23 CGR01/R01/G01/Q01: Owner reverts CAS01 to the Garage setting for the challenge hero and all five cards. Scoped reverse patch removes the abstract mode/scene/shader and its live asset entry; ChallengeCreate, CarShowroom and focused test sources match their exact pre-abstract text. Whole-row spring, full-width cards, quiet loading, fixed camera, original reveal and PB/exact-result flow remain. Native Compatibility282 and parser1025 pass; captures, commands and scoped checkpoint: docs/evidence/challenge-garage-restored-2026-10-23/report.json. Client reload and owner/device acceptance remain; no phone attachment check/device test, APK, live mutation or deployment. Concurrent work preserved.
+ 
+ 2026-10-23 KCB01-KCB03/G01/R01/Q01: Owner clarifies cobblestone-street character for kerbs. Shared loop now uses cleared actual compact-car cobblestone recording, preserving uneven contacts with sub-bass reduction and matched loudness; synthetic pulse train and rejected preview sources are replaced. Original physics-contact start/gain/pitch/gates/cache/voices/canonical behavior and concurrent snow/shared-output work remain. Native88, vehicle1469, loops208, Desert67, continuity42 and12-capture review pass; decoded36.74dB SNR/-18.44LUFS, repeat60assets exact. Initial loudness calibration failure retained; no invariant weakened. Commands, applied preview, source provenance and scoped checkpoint: docs/KERB_COBBLESTONE_2026_10_23.md. PC restart and owner/device listening remain; no phone attachment check/device test, updated APK, live mutation or deployment.
+diff --git a/docs/PHASE_0_PLAN.md b/docs/PHASE_0_PLAN.md
+--- a/docs/PHASE_0_PLAN.md
++++ b/docs/PHASE_0_PLAN.md
+@@ -1,3 +1,5 @@
++2026-10-23 LLS01-LLS02/R01/Q01: Investigate tablet later-lap stutter; tyre visibility now encodes marks on arrival and copies packed pages, retaining exact ring/order/bounds/pixels and one draw. Synthetic fifth-lap Compatibility callback8.419 to1.438ms; no tablet-FPS/symptom-attribution claim. Focused1789headless/1795Compatibility/1795desktopMobile, bridge8/loading26/parser1025 pass. Read-only connected-tablet status0 and short steady50Hz sample did not capture stutter. Initial costs/corrections, actual commands, limits and scoped checkpoint: docs/LATER_LAP_STUTTER_2026_10_23.md and docs/evidence/later-lap-stutter-2026-10-23/report.json. Tablet update and sustained owner acceptance remain; no APK/install, active-race input/interruption, native/backend mutation or deployment. Concurrent work preserved.
++
+ 2026-10-23 CGR01/R01/G01/Q01: Owner reverts CAS01 to the Garage setting for the challenge hero and all five cards. Scoped reverse patch removes the abstract mode/scene/shader and its live asset entry; ChallengeCreate, CarShowroom and focused test sources match their exact pre-abstract text. Whole-row spring, full-width cards, quiet loading, fixed camera, original reveal and PB/exact-result flow remain. Native Compatibility282 and parser1025 pass; captures, commands and scoped checkpoint: docs/evidence/challenge-garage-restored-2026-10-23/report.json. Client reload and owner/device acceptance remain; no phone attachment check/device test, APK, live mutation or deployment. Concurrent work preserved.
+ 
+ 2026-10-23 KCB01-KCB03/G01/R01/Q01: Owner clarifies cobblestone-street character for kerbs. Shared loop now uses cleared actual compact-car cobblestone recording, preserving uneven contacts with sub-bass reduction and matched loudness; synthetic pulse train and rejected preview sources are replaced. Original physics-contact start/gain/pitch/gates/cache/voices/canonical behavior and concurrent snow/shared-output work remain. Native88, vehicle1469, loops208, Desert67, continuity42 and12-capture review pass; decoded36.74dB SNR/-18.44LUFS, repeat60assets exact. Initial loudness calibration failure retained; no invariant weakened. Commands, applied preview, source provenance and scoped checkpoint: docs/KERB_COBBLESTONE_2026_10_23.md. PC restart and owner/device listening remain; no phone attachment check/device test, updated APK, live mutation or deployment.
+diff --git a/docs/evidence/later-lap-stutter-2026-10-23/report.json b/docs/evidence/later-lap-stutter-2026-10-23/report.json
+new file mode 100644
+--- /dev/null
++++ b/docs/evidence/later-lap-stutter-2026-10-23/report.json
+@@ -0,0 +1,538 @@
++{
++  "date": "2026-10-23",
++  "requirements": [
++    "LLS01",
++    "LLS02",
++    "R01",
++    "Q01"
++  ],
++  "request": "Tablet starts smoothly; later laps stutter slightly",
++  "outcome": "Confirmed lap-dependent tyre-mark visibility hotspot reduced locally; device symptom attribution remains pending",
++  "source_changes": [
++    "game/vehicle/trail_visibility.gd",
++    "game/tests/test_later_lap_trails.gd",
++    "game/tests/fixtures/later_lap_stutter_before/trail_visibility.gd.txt",
++    "docs/LATER_LAP_STUTTER_2026_10_23.md",
++    "AGENTS.md",
++    "DEVELOPMENT_STATUS.md",
++    "docs/PHASE_0_PLAN.md"
++  ],
++  "source_sha256": {
++    "game/vehicle/trail_visibility.gd": "bb7c407f16d88cc31231ccf197afbf3109ea86a9b529a1c0ee22fed84a8b26d5",
++    "game/tests/test_later_lap_trails.gd": "ed351b2d4df14afc222021801f3dacd0a78e335f062781f261ec1ba82d268fbe",
++    "game/tests/fixtures/later_lap_stutter_before/trail_visibility.gd.txt": "08dbc5684a07b2cd44fc6b5d08eef7cca7636b1eae6f89065ffe180e384a3b2c",
++    "docs/LATER_LAP_STUTTER_2026_10_23.md": "129707bf63db9be39f2189f57864d7fa69f765b7e237d4f43490cadc20bd8221",
++    "AGENTS.md": "157f7d8aa78080ac14831e0d1f04325c6398e1960b0e47b70a3f16877c4fcfff",
++    "DEVELOPMENT_STATUS.md": "38c0d696ae03fa1da8f39a5f454ddff327a127f772e1919a1ccd75b37392d51a",
++    "docs/PHASE_0_PLAN.md": "1e543cba0752e70972ded221ce6a15ba646f0876c7eee2848ae4495fad1e74d9"
++  },
++  "installed_baseline": {
++    "matches": true,
++    "sha256": "08dbc5684a07b2cd44fc6b5d08eef7cca7636b1eae6f89065ffe180e384a3b2c",
++    "frozen_source": "build\\tablet-sign-in-deployment-2026-10-23\\source\\game\\vehicle\\trail_visibility.gd"
++  },
++  "validation": {
++    "original-control": {
++      "checks": 1465,
++      "failures": 0,
++      "renderer": "gl_compatibility",
++      "measurements": [
++        {
++          "camera_size": 30.0,
++          "current": {
++            "max_ms": 1.091,
++            "median_ms": 0.51,
++            "p95_ms": 0.934
++          },
++          "original": {
++            "max_ms": 1.089,
++            "median_ms": 0.495,
++            "p95_ms": 0.887
++          }
++        },
++        {
++          "camera_size": 180.0,
++          "current": {
++            "max_ms": 4.262,
++            "median_ms": 2.276,
++            "p95_ms": 3.82
++          },
++          "original": {
++            "max_ms": 4.482,
++            "median_ms": 2.267,
++            "p95_ms": 4.323
++          }
++        },
++        {
++          "camera_size": 1200.0,
++          "current": {
++            "max_ms": 19.471,
++            "median_ms": 11.534,
++            "p95_ms": 17.522
++          },
++          "original": {
++            "max_ms": 20.251,
++            "median_ms": 11.133,
++            "p95_ms": 16.921
++          }
++        }
++      ]
++    },
++    "final-headless": {
++      "checks": 1789,
++      "failures": 0,
++      "renderer": "gl_compatibility",
++      "measurements": [
++        {
++          "camera_size": 30.0,
++          "current": {
++            "max_ms": 0.912,
++            "median_ms": 0.407,
++            "p95_ms": 0.629
++          },
++          "original": {
++            "max_ms": 1.272,
++            "median_ms": 0.637,
++            "p95_ms": 1.058
++          }
++        },
++        {
++          "camera_size": 180.0,
++          "current": {
++            "max_ms": 1.096,
++            "median_ms": 0.494,
++            "p95_ms": 0.713
++          },
++          "original": {
++            "max_ms": 4.627,
++            "median_ms": 2.594,
++            "p95_ms": 4.065
++          }
++        },
++        {
++          "camera_size": 1200.0,
++          "current": {
++            "max_ms": 1.569,
++            "median_ms": 0.815,
++            "p95_ms": 1.325
++          },
++          "original": {
++            "max_ms": 21.395,
++            "median_ms": 11.693,
++            "p95_ms": 17.83
++          }
++        },
++        {
++          "append_current_us_per_mark": 3.52630615234375,
++          "append_original_us_per_mark": 2.6080322265625
++        },
++        {
++          "current": {
++            "max_ms": 4.886,
++            "median_ms": 0.484,
++            "p95_ms": 4.886
++          },
++          "lap": 1,
++          "original": {
++            "max_ms": 4.262,
++            "median_ms": 2.313,
++            "p95_ms": 4.262
++          },
++          "retained_marks": 3276
++        },
++        {
++          "current": {
++            "max_ms": 0.674,
++            "median_ms": 0.446,
++            "p95_ms": 0.674
++          },
++          "lap": 2,
++          "original": {
++            "max_ms": 4.602,
++            "median_ms": 3.151,
++            "p95_ms": 4.602
++          },
++          "retained_marks": 6552
++        },
++        {
++          "current": {
++            "max_ms": 0.885,
++            "median_ms": 0.594,
++            "p95_ms": 0.885
++          },
++          "lap": 3,
++          "original": {
++            "max_ms": 6.854,
++            "median_ms": 5.234,
++            "p95_ms": 6.854
++          },
++          "retained_marks": 9828
++        },
++        {
++          "current": {
++            "max_ms": 0.957,
++            "median_ms": 0.679,
++            "p95_ms": 0.957
++          },
++          "lap": 4,
++          "original": {
++            "max_ms": 11.745,
++            "median_ms": 7.336,
++            "p95_ms": 11.745
++          },
++          "retained_marks": 13104
++        },
++        {
++          "current": {
++            "max_ms": 1.06,
++            "median_ms": 0.798,
++            "p95_ms": 1.06
++          },
++          "lap": 5,
++          "original": {
++            "max_ms": 16.124,
++            "median_ms": 9.366,
++            "p95_ms": 16.124
++          },
++          "retained_marks": 16380
++        }
++      ]
++    },
++    "final-compatibility": {
++      "checks": 1795,
++      "failures": 0,
++      "renderer": "gl_compatibility",
++      "measurements": [
++        {
++          "camera_size": 30.0,
++          "current": {
++            "max_ms": 2.642,
++            "median_ms": 1.257,
++            "p95_ms": 2.125
++          },
++          "original": {
++            "max_ms": 2.731,
++            "median_ms": 1.525,
++            "p95_ms": 2.221
++          }
++        },
++        {
++          "camera_size": 180.0,
++          "current": {
++            "max_ms": 2.307,
++            "median_ms": 1.224,
++            "p95_ms": 2.111
++          },
++          "original": {
++            "max_ms": 5.969,
++            "median_ms": 3.111,
++            "p95_ms": 4.258
++          }
++        },
++        {
++          "camera_size": 1200.0,
++          "current": {
++            "max_ms": 2.993,
++            "median_ms": 1.547,
++            "p95_ms": 2.449
++          },
++          "original": {
++            "max_ms": 14.683,
++            "median_ms": 11.285,
++            "p95_ms": 14.163
++          }
++        },
++        {
++          "append_current_us_per_mark": 2.51519775390625,
++          "append_original_us_per_mark": 1.73553466796875
++        },
++        {
++          "current": {
++            "max_ms": 5.426,
++            "median_ms": 1.196,
++            "p95_ms": 5.426
++          },
++          "lap": 1,
++          "original": {
++            "max_ms": 3.459,
++            "median_ms": 2.405,
++            "p95_ms": 3.459
++          },
++          "retained_marks": 3276
++        },
++        {
++          "current": {
++            "max_ms": 2.27,
++            "median_ms": 1.131,
++            "p95_ms": 2.27
++          },
++          "lap": 2,
++          "original": {
++            "max_ms": 5.484,
++            "median_ms": 4.032,
++            "p95_ms": 5.484
++          },
++          "retained_marks": 6552
++        },
++        {
++          "current": {
++            "max_ms": 2.313,
++            "median_ms": 1.347,
++            "p95_ms": 2.313
++          },
++          "lap": 3,
++          "original": {
++            "max_ms": 6.887,
++            "median_ms": 5.221,
++            "p95_ms": 6.887
++          },
++          "retained_marks": 9828
++        },
++        {
++          "current": {
++            "max_ms": 2.596,
++            "median_ms": 1.624,
++            "p95_ms": 2.596
++          },
++          "lap": 4,
++          "original": {
++            "max_ms": 8.038,
++            "median_ms": 6.907,
++            "p95_ms": 8.038
++          },
++          "retained_marks": 13104
++        },
++        {
++          "current": {
++            "max_ms": 2.238,
++            "median_ms": 1.438,
++            "p95_ms": 2.238
++          },
++          "lap": 5,
++          "original": {
++            "max_ms": 10.474,
++            "median_ms": 8.419,
++            "p95_ms": 10.474
++          },
++          "retained_marks": 16380
++        }
++      ]
++    },
++    "final-desktop-mobile": {
++      "checks": 1795,
++      "failures": 0,
++      "renderer": "mobile",
++      "measurements": [
++        {
++          "camera_size": 30.0,
++          "current": {
++            "max_ms": 13.491,
++            "median_ms": 0.405,
++            "p95_ms": 0.698
++          },
++          "original": {
++            "max_ms": 11.05,
++            "median_ms": 0.55,
++            "p95_ms": 0.709
++          }
++        },
++        {
++          "camera_size": 180.0,
++          "current": {
++            "max_ms": 7.485,
++            "median_ms": 0.448,
++            "p95_ms": 0.648
++          },
++          "original": {
++            "max_ms": 12.338,
++            "median_ms": 2.13,
++            "p95_ms": 2.569
++          }
++        },
++        {
++          "camera_size": 1200.0,
++          "current": {
++            "max_ms": 10.54,
++            "median_ms": 0.778,
++            "p95_ms": 1.279
++          },
++          "original": {
++            "max_ms": 25.421,
++            "median_ms": 9.83,
++            "p95_ms": 12.945
++          }
++        },
++        {
++          "append_current_us_per_mark": 2.4676513671875,
++          "append_original_us_per_mark": 1.61883544921875
++        },
++        {
++          "current": {
++            "max_ms": 3.607,
++            "median_ms": 0.463,
++            "p95_ms": 3.607
++          },
++          "lap": 1,
++          "original": {
++            "max_ms": 2.112,
++            "median_ms": 1.693,
++            "p95_ms": 2.112
++          },
++          "retained_marks": 3276
++        },
++        {
++          "current": {
++            "max_ms": 0.706,
++            "median_ms": 0.506,
++            "p95_ms": 0.706
++          },
++          "lap": 2,
++          "original": {
++            "max_ms": 3.887,
++            "median_ms": 3.118,
++            "p95_ms": 3.887
++          },
++          "retained_marks": 6552
++        },
++        {
++          "current": {
++            "max_ms": 11.002,
++            "median_ms": 0.589,
++            "p95_ms": 11.002
++          },
++          "lap": 3,
++          "original": {
++            "max_ms": 5.546,
++            "median_ms": 4.434,
++            "p95_ms": 5.546
++          },
++          "retained_marks": 9828
++        },
++        {
++          "current": {
++            "max_ms": 0.988,
++            "median_ms": 0.664,
++            "p95_ms": 0.988
++          },
++          "lap": 4,
++          "original": {
++            "max_ms": 7.039,
++            "median_ms": 6.351,
++            "p95_ms": 7.039
++          },
++          "retained_marks": 13104
++        },
++        {
++          "current": {
++            "max_ms": 1.005,
++            "median_ms": 0.715,
++            "p95_ms": 1.005
++          },
++          "lap": 5,
++          "original": {
++            "max_ms": 8.642,
++            "median_ms": 7.616,
++            "p95_ms": 8.642
++          },
++          "retained_marks": 16380
++        }
++      ]
++    }
++  },
++  "existing_regressions": {
++    "bridge_native": {
++      "checks": 8,
++      "failures": 0
++    },
++    "actual_app_trail_preparation_headless": {
++      "checks": 26,
++      "failures": 0
++    },
++    "script_parser": {
++      "scripts": 1025,
++      "failures": 0
++    }
++  },
++  "native_images": {
++    "final-compatibility": {
++      "original_sha256": "a4fd03d47210bee48507c549cae6fe582d5258372188c3784ae314002eec8e98",
++      "current_sha256": "a4fd03d47210bee48507c549cae6fe582d5258372188c3784ae314002eec8e98",
++      "exact_pixels": true
++    },
++    "final-desktop-mobile": {
++      "original_sha256": "ae771af830249f7f0fde0f53f6277f36159597ce4657d3fa241144f7a3b2b996",
++      "current_sha256": "ae771af830249f7f0fde0f53f6277f36159597ce4657d3fa241144f7a3b2b996",
++      "exact_pixels": true
++    }
++  },
++  "tablet_read_only": {
++    "attached": true,
++    "model": "OnePlus Pad 2 / OPD2403",
++    "original_pid": 27442,
++    "thermal_status": 0,
++    "reported_active_cooling_devices": 0,
++    "memory_snapshot_kib": {
++      "total_pss": 788461,
++      "swap_pss": 187785
++    },
++    "compositor": {
++      "intervals": 125,
++      "minimum_ms": 19.998386,
++      "maximum_ms": 19.999375,
++      "mean_ms": 19.998876656,
++      "intervals_over_25ms": 0
++    },
++    "reported_stutter_captured": false,
++    "existing_saved_hitch": {
++      "earlier_process": true,
++      "tick": 0,
++      "frame_ms": 590.392,
++      "relevance": "Startup event; not evidence of later-lap stutter"
++    },
++    "private_raw_diagnostics": "build\\later-lap-stutter-2026-10-23",
++    "game_input": false,
++    "restart": false,
++    "install": false,
++    "data_mutation": false
++  },
++  "bounded_storage": {
++    "retained_marks": 16384,
++    "draws": 1,
++    "ring_encode_bytes": 1310720,
++    "submitted_buffer_bytes": 1310720,
++    "largest_page_slice_bytes": 40960,
++    "note": "Explicit packed arrays; excludes renderer/driver copies and temporary allocator capacity"
++  },
++  "limits": [
++    "Desktop callback timings are not Android FPS or confirmed attribution of the owner symptom",
++    "Extra encode-on-arrival cost and initial activation cost retained in detailed reports",
++    "Some desktop Mobile outliers remain; full GPU buffer submissions and mark overdraw remain",
++    "Short device sample did not capture symptom; single memory snapshot cannot establish growth/leak",
++    "Updated tablet build, sustained same-track early/late-lap comparison and owner acceptance remain"
++  ],
++  "initial_interruptions": [
++    "Sandbox denied default ADB and Godot log initialization; reviewed access succeeded",
++    "First native fixture retained an offscreen cached selection after a world-transform probe; camera moved and strict nonempty/exact-pixel checks passed",
++    "Bridge render test mistakenly launched headless; owned test stopped and required native run passed"
++  ],
++  "scope": {
++    "apk_built": false,
++    "apk_installed": false,
++    "active_race_interrupted": false,
++    "canonical_physics_changed": false,
++    "backend_or_native_binary_changed": false,
++    "deployment": false,
++    "concurrent_work_preserved": true
++  },
++  "commands": [
++    "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1 -Action TestScript -ScriptPath res://tests/test_later_lap_trails.gd -TestArgument --output=res://../build/later-lap-stutter-2026-10-23/final-headless",
++    "Same script with -Graphical -RenderingMethod gl_compatibility and output final-compatibility",
++    "Same script with -Graphical -RenderingMethod mobile -RenderingDriver vulkan and output final-desktop-mobile",
++    "scripts/dev.ps1 -Action TestScript -ScriptPath res://tests/test_bridge_trails.gd -Graphical -RenderingMethod gl_compatibility -TestArgument --folder=res://../build/later-lap-stutter-2026-10-23/bridge",
++    "scripts/dev.ps1 -Action TestScript -ScriptPath res://tests/test_trail_render_preparation.gd",
++    "scripts/dev.ps1 -Action TestScript -ScriptPath res://tests/test_script_parse.gd",
++    "adb devices -l; targeted dumpsys thermalservice/battery/meminfo; run-as ls/cat existing hitch file; logcat -d --pid=27442 filtered to error/hitch/startup; SurfaceFlinger --list and --latency for game surface; pidof",
++    "git diff --check -- game/vehicle/trail_visibility.gd"
++  ],
++  "checkpoint": "task-only.patch"
++}

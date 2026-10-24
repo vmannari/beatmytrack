@@ -1,0 +1,2088 @@
+diff --git a/docs/BACKEND_COST_REDUCTION_PLAN_2026_10_24.md b/docs/BACKEND_COST_REDUCTION_PLAN_2026_10_24.md
+new file mode 100644
+--- /dev/null
++++ b/docs/BACKEND_COST_REDUCTION_PLAN_2026_10_24.md
+@@ -0,0 +1,133 @@
++# Backend cost reduction plan
++
++The owner's target is a 95% reduction from the previous cost scenarios. At one million daily players, 5% of the earlier €37,759–58,623/month range is €1,888–2,931/month. **Use €1,800/month as the engineering ceiling for that workload, and require a successful capacity and recovery test before claiming it is achievable.** This compares with an earlier scenario, not an observed production bill. The present small staging service has a fixed resource floor of approximately €83/month.
++
++The route to the target is to keep ordinary race computation cheap, avoid charging multiple object operations for every attempt, archive compact facts instead of accumulating detailed SQL indefinitely, and use hosting and delivery with a lower unit cost. Preserve ten legitimate races per daily player in the model. Unlimited racing, verified PBs, exact challenge results, earned rewards, purchases and retry correctness remain requirements.
++
++Requirements CR95-01 correct verification accounting, CR95-02 delivery, CR95-03 bounded hot data and receipts, CR95-04 packed object operations, CR95-05 deployment economics, CR95-06 operational and load acceptance, CR95-07 preservation and evidence.
++
++## Correction to the original verification model
++
++The first review used the superseded native proof/full-replay timings. That was a material review error. **Current production acceptance is already a Python trajectory pass with no full-physics fallback.** Native code prepares immutable geometry on a cold cache; it does not simulate each race. Existing `bmt-trajectory-v1` recordings also omit the control-frame arrays. The proposed optimization is to preserve this path, not invent it or weaken verification.
++
++A fresh current-source benchmark on 24 October used the pinned engine for static preparation, then prohibited all engine calls during 500 five-lap checks:
++
++| Scope | Median | p95 | Maximum |
++| --- | ---: | ---: | ---: |
++| Trajectory checker | 1.713 ms | 2.943 ms | 3.789 ms |
++| Adapter with prepared geometry | 1.766 ms | 3.003 ms | 3.677 ms |
++
++The fixture contains 2,130 path samples; every iteration retains the exact five lap times. Static preparation took 1.318 seconds separately. The first restricted-environment run failed during engine preparation; the same command succeeded with normal native access. [Fresh samples](evidence/backend-cost-reduction-2026-10-24/trajectory-current.json), [current acceptance](../backend/bmt_backend/verifier.py), [original trajectory contract](TRAJECTORY_VERIFICATION.md).
++
++At the earlier peak of 579 results/second, the median computation corresponds arithmetically to about 1.7 single-core equivalents at 60% utilization. This is not complete job capacity: decoding, authentication, object reads, ghost handling, SQL finalization and background work remain. Longer trajectories also cost more. However, the former 224 one-CPU verification-instance inference is not a valid CPU requirement for this checker. I/O concurrency must be separated from allocated CPU.
++
++## Candidate monthly budget
++
++The following is a test configuration and spending envelope for one million daily players, ten million accepted races/day, ten million registered accounts, a fivefold peak, and one year of archived receipts. It assumes the data and request reductions below have been implemented. It is not a capacity-tested quote.
++
++| Component | Candidate allocation or allowance | Monthly EUR budget |
++| --- | --- | ---: |
++| API and worker hosts | Two CCX43 instances, with separate process/resource budgets | 551.98 |
++| PostgreSQL | Two CCX43 instances for primary and physical standby | 551.98 |
++| Packed content, recording and receipt objects | Storage and operations allowance | 200 |
++| Database backups, WAL and recovery storage | Separate recovery allowance | 150 |
++| Edge, load balancing, IPv4 and transfer | Combined allowance | 100 |
++| Monitoring and logs | Bounded retention and success-log sampling | 50 |
++| Extra storage and miscellaneous | Allowance | 50 |
++| Contingency | Unallocated | 100 |
++| **Total** | **Subject to all acceptance gates** | **1,753.96** |
++
++The official June 2026 EU price table lists CCX43 at €275.99/month excluding VAT and IPv4. Four such instances cost €1,103.96/month. Confirm current profile specifications, local disk capacity, region availability and the final order price before provisioning. The architecture needs independently placed hosts, not four containers on one machine. [Official regional prices](https://docs.hetzner.com/general/infrastructure-and-availability/price-adjustment/).
++
++The total is 95.35–97.01% below the previous scenario. It is a budget to design and test against, rather than a measured saving. Operating-system patching, PostgreSQL upgrades, failover, security, monitoring and on-call work move to the operator. Engineering labour, tax, setup charges and one-time migration cost are outside it. Buying these servers does not establish their capacity.
++
++For application hosts, test a profile around 16 vCPUs/64 GiB per host, with bounded API, trajectory/queue, geometry-preparation and background processes. For the database, test a similar primary/standby profile with local SSD and a live primary dataset below 250 GiB. The exact quoted host profile must be checked before purchase. These are test envelopes. They must handle peak load and a host failure within the service budgets; otherwise the allocation, design or cost target must change.
++
++The standby can also serve the current isolated Studio reader in normal operation. During failover, gameplay takes priority and broad reporting may be unavailable until another standby is ready. Replication is not a backup; retain independent base backups, WAL and tested SQL/object recovery.
++
++At 10,000 daily players, a flat 95% reduction implies approximately €37–56/month. Fixed redundancy, backups and operational overhead make that a substantially harder percentage target than at large scale. A small shared-server beta and a resilient public service have different floors. Do not extrapolate the million-player budget down without a separate small-service allocation.
++
++## Remove expensive content delivery
++
++The previous scenario included about €10,538/month for 5 MiB/day/player of Europe-bound Cloud Run delivery at a million daily players. That traffic volume was an assumption, not a measured current requirement. First measure compressed bytes and client cache misses by content type.
++
++Serve immutable published track/content bytes through a suitable low-egress object/CDN path. Cloudflare R2 currently lists no direct internet egress charge, with paid storage and operations. Alternatively, the official Hetzner traffic table includes substantial EU transfer allowances and low overage prices. **Changing the storage provider while still proxying all downloads through Cloud Run would retain Cloud Run's outbound bill.** The client must download bulk public bytes through the new delivery path. [R2 pricing](https://developers.cloudflare.com/r2/pricing/), [included traffic](https://docs.hetzner.com/robot/general/traffic/).
++
++Use long-lived immutable content hashes, compressed responses, conditional metadata and bounded client disk caches. Keep authenticated ownership/visibility checks for private records and challenges. Public content may use a public cache; a private recording cannot be made public to improve its cache hit rate. Revocation and privacy behaviour require acceptance tests.
++
++R2 is a candidate, not an already accepted adapter. The existing S3 boundary provides a useful starting point, but provider tests must prove conditional create-once writes, integrity, range reads, timeouts, listing, deletion and crash recovery. R2 documents atomic conditional writes, which supports the required create-once design. [S3 boundary](../backend/bmt_backend/s3_storage.py), [R2 consistency](https://developers.cloudflare.com/r2/reference/consistency/).
++
++## Stop storing two independent objects for every race
++
++Ten million races/day is 300 million races/month. Two independent object writes per race are 600 million writes: **$2,700/month at R2's $4.50/million Class A rate**, before reads or storage. Egress-free storage alone therefore cannot meet the target.
++
++Change the storage unit from one object per attempt to bounded immutable packs. Keep accepted intake durable before acknowledgement, with bounded recent proof bytes in a WAL-protected queue/table or another replicated durable journal. Process those proofs without a compulsory remote-object round trip. Do not use unreplicated memory or a container's temporary filesystem as the sole acknowledged copy.
++
++Pack transient recordings and protected recordings in separate streams. A starting target is at most 128 records per pack, with an independent six-MiB encoded-byte limit; large records close a pack earlier. Never bypass the existing eight-MiB decoded object limit. At 128 records, one transient write per race becomes approximately 2.34 million pack writes/month. Receipts are much smaller and can use larger record counts within the same byte bound.
++
++Each record needs an immutable ID, checksum, offset and length. Publish pack bytes before atomically publishing their authoritative pointers. Restart after a partial write must recover or safely collect the unpublished pack. Recently written records remain accessible while a pack fills; exact post-race challenges must retain their actual slower-than-PB recordings too.
++
++The current whole-object gzip/JSON boundary cannot provide efficient random record ranges. Introduce a versioned pack with independently compressed record frames and an authenticated index, including record hashes for verification of partial reads. This is a storage-contract change. Preserve trajectory numbers losslessly; rounding coordinates to save bytes can change acceptance near narrow gates.
++
++Do not keep an entire transient pack forever because one PB points into it. Promote protected records into protected packs and compact dead records with generation-fenced pointer changes. Ghosts remain optional presentation; a pack flush must not hold scoring locks or delay the ordinary result screen.
++
++Private mixed-player packs need a record-authorized resolver. A URL granting the whole pack would expose other records. Serve only the permitted byte range through the low-cost authenticated path unless the provider authorization mechanism proves that the permitted range cannot be altered. This security and correctness work is part of the storage redesign.
++
++For budgeting, four thousand GB of Standard R2 storage, ten million Class A operations and two hundred million Class B operations cost $177/month before free allowances. A deliberately assumed €1.10 per dollar stress factor gives €194.70, inside the €200 envelope; that factor is not an exchange-rate quote. Exceeding any of these data/operation targets invalidates that budget. These rates are independent of how much an intermediate metered service charges.
++
++## Bound hot SQL and preserve exact rewards
++
++The largest database reduction is to stop retaining every attempt's detailed reward rows, duplicated financial descriptions and compacted server event as separate permanent hot SQL records.
++
++Keep ordinary detailed results for a short review period, initially seven days for testing, and terminal nonprotected proof/recording evidence for at most twenty-four hours. Keep pending work until authoritative terminal handling. Preserve all PB sources, exact challenge references, published creator validation and other protected records. These are proposed new retention policies; no existing records are deleted by this plan.
++
++Store older accepted facts in compact immutable archives with shared manifests and numeric keys. A 128-byte receipt target would produce about 435 GiB/year at ten million results/day, before envelopes and replicas. That is an encoding target, not an already implemented schema. Prove that it contains the facts needed for exact rewards, result recovery, support and analytical reconciliation. Core purchase/fulfillment records retain their separate correctness requirements. Archives still grow each year; their compact storage cost replaces the much larger indexed SQL growth rather than creating a permanent fixed-size history.
++
++**Never implement this by deleting the reward replay fence after a timeout.** A lost response or an old saved upload must not grant a second reward. A viable replacement needs server-issued ticket identities, a durable closed/settled frontier and exact out-of-order status, backed by immutable receipt archives. Late retries must return their original outcome or an explicitly versioned archived response without replaying effects. A counter alone and a probabilistic Bloom filter cannot provide this guarantee.
++
++Update reward, achievement and telemetry deduplication together. Existing `CoinReward` rows are currently part of that correctness boundary. Account erasure, interruption, ticket expiry, simultaneous replies and archive failure must be tested before any compacted receipt replaces them. Do not change currency, earned rewards or competitive eligibility to meet a storage target.
++
++The live SQL target is at most 250 GiB under the stated account/PB population. It includes all relevant tables and indexes, not just the award table. Retention must drain at least as quickly as data arrives, and recovery/free-space headroom must fit the selected disks. A larger registered population, many more PB boards per person or sustained new content can invalidate the target even at the same DAU.
++
++## Spend database work on current gameplay
++
++Keep the current trajectory checker and cached geometry. Separate bounded I/O concurrency from checker CPU. Avoid one native engine or one idle CPU per concurrent race. Native preparation, explicit diagnostics and artificial driver generation need independent small budgets; artificial generation yields to actual players.
++
++Aim initially for forty API requests per daily player rather than the previous unmeasured assumption of 150. At a million players this is 463 requests/second average and 2,315/second at a fivefold peak. Starts, uploads and coalesced completions can account for roughly thirty requests for ten races; startup and menu actions consume the rest. This is a target that must be checked against actual client flows, not a restriction on legitimate racing.
++
++Combine completion data already available from one transaction: verified result, coin receipt, PB information and relevant competition changes. Retain exact finished-ticket identity and persistent outbox recovery. Cache shared immutable views and avoid refetching unchanged menus. Keep challenge try reservations and rewind entitlements authoritative; do not pre-reserve limited competition tries simply to reduce calls.
++
++Set an explicit diagnostic event/byte budget. Aggregate repeated quality observations locally and sample detailed diagnostics where full population detail is unnecessary. Retain exact server-side accepted-race, reward, purchase and competition totals. Use compact server aggregates instead of three permanent raw copies of the same accepted event. The earlier hundred-client-events/day input was an assumption, so measure the actual volume before claiming a particular reduction.
++
++Bound success logs, old snapshots, cache generations, synthetic drivers and scheduled reports. Serve broad analytics on the standby or prepared summaries. Protect gameplay connections and CPU across simultaneous request classes; separate process limits alone do not reserve global pool capacity.
++
++## Implementation order and acceptance gates
++
++| Order | Deliverable | Required evidence |
++| --- | --- | --- |
++| 1 | Current-flow accounting and corrected capacity baseline | Actual proof/ghost bytes, SQL/index/WAL deltas, request counts, object operations and complete result latency. The fresh pure-check benchmark is only the computation term. |
++| 2 | Low-egress delivery and immutable client caching | Same authorized content and visibility; measured delivered bytes, cache misses and intermediate-service charges. |
++| 3 | Durable compact intake and packed recordings | Restart/lost-write recovery, exact checksums, protected-reference compaction, record-level authorization and bounded operations. |
++| 4 | Versioned compact receipts and automatic retention | Exact once-only awards/achievements/analytics under duplicates, late replies, erasure and interrupted archive publication. Source counts and historical outcomes reconcile exactly. |
++| 5 | Combined completion responses and bounded telemetry | Same game flows and competition rules, with measured request/event reductions and no client retry storms. |
++| 6 | Candidate self-managed deployment in isolation | Peak mixed load, hot-board writes, connection limits, background freshness and one-host-loss capacity within the €1,800 envelope. |
++| 7 | Recovery and rollout | PITR/restore, primary failure with fencing, rollback/roll-forward compatibility and matching client/API/worker protocol. Actual provider change requires a separate authorised deployment. |
++
++Require the same ten million accepted races/day in the model. Do not obtain the saving by reducing legitimate races, skipping their trajectory checks, trusting submitted currency, dropping durable acknowledgements, eliminating independent backups or discarding purchased entitlements.
++
++The full-load gate is approximately 579 accepted results/second plus 2,315 dynamic requests/second under the proposed client request target, with realistic retained accounts/PBs and the actual ratio of shared cache hits. Completion traffic must be counted once within the dynamic total. Measure scheduled p95/p99, offered versus completed load, job age, CPU, SQL locks, WAL/IOPS, pool waits, retained bytes and actual provider meters. Repeat under a host failure and during retention/rollover. If it fails, change the design or budget; a cheap server list is not proof.
++
++No rewrite of the whole backend is required merely to begin. PostgreSQL, the current Python trajectory checker, immutable manifests and durable client outboxes remain useful. The critical changes are the unit of stored data, the lifetime of hot records, the amount of repeated work and the deployment billing model.
++
++## Review artifacts and limits
++
++The [budget model](evidence/backend-cost-reduction-2026-10-24/budget.json) and [calculation script](evidence/backend-cost-reduction-2026-10-24/budget_model.py) record assumptions and targets. The uncorrected review and model are preserved in the evidence directory for accountability. The [performance review](BACKEND_PERFORMANCE_REVIEW_2026_10_24.md) now withdraws its obsolete verification fleet and cost forecast.
++
++Actual new measurement command:
++
++```text
++python -X utf8 backend/tools/benchmark_trajectory.py --godot "C:/apps/Godot 4.7.2/Godot_v4.7.2-stable_win64_console.exe" --project game --fixture backend/tests/fixtures/verified_oval.json --proof .tools/trajectory-approved-20261009/proof.json --output docs/evidence/backend-cost-reduction-2026-10-24/trajectory-current.json --iterations 500
++python -X utf8 docs/evidence/backend-cost-reduction-2026-10-24/budget_model.py
++```
++
++The native path was passed as one quoted PowerShell argument in the actual execution. Five hundred adapter and five hundred checker calls retained the fixture's exact time/laps and made no engine calls during acceptance. This is a local computation measurement. No target-population load test, provider contract acceptance, new cloud purchase, configuration change, migration, deletion, runtime implementation, device test or phone/tablet attachment check was performed.
+diff --git a/docs/evidence/backend-cost-reduction-2026-10-24/budget.json b/docs/evidence/backend-cost-reduction-2026-10-24/budget.json
+new file mode 100644
+--- /dev/null
++++ b/docs/evidence/backend-cost-reduction-2026-10-24/budget.json
+@@ -0,0 +1,108 @@
++{
++  "requirements": [
++    "CR95-01",
++    "CR95-02",
++    "CR95-03",
++    "CR95-04",
++    "CR95-05",
++    "CR95-06",
++    "CR95-07"
++  ],
++  "status": "Engineering budget and test gates only; unproven at target traffic",
++  "date": "2026-10-24",
++  "dau": 1000000,
++  "registered_accounts_assumption": 10000000,
++  "receipt_history_years": 1,
++  "races_per_dau_day": 10,
++  "races_per_day": 10000000,
++  "verification_peak_per_second": 578.7037037037037,
++  "original_cost_range_eur_month": [
++    37758.77485197717,
++    58623.07457779672
++  ],
++  "original_model_status": "Verification assumptions withdrawn; comparison is with the previous scenario, not an observed bill",
++  "strict_95_percent_cost_ceiling_eur_month": 1887.9387425988587,
++  "chosen_ceiling_eur_month": 1800,
++  "line_item_budget_eur_month": {
++    "two_api_worker_CCX43": 551.98,
++    "postgres_primary_standby_two_CCX43": 551.98,
++    "packed_objects_and_operations": 200,
++    "database_backups_wal_and_recovery": 150,
++    "edge_load_balancing_ipv4_and_transfer": 100,
++    "monitoring_logs": 50,
++    "extra_storage_and_miscellaneous": 50,
++    "contingency": 100
++  },
++  "total_budget_eur_month": 1753.96,
++  "reduction_against_original_range_percent": [
++    95.3548280979033,
++    97.00807231174412
++  ],
++  "current_verification": {
++    "schema": "bmt-trajectory-v1",
++    "ordinary_replay_fallback": false,
++    "iterations": 500,
++    "samples_per_fixture": 2130,
++    "adapter_median_ms": 1.76615,
++    "adapter_p95_ms": 3.0032,
++    "adapter_max_ms": 3.6773,
++    "engine_calls_in_acceptance": 0,
++    "theoretical_single_core_check_equivalents_at_peak_60percent": 1.7034625771604939,
++    "qualification": "Isolated current-code check/adapter; not complete job throughput, measured CPU utilization or fleet sizing"
++  },
++  "request_target": {
++    "api_calls_per_dau_day": 40,
++    "average_rps": 462.962962962963,
++    "peak_rps": 2314.814814814815,
++    "qualification": "Proposed target; preserve explicit competition starts and durable retries"
++  },
++  "data_targets": {
++    "primary_live_sql_gib_max": 250,
++    "ordinary_detailed_result_days": 7,
++    "terminal_nonprotected_evidence_hours": 24,
++    "outstanding_unacknowledged_jobs": "Retain until authoritative terminal handling; never expire live work",
++    "permanent_compact_receipt_bytes_per_race": 128,
++    "receipt_archive_gib_per_year": 435.11390686035156,
++    "object_storage_gb_total_budget": 4000,
++    "recording_pack_records_target": 128,
++    "recording_pack_encoded_max_mib": 6,
++    "transient_recording_pack_writes_per_month": 2343750,
++    "required_live_references": [
++      "race and lap PBs",
++      "exact challenge results",
++      "creator validation",
++      "published track versions",
++      "purchase/fulfillment records"
++    ]
++  },
++  "r2_budget_check": {
++    "currency": "USD",
++    "standard_gb_month": 0.015,
++    "class_a_per_million": 4.5,
++    "class_b_per_million": 0.36,
++    "internet_egress": 0,
++    "gb_month_assumption": 4000,
++    "class_a_millions_assumption": 10,
++    "class_b_millions_assumption": 200,
++    "usd_month_before_free_tier": 177.0,
++    "budget_fx_stress_eur_per_usd": 1.1,
++    "fx_qualification": "Stress allowance, not a current foreign-exchange quote",
++    "stressed_eur_month": 194.70000000000002,
++    "no_change_object_operations_warning": "Two separate object writes per race would cost2700USD/month in ClassA alone at300million races"
++  },
++  "operational_tradeoff": "Self-managed primary/standby, backups, failover, security and on-call replace managed-service operations. Labour is excluded.",
++  "capacity_gates": [
++    "Exact current-image sustained mixed load at declared host profiles",
++    "One-node-loss and primary-failover tests",
++    "Hot-board contention and full retention footprint",
++    "Replay-safe receipt compaction with lost/out-of-order replies",
++    "Packed-object authorization, range reads, crash recovery and protected-record compaction",
++    "Restore across SQL and object generations",
++    "Actual billed bytes/operations and total transfer below budgets"
++  ],
++  "sources": [
++    "https://docs.hetzner.com/general/infrastructure-and-availability/price-adjustment/",
++    "https://developers.cloudflare.com/r2/pricing/",
++    "https://docs.hetzner.com/robot/general/traffic/"
++  ]
++}
+diff --git a/docs/evidence/backend-cost-reduction-2026-10-24/budget_model.py b/docs/evidence/backend-cost-reduction-2026-10-24/budget_model.py
+new file mode 100644
+--- /dev/null
++++ b/docs/evidence/backend-cost-reduction-2026-10-24/budget_model.py
+@@ -0,0 +1,75 @@
++"""Cost ceiling and engineering gates; no claim of production capacity."""
++import json
++import math
++from pathlib import Path
++
++HERE = Path(__file__).resolve().parent
++
++
++def main():
++    original = json.loads((HERE / "model-before-correction.json").read_text(encoding="utf-8"))
++    million = next(item for item in original["scenarios"] if item["dau"] == 1000000)
++    old_range = million["with_25_percent_operational_allowance_eur_month_range"]
++    benchmark = json.loads((HERE / "trajectory-current.json").read_text(encoding="utf-8"))
++    # Official Hetzner June 2026 adjustment, EU, excluding VAT and IPv4.
++    servers = {"two_api_worker_CCX43": 2 * 275.99, "postgres_primary_standby_two_CCX43": 2 * 275.99}
++    allowances = {"packed_objects_and_operations": 200, "database_backups_wal_and_recovery": 150,
++                  "edge_load_balancing_ipv4_and_transfer": 100, "monitoring_logs": 50,
++                  "extra_storage_and_miscellaneous": 50, "contingency": 100}
++    total = sum(servers.values()) + sum(allowances.values())
++    races_day, peak_factor = 10000000, 5
++    race_peak = races_day / 86400 * peak_factor
++    result = {
++        "requirements": ["CR95-01", "CR95-02", "CR95-03", "CR95-04", "CR95-05", "CR95-06", "CR95-07"],
++        "status": "Engineering budget and test gates only; unproven at target traffic",
++        "date": "2026-10-24", "dau": 1000000, "registered_accounts_assumption": 10000000, "receipt_history_years": 1,
++        "races_per_dau_day": 10, "races_per_day": races_day, "verification_peak_per_second": race_peak,
++        "original_cost_range_eur_month": old_range,
++        "original_model_status": "Verification assumptions withdrawn; comparison is with the previous scenario, not an observed bill",
++        "strict_95_percent_cost_ceiling_eur_month": .05 * min(old_range),
++        "chosen_ceiling_eur_month": 1800, "line_item_budget_eur_month": {**servers, **allowances},
++        "total_budget_eur_month": total,
++        "reduction_against_original_range_percent": [100 * (1-total/value) for value in old_range],
++        "current_verification": {"schema": "bmt-trajectory-v1", "ordinary_replay_fallback": False,
++            "iterations": benchmark["iterations"], "samples_per_fixture": benchmark["trajectory_samples"],
++            "adapter_median_ms": benchmark["adapter"]["median_ms"], "adapter_p95_ms": benchmark["adapter"]["p95_ms"],
++            "adapter_max_ms": benchmark["adapter"]["max_ms"], "engine_calls_in_acceptance": 0,
++            "theoretical_single_core_check_equivalents_at_peak_60percent": race_peak * benchmark["adapter"]["median_ms"] / 1000 / .6,
++            "qualification": "Isolated current-code check/adapter; not complete job throughput, measured CPU utilization or fleet sizing"},
++        "request_target": {"api_calls_per_dau_day": 40, "average_rps": 1000000*40/86400,
++            "peak_rps": 1000000*40/86400*5, "qualification": "Proposed target; preserve explicit competition starts and durable retries"},
++        "data_targets": {"primary_live_sql_gib_max": 250,
++            "ordinary_detailed_result_days": 7, "terminal_nonprotected_evidence_hours": 24,
++            "outstanding_unacknowledged_jobs": "Retain until authoritative terminal handling; never expire live work",
++            "permanent_compact_receipt_bytes_per_race": 128,
++            "receipt_archive_gib_per_year": races_day*365*128/1024**3,
++            "object_storage_gb_total_budget": 4000,
++            "recording_pack_records_target": 128, "recording_pack_encoded_max_mib": 6,
++            "transient_recording_pack_writes_per_month": math.ceil(races_day*30/128),
++            "required_live_references": ["race and lap PBs", "exact challenge results", "creator validation", "published track versions", "purchase/fulfillment records"]},
++        "r2_budget_check": {"currency": "USD", "standard_gb_month": .015,
++            "class_a_per_million": 4.50, "class_b_per_million": .36, "internet_egress": 0,
++            "gb_month_assumption": 4000, "class_a_millions_assumption": 10,
++            "class_b_millions_assumption": 200,
++            "usd_month_before_free_tier": 4000*.015+10*4.50+200*.36,
++            "budget_fx_stress_eur_per_usd": 1.1,
++            "fx_qualification": "Stress allowance, not a current foreign-exchange quote",
++            "stressed_eur_month": (4000*.015+10*4.50+200*.36)*1.1,
++            "no_change_object_operations_warning": "Two separate object writes per race would cost2700USD/month in ClassA alone at300million races"},
++        "operational_tradeoff": "Self-managed primary/standby, backups, failover, security and on-call replace managed-service operations. Labour is excluded.",
++        "capacity_gates": ["Exact current-image sustained mixed load at declared host profiles", "One-node-loss and primary-failover tests",
++            "Hot-board contention and full retention footprint", "Replay-safe receipt compaction with lost/out-of-order replies",
++            "Packed-object authorization, range reads, crash recovery and protected-record compaction", "Restore across SQL and object generations",
++            "Actual billed bytes/operations and total transfer below budgets"],
++        "sources": ["https://docs.hetzner.com/general/infrastructure-and-availability/price-adjustment/",
++            "https://developers.cloudflare.com/r2/pricing/", "https://docs.hetzner.com/robot/general/traffic/"]}
++    assert total <= 1800 < .05*min(old_range)
++    assert result["r2_budget_check"]["stressed_eur_month"] <= allowances["packed_objects_and_operations"]
++    (HERE / "budget.json").write_text(json.dumps(result, indent=2) + "\n", encoding="utf-8")
++    print(json.dumps({"total_eur_month": total, "reduction_percent": result["reduction_against_original_range_percent"],
++        "strict_ceiling_eur_month": .05*min(old_range), "proof_check_equivalents_at_peak": result["current_verification"]["theoretical_single_core_check_equivalents_at_peak_60percent"],
++        "r2_stress_eur_month": result["r2_budget_check"]["stressed_eur_month"]}))
++
++
++if __name__ == "__main__":
++    main()
+diff --git a/docs/evidence/backend-cost-reduction-2026-10-24/finalize.py b/docs/evidence/backend-cost-reduction-2026-10-24/finalize.py
+new file mode 100644
+--- /dev/null
++++ b/docs/evidence/backend-cost-reduction-2026-10-24/finalize.py
+@@ -0,0 +1,73 @@
++"""Validate the corrected review and proposed cost ceiling without changing runtime."""
++import difflib
++import hashlib
++import json
++import re
++from pathlib import Path
++
++HERE = Path(__file__).resolve().parent
++ROOT = HERE.parents[2]
++
++
++def main():
++    budget = json.loads((HERE / "budget.json").read_text(encoding="utf-8"))
++    benchmark = json.loads((HERE / "trajectory-current.json").read_text(encoding="utf-8"))
++    assert budget["total_budget_eur_month"] == 1753.96
++    assert budget["total_budget_eur_month"] < .05 * min(budget["original_cost_range_eur_month"])
++    assert benchmark["iterations"] == 500 and benchmark["engine_calls_during_verification"] == 0
++    assert benchmark["five_laps"] and benchmark["adapter"]["p95_ms"] < 5
++    checked_links = 0
++    for name in ("BACKEND_PERFORMANCE_REVIEW_2026_10_24.md", "BACKEND_COST_REDUCTION_PLAN_2026_10_24.md"):
++        path = ROOT / "docs" / name
++        for link in re.findall(r"\[[^\]]*\]\(([^)]+)\)", path.read_text(encoding="utf-8")):
++            if link.startswith(("https://", "http://", "#")):
++                continue
++            assert (path.parent / link.split("#")[0]).exists(), link
++            checked_links += 1
++    sources = ["backend/bmt_backend/verifier.py", "backend/bmt_backend/trajectory_verifier.py",
++               "backend/bmt_backend/worker.py", "backend/bmt_backend/runs.py",
++               "backend/bmt_backend/economy_models.py", "backend/bmt_backend/studio_finance.py",
++               "backend/bmt_backend/telemetry_processing.py", "backend/bmt_backend/gcs_storage.py",
++               "backend/bmt_backend/s3_storage.py", "backend/tools/benchmark_trajectory.py",
++               "backend/tests/fixtures/verified_oval.json", ".tools/trajectory-approved-20261009/proof.json"]
++    report = {
++        "date": "2026-10-24", "requirements": budget["requirements"],
++        "status": "Concrete cost target and design prepared; no cost-reduction implementation or production capacity claim",
++        "review_correction": "The prior native proof/full-replay cost basis was superseded. Current acceptance uses a Python trajectory check without a replay fallback.",
++        "source_sha256": {name: hashlib.sha256((ROOT / name).read_bytes()).hexdigest() for name in sources},
++        "new_measurement": {"fixture": "five laps,2130samples", "iterations_each_kernel_and_adapter": 500,
++            "adapter_median_ms": benchmark["adapter"]["median_ms"], "adapter_p95_ms": benchmark["adapter"]["p95_ms"],
++            "engine_calls_during_acceptance": 0, "exact_lap_times_retained": True,
++            "first_attempt": "Restricted execution failed during engine preparation; normal native-access run passed"},
++        "target_eur_month": 1800, "candidate_budget_eur_month": budget["total_budget_eur_month"],
++        "capacity_status": "One-millionDAU allocation is unproven; complete mixed load,failover,storage and recovery gates remain",
++        "local_relative_links_checked": checked_links,
++        "validation": {"budget_totals": "passed", "95percent_comparison": "passed", "JSON_readback": "passed",
++            "runtime_tests": "No runtime modifications; fresh check/adapter benchmark only. Earlier focused review tests retain39pass,1failure,15skips.",
++            "lint_and_compilation": "Run separately and recorded in conversation"},
++        "preservation": {"original_review": "review-before-correction.md", "original_model": "model-before-correction.json",
++            "cloud_mutation": False, "runtime_implementation": False, "data_deletion": False,
++            "purchases": False, "device_test": False, "phone_or_tablet_attachment_check": False},
++    }
++    (HERE / "report.json").write_text(json.dumps(report, indent=2) + "\n", encoding="utf-8")
++    changed = [ROOT / "docs/BACKEND_COST_REDUCTION_PLAN_2026_10_24.md", *sorted(
++        path for path in HERE.iterdir() if path.is_file() and path.name != "scoped-change.patch")]
++    # These new files accompany the separately regenerated corrected-review patch.
++    patch = []
++    for path in changed:
++        if path.suffix == ".json":
++            json.loads(path.read_text(encoding="utf-8"))
++        name = path.relative_to(ROOT).as_posix()
++        patch.extend([f"diff --git a/{name} b/{name}\n", "new file mode 100644\n"])
++        for line in difflib.unified_diff([], path.read_text(encoding="utf-8").splitlines(keepends=True),
++                                         fromfile="/dev/null", tofile="b/" + name):
++            patch.append(line)
++            if not line.endswith("\n"):
++                patch.append("\n\\ No newline at end of file\n")
++    (HERE / "scoped-change.patch").write_text("".join(patch), encoding="utf-8", newline="\n")
++    print(json.dumps({"budget_eur_month": budget["total_budget_eur_month"], "relative_links": checked_links,
++                      "new_files_in_checkpoint": len(changed), "engine_calls_in_check": 0}))
++
++
++if __name__ == "__main__":
++    main()
+diff --git a/docs/evidence/backend-cost-reduction-2026-10-24/model-before-correction.json b/docs/evidence/backend-cost-reduction-2026-10-24/model-before-correction.json
+new file mode 100644
+--- /dev/null
++++ b/docs/evidence/backend-cost-reduction-2026-10-24/model-before-correction.json
+@@ -0,0 +1,361 @@
++{
++  "status": "Assumption-based engineering model; no load-tested capacity guarantee",
++  "currency": "EUR",
++  "month_days": 30,
++  "assumptions": {
++    "races_per_dau_day": 10,
++    "api_requests_per_dau_day": 150,
++    "client_telemetry_events_per_dau_day": 100,
++    "peak_to_average": 5,
++    "session_minutes_per_dau_day": 30,
++    "target_utilization": 0.6,
++    "warm_proof_service_seconds": 0.14,
++    "warm_full_replay_service_seconds": 1.06,
++    "fallback_fraction": 0.1,
++    "api_cpu_seconds_per_request_range": [
++      0.005,
++      0.02
++    ],
++    "downloads_mib_per_dau_day": 5,
++    "temporary_sql_kib_per_race_range": [
++      2,
++      6
++    ],
++    "permanent_sql_receipt_bundle_kib_per_race_range": [
++      1,
++      4
++    ],
++    "replay_and_ghost_combined_stored_kib_per_race_range": [
++      20,
++      100
++    ],
++    "race_retention_days": 90,
++    "cost_ledger_age_days": 365,
++    "client_telemetry_retention_days_including_grace": 8,
++    "client_telemetry_sql_kib_per_event": 1,
++    "sql_allocation_factor_for_free_space_and_unmodelled_core": 1.3,
++    "backup_used_data_multiplier": 2,
++    "object_writes_per_race": 2,
++    "object_reads_per_race": 4,
++    "planning_verifier_gib_per_one_cpu_instance": 1,
++    "cost_architecture": "Peak verification capacity held all month; HA primary and a full reporting replica; API scales with utilization.",
++    "excluded": "Engineering, tax, discounts/credits, store fees, ad delivery, CDN changes, broad attack traffic, extra regions, independent background compute, and unlimited additional years of receipts."
++  },
++  "current_fixed_resource_floor_eur": {
++    "warm_idle_api": 11.399616,
++    "worker": 27.756432000000004,
++    "sql_cpu_ram": 42.79967658,
++    "sql_10gib_ssd": 1.49599999,
++    "sum_before_variable_usage": 83.45172457000001
++  },
++  "planning_one_cpu_one_gib_worker_month_eur": 28.46016,
++  "scenarios": [
++    {
++      "dau": 10000,
++      "races_per_day": 100000,
++      "peak_concurrent_players": 1041.6666666666667,
++      "api_rps_average": 17.36111111111111,
++      "api_rps_peak": 86.80555555555556,
++      "verification_rps_average": 1.1574074074074074,
++      "verification_rps_peak": 5.787037037037037,
++      "telemetry_eps_average": 11.574074074074074,
++      "telemetry_eps_peak": 57.870370370370374,
++      "peak_serial_verification_engines": 3,
++      "api_peak_vcpu_range": [
++        1,
++        3
++      ],
++      "sql_history_90d_gib_range": [
++        17.1661376953125,
++        51.4984130859375
++      ],
++      "permanent_receipts_after_year_gib_range": [
++        34.809112548828125,
++        139.2364501953125
++      ],
++      "raw_client_telemetry_8d_gib": 7.62939453125,
++      "objects_90d_gib_range": [
++        171.661376953125,
++        858.306884765625
++      ],
++      "download_gib_month": 1464.84375,
++      "component_costs_eur_month": {
++        "peak_reserved_verifiers": 85.38047999999999,
++        "api_range": [
++          23.837249999999997,
++          50.06999999999999
++        ],
++        "network_europe": 135.35156103515624,
++        "sql_storage_and_backups_range": [
++          43.168067657947546,
++          143.66332916564943
++        ],
++        "object_storage_range": [
++          3.0212400627136233,
++          15.106200313568117
++        ],
++        "object_operations": 30.605999999999998,
++        "sql_compute_range": [
++          263.4508656,
++          439.0847784
++        ]
++      },
++      "database_test_envelope": {
++        "primary_cpu_ram_low": [
++          2,
++          8
++        ],
++        "primary_cpu_ram_high": [
++          4,
++          16
++        ],
++        "reporting_replica_cpu_ram": [
++          2,
++          8
++        ]
++      },
++      "subtotal_eur_month_range": [
++        584.8154643558173,
++        899.2623489143738
++      ],
++      "with_25_percent_operational_allowance_eur_month_range": [
++        731.0193304447716,
++        1124.0779361429672
++      ]
++    },
++    {
++      "dau": 100000,
++      "races_per_day": 1000000,
++      "peak_concurrent_players": 10416.666666666668,
++      "api_rps_average": 173.61111111111111,
++      "api_rps_peak": 868.0555555555555,
++      "verification_rps_average": 11.574074074074074,
++      "verification_rps_peak": 57.870370370370374,
++      "telemetry_eps_average": 115.74074074074075,
++      "telemetry_eps_peak": 578.7037037037037,
++      "peak_serial_verification_engines": 23,
++      "api_peak_vcpu_range": [
++        8,
++        29
++      ],
++      "sql_history_90d_gib_range": [
++        171.661376953125,
++        514.984130859375
++      ],
++      "permanent_receipts_after_year_gib_range": [
++        348.09112548828125,
++        1392.364501953125
++      ],
++      "raw_client_telemetry_8d_gib": 76.2939453125,
++      "objects_90d_gib_range": [
++        1716.61376953125,
++        8583.06884765625
++      ],
++      "download_gib_month": 14648.4375,
++      "component_costs_eur_month": {
++        "peak_reserved_verifiers": 654.58368,
++        "api_range": [
++          244.6905,
++          507.018
++        ],
++        "network_europe": 1256.5299853515626,
++        "sql_storage_and_backups_range": [
++          431.6806765794754,
++          1436.6332916564943
++        ],
++        "object_storage_range": [
++          30.212400627136233,
++          151.06200313568115
++        ],
++        "object_operations": 306.06,
++        "sql_compute_range": [
++          878.1695568,
++          1580.7052079999999
++        ]
++      },
++      "database_test_envelope": {
++        "primary_cpu_ram_low": [
++          8,
++          32
++        ],
++        "primary_cpu_ram_high": [
++          16,
++          64
++        ],
++        "reporting_replica_cpu_ram": [
++          4,
++          16
++        ]
++      },
++      "subtotal_eur_month_range": [
++        3801.926799358174,
++        5892.592168143738
++      ],
++      "with_25_percent_operational_allowance_eur_month_range": [
++        4752.408499197717,
++        7365.740210179672
++      ]
++    },
++    {
++      "dau": 1000000,
++      "races_per_day": 10000000,
++      "peak_concurrent_players": 104166.66666666666,
++      "api_rps_average": 1736.111111111111,
++      "api_rps_peak": 8680.555555555555,
++      "verification_rps_average": 115.74074074074075,
++      "verification_rps_peak": 578.7037037037037,
++      "telemetry_eps_average": 1157.4074074074074,
++      "telemetry_eps_peak": 5787.0370370370365,
++      "peak_serial_verification_engines": 224,
++      "api_peak_vcpu_range": [
++        73,
++        290
++      ],
++      "sql_history_90d_gib_range": [
++        1716.61376953125,
++        5149.84130859375
++      ],
++      "permanent_receipts_after_year_gib_range": [
++        3480.9112548828125,
++        13923.64501953125
++      ],
++      "raw_client_telemetry_8d_gib": 762.939453125,
++      "objects_90d_gib_range": [
++        17166.1376953125,
++        85830.6884765625
++      ],
++      "download_gib_month": 146484.375,
++      "component_costs_eur_month": {
++        "peak_reserved_verifiers": 6375.0758399999995,
++        "api_range": [
++          2453.223,
++          5076.498
++        ],
++        "network_europe": 10537.779853515625,
++        "sql_storage_and_backups_range": [
++          4316.806765794754,
++          14366.332916564941
++        ],
++        "object_storage_range": [
++          302.1240062713623,
++          1510.6200313568118
++        ],
++        "object_operations": 3060.6,
++        "sql_compute_range": [
++          3161.4104159999997,
++          5971.5530208
++        ]
++      },
++      "database_test_envelope": {
++        "primary_cpu_ram_low": [
++          32,
++          128
++        ],
++        "primary_cpu_ram_high": [
++          64,
++          256
++        ],
++        "reporting_replica_cpu_ram": [
++          8,
++          32
++        ]
++      },
++      "subtotal_eur_month_range": [
++        30207.01988158174,
++        46898.45966223737
++      ],
++      "with_25_percent_operational_allowance_eur_month_range": [
++        37758.77485197717,
++        58623.07457779672
++      ]
++    },
++    {
++      "dau": 10000000,
++      "races_per_day": 100000000,
++      "peak_concurrent_players": 1041666.6666666667,
++      "api_rps_average": 17361.11111111111,
++      "api_rps_peak": 86805.55555555555,
++      "verification_rps_average": 1157.4074074074074,
++      "verification_rps_peak": 5787.0370370370365,
++      "telemetry_eps_average": 11574.074074074075,
++      "telemetry_eps_peak": 57870.37037037037,
++      "peak_serial_verification_engines": 2238,
++      "api_peak_vcpu_range": [
++        724,
++        2894
++      ],
++      "sql_history_90d_gib_range": [
++        17166.1376953125,
++        51498.4130859375
++      ],
++      "permanent_receipts_after_year_gib_range": [
++        34809.112548828125,
++        139236.4501953125
++      ],
++      "raw_client_telemetry_8d_gib": 7629.39453125,
++      "objects_90d_gib_range": [
++        171661.376953125,
++        858306.884765625
++      ],
++      "download_gib_month": 1464843.75,
++      "component_costs_eur_month": {
++        "peak_reserved_verifiers": 63693.838079999994,
++        "api_range": [
++          24538.548000000003,
++          50771.298
++        ],
++        "network_europe": 80272.38853515625,
++        "sql_storage_and_backups_range": [
++          43168.06765794754,
++          143663.32916564943
++        ],
++        "object_storage_range": [
++          3021.2400627136235,
++          15106.200313568117
++        ],
++        "object_operations": 30606.0
++      }
++    }
++  ],
++  "one_million_dau_verification_sensitivity": [
++    {
++      "fallback_fraction": 0,
++      "service_seconds": 0.14,
++      "peak_engines": 136
++    },
++    {
++      "fallback_fraction": 0.1,
++      "service_seconds": 0.23200000000000004,
++      "peak_engines": 224
++    },
++    {
++      "fallback_fraction": 0.5,
++      "service_seconds": 0.6000000000000001,
++      "peak_engines": 579
++    },
++    {
++      "fallback_fraction": 1,
++      "service_seconds": 1.06,
++      "peak_engines": 1023
++    }
++  ],
++  "one_million_dau_download_sensitivity": [
++    {
++      "mib_per_dau_day": 1,
++      "gib_month": 29296.875,
++      "europe_run_egress_eur_month": 2287.7799707031254
++    },
++    {
++      "mib_per_dau_day": 5,
++      "gib_month": 146484.375,
++      "europe_run_egress_eur_month": 10537.779853515625
++    },
++    {
++      "mib_per_dau_day": 10,
++      "gib_month": 292968.75,
++      "europe_run_egress_eur_month": 18397.389707031252
++    }
++  ],
++  "one_million_dau_queue_capacity_seconds_at_peak": 0.221184,
++  "one_million_dau_client_telemetry_backlog_seconds_at_peak": 8.64
++}
+diff --git a/docs/evidence/backend-cost-reduction-2026-10-24/report.json b/docs/evidence/backend-cost-reduction-2026-10-24/report.json
+new file mode 100644
+--- /dev/null
++++ b/docs/evidence/backend-cost-reduction-2026-10-24/report.json
+@@ -0,0 +1,58 @@
++{
++  "date": "2026-10-24",
++  "requirements": [
++    "CR95-01",
++    "CR95-02",
++    "CR95-03",
++    "CR95-04",
++    "CR95-05",
++    "CR95-06",
++    "CR95-07"
++  ],
++  "status": "Concrete cost target and design prepared; no cost-reduction implementation or production capacity claim",
++  "review_correction": "The prior native proof/full-replay cost basis was superseded. Current acceptance uses a Python trajectory check without a replay fallback.",
++  "source_sha256": {
++    "backend/bmt_backend/verifier.py": "2551f255c72baf8d2978d04552fd021048f352e587142e9d36f23fe7b232c098",
++    "backend/bmt_backend/trajectory_verifier.py": "8ecf4b3096adb81cd4c611013defca6a2df751f24634afecab9ea1ee515629b4",
++    "backend/bmt_backend/worker.py": "077a4a132486bfbbcaa3a2d2cd79ee19a0352779e8f82f9a74ea041eaa7c32be",
++    "backend/bmt_backend/runs.py": "c6befe392d6f619b5d79c1e85a9738ba4cdba1e9cd3fdc2ed8125930150c8d68",
++    "backend/bmt_backend/economy_models.py": "0b22ec4fcbc3b764ebdde5e3d8ad7f2854ec595cb6d07a5cde53aba35adec351",
++    "backend/bmt_backend/studio_finance.py": "32d851ca25c9f3fee936cde496ee4bcc7327f3c2e20b01e78290d3aff20bcfaa",
++    "backend/bmt_backend/telemetry_processing.py": "b3451bbb130e69a87c4538574f12fa3eddc8f40cfb128552cedd834ca9154021",
++    "backend/bmt_backend/gcs_storage.py": "5499b55ea0d28c72e1873e9096bb47cbd30df239d1e42c36e16acf7f54ece515",
++    "backend/bmt_backend/s3_storage.py": "fcc6e669661bfae63b93a52391d7f1034b1c70a8e0f880e1a4c3bb51cbb220cd",
++    "backend/tools/benchmark_trajectory.py": "871a95590b83a2e7b6513e53dc43b3789a41fc8eb44f037bb1699b2d341b2c73",
++    "backend/tests/fixtures/verified_oval.json": "8318f76ea6097a7566caede97c5e07909c31f5f56ea08d12703ee9284f98e4d8",
++    ".tools/trajectory-approved-20261009/proof.json": "4c22606b76c0a2785259e679631c4a5d072e70a8c765df909aec68dc24a490f9"
++  },
++  "new_measurement": {
++    "fixture": "five laps,2130samples",
++    "iterations_each_kernel_and_adapter": 500,
++    "adapter_median_ms": 1.76615,
++    "adapter_p95_ms": 3.0032,
++    "engine_calls_during_acceptance": 0,
++    "exact_lap_times_retained": true,
++    "first_attempt": "Restricted execution failed during engine preparation; normal native-access run passed"
++  },
++  "target_eur_month": 1800,
++  "candidate_budget_eur_month": 1753.96,
++  "capacity_status": "One-millionDAU allocation is unproven; complete mixed load,failover,storage and recovery gates remain",
++  "local_relative_links_checked": 37,
++  "validation": {
++    "budget_totals": "passed",
++    "95percent_comparison": "passed",
++    "JSON_readback": "passed",
++    "runtime_tests": "No runtime modifications; fresh check/adapter benchmark only. Earlier focused review tests retain39pass,1failure,15skips.",
++    "lint_and_compilation": "Run separately and recorded in conversation"
++  },
++  "preservation": {
++    "original_review": "review-before-correction.md",
++    "original_model": "model-before-correction.json",
++    "cloud_mutation": false,
++    "runtime_implementation": false,
++    "data_deletion": false,
++    "purchases": false,
++    "device_test": false,
++    "phone_or_tablet_attachment_check": false
++  }
++}
+diff --git a/docs/evidence/backend-cost-reduction-2026-10-24/review-before-correction.md b/docs/evidence/backend-cost-reduction-2026-10-24/review-before-correction.md
+new file mode 100644
+--- /dev/null
++++ b/docs/evidence/backend-cost-reduction-2026-10-24/review-before-correction.md
+@@ -0,0 +1,218 @@
++# Backend performance and scaling review
++
++Reviewed 24 October 2026. Requirements BPR01 performance, BPR02 capacity and resources, BPR03 costs, BPR04 storage and operational readiness, and Q01 evidence.
++
++**The backend has a credible architecture for growing an asynchronous racing game, but its current deployment is a small development service. It has no demonstrated capacity for a million daily active players.** The largest costs at that scale are likely to be accumulated race and financial history, data delivery, verification capacity, and PostgreSQL operation. The compact World Ranking implementation is comparatively inexpensive.
++
++The current staging allocation has room for its observed traffic. Its worker is much closer to its CPU and memory limits than the API. Increasing API replicas alone would leave worker throughput, shared database connections and several write bottlenecks unresolved. A public launch needs measured arrival rates, explicit retention and recovery policies, and a sustained test of the exact production image.
++
++The financial scenarios below use official regional EUR catalogue prices retrieved on 24 October. They deliberately include paid infrastructure after credits expire. They are engineering calculations under stated activity assumptions, rather than quotations or upper bounds on a future bill.
++
++## Current deployment and observed load
++
++Read-only Google Cloud inspection at approximately 10:37 Helsinki confirmed the following in `europe-west1`:
++
++| Component | Actual configuration | Previous 24 hours |
++| --- | --- | --- |
++| API | 1 vCPU, 1 GiB per instance; service minimum 1, maximum 2; HTTP concurrency 16 per instance | Weighted sampled CPU mean 1.33%; maximum sampled distribution mean 28.3%; memory maximum sampled mean 334 MiB |
++| Worker pool | One manually allocated instance, 1 vCPU and 768 MiB | Weighted sampled CPU mean 57.2%, with saturation samples; memory mean about 562 MiB, maximum sampled mean 659 MiB |
++| PostgreSQL | Zonal `db-custom-1-3840`: 1 vCPU, 3.75 GiB RAM | CPU sample mean 19.6%, maximum 25.9%; memory maximum about 1.39 GiB; maximum aligned connection sum 12 |
++| SQL disk | 10 GiB SSD, automatic growth disabled | Maximum reported used disk 497 MiB |
++| Objects | Private regional Standard GCS bucket; seven-day soft delete; no bucket lifecycle policy returned | No current object-byte inventory was requested |
++| Recovery | Seven retained daily SQL backups; deletion protection enabled | Point-in-time recovery and transaction-log archiving are disabled |
++| Analytics | No reporting database configured; only one SQL instance exists | Broad Studio behaviour reports deliberately remain unavailable |
++
++The complete request-count query returned **5,115 requests over 24 hours**, approximately 0.059 requests/second averaged over the day. The separately sampled request-latency distributions contain 5,126 observations with a weighted mean of 80.2 ms. These are different provider metric series with different reporting timing; the count difference is retained. They include administrative, health, conditional and failed responses. They do not establish game-endpoint p95, mobile latency or an availability SLO. The count includes 70 HTTP 503 responses and 475 HTTP 404 responses; their causes were not established by these aggregate metrics.
++
++Utilization values are monitoring samples and distribution means, rather than instantaneous maxima. Quiet average API CPU cannot establish maximum-body memory safety or burst capacity. Development drivers and telemetry are enabled; this workload does not represent a production player population. The worker memory result supersedes the much smaller observed footprint in the 6 October cost review: reducing it to 512 MiB would be inconsistent with the current observations.
++
++API and worker still use image `sha256:c126c96c221a621e16165d55c9286bb0ea838e8c539fc9b20cd7ac51dda6b53c`. The last verified release is schema 0057. The workspace also contains 0058 challenge series and 0059 World Ranking; their presence is not evidence of a live rollout. The cloud inspection did not query the database schema directly or change configuration. [Current inventory](evidence/backend-performance-review-2026-10-24/cloud-inventory.json), [complete metric summaries](evidence/backend-performance-review-2026-10-24/cloud-metrics.json), [last deployment evidence](LATEST_BACKEND_DEPLOY_2026_10_23.md).
++
++## Architecture and existing scaling strengths
++
++Driving and rendering run on the player's device. The backend handles identity, discovery, starts and uploads, asynchronous verification, records, competition, rewards, purchases and reporting. Adding a player does not add a continuous 120 Hz server simulation. Capacity follows HTTP activity, completed attempts, content downloads and retained data.
++
++FastAPI services can be replicated. PostgreSQL is the shared transactional authority, and replay, ghost and track documents use compressed content-addressed object storage. Verification runs outside the API in persistent native processes. Durable jobs, leases and idempotent receipts allow retries without duplicating results or rewards. These are appropriate foundations for this game.
++
++Recent changes materially improve the read and background paths:
++
++| Area | Current behaviour and scaling benefit |
++| --- | --- |
++| Discovery | Indexed projections and frozen cursor views avoid constructing a complete catalogue per request. Twenty-item pages retain current account/content authority checks. Short-text indexes, work credits, deadlines, receiver limits and bounded retained collections prevent unlimited individual work. |
++| Leaderboards | Stored population counts, bounded time-prefix counters and a compressed tie tree avoid counting every faster player for each normal rank lookup. Keyset cursors bound ordinary page traversal. Legacy numeric offsets remain bounded at 10,000. |
++| Histograms | Packed tick/frequency arrays depend on distinct tick values, rather than retaining every driver's Python row. Shared snapshots refresh in the background; conditional HTTP responses reduce repeated bodies. |
++| Race acceptance | Creator-achievement effects are durable and reduced later, removing the previous creator-wide lock from the acceptance transaction. Rivalry matching uses bounded open-group candidates. |
++| Telemetry | Durable intake and analytical ownership are partitioned. Separate actor/shared/rollup stages avoid holding one global analytical state row during every batch. |
++| Background scheduling | Publication, discovery and optional telemetry have separate supervised processes. Presentation jobs receive reserved turns during continuous racing. |
++| World Ranking | SQL-only settlement uses one connection, bounded phases and atomic generations. Readers continue to see a complete published generation while the next one builds. |
++
++The former full-catalogue limit, per-driver histogram allocation, global telemetry projection lock and closed-group scan should not be repeated as current unfixed findings. Current code and the later fix receipts supersede those earlier reviews. [Previous review](evidence/backend-scale-review-2026-10-23/review.json), [follow-up fixes](evidence/backend-scale-other-fixes-2026-10-23/report.json), [discovery guards](evidence/discovery-resource-fixes-2026-10-23/report.json).
++
++## Measurements and response times
++
++| Evidence | Measured result | What the measurement establishes |
++| --- | --- | --- |
++| Latest discovery resource probe, 23 October | New view 305.8 ms and 27 SQL statements; 25 twenty-item pages had median 47.2 ms and maximum 98.0 ms, with 17–20 statements per page | Local synthetic 5,001-track PostgreSQL/TestClient behaviour. No cloud/network or sustained traffic claim. |
++| World Ranking, 23 October | One million players and 26 million awards settled and cleaned in 1,120.8 s; ranking-page median/p95 18.5/55.2 ms, profile median/p95 18.2/99.2 ms | Local PostgreSQL constrained to one CPU/2 GiB. Foreground acceptance used FakeVerifier. Ranking-page latency does not establish native verification capacity. |
++| World Ranking foreground outliers | Country-page maximum 824 ms; synthetic acceptance p95 420 ms, maximum 1,247 ms | Shared database CPU can still delay foreground work. The old suggested fifteen-minute million-player settlement goal is not met by the 18.7-minute probe. |
++| Telemetry, 22 October | One process 2,313 events/s versus four processes 2,638 events/s for uniform traffic; hot-context results 1,718 versus 2,297 events/s | Short 4,000-event drains under a two-CPU diagnostic limit, without concurrent HTTP ingestion or gameplay. Four processes delivered 1.14–1.34 times throughput, not four times. |
++| Native verification, 9 October | Warm proof median 139.7 ms wall/78.1 ms engine CPU; optimized full replay 1,060.9 ms wall/1,015.6 ms engine CPU | One older five-lap fixture. Useful calibration for sensitivity calculations, not a measurement of the current cloud build or its maximum tracks. |
++| Historical HTTP lab, 5 October | 100,000-player fixture completed 77.5 requests/s with endpoint p95 approximately 156–188 ms | Earlier code and a fifteen-second local read test. The subsequent substantial implementation changes prevent treating this as current capacity. |
++| Historical overload control | 46 HTTP 503 responses, 550 dropped arrivals and 3.09 s scheduled p95 | The load lab detects overload; completed throughput alone conceals unmet demand. |
++
++Sources: [discovery timings](evidence/discovery-resource-fixes-2026-10-23/profile-result.json), [ranking experiment and qualifications](WORLD_RANKING_IMPLEMENTATION_2026_10_23.md), [telemetry benchmark](evidence/telemetry-parallelism-2026-10-22/report.json), [verification experiment](VERIFICATION_SPEED.md), [historical read report](evidence/backend-scalability-2026-10-05/postgres-100k.json), [overload report](evidence/backend-scalability-2026-10-05/overload.json).
++
++A player's confirmation time includes upload, admission, queue wait, object reads, native verification, SQL finalization and result delivery. Native computation is only one term. The app can show local results immediately while this completes. Long polling reduces some completion delay, but defaults to four waiters per API process; it still occupies HTTP concurrency and has a polling fallback. Keep queue age and confirmation latency separate from API request latency.
++
++Proposed initial acceptance goals are warm ordinary reads below 200 ms server p95 and 500 ms p99, upload acknowledgements below 500 ms p95 excluding upload transfer, ordinary proof confirmation below two seconds p95/five seconds p99, and stable background freshness during peak gameplay. Full replay needs its own measured distribution. These are proposed targets. Worldwide mobile network time, maximum uploads, cold starts and intentional long waits need separate budgets. Retain the warm API floor: an earlier cold first Rivalry request took approximately sixteen seconds.
++
++## Activity model and capacity calculations
++
++Registered accounts determine identity storage; daily active users determine daily work; peak concurrent players and action timing determine bursts. One million registered accounts with 10,000 daily players is a very different deployment from one million daily players.
++
++The illustrative workload assumes ten accepted races, 150 API requests, 100 client telemetry events and thirty minutes of use per daily player. The busiest period is five times the daily average. Downloads average 5 MiB per daily player after client caching. Verification uses the older warm-fixture calibration of 0.14 seconds for proofs and 1.06 seconds for full replay, with 10% full replay. No evidence establishes these as current fleet averages.
++
++| Daily active players | Illustrative peak players online | Average / peak API requests per second | Average / peak race verifications per second | Peak client telemetry events per second |
++| --- | ---: | ---: | ---: | ---: |
++| 10,000 | 1,042 | 17 / 87 | 1.2 / 5.8 | 58 |
++| 100,000 | 10,417 | 174 / 868 | 11.6 / 57.9 | 579 |
++| 1,000,000 | 104,167 | 1,736 / 8,681 | 116 / 579 | 5,787 |
++| 10,000,000 | 1,041,667 | 17,361 / 86,806 | 1,157 / 5,787 | 57,870 |
++
++For one million daily players, the arithmetic is ten million accepted races/day and 4.5 billion API calls per thirty-day month. Server-generated telemetry is additional to the client-event column. Synchronised event endings, launch publicity or unusually concentrated geography can exceed the fivefold factor.
++
++The calibrated average verification service time is `0.9 × 0.14 + 0.1 × 1.06 = 0.232 seconds`. At a target 60% utilization, required serial verification engines are `ceil(peak races/second × service seconds / 0.6)`:
++
++| Daily active players | Calibrated peak verification engines | Illustrative peak API vCPUs at 5–20 ms CPU/request | Primary PostgreSQL test envelope | Reporting replica test envelope |
++| --- | ---: | ---: | --- | --- |
++| 10,000 | 3 | 1–3 | 2–4 vCPUs, 8–16 GiB RAM | 2 vCPUs, 8 GiB |
++| 100,000 | 23 | 8–29 | 8–16 vCPUs, 32–64 GiB RAM | 4 vCPUs, 16 GiB |
++| 1,000,000 | 224 | 73–290 | 32–64 vCPUs, 128–256 GiB RAM | 8 vCPUs, 32 GiB |
++| 10,000,000 | 2,238 | 724–2,894 | Requires a separate measured partitioning/topology design | Dedicated reporting and analytical capacity |
++
++**These are candidate test allocations, not supported-player ratings.** API CPU/request is an assumption. Verification service times omit additional current Python, I/O and finalization costs. The database envelopes are engineering starting points with no measured CPU-per-transaction calibration. They may be insufficient, particularly with popular boards, heavy telemetry or poor working-set locality. A failed hot-key test could require architectural changes despite ample total CPU.
++
++Planning verification instances have one vCPU/1 GiB each. At 224 instances that is 224 allocated vCPUs and 224 GiB of container memory at peak, before separately provisioned background services. The existing deployment does not implement an automatic fleet of independently scaled verifier instances. Database cache memory follows the active indexes and frequently accessed rows, not every registered account. PostgreSQL CPU sizing also depends on write-ahead log generation, storage IOPS and commit latency.
++
++The local NAS/PC Compose template declares approximately 2.4 GiB across database, proxy, API and worker container limits, before the operating system, filesystem cache and other applications. This is a small-host configuration, with no measured public NAS capacity or independent host failover. A home uplink, power supply and single storage host introduce additional availability and download constraints. [Compose resource limits](../backend/deploy/compose.yaml).
++
++At one million daily players, the verification count changes from **136 engines with all proofs, to 224 at 10% fallback, 579 at 50%, and 1,023 with all full replay**, using the same calibration. Longer tracks, rewinds, retries and creator validation can increase costs further. Doubling actual service time approximately doubles the required engine count. Measure each verification method and track class independently before selecting capacity.
++
++## Remaining bottlenecks and operational risks
++
++| Priority | Finding | Consequence and next step |
++| --- | --- | --- |
++| High | Fixed verification allocation and shared worker CPU | One pool instance supervises verification, publication, discovery and telemetry processes within the same 1 vCPU/768 MiB. Process separation does not reserve CPU or memory. Separate their deployment resources when measured contention requires it; scale verification from oldest job age and arrival/drain rate. |
++| High | Database connection budget | API pools have four connections and no overflow. Each worker replica can add two verification connections plus one each for publication, discovery and telemetry; enabled ranking adds another. Two APIs plus four such worker replicas already reserve up to 28–32 connections before operations and transient deployment overlap, against a limit of 40. Recalculate all pools and test a suitable pooler/topology before scaling. |
++| High | Combined admission lanes do not guarantee a spare gameplay connection | With a four-connection API pool, telemetry and small discovery each permit up to three concurrent operations through independent semaphores. Their combined allowance can exceed the pool; notification listeners and ordinary traffic also use it. A per-lane cap does not create a global reserved connection. Stress these lanes together before deciding whether shared admission or separate bounded pools are needed. |
++| High | Popular-board writes still share rows | PB triggers update board counts/revisions and time/tie indexes transactionally. Different players improving on the same board can wait on shared rows until the acceptance transaction commits. Bounded rank reads do not remove this write serialization. Measure one very popular board, shared ties and multi-car tracks; collect lock-hold time and waiters. The serialization point is source-confirmed; its production throughput threshold is unmeasured. |
++| High | Permanent receipts grow with total attempts | `CoinReward`, earned `StudioCoinEntry` rows and compacted server `ProductEvent` receipts survive ordinary race pruning. Their total does not become bounded merely because runs have a ninety-day retention option. Establish compact durable replay fences and archive policies without allowing duplicate fulfillment. |
++| High | Retention requires an operating schedule | Reference-aware race/object retention is opt-in and resumable. No bucket lifecycle was configured, and this inspection did not establish a recurring race-retention job. A configured `retention_days=90` is not proof of deletion. Monitor age, candidate arrivals, batch completion and protected references; keep deletion ownership and retry guarantees. |
++| High | Fixed disk and limited recovery | Automatic SQL growth is disabled, there is no regional failover, and PITR is disabled. Daily backups alone can leave nearly a day's database changes unrecoverable after a destructive loss. Adopt explicit RPO/RTO targets and rehearse database/object recovery before launch. |
++| Medium | Telemetry parallelism is not linear | The measured four-process speedup was only 1.14–1.34 times. Shared semantic contexts intentionally have one reducer, and the primary still pays for analytical writes and WAL. Tune event volume and measure sustained ingestion with gameplay; use a dedicated analytical system if the primary remains the bottleneck. |
++| Medium | Bounded queues provide little large-scale burst time | At the model's million-player peak, 128 verification slots equal only 0.22 seconds of incoming races; 50,000 client-event backlog credits equal 8.64 seconds of client events. Bounds protect the service but cause throttling when consumers stall. Size backlog from tolerated outage time, durable client retries and measured storage. Increasing it does not increase processing rate. |
++| Medium | Near-full queue admission can reject early | A preflight probes at most 64 slots. With one vacancy in capacity C, success is only `min(64,C)/C`; final allocation also searches a finite slot domain. A vastly enlarged slot pool needs a measured redesign, rather than a configuration increase alone. |
++| Medium | Ranking and reporting share infrastructure costs | Ranking has low-priority scheduling and a foreground-age guard, but no database CPU reservation. Analytics is correctly blocked without its required physical standby. A full reporting replica replicates all primary data and consumes disk/WAL bandwidth; it does not reduce primary analytical projection writes. |
++| Medium | Read amplification, retries and logging | Current discovery pages take 17–20 SQL statements. One thousand such pages/s means 17,000–20,000 statements/s before other activity. Lost completion hints fall back to polling. Structured request logs at 4.5 billion calls/month can also generate terabytes of billable logs. Budget SQL work, retry traffic, cache hit rates and log ingestion independently. |
++
++Relevant source boundaries: [supervisor](../backend/bmt_backend/service_worker.py), [database pools](../backend/bmt_backend/db.py), [request admission](../backend/bmt_backend/middleware.py), [PB projection triggers](../backend/bmt_backend/migrations/versions/0013_scalability.py), [rank triggers](../backend/bmt_backend/migrations/versions/0055_bounded_rank_reads.py), [reward receipts](../backend/bmt_backend/economy_models.py), [financial entries](../backend/bmt_backend/studio_finance.py), [telemetry expiry](../backend/bmt_backend/telemetry_processing.py), [retention](../backend/bmt_backend/maintenance.py), [reporting isolation](../backend/bmt_backend/studio_reporting.py).
++
++Existing limits also need legitimate-traffic testing. Discovery retains at most sixteen million charged collection members/four GiB of charged member storage across sixteen service stripes. These are logical accounting bounds, not PostgreSQL heap/index/WAL measurements; one stripe can fill before the service total. Bulk personal-list uploads and large shared-network guest populations must receive usable retry behaviour under the intended load. Published tracks remain immutable and retained, so content growth is a separate permanent budget.
++
++## Storage and retention requirements
++
++The following are **assumed physical-size ranges**, rather than measurements of the live tables or average replay sizes. They expose the order of magnitude and identify which measurements matter next.
++
++| Storage category | Assumption | At one million daily players doing ten races/day |
++| --- | --- | ---: |
++| Ordinary race/ticket/job SQL history, excluding permanent receipt bundle | 2–6 KiB per accepted race, ninety days | 1.68–5.03 TiB |
++| Permanent reward, finance and compact server receipt bundle | 1–4 KiB per accepted race, one year | 3.40–13.60 TiB, then continues growing |
++| Replay and ghost objects combined | 20–100 KiB compressed per accepted race, ninety days | 16.76–83.82 TiB before protected older objects and soft-delete recovery |
++| Raw client telemetry | 100 events/day/player, 1 KiB each including SQL/index allowance, eight days including expiry grace | 763 GiB |
++| Per-player daily analytical facts | One 1 KiB row/day/player, 180 days | Another 172 GiB for each such daily context; session and multiple-context facts add more |
++| World Ranking | Actual one-million-player/26-million-award experiment | 3.22 GiB SQL allocated, including reusable work pages; excludes other gameplay tables and full steady-state correction headroom |
++
++The permanent bundle estimate includes several receipt classes collectively. It must be replaced with measured `pg_total_relation_size` deltas on accepted races; row-count conservation and permanent receipt semantics must survive any compression. At this activity level the game generates 3.65 billion accepted results/year, so even 100 additional physical bytes/result cost about 340 GiB/year before replicas/backups.
++
++Ninety-day object retention is an optimistic window for planning: current race/lap PBs, creator proofs, challenge targets, other live references and immutable track versions remain protected. New bests can release older evidence only when every reference is gone. GCS soft deletion adds approximately seven days of recovery storage to successfully deleted objects; it does not remove unreferenced objects by itself. Failed/partial publication evidence also has separate accounting and retention.
++
++Current World Ranking archives use 36 bytes per weekly result and 16 per world-position record before base64 envelopes, gzip, manifests and storage metadata. At a million records of each kind for 52 weeks, the raw binary content is about 2.52 GiB/year. Earlier 34/14-byte proposals are superseded. Turnover, corrections and mapping/career history change the totals. Ranking storage is small beside retained full race evidence. [Implemented ranking format](WORLD_RANKING_IMPLEMENTATION_2026_10_23.md).
++
++Account storage is independent of daily traffic. As a separate assumption, 2–10 KiB of basic identity/index data per registered account means about 0.93–4.66 TiB for 500 million accounts, before sessions, ownership, profiles and racing history. No such population has been seeded or tested. Large sparse account populations need indexed account lookup and cache locality; they do not require every account in RAM.
++
++Plan physical primary/replica allocation, backup bytes, WAL, vacuum headroom, index builds and recovery staging separately. The cost model adds 30% allocation headroom and two used-data equivalents of backups as assumptions; neither is a measured production peak. Multi-terabyte table churn may require more. Long restores and vacuum debt can become operational limits before raw storage prices become unaffordable.
++
++## Running costs
++
++The official Cloud Billing catalogue was queried in EUR for Belgium/EMEA rather than converting a web calculator's default US prices. Selected public SKU responses and pricing tiers are retained in [prices.json](evidence/backend-performance-review-2026-10-24/prices.json). Prices exclude tax and negotiated discounts. [Catalogue API](https://docs.cloud.google.com/billing/v1/how-tos/catalog-api), [Cloud Run pricing](https://cloud.google.com/run/pricing), [Cloud SQL pricing](https://cloud.google.com/sql/pricing), [Cloud Storage pricing](https://cloud.google.com/storage/pricing).
++
++| Resource | Regional catalogue calculation for a thirty-day month |
++| --- | ---: |
++| Current 1 vCPU/1 GiB API kept warm but idle | €11.40, plus active request charges |
++| Current continuous 1 vCPU/768 MiB worker | €27.76 |
++| Planning continuous 1 vCPU/1 GiB verifier | €28.46 |
++| Current 1 vCPU/3.75 GiB zonal SQL compute | €42.80 |
++| Current 10 GiB SQL SSD | €1.50 |
++| SQL SSD, zonal / HA regional | €0.1496 / €0.2992 per GiB-month |
++| SQL backups | €0.0704 per used GiB-month |
++| Regional Standard object storage | €0.0176 per GiB-month |
++| Request charge after the catalogue's initial tier | €0.351 per million API requests |
++| Standard object writes / reads at paid marginal tiers | €4.399 / €0.351 per million operations |
++
++The current fixed resource floor is **€83.45/month**, before active API use, storage operations, backups, registry/builds, logs and other usage. An approximate small-traffic planning allowance is €90–150/month. This is not a billing-export reconciliation. The initial request/API-resource free allowances and credits can reduce cash spend; a busy second API instance can increase it. CPU utilization is not the same as billed active instance time.
++
++For larger populations, the model assumes an HA primary, a full reporting replica, peak verification capacity kept allocated all month, one year of permanent receipts, ninety-day ordinary retention and the activity assumptions above. API compute uses 5–20 ms CPU/request at 60% target utilization. The SQL sizes are the unvalidated test envelopes in the capacity table. A 25% operational allowance is then added for unmodelled services and variation. Engineering salaries, tax, store fees, ad delivery, additional regions and broad attack traffic remain outside it.
++
++| Daily active players | Calculated component subtotal/month | With 25% operational allowance | Interpretation |
++| --- | ---: | ---: | --- |
++| 10,000 | €585–899 | **About €730–1,125** | Candidate resilient small-service budget after a year of the modelled activity |
++| 100,000 | €3,802–5,893 | **About €4,750–7,400** | Requires verified worker, database and connection scaling |
++| 1,000,000 | €30,207–46,898 | **About €38,000–59,000** | Assumption-based scenario; neither supported capacity nor a cost ceiling |
++| 10,000,000 | No complete topology priced | **Do not treat the smaller tiers as a quote** | Modelled verifier/API/network/SQL-storage/object components alone are approximately €245,000–384,000/month, before database compute, dedicated background capacity and operational allowance |
++
++At one million daily players the subtotal includes approximately €6,375 of continuously reserved calibrated verifiers, €2,453–5,076 API, €3,161–5,972 SQL compute, €4,317–14,366 SQL allocation/backups, €10,538 Europe-bound Cloud Run delivery, €302–1,511 object storage and €3,061 object operations. These cost allocations describe a proposed topology; they do not imply that this amount buys the required throughput. Slow SQL, current-image verification costs or heavier analytical demand can exceed the scenario.
++
++The biggest sensitivities are practical:
++
++- **Downloads:** at a million daily players, 1/5/10 MiB per player/day gives approximately €2,288/€10,538/€18,397 per month of Europe-to-Europe Cloud Run delivery at the retrieved tiered rates. Other destinations, CDN contracts and delivery paths have different rates. Immutable client caches and careful asset delivery deserve measurement early.
++- **History policy:** each additional year of the assumed permanent bundle adds 3.40–13.60 TiB of source SQL at this activity level. That cost is replicated and backed up. There is no stable lifetime storage plateau under the current permanent-receipt model.
++- **Verification mix:** keeping 579 rather than 224 one-CPU/one-GiB engines allocated increases this component from about €6,375 to €16,479/month. Reaching 1,023 gives approximately €29,116/month before other changes.
++- **Worker scheduling:** a future fleet tracking the daily shape could reduce the reserved verifier bill substantially. An ideal average-sized equivalent would be approximately 45 engines/€1,274 per month in this calibration, but the existing manual worker allocation does not deliver that saving or ensure a warm burst fleet.
++- **Log volume:** 400–1,000 bytes per request over 4.5 billion requests produces roughly 1.64–4.09 TiB/month before provider metadata and worker logs. Apply deliberate success-log sampling/aggregation while retaining required financial and incident audit evidence.
++
++Object storage bytes are inexpensive compared with indexed SQL, replication and egress. At the same time, hundreds of millions of small object operations have a visible cost even when each object is small. Simply moving all data to a larger database would miss these separate cost drivers.
++
++## Recommended scaling sequence and acceptance
++
++1. **Establish current-image service costs.** Run the pinned image with real native verification across all five cars, common and maximum tracks, proof/full replay/rewind/creator paths, warm and cold caches. Record wall time, Python/native CPU, RSS, object bytes and calls, SQL finalization latency, failure/retry rate and method proportions. Measure real stored table/index/object deltas for a substantial synthetic accepted-race batch.
++2. **Test a concrete 10,000-player workload.** Use an isolated same-region environment at declared resource limits. Generate an open-loop mixed workload around 87 API calls/s, 5.8 verifications/s and 58 client events/s at peak under this model. Verify generator drops, scheduled p95/p99, errors and queue age rather than completed throughput alone. The existing [capacity lab](../backend/LOAD_TESTING.md) is a useful starting point but must exercise current discovery, telemetry and optional ranking paths.
++3. **Run hot-key and simultaneous-lane tests.** Concentrate traffic on one official board, one creator, one skill band, shared tie values and one analytical context. Combine discovery, telemetry, uploads, completion waits and ordinary reads. Test deployment overlap and connection exhaustion. A broad uniform player fixture will miss these bottlenecks.
++4. **Make retention and recovery operational.** Establish approved retention/archive rules for each receipt class, reference-safe object collection, backup checks, oldest retained age, disk/WAL alarms and measured drains. Proposed public-service starting recovery targets are RPO at most five minutes and RTO at most thirty minutes; they require a suitable recovery configuration and a successful exercise, not just an enabled setting.
++5. **Separate resources where tests justify it.** Give verification, publication, discovery and analytics explicit CPU/memory/connection budgets. Keep gameplay-primary work bounded; provision the required reporting standby only through the normal authorised change process. Scaling full supervisor replicas duplicates every role, so prefer role-specific scaling at material load.
++6. **Progress through measured plateaus.** Test 10,000 then 100,000 then one million daily-player arrival rates with representative retained histories and indexes. Use at least a 24-hour soak at a justified intermediate rate, plus weekly rollover, cold content, worker kill/restart, dependency slowdown, retention and restore exercises. At a million, explicitly accept WAL/IOPS, vacuum, multi-terabyte recovery and peak verification cost before committing to the topology.
++
++For each tier, publish endpoint p50/p95/p99, accepted and rejected arrival rates, queue age and drain time, oldest projection lag, pool waits, lock contention, DB CPU/IOPS/WAL, disk/temp peaks, per-role memory, object and egress bytes, and cost per thousand accepted races. Verify that protected results/rewards remain exact during overload and recovery. Keep normal driving and local result presentation independent of slow confirmation.
++
++A single PostgreSQL deployment may remain economical well into growth if these measured workloads fit. At tens of thousands of peak requests and thousands of race finalizations per second, first measure partitioning by player/board, an analytical pipeline outside the gameplay primary, delivery caching and independently scaled verification. Geography needs deliberate latency measurements before adding regions; a remote API that still makes many cross-region primary queries can increase cost and latency. There is no evidence supporting a multi-region or 500-million-account certification today.
++
++## Review validation and files
++
++This review changes documentation and review tools only. The [evidence directory](evidence/backend-performance-review-2026-10-24/) contains aggregate inventory/monitoring, selected public prices, reproducible arithmetic and the actual focused test receipt. It contains no tokens, credentials, account records or database dump. Existing concurrent runtime work is preserved.
++
++Actual commands used the pinned backend Python environment:
++
++```text
++python -X utf8 docs/evidence/backend-performance-review-2026-10-24/inspect_cloud.py
++python -X utf8 docs/evidence/backend-performance-review-2026-10-24/prices.py
++python -X utf8 docs/evidence/backend-performance-review-2026-10-24/model.py
++python -X utf8 docs/evidence/backend-performance-review-2026-10-24/finalize_review.py
++python -X utf8 -m pytest backend/tests/test_bounded_leaderboard_ranks.py backend/tests/test_bounded_retention.py backend/tests/test_priority_scaling.py backend/tests/test_telemetry_parallel.py backend/tests/test_service_worker.py -k 'not postgres' -q --tb=short --junitxml=docs/evidence/backend-performance-review-2026-10-24/focused-tests.xml
++python -X utf8 -m ruff check docs/evidence/backend-performance-review-2026-10-24
++git apply --check --reverse -- docs/evidence/backend-performance-review-2026-10-24/scoped-change.patch
++```
++
++The focused run returned **39 passed, 1 failed, 15 skipped, 51 deselected**. The failure is `test_visible_windows_limit_keys_before_joining_hidden_pbs[sqlite]`: the small SQLite fixture chooses its covering primary-key index rather than the specifically named partial index. Its returned-row assertion passes before the plan assertion fails. The same limitation is documented in the 23 October deployed-image gate; no test or invariant was weakened here. Skips include Linux-only signal/supervisor checks on Windows. PostgreSQL parametrizations were deliberately excluded, so this run supplies no new PostgreSQL concurrency or throughput result.
++
++Local model totals, units and all 27 relative document links pass validation. Ruff and Python compilation pass. The scoped checkpoint includes these new review files only; its reverse dry-run verifies their exact contents without applying any change. An initial patch-generation error on a source file without a trailing newline was corrected by preserving the standard no-newline marker.
++
++The first read-only cloud query failed under the restricted credential/network environment. It was retained as `cloud-inventory-initial.json`; normal read-only execution succeeded. Initial monitoring results had further pages; the final summaries follow all returned pages. No production load, migration, deployment, resource purchase, account mutation, device test or phone/tablet attachment check was performed.
+diff --git a/docs/evidence/backend-cost-reduction-2026-10-24/trajectory-current.json b/docs/evidence/backend-cost-reduction-2026-10-24/trajectory-current.json
+new file mode 100644
+--- /dev/null
++++ b/docs/evidence/backend-cost-reduction-2026-10-24/trajectory-current.json
+@@ -0,0 +1,1021 @@
++{
++  "iterations": 500,
++  "trajectory_samples": 2130,
++  "static_preparation_ms": 1317.5037,
++  "kernel": {
++    "median_ms": 1.7127,
++    "p95_ms": 2.9429,
++    "max_ms": 3.7889,
++    "samples_ms": [
++      1.7133,
++      1.9415,
++      1.6588,
++      1.5767,
++      1.8483,
++      1.6262,
++      1.7574,
++      1.6086,
++      1.5755,
++      1.6309,
++      1.5963,
++      1.7651,
++      1.5965,
++      1.8079,
++      1.6409,
++      1.552,
++      1.6571,
++      1.5406,
++      1.7682,
++      1.6514,
++      1.6176,
++      1.6351,
++      1.5437,
++      1.6632,
++      1.631,
++      1.5474,
++      1.6172,
++      1.857,
++      1.6869,
++      1.5844,
++      1.7239,
++      1.6824,
++      1.5809,
++      1.7518,
++      1.6917,
++      1.589,
++      1.9349,
++      1.6227,
++      1.8644,
++      1.657,
++      1.5683,
++      1.837,
++      1.5948,
++      1.7643,
++      1.6599,
++      1.819,
++      1.598,
++      1.6044,
++      1.6449,
++      1.6157,
++      2.0666,
++      1.7532,
++      1.6651,
++      1.88,
++      2.07,
++      1.9234,
++      1.8111,
++      1.806,
++      1.854,
++      1.8934,
++      1.7855,
++      1.8646,
++      1.7902,
++      1.793,
++      1.7316,
++      1.7065,
++      1.7887,
++      1.673,
++      2.1096,
++      1.715,
++      1.9523,
++      1.6997,
++      1.6215,
++      1.6661,
++      1.5824,
++      2.5363,
++      1.6556,
++      2.1771,
++      1.7628,
++      1.9641,
++      1.6917,
++      1.644,
++      1.7171,
++      1.668,
++      1.7508,
++      1.6734,
++      1.6609,
++      1.6991,
++      2.0863,
++      1.7477,
++      1.7039,
++      1.7232,
++      1.6119,
++      1.6202,
++      1.7283,
++      1.757,
++      1.7932,
++      1.7747,
++      1.7687,
++      1.7281,
++      1.7079,
++      1.9686,
++      1.7553,
++      1.7948,
++      1.7309,
++      1.9024,
++      1.7017,
++      1.6587,
++      1.7286,
++      1.761,
++      1.9078,
++      1.7231,
++      1.8542,
++      1.7843,
++      2.5744,
++      1.7193,
++      1.8281,
++      1.6935,
++      1.9866,
++      1.6611,
++      1.5647,
++      1.7292,
++      1.7289,
++      1.7419,
++      1.6505,
++      1.614,
++      1.6318,
++      1.6483,
++      1.8673,
++      1.7642,
++      1.6984,
++      1.7844,
++      1.648,
++      1.6491,
++      1.556,
++      1.7375,
++      1.8033,
++      1.5548,
++      1.6444,
++      1.5902,
++      1.8211,
++      1.6076,
++      1.6514,
++      1.6058,
++      1.5997,
++      1.7906,
++      1.5892,
++      1.6561,
++      1.7786,
++      1.7968,
++      1.6728,
++      1.5885,
++      1.8383,
++      1.6242,
++      1.669,
++      1.592,
++      1.5885,
++      1.7722,
++      1.5599,
++      1.7731,
++      1.6171,
++      1.5894,
++      1.767,
++      1.8211,
++      1.9138,
++      1.7015,
++      1.6346,
++      1.6625,
++      1.7628,
++      2.0193,
++      1.8151,
++      1.8551,
++      1.6905,
++      1.6748,
++      1.6694,
++      1.5889,
++      2.2652,
++      1.6827,
++      1.6948,
++      1.765,
++      1.6141,
++      1.7929,
++      1.6298,
++      1.8995,
++      1.7477,
++      2.0711,
++      1.698,
++      1.7009,
++      1.7286,
++      1.7419,
++      2.3768,
++      1.5682,
++      1.6949,
++      1.5701,
++      1.6807,
++      1.7421,
++      1.6942,
++      1.9268,
++      1.6433,
++      2.0332,
++      1.6684,
++      1.5743,
++      1.5855,
++      1.6423,
++      1.7532,
++      1.6325,
++      1.57,
++      1.7583,
++      1.5611,
++      1.8033,
++      1.5952,
++      1.6426,
++      1.9213,
++      1.5873,
++      1.6393,
++      1.6421,
++      1.6601,
++      1.6034,
++      1.5503,
++      1.7059,
++      1.6184,
++      1.8889,
++      1.562,
++      1.7029,
++      1.9921,
++      1.7515,
++      1.7623,
++      1.6602,
++      1.777,
++      1.6307,
++      1.6965,
++      1.7594,
++      1.626,
++      1.6734,
++      1.6868,
++      1.6185,
++      1.7961,
++      1.6033,
++      1.6812,
++      1.7508,
++      1.6898,
++      1.6075,
++      1.6397,
++      1.9699,
++      1.6098,
++      1.6768,
++      1.6105,
++      1.6329,
++      1.76,
++      1.671,
++      1.6381,
++      1.5899,
++      1.9449,
++      1.6928,
++      1.8443,
++      1.8013,
++      1.8591,
++      1.9087,
++      1.6619,
++      1.6913,
++      1.7243,
++      1.7136,
++      2.4764,
++      1.6688,
++      2.0548,
++      1.8037,
++      1.7197,
++      1.779,
++      1.727,
++      1.8352,
++      1.7332,
++      1.8423,
++      1.6907,
++      1.6955,
++      1.7513,
++      1.6302,
++      1.6511,
++      1.6431,
++      1.8021,
++      1.7628,
++      1.5815,
++      1.6958,
++      1.6119,
++      1.8414,
++      1.6347,
++      1.6524,
++      1.6398,
++      1.6434,
++      1.7761,
++      1.6638,
++      1.623,
++      1.7106,
++      1.6644,
++      1.7379,
++      1.6362,
++      1.7252,
++      1.6341,
++      1.6927,
++      1.6463,
++      1.6224,
++      1.7237,
++      1.8293,
++      1.6503,
++      1.6806,
++      1.6151,
++      1.7652,
++      1.7252,
++      1.6387,
++      1.6407,
++      1.6607,
++      1.7993,
++      1.6855,
++      1.7057,
++      1.6954,
++      1.6108,
++      1.7345,
++      1.6056,
++      1.8725,
++      1.6367,
++      1.6407,
++      1.8202,
++      1.6558,
++      1.8195,
++      1.6288,
++      1.6386,
++      1.6585,
++      1.6681,
++      3.2359,
++      3.3549,
++      1.5896,
++      1.6975,
++      1.8099,
++      1.5825,
++      1.6368,
++      1.5529,
++      1.7245,
++      1.8922,
++      1.5619,
++      1.6932,
++      1.5543,
++      1.8503,
++      1.8188,
++      1.7293,
++      1.6447,
++      1.7883,
++      1.7237,
++      1.6765,
++      1.8816,
++      1.6141,
++      1.5987,
++      1.7272,
++      1.5978,
++      1.7062,
++      1.6924,
++      2.8016,
++      1.7043,
++      1.7533,
++      1.7142,
++      2.4066,
++      1.8164,
++      1.5509,
++      1.7885,
++      1.7272,
++      1.7424,
++      1.7152,
++      1.6747,
++      1.7442,
++      1.7826,
++      2.0293,
++      1.6278,
++      1.6354,
++      1.8008,
++      1.6167,
++      1.6642,
++      1.5814,
++      1.6853,
++      1.7486,
++      1.5978,
++      1.7108,
++      1.5949,
++      1.997,
++      1.6628,
++      1.6217,
++      1.6742,
++      1.6543,
++      1.7593,
++      1.5888,
++      1.6808,
++      1.6334,
++      1.7094,
++      1.7,
++      1.6522,
++      1.7454,
++      1.6089,
++      1.8347,
++      1.6818,
++      1.6226,
++      2.0252,
++      1.6731,
++      2.1479,
++      1.6232,
++      1.6256,
++      1.6597,
++      1.6692,
++      1.8114,
++      1.6394,
++      1.6364,
++      1.7814,
++      1.6369,
++      1.745,
++      1.6353,
++      1.7438,
++      1.7082,
++      1.638,
++      1.6447,
++      1.7895,
++      2.185,
++      2.0048,
++      1.9944,
++      1.7836,
++      1.887,
++      2.9873,
++      3.0076,
++      3.1853,
++      3.0522,
++      2.9718,
++      1.7815,
++      1.7278,
++      1.7918,
++      1.7128,
++      1.8158,
++      1.7234,
++      1.7091,
++      1.7126,
++      1.8368,
++      1.8557,
++      1.7818,
++      1.7894,
++      1.7799,
++      3.1321,
++      2.9188,
++      3.0395,
++      3.117,
++      3.0939,
++      3.1066,
++      3.0164,
++      2.1933,
++      1.7323,
++      1.887,
++      1.6851,
++      1.9519,
++      1.7257,
++      1.7305,
++      1.7387,
++      1.8195,
++      1.7927,
++      1.6982,
++      1.8654,
++      1.8711,
++      1.7483,
++      1.7074,
++      1.6673,
++      1.825,
++      1.8676,
++      2.7475,
++      1.6661,
++      1.8076,
++      3.054,
++      3.0516,
++      3.0585,
++      3.0258,
++      2.9379,
++      3.0954,
++      3.0313,
++      3.1102,
++      2.9429,
++      3.1881,
++      1.9281,
++      1.8525,
++      1.7058,
++      1.7338,
++      1.7172,
++      2.1215,
++      1.7335,
++      2.0667,
++      1.7932,
++      2.3564,
++      1.6679,
++      1.6679,
++      2.9616,
++      3.6537,
++      3.7889,
++      3.4149,
++      1.6564,
++      1.7018,
++      1.6828,
++      1.6415,
++      1.8107,
++      1.8009,
++      2.1735
++    ]
++  },
++  "adapter": {
++    "median_ms": 1.76615,
++    "p95_ms": 3.0032,
++    "max_ms": 3.6773,
++    "samples_ms": [
++      1.6952,
++      1.7857,
++      1.6399,
++      1.8038,
++      1.6577,
++      1.6705,
++      1.6926,
++      1.6214,
++      2.0648,
++      2.0049,
++      1.8005,
++      1.7859,
++      1.6235,
++      1.7937,
++      1.67,
++      1.666,
++      1.6564,
++      1.7559,
++      1.9245,
++      1.6848,
++      1.8532,
++      1.7186,
++      1.7509,
++      1.7067,
++      1.6345,
++      1.6786,
++      1.6583,
++      1.6803,
++      1.7451,
++      1.6838,
++      1.7572,
++      1.7029,
++      1.5948,
++      1.7403,
++      1.6551,
++      1.7668,
++      1.8541,
++      1.6574,
++      1.7049,
++      1.6362,
++      1.8244,
++      1.6955,
++      1.6655,
++      1.7134,
++      1.6063,
++      2.1175,
++      1.6721,
++      1.7562,
++      1.7313,
++      1.5872,
++      2.0886,
++      1.7685,
++      1.9314,
++      1.9175,
++      2.15,
++      1.8862,
++      2.0478,
++      1.8064,
++      2.7471,
++      1.8566,
++      1.8193,
++      1.7876,
++      1.8094,
++      1.7948,
++      1.8009,
++      1.9427,
++      1.9167,
++      1.7618,
++      1.8994,
++      1.6916,
++      1.8545,
++      1.7777,
++      1.7884,
++      1.6352,
++      1.7647,
++      1.7373,
++      1.6837,
++      1.7978,
++      1.6345,
++      2.0661,
++      1.6841,
++      1.7994,
++      1.7009,
++      1.8298,
++      1.7956,
++      1.7043,
++      1.9436,
++      1.6875,
++      1.8023,
++      1.871,
++      1.6838,
++      1.7071,
++      1.7884,
++      2.071,
++      1.7883,
++      1.6355,
++      1.863,
++      1.7383,
++      1.8877,
++      1.6863,
++      2.2607,
++      1.8856,
++      2.1152,
++      1.8267,
++      1.7677,
++      1.7882,
++      1.7523,
++      1.8077,
++      1.7574,
++      2.3525,
++      1.8412,
++      1.7787,
++      1.773,
++      2.0239,
++      1.7793,
++      2.1222,
++      1.9838,
++      1.9924,
++      1.8077,
++      1.6817,
++      1.8761,
++      1.8434,
++      1.7437,
++      1.7331,
++      1.6678,
++      1.7527,
++      1.97,
++      1.7716,
++      1.7707,
++      1.7571,
++      2.0722,
++      1.7798,
++      1.8771,
++      1.6559,
++      1.6782,
++      1.818,
++      1.7151,
++      1.7902,
++      1.6728,
++      1.62,
++      1.7405,
++      1.639,
++      2.0579,
++      1.8129,
++      1.8497,
++      1.702,
++      1.7188,
++      1.8149,
++      1.7436,
++      2.0933,
++      1.6773,
++      1.6131,
++      1.8284,
++      1.8711,
++      1.7552,
++      1.713,
++      1.739,
++      1.7026,
++      2.1413,
++      1.7603,
++      1.6586,
++      1.7755,
++      1.6428,
++      1.6121,
++      1.7278,
++      1.6747,
++      1.8234,
++      1.8992,
++      1.9324,
++      1.7328,
++      2.0581,
++      1.8637,
++      1.689,
++      1.7899,
++      1.6191,
++      1.6536,
++      1.7156,
++      1.6027,
++      1.6805,
++      1.7018,
++      2.2323,
++      1.684,
++      1.6665,
++      1.9552,
++      1.6253,
++      1.7456,
++      1.8121,
++      2.1312,
++      1.7132,
++      1.8138,
++      1.6666,
++      1.6384,
++      1.7231,
++      1.88,
++      1.8018,
++      1.8108,
++      1.6838,
++      1.6659,
++      1.9228,
++      1.901,
++      1.6833,
++      1.9049,
++      1.768,
++      1.6263,
++      1.7435,
++      1.6589,
++      1.9213,
++      1.7335,
++      1.6099,
++      1.6777,
++      1.6795,
++      2.036,
++      1.6832,
++      1.7973,
++      1.6844,
++      1.6788,
++      1.8589,
++      1.6643,
++      1.7604,
++      1.7156,
++      1.82,
++      1.7067,
++      1.6124,
++      1.7527,
++      1.8443,
++      1.8101,
++      1.8246,
++      1.701,
++      1.7582,
++      1.7133,
++      1.7429,
++      1.7208,
++      1.6449,
++      1.7271,
++      1.7277,
++      1.7423,
++      1.7521,
++      1.6811,
++      1.7584,
++      1.7005,
++      1.7144,
++      1.7462,
++      1.6983,
++      1.935,
++      1.7121,
++      1.7552,
++      1.6354,
++      1.878,
++      1.7466,
++      1.6787,
++      1.6722,
++      1.7555,
++      1.7721,
++      2.1583,
++      1.7736,
++      1.7676,
++      1.9045,
++      1.7709,
++      1.7246,
++      1.9794,
++      1.8126,
++      1.9124,
++      1.7535,
++      1.6798,
++      1.8495,
++      1.7149,
++      1.7919,
++      1.7925,
++      1.8562,
++      1.7762,
++      1.7393,
++      1.7352,
++      1.7149,
++      2.0996,
++      1.6618,
++      1.7492,
++      1.7515,
++      1.6307,
++      1.8043,
++      1.6514,
++      1.8138,
++      1.6319,
++      1.7709,
++      1.7145,
++      1.6622,
++      1.781,
++      1.6981,
++      1.7589,
++      1.7028,
++      1.6125,
++      1.8099,
++      1.7197,
++      1.7738,
++      1.7259,
++      1.6329,
++      1.7673,
++      1.7693,
++      1.8453,
++      1.7074,
++      1.6198,
++      1.6734,
++      1.6701,
++      1.8264,
++      1.7252,
++      1.6455,
++      1.8222,
++      1.6456,
++      1.8704,
++      1.6225,
++      1.5926,
++      1.931,
++      1.7162,
++      1.8217,
++      1.6728,
++      1.9737,
++      1.7016,
++      1.6846,
++      1.7016,
++      1.6505,
++      2.0054,
++      1.6863,
++      1.616,
++      1.6386,
++      1.827,
++      1.8262,
++      1.601,
++      2.0137,
++      3.2363,
++      2.2348,
++      1.6896,
++      1.7204,
++      1.6227,
++      1.8579,
++      1.6491,
++      1.6001,
++      1.6817,
++      1.6146,
++      1.7905,
++      1.6453,
++      1.6355,
++      2.0165,
++      1.7359,
++      1.8497,
++      1.6887,
++      2.0099,
++      1.8899,
++      1.6924,
++      1.6905,
++      1.6117,
++      2.2879,
++      1.6845,
++      1.6826,
++      1.7468,
++      1.7947,
++      1.7077,
++      1.6542,
++      1.8755,
++      1.6853,
++      1.9366,
++      1.7113,
++      1.631,
++      1.6263,
++      1.8479,
++      2.0786,
++      1.6996,
++      1.8357,
++      1.7953,
++      1.6396,
++      1.7918,
++      1.6537,
++      1.8983,
++      1.7214,
++      1.7704,
++      1.6787,
++      1.6843,
++      1.7301,
++      1.7711,
++      1.9039,
++      1.7722,
++      1.6698,
++      1.8615,
++      1.6393,
++      1.8517,
++      1.7628,
++      1.8897,
++      1.6921,
++      1.7158,
++      1.8482,
++      1.6998,
++      1.8569,
++      1.7763,
++      1.6757,
++      1.7702,
++      1.6705,
++      1.8426,
++      1.6547,
++      1.6989,
++      1.7483,
++      2.0039,
++      1.7876,
++      1.7235,
++      1.9069,
++      1.8815,
++      1.7197,
++      1.7348,
++      1.6937,
++      1.8657,
++      1.7579,
++      1.744,
++      1.7389,
++      1.7054,
++      1.8901,
++      1.7179,
++      1.8409,
++      1.7469,
++      1.7457,
++      2.1438,
++      1.8638,
++      1.8807,
++      1.8287,
++      3.2577,
++      3.1141,
++      3.0299,
++      3.2021,
++      3.1449,
++      2.4954,
++      1.8569,
++      1.7655,
++      1.7969,
++      1.979,
++      1.9715,
++      1.7967,
++      1.8909,
++      1.767,
++      1.7528,
++      1.7388,
++      1.6667,
++      1.8909,
++      3.1113,
++      3.1136,
++      3.2999,
++      3.1302,
++      3.0855,
++      3.0595,
++      3.2155,
++      3.2468,
++      1.7983,
++      1.8112,
++      1.7809,
++      1.8407,
++      1.9243,
++      1.7203,
++      2.0189,
++      1.9804,
++      1.9544,
++      1.7865,
++      1.7582,
++      1.7992,
++      1.6585,
++      2.0006,
++      1.7627,
++      1.8165,
++      1.8256,
++      1.7415,
++      1.861,
++      1.7411,
++      2.2742,
++      3.1415,
++      3.0032,
++      3.1046,
++      3.2055,
++      3.0323,
++      3.0534,
++      2.9859,
++      3.1849,
++      3.1632,
++      3.0486,
++      2.1235,
++      1.7918,
++      1.7964,
++      1.8708,
++      1.8296,
++      1.8318,
++      1.8048,
++      2.1756,
++      1.9167,
++      1.8293,
++      1.7996,
++      1.7682,
++      3.5031,
++      3.6773,
++      3.5968,
++      1.7399,
++      1.7352,
++      2.2011,
++      1.7744,
++      1.7552,
++      1.7289,
++      1.7455,
++      1.7271
++    ]
++  },
++  "engine_calls_during_verification": 0,
++  "five_laps": true
++}
+\ No newline at end of file

@@ -1,0 +1,3515 @@
+diff --git a/game/vehicle/visible_contact_audio.gd b/game/vehicle/visible_contact_audio.gd
+--- a/game/vehicle/visible_contact_audio.gd
++++ b/game/vehicle/visible_contact_audio.gd
+@@ -64,7 +64,9 @@
+ 		var a: Vector2 = outline[index]
+ 		var b: Vector2 = outline[index+1]
+ 		var steps: int = maxi(1,ceili(a.distance_to(b)/maxf(.10,track.cell_size*.5)))
+-		for step: int in range(steps+1):
++		# The next edge owns this edge's endpoint. Counting it twice exhausts
++		# the bounded budget on detailed bodies before their full perimeter.
++		for step: int in range(steps):
+ 			count += 1
+ 			if count>MAX_PROBES: break
+ 			var local: Vector2 = a.lerp(b,float(step)/steps)
+diff --git a/game/tests/test_collision_trace.gd b/game/tests/test_collision_trace.gd
+--- a/game/tests/test_collision_trace.gd
++++ b/game/tests/test_collision_trace.gd
+@@ -17,6 +17,8 @@
+ 
+ func run() -> void:
+ 	var audio := ObservedAudio.new()
++	audio.use_windows_impacts = false # This fixture checks the traced Godot fallback.
++	audio.output_enabled = true # Exercise playback explicitly despite headless output suppression.
+ 	root.add_child(audio)
+ 	audio.configure("compact",VehicleCatalog.config("compact"))
+ 	var state := VehicleState.new()
+diff --git a/scripts/probe_windows_contact_timing.ps1 b/scripts/probe_windows_contact_timing.ps1
+--- a/scripts/probe_windows_contact_timing.ps1
++++ b/scripts/probe_windows_contact_timing.ps1
+@@ -1,5 +1,5 @@
+ param(
+-    [ValidateSet('direct','events','surfaces','kerbs')][string]$Kind = 'direct',
++    [ValidateSet('direct','events','surfaces','kerbs','bridge')][string]$Kind = 'direct',
+     [Parameter(Mandatory=$true)][string]$Label
+ )
+ $ErrorActionPreference = 'Stop'
+@@ -15,6 +15,7 @@
+     events = 'res://tests/probe_contact_audio_output.gd'
+     surfaces = 'res://tests/probe_surface_audio_output.gd'
+     kerbs = 'res://tests/probe_kerb_contact_output.gd'
++    bridge = 'res://tests/probe_compact_bridge_output.gd'
+ }
+ $dev = Join-Path $repoRoot 'scripts/dev.ps1'
+ $probe = Join-Path $repoRoot 'build/audio-output-2026-10-09/process-audio-probe.exe'
+diff --git a/AGENTS.md b/AGENTS.md
+--- a/AGENTS.md
++++ b/AGENTS.md
+@@ -3,6 +3,9 @@
+ 
+ ## Slide-activated driving touch buttons override (2026-10-23)
+ 2026-10-23 TSA01-TSA03/R01/G01/Q01: Driving buttons follow current finger position, including slide entry from outside and direct transfers among steering, gas, brake and handbrake. Independent fingers, enlarged target arbitration, existing edge tolerance/pedal fade, relative analog origins and lifecycle fences remain. Focused1253headless/1259Compatibility/1259desktopMobile, padding1218, analog1642, layout407 including viewport90, mobile747 and driving72 pass. Native views, initial execution/userdata/edge-fade corrections, shutdown/certificate diagnostics, actual commands, hashes and scoped checkpoint: docs/TOUCH_SLIDE_ACTIVATION_2026_10_23.md and docs/evidence/touch-slide-activation-2026-10-23/report.json. Client reload and owner/device feel remain; no phone/tablet attachment check, physical-device test, APK, live mutation or deployment. Concurrent work preserved.
++
++## Compact bridge-impact timing correction (2026-10-23)
++2026-10-23 CBT01-CBT03/R01/Q01: Compact head-on bridge-end delay reproduced on cached Knot. Duplicate edge endpoints exhausted128 outline probes before the detailed Compact perimeter was covered; shared endpoints now belong to the next edge, retaining full coverage in116 probes. Original coverage160/4 failures (detailed Compact only); final160headless/160Compatibility/160desktopMobile, paired168-case matrix/review2034, wall167/bridge42184/escalation65/bridge physics16/trace9/kerb26/parser1039 pass. Actual Windows rendered-contact-to-process-output slow case155.98 to19.98ms; physical ticks/states remain exact. This removes the reproduced detection delay, not Windows output buffering or kerb latency. Original-method controls, native view, initial shell/trace-fixture corrections, commands and scoped checkpoint: docs/COMPACT_BRIDGE_AUDIO_2026_10_23.md and docs/evidence/compact-bridge-impact-2026-10-23/report.json. Owner reports no tablet delay; actual tablet model mode was not checked. New Windows client reload and owner listening remain; no phone/tablet check/test, microphone/owner-process capture, APK, native rebuild, live mutation or deployment. Concurrent work preserved.
+ 
+ ## Softer packed-snow impact override (2026-10-23)
+ 2026-10-23 SSI01/R01/Q01: Soften packed snow with less high crunch, a rounded1.2ms fade and lower final trim. Actual same-gain/pitch master peak falls1.60dB and first100ms0.77dB; strong onset remains0.408ms. Continuous/powder/heavy-bank samples and mixer source stay byte-exact. Native capture13, response29headless/35Compatibility, asset/capture12 and parser1037 pass. Reusable capture paths preserve earlier auditions. Commands, before/after WAVs, sources and scoped Git-checkable checkpoint: docs/SOFT_SNOW_IMPACT_2026_10_23.md and docs/evidence/soft-snow-impact-2026-10-23/report.json. Client restart and owner/device listening remain; no phone/tablet attachment check, physical-device test, APK/export/install, native rebuild, account/backend mutation, purchase or deployment. Concurrent work preserved.
+diff --git a/DEVELOPMENT_STATUS.md b/DEVELOPMENT_STATUS.md
+--- a/DEVELOPMENT_STATUS.md
++++ b/DEVELOPMENT_STATUS.md
+@@ -1,6 +1,8 @@
+ 2026-10-23 SBT01-SBT02/R01/Q01: Owner requests a softer, longer bass thump. Packed snow becomes a540ms recorded40-320Hz body with a3ms curved attack and longer quiet decay. Actual same-gain/pitch master peak falls4.30dB, first100ms1.63dB; integrated bass rises33% and90%-energy duration38to178ms. Strong raw onset2.132ms retains the5ms guard. Continuous/powder/heavy-bank samples and playback sources remain exact. Native capture13, response29headless/35Compatibility, asset/capture20 and parser1041 pass. Commands, before/after WAVs, provenance and scoped checkpoint: docs/SNOW_BASS_THUMP_2026_10_23.md and docs/evidence/bass-snow-thump-2026-10-23/report.json. Client restart and owner/device listening remain; no phone/tablet attachment check, physical-device test, APK/export/install, native rebuild, account/backend mutation, purchase or deployment. Concurrent work preserved.
+ 
+ 2026-10-23 TSA01-TSA03/R01/G01/Q01: Driving buttons follow current finger position, including slide entry from outside and direct transfers among steering, gas, brake and handbrake. Independent fingers, enlarged target arbitration, existing edge tolerance/pedal fade, relative analog origins and lifecycle fences remain. Focused1253headless/1259Compatibility/1259desktopMobile, padding1218, analog1642, layout407 including viewport90, mobile747 and driving72 pass. Native views, initial execution/userdata/edge-fade corrections, shutdown/certificate diagnostics, actual commands, hashes and scoped checkpoint: docs/TOUCH_SLIDE_ACTIVATION_2026_10_23.md and docs/evidence/touch-slide-activation-2026-10-23/report.json. Client reload and owner/device feel remain; no phone/tablet attachment check, physical-device test, APK, live mutation or deployment. Concurrent work preserved.
++
++2026-10-23 CBT01-CBT03/R01/Q01: Compact head-on bridge-end delay reproduced on cached Knot. Duplicate edge endpoints exhausted128 outline probes before the detailed Compact perimeter was covered; shared endpoints now belong to the next edge, retaining full coverage in116 probes. Original coverage160/4 failures (detailed Compact only); final160headless/160Compatibility/160desktopMobile, paired168-case matrix/review2034, wall167/bridge42184/escalation65/bridge physics16/trace9/kerb26/parser1039 pass. Actual Windows rendered-contact-to-process-output slow case155.98 to19.98ms; physical ticks/states remain exact. This removes the reproduced detection delay, not Windows output buffering or kerb latency. Original-method controls, native view, initial shell/trace-fixture corrections, commands and scoped checkpoint: docs/COMPACT_BRIDGE_AUDIO_2026_10_23.md and docs/evidence/compact-bridge-impact-2026-10-23/report.json. Owner reports no tablet delay; actual tablet model mode was not checked. New Windows client reload and owner listening remain; no phone/tablet check/test, microphone/owner-process capture, APK, native rebuild, live mutation or deployment. Concurrent work preserved.
+ 
+ 2026-10-23 SSI01/R01/Q01: Soften packed snow with less high crunch, a rounded1.2ms fade and lower final trim. Actual same-gain/pitch master peak falls1.60dB and first100ms0.77dB; strong onset remains0.408ms. Continuous/powder/heavy-bank samples and mixer source stay byte-exact. Native capture13, response29headless/35Compatibility, asset/capture12 and parser1037 pass. Reusable capture paths preserve earlier auditions. Commands, before/after WAVs, sources and scoped Git-checkable checkpoint: docs/SOFT_SNOW_IMPACT_2026_10_23.md and docs/evidence/soft-snow-impact-2026-10-23/report.json. Client restart and owner/device listening remain; no phone/tablet attachment check, physical-device test, APK/export/install, native rebuild, account/backend mutation, purchase or deployment. Concurrent work preserved.
+ 
+diff --git a/docs/PHASE_0_PLAN.md b/docs/PHASE_0_PLAN.md
+--- a/docs/PHASE_0_PLAN.md
++++ b/docs/PHASE_0_PLAN.md
+@@ -1,4 +1,6 @@
+ 2026-10-23 SBT01-SBT02/R01/Q01: Owner requests a softer, longer bass thump. Packed snow becomes a540ms recorded40-320Hz body with a3ms curved attack and longer quiet decay. Actual same-gain/pitch master peak falls4.30dB, first100ms1.63dB; integrated bass rises33% and90%-energy duration38to178ms. Strong raw onset2.132ms retains the5ms guard. Continuous/powder/heavy-bank samples and playback sources remain exact. Native capture13, response29headless/35Compatibility, asset/capture20 and parser1041 pass. Commands, before/after WAVs, provenance and scoped checkpoint: docs/SNOW_BASS_THUMP_2026_10_23.md and docs/evidence/bass-snow-thump-2026-10-23/report.json. Client restart and owner/device listening remain; no phone/tablet attachment check, physical-device test, APK/export/install, native rebuild, account/backend mutation, purchase or deployment. Concurrent work preserved.
++
++2026-10-23 CBT01-CBT03/R01/Q01: Compact head-on bridge-end delay reproduced on cached Knot. Duplicate edge endpoints exhausted128 outline probes before the detailed Compact perimeter was covered; shared endpoints now belong to the next edge, retaining full coverage in116 probes. Original coverage160/4 failures (detailed Compact only); final160headless/160Compatibility/160desktopMobile, paired168-case matrix/review2034, wall167/bridge42184/escalation65/bridge physics16/trace9/kerb26/parser1039 pass. Actual Windows rendered-contact-to-process-output slow case155.98 to19.98ms; physical ticks/states remain exact. This removes the reproduced detection delay, not Windows output buffering or kerb latency. Original-method controls, native view, initial shell/trace-fixture corrections, commands and scoped checkpoint: docs/COMPACT_BRIDGE_AUDIO_2026_10_23.md and docs/evidence/compact-bridge-impact-2026-10-23/report.json. Owner reports no tablet delay; actual tablet model mode was not checked. New Windows client reload and owner listening remain; no phone/tablet check/test, microphone/owner-process capture, APK, native rebuild, live mutation or deployment. Concurrent work preserved.
+ 
+ 2026-10-23 SSI01/R01/Q01: Soften packed snow with less high crunch, a rounded1.2ms fade and lower final trim. Actual same-gain/pitch master peak falls1.60dB and first100ms0.77dB; strong onset remains0.408ms. Continuous/powder/heavy-bank samples and mixer source stay byte-exact. Native capture13, response29headless/35Compatibility, asset/capture12 and parser1037 pass. Reusable capture paths preserve earlier auditions. Commands, before/after WAVs, sources and scoped Git-checkable checkpoint: docs/SOFT_SNOW_IMPACT_2026_10_23.md and docs/evidence/soft-snow-impact-2026-10-23/report.json. Client restart and owner/device listening remain; no phone/tablet attachment check, physical-device test, APK/export/install, native rebuild, account/backend mutation, purchase or deployment. Concurrent work preserved.
+ 
+diff --git a/docs/WINDOWS_CONTACT_TIMING_2026_10_23.md b/docs/WINDOWS_CONTACT_TIMING_2026_10_23.md
+--- a/docs/WINDOWS_CONTACT_TIMING_2026_10_23.md
++++ b/docs/WINDOWS_CONTACT_TIMING_2026_10_23.md
+@@ -1,4 +1,9 @@
+ # Persistent Windows contact-sound timing — 2026-10-23
++
++Follow-up: the owner's Compact/bridge case exposed incomplete detailed-body
++coverage at narrow rail ends. The [Compact bridge correction](COMPACT_BRIDGE_AUDIO_2026_10_23.md)
++reproduces and removes that detection delay. The measurements below remain the
++earlier flat-wall/kerb investigation; its remaining output latency is unchanged.
+ 
+ WCT01-WCT03/R01/Q01 investigate the owner's confirmation that collision and kerb
+ sounds have always felt delayed on Windows, through speakers as well as Bluetooth,
+diff --git a/game/tests/probe_compact_bridge_contacts.gd b/game/tests/probe_compact_bridge_contacts.gd
+new file mode 100644
+--- /dev/null
++++ b/game/tests/probe_compact_bridge_contacts.gd
+@@ -0,0 +1,136 @@
++extends SceneTree
++## Read-only contact diagnosis on a supplied current-format bridge document.
++var output: String = "res://../build/compact-bridge-impact-2026-10-23/matrix"
++var document_path: String = "res://../docs/evidence/compact-bridge-impact-2026-10-23/knot.json"
++var baseline: bool = false
++
++func _initialize() -> void: run.call_deferred()
++
++func full_outline(audio: VehicleAudio, state: VehicleState, track: NativeTrack, incoming: Vector2) -> Dictionary:
++	var found: bool = false
++	var eligible: bool = false
++	var span: int = CreatorBridges.span_at(track.creator_bridges,state.position) if state.track_elevated else -1
++	var outline: PackedVector2Array = audio.visible_contact.outline
++	for index: int in range(outline.size()-1):
++		var a: Vector2 = outline[index]
++		var b: Vector2 = outline[index+1]
++		var steps: int = maxi(1,ceili(a.distance_to(b)/.05))
++		for step: int in range(steps+1):
++			var local: Vector2 = a.lerp(b,float(step)/steps)
++			var point: Vector2 = state.position+state.right()*local.x+state.forward()*local.y
++			if not audio.visible_contact._solid_at(state,track,point,span): continue
++			found = true
++			var x: int = floori((point.x+track.half_extent.x)/track.cell_size)
++			var y: int = floori((track.half_extent.y-point.y)/track.cell_size)
++			var center := Vector2((x+.5)*track.cell_size-track.half_extent.x,track.half_extent.y-(y+.5)*track.cell_size)
++			for direction: Vector2 in [Vector2.LEFT,Vector2.RIGHT,Vector2.UP,Vector2.DOWN]:
++				if audio.visible_contact._solid_at(state,track,center+direction*track.cell_size,span): continue
++				var inward: float = -incoming.dot(direction)
++				if inward>1.2 and inward/maxf(incoming.length(),.001)>.35: eligible = true
++	return {"touch":found,"eligible":eligible}
++
++func run() -> void:
++	for argument: String in OS.get_cmdline_user_args():
++		if argument.begins_with("--document="): document_path = argument.trim_prefix("--document=")
++		if argument.begins_with("--output-dir="): output = argument.trim_prefix("--output-dir=")
++		if argument=="--baseline": baseline = true
++	DirAccess.make_dir_recursive_absolute(ProjectSettings.globalize_path(output))
++	var document: Dictionary = JSON.parse_string(FileAccess.get_file_as_string(document_path))
++	var track: NativeTrack = TrackCompiler.compile(document)
++	assert(track!=null and not track.creator_bridges.is_empty())
++	var car := CarVisual.new()
++	car.vehicle_id = "compact"
++	root.add_child(car)
++	var audio := VehicleAudio.new()
++	audio.use_windows_impacts = false
++	root.add_child(audio)
++	var config: HandlingConfig = VehicleCatalog.config("compact")
++	audio.configure("compact",config,car)
++	if baseline:
++		var original: String = FileAccess.get_file_as_string("res://../docs/evidence/compact-bridge-impact-2026-10-23/before/game/vehicle/visible_contact_audio.gd")
++		var method: String = original.substr(original.find("func sample("))
++		method = method.substr(0,method.find("func _solid_at("))
++		var script := GDScript.new()
++		script.source_code = "extends VisibleContactAudio\n\n"+method
++		assert(script.reload()==OK,"The exact original sample method must compile as the baseline control.")
++		audio.visible_contact = script.new()
++		audio.visible_contact.configure(car,true)
++	var front: float = 0.0
++	var probes: int = 0
++	for i: int in range(audio.visible_contact.outline.size()-1):
++		front = maxf(front,audio.visible_contact.outline[i].y)
++		probes += maxi(1,ceili(audio.visible_contact.outline[i].distance_to(audio.visible_contact.outline[i+1])/maxf(.10,track.cell_size*.5)))+1
++	var rows: Array[Dictionary] = []
++	for span_index: int in range(track.creator_bridges.size()):
++		var bridge: Dictionary = track.creator_bridges[span_index]
++		var origin := Vector2(bridge.position[0],bridge.position[1])
++		var axis: Vector2 = Vector2.RIGHT.rotated(deg_to_rad(float(bridge.heading)))
++		var normal: Vector2 = axis.orthogonal()
++		var length: float = bridge.length
++		var cases: Array[Dictionary] = []
++		for side: float in [-1.0,1.0]:
++			for u: float in [3.0,length-3.0]:
++				cases.append({"kind":"low_side","start":origin+axis*u+normal*side*(float(bridge.width)*.5+CreatorBridges.RAIL+front+.3),"direction":-normal*side,"upper":false,"side":side,"u":u})
++			cases.append({"kind":"upper_rail","start":origin+axis*length*.5,"direction":normal*side,"upper":true,"side":side,"u":length*.5})
++			cases.append({"kind":"underside","start":origin+axis*(10.0 if side<0 else length-10.0),"direction":axis*side,"upper":false,"side":side,"u":10.0 if side<0 else length-10.0})
++			for reverse: bool in [false,true]:
++				for offset: float in [-.8,-.3,.2,.65,1.0]:
++					cases.append({"kind":"rail_end","start":origin+axis*(length+front+.7 if reverse else -front-.7)+normal*side*(float(bridge.width)*.5+offset),"direction":axis*(-1.0 if reverse else 1.0),"upper":false,"side":side,"u":length if reverse else 0.0})
++		for test: Dictionary in cases:
++			for speed: float in [5.0,15.0,30.0]:
++				var direction: Vector2 = test.direction
++				var sim := VehicleSimulation.new(config)
++				var plain := VehicleSimulation.new(config)
++				sim.reset(test.start,atan2(direction.x,direction.y))
++				plain.reset(sim.state.position,sim.state.heading)
++				sim.state.track_elevated = test.upper
++				plain.state.track_elevated = test.upper
++				sim.state.velocity = direction*speed
++				plain.state.velocity = sim.state.velocity
++				audio.reset()
++				var row: Dictionary = {"span":span_index,"kind":test.kind,"side":test.side,"u":test.u,"initial_speed":speed,"touch":-1,"full_touch":-1,"eligible":-1,"cue":-1,"physical":-1,"incoming_at_cue":0.0,"normal":[0,0],"equivalent":true,"cue_count":0}
++				for tick: int in range(400):
++					var incoming: Vector2 = sim.state.velocity
++					var previous: Vector2 = sim.state.position
++					sim.step(DriveFrame.new(),track)
++					plain.step(DriveFrame.new(),track)
++					if int(row.eligible)<0:
++						var footprint: Dictionary = full_outline(audio,sim.state,track,incoming)
++						if footprint.touch and int(row.full_touch)<0: row.full_touch = sim.state.tick
++						if footprint.eligible: row.eligible = sim.state.tick
++					audio.begin_physics_feedback()
++					audio.resolved_contact(sim.state,track,incoming,previous,sim.state.heading)
++					if audio.visible_contact.touching and int(row.touch)<0: row.touch = sim.state.tick
++					if audio.impact_count>0 and int(row.cue)<0:
++						row.cue = sim.state.tick
++						row.incoming_at_cue = incoming.length()
++						row.normal = [audio.visible_contact.normal.x,audio.visible_contact.normal.y]
++					row.equivalent = bool(row.equivalent) and sim.state.snapshot()==plain.state.snapshot()
++					if sim.state.collision_impulse!=Vector2.ZERO:
++						row.physical = sim.state.tick
++						break
++					if tick%4==0: audio.present(sim.state,DriveFrame.new(),track,VehicleSimulation.STEP*4,false)
++				row.cue_count = audio.impact_count
++				assert(row.equivalent,"Contact sound must leave the exact simulation unchanged.")
++				rows.append(row)
++				print("COMPACT_BRIDGE_CONTACT: ",JSON.stringify(row))
++			await process_frame
++	var file := FileAccess.open(output.path_join("matrix.json"),FileAccess.WRITE)
++	var outline_rows: Array[Dictionary] = []
++	for id: String in VehicleCatalog.IDS:
++		var model := CarVisual.new()
++		model.vehicle_id = id
++		root.add_child(model)
++		var observer := VisibleContactAudio.new()
++		observer.configure(model,true)
++		var required: int = 0
++		for index: int in range(observer.outline.size()-1): required += maxi(1,ceili(observer.outline[index].distance_to(observer.outline[index+1])/maxf(.10,track.cell_size*.5)))
++		outline_rows.append({"car":id,"vertices":observer.outline.size(),"unique_probes":required,"original_probes":required+observer.outline.size()-1})
++		model.free()
++	file.store_string(JSON.stringify({"name":document.get("name",""),"car":"compact","baseline":baseline,"front":front,"outline_points":audio.visible_contact.outline.size(),"unbounded_probe_count":probes,"outlines":outline_rows,"rows":rows},"\t"))
++	file.close()
++	audio.free()
++	car.free()
++	await create_timer(.2).timeout
++	print("COMPACT_BRIDGE_MATRIX: %d cases"%rows.size())
++	quit()
+diff --git a/game/tests/probe_compact_bridge_output.gd b/game/tests/probe_compact_bridge_output.gd
+new file mode 100644
+--- /dev/null
++++ b/game/tests/probe_compact_bridge_output.gd
+@@ -0,0 +1,125 @@
++extends "res://tests/probe_direct_collision_output.gd"
++## Interleaved original/current contact methods, actual Compact and cached bridge.
++var document_path: String = "res://../docs/evidence/compact-bridge-impact-2026-10-23/knot.json"
++var reference_points := PackedVector2Array()
++var bridge: Dictionary = {}
++
++func original_observer(car: CarVisual) -> VisibleContactAudio:
++	var original: String = FileAccess.get_file_as_string("res://../docs/evidence/compact-bridge-impact-2026-10-23/before/game/vehicle/visible_contact_audio.gd")
++	var method: String = original.substr(original.find("func sample("))
++	method = method.substr(0,method.find("func _solid_at("))
++	var script := GDScript.new()
++	script.source_code = "extends VisibleContactAudio\n\n"+method
++	assert(script.reload()==OK)
++	var observer: VisibleContactAudio = script.new()
++	observer.configure(car,true)
++	return observer
++
++func _record_render() -> void:
++	if game==null or row.is_empty() or int(row.render_contact_us)>0: return
++	var span: int = CreatorBridges.span_at(game.native_track.creator_bridges,game.sim.state.position) if game.sim.state.track_elevated else -1
++	for point: Vector2 in reference_points:
++		var local := Vector3(point.x/game.car.scale.x,0,-point.y/game.car.scale.z)
++		var world: Vector3 = game.car.global_transform*local
++		if game.vehicle_audio.visible_contact._solid_at(game.sim.state,game.native_track,Vector2(world.x,-world.z),span):
++			row.render_contact_us = now_us()
++			row.render_contact_tick = game.sim.state.tick
++			return
++
++func run() -> void:
++	for argument: String in OS.get_cmdline_user_args():
++		if argument.begins_with("--output-dir="): output = argument.trim_prefix("--output-dir=")
++		if argument.begins_with("--document="): document_path = argument.trim_prefix("--document=")
++	DirAccess.make_dir_recursive_absolute(ProjectSettings.globalize_path(output))
++	var document: Dictionary = JSON.parse_string(FileAccess.get_file_as_string(document_path))
++	var track: NativeTrack = TrackCompiler.compile(document)
++	assert(track!=null and not track.creator_bridges.is_empty())
++	bridge = track.creator_bridges[0]
++	game = load("res://core/game.tscn").instantiate()
++	game.vehicle_id = "compact"
++	game.initial_track = track
++	game.production_mode = false
++	game.set_physics_process(false)
++	root.add_child(game)
++	var deadline: int = Time.get_ticks_msec()+30000
++	while not game.preparation_complete and Time.get_ticks_msec()<deadline:
++		await process_frame
++	assert(game.preparation_complete)
++	game.set_physics_process(false)
++	game.driver = NeutralInput.new()
++	game.countdown_ticks = 0
++	var audio: VehicleAudio = game.vehicle_audio
++	draw_outline = audio.visible_contact.outline.duplicate()
++	var front: float = 0.0
++	for index: int in range(draw_outline.size()-1):
++		var a: Vector2 = draw_outline[index]
++		var b: Vector2 = draw_outline[index+1]
++		front = maxf(front,a.y)
++		var steps: int = maxi(1,ceili(a.distance_to(b)/.05))
++		for step: int in range(steps): reference_points.append(a.lerp(b,float(step)/steps))
++	for bus: int in range(1,AudioServer.bus_count):
++		AudioServer.set_bus_mute(bus,AudioServer.get_bus_name(bus)!="Impacts")
++	RenderingServer.frame_post_draw.connect(_record_render)
++	var file := FileAccess.open(output.path_join("ready.json"),FileAccess.WRITE)
++	file.store_string(JSON.stringify({"pid":OS.get_process_id(),"driver":AudioServer.get_driver_name(),"device":AudioServer.output_device,"rate":AudioServer.get_mix_rate(),"track":document.get("name",""),"span":0,"side":1,"reverse":true,"offset":-.8}))
++	file.close()
++	deadline = Time.get_ticks_msec()+15000
++	while not FileAccess.file_exists(output.path_join("armed")):
++		await process_frame
++		assert(Time.get_ticks_msec()<deadline)
++	var axis: Vector2 = Vector2.RIGHT.rotated(deg_to_rad(float(bridge.heading)))
++	var origin := Vector2(bridge.position[0],bridge.position[1])
++	var direction: Vector2 = -axis
++	var heading: float = atan2(direction.x,direction.y)
++	var rows: Array[Dictionary] = []
++	for speed: float in [5.0,15.0,30.0]:
++		for baseline: bool in [true,false]:
++			row = {}
++			var start: Vector2 = origin+axis*(float(bridge.length)+front+.7)+axis.orthogonal()*(float(bridge.width)*.5-.8)
++			game.sim.reset(start,heading)
++			game.sim.state.velocity = direction*speed
++			game.previous_position = start
++			game.previous_heading = heading
++			audio.reset()
++			if baseline: audio.visible_contact = original_observer(game.car)
++			else:
++				audio.visible_contact = VisibleContactAudio.new()
++				audio.visible_contact.configure(game.car,true)
++			await create_timer(.7).timeout
++			var native_before: int = int(audio.windows_impacts.stats().get("submitted",0))
++			row = {"trial":rows.size(),"speed_mps":speed,"original_method":baseline,"render_contact_us":0,"render_contact_tick":-1,"cue_tick":-1,"physical_tick":-1,"physical_us":0,"unix_us":0,"route":"none"}
++			for tick: int in range(400):
++				await physics_frame
++				var before_us: int = now_us()
++				game._physics_process(VehicleSimulation.STEP)
++				if int(row.unix_us)==0 and audio.impact_count>0:
++					row.unix_us = before_us
++					row.cue_tick = game.sim.state.tick
++					row.native = audio.windows_impacts.stats()
++					row.route = "windows_raw" if int(row.native.get("submitted",0))>native_before else "godot"
++					row.clip = VehicleAudio.IMPACTS[audio.impact_index]
++				if game.sim.state.collision_impulse!=Vector2.ZERO:
++					row.physical_tick = game.sim.state.tick
++					row.physical_us = before_us
++					break
++			await create_timer(.45).timeout
++			row.cue_count = audio.impact_count
++			row.reported_latency_ms = AudioServer.get_output_latency()*1000.0
++			row.next_mix_ms = AudioServer.get_time_to_next_mix()*1000.0
++			assert(int(row.unix_us)>0 and int(row.physical_us)>0 and int(row.render_contact_us)>0 and int(row.cue_count)==1)
++			if baseline: assert(int(row.cue_tick)==int(row.physical_tick))
++			else: assert(int(row.cue_tick)<int(row.physical_tick))
++			rows.append(row.duplicate(true))
++			print("COMPACT_BRIDGE_OUTPUT_TRIAL: ",JSON.stringify(row))
++	row = {}
++	RenderingServer.frame_post_draw.disconnect(_record_render)
++	file = FileAccess.open(output.path_join("events.json"),FileAccess.WRITE)
++	file.store_string(JSON.stringify(rows,"\t"))
++	file.close()
++	await RenderingServer.frame_post_draw
++	get_root().get_texture().get_image().save_png(output.path_join("bridge-contact.png"))
++	game.free()
++	game = null
++	await create_timer(.2).timeout
++	print("COMPACT_BRIDGE_OUTPUT: %d trials"%rows.size())
++	quit()
+diff --git a/game/tests/test_complete_contact_outline.gd b/game/tests/test_complete_contact_outline.gd
+new file mode 100644
+--- /dev/null
++++ b/game/tests/test_complete_contact_outline.gd
+@@ -0,0 +1,72 @@
++extends SceneTree
++## Every real body vertex must be observable within the existing probe budget.
++var checks: int = 0
++var failures: int = 0
++var baseline: bool = false
++
++class CountedObserver extends VisibleContactAudio:
++	var seen: Array[Vector2] = []
++	func _solid_at(state: VehicleState, track: NativeTrack, point: Vector2, span_index: int) -> bool:
++		seen.append(point)
++		return super._solid_at(state,track,point,span_index)
++
++func _initialize() -> void: run.call_deferred()
++
++func check(ok: bool, message: String) -> void:
++	checks += 1
++	if not ok:
++		failures += 1
++		print("FAIL: "+message)
++
++func make_observer() -> VisibleContactAudio:
++	if not baseline: return CountedObserver.new()
++	var original: String = FileAccess.get_file_as_string("res://../docs/evidence/compact-bridge-impact-2026-10-23/before/game/vehicle/visible_contact_audio.gd")
++	var method: String = original.substr(original.find("func sample("))
++	method = method.substr(0,method.find("func _solid_at("))
++	var script := GDScript.new()
++	script.source_code = "extends VisibleContactAudio\nvar seen: Array[Vector2] = []\n"+method+"\nfunc _solid_at(state: VehicleState, track: NativeTrack, point: Vector2, span_index: int) -> bool:\n\tseen.append(point)\n\treturn super._solid_at(state,track,point,span_index)\n"
++	assert(script.reload()==OK)
++	return script.new()
++
++func run() -> void:
++	baseline = "--baseline" in OS.get_cmdline_user_args()
++	var track := NativeTrack.new()
++	track.cell_size = .5
++	track.grid_width = 64
++	track.grid_height = 64
++	track.half_extent = Vector2(16,16)
++	track.cells.resize(4096)
++	track.cells.fill(0)
++	track.deck_cells.resize(4096)
++	track.deck_cells.fill(-1)
++	for id: String in VehicleCatalog.IDS:
++		for simple: bool in [false,true]:
++			var car := CarVisual.new()
++			car.vehicle_id = id
++			car.simple_model = simple
++			root.add_child(car)
++			var observer: VisibleContactAudio = make_observer()
++			observer.configure(car,true)
++			for angle: float in [0.0,.75,PI*.5,PI]:
++				var state := VehicleState.new()
++				state.position = Vector2(1.5,-.75)
++				state.heading = angle
++				var before: Array = state.snapshot()
++				observer.reset()
++				observer.get("seen").clear()
++				var impulse: Vector2 = observer.sample(state,track,state.forward()*5)
++				var seen: Array = observer.get("seen")
++				check(seen.size()<=VisibleContactAudio.MAX_PROBES,"bounded observation: "+id+str(simple))
++				var complete: bool = true
++				for index: int in range(observer.outline.size()-1):
++					var local: Vector2 = observer.outline[index]
++					var vertex: Vector2 = state.position+state.right()*local.x+state.forward()*local.y
++					if not seen.any(func(point: Vector2) -> bool: return point.distance_to(vertex)<.00001): complete = false
++				check(complete,"every real hull vertex is observed: "+id+str(simple))
++				check(impulse==Vector2.ZERO and not observer.touching,"clear geometry stays silent: "+id)
++				check(state.snapshot()==before,"observer preserves exact driving state: "+id)
++			car.free()
++			await process_frame
++	await create_timer(.2).timeout
++	print("COMPLETE_CONTACT_OUTLINE: %d checks, %d failures"%[checks,failures])
++	quit(1 if failures else 0)
+diff --git a/scripts/review_compact_bridge_impact.py b/scripts/review_compact_bridge_impact.py
+new file mode 100644
+--- /dev/null
++++ b/scripts/review_compact_bridge_impact.py
+@@ -0,0 +1,85 @@
++"""Compare the original and corrected footprint observers and real Windows hits."""
++from pathlib import Path
++import json
++import subprocess
++import sys
++
++ROOT = Path(__file__).resolve().parents[1]
++OUT = ROOT / "build/compact-bridge-impact-2026-10-23"
++CAPTURE = ROOT / "build/windows-contact-timing-2026-10-23/bridge-original-fixed-r1/bridge"
++before = json.loads((OUT / "baseline/matrix.json").read_text())
++after = json.loads((OUT / "fixed/matrix.json").read_text())
++assert len(before["rows"]) == len(after["rows"]) == 168
++checks = 1
++corrected = []
++remaining = []
++missed_before = 0
++for index, (old, new) in enumerate(zip(before["rows"], after["rows"])):
++    for key in ("span", "kind", "side", "u", "initial_speed", "physical", "eligible", "full_touch"):
++        assert old[key] == new[key], (index, key)
++        checks += 1
++    assert old["equivalent"] and new["equivalent"]
++    assert new["cue_count"] <= 1
++    checks += 2
++    if new["eligible"] >= 0:
++        assert new["cue"] >= 0
++        checks += 1
++        if old["cue"] < 0:
++            missed_before += 1
++        else:
++            assert new["cue"] <= old["cue"], index
++            checks += 1
++        if old["cue"] < 0 or old["cue"] > new["cue"]:
++            corrected.append({"index": index, "before_tick": old["cue"], "after_tick": new["cue"], "eligible_tick": new["eligible"]})
++        if new["cue"] > new["eligible"] + 1:
++            remaining.append({"index": index, "ticks_after_dense_reference": new["cue"] - new["eligible"]})
++    elif new["physical"] < 0:
++        assert new["cue_count"] == old["cue_count"] == 0
++        checks += 1
++for outline in after["outlines"]:
++    assert outline["unique_probes"] <= 128
++    checks += 1
++subprocess.run(
++    [sys.executable, str(ROOT / "scripts/review_windows_audio_output.py"), str(CAPTURE)],
++    check=True, capture_output=True,
++)
++events = json.loads((CAPTURE / "events.json").read_text())
++timings = json.loads((CAPTURE / "timing-report.json").read_text())["rows"]
++assert len(events) == len(timings) == 6
++checks += 1
++native = []
++for index in range(0, 6, 2):
++    old, new = events[index:index + 2]
++    old_output, new_output = timings[index:index + 2]
++    assert old["original_method"] and not new["original_method"]
++    assert old["speed_mps"] == new["speed_mps"]
++    assert old["route"] == new["route"] == "windows_raw"
++    assert old["cue_count"] == new["cue_count"] == 1
++    assert old["physical_tick"] == new["physical_tick"]
++    assert old["cue_tick"] == old["physical_tick"]
++    assert new["cue_tick"] < new["physical_tick"]
++    checks += 7
++    old_delay = (old_output["output_unix_us"] - old["render_contact_us"]) / 1000
++    new_delay = (new_output["output_unix_us"] - new["render_contact_us"]) / 1000
++    assert new_delay < old_delay
++    checks += 1
++    native.append({
++        "speed_mps": old["speed_mps"],
++        "original_cue_tick": old["cue_tick"],
++        "corrected_cue_tick": new["cue_tick"],
++        "physical_tick": old["physical_tick"],
++        "original_render_contact_to_output_ms": old_delay,
++        "corrected_render_contact_to_output_ms": new_delay,
++        "original_request_to_output_ms": old_output["latency_ms"],
++        "corrected_request_to_output_ms": new_output["latency_ms"],
++    })
++report = {
++    "checks": checks, "failures": 0,
++    "matrix_cases": len(after["rows"]), "eligible_cases": sum(r["eligible"] >= 0 for r in after["rows"]),
++    "missed_eligible_before": missed_before, "missed_eligible_after": 0,
++    "corrected_cases": corrected, "remaining_dense_reference_gaps": remaining,
++    "outlines": after["outlines"], "native_original_corrected_pairs": native,
++    "limits": "Current sampled perimeter retains 0.25 m target spacing and the same 128-probe ceiling. Dense 0.05 m reference can lead sampled contact by up to four ticks in two narrow-edge cases. Native output is own-process software capture; rendered-footprint timing excludes monitor scanout and acoustic/Bluetooth latency. No Windows buffer-latency reduction or kerb correction is claimed.",
++}
++(OUT / "review.json").write_text(json.dumps(report, indent=2) + "\n", encoding="utf-8")
++print(json.dumps({"checks": checks, "failures": 0, "cases_improved": len(corrected), "native_pairs": native}, indent=2))
+diff --git a/docs/COMPACT_BRIDGE_AUDIO_2026_10_23.md b/docs/COMPACT_BRIDGE_AUDIO_2026_10_23.md
+new file mode 100644
+--- /dev/null
++++ b/docs/COMPACT_BRIDGE_AUDIO_2026_10_23.md
+@@ -0,0 +1,145 @@
++# Compact bridge-impact audio correction — 2026-10-23
++
++CBT01-CBT03/R01/Q01 follow the owner's specific case: Compact, head-on against a
++bridge, with a persistent delay on Windows but no noticeable delay on the tablet.
++The earlier flat-wall diagnostics did not cover a narrow bridge rail end.
++
++**A detailed-Compact contact-detection defect is reproduced and corrected.**
++This fixes the reproduced bridge-end delay; it does not claim to fix the separate
++Windows output-buffer delay or kerb playback latency. Owner listening remains.
++
++## Cause and correction
++
++The actual detailed Compact has an 88-point closed convex outline. The observer
++checked both endpoints of every edge, asking for 203 probe calls, then stopped at
++the existing 128-call ceiling. Duplicate shared endpoints consumed the allowance
++before the complete perimeter was checked. A rail end touching the omitted nose
++corner could therefore wait for the smaller physical collision circle, or miss
++the eligible body-contact sound entirely.
++
++`VisibleContactAudio.sample()` now leaves each edge's endpoint to the following
++edge. The same outline needs **116** unique probes and fits the existing bound.
++The closed polygon's first point also owns the final closing endpoint. The
++normal/angle/strength gates, bridge-layer exclusions, current-contact requirement,
++cooldown, duplicate-cue latch and original samples/output routes are unchanged.
++No prediction of future contacts is introduced. Handling, collision physics,
++damage, visual models, camera and track geometry are unchanged.
++
++The independent coverage test visits every actual hull vertex on all five real
++cars, both detailed and simplified models, at four headings, while asserting the
++same 128-probe bound, clear-track silence and exact unchanged simulation state.
++The exact original `sample()` method fails four of 160 checks, all for the
++detailed Compact. The correction passes all 160 in headless, Compatibility and
++desktop Mobile rendering. The simplified Compact's original coverage passes;
++this is consistent with a model-detail difference, but **the tablet's actual
++model setting was not inspected**, and no device-level cause is claimed.
++
++## Reproduction on the cached bridge
++
++A read-only check of the saved local selection found Compact / **Knot**. Its
++current-format local cached document has source SHA-256
++`c237960ed63d03361858789517d02a3bb742740fe3795753bed3a12e6de53b13` and two bridge
++spans. This was a local reproduction starting point, not confirmation from the
++owner of the exact track or impact position. No account/session file contents were
++copied or printed, and no backend request was made.
++
++The 168-case matrix covers both spans, both sides/ends, low sides, undersides,
++upper rails and head-on rail-end offsets at initial 5/15/30 m/s. Every physics
++step is compared with an observer-free simulation using identical inputs. All
++canonical states and physical-contact ticks remain exact. The original method
++misses six eligible sounds and has 47 rail-end cases more than one tick late or
++missing. The correction removes all six misses and improves 57 cases overall.
++
++In the strongest matched case, the original waits until physical-contact tick
++39; the correction sounds on eligible body-contact tick 22, with physical
++contact still at tick 39. This removes **17 nominal physics ticks / 141.67 ms**
++of detection delay. At 15/30 m/s the matched cue advances 13→8 and 7→4 ticks.
++
++The matrix's dense independent reference uses 5 cm perimeter samples; production
++retains its previous 25 cm target at this grid size. Two narrow-edge cases still
++trail that denser reference by 2/4 ticks. No universal exact-3D-contact claim is
++made, and those differences are retained in the review.
++
++## Actual rendered Windows output
++
++One native Compatibility session interleaves the exact original and corrected
++observer methods on the actual Game, Compact and cached bridge. It waits for
++real asynchronous preparation, uses neutral input and normal rendering, and
++captures only its own process tree. The same native Windows RAW event path is
++confirmed in all six trials, with one cue per trial and identical physical-hit
++ticks. Other buses are muted to isolate the impact.
++
++| Initial speed | Original rendered footprint → output | Corrected | Original / corrected request → output |
++| --- | ---: | ---: | ---: |
++| 5 m/s | 155.98 ms | **19.98 ms** | 31.98 / 35.98 ms |
++| 15 m/s | 62.98 ms | **32.98 ms** | 37.98 / 41.98 ms |
++| 30 m/s | 57.98 ms | **32.98 ms** | 41.98 / 40.98 ms |
++
++These are software process-output measurements, with no fixed capture offset
++subtracted. Rendered contact is a sampled footprint against the current solid
++grid at `frame_post_draw`, not exact tyre/body-triangle intersection, monitor
++scanout or acoustic speaker/Bluetooth timing. The Windows request-to-output
++delay remains; the improvement is earlier, correctly covered contact detection.
++The screenshot is captured after timing is complete so image readback cannot
++stall the measured contact interval.
++
++[Actual bridge view](evidence/compact-bridge-impact-2026-10-23/bridge-contact.png) ·
++[Evidence report](evidence/compact-bridge-impact-2026-10-23/report.json).
++
++## Commands and checks
++
++All engine checks use pinned `4.7.2.stable.official.ed1daf0bf` through
++`scripts/dev.ps1`. Isolated application data is used for the final checks and
++capture. Actual wrappers/receipts are retained in the report.
++
++```powershell
++# Matrix controls used --baseline and separate baseline/fixed output folders.
++# The probe also accepts --document=<local current-format document>.
++powershell -NoProfile -ExecutionPolicy Bypass -Command "& './scripts/dev.ps1' -Action TestScript -ScriptPath res://tests/probe_compact_bridge_contacts.gd -TestArgument @('--baseline','--output-dir=res://../build/compact-bridge-impact-2026-10-23/baseline')"
++powershell -NoProfile -ExecutionPolicy Bypass -Command "& './scripts/dev.ps1' -Action TestScript -ScriptPath res://tests/probe_compact_bridge_contacts.gd -TestArgument @('--output-dir=res://../build/compact-bridge-impact-2026-10-23/fixed')"
++powershell -NoProfile -ExecutionPolicy Bypass -File scripts/probe_windows_contact_timing.ps1 -Kind bridge -Label bridge-original-fixed-r1
++python scripts/review_compact_bridge_impact.py
++powershell -NoProfile -ExecutionPolicy Bypass -File build/compact-bridge-impact-2026-10-23/run_checks.ps1 -Baseline
++powershell -NoProfile -ExecutionPolicy Bypass -File build/compact-bridge-impact-2026-10-23/run_checks.ps1
++powershell -NoProfile -ExecutionPolicy Bypass -File build/compact-bridge-impact-2026-10-23/run_checks.ps1 -Graphical
++powershell -NoProfile -ExecutionPolicy Bypass -File build/compact-bridge-impact-2026-10-23/run_checks.ps1 -Graphical -RenderingMethod mobile
++```
++
++| Actual check | Outcome |
++| --- | --- |
++| Exact-original coverage control | 160 checks / 4 expected reproduced coverage failures. |
++| Corrected coverage, headless / Compatibility / desktop Mobile | 160 / 160 / 160, zero failures. |
++| Original/corrected bridge matrix plus native paired review | 168 cases each; 2034 review checks, zero failures. |
++| Existing visible-wall audio | 167 checks, zero failures, all five cars. |
++| Existing bridge-contact audio | 42184 checks, zero failures; 180 clear sweeps, zero false crashes. |
++| Existing contact escalation / bridge physics | 65 / 16 checks, zero failures. |
++| Collision trace / kerb physics response | 9 / 26 checks, zero failures. |
++| Full script parser | 1039 scripts, zero failures. |
++| Python reviewer compilation / scoped whitespace / patch check | Actual receipts retained in the checkpoint. |
++
++The initial bridge matrix remained an investigation and asserted canonical
++equivalence; it did not call late/missing audio a pass. Original and corrected
++sources/JSONs are retained separately. One first wrapper invocation was blocked
++by shell execution policy; another incorrectly expanded the child APPDATA
++assignment and used the usual Godot log location. That headless matrix does not
++load or save owner records; subsequent checks and the paired native capture use
++isolated storage. A broader pre-existing trace fixture also expected playback
++while production headless output was deliberately disabled. Its setup now
++explicitly enables the Godot fallback it tests, retaining all nine assertions.
++No production headless output gate was changed, and the initial failure is kept.
++
++## Scope and remaining acceptance
++
++The production change is three added lines and one removed line in
++`game/vehicle/visible_contact_audio.gd`. Diagnostics add the complete-coverage
++test, bridge matrix, paired actual-Game capture, reviewer and bridge launcher
++option; the trace fixture has explicit deterministic playback setup. A task-only
++Git-checkable patch preserves the shared index and concurrent work.
++
++Restart/reload the Windows client to load the changed script, then owner-listen
++to the reported bridge hit. This is application of a new correction, not an
++attribution of the longstanding issue to stale processes. Kerb sound timing and
++the remaining Windows output delay are unchanged by this correction. No tablet
++attachment check or physical-device test, microphone/owner-process capture,
++APK/export/install, native rebuild, account/backend mutation or deployment was
++performed. Existing owner processes and concurrent work remain intact.
+diff --git a/docs/evidence/compact-bridge-impact-2026-10-23/report.json b/docs/evidence/compact-bridge-impact-2026-10-23/report.json
+new file mode 100644
+--- /dev/null
++++ b/docs/evidence/compact-bridge-impact-2026-10-23/report.json
+@@ -0,0 +1,668 @@
++{
++  "date": "2026-10-23",
++  "timezone": "Europe/Helsinki",
++  "requirements": [
++    "CBT01",
++    "CBT02",
++    "CBT03",
++    "R01",
++    "Q01"
++  ],
++  "owner_case": {
++    "car": "compact",
++    "collision": "head-on against bridge",
++    "windows": "persistent on Bluetooth and speakers across restarts",
++    "tablet": "owner does not notice delay; not independently device-tested"
++  },
++  "status": "Reproduced and corrected detailed-Compact perimeter truncation at bridge ends; owner listening and separate kerb/Windows output latency remain.",
++  "production_change": {
++    "path": "game/vehicle/visible_contact_audio.gd",
++    "scope": "Skip duplicate shared endpoints; next edge owns endpoint. Same 128-probe bound and unchanged geometry, gates, physics, damage, camera, banks and native output.",
++    "original_probe_calls": 203,
++    "unique_probe_calls": 116,
++    "hull_points": 88
++  },
++  "source_track": {
++    "title": "Knot",
++    "origin": "read-only saved local selection/cache; exact owner track not separately confirmed",
++    "source_sha256": "c237960ed63d03361858789517d02a3bb742740fe3795753bed3a12e6de53b13",
++    "fixture_path": "docs/evidence/compact-bridge-impact-2026-10-23/knot.json",
++    "fixture_sha256": "e8232ac63d9c1407bcadb0bc62f3b5a87b803cc5fbf8f2d89f5f782367101333",
++    "backend_contacted": false
++  },
++  "review": {
++    "checks": 2034,
++    "failures": 0,
++    "matrix_cases": 168,
++    "eligible_cases": 163,
++    "missed_eligible_before": 6,
++    "missed_eligible_after": 0,
++    "corrected_cases": [
++      {
++        "index": 2,
++        "before_tick": 3,
++        "after_tick": 2,
++        "eligible_tick": 2
++      },
++      {
++        "index": 12,
++        "before_tick": -1,
++        "after_tick": 29,
++        "eligible_tick": 27
++      },
++      {
++        "index": 13,
++        "before_tick": 13,
++        "after_tick": 10,
++        "eligible_tick": 9
++      },
++      {
++        "index": 14,
++        "before_tick": 7,
++        "after_tick": 5,
++        "eligible_tick": 5
++      },
++      {
++        "index": 15,
++        "before_tick": 31,
++        "after_tick": 17,
++        "eligible_tick": 17
++      },
++      {
++        "index": 16,
++        "before_tick": 11,
++        "after_tick": 6,
++        "eligible_tick": 6
++      },
++      {
++        "index": 17,
++        "before_tick": 6,
++        "after_tick": 3,
++        "eligible_tick": 3
++      },
++      {
++        "index": 18,
++        "before_tick": 31,
++        "after_tick": 16,
++        "eligible_tick": 16
++      },
++      {
++        "index": 19,
++        "before_tick": 10,
++        "after_tick": 6,
++        "eligible_tick": 6
++      },
++      {
++        "index": 20,
++        "before_tick": 5,
++        "after_tick": 3,
++        "eligible_tick": 3
++      },
++      {
++        "index": 36,
++        "before_tick": -1,
++        "after_tick": 20,
++        "eligible_tick": 20
++      },
++      {
++        "index": 37,
++        "before_tick": 12,
++        "after_tick": 7,
++        "eligible_tick": 7
++      },
++      {
++        "index": 38,
++        "before_tick": 6,
++        "after_tick": 4,
++        "eligible_tick": 4
++      },
++      {
++        "index": 39,
++        "before_tick": -1,
++        "after_tick": 22,
++        "eligible_tick": 21
++      },
++      {
++        "index": 40,
++        "before_tick": 12,
++        "after_tick": 7,
++        "eligible_tick": 7
++      },
++      {
++        "index": 41,
++        "before_tick": 6,
++        "after_tick": 4,
++        "eligible_tick": 4
++      },
++      {
++        "index": 42,
++        "before_tick": 4,
++        "after_tick": 3,
++        "eligible_tick": 3
++      },
++      {
++        "index": 45,
++        "before_tick": 3,
++        "after_tick": 2,
++        "eligible_tick": 2
++      },
++      {
++        "index": 51,
++        "before_tick": 90,
++        "after_tick": 89,
++        "eligible_tick": 89
++      },
++      {
++        "index": 63,
++        "before_tick": 17,
++        "after_tick": 16,
++        "eligible_tick": 16
++      },
++      {
++        "index": 66,
++        "before_tick": 31,
++        "after_tick": 16,
++        "eligible_tick": 16
++      },
++      {
++        "index": 67,
++        "before_tick": 10,
++        "after_tick": 6,
++        "eligible_tick": 6
++      },
++      {
++        "index": 68,
++        "before_tick": 5,
++        "after_tick": 3,
++        "eligible_tick": 3
++      },
++      {
++        "index": 69,
++        "before_tick": 39,
++        "after_tick": 22,
++        "eligible_tick": 22
++      },
++      {
++        "index": 70,
++        "before_tick": 13,
++        "after_tick": 8,
++        "eligible_tick": 8
++      },
++      {
++        "index": 71,
++        "before_tick": 7,
++        "after_tick": 4,
++        "eligible_tick": 4
++      },
++      {
++        "index": 72,
++        "before_tick": 33,
++        "after_tick": 19,
++        "eligible_tick": 19
++      },
++      {
++        "index": 73,
++        "before_tick": 11,
++        "after_tick": 7,
++        "eligible_tick": 7
++      },
++      {
++        "index": 74,
++        "before_tick": 6,
++        "after_tick": 4,
++        "eligible_tick": 4
++      },
++      {
++        "index": 81,
++        "before_tick": 24,
++        "after_tick": 23,
++        "eligible_tick": 23
++      },
++      {
++        "index": 93,
++        "before_tick": 80,
++        "after_tick": 79,
++        "eligible_tick": 79
++      },
++      {
++        "index": 96,
++        "before_tick": 31,
++        "after_tick": 16,
++        "eligible_tick": 16
++      },
++      {
++        "index": 97,
++        "before_tick": 11,
++        "after_tick": 6,
++        "eligible_tick": 6
++      },
++      {
++        "index": 98,
++        "before_tick": 6,
++        "after_tick": 3,
++        "eligible_tick": 3
++      },
++      {
++        "index": 99,
++        "before_tick": 28,
++        "after_tick": 14,
++        "eligible_tick": 14
++      },
++      {
++        "index": 100,
++        "before_tick": 9,
++        "after_tick": 5,
++        "eligible_tick": 5
++      },
++      {
++        "index": 101,
++        "before_tick": 5,
++        "after_tick": 3,
++        "eligible_tick": 3
++      },
++      {
++        "index": 120,
++        "before_tick": 21,
++        "after_tick": 20,
++        "eligible_tick": 20
++      },
++      {
++        "index": 123,
++        "before_tick": -1,
++        "after_tick": 24,
++        "eligible_tick": 24
++      },
++      {
++        "index": 124,
++        "before_tick": 13,
++        "after_tick": 7,
++        "eligible_tick": 7
++      },
++      {
++        "index": 125,
++        "before_tick": 6,
++        "after_tick": 4,
++        "eligible_tick": 4
++      },
++      {
++        "index": 129,
++        "before_tick": 14,
++        "after_tick": 13,
++        "eligible_tick": 13
++      },
++      {
++        "index": 136,
++        "before_tick": 38,
++        "after_tick": 37,
++        "eligible_tick": 37
++      },
++      {
++        "index": 147,
++        "before_tick": 30,
++        "after_tick": 14,
++        "eligible_tick": 14
++      },
++      {
++        "index": 148,
++        "before_tick": 10,
++        "after_tick": 5,
++        "eligible_tick": 5
++      },
++      {
++        "index": 149,
++        "before_tick": 5,
++        "after_tick": 3,
++        "eligible_tick": 3
++      },
++      {
++        "index": 150,
++        "before_tick": -1,
++        "after_tick": 15,
++        "eligible_tick": 15
++      },
++      {
++        "index": 151,
++        "before_tick": 10,
++        "after_tick": 5,
++        "eligible_tick": 5
++      },
++      {
++        "index": 152,
++        "before_tick": 5,
++        "after_tick": 3,
++        "eligible_tick": 3
++      },
++      {
++        "index": 153,
++        "before_tick": -1,
++        "after_tick": 38,
++        "eligible_tick": 34
++      },
++      {
++        "index": 154,
++        "before_tick": 14,
++        "after_tick": 13,
++        "eligible_tick": 12
++      },
++      {
++        "index": 156,
++        "before_tick": 34,
++        "after_tick": 20,
++        "eligible_tick": 19
++      },
++      {
++        "index": 157,
++        "before_tick": 12,
++        "after_tick": 7,
++        "eligible_tick": 7
++      },
++      {
++        "index": 158,
++        "before_tick": 6,
++        "after_tick": 4,
++        "eligible_tick": 4
++      },
++      {
++        "index": 159,
++        "before_tick": 33,
++        "after_tick": 19,
++        "eligible_tick": 19
++      },
++      {
++        "index": 160,
++        "before_tick": 11,
++        "after_tick": 7,
++        "eligible_tick": 7
++      },
++      {
++        "index": 161,
++        "before_tick": 6,
++        "after_tick": 4,
++        "eligible_tick": 4
++      }
++    ],
++    "remaining_dense_reference_gaps": [
++      {
++        "index": 12,
++        "ticks_after_dense_reference": 2
++      },
++      {
++        "index": 153,
++        "ticks_after_dense_reference": 4
++      }
++    ],
++    "outlines": [
++      {
++        "car": "compact",
++        "original_probes": 203,
++        "unique_probes": 116,
++        "vertices": 88
++      },
++      {
++        "car": "pickup",
++        "original_probes": 74,
++        "unique_probes": 62,
++        "vertices": 13
++      },
++      {
++        "car": "classic",
++        "original_probes": 56,
++        "unique_probes": 44,
++        "vertices": 13
++      },
++      {
++        "car": "formula",
++        "original_probes": 67,
++        "unique_probes": 53,
++        "vertices": 15
++      },
++      {
++        "car": "kart",
++        "original_probes": 53,
++        "unique_probes": 39,
++        "vertices": 15
++      }
++    ],
++    "native_original_corrected_pairs": [
++      {
++        "speed_mps": 5.0,
++        "original_cue_tick": 39,
++        "corrected_cue_tick": 22,
++        "physical_tick": 39,
++        "original_render_contact_to_output_ms": 155.98325,
++        "corrected_render_contact_to_output_ms": 19.98325,
++        "original_request_to_output_ms": 31.98325,
++        "corrected_request_to_output_ms": 35.98325
++      },
++      {
++        "speed_mps": 15.0,
++        "original_cue_tick": 13,
++        "corrected_cue_tick": 8,
++        "physical_tick": 13,
++        "original_render_contact_to_output_ms": 62.98325,
++        "corrected_render_contact_to_output_ms": 32.98325,
++        "original_request_to_output_ms": 37.98325,
++        "corrected_request_to_output_ms": 41.98325
++      },
++      {
++        "speed_mps": 30.0,
++        "original_cue_tick": 7,
++        "corrected_cue_tick": 4,
++        "physical_tick": 7,
++        "original_render_contact_to_output_ms": 57.98325,
++        "corrected_render_contact_to_output_ms": 32.98325,
++        "original_request_to_output_ms": 41.98325,
++        "corrected_request_to_output_ms": 40.98325
++      }
++    ],
++    "limits": "Current sampled perimeter retains 0.25 m target spacing and the same 128-probe ceiling. Dense 0.05 m reference can lead sampled contact by up to four ticks in two narrow-edge cases. Native output is own-process software capture; rendered-footprint timing excludes monitor scanout and acoustic/Bluetooth latency. No Windows buffer-latency reduction or kerb correction is claimed."
++  },
++  "actual_checks": [
++    {
++      "name": "Original sample-method coverage control",
++      "checks": 160,
++      "failures": 4,
++      "expected": "Detailed Compact incomplete coverage; simplified mode and other cars pass."
++    },
++    {
++      "name": "Corrected coverage headless",
++      "checks": 160,
++      "failures": 0
++    },
++    {
++      "name": "Corrected coverage native Compatibility",
++      "checks": 160,
++      "failures": 0
++    },
++    {
++      "name": "Corrected coverage desktop Mobile",
++      "checks": 160,
++      "failures": 0
++    },
++    {
++      "name": "Visible wall audio",
++      "checks": 167,
++      "failures": 0
++    },
++    {
++      "name": "Bridge contact audio",
++      "checks": 42184,
++      "failures": 0,
++      "clear_sweeps": 180,
++      "false_crashes": 0
++    },
++    {
++      "name": "Contact escalation",
++      "checks": 65,
++      "failures": 0
++    },
++    {
++      "name": "Bridge physics",
++      "checks": 16,
++      "failures": 0
++    },
++    {
++      "name": "Collision trace",
++      "checks": 9,
++      "failures": 0
++    },
++    {
++      "name": "Surface/kerb response headless",
++      "checks": 26,
++      "failures": 0
++    },
++    {
++      "name": "Parser",
++      "scripts": 1039,
++      "failures": 0
++    },
++    {
++      "name": "Python reviewer compilation",
++      "exit_code": 0
++    }
++  ],
++  "actual_commands": [
++    "scripts/dev.ps1 -Action TestScript -ScriptPath res://tests/probe_compact_bridge_contacts.gd -TestArgument @('--baseline','--output-dir=res://../build/compact-bridge-impact-2026-10-23/baseline')",
++    "scripts/dev.ps1 -Action TestScript -ScriptPath res://tests/probe_compact_bridge_contacts.gd -TestArgument @('--output-dir=res://../build/compact-bridge-impact-2026-10-23/fixed')",
++    "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/probe_windows_contact_timing.ps1 -Kind bridge -Label bridge-original-fixed-r1",
++    "python scripts/review_compact_bridge_impact.py",
++    "powershell -NoProfile -ExecutionPolicy Bypass -File build/compact-bridge-impact-2026-10-23/run_checks.ps1 -Baseline",
++    "same run_checks.ps1 with default corrected/headless, -Graphical Compatibility, and -Graphical -RenderingMethod mobile",
++    "same run_checks.ps1 -Checks test_bridge_contact_audio -ExtraArgument --evidence-dir=res://../build/compact-bridge-impact-2026-10-23/bridge-regression",
++    "same run_checks.ps1 for test_visible_wall_audio, test_contact_escalation_audio, test_bridge_contacts, test_collision_trace, test_surface_audio_response and test_script_parse",
++    "python -m py_compile scripts/review_compact_bridge_impact.py"
++  ],
++  "initial_corrections": [
++    "One wrapper was blocked by shell execution policy before launch.",
++    "One child APPDATA assignment expanded incorrectly, so that headless baseline used the usual Godot log location; no owner records were loaded or saved. All final checks/capture use isolated application storage.",
++    "Existing collision trace fixture initially fails 1 of 9 checks because production intentionally suppresses headless playback. Fixture now explicitly enables its asserted Godot fallback and retains all nine assertions; production output suppression unchanged."
++  ],
++  "limits": [
++    "Current 25 cm perimeter target remains; a dense 5 cm reference leads by 2/4 ticks in two narrow-edge cases.",
++    "Native timing is process-loopback and frame_post_draw footprint contact, not acoustic output or monitor scanout.",
++    "No Windows buffer-latency reduction or kerb correction is claimed.",
++    "Original full-coverage test fails only detailed Compact, but the tablet detail setting was not inspected.",
++    "New client reload and owner listening acceptance remain.",
++    "Probe default input is now the byte-identical retained document in evidence; captures used the identical build-directory copy."
++  ],
++  "microphone": false,
++  "other_application_or_owner_audio_captured": false,
++  "owner_process_control": false,
++  "phone_tablet_check_or_device_test": false,
++  "apk_export_install": false,
++  "native_rebuild": false,
++  "account_backend_mutation_deployment": false,
++  "artifacts": [
++    {
++      "path": "docs/evidence/compact-bridge-impact-2026-10-23/baseline/matrix.json",
++      "sha256": "cb3a24b8a3beb505f3ffff31f2d7d21bfa9db8cf29a656b3d2e4301e634917e8",
++      "bytes": 52674
++    },
++    {
++      "path": "docs/evidence/compact-bridge-impact-2026-10-23/fixed/matrix.json",
++      "sha256": "0875d8cf4458c775d87e8a3ffefc45f2b6a449a24b74598d84ab56cf0d409f6f",
++      "bytes": 52764
++    },
++    {
++      "path": "docs/evidence/compact-bridge-impact-2026-10-23/review.json",
++      "sha256": "b69ded1a2583b268b9c54bd8515352d252af85705db9ffbf6f1262c751ff29bb",
++      "bytes": 8860
++    },
++    {
++      "path": "docs/evidence/compact-bridge-impact-2026-10-23/run_checks.ps1",
++      "sha256": "9a3bbb0a7a3842e0acb3b19b76f79b1dd38e88b2aed09dd98b7d2058b677d987",
++      "bytes": 775
++    },
++    {
++      "path": "docs/evidence/compact-bridge-impact-2026-10-23/native/ready.json",
++      "sha256": "83a048d5ddbfbc67f178b34eedb7862173c2bff3c479f5645e48838b91e4653c",
++      "bytes": 127
++    },
++    {
++      "path": "docs/evidence/compact-bridge-impact-2026-10-23/native/events.json",
++      "sha256": "6d002ead982c988ed0cf60141842d8b0b704def6b3e864e7b0d5cdf4f54f196e",
++      "bytes": 4266
++    },
++    {
++      "path": "docs/evidence/compact-bridge-impact-2026-10-23/native/timing-report.json",
++      "sha256": "31ca5362603fa05b648429359a2554a8519141a3ce37873a3bcf2bfd5f21c01a",
++      "bytes": 1656
++    },
++    {
++      "path": "docs/evidence/compact-bridge-impact-2026-10-23/native/engine.log",
++      "sha256": "8dd20c1f35e791e24b0443a757a1ce2838b972b9f495d230825110c042c3785c",
++      "bytes": 4751
++    },
++    {
++      "path": "docs/evidence/compact-bridge-impact-2026-10-23/native/engine-error.log",
++      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
++      "bytes": 0
++    },
++    {
++      "path": "docs/evidence/compact-bridge-impact-2026-10-23/native/capture-meta.txt",
++      "sha256": "b1e8e25ec12440787c437f242f7c3c193cada59bb49f1cf608d7e24ce6226365",
++      "bytes": 65
++    },
++    {
++      "path": "docs/evidence/compact-bridge-impact-2026-10-23/bridge-contact.png",
++      "sha256": "526bdbc310fe45a4991054cf9633b97f6489595b6d1aaa2c6908b823a0d8a2c9",
++      "bytes": 1499172
++    },
++    {
++      "path": "build/windows-contact-timing-2026-10-23/bridge-original-fixed-r1/bridge/loopback.pcm",
++      "sha256": "17cb17cd67bc429a0947bbb862b707a5405dab8daae062b9bef7d19f7fea2f3e",
++      "bytes": 5752320
++    },
++    {
++      "path": "build/windows-contact-timing-2026-10-23/bridge-original-fixed-r1/bridge/packets.csv",
++      "sha256": "eeb0a100faa0d03000b0881cc383eda71e7feefe5ff358602faa53d8ebcb4817",
++      "bytes": 210452
++    },
++    {
++      "path": "docs/evidence/compact-bridge-impact-2026-10-23/logs/TestScript-10136.log",
++      "sha256": "1c0a6f799c48f054938a2655b1b4b7d60e46a992b479689950f2bf7b46b2f09e",
++      "bytes": 115
++    },
++    {
++      "path": "docs/evidence/compact-bridge-impact-2026-10-23/logs/TestScript-35004.log",
++      "sha256": "16a87e6917933194ea5dd61a6f7e5f783e23d2c6357b3b0631a29705cda22104",
++      "bytes": 183
++    },
++    {
++      "path": "docs/evidence/compact-bridge-impact-2026-10-23/logs/TestScript-19424.log",
++      "sha256": "b3596d6cda49bfd0a66729c537acf16e2e4c8dcb75c18455adf606967abd896b",
++      "bytes": 546
++    },
++    {
++      "path": "docs/evidence/compact-bridge-impact-2026-10-23/logs/TestScript-34792.log",
++      "sha256": "cebc89135237d1f3db032d26dd0964598795c913ed4f7bfa92be0462deef7cc3",
++      "bytes": 626
++    },
++    {
++      "path": "docs/evidence/compact-bridge-impact-2026-10-23/logs/TestScript-29596.log",
++      "sha256": "267098fce863b91d9f1145fa2d40e94c968f12279c73ae411dc2281c16c58252",
++      "bytes": 558
++    },
++    {
++      "path": "docs/evidence/compact-bridge-impact-2026-10-23/logs/TestScript-34372.log",
++      "sha256": "922e749175c00235a66fba9b1b5d7d6daf34e6abcacfa4cf7a2160aa66873251",
++      "bytes": 125
++    },
++    {
++      "path": "docs/evidence/compact-bridge-impact-2026-10-23/logs/TestScript-18748.log",
++      "sha256": "7ba1a30aedbdd72398eaa885d02c191ba9a34dbd01e7f8f35eab0d657f308c82",
++      "bytes": 349
++    },
++    {
++      "path": "docs/evidence/compact-bridge-impact-2026-10-23/logs/TestScript-33500.log",
++      "sha256": "a4668c57505099067ef1c276391e835693fe8cec7391e21c048a30dcfe182341",
++      "bytes": 4526
++    },
++    {
++      "path": "docs/evidence/compact-bridge-impact-2026-10-23/knot.json",
++      "sha256": "e8232ac63d9c1407bcadb0bc62f3b5a87b803cc5fbf8f2d89f5f782367101333",
++      "bytes": 24497
++    }
++  ],
++  "checkpoint": "docs/evidence/compact-bridge-impact-2026-10-23/checkpoint.json"
++}
+diff --git a/docs/evidence/compact-bridge-impact-2026-10-23/review.json b/docs/evidence/compact-bridge-impact-2026-10-23/review.json
+new file mode 100644
+--- /dev/null
++++ b/docs/evidence/compact-bridge-impact-2026-10-23/review.json
+@@ -0,0 +1,427 @@
++{
++  "checks": 2034,
++  "failures": 0,
++  "matrix_cases": 168,
++  "eligible_cases": 163,
++  "missed_eligible_before": 6,
++  "missed_eligible_after": 0,
++  "corrected_cases": [
++    {
++      "index": 2,
++      "before_tick": 3,
++      "after_tick": 2,
++      "eligible_tick": 2
++    },
++    {
++      "index": 12,
++      "before_tick": -1,
++      "after_tick": 29,
++      "eligible_tick": 27
++    },
++    {
++      "index": 13,
++      "before_tick": 13,
++      "after_tick": 10,
++      "eligible_tick": 9
++    },
++    {
++      "index": 14,
++      "before_tick": 7,
++      "after_tick": 5,
++      "eligible_tick": 5
++    },
++    {
++      "index": 15,
++      "before_tick": 31,
++      "after_tick": 17,
++      "eligible_tick": 17
++    },
++    {
++      "index": 16,
++      "before_tick": 11,
++      "after_tick": 6,
++      "eligible_tick": 6
++    },
++    {
++      "index": 17,
++      "before_tick": 6,
++      "after_tick": 3,
++      "eligible_tick": 3
++    },
++    {
++      "index": 18,
++      "before_tick": 31,
++      "after_tick": 16,
++      "eligible_tick": 16
++    },
++    {
++      "index": 19,
++      "before_tick": 10,
++      "after_tick": 6,
++      "eligible_tick": 6
++    },
++    {
++      "index": 20,
++      "before_tick": 5,
++      "after_tick": 3,
++      "eligible_tick": 3
++    },
++    {
++      "index": 36,
++      "before_tick": -1,
++      "after_tick": 20,
++      "eligible_tick": 20
++    },
++    {
++      "index": 37,
++      "before_tick": 12,
++      "after_tick": 7,
++      "eligible_tick": 7
++    },
++    {
++      "index": 38,
++      "before_tick": 6,
++      "after_tick": 4,
++      "eligible_tick": 4
++    },
++    {
++      "index": 39,
++      "before_tick": -1,
++      "after_tick": 22,
++      "eligible_tick": 21
++    },
++    {
++      "index": 40,
++      "before_tick": 12,
++      "after_tick": 7,
++      "eligible_tick": 7
++    },
++    {
++      "index": 41,
++      "before_tick": 6,
++      "after_tick": 4,
++      "eligible_tick": 4
++    },
++    {
++      "index": 42,
++      "before_tick": 4,
++      "after_tick": 3,
++      "eligible_tick": 3
++    },
++    {
++      "index": 45,
++      "before_tick": 3,
++      "after_tick": 2,
++      "eligible_tick": 2
++    },
++    {
++      "index": 51,
++      "before_tick": 90,
++      "after_tick": 89,
++      "eligible_tick": 89
++    },
++    {
++      "index": 63,
++      "before_tick": 17,
++      "after_tick": 16,
++      "eligible_tick": 16
++    },
++    {
++      "index": 66,
++      "before_tick": 31,
++      "after_tick": 16,
++      "eligible_tick": 16
++    },
++    {
++      "index": 67,
++      "before_tick": 10,
++      "after_tick": 6,
++      "eligible_tick": 6
++    },
++    {
++      "index": 68,
++      "before_tick": 5,
++      "after_tick": 3,
++      "eligible_tick": 3
++    },
++    {
++      "index": 69,
++      "before_tick": 39,
++      "after_tick": 22,
++      "eligible_tick": 22
++    },
++    {
++      "index": 70,
++      "before_tick": 13,
++      "after_tick": 8,
++      "eligible_tick": 8
++    },
++    {
++      "index": 71,
++      "before_tick": 7,
++      "after_tick": 4,
++      "eligible_tick": 4
++    },
++    {
++      "index": 72,
++      "before_tick": 33,
++      "after_tick": 19,
++      "eligible_tick": 19
++    },
++    {
++      "index": 73,
++      "before_tick": 11,
++      "after_tick": 7,
++      "eligible_tick": 7
++    },
++    {
++      "index": 74,
++      "before_tick": 6,
++      "after_tick": 4,
++      "eligible_tick": 4
++    },
++    {
++      "index": 81,
++      "before_tick": 24,
++      "after_tick": 23,
++      "eligible_tick": 23
++    },
++    {
++      "index": 93,
++      "before_tick": 80,
++      "after_tick": 79,
++      "eligible_tick": 79
++    },
++    {
++      "index": 96,
++      "before_tick": 31,
++      "after_tick": 16,
++      "eligible_tick": 16
++    },
++    {
++      "index": 97,
++      "before_tick": 11,
++      "after_tick": 6,
++      "eligible_tick": 6
++    },
++    {
++      "index": 98,
++      "before_tick": 6,
++      "after_tick": 3,
++      "eligible_tick": 3
++    },
++    {
++      "index": 99,
++      "before_tick": 28,
++      "after_tick": 14,
++      "eligible_tick": 14
++    },
++    {
++      "index": 100,
++      "before_tick": 9,
++      "after_tick": 5,
++      "eligible_tick": 5
++    },
++    {
++      "index": 101,
++      "before_tick": 5,
++      "after_tick": 3,
++      "eligible_tick": 3
++    },
++    {
++      "index": 120,
++      "before_tick": 21,
++      "after_tick": 20,
++      "eligible_tick": 20
++    },
++    {
++      "index": 123,
++      "before_tick": -1,
++      "after_tick": 24,
++      "eligible_tick": 24
++    },
++    {
++      "index": 124,
++      "before_tick": 13,
++      "after_tick": 7,
++      "eligible_tick": 7
++    },
++    {
++      "index": 125,
++      "before_tick": 6,
++      "after_tick": 4,
++      "eligible_tick": 4
++    },
++    {
++      "index": 129,
++      "before_tick": 14,
++      "after_tick": 13,
++      "eligible_tick": 13
++    },
++    {
++      "index": 136,
++      "before_tick": 38,
++      "after_tick": 37,
++      "eligible_tick": 37
++    },
++    {
++      "index": 147,
++      "before_tick": 30,
++      "after_tick": 14,
++      "eligible_tick": 14
++    },
++    {
++      "index": 148,
++      "before_tick": 10,
++      "after_tick": 5,
++      "eligible_tick": 5
++    },
++    {
++      "index": 149,
++      "before_tick": 5,
++      "after_tick": 3,
++      "eligible_tick": 3
++    },
++    {
++      "index": 150,
++      "before_tick": -1,
++      "after_tick": 15,
++      "eligible_tick": 15
++    },
++    {
++      "index": 151,
++      "before_tick": 10,
++      "after_tick": 5,
++      "eligible_tick": 5
++    },
++    {
++      "index": 152,
++      "before_tick": 5,
++      "after_tick": 3,
++      "eligible_tick": 3
++    },
++    {
++      "index": 153,
++      "before_tick": -1,
++      "after_tick": 38,
++      "eligible_tick": 34
++    },
++    {
++      "index": 154,
++      "before_tick": 14,
++      "after_tick": 13,
++      "eligible_tick": 12
++    },
++    {
++      "index": 156,
++      "before_tick": 34,
++      "after_tick": 20,
++      "eligible_tick": 19
++    },
++    {
++      "index": 157,
++      "before_tick": 12,
++      "after_tick": 7,
++      "eligible_tick": 7
++    },
++    {
++      "index": 158,
++      "before_tick": 6,
++      "after_tick": 4,
++      "eligible_tick": 4
++    },
++    {
++      "index": 159,
++      "before_tick": 33,
++      "after_tick": 19,
++      "eligible_tick": 19
++    },
++    {
++      "index": 160,
++      "before_tick": 11,
++      "after_tick": 7,
++      "eligible_tick": 7
++    },
++    {
++      "index": 161,
++      "before_tick": 6,
++      "after_tick": 4,
++      "eligible_tick": 4
++    }
++  ],
++  "remaining_dense_reference_gaps": [
++    {
++      "index": 12,
++      "ticks_after_dense_reference": 2
++    },
++    {
++      "index": 153,
++      "ticks_after_dense_reference": 4
++    }
++  ],
++  "outlines": [
++    {
++      "car": "compact",
++      "original_probes": 203,
++      "unique_probes": 116,
++      "vertices": 88
++    },
++    {
++      "car": "pickup",
++      "original_probes": 74,
++      "unique_probes": 62,
++      "vertices": 13
++    },
++    {
++      "car": "classic",
++      "original_probes": 56,
++      "unique_probes": 44,
++      "vertices": 13
++    },
++    {
++      "car": "formula",
++      "original_probes": 67,
++      "unique_probes": 53,
++      "vertices": 15
++    },
++    {
++      "car": "kart",
++      "original_probes": 53,
++      "unique_probes": 39,
++      "vertices": 15
++    }
++  ],
++  "native_original_corrected_pairs": [
++    {
++      "speed_mps": 5.0,
++      "original_cue_tick": 39,
++      "corrected_cue_tick": 22,
++      "physical_tick": 39,
++      "original_render_contact_to_output_ms": 155.98325,
++      "corrected_render_contact_to_output_ms": 19.98325,
++      "original_request_to_output_ms": 31.98325,
++      "corrected_request_to_output_ms": 35.98325
++    },
++    {
++      "speed_mps": 15.0,
++      "original_cue_tick": 13,
++      "corrected_cue_tick": 8,
++      "physical_tick": 13,
++      "original_render_contact_to_output_ms": 62.98325,
++      "corrected_render_contact_to_output_ms": 32.98325,
++      "original_request_to_output_ms": 37.98325,
++      "corrected_request_to_output_ms": 41.98325
++    },
++    {
++      "speed_mps": 30.0,
++      "original_cue_tick": 7,
++      "corrected_cue_tick": 4,
++      "physical_tick": 7,
++      "original_render_contact_to_output_ms": 57.98325,
++      "corrected_render_contact_to_output_ms": 32.98325,
++      "original_request_to_output_ms": 41.98325,
++      "corrected_request_to_output_ms": 40.98325
++    }
++  ],
++  "limits": "Current sampled perimeter retains 0.25 m target spacing and the same 128-probe ceiling. Dense 0.05 m reference can lead sampled contact by up to four ticks in two narrow-edge cases. Native output is own-process software capture; rendered-footprint timing excludes monitor scanout and acoustic/Bluetooth latency. No Windows buffer-latency reduction or kerb correction is claimed."
++}
+diff --git a/docs/evidence/compact-bridge-impact-2026-10-23/knot.json b/docs/evidence/compact-bridge-impact-2026-10-23/knot.json
+new file mode 100644
+--- /dev/null
++++ b/docs/evidence/compact-bridge-impact-2026-10-23/knot.json
+@@ -0,0 +1,1505 @@
++{
++  "base_track": "",
++  "corners": [
++    "sharp",
++    "sharp",
++    "sharp",
++    "sharp",
++    "sharp",
++    "sharp",
++    "sharp",
++    "sharp",
++    "sharp",
++    "sharp",
++    "sharp",
++    "sharp",
++    "sharp",
++    "sharp",
++    "sharp",
++    "sharp",
++    "sharp",
++    "sharp",
++    "sharp",
++    "sharp",
++    "sharp",
++    "sharp",
++    "sharp",
++    "sharp",
++    "sharp",
++    "sharp",
++    "sharp",
++    "sharp",
++    "sharp",
++    "sharp",
++    "sharp",
++    "sharp",
++    "sharp",
++    "sharp",
++    "sharp",
++    "sharp",
++    "sharp",
++    "sharp",
++    "sharp",
++    "sharp",
++    "sharp",
++    "sharp",
++    "sharp",
++    "sharp",
++    "sharp",
++    "sharp",
++    "sharp",
++    "sharp",
++    "sharp",
++    "sharp",
++    "sharp",
++    "sharp",
++    "sharp",
++    "sharp",
++    "sharp",
++    "sharp",
++    "sharp",
++    "sharp",
++    "sharp",
++    "sharp",
++    "sharp",
++    "sharp",
++    "sharp",
++    "sharp",
++    "sharp",
++    "sharp",
++    "sharp",
++    "sharp",
++    "sharp",
++    "sharp",
++    "sharp",
++    "sharp",
++    "sharp",
++    "sharp",
++    "sharp",
++    "sharp",
++    "sharp",
++    "sharp",
++    "sharp",
++    "sharp",
++    "sharp",
++    "sharp",
++    "sharp",
++    "sharp",
++    "sharp",
++    "sharp",
++    "sharp",
++    "sharp",
++    "sharp",
++    "sharp",
++    "sharp",
++    "sharp",
++    "sharp",
++    "sharp",
++    "sharp",
++    "sharp"
++  ],
++  "creator": "Beat my track",
++  "id": "track_1e3936d025fe7c82",
++  "layout": {},
++  "name": "Knot",
++  "objects": [
++    {
++      "kind": "tyre_stack",
++      "position": [
++        -13.0,
++        -28.0
++      ],
++      "rotation": 0.0
++    },
++    {
++      "kind": "tyre_stack",
++      "position": [
++        -15.0,
++        -29.0
++      ],
++      "rotation": 0.0
++    },
++    {
++      "kind": "tyre_stack",
++      "position": [
++        -14.0,
++        -28.0
++      ],
++      "rotation": 0.0
++    },
++    {
++      "kind": "tyre_stack",
++      "position": [
++        -14.0,
++        -29.0
++      ],
++      "rotation": 0.0
++    },
++    {
++      "kind": "tyre_stack",
++      "position": [
++        -16.0,
++        -28.0
++      ],
++      "rotation": 0.0
++    },
++    {
++      "kind": "tyre_stack",
++      "position": [
++        -16.0,
++        -29.0
++      ],
++      "rotation": 0.0
++    },
++    {
++      "kind": "tyre_stack",
++      "position": [
++        -15.0,
++        -28.0
++      ],
++      "rotation": 0.0
++    },
++    {
++      "kind": "tyre_stack",
++      "position": [
++        -17.0,
++        -29.0
++      ],
++      "rotation": 0.0
++    },
++    {
++      "kind": "tyre_stack",
++      "position": [
++        -17.0,
++        -28.0
++      ],
++      "rotation": 0.0
++    },
++    {
++      "kind": "tyre_stack",
++      "position": [
++        -17.0,
++        -30.0
++      ],
++      "rotation": 0.0
++    },
++    {
++      "kind": "tyre_stack",
++      "position": [
++        -16.0,
++        -30.0
++      ],
++      "rotation": 0.0
++    },
++    {
++      "kind": "tyre_stack",
++      "position": [
++        -18.0,
++        -29.0
++      ],
++      "rotation": 0.0
++    },
++    {
++      "kind": "tyre_stack",
++      "position": [
++        -18.0,
++        -30.0
++      ],
++      "rotation": 0.0
++    },
++    {
++      "kind": "tyre_stack",
++      "position": [
++        -19.0,
++        -28.0
++      ],
++      "rotation": 0.0
++    },
++    {
++      "kind": "tyre_stack",
++      "position": [
++        -19.0,
++        -29.0
++      ],
++      "rotation": 0.0
++    },
++    {
++      "kind": "tyre_stack",
++      "position": [
++        -18.0,
++        -28.0
++      ],
++      "rotation": 0.0
++    },
++    {
++      "kind": "tyre_stack",
++      "position": [
++        -19.0,
++        -30.0
++      ],
++      "rotation": 0.0
++    },
++    {
++      "kind": "tyre_stack",
++      "position": [
++        -20.0,
++        -29.0
++      ],
++      "rotation": 0.0
++    },
++    {
++      "kind": "tyre_stack",
++      "position": [
++        -20.0,
++        -30.0
++      ],
++      "rotation": 0.0
++    },
++    {
++      "kind": "tyre_stack",
++      "position": [
++        -21.0,
++        -29.0
++      ],
++      "rotation": 0.0
++    },
++    {
++      "kind": "tyre_stack",
++      "position": [
++        -21.0,
++        -30.0
++      ],
++      "rotation": 0.0
++    },
++    {
++      "kind": "tyre_stack",
++      "position": [
++        -22.0,
++        -29.0
++      ],
++      "rotation": 0.0
++    },
++    {
++      "kind": "tyre_stack",
++      "position": [
++        -22.0,
++        -31.0
++      ],
++      "rotation": 0.0
++    },
++    {
++      "kind": "tyre_stack",
++      "position": [
++        -22.0,
++        -30.0
++      ],
++      "rotation": 0.0
++    },
++    {
++      "kind": "tyre_stack",
++      "position": [
++        -23.0,
++        -29.0
++      ],
++      "rotation": 0.0
++    },
++    {
++      "kind": "tyre_stack",
++      "position": [
++        -23.0,
++        -30.0
++      ],
++      "rotation": 0.0
++    },
++    {
++      "kind": "tyre_stack",
++      "position": [
++        -23.0,
++        -31.0
++      ],
++      "rotation": 0.0
++    },
++    {
++      "kind": "tyre_stack",
++      "position": [
++        -24.0,
++        -30.0
++      ],
++      "rotation": 0.0
++    },
++    {
++      "kind": "tyre_stack",
++      "position": [
++        -24.0,
++        -31.0
++      ],
++      "rotation": 0.0
++    },
++    {
++      "kind": "tyre_stack",
++      "position": [
++        -25.0,
++        -30.0
++      ],
++      "rotation": 0.0
++    },
++    {
++      "kind": "tyre_stack",
++      "position": [
++        -25.0,
++        -31.0
++      ],
++      "rotation": 0.0
++    },
++    {
++      "kind": "tyre_stack",
++      "position": [
++        -26.0,
++        -30.0
++      ],
++      "rotation": 0.0
++    },
++    {
++      "kind": "tyre_stack",
++      "position": [
++        -26.0,
++        -31.0
++      ],
++      "rotation": 0.0
++    },
++    {
++      "kind": "tyre_stack",
++      "position": [
++        -27.0,
++        -31.0
++      ],
++      "rotation": 0.0
++    },
++    {
++      "kind": "tyre_stack",
++      "position": [
++        -27.0,
++        -32.0
++      ],
++      "rotation": 0.0
++    },
++    {
++      "kind": "tyre_stack",
++      "position": [
++        -26.0,
++        -32.0
++      ],
++      "rotation": 0.0
++    },
++    {
++      "kind": "tyre_stack",
++      "position": [
++        -25.0,
++        -32.0
++      ],
++      "rotation": 0.0
++    },
++    {
++      "kind": "tyre_stack",
++      "position": [
++        -24.0,
++        -32.0
++      ],
++      "rotation": 0.0
++    },
++    {
++      "kind": "tyre_stack",
++      "position": [
++        -23.0,
++        -32.0
++      ],
++      "rotation": 0.0
++    },
++    {
++      "kind": "tyre_stack",
++      "position": [
++        -28.0,
++        -32.0
++      ],
++      "rotation": 0.0
++    },
++    {
++      "kind": "tyre_stack",
++      "position": [
++        -28.0,
++        -33.0
++      ],
++      "rotation": 0.0
++    },
++    {
++      "kind": "tyre_stack",
++      "position": [
++        -27.0,
++        -33.0
++      ],
++      "rotation": 0.0
++    },
++    {
++      "kind": "tyre_stack",
++      "position": [
++        -26.0,
++        -33.0
++      ],
++      "rotation": 0.0
++    },
++    {
++      "kind": "tyre_stack",
++      "position": [
++        -25.0,
++        -33.0
++      ],
++      "rotation": 0.0
++    },
++    {
++      "kind": "tyre_stack",
++      "position": [
++        -24.0,
++        -33.0
++      ],
++      "rotation": 0.0
++    },
++    {
++      "kind": "tyre_stack",
++      "position": [
++        -29.0,
++        -32.0
++      ],
++      "rotation": 0.0
++    },
++    {
++      "kind": "tyre_stack",
++      "position": [
++        -29.0,
++        -33.0
++      ],
++      "rotation": 0.0
++    },
++    {
++      "kind": "tyre_stack",
++      "position": [
++        -30.0,
++        -33.0
++      ],
++      "rotation": 0.0
++    },
++    {
++      "kind": "tyre_stack",
++      "position": [
++        -31.0,
++        -34.0
++      ],
++      "rotation": 0.0
++    },
++    {
++      "kind": "tyre_stack",
++      "position": [
++        -30.0,
++        -34.0
++      ],
++      "rotation": 0.0
++    },
++    {
++      "kind": "tyre_stack",
++      "position": [
++        -29.0,
++        -34.0
++      ],
++      "rotation": 0.0
++    },
++    {
++      "kind": "tyre_stack",
++      "position": [
++        -28.0,
++        -34.0
++      ],
++      "rotation": 0.0
++    },
++    {
++      "kind": "tyre_stack",
++      "position": [
++        -32.0,
++        -35.0
++      ],
++      "rotation": 0.0
++    },
++    {
++      "kind": "tyre_stack",
++      "position": [
++        -31.0,
++        -35.0
++      ],
++      "rotation": 0.0
++    },
++    {
++      "kind": "tyre_stack",
++      "position": [
++        -30.0,
++        -35.0
++      ],
++      "rotation": 0.0
++    },
++    {
++      "kind": "tyre_stack",
++      "position": [
++        -29.0,
++        -35.0
++      ],
++      "rotation": 0.0
++    },
++    {
++      "kind": "tyre_stack",
++      "position": [
++        -33.0,
++        -36.0
++      ],
++      "rotation": 0.0
++    },
++    {
++      "kind": "tyre_stack",
++      "position": [
++        -32.0,
++        -36.0
++      ],
++      "rotation": 0.0
++    },
++    {
++      "kind": "tyre_stack",
++      "position": [
++        -31.0,
++        -36.0
++      ],
++      "rotation": 0.0
++    },
++    {
++      "kind": "tyre_stack",
++      "position": [
++        -34.0,
++        -36.0
++      ],
++      "rotation": 0.0
++    },
++    {
++      "kind": "tyre_stack",
++      "position": [
++        -34.0,
++        -37.0
++      ],
++      "rotation": 0.0
++    },
++    {
++      "kind": "tyre_stack",
++      "position": [
++        -33.0,
++        -37.0
++      ],
++      "rotation": 0.0
++    },
++    {
++      "kind": "tyre_stack",
++      "position": [
++        -32.0,
++        -37.0
++      ],
++      "rotation": 0.0
++    },
++    {
++      "kind": "tyre_stack",
++      "position": [
++        -35.0,
++        -37.0
++      ],
++      "rotation": 0.0
++    },
++    {
++      "kind": "tyre_stack",
++      "position": [
++        -35.0,
++        -38.0
++      ],
++      "rotation": 0.0
++    },
++    {
++      "kind": "tyre_stack",
++      "position": [
++        -34.0,
++        -38.0
++      ],
++      "rotation": 0.0
++    },
++    {
++      "kind": "tyre_stack",
++      "position": [
++        -33.0,
++        -38.0
++      ],
++      "rotation": 0.0
++    },
++    {
++      "kind": "tyre_stack",
++      "position": [
++        -13.0,
++        -29.0
++      ],
++      "rotation": 0.0
++    },
++    {
++      "kind": "tyre_stack",
++      "position": [
++        -12.0,
++        -28.0
++      ],
++      "rotation": 0.0
++    },
++    {
++      "kind": "tyre_stack",
++      "position": [
++        -12.0,
++        -29.0
++      ],
++      "rotation": 0.0
++    },
++    {
++      "kind": "tyre_stack",
++      "position": [
++        -11.0,
++        -28.0
++      ],
++      "rotation": 0.0
++    },
++    {
++      "kind": "tyre_stack",
++      "position": [
++        -11.0,
++        -29.0
++      ],
++      "rotation": 0.0
++    },
++    {
++      "kind": "tyre_stack",
++      "position": [
++        -10.0,
++        -29.0
++      ],
++      "rotation": 0.0
++    },
++    {
++      "kind": "tyre_stack",
++      "position": [
++        -11.0,
++        -30.0
++      ],
++      "rotation": 0.0
++    },
++    {
++      "kind": "tyre_stack",
++      "position": [
++        -10.0,
++        -30.0
++      ],
++      "rotation": 0.0
++    },
++    {
++      "kind": "tyre_stack",
++      "position": [
++        -9.0,
++        -30.0
++      ],
++      "rotation": 0.0
++    },
++    {
++      "kind": "tyre_stack",
++      "position": [
++        -10.0,
++        -31.0
++      ],
++      "rotation": 0.0
++    },
++    {
++      "kind": "tyre_stack",
++      "position": [
++        -9.0,
++        -31.0
++      ],
++      "rotation": 0.0
++    },
++    {
++      "kind": "tyre_stack",
++      "position": [
++        -8.0,
++        -31.0
++      ],
++      "rotation": 0.0
++    },
++    {
++      "kind": "tyre_stack",
++      "position": [
++        -7.0,
++        -31.0
++      ],
++      "rotation": 0.0
++    },
++    {
++      "kind": "tyre_stack",
++      "position": [
++        -8.0,
++        -30.0
++      ],
++      "rotation": 0.0
++    },
++    {
++      "kind": "tyre_stack",
++      "position": [
++        -9.0,
++        -32.0
++      ],
++      "rotation": 0.0
++    },
++    {
++      "kind": "tyre_stack",
++      "position": [
++        -8.0,
++        -32.0
++      ],
++      "rotation": 0.0
++    },
++    {
++      "kind": "tyre_stack",
++      "position": [
++        -7.0,
++        -32.0
++      ],
++      "rotation": 0.0
++    },
++    {
++      "kind": "tyre_stack",
++      "position": [
++        -6.0,
++        -32.0
++      ],
++      "rotation": 0.0
++    }
++  ],
++  "paint": [
++    {
++      "mode": "area",
++      "points": [
++        [
++          -27.5,
++          -85.0
++        ],
++        [
++          -35.5,
++          -54.0
++        ],
++        [
++          -37.5,
++          -40.0
++        ],
++        [
++          -30.5,
++          -30.5
++        ],
++        [
++          -13.5,
++          -26.5
++        ],
++        [
++          -5.5,
++          -31.0
++        ],
++        [
++          13.5,
++          -47.0
++        ],
++        [
++          -14.5,
++          -55.0
++        ],
++        [
++          -20.5,
++          -66.0
++        ]
++      ],
++      "protect_road": true,
++      "shape": "round",
++      "surface": 2.0,
++      "width": 10.0
++    }
++  ],
++  "pieces": [
++    {
++      "flip": false,
++      "heading": 0.0459302607441986,
++      "kind": "straight",
++      "length": 53.9630813598633,
++      "position": [
++        -5.5,
++        -48.5
++      ],
++      "radius": 16.0,
++      "width": 10.0
++    },
++    {
++      "flip": false,
++      "heading": 0.0459302607441986,
++      "kind": "hairpin",
++      "length": 0.0,
++      "position": [
++        48.4630661010742,
++        -48.4567413330078
++      ],
++      "radius": 12.0,
++      "width": 10.0
++    },
++    {
++      "flip": false,
++      "heading": 180.045930260744,
++      "kind": "hairpin",
++      "length": 0.0,
++      "position": [
++        48.4245872497559,
++        -0.456756591796875
++      ],
++      "radius": 12.0,
++      "width": 10.0
++    },
++    {
++      "flip": false,
++      "heading": 0.0459302607441714,
++      "kind": "straight",
++      "length": 28.0,
++      "position": [
++        48.4245872497559,
++        -0.456756591796875
++      ],
++      "radius": 16.0,
++      "width": 10.0
++    },
++    {
++      "flip": false,
++      "heading": 0.0459302607441714,
++      "kind": "hairpin",
++      "length": 0.0,
++      "position": [
++        76.4438171386719,
++        -24.4343032836914
++      ],
++      "radius": 12.0,
++      "width": 10.0
++    },
++    {
++      "flip": false,
++      "heading": 180.045930260744,
++      "kind": "bridge",
++      "length": 48.0,
++      "position": [
++        76.4438171386719,
++        -24.4343032836914
++      ],
++      "radius": 16.0,
++      "width": 10.0
++    },
++    {
++      "curvature": 0.14,
++      "flip": false,
++      "heading": 182.279735731391,
++      "kind": "curve",
++      "length": 0.0,
++      "position": [
++        28.4438323974609,
++        -24.4727821350098
++      ],
++      "radius": 11.2410340375426,
++      "width": 10.0
++    },
++    {
++      "flip": false,
++      "heading": 269.896837263003,
++      "kind": "bridge",
++      "length": 45.9167631401033,
++      "position": [
++        17.6588439941406,
++        -36.1520690917969
++      ],
++      "radius": 16.0,
++      "width": 10.0
++    },
++    {
++      "flip": false,
++      "heading": 269.164944073622,
++      "kind": "hairpin",
++      "length": 3.51069364126234,
++      "position": [
++        2.63457846641541,
++        -81.8509750366211
++      ],
++      "radius": 7.47158837799172,
++      "width": 10.0
++    },
++    {
++      "angle": 97.0,
++      "curvature": 0.1,
++      "flip": false,
++      "heading": 172.164944073622,
++      "kind": "curve",
++      "length": 0.0,
++      "position": [
++        20.4580819606781,
++        -66.539306640625
++      ],
++      "radius": 15.6867286361938,
++      "width": 10.0
++    },
++    {
++      "flip": false,
++      "heading": 91.147741582029,
++      "kind": "curve",
++      "length": 0.0,
++      "position": [
++        42.2206611633301,
++        -87.4470138549805
++      ],
++      "radius": 21.3394287577419,
++      "width": 10.0
++    },
++    {
++      "flip": false,
++      "heading": 1.37077275795377,
++      "kind": "curve",
++      "length": 0.0,
++      "position": [
++        20.4223327636719,
++        -110.31413269043
++      ],
++      "radius": 22.3391302390746,
++      "width": 10.0
++    },
++    {
++      "flip": false,
++      "heading": 180.045930260744,
++      "kind": "curve",
++      "length": 0.0,
++      "position": [
++        -5.5,
++        -48.5
++      ],
++      "radius": 16.0,
++      "width": 10.0
++    },
++    {
++      "angle": 86.5,
++      "curvature": 0.14,
++      "flip": false,
++      "heading": 269.209401027878,
++      "kind": "curve",
++      "length": 0.0,
++      "position": [
++        -21.4871692657471,
++        -64.5128173828125
++      ],
++      "radius": 45.3031790492409,
++      "width": 11.0
++    }
++  ],
++  "points": [
++    [
++      -5.5,
++      -48.5
++    ],
++    [
++      0.0672729015350342,
++      -48.4955368041992
++    ],
++    [
++      5.63454580307007,
++      -48.4910774230957
++    ],
++    [
++      11.2018184661865,
++      -48.4866104125977
++    ],
++    [
++      16.7690925598145,
++      -48.4821472167969
++    ],
++    [
++      22.3363647460938,
++      -48.4776878356934
++    ],
++    [
++      27.903636932373,
++      -48.4732246398926
++    ],
++    [
++      33.4709091186523,
++      -48.4687614440918
++    ],
++    [
++      39.0381851196289,
++      -48.464298248291
++    ],
++    [
++      44.6054573059082,
++      -48.4598350524902
++    ],
++    [
++      50.1663856506348,
++      -48.3289108276367
++    ],
++    [
++      55.2997055053711,
++      -46.3085250854492
++    ],
++    [
++      58.9827461242676,
++      -42.201774597168
++    ],
++    [
++      60.4440650939941,
++      -36.8820991516113
++    ],
++    [
++      59.363166809082,
++      -31.472448348999
++    ],
++    [
++      55.982120513916,
++      -27.112943649292
++    ],
++    [
++      51.0032501220703,
++      -24.7365913391113
++    ],
++    [
++      45.486644744873,
++      -24.088171005249
++    ],
++    [
++      40.5957908630371,
++      -21.5356159210205
++    ],
++    [
++      37.3583374023438,
++      -17.0689926147461
++    ],
++    [
++      36.4683532714844,
++      -11.6245613098145
++    ],
++    [
++      38.1042671203613,
++      -6.35640430450439
++    ],
++    [
++      41.9275398254395,
++      -2.37956213951111
++    ],
++    [
++      47.1253280639648,
++      -0.532504320144653
++    ],
++    [
++      52.6897888183594,
++      -0.453337460756302
++    ],
++    [
++      58.2570610046387,
++      -0.448874533176422
++    ],
++    [
++      63.8243370056152,
++      -0.444411635398865
++    ],
++    [
++      69.3916091918945,
++      -0.439948707818985
++    ],
++    [
++      74.9588775634766,
++      -0.435485780239105
++    ],
++    [
++      80.4460525512695,
++      -1.13077664375305
++    ],
++    [
++      85.0834350585938,
++      -4.1186900138855
++    ],
++    [
++      87.8869781494141,
++      -8.86997985839844
++    ],
++    [
++      88.2736892700195,
++      -14.3727807998657
++    ],
++    [
++      86.1525421142578,
++      -19.4653034210205
++    ],
++    [
++      81.9789047241211,
++      -23.0721950531006
++    ],
++    [
++      76.6316528320312,
++      -24.4283657073975
++    ],
++    [
++      71.0644683837891,
++      -24.4386157989502
++    ],
++    [
++      65.497200012207,
++      -24.443078994751
++    ],
++    [
++      59.9299240112305,
++      -24.4475421905518
++    ],
++    [
++      54.3626518249512,
++      -24.4520053863525
++    ],
++    [
++      48.7953796386719,
++      -24.4564666748047
++    ],
++    [
++      43.2281074523926,
++      -24.4609317779541
++    ],
++    [
++      37.660831451416,
++      -24.4653949737549
++    ],
++    [
++      32.0935592651367,
++      -24.469856262207
++    ],
++    [
++      26.5274391174316,
++      -24.5391292572021
++    ],
++    [
++      21.1428031921387,
++      -25.714958190918
++    ],
++    [
++      17.8724765777588,
++      -30.0231266021729
++    ],
++    [
++      17.6334609985352,
++      -35.561580657959
++    ],
++    [
++      17.6498832702637,
++      -41.1282997131348
++    ],
++    [
++      17.6398601531982,
++      -46.6955680847168
++    ],
++    [
++      17.6298351287842,
++      -52.2628326416016
++    ],
++    [
++      17.6198120117188,
++      -57.8300971984863
++    ],
++    [
++      17.6097888946533,
++      -63.3973617553711
++    ],
++    [
++      17.5997638702393,
++      -68.9646301269531
++    ],
++    [
++      17.5897407531738,
++      -74.5318984985352
++    ],
++    [
++      17.5797157287598,
++      -80.0991592407227
++    ],
++    [
++      17.5194702148438,
++      -85.665885925293
++    ],
++    [
++      15.4042043685913,
++      -90.675163269043
++    ],
++    [
++      10.4551134109497,
++      -92.9233779907227
++    ],
++    [
++      5.29052400588989,
++      -91.2219085693359
++    ],
++    [
++      2.65818786621094,
++      -86.4647521972656
++    ],
++    [
++      2.65818691253662,
++      -80.9018859863281
++    ],
++    [
++      3.3292121887207,
++      -75.3857574462891
++    ],
++    [
++      5.7132453918457,
++      -70.4043807983398
++    ],
++    [
++      10.1468458175659,
++      -67.1418304443359
++    ],
++    [
++      15.5949249267578,
++      -66.1718139648438
++    ],
++    [
++      21.1441326141357,
++      -66.5375366210938
++    ],
++    [
++      26.6387386322021,
++      -67.3284378051758
++    ],
++    [
++      31.7448253631592,
++      -69.5064468383789
++    ],
++    [
++      36.114372253418,
++      -72.930290222168
++    ],
++    [
++      39.4547805786133,
++      -77.3639297485352
++    ],
++    [
++      41.5368385314941,
++      -82.5098342895508
++    ],
++    [
++      42.2247886657715,
++      -88.0185165405273
++    ],
++    [
++      41.5255813598633,
++      -93.5268783569336
++    ],
++    [
++      39.4887237548828,
++      -98.6923446655273
++    ],
++    [
++      36.2421264648438,
++      -103.196884155273
++    ],
++    [
++      31.9829998016357,
++      -106.759353637695
++    ],
++    [
++      26.9783840179443,
++      -109.164764404297
++    ],
++    [
++      21.5341186523438,
++      -110.256660461426
++    ],
++    [
++      15.9793872833252,
++      -110.00260925293
++    ],
++    [
++      10.4274864196777,
++      -109.590721130371
++    ],
++    [
++      4.90203475952148,
++      -108.92000579834
++    ],
++    [
++      -0.528405427932739,
++      -107.70970916748
++    ],
++    [
++      -5.7234320640564,
++      -105.726333618164
++    ],
++    [
++      -10.4682722091675,
++      -102.831756591797
++    ],
++    [
++      -14.510947227478,
++      -99.0198364257812
++    ],
++    [
++      -17.650089263916,
++      -94.4347610473633
++    ],
++    [
++      -19.8059062957764,
++      -89.3109817504883
++    ],
++    [
++      -21.0510063171387,
++      -83.8904266357422
++    ],
++    [
++      -21.5747985839844,
++      -78.3506317138672
++    ],
++    [
++      -21.6407299041748,
++      -72.7845077514648
++    ],
++    [
++      -21.5336017608643,
++      -67.2182846069336
++    ],
++    [
++      -21.2323341369629,
++      -61.66650390625
++    ],
++    [
++      -19.3204784393311,
++      -56.4682960510254
++    ],
++    [
++      -15.7544412612915,
++      -52.2300987243652
++    ],
++    [
++      -10.9538583755493,
++      -49.4673843383789
++    ]
++  ],
++  "route_override": true,
++  "schema": "creator-track-v5",
++  "start_line": {
++    "heading": 0.0460759758932454,
++    "position": [
++      46.3524894714355,
++      -48.4584350585938
++    ]
++  },
++  "surface": "asphalt",
++  "theme": "pine",
++  "width": 10.0,
++  "widths": [
++    10.0,
++    10.0,
++    10.0,
++    10.0,
++    10.0,
++    10.0,
++    10.0,
++    10.0,
++    10.0,
++    10.0,
++    10.0,
++    10.0,
++    10.0,
++    10.0,
++    10.0,
++    10.0,
++    10.0,
++    10.0,
++    10.0,
++    10.0,
++    10.0,
++    10.0,
++    10.0,
++    10.0,
++    10.0,
++    10.0,
++    10.0,
++    10.0,
++    10.0,
++    10.0,
++    10.0,
++    10.0,
++    10.0,
++    10.0,
++    10.0,
++    10.0,
++    10.0,
++    10.0,
++    10.0,
++    10.0,
++    10.0,
++    10.0,
++    10.0,
++    10.0,
++    10.0,
++    10.0,
++    10.0,
++    10.0,
++    10.0,
++    10.0,
++    10.0,
++    10.0,
++    10.0,
++    10.0,
++    10.0,
++    10.0,
++    10.0,
++    10.0,
++    10.0,
++    10.0,
++    10.0,
++    10.0,
++    10.0,
++    10.0,
++    10.0,
++    10.0,
++    10.0,
++    10.0,
++    10.0,
++    10.0,
++    10.0,
++    10.0,
++    10.0,
++    10.0,
++    10.0,
++    10.0,
++    10.0,
++    10.0343494415283,
++    10.454249382019,
++    10.770881652832,
++    11.0,
++    11.0,
++    11.0,
++    11.0,
++    11.0,
++    11.0,
++    11.0,
++    11.0,
++    11.0,
++    11.0,
++    11.0,
++    10.672646522522,
++    10.4060554504395,
++    10.0,
++    10.0,
++    10.0
++  ]
++}
+diff --git a/docs/evidence/compact-bridge-impact-2026-10-23/before/game/vehicle/visible_contact_audio.gd b/docs/evidence/compact-bridge-impact-2026-10-23/before/game/vehicle/visible_contact_audio.gd
+new file mode 100644
+--- /dev/null
++++ b/docs/evidence/compact-bridge-impact-2026-10-23/before/game/vehicle/visible_contact_audio.gd
+@@ -0,0 +1,130 @@
++class_name VisibleContactAudio
++extends RefCounted
++## Presentation contact only. The canonical circle/forces/records are untouched.
++var outline := PackedVector2Array()
++var touching: bool = false
++var sounded: bool = false
++var cue_requested: bool = false
++var normal := Vector2.ZERO
++const MAX_PROBES: int = 128
++const CACHE_BYTES: int = 1024 * 1024
++static var prepared_outlines: Array[Dictionary] = []
++
++func configure(car: Node3D, prepared: bool = false) -> void:
++	var points := PackedVector2Array()
++	var inverse: Transform3D = car.global_transform.affine_inverse()
++	var parts: Array = car.find_children("*","MeshInstance3D",true,false)
++	var key: Array = [car.scale]
++	if prepared:
++		for node: MeshInstance3D in parts:
++			if node.mesh != null: key.append([node.mesh.get_instance_id(),inverse*node.global_transform])
++		for index: int in range(prepared_outlines.size()):
++			if prepared_outlines[index].key != key: continue
++			var entry: Dictionary = prepared_outlines.pop_at(index); prepared_outlines.append(entry)
++			outline = entry.outline
++			reset()
++			return
++	for node: Node in parts:
++		var part: MeshInstance3D = node as MeshInstance3D
++		if part.mesh==null: continue
++		var transform: Transform3D = inverse*part.global_transform
++		for surface: int in range(part.mesh.get_surface_count()):
++			var arrays: Array = part.mesh.surface_get_arrays(surface)
++			var vertices: PackedVector3Array = arrays[Mesh.ARRAY_VERTEX]
++			for vertex: Vector3 in vertices:
++				var local: Vector3 = transform*vertex
++				points.append(Vector2(local.x*car.scale.x,-local.z*car.scale.z))
++	outline = Geometry2D.convex_hull(points) if points.size()>2 else PackedVector2Array()
++	if prepared:
++		var bytes: int = var_to_bytes(key).size()+outline.size()*8+512
++		if bytes <= CACHE_BYTES:
++			var total: int = bytes
++			for entry: Dictionary in prepared_outlines: total += int(entry.bytes)
++			while not prepared_outlines.is_empty() and (prepared_outlines.size() >= 8 or total > CACHE_BYTES): total -= int(prepared_outlines.pop_front().bytes)
++			prepared_outlines.append({"key":key,"outline":outline,"bytes":bytes})
++	reset()
++
++func reset() -> void:
++	touching = false
++	sounded = false
++	cue_requested = false
++	normal = Vector2.ZERO
++
++func sample(state: VehicleState, track: NativeTrack, incoming: Vector2) -> Vector2:
++	if track==null or outline.size()<3 or state.jump_height>0.0 or state.roll_ticks>0:
++		reset()
++		return Vector2.ZERO
++	var found: bool = false
++	var count: int = 0
++	var contact_point := Vector2.ZERO
++	var forward: Vector2 = state.forward()
++	var right: Vector2 = state.right()
++	var span_index: int = CreatorBridges.span_at(track.creator_bridges,state.position) if state.track_elevated else -1
++	for index: int in range(outline.size()-1):
++		var a: Vector2 = outline[index]
++		var b: Vector2 = outline[index+1]
++		var steps: int = maxi(1,ceili(a.distance_to(b)/maxf(.10,track.cell_size*.5)))
++		for step: int in range(steps+1):
++			count += 1
++			if count>MAX_PROBES: break
++			var local: Vector2 = a.lerp(b,float(step)/steps)
++			var point: Vector2 = state.position+right*local.x+forward*local.y
++			if _solid_at(state,track,point,span_index):
++				found = true
++				contact_point = point
++				break
++		if found or count>MAX_PROBES: break
++	if not found:
++		reset()
++		return Vector2.ZERO
++	var first: bool = not touching
++	touching = true
++	if first:
++		# An occupied cell's nearest rectangle edge can be an internal edge.
++		# Use only faces with clear neighboring material for audible incidence.
++		var x: int = floori((contact_point.x+track.half_extent.x)/track.cell_size)
++		var y: int = floori((track.half_extent.y-contact_point.y)/track.cell_size)
++		var center := Vector2((float(x)+.5)*track.cell_size-track.half_extent.x,track.half_extent.y-(float(y)+.5)*track.cell_size)
++		var best: float = -INF
++		normal = Vector2.ZERO
++		for direction: Vector2 in [Vector2.LEFT,Vector2.RIGHT,Vector2.UP,Vector2.DOWN]:
++			if _solid_at(state,track,center+direction*track.cell_size,span_index): continue
++			var facing: float = -incoming.dot(direction)
++			if facing>best:
++				best = facing
++				normal = direction
++		# No exposed face means no trustworthy visual-only impact normal.
++		# Let the canonical observer handle deep/startup overlap instead.
++	var inward: float = maxf(0.0,-incoming.dot(normal))
++	if not sounded and not cue_requested and inward>1.2 and inward/maxf(incoming.length(),.001)>.35:
++		# A genuine current mesh/solid intersection, not predicted future impact.
++		# A soft first touch can become meaningful during the same episode.
++		# Attempt once, so a cooldown rejection cannot queue a stale later cue.
++		cue_requested = true
++		return normal*inward
++	return Vector2.ZERO
++
++func _solid_at(state: VehicleState, track: NativeTrack, point: Vector2, span_index: int) -> bool:
++	if track.cell_at(point,state.track_elevated)!=4: return false
++	var x: int = floori((point.x+track.half_extent.x)/track.cell_size)
++	var y: int = floori((track.half_extent.y-point.y)/track.cell_size)
++	var center := Vector2((x+.5)*track.cell_size-track.half_extent.x,track.half_extent.y-(y+.5)*track.cell_size)
++	if state.track_elevated and span_index>=0:
++		# Match the resolver's supporting-span guard. A nearby disconnected
++		# bridge rail cannot hit a car still leaving its own low ramp.
++		return CreatorBridges.contains(track.creator_bridges[span_index],center) or CreatorBridges.shares_span(track.creator_bridges,state.position,center)
++	if not state.track_elevated:
++		for span: Dictionary in track.creator_bridges:
++			var local: Vector2 = CreatorBridges.local_point(span,state.position)
++			if local.x>=0.0 and local.x<=float(span.length): continue
++			if absf(local.y)>float(span.width)*.5: continue
++			var axis: Vector2 = Vector2.RIGHT.rotated(deg_to_rad(float(span.heading)))
++			if absf(state.forward().dot(axis))<=.75: continue
++			# The visible nose/rear can already be on the sloping road while
++			# the centre is outside its mouth. Its low underside is not a wall.
++			var on_ramp: Vector2 = CreatorBridges.local_point(span,center)
++			if on_ramp.x>=0.0 and on_ramp.x<=float(span.length) and absf(on_ramp.y)<=float(span.width)*.5 and track.cell_at(center,true)==0: return false
++	return true
++
++func duplicate_physical(impulse: Vector2) -> bool:
++	return touching and sounded and impulse.normalized().dot(normal)>.65
+diff --git a/docs/evidence/compact-bridge-impact-2026-10-23/make_checkpoint.py b/docs/evidence/compact-bridge-impact-2026-10-23/make_checkpoint.py
+new file mode 100644
+--- /dev/null
++++ b/docs/evidence/compact-bridge-impact-2026-10-23/make_checkpoint.py
+@@ -0,0 +1,80 @@
++"""Make a scoped checkpoint while preserving the shared worktree and index."""
++from pathlib import Path
++import difflib
++import hashlib
++import json
++import re
++import subprocess
++
++ROOT = Path(__file__).resolve().parents[3]
++OUT = Path(__file__).resolve().parent
++modified = {}
++for name in [
++    "game/vehicle/visible_contact_audio.gd",
++    "game/tests/test_collision_trace.gd",
++    "scripts/probe_windows_contact_timing.ps1",
++]:
++    modified[name] = (OUT / "before" / name).read_text(encoding="utf-8")
++# Only remove this task's inserted marker when constructing shared-doc bases.
++# Later concurrent insertions therefore remain on both sides of the patch.
++for name in ["AGENTS.md", "DEVELOPMENT_STATUS.md", "docs/PHASE_0_PLAN.md"]:
++    text = (ROOT / name).read_text(encoding="utf-8")
++    match = re.search(r"^2026-10-23 CBT01-CBT03/R01/Q01: [^\n]+\n\n", text, re.M)
++    assert match, name
++    marker = match.group(0)
++    if name == "AGENTS.md":
++        marker = "## Compact bridge-impact timing correction (2026-10-23)\n" + marker
++    assert text.count(marker) == 1
++    modified[name] = text.replace(marker, "", 1)
++note = "Follow-up: the owner's Compact/bridge case exposed incomplete detailed-body\ncoverage at narrow rail ends. The [Compact bridge correction](COMPACT_BRIDGE_AUDIO_2026_10_23.md)\nreproduces and removes that detection delay. The measurements below remain the\nearlier flat-wall/kerb investigation; its remaining output latency is unchanged.\n\n"
++old_doc = "docs/WINDOWS_CONTACT_TIMING_2026_10_23.md"
++current_doc = (ROOT / old_doc).read_text(encoding="utf-8")
++assert current_doc.count(note) == 1
++modified[old_doc] = current_doc.replace(note, "", 1)
++new = [
++    "game/tests/probe_compact_bridge_contacts.gd",
++    "game/tests/probe_compact_bridge_output.gd",
++    "game/tests/test_complete_contact_outline.gd",
++    "scripts/review_compact_bridge_impact.py",
++    "docs/COMPACT_BRIDGE_AUDIO_2026_10_23.md",
++    "docs/evidence/compact-bridge-impact-2026-10-23/report.json",
++    "docs/evidence/compact-bridge-impact-2026-10-23/review.json",
++    "docs/evidence/compact-bridge-impact-2026-10-23/knot.json",
++    "docs/evidence/compact-bridge-impact-2026-10-23/before/game/vehicle/visible_contact_audio.gd",
++    "docs/evidence/compact-bridge-impact-2026-10-23/make_checkpoint.py",
++]
++patch = []
++files = []
++for relative, before in [*modified.items(), *((name, "") for name in new)]:
++    after_bytes = (ROOT / relative).read_bytes()
++    after = after_bytes.decode("utf-8").replace("\r\n", "\n")
++    before = before.replace("\r\n", "\n")
++    if before == after:
++        continue
++    if relative in new:
++        assert not any(line.rstrip(" \t") != line for line in after.splitlines()), relative
++    patch.append(f"diff --git a/{relative} b/{relative}\n")
++    if relative in new:
++        patch.append("new file mode 100644\n")
++    patch.extend(difflib.unified_diff(
++        before.splitlines(keepends=True), after.splitlines(keepends=True),
++        fromfile="/dev/null" if relative in new else "a/" + relative,
++        tofile="b/" + relative,
++    ))
++    files.append({"path": relative, "sha256": hashlib.sha256(after_bytes).hexdigest()})
++target = OUT / "scoped-change.patch"
++target.write_text("".join(patch), encoding="utf-8", newline="\n")
++result = subprocess.run(
++    ["git", "-c", "core.safecrlf=false", "apply", "--check", "--reverse", str(target)],
++    cwd=ROOT, capture_output=True, text=True,
++)
++receipt = {
++    "command": "git -c core.safecrlf=false apply --check --reverse " + str(target.relative_to(ROOT)),
++    "exit_code": result.returncode, "output": result.stdout + result.stderr,
++    "patch_sha256": hashlib.sha256(target.read_bytes()).hexdigest(),
++    "files": files, "shared_index_modified": False,
++    "production_scope": "Duplicate perimeter endpoint removal only; other changes are diagnostics/documentation.",
++}
++(OUT / "checkpoint.json").write_text(json.dumps(receipt, indent=2) + "\n", encoding="utf-8")
++print(json.dumps({"files": len(files), "reverse_check_exit_code": result.returncode, "output": receipt["output"]}, indent=2))
++raise SystemExit(result.returncode)

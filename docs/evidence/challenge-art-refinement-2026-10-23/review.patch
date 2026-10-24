@@ -1,0 +1,808 @@
+diff --git a/game/ui/challenges_page.gd b/game/ui/challenges_page.gd
+--- a/game/ui/challenges_page.gd
++++ b/game/ui/challenges_page.gd
+@@ -44,12 +44,8 @@
+ var _received_at: int = 0
+ var _clock: Label
+ 
+-func _draw() -> void:
+-	draw_rect(Rect2(Vector2.ZERO,size),Color("0b151e"))
+-
+ func _ready() -> void:
+ 	name = "ChallengesPage"
+-	resized.connect(queue_redraw)
+ 	theme = MenuStyle.theme()
+ 	_received_at = Time.get_ticks_msec()
+ 	size_flags_vertical = Control.SIZE_EXPAND_FILL
+@@ -209,14 +205,14 @@
+ 	var layout := func() -> void: choices.columns = 2 if scroll.size.x >= 560 else 1
+ 	scroll.resized.connect(layout)
+ 	layout.call()
+-	_entry_card(choices,"Find & play","Browse challenges and join your next race.","find",func() -> void: browse_requested.emit(),"ChallengeFindAndPlay")
+-	_entry_card(choices,"Create a challenge","Choose the format, tracks and car. Invite your rivals.","create",_request_creation,"ChallengeCreateNew")
++	_entry_card(choices,"Find & play","Browse challenges and join your next race.","entry-find-play-v2",func() -> void: browse_requested.emit(),"ChallengeFindAndPlay")
++	_entry_card(choices,"Create a challenge","Choose the format, tracks and car. Invite your rivals.","entry-create-v2",_request_creation,"ChallengeCreateNew")
+ 
+ func _request_creation() -> void:
+ 	if signed_in: create_requested.emit()
+ 	else: sign_in_requested.emit()
+ 
+-func _entry_card(parent: Control, title: String, description: String, graphic: String, action: Callable, node_name: String) -> void:
++func _entry_card(parent: Control, title: String, description: String, poster: String, action: Callable, node_name: String) -> void:
+ 	var card := MenuStyle.button(title,action)
+ 	card.name = node_name
+ 	card.tooltip_text = title+". "+description
+@@ -236,8 +232,10 @@
+ 	content.offset_bottom = -3
+ 	content.add_theme_constant_override("separation",0)
+ 	card.add_child(content)
+-	var art := ChallengeGraphic.new()
+-	art.kind = graphic
++	var art := TextureRect.new()
++	art.texture = load("res://assets/menu/challenges/"+poster+".png")
++	art.expand_mode = TextureRect.EXPAND_IGNORE_SIZE
++	art.stretch_mode = TextureRect.STRETCH_KEEP_ASPECT_COVERED
+ 	art.size_flags_vertical = Control.SIZE_EXPAND_FILL
+ 	art.custom_minimum_size.y = 48
+ 	content.add_child(art)
+@@ -300,7 +298,7 @@
+ 		tile.target_ms = _target_ms(item)
+ 		tile.remaining = _remaining_text(item)
+ 		tile.reward = _reward_caption(item)
+-		tile.accent = ChallengeGraphic.biome_accent(str(item.entry.get("theme","pine")))
++		tile.scenery = TrackTile.scenery_texture(str(item.entry.get("theme","pine")))
+ 		tile.route = _card_outline(item.entry.points)
+ 		tile.pressed.connect(func() -> void: selected_requested.emit(str(item.code)))
+ 		grid.add_child(tile)
+@@ -370,9 +368,10 @@
+ 	preview.clip_contents = true
+ 	preview.add_theme_stylebox_override("panel",MenuStyle.box(Color("0c1d28"),0))
+ 	column.add_child(preview)
+-	var art := ChallengeGraphic.new()
+-	art.kind = "map"
+-	art.accent = ChallengeGraphic.biome_accent(str(_stage_data().entry.get("theme","pine")))
++	var art := TextureRect.new()
++	art.texture = TrackTile.scenery_texture(str(_stage_data().entry.get("theme","pine")))
++	art.expand_mode = TextureRect.EXPAND_IGNORE_SIZE
++	art.stretch_mode = TextureRect.STRETCH_KEEP_ASPECT_COVERED
+ 	preview.add_child(art)
+ 	var shade := ColorRect.new()
+ 	shade.color = Color(0.015,0.045,0.065,0.56)
+@@ -651,9 +650,10 @@
+ 	preview.custom_minimum_size.y = 132
+ 	preview.add_theme_stylebox_override("panel",MenuStyle.box(Color("091720"),0))
+ 	column.add_child(preview)
+-	var art := ChallengeGraphic.new()
+-	art.kind = "map"
+-	art.accent = ChallengeGraphic.biome_accent(str(_stage_data().entry.get("theme","pine")))
++	var art := TextureRect.new()
++	art.texture = TrackTile.scenery_texture(str(_stage_data().entry.get("theme","pine")))
++	art.expand_mode = TextureRect.EXPAND_IGNORE_SIZE
++	art.stretch_mode = TextureRect.STRETCH_KEEP_ASPECT_COVERED
+ 	preview.add_child(art)
+ 	var overlay := HBoxContainer.new()
+ 	preview.add_child(overlay)
+diff --git a/game/ui/challenge_race_card.gd b/game/ui/challenge_race_card.gd
+--- a/game/ui/challenge_race_card.gd
++++ b/game/ui/challenge_race_card.gd
+@@ -6,7 +6,7 @@
+ var remaining: String
+ var reward: String
+ var route: PackedVector2Array
+-var accent: Color = Color("a8b795")
++var scenery: Texture2D
+ var _route_size := Vector2(-1,-1)
+ var _route_points: PackedVector2Array
+ 
+@@ -35,13 +35,22 @@
+ 	mouse_exited.connect(queue_redraw)
+ 
+ func _draw() -> void:
++	if scenery == null: return
+ 	var art := Rect2(3,3,size.x-6,96)
+-	ChallengeGraphic.draw_map_background(self,art,accent)
++	var source := Rect2(Vector2.ZERO,scenery.get_size())
++	var ratio: float = art.size.x/art.size.y
++	if source.size.x/source.size.y > ratio:
++		source.position.x = (source.size.x-source.size.y*ratio)*0.5
++		source.size.x = source.size.y*ratio
++	else:
++		source.position.y = (source.size.y-source.size.x/ratio)*0.5
++		source.size.y = source.size.x/ratio
++	draw_texture_rect_region(scenery,art,source,Color.WHITE if is_hovered() else Color(0.85,0.9,0.94))
++	draw_rect(art,Color(0.015,0.045,0.065,0.3))
+ 	_project_route(art.size)
+ 	if _route_points.size() > 1:
+ 		draw_polyline(_route_points,Color("08131bcc"),5,true)
+ 		draw_polyline(_route_points,Color("f4eee0"),2,true)
+-		draw_circle(_route_points[0],3,MenuStyle.ACCENT,true,-1,true)
+ 	var format: String = "TIME ATTACK" if item.mode == "beat" else "3×3 SERIES" if item.mode == "3x3" else "GROUP RACE"
+ 	var badge_width: float = MenuStyle.DISPLAY.get_string_size(format,HORIZONTAL_ALIGNMENT_LEFT,-1,14).x+16
+ 	draw_style_box(MenuStyle.box(Color("08151eeb"),0),Rect2(10,10,badge_width,24))
+diff --git a/game/ui/challenge_create.gd b/game/ui/challenge_create.gd
+--- a/game/ui/challenge_create.gd
++++ b/game/ui/challenge_create.gd
+@@ -10,6 +10,7 @@
+ const RULES := 3
+ const FORMAT_TITLES: Dictionary = {"duel":"One-to-one","group":"Group race","three":"3×3","custom":"Custom challenge"}
+ const FormatCard = preload("res://ui/challenge_format_card.gd")
++const POSTERS: Dictionary = {"duel":"res://assets/menu/challenges/one-to-one-v2.png","group":"res://assets/menu/challenges/group-race-v2.png","three":"res://assets/menu/challenges/three-by-three-v2.png"}
+ var adapter: ChallengesClient
+ var entries: Array[Dictionary] = []
+ var library: TrackLibrary
+@@ -78,12 +79,8 @@
+ func _entry() -> Dictionary: return _chosen_entries[0] if not _chosen_entries.is_empty() else {}
+ func _vehicle_id() -> String: return VehicleCatalog.valid_id(initial_vehicle) if locked_result() else _chosen_car
+ 
+-func _draw() -> void:
+-	draw_rect(Rect2(Vector2.ZERO,size),Color("0b151e"))
+-
+ func _ready() -> void:
+ 	name = "ChallengeCreate"
+-	resized.connect(queue_redraw)
+ 	theme = MenuStyle.theme()
+ 	process_mode = Node.PROCESS_MODE_ALWAYS
+ 	size_flags_vertical = Control.SIZE_EXPAND_FILL
+@@ -195,6 +192,7 @@
+ 		card.description = {"duel":PackedStringArray(["One rival. Your time to beat."]),"group":PackedStringArray(["Get the crew on the same grid."]),"three":PackedStringArray(["Three tracks. Three tries on each."])}[key]
+ 		card.audience = "You + one rival" if key == "duel" else "Up to 20 drivers"
+ 		card.tries = "3 tracks · 3 tries each" if key == "three" else "1 track · Unlimited tries"
++		card.scenery = load(POSTERS[key]) as Texture2D
+ 		card.name = "ChallengeFormat_"+key
+ 		card.pressed.connect(_choose_format.bind(key))
+ 		_formats.add_child(card)
+diff --git a/game/ui/challenge_format_card.gd b/game/ui/challenge_format_card.gd
+--- a/game/ui/challenge_format_card.gd
++++ b/game/ui/challenge_format_card.gd
+@@ -1,11 +1,12 @@
+ extends Button
+-## Focusable native competition diagrams; no illustration textures.
++## Focusable format posters with original, separately authored competition artwork.
+ var format_id: String = "duel"
+ var caption: String = "Head to head"
+ var description: PackedStringArray = ["One rival. Your time to beat."]
+ var audience: String = "You + one rival"
+ var tries: String = "Unlimited tries"
+ var chosen: bool = false
++var scenery: Texture2D
+ 
+ func _ready() -> void:
+ 	texture_filter = CanvasItem.TEXTURE_FILTER_LINEAR_WITH_MIPMAPS
+@@ -46,8 +47,26 @@
+ 	var inset: float = 19 if size.x >= 250 else 15
+ 	var tint := Color(1,1,1,0.45 if disabled else 1.0)
+ 	var art: Rect2 = artwork_rect()
+-	draw_rect(art,Color("10202b"))
+-	ChallengeGraphic.draw_design(self,Rect2(10,40,size.x-20,maxf(48,size.y-122)),format_id,MenuStyle.ACCENT,tint)
++	if scenery != null:
++		# The series needs all three circuits and their starts visible together.
++		var source := Rect2(Vector2.ZERO,scenery.get_size())
++		var color: Color = (Color.WHITE if chosen else Color(0.72,0.77,0.80))*tint
++		if format_id == "three":
++			draw_rect(art,Color("10202b"))
++			var available := Rect2(8,8,size.x-16,maxf(80,size.y-88))
++			var scale: float = minf(available.size.x/source.size.x,available.size.y/source.size.y)
++			var fitted := Rect2(available.get_center()-source.size*scale*0.5,source.size*scale)
++			draw_texture_rect(scenery,fitted,false,color)
++		else:
++			var ratio: float = art.size.x/art.size.y
++			if source.size.x/source.size.y > ratio:
++				source.position.x = (source.size.x-source.size.y*ratio)*0.5
++				source.size.x = source.size.y*ratio
++			else:
++				source.position.y = (source.size.y-source.size.x/ratio)*0.5
++				source.size.y = source.size.x/ratio
++			draw_texture_rect_region(scenery,art,source,color)
++	draw_rect(art,Color(0.025,0.065,0.09,0.10 if chosen else 0.16))
+ 	var index: int = ["duel","group","three"].find(format_id)+1
+ 	draw_string(MenuStyle.DISPLAY,Vector2(inset,25),"0"+str(index),HORIZONTAL_ALIGNMENT_LEFT,-1,15,MenuStyle.ACCENT*tint if chosen else Color("c3d0d5")*tint)
+ 	var strip := Rect2(8,size.y-72,size.x-16,64)
+diff --git a/game/ui/challenge_track_card.gd b/game/ui/challenge_track_card.gd
+--- a/game/ui/challenge_track_card.gd
++++ b/game/ui/challenge_track_card.gd
+@@ -1,5 +1,5 @@
+ extends Button
+-## Native circuit diagrams with the existing track selection label.
++## Track posters share the creator's scenic frame and bottom selection label.
+ var entry: Dictionary = {}
+ var chosen: bool = false
+ 
+@@ -23,7 +23,17 @@
+ 	mouse_default_cursor_shape = Control.CURSOR_POINTING_HAND
+ 
+ func _draw() -> void:
+-	ChallengeGraphic.draw_map_background(self,Rect2(1,1,size.x-2,size.y-2),ChallengeGraphic.biome_accent(str(entry.get("theme","pine"))))
++	var scenery: Texture2D = TrackTile.scenery_texture(str(entry.get("theme","pine")))
++	var source := Rect2(Vector2.ZERO,scenery.get_size())
++	var ratio: float = (size.x-2)/(size.y-2)
++	if source.size.x/source.size.y > ratio:
++		source.position.x = (source.size.x-source.size.y*ratio)*0.5
++		source.size.x = source.size.y*ratio
++	else:
++		source.position.y = (source.size.y-source.size.x/ratio)*0.5
++		source.size.y = source.size.x/ratio
++	draw_texture_rect_region(scenery,Rect2(1,1,size.x-2,size.y-2),source,Color.WHITE if chosen else Color(0.62,0.68,0.72))
++	draw_rect(Rect2(1,1,size.x-2,size.y-80),Color(0.01,0.04,0.06,0.34))
+ 	var points: PackedVector2Array = ChallengesPage._card_outline(entry.get("points",[]))
+ 	if points.size() >= 2:
+ 		var bounds := Rect2(points[0],Vector2.ZERO)
+diff --git a/game/ui/challenge_ready_dialog.gd b/game/ui/challenge_ready_dialog.gd
+--- a/game/ui/challenge_ready_dialog.gd
++++ b/game/ui/challenge_ready_dialog.gd
+@@ -27,9 +27,10 @@
+ 	panel.clip_contents = true
+ 	panel.add_theme_stylebox_override("panel",MenuStyle.card(18))
+ 	content.add_child(panel)
+-	var art := ChallengeGraphic.new()
+-	art.kind = "map"
+-	art.accent = ChallengeGraphic.biome_accent(str(snapshot.entry.get("theme","pine")))
++	var art := TextureRect.new()
++	art.texture = TrackTile.scenery_texture(str(snapshot.entry.get("theme","pine")))
++	art.expand_mode = TextureRect.EXPAND_IGNORE_SIZE
++	art.stretch_mode = TextureRect.STRETCH_KEEP_ASPECT_COVERED
+ 	panel.add_child(art)
+ 	var shade := ColorRect.new()
+ 	shade.color = Color(0.02,0.07,0.1,0.74)
+diff --git a/game/ui/track_browser.gd b/game/ui/track_browser.gd
+--- a/game/ui/track_browser.gd
++++ b/game/ui/track_browser.gd
+@@ -59,7 +59,7 @@
+ var records_panel: PanelContainer
+ var _hero_serial: int = -1
+ var _hero_scenery: Control
+-var _hero_art: Control
++var _hero_art: TextureRect
+ var hero: PanelContainer
+ const FilterDrawer = preload("res://ui/track_filter_drawer.gd")
+ var filter_dialog: FilterDrawer
+@@ -307,7 +307,6 @@
+ 			list_grid.add_child(tile)
+ 		else:
+ 			var card := TrackTile.new()
+-			card.native_route_art = selection_only
+ 			card.entry = entry
+ 			card.selected = selection_only and str(entry.get("version_id","")) in selected_versions
+ 			card.favorite = entry.id in records.settings.get("favorites",[])
+@@ -698,7 +697,6 @@
+ 			grid.move_child(existing,index-first)
+ 			continue
+ 		var tile := TrackTile.new()
+-		tile.native_route_art = selection_only
+ 		tile.set_meta("catalog_index",index)
+ 		tile.compact = true
+ 		tile.entry = entry
+@@ -1550,19 +1548,11 @@
+ 		_hero_scenery.mouse_filter = Control.MOUSE_FILTER_IGNORE
+ 		_hero_scenery.clip_contents = true
+ 	hero.add_child(_hero_scenery)
+-	var art: Control
+-	if selection_only:
+-		var diagram := ChallengeGraphic.new()
+-		diagram.kind = "map"
+-		diagram.accent = ChallengeGraphic.biome_accent(theme_id)
+-		art = diagram
+-	else:
+-		var scenery := TextureRect.new()
+-		scenery.texture = TrackTile.scenery_texture(theme_id)
+-		scenery.expand_mode = TextureRect.EXPAND_IGNORE_SIZE
+-		scenery.stretch_mode = TextureRect.STRETCH_KEEP_ASPECT_COVERED
+-		art = scenery
++	var art := TextureRect.new()
+ 	art.name = "SelectedTrackScenery"
++	art.texture = TrackTile.scenery_texture(theme_id)
++	art.expand_mode = TextureRect.EXPAND_IGNORE_SIZE
++	art.stretch_mode = TextureRect.STRETCH_KEEP_ASPECT_COVERED
+ 	art.mouse_filter = Control.MOUSE_FILTER_IGNORE
+ 	_clear(_hero_scenery)
+ 	_hero_scenery.add_child(art)
+diff --git a/game/ui/track_tile.gd b/game/ui/track_tile.gd
+--- a/game/ui/track_tile.gd
++++ b/game/ui/track_tile.gd
+@@ -17,7 +17,6 @@
+ var draft_mode: bool = false
+ var preview_only: bool = false
+ var compact: bool = false
+-var native_route_art: bool = false
+ var paths: Array[PackedVector2Array] = []
+ var route_bounds: Rect2
+ static var scenery_cache: Dictionary = {}
+@@ -166,9 +165,6 @@
+ 
+ func _draw_terrain(area: Rect2) -> void:
+ 	var theme_id: String = str(entry.get("theme","pine"))
+-	if native_route_art:
+-		ChallengeGraphic.draw_map_background(self,area,ChallengeGraphic.biome_accent(theme_id))
+-		return
+ 	var artwork: Texture2D = STORM_SCENERY if theme_id == "storm" else SCENERY
+ 	var cell: Vector2 = artwork.get_size() if theme_id == "storm" else artwork.get_size()*0.5
+ 	var source := Rect2(Vector2.ZERO,cell)
+diff --git a/game/tests/test_challenge_cards.gd b/game/tests/test_challenge_cards.gd
+--- a/game/tests/test_challenge_cards.gd
++++ b/game/tests/test_challenge_cards.gd
+@@ -202,7 +202,7 @@
+ 				var graphic: Image = frame.get_region(area)
+ 				graphic.resize(128,96,Image.INTERPOLATE_NEAREST)
+ 				diagrams.append(graphic.get_data())
+-			check(diagrams[0] != diagrams[1] and diagrams[0] != diagrams[2] and diagrams[1] != diagrams[2],"duel, group and series use visually distinct native diagrams")
++			check(diagrams[0] != diagrams[1] and diagrams[0] != diagrams[2] and diagrams[1] != diagrams[2],"duel, group and series use visually distinct illustrations")
+ 		await capture("formats-"+str(dimensions.x)+"x"+str(dimensions.y))
+ 	root.size = Vector2i(1280,720)
+ 	await settle()
+diff --git a/game/ui/challenge_graphic.gd b/game/ui/challenge_graphic.gd
+deleted file mode 100644
+--- a/game/ui/challenge_graphic.gd
++++ /dev/null
+@@ -1,112 +0,0 @@
+-class_name ChallengeGraphic
+-extends Control
+-## Original native competition diagrams, with no illustration textures or worlds.
+-var kind: String = "find"
+-var accent: Color = MenuStyle.ACCENT
+-
+-func _ready() -> void:
+-	mouse_filter = Control.MOUSE_FILTER_IGNORE
+-	clip_contents = true
+-	resized.connect(queue_redraw)
+-
+-func _draw() -> void:
+-	draw_design(self,Rect2(Vector2.ZERO,size),kind,accent)
+-
+-static func biome_accent(id: String) -> Color:
+-	return {"pine":Color("a8b795"),"desert":Color("c7a57b"),"winter":Color("88b5c3"),"night_city":Color("879eb1"),"storm":Color("b2aac4")}.get(id,Color("a8b795"))
+-
+-static func draw_map_background(canvas: CanvasItem, area: Rect2, tone: Color) -> void:
+-	canvas.draw_rect(area,Color("10202b"))
+-	var grid := Color(tone,0.065)
+-	for x: int in range(1,mini(96,ceili(area.size.x/24.0))):
+-		var offset: float = area.position.x+x*24
+-		canvas.draw_line(Vector2(offset,area.position.y),Vector2(offset,area.end.y),grid,1)
+-	for y: int in range(1,mini(96,ceili(area.size.y/24.0))):
+-		var offset: float = area.position.y+y*24
+-		canvas.draw_line(Vector2(area.position.x,offset),Vector2(area.end.x,offset),grid,1)
+-	canvas.draw_line(area.position,Vector2(area.end.x,area.position.y),Color(tone,0.3),1)
+-
+-static func draw_design(canvas: CanvasItem, area: Rect2, mode: String, tone: Color, tint: Color = Color.WHITE) -> void:
+-	if area.size.x < 1 or area.size.y < 1: return
+-	draw_map_background(canvas,area,tone)
+-	if mode == "map": return
+-	var scale: float = minf(area.size.x/640.0,area.size.y/360.0)
+-	var origin: Vector2 = area.get_center()-Vector2(320,180)*scale
+-	var ink := Color("08151e")*tint
+-	var line := Color("77919f")*tint
+-	var light := Color("e3e9e7")*tint
+-	var gold: Color = tone*tint
+-	if mode == "create":
+-		for index: int in range(3):
+-			var center: Vector2 = origin+Vector2(140+180*index,180)*scale
+-			var tile := Rect2(center-Vector2(56,56)*scale,Vector2(112,112)*scale)
+-			canvas.draw_rect(tile,Color("162c39"))
+-			canvas.draw_rect(tile,Color(line,0.7),false,maxf(1,scale))
+-			var icon: String = ["target","compass","car"][index]
+-			canvas.draw_texture_rect(MenuIcon.texture(icon,true),Rect2(center-Vector2(27,27)*scale,Vector2(54,54)*scale),false,gold if index == 2 else light)
+-			if index < 2:
+-				var arrow: Vector2 = center+Vector2(78,0)*scale
+-				canvas.draw_line(arrow-Vector2(12,0)*scale,arrow+Vector2(12,0)*scale,line,maxf(1,2*scale),true)
+-				canvas.draw_line(arrow+Vector2(12,0)*scale,arrow+Vector2(4,-8)*scale,line,maxf(1,2*scale),true)
+-				canvas.draw_line(arrow+Vector2(12,0)*scale,arrow+Vector2(4,8)*scale,line,maxf(1,2*scale),true)
+-			if area.size.y >= 120:
+-				_text(canvas,center+Vector2(0,-76)*scale,"0"+str(index+1),16,scale,line)
+-				_text(canvas,center+Vector2(0,88)*scale,["FORMAT","TRACK","CAR"][index],18,scale,light)
+-	elif mode == "find":
+-		for index: int in range(3):
+-			var tile := Rect2(origin+Vector2(112+index*20,65+index*78)*scale,Vector2(292,68)*scale)
+-			canvas.draw_rect(tile,Color("172e3b"))
+-			canvas.draw_rect(tile,Color(line,0.7),false,maxf(1,scale))
+-			_circuit(canvas,Rect2(tile.position+Vector2(14,12)*scale,Vector2(82,44)*scale),index,light,maxf(1,2*scale))
+-			canvas.draw_line(tile.position+Vector2(122,23)*scale,tile.position+Vector2(263,23)*scale,line,maxf(1,2*scale),true)
+-			canvas.draw_line(tile.position+Vector2(122,45)*scale,tile.position+Vector2(214,45)*scale,Color(line,0.45),maxf(1,2*scale),true)
+-		var lens: Vector2 = origin+Vector2(430,155)*scale
+-		canvas.draw_circle(lens,66*scale,ink,true,-1,true)
+-		canvas.draw_arc(lens,66*scale,0,TAU,56,gold,maxf(2,5*scale),true)
+-		_circuit(canvas,Rect2(lens-Vector2(41,30)*scale,Vector2(82,60)*scale),1,light,maxf(1,2*scale))
+-		canvas.draw_line(lens+Vector2(48,49)*scale,lens+Vector2(103,105)*scale,gold,maxf(3,12*scale),true)
+-	elif mode == "duel":
+-		for index: int in range(2):
+-			var y: float = 116+index*116
+-			var a: Vector2 = origin+Vector2(95,y)*scale
+-			var b: Vector2 = origin+Vector2(520,y)*scale
+-			canvas.draw_line(a,b,Color(line,0.4),maxf(1,2*scale),true)
+-			canvas.draw_line(a+Vector2(80,0)*scale,a+Vector2(300,0)*scale,gold if index == 1 else light,maxf(2,5*scale),true)
+-			_token(canvas,origin+Vector2(190+index*70,y)*scale,30*scale,gold if index == 1 else light)
+-			_flag(canvas,origin+Vector2(490,y-25)*scale,scale)
+-		if area.size.y >= 120: _text(canvas,origin+Vector2(320,188)*scale,"VS",32,scale,line)
+-	elif mode == "group":
+-		for column: int in range(3):
+-			for row: int in range(2):
+-				var center: Vector2 = origin+Vector2(154+column*143+row*22,110+row*112)*scale
+-				canvas.draw_line(center-Vector2(36,0)*scale,center+Vector2(64,0)*scale,Color(line,0.4),maxf(1,2*scale),true)
+-				_token(canvas,center,27*scale,gold if column == 0 and row == 1 else light)
+-		if area.size.y >= 120: _text(canvas,origin+Vector2(320,305)*scale,"UP TO 20 DRIVERS",18,scale,line)
+-	else:
+-		for index: int in range(3):
+-			var center: Vector2 = origin+Vector2(116+204*index,174)*scale
+-			_circuit(canvas,Rect2(center-Vector2(72,57)*scale,Vector2(144,114)*scale),index,light,maxf(1,3*scale))
+-			for attempt: int in range(3): canvas.draw_circle(center+Vector2((attempt-1)*18,89)*scale,4*scale,gold,true,-1,true)
+-			if area.size.y >= 120: _text(canvas,center-Vector2(0,88)*scale,"0"+str(index+1),18,scale,line)
+-
+-static func _token(canvas: CanvasItem, center: Vector2, radius: float, tone: Color) -> void:
+-	canvas.draw_circle(center,radius,Color("142936"),true,-1,true)
+-	canvas.draw_arc(center,radius,0,TAU,32,tone,maxf(1,radius/15),true)
+-	canvas.draw_circle(center-Vector2(0,radius*0.23),radius*0.23,tone,true,-1,true)
+-	canvas.draw_arc(center+Vector2(0,radius*0.51),radius*0.47,PI,TAU,16,tone,maxf(1,radius/9),true)
+-
+-static func _flag(canvas: CanvasItem, origin: Vector2, scale: float) -> void:
+-	for row: int in range(4):
+-		for column: int in range(2):
+-			canvas.draw_rect(Rect2(origin+Vector2(column*10,row*12)*scale,Vector2(10,12)*scale),Color("c5d0d2") if (row+column)%2 == 0 else Color("172b36"))
+-
+-static func _text(canvas: CanvasItem, center: Vector2, text: String, pixels: int, scale: float, tone: Color) -> void:
+-	var font_size: int = maxi(10,roundi(pixels*scale))
+-	var width: float = MenuStyle.DISPLAY.get_string_size(text,HORIZONTAL_ALIGNMENT_LEFT,-1,font_size).x
+-	canvas.draw_string(MenuStyle.DISPLAY,center-Vector2(width*0.5,0),text,HORIZONTAL_ALIGNMENT_LEFT,-1,font_size,tone)
+-
+-static func _circuit(canvas: CanvasItem, area: Rect2, index: int, tone: Color, width: float) -> void:
+-	var variants: Array = [PackedVector2Array([Vector2(0.1,0.75),Vector2(0.2,0.18),Vector2(0.64,0.1),Vector2(0.9,0.4),Vector2(0.72,0.86),Vector2(0.1,0.75)]),PackedVector2Array([Vector2(0.1,0.1),Vector2(0.85,0.1),Vector2(0.9,0.6),Vector2(0.58,0.6),Vector2(0.58,0.9),Vector2(0.16,0.86),Vector2(0.1,0.1)]),PackedVector2Array([Vector2(0.1,0.55),Vector2(0.24,0.12),Vector2(0.53,0.32),Vector2(0.82,0.1),Vector2(0.92,0.67),Vector2(0.62,0.9),Vector2(0.3,0.74),Vector2(0.1,0.55)])]
+-	var points: PackedVector2Array = variants[index%3]
+-	for point: int in range(points.size()): points[point] = area.position+points[point]*area.size
+-	canvas.draw_polyline(points,tone,width,true)
+diff --git a/game/ui/challenge_graphic.gd.uid b/game/ui/challenge_graphic.gd.uid
+deleted file mode 100644
+--- a/game/ui/challenge_graphic.gd.uid
++++ /dev/null
+@@ -1 +0,0 @@
+-uid://ymtwuif8muv8
+diff --git a/DEVELOPMENT_STATUS.md b/DEVELOPMENT_STATUS.md
+--- a/DEVELOPMENT_STATUS.md
++++ b/DEVELOPMENT_STATUS.md
+@@ -1,3 +1,5 @@
++2026-10-23 CIR01-CIR03/R01/G01/Q01: Owner prefers the earlier scenic challenge artwork and rejects the native-diagram replacement. Five original v2 image_gen edits retain forest driving, garage planning, duel, six-car grid and three closed circuits/three lights each, with calmer lighting, cleaner materials and corrected props/vehicle geometry. A targeted cleanup removes the garage car badge/lettering. The 3x3 card fits all three circuits and starts above its caption; other scene posters remain full frame. Scenic browser/picker/detail/invitation art returns, with dedicated Find & play and exact rules/targets/account/verification/car selection preserved. Entry92/92native, browser110Compatibility, final cards270Compatibility/270desktopMobile, integrated216, FreeRace233 and parser1040 pass. Native previews, exact prompts/provenance, source hashes and scoped checkpoint: docs/evidence/challenge-art-refinement-2026-10-23/report.json and game/assets/menu/challenges/refinement-v2.json. Initial badge/crop corrections retained. Client reload and owner appearance/device acceptance remain; no phone/tablet attachment check, physical-device test, APK/export/install, account/backend mutation, social send or deployment. Concurrent work preserved.
++
+ 2026-10-23 SGP01-SGP03/G01/R01/Q01: Owner cannot notice Desert wind in-game. Reproduce through actual Game presentation, normal seeded ambience and moving driving camera: original0/18 readable samples and170perceptible peak pixels. Raise ordinary visual floor0.30to0.65, strengthen thin wisps with0.20sqrt(shape) and retain terrain hue through renderer-calibrated airborne value. Six stable separated sites,48quads/96triangles, audio, camera, depth and canonical/lifecycle guards remain. Final9/18samples per renderer, peaks4548Mobile/6389Compatibility; gameplay4/6/6, focused55/68/68, Desert87, ambience111, biomes108 and parser1041 pass; all784roof pixels remain exact. Actual ordinary-driving previews, retained fixture/material corrections, commands, hashes and scoped Git-checked checkpoint: docs/DESERT_SAND_GAMEPLAY_2026_10_23.md and docs/evidence/desert-sand-gameplay-2026-10-23/report.json. Local restart, owner recognition and physical-device fragment cost/appearance remain. No phone/tablet attachment check, physical-device test, APK, live account/backend mutation or deployment. Concurrent work and owner game/editor processes preserved.
+ 
+ 2026-10-23 PFL01-PFL03/R01/G01/Q01: Darker matte concrete uses an original deterministic512-square packed texture, filtered grain and clear6x8m slab joints with renderer-correct pigment. The reserved stair corridor removes two conflicting bays; joined yellow exit borders leave zebra paint clear. Central slots are section A;98 unique A01-A62/B01-B36 spaces remain. Focused608headless/642Compatibility/642desktopMobile, App141, exact repeat bake/import channels and parser1040 pass. Initial shader fallback, mip-test, native import-lock, excessive mottle and Mobile colour corrections remain documented. Native views, commands, hashes and scoped binary-capable checkpoint: docs/PARKING_HALL_FLOOR_LAYOUT_2026_10_23.md and docs/evidence/parking-hall-floor-layout-2026-10-23/report.json. No roof; normal driving/camera and saved records/condition remain. Client restart and owner/device acceptance remain; no phone/tablet attachment check, physical-device test, APK, live mutation or deployment. Concurrent work preserved.
+diff --git a/docs/PHASE_0_PLAN.md b/docs/PHASE_0_PLAN.md
+--- a/docs/PHASE_0_PLAN.md
++++ b/docs/PHASE_0_PLAN.md
+@@ -1,3 +1,5 @@
++2026-10-23 CIR01-CIR03/R01/G01/Q01: Owner prefers the earlier scenic challenge artwork and rejects the native-diagram replacement. Five original v2 image_gen edits retain forest driving, garage planning, duel, six-car grid and three closed circuits/three lights each, with calmer lighting, cleaner materials and corrected props/vehicle geometry. A targeted cleanup removes the garage car badge/lettering. The 3x3 card fits all three circuits and starts above its caption; other scene posters remain full frame. Scenic browser/picker/detail/invitation art returns, with dedicated Find & play and exact rules/targets/account/verification/car selection preserved. Entry92/92native, browser110Compatibility, final cards270Compatibility/270desktopMobile, integrated216, FreeRace233 and parser1040 pass. Native previews, exact prompts/provenance, source hashes and scoped checkpoint: docs/evidence/challenge-art-refinement-2026-10-23/report.json and game/assets/menu/challenges/refinement-v2.json. Initial badge/crop corrections retained. Client reload and owner appearance/device acceptance remain; no phone/tablet attachment check, physical-device test, APK/export/install, account/backend mutation, social send or deployment. Concurrent work preserved.
++
+ 2026-10-23 SGP01-SGP03/G01/R01/Q01: Owner cannot notice Desert wind in-game. Reproduce through actual Game presentation, normal seeded ambience and moving driving camera: original0/18 readable samples and170perceptible peak pixels. Raise ordinary visual floor0.30to0.65, strengthen thin wisps with0.20sqrt(shape) and retain terrain hue through renderer-calibrated airborne value. Six stable separated sites,48quads/96triangles, audio, camera, depth and canonical/lifecycle guards remain. Final9/18samples per renderer, peaks4548Mobile/6389Compatibility; gameplay4/6/6, focused55/68/68, Desert87, ambience111, biomes108 and parser1041 pass; all784roof pixels remain exact. Actual ordinary-driving previews, retained fixture/material corrections, commands, hashes and scoped Git-checked checkpoint: docs/DESERT_SAND_GAMEPLAY_2026_10_23.md and docs/evidence/desert-sand-gameplay-2026-10-23/report.json. Local restart, owner recognition and physical-device fragment cost/appearance remain. No phone/tablet attachment check, physical-device test, APK, live account/backend mutation or deployment. Concurrent work and owner game/editor processes preserved.
+ 
+ 2026-10-23 PFL01-PFL03/R01/G01/Q01: Darker matte concrete uses an original deterministic512-square packed texture, filtered grain and clear6x8m slab joints with renderer-correct pigment. The reserved stair corridor removes two conflicting bays; joined yellow exit borders leave zebra paint clear. Central slots are section A;98 unique A01-A62/B01-B36 spaces remain. Focused608headless/642Compatibility/642desktopMobile, App141, exact repeat bake/import channels and parser1040 pass. Initial shader fallback, mip-test, native import-lock, excessive mottle and Mobile colour corrections remain documented. Native views, commands, hashes and scoped binary-capable checkpoint: docs/PARKING_HALL_FLOOR_LAYOUT_2026_10_23.md and docs/evidence/parking-hall-floor-layout-2026-10-23/report.json. No roof; normal driving/camera and saved records/condition remain. Client restart and owner/device acceptance remain; no phone/tablet attachment check, physical-device test, APK, live mutation or deployment. Concurrent work preserved.
+diff --git a/docs/CHALLENGE_PAGE.md b/docs/CHALLENGE_PAGE.md
+--- a/docs/CHALLENGE_PAGE.md
++++ b/docs/CHALLENGE_PAGE.md
+@@ -1,3 +1,15 @@
++# Refined scenic challenge illustrations - 2026-10-23
++
++CIR01-CIR03 supersedes the rejected native-diagram presentation. The owner prefers the earlier scenic racing and garage pictures, with less conspicuous generated detail and accurate construction. Five versioned v2 edits preserve those subjects: the blue car on a forest bend, a garage planning workbench, two rival hatchbacks, a six-car grid and three distinct closed circuits with three start lights each.
++
++The revisions use softer natural lighting, dry asphalt, simpler materials and more coherent car, wheel, road, barrier and garage objects. The workbench has three separate closed route maps, one central-hand stopwatch, a pencil and folded checkered cloth; a targeted second edit removes the parked car's badge and tiny lettering. The 3x3 format shows its complete illustration above the caption so all circuits and starts remain visible. Entry pictures remain different. The earlier scenic route-card/detail/picker presentation is restored; Find & play remains a dedicated finding/racing destination with no creation options. Actual Garage cars, timing, verification, attempts and account checks remain.
++
++The built-in image_gen tool edited the original project images. Original PNGs and provenance are retained. Versioned workspace files and the exact prompt set, references, cleanup and hashes are in [refinement-v2.json](../game/assets/menu/challenges/refinement-v2.json). Each runtime import remains lossless, mipmapped and capped at1024px on the long side.
++
++[Entry preview](evidence/challenge-art-refinement-2026-10-23/entry/Windows-gl_compatibility/entry-1280x720.png) and [format preview](evidence/challenge-art-refinement-2026-10-23/creation/Windows-gl_compatibility/formats-1280x720.png). Actual native checks, source/asset fingerprints and scoped checkpoint: [report](evidence/challenge-art-refinement-2026-10-23/report.json). Owner appearance acceptance and physical-device readability remain; no phone/tablet attachment check, device test, APK/export/install, live account/backend mutation, social send or deployment by this task.
++
++---
++
+ # Native challenge graphics - 2026-10-23
+ 
+ The owner rejected the generated challenge pictures. CNA01-CNA03 replaces entry and format illustrations with original native diagrams: a circuit search, format/track/car planning, a duel, a starting grid and three circuits with three attempt dots each. Challenge race cards, selected race/result/invitation previews and the creation track picker use circuit maps on a restrained navy grid. Race maps retain the actual track points; the format symbols are decorative diagrams. The two entry choices remain distinct.
+diff --git a/licenses/ASSETS.md b/licenses/ASSETS.md
+--- a/licenses/ASSETS.md
++++ b/licenses/ASSETS.md
+@@ -1,3 +1,5 @@
++Refined challenge illustrations (2026-10-23, CIR01-CIR03): game/assets/menu/challenges/entry-find-play-v2.png, entry-create-v2.png, one-to-one-v2.png, group-race-v2.png and three-by-three-v2.png are original built-in image_gen edits of the five previously generated project illustrations. The owner rejects the intervening native diagrams and requests the earlier scenic direction with less excessive surface detail and more accurate objects. The forest/garage/two-car/six-car/three-circuit subjects remain distinct. A targeted garage-car cleanup removes the original manufacturer-like badge and tiny lettering. Exact prompts, local reference paths, output paths and SHA-256: game/assets/menu/challenges/refinement-v2.json. Provider PNGs are copied byte-exactly into the workspace, with lossless mipmapped1024px-long-side Godot imports. Original v1 bytes/provenance remain. No new runtime provider, external artwork, trademark or dependency is added; fictional vehicles are decorative art and do not substitute actual in-game car selection. Actual native previews and acceptance limits: docs/evidence/challenge-art-refinement-2026-10-23/report.json.
++
+ Challenge native graphics (2026-10-23, CNA01-CNA03): game/ui/challenge_graphic.gd contains original code-native circuit/search/planning and competition diagrams, using the existing game fonts and fictional MenuIcon set. Race and picker maps use their actual saved track points. These replace the generated challenge entry/format pictures and scenic challenge backgrounds after owner feedback. No new raster asset, third-party source, provider or dependency. Earlier PNGs and their provenance remain historical; they are no longer referenced by the challenge UI. Native views and exact source hashes: docs/evidence/challenge-native-art-2026-10-23/report.json.
+ 
+ Garage sidebar artwork (2026-10-19, GSI01-GSI03): original project-authored SVG path data in game/ui/garage_mode_icons.gd for the car silhouette, paintbrush, cleaning droplet, wrench, musical notes, trophy and newspaper. Shared rounded strokes and native Godot SVG rasterisation; no downloaded/copied icon library, generated-provider image, external asset or new dependency. Actual native views and task-only checkpoint: docs/GARAGE_SIDEBAR_2026_10_19.md.
+diff --git a/game/assets/menu/challenges/entry-create-v2.png.import b/game/assets/menu/challenges/entry-create-v2.png.import
+new file mode 100644
+--- /dev/null
++++ b/game/assets/menu/challenges/entry-create-v2.png.import
+@@ -0,0 +1,40 @@
++[remap]
++
++importer="texture"
++type="CompressedTexture2D"
++uid="uid://blhdyu48v48eo"
++path="res://.godot/imported/entry-create-v2.png-54b1fd6bd135fdc256a28b3847de5ab0.ctex"
++metadata={
++"vram_texture": false
++}
++
++[deps]
++
++source_file="res://assets/menu/challenges/entry-create-v2.png"
++dest_files=["res://.godot/imported/entry-create-v2.png-54b1fd6bd135fdc256a28b3847de5ab0.ctex"]
++
++[params]
++
++compress/mode=0
++compress/high_quality=false
++compress/lossy_quality=0.7
++compress/uastc_level=0
++compress/rdo_quality_loss=0.0
++compress/hdr_compression=1
++compress/normal_map=0
++compress/channel_pack=0
++mipmaps/generate=true
++mipmaps/limit=-1
++roughness/mode=0
++roughness/src_normal=""
++process/channel_remap/red=0
++process/channel_remap/green=1
++process/channel_remap/blue=2
++process/channel_remap/alpha=3
++process/fix_alpha_border=true
++process/premult_alpha=false
++process/normal_map_invert_y=false
++process/hdr_as_srgb=false
++process/hdr_clamp_exposure=false
++process/size_limit=1024
++detect_3d/compress_to=1
+diff --git a/game/assets/menu/challenges/entry-find-play-v2.png.import b/game/assets/menu/challenges/entry-find-play-v2.png.import
+new file mode 100644
+--- /dev/null
++++ b/game/assets/menu/challenges/entry-find-play-v2.png.import
+@@ -0,0 +1,40 @@
++[remap]
++
++importer="texture"
++type="CompressedTexture2D"
++uid="uid://cx2weyqpkcj5f"
++path="res://.godot/imported/entry-find-play-v2.png-a04f3afe8cb59f86e361e08626e53640.ctex"
++metadata={
++"vram_texture": false
++}
++
++[deps]
++
++source_file="res://assets/menu/challenges/entry-find-play-v2.png"
++dest_files=["res://.godot/imported/entry-find-play-v2.png-a04f3afe8cb59f86e361e08626e53640.ctex"]
++
++[params]
++
++compress/mode=0
++compress/high_quality=false
++compress/lossy_quality=0.7
++compress/uastc_level=0
++compress/rdo_quality_loss=0.0
++compress/hdr_compression=1
++compress/normal_map=0
++compress/channel_pack=0
++mipmaps/generate=true
++mipmaps/limit=-1
++roughness/mode=0
++roughness/src_normal=""
++process/channel_remap/red=0
++process/channel_remap/green=1
++process/channel_remap/blue=2
++process/channel_remap/alpha=3
++process/fix_alpha_border=true
++process/premult_alpha=false
++process/normal_map_invert_y=false
++process/hdr_as_srgb=false
++process/hdr_clamp_exposure=false
++process/size_limit=1024
++detect_3d/compress_to=1
+diff --git a/game/assets/menu/challenges/group-race-v2.png.import b/game/assets/menu/challenges/group-race-v2.png.import
+new file mode 100644
+--- /dev/null
++++ b/game/assets/menu/challenges/group-race-v2.png.import
+@@ -0,0 +1,40 @@
++[remap]
++
++importer="texture"
++type="CompressedTexture2D"
++uid="uid://b4i0mrhphjtb2"
++path="res://.godot/imported/group-race-v2.png-bf00822e46714dcb80ce40d57d7870c8.ctex"
++metadata={
++"vram_texture": false
++}
++
++[deps]
++
++source_file="res://assets/menu/challenges/group-race-v2.png"
++dest_files=["res://.godot/imported/group-race-v2.png-bf00822e46714dcb80ce40d57d7870c8.ctex"]
++
++[params]
++
++compress/mode=0
++compress/high_quality=false
++compress/lossy_quality=0.7
++compress/uastc_level=0
++compress/rdo_quality_loss=0.0
++compress/hdr_compression=1
++compress/normal_map=0
++compress/channel_pack=0
++mipmaps/generate=true
++mipmaps/limit=-1
++roughness/mode=0
++roughness/src_normal=""
++process/channel_remap/red=0
++process/channel_remap/green=1
++process/channel_remap/blue=2
++process/channel_remap/alpha=3
++process/fix_alpha_border=true
++process/premult_alpha=false
++process/normal_map_invert_y=false
++process/hdr_as_srgb=false
++process/hdr_clamp_exposure=false
++process/size_limit=1024
++detect_3d/compress_to=1
+diff --git a/game/assets/menu/challenges/one-to-one-v2.png.import b/game/assets/menu/challenges/one-to-one-v2.png.import
+new file mode 100644
+--- /dev/null
++++ b/game/assets/menu/challenges/one-to-one-v2.png.import
+@@ -0,0 +1,40 @@
++[remap]
++
++importer="texture"
++type="CompressedTexture2D"
++uid="uid://beololb74vspx"
++path="res://.godot/imported/one-to-one-v2.png-e8f12d731bbb0f38c246619d905c017f.ctex"
++metadata={
++"vram_texture": false
++}
++
++[deps]
++
++source_file="res://assets/menu/challenges/one-to-one-v2.png"
++dest_files=["res://.godot/imported/one-to-one-v2.png-e8f12d731bbb0f38c246619d905c017f.ctex"]
++
++[params]
++
++compress/mode=0
++compress/high_quality=false
++compress/lossy_quality=0.7
++compress/uastc_level=0
++compress/rdo_quality_loss=0.0
++compress/hdr_compression=1
++compress/normal_map=0
++compress/channel_pack=0
++mipmaps/generate=true
++mipmaps/limit=-1
++roughness/mode=0
++roughness/src_normal=""
++process/channel_remap/red=0
++process/channel_remap/green=1
++process/channel_remap/blue=2
++process/channel_remap/alpha=3
++process/fix_alpha_border=true
++process/premult_alpha=false
++process/normal_map_invert_y=false
++process/hdr_as_srgb=false
++process/hdr_clamp_exposure=false
++process/size_limit=1024
++detect_3d/compress_to=1
+diff --git a/game/assets/menu/challenges/three-by-three-v2.png.import b/game/assets/menu/challenges/three-by-three-v2.png.import
+new file mode 100644
+--- /dev/null
++++ b/game/assets/menu/challenges/three-by-three-v2.png.import
+@@ -0,0 +1,40 @@
++[remap]
++
++importer="texture"
++type="CompressedTexture2D"
++uid="uid://cd0k70cdjjjyb"
++path="res://.godot/imported/three-by-three-v2.png-a2cff10863d61c7774fd7efc7d1b57d8.ctex"
++metadata={
++"vram_texture": false
++}
++
++[deps]
++
++source_file="res://assets/menu/challenges/three-by-three-v2.png"
++dest_files=["res://.godot/imported/three-by-three-v2.png-a2cff10863d61c7774fd7efc7d1b57d8.ctex"]
++
++[params]
++
++compress/mode=0
++compress/high_quality=false
++compress/lossy_quality=0.7
++compress/uastc_level=0
++compress/rdo_quality_loss=0.0
++compress/hdr_compression=1
++compress/normal_map=0
++compress/channel_pack=0
++mipmaps/generate=true
++mipmaps/limit=-1
++roughness/mode=0
++roughness/src_normal=""
++process/channel_remap/red=0
++process/channel_remap/green=1
++process/channel_remap/blue=2
++process/channel_remap/alpha=3
++process/fix_alpha_border=true
++process/premult_alpha=false
++process/normal_map_invert_y=false
++process/hdr_as_srgb=false
++process/hdr_clamp_exposure=false
++process/size_limit=1024
++detect_3d/compress_to=1
+diff --git a/game/assets/menu/challenges/refinement-v2.json b/game/assets/menu/challenges/refinement-v2.json
+new file mode 100644
+--- /dev/null
++++ b/game/assets/menu/challenges/refinement-v2.json
+@@ -0,0 +1,79 @@
++{
++  "date": "2026-10-23",
++  "provider": "Built-in image_gen",
++  "mode": "edit",
++  "purpose": "Owner prefers the previous scenic illustrations and requests less obviously generated artwork with corrected details.",
++  "requests": [
++    {
++      "key": "find",
++      "source": "entry-find-play-v1.png",
++      "prompt": "Use case: precise-object-edit. This is an edit of the supplied existing Beat my track game-menu illustration. The owner likes its scenic motorsport direction but finds it obviously AI-generated. Preserve the overall subject, composition and restrained navy/warm natural palette. Refine into a confident professionally painted motorsport editorial illustration with controlled cel-shaded forms: clean large shapes, selective detail, coherent perspective and natural soft lighting. Reduce the overprocessed HDR, pin-sharp noise on every surface, excessive glow, mirror-like wetness, random scratches and repetitive clutter. No text, numbers, watermarks, trademarks, manufacturer badges or pseudo-writing. Anatomically and mechanically coherent cars with four correctly aligned wheels, consistent axle/wheelbase geometry, two matching lamps per side, plausible windows, mirrors, door seams and tires touching the road. Every drawn object must be identifiable and physically plausible. Keep the square elevated rear-three-quarter view of ONE blue compact hatchback on a sweeping pine-forest race-circuit bend, with the distant mountains/lake and morning daylight. Preserve this as the distinct Find & play scene. Correct the car to a clean fictional compact with restrained bodywork, no modern manufacturer emblems, invented tiny lettering or extravagant aero. It follows the bend with wheel direction aligned to travel; consistent rear lights and side windows, no duplicate exhausts or melted bumper detail. Road is dry, smooth matte asphalt with one consistent white edge line, realistic modest kerb, supported guardrail posts following the curve at equal spacing and exactly two consistent chevron boards pointing along the bend. Remove flying gravel, exaggerated drift marks and oversaturated sunbeams. One simple rectangular checkered flag on a single supported post; clean consistent square pattern. Simplify forest foliage into deliberate painted masses rather than millions of crunchy highlights. Keep the car, road and scenery readable in the central 75 percent after landscape cropping.",
++      "output_hint": "Generated images are saved to C:\\Users\\ville\\.codex\\generated_images\\01a169e0-162c-7fe1-93ce-778c30d112af as C:\\Users\\ville\\.codex\\generated_images\\01a169e0-162c-7fe1-93ce-778c30d112af\\exec-1a6ea028-7a46-4269-bcda-5dc7bcb88416.png by default.\nIf you need to use a generated image at another path, copy it and leave the original in place unless the user explicitly asks you to delete it.\nThe generated image is already displayed to the user. There is no need to render it in the final response as a Markdown image or file link.",
++      "workspace_path": "game/assets/menu/challenges/entry-find-play-v2.png",
++      "sha256": "2857f72f6cf7a68db0a9a09250a042155022715dfc806b95cb2fc6c9e73141dd",
++      "runtime_import": {
++        "size_limit": 1024,
++        "mipmaps": true,
++        "compression": "lossless"
++      }
++    },
++    {
++      "key": "create",
++      "source": "entry-create-v1.png",
++      "prompt": "Use case: precise-object-edit. This is an edit of the supplied existing Beat my track game-menu illustration. The owner likes its scenic motorsport direction but finds it obviously AI-generated. Preserve the overall subject, composition and restrained navy/warm natural palette. Refine into a confident professionally painted motorsport editorial illustration with controlled cel-shaded forms: clean large shapes, selective detail, coherent perspective and natural soft lighting. Reduce the overprocessed HDR, pin-sharp noise on every surface, excessive glow, mirror-like wetness, random scratches and repetitive clutter. No text, numbers, watermarks, trademarks, manufacturer badges or pseudo-writing. Anatomically and mechanically coherent cars with four correctly aligned wheels, consistent axle/wheelbase geometry, two matching lamps per side, plausible windows, mirrors, door seams and tires touching the road. Every drawn object must be identifiable and physically plausible. Keep the square garage-planning composition: blue steel workbench in the foreground, warm practical lamp at upper left, one burgundy hatchback parked quietly in the garage behind. This is the distinct Create a challenge scene. Simplify foreground to exactly THREE separate flat cream route cards with crisp straight paper edges, ONE ordinary graphite pencil laid to the side, ONE well-constructed mechanical stopwatch and ONE folded checkered cloth. Remove keys, extra shiny tools, ambiguous parts, excess tiny objects and scuffed surface noise. On each route card draw a simple DIFFERENT unbranched continuous CLOSED circuit outline, consistent line weight and coherent plane perspective; absolutely no route branches, dead ends, crossings or bridges. Stopwatch: a single circular cream face with exactly one central hand, a single central pivot, uniform fine minute ticks around the rim, one top winding crown; no second dial, no bogus lettering, no duplicated hands. Ensure each object has one contact shadow aligned with the same lamp. Bench finish is matte worn blue steel, garage concrete softly reflective but dry, plausible sparse tool cabinet and closed gas bottle in the background with no glowing seams. The parked car has coherent wheels, windows and restrained fictional bodywork; remove badge-like circles or marks. Warm muted natural light, enough tonal separation for small menu cards.",
++      "output_hint": "Generated images are saved to C:\\Users\\ville\\.codex\\generated_images\\01a169e0-162c-7fe1-93ce-778c30d112af as C:\\Users\\ville\\.codex\\generated_images\\01a169e0-162c-7fe1-93ce-778c30d112af\\exec-b154149c-99f9-49d0-9977-03540b911c46.png by default.\nIf you need to use a generated image at another path, copy it and leave the original in place unless the user explicitly asks you to delete it.\nThe generated image is already displayed to the user. There is no need to render it in the final response as a Markdown image or file link.",
++      "workspace_path": "game/assets/menu/challenges/entry-create-v2.png",
++      "sha256": "1173fc8db5bf79fadb1035b1f896ce7adeba8116e225b6fb469df97ad548d8e9",
++      "runtime_import": {
++        "size_limit": 1024,
++        "mipmaps": true,
++        "compression": "lossless"
++      }
++    },
++    {
++      "key": "duel",
++      "source": "one-to-one-v1.png",
++      "prompt": "Use case: precise-object-edit. This is an edit of the supplied existing Beat my track game-menu illustration. The owner likes its scenic motorsport direction but finds it obviously AI-generated. Preserve the overall subject, composition and restrained navy/warm natural palette. Refine into a confident professionally painted motorsport editorial illustration with controlled cel-shaded forms: clean large shapes, selective detail, coherent perspective and natural soft lighting. Reduce the overprocessed HDR, pin-sharp noise on every surface, excessive glow, mirror-like wetness, random scratches and repetitive clutter. No text, numbers, watermarks, trademarks, manufacturer badges or pseudo-writing. Anatomically and mechanically coherent cars with four correctly aligned wheels, consistent axle/wheelbase geometry, two matching lamps per side, plausible windows, mirrors, door seams and tires touching the road. Every drawn object must be identifiable and physically plausible. Preserve the portrait 2:3 frontal two-car duel scene with EXACTLY TWO boxy fictional classic rally hatchbacks side by side on a starting straight, left ivory/navy and right muted red/ivory. Both face straight along parallel lanes with a safe visible gap between them. Correct symmetry: each car has four round front lamps, two equally spaced on each side, normal horizontal grille, consistent wheels, mirrors and windshield geometry; both designs share one coherent construction. Each seated driver wears one plain helmet, sits on the same left-hand-drive side relative to their own vehicle, both hands naturally on one steering wheel; avoid overlapping seat/rollcage/helmet shapes. The tarmac is dry matte asphalt. Two rectangular white grid boxes, a short straight black-and-white start strip crossing both lanes with regular square checks. Remove the distracting thick central yellow stripe running into the cars and all impossibly random paint marks. Keep industrial pit buildings and only two simple supported floodlight structures in soft background, no dense bridge/gantry maze or detailed anonymous crowd. Calm dusk blue with modest warm lamp light, no floodlight starbursts or fantasy beams. Keep cars within central 85 percent; lower 12 percent naturally quiet for native UI caption added separately.",
++      "output_hint": "Generated images are saved to C:\\Users\\ville\\.codex\\generated_images\\01a169e0-162c-7fe1-93ce-778c30d112af as C:\\Users\\ville\\.codex\\generated_images\\01a169e0-162c-7fe1-93ce-778c30d112af\\exec-9579809e-5384-4e6f-af53-c7c5f4141e44.png by default.\nIf you need to use a generated image at another path, copy it and leave the original in place unless the user explicitly asks you to delete it.\nThe generated image is already displayed to the user. There is no need to render it in the final response as a Markdown image or file link.",
++      "workspace_path": "game/assets/menu/challenges/one-to-one-v2.png",
++      "sha256": "f429013e8317deb65828624657ecdc8fbaca8d3524111f4299ac3eea7bc0a8ae",
++      "runtime_import": {
++        "size_limit": 1024,
++        "mipmaps": true,
++        "compression": "lossless"
++      }
++    },
++    {
++      "key": "group",
++      "source": "group-race-v1.png",
++      "prompt": "Use case: precise-object-edit. This is an edit of the supplied existing Beat my track game-menu illustration. The owner likes its scenic motorsport direction but finds it obviously AI-generated. Preserve the overall subject, composition and restrained navy/warm natural palette. Refine into a confident professionally painted motorsport editorial illustration with controlled cel-shaded forms: clean large shapes, selective detail, coherent perspective and natural soft lighting. Reduce the overprocessed HDR, pin-sharp noise on every surface, excessive glow, mirror-like wetness, random scratches and repetitive clutter. No text, numbers, watermarks, trademarks, manufacturer badges or pseudo-writing. Anatomically and mechanically coherent cars with four correctly aligned wheels, consistent axle/wheelbase geometry, two matching lamps per side, plausible windows, mirrors, door seams and tires touching the road. Every drawn object must be identifiable and physically plausible. Preserve the portrait 2:3 elevated front-three-quarter racing-pack scene with EXACTLY SIX fictional boxy classic rally hatchbacks on a starting grid: one ivory/navy car in front and five in muted red, grey, ivory and blue behind. Correct the arrangement into three plausible staggered rows with safe gaps, all cars parallel and heading the SAME direction; no interpenetration or wheels crossing another vehicle. Keep full coherent car silhouettes, the same normal four-round-headlamp construction on each, regular windows and real tire contact shadows. Helmeted seated drivers are simple quiet silhouettes rather than intricate faces or tangled arm/rollcage shapes. Ground is dry matte asphalt; simple parallel white rectangular grid slots follow one shared vanishing point. Remove the random yellow diagonal stripes, excessive sparkly wet-road reflections, smoke/speed streaks and slanted fantasy grandstand geometry. A straight barrier and simple fence on each side, one modest pit building and a small number of structurally supported light poles in soft dusk background. No labels or lettering anywhere. Featured car remains central, with all six cars countable, lower 12 percent quiet for native caption added separately.",
++      "output_hint": "Generated images are saved to C:\\Users\\ville\\.codex\\generated_images\\01a169e0-162c-7fe1-93ce-778c30d112af as C:\\Users\\ville\\.codex\\generated_images\\01a169e0-162c-7fe1-93ce-778c30d112af\\exec-857b8b1d-8c37-467f-9669-80747431d957.png by default.\nIf you need to use a generated image at another path, copy it and leave the original in place unless the user explicitly asks you to delete it.\nThe generated image is already displayed to the user. There is no need to render it in the final response as a Markdown image or file link.",
++      "workspace_path": "game/assets/menu/challenges/group-race-v2.png",
++      "sha256": "e4fe3bc71201a949e7eac2979b5627586fc783fddce3768be92a53a644d8c544",
++      "runtime_import": {
++        "size_limit": 1024,
++        "mipmaps": true,
++        "compression": "lossless"
++      }
++    },
++    {
++      "key": "three",
++      "source": "three-by-three-v1.png",
++      "prompt": "Use case: precise-object-edit. This is an edit of the supplied existing Beat my track game-menu illustration. The owner likes its scenic motorsport direction but finds it obviously AI-generated. Preserve the overall subject, composition and restrained navy/warm natural palette. Refine into a confident professionally painted motorsport editorial illustration with controlled cel-shaded forms: clean large shapes, selective detail, coherent perspective and natural soft lighting. Reduce the overprocessed HDR, pin-sharp noise on every surface, excessive glow, mirror-like wetness, random scratches and repetitive clutter. No text, numbers, watermarks, trademarks, manufacturer badges or pseudo-writing. Anatomically and mechanically coherent cars with four correctly aligned wheels, consistent axle/wheelbase geometry, two matching lamps per side, plausible windows, mirrors, door seams and tires touching the road. Every drawn object must be identifiable and physically plausible. Preserve the portrait 2:3 industrial three-circuit scene, but correct its impossible geometry. Depict EXACTLY THREE separate small closed-loop asphalt racing circuits on three flat clearly supported concrete terraces receding from foreground to background. Each circuit must be one continuous unbranched drivable CLOSED loop with an unmistakable inner and outer boundary, consistent road width, no junctions, dead ends, self-crossing roads, overlapping decks or impossible perspective. Each of the three loops has a distinct outline: foreground oval with one shallow infield bend, middle rounded triangle, rear elongated kidney. The entire loop is readable in each terrace. Exactly ONE small ivory/navy fictional boxy hatchback on each loop, THREE cars total, correct scale and all wheels on the asphalt. Exactly ONE simple horizontal start-light bar at the start of each track with THREE evenly spaced amber lamps per bar, NINE lamps total; mount each bar on TWO straight posts placed off the roadway. A small clean black-and-white start line crosses the road beneath each bar. Proper solid terrace support walls and safety railings; remove unbuildable floating sections, random stairs, pipe tangles, excess tire piles and glowing edge strips. Restrained flat painted industrial surfaces, dry asphalt, muted dusk light. No words, numerals, signage or UI. Keep three circuits clearly separate and counted, not three turns of one connected road.",
++      "output_hint": "Generated images are saved to C:\\Users\\ville\\.codex\\generated_images\\01a169e0-162c-7fe1-93ce-778c30d112af as C:\\Users\\ville\\.codex\\generated_images\\01a169e0-162c-7fe1-93ce-778c30d112af\\exec-12282457-e3c0-4563-8b3b-a16e79614d93.png by default.\nIf you need to use a generated image at another path, copy it and leave the original in place unless the user explicitly asks you to delete it.\nThe generated image is already displayed to the user. There is no need to render it in the final response as a Markdown image or file link.",
++      "workspace_path": "game/assets/menu/challenges/three-by-three-v2.png",
++      "sha256": "a1c1191d8dead7b7d8168dda46ba0bd6d1567fd471e4810059748d46626cb967",
++      "runtime_import": {
++        "size_limit": 1024,
++        "mipmaps": true,
++        "compression": "lossless"
++      }
++    }
++  ],
++  "cleanup": {
++    "key": "create",
++    "prompt": "Use case: precise-object-edit. Edit only the burgundy parked car in the UPPER RIGHT BACKGROUND of this finished garage illustration. Remove the small circular manufacturer badge centered on its rear hatch and every tiny silver badge/letter/word on the lower hatch. Replace their pixels with smooth continuous burgundy paint and a coherent soft reflection. The car must have absolutely no rear badge, emblem, symbol or writing. Preserve everything else exactly in style and composition: all THREE route cards and their closed-loop outlines, ONE central-hand stopwatch, pencil, folded checkered cloth, blue bench, lamp, garage lighting, car geometry, wheels, tail lamps, windows and framing. Do not add objects, do not change the foreground, no text, no watermark.",
++    "initial_output_hint": "Generated images are saved to C:\\Users\\ville\\.codex\\generated_images\\01a169e0-162c-7fe1-93ce-778c30d112af as C:\\Users\\ville\\.codex\\generated_images\\01a169e0-162c-7fe1-93ce-778c30d112af\\exec-e6ced4fa-2740-404d-adf2-26c16e57c1fd.png by default.\nIf you need to use a generated image at another path, copy it and leave the original in place unless the user explicitly asks you to delete it.\nThe generated image is already displayed to the user. There is no need to render it in the final response as a Markdown image or file link.",
++    "final_output_hint": "Generated images are saved to C:\\Users\\ville\\.codex\\generated_images\\01a169e0-162c-7fe1-93ce-778c30d112af as C:\\Users\\ville\\.codex\\generated_images\\01a169e0-162c-7fe1-93ce-778c30d112af\\exec-b154149c-99f9-49d0-9977-03540b911c46.png by default.\nIf you need to use a generated image at another path, copy it and leave the original in place unless the user explicitly asks you to delete it.\nThe generated image is already displayed to the user. There is no need to render it in the final response as a Markdown image or file link."
++  }
++}

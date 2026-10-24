@@ -1,0 +1,23 @@
+# Garage parking hall — 2026-10-23
+
+Garage **Test drive** opens a local, untimed 240 × 160 metre concrete parking hall with the previewed car. The 200 metre marked straight supports acceleration/braking checks; the 56 metre diameter clear turning area, slalom markers and empty parking bays support steering, drifting, reversing and parking practice. Reset car returns to the entrance; Garage or the pause menu returns to the same retained garage.
+
+| Requirement | Implementation |
+| --- | --- |
+| GPH01 | Test drive is available in car browsing, Customise, Tuning and Care. It commits the current garage tools and selects the previewed car. Sliding/hidden controls cannot start the hall. Short landscape windows reserve room for the action row. |
+| GPH02 | One local geometry resource supplies 240 × 160 m wall bounds and 26 exact cylindrical pillar bounds to both simulation and presentation. The straight and turning circle remain clear. Painted lines and flexible slalom markers are cosmetic. |
+| GPH03 | Reuse the real five cars, saved paint/parts, locked normal handling, quantized controls, skid marks, audio, approved overhead camera and camera preferences. No canonical simulation or physics version changes. |
+| GPH04 | Start immediately without countdown, laps, results, rewards, tickets, ghosts, paid resumes or stored race inputs/proof. Saved car condition and PBs are unchanged. Reset/pause/background/input release work normally. |
+| R01 / G01 / Q01 | Preserve unrelated work; retain real logs, corrections, screenshots, source hashes and a task-only Git-checkable patch. Device and owner acceptance remain explicit. |
+
+`game/garage/parking_hall_data.gd` contains the local facility geometry. `parking_hall_visual.gd` builds the original concrete floor, painted bays/markers, circular columns, perimeter ventilation and strip fixtures. `parking_hall_floor.gdshader` supplies quiet concrete grain/joints. Repeated box fixtures use one MultiMesh per material; there are no per-bay dynamic lights. The ceiling is presented as a cutaway so the normal overhead camera can see the car. No downloaded or generated bitmap asset, external service or new dependency is used.
+
+`parking_hall_drive.gd` inherits the existing Game composition and overrides the local ground, indoor lighting and condition persistence. Its free-drive flag suppresses the shared race evidence recorder. App owns covered, scope/navigation/car-fenced loading and the retained-menu return. Existing editor practice continues to expose Edit here; the hall exposes Garage and an unobstructed speed display.
+
+Changed shared sources are `game/core/app.gd`, `game/core/game.gd`, `game/ui/garage_page.gd`, `game/ui/playground_hud.gd` and `game/ui/race_pause_menu.gd`. The focused harness is `game/tests/test_parking_hall.gd`. Captured original Garage-method fixtures retain the existing carousel assertions for control comparisons. The evidence report lists every checkpoint source and its SHA-256.
+
+Validation uses pinned Godot `4.7.2.stable.official.ed1daf0bf`, isolated workspace APPDATA and disposable records/libraries. Commands and complete logs are under [the evidence directory](evidence/parking-hall-2026-10-23/). The final report contains the actual counts. Existing driving, editor practice, garage carousel and App regressions are also recorded. Native captures cover 960 × 540, 1280 × 720 and 1600 × 900 in Compatibility and desktop Mobile/Vulkan.
+
+Corrections retained in evidence: the first PowerShell invocation needed process-only execution-policy bypass; sandboxed Godot could not read the Windows certificate store, so approved native runs used isolated test data outside that sandbox. The first headless layout assertion mixed physical and logical viewport sizes. Native review then exposed a speed/handbrake overlap and the short-window Garage action row clipping. The old carousel fixture exposed an accidental free-drive activation during a menu slide; the final guard fixes that, with its assertions retained. An original-method control had one Patterns timing failure; the final current carousel passes all 152 checks. Initial failure logs and the speed-overlap image remain in evidence.
+
+Restart the client to load the new scripts. Owner acceptance of the hall's size, indoor appearance and driving feel remains. Phone/tablet attachment was not checked, and no physical-device test, APK export/install, live backend/account mutation, social send or deployment was performed. Desktop renderer results do not certify mobile FPS, memory or sustained thermal performance. Concurrent challenge/menu/editor/gameplay/backend work remains in place and is excluded from the task patch.

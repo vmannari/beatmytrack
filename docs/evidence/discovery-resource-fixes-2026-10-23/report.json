@@ -1,0 +1,299 @@
+{
+  "date": "2026-10-23",
+  "generated_at": "2026-10-23T06:20:15.613162+00:00",
+  "scope": "Implement the two immediate discovery resource-exhaustion fixes and both smaller retention/network follow-ups, integrated with ongoing high-priority hardening. Local only.",
+  "review": "../discovery-resource-exhaustion-2026-10-23/report.json",
+  "requirements": [
+    {
+      "id": "REX01/RE01",
+      "status": "implemented",
+      "change": "Discovery-only NOWAIT account privacy fences at authentication and every commit. Contended requests return503/Retry-After1 without joining owner-row lock queues; revocation/removal remain authoritative. Shared small/bulk query slots are capped at max(1,min(3,pool_size-1)); this reserves other gameplay capacity when pool_size>1.",
+      "checks": [
+        "PostgreSQL held-owner test and profile",
+        "account removal/lease commit regression",
+        "106 security/privacy/communication/staging checks"
+      ]
+    },
+    {
+      "id": "REX02/RE02",
+      "status": "implemented",
+      "change": "Separate durable ordinary/expensive work credits, independent of view creation. Random, text/non-text filters, personal state and authenticated initializations use the expensive lane. One ten-second expensive lease per actor across replicas; fenced tokens cannot commit/refund/release replacement work. Actual query/Random/visibility budget failures trigger shared2/4/8/16/30s cooldown, preserving cheap browsing. Older replica windows cannot reset newer credit windows. Request connections are released before refund metadata transactions.",
+      "checks": [
+        "two API instances share cooldown and duplicate admission",
+        "cursor/filter/Random retry coverage",
+        "non-text gate",
+        "replaced lease",
+        "clock rollback",
+        "light-lane independence",
+        "SQLite deadline and busy-timeout pool lifecycle"
+      ]
+    },
+    {
+      "id": "REX03/RE03",
+      "status": "implemented",
+      "change": "Bounded captured-epoch indexed batches discard nonexistent favorite/history IDs; unused history is not copied. Device-local lists remain untouched. Outstanding actor and sixteen service-stripe member/charged-byte caps include expired physical rows. Counters, insertion, expiry and erasure commit/rollback atomically. Legacy members remain intact during512-member indexed backfill; accounting compares cursor tuples with database collation, including Unicode. New member writes wait503 until ready.",
+      "checks": [
+        "nonexistent IDs persist zero rows",
+        "typed real IDs",
+        "actor rows/bytes and service stripes",
+        "rollback",
+        "expiry",
+        "erasure",
+        "partial legacy backfill/rollback",
+        "0056 downgrade/legacy seed/0057 upgrade on SQLite and PostgreSQL"
+      ]
+    },
+    {
+      "id": "REX04/RE04",
+      "status": "implemented",
+      "change": "Secondary shared anonymous IPv6/64 or IPv4/32 read/burst/create/member budgets. Small anonymous reception is additionally capped at two/network and four/process. Trusted proxy resolution and exact peer cursor identity are retained. Validated signed-in players keep separate account budgets and receiver capacity.",
+      "checks": [
+        "rotating actual IPv6 peers",
+        "exact cursor scope",
+        "shared-network signed-in independence",
+        "untrusted forwarding headers/invalid credentials",
+        "same-prefix and distinct-prefix receivers",
+        "receiver cleanup",
+        "real TCP/Uvicorn/h11 framing"
+      ]
+    }
+  ],
+  "default_policy": {
+    "work_credit_unit_ms": 25,
+    "reservation_units": 60,
+    "ordinary_min_charge": 1,
+    "expensive_min_charge": 4,
+    "ordinary_units_per_minute": 600,
+    "expensive_units_per_minute": 240,
+    "expensive_lease_seconds": 10,
+    "idle_guard_retention_seconds": 180,
+    "network_requests_per_minute": 1200,
+    "network_requests_per_ten_second_bucket": 120,
+    "network_creations_per_minute": 40,
+    "network_inserted_members_per_minute": 202000,
+    "actor_outstanding_members": 202000,
+    "actor_charged_bytes": 67108864,
+    "service_storage_stripes": 16,
+    "service_outstanding_members": 16000000,
+    "service_charged_bytes": 4294967296,
+    "charge_definition": "128+UTF8 kind/identifier lengths per row, not physical PostgreSQL heap/index/WAL bytes",
+    "caveats": "A service stripe may fill before aggregate capacity. Tune against real demand, NAT behavior, database allocation and cleanup capacity. Conservative lost refunds never increase allowance."
+  },
+  "validation": {
+    "test_receipts": [
+      {
+        "receipt": "first.xml",
+        "tests": 38,
+        "failures": 3,
+        "errors": 0,
+        "skipped": 1,
+        "passed": 34
+      },
+      {
+        "receipt": "history/broad-postgres.xml",
+        "tests": 56,
+        "failures": 0,
+        "errors": 0,
+        "skipped": 1,
+        "passed": 55
+      },
+      {
+        "receipt": "postgres.xml",
+        "tests": 21,
+        "failures": 0,
+        "errors": 0,
+        "skipped": 1,
+        "passed": 20
+      },
+      {
+        "receipt": "receiver-postgres.xml",
+        "tests": 2,
+        "failures": 0,
+        "errors": 0,
+        "skipped": 0,
+        "passed": 2
+      },
+      {
+        "receipt": "receiver-sqlite.xml",
+        "tests": 3,
+        "failures": 0,
+        "errors": 0,
+        "skipped": 0,
+        "passed": 3
+      },
+      {
+        "receipt": "resources-first.xml",
+        "tests": 16,
+        "failures": 1,
+        "errors": 0,
+        "skipped": 1,
+        "passed": 14
+      },
+      {
+        "receipt": "safety.xml",
+        "tests": 106,
+        "failures": 0,
+        "errors": 0,
+        "skipped": 0,
+        "passed": 106
+      },
+      {
+        "receipt": "sqlite-final.xml",
+        "tests": 59,
+        "failures": 0,
+        "errors": 0,
+        "skipped": 2,
+        "passed": 57
+      },
+      {
+        "receipt": "sqlite-pool.xml",
+        "tests": 24,
+        "failures": 0,
+        "errors": 0,
+        "skipped": 3,
+        "passed": 21
+      },
+      {
+        "receipt": "sqlite.xml",
+        "tests": 57,
+        "failures": 0,
+        "errors": 0,
+        "skipped": 2,
+        "passed": 55
+      }
+    ],
+    "overlap": "Runs overlap; do not sum counts as unique tests.",
+    "ruff": "All checks passed for14 scoped source/migration/test files after final runtime edits.",
+    "whitespace": "Scoped git diff --check passed; source checkpoint also checks new text files.",
+    "warnings": "Existing Starlette/httpx deprecation and SQLite expression-index reflection warnings retained.",
+    "owned_postgres": "Fresh labelled loopback PostgreSQL17 containers only; ownership verified before cleanup. Every created container was removed; no live settings used."
+  },
+  "local_profile": {
+    "scope": "Local synthetic5001-track TestClient/PostgreSQL probe, not cloud/network/DAU capacity",
+    "fresh_view": {
+      "milliseconds": 305.846900009783,
+      "statements": 27
+    },
+    "twenty_item_cursor_pages": {
+      "samples": 25,
+      "median_ms": 47.1871000045212,
+      "max_ms": 97.95460000168532,
+      "statement_counts": [
+        17,
+        20
+      ]
+    },
+    "timeout_replay": {
+      "instrumented_execution_attempts": 1,
+      "initial_status": 503,
+      "initial_retry_after": "2",
+      "repeat_statuses": [
+        503,
+        503,
+        503,
+        503,
+        503
+      ],
+      "repeat_details": [
+        "DISCOVERY_RETRY_COOLDOWN",
+        "DISCOVERY_RETRY_COOLDOWN",
+        "DISCOVERY_RETRY_COOLDOWN",
+        "DISCOVERY_RETRY_COOLDOWN",
+        "DISCOVERY_RETRY_COOLDOWN"
+      ],
+      "ordinary_page_status": 200
+    },
+    "held_owner_lock": {
+      "pool_size": 4,
+      "connections_checked_out_after_three_rejections": 1,
+      "same_account_statuses": [
+        503,
+        503,
+        503
+      ],
+      "same_account_details": [
+        "DISCOVERY_ACCOUNT_BUSY",
+        "DISCOVERY_ACCOUNT_BUSY",
+        "DISCOVERY_ACCOUNT_BUSY"
+      ],
+      "three_rejections_ms": 25.13159999216441,
+      "other_player_read_status": 200,
+      "other_player_read_ms_while_lock_held": 8.619800006272271
+    }
+  },
+  "real_http": {
+    "scope": "Real loopback TCP/HTTP through local Uvicorn h11 and the actual FastAPI application; temporary SQLite and synthetic unknown IDs only",
+    "uvicorn": "0.54.0",
+    "h11": "0.16.0",
+    "source_before": "402a9e8aeadd58bbeece5613a3bd303af3ab174e261e8eaf8e97b742b8c16873",
+    "source_after": "402a9e8aeadd58bbeece5613a3bd303af3ab174e261e8eaf8e97b742b8c16873",
+    "cases": [
+      {
+        "case": "honest_content_length",
+        "actual_body_bytes": 75019,
+        "status_line": "HTTP/1.1 200 OK",
+        "query_stage_pool_samples": [
+          {
+            "small_slots_available": 3,
+            "large_slots_available": 0
+          }
+        ]
+      },
+      {
+        "case": "chunked_without_content_length",
+        "actual_body_bytes": 75019,
+        "status_line": "HTTP/1.1 200 OK",
+        "query_stage_pool_samples": [
+          {
+            "small_slots_available": 3,
+            "large_slots_available": 0
+          }
+        ]
+      },
+      {
+        "case": "chunked_with_short_content_length",
+        "actual_body_bytes": 75019,
+        "status_line": "HTTP/1.1 413 Content Too Large",
+        "query_stage_pool_samples": []
+      }
+    ],
+    "cloud_ingress": "Not tested; an upstream proxy may reject ambiguous framing before it reaches the app"
+  },
+  "comparisons": [
+    "Review probe: held owner plus three waiters occupied all four pool connections and delayed another player. Final probe: three503 rejections in25.13ms leave only the holder connection checked out; another-player read succeeds in8.62ms while the lock remains held. Controlled local behavior, not throughput certification.",
+    "Review: eight ignored-Retry-After attempts re-entered the injected timeout stage. Final: one injected timeout-stage entry and five cooldown denials, with ordinary browsing200. Instrumented stage proves admission, not CPU cost."
+  ],
+  "optional_review_optimization": {
+    "id": "RE05",
+    "disposition": "Shared work-credit admission now bounds repeated creation-quota denials, including cached-query retries. Exhausted work credit is rejected before freshness lookup. While credit remains, creation denials may still perform one bounded freshness statement. No blanket negative-cache hint bypasses existing-view reuse or current readiness/account checks. This residual bounded metadata cost is not an unbounded catalogue scan."
+  },
+  "corrected_attempts": [
+    "initial.log: first launch lacked PYTHONPATH; used workspace backend path and the secure virtualenv thereafter.",
+    "first.xml:34pass/3fail/1skip. Updated the old Retry-After1 assertion to the deliberate initial cooldown2; limited cooldowns to actual query/Random/visibility budget failures so preparing/stale-index semantics remain; the concurrent small/bulk admission fixture passed on final integration without weakening its assertion.",
+    "resources-first.xml:14pass/1fail/1skip. Burst fixture crossed a ten-second window; froze its clock and retained exact boundary behavior.",
+    "history/http-powershell-redirection.log: probe printed all expected results but PowerShell classified stderr logging as a native-command error. Re-ran with captured subprocess streams; explicit framing/pool/source assertions pass, exit0.",
+    "Documentation patch initially failed context matching on a concurrent status paragraph; no file changed. Final note prepends preserve all current content."
+  ],
+  "remaining_acceptance": [
+    "Coordinated0057 plus matching API/worker release; drain old collection writers/cleanup workers. Back up first, measure metadata index build/lock time on representative data, and verify storage_backfill_ready/stripe totals.",
+    "New personal-copy writes deliberately wait during legacy accounting; ordinary feeds and existing views stay readable. Existing storage above new caps is accounted without destructive truncation; new intake fails closed until capacity drains.",
+    "Measure production-like filter mix, migration volume, pool/CPU/memory, latency tails, storage/WAL and NAT false positives. The5001-track profile is synthetic TestClient/PostgreSQL, not network/cloud/million-DAU or500-million-account certification.",
+    "No upstream WAF/volumetric-DDoS configuration changed; application safeguards are not an upstream traffic-capacity claim."
+  ],
+  "reproduction": [
+    "Set PYTHONPATH to the absolute workspace backend directory; use .tools/backend-secure-venv/Scripts/python.exe.",
+    "python -m pytest backend/tests/test_discovery_v3.py backend/tests/test_discovery_projection.py backend/tests/test_discovery_hardening.py backend/tests/test_discovery_resources.py -q -k sqlite",
+    "python docs/evidence/discovery-resource-fixes-2026-10-23/postgres_lab.py (default broad suites; --resources-only core; --receiver-only final receiver cases; WSL sandbox escalation used)",
+    "python docs/evidence/discovery-resource-fixes-2026-10-23/http_probe.py",
+    "python -m pytest backend/tests/test_attack_resistance.py backend/tests/test_communication_boundary.py backend/tests/test_privacy.py backend/tests/test_community_safety.py backend/tests/test_gcp_staging.py -q -k 'not postgres'"
+  ],
+  "source_checkpoint": "source-checkpoint.json",
+  "patch": "baseline-to-final.patch (scoped snapshot difference; shared-file concurrent edits are not exclusively attributed to this task)",
+  "not_performed": [
+    "live migration/deployment",
+    "live account/race/publication/queue mutation",
+    "phone attachment check/device test",
+    "APK/export/install",
+    "upstream WAF change"
+  ]
+}

@@ -1,0 +1,557 @@
+diff --git a/game/core/app.gd b/game/core/app.gd
+--- a/game/core/app.gd
++++ b/game/core/app.gd
+@@ -2776,6 +2776,7 @@
+ 	object_browser.size_chosen.connect(func(value: float) -> void: canvas.stamp_scale=value)
+ 	object_browser.span_chosen.connect(func(value: float) -> void: canvas.stamp_span=value)
+ 	object_browser.container_color_chosen.connect(_container_colour)
++	object_browser.rotation_requested.connect(_object_rotation_dialog)
+ 	object_browser.select_requested.connect(func() -> void:
+ 		canvas.cancel_gesture(); canvas.mode="objects"; _build_editor_tools())
+ 	object_browser.populate_requested.connect(_open_object_population)
+@@ -3009,6 +3010,8 @@
+ 		object_browser.refresh()
+ 	var browsing: bool = category=="objects" and not (canvas.selected_object>=0 and canvas.mode=="objects")
+ 	object_browser.visible = browsing
++	object_browser.set_stamp_rotation(canvas.stamp_rotation)
++	object_browser.rotation_button.disabled = canvas.mode == "run"
+ 	editor_palette.visible = not browsing
+ 	for key: String in editor_mode_buttons: (editor_mode_buttons[key] as Button).set_pressed_no_signal(key == category)
+ 	surface_toolbar.visible = category == "paint"
+@@ -3085,7 +3088,10 @@
+ 	elif category == "objects":
+ 		if canvas.selected_object >= 0 and canvas.mode == "objects":
+ 			editor_status.text=CreatorObjects.description(document.objects[canvas.selected_object].kind)
+-			_context_button("Rotate","rotate",_rotate_object)
++			_context_button("Rotate","rotate",_rotate_object).tooltip_text = "Rotate by 22.5°"
++			var rotation_choice: Button = _context_button(preload("res://editor/object_rotation.gd").angle_text(_object_rotation()),"rotate",_object_rotation_dialog)
++			rotation_choice.name = "ObjectRotation"
++			rotation_choice.tooltip_text = "16 orientations or Free rotation"
+ 			_context_button("Copy","objects",_duplicate_object)
+ 			if document.objects[canvas.selected_object].kind == "speed_bump":
+ 				_context_button("Width -","minus",func() -> void: _resize_speed_bump(-0.5))
+@@ -3255,12 +3261,39 @@
+ 	_commit_selection()
+ 
+ func _rotate_object() -> void:
+-	canvas.stamp_rotation = fposmod(canvas.stamp_rotation+45,360)
+-	if canvas.selected_object >= 0:
++	_set_object_rotation(preload("res://editor/object_rotation.gd").next_angle(_object_rotation()))
++
++func _object_rotation() -> float:
++	return float(document.objects[canvas.selected_object].rotation) if canvas.selected_object >= 0 else canvas.stamp_rotation
++
++func _set_object_rotation(value: float) -> void:
++	if not is_finite(value): return
++	var angle: float = fposmod(value,360.0)
++	canvas.stamp_rotation = angle
++	if canvas.selected_object >= 0 and not is_equal_approx(float(document.objects[canvas.selected_object].rotation),angle):
+ 		_remember()
+-		document.objects[canvas.selected_object].rotation = fposmod(float(document.objects[canvas.selected_object].rotation)+45,360)
++		document.objects[canvas.selected_object].rotation = angle
+ 		_commit_selection()
+ 	else: _build_editor_tools()
++	object_browser.set_stamp_rotation(angle)
++
++func _object_rotation_dialog() -> void:
++	if root_ui.find_child("ObjectRotationDialog",true,false) != null: return
++	if is_instance_valid(object_browser.options): object_browser.options.hide()
++	canvas.cancel_gesture()
++	var dialog := preload("res://editor/object_rotation.gd").new()
++	dialog.angle = _object_rotation()
++	var owner_canvas: EditorCanvas = canvas
++	var source: Dictionary = document
++	var selection: int = canvas.selected_object
++	var kind: String = canvas.stamp_kind
++	dialog.confirmed.connect(func() -> void:
++		if not is_instance_valid(owner_canvas) or canvas != owner_canvas or screen != "create": return
++		if not is_same(document,source) or canvas.selected_object != selection or canvas.stamp_kind != kind: return
++		if dialog.free_rotation: dialog.field.apply()
++		_set_object_rotation(dialog.angle))
++	_own_dialog(dialog)
++	dialog.popup_centered_clamped(Vector2i(410,360))
+ 
+ func _scale_object(delta: float) -> void:
+ 	if canvas.selected_object < 0: return
+diff --git a/game/editor/object_browser.gd b/game/editor/object_browser.gd
+--- a/game/editor/object_browser.gd
++++ b/game/editor/object_browser.gd
+@@ -7,6 +7,7 @@
+ signal container_color_chosen(color: String)
+ signal select_requested
+ signal populate_requested
++signal rotation_requested
+ var category: String = "All"
+ var biome: String = "pine"
+ var current: String = "tree"
+@@ -26,6 +27,8 @@
+ var _tile_key: Array = []
+ var _detail_key: Array = []
+ var _styled_category: String = ""
++var rotation_button: Button
++var stamp_rotation: float = 0.0
+ 
+ func _ready() -> void:
+ 	name = "ObjectBrowser"
+@@ -41,6 +44,12 @@
+ 			category = value; page = 0; _tiles())
+ 		button.name = "Category_"+value
+ 		categories.add_child(button)
++	rotation_button = _button("",func() -> void: rotation_requested.emit())
++	rotation_button.name = "ObjectRotation"
++	rotation_button.tooltip_text = "16 orientations or Free rotation"
++	rotation_button.custom_minimum_size = Vector2(76,44)
++	top.add_child(rotation_button)
++	set_stamp_rotation(stamp_rotation)
+ 	var populate: Button = _button("Populate",func() -> void: populate_requested.emit())
+ 	populate.name = "PopulateObjects"
+ 	populate.custom_minimum_size = Vector2(100,44)
+@@ -92,6 +101,10 @@
+ 
+ func _button(text: String, action: Callable) -> Button:
+ 	return EditorStyle.button(text,action)
++
++func set_stamp_rotation(value: float) -> void:
++	stamp_rotation = value
++	if is_instance_valid(rotation_button): rotation_button.text = preload("res://editor/object_rotation.gd").angle_text(value)
+ 
+ func _clear(row: Node) -> void:
+ 	for child: Node in row.get_children():
+diff --git a/game/tests/test_editor_v2.gd b/game/tests/test_editor_v2.gd
+--- a/game/tests/test_editor_v2.gd
++++ b/game/tests/test_editor_v2.gd
+@@ -102,11 +102,15 @@
+ 	app.set("library",TrackLibrary.new(folder))
+ 	(app.get("records") as LocalRecords).path = folder+"/records.json"
+ 	root.add_child(app)
++	while not app.startup_complete: await process_frame
+ 	app.set("document",doc.duplicate(true))
+ 	app.call("_show_screen","create")
+ 	await process_frame
+ 	await process_frame
+ 	var canvas: EditorCanvas = app.get("canvas")
++	var ready_deadline: int = Time.get_ticks_msec()+15000
++	while (app.editor_commits.unsettled() or app.editor_preview_thread != null or canvas.preparing) and Time.get_ticks_msec()<ready_deadline: await process_frame
++	check(not canvas.preparing and app.editor_preview_thread == null,"editor preparation finishes before touch placement checks")
+ 	app.call("_editor_category","waypoints")
+ 	var down := InputEventScreenTouch.new()
+ 	down.pressed = true; down.position = canvas.to_screen(Vector2(-35,-25)); down.index = 1
+@@ -140,7 +144,7 @@
+ 	down.pressed = false; canvas._gui_input(down)
+ 	check((app.get("document") as Dictionary).objects.size() == count+1,"single touch stamps one object on release")
+ 	app.call("_rotate_object")
+-	check((app.get("document") as Dictionary).objects[-1].rotation == 45,"selected object rotates 45 degrees")
++	check((app.get("document") as Dictionary).objects[-1].rotation == 22.5,"selected object rotates 22.5 degrees")
+ 	app.call("_duplicate_object")
+ 	check((app.get("document") as Dictionary).objects.size() == count+2,"copy adds an independently positioned object")
+ 	app.call("_delete_selection")
+diff --git a/game/editor/object_rotation.gd b/game/editor/object_rotation.gd
+new file mode 100644
+--- /dev/null
++++ b/game/editor/object_rotation.gd
+@@ -0,0 +1,92 @@
++extends ConfirmationDialog
++## Rotation is staged here; Apply creates one ordinary editor undo step.
++
++const STEP: float = 22.5
++var angle: float = 0.0
++var free_rotation: bool = false
++var presets: Array[Button] = []
++var free_button: Button
++var slider: HSlider
++var field: SpinBox
++var _syncing_field: bool = false
++
++static func next_angle(current: float) -> float:
++	return fposmod((floorf(fposmod(current,360.0)/STEP)+1.0)*STEP,360.0)
++
++static func angle_text(value: float) -> String:
++	return String.num(fposmod(value,360.0),2).trim_suffix(".0")+"°"
++
++func _ready() -> void:
++	name = "ObjectRotationDialog"
++	title = "Object rotation"
++	ok_button_text = "Apply"
++	angle = fposmod(angle,360.0)
++	free_rotation = not is_equal_approx(angle,snappedf(angle,STEP))
++	var content := VBoxContainer.new()
++	content.add_theme_constant_override("separation",10)
++	add_child(content)
++	var grid := GridContainer.new()
++	grid.columns = 4
++	grid.add_theme_constant_override("h_separation",8)
++	grid.add_theme_constant_override("v_separation",8)
++	content.add_child(grid)
++	for index: int in range(16):
++		var value: float = index*STEP
++		var button: Button = EditorStyle.button(angle_text(value),func() -> void:
++			free_rotation = false
++			_set_angle(value))
++		button.name = "Orientation_"+str(index)
++		button.toggle_mode = true
++		EditorStyle.apply(button)
++		button.custom_minimum_size = Vector2(84,44)
++		button.size_flags_horizontal = Control.SIZE_EXPAND_FILL
++		grid.add_child(button)
++		presets.append(button)
++	free_button = EditorStyle.button("Free rotation",func() -> void:
++		free_rotation = true
++		_refresh())
++	free_button.name = "FreeRotation"
++	free_button.toggle_mode = true
++	EditorStyle.apply(free_button)
++	free_button.custom_minimum_size.y = 44
++	content.add_child(free_button)
++	var row := HBoxContainer.new()
++	row.add_theme_constant_override("separation",12)
++	content.add_child(row)
++	slider = HSlider.new()
++	slider.name = "RotationSlider"
++	slider.max_value = 360.0
++	slider.step = 0.0
++	slider.custom_minimum_size = Vector2(180,48)
++	slider.size_flags_horizontal = Control.SIZE_EXPAND_FILL
++	slider.value_changed.connect(_set_angle)
++	row.add_child(slider)
++	field = SpinBox.new()
++	field.name = "RotationAngle"
++	field.max_value = 360.0
++	field.step = 0.01
++	field.suffix = "°"
++	field.custom_minimum_size = Vector2(130,48)
++	field.value_changed.connect(func(value: float) -> void:
++		if not _syncing_field: _set_angle(value))
++	row.add_child(field)
++	_refresh()
++
++func _set_angle(value: float) -> void:
++	angle = fposmod(value,360.0)
++	_refresh()
++
++func _refresh() -> void:
++	for index: int in range(presets.size()):
++		var chosen: bool = not free_rotation and is_equal_approx(angle,index*STEP)
++		presets[index].set_pressed_no_signal(chosen)
++	free_button.set_pressed_no_signal(free_rotation)
++	slider.editable = free_rotation
++	field.editable = free_rotation
++	slider.set_value_no_signal(angle)
++	_syncing_field = true
++	field.value = angle
++	# SpinBox retains its edit buffer while focused; slider/preset changes must
++	# also replace that buffer so Apply cannot restore the previous angle.
++	field.get_line_edit().text = String.num(angle,2)+" "+field.suffix
++	_syncing_field = false
+diff --git a/game/tests/test_object_rotation.gd b/game/tests/test_object_rotation.gd
+new file mode 100644
+--- /dev/null
++++ b/game/tests/test_object_rotation.gd
+@@ -0,0 +1,170 @@
++extends SceneTree
++const ROTATION = preload("res://editor/object_rotation.gd")
++var checks: int = 0
++var failures: int = 0
++var app: Node
++var out: String = ""
++
++func _initialize() -> void: run.call_deferred()
++
++func check(ok: bool, label: String) -> void:
++	checks += 1
++	if not ok:
++		failures += 1
++		print("FAIL: ",label)
++
++func wait_preview() -> void:
++	var deadline: int = Time.get_ticks_msec()+20000
++	while (app.editor_commits.unsettled() or app.editor_preview_thread != null or app.editor_world._building) and Time.get_ticks_msec()<deadline: await process_frame
++	check(not app.editor_commits.unsettled() and app.editor_preview_thread == null and not app.editor_world._building,"editor preparation settles")
++
++func capture(label: String) -> void:
++	if out.is_empty() or DisplayServer.get_name() == "headless": return
++	for i: int in range(3): await process_frame
++	await RenderingServer.frame_post_draw
++	var path: String = out.path_join(label+"-"+RenderingServer.get_current_rendering_method()+".png")
++	check(root.get_texture().get_image().save_png(path) == OK,"native capture "+label)
++
++func picker():
++	app._object_rotation_dialog()
++	return app.root_ui.find_child("ObjectRotationDialog",true,false)
++
++func confirm(dialog) -> void:
++	dialog.hide()
++	dialog.confirmed.emit()
++	for i: int in range(2): await process_frame
++
++func cancel(dialog) -> void:
++	dialog.hide()
++	dialog.canceled.emit()
++	for i: int in range(2): await process_frame
++
++func run() -> void:
++	root.size = Vector2i(1280,720)
++	create_timer(90.0).timeout.connect(func() -> void: print("ROTATION_TEST_TIMEOUT"); quit(2))
++	for arg: String in OS.get_cmdline_user_args():
++		if arg.begins_with("--rotation-evidence="): out = arg.trim_prefix("--rotation-evidence=")
++	var folder: String = "user://object_rotation_"+TrackLibrary.unique_id()
++	app = load("res://core/app.tscn").instantiate()
++	app.library = TrackLibrary.new(folder)
++	app.records = LocalRecords.new(folder.path_join("records.json"))
++	root.add_child(app)
++	while not app.startup_complete: await process_frame
++	var doc: Dictionary = TrackDocument.create_default()
++	doc.id = "rotation_test"
++	doc["automatic_scenery"] = false
++	doc.objects = [{"kind":"barrier","position":[12.0,12.0],"rotation":0.0,"scale":1.25},{"kind":"tree","position":[-18.0,12.0],"rotation":45.0}]
++	check(TrackDocument.validate(doc).is_empty(),"rotation fixture is valid")
++	app.document = doc
++	app._show_screen("create")
++	await wait_preview()
++	app._editor_category("objects")
++	app.canvas.selected_object = 0
++	app.canvas.mode = "objects"
++	app._build_editor_tools()
++	var other: Dictionary = doc.objects[1].duplicate(true)
++	for i: int in range(1,17):
++		app._rotate_object()
++		check(doc.objects[0].rotation == fposmod(i*22.5,360.0),"orientation "+str(i)+" uses the 16-direction grid")
++	check(doc.objects[1] == other and doc.objects[0].scale == 1.25 and doc.objects[0].position == [12.0,12.0],"rotation preserves other objects, position and scale")
++	app._undo()
++	check(app.document.objects[0].rotation == 337.5,"undo restores previous orientation")
++	app._redo()
++	check(app.document.objects[0].rotation == 0.0,"redo restores wrapped orientation")
++	app.canvas.selected_object = 0
++	app._build_editor_tools()
++	await wait_preview()
++	await capture("selected-object")
++	var history_size: int = app.history.size()
++	var before: Dictionary = app.document.duplicate(true)
++	var dialog = picker()
++	check(dialog.presets.size() == 16 and dialog.free_button.text == "Free rotation","picker offers sixteen orientations and Free rotation")
++	for i: int in range(16):
++		dialog.presets[i].pressed.emit()
++		check(dialog.angle == i*22.5 and not dialog.free_rotation,"preset "+str(i)+" selects its absolute angle")
++	check(app.document == before and app.history.size() == history_size,"choosing angles is transactional until Apply")
++	dialog.presets[3].pressed.emit()
++	await capture("sixteen-orientations")
++	await confirm(dialog)
++	await process_frame
++	check(app.document.objects[0].rotation == 67.5 and app.history.size() == history_size+1,"Apply commits exactly one rotation history entry")
++	dialog = picker()
++	dialog.free_button.pressed.emit()
++	dialog.slider.value = 13.37
++	check(dialog.free_rotation and is_equal_approx(dialog.field.value,13.37),"Free rotation synchronizes continuous slider and angle field")
++	await cancel(dialog)
++	await process_frame
++	check(app.document.objects[0].rotation == 67.5 and app.history.size() == history_size+1,"Cancel leaves object and history unchanged")
++	dialog = picker()
++	dialog.free_button.pressed.emit()
++	dialog.field.get_line_edit().text = "13.37"
++	await confirm(dialog)
++	await process_frame
++	check(is_equal_approx(app.document.objects[0].rotation,13.37),"Apply accepts typed free angle without pressing Enter")
++	app._undo()
++	check(app.document.objects[0].rotation == 67.5,"free rotation has one exact undo step")
++	app._redo()
++	check(is_equal_approx(app.document.objects[0].rotation,13.37),"redo restores free angle")
++	app.canvas.selected_object = 0
++	app._rotate_object()
++	check(app.document.objects[0].rotation == 22.5,"stepping from a free angle rejoins the absolute grid")
++	app._set_object_rotation(359.99)
++	app._rotate_object()
++	check(app.document.objects[0].rotation == 0.0,"last free angle wraps to zero on the next step")
++	dialog = picker()
++	dialog.free_button.pressed.emit()
++	dialog.field.value = 360.0
++	check(dialog.angle == 0.0,"full-turn input normalizes to zero")
++	dialog.field.value = 28.75
++	await capture("free-rotation")
++	for viewport: Vector2i in [Vector2i(960,540),Vector2i(1600,900)]:
++		root.size = viewport
++		await process_frame
++		dialog.popup_centered_clamped(Vector2i(410,360))
++		for i: int in range(3): await process_frame
++		check(Rect2(Vector2.ZERO,root.get_visible_rect().size).encloses(Rect2(dialog.position,dialog.size)),"rotation dialog fits "+str(viewport)+" at "+str(Rect2i(dialog.position,dialog.size)))
++		await capture("free-rotation-"+str(viewport.x))
++	await confirm(dialog)
++	await process_frame
++	app._flush_editor_writes()
++	var saved: Dictionary = app.library.load_wip(str(app.document.id))
++	if saved.is_empty(): print("WIP_READ_ERROR ",app.library.directory," ",app.library.last_error," validation=",TrackDocument.validate(app.document)," save=",app.editor_save_message)
++	check(not saved.is_empty() and saved.objects[0].rotation == 28.75,"free angle survives real WIP save/reload")
++	check(TrackDocument.validate(saved).is_empty(),"fractional rotations retain valid track format")
++	var saved_track: NativeTrack = TrackCompiler.compile(saved)
++	var current_track: NativeTrack = TrackCompiler.compile(app.document)
++	check(saved_track != null and current_track != null and saved_track.content_hash == current_track.content_hash,"reloaded fractional rotation retains compiled track identity")
++	# New placement uses the same picker without editing existing objects.
++	app._choose_object("barrier")
++	history_size = app.history.size()
++	dialog = picker()
++	dialog.free_button.pressed.emit()
++	dialog.field.value = 71.23
++	await confirm(dialog)
++	await process_frame
++	if not is_equal_approx(app.canvas.stamp_rotation,71.23): print("PLACEMENT_ANGLE ",app.canvas.stamp_rotation," selection=",app.canvas.selected_object," history=",app.history.size()," previous=",history_size)
++	check(is_equal_approx(app.canvas.stamp_rotation,71.23) and app.history.size() == history_size,"new-object angle changes placement state without history")
++	check(app.document.objects[0].rotation == 28.75,"placement rotation leaves existing objects untouched")
++	app._editor_category("road")
++	app._editor_category("objects")
++	check(is_equal_approx(app.canvas.stamp_rotation,71.23) and app.object_browser.rotation_button.text == "71.23°","tool switching retains placement angle and its label")
++	var count: int = app.document.objects.size()
++	app.canvas.mode = "place"
++	var point: Vector2 = app.canvas.to_screen(Vector2(28,16))
++	app.canvas._begin(point,0); app.canvas._end(0)
++	check(app.document.objects.size() == count+1 and is_equal_approx(app.document.objects[-1].rotation,71.23),"actual touch placement uses the chosen free angle")
++	await wait_preview()
++	# A stale picker cannot rotate a different selection.
++	app.canvas.mode = "objects"; app.canvas.selected_object = 0
++	dialog = picker()
++	dialog.presets[8].pressed.emit()
++	app.canvas.selected_object = 1
++	await confirm(dialog)
++	await process_frame
++	check(app.document.objects[1] == other,"stale picker cannot modify a replacement selection")
++	app.queue_free()
++	for i: int in range(4): await process_frame
++	GameSoundtrack.instance().queue_free()
++	await create_timer(0.3).timeout
++	print("OBJECT_ROTATION_TESTS: %d checks, %d failures" % [checks,failures])
++	quit(1 if failures else 0)
+diff --git a/docs/OBJECT_ROTATION_2026_10_23.md b/docs/OBJECT_ROTATION_2026_10_23.md
+new file mode 100644
+--- /dev/null
++++ b/docs/OBJECT_ROTATION_2026_10_23.md
+@@ -0,0 +1,29 @@
++# Object rotation — 2026-10-23
++
++OR01: Objects now have sixteen discrete orientations, 22.5° apart. Rotate advances to the next absolute orientation, including returning to the grid after a free angle and wrapping at 360°.
++
++OR02: Tap the angle beside Rotate, or the angle in the object palette, to open the native rotation picker. It offers all sixteen orientations and an additional Free rotation option with a continuous slider and a numeric angle field. Apply commits the selected angle; Cancel leaves the object and placement angle unchanged. Object runs retain their tangent-based orientation.
++
++OR03/R01: Selected objects retain position, scale and other fields; each applied change uses the existing undo, redo and local WIP persistence. New placements use the selected angle without creating history until an object is placed. Pending dialogs check the document, canvas, selection and object kind before applying. Track formats, compiler and driving rules are unchanged.
++
++Changed runtime files: `game/core/app.gd`, `game/editor/object_browser.gd`, and the new `game/editor/object_rotation.gd`. Tests: new `game/tests/test_object_rotation.gd`; `game/tests/test_editor_v2.gd` expects 22.5° and waits for startup/preparation before exercising actual touch placement.
++
++G01/Q01 evidence and exact commands are in [the evidence directory](evidence/object-rotation-2026-10-23/), with native screenshots at 1280×720, 960×540 and 1600×900. [Free rotation at 960×540](evidence/object-rotation-2026-10-23/free-rotation-960-gl_compatibility.png) and [all sixteen directions](evidence/object-rotation-2026-10-23/sixteen-orientations-mobile.png) were visually inspected.
++
++```powershell
++powershell -NoProfile -ExecutionPolicy Bypass -File docs/evidence/object-rotation-2026-10-23/run.ps1
++powershell -NoProfile -ExecutionPolicy Bypass -File docs/evidence/object-rotation-2026-10-23/run.ps1 -Graphical -Renderer gl_compatibility
++powershell -NoProfile -ExecutionPolicy Bypass -File docs/evidence/object-rotation-2026-10-23/run.ps1 -Graphical -Renderer mobile
++powershell -NoProfile -ExecutionPolicy Bypass -File docs/evidence/object-rotation-2026-10-23/run.ps1 -TestName test_editor_workflow
++powershell -NoProfile -ExecutionPolicy Bypass -File docs/evidence/object-rotation-2026-10-23/run.ps1 -TestName test_editor_v2
++powershell -NoProfile -ExecutionPolicy Bypass -File docs/evidence/object-rotation-2026-10-23/run.ps1 -TestName test_app
++git diff --check -- game/core/app.gd game/editor/object_browser.gd game/tests/test_editor_v2.gd
++```
++
++The pinned Godot build is `4.7.2.stable.official.ed1daf0bf`. Final focused checks: **60 headless, 65 Compatibility, 65 desktop Mobile**, all passing. Existing editor workflow **254**, older editor suite **37**, and App **141** pass. Exact outcomes and checkpoint verification are recorded in `report.json`.
++
++The normal `scripts/dev.ps1` entry point was attempted with CheckScript and TestScript. Its error gate stops on the sandbox's Windows certificate-store diagnostic. The evidence runner uses the same pinned engine directly, isolated workspace APPDATA, Dummy audio and `BMT_API_URL=audit-disabled`; it preserves the diagnostic, checks the engine exit code and rejects other script/runtime errors. An initial launch also encountered the ordinary-profile log permission and PowerShell execution-policy restrictions, corrected through workspace-only storage and process-only policy bypass.
++
++Initial corrections: renamed a browser method that conflicted with Control's native `set_rotation`; used a String key for the fixture's optional scenery flag; compared dialog geometry in logical viewport coordinates; waited for deferred dialog retirement; and explicitly synchronized SpinBox's edit buffer so Apply cannot restore an older angle after slider/preset changes. The older editor test also initially ran before startup and before preparation completed. No failing production invariant was removed.
++
++The task-only patch and source hashes exclude concurrent editor restructuring and other work. Existing owner processes were preserved. No phone attachment check, physical-device test, APK, live service/account mutation or deployment was performed. Owner interaction/appearance and physical touch/keyboard acceptance remain; reload the client to use the new controls.
+diff --git a/docs/evidence/object-rotation-2026-10-23/run.ps1 b/docs/evidence/object-rotation-2026-10-23/run.ps1
+new file mode 100644
+--- /dev/null
++++ b/docs/evidence/object-rotation-2026-10-23/run.ps1
+@@ -0,0 +1,23 @@
++param([switch]$Graphical, [ValidateSet('gl_compatibility','mobile')][string]$Renderer = 'gl_compatibility', [string[]]$TestName = @('test_object_rotation'))
++$rotationRepo = (Resolve-Path (Join-Path $PSScriptRoot '../../..')).Path
++$rotationEngine = 'C:/apps/Godot 4.7.2/Godot_v4.7.2-stable_win64_console.exe'
++$rotationPin = [System.IO.File]::ReadAllText((Join-Path $rotationRepo 'godot-version.txt')).Trim()
++if ((& $rotationEngine --version | Out-String).Trim() -ne $rotationPin) { throw 'Pinned engine mismatch' }
++$env:APPDATA = Join-Path $rotationRepo 'build/object-rotation-2026-10-23/profile'
++$env:BMT_API_URL = 'audit-disabled'
++New-Item -ItemType Directory -Path $env:APPDATA -Force | Out-Null
++$rotationArgs = @('--path',(Join-Path $rotationRepo 'game'),'--audio-driver','Dummy')
++if ($Graphical) { $rotationArgs += @('--rendering-method',$Renderer) } else { $rotationArgs = @('--headless')+$rotationArgs }
++$rotationMode = if ($Graphical) { $Renderer } else { 'headless' }
++$rotationFailures = 0
++# dev.ps1 was attempted first. Its gate stops on this sandbox's Windows
++# certificate-store diagnostic; retain exit codes and reject all other errors.
++$ErrorActionPreference = 'Continue'
++foreach ($rotationTest in $TestName) {
++    $rotationLog = Join-Path $PSScriptRoot ($rotationTest+'-'+$rotationMode+'.log')
++    & $rotationEngine @rotationArgs --script ('res://tests/'+$rotationTest+'.gd') -- ('--rotation-evidence='+$PSScriptRoot) 2>&1 | Tee-Object -FilePath $rotationLog
++    $rotationExit = $LASTEXITCODE
++    $rotationErrors = @(Get-Content -LiteralPath $rotationLog | Where-Object { $_ -match '(^| : )(SCRIPT ERROR:|ERROR:)|Parse Error:' -and $_ -notmatch 'Failed to read the root certificate store' -and $_.Trim() -ne 'ERROR: Access denied' })
++    if ($rotationExit -ne 0 -or $rotationErrors.Count -gt 0) { $rotationFailures++; Write-Output ('ROTATION_TEST_EXIT '+$rotationTest+' '+$rotationExit+' unexpected_errors='+$rotationErrors.Count) }
++}
++exit $rotationFailures
+diff --git a/docs/evidence/object-rotation-2026-10-23/build_checkpoint.py b/docs/evidence/object-rotation-2026-10-23/build_checkpoint.py
+new file mode 100644
+--- /dev/null
++++ b/docs/evidence/object-rotation-2026-10-23/build_checkpoint.py
+@@ -0,0 +1,71 @@
++"""Build a review patch containing only this task's changes in the shared tree."""
++from pathlib import Path
++import difflib
++import hashlib
++import json
++import re
++import subprocess
++
++ROOT = Path(__file__).resolve().parents[3]
++OUT = Path(__file__).resolve().parent
++CAPTURED = OUT / "before"
++
++app_path = "game/core/app.gd"
++app = (ROOT / app_path).read_text(encoding="utf-8")
++baseline = app
++for addition in [
++    "\tobject_browser.rotation_requested.connect(_object_rotation_dialog)\n",
++    "\tobject_browser.set_stamp_rotation(canvas.stamp_rotation)\n\tobject_browser.rotation_button.disabled = canvas.mode == \"run\"\n",
++]:
++    assert baseline.count(addition) == 1
++    baseline = baseline.replace(addition, "", 1)
++selected = '''\t\t\t_context_button("Rotate","rotate",_rotate_object).tooltip_text = "Rotate by 22.5°"
++\t\t\tvar rotation_choice: Button = _context_button(preload("res://editor/object_rotation.gd").angle_text(_object_rotation()),"rotate",_object_rotation_dialog)
++\t\t\trotation_choice.name = "ObjectRotation"
++\t\t\trotation_choice.tooltip_text = "16 orientations or Free rotation"
++'''
++assert baseline.count(selected) == 1
++baseline = baseline.replace(selected, '\t\t\t_context_button("Rotate","rotate",_rotate_object)\n', 1)
++original_app = (CAPTURED / "app-before.gd").read_text(encoding="utf-8")
++old_rotation = original_app[original_app.index("func _rotate_object()"):original_app.index("func _scale_object(")]
++baseline = baseline[:baseline.index("func _rotate_object()")] + old_rotation + baseline[baseline.index("func _scale_object("):]
++
++previous = {
++    app_path: baseline,
++    "game/editor/object_browser.gd": (CAPTURED / "object_browser-before.gd").read_text(encoding="utf-8"),
++    "game/tests/test_editor_v2.gd": (CAPTURED / "test_editor_v2-before.gd").read_text(encoding="utf-8"),
++}
++added = ["game/editor/object_rotation.gd", "game/tests/test_object_rotation.gd", "docs/OBJECT_ROTATION_2026_10_23.md", "docs/evidence/object-rotation-2026-10-23/run.ps1", "docs/evidence/object-rotation-2026-10-23/build_checkpoint.py"]
++patch = []
++hashes = {}
++for name in [*previous, *added]:
++    current = (ROOT / name).read_text(encoding="utf-8")
++    old = previous.get(name, "")
++    patch.append("diff --git a/" + name + " b/" + name + "\n")
++    if name in added:
++        patch.append("new file mode 100644\n")
++    patch.extend(difflib.unified_diff(old.splitlines(True), current.splitlines(True), fromfile="a/"+name if name in previous else "/dev/null", tofile="b/"+name))
++    hashes[name] = hashlib.sha256((ROOT / name).read_bytes()).hexdigest()
++(OUT / "task-only.patch").write_text("".join(patch), encoding="utf-8", newline="\n")
++verified = subprocess.run(["git", "apply", "--reverse", "--check", str(OUT / "task-only.patch")], cwd=ROOT, capture_output=True, text=True)
++results = {}
++for path in sorted(OUT.glob("test_*.log")):
++    raw = path.read_bytes()
++    log = raw.decode("utf-16" if raw.startswith((b"\xff\xfe",b"\xfe\xff")) else "utf-8-sig")
++    results[path.name] = {
++        "summaries": re.findall(r"[A-Z0-9_]+TESTS: \d+ checks, \d+ failures", log),
++        "sha256": hashlib.sha256(path.read_bytes()).hexdigest(),
++        "runner_failure": "ROTATION_TEST_EXIT" in log,
++    }
++report = {
++    "requirements": ["OR01", "OR02", "OR03", "G01", "R01", "Q01"],
++    "engine": "4.7.2.stable.official.ed1daf0bf",
++    "environment": {"profile": "build/object-rotation-2026-10-23/profile", "BMT_API_URL": "audit-disabled", "audio_driver": "Dummy", "gpu": "desktop NVIDIA GeForce RTX 3090"},
++    "results": results,
++    "sha256": hashes,
++    "checkpoint_reverse_check": {"exit": verified.returncode, "stdout": verified.stdout, "stderr": verified.stderr},
++    "limitations": ["Windows sandbox certificate-store diagnostic retained", "No phone attachment check or physical-device test", "No APK or deployment", "Owner appearance/interaction and physical touch/keyboard acceptance remain"],
++}
++(OUT / "report.json").write_text(json.dumps(report, indent=2)+"\n", encoding="utf-8")
++print(json.dumps(report["checkpoint_reverse_check"]))
++raise SystemExit(verified.returncode)

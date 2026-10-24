@@ -1,0 +1,78 @@
+--- a/backend/bmt_backend/discovery_projection.py
++++ b/backend/bmt_backend/discovery_projection.py
+@@ -45,8 +45,10 @@
+ 
+ 
+ def track_range(column, shard):
+-    prefix = format(shard, "x")
+-    return and_(column >= prefix, column < prefix + "~")
++    # UUIDs use lowercase hexadecimal. A punctuation sentinel is not an upper
++    # bound under language collations such as Cloud SQL's en_US.UTF8.
++    prefixes = "0123456789abcdefg"
++    return and_(column >= prefixes[shard], column < prefixes[shard + 1])
+ 
+ 
+ def eligible(player):
+--- a/backend/deploy/stage_verifier.py
++++ b/backend/deploy/stage_verifier.py
+@@ -53,6 +53,7 @@
+         "burning_barrel",
+         "breakable_props",
+         "loose_tyres",
++        "tyre_contacts",
+         "track_hazards",
+         "speed_bumps",
+         "vehicle_catalog",
+--- a/backend/tests/test_discovery_projection.py
++++ b/backend/tests/test_discovery_projection.py
+@@ -2,6 +2,7 @@
+ import time
+ import uuid
+ 
++import pytest
+ from sqlalchemy import func, select, update
+ from test_discovery_paging import auth_app as auth_app_fixture
+ from test_discovery_v3 import indexed as indexed_fixture
+@@ -22,6 +23,30 @@
+ indexed = indexed_fixture
+ 
+ 
++def test_partition_bounds_cover_hex_ids_under_english_collation(indexed):
++    from sqlalchemy import literal, text
++
++    from bmt_backend.discovery_projection import track_range
++
++    with indexed.app.state.session_factory() as db:
++        collations = [None]
++        if db.bind.dialect.name == "postgresql":
++            available = set(db.scalars(text("SELECT collname FROM pg_collation")))
++            english = next((name for name in ("en-US-x-icu", "en_US.utf8", "en_US.UTF8") if name in available), None)
++            if english is None:
++                pytest.skip("PostgreSQL English collation is not installed")
++            collations.append(english)
++        for collation in collations:
++            for prefix in "0123456789abcdef":
++                for second in "0123456789abcdef":
++                    identity = prefix + second + "000000-0000-4000-8000-000000000000"
++                    column = literal(identity)
++                    if collation:
++                        column = column.collate(collation)
++                    for shard in (int(prefix, 16), (int(prefix, 16) + 1) % 16):
++                        assert db.scalar(select(track_range(column, shard))) is (shard == int(prefix, 16))
++
++
+ def test_hot_partition_drains_without_waiting_for_empty_partitions(indexed):
+     d = indexed
+     stamp = int(time.time())
+--- a/backend/tests/test_verifier.py
++++ b/backend/tests/test_verifier.py
+@@ -68,7 +68,8 @@
+     historical_track.write_text(historical_track.read_text().replace(
+         "hash_value: String) -> NativeTrack:",
+         "hash_value: String, _prepared_cells: PackedInt32Array = PackedInt32Array(), "
+-        "_prepared_deck: PackedInt32Array = PackedInt32Array()) -> NativeTrack:",
++        "_prepared_deck: PackedInt32Array = PackedInt32Array(), "
++        "_paint_exclusion: PackedByteArray = PackedByteArray(), _cancelled: Callable = Callable()) -> NativeTrack:",
+     ))
+     subprocess.run([real_verifier.binary, "--headless", "--path", str(project), "--editor", "--import"],
+                    check=True, capture_output=True, timeout=90)

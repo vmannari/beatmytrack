@@ -1,0 +1,119 @@
+"""Save SBT01-SBT02 receipts and a scoped patch without touching the shared index."""
+from pathlib import Path
+import hashlib
+import json
+import re
+import shutil
+import subprocess
+
+ROOT = Path.cwd().resolve()
+OUT = ROOT / 'docs/evidence/bass-snow-thump-2026-10-23'
+BUILD = ROOT / 'build/bass-snow-thump-2026-10-23'
+
+
+def sha(path):
+    return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def save(name, value):
+    (OUT / name).write_text(json.dumps(value, indent=2) + '\n', encoding='utf8')
+
+
+analysis = json.loads((OUT / 'analysis.json').read_text())
+assert analysis['failures'] == 0 and len(analysis['checks']) == 20
+receipts = []
+for name, expected in [('capture', '13 checks, 0 failures'),
+                       ('response-compatibility', '35 checks, 0 failures'),
+                       ('response-headless', '29 checks, 0 failures'),
+                       ('parser', '1041 scripts, 0 failures')]:
+    path = OUT / 'logs' / (name + '.log')
+    log = path.read_text()
+    assert expected in log and 'FAIL:' not in log and 'ERROR:' not in log
+    receipts.append(dict(log=str(path.relative_to(OUT)).replace('\\', '/'),
+                         summary=[line for line in log.splitlines() if re.search(r'checks,|SCRIPT_PARSE:', line)]))
+changed = {'scripts/build_snow_audio.py', 'game/assets/audio/vehicles/snow_hit.wav',
+           'game/assets/audio/vehicles/snow_manifest.json', 'game/assets/audio/vehicles/NOTICE.txt', 'licenses/ASSETS.md'}
+for item in json.loads((OUT / 'before-sources.json').read_text()):
+    if item['path'] not in changed:
+        assert sha(ROOT / item['path']) == item['sha256'], item['path']
+new = analysis['native_master_captures']['packed']
+old = analysis['native_master_captures']['before']
+save('report.json', dict(schema='bmt-snow-bass-thump-v1', date='2026-10-23',
+    requirements={'SBT01': 'Softer, longer, bass-led recorded snowbank thump',
+                  'SBT02': 'Retain prompt contact response and cleared source provenance',
+                  'R01': 'Actual game mixer comparison, native response and asset checks',
+                  'Q01': 'Retained commands, source hashes and scoped Git checkpoint'},
+    engine='4.7.2.stable.official.ed1daf0bf', installed_variant='packed', manifest_revision=5,
+    changed_production_files=sorted(changed), analysis='analysis.json', receipts=receipts,
+    mastered_peak_delta_db=new['peak_dbfs'] - old['peak_dbfs'],
+    mastered_100ms_delta_db=new['early_100ms_dbfs'] - old['early_100ms_dbfs'],
+    mastered_bass_energy_ratio=new['bass_energy'] / old['bass_energy'],
+    samples=analysis['samples'], native_master_captures=analysis['native_master_captures'],
+    sources='game/assets/audio/vehicles/snow_manifest.json',
+    commands=[
+        'python scripts/build_snow_audio.py --audition-dir build/bass-snow-thump-2026-10-23/variants',
+        'powershell -NoProfile -ExecutionPolicy Bypass -File build/bass-snow-thump-2026-10-23/capture.ps1',
+        'python build/bass-snow-thump-2026-10-23/review.py',
+        'Repeat generation with exact installed WAV/manifest SHA256 assertion: pass',
+        'python build/bass-snow-thump-2026-10-23/finish_evidence.py',
+        'Independent Git index: diff --binary, diff --check, reverse apply --check in staging and shared workspace'],
+    reproduction=['capture.ps1.txt', 'review.py.txt', 'finish_evidence.py.txt', 'variants.json'],
+    limits=['Restart the client to load its cached sample replacement',
+            'Owner sound-character listening and physical-device acceptance remain',
+            'No phone/tablet attachment check, physical-device test, APK/export/install, native rebuild, account/backend mutation, purchase or deployment',
+            'No running owner process was interrupted',
+            'No Soundsnap audio used or claimed as auditioned',
+            'Concurrent work preserved; no shared Git commit or index mutation']))
+shutil.copyfile(Path(__file__), OUT / 'finish_evidence.py.txt')
+
+baseline = {}
+for directory in ['before', 'doc-base']:
+    for path in (OUT / directory).rglob('*'):
+        if path.is_file():
+            baseline[str(path.relative_to(OUT / directory)).replace('\\', '/')] = path
+new_paths = ['docs/SNOW_BASS_THUMP_2026_10_23.md']
+for path in OUT.rglob('*'):
+    if path.is_file() and 'doc-base' not in path.relative_to(OUT).parts and path.name not in {'workspace-task-only.patch', 'checkpoint.json'}:
+        new_paths.append(str(path.relative_to(ROOT)).replace('\\', '/'))
+stage = BUILD / 'checkpoint'
+assert stage.resolve().is_relative_to(BUILD.resolve())
+stage.mkdir(exist_ok=True)
+shared_index = ROOT / '.git/index'
+index_hash = sha(shared_index)
+
+
+def git(*args, output=False):
+    return subprocess.run(['git', '-C', str(stage), *args], check=True,
+                          stdout=subprocess.PIPE if output else subprocess.DEVNULL).stdout
+
+
+git('init', '-q')
+git('config', 'core.autocrlf', 'false')
+git('config', 'core.whitespace', 'blank-at-eol,blank-at-eof,space-before-tab,cr-at-eol')
+for name, source in baseline.items():
+    destination = stage / name
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copyfile(source, destination)
+git('add', '--', *baseline)
+files = []
+for name in dict.fromkeys([*baseline, *new_paths]):
+    source, destination = ROOT / name, stage / name
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copyfile(source, destination)
+    previous = baseline.get(name)
+    if previous is None or previous.read_bytes() != source.read_bytes():
+        files.append(dict(path=name, before_sha256=sha(previous) if previous else None,
+                          sha256=sha(source), bytes=source.stat().st_size))
+git('add', '-N', '--', *new_paths)
+patch = OUT / 'workspace-task-only.patch'
+patch.write_bytes(git('diff', '--binary', '--no-ext-diff', output=True))
+git('diff', '--check')
+git('apply', '--reverse', '--check', str(patch))
+subprocess.run(['git', 'apply', '--reverse', '--check', str(patch)], cwd=ROOT, check=True)
+assert sha(shared_index) == index_hash
+save('checkpoint.json', dict(schema='bmt-workspace-checkpoint-v1', files=files,
+    baseline='Task-start source bytes and current shared-document bases; independent Git index',
+    patch_sha256=sha(patch), shared_index_sha256=index_hash,
+    shared_index_modified=False, git_commit_created=False, whitespace='pass',
+    staged_reverse_check='pass', shared_workspace_reverse_check='pass'))
+print('SNOW_THUMP_CHECKPOINT:', len(files), 'files; source hashes, whitespace and both reverse checks pass')

@@ -1,0 +1,297 @@
+{
+  "task": "Fix high-priority backend scalability findings BSR2-F01 through BSR2-F03",
+  "date": "2026-10-23",
+  "base_commit": "dc3e2af6c9e1875db9ffe7e2a8efa321076f19b1",
+  "requirements": {
+    "BPF01 / BSR2-F01": {
+      "status": "implemented and validated",
+      "change": "Partial open-group index; <=100 indexed candidates; independent group claims with SKIP LOCKED; creation-only band guard.",
+      "preserved": "Exact capacity=20, [1,20] fields for 21 concurrent entrants, unique membership/retries, pinned tracks and existing skill behavior.",
+      "tests": [
+        "test_open_group_index_excludes_closed_groups",
+        "test_matching_plan_uses_partial_index_with_many_closed_groups",
+        "test_postgres_rivalry_skips_busy_group_and_old_band_lock",
+        "test_group_capacity_and_repeat_joins",
+        "test_simultaneous_capacity_reservations"
+      ]
+    },
+    "BPF02 / BSR2-F02": {
+      "status": "implemented and validated",
+      "change": "Transactional run-keyed pending creator effects for both plays and reach; <=100 effects per partition turn, grouped by creator; skip busy states; atomic projection/deletion.",
+      "correctness": "Permanent CoinReward prevents replay after projection; rollback retains effects; exact threshold timestamps/revisions; new intake checks eligibility; later suspension/test changes preserve accepted effects; deletion cancels pending work in indexed chunks.",
+      "privacy": "No new racer ID column, FK lock or replay document. Pending run IDs can still associate with the retained accepted-run record until projection. Creator erasure excludes intake/reduction through sixteen fixed partition fences.",
+      "tests": [
+        "test_postgres_busy_creator_projection_does_not_block_two_race_acceptances",
+        "test_postgres_busy_creator_reducer_skips_and_retains_effects",
+        "test_creator_effects_roll_back_and_permanent_reward_receipt_prevents_replay",
+        "test_creator_batches_preserve_exact_unlock_timestamps_and_bounded_erasure",
+        "test_postgres_parallel_intake_reduction_and_erasure_remain_exact",
+        "test_creator_restriction_preserves_accepted_effects_but_rejects_new_intake"
+      ]
+    },
+    "BPF03 / BSR2-F03": {
+      "status": "implemented and validated",
+      "change": "Every 16 completed worker jobs reserves privacy, histogram and a rotating achievement/Trackside turn; idle roles and four achievement stages also rotate; reserved failures are isolated and logged.",
+      "bound": "With both presentation roles continuously busy, each gets a reserved attempt within 32 job completions. Under continuously busy achievement classes, each class gets an attempt within four achievement turns (128 job completions). This is per running worker, not a wall-clock SLA.",
+      "tests": [
+        "test_busy_foreground_reserves_both_presentation_classes",
+        "test_idle_roles_and_achievement_roles_are_fair_even_when_all_busy",
+        "test_failed_cleanup_does_not_consume_other_reserved_turns",
+        "test_continuous_foreground_work_gets_reserved_histogram_turn"
+      ]
+    },
+    "R01": "Objective implementation review and refinements are recorded below; original capacity assertions retained.",
+    "Q01": "Actual command receipts, migration checks, source hashes and applicable task-only patch retained; no deployment/device claim."
+  },
+  "objective_review_and_refinements": [
+    {
+      "finding": "Plays were not the only creator lock; first-time reach also touched creator state inside race acceptance.",
+      "refinement": "Both effects share the accepted-run outbox row; reach updates cannot invent another play."
+    },
+    {
+      "finding": "Historical Rivalry migration creates current model indexes on fresh installs.",
+      "refinement": "Additive migration inspects the index before creation; both fresh and upgrade/rollback installs tested."
+    },
+    {
+      "finding": "Concurrent P2 work temporarily introduced two migration heads.",
+      "refinement": "Retained this task's 0054 after concurrent work chained its bounded-rank migration as 0055; no concurrent source was overwritten."
+    },
+    {
+      "finding": "Initial SKIP LOCKED/create behavior split 21 entrants into [6,15], violating the existing [1,20] test.",
+      "refinement": "Wait on a group when all eligible candidates are busy; guard only creation, then recheck. Original assertion passes without modification."
+    },
+    {
+      "finding": "A busy creator or a failed housekeeping role could stall or consume other background turns.",
+      "refinement": "Skip locked creator states, bound rare first-insert waits to 250ms, advance fair cursors before execution, and log/isolate reserved-role failures."
+    },
+    {
+      "finding": "Dropping queued effects on later creator suspension would lose already accepted plays.",
+      "refinement": "Intake attests creator eligibility; reducer preserves accepted effects through later restrictions and retains deletion as permanent cancellation."
+    },
+    {
+      "finding": "The new PostgreSQL two-track fixture initially exceeded the real publication-slot limit.",
+      "refinement": "Seed the second published test course using the existing official fixture and use independent per-replica finalization state; no entitlement/capacity assertions weakened."
+    }
+  ],
+  "changed_runtime_and_test_files": [
+    "backend/README.md",
+    "backend/bmt_backend/achievement_models.py",
+    "backend/bmt_backend/achievements.py",
+    "backend/bmt_backend/creator_achievements.py",
+    "backend/bmt_backend/migrations/versions/0054_priority_scaling.py",
+    "backend/bmt_backend/news.py",
+    "backend/bmt_backend/privacy.py",
+    "backend/bmt_backend/rivalry.py",
+    "backend/bmt_backend/rivalry_models.py",
+    "backend/bmt_backend/worker.py",
+    "backend/tests/test_achievements.py",
+    "backend/tests/test_priority_scaling.py"
+  ],
+  "validation_receipts": {
+    "baseline.xml": {
+      "tests": 3,
+      "errors": 0,
+      "failures": 3,
+      "skipped": 0,
+      "passed": 0,
+      "seconds": 2.543,
+      "started": "2026-10-23T08:00:30.913819+03:00"
+    },
+    "focused-final.xml": {
+      "tests": 39,
+      "errors": 0,
+      "failures": 0,
+      "skipped": 1,
+      "passed": 38,
+      "seconds": 39.402,
+      "started": "2026-10-23T08:05:07.077974+03:00"
+    },
+    "focused.xml": {
+      "tests": 39,
+      "errors": 14,
+      "failures": 1,
+      "skipped": 1,
+      "passed": 23,
+      "seconds": 23.705,
+      "started": "2026-10-23T08:03:42.026103+03:00"
+    },
+    "initial.xml": {
+      "tests": 39,
+      "errors": 35,
+      "failures": 1,
+      "skipped": 0,
+      "passed": 3,
+      "seconds": 33.712,
+      "started": "2026-10-23T08:02:42.241688+03:00"
+    },
+    "original-rollback.xml": {
+      "tests": 4,
+      "errors": 0,
+      "failures": 4,
+      "skipped": 0,
+      "passed": 0,
+      "seconds": 4.912,
+      "started": "2026-10-23T08:16:41.899520+03:00"
+    },
+    "postgres-delivery.xml": {
+      "tests": 77,
+      "errors": 0,
+      "failures": 0,
+      "skipped": 4,
+      "passed": 73,
+      "seconds": 306.646,
+      "started": "2026-10-23T05:24:30.121390+00:00"
+    },
+    "postgres-focused.xml": {
+      "tests": 46,
+      "errors": 0,
+      "failures": 2,
+      "skipped": 3,
+      "passed": 41,
+      "seconds": 186.876,
+      "started": "2026-10-23T05:08:40.344589+00:00"
+    },
+    "postgres-priority-final.xml": {
+      "tests": 16,
+      "errors": 0,
+      "failures": 0,
+      "skipped": 3,
+      "passed": 13,
+      "seconds": 64.934,
+      "started": "2026-10-23T05:13:20.604617+00:00"
+    },
+    "postgres-regression-final.xml": {
+      "tests": 75,
+      "errors": 0,
+      "failures": 0,
+      "skipped": 4,
+      "passed": 71,
+      "seconds": 219.697,
+      "started": "2026-10-23T05:16:54.287189+00:00"
+    },
+    "priority-expanded.xml": {
+      "tests": 8,
+      "errors": 0,
+      "failures": 0,
+      "skipped": 0,
+      "passed": 8,
+      "seconds": 7.051,
+      "started": "2026-10-23T08:08:03.060055+03:00"
+    },
+    "sqlite-delivery.xml": {
+      "tests": 137,
+      "errors": 0,
+      "failures": 0,
+      "skipped": 11,
+      "passed": 126,
+      "seconds": 211.527,
+      "started": "2026-10-23T08:24:18.208855+03:00"
+    },
+    "sqlite-regression-final.xml": {
+      "tests": 135,
+      "errors": 0,
+      "failures": 0,
+      "skipped": 11,
+      "passed": 124,
+      "seconds": 151.247,
+      "started": "2026-10-23T08:17:17.225195+03:00"
+    },
+    "sqlite-regression.xml": {
+      "tests": 139,
+      "errors": 0,
+      "failures": 4,
+      "skipped": 11,
+      "passed": 124,
+      "seconds": 172.307,
+      "started": "2026-10-23T08:10:49.371159+03:00"
+    }
+  },
+  "matching_probe": {
+    "closed_groups": 100000,
+    "open_groups": 1,
+    "node": "Index Only Scan",
+    "index": "ix_rivalry_open_matching",
+    "shared_hit_blocks": 2,
+    "local_execution_ms": 0.023,
+    "limit": "Synthetic local plan evidence only; not a comparable cloud throughput benchmark or DAU certification."
+  },
+  "actual_commands": {
+    "failure_first": ".tools/backend-secure-venv/Scripts/python.exe docs/evidence/backend-priority-fixes-2026-10-23/run_sqlite.py tests/test_priority_scaling.py --junitxml=../docs/evidence/backend-priority-fixes-2026-10-23/baseline.xml",
+    "sqlite_delivery": ".tools/backend-secure-venv/Scripts/python.exe docs/evidence/backend-priority-fixes-2026-10-23/run_sqlite.py --exclude-legacy-rollback-tests tests/test_priority_scaling.py tests/test_achievements.py tests/test_rivalry.py tests/test_rivalry_concurrency.py tests/test_histogram_followup.py tests/test_histogram_snapshots.py tests/test_lap_bests.py tests/test_news.py tests/test_privacy.py tests/test_queue_capacity_slots.py --junitxml=../docs/evidence/backend-priority-fixes-2026-10-23/sqlite-delivery.xml",
+    "postgres_delivery": "wsl -d Ubuntu -- docker run --rm --cpus=2 --memory=1024m --pids-limit=128 --network container:bmt-backend-test -v '/mnt/c/Codes/Godot/Beat my track/backend:/task/backend:ro' -v '/mnt/c/Codes/Godot/Beat my track/.tools/backend-postgres.env:/task/db.env:ro' -v '/mnt/c/Codes/Godot/Beat my track/docs/evidence/backend-priority-fixes-2026-10-23:/evidence' -e PYTHONPATH=/task/backend -e PYTHONDONTWRITEBYTECODE=1 -w /task/backend --entrypoint python bmt-full-20261018:86d38519ffb5ac1f /evidence/run_postgres.py --exclude-legacy-rollback-tests tests/test_priority_scaling.py tests/test_achievements.py tests/test_rivalry.py tests/test_histogram_followup.py tests/test_news.py tests/test_privacy_postgres.py::test_concurrent_deletion_receipts_have_one_effect tests/test_privacy_postgres.py::test_upload_that_released_owner_lock_is_fenced_after_removal --junitxml=/evidence/postgres-delivery.xml",
+    "original_rollback_reproduction": ".tools/backend-secure-venv/Scripts/python.exe docs/evidence/backend-priority-fixes-2026-10-23/run_original_rollback.py",
+    "ruff": [
+      "C:\\Codes\\Godot\\Beat my track\\.tools\\backend-secure-venv\\Scripts\\python.exe",
+      "-m",
+      "ruff",
+      "check",
+      "backend/bmt_backend/rivalry.py",
+      "backend/bmt_backend/rivalry_models.py",
+      "backend/bmt_backend/achievement_models.py",
+      "backend/bmt_backend/achievements.py",
+      "backend/bmt_backend/creator_achievements.py",
+      "backend/bmt_backend/news.py",
+      "backend/bmt_backend/privacy.py",
+      "backend/bmt_backend/worker.py",
+      "backend/bmt_backend/migrations/versions/0054_priority_scaling.py",
+      "backend/tests/test_achievements.py",
+      "backend/tests/test_priority_scaling.py"
+    ],
+    "whitespace": [
+      "git",
+      "diff",
+      "--check",
+      "--",
+      "backend/bmt_backend/rivalry.py",
+      "backend/bmt_backend/rivalry_models.py",
+      "backend/bmt_backend/achievement_models.py",
+      "backend/bmt_backend/achievements.py",
+      "backend/bmt_backend/news.py",
+      "backend/bmt_backend/privacy.py",
+      "backend/bmt_backend/worker.py",
+      "backend/tests/test_achievements.py",
+      "backend/README.md",
+      "backend/tests/test_priority_scaling.py",
+      "backend/bmt_backend/creator_achievements.py",
+      "backend/bmt_backend/migrations/versions/0054_priority_scaling.py"
+    ],
+    "patch_application_check": [
+      "git",
+      "apply",
+      "--check",
+      "--directory=build/backend-priority-fixes-2026-10-23/original-rollback",
+      "docs/evidence/backend-priority-fixes-2026-10-23/task-only.patch"
+    ]
+  },
+  "historical_rollback_limitation": {
+    "tests": [
+      "test_migration_backfills_snapshots_without_rewriting_results",
+      "test_migration_bounded_backfill_matches_legacy_and_survives_restart",
+      "test_migration_seeds_existing_racers_without_old_news",
+      "test_migration_preserves_pending_jobs_and_round_trips"
+    ],
+    "reproduction": "All four fail on the exact original Git source at irreversible 0051_telemetry_parallel. Current full SQLite suite also retains these four failures: three stop earlier at 0054's intentional pending-effect guard; one reaches 0051. Delivery selection excludes these four named historical rollback cases only. Assertions remain unchanged.",
+    "replacement_scope": "This task's own 0054 downgrade refusal, drain, downgrade and re-upgrade are verified on SQLite and PostgreSQL without crossing 0051."
+  },
+  "remaining_acceptance_and_limits": [
+    "Apply matching migration/API/worker code through the reviewed release process. No live deployment, account, race, publication or queue mutation was performed.",
+    "Stop/drain old writers for cutover; measure the partial-index build and migration lock on representative data. Downgrade refuses pending award loss.",
+    "Per-group locks and creation-only band guards remain to preserve exact field filling. Sharing a group can still wait; closed groups do not accumulate in its candidate scan.",
+    "Fair reserved work prevents starvation; it does not prove arrival/service-rate balance. Creator distribution, pending-effect age, rarity/news backlog, long canonical verifications, database CPU/storage and worker counts need representative sustained and burst load tests.",
+    "500 million accounts and one million DAU have not been certified. No phone attachment check, physical-device test, APK build or export was performed.",
+    "Concurrent discovery, admission, rank, retention, Studio and client work was preserved. The task-only patch excludes the concurrent skill_score rewrite in the shared Rivalry module; final-source hashes record the shared runtime actually inspected."
+  ],
+  "test_fixture": {
+    "other_clients": 0,
+    "remaining_domain_test_schemas": 58
+  },
+  "fixture_lifecycle": "Dedicated local PostgreSQL fixture started from stopped state for tests, checked for other clients, and restored to stopped state. Unidentified historical test schemas were retained, not deleted.",
+  "checkpoint": {
+    "kind": "task-only applicable Git patch; no shared staging/commit",
+    "path": "task-only.patch",
+    "sha256": "800b5997bf1c4ff46229acf9193dbb5ef1d80d2e44ce6b27f1eab4253d3845ee",
+    "original_manifest": "original.json",
+    "shared_final_hashes": "final-source-hashes.json",
+    "apply_check": "passed against isolated original Git source"
+  }
+}

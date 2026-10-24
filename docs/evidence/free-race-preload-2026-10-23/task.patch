@@ -1,0 +1,670 @@
+diff --git a/game/ui/track_browser.gd b/game/ui/track_browser.gd
+--- a/game/ui/track_browser.gd
++++ b/game/ui/track_browser.gd
+@@ -276,15 +276,8 @@
+ 	var end: int = mini(_page_total()+_list_column_offset,first+(ceili(track_list.size.y/_list_stride.y)+3)*_list_columns)
+ 	var paged: bool = cloud != null and cloud.paged_discovery_available() and is_instance_valid(cloud.discovery_pages) and cloud.discovery_pages.total >= 0
+ 	if paged:
+-		# Request the nearest missing visible page. Its completion reconciles this
+-		# window again, so a wide grid can span pages without draining the catalog.
+-		var visible_first: int = int(track_list.scroll_vertical/_list_stride.y)*_list_columns
+-		var desired: int = visible_first
+-		for index: int in range(visible_first,end):
+-			if cloud.discovery_pages.entry_at(index-_list_column_offset).is_empty():
+-				desired = index
+-				break
+-		if not page_preview and cloud.discovery_pages.error.is_empty(): cloud.discovery_pages.request_visible.call_deferred(maxi(0,desired-_list_column_offset))
++		var visible_first: int = int(track_list.scroll_vertical/_list_stride.y)*_list_columns-_list_column_offset
++		_prefetch_tracks(visible_first,ceili(track_list.size.y/_list_stride.y)*_list_columns)
+ 	elif cloud != null and not page_preview and end >= matches.size() and track_list.scroll_vertical > 0:
+ 		cloud.load_more()
+ 	if first == _list_start and not reconcile: return
+@@ -305,9 +298,11 @@
+ 			tile = retained[index]
+ 			if reconcile: (tile as TrackTile).update_entry(entry,entry.id in records.settings.get("favorites",[]),int(records.settings.get("track_ratings",{}).get(str(entry.id),0)),selection_only and str(entry.get("version_id","")) in selected_versions)
+ 		elif entry.is_empty():
+-			tile = MenuStyle.label("Loading tracks..." if paged and cloud.discovery_pages.error.is_empty() else "Refresh to retry",16,true)
+-			if paged and cloud.discovery_pages.has_method("unavailable_slot") and cloud.discovery_pages.unavailable_slot(index-_list_column_offset):
+-				(tile as Label).text = "Track no longer available"
++			# A partial leading row keeps retained cards in their original columns
++			# after cache eviction. No unloaded track receives a card or a label.
++			if index >= _list_column_offset: continue
++			tile = Control.new()
++			tile.mouse_filter = Control.MOUSE_FILTER_IGNORE
+ 			tile.set_meta("catalog_index",index)
+ 			list_grid.add_child(tile)
+ 		else:
+@@ -337,10 +332,16 @@
+ 		list_grid.add_child(empty)
+ 
+ func _list_entry(index: int, paged: bool) -> Dictionary:
+-	if paged:
+-		var metadata: Dictionary = cloud.discovery_pages.entry_at(index-_list_column_offset) if index >= _list_column_offset else {}
+-		return {} if metadata.is_empty() else cloud.entry_from_metadata(metadata)
+-	return matches[index] if index >= 0 and index < matches.size() else {}
++	var card_index: int = index-_list_column_offset if paged else index
++	return matches[card_index] if card_index >= 0 and card_index < matches.size() else {}
++
++func _prefetch_tracks(first: int, visible_count: int) -> void:
++	if page_preview or cloud == null or not cloud.paged_discovery_available() or not is_instance_valid(cloud.discovery_pages): return
++	var window: Node = cloud.discovery_pages
++	if window.total < 0 or not window.error.is_empty(): return
++	var index: int = clampi(first,0,maxi(0,matches.size()-1))
++	var network_index: int = int(matches[index].get("discovery_index",index)) if not matches.is_empty() else 0
++	window.request_visible.call_deferred(network_index,maxi(1,visible_count))
+ 
+ func _focus_list_card(card: TrackTile) -> void:
+ 	var top: int = int(int(card.get_meta("catalog_index"))/_list_columns)*int(_list_stride.y)
+@@ -518,8 +519,8 @@
+ 	var current: Array = [cloud.entries, records.settings.get("favorites",[]), cloud.client.base_url(), cloud.client.player.get("id",""), cloud.client.signed_in()]
+ 	if cloud.paged_discovery_available() and is_instance_valid(cloud.discovery_pages): current.append([cloud.discovery_pages.total,cloud.discovery_pages.generation,cloud.discovery_pages.loading])
+ 	if current == _cloud_catalog_state: return false
++	cloud.add_to_catalog(catalog,discovery,records.settings.get("favorites",[]))
+ 	_sync_discovery_window()
+-	cloud.add_to_catalog(catalog,discovery,records.settings.get("favorites",[]))
+ 	_cloud_catalog_state = current.duplicate(true)
+ 	return true
+ 
+@@ -528,7 +529,7 @@
+ var _list_column_offset: int = 0
+ 
+ func _sync_discovery_window() -> void:
+-	if cloud == null or not cloud.has_method("indexed_discovery_available") or not cloud.indexed_discovery_available():
++	if cloud == null or not cloud.paged_discovery_available():
+ 		_window_generation = -1
+ 		_window_shift = 0
+ 		_list_column_offset = 0
+@@ -542,8 +543,20 @@
+ 		gallery.call("_stop_snap")
+ 		gallery.scroll_horizontal = 0
+ 		track_list.scroll_vertical = 0
+-	var shift: int = int(window.coordinate_shift)-_window_shift
+-	_window_shift = int(window.coordinate_shift)
++		return
++	if window.total < 0: return
++	# Presentation contains actual cards only. Cursor slots can have gaps after
++	# authority filtering, and the leading reload page is never a visible row.
++	var shift: int = 0
++	var incoming: Array = discovery.query(catalog,state,records.settings.get("favorites",[]),records.settings.get("track_ratings",{}),records.settings.get("raced_tracks",[]))
++	var positions: Dictionary = {}
++	for index: int in range(incoming.size()): positions[str(incoming[index].version_id)] = index
++	for index: int in range(matches.size()):
++		var version: String = str(matches[index].get("version_id",""))
++		if positions.has(version):
++			shift = int(positions[version])-index
++			break
++	_window_shift += shift
+ 	if shift != 0:
+ 		var new_offset: int = posmod(-_window_shift,_list_columns)
+ 		var list_shift: int = shift+new_offset-_list_column_offset
+@@ -601,7 +614,7 @@
+ 	for index: int in range(matches.size()):
+ 		if str(matches[index].id) != identity: continue
+ 		gallery.call("_stop_snap")
+-		gallery.scroll_horizontal = int(matches[index].get("discovery_index",index))*tile_stride
++		gallery.scroll_horizontal = index*tile_stride
+ 		_render_tiles(true)
+ 		return
+ 
+@@ -655,9 +668,8 @@
+ func _render_tiles(reconcile: bool = false) -> void:
+ 	if not is_instance_valid(grid): return
+ 	if cloud != null and cloud.paged_discovery_available() and is_instance_valid(cloud.discovery_pages) and cloud.discovery_pages.total >= 0:
+-		_render_paged_tiles(reconcile)
+-		return
+-	if not list_open and cloud != null and gallery.scroll_horizontal > 0 and int(gallery.scroll_horizontal/tile_stride)+12 >= matches.size():
++		if not list_open: _prefetch_tracks(int(gallery.scroll_horizontal/tile_stride),ceili(gallery.size.x/maxf(1.0,tile_stride)))
++	elif not list_open and cloud != null and gallery.scroll_horizontal > 0 and int(gallery.scroll_horizontal/tile_stride)+12 >= matches.size():
+ 		cloud.load_more()
+ 	var first: int = maxi(0,int(gallery.scroll_horizontal/tile_stride)-1)
+ 	_warm_visible_comparisons(first)
+@@ -729,7 +741,10 @@
+ 			return
+ 		var public_entry: Dictionary = cloud.entry_from_metadata(metadata)
+ 		gallery.call("_stop_snap")
+-		gallery.scroll_horizontal = int(metadata.discovery_index)*tile_stride
++		for index: int in range(matches.size()):
++			if str(matches[index].get("version_id","")) == str(metadata.version_id):
++				gallery.scroll_horizontal = index*tile_stride
++				break
+ 		_render_tiles(true)
+ 		_select(public_entry)
+ 		return
+@@ -740,7 +755,7 @@
+ 	_select(entry)
+ 
+ func _page_total() -> int:
+-	if cloud != null and cloud.paged_discovery_available() and is_instance_valid(cloud.discovery_pages) and cloud.discovery_pages.total >= 0: return int(cloud.discovery_pages.total)
++	# Remote totals/cursor windows describe fetch coordinates, never empty cards.
+ 	return matches.size()
+ 
+ func telemetry_exposures() -> Array[Dictionary]:
+@@ -754,56 +769,8 @@
+ 		if not child is TrackTile or not child.is_visible_in_tree(): continue
+ 		var card: Rect2 = child.get_global_rect()
+ 		if card.get_area() <= 0 or viewport.intersection(card).get_area() < card.get_area()*0.5: continue
+-		result.append({"entry":child.entry,"position":int(child.get_meta("catalog_index",0))})
++		result.append({"entry":child.entry,"position":int(child.entry.get("discovery_index",child.get_meta("catalog_index",0)))})
+ 	return result
+-
+-func _render_paged_tiles(reconcile: bool) -> void:
+-	var first: int = maxi(0,int(gallery.scroll_horizontal/tile_stride)-1)
+-	if not list_open and not page_preview: cloud.discovery_pages.request_visible.call_deferred(first)
+-	_warm_visible_comparisons(first)
+-	if first == _tile_start and not reconcile: return
+-	_tile_start = first
+-	var end: int = mini(_page_total(),first+12)
+-	var retained: Dictionary = {}
+-	for child: Node in grid.get_children():
+-		var index: int = int(child.get_meta("catalog_index",-1))
+-		var metadata: Dictionary = cloud.discovery_pages.entry_at(index) if index >= 0 else {}
+-		if not child.has_meta("catalog_index") or index < first or index >= end or (not child is TrackTile and not metadata.is_empty()) or (child is TrackTile and str(child.entry.get("version_id","")) != str(metadata.get("version_id",""))):
+-			grid.remove_child(child)
+-			child.queue_free()
+-		else: retained[index] = child
+-	grid.position.x = first*tile_stride+float(gallery.get("overscroll_offset"))
+-	for index: int in range(first,end):
+-		if retained.has(index):
+-			if retained[index] is TrackTile and reconcile:
+-				var current_entry: Dictionary = cloud.entry_from_metadata(cloud.discovery_pages.entry_at(index))
+-				retained[index].update_entry(current_entry,current_entry.id in records.settings.get("favorites",[]),int(records.settings.get("track_ratings",{}).get(str(current_entry.id),0)),current_entry.id == preview_entry.get("id",selected_track.identity))
+-			grid.move_child(retained[index],index-first)
+-			continue
+-		var metadata: Dictionary = cloud.discovery_pages.entry_at(index)
+-		if metadata.is_empty():
+-			var pending: Label = MenuStyle.label("Unavailable" if cloud.discovery_pages.pages.has(index/20) else "Loading tracks…",16,true)
+-			pending.custom_minimum_size = Vector2(tile_stride-12,140)
+-			pending.set_meta("catalog_index",index)
+-			grid.add_child(pending)
+-			grid.move_child(pending,index-first)
+-			continue
+-		var entry: Dictionary = cloud.entry_from_metadata(metadata)
+-		var tile := TrackTile.new()
+-		tile.set_meta("catalog_index",index)
+-		tile.compact = true
+-		tile.entry = entry
+-		tile.favorite = entry.id in records.settings.get("favorites",[])
+-		tile.personal_rating = int(records.settings.get("track_ratings",{}).get(str(entry.id),0))
+-		tile.selected = entry.id == preview_entry.get("id",selected_track.identity)
+-		tile.name = "Track_"+str(entry.id)
+-		tile.pressed.connect(_select_tile.bind(tile))
+-		tile.focus_entered.connect(_focus_tile.bind(tile))
+-		tile.favorite_requested.connect(_favorite_id.bind(str(entry.id)))
+-		grid.add_child(tile)
+-		grid.move_child(tile,index-first)
+-		tile.custom_minimum_size = Vector2(tile_stride-12,140)
+-		tile.size_flags_horizontal = Control.SIZE_FILL
+ 
+ func _warm_visible_comparisons(first: int) -> void:
+ 	if list_open or page_preview or cloud == null or not cloud.client.has_method("signed_in") or not cloud.client.signed_in(): return
+@@ -811,7 +778,7 @@
+ 	var versions: PackedStringArray = []
+ 	var visible: int = maxi(1,ceili(gallery.size.x/maxf(1.0,tile_stride)))
+ 	for index: int in range(first,mini(_page_total(),first+visible+2)):
+-		var entry: Dictionary = cloud.discovery_pages.entry_at(index) if cloud.paged_discovery_available() else matches[index] if index < matches.size() else {}
++		var entry: Dictionary = matches[index] if index < matches.size() else {}
+ 		if not entry.is_empty() and entry.has("version_id"):
+ 			if _comparison_selection == _comparison_selection_key(selected_track) and str(entry.version_id) == str(selected_track.metadata.get("cloud_version","")): continue
+ 			entries.append(entry)
+diff --git a/game/backend/discovery_windows.gd b/game/backend/discovery_windows.gd
+--- a/game/backend/discovery_windows.gd
++++ b/game/backend/discovery_windows.gd
+@@ -1,6 +1,6 @@
+ extends Node
+-## V3 cursor windows. Coordinates cover cached pages and one adjacent placeholder,
+-## never the estimated size of the remote catalogue. Eviction rebases coordinates.
++## V3 cursor windows reserve adjacent cursor coordinates for bounded refetches.
++## Presentation uses actual entries only. Eviction rebases fetch coordinates.
+ signal changed
+ var client: Node
+ var query: Dictionary = {}
+@@ -14,6 +14,7 @@
+ var loading: bool = false
+ var error: String = ""
+ var desired_index: int = 0
++var _visible_count: int = 0
+ var locate_version: String = ""
+ var last_used: int = 0
+ var cache_directory: String = ""
+@@ -71,6 +72,7 @@
+ 	loading = false
+ 	error = ""
+ 	desired_index = 0
++	_visible_count = 0
+ 	coordinate_shift = 0
+ 	has_more = false
+ 
+@@ -114,6 +116,7 @@
+ 	if page_number == 0 and data.get("previous_cursor") == null:
+ 		snapshot_cache.remember(query_key,data)
+ 	changed.emit()
++	if _visible_count > 0: _prefetch_visible.call_deferred(serial)
+ 
+ func _install(number: int, data: Dictionary) -> void:
+ 	cursor = str(data.page_cursor)
+@@ -171,9 +174,13 @@
+ 	var delay_seconds: int = maxi(int(result.get("retry_after",0)),mini(30,1 << (failure_count-1)))
+ 	retry_at_msec = Time.get_ticks_msec()+delay_seconds*1000+randi_range(0,250)
+ 
+-func request_visible(index: int) -> void:
++func request_visible(index: int, visible_count: int = 0) -> void:
+ 	desired_index = clampi(index,0,maxi(0,total-1))
++	_visible_count = clampi(visible_count,0,PAGE_SIZE*3)
+ 	if loading or total < 0 or not error.is_empty(): return
++	if _visible_count > 0:
++		_prefetch_visible(generation)
++		return
+ 	var number: int = desired_index/PAGE_SIZE
+ 	if not pages.has(number):
+ 		_fetch(number)
+@@ -183,6 +190,16 @@
+ 	var low: int = int(pages.keys().min())
+ 	if number == high and desired_index%PAGE_SIZE >= 8 and not str(pages[high].next).is_empty(): _fetch(high+1)
+ 	elif number == low and low > 0 and desired_index%PAGE_SIZE < 3 and not str(pages[low].previous).is_empty(): _fetch(low-1)
++
++func _prefetch_visible(serial: int) -> void:
++	if serial != generation or _visible_count <= 0 or loading or total < 0 or not error.is_empty() or pages.is_empty(): return
++	var low: int = int(pages.keys().min())
++	var high: int = int(pages.keys().max())
++	var reserve: int = clampi(_visible_count*2,PAGE_SIZE,PAGE_SIZE*3)
++	# Keep two viewports ahead, including when a wide grid fills several pages.
++	# Completion revisits the latest demand; there is only one owned HTTP read.
++	if desired_index < low*PAGE_SIZE+reserve and not str(pages[low].previous).is_empty(): _fetch(low-1)
++	elif desired_index+_visible_count+reserve >= (high+1)*PAGE_SIZE and not str(pages[high].next).is_empty(): _fetch(high+1)
+ 
+ func entries() -> Array[Dictionary]:
+ 	var result: Array[Dictionary] = []
+diff --git a/game/backend/discovery_pages.gd b/game/backend/discovery_pages.gd
+--- a/game/backend/discovery_pages.gd
++++ b/game/backend/discovery_pages.gd
+@@ -14,6 +14,7 @@
+ var loading: bool = false
+ var error: String = ""
+ var desired_index: int = 0
++var _visible_count: int = 0
+ var locate_version: String = ""
+ var last_used: int = 0
+ var cache_directory: String = ""
+@@ -63,6 +64,7 @@
+ 	loading = false
+ 	error = ""
+ 	desired_index = 0
++	_visible_count = 0
+ 	_initial_refresh = true
+ 	snapshot_cache.max_entries = 3
+ 	snapshot_cache.max_age_seconds = 86400
+@@ -118,6 +120,9 @@
+ 	last_used = Time.get_ticks_msec()
+ 	changed.emit()
+ 	# A fast swipe can change the requested page while the HTTP read is pending.
++	if _visible_count > 0:
++		_prefetch_visible.call_deferred(serial)
++		return
+ 	var wanted: int = maxi(0,desired_index/PAGE_SIZE)
+ 	if wanted != effective_page and wanted*PAGE_SIZE < total and not pages.has(wanted): _fetch.call_deferred(wanted)
+ 
+@@ -139,14 +144,30 @@
+ 		seen[index] = true
+ 	return true
+ 
+-func request_visible(index: int) -> void:
++func request_visible(index: int, visible_count: int = 0) -> void:
+ 	desired_index = maxi(0,index)
++	_visible_count = clampi(visible_count,0,PAGE_SIZE*3)
+ 	if loading or total < 0 or desired_index >= total: return
++	if _visible_count > 0:
++		_prefetch_visible(generation)
++		return
+ 	var number: int = desired_index/PAGE_SIZE
+ 	if not pages.has(number): _fetch(number); return
+ 	pages[number].used = Time.get_ticks_msec()
+ 	# One-page prefetch; never drain the whole community catalog.
+ 	if desired_index%PAGE_SIZE >= 8 and (number+1)*PAGE_SIZE < total and not pages.has(number+1): _fetch(number+1)
++
++func _prefetch_visible(serial: int) -> void:
++	if serial != generation or _visible_count <= 0 or loading or total < 0 or not error.is_empty(): return
++	var reserve: int = clampi(_visible_count*2,PAGE_SIZE,PAGE_SIZE*3)
++	var first: int = maxi(0,desired_index-reserve)/PAGE_SIZE
++	var last: int = mini(total-1,desired_index+_visible_count+reserve)/PAGE_SIZE
++	for number: int in range(first,last+1):
++		if pages.has(number): pages[number].used = Time.get_ticks_msec()
++	for number: int in range(first,last+1):
++		if not pages.has(number):
++			_fetch(number)
++			return
+ 
+ func entries() -> Array[Dictionary]:
+ 	var result: Array[Dictionary] = []
+diff --git a/game/tests/test_free_race_preload.gd b/game/tests/test_free_race_preload.gd
+new file mode 100644
+--- /dev/null
++++ b/game/tests/test_free_race_preload.gd
+@@ -0,0 +1,162 @@
++extends SceneTree
++## Actual browser + owned, delayed HTTP fixtures; no service or player writes.
++const CursorFixture = preload("res://tests/test_discovery_windows.gd")
++const PageFixture = preload("res://tests/test_discovery_pages.gd")
++const Cloud = preload("res://backend/cloud_tracks.gd")
++var checks: int = 0
++var failures: int = 0
++var output: String = ProjectSettings.globalize_path("res://../docs/evidence/free-race-preload-2026-10-23/captures")
++
++class SlowCursor extends CursorFixture.CursorClient:
++	var block_reads: bool = false
++	func request_discovery(body: Dictionary, owner: int, random_choice: bool = false) -> Dictionary:
++		if block_reads: hold_once = true
++		return await super.request_discovery(body,owner,random_choice)
++
++class SlowPage extends PageFixture.PagedClient:
++	var block_reads: bool = false
++	func request_discovery(body: Dictionary, owner: int, random_choice: bool = false) -> Dictionary:
++		if block_reads: hold_once = true
++		return await super.request_discovery(body,owner,random_choice)
++
++func _initialize() -> void: run.call_deferred()
++func check(ok: bool, label: String) -> void:
++	checks += 1
++	if not ok: failures += 1; push_error(label)
++func frames(count: int = 8) -> void:
++	for _frame: int in range(count): await process_frame
++func settle(window: Node) -> void:
++	for _frame: int in range(100):
++		await process_frame
++		if not window.loading:
++			await frames(3)
++			if not window.loading: return
++	check(false,"bounded preload finishes")
++func capture(label: String) -> void:
++	if DisplayServer.get_name() == "headless": return
++	await RenderingServer.frame_post_draw
++	check(root.get_texture().get_image().save_png(output.path_join(RenderingServer.get_current_rendering_method()+"-"+label+".png")) == OK,"capture "+label)
++func card_checks(browser: TrackBrowser, label: String) -> void:
++	check(browser._page_total() == browser.matches.size(),label+": extent contains only actual cards")
++	check(browser.list_grid.get_children().all(func(child: Node) -> bool: return child is TrackTile or (child is Control and not child is Label and int(child.get_meta("catalog_index",-1)) < browser._list_column_offset)),label+": list has no unloaded placeholders")
++	check(browser.grid.get_children().all(func(child: Node) -> bool: return child is TrackTile),label+": carousel has no unloaded placeholders")
++	var expected: float = maxf(1,ceilf(float(browser.matches.size()+browser._list_column_offset)/browser._list_columns)*browser._list_stride.y-12)
++	check(is_equal_approx(browser.list_content.custom_minimum_size.y,expected),label+": list ends at its final loaded row")
++	check(browser.gallery_content.custom_minimum_size.x == maxi(1,browser.matches.size()*browser.tile_stride-12),label+": carousel ends at its final loaded card")
++
++func run() -> void:
++	root.theme = MenuStyle.theme()
++	create_timer(120).timeout.connect(func() -> void: push_error("Preload test deadline"); quit(1))
++	DirAccess.make_dir_recursive_absolute(output)
++	for protocol: int in [3,2]: await protocol_checks(protocol)
++	print("FREE_RACE_PRELOAD: %d checks, %d failures" % [checks,failures])
++	quit(1 if failures else 0)
++
++func protocol_checks(protocol: int) -> void:
++	var folder: String = ProjectSettings.globalize_path("res://../build/free-race-preload-%d-%d" % [protocol,Time.get_ticks_usec()])
++	var client: Node = SlowCursor.new() if protocol == 3 else SlowPage.new()
++	root.add_child(client)
++	client.configure("http://127.0.0.1:1")
++	client._capabilities = {"discovery_paging_version":protocol}
++	client.document = TrackDocument.from_builtin(NativeTrack.read("res://resources/tracks/starter_circuit.json"))
++	client.hash_value = JSON.stringify(client.document).sha256_text()
++	var cloud := Cloud.new()
++	cloud.client = client
++	cloud.root_override = folder.path_join("cloud")
++	root.add_child(cloud)
++	await cloud.query_discovery({"sort":"name"})
++	var window: Node = cloud.discovery_pages
++	cloud._write(cloud.cache_root().path_join(client.hash_value+".json"),client.document)
++	var library := TrackLibrary.new(folder.path_join("drafts"))
++	var catalog := TrackCatalog.new(library)
++	cloud.add_to_catalog(catalog)
++	var entry: Dictionary = cloud.entry_from_metadata(client.metadata(0) if protocol == 3 else client.metadata(0,0))
++	check(await cloud.download(entry),"fixture uses existing exact document cache")
++	var track: NativeTrack = cloud.compile_entry(entry)
++	check(track != null,"fixture compiles through normal validation")
++	if track == null: quit(1); return
++	catalog.remember_track(entry,track)
++	var browser := TrackBrowser.new()
++	browser.library = library
++	browser.catalog = catalog
++	browser.cloud = cloud
++	browser.records = LocalRecords.new(folder.path_join("records.json"))
++	browser.selected_track = track
++	browser.state = {"sort":"name"}
++	browser.page_preview = true
++	root.add_child(browser)
++	for dimensions: Vector2i in [Vector2i(1720,900),Vector2i(960,540),Vector2i(390,844),Vector2i(844,390)]:
++		var label: String = "v%d-%dx%d" % [protocol,dimensions.x,dimensions.y]
++		browser.page_preview = true
++		await cloud.query_discovery({"sort":"name"},[],[],true)
++		root.size = dimensions
++		root.content_scale_size = dimensions
++		browser.size = dimensions
++		browser._set_list_open(true)
++		client.block_reads = true
++		browser.page_preview = false
++		browser._cloud_changed()
++		await frames()
++		check(window.loading and cloud.entries.size() == 20,label+": preload begins before the first page is exhausted")
++		card_checks(browser,label+" pending")
++		browser.track_list.scroll_vertical = 1000000
++		await frames()
++		card_checks(browser,label+" pending end")
++		check(browser.track_list.scroll_vertical <= maxi(0,ceili(browser.list_content.custom_minimum_size.y-browser.track_list.size.y)),label+": delayed network clamps at loaded end")
++		await capture(label+"-pending-end")
++		client.block_reads = false
++		client.release_read.emit()
++		await settle(window)
++		var visible: int = ceili(browser.track_list.size.y/browser._list_stride.y)*browser._list_columns
++		var first: int = int(browser.track_list.scroll_vertical/browser._list_stride.y)*browser._list_columns
++		check(browser.matches.size() >= first+visible+mini(60,maxi(20,visible*2)),label+": completion fills the viewport reserve without another scroll")
++		check(browser.matches.size() <= 160,label+": stationary view does not drain the catalogue")
++		var request_count: int = client.requests.size()
++		await frames(12)
++		check(client.requests.size() == request_count,label+": background requests stop when the reserve is full")
++		card_checks(browser,label+" loaded")
++		await capture(label+"-loaded")
++		browser._set_list_open(false)
++		browser._render_tiles(true)
++		await frames()
++		card_checks(browser,label+" carousel")
++		await capture(label+"-carousel")
++		browser._set_list_open(true)
++		await settle(window)
++	if protocol == 3:
++		browser.page_preview = true
++		client.missing_card = 19
++		await cloud.query_discovery({"sort":"name"},[],[],true)
++		client.block_reads = true
++		browser.page_preview = false
++		browser._cloud_changed()
++		await frames()
++		check(browser.matches.size() == 19,"authority-filtered page displays nineteen cards without a twentieth empty slot")
++		card_checks(browser,"sparse page")
++		client.block_reads = false
++		client.release_read.emit()
++		await settle(window)
++		client.missing_card = -1
++		# Failure keeps the loaded end and pauses automatic retries.
++		client.busy_once = true
++		await window._fetch(int(window.pages.keys().max())+1)
++		var failed_reads: int = client.requests.size()
++		browser.track_list.scroll_vertical = 1000000
++		browser._render_list(true)
++		await frames()
++		check(not window.error.is_empty() and client.requests.size() == failed_reads,"failed page retains cards and does not retry on scroll")
++		card_checks(browser,"failed page")
++		await capture("v3-failed-page")
++		window.retry_at_msec = 0
++	# A terminal search shrinks to exactly one actual card in both protocols.
++	browser.page_preview = true
++	await cloud.query_discovery({"search":"4999","sort":"name"},[],[],true)
++	browser.page_preview = false
++	browser._cloud_changed()
++	await frames()
++	check(browser.matches.size() == 1 and not window.loading,"terminal search ends without extra reads")
++	card_checks(browser,"terminal search")
++	browser.queue_free()
++	cloud.queue_free()
++	client.queue_free()
++	await frames()
+diff --git a/game/tests/test_discovery_windows.gd b/game/tests/test_discovery_windows.gd
+--- a/game/tests/test_discovery_windows.gd
++++ b/game/tests/test_discovery_windows.gd
+@@ -177,16 +177,16 @@
+ 		while pages.loading: await process_frame
+ 		var high: int = int(pages.pages.keys().max())
+ 		var old_offset: int = browser._list_column_offset
+-		var old_shift: int = pages.coordinate_shift
+ 		var anchor_index: int = maxi(0,(high-1)*20+5)
+ 		var anchor_item: Dictionary = pages.entry_at(anchor_index)
++		anchor_index = browser.matches.find_custom(func(item: Dictionary) -> bool: return item.version_id == anchor_item.version_id)
+ 		browser.track_list.scroll_vertical = int((anchor_index+old_offset)/browser._list_columns)*int(browser._list_stride.y)
+ 		var old_y: int = browser.track_list.scroll_vertical
+ 		await pages._fetch(high+1)
+-		var movement: int = pages.coordinate_shift-old_shift
++		var new_index: int = browser.matches.find_custom(func(item: Dictionary) -> bool: return item.version_id == anchor_item.version_id)
++		var movement: int = new_index-anchor_index
+ 		if movement != 0:
+-			var new_index: int = anchor_index+movement
+-			check(pages.entry_at(new_index).get("track_id","") == anchor_item.get("track_id","missing"),"eviction retains the exact visible card")
++			check(new_index >= 0 and browser.matches[new_index].get("track_id","") == anchor_item.get("track_id","missing"),"eviction retains the exact visible card")
+ 			check(posmod(anchor_index+old_offset,browser._list_columns) == posmod(new_index+browser._list_column_offset,browser._list_columns),"eviction preserves the card column")
+ 			var expected_y: int = old_y+int((movement+browser._list_column_offset-old_offset)/browser._list_columns)*int(browser._list_stride.y)
+ 			check(browser.track_list.scroll_vertical == expected_y,"eviction preserves the card screen row")
+diff --git a/game/tests/test_discovery_pages.gd b/game/tests/test_discovery_pages.gd
+--- a/game/tests/test_discovery_pages.gd
++++ b/game/tests/test_discovery_pages.gd
+@@ -135,12 +135,12 @@
+ 	await settle(pages)
+ 	check(browser.grid.get_child_count() <= 12 and str(browser.grid.get_child(0).entry.id) == first_id,"appending server page keeps first visible card stable and bounds controls")
+ 	check(browser.grid.get_children().all(func(node: Node) -> bool: return node.size.y <= 140.0),"paged card footers remain inside the carousel height")
+-	check(browser.gallery_content.custom_minimum_size.x >= 5000*browser.tile_stride-12,"virtual scrollbar covers full global results")
++	check(browser.gallery_content.custom_minimum_size.x == browser.matches.size()*browser.tile_stride-12,"virtual scrollbar ends at actual loaded cards")
+ 	await capture("default-discovery")
+-	browser.gallery.scroll_horizontal = 4250*browser.tile_stride
++	browser.gallery.scroll_horizontal = browser.matches.size()*browser.tile_stride
+ 	browser._render_tiles(true)
+ 	await settle(pages)
+-	check(browser.grid.get_child_count() <= 12 and browser.grid.get_children().all(func(node: Node) -> bool: return node is TrackTile),"deep scrolling loads every visible card across page boundary")
++	check(browser.grid.get_child_count() > 0 and browser.grid.get_child_count() <= 12 and browser.grid.get_children().all(func(node: Node) -> bool: return node is TrackTile),"scrolling to the loaded end preloads more actual cards across the page boundary")
+ 	check(not browser.race_button.disabled,"evicting selected track's preview does not disable its cached race")
+ 	await capture("deep-discovery")
+ 	browser.search_dialog.open_for(browser.state,browser.find_child("RaceSearch",true,false))
+diff --git a/game/tests/test_free_race_list.gd b/game/tests/test_free_race_list.gd
+--- a/game/tests/test_free_race_list.gd
++++ b/game/tests/test_free_race_list.gd
+@@ -318,14 +318,15 @@
+ 	await settle()
+ 	browser._close_track_view()
+ 	await settle()
+-	# Reach distant pages without creating thousands of cards or loading documents.
++	# A large remote catalogue exposes only loaded cards and preloads its next
++	# pages when the player approaches that loaded end.
+ 	client.track_total = 5000
+ 	await app.cloud.query_discovery({"sort":"name"},[],[],true)
+ 	await settle()
+-	browser.track_list.scroll_vertical = int(4250/browser._list_columns)*int(browser._list_stride.y)
++	browser.track_list.scroll_vertical = ceili(browser.list_content.custom_minimum_size.y)
+ 	await settle()
+ 	check(browser.list_open and browser.list_grid.get_children().all(func(node: Node) -> bool: return node is TrackTile),"deep list scrolling hydrates every visible card")
+-	check(int(browser.list_grid.get_child(0).get_meta("catalog_index")) > 4200 and browser.list_grid.get_child_count() <= 60,"5000-track list keeps a bounded distant window")
++	check(int(browser.list_grid.get_child(0).get_meta("catalog_index")) > 0 and browser.list_grid.get_child_count() <= 60 and browser._page_total() == browser.matches.size() and browser._page_total() < 5000,"5000-track list keeps controls and scroll coordinates bounded by actual loaded cards")
+ 	check(app.cloud.discovery_pages.pages.size() <= 15 and client.requests.size() < 30,"scrolling fetches nearby pages within the existing cache bound")
+ 	await capture("deep-list")
+ 	await first_visible_detail_return()
+@@ -334,6 +335,7 @@
+ 	var requests_before: int = client.requests.size()
+ 	app.cloud.discovery_pages.pages.clear()
+ 	app.cloud.discovery_pages.error = "Could not load tracks. Retry when connected."
++	app.cloud._discovery_changed()
+ 	browser._refresh()
+ 	await frames(24)
+ 	check(client.requests.size() == requests_before,"failed list pages wait for explicit refresh without repeated reads")
+@@ -343,6 +345,7 @@
+ 	browser.state.theme = "coast"
+ 	app.cloud.discovery_pages.total = 0
+ 	app.cloud.discovery_pages.pages.clear()
++	app.cloud._discovery_changed()
+ 	browser._refresh()
+ 	await frames()
+ 	check(browser.list_open and browser.list_grid.find_child("TrackListEmptyState",true,false) != null,"empty result uses list space and keeps navigation available")
+diff --git a/AGENTS.md b/AGENTS.md
+--- a/AGENTS.md
++++ b/AGENTS.md
+@@ -1,3 +1,6 @@
++## Free Race preloading and loaded-end scrolling override (2026-10-23)
++2026-10-23 RFP01-RFP02/R01/G01/Q01: Free Race preloads from the visible card range with two viewports of reserve (20-60 cards), one owned read and completion-driven continuation. The list and carousel expose actual loaded cards only; slow/failed replies stop at the loaded end. Dense presentation coordinates retain exact revisions, telemetry fetch positions and row/column anchors through bounded cursor-cache eviction. Focused228headless/253Compatibility/253desktopMobile, cursor106, legacy paging269, FreeRace233, challenges216, App141 and parser1015 pass. Commands, native pending/loaded views, initial harness corrections and task-only Git-checkable patch: docs/FREE_RACE_PRELOAD_2026_10_23.md and docs/evidence/free-race-preload-2026-10-23/report.json. Tablet/owner sustained scrolling acceptance remains; no phone/tablet attachment check, physical-device test, APK, live mutation or deployment. Concurrent work preserved.
++
+ ## Whole-row challenge carousel end animation override (2026-10-23)
+ 2026-10-23 CEB01/R01/G01/Q01: Challenge car carousel now uses the shared scroll-strip/inner-row structure, so end elasticity moves all five cards together. Explicit row sizing retains full-width cards and narrow paging. Native touch/wheel tests cover every wide-screen starting card, both narrow ends, intermediate spring alignment, exact return positions and no accidental selection. Task-original238/28 failures; final238headless/282Compatibility/282desktopMobile, integrated216 and parser1015 pass. Commands, retained initial anchoring and concurrent landing_view interruption, native captures and scoped checkpoint: docs/evidence/challenge-carousel-edges-2026-10-23/report.json. Owner/device acceptance remains; no phone attachment check/device test, APK, live mutation or deployment. Concurrent work preserved.
+ 
+diff --git a/DEVELOPMENT_STATUS.md b/DEVELOPMENT_STATUS.md
+--- a/DEVELOPMENT_STATUS.md
++++ b/DEVELOPMENT_STATUS.md
+@@ -1,3 +1,5 @@
++2026-10-23 RFP01-RFP02/R01/G01/Q01: Free Race preloads from the visible card range with two viewports of reserve (20-60 cards), one owned read and completion-driven continuation. The list and carousel expose actual loaded cards only; slow/failed replies stop at the loaded end. Dense presentation coordinates retain exact revisions, telemetry fetch positions and row/column anchors through bounded cursor-cache eviction. Focused228headless/253Compatibility/253desktopMobile, cursor106, legacy paging269, FreeRace233, challenges216, App141 and parser1015 pass. Commands, native pending/loaded views, initial harness corrections and task-only Git-checkable patch: docs/FREE_RACE_PRELOAD_2026_10_23.md and docs/evidence/free-race-preload-2026-10-23/report.json. Tablet/owner sustained scrolling acceptance remains; no phone/tablet attachment check, physical-device test, APK, live mutation or deployment. Concurrent work preserved.
++
+ 2026-10-23 CEB01/R01/G01/Q01: Challenge car carousel now uses the shared scroll-strip/inner-row structure, so end elasticity moves all five cards together. Explicit row sizing retains full-width cards and narrow paging. Native touch/wheel tests cover every wide-screen starting card, both narrow ends, intermediate spring alignment, exact return positions and no accidental selection. Task-original238/28 failures; final238headless/282Compatibility/282desktopMobile, integrated216 and parser1015 pass. Commands, retained initial anchoring and concurrent landing_view interruption, native captures and scoped checkpoint: docs/evidence/challenge-carousel-edges-2026-10-23/report.json. Owner/device acceptance remains; no phone attachment check/device test, APK, live mutation or deployment. Concurrent work preserved.
+ 
+ 2026-10-23 ASI01-ASI03/B01/B19/R01/G01/Q01: Repair Android remembered sign-in through the JNI vault method registry. Completed sign-in/first country save go directly to Race; saved country skips setup and the signed-in confirmation, with Profile account management retained. Focused16, real HTTP75headless/88Compatibility, rotation17 and App141 pass; original reproduces2 registry failures and the unchanged4 publication-fixture failures. Native views/commands/hashes/scoped checkpoint: docs/evidence/sign-in-startup-2026-10-23/report.json; details: docs/REMEMBERED_SIGN_IN.md. No successful tablet attachment check/device test, APK/install, live mutation or deployment. Updated tablet build and owner cold-restart acceptance remain; concurrent work preserved.
+diff --git a/docs/PHASE_0_PLAN.md b/docs/PHASE_0_PLAN.md
+--- a/docs/PHASE_0_PLAN.md
++++ b/docs/PHASE_0_PLAN.md
+@@ -1,3 +1,5 @@
++2026-10-23 RFP01-RFP02/R01/G01/Q01: Free Race preloads from the visible card range with two viewports of reserve (20-60 cards), one owned read and completion-driven continuation. The list and carousel expose actual loaded cards only; slow/failed replies stop at the loaded end. Dense presentation coordinates retain exact revisions, telemetry fetch positions and row/column anchors through bounded cursor-cache eviction. Focused228headless/253Compatibility/253desktopMobile, cursor106, legacy paging269, FreeRace233, challenges216, App141 and parser1015 pass. Commands, native pending/loaded views, initial harness corrections and task-only Git-checkable patch: docs/FREE_RACE_PRELOAD_2026_10_23.md and docs/evidence/free-race-preload-2026-10-23/report.json. Tablet/owner sustained scrolling acceptance remains; no phone/tablet attachment check, physical-device test, APK, live mutation or deployment. Concurrent work preserved.
++
+ 2026-10-23 CEB01/R01/G01/Q01: Challenge car carousel now uses the shared scroll-strip/inner-row structure, so end elasticity moves all five cards together. Explicit row sizing retains full-width cards and narrow paging. Native touch/wheel tests cover every wide-screen starting card, both narrow ends, intermediate spring alignment, exact return positions and no accidental selection. Task-original238/28 failures; final238headless/282Compatibility/282desktopMobile, integrated216 and parser1015 pass. Commands, retained initial anchoring and concurrent landing_view interruption, native captures and scoped checkpoint: docs/evidence/challenge-carousel-edges-2026-10-23/report.json. Owner/device acceptance remains; no phone attachment check/device test, APK, live mutation or deployment. Concurrent work preserved.
+ 
+ 2026-10-23 ASI01-ASI03/B01/B19/R01/G01/Q01: Tablet sign-in persistence now checks Android JNI vault operations correctly. Saved country and completed sign-in bypass setup/confirmation and enter Race; explicit account management remains. Focused16, HTTP75headless/88Compatibility, rotation17 and App141 pass. Original-registry and publication-fixture controls, native views, initial harness correction, commands and scoped checkpoint: docs/evidence/sign-in-startup-2026-10-23/report.json. No successful tablet attachment check/device test, APK/install, live mutation or deployment; updated tablet build and owner cold-restart acceptance remain. Concurrent work preserved.
+diff --git a/docs/FREE_RACE_PRELOAD_2026_10_23.md b/docs/FREE_RACE_PRELOAD_2026_10_23.md
+new file mode 100644
+--- /dev/null
++++ b/docs/FREE_RACE_PRELOAD_2026_10_23.md
+@@ -0,0 +1,52 @@
++# Free Race preloading and loaded-end scrolling, 2026-10-23
++
++The track list now preloads according to its visible rows and columns. While more tracks are pending, scrolling ends at the last loaded card. The selected-track carousel follows the same rule. Loaded cards remain usable if a later page fails.
++
++| Requirement | Result |
++| --- | --- |
++| RFP01 | Pass the actual visible card range to discovery. Reserve two viewports ahead, bounded to 20?60 cards. Continue toward the latest viewport after each response, with one read in flight. |
++| RFP02 | Build list/carousel extents from actual loaded cards. Compact omitted/unloaded cursor slots; render no per-track loading, retry or unavailable placeholders. |
++| R01 | Preserve exact selected revisions, immutable document downloads, global search/Random, account/query fences, retry/backoff, bounded caches and telemetry positions. Keep retained card columns and screen rows stable through eviction. |
++| G01 | Save native pending-end, loaded and carousel screenshots at 1720?900, 960?540, 390?844 and 844?390 for both discovery protocols and desktop renderers. |
++| Q01 | Run focused and existing regressions, parse all project scripts, preserve concurrent work and provide a scoped Git-checkable patch. |
++
++`game/ui/track_browser.gd` uses a compact list of actual catalogue entries for both views. Fetch coordinates remain attached to entries, so telemetry and subsequent cursor reads retain their meaning. A small leading alignment spacer can preserve a retained row's columns after eviction; it represents no track. The global catalogue is still fully browsable through sequential paging, Search and Random.
++
++`game/backend/discovery_windows.gd` and `game/backend/discovery_pages.gd` accept viewport demand. Each successful response revisits that demand, including scroll movement during a pending read. The existing 13/15-page cache bounds remain; legacy pages in the current demand range are touched before prefetch eviction. Query generations, source scopes and the existing v3 failure/backoff controls remain in force. The optional one-index API remains available to other callers.
++
++| Check | Actual result |
++| --- | --- |
++| `test_free_race_preload.gd`, headless | 228 checks, 0 failures |
++| Same, Compatibility | 253 checks, 0 failures |
++| Same, desktop Mobile/Vulkan | 253 checks, 0 failures |
++| `test_discovery_windows.gd` | 106 checks, 0 failures |
++| `test_discovery_pages.gd` | 269 checks, 0 failures |
++| `test_free_race_list.gd` | 233 checks, 0 failures |
++| `test_challenges.gd` | 216 checks, 0 failures |
++| `test_app.gd` | 141 checks, 0 failures |
++| `test_script_parse.gd` | 1015 scripts, 0 failures |
++
++The focused fixture holds actual browser page requests while scrolling to the loaded end, then releases them and verifies that preloading fills the latest viewport's reserve without another scroll. It also checks stationary request bounds, sparse authority-filtered pages, failure/retry behavior and terminal search results in both protocols. Existing cursor regressions retain exact card/revision and row/column checks during eviction, backward cursor reads and late account/query replies. Existing paging tests still traverse all 5,000 fixture records.
++
++Actual commands used the pinned Godot 4.7.2 build through `scripts/dev.ps1`. Tests isolated `APPDATA` under `build/free-race-preload-user`:
++
++```powershell
++$env:APPDATA = Join-Path (Get-Location) 'build/free-race-preload-user'
++powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1 -Action CheckScript -ScriptPath res://ui/track_browser.gd
++powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1 -Action TestScript -ScriptPath res://tests/test_free_race_preload.gd
++# Repeat the focused script with each native renderer:
++# -Graphical -RenderingMethod gl_compatibility
++# -Graphical -RenderingMethod mobile
++# Existing regressions used the same TestScript action with the script names above.
++# Batch invocations and exact outcomes are recorded in report.json and logs/.
++```
++
++Initial direct PowerShell invocation was blocked by its execution policy; the process-only `-ExecutionPolicy Bypass` invocation worked. Godot's sandboxed fixture startup could not read the Windows certificate store, so native local tests ran with approved Windows access. User data remained isolated. An initial bare-window capture fixture used mismatched logical/display sizes; its content scale now matches each tested viewport.
++
++The first existing Free Race run reported two failures: the former assertion expected scrolling through thousands of unloaded positions, and its manually cleared pages had not emitted the production cloud catalogue-change event. The updated test asserts loaded-only coordinates/control bounds and uses that actual event for failure/empty fixtures. The original 233-check failure log is retained. Historical evidence output was restored after copying this run's report into the task evidence folder.
++
++Native examples: [pending tablet-sized end](evidence/free-race-preload-2026-10-23/captures/gl_compatibility-v3-1720x900-pending-end.png), [loaded buffer](evidence/free-race-preload-2026-10-23/captures/gl_compatibility-v3-960x540-loaded.png), [failed page](evidence/free-race-preload-2026-10-23/captures/mobile-v3-failed-page.png). All 50 screenshots and test logs are under [the evidence folder](evidence/free-race-preload-2026-10-23/).
++
++These are desktop fixture/render checks, not tablet frame-rate or mobile network measurements. Owner acceptance on the tablet, including sustained flings, slow-network scrolling and returning from track details, remains. No phone/tablet attachment check, physical-device test, APK export/install, live backend/account mutation or deployment was performed.
++
++`task.patch` contains only this task's runtime/test/documentation changes relative to the captured workspace sources. It is checked with `git apply --reverse --check`; the shared index and existing commits are unchanged. Concurrent work is preserved.

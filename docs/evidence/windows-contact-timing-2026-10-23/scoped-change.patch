@@ -1,0 +1,1055 @@
+diff --git a/game/tests/probe_direct_collision_output.gd b/game/tests/probe_direct_collision_output.gd
+--- a/game/tests/probe_direct_collision_output.gd
++++ b/game/tests/probe_direct_collision_output.gd
+@@ -1,6 +1,6 @@
+ extends "res://tests/analyze_shallow_collisions.gd"
+ ## Real-time direct hits: normal rendering, actual Game callback, own-process capture.
+-const OUT: String = "res://../build/direct-collision-output-2026-10-09"
++var output: String = "res://../build/direct-collision-output-2026-10-09"
+ class NeutralInput extends DriverInput:
+ 	func sample() -> DriveFrame:
+ 		return DriveFrame.new()
+@@ -25,12 +25,14 @@
+ 			return
+ 
+ func run() -> void:
+-	DirAccess.make_dir_recursive_absolute(ProjectSettings.globalize_path(OUT))
+-	var ready_file: FileAccess = FileAccess.open(OUT.path_join("ready.json"),FileAccess.WRITE)
++	for argument: String in OS.get_cmdline_user_args():
++		if argument.begins_with("--output-dir="): output = argument.trim_prefix("--output-dir=")
++	DirAccess.make_dir_recursive_absolute(ProjectSettings.globalize_path(output))
++	var ready_file: FileAccess = FileAccess.open(output.path_join("ready.json"),FileAccess.WRITE)
+ 	ready_file.store_string(JSON.stringify({"pid":OS.get_process_id(),"driver":AudioServer.get_driver_name(),"device":AudioServer.output_device,"reported_latency_ms":AudioServer.get_output_latency()*1000.0,"rate":AudioServer.get_mix_rate()}))
+ 	ready_file.close()
+ 	var timeout: int = Time.get_ticks_msec()+60000
+-	while not FileAccess.file_exists(OUT.path_join("armed")):
++	while not FileAccess.file_exists(output.path_join("armed")):
+ 		await process_frame
+ 		if Time.get_ticks_msec()>timeout:
+ 			print("DIRECT_COLLISION_OUTPUT: capture not armed")
+@@ -39,11 +41,16 @@
+ 	game = load("res://core/game.tscn").instantiate()
+ 	game.vehicle_id = "compact"
+ 	game.initial_track = make_wall(Vector2(0,-1),.5)
++	game.production_mode = false
++	game.set_physics_process(false)
+ 	root.add_child(game)
+-	game.set_physics_process(false)
++	var ready_deadline: int = Time.get_ticks_msec()+30000
++	while not game.preparation_complete and Time.get_ticks_msec()<ready_deadline:
++		await process_frame
++	assert(game.preparation_complete,"The actual Game must finish preparing before contact timing begins.")
++	game.set_physics_process(false) # Installation restores processing after its owned staging.
+ 	game.driver = NeutralInput.new()
+ 	game.countdown_ticks = 0
+-	game.production_mode = false
+ 	var audio: VehicleAudio = game.vehicle_audio
+ 	draw_outline = audio.visible_contact.outline.duplicate()
+ 	RenderingServer.frame_post_draw.connect(_record_render)
+@@ -89,7 +96,7 @@
+ 			print("DIRECT_COLLISION_TRIAL: ",JSON.stringify(row))
+ 	row = {}
+ 	RenderingServer.frame_post_draw.disconnect(_record_render)
+-	var file: FileAccess = FileAccess.open(OUT.path_join("events.json"),FileAccess.WRITE)
++	var file: FileAccess = FileAccess.open(output.path_join("events.json"),FileAccess.WRITE)
+ 	file.store_string(JSON.stringify(rows,"\t"))
+ 	file.close()
+ 	game.free()
+diff --git a/scripts/review_direct_collision_output.py b/scripts/review_direct_collision_output.py
+--- a/scripts/review_direct_collision_output.py
++++ b/scripts/review_direct_collision_output.py
+@@ -3,7 +3,7 @@
+ import json,subprocess,sys
+ 
+ ROOT=Path(__file__).resolve().parents[1]
+-OUT=ROOT/'build/direct-collision-output-2026-10-09'
++OUT=Path(sys.argv[1]).resolve() if len(sys.argv)>1 else ROOT/'build/direct-collision-output-2026-10-09'
+ subprocess.run([sys.executable,str(ROOT/'scripts/review_windows_audio_output.py'),str(OUT)],check=True,capture_output=True)
+ events=json.loads((OUT/'events.json').read_text())
+ timings=json.loads((OUT/'timing-report.json').read_text())
+diff --git a/AGENTS.md b/AGENTS.md
+--- a/AGENTS.md
++++ b/AGENTS.md
+@@ -1,3 +1,9 @@
++## Original snow-impact options override (2026-10-23)
++2026-10-23 OSI01-OSI03/R01/Q01: Three original snow impacts use existing cleared Nox recordings; packed snow is installed, with powder/heavy-bank auditions. Actual same-gain/pitch mastered first100ms rises2.33dB, strong attack0.204ms and peak0.557 retain headroom. Continuous snow is byte-exact; contact/driving/gains/voice limits/native libraries remain. Source hashes and repeat build are exact. Capture13/driving6, analysis34, snowbank89headless, response29headless/35Compatibility/35desktopMobile, Windows18 and parser1030 pass. Soundsnap previews remain unusable; no listening/matching claim or copied reference audio. Actual commands, source provenance, WAV comparisons, limitations and scoped checkpoint: docs/ORIGINAL_SNOW_IMPACT_2026_10_23.md and docs/evidence/original-snow-impact-2026-10-23/report.json. Client restart and owner/device listening remain; no phone/tablet attachment check, physical-device test, APK/export/install, native rebuild, account/backend mutation, purchase or deployment. Concurrent work preserved.
++
++## Persistent Windows contact-sound investigation (2026-10-23)
++2026-10-23 WCT01-WCT03/R01/Q01: Owner confirms persistent Windows collision/kerb delay on speakers and Bluetooth across restarts. Actual rendered Game diagnostics request wall sound on the visible-contact tick and kerb sound on the first wheel-contact tick; software request-to-output remains36-42ms wall,34-38ms entry,53-59ms rolling. Direct30/kerb39 reviews, script check and Python compilation pass; earlier surface36/impact18 checks are not owner-symptom acceptance. Initial asynchronous-processing/held-wheel fixture failures remain. Nine relevant runtime sources/manifest are exact; diagnostics only, no runtime fix or before/after improvement claimed. Commands, scoped checkpoint and limits: docs/WINDOWS_CONTACT_TIMING_2026_10_23.md and docs/evidence/windows-contact-timing-2026-10-23/report.json. Exact owner car/track/object and acoustic attribution remain; no owner-process control/capture, microphone, phone/tablet test, APK, live mutation or deployment. Concurrent work preserved.
++
+ ## Garage parking hall free drive override (2026-10-23)
+ 2026-10-23 GPH01-GPH04/R01/G01/Q01: Garage Test drive opens an untimed 240x160m parking hall with a 200m marked straight, clear turning circle, slalom and parking bays. All five real cars retain normal handling, paint/parts, camera and touch controls; reset/pause/background/retained Garage return work without race proof, tickets, rewards, PB or saved-condition writes. Sliding actions cannot launch the hall; short-window entry and the separate speed display remain visible. Focused364headless/380Compatibility/380desktopMobile, driving72, practice54, Garage152/sidebar415 and App141 pass. Native views, initial viewport/speed/clipping/slide corrections, original-method control, actual commands and scoped Git-checkable patch: docs/PARKING_HALL_2026_10_23.md and docs/evidence/parking-hall-2026-10-23/report.json. Client restart and owner/device size/appearance/sustained acceptance remain; no phone/tablet attachment check, physical-device test, APK, live mutation or deployment. Concurrent work preserved.
+ 
+diff --git a/DEVELOPMENT_STATUS.md b/DEVELOPMENT_STATUS.md
+--- a/DEVELOPMENT_STATUS.md
++++ b/DEVELOPMENT_STATUS.md
+@@ -1,3 +1,7 @@
++2026-10-23 OSI01-OSI03/R01/Q01: Three original snow impacts use existing cleared Nox recordings; packed snow is installed, with powder/heavy-bank auditions. Actual same-gain/pitch mastered first100ms rises2.33dB, strong attack0.204ms and peak0.557 retain headroom. Continuous snow is byte-exact; contact/driving/gains/voice limits/native libraries remain. Source hashes and repeat build are exact. Capture13/driving6, analysis34, snowbank89headless, response29headless/35Compatibility/35desktopMobile, Windows18 and parser1030 pass. Soundsnap previews remain unusable; no listening/matching claim or copied reference audio. Actual commands, source provenance, WAV comparisons, limitations and scoped checkpoint: docs/ORIGINAL_SNOW_IMPACT_2026_10_23.md and docs/evidence/original-snow-impact-2026-10-23/report.json. Client restart and owner/device listening remain; no phone/tablet attachment check, physical-device test, APK/export/install, native rebuild, account/backend mutation, purchase or deployment. Concurrent work preserved.
++
++2026-10-23 WCT01-WCT03/R01/Q01: Owner confirms persistent Windows collision/kerb delay on speakers and Bluetooth across restarts. Actual rendered Game diagnostics request wall sound on the visible-contact tick and kerb sound on the first wheel-contact tick; software request-to-output remains36-42ms wall,34-38ms entry,53-59ms rolling. Direct30/kerb39 reviews, script check and Python compilation pass; earlier surface36/impact18 checks are not owner-symptom acceptance. Initial asynchronous-processing/held-wheel fixture failures remain. Nine relevant runtime sources/manifest are exact; diagnostics only, no runtime fix or before/after improvement claimed. Commands, scoped checkpoint and limits: docs/WINDOWS_CONTACT_TIMING_2026_10_23.md and docs/evidence/windows-contact-timing-2026-10-23/report.json. Exact owner car/track/object and acoustic attribution remain; no owner-process control/capture, microphone, phone/tablet test, APK, live mutation or deployment. Concurrent work preserved.
++
+ 2026-10-23 FBR01-FBR04/R01/G01/Q01: Find & play is now a dedicated racing browser with Discover/Friends/Joined, scenic route cards, explicit search/collapsible filters and a focused race hero. Create/Created/share/rematch/cancel management stays outside finding; explicit Created and result flows retain their actions. Race details and Standings separate target information from the complete table while Race remains pinned. Account/folder/filter-fenced draft search/focus, gallery position and detail-tab restoration survive replies; Refresh reads the catalogue. Browser92headless/110Compatibility/110desktopMobile, gates76/88/79, entry87, integrated216, series30 and parser1028 pass. Native before/after, filters, empty/error/guest/long-name/owner views, corrections, commands and scoped checkpoint: docs/evidence/challenge-racing-browser-2026-10-23/report.json. Owner appearance/touch acceptance remains. No phone attachment check/device test, APK, live account/backend mutation, social send or deployment. Concurrent work preserved.
+ 
+ 2026-10-23 KST01-KST03/R01/Q01: Retain recorded cobblestone kerb clatter and restore a subtle recorded body thud underneath, six pulses/second at native pitch with small level variations. Layer RMS0.38 of clatter; matched decoded loudness-18.48LUFS versus previous-18.49. Native89/loops208, continuity42 and12-capture review pass; repeat60audio hashes exact, all58other WAV/Ogg files preserved. Initial actual-Game fixture ran before asynchronous preparation; corrected readiness wait retains crossing assertions. Commands, applied preview, provenance and scoped checkpoint: docs/KERB_SUBTLE_THUD_2026_10_23.md. PC restart and owner listening acceptance remain. No phone/tablet attachment check/device test, APK/export/install, live mutation or deployment by this task; concurrent work preserved.
+diff --git a/docs/PHASE_0_PLAN.md b/docs/PHASE_0_PLAN.md
+--- a/docs/PHASE_0_PLAN.md
++++ b/docs/PHASE_0_PLAN.md
+@@ -1,3 +1,7 @@
++2026-10-23 OSI01-OSI03/R01/Q01: Three original snow impacts use existing cleared Nox recordings; packed snow is installed, with powder/heavy-bank auditions. Actual same-gain/pitch mastered first100ms rises2.33dB, strong attack0.204ms and peak0.557 retain headroom. Continuous snow is byte-exact; contact/driving/gains/voice limits/native libraries remain. Source hashes and repeat build are exact. Capture13/driving6, analysis34, snowbank89headless, response29headless/35Compatibility/35desktopMobile, Windows18 and parser1030 pass. Soundsnap previews remain unusable; no listening/matching claim or copied reference audio. Actual commands, source provenance, WAV comparisons, limitations and scoped checkpoint: docs/ORIGINAL_SNOW_IMPACT_2026_10_23.md and docs/evidence/original-snow-impact-2026-10-23/report.json. Client restart and owner/device listening remain; no phone/tablet attachment check, physical-device test, APK/export/install, native rebuild, account/backend mutation, purchase or deployment. Concurrent work preserved.
++
++2026-10-23 WCT01-WCT03/R01/Q01: Owner confirms persistent Windows collision/kerb delay on speakers and Bluetooth across restarts. Actual rendered Game diagnostics request wall sound on the visible-contact tick and kerb sound on the first wheel-contact tick; software request-to-output remains36-42ms wall,34-38ms entry,53-59ms rolling. Direct30/kerb39 reviews, script check and Python compilation pass; earlier surface36/impact18 checks are not owner-symptom acceptance. Initial asynchronous-processing/held-wheel fixture failures remain. Nine relevant runtime sources/manifest are exact; diagnostics only, no runtime fix or before/after improvement claimed. Commands, scoped checkpoint and limits: docs/WINDOWS_CONTACT_TIMING_2026_10_23.md and docs/evidence/windows-contact-timing-2026-10-23/report.json. Exact owner car/track/object and acoustic attribution remain; no owner-process control/capture, microphone, phone/tablet test, APK, live mutation or deployment. Concurrent work preserved.
++
+ 2026-10-23 FBR01-FBR04/R01/G01/Q01: Find & play is now a dedicated racing browser with Discover/Friends/Joined, scenic route cards, explicit search/collapsible filters and a focused race hero. Create/Created/share/rematch/cancel management stays outside finding; explicit Created and result flows retain their actions. Race details and Standings separate target information from the complete table while Race remains pinned. Account/folder/filter-fenced draft search/focus, gallery position and detail-tab restoration survive replies; Refresh reads the catalogue. Browser92headless/110Compatibility/110desktopMobile, gates76/88/79, entry87, integrated216, series30 and parser1028 pass. Native before/after, filters, empty/error/guest/long-name/owner views, corrections, commands and scoped checkpoint: docs/evidence/challenge-racing-browser-2026-10-23/report.json. Owner appearance/touch acceptance remains. No phone attachment check/device test, APK, live account/backend mutation, social send or deployment. Concurrent work preserved.
+ 
+ 2026-10-23 KST01-KST03/R01/Q01: Retain recorded cobblestone kerb clatter and restore a subtle recorded body thud underneath, six pulses/second at native pitch with small level variations. Layer RMS0.38 of clatter; matched decoded loudness-18.48LUFS versus previous-18.49. Native89/loops208, continuity42 and12-capture review pass; repeat60audio hashes exact, all58other WAV/Ogg files preserved. Initial actual-Game fixture ran before asynchronous preparation; corrected readiness wait retains crossing assertions. Commands, applied preview, provenance and scoped checkpoint: docs/KERB_SUBTLE_THUD_2026_10_23.md. PC restart and owner listening acceptance remain. No phone/tablet attachment check/device test, APK/export/install, live mutation or deployment by this task; concurrent work preserved.
+diff --git a/game/tests/probe_kerb_contact_output.gd b/game/tests/probe_kerb_contact_output.gd
+new file mode 100644
+--- /dev/null
++++ b/game/tests/probe_kerb_contact_output.gd
+@@ -0,0 +1,142 @@
++extends "res://tests/test_grass_kerb_audio.gd"
++## Actual Game wheel contacts and rendering; isolate the entry and rolling paths.
++var capture_output: String = "res://../build/windows-contact-timing-2026-10-23/kerbs"
++var game: Node
++var timing_row: Dictionary = {}
++
++class NeutralInput extends DriverInput:
++	func sample() -> DriveFrame: return DriveFrame.new()
++
++class ContactAudio extends VehicleAudio:
++	var isolation: String = "bump"
++	var observing: bool = false
++	var in_contact_callback: bool = false
++	var request_us: int = 0
++	var callback_tick: int = -1
++	var request_tick: int = -1
++	var route: String = "none"
++	func resolved_contact(state: VehicleState, track: NativeTrack, incoming: Vector2, previous_position: Vector2 = Vector2.INF, previous_heading: float = INF) -> void:
++		in_contact_callback = true
++		callback_tick = state.tick
++		super.resolved_contact(state,track,incoming,previous_position,previous_heading)
++		in_contact_callback = false
++	func _event(clip: String, amplitude: float, pitch: float = 1.0, debris: bool = false) -> void:
++		# Exclude unrelated gear/landing cues, and measure the entry separately.
++		if not observing or not in_contact_callback or isolation!="bump" or clip!="chassis": return
++		if request_us==0:
++			request_us = int(Time.get_unix_time_from_system()*1000000.0)
++			request_tick = callback_tick
++		var before: int = int(windows_impacts.stats().get("submitted",0))
++		super._event(clip,amplitude,pitch,debris)
++		route = "windows_raw" if int(windows_impacts.stats().get("submitted",0))>before else "godot"
++	func _layer(key: String, desired: float, pitch: float, delta: float, immediate_silence: bool) -> void:
++		var keep: bool = key=="kerb_roll" and isolation=="roll"
++		if keep and observing and in_contact_callback and desired>0.0 and request_us==0:
++			request_us = int(Time.get_unix_time_from_system()*1000000.0)
++			request_tick = callback_tick
++			route = "windows_mix" if bool(GameSoundtrack.instance().windows_output.stats().get("ready",false)) else "godot"
++		super._layer(key,desired if keep else 0.0,pitch,delta,immediate_silence or not keep)
++
++func _record_render() -> void:
++	if game==null or timing_row.is_empty() or int(timing_row.render_contact_us)>0: return
++	for wheel: Node3D in game.car.rolling_wheels:
++		var point: Vector3 = wheel.global_position
++		if game.native_track.kerbs.height_at(Vector2(point.x,-point.z))>.004:
++			timing_row.render_contact_us = int(Time.get_unix_time_from_system()*1000000.0)
++			timing_row.render_contact_tick = game.sim.state.tick
++			return
++
++func run() -> void:
++	for argument: String in OS.get_cmdline_user_args():
++		if argument.begins_with("--output-dir="): capture_output = argument.trim_prefix("--output-dir=")
++	DirAccess.make_dir_recursive_absolute(ProjectSettings.globalize_path(capture_output))
++	game = load("res://core/game.tscn").instantiate()
++	game.vehicle_id = "compact"
++	game.initial_track = make_track(true)
++	game.production_mode = false
++	game.set_physics_process(false)
++	root.add_child(game)
++	var deadline: int = Time.get_ticks_msec()+30000
++	while not game.preparation_complete and Time.get_ticks_msec()<deadline:
++		await process_frame
++	assert(game.preparation_complete,"The actual Game must finish preparing before kerb timing begins.")
++	game.set_physics_process(false)
++	game.countdown_ticks = 0
++	game.driver = NeutralInput.new()
++	game.vehicle_audio.free()
++	var audio := ContactAudio.new()
++	game.vehicle_audio = audio
++	game.add_child(audio)
++	audio.configure(game.vehicle_id,game.handling,game.car)
++	# Nature and engine sounds cannot contaminate the contact onset measurement.
++	var muted_bus: int = AudioServer.bus_count
++	AudioServer.add_bus()
++	AudioServer.set_bus_name(muted_bus,"ContactTimingMuted")
++	AudioServer.set_bus_mute(muted_bus,true)
++	for player: AudioStreamPlayer in game.find_children("*","AudioStreamPlayer",true,false):
++		if not audio.is_ancestor_of(player): player.bus = "ContactTimingMuted"
++	for label: String in ["Engine","Tires","Music","Interface"]:
++		AudioServer.set_bus_mute(AudioServer.get_bus_index(label),true)
++	RenderingServer.frame_post_draw.connect(_record_render)
++	var file := FileAccess.open(capture_output.path_join("ready.json"),FileAccess.WRITE)
++	file.store_string(JSON.stringify({"pid":OS.get_process_id(),"driver":AudioServer.get_driver_name(),"device":AudioServer.output_device,"rate":AudioServer.get_mix_rate()}))
++	file.close()
++	deadline = Time.get_ticks_msec()+15000
++	while not FileAccess.file_exists(capture_output.path_join("armed")):
++		await process_frame
++		assert(Time.get_ticks_msec()<deadline,"Capture must arm before the isolated trials.")
++	var rows: Array[Dictionary] = []
++	for isolation: String in ["bump","roll"]:
++		for speed: float in [5.0,15.0,30.0]:
++			timing_row = {}
++			audio.observing = false
++			audio.isolation = isolation
++			var start := Vector2(0,-3.0)
++			game.sim.reset(start,0.0)
++			game.sim.state.velocity = Vector2(0,speed)
++			game.previous_position = start
++			game.previous_heading = 0.0
++			audio.reset()
++			audio.request_us = 0
++			audio.request_tick = -1
++			audio.route = "none"
++			await create_timer(.65).timeout
++			timing_row = {"trial":rows.size(),"clip":"kerb_entry" if isolation=="bump" else "kerb_roll","speed_mps":speed,"unix_us":0,"contact_us":0,"contact_tick":-1,"render_contact_us":0,"render_contact_tick":-1}
++			audio.observing = true
++			for tick: int in range(400):
++				await physics_frame
++				var before_us: int = int(Time.get_unix_time_from_system()*1000000.0)
++				game._physics_process(VehicleSimulation.STEP)
++				if audio.surface_model.kerb>0.0 and int(timing_row.contact_us)==0:
++					timing_row.contact_us = before_us
++					timing_row.contact_tick = game.sim.state.tick
++				if int(timing_row.render_contact_us)>0 and audio.request_us>0: break
++			assert(int(timing_row.contact_us)>0 and audio.request_us>0,"Wheel contact must request its isolated sound in the same callback.")
++			timing_row.unix_us = audio.request_us
++			timing_row.route = audio.route
++			timing_row.request_tick = audio.request_tick
++			timing_row.native = audio.windows_impacts.stats()
++			timing_row.next_mix_ms = AudioServer.get_time_to_next_mix()*1000.0
++			timing_row.reported_latency_ms = AudioServer.get_output_latency()*1000.0
++			timing_row.kerb_count = audio.kerb_count
++			await create_timer(.45).timeout
++			assert(int(timing_row.render_contact_us)>0,"Normal rendering must show wheel contact.")
++			assert(int(timing_row.request_tick)==int(timing_row.contact_tick),"Contact dispatch cannot wait for another physics tick.")
++			assert(game.sim.state.collision_count==0,"Kerb feedback must remain separate from wall collisions.")
++			rows.append(timing_row.duplicate(true))
++			print("KERB_CONTACT_TRIAL: ",JSON.stringify(timing_row))
++			audio.observing = false
++	timing_row = {}
++	RenderingServer.frame_post_draw.disconnect(_record_render)
++	file = FileAccess.open(capture_output.path_join("events.json"),FileAccess.WRITE)
++	file.store_string(JSON.stringify(rows,"\t"))
++	file.close()
++	file = FileAccess.open(capture_output.path_join("output-stats.json"),FileAccess.WRITE)
++	file.store_string(JSON.stringify(GameSoundtrack.instance().windows_output.stats(),"\t"))
++	file.close()
++	game.free()
++	game = null
++	AudioServer.remove_bus(muted_bus)
++	await create_timer(.2).timeout
++	print("KERB_CONTACT_OUTPUT: %d actual contact trials"%rows.size())
++	quit()
+diff --git a/scripts/probe_windows_contact_timing.ps1 b/scripts/probe_windows_contact_timing.ps1
+new file mode 100644
+--- /dev/null
++++ b/scripts/probe_windows_contact_timing.ps1
+@@ -0,0 +1,43 @@
++param(
++    [ValidateSet('direct','events','surfaces','kerbs')][string]$Kind = 'direct',
++    [Parameter(Mandatory=$true)][string]$Label
++)
++$ErrorActionPreference = 'Stop'
++$repoRoot = Split-Path -Parent $PSScriptRoot
++if ($Label -notmatch '^[a-zA-Z0-9_-]+$') { throw 'Use a simple capture label.' }
++$captureRoot = Join-Path $repoRoot ('build/windows-contact-timing-2026-10-23/' + $Label + '/' + $Kind)
++if (Test-Path -LiteralPath $captureRoot) { throw ('Capture already exists: ' + $captureRoot) }
++New-Item -ItemType Directory -Path $captureRoot -Force | Out-Null
++$env:APPDATA = Join-Path $captureRoot 'native-user'
++New-Item -ItemType Directory -Path $env:APPDATA -Force | Out-Null
++$scripts = @{
++    direct = 'res://tests/probe_direct_collision_output.gd'
++    events = 'res://tests/probe_contact_audio_output.gd'
++    surfaces = 'res://tests/probe_surface_audio_output.gd'
++    kerbs = 'res://tests/probe_kerb_contact_output.gd'
++}
++$dev = Join-Path $repoRoot 'scripts/dev.ps1'
++$probe = Join-Path $repoRoot 'build/audio-output-2026-10-09/process-audio-probe.exe'
++$arguments = @('-NoProfile','-ExecutionPolicy','Bypass','-File',('"' + $dev + '"'),'-Action','TestScript','-ScriptPath',$scripts[$Kind],'-Graphical','-RenderingMethod','gl_compatibility','-TestArgument',('"--output-dir=' + $captureRoot.Replace('\','/') + '"'))
++$diagnostic = Start-Process -FilePath 'powershell.exe' -ArgumentList $arguments -WindowStyle Hidden -PassThru -RedirectStandardOutput (Join-Path $captureRoot 'engine.log') -RedirectStandardError (Join-Path $captureRoot 'engine-error.log')
++$null = $diagnostic.Handle
++$readyPath = Join-Path $captureRoot 'ready.json'
++$deadline = [DateTime]::UtcNow.AddSeconds(40)
++while (-not (Test-Path -LiteralPath $readyPath)) {
++    if ($diagnostic.HasExited -or [DateTime]::UtcNow -gt $deadline) { throw ('Diagnostic did not become ready: ' + $captureRoot) }
++    Start-Sleep -Milliseconds 100
++}
++$ready = Get-Content -LiteralPath $readyPath -Raw | ConvertFrom-Json
++& $probe $ready.pid $captureRoot 30
++if ($LASTEXITCODE -ne 0) { throw 'Own-process capture failed.' }
++if (-not $diagnostic.WaitForExit(10000)) { throw 'Diagnostic did not finish.' }
++$diagnostic.Refresh()
++if ($diagnostic.ExitCode -ne 0) { throw ('Diagnostic failed: ' + $captureRoot) }
++$reviewer = switch ($Kind) {
++    'direct' { 'review_direct_collision_output.py' }
++    'kerbs' { 'review_kerb_contact_output.py' }
++    default { 'review_windows_audio_output.py' }
++}
++& python (Join-Path $repoRoot ('scripts/' + $reviewer)) $captureRoot
++if ($LASTEXITCODE -ne 0) { throw 'Timing review failed.' }
++Write-Output ('CAPTURE_ROOT=' + $captureRoot)
+diff --git a/scripts/review_kerb_contact_output.py b/scripts/review_kerb_contact_output.py
+new file mode 100644
+--- /dev/null
++++ b/scripts/review_kerb_contact_output.py
+@@ -0,0 +1,60 @@
++"""Review actual wheel-contact dispatch, rendered contact and own-process output."""
++from pathlib import Path
++import json
++import statistics
++import subprocess
++import sys
++
++ROOT = Path(__file__).resolve().parents[1]
++OUT = Path(sys.argv[1]).resolve()
++subprocess.run(
++    [sys.executable, str(ROOT / "scripts/review_windows_audio_output.py"), str(OUT)],
++    check=True,
++    capture_output=True,
++)
++events = json.loads((OUT / "events.json").read_text())
++timings = json.loads((OUT / "timing-report.json").read_text())
++assert len(events) == len(timings["rows"]) == 6
++checks = 1
++rows = []
++for event, timing in zip(events, timings["rows"]):
++    assert event["trial"] == timing["trial"]
++    assert event["request_tick"] == event["contact_tick"]
++    assert event["unix_us"] >= event["contact_us"] > 0
++    assert event["render_contact_us"] > 0
++    assert event["kerb_count"] == 1
++    expected = "windows_raw" if event["clip"] == "kerb_entry" else "windows_mix"
++    assert event["route"] == expected
++    checks += 6
++    rows.append({
++        "trial": event["trial"],
++        "clip": event["clip"],
++        "speed_mps": event["speed_mps"],
++        "route": event["route"],
++        "contact_tick": event["contact_tick"],
++        "request_tick": event["request_tick"],
++        "render_contact_tick": event["render_contact_tick"],
++        "contact_to_request_ms": (event["unix_us"] - event["contact_us"]) / 1000,
++        "request_to_output_ms": timing["latency_ms"],
++        "contact_to_output_ms": (timing["output_unix_us"] - event["contact_us"]) / 1000,
++        "render_contact_to_output_ms": (timing["output_unix_us"] - event["render_contact_us"]) / 1000,
++    })
++by_clip = {}
++for clip in ("kerb_entry", "kerb_roll"):
++    selected = [row for row in rows if row["clip"] == clip]
++    assert sorted(row["speed_mps"] for row in selected) == [5.0, 15.0, 30.0]
++    checks += 1
++    by_clip[clip] = {
++        "trials": len(selected),
++        "median_request_to_output_ms": statistics.median(row["request_to_output_ms"] for row in selected),
++        "median_render_contact_to_output_ms": statistics.median(row["render_contact_to_output_ms"] for row in selected),
++    }
++report = {
++    "checks": checks,
++    "failures": 0,
++    "rows": rows,
++    "by_clip": by_clip,
++    "limits": "Own-process output; rendered contact is the actual wheel-centre projection at frame_post_draw, not tyre-surface contact, monitor scanout or acoustic output. Entry and rolling are isolated diagnostic controls, using the same production contact and playback methods.",
++}
++(OUT / "kerb-review.json").write_text(json.dumps(report, indent=2) + "\n", encoding="utf-8")
++print(json.dumps(report, indent=2))
+diff --git a/docs/WINDOWS_CONTACT_TIMING_2026_10_23.md b/docs/WINDOWS_CONTACT_TIMING_2026_10_23.md
+new file mode 100644
+--- /dev/null
++++ b/docs/WINDOWS_CONTACT_TIMING_2026_10_23.md
+@@ -0,0 +1,110 @@
++# Persistent Windows contact-sound timing — 2026-10-23
++
++WCT01-WCT03/R01/Q01 investigate the owner's confirmation that collision and kerb
++sounds have always felt delayed on Windows, through speakers as well as Bluetooth,
++and persist after restarting. **The reported problem remains unresolved.** Neither
++Bluetooth nor a stale running process is established as its explanation. This task
++adds reproducible diagnostics; it does not claim a runtime fix or a before/after
++improvement.
++
++The earlier 54-check inspection established immediate dispatch and measured gain
++changes in the continuous output. It did not establish perceptual synchronization
++in the owner's actual driving case. The new diagnostics run the actual Game with
++normal rendering and real fixed-rate callbacks, after asynchronous preparation is
++complete. They use neutral input, local synthetic geometry, isolated application
++data and capture only their own process tree. No owner game is controlled or
++recorded, and no microphone or unrelated application is captured.
++
++## Actual measurements
++
++All times below are milliseconds from the request to **software process output**,
++without subtracting a capture offset. They exclude acoustic speaker/headphone
++timing. A completed rendered frame is not monitor scanout.
++
++| Contact / selected path | 5 m/s | 15 m/s | 30 m/s |
++| --- | ---: | ---: | ---: |
++| Normal wall hit / Windows RAW event | 41.48 | 36.48 | 42.48 |
++| Kerb entry thud / Windows RAW event | 35.38 | 38.26 | 34.22 |
++| Kerb rolling / Windows mixed output | 52.82 | 52.53 | 58.76 |
++
++The normal wall request and rendered footprint first touch share ticks 74/25/13.
++Rendered-footprint-to-output timing is 33.48/27.48/34.48 ms. The physical circle
++responds later on ticks 88/29/15. A diagnostic control disabling the early outline
++still requests the sound on the physical-response tick exactly; its rendered
++footprint-to-output timing is 149.48/62.48/49.48 ms. This control demonstrates a
++possible geometry gap; it does **not** establish that the owner's game misses the
++outline check.
++
++For all six kerb trials, first qualifying wheel contact and playback request share
++ticks 46/16/8. Time from the beginning of that physics callback to the request is
++0–1 ms. Exactly one entry is registered in each trial, and there is no wall
++collision. The entry and rolling paths are isolated from one another and from
++engine, gear, music and nature sounds, using the same production contact and
++playback methods. The car keeps rendering and stepping until its actual rendered
++wheel centre reaches the raised surface. Wheel-centre-to-output timing is
++18.22–30.26 ms for entry and 35.82–44.53 ms for rolling. This is not exact contact
++between the tyre's curved 3D surface and the kerb.
++
++The current source crash WAVs cross amplitude .01 at frame zero; chassis crosses
++it at 0.091 ms. The preceding inspection retained those source hashes and first
++10 ms RMS measurements under
++`build/windows-contact-followup-2026-10-23/report.json`. Source onset does not
++establish acoustic latency or exclude masking in the complete driving mix.
++
++## Reproduction and changes
++
++Use the pinned `4.7.2.stable.official.ed1daf0bf` through the normal entry point:
++
++```powershell
++powershell -NoProfile -ExecutionPolicy Bypass -File scripts/probe_windows_contact_timing.ps1 -Kind direct -Label baseline-r2
++powershell -NoProfile -ExecutionPolicy Bypass -File scripts/probe_windows_contact_timing.ps1 -Kind kerbs -Label baseline-r2
++python scripts/review_direct_collision_output.py build/windows-contact-timing-2026-10-23/baseline-r2/direct
++python scripts/review_kerb_contact_output.py build/windows-contact-timing-2026-10-23/baseline-r2/kerbs
++```
++
++Labels must be new; the launcher refuses to overwrite a capture. It starts a
++separate hidden helper, waits for the diagnostic's own PID, records that process
++tree for 30 seconds and reviews valid packet timestamps. `-Kind events` and
++`-Kind surfaces` expose the existing isolated event/gain-change probes through the
++same launcher. Actual task receipts and hashes are in
++[the evidence report](evidence/windows-contact-timing-2026-10-23/report.json).
++
++- `probe_direct_collision_output.gd` now accepts a capture directory and waits
++  for real preparation, then disables automatic physics again after installation
++  restores processing. Its existing one-cue and canonical-tick assertions remain.
++- `probe_kerb_contact_output.gd` observes the real Game callback, isolates the
++  entry and rolling paths, and timestamps the actual rendered wheel centres.
++- The two reviewers accept explicit output directories and retain dispatch,
++  route, single-entry and source/render/output timing checks. Direct review
++  passes **30** checks; kerb review passes **39** checks. The kerb script check
++  and both Python compilations pass. Earlier surface/impact suites passed
++  **36/18** checks; they are not a reproduction of the owner's perceptual report.
++- Nine relevant gameplay/audio runtime sources and the selected extension
++  manifest remain byte-identical to task start. No native library, bank asset,
++  physics, camera, gain or output configuration was changed. The normal launcher
++  still refreshes its generated client build identity.
++
++Initial diagnostic failures are retained. The first wall run allowed installation
++to restore automatic physics, contaminating its supposedly manual trials; the
++final fixture reapplies its processing fence after readiness. The first kerb run
++froze physics on the first qualifying point, before the transformed rendered
++wheel reached the surface; the final fixture continues normal stepping and
++retains the first-contact/request tick assertion. No production timing change or
++weakened assertion is used to obtain the final results. Cold preparation/render
++hitch messages remain in the raw diagnostic logs.
++
++Upstream references consulted while inspecting output buffering:
++[Microsoft shared-stream initialization](https://learn.microsoft.com/en-us/windows/win32/api/audioclient/nf-audioclient-iaudioclient3-initializesharedaudiostream)
++and [Godot hard-limiter source](https://github.com/godotengine/godot/blob/master/servers/audio/effects/audio_effect_hard_limiter.cpp).
++Upstream source is background context, not proof of the pinned engine's exact
++acoustic timing or justification for changing its DSP.
++
++## Remaining investigation
++
++The exact owner car, track and collision object have been requested so that walls,
++tyres and other prop paths are not treated as interchangeable. No actual owner
++case or acoustic measurement has yet established why the persistent perceived
++delay remains. Different capture fixtures and mixer phases are not a before/after
++improvement. No verified runtime fix, zero-latency claim, Bluetooth attribution or
++restart-based resolution is claimed. No phone/tablet test, APK/export/install,
++account/backend mutation or deployment was performed. Concurrent work remains.
+diff --git a/docs/evidence/windows-contact-timing-2026-10-23/report.json b/docs/evidence/windows-contact-timing-2026-10-23/report.json
+new file mode 100644
+--- /dev/null
++++ b/docs/evidence/windows-contact-timing-2026-10-23/report.json
+@@ -0,0 +1,450 @@
++{
++  "date": "2026-10-23",
++  "timezone": "Europe/Helsinki",
++  "requirements": [
++    "WCT01",
++    "WCT02",
++    "WCT03",
++    "R01",
++    "Q01"
++  ],
++  "owner_report": "Windows collision and kerb sound delay persists on Bluetooth and speakers, across restarts, and has always been present.",
++  "status": "Investigation diagnostics delivered; owner-reported delay remains unresolved. No runtime fix or before/after improvement claimed.",
++  "changes": [
++    "game/tests/probe_direct_collision_output.gd",
++    "game/tests/probe_kerb_contact_output.gd",
++    "scripts/probe_windows_contact_timing.ps1",
++    "scripts/review_direct_collision_output.py",
++    "scripts/review_kerb_contact_output.py",
++    "docs/WINDOWS_CONTACT_TIMING_2026_10_23.md",
++    "AGENTS.md",
++    "DEVELOPMENT_STATUS.md",
++    "docs/PHASE_0_PLAN.md"
++  ],
++  "direct": {
++    "checks": 30,
++    "failures": 0,
++    "rows": [
++      {
++        "trial": 0,
++        "speed_mps": 5.0,
++        "canonical_only": false,
++        "route": "windows_raw",
++        "cue_tick": 74,
++        "render_contact_tick": 74,
++        "physical_tick": 88,
++        "cue_to_output_ms": 41.48325,
++        "render_contact_to_output_ms": 33.48325,
++        "physical_contact_to_output_ms": -75.51675
++      },
++      {
++        "trial": 1,
++        "speed_mps": 15.0,
++        "canonical_only": false,
++        "route": "windows_raw",
++        "cue_tick": 25,
++        "render_contact_tick": 25,
++        "physical_tick": 29,
++        "cue_to_output_ms": 36.48325,
++        "render_contact_to_output_ms": 27.48325,
++        "physical_contact_to_output_ms": 2.48325
++      },
++      {
++        "trial": 2,
++        "speed_mps": 30.0,
++        "canonical_only": false,
++        "route": "windows_raw",
++        "cue_tick": 13,
++        "render_contact_tick": 13,
++        "physical_tick": 15,
++        "cue_to_output_ms": 42.48325,
++        "render_contact_to_output_ms": 34.48325,
++        "physical_contact_to_output_ms": 27.48325
++      },
++      {
++        "trial": 3,
++        "speed_mps": 5.0,
++        "canonical_only": true,
++        "route": "windows_raw",
++        "cue_tick": 88,
++        "render_contact_tick": 74,
++        "physical_tick": 88,
++        "cue_to_output_ms": 40.48325,
++        "render_contact_to_output_ms": 149.48325,
++        "physical_contact_to_output_ms": 40.48325
++      },
++      {
++        "trial": 4,
++        "speed_mps": 15.0,
++        "canonical_only": true,
++        "route": "windows_raw",
++        "cue_tick": 29,
++        "render_contact_tick": 25,
++        "physical_tick": 29,
++        "cue_to_output_ms": 38.48325,
++        "render_contact_to_output_ms": 62.48325,
++        "physical_contact_to_output_ms": 38.48325
++      },
++      {
++        "trial": 5,
++        "speed_mps": 30.0,
++        "canonical_only": true,
++        "route": "windows_raw",
++        "cue_tick": 15,
++        "render_contact_tick": 13,
++        "physical_tick": 15,
++        "cue_to_output_ms": 40.48325,
++        "render_contact_to_output_ms": 49.48325,
++        "physical_contact_to_output_ms": 40.48325
++      }
++    ],
++    "limits": "Own-process software output and frame-post-draw footprint timestamps; excludes monitor scanout and acoustic speaker/headphone latency. canonical_only deliberately disables the early visible-footprint cue as a diagnostic control."
++  },
++  "kerbs": {
++    "checks": 39,
++    "failures": 0,
++    "rows": [
++      {
++        "trial": 0,
++        "clip": "kerb_entry",
++        "speed_mps": 5.0,
++        "route": "windows_raw",
++        "contact_tick": 46,
++        "request_tick": 46,
++        "render_contact_tick": 47,
++        "contact_to_request_ms": 1.0,
++        "request_to_output_ms": 35.38325,
++        "contact_to_output_ms": 36.38325,
++        "render_contact_to_output_ms": 20.38325
++      },
++      {
++        "trial": 1,
++        "clip": "kerb_entry",
++        "speed_mps": 15.0,
++        "route": "windows_raw",
++        "contact_tick": 16,
++        "request_tick": 16,
++        "render_contact_tick": 16,
++        "contact_to_request_ms": 0.0,
++        "request_to_output_ms": 38.25825,
++        "contact_to_output_ms": 38.25825,
++        "render_contact_to_output_ms": 30.25825
++      },
++      {
++        "trial": 2,
++        "clip": "kerb_entry",
++        "speed_mps": 30.0,
++        "route": "windows_raw",
++        "contact_tick": 8,
++        "request_tick": 8,
++        "render_contact_tick": 9,
++        "contact_to_request_ms": 0.0,
++        "request_to_output_ms": 34.21675,
++        "contact_to_output_ms": 34.21675,
++        "render_contact_to_output_ms": 18.21675
++      },
++      {
++        "trial": 3,
++        "clip": "kerb_roll",
++        "speed_mps": 5.0,
++        "route": "windows_mix",
++        "contact_tick": 46,
++        "request_tick": 46,
++        "render_contact_tick": 47,
++        "contact_to_request_ms": 0.0,
++        "request_to_output_ms": 52.82075,
++        "contact_to_output_ms": 52.82075,
++        "render_contact_to_output_ms": 35.82075
++      },
++      {
++        "trial": 4,
++        "clip": "kerb_roll",
++        "speed_mps": 15.0,
++        "route": "windows_mix",
++        "contact_tick": 16,
++        "request_tick": 16,
++        "render_contact_tick": 16,
++        "contact_to_request_ms": 1.0,
++        "request_to_output_ms": 52.52925,
++        "contact_to_output_ms": 53.52925,
++        "render_contact_to_output_ms": 44.52925
++      },
++      {
++        "trial": 5,
++        "clip": "kerb_roll",
++        "speed_mps": 30.0,
++        "route": "windows_mix",
++        "contact_tick": 8,
++        "request_tick": 8,
++        "render_contact_tick": 9,
++        "contact_to_request_ms": 0.0,
++        "request_to_output_ms": 58.75825,
++        "contact_to_output_ms": 58.75825,
++        "render_contact_to_output_ms": 42.75825
++      }
++    ],
++    "by_clip": {
++      "kerb_entry": {
++        "trials": 3,
++        "median_request_to_output_ms": 35.38325,
++        "median_render_contact_to_output_ms": 20.38325
++      },
++      "kerb_roll": {
++        "trials": 3,
++        "median_request_to_output_ms": 52.82075,
++        "median_render_contact_to_output_ms": 42.75825
++      }
++    },
++    "limits": "Own-process output; rendered contact is the actual wheel-centre projection at frame_post_draw, not tyre-surface contact, monitor scanout or acoustic output. Entry and rolling are isolated diagnostic controls, using the same production contact and playback methods."
++  },
++  "other_actual_checks": [
++    {
++      "name": "Pinned-engine kerb script check",
++      "exit_code": 0
++    },
++    {
++      "name": "Python compilation of both reviewers",
++      "exit_code": 0
++    },
++    {
++      "name": "PowerShell launcher AST parse",
++      "errors": 0
++    },
++    {
++      "name": "Scoped tracked whitespace check",
++      "exit_code": 0
++    },
++    {
++      "name": "Earlier surface response suite",
++      "checks": 36,
++      "failures": 0
++    },
++    {
++      "name": "Earlier Windows impact suite",
++      "checks": 18,
++      "failures": 0
++    }
++  ],
++  "runtime_unchanged": [
++    {
++      "path": "native/windows_audio/impact.cpp",
++      "same_as_task_start": true,
++      "sha256": "1fda4e4bd9f643d97701bb6f49136e621a14bce2d251aafa9854243701384273"
++    },
++    {
++      "path": "native/windows_audio/mix_output.h",
++      "same_as_task_start": true,
++      "sha256": "f73fc23c653fba7721de40ed679cf8f3f852c36cc0525685ec96488de78bad03"
++    },
++    {
++      "path": "game/platform/windows/impact.gdextension",
++      "same_as_task_start": true,
++      "sha256": "185923b6a5759e7c3cc341154923011cebe7d58069349110b78f689bc9ce42cd"
++    },
++    {
++      "path": "game/platform/windows_audio_output.gd",
++      "same_as_task_start": true,
++      "sha256": "46dce775e4674914a66f9b0505cfadc8d22906607732ba04c786298e7674d8b4"
++    },
++    {
++      "path": "game/platform/windows_impact_audio.gd",
++      "same_as_task_start": true,
++      "sha256": "93e19edb773d9b0241e18503d90b313c4db63c95762aa38261839d2391f60c0f"
++    },
++    {
++      "path": "game/vehicle/vehicle_audio.gd",
++      "same_as_task_start": true,
++      "sha256": "80410ac4b6c07b6d7c37855349f9146818e2c50075d3b75523ff3eb2638b4531"
++    },
++    {
++      "path": "game/vehicle/visible_contact_audio.gd",
++      "same_as_task_start": true,
++      "sha256": "0285898e009152634084a6898fb38cd8137a0e1d80701c5cccb2f5c71c448c46"
++    },
++    {
++      "path": "game/vehicle/surface_audio_model.gd",
++      "same_as_task_start": true,
++      "sha256": "23fa562fad632123f96abc2800ba4998531d377f7c55aa6135024d86bd24869e"
++    },
++    {
++      "path": "game/core/game.gd",
++      "same_as_task_start": true,
++      "sha256": "f64eba8014a4eaf371b29b0aec89d29ad07305c94760871afcf6e740abb57537"
++    }
++  ],
++  "actual_commands": [
++    "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/probe_windows_contact_timing.ps1 -Kind direct -Label baseline-r1",
++    "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/probe_windows_contact_timing.ps1 -Kind direct -Label baseline-r2",
++    "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/probe_windows_contact_timing.ps1 -Kind kerbs -Label baseline-r1",
++    "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/probe_windows_contact_timing.ps1 -Kind kerbs -Label baseline-r2",
++    "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1 -Action CheckScript -ScriptPath res://tests/probe_kerb_contact_output.gd",
++    "python scripts/review_kerb_contact_output.py build/windows-contact-timing-2026-10-23/baseline-r2/kerbs",
++    "python -m py_compile scripts/review_direct_collision_output.py scripts/review_kerb_contact_output.py",
++    "git diff --check -- game/tests/probe_direct_collision_output.gd scripts/review_direct_collision_output.py AGENTS.md DEVELOPMENT_STATUS.md docs/PHASE_0_PLAN.md"
++  ],
++  "initial_failures": [
++    {
++      "capture": "baseline-r1/direct",
++      "outcome": "Rejected; automatic physics was restored by preparation and contaminated manual contact trials. Reapply the existing processing fence after the real readiness barrier; keep all original assertions."
++    },
++    {
++      "capture": "baseline-r1/kerbs",
++      "outcome": "Rejected; physics frozen at first contact did not let the transformed rendered wheel reach the surface. Continue normal stepping until rendered wheel contact while retaining the first request tick and same-tick assertion."
++    }
++  ],
++  "limits": [
++    "Software process-loopback; no acoustic latency or monitor scanout measurement.",
++    "Synthetic local wall and kerb geometry; exact owner car/track/object still requested.",
++    "Early-outline-disabled wall cases are explicit diagnostic controls, not production behavior.",
++    "Entry and rolling kerb paths are isolated controls, not a full driving-mix listening test.",
++    "Cold preparation/render hitch messages retained.",
++    "No unsupported conclusion that Bluetooth, stale processes or restart explain the persistent report.",
++    "The normal launcher refreshes the generated client build identity; gameplay/audio sources and selected native manifest remain exact."
++  ],
++  "owner_process_control_or_capture": false,
++  "microphone": false,
++  "other_application_audio": false,
++  "phone_or_tablet_test": false,
++  "apk_export_install": false,
++  "account_backend_mutation_or_deployment": false,
++  "checkpoint": "docs/evidence/windows-contact-timing-2026-10-23/checkpoint.json",
++  "artifacts": [
++    {
++      "path": "docs/evidence/windows-contact-timing-2026-10-23/captures/baseline-r1/direct/engine.log",
++      "sha256": "992e555d46efd5fdd3aff8a1944775a16797a79707ecfd400ebc6f246ebeea04"
++    },
++    {
++      "path": "docs/evidence/windows-contact-timing-2026-10-23/captures/baseline-r1/direct/engine-error.log",
++      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
++    },
++    {
++      "path": "docs/evidence/windows-contact-timing-2026-10-23/captures/baseline-r1/direct/ready.json",
++      "sha256": "a3c2adf8f8ac0cb8224b150552f329cecd66631eef20ad3ea89560e76b0571f5"
++    },
++    {
++      "path": "docs/evidence/windows-contact-timing-2026-10-23/captures/baseline-r1/direct/capture-meta.txt",
++      "sha256": "7fbae6a3c8413239c5fd81a107bd73830a3a4958bbf4149e528f084c220b1575"
++    },
++    {
++      "path": "build/windows-contact-timing-2026-10-23/baseline-r1/direct/loopback.pcm",
++      "sha256": "2719aa96ba8757c824ecae581fc23cabbe21d5062887b1f41d2734191fb064ef",
++      "bytes": 5752320
++    },
++    {
++      "path": "build/windows-contact-timing-2026-10-23/baseline-r1/direct/packets.csv",
++      "sha256": "66a4664e0d1f5950d7de91777a2e99ece34701966b8949ea0f26169086f7cfba",
++      "bytes": 210452
++    },
++    {
++      "path": "docs/evidence/windows-contact-timing-2026-10-23/captures/baseline-r2/direct/engine.log",
++      "sha256": "679e35f419027edf1bb005fb4e0a13573b08ecd15301c4a3344d56553c79d52a"
++    },
++    {
++      "path": "docs/evidence/windows-contact-timing-2026-10-23/captures/baseline-r2/direct/engine-error.log",
++      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
++    },
++    {
++      "path": "docs/evidence/windows-contact-timing-2026-10-23/captures/baseline-r2/direct/ready.json",
++      "sha256": "a02a8b1e695afcef46454b98f048b16a9a11e39bf394ea21c5a055fd1ea25f58"
++    },
++    {
++      "path": "docs/evidence/windows-contact-timing-2026-10-23/captures/baseline-r2/direct/events.json",
++      "sha256": "16fa51b41a24967719eda46c9e42c444ff381e24f32ad681b9d7ab0a9afc09e7"
++    },
++    {
++      "path": "docs/evidence/windows-contact-timing-2026-10-23/captures/baseline-r2/direct/timing-report.json",
++      "sha256": "35b584450ddd70e1965c555c251362397bb9893f9b0768688577648dda15a2c8"
++    },
++    {
++      "path": "docs/evidence/windows-contact-timing-2026-10-23/captures/baseline-r2/direct/direct-review.json",
++      "sha256": "4c7af6fa859a60c617fa9d402fa3c1eea27e3e7f7d979f5a1e8412c81025a048"
++    },
++    {
++      "path": "docs/evidence/windows-contact-timing-2026-10-23/captures/baseline-r2/direct/capture-meta.txt",
++      "sha256": "1eae46e9cfa4fc87d4acb8ea1a4f6fc276d1ea2cfc1de5dfd4383be378839153"
++    },
++    {
++      "path": "build/windows-contact-timing-2026-10-23/baseline-r2/direct/loopback.pcm",
++      "sha256": "c2419a81e5e683731b0de77f8001e471c09d32a0230b317ee42b90896fc4ed3c",
++      "bytes": 5748480
++    },
++    {
++      "path": "build/windows-contact-timing-2026-10-23/baseline-r2/direct/packets.csv",
++      "sha256": "410024803b1350bea96c56a3bfa7025e40baf5eb6ea41fc02f71136c50067a2f",
++      "bytes": 210310
++    },
++    {
++      "path": "docs/evidence/windows-contact-timing-2026-10-23/captures/baseline-r1/kerbs/engine.log",
++      "sha256": "eccde06707baf1ec6180f237d64292a4191de57cd62e30ee99ee205451baf98f"
++    },
++    {
++      "path": "docs/evidence/windows-contact-timing-2026-10-23/captures/baseline-r1/kerbs/engine-error.log",
++      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
++    },
++    {
++      "path": "docs/evidence/windows-contact-timing-2026-10-23/captures/baseline-r1/kerbs/ready.json",
++      "sha256": "2e914196d6f5fb6f9e2eca15ca49187e41181965bb6cef340052a3ec42a7456e"
++    },
++    {
++      "path": "docs/evidence/windows-contact-timing-2026-10-23/captures/baseline-r1/kerbs/capture-meta.txt",
++      "sha256": "63226b0adc6d1ab056cae1c54e2c6e14936c9e913956a1fdf382eaa599d2cdde"
++    },
++    {
++      "path": "build/windows-contact-timing-2026-10-23/baseline-r1/kerbs/loopback.pcm",
++      "sha256": "1f8f2841d8ec6f922db062b97b7cc9387139c5dd6ac6a045e1368433fed29f2f",
++      "bytes": 5723520
++    },
++    {
++      "path": "build/windows-contact-timing-2026-10-23/baseline-r1/kerbs/packets.csv",
++      "sha256": "41adb02f8b060b2044d801b04892719f6fa99e7feeb0b6cb83dd240187e0517d",
++      "bytes": 209387
++    },
++    {
++      "path": "docs/evidence/windows-contact-timing-2026-10-23/captures/baseline-r2/kerbs/engine.log",
++      "sha256": "2c4d4f5dd6615ebc19ec5ec8eb68dbafc4c1d87bffa46d78529f6fcf759020ca"
++    },
++    {
++      "path": "docs/evidence/windows-contact-timing-2026-10-23/captures/baseline-r2/kerbs/engine-error.log",
++      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
++    },
++    {
++      "path": "docs/evidence/windows-contact-timing-2026-10-23/captures/baseline-r2/kerbs/ready.json",
++      "sha256": "f6327987c9e593538849c9ff957503f1e7b91f5077e9701a5967821ce2014ad9"
++    },
++    {
++      "path": "docs/evidence/windows-contact-timing-2026-10-23/captures/baseline-r2/kerbs/events.json",
++      "sha256": "2d16cd5c9cf1a82fc375712370d39fb830de07361e02faa2ad279ee632206a7b"
++    },
++    {
++      "path": "docs/evidence/windows-contact-timing-2026-10-23/captures/baseline-r2/kerbs/timing-report.json",
++      "sha256": "d90cef3f9f36a618a6a1385ff4f268541cc21a1de13d881902c2307acd0d3559"
++    },
++    {
++      "path": "docs/evidence/windows-contact-timing-2026-10-23/captures/baseline-r2/kerbs/kerb-review.json",
++      "sha256": "0c0f563f606b10f955ece39215c0b9890bcf32b9b7003da65b9903191ff2fb6a"
++    },
++    {
++      "path": "docs/evidence/windows-contact-timing-2026-10-23/captures/baseline-r2/kerbs/output-stats.json",
++      "sha256": "8eeb5dba927b451c6f6d92eda018b9f23a6519be31cd6da19cc6d184e0528c14"
++    },
++    {
++      "path": "docs/evidence/windows-contact-timing-2026-10-23/captures/baseline-r2/kerbs/capture-meta.txt",
++      "sha256": "a12a59bc5e3471998af0569cb4c3c7e2468e6361a9a322ddbcf5c5f248af775b"
++    },
++    {
++      "path": "build/windows-contact-timing-2026-10-23/baseline-r2/kerbs/loopback.pcm",
++      "sha256": "661fc997f5bc2ba63d29870f7c3ef9683271664a075cbb45d63fac3d0770ef06",
++      "bytes": 5748480
++    },
++    {
++      "path": "build/windows-contact-timing-2026-10-23/baseline-r2/kerbs/packets.csv",
++      "sha256": "ac746a506e06737e6c402883d83d432c7a6184ab48235d4b128749e13517b2c0",
++      "bytes": 210310
++    }
++  ],
++  "remaining": [
++    "Owner car/track/object case.",
++    "Attribution of the persistent perceived delay and a validated runtime correction.",
++    "Owner listening acceptance; no resolution is claimed."
++  ]
++}
+diff --git a/docs/evidence/windows-contact-timing-2026-10-23/runtime-unchanged.json b/docs/evidence/windows-contact-timing-2026-10-23/runtime-unchanged.json
+new file mode 100644
+--- /dev/null
++++ b/docs/evidence/windows-contact-timing-2026-10-23/runtime-unchanged.json
+@@ -0,0 +1,47 @@
++[
++  {
++    "path": "native/windows_audio/impact.cpp",
++    "same_as_task_start": true,
++    "sha256": "1fda4e4bd9f643d97701bb6f49136e621a14bce2d251aafa9854243701384273"
++  },
++  {
++    "path": "native/windows_audio/mix_output.h",
++    "same_as_task_start": true,
++    "sha256": "f73fc23c653fba7721de40ed679cf8f3f852c36cc0525685ec96488de78bad03"
++  },
++  {
++    "path": "game/platform/windows/impact.gdextension",
++    "same_as_task_start": true,
++    "sha256": "185923b6a5759e7c3cc341154923011cebe7d58069349110b78f689bc9ce42cd"
++  },
++  {
++    "path": "game/platform/windows_audio_output.gd",
++    "same_as_task_start": true,
++    "sha256": "46dce775e4674914a66f9b0505cfadc8d22906607732ba04c786298e7674d8b4"
++  },
++  {
++    "path": "game/platform/windows_impact_audio.gd",
++    "same_as_task_start": true,
++    "sha256": "93e19edb773d9b0241e18503d90b313c4db63c95762aa38261839d2391f60c0f"
++  },
++  {
++    "path": "game/vehicle/vehicle_audio.gd",
++    "same_as_task_start": true,
++    "sha256": "80410ac4b6c07b6d7c37855349f9146818e2c50075d3b75523ff3eb2638b4531"
++  },
++  {
++    "path": "game/vehicle/visible_contact_audio.gd",
++    "same_as_task_start": true,
++    "sha256": "0285898e009152634084a6898fb38cd8137a0e1d80701c5cccb2f5c71c448c46"
++  },
++  {
++    "path": "game/vehicle/surface_audio_model.gd",
++    "same_as_task_start": true,
++    "sha256": "23fa562fad632123f96abc2800ba4998531d377f7c55aa6135024d86bd24869e"
++  },
++  {
++    "path": "game/core/game.gd",
++    "same_as_task_start": true,
++    "sha256": "f64eba8014a4eaf371b29b0aec89d29ad07305c94760871afcf6e740abb57537"
++  }
++]
+diff --git a/docs/evidence/windows-contact-timing-2026-10-23/make_checkpoint.py b/docs/evidence/windows-contact-timing-2026-10-23/make_checkpoint.py
+new file mode 100644
+--- /dev/null
++++ b/docs/evidence/windows-contact-timing-2026-10-23/make_checkpoint.py
+@@ -0,0 +1,64 @@
++"""Create a task-only text patch without changing the shared Git index."""
++from pathlib import Path
++import difflib
++import hashlib
++import json
++import subprocess
++
++ROOT = Path(__file__).resolve().parents[3]
++OUT = Path(__file__).resolve().parent
++modified = {
++    "game/tests/probe_direct_collision_output.gd": (OUT / "before/game/tests/probe_direct_collision_output.gd").read_bytes(),
++}
++reviewer = "scripts/review_direct_collision_output.py"
++modified[reviewer] = subprocess.run(
++    ["git", "show", "HEAD:" + reviewer], cwd=ROOT, capture_output=True, check=True
++).stdout
++for relative in ["AGENTS.md", "DEVELOPMENT_STATUS.md", "docs/PHASE_0_PLAN.md"]:
++    modified[relative] = (OUT / "doc-base" / relative).read_bytes()
++new = [
++    "game/tests/probe_kerb_contact_output.gd",
++    "scripts/probe_windows_contact_timing.ps1",
++    "scripts/review_kerb_contact_output.py",
++    "docs/WINDOWS_CONTACT_TIMING_2026_10_23.md",
++    "docs/evidence/windows-contact-timing-2026-10-23/report.json",
++    "docs/evidence/windows-contact-timing-2026-10-23/runtime-unchanged.json",
++    "docs/evidence/windows-contact-timing-2026-10-23/make_checkpoint.py",
++]
++patch = []
++files = []
++for relative, before in [*modified.items(), *((relative, b"") for relative in new)]:
++    after = (ROOT / relative).read_bytes()
++    before_text = before.decode("utf-8").replace("\r\n", "\n")
++    after_text = after.decode("utf-8").replace("\r\n", "\n")
++    if before_text == after_text:
++        continue
++    if relative in new:
++        assert not any(line.rstrip(" \t") != line for line in after_text.splitlines()), relative
++    patch.append(f"diff --git a/{relative} b/{relative}\n")
++    if relative in new:
++        patch.append("new file mode 100644\n")
++    patch.extend(difflib.unified_diff(
++        before_text.splitlines(keepends=True), after_text.splitlines(keepends=True),
++        fromfile="/dev/null" if relative in new else "a/" + relative,
++        tofile="b/" + relative,
++    ))
++    files.append({"path": relative, "sha256": hashlib.sha256(after).hexdigest()})
++target = OUT / "scoped-change.patch"
++target.write_text("".join(patch), encoding="utf-8", newline="\n")
++result = subprocess.run(
++    ["git", "-c", "core.safecrlf=false", "apply", "--check", "--reverse", str(target)],
++    cwd=ROOT, capture_output=True, text=True,
++)
++receipt = {
++    "command": "git -c core.safecrlf=false apply --check --reverse " + str(target.relative_to(ROOT)),
++    "exit_code": result.returncode,
++    "output": result.stdout + result.stderr,
++    "patch_sha256": hashlib.sha256(target.read_bytes()).hexdigest(),
++    "files": files,
++    "shared_index_modified": False,
++    "runtime_fix_claimed": False,
++}
++(OUT / "checkpoint.json").write_text(json.dumps(receipt, indent=2) + "\n", encoding="utf-8")
++print(json.dumps({"files": len(files), "reverse_check_exit_code": result.returncode, "output": receipt["output"]}, indent=2))
++raise SystemExit(result.returncode)

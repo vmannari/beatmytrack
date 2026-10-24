@@ -1,0 +1,85 @@
+{
+  "requirement_ids": [
+    "BSR2-F06",
+    "BSR2-F07",
+    "BSR2-F08"
+  ],
+  "implementation": {
+    "BSR2-F06": "Race receipt/day and network-day cleanup signal progress into maintenance.more; isolated backlogs immediately retain a draining turn.",
+    "BSR2-F07": "AnalysisPerson.last_day expiry index replaces recurring first-cohort sweeps. New projections advance the latest fact day, legacy NULLs upgrade once in bounded actor-fenced batches, due candidates recheck latest indexed day after acquiring ownership. First cohort and exact retention floor remain unchanged.",
+    "BSR2-F08": "Each identity class deletes at most1000 selected keys per transaction. Expired families lock before bounded token deletion and only empty families are removed, preventing unbounded rotation-history cascades. Busy expired families still reportmore. CLI drains up to100 batches by default, accepts1-1000 batches, and explicitly returnsmore/budget_exhausted."
+  },
+  "changed_files": [
+    "backend/bmt_backend/telemetry_processing.py",
+    "backend/bmt_backend/telemetry_erasure.py",
+    "backend/bmt_backend/maintenance.py",
+    "backend/bmt_backend/race_statistics.py",
+    "backend/bmt_backend/network_health.py",
+    "backend/bmt_backend/studio_platform_models.py",
+    "backend/bmt_backend/studio_analysis.py",
+    "backend/bmt_backend/track_models.py",
+    "backend/bmt_backend/migrations/versions/0056_bounded_retention.py",
+    "backend/tests/test_bounded_retention.py"
+  ],
+  "source_sha256": {
+    "backend/bmt_backend/telemetry_processing.py": "b3451bbb130e69a87c4538574f12fa3eddc8f40cfb128552cedd834ca9154021",
+    "backend/bmt_backend/telemetry_erasure.py": "d59fe7cfbc786a60044af2ea2384d52742a6d7dc2ea60c6b0524043cc839f1d3",
+    "backend/bmt_backend/maintenance.py": "26bb784fa24810a34a2af9d93adaa5b50d4572e1f91d09accd6926d50a008766",
+    "backend/bmt_backend/race_statistics.py": "d43b0b2bc6b2a005bb945a307b9ccd7eff9f40a8d31c380de6ef03119aa6b516",
+    "backend/bmt_backend/network_health.py": "0b60338224c91d15d6c78a9624c09a5a573c5136fad4d58f40ebfb4af4c6723f",
+    "backend/bmt_backend/studio_platform_models.py": "6fac6aedd526dff2efdd73d5a90856a2acf568e8a42c0cd6dac127cb116a9cea",
+    "backend/bmt_backend/studio_analysis.py": "86677df877efaf241a9ff2433615b0a6be5be1b91adbc17bd859fb232e20829e",
+    "backend/bmt_backend/track_models.py": "f77175763556f46b0aab36a1c0699b6b641d34e56a39276231c0ca9a83f3ad13",
+    "backend/bmt_backend/migrations/versions/0056_bounded_retention.py": "0924899271e90e0168c7fb153b92a415c5889be2d12a7ea69b1e98b9712613fd",
+    "backend/tests/test_bounded_retention.py": "af2953afdd3c444006facaeabb6a9f3146966718df02e1b4a9d576b9cfd233ed"
+  },
+  "validation": [
+    {
+      "command": ".tools/backend-secure-venv/Scripts/python.exe -m pytest backend/tests/test_bounded_retention.py -q -k 'not postgres'",
+      "result": "Initial10passed, then11passed after CLI test; finalfocused+legacymaintenance12passed before added migration test.",
+      "receipt": "focused-sqlite.txt"
+    },
+    {
+      "command": ".tools/backend-secure-venv/Scripts/python.exe -m pytest backend/tests/test_bounded_retention.py -q -k 'expiry_migration and not postgres'",
+      "result": "1passed,21deselected; populated0056 downgrade/upgrade preserves cohort and lazily initializes deadline.",
+      "receipt": "migration-sqlite.txt"
+    },
+    {
+      "command": ".tools/backend-secure-venv/Scripts/python.exe -m pytest backend/tests/test_bounded_retention.py backend/tests/test_maintenance.py backend/tests/test_telemetry_parallel.py backend/tests/test_studio_platform.py backend/tests/test_network_health.py backend/tests/test_race_statistics.py -q -k 'not postgres'",
+      "result": "98passed,1failed,21deselected. Failure in pre-existing overview/publications contract fixture; root replay against archived original HEAD reproduces identical KeyError; see root/original-overview-fixture.xml. Assertion retained."
+    },
+    {
+      "command": ".tools/backend-secure-venv/Scripts/python.exe -m ruff check <10 owned source/test paths>",
+      "result": "All checks passed."
+    },
+    {
+      "command": "git diff --check -- <10 owned source/test paths>",
+      "result": "Passed; only existing CRLF normalization notices."
+    },
+    {
+      "command": ".tools/backend-secure-venv/Scripts/python.exe docs/evidence/backend-scale-other-fixes-2026-10-23/retention/probe.py",
+      "result": "1000/10000/100000 retained active old-cohort people each require approximately100 SQLiteVM instructions, no expiry backlog; both existence probes use covering ix_analysis_person_expiry.",
+      "receipt": "probe.json"
+    },
+    {
+      "command": ".tools/backend-secure-venv/Scripts/python.exe -m bmt_backend.maintenance --help",
+      "result": "CLI exposes --identity-batches and bounded1000-row-per-class help."
+    },
+    {
+      "command": "Coordinated disposable PostgreSQL run: tests/test_bounded_retention.py -k postgres",
+      "result": "Root coordinates10 cases, including locked-family backlog, locked-actor retry, actual EXPLAIN for10000 current people and populated0056 migration. See root receipts for final result."
+    }
+  ],
+  "objective_review": [
+    "Split NULL/due existence checks so the optimizer can stop at each expiry-index prefix rather than combining a population bitmap.",
+    "Retained active people no longer trigger old-cohort maintenance. Legacy deadline work is one-time and bounded, without a historical migration rewrite.",
+    "Family lock order matches refresh: parent before token. Child deletion budget applies to all selected families together, not once per family. Empty-parent recheck makes the remaining cascade zero.",
+    "A single1000-row/hour CLI pass would under-drain a million-player workload; default finite100-transaction drain and explicit backlog/budget flags avoid that hidden ceiling."
+  ],
+  "remaining_acceptance": [
+    "Matching0056 schema/API/worker rollout and representative PostgreSQL migration duration/index/storage acceptance are required; no live changes performed.",
+    "LegacyNULL deadline backfill and identity cleanup service rate must be measured against actual retained population, session rotations and scheduled runtime; followmore/budget_exhausted with another budgeted job.",
+    "Synthetic local query-work and correctness checks do not certify millionDAU/500millionaccounts cloud capacity."
+  ],
+  "checkpoint": "task-only.patch excludes the concurrent Studio reporting endpoint changes; no shared-workspace commit, deployment or live account mutation."
+}

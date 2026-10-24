@@ -1,0 +1,213 @@
+--- a/game/core/app.gd
++++ b/game/core/app.gd
+@@ -1686,7 +1686,7 @@
+ 	dialog.initial_attempt_limit = attempt_limit
+ 	dialog.initial_configuration = configuration.duplicate(true)
+ 	if not ticket_id.is_empty():
+-		if finished.is_empty() and is_instance_valid(game) and game.get("track_session").finished:
++		if finished.is_empty() and is_instance_valid(game) and game.preparation_complete and game.get("track_session").finished:
+ 			finished = _challenge_finished_context(game.get("native_track"),game.get("track_session").race_time_seconds(),game.get("track_session").completed_laps,ticket_id,str(game.get("vehicle_id")))
+ 		dialog.result_context = finished.duplicate(true)
+ 		if not finished.is_empty():
+@@ -3542,9 +3542,7 @@
+ 	push_warning("Race preparation timed out at stage: " + race_loading.status_label.text)
+ 	# A partially constructed world is still disabled and has no race result.
+ 	if is_instance_valid(game) and game.process_mode == Node.PROCESS_MODE_DISABLED:
+-		remove_child(game)
+-		game.queue_free()
+-		game = null
++		_discard_preparing_game(game)
+ 	cloud_ticket = {}
+ 	cloud_starting = false
+ 	_close_race_loading(expected_id)
+@@ -3697,6 +3695,8 @@
+ 	root_ui.visible = false
+ 	game = GAME_SCENE.instantiate()
+ 	game.process_mode = Node.PROCESS_MODE_DISABLED
++	game.cooperative_preparation = true
++	game.preparation_current = _race_installation_current.bind(loading_id,original_scope,navigation_generation,starting_screen,selected_vehicle,starting_selection)
+ 	game.set_meta("soundtrack_rivalry", rivalry_racing)
+ 	game.set_meta("race_offline_only", offline_only)
+ 	game.set("initial_track", track)
+@@ -3715,6 +3715,12 @@
+ 	game.connect("retry_requested", _retry_race)
+ 	add_child(game)
+ 	var prepared_game: Node = game
++	while is_instance_valid(prepared_game) and game == prepared_game and not prepared_game.preparation_complete:
++		await get_tree().process_frame
++		if _race_preparation_changed(loading_id,original_scope,navigation_generation,starting_screen,selected_vehicle,starting_selection):
++			_discard_preparing_game(prepared_game)
++			return
++	if not is_instance_valid(prepared_game) or game != prepared_game: return
+ 	if rivalry_racing:
+ 		game.ghost_mode = "race" if not rivalry_recording.is_empty() else "off"
+ 		game.ghost_bests = {"race":rivalry_recording} if not rivalry_recording.is_empty() else {}
+@@ -3790,7 +3796,7 @@
+ 		cloud_starting = false
+ 		_close_race_loading(loading_id)
+ 		return
+-	if lifecycle.scope() != original_scope or navigation_generation != _navigation_generation:
++	if _race_preparation_changed(loading_id,original_scope,navigation_generation,starting_screen,selected_vehicle,starting_selection):
+ 		cloud_starting = false
+ 		_close_race_loading(loading_id)
+ 		_leave_race()
+@@ -3806,11 +3812,26 @@
+ 	game.set("night_preparation",night_preparation)
+ 	# This is the shared covered finish/bridge draw, not isolated bridge GPU time.
+ 	game.set("bridge_preparation_ms", preparation_ms)
++	game.preparation_current = Callable()
+ 	game.process_mode = Node.PROCESS_MODE_INHERIT
+ 	_telemetry_begin_attempt(track)
+ 	if race_ad_breaks != null and not returning_to_editor and not bool(game.get("attempt_practice")): race_ad_breaks.prepare()
+ 	cloud_starting = false
+ 	_close_race_loading(loading_id)
++
++
++func _race_installation_current(loading_id: int, scope: String, navigation: int, starting_screen: String, vehicle: String, selection: NativeTrack) -> bool:
++	return not is_queued_for_deletion() and _race_loading_matches(loading_id) and scope == lifecycle.scope() and navigation == _navigation_generation and starting_screen == screen and vehicle == VehicleCatalog.selected and selection == selected_track
++
++
++func _discard_preparing_game(prepared_game: Node) -> void:
++	if not is_instance_valid(prepared_game) or game != prepared_game or prepared_game.process_mode != Node.PROCESS_MODE_DISABLED: return
++	prepared_game.cancel_preparation()
++	remove_child(prepared_game)
++	prepared_game.queue_free()
++	game = null
++	cloud_ticket = {}
++	root_ui.visible = true
+ 
+ func _prepare_night_lighting(loading_id: int, prepared_game: Node) -> Dictionary:
+ 	var summary: Dictionary = {"drawn":false,"items":0,"contexts":0,"sets":0,"elapsed_ms":0.0,"truncated":0,"light_limit":false}
+@@ -3844,10 +3865,10 @@
+ 
+ func _leave_race() -> void:
+ 	if race_ad_breaks != null and race_ad_breaks.blocking: return
+-	if is_instance_valid(game) and not cloud_ticket.is_empty() and bool(game.get("track_session").finished):
++	if is_instance_valid(game) and game.preparation_complete and not cloud_ticket.is_empty() and bool(game.get("track_session").finished):
+ 		_results()
+ 		if not cloud_ticket.is_empty(): return
+-	if is_instance_valid(game) and not _telemetry_race_finished:
++	if is_instance_valid(game) and game.preparation_complete and not _telemetry_race_finished:
+ 		var complete: bool = bool(game.get("track_session").finished)
+ 		if client_quality != null: client_quality.finish_race("finished" if complete else "abandoned")
+ 		_telemetry_observe("race_finished" if complete else "race_abandoned",_telemetry_track_properties(game.get("native_track"),"finished" if complete else "exit"))
+@@ -3887,6 +3908,7 @@
+ 		pending_menu_notice = ""
+ 
+ func _results() -> void:
++	if not is_instance_valid(game) or not game.preparation_complete: return
+ 	var result_records: LocalRecords = game.get("preference_records")
+ 	var session: TrackSession = game.get("track_session")
+ 	var track: NativeTrack = game.get("native_track")
+@@ -4012,7 +4034,7 @@
+ func _try_race_ad(finished_game: int, panel: Control) -> void:
+ 	if race_ad_breaks == null: return
+ 	var at_break: Callable = func() -> bool:
+-		return _publishing_slots_foreground and is_instance_valid(game) and game.get_instance_id() == finished_game and bool(game.get("track_session").finished) and is_instance_valid(panel) and panel.is_visible_in_tree()
++		return _publishing_slots_foreground and is_instance_valid(game) and game.preparation_complete and game.get_instance_id() == finished_game and bool(game.get("track_session").finished) and is_instance_valid(panel) and panel.is_visible_in_tree()
+ 	await race_ad_breaks.show_if_due(at_break)
+ 
+ func _ad_blocking_changed(value: bool) -> void:
+@@ -4133,7 +4155,7 @@
+ 
+ func _retry_race(offline_only: bool = false) -> void:
+ 	if race_ad_breaks != null and race_ad_breaks.blocking: return
+-	if cloud_starting or not is_instance_valid(game): return
++	if cloud_starting or not is_instance_valid(game) or not game.preparation_complete: return
+ 	if product_telemetry != null: product_telemetry.set_transport_allowed(false)
+ 	if not cloud_ticket.is_empty() and bool(game.get("track_session").finished):
+ 		_results()
+@@ -4577,7 +4599,7 @@
+ 	await _start_race(track,true)
+ 
+ func _complete_draft_test() -> void:
+-	if not is_instance_valid(game) or test_document_snapshot.is_empty(): return
++	if not is_instance_valid(game) or not game.preparation_complete or test_document_snapshot.is_empty(): return
+ 	var witness: TrackSession = game.get("practice_validation")
+ 	if not witness.finished or not bool(game.get("practice_validation_eligible")): return
+ 	var storage: TrackLibrary = test_library_snapshot if test_library_snapshot != null else library
+--- a/game/track/native_track_visual.gd
++++ b/game/track/native_track_visual.gd
+@@ -48,6 +48,8 @@
+ var partition_static_meshes: bool = true
+ var uniform_terrain_regions: bool = true
+ var _menu_slices: bool = false
++var profile_build: bool = false
++var build_costs: Dictionary = {}
+ var build_current: Callable
+ 
+ func _build_is_current() -> bool:
+@@ -152,10 +154,13 @@
+ 	var visual_version: String = VERSION if partition_static_meshes and uniform_terrain_regions else VERSION+"/"+str(partition_static_meshes)+"/"+str(uniform_terrain_regions)
+ 	var world_key: Array = [track.content_hash,visual_version,ContactShading.VERSION,CreatorPropVisual.VERSION,theme_id,colors,partition_night_ground]
+ 	var reuse_world: bool = cache_race_world and not editor_preview
+-	if reuse_world and PREPARED_WORLDS.restore(world_key,self):
+-		race_road_packet = {}
+-		world_built = true
+-		return
++	if reuse_world:
++		var restored: bool = await PREPARED_WORLDS.restore_cooperative(world_key,self) if _menu_slices else PREPARED_WORLDS.restore(world_key,self)
++		if _menu_slices and not _build_is_current(): return
++		if restored:
++			race_road_packet = {}
++			world_built = true
++			return
+ 	var ground := ShaderMaterial.new()
+ 	ground.shader = preload("res://track/ground.gdshader")
+ 	ground.set_shader_parameter("surface_factors", SURFACE_FACTORS)
+@@ -185,14 +190,22 @@
+ 		await _build_low_cover(track)
+ 		await _build_placed_objects(track)
+ 	if _menu_slices and not _build_is_current(): return
++	var final_stage_started: int = Time.get_ticks_usec() if profile_build else 0
+ 	bridge.build(self)
++	if profile_build: build_costs.bridge_us = Time.get_ticks_usec()-final_stage_started
+ 	_build_finish(track)
++	final_stage_started = Time.get_ticks_usec() if profile_build else 0
+ 	_build_snow_banks(track)
++	if profile_build: build_costs.snow_us = Time.get_ticks_usec()-final_stage_started
+ 	if desert_relief != null: await desert_relief.apply(self,_menu_slices)
+-	_partition_bank_meshes()
+-	if reuse_world: PREPARED_WORLDS.remember(world_key,self,track)
++	if _menu_slices and not _build_is_current(): return
++	await _partition_bank_meshes()
++	if _menu_slices and not _build_is_current(): return
++	if reuse_world:
++		if _menu_slices: await PREPARED_WORLDS.remember_cooperative(world_key,self,track)
++		else: PREPARED_WORLDS.remember(world_key,self,track)
++	if _menu_slices and not _build_is_current(): return
+ 	world_built = true
+-
+ 
+ func _partition_bank_meshes() -> void:
+ 	if not partition_static_meshes or editor_preview: return
+@@ -202,6 +215,7 @@
+ 	var bytes: int = int(get_meta("spatial_mask_budget_bytes",0))
+ 	for child: Node in get_children(): bytes += PREPARED_WORLDS._resource_bytes(child,resources)
+ 	for child: Node in get_children():
++		if _menu_slices and not await _yield_build(): return
+ 		if not child is MeshInstance3D or child.has_meta("spatial_mesh_family"): continue
+ 		var material: ShaderMaterial = child.material_override as ShaderMaterial
+ 		var bank: bool = material != null and theme_id == "winter" and material.shader.code.contains("smooth_road_bank")
+@@ -210,8 +224,11 @@
+ 		var props: bool = static_material is BaseMaterial3D and static_material.vertex_color_use_as_albedo
+ 		props = props or child.name in ["LowCover","DesertLowCover"]
+ 		if not bank and not props: continue
+-		remove_child(child)
+-		var parts: Array[MeshInstance3D] = SpatialMeshChunks.add(self,child,true,false,true,maxi(0,PREPARED_WORLDS.MAX_BYTES-bytes))
++		# Keep partial chunk families owned by this visual across slice waits.
++		var split_started: int = Time.get_ticks_usec() if profile_build else 0
++		var parts: Array[MeshInstance3D] = await SpatialMeshChunks.add_cooperative(self,child,true,false,true,maxi(0,PREPARED_WORLDS.MAX_BYTES-bytes),_yield_build if _menu_slices else Callable())
++		if profile_build: build_costs.partition_child_wall_max_us = maxi(int(build_costs.get("partition_child_wall_max_us",0)),Time.get_ticks_usec()-split_started)
++		if _menu_slices and not _build_is_current(): return
+ 		if parts.size() <= 1: continue
+ 		for part: MeshInstance3D in parts:
+ 			bytes += 512+part.mesh.surface_get_array_len(0)*96+part.mesh.surface_get_array_index_len(0)*4
+@@ -1478,6 +1495,7 @@
+ 
+ 
+ func _build_barriers(track: NativeTrack) -> void:
++	if _menu_slices and not _build_is_current(): return
+ 	var cap := SurfaceTool.new()
+ 	var sides := SurfaceTool.new()
+ 	cap.begin(Mesh.PRIMITIVE_TRIANGLES)

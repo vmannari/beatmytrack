@@ -1,0 +1,202 @@
+extends PanelContainer
+## Provider choice first; only authenticated new players see name selection.
+signal continue_requested
+var account: Node
+var username: LineEdit
+var country_picker: Button
+var country_save: Button
+var country_group: VBoxContainer
+var country_player_id: String = ""
+var title: Label
+var subtitle: Label
+var status_label: Label
+var google_button: Button
+var development_button: Button
+var logout_button: Button
+var delete_button: Button
+var cancel_button: Button
+var refresh_button: Button
+var save_button: Button
+var guest_button: Button
+var footer: Label
+var divider: HBoxContainer
+var google_status: Label
+
+func centered_label(text: String, font_size: int, muted: bool = false) -> Label:
+	var label: Label = MenuStyle.label(text, font_size, muted)
+	label.add_theme_font_override("font", MenuStyle.BODY)
+	label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	label.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	return label
+
+func _ready() -> void:
+	var style := MenuStyle.box(Color(0.045, 0.078, 0.12, 0.91), 28)
+	style.set_corner_radius_all(22)
+	style.border_color = Color(0.68, 0.77, 0.83, 0.40)
+	style.set_border_width_all(1)
+	style.shadow_color = Color(0, 0, 0, 0.3)
+	style.shadow_size = 16
+	add_theme_stylebox_override("panel", style)
+	var column := VBoxContainer.new()
+	column.add_theme_constant_override("separation", 14)
+	add_child(column)
+	title = centered_label("Sign in", 42)
+	column.add_child(title)
+	subtitle = centered_label("Your racing profile. Your next personal best.", 20, true)
+	column.add_child(subtitle)
+	var space := Control.new()
+	space.custom_minimum_size.y = 6
+	column.add_child(space)
+	google_button = preload("res://ui/google_sign_in_button.gd").new()
+	google_button.pressed.connect(account.sign_in_google)
+	google_button.name = "GoogleSignIn"
+	column.add_child(google_button)
+	google_button.custom_minimum_size.y = 80
+	google_status = centered_label("Google sign-in is awaiting setup.", 16, true)
+	column.add_child(google_status)
+	development_button = MenuStyle.button("Development · Beat My Track", account.sign_in_developer)
+	development_button.name = "DevelopmentSignIn"
+	development_button.custom_minimum_size = Vector2(360, 60)
+	development_button.size_flags_horizontal = Control.SIZE_SHRINK_CENTER
+	development_button.add_theme_font_override("font", MenuStyle.BODY)
+	var dev_style := MenuStyle.box(Color(0.25, 0.30, 0.38, 0.68), 12)
+	dev_style.set_corner_radius_all(12)
+	dev_style.set_border_width_all(1)
+	dev_style.border_color = Color(0.58, 0.66, 0.75, 0.55)
+	development_button.add_theme_stylebox_override("normal", dev_style)
+	column.add_child(development_button)
+	username = LineEdit.new()
+	username.name = "PlayerUsername"
+	username.placeholder_text = "Your racing name"
+	username.max_length = 40
+	username.custom_minimum_size.y = 54
+	username.text_submitted.connect(func(_value: String) -> void: _save_name())
+	column.add_child(username)
+	country_group = VBoxContainer.new()
+	country_group.add_theme_constant_override("separation",8)
+	column.add_child(country_group)
+	country_group.add_child(centered_label("Your flag appears beside you in standings.",16,true))
+	country_picker = preload("res://ui/country_picker.gd").new()
+	country_picker.country_selected.connect(func(_code: String) -> void: _country_changed())
+	country_group.add_child(country_picker)
+	country_save = MenuStyle.button("Save country",_save_country,true)
+	country_save.name = "SavePlayerCountry"
+	country_group.add_child(country_save)
+	save_button = MenuStyle.button("Save name & continue", _save_name, true)
+	save_button.name = "SavePlayerName"
+	column.add_child(save_button)
+	status_label = centered_label("", 18, true)
+	column.add_child(status_label)
+	cancel_button = MenuStyle.button("Cancel sign-in", account.cancel_google)
+	column.add_child(cancel_button)
+	refresh_button = MenuStyle.button("Retry connection", account.refresh_options)
+	column.add_child(refresh_button)
+	divider = HBoxContainer.new()
+	for index: int in range(3):
+		if index == 1:
+			var or_label := centered_label("OR", 16, true)
+			or_label.autowrap_mode = TextServer.AUTOWRAP_OFF
+			or_label.custom_minimum_size.x = 48
+			divider.add_child(or_label)
+		else:
+			var line := HSeparator.new()
+			line.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+			line.size_flags_vertical = Control.SIZE_SHRINK_CENTER
+			divider.add_child(line)
+	column.add_child(divider)
+	guest_button = MenuStyle.button("Play as guest  ›", func() -> void: continue_requested.emit())
+	guest_button.name = "ContinueWithoutSignIn"
+	guest_button.add_theme_font_override("font", MenuStyle.BODY)
+	guest_button.add_theme_color_override("font_color", Color("90d4ff"))
+	guest_button.add_theme_stylebox_override("normal", StyleBoxEmpty.new())
+	column.add_child(guest_button)
+	footer = centered_label("You can sign in whenever you're ready.", 16, true)
+	column.add_child(footer)
+	logout_button = MenuStyle.button("Sign out", account.sign_out)
+	logout_button.name = "SignOut"
+	column.add_child(logout_button)
+	delete_button = MenuStyle.button("Delete account",_confirm_deletion)
+	delete_button.name = "DeleteAccount"
+	column.add_child(delete_button)
+	var privacy: Button = MenuStyle.button("Privacy policy",func() -> void:
+		if not account.client.base_url().is_empty(): account.open_browser.call(account.client.base_url()+"/privacy"))
+	privacy.name = "AccountPrivacyPolicy"
+	privacy.disabled = account.client.base_url().is_empty()
+	column.add_child(privacy)
+	column.add_child(centered_label("Optional usage and performance sharing is off until you enable it in Settings → Privacy. Online racing sends the evidence needed to verify your results.",15,true))
+	account.changed.connect(_update)
+	_update()
+
+func _save_name() -> void:
+	if country_picker.country_code.is_empty():
+		account.message = "Choose your country before continuing."
+		account.changed.emit()
+		return
+	await account.save_username(username.text,country_picker.country_code)
+
+func _confirm_deletion() -> void:
+	if account.busy or not account.client.signed_in(): return
+	var dialog := ConfirmationDialog.new()
+	dialog.name = "DeleteAccountConfirmation"
+	dialog.title = "Delete account"
+	dialog.dialog_text = ""
+	var copy: Label = MenuStyle.label("Your sign-in identity, name, country and private online data will be removed.\n\nPublished tracks and historical standings stay under Removed account.\nLocal tracks, car condition and cosmetics stay on this device.\nSigning in again creates a separate account.",18,true)
+	copy.name = "DeleteAccountCopy"
+	copy.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	copy.custom_minimum_size.x = 500
+	dialog.add_child(copy)
+	dialog.ok_button_text = "Delete account permanently"
+	dialog.cancel_button_text = "Keep account"
+	dialog.confirmed.connect(account.delete_account.bind(str(account.client.player.get("id","")),account.client.base_url()))
+	dialog.confirmed.connect(dialog.queue_free)
+	dialog.canceled.connect(dialog.queue_free)
+	add_child(dialog)
+	preload("res://ui/popup_style.gd").watch(dialog)
+	dialog.popup_centered(Vector2i(620,440))
+	dialog.get_cancel_button().grab_focus()
+
+func _country_changed() -> void:
+	country_save.disabled = account.busy or country_picker.country_code == str(account.client.player.get("country_code",""))
+
+func _save_country() -> void:
+	await account.save_country(country_picker.country_code)
+
+func _update() -> void:
+	var signed_in: bool = account.client.signed_in()
+	var onboarding: bool = account.needs_username()
+	var waiting: bool = account.waiting_for_google
+	title.text = "Sign in" if not signed_in else "Choose your name" if onboarding else "Choose your country" if account.needs_country() else "Your account"
+	subtitle.text = "This is the name other racers will see." if onboarding else (account.player_name() if signed_in else "Your racing profile. Your next personal best.")
+	username.visible = onboarding
+	username.editable = not account.busy
+	save_button.visible = onboarding
+	save_button.disabled = account.busy
+	country_group.visible = signed_in
+	country_picker.disabled = account.busy
+	var player_id: String = str(account.client.player.get("id",""))
+	if player_id != country_player_id:
+		country_player_id = player_id
+		country_picker.set_country(str(account.client.player.get("country_code","")))
+	if country_picker.country_code.is_empty(): country_picker.set_country(str(account.client.player.get("country_code","")))
+	if account.message == "Country saved.": country_picker.set_country(str(account.client.player.get("country_code","")))
+	country_save.visible = signed_in and not onboarding
+	_country_changed()
+	google_button.visible = not signed_in and not waiting
+	google_button.disabled = account.busy or not account.configured
+	google_status.visible = not signed_in and not waiting and not account.capabilities.is_empty() and not account.google_available()
+	development_button.visible = not signed_in and not waiting and account.show_development()
+	development_button.disabled = account.busy or not account.configured
+	logout_button.visible = signed_in
+	logout_button.disabled = account.busy
+	delete_button.visible = signed_in
+	delete_button.disabled = account.busy or not account.client.deletion_supported()
+	cancel_button.visible = waiting
+	cancel_button.disabled = account._cancelled
+	refresh_button.visible = account.retry_available and not account.busy
+	status_label.text = account.message
+	status_label.visible = not account.message.is_empty() and account.message not in ["Choose how to sign in.", "Signed in as " + account.player_name() + ".", "Choose the name other racers will see."]
+	divider.visible = not signed_in
+	guest_button.visible = not onboarding
+	guest_button.disabled = waiting
+	guest_button.text = "Continue racing  ›" if signed_in else "Play as guest  ›"
+	footer.visible = not signed_in and not waiting

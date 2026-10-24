@@ -1,0 +1,39 @@
+{
+  "fixture": "isolated physical PostgreSQL 16 streaming replica, no published ports",
+  "database_fixtures": "temporary task containers and tmpfs only",
+  "checks": {
+    "missing_primary_identity_privilege_denies_report": 503,
+    "missing_reader_identity_privilege_denies_report": 503,
+    "physical_standby_success": {
+      "source": "read_only_replica",
+      "last_replayed_transaction_at": 1792733153,
+      "last_replayed_transaction_age_seconds": 6.569,
+      "request_start_fence_applied": true
+    },
+    "quiet_caught_up_standby_remains_available": {
+      "source": "read_only_replica",
+      "last_replayed_transaction_at": 1792733153,
+      "last_replayed_transaction_age_seconds": 8.676,
+      "request_start_fence_applied": true
+    },
+    "server_read_only": "SQLSTATE 25006",
+    "total_server_sql_deadline_seconds": 1.5007887539995863,
+    "paused_replica_rejects_erased_contribution": {
+      "status": 503,
+      "duration_seconds": 0.2533869789995151,
+      "erasure_commit_synchronous_commit": "off",
+      "stale_contribution_still_present_on_paused_replica": true
+    },
+    "catch_up_observes_erasure": true,
+    "restricted_primary_role_cannot_read_analysis_facts": "SQLSTATE 42501",
+    "real_http_exact_report_primary_fact_queries": 0,
+    "real_http_primary_sql_shapes": [
+      "INSERT INTO rate_buckets (key, count, expires_at) VALUES (%(key)s::VARCHAR, %(count)s::INTEGER, %(expires_at)s::INTEGER) ON CONFLICT (key) DO UPDATE SET count = (rate_buckets.count + %(count_1)s::INTEGER) WHERE rate_buckets.count <= %(count_2)s::INTEGER RETURNING rate_buckets.count",
+      "INSERT INTO rate_buckets (key, count, expires_at) VALUES (%(key)s::VARCHAR, %(count)s::INTEGER, %(expires_at)s::INTEGER) ON CONFLICT (key) DO UPDATE SET count = (rate_buckets.count + %(count_1)s::INTEGER) WHERE rate_buckets.count <= %(count_2)s::INTEGER RETURNING rate_buckets.count",
+      "SELECT players.username_key, players.id, players.display_name, players.country_code, players.needs_username, players.disabled, players.deleted_at, players.analytics_enabled, players.is_test_driver, players.vehicle_appearances, players.created_at, session_families.id AS id_1, session_families.player_id, session_families.expires_at, session_families.revoked, session_tokens.id AS id_2, session_tokens.family_id, session_tokens.access_hash, session_tokens.refresh_hash, session_tokens.access_expires_at, session_tokens.consumed, session_tokens.recovery_key_hash, session_tokens.recovery_nonce, session_tokens.replacement_id, session_tokens.rotated_at \nFROM players JOIN session_families ON session_families.player_id = players.id JOIN session_tokens ON session_tokens.family_id = session_families.id \nWHERE session_tokens.access_hash = %(access_hash_1)s::VARCHAR",
+      "INSERT INTO rate_buckets (key, count, expires_at) VALUES (%(key)s::VARCHAR, %(count)s::INTEGER, %(expires_at)s::INTEGER) ON CONFLICT (key) DO UPDATE SET count = (rate_buckets.count + %(count_1)s::INTEGER) WHERE rate_buckets.count <= %(count_2)s::INTEGER RETURNING rate_buckets.count",
+      "SET LOCAL statement_timeout = 1499",
+      "SELECT pg_current_wal_insert_lsn()::text AS lsn, (pg_control_system()).system_identifier::text AS cluster_id, current_database() AS database, current_schema() AS schema"
+    ]
+  }
+}

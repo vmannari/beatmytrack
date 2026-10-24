@@ -1,0 +1,2430 @@
+--- a/game/core/game.gd
++++ b/game/core/game.gd
+@@ -525,7 +525,7 @@
+ 	if profile_enabled: profile_weathering_us += Time.get_ticks_usec() - weathering_start
+ 	condition_save_elapsed += delta
+ 	if condition_save_elapsed >= 5.0:
+-		_save_condition()
++		_save_condition(true)
+ 	car.set_headlight_bridge_occlusion(not presented.state.track_elevated)
+ 	var audio_start: int = Time.get_ticks_usec() if profile_enabled else 0
+ 	vehicle_audio.present(presented.state,frame,native_track,delta,paused,countdown_ticks>0,shared_contacts)
+@@ -930,12 +930,12 @@
+ 	return scale
+ 
+ 
+-func _save_condition() -> void:
++func _save_condition(background: bool = false) -> void:
+ 	var started: int = Time.get_ticks_usec() if profile_enabled else 0
+ 	condition_save_elapsed = 0.0
+ 	if preference_records != null and car != null:
+ 		condition_save_count += 1
+-		var error: Error = VehicleCondition.save(preference_records, vehicle_id, car_weathering.snapshot())
++		var error: Error = VehicleCondition.save(preference_records, vehicle_id, car_weathering.snapshot(),background)
+ 		if error != OK: push_warning("Local car condition save failed: " + error_string(error))
+ 	if profile_enabled: profile_condition_us += Time.get_ticks_usec() - started
+ 
+--- a/game/persistence/local_records.gd
++++ b/game/persistence/local_records.gd
+@@ -12,6 +12,9 @@
+ var settings: Dictionary = {}
+ var _committed_records: Dictionary = {}
+ var _committed_settings: Dictionary = {}
++var _condition_store: Node
++var _condition_revision: int = -1
++var _condition_committed_revision: int = -1
+ 
+ 
+ func _init(file_path: String = "user://local_records.json") -> void:
+@@ -19,6 +22,10 @@
+ 
+ 
+ func load_records() -> void:
++	if is_instance_valid(_condition_store): _condition_store.flush(); _condition_store.release(self)
++	_condition_store = null
++	_condition_revision = -1
++	_condition_committed_revision = -1
+ 	records = {}
+ 	settings = {}
+ 	_committed_records = {}
+@@ -30,8 +37,45 @@
+ 			continue
+ 		records = document.records
+ 		settings = document.settings
+-		_remember_committed()
+-		return
++		break
++	# A small sidecar overrides legacy embedded cosmetics, including when the
++	# PB file does not yet exist. Old files remain intact until a normal commit.
++	_remember_committed()
++	_conditions()
++
++
++func _conditions() -> Node:
++	var condition_path: String = ProjectSettings.globalize_path(path+".conditions.json").simplify_path()
++	if not is_instance_valid(_condition_store) or _condition_store.path != condition_path:
++		if is_instance_valid(_condition_store): _condition_store.flush(); _condition_store.release(self)
++		_condition_store = preload("res://persistence/condition_store.gd").acquire(condition_path,settings.get("vehicle_conditions",{}),weakref(self))
++		_condition_revision = -1
++		_condition_committed_revision = -1
++	_sync_conditions()
++	return _condition_store
++
++
++func _sync_conditions() -> void:
++	if _condition_revision != _condition_store.revision and (not _condition_store.current.is_empty() or settings.has("vehicle_conditions")):
++		settings.vehicle_conditions = _condition_store.current.duplicate(true)
++	_condition_revision = _condition_store.revision
++	if _condition_committed_revision != _condition_store.committed_revision and (not _condition_store.committed.is_empty() or _committed_settings.has("vehicle_conditions")):
++		_committed_settings.vehicle_conditions = _condition_store.committed.duplicate(true)
++	_condition_committed_revision = _condition_store.committed_revision
++
++
++func save_vehicle_conditions(value: Dictionary, background: bool = false) -> Error:
++	var store: Node = _conditions()
++	var error: Error = store.stage(value)
++	if error == OK and not background: error = store.flush()
++	_sync_conditions()
++	return error
++
++
++func poll_vehicle_conditions() -> void:
++	if not is_instance_valid(_condition_store): return
++	_condition_store.poll()
++	_sync_conditions()
+ 
+ 
+ func key_for(track: NativeTrack, handling: HandlingConfig) -> String:
+@@ -68,6 +112,16 @@
+ 
+ 
+ func save_records() -> Error:
++	if settings.has("vehicle_conditions") and not VehicleCondition.valid_collection(settings.vehicle_conditions): return _failed(ERR_INVALID_DATA)
++	if is_instance_valid(_condition_store):
++		# A caller may still deliberately update the legacy settings API. Keep
++		# that valid change, without allowing invalid values to be overwritten.
++		if _condition_revision == _condition_store.revision and settings.get("vehicle_conditions",{}) != _condition_store.current:
++			_condition_store.stage(settings.get("vehicle_conditions",{}))
++		var condition_error: Error = _condition_store.flush()
++		if condition_error != OK: return _failed(condition_error)
++		_condition_revision = -1
++		_sync_conditions()
+ 	var document: Dictionary = _normalize({"schema":SCHEMA,"records":records,"settings":settings})
+ 	if document.is_empty():
+ 		return _failed(ERR_INVALID_DATA)
+@@ -112,6 +166,7 @@
+ 	# A result is visible as a saved PB only after its commit succeeds.
+ 	records = _committed_records.duplicate(true)
+ 	settings = _committed_settings.duplicate(true)
++	_condition_revision = -1
+ 	return error
+ 
+ 
+--- /dev/null
++++ b/game/persistence/condition_store.gd
+@@ -0,0 +1,141 @@
++extends Node
++## Profile-local cosmetics. One writer, immutable packets, bounded to five cars.
++const MAX_BYTES: int = 131072
++static var _stores: Dictionary = {}
++var path: String
++var current: Dictionary = {}
++var committed: Dictionary = {}
++var last_error: Error = OK
++var revision: int = 0
++var committed_revision: int = 0
++var _thread: Thread
++var _writing: Dictionary = {}
++var _writing_revision: int = 0
++var _retry_at: int = 0
++var _owners: Array[WeakRef] = []
++var _key: String
++
++static func acquire(file_path: String, legacy: Dictionary, owner_ref: WeakRef) -> Node:
++	var absolute: String = ProjectSettings.globalize_path(file_path).simplify_path()
++	var key: String = absolute.to_lower() if OS.get_name() == "Windows" else absolute
++	var existing: Node = _stores.get(key)
++	if is_instance_valid(existing) and not existing.is_queued_for_deletion():
++		existing.watch(owner_ref)
++		return existing
++	var store: Node = load("res://persistence/condition_store.gd").new(absolute,legacy,owner_ref)
++	store._key = key
++	_stores[key] = store
++	(Engine.get_main_loop() as SceneTree).root.add_child.call_deferred(store)
++	return store
++
++func _init(file_path: String, legacy: Dictionary, owner_ref: WeakRef) -> void:
++	path = file_path
++	_owners.append(owner_ref)
++	current = legacy.duplicate(true)
++	for candidate: String in [path,path+".bak"]:
++		var saved: Dictionary = _read(candidate)
++		if saved.is_empty(): continue
++		current = saved.conditions
++		break
++	committed = current.duplicate(true)
++
++func _process(_delta: float) -> void:
++	for index: int in range(_owners.size()-1,-1,-1):
++		var owner_records: RefCounted = _owners[index].get_ref()
++		if owner_records == null or owner_records._condition_store != self: _owners.remove_at(index)
++	if _owners.is_empty(): close(); return
++	poll()
++	for owner_ref: WeakRef in _owners: owner_ref.get_ref()._sync_conditions()
++
++func watch(owner_ref: WeakRef) -> void:
++	for known: WeakRef in _owners:
++		if known.get_ref() == owner_ref.get_ref(): return
++	_owners.append(owner_ref)
++
++func release(owner_records: RefCounted) -> void:
++	for index: int in range(_owners.size()-1,-1,-1):
++		if _owners[index].get_ref() == null or _owners[index].get_ref() == owner_records: _owners.remove_at(index)
++	if _owners.is_empty(): close()
++
++func close() -> void:
++	flush()
++	if _stores.get(_key) == self: _stores.erase(_key)
++	queue_free()
++
++func _exit_tree() -> void:
++	flush()
++	if _stores.get(_key) == self: _stores.erase(_key)
++
++func stage(value: Dictionary) -> Error:
++	if not VehicleCondition.valid_collection(value): return ERR_INVALID_DATA
++	if current != value:
++		current = value.duplicate(true)
++		revision += 1
++	poll()
++	return OK
++
++func poll() -> void:
++	if _thread != null:
++		if _thread.is_alive(): return
++		_accept(_thread.wait_to_finish())
++		_thread = null
++	if revision == committed_revision or Time.get_ticks_msec() < _retry_at: return
++	_writing = current.duplicate(true)
++	_writing_revision = revision
++	_thread = Thread.new()
++	var error: Error = _thread.start(_write.bind(path,_writing),Thread.PRIORITY_LOW)
++	if error != OK:
++		_thread = null
++		_accept(error)
++
++func flush() -> Error:
++	if _thread != null:
++		_accept(_thread.wait_to_finish())
++		_thread = null
++	if revision == committed_revision: return OK
++	_writing = current.duplicate(true)
++	_writing_revision = revision
++	_accept(_write(path,_writing))
++	return last_error
++
++func _accept(error: Error) -> void:
++	if error != OK and last_error == OK: push_warning("Local car condition save failed: "+error_string(error))
++	last_error = error
++	if error == OK:
++		committed = _writing
++		committed_revision = _writing_revision
++	_retry_at = Time.get_ticks_msec()+5000 if error != OK else 0
++	_writing = {}
++
++static func _read(file_path: String) -> Dictionary:
++	var file := FileAccess.open(file_path,FileAccess.READ)
++	if file == null: return {}
++	if file.get_length() > MAX_BYTES: return {}
++	var parser := JSON.new()
++	if parser.parse(file.get_as_text()) != OK: return {}
++	var value: Variant = parser.data
++	if not value is Dictionary or value.size() != 2 or value.get("schema") != 1 or not VehicleCondition.valid_collection(value.get("conditions")): return {}
++	return value
++
++static func _write(file_path: String, value: Dictionary) -> Error:
++	if not VehicleCondition.valid_collection(value): return ERR_INVALID_DATA
++	var content: String = JSON.stringify({"schema":1,"conditions":value},"",true)
++	if content.to_utf8_buffer().size() > MAX_BYTES: return ERR_OUT_OF_MEMORY
++	var temporary: String = file_path+".tmp"
++	var backup: String = file_path+".bak"
++	var file := FileAccess.open(temporary,FileAccess.WRITE)
++	if file == null: return FileAccess.get_open_error()
++	file.store_string(content)
++	file.flush()
++	var error: Error = file.get_error()
++	file.close()
++	if error != OK or _read(temporary).is_empty(): return ERR_FILE_CANT_WRITE
++	if FileAccess.file_exists(file_path):
++		if not _read(file_path).is_empty():
++			if FileAccess.file_exists(backup):
++				error = DirAccess.remove_absolute(backup)
++				if error != OK: return error
++			error = DirAccess.rename_absolute(file_path,backup)
++		else: error = DirAccess.remove_absolute(file_path)
++		if error != OK: return error
++	return DirAccess.rename_absolute(temporary,file_path)
+--- a/game/vehicle/vehicle_condition.gd
++++ b/game/vehicle/vehicle_condition.gd
+@@ -6,15 +6,16 @@
+ 
+ static func read(records: LocalRecords, id: String) -> Dictionary:
+ 	if records == null: return {}
++	records._conditions()
+ 	return records.settings.get("vehicle_conditions", {}).get(id, {}).duplicate(true)
+ 
+-static func save(records: LocalRecords, id: String, value: Dictionary) -> Error:
++static func save(records: LocalRecords, id: String, value: Dictionary, background: bool = false) -> Error:
+ 	if records == null: return OK
+-	if read(records, id) == value: return OK
++	if read(records, id) == value:
++		return OK if background else records.save_vehicle_conditions(records.settings.get("vehicle_conditions",{}))
+ 	var collection: Dictionary = records.settings.get("vehicle_conditions", {}).duplicate(true)
+ 	collection[id] = value.duplicate(true)
+-	records.settings.vehicle_conditions = collection
+-	return records.save_records()
++	return records.save_vehicle_conditions(collection,background)
+ 
+ static func valid_collection(value: Variant) -> bool:
+ 	if not value is Dictionary or value.size() > VehicleCatalog.IDS.size(): return false
+--- a/game/vehicle/light_props.gd
++++ b/game/vehicle/light_props.gd
+@@ -2,12 +2,24 @@
+ extends RefCounted
+ ## Deterministic, forgiving movable props; previous attempts cannot change a run.
+ static func step(state: VehicleState, objects: Array, contact: Callable, previous: Vector2, dt: float, car_mass: float, car_radius: float) -> void:
+-	var props: Array = []
+-	for object: Dictionary in objects:
+-		if object.kind in CreatorCatalog.SOFT: props.append(object)
++	# Derived scratch data is not canonical state or rewind payload. Compare the
++	# immutable source by value so editor/test mutations also invalidate it.
++	var work: Dictionary = state.get_meta(&"light_prop_work",{})
++	if work.is_empty() or objects != work.source:
++		var prepared: Array = []
++		var radii: Array[float] = []
++		var has_breakables: bool = false
++		for object: Dictionary in objects:
++			if object.kind in CreatorCatalog.SOFT:
++				prepared.append(object)
++				radii.append(CreatorObjects.size_of(object).x*0.35)
++				if object.kind in BreakableProps.KINDS: has_breakables = true
++		work = {"source":objects.duplicate(true),"props":prepared,"radii":radii,"breakables":has_breakables}
++		state.set_meta(&"light_prop_work",work)
++	var props: Array = work.props
+ 	if state.light_props.is_empty():
+ 		for object: Dictionary in props: state.light_props.append(BurningBarrel.initial(object) if object.kind=="burning_barrel" else [object.position[0],object.position[1],0.0,0.0,0.0])
+-	BreakableProps.prepare(state,props)
++	if work.breakables: BreakableProps.prepare(state,props)
+ 	for index: int in range(props.size()):
+ 		if props[index].kind=="burning_barrel":
+ 			BurningBarrel.step(state,props[index],state.light_props[index],contact,previous,dt,car_mass,car_radius)
+@@ -18,8 +30,10 @@
+ 		var row: Array = state.light_props[index]
+ 		var p := Vector2(row[0],row[1])
+ 		var velocity := Vector2(row[2],row[3])
+-		var radius: float = CreatorObjects.size_of(props[index]).x*0.35
+-		if not state.track_elevated and state.jump_height<=0:
++		var radius: float = work.radii[index]
++		var reach: float = car_radius+radius+0.0001
++		var near_car: bool = p.x >= minf(previous.x,state.position.x)-reach and p.x <= maxf(previous.x,state.position.x)+reach and p.y >= minf(previous.y,state.position.y)-reach and p.y <= maxf(previous.y,state.position.y)+reach
++		if not state.track_elevated and state.jump_height<=0 and near_car:
+ 			var delta: Vector2 = p-Geometry2D.get_closest_point_to_segment(p,previous,state.position)
+ 			if delta.length()<car_radius+radius:
+ 				var normal: Vector2 = delta.normalized() if delta.length_squared()>0.000001 else state.forward()
+@@ -32,8 +46,10 @@
+ 					row[4] = 1.0
+ 		velocity = velocity.limit_length(16).move_toward(Vector2.ZERO,5.0*dt)
+ 		var next: Vector2 = p+velocity*dt
+-		var collision: Vector3 = contact.call(next,radius,false)
+-		if collision.z<=0: p=next
+-		else: velocity=Vector2.ZERO
++		# At zero velocity both branches of the old query leave p/velocity exact.
++		if velocity != Vector2.ZERO or p.x == 0.0 or p.y == 0.0:
++			var collision: Vector3 = contact.call(next,radius,false)
++			if collision.z<=0: p=next
++			else: velocity=Vector2.ZERO
+ 		row[0]=p.x; row[1]=p.y; row[2]=velocity.x; row[3]=velocity.y
+ 	BreakableProps.step_fragments(state,contact,previous,dt,car_mass,car_radius)
+--- a/game/vehicle/loose_tyres.gd
++++ b/game/vehicle/loose_tyres.gd
+@@ -19,33 +19,74 @@
+ 	if state.loose_tyres.is_empty():
+ 		for p: Vector2 in origins: state.loose_tyres.append([p.x,p.y,0.0,0.0,0.0])
+ 	var count: int = state.loose_tyres.size()
+-	var points: Array[Vector2] = []
+-	var velocities: Array[Vector2] = []
+-	var friction: Array[float] = []
+-	var buckets: Dictionary = {}
+-	var pairs: Array[Vector2i] = []
++	# Reuse derived arrays/pairs while positions are unchanged. Every canonical
++	# row is still checked, so rewind/restores and in-place mutations invalidate
++	# the broadphase without storing caches in snapshots or changing pair order.
++	var work: Dictionary = state.get_meta(&"tyre_work",{})
++	var rebuild: bool = work.is_empty() or int(work.count) != count
++	if rebuild:
++		var point_buffer: Array[Vector2] = []
++		var velocity_buffer: Array[Vector2] = []
++		var friction_buffer: Array[float] = []
++		var normal_buffer: Array[Vector2] = []
++		var pair_buffer: Array[Vector2i] = []
++		var delta_buffer: Array[Vector2] = []
++		var pair_normal_buffer: Array[Vector2] = []
++		var touching_buffer: Array[bool] = []
++		var candidate_buffer: Array[int] = []
++		point_buffer.resize(count); velocity_buffer.resize(count); friction_buffer.resize(count); normal_buffer.resize(count)
++		work = {"count":count,"points":point_buffer,"velocities":velocity_buffer,"friction":friction_buffer,"normals":normal_buffer,"pairs":pair_buffer,"deltas":delta_buffer,"pair_normals":pair_normal_buffer,"touching":touching_buffer,"buckets":{},"candidates":candidate_buffer,"separated":true,"geometry_ready":false}
++		state.set_meta(&"tyre_work",work)
++	var points: Array[Vector2] = work.points
++	var velocities: Array[Vector2] = work.velocities
++	var friction: Array[float] = work.friction
++	var buckets: Dictionary = work.buckets
++	var pairs: Array[Vector2i] = work.pairs
++	var solver_active: bool = false
+ 	for index: int in range(count):
+ 		var tyre: Array = state.loose_tyres[index]
+ 		var p := Vector2(tyre[0],tyre[1])
+-		points.append(p)
+-		velocities.append(Vector2(tyre[2],tyre[3]).limit_length(30))
+-		friction.append(SLIDING_DECELERATION*step_seconds)
+-		var cell := Vector2i(floori(p.x/1.6),floori(p.y/1.6))
+-		# Stable indices and fixed neighbour order, independent of dictionary iteration.
+-		for y: int in range(-1,2):
+-			for x: int in range(-1,2):
+-				for other: int in buckets.get(cell+Vector2i(x,y),[]):
+-					if p.distance_squared_to(points[other]) <= 1.6*1.6:
+-						pairs.append(Vector2i(other,index))
+-		if not buckets.has(cell): buckets[cell] = []
+-		buckets[cell].append(index)
++		if p != points[index]: rebuild = true
++		points[index] = p
++		velocities[index] = Vector2(tyre[2],tyre[3]).limit_length(30)
++		if velocities[index] != Vector2.ZERO: solver_active = true
++		friction[index] = SLIDING_DECELERATION*step_seconds
++	if rebuild:
++		buckets.clear(); pairs.clear()
++		work.geometry_ready = false
++		work.separated = true
++		for index: int in range(count):
++			var p: Vector2 = points[index]
++			var cell := Vector2i(floori(p.x/1.6),floori(p.y/1.6))
++			# The original stable index and neighbour order is retained exactly.
++			for y: int in range(-1,2):
++				for x: int in range(-1,2):
++					for other: int in buckets.get(cell+Vector2i(x,y),[]):
++						if p.distance_squared_to(points[other]) <= 1.6*1.6:
++							pairs.append(Vector2i(other,index))
++							if (p-points[other]).length() < 1.0: work.separated = false
++			if not buckets.has(cell): buckets[cell] = []
++			buckets[cell].append(index)
+ 	# Accumulated friction has one per-tick budget. Iteration transmits the car's
+ 	# available force through a pile, including static friction at rest.
+ 	# Positions do not change during the impulse solver. Compute its contact
+ 	# geometry once, retaining the original index and impulse order.
+-	var car_normals: Array[Vector2] = []
+-	var solver_active: bool = false
+-	for index: int in range(count):
++	var car_normals: Array[Vector2] = work.normals
++	car_normals.fill(Vector2.ZERO)
++	var candidates: Array[int] = work.candidates
++	candidates.clear()
++	if not state.track_elevated:
++		var reach: float = config.collision_radius+RADIUS+0.005+0.0001
++		var low := Vector2i(((from.min(state.position)-Vector2.ONE*reach)/1.6).floor())
++		var high := Vector2i(((from.max(state.position)+Vector2.ONE*reach)/1.6).floor())
++		if (high.x-low.x+1)*(high.y-low.y+1) <= 64:
++			for y: int in range(low.y,high.y+1):
++				for x: int in range(low.x,high.x+1):
++					for index: int in buckets.get(Vector2i(x,y),[]): candidates.append(index)
++			candidates.sort()
++		else:
++			for index: int in range(count): candidates.append(index)
++	for index: int in candidates:
+ 		var point: Vector2 = points[index]
+ 		var normal := Vector2.ZERO
+ 		if not state.track_elevated:
+@@ -53,29 +94,28 @@
+ 			var delta: Vector2 = point-near
+ 			if delta.length() <= config.collision_radius+RADIUS+0.005:
+ 				normal = delta.normalized() if delta.length_squared()>0.000001 else state.forward()
+-		car_normals.append(normal)
+-		if normal != Vector2.ZERO or velocities[index] != Vector2.ZERO: solver_active = true
++		car_normals[index] = normal
++		if normal != Vector2.ZERO: solver_active = true
+ 	# Separated, stationary stacks cannot change this tick: the swept car test
+ 	# above also excludes car separation. Keep overlapping piles on the complete
+ 	# solver path, including sub-ULP overlaps, to preserve exact contact results.
+ 	if not solver_active:
+-		var separated: bool = true
+-		for pair: Vector2i in pairs:
+-			if (points[pair.y]-points[pair.x]).length() < 1.0:
+-				separated = false
+-				break
+-		if separated:
++		if work.separated:
+ 			for tyre: Array in state.loose_tyres:
+ 				tyre[4] = fposmod(float(tyre[4]),TAU)
+ 			return
+-	var pair_deltas: Array[Vector2] = []
+-	var pair_normals: Array[Vector2] = []
+-	var pair_touching: Array[bool] = []
+-	for pair: Vector2i in pairs:
+-		var delta: Vector2 = points[pair.y]-points[pair.x]
+-		pair_deltas.append(delta)
+-		pair_normals.append(delta.normalized() if delta.length_squared()>0.000001 else Vector2.RIGHT)
+-		pair_touching.append(delta.length() <= 1.005)
++	var pair_deltas: Array[Vector2] = work.deltas
++	var pair_normals: Array[Vector2] = work.pair_normals
++	var pair_touching: Array[bool] = work.touching
++	if not work.geometry_ready:
++		pair_deltas.resize(pairs.size()); pair_normals.resize(pairs.size()); pair_touching.resize(pairs.size())
++		for pair_index: int in range(pairs.size()):
++			var pair: Vector2i = pairs[pair_index]
++			var delta: Vector2 = points[pair.y]-points[pair.x]
++			pair_deltas[pair_index] = delta
++			pair_normals[pair_index] = delta.normalized() if delta.length_squared()>0.000001 else Vector2.RIGHT
++			pair_touching[pair_index] = delta.length() <= 1.005
++		work.geometry_ready = true
+ 	for iteration: int in range(16 if solver_active else 0):
+ 		for index: int in range(count):
+ 			if velocities[index] == Vector2.ZERO and car_normals[index] == Vector2.ZERO:
+--- a/game/editor/track_compiler.gd
++++ b/game/editor/track_compiler.gd
+@@ -79,6 +79,7 @@
+ 	var cells := PackedInt32Array()
+ 	cells.resize(grid.x * grid.y)
+ 	cells.fill(1)
++	var paint_exclusion := PackedByteArray()
+ 	if base != null: cells = base.cells.duplicate()
+ 	var terrain_objects: Array = []
+ 	for object: Dictionary in document.objects:
+@@ -86,6 +87,7 @@
+ 	var raster_key: Array = [document.base_track,base.content_hash if base != null else "",grid,extent,cell_size,document.layout,document.pieces,document.surface,document.paint,terrain_objects]
+ 	if raster_key == preview_cache.get("key",[]):
+ 		cells = preview_cache.cells.duplicate()
++		paint_exclusion = preview_cache.get("paint_exclusion",PackedByteArray()).duplicate()
+ 	else:
+ 		var road_mask: PackedInt32Array = cells.duplicate()
+ 		_stamp_objects(document,cells,grid,extent,cell_size,true)
+@@ -95,11 +97,12 @@
+ 			if section.bridge: continue
+ 			var section_widths: PackedFloat32Array = section.widths
+ 			_raster_road(section.points,section_widths,2 if document.surface == "dirt" else 0,cells,grid,extent,cell_size,false,road_mask,cancelled)
+-		_paint(document.paint,cells,grid,extent,cell_size,road_mask,cancelled)
++		paint_exclusion = _paint(document.paint,cells,grid,extent,cell_size,road_mask,cancelled)
+ 		if _cancelled(cancelled): return null
+ 		if preview_cache.get("enabled",false):
+ 			preview_cache.key = raster_key.duplicate(true)
+ 			preview_cache.cells = cells.duplicate()
++			preview_cache.paint_exclusion = paint_exclusion.duplicate()
+ 	var scenery_cells: PackedInt32Array = cells.duplicate()
+ 	_stamp_objects(document,cells,grid,extent,cell_size,false)
+ 	var deck := PackedInt32Array()
+@@ -161,7 +164,7 @@
+ 	data.provenance["base_track"] = document.base_track
+ 	data.provenance["base_hash"] = base.content_hash if base != null else ""
+ 	if _cancelled(cancelled): return null
+-	var compiled: NativeTrack = NativeTrack.from_data(data,document_hash(document,str(data.provenance.base_hash)),cells,deck)
++	var compiled: NativeTrack = NativeTrack.from_data(data,document_hash(document,str(data.provenance.base_hash)),cells,deck,paint_exclusion,cancelled)
+ 	if _cancelled(cancelled): return null
+ 	if preview_cache.get("enabled",false):
+ 		PREPARED.remember(document,compiled,preview_cache); PREPARED.trim_auxiliary(preview_cache)
+@@ -183,8 +186,10 @@
+ 				if CreatorObjects.solid_contains(object,point): cells[y*grid.x+x] = CreatorObjects.surface(object.kind)
+ 
+ 
+-static func _paint(strokes: Array, cells: PackedInt32Array, grid: Vector2i, extent: Vector2, cell_size: float, road_mask: PackedInt32Array, cancelled: Callable = Callable()) -> void:
+-	if strokes.is_empty(): return
++static func _paint(strokes: Array, cells: PackedInt32Array, grid: Vector2i, extent: Vector2, cell_size: float, road_mask: PackedInt32Array, cancelled: Callable = Callable()) -> PackedByteArray:
++	var exclusion := PackedByteArray()
++	exclusion.resize(cells.size())
++	if strokes.is_empty(): return exclusion
+ 	var native: RefCounted = preload("res://track/geometry_acceleration.gd").raster()
+ 	if native != null:
+ 		var prepared: Array = []
+@@ -192,42 +197,62 @@
+ 			var stroke: Dictionary = authored.duplicate(true)
+ 			stroke.points = SurfacePaint.contour(authored.points,str(authored.get("mode","free")))
+ 			prepared.append(stroke)
+-		var result: Dictionary = native.call("raster_paint",prepared,{"cells":cells,"mask":road_mask,"grid":grid,"extent":extent,"cell_size":cell_size},Geometry2D,cancelled)
+-		if _cancelled(cancelled): return
++		var result: Dictionary = native.call("raster_paint",prepared,{"cells":cells,"mask":road_mask,"grid":grid,"extent":extent,"cell_size":cell_size,"exclusion":exclusion},Geometry2D,cancelled)
++		if _cancelled(cancelled): return PackedByteArray()
+ 		if result.has("cells"):
+ 			cells.resize(0); cells.append_array(result.cells)
+ 			road_mask.resize(0); road_mask.append_array(result.mask)
+-			return
++			# Older native libraries still paint exactly; derive their missing mask
++			# in the cancellable kerb fallback rather than publishing a partial one.
++			return result.get("exclusion",PackedByteArray())
++	var previous: Dictionary = {}
+ 	for authored: Dictionary in strokes:
+-		if _cancelled(cancelled): return
++		if _cancelled(cancelled): return PackedByteArray()
++		if authored == previous: continue
++		previous = authored
+ 		var stroke: Dictionary = SurfacePaint.prepared(authored)
+ 		if stroke.get("mode","") == "area":
+ 			var polygon: PackedVector2Array = SurfacePaint.contour(authored.points,"area")
+ 			var bounds: Rect2i = SurfacePaint.cell_bounds(polygon,extent,cell_size,grid)
+ 			for y: int in range(bounds.position.y,bounds.end.y):
++				if _cancelled(cancelled): return PackedByteArray()
+ 				for x: int in range(bounds.position.x,bounds.end.x):
++					var at: int = y*grid.x+x
++					if cells[at] == int(stroke.surface) and road_mask[at] == (0 if int(stroke.surface) == 0 else 1) and (stroke.get("protect_road",false) or exclusion[at] != 0): continue
+ 					var point := Vector2((x+0.5)*cell_size-extent.x,extent.y-(y+0.5)*cell_size)
+-					if Geometry2D.is_point_in_polygon(point,polygon) and not (stroke.get("protect_road",false) and road_mask[y*grid.x+x] in [0,2]):
+-						cells[y*grid.x+x] = int(stroke.surface)
+-						road_mask[y*grid.x+x] = 0 if int(stroke.surface) == 0 else 1
++					if Geometry2D.is_point_in_polygon(point,polygon):
++						if not stroke.get("protect_road",false): exclusion[at] = 1
++						if not (stroke.get("protect_road",false) and road_mask[at] in [0,2]):
++							cells[at] = int(stroke.surface)
++							road_mask[at] = 0 if int(stroke.surface) == 0 else 1
+ 			continue
+ 		var radius: float = float(stroke.width)*0.5
++		var visited: Dictionary = {}
+ 		for i: int in range(stroke.points.size()):
+-			if i % 32 == 0 and _cancelled(cancelled): return
++			if i % 32 == 0 and _cancelled(cancelled): return PackedByteArray()
+ 			var p: Array = stroke.points[i]
+ 			var q: Array = stroke.points[maxi(0,i-1)]
+ 			var a := Vector2(p[0],p[1])
+ 			var b := Vector2(q[0],q[1])
++			var key: Array = [a,b]
++			if visited.has(key): continue
++			visited[key] = true
+ 			var lo: Vector2 = a.min(b)-Vector2.ONE*radius
+ 			var hi: Vector2 = a.max(b)+Vector2.ONE*radius
+ 			for y: int in range(maxi(0,floori((extent.y-hi.y)/cell_size)),mini(grid.y,ceili((extent.y-lo.y)/cell_size))):
++				if _cancelled(cancelled): return PackedByteArray()
+ 				for x: int in range(maxi(0,floori((lo.x+extent.x)/cell_size)),mini(grid.x,ceili((hi.x+extent.x)/cell_size))):
++					var at: int = y*grid.x+x
++					if cells[at] == int(stroke.surface) and road_mask[at] == (0 if int(stroke.surface) == 0 else 1) and (stroke.get("protect_road",false) or exclusion[at] != 0): continue
+ 					var point := Vector2((x+0.5)*cell_size-extent.x,extent.y-(y+0.5)*cell_size)
+ 					var delta: Vector2 = point-Geometry2D.get_closest_point_to_segment(point,a,b)
+ 					var hit: bool = delta.length_squared() <= radius*radius if stroke.shape == "round" else maxf(absf(delta.x),absf(delta.y)) <= radius
+-					if hit and not (stroke.get("protect_road",false) and road_mask[y*grid.x+x] in [0,2]):
+-						cells[y*grid.x+x] = int(stroke.surface)
+-						road_mask[y*grid.x+x] = 0 if int(stroke.surface) == 0 else 1
++					if hit:
++						if not stroke.get("protect_road",false): exclusion[at] = 1
++						if not (stroke.get("protect_road",false) and road_mask[at] in [0,2]):
++							cells[at] = int(stroke.surface)
++							road_mask[at] = 0 if int(stroke.surface) == 0 else 1
++	return exclusion
+ 
+ 
+ static func _raster_road(road_route: PackedVector2Array, road_widths: PackedFloat32Array, road_kind: int, cells: PackedInt32Array, grid: Vector2i, extent: Vector2, cell_size: float, closed: bool, road_mask: PackedInt32Array = PackedInt32Array(), cancelled: Callable = Callable()) -> void:
+--- a/game/editor/prepared_track_cache.gd
++++ b/game/editor/prepared_track_cache.gd
+@@ -54,7 +54,7 @@
+ 	cache["prepared"] = entries; cache["prepared_bytes"] = total+size
+ 
+ static func trim_auxiliary(cache: Dictionary) -> void:
+-	var keys: Array[String] = ["key","cells","sections_key","sections","bridges","overlay_key","overlay_image","road_key","road_image","winter_marker_key","winter_markers"]
++	var keys: Array[String] = ["key","cells","paint_exclusion","sections_key","sections","bridges","overlay_key","overlay_image","road_key","road_image","winter_marker_key","winter_markers"]
+ 	var values: Array = []
+ 	var bytes: int = 0
+ 	for key: String in keys:
+--- a/game/track/native_track.gd
++++ b/game/track/native_track.gd
+@@ -50,7 +50,7 @@
+ 	return from_data(data, FileAccess.get_sha256(path))
+ 
+ 
+-static func from_data(data: Dictionary, hash_value: String, prepared_cells: PackedInt32Array = PackedInt32Array(), prepared_deck: PackedInt32Array = PackedInt32Array()) -> NativeTrack:
++static func from_data(data: Dictionary, hash_value: String, prepared_cells: PackedInt32Array = PackedInt32Array(), prepared_deck: PackedInt32Array = PackedInt32Array(), paint_exclusion: PackedByteArray = PackedByteArray(), cancelled: Callable = Callable()) -> NativeTrack:
+ 	# Trusted native data only. Creator imports are validated and compiled first.
+ 	var track := NativeTrack.new()
+ 	track.metadata = data
+@@ -89,8 +89,10 @@
+ 	if not data.bridges.is_empty():
+ 		track.bridge_axis = Vector2(data.bridges[0].axis[0], data.bridges[0].axis[1])
+ 		track.bridge_height = float(data.bridges[0].height)
+-	track.kerbs.build(track)
+-	track.snow_banks.build(track)
++	track.kerbs.build(track,paint_exclusion,cancelled)
++	if cancelled.is_valid() and cancelled.call(): return null
++	track.snow_banks.build(track,PackedByteArray(),cancelled)
++	if cancelled.is_valid() and cancelled.call(): return null
+ 	return track
+ 
+ 
+--- a/game/track/road_kerbs.gd
++++ b/game/track/road_kerbs.gd
+@@ -13,17 +13,22 @@
+ var grid := Vector2i.ZERO
+ 
+ 
+-func build(track: NativeTrack) -> void:
++func build(track: NativeTrack, paint_exclusion: PackedByteArray = PackedByteArray(), cancelled: Callable = Callable()) -> void:
+ 	triangles.clear()
+ 	buckets.clear()
+ 	extent = track.half_extent
+ 	cell_size = track.cell_size
+ 	grid = Vector2i(track.grid_width,track.grid_height)
+ 	var document: Dictionary = track.metadata.get("creator_document",{})
+-	blocked = exclusion_mask(track,document.get("paint",[]))
+-	var segments: Array[Dictionary] = creator_segments(document)
++	blocked = paint_exclusion.duplicate() if paint_exclusion.size() == track.cells.size() else exclusion_mask(track,document.get("paint",[]),cancelled)
++	if blocked.size() != track.cells.size(): return
++	for index: int in range(track.cells.size()):
++		if index % 256 == 0 and _cancelled(cancelled): return
++		if track.cells[index] in [4,7]: blocked[index] = 1
++	var segments: Array[Dictionary] = creator_segments(document,"",false,cancelled)
+ 	var first: int = 0
+ 	while first < segments.size():
++		if _cancelled(cancelled): return
+ 		var last: int = first
+ 		while last+1 < segments.size():
+ 			var a: Dictionary = segments[last]
+@@ -33,6 +38,7 @@
+ 		var origin: float = segments[first].start
+ 		var length: float = float(segments[last].end)-origin
+ 		for i: int in range(first,last+1):
++			if i % 32 == 0 and _cancelled(cancelled): return
+ 			var segment: Dictionary = segments[i]
+ 			_strip(segment.a,segment.b,segment.outer_a,segment.outer_b,float(segment.start)-origin,float(segment.end)-origin,length)
+ 		first = last+1
+@@ -48,6 +54,7 @@
+ 	selected.resize(track.cells.size())
+ 	var indices: Array[Vector2i] = []
+ 	for y: int in range(grid.y):
++		if _cancelled(cancelled): return
+ 		for x: int in range(grid.x):
+ 			if track.cells[y*grid.x+x] != 5 or blocked[y*grid.x+x] != 0: continue
+ 			var near_road: bool = false
+@@ -82,13 +89,14 @@
+ 
+ 
+ 
+-static func creator_segments(document: Dictionary, selected_kind: String = "", presentation: bool = false) -> Array[Dictionary]:
++static func creator_segments(document: Dictionary, selected_kind: String = "", presentation: bool = false, cancelled: Callable = Callable()) -> Array[Dictionary]:
+ 	var result: Array[Dictionary] = []
+ 	if document.get("surface","asphalt") == "dirt": return result
+ 	var pieces: Array = document.get("pieces",[])
+ 	var topology: Dictionary = RoadPieces.prepare_endpoints(pieces)
+ 	var outlines: Array[Dictionary] = []
+ 	for index: int in range(pieces.size()):
++		if _cancelled(cancelled): return []
+ 		if pieces[index].kind == "bridge": continue
+ 		var polygons: Array[PackedVector2Array] = []
+ 		if pieces[index].kind == "spline":
+@@ -102,6 +110,7 @@
+ 	for index: int in range(pieces.size()):
+ 		if pieces[index].kind == "bridge": continue
+ 		if not selected_kind.is_empty() and pieces[index].kind != selected_kind: continue
++		if _cancelled(cancelled): return []
+ 		var points: PackedVector2Array = RoadPieces.samples(pieces[index])
+ 		var cuts: Array[Dictionary] = RoadEdges._join_cuts(pieces,index,topology)
+ 		var border_contours: Array[PackedVector2Array] = RoadEdges.presentation_contours(pieces,index,-0.20,topology) if presentation else RoadEdges.section_contours(pieces,index,-0.20,topology)
+@@ -109,6 +118,7 @@
+ 			var hole: bool = pieces[index].kind == "spline" and Geometry2D.is_polygon_clockwise(polygon)
+ 			var distance: float = 0.0
+ 			for edge: int in range(polygon.size()):
++				if edge % 32 == 0 and _cancelled(cancelled): return []
+ 				var a: Vector2 = polygon[edge]
+ 				var b: Vector2 = polygon[(edge+1)%polygon.size()]
+ 				if RoadEdges._on_join_cut(a,b,cuts) or (presentation and RoadEdges._on_join_cap(a,b,cuts)): continue
+@@ -120,6 +130,7 @@
+ 					nb = SplineBorders.kerb_normal(polygon,(edge+1)%polygon.size(),nb)
+ 				var steps: int = maxi(1,ceili(a.distance_to(b)/0.20))
+ 				for step: int in range(steps):
++					if step % 32 == 0 and _cancelled(cancelled): return []
+ 					var p: Vector2 = a.lerp(b,float(step)/steps)
+ 					var q: Vector2 = a.lerp(b,float(step+1)/steps)
+ 					var np: Vector2 = na.lerp(nb,float(step)/steps)
+@@ -181,34 +192,48 @@
+ 	return height
+ 
+ 
+-static func exclusion_mask(track: NativeTrack, paint: Array) -> PackedByteArray:
++static func exclusion_mask(track: NativeTrack, paint: Array, cancelled: Callable = Callable()) -> PackedByteArray:
+ 	var mask := PackedByteArray()
+ 	mask.resize(track.cells.size())
+ 	for index: int in range(track.cells.size()):
++		if index % 256 == 0 and _cancelled(cancelled): return PackedByteArray()
+ 		if track.cells[index] in [4,7]: mask[index] = 1
++	var visited: Dictionary = {}
+ 	for authored: Dictionary in paint:
++		if _cancelled(cancelled): return PackedByteArray()
+ 		var stroke: Dictionary = SurfacePaint.prepared(authored)
+ 		if stroke.get("protect_road",false): continue
+ 		if stroke.get("mode","") == "area":
+ 			var polygon: PackedVector2Array = SurfacePaint.contour(authored.points,"area")
+ 			var bounds: Rect2i = SurfacePaint.cell_bounds(polygon,track.half_extent,track.cell_size,Vector2i(track.grid_width,track.grid_height))
+ 			for y: int in range(bounds.position.y,bounds.end.y):
++				if _cancelled(cancelled): return PackedByteArray()
+ 				for x: int in range(bounds.position.x,bounds.end.x):
++					if mask[y*track.grid_width+x] != 0: continue
+ 					var point := Vector2((x+0.5)*track.cell_size-track.half_extent.x,track.half_extent.y-(y+0.5)*track.cell_size)
+ 					if Geometry2D.is_point_in_polygon(point,polygon): mask[y*track.grid_width+x] = 1
+ 			continue
+ 		var radius: float = float(stroke.width)*0.5
+ 		for index: int in range(stroke.points.size()):
++			if _cancelled(cancelled): return PackedByteArray()
+ 			var p: Array = stroke.points[index]
+ 			var q: Array = stroke.points[maxi(0,index-1)]
+ 			var a := Vector2(p[0],p[1])
+ 			var b := Vector2(q[0],q[1])
++			var key: Array = [a,b,radius,stroke.shape]
++			if visited.has(key): continue
++			visited[key] = true
+ 			var lo: Vector2 = a.min(b)-Vector2.ONE*radius
+ 			var hi: Vector2 = a.max(b)+Vector2.ONE*radius
+ 			for y: int in range(maxi(0,floori((track.half_extent.y-hi.y)/track.cell_size)),mini(track.grid_height,ceili((track.half_extent.y-lo.y)/track.cell_size))):
++				if _cancelled(cancelled): return PackedByteArray()
+ 				for x: int in range(maxi(0,floori((lo.x+track.half_extent.x)/track.cell_size)),mini(track.grid_width,ceili((hi.x+track.half_extent.x)/track.cell_size))):
++					if mask[y*track.grid_width+x] != 0: continue
+ 					var point := Vector2((x+0.5)*track.cell_size-track.half_extent.x,track.half_extent.y-(y+0.5)*track.cell_size)
+ 					var delta: Vector2 = point-Geometry2D.get_closest_point_to_segment(point,a,b)
+ 					var hit: bool = delta.length_squared() <= radius*radius if stroke.shape == "round" else maxf(absf(delta.x),absf(delta.y)) <= radius
+ 					if hit: mask[y*track.grid_width+x] = 1
+ 	return mask
++
++static func _cancelled(cancelled: Callable) -> bool:
++	return cancelled.is_valid() and bool(cancelled.call())
+--- a/game/track/snow_banks.gd
++++ b/game/track/snow_banks.gd
+@@ -6,7 +6,7 @@
+ const CONTACT_BUCKET: float = 0.5
+ var _contact_buckets: Dictionary = {}
+ 
+-func build(track: NativeTrack) -> void:
++func build(track: NativeTrack, _paint_exclusion: PackedByteArray = PackedByteArray(), cancelled: Callable = Callable()) -> void:
+ 	triangles.clear()
+ 	buckets.clear()
+ 	_contact_buckets.clear()
+@@ -20,6 +20,7 @@
+ 	var edges: Array[Dictionary] = []
+ 	var starts: Dictionary = {}
+ 	for y: int in range(grid.y):
++		if _cancelled(cancelled): return
+ 		for x: int in range(grid.x):
+ 			if track.cells[y*grid.x+x] != 0: continue
+ 			var nodes: Array[Vector2i] = [Vector2i(x,y),Vector2i(x+1,y),Vector2i(x+1,y+1),Vector2i(x,y+1)]
+@@ -33,10 +34,12 @@
+ 	var visited := PackedByteArray()
+ 	visited.resize(edges.size())
+ 	for first: int in range(edges.size()):
++		if _cancelled(cancelled): return
+ 		if visited[first] != 0: continue
+ 		var polygon := PackedVector2Array()
+ 		var current: int = first
+ 		while current >= 0 and visited[current] == 0:
++			if polygon.size() % 128 == 0 and _cancelled(cancelled): return
+ 			visited[current] = 1
+ 			var edge: Dictionary = edges[current]
+ 			polygon.append(Vector2(edge.a.x*cell_size-extent.x,extent.y-edge.a.y*cell_size))
+--- a/native/track_geometry/raster_geometry.hpp
++++ b/native/track_geometry/raster_geometry.hpp
+@@ -6,14 +6,16 @@
+     Vector2 extent;
+     double step;
+     PackedInt32Array cells,mask;
++    PackedByteArray exclusion;
+     bool load(const Dictionary &data) {
+         size=data.get("grid",Vector2i()); extent=data.get("extent",Vector2()); step=data.get("cell_size",0.0);
+         cells=data.get("cells",PackedInt32Array()); mask=data.get("mask",PackedInt32Array());
++        exclusion=data.get("exclusion",PackedByteArray());
+         return size.x>0 && size.y>0 && int64_t(size.x)*size.y==cells.size() && cells.size()<=16000000 &&
+-            (mask.is_empty() || mask.size()==cells.size()) && std::isfinite(step) && step>0 && extent.is_finite();
++            (mask.is_empty() || mask.size()==cells.size()) && (exclusion.is_empty() || exclusion.size()==cells.size()) && std::isfinite(step) && step>0 && extent.is_finite();
+     }
+     Vector2 point(int x,int y) const {return Vector2(float((x+0.5)*step-extent.x),float(extent.y-(y+0.5)*step));}
+-    Dictionary output() const {Dictionary d;d["cells"]=cells;d["mask"]=mask;return d;}
++    Dictionary output() const {Dictionary d;d["cells"]=cells;d["mask"]=mask;if (!exclusion.is_empty()) d["exclusion"]=exclusion;return d;}
+ };
+ inline Dictionary road(const Dictionary &data,Object *geometry,const Callable &cancelled) {
+     Grid g;if (!geometry || !g.load(data)) return {};
+@@ -53,29 +55,39 @@
+ inline Dictionary paint(const Array &strokes,const Dictionary &data,Object *geometry,const Callable &cancelled) {
+     Grid g;if (!geometry || !g.load(data) || g.mask.is_empty()) return {};
+     int32_t *values=g.cells.ptrw(),*mask=g.mask.ptrw();
++    uint8_t *excluded=g.exclusion.is_empty()?nullptr:g.exclusion.ptrw();
+     Stop stop{cancelled};
++    Dictionary previous;
+     for (int64_t s=0;s<strokes.size();++s) {
+         if (stop.check() || strokes[s].get_type()!=Variant::DICTIONARY) return {};
+         Dictionary stroke=strokes[s];Polygon points=stroke.get("points",Polygon());
++        if (s>0 && stroke.recursive_equal(previous,0)) continue;
++        previous=stroke;
+         if (points.is_empty()) continue;
+         for (int64_t i=0;i<points.size();++i) if (!points[i].is_finite()) return {};
+         bool area=String(stroke.get("mode",""))=="area",round=String(stroke.get("shape","round"))=="round",protect=stroke.get("protect_road",false);
+         double radius=double(stroke.get("width",0.0))*0.5;int surface=stroke.get("surface",0);
+         if (!std::isfinite(radius) || radius<0) return {};
+         Vector2 low=points[0],high=low;
++        // Repeated capsules within one stroke only assign the same constants;
++        // retain endpoint orientation for exact floating-point coverage.
++        std::set<std::array<float,4>> visited;
+         if (area) for (int64_t i=0;i<points.size();++i) {low=low.min(points[i]);high=high.max(points[i]);}
+         for (int64_t i=0;i<(area?1:points.size());++i) {
+             Vector2 a=points[i],b=points[std::max(int64_t(0),i-1)];
++            if (!area && !visited.insert({a.x,a.y,b.x,b.y}).second) continue;
+             if (!area) {low=a.min(b)-Vector2(1,1)*float(radius);high=a.max(b)+Vector2(1,1)*float(radius);}
+             int x0=std::max(0,int(std::floor((double(low.x)+g.extent.x)/g.step))),x1=std::min(g.size.x,int(std::ceil((double(high.x)+g.extent.x)/g.step)));
+             int y0=std::max(0,int(std::floor((double(g.extent.y)-high.y)/g.step))),y1=std::min(g.size.y,int(std::ceil((double(g.extent.y)-low.y)/g.step)));
+             for (int y=y0;y<y1;++y) {
+                 if (stop.check()) return {};
+                 for (int x=x0;x<x1;++x) {
++                    int at=y*g.size.x+x;
++                    if (values[at]==surface && mask[at]==(surface==0?0:1) && (!excluded || protect || excluded[at]!=0)) continue;
+                     Vector2 p=g.point(x,y);bool hit;
+                     if (area) hit=contains(geometry,p,points);
+                     else {Vector2 d=p-closest(geometry,p,a,b);hit=round?double(d.length_squared())<=radius*radius:std::max(std::abs(double(d.x)),std::abs(double(d.y)))<=radius;}
+-                    int at=y*g.size.x+x;
++                    if (hit && excluded && !protect) excluded[at]=1;
+                     if (hit && !(protect && (mask[at]==0 || mask[at]==2))) {values[at]=surface;mask[at]=surface==0?0:1;}
+                 }
+             }
+--- a/native/track_geometry/track_geometry.cpp
++++ b/native/track_geometry/track_geometry.cpp
+@@ -18,6 +18,7 @@
+ #include <cmath>
+ #include <cstdint>
+ #include <limits>
++#include <set>
+ using namespace godot;
+ 
+ namespace {
+--- a/native/track_geometry/PROVENANCE.md
++++ b/native/track_geometry/PROVENANCE.md
+@@ -10,6 +10,8 @@
+ `winter_geometry.hpp` ports the original snowbank row profiles, finite-difference normals, winding-preserving section emission and Winter marker selection from `native_track_visual.gd` and `winter_scenery.gd`. The pinned engine Noise API retains the original FastNoiseLite field. Existing snow deposits, materials and canonical snow contacts remain unchanged.
+ 
+ `raster_geometry.hpp` ports the original compiler road/shoulder coverage and ordered paint-cell loops plus editor RGB/L8 mask packing. Small stroke smoothing stays shared in GDScript. Compiler output participates in canonical track identity, so independent exact full-track comparisons and retained compiler goldens fence this optional implementation; the compiler version remains 27. Unsupported platforms and unavailable feature versions retain the original scalar compiler. These are local CPU changes with no server cache, network request or service cost.
++
++The 23 October 2026 gameplay F02 follow-up optionally returns the unprotected paint footprint from the same coverage calculations. Repeated oriented capsules and consecutive identical strokes are idempotent and coalesced without reordering different paint. Existing callers can omit this buffer; older libraries retain the cancellable GDScript exclusion fallback. Exact cells, road masks, kerb exclusions, prepared geometry and identities are covered by the retained independent originals and compiler goldens. See [GAMEPLAY_F01_F03_2026_10_23.md](../../docs/GAMEPLAY_F01_F03_2026_10_23.md) for build fingerprints, tests and measured limits.
+ 
+ The build reuses the already installed official `godot-cpp` checkout at commit `e83fd0904c13356ed1d4c3d09f8bb9132bdc6b77`, its existing release libraries, MinGW and Android NDK r28b. No SDK or package download is required. Godot's API and the public `SurfaceTool` retain mesh encoding/indexing behaviour; floating-point contraction and fast-math are disabled. Windows x86-64 and Android ARM64/x86-64 libraries are built; Android targets API 24 with 16 KiB ELF load alignment. Unsupported native platforms retain the original GDScript algorithm.
+ 
+--- a/game/platform/track_geometry/track_geometry.gdextension
++++ b/game/platform/track_geometry/track_geometry.gdextension
+@@ -4,6 +4,6 @@
+ reloadable = false
+ 
+ [libraries]
+-windows.x86_64 = "res://platform/track_geometry/bmt_track_geometry.windows.x86_64.236a6571f13e.dll"
++windows.x86_64 = "res://platform/track_geometry/bmt_track_geometry.windows.x86_64.c21fac59c70d.dll"
+ android.arm64 = "res://platform/track_geometry/libbmt_track_geometry.android.arm64.so"
+ android.x86_64 = "res://platform/track_geometry/libbmt_track_geometry.android.x86_64.so"
+--- a/game/tests/test_race_hitch_monitor.gd
++++ b/game/tests/test_race_hitch_monitor.gd
+@@ -7,10 +7,11 @@
+ 
+ class SlowRecords extends LocalRecords:
+ 	var delay_ms: int = 0
+-	func save_records() -> Error:
++	func save_vehicle_conditions(value: Dictionary, _background: bool = false) -> Error:
+ 		if delay_ms > 0:
+ 			OS.delay_msec(delay_ms)
+ 			delay_ms = 0
++		settings.vehicle_conditions = value.duplicate(true)
+ 		return OK
+ 
+ class LateCallback extends Node:
+@@ -37,6 +38,7 @@
+ 	DirAccess.make_dir_recursive_absolute(output)
+ 	var game: Node = load("res://core/game.tscn").instantiate()
+ 	var records := SlowRecords.new()
++	records.path = output.path_join("disposable-records.json")
+ 	game.preference_records = records
+ 	game.initial_track = NativeTrack.read("res://resources/tracks/starter_circuit.json")
+ 	game.production_mode = true
+--- /dev/null
++++ b/game/tests/test_condition_store.gd
+@@ -0,0 +1,69 @@
++extends SceneTree
++var checks: int = 0
++var failures: int = 0
++var folder: String
++func _initialize() -> void: run.call_deferred()
++func check(ok: bool, message: String) -> void:
++	checks += 1
++	if not ok: failures += 1; print("FAIL: ",message)
++func condition(dirt: float) -> Dictionary:
++	var value: Dictionary = VehicleWeathering.new().snapshot()
++	value.dirt = dirt
++	return value
++func run() -> void:
++	folder = "user://condition_store_"+TrackLibrary.unique_id()
++	DirAccess.make_dir_recursive_absolute(folder)
++	var records := LocalRecords.new(folder.path_join("records.json"))
++	for index: int in range(10000): records.records[str(index).sha256_text()] = {"race_ms":100000,"flying_ms":20000}
++	records.settings.vehicle_conditions = {"compact":condition(0.2)}
++	check(records.save_records() == OK,"seed legacy embedded cosmetics and large PB store")
++	var primary_hash: String = FileAccess.get_sha256(records.path)
++	var prior_records: Dictionary = records.records.duplicate(true)
++	var signals: Array[int] = [0]
++	records.achievement_progress_committed.connect(func() -> void: signals[0] += 1)
++	check(VehicleCondition.read(records,"compact") == condition(0.2),"legacy cosmetic data loads unchanged")
++	var queue_started: int = Time.get_ticks_usec()
++	check(VehicleCondition.save(records,"compact",condition(0.4),true) == OK,"periodic save enqueues immutable cosmetic packet")
++	var queue_us: int = Time.get_ticks_usec()-queue_started
++	check(records._condition_store._thread != null,"background save starts owned writer")
++	for value: float in [0.5,0.6,0.7,0.8,0.9]:
++		check(VehicleCondition.save(records,"compact",condition(value),true) == OK,"newer pending revision coalesces")
++	var shared := LocalRecords.new(records.path)
++	shared.load_records()
++	check(shared._condition_store == records._condition_store,"one writer for the same profile path")
++	check(VehicleCondition.read(shared,"compact").dirt == 0.9,"shared reader observes latest live revision")
++	check(shared._committed_settings.vehicle_conditions == shared._condition_store.committed,"new profile owner mirrors confirmed cosmetics separately from queued revisions")
++	check(VehicleCondition.save(records,"compact",condition(0.9)) == OK,"lifecycle barrier flushes newest queued revision")
++	check(FileAccess.get_sha256(records.path) == primary_hash,"cosmetic commit never rewrites full PB/settings file")
++	check(records.records == prior_records and signals[0] == 0,"cosmetics cannot commit PBs or achievement signals")
++	var store: Node = records._condition_store
++	var document: Variant = JSON.parse_string(FileAccess.get_file_as_string(store.path))
++	check(document.conditions.compact == JSON.parse_string(JSON.stringify(condition(0.9),"",true)),"worker commits exact last JSON mask and condition")
++	check(FileAccess.get_file_as_bytes(store.path).size() < 20000,"single-car packet remains small despite 10k PBs")
++	var committed: Dictionary = store.committed.duplicate(true)
++	check(DirAccess.make_dir_absolute(store.path+".tmp") == OK,"create isolated blocked temporary path")
++	check(VehicleCondition.save(records,"compact",condition(0.95)) != OK,"failed sidecar write is reported")
++	check(store.committed == committed,"failure retains confirmed cosmetic revision")
++	check(records.records == prior_records and FileAccess.get_sha256(records.path) == primary_hash,"failure never rolls back or rewrites unrelated records")
++	check(DirAccess.remove_absolute(store.path+".tmp") == OK,"remove only the disposable blocked temporary directory")
++	check(VehicleCondition.save(records,"compact",condition(0.95)) == OK,"unchanged queued value retries and commits after storage recovers")
++	var invalid: Dictionary = condition(1.0); invalid.dirt = INF
++	check(VehicleCondition.save(records,"compact",invalid) == ERR_INVALID_DATA,"invalid cosmetics do not enter writer")
++	check(VehicleCondition.read(records,"compact").dirt == 0.95,"invalid write retains last live condition")
++	check(VehicleCondition.save(records,"classic",condition(0.3),true) == OK,"other cars share ordered profile writer")
++	var weak_store: WeakRef = weakref(store)
++	records = null; shared = null
++	for index: int in range(6): await process_frame
++	check(weak_store.get_ref() == null,"last profile owner releases and joins writer without retained nodes")
++	var reopened := LocalRecords.new(folder.path_join("records.json")); reopened.load_records()
++	check(reopened.records == prior_records,"restart retains every PB")
++	check(VehicleCondition.read(reopened,"compact").dirt == 0.95 and VehicleCondition.read(reopened,"classic").dirt == 0.3,"owner release flushes final per-car conditions")
++	var sidecar: String = reopened._condition_store.path
++	reopened = null
++	for index: int in range(4): await process_frame
++	FileAccess.open(sidecar,FileAccess.WRITE).store_string("corrupt")
++	var recovered := LocalRecords.new(folder.path_join("records.json")); recovered.load_records()
++	check(VehicleCondition.read(recovered,"compact").dirt == 0.95,"corrupt primary falls back to last committed sidecar backup")
++	check(not recovered.records.is_empty(),"cosmetic corruption does not damage PB recovery")
++	print("CONDITION_STORE checks=%d failures=%d queue_10k_us=%d" % [checks,failures,queue_us])
++	quit(1 if failures else 0)
+--- /dev/null
++++ b/game/tests/test_paint_preparation.gd
+@@ -0,0 +1,103 @@
++extends SceneTree
++var checks: int = 0
++var failures: int = 0
++func _initialize() -> void: run.call_deferred()
++func check(ok: bool, message: String) -> void:
++	checks += 1
++	if not ok: failures += 1; print("FAIL: ",message)
++func reference(name: String, declaration: String) -> GDScript:
++	var script := GDScript.new()
++	script.source_code = FileAccess.get_file_as_string("res://tests/fixtures/gameplay_f01_f03_before/"+name+".gd.txt").replace("\r\n","\n").replace("class_name "+declaration+"\n","")
++	check(script.reload() == OK,"original reference compiles: "+name)
++	return script
++func grid_track(cells: PackedInt32Array, width: int = 64) -> NativeTrack:
++	var track := NativeTrack.new()
++	track.grid_width = width; track.grid_height = width; track.cell_size = 0.5
++	track.half_extent = Vector2.ONE*float(width)*0.25
++	track.cells = cells
++	return track
++func run() -> void:
++	var old_compiler: GDScript = reference("track_compiler","TrackCompiler")
++	var old_kerbs: GDScript = reference("road_kerbs","RoadKerbs")
++	var acceleration = preload("res://track/geometry_acceleration.gd")
++	var original_native: bool = acceleration.raster_enabled
++	for mode: String in ["free","line","area"]:
++		for shape: String in ["round","square"]:
++			for protected: bool in [false,true]:
++				var strokes: Array = []
++				for surface: int in range(8):
++					var points: Array = [[-10.25+surface*0.25,-8],[9,7],[5,10.25]]
++					if mode == "area": points = [[-10,-8],[9,-8],[9,8],[-10,8]]
++					strokes.append({"surface":surface,"width":float(surface+1),"shape":shape,"mode":mode,"protect_road":protected if surface%2 == 0 else not protected,"points":points})
++				strokes.append(strokes[-1].duplicate(true))
++				var initial := PackedInt32Array(); initial.resize(64*64); initial.fill(1)
++				for y: int in range(64):
++					for x: int in range(29,35): initial[y*64+x] = 0
++				var expected: PackedInt32Array = initial.duplicate()
++				var expected_road: PackedInt32Array = initial.duplicate()
++				acceleration.raster_enabled = false
++				old_compiler._paint(strokes,expected,Vector2i(64,64),Vector2(16,16),0.5,expected_road)
++				var expected_mask: PackedByteArray = old_kerbs.exclusion_mask(grid_track(expected),strokes)
++				for native: bool in [false,true]:
++					acceleration.raster_enabled = native
++					var actual: PackedInt32Array = initial.duplicate()
++					var actual_road: PackedInt32Array = initial.duplicate()
++					var mask: PackedByteArray = TrackCompiler._paint(strokes,actual,Vector2i(64,64),Vector2(16,16),0.5,actual_road)
++					check(actual == expected and actual_road == expected_road,"ordered paint/protection exact: "+mode+shape+str(protected)+str(native))
++					for index: int in range(actual.size()):
++						if actual[index] in [4,7]: mask[index] = 1
++					check(mask == expected_mask,"reused exclusion matches original coverage: "+mode+shape+str(protected)+str(native))
++	var initial := PackedInt32Array(); initial.resize(4096); initial.fill(1)
++	var cancelled: Array[int] = [0]
++	var paint: Array = [{"surface":2,"width":40.0,"shape":"round","points":[[-16,-16],[16,16]],"mode":"free"}]
++	var mask: PackedByteArray = RoadKerbs.exclusion_mask(grid_track(initial),paint,func() -> bool: cancelled[0] += 1; return cancelled[0] >= 25)
++	check(mask.is_empty() and cancelled[0] == 25,"fallback cancellation is observed inside exclusion rows")
++	for native: bool in [false,true]:
++		acceleration.raster_enabled = native
++		cancelled[0] = 0
++		var cells: PackedInt32Array = initial.duplicate(); var road: PackedInt32Array = initial.duplicate()
++		mask = TrackCompiler._paint(paint,cells,Vector2i(64,64),Vector2(16,16),0.5,road,func() -> bool: cancelled[0] += 1; return cancelled[0] >= 2)
++		check(mask.is_empty(),"cancelled paint never publishes a prepared exclusion mask: "+str(native))
++	acceleration.raster_enabled = original_native
++	var doc: Dictionary = TrackDocument.create_default()
++	var points: Array = []
++	for index: int in range(512): points.append([-110,-110] if index%2 == 0 else [110,110])
++	var stroke: Dictionary = {"surface":1,"width":40.0,"shape":"round","mode":"free","points":points}
++	for index: int in range(32): doc.paint.append(stroke.duplicate(true))
++	check(TrackDocument.validate(doc).is_empty(),"stress case respects 512 points/stroke and 16384 total points")
++	var start: int = Time.get_ticks_usec()
++	var compiled: NativeTrack = TrackCompiler.compile(doc)
++	var stress_us: int = Time.get_ticks_usec()-start
++	check(compiled != null,"maximum repeated-paint document completes")
++	var reduced: Dictionary = doc.duplicate(true)
++	reduced.paint = [stroke.duplicate(true)]; reduced.paint[0].points = points.slice(0,3)
++	var equivalent: NativeTrack = TrackCompiler.compile(reduced)
++	check(compiled.cells == equivalent.cells and compiled.kerbs.blocked == equivalent.kerbs.blocked,"idempotent stroke reduction retains exact complete cells and kerb exclusions")
++	var cache: Dictionary = {"enabled":true}
++	var first: NativeTrack = TrackCompiler.compile(reduced,cache)
++	var restored: NativeTrack = TrackCompiler.compile(reduced,cache)
++	check(first.cells == restored.cells and first.kerbs.blocked == restored.kerbs.blocked,"prepared cache restores exact shared paint coverage")
++	cancelled[0] = 0
++	check(NativeTrack.from_data(equivalent.metadata,equivalent.content_hash,equivalent.cells,equivalent.deck_cells,equivalent.kerbs.blocked,func() -> bool: cancelled[0] += 1; return cancelled[0] >= 5) == null,"from_data fences partial cancelled contact preparation")
++	var large_cells := PackedInt32Array(); large_cells.resize(640*640); large_cells.fill(1)
++	var large_track: NativeTrack = grid_track(large_cells,640)
++	var entered := Semaphore.new()
++	var observed: Array[int] = [0]
++	var large_paint: Array = [{"surface":2,"width":40.0,"shape":"round","mode":"free","points":[[-110,-110],[110,110]]}]
++	var job = preload("res://editor/work_job.gd").start(func(stop: Callable) -> PackedByteArray:
++		return RoadKerbs.exclusion_mask(large_track,large_paint,func() -> bool:
++			observed[0] += 1
++			if observed[0] == 1610: entered.post()
++			return stop.call()),self)
++	var deadline: int = Time.get_ticks_msec()+5000
++	var started: bool = false
++	while not job.done and Time.get_ticks_msec() < deadline:
++		if entered.try_wait(): started = true; break
++		await process_frame
++	job.cancel()
++	var cancel_start: int = Time.get_ticks_usec()
++	while not job.done and Time.get_ticks_msec() < deadline: await process_frame
++	check(started and job.done and job.result.is_empty(),"real owned worker cancels inside mask without publishing partial output")
++	print("PAINT_CANCEL_JOIN_MS: ",(Time.get_ticks_usec()-cancel_start)/1000.0)
++	print("PAINT_PREPARATION checks=%d failures=%d stress_16384_points_ms=%.3f" % [checks,failures,stress_us/1000.0])
++	quit(1 if failures else 0)
+--- /dev/null
++++ b/game/tests/test_dynamic_prop_work.gd
+@@ -0,0 +1,88 @@
++extends SceneTree
++var checks: int = 0
++var failures: int = 0
++class ReferenceTrack extends NativeTrack:
++	var original_tyres: GDScript
++	var original_props: GDScript
++	func step_props(state: VehicleState, from: Vector2, config: HandlingConfig, seconds: float) -> void:
++		original_tyres.step(state,tyre_origins,_contact,from,config,seconds)
++		original_props.step(state,hazard_objects,_contact,from,seconds,config.mass,config.collision_radius)
++func _initialize() -> void: run.call_deferred()
++func check(ok: bool, message: String) -> void:
++	checks += 1
++	if not ok: failures += 1; print("FAIL: ",message)
++func reference(name: String, declaration: String) -> GDScript:
++	var script := GDScript.new()
++	script.source_code = FileAccess.get_file_as_string("res://tests/fixtures/gameplay_f01_f03_before/"+name+".gd.txt").replace("\r\n","\n").replace("class_name "+declaration+"\n","")
++	check(script.reload() == OK,"original reference compiles: "+name)
++	return script
++func run() -> void:
++	var old_tyres: GDScript = reference("loose_tyres","LooseTyres")
++	var old_props: GDScript = reference("light_props","LightProps")
++	var config: HandlingConfig = VehicleCatalog.config("compact")
++	var random := RandomNumberGenerator.new(); random.seed = 20261023
++	var wall: Callable = func(p: Vector2, radius: float, _e: bool) -> Vector3: return Vector3(1,0,1) if p.x+radius > 8.0 else Vector3.ZERO
++	for scenario: int in range(16):
++		var origins := PackedVector2Array()
++		for index: int in range(24): origins.append(Vector2((index%6)*1.05-3,(index/6)*1.05))
++		var objects: Array = []
++		for index: int in range(24): objects.append({"kind":CreatorCatalog.SOFT[index%CreatorCatalog.SOFT.size()],"position":[-5+(index%8)*1.4,2+(index/8)*1.4],"rotation":0,"scale":1.0})
++		var a := VehicleState.new(); var b := VehicleState.new()
++		a.position = Vector2(0,-7); b.position = a.position
++		var saved: Dictionary = {}
++		for tick: int in range(120):
++			var from: Vector2 = a.position
++			a.velocity = Vector2(random.randf_range(-5,5),8 if tick%40 < 25 else -4)
++			b.velocity = a.velocity
++			a.position += a.velocity*VehicleSimulation.STEP; b.position += b.velocity*VehicleSimulation.STEP
++			a.track_elevated = scenario%4 == 0; b.track_elevated = a.track_elevated
++			old_tyres.step(a,origins,wall,from,config,VehicleSimulation.STEP)
++			LooseTyres.step(b,origins,wall,from,config,VehicleSimulation.STEP)
++			old_props.step(a,objects,wall,from,VehicleSimulation.STEP,config.mass,config.collision_radius)
++			LightProps.step(b,objects,wall,from,VehicleSimulation.STEP,config.mass,config.collision_radius)
++			check(var_to_bytes(a.snapshot()) == var_to_bytes(b.snapshot()),"byte-exact tyre/prop state scenario %d tick %d" % [scenario,tick])
++			if failures > 0: quit(1); return
++			if tick == 30: saved = RewindHistory.properties(a)
++			if tick == 60:
++				RewindHistory.restore(a,saved); RewindHistory.restore(b,saved)
++			if tick == 80:
++				# In-place edits of canonical rows and descriptors must invalidate work.
++				a.loose_tyres[0][0] += 0.03; b.loose_tyres[0][0] += 0.03
++				objects[0].scale = 2.0
++			if tick == 90:
++				a.loose_tyres.append([20.0,20.0,0.0,0.0,0.0]); b.loose_tyres.append([20.0,20.0,0.0,0.0,0.0])
++			a.tick += 1; b.tick += 1
++	var state := VehicleState.new(); state.position = Vector2(-30,-30)
++	var calls: Array[int] = [0]
++	var clear: Callable = func(_p: Vector2,_r: float,_e: bool) -> Vector3: calls[0] += 1; return Vector3.ZERO
++	LightProps.step(state,[{"kind":"cone","position":[10,10],"rotation":0}],clear,state.position,VehicleSimulation.STEP,config.mass,config.collision_radius)
++	check(calls[0] == 0,"distant resting simple prop makes no world contact query")
++	check(not RewindHistory.properties(state).has("light_prop_work"),"derived work is excluded from rewind properties")
++	# Full canonical driving, all five cars/biomes, with the task-original prop
++	# solvers substituted only on the reference track. Keep exact byte checks.
++	for biome: String in TrackTheme.IDS:
++		var doc: Dictionary = TrackDocument.create_default(); doc.theme = biome
++		var track: NativeTrack = TrackCompiler.compile(doc)
++		track.tyre_origins.clear(); track.hazard_objects.clear()
++		for index: int in range(24):
++			track.tyre_origins.append(track.spawn+Vector2((index%6)*1.05-2.6,4+(index/6)*1.05))
++			var position: Vector2 = track.spawn+Vector2((index%8)*1.4-5,10+(index/8)*1.4)
++			track.hazard_objects.append({"kind":CreatorCatalog.SOFT[index%CreatorCatalog.SOFT.size()],"position":[position.x,position.y],"rotation":0})
++		var prior_track := ReferenceTrack.new()
++		for property: Dictionary in track.get_property_list():
++			if int(property.usage) & PROPERTY_USAGE_SCRIPT_VARIABLE: prior_track.set(property.name,track.get(property.name))
++		prior_track.original_tyres = old_tyres; prior_track.original_props = old_props
++		for car: String in VehicleCatalog.IDS:
++			var prior := VehicleSimulation.new(VehicleCatalog.config(car)); var current := VehicleSimulation.new(VehicleCatalog.config(car))
++			prior.reset(track.spawn,0.0); current.reset(track.spawn,0.0)
++			var saved: Dictionary = {}
++			for tick: int in range(600):
++				var frame := DriveFrame.new(); frame.throttle = 255 if tick%120 < 95 else 0; frame.brake = 128 if tick%120 >= 95 else 0; frame.steer = 24 if tick%180 < 90 else -24
++				frame.handbrake = 255 if tick%160 > 145 else 0
++				prior.step(frame,prior_track); current.step(frame,track)
++				check(var_to_bytes(prior.state.snapshot()) == var_to_bytes(current.state.snapshot()),"full physics exact: %s/%s tick %d" % [biome,car,tick])
++				if failures > 0: quit(1); return
++				if tick == 250: saved = RewindHistory.properties(prior.state)
++				if tick == 400: RewindHistory.restore(prior.state,saved); RewindHistory.restore(current.state,saved)
++	print("DYNAMIC_PROP_WORK checks=%d failures=%d" % [checks,failures])
++	quit(1 if failures else 0)
+--- /dev/null
++++ b/game/tests/profile_gameplay_f01_f03.gd
+@@ -0,0 +1,110 @@
++extends SceneTree
++## Desktop paired stage timings; not a phone/FPS/thermal certification.
++const OUTPUT: String = "res://../docs/evidence/gameplay-f01-f03-2026-10-23/paired-profile.json"
++var results: Dictionary = {"kind":"paired desktop microbenchmarks","engine":Engine.get_version_info().string,"platform":OS.get_name(),"samples":{}}
++func _initialize() -> void: run.call_deferred()
++func reference(name: String, declaration: String) -> GDScript:
++	var script := GDScript.new()
++	script.source_code = FileAccess.get_file_as_string("res://tests/fixtures/gameplay_f01_f03_before/"+name+".gd.txt").replace("\r\n","\n").replace("class_name "+declaration+"\n","")
++	assert(script.reload() == OK)
++	return script
++func stats(samples: Array) -> Dictionary:
++	var ordered: Array = samples.duplicate(); ordered.sort()
++	return {"unit":"us","median":ordered[ordered.size()/2],"min":ordered.front(),"max":ordered.back(),"samples":samples}
++func condition(dirt: float) -> Dictionary:
++	var value: Dictionary = VehicleWeathering.new().snapshot(); value.dirt = dirt
++	return value
++func clear(_p: Vector2,_r: float,_e: bool) -> Vector3: return Vector3.ZERO
++func run() -> void:
++	var old_records: GDScript = reference("local_records","LocalRecords")
++	var folder: String = "user://gameplay_profile_"+TrackLibrary.unique_id()
++	DirAccess.make_dir_recursive_absolute(folder)
++	for count: int in [1000,10000]:
++		var before: RefCounted = old_records.new(folder.path_join("before_%d.json" % count))
++		var after := LocalRecords.new(folder.path_join("after_%d.json" % count))
++		for index: int in range(count): before.records[str(index).sha256_text()] = {"race_ms":100000,"flying_ms":20000}
++		after.records = before.records.duplicate(true)
++		before.settings.vehicle_conditions = {"compact":condition(0.0)}
++		after.settings.vehicle_conditions = {"compact":condition(0.0)}
++		assert(before.save_records() == OK and after.save_records() == OK)
++		VehicleCondition.read(after,"compact")
++		var original_hash: String = FileAccess.get_sha256(after.path)
++		var full: Array = []; var queue: Array = []; var barrier: Array = []
++		for index: int in range(15):
++			var value: Dictionary = condition(float(index+1)/20.0)
++			before.settings.vehicle_conditions.compact = value
++			var begin: int = Time.get_ticks_usec()
++			assert(before.save_records() == OK)
++			full.append(Time.get_ticks_usec()-begin)
++			begin = Time.get_ticks_usec()
++			assert(VehicleCondition.save(after,"compact",value,true) == OK)
++			queue.append(Time.get_ticks_usec()-begin)
++			begin = Time.get_ticks_usec()
++			assert(after._condition_store.flush() == OK)
++			barrier.append(Time.get_ticks_usec()-begin)
++		assert(FileAccess.get_sha256(after.path) == original_hash)
++		results.samples["condition_%d_records" % count] = {"before_full_main_thread":stats(full),"after_main_thread_enqueue":stats(queue),"after_explicit_barrier_separate":stats(barrier)}
++		before = null; after = null
++		for frame: int in range(3): await process_frame
++	var old_tyres: GDScript = reference("loose_tyres","LooseTyres")
++	var old_props: GDScript = reference("light_props","LightProps")
++	var config: HandlingConfig = VehicleCatalog.config("compact")
++	for count: int in [96,576]:
++		var origins := PackedVector2Array()
++		for index: int in range(count): origins.append(Vector2(20+(index%24)*2,20+(index/24)*2))
++		var states: Array = [VehicleState.new(),VehicleState.new()]
++		for state: VehicleState in states: state.position = Vector2(-20,-20)
++		var samples: Array = [[],[]]
++		for batch: int in range(5):
++			for variant: int in ([0,1] if batch%2 == 0 else [1,0]):
++				var implementation: GDScript = old_tyres if variant == 0 else LooseTyres
++				var state: VehicleState = states[variant]
++				for warm: int in range(5): implementation.step(state,origins,clear,state.position,config,VehicleSimulation.STEP)
++				var begin: int = Time.get_ticks_usec()
++				for tick: int in range(120): implementation.step(state,origins,clear,state.position,config,VehicleSimulation.STEP)
++				samples[variant].append(float(Time.get_ticks_usec()-begin)/120.0)
++		assert(var_to_bytes(states[0].snapshot()) == var_to_bytes(states[1].snapshot()))
++		results.samples["resting_tyres_%d_per_tick" % count] = {"before":stats(samples[0]),"after":stats(samples[1])}
++	var objects: Array = []
++	for index: int in range(96): objects.append({"kind":"cone","position":[20+(index%12)*3,20+(index/12)*3],"rotation":0})
++	var states: Array = [VehicleState.new(),VehicleState.new()]
++	for state: VehicleState in states: state.position = Vector2(-20,-20)
++	var samples: Array = [[],[]]
++	for batch: int in range(5):
++		for variant: int in ([0,1] if batch%2 == 0 else [1,0]):
++			var implementation: GDScript = old_props if variant == 0 else LightProps
++			var state: VehicleState = states[variant]
++			for warm: int in range(5): implementation.step(state,objects,clear,state.position,VehicleSimulation.STEP,config.mass,config.collision_radius)
++			var begin: int = Time.get_ticks_usec()
++			for tick: int in range(600): implementation.step(state,objects,clear,state.position,VehicleSimulation.STEP,config.mass,config.collision_radius)
++			samples[variant].append(float(Time.get_ticks_usec()-begin)/600.0)
++	assert(var_to_bytes(states[0].snapshot()) == var_to_bytes(states[1].snapshot()))
++	results.samples.resting_cones_96_per_tick = {"before":stats(samples[0]),"after":stats(samples[1])}
++	var old_kerbs: GDScript = reference("road_kerbs","RoadKerbs")
++	var track := NativeTrack.new(); track.grid_width = 128; track.grid_height = 128; track.half_extent = Vector2(32,32); track.cell_size = 0.5; track.cells.resize(128*128); track.cells.fill(1)
++	var points: Array = []
++	for index: int in range(32): points.append([-25,-25] if index%2 == 0 else [25,25])
++	var paint: Array = []
++	for index: int in range(4): paint.append({"surface":1,"width":12.0,"shape":"round","mode":"free","points":points.duplicate(true)})
++	samples = [[],[]]
++	var masks: Array = [PackedByteArray(),PackedByteArray()]
++	for batch: int in range(5):
++		for variant: int in ([0,1] if batch%2 == 0 else [1,0]):
++			var implementation: GDScript = old_kerbs if variant == 0 else RoadKerbs
++			var begin: int = Time.get_ticks_usec()
++			masks[variant] = implementation.exclusion_mask(track,paint)
++			samples[variant].append(Time.get_ticks_usec()-begin)
++	assert(masks[0] == masks[1])
++	results.samples.exclusion_fallback_128_points = {"before":stats(samples[0]),"after":stats(samples[1]),"note":"Fallback-only comparison. Normal new compiler reuses its paint mask, avoiding this second raster entirely."}
++	var doc: Dictionary = TrackDocument.create_default(); points.clear()
++	for index: int in range(512): points.append([-110,-110] if index%2 == 0 else [110,110])
++	for index: int in range(32): doc.paint.append({"surface":1,"width":40.0,"shape":"round","mode":"free","points":points.duplicate(true)})
++	var stress: Array = []
++	for batch: int in range(5):
++		var begin: int = Time.get_ticks_usec()
++		assert(TrackCompiler.compile(doc) != null)
++		stress.append(Time.get_ticks_usec()-begin)
++	results.samples.full_compile_16384_repeated_points_after = stats(stress)
++	var file := FileAccess.open(OUTPUT,FileAccess.WRITE); file.store_string(JSON.stringify(results,"\t",true)+"\n"); file.close()
++	for key: String in results.samples: print(key,": ",JSON.stringify(results.samples[key]))
++	quit()
+--- /dev/null
++++ b/docs/GAMEPLAY_F01_F03_2026_10_23.md
+@@ -0,0 +1,107 @@
++# Gameplay audit fixes F01, F02 and F03
++
++23 October 2026. Implements the owner's request to fix the first three findings in [the gameplay audit](GAMEPLAY_AUDIT_2026_10_23.md). Source changes and desktop verification are complete. Android execution and sustained device performance remain unmeasured.
++
++## Requirements and resulting behavior
++
++| ID | Requirement | Implementation |
++|---|---|---|
++| GPA-F01 | Remove full records/settings commits from periodic cosmetic saving. | A profile-owned, versioned condition sidecar uses one low-priority writer, immutable packets and latest-revision coalescing. The five-second racing callback queues only cosmetics. |
++| GPA-F01-R | Preserve local-only data, atomic recovery, per-car masks and commit-only PB/achievement semantics. | Legacy embedded conditions load unchanged. Sidecar primary/backup recovery, bounded validation, explicit lifecycle flushes and write-failure retry are independent of PB commits. |
++| GPA-F02 | Avoid duplicate paint-exclusion rasterization and make cancellation effective inside it. | Compiler paint emits its exact exclusion footprint once; native-track preparation reuses it. Native/scalar paths coalesce identical work. Fallback rows and contact preparation observe cancellation; canceled partial tracks are discarded. |
++| GPA-F03 | Remove avoidable distant/resting prop and tyre work without altering driving. | Retain descriptors, scratch arrays, buckets, pair order and geometry; use conservative swept candidates and proven stationary skips. Derived data stays outside canonical snapshots and rewind. |
++| R01/Q01 | Preserve features, exact physics/track output and independent regressions; retain actual evidence. | Task-original reference files, exact state comparisons, unchanged compiler goldens, existing lifecycle/replay tests and paired measurements are retained. |
++
++## F01: cosmetic persistence
++
++`game/persistence/condition_store.gd` owns a small `<records-path>.conditions.json` file with schema 1. It validates the existing five-car cosmetic collection and caps file size at 128 KiB. There is one tree-owned service and writer per canonical profile path, with weak record-owner references. A packet cannot mutate while the writer serializes, verifies and atomically rotates its temporary/primary/backup files. Repeated updates coalesce to the latest revision. Failed writes retain the confirmed revision and retry with backoff.
++
++`LocalRecords` mirrors live and confirmed cosmetic revisions without copying the full PB dictionary. `VehicleCondition` preserves its existing synchronous API for Garage actions and lifecycle saves; Game requests background operation only for its periodic callback. Existing finish, retry, pause/background and exit save sites retain their flush barriers. Last-owner removal and tree exit join the writer and flush the latest pending packet. Temporary files are never treated as committed data. No network or account data is involved.
++
++Ordinary PB/settings writes retain their original validation, atomic commit, rollback and achievement notification behavior. They can still include legacy cosmetics, after flushing the sidecar. Full-store result/settings writes remain synchronous; this fix specifically removes the recurring cosmetic trigger during driving. A lifecycle flush may wait for the small outstanding write. Storage failure is reported and cannot commit a PB or achievement accidentally. There is no guarantee of retaining the last queued cosmetic revision after forced process termination.
++
++Changed runtime files: `game/core/game.gd`, `game/persistence/local_records.gd`, new `game/persistence/condition_store.gd`, and `game/vehicle/vehicle_condition.gd`. The hitch-monitor test now injects its original 180 ms delay at the new condition-save boundary, retains every timing assertion, and uses a disposable records path.
++
++## F02: one paint footprint and cooperative cancellation
++
++`TrackCompiler._paint()` accumulates the union of unprotected paint coverage alongside the existing ordered cell/road-mask writes. That footprint is passed through `NativeTrack.from_data()` into `RoadKerbs.build()`. Final solid cells are still included. Preview reuse stores the footprint with its raster key and counts it against the existing 8 MiB auxiliary allowance; prepared-track snapshots remain under their existing separate budget.
++
++The optional native result adds an exclusion buffer without changing the method or required feature version. An older library continues painting and falls back to the cancellable scalar exclusion builder. The native and scalar algorithms retain oriented endpoint calculations, paint order, road protection and surface assignments. Identical oriented capsules within a stroke and consecutive identical strokes are idempotent. The exclusion-only fallback also deduplicates identical coverage across strokes and skips cells already covered.
++
++Cancellation is checked inside raster rows, segment/contour preparation and Winter contact preparation. `from_data()` returns null after cancellation, preventing partially prepared contact data from reaching a race. This removes the audited uncancellable duplicate raster loop. Arbitrarily complex unique strokes still consume work proportional to their coverage; no claim is made that every legal track now loads within one fixed latency budget. No authored content is rejected or simplified, and the compiler remains version 27 because exact output and identities remain unchanged.
++
++Changed files: `game/editor/track_compiler.gd`, `game/editor/prepared_track_cache.gd`, `game/track/native_track.gd`, `game/track/road_kerbs.gd`, `game/track/snow_banks.gd`, `native/track_geometry/raster_geometry.hpp`, `native/track_geometry/track_geometry.cpp`, the extension descriptor and its matching Windows/Android binaries. Native provenance is updated separately.
++
++## F03: retained deterministic prop work
++
++`LightProps.step()` retains filtered immutable descriptors/radii, detects in-place descriptor changes, and prepares breakable data only when relevant. A conservative swept rectangle excludes distant simple props before the original exact car test. Proven zero-motion world queries are skipped; signed-zero edge behavior is preserved. Burning barrels, breakable contacts and fragments retain their specialized simulation.
++
++`LooseTyres.step()` retains scratch buffers, spatial buckets, stable ordered pairs and pair geometry while canonical positions remain unchanged. Every canonical row is still inspected, so rewind/restoration and in-place mutations invalidate derived geometry. Swept car candidates are collected in ascending body order; large query spans conservatively use all bodies. Original friction, impulses, contact thresholds, 16 solver iterations and four separation passes remain intact. Metadata caches are excluded from snapshots, rewind properties and uploaded race data.
++
++Resting-row checks remain O(N), and retained buffers trade bounded per-state memory for less repeated allocation. Dense interacting tyre piles still have the separate F04 pair/solver scalability limitation. Active islands, altered sleeping thresholds or reduced iterations were deliberately unnecessary for this fix. Handling parameters, physics version 0.66, 120 Hz stepping and competitive timing are unchanged.
++
++## Paired desktop results
++
++Pinned Godot 4.7.2 on Windows; graphical checks used the RTX 3090. The profile loads independent task-original implementations in the same process. These are stage microbenchmarks, not release APK frame times or Android/thermal results. Raw samples and methodology are in [paired-profile.json](evidence/gameplay-f01-f03-2026-10-23/paired-profile.json) and `game/tests/profile_gameplay_f01_f03.gd`.
++
++| Workload | Before median | After median | Sampling |
++|---|---:|---:|---|
++| Cosmetic update, 1,000 PB records, main thread | 38.823 ms | 0.333 ms enqueue | 15 paired updates |
++| Cosmetic update, 10,000 PB records, main thread | 391.634 ms | 0.415 ms enqueue | 15 paired updates |
++| Explicit small-sidecar lifecycle barrier, 10,000 PBs | — | 3.963 ms | Measured separately; maximum 15.209 ms |
++| 96 separated resting tyres | 0.325 ms/tick | 0.045 ms/tick | Five alternating 120-tick batches |
++| 576 separated resting tyres | 1.808 ms/tick | 0.217 ms/tick | Five alternating 120-tick batches |
++| 96 distant resting cones | 0.333 ms/tick | 0.103 ms/tick | Five alternating 600-tick batches |
++| Exclusion fallback, 128 repeated paint points | 539.405 ms | 14.058 ms | Five alternating pairs; exact masks |
++| Full compile, legal 16,384 repeated long-diagonal paint points | Not run: analytical multibillion-visit original | 261.371 ms | Five new-path compiles; maximum 298.152 ms |
++
++The normal new compiler bypasses the separately measured exclusion fallback by sharing its prepared footprint. Tyre/prop timings exclude real terrain-query cost; real-contact correctness is tested separately. The unchanged PB-file hash confirms that timed cosmetic updates do not rewrite it.
++
++## Actual validation
++
++All executions used isolated APPDATA and disposable test saves. The new tests retain independent task-start scripts under `game/tests/fixtures/gameplay_f01_f03_before/`; source hashes are in [before.json](evidence/gameplay-f01-f03-2026-10-23/before.json).
++
++| Test | Result |
++|---|---|
++| Condition store: 10k PBs, coalescing/shared owner, confirmed/live separation, failed writes/retry, last-owner cleanup, restart, corrupt-primary recovery | 31/31 headless, 31/31 Compatibility, 31/31 desktop Mobile |
++| Paint preparation: all eight surfaces, modes/shapes/protection/order, scalar/native equality, maximum repeated paint, cache and real-worker cancellation | 59/59 on each of headless, Compatibility and desktop Mobile |
++| Prop work: original exact solvers, rewinds, descriptor/row edits, all soft kinds; full simulation across all five cars/biomes | 16,924/16,924 headless and desktop Mobile; earlier focused 1,924/1,924 Compatibility |
++| Existing tyre equivalence | 13,200 exact whole-state comparisons |
++| Existing compiler goldens / native Winter/raster | 8/8 unchanged; 482/482 |
++| New preparation with task-original native library | 8/8 compiler goldens and 482/482 native/scalar checks |
++| Records / driving / checkpoints / tyre-load | 54 / 72 / 266 / 75 checks passed |
++| Breakable props / burning barrel / rewind | 46 / 54 / 61 passed |
++| Cars, including 15 full five-lap recordings/replays / handling / bridge contacts | 105 / 88 / 16 passed |
++| Road cache / editor preparation / App / achievement notification | 70 / 270 / 141 / 291 passed |
++| Graphical race hitch monitor / personal ghosts / Garage exterior inspection | 47 / 38 / 45 passed |
++| Existing wash, persistence and Garage/race lifecycle | 1,383 headless / 1,402 Compatibility passed; captures retained |
++| Pinned import / final script parse | Passed; 942 scripts, zero failures |
++
++Two pre-existing regression failures remain documented, with assertions intact: `test_surface_modes.gd` reports its oil-placement failure (50 checks, one failure) on both task-original and fixed sources; `test_breakable_contract.gd` reports the same 689 historical no-breakable physics assertions out of 2,219 on both. Its old geometry checks and legacy movable-prop comparisons pass. This task does not change those fixtures or assert a globally green suite. The current-version independent physics comparisons above pass exactly.
++
++Initial corrections are retained in the evidence report: a RefCounted destruction-hook ownership approach was replaced with a tree-owned writer; JSON-number normalization and expected-corruption parsing were corrected in the save test; the cancellation test now requests cancellation within the native callback sampling cadence. Two isolated-copy reproduction commands initially lacked historical fixture/report directories and were rerun after fixing only that test environment. An incorrect Garage test filename was rejected before execution. No failing gameplay invariant was removed or relaxed.
++
++## Reproduction and native build
++
++Run from the repository root with the pinned engine installed. Point APPDATA at a new disposable directory under `build/`; do not use owner saves.
++
++```powershell
++$env:APPDATA = Join-Path (Get-Location).Path 'build/gameplay-fixes-2026-10-23/appdata'
++powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1 -Action BuildTrackGeometry -NativePlatform all
++powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1 -Action TestScript -ScriptPath res://tests/test_condition_store.gd
++powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1 -Action TestScript -ScriptPath res://tests/test_paint_preparation.gd
++powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1 -Action TestScript -ScriptPath res://tests/test_dynamic_prop_work.gd
++powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1 -Action TestScript -ScriptPath res://tests/profile_gameplay_f01_f03.gd
++```
++
++The same focused tests were run with `-Graphical -RenderingMethod gl_compatibility` and `mobile` as detailed above. Existing regression commands, logs, exact file hashes and the scoped source checkpoint are listed in [report.json](evidence/gameplay-f01-f03-2026-10-23/report.json).
++
++Native build: existing godot-cpp `e83fd0904c13356ed1d4c3d09f8bb9132bdc6b77`, MinGW, NDK r28b, API 24, O2, floating-point contraction disabled. Final SHA-256:
++
++- Windows `bmt_track_geometry.windows.x86_64.c21fac59c70d.dll`: `c21fac59c70d3cfcb847d3201a5928b32fc9c711c419b02aa2d3bc2309ca7a24`.
++- Android ARM64: `dd811096928c0df91bdfc72ce44268061aea5d07441df7a3942855d19c062cd2`.
++- Android x86-64: `262bde661429776a566f1e1246e1a0ac0ab49a2658470764d047211b4e9c10c3`.
++
++All Android ELF LOAD segments have 0x4000 alignment. A full client restart loads the new native library; the already-running editor retains its previous non-reloadable DLL. No shader, camera or art change is intended. Existing wash captures are regression evidence, not a new visual direction.
++
++No phone attachment check, Android device execution, APK export/install, live account/backend mutation or deployment was performed. Remaining acceptance: reference Nord 2 release-like 15–20-minute CPU/GPU/thermal soak; five-second cosmetic-save traces; force-stop/relaunch and write-pressure recovery; complex unique-paint cancellation; repeated race/restart/menu cycles and dense active tyre piles. These fixes do not establish universal stable 60 FPS or resolve the audit's other findings. Concurrent backend, discovery, challenge and Desert changes remain outside this checkpoint.
+--- /dev/null
++++ b/game/tests/fixtures/gameplay_f01_f03_before/light_props.gd.txt
+@@ -0,0 +1,39 @@
++class_name LightProps
++extends RefCounted
++## Deterministic, forgiving movable props; previous attempts cannot change a run.
++static func step(state: VehicleState, objects: Array, contact: Callable, previous: Vector2, dt: float, car_mass: float, car_radius: float) -> void:
++	var props: Array = []
++	for object: Dictionary in objects:
++		if object.kind in CreatorCatalog.SOFT: props.append(object)
++	if state.light_props.is_empty():
++		for object: Dictionary in props: state.light_props.append(BurningBarrel.initial(object) if object.kind=="burning_barrel" else [object.position[0],object.position[1],0.0,0.0,0.0])
++	BreakableProps.prepare(state,props)
++	for index: int in range(props.size()):
++		if props[index].kind=="burning_barrel":
++			BurningBarrel.step(state,props[index],state.light_props[index],contact,previous,dt,car_mass,car_radius)
++			continue
++		if props[index].kind in BreakableProps.KINDS:
++			BreakableProps.step_one(state,props,index,contact,previous,dt,car_mass,car_radius)
++			continue
++		var row: Array = state.light_props[index]
++		var p := Vector2(row[0],row[1])
++		var velocity := Vector2(row[2],row[3])
++		var radius: float = CreatorObjects.size_of(props[index]).x*0.35
++		if not state.track_elevated and state.jump_height<=0:
++			var delta: Vector2 = p-Geometry2D.get_closest_point_to_segment(p,previous,state.position)
++			if delta.length()<car_radius+radius:
++				var normal: Vector2 = delta.normalized() if delta.length_squared()>0.000001 else state.forward()
++				var approach: float = (state.velocity-velocity).dot(normal)
++				if approach>0:
++					var mass: float = 8.0 if props[index].kind in ["cone","chevron","braking_board"] else 22.0
++					var impulse: float = minf(approach/(1.0/car_mass+1.0/mass),car_mass*0.18)
++					state.velocity -= normal*impulse/car_mass
++					velocity += normal*impulse/mass
++					row[4] = 1.0
++		velocity = velocity.limit_length(16).move_toward(Vector2.ZERO,5.0*dt)
++		var next: Vector2 = p+velocity*dt
++		var collision: Vector3 = contact.call(next,radius,false)
++		if collision.z<=0: p=next
++		else: velocity=Vector2.ZERO
++		row[0]=p.x; row[1]=p.y; row[2]=velocity.x; row[3]=velocity.y
++	BreakableProps.step_fragments(state,contact,previous,dt,car_mass,car_radius)
+--- /dev/null
++++ b/game/tests/fixtures/gameplay_f01_f03_before/local_records.gd.txt
+@@ -0,0 +1,243 @@
++class_name LocalRecords
++extends RefCounted
++## Local, unverified PBs. Persistence and recovery stay outside canonical physics.
++signal achievement_progress_committed
++
++const SCHEMA: int = 2
++const MAX_BYTES: int = 4194304
++const MAX_TIME_MS: int = 2147483647
++
++var path: String
++var records: Dictionary = {}
++var settings: Dictionary = {}
++var _committed_records: Dictionary = {}
++var _committed_settings: Dictionary = {}
++
++
++func _init(file_path: String = "user://local_records.json") -> void:
++	path = file_path
++
++
++func load_records() -> void:
++	records = {}
++	settings = {}
++	_committed_records = {}
++	_committed_settings = {}
++	# A temporary is uncommitted and is never loaded as a personal best.
++	for candidate: String in [path,path+".bak"]:
++		var document: Dictionary = _read_document(candidate)
++		if document.is_empty():
++			continue
++		records = document.records
++		settings = document.settings
++		_remember_committed()
++		return
++
++
++func key_for(track: NativeTrack, handling: HandlingConfig) -> String:
++	return (track.content_hash + VehicleSimulation.PHYSICS_VERSION + JSON.stringify(handling.snapshot(),"",true) + RaceRules.KEY).sha256_text()
++
++
++func best_for(track: NativeTrack, handling: HandlingConfig) -> float:
++	return float(records.get(key_for(track,handling),{}).get("race_ms",0)) / 1000.0
++
++
++func record(track: NativeTrack, handling: HandlingConfig, race_time: float, laps: Array[float]) -> Error:
++	if not _positive_seconds(race_time) or laps.size() != RaceRules.LAPS:
++		return ERR_INVALID_DATA
++	var total: float = 0.0
++	for lap: float in laps:
++		if not _positive_seconds(lap):
++			return ERR_INVALID_DATA
++		total += lap
++	if absf(total-race_time) > 0.002:
++		return ERR_INVALID_DATA
++	var key: String = key_for(track,handling)
++	var value: Dictionary = records.get(key,{}).duplicate(true)
++	var race_ms: int = roundi(race_time*1000.0)
++	var flying_ms: int = roundi(laps[1]*1000.0)
++	for index: int in range(2, laps.size()):
++		flying_ms = mini(flying_ms, roundi(laps[index]*1000.0))
++	value.race_ms = mini(int(value.get("race_ms",race_ms)),race_ms)
++	value.flying_ms = mini(int(value.get("flying_ms",flying_ms)),flying_ms)
++	records[key] = value
++	var raced: Array = settings.get("raced_tracks",[]).duplicate()
++	if track.identity not in raced: raced.append(track.identity)
++	settings["raced_tracks"] = raced
++	return save_records()
++
++
++func save_records() -> Error:
++	var document: Dictionary = _normalize({"schema":SCHEMA,"records":records,"settings":settings})
++	if document.is_empty():
++		return _failed(ERR_INVALID_DATA)
++	var content: String = JSON.stringify(document,"",true)
++	if content.to_utf8_buffer().size() > MAX_BYTES:
++		return _failed(ERR_OUT_OF_MEMORY)
++	var temporary: String = path+".tmp"
++	var backup: String = path+".bak"
++	var file := FileAccess.open(temporary,FileAccess.WRITE)
++	if file == null:
++		return _failed(FileAccess.get_open_error())
++	file.store_string(content)
++	file.flush()
++	var error: Error = file.get_error()
++	file.close()
++	if error != OK or _read_document(temporary).is_empty():
++		return _failed(ERR_FILE_CANT_WRITE)
++	if FileAccess.file_exists(path):
++		if not _read_document(path).is_empty():
++			if FileAccess.file_exists(backup):
++				error = DirAccess.remove_absolute(backup)
++				if error != OK:
++					return _failed(error)
++			error = DirAccess.rename_absolute(path,backup)
++		else:
++			# Keep the previous good backup when the primary is corrupt.
++			error = DirAccess.remove_absolute(path)
++		if error != OK:
++			return _failed(error)
++	error = DirAccess.rename_absolute(temporary,path)
++	if error != OK:
++		return _failed(error)
++	records = document.records
++	settings = document.settings
++	var awards_changed: bool = settings.get("achievements",{}).get("unlocked",{}) != _committed_settings.get("achievements",{}).get("unlocked",{})
++	_remember_committed()
++	if awards_changed: achievement_progress_committed.emit()
++	return OK
++
++
++func _failed(error: Error) -> Error:
++	# A result is visible as a saved PB only after its commit succeeds.
++	records = _committed_records.duplicate(true)
++	settings = _committed_settings.duplicate(true)
++	return error
++
++
++func _remember_committed() -> void:
++	_committed_records = records.duplicate(true)
++	_committed_settings = settings.duplicate(true)
++
++
++static func _read_document(file_path: String) -> Dictionary:
++	var file := FileAccess.open(file_path,FileAccess.READ)
++	if file == null:
++		return {}
++	if file.get_length() > MAX_BYTES:
++		file.close()
++		return {}
++	var text: String = file.get_as_text()
++	file.close()
++	var parser := JSON.new()
++	if parser.parse(text) != OK:
++		return {}
++	return _normalize(parser.data)
++
++
++static func _normalize(data: Variant) -> Dictionary:
++	if not data is Dictionary or data.size() != 3 or not _number(data.get("schema")):
++		return {}
++	if float(data.schema) != 1.0 and float(data.schema) != float(SCHEMA):
++		return {}
++	if not data.get("records") is Dictionary or not data.get("settings") is Dictionary:
++		return {}
++	var preferences: Dictionary = data.settings
++	for field: Variant in preferences:
++		if field == "last_track":
++			if not preferences[field] is String or preferences[field].is_empty() or preferences[field].length() > 64: return {}
++			for character: String in preferences[field]:
++				if character not in "abcdefghijklmnopqrstuvwxyz0123456789_-": return {}
++		elif field == "selected_car":
++			if not preferences[field] is String or preferences[field] not in VehicleCatalog.IDS: return {}
++		elif field == "achievements":
++			if not AchievementProgress.valid(preferences[field]): return {}
++		elif field == "guest_coins":
++			if not preload("res://persistence/cosmetic_catalog.gd").valid_guest(preferences[field]): return {}
++		elif field == "cosmetic_legacy":
++			if not preload("res://persistence/cosmetic_catalog.gd").valid_owned(preferences[field]): return {}
++		elif field == "music_record":
++			if not preload("res://soundtrack/record_library.gd").valid_id(preferences[field]): return {}
++		elif field == "music_records":
++			if not preload("res://soundtrack/record_library.gd").valid_collection(preferences[field]): return {}
++		elif field == "vehicle_conditions":
++			if not VehicleCondition.valid_collection(preferences[field]): return {}
++		elif field == "vehicle_liveries":
++			if not VehicleLivery.valid_collection(preferences[field]): return {}
++		elif field == "vehicle_customisation":
++			if not VehicleCustomisation.valid_collection(preferences[field]): return {}
++		elif field == "camera_mode":
++			if not preferences[field] is String or preferences[field] not in CameraProfile.MODES: return {}
++		elif field in preload("res://presentation/graphics_preferences.gd").DEFAULTS:
++			if not preload("res://presentation/graphics_preferences.gd").valid(field,preferences[field]): return {}
++		elif field == "camera_speed_zoom_strength":
++			if not _number(preferences[field]) or float(preferences[field]) < 0.0 or float(preferences[field]) > CameraProfile.MAX_SPEED_ZOOM_STRENGTH: return {}
++		elif field == "ghost_mode":
++			if not preferences[field] is String or preferences[field] not in PersonalGhostRun.MODES: return {}
++		elif field == "track_ratings":
++			if not preferences[field] is Dictionary: return {}
++			for id: Variant in preferences[field]:
++				var rating: Variant = preferences[field][id]
++				if not id is String or id.is_empty() or id.length() > 128: return {}
++				if not _number(rating) or float(rating) != floorf(float(rating)) or int(rating) < 1 or int(rating) > 5: return {}
++		elif field in ["favorites","raced_tracks"]:
++			if not preferences[field] is Array: return {}
++			for id: Variant in preferences[field]:
++				if not id is String or id.length() > 64 or id.is_empty(): return {}
++				for character: String in id:
++					if character not in "abcdefghijklmnopqrstuvwxyz0123456789_-": return {}
++		elif field == "control_layout":
++			if not ControlLayout.valid(preferences[field]): return {}
++		elif field in ["left_handed", "camera_speed_zoom", "control_labels", "development_show_ads", "simple_car_models", "optional_analytics", "music_enabled", "drift_haptics"]:
++			if not preferences[field] is bool:
++				return {}
++		elif field in ["steering_haptics", "music_volume", "vehicle_volume", "interface_volume"]:
++			if not _number(preferences[field]) or float(preferences[field]) < 0.0 or float(preferences[field]) > 1.0:
++				return {}
++		elif field == "touch_scale":
++			if not _number(preferences[field]) or float(preferences[field]) < 1.0 or float(preferences[field]) > 1.4:
++				return {}
++		else:
++			return {}
++	var normalized: Dictionary = {}
++	for key: Variant in data.records:
++		if not key is String or key.length() != 64:
++			return {}
++		for character: String in key:
++			if character not in "0123456789abcdef":
++				return {}
++		var entry: Variant = data.records[key]
++		if not entry is Dictionary or entry.size() != 2:
++			return {}
++		var race: Variant = entry.get("race_ms") if data.schema == SCHEMA else entry.get("race")
++		var flying: Variant = entry.get("flying_ms") if data.schema == SCHEMA else entry.get("flying")
++		if not _number(race) or not _number(flying):
++			return {}
++		if data.schema == 1:
++			if not _positive_seconds(float(race)) or not _positive_seconds(float(flying)):
++				return {}
++			race = roundi(float(race)*1000.0)
++			flying = roundi(float(flying)*1000.0)
++		if float(race) != floorf(float(race)) or float(flying) != floorf(float(flying)):
++			return {}
++		if float(race) < 1.0 or float(race) > MAX_TIME_MS or float(flying) < 1.0 or float(flying) > float(race):
++			return {}
++		normalized[key] = {"race_ms":int(race),"flying_ms":int(flying)}
++	var normalized_preferences: Dictionary = preferences.duplicate(true)
++	if normalized_preferences.has("achievements"):
++		normalized_preferences.achievements = AchievementProgress.normalized(normalized_preferences.achievements)
++	if normalized_preferences.has("guest_coins"):
++		for field: String in ["version","balance","sequence"]:
++			normalized_preferences.guest_coins[field] = int(normalized_preferences.guest_coins[field])
++	normalized_preferences.erase("music_records")
++	if normalized_preferences.has("music_record"):
++		normalized_preferences.music_record = preload("res://soundtrack/record_library.gd").selected(normalized_preferences).id
++	return {"schema":SCHEMA,"records":normalized,"settings":normalized_preferences}
++
++
++static func _number(value: Variant) -> bool:
++	return (value is int or value is float) and is_finite(float(value))
++
++
++static func _positive_seconds(value: float) -> bool:
++	return is_finite(value) and value >= 0.001 and value <= float(MAX_TIME_MS)/1000.0
+--- /dev/null
++++ b/game/tests/fixtures/gameplay_f01_f03_before/loose_tyres.gd.txt
+@@ -0,0 +1,155 @@
++class_name LooseTyres
++extends RefCounted
++## Deterministic planar tyre stacks. State belongs to each run, never to track data.
++const RADIUS: float = 0.5
++const MASS: float = 400.0 # Effective contact mass for a resistant tyre stack.
++const SLIDING_DECELERATION: float = 24.0
++
++static func positions(document: Dictionary) -> PackedVector2Array:
++	var result := PackedVector2Array()
++	for object: Dictionary in document.get("objects",[]):
++		if object.kind not in ["tyre_wall","tyre_stack"]: continue
++		var center := Vector2(object.position[0],object.position[1])
++		var count: int = 1 if object.kind == "tyre_stack" else 6
++		for i: int in range(count): result.append(center+Vector2(i-(count-1)*0.5,0).rotated(deg_to_rad(float(object.rotation))))
++	return result
++
++static func step(state: VehicleState, origins: PackedVector2Array, contact_test: Callable, from: Vector2, config: HandlingConfig, step_seconds: float) -> void:
++	if origins.is_empty(): return
++	if state.loose_tyres.is_empty():
++		for p: Vector2 in origins: state.loose_tyres.append([p.x,p.y,0.0,0.0,0.0])
++	var count: int = state.loose_tyres.size()
++	var points: Array[Vector2] = []
++	var velocities: Array[Vector2] = []
++	var friction: Array[float] = []
++	var buckets: Dictionary = {}
++	var pairs: Array[Vector2i] = []
++	for index: int in range(count):
++		var tyre: Array = state.loose_tyres[index]
++		var p := Vector2(tyre[0],tyre[1])
++		points.append(p)
++		velocities.append(Vector2(tyre[2],tyre[3]).limit_length(30))
++		friction.append(SLIDING_DECELERATION*step_seconds)
++		var cell := Vector2i(floori(p.x/1.6),floori(p.y/1.6))
++		# Stable indices and fixed neighbour order, independent of dictionary iteration.
++		for y: int in range(-1,2):
++			for x: int in range(-1,2):
++				for other: int in buckets.get(cell+Vector2i(x,y),[]):
++					if p.distance_squared_to(points[other]) <= 1.6*1.6:
++						pairs.append(Vector2i(other,index))
++		if not buckets.has(cell): buckets[cell] = []
++		buckets[cell].append(index)
++	# Accumulated friction has one per-tick budget. Iteration transmits the car's
++	# available force through a pile, including static friction at rest.
++	# Positions do not change during the impulse solver. Compute its contact
++	# geometry once, retaining the original index and impulse order.
++	var car_normals: Array[Vector2] = []
++	var solver_active: bool = false
++	for index: int in range(count):
++		var point: Vector2 = points[index]
++		var normal := Vector2.ZERO
++		if not state.track_elevated:
++			var near: Vector2 = Geometry2D.get_closest_point_to_segment(point,from,state.position)
++			var delta: Vector2 = point-near
++			if delta.length() <= config.collision_radius+RADIUS+0.005:
++				normal = delta.normalized() if delta.length_squared()>0.000001 else state.forward()
++		car_normals.append(normal)
++		if normal != Vector2.ZERO or velocities[index] != Vector2.ZERO: solver_active = true
++	# Separated, stationary stacks cannot change this tick: the swept car test
++	# above also excludes car separation. Keep overlapping piles on the complete
++	# solver path, including sub-ULP overlaps, to preserve exact contact results.
++	if not solver_active:
++		var separated: bool = true
++		for pair: Vector2i in pairs:
++			if (points[pair.y]-points[pair.x]).length() < 1.0:
++				separated = false
++				break
++		if separated:
++			for tyre: Array in state.loose_tyres:
++				tyre[4] = fposmod(float(tyre[4]),TAU)
++			return
++	var pair_deltas: Array[Vector2] = []
++	var pair_normals: Array[Vector2] = []
++	var pair_touching: Array[bool] = []
++	for pair: Vector2i in pairs:
++		var delta: Vector2 = points[pair.y]-points[pair.x]
++		pair_deltas.append(delta)
++		pair_normals.append(delta.normalized() if delta.length_squared()>0.000001 else Vector2.RIGHT)
++		pair_touching.append(delta.length() <= 1.005)
++	for iteration: int in range(16 if solver_active else 0):
++		for index: int in range(count):
++			if velocities[index] == Vector2.ZERO and car_normals[index] == Vector2.ZERO:
++				continue
++			var speed: float = velocities[index].length()
++			var reduction: float = minf(speed,friction[index])
++			velocities[index] = velocities[index].move_toward(Vector2.ZERO,reduction)
++			friction[index] -= reduction
++			var normal: Vector2 = car_normals[index]
++			if normal == Vector2.ZERO: continue
++			var approach: float = (state.velocity-velocities[index]).dot(normal)
++			if approach > 0:
++				var impulse: float = approach/(1.0/config.mass+1.0/MASS)
++				state.velocity -= normal*impulse/config.mass
++				state.collision_impulse -= normal*impulse/config.mass
++				velocities[index] += normal*impulse/MASS
++				if iteration == 0: state.collision_count += 1
++		for pair_index: int in range(pairs.size()):
++			var pair: Vector2i = pairs[pair_index]
++			if velocities[pair.x] == Vector2.ZERO and velocities[pair.y] == Vector2.ZERO:
++				continue
++			var normal: Vector2 = pair_normals[pair_index]
++			if not pair_touching[pair_index] and (pair_deltas[pair_index]+(velocities[pair.y]-velocities[pair.x])*step_seconds).length()>1.0: continue
++			var approach: float = (velocities[pair.x]-velocities[pair.y]).dot(normal)
++			if approach > 0:
++				velocities[pair.x] -= normal*approach*0.5
++				velocities[pair.y] += normal*approach*0.5
++	for index: int in range(count):
++		var tyre: Array = state.loose_tyres[index]
++		var p: Vector2 = points[index]
++		var velocity: Vector2 = velocities[index]
++		var motion: Vector2 = velocity*step_seconds
++		# A stationary tyre's world contact can only assign its already-zero
++		# velocity. Avoid that query; car/pile separation below still runs.
++		var steps: int = 0 if velocity == Vector2.ZERO else maxi(1,ceili(motion.length()/0.2))
++		for i: int in range(steps):
++			var candidate: Vector2 = p+motion/steps
++			var collision: Vector3 = contact_test.call(candidate,RADIUS,false)
++			if collision.z > 0:
++				velocity = Vector2.ZERO
++				break
++			p = candidate
++		if not state.track_elevated:
++			var delta: Vector2 = p-state.position
++			var contact: float = config.collision_radius+RADIUS
++			if delta.length()<contact:
++				var normal: Vector2 = delta.normalized() if delta.length_squared()>0.000001 else state.forward()
++				state.position = p-normal*contact
++		tyre[0] = p.x; tyre[1] = p.y
++		tyre[2] = velocity.x; tyre[3] = velocity.y
++		tyre[4] = fposmod(float(tyre[4])+velocity.length()*step_seconds/RADIUS,TAU)
++	# Remove small integration overlaps so an arriving stack cannot sink into a pile.
++	for iteration: int in range(4):
++		for pair: Vector2i in pairs:
++			var a: Array = state.loose_tyres[pair.x]
++			var b: Array = state.loose_tyres[pair.y]
++			var pa := Vector2(a[0],a[1])
++			var pb := Vector2(b[0],b[1])
++			var delta: Vector2 = pb-pa
++			if delta.length()>=1.0: continue
++			var normal: Vector2 = delta.normalized() if delta.length_squared()>0.000001 else Vector2.RIGHT
++			var correction: Vector2 = normal*(1.0-delta.length())*0.5
++			var next_a: Vector2 = pa-correction
++			var next_b: Vector2 = pb+correction
++			# Settled piles can retain sub-ULP overlaps: these proposed corrections
++			# round to the same position. A world query cannot change their result.
++			if next_a != pa and Vector3(contact_test.call(next_a,RADIUS,false)).z<=0: pa = next_a
++			if next_b != pb and Vector3(contact_test.call(next_b,RADIUS,false)).z<=0: pb = next_b
++			a[0]=pa.x; a[1]=pa.y; b[0]=pb.x; b[1]=pb.y
++		if state.track_elevated: continue
++		for tyre: Array in state.loose_tyres:
++			var p := Vector2(tyre[0],tyre[1])
++			var delta: Vector2 = p-state.position
++			var contact: float = config.collision_radius+RADIUS
++			if delta.length()<contact:
++				var normal: Vector2 = delta.normalized() if delta.length_squared()>0.000001 else state.forward()
++				state.position = p-normal*contact
+--- /dev/null
++++ b/game/tests/fixtures/gameplay_f01_f03_before/README.md
+@@ -0,0 +1,5 @@
++# Gameplay F01-F03 independent references
++
++These are byte-for-byte copies of the task-start implementations from 23 October 2026, before the authorized F01-F03 fixes. `.gd.txt` prevents automatic class registration. Tests load the text and remove only its `class_name` declaration to run both versions in one process. Runtime exports already exclude `tests/*`.
++
++The source SHA-256 values are retained in `docs/evidence/gameplay-f01-f03-2026-10-23/before.json`; full task-start files also remain in that evidence directory's `before/` folder. `test_dynamic_prop_work.gd`, `test_paint_preparation.gd` and `profile_gameplay_f01_f03.gd` use these references. Keep their calculations independent of production optimizations.
+--- /dev/null
++++ b/game/tests/fixtures/gameplay_f01_f03_before/road_kerbs.gd.txt
+@@ -0,0 +1,214 @@
++class_name RoadKerbs
++extends RefCounted
++## Versioned, deterministic low kerb geometry. No nodes, rendering or runtime I/O.
++
++const HEIGHT: float = 0.10
++const BUCKET: float = 4.0
++var maximum_height: float = HEIGHT
++var triangles: Array[Dictionary] = []
++var buckets: Dictionary = {}
++var blocked := PackedByteArray()
++var extent := Vector2.ZERO
++var cell_size: float = 0.5
++var grid := Vector2i.ZERO
++
++
++func build(track: NativeTrack) -> void:
++	triangles.clear()
++	buckets.clear()
++	extent = track.half_extent
++	cell_size = track.cell_size
++	grid = Vector2i(track.grid_width,track.grid_height)
++	var document: Dictionary = track.metadata.get("creator_document",{})
++	blocked = exclusion_mask(track,document.get("paint",[]))
++	var segments: Array[Dictionary] = creator_segments(document)
++	var first: int = 0
++	while first < segments.size():
++		var last: int = first
++		while last+1 < segments.size():
++			var a: Dictionary = segments[last]
++			var b: Dictionary = segments[last+1]
++			if a.piece != b.piece or absf(float(a.end)-float(b.start)) > 0.0001 or Vector2(a.b).distance_to(b.a) > 0.001: break
++			last += 1
++		var origin: float = segments[first].start
++		var length: float = float(segments[last].end)-origin
++		for i: int in range(first,last+1):
++			var segment: Dictionary = segments[i]
++			_strip(segment.a,segment.b,segment.outer_a,segment.outer_b,float(segment.start)-origin,float(segment.end)-origin,length)
++		first = last+1
++	# Native source kerbs remain in remixes, outside new piece scenery. Raster
++	# shoulders generated for new pieces are not an additional ring of kerbs.
++	var pieces: Array = document.get("pieces",[])
++	if not pieces.is_empty() and document.get("base_track","") == "": return
++	var covered: Array[PackedVector2Array] = []
++	for index: int in range(pieces.size()):
++		if pieces[index].kind == "bridge": continue
++		for polygon: PackedVector2Array in Geometry2D.offset_polygon(RoadPieces.section_outline(pieces,index),1.8,Geometry2D.JOIN_ROUND): covered.append(polygon)
++	var selected := PackedByteArray()
++	selected.resize(track.cells.size())
++	var indices: Array[Vector2i] = []
++	for y: int in range(grid.y):
++		for x: int in range(grid.x):
++			if track.cells[y*grid.x+x] != 5 or blocked[y*grid.x+x] != 0: continue
++			var near_road: bool = false
++			for offset: Vector2i in [Vector2i(3,0),Vector2i(-3,0),Vector2i(0,3),Vector2i(0,-3),Vector2i(1,0),Vector2i(-1,0),Vector2i(0,1),Vector2i(0,-1),Vector2i(2,0),Vector2i(-2,0),Vector2i(0,2),Vector2i(0,-2)]:
++				var q: Vector2i = Vector2i(x,y)+offset
++				if q.x >= 0 and q.y >= 0 and q.x < grid.x and q.y < grid.y and track.cells[q.y*grid.x+q.x] == 0: near_road = true
++			if not near_road: continue
++			var midpoint := Vector2((x+0.5)*cell_size-extent.x,extent.y-(y+0.5)*cell_size)
++			var hidden: bool = false
++			for polygon: PackedVector2Array in covered:
++				if Geometry2D.is_point_in_polygon(midpoint,polygon): hidden = true; break
++			if hidden: continue
++			selected[y*grid.x+x] = 1
++			indices.append(Vector2i(x,y))
++	for cell: Vector2i in indices:
++		var p := Vector2(cell.x*cell_size-extent.x,extent.y-cell.y*cell_size)
++		var center: Vector2 = p+Vector2(cell_size,-cell_size)*0.5
++		var corners: Array[Vector2] = [p,p+Vector2(cell_size,0),p+Vector2(cell_size,-cell_size),p+Vector2(0,-cell_size)]
++		var nodes: Array[Vector2i] = [cell,cell+Vector2i(1,0),cell+Vector2i(1,1),cell+Vector2i(0,1)]
++		for edge: int in range(4):
++			var a: Vector2 = corners[edge]
++			var b: Vector2 = corners[(edge+1)%4]
++			_add(a,b,center,_native_vertex_height(nodes[edge],selected),_native_vertex_height(nodes[(edge+1)%4],selected),HEIGHT,Vector2((a.x-a.y)*0.8,-1),Vector2((b.x-b.y)*0.8,-1),Vector2((center.x-center.y)*0.8,-1))
++
++
++func _native_vertex_height(node: Vector2i, selected: PackedByteArray) -> float:
++	# Adjacent cells share a level crown. Only the outside boundary slopes down.
++	for offset: Vector2i in [Vector2i(-1,-1),Vector2i(0,-1),Vector2i(-1,0),Vector2i.ZERO]:
++		var cell: Vector2i = node+offset
++		if cell.x < 0 or cell.y < 0 or cell.x >= grid.x or cell.y >= grid.y or selected[cell.y*grid.x+cell.x] == 0: return 0.0
++	return HEIGHT
++
++
++
++static func creator_segments(document: Dictionary, selected_kind: String = "", presentation: bool = false) -> Array[Dictionary]:
++	var result: Array[Dictionary] = []
++	if document.get("surface","asphalt") == "dirt": return result
++	var pieces: Array = document.get("pieces",[])
++	var topology: Dictionary = RoadPieces.prepare_endpoints(pieces)
++	var outlines: Array[Dictionary] = []
++	for index: int in range(pieces.size()):
++		if pieces[index].kind == "bridge": continue
++		var polygons: Array[PackedVector2Array] = []
++		if pieces[index].kind == "spline":
++			polygons = RoadEdges.section_contours(pieces,index,0.0,topology)
++		else:
++			polygons.append(RoadPieces.section_outline(pieces,index,0.0,topology))
++		for polygon: PackedVector2Array in polygons:
++			var bounds := Rect2(polygon[0],Vector2.ZERO)
++			for point: Vector2 in polygon: bounds = bounds.expand(point)
++			outlines.append({"index":index,"polygon":polygon,"bounds":bounds,"hole":pieces[index].kind == "spline" and Geometry2D.is_polygon_clockwise(polygon)})
++	for index: int in range(pieces.size()):
++		if pieces[index].kind == "bridge": continue
++		if not selected_kind.is_empty() and pieces[index].kind != selected_kind: continue
++		var points: PackedVector2Array = RoadPieces.samples(pieces[index])
++		var cuts: Array[Dictionary] = RoadEdges._join_cuts(pieces,index,topology)
++		var border_contours: Array[PackedVector2Array] = RoadEdges.presentation_contours(pieces,index,-0.20,topology) if presentation else RoadEdges.section_contours(pieces,index,-0.20,topology)
++		for polygon: PackedVector2Array in border_contours:
++			var hole: bool = pieces[index].kind == "spline" and Geometry2D.is_polygon_clockwise(polygon)
++			var distance: float = 0.0
++			for edge: int in range(polygon.size()):
++				var a: Vector2 = polygon[edge]
++				var b: Vector2 = polygon[(edge+1)%polygon.size()]
++				if RoadEdges._on_join_cut(a,b,cuts) or (presentation and RoadEdges._on_join_cap(a,b,cuts)): continue
++				var na: Vector2 = RoadEdges._roadside_miter(polygon,edge,cuts,presentation)
++				var nb: Vector2 = RoadEdges._roadside_miter(polygon,(edge+1)%polygon.size(),cuts,presentation)
++				if hole: na = -na; nb = -nb
++				if pieces[index].kind == "spline":
++					na = SplineBorders.kerb_normal(polygon,edge,na)
++					nb = SplineBorders.kerb_normal(polygon,(edge+1)%polygon.size(),nb)
++				var steps: int = maxi(1,ceili(a.distance_to(b)/0.20))
++				for step: int in range(steps):
++					var p: Vector2 = a.lerp(b,float(step)/steps)
++					var q: Vector2 = a.lerp(b,float(step+1)/steps)
++					var np: Vector2 = na.lerp(nb,float(step)/steps)
++					var nq: Vector2 = na.lerp(nb,float(step+1)/steps)
++					var start: float = distance
++					distance += (p+np*0.375).distance_to(q+nq*0.375)
++					var midpoint: Vector2 = (p+q)*0.5
++					var outward: Vector2 = (q-p).normalized().orthogonal()*0.425
++					if Geometry2D.is_point_in_polygon(midpoint+outward,polygon) != hole: outward = -outward
++					if not RoadEdges._road_edge_exposed(midpoint+outward,index,outlines,pieces,topology): continue
++					var curved: bool = SplineBorders.curved_edge(polygon,edge,points) if pieces[index].kind == "spline" else RoadEdges._inner_bend_distance(midpoint,points) >= 0.0
++					if not RoadEdges._on_join_plane(a,b,cuts) and curved:
++						result.append({"a":p,"b":q,"outer_a":p+np*0.75,"outer_b":q+nq*0.75,"start":start,"end":distance,"piece":index})
++	return result
++
++
++func _strip(a: Vector2, b: Vector2, outer_a: Vector2, outer_b: Vector2, start: float, end: float, length: float) -> void:
++	var block: float = length/maxf(1.0,2.0*floorf(length/3.0)+1.0)
++	var tip_a: float = smoothstep(0.0,minf(block,1.8),minf(start,length-start))
++	var tip_b: float = smoothstep(0.0,minf(block,1.8),minf(end,length-end))
++	outer_a = a.lerp(outer_a,lerpf(0.12,1.0,tip_a))
++	outer_b = b.lerp(outer_b,lerpf(0.12,1.0,tip_b))
++	var profile: Array[float] = [0.0,0.25,0.80,1.0]
++	var heights: Array[float] = [0.0,HEIGHT*0.85,HEIGHT,0.0]
++	for i: int in range(3):
++		var p: Vector2 = a.lerp(outer_a,profile[i])
++		var q: Vector2 = b.lerp(outer_b,profile[i])
++		var r: Vector2 = a.lerp(outer_a,profile[i+1])
++		var t: Vector2 = b.lerp(outer_b,profile[i+1])
++		_add(p,q,t,heights[i]*tip_a,heights[i]*tip_b,heights[i+1]*tip_b,Vector2(start,length),Vector2(end,length),Vector2(end,length))
++		_add(p,t,r,heights[i]*tip_a,heights[i+1]*tip_b,heights[i+1]*tip_a,Vector2(start,length),Vector2(end,length),Vector2(start,length))
++
++
++func _add(a: Vector2, b: Vector2, c: Vector2, ha: float, hb: float, hc: float, ua: Vector2, ub: Vector2, uc: Vector2) -> void:
++	if absf((b-a).cross(c-a)) < 0.0000001: return
++	var index: int = triangles.size()
++	triangles.append({"points":PackedVector2Array([a,b,c]),"heights":PackedFloat32Array([ha,hb,hc]),"uv":PackedVector2Array([ua,ub,uc])})
++	var lo: Vector2i = Vector2i((a.min(b).min(c)/BUCKET).floor())
++	var hi: Vector2i = Vector2i((a.max(b).max(c)/BUCKET).floor())
++	for y: int in range(lo.y,hi.y+1):
++		for x: int in range(lo.x,hi.x+1):
++			var key := Vector2i(x,y)
++			if not buckets.has(key): buckets[key] = []
++			buckets[key].append(index)
++
++
++func height_at(point: Vector2) -> float:
++	var cell := Vector2i(floori((point.x+extent.x)/cell_size),floori((extent.y-point.y)/cell_size))
++	if cell.x < 0 or cell.y < 0 or cell.x >= grid.x or cell.y >= grid.y or blocked[cell.y*grid.x+cell.x] != 0: return 0.0
++	var height: float = 0.0
++	for index: int in buckets.get(Vector2i((point/BUCKET).floor()),[]):
++		var t: Dictionary = triangles[index]
++		var p: PackedVector2Array = t.points
++		var d: float = (p[1]-p[0]).cross(p[2]-p[0])
++		var b: float = (point-p[0]).cross(p[2]-p[0])/d
++		var c: float = (p[1]-p[0]).cross(point-p[0])/d
++		if b >= -0.00001 and c >= -0.00001 and b+c <= 1.00001:
++			height = maxf(height,clampf((1.0-b-c)*t.heights[0]+b*t.heights[1]+c*t.heights[2],0.0,maximum_height))
++	return height
++
++
++static func exclusion_mask(track: NativeTrack, paint: Array) -> PackedByteArray:
++	var mask := PackedByteArray()
++	mask.resize(track.cells.size())
++	for index: int in range(track.cells.size()):
++		if track.cells[index] in [4,7]: mask[index] = 1
++	for authored: Dictionary in paint:
++		var stroke: Dictionary = SurfacePaint.prepared(authored)
++		if stroke.get("protect_road",false): continue
++		if stroke.get("mode","") == "area":
++			var polygon: PackedVector2Array = SurfacePaint.contour(authored.points,"area")
++			var bounds: Rect2i = SurfacePaint.cell_bounds(polygon,track.half_extent,track.cell_size,Vector2i(track.grid_width,track.grid_height))
++			for y: int in range(bounds.position.y,bounds.end.y):
++				for x: int in range(bounds.position.x,bounds.end.x):
++					var point := Vector2((x+0.5)*track.cell_size-track.half_extent.x,track.half_extent.y-(y+0.5)*track.cell_size)
++					if Geometry2D.is_point_in_polygon(point,polygon): mask[y*track.grid_width+x] = 1
++			continue
++		var radius: float = float(stroke.width)*0.5
++		for index: int in range(stroke.points.size()):
++			var p: Array = stroke.points[index]
++			var q: Array = stroke.points[maxi(0,index-1)]
++			var a := Vector2(p[0],p[1])
++			var b := Vector2(q[0],q[1])
++			var lo: Vector2 = a.min(b)-Vector2.ONE*radius
++			var hi: Vector2 = a.max(b)+Vector2.ONE*radius
++			for y: int in range(maxi(0,floori((track.half_extent.y-hi.y)/track.cell_size)),mini(track.grid_height,ceili((track.half_extent.y-lo.y)/track.cell_size))):
++				for x: int in range(maxi(0,floori((lo.x+track.half_extent.x)/track.cell_size)),mini(track.grid_width,ceili((hi.x+track.half_extent.x)/track.cell_size))):
++					var point := Vector2((x+0.5)*track.cell_size-track.half_extent.x,track.half_extent.y-(y+0.5)*track.cell_size)
++					var delta: Vector2 = point-Geometry2D.get_closest_point_to_segment(point,a,b)
++					var hit: bool = delta.length_squared() <= radius*radius if stroke.shape == "round" else maxf(absf(delta.x),absf(delta.y)) <= radius
++					if hit: mask[y*track.grid_width+x] = 1
++	return mask
+--- /dev/null
++++ b/game/tests/fixtures/gameplay_f01_f03_before/track_compiler.gd.txt
+@@ -0,0 +1,274 @@
++class_name TrackCompiler
++extends RefCounted
++## Pure bounded compiler; native surface cells drive both simulation and art.
++
++const VERSION: String = "creator-compiler-27"
++const CELL_SIZE: float = 0.5
++static var bases: Dictionary = {}
++const PREPARED = preload("res://editor/prepared_track_cache.gd")
++
++
++
++static func compile(document: Dictionary, preview_cache: Dictionary = {}, cancelled: Callable = Callable()) -> NativeTrack:
++	if _cancelled(cancelled): return null
++	if not TrackDocument.validate(document).is_empty():
++		return null
++	# Desert road beds are compacted sand regardless of the saved road option.
++	if document.theme == "desert":
++		document = document.duplicate(true)
++		document.surface = "asphalt" # Structural road cell; biome supplies material/traction.
++		if not document.layout.is_empty(): document.layout.surface = "asphalt"
++	if preview_cache.get("enabled",false):
++		var retained: NativeTrack = PREPARED.restore(document,preview_cache)
++		if retained != null: return retained
++	var base: NativeTrack
++	if document.base_track != "":
++		if not bases.has(document.base_track):
++			if bases.size() >= 2: bases.clear()
++			bases[document.base_track] = NativeTrack.read("res://resources/tracks/"+document.base_track+".json")
++		base = bases[document.base_track]
++	var cell_size: float = base.cell_size if base != null else CELL_SIZE
++	var samples: Dictionary = TrackDocument.route_data(document)
++	var route: PackedVector2Array = samples.points
++	var widths: PackedFloat32Array = samples.widths
++	# Put the start/finish on the outgoing road beyond a sharp apex.
++	if document.corners[0] == "sharp":
++		var offset: int = mini(8, maxi(1, floori(Vector2(document.points[0][0],document.points[0][1]).distance_to(Vector2(document.points[1][0],document.points[1][1]))*0.5)))
++		route = route.slice(offset) + route.slice(0,offset)
++		widths = widths.slice(offset) + widths.slice(0,offset)
++	if document.has("start_line"):
++		var start_route: Dictionary = CreatorStartLine.route_from_start(route,widths,document.start_line)
++		route = start_route.points
++		widths = start_route.widths
++	var road_samples: Dictionary = {"points":PackedVector2Array(),"widths":PackedFloat32Array()}
++	if not document.layout.is_empty(): road_samples = TrackDocument.route_data(document.layout)
++	var road_route: PackedVector2Array = road_samples.points
++	var road_widths: PackedFloat32Array = road_samples.widths
++	var section_key: Array = [document.pieces]
++	var sections: Array[Dictionary] = []
++	var bridges: Array = []
++	if preview_cache.get("sections_key",[]) == section_key:
++		sections.assign(preview_cache.sections)
++		bridges = preview_cache.bridges.duplicate(true)
++	else:
++		var topology: Dictionary = RoadPieces.prepare_endpoints(document.pieces)
++		for piece_index: int in range(document.pieces.size()):
++			if _cancelled(cancelled): return null
++			var piece: Dictionary = document.pieces[piece_index]
++			var geometry: Dictionary = RoadPieces.section_geometry(document.pieces,piece_index,topology)
++			sections.append({"points":geometry.points,"widths":geometry.widths,"width":float(piece.width),"bridge":piece.kind == "bridge"})
++			if piece.kind == "bridge": bridges.append(piece.duplicate(true))
++		if preview_cache.get("enabled",false):
++			preview_cache.sections_key = section_key.duplicate(true)
++			preview_cache.sections = sections.duplicate(true); preview_cache.bridges = bridges.duplicate(true)
++	var radius: float = widths[0] * 0.5
++	var extent := Vector2.ZERO
++	for point: Vector2 in route + road_route:
++		extent.x = maxf(extent.x, absf(point.x))
++		extent.y = maxf(extent.y, absf(point.y))
++	for section: Dictionary in sections:
++		for point: Vector2 in section.points: extent = extent.max(point.abs()+Vector2.ONE*float(section.width)*0.5)
++	for object: Dictionary in document.get("objects",[]):
++		var point := Vector2(object.position[0],object.position[1])
++		extent = extent.max(point.abs()+CreatorObjects.size_of(object))
++	for stroke: Dictionary in document.paint:
++		for p: Array in stroke.points: extent = extent.max(Vector2(p[0],p[1]).abs()+Vector2.ONE*float(stroke.width)*0.5)
++	extent = (extent + Vector2.ONE * (float(Array(widths).max())*0.5 + 12.0)).ceil()
++	if base != null: extent = base.half_extent
++	var grid := Vector2i(roundi(extent.x * 2.0 / cell_size), roundi(extent.y * 2.0 / cell_size))
++	var cells := PackedInt32Array()
++	cells.resize(grid.x * grid.y)
++	cells.fill(1)
++	if base != null: cells = base.cells.duplicate()
++	var terrain_objects: Array = []
++	for object: Dictionary in document.objects:
++		if object.kind in ["dirt","water"]: terrain_objects.append(object)
++	var raster_key: Array = [document.base_track,base.content_hash if base != null else "",grid,extent,cell_size,document.layout,document.pieces,document.surface,document.paint,terrain_objects]
++	if raster_key == preview_cache.get("key",[]):
++		cells = preview_cache.cells.duplicate()
++	else:
++		var road_mask: PackedInt32Array = cells.duplicate()
++		_stamp_objects(document,cells,grid,extent,cell_size,true)
++		var road_kind: int = 2 if document.layout.get("surface",document.surface) == "dirt" else 0
++		_raster_road(road_route,road_widths,road_kind,cells,grid,extent,cell_size,true,road_mask,cancelled)
++		for section: Dictionary in sections:
++			if section.bridge: continue
++			var section_widths: PackedFloat32Array = section.widths
++			_raster_road(section.points,section_widths,2 if document.surface == "dirt" else 0,cells,grid,extent,cell_size,false,road_mask,cancelled)
++		_paint(document.paint,cells,grid,extent,cell_size,road_mask,cancelled)
++		if _cancelled(cancelled): return null
++		if preview_cache.get("enabled",false):
++			preview_cache.key = raster_key.duplicate(true)
++			preview_cache.cells = cells.duplicate()
++	var scenery_cells: PackedInt32Array = cells.duplicate()
++	_stamp_objects(document,cells,grid,extent,cell_size,false)
++	var deck := PackedInt32Array()
++	deck.resize(cells.size())
++	deck.fill(-1)
++	if base != null: deck = base.deck_cells.duplicate()
++	CreatorBridges.stamp(bridges,cells,deck,grid,extent,cell_size)
++	if _cancelled(cancelled): return null
++	var scenery: Array = CreatorScenery.generate(document,scenery_cells,deck,grid,extent,cell_size)
++	_stamp_objects({"objects":scenery},cells,grid,extent,cell_size,false)
++	# A distant perimeter makes the finite authoring area explicit and keeps
++	# accidental off-course driving recoverable with the ordinary restart.
++	for y: int in range(grid.y):
++		for x: int in range(grid.x):
++			if base == null and (x < 2 or y < 2 or x >= grid.x-2 or y >= grid.y-2):
++				cells[y*grid.x+x] = 4
++	var surfaces: Array = []
++	for y: int in range(grid.y):
++		var start: int = 0
++		for x: int in range(1,grid.x+1):
++			if x == grid.x or cells[y*grid.x+x] != cells[y*grid.x+start]:
++				surfaces.append([start,y,x-start,1,cells[y*grid.x+start]])
++				start = x
++	var route_data: Array = []
++	for point: Vector2 in route:
++		route_data.append([point.x,point.y])
++	var checkpoints: Array = []
++	for fraction: float in [0.20,0.40,0.60,0.80]:
++		var index: int = floori(route.size()*fraction)
++		var center: Vector2 = route[index]
++		var tangent: Vector2 = (route[(index+1)%route.size()]-center).normalized()
++		var side := Vector2(tangent.y,-tangent.x)
++		var half: Vector2 = side.abs() * widths[index]*0.5 + tangent.abs() * 1.5
++		checkpoints.append([center.x-half.x,center.y-half.y,half.x*2.0,half.y*2.0])
++	var forward: Vector2 = (route[1]-route[0]).normalized()
++	var finish_center: Vector2 = route[0]
++	var frame: Dictionary = RoadPieces.road_frame(document.pieces,finish_center,forward)
++	if not frame.is_empty():
++		forward = frame.tangent
++		finish_center = frame.point
++		radius = float(frame.width)*0.5
++	var heading: float = atan2(forward.x,forward.y)
++	var data: Dictionary = {"schema":"surface-grid-v2", "identity":"creator_"+document.id, "name":document.name, "title":document.name, "version":VERSION,
++		"scenery_objects":scenery, "theme":document.theme, "creator_document":document.duplicate(true), "cell_size":cell_size, "grid_size":[grid.x,grid.y],
++		"origin":[-extent.x,extent.y], "car_width_m":1.584, "representative_width_m":document.width,
++		"surfaces":surfaces, "deck":[], "bridges":[], "spawn":route_data[0], "spawn_heading":heading,
++		"finish":{"center":[finish_center.x,finish_center.y],"half_width":radius,"heading":heading,"basis":"creator route origin"},
++		"route":route_data,"route_widths":Array(widths),"checkpoints":checkpoints, "debug":{"blocks":[]},
++		"provenance":{"source":"local creator","use":"original route with built-in track kit"}}
++	if base != null:
++		data.deck = base.metadata.deck.duplicate(true)
++		data.bridges = base.metadata.bridges.duplicate(true)
++		if not document.route_override and not document.has("start_line"):
++			for key: String in ["route","checkpoints","spawn","spawn_heading","finish"]: data[key] = base.metadata[key]
++	if not bridges.is_empty():
++		data["creator_bridges"] = bridges
++		data["legacy_deck"] = base.metadata.deck.duplicate(true) if base != null else []
++		data.deck = CreatorBridges.rectangles(deck,grid)
++	data.provenance["base_track"] = document.base_track
++	data.provenance["base_hash"] = base.content_hash if base != null else ""
++	if _cancelled(cancelled): return null
++	var compiled: NativeTrack = NativeTrack.from_data(data,document_hash(document,str(data.provenance.base_hash)),cells,deck)
++	if _cancelled(cancelled): return null
++	if preview_cache.get("enabled",false):
++		PREPARED.remember(document,compiled,preview_cache); PREPARED.trim_auxiliary(preview_cache)
++	return compiled
++
++static func document_hash(document: Dictionary, base_hash: String) -> String:
++	return (VERSION+"\n"+base_hash+"\n"+JSON.stringify(JSON.parse_string(JSON.stringify(document)),"",true)).sha256_text()
++
++
++static func _stamp_objects(document: Dictionary, cells: PackedInt32Array, grid: Vector2i, extent: Vector2, cell_size: float, terrain: bool) -> void:
++	for object: Dictionary in document.get("objects",[]):
++		if object.kind in ["tyre_stack","tyre_wall","oil","jump","speed_bump"] or object.kind in CreatorCatalog.DECORATIVE or object.kind in CreatorCatalog.SOFT: continue # Loose stacks are simulated, never baked into a wall.
++		if (object.kind in ["dirt","water"]) != terrain: continue
++		var center := Vector2(object.position[0],object.position[1])
++		var reach: float = CreatorObjects.size_of(object).length()*0.5
++		for y: int in range(maxi(0,floori((extent.y-center.y-reach)/cell_size)),mini(grid.y,ceili((extent.y-center.y+reach)/cell_size))):
++			for x: int in range(maxi(0,floori((center.x-reach+extent.x)/cell_size)),mini(grid.x,ceili((center.x+reach+extent.x)/cell_size))):
++				var point := Vector2((x+0.5)*cell_size-extent.x,extent.y-(y+0.5)*cell_size)
++				if CreatorObjects.solid_contains(object,point): cells[y*grid.x+x] = CreatorObjects.surface(object.kind)
++
++
++static func _paint(strokes: Array, cells: PackedInt32Array, grid: Vector2i, extent: Vector2, cell_size: float, road_mask: PackedInt32Array, cancelled: Callable = Callable()) -> void:
++	if strokes.is_empty(): return
++	var native: RefCounted = preload("res://track/geometry_acceleration.gd").raster()
++	if native != null:
++		var prepared: Array = []
++		for authored: Dictionary in strokes:
++			var stroke: Dictionary = authored.duplicate(true)
++			stroke.points = SurfacePaint.contour(authored.points,str(authored.get("mode","free")))
++			prepared.append(stroke)
++		var result: Dictionary = native.call("raster_paint",prepared,{"cells":cells,"mask":road_mask,"grid":grid,"extent":extent,"cell_size":cell_size},Geometry2D,cancelled)
++		if _cancelled(cancelled): return
++		if result.has("cells"):
++			cells.resize(0); cells.append_array(result.cells)
++			road_mask.resize(0); road_mask.append_array(result.mask)
++			return
++	for authored: Dictionary in strokes:
++		if _cancelled(cancelled): return
++		var stroke: Dictionary = SurfacePaint.prepared(authored)
++		if stroke.get("mode","") == "area":
++			var polygon: PackedVector2Array = SurfacePaint.contour(authored.points,"area")
++			var bounds: Rect2i = SurfacePaint.cell_bounds(polygon,extent,cell_size,grid)
++			for y: int in range(bounds.position.y,bounds.end.y):
++				for x: int in range(bounds.position.x,bounds.end.x):
++					var point := Vector2((x+0.5)*cell_size-extent.x,extent.y-(y+0.5)*cell_size)
++					if Geometry2D.is_point_in_polygon(point,polygon) and not (stroke.get("protect_road",false) and road_mask[y*grid.x+x] in [0,2]):
++						cells[y*grid.x+x] = int(stroke.surface)
++						road_mask[y*grid.x+x] = 0 if int(stroke.surface) == 0 else 1
++			continue
++		var radius: float = float(stroke.width)*0.5
++		for i: int in range(stroke.points.size()):
++			if i % 32 == 0 and _cancelled(cancelled): return
++			var p: Array = stroke.points[i]
++			var q: Array = stroke.points[maxi(0,i-1)]
++			var a := Vector2(p[0],p[1])
++			var b := Vector2(q[0],q[1])
++			var lo: Vector2 = a.min(b)-Vector2.ONE*radius
++			var hi: Vector2 = a.max(b)+Vector2.ONE*radius
++			for y: int in range(maxi(0,floori((extent.y-hi.y)/cell_size)),mini(grid.y,ceili((extent.y-lo.y)/cell_size))):
++				for x: int in range(maxi(0,floori((lo.x+extent.x)/cell_size)),mini(grid.x,ceili((hi.x+extent.x)/cell_size))):
++					var point := Vector2((x+0.5)*cell_size-extent.x,extent.y-(y+0.5)*cell_size)
++					var delta: Vector2 = point-Geometry2D.get_closest_point_to_segment(point,a,b)
++					var hit: bool = delta.length_squared() <= radius*radius if stroke.shape == "round" else maxf(absf(delta.x),absf(delta.y)) <= radius
++					if hit and not (stroke.get("protect_road",false) and road_mask[y*grid.x+x] in [0,2]):
++						cells[y*grid.x+x] = int(stroke.surface)
++						road_mask[y*grid.x+x] = 0 if int(stroke.surface) == 0 else 1
++
++
++static func _raster_road(road_route: PackedVector2Array, road_widths: PackedFloat32Array, road_kind: int, cells: PackedInt32Array, grid: Vector2i, extent: Vector2, cell_size: float, closed: bool, road_mask: PackedInt32Array = PackedInt32Array(), cancelled: Callable = Callable()) -> void:
++	var native: RefCounted = preload("res://track/geometry_acceleration.gd").raster()
++	if native != null:
++		var result: Dictionary = native.call("raster_road",{"route":road_route,"widths":road_widths,"kind":road_kind,"cells":cells,"mask":road_mask,"grid":grid,"extent":extent,"cell_size":cell_size,"closed":closed},Geometry2D,cancelled)
++		if _cancelled(cancelled): return
++		if result.has("cells"):
++			cells.resize(0); cells.append_array(result.cells)
++			road_mask.resize(0); road_mask.append_array(result.mask)
++			return
++	var has_mask: bool = not road_mask.is_empty()
++	var segment_count: int = road_route.size() if closed else maxi(0,road_route.size()-1)
++	for i: int in range(segment_count):
++		if i % 16 == 0 and _cancelled(cancelled): return
++		var a: Vector2 = road_route[i]
++		var b: Vector2 = road_route[(i+1) % road_route.size()]
++		var radius_a: float = road_widths[i]*0.5
++		var radius_b: float = road_widths[(i+1)%road_widths.size()]*0.5
++		var margin: float = maxf(radius_a,radius_b) + 1.0
++		var x0: int = maxi(0, floori((minf(a.x,b.x)-margin+extent.x)/cell_size))
++		var x1: int = mini(grid.x-1, ceili((maxf(a.x,b.x)+margin+extent.x)/cell_size))
++		var y0: int = maxi(0, floori((extent.y-maxf(a.y,b.y)-margin)/cell_size))
++		var y1: int = mini(grid.y-1, ceili((extent.y-minf(a.y,b.y)+margin)/cell_size))
++		for y: int in range(y0,y1+1):
++			for x: int in range(x0,x1+1):
++				var at: int = y*grid.x+x
++				# Overlapping samples cannot change an already-painted road cell.
++				# Keep other kinds (including kerbs) in the exact coverage test.
++				if cells[at] == road_kind and (not has_mask or road_mask[at] == road_kind): continue
++				var p := Vector2((x+0.5)*cell_size-extent.x,extent.y-(y+0.5)*cell_size)
++				var closest: Vector2 = Geometry2D.get_closest_point_to_segment(p,a,b)
++				var distance: float = p.distance_squared_to(closest)
++				var local_radius: float = lerpf(radius_a,radius_b,clampf((closest-a).dot(b-a)/maxf(0.0001,a.distance_squared_to(b)),0,1))
++				if distance <= local_radius*local_radius:
++					cells[at] = road_kind
++					if has_mask: road_mask[at] = road_kind
++				elif distance <= (local_radius+1.0)*(local_radius+1.0):
++					if cells[at] in [1,2,3] and cells[at] != road_kind: cells[at] = 5
++					# Terrain objects affect cells but not the road-protection mask.
++					if has_mask and road_mask[at] in [1,2,3] and road_mask[at] != road_kind: road_mask[at] = 5
++
++static func _cancelled(callback: Callable) -> bool:
++	return callback.is_valid() and callback.call()
+--- /dev/null
++++ b/game/persistence/condition_store.gd.uid
+@@ -0,0 +1 @@
++uid://0fl2vnk45sgc
+--- /dev/null
++++ b/game/tests/test_condition_store.gd.uid
+@@ -0,0 +1 @@
++uid://qr8unwfqjtia
+--- /dev/null
++++ b/game/tests/test_paint_preparation.gd.uid
+@@ -0,0 +1 @@
++uid://disfdwcv8u4yq
+--- /dev/null
++++ b/game/tests/test_dynamic_prop_work.gd.uid
+@@ -0,0 +1 @@
++uid://cbctavro47sp7
+--- /dev/null
++++ b/game/tests/profile_gameplay_f01_f03.gd.uid
+@@ -0,0 +1 @@
++uid://b55tvs304eko7
+--- a/AGENTS.md
++++ b/AGENTS.md
+@@ -1,3 +1,6 @@
++## Gameplay audit F01-F03 fixes override (2026-10-23)
++2026-10-23 GPA-F01/GPA-F01-R/GPA-F02/GPA-F03/R01/Q01: Periodic local car conditions use one profile-owned coalescing sidecar writer, retaining atomic backup/recovery and lifecycle flushes without rewriting PBs. Compiler paint shares exact exclusions with contact preparation, deduplicates idempotent coverage and observes internal cancellation; old native libraries retain scalar fallback. Retained prop descriptors/tyre scratch and stable broadphase candidates preserve exact driving, rewind and versions. Paired desktop 10k-PB save391.634ms to0.415ms enqueue, 576 resting tyres1.808ms to0.217ms/tick, exclusion fallback539.405ms to14.058ms; these are not device/FPS claims. Focused31/59/16924 headless and desktopMobile, earlier31/59/1924 Compatibility, tyre13200, native482 plus old-library482, cars105/handling88, records54, hitch47/ghost38/wash1402 and parser942 pass. Existing oil-placement1 and historical physics689 failures reproduce on task-original code; assertions remain. Commands, corrections, native provenance, limits and scoped checkpoint: docs/GAMEPLAY_F01_F03_2026_10_23.md and docs/evidence/gameplay-f01-f03-2026-10-23/report.json. Full client restart and reference-device sustained acceptance remain; no phone attachment check/device test, APK, live mutation or deployment. Concurrent work remains preserved.
++
+ ## Discovery availability, short search and cost hardening override (2026-10-23)
+ 2026-10-23 DHF01-DHF06/R01/Q01: Discovery separates bounded small receivers from large uploads, fences incomplete-body ownership, and pauses automatic failed-page fetches with Retry-After/backoff. Batched freshness, narrow frozen candidates, RETURNING checkpoints and joined Random slots retain current authority and exact windows/sampling. Short-gram GIN indexes preserve exact short substrings; cleanup work keeps the daemon awake, with rank/pair/retention lag health. Compact expiry keys retain exact bounded expiration. With matching shared guards, paired100001-track/10000-creator warm pages78.966ms to48.666ms and fresh Name SQL59 to26; the earlier million-row core miss503/1564.035ms becomes200/96.876ms. Paired200000-row ledgers shrink26.89-28.17%. Core71pass/1SQLite-lock skip, final guarded17, expiry2, integrated106 and real native HTTP2 pass; native82headless/85Compatibility/85desktopMobile, legacy269/list233/challenge68/App141/parser939 pass. Measurements are local, not DAU/cloud certification. Commands, transient concurrent migration/compiler/fixture corrections, plans/WAL/storage and scoped checkpoint: docs/evidence/discovery-hardening-2026-10-23/report.json. Matching migration/API/worker/client rollout, representative migration/load and owner/device acceptance remain; no phone attachment check/device test, APK, live backend/account mutation or deployment.
+ 
+--- a/DEVELOPMENT_STATUS.md
++++ b/DEVELOPMENT_STATUS.md
+@@ -1,3 +1,5 @@
++2026-10-23 GPA-F01/GPA-F01-R/GPA-F02/GPA-F03/R01/Q01: Fix audit F01-F03 with a profile-owned background cosmetic sidecar, one shared exact paint-exclusion mask with cooperative cancellation, and retained deterministic tyre/prop work. Paired desktop 10k-PB update391.634ms to0.415ms enqueue; 576 resting tyres1.808ms to0.217ms/tick; fallback exclusions539.405ms to14.058ms. Focused31/59/16924 headless and desktopMobile, earlier31/59/1924 Compatibility, tyre13200, native482/old-library482, cars105/handling88, records54, graphical hitch47/ghost38/wash1402 and parser942 pass. Existing oil-placement1 and historical physics689 failures reproduce unchanged. Commands, corrected attempts, native binaries, scope checkpoint and acceptance limits: docs/GAMEPLAY_F01_F03_2026_10_23.md. Driving, compiler/physics versions, local-only cosmetics, PB/achievement commits and concurrent work remain preserved. Full client restart and sustained Android acceptance remain; no phone attachment check/device test, APK, live mutation or deployment.
++
+ 2026-10-23 DHF01-DHF06/R01/Q01: Discovery separates bounded small receivers from large uploads, fences incomplete-body ownership, and pauses automatic failed-page fetches with Retry-After/backoff. Batched freshness, narrow frozen candidates, RETURNING checkpoints and joined Random slots retain current authority and exact windows/sampling. Short-gram GIN indexes preserve exact short substrings; cleanup work keeps the daemon awake, with rank/pair/retention lag health. Compact expiry keys retain exact bounded expiration. With matching shared guards, paired100001-track/10000-creator warm pages78.966ms to48.666ms and fresh Name SQL59 to26; the earlier million-row core miss503/1564.035ms becomes200/96.876ms. Paired200000-row ledgers shrink26.89-28.17%. Core71pass/1SQLite-lock skip, final guarded17, expiry2, integrated106 and real native HTTP2 pass; native82headless/85Compatibility/85desktopMobile, legacy269/list233/challenge68/App141/parser939 pass. Measurements are local, not DAU/cloud certification. Commands, transient concurrent migration/compiler/fixture corrections, plans/WAL/storage and scoped checkpoint: docs/evidence/discovery-hardening-2026-10-23/report.json. Matching migration/API/worker/client rollout, representative migration/load and owner/device acceptance remain; no phone attachment check/device test, APK, live backend/account mutation or deployment.
+ 
+ 2026-10-23 CCR01-CCR04/G01/R01/Q01: Apply the approved HTML challenge-card direction to the native menu: Choose your challenge, Head to head, Group race, Three tries and a fourth Custom rules card. Optional rules commit/cancel race type, 24-hour/3-day/7-day duration, 1/3/5/unlimited tries and supported public/invitation visibility; preset changes retain duration and visibility. Actual route/car/time lead the page, with fixed completed-ticket results, verification/errors/account fences, five laps, verified-PB menu sources and target-free groups retained. Race-first return preserves the selected format; an account-fenced frozen invitation precedes explicit system sharing. Focused97headless/109Compatibility/109desktopMobile, native challenge195, discovery68/source27/tab60/App141 and parser939 pass. Commands, initial environment/fixture/layout corrections, native views, hashes and task-only checkpoint: docs/evidence/challenge-cards-native-2026-10-23/report.json. Owner appearance and physical-device touch acceptance remain; no phone attachment check/device test, APK, live backend/account mutation, social send or deployment.
+--- a/docs/PHASE_0_PLAN.md
++++ b/docs/PHASE_0_PLAN.md
+@@ -1,3 +1,5 @@
++2026-10-23 GPA-F01/GPA-F01-R/GPA-F02/GPA-F03/R01/Q01: Audit F01-F03 implemented with isolated cosmetic persistence, shared exact/cancellable paint preparation and retained deterministic prop/tyre data. Paired desktop10k-PB main callback391.634ms to0.415ms, 576 resting tyres1.808ms to0.217ms/tick, fallback exclusion539.405ms to14.058ms. Focused31/59/16924 headless/desktopMobile and earlier31/59/1924 Compatibility, exact tyre13200, native482 plus old-library482, full-lap cars105/handling88, records54, graphical lifecycle/ghost/wash and parser942 pass. The same oil-placement1/historical physics689 failures reproduce on original source. Actual commands, corrections, hashes and scoped checkpoint: docs/GAMEPLAY_F01_F03_2026_10_23.md. Other audit findings, dense active piles and physical-device sustained acceptance remain. No phone attachment check/device test, APK, live mutation or deployment; concurrent work retained.
++
+ 2026-10-23 CCR01-CCR04/G01/R01/Q01: Apply the approved HTML challenge-card direction to the native menu: Choose your challenge, Head to head, Group race, Three tries and a fourth Custom rules card. Optional rules commit/cancel race type, 24-hour/3-day/7-day duration, 1/3/5/unlimited tries and supported public/invitation visibility; preset changes retain duration and visibility. Actual route/car/time lead the page, with fixed completed-ticket results, verification/errors/account fences, five laps, verified-PB menu sources and target-free groups retained. Race-first return preserves the selected format; an account-fenced frozen invitation precedes explicit system sharing. Focused97headless/109Compatibility/109desktopMobile, native challenge195, discovery68/source27/tab60/App141 and parser939 pass. Commands, initial environment/fixture/layout corrections, native views, hashes and task-only checkpoint: docs/evidence/challenge-cards-native-2026-10-23/report.json. Owner appearance and physical-device touch acceptance remain; no phone attachment check/device test, APK, live backend/account mutation, social send or deployment.
+ 
+ 2026-10-23 SVI01-SVI03/G01/R01/Q01: Owner finds granular Desert wind barely visible. Raise ordinary/gust strength to0.30/0.95 with square-root opacity, rounded matte flecks, denser wider local bursts and shorter unequal gaps. Six fixed irregular sites, minimum8m separation, low hops and lifecycle/depth/canonical fences remain. One bounded4608-instance/9216-triangle batch increases the previous grain pool fourfold; physical-device cost is unmeasured. Actual normal-driving-camera peaks303/277 to2190/2130pixels, calm1901/1891, quiet0 and783exact roof pixels pass. Focused52headless/62Compatibility/62desktopMobile, Desert87, ambience111, biomes108, parser934 and scoped whitespace pass. Commands, retained initial visibility/style corrections, native ordinary-camera motion/views and task-only checkpoint: docs/DESERT_SAND_VISIBILITY_2026_10_23.md. Local client reload, owner appearance and device performance acceptance remain; no phone attachment check/device test, APK, backend/account mutation or deployment.
+--- a/docs/GAMEPLAY_AUDIT_2026_10_23.md
++++ b/docs/GAMEPLAY_AUDIT_2026_10_23.md
+@@ -1,6 +1,8 @@
+ # Beat My Track — gameplay and performance audit
+ 
+ Date: 23 October 2026. Investigation only; no gameplay implementation changes.
++
++Follow-up: the owner subsequently authorized fixes F01–F03. Their implementation, paired desktop measurements, exact-output validation and remaining device acceptance are documented in [GAMEPLAY_F01_F03_2026_10_23.md](GAMEPLAY_F01_F03_2026_10_23.md). Findings and measurements below retain the audit-time state.
+ 
+ ## 1. Executive assessment
+ 

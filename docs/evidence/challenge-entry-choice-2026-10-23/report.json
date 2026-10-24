@@ -1,0 +1,138 @@
+{
+  "date": "2026-10-23",
+  "requirements": {
+    "CEM01": "Offer Find & play versus Create a challenge on the first Challenges menu.",
+    "CEM02": "Use existing discovery and format-first creation with correct Back/cancel behavior and guest sign-in gates.",
+    "CEM03": "Preserve direct invitations, exact results, created invitation previews, race intent and delayed model refresh ownership.",
+    "R01": "Preserve five laps, source verification, attempt gates, account fences, canonical driving and concurrent work.",
+    "G01": "Native pointer input and captures at1280x720,960x540,844x390,390x844 using shipping canvas scaling; also test an unscaled stacked390x844 page.",
+    "Q01": "Focused headless/Compatibility/desktop Mobile, integrated challenge/discovery/action regressions, parser and task-only Git patch."
+  },
+  "behavior": "Two full-card native buttons reuse the existing approved challenge posters. Find & play enters the retained discovery/browser flow; Create a challenge enters format selection. Explicit Challenges activation opens the choice, browse Back returns to it, and canceling creation restores its origin. Late adapter refreshes preserve the selected menu intent. Home does not initiate ordinary catalogue reads. Invitation links, rematches, creation completion and result feedback preserve direct challenge access.",
+  "changed_files": [
+    {
+      "path": "game/core/app.gd",
+      "sha256": "d8e7b117611c589e26327834a6efaa02b3ebdb8b4eb0d421b07993a659d4bd21",
+      "bytes": 280306
+    },
+    {
+      "path": "game/ui/challenges_page.gd",
+      "sha256": "9c38be89ba174ac319b6648f71ba0a2b56945a1e216737a1e20684a779c79c20",
+      "bytes": 37050
+    },
+    {
+      "path": "game/tests/test_challenges.gd",
+      "sha256": "d2219a882765eee775482754ccd2f24e8468606eb95766a4e98bade1d2ede19a",
+      "bytes": 22412
+    },
+    {
+      "path": "game/tests/test_challenge_discovery.gd",
+      "sha256": "8571ddacfd48fb546570380206a90ed88e85b05682c9e4ec8c11e13087734da4",
+      "bytes": 10846
+    },
+    {
+      "path": "game/tests/test_challenge_entry.gd",
+      "sha256": "8402f2277c36c07fd7985e45c0c494c2f7c11a49143fa5f323e858a466ee6ac3",
+      "bytes": 7716
+    },
+    {
+      "path": "DEVELOPMENT_STATUS.md",
+      "sha256": "76d4fec453432a4eb2e1d70b94de7c17df026c19e2ac0a73656d12d8d1d5c59c",
+      "bytes": 739571
+    },
+    {
+      "path": "docs/PHASE_0_PLAN.md",
+      "sha256": "68bfe43a3739771f7406aebbe3d60f42bcbbf923c2ab65e08719920fa8d87f46",
+      "bytes": 677675
+    }
+  ],
+  "commands": [
+    "$env:APPDATA = Join-Path (Get-Location) 'build/challenge-entry-user'",
+    "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1 -Action TestScript -ScriptPath res://tests/test_challenge_entry.gd",
+    "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1 -Action TestScript -ScriptPath res://tests/test_challenge_entry.gd -Graphical -RenderingMethod gl_compatibility",
+    "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1 -Action TestScript -ScriptPath res://tests/test_challenge_entry.gd -Graphical -RenderingMethod mobile",
+    "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1 -Action TestScript -ScriptPath res://tests/test_challenges.gd",
+    "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1 -Action TestScript -ScriptPath res://tests/test_challenge_discovery.gd",
+    "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1 -Action TestScript -ScriptPath res://tests/test_challenge_tab.gd",
+    "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1 -Action TestScript -ScriptPath res://tests/test_script_parse.gd",
+    "git diff --check -- game/ui/challenges_page.gd game/core/app.gd game/tests/test_challenges.gd game/tests/test_challenge_discovery.gd game/tests/test_challenge_entry.gd"
+  ],
+  "final_tests": [
+    {
+      "name": "focused-headless",
+      "log": "logs/TestScript-33952.log",
+      "result": "CHALLENGE ENTRY: 83 checks, 0 failures",
+      "exit_code": 0
+    },
+    {
+      "name": "focused-compatibility",
+      "log": "logs/TestScript-37772.log",
+      "result": "CHALLENGE ENTRY: 88 checks, 0 failures",
+      "exit_code": 0
+    },
+    {
+      "name": "focused-desktop-mobile",
+      "log": "logs/TestScript-18492.log",
+      "result": "CHALLENGE ENTRY: 88 checks, 0 failures",
+      "exit_code": 0
+    },
+    {
+      "name": "integrated",
+      "log": "logs/TestScript-31828.log",
+      "result": "CHALLENGES: 216 checks, 0 failures",
+      "exit_code": 0
+    },
+    {
+      "name": "discovery",
+      "log": "logs/TestScript-35536.log",
+      "result": "CHALLENGE DISCOVERY: 68 checks, 0 failures",
+      "exit_code": 0
+    },
+    {
+      "name": "action-gates",
+      "log": "logs/TestScript-29576.log",
+      "result": "CHALLENGE TAB: 60 checks, 0 failures",
+      "exit_code": 0
+    },
+    {
+      "name": "parser",
+      "log": "logs/TestScript-37808.log",
+      "result": "SCRIPT_PARSE: 1017 scripts, 0 failures",
+      "exit_code": 0
+    }
+  ],
+  "initial_corrections": [
+    "PowerShell execution policy required an explicit process-local -ExecutionPolicy Bypass. Workspace APPDATA avoids production-profile log access. Godot certificate-store initialization required auto-reviewed elevated execution; no live requests were authorized or made.",
+    "A signal-emission ternary raised Trying to get a return value of a method that returns void. The creation actions now share an explicit branch callback.",
+    "The first graphical fixture incorrectly disabled shipping canvas scaling for the complete application shell, exposing unsupported raw portrait and short-window layout bounds. The final full-shell fixture retains the shipping canvas_items/expand configuration and asserts both choices fit; an additional isolated unscaled390x844 fixture still verifies stacking. The failing graphical logs are retained.",
+    "Minimum card/art heights were reduced so short layouts retain their captions without requiring the original240px poster minimum."
+  ],
+  "retained_initial_logs": [
+    "logs/TestScript-30244.log",
+    "logs/TestScript-7128.log",
+    "logs/TestScript-9472.log"
+  ],
+  "known_limits": [
+    "Desktop Godot windows and desktop Mobile rendering are not physical-device acceptance or FPS measurements.",
+    "The integrated suite retains one previously documented Thread wait_to_finish teardown warning while all216 assertions pass.",
+    "Portrait full-shell rendering follows the existing shipping canvas scaling; unscaled stacked behavior is verified independently.",
+    "No phone attachment check or device test, APK, live backend/account mutation, social send or deployment. Owner appearance/touch acceptance remains."
+  ],
+  "concurrent_work": "Existing dirty files and new appearance-sync integration were preserved. The source fingerprints describe the tested combined workspace; task-only.patch filters out concurrent app changes and leaves the Git index untouched.",
+  "checkpoint": {
+    "path": "task-only.patch",
+    "kind": "Task-only reviewable Git patch against captured pre-task working source; no unrelated changes staged or committed."
+  },
+  "screenshots": [
+    "Windows-gl_compatibility/entry-1280x720.png",
+    "Windows-gl_compatibility/entry-390x844.png",
+    "Windows-gl_compatibility/entry-844x390.png",
+    "Windows-gl_compatibility/entry-960x540.png",
+    "Windows-gl_compatibility/entry-stacked-390x844.png",
+    "Windows-mobile/entry-1280x720.png",
+    "Windows-mobile/entry-390x844.png",
+    "Windows-mobile/entry-844x390.png",
+    "Windows-mobile/entry-960x540.png",
+    "Windows-mobile/entry-stacked-390x844.png"
+  ]
+}

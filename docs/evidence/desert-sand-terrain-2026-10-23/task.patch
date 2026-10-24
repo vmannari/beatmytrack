@@ -1,0 +1,297 @@
+--- a/game/track/desert_sand_wind.gd
++++ b/game/track/desert_sand_wind.gd
+@@ -9,7 +9,7 @@
+ const WIND: Vector2 = Vector2(0.91, 0.414608)
+ const SAND_SHADER: Shader = preload("res://track/desert_sand_wind.gdshader")
+ const DENSITY: Texture2D = preload("res://assets/textures/desert_wind_density_v1.png")
+-const SAND_COLOR: Color = Color("b8b1a7")
++const SAND_COLOR: Color = TrackTheme.DESERT[2]
+ var plumes: MultiMeshInstance3D
+ var material: ShaderMaterial
+ var track: NativeTrack
+--- a/game/track/desert_sand_wind.gdshader
++++ b/game/track/desert_sand_wind.gdshader
+@@ -3,7 +3,7 @@
+ 
+ uniform sampler2D density_texture : filter_linear_mipmap, repeat_enable;
+ uniform sampler2D scene_depth : hint_depth_texture, filter_nearest, repeat_disable;
+-uniform vec4 sand_color : source_color = vec4(0.72157, 0.69412, 0.65490, 1.0);
++uniform vec4 sand_color : source_color = vec4(0.75686, 0.64314, 0.47059, 1.0);
+ uniform float elapsed = 0.0;
+ uniform float strength = 0.0;
+ uniform vec3 focus;
+@@ -17,14 +17,14 @@
+ }
+ 
+ float emission(float time, float seed) {
+-    float period = 6.0 + sand_hash(seed + 3.0) * 5.0;
++    float period = 5.0 + sand_hash(seed + 3.0) * 4.0;
+     float clock = time + seed * 31.0;
+     float cycle = floor(clock / period);
+     float local_time = mod(clock, period);
+     float event_seed = sand_hash(seed * 39.0 + cycle * 7.0);
+     float start = 0.8 + event_seed * 1.3;
+     float duration = mix(1.8, 4.2, sand_hash(event_seed + 9.0));
+-    return step(0.12, event_seed) * smoothstep(start, start + 0.25, local_time)
++    return step(0.10, event_seed) * smoothstep(start, start + 0.25, local_time)
+         * (1.0 - smoothstep(start + duration - 0.45, start + duration, local_time));
+ }
+ 
+@@ -81,7 +81,9 @@
+     vec4 opaque_world = INV_VIEW_MATRIX * view;
+     // Proxy corners cannot place low powder above a taller car/bridge roof.
+     intersection *= 1.0 - smoothstep(center_height, center_height + 0.06, opaque_world.y / opaque_world.w);
+-    ALBEDO = sand_color.rgb * mix(0.97, 1.02, density.r);
++    // Share the terrain pigment, keeping its red-channel brightness near the
++    // accepted grey-powder version so the warmer tint adds no bright cores.
++    ALBEDO = sand_color.rgb * 0.90 * mix(0.97, 1.02, density.r);
+     ROUGHNESS = 1.0;
+     SPECULAR = 0.0;
+     ALPHA = 0.28 * strength * presence * shape * distance_fade * intersection;
+--- a/game/tests/test_desert_sand_wind.gd
++++ b/game/tests/test_desert_sand_wind.gd
+@@ -3,7 +3,7 @@
+ const FX = preload("res://track/desert_sand_wind.gd")
+ var checks: int = 0
+ var failures: int = 0
+-var out: String = "res://../docs/evidence/desert-sand-reference-2026-10-23/"
++var out: String = "res://../docs/evidence/desert-sand-terrain-2026-10-23/"
+ 
+ func _initialize() -> void:
+ 	run.call_deferred()
+@@ -270,11 +270,15 @@
+ 	contrast.sort()
+ 	var p99: float = contrast[mini(contrast.size() - 1, floori(contrast.size() * 0.99))] if not contrast.is_empty() else 1.0
+ 	var mean_saturation: float = saturation / maxi(1, pixels)
+-	check(pixels > 1000 and mean_saturation < 0.16, "actual powder is muted on neutral ground under Desert light")
++	# Compare the requested warm terrain hue while retaining the accepted
++	# mutedness, soft-contrast and bright-core limits.
++	var mean_colour: Color = colour / maxi(1, pixels)
++	var hue_error: float = absf(wrapf(mean_colour.h - TrackTheme.DESERT[2].h, -0.5, 0.5))
++	check(pixels > 1000 and mean_saturation < 0.16 and hue_error < 0.04, "actual powder shares the warm terrain hue without saturated cores")
+ 	check(bright_specks == 0 and p99 < 0.20, "soft powder contains no bright yellow specks or hard opaque cores")
+ 	check(powder.save_png(out + "palette.png") == OK, "native muted-powder palette fixture")
+ 	var receipt := FileAccess.open(out + "palette.json", FileAccess.WRITE)
+-	receipt.store_string(JSON.stringify({"pixels": pixels, "mean_saturation": mean_saturation, "mean_rgb": colour / maxi(1, pixels), "bright_specks": bright_specks, "contrast_p99": p99}, "\t"))
++	receipt.store_string(JSON.stringify({"pixels": pixels, "mean_saturation": mean_saturation, "mean_rgb": mean_colour, "terrain_hue_error": hue_error, "bright_specks": bright_specks, "contrast_p99": p99}, "\t"))
+ 	receipt.close()
+ 	print("SAND_PALETTE: ", pixels, " pixels saturation=", mean_saturation, " bright=", bright_specks, " contrast_p99=", p99)
+ 	floor_node.queue_free()
+--- a/AGENTS.md
++++ b/AGENTS.md
+@@ -1,3 +1,6 @@
++## Terrain-matched Desert sand cadence override (2026-10-23)
++2026-10-23 STC01-STC02/G01/R01/Q01: Owner likes the RSP sand preview and requests closer terrain colour and slightly more frequent appearances. Share the existing loose-sand palette with brightness compensation; shorten independent periods6-11s to5-9s and skips12% to10% (about24% more nominal starts). Accepted soft shape, drift, lift, opacity, six separated crest sites and48-quad/96-triangle batch remain. Focused55headless/68Compatibility/68desktopMobile, Desert87, ambience111, biomes108 and parser1031 pass. Original mutedness/contrast/roof/canonical/lifecycle guards remain; native hue errors0.0021/0.0175, zero bright specks and784exact roof pixels pass. Commands, updated HTML previews, hashes and scoped Git-checkable patch: docs/DESERT_SAND_TERRAIN_2026_10_23.md and docs/evidence/desert-sand-terrain-2026-10-23/report.json. Client reload and owner/device colour/cadence/cost acceptance remain. No phone/tablet attachment check, physical-device test, APK, live account/backend mutation or deployment. Concurrent work preserved.
++
+ ## Original snow-impact options override (2026-10-23)
+ 2026-10-23 OSI01-OSI03/R01/Q01: Three original snow impacts use existing cleared Nox recordings; packed snow is installed, with powder/heavy-bank auditions. Actual same-gain/pitch mastered first100ms rises2.33dB, strong attack0.204ms and peak0.557 retain headroom. Continuous snow is byte-exact; contact/driving/gains/voice limits/native libraries remain. Source hashes and repeat build are exact. Capture13/driving6, analysis34, snowbank89headless, response29headless/35Compatibility/35desktopMobile, Windows18 and parser1030 pass. Soundsnap previews remain unusable; no listening/matching claim or copied reference audio. Actual commands, source provenance, WAV comparisons, limitations and scoped checkpoint: docs/ORIGINAL_SNOW_IMPACT_2026_10_23.md and docs/evidence/original-snow-impact-2026-10-23/report.json. Client restart and owner/device listening remain; no phone/tablet attachment check, physical-device test, APK/export/install, native rebuild, account/backend mutation, purchase or deployment. Concurrent work preserved.
+ 
+--- a/DEVELOPMENT_STATUS.md
++++ b/DEVELOPMENT_STATUS.md
+@@ -1,3 +1,5 @@
++2026-10-23 STC01-STC02/G01/R01/Q01: Owner likes the RSP sand preview and requests closer terrain colour and slightly more frequent appearances. Share the existing loose-sand palette with brightness compensation; shorten independent periods6-11s to5-9s and skips12% to10% (about24% more nominal starts). Accepted soft shape, drift, lift, opacity, six separated crest sites and48-quad/96-triangle batch remain. Focused55headless/68Compatibility/68desktopMobile, Desert87, ambience111, biomes108 and parser1031 pass. Original mutedness/contrast/roof/canonical/lifecycle guards remain; native hue errors0.0021/0.0175, zero bright specks and784exact roof pixels pass. Commands, updated HTML previews, hashes and scoped Git-checkable patch: docs/DESERT_SAND_TERRAIN_2026_10_23.md and docs/evidence/desert-sand-terrain-2026-10-23/report.json. Client reload and owner/device colour/cadence/cost acceptance remain. No phone/tablet attachment check, physical-device test, APK, live account/backend mutation or deployment. Concurrent work preserved.
++
+ 2026-10-23 LLSD01/LLS01-LLS02/R01/V05/Q01: Owner-approved tyre-visibility fix deployed to OnePlus Pad 2, build0.3.0-creator.3ae28a749c83e1a138e1c689731c58b2. Frozen installed source changes one gameplay file; native libraries exact. Focused1789/import/startup/driving72/catalog21/menu41 pass. Installed APK hash/version and firstInstallTime verified; awake APP_READY, zero matched game errors, actual signed-in Race menu/results retained. Initial asleep-launch/EGL and receipt-encoding corrections are documented. Data-preserving install-r; no uninstall/clear/track sync/backend deployment or driving/provider input. Sustained later-lap owner acceptance remains. Commands, native view, hashes and scoped checkpoint: docs/evidence/tablet-lap-stutter-deployment-2026-10-23/report.json. Concurrent work preserved.
+ 
+ 2026-10-23 OSI01-OSI03/R01/Q01: Three original snow impacts use existing cleared Nox recordings; packed snow is installed, with powder/heavy-bank auditions. Actual same-gain/pitch mastered first100ms rises2.33dB, strong attack0.204ms and peak0.557 retain headroom. Continuous snow is byte-exact; contact/driving/gains/voice limits/native libraries remain. Source hashes and repeat build are exact. Capture13/driving6, analysis34, snowbank89headless, response29headless/35Compatibility/35desktopMobile, Windows18 and parser1030 pass. Soundsnap previews remain unusable; no listening/matching claim or copied reference audio. Actual commands, source provenance, WAV comparisons, limitations and scoped checkpoint: docs/ORIGINAL_SNOW_IMPACT_2026_10_23.md and docs/evidence/original-snow-impact-2026-10-23/report.json. Client restart and owner/device listening remain; no phone/tablet attachment check, physical-device test, APK/export/install, native rebuild, account/backend mutation, purchase or deployment. Concurrent work preserved.
+--- a/docs/PHASE_0_PLAN.md
++++ b/docs/PHASE_0_PLAN.md
+@@ -1,3 +1,5 @@
++2026-10-23 STC01-STC02/G01/R01/Q01: Owner likes the RSP sand preview and requests closer terrain colour and slightly more frequent appearances. Share the existing loose-sand palette with brightness compensation; shorten independent periods6-11s to5-9s and skips12% to10% (about24% more nominal starts). Accepted soft shape, drift, lift, opacity, six separated crest sites and48-quad/96-triangle batch remain. Focused55headless/68Compatibility/68desktopMobile, Desert87, ambience111, biomes108 and parser1031 pass. Original mutedness/contrast/roof/canonical/lifecycle guards remain; native hue errors0.0021/0.0175, zero bright specks and784exact roof pixels pass. Commands, updated HTML previews, hashes and scoped Git-checkable patch: docs/DESERT_SAND_TERRAIN_2026_10_23.md and docs/evidence/desert-sand-terrain-2026-10-23/report.json. Client reload and owner/device colour/cadence/cost acceptance remain. No phone/tablet attachment check, physical-device test, APK, live account/backend mutation or deployment. Concurrent work preserved.
++
+ 2026-10-23 LLSD01/LLS01-LLS02/R01/V05/Q01: Owner-approved tyre-visibility fix deployed to OnePlus Pad 2, build0.3.0-creator.3ae28a749c83e1a138e1c689731c58b2. Frozen installed source changes one gameplay file; native libraries exact. Focused1789/import/startup/driving72/catalog21/menu41 pass. Installed APK hash/version and firstInstallTime verified; awake APP_READY, zero matched game errors, actual signed-in Race menu/results retained. Initial asleep-launch/EGL and receipt-encoding corrections are documented. Data-preserving install-r; no uninstall/clear/track sync/backend deployment or driving/provider input. Sustained later-lap owner acceptance remains. Commands, native view, hashes and scoped checkpoint: docs/evidence/tablet-lap-stutter-deployment-2026-10-23/report.json. Concurrent work preserved.
+ 
+ 2026-10-23 OSI01-OSI03/R01/Q01: Three original snow impacts use existing cleared Nox recordings; packed snow is installed, with powder/heavy-bank auditions. Actual same-gain/pitch mastered first100ms rises2.33dB, strong attack0.204ms and peak0.557 retain headroom. Continuous snow is byte-exact; contact/driving/gains/voice limits/native libraries remain. Source hashes and repeat build are exact. Capture13/driving6, analysis34, snowbank89headless, response29headless/35Compatibility/35desktopMobile, Windows18 and parser1030 pass. Soundsnap previews remain unusable; no listening/matching claim or copied reference audio. Actual commands, source provenance, WAV comparisons, limitations and scoped checkpoint: docs/ORIGINAL_SNOW_IMPACT_2026_10_23.md and docs/evidence/original-snow-impact-2026-10-23/report.json. Client restart and owner/device listening remain; no phone/tablet attachment check, physical-device test, APK/export/install, native rebuild, account/backend mutation, purchase or deployment. Concurrent work preserved.
+--- /dev/null
++++ b/docs/DESERT_SAND_TERRAIN_2026_10_23.md
+@@ -0,0 +1,28 @@
++# Desert sand: terrain colour and frequency, 2026-10-23
++
++The owner likes the RSP HTML preview and requests a closer terrain colour match and slightly more frequent appearances. This is a small refinement of that accepted direction.
++
++- **STC01:** airborne sand now uses `TrackTheme.DESERT[2]` (`c1a478`), the existing loose-sand terrain palette, in place of the separate grey `b8b1a7` tint. A 0.90 linear pigment multiplier keeps the red-channel brightness close to the previous powder, preserving its soft contrast under Desert light.
++- **STC02:** independent burst periods change from 6–11 to 5–9 seconds and skipped cycles from 12% to 10%. This is about 24% more nominal burst starts, based on the mean period and skip probability; it is not a measured player-session percentage. Burst size, individual lifetime, drift, lift and opacity remain as in the preview the owner liked.
++- **G01/R01/Q01:** keep the same six separated crest sites, 48 quads/96 triangles, density asset, depth/roof guards and lifecycle. Terrain artwork/geometry, camera, wind audio, vehicle dust and canonical driving are unchanged by this task. More frequent transparency can increase fragment work; no device performance improvement is claimed.
++
++Runtime changes are limited to `game/track/desert_sand_wind.gd` and its shader. The existing focused fixture writes a new evidence folder and adds a rendered hue comparison against the terrain palette. It retains the existing mutedness limit of 0.16, no bright saturated specks, contrast p99 below 0.20, visibility/quiet checks, exact opaque-roof checks and canonical/lifecycle assertions. No asset or external dependency is added.
++
++[Desktop Mobile motion](evidence/desert-sand-terrain-2026-10-23/mobile/motion.html) and [Compatibility motion](evidence/desert-sand-terrain-2026-10-23/gl_compatibility/motion.html) use the normal driving camera. Each folder also retains before/gust/calm/detail/palette/occlusion images and JSON measurements. The neutral-floor palette fixture is an isolation view; driving views retain the original warm sun veil. The earlier RSP preview and evidence remain available for comparison.
++
++<!-- CHECKS -->
++
++Native verification: focused **55 headless / 68 Compatibility / 68 desktop Mobile**, Desert **87**, ambience **111**, biomes **108** and parser **1031 scripts** pass. Both renderers retain 784 exact roof pixels and zero bright saturated specks. Rendered terrain-hue errors are 0.0021/0.0175 of a hue turn, with saturation 0.082/0.133 and contrast p99 0.086/0.137. Hardware is an RTX 3090; desktop Mobile is Vulkan on Windows, not a tablet measurement.
++
++Actual commands, source hashes and the scoped checkpoint are in [report.json](evidence/desert-sand-terrain-2026-10-23/report.json). Tests use the pinned Godot `4.7.2.stable.official.ed1daf0bf` through `scripts/dev.ps1`, with normal Windows certificate-store access. Representative commands:
++
++```powershell
++powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1 -Action TestScript -ScriptPath res://tests/test_desert_sand_wind.gd -Graphical -RenderingMethod mobile -CommandTimeoutSeconds 300
++powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1 -Action TestScript -ScriptPath res://tests/test_desert_sand_wind.gd -Graphical -RenderingMethod gl_compatibility -CommandTimeoutSeconds 300
++powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1 -Action TestScript -ScriptPath res://tests/test_desert_sand_wind.gd -CommandTimeoutSeconds 300
++.tools/review/Scripts/python.exe docs/evidence/desert-sand-terrain-2026-10-23/encode_preview.py
++```
++
++The initial Mobile run already passed the original 0.16 saturation threshold numerically. An unnecessarily broad temporary hue-test limit was restored to 0.16 before final checks; the initial receipt is retained as `mobile-initial.log`. Both final renderers use the strict colour criteria. Screenshot readbacks can emit `RACE_HITCH`; they are not gameplay frame-time measurements.
++
++The task-only patch compares the three code/test files with their saved preceding versions and adds this document, evidence helpers and additive status updates. Concurrent work is preserved. Client reload and owner acceptance of colour/cadence remain, along with sustained physical-device appearance/performance acceptance. No phone/tablet attachment check or physical-device test was performed. No APK/export/install, account/backend mutation or deployment was performed.
+--- /dev/null
++++ b/docs/evidence/desert-sand-terrain-2026-10-23/encode_preview.py
+@@ -0,0 +1,53 @@
++"""Encode actual native frames losslessly; preserve the native fine-powder motion."""
++import base64
++import io
++import json
++import re
++from pathlib import Path
++
++from PIL import Image
++
++root = Path(__file__).resolve().parent
++player = """<!doctype html><meta charset="utf-8"><title>Desert sand terrain refinement</title>
++<style>body{background:#172129;color:#edf1f3;font:16px system-ui;max-width:1280px;margin:32px auto}img,canvas{width:100%}button{padding:10px}[hidden]{display:none}</style>
++<p>Terrain-coloured windblown sand with shorter gaps - actual Godot frames at normal driving zoom; gust then ordinary wind</p>
++<img id="view" src="motion.webp"><canvas id="still" hidden></canvas>
++<button id="toggle">Pause</button><script>
++const view=document.getElementById('view'),still=document.getElementById('still'),toggle=document.getElementById('toggle');
++let playing=true;toggle.onclick=()=>{if(playing){still.width=view.naturalWidth;still.height=view.naturalHeight;still.getContext('2d').drawImage(view,0,0);}
++playing=!playing;view.hidden=!playing;still.hidden=playing;toggle.textContent=playing?'Pause':'Play';};
++</script>"""
++for renderer in ("gl_compatibility", "mobile"):
++    folder = root / renderer
++    source = (folder / "motion.html").read_text(encoding="utf-8")
++    match = re.search(r"const frames=(\[.*?\]);let frame=", source)
++    if match is None:
++        print(renderer, "preview already encoded")
++        continue
++    frames = json.loads(match.group(1))
++    images = [
++        Image.open(io.BytesIO(base64.b64decode(frame.split(",", 1)[1]))).convert("RGB")
++        for frame in frames
++    ]
++    images[0].save(
++        folder / "motion.webp", save_all=True, append_images=images[1:],
++        duration=67, loop=0, lossless=True, method=4,
++    )
++    (folder / "motion.html").write_text(player, encoding="utf-8")
++    print(renderer, len(images), "frames", (folder / "motion.webp").stat().st_size, "bytes")
++
++metadata = {}
++for renderer in ("gl_compatibility", "mobile"):
++    path = root / renderer / "motion.webp"
++    image = Image.open(path)
++    duration = 0
++    for frame in range(image.n_frames):
++        image.seek(frame)
++        image.load()
++        duration += image.info["duration"]
++    metadata[renderer] = {
++        "native_frames": 90, "encoded_frames": image.n_frames,
++        "duration_ms": duration, "bytes": path.stat().st_size,
++    }
++(root / "preview-encoding.json").write_text(json.dumps(metadata, indent=2) + "\n", encoding="utf-8")
++print(json.dumps(metadata))
+--- /dev/null
++++ b/docs/evidence/desert-sand-terrain-2026-10-23/finalize_receipt.py
+@@ -0,0 +1,103 @@
++"""Check actual receipts and retain this refinement independently of concurrent work."""
++import difflib
++import hashlib
++import json
++import re
++import subprocess
++from pathlib import Path
++
++OUT = Path(__file__).resolve().parent
++ROOT = OUT.parents[2]
++PREFIX = "docs/evidence/desert-sand-terrain-2026-10-23/"
++DOC = "docs/DESERT_SAND_TERRAIN_2026_10_23.md"
++
++
++def read_log(name):
++    raw = (OUT / name).read_bytes()
++    return raw.decode("utf-16" if raw.startswith((b"\xff\xfe", b"\xfe\xff")) else "utf-8-sig")
++
++
++tests = []
++for name, script, flags in [
++    ("headless", "test_desert_sand_wind.gd", ""),
++    ("compatibility-final", "test_desert_sand_wind.gd", " -Graphical -RenderingMethod gl_compatibility"),
++    ("mobile-final", "test_desert_sand_wind.gd", " -Graphical -RenderingMethod mobile"),
++    ("desert", "test_desert.gd", ""), ("ambience", "test_desert_ambience.gd", ""),
++    ("biomes", "test_biomes.gd", ""), ("parser", "test_script_parse.gd", ""),
++]:
++    log = read_log(name + ".log")
++    result = re.search(r"(\d+) (checks|scripts), 0 failures", log)
++    assert result and "FAIL:" not in log and "SCRIPT ERROR:" not in log, name
++    tests.append({"name": name, "checks": int(result[1]), "failures": 0, "log": name + ".log",
++                  "command": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1 -Action TestScript -ScriptPath res://tests/" + script + flags + " -CommandTimeoutSeconds 300"})
++assert all(row["exit_code"] == 0 for row in json.loads((OUT / "regression-exits.json").read_text(encoding="utf-8-sig")))
++measurements = {}
++for renderer, log in [("gl_compatibility", "compatibility-final.log"), ("mobile", "mobile-final.log")]:
++    timeline = json.loads((OUT / renderer / "timeline.json").read_text())
++    palette = json.loads((OUT / renderer / "palette.json").read_text())
++    assert 2000 <= timeline["peak_pixels"] < 1280 * 720 * 0.08
++    assert timeline["calm_pixels"] >= 600 and timeline["quiet_pixels"] < timeline["peak_pixels"] * 0.35
++    assert palette["pixels"] > 1000 and palette["mean_saturation"] < 0.16 and palette["terrain_hue_error"] < 0.04
++    assert palette["bright_specks"] == 0 and palette["contrast_p99"] < 0.20
++    roof = re.search(r"SAND_OPAQUE_SAMPLES: (\d+) changed=(\d+)", read_log(log))
++    assert roof and int(roof[1]) > 100 and int(roof[2]) == 0
++    measurements[renderer] = {"timeline": timeline, "palette": palette, "roof": {"samples": int(roof[1]), "changed": int(roof[2])}}
++counts = {row["name"]: row["checks"] for row in tests}
++checks_text = ("<!-- CHECKS -->\n\nNative verification: focused **{headless} headless / {compatibility-final} Compatibility / {mobile-final} desktop Mobile**, Desert **{desert}**, ambience **{ambience}**, biomes **{biomes}** and parser **{parser} scripts** pass. Both renderers retain 784 exact roof pixels and zero bright saturated specks. Rendered terrain-hue errors are 0.0021/0.0175 of a hue turn, with saturation 0.082/0.133 and contrast p99 0.086/0.137. Hardware is an RTX 3090; desktop Mobile is Vulkan on Windows, not a tablet measurement.").format(**counts)
++doc = ROOT / DOC
++doc.write_text(re.sub(r"<!-- CHECKS -->.*?(?=\n\nActual commands)", checks_text, doc.read_text(encoding="utf-8"), flags=re.S), encoding="utf-8", newline="\n")
++
++summary = ("2026-10-23 STC01-STC02/G01/R01/Q01: Owner likes the RSP sand preview and requests closer terrain colour and slightly more frequent appearances. Share the existing loose-sand palette with brightness compensation; shorten independent periods6-11s to5-9s and skips12% to10% (about24% more nominal starts). Accepted soft shape, drift, lift, opacity, six separated crest sites and48-quad/96-triangle batch remain. Focused{headless}headless/{compatibility-final}Compatibility/{mobile-final}desktopMobile, Desert{desert}, ambience{ambience}, biomes{biomes} and parser{parser} pass. Original mutedness/contrast/roof/canonical/lifecycle guards remain; native hue errors0.0021/0.0175, zero bright specks and784exact roof pixels pass. Commands, updated HTML previews, hashes and scoped Git-checkable patch: docs/DESERT_SAND_TERRAIN_2026_10_23.md and docs/evidence/desert-sand-terrain-2026-10-23/report.json. Client reload and owner/device colour/cadence/cost acceptance remain. No phone/tablet attachment check, physical-device test, APK, live account/backend mutation or deployment. Concurrent work preserved.").format(**counts)
++base, after = OUT / "task-base", OUT / "task-after"
++statuses = ["AGENTS.md", "DEVELOPMENT_STATUS.md", "docs/PHASE_0_PLAN.md"]
++for name in statuses:
++    path = ROOT / name
++    raw = path.read_bytes()
++    if b"2026-10-23 STC01-STC02/" in raw:
++        assert (base / name).exists()
++        continue
++    target = base / name
++    target.parent.mkdir(parents=True, exist_ok=True)
++    target.write_bytes(raw)
++    nl = b"\r\n" if b"\r\n" in raw else b"\n"
++    heading = b"## Terrain-matched Desert sand cadence override (2026-10-23)" + nl if name == "AGENTS.md" else b""
++    path.write_bytes(heading + summary.encode() + nl * 2 + raw)
++revisions = ["game/track/desert_sand_wind.gd", "game/track/desert_sand_wind.gdshader", "game/tests/test_desert_sand_wind.gd"]
++for name in revisions:
++    target = base / name
++    target.parent.mkdir(parents=True, exist_ok=True)
++    target.write_bytes((OUT / "before" / Path(name).name).read_bytes())
++files = revisions + statuses + [DOC, PREFIX + "encode_preview.py", PREFIX + "finalize_receipt.py"]
++patch, hashes = [], {}
++for name in files:
++    path = ROOT / name
++    target = after / name
++    target.parent.mkdir(parents=True, exist_ok=True)
++    target.write_bytes(path.read_bytes())
++    old = (base / name).read_text(encoding="utf-8").splitlines(True) if (base / name).exists() else []
++    new = path.read_text(encoding="utf-8").splitlines(True)
++    patch.extend(difflib.unified_diff(old, new, fromfile="a/" + name if old else "/dev/null", tofile="b/" + name))
++    hashes[name] = hashlib.sha256(path.read_bytes()).hexdigest()
++(OUT / "task.patch").write_text("".join(patch), encoding="utf-8", newline="\n")
++git_checks = []
++for args, log in [(["diff", "--check", "--", *revisions, *statuses, DOC], "whitespace.log"), (["apply", "--reverse", "--check", PREFIX + "task.patch"], "checkpoint.log")]:
++    result = subprocess.run(["git", *args], cwd=ROOT, capture_output=True)
++    (OUT / log).write_bytes(result.stdout + result.stderr)
++    assert result.returncode == 0, (log, result.stderr.decode(errors="replace"))
++    git_checks.append({"command": "git " + " ".join(args), "exit_code": result.returncode, "log": log})
++report = {"date": "2026-10-23", "requirements": ["STC01", "STC02", "G01", "R01", "Q01"],
++          "engine": "4.7.2.stable.official.ed1daf0bf", "gpu": "NVIDIA GeForce RTX 3090 desktop",
++          "tests": tests, "measurements": measurements, "git_checks": git_checks,
++          "burst_period_seconds": {"before": [6, 11], "after": [5, 9]}, "cycle_skip_probability": {"before": 0.12, "after": 0.10},
++          "nominal_start_rate_ratio": (8.5 / 7.0) * (0.90 / 0.88), "rate_scope": "nominal mean-period/skip estimate, not measured session rate",
++          "colour": "Existing TrackTheme.DESERT[2] with0.90 linear pigment multiplier", "geometry": {"max_sites": 6, "quads": 48, "triangles": 96},
++          "preview_encoding": json.loads((OUT / "preview-encoding.json").read_text()),
++          "encoder_command": ".tools/review/Scripts/python.exe " + PREFIX + "encode_preview.py",
++          "retained_attempt": "mobile-initial.log", "correction": "Restore original0.16 mutedness cap before final checks; initial measured0.133 already meets it",
++          "changed_files": files, "source_sha256": hashes, "patch": "task.patch", "patch_sha256": hashlib.sha256((OUT / "task.patch").read_bytes()).hexdigest(),
++          "acceptance_remaining": ["client reload", "owner colour and cadence", "sustained physical-device appearance and fragment cost"],
++          "performance_claim": "None; more frequent transparency can increase fragment work",
++          "phone_tablet_attachment_check": False, "physical_device_test": False, "apk_export_install": False, "live_mutation": False, "deployment": False,
++          "concurrent_work_preserved": True}
++(OUT / "report.json").write_text(json.dumps(report, indent=2) + "\n", encoding="utf-8")
++print("Verified receipts and task-only Git checkpoint:", len(files), "files")

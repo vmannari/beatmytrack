@@ -21,7 +21,7 @@ finish() {
         compose run --rm --no-deps -T --entrypoint python api -m bmt_backend.backup_guard end --token "$guard" >&2 || code=1
     fi
     if test "$mode" = offline; then
-        for service in api worker; do
+        for service in api worker admin; do
             case " $running " in *" $service "*) compose start "$service" >&2 || code=1 ;; esac
         done
     fi
@@ -43,7 +43,7 @@ case "$mode" in
         guard=$(compose run --rm --no-deps -T --entrypoint python api -m bmt_backend.backup_guard begin)
         printf '%s\n' "$guard" > "$destination/GC_RECOVERY_TOKEN"
         ;;
-    offline) compose stop api worker >&2 ;;
+    offline) compose stop api worker admin >&2 ;;
     *) echo "BMT_BACKUP_MODE must be online or offline" >&2; exit 2 ;;
 esac
 compose exec -T db pg_dump -U postgres -d bmt --format=custom --no-owner --no-privileges > "$destination/database.dump"

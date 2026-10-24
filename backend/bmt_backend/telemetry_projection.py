@@ -109,6 +109,8 @@ def project_actor(session, events, owner, at, fact_days):
     write_metrics(session, owner.id, owner.revision, deltas)
     from . import studio_analysis
     studio_analysis.project(session, events, profiles, ACTIVE, state=owner)
+    from .game_config_observations import project as project_configuration
+    project_configuration(session, events)
     observed = [event for event in events if event.name != "collection_rejected"]
     if observed:
         earliest = min(event.occurred_at for event in observed)

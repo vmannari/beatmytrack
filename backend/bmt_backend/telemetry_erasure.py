@@ -62,11 +62,12 @@ def erase_publications(session, player_id, limit=16):
 
 def expire_people(session, at, fact_days, limit, control):
     floor = at // 86400 - fact_days
-    retired = 0
+    retired, more = 0, False
     for model, criterion in ((ProductPlayerDay, ProductPlayerDay.day < floor),
                              (AnalysisDay, AnalysisDay.day < floor),
                              (AnalysisSession, AnalysisSession.last_at < at - fact_days * 86400)):
         rows = session.scalars(select(model).where(criterion).limit(limit)).all()
+        more = more or bool(rows)
         # One owner at a time, no waiting on an active analytical batch.
         for row in sorted(rows, key=lambda r: partition(r.player_id)):
             owner = session.scalar(select(TelemetryActor).where(TelemetryActor.id == partition(row.player_id))
@@ -80,20 +81,31 @@ def expire_people(session, at, fact_days, limit, control):
                     session.delete(current)
                     retired += 1
     session.flush()
-    # Bound candidates before testing activity. Filtering a whole old cohort
-    # with NOT EXISTS can scan millions of still-active people to find one
-    # expired person. A durable keyset cursor spreads that work across passes.
-    rows = session.scalars(select(AnalysisPerson).where(AnalysisPerson.player_id > control.person_cursor)
-        .order_by(AnalysisPerson.player_id).limit(limit)).all()
-    control.person_cursor = rows[-1].player_id if rows else ""
+    # A NULL deadline is upgraded once, lazily. The expiry index supplies both
+    # legacy and due candidates; retained active cohorts are never swept again.
+    rows = session.scalars(select(AnalysisPerson).where(AnalysisPerson.last_day.is_(None))
+        .order_by(AnalysisPerson.last_day, AnalysisPerson.player_id).limit(limit)).all()
+    rows += session.scalars(select(AnalysisPerson).where(AnalysisPerson.last_day < floor)
+        .order_by(AnalysisPerson.last_day, AnalysisPerson.player_id).limit(limit)).all()
+    more = more or bool(rows)
     for row in sorted(rows, key=lambda r: partition(r.player_id)):
-        if row.first_at >= floor * 86400:
-            continue
         owner = session.scalar(select(TelemetryActor).where(TelemetryActor.id == partition(row.player_id))
             .with_for_update(skip_locked=True))
-        # Recheck after ownership acquisition, including a concurrent first insertion.
-        if owner is not None and session.scalar(select(AnalysisDay.player_id)
-                .where(AnalysisDay.player_id == row.player_id).limit(1)) is None:
-            session.delete(row)
+        if owner is None:
+            continue
+        current = session.get(AnalysisPerson, row.player_id, populate_existing=True)
+        if current is None:
+            continue
+        # The indexed latest day is one lookup, even for an old active cohort.
+        # Refresh after ownership acquisition so a late activity update cannot
+        # be erased using the candidate's stale deadline.
+        latest = session.scalar(select(AnalysisDay.day).where(AnalysisDay.player_id == row.player_id)
+            .order_by(AnalysisDay.day.desc()).limit(1))
+        current.last_day = max(current.last_day if current.last_day is not None else current.first_at // 86400,
+                               latest if latest is not None else current.first_at // 86400)
+        if current.last_day < floor and latest is None:
+            session.delete(current)
             retired += 1
-    return retired, bool(rows)
+    # This legacy cursor is retained for mixed-schema diagnostics, not revisited.
+    control.person_cursor = ""
+    return retired, more

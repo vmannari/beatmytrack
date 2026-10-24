@@ -10,6 +10,7 @@ from sqlalchemy import and_, case, delete, exists, func, or_, select, text, tupl
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 
+from . import discovery_retention as retention
 from .discovery_models import (
     LIFETIME,
     WINDOW,
@@ -19,11 +20,14 @@ from .discovery_models import (
     DiscoveryCollection,
     DiscoveryDriver,
     DiscoveryEntry,
+    DiscoveryGuard,
     DiscoveryHead,
     DiscoveryMember,
     DiscoveryOwnerJob,
     DiscoveryPartition,
     DiscoverySession,
+    DiscoveryStorage,
+    DiscoveryStorageBootstrap,
 )
 from .identity_models import Player
 from .track_models import Board, Run, Track, TrackVersion, now
@@ -41,8 +45,10 @@ def partition(track_id):
 
 
 def track_range(column, shard):
-    prefix = format(shard, "x")
-    return and_(column >= prefix, column < prefix + "~")
+    # UUIDs use lowercase hexadecimal. A punctuation sentinel is not an upper
+    # bound under language collations such as Cloud SQL's en_US.UTF8.
+    prefixes = "0123456789abcdefg"
+    return and_(column >= prefixes[shard], column < prefixes[shard + 1])
 
 
 def eligible(player):
@@ -230,30 +236,33 @@ def owner_job(db, shard, stamp):
 
 def cleanup(db, stamp):
     """Every transaction bounds deletion output, including collection members."""
+    removed = 0
     for model, predicate, fields in (
         (DiscoveryEntry, DiscoveryEntry.retired_at < stamp - LIFETIME - 120, (DiscoveryEntry.track_id, DiscoveryEntry.epoch)),
         (DiscoveryBoundary, DiscoveryBoundary.expires_at < stamp, (DiscoveryBoundary.id,)),
         (DiscoverySession, DiscoverySession.expires_at < stamp, (DiscoverySession.id,)),
         (DiscoveryChange, DiscoveryChange.processed_at < stamp - 120, (DiscoveryChange.id,)),
+        (DiscoveryGuard, and_(DiscoveryGuard.expires_at < stamp,
+            DiscoveryGuard.lease_until <= stamp*1000), (DiscoveryGuard.id,)),
     ):
         keys = list(db.execute(select(*fields).where(predicate).limit(BATCH).with_for_update(skip_locked=True)))
         if keys:
             db.execute(delete(model).where(tuple_(*fields).in_([tuple(r) for r in keys])))
-    from .discovery import DiscoverySnapshot
-    expired_v2 = db.scalar(select(DiscoverySnapshot.id).where(DiscoverySnapshot.expires_at < stamp)
-        .limit(1).with_for_update(skip_locked=True))
-    if expired_v2:
-        db.execute(delete(DiscoverySnapshot).where(DiscoverySnapshot.id == expired_v2))
-    expired = db.scalar(select(DiscoveryCollection.id).where(DiscoveryCollection.expires_at < stamp)
+            removed += len(keys)
+    expired = db.scalar(select(DiscoveryCollection).where(DiscoveryCollection.expires_at < stamp)
         .order_by(DiscoveryCollection.expires_at, DiscoveryCollection.id).limit(1).with_for_update(skip_locked=True))
     if expired:
         keys = list(db.execute(select(DiscoveryMember.kind, DiscoveryMember.track_id)
-            .where(DiscoveryMember.collection_id == expired).limit(BATCH * 4)))
+            .where(DiscoveryMember.collection_id == expired.id).limit(BATCH * 4)))
         if keys:
-            db.execute(delete(DiscoveryMember).where(DiscoveryMember.collection_id == expired,
-                tuple_(DiscoveryMember.kind, DiscoveryMember.track_id).in_([tuple(r) for r in keys])))
+            if retention.erase_members(db, expired, keys):
+                removed += len(keys)
         else:
-            db.execute(delete(DiscoveryCollection).where(DiscoveryCollection.id == expired))
+            if expired.member_rows or expired.member_bytes:
+                raise RuntimeError("Discovery empty collection retains a storage charge")
+            db.delete(expired)
+            removed += 1
+    return removed
 
 
 def step(factory, *, clock=None):
@@ -261,6 +270,7 @@ def step(factory, *, clock=None):
     bootstrap_work = backfill_runs(factory, stamp)
     with factory() as db:
         budget(db)
+        storage_work = retention.backfill(db)
         # Prefer partitions with committed work. Uniformly rotating through all
         # empty partitions throttles a single popular track by sixteen. Idle
         # partitions still get a reserved health/reconciliation turn every 30s.
@@ -277,7 +287,8 @@ def step(factory, *, clock=None):
         shard = db.scalar(select(DiscoveryPartition).order_by(priority, DiscoveryPartition.checked_at,
             DiscoveryPartition.id).with_for_update(skip_locked=True).limit(1))
         if shard is None:
-            return bootstrap_work
+            db.commit()
+            return bool(bootstrap_work or storage_work)
         shard.checked_at = time.time_ns()
         force = set()
         if not shard.ready:
@@ -320,8 +331,7 @@ def step(factory, *, clock=None):
         force.update(affected)
         deltas.update(owner_deltas)
         expired = list(db.scalars(select(DiscoveryDriver).where(DiscoveryDriver.partition == shard.id,
-            DiscoveryDriver.expires_at < stamp).order_by(DiscoveryDriver.expires_at,
-                DiscoveryDriver.track_id, DiscoveryDriver.player_id).limit(BATCH)))
+            DiscoveryDriver.expires_at < stamp).order_by(DiscoveryDriver.expires_at).limit(BATCH)))
         for row in expired:
             deltas[row.track_id] -= int(row.counted)
             db.delete(row)
@@ -347,9 +357,9 @@ def step(factory, *, clock=None):
         changed = publish(db, shard, force | due, stamp)
         for event in events:
             event.processed_at = stamp
-        cleanup(db, stamp)
+        removed = cleanup(db, stamp)
         db.commit()
-        return bool(bootstrap_work or events or force or due or expired or affected or owner_deltas or changed)
+        return bool(bootstrap_work or storage_work or events or force or due or expired or affected or owner_deltas or changed or removed)
 
 
 def settle_for_diagnostics(factory, *, clock=None, maximum=10000):
@@ -396,13 +406,35 @@ def health(factory):
     with factory() as db:
         budget(db)
         bootstrap = db.get(DiscoveryBootstrap, 1)
-        partitions = list(db.scalars(select(DiscoveryPartition).order_by(DiscoveryPartition.id)))
+        pending_at = select(DiscoveryChange.created_at).where(DiscoveryChange.partition == DiscoveryPartition.id,
+            DiscoveryChange.processed_at.is_(None)).order_by(DiscoveryChange.id).limit(1).correlate(DiscoveryPartition).scalar_subquery()
+        expired_at = select(DiscoveryDriver.expires_at).where(DiscoveryDriver.partition == DiscoveryPartition.id,
+            DiscoveryDriver.expires_at < stamp).order_by(DiscoveryDriver.expires_at).limit(1).correlate(DiscoveryPartition).scalar_subquery()
+        due_at = select(DiscoveryHead.due_at).where(DiscoveryHead.partition == DiscoveryPartition.id,
+            DiscoveryHead.due_at > 0, DiscoveryHead.due_at <= stamp).order_by(DiscoveryHead.due_at).limit(1).correlate(DiscoveryPartition).scalar_subquery()
+        partitions = list(db.execute(select(DiscoveryPartition, pending_at, expired_at, due_at).order_by(DiscoveryPartition.id)))
         values = []
-        for shard in partitions:
-            pending = db.scalar(select(DiscoveryChange.created_at).where(
-                DiscoveryChange.partition == shard.id, DiscoveryChange.processed_at.is_(None))
-                .order_by(DiscoveryChange.id).limit(1))
+        for shard, pending, expired, due in partitions:
             values.append({"partition":shard.id,"ready":shard.ready,"epoch":shard.epoch,
                 "slots":shard.slots,"checked_age_seconds":max(0,stamp-shard.checked_at//1_000_000_000),
-                "pending_age_seconds":max(0,stamp-pending) if pending is not None else 0})
-        return {"population_backfill_ready":bool(bootstrap and bootstrap.ready),"partitions":values}
+                "pending_age_seconds":max(0,stamp-pending) if pending is not None else 0,
+                "expired_pair_age_seconds":max(0,stamp-expired) if expired is not None else 0,
+                "rank_due_age_seconds":max(0,stamp-due) if due is not None else 0})
+        cleanup_age = {}
+        for name, column, grace in (
+            ("entries", DiscoveryEntry.retired_at, LIFETIME + 120),
+            ("boundaries", DiscoveryBoundary.expires_at, 0),
+            ("sessions", DiscoverySession.expires_at, 0),
+            ("receipts", DiscoveryChange.processed_at, 120),
+            ("collections", DiscoveryCollection.expires_at, 0),
+            ("guards", DiscoveryGuard.expires_at, 0),
+        ):
+            oldest = db.scalar(select(column).where(column < stamp - grace).order_by(column).limit(1))
+            cleanup_age[name] = max(0, stamp - grace - oldest) if oldest is not None else 0
+        return {"population_backfill_ready":bool(bootstrap and bootstrap.ready),"partitions":values,
+                "cleanup_oldest_age_seconds": cleanup_age,
+                "storage_backfill_ready": bool(db.scalar(select(DiscoveryStorageBootstrap.ready)
+                    .where(DiscoveryStorageBootstrap.id == 1))),
+                "storage_partitions": [{"partition": row.id, "member_rows": row.member_rows,
+                    "charged_member_bytes": row.member_bytes}
+                    for row in db.scalars(select(DiscoveryStorage).order_by(DiscoveryStorage.id))]}

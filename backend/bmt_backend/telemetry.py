@@ -10,7 +10,7 @@ from sqlalchemy import select, text
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 
-from . import network_health, quality, race_statistics
+from . import game_config_observations, network_health, quality, race_statistics
 from .db import get_session
 from .middleware import ParsedJSONRoute
 from .security import current_player
@@ -47,6 +47,7 @@ ALLOWED = {
     "store_opened": set(), "offer_exposed": {"product_id"}, "purchase_requested": {"product_id"},
 }
 ALLOWED.update(quality.FIELDS)
+ALLOWED.update(game_config_observations.FIELDS)
 ALLOWED.update(network_health.FIELDS)
 ALLOWED["race_statistics"] = race_statistics.REQUIRED | race_statistics.OPTIONAL
 REASONS = {"launch", "resume", "inactivity", "finished", "restart", "exit", "background", "unknown",
@@ -73,6 +74,13 @@ def integer(value, low=0, high=86400000):
 
 
 def properties(name, value):
+    if name in game_config_observations.NAMES:
+        return game_config_observations.validate(name, value)
+    configuration = {}
+    if name not in quality.NAMES and name not in network_health.NAMES and name not in ("race_statistics", "collection_summary") and isinstance(value, dict) and set(value) & game_config_observations.COMMON:
+        configuration = game_config_observations.validate("config_applied", {
+            key: item for key, item in value.items() if key in game_config_observations.COMMON})
+        value = {key: item for key, item in value.items() if key not in game_config_observations.COMMON}
     if name in network_health.NAMES:
         return network_health.validate(name, value)
     if name == "race_statistics":
@@ -111,7 +119,7 @@ def properties(name, value):
         elif key == "reason" and item not in REASONS:
             raise ValueError("INVALID_EVENT")
         result[key] = item
-    return quality.validate(name, result) if name in quality.NAMES else result
+    return quality.validate(name, result) if name in quality.NAMES else {**result, **configuration}
 
 
 class Batch(BaseModel):

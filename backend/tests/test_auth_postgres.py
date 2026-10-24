@@ -93,6 +93,7 @@ def postgres_auth(tmp_path):
     )
     try:
         settings = Settings(
+            environment="test",
             database_url=database_url,
             object_dir=str(tmp_path / "objects"),
             google_client_ids=("test-client",),

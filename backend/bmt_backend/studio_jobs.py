@@ -4,8 +4,14 @@ import base64
 import json
 
 from fastapi import APIRouter, HTTPException, Query, Request
-from sqlalchemy import Integer, String, cast, func, or_, select
+from sqlalchemy import Integer, String, case, cast, func, literal, or_, select
 
+from .achievement_models import (
+    AchievementCompetition,
+    AchievementRecord,
+    AchievementState,
+    CreatorAchievementEvent,
+)
 from .admin import Access
 from .news_models import NewsDemand
 from .privacy_models import AccountDeletion
@@ -14,6 +20,7 @@ from .studio_platform_models import StudioDelivery
 from .studio_queries import read_snapshot
 from .telemetry_models import ProductEvent, ProductState
 from .track_models import HistogramSnapshot, Run, TrackValidation, now
+from .world_ranking_models import RankingBranch, RankingControl
 
 router = APIRouter(tags=["Studio worker queues"])
 
@@ -30,6 +37,7 @@ def jobs(
 ):
     if state not in ("pending", "failed", "all"):
         raise HTTPException(422, "INVALID_JOB_STATE")
+    at = now()
     specs = (
         (
             "race",
@@ -91,6 +99,20 @@ def jobs(
             StudioDelivery.state == "pending",
             StudioDelivery.state == "dead",
         ),
+        ("ranking", RankingBranch, cast(RankingBranch.id, String),
+         case((RankingBranch.mode == 'rebuild', 0), else_=RankingBranch.next_week + 604800),
+         (RankingBranch.id == select(RankingControl.running_branch).where(RankingControl.id == 1).scalar_subquery())
+         & ((RankingBranch.phase != 'idle') | (RankingBranch.mode == 'rebuild') | (RankingBranch.next_week + 604800 <= at)),
+         (RankingBranch.id == select(RankingControl.running_branch).where(RankingControl.id == 1).scalar_subquery())
+         & (RankingBranch.failure != '')),
+        ("achievement_competition", AchievementCompetition, AchievementCompetition.kind + '~' + AchievementCompetition.id,
+         AchievementCompetition.due_at, AchievementCompetition.done.is_(False) & (AchievementCompetition.due_at <= at), False),
+        ("achievement_record", AchievementRecord, AchievementRecord.board_id, AchievementRecord.due_at,
+         AchievementRecord.due_at <= at, False),
+        ("achievement_rarity", AchievementState, AchievementState.player_id + '~' + AchievementState.scope,
+         literal(0), AchievementState.rarity_pending.is_(True), False),
+        ("creator_achievement", CreatorAchievementEvent, CreatorAchievementEvent.id, CreatorAchievementEvent.stamp,
+         literal(True), False),
     )
     if kind and kind not in {row[0] for row in specs}:
         raise HTTPException(422, "INVALID_JOB_KIND")
@@ -114,15 +136,25 @@ def jobs(
         for label, model, identity, created, pending, failed in specs:
             if kind and label != kind:
                 continue
-            summary = db.execute(
-                select(func.count(), func.min(created)).select_from(model).where(pending)
-            ).one()
+            bounded = label in ('ranking', 'achievement_competition', 'achievement_record', 'achievement_rarity', 'creator_achievement')
+            if bounded:
+                count = db.scalar(select(func.count()).select_from(select(identity).where(pending).limit(10001).subquery()))
+                oldest = db.scalar(select(created).where(pending).order_by(created).limit(1))
+                failed_count = db.scalar(select(func.count()).select_from(select(identity).where(failed).limit(10001).subquery()))
+                summary = (min(count, 10000), oldest)
+            else:
+                summary = db.execute(select(func.count(), func.min(created)).select_from(model).where(pending)).one()
+                failed_count = db.scalar(select(func.count()).select_from(model).where(failed))
             summaries.append(
                 {
                     "kind": label,
                     "pending": summary[0],
-                    "oldest_at": summary[1],
-                    "failed": db.scalar(select(func.count()).select_from(model).where(failed)),
+                    "oldest_at": summary[1] or None,
+                    "failed": min(failed_count, 10000) if bounded else failed_count,
+                    "capped": bounded and (count > 10000 or failed_count > 10000),
+                    "pending_capped": bounded and count > 10000,
+                    "failed_capped": bounded and failed_count > 10000,
+                    "age_known": bool(summary[1]) or not summary[0],
                 }
             )
             conditions = [pending] if state == "pending" else [failed] if state == "failed" else []
@@ -136,7 +168,7 @@ def jobs(
                 select(
                     identity,
                     created,
-                    getattr(model, "status", getattr(model, "state", created)).label("status"),
+                    getattr(model, "status", getattr(model, "state", getattr(model, "phase", created))).label("status"),
                 )
                 .where(*conditions)
                 .order_by(created, identity)
@@ -156,6 +188,8 @@ def jobs(
                     }
                 )
         product = db.get(ProductState, 1)
+        from .studio_ranking import ranking_status
+        ranking = ranking_status(db, request.app.state.settings)
         ordered = sorted(items, key=lambda x: (x["created_at"], x["kind"], x["id"]))
         next_cursor = None
         if len(ordered) > limit:
@@ -179,6 +213,7 @@ def jobs(
             "role": role,
             "as_of": now(),
             "summary": summaries,
+            "ranking": ranking,
             "projection": {
                 "pending": product.pending_events,
                 "capped": product.pending_capped,
@@ -196,5 +231,5 @@ def jobs(
             "items": ordered[:limit],
             "next_cursor": next_cursor,
             "truncated": len(items) > limit,
-            "scope": "Complete current per-kind counts, oldest first paged records. News uses the requested UTC day; histograms use the scheduled refresh time. No worker lease credentials are exposed.",
+            "scope": "Current per-kind queue counts and oldest-first records. New ranking/achievement counts are bounded at 10,000 and labelled if capped. Rarity enqueue time is unavailable; news uses the requested UTC day. Ranking uses the week-close schedule. No worker lease credentials are exposed.",
         }

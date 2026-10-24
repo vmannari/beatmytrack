@@ -269,7 +269,7 @@ def test_draw_uses_metrics_variety_and_seed_without_repetition():
 
 
 def test_concurrent_planners_and_commands_have_one_winner(tmp_path):
-    app = create_app(Settings(database_url=f"sqlite:///{(tmp_path/'plans.sqlite').as_posix()}",
+    app = create_app(Settings(environment="test", studio_legacy_keys_enabled=True, database_url=f"sqlite:///{(tmp_path/'plans.sqlite').as_posix()}",
         object_dir=str(tmp_path / "objects"), admin_owner_key="o" * 40, admin_analyst_key="a" * 40,
         rate_limit_per_minute=10000, write_limit_per_minute=10000), verifier=FakeVerifier())
     upgrade(app.state.engine)

@@ -15,11 +15,12 @@ BMT_COMPOSE_PROJECT=$2
 mkdir "$BMT_DEPLOY_DIR/.backup.lock" || { echo "Another backup/restore is running" >&2; exit 1; }
 trap 'rmdir "$BMT_DEPLOY_DIR/.backup.lock"' EXIT
 # Refuse to stop or overwrite any pre-existing application deployment.
-test -z "$(compose ps -a -q api worker migrate)" || { echo "Target project already contains application containers" >&2; exit 1; }
+test -z "$(compose ps -a -q api worker admin migrate)" || { echo "Target project already contains application containers" >&2; exit 1; }
 compose up -d --wait db
 table_count=$(compose exec -T db psql -U postgres -d bmt -Atc "SELECT count(*) FROM pg_tables WHERE schemaname='public'")
 test "$table_count" = 0 || { echo "Restore requires an empty target database" >&2; exit 1; }
 compose run --rm --no-deps -T --entrypoint python api /app/deploy/object_archive.py check-empty
 compose run --rm --no-deps -T --entrypoint python api /app/deploy/object_archive.py restore < "$source/objects.tar"
-compose exec -T db pg_restore -U postgres -d bmt --role=bmt --exit-on-error --single-transaction --no-owner --no-privileges < "$source/database.dump"
+compose exec -T db pg_restore -U postgres -d bmt --role=bmt_migrator --exit-on-error --single-transaction --no-owner --no-privileges < "$source/database.dump"
+compose run --rm --no-deps migrate
 echo "Restored into isolated project $BMT_COMPOSE_PROJECT. API and worker remain stopped. Validate, choose an unused BMT_PORT, then start explicitly."

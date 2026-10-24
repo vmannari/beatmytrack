@@ -201,6 +201,7 @@ def project(session, events):
 
 
 def cleanup(session, at, limit, fact_days):
+    more = False
     for model, fields, predicate, ordering in (
         (RaceStatisticsReceipt, (RaceStatisticsReceipt.player_id, RaceStatisticsReceipt.race_id), RaceStatisticsReceipt.received_at < at - 8 * 86400,
             (RaceStatisticsReceipt.received_at, RaceStatisticsReceipt.player_id, RaceStatisticsReceipt.race_id)),
@@ -208,7 +209,10 @@ def cleanup(session, at, limit, fact_days):
             (RaceStatisticsDay.day, RaceStatisticsDay.dimension)),
     ):
         keys = session.execute(select(*fields).where(predicate).order_by(*ordering).limit(limit)).all()
-        if keys: session.execute(delete(model).where(tuple_(*fields).in_(keys)))
+        if keys:
+            session.execute(delete(model).where(tuple_(*fields).in_(keys)))
+            more = True
+    return more
 
 
 def preview(version):

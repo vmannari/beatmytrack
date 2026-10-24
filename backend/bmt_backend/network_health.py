@@ -131,6 +131,7 @@ def cleanup(session, at, limit, fact_days):
         .where(NetworkHealthDay.day < at // 86400 - fact_days).order_by(NetworkHealthDay.day, NetworkHealthDay.dimension).limit(limit)).all()
     if keys:
         session.execute(delete(NetworkHealthDay).where(tuple_(NetworkHealthDay.day, NetworkHealthDay.dimension).in_(keys)))
+    return bool(keys)
 
 
 @router.get("/v1/admin/network-health")

@@ -127,12 +127,18 @@ def test_finished_race_time_and_submission_latency_are_coherent_at_day_boundary(
 
 
 def test_simulator_ordinary_players_projection_balanced_economy_and_workflows(domain):  # noqa: F811
+    from bmt_backend.studio_reporting import StudioReporting
+
     sim = prepared(domain)
     domain.app.state.settings = replace(
         domain.app.state.settings,
         admin_owner_key="o" * 40,
         telemetry_enabled=True,
         client_quality_enabled=True,
+    )
+    domain.app.state.studio_reporting.close()
+    domain.app.state.studio_reporting = StudioReporting(
+        domain.app.state.settings, engine=domain.app.state.engine
     )
     with domain.factory() as db:
         original = {

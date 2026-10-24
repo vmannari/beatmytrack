@@ -112,7 +112,7 @@ def capture_verified(session, run, board, version, track, player):
         reach.racers += 1
         if track.owner_id != player.id:
             from .achievements import capture_reach
-            capture_reach(session, track, reach, run.finished_at)
+            capture_reach(session, track, reach, run.id)
         for threshold in MILESTONES:
             if reach.milestone < threshold <= reach.racers:
                 reach.milestone = threshold

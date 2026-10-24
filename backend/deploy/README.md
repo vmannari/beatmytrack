@@ -1,3 +1,7 @@
+<!-- SECURITY-FIXES-20261024 -->
+Security update2026-10-24: SEC06/SEC07/SEC03/SEC08/SEC04 now require the matching client/API/worker sources, migration0061 and separate workload credentials. Public production API has no Studio routes; private Studio requires named MFA. Temporary ad resumes are disabled in production. Existing-volume/cloud authority cutover is required before rollout; no deployment was performed. See [implementation, validation and rollout requirements](../../docs/SECURITY_FIXES_2026_10_24.md).
+<!-- /SECURITY-FIXES-20261024 -->
+
 2026-10-14 final combined backend review covers the current 0033/0034 source, including real publication upload/account-deletion fencing and cross-process restart recovery. Reused discovery snapshots report their actual remaining lifetime. Local checks pass; coordinated approved migrations, matching API/worker images and deployment-host reboot/restore/load acceptance remain. No production operation was performed. Evidence: ../../docs/evidence/backend-final-review-2026-10-14/review.json.
 
 2026-10-14 backend attack fixes BA01-BA04 prepare migration `0033_attack_resource_bounds`: migrate the approved schema before running matching API/worker code. No production migration or deployment was performed. Large authenticated routes reject invalid sessions before body IO; unsupported methods/bodies never enter large parsing. Discovery uses an independent slot, shared frozen order vectors and database/creation budgets. Defaults are `BMT_PUBLICATION_EVIDENCE_BYTES=67108864`, `BMT_PUBLICATION_EVIDENCE_COUNT=128`, `BMT_DISCOVERY_CATALOGUE_LIMIT=100000`, `BMT_DISCOVERY_SNAPSHOT_IDS=1000000`, `BMT_DISCOVERY_SNAPSHOT_COUNT=2048`, `BMT_DISCOVERY_CREATE_PER_MINUTE=20`; these are hosting limits to assess against measured load. Full creation budgets return explicit 429/503 while cached pages remain usable. Incomplete/failed publication evidence stays charged across crashes; matching delivery reuses its reservation. Run recurring bounded `maintenance --retention --apply-retention --online` through the authorized operations workflow (or `--offline` with every writer stopped). At the existing retention age, terminal rejected evidence and expired incomplete uploads become small permanent retry tombstones; published content and recoverable validator/build/slot failures remain protected. Legacy nonpublished rows are conservatively charged at 2.5 MiB each, so review old rejected evidence and quotas before rollout. Full privacy/account-feature integration and deployment-host reboot/restore/load acceptance remain separate. Tests/task-only checkpoint: ../../docs/evidence/backend-attack-fixes-2026-10-14/fixes.json.
@@ -277,6 +281,14 @@ This default authentication cleanup does not delete track or race history. Opt-i
 reference-aware race/object retention is described above. Account deletion and
 shared-content retirement still require separate policies.
 
+Identity expiry commits batches of at most 1,000 rows per class, including session
+tokens before their empty expired families. The CLI performs at most 100 batches
+by default; `--identity-batches` accepts 1–1,000. Check `more` and
+`budget_exhausted` in its JSON receipt and schedule another invocation promptly
+while work remains. Size that schedule from measured expiry arrivals and drain
+rate; the budget is a work limit, not a daily capacity guarantee. Expired sessions
+are rejected immediately even while their records await cleanup.
+
 ## Migration to cloud
 
 1. Keep player UUIDs, track/version IDs, rules keys and SHA256 object keys unchanged.
@@ -322,6 +334,77 @@ another PostgreSQL host; see [PostgreSQL 17 pg_dump](https://www.postgresql.org/
 ## Scalability configuration and backups
 
 API pools default to four connections with zero overflow; worker pools use two. Connection/pool waits are three seconds; PostgreSQL statements are bounded. Budget all API/worker/migration/backup/admin pools against the configured 40 database connections before scaling. A worker caches only immutable tracks; its pinned engine is recycled and its process remains separate from HTTP. Measure verification service time and queue age on the NAS before selecting worker count. Increasing replicas without enough CPU or memory reduces capacity.
+
+`BMT_TELEMETRY_HTTP_CONCURRENCY` defaults to four and accepts 1–16. Each API process
+uses the smaller of that value and `max(1, BMT_DATABASE_POOL_SIZE - 1)` telemetry
+slots, independent of the race-upload allowance. Requests retain the 64 KiB
+decoded-body limit and hold their slot through response serialization. This
+removes the unconditional single-handler ceiling while bounding live trees;
+measure CPU, memory and pool contention before increasing either setting.
+Small discovery requests have a separate bounded query pool; large bodies and
+expensive searches retain their narrower allowances.
+
+Broad Studio behaviour/release reports and their CSV exports require `BMT_STUDIO_ANALYSIS_DATABASE_URL` pointing
+to a dedicated PostgreSQL hot standby with matching database/schema and a read-only
+credential. There is no primary fallback: an unconfigured, mismatched, catching-up or
+unavailable replica produces an actionable 503. The reader allows one report per
+API process with its own one-connection pool. The total SQL budget is
+`BMT_STUDIO_ANALYSIS_STATEMENT_TIMEOUT_MS` (default 5,000; range 100–30,000).
+Connection checkout/connect waits have their separate bounded timeouts, so this
+is an SQL budget rather than a strict HTTP wall-clock deadline.
+Before the report snapshot opens, a constant-size primary WAL-insertion-position read
+fences replica replay so an already committed privacy deletion is visible.
+Primary and standby system identifier, database and current schema must match.
+Grant both the API role and reporting reader `EXECUTE ON FUNCTION
+pg_catalog.pg_control_system()` on the primary; the grants replicate to the
+standby. The reporting reader also needs schema `USAGE` and `SELECT` on
+`studio_analysis_state`, `studio_analysis_people`, `studio_analysis_days`,
+`studio_analysis_sessions`, `race_statistics_days` and `product_state`; configure its search path to
+match the API schema. An absent privilege fails closed. Last replayed transaction
+age is coverage metadata; a quiet, fully caught-up replica remains available.
+Exact arbitrary-window distinct/cohort queries still do linear
+analytical work on the replica and can hit the deadline; they no longer consume
+gameplay-database scan resources. Provision and load-test this replica separately.
+
+For the 2026-10-24 Studio items 1–4 update, roll out matching API and admin assets
+together: directory cursors include the selected timestamp field; CSV schemas now
+carry provenance and support report-specific views. The default activity CSV keeps
+its dimensional rows. Downloads are new queries, not durable frozen snapshots.
+Saved record/subroute locations use the existing JSON filters column; no migration
+is introduced by this Studio change. Current source still requires its independently
+managed World Ranking and concurrent schema migrations.
+
+Roll out the matching ranking worker to record its bounded metadata heartbeat
+between batches (at most once per 15 seconds), and the matching independent watchdog
+to inspect ranking and achievement queue coverage. Ranking status reads do not
+execute settlement. A heartbeat older than 180 seconds or unchanged progress for
+600 seconds while settlement is pending raises a warning; queued week settlement
+uses a 3,600-second initial warning allowance. Rarity work has no enqueue timestamp
+and remains unknown-age rather than inferred healthy. Historical correction rebuilds
+also have unknown schedule age; heartbeat/progress evidence supplies their worker
+check. New projection counts cap at 10,000 and expose independent cap flags.
+Calibrate these warnings against the deployed worker and workload before operational
+acceptance. Validate a controlled outage/recovery and notification delivery through
+the separately configured monitoring chain. No monitoring host, notification receiver,
+launch date, provider account or rollout was activated by the local implementation.
+
+Migrations `0055_bounded_rank_reads` and `0056_bounded_retention` must precede the
+matching API/worker rollout. The rank migration seeds exact public/all time
+counts and compressed UUID tie trees from existing PBs while writers are
+quiesced; rehearse its duration, locks and storage on a representative copy.
+Tie trees store between N and 2N−1 nodes for N visible PBs, rather than one node
+per UUID prefix. The retention migration adds indexed last-activity deadlines;
+workers upgrade legacy NULL deadlines in bounded batches without changing
+first-observed cohort dates. Verification admissions use independent transactional
+slots as their exact shared-capacity fence and no longer count all reservations
+in preflight. Before external object writes, preflight probes at most 64 randomly
+sampled slot keys. A full queue rejects immediately; an occupied sample on a
+larger queue returns retryable 503 even if an unsampled vacancy exists. With one
+vacancy, a 64-slot sample succeeds with probability `64 / capacity`; size queues
+from measured worker service capacity to avoid retry amplification near saturation.
+The database trigger remains the exact admission fence. Slot allocation still
+depends on the configured finite queue size;
+measure it before materially increasing `BMT_MAX_QUEUED_RUNS`.
 
 Public track validation always queues. `BMT_ALLOW_SYNC_TRACK_VALIDATION=true` is only for explicitly configured non-production tests/development. New clients negotiate compact inputs/gzip/batched status from bootstrap; unadvertised servers receive legacy canonical frames and individual polling. Update API/worker together, then verify the client contract; no deployment is included in this task.
 

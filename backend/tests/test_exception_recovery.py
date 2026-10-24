@@ -90,15 +90,15 @@ def test_garbage_header_cannot_bypass_public_budget_but_valid_users_have_indepen
             assert [client.get("/v1/bootstrap", headers=h).status_code for _ in range(3)] == [200, 200, 429]
 
 
-def test_all_responses_have_server_time_and_legacy_fleet_floor(auth_app):
-    peer = create_app(replace(auth_app.state.settings, transport_profile="legacy"),
+def test_all_responses_have_server_time_and_current_transport_floor(auth_app):
+    peer = create_app(auth_app.state.settings,
                       engine=auth_app.state.engine, identity_verifier=auth_app.state.identity_verifier)
     with TestClient(peer) as client:
         response = client.get("/v1/bootstrap")
         assert abs(int(response.headers["x-server-time"]) - now()) <= 2
-        assert response.json()["upload_encodings"] == ["identity"]
-        assert response.json()["refresh_recovery_seconds"] == 0
-        assert response.json()["resume_recovery"] is False
+        assert response.json()["upload_encodings"] == ["identity", "gzip"]
+        assert response.json()["refresh_recovery_seconds"] == auth_app.state.settings.refresh_recovery_seconds
+        assert response.json()["resume_recovery"] is True
         assert client.get("/v1/me").headers["x-server-time"]
 
 

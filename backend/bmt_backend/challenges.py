@@ -13,7 +13,13 @@ from sqlalchemy import and_, case, exists, or_, select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import aliased
 
-from .challenge_models import Challenge, ChallengeMember, ChallengeTicket
+from .challenge_models import (
+    Challenge,
+    ChallengeMember,
+    ChallengeStage,
+    ChallengeStageTicket,
+    ChallengeTicket,
+)
 from .cursors import decode_cursor, encode_cursor
 from .identity_models import Player
 from .middleware import ParsedJSONRoute
@@ -53,7 +59,8 @@ class Create(BaseModel):
     model_config = ConfigDict(extra="forbid")
     version_id: str = Field(min_length=36, max_length=36)
     vehicle_id: str = Field(min_length=1, max_length=80)
-    mode: Literal["beat", "group"] = "beat"
+    mode: Literal["beat", "group", "3x3"] = "beat"
+    version_ids: list[str] | None = Field(default=None, min_length=3, max_length=3)
     duration_seconds: Literal[86400, 259200, 604800] = 604800
     attempt_limit: int | None = Field(default=None, strict=True)
     visibility: Literal["private", "public"] = "private"
@@ -66,6 +73,13 @@ class Create(BaseModel):
             raise ValueError("Choose 1, 3, 5 or unlimited tries")
         if self.source_run_id and self.source_ticket_id:
             raise ValueError("Choose one result reference")
+        if self.mode == "3x3":
+            if (not self.version_ids or len(set(self.version_ids)) != 3
+                    or self.version_ids[0] != self.version_id or any(len(v) != 36 for v in self.version_ids)
+                    or self.attempt_limit != 3):
+                raise ValueError("3x3 requires three distinct tracks and three tries per track")
+        elif self.version_ids is not None:
+            raise ValueError("Multiple tracks require 3x3")
         return self
 
 
@@ -90,6 +104,9 @@ def available(session, code, *, lock=False):
     version = published_version(session, board.version_id)
     if session.get(Track, version.track_id).hidden:
         raise HTTPException(404, "Challenge track unavailable")
+    if challenge.mode == "3x3":
+        from .challenge_series import check_tracks
+        check_tracks(session, challenge)
     return challenge
 
 
@@ -109,6 +126,9 @@ def check_participant_blocks(session, player_id, challenge):
     from .community import check_creator, is_blocked
     board = session.get(Board, challenge.board_id)
     check_creator(session, player_id, session.get(Track, session.get(TrackVersion, board.version_id).track_id).owner_id)
+    if challenge.mode == "3x3":
+        from .challenge_series import check_tracks
+        check_tracks(session, challenge, player_id)
     peers = session.scalars(select(ChallengeMember.player_id).where(ChallengeMember.challenge_id == challenge.id)).all()
     if any(is_blocked(session, player_id, peer, mutual=True) for peer in {challenge.creator_id, *peers}):
         raise HTTPException(403, "PLAYER_BLOCKED")
@@ -158,6 +178,9 @@ def snapshot(session, request, challenge, player_id=""):
     check_creator(session, player_id, track.owner_id)
     if is_blocked(session, player_id, creator.id, mutual=True):
         raise HTTPException(403, "PLAYER_BLOCKED")
+    if challenge.mode == "3x3":
+        from .challenge_series import check_tracks
+        check_tracks(session, challenge, player_id)
     rows = standings(session, challenge)
     current = now()
     pending = session.scalar(select(Run.id).join(ChallengeTicket, ChallengeTicket.ticket_id == Run.ticket_id)
@@ -167,7 +190,7 @@ def snapshot(session, request, challenge, player_id=""):
     member = session.get(ChallengeMember, (challenge.id, player_id)) if player_id else None
     attempts_used = member.attempts_used if member else 0
     from .economy import challenge_rewards
-    return {"id": challenge.id, "code": challenge.code, "mode": challenge.mode, "state": state,
+    value = {"id": challenge.id, "code": challenge.code, "mode": challenge.mode, "state": state,
             "visibility": challenge.visibility, "capacity": 2 if challenge.mode == "beat" else 20,
             "rewards": challenge_rewards(session, challenge.id, player_id, current),
             "creator_id": creator.id, "creator": creator.display_name, "self_id": player_id,
@@ -183,6 +206,10 @@ def snapshot(session, request, challenge, player_id=""):
             "entry": track_payload(version, track, session.get(Player, track.owner_id).display_name,
                                    request.app.state.settings.public_base_url),
             "share_url": request.app.state.settings.public_base_url.rstrip("/")+"/c/"+challenge.code}
+    if challenge.mode == "3x3":
+        from .challenge_series import decorate
+        return decorate(session, request, challenge, value, player_id)
+    return value
 
 
 def source_for(session, board, player_id, source_run_id=None, source_ticket_id=None):
@@ -252,6 +279,16 @@ def create_record(session, request, player, payload, key, scope, body):
         # Blob IO/verification released the snapshot. Recheck availability/build.
         board = prepare_board(session, request, payload.version_id, payload.vehicle_id)
         source = source_for(session, board, player.id, source.id)
+    boards = [prepare_board(session, request, v, payload.vehicle_id) for v in payload.version_ids] if payload.mode == "3x3" else []
+    if boards:
+        track_ids = [session.get(TrackVersion, b.version_id).track_id for b in boards]
+        if len(set(track_ids)) != 3:
+            raise HTTPException(422, "Choose three distinct tracks")
+        for track_id in track_ids:
+            track = session.get(Track, track_id)
+            if track.archived:
+                raise HTTPException(404, "Challenge track unavailable")
+            check_creator(session, player.id, track.owner_id)
     challenge = Challenge(code=secrets.token_hex(8).upper(), creator_id=player.id, board_id=board.id,
         mode=payload.mode, visibility=payload.visibility, target_run_id=source.id if source else None,
         target_ticks=source.time_ticks if source and payload.mode == "beat" else None,
@@ -260,8 +297,14 @@ def create_record(session, request, player, payload, key, scope, body):
     session.flush()
     session.add(ChallengeMember(challenge_id=challenge.id, player_id=player.id,
                                attempts_used=1 if source else 0,
-                               run_id=source.id if source else None, time_ticks=source.time_ticks if source else None))
+                               run_id=source.id if source and not boards else None, time_ticks=source.time_ticks if source and not boards else None))
     session.flush()
+    if boards:
+        for ordinal, stage_board in enumerate(boards):
+            session.add(ChallengeStage(challenge_id=challenge.id, ordinal=ordinal, board_id=stage_board.id))
+        session.flush()
+        from .challenge_series import add_member
+        add_member(session, challenge, player.id, source)
     return commit_response(session, player.id, scope, key, body, snapshot(session, request, challenge, player.id))
 
 
@@ -269,7 +312,8 @@ def create_record(session, request, player, payload, key, scope, body):
 def create(payload: Create, request: Request, session: DB, player: Auth, key: Key):
     real_player(player)
     # Unlimited is the existing contract, including persisted pre-migration keys.
-    omitted = {"attempt_limit"} if payload.attempt_limit is None else set()
+    omitted = {"version_ids"} if payload.version_ids is None else set()
+    omitted |= {"attempt_limit"} if payload.attempt_limit is None else set()
     if payload.visibility == "private":
         omitted.add("visibility")  # Preserve retry identities from older clients.
     body = payload.model_dump(exclude=omitted)
@@ -280,7 +324,7 @@ def create(payload: Create, request: Request, session: DB, player: Auth, key: Ke
 @router.get("/challenges")
 def inbox(request: Request, session: DB, player: Auth,
           folder: Literal["discover", "friends", "received", "sent"] = "received",
-          search: str = Query(default="", max_length=80), mode: Literal["all", "beat", "group"] = "all",
+          search: str = Query(default="", max_length=80), mode: Literal["all", "beat", "group", "3x3"] = "all",
           vehicle: str = Query(default="", max_length=80), sort: Literal["ending", "newest"] = "ending",
           cursor: str | None = Query(default=None, max_length=800)):
     return challenge_list(request, session, player, folder, search, mode, vehicle, sort, cursor)
@@ -288,7 +332,7 @@ def inbox(request: Request, session: DB, player: Auth,
 
 @router.get("/challenges/discover")
 def public_discovery(request: Request, session: DB, credentials=Depends(bearer),
-          search: str = Query(default="", max_length=80), mode: Literal["all", "beat", "group"] = "all",
+          search: str = Query(default="", max_length=80), mode: Literal["all", "beat", "group", "3x3"] = "all",
           vehicle: str = Query(default="", max_length=80), sort: Literal["ending", "newest"] = "ending",
           cursor: str | None = Query(default=None, max_length=800)):
     player = current_player(request, credentials, session) if credentials else None
@@ -309,6 +353,9 @@ def challenge_list(request, session, player, folder, search, mode, vehicle, sort
         .where(author.disabled.is_(False), author.deleted_at.is_(None), author.is_test_driver.is_(False),
                track_author.disabled.is_(False), track_author.is_test_driver.is_(False),
                Track.hidden.is_(False), TrackVersion.state == "published"))
+    series = request.query_params.get("series") == "1"
+    if not series:
+        query = query.where(Challenge.mode != "3x3")
     public = folder in ("discover", "friends")
     if public:
         query = query.where(Challenge.visibility == "public", Track.archived.is_(False), Challenge.cancelled.is_(False),
@@ -359,6 +406,8 @@ def challenge_list(request, session, player, folder, search, mode, vehicle, sort
     ascending = public and sort == "ending"
     order_column = Challenge.ends_at if ascending else Challenge.created_at
     context = {"folder": folder, "player": player_id, "search": search, "mode": mode, "vehicle": vehicle, "sort": sort}
+    if series:
+        context["series"] = 1
     if cursor is not None:
         position = decode_cursor(cursor)
         if (set(position) != {"at", "id", *context} or type(position["at"]) is not int
@@ -370,7 +419,13 @@ def challenge_list(request, session, player, folder, search, mode, vehicle, sort
     limit = 20 if public else 50
     challenges = session.scalars(query.order_by(order_column.asc() if ascending else order_column.desc(), Challenge.id)
                                 .limit(limit+1)).all()
-    items = [snapshot(session, request, challenge, player_id) for challenge in challenges[:limit]]
+    items = []
+    for challenge in challenges[:limit]:
+        try:
+            items.append(snapshot(session, request, challenge, player_id))
+        except HTTPException as exc:
+            if challenge.mode != "3x3" or exc.status_code not in (403, 404):
+                raise
     last = challenges[limit-1] if len(challenges) > limit else None
     next_cursor = encode_cursor({"at": last.ends_at if ascending else last.created_at, "id": last.id,
                                  **context}) if last else None
@@ -399,6 +454,9 @@ def join(code: str, request: Request, session: DB, player: Auth, key: Key):
     challenge = available(session, code, lock=True)
     check_participant_blocks(session, player.id, challenge)
     compatible(request, session.get(Board, challenge.board_id).manifest)
+    if challenge.mode == "3x3":
+        from .challenge_series import check_tracks
+        check_tracks(session, challenge, player.id, request)
     if session.get(ChallengeMember, (challenge.id, player.id)) is None:
         capacity = 2 if challenge.mode == "beat" else 20
         if challenge.cancelled or now() >= challenge.ends_at:
@@ -410,13 +468,17 @@ def join(code: str, request: Request, session: DB, player: Auth, key: Key):
             raise HTTPException(409, "Challenge is full")
         session.add(ChallengeMember(challenge_id=challenge.id, player_id=player.id))
         session.flush()
+        if challenge.mode == "3x3":
+            from .challenge_series import add_member
+            add_member(session, challenge, player.id)
     return commit_response(session, player.id, scope, key, {}, snapshot(session, request, challenge, player.id))
 
 
 @router.post("/challenges/{code}/tickets", status_code=201)
-def ticket(code: str, request: Request, session: DB, player: Auth, key: Key):
+def ticket(code: str, request: Request, session: DB, player: Auth, key: Key,
+           stage: int | None = Query(default=None, ge=0, le=2)):
     real_player(player)
-    scope = "challenge_ticket:"+code
+    scope = "challenge_ticket:"+code+(":"+str(stage) if stage is not None else "")
     old = replay_response(session, player.id, scope, key, {})
     if old is not None:
         return old
@@ -432,11 +494,18 @@ def ticket(code: str, request: Request, session: DB, player: Auth, key: Key):
         raise HTTPException(410, "Challenge has ended")
     if challenge.mode == "beat" and player.id == challenge.creator_id:
         raise HTTPException(409, "Share this challenge to invite an opponent")
-    board = session.get(Board, challenge.board_id)
+    if (challenge.mode == "3x3") != (stage is not None):
+        raise HTTPException(422, "Choose one of the three tracks" if challenge.mode == "3x3" else "This challenge has one track")
+    stage_member = None
+    if stage is not None:
+        from .challenge_series import reserve
+        board, stage_member = reserve(session, challenge, player.id, stage)
+    else:
+        board = session.get(Board, challenge.board_id)
     compatible(request, board.manifest)
     reservation = update(ChallengeMember).where(ChallengeMember.challenge_id == challenge.id,
                                                ChallengeMember.player_id == player.id)
-    if challenge.attempt_limit is not None:
+    if challenge.attempt_limit is not None and stage is None:
         reservation = reservation.where(ChallengeMember.attempts_used < challenge.attempt_limit)
     if not session.execute(reservation.values(attempts_used=ChallengeMember.attempts_used+1)).rowcount:
         raise HTTPException(409, "No tries remaining")
@@ -445,6 +514,10 @@ def ticket(code: str, request: Request, session: DB, player: Auth, key: Key):
     session.add(issued)
     session.flush()
     session.add(ChallengeTicket(ticket_id=issued.id, challenge_id=challenge.id))
+    session.flush()
+    if stage is not None:
+        session.add(ChallengeStageTicket(ticket_id=issued.id, ordinal=stage))
+        member = stage_member
     return commit_response(session, player.id, scope, key, {}, {**_ticket_payload(issued, board), "challenge_code": code,
         "attempt_limit": challenge.attempt_limit, "attempts_used": member.attempts_used,
         "attempts_remaining": max(0, challenge.attempt_limit-member.attempts_used) if challenge.attempt_limit is not None else None})
@@ -462,6 +535,10 @@ def accept_verified(session, run, *, acceptance=None):
     player = session.get(Player, run.player_id)
     if member is None or player.disabled or player.is_test_driver:
         binding.outcome = {"counted": False}
+        return
+    if challenge.mode == "3x3":
+        from .challenge_series import accept
+        accept(session, challenge, binding, run, member)
         return
     prior = member.time_ticks
     improved = prior is None or run.time_ticks < prior
@@ -497,15 +574,26 @@ def result(ticket_id: str, request: Request, session: DB, player: Auth):
 
 
 @router.get("/challenges/{code}/ghost")
-def ghost(code: str, request: Request, session: DB, credentials=Depends(bearer)):
+def ghost(code: str, request: Request, session: DB, credentials=Depends(bearer),
+          stage: int | None = Query(default=None, ge=0, le=2)):
     challenge = available(session, code)
     viewer = current_player(request, credentials, session) if credentials else None
     if viewer:
         check_participant_blocks(session, viewer.id, challenge)
     if challenge.cancelled:
         raise HTTPException(410, "Challenge was cancelled")
-    rows = standings(session, challenge)
-    run_id = challenge.target_run_id if challenge.mode == "beat" else rows[0]["run_id"] if rows else None
+    if challenge.mode == "3x3":
+        if stage is None:
+            raise HTTPException(422, "Choose one of the three tracks")
+        from .challenge_models import ChallengeStageMember
+        candidates = session.scalars(select(ChallengeStageMember).join(Player).where(
+            ChallengeStageMember.challenge_id == challenge.id, ChallengeStageMember.ordinal == stage,
+            ChallengeStageMember.time_ticks.is_not(None), Player.disabled.is_(False), Player.is_test_driver.is_(False))
+            .order_by(ChallengeStageMember.time_ticks, ChallengeStageMember.player_id)).all()
+        run_id = candidates[0].run_id if candidates else None
+    else:
+        rows = standings(session, challenge)
+        run_id = challenge.target_run_id if challenge.mode == "beat" else rows[0]["run_id"] if rows else None
     run = session.get(Run, run_id) if run_id else None
     if run is None or not run.ghost_hash or session.get(Player, run.player_id).disabled:
         raise HTTPException(404, "Ghost unavailable")
@@ -536,6 +624,8 @@ def rematch(code: str, payload: Rematch, request: Request, session: DB, player: 
     if old is not None:
         return old
     challenge = available(session, code)
+    if challenge.mode == "3x3":
+        raise HTTPException(409, "Create a new 3x3 challenge to race again")
     member = session.get(ChallengeMember, (challenge.id, player.id))
     if member is None or member.time_ticks is None or challenge.cancelled:
         raise HTTPException(409, "Set a verified time before rematching")
@@ -552,12 +642,12 @@ def rematch(code: str, payload: Rematch, request: Request, session: DB, player: 
 @preview_router.get("/c/{code}", response_class=HTMLResponse)
 def preview(code: str, request: Request, session: DB):
     value = snapshot(session, request, available(session, code))
-    title = html.escape(value["entry"]["name"])
+    title = html.escape(" / ".join(stage["entry"]["name"] for stage in value["stages"])) if value["mode"] == "3x3" else html.escape(value["entry"]["name"])
     name = html.escape(value["creator"])
-    target = f'{value["target_ms"]/1000:.3f} s' if value["target_ms"] else "Group challenge"
+    target = "3 tracks - 3 tries each" if value["mode"] == "3x3" else f'{value["target_ms"]/1000:.3f} s' if value["target_ms"] else "Group challenge"
     state = "Invitation open" if value["state"] == "active" else value["state"].capitalize()
     vehicle = html.escape(value["vehicle_id"].replace("_", " ").title())
-    tries = f"{value['attempt_limit']} tries per driver" if value["attempt_limit"] is not None else "Unlimited tries"
+    tries = "3 tries per track" if value["mode"] == "3x3" else f"{value['attempt_limit']} tries per driver" if value["attempt_limit"] is not None else "Unlimited tries"
     return HTMLResponse(f'''<!doctype html><html lang="en"><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1"><title>{title} — Beat my track</title>
 <meta property="og:title" content="{name} challenges you on {title}">

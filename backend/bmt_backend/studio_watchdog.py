@@ -233,15 +233,21 @@ def queue_signals(value, *, at):
         "histogram": 180,
         "news": None,
         "notification": 300,
+        "ranking": 3600,
+        "achievement_competition": 900,
+        "achievement_record": 900,
+        "achievement_rarity": None,
+        "creator_achievement": 900,
     }
     summaries = {row["kind"]: row for row in value["summary"]}
-    if set(summaries) != set(limits):
+    legacy = {'race', 'publication', 'validation', 'erasure', 'histogram', 'news', 'notification'}
+    if not legacy <= set(summaries):
         raise ValueError("INCOMPLETE_QUEUE_COVERAGE")
     result = []
     for kind, threshold in limits.items():
-        row = summaries[kind]
-        pending = row["pending"]
-        oldest = row["oldest_at"]
+        row = summaries.get(kind, {})
+        pending = row.get("pending")
+        oldest = row.get("oldest_at")
         known = type(pending) is int and pending >= 0 and (pending == 0 or bool(oldest and threshold))
         age = max(0, at - oldest) if oldest and threshold else None
         result.append(
@@ -265,6 +271,17 @@ def queue_signals(value, *, at):
                 target="system/jobs",
             )
         )
+    ranking = value.get('ranking')
+    if ranking and ranking.get('enabled'):
+        seen, progress = ranking.get('worker_last_seen_at'), ranking.get('progress_at')
+        pending = ranking.get('pending')
+        result.append(Signal(
+            key='ranking_worker', active=(bool(ranking.get('retrying')) or at-seen >= 180
+                or bool(progress and at-progress >= 600)) if pending and seen else None if pending else False,
+            severity='warning', title='World Ranking worker needs attention',
+            evidence='State: '+ranking.get('state', 'unknown')+'; heartbeat: '+str(seen or 'unknown')+'; progress: '+str(progress or 'unknown'),
+            next_step='Inspect ranking phase, cursor, retry state and published generation. Scheduled inactivity before week close is expected.',
+            target='competitions?kind=ranking'))
     projection = value.get("projection") or {}
     oldest = projection.get("oldest_receipt_at")
     result.append(

@@ -30,9 +30,11 @@ UI = Path(__file__).with_name("admin_ui")
 
 def access(request: Request):
     settings = request.app.state.settings
+    if settings.workload_role != "admin" and settings.environment == "production":
+        raise HTTPException(404, "NOT_FOUND")
     supplied = request.headers.get("authorization", "").removeprefix("Bearer ")
     for role, key in (("owner", settings.admin_owner_key), ("analyst", settings.admin_analyst_key)):
-        if settings.studio_legacy_keys_enabled and key and hmac.compare_digest(supplied.encode(), key.encode()):
+        if settings.environment != "production" and settings.studio_legacy_keys_enabled and key and hmac.compare_digest(supplied.encode(), key.encode()):
             return role
     from .studio_access import named_access
     return named_access(request, supplied)
@@ -61,7 +63,7 @@ def console():
 
 @router.get("/admin/assets/{name}", include_in_schema=False)
 def asset(name: str):
-    if name not in ("app.js", "commerce.js", "support.js", "studio.js", "product_analytics.js", "operations.js", "style.css", "catalogue.js", "catalogue.css", "monitor.js", "network.js", "monitor.css", "monitor_views.js", "monitor_views.css", "insights.js", "insights.css", "platform.js", "platform.css"):
+    if name not in ("app.js", "commerce.js", "support.js", "studio.js", "product_analytics.js", "operations.js", "style.css", "catalogue.js", "catalogue.css", "monitor.js", "network.js", "monitor.css", "monitor_views.js", "monitor_views.css", "insights.js", "insights.css", "platform.js", "platform.css", "game_config.js", "game_config.css", "ranking.js"):
         raise HTTPException(404)
     return FileResponse(UI / name)
 
@@ -114,6 +116,7 @@ def entities(
     q: str = Query("", max_length=100),
     state: str = Query("", max_length=32),
     failure_code: str = Query("", max_length=64),
+    time_field: str = "created_at",
     offset: int = Query(0, ge=0, le=1000000),
     limit: int = Query(25, ge=1, le=100),
     cursor: str = Query("", max_length=2048),
@@ -121,7 +124,12 @@ def entities(
     if kind not in FIELDS:
         raise HTTPException(404)
     model, fields = FIELDS[kind]
-    conditions = during(model.created_at, window)
+    if time_field not in ("created_at", "finished_at") or (time_field == "finished_at" and kind not in ("races", "jobs")):
+        raise HTTPException(422, "INVALID_TIME_FIELD")
+    timestamp = getattr(model, time_field)
+    conditions = during(timestamp, window)
+    if time_field == "finished_at":
+        conditions.append(timestamp.is_not(None))
     if kind == "tracks" and request.app.state.settings.local_drafts_only:
         conditions.append(TrackVersion.state == "published")
     if q:
@@ -147,9 +155,10 @@ def entities(
             conditions.append(getattr(model, "state" if kind == "tracks" else "status") == state)
     with request.app.state.session_factory() as db:
         selected, paging = page(db, select(model).where(*conditions).options(
-            load_only(*(getattr(model, field) for field in fields.split()))), model.created_at, model.id,
+            load_only(*(getattr(model, field) for field in fields.split()))), timestamp, model.id,
             scope=digest({"kind": kind, "window": window, "q": q, "state": state,
-                          "failure": failure_code, "published": request.app.state.settings.local_drafts_only}),
+                          "failure": failure_code, "time_field": time_field,
+                          "published": request.app.state.settings.local_drafts_only}),
             cursor=cursor, offset=offset, limit=limit, descending=True, numeric=True)
         rows = [row[0] for row in selected]
         items = [record(kind, row) for row in rows]

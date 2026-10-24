@@ -19,6 +19,7 @@ from sqlalchemy import (
     Integer,
     String,
     UniqueConstraint,
+    text,
 )
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Mapped, Session, mapped_column
@@ -272,6 +273,9 @@ class VersionFinisher(Base):
 
 class OperationState(Base):
     __tablename__ = "operation_state"
+    __table_args__ = (Index("ix_worker_heartbeat_expiry", "updated_at", "id",
+                           sqlite_where=text("id LIKE 'worker:%'"),
+                           postgresql_where=text("id LIKE 'worker:%'")),)
     id: Mapped[str] = mapped_column(String(80), primary_key=True)
     updated_at: Mapped[int] = mapped_column(Integer, default=now, index=True)
     details: Mapped[dict] = mapped_column(JSON, default=dict)

@@ -156,6 +156,7 @@ def test_slot_and_access_adjustments_preserve_real_access_and_consumption(store)
 
 
 def test_controls_reject_read_only_real_accounts_and_disabled_configuration(store):
+    from production_staff_fixture import install
     body = draft(product_id="creator_slot_1", outcome="approved")
     assert preview(store, body, ANALYST).status_code == 403
     command = execution(store, body)
@@ -167,7 +168,9 @@ def test_controls_reject_read_only_real_accounts_and_disabled_configuration(stor
             "allow_sync_track_validation": False},
         {"dev_auth_enabled": False, "purchase_simulation_enabled": False}):
         old = store.app.state.settings
-        store.app.state.settings = replace(old, **change)
+        if change.get("environment") == "production":
+            install(store.app)
+        store.app.state.settings = replace(store.app.state.settings, **change)
         assert preview(store, body).status_code == send(store, command).status_code == 403
         store.app.state.settings = old
     assert send(store, {**command, "reason": " " * 12}).status_code == 422

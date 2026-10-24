@@ -89,10 +89,10 @@ def test_idle_worker_checks_at_most_once_a_minute_when_empty(domain, monkeypatch
         assert not drive_idle(domain.app)
         for _ in range(100):
             assert not drive_idle(domain.app)
-        assert len(statements) == 3
+        assert len(statements) == 4  # Includes one bounded pending-creator probe.
         stamp[0] += 60
         assert not drive_idle(domain.app)
-        assert len(statements) == 6
+        assert len(statements) == 8
     finally:
         event.remove(domain.app.state.engine, "before_cursor_execute", record)
 
@@ -160,6 +160,8 @@ def test_creator_completion_and_unique_reach_exclude_owner_and_repeat_racers(dom
     race(domain, version, "Alice", frames=50)
     race(domain, version, "Alice", frames=60)
     race(domain, version, "Bob", frames=50)
+    while process_due(domain.app):
+        pass
     before = collection(domain, "Creator")["states"]["creator"]["metrics"]
     assert before["creator_plays"] == 3 and before["creator_reach"] == 2
     race(domain, version, "Creator", frames=30)

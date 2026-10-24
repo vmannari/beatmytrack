@@ -2,6 +2,7 @@
 import time
 import uuid
 
+import pytest
 from sqlalchemy import func, select, update
 from test_discovery_paging import auth_app as auth_app_fixture
 from test_discovery_v3 import indexed as indexed_fixture
@@ -20,6 +21,30 @@ from bmt_backend.track_models import Board, Run, RunTicket, TrackVersion
 
 auth_app = auth_app_fixture
 indexed = indexed_fixture
+
+
+def test_partition_bounds_cover_hex_ids_under_english_collation(indexed):
+    from sqlalchemy import literal, text
+
+    from bmt_backend.discovery_projection import track_range
+
+    with indexed.app.state.session_factory() as db:
+        collations = [None]
+        if db.bind.dialect.name == "postgresql":
+            available = set(db.scalars(text("SELECT collname FROM pg_collation")))
+            english = next((name for name in ("en-US-x-icu", "en_US.utf8", "en_US.UTF8") if name in available), None)
+            if english is None:
+                pytest.skip("PostgreSQL English collation is not installed")
+            collations.append(english)
+        for collation in collations:
+            for prefix in "0123456789abcdef":
+                for second in "0123456789abcdef":
+                    identity = prefix + second + "000000-0000-4000-8000-000000000000"
+                    column = literal(identity)
+                    if collation:
+                        column = column.collate(collation)
+                    for shard in (int(prefix, 16), (int(prefix, 16) + 1) % 16):
+                        assert db.scalar(select(track_range(column, shard))) is (shard == int(prefix, 16))
 
 
 def test_hot_partition_drains_without_waiting_for_empty_partitions(indexed):

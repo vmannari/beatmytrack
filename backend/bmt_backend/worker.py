@@ -98,19 +98,8 @@ def process_one(app, *, refresh_histograms=False) -> bool:
                 return True
             if publish_one(app):
                 return True
-            if refresh_histograms:
-                from .achievements import drive_idle as progress_achievements
-                if progress_achievements(app):
-                    return True
-                from .news import process_requested
-                if process_requested(app):
-                    return True
-                from .lap_bests import backfill_one
-                if backfill_one(app.state.session_factory)["worked"]:
-                    return True
-                from .histogram_snapshots import refresh_one as refresh_histogram
-                if refresh_histogram(app, active_only=True):
-                    return True
+            if refresh_histograms and process_background(app):
+                return True
             driver_work = getattr(app.state, "driver_work", None)
             if driver_work is not None:
                 return driver_work.poll()
@@ -357,6 +346,32 @@ def finalize(app, run_id, token, pinned_manifest, result, failure, rejected, per
     return True
 
 
+def process_background(app, *, reserved=False):
+    """Rotate bounded roles, including when the first class never empties."""
+    from .achievements import drive_idle
+    from .histogram_snapshots import refresh_one
+    from .lap_bests import backfill_one
+    from .news import process_requested
+    from .game_config import activate_schedules
+    roles = [lambda: drive_idle(app, force=reserved), lambda: process_requested(app)]
+    if time.monotonic() >= getattr(app.state, "config_schedule_check", 0):
+        app.state.config_schedule_check = time.monotonic() + 15
+        roles.append(lambda: activate_schedules(app.state.session_factory))
+    if not reserved:
+        roles.extend((lambda: backfill_one(app.state.session_factory)["worked"],
+                      lambda: refresh_one(app, active_only=True)))
+    attribute = "reserved_presentation_role" if reserved else "idle_background_role"
+    cursor = getattr(app.state, attribute, 0)
+    for offset in range(len(roles)):
+        if stopping(app):
+            return False
+        index = (cursor + offset) % len(roles)
+        setattr(app.state, attribute, (index + 1) % len(roles))
+        if roles[index]():
+            return True
+    return False
+
+
 def process_worker_job(app) -> bool:
     # The long-running service performs background presentation work. Explicit
     # single-race diagnostic calls retain their verification-only behavior.
@@ -366,11 +381,20 @@ def process_worker_job(app) -> bool:
         count = (getattr(app.state, "privacy_work_count", 0) + 1) % 16
         app.state.privacy_work_count = count
         if count == 0:
+            from .histogram_snapshots import refresh_one
             from .privacy import cleanup_one
-            cleanup_one(app)
-            if not stopping(app):
-                from .histogram_snapshots import refresh_one
-                refresh_one(app, active_only=True)
+            tasks = (("privacy", lambda: cleanup_one(app)),
+                     ("histograms", lambda: refresh_one(app, active_only=True)),
+                     ("presentation", lambda: process_background(app, reserved=True)))
+            for role, task in tasks:
+                if stopping(app):
+                    break
+                try:
+                    task()
+                except Exception:
+                    # A failed housekeeping class must not consume every other
+                    # role's reserved turn. Each job retains its own transaction.
+                    logger.exception("reserved_background_failed role=%s", role)
         return True
     from .privacy import cleanup_one
     return cleanup_one(app)

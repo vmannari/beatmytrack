@@ -3,20 +3,22 @@ import base64
 import hashlib
 import hmac
 import json
+import re
 import secrets
 import time
 import uuid
 from contextlib import contextmanager
 
 from fastapi import APIRouter, Depends, HTTPException, Request
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import and_, exists, func, or_, select, text, tuple_, union_all
 from sqlalchemy.exc import DBAPIError
 
+from . import discovery_guard as guard
+from . import discovery_retention as retention
 from .client_address import ClientAddress
 from .community import blocked_ids
 from .db import get_session
-from .discovery import Query
 from .discovery_models import (
     LIFETIME,
     PARTITIONS,
@@ -31,6 +33,7 @@ from .discovery_models import (
 )
 from .discovery_models import DiscoveryEntry as E
 from .discovery_projection import insert
+from .discovery_query import Query
 from .identity_models import Player
 from .middleware import ParsedJSONRoute, check_budget
 from .security import bearer, current_player
@@ -51,12 +54,6 @@ class PageRequest(BaseModel):
     exclude: str = Field("", max_length=80)
     locate_version: str = Field("", max_length=36)
 
-    @model_validator(mode="after")
-    def no_legacy_paging(self):
-        if self.query and (self.query.offset is not None or self.query.cursor or
-                self.query.locate_version or self.query.exclude):
-            raise ValueError("V3 paging and selection fields belong outside query; offsets are unsupported")
-        return self
 
 
 def digest(value):
@@ -66,7 +63,8 @@ def digest(value):
 @contextmanager
 def query_budget(db):
     deadline = time.monotonic() + QUERY_SECONDS
-    raw = None
+    previous = db.info.get("discovery_deadline")
+    db.info["discovery_deadline"] = deadline
     if db.bind.dialect.name == "sqlite":
         raw = db.connection().connection.driver_connection
         raw.set_progress_handler(lambda: int(time.monotonic() > deadline), 1000)
@@ -81,8 +79,15 @@ def query_budget(db):
             raise HTTPException(503, "DISCOVERY_QUERY_BUDGET", headers={"Retry-After": "1"}) from None
         raise
     finally:
-        if raw is not None:
-            raw.set_progress_handler(None, 0)
+        if previous is None:
+            db.info.pop("discovery_deadline", None)
+        else:
+            db.info["discovery_deadline"] = previous
+        # Commits may return/reborrow a connection during budget reservations.
+        # Pool check-in clears returned handlers; touch only our owned current
+        # transaction, never a raw connection another request could have taken.
+        if db.bind.dialect.name == "sqlite" and db.in_transaction() and db.is_active:
+            db.connection().connection.driver_connection.set_progress_handler(None, 0)
 
 
 def check_deadline(db, deadline):
@@ -124,30 +129,45 @@ def resolve(db, value, actor, stamp):
 
 def boundary(db, view, positions, phase, previous=None, anchor=None):
     identity = digest([view.id, positions, phase, previous, anchor])
-    db.execute(insert(db, DiscoveryBoundary).values(id=identity, session_id=view.id,
+    created = db.scalar(insert(db, DiscoveryBoundary).values(id=identity, session_id=view.id,
         expires_at=view.expires_at, positions=positions, phase=phase,
-        previous_id=previous, anchor_version=anchor).on_conflict_do_nothing(index_elements=["id"]))
-    return db.get(DiscoveryBoundary, identity)
+        previous_id=previous, anchor_version=anchor).on_conflict_do_nothing(index_elements=["id"])
+        .returning(DiscoveryBoundary))
+    return created if created is not None else db.get(DiscoveryBoundary, identity)
 
 
-def collection(db, request, actor, query, stamp, deadline, blocks):
-    values = {"favorite": sorted(set(query.ids or [])), "raced": sorted(set(query.raced_ids)),"block":blocks}
+def collection(db, request, actor, query, stamp, deadline, blocks, epochs, anonymous):
+    values = {"favorite": sorted(set(query.ids or [])),
+        "raced": sorted(set(query.raced_ids)) if query.race_history != "any" else [], "block": blocks}
     if not any(values.values()):
         return None
     identity = digest([actor, values, stamp // LIFETIME])
     existing = db.get(DiscoveryCollection, identity)
     if existing:
         return identity
-    active = list(db.scalars(select(DiscoveryCollection.id).where(DiscoveryCollection.scope == actor,
-        DiscoveryCollection.expires_at > stamp).limit(32)))
-    if len(active) >= 32:
-        raise HTTPException(429, "DISCOVERY_COLLECTION_LIMIT")
+    for kind in ("favorite", "raced"):
+        values[kind] = retention.known_ids(db, values[kind], epochs, lambda: check_deadline(db, deadline))
+    if not any(values.values()):
+        return None
+    identity = digest([actor, values, stamp // LIFETIME])
+    if db.get(DiscoveryCollection, identity):
+        return identity
     size = sum(len(v) for v in values.values())
     if not check_budget(request.app.state.session_factory, actor, "discovery_collection_rows", 101000, size, session=db):
         raise HTTPException(429, "DISCOVERY_COLLECTION_LIMIT")
+    settings = request.app.state.settings
+    if anonymous:
+        guard.network_budget(db, request, "members", settings.discovery_network_rows_per_minute, size)
+    byte_size = sum(retention.weight(kind, tid) for kind, ids in values.items() for tid in ids)
+    part = retention.reserve(db, actor, settings, size, byte_size)
     inserted = db.scalar(insert(db, DiscoveryCollection).values(id=identity, scope=actor,
-        expires_at=(stamp // LIFETIME + 2) * LIFETIME).on_conflict_do_nothing(index_elements=["id"])
+        expires_at=(stamp // LIFETIME + 2) * LIFETIME, member_rows=size, member_bytes=byte_size,
+        accounted=True, capacity_partition=part, member_cursor_kind="", member_cursor_id="")
+        .on_conflict_do_nothing(index_elements=["id"])
         .returning(DiscoveryCollection.id))
+    if inserted is None:
+        # Never commit a capacity reservation without its owned collection.
+        raise guard.busy()
     if inserted:
         rows = [{"collection_id": identity, "kind": kind, "track_id": tid} for kind, ids in values.items() for tid in ids]
         for start in range(0, len(rows), 256):
@@ -157,20 +177,23 @@ def collection(db, request, actor, query, stamp, deadline, blocks):
 
 
 def new_session(db, request, actor, player, query, stamp, anchor, deadline):
-    partitions = list(db.scalars(select(DiscoveryPartition).order_by(DiscoveryPartition.id)))
-    bootstrap = db.get(DiscoveryBootstrap, 1)
-    if len(partitions) != PARTITIONS or not all(p.ready for p in partitions) or not bootstrap or not bootstrap.ready:
+    check_deadline(db, deadline)
+    # Sixteen bounded index probes, one network round trip. Never GROUP/COUNT
+    # the journal: an arbitrarily large backlog must not slow admission checks.
+    oldest = select(DiscoveryChange.created_at).where(
+        DiscoveryChange.partition == DiscoveryPartition.id, DiscoveryChange.processed_at.is_(None)
+        ).order_by(DiscoveryChange.id).limit(1).correlate(DiscoveryPartition).scalar_subquery()
+    health = list(db.execute(select(DiscoveryPartition, oldest, DiscoveryBootstrap.ready)
+        .join(DiscoveryBootstrap, DiscoveryBootstrap.id == 1).order_by(DiscoveryPartition.id)))
+    partitions = [row[0] for row in health]
+    if len(partitions) != PARTITIONS or not all(p.ready and ready for p, _, ready in health):
         raise HTTPException(503, "DISCOVERY_INDEX_PREPARING", headers={"Retry-After": "2"})
     if any(p.checked_at < (stamp - 120) * 1_000_000_000 for p in partitions):
         raise HTTPException(503, "DISCOVERY_INDEX_STALE", headers={"Retry-After": "2"})
     # A running consumer can still fall behind. Inspect one indexed pending
     # receipt per partition rather than counting or scanning the journal.
-    for shard in partitions:
-        check_deadline(db, deadline)
-        oldest = db.scalar(select(DiscoveryChange.created_at).where(
-            DiscoveryChange.partition == shard.id, DiscoveryChange.processed_at.is_(None))
-            .order_by(DiscoveryChange.id).limit(1))
-        if oldest is not None and oldest < stamp - 120:
+    for _, pending_at, _ in health:
+        if pending_at is not None and pending_at < stamp - 120:
             raise HTTPException(503, "DISCOVERY_INDEX_STALE", headers={"Retry-After": "2"})
     if query.section == "saved" and player is None:
         raise HTTPException(401, "AUTH_REQUIRED")
@@ -179,7 +202,7 @@ def new_session(db, request, actor, player, query, stamp, anchor, deadline):
     blocks = list(db.scalars(blocked_ids(db,player.id).order_by("blocked_id").limit(1001))) if player else []
     if len(blocks) > 1000:
         raise HTTPException(429,"DISCOVERY_COLLECTION_LIMIT")
-    values = query.model_dump(exclude={"cursor", "offset", "fresh", "exclude", "locate_version", "ids", "raced_ids"})
+    values = query.model_dump(exclude={"ids", "raced_ids"})
     values["owner"] = player.id if player and query.section == "saved" else ""
     values["favorites_present"] = query.ids is not None
     values["frozen_blocks"] = bool(blocks)
@@ -196,13 +219,17 @@ def new_session(db, request, actor, player, query, stamp, anchor, deadline):
     if not check_budget(request.app.state.session_factory, actor, "discovery_v3_create",
             request.app.state.settings.discovery_create_per_minute, session=db):
         raise HTTPException(429, "DISCOVERY_CREATION_LIMIT")
+    if player is None:
+        guard.network_budget(db, request, "create", request.app.state.settings.discovery_network_creates_per_minute)
     check_deadline(db, deadline)
-    collection_id = collection(db, request, actor, query, stamp, deadline, blocks)
-    db.execute(insert(db, DiscoverySession).values(id=identity, scope=actor, created_at=stamp,
+    collection_id = collection(db, request, actor, query, stamp, deadline, blocks,
+        [p.epoch for p in partitions], player is None)
+    view = db.scalar(insert(db, DiscoverySession).values(id=identity, scope=actor, created_at=stamp,
         expires_at=stamp + LIFETIME, secret=secrets.token_hex(32), query=values,
         epochs=[p.epoch for p in partitions], slots=[p.slots for p in partitions],
-        collection_id=collection_id).on_conflict_do_nothing(index_elements=["id"]))
-    view = db.get(DiscoverySession, identity)
+        collection_id=collection_id).on_conflict_do_nothing(index_elements=["id"]).returning(DiscoverySession))
+    if view is None:
+        view = db.get(DiscoverySession, identity)
     return view, boundary(db, view, {}, 0, anchor=anchor or None)
 
 
@@ -244,7 +271,7 @@ def seek(fields, values, inclusive=False):
     return or_(*options)
 
 
-def conditions(view, player, authority=True):
+def conditions(view, player, authority=True, postgres=False):
     q = view.query
     result = [E.visible.is_(True)]
     if authority:
@@ -274,6 +301,13 @@ def conditions(view, player, authority=True):
     term = q["search"].strip()
     if term:
         name, creator = E.name.icontains(term, autoescape=True), E.creator.icontains(term, autoescape=True)
+        if postgres and not re.search(r"[^\W_]{3}", term):
+            # Trigrams cannot accelerate these patterns. The immutable SQL
+            # function uses database lower()/characters, including punctuation;
+            # ILIKE remains the exact final substring predicate.
+            grams = func.discovery_short_grams(term)
+            name = and_(func.discovery_short_grams(E.name).op("@>")(grams), name)
+            creator = and_(func.discovery_short_grams(E.creator).op("@>")(grams), creator)
         result.append(name if q["search_kind"] == 1 else creator if q["search_kind"] == 2 else or_(name, creator))
     def member(kind):
         return exists(select(DiscoveryMember.track_id).where(DiscoveryMember.collection_id == view.collection_id,
@@ -290,17 +324,22 @@ def at_epoch(shard, epoch):
     return and_(E.partition == shard, E.epoch <= epoch, or_(E.until.is_(None), E.until > epoch))
 
 
-def base():
-    return (select(E).join(Track, Track.id == E.track_id).join(Player, Player.id == Track.owner_id)
-        .join(TrackVersion, TrackVersion.id == E.version_id))
+def base(authority=True, columns=None):
+    statement = select(*(columns if columns is not None else (E,)))
+    if authority:
+        statement = (statement.join(Track, Track.id == E.track_id).join(Player, Player.id == Track.owner_id)
+            .join(TrackVersion, TrackVersion.id == E.version_id))
+    return statement
 
 
 def fetch(db, view, player, fields, after=None, official=None, limit=PAGE + 1, extra=(), inclusive=False, authority=True):
-    predicates = conditions(view, player, authority)
+    predicates = conditions(view, player, authority, db.bind.dialect.name == "postgresql")
+    names = dict.fromkeys(["track_id", "version_id", "official", *(n for n, _ in fields)])
+    columns = [getattr(E, name) for name in names]
     orders = [getattr(E, n).desc() if desc else getattr(E, n).asc() for n, desc in fields]
     pieces = []
     for shard, epoch in enumerate(view.epochs):
-        statement = base().where(at_epoch(shard, epoch), *predicates, seek(fields, after, inclusive), *extra)
+        statement = base(authority, columns).where(at_epoch(shard, epoch), *predicates, seek(fields, after, inclusive), *extra)
         if official is not None:
             statement = statement.where(E.official == official)
         sub = statement.order_by(*orders).limit(limit).subquery()
@@ -400,18 +439,13 @@ def choose(db, request, view, player, exclude, deadline):
                         draws.append((shard, value + 1))
                         break
                     value -= count
-            rows = list(db.execute(base().join(DiscoveryHead, DiscoveryHead.track_id == E.track_id)
+            rows = list(db.execute(base(columns=(E.track_id, E.version_id,
+                DiscoveryHead.partition.label("sample_partition"), DiscoveryHead.slot.label("sample_slot")))
+                .join(DiscoveryHead, DiscoveryHead.track_id == E.track_id)
                 .where(tuple_(DiscoveryHead.partition, DiscoveryHead.slot).in_(draws),
                     or_(*(at_epoch(p, epoch) for p, epoch in enumerate(view.epochs))),
-                    *conditions(view, player), E.track_id != exclude)).mappings())
-            by_slot = {}
-            # E does not expose slot; bounded head lookup maps the sampled IDs.
-            heads = {h.track_id: (h.partition, h.slot) for h in db.scalars(select(DiscoveryHead)
-                .where(tuple_(DiscoveryHead.partition, DiscoveryHead.slot).in_(draws)))}
-            for row in rows:
-                value = row.get(E, row)
-                mapped = {c.name: getattr(value, c.name) for c in E.__table__.columns} if isinstance(value, E) else dict(value)
-                by_slot[heads[mapped["track_id"]]] = mapped
+                    *conditions(view, player, postgres=db.bind.dialect.name == "postgresql"), E.track_id != exclude)).mappings())
+            by_slot = {(row["sample_partition"], row["sample_slot"]): row for row in rows}
             selected = next(([by_slot[d]] for d in draws if d in by_slot), [])
             if selected:
                 break
@@ -427,21 +461,45 @@ def choose(db, request, view, player, exclude, deadline):
 def handle(body, request, db, credentials, random_choice):
     player = current_player(request, credentials, db) if credentials else None
     actor, stamp = scope(request, player), now()
-    with query_budget(db) as deadline:
-        if body.cursor:
-            if body.query is not None or body.locate_version:
-                raise HTTPException(422, "CURSOR_QUERY_CONFLICT")
-            view, start = resolve(db, body.cursor, actor, stamp)
-        else:
-            if body.query is None:
-                raise HTTPException(422, "DISCOVERY_QUERY_REQUIRED")
-            view, start = new_session(db, request, actor, player, body.query, stamp, body.locate_version, deadline)
-        check_deadline(db, deadline)
-        result = choose(db, request, view, player, body.exclude, deadline) if random_choice else page(
-            db, request, view, start, player, deadline)
-        check_deadline(db, deadline)
-    db.commit()
-    return result
+    failure = None
+    try:
+        with query_budget(db) as deadline:
+            if body.cursor:
+                if body.query is not None or body.locate_version:
+                    raise HTTPException(422, "CURSOR_QUERY_CONFLICT")
+                view, start = resolve(db, body.cursor, actor, stamp)
+                expensive = guard.costly(view.query, random_choice)
+            else:
+                if body.query is None:
+                    raise HTTPException(422, "DISCOVERY_QUERY_REQUIRED")
+                expensive = player is not None or guard.costly(body.query.model_dump(), random_choice)
+            # End the read/authentication transaction before reserving credits;
+            # no second pooled connection or stale SQLite read snapshot is needed.
+            db.commit()
+            gate = getattr(request.state, "discovery_expensive_gate", None)
+            if gate is not None and expensive and not getattr(request.state, "discovery_search_admitted", False):
+                if not gate.acquire(blocking=False):
+                    raise HTTPException(503, "DISCOVERY_SEARCH_BUSY", headers={"Retry-After": "1"})
+                request.state.discovery_search_admitted = True
+            guard.claim(db, actor, request.app.state.settings, "heavy" if expensive else "light")
+            check_deadline(db, deadline)
+            if not body.cursor:
+                view, start = new_session(db, request, actor, player, body.query, stamp, body.locate_version, deadline)
+            guard.owned(db)
+            check_deadline(db, deadline)
+            result = choose(db, request, view, player, body.exclude, deadline) if random_choice else page(
+                db, request, view, start, player, deadline)
+            check_deadline(db, deadline)
+            db.commit()
+            return result
+    except BaseException as error:
+        failure = error
+        raise
+    finally:
+        tickets = db.info.pop("discovery_tickets", [])
+        db.rollback()
+        if tickets:
+            guard.finish(request.app.state.session_factory, tickets, failure)
 
 
 @router.post("/v1/discovery/v3/tracks")

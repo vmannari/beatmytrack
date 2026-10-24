@@ -6,14 +6,13 @@ from uuid import uuid4
 
 import httpx
 import pytest
-from sqlalchemy import func, select, text, update
+from sqlalchemy import func, inspect, select, text, update
 from test_domains import domain as domain_fixture
 from test_domains import headers
 from test_publication_intents import body
 from test_publication_intents import publications as publications_fixture
 
 from bmt_backend import discovery_v3 as discovery
-from bmt_backend.discovery import DiscoveryBudget, DiscoverySnapshot
 from bmt_backend.discovery_models import DiscoveryEntry, DiscoverySession
 from bmt_backend.discovery_projection import settle_for_diagnostics
 from bmt_backend.maintenance import retain
@@ -278,8 +277,8 @@ def _assert_legacy_resource_upgrade(domain, engine, command, configuration, upgr
         row = session.get(PublicationIntent, identity)
         assert row.operation_key and row.status == "failed" and row.contract == {}
         assert row.evidence_bytes == 2621440 and not row.evidence_retired
-        budget = session.get(DiscoveryBudget, 1)
-        assert budget.entries == 2 and budget.snapshots == 1
+        assert not inspect(session.connection()).has_table("discovery_snapshots")
+        assert not inspect(session.connection()).has_table("discovery_budget")
 
 
 @pytest.mark.parametrize("failure", ["validator_unavailable", "build_mismatch", "NO_PUBLISHING_SLOTS"])
@@ -310,6 +309,7 @@ def catalogue(domain):
 
 
 def query(domain, **values):
+    values.pop("fresh", None)  # Refresh opens a cursor view; it is not a filter.
     cursor = values.pop("cursor", "")
     payload = {"cursor":cursor} if cursor else {"query":values}
     return domain.client.post("/v1/discovery/v3/tracks", json=payload)
@@ -327,7 +327,7 @@ def test_fresh_queries_coalesce_across_cache_restart(catalogue):
     assert len(set(pages)) == 1
     with domain.factory() as session:
         assert session.scalar(select(func.count()).select_from(DiscoverySession)) == 1
-        assert session.scalar(select(func.count()).select_from(DiscoverySnapshot)) == 0
+        assert not inspect(session.connection()).has_table("discovery_snapshots")
         assert session.scalar(select(func.count()).select_from(DiscoveryEntry)) == 12
 
 
@@ -342,7 +342,7 @@ def test_unchanged_fresh_order_is_not_duplicated_each_refresh_window(catalogue, 
         assert len(response.json()["items"])==12
     with domain.factory() as session:
         assert session.scalar(select(func.count()).select_from(DiscoveryEntry))==12
-        assert session.scalar(select(func.count()).select_from(DiscoverySnapshot))==0
+        assert not inspect(session.connection()).has_table("discovery_snapshots")
 
 
 
@@ -357,15 +357,16 @@ def test_creation_budget_does_not_charge_cached_pages(catalogue):
 
 
 @pytest.mark.parametrize("setting,value", [("discovery_catalogue_limit",6),("discovery_snapshot_ids",6)])
-def test_old_catalogue_caps_no_longer_truncate_indexed_pages(catalogue,setting,value):
+def test_retired_catalogue_caps_cannot_configure_indexed_pages(catalogue,setting,value):
     domain=catalogue
-    domain.app.state.settings=replace(domain.app.state.settings,**{setting:value})
+    with pytest.raises(TypeError):
+        replace(domain.app.state.settings,**{setting:value})
     response=query(domain,fresh=True)
     assert response.status_code==200 and len(response.json()["items"])==12
     assert response.json()["has_more"] is False and response.json()["total"] is None
     with domain.factory() as session:
-        assert session.scalar(select(func.count()).select_from(DiscoverySnapshot))==0
-        assert session.get(DiscoveryBudget,1).entries==0
+        assert not inspect(session.connection()).has_table("discovery_snapshots")
+        assert not inspect(session.connection()).has_table("discovery_budget")
 
 
 
@@ -420,5 +421,5 @@ def test_postgres_discovery_state_is_shared_without_global_budget_lock(catalogue
     with domain.factory() as session:
         assert session.scalar(select(func.count()).select_from(DiscoverySession))==(1 if same_query else 2)
         assert session.scalar(select(func.count()).select_from(DiscoveryEntry))==12
-        assert session.scalar(select(func.count()).select_from(DiscoverySnapshot))==0
+        assert not inspect(session.connection()).has_table("discovery_snapshots")
 

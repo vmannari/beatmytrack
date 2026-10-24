@@ -31,7 +31,8 @@ def local_configuration():
     )
     if len(config.get("BMT_DEV_AUTH_KEY", "")) < 32:
         raise RuntimeError("Invalid private development configuration")
-    for name in ("BMT_ADMIN_OWNER_KEY", "BMT_ADMIN_ANALYST_KEY"):
+    for name in ("BMT_ADMIN_OWNER_KEY", "BMT_ADMIN_ANALYST_KEY", "BMT_API_DB_PASSWORD",
+                 "BMT_WORKER_DB_PASSWORD", "BMT_ADMIN_DB_PASSWORD"):
         if not config.get(name):
             config[name] = secrets.token_urlsafe(32)
             with ENV_FILE.open("a", encoding="utf-8") as output:
@@ -82,7 +83,7 @@ def backup_local_data(command):
     ).stdout.split()
     if "db" not in running:
         return None
-    subprocess.run([*command, "stop", "api", "worker"], cwd=ROOT, check=True)
+    subprocess.run([*command, "stop", "api", "worker", "admin"], cwd=ROOT, check=True)
     stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
     destination = ROOT / "build" / "pc-backups" / stamp
     destination.mkdir(parents=True, mode=0o700)

@@ -19,6 +19,15 @@ def address(value):
         return None
 
 
+def anonymous_network(value):
+    """Secondary abuse identity only; never use it for cursors or account scope."""
+    parsed = address(value)
+    if parsed is None:
+        return value
+    prefix = 64 if parsed.version == 6 else 32
+    return str(ipaddress.ip_network((parsed, prefix), strict=False))
+
+
 class ClientAddress:
     def __init__(self, networks=()):
         self.networks = proxy_networks(networks)

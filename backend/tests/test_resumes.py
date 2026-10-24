@@ -203,7 +203,7 @@ def test_replay_rejects_invalid_rewind_contract(race_fixture, mutation):
 
 
 def test_temporary_ad_resumes_are_idempotent_bounded_and_not_banked(domain, monkeypatch):
-    import bmt_backend.resumes as api
+    from dataclasses import replace
 
     race = begin(domain)
     assert spend(domain, race).status_code == 200  # daily
@@ -219,8 +219,8 @@ def test_temporary_ad_resumes_are_idempotent_bounded_and_not_banked(domain, monk
         sources = list(session.scalars(select(ResumeReceipt.source).where(ResumeReceipt.race_id == race)))
         assert sources.count("daily") == 1 and sources.count("ad_preview") == 2
     another = begin(domain)
-    monkeypatch.setattr(api, "TEMPORARY_AD_RESUMES", False)
+    domain.app.state.settings = replace(domain.app.state.settings, temporary_ad_resumes_enabled=False)
     assert domain.client.get("/v1/resumes", headers=headers(domain)).json()["ad_preview_available"] is False
     assert spend(domain, another).status_code == 409
-    monkeypatch.setattr(api, "TEMPORARY_AD_RESUMES", True)
+    domain.app.state.settings = replace(domain.app.state.settings, temporary_ad_resumes_enabled=True)
     assert spend(domain, another).status_code == 200

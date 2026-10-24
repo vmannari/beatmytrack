@@ -44,8 +44,32 @@ def test_concurrent_source_change_stops_rollout(monkeypatch):
         updater.check_source()
 
 
+def test_shared_runtime_layout_is_rejected_before_build():
+    service=SimpleNamespace(n={"api":"api","runtime":"runtime"},describe=lambda *_:{"containers":[{"image":"old"}]})
+    with pytest.raises(RuntimeError,match="Separate runtime service accounts"):
+        update.assert_authority_layout(service,{"project":"fixture"})
+
+
+def test_separate_runtime_layout_accepts_only_exact_credentials():
+    names={key:key for key in ("api","worker","migrate","runtime","worker_runtime","migrator","app_secret","worker_secret","admin_secret")}
+    config={"project":"fixture"}
+    mapping={"api":("runtime","app_secret","api"),"worker":("worker_runtime","worker_secret","worker"),
+             "migrate":("migrator","admin_secret","migrator")}
+    def describe(_kind,name):
+        account,secret,role=mapping[name]
+        return {"spec":{"template":{"spec":{"serviceAccountName":account+"@fixture.iam.gserviceaccount.com",
+            "containers":[{"env":[{"name":"BMT_WORKLOAD_ROLE","value":role},
+                {"name":"BMT_DATABASE_URL","valueFrom":{"secretKeyRef":{"name":secret,"key":"1"}}}]}]}}}}
+    service=SimpleNamespace(n=names,describe=describe)
+    update.assert_authority_layout(service,config)
+    names["worker_secret"]="wrong-secret"
+    with pytest.raises(RuntimeError,match="Separate workload credentials"):
+        update.assert_authority_layout(service,config)
+
+
 @pytest.mark.parametrize("backup_success", [True, False])
 def test_backup_and_queue_precede_migration(tmp_path, monkeypatch, backup_success):
+    monkeypatch.setattr(update,"assert_authority_layout",lambda *_:None)
     events = []
     names = {key: key for key in ("api", "worker", "migrate", "smoke", "sql", "bucket", "repo")}
     def call(*args):

@@ -29,6 +29,18 @@ def save(domain, value, player="Alice"):
     return domain.client.put("/v1/rivalry/appearance", json=value, headers=headers(domain, player))
 
 
+def grant_assets(domain):
+    """Catalog rendering fixtures own the selections they exercise."""
+    from bmt_backend.economy_models import CosmeticUnlock
+    items = ["livery/" + pattern for pattern in CATALOG["patterns"] if pattern != "plain"]
+    items += ["kit/compact/" + category + "/" + option for category, options in CATALOG["parts"].items()
+              for option in options if option != "stock"]
+    with domain.factory() as session:
+        for player in ("Alice", "Bob"):
+            session.add_all(CosmeticUnlock(player_id=domain.players[player], item_id=item, price=0) for item in items)
+        session.commit()
+
+
 def test_catalog_matches_native_assets():
     root = Path(__file__).resolve().parents[2]
     assert CATALOG["patterns"] == ["plain"] + [row["id"] for row in json.loads((root / "game/assets/liveries/catalog.json").read_text())]
@@ -40,6 +52,7 @@ def test_catalog_matches_native_assets():
 
 
 def test_players_share_their_own_parts_and_livery_without_changing_scores(rivalry_domain):
+    grant_assets(rivalry_domain)
     seed(rivalry_domain)
     first = join(rivalry_domain)
     join(rivalry_domain, "Bob")
@@ -89,6 +102,7 @@ def test_untrusted_appearance_is_rejected(rivalry_domain, path, value):
 
 
 def test_all_allowed_assets_and_vehicle_bounds(rivalry_domain):
+    grant_assets(rivalry_domain)
     for pattern in CATALOG["patterns"]:
         assert save(rivalry_domain, appearance(pattern=pattern)).status_code == 200
     for sticker in CATALOG["stickers"]:

@@ -163,7 +163,7 @@ def test_random_slot_sampling_reaches_any_track_and_exhaustion_is_retryable(inde
     monkeypatch.setattr(discovery_v3, "RANDOM_TRIALS", 0)
     response = d.client.post("/v1/discovery/v3/random", json={"cursor":first["page_cursor"]})
     assert response.status_code == 503 and response.json()["detail"] == "DISCOVERY_RANDOM_BUDGET"
-    assert "items" not in response.json() and response.headers["retry-after"] == "1"
+    assert "items" not in response.json() and response.headers["retry-after"] == "2"
 
 
 def test_expiry_and_query_budget_never_become_false_empty_results(indexed, monkeypatch):

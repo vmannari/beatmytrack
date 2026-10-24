@@ -10,7 +10,6 @@ x-runtime: &runtime
     BMT_DEV_AUTH_ENABLED: "true"
     BMT_TEST_DRIVERS_ENABLED: ${BMT_TEST_DRIVERS_ENABLED:-false}
     BMT_DEV_AUTH_KEY: ${BMT_DEV_AUTH_KEY:?Run BackendStart to generate local configuration}
-    BMT_DATABASE_URL: postgresql+psycopg://bmt:${BMT_DB_PASSWORD}@db:5432/bmt
     BMT_PUBLIC_BASE_URL: http://127.0.0.1:18181
     BMT_TRANSPORT_PROFILE: ${BMT_TRANSPORT_PROFILE:-compact}
     BMT_REFRESH_RECOVERY_SECONDS: ${BMT_REFRESH_RECOVERY_SECONDS:-120}
@@ -18,11 +17,10 @@ x-runtime: &runtime
     BMT_READINESS_CACHE_SECONDS: ${BMT_READINESS_CACHE_SECONDS:-2}
     BMT_READINESS_STORAGE_CACHE_SECONDS: ${BMT_READINESS_STORAGE_CACHE_SECONDS:-30}
     BMT_READINESS_TIMEOUT_SECONDS: ${BMT_READINESS_TIMEOUT_SECONDS:-2}
-    BMT_ADMIN_OWNER_KEY: ${BMT_ADMIN_OWNER_KEY:-}
-    BMT_ADMIN_ANALYST_KEY: ${BMT_ADMIN_ANALYST_KEY:-}
     BMT_GOOGLE_CLIENT_IDS: ${BMT_GOOGLE_CLIENT_IDS:-}
     BMT_GOOGLE_WEB_CLIENT_ID: ${BMT_GOOGLE_WEB_CLIENT_ID:-}
     BMT_OBJECT_DIR: /var/lib/bmt/objects
+    BMT_WORLD_RANKING_LAUNCH_WEEK: ${BMT_WORLD_RANKING_LAUNCH_WEEK:-0}
   volumes:
     - ../bmt_backend:/app/bmt_backend:ro
     - objects:/var/lib/bmt/objects
@@ -46,11 +44,22 @@ services:
       retries: 30
   migrate:
     <<: *runtime
-    command: [python, -m, bmt_backend.migrate]
+    command: [python, -m, bmt_backend.database_privileges, --migrate, --provision]
+    environment:
+      <<: *environment
+      BMT_WORKLOAD_ROLE: migrator
+      BMT_DATABASE_URL: postgresql+psycopg://bmt:${BMT_DB_PASSWORD}@db:5432/bmt
+      BMT_API_DB_PASSWORD: ${BMT_API_DB_PASSWORD:?Generate distinct runtime passwords}
+      BMT_WORKER_DB_PASSWORD: ${BMT_WORKER_DB_PASSWORD:?Generate distinct runtime passwords}
+      BMT_ADMIN_DB_PASSWORD: ${BMT_ADMIN_DB_PASSWORD:?Generate distinct runtime passwords}
     depends_on:
       db: {condition: service_healthy}
   api:
     <<: *runtime
+    environment:
+      <<: *environment
+      BMT_WORKLOAD_ROLE: api
+      BMT_DATABASE_URL: postgresql+psycopg://bmt_api:${BMT_API_DB_PASSWORD:?Generate an API password}@db:5432/bmt
     build:
       context: ../..
       dockerfile: backend/Dockerfile
@@ -71,12 +80,33 @@ services:
     stop_grace_period: 30s
     environment:
       <<: *environment
+      BMT_WORKLOAD_ROLE: worker
+      BMT_DATABASE_URL: postgresql+psycopg://bmt_worker:${BMT_WORKER_DB_PASSWORD:?Generate a worker password}@db:5432/bmt
       BMT_TEST_DRIVER_API_URL: http://api:8080
       BMT_WORKER_SHUTDOWN_GRACE_SECONDS: ${BMT_WORKER_SHUTDOWN_GRACE_SECONDS:-5}
     restart: unless-stopped
     command: [python, -m, bmt_backend.service_worker]
     depends_on:
       migrate: {condition: service_completed_successfully}
+
+  admin:
+    <<: *runtime
+    profiles: [studio]
+    command: [uvicorn, "bmt_backend.app:create_admin_app", --factory, --host, "0.0.0.0", --port, "8080", --no-proxy-headers, --no-access-log, --limit-concurrency, "24", --timeout-keep-alive, "5"]
+    environment:
+      <<: *environment
+      BMT_WORKLOAD_ROLE: admin
+      BMT_DATABASE_URL: postgresql+psycopg://bmt_admin:${BMT_ADMIN_DB_PASSWORD:?Generate a Studio database password}@db:5432/bmt
+      BMT_STUDIO_STAFF_AUDIENCES: ${BMT_STUDIO_STAFF_AUDIENCES:-}
+      BMT_STUDIO_STAFF_SUBJECTS: ${BMT_STUDIO_STAFF_SUBJECTS:-}
+      BMT_STUDIO_STAFF_REQUIRE_MFA: "true"
+      BMT_STUDIO_LEGACY_KEYS_ENABLED: "true"
+      BMT_ADMIN_OWNER_KEY: ${BMT_ADMIN_OWNER_KEY:-}
+      BMT_ADMIN_ANALYST_KEY: ${BMT_ADMIN_ANALYST_KEY:-}
+    ports: ["127.0.0.1:18182:8080"]
+    depends_on:
+      migrate: {condition: service_completed_successfully}
+    restart: unless-stopped
 
 volumes:
   postgres_data:

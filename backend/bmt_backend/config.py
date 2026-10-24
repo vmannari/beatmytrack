@@ -7,11 +7,14 @@ from pathlib import Path
 class Settings:
     admin_owner_key: str = ""
     admin_analyst_key: str = ""
-    studio_legacy_keys_enabled: bool = True
+    studio_legacy_keys_enabled: bool = False
+    workload_role: str = "api"
     studio_staff_audiences: tuple[str, ...] = field(default_factory=tuple)
     studio_staff_subjects: str = ""
     studio_staff_require_mfa: bool = True
     studio_business_cohorts: bool = False
+    studio_analysis_database_url: str = ""
+    studio_analysis_statement_timeout_ms: int = 5000
     studio_monitor_source_tokens: str = ""
     studio_monitor_external_notifiers: tuple[str, ...] = ()
     studio_monitor_webhook_url: str = ""
@@ -24,6 +27,7 @@ class Settings:
     test_drivers_enabled: bool = False
     test_driver_api_url: str = ""
     purchase_simulation_enabled: bool = False
+    temporary_ad_resumes_enabled: bool = False
     telemetry_enabled: bool = False
     client_quality_enabled: bool = False
     privacy_developer_name: str = "[Developer name — to be confirmed]"
@@ -60,16 +64,29 @@ class Settings:
     run_wait_capacity: int = 4
     publication_evidence_bytes: int = 64 * 1024 * 1024
     publication_evidence_count: int = 128
-    discovery_catalogue_limit: int = 100000
-    discovery_snapshot_ids: int = 1000000
-    discovery_snapshot_count: int = 2048
     discovery_create_per_minute: int = 20
+    discovery_work_units_per_minute: int = 600
+    discovery_expensive_units_per_minute: int = 240
+    discovery_network_reads_per_minute: int = 1200
+    discovery_network_burst: int = 120
+    discovery_network_creates_per_minute: int = 40
+    discovery_network_rows_per_minute: int = 202000
+    discovery_actor_member_rows: int = 202000
+    discovery_actor_member_bytes: int = 64 * 1024 * 1024
+    discovery_storage_member_rows: int = 16000000
+    discovery_storage_member_bytes: int = 4 * 1024 * 1024 * 1024
     worker_stale_seconds: int = 300
     worker_shutdown_grace_seconds: int = 5
     readiness_cache_seconds: int = 2
     readiness_storage_cache_seconds: int = 30
     readiness_timeout_seconds: int = 2
     histogram_refresh_seconds: int = 900
+    # Zero leaves launch unannounced. Enable only for a declared future UTC Monday.
+    world_ranking_launch_week: int = 0
+    world_ranking_batch_size: int = 2000
+    world_ranking_statement_ms: int = 30000
+    world_ranking_pause_ms: int = 25
+    world_ranking_max_queue_age_seconds: int = 30
     retention_days: int = 90
     backup_marker_path: str = ""
     database_pool_size: int = 4
@@ -77,6 +94,7 @@ class Settings:
     database_pool_timeout_seconds: int = 3
     database_statement_timeout_ms: int = 10000
     upload_concurrency: int = 2
+    telemetry_http_concurrency: int = 4
     edge_limit_per_minute: int = 12000
     pre_auth_limit_per_minute: int = 600
     trusted_proxy_networks: tuple[str, ...] = field(default_factory=tuple)
@@ -96,6 +114,28 @@ class Settings:
     s3_prefix: str = "bmt/v1"
 
     def __post_init__(self):
+        if self.workload_role not in ("api", "admin", "worker", "migrator", "operator"):
+            raise ValueError("Invalid workload role")
+        if self.environment == "production":
+            if self.studio_legacy_keys_enabled or self.admin_owner_key or self.admin_analyst_key:
+                raise ValueError("Production Studio requires named staff credentials; legacy administrator keys are forbidden")
+            if not self.studio_staff_require_mfa:
+                raise ValueError("Production Studio requires verified MFA")
+            if self.temporary_ad_resumes_enabled:
+                raise ValueError("Temporary ad-preview resumes are restricted to development/test")
+        if self.workload_role == "worker" and (self.admin_owner_key or self.admin_analyst_key
+                or self.studio_staff_subjects or self.studio_monitor_source_tokens
+                or self.studio_monitor_webhook_key or self.studio_monitor_webhook_url):
+            raise ValueError("Workers cannot receive administrator or monitor credentials")
+        if (type(self.world_ranking_launch_week) is not int or self.world_ranking_launch_week < 0
+                or (self.world_ranking_launch_week and (self.world_ranking_launch_week-345600) % 604800)):
+            raise ValueError("World Ranking launch must be a Monday at 00:00 UTC")
+        if not 1 <= self.world_ranking_batch_size <= 10000:
+            raise ValueError("World Ranking batch must contain 1 to 10000 players")
+        if not 1000 <= self.world_ranking_statement_ms <= 60000 or not 10 <= self.world_ranking_pause_ms <= 1000:
+            raise ValueError("World Ranking requires bounded statements and a cooperative pause")
+        if not 5 <= self.world_ranking_max_queue_age_seconds <= 300:
+            raise ValueError("World Ranking must yield to delayed foreground verification")
         from .studio_settings import validate_studio_settings
         validate_studio_settings(self)
         from .client_address import proxy_networks
@@ -104,6 +144,12 @@ class Settings:
             raise ValueError("Legacy remote drafts are available only to explicit compatibility test fixtures")
         if self.client_quality_enabled and not self.telemetry_enabled:
             raise ValueError("Client quality requires bounded product telemetry transport")
+        if (self.studio_analysis_database_url
+                and not self.studio_analysis_database_url.startswith("postgresql+psycopg://")):
+            raise ValueError("Studio analysis requires a dedicated PostgreSQL read replica")
+        if (type(self.studio_analysis_statement_timeout_ms) is not int
+                or not 100 <= self.studio_analysis_statement_timeout_ms <= 30000):
+            raise ValueError("Studio analysis timeout must be between 100 and 30000 milliseconds")
         if (not 50 <= self.telemetry_client_backlog <= 1000000
                 or not 1 <= self.telemetry_processor_batch <= 1000
                 or not 1 <= self.telemetry_raw_days <= 30 or not 14 <= self.telemetry_fact_days <= 366):
@@ -132,25 +178,33 @@ class Settings:
             "write_limit_per_minute",
             "max_queued_runs",
             "run_wait_capacity",
-            "publication_evidence_bytes", "publication_evidence_count", "discovery_catalogue_limit",
-            "discovery_snapshot_ids", "discovery_snapshot_count",
+            "publication_evidence_bytes", "publication_evidence_count",
             "discovery_create_per_minute",
+            "discovery_work_units_per_minute", "discovery_expensive_units_per_minute",
+            "discovery_network_reads_per_minute", "discovery_network_burst",
+            "discovery_network_creates_per_minute", "discovery_network_rows_per_minute",
+            "discovery_actor_member_rows", "discovery_actor_member_bytes",
+            "discovery_storage_member_rows", "discovery_storage_member_bytes",
             "worker_stale_seconds",
             "worker_shutdown_grace_seconds",
             "readiness_cache_seconds", "readiness_storage_cache_seconds", "readiness_timeout_seconds",
             "retention_days",
             "privacy_backup_days", "privacy_purchase_days",
             "database_pool_size", "database_pool_timeout_seconds", "database_statement_timeout_ms",
-            "upload_concurrency", "edge_limit_per_minute", "pre_auth_limit_per_minute", "verifier_recycle_jobs",
+            "upload_concurrency", "telemetry_http_concurrency", "edge_limit_per_minute", "pre_auth_limit_per_minute", "verifier_recycle_jobs",
         ):
             value = getattr(self, name)
             if type(value) is not int or value <= 0:
                 raise ValueError(f"BMT_{name.upper()} must be a positive integer")
         if self.database_pool_overflow < 0 or self.upload_concurrency > 8:
             raise ValueError("Invalid pool overflow or upload concurrency")
+        if min(self.discovery_work_units_per_minute, self.discovery_expensive_units_per_minute) < 60:
+            raise ValueError("Discovery work budgets must reserve at least one 1.5s query allowance")
+        if self.telemetry_http_concurrency > 16:
+            raise ValueError("Telemetry HTTP concurrency cannot exceed 16 bounded request trees")
         if self.run_wait_capacity > 64:
             raise ValueError("Run wait capacity must leave room for ordinary HTTP requests")
-        if self.refresh_recovery_seconds > 300 or self.transport_profile not in ("legacy", "compact"):
+        if self.refresh_recovery_seconds > 300 or self.transport_profile != "compact":
             raise ValueError("Invalid recovery window or transport profile")
         if self.readiness_cache_seconds > 5 or self.readiness_storage_cache_seconds > 60 or self.readiness_timeout_seconds > 5:
             raise ValueError("Readiness cache/deadline exceeds the bounded probe allowance")

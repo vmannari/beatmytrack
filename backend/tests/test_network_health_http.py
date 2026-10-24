@@ -29,7 +29,7 @@ def test_real_native_network_packet_and_server_request_id_correlation(tmp_path):
     key, analyst = secrets.token_urlsafe(32), secrets.token_urlsafe(32)
     listener = socket.socket(); listener.bind(("127.0.0.1", 0))
     base = f"http://127.0.0.1:{listener.getsockname()[1]}"
-    app = create_app(Settings(environment="development", dev_auth_enabled=True, dev_auth_key=key,
+    app = create_app(Settings(studio_legacy_keys_enabled=True, environment="development", dev_auth_enabled=True, dev_auth_key=key,
         telemetry_enabled=True, client_quality_enabled=True, admin_analyst_key=analyst,
         database_url="sqlite:///" + str(tmp_path / "fixture.sqlite"), object_dir=str(tmp_path / "objects"),
         auth_limit_per_minute=1000, write_limit_per_minute=1000))

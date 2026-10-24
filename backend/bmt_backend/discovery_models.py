@@ -100,7 +100,7 @@ class DiscoveryDriver(Base):
     last_at: Mapped[int] = mapped_column(BigInteger)
     expires_at: Mapped[int] = mapped_column(BigInteger)
     counted: Mapped[bool] = mapped_column(Boolean)
-    __table_args__ = (Index("ix_discovery_driver_expire", "partition", "expires_at", "track_id", "player_id"),
+    __table_args__ = (Index("ix_discovery_driver_expire", "partition", "expires_at"),
                       Index("ix_discovery_driver_player", "player_id", "track_id"))
 
 
@@ -125,8 +125,15 @@ class DiscoveryCollection(Base):
     id: Mapped[str] = mapped_column(String(64), primary_key=True)
     scope: Mapped[str] = mapped_column(String(64))
     expires_at: Mapped[int] = mapped_column(BigInteger)
+    member_rows: Mapped[int] = mapped_column(BigInteger, default=0, server_default="0")
+    member_bytes: Mapped[int] = mapped_column(BigInteger, default=0, server_default="0")
+    accounted: Mapped[bool] = mapped_column(Boolean, default=False, server_default="0")
+    capacity_partition: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    member_cursor_kind: Mapped[str] = mapped_column(String(8), default="", server_default="")
+    member_cursor_id: Mapped[str] = mapped_column(String(80), default="", server_default="")
     __table_args__ = (Index("ix_discovery_collection_expire", "expires_at", "id"),
-                      Index("ix_discovery_collection_scope", "scope", "expires_at"))
+                      Index("ix_discovery_collection_scope", "scope", "expires_at"),
+                      Index("ix_discovery_collection_accounted", "accounted", "id"))
 
 
 class DiscoveryMember(Base):
@@ -164,3 +171,34 @@ class DiscoveryBoundary(Base):
     anchor_version: Mapped[str | None] = mapped_column(String(36), nullable=True)
     __table_args__ = (Index("ix_discovery_boundary_expire", "expires_at", "id"),
                       Index("ix_discovery_boundary_session", "session_id", "id"))
+
+
+class DiscoveryGuard(Base):
+    """Per-actor lane credits/leases, shared across replicas. No global hot row."""
+    __tablename__ = "discovery_guards"
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    scope: Mapped[str] = mapped_column(String(64))
+    lane: Mapped[str] = mapped_column(String(8))
+    window: Mapped[int] = mapped_column(BigInteger)
+    used_units: Mapped[int] = mapped_column(Integer, default=0)
+    failures: Mapped[int] = mapped_column(Integer, default=0)
+    cooldown_until: Mapped[int] = mapped_column(BigInteger, default=0)
+    lease_until: Mapped[int] = mapped_column(BigInteger, default=0)
+    lease_token: Mapped[str] = mapped_column(String(32), default="")
+    expires_at: Mapped[int] = mapped_column(BigInteger)
+    __table_args__ = (Index("ix_discovery_guard_expire", "expires_at", "id"),
+                      Index("ix_discovery_guard_scope", "scope", "id"))
+
+
+class DiscoveryStorage(Base):
+    """Sixteen independent physical-member allowances, updated transactionally."""
+    __tablename__ = "discovery_storage"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    member_rows: Mapped[int] = mapped_column(BigInteger, default=0)
+    member_bytes: Mapped[int] = mapped_column(BigInteger, default=0)
+
+
+class DiscoveryStorageBootstrap(Base):
+    __tablename__ = "discovery_storage_bootstrap"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    ready: Mapped[bool] = mapped_column(Boolean, default=False)

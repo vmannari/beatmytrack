@@ -1,3 +1,4 @@
+import time
 from collections.abc import Generator
 
 from fastapi import Request
@@ -20,6 +21,18 @@ def make_engine(url: str, settings=None, *, schema=""):
         @event.listens_for(engine, "connect")
         def configure_sqlite(connection, _):
             connection.execute("PRAGMA foreign_keys=ON")
+            if not (url.endswith(":memory:") or url == "sqlite://"):
+                # Discovery's durable work credits must not wait for an
+                # unrelated reader to release SQLite's rollback journal.
+                connection.execute("PRAGMA journal_mode=WAL")
+
+        @event.listens_for(engine, "checkin")
+        def clear_sqlite_deadline(connection, record):
+            if connection is not None:
+                connection.set_progress_handler(None, 0)
+                previous = record.info.pop("discovery_busy_timeout", None)
+                if previous is not None:
+                    connection.execute("PRAGMA busy_timeout=" + str(previous))
 
         return engine
     import re
@@ -42,6 +55,14 @@ def make_engine(url: str, settings=None, *, schema=""):
 
 def make_session_factory(engine):
     return sessionmaker(engine, expire_on_commit=False)
+
+
+@event.listens_for(Session, "after_begin")
+def sqlite_discovery_deadline(session, _transaction, connection):
+    deadline = session.info.get("discovery_deadline")
+    if deadline is not None and connection.dialect.name == "sqlite":
+        raw = connection.connection.driver_connection
+        raw.set_progress_handler(lambda: int(time.monotonic() > deadline), 1000)
 
 
 def get_session(request: Request) -> Generator[Session, None, None]:

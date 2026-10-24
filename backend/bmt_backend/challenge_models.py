@@ -1,5 +1,15 @@
 """Invitation-scoped competitions; timing is written only by verification."""
-from sqlalchemy import JSON, Boolean, CheckConstraint, ForeignKey, Index, Integer, String, false
+from sqlalchemy import (
+    JSON,
+    Boolean,
+    CheckConstraint,
+    ForeignKey,
+    ForeignKeyConstraint,
+    Index,
+    Integer,
+    String,
+    false,
+)
 from sqlalchemy.orm import Mapped, mapped_column
 
 from .db import Base
@@ -42,3 +52,33 @@ class ChallengeTicket(Base):
     ticket_id: Mapped[str] = mapped_column(ForeignKey("run_tickets.id"), primary_key=True)
     challenge_id: Mapped[str] = mapped_column(ForeignKey("challenges.id"), index=True)
     outcome: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+
+
+class ChallengeStage(Base):
+    __tablename__ = "challenge_stages"
+    __table_args__ = (CheckConstraint("ordinal >= 0 AND ordinal < 3"),)
+    challenge_id: Mapped[str] = mapped_column(ForeignKey("challenges.id"), primary_key=True)
+    ordinal: Mapped[int] = mapped_column(Integer, primary_key=True)
+    board_id: Mapped[str] = mapped_column(ForeignKey("boards.id"))
+
+
+class ChallengeStageMember(Base):
+    __tablename__ = "challenge_stage_members"
+    __table_args__ = (
+        ForeignKeyConstraint(["challenge_id", "ordinal"], ["challenge_stages.challenge_id", "challenge_stages.ordinal"]),
+        ForeignKeyConstraint(["challenge_id", "player_id"], ["challenge_members.challenge_id", "challenge_members.player_id"]),
+        CheckConstraint("attempts_used >= 0 AND attempts_used <= 3"),
+        Index("ix_challenge_stage_member_run", "run_id"),
+    )
+    challenge_id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    ordinal: Mapped[int] = mapped_column(Integer, primary_key=True)
+    player_id: Mapped[str] = mapped_column(ForeignKey("players.id"), primary_key=True)
+    attempts_used: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
+    run_id: Mapped[str | None] = mapped_column(ForeignKey("runs.id"), nullable=True)
+    time_ticks: Mapped[int | None] = mapped_column(Integer, nullable=True)
+
+
+class ChallengeStageTicket(Base):
+    __tablename__ = "challenge_stage_tickets"
+    ticket_id: Mapped[str] = mapped_column(ForeignKey("challenge_tickets.ticket_id"), primary_key=True)
+    ordinal: Mapped[int] = mapped_column(Integer)

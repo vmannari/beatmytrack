@@ -212,7 +212,7 @@ def publish(factory, at=None, fact_days=180):
 
 
 def maintenance(factory, at=None, raw_days=7, fact_days=180, limit=500, force=False):
-    """Expiry runs separately from owner transactions, at most once per minute."""
+    """Bound expiry separately; drain backlogs and check idle data once a minute."""
     stamp = now() if at is None else at
     with factory() as session:
         control = session.scalar(select(TelemetryControl).where(TelemetryControl.id == 1)
@@ -231,12 +231,13 @@ def maintenance(factory, at=None, raw_days=7, fact_days=180, limit=500, force=Fa
         for model, field, threshold in ((QualityFact, QualityFact.day, floor),
                 (ProductMetric, ProductMetric.day, floor), (ProductPlayerDay, ProductPlayerDay.day, floor),
                 (AnalysisDay, AnalysisDay.day, floor), (AnalysisSession, AnalysisSession.last_at, stamp - fact_days * 86400),
-                (AnalysisPerson, AnalysisPerson.first_at, floor * 86400),
                 (RaceStatisticsReceipt, RaceStatisticsReceipt.received_at, stamp - 8 * 86400),
                 (RaceStatisticsDay, RaceStatisticsDay.day, floor), (NetworkHealthDay, NetworkHealthDay.day, floor),
                 (ProductPublication, ProductPublication.published_at, floor * 86400),
                 (TelemetryMetric, TelemetryMetric.day, floor)):
             probes.append(select(field).select_from(model).where(field < threshold).exists())
+        probes.append(select(AnalysisPerson.player_id).where(AnalysisPerson.last_day.is_(None)).exists())
+        probes.append(select(AnalysisPerson.player_id).where(AnalysisPerson.last_day < floor).exists())
         if not session.scalar(select(or_(*probes))):
             control.maintenance_at = stamp
             session.commit()
@@ -262,8 +263,8 @@ def maintenance(factory, at=None, raw_days=7, fact_days=180, limit=500, force=Fa
             if rows:
                 session.execute(delete(model).where(tuple_(*keys).in_(rows)))
                 aggregate_more = True
-        race_statistics.cleanup(session, stamp, limit, fact_days)
-        network_health.cleanup(session, stamp, limit, fact_days)
+        race_more = race_statistics.cleanup(session, stamp, limit, fact_days)
+        network_more = network_health.cleanup(session, stamp, limit, fact_days)
         from .telemetry_erasure import expire_people
         private_retired, people_more = expire_people(session, stamp, fact_days, min(limit, 16), control)
         partial_more = expire_partials(session, stamp // 86400 - fact_days, min(limit, 16))
@@ -271,7 +272,8 @@ def maintenance(factory, at=None, raw_days=7, fact_days=180, limit=500, force=Fa
             ProductPublication.published_at < (stamp // 86400 - fact_days) * 86400).limit(limit)).all()
         if ids:
             session.execute(delete(ProductPublication).where(ProductPublication.version_id.in_(ids)))
-        more = bool(expired or old_server or aggregate_more or private_retired or people_more or partial_more or ids)
+        more = bool(expired or old_server or aggregate_more or race_more or network_more or
+                    private_retired or people_more or partial_more or ids)
         control.maintenance_at = 0 if more else stamp
         session.commit()
         return {"retired_client_events": len(expired), "compacted_server_receipts": len(old_server), "more": more}

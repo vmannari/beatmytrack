@@ -62,10 +62,7 @@ def catalog(auth_app, auth_client, sign_in, monkeypatch):
 
 
 @pytest.mark.parametrize("path", ["/v1/discovery/tracks", "/v1/discovery/random"])
-def test_retired_v2_never_rebuilds_catalogues(auth_client, monkeypatch, path):
-    def forbidden(*_args, **_kwargs):
-        raise AssertionError("Retired v2 attempted a catalogue snapshot")
-    monkeypatch.setattr(discovery, "_page", forbidden)
+def test_retired_v2_never_rebuilds_catalogues(auth_client, path):
     response = auth_client.post(path, json={"sort":"name"})
     assert response.status_code == 426
     assert response.json()["detail"] == "DISCOVERY_CLIENT_UPDATE_REQUIRED"

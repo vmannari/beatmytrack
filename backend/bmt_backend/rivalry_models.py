@@ -1,5 +1,5 @@
 """Pinned weekly fields; results are written only by canonical verification."""
-from sqlalchemy import JSON, Boolean, ForeignKey, Index, Integer, String, UniqueConstraint, false
+from sqlalchemy import JSON, Boolean, ForeignKey, Index, Integer, String, UniqueConstraint, false, text
 from sqlalchemy.orm import Mapped, mapped_column
 
 from .db import Base
@@ -8,8 +8,13 @@ from .track_models import new_id, now
 
 class RivalryGroup(Base):
     __tablename__ = "rivalry_groups"
-    __table_args__ = (Index("ix_rivalry_matching", "week_start", "contract_key", "skill_band"),)
+    __table_args__ = (
+        Index("ix_rivalry_matching", "week_start", "contract_key", "skill_band"),
+        Index("ix_rivalry_open_matching", "week_start", "contract_key", "skill_band", "created_at", "id",
+              postgresql_where=text("member_count < 20"), sqlite_where=text("member_count < 20")),
+    )
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    world_circuit_id: Mapped[int | None] = mapped_column(Integer, nullable=True, index=True)
     week_start: Mapped[int] = mapped_column(Integer)
     ends_at: Mapped[int] = mapped_column(Integer)
     vehicle_id: Mapped[str] = mapped_column(String(80))

@@ -1,4 +1,82 @@
+<!-- GAME-CONFIGURATION-20261024 -->
+Game Configuration is implemented locally in the app, gameplay API and private Studio. Open **Administration / Game Configuration** for ad cadence, audiences, publication/scheduling, emergency restrictions and preview, or **Administration / A/B testing** for 2-4-arm tests, exposure-based results and reviewed promotion. Apply matching migration0060 and API/Studio/worker/client sources with the subsequent migration chain; no deployment or live policy change was performed. Production provider/consent prerequisites remain. See [controls, evidence and rollout limits](../docs/GAME_CONFIGURATION_IMPLEMENTATION_2026_10_24.md).
+<!-- /GAME-CONFIGURATION-20261024 -->
+
+<!-- SECURITY-FIXES-20261024 -->
+Security update2026-10-24: SEC06/SEC07/SEC03/SEC08/SEC04 now require the matching client/API/worker sources, migration0061 and separate workload credentials. Public production API has no Studio routes; private Studio requires named MFA. Temporary ad resumes are disabled in production. Existing-volume/cloud authority cutover is required before rollout; no deployment was performed. See [implementation, validation and rollout requirements](../docs/SECURITY_FIXES_2026_10_24.md).
+<!-- /SECURITY-FIXES-20261024 -->
+
 # Beat my track backend
+
+## Current setup and release status — reviewed 2026-10-24
+
+For local setup use the PC launcher or the isolated manual environment below;
+the development command entry point is [scripts/dev.ps1](../scripts/dev.ps1).
+See [the documentation index](../docs/README.md) and
+[current architecture](../docs/BACKEND_V1.md) for connected client/server features.
+
+The [latest recorded complete deployment](../docs/LATEST_BACKEND_DEPLOY_2026_10_23.md)
+put the retained cloud and PC services on **0057_discovery_resource_guards**, with
+compiler27 / physics0.66 / rules23. This includes the earlier discovery, queue,
+retention, telemetry and Studio-read migrations discussed below. Their older
+“not deployed” notes describe the original local checkpoints. Broad Studio behavior
+reporting still requires the configured reporting standby; core operations do not.
+
+The workspace also contains `0058_challenge_series`, `0059_world_ranking` and
+`0060_game_configuration`. Select matching migrations, API, workers, canonical
+bundle and client for a release; source presence is not a deployment receipt.
+See [3×3 capability and rollout](../docs/CHALLENGES.md),
+[World Ranking launch/settlement gates](../docs/WORLD_RANKING_IMPLEMENTATION_2026_10_23.md)
+and [game-configuration implementation and verification](../docs/GAME_CONFIGURATION_IMPLEMENTATION_2026_10_24.md).
+Production billing remains disconnected. No live state was checked for this review.
+
+Current discovery advertises protocol3. The active routes are
+`POST /v1/discovery/v3/tracks` and `/v1/discovery/v3/random`; retired protocol routes
+return HTTP426. See [current client/window behavior](../docs/DISCOVERY_PAGING.md).
+The sections below retain detailed configuration and dated implementation evidence.
+
+Studio review items 1–4 (local, 2026-10-24): report-specific CSV exports and release
+comparisons use the isolated reporting reader. Downloads identify a new query and
+include effective UTC dates, scope, query time and source watermark. Guided links
+retain compatible filters; verification KPI drilldowns use terminal time and their
+exact five-minute interval. Source age, partial days and unavailable coverage are
+visible; individual overview feed failures retain other successful cards. Saved
+locations preserve record IDs and queue subpaths, with actor-scoped rename/delete.
+Content & competitions includes World Ranking status, published/working generations,
+worker/progress timestamps and audited correction preview/confirmation. Queue coverage
+includes bounded ranking and achievement projections. Release comparisons add
+device/OS/track/render-context scope, frame-rate differences, independent player
+coverage, sample warnings and scoped diagnostic links. The exploratory 30-package /
+1,000-frame warning is not a certified rollout threshold. See
+[implementation, native browser evidence and actual checks](../docs/evidence/studio-items-1-4-2026-10-24/report.html).
+Matching API/UI/ranking-worker/watchdog rollout, reporting-reader grants and production
+calibration remain required; this change has not been deployed.
+
+Discovery resource guards (`0057_discovery_resource_guards`, 2026-10-23): discovery POSTs use a nonblocking account fence, including pre-body authentication and the final commit check. A busy account returns `503 DISCOVERY_ACCOUNT_BUSY` promptly; revocation, account removal and erasure serialization remain authoritative. Discovery executions share at most `max(1, min(3, database_pool_size - 1))` local query slots, across both small and bulk bodies, leaving a pooled connection for other gameplay when the configured pool has more than one connection.
+
+Work credits are shared in PostgreSQL, independently of view creation. Each actor has separate ordinary and expensive allowances. Random, text and non-text filters, personal lists and authenticated new-view initialization use the expensive lane. One expensive operation per actor is leased across replicas, with a ten-second crash-recovery deadline and token checks before work and every commit. Credit reservations survive rollbacks and crashes; unused credit is refunded after releasing the request connection. Elapsed server work is charged in 25ms units, with a minimum of one unit for ordinary work and four for expensive work; each attempt conservatively reserves 60 units before executing. Defaults are `BMT_DISCOVERY_WORK_UNITS_PER_MINUTE=600` and `BMT_DISCOVERY_EXPENSIVE_UNITS_PER_MINUTE=240`. Insufficient credit returns `429 DISCOVERY_WORK_LIMIT`. Query/Random budget failures retain their charge and enforce an actor-wide expensive-work cooldown of 2, 4, 8, 16 and then 30 seconds. Rotating cursors, filters or Random exclusions cannot evade it. Ordinary pages retain their independent allowance. Guard rows expire after three idle minutes and are removed in bounded worker batches. SQLite file databases use WAL, and connection-local progress/busy handlers are cleared before pool reuse.
+
+Anonymous traffic also has shared secondary network limits: IPv6 `/64`, IPv4 `/32`, 1,200 requests/minute, a burst allowance of 120 requests/ten-second bucket, 40 new views/minute and 202,000 inserted member rows/minute. Configure these with `BMT_DISCOVERY_NETWORK_READS_PER_MINUTE`, `BMT_DISCOVERY_NETWORK_BURST`, `BMT_DISCOVERY_NETWORK_CREATES_PER_MINUTE` and `BMT_DISCOVERY_NETWORK_ROWS_PER_MINUTE`. Anonymous small-body reception is additionally capped at two concurrent receivers per network and four per process, preserving receiver capacity for validated players. These limits supplement exact peer/player admission and trusted-proxy validation. They do not broaden cursor ownership, and validated signed-in players retain independent account budgets behind shared networks.
+
+Personal-list copies retain only IDs present at the captured discovery epochs; unused history lists are omitted. Device-local favorites/history and the 50,000-ID input limit per list remain. Outstanding physical rows, including expired rows awaiting collection, are capped per actor at 202,000 rows and 64 MiB of charged member storage (`BMT_DISCOVERY_ACTOR_MEMBER_ROWS`, `BMT_DISCOVERY_ACTOR_MEMBER_BYTES`). Sixteen independent transactional service stripes cap aggregate retained members at 16,000,000 rows and 4 GiB (`BMT_DISCOVERY_STORAGE_MEMBER_ROWS`, `BMT_DISCOVERY_STORAGE_MEMBER_BYTES`), divided across stripes; an individual stripe may fill first. Charged bytes are 128 plus the UTF-8 kind/identifier lengths per member, not a measurement of PostgreSQL heap/index/WAL allocation. Limits return `429 DISCOVERY_STORAGE_LIMIT`, without preventing ordinary discovery or reads of already-created views. Tune allowances against measured legitimate demand, database allocation and cleanup capacity before increasing traffic.
+
+Apply `0057` and matching API/worker code in a coordinated release, draining old collection writers and cleanup workers. Existing collections are preserved and accounted through indexed 512-member worker batches; new retained-member writes return `503 DISCOVERY_STORAGE_PREPARING` until accounting finishes, while ordinary feeds and existing views remain readable. Source health logs include `storage_backfill_ready`, sixteen member/byte totals and guard cleanup age. Deletion/expiry reduce the same counters in their transaction, including partially accounted legacy collections; failed writes release their capacity on rollback. The migration adds an index on existing collection metadata: measure its build/lock time on a representative copy and use a controlled window. No live migration, deployment, upstream WAF change or million-DAU certification is implied by the local checks. [Resource-guard implementation, failure tests and local timing evidence](../docs/evidence/discovery-resource-fixes-2026-10-23/report.json).
+
+Discovery hardening (`0053_discovery_short_search`, 2026-10-23, DHF01-DHF06): small identity-encoded discovery bodies with a declared length of at most 16 KiB use eight bounded receivers and a separate parser/query allowance. Large, compressed and length-unknown collection uploads retain one large-tree slot. One unfinished small body per verified player or anonymous peer, a two-second inter-chunk stall bound and a five-second small-body deadline prevent one slow uploader from occupying query capacity. All discovery queries share the bounded pool; the integrated resource guards reserve ordinary gameplay capacity and separately admit expensive work. A busy response carries Retry-After. The native v3 window pauses automatic fetching after failure, honors that delay with bounded backoff/jitter on explicit retries, and resets retry ownership on account/query changes.
+
+Freshness uses sixteen bounded indexed receipt probes in one SQL round trip. Frozen pages select narrow revision/order keys from the projection; current track/account/block authority remains checked during hydration. INSERT RETURNING avoids extra session/checkpoint reads, and Random retrieves sampled slot coordinates with its candidate rows. Exact sampling, frozen spans, current restrictions, private caches and twenty-item pages remain. Short searches retain exact case-insensitive substring behavior: PostgreSQL adds GIN indexes over distinct one/two-character grams, including literal punctuation, then applies the original ILIKE predicate. Arbitrary selective filters still have a finite work budget and can explicitly retry.
+
+Cleanup progress now keeps the discovery daemon active until bounded expired work drains. Health includes pending receipt, rank-due, expired-pair and retained-state cleanup ages. The seven-day pair expiry index stores only partition/expiry: the consumer needs no tie ordering while it owns the partition. Exact latest-pair refresh, expiration and counter deltas remain. Paired 200,000-row local probes reduce total pair-ledger allocation by 26.9–28.2%; these are physical PostgreSQL measurements, not a cloud price or DAU forecast.
+
+Apply `0053` before matching API/worker code; the current shared migration chain and admission/storage guards must also match the artifact being released. Review the rating-sum change from `0050`, backups, source backfill and old-client update together. A fresh projection builds the new indexes while empty. On a populated projection or pair ledger, ordinary transactional DROP/CREATE index builds block writers and can exceed the migration connection's default statement timeout. Measure a representative copy and choose a controlled maintenance window or an operator-reviewed concurrent-index cutover with equivalent schema verification before recording the revision. Do not run old expiry workers across a populated index cutover. Neither API requests nor workers run migrations. [Actual tests, paired SQL plans, WAL/storage measurements, limitations and scoped checkpoint](../docs/evidence/discovery-hardening-2026-10-23/report.json). No live rollout or device test was performed.
+
+Local priority scalability fixes (2026-10-23, `0054_priority_scaling`): Rivalry matching reads at most 100 open group IDs through a partial index, skips busy groups when another open group is available, and keeps the exact 20-driver capacity. If every candidate is busy, it waits on one group before creating another; only new-group creation uses the band guard. Closed groups no longer accumulate in the matching scan. Membership, pinned tracks, skill scoring and retries retain their existing contracts.
+
+Accepted ordinary races now commit a pending creator-achievement effect alongside the permanent coin receipt. Both play counts and first-time racer reach are projected later, in batches of at most 100 effects, coalesced by creator. Racer achievements remain immediate. Sixteen partition fences allow race intake during reduction while excluding account erasure; busy creator states retain their effects for retry. New intake checks creator eligibility; later suspension/test-identity changes preserve accepted effects, while account deletion cancels them. Pending rows contain only the creator ID, accepted run ID, partition, timestamp and reach, and are deleted atomically with projection. CoinReward remains the durable replay fence; do not independently replay historical accepted races into this outbox. Creator deletion drains indexed 100-row chunks before completing achievement erasure.
+
+The service worker reserves privacy, histogram and one rotating achievement/Trackside turn every 16 completed jobs. With both presentation classes continuously busy, each gets a turn within 32 job completions; achievement competitions, rarity, held records and creator effects rotate internally. Idle presentation/lap/histogram work also rotates. These are work-count guarantees, not a wall-clock deadline or throughput certification. Long verifications still delay a turn. Size worker capacity against pending-effect age, requested-news latency and database load on representative traffic; a reserved share alone does not prove one-million-DAU capacity.
+
+Roll out `0054` with matching API and worker code after draining/stopping old writers and taking a recoverable backup. Existing creator totals are retained with no historical rebuild. The open-group index is built transactionally by the ordinary migration; measure its lock/build time on representative data or use an operator-reviewed concurrent-index cutover before recording the equivalent revision. Drain the creator outbox with the matching worker before downgrade: the migration refuses to discard pending effects. Restart the matching service after migration; do not run legacy synchronous creator writers concurrently with the new reducer. [Tests, query plans, review refinements and task-only checkpoint](../docs/evidence/backend-priority-fixes-2026-10-23/report.json). No live rollout or physical-device test was performed for this backend change.
 
 Local discovery redesign (2026-10-22): `/v1/discovery/v3/tracks` and `/v1/discovery/v3/random` replace whole matching-catalogue snapshots. A request sends `{"query":{"sort":"name"}}`, then only `{"cursor":"..."}` for later pages. Twenty-item pages expose `total: null`, `has_more`, `page_cursor`, `next_cursor` and `previous_cursor`. The matching client uses a bounded sliding window and labels loaded cards. A selected revision can open an anchored window with `locate_version`; that window starts at the selected track and continues forward. Refresh opens the ordinary feed. Arbitrary offsets and a selected track's exact global ordinal are retired. The v2 endpoints return HTTP426; overload never falls back to building a catalogue.
 
@@ -150,7 +228,7 @@ Tests and dependency checking:
 ```powershell
 # Set BMT_TEST_DATABASE_URL only to a disposable test database.
 powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1 -Action BackendTest
-.tools/backend-venv/Scripts/python -m pip check
+.tools/backend-secure-venv/Scripts/python -m pip check
 ```
 
 Do not point tests at a real player database. Current measured outcomes and remaining
@@ -378,3 +456,25 @@ the newest 100. No push service or additional always-on worker is introduced.
 Actual tests, native fixture views, initial failures, source hashes and limits:
 [Garage News evidence](../docs/evidence/garage-news-2026-10-16/report.json).
 Phone touch/performance and production capacity remain unmeasured.
+
+### World Ranking
+
+Migration `0059_world_ranking` adds the prospective Compact Circuit and the
+best-12-of-26 World Ranking, with best-six 13-week seasons. Configure the same
+`BMT_WORLD_RANKING_LAUNCH_WEEK` (UTC Monday epoch seconds) on API and workers;
+zero leaves launch unannounced and does not start the ranking role. Do not
+backfill historical Rivalries. Prepare five trusted official tracks through
+the existing weekly planner before the declared opening.
+
+The supervisor starts a separate low-priority SQL-only ranking process with
+one database connection. Its batches, bounded sort memory, query deadline and
+foreground queue guard keep settlement out of race acceptance and HTTP reads.
+Readers use an atomic published generation and indexed 50-row pages, nine-row
+neighborhoods and at most 26 results per profile. The current and previous
+generations remain hot; older sporting inputs use compact private archives.
+Official Circuit receipts grant three free resumes without charging wallets.
+
+See [implementation and rollout](../docs/WORLD_RANKING_IMPLEMENTATION_2026_10_23.md)
+for exact rules, correction commands, retention, measured capacity, source
+manifests, native views, remaining acceptance and connection-budget checks.
+This change has not been deployed or enabled on a live service.

@@ -1,3 +1,7 @@
+<!-- SECURITY-FIXES-20261024 -->
+Security update2026-10-24: SEC06/SEC07/SEC03/SEC08/SEC04 now require the matching client/API/worker sources, migration0061 and separate workload credentials. Public production API has no Studio routes; private Studio requires named MFA. Temporary ad resumes are disabled in production. Existing-volume/cloud authority cutover is required before rollout; no deployment was performed. See [implementation, validation and rollout requirements](../../../docs/SECURITY_FIXES_2026_10_24.md).
+<!-- /SECURITY-FIXES-20261024 -->
+
 # Google Cloud staging
 
 October 7: use `powershell -NoProfile -ExecutionPolicy Bypass -File scripts/deploy-backend.ps1` from the repository root to preview an update of the existing retained backend; add `-Apply` to execute. The reusable updater preserves the existing resource settings and data, with backup, ownership and acceptance checks. Use a quiet testing window; this is a retained-staging updater with no automatic rollback. [Commands, actual tests and limitations](../../../docs/GOOGLE_BACKEND_DEPLOY_SCRIPT.md). The disposable provisioning script below retains its changed-image refusal.

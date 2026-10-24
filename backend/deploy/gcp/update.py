@@ -37,6 +37,31 @@ def source_hash():
     return digest.hexdigest()
 
 
+def assert_authority_layout(service, config):
+    """An image-only updater cannot safely convert the former shared identity."""
+    roles = [("api","runtime","app_secret","api"),
+             ("worker","worker_runtime","worker_secret","worker"),
+             ("migrate","migrator","admin_secret","migrator")]
+    if config.get("admin_enabled"):
+        roles.append(("admin","staff_runtime","staff_secret","admin"))
+    for resource, account, secret, workload in roles:
+        node = service.describe("job" if resource=="migrate" else "worker" if resource=="worker" else "api",service.n[resource])
+        for _ in range(8):
+            if not isinstance(node,dict) or node.get("containers"):break
+            node=node.get("template") or node.get("spec")
+        require(isinstance(node,dict) and len(node.get("containers",[]))==1,
+                "Security authority cutover required before image-only updates; see docs/SECURITY_FIXES_2026_10_24.md")
+        expected=service.n[account]+"@"+config["project"]+".iam.gserviceaccount.com"
+        require((node.get("serviceAccount") or node.get("serviceAccountName"))==expected,
+                "Separate runtime service accounts must be deployed before image-only updates")
+        env={value["name"]:value for value in node["containers"][0].get("env",[])}
+        binding=env.get("BMT_DATABASE_URL",{})
+        reference=(binding.get("valueSource") or binding.get("valueFrom") or {}).get("secretKeyRef",{})
+        actual=(reference.get("secret") or reference.get("name") or "").rsplit("/",1)[-1]
+        require(actual==service.n[secret] and env.get("BMT_WORKLOAD_ROLE",{}).get("value")==workload,
+                "Separate workload credentials/configuration must be deployed before image-only updates")
+
+
 class Updater:
     def __init__(self, config, directory, runner=None):
         self.config = config
@@ -59,6 +84,7 @@ class Updater:
     def run(self):
         s = self.service
         s.preflight()
+        assert_authority_layout(s,self.config)
         old = json.loads((self.directory / "deployment.json").read_text())
         self.receipt = {"started_utc": datetime.now(timezone.utc).isoformat(),
                         "owner": self.config["owner"], "old_image": old["image"],
@@ -102,7 +128,9 @@ class Updater:
         s.call("run", "jobs", "execute", s.n["migrate"], "--region=" + self.config["region"], "--wait")
         self.receipt["migration_complete"] = True
         self.save()
-        for kind, command in (("worker", "worker-pools"), ("api", "services")):
+        targets=[("worker", "worker-pools"), ("api", "services")]
+        if self.config.get("admin_enabled"):targets.append(("admin","services"))
+        for kind, command in targets:
             self.check_source()
             print("Updating " + kind, flush=True)
             s.call("run", command, "update", s.n[kind], "--region=" + self.config["region"], "--image=" + image)

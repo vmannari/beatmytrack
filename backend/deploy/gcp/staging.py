@@ -65,8 +65,16 @@ def validate(config, *, apply=False, now=None):
         raise ValueError("telemetry_enabled must be a boolean")
     # Main worker pool (2), publication (1), discovery (1), optional product (1).
     # Reserve full revision overlap, operations and spare DB connections.
-    worker_connections = 4 + int(config.get("telemetry_enabled", False))
-    budget = 2 * (config["api_max"] * 4 + config["worker_instances"] * worker_connections) + 6 + 10
+    ranking_launch = config.get("world_ranking_launch_week", 0)
+    if type(ranking_launch) is not int or ranking_launch < 0 or (ranking_launch and (ranking_launch-345600) % 604800):
+        raise ValueError("World Ranking launch requires a UTC Monday")
+    worker_connections = 4 + int(config.get("telemetry_enabled", False)) + int(bool(ranking_launch))
+    if type(config.get("admin_enabled", False)) is not bool:
+        raise ValueError("admin_enabled must be a boolean")
+    if config.get("admin_enabled"):
+        if not config.get("studio_staff_audiences") or not config.get("studio_staff_subjects"):
+            raise ValueError("Private Studio requires named MFA staff and explicit audiences")
+    budget = 2 * (config["api_max"] * 4 + config["worker_instances"] * worker_connections + 2 * int(config.get("admin_enabled", False))) + 6 + 10
     if budget > 40:
         raise ValueError("Replica/rollout pools exceed the 40-connection staging budget")
     clients = config.get("google_client_ids", [])
@@ -104,8 +112,10 @@ def names(config):
     return {"api": base + "-api", "worker": base + "-worker", "migrate": base + "-migrate",
         "smoke": base + "-smoke", "sql": base + "-db", "repo": base + "-images",
         "bucket": "bmt-stg-" + config["project"][:23] + "-" + config["owner"][:8],
-        "app_secret": base + "-app-db", "admin_secret": base + "-admin-db",
-        "runtime": base + "-runtime", "migrator": base + "-migrator", "operator": base + "-operator"}
+        "app_secret": base + "-api-db", "admin_secret": base + "-admin-db",
+        "worker_secret": base + "-worker-db", "staff_secret": base + "-studio-db", "admin": base + "-studio",
+        "worker_runtime": base + "-worker", "staff_runtime": base + "-staff",
+        "runtime": base + "-api", "migrator": base + "-migrator", "operator": base + "-operator"}
 
 
 def labels(config):
@@ -114,15 +124,21 @@ def labels(config):
 
 
 def environment(config, role, public_url="https://staging.invalid"):
-    result = {"BMT_ENVIRONMENT": "production", "BMT_DEV_AUTH_ENABLED": "false", "BMT_TEST_DRIVERS_ENABLED": "false",
+    result = {"BMT_WORKLOAD_ROLE": {"migrate": "migrator", "smoke": "operator"}.get(role, role),
+        "BMT_STUDIO_LEGACY_KEYS_ENABLED": "false", "BMT_STUDIO_STAFF_REQUIRE_MFA": "true",
+        "BMT_TEMPORARY_AD_RESUMES_ENABLED": "false", "BMT_ENVIRONMENT": "production", "BMT_DEV_AUTH_ENABLED": "false", "BMT_TEST_DRIVERS_ENABLED": "false",
         "BMT_OBJECT_BACKEND": "gcs", "BMT_GCS_BUCKET": names(config)["bucket"], "BMT_GCS_PREFIX": "bmt/v1",
         "BMT_PUBLIC_BASE_URL": public_url, "BMT_GOOGLE_CLIENT_IDS": ",".join(config.get("google_client_ids", [])),
         "BMT_GOOGLE_WEB_CLIENT_ID": config.get("google_web_client_id", ""), "BMT_DATABASE_POOL_SIZE": "4" if role == "api" else "2",
         "BMT_DATABASE_POOL_OVERFLOW": "0", "BMT_DATABASE_POOL_TIMEOUT_SECONDS": "3",
         "BMT_TELEMETRY_ENABLED": str(config.get("telemetry_enabled", False)).lower(),
+        "BMT_WORLD_RANKING_LAUNCH_WEEK": str(config.get("world_ranking_launch_week", 0)),
         "BMT_READINESS_CACHE_SECONDS": "2", "BMT_READINESS_STORAGE_CACHE_SECONDS": "30", "BMT_READINESS_TIMEOUT_SECONDS": "2",
         "BMT_UPLOAD_CONCURRENCY": "2", "BMT_MAX_QUEUED_RUNS": "128", "BMT_PERSISTENT_VERIFIER": "true",
         "BMT_WORKER_SHUTDOWN_GRACE_SECONDS": "5", "BMT_STAGING_OWNER": config["owner"]}
+    if role == "admin":
+        result["BMT_STUDIO_STAFF_AUDIENCES"] = ",".join(config.get("studio_staff_audiences", []))
+        result["BMT_STUDIO_STAFF_SUBJECTS"] = json.dumps(config.get("studio_staff_subjects", {}))
     if role == "api":
         # The direct Cloud Run frontend reaches the container on loopback/link
         # local addresses. External LB chains must pin their additional hops.
@@ -162,7 +178,7 @@ def deployment_commands(config, image, directory):
             "--env-vars-file=" + str(directory / (role + "-env.json")), "--labels=" + label,
             "--cpu=1", "--memory=" + ("1024Mi" if role == "api" else "768Mi")]
     job = ["--command=python", "--tasks=1", "--parallelism=1", "--max-retries=0", "--task-timeout=300s"]
-    return {
+    result = {
         "migrate": command(config, "run", "jobs", "deploy", n["migrate"], *common("migrate", "migrator", "admin_secret"),
             *job, "--args=-m,bmt_backend.cloud_setup"),
         "migrate_execute": command(config, "run", "jobs", "execute", n["migrate"], "--region=" + region, "--wait"),
@@ -171,12 +187,19 @@ def deployment_commands(config, image, directory):
             "--timeout=60s", "--ingress=all", "--allow-unauthenticated" if config["public_api"] else "--no-allow-unauthenticated",
             "--startup-probe=httpGet.path=/ready,timeoutSeconds=4,periodSeconds=5,failureThreshold=12",
             "--liveness-probe=httpGet.path=/health,timeoutSeconds=2,periodSeconds=15,failureThreshold=3"),
-        "worker": command(config, "run", "worker-pools", "deploy", n["worker"], *common("worker", "runtime", "app_secret"),
+        "worker": command(config, "run", "worker-pools", "deploy", n["worker"], *common("worker", "worker_runtime", "worker_secret"),
             "--instances=" + str(config["worker_instances"]), "--command=python", "--args=-m,bmt_backend.service_worker"),
         "smoke": command(config, "run", "jobs", "deploy", n["smoke"], *common("smoke", "operator", "app_secret"),
             *job, "--args=-m,bmt_backend.cloud_smoke"),
         "smoke_execute": command(config, "run", "jobs", "execute", n["smoke"], "--region=" + region, "--wait"),
     }
+
+    if config.get("admin_enabled"):
+        result["admin"] = command(config, "run", "deploy", n["admin"], *common("admin", "staff_runtime", "staff_secret"),
+            "--command=uvicorn", "--args=bmt_backend.app:create_admin_app,--factory,--host,0.0.0.0,--port,8080,--no-proxy-headers,--no-access-log,--limit-concurrency,24,--timeout-keep-alive,5",
+            "--port=8080", "--concurrency=8", "--min=0", "--max=1", "--timeout=60s", "--ingress=all", "--no-allow-unauthenticated")
+    return result
+
 
 
 def plan(config, directory):
@@ -190,12 +213,14 @@ def plan(config, directory):
         "visibility": "public with application auth" if config["public_api"] else "private Cloud Run IAM",
         "commands": deployment_commands(config, image, directory),
         "iam": {"runtime": ["project:cloudsql.client", "bucket:storage.objectCreator", "bucket:storage.objectViewer", "app-secret:secretAccessor"],
+            "worker_runtime": ["project:cloudsql.client", "bucket:storage.objectCreator", "bucket:storage.objectViewer", "worker-secret:secretAccessor"],
+            "staff_runtime": ["project:cloudsql.client", "bucket:storage.objectCreator", "bucket:storage.objectViewer", "studio-secret:secretAccessor"],
             "migrator": ["project:cloudsql.client", "admin-secret:secretAccessor"],
             "operator": ["project:cloudsql.client", "bucket:storage.objectUser", "app-secret:secretAccessor"]},
         "notes": ["No resources created by plan/render", "Budget is a reviewed estimate, not a provider spend cap",
             "Run cleanup/watch explicitly; a local watcher requires this computer to remain running",
             "No live player data is imported", "Default HTTP server does not trust arbitrary forwarded headers"]}
-    for role in ("api", "worker", "migrate", "smoke"):
+    for role in ("api", "worker", "migrate", "smoke", "admin"):
         write_json(directory / (role + "-env.json"), environment(config, role))
     write_json(directory / "plan.json", result)
     return result
@@ -206,9 +231,10 @@ def removal_commands(config):
     region = "--region=" + config["region"]
     resources = [("worker", n["worker"]), ("api", n["api"]), ("job", n["smoke"]), ("job", n["migrate"]),
         ("sql", n["sql"]), ("bucket", n["bucket"]), ("repo", n["repo"]),
-        ("secret", n["app_secret"]), ("secret", n["admin_secret"])]
+        ("secret", n["app_secret"]), ("secret", n["admin_secret"]),
+        ("secret", n["worker_secret"]), ("secret", n["staff_secret"]), ("api", n["admin"])]
     resources += [("account", n[role] + "@" + config["project"] + ".iam.gserviceaccount.com")
-        for role in ("runtime", "migrator", "operator")]
+        for role in ("runtime", "worker_runtime", "staff_runtime", "migrator", "operator")]
     result = []
     for kind, name in resources:
         args = {"worker": ["run", "worker-pools", "delete", name, region], "api": ["run", "services", "delete", name, region],
@@ -364,13 +390,15 @@ class Staging:
         self.call("services", "enable", *SERVICES)
         for item in removal_commands(self.c):
             self.describe(item["kind"], item["name"])  # Detect collisions before creating billed resources.
-        for role in ("runtime", "migrator", "operator"):
+        for role in ("runtime", "worker_runtime", "staff_runtime", "migrator", "operator"):
             self.ensure("account", self.account(role), "iam", "service-accounts", "create", self.n[role],
                 "--description=Beat my track staging " + self.c["owner"])
             self.call("projects", "add-iam-policy-binding", self.c["project"],
                 "--member=serviceAccount:" + self.account(role), "--role=roles/cloudsql.client", "--condition=None")
         self.create_bucket()
         for role, grants in (("runtime", ["roles/storage.objectCreator", "roles/storage.objectViewer"]),
+                             ("worker_runtime", ["roles/storage.objectCreator", "roles/storage.objectViewer"]),
+                             ("staff_runtime", ["roles/storage.objectCreator", "roles/storage.objectViewer"]),
                              ("operator", ["roles/storage.objectUser"])):
             for grant in grants:
                 self.call("storage", "buckets", "add-iam-policy-binding", "gs://" + self.n["bucket"],
@@ -382,12 +410,14 @@ class Staging:
         if not any(d.get("name") == "bmt" for d in databases):
             self.call("sql", "databases", "create", "bmt", "--instance=" + self.n["sql"])
         host = f"/cloudsql/{self.c['project']}:{self.c['region']}:{self.n['sql']}"
-        for role, user in (("admin_secret", "postgres"), ("app_secret", "bmt")):
+        for role, user in (("admin_secret", "postgres"), ("app_secret", "bmt_api"),
+                           ("worker_secret", "bmt_worker"), ("staff_secret", "bmt_admin")):
             proposed = URL.create("postgresql+psycopg", username=user, password=secrets.token_hex(32),
                 database="bmt", query={"host": host}).render_as_string(hide_password=False)
             uri = self.secret(self.n[role], proposed)
             self.sql_user(user, make_url(uri).password)
-        for role, secret in (("runtime", "app_secret"), ("operator", "app_secret"), ("migrator", "admin_secret")):
+        for role, secret in (("runtime", "app_secret"), ("operator", "app_secret"), ("migrator", "admin_secret"),
+                             ("worker_runtime", "worker_secret"), ("staff_runtime", "staff_secret")):
             self.call("secrets", "add-iam-policy-binding", self.n[secret],
                 "--member=serviceAccount:" + self.account(role), "--role=roles/secretmanager.secretAccessor")
 
@@ -444,7 +474,7 @@ class Staging:
             raise ValueError("Deploy requires the owned registry's immutable digest")
         plan(self.c, self.directory)
         commands = deployment_commands(self.c, image, self.directory)
-        for kind, resource in (("job", "migrate"), ("api", "api"), ("worker", "worker"), ("job", "smoke")):
+        for kind, resource in (("job", "migrate"), ("api", "api"), ("worker", "worker"), ("job", "smoke"), ("api", "admin")):
             existing = self.describe(kind, self.n[resource])  # Never overwrite an unrelated name.
             if existing and resource_image(existing) != image:
                 raise RuntimeError("A changed staging image needs a fresh owner/environment; mixed-build rollout is refused")
@@ -454,11 +484,13 @@ class Staging:
         uri = api.get("status", {}).get("url") or api.get("uri", "")
         if not re.fullmatch(r"https://[a-z0-9.-]+\.run\.app", uri):
             raise RuntimeError("Cloud Run returned an unexpected service URL")
-        for role in ("api", "worker", "smoke"):
+        for role in ("api", "worker", "smoke", "admin"):
             write_json(self.directory / (role + "-env.json"), environment(self.c, role, uri))
         self.runner.run(commands["api"])  # Same digest, now the real browser origin; no mixed protocol versions.
         for key in ("worker", "smoke", "smoke_execute"):
             self.runner.run(commands[key])
+        if self.c.get("admin_enabled"):
+            self.runner.run(commands["admin"])
         write_json(self.directory / "deployment.json", {"image": image, "url": uri, "owner": self.c["owner"]})
         return uri
 

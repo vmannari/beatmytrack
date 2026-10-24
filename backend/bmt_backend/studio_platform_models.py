@@ -28,9 +28,13 @@ class AnalysisState(Base):
 
 class AnalysisPerson(Base):
     __tablename__ = "studio_analysis_people"
-    __table_args__ = (Index("ix_analysis_cohort", "first_at", "player_id"),)
+    __table_args__ = (Index("ix_analysis_cohort", "first_at", "player_id"),
+                     Index("ix_analysis_person_expiry", "last_day", "player_id"))
     player_id: Mapped[str] = mapped_column(String(36), primary_key=True)
     first_at: Mapped[int] = mapped_column(Integer)
+    # Nullable only for the bounded, lazy upgrade of retained historical rows.
+    # Cohort membership remains first_at; expiry follows the newest fact day.
+    last_day: Mapped[int | None] = mapped_column(Integer, nullable=True)
     first_build: Mapped[str] = mapped_column(String(80), default="")
     first_platform: Mapped[str] = mapped_column(String(12), default="")
     first_mode: Mapped[str] = mapped_column(String(24), default="")
@@ -204,6 +208,7 @@ class StudioExperiment(Base):
     minimum_per_variant: Mapped[int] = mapped_column(Integer, default=500)
     allocation: Mapped[dict] = mapped_column(JSON)
     variants: Mapped[dict] = mapped_column(JSON)
+    configuration: Mapped[dict] = mapped_column(JSON, default=dict, server_default="{}")
     salt: Mapped[str] = mapped_column(String(64))
     created_at: Mapped[int] = mapped_column(Integer, default=now)
     started_at: Mapped[int | None] = mapped_column(Integer, nullable=True)
@@ -235,6 +240,7 @@ class StudioAssignment(Base):
     assigned_at: Mapped[int] = mapped_column(Integer, default=now)
     exposed_at: Mapped[int | None] = mapped_column(Integer, nullable=True)
     exposure_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
+    observed_counters: Mapped[dict] = mapped_column(JSON, default=dict, server_default="{}")
     __table_args__ = (Index("ix_experiment_exposure", "experiment_id", "exposed_at", "player_id"),)
 
 

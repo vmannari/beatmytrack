@@ -21,6 +21,7 @@ class TestIdentity:
 @pytest.fixture
 def auth_app(tmp_path):
     settings = Settings(
+        environment="test", studio_legacy_keys_enabled=True, temporary_ad_resumes_enabled=True,
         database_url=f"sqlite:///{(tmp_path / 'db.sqlite').as_posix()}",
         object_dir=str(tmp_path / "objects"),
         google_client_ids=("test-client",),

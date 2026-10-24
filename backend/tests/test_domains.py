@@ -92,6 +92,7 @@ def domain(tmp_path, request):
         )
     settings = Settings(
         environment="test", allow_sync_track_validation=True, local_drafts_only=False,
+        studio_legacy_keys_enabled=True, temporary_ad_resumes_enabled=True,
         database_url=database_url,
         object_dir=str(tmp_path / "objects"),
         rate_limit_per_minute=10000,

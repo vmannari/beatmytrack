@@ -19,8 +19,13 @@ def _product_priority():
 
 
 def _spawn(role, command):
-    options = {"start_new_session": os.name == "posix"}
-    if role == "product" and sys.platform.startswith("linux"):
+    environment = {k: v for k, v in os.environ.items() if not (
+        k.startswith(("BMT_ADMIN_", "BMT_STUDIO_STAFF_", "BMT_STUDIO_MONITOR_")) or
+        k in ("BMT_STUDIO_MONITOR_SOURCE_TOKENS", "BMT_STUDIO_MONITOR_WEBHOOK_KEY",
+              "BMT_API_DB_PASSWORD", "BMT_ADMIN_DB_PASSWORD", "BMT_MIGRATOR_DB_PASSWORD"))}
+    environment["BMT_WORKLOAD_ROLE"] = "worker"
+    options = {"start_new_session": os.name == "posix", "env": environment}
+    if role in ("product", "ranking") and sys.platform.startswith("linux"):
         options["preexec_fn"] = _product_priority
     return subprocess.Popen(command, **options)
 
@@ -70,7 +75,7 @@ def _kill_group(child):
     return False
 
 
-def supervise(*, telemetry_enabled=False, shutdown_seconds=7.0, commands=None, child_factory=_spawn):
+def supervise(*, telemetry_enabled=False, ranking_enabled=False, shutdown_seconds=7.0, commands=None, child_factory=_spawn):
     """Fixed shipping roles; commands/factory injection is for process tests only.
 
     Normal exit requires a stop request, clean child exits and no forced cleanup.
@@ -84,9 +89,12 @@ def supervise(*, telemetry_enabled=False, shutdown_seconds=7.0, commands=None, c
         "publication": (sys.executable, "-m", "bmt_backend.publication_worker"),
         "discovery": (sys.executable, "-m", "bmt_backend.discovery_worker"),
         "product": (sys.executable, "-m", "bmt_backend.product_worker"),
+        "ranking": (sys.executable, "-m", "bmt_backend.world_ranking_worker"),
     }
     selected = commands if commands is not None else shipping
     roles = ("worker", "publication", "discovery", "product") if telemetry_enabled else ("worker", "publication", "discovery")
+    if ranking_enabled:
+        roles += ("ranking",)
     children, previous = {}, {}
     requested_at, requested_signal, failed = None, None, False
 
@@ -161,6 +169,7 @@ def main():
     settings = Settings.from_env()
     logging.basicConfig(level=logging.INFO)
     return supervise(telemetry_enabled=settings.telemetry_enabled,
+        ranking_enabled=bool(settings.world_ranking_launch_week),
         shutdown_seconds=settings.worker_shutdown_grace_seconds + 2)
 
 

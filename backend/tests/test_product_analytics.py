@@ -641,7 +641,8 @@ def test_telemetry_handler_budget_does_not_borrow_race_upload_slots(auth_app, mo
             await release.wait()
             live[kind] -= 1
             await JSONResponse({"ok": True})(scope, receive, send)
-        boundary = RequestBoundary(handler, replace(auth_app.state.settings, upload_concurrency=2), auth_app.state.session_factory)
+        boundary = RequestBoundary(handler, replace(auth_app.state.settings,
+            upload_concurrency=2, telemetry_http_concurrency=1), auth_app.state.session_factory)
         async with httpx.AsyncClient(transport=httpx.ASGITransport(app=boundary), base_url="http://test") as client:
             first = asyncio.create_task(client.post("/v1/telemetry/batches", json={}))
             await asyncio.wait_for(telemetry_started.wait(), 2)

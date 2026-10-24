@@ -9,6 +9,7 @@ from google.auth.exceptions import GoogleAuthError, TransportError
 from google.auth.transport.requests import Request as GoogleRequest
 from google.oauth2 import id_token
 from sqlalchemy import event, select
+from sqlalchemy.exc import DBAPIError
 from sqlalchemy.orm import Session
 
 from .db import get_session
@@ -110,6 +111,9 @@ def current_player(
     request.state.authenticated_player = player
     if request.method not in ("GET", "HEAD"):
         session.info["privacy_actor"] = player.id
+        session.info["privacy_nowait"] = request.url.path in (
+            "/v1/discovery/tracks", "/v1/discovery/random",
+            "/v1/discovery/v3/tracks", "/v1/discovery/v3/random")
         fence_account_write(session)
     return player
 
@@ -119,7 +123,13 @@ def fence_account_write(session):
     actor = session.info.get("privacy_actor")
     if actor is None:
         return
-    row = session.execute(select(Player.deleted_at, Player.disabled).where(Player.id == actor).with_for_update()).first()
+    try:
+        row = session.execute(select(Player.deleted_at, Player.disabled).where(Player.id == actor)
+            .with_for_update(nowait=bool(session.info.get("privacy_nowait")))).first()
+    except DBAPIError as error:
+        if session.info.get("privacy_nowait") and getattr(error.orig, "sqlstate", "") == "55P03":
+            raise HTTPException(503, "DISCOVERY_ACCOUNT_BUSY", headers={"Retry-After": "1"}) from None
+        raise
     if row is None or row.deleted_at is not None or row.disabled:
         raise HTTPException(401, "INVALID_SESSION")
 
@@ -129,3 +139,7 @@ def account_commit_fence(session):
     # A request that released its connection before blob IO cannot resurrect an
     # account if deletion committed during that IO. Exceptions roll back writes.
     fence_account_write(session)
+    # Account removal wins over operational lease errors, and every metadata
+    # budget commit must also fence a replaced/expired discovery worker.
+    from .discovery_guard import owned
+    owned(session)

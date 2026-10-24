@@ -4,11 +4,8 @@ from fastapi import APIRouter, Query, Request
 from sqlalchemy import BigInteger, case, cast, func, select
 
 from .admin import Access, Window
-from .admin_ranges import calendar_range
-from .quality_models import QualityFact
 from .race_statistics_models import RaceStatisticsDay as Race
-from .studio_analysis import DAY
-from .studio_platform_models import AnalysisDay, AnalysisState, StudioFinanceEvent
+from .studio_platform_models import AnalysisState, StudioFinanceEvent
 from .studio_queries import read_snapshot
 from .telemetry_models import ProductState
 from .track_models import now
@@ -161,107 +158,12 @@ def quality_totals(db, conditions):
 
 @router.get("/v1/admin/analysis/releases")
 def compare(
-    request: Request,
-    role: Access,
-    window: Window,
-    build_id: str = Query("", max_length=80),
-    baseline: str = Query("", max_length=80),
-    platform: str = Query("", max_length=12),
+    request: Request, role: Access, window: Window,
+    build_id: str = Query("", max_length=80), baseline: str = Query("", max_length=80),
+    platform: str = Query("", max_length=12), device_model: str = Query("", max_length=80),
+    os_version: str = Query("", max_length=80), track_version_id: str = Query("", max_length=36),
+    render_context_key: str = Query("", max_length=64),
 ):
-    first, until = window or calendar_range(7)
-    conditions = [Race.day >= first // DAY, Race.day <= (until - 1) // DAY]
-    if platform:
-        conditions.append(Race.platform == platform)
-    with request.app.state.session_factory() as db:
-        read_snapshot(db)
-        builds = list(
-            db.scalars(select(Race.build_id).where(*conditions).distinct().order_by(Race.build_id).limit(201))
-        )
-
-        def one(build):
-            if not build:
-                return None
-            scope = [*conditions, Race.build_id == build]
-            result = quality_totals(db, scope)
-            result["build_id"] = build
-            affected = [
-                AnalysisDay.day >= first // DAY,
-                AnalysisDay.day <= (until - 1) // DAY,
-                AnalysisDay.build_id == build,
-                AnalysisDay.counters["quality_attempts"].as_integer() > 0,
-            ]
-            if platform:
-                affected.append(AnalysisDay.platform == platform)
-            reporting, slow = db.execute(select(
-                func.count(func.distinct(AnalysisDay.player_id)),
-                func.count(func.distinct(case((AnalysisDay.counters["quality_slow_frames"].as_integer() > 0,
-                                               AnalysisDay.player_id))))).where(*affected)).one()
-            result["reporting_players"], result["affected_players"] = reporting, slow
-            return result
-
-        candidate, control = one(build_id), one(baseline)
-        segment_fields = (Race.device_model, Race.os_version, Race.render_context_key)
-        segments = (
-            db.execute(
-                select(
-                    *segment_fields,
-                    func.sum(Race.races).label("attempts"),
-                    func.sum(
-                        sum(
-                            (cast(Race.frame_buckets[i].as_string(), BigInteger) for i in range(5, 8)),
-                            start=0,
-                        )
-                    ).label("slow_frames"),
-                )
-                .where(*conditions, Race.build_id == build_id)
-                .group_by(*segment_fields)
-                .order_by(func.sum(Race.races).desc(), *segment_fields)
-                .limit(21)
-            ).all()
-            if build_id
-            else []
-        )
-        diagnostic = dict(
-            db.execute(
-                select(
-                    *[
-                        func.coalesce(func.sum(getattr(QualityFact, name)), 0).label(name)
-                        for name in ("reports", "samples", "slow")
-                    ]
-                ).where(
-                    QualityFact.kind == "quality_summary",
-                    QualityFact.day >= first // DAY,
-                    QualityFact.day <= (until - 1) // DAY,
-                )
-            )
-            .mappings()
-            .one()
-        )
-        return {
-            "role": role,
-            "since": first // DAY * DAY,
-            "until": ((until - 1) // DAY + 1) * DAY,
-            "as_of": now(),
-            "builds": builds[:200],
-            "builds_truncated": len(builds) > 200,
-            "candidate": candidate,
-            "baseline": control,
-            "comparison": {
-                "completion_change": candidate["completion"] - control["completion"],
-                "descriptive_only": True,
-            }
-            if candidate
-            and control
-            and candidate["completion"] is not None
-            and control["completion"] is not None
-            else None,
-            "segments": [
-                dict(
-                    zip(("device_model", "os_version", "render_context_key", "attempts", "slow_frames"), row)
-                )
-                for row in segments[:20]
-            ],
-            "segments_truncated": len(segments) > 20,
-            "historical_diagnostic_totals": diagnostic,
-            "coverage": "Full filtered SQL aggregates. Release comparisons describe reporting populations and are not causal. Affected-player coverage starts at analysis migration; no client crash-free denominator is inferred.",
-        }
+    from .studio_release_reports import release_report
+    return release_report(request, role, window, build_id, baseline, platform, device_model,
+                          os_version, track_version_id, render_context_key)

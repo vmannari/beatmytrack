@@ -147,6 +147,27 @@ def test_plan_is_concrete_private_bounded_and_has_no_credentials(tmp_path):
         assert env["BMT_OBJECT_BACKEND"] == "gcs" and "BMT_DATABASE_URL" not in env
     commands = result["commands"]
     assert "--max=2" in commands["api"] and "--min=0" in commands["api"]
+
+
+def test_private_studio_and_worker_have_distinct_credentials_and_iam(tmp_path):
+    c=config()
+    c.update(api_max=1,admin_enabled=True,studio_staff_audiences=["staff.apps.googleusercontent.com"],
+             studio_staff_subjects={"known":{"name":"Owner","role":"owner"}})
+    staging.validate(c)
+    result=staging.plan(c,tmp_path)
+    commands=result["commands"]
+    accounts=[];secrets=[]
+    for role in ("api","worker","admin"):
+        accounts.append(next(v for v in commands[role] if v.startswith("--service-account=")))
+        secrets.append(next(v for v in commands[role] if v.startswith("--set-secrets=")))
+        env=staging.environment(c,role)
+        assert env["BMT_WORKLOAD_ROLE"]==role and env["BMT_STUDIO_LEGACY_KEYS_ENABLED"]=="false"
+        if role!="admin":assert "BMT_STUDIO_STAFF_SUBJECTS" not in env
+    assert len(set(accounts))==len(set(secrets))==3
+    assert "--no-allow-unauthenticated" in commands["admin"]
+    assert "--allow-unauthenticated" not in commands["admin"]
+    assert staging.environment(c,"migrate")["BMT_WORKLOAD_ROLE"]=="migrator"
+    assert "admin" not in staging.deployment_commands(config(),"fixture",tmp_path)
     assert "--instances=1" in commands["worker"]
     assert all("--project=" + c["project"] in argv for argv in commands.values())
     assert all("@sha256:" in " ".join(commands[r]) for r in ("api", "worker", "migrate", "smoke"))
@@ -182,7 +203,7 @@ def test_provision_is_idempotent_and_secret_values_never_enter_arguments(tmp_pat
     service.provision()
     passwords = deepcopy(runner.users)
     service.provision()
-    assert runner.users == passwords and len(runner.versions) == 2
+    assert runner.users == passwords and len(runner.versions) == 4
     serialized = json.dumps(runner.calls)
     assert all(value not in serialized for value in passwords.values())
     assert "sensitive-fixture-access" not in serialized
@@ -258,9 +279,9 @@ def test_cleanup_is_exact_owned_and_repeatable(tmp_path):
         return result
     runner.run = run
     deleted = service.cleanup()
-    assert len(deleted) == 12 and service.cleanup() == []
+    assert len(deleted) == 17 and service.cleanup() == []
     assert not any(call[2:4] == ["projects", "delete"] for call in runner.calls)
-    assert len([call for call in runner.calls if "remove-iam-policy-binding" in call]) == 3
+    assert len([call for call in runner.calls if "remove-iam-policy-binding" in call]) == 5
 
 
 def test_smoke_never_forwards_token_to_tampered_receipt(tmp_path):

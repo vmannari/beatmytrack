@@ -54,20 +54,21 @@ def enroll(session, player_id):
         count(session, player_id, "__eligible")
 
 
-def state(session, player_id, scope):
+def state(session, player_id, scope, *, skip_locked=False, accepted_creator=False):
     # Conditional insert fences concurrent account erasure without a second Player lock.
     table = AchievementState.__table__.c
     values = {"player_id": player_id, "scope": scope, "metrics": {}, "unlocked": {}, "featured": [], "revision": 0,
               "rarity_pending": False, "rarity_counted": []}
-    source = select(*(literal(value, type_=table[key].type) for key, value in values.items())).where(
-        select(Player.id).where(Player.id == player_id, Player.disabled.is_(False),
-            Player.deleted_at.is_(None), Player.is_test_driver.is_(False)).exists())
+    allowed = select(Player.id).where(Player.id == player_id, Player.deleted_at.is_(None))
+    if not (accepted_creator and scope == "creator"):
+        allowed = allowed.where(Player.disabled.is_(False), Player.is_test_driver.is_(False))
+    source = select(*(literal(value, type_=table[key].type) for key, value in values.items())).where(allowed.exists())
     session.execute(insert(session, AchievementState).from_select(list(values), source).on_conflict_do_nothing())
     return session.scalar(select(AchievementState).where(AchievementState.player_id == player_id,
-        AchievementState.scope == scope).with_for_update().execution_options(populate_existing=True))
+        AchievementState.scope == scope).with_for_update(skip_locked=skip_locked).execution_options(populate_existing=True))
 
 
-def save(session, row, metrics, stamp):
+def save(session, row, metrics, stamp, *, flush=True):
     if row is None:
         return
     unlocked = dict(row.unlocked)
@@ -84,7 +85,8 @@ def save(session, row, metrics, stamp):
         row.rarity_pending = True
     row.metrics, row.unlocked = metrics, unlocked
     row.revision += 1
-    session.flush()
+    if flush:
+        session.flush()
 
 
 def bump(metrics, key, amount=1):
@@ -196,11 +198,8 @@ def capture_race(session, run, previous, *, incident_free=False, acceptance=None
     if previous[0] == 0 or run.time_ticks < previous[0]:
         observe_record(session, board.id, run.finished_at)
     if track.owner_id != run.player_id:
-        creator = state(session, track.owner_id, "creator")
-        if creator is not None:
-            values = dict(creator.metrics)
-            bump(values, "creator_plays")
-            save(session, creator, values, run.finished_at)
+        from .creator_achievements import enqueue
+        enqueue(session, run, track.owner_id)
 
 
 def capture_publication(session, track, player, stamp):
@@ -211,13 +210,12 @@ def capture_publication(session, track, player, stamp):
         save(session, row, metrics, stamp)
 
 
-def capture_reach(session, track, reach, stamp):
+def capture_reach(session, track, reach, run_id):
     from .news_models import TrackRacer
     owner = session.get(TrackRacer, (track.id, track.owner_id))
     value = max(0, reach.racers - int(owner is not None))
-    row = state(session, track.owner_id, "creator")
-    if row and value > row.metrics.get("creator_reach", 0):
-        save(session, row, {**row.metrics, "creator_reach": value}, stamp)
+    from .creator_achievements import capture_reach as enqueue_reach
+    enqueue_reach(session, run_id, track.owner_id, value)
 
 
 def leaders(session, board_id):
@@ -244,8 +242,22 @@ def observe_record(session, board_id, stamp):
 
 
 def process_due(app, *, clock=None):
-    """Idle worker: at most one group (<=20 entrants) or one held record."""
+    """Fair bounded turns: competitions, rarity, held records and creator effects."""
     stamp = now() if clock is None else clock
+    from .creator_achievements import process_one as project_creator
+    roles = (process_competition, process_rarity, process_record, None)
+    cursor = getattr(app.state, "achievement_role", 0)
+    for offset in range(len(roles)):
+        index = (cursor + offset) % len(roles)
+        # Advance before execution, including failures, so a broken role cannot
+        # permanently exclude later classes on the next service iteration.
+        app.state.achievement_role = (index + 1) % len(roles)
+        if (roles[index](app, stamp) if roles[index] else project_creator(app)):
+            return True
+    return False
+
+
+def process_competition(app, stamp):
     with app.state.session_factory() as session:
         job = session.scalar(select(AchievementCompetition).where(AchievementCompetition.done.is_(False),
             AchievementCompetition.due_at <= stamp).order_by(AchievementCompetition.due_at,
@@ -254,6 +266,11 @@ def process_due(app, *, clock=None):
             finalize_competition(session, job, stamp)
             session.commit()
             return True
+    return False
+
+
+def process_rarity(app, stamp):
+    with app.state.session_factory() as session:
         # Rarity is a coalesced projection in the existing idle worker. Racing
         # never waits on a global counter, even when playing each other's tracks.
         row = session.scalar(select(AchievementState).where(AchievementState.rarity_pending.is_(True))
@@ -268,6 +285,11 @@ def process_due(app, *, clock=None):
             row.rarity_pending = False
             session.commit()
             return True
+    return False
+
+
+def process_record(app, stamp):
+    with app.state.session_factory() as session:
         record = session.scalar(select(AchievementRecord).where(AchievementRecord.due_at <= stamp)
             .order_by(AchievementRecord.due_at, AchievementRecord.board_id).limit(1).with_for_update(skip_locked=True))
         if record:
@@ -283,10 +305,10 @@ def process_due(app, *, clock=None):
     return False
 
 
-def drive_idle(app):
+def drive_idle(app, *, force=False):
     """No timers/services: share the existing worker with bounded idle SQL cost."""
     current = time.monotonic()
-    if current < getattr(app.state, "achievement_check_after", 0):
+    if not force and current < getattr(app.state, "achievement_check_after", 0):
         return False
     worked = process_due(app)
     app.state.achievement_check_after = current + (0.25 if worked else 60.0)
@@ -398,6 +420,9 @@ def feature(body: Featured, session: DB, player: Auth):
 
 def erase_private(session, player_id):
     """Called after the account is fenced; decrement rarity only once."""
+    from .creator_achievements import erase_pending
+    if not erase_pending(session, player_id):
+        return False
     rows = session.scalars(select(AchievementState).where(AchievementState.player_id == player_id)
         .order_by(AchievementState.scope).with_for_update()).all()
     cohort = session.get(AchievementCohort, player_id)
@@ -411,3 +436,4 @@ def erase_private(session, player_id):
     # Fact collection caps at 1125 per player; no race-history receipt table.
     session.execute(delete(AchievementFact).where(AchievementFact.player_id == player_id))
     session.execute(delete(AchievementRecord).where(AchievementRecord.player_id == player_id))
+    return True

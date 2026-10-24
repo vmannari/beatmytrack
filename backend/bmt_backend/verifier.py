@@ -23,7 +23,7 @@ from typing import Any
 
 REPLAY_SCHEMA = "bmt-replay-v1"
 MAX_FRAMES = 216_000  # 30 minutes at the canonical 120 Hz.
-MAX_TRACK_BYTES = 524_288
+MAX_TRACK_BYTES = 1_048_576
 MAX_REQUEST_BYTES = 8 * 1024 * 1024
 MAX_JSON_NODES = MAX_FRAMES * 5 + MAX_TRACK_BYTES + 1024
 _ENGINE_SLOT = threading.BoundedSemaphore(1)

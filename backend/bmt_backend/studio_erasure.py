@@ -1,6 +1,7 @@
 """Bounded additive erasure, independent of the original persistent plan stages."""
 
 from sqlalchemy import select
+from .game_config_models import GameConfigDelivery
 
 from .studio_platform_models import (
     AnalysisDay,
@@ -17,7 +18,7 @@ def erase_studio_private(db, player_id):
     fence_private(db, player_id)
     if erase_publications(db, player_id):
         return True
-    for model in (AnalysisDay, AnalysisSession, AnalysisPerson, StudioAssignment, StudioCoinEntry):
+    for model in (AnalysisDay, AnalysisSession, AnalysisPerson, StudioAssignment, StudioCoinEntry, GameConfigDelivery):
         rows = db.scalars(select(model).where(model.player_id == player_id).limit(100)).all()
         if rows:
             for row in rows:

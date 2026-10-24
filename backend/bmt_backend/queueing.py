@@ -1,19 +1,33 @@
 """Transactional capacity slots without a globally serialized counter."""
 import time
+from random import sample
 
 from fastapi import HTTPException
 from sqlalchemy import func, select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 
-from .track_models import QueueCapacity, QueueLimit, QueuePlayer, QueueReservation
+from .track_models import QueueLimit, QueuePlayer, QueueReservation
 
 
 def check_capacity(session, player_id: str, capacity: int) -> None:
-    pending = session.scalar(select(QueueCapacity.pending))
+    """Bounded owner/availability hint; the job trigger enforces capacity exactly.
+
+    Counting every occupied slot is unnecessary and cannot reserve capacity.
+    Probe at most64 independently sampled slots before external object writes.
+    A large, nearly full queue can conservatively return busy even with an
+    unsampled vacancy. This hint never reserves capacity; admission always
+    relies on the transactional slot reservation after ``admit``.
+    """
     owner = session.get(QueuePlayer, player_id)
-    if pending >= capacity or (owner is not None and owner.pending >= 8):
+    if owner is not None and owner.pending >= 8:
         raise HTTPException(429, "Verification queue is full; retry this saved attempt later")
+    slots = sample(range(capacity), min(64, capacity))
+    occupied = session.scalars(select(QueueReservation.slot).where(QueueReservation.slot.in_(slots))).all()
+    if len(occupied) == len(slots):
+        if capacity <= 64:
+            raise HTTPException(429, "Verification queue is full; retry this saved attempt later")
+        raise HTTPException(503, "VERIFICATION_CAPACITY_BUSY", headers={"Retry-After": "1"})
 
 
 def admit(session, player_id: str, capacity: int) -> None:
@@ -45,8 +59,6 @@ def admit(session, player_id: str, capacity: int) -> None:
         .on_conflict_do_nothing(index_elements=[QueuePlayer.player_id]))
     owner = session.scalar(select(QueuePlayer).where(QueuePlayer.player_id == player_id)
         .with_for_update().execution_options(populate_existing=True))
-    if session.scalar(select(QueueCapacity.pending)) >= capacity:
-        raise HTTPException(429, "Verification capacity reached; retry this saved attempt later")
     if owner.pending >= 8:
         raise HTTPException(429, "Verification queue is full for this player; retry after a pending result completes")
 

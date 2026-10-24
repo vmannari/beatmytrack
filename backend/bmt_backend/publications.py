@@ -38,10 +38,11 @@ from .track_models import (
 )
 from .tracks import TrackContent, discovery_projection, track_payload
 from .trajectory_verifier import validate_envelope
-from .verifier import VerificationError, VerifierStopping
+from .verifier import MAX_TRACK_BYTES, VerificationError, VerifierStopping
 from .worker_lifecycle import aborting, stopping
 
 router = APIRouter(route_class=ParsedJSONRoute, tags=["publication"])
+admin_router = APIRouter(route_class=ParsedJSONRoute, tags=["administration"])
 DB = Annotated[Session, Depends(get_session)]
 Auth = Annotated[Player, Depends(current_player)]
 Key = Annotated[str, Header(alias="Idempotency-Key")]
@@ -122,7 +123,7 @@ def request_publication(body: PublishDocument, request: Request, session: DB, pl
         validate_envelope(body.replay)
         if set(body.replay) != {"schema", "input_count", "race_proof"}:
             raise VerificationError("Creator publication cannot include rewinds or ghosts")
-        if len(canonical_json(clean.document)) > 524288 or len(canonical_json(body.replay)) > 2097152:
+        if len(canonical_json(clean.document)) > MAX_TRACK_BYTES or len(canonical_json(body.replay)) > 2097152:
             raise HTTPException(413, "Publication document or trajectory exceeds limit")
     except (ValueError, RecursionError, UnicodeError) as exc:
         raise HTTPException(422, f"Invalid publication: {str(exc)[:160]}") from None
@@ -205,7 +206,7 @@ def admin_payload(intent):
             "source_document_hash": intent.content_hash, "source_trajectory_hash": intent.replay_hash}
 
 
-@router.get("/admin/publications")
+@admin_router.get("/admin/publications")
 def admin_publications(request: Request, session: DB, limit: int = Query(50, ge=1, le=100),
                        offset: int = Query(0, ge=0, le=10000),
                        state: Literal["all", "queued", "verifying", "published", "failed"] = "all"):
@@ -233,7 +234,7 @@ def admin_publications(request: Request, session: DB, limit: int = Query(50, ge=
             "source": "Explicit publication processing; saved/editor drafts stay on devices"}
 
 
-@router.get("/admin/publications/{publication_id}")
+@admin_router.get("/admin/publications/{publication_id}")
 def admin_publication(publication_id: str, request: Request, session: DB):
     from .admin import access
     role = access(request)

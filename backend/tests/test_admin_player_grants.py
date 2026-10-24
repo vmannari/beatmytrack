@@ -91,6 +91,8 @@ def test_inspection_and_preview_are_read_only_and_include_catalogue(store):
 @pytest.mark.parametrize("product,quantity,slots", [("publishing_slots", 17, 18), ("creator_slot_1", 1, 2),
     ("creator_slots_5", 1, 6), ("creator_slots_10", 1, 11)])
 def test_real_slots_without_simulation_or_billing_are_audited_once(store, product, quantity, slots):
+    from production_staff_fixture import install
+    install(store.app)
     store.app.state.settings = replace(store.app.state.settings, environment="production",
         dev_auth_enabled=False, purchase_simulation_enabled=False, allow_sync_track_validation=False)
     body = command(store, draft(product, quantity))

@@ -22,8 +22,13 @@ from starlette.concurrency import run_in_threadpool
 from starlette.responses import JSONResponse
 from starlette.routing import compile_path, get_route_path
 
-from .client_address import ClientAddress
+from .client_address import ClientAddress, anonymous_network
 from .identity_models import RateBucket
+
+DISCOVERY_BODY_STALL_SECONDS = 2.0
+CONTROL_BODY_SECONDS = 5.0
+CONTROL_BODY_STALL_SECONDS = 2.0
+from .discovery_guard import costly
 from .json_data import parse_json as parse_body
 from .observability import dependency_failure
 from .security import digest
@@ -131,8 +136,22 @@ class RequestBoundary:
     def __init__(self, app, settings, session_factory):
         self.app, self.settings, self.session_factory = app, settings, session_factory
         self.parsers = asyncio.Semaphore(settings.upload_concurrency)
-        self.telemetry_parsers = asyncio.Semaphore(1)
+        # A telemetry tree is capped at 64 KiB on the wire. Allow independent
+        # requests while retaining a fixed live-tree bound and, where possible,
+        # leaving one pooled connection available to ordinary gameplay.
+        self.telemetry_parsers = asyncio.Semaphore(min(
+            settings.telemetry_http_concurrency, max(1, settings.database_pool_size - 1)))
         self.discovery_parsers = asyncio.Semaphore(1)
+        # Large collection bodies retain their original single-tree allowance.
+        # Tiny requests buffer independently, then enter a bounded query pool;
+        # an unfinished anonymous upload cannot own the query capacity.
+        self.discovery_receivers = asyncio.Semaphore(8)
+        self.discovery_receiving_keys = set()
+        self.discovery_anonymous_receiving = 0
+        self.discovery_network_receivers = {}
+        self.discovery_small_parsers = asyncio.Semaphore(max(1, min(3, settings.database_pool_size - 1)))
+        self.discovery_queries = threading.BoundedSemaphore(max(1, min(3, settings.database_pool_size - 1)))
+        self.discovery_expensive = threading.BoundedSemaphore(1)
         self.read_leases = OrderedDict()
         self.denied_peers = OrderedDict()
         self.denied_credentials = OrderedDict()
@@ -140,6 +159,34 @@ class RequestBoundary:
         # database, revocation, expiry and its own player's budget.
         self.known_credentials = OrderedDict()
         self.client_address = ClientAddress(settings.trusted_proxy_networks)
+        # Small control bodies must not occupy every HTTP slot while waiting
+        # for their last byte. Counts live only for the bounded receive phase.
+        self.control_receivers = {}
+        self.control_receiving = 0
+        self.anonymous_control_receiving = 0
+
+    def acquire_control_receiver(self, peer, player_id=None):
+        key = ("player", player_id) if player_id else ("network", anonymous_network(peer))
+        if (self.control_receiving >= 8 or self.control_receivers.get(key, 0) >= 2
+                or (not player_id and self.anonymous_control_receiving >= 4)):
+            return None
+        self.control_receivers[key] = self.control_receivers.get(key, 0) + 1
+        self.control_receiving += 1
+        if not player_id:
+            self.anonymous_control_receiving += 1
+        return key
+
+    def release_control_receiver(self, key):
+        if key is None:
+            return
+        remaining = self.control_receivers[key] - 1
+        if remaining:
+            self.control_receivers[key] = remaining
+        else:
+            del self.control_receivers[key]
+        self.control_receiving -= 1
+        if key[0] == "network":
+            self.anonymous_control_receiving -= 1
 
     @staticmethod
     def route_context(scope):
@@ -159,6 +206,15 @@ class RequestBoundary:
             if partial[1] is None:
                 partial = template, context.original_route
         return partial
+
+    def release_anonymous_receiver(self, network):
+        if network is not None:
+            remaining = self.discovery_network_receivers[network]-1
+            if remaining:
+                self.discovery_network_receivers[network] = remaining
+            else:
+                del self.discovery_network_receivers[network]
+            self.discovery_anonymous_receiving -= 1
 
     @staticmethod
     def route_template(scope):
@@ -255,7 +311,12 @@ class RequestBoundary:
         response_started = False
         acquired = False
         acquired_pool = None
+        discovery_receiving = False
+        discovery_network_receive_key = None
+        discovery_receive_key = None
         identity_admitted = False
+        control_receive_key = None
+        body_complete = False
         wire_bytes, decoded_bytes, response_bytes = 0, 0, 0
 
         async def response_send(message):
@@ -267,6 +328,10 @@ class RequestBoundary:
                     (b"x-request-id", request_id.encode()),
                     (b"x-content-type-options", b"nosniff"),
                 ]
+                if not body_complete and scope.get("http_version") in ("1.0", "1.1"):
+                    # Rejections before draining a body must also release the
+                    # transport slot, even if the sender keeps its socket open.
+                    message["headers"].append((b"connection", b"close"))
                 if not any(name.lower() == b"x-server-time" for name, _ in message["headers"]):
                     message["headers"].append((b"x-server-time", str(int(time.time())).encode()))
                 if not any(name.lower() == b"cache-control" for name, _ in message["headers"]):
@@ -292,6 +357,9 @@ class RequestBoundary:
         try:
             method = scope["method"]
             headers = dict(scope["headers"])
+            from .workloads import administration_enabled, administrative_path
+            if administrative_path(scope["path"]) and not administration_enabled(self.settings):
+                return await error(404, "NOT_FOUND")
             health = scope["path"] in ("/health", "/ready", "/healthz", "/readyz")
             if health and method != "GET":
                 return await error(405, "METHOD_NOT_ALLOWED")
@@ -348,8 +416,18 @@ class RequestBoundary:
                             self.remember_credential(credential_key)
                         else:
                             self.known_credentials.pop(credential_key, None)
-                        return await error(denied.status_code, denied.detail)
+                        return await error(denied.status_code, denied.detail, denied.headers)
             path = scope["path"]
+            if path in ("/v1/discovery/tracks", "/v1/discovery/random", "/v1/discovery/v3/tracks", "/v1/discovery/v3/random") and not identity_admitted:
+                # Secondary network budgets do not replace player/cursor identity.
+                network = "discovery-network:" + anonymous_network(peer)
+                try:
+                    if (not await self.read_budget(network, self.settings.discovery_network_reads_per_minute)
+                            or not await self.read_budget(network, self.settings.discovery_network_burst,
+                                "burst:" + str(int(time.time())//10))):
+                        return await error(429, "DISCOVERY_NETWORK_LIMIT", {"Retry-After": "10"})
+                except SQLAlchemyError as exc:
+                    return await database_error(exc)
             _template, route = self.route_context(scope)
             if route is not None and route.methods and method not in route.methods:
                 return await error(405, "METHOD_NOT_ALLOWED", {"Allow": ", ".join(sorted(route.methods))})
@@ -386,22 +464,64 @@ class RequestBoundary:
             encoding = headers.get(b"content-encoding", b"identity")
             if encoding not in (b"identity", b"gzip"):
                 return await error(415, "UNSUPPORTED_CONTENT_ENCODING")
-            if upload:
+            discovery = path in ("/v1/discovery/tracks", "/v1/discovery/random", "/v1/discovery/v3/tracks", "/v1/discovery/v3/random")
+            small_discovery = discovery and length is not None and declared <= 16384 and encoding == b"identity"
+            if small_discovery:
+                limit = min(limit, 16384)
+                try:
+                    await asyncio.wait_for(self.discovery_receivers.acquire(), timeout=0.1)
+                    discovery_receiving = True
+                    discovery_receive_key = ("player", scope["state"]["budget_player_id"]) if identity_admitted else ("peer", peer)
+                    if discovery_receive_key in self.discovery_receiving_keys:
+                        discovery_receive_key = None
+                        return await error(503, "DISCOVERY_UPLOAD_BUSY", {"Retry-After": "1"})
+                    self.discovery_receiving_keys.add(discovery_receive_key)
+                    if not identity_admitted:
+                        receive_network = anonymous_network(peer)
+                        if (self.discovery_anonymous_receiving >= 4
+                                or self.discovery_network_receivers.get(receive_network, 0) >= 2):
+                            return await error(503, "DISCOVERY_UPLOAD_BUSY", {"Retry-After": "1"})
+                        self.discovery_anonymous_receiving += 1
+                        self.discovery_network_receivers[receive_network] = self.discovery_network_receivers.get(receive_network, 0)+1
+                        discovery_network_receive_key = receive_network
+                except (asyncio.TimeoutError, TimeoutError):
+                    return await error(503, "REQUEST_VALIDATION_BUSY")
+            elif upload:
                 try:
                     acquired_pool = (self.telemetry_parsers if path == "/v1/telemetry/batches" else
-                                     self.discovery_parsers if path in ("/v1/discovery/tracks", "/v1/discovery/random", "/v1/discovery/v3/tracks", "/v1/discovery/v3/random")
+                                     self.discovery_parsers if discovery
                                      else self.parsers)
                     await asyncio.wait_for(acquired_pool.acquire(), timeout=0.1)
                     acquired = True
                 except (asyncio.TimeoutError, TimeoutError):
                     return await error(503, "REQUEST_VALIDATION_BUSY")
+            control = body_allowed and not upload
+            prefetched = None
+            if control:
+                control_receive_key = self.acquire_control_receiver(peer,
+                    scope["state"].get("budget_player_id") if identity_admitted else None)
+                if control_receive_key is None:
+                    # A complete, already buffered request must still work when
+                    # another sender behind the same NAT holds its receive slots.
+                    # Give it only one event and a 20ms wait; never wait for a tail.
+                    try:
+                        prefetched = await asyncio.wait_for(receive(), 0.02)
+                    except (asyncio.TimeoutError, TimeoutError):
+                        return await error(503, "CONTROL_UPLOAD_BUSY", {"Retry-After": "1"})
+                    if prefetched["type"] != "http.request" or prefetched.get("more_body", False):
+                        return await error(503, "CONTROL_UPLOAD_BUSY", {"Retry-After": "1"})
             inflater = zlib.decompressobj(16 + zlib.MAX_WBITS) if encoding == b"gzip" else None
             body = bytearray()
             wire_bytes = 0
             try:
-                body_deadline = time.monotonic() + 30
+                body_deadline = time.monotonic() + (CONTROL_BODY_SECONDS if control else 5 if small_discovery else 30)
                 while True:
-                    message = await asyncio.wait_for(receive(), max(0, body_deadline - time.monotonic()))
+                    remaining = max(0, body_deadline - time.monotonic())
+                    stall = CONTROL_BODY_STALL_SECONDS if control else DISCOVERY_BODY_STALL_SECONDS if discovery else remaining
+                    if prefetched is not None:
+                        message, prefetched = prefetched, None
+                    else:
+                        message = await asyncio.wait_for(receive(), min(stall, remaining))
                     if message["type"] == "http.disconnect":
                         return
                     chunk = message.get("body", b"")
@@ -421,12 +541,27 @@ class RequestBoundary:
                     if len(body) > limit:
                         return await error(413, "PAYLOAD_TOO_LARGE")
                     if not message.get("more_body", False):
+                        body_complete = True
                         break
             except (asyncio.TimeoutError, TimeoutError):
                 return await error(408, "REQUEST_BODY_TIMEOUT")
             if inflater is not None and (not inflater.eof or inflater.unused_data or inflater.unconsumed_tail):
                 return await error(400, "INVALID_GZIP")
             decoded_bytes = len(body)
+            self.release_control_receiver(control_receive_key)
+            control_receive_key = None
+            if small_discovery:
+                try:
+                    acquired_pool = self.discovery_small_parsers
+                    await asyncio.wait_for(acquired_pool.acquire(), timeout=0.1)
+                    acquired = True
+                except (asyncio.TimeoutError, TimeoutError):
+                    return await error(503, "REQUEST_VALIDATION_BUSY")
+                self.discovery_receivers.release()
+                self.discovery_receiving_keys.discard(discovery_receive_key)
+                self.release_anonymous_receiver(discovery_network_receive_key)
+                discovery_network_receive_key = None
+                discovery_receiving = False
             if body:
                 if headers.get(b"content-type", b"").split(b";")[0].strip().lower() != b"application/json":
                     return await error(415, "JSON_REQUIRED")
@@ -437,6 +572,20 @@ class RequestBoundary:
                 except (ValueError, RecursionError, UnicodeDecodeError):
                     return await error(400, "INVALID_JSON")
                 scope["state"]["bounded_json"] = parsed
+                if discovery and isinstance(parsed, dict):
+                    if not self.discovery_queries.acquire(blocking=False):
+                        return await error(503, "DISCOVERY_QUERY_BUSY", {"Retry-After": "1"})
+                    scope["state"]["discovery_query_admitted"] = True
+                    scope["state"]["discovery_expensive_gate"] = self.discovery_expensive
+                    query = parsed.get("query")
+                    expensive = path.endswith("/random") or isinstance(query, dict) and costly(query)
+                    if expensive:
+                        # Fail fast rather than queuing expensive searches in all
+                        # four ordinary page slots. Cursors are checked again by
+                        # the handler, including cursors carrying saved searches.
+                        if not self.discovery_expensive.acquire(blocking=False):
+                            return await error(503, "DISCOVERY_SEARCH_BUSY", {"Retry-After": "1"})
+                        scope["state"]["discovery_search_admitted"] = True
                 if token_auth:
                     token = parsed.get("token" if scope["path"].endswith("/poll") else "refresh_token", "") if isinstance(parsed, dict) else ""
                     try:
@@ -463,11 +612,20 @@ class RequestBoundary:
                 raise
             return await error(500, "INTERNAL_ERROR")
         finally:
+            self.release_control_receiver(control_receive_key)
             # Include Pydantic validation, the endpoint, storage and response
             # serialization: releasing after json.loads did not bound live trees.
             scope.get("state", {}).pop("bounded_json", None)
+            if scope.get("state", {}).pop("discovery_query_admitted", False):
+                self.discovery_queries.release()
             if acquired:
                 acquired_pool.release()
+            if discovery_receiving:
+                self.discovery_receivers.release()
+                self.discovery_receiving_keys.discard(discovery_receive_key)
+                self.release_anonymous_receiver(discovery_network_receive_key)
+            if scope.get("state", {}).pop("discovery_search_admitted", False):
+                self.discovery_expensive.release()
             # Template paths only: never log ID tokens, credentials, raw paths or query strings.
             log.info(
                 json.dumps(

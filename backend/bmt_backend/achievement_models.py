@@ -56,3 +56,23 @@ class AchievementRecord(Base):
     ticks: Mapped[int] = mapped_column(Integer)
     since: Mapped[int] = mapped_column(Integer)
     due_at: Mapped[int] = mapped_column(Integer)
+
+
+class CreatorAchievementPartition(Base):
+    """Shared intake / exclusive erasure fences; reducers use NO KEY UPDATE."""
+    __tablename__ = "creator_achievement_partitions"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+
+
+class CreatorAchievementEvent(Base):
+    """Pending effects only. CoinReward is the permanent accepted-run receipt."""
+    __tablename__ = "creator_achievement_events"
+    __table_args__ = (
+        Index("ix_creator_achievement_pending", "partition", "stamp", "id"),
+        Index("ix_creator_achievement_owner", "creator_id", "stamp", "id"),
+    )
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)  # accepted run
+    partition: Mapped[int] = mapped_column(Integer)
+    creator_id: Mapped[str] = mapped_column(String(36))  # no Player FK/key locks
+    stamp: Mapped[int] = mapped_column(Integer)
+    reach: Mapped[int] = mapped_column(BigInteger, default=0)

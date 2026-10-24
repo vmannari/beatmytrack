@@ -1,5 +1,5 @@
 """Earned coins and permanent cosmetic ownership, separate from paid commerce/resumes."""
-from sqlalchemy import JSON, BigInteger, CheckConstraint, ForeignKey, Integer, String
+from sqlalchemy import JSON, BigInteger, Boolean, CheckConstraint, ForeignKey, Index, Integer, String, text
 from sqlalchemy.orm import Mapped, mapped_column
 
 from .db import Base
@@ -48,4 +48,29 @@ class RewardRankCount(Base):
     board_id: Mapped[str] = mapped_column(ForeignKey("boards.id"), primary_key=True)
     metric: Mapped[str] = mapped_column(String(4), primary_key=True)
     node: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    total: Mapped[int] = mapped_column(BigInteger)
+
+
+class LeaderboardRankCount(Base):
+    """Disjoint ordinary/test prefixes; artificial reads combine both."""
+    __tablename__ = "leaderboard_rank_counts"
+    __table_args__ = (CheckConstraint("total >= 0"),)
+    board_id: Mapped[str] = mapped_column(ForeignKey("boards.id"), primary_key=True)
+    population: Mapped[str] = mapped_column(String(6), primary_key=True)
+    node: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    total: Mapped[int] = mapped_column(BigInteger)
+
+
+class LeaderboardTieNode(Base):
+    """Compressed radix tree; singleton ties consume just one leaf."""
+    __tablename__ = "leaderboard_tie_nodes"
+    __table_args__ = (CheckConstraint("total > 0"),
+                      Index("ix_leaderboard_tie_children", "board_id", "time_ticks", "parent", "prefix"),
+                      Index("ix_leaderboard_visible_order", "board_id", "time_ticks", "prefix",
+                            postgresql_where=text("leaf IS TRUE"), sqlite_where=text("leaf IS 1")))
+    board_id: Mapped[str] = mapped_column(ForeignKey("boards.id"), primary_key=True)
+    time_ticks: Mapped[int] = mapped_column(Integer, primary_key=True)
+    prefix: Mapped[str] = mapped_column(String(36), primary_key=True)
+    leaf: Mapped[bool] = mapped_column(Boolean, primary_key=True)
+    parent: Mapped[str | None] = mapped_column(String(36), nullable=True)
     total: Mapped[int] = mapped_column(BigInteger)

@@ -7,10 +7,11 @@ from datetime import datetime, timezone
 
 from fastapi import APIRouter, HTTPException, Query, Request
 from pydantic import BaseModel, ConfigDict, Field
-from sqlalchemy import case, func, or_, select, update
+from sqlalchemy import func, literal_column, or_, select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import aliased
 
+from .appearance_routes import owner_for_write
 from .contracts import build_contract
 from .identity_models import Player
 from .middleware import ParsedJSONRoute
@@ -19,7 +20,6 @@ from .runs import PINNED_FIELDS, BoardDB, _ticket_payload, board_manifest
 from .test_population import check_scope, contract_scope
 from .track_models import (
     Board,
-    BoardTimeCount,
     IdempotencyRecord,
     OperationState,
     PersonalBest,
@@ -58,10 +58,9 @@ class Race(BaseModel):
 @router.put("/rivalry/appearance")
 def save_appearance(payload: Appearance, session: DB, player: Auth):
     # Serialize per-player car updates with other devices and account erasure.
-    owner = session.scalar(select(Player).where(Player.id == player.id).with_for_update()
-                           .execution_options(populate_existing=True))
-    if owner is None or owner.deleted_at is not None or owner.disabled:
-        raise HTTPException(401, "INVALID_SESSION")
+    owner = owner_for_write(session, player.id)
+    from .appearance_authorization import require_owned
+    require_owned(session, player.id, payload)
     value = payload.model_dump()
     owner.vehicle_appearances = {**owner.vehicle_appearances, payload.vehicle_id: value}
     session.commit()
@@ -124,9 +123,17 @@ def eligible_versions(session, active, vehicle):
     return rows
 
 
-def selected_slots(session, request, active, vehicle, test_population):
+def selected_slots(session, request, active, vehicle, test_population, *, timestamp=None, use_circuit=True):
     from .rivalry_planning import planned_versions
-    chosen = planned_versions(session, active, vehicle, now())
+    timestamp = now() if timestamp is None else timestamp
+    if use_circuit and vehicle == "compact" and not test_population:
+        from .world_ranking_models import Circuit
+        circuit = session.scalar(select(Circuit).where(Circuit.week_start == week_window(timestamp)[0]))
+        if circuit is not None:
+            from .rivalry_planning import plan_contract
+            if circuit.contract_key == plan_contract(active, vehicle):
+                return circuit.tracks
+    chosen = planned_versions(session, active, vehicle, timestamp)
     if len(chosen) < TRACK_COUNT:
         return []
     metadata = {version.id: (version, track, name) for version,track,name in session.execute(
@@ -159,20 +166,15 @@ def skill_score(session, player_id, vehicle, active, timestamp, test_population=
         .order_by(PersonalBest.achieved_at.desc(), Board.id).limit(20)).all()
     if not own:
         return None
-    count = BoardTimeCount.all_count if test_population else BoardTimeCount.public_count
-    frequencies = {bid: (slower or 0, tied or 0) for bid, slower, tied in session.execute(
-        select(BoardTimeCount.board_id,
-            func.sum(case((BoardTimeCount.time_ticks > PersonalBest.time_ticks, count), else_=0)),
-            func.sum(case((BoardTimeCount.time_ticks == PersonalBest.time_ticks, count), else_=0)))
-        .join(PersonalBest, PersonalBest.board_id == BoardTimeCount.board_id)
-        .where(PersonalBest.player_id == player_id, BoardTimeCount.board_id.in_([b.id for _, b in own]))
-        .group_by(BoardTimeCount.board_id))}
+    from .leaderboard_ranks import time_counts_many
+    frequencies = time_counts_many(session, [(board.id, best.time_ticks) for best, board in own],
+                                   artificial=test_population)
     scores = []
     for best, board in own:
         total = board.all_count if test_population else board.public_count
         if total < 5:
             continue
-        slower, tied = frequencies.get(board.id, (0, 0))
+        _, tied, slower = frequencies.get(board.id, (0, 0, 0))
         scores.append(round(1000 * (slower + (tied - 1) / 2) / (total - 1)))
     return round(statistics.median(scores)) if len(scores) >= 3 else None
 
@@ -252,6 +254,8 @@ def snapshot(session, group, player_id, timestamp=None):
                    RivalryTicket.outcome["personal_best"].as_boolean().is_(True)).distinct()).all())
     iso = datetime.fromtimestamp(group.week_start, timezone.utc).isocalendar()
     result = {"group_id": group.id, "state": state, "week": iso.week, "year": iso.year,
+              "world_circuit": {"id": group.world_circuit_id, "official": True, "required_tracks": 5,
+                                "free_resumes": 3, "week_start": group.week_start} if group.world_circuit_id else None,
               "ends_at": group.ends_at, "server_now": timestamp, "remaining_seconds": max(0, group.ends_at - timestamp),
               "vehicle_id": group.vehicle_id, "placement": group.skill_band == -1, "driver_count": len(overall),
               "test_population": group.test_population,
@@ -309,7 +313,12 @@ def finish_join_response(session, player_id, key, saved):
     return frozen
 
 
-def commit_join(session, player_id, key, body, group_id):
+def commit_join(session, player_id, key, body, group_id, circuit_id=None):
+    from .world_circuit import enter
+    group = session.get(RivalryGroup, group_id)
+    if group.world_circuit_id != circuit_id:
+        raise HTTPException(409, "CIRCUIT_MEMBERSHIP_CONFLICT")
+    enter(session, group, session.get(Player, player_id))
     if body.get("automatic_test_drivers"):
         from .automatic_test_drivers import enroll
         enroll(session, group_id)
@@ -360,43 +369,43 @@ def join(payload: Join, request: Request, session: DB, player: Auth, key: Key):
     contract = contract_scope(contract, payload.test_population)
     timestamp = now()
     start, end, _, _ = week_window(timestamp)
+    circuit_id = None
+    launch = request.app.state.settings.world_ranking_launch_week
+    if launch and start >= launch and payload.vehicle_id == "compact" and not payload.test_population:
+        from .world_ranking_models import Circuit
+        circuit = session.scalar(select(Circuit).where(Circuit.week_start == start))
+        if circuit is None:
+            raise HTTPException(503, "CIRCUIT_PREPARING")
+        if circuit.contract_key != contract:
+            raise HTTPException(409, "CIRCUIT_BUILD_PINNED_UNTIL_NEXT_WEEK")
+        circuit_id = circuit.id
     member = session.scalar(select(RivalryMember).where(RivalryMember.player_id == player.id,
         RivalryMember.week_start == start, RivalryMember.contract_key == contract))
     if member:
-        return commit_join(session,player.id,key,body,member.group_id)
+        return commit_join(session,player.id,key,body,member.group_id,circuit_id)
     session.scalar(select(Player).where(Player.id == player.id).with_for_update())
     member = session.scalar(select(RivalryMember).where(RivalryMember.player_id == player.id,
         RivalryMember.week_start == start, RivalryMember.contract_key == contract))
     if member:
-        return commit_join(session,player.id,key,body,member.group_id)
+        return commit_join(session,player.id,key,body,member.group_id,circuit_id)
     skill = skill_score(session, player.id, payload.vehicle_id, active, timestamp, payload.test_population)
     # Expensive candidate selection is read work outside the cohort reservation.
     prepared_slots = selected_slots(session,request,active,payload.vehicle_id,payload.test_population)
     band = min(9, skill // 100) if skill is not None else -1
-    lock_id = digest({"week": start, "contract": contract, "band": band})
-    if session.get(OperationState, lock_id) is None:
-        try:
-            with session.begin_nested():
-                session.add(OperationState(id=lock_id))
-                session.flush()
-        except IntegrityError:
-            pass
-    session.scalar(select(OperationState).where(OperationState.id == lock_id).with_for_update())
-    groups = session.scalars(select(RivalryGroup).where(RivalryGroup.week_start == start,
-        RivalryGroup.contract_key == contract, RivalryGroup.skill_band == band,
-        RivalryGroup.member_count < GROUP_CAPACITY).order_by(RivalryGroup.created_at).limit(100)).all()
-    random.shuffle(groups)
-    group = None
-    for candidate in groups:
-        candidate = session.scalar(select(RivalryGroup).where(RivalryGroup.id == candidate.id).with_for_update())
-        # The conditional increment also protects the capacity on SQLite,
-        # whose SELECT FOR UPDATE has no effect. A failed reservation retries
-        # another open group; membership and reservation commit together.
-        reserved = session.execute(update(RivalryGroup).where(RivalryGroup.id == candidate.id,
-            RivalryGroup.member_count < GROUP_CAPACITY).values(member_count=RivalryGroup.member_count+1)).rowcount
-        if reserved:
-            group = candidate
-            break
+    group = reserve_open_group(session, start, contract, band, circuit_id)
+    if group is None:
+        # Only creation takes a guard. A busy open group must fill before another
+        # is created; ordinary joins lock their group, never the whole skill band.
+        lock_id = digest({"purpose": "rivalry-create-v2", "week": start, "contract": contract, "band": band})
+        if session.get(OperationState, lock_id) is None:
+            try:
+                with session.begin_nested():
+                    session.add(OperationState(id=lock_id))
+                    session.flush()
+            except IntegrityError:
+                pass
+        session.scalar(select(OperationState).where(OperationState.id == lock_id).with_for_update())
+        group = reserve_open_group(session, start, contract, band, circuit_id)
     if group is None:
         if len(prepared_slots) < TRACK_COUNT:
             raise HTTPException(409, "NOT_ENOUGH_ELIGIBLE_TRACKS")
@@ -412,13 +421,49 @@ def join(payload: Join, request: Request, session: DB, player: Auth, key: Key):
                     pass
             slots.append({key:value for key,value in prepared.items() if key!="manifest"})
         group = RivalryGroup(week_start=start, ends_at=end, vehicle_id=payload.vehicle_id,
+                             world_circuit_id=circuit_id,
                              test_population=payload.test_population,
                              contract_key=contract, skill_band=band, tracks=slots, member_count=1)
         session.add(group)
         session.flush()
     session.add(RivalryMember(group_id=group.id, player_id=player.id, week_start=start, contract_key=contract, skill=skill))
     session.flush()
-    return commit_join(session,player.id,key,body,group.id)
+    return commit_join(session,player.id,key,body,group.id,circuit_id)
+
+
+def open_group_candidates(start, contract, band):
+    # Literal predicate also permits the partial index in PostgreSQL generic plans.
+    return select(RivalryGroup.id).where(RivalryGroup.week_start == start,
+        RivalryGroup.contract_key == contract, RivalryGroup.skill_band == band,
+        RivalryGroup.member_count < literal_column("20")).order_by(
+            RivalryGroup.created_at, RivalryGroup.id).limit(100)
+
+
+def reserve_open_group(session, start, contract, band, circuit_id=None):
+    candidates = list(session.scalars(open_group_candidates(start, contract, band).where(
+        RivalryGroup.world_circuit_id == circuit_id)))
+    random.shuffle(candidates)
+    for identity in candidates:
+        candidate = session.scalar(select(RivalryGroup).where(RivalryGroup.id == identity,
+            RivalryGroup.member_count < GROUP_CAPACITY).with_for_update(skip_locked=True))
+        if candidate is None:
+            continue
+        # SQLite has no row locks; the conditional write still enforces capacity.
+        reserved = session.execute(update(RivalryGroup).where(RivalryGroup.id == identity,
+            RivalryGroup.member_count < GROUP_CAPACITY).values(member_count=RivalryGroup.member_count + 1)).rowcount
+        if reserved:
+            return candidate
+    if candidates:
+        # All open candidates may be locked by in-flight joins. Wait for one
+        # group's exact capacity decision instead of fragmenting a 20-driver
+        # field into many smaller groups. Other open groups were tried first.
+        candidate = session.scalar(select(RivalryGroup).where(RivalryGroup.id == candidates[0],
+            RivalryGroup.member_count < GROUP_CAPACITY).with_for_update())
+        if candidate is not None and session.execute(update(RivalryGroup).where(
+                RivalryGroup.id == candidate.id, RivalryGroup.member_count < GROUP_CAPACITY)
+                .values(member_count=RivalryGroup.member_count + 1)).rowcount:
+            return candidate
+    return None
 
 
 @router.get("/rivalry/{group_id}")

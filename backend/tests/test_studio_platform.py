@@ -35,13 +35,20 @@ MONITOR = {"Authorization": "Bearer " + "m" * 40}
 
 @pytest.fixture
 def platform(auth_app, auth_client, sign_in):
+    from bmt_backend.studio_reporting import StudioReporting
+
     auth_app.state.settings = replace(
         auth_app.state.settings,
+        environment="test",
         admin_owner_key="o" * 40,
         admin_analyst_key="a" * 40,
         telemetry_enabled=True,
         client_quality_enabled=True,
         studio_monitor_source_tokens=json.dumps({"fixture": "m" * 40}),
+    )
+    auth_app.state.studio_reporting.close()
+    auth_app.state.studio_reporting = StudioReporting(
+        replace(auth_app.state.settings, environment="test"), engine=auth_app.state.engine
     )
     signed = sign_in("studio-platform")
     return (

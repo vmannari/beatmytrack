@@ -5,12 +5,11 @@ from datetime import datetime, timezone
 from typing import Literal
 
 from fastapi import APIRouter, HTTPException, Query, Request
-from sqlalchemy import BigInteger, Integer, case, cast, delete, func, select, tuple_
+from sqlalchemy import BigInteger, Integer, case, cast, func, select, tuple_
 
 from .admin import Access, Window
 from .admin_ranges import calendar_range
 from .studio_platform_models import AnalysisDay, AnalysisPerson, AnalysisSession, AnalysisState
-from .studio_queries import read_snapshot
 from .telemetry_models import ProductState
 from .track_models import digest, now
 
@@ -50,7 +49,7 @@ def project(session, events, profiles, active_names, *, state=None):
     if state is None:
         raise RuntimeError("STUDIO_ANALYSIS_MIGRATION_REQUIRED")
     grouped, contexts, session_groups = {}, {}, {}
-    active_events, client_first = {}, {}
+    active_events, client_first, latest_days = {}, {}, {}
     for event in events:
         props = event.properties or {}
         context = {
@@ -63,6 +62,7 @@ def project(session, events, profiles, active_names, *, state=None):
             "renderer": (props.get("render_context") or {}).get("renderer", ""),
         }
         key = event.occurred_at // DAY, event.player_id, digest(context)
+        latest_days[event.player_id] = max(latest_days.get(event.player_id, key[0]), key[0])
         contexts[key] = context
         entry = grouped.setdefault(
             key, {"counts": Counter(), "first": event.occurred_at, "last": event.occurred_at}
@@ -142,6 +142,7 @@ def project(session, events, profiles, active_names, *, state=None):
             row = AnalysisPerson(
                 player_id=identity,
                 first_at=event.occurred_at,
+                last_day=event.occurred_at // DAY,
                 first_build=event.build_id or "",
                 first_platform=event.platform or "",
                 first_mode=str((event.properties or {}).get("mode", ""))[:24],
@@ -158,6 +159,8 @@ def project(session, events, profiles, active_names, *, state=None):
             )
             row.first_mode = str((event.properties or {}).get("mode", ""))[:24]
     for identity, row in people.items():
+        if identity in latest_days and row.last_day is not None:
+            row.last_day = max(row.last_day, latest_days[identity])
         if identity in client_first:
             row.first_client_at = min(row.first_client_at or client_first[identity], client_first[identity])
         profile = profiles.get(identity)
@@ -208,25 +211,10 @@ def project(session, events, profiles, active_names, *, state=None):
 
 
 def cleanup(session, at, limit, fact_days):
-    for model, keys, timestamp in (
-        (AnalysisDay, (AnalysisDay.day, AnalysisDay.player_id, AnalysisDay.dimension), AnalysisDay.day),
-        (AnalysisSession, (AnalysisSession.player_id, AnalysisSession.session_id), AnalysisSession.last_at),
-    ):
-        floor = at // DAY - fact_days if model is AnalysisDay else at - fact_days * DAY
-        expired = session.execute(select(*keys).where(timestamp < floor).order_by(*keys).limit(limit)).all()
-        if expired:
-            session.execute(delete(model).where(tuple_(*keys).in_(expired)))
-    expired_people = session.scalars(
-        select(AnalysisPerson.player_id)
-        .where(
-            AnalysisPerson.first_at < (at // DAY - fact_days) * DAY,
-            ~select(AnalysisDay.player_id).where(AnalysisDay.player_id == AnalysisPerson.player_id).exists(),
-        )
-        .order_by(AnalysisPerson.player_id)
-        .limit(limit)
-    ).all()
-    if expired_people:
-        session.execute(delete(AnalysisPerson).where(AnalysisPerson.player_id.in_(expired_people)))
+    # Keep legacy callers on the same bounded owner fences as the staged worker.
+    from .telemetry_erasure import expire_people
+    from .telemetry_queue_models import TelemetryControl
+    return expire_people(session, at, fact_days, min(limit, 16), session.get(TelemetryControl, 1))
 
 
 def sums(model, names=COUNTERS):
@@ -262,8 +250,9 @@ def behaviour(
 ):
     requested, (first, until) = interval(window)
     at = now()
-    with request.app.state.session_factory() as session:
-        read_snapshot(session)
+    with request.app.state.studio_reporting.snapshot(
+        request.app.state.session_factory, request_id=request.state.request_id
+    ) as (session, replica):
         state, product = session.get(AnalysisState, 1), session.get(ProductState, 1)
         retained_floor = at // DAY - (product.fact_days if product else 180)
         conditions = [AnalysisDay.day >= first // DAY, AnalysisDay.day < until // DAY]
@@ -333,6 +322,20 @@ def behaviour(
             for day, offset, count in returned:
                 returns[int(offset)][day] = count
         watermark = state.processed_through if state else None
+        # Calendar gaps describe observed activity, not proof that every client
+        # reported. Never turn pre-collection/expired days into observed zeros.
+        daily_values = {row[0]: row[1:] for row in daily}
+        daily_rows = []
+        if view in ("activity", "all"):
+            for day in range(first // DAY, until // DAY):
+                covered = bool(state and state.latest_client_at and day >= retained_floor and (day + 1) * DAY > state.started_at
+                               and watermark and day * DAY <= watermark and day * DAY <= at)
+                partial = covered and ((day + 1) * DAY > min(at, watermark)
+                                       or day * DAY < state.started_at)
+                values = daily_values.get(day, (0, 0, 0, 0, 0) if covered else (None,) * 5)
+                daily_rows.append(dict(zip(
+                    ("day", "players", "foreground_ms", "starts", "finishes", "accepted"), (day, *values)),
+                    coverage_state="partial" if partial else "observed" if covered else "unobserved"))
         retention = []
         for day, size in sorted(sizes.items()):
             item = {
@@ -378,17 +381,7 @@ def behaviour(
             "options_truncated": len(options) > 200,
             "active_players": players,
             "counters": counts,
-            "daily": [
-                {
-                    "day": day,
-                    "players": n,
-                    "foreground_ms": duration,
-                    "starts": starts,
-                    "finishes": finishes,
-                    "accepted": accepted,
-                }
-                for day, n, duration, starts, finishes, accepted in daily
-            ],
+            "daily": daily_rows,
             "view": view,
             "engagement": engagement,
             "retention": retention,
@@ -401,6 +394,7 @@ def behaviour(
                 "retained_from": retained_floor * DAY,
                 "latest_client_at": state.latest_client_at if state else None,
                 "pending_events": product.pending_events if product else None,
+                "reporting_storage": replica,
                 "available": bool(
                     state
                     and state.latest_client_at
@@ -412,6 +406,6 @@ def behaviour(
                 "foreground": "Sum of client-reported foreground intervals; missing final intervals and concurrent devices affect coverage.",
                 "retention": "Exact UTC D1/D7/D30, any return build; follow-up is provisional for seven additional days.",
                 "guest": "Unavailable; no guest/account linking",
-                "totals": "Full filtered SQL aggregates; detail option limits do not truncate metrics",
+                "totals": "Exact filtered SQL aggregates on isolated reporting storage; detail option limits do not truncate metrics",
             },
         }

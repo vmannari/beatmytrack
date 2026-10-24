@@ -32,7 +32,7 @@ def named_access(request, supplied):
     if not entry:
         raise HTTPException(403, "STAFF_NOT_AUTHORISED")
     amr = claims.get("amr")
-    if settings.studio_staff_require_mfa and (
+    if (settings.studio_staff_require_mfa or settings.environment == "production") and (
         not isinstance(amr, list)
         or any(not isinstance(v, str) for v in amr)
         or not set(amr).intersection({"mfa", "otp"})

@@ -7,13 +7,19 @@ from sqlalchemy import inspect, text
 from .config import Settings
 from .db import make_engine
 from .migrate import upgrade
+from .database_privileges import DEFAULT_ROLES, configure, identifier
 
 
-def setup(engine, owner, app_role="bmt", schema="public"):
+def setup(engine, owner, roles=None, schema="public"):
     if not re.fullmatch(r"[0-9a-f]{32}", owner):
         raise ValueError("Staging needs its explicit ownership identifier")
-    if not re.fullmatch(r"[a-z][a-z0-9_]{2,62}", app_role) or app_role in ("postgres", "cloudsqlsuperuser"):
-        raise ValueError("Invalid application database role")
+    roles = dict(DEFAULT_ROLES if roles is None else roles)
+    if set(roles) != set(DEFAULT_ROLES) or len(set(roles.values())) != 3:
+        raise ValueError("Three separate workload roles are required")
+    for role in roles.values():
+        identifier(role)
+        if role in ("postgres", "cloudsqlsuperuser"):
+            raise ValueError("Invalid application database role")
     if schema != "public" and not re.fullmatch(r"bmt_load_[0-9a-f]{32}", schema):
         raise ValueError("Invalid staging schema")
     if engine.dialect.name != "postgresql":
@@ -31,24 +37,20 @@ def setup(engine, owner, app_role="bmt", schema="public"):
     # Guard exists before upgrade, so an interrupted migration remains resumable.
     upgrade(engine)
     with engine.begin() as connection:
-        flags = connection.execute(text("SELECT rolsuper,rolreplication,rolbypassrls FROM pg_roles WHERE rolname=:role"), {"role": app_role}).one_or_none()
-        if flags is None or any(flags):
-            raise RuntimeError("Refusing an inherently privileged application role")
-        # Cloud SQL's managed administrator is not a PostgreSQL superuser; do not
-        # attempt superuser-only attribute changes even when setting them false.
-        connection.execute(text(f'ALTER ROLE "{app_role}" NOCREATEDB NOCREATEROLE'))
-        if connection.execute(text("SELECT 1 FROM pg_roles WHERE rolname='cloudsqlsuperuser'")).scalar():
-            connection.execute(text(f'REVOKE cloudsqlsuperuser FROM "{app_role}"'))
-        connection.execute(text(f'GRANT USAGE ON SCHEMA "{schema}" TO "{app_role}"'))
-        connection.execute(text(f'GRANT SELECT,INSERT,UPDATE,DELETE ON ALL TABLES IN SCHEMA "{schema}" TO "{app_role}"'))
-        connection.execute(text(f'GRANT USAGE,SELECT,UPDATE ON ALL SEQUENCES IN SCHEMA "{schema}" TO "{app_role}"'))
-        connection.execute(text(f'ALTER DEFAULT PRIVILEGES IN SCHEMA "{schema}" GRANT SELECT,INSERT,UPDATE,DELETE ON TABLES TO "{app_role}"'))
-        connection.execute(text(f'ALTER DEFAULT PRIVILEGES IN SCHEMA "{schema}" GRANT USAGE,SELECT,UPDATE ON SEQUENCES TO "{app_role}"'))
-        connection.execute(text(f'REVOKE ALL ON {guard} FROM "{app_role}"'))
+        for role in roles.values():
+            flags = connection.execute(text("SELECT rolsuper,rolreplication,rolbypassrls FROM pg_roles WHERE rolname=:role"), {"role": role}).one_or_none()
+            if flags is None or any(flags):
+                raise RuntimeError("Refusing an inherently privileged application role")
+            connection.execute(text(f'ALTER ROLE {identifier(role)} NOCREATEDB NOCREATEROLE'))
+            if connection.execute(text("SELECT 1 FROM pg_roles WHERE rolname='cloudsqlsuperuser'")).scalar():
+                connection.execute(text(f'REVOKE cloudsqlsuperuser FROM {identifier(role)}'))
+    configure(engine, schema=schema, roles=roles)
 
 
 def main():
     settings = Settings.from_env()
+    if settings.workload_role != "migrator":
+        raise ValueError("Staging setup requires the dedicated migrator workload")
     owner = os.environ.get("BMT_STAGING_OWNER", "")
     engine = make_engine(settings.database_url, settings)
     try:

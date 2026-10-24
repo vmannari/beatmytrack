@@ -1,24 +1,20 @@
 """Staff-owned saved views, case assignment, releases and bounded CSV exports."""
 
-import csv
-import io
-from datetime import datetime, timezone
+import re
+from typing import Literal
 from uuid import UUID
 
 from fastapi import APIRouter, HTTPException, Query, Request
-from fastapi.responses import Response
 from pydantic import BaseModel, ConfigDict, Field
-from sqlalchemy import case, event, func, select
+from sqlalchemy import event, func, select
 
 from .admin import Access, Window
 from .admin_models import AdminAudit
-from .admin_ranges import calendar_range
 from .middleware import ParsedJSONRoute
 from .studio_access import actor
 from .studio_case_models import StudioCase, StudioCaseEvent
 from .studio_cases import begin, owner, safe_text
 from .studio_platform_models import (
-    AnalysisDay,
     StudioCaseTriage,
     StudioIncident,
     StudioRelease,
@@ -42,6 +38,7 @@ ROUTES = {
     "players",
     "cases",
     "studio",
+    "races", "audit", "jobs", "grants",
 }
 FILTERS = {
     "since",
@@ -56,6 +53,10 @@ FILTERS = {
     "state",
     "kind",
     "failure_code",
+    "all", "status", "time_field", "device_model", "os_version", "track_version_id", "version",
+    "renderer", "render_context_key", "context_state", "car_detail", "category", "metric",
+    "theme", "visibility", "origin", "sort", "direction", "min_rating", "min_finishers", "limit",
+    "view", "draft",
 }
 
 
@@ -110,8 +111,33 @@ class Saved(BaseModel):
     id: UUID
     expected_revision: int = Field(ge=0)
     name: str = Field(min_length=1, max_length=100)
-    route: str = Field(max_length=40)
+    route: str = Field(max_length=100)
     filters: dict[str, str]
+
+
+def saved_location(route, filters):
+    """Store a validated subpath in JSON; retain the existing VARCHAR(40) schema."""
+    parts = route.split("/")
+    if parts[0] not in ROUTES or len(parts) > 2:
+        raise HTTPException(422, "INVALID_SAVED_VIEW")
+    if len(parts) == 2:
+        root, leaf = parts
+        valid = ((root == "system" and leaf in ("jobs", "audit", "access"))
+                 or (root in ("players", "tracks", "races", "cases", "competitions")
+                     and re.fullmatch(r"[a-fA-F0-9]{8}(?:-[a-fA-F0-9]{4}){3}-[a-fA-F0-9]{12}", leaf))
+                 or (root == "alarms" and re.fullmatch(r"[a-zA-Z0-9_-]{1,64}", leaf)))
+        if not valid:
+            raise HTTPException(422, "INVALID_SAVED_VIEW")
+    return parts[0], {**filters, **({"_path": parts[1]} if len(parts) == 2 else {})}
+
+
+def saved_value(row):
+    data = value(row, "id name route filters revision updated_at")
+    data["filters"] = dict(data["filters"])
+    leaf = data["filters"].pop("_path", None)
+    if leaf:
+        data["route"] += "/" + leaf
+    return data
 
 
 @router.get("/v1/admin/saved-views")
@@ -120,7 +146,7 @@ def saved(request: Request, role: Access):
         read_snapshot(db)
         return {
             "items": [
-                value(r, "id name route filters revision updated_at")
+                saved_value(r)
                 for r in db.scalars(
                     select(StudioSavedView)
                     .where(StudioSavedView.owner == actor(role))
@@ -134,11 +160,11 @@ def saved(request: Request, role: Access):
 @router.post("/v1/admin/saved-views")
 def save(body: Saved, request: Request, role: Access):
     if (
-        body.route not in ROUTES
-        or not set(body.filters) <= FILTERS
+        not set(body.filters) <= FILTERS
         or any(len(v) > 160 for v in body.filters.values())
     ):
         raise HTTPException(422, "INVALID_SAVED_VIEW")
+    route, filters = saved_location(body.route, body.filters)
     fingerprint = digest(body.model_dump(mode="json"))
     with request.app.state.session_factory() as db:
         begin(db, str(UUID(digest({"saved_owner": actor(role)})[:32])))
@@ -164,8 +190,8 @@ def save(body: Saved, request: Request, role: Access):
                 id=str(body.id),
                 owner=actor(role),
                 name=body.name,
-                route=body.route,
-                filters=body.filters,
+                route=route,
+                filters=filters,
                 revision=0,
             )
             db.add(row)
@@ -174,12 +200,12 @@ def save(body: Saved, request: Request, role: Access):
         before = value(row, "id name route filters revision")
         row.name, row.route, row.filters, row.updated_at, row.revision = (
             safe_text(body.name, 100),
-            body.route,
-            body.filters,
+            route,
+            filters,
             now(),
             row.revision + 1,
         )
-        after = value(row, "id name route filters revision updated_at")
+        after = saved_value(row)
         audited(
             db,
             request,
@@ -192,6 +218,33 @@ def save(body: Saved, request: Request, role: Access):
             after,
             fingerprint,
         )
+        db.commit()
+        return after
+
+
+class DeleteSaved(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    command_id: UUID
+    expected_revision: int = Field(ge=1)
+
+
+@router.post("/v1/admin/saved-views/{identity}/delete")
+def delete_saved(identity: UUID, body: DeleteSaved, request: Request, role: Access):
+    fingerprint = digest({"id": str(identity), **body.model_dump(mode="json")})
+    with request.app.state.session_factory() as db:
+        begin(db, str(UUID(digest({"saved_owner": actor(role)})[:32])))
+        previous = replay(db, body.command_id, fingerprint)
+        if previous is not None:
+            return previous
+        row = db.get(StudioSavedView, str(identity))
+        if row is None or row.owner != actor(role):
+            raise HTTPException(404, "SAVED_VIEW_NOT_FOUND")
+        if row.revision != body.expected_revision:
+            raise HTTPException(409, "VIEW_REVISION_CHANGED")
+        after = {"id": str(identity), "deleted": True}
+        audited(db, request, role, body.command_id, "saved_view_delete", row.id,
+                "Delete saved reporting view", saved_value(row), after, fingerprint)
+        db.delete(row)
         db.commit()
         return after
 
@@ -367,58 +420,30 @@ def export(
     platform: str = Query("", max_length=12),
     mode: str = Query("", max_length=24),
     population: str = "all",
+    view: Literal["activity", "retention", "journey", "engagement", "dimensions"] = "dimensions",
 ):
-    first, until = window or calendar_range(7)
-    from .studio_analysis import population_conditions
+    from .studio_exports import behaviour_export
+    return behaviour_export(request, role, window,
+        {'build_id': build_id, 'platform': platform, 'mode': mode, 'population': population}, view, csv_cell)
 
-    conditions = [
-        AnalysisDay.day >= first // 86400,
-        AnalysisDay.day <= (until - 1) // 86400,
-        *population_conditions(request.app.state.settings, AnalysisDay, population),
-    ]
-    for field, value_ in (("build_id", build_id), ("platform", platform), ("mode", mode)):
-        if value_:
-            conditions.append(getattr(AnalysisDay, field) == value_)
-    with request.app.state.session_factory() as db:
-        read_snapshot(db)
-        fields = (AnalysisDay.day, AnalysisDay.build_id, AnalysisDay.platform)
-        rows = db.execute(
-            select(
-                *fields,
-                func.count(
-                    func.distinct(
-                        case((AnalysisDay.counters["active"].as_integer() > 0, AnalysisDay.player_id))
-                    )
-                ),
-                func.coalesce(func.sum(AnalysisDay.counters["race_started"].as_integer()), 0),
-            )
-            .where(*conditions)
-            .group_by(*fields)
-            .order_by(*fields)
-            .limit(1001)
-        ).all()
-        if len(rows) > 1000:
-            raise HTTPException(422, "EXPORT_TOO_LARGE_NARROW_DATES")
-        stream = io.StringIO(newline="")
-        writer = csv.writer(stream)
-        writer.writerow(("utc_day", "build_id", "platform", "active_players", "race_starts"))
-        writer.writerows(
-            [
-                [
-                    datetime.fromtimestamp(row[0] * 86400, timezone.utc).date().isoformat(),
-                    *[csv_cell(v) for v in row[1:]],
-                ]
-                for row in rows
-            ]
-        )
-        return Response(
-            stream.getvalue(),
-            media_type="text/csv",
-            headers={
-                "Content-Disposition": 'attachment; filename="observed-activity.csv"',
-                "Cache-Control": "no-store",
-            },
-        )
+
+@router.get("/v1/admin/exports/releases.csv")
+def export_releases(
+    request: Request, role: Access, window: Window,
+    build_id: str = Query("", max_length=80), baseline: str = Query("", max_length=80),
+    platform: str = Query("", max_length=12), device_model: str = Query("", max_length=80),
+    os_version: str = Query("", max_length=80), track_version_id: str = Query("", max_length=36),
+    render_context_key: str = Query("", max_length=64),
+):
+    from .studio_exports import csv_report
+    from .studio_release_reports import release_report
+    data = release_report(request, role, window, build_id, baseline, platform, device_model,
+                          os_version, track_version_id, render_context_key)
+    data['coverage'] = data['source']
+    rows = [{**data[k], 'comparison_role': k} for k in ('candidate', 'baseline') if data[k]]
+    return csv_report(data, 'release-comparison', rows,
+        ['comparison_role', 'build_id', 'attempts', 'finished', 'frames', 'slow_frames',
+         'completion', 'slow_fraction', 'reporting_players', 'affected_players', 'player_coverage', 'sample_sufficient'], csv_cell)
 
 
 # Existing case commands also retain the named actor in their append-only history.

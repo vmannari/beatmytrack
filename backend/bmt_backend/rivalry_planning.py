@@ -180,6 +180,8 @@ def maintain(app):
                 OperationState.updated_at <= timestamp - 60).values(updated_at=timestamp)).rowcount
             if claimed:
                 changes = sum(ensure_vehicle(db, active, v, timestamp) for v in sorted(active.get("vehicles", {})))
+                from .world_circuit import ensure_circuits
+                ensure_circuits(db, app, active, timestamp)
                 db.get(OperationState, "rivalry-planning").details = {"plans_changed": changes}
             db.commit()
     except Exception:

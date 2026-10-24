@@ -356,7 +356,9 @@ def finish_cleanup(app, session, job, *, final=True):
             session.commit()
             return True
     from .achievements import erase_private as erase_achievements
-    erase_achievements(session, job.player_id)
+    if not erase_achievements(session, job.player_id):
+        session.commit()
+        return True
     from .admin_models import AdminAudit
     from .commerce_models import Purchase
     from .community_models import CommunityAcceptance, PlayerBlock
@@ -374,8 +376,12 @@ def finish_cleanup(app, session, job, *, final=True):
     case_ids = select(StudioCase.id).where(StudioCase.player_id == job.player_id)
     session.execute(update(StudioCaseEvent).where(StudioCaseEvent.case_id.in_(case_ids)).values(detail={}))
     session.execute(update(StudioCase).where(StudioCase.player_id == job.player_id).values(title=REMOVED_NAME))
-    session.execute(update(AdminAudit).where(AdminAudit.entity_id == job.player_id).values(
-        reason=REMOVED_NAME, before={}, after={}))
+    if session.bind.dialect.name == "postgresql":
+        from sqlalchemy import text
+        session.execute(text("SELECT bmt_redact_removed_audit(:player)"), {"player": job.player_id})
+    else:
+        session.execute(update(AdminAudit).where(AdminAudit.entity_id == job.player_id).values(
+            reason=REMOVED_NAME, before={}, after={}))
     # Keep token digests for bounded purchase replay/fraud prevention, never Google identity.
     session.execute(delete(Purchase).where(Purchase.player_id == job.player_id,
         Purchase.created_at < now() - app.state.settings.privacy_purchase_days * 86400))

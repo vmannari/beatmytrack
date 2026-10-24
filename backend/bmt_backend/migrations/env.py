@@ -12,6 +12,7 @@ from bmt_backend import (  # noqa: F401
     discovery,
     discovery_models,
     economy_models,
+    game_config_models,
     identity_models,
     network_models,
     news_models,
@@ -27,6 +28,7 @@ from bmt_backend import (  # noqa: F401
     telemetry_models,
     test_driver_models,
     track_models,
+    world_ranking_models,
 )
 from bmt_backend.db import Base
 

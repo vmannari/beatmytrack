@@ -9,7 +9,7 @@ from typing import Annotated, Literal
 
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query, Request, Response
 from pydantic import BaseModel, ConfigDict, Field
-from sqlalchemy import Integer, case, cast, func, literal, or_, select, text, tuple_
+from sqlalchemy import Integer, and_, case, cast, func, literal, or_, select, text, tuple_
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 from starlette.concurrency import run_in_threadpool
@@ -18,8 +18,10 @@ from .board_cache import cached
 from .contracts import current_manifest
 from .cursors import decode_cursor, encode_cursor
 from .db import get_session
+from .economy_models import LeaderboardTieNode
 from .histogram_population import SNAPSHOT_OWN_LIMIT, HistogramPopulation
 from .identity_models import Player
+from .leaderboard_ranks import tied_before, time_counts
 from .middleware import ParsedJSONRoute
 from .queueing import admit, check_capacity
 from .security import bearer, current_player
@@ -286,6 +288,24 @@ def submit(payload: SubmitRun, request: Request, session: DB, player: Auth, key:
     return commit_response(session, player.id, "submit_run", key, body, run_payload(run))
 
 
+@router.get("/run-tickets/{ticket_id}/submission")
+def recover_submission(ticket_id: str, session: DB, player: Auth) -> dict:
+    """Read an already accepted ticket without replacing its immutable replay."""
+    if len(ticket_id) != 36:
+        raise HTTPException(404, "Run ticket not found")
+    ticket = session.scalar(select(RunTicket).where(
+        RunTicket.id == ticket_id, RunTicket.player_id == player.id))
+    if ticket is None:
+        raise HTTPException(404, "Run ticket not found")
+    run = session.scalar(select(Run).where(Run.ticket_id == ticket.id, Run.player_id == player.id))
+    if run is None:
+        return {"run": None}
+    from .rivalry_models import RivalryTicket
+    binding = session.get(RivalryTicket, ticket.id)
+    return {"run": {**run_payload(run), "outcome": binding.outcome if binding else None,
+                    "slot": binding.slot if binding else None}}
+
+
 @router.get("/runs/status")
 def run_statuses(session: DB, player: Auth, ids: list[str] = Query(max_length=32)) -> dict:
     from .rivalry_models import RivalryTicket
@@ -429,12 +449,33 @@ def population_count_query(session, board_id, *conditions):
     return session.scalar(select(func.count()).select_from(population(board_id).where(*conditions).subquery()))
 
 
+def population_window(board_id, limit, *, offset=0, anchor=None, before=False):
+    """Limit visible indexed keys before any authoritative PB/player joins.
+
+    Hidden PBs and compressed internal nodes never consume a candidate slot.
+    The leaf projection and authority changes commit in the same transaction;
+    both the key window and the joins use this statement's database snapshot.
+    """
+    node = LeaderboardTieNode
+    keys = select(node.time_ticks, node.prefix.label("player_id")).where(
+        node.board_id == board_id, node.leaf.is_(True))
+    if anchor is not None:
+        cursor = tuple_(node.time_ticks, node.prefix)
+        keys = keys.where(cursor < anchor if before else cursor > anchor)
+    order = (node.time_ticks.desc(), node.prefix.desc()) if before else (node.time_ticks, node.prefix)
+    window = keys.order_by(*order).offset(offset).limit(limit).subquery()
+    order = (PersonalBest.time_ticks.desc(), PersonalBest.player_id.desc()) if before else (
+        PersonalBest.time_ticks, PersonalBest.player_id)
+    return population(board_id).join(window, and_(PersonalBest.time_ticks == window.c.time_ticks,
+        PersonalBest.player_id == window.c.player_id)).order_by(*order)
+
+
 def rank_rows(session, board_id, rows, first_position):
     result, previous_time, rank = [], None, 0
     for index, source in enumerate(rows):
         row = dict(source)
         if row["time_ticks"] != previous_time:
-            rank = (tick_count(session, board_id, BoardTimeCount.time_ticks < row["time_ticks"]) + 1
+            rank = (time_counts(session, board_id, row["time_ticks"])[0] + 1
                     if index == 0 else first_position + index)
             previous_time = row["time_ticks"]
         result.append({**row, "rank": rank, "position": first_position + index})
@@ -451,19 +492,19 @@ def top(
 ) -> dict:
     board = public_board(session, board_id)
     count = population_count(session, board_id)
-    statement = population(board_id)
+    anchor = None
     if cursor:
         position = decode_cursor(cursor)
         if type(position.get("ticks")) is not int or not isinstance(position.get("player"), str) or len(position["player"]) > 36:
             raise HTTPException(422, "INVALID_CURSOR")
-        before = tuple_(PersonalBest.time_ticks, PersonalBest.player_id) <= (position["ticks"], position["player"])
+        anchor = (position["ticks"], position["player"])
         if position.get("board") == board_id and position.get("revision") == board.stats_revision and type(position.get("position")) is int:
             offset = position["position"]
         else:
-            offset = tick_count(session, board_id, BoardTimeCount.time_ticks < position["ticks"]) + population_count(
-                session, board_id, PersonalBest.time_ticks == position["ticks"], PersonalBest.player_id <= position["player"])
-        statement = statement.where(~before)
-    raw = session.execute(statement.order_by(PersonalBest.time_ticks, PersonalBest.player_id).offset(0 if cursor else offset).limit(limit+1)).mappings().all()
+            offset = time_counts(session, board_id, position["ticks"])[0] + tied_before(
+                session, board_id, position["ticks"], position["player"], inclusive=True)
+    raw = session.execute(population_window(board_id, limit+1, offset=0 if cursor else offset,
+                                            anchor=anchor)).mappings().all()
     rows = rank_rows(session, board_id, raw[:limit], offset + 1)
     return {
         "board_id": board_id,
@@ -504,15 +545,12 @@ def around_me(board_id: str, session: BoardDB, player: Auth, radius: int = Query
             "faster_than_percent": None,
         }
     ticks = own["time_ticks"]
-    before = tuple_(PersonalBest.time_ticks, PersonalBest.player_id) < (ticks, player.id)
-    after = tuple_(PersonalBest.time_ticks, PersonalBest.player_id) > (ticks, player.id)
-    position = tick_count(session, board_id, BoardTimeCount.time_ticks < ticks) + population_count(
-        session, board_id, PersonalBest.time_ticks == ticks, PersonalBest.player_id < player.id) + 1
-    predecessors = session.execute(population(board_id).where(before).order_by(PersonalBest.time_ticks.desc(), PersonalBest.player_id.desc()).limit(radius)).mappings().all()
-    successors = session.execute(population(board_id).where(after).order_by(PersonalBest.time_ticks, PersonalBest.player_id).limit(radius)).mappings().all()
+    faster, _, slower = time_counts(session, board_id, ticks)
+    position = faster + tied_before(session, board_id, ticks, player.id) + 1
+    predecessors = session.execute(population_window(board_id, radius, anchor=(ticks, player.id), before=True)).mappings().all()
+    successors = session.execute(population_window(board_id, radius, anchor=(ticks, player.id))).mappings().all()
     rows = rank_rows(session, board_id, list(reversed(predecessors)) + [own] + list(successors), position - len(predecessors))
     own = rows[len(predecessors)]
-    slower = tick_count(session, board_id, BoardTimeCount.time_ticks > ticks)
     return {
         "board_id": board_id,
         "population": count,

@@ -68,7 +68,8 @@ def legacy_contact_verifier(real_verifier, tmp_path_factory):
     historical_track.write_text(historical_track.read_text().replace(
         "hash_value: String) -> NativeTrack:",
         "hash_value: String, _prepared_cells: PackedInt32Array = PackedInt32Array(), "
-        "_prepared_deck: PackedInt32Array = PackedInt32Array()) -> NativeTrack:",
+        "_prepared_deck: PackedInt32Array = PackedInt32Array(), "
+        "_paint_exclusion: PackedByteArray = PackedByteArray(), _cancelled: Callable = Callable()) -> NativeTrack:",
     ))
     subprocess.run([real_verifier.binary, "--headless", "--path", str(project), "--editor", "--import"],
                    check=True, capture_output=True, timeout=90)

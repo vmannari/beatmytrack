@@ -3,12 +3,12 @@
 import argparse
 import json
 
-from sqlalchemy import String, cast, delete, or_, select, union_all, update
+from sqlalchemy import String, cast, delete, or_, select, text, union_all, update
 
-from .challenge_models import Challenge, ChallengeMember, ChallengeTicket
+from .challenge_models import Challenge, ChallengeMember, ChallengeStageMember, ChallengeTicket
 from .config import Settings
 from .db import make_engine, make_session_factory
-from .identity_models import BrowserLogin, LoginChallenge, RateBucket, SessionFamily, now
+from .identity_models import BrowserLogin, LoginChallenge, RateBucket, SessionFamily, SessionToken, now
 from .object_models import ObjectPin
 from .publication_models import PublicationIntent, PublicationUpload
 from .publication_storage import retire_evidence, retired_candidates
@@ -24,6 +24,7 @@ from .track_models import (
     RunTicket,
     TrackVersion,
 )
+from .world_ranking_models import Circuit, RankingArchive
 
 
 def retain(factory, blobs, days: int = 90, *, apply: bool = False, offline: bool = False, online: bool = False,
@@ -63,6 +64,7 @@ def retain(factory, blobs, days: int = 90, *, apply: bool = False, offline: bool
             ~Run.id.in_(select(RivalryBest.run_id)),
             ~Run.id.in_(select(Challenge.target_run_id).where(Challenge.target_run_id.is_not(None))),
             ~Run.id.in_(select(ChallengeMember.run_id).where(ChallengeMember.run_id.is_not(None))),
+            ~Run.id.in_(select(ChallengeStageMember.run_id).where(ChallengeStageMember.run_id.is_not(None))),
             ~Run.id.in_(select(TrackVersion.creator_test_run_id).where(TrackVersion.creator_test_run_id.is_not(None))),
         ).order_by(Run.finished_at, Run.id).limit(1000)).all()
         run_ids = {r.id for r in candidates}
@@ -93,6 +95,7 @@ def retain(factory, blobs, days: int = 90, *, apply: bool = False, offline: bool
         hashes = [row["digest"] for row in eligible]
         keep = [] if online else [~Run.id.in_(run_ids)]
         referenced = set(session.scalars(union_all(
+            select(RankingArchive.digest).where(RankingArchive.digest.in_(hashes)),
             select(TrackVersion.content_hash).where(TrackVersion.content_hash.in_(hashes)),
             select(PublicationIntent.content_hash).where(PublicationIntent.content_hash.in_(hashes),
                 PublicationIntent.evidence_retired.is_(False)),
@@ -121,6 +124,7 @@ def retain(factory, blobs, days: int = 90, *, apply: bool = False, offline: bool
                 # Newly-pruned run objects are collected in a later committed batch.
                 key = row["digest"]
                 if (session.scalar(select(TrackVersion.id).where(TrackVersion.content_hash==key).limit(1))
+                        or session.scalar(select(RankingArchive.snapshot_id).where(RankingArchive.digest==key).limit(1))
                         or session.scalar(select(Run.id).where(or_(Run.replay_hash==key,Run.ghost_hash==key)).limit(1))
                         or session.scalar(select(PublicationIntent.id).where(PublicationIntent.evidence_retired.is_(False),
                             or_(PublicationIntent.content_hash==key,
@@ -166,6 +170,11 @@ def archive_closed_weeks(factory, days=90, *, apply=False):
             .with_for_update(skip_locked=True)).all()
         count = 0
         for group in groups:
+            if group.world_circuit_id is not None:
+                circuit = session.get(Circuit, group.world_circuit_id)
+                if circuit is not None and circuit.original_snapshot is None:
+                    # A prolonged settlement outage must not discard its input.
+                    continue
             pending = session.scalar(select(Run.id).join(RivalryTicket, RivalryTicket.ticket_id==Run.ticket_id)
                 .where(RivalryTicket.group_id==group.id,Run.status.in_(("queued","verifying"))).limit(1))
             if pending:
@@ -186,7 +195,15 @@ def archive_closed_weeks(factory, days=90, *, apply=False):
         return count
 
 
-def cleanup(factory) -> dict:
+def cleanup(factory, *, batch_limit=1000) -> dict:
+    """One bounded expiry batch; repeat while ``more`` is true.
+
+    Session families can contain arbitrary rotation history. Delete at most one
+    batch of their tokens before deleting only empty, locked expired families;
+    a single parent deletion can therefore never cascade an unbounded history.
+    """
+    if type(batch_limit) is not int or not 1 <= batch_limit <= 1000:
+        raise ValueError("INVALID_IDENTITY_CLEANUP_BUDGET")
     current = now()
     with factory() as session:
         result = {}
@@ -194,24 +211,58 @@ def cleanup(factory) -> dict:
             ("browser_logins", BrowserLogin),
             ("rate_buckets", RateBucket),
             ("login_challenges", LoginChallenge),
-            ("session_families", SessionFamily),
         ):
-            result[name] = session.execute(delete(model).where(model.expires_at < current)).rowcount
-        result["worker_heartbeats"] = session.execute(delete(OperationState).where(OperationState.id.startswith("worker:"), OperationState.updated_at < current-86400)).rowcount
+            key = next(iter(model.__table__.primary_key.columns))
+            ids = session.scalars(select(key).where(model.expires_at < current)
+                .order_by(model.expires_at).limit(batch_limit)).all()
+            result[name] = session.execute(delete(model).where(key.in_(ids), model.expires_at < current)).rowcount if ids else 0
+        families = session.scalars(select(SessionFamily.id).where(SessionFamily.expires_at < current)
+            .order_by(SessionFamily.expires_at).limit(batch_limit).with_for_update(skip_locked=True)).all()
+        tokens = session.scalars(select(SessionToken.id).where(SessionToken.family_id.in_(families))
+            .limit(batch_limit)).all() if families else []
+        result["session_tokens"] = session.execute(delete(SessionToken).where(SessionToken.id.in_(tokens))).rowcount if tokens else 0
+        empty = ~select(SessionToken.id).where(SessionToken.family_id == SessionFamily.id).exists()
+        result["session_families"] = session.execute(delete(SessionFamily).where(
+            SessionFamily.id.in_(families), SessionFamily.expires_at < current, empty)).rowcount if families else 0
+        heartbeats = session.scalars(select(OperationState.id).where(text("id LIKE 'worker:%'"),
+            OperationState.updated_at < current-86400).order_by(OperationState.updated_at).limit(batch_limit)).all()
+        result["worker_heartbeats"] = session.execute(delete(OperationState).where(OperationState.id.in_(heartbeats),
+            OperationState.updated_at < current-86400)).rowcount if heartbeats else 0
         # Only versioned expiring keys can be removed. Legacy retry identities
         # and permanent provider/store ResumeGrant IDs are never discarded.
         keys = session.execute(select(IdempotencyRecord.player_id,IdempotencyRecord.scope,IdempotencyRecord.key)
             .where(IdempotencyRecord.key.startswith("v2."),IdempotencyRecord.created_at < current-92*86400)
-            .order_by(IdempotencyRecord.created_at).limit(1000)).all()
+            .order_by(IdempotencyRecord.created_at).limit(batch_limit)).all()
         for player,scope,key in keys:
             session.execute(delete(IdempotencyRecord).where(IdempotencyRecord.player_id==player,
                 IdempotencyRecord.scope==scope,IdempotencyRecord.key==key))
         result["expired_retry_keys"] = len(keys)
-        expired_pins = session.scalars(select(ObjectPin.digest).where(ObjectPin.expires_at < current-86400).limit(1000)).all()
+        expired_pins = session.scalars(select(ObjectPin.digest).where(ObjectPin.expires_at < current-86400).limit(batch_limit)).all()
         session.execute(delete(ObjectPin).where(ObjectPin.digest.in_(expired_pins),ObjectPin.expires_at < current-86400))
         result["expired_object_pins"] = len(expired_pins)
+        # A skipped owner is busy, not absent. Keep the CLI backlog signal true
+        # even when every expired family was locked by a concurrent operation.
+        result["more"] = any(result.values()) or session.scalar(select(SessionFamily.id)
+            .where(SessionFamily.expires_at < current).limit(1)) is not None
+        result["batch_limit"] = batch_limit
         session.commit()
         return result
+
+
+def cleanup_batches(factory, *, batches=100, batch_limit=1000) -> dict:
+    """Drain a finite CLI budget, releasing locks after every expiry batch."""
+    if type(batches) is not int or not 1 <= batches <= 1000:
+        raise ValueError("INVALID_IDENTITY_CLEANUP_BATCHES")
+    totals = {}
+    for completed in range(1, batches + 1):
+        result = cleanup(factory, batch_limit=batch_limit)
+        for name, amount in result.items():
+            if name not in ("more", "batch_limit"):
+                totals[name] = totals.get(name, 0) + amount
+        if not result["more"]:
+            break
+    return {**totals, "more": result["more"], "batches": completed, "batch_limit": batch_limit,
+            "budget_exhausted": result["more"] and completed == batches}
 
 
 def backfill_discovery(factory, blobs, limit: int = 100) -> dict:
@@ -238,6 +289,8 @@ def main():
     parser.add_argument("--object-cursor", type=json.loads, help="next_object_cursor from the previous retention batch")
     parser.add_argument("--backfill-discovery", action="store_true", help="Backfill at most 100 legacy preview projections")
     parser.add_argument("--backfill-laps", action="store_true", help="Backfill at most 200 accepted lap records; repeat until complete")
+    parser.add_argument("--identity-batches", type=int, default=100,
+                        help="Identity expiry: 1-1000 transactions of at most 1000 rows per class (default 100); repeat if more")
     args = parser.parse_args()
     settings = Settings.from_env()
     engine = make_engine(settings.database_url,settings)
@@ -251,7 +304,7 @@ def main():
     elif args.retention or args.apply_retention:
         print(json.dumps(retain(factory,blobs,settings.retention_days,apply=args.apply_retention,offline=args.offline,online=args.online,object_cursor=args.object_cursor)))
     else:
-        print(json.dumps(cleanup(factory)))
+        print(json.dumps(cleanup_batches(factory, batches=args.identity_batches)))
     engine.dispose()
 
 

@@ -7,12 +7,14 @@ from .discovery_models import (
     DiscoveryCollection,
     DiscoveryDriver,
     DiscoveryEntry,
+    DiscoveryGuard,
     DiscoveryHead,
     DiscoveryMember,
     DiscoveryOwnerJob,
     DiscoveryPartition,
     DiscoverySession,
 )
+from .discovery_retention import erase_members
 from .discovery_v3 import digest
 from .track_models import now
 
@@ -29,16 +31,22 @@ def erase_private(db, player_id, limit=100):
     if views:
         db.execute(delete(DiscoverySession).where(DiscoverySession.id.in_(views)))
         return False
-    collection = db.scalar(select(DiscoveryCollection.id).where(DiscoveryCollection.scope == actor).limit(1))
-    if collection:
+    collection_id = db.scalar(select(DiscoveryCollection.id).where(DiscoveryCollection.scope == actor).limit(1))
+    if collection_id:
+        collection = db.scalar(select(DiscoveryCollection).where(DiscoveryCollection.id == collection_id)
+            .with_for_update(skip_locked=True))
+        if collection is None:
+            return False
         members = list(db.execute(select(DiscoveryMember.kind, DiscoveryMember.track_id)
-            .where(DiscoveryMember.collection_id == collection).limit(limit)))
+            .where(DiscoveryMember.collection_id == collection.id).limit(limit)))
         if members:
-            db.execute(delete(DiscoveryMember).where(DiscoveryMember.collection_id == collection,
-                tuple_(DiscoveryMember.kind, DiscoveryMember.track_id).in_([tuple(r) for r in members])))
+            erase_members(db, collection, members)
         else:
-            db.execute(delete(DiscoveryCollection).where(DiscoveryCollection.id == collection))
+            if collection.member_rows or collection.member_bytes:
+                raise RuntimeError("Discovery empty collection retains a storage charge")
+            db.delete(collection)
         return False
+    db.execute(delete(DiscoveryGuard).where(DiscoveryGuard.scope == actor))
     # Lock affected partitions in the same order as all projection writers.
     drivers = list(db.scalars(select(DiscoveryDriver).where(DiscoveryDriver.player_id == player_id).limit(limit)))
     if drivers:

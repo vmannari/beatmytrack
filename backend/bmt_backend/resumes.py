@@ -6,7 +6,7 @@ before calling grant_verified. Provider/product configuration is not yet selecte
 
 from typing import Literal
 
-from fastapi import APIRouter, HTTPException, Request
+from fastapi import APIRouter, HTTPException, Query, Request
 from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import select
 
@@ -17,9 +17,10 @@ from .track_models import IdempotencyRecord, Run, RunTicket, commit_response, di
 from .tracks import DB, Auth, Key
 
 router = APIRouter(route_class=ParsedJSONRoute, tags=["resumes"])
-# Owner-authorized bridge until a real rewarded-ad adapter is integrated.
-# These receipts are explicitly not evidence of a watched ad or a banked grant.
-TEMPORARY_AD_RESUMES = True
+def temporary_ad_resumes(settings):
+    """Explicit local preview only; never an assertion of a watched ad."""
+    return bool(settings is not None and settings.environment in ("development", "test")
+                and settings.temporary_ad_resumes_enabled)
 
 
 def locked_wallet(session, player_id, *, allow_disabled=False):
@@ -45,7 +46,7 @@ def wallet_payload(wallet, session=None, settings=None):
         "balance": wallet.balance,
         "reset_at": (day + 1) * 86400,
         "ads_available": False,
-        "ad_preview_available": TEMPORARY_AD_RESUMES,
+        "ad_preview_available": temporary_ad_resumes(settings),
         "purchases_available": False,
         "ad_free": ad_free,
         "free_rewinds": ad_free,
@@ -76,9 +77,16 @@ def grant_verified(session, player_id: str, source: str, transaction_id: str, qu
 
 
 @router.get("/resumes")
-def balance(request: Request, session: DB, player: Auth):
+def balance(request: Request, session: DB, player: Auth, ticket_id: str = Query(default="", max_length=36)):
     wallet = locked_wallet(session, player.id)
     result = wallet_payload(wallet, session, request.app.state.settings)
+    if ticket_id:
+        ticket = session.get(RunTicket, ticket_id)
+        if ticket is None or ticket.player_id != player.id:
+            raise HTTPException(404, "Race ticket not found")
+        from .world_circuit import ticket_is_official
+        if ticket_is_official(session, ticket_id):
+            result.update(free_rewinds=True, circuit_free=True, ads_available=False, ad_preview_available=False)
     session.commit()
     return result
 
@@ -166,7 +174,11 @@ def consume(race_id: str, payload: Consume, request: Request, session: DB, playe
         raise HTTPException(422, "Resume does not follow the race input timeline")
     day = now() // 86400
     current_wallet = wallet_payload(wallet, session, request.app.state.settings)
-    if current_wallet["free_rewinds"]:
+    from .world_circuit import ticket_is_official
+    circuit_free = bool(race.ticket_id and ticket_is_official(session, race.ticket_id))
+    if circuit_free:
+        source = "circuit"
+    elif current_wallet["free_rewinds"]:
         source = "ad_free"
     elif wallet.balance > 0:
         source = "balance"
@@ -174,7 +186,7 @@ def consume(race_id: str, payload: Consume, request: Request, session: DB, playe
     elif wallet.free_day < day:
         source = "daily"
         wallet.free_day = day
-    elif TEMPORARY_AD_RESUMES:
+    elif temporary_ad_resumes(request.app.state.settings):
         source = "ad_preview"
     else:
         raise HTTPException(409, "No resumes available; daily free resume resets at 00:00 UTC")
@@ -183,13 +195,16 @@ def consume(race_id: str, payload: Consume, request: Request, session: DB, playe
                             settled=payload.recovery != "v1", **payload.model_dump(exclude={"recovery"}))
     session.add(receipt)
     session.flush()
+    response_wallet = wallet_payload(wallet, session, request.app.state.settings)
+    if circuit_free:
+        response_wallet.update(free_rewinds=True, circuit_free=True, ads_available=False, ad_preview_available=False)
     return commit_response(
         session,
         player.id,
         "consume_resume",
         key,
         body,
-        {"receipt_id": receipt.id, "used": race.used, "wallet": wallet_payload(wallet, session, request.app.state.settings)},
+        {"receipt_id": receipt.id, "used": race.used, "wallet": response_wallet},
     )
 
 
@@ -244,8 +259,13 @@ def recover_resume(payload: ResumeRecovery, request: Request, session: DB, playe
     race_id = payload.race_id or bound_id
     race = session.get(ResumeRace, race_id) if race_id else None
     if race is None:
+        recovered_wallet = wallet_payload(wallet, session, request.app.state.settings)
+        from .world_circuit import ticket_is_official
+        ticket = session.get(RunTicket, payload.ticket_id) if payload.ticket_id else None
+        if ticket is not None and ticket.player_id == player.id and ticket_is_official(session,ticket.id):
+            recovered_wallet.update(free_rewinds=True, circuit_free=True, ads_available=False, ad_preview_available=False)
         session.commit()
-        return {"state": "absent", "wallet": wallet_payload(wallet, session, request.app.state.settings)}
+        return {"state": "absent", "wallet": recovered_wallet}
     if race.player_id != player.id or race.ticket_id != payload.ticket_id:
         raise HTTPException(404, "Resume race not found")
     if race.ticket_id:
@@ -277,7 +297,11 @@ def recover_resume(payload: ResumeRecovery, request: Request, session: DB, playe
     elif payload.action == "confirm" and receipt and not receipt.refunded:
         receipt.settled = True
     state = "abandoned" if race.abandoned else "consumed" if receipt else "absent"
-    result = {"state": state, "race_id": race.id, "wallet": wallet_payload(wallet, session, request.app.state.settings)}
+    recovery_wallet = wallet_payload(wallet, session, request.app.state.settings)
+    from .world_circuit import ticket_is_official
+    if race.ticket_id and ticket_is_official(session, race.ticket_id):
+        recovery_wallet.update(free_rewinds=True, circuit_free=True, ads_available=False, ad_preview_available=False)
+    result = {"state": state, "race_id": race.id, "wallet": recovery_wallet}
     if receipt and not race.abandoned:
         result.update(receipt_id=receipt.id, used=receipt.ordinal)
     session.commit()

@@ -21,6 +21,9 @@ class FixtureIdentity:
 
 def prepare(app):
     seed(app)
+    # The shared native Free Race search uses the v3 projection/daemon contract.
+    from bmt_backend.discovery_projection import settle_for_diagnostics
+    settle_for_diagnostics(app.state.session_factory)
     app.state.identity_verifier = FixtureIdentity()
 
 

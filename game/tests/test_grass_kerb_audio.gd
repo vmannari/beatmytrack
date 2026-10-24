@@ -194,11 +194,18 @@ func game_crossing(track: NativeTrack) -> void:
 	var game: Node = load("res://core/game.tscn").instantiate()
 	game.vehicle_id = "compact"
 	game.initial_track = track
-	root.add_child(game)
+	game.production_mode = false
 	game.set_process(false)
 	game.set_physics_process(false)
+	root.add_child(game)
+	var ready_deadline: int = Time.get_ticks_msec()+30000
+	while not game.preparation_complete and Time.get_ticks_msec()<ready_deadline:
+		await process_frame
+	check(game.preparation_complete,"actual Game finishes preparing before the kerb crossing")
+	if not game.preparation_complete:
+		game.free()
+		return
 	game.countdown_ticks = 0
-	game.production_mode = false
 	game.sim.reset(Vector2(0,-4),0)
 	game.sim.state.velocity = Vector2(0,18)
 	game.previous_position = game.sim.state.position
@@ -237,6 +244,7 @@ func capture(audio: ObservedAudio) -> void:
 		recorder.format = AudioStreamWAV.FORMAT_16_BITS
 		AudioServer.add_bus_effect(bus,recorder)
 		records.append(recorder)
+	GameSoundtrack.instance().windows_output.sync_output()
 	var traces: Array[Dictionary] = []
 	var cases: Array[String] = ["grass-entry","kerb-cross","kerb-ride","kerb-speeds"]
 	if offroad_review: cases.append_array(["grass-speeds","gravel-speeds"])
@@ -300,5 +308,8 @@ func capture(audio: ObservedAudio) -> void:
 	var report := FileAccess.open(OUT.path_join("native-contact-timing.json"),FileAccess.WRITE)
 	report.store_string(JSON.stringify(traces,"\t"))
 	report.close()
-	AudioServer.remove_bus_effect(0,AudioServer.get_bus_effect_count(0)-1)
+	for index: int in range(AudioServer.get_bus_effect_count(0)):
+		if AudioServer.get_bus_effect(0,index)==records[0]:
+			AudioServer.remove_bus_effect(0,index)
+			break
 	for index: int in range(buses.size()-1,0,-1): AudioServer.remove_bus(buses[index])

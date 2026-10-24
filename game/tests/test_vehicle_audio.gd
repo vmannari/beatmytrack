@@ -15,6 +15,8 @@ func check(ok: bool, description: String) -> void:
 		print("FAIL: "+description)
 
 func run() -> void:
+	for argument: String in OS.get_cmdline_user_args():
+		if argument.begins_with("--evidence-dir="): evidence = argument.trim_prefix("--evidence-dir=")
 	capture_audio = DisplayServer.get_name()!="headless"
 	check(not ClassDB.class_exists("BMTMusicStream"),"retired native soundtrack is absent")
 	check(not FileAccess.file_exists("res://music/bmt_music.gdextension"),"soundtrack is outside the export root")
@@ -148,6 +150,7 @@ func _record_previews() -> void:
 	var record := AudioEffectRecord.new()
 	record.format = AudioStreamWAV.FORMAT_16_BITS
 	AudioServer.add_bus_effect(0,record)
+	GameSoundtrack.instance().windows_output.sync_output()
 	for id: String in VehicleCatalog.IDS:
 		var audio := VehicleAudio.new()
 		root.add_child(audio)
@@ -180,4 +183,7 @@ func _record_previews() -> void:
 			check(peak>1000 and peak<32700,"captured mix is audible and unclipped: "+id)
 			check(recording.save_to_wav(evidence.path_join(id+"-driving.wav"))==OK,"saved playable preview: "+id)
 		audio.free()
-	AudioServer.remove_bus_effect(0,AudioServer.get_bus_effect_count(0)-1)
+	for index: int in range(AudioServer.get_bus_effect_count(0)):
+		if AudioServer.get_bus_effect(0,index)==record:
+			AudioServer.remove_bus_effect(0,index)
+			break

@@ -1,6 +1,7 @@
-"""Master CC0 recorded snow as one cyclic plough texture and one entry crunch."""
+"""Master CC0 recorded snow as one cyclic plough texture and one entry impact."""
 import hashlib
 import json
+import argparse
 from pathlib import Path
 import wave
 
@@ -10,6 +11,7 @@ ROOT = Path(__file__).resolve().parents[1]
 SOURCE = ROOT / "build/vehicle_audio_sources/snow"
 OUT = ROOT / "game/assets/audio/vehicles"
 RATE = 44100
+IMPACT_VARIANTS = ("packed", "powder", "bank")
 
 
 def read(record):
@@ -41,9 +43,9 @@ def finish(values, rms, high=3000):
     return values
 
 
-def write(name, values, looping, sources):
+def write(name, values, looping, sources, destination=OUT):
     pcm = np.round(np.clip(values, -.999, .999) * 32767).astype("<i2")
-    path = OUT / (name + ".wav")
+    path = destination / (name + ".wav")
     with wave.open(str(path), "wb") as stream:
         stream.setparams((1, 2, RATE, len(pcm), "NONE", "not compressed"))
         stream.writeframes(pcm.tobytes())
@@ -54,7 +56,82 @@ def write(name, values, looping, sources):
             "sha256": hashlib.sha256(path.read_bytes()).hexdigest()}
 
 
+def impact_fragment(recording, speed, seconds, low, high, lead=.0009):
+    """Align each independently shaped recorded compression at its real peak."""
+    values = np.interp(np.arange(round(len(recording) / speed)) * speed,
+                       np.arange(len(recording)), recording)
+    hz = np.fft.rfftfreq(len(values), 1 / RATE)
+    shape = (1 - np.exp(-(hz / low) ** 4)) * np.exp(-(hz / high) ** 4)
+    values = np.fft.irfft(np.fft.rfft(values) * shape, n=len(values))
+    peak = int(np.argmax(abs(values)))
+    polarity = 1 if values[peak] >= 0 else -1
+    begin = max(0, peak - round(RATE * lead))
+    count = round(RATE * seconds)
+    fragment = np.zeros(count)
+    excerpt = values[begin:begin + count] * polarity
+    fragment[:len(excerpt)] = excerpt
+    # Layer levels follow the first compression, rather than its quiet tail.
+    fragment /= max(1e-8, np.sqrt(np.mean(fragment[:round(RATE * .10)] ** 2)))
+    return fragment
+
+
+def make_thump(clips):
+    """A muted recorded bass compression with a sustained, quiet snow tail."""
+    seconds = .54
+    time = np.arange(round(RATE * seconds)) / RATE
+    body = impact_fragment(clips[3], .35, seconds, 40, 320, lead=.003)
+    # Lift the recording's existing decay gradually, without an echo or tone.
+    body *= 1 + 3 * (1 - np.exp(-time / .05))
+    compression = impact_fragment(clips[3], .60, seconds, 80, 1000, lead=.003)
+    powder = impact_fragment(clips[2], .65, seconds, 180, 1200, lead=.003)
+    values = body * .88 + compression * .10 + powder * .025
+    values *= np.exp(-time / .30)
+    attack, release = round(RATE * .003), round(RATE * .09)
+    values[:attack] *= np.sin(np.linspace(0, np.pi / 2, attack)) ** 2
+    values[-release:] *= np.cos(np.linspace(0, np.pi / 2, release)) ** 2
+    values *= .12 / max(1e-8, np.sqrt(np.mean(values ** 2)))
+    values = .86 * np.tanh(values / .86) * 10 ** (-3 / 20)
+    values[0] = values[-1] = 0
+    strong = np.flatnonzero(abs(values) >= max(abs(values)) * .5)[0] / RATE
+    if strong > .005: raise ValueError("Recorded bass thump must begin within 5 ms")
+    return values, strong
+
+
+def make_impact(clips, variant):
+    """Original layered snow recordings; no third-party reference audio."""
+    if variant == "packed": return make_thump(clips)
+    seconds = {"powder": .38, "bank": .42}[variant]
+    speed = {"powder": .88, "bank": .62}[variant]
+    compression = impact_fragment(clips[3], speed, seconds, 65, 2900)
+    body = impact_fragment(clips[3], .48 if variant != "bank" else .42, seconds, 50, 580)
+    crumble = impact_fragment(clips[2], .88, seconds, 220, 3600)
+    powder = impact_fragment(clips[0], .85, seconds, 180, 2400)
+    if variant == "powder": values = compression*.55 + body*.30 + powder*.55
+    else: values = compression*.65 + body*.65 + crumble*.18
+    time = np.arange(len(values)) / RATE
+    values *= np.exp(-time / (.20 if variant == "bank" else .16))
+    attack = round(RATE * .0005)
+    release = round(RATE * .045)
+    values[:attack] *= np.linspace(0, 1, attack)
+    values[-release:] *= np.linspace(1, 0, release)
+    target = {"powder": .15, "bank": .18}[variant]
+    values *= target / max(1e-8, np.sqrt(np.mean(values ** 2)))
+    # A rounded, bounded compression adds density without clipping the master.
+    values = .86 * np.tanh(values / .86)
+    values[0] = values[-1] = 0
+    strong = np.flatnonzero(abs(values) >= max(abs(values)) * .5)[0] / RATE
+    if strong > .005: raise ValueError("Original snow compression must begin within 5 ms")
+    return values, strong
+
+
 def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--impact-variant", choices=IMPACT_VARIANTS, default="packed")
+    parser.add_argument("--audition-dir", type=Path, default=ROOT / "build/original-snow-impact-2026-10-23/variants")
+    args = parser.parse_args()
+    destination = args.audition_dir.resolve()
+    if not destination.is_relative_to(ROOT): raise ValueError("Audition output must stay in this workspace")
+    destination.mkdir(parents=True, exist_ok=True)
     records = json.loads((SOURCE / "manifest.json").read_text(encoding="utf-8"))
     clips = [read(record) for record in records]
     rng = np.random.default_rng(22102026)
@@ -85,21 +162,18 @@ def main():
     correction = bed[-1] - bed[0]
     count = 256
     bed[-count:] -= correction * np.linspace(0, 1, count)
-    # A short, weighty compression with its actual attack at contact. The old
-    # landing retained a 90 ms approach before its main crunch. Slow the source
-    # for body weight, then trim to 1 ms before the strongest compression.
-    compression = np.interp(np.arange(round(len(clips[3]) / .72)) * .72, np.arange(len(clips[3])), clips[3])
-    compression = finish(compression, .23, high=2600)
-    begin = max(0, int(np.argmax(abs(compression))) - round(RATE * .001))
-    hit = compression[begin:begin + round(RATE * .28)].copy()
-    hit[:round(RATE * .0007)] *= np.linspace(0, 1, round(RATE * .0007))
-    hit[-round(RATE * .025):] *= np.linspace(1, 0, round(RATE * .025))
-    strong = np.flatnonzero(abs(hit) > max(abs(hit)) * .5)[0] / RATE
-    if strong > .005: raise ValueError("Snow compression must have an audible attack within 5 ms")
+    variants = {}
+    for variant in IMPACT_VARIANTS:
+        values, strong = make_impact(clips, variant)
+        variants[variant] = write(variant, values, False, [records[index]["filename"] for index in ([3, 0] if variant=="powder" else [3, 2])], destination)
+        variants[variant]["strong_onset_ms"] = strong * 1000
+    (destination / "variants.json").write_text(json.dumps(variants, indent=2) + "\n", encoding="utf-8")
+    hit, strong = make_impact(clips, args.impact_variant)
     outputs = [write("snow", bed, True, [item["filename"] for item in records[:2]]),
-               write("snow_hit", hit, False, [records[3]["filename"]])]
-    manifest = {"schema": "vehicle-snow-audio-v1", "revision": 2, "rate": RATE, "channels": 1, "bits": 16,
-                "design": "Dense 35-70 ms soft-snow overlap with 150 ms cyclic energy control, 85-3000 Hz shaping and cyclic join. Entry is a slower recorded compression trimmed to its attack, with 85-2600 Hz shaping. No synthetic noise or tones.",
+               write("snow_hit", hit, False, variants[args.impact_variant]["sources"])]
+    manifest = {"schema": "vehicle-snow-audio-v1", "revision": 5, "rate": RATE, "channels": 1, "bits": 16,
+                "design": "Unchanged dense recorded soft-snow loop. Packed entry is a softer 540 ms bass thump: .35-speed recorded landing body at 40-320 Hz, gradual recorded-tail lift, quiet 80-1000 Hz compression and 180-1200 Hz snow detail. A 3 ms rounded attack, 300 ms decay envelope, 90 ms release and lower level soften the strike while retaining sub-5 ms strong onset. Other variants remain exact. No synthetic noise or tones; no Soundsnap samples used.",
+                "impact_variant": args.impact_variant, "reference_audio_used": False,
                 "entry_strong_onset_ms": float(strong * 1000),
                 "license_verified_on": "2026-10-22", "sources": records, "outputs": outputs}
     (OUT / "snow_manifest.json").write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")

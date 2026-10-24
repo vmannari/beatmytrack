@@ -3,7 +3,7 @@ from pathlib import Path
 import json,subprocess,sys
 
 ROOT=Path(__file__).resolve().parents[1]
-OUT=ROOT/'build/direct-collision-output-2026-10-09'
+OUT=Path(sys.argv[1]).resolve() if len(sys.argv)>1 else ROOT/'build/direct-collision-output-2026-10-09'
 subprocess.run([sys.executable,str(ROOT/'scripts/review_windows_audio_output.py'),str(OUT)],check=True,capture_output=True)
 events=json.loads((OUT/'events.json').read_text())
 timings=json.loads((OUT/'timing-report.json').read_text())

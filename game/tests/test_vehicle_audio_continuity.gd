@@ -70,6 +70,11 @@ func run() -> void:
 			check(recording.save_to_wav(OUTPUT.path_join(id+"-continuous.wav"))==OK,"saved continuous engine recording: "+id)
 		check(state.snapshot().size()==before.size(),"audio retains canonical state schema: "+id)
 		audio.free()
+		var output: WindowsAudioOutput = GameSoundtrack.instance().windows_output
+		if output.backend!=null:
+			var stats: Dictionary = output.stats()
+			check(bool(stats.ready) and not bool(stats.failed) and int(stats.overflows)==0,"continuous native output remains ready without overflow: "+id)
+			print("CONTINUOUS_OUTPUT_STATS: ",id," ",stats)
 		print("CONTINUOUS_CAPTURE: "+id)
 	AudioServer.remove_bus_effect(engine_bus,AudioServer.get_bus_effect_count(engine_bus)-1)
 	print("VEHICLE_AUDIO_CONTINUITY: %d checks, %d failures"%[checks,failures])

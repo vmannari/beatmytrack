@@ -25,6 +25,20 @@ if manifest['kerb_revision'] in ['clean-tyre-3','slow-pulse-4','thuds-5','tyre-b
     assert clip['sources']==[], 'Clean kerb must contain no field recordings'
     expected = {'clean-tyre-3':'kerb-clean-3','slow-pulse-4':'kerb-slow-pulse-4','thuds-5':'kerb-thuds-5','tyre-body-6':'kerb-tyre-body-6'}
     assert clip['generator']==expected[manifest['kerb_revision']]
+elif manifest['kerb_revision']=='cobblestone-thuds-8':
+    assert clip['sources']==['car_cobblestone_cc0.wav','Vehicle_Truck_Body_Movement_Interior_Mono_01.wav']
+    assert clip['generator']=='kerb-cobblestone-thuds-8' and clip['natural_cobblestone_timing'] is True
+    assert clip['body_pulse_hz_at_native_pitch']==6 and clip['body_to_cobblestone_rms_ratio']==.38
+    for name in clip['sources']:
+        source = next(item for item in manifest['sources'] if item['filename']==name)
+        assert source['license']=='CC0-1.0'
+        assert hashlib.sha256((root/'build/vehicle_audio_sources'/name).read_bytes()).hexdigest()==source['sha256']
+elif manifest['kerb_revision']=='cobblestone-recorded-7':
+    assert clip['sources']==['car_cobblestone_cc0.wav']
+    assert clip['generator']=='kerb-cobblestone-7' and clip['natural_contact_timing'] is True
+    source = next(item for item in manifest['sources'] if item['filename']==clip['sources'][0])
+    assert source['license']=='CC0-1.0' and '591078' in source['source']
+    assert hashlib.sha256((root/'build/vehicle_audio_sources'/source['filename']).read_bytes()).hexdigest()==source['sha256']
 else:
     assert manifest['kerb_revision']=='recorded-rumble-2'
     assert clip['sources']==['kerb_rumble_cc0.wav']

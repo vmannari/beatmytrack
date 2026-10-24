@@ -1,47 +1,45 @@
-"""Dry tyre contacts and damped suspension chatter, authored offline."""
+"""Recorded cobblestone clatter with a quiet, repeating suspension thud."""
+
 import numpy as np
 
-REVISION = "tyre-body-6"
-GENERATOR = "kerb-tyre-body-6"
-SEED = 2026102261
-PULSE_HZ = 6.0
+REVISION = "cobblestone-thuds-8"
+GENERATOR = "kerb-cobblestone-thuds-8"
+DESIGN = "Recorded cobblestone clatter with subtle repeating recorded body thuds"
+SOURCE = "car_cobblestone_cc0.wav"
+SOURCE_CUT = (8.0, 16.0)
+BODY_SOURCE = "Vehicle_Truck_Body_Movement_Interior_Mono_01.wav"
+BODY_CUT = (.92, 1.045)
+BODY_PULSE_HZ = 6.0
+BODY_RELATIVE_RMS = .38
 
 
-def unit_rms(values):
-    return values / max(float(np.sqrt(np.mean(values ** 2))), 1e-9)
+def layers(read, filter_audio, rate):
+    source = read(SOURCE)
+    values = source[round(SOURCE_CUT[0]*rate):round(SOURCE_CUT[1]*rate)].copy()
+    if len(values) != 8*rate:
+        raise ValueError("Expected the complete eight-second cobblestone excerpt")
+    clatter = filter_audio(values, low=100, high=6500)
+
+    # Retain the recorded, irregular tyre detail. Under it, a short rounded
+    # body movement supplies the owner's missing thud-thud-thud. Filtering and
+    # a quick decay remove the source's rattly tail; there is no generated tone.
+    body = filter_audio(read(BODY_SOURCE), low=95, high=420)
+    body = body[round(BODY_CUT[0]*rate):round(BODY_CUT[1]*rate)].copy()
+    time = np.arange(len(body))/rate
+    body *= np.minimum(time/.004, 1)*np.exp(-time/.036)
+    release = round(.012*rate)
+    body[-release:] *= np.linspace(1, 0, release)
+    pulses = np.zeros(len(clatter))
+    for number, offset in enumerate(range(0, len(pulses), round(rate/BODY_PULSE_HZ))):
+        # Small level differences keep a body pulse from becoming a drum beat.
+        weight = .94 + .06*np.sin(number*2.399963229728653)
+        count = min(len(body), len(pulses)-offset)
+        pulses[offset:offset+count] += body[:count]*weight
+    pulses *= BODY_RELATIVE_RMS*np.sqrt(np.mean(clatter**2)/np.mean(pulses**2))
+    return clatter, pulses
 
 
 def render(read, steady, filter_audio, write, rate):
-    count = 8*rate
-    rng = np.random.default_rng(SEED)
-    # A restrained rubber bed connects the contacts without adding gravel hiss.
-    rolling = unit_rms(filter_audio(rng.normal(size=count),low=85,high=700))*.028
-    time = np.arange(round(.14*rate),dtype=np.float64)/rate
-    attack = 1-np.exp(-time/.0009)
-    for index in range(round(8*PULSE_HZ)):
-        # Several short, fixed body modes replace the old falling sine note.
-        # Broad rubber excitation carries most of the material character;
-        # no long metallic resonance or audible pitched sweep is introduced.
-        body = np.zeros_like(time)
-        for hz, weight, decay in [(105,.45,.024),(185,.32,.019),(325,.24,.014),
-                                  (570,.15,.009),(940,.08,.005)]:
-            body += weight*np.sin(2*np.pi*hz*rng.uniform(.96,1.04)*time)*np.exp(-time/decay)
-        rubber = unit_rms(filter_audio(rng.normal(size=len(time)),low=100,high=1700))
-        contact = unit_rms(filter_audio(rng.normal(size=len(time)),low=380,high=3800))
-        pulse = attack*(body*.85 + rubber*.42*np.exp(-time/.023)
-                        + contact*.26*np.exp(-time/.006))
-        # A small irregular secondary compression makes each strike less like
-        # one identical drum hit, while retaining the established six-beat pace.
-        delay = round(rng.uniform(.010,.017)*rate)
-        echo = attack*rubber*np.exp(-time/.010)*.10
-        pulse[delay:] += echo[:-delay]
-        pulse[-round(.012*rate):] *= np.linspace(1,0,round(.012*rate))
-        offset = round((index/PULSE_HZ+rng.uniform(-.0018,.0018))*rate)
-        pressure = (.94+.09*np.sin(index*.47))*rng.uniform(.94,1.06)
-        positions = (offset+np.arange(len(pulse)))%count
-        rolling[positions] += pulse*pressure
-    # Soft offline compression controls isolated noise spikes without the
-    # texture levelling that would erase each contact's attack and decay.
-    rolling = np.tanh(rolling*1.5)
-    # Calibrated to the prior cue's -18.5 LUFS, rather than a louder audition.
-    write("kerb_roll",filter_audio(rolling,low=65,high=3600),[],rms=.128)
+    clatter, pulses = layers(read, filter_audio, rate)
+    # Match the previous cue's loudness; the pulse changes character, not gain.
+    write("kerb_roll", clatter+pulses, [SOURCE, BODY_SOURCE], rms=.1417)

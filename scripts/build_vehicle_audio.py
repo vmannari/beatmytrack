@@ -38,6 +38,11 @@ elif not (args.compact_only or args.kerbs_only or args.offroad_only or args.gras
 kerb_source_manifest = SOURCE / "kerb_source_manifest.json"
 if kerb_source_manifest.exists():
     sources += json.loads(kerb_source_manifest.read_text(encoding="utf-8"))
+cobblestone_source_manifest = SOURCE / "cobblestone_source_manifest.json"
+if cobblestone_source_manifest.exists():
+    sources += json.loads(cobblestone_source_manifest.read_text(encoding="utf-8"))
+elif not (args.compact_only or args.collisions_only or args.offroad_only or args.grass_only):
+    raise SystemExit("Prepare the cleared cobblestone source with scripts/prepare_kerb_cobblestone_audition.py --register-source first")
 grass_source_manifest = SOURCE / "owner_grass_source_manifest.json"
 if grass_source_manifest.exists():
     sources += json.loads(grass_source_manifest.read_text(encoding="utf-8"))
@@ -179,11 +184,14 @@ def write(name, values, used, looping=True, rms=.14, engine_order=None, loop_rea
     if engine_order is not None: outputs[-1]["engine_order_hz"] = engine_order
     if name in TEXTURES or name=="scrape": outputs[-1]["continuous_texture"] = True
     if name=="kerb_roll":
-        from kerb_audio_mastering import GENERATOR, SEED, PULSE_HZ
-        outputs[-1]["design"] = "Original dry tyre contacts, broad rubber excitation and damped body chatter; no recorded source"
+        from kerb_audio_mastering import DESIGN, GENERATOR, SOURCE_CUT, BODY_CUT, BODY_PULSE_HZ, BODY_RELATIVE_RMS
+        outputs[-1]["design"] = DESIGN
         outputs[-1]["generator"] = GENERATOR
-        outputs[-1]["generator_seed"] = SEED
-        outputs[-1]["pulse_hz_at_native_pitch"] = PULSE_HZ
+        outputs[-1]["source_cut_seconds"] = list(SOURCE_CUT)
+        outputs[-1]["natural_cobblestone_timing"] = True
+        outputs[-1]["body_source_cut_seconds"] = list(BODY_CUT)
+        outputs[-1]["body_pulse_hz_at_native_pitch"] = BODY_PULSE_HZ
+        outputs[-1]["body_to_cobblestone_rms_ratio"] = BODY_RELATIVE_RMS
     if name=="grass":
         outputs[-1]["design"] = "Continuous overlapping excerpts of the owner's two grass rustles"
         outputs[-1]["generator"] = "owner-grass-rustle-1"

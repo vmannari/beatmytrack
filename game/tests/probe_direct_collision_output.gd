@@ -1,6 +1,6 @@
 extends "res://tests/analyze_shallow_collisions.gd"
 ## Real-time direct hits: normal rendering, actual Game callback, own-process capture.
-const OUT: String = "res://../build/direct-collision-output-2026-10-09"
+var output: String = "res://../build/direct-collision-output-2026-10-09"
 class NeutralInput extends DriverInput:
 	func sample() -> DriveFrame:
 		return DriveFrame.new()
@@ -25,12 +25,14 @@ func _record_render() -> void:
 			return
 
 func run() -> void:
-	DirAccess.make_dir_recursive_absolute(ProjectSettings.globalize_path(OUT))
-	var ready_file: FileAccess = FileAccess.open(OUT.path_join("ready.json"),FileAccess.WRITE)
+	for argument: String in OS.get_cmdline_user_args():
+		if argument.begins_with("--output-dir="): output = argument.trim_prefix("--output-dir=")
+	DirAccess.make_dir_recursive_absolute(ProjectSettings.globalize_path(output))
+	var ready_file: FileAccess = FileAccess.open(output.path_join("ready.json"),FileAccess.WRITE)
 	ready_file.store_string(JSON.stringify({"pid":OS.get_process_id(),"driver":AudioServer.get_driver_name(),"device":AudioServer.output_device,"reported_latency_ms":AudioServer.get_output_latency()*1000.0,"rate":AudioServer.get_mix_rate()}))
 	ready_file.close()
 	var timeout: int = Time.get_ticks_msec()+60000
-	while not FileAccess.file_exists(OUT.path_join("armed")):
+	while not FileAccess.file_exists(output.path_join("armed")):
 		await process_frame
 		if Time.get_ticks_msec()>timeout:
 			print("DIRECT_COLLISION_OUTPUT: capture not armed")
@@ -39,11 +41,16 @@ func run() -> void:
 	game = load("res://core/game.tscn").instantiate()
 	game.vehicle_id = "compact"
 	game.initial_track = make_wall(Vector2(0,-1),.5)
-	root.add_child(game)
+	game.production_mode = false
 	game.set_physics_process(false)
+	root.add_child(game)
+	var ready_deadline: int = Time.get_ticks_msec()+30000
+	while not game.preparation_complete and Time.get_ticks_msec()<ready_deadline:
+		await process_frame
+	assert(game.preparation_complete,"The actual Game must finish preparing before contact timing begins.")
+	game.set_physics_process(false) # Installation restores processing after its owned staging.
 	game.driver = NeutralInput.new()
 	game.countdown_ticks = 0
-	game.production_mode = false
 	var audio: VehicleAudio = game.vehicle_audio
 	draw_outline = audio.visible_contact.outline.duplicate()
 	RenderingServer.frame_post_draw.connect(_record_render)
@@ -89,7 +96,7 @@ func run() -> void:
 			print("DIRECT_COLLISION_TRIAL: ",JSON.stringify(row))
 	row = {}
 	RenderingServer.frame_post_draw.disconnect(_record_render)
-	var file: FileAccess = FileAccess.open(OUT.path_join("events.json"),FileAccess.WRITE)
+	var file: FileAccess = FileAccess.open(output.path_join("events.json"),FileAccess.WRITE)
 	file.store_string(JSON.stringify(rows,"\t"))
 	file.close()
 	game.free()

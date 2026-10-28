@@ -26,7 +26,8 @@ static func view(theme_id: String, font_size: int = 16) -> PanelContainer:
 	glyph.stretch_mode = TextureRect.STRETCH_KEEP_ASPECT_CENTERED
 	glyph.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	row.add_child(glyph)
-	var label := MenuStyle.label(TrackTheme.title(theme_id).to_upper(),font_size)
+	var label := MenuStyle.label("",font_size)
+	GameText.bind_upper(label,TrackTheme.title(theme_id))
 	label.add_theme_color_override("font_color",color(theme_id))
 	row.add_child(label)
 	return badge

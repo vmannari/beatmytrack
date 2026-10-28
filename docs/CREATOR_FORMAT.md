@@ -1,6 +1,6 @@
 # Current creator format and admission limits
 
-Reviewed 2026-10-24. External creator documents must use **creator-track-v5**.
+Reviewed 2026-10-27. External creator documents must use **creator-track-v5**.
 The native loader accepts **surface-grid-v2**. Earlier creator/native versions and
 Coast imports are unsupported; older-format conversion is not offered. Existing
 player files are preserved rather than deleted when they cannot be imported.
@@ -32,6 +32,27 @@ objects/hazards, start-line pose and scenery settings, with strict allowlists.
 The route is derived from connected pieces for the current UI; manual waypoint
 editing is retired. Authoring and playable-route validation are distinct so that
 unfinished work can be recovered without claiming it is ready to race.
+
+Grass and Storm road pieces accept an optional `surface` of `"asphalt"` or
+`"gravel"`. An omitted value inherits the document's `surface`, with legacy
+`"dirt"` using the loose surface. The editor exposes these choices for the selected
+piece and unplaced preview. Other themes retain stored choices but use their
+existing biome material. Bridges apply their choice to the deck and ramp
+approaches independently of the ground below. Gravel uses existing native surface
+2 (0.8 grip, 2.0 resistance), the Desert road's warm compacted finish, and no
+asphalt bend kerbs. Visual material joins blend through connected road cells up
+to three metres on either side; asphalt markings fade through the transition.
+Ground and bridge blends use independent channels. Driving material boundaries
+still use the exact authored road mouths. See
+[compacted finish and gradual joins](ROAD_MATERIAL_BLENDS_2026_10_27.md).
+
+This is an optional v5 extension: documents without piece materials keep their
+existing canonical output and hashes. A changed piece material is included in the
+document content hash. Visual kit 216 retires older presentation caches. Hosting
+new material tracks requires the matching client and API/worker source rollout;
+this local implementation does not deploy those services. See
+[road-piece materials](ROAD_PIECE_MATERIALS_2026_10_27.md) for actual checks and
+screenshots.
 
 Compiler identity is **creator-compiler-27**. Geometry is shared by editor preview,
 practice, racing and canonical verification. Desert compilation normalizes the road

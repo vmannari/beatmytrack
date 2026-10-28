@@ -12,6 +12,7 @@ signal notice(message: String)
 signal share_requested(entry: Dictionary)
 signal rivalry_requested
 signal challenges_requested
+signal daily_requested
 signal entry_chosen(entry: Dictionary)
 
 var selection_only: bool = false
@@ -23,7 +24,10 @@ var records: LocalRecords
 var builtin_ids: Array[String]
 var selected_track: NativeTrack
 var state: Dictionary
-var page_preview: bool = false
+var page_preview: bool = false:
+	set(value):
+		page_preview = value
+		if value and discovery != null: discovery.comparisons.cancel_speculation()
 var catalog: TrackCatalog
 var matches: Array[Dictionary] = []
 var grid: GridContainer
@@ -98,6 +102,8 @@ var _preparation_key: Array = []
 var _preparation_since: int = 0
 var _preparation_sent: bool = false
 const PREPARATION_SETTLE_MS: int = 650
+const COMPARISON_REUSE = preload("res://backend/comparison_reuse.gd")
+var _comparison_attempts: Dictionary = {}
 
 func _ready() -> void:
 	size_flags_vertical = Control.SIZE_EXPAND_FILL
@@ -350,6 +356,8 @@ func _focus_list_card(card: TrackTile) -> void:
 		track_list.scroll_vertical = ceili(top+_list_stride.y-12-track_list.size.y)
 
 func _set_list_open(value: bool, animate: bool = false) -> void:
+	if value and discovery != null: discovery.comparisons.cancel_speculation()
+	if list_open and not value: _comparison_selection = ""
 	list_open = value
 	race_button.visible = not value
 	for button: Button in [random_button,filter_button,find_child("RaceSearch",true,false)]:
@@ -469,7 +477,7 @@ func _load_catalog() -> void:
 	for index: int in range(builtin_ids.size()):
 		catalog.add_builtin(builtin_ids[index])
 		if Time.get_ticks_usec()-slice_start >= 3000:
-			count_label.text = "Loading circuits  /  %d of %d" % [index+1,builtin_ids.size()]
+			count_label.text = GameText.message("Loading circuits  /  %d of %d") % [index+1,builtin_ids.size()]
 			await get_tree().process_frame
 			if not is_inside_tree(): return
 			slice_start = Time.get_ticks_usec()
@@ -478,7 +486,7 @@ func _load_catalog() -> void:
 	for index: int in range(ids.size()):
 		catalog.add_local(ids[index])
 		if Time.get_ticks_usec()-slice_start >= 3000:
-			count_label.text = "Indexing saved tracks  /  %d of %d" % [index+1,ids.size()]
+			count_label.text = GameText.message("Indexing saved tracks  /  %d of %d") % [index+1,ids.size()]
 			await get_tree().process_frame
 			if not is_inside_tree(): return
 			slice_start = Time.get_ticks_usec()
@@ -493,6 +501,7 @@ func _load_catalog() -> void:
 func activate_page() -> void:
 	if not page_preview: return
 	page_preview = false
+	_comparison_selection = ""
 	# The cached controls and metadata are already current. Rebuilding both
 	# sections here introduces a visible hitch just as the page finishes arriving.
 	if catalog.indexed_revision != library.revision:
@@ -644,9 +653,9 @@ func _refresh() -> void:
 		empty.name = "DiscoveryEmptyState"
 		empty.custom_minimum_size.y = 128
 		grid.add_child(empty)
-	count_label.text = "%d / %d circuits%s" % [matches.size(),catalog.entries.size()," · indexing…" if loading else ""]
+	count_label.text = GameText.plural("{count} / {total} circuit","{count} / {total} circuits",matches.size(),{"total":catalog.entries.size()}) + (GameText.message(" · indexing…") if loading else "")
 	if cloud != null: count_label.text += " · "+str(cloud.status)
-	count_label.tooltip_text = "%d matching tracks out of %d in your library" % [matches.size(),catalog.entries.size()]
+	count_label.tooltip_text = GameText.message("%d matching tracks out of %d in your library") % [matches.size(),catalog.entries.size()]
 	if cloud != null and cloud.has_method("paged_discovery_available") and cloud.paged_discovery_available():
 		count_label.text = cloud.status
 		count_label.tooltip_text = "Loaded track cards. Scroll to browse more; Refresh updates the ordering."
@@ -876,6 +885,7 @@ func _select(entry: Dictionary) -> void:
 
 func _show_preview_comparison(entry: Dictionary, serial: int, vehicle: String) -> void:
 	var scope: String = _comparison_scope()
+	discovery.comparisons.configure(cloud.client,discovery.snapshot_cache.path+".comparisons.json" if not discovery.snapshot_cache.path.is_empty() else "",discovery.snapshot_cache.scope)
 	var value: Dictionary = await discovery.comparisons.fetch(str(entry.get("version_id","")),vehicle)
 	if not is_inside_tree() or scope != _comparison_scope() or (not selecting and not selected_track.metadata.get("metadata_only",false)) or serial != _selection_serial or VehicleCatalog.selected != vehicle or preview_entry.get("version_id","") != entry.get("version_id",""): return
 	var snapshot: Dictionary = {}
@@ -949,6 +959,7 @@ func _poll_preparation_hint() -> void:
 	preparation_requested.emit(selected_track)
 
 func _exit_tree() -> void:
+	discovery.comparisons.cancel_speculation()
 	_selection_serial += 1
 	if _view_motion != null:
 		_view_motion.kill()
@@ -1006,7 +1017,9 @@ func _comparison_scope() -> String:
 
 func _comparison_warmed(identity: String) -> void:
 	if page_preview or not selected_track.metadata.get("metadata_only",false): return
-	if identity == discovery.comparisons.key(str(selected_track.metadata.cloud_version),VehicleCatalog.selected): _show_detail()
+	if identity == discovery.comparisons.key(str(selected_track.metadata.cloud_version),VehicleCatalog.selected):
+		_comparison_selection = ""
+		_show_detail()
 
 func _load_cloud_detail(track: NativeTrack) -> void:
 	var scope: String = _comparison_scope()
@@ -1016,6 +1029,8 @@ func _load_cloud_detail(track: NativeTrack) -> void:
 	var request_key: String = _comparison_selection_key(track)
 	if _cloud_detail_pending.has(request_key): return
 	_comparison_selection = request_key
+	_comparison_attempts[request_key] = Time.get_ticks_msec()
+	while _comparison_attempts.size() > 32: _comparison_attempts.erase(_comparison_attempts.keys()[0])
 	_cloud_detail_pending[request_key] = true
 	if _detail_wait_key != request_key:
 		_detail_wait_key = request_key
@@ -1025,6 +1040,7 @@ func _load_cloud_detail(track: NativeTrack) -> void:
 	var snapshot: Dictionary = discovery.record_snapshot(key)
 	var had_comparison: bool = _comparison_ready(snapshot)
 	var preloader = discovery.comparisons
+	preloader.configure(cloud.client,discovery.snapshot_cache.path+".comparisons.json" if not discovery.snapshot_cache.path.is_empty() else "",discovery.snapshot_cache.scope)
 	var warmed: Dictionary = preloader.peek(str(track.metadata.cloud_version),vehicle)
 	if not had_comparison and warmed.get("packet") is Dictionary and _apply_cloud_comparison(snapshot,warmed.packet,track):
 		for field: String in ["friends","board_error"]:
@@ -1036,20 +1052,12 @@ func _load_cloud_detail(track: NativeTrack) -> void:
 	if snapshot.get("comparison_scope","") != "all" or int(snapshot.get("comparison_bins",0)) != RaceComplete.COMPARISON_BINS:
 		for obsolete: String in ["race_distribution","lap_distribution","race_rank","race_top_percent","test_population","population"]: snapshot.erase(obsolete)
 	if cloud.client.signed_in():
-		var path: String = "/track-versions/"+str(track.metadata.cloud_version)+"/results-comparison?vehicle_id="+vehicle.uri_encode()+"&bins=%d" % RaceComplete.COMPARISON_BINS
 		var local: Dictionary = records.records.get(key,{})
 		var race_ms: int = _personal_best_ms(snapshot,local,"race")
 		var lap_ms: int = _personal_best_ms(snapshot,local,"lap")
-		if race_ms > 0: path += "&race_ticks=%d" % roundi(float(race_ms)*VehicleSimulation.TICK_RATE/1000.0)
-		if lap_ms > 0: path += "&lap_ticks=%d" % roundi(float(lap_ms)*VehicleSimulation.TICK_RATE/1000.0)
-		path += _cached_frame_query(snapshot.get("race_distribution",{}),"race")
-		path += _cached_frame_query(snapshot.get("lap_distribution",{}),"lap")
-		var comparison: Dictionary
-		var needs_overlay: bool = race_ms > 0 or lap_ms > 0 or had_comparison
-		if not needs_overlay and (warmed.has("packet") or preloader.pending(str(track.metadata.cloud_version),vehicle)):
-			warmed = await preloader.fetch(str(track.metadata.cloud_version),vehicle)
-			comparison = {"ok":warmed.has("packet"),"data":warmed.get("packet",{})}
-		else: comparison = await cloud.client.request_api(path,HTTPClient.METHOD_GET,{},"",true)
+		var race_ticks: int = roundi(float(race_ms)*VehicleSimulation.TICK_RATE/1000.0) if race_ms > 0 else 0
+		var lap_ticks: int = roundi(float(lap_ms)*VehicleSimulation.TICK_RATE/1000.0) if lap_ms > 0 else 0
+		var comparison: Dictionary = await preloader.comparison(str(track.metadata.cloud_version),vehicle,race_ticks,lap_ticks,[race_ticks,lap_ticks],_snapshot_frame(snapshot))
 		if not is_inside_tree() or scope != _comparison_scope() or track != selected_track or serial != _selection_serial or VehicleCatalog.selected != vehicle or request_key != _comparison_selection_key(track):
 			_cloud_detail_pending.erase(request_key)
 			return
@@ -1089,7 +1097,7 @@ func _load_cloud_leaderboard(track: NativeTrack, serial: int, vehicle: String, k
 			discovery.remember_record(key,snapshot)
 			if is_inside_tree() and serial == _selection_serial: _show_detail()
 			return
-	var response: Dictionary = await cloud.client.request_public("/track-versions/"+str(track.metadata.cloud_version)+"/leaderboard?vehicle_id="+vehicle.uri_encode(),get_instance_id())
+	var response: Dictionary = await cloud.client.request_public("/track-versions/"+str(track.metadata.cloud_version)+"/leaderboard?vehicle_id="+vehicle.uri_encode()+"&limit=3",get_instance_id())
 	if not is_inside_tree() or scope != _comparison_scope() or track != selected_track or serial != _selection_serial or VehicleCatalog.selected != vehicle:
 		return
 	var standings: Array = []
@@ -1099,6 +1107,7 @@ func _load_cloud_leaderboard(track: NativeTrack, serial: int, vehicle: String, k
 	var snapshot: Dictionary = discovery.record_snapshot(key)
 	snapshot.friends = standings
 	snapshot.board_error = "" if response.ok else str(response.error)
+	preloader.remember_board(version,vehicle,standings,str(snapshot.board_error))
 	discovery.remember_record(key,snapshot)
 	if is_inside_tree() and serial == _selection_serial: _show_detail()
 
@@ -1134,6 +1143,9 @@ func _apply_cloud_comparison(snapshot: Dictionary, data: Dictionary, track: Nati
 			snapshot.population = int(histogram.comparison.population)
 	snapshot.comparison_scope = "all"
 	snapshot.comparison_bins = RaceComplete.COMPARISON_BINS
+	snapshot._comparison_packet = data.duplicate(true)
+	var retained: Dictionary = discovery.comparisons.peek(str(track.metadata.get("cloud_version","")),VehicleCatalog.selected) if track != null else {}
+	snapshot._comparison_fetched_at = int(retained.get("_fetched_at",Time.get_unix_time_from_system()))
 	snapshot.erase("comparison_error")
 	snapshot.erase("test_population")
 	_align_personal_comparison(snapshot,local)
@@ -1166,6 +1178,18 @@ static func _cached_frame_query(distribution: Dictionary, metric: String) -> Str
 	var edges: Array = distribution.get("edges_ms",[])
 	if edges.size() < 2: return ""
 	return "&%s_from_ticks=%d&%s_to_ticks=%d" % [metric,roundi(float(edges[0])*VehicleSimulation.TICK_RATE/1000.0),metric,roundi(float(edges[-1])*VehicleSimulation.TICK_RATE/1000.0)]
+
+static func _snapshot_frame(snapshot: Dictionary) -> Dictionary:
+	if snapshot.get("_comparison_packet") is Dictionary: return snapshot._comparison_packet
+	var result: Dictionary = {}
+	for pair: Array in [["race","race_distribution"],["best_lap","lap_distribution"]]:
+		var edges: Array = snapshot.get(pair[1],{}).get("edges_ms",[])
+		if edges.size() >= 2: result[pair[0]] = {"bins":[{"from_ticks":roundi(float(edges[0])*VehicleSimulation.TICK_RATE/1000.0),"to_ticks_exclusive":roundi(float(edges[-1])*VehicleSimulation.TICK_RATE/1000.0)}]}
+	return result
+
+func _comparison_expired(snapshot: Dictionary, request_key: String) -> bool:
+	if snapshot.has("comparison_error") or Time.get_ticks_msec()-int(_comparison_attempts.get(request_key,-30000)) < 30000: return false
+	return not COMPARISON_REUSE.fresh({"packet":snapshot.get("_comparison_packet",{}),"_fetched_at":snapshot.get("_comparison_fetched_at",0)})
 
 func _open_scores() -> void:
 	var dialog := preload("res://ui/cloud_leaderboard.gd").new()
@@ -1261,7 +1285,7 @@ func _show_detail(preview_snapshot: Dictionary = {}) -> void:
 			if not snapshot.has(field) and warmed.has(field): snapshot[field] = warmed[field]
 		if not page_preview and cloud.client.signed_in():
 			var request_key: String = _comparison_selection_key(selected_track)
-			if _comparison_selection != request_key:
+			if _comparison_selection != request_key or (known_contract and not _cloud_detail_pending.has(request_key) and _comparison_expired(snapshot,request_key)):
 				if known_contract: _load_cloud_detail(selected_track)
 				else:
 					_comparison_selection = request_key
@@ -1290,7 +1314,7 @@ func _show_detail(preview_snapshot: Dictionary = {}) -> void:
 	# one comparison read when the actual page is visible, including promotion.
 	if not metadata_only and not page_preview and cloud != null and selected_track.metadata.has("cloud_version") and _selected_is_available():
 		var request_key: String = _comparison_selection_key(selected_track)
-		var unresolved: bool = not _comparison_ready(snapshot) and not snapshot.has("comparison_error") and not _cloud_detail_pending.has(request_key)
+		var unresolved: bool = (not _comparison_ready(snapshot) or _comparison_expired(snapshot,request_key)) and not snapshot.has("comparison_error") and not _cloud_detail_pending.has(request_key)
 		if _comparison_selection != request_key or unresolved:
 			_load_cloud_detail(selected_track)
 			snapshot = discovery.record_snapshot(key)
@@ -1506,7 +1530,8 @@ func _build_mode_rail(parent: Control) -> void:
 	var rail := RaceModeRail.new()
 	rail.mode_requested.connect(func(mode: String) -> void:
 		if mode == "rivalry": rivalry_requested.emit()
-		elif mode == "challenges": challenges_requested.emit())
+		elif mode == "challenges": challenges_requested.emit()
+		elif mode == "daily": daily_requested.emit())
 	parent.add_child(rail)
 
 func _show_hero(title: String, theme_id: String) -> void:
@@ -1570,7 +1595,7 @@ func _show_hero(title: String, theme_id: String) -> void:
 	spacer.size_flags_vertical = Control.SIZE_EXPAND_FILL
 	info.add_child(spacer)
 	info.add_child(preload("res://ui/biome_badge.gd").view(theme_id,16))
-	var heading := MenuStyle.label(title,60)
+	var heading := MenuStyle.user_label(title,60)
 	heading.name = "HeroTrackTitle"
 	var title_width: float = MenuStyle.DISPLAY.get_string_size(title,HORIZONTAL_ALIGNMENT_LEFT,-1,60).x
 	heading.clip_text = true
@@ -1584,6 +1609,7 @@ func _show_hero(title: String, theme_id: String) -> void:
 	title_slot.add_child(title_row)
 	title_row.add_child(heading)
 	var creator := MenuStyle.button(hero_creator,_show_creator_tracks.bind(hero_creator))
+	GameText.user_text(creator)
 	creator.name = "HeroCreatorLink"
 	creator.clip_text = true
 	creator.tooltip_text = "Show tracks by "+hero_creator
@@ -1678,7 +1704,7 @@ func _show_hero(title: String, theme_id: String) -> void:
 		outline.draw_polyline(path,Color("06131c"),8,true)
 		outline.draw_polyline(path,Color.WHITE,4,true))
 	outline.resized.connect(outline.queue_redraw)
-	route_column.add_child(MenuStyle.label(("~ " if not preview_entry.is_empty() else "")+"%.2f KM / LAP" % (hero_length/1000.0),20,true))
+	route_column.add_child(MenuStyle.label(("~ " if not preview_entry.is_empty() else "")+GameText.message("%.2f KM / LAP") % (hero_length/1000.0),20,true))
 	if animate: _slide_section()
 
 func _slide_section() -> void:

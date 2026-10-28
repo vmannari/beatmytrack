@@ -13,6 +13,27 @@ var simple_model: bool = false
 var editable_kits: bool = false
 var kit_frames: Dictionary = {}
 var graphics := LiveryGraphics.new()
+var cooperative_build: bool = false
+var cache_rest_pose: bool = true
+var build_budget_us: int = 4000
+var garage_template: bool = false
+var model_ready: bool = false
+var _model_slice_started: int = 0
+var model_yields: int = 0
+var model_max_slice_us: int = 0
+var model_slice_at: String = ""
+var _model_stage: String = "initial"
+
+func _model_checkpoint() -> bool:
+	if not cooperative_build: return true
+	var elapsed: int = Time.get_ticks_usec()-_model_slice_started
+	if elapsed > model_max_slice_us:
+		model_max_slice_us = elapsed; model_slice_at = _model_stage
+	if Time.get_ticks_usec()-_model_slice_started >= build_budget_us:
+		model_yields += 1
+		await get_tree().process_frame
+		_model_slice_started = Time.get_ticks_usec()
+	return is_inside_tree() and not is_queued_for_deletion()
 
 func apply_livery(value: Dictionary) -> void:
 	livery = VehicleLivery.normalize(value,vehicle_id)
@@ -43,7 +64,7 @@ func set_night_headlights(enabled: bool) -> void:
 	headlights.name = "NightHeadlights"
 	body.add_child(headlights)
 	# One bounded light for both lamps; no shadow maps, volumetrics or frame work.
-	var mount: Vector3 = {"compact":Vector3(0.60,0.80,-2.14),"pickup":Vector3(0.66,1.12,-2.71),"classic":Vector3(0.68,0.75,-1.94),"formula":Vector3(0.32,0.31,-2.20),"kart":Vector3(0.33,0.25,-1.38)}.get(vehicle_id,Vector3(0.60,0.80,-2.14))
+	var mount: Vector3 = {"compact":Vector3(0.60,0.80,-2.14),"pickup":Vector3(0.66,1.12,-2.71),"classic":Vector3(0.68,0.75,-1.94),"formula":Vector3(0.32,0.31,-2.20),"electric":Vector3(0.51,0.84,-2.29),"kart":Vector3(0.33,0.25,-1.38),"forklift":Vector3(0.70,2.47,-0.89)}.get(vehicle_id,Vector3(0.60,0.80,-2.14))
 	var beam := SpotLight3D.new()
 	beam.name = "SharedHeadlightBeam"
 	# Keep the entire hood behind the cone. A higher, wider short-range beam
@@ -65,6 +86,11 @@ func set_night_headlights(enabled: bool) -> void:
 	lens.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
 	lens.albedo_color = Color("fff0d2")
 	for side: float in [-1.0,1.0]:
+		if vehicle_id == "electric":
+			if side < 0.0:
+				lens.albedo_color = Color("e8f7ff")
+				preload("res://vehicle/electric_car_model.gd").night_lens(headlights,lens)
+			continue
 		if vehicle_id == "compact":
 			var x: float = side*CompactFrontLamps.OFFSET
 			var round_lens: MeshInstance3D = VisualGeometry.cylinder(headlights,0.103,0.012,Vector3(x,CompactFrontLamps.CENTER,CompactDetail._nose_z(x)-0.047),lens)
@@ -91,6 +117,8 @@ func set_headlight_bridge_occlusion(enabled: bool) -> void:
 		if road_headlight.light_cull_mask != mask: road_headlight.light_cull_mask = mask
 var batch_parts: bool = true
 var front_wheels: Array[Node3D] = []
+var rear_wheels: Array[Node3D] = []
+var rear_steering_config: HandlingConfig
 var rolling_wheels: Array[Node3D] = []
 var wheel_radii: Array[float] = []
 var wheel_rest_positions: Array[Vector3] = []
@@ -196,8 +224,19 @@ func present_ramp(state: VehicleState, support: float, pitch: float, enabled: bo
 
 
 func _ready() -> void:
+	_model_slice_started = Time.get_ticks_usec() if cooperative_build else 0
 	scale = Vector3.ONE * HandlingConfig.BODY_SCALE
+	if vehicle_id == "forklift": rear_steering_config = VehicleCatalog.config(vehicle_id)
 	if not VehicleCustomisation.valid(customisation): customisation = VehicleCustomisation.defaults()
+	if garage_template and preload("res://ui/garage_car_cache.gd").restore(self):
+		if livery.is_empty(): livery = VehicleLivery.defaults(vehicle_id)
+		apply_livery(livery)
+		_update_rear_lights()
+		graphics.configure(self)
+		force_update_transform()
+		for node: Node3D in find_children("*","Node3D",true,false): node.force_update_transform()
+		model_ready = true
+		return
 	if preload("res://vehicle/prepared_car_cache.gd").restore(self):
 		if livery.is_empty(): livery = VehicleLivery.defaults(vehicle_id)
 		apply_livery(livery)
@@ -205,12 +244,14 @@ func _ready() -> void:
 		graphics.configure(self)
 		force_update_transform()
 		for node: Node3D in find_children("*","Node3D",true,false): node.force_update_transform()
+		model_ready = true
 		return
 	if vehicle_id != "compact":
 		VehicleModels.build(self, vehicle_id)
 		if not livery.is_empty(): apply_livery(livery)
 		_update_rear_lights()
-		_finish_render_model()
+		await _finish_render_model()
+		model_ready = true
 		return
 	var paint := CompactFinish.paint(Color("e0d5b5"))
 	var blue := CompactFinish.paint(Color("30627d"))
@@ -221,9 +262,14 @@ func _ready() -> void:
 	brake_material = VisualGeometry.material(Color("802d2b"))
 	body = Node3D.new()
 	add_child(body)
+	_model_stage = "body"
 	CompactCoachwork.build_body(self,blue)
+	if not await _model_checkpoint(): return
 	# Three-door hatch: the cabin reaches the tail, with no sedan boot deck.
+	_model_stage = "cabin"
 	_hatchback(paint, glass, trim, blue)
+	if not await _model_checkpoint(): return
+	_model_stage = "wheels"
 	for side: float in [-1.0, 1.0]:
 		for axle: float in [-1.28, 1.28]:
 			var pivot := Node3D.new()
@@ -243,22 +289,32 @@ func _ready() -> void:
 			register_rolling_wheel(pivot, 0.37)
 			var brake_parent: Node3D = new_kit_frame("rims",pivot) if editable_kits else pivot
 			if CompactKits.choice(self,"rims") != "stock": CompactKits.build_caliper(brake_parent,side)
-	CompactDetail.build(self, blue, paint, trim, rim)
+			if not await _model_checkpoint(): return
+	_model_stage = "details"
+	await CompactDetail.build(self, blue, paint, trim, rim,_model_checkpoint if cooperative_build else Callable())
+	if not await _model_checkpoint(): return
 	CompactKits.build_aero(self)
 	CompactKits.build_body(self)
 	if not livery.is_empty(): apply_livery(livery)
 	_update_rear_lights()
-	_finish_render_model()
+	await _finish_render_model()
+	model_ready = true
 
 
 func _finish_render_model() -> void:
 	if simple_model: RacingCarModels.prepare(self)
 	if batch_parts:
-		VisualGeometry.batch_static_parts(self)
-		VisualGeometry.batch_car_parts(self)
+		_model_stage = "sibling batches"
+		await VisualGeometry.batch_static_parts(self,_model_checkpoint if cooperative_build else Callable())
+		if not await _model_checkpoint(): return
+		_model_stage = "frame batches"
+		await VisualGeometry.batch_car_parts(self,_model_checkpoint if cooperative_build else Callable())
+		if not await _model_checkpoint(): return
+	_model_stage = "snapshot"
 	if livery.is_empty(): livery = VehicleLivery.defaults(vehicle_id)
-	preload("res://vehicle/prepared_car_cache.gd").remember(self)
+	if cache_rest_pose: preload("res://vehicle/prepared_car_cache.gd").remember(self)
 	graphics.configure(self)
+	if not await _model_checkpoint(): return
 
 func new_kit_frame(category: String, parent: Node3D) -> Node3D:
 	var frame := Node3D.new()
@@ -327,6 +383,10 @@ func present(point: Vector2, angle: float, state: VehicleState, frame: DriveFram
 	rotation.y = -angle
 	for wheel: Node3D in front_wheels:
 		wheel.rotation.y = -state.steering * (0.60 if vehicle_id == "kart" else 0.4)
+	if vehicle_id == "forklift":
+		var speed_fraction: float = clampf(absf(state.velocity.dot(state.forward())) / 24.0, 0.0, 1.0)
+		for wheel: Node3D in rear_wheels:
+			wheel.rotation.y = state.steering * rear_steering_config.steering_angle * (1.0 - rear_steering_config.high_speed_steering_reduction * speed_fraction)
 	for i: int in range(rolling_wheels.size()):
 		var rotor: Node3D = rolling_wheels[i]
 		var pivot: Node3D = rotor.get_parent() as Node3D
@@ -334,6 +394,8 @@ func present(point: Vector2, angle: float, state: VehicleState, frame: DriveFram
 		var distance: float = travel.dot(Vector2(sin(heading), cos(heading)))
 		rotor.rotation.x = wrapf(rotor.rotation.x - distance / wheel_radii[i], -PI, PI)
 	var braking: bool = frame.brake > 0
+	if vehicle_id == "electric":
+		braking = frame.throttle < 62 and state.velocity.length() > 0.5 and state.jump_height == 0.0 and state.roll_ticks == 0
 	if braking != rear_braking:
 		rear_braking = braking
 		_update_rear_lights()
@@ -483,7 +545,7 @@ func present_roll(state: VehicleState, interpolation: float = 1.0) -> void:
 			outline.append_array([Vector2(-half,height),Vector2(half,height)])
 	if vehicle_id != "compact":
 		var half_width: float = 1.05 if vehicle_id == "pickup" else 1.16 if vehicle_id == "formula" else 0.96
-		var height: float = 1.96 if vehicle_id == "pickup" else 0.91 if vehicle_id == "formula" else 1.36
+		var height: float = 2.89 if vehicle_id == "forklift" else 1.96 if vehicle_id == "pickup" else 0.91 if vehicle_id == "formula" else 1.36
 		outline = [Vector2(-half_width,0),Vector2(half_width,0),Vector2(-half_width,0.75),Vector2(half_width,0.75),Vector2(-0.76,height),Vector2(0.76,height)]
 	if vehicle_id == "kart":
 		outline = [Vector2(-0.86,0),Vector2(0.86,0),Vector2(-0.86,0.44),Vector2(0.86,0.44),Vector2(-0.23,1.16),Vector2(0.23,1.16)]

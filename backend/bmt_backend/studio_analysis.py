@@ -251,7 +251,7 @@ def behaviour(
     requested, (first, until) = interval(window)
     at = now()
     with request.app.state.studio_reporting.snapshot(
-        request.app.state.session_factory, request_id=request.state.request_id
+        request.app.state.session_factory, request_id=request.state.request_id, window=(first, until)
     ) as (session, replica):
         state, product = session.get(AnalysisState, 1), session.get(ProductState, 1)
         retained_floor = at // DAY - (product.fact_days if product else 180)
@@ -406,6 +406,6 @@ def behaviour(
                 "foreground": "Sum of client-reported foreground intervals; missing final intervals and concurrent devices affect coverage.",
                 "retention": "Exact UTC D1/D7/D30, any return build; follow-up is provisional for seven additional days.",
                 "guest": "Unavailable; no guest/account linking",
-                "totals": "Exact filtered SQL aggregates on isolated reporting storage; detail option limits do not truncate metrics",
+                "totals": "Exact filtered SQL aggregates through the configured reporting reader; detail option limits do not truncate metrics",
             },
         }

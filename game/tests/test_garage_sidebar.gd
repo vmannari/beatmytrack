@@ -23,6 +23,37 @@ func settle() -> void:
 	while page._menu_motion != null: await frame()
 	for tick: int in range(4): await frame()
 
+func rail_snapshot() -> Array[Dictionary]:
+	var result: Array[Dictionary] = []
+	for button: Button in page.rail.get_children():
+		result.append({"id":button.get_instance_id(),"rect":button.get_global_rect(),"name":button.name})
+	return result
+
+func check_rail_snapshot(expected: Array[Dictionary], label: String) -> void:
+	check(page.rail.get_child_count()==expected.size(),"all rail buttons remain present "+label)
+	for item: Dictionary in expected:
+		var button: Button = page.rail.get_node_or_null(NodePath(item.name))
+		check(is_instance_valid(button) and button.get_instance_id()==item.id,"same rail button throughout motion "+label+" "+str(item.name))
+		if not is_instance_valid(button): continue
+		check(button.is_visible_in_tree() and button.get_global_rect().is_equal_approx(item.rect),"rail button stays visible in its exact slot "+label+" "+str(item.name))
+		check(button.mouse_filter!=Control.MOUSE_FILTER_IGNORE and button.focus_mode!=Control.FOCUS_NONE,"rail button remains interactive "+label+" "+str(item.name))
+
+func settle_with_fixed_rail(expected: Array[Dictionary], label: String) -> void:
+	var tween: Tween = page._menu_motion
+	check(tween!=null,"content transition starts "+label)
+	if tween==null: return
+	tween.pause()
+	for sample: int in range(9):
+		if sample>0: tween.custom_step(GaragePage.MENU_MOVE_SECONDS/8.0)
+		page._present_menu_layout()
+		await frame()
+		check_rail_snapshot(expected,label+" frame "+str(sample))
+		if sample in [0,3,5] and root.size.x==1280:
+			await capture("motion-"+label+"-"+str(sample))
+	tween.custom_step(0.001)
+	await settle()
+	check_rail_snapshot(expected,label+" settled")
+
 func capture(label: String) -> void:
 	if DisplayServer.get_name() == "headless": return
 	check(root.get_texture().get_image().save_png(output.path_join(label+".png")) == OK,"capture "+label)
@@ -70,7 +101,7 @@ func click(button: Button, touch: bool = false) -> void:
 
 func run() -> void:
 	OS.set_environment("BMT_API_URL","")
-	var evidence_root: String = "res://../docs/evidence/garage-workshop-navigation-2026-10-24/native"
+	var evidence_root: String = "res://../docs/evidence/garage-workshop-overlay-2026-10-25/native"
 	for argument: String in OS.get_cmdline_user_args():
 		if argument.begins_with("--evidence-root="): evidence_root = argument.trim_prefix("--evidence-root=")
 	before = "--before" in OS.get_cmdline_user_args()
@@ -98,12 +129,27 @@ func run() -> void:
 		await settle()
 		rail_bounds("cars "+str(dimensions))
 		await capture("cars-"+str(dimensions.x))
+		var fixed_rail: Array[Dictionary] = rail_snapshot()
 		page._confirm_car()
-		await settle()
+		await settle_with_fixed_rail(fixed_rail,"select-"+str(dimensions.x))
 		rail_bounds("selected "+str(dimensions))
-		# The owner's new reference promotes Appearance/Wash/Parts into the rail.
-		check(page.rail.get_child_count() == 7,"seven stable destinations including car selection")
-		check(not page._workshop_tabs.visible,"reference navigation leaves the car header unobstructed")
+		# Workshop owns the three car tasks; media keep their own rail entries.
+		check(page.rail.get_child_count() == 5,"five stable destinations including Workshop")
+		check(page._workshop_tabs.visible,"Workshop overlay visible after selecting car")
+		if not before:
+			check(page._workshop_tabs.get_parent()==page.preview,"Workshop controls overlay the car view")
+			check(page._workshop_tabs.get_child_count()==3,"three compact overlay buttons without a submenu heading")
+			check(absf(page.preview.global_position.x-page.rail.get_global_rect().end.x-12)<1,"overlay consumes no separate layout column")
+		for tab: Control in page._workshop_tabs.get_children():
+			if not tab is Button: continue
+			check(root.get_visible_rect().encloses(tab.get_global_rect()),"Workshop tab fits window")
+			check(tab.size.y >= 48,"Workshop submenu touch target")
+			if not before:
+				check(page.preview.get_global_rect().encloses(tab.get_global_rect()),"overlay button fits inside car view")
+				check(not tab.get_global_rect().intersects(page.heading.get_global_rect()),"overlay clears the car name")
+				check(page.preview.get_node("GarageViewControls").find_children("*","Button",true,false).is_empty(),"view control buttons are absent")
+				check(tab.icon!=null and not tab.tooltip_text.is_empty() and not tab.accessibility_name.is_empty(),"overlay has a named mode icon")
+		check(page.rail.get_node_or_null("GarageCare") == null and page.rail.get_node_or_null("GarageCustomise") == null and page.rail.get_node_or_null("GarageTuning") == null,"car tasks are grouped in the side submenu")
 		await capture("customise-"+str(dimensions.x))
 		var rects: Array = []
 		for button: Node in page.rail.get_children(): rects.append({"name":button.name,"rect":str(button.get_global_rect())})
@@ -111,10 +157,19 @@ func run() -> void:
 		var positions: Array[Rect2] = []
 		for button: Node in page.rail.get_children(): positions.append(button.get_global_rect())
 		for destination: String in ["care","tuning","records","trophies","news"]:
-			var target: Button = page.rail.get_node("Garage"+destination.capitalize())
-			await click(target,destination in ["records","news"])
-			await settle()
+			var target: Button = page._workshop_tabs.get_node("WorkshopWash" if destination == "care" else "WorkshopParts") if destination in ["care","tuning"] else page.rail.get_node("Garage"+destination.capitalize())
+			var yaw: float = page.showroom.yaw
+			var zoom: float = page.showroom.zoom
+			fixed_rail = rail_snapshot()
+			await click(target,destination in ["care","records","news"])
+			await settle_with_fixed_rail(fixed_rail,destination+"-"+str(dimensions.x))
 			check(page.section == destination,"pointer opens "+destination+" "+str(dimensions))
+			if destination in ["care","tuning"]:
+				check(page.showroom.yaw==yaw and page.showroom.zoom==zoom,"overlay click does not orbit or zoom the car")
+				check(page.preview.get_global_rect().encloses(page._workshop_tabs.get_global_rect()),"overlay follows resized car view "+destination)
+				if destination=="care":
+					check(not page._workshop_tabs.get_global_rect().intersects(page._wash_status_panel.get_global_rect()),"overlay clears cleanliness status")
+					check(not page._workshop_tabs.get_global_rect().intersects(page.preview.get_node("GarageWashTools").get_global_rect()),"overlay clears washing tools")
 			check(page._preview_column.visible == (destination != "news"),"preview column follows destination "+destination)
 			if destination == "news":
 				check(page.tools_panel.global_position.y <= page.global_position.y+1,"News keeps its full-height layout")
@@ -123,18 +178,50 @@ func run() -> void:
 			check(page.showroom.showroom_viewport == viewport and page.showroom.car == car,"retained car/viewport "+destination)
 			if dimensions.x == 1280: await capture(destination+"-1280")
 		check(not page._workshop_tabs.visible,"tabs hidden outside workshop")
-		await click(page.rail.get_node("GarageTuning"))
-		await settle()
-		check(page.section == "tuning","Parts opens directly after News")
-		check(not page._workshop_tabs.visible,"Parts uses the single navigation rail")
+		fixed_rail = rail_snapshot()
+		await click(page.rail.get_node("GarageWorkshop"))
+		await settle_with_fixed_rail(fixed_rail,"workshop-return-"+str(dimensions.x))
+		check(page.section == "tuning","Workshop remembers Parts after News")
+		check(page._workshop_tabs.visible,"returning to Workshop restores overlay controls")
 		check(not page.actions.visible and page.actions.get_child_count()==0,"customisation has no bottom button row "+str(dimensions))
 		check(page.get_global_rect().encloses(page.tools_panel.get_global_rect()),"workshop controls fit "+str(dimensions))
 		check(root.get_visible_rect().encloses(page.tools_panel.get_global_rect()),"workshop controls fit window "+str(dimensions))
 		if dimensions.x == 1280: await capture("workshop-return-1280")
+		# A second rail click must work while the first content panel is moving.
+		fixed_rail = rail_snapshot()
+		var news_button: Button = page.rail.get_node("GarageNews")
+		news_button.grab_focus()
+		page._show_section("records")
+		page._menu_motion.pause()
+		page._menu_motion.custom_step(GaragePage.MENU_MOVE_SECONDS*0.4)
+		page._present_menu_layout()
+		await frame()
+		check_rail_snapshot(fixed_rail,"interrupted-"+str(dimensions.x))
+		check(is_instance_valid(news_button) and news_button.has_focus(),"submenu change preserves keyboard focus")
+		await click(page.rail.get_node("GarageNews"),true)
+		check(page.section=="news","touch can change destination during content motion")
+		await settle_with_fixed_rail(fixed_rail,"interrupted-news-"+str(dimensions.x))
+		check(page._departing_menus.get_child_count()==0,"interrupted content panels are cleaned up")
 		page._car_menu_open = false
 	page._show_section("cars")
 	await settle()
 	check(app.records.settings.get("vehicle_conditions",{}).is_empty(),"navigation does not write car condition")
+	var dirty: Dictionary = VehicleWeathering.new().snapshot()
+	dirty.dirt = 0.85
+	dirty.slow_dirt = 0.25
+	check(VehicleCondition.save(app.records,"forklift",dirty)==OK,"seed isolated dirty Forklift")
+	page.open_car(VehicleCatalog.IDS.find("forklift"))
+	await settle()
+	check(page._customisation_locked and not page.tools_panel.visible and page.customise_layout==null,"actual App dirty Forklift has no wash-required sidebar")
+	check(page.preview.get_global_rect().encloses(page._wash_requirement.get_global_rect()),"actual App compact wash notice fits the showroom")
+	for name: String in ["GarageTopView","GarageZoomIn","GarageZoomOut","GarageResetView"]:
+		check(page.find_child(name,true,false)==null,"actual App removes "+name)
+	await capture("app-dirty-forklift-overlay")
+	await click(page.preview.find_child("GarageWashForCustomisation",true,false),true)
+	await settle()
+	check(page.section=="care" and page.showroom.wash_mode and not page.tools_panel.visible,"actual touch Wash car enters washing without a sidebar")
+	check(not page._wash_requirement.visible,"actual washing hides the compact requirement")
+	await capture("app-wash-after-shortcut")
 	var report := FileAccess.open(output.path_join("layout.json"),FileAccess.WRITE)
 	report.store_string(JSON.stringify({"checks":checks,"failures":failures,"before":before,"renderer":RenderingServer.get_current_rendering_method(),"layouts":rail_report},"\t"))
 	report.close()

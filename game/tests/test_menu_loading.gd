@@ -22,7 +22,7 @@ func run() -> void:
 	var browser := TrackBrowser.new()
 	browser.library = library
 	browser.records = LocalRecords.new(folder+"/records.json")
-	browser.selected_track = NativeTrack.read("res://resources/tracks/starter_circuit.json")
+	browser.selected_track = NativeTrack.read("res://resources/tracks/ellipse.json")
 	browser.state = {"section":"all","page":0}
 	root.add_child(browser)
 	while browser.loading: await process_frame
@@ -115,7 +115,7 @@ func run() -> void:
 	var board := DelayedBoard.new()
 	root.add_child(board)
 	browser.cloud = board
-	var ready_track := NativeTrack.read("res://resources/tracks/starter_circuit.json")
+	var ready_track := NativeTrack.read("res://resources/tracks/ellipse.json")
 	ready_track.identity = str(a.id)
 	ready_track.metadata.cloud_version = "fixture_ready"
 	browser.catalog.indexed_revision = library.revision

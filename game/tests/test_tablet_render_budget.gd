@@ -52,7 +52,7 @@ func run() -> void:
 		check(camera.unproject_position(world_points[index]).is_equal_approx(positions[index]),"whole-scene framing remains exact at lower world resolution")
 	viewport.free()
 	for wet: bool in [false,true]:
-		var track := NativeTrack.read("res://resources/tracks/starter_circuit.json")
+		var track := NativeTrack.read("res://resources/tracks/ellipse.json")
 		track.cells.fill(3 if wet else 0)
 		if wet:
 			track.cells[track.cells.size()/2] = 6

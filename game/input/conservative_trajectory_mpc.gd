@@ -37,7 +37,7 @@ func control(state: VehicleState, trajectory: RacingTrajectory, progress: float,
 	guidance_steering = clampf(atan(config.wheelbase*pursuit)/angle-state.yaw_rate*0.025,-1.0,1.0)
 	var braking_preview: Dictionary = trajectory.at(progress+speed*lerpf(0.20,0.02,skill))
 	var speed_goal: float = minf(reference.speed,braking_preview.speed)*pace
-	guidance_acceleration = clampf((speed_goal-speed)*lerpf(2.1,3.5,skill),-config.braking_force/config.mass,RacingTrajectory.drive_acceleration(config,speed,reference.grip,reference.drag))
+	guidance_acceleration = clampf((speed_goal-speed)*lerpf(2.1,3.5,skill),-config.maximum_deceleration(),RacingTrajectory.drive_acceleration(config,speed,reference.grip,reference.drag))
 	var normal := Vector2(cos(reference.heading),-sin(reference.heading))
 	initial = PackedFloat64Array([(state.position-reference.point).dot(normal),wrapf(state.heading-reference.heading,-PI,PI),state.yaw_rate,state.velocity.dot(state.right()),state.velocity.length()-maxf(2.0,state.velocity.length())])
 	references.clear()
@@ -77,7 +77,7 @@ func control(state: VehicleState, trajectory: RacingTrajectory, progress: float,
 		ref.gain = derivative
 		ref.bias = yaw-derivative*feed_angle/steer_angle
 		ref.drive = RacingTrajectory.drive_acceleration(config,travel_speed,ref.grip,ref.drag)
-		ref.brake = minf(config.braking_force/config.mass,config.longitudinal_grip*ref.grip)*0.85
+		ref.brake = minf(config.maximum_deceleration(),config.longitudinal_grip*ref.grip)*0.85
 		ref.side = travel_speed*(1.0-side_decay)/config.lateral_response
 		ref.yaw = travel_speed*ref.curvature
 		ref.heading_goal = atan(ref.yaw/config.lateral_response)
@@ -133,7 +133,8 @@ func control(state: VehicleState, trajectory: RacingTrajectory, progress: float,
 	var force: float = config.engine_force/config.mass*(1.0-0.45*clampf(state.velocity.length()/config.maximum_speed,0.0,1.0))
 	var drag: float = (config.drag*state.velocity.length_squared()+config.rolling_resistance)/config.mass+reference.drag
 	var pedal: float = previous_acceleration+drag
-	if pedal >= 0.0: frame.throttle = clampi(roundi(pedal/maxf(0.1,force)*255.0),0,255)
+	if config.single_pedal: frame.throttle = roundi(config.accelerator_for_acceleration(pedal,force)*255.0)
+	elif pedal >= 0.0: frame.throttle = clampi(roundi(pedal/maxf(0.1,force)*255.0),0,255)
 	else: frame.brake = clampi(roundi(-pedal/(config.braking_force/config.mass)*255.0),0,255)
 	return frame
 

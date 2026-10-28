@@ -66,7 +66,7 @@ func run() -> void:
 	var directory: String = "user://camera_test_" + TrackLibrary.unique_id()
 	DirAccess.make_dir_recursive_absolute(directory)
 	var store := LocalRecords.new(directory.path_join("records.json"))
-	store.settings.favorites = ["starter_circuit"]
+	store.settings.favorites = ["ellipse"]
 	store.settings.camera_speed_zoom = false
 	store.settings.camera_speed_zoom_strength = 0.41
 	for mode: String in CameraProfile.MODES:
@@ -74,7 +74,7 @@ func run() -> void:
 		check(store.save_records() == OK, "camera preference commits " + mode)
 		var reload := LocalRecords.new(store.path)
 		reload.load_records()
-		check(reload.settings.camera_mode == mode and reload.settings.favorites == ["starter_circuit"], "reload preserves camera and unrelated preferences " + mode)
+		check(reload.settings.camera_mode == mode and reload.settings.favorites == ["ellipse"], "reload preserves camera and unrelated preferences " + mode)
 		check(reload.settings.camera_speed_zoom == false, "reload preserves disabled speed zoom " + mode)
 		check(is_equal_approx(float(reload.settings.camera_speed_zoom_strength), 0.41), "reload preserves zoom strength independently of mode and toggle " + mode)
 	store.settings.camera_mode = "unknown"

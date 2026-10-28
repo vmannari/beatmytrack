@@ -14,6 +14,7 @@ func check(ok: bool, label: String) -> void:
 
 func _run() -> void:
 	var kart: HandlingConfig = VehicleCatalog.config("kart")
+	_check_top_speed(kart)
 	_check_soil(kart)
 	_check_edge(kart)
 	_check_tighter_turn(kart)
@@ -73,6 +74,54 @@ func _run() -> void:
 	print("KART_METRICS ",JSON.stringify(metrics))
 	print("KART_TESTS: %d checks, %d failures" % [checks,failures])
 	quit(1 if failures else 0)
+
+func _check_top_speed(kart: HandlingConfig) -> void:
+	check(absf(kart.maximum_speed*3.6-140.0) < 0.001,"kart has the owner-requested 140 km/h cap")
+	check(kart.version == "kart-5","higher speed has a separate handling identity")
+	var previous: HandlingConfig = kart.duplicate() as HandlingConfig
+	previous.version = "kart-4"
+	previous.maximum_speed = 30.0
+	var values: Dictionary = kart.snapshot()
+	var old_values: Dictionary = previous.snapshot()
+	for key: String in ["version","maximum_speed"]:
+		values.erase(key)
+		old_values.erase(key)
+	check(values == old_values,"top-speed tuning preserves every other handling field")
+	var sim := VehicleSimulation.new(kart)
+	var old := VehicleSimulation.new(previous)
+	var replay := VehicleSimulation.new(kart)
+	var launch_no_slower: bool = true
+	var first_tick_equal: bool = false
+	var exact_replay: bool = true
+	var maximum: float = 0
+	var to_target: int = 0
+	for tick: int in range(3600):
+		var frame: DriveFrame = DriveFrame.sample(0,1,0)
+		old.step(frame)
+		sim.step(frame)
+		replay.step(frame)
+		if tick == 0: first_tick_equal = sim.state.snapshot() == old.state.snapshot()
+		if old.state.velocity.length() < 29.99: launch_no_slower = launch_no_slower and sim.state.velocity.length() >= old.state.velocity.length()
+		exact_replay = exact_replay and sim.state.snapshot() == replay.state.snapshot()
+		maximum = maxf(maximum,sim.state.velocity.length())
+		if to_target == 0 and sim.state.velocity.length()*3.6 >= 139.99: to_target = tick+1
+	check(first_tick_equal,"initial launch tick retains the original engine force")
+	check(launch_no_slower,"higher cap preserves at least the previous launch acceleration")
+	check(to_target > 0 and absf(maximum*3.6-140.0) < 0.001,"full throttle reaches and holds 140 km/h")
+	check(maximum <= kart.maximum_speed,"sustained full throttle never exceeds the configured cap")
+	check(exact_replay,"30 seconds at the new cap replays exactly")
+	var brake_start: Vector2 = sim.state.position
+	var stop_ticks: int = 0
+	for tick: int in range(480):
+		sim.step(DriveFrame.sample(0,0,1))
+		if sim.state.velocity.length() < 0.15:
+			stop_ticks = tick+1
+			break
+	check(stop_ticks > 0,"the existing brakes stop the kart from 140 km/h")
+	var track: NativeTrack = NativeTrack.read("res://tests/fixtures/legacy_tracks/slicks_arto4_test.json")
+	var records := LocalRecords.new("user://kart_speed_identity.json")
+	check(records.key_for(track,kart) != records.key_for(track,previous),"new speed cannot merge with earlier kart PB rules")
+	print("KART_TOP_SPEED ",JSON.stringify({"version":kart.version,"config_hash":JSON.stringify(kart.snapshot(),"",true).sha256_text(),"maximum_kmh":maximum*3.6,"to_140_s":to_target/120.0,"brake_stop_s":stop_ticks/120.0,"brake_distance_m":sim.state.position.distance_to(brake_start)}))
 
 func _check_soil(kart: HandlingConfig) -> void:
 	var previous: HandlingConfig = kart.duplicate() as HandlingConfig

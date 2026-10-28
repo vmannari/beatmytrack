@@ -133,7 +133,7 @@ func _ready() -> void:
 	info.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	info.add_theme_constant_override("separation",4)
 	footer.add_child(info)
-	active_label = MenuStyle.label("0 filters active",17)
+	active_label = MenuStyle.label(GameText.plural("{count} filter active","{count} filters active",0),17)
 	info.add_child(active_label)
 	var reset := MenuStyle.button("RESET",reset_choices)
 	reset.name = "ResetFilters"
@@ -255,9 +255,9 @@ func refresh_choices() -> void:
 	rating_slider.tooltip_text = "Minimum rating: "+rating_value.text+" (0.1 steps)"
 	sorting.selected = maxi(0,["recommended","name","score","plays"].find(draft.sort))
 	var found: int = discovery.query(catalog,draft,records.settings.get("favorites",[]),records.settings.get("track_ratings",{}),records.settings.get("raced_tracks",[])).size()
-	apply_button.text = "SHOW %d TRACK%s" % [found,"" if found == 1 else "S"]
+	apply_button.text = GameText.plural("SHOW {count} TRACK","SHOW {count} TRACKS",found)
 	if catalog.server_ordered: apply_button.text = "SHOW TRACKS"
-	active_label.text = "%d filter%s active" % [active_count(draft),"" if active_count(draft) == 1 else "s"]
+	active_label.text = GameText.plural("{count} filter active","{count} filters active",active_count(draft))
 	active_label.add_theme_color_override("font_color",MenuStyle.ACCENT if active_count(draft) > 0 else MenuStyle.TEXT)
 
 static func active_count(filters: Dictionary) -> int:

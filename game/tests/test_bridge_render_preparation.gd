@@ -22,7 +22,7 @@ func run() -> void:
 		if "--night-only" in OS.get_cmdline_user_args() and theme != "night_city": continue
 		var track: NativeTrack
 		if theme == "native": track = NativeTrack.read("res://tests/fixtures/legacy_tracks/slicks_1way_test.json")
-		elif theme == "no-bridge": track = NativeTrack.read("res://resources/tracks/starter_circuit.json")
+		elif theme == "no-bridge": track = NativeTrack.read("res://resources/tracks/ellipse.json")
 		else:
 			var document: Dictionary = JSON.parse_string(FileAccess.get_file_as_string("res://tests/fixtures/over_and_under.json"))
 			document.theme = theme

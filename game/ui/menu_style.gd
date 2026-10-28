@@ -145,6 +145,11 @@ static func button(text: String, action: Callable, primary: bool = false) -> But
 		node.add_theme_color_override("font_hover_color", INK)
 	return node
 
+static func user_label(text: String, font_size: int = 18, muted: bool = false) -> Label:
+	var node: Label = label(text,font_size,muted)
+	GameText.user_text(node)
+	return node
+
 static func fill(node: Control) -> void:
 	node.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
 

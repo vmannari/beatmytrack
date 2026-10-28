@@ -62,7 +62,7 @@ void fragment() { ALBEDO = vec3(1.0); ALPHA = surface_sample ? dust_bridge_surfa
 	quad.material_override = mask
 	dust = SandDust.new()
 	world.add_child(dust)
-	track = NativeTrack.read("res://resources/tracks/starter_circuit.json")
+	track = NativeTrack.read("res://resources/tracks/ellipse.json")
 	track.metadata.theme = "desert"
 	track.cells.fill(2)
 	track.deck_cells.fill(0)
@@ -70,7 +70,7 @@ void fragment() { ALBEDO = vec3(1.0); ALPHA = surface_sample ? dust_bridge_surfa
 	state.velocity = Vector2(0,12)
 	for angle: float in [0.0,37.0,90.0,213.0]:
 		var span: Dictionary = {"kind":"bridge","position":[-10.0,-6.0],"heading":angle,"length":32.0,"width":10.0}
-		track = NativeTrack.read("res://resources/tracks/starter_circuit.json")
+		track = NativeTrack.read("res://resources/tracks/ellipse.json")
 		track.metadata.theme = "desert"
 		track.cells.fill(2)
 		track.deck_cells.fill(0)
@@ -130,7 +130,7 @@ void fragment() { ALBEDO = vec3(1.0); ALPHA = surface_sample ? dust_bridge_surfa
 	dust.clear()
 	check(dust.cloud_emitters().all(func(emitter: GPUParticles3D) -> bool: return not emitter.emitting),"restart clears both particle layers")
 	var last_span: Dictionary = track.creator_bridges[0]
-	track = NativeTrack.read("res://resources/tracks/starter_circuit.json")
+	track = NativeTrack.read("res://resources/tracks/ellipse.json")
 	track.metadata.theme = "desert"
 	for index: int in range(15): track.creator_bridges.append({"position":[1000.0+index*40,1000.0],"heading":0.0,"length":32.0,"width":10.0})
 	track.creator_bridges.append(last_span)
@@ -142,7 +142,7 @@ void fragment() { ALBEDO = vec3(1.0); ALPHA = surface_sample ? dust_bridge_surfa
 	var origin: Vector2 = state.position-Vector2(16,0).rotated(deg_to_rad(float(crossing.heading)))
 	crossing.position = [origin.x,origin.y]
 	check(CreatorBridges.validate([last_span,crossing]).is_empty(),"junction witness has approved matching deck heights")
-	track = NativeTrack.read("res://resources/tracks/starter_circuit.json")
+	track = NativeTrack.read("res://resources/tracks/ellipse.json")
 	track.metadata.theme = "desert"
 	track.creator_bridges = [last_span,crossing]
 	dust.sample(state,DriveFrame.new(),track)
@@ -154,7 +154,7 @@ void fragment() { ALBEDO = vec3(1.0); ALPHA = surface_sample ? dust_bridge_surfa
 	dust.bridge_clipping_enabled = true
 	bind_mask(false)
 	await pixel(VisualGeometry.world(state.position)+Vector3.UP*4.5,false,"restoring clipping keeps the same bridge geometry")
-	track = NativeTrack.read("res://resources/tracks/starter_circuit.json")
+	track = NativeTrack.read("res://resources/tracks/ellipse.json")
 	dust.sample(state,DriveFrame.new(),track)
 	bind_mask(false)
 	await pixel(VisualGeometry.world(state.position)+Vector3.UP*4.5,true,"a track without bridges keeps original cloud visibility")

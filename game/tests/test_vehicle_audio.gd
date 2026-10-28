@@ -32,7 +32,7 @@ func run() -> void:
 		check(float(clip.peak_dbfs)<= -1.5,"asset has mastering headroom: "+str(clip.file))
 		check(sample.data.size()>1000,"asset contains audio: "+str(clip.file))
 		check(FileAccess.get_sha256(VehicleAudio.BANK+str(clip.file))==str(clip.sha256),"bank checksum: "+str(clip.file))
-	var track: NativeTrack = NativeTrack.read("res://resources/tracks/starter_circuit.json")
+	var track: NativeTrack = NativeTrack.read("res://resources/tracks/ellipse.json")
 	var config: HandlingConfig = VehicleCatalog.config("compact")
 	var state := VehicleState.new()
 	state.position = track.spawn
@@ -49,7 +49,7 @@ func run() -> void:
 			model.advance(state,control,1.0/60)
 			var weights: Vector3 = model.weights()
 			check(absf(weights.length_squared()-1.0)<0.0001,"equal-power engine crossfade: "+id)
-		check(model.shifts==0 if id=="kart" else model.shifts>=3,"authored transmission: "+id)
+		check(model.shifts==0 if id in ["kart","forklift","electric"] else model.shifts>=3,"authored transmission: "+id)
 		check(model.rpm>=model.idle_rpm and model.rpm<=model.redline_rpm,"bounded RPM: "+id)
 		state.velocity = Vector2.ZERO
 		var final_before: Array = state.snapshot()
@@ -128,7 +128,7 @@ func run() -> void:
 	audio.free()
 	# Lifecycle regression: a real race creates only the replacement mixer.
 	var game: Node = load("res://core/game.tscn").instantiate()
-	game.initial_track = NativeTrack.read("res://resources/tracks/starter_circuit.json")
+	game.initial_track = NativeTrack.read("res://resources/tracks/ellipse.json")
 	root.add_child(game)
 	game.set_physics_process(false)
 	game.set_process(false)

@@ -12,6 +12,10 @@ class Service extends Node:
 	var joins: int = 0
 	var week: int = 41
 	var keys: int = 0
+	var raced: bool = false
+	var pending: int = 0
+	var continues: int = 0
+	var fail_continue: bool = false
 	func base_url() -> String: return "http://127.0.0.1:18181"
 	func signed_in() -> bool: return true
 	func test_drivers_available() -> bool: return enabled
@@ -20,11 +24,13 @@ class Service extends Node:
 		return "fixture-key-"+str(keys)
 	func request_api(path: String, _method: int, payload: Dictionary, _key: String, _authorized: bool) -> Dictionary:
 		if path == "/rivalry/join":
-			assert(payload.test_population and payload.automatic_test_drivers)
+			assert(payload.test_population == enabled and payload.automatic_test_drivers == enabled)
 			joins += 1
 			state = "active"
 			automatic = true
 		elif path.ends_with("/continue"):
+			continues += 1
+			if fail_continue: return {"ok":false}
 			week += 1
 			state = "not_joined"
 			automatic = false
@@ -35,10 +41,12 @@ class Service extends Node:
 		data.group_id = "fixture-group"
 		data.self_id = "observer"
 		data.vehicle_id = "compact"
+		data.pending_runs = pending
 		data.standings = [{"id":"observer","name":"Observer","rank":null,"points":0}]
 		data.tracks = []
 		for slot: int in range(5):
 			data.tracks.append({"board_id":"board_"+str(slot),"entries":[{"id":"observer","name":"Observer","ms":null,"rank":null,"points":0}],"entry":{"name":"Circuit "+str(slot),"creator":"Beat my track","track_id":"track_"+str(slot),"version_id":"version_"+str(slot),"content_hash":"a".repeat(64),"points":[]}})
+		if raced: data.tracks[0].entries[0].ms = 123456
 		return data
 
 func _initialize() -> void: call_deferred("run")
@@ -63,19 +71,47 @@ func run() -> void:
 	await adapter.refresh()
 	check(service.joins == 2,"an existing manual test field is adopted automatically")
 	service.state = "complete"
+	service.raced = true
 	service.automatic = false
 	await adapter.refresh()
 	check(adapter.model.completed and service.joins == 2,"an older completed week stays visible for finale review")
 	await adapter.continue_week()
 	check(adapter.model.week == 42 and adapter.model.status == "active" and service.joins == 3,"Continue automatically opens the new week's development field")
+	service.raced = false
+	service.state = "complete"
+	service.pending = 1
+	await adapter.refresh()
+	check(adapter.model.completed and service.continues == 1,"pending verification prevents automatic rollover")
+	service.pending = 0
+	service.fail_continue = true
+	await adapter.refresh()
+	check(adapter.model.completed and not adapter.busy and not adapter.error.is_empty() and service.continues == 2,"failed automatic acknowledgement stops with a retryable error")
+	var page := WeeklyRivalryPage.new()
+	page.model = adapter.model
+	page.signed_in = true
+	page.error = adapter.error
+	root.add_child(page)
+	check(page.find_child("RivalryNextWeek",true,false) == null and page.find_child("RivalryFinaleActions",true,false) == null,"empty weeks never show finale buttons")
+	check(page.find_child("RivalryRefresh",true,false) != null,"failed rollover offers Refresh to retry")
+	page.queue_free()
+	service.fail_continue = false
+	await adapter.refresh()
+	check(adapter.model.week == 43 and adapter.model.status == "active" and service.joins == 4 and service.continues == 3,"a week with no races advances without a Continue action")
 	var old_scope: String = adapter.scope()
 	service.enabled = false
 	service.state = "not_joined"
 	await adapter.refresh()
-	check(not adapter.test_population and adapter.scope() != old_scope and adapter.model.tracks.is_empty() and service.joins == 3,"a disabled service fences the old test field and never enrolls fake entrants")
+	check(not adapter.test_population and adapter.scope() != old_scope and adapter.model.tracks.is_empty() and service.joins == 4,"a disabled service fences the old test field and never enrolls fake entrants")
 	var malformed: Dictionary = service.snapshot()
 	malformed.automatic_test_drivers = "true"
 	check(not Adapter.valid_snapshot(malformed),"a malformed automatic marker cannot enter client state")
+	service.state = "complete"
+	await adapter.refresh()
+	check(not adapter.test_population and adapter.model.status == "active" and adapter.model.week == 44 and service.joins == 5,"ordinary player populations also skip an empty completed week")
+	service.state = "complete"
+	service.raced = true
+	await adapter.refresh()
+	check(adapter.model.completed and service.joins == 5,"one completed race keeps the ordinary player's finale")
 	adapter.queue_free()
 	await process_frame
 	print("AUTOMATIC_RIVALRY_FLOW: %d checks, %d failures" % [checks,failures])

@@ -143,6 +143,11 @@ def environment(config, role, public_url="https://staging.invalid"):
     if role == "admin":
         result["BMT_STUDIO_STAFF_AUDIENCES"] = ",".join(config.get("studio_staff_audiences", []))
         result["BMT_STUDIO_STAFF_SUBJECTS"] = json.dumps(config.get("studio_staff_subjects", {}))
+        for key in ("project", "tenant", "api_key", "auth_domain", "login_hint"):
+            result["BMT_STUDIO_IDENTITY_" + key.upper()] = config.get("studio_identity_" + key, "")
+        result["BMT_STUDIO_ANALYSIS_MODE"] = config.get("studio_analysis_mode", "replica")
+        result["BMT_STUDIO_ANALYSIS_STATEMENT_TIMEOUT_MS"] = str(
+            config.get("studio_analysis_statement_timeout_ms", 5000))
     if role == "api":
         # The direct Cloud Run frontend reaches the container on loopback/link
         # local addresses. External LB chains must pin their additional hops.

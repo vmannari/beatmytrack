@@ -120,10 +120,10 @@ func _geometry() -> void:
 	doc.paint = []
 	doc.surface = "dirt"
 	check(TrackCompiler.compile(doc).kerbs.triangles.is_empty(),"dirt pieces never acquire asphalt kerbs")
-	var native: NativeTrack = NativeTrack.read("res://resources/tracks/starter_circuit.json")
+	var native: NativeTrack = NativeTrack.read("res://resources/tracks/ellipse.json")
 	check(not native.kerbs.triangles.is_empty(),"native circuits also compile raised kerbs")
 	doc.surface = "asphalt"
-	doc.base_track = "starter_circuit"
+	doc.base_track = "ellipse"
 	var remix: NativeTrack = TrackCompiler.compile(doc)
 	var native_preserved: bool = false
 	for t: Dictionary in remix.kerbs.triangles:

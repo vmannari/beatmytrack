@@ -4,6 +4,8 @@ extends RefCounted
 
 var touches: Dictionary = {}
 var touch_strengths: Dictionary = {}
+var single_pedal: bool = false
+var reverse_selected: bool = false
 
 
 func set_touch(index: int, action: StringName, strength: float = 1.0) -> void:
@@ -24,6 +26,9 @@ func clear() -> void:
 
 
 func sample() -> DriveFrame:
+	if single_pedal:
+		return DriveFrame.sample(_strength(&"steer_right") - _strength(&"steer_left"),
+			_strength(&"accelerate"), 1.0 if reverse_selected else 0.0, 0.0)
 	return DriveFrame.sample(_strength(&"steer_right") - _strength(&"steer_left"),
 		_strength(&"accelerate"), _strength(&"brake"), _strength(&"handbrake"))
 

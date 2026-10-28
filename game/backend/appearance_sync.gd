@@ -11,7 +11,7 @@ var _epoch: int = 0
 var _applying: bool = false
 var _debounce: Timer
 var _poll: Timer
-var clean_poll_allowed: Callable
+var refresh_allowed: Callable
 var _last_success_msec: int = -1
 
 func _ready() -> void:
@@ -41,20 +41,29 @@ func bind_records(value: LocalRecords) -> void:
 	_last_success_msec = -1
 	if records != null: records.appearance_committed.connect(_committed)
 	if is_instance_valid(_debounce): _debounce.stop()
+	if is_instance_valid(_poll):
+		if not _scope.is_empty() and _needs_recovery(): _poll.start()
+		else: _poll.stop()
 
 func _committed() -> void:
-	if not _applying and not scope().is_empty() and _scope == scope(): _debounce.start()
+	if not _applying and not scope().is_empty() and _scope == scope():
+		_debounce.start()
+		_poll.start()
 
 func _needs_recovery() -> bool:
 	if records == null: return false
-	if not status.is_empty() or not records.settings.has(State.KEY) or not State.pending(records.settings).is_empty(): return true
+	if not records.settings.has(State.KEY) or not State.pending(records.settings).is_empty(): return true
 	var base: Dictionary = State.baseline(records.settings)
 	for id: String in VehicleCatalog.IDS:
 		if State.authored(records.settings,id) and State.car(records.settings,id) != base.get(id): return true
 	return false
 
 func _poll_refresh() -> void:
-	if not _needs_recovery() and clean_poll_allowed.is_valid() and not bool(clean_poll_allowed.call()): return
+	# An unchanged local baseline gives no reason to fetch every 30 seconds.
+	# A visible consumer/foreground return can explicitly request freshness.
+	if not _needs_recovery():
+		_poll.stop()
+		return
 	refresh()
 
 func refresh_if_stale() -> void:
@@ -75,14 +84,20 @@ func _save(base: Dictionary, value: Dictionary = {}, pending: Dictionary = {}) -
 
 func refresh() -> void:
 	if records == null or busy or _scope.is_empty() or scope() != _scope: return
+	if refresh_allowed.is_valid() and not bool(refresh_allowed.call()): return
+	if _poll.is_stopped(): _poll.start()
 	var epoch: int = _epoch
 	var owner: LocalRecords = records
 	busy = true
 	var response: Dictionary = await client.request_api("/me/appearances",HTTPClient.METHOD_GET,{},"",true)
 	if not _current(epoch,owner): return
+	if refresh_allowed.is_valid() and not bool(refresh_allowed.call()):
+		busy = false
+		return
 	if not response.get("ok",false) or not State.valid_collection(response.get("data",{}).get("appearances")):
 		status = "Garage sync needs a server update." if response.get("status",0) == 404 else "Garage changes saved on this device. Sync will retry."
 		busy = false
+		if not _needs_recovery(): _poll.stop()
 		changed.emit()
 		return
 	status = ""
@@ -91,6 +106,7 @@ func refresh() -> void:
 	var base: Dictionary = State.baseline(records.settings)
 	var pending: Dictionary = State.pending(records.settings)
 	for id: String in VehicleCatalog.IDS:
+		if refresh_allowed.is_valid() and not bool(refresh_allowed.call()): break
 		var local: Dictionary = State.car(records.settings,id)
 		var previous: Variant = base.get(id)
 		var server: Variant = remote.get(id)
@@ -143,4 +159,5 @@ func refresh() -> void:
 			if State.authored(records.settings,id) and State.car(records.settings,id) != base.get(id):
 				_debounce.start()
 				break
+	if not _needs_recovery(): _poll.stop()
 	changed.emit()

@@ -56,7 +56,7 @@ func ring(trails: SkidTrails) -> PackedByteArray:
 
 func case(theme: String, bridge: bool, legacy: GDScript) -> void:
 	var label: String = theme+("-bridge" if bridge else "-ground")
-	var track: NativeTrack = NativeTrack.read("res://resources/tracks/starter_circuit.json")
+	var track: NativeTrack = NativeTrack.read("res://resources/tracks/ellipse.json")
 	track.metadata.theme = theme
 	if bridge: track.bridge_height = 2.0
 	var state := VehicleState.new(); state.position = track.spawn; state.velocity = Vector2(0,12)
@@ -152,7 +152,7 @@ func inactive_batches() -> void:
 		var node := Node3D.new(); node.position = Vector3(50,0,0); debris.add_child(node)
 		BreakablePropVisual.build(node,kit,kind,1.0); props.append(node)
 	kit.free()
-	var track: NativeTrack = NativeTrack.read("res://resources/tracks/starter_circuit.json"); track.metadata.theme = "winter"
+	var track: NativeTrack = NativeTrack.read("res://resources/tracks/ellipse.json"); track.metadata.theme = "winter"
 	var weather := WinterSnowWind.new(); world.add_child(weather); weather.configure(track)
 	var impact := ImpactCracks.new(); world.add_child(impact)
 	var damage: Vector4 = impact.side_damage
@@ -218,7 +218,7 @@ func app_launch() -> void:
 	root.add_child(app)
 	while not app.startup_complete: await process_frame
 	app._show_screen("tracks")
-	var track: NativeTrack = NativeTrack.read("res://resources/tracks/starter_circuit.json"); track.metadata.theme = "storm"
+	var track: NativeTrack = NativeTrack.read("res://resources/tracks/ellipse.json"); track.metadata.theme = "storm"
 	track.metadata.cloud_version = "isolated-effect-preparation"
 	app.selected_track = track
 	var condition := VehicleWeathering.new(); condition.deposit_color = VehicleWeathering.COLORS.storm; condition.dirt_amount = 0.125

@@ -25,6 +25,11 @@ public final class BmtGoogleSignIn extends GodotPlugin {
         return BmtProcessExits.read(getActivity());
     }
 
+    /** Explicit support action only; bounded first-party frames, no raw traces. */
+    @UsedByGodot public String getSupportExits() {
+        return BmtProcessExits.readSupport(getActivity());
+    }
+
     @UsedByGodot public void startSignIn(String clientId, String nonce) {
         Activity activity = getActivity();
         if (activity == null) { result.set("error:unavailable"); return; }

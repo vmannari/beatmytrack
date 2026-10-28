@@ -48,9 +48,12 @@ func _run() -> void:
 	while not app.startup_complete: await process_frame
 	VehicleCatalog.selected = "compact"
 	app._show_screen("garage")
-	await settle()
 	var page: GaragePage = app.root_ui.find_child("GaragePage",true,false)
 	var view: CarShowroom = page.showroom
+	var deadline: int = Time.get_ticks_msec()+120000
+	while page.progressive_entry and view.preparing and Time.get_ticks_msec()<deadline: await process_frame
+	check(not page.progressive_entry or not view.preparing,"original reflective studio is ready before pixel and lifecycle assertions")
+	await settle()
 	var rig: GarageReflections = view.reflections
 	check(rig != null and rig.views.size() == 2,"two bounded reflection captures")
 	for index: int in range(2):

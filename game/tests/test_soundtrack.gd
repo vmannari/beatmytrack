@@ -119,7 +119,7 @@ func _test_progress(world: GameSoundtrack) -> void:
 
 
 func _test_qualities() -> void:
-	var track: NativeTrack = NativeTrack.read("res://resources/tracks/starter_circuit.json")
+	var track: NativeTrack = NativeTrack.read("res://resources/tracks/ellipse.json")
 	var config: HandlingConfig = VehicleCatalog.config("compact")
 	var state := VehicleState.new()
 	state.position = track._race_route_point(20.0)
@@ -160,7 +160,7 @@ func _test_qualities() -> void:
 
 
 func _test_equivalence() -> void:
-	var track: NativeTrack = NativeTrack.read("res://resources/tracks/starter_circuit.json")
+	var track: NativeTrack = NativeTrack.read("res://resources/tracks/ellipse.json")
 	var config: HandlingConfig = VehicleCatalog.config("compact")
 	var plain := VehicleSimulation.new(config)
 	var observed := VehicleSimulation.new(config)
@@ -180,7 +180,7 @@ func _test_equivalence() -> void:
 func _test_lifecycle(world: GameSoundtrack) -> void:
 	world.show_menu()
 	var game: Node = load("res://core/game.tscn").instantiate()
-	game.initial_track = NativeTrack.read("res://resources/tracks/starter_circuit.json")
+	game.initial_track = NativeTrack.read("res://resources/tracks/ellipse.json")
 	game.production_mode = true
 	root.add_child(game)
 	game.set_physics_process(false)

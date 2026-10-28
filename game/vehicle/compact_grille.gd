@@ -81,6 +81,26 @@ static func _emit_polygon(tool: SurfaceTool, polygon: Array[Dictionary], write_u
 static func point(p: Vector2, depth: float) -> Vector3:
 	return Vector3(p.x,p.y,CompactCoachwork.front_skin(p.x,p.y)+depth)
 
+static func prepare(cooperate: Callable) -> bool:
+	for key: String in ["FrontGrilleSurround","FrontGrilleLouvers","FrontGrilleCooling","FrontGrilleLattice"]:
+		_mesh(key)
+		if cooperate.is_valid() and not await cooperate.call(): return false
+	return true
+
+static func _mesh(key: String) -> ArrayMesh:
+	if not meshes.has(key):
+		var tool := SurfaceTool.new()
+		tool.begin(Mesh.PRIMITIVE_TRIANGLES)
+		match key:
+			"FrontGrilleSurround": _surround(tool)
+			"FrontGrilleLouvers": _louvers(tool)
+			"FrontGrilleCooling": _cooling(tool)
+			"FrontGrilleLattice": _lattice(tool)
+		tool.index()
+		tool.generate_tangents()
+		meshes[key] = tool.commit()
+	return meshes[key]
+
 static func build(car: CarVisual) -> void:
 	var graphite := CompactFinish.rubber(Color("141d20"))
 	graphite.roughness = 0.67
@@ -95,20 +115,9 @@ static func build(car: CarVisual) -> void:
 	lattice.roughness = 0.39
 	for material: StandardMaterial3D in [graphite,satin,slats,lattice]: material.set_meta("compact_grille_finish",true)
 	for key: String in ["FrontGrilleSurround","FrontGrilleLouvers","FrontGrilleCooling","FrontGrilleLattice"]:
-		if not meshes.has(key):
-			var tool := SurfaceTool.new()
-			tool.begin(Mesh.PRIMITIVE_TRIANGLES)
-			match key:
-				"FrontGrilleSurround": _surround(tool)
-				"FrontGrilleLouvers": _louvers(tool)
-				"FrontGrilleCooling": _cooling(tool)
-				"FrontGrilleLattice": _lattice(tool)
-			tool.index()
-			tool.generate_tangents()
-			meshes[key] = tool.commit()
 		var part := MeshInstance3D.new()
 		part.name = key
-		part.mesh = meshes[key]
+		part.mesh = _mesh(key)
 		part.material_override = {"FrontGrilleSurround":satin,"FrontGrilleLouvers":slats,"FrontGrilleCooling":graphite,"FrontGrilleLattice":lattice}[key]
 		car.body.add_child(part)
 

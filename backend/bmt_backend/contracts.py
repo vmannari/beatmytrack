@@ -9,9 +9,30 @@ BUILD_FIELDS = (
     "compiler_version", "track_schema", "replay_schema", "tick_rate", "laps", "vehicles",
 )
 
+# .75 changes only optional Electric slide controls. The other six integrators
+# and configuration hashes retain .74 behavior (native differential regression).
+# This is an explicit, symmetric compatibility declaration, not a version range.
+# Car tuning belongs in its handling version/hash; reserve a shared physics bump
+# for changes affecting shared simulation. Never infer equivalence by ordering.
+ELECTRIC_ONLY_PHYSICS = ("arcade-planar-0.74", "arcade-planar-0.75")
+UNCHANGED_VEHICLES = frozenset(("compact", "pickup", "classic", "formula", "kart", "forklift"))
+
+
+def compatible_physics_versions(version, vehicle_id):
+    if vehicle_id in UNCHANGED_VEHICLES and version in ELECTRIC_ONLY_PHYSICS:
+        return (version, *(item for item in ELECTRIC_ONLY_PHYSICS if item != version))
+    return (version,)
+
 
 def build_contract(manifest: dict) -> dict:
     return {field: manifest.get(field) for field in BUILD_FIELDS}
+
+
+def vehicle_build_contract(manifest: dict, vehicle_id: str) -> dict:
+    vehicle = manifest.get("vehicles", {}).get(vehicle_id, {})
+    return {**build_contract(manifest), "vehicle_id": vehicle_id,
+            "vehicles": {vehicle_id: {field: vehicle.get(field) for field in ("handling_version", "config_hash")}}}
+
 
 def current_manifest(manifest: dict) -> dict:
     result = dict(manifest)

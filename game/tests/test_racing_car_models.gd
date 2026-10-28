@@ -62,6 +62,11 @@ func picture(car: CarVisual, tag: String) -> Image:
 
 func _run() -> void:
 	graphical = DisplayServer.get_name() != "headless"
+	var only_vehicle: String = ""
+	for argument: String in OS.get_cmdline_user_args():
+		if argument.begins_with("--vehicle="): only_vehicle = argument.trim_prefix("--vehicle=")
+		if argument.begins_with("--evidence-root="): output = argument.trim_prefix("--evidence-root=")
+	assert(only_vehicle.is_empty() or only_vehicle in VehicleCatalog.IDS)
 	root.size = Vector2i(1280,720)
 	output = output.path_join(RenderingServer.get_current_rendering_method())
 	DirAccess.make_dir_recursive_absolute(ProjectSettings.globalize_path(output))
@@ -88,18 +93,22 @@ func _run() -> void:
 	camera.position = Vector3(-5,7,-9)
 	camera.look_at(Vector3.ZERO)
 	for id: String in VehicleCatalog.IDS:
+		if not only_vehicle.is_empty() and id!=only_vehicle: continue
 		var control := CarVisual.new()
 		control.vehicle_id = id
 		control.batch_parts = false
 		world.add_child(control)
+		while not control.model_ready: await process_frame
 		legacy_batches(control)
 		var detailed := CarVisual.new()
 		detailed.vehicle_id = id
 		world.add_child(detailed)
+		while not detailed.model_ready: await process_frame
 		var simple := CarVisual.new()
 		simple.vehicle_id = id
 		simple.simple_model = true
 		world.add_child(simple)
+		while not simple.model_ready: await process_frame
 		var before: Dictionary = inspect(control)
 		var after: Dictionary = inspect(detailed)
 		var reduced: Dictionary = inspect(simple)
@@ -117,8 +126,14 @@ func _run() -> void:
 		var state := VehicleState.new()
 		state.tick = 1
 		state.steering = 0.4
+		if id == "electric": state.velocity = Vector2(0,10)
 		simple.present(Vector2.ZERO,0,state,DriveFrame.sample(0,0,1))
 		check(simple.brake_material.albedo_color == Color("f17158"),id+" brake material still responds")
+		if id == "electric":
+			state.velocity = Vector2.ZERO
+			state.tick += 1
+			simple.present(Vector2.ZERO,0,state,DriveFrame.sample(0,0,1))
+			check(not simple.rear_braking and simple.brake_material.albedo_color == Color("802d2b"),"electric idle retains the existing no-regeneration light state")
 		var condition := VehicleWeathering.new()
 		condition.configure(simple,"desert",VehicleCatalog.config(id))
 		check(not condition.materials.is_empty(),id+" local weathering binds")

@@ -141,6 +141,8 @@ class GodotVerifier:
         self._log = None
         self._jobs = 0
         self.engine_pid = None
+        self.idle_seconds = float(getattr(settings, "verifier_idle_seconds", 30))
+        self._last_engine_use = time.monotonic()
         self._stop = threading.Event()
         self._geometry_cache = OrderedDict()
         self._geometry_lock = threading.Lock()
@@ -148,6 +150,24 @@ class GodotVerifier:
 
     def request_stop(self):
         self._stop.set()
+
+    def retire_idle(self):
+        """Release only an idle owned engine; retain the immutable build manifest.
+
+        The same admission slot guards invocation and retirement. A concurrent
+        long request can therefore never be terminated by the idle timer.
+        """
+        if self.idle_seconds <= 0 or self._service is None:
+            return False
+        if not _ENGINE_SLOT.acquire(blocking=False):
+            return False
+        try:
+            if self._service is None or time.monotonic() - self._last_engine_use < self.idle_seconds:
+                return False
+            self.close()
+            return True
+        finally:
+            _ENGINE_SLOT.release()
 
     def _check_stopping(self):
         if self._stop.is_set():
@@ -282,6 +302,7 @@ class GodotVerifier:
         try:
             return self._invoke_locked(payload)
         finally:
+            self._last_engine_use = time.monotonic()
             _ENGINE_SLOT.release()
 
     def _invoke_locked(self, payload: dict) -> dict:

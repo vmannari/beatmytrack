@@ -7,6 +7,17 @@
     "board_id": {"type": "string", "minLength": 1},
     "population_scope": {"const": "all"},
     "stats_revision": {"type": "integer", "minimum": 0},
+    "histogram_key": {"type": "string", "pattern": "^[0-9a-f]{64}$", "description": "Identity of this exact generation and pair of bin grids; may be sent as known_histogram to omit unchanged bins."},
+    "freshness": {
+      "type": "object",
+      "required": ["generated_at", "expires_at"],
+      "properties": {
+        "generated_at": {"type": "integer", "minimum": 0},
+        "expires_at": {"type": "integer", "minimum": 0}
+      },
+      "additionalProperties": false,
+      "description": "Absolute UTC epoch seconds from the durable server snapshot. expires_at is the next scheduled population-dependent validation, including unchanged-generation validation; a client must not restart it on download. Client reuse is additionally bounded to one hour from receipt. Older servers omit these optional fields and retain the legacy ten-minute client fallback. Personal best, account, car/rules and frame matching are additional reuse requirements."
+    },
     "race": {"$ref": "time-histogram-v1.schema.json"},
     "best_lap": {"$ref": "time-histogram-v1.schema.json"}
   },

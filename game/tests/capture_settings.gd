@@ -99,7 +99,7 @@ func run() -> void:
 
 func _preferences() -> void:
 	var store: LocalRecords = app.get("records")
-	store.settings.favorites = ["starter_circuit"]
+	store.settings.favorites = ["ellipse"]
 	check(store.save_records() == OK, "unrelated preference fixture saved")
 	await _press("SettingsCategory_development")
 	check(not _page().draft_show_ads, "test ads default off for existing profiles")
@@ -112,7 +112,7 @@ func _preferences() -> void:
 	await _press("ResetSettings")
 	check(not _page().draft_show_ads and store.settings.development_show_ads, "development reset is staged")
 	await _press("ApplySettings")
-	check(not store.settings.development_show_ads and store.settings.favorites == ["starter_circuit"], "development reset preserves unrelated settings")
+	check(not store.settings.development_show_ads and store.settings.favorites == ["ellipse"], "development reset preserves unrelated settings")
 	await _press("SettingsCategory_ghosts")
 	await _press("Ghost_race")
 	check(_page().draft_ghost == "race" and store.settings.get("ghost_mode", "lap") == "lap", "ghost choice stages until Apply")
@@ -188,7 +188,7 @@ func _preferences() -> void:
 	for key: String in ControlLayout.KEYS:
 		for field: String in ["x", "y", "scale", "opacity"]:
 			check(is_equal_approx(float(restored[key][field]), float(preset[key][field])), "reset restores " + key + " " + field)
-	check(reloaded.settings.favorites == ["starter_circuit"], "reset preserves favorites")
+	check(reloaded.settings.favorites == ["ellipse"], "reset preserves favorites")
 	check(reloaded.settings.camera_mode == "follow_car", "reset controls preserves camera")
 	check(not reloaded.settings.camera_speed_zoom, "reset controls preserves disabled speed zoom")
 	check(is_equal_approx(float(reloaded.settings.camera_speed_zoom_strength), staged_strength), "reset controls preserves zoom strength")
@@ -200,7 +200,7 @@ func _preferences() -> void:
 	check(is_equal_approx(_page().draft_speed_zoom_strength, 0.30) and is_equal_approx(float(store.settings.camera_speed_zoom_strength), staged_strength), "camera strength reset stages stronger default")
 	await _press("ApplySettings")
 	reloaded.load_records()
-	check(reloaded.settings.camera_mode == "overhead" and reloaded.settings.favorites == ["starter_circuit"], "camera reset commits without changing favorites")
+	check(reloaded.settings.camera_mode == "overhead" and reloaded.settings.favorites == ["ellipse"], "camera reset commits without changing favorites")
 	check(reloaded.settings.camera_speed_zoom, "camera reset restores speed zoom default")
 	check(is_equal_approx(float(reloaded.settings.camera_speed_zoom_strength), 0.30), "camera reset commits stronger default strength")
 	check(reloaded.settings.ghost_mode == "race", "other resets preserve ghost mode")
@@ -209,7 +209,7 @@ func _preferences() -> void:
 	check(_page().draft_ghost == "lap" and store.settings.ghost_mode == "race", "ghost reset stages without changing committed choice")
 	await _press("ApplySettings")
 	reloaded.load_records()
-	check(reloaded.settings.ghost_mode == "lap" and reloaded.settings.favorites == ["starter_circuit"], "ghost reset commits default and preserves unrelated preferences")
+	check(reloaded.settings.ghost_mode == "lap" and reloaded.settings.favorites == ["ellipse"], "ghost reset commits default and preserves unrelated preferences")
 	await _press("SettingsCategory_controls")
 	await _press("Steering_horizontal")
 	await _press("Tab_tracks")

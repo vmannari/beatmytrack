@@ -15,7 +15,7 @@ from google.auth.transport.requests import Request as AuthRequest
 from urllib3.exceptions import HTTPError as StreamError
 
 from .http_transport import PooledTransport
-from .storage import canonical_json, decode_blob_json
+from .storage import decode_blob_json, prepare_json
 
 LIMIT = 8 * 1024 * 1024
 STORED_LIMIT = LIMIT + 65536
@@ -107,10 +107,10 @@ class GCSBlobStore:
         raise OSError("Invalid object metadata")
 
     def put_json(self, data):
-        raw = canonical_json(data)
+        prepared = prepare_json(data)
+        raw, digest = prepared.body, prepared.digest
         if len(raw) > LIMIT:
             raise ValueError("Object exceeds limit")
-        digest = hashlib.sha256(raw).hexdigest()
         key = self._key(digest)
         body = gzip.compress(raw, compresslevel=3, mtime=0)
         status, response = self._request("POST", upload=True, body=body,

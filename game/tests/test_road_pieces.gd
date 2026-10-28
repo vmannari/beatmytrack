@@ -274,7 +274,7 @@ func _practice_start() -> void:
 	for invalid: Variant in [null,[],{}, {"position":[0,0]}, {"position":[0,0],"heading":0,"script":"run"}, {"position":[0],"heading":0}, {"position":[NAN,0],"heading":0}, {"position":[0,110.1],"heading":0}, {"position":[0,0],"heading":INF}, {"position":[0,0],"heading":-1}, {"position":[0,0],"heading":360}]:
 		doc.practice_start = invalid
 		check(not TrackDocument.validate(doc).is_empty(),"invalid practice start rejected: "+str(invalid))
-	var native: NativeTrack = NativeTrack.read("res://resources/tracks/starter_circuit.json")
+	var native: NativeTrack = NativeTrack.read("res://resources/tracks/ellipse.json")
 	check(not TrackDocument.from_builtin(native).has("practice_start"),"native remix preserves its original start until explicitly moved")
 
 

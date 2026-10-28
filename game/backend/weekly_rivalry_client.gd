@@ -3,6 +3,7 @@ extends Node
 signal changed
 var circuit_mode: bool = false
 var client: Node
+var result_poll_allowed: Callable
 var appearance_provider: Callable
 var appearance_sync: Callable
 var _synced_appearance: String = ""
@@ -26,6 +27,7 @@ var cache_directory: String = ""
 var cached_snapshot: bool = false
 var snapshot_cache = preload("res://backend/menu_snapshot_cache.gd").new()
 var _last_refresh_msec: int = -60000
+var _failed_fetch_scope: String = ""
 var _continue_group: String = ""
 var _continue_key: String = ""
 const REFRESH_INTERVAL_MSEC: int = 30000
@@ -109,6 +111,7 @@ func reset() -> void:
 	_ghost_pending.clear()
 	cached_snapshot = false
 	_last_refresh_msec = -60000
+	_failed_fetch_scope = ""
 	_continue_group = ""
 	_continue_key = ""
 
@@ -177,11 +180,14 @@ func refresh(force: bool = true) -> void:
 			reset()
 	if busy and request_scope == scope(): return
 	if busy: reset()
-	if snapshot_scope != scope(): reset()
+	if snapshot_scope != scope() and _failed_fetch_scope != scope(): reset()
 	if not client.signed_in():
 		error = "Sign in to join Weekly Rivalry."
 		changed.emit()
 		return
+	# Keep failures visible through menu activation/prefetch using the normal
+	# refresh interval. Refresh and Join still retry explicitly without waiting.
+	if not force and _failed_fetch_scope == scope() and Time.get_ticks_msec()-_last_refresh_msec < REFRESH_INTERVAL_MSEC: return
 	_restore_snapshot()
 	if not force and not cached_snapshot and has_snapshot() and Time.get_ticks_msec()-_last_refresh_msec < REFRESH_INTERVAL_MSEC: return
 	var original: String = scope()
@@ -205,6 +211,7 @@ func join() -> void:
 func _fetch(path: String, method: HTTPClient.Method = HTTPClient.METHOD_GET, payload: Dictionary = {}) -> void:
 	busy = true
 	error = ""
+	_failed_fetch_scope = ""
 	var original: String = scope()
 	var generation: int = _generation
 	request_scope = original
@@ -227,11 +234,18 @@ func _fetch(path: String, method: HTTPClient.Method = HTTPClient.METHOD_GET, pay
 		cached_snapshot = false
 		_last_refresh_msec = Time.get_ticks_msec()
 		_remember_snapshot(response.data)
+		# A car with no results has no finale to review. Use the same scoped,
+		# idempotent acknowledgement and current-week enrollment as Continue.
+		if model.empty_completed_week() and path != "/rivalry/join":
+			await continue_week()
+			return
 		var needs_enrollment: bool = model.status == "not_joined" or (model.status == "active" and not bool(response.data.get("automatic_test_drivers",false)))
 		if test_population and needs_enrollment and path != "/rivalry/join":
 			await join()
 			return
 	else:
+		_failed_fetch_scope = original
+		_last_refresh_msec = Time.get_ticks_msec()
 		error = "Five eligible tracks are needed before a rivalry can open." if str(response.get("error","")) == "NOT_ENOUGH_ELIGIBLE_TRACKS" else "Rivalry unavailable. Check your connection and try again."
 	changed.emit()
 
@@ -332,6 +346,7 @@ static func _validate_ghost(recording: Variant) -> Dictionary:
 	return recording
 
 func poll_result() -> void:
+	if result_poll_allowed.is_valid() and not bool(result_poll_allowed.call()): return
 	if busy or result_polling or result_ticket.is_empty() or snapshot_scope != scope(): return
 	var current_msec: int = Time.get_ticks_msec()
 	if _poll_ticket != result_ticket:
@@ -341,7 +356,7 @@ func poll_result() -> void:
 	# Durable-upload status reads can already hold the verified receipt. Consume
 	# it immediately without another HTTP poll or waiting for this poll's timer.
 	var recent: Dictionary = client.recent_run(result_ticket)
-	var confirmed: bool = recent.get("status") == "verified" and recent.get("outcome") is Dictionary and valid_outcome(recent.outcome)
+	var confirmed: bool = recent.get("status") in ["verified","skipped"] and recent.get("outcome") is Dictionary and valid_outcome(recent.outcome)
 	if current_msec < _next_poll_msec and not confirmed: return
 	var original: String = scope()
 	var ticket_id: String = result_ticket
@@ -370,7 +385,7 @@ func poll_result() -> void:
 		_next_poll_msec = Time.get_ticks_msec()+15000+int(Crypto.new().generate_random_bytes(1)[0])*10
 		changed.emit()
 		return
-	if result_state == "verified" and response.data.get("outcome") is Dictionary and valid_outcome(response.data.outcome):
+	if result_state in ["verified","skipped"] and response.data.get("outcome") is Dictionary and valid_outcome(response.data.outcome):
 		var outcome: Dictionary = response.data.outcome
 		var index: int = int(response.data.slot)
 		# Confirm feedback as soon as its proof arrives. Refresh the full board
@@ -379,7 +394,7 @@ func poll_result() -> void:
 		changed.emit()
 		await _fetch("/rivalry/"+model.group_id)
 		if original != scope() or generation != _generation: return
-	elif result_state == "verified":
+	elif result_state in ["verified","skipped"]:
 		model.last_result = {"ms":model.last_result.get("ms",0)}
 		error = "Result details unavailable. Refresh Rivalry to check your standings."
 		changed.emit()

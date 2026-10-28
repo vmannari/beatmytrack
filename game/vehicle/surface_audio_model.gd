@@ -19,8 +19,10 @@ var acceleration: float = 0.0
 var last_speed: float = 0.0
 var has_speed: bool = false
 var contacts_grounded: bool = false
+var single_pedal: bool = false
 
 func configure(config: HandlingConfig) -> void:
+	single_pedal = config.single_pedal
 	wheelbase = config.wheelbase
 	track_width = config.track_width
 	bumper_length = maxf(config.collision_radius,config.wheelbase*0.5+0.80*HandlingConfig.BODY_SCALE)
@@ -67,7 +69,7 @@ func sample(state: VehicleState, frame: DriveFrame, track: NativeTrack, delta: f
 	last_speed = speed
 	has_speed = true
 	var reverse: bool = state.velocity.dot(state.forward()) < -0.6
-	var pedal: float = float(frame.brake if reverse else frame.throttle)/255.0
+	var pedal: float = float(frame.brake if reverse and not single_pedal else frame.throttle)/255.0
 	drive = lerpf(drive,clampf(pedal*0.70+maxf(acceleration,0.0)/15.0*0.30,0.0,1.0),gain)
 
 func sample_contacts(state: VehicleState, track: NativeTrack, grounded: bool) -> void:

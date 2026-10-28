@@ -116,8 +116,10 @@ func visuals_awards() -> void:
 			app.rivalry_section = "overview"
 			app._show_screen("rivalry")
 			await settle()
-			var ceremony: Control = app.content.find_child("WeeklyRivalryFinale",true,false)
-			check(ceremony != null,"completed overview mounts the awards ceremony")
+			await dismiss_weekly_summary()
+			var ceremony: WeeklyRivalryPage = app.content.find_child("WeeklyRivalryPage",true,false)
+			if kind == "champion": print("WEEKLY_FINALE ",dimensions," page=",ceremony.size)
+			check(ceremony != null and ceremony.find_child("WeeklyRivalryFinale",true,false) == null,"completed overview retains the shared weekly screen")
 			check_card_bounds(ceremony,"%s %dx%d" % [kind,dimensions.x,dimensions.y])
 			var next: Button = ceremony.find_child("RivalryNextWeek",true,false)
 			var share: Button = ceremony.find_child("RivalryShareResults",true,false)
@@ -126,26 +128,19 @@ func visuals_awards() -> void:
 			check(share.get_global_rect().end.y <= app.root_ui.size.y+1,"sharing remains inside the visible screen")
 			check(next.get_global_rect().end.y <= app.content.get_global_rect().end.y+0.5,"Continue is fully inside the page clipping boundary")
 			check(share.get_global_rect().end.y <= app.content.get_global_rect().end.y+0.5,"Share is fully inside the page clipping boundary")
-			check(absf(share.size.x-next.size.x) < 2,"outside-card bottom actions have equal width")
-			check(ceremony.track_buttons.size() == 5,"all five pinned tracks have a thumbnail/detail action")
-			var track_scroll: ScrollContainer = ceremony.find_child("RivalryFinalTrackScroll",true,false)
-			for row: Button in ceremony.track_buttons:
-				check(row.get_global_rect().end.y <= track_scroll.get_global_rect().end.y+1,"all five track rows remain visible in the initial ceremony")
-				check(row.get_global_rect().end.y <= ceremony.find_child("RivalryFinaleBody",true,false).get_global_rect().end.y+1,"track rows fit inside the actual body clipping viewport")
-				for child: Node in row.find_children("*","Label",true,false):
-					check(child.get_global_rect().end.x <= row.get_global_rect().end.x+1,"track names, times, gaps and points stay inside their row")
-			check(ceremony.find_child("RivalryChampionLaurels",true,false).tier == ceremony.summary.tier,"award ornament receives the performance intensity")
-			if kind in ["perfect","champion","tied"]: check_decoration_alignment(ceremony,kind)
-			check((ceremony.find_child("RivalryPerfectWeekBadge",true,false) != null) == (kind == "perfect"),"Perfect Week badge matches the actual five-win condition")
-			if kind == "perfect": check_perfect_badge_alignment(ceremony)
-			check(ceremony.find_child("FinalDriver_you",true,false) != null,"compact final standings always include the highlighted player")
-			check(ceremony.find_child("RivalryDriversPanel",true,false).find_children("FinalDriver_*","",true,false).size() <= 5,"compact standings contain at most five actual competitors")
-			var car: Control = ceremony.find_child("RivalryVictoryCar",true,false)
-			check(car.car.vehicle_id == app.rivalry.model.vehicle_id and car.viewport.transparent_bg,"scenic hero renders the actual pinned car with a transparent background")
+			check(absf(share.size.x-next.size.x) < 2,"shared track-panel footer actions have equal width")
+			check(ceremony.track_rows.size() == 5,"all five pinned tracks have a thumbnail/detail action")
+			var summary: Dictionary = ceremony.model.finale_summary()
+			var badge: Label = ceremony.find_child("RivalryPositionSummary",true,false)
+			check(badge.text == GameText.message("PERFECT\nWEEK").replace("\n"," ") if kind == "perfect" else badge.text == GameText.message(summary.title),"result badge matches the earned championship state")
+			check(ceremony.find_child("Driver_you",true,false) != null,"weekly standings include the highlighted player")
+			check(ceremony.find_child("RivalryDriversPanel",true,false).find_children("Driver_*","",true,false).size() == summary.drivers,"weekly standings retain every actual competitor")
+			for car: Node in ceremony.find_children("RivalryPodiumCar_*","",true,false):
+				check(car.car.vehicle_id == ceremony.model.vehicle_id and car.viewport.transparent_bg,"weekly podium renders the pinned actual car")
 			await capture(kind,dimensions)
 		var page: WeeklyRivalryPage = app.content.find_child("WeeklyRivalryPage",true,false)
-		var ceremony: Control = page.find_child("WeeklyRivalryFinale",true,false)
-		ceremony.track_buttons[2].pressed.emit()
+		var ceremony: WeeklyRivalryPage = page
+		ceremony.track_rows[2].pressed.emit()
 		await settle()
 		check(app.rivalry_section == "detail" and app.rivalry_track == 2,"award track rows open their original completed-week detail")
 		app.rivalry_section = "overview"
@@ -167,7 +162,8 @@ func visuals_awards() -> void:
 		app.rivalry_section = "overview"
 		app._rivalry()
 		await settle()
-		var car: Control = app.content.find_child("RivalryVictoryCar",true,false)
+		await dismiss_weekly_summary()
+		var car: Control = app.content.find_child("RivalryPodiumCar_1",true,false)
 		check(car.car.vehicle_id == id and car.car.livery == VehicleLivery.for_car(app.records.settings,id),"ceremony uses each actual car and its local livery")
 		var pixels: Image = car.viewport.get_texture().get_image()
 		var clipped: bool = false
@@ -187,43 +183,40 @@ func visuals_awards() -> void:
 	app.queue_free()
 	await process_frame
 
-func check_card_bounds(ceremony: Control, context: String) -> void:
-	var body: ScrollContainer = ceremony.find_child("RivalryFinaleBody",true,false)
-	var viewport: Rect2 = body.get_global_rect()
-	for id: String in ["RivalryTracksPanel","RivalryDriversPanel","RivalryWeeklyHighlights"]:
-		var card: Control = ceremony.find_child(id,true,false)
-		var rect: Rect2 = card.get_global_rect()
-		check(rect.position.y >= viewport.position.y-0.5 and rect.end.y <= viewport.end.y+0.5,context+" complete "+id+" fits inside the visible body")
-		for label: Label in card.find_children("*","Label",true,false):
-			var text_rect: Rect2 = label.get_global_rect()
-			check(text_rect.position.y >= viewport.position.y-0.5 and text_rect.end.y <= viewport.end.y+0.5,context+" "+id+" text remains fully visible: "+label.text)
-	check(not body.get_v_scroll_bar().is_visible_in_tree(),context+" shows all finale cards without body scrolling")
-
-func check_decoration_alignment(ceremony: Control, kind: String) -> void:
-	var heading: Label = ceremony.title
-	var art: Control = ceremony.ornament
-	var font: Font = heading.get_theme_font("font")
-	var font_size: int = heading.get_theme_font_size("font_size")
-	var words_width: float = font.get_string_size(heading.text,HORIZONTAL_ALIGNMENT_LEFT,-1,font_size).x
-	var heading_rect: Rect2 = heading.get_global_rect()
-	var words_left: float = heading_rect.position.x+(heading_rect.size.x-words_width)*0.5 if heading.horizontal_alignment == HORIZONTAL_ALIGNMENT_CENTER else heading_rect.position.x
-	var words := Rect2(Vector2(words_left,heading_rect.position.y),Vector2(words_width,heading_rect.size.y))
-	var crown: PackedVector2Array = art.crown_geometry()
-	var global_crown := PackedVector2Array()
-	for point: Vector2 in crown: global_crown.append(art.get_global_transform()*point)
-	var crown_bounds := Rect2(global_crown[0],Vector2.ZERO)
-	for point: Vector2 in global_crown: crown_bounds = crown_bounds.expand(point)
-	check(absf(crown_bounds.get_center().x-words.get_center().x) <= 1.0,kind+" crown is centered over the actual rendered words")
-	check(crown_bounds.end.y+6 <= words.position.y,kind+" crown and its underline stay above the heading")
-	check(crown_bounds.position.y >= app.content.get_global_rect().position.y,kind+" crown stays within the rivalry page")
-	check(art.size.x >= words_width+100 and art.size.x <= words_width+120,kind+" wreath fits the heading with symmetric text clearance")
-	var geometry: Dictionary = art.laurel_geometry()
-	var left: Rect2 = geometry.left_rect
-	var right: Rect2 = geometry.right_rect
-	check(absf(left.get_center().x+right.get_center().x-art.size.x) < 0.01 and left.size == right.size,kind+" curved botanical branches mirror around the heading")
-	var left_end: Vector2 = art.get_global_transform()*left.end
-	var right_start: Vector2 = art.get_global_transform()*right.position
-	check(left_end.x <= words.position.x-6 and right_start.x >= words.end.x+6,kind+" both laurel branches remain clear of the rendered heading")
+func check_card_bounds(page: Control, context: String) -> void:
+	var body: Control = page.find_child("RivalryBody",true,false)
+	check(page.find_child("WeeklyRivalryFinale",true,false) == null,context+" uses the weekly screen rather than a separate finale")
+	if page.find_child("RivalryPodium",true,false) == null:
+		check(false,context+" retains the normal weekly podium")
+		return
+	check(not body is ScrollContainer,context+" main screen has no scrolling container")
+	for id: String in ["RivalryPodium","RivalryTracksPanel","RivalryDriversPanel"]:
+		var card: Control = page.find_child(id,true,false)
+		check(app.menu_body_slot.get_global_rect().grow(0.5).encloses(card.get_global_rect()),context+" "+id+" stays inside the menu clipping boundary")
+	var tracks: Control = page.find_child("RivalryTracksPanel",true,false)
+	for row: Button in page.track_rows:
+		check(tracks.get_global_rect().encloses(row.get_global_rect()),context+" all five track actions stay visible")
+		for label: Label in row.find_children("*","Label",true,false):
+			if not label.is_visible_in_tree(): continue
+			var fits: bool = row.get_global_rect().grow(0.5).encloses(label.get_global_rect())
+			if not fits and failures < 8: print("WEEKLY_ROW_BOUNDS ",context," row=",row.get_global_rect()," label=",label.text," rect=",label.get_global_rect())
+			check(fits,context+" track value fits inside its weekly row: "+label.text)
+	var scroll: ScrollContainer = page.standings_scroll
+	var target: Control = page.find_child("Driver_you",true,false)
+	var original: int = scroll.scroll_vertical
+	var rows: Node = scroll.get_child(0).get_child(0)
+	var last: Control = rows.get_child(rows.get_child_count()-1)
+	scroll.ensure_control_visible(last)
+	check(scroll.scroll_vertical > 0,context+" full weekly standings remain reachable")
+	scroll.scroll_vertical = original
+	check(target != null,context+" player remains in the weekly standings")
+	for scroll_view: ScrollContainer in page.find_children("*","ScrollContainer",true,false):
+		check(scroll_view == scroll,context+" scrolling stays in the standings list")
+	var status: Control = page.find_child("RivalryStatusMessage",true,false)
+	check(status.visible == not page.error.is_empty(),context+" removed context returns only for actionable errors")
+	for id: String in ["RivalryShareResults","RivalryNextWeek"]:
+		var button: Button = page.find_child(id,true,false)
+		check(tracks.get_global_rect().encloses(button.get_global_rect()),context+" "+id+" stays beneath the shared track rows")
 
 func check_rendered_laurel_symmetry() -> void:
 	for badge: bool in [false,true]: await check_rendered_branches(badge)
@@ -255,22 +248,3 @@ func check_rendered_branches(badge: bool) -> void:
 	check(mismatched == 0,"actual laurel pixels mirror within their intended branch rectangles")
 	viewport.queue_free()
 	await process_frame
-
-func check_perfect_badge_alignment(ceremony: Control) -> void:
-	var badge: Control = ceremony.find_child("RivalryPerfectWeekBadge",true,false)
-	var art: Control = badge.find_child("RivalryPerfectWeekArt",true,false)
-	var label: Label = badge.find_child("RivalryPerfectWeekText",true,false)
-	var font: Font = label.get_theme_font("font")
-	var font_size: int = label.get_theme_font_size("font_size")
-	var width: float = maxf(font.get_string_size("PERFECT",HORIZONTAL_ALIGNMENT_LEFT,-1,font_size).x,font.get_string_size("WEEK",HORIZONTAL_ALIGNMENT_LEFT,-1,font_size).x)
-	var rect: Rect2 = label.get_global_rect()
-	var words := Rect2(Vector2(rect.get_center().x-width*0.5,rect.position.y),Vector2(width,font.get_height(font_size)*2))
-	var crown: Rect2 = art.get_global_transform()*art.crown_rect()
-	var branches: Dictionary = art.laurel_geometry()
-	var left: Rect2 = art.get_global_transform()*branches.left_rect
-	var right: Rect2 = art.get_global_transform()*branches.right_rect
-	check(absf(crown.get_center().x-words.get_center().x) <= 1,"Perfect Week crown centers over both title lines")
-	check(crown.end.y <= words.position.y-2,"Perfect Week crown stays above its lettering")
-	check(left.end.x <= words.position.x-4 and right.position.x >= words.end.x+4,"Perfect Week branches stay clear of both words")
-	check(words.end.y <= badge.get_global_rect().end.y+0.5,"Perfect Week lettering fits inside the badge")
-	check(left.position.y >= badge.get_global_rect().position.y and right.end.y <= badge.get_global_rect().end.y+0.5,"Perfect Week laurels fit inside their badge")

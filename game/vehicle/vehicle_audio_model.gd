@@ -19,7 +19,9 @@ func configure(id: String, speed: float) -> void:
 	vehicle_id = VehicleCatalog.valid_id(id)
 	maximum_speed = maxf(10.0,speed)
 	match vehicle_id:
-		"pickup":
+		"electric":
+			idle_rpm = 600.0; redline_rpm = 12000.0; anchors = Vector3(1200,4800,9600)
+		"pickup", "forklift":
 			idle_rpm = 800.0; redline_rpm = 5200.0; anchors = Vector3(950,2400,4400)
 		"classic":
 			idle_rpm = 1050.0; redline_rpm = 7600.0; anchors = Vector3(1250,3200,6500)
@@ -46,7 +48,14 @@ func advance(state: VehicleState, frame: DriveFrame, delta: float) -> bool:
 	var signed_speed: float = state.velocity.dot(state.forward())
 	reverse = signed_speed < -0.6
 	var pedal: float = float(frame.brake if reverse else frame.throttle)/255.0
+	if vehicle_id == "electric": pedal = frame.throttle / 255.0
 	load_amount = lerpf(load_amount,pedal,1.0-exp(-dt*(14.0 if pedal>load_amount else 7.0)))
+	if vehicle_id == "electric":
+		gear = -1 if reverse else 1
+		rpm = lerpf(idle_rpm,redline_rpm,clampf(speed / maximum_speed,0.0,1.0))
+		shift_remaining = 0.0
+		shift_cooldown = 0.0
+		return false
 	shift_cooldown = maxf(0.0,shift_cooldown-dt)
 	shift_remaining = maxf(0.0,shift_remaining-dt)
 	var changed: bool = false
@@ -54,7 +63,7 @@ func advance(state: VehicleState, frame: DriveFrame, delta: float) -> bool:
 		gear = -1
 	elif gear < 1:
 		gear = 1
-	elif vehicle_id != "kart" and shift_cooldown == 0.0:
+	elif vehicle_id not in ["kart","forklift"] and shift_cooldown == 0.0:
 		if gear < GEAR_TOPS.size() and speed > maximum_speed*GEAR_TOPS[gear-1]*0.92:
 			gear += 1
 			changed = true
@@ -65,7 +74,7 @@ func advance(state: VehicleState, frame: DriveFrame, delta: float) -> bool:
 		shift_remaining = 0.12
 		shift_cooldown = 0.32
 		shifts += 1
-	var top: float = maximum_speed*GEAR_TOPS[maxi(0,gear-1)] if vehicle_id != "kart" else maximum_speed*1.04
+	var top: float = maximum_speed*GEAR_TOPS[maxi(0,gear-1)] if vehicle_id not in ["kart","forklift"] else maximum_speed*1.04
 	if reverse: top = 9.0
 	var wheel_rpm: float = idle_rpm + clampf(speed/top,0.0,1.0)*(redline_rpm-idle_rpm)
 	var neutral_rpm: float = idle_rpm+load_amount*(redline_rpm-idle_rpm)*0.56

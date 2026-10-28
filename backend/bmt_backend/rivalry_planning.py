@@ -10,7 +10,7 @@ from sqlalchemy import select, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 
-from .contracts import build_contract
+from .contracts import vehicle_build_contract
 from .rivalry import TRACK_COUNT, eligible_query, week_window
 from .rivalry_models import RivalryGroup, RivalryWeekPlan
 from .track_models import OperationState, Track, TrackVersion, digest, now
@@ -22,7 +22,7 @@ logger = logging.getLogger("bmt.rivalry_planning")
 
 
 def plan_contract(active, vehicle):
-    return digest({**build_contract(active), "vehicles": {vehicle: active["vehicles"][vehicle]}, "vehicle_id": vehicle})
+    return digest(vehicle_build_contract(active, vehicle))
 
 
 def planning_lock(db, contract):

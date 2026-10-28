@@ -50,7 +50,7 @@ func run() -> void:
 	dialog().queue_free()
 	await process_frame
 	var original: Node = app.cloud
-	var track := NativeTrack.read("res://resources/tracks/starter_circuit.json")
+	var track := NativeTrack.read("res://resources/tracks/ellipse.json")
 	track.metadata.cloud_version = "isolated-feedback"
 	var held := HeldTicket.new()
 	held.client = original.client
@@ -71,7 +71,7 @@ func run() -> void:
 		check(app.race_loading == overlay and dialog() == null,"duplicate start keeps one visible preparation: "+scenario)
 		match scenario:
 			"car": VehicleCatalog.selected = "kart"
-			"track": app.selected_track = NativeTrack.read("res://resources/tracks/starter_circuit.json")
+			"track": app.selected_track = NativeTrack.read("res://resources/tracks/ellipse.json")
 			"account": app.online.client.player = {"id":"changed-feedback"}
 			"navigation": app._show_screen("garage")
 		held.released.emit()

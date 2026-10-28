@@ -5,7 +5,8 @@ extends RefCounted
 
 const RALLY_HANDBRAKE = preload("res://vehicle/rally_handbrake.gd")
 const BRIDGE_FLIGHT = preload("res://vehicle/bridge_flight.gd")
-const PHYSICS_VERSION: String = "arcade-planar-0.66"
+const PHYSICS_VERSION: String = "arcade-planar-0.75"
+const LOW_SPEED_TURN_FADE_END: float = 16.66 # Below 60 km/h, avoiding float32 endpoint arithmetic.
 const SOIL_TORQUE_GAIN: float = 1.35 # Loose verge bite beyond pure longitudinal drag.
 const SOIL_ROUGH_YAW_ACCELERATION: float = 1.45 # rad/s^2 peak spatial tyre deflection.
 const TICK_RATE: int = 120
@@ -52,6 +53,9 @@ func _step(frame: DriveFrame, ground: PlaygroundData = null) -> void:
 	LaunchStart.advance(state, frame)
 	# Brake pressure is only input driven; no automatic drift latch.
 	var requested_handbrake: float = frame.handbrake / 255.0
+	if config.single_pedal:
+		requested_handbrake = 0.0
+		state.handbrake_pressure = 0.0
 	state.handbrake_pressure = move_toward(state.handbrake_pressure, requested_handbrake,
 		(30.0 if requested_handbrake > state.handbrake_pressure else 3.0) * STEP)
 	var old_position: Vector2 = state.position
@@ -115,6 +119,7 @@ func _step(frame: DriveFrame, ground: PlaygroundData = null) -> void:
 	var tire_grip: float = 1.0 - maxf(dirt_loss, maxf(state.tire_oil * 0.65, state.tire_water * 0.18))
 	var throttle: float = frame.throttle / 255.0
 	var brake: float = frame.brake / 255.0
+	if config.single_pedal: brake = 0.0
 	var handbrake: float = state.handbrake_pressure
 	if config.progressive_handling and brake > 0.0:
 		throttle = 0.0
@@ -124,6 +129,9 @@ func _step(frame: DriveFrame, ground: PlaygroundData = null) -> void:
 	var steering_response: float = config.steering_rate
 	if config.progressive_handling and state.steering != 0.0 and (signf(requested_steering) != signf(state.steering) or absf(requested_steering) < absf(state.steering)):
 		steering_response = maxf(steering_response, config.countersteering_rate)
+	if config.low_speed_steering_rate_scale < 1.0 and state.velocity.length() < 8.0 and (state.steering == 0.0 or signf(requested_steering) == signf(state.steering)) and absf(requested_steering) > absf(state.steering):
+		# Gentle low-speed lock buildup; unwind and initial countersteer stay quick.
+		steering_response *= lerpf(config.low_speed_steering_rate_scale,1.0,smoothstep(4.0,8.0,state.velocity.length()))
 	state.steering = move_toward(state.steering, requested_steering, steering_response * STEP)
 	var forward: Vector2 = state.forward()
 	var right: Vector2 = state.right()
@@ -133,6 +141,9 @@ func _step(frame: DriveFrame, ground: PlaygroundData = null) -> void:
 	var slip: float = state.slip_angle()
 	var speed_fraction: float = clampf(absf(longitudinal) / 24.0, 0.0, 1.0)
 	var steer_angle: float = state.steering * config.steering_angle * (1.0 - config.high_speed_steering_reduction * speed_fraction)
+	if config.low_speed_steering_scale < 1.0 and speed < 8.0:
+		# Fade the parking-speed lock reduction out completely before normal driving.
+		steer_angle *= lerpf(config.low_speed_steering_scale,1.0,smoothstep(2.0,8.0,speed))
 	var target_yaw: float = longitudinal / config.wheelbase * tan(steer_angle)
 	target_yaw *= config.front_grip / config.rear_grip
 	var wheel_soil: Vector4 = _wheel_soil_contacts(ground) if config.wheel_soil_drag else Vector4(pickup,pickup,pickup,pickup)
@@ -159,6 +170,16 @@ func _step(frame: DriveFrame, ground: PlaygroundData = null) -> void:
 	target_yaw += state.steering * throttle * config.throttle_rotation * speed_fraction * signf(longitudinal)
 	if longitudinal > 1.0 and not config.progressive_handling:
 		target_yaw += slip * config.countersteer_assistance
+	if config.low_speed_turn_radius > 0.0 and (config.continuous_turn_radius or speed < LOW_SPEED_TURN_FADE_END):
+		# Power/lift rotation shares the steering curvature envelope. The continuous
+		# profile never restores a tighter turn at higher speed. Legacy profiles
+		# retain their low-speed fade. Yaw response and inertia still apply.
+		var radius: float = config.low_speed_turn_radius+speed*speed/config.low_speed_turn_acceleration if config.continuous_turn_radius else maxf(config.low_speed_turn_radius,speed*speed/config.low_speed_turn_acceleration)
+		var curvature_yaw: float = absf(longitudinal)/radius*absf(state.steering)
+		var bounded_yaw: float = clampf(target_yaw,-curvature_yaw,curvature_yaw)
+		var curvature_blend: float = 0.0 if config.continuous_turn_radius else smoothstep(40.0/3.6,LOW_SPEED_TURN_FADE_END,speed)
+		if curvature_blend < 1.0 and bounded_yaw != target_yaw:
+			target_yaw = lerpf(bounded_yaw,target_yaw,curvature_blend)
 	# Rear lock changes tire forces, not the front steering angle or a target radius.
 	var axle: Vector3 = _handbrake_axles(longitudinal, lateral, steer_angle, surface.x * tire_grip, requested_handbrake) if handbrake > 0.0 else Vector3.ZERO
 	var axle_acceleration: Vector2 = right * axle.x + forward * axle.y
@@ -201,8 +222,32 @@ func _step(frame: DriveFrame, ground: PlaygroundData = null) -> void:
 	grip_limit *= 1.0 - throttle * absf(state.steering) * config.throttle_grip_loss
 	if config.progressive_handling:
 		grip_limit *= 1.0 - brake_turn * config.brake_grip_loss
-	var lateral_acceleration: float = clampf(-lateral * config.lateral_response * tire_grip, -grip_limit, grip_limit)
-	var next_lateral: float = move_toward(lateral, 0.0, absf(lateral_acceleration) * STEP)
+	# A rear-steered chassis pivots around its fixed front axle. The centre moves
+	# outward while the nose follows the requested turn; the rear sweeps wider.
+	# Keep the established front-steer arithmetic exact for every existing car.
+	var target_lateral: float = -state.yaw_rate * config.wheelbase * 0.5 if config.rear_steering else 0.0
+	var lateral_response: float = config.lateral_response
+	if config.rear_wheel_drive and config.launch_lateral_response_scale < 1.0 and longitudinal >= 0.0 and speed < 8.0:
+		# Rear-drive power lets the tail retain a little sideways momentum on launch.
+		# No yaw impulse: steering still sets rotation, and lifting/straightening
+		# restores normal response. The speed fade fully removes this at 8 m/s.
+		var launch_slip: float = smoothstep(0.35,0.65,throttle) * smoothstep(0.1,0.35,absf(state.steering)) * (1.0-smoothstep(4.0,8.0,speed))
+		lateral_response *= lerpf(1.0,config.launch_lateral_response_scale,launch_slip)
+	if config.rear_wheel_drive and config.power_lateral_response_scale < 1.0 and longitudinal > 0.0:
+		# Rear power retains lateral momentum beyond the launch-speed window.
+		# Share the existing launch response rather than stacking both reductions.
+		# Steering/yaw and available motor/braking forces keep their original bounds.
+		var power_start: float = maxf(0.46,config.coast_pedal+0.20)
+		var power_end: float = maxf(power_start+0.01,config.power_slide_full_pedal)
+		var power_slide: float = smoothstep(power_start,power_end,throttle) * smoothstep(0.1,0.45,absf(state.steering))
+		if config.power_slide_high_speed_scale < 1.0:
+			# Retain a planted fast sweep while making ordinary powered corners looser.
+			# The optional fade is continuous and cannot add steering or motor force.
+			power_slide *= lerpf(1.0,config.power_slide_high_speed_scale,smoothstep(28.0,maxf(28.01,config.maximum_speed),speed))
+		var power_response: float = config.lateral_response * lerpf(1.0,config.power_lateral_response_scale,power_slide)
+		lateral_response = minf(lateral_response,power_response)
+	var lateral_acceleration: float = clampf((target_lateral - lateral) * lateral_response * tire_grip, -grip_limit, grip_limit)
+	var next_lateral: float = move_toward(lateral, target_lateral, absf(lateral_acceleration) * STEP)
 	if handbrake > 0.0:
 		next_lateral = lerpf(next_lateral, lateral + axle_acceleration.dot(right) * STEP, handbrake)
 	# Grip redirects most scrubbed lateral energy into travel instead of deleting it.
@@ -214,7 +259,7 @@ func _step(frame: DriveFrame, ground: PlaygroundData = null) -> void:
 	if handbrake > 0.0 and longitudinal < 0.0: removed_energy = 0.0
 	var alignment: float = clampf(absf(longitudinal) / maxf(absf(lateral), 0.01), 0.0, 1.0)
 	longitudinal = signf(longitudinal) * sqrt(longitudinal * longitudinal + removed_energy * config.corner_energy_retention * alignment * (1.0 - requested_handbrake))
-	var drive_acceleration: float = _pedal_acceleration(longitudinal, frame.throttle / 255.0, brake)
+	var drive_acceleration: float = _pedal_acceleration(longitudinal, frame.throttle / 255.0, frame.brake / 255.0 if config.single_pedal else brake)
 	if handbrake > 0.0:
 		state.reverse_wait = 0.0
 		if brake > 0.0:
@@ -230,6 +275,19 @@ func _step(frame: DriveFrame, ground: PlaygroundData = null) -> void:
 	# strand the car against movable props; full penalty applies above 12 m/s.
 	var drive_tire_grip: float = 1.0 - maxf(dirt_loss * smoothstep(3.0, 12.0, speed), maxf(state.tire_oil * 0.65, state.tire_water * 0.18))
 	longitudinal_limit *= surface.x * drive_tire_grip
+	if config.rear_wheel_drive:
+		# The rear motor shares its tyres with cornering. One-pedal lift blends
+		# automatic friction braking with regeneration across all four wheels;
+		# it uses the combined traction budget above, not the motor's rear limit.
+		# Ordinary rear-only regen still loses rear load under braking.
+		var regenerating: bool = config.regeneration > 0.0 and brake == 0.0 and throttle < config.coast_pedal
+		if not (config.single_pedal and regenerating) and (brake == 0.0 or brake > 0.0 and longitudinal < -0.15):
+			var rear_load: float = 0.48 if regenerating else 0.60
+			var rear_soil: float = (wheel_soil.z + wheel_soil.w) * 0.5
+			var rear_traction: float = config.longitudinal_grip * rear_load * surface.x * drive_tire_grip
+			rear_traction *= lerpf(1.0, 0.65, rear_soil)
+			rear_traction *= sqrt(maxf(0.15, 1.0 - lateral_usage * lateral_usage * 0.80))
+			longitudinal_limit = minf(longitudinal_limit, rear_traction)
 	drive_acceleration = clampf(drive_acceleration, -longitudinal_limit, longitudinal_limit)
 	# Temporary forward drive only; braking/reverse and maximum speed stay unchanged.
 	if drive_acceleration > 0.0 and throttle > 0.0 and longitudinal >= 0.0:
@@ -240,6 +298,9 @@ func _step(frame: DriveFrame, ground: PlaygroundData = null) -> void:
 	if longitudinal < -config.reverse_speed:
 		drive_acceleration = maxf(0.0, drive_acceleration)
 	var next_longitudinal: float = longitudinal + (drive_acceleration + axle_acceleration.dot(forward) * handbrake) * STEP
+	# Lift-off braking stops in either direction and holds; it never selects reverse.
+	if config.regeneration > 0.0 and brake == 0.0 and throttle < config.coast_pedal and longitudinal * next_longitudinal < 0.0:
+		next_longitudinal = 0.0
 	if requested_handbrake > 0.0 and longitudinal * next_longitudinal < 0.0: next_longitudinal = 0.0
 	if requested_handbrake == 0.0 and brake == 0.0 and handbrake > 0.0 and next_longitudinal < 0.0:
 		# Brief, dissipative exit assistance catches reverse chassis slip while
@@ -308,6 +369,18 @@ static func dirt_grip_loss(dirt: float, sensitivity: float, loose_contact: bool 
 
 
 func _pedal_acceleration(speed: float, throttle: float, brake: float) -> float:
+	if config.single_pedal:
+		# In this car only, the third replay channel is the D/R selector. It is
+		# never a brake pedal. Opposing travel first dissipates to zero, so a
+		# direction request cannot reverse momentum or create an instant boost.
+		state.reverse_wait = 0.0
+		var direction: float = -1.0 if brake >= 0.5 else 1.0
+		if speed * direction < -0.001 or throttle < config.coast_pedal:
+			var amount: float = 1.0 if speed * direction < -0.001 else 1.0 - throttle / config.coast_pedal
+			return -signf(speed) * minf(absf(speed) / STEP, config.regeneration * amount)
+		var pedal: float = (throttle - config.coast_pedal) / (1.0 - config.coast_pedal)
+		var top: float = config.reverse_speed if direction < 0.0 else config.maximum_speed
+		return direction * config.engine_force / config.mass * pedal * (1.0 - 0.45 * clampf(absf(speed) / top, 0.0, 1.0))
 	if brake > 0.0:
 		if absf(speed) < 0.15 and throttle == 0.0:
 			state.reverse_wait += STEP
@@ -322,6 +395,10 @@ func _pedal_acceleration(speed: float, throttle: float, brake: float) -> float:
 	state.reverse_wait = 0.0
 	if speed < -0.15 and throttle > 0.0:
 		return config.braking_force / config.mass * throttle
+	if config.regeneration > 0.0:
+		if throttle < config.coast_pedal:
+			return -signf(speed) * minf(absf(speed) / STEP, config.regeneration * (1.0 - throttle / config.coast_pedal))
+		throttle = (throttle - config.coast_pedal) / (1.0 - config.coast_pedal)
 	var power_falloff: float = 1.0 - 0.45 * clampf(speed / config.maximum_speed, 0.0, 1.0)
 	if config.slide_power_recovery > 0.0 and speed > 0.0:
 		# Optional original-based tune: retain more of the engine's normal force

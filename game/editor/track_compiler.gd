@@ -44,7 +44,7 @@ static func compile(document: Dictionary, preview_cache: Dictionary = {}, cancel
 	if not document.layout.is_empty(): road_samples = TrackDocument.route_data(document.layout)
 	var road_route: PackedVector2Array = road_samples.points
 	var road_widths: PackedFloat32Array = road_samples.widths
-	var section_key: Array = [document.pieces]
+	var section_key: Array = [document.pieces,document.surface,document.theme]
 	var sections: Array[Dictionary] = []
 	var bridges: Array = []
 	if preview_cache.get("sections_key",[]) == section_key:
@@ -56,8 +56,12 @@ static func compile(document: Dictionary, preview_cache: Dictionary = {}, cancel
 			if _cancelled(cancelled): return null
 			var piece: Dictionary = document.pieces[piece_index]
 			var geometry: Dictionary = RoadPieces.section_geometry(document.pieces,piece_index,topology)
-			sections.append({"points":geometry.points,"widths":geometry.widths,"width":float(piece.width),"bridge":piece.kind == "bridge"})
-			if piece.kind == "bridge": bridges.append(piece.duplicate(true))
+			sections.append({"points":geometry.points,"widths":geometry.widths,"width":float(piece.width),"bridge":piece.kind == "bridge","surface":RoadPieces.material(piece,document)})
+			if piece.kind == "bridge":
+				var span: Dictionary = piece.duplicate(true)
+				if RoadPieces.has_materials(document): span.surface = RoadPieces.material(piece,document)
+				else: span.erase("surface")
+				bridges.append(span)
 		if preview_cache.get("enabled",false):
 			preview_cache.sections_key = section_key.duplicate(true)
 			preview_cache.sections = sections.duplicate(true); preview_cache.bridges = bridges.duplicate(true)
@@ -96,7 +100,8 @@ static func compile(document: Dictionary, preview_cache: Dictionary = {}, cancel
 		for section: Dictionary in sections:
 			if section.bridge: continue
 			var section_widths: PackedFloat32Array = section.widths
-			_raster_road(section.points,section_widths,2 if document.surface == "dirt" else 0,cells,grid,extent,cell_size,false,road_mask,cancelled)
+			_raster_road(section.points,section_widths,2 if section.surface == "gravel" else 0,cells,grid,extent,cell_size,false,road_mask,cancelled)
+		if RoadPieces.has_materials(document): RoadPieces.stamp_materials(document,cells,grid,extent,cell_size,0.0,road_mask,cancelled)
 		paint_exclusion = _paint(document.paint,cells,grid,extent,cell_size,road_mask,cancelled)
 		if _cancelled(cancelled): return null
 		if preview_cache.get("enabled",false):

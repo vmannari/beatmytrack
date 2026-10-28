@@ -14,9 +14,20 @@ var _scope_lock: RefCounted
 var _instance_nonce: String = Crypto.new().generate_random_bytes(24).hex_encode()
 static var _process_nonce: String = Crypto.new().generate_random_bytes(24).hex_encode()
 var profile_callback_us: int = 0
+var background_allowed: Callable
+var _empty_directory: String = ""
 const Files = preload("res://backend/atomic_json.gd")
 const REQUEST_INTERVAL_SECONDS: int = 5
 const MAX_INSPECTED: int = 64
+
+func _ready() -> void:
+	if client != null and client.has_signal("identity_changed"): client.identity_changed.connect(_wake)
+	if client != null and not client.signed_in(): set_process(false)
+
+func _wake() -> void:
+	_empty_directory = ""
+	_next_msec = 0
+	set_process(client != null and client.signed_in())
 
 func _directory(owner: String, origin: String) -> String:
 	var base: String = root_override if not root_override.is_empty() else client.session_path.get_base_dir().path_join("resume_recovery") if not client.session_path.is_empty() else "user://resume_recovery"
@@ -61,13 +72,17 @@ func save(entry: Dictionary) -> bool:
 	# A failed ownership journal must stop consumption before any charge.
 	if active.has(str(entry.begin_key)) and not bool(active[str(entry.begin_key)].saved): return false
 	var path: String = _directory(str(entry.owner),str(entry.origin)).path_join(str(entry.consume_key).sha256_text()+".json")
-	return Files.write(path,entry,32768)
+	var saved: bool = Files.write(path,entry,32768)
+	if saved: _wake()
+	return saved
 
 func discard(entry: Dictionary) -> void:
 	if not entry.has_all(["owner","origin","consume_key"]): return
 	DirAccess.remove_absolute(_directory(str(entry.owner),str(entry.origin)).path_join(str(entry.consume_key).sha256_text()+".json"))
 
 func _process(_delta: float) -> void:
+	if background_allowed.is_valid() and not bool(background_allowed.call()): return
+	if not _empty_directory.is_empty() and _empty_directory == _directory(str(client.player.get("id","")),str(client.base_url())): return
 	if not busy and Time.get_ticks_msec() >= _next_msec:
 		var started: int = Time.get_ticks_usec()
 		_next_msec = Time.get_ticks_msec()+5000+int(Crypto.new().generate_random_bytes(1)[0])*10
@@ -77,10 +92,13 @@ func _process(_delta: float) -> void:
 
 func reconcile() -> void:
 	if busy or not client.signed_in() or not bool(client._capabilities.get("resume_recovery",false)): return
+	if background_allowed.is_valid() and not bool(background_allowed.call()): return
 	busy = true
 	var owner: String = str(client.player.get("id",""))
 	var origin: String = str(client.base_url())
 	var directory: String = _directory(owner,origin)
+	_empty_directory = ""
+	set_process(true)
 	if not _ready_scope(directory):
 		busy = false
 		return
@@ -94,16 +112,26 @@ func reconcile() -> void:
 		return
 	# Re-read after acquiring the shared lock. The preceding instance may have
 	# changed both the retry deadline and a journal while this one waited.
-	if str(client.player.get("id","")) == owner and client.base_url() == origin and _ready_scope(directory):
+	var allowed: bool = not background_allowed.is_valid() or bool(background_allowed.call())
+	if allowed and str(client.player.get("id","")) == owner and client.base_url() == origin and _ready_scope(directory):
 		await _reconcile_locked(directory,owner,origin)
 	_scope_lock.release()
 	_scope_lock = null
 	busy = false
 
 func _reconcile_locked(directory: String, owner: String, origin: String) -> void:
+	if background_allowed.is_valid() and not bool(background_allowed.call()): return
 	var filenames: PackedStringArray = DirAccess.get_files_at(directory) if DirAccess.dir_exists_absolute(directory) else PackedStringArray()
+	var has_journals: bool = false
+	for filename: String in filenames:
+		if filename.ends_with(".json") and not filename.begins_with("."): has_journals = true; break
+	if not has_journals:
+		_empty_directory = directory
+		set_process(false)
+		return
 	var start: int = int(_cursor.get(directory,0)) % maxi(1,filenames.size())
 	for offset: int in range(mini(MAX_INSPECTED,filenames.size())):
+		if background_allowed.is_valid() and not bool(background_allowed.call()): return
 		var index: int = (start+offset) % filenames.size()
 		_cursor[directory] = index+1
 		var filename: String = filenames[index]

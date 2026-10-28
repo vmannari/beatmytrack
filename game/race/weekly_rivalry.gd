@@ -27,6 +27,16 @@ var forming: bool = false
 var vehicle_id: String = "compact"
 var source_self: String = ""
 var personal_best_slots: Array[int] = []
+var pending_runs: int = 0
+
+func empty_completed_week() -> bool:
+	if sample or not completed or pending_runs > 0 or tracks.size() != 5: return false
+	var own: Dictionary = self_row(standing())
+	if own.is_empty() or int(own.get("completed",0)) > 0: return false
+	for track: Dictionary in tracks:
+		var row: Dictionary = self_row(track.entries)
+		if row.is_empty() or row.get("ms") != null or row.get("ticks") != null: return false
+	return true
 
 func _init(use_sample: bool = false) -> void:
 	sample = use_sample
@@ -44,6 +54,7 @@ func apply_snapshot(value: Dictionary) -> void:
 	week = int(value.get("week",0))
 	group_id = str(value.get("group_id",""))
 	completed = status == "complete"
+	pending_runs = int(value.get("pending_runs",0))
 	remaining_seconds = int(value.get("remaining_seconds",maxi(0,int(value.get("ends_at",0))-int(value.get("server_now",0)))))
 	received_msec = Time.get_ticks_msec()
 	placement = bool(value.get("placement",false))
@@ -179,11 +190,11 @@ func preview_result(index: int, ticks: int, seconds: float) -> Dictionary:
 	return last_result.duplicate(true)
 
 func countdown() -> String:
-	if sample and completed: return "Week complete"
-	if status == "settling": return "Final results being verified"
-	if completed: return "Week complete"
+	if sample and completed: return GameText.message("Week complete")
+	if status == "settling": return GameText.message("Final results being verified")
+	if completed: return GameText.message("Week complete")
 	var left: int = maxi(0,remaining_seconds-(Time.get_ticks_msec()-received_msec)/1000)
-	return "%dd %dh remaining" % [left/86400,(left%86400)/3600] if left > 0 else "Week closing"
+	return GameText.message("{days}d {hours}h remaining",{"days":left/86400,"hours":(left%86400)/3600}) if left > 0 else GameText.message("Week closing")
 
 func _seed() -> void:
 	tracks.clear()

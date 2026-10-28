@@ -12,7 +12,7 @@ from sqlalchemy.exc import IntegrityError
 
 from .admin import Access, Window
 from .admin_ranges import calendar_range
-from .commerce import CATALOG, entitlement_payload, fulfill_verified, lock_entitlements
+from .commerce import CATALOG, entitlement_payload, fulfill_verified, gift_recipient, lock_purchase_accounts
 from .commerce_models import Purchase
 from .middleware import ParsedJSONRoute
 from .studio_cases import begin
@@ -70,6 +70,7 @@ class Verify(BaseModel):
     model_config = ConfigDict(strict=True, extra="forbid")
     product_id: str = Field(min_length=1, max_length=40)
     purchase_token: str = Field(min_length=16, max_length=4096)
+    recipient_player_id: str | None = Field(None, min_length=36, max_length=36)
 
 
 @router.post("/v1/billing/google-play/verify")
@@ -78,6 +79,11 @@ def verify(body: Verify, request: Request, player: Auth, session: DB):
         raise HTTPException(503, "PLAY_NOT_CONFIGURED")
     if body.product_id not in CATALOG:
         raise HTTPException(422, "UNKNOWN_PRODUCT")
+    if body.recipient_player_id is not None:
+        try:
+            body.recipient_player_id = str(UUID(body.recipient_player_id))
+        except ValueError:
+            raise HTTPException(422, "INVALID_GIFT_RECIPIENT") from None
     player_id = player.id
     session.rollback()  # Provider IO never retains a SQL transaction or wallet lock.
     from .studio_providers import PlayProvider
@@ -101,11 +107,14 @@ def verify(body: Verify, request: Request, player: Auth, session: DB):
     identity = "google_play:" + digest({"token": body.purchase_token})
     try:
         begin(session, str(UUID(identity.split(":")[1][:32])))
-        row = lock_entitlements(session, player_id)
+        rows = lock_purchase_accounts(session, player_id, body.recipient_player_id)
+        row = rows[player_id]
         old = session.get(Purchase, identity)
-        if old and (old.player_id != player_id or old.product_id != body.product_id):
+        if old and (old.player_id != player_id or old.product_id != body.product_id
+                or old.recipient_player_id != body.recipient_player_id):
             raise HTTPException(409, "PURCHASE_ALREADY_CLAIMED")
         if old is None:
+            gift_recipient(session, player_id, body.recipient_player_id, body.product_id)
             if verified["consumption"] != "CONSUMPTION_STATE_YET_TO_BE_CONSUMED":
                 raise HTTPException(409, "PURCHASE_ALREADY_CONSUMED")
             old = Purchase(
@@ -114,11 +123,13 @@ def verify(body: Verify, request: Request, player: Auth, session: DB):
                 provider="google_play",
                 product_id=body.product_id,
                 state="approved",
+                recipient_player_id=body.recipient_player_id,
             )
             session.add(old)
-        fulfill_verified(session, row, old, verified_at=now())
+        fulfill_verified(session, rows[old.recipient_player_id or player_id], old, verified_at=now())
         result = {
-            "purchase": {"id": old.id, "state": old.state, "fulfilled_at": old.fulfilled_at},
+            "purchase": {"id": old.id, "state": old.state, "fulfilled_at": old.fulfilled_at,
+                "recipient_player_id": old.recipient_player_id},
             "entitlements": entitlement_payload(session, request.app.state.settings, row),
         }
         session.commit()

@@ -2,7 +2,7 @@ class_name ContactShading
 extends RefCounted
 ## Cosmetic depth projections. No collision, timing or canonical-state writes.
 const VERSION: String = "contact-lighting-12"
-const CAR_DIMENSIONS: Dictionary = {"compact":Vector2(2.35,4.8),"pickup":Vector2(2.6,5.8),"classic":Vector2(2.5,4.6),"formula":Vector2(2.7,5.0),"kart":Vector2(2.0,3.2)}
+const CAR_DIMENSIONS: Dictionary = {"compact":Vector2(2.35,4.8),"pickup":Vector2(2.6,5.8),"classic":Vector2(2.5,4.6),"formula":Vector2(2.7,5.0),"kart":Vector2(2.0,3.2),"forklift":Vector2(2.25,4.7)}
 const STATIC_KINDS: Array[String] = ["tree","broadleaf","bush","rock","boulder","slate","cliff","barrier","log","parked_car","van","car_wreck","container","shed","hut","grandstand","egypt_pyramid","egypt_obelisk","egypt_column","egypt_column_broken","egypt_wall","igloo","snow_castle","ice_compact","firefly_bush","burning_barrel","lantern_post","neon_arrow","burning_car","abandoned_warehouse"]
 
 static func material() -> ShaderMaterial:

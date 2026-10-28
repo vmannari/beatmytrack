@@ -7,7 +7,7 @@ func run() -> void:
 		print("SURFACE_IMPACT_CAPTURE requires -Graphical")
 		quit(1)
 		return
-	var track: NativeTrack = NativeTrack.read("res://resources/tracks/starter_circuit.json")
+	var track: NativeTrack = NativeTrack.read("res://resources/tracks/ellipse.json")
 	await process_frame
 	await capture(track,VehicleCatalog.config("compact"))
 	print("SURFACE_IMPACT_CAPTURE: %d checks, %d failures"%[checks,failures])

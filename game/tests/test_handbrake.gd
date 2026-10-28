@@ -8,7 +8,28 @@ func check(ok: bool, message: String) -> void:
 		failures += 1
 		push_error(message)
 func _initialize() -> void: call_deferred("run")
+
+func vehicles() -> Array[String]:
+	var result: Array[String] = VehicleCatalog.IDS.duplicate()
+	for argument: String in OS.get_cmdline_user_args():
+		if argument.begins_with("--car="):
+			var id: String = argument.trim_prefix("--car=")
+			assert(id in VehicleCatalog.IDS)
+			result.assign([id])
+	result = result.filter(func(id: String) -> bool: return not VehicleCatalog.config(id).single_pedal)
+	return result
+
 func run() -> void:
+	for id: String in VehicleCatalog.IDS:
+		var config: HandlingConfig = VehicleCatalog.config(id)
+		if not config.single_pedal: continue
+		var ordinary := VehicleSimulation.new(config)
+		var requested := VehicleSimulation.new(config)
+		for tick: int in range(360):
+			ordinary.step(DriveFrame.sample(0.6,1,0))
+			requested.step(DriveFrame.sample(0.6,1,0,1))
+		check(ordinary.state.snapshot() == requested.state.snapshot(),id+" has no handbrake effect")
+		check(requested.state.handbrake_pressure == 0,id+" cannot engage a handbrake")
 	test_half_turn_exit()
 	test_pull_rotation()
 	test_input_and_stopping()
@@ -19,7 +40,7 @@ func run() -> void:
 	quit(1 if failures else 0)
 
 func test_input_and_stopping() -> void:
-	for id: String in VehicleCatalog.IDS:
+	for id: String in vehicles():
 		for direction: float in [-1.0,1.0]:
 			var sim := VehicleSimulation.new(VehicleCatalog.config(id))
 			sim.state.velocity = Vector2(0,direction*18)
@@ -56,7 +77,7 @@ func path(id: String, speed: float, pull: int) -> Dictionary:
 	return {"complete":false}
 
 func test_paths() -> void:
-	for id: String in VehicleCatalog.IDS:
+	for id: String in vehicles():
 		var ordinary: Dictionary = path(id,18,0)
 		var pull: Dictionary = path(id,18,24)
 		check(ordinary.complete and pull.complete,id+" brief pull and powered release completes 170 degree hairpin")
@@ -68,7 +89,7 @@ func test_paths() -> void:
 	check(compact.complete and float(compact.radius) < 4.0,"compact slow hairpin stays tight with a longer deliberate pull")
 
 func test_correction_and_replay() -> void:
-	for id: String in VehicleCatalog.IDS:
+	for id: String in vehicles():
 		var right := VehicleSimulation.new(VehicleCatalog.config(id))
 		var left := VehicleSimulation.new(VehicleCatalog.config(id))
 		right.state.velocity = Vector2(0,18); left.state.velocity = Vector2(0,18)
@@ -110,7 +131,7 @@ func test_correction_and_replay() -> void:
 
 
 func test_pull_rotation() -> void:
-	for id: String in VehicleCatalog.IDS:
+	for id: String in vehicles():
 		for speed: float in [12.0,18.0,25.0,35.0]:
 			for ticks: int in [24,36,60]:
 				var sim := VehicleSimulation.new(VehicleCatalog.config(id))
@@ -135,7 +156,7 @@ func test_pull_rotation() -> void:
 
 
 func test_half_turn_exit() -> void:
-	for id: String in VehicleCatalog.IDS:
+	for id: String in vehicles():
 		var sim := VehicleSimulation.new(VehicleCatalog.config(id))
 		sim.state.velocity = Vector2(0,minf(35.0,sim.config.maximum_speed))
 		var rotation: float = 0.0

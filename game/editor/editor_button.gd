@@ -41,7 +41,11 @@ static func make(label: String, icon: String, action: Callable, chosen: bool = f
 	button.pressed.connect(action)
 	return button
 
+func _notification(what: int) -> void:
+	if what == NOTIFICATION_TRANSLATION_CHANGED: queue_redraw()
+
 func _draw() -> void:
+	var display_caption: String = tr(caption)
 	var center := Vector2(24,size.y*0.5) if horizontal else Vector2(size.x*0.5,26 if not caption.is_empty() else size.y*0.5)
 	var ink := Color(0.94,0.97,0.97,0.35 if disabled else 1.0)
 	if glyph=="play": ink=Color("859095") if disabled else Color("b4ed69")
@@ -141,10 +145,10 @@ func _draw() -> void:
 		var symbol: String = {"back":"‹","undo":"↶","redo":"↷","test":"▶","confirm":"✓","rotate":"↻","flip":"⇄","snap":"⊙","move":"✥","more":"•••","minus":"−","plus":"+","fit":"⌗","delete":"×","issue":"!","width":"↔"}.get(glyph,glyph)
 		draw_string(ThemeDB.fallback_font,center+Vector2(-ThemeDB.fallback_font.get_string_size(symbol,HORIZONTAL_ALIGNMENT_LEFT,-1,28).x*0.5,10),symbol,HORIZONTAL_ALIGNMENT_LEFT,-1,28,ink)
 	if horizontal:
-		draw_string(EditorStyle.FONT,Vector2(46,size.y*0.5+6),caption,HORIZONTAL_ALIGNMENT_LEFT,-1,18,ink)
+		draw_string(EditorStyle.FONT,Vector2(46,size.y*0.5+6),display_caption,HORIZONTAL_ALIGNMENT_LEFT,-1,18,ink)
 	elif not caption.is_empty():
 		var font: Font = get_theme_font("font")
-		draw_string(font,Vector2((size.x-font.get_string_size(caption,HORIZONTAL_ALIGNMENT_LEFT,-1,16).x)*0.5,size.y-9),caption,HORIZONTAL_ALIGNMENT_LEFT,-1,16,ink)
+		draw_string(font,Vector2((size.x-font.get_string_size(display_caption,HORIZONTAL_ALIGNMENT_LEFT,-1,16).x)*0.5,size.y-9),display_caption,HORIZONTAL_ALIGNMENT_LEFT,-1,16,ink)
 
 static func action(label: String, icon: String, callback: Callable, primary: bool = false) -> EditorButton:
 	var button: EditorButton=make(label,icon,callback,primary)

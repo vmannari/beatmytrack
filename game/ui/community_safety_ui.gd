@@ -189,7 +189,7 @@ func _manage() -> void:
 	body.add_child(MenuStyle.button("Retry sync / saved reports",func() -> void:
 		_set_status("Syncing…")
 		await client.safety.refresh()
-		if is_inside_tree(): _set_status("Saved reports: %d · pending blocks: %d" % [client.safety.pending_reports.size(),client.safety.pending_blocks.size()])
+		if is_inside_tree(): _set_status(GameText.message("Saved reports: %d · pending blocks: %d") % [client.safety.pending_reports.size(),client.safety.pending_blocks.size()])
 	))
 	body.add_child(MenuStyle.button("My reports",_my_reports))
 

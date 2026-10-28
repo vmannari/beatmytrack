@@ -100,7 +100,7 @@ func run() -> void:
 		inspect(app.root_ui,Rect2(Vector2.ZERO,root.get_visible_rect().size))
 		var winner: Control = app.root_ui.find_child("RivalryPodium_1",true,false)
 		var runner: Control = app.root_ui.find_child("RivalryPodium_2",true,false)
-		check(is_equal_approx(winner.size.y,runner.size.y) and is_equal_approx(runner.global_position.y,winner.global_position.y),"podium cards have equal heights and aligned top edges")
+		check(is_equal_approx(winner.size.y-runner.size.y,1.0) and is_equal_approx(runner.global_position.y-winner.global_position.y,1.0),"podium gives first place a subtle one-unit height advantage")
 		check(winner.size.y <= 194,"the car podium remains compact enough to prioritize standings")
 		check(app.root_ui.find_child("RivalryPodiumCar_1",true,false) != null,"podium shows the winner's native car")
 		var left_panel: Control = app.root_ui.find_child("RivalryDriversPanel",true,false)
@@ -208,9 +208,13 @@ func run() -> void:
 		app.rivalry_section = "overview"
 		app._rivalry()
 		await settle()
+		var weekly_summary: Node = app.root_ui.get_node_or_null("RivalrySummaryDialog")
+		if weekly_summary != null:
+			weekly_summary.confirm_button.pressed.emit()
+			await settle()
 		inspect(app.root_ui,Rect2(Vector2.ZERO,root.get_visible_rect().size))
 		await capture("weekly-finale",dimensions)
-		check(app.rivalry_section == "overview" and app.root_ui.find_child("WeeklyRivalryFinale",true,false) != null,"completed overview becomes the championship awards ceremony")
+		check(app.rivalry_section == "overview" and app.root_ui.find_child("RivalryPodium",true,false) != null and app.root_ui.find_child("WeeklyRivalryFinale",true,false) == null,"completed overview retains the weekly podium and component positions")
 		(app.root_ui.find_child("SelectRivalryTrack_2",true,false) as Button).pressed.emit()
 		await settle()
 		check(app.rivalry_section == "detail" and (app.root_ui.find_child("RivalryStartRace",true,false) as Button).disabled,"completed-week rows open details but cannot start another race")

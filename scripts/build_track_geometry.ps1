@@ -7,12 +7,13 @@ $source = Join-Path $repoRoot 'native/track_geometry/track_geometry.cpp'
 $outputRoot = Join-Path $repoRoot 'game/platform/track_geometry'
 $buildRoot = Join-Path $repoRoot 'build/device-track-loading/native'
 New-Item -ItemType Directory -Path $buildRoot -Force | Out-Null
-$common = @('-std=c++17','-O2','-ffp-contract=off','-shared','-s','-DGDEXTENSION','-DNDEBUG',('-I'+(Join-Path $bindings 'include')),('-I'+(Join-Path $bindings 'gen/include')),('-I'+(Join-Path $bindings 'gdextension')),$source)
+$common = @('-std=c++17','-O2','-g','-ffp-contract=off','-shared','-DGDEXTENSION','-DNDEBUG',('-I'+(Join-Path $bindings 'include')),('-I'+(Join-Path $bindings 'gen/include')),('-I'+(Join-Path $bindings 'gdextension')),$source)
 if ($Platform -in @('windows','all')) {
     $compiler = 'C:/msys64/mingw64/bin/g++.exe'
     $compiled = Join-Path $buildRoot 'bmt_track_geometry.windows.x86_64.roads.dll'
     & $compiler @common '-static' '-Wl,--no-insert-timestamp' '-DWINDOWS_ENABLED' (Join-Path $bindings 'bin/libgodot-cpp.windows.template_release.x86_64.a') '-o' $compiled
     if ($LASTEXITCODE) { throw 'Windows track geometry build failed.' }
+    & (Join-Path $PSScriptRoot 'retain_native_symbols.ps1') -Compiled $compiled -Objcopy 'C:/msys64/mingw64/bin/objcopy.exe' -Strip 'C:/msys64/mingw64/bin/strip.exe'
     # A running editor may retain the previous DLL. Content-address the new
     # library so rebuilding never replaces a loaded native image.
     $binaryTag = (Get-FileHash -LiteralPath $compiled -Algorithm SHA256).Hash.ToLowerInvariant().Substring(0,12)
@@ -30,8 +31,9 @@ if ($Platform -in @('android','all')) {
         $target = if ($architecture -eq 'arm64') { 'aarch64-linux-android24' } else { 'x86_64-linux-android24' }
         $compiler = Join-Path $toolchain 'bin/clang++.exe'
         $compiled = Join-Path $buildRoot "libbmt_track_geometry.android.$architecture.so"
-        & $compiler @common ("--target="+$target) ("--sysroot="+(Join-Path $toolchain 'sysroot')) '-fPIC' '-DANDROID_ENABLED' '-DUNIX_ENABLED' '-Wl,-z,max-page-size=16384' '-static-libstdc++' (Join-Path $bindings "bin/libgodot-cpp.android.template_release.$architecture.a") '-llog' '-ldl' '-o' $compiled
+        & $compiler @common ("--target="+$target) ("--sysroot="+(Join-Path $toolchain 'sysroot')) '-fPIC' '-DANDROID_ENABLED' '-DUNIX_ENABLED' '-Wl,--build-id=sha1' '-Wl,-z,max-page-size=16384' '-static-libstdc++' (Join-Path $bindings "bin/libgodot-cpp.android.template_release.$architecture.a") '-llog' '-ldl' '-o' $compiled
         if ($LASTEXITCODE) { throw "Android $architecture track geometry build failed." }
+        & (Join-Path $PSScriptRoot 'retain_native_symbols.ps1') -Compiled $compiled -Objcopy (Join-Path $toolchain 'bin/llvm-objcopy.exe') -Strip (Join-Path $toolchain 'bin/llvm-strip.exe')
         Copy-Item -LiteralPath $compiled -Destination (Join-Path $outputRoot (Split-Path -Leaf $compiled)) -Force
     }
 }

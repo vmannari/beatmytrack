@@ -2,7 +2,7 @@ class_name CreatorCatalog
 extends RefCounted
 ## One browser tile per asset family; variants are chosen after selection.
 const BIOME_ASSETS: Dictionary = {
- "desert":["pebbles","rock","slate","cliff","chevron","braking_board","flag","gantry","egypt_pyramid","egypt_obelisk","egypt_column","egypt_wall"],
+ "desert":["pebbles","rock","slate","cliff","jump","chevron","braking_board","flag","gantry","egypt_pyramid","egypt_obelisk","egypt_column","egypt_wall"],
  "winter":["tree","pebbles","rock","slate","cliff","log","tyre_stack","barrier","guardrail","fence","cone","chevron","braking_board","flag","light","gantry","shed","hut","igloo","snow_castle","snowman","snow_lantern","ice_lantern","ice_compact"]
 }
 const OBJECT_BIOMES: Dictionary = {"abandoned_warehouse":["night_city"],"burning_car":["night_city"],"firefly_bush":["night_city"],"burning_barrel":["night_city"],"lantern_post":["night_city"],"neon_arrow":["night_city"],"speed_bump":["pine","storm","night_city"],"egypt_pyramid":["desert"],"egypt_obelisk":["desert"],"egypt_column":["desert"],"egypt_wall":["desert"],"igloo":["winter"],"snowman":["winter"],"snow_castle":["winter"],"snow_lantern":["winter"],"ice_lantern":["winter"],"ice_compact":["winter"]}
@@ -40,7 +40,7 @@ const ASSETS: Array = [
  ["flag","Flag","Trackside",["flag"]],
  ["light","Light pole","Trackside",["light"]],
  ["gantry","Start gantry","Trackside",["gantry"]],
- ["jump","Jump","Props",["jump"]],
+ ["jump","Jumps & bumps","Props",["jump"]],
  ["speed_bump","Speed bump","Props",["speed_bump"]],
  ["oil","Oil spill","Props",["oil"]],
  ["hay_bale","Hay bale","Props",["hay_bale"]],
@@ -87,7 +87,7 @@ static func behavior(kind: String) -> String:
 	if kind == "crate": return "Movable; heavy impacts break it into loose wood"
 	if kind == "speed_bump": return "Brake before it; accelerate as the nose rises"
 	if kind == "oil": return "Oil spill / slippery; coats tyres and reduces grip"
-	if kind == "jump": return "Ramp / launches the car in its facing direction"
+	if kind == "jump": return "Low ramps and rounded bumps / tap again to choose a style"
 	if kind in DECORATIVE: return "Decorative / no collision"
 	if kind in SOFT: return "Light / moves on impact; small speed loss"
 	if kind in ["tree","broadleaf"]: return "Solid / trunk collision"

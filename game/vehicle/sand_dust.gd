@@ -5,7 +5,7 @@ static var prepared_emitters: Array[Dictionary] = []
 const PREPARED_EMITTER_BYTES: int = 2 * 1024 * 1024
 ## Presentation-only, wheel-driven sand spray and lingering dust. Particle state
 ## never feeds back into the fixed-step vehicle simulation.
-const PRESENTATION_VERSION: String = "desert-dust-21"
+const PRESENTATION_VERSION: String = "desert-dust-22"
 const GRASS_PRESENTATION_VERSION: String = "grass-clippings-2"
 
 const SAND_SURFACE: int = 2
@@ -126,6 +126,8 @@ func _set_desert_profile(enabled: bool) -> void:
 		grit.scale_max = 1.15 if enabled else 1.28
 	for emitter: GPUParticles3D in dust_emitters+deck_dust_emitters:
 		_apply_desert_cloud(emitter,enabled)
+	for emitter: GPUParticles3D in tyre_emitters+deck_tyre_emitters:
+		(emitter.draw_pass_1.surface_get_material(0) as ShaderMaterial).set_shader_parameter("rally_dust",enabled)
 	for emitter: GPUParticles3D in deck_tyre_emitters: _sync_deck_cloud_process(emitter)
 
 
@@ -145,13 +147,16 @@ func _apply_desert_cloud(emitter: GPUParticles3D, enabled: bool) -> void:
 	material.color_ramp = _desert_alpha() if enabled else _alpha_ramp(0.48,MODE_DUST)
 	material.scale_curve = _scale_curve(MODE_DUST)
 	material.spread = 110.0 if enabled else 72.0
-	material.initial_velocity_max = 2.2 if enabled else 1.65
+	material.initial_velocity_max = 1.8 if enabled else 1.65
 	material.damping_min = 0.30 if enabled else 0.75
 	material.damping_max = 0.65 if enabled else 1.25
-	material.gravity = Vector3(0,0.24 if enabled else 0.06,0)
+	material.gravity = Vector3(0,0.12 if enabled else 0.06,0)
 	cloud_material.set_shader_parameter("billowing",enabled)
+	cloud_material.set_shader_parameter("rally_dust",enabled)
 	if enabled:
-		material.scale_curve = _bounded_growth([0.65,1.4,2.1,2.5])
+		# A narrow tyre wake opens gradually into a suspended, porous plume.
+		# Retain the quick near-wake fill and the existing particle budget.
+		material.scale_curve = _bounded_growth([0.65,1.4,1.65,1.9])
 		(material.scale_curve as CurveTexture).curve.set_point_offset(1,0.025)
 	material.angular_velocity_curve = _rotation_from_growth(material.scale_curve) if enabled else null
 	if _deck_cloud_sources.has(emitter): _sync_deck_cloud_process(emitter)
@@ -187,8 +192,8 @@ func _rotation_from_growth(growth: CurveTexture) -> CurveTexture:
 
 func _desert_alpha() -> GradientTexture1D:
 	var gradient := Gradient.new()
-	gradient.offsets = PackedFloat32Array([0.0,0.012,0.35,0.72,1.0])
-	gradient.colors = PackedColorArray([Color(1,1,1,0),Color(1,1,1,0.88),Color(1,1,1,0.82),Color(1,1,1,0.55),Color(1,1,1,0)])
+	gradient.offsets = PackedFloat32Array([0.0,0.012,0.16,0.45,0.72,1.0])
+	gradient.colors = PackedColorArray([Color(1,1,1,0),Color(1,1,1,0.88),Color(1,1,1,0.48),Color(1,1,1,0.22),Color(1,1,1,0.06),Color(1,1,1,0)])
 	var texture := GradientTexture1D.new()
 	texture.gradient = gradient
 	return texture
@@ -532,6 +537,7 @@ render_mode unshaded, blend_mix, depth_draw_never, cull_disabled;
 uniform sampler2D dust_texture : source_color, filter_linear_mipmap;
 uniform float alpha_softness = 0.42;
 uniform bool billowing = false;
+uniform bool rally_dust = false;
 uniform float intersection_fade = 0.45;
 uniform sampler2D scene_depth : hint_depth_texture, repeat_disable, filter_nearest;
 uniform bool dust_birth_height_available = false;
@@ -572,6 +578,14 @@ void fragment() {
 		vec2 p = UV * 2.0 - 1.0;
 		alpha = (1.0-smoothstep(0.42,1.0,length(p))) * mix(0.80,1.0,puff.a);
 		ALBEDO = COLOR.rgb * mix(0.94,1.04,value);
+		if (rally_dust) {
+			// Texture breaks the silhouette as well as the interior; avoid a
+			// chain of opaque circles along the driven path. No extra samples.
+			float radius = length(p);
+			alpha = (1.0-smoothstep(0.18,0.86+0.14*puff.a,radius))
+				* mix(0.35,1.0,smoothstep(0.10,0.85,puff.a))
+				* mix(0.55,1.0,smoothstep(0.20,0.80,value));
+		}
 		if (alpha <= 0.0) discard;
 		// Soften intersections with the road/car instead of cutting a billboard in half.
 		float depth = texture(scene_depth,SCREEN_UV).r;

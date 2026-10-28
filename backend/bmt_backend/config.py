@@ -12,8 +12,14 @@ class Settings:
     studio_staff_audiences: tuple[str, ...] = field(default_factory=tuple)
     studio_staff_subjects: str = ""
     studio_staff_require_mfa: bool = True
+    studio_identity_project: str = ""
+    studio_identity_tenant: str = ""
+    studio_identity_api_key: str = ""
+    studio_identity_auth_domain: str = ""
+    studio_identity_login_hint: str = ""
     studio_business_cohorts: bool = False
     studio_analysis_database_url: str = ""
+    studio_analysis_mode: str = "replica"
     studio_analysis_statement_timeout_ms: int = 5000
     studio_monitor_source_tokens: str = ""
     studio_monitor_external_notifiers: tuple[str, ...] = ()
@@ -22,6 +28,12 @@ class Settings:
     studio_monitor_poll_seconds: int = 30
     studio_play_package: str = ""
     studio_admob_account: str = ""
+    studio_usage_project: str = ""
+    studio_usage_region: str = "europe-west1"
+    studio_usage_resources: str = ""
+    studio_usage_player_id: str = ""
+    studio_usage_billing_table: str = ""
+    studio_usage_billing_location: str = "EU"
     environment: str = "production"
     dev_auth_enabled: bool = False
     test_drivers_enabled: bool = False
@@ -100,6 +112,7 @@ class Settings:
     trusted_proxy_networks: tuple[str, ...] = field(default_factory=tuple)
     persistent_verifier: bool = True
     verifier_recycle_jobs: int = 100
+    verifier_idle_seconds: int = 30
     allow_sync_track_validation: bool = False
     local_drafts_only: bool = True
     object_backend: str = "local"
@@ -124,6 +137,8 @@ class Settings:
     s3_prefix: str = "bmt/v1"
 
     def __post_init__(self):
+        if type(self.verifier_idle_seconds) is not int or not 0 <= self.verifier_idle_seconds <= 300:
+            raise ValueError("Verifier idle retirement must be between zero and 300 seconds")
         if (not 1 <= self.object_pack_records <= 128 or not 65536 <= self.object_pack_bytes <= 8*1024*1024
                 or not self.object_pack_bytes <= self.object_pending_bytes_per_partition <= 128*1024*1024
                 or not 1 <= self.object_pending_records_per_partition <= 16384

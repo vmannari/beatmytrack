@@ -220,7 +220,7 @@ func capture(ambience: DesertAmbience) -> void:
 
 func capture_vehicle_mix(ambience: DesertAmbience, master_record: AudioEffectRecord) -> void:
 	# Controlled real mixer at fixed speeds; no race submission or player persistence.
-	var track: NativeTrack = NativeTrack.read("res://resources/tracks/starter_circuit.json")
+	var track: NativeTrack = NativeTrack.read("res://resources/tracks/ellipse.json")
 	track.metadata.theme = "desert"
 	track.cells.fill(0)
 	var vehicle := VehicleAudio.new()

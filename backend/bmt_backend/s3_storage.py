@@ -11,7 +11,7 @@ import requests
 from urllib3.exceptions import HTTPError as StreamError
 
 from .http_transport import PooledTransport
-from .storage import MAX_STORED_BLOB_BYTES, canonical_json, decode_blob_json
+from .storage import MAX_STORED_BLOB_BYTES, decode_blob_json, prepare_json
 
 LIMIT = 8*1024*1024
 
@@ -74,10 +74,10 @@ class S3BlobStore:
             raise OSError("Object service unavailable") from None
 
     def put_json(self, data):
-        body = canonical_json(data)
+        prepared = prepare_json(data)
+        body, digest = prepared.body, prepared.digest
         if len(body) > LIMIT:
             raise ValueError("Object exceeds limit")
-        digest = hashlib.sha256(body).hexdigest()
         compressed = gzip.compress(body,compresslevel=3,mtime=0)
         for _ in range(2):
             status,_ = self._request("PUT",self._key(digest),body=compressed,extra={"if-none-match":"*"})

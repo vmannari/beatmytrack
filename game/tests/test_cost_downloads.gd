@@ -137,7 +137,7 @@ func run() -> void:
 	check(previews.restore(compact) and compact.items[0].points == [[0,0],[4,5]] and compact.items[0].rating_count == 5,"compact preview preserves fresh volatile fields")
 	check(not previews.restore({"items":[{"preview_hash":"e".repeat(64)}]}),"missing preview requests full fallback")
 	var bundled: Variant = JSON.parse_string(FileAccess.get_file_as_string("res://resources/cloud_tracks/index.json"))
-	check(bundled is Dictionary and bundled.documents.size() == 27,"trusted bundled catalogue is present")
+	check(bundled is Dictionary and bundled.documents.size() == 26,"trusted bundled catalogue excludes the retired Starter Circuit")
 	for identity: String in bundled.documents:
 		var document: Dictionary = preload("res://backend/cloud_tracks.gd").cached_document({"cache_path":directory.path_join("absent.json"),"content_hash":identity})
 		check(not document.is_empty(),"bundled exact-hash document is valid "+identity)

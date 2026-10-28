@@ -93,7 +93,7 @@ func run() -> void:
 	root.size = Vector2i(1280,720)
 	create_timer(40).timeout.connect(func() -> void: push_error("Publication test deadline"); quit(1))
 	folder = ProjectSettings.globalize_path("res://../build/publication-tests-"+str(Time.get_ticks_usec()))
-	var document: Dictionary = TrackDocument.from_builtin(NativeTrack.read("res://resources/tracks/starter_circuit.json"))
+	var document: Dictionary = TrackDocument.from_builtin(NativeTrack.read("res://resources/tracks/ellipse.json"))
 	document.name = "Star"
 	var body: String = JSON.stringify(document)
 	var hash_value: String = body.sha256_text()
@@ -150,7 +150,7 @@ func run() -> void:
 	var app := PublicationApp.new()
 	app.library = TrackLibrary.new(folder.path_join("drafts"))
 	app.records = LocalRecords.new(folder.path_join("records.json"))
-	app.selected_track = NativeTrack.read("res://resources/tracks/starter_circuit.json")
+	app.selected_track = NativeTrack.read("res://resources/tracks/ellipse.json")
 	app.cloud = cloud
 	app.online = preload("res://backend/account_controller.gd").new()
 	app.online.client.free()

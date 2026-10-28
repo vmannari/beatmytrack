@@ -14,7 +14,7 @@ func check(ok: bool, message: String) -> void:
 		print("FAIL: "+message)
 
 func run() -> void:
-	var track: NativeTrack = NativeTrack.read("res://resources/tracks/starter_circuit.json")
+	var track: NativeTrack = NativeTrack.read("res://resources/tracks/ellipse.json")
 	track.metadata.theme = "storm"
 	track.cells.fill(0)
 	var audio := VehicleAudio.new()

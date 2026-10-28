@@ -79,6 +79,7 @@ class API:
         if bootstrap.get("test_drivers") is not True or bootstrap.get("development_auth") is not True:
             raise ValueError("Service must explicitly enable development auth and test drivers")
         self.upload_recovery = bootstrap.get("test_driver_upload_recovery") is True
+        self.non_improving_runs = bootstrap.get("non_improving_runs_version") == 1
 
     def call(self, method, path, body=None, subject=None, idempotency=None, operator=False):
         if self.stop_event is not None and self.stop_event.is_set():
@@ -346,6 +347,15 @@ def recording(api, plan, job, profile, settings, state_path, *, generator=None):
         job["driven_controller"] = result.get("controller_version", "unversioned")
         if build_contract(result["manifest"]) != build_contract(plan["manifest"]):
             raise RuntimeError("Local generator and service have different canonical builds")
+        # Freeze the hint only on newly generated recordings. Existing uploads
+        # and their recovery journals must retain their exact original body.
+        laps = result.get("lap_ticks")
+        replay = result["replay"]
+        if (getattr(api, "non_improving_runs", False) and replay.get("schema") == "bmt-trajectory-v1"
+                and type(laps) is list and len(laps) == 5
+                and all(type(ticks) is int and ticks > 0 for ticks in laps)
+                and sum(laps) == result["time_ticks"]):
+            result = {**result, "replay": {**replay, "claimed_lap_ticks": list(laps)}}
         atomic_save(path, result)
     return result
 
@@ -359,7 +369,7 @@ def tick(api, plan, settings, path, maximum=4, *, generator=None):
     for job in plan["jobs"]:
         if job["status"] == "submitted":
             run = api.call("GET", "/runs/" + job["run_id"], subject=job["subject"])
-            if run["status"] in ("verified", "rejected", "failed"):
+            if run["status"] in ("verified", "skipped", "rejected", "failed"):
                 if run["status"] == "failed" and run.get("retryable") and job.get("retries", 0) < 3:
                     api.call(
                         "POST",
@@ -379,11 +389,11 @@ def tick(api, plan, settings, path, maximum=4, *, generator=None):
                         f"{job['subject']} · circuit {job['slot'] + 1} · {run['status']} · {run['time_ticks']} ticks"
                     )
                 atomic_save(path, plan)
-    # Join only once the shared history population has actually been verified.
+    # A skipped repeat already has verified PBs in the shared history population.
     history = [job for job in plan["jobs"] if job["group_id"] is None]
     history_ready = bool(history) and all(
-        job["status"] == "verified" if plan.get("require_history_completion") else
-        job["status"] in ("verified", "rejected", "failed", "uncompleted", "expired")
+        job["status"] in ("verified", "skipped") if plan.get("require_history_completion") else
+        job["status"] in ("verified", "skipped", "rejected", "failed", "uncompleted", "expired")
         for job in history
     )
     if (

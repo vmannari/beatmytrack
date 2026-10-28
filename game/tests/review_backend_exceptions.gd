@@ -5,7 +5,7 @@ var completed: bool = false
 
 class DelayedStore extends Node:
 	var calls: int = 0
-	func queue_run_async(_ticket: Dictionary, _frames: Array, _publish: String, _rewinds: Array) -> bool:
+	func queue_run_async(_ticket: Dictionary, _frames: Variant, _publish: String, _rewinds: Array) -> bool:
 		calls += 1
 		await get_tree().create_timer(0.05).timeout
 		return false

@@ -1,5 +1,7 @@
 # Creator scenery, scaling and hazards - 2026-09-14
 
+27 October 2026: new placements now offer five restrained jump/bump profiles, with a rounded sand rise as Desert's default. The original jump behavior below remains the exact contract for saved objects without `jump_profile`. See [Editor jump styles](EDITOR_JUMP_STYLES_2026_10_27.md) for the controls, new dimensions, native views, actual tests and publication/reload acceptance.
+
 Requirements: V02/V04/V05 (consistent mature woodland art and reviewed rendering), R01/T01-T04 (local creator selection, editing, persistence and bounded data), G01 (car response), and the owner's 2026-09-14 request. This checkpoint implements tapered kerbs, solid/deletable trees, matching bridge asphalt and scalable objects with deterministic hazard effects.
 
 ## Behavior

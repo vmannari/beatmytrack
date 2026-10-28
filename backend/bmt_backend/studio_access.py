@@ -23,6 +23,12 @@ def actor(role):
     return getattr(role, "actor_id", str(role))
 
 
+def staff_identity(subject):
+    return "s_" + base64.urlsafe_b64encode(
+        hashlib.sha256(("https://accounts.google.com/" + subject).encode()).digest()
+    ).decode()[:22]
+
+
 def named_access(request, supplied):
     settings = request.app.state.settings
     if not settings.studio_staff_audiences or not supplied:
@@ -38,12 +44,7 @@ def named_access(request, supplied):
         or not set(amr).intersection({"mfa", "otp"})
     ):
         raise HTTPException(403, "STAFF_MFA_CLAIM_REQUIRED")
-    identity = (
-        "s_"
-        + base64.urlsafe_b64encode(
-            hashlib.sha256(("https://accounts.google.com/" + claims["sub"]).encode()).digest()
-        ).decode()[:22]
-    )
+    identity = staff_identity(claims["sub"])
     with request.app.state.session_factory() as db:
         row = db.get(StudioStaff, identity)
         if row is not None and not row.enabled:

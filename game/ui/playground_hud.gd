@@ -12,6 +12,7 @@ signal record_requested
 signal track_requested
 signal exit_requested
 signal edit_here_requested
+signal direction_requested
 
 var production_mode: bool = false
 var editor_test: bool = false
@@ -37,6 +38,7 @@ var handling_button: MenuButton
 var config: HandlingConfig
 var driver: DriverInput
 var touch: TouchControls
+var direction_button: Button
 var speed_label: Label
 var debug_label: Label
 var message_label: Label
@@ -57,10 +59,30 @@ func _ready() -> void:
 	root.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	add_child(root)
 	touch = TouchControls.new()
+	driver.single_pedal = config.single_pedal
 	touch.driver = driver
 	touch.vehicle_id = config.vehicle_id
 	root.add_child(touch)
 	root.theme = RaceHUDStyle.theme()
+	if config.single_pedal:
+		direction_button = Button.new()
+		direction_button.name = "ElectricDirection"
+		direction_button.text = "D"
+		direction_button.tooltip_text = "Change between Drive and Reverse while stopped"
+		direction_button.custom_minimum_size = Vector2(60,60)
+		direction_button.add_theme_font_size_override("font_size",28)
+		root.add_child(direction_button)
+		_round_button(direction_button)
+		var position_direction := func() -> void:
+			var rect: Rect2 = touch.direction_rect()
+			direction_button.position = rect.position
+			direction_button.size = rect.size
+			direction_button.modulate.a = float(touch.layout.brake.opacity) if not touch.layout.is_empty() else 1.0
+		touch.draw.connect(position_direction)
+		position_direction.call_deferred()
+		direction_button.pressed.connect(func() -> void:
+			if direction_button.disabled: return
+			direction_requested.emit())
 	var race_card := PanelContainer.new()
 	race_card.name = "RaceCard"
 	race_card.position = Vector2(24, 20)
@@ -139,6 +161,8 @@ func _ready() -> void:
 	actions.offset_left = -304
 	actions.offset_right = -24
 	actions.offset_top = 20
+	if config.single_pedal:
+		actions.grow_horizontal = Control.GROW_DIRECTION_BEGIN
 	actions.add_theme_constant_override("separation", 8)
 	root.add_child(actions)
 	var top := HBoxContainer.new()
@@ -194,12 +218,6 @@ func _ready() -> void:
 	panel.offset_right = 114
 	panel.offset_top = -156
 	panel.offset_bottom = -42
-	if free_drive_mode:
-		panel.set_anchors_and_offsets_preset(Control.PRESET_TOP_LEFT)
-		panel.offset_left = 24
-		panel.offset_right = 188
-		panel.offset_top = 62
-		panel.offset_bottom = 164
 	panel.add_theme_stylebox_override("panel", _panel_style())
 	panel.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	panel.visible = not editor_test or free_drive_mode
@@ -209,7 +227,7 @@ func _ready() -> void:
 	info.add_theme_constant_override("separation", 0)
 	panel.add_child(info)
 	info.alignment = BoxContainer.ALIGNMENT_END
-	speed_label = _label("0", 36 if free_drive_mode else 44)
+	speed_label = _label("0", 44)
 	speed_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	info.add_child(speed_label)
 	var units := _label("km/h", 18)
@@ -322,7 +340,7 @@ func update_values(state: VehicleState, frame: DriveFrame, delta: float, paused:
 	speed_label.text = "%d" % (state.velocity.length() * 3.6)
 	debug_label.visible = debug_enabled and OS.is_debug_build()
 	if debug_label.visible:
-		debug_label.text = "\nForward   %6.2f m/s\nLateral     %6.2f m/s\nSlip          %6.1f°\nSteer       %+6.2f\nThrottle   %6.2f\nBrake       %6.2f\nYaw         %+6.1f°/s\nGrip          %s  %.2f\nFPS          %d\nTick          %d  ·  hits %d" % [
+		debug_label.text = GameText.message("\nForward   %6.2f m/s\nLateral     %6.2f m/s\nSlip          %6.1f°\nSteer       %+6.2f\nThrottle   %6.2f\nBrake       %6.2f\nYaw         %+6.1f°/s\nGrip          %s  %.2f\nFPS          %d\nTick          %d  ·  hits %d") % [
 			state.velocity.dot(state.forward()), state.velocity.dot(state.right()), rad_to_deg(state.slip_angle()),
 			frame.steer / 127.0, frame.throttle / 255.0, frame.brake / 255.0, rad_to_deg(state.yaw_rate),
 			"SLIP" if state.grip < 0.95 else "GRIP", state.grip, Engine.get_frames_per_second(), state.tick, state.collision_count]

@@ -50,6 +50,7 @@ static func uniforms(finish: ShaderMaterial, value: Dictionary, id: String, enab
 	var projection: Dictionary = LiveryCatalog.projection(id)
 	finish.set_shader_parameter("graphic_bounds",projection.bounds)
 	finish.set_shader_parameter("panel_levels",projection.levels)
+	finish.set_shader_parameter("rear_sticker",id == "forklift")
 	for panel: String in VehicleLivery.SURFACES:
 		var rectangle: Vector4 = projection[panel]
 		var sticker: Dictionary = value.stickers[panel]

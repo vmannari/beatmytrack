@@ -45,6 +45,12 @@ func click(button: Button) -> void:
 	# A forced contextual-clock advance must not race the real native page tween.
 	var settle_deadline: int = Time.get_ticks_msec()+2000
 	while is_instance_valid(app) and app.menu_page_motion != null and Time.get_ticks_msec()<settle_deadline: await frame()
+	if is_instance_valid(app) and app.tutorial != null and app.tutorial._backgrounded:
+		# Resizing a native renderer window may deliver focus-out after resize() returns.
+		if DisplayServer.get_name() != "headless": root.grab_focus()
+		app.tutorial._notification(NOTIFICATION_APPLICATION_FOCUS_IN)
+		app.tutorial._process(0)
+		await frame(2)
 	check(button != null and button.is_visible_in_tree(),"visible tutorial action")
 	if button == null or not button.is_visible_in_tree(): return
 	var ancestor: Node = button.get_parent()
@@ -143,7 +149,7 @@ func progress_contract() -> void:
 	check(unavailable.last_error != OK and unavailable.status == "active","failed saving permits the current lesson to continue")
 	var record := LocalRecords.new(directory.path_join("old.json"))
 	check(not Progress.has_played(record),"untouched save is new")
-	record.settings.last_track = "starter_circuit"
+	record.settings.last_track = "ellipse"
 	check(Progress.has_played(record),"existing last-track preference suppresses onboarding")
 	for value: Variant in [{}, {"schema":1,"status":"completed","step":1,"seen":{}}, {"schema":1,"status":"active","step":2.5,"seen":{}}, {"schema":1,"status":"new","step":0,"seen":{"unknown":true}}]:
 		var invalid_path: String = directory.path_join("invalid.json")
@@ -169,9 +175,9 @@ func check_layouts(game: Node) -> void:
 		layout.steering_type = method
 		game.hud.touch.layout = layout
 		await frame(2)
-		tutorial._input_kind = "touch"
 		tutorial._process(0.0)
-		check(not tutorial.view.outlines.is_empty(),"saved left-handed "+method+" has a real control highlight")
+		check(not tutorial.view.outlines.is_empty(),"saved left-handed "+method+" is highlighted before the first touch")
+		check(tutorial.view.copy.text.contains("highlighted"),"default "+method+" instruction points to its on-screen control")
 		var control: Rect2 = game.hud.touch.group_rects().accelerator
 		var point: Vector2 = control.get_center()
 		await touch_event(point,true)
@@ -195,15 +201,148 @@ func check_layouts(game: Node) -> void:
 	tutorial._process(0)
 	check(not tutorial.view.card.get_global_rect().intersects(game.hud.touch.group_rects().accelerator),"coach moves clear of a custom pedal position")
 	game.hud.touch.layout = ControlLayout.preset()
-	tutorial._input_kind = "keyboard"
+	var key := InputEventKey.new()
+	key.keycode = KEY_W
+	key.pressed = true
+	root.push_input(key,true)
+	key = InputEventKey.new()
+	key.keycode = KEY_W
+	root.push_input(key,true)
+	var pad := InputEventJoypadButton.new()
+	pad.button_index = JOY_BUTTON_A
+	pad.pressed = true
+	root.push_input(pad,true)
+	pad = InputEventJoypadButton.new()
+	pad.button_index = JOY_BUTTON_A
+	root.push_input(pad,true)
 	tutorial._process(0.0)
+	check(not tutorial.view.outlines.is_empty() and tutorial.view.copy.text.contains("highlighted"),"keyboard and gamepad events preserve touch teaching and highlights")
 
-func feed(game: Node, input: DriveFrame) -> void:
+func feed(game: Node, input: DriveFrame, observe: bool = true) -> void:
 	game.driver.set_touch(90,&"steer_right" if input.steer >= 0 else &"steer_left",absf(input.steer/127.0))
 	game.driver.set_touch(91,&"accelerate",input.throttle/255.0)
 	game.driver.set_touch(92,&"brake",input.brake/255.0)
 	game._physics_process(1.0/120.0)
-	app.tutorial._process(1.0/120.0)
+	if observe: app.tutorial._process(1.0/120.0)
+
+func floor_marker_contract(game: Node) -> void:
+	if DisplayServer.get_name() == "headless": return
+	var tutorial: Node = app.tutorial
+	var start: Vector2 = game.sim.state.position
+	var heading: float = game.sim.state.heading
+	for stage: int in range(3):
+		var goal: Vector2 = tutorial.HALL_GOALS[stage]
+		tutorial.progress.advance(stage)
+		game.sim.reset(goal,heading)
+		game.previous_position = goal
+		game.previous_heading = heading
+		game._present_frame(0)
+		game.camera.follow(goal,Vector2.ZERO,heading,0,true)
+		tutorial._process(0)
+		await frame(3)
+		var center: Vector2 = game.camera.unproject_position(VisualGeometry.world(goal)+Vector3(0,0.08,0))
+		var picture: Image = root.get_texture().get_image()
+		var gold := Vector3(MenuStyle.ACCENT.r,MenuStyle.ACCENT.g,MenuStyle.ACCENT.b)
+		var marked: bool = false
+		for dx: int in range(-3,4):
+			for dy: int in range(-3,4):
+				var pixel: Color = picture.get_pixel(roundi(center.x)+dx,roundi(center.y)+dy)
+				marked = marked or Vector3(pixel.r,pixel.g,pixel.b).distance_to(gold) < 0.12
+		check(marked,"stage %d draws its visible target on the actual simulation goal" % stage)
+		await capture("floor-target-%d" % stage)
+	game.sim.reset(start,heading)
+	game.previous_position = start
+	game.previous_heading = heading
+	game._present_frame(0)
+	game.camera.follow(start,Vector2.ZERO,heading,0,true)
+	tutorial.progress.advance(0)
+	tutorial._process(0)
+
+func highlight_contract(game: Node) -> void:
+	var tutorial: Node = app.tutorial
+	var saved_step: int = tutorial.progress.step
+	for method: String in ControlLayout.METHODS:
+		var layout: Dictionary = ControlLayout.preset(true)
+		layout.steering_type = method
+		game.hud.touch.layout = layout
+		for stage: int in range(3):
+			tutorial.progress.advance(stage)
+			tutorial._process(0)
+			var names: Array[String] = []
+			names.assign([method] if stage == 1 and method != "buttons" else ["steer_left","steer_right"] if stage == 1 else ["brake" if stage == 2 and method == "buttons" else "accelerator"])
+			var expected: Array[Rect2] = []
+			for control: String in names: expected.append(game.hud.touch.get_global_transform_with_canvas()*game.hud.touch.group_rects()[control])
+			check(tutorial.view.outlines == expected,"stage %d highlights actual saved %s controls" % [stage,method])
+			if DisplayServer.get_name() != "headless" and not tutorial.view.outlines.is_empty():
+				await frame(2)
+				var rect: Rect2 = expected[0].grow(5)
+				var picture: Image = root.get_texture().get_image()
+				var gold := Vector3(MenuStyle.ACCENT.r,MenuStyle.ACCENT.g,MenuStyle.ACCENT.b)
+				var visible: bool = false
+				for dy: int in range(4):
+					var pixel: Color = picture.get_pixel(roundi(rect.get_center().x),roundi(rect.position.y)+dy)
+					visible = visible or Vector3(pixel.r,pixel.g,pixel.b).distance_to(gold) < 0.12
+				check(visible,"stage %d %s highlight is drawn above the HUD" % [stage,method])
+			await capture("highlight-%s-%d" % [method,stage])
+	game.hud.touch.layout = ControlLayout.preset()
+	tutorial.progress.advance(saved_step)
+	tutorial._process(0)
+
+func stop_fixture(game: Node, position: Vector2) -> void:
+	var tutorial: Node = app.tutorial
+	tutorial.progress.advance(2)
+	# Observe a moving/outside state so separate cases cannot share a partial stop.
+	game.sim.state.position = tutorial.HALL_GOALS[2]+Vector2(12,0)
+	game.sim.state.velocity = Vector2.ZERO
+	feed(game,DriveFrame.new())
+	game.sim.state.position = position
+	game.sim.state.velocity = Vector2.ZERO
+
+func stopped_ticks(game: Node, ticks: int) -> void:
+	# 120 Hz physics / 30 Hz presentation; brake taps may fall between observations.
+	for tick: int in range(ticks):
+		feed(game,DriveFrame.new(),false)
+		if tick%4 == 3: app.tutorial._process(4.0/120.0)
+
+func stopping_contract(game: Node) -> void:
+	print("TUTORIAL: stopped-circle regression")
+	var tutorial: Node = app.tutorial
+	var goal: Vector2 = tutorial.HALL_GOALS[2]
+	stop_fixture(game,goal+Vector2(12,0))
+	stopped_ticks(game,40)
+	check(tutorial.progress.step == 2,"stopping outside the circle cannot finish")
+	stop_fixture(game,goal)
+	game.sim.state.velocity = Vector2(0,3)
+	stopped_ticks(game,12)
+	check(game.sim.state.velocity.length() > 0.8 and tutorial.progress.step == 2,"driving through the circle cannot finish")
+	stop_fixture(game,goal)
+	for render: int in range(100): tutorial._process(1.0/30.0)
+	check(tutorial.progress.step == 2,"render frames without simulation cannot finish a stop")
+	stopped_ticks(game,28)
+	check(tutorial.progress.step == 3,"a stable stop inside the circle completes without a hidden brake requirement")
+	await capture("stopped-without-brake")
+	stop_fixture(game,goal)
+	feed(game,DriveFrame.sample(0,0,1),false)
+	stopped_ticks(game,4)
+	check(game.frame.brake == 0,"short brake press ends before the presentation sample")
+	stopped_ticks(game,28)
+	check(tutorial.progress.step == 3,"a brake released between presentation samples still completes the stop")
+	stop_fixture(game,goal)
+	stopped_ticks(game,12)
+	game.sim.state.position = goal+Vector2(12,0)
+	stopped_ticks(game,4)
+	game.sim.state.position = goal
+	stopped_ticks(game,20)
+	check(tutorial.progress.step == 2,"leaving the circle resets the continuous stop")
+	stopped_ticks(game,8)
+	check(tutorial.progress.step == 3,"a new continuous stop succeeds after leaving and returning")
+	stop_fixture(game,goal+Vector2(8.9,0))
+	stopped_ticks(game,28)
+	check(tutorial.progress.step == 3,"stopping just inside the visible circle succeeds")
+	# Restore the real driver's next objective after the isolated edge cases.
+	tutorial.progress.advance(2)
+	game.sim.reset(tutorial.HALL_GOALS[1],0)
+	tutorial._process(0)
 
 func drive_hall_stage(game: Node, stage: int) -> void:
 	var target: Vector2 = app.tutorial.HALL_GOALS[stage]
@@ -266,6 +405,8 @@ func run() -> void:
 	check(tutorial.progress.status == "skipped" and not tutorial.view.visible,"skip is immediate and persisted")
 	check(not tutorial._layer.visible,"hidden tutorial releases the menu's modal layer")
 	app._show_screen("garage")
+	# MA13 prepares the single live room on first entry, under the normal cover.
+	while app.screen != "garage": await frame()
 	await frame(4)
 	tutorial._process(1.0)
 	check(tutorial.view.key == "topic_garage_0","first Garage entry supplies a contextual tip")
@@ -294,6 +435,8 @@ func run() -> void:
 	for tick: int in range(120): feed(hall,DriveFrame.new())
 	check(tutorial.progress.step == 0,"waiting cannot complete a driving objective")
 	await check_layouts(hall)
+	await floor_marker_contract(hall)
+	await highlight_contract(hall)
 	for dimensions: Vector2i in [Vector2i(960,540),Vector2i(1280,720),Vector2i(1600,720)]:
 		await resize(dimensions)
 		await card_fits("hall "+str(dimensions))
@@ -321,47 +464,56 @@ func run() -> void:
 	await capture("hall-steer")
 	await drive_hall_stage(hall,1)
 	await capture("hall-brake")
+	await stopping_contract(hall)
 	await drive_hall_stage(hall,2)
-	# A player may coast to a stop before reading the brake instruction.
-	tutorial.progress.advance(2)
-	hall.sim.reset(tutorial.HALL_GOALS[2],PI*0.5)
-	for tick: int in range(30): feed(hall,DriveFrame.new())
-	check(tutorial.progress.step == 2,"coasting to a stop still asks the player to try the brake")
-	feed(hall,DriveFrame.sample(0,0,1))
-	for tick: int in range(30): feed(hall,DriveFrame.new())
-	check(tutorial.progress.step == 3,"a stopped player can finish the brake lesson without reversing")
 	check(app.records.records == records_before and VehicleCondition.read(app.records,hall.vehicle_id) == condition_before,"parking lesson preserves PBs and saved car condition")
 	check(app.cloud_ticket.is_empty() and hall.online_frames.is_empty(),"parking lesson creates no ticket or recorded race")
 	await capture("hall-ready")
 	var resumed: RefCounted = Progress.new(directory.path_join("tutorial.json"))
 	resumed.load_progress()
 	check(resumed.status == "active" and resumed.step == 3,"completed parking lesson survives a restart")
+	if "--hall-only" in OS.get_cmdline_user_args(): await finish(); return
 	await click(tutorial.view.secondary)
 	check(tutorial.view.key == "ready_compact" and tutorial.view.primary.visible,"Practise more retains a compact way to start the first race")
 	await capture("hall-practise-more")
 	await click(tutorial.view.primary)
 	if not await wait_game(false): await finish(); return
 	var race: Node = app.game
+	check(race.native_track.identity == "ellipse" and race.native_track.metadata.title == "Ellipse","tutorial races the existing Ellipse")
+	var ellipse_source: Dictionary = JSON.parse_string(FileAccess.get_file_as_string("res://resources/cloud_tracks/893027446fb96e8a38a64b3143b033c04c15587b0364f6700fbda7985973defc.json"))
+	check(race.native_track.metadata.creator_document == ellipse_source,"tutorial preserves the official Ellipse layout and objects")
+	check(BuiltinTracks.ids() == ["ellipse","storm_freight","storm_switchyard","storm_timber","storm_quarry","storm_floodgate"] and not FileAccess.file_exists("res://resources/tracks/starter_circuit.json"),"Ellipse remains the lesson alongside the five original Storm circuits; Starter Circuit stays retired")
 	check(race.track_session.target_laps == 5 and not race.editor_test and not race.attempt_practice,"first race keeps ordinary five-lap rules")
 	check(bool(race.get_meta("tutorial_lesson",false)) and app.cloud_ticket.is_empty(),"bundled lesson is explicitly local with no verified ticket")
 	check(race.resume_client == null and not race.hud.rewind_button.visible,"lesson offers no resource-consuming resume")
 	race.open_rewind()
 	check(not is_instance_valid(race.rewind_panel),"keyboard rewind cannot spend a lesson resource")
-	var other: NativeTrack = NativeTrack.read("res://resources/tracks/starter_circuit.json")
+	var other: NativeTrack = NativeTrack.read("res://resources/tracks/ellipse.json")
 	check(tutorial.authorizes(race.native_track) and not tutorial.authorizes(other),"same-ID documents cannot acquire tutorial launch authority")
 	await capture("first-race-countdown")
 	for tick: int in range(360): feed(race,DriveFrame.new())
 	check(race.countdown_ticks == 0 and tutorial.view.key == "race_lap","countdown leads to checkpoint guidance")
 	await capture("first-race-driving")
 	print("TUTORIAL: real five-lap race")
-	var driver := RouteDriver.new()
+	# Ellipse has a tyre wall across the centreline. Use the existing physical
+	# detour driver so the native test steers around it with ordinary inputs.
+	var traits: Dictionary = {"seed":7,"skill":0.7,"consistency":1.0,"aggression":0.5,"learning":0.5,"strengths":{}}
+	var driver := ProfiledRouteDriver.new(traits,"pine",race.native_track.content_hash,0)
+	driver.obstacle_detours = true
+	# Detours follow the native route directly; no pilot optimisation is needed.
+	driver.trajectory = RacingTrajectory.new()
+	driver.trajectory.build(race.native_track,race.handling,"center")
 	var ticks: int = 0
 	while not race.track_session.finished and ticks < 48000:
-		feed(race,driver.sample(race.sim.state,race.native_track,race.handling))
+		feed(race,driver.sample(race.sim.state,race.native_track,race.handling,race.track_session))
 		ticks += 1
 		if ticks%600 == 0: await frame()
+		if race.paused:
+			print("TUTORIAL: diagnostic race paused at simulation tick ",race.sim.state.tick," focus=",root.has_focus()," tutorial_background=",tutorial._backgrounded," pause_menu=",race.hud.pause_menu.visible)
+			await capture("diagnostic-race-paused")
+			break
 	check(race.track_session.finished and race.track_session.completed_laps == 5,"real quantized driver finishes all five ordered laps")
-	print("TUTORIAL: race ticks ",ticks," laps ",race.track_session.completed_laps)
+	print("TUTORIAL: race ticks ",ticks," simulation_tick=",race.sim.state.tick," laps ",race.track_session.completed_laps," paused=",race.paused," position=",race.sim.state.position," speed=",race.sim.state.velocity.length())
 	if not race.track_session.finished: await finish(); return
 	for tick: int in range(600):
 		if race.paused: break
@@ -423,7 +575,7 @@ func run() -> void:
 	tutorial._offer_pending = true
 	tutorial._running = true
 	tutorial._result_id = 999
-	tutorial.lesson_track = NativeTrack.read("res://resources/tracks/starter_circuit.json")
+	tutorial.lesson_track = NativeTrack.read("res://resources/tracks/ellipse.json")
 	app.online.client.player = {"id":"isolated-account-switch"}
 	tutorial._process(0)
 	check(not tutorial._running and not tutorial._offer_pending and tutorial.lesson_track == null and tutorial._result_id == 0 and not tutorial.view.visible,"account switch fences pending lessons, results and local launch authority")

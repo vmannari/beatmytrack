@@ -81,6 +81,30 @@ func run() -> void:
 	service.player = {"id":"fixture-owner"}
 	service._capabilities = {"trajectory_verification":true,"submission_recovery_version":1}
 	var cloud: Node = _cloud(service)
+	# New compact journals and existing trajectory journals produce identical wire
+	# bodies, hashes and keys after JSON reload, including launch/rewind receipts.
+	var exact_controls: Array = [[0,255,0,0,2],[127,128,0,255],[-127,0,255]]
+	var proof: Dictionary = {"schema":"bmt-race-proof-v1","samples":[[0,0.0,0.0,0.0,0.0,0.0,0,0.0],[3,1.0,2.0,0.2,1.0,2.0,0,0.0]]}
+	var receipt: Array = [{"receipt_id":"11111111-1111-4111-8111-111111111111","input_offset":2,"from_tick":2,"to_tick":0}]
+	var ticket: Dictionary = {"ticket_id":"new-count-journal","_submit_key":"count-key","_race_proof":proof,"_race_ghost":{"ticks":3},"_wire_options":{"path":0,"incidents":false}}
+	check(cloud.queue_run(ticket,exact_controls,"",receipt),"new count journal saves with actual proof and rewind")
+	var count_job: Dictionary = cloud.upload_job(ticket.ticket_id)
+	var count_path: String = str(count_job._path); count_job.erase("_path")
+	var result: Dictionary = await cloud._submit_saved(count_job,count_path)
+	# Ghost JSON numbers retain the existing disk-reload representation; controls,
+	# sample ticks, input count and receipt integers are normalized by the codec.
+	var expected: Dictionary = Client._pack_trajectory(3,proof,receipt,{"ticks":3.0},false,false)
+	check(result.ok and service.writes.back().key=="count-key" and service.writes.back().body.replay==expected,"new count journal sends the exact pinned trajectory body and retry key")
+	var original_trajectory: Dictionary = {"frames":exact_controls,"rewinds":receipt,"race_proof":proof,"ghost":{"ticks":3}}
+	var old_job: Dictionary = _saved(cloud,"existing-trajectory",original_trajectory)
+	var old_path: String = str(cloud.upload_job("existing-trajectory")._path)
+	var old_hash: String = str(old_job.replay_hash)
+	result = await cloud._submit_saved(old_job,old_path)
+	check(result.ok and service.writes.back().body.replay==expected,"existing trajectory without pinned options remains sendable with the exact original body")
+	check(str(cloud.upload_job("existing-trajectory").replay_hash)==old_hash,"existing trajectory replay hash is never replaced")
+	check(cloud.upload_job("existing-trajectory").wire_options=={"path":0.0,"incidents":false},"first recovery pins old journal transport options for later retries")
+	cloud.queue_free(); await process_frame
+	cloud = _cloud(service)
 	check(Cloud._write_file(cloud.outbox_path(),{"jobs":[{"ticket":"old-journal","key":"original-journal-key","frames":recording.frames,"rewinds":[]}]}),"original embedded outbox is durable")
 	await cloud.flush_outbox()
 	var migrated: Dictionary = cloud.upload_job("old-journal")

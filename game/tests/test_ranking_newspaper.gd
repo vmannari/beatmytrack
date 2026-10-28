@@ -98,7 +98,7 @@ func run() -> void:
 	await settle()
 	var change: Label = completed.find_child("WorldRankingWeekChange",true,false)
 	check(change != null and "Up 36 places" in change.text,"completed-week overview displays ranking change")
-	check(completed.find_child("RivalryFinaleBody",true,false).get_global_rect().encloses(change.get_global_rect()),"ranking movement is visible without scrolling the completed overview")
+	check(completed.find_child("RivalryTracksPanel",true,false).get_global_rect().encloses(change.get_global_rect()),"ranking movement remains visible inside the shared weekly track panel")
 	check(completed.find_child("WorldCircuitEntry",true,false) == null,"completed-week overview has no Circuit button")
 	check(completed.find_child("WorldRankingWeekResult",true,false).find_children("*","Button",true,false).is_empty(),"weekly ranking summary contains only results")
 	capture("weekly-results-1280")

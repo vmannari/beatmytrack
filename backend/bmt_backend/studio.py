@@ -126,7 +126,7 @@ def race_evidence(session, run_id):
             "description": "Server issued a race contract; this does not prove a client race started."})
     lifecycle.append({"event": "submission_received", "at": run.created_at,
         "description": "Server persisted the submitted race evidence."})
-    if run.finished_at is not None and run.status in ("verified", "rejected", "failed"):
+    if run.finished_at is not None and run.status in ("verified", "skipped", "rejected", "failed"):
         lifecycle.append({"event": "verification_" + run.status, "at": run.finished_at,
             "description": "Terminal server verification outcome; this timestamp is not the driving finish time."})
     lifecycle.sort(key=lambda event: event["at"])

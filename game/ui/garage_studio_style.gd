@@ -36,11 +36,14 @@ static func tile(button: Button, selected: bool, radius: int = 10) -> void:
 
 static func tab(button: Button, selected: bool) -> void:
 	for state: String in ["normal","hover","pressed","hover_pressed","focus"]:
-		var style := MenuStyle.box(Color("172832") if selected or state == "hover" else Color("101c25"),4)
-		style.set_corner_radius_all(3)
-		style.border_color = MenuStyle.ACCENT if selected or state == "focus" else EDGE
-		style.set_border_width_all(1)
-		style.border_width_bottom = 2 if selected or state == "focus" else 1
+		var style := MenuStyle.box(Color("15242d") if state in ["hover","pressed","hover_pressed"] else Color.TRANSPARENT,4)
+		style.set_corner_radius_all(0)
+		style.border_color = MenuStyle.ACCENT if selected else Color("2b3d47")
+		style.border_width_bottom = 2 if selected else 1
+		if state == "focus":
+			style.border_color = MenuStyle.ACCENT
+			style.set_border_width_all(1)
+			style.set_expand_margin_all(-3)
 		button.add_theme_stylebox_override(state,style)
 	for state: String in ["font_color","font_hover_color","font_pressed_color","font_focus_color","font_hover_pressed_color"]:
 		button.add_theme_color_override(state,MenuStyle.ACCENT if selected else MenuStyle.TEXT)
@@ -53,9 +56,14 @@ static func header(parent: Control, title: String, reset: Button) -> void:
 	stack.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	stack.add_theme_constant_override("separation",1)
 	row.add_child(stack)
-	var heading: Label = MenuStyle.label(title,30)
+	var heading: Label = MenuStyle.label(title,28)
 	heading.name = "StudioTitle"
+	heading.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
+	stack.size_flags_vertical = Control.SIZE_SHRINK_CENTER
 	stack.add_child(heading)
 	reset.custom_minimum_size = Vector2(48,48)
-	tile(reset,false,8)
+	for state: String in ["normal","disabled"]:
+		reset.add_theme_stylebox_override(state,MenuStyle.box(Color.TRANSPARENT,0))
+	reset.add_theme_stylebox_override("hover",MenuStyle.box(SURFACE,0))
+	reset.add_theme_color_override("icon_normal_color",SOFT)
 	row.add_child(reset)

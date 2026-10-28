@@ -18,7 +18,7 @@ func run() -> void:
 		quit(1)
 		return
 	DirAccess.make_dir_recursive_absolute(ProjectSettings.globalize_path(OUT))
-	var track: NativeTrack = NativeTrack.read("res://resources/tracks/starter_circuit.json")
+	var track: NativeTrack = NativeTrack.read("res://resources/tracks/ellipse.json")
 	track.metadata.theme = "desert"
 	track.cells.fill(0)
 	var record := AudioEffectRecord.new()

@@ -25,6 +25,7 @@ var race_time_caption: Label
 var lap_time_caption: Label
 var comparison_scope: String = "all"
 var last_comparison: Dictionary = {}
+var comparison_cache: RefCounted
 const COMPARISON_BINS: int = 16
 var vehicle_id: String = "compact"
 var facts: Dictionary
@@ -59,7 +60,7 @@ func _ready() -> void:
 	titles.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	header.add_child(titles)
 	titles.add_child(MenuStyle.label("RACE COMPLETE",30))
-	titles.add_child(MenuStyle.label("%s / %s / %d LAPS" % [results.circuit.to_upper(),results.vehicle_name.to_upper(),results.laps.size()],16,true))
+	titles.add_child(MenuStyle.label(GameText.message("%s / %s / %d LAPS") % [results.circuit.to_upper(),results.vehicle_name.to_upper(),results.laps.size()],16,true))
 	var home := MenuStyle.button("",func() -> void: home_requested.emit())
 	home.name = "MainMenu"
 	home.tooltip_text = "Main menu"
@@ -170,7 +171,7 @@ func _update_coin_status() -> void:
 		_reward_status.text = "Sign in to earn coins."
 		return
 	var credited: bool = coin_receipt.get("status") == "credited"
-	_reward_status.text = "Coins saved · Balance: %d" % economy.balance() if credited else "Coins will be added after verification." if not reward_ticket.is_empty() else "Race online to earn account coins." if economy.authenticated() else "No coins saved for this race."
+	_reward_status.text = GameText.message("Coins saved · Balance: %d") % economy.balance() if credited else "Coins will be added after verification." if not reward_ticket.is_empty() else "Race online to earn account coins." if economy.authenticated() else "No coins saved for this race."
 	if coin_receipt.get("status") == "save_failed": _reward_status.text = "Rewards could not be saved. Check storage."
 
 func _load_coin_receipt() -> void:
@@ -366,7 +367,7 @@ static func _position_text(comparison: Variant) -> String:
 	if not comparison is Dictionary or int(comparison.get("population",0)) < 2: return ""
 	var position: int = int(comparison.get("position",0))
 	if position <= 0: return ""
-	return "POSITION %d" % position if position <= 10 else "TOP %d%%" % clampi(int(comparison.get("top_percent",100)),1,100)
+	return GameText.message("POSITION %d") % position if position <= 10 else GameText.message("TOP %d%%") % clampi(int(comparison.get("top_percent",100)),1,100)
 
 func _update_best_caption(caption: Label, markers: Array) -> void:
 	caption.text = ""
@@ -411,13 +412,21 @@ func _refresh_rank() -> void:
 		_comparison_unavailable("Sign in to compare")
 		return
 	standings_busy = true
-	var path: String = "/track-versions/"+cloud_version+"/results-comparison?vehicle_id="+vehicle_id.uri_encode()+"&bins=%d" % COMPARISON_BINS
+	var path: String = "/track-versions/"+cloud_version+"/results-comparison?vehicle_id="+vehicle_id.uri_encode()+GameText.message("&bins=%d") % COMPARISON_BINS
 	if results.total > 0: path += "&race_ticks=%d" % roundi(results.total*VehicleSimulation.TICK_RATE)
 	var flying: float = float(facts.get("flying",0))
 	if flying > 0: path += "&lap_ticks=%d" % roundi(flying*VehicleSimulation.TICK_RATE)
 	path += _frame_query(last_comparison.get("race",{}),"race")
 	path += _frame_query(last_comparison.get("best_lap",{}),"lap")
-	var response: Dictionary = await cloud_client.request_api(path,HTTPClient.METHOD_GET,{},"",true)
+	var response: Dictionary
+	if comparison_cache != null:
+		var best_race: float = results.best if results.best > 0 else results.previous
+		var best_lap: float = float(facts.get("previous_lap",0))
+		if results.clean and not results.editor:
+			if results.total > 0: best_race = minf(best_race,results.total) if best_race > 0 else results.total
+			if flying > 0: best_lap = minf(best_lap,flying) if best_lap > 0 else flying
+		response = await comparison_cache.comparison(cloud_version,vehicle_id,roundi(results.total*VehicleSimulation.TICK_RATE),roundi(flying*VehicleSimulation.TICK_RATE),[roundi(best_race*VehicleSimulation.TICK_RATE),roundi(best_lap*VehicleSimulation.TICK_RATE)],last_comparison)
+	else: response = await cloud_client.request_api(path,HTTPClient.METHOD_GET,{},"",true)
 	if not is_inside_tree(): return
 	if not response.ok or not _apply_comparison(response.data): _comparison_unavailable("Comparison unavailable")
 	standings_busy = false
@@ -507,7 +516,7 @@ func _recommendations() -> void:
 		var title := MenuStyle.label(item.name,27)
 		title.clip_text = true
 		copy.add_child(title)
-		copy.add_child(MenuStyle.label("%d laps / est. %d:%02d" % [item.laps,int(item.estimated_seconds/60),int(item.estimated_seconds)%60],14,true))
+		copy.add_child(MenuStyle.label(GameText.message("%d laps / est. %d:%02d") % [item.laps,int(item.estimated_seconds/60),int(item.estimated_seconds)%60],14,true))
 		var reason := MenuStyle.label(item.reason,12,true)
 		reason.clip_text = true
 		copy.add_child(reason)
@@ -534,7 +543,7 @@ func _recommendations() -> void:
 			button.tooltip_text = aggregate+" · verified racers"
 		else:
 			rating_line.add_child(MenuStyle.label("%.1f (1)" % score if score > 0 else "\u2014 (0)",14,score == 0))
-			button.tooltip_text = "%.1f (1) — local votes on this device" % score if score > 0 else "Unrated (0) — local votes on this device"
+			button.tooltip_text = GameText.message("%.1f (1) — local votes on this device") % score if score > 0 else "Unrated (0) — local votes on this device"
 
 func _actions() -> void:
 	var row := HBoxContainer.new()
@@ -584,5 +593,5 @@ func select_track(index: int) -> void:
 		style.border_color = MenuStyle.ACCENT if i == index else MenuStyle.BORDER
 		style.set_border_width_all(2 if i == index else 1)
 		(cards[i].get_node("SelectionFrame") as Panel).add_theme_stylebox_override("panel",style)
-	race_button.text = "RACE %s  \u2192" % str(recommendations[index].name).to_upper()
+	race_button.text = GameText.message("RACE %s  \u2192") % str(recommendations[index].name).to_upper()
 	race_button.text_overrun_behavior = TextServer.OVERRUN_TRIM_ELLIPSIS

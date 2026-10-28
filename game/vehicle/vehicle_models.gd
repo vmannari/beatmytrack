@@ -7,7 +7,7 @@ static func build(car: CarVisual, id: String) -> void:
 	car.body = Node3D.new()
 	car.add_child(car.body)
 	car.brake_material = VisualGeometry.material(Color("802d2b"))
-	var paint: StandardMaterial3D = VisualGeometry.material(Color({"pickup":"944638","classic":"739181","formula":"c8ad58","kart":"b96d43"}.get(id,"c8c1ab")))
+	var paint: StandardMaterial3D = VisualGeometry.material(Color({"pickup":"944638","classic":"739181","formula":"c8ad58","kart":"b96d43","forklift":"d5a62d"}.get(id,"c8c1ab")))
 	VisualGeometry.ink(paint)
 	var cream: StandardMaterial3D = VisualGeometry.material(Color("d9d0b7"))
 	VisualGeometry.ink(cream)
@@ -17,17 +17,27 @@ static func build(car: CarVisual, id: String) -> void:
 	var trim: StandardMaterial3D = VisualGeometry.material(Color("182126"))
 	var glass: StandardMaterial3D = VisualGeometry.material(Color("304957"))
 	match id:
+		"electric":
+			preload("res://vehicle/electric_car_model.gd").build(car)
+			return
 		"pickup": _pickup(car,paint,cream,trim,glass,accent)
 		"classic": _classic(car,paint,cream,trim,glass,accent)
 		"formula": _formula(car,paint,cream,trim,glass,accent)
-		"kart": _kart(car,paint,cream,trim,glass,accent)
+		"kart":
+			preload("res://vehicle/kart_model.gd").build(car)
+			return
+		"forklift": preload("res://vehicle/forklift_model.gd").build(car)
 	var config: HandlingConfig = VehicleCatalog.config(id)
 	var half_axle: float = config.wheelbase / (2.0 * HandlingConfig.BODY_SCALE)
 	var half_track: float = config.track_width / (2.0 * HandlingConfig.BODY_SCALE)
 	var radius: float = 0.44 if id == "pickup" else 0.22 if id == "kart" else 0.34
 	for side: float in [-1.0,1.0]:
 		for axle: float in [-half_axle,half_axle]:
-			_wheel(car,Vector3(side*half_track,radius,axle),radius,0.36 if id == "formula" else 0.27,trim)
+			if id == "forklift":
+				var wheel_radius: float = 0.43 if axle < 0.0 else 0.30
+				preload("res://vehicle/forklift_model.gd").wheel(car,Vector3(side*half_track,wheel_radius,axle),wheel_radius,0.32 if axle < 0.0 else 0.25)
+			else:
+				_wheel(car,Vector3(side*half_track,radius,axle),radius,0.36 if id == "formula" else 0.27,trim)
 
 static func _box(car: CarVisual, dimensions: Vector3, center: Vector3, material: Material) -> MeshInstance3D:
 	return VisualGeometry.box(car.body,dimensions,center,material)
@@ -46,7 +56,9 @@ static func _wheel(car: CarVisual, center: Vector3, radius: float, width: float,
 	for spoke: int in range(8):
 		var angle: float = spoke*TAU/8.0
 		car._seam(wheel,Vector3(signf(center.x)*(width*0.5+0.009),sin(angle)*radius*0.25,cos(angle)*radius*0.25),Vector3(signf(center.x)*(width*0.5+0.009),sin(angle)*radius*0.53,cos(angle)*radius*0.53),0.025,trim)
-	if center.z < 0: car.front_wheels.append(wheel)
+	if car.vehicle_id == "forklift":
+		if center.z > 0.0: car.rear_wheels.append(wheel)
+	elif center.z < 0: car.front_wheels.append(wheel)
 	car.register_rolling_wheel(wheel, radius)
 
 static func _cabin(car: CarVisual, width: float, base: float, roof: float, front: float, back: float, roof_front: float, roof_back: float, paint: Material, glass: Material, trim: Material) -> void:
@@ -138,69 +150,3 @@ static func _formula(car: CarVisual, paint: Material, cream: Material, trim: Mat
 	for vent: int in range(5):
 		_box(car,Vector3(0.39,0.02,0.025),Vector3(0,0.536,0.81+vent*0.12),trim)
 	_box(car,Vector3(0.13,0.08,0.045),Vector3(0,0.34,2.15),car.brake_material)
-
-static func _kart(car: CarVisual, paint: Material, cream: Material, trim: Material, glass: Material, accent: Material) -> void:
-	# Low tubular chassis and an exposed seated driver distinguish it from Formula.
-	var steel: StandardMaterial3D = VisualGeometry.material(Color("536674"))
-	var suit: StandardMaterial3D = VisualGeometry.material(Color("263e53"))
-	VisualGeometry.ink(suit)
-	_box(car,Vector3(0.85,0.055,1.92),Vector3(0,0.16,-0.08),car.underside_material)
-	for side: float in [-1.0,1.0]:
-		car._seam(car.body,Vector3(side*0.47,0.16,-1.12),Vector3(side*0.47,0.16,1.07),0.065,steel)
-		car._seam(car.body,Vector3(side*0.66,0.22,-0.88),Vector3(side*0.40,0.21,-0.50),0.038,steel)
-		_box(car,Vector3(0.29,0.23,1.04),Vector3(side*0.52,0.29,0.01),paint)
-		_box(car,Vector3(0.30,0.035,0.75),Vector3(side*0.52,0.417,-0.02),accent)
-		car._seam(car.body,Vector3(side*0.76,0.15,1.08),Vector3(side*0.76,0.15,1.25),0.065,trim)
-	for end: float in [-1.0,1.0]:
-		car._seam(car.body,Vector3(-0.76,0.16,end*1.13),Vector3(0.76,0.16,end*1.13),0.065,steel)
-	for side: float in [-1.0,1.0]:
-		_box(car,Vector3(0.14,0.075,0.035),Vector3(side*0.55,0.21,1.15),car.brake_material)
-	car._seam(car.body,Vector3(-0.72,0.22,0.88),Vector3(0.72,0.22,0.88),0.055,steel)
-	var nose := Node3D.new()
-	car.body.add_child(nose)
-	nose.position.z = -1.07
-	car._shell(nose,[Vector3(0.74,0.13,0.30),Vector3(0.76,0.30,0.28),Vector3(0.60,0.40,0.24)],paint)
-	VisualGeometry.box(nose,Vector3(0.18,0.008,0.48),Vector3(0,0.405,0),accent)
-	# Centered fairing meets the nose top; its stripe shares the same center and width.
-	car._panel([Vector3(-0.18,0.40,-0.83),Vector3(0.18,0.40,-0.83),Vector3(0.20,0.60,-0.37),Vector3(-0.20,0.60,-0.37)],Vector3(0,0.92,-0.40),paint)
-	car._panel([Vector3(-0.09,0.409,-0.83),Vector3(0.09,0.409,-0.83),Vector3(0.09,0.609,-0.37),Vector3(-0.09,0.609,-0.37)],Vector3(0,0.92,-0.40),cream)
-	# Seat shell, torso, bent legs and arms reaching the steering wheel.
-	_box(car,Vector3(0.45,0.10,0.61),Vector3(0,0.24,0.32),trim)
-	var seat: MeshInstance3D = _box(car,Vector3(0.47,0.43,0.10),Vector3(0,0.44,0.58),trim)
-	seat.rotation.x = -0.16
-	var torso: MeshInstance3D = _box(car,Vector3(0.35,0.39,0.26),Vector3(0,0.52,0.27),suit)
-	torso.rotation.x = -0.16
-	for side: float in [-1.0,1.0]:
-		var x: float = side*0.115
-		car._seam(car.body,Vector3(x,0.33,0.14),Vector3(x+side*0.025,0.36,-0.35),0.13,suit)
-		car._seam(car.body,Vector3(x+side*0.025,0.36,-0.35),Vector3(x,0.23,-0.82),0.10,suit)
-		_box(car,Vector3(0.12,0.08,0.23),Vector3(x,0.22,-0.82),trim)
-		car._seam(car.body,Vector3(side*0.21,0.62,0.21),Vector3(side*0.29,0.46,-0.02),0.095,suit)
-		car._seam(car.body,Vector3(side*0.29,0.46,-0.02),Vector3(side*0.16,0.54,-0.30),0.085,suit)
-		_box(car,Vector3(0.09,0.08,0.10),Vector3(side*0.16,0.54,-0.30),cream)
-	car._seam(car.body,Vector3(0,0.20,-0.56),Vector3(0,0.53,-0.30),0.04,steel)
-	var steering := Node3D.new()
-	car.body.add_child(steering)
-	steering.position = Vector3(0,0.53,-0.30)
-	steering.rotation.x = -0.65
-	VisualGeometry.ring(steering,Vector3.ZERO,0.17,0.035,trim)
-	car._seam(steering,Vector3(-0.15,0,0),Vector3(0.15,0,0),0.025,steel)
-	var helmet := MeshInstance3D.new()
-	var sphere := SphereMesh.new()
-	sphere.radius = 0.195
-	sphere.height = 0.38
-	sphere.radial_segments = 20
-	sphere.rings = 12
-	helmet.mesh = sphere
-	helmet.material_override = cream
-	helmet.position = Vector3(0,0.91,0.23)
-	car.body.add_child(helmet)
-	_box(car,Vector3(0.30,0.115,0.08),Vector3(0,0.93,0.07),glass)
-	# Exposed rear-right engine, cooling fins, air box, exhaust and chain guard.
-	_box(car,Vector3(0.32,0.25,0.35),Vector3(0.43,0.34,0.70),steel)
-	for fin: int in range(6):
-		_box(car,Vector3(0.35,0.019,0.36),Vector3(0.43,0.31+fin*0.032,0.70),trim)
-	_box(car,Vector3(0.17,0.17,0.28),Vector3(0.49,0.55,0.70),trim)
-	var exhaust: MeshInstance3D = VisualGeometry.cylinder(car.body,0.072,0.44,Vector3(0.32,0.29,1.06),steel)
-	exhaust.rotation.z = PI*0.5
-	_box(car,Vector3(0.07,0.19,0.52),Vector3(0.18,0.25,0.80),trim)

@@ -1,7 +1,11 @@
 class_name GarageLiveryMenu
 extends VBoxContainer
 ## Native sidebar workbench. Browsing uses offline model renders only.
-const PALETTE: Array[String] = ["ebe3d0","c1c9cb","7b8d96","253747","121b24","317573","50734f","b8a170","d6ab50","cc7448","a44844","764654","9b879e","67849e","b9c8bb"]
+const PALETTE: Array[String] = [
+	"ebe3d0","c1c9cb","7b8d96","253747","121b24",
+	"317573","50734f","b8a170","d6ab50","cc7448",
+	"a44844","764654","9b879e","67849e","b9c8bb",
+	"3f62b2","6945a0","cf6f91","72b8a3","8b573b"]
 const Studio = preload("res://ui/garage_studio_style.gd")
 var page: GaragePage
 var pattern_tiles: Dictionary = {}
@@ -12,6 +16,7 @@ var slider_labels: Dictionary = {}
 var active_picker: Control
 var pattern_scroll: ScrollContainer
 var pattern_shelf: VBoxContainer
+var pattern_icons: Node
 var _tabs: Dictionary = {}
 var _contents: Dictionary = {}
 var _content: VBoxContainer
@@ -84,6 +89,7 @@ func show_tab(tab: String) -> void:
 		sticker_tiles[str(tile.name).trim_prefix("Sticker_")] = tile
 	page.pickers = colour_pickers.duplicate()
 	refresh()
+	page._workbench_focus_pending = true
 
 func active_control(control_name: String) -> Control:
 	if not is_instance_valid(_content): return null
@@ -99,27 +105,68 @@ func _scroll() -> ScrollContainer:
 	return scroll
 
 func _patterns() -> void:
-	pattern_shelf = preload("res://ui/garage_cosmetic_shelf.gd").new()
+	pattern_shelf = preload("res://ui/garage_parts_list.gd").new()
+	pattern_shelf.caption_row.hide() # The existing Appearance header owns the wallet.
 	_content.add_child(pattern_shelf)
 	pattern_shelf.equip.pressed.connect(page._equip_cosmetic_preview)
-	pattern_shelf.cancel.pressed.connect(page._cancel_cosmetic_preview)
 	pattern_scroll = pattern_shelf.scroll
 	pattern_scroll.name = "LiveryPatternGallery"
+	pattern_icons = preload("res://ui/garage_paint_icons.gd").new()
+	pattern_icons.scroll = pattern_scroll
+	pattern_shelf.add_child(pattern_icons)
+	pattern_scroll.resized.connect(_reveal_pattern,CONNECT_DEFERRED)
+	pattern_scroll.get_v_scroll_bar().changed.connect(_reveal_pattern,CONNECT_DEFERRED)
+	pattern_scroll.get_v_scroll_bar().value_changed.connect(func(_value: float) -> void: _queue_pattern_icons.call_deferred())
 	var grid: GridContainer = pattern_shelf.cards
+	grid.resized.connect(_reveal_pattern,CONNECT_DEFERRED)
 	for index: int in range(page._preset_count()):
 		var plain_count: int = GaragePage.LIVERY_NAMES.size()
-		var title: String = GaragePage.LIVERY_NAMES[index] if index < plain_count else LiveryCatalog.patterns[index-plain_count].title
-		var key: String = GaragePage.LIVERY_NAMES[index].to_lower() if index < plain_count else LiveryCatalog.patterns[index-plain_count].id
-		var texture: Texture2D = load("res://assets/liveries/previews_v2/"+page.vehicle_id+"/"+key+".png")
-		var tile: LiveryTile = LiveryTile.make(title,texture,page._preview_livery.bind(index))
-		tile.name = "Pattern_"+key
-		tile.set_meta("livery_index",index)
-		grid.add_child(tile)
-		pattern_tiles[index] = tile
-		tile.focus_entered.connect(pattern_shelf.reveal.bind(tile),CONNECT_DEFERRED)
-	# Restore the selected design to view when reopening this tool.
-	var selected_index: int = page._preset_index()
-	if pattern_tiles.has(selected_index): pattern_scroll.ensure_control_visible.call_deferred(pattern_tiles[selected_index])
+		var title: String = GaragePage.LIVERY_NAMES[index] if index<plain_count else LiveryCatalog.patterns[index-plain_count].title
+		var key: String = GaragePage.LIVERY_NAMES[index].to_lower() if index<plain_count else LiveryCatalog.patterns[index-plain_count].id
+		var row := preload("res://ui/garage_part_option.gd").new()
+		row.setup(index,[key,title],"Two-tone paint" if index<plain_count else "Graphic paint scheme",page._preview_livery.bind(index))
+		row.name = "Pattern_"+key
+		row.add_car_icon()
+		row.set_meta("livery_index",index)
+		row.set_meta("pattern_title",title)
+		grid.add_child(row)
+		pattern_tiles[index] = row
+		row.focus_entered.connect(_reveal_pattern,CONNECT_DEFERRED)
+	_queue_pattern_icons.call_deferred()
+
+func _reveal_pattern() -> void:
+	if page.section!="customise" or page._customise_tab!="livery" or not is_visible_in_tree(): return
+	var focused: Control = get_viewport().gui_get_focus_owner()
+	if is_instance_valid(focused) and pattern_scroll.is_ancestor_of(focused):
+		pattern_scroll.ensure_control_visible(focused)
+	else:
+		for row: Button in pattern_tiles.values():
+			if row.selected:
+				pattern_scroll.ensure_control_visible(row)
+				break
+	_queue_pattern_icons.call_deferred()
+
+func _queue_pattern_icons() -> void:
+	if not is_instance_valid(pattern_scroll) or not is_instance_valid(pattern_icons): return
+	var active: bool = page.section=="customise" and page._customise_tab=="livery" and pattern_scroll.is_visible_in_tree()
+	for index: int in pattern_tiles:
+		var row: Button = pattern_tiles[index]
+		if active and pattern_scroll.get_global_rect().intersects(row.get_global_rect()):
+			var paint: Dictionary = option_livery(index)
+			pattern_icons.request(row,page.vehicle_id,paint,page.kit_draft)
+		else:
+			row.car_icon.texture = null
+			row.icon_key = ""
+
+func equipped_index() -> int:
+	return 0 if page.draft.pattern=="plain" else GaragePage.LIVERY_NAMES.size()+LiveryCatalog.pattern_index(page.draft.pattern)
+
+func option_livery(index: int) -> Dictionary:
+	# The equipped design retains the player's saved palette and stickers.
+	if index==equipped_index(): return page.draft.duplicate(true)
+	var value: Dictionary = page._preset_value(index)
+	value.stickers = page.draft.stickers.duplicate(true)
+	return value
 
 func _colours() -> void:
 	var scroll: ScrollContainer = _scroll()
@@ -219,7 +266,7 @@ func _stickers() -> void:
 	content.add_child(panels)
 	for panel: String in VehicleLivery.SURFACES:
 		if panel == "roof" and not LiveryCatalog.has_roof(page.vehicle_id): continue
-		var button := MenuStyle.tab(panel.capitalize(),page._choose_sticker_surface.bind(panel),panel == page._sticker_surface)
+		var button := MenuStyle.tab(LiveryCatalog.sticker_label(page.vehicle_id,panel),page._choose_sticker_surface.bind(panel),panel == page._sticker_surface)
 		button.name = "Sticker"+panel.capitalize()
 		button.custom_minimum_size.y = 48
 		button.size_flags_horizontal = Control.SIZE_EXPAND_FILL
@@ -274,24 +321,24 @@ func _choose_sticker_category(category: String) -> void:
 	show_tab("stickers")
 
 func refresh() -> void:
-	var selected_index: int = page._preset_index()
-	# A custom colour retains the design's selected card.
-	if page.draft.pattern != "plain": selected_index = GaragePage.LIVERY_NAMES.size()+LiveryCatalog.pattern_index(page.draft.pattern)
-	else: selected_index = 0 # Custom plain colours still belong to Midnight's design.
+	var selected_index: int = equipped_index()
 	var preview_index: int = int(page._cosmetic_preview.get("index",selected_index))
+	var previewing: bool = page._cosmetic_preview.get("kind","")=="livery"
 	for index: int in pattern_tiles:
-		pattern_tiles[index].set_selected(index == preview_index)
-		page._shop_badge(pattern_tiles[index],"livery/"+str(page._preset_value(index).pattern))
-		var equipped: bool = index == selected_index
-		var badge: Label = pattern_tiles[index].get_node_or_null("CoinPrice")
-		if badge != null and equipped: badge.text = "Equipped"
-		if index == preview_index:
-			var tile: LiveryTile = pattern_tiles[index]
-			var item: String = "livery/"+str(page._preset_value(index).pattern)
-			var cost: String = "" if page.economy == null or page._cosmetic_preview.is_empty() else "Owned" if page.economy.owns(item) else "%d coins" % page.economy.price(item)
-			var photo: TextureRect = tile.find_child("LiveryModelPreview",true,false)
-			pattern_shelf.show_choice(photo.texture,tile.accessibility_name,"Equipped" if page._cosmetic_preview.is_empty() else "Previewing · Pattern",cost,index,pattern_tiles.size())
-			if not page._cosmetic_preview.is_empty() and page._cosmetic_preview.kind == "livery": pattern_shelf.reveal.call_deferred(tile)
+		var row: Button = pattern_tiles[index]
+		var item: String = "livery/"+str(page._preset_value(index).pattern)
+		var equipped: bool = index==selected_index
+		var owned: bool = equipped or page.economy==null or page.economy.owns(item)
+		var cost: int = 0 if page.economy==null else page.economy.price(item)
+		row.present(index==preview_index,equipped,owned,cost,previewing and index==preview_index)
+		if index==preview_index:
+			pattern_shelf.show_choice(str(row.get_meta("pattern_title")),not previewing,owned,cost,index,pattern_tiles.size(),"Patterns")
+	if page.section=="customise" and page._customise_tab=="livery" and is_visible_in_tree():
+		page._compare_button.visible = true
+		page._compare_button.disabled = not previewing
+		page._preview_hint.hide()
+		_reveal_pattern.call_deferred()
+	_queue_pattern_icons.call_deferred()
 	for slot: String in slot_buttons:
 		var button: LiveryColourChip = slot_buttons[slot]
 		button.colour = Color(str(page.draft.colors[slot]))

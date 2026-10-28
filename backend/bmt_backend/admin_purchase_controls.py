@@ -17,7 +17,9 @@ from .commerce import (
     access_values,
     adjust_simulated_access,
     fulfill_verified,
+    gift_recipient,
     grant_access,
+    lock_purchase_accounts,
     simulator_allowed,
 )
 from .commerce_models import Entitlements, ProductControl, Purchase
@@ -122,7 +124,14 @@ def plan(session, player, body, at, *, lock_product=False):
         after["purchase"] = {**before["purchase"], "state": body.outcome,
             "fulfilled_at": at if body.outcome == "approved" else None}
         if body.outcome == "approved":
-            after["access"] = grant_access(values, purchase.product_id, simulated=True, verified_at=at)
+            if purchase.recipient_player_id:
+                recipient = purchase.recipient_player_id
+                recipient_values = access_values(session.get(Entitlements, recipient))
+                before["gift_recipient"] = {"player_id": recipient, "access": recipient_values}
+                after["gift_recipient"] = {"player_id": recipient,
+                    "access": grant_access(recipient_values, purchase.product_id, simulated=True, verified_at=at)}
+            else:
+                after["access"] = grant_access(values, purchase.product_id, simulated=True, verified_at=at)
     else:
         after["access"] = adjust_simulated_access(values, body.action, at=at, slots_delta=body.slots_delta or 0)
     return before, after, purchase
@@ -155,6 +164,11 @@ def execute(player_id: UUID, body: Execute, request: Request, role: Access):
     player_id = str(player_id)
     hashed = digest({"player_id": player_id, **body.model_dump()})
     with request.app.state.session_factory() as session:
+        if body.action == "resolve_purchase":
+            order = session.get(Purchase, body.purchase_id)
+            if order is not None and order.player_id == player_id:
+                lock_purchase_accounts(session, player_id, order.recipient_player_id)
+                session.refresh(order)
         player = player_for_control(session, settings, player_id, lock=True)
         prior = session.scalar(select(AdminAudit).where(AdminAudit.command_id == command_id))
         if prior:
@@ -180,7 +194,14 @@ def execute(player_id: UUID, body: Execute, request: Request, role: Access):
             elif body.action == "resolve_purchase":
                 purchase.state = body.outcome
             if purchase is not None and body.outcome == "approved":
-                fulfill_verified(session, row, purchase, verified_at=body.preview_at)
+                target = row
+                if purchase.recipient_player_id:
+                    gift_recipient(session, player_id, purchase.recipient_player_id, purchase.product_id,
+                        settings=settings, simulated=True)
+                    target = session.get(Entitlements, purchase.recipient_player_id)
+                fulfill_verified(session, target, purchase, verified_at=body.preview_at)
+                if purchase.recipient_player_id and access_values(target) != after["gift_recipient"]["access"]:
+                    raise RuntimeError("Gift delivery differs from its preview")
             elif body.action not in ("simulate_purchase", "resolve_purchase"):
                 for field, value in after["access"].items():
                     setattr(row, field, value)

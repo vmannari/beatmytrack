@@ -1,0 +1,36 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Position update for an exact retained pair of histograms",
+  "type": "object",
+  "required": ["schema", "board_id", "population_scope", "stats_revision", "histogram_key", "freshness", "race", "best_lap"],
+  "properties": {
+    "schema": {"const": "bmt-comparison-overlay-v1"},
+    "board_id": {"type": "string", "minLength": 1},
+    "population_scope": {"const": "all"},
+    "stats_revision": {"type": "integer", "minimum": 0},
+    "histogram_key": {"$ref": "results-comparison-v1.schema.json#/properties/histogram_key"},
+    "freshness": {"$ref": "results-comparison-v1.schema.json#/properties/freshness"},
+    "race": {"$ref": "#/$defs/metric"},
+    "best_lap": {"$ref": "#/$defs/metric"}
+  },
+  "$defs": {
+    "metric": {
+      "type": "object",
+      "required": ["board_id", "metric", "population", "minimum_ticks", "maximum_ticks", "own_best_ticks", "opponent_count", "comparison"],
+      "properties": {
+        "board_id": {"type": "string"},
+        "metric": {"enum": ["race", "best_lap"]},
+        "population": {"type": "integer", "minimum": 0},
+        "minimum_ticks": {"type": ["integer", "null"], "minimum": 1},
+        "maximum_ticks": {"type": ["integer", "null"], "minimum": 1},
+        "own_best_ticks": {"type": ["integer", "null"], "minimum": 1},
+        "opponent_count": {"type": "integer", "minimum": 0},
+        "comparison": {"$ref": "time-histogram-v1.schema.json#/properties/comparison"},
+        "comparison_approximate": {"type": "boolean"}
+      },
+      "additionalProperties": false
+    }
+  },
+  "additionalProperties": false,
+  "description": "Returned only when known_histogram matches the server's exact board, generation and bin grids. Both metrics omit bins together. The caller merges only with that exact retained key, then applies ordinary full-response validation. Different generations, changed bounds and unknown keys return a complete legacy-compatible response instead. Markers/positions bind this request's candidate ticks and preserve existing large-population approximation semantics. No record, scoring or reward mutation."
+}

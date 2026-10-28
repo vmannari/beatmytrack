@@ -91,7 +91,8 @@ def test_seeding_rejects_other_backends_and_catalog_contains_public_documents_on
     with pytest.raises(ValueError):
         seed_lab_catalog(app)
     bundle = json.loads(CATALOG_PATH.read_text(encoding="utf-8"))
-    assert len(bundle["documents"]) == 27
-    assert len({d["id"] for d in bundle["documents"]}) == 27
+    assert len(bundle["documents"]) == 26
+    assert len({d["id"] for d in bundle["documents"]}) == 26
+    assert all(d["id"] != "starter_circuit" for d in bundle["documents"])
     assert set(bundle) == {"format","source_sha256","documents"}
     assert all(d["schema"] == "creator-track-v5" for d in bundle["documents"])

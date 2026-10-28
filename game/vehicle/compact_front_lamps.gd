@@ -10,7 +10,7 @@ static func point(side: float, radius: float, angle: float, depth: float) -> Vec
 	var p := Vector2(side*OFFSET+cos(angle)*radius,CENTER+sin(angle)*radius)
 	return CompactGrille.point(p,depth)
 
-static func build(car: CarVisual) -> void:
+static func build(car: CarVisual, cooperate: Callable = Callable()) -> void:
 	var gasket := CompactFinish.rubber(Color("182327"))
 	var chrome := CompactFinish.alloy(Color("b9c4c3"))
 	chrome.metallic = 0.90
@@ -27,16 +27,18 @@ static func build(car: CarVisual) -> void:
 			var tool := SurfaceTool.new()
 			tool.begin(Mesh.PRIMITIVE_TRIANGLES)
 			for side: float in [-1.0,1.0]:
+				var complete: bool = true
 				match kind:
 					"Gaskets":
-						_revolve(tool,side,[Vector2(0.120,-0.026),Vector2(RADIUS,-0.016),Vector2(RADIUS,0.003),Vector2(0.120,0.003)],32 if not car.simple_model else 24,true)
+						complete = await _revolve(tool,side,[Vector2(0.120,-0.026),Vector2(RADIUS,-0.016),Vector2(RADIUS,0.003),Vector2(0.120,0.003)],32 if not car.simple_model else 24,true,false,cooperate)
 					"Bezels":
-						_revolve(tool,side,[Vector2(0.119,-0.039),Vector2(0.126,-0.034),Vector2(0.128,-0.027),Vector2(0.125,-0.023),Vector2(0.119,-0.024)],48 if not car.simple_model else 32,true,true)
+						complete = await _revolve(tool,side,[Vector2(0.119,-0.039),Vector2(0.126,-0.034),Vector2(0.128,-0.027),Vector2(0.125,-0.023),Vector2(0.119,-0.024)],48 if not car.simple_model else 32,true,true,cooperate)
 					"Reflectors":
-						_revolve(tool,side,[Vector2(0,-0.015),Vector2(0.050,-0.018),Vector2(0.100,-0.027),Vector2(0.119,-0.036)],32 if not car.simple_model else 24,false,true)
-						_revolve(tool,side,[Vector2(0,-0.045),Vector2(0.012,-0.042),Vector2(0.018,-0.036),Vector2(0.018,-0.032),Vector2(0,-0.032)],15 if not car.simple_model else 12,true,true)
+						complete = await _revolve(tool,side,[Vector2(0,-0.015),Vector2(0.050,-0.018),Vector2(0.100,-0.027),Vector2(0.119,-0.036)],32 if not car.simple_model else 24,false,true,cooperate)
+						if complete: complete = await _revolve(tool,side,[Vector2(0,-0.045),Vector2(0.012,-0.042),Vector2(0.018,-0.036),Vector2(0.018,-0.032),Vector2(0,-0.032)],15 if not car.simple_model else 12,true,true,cooperate)
 					"Lenses":
-						_revolve(tool,side,[Vector2(0,-0.054),Vector2(0.064,-0.050),Vector2(0.104,-0.043),Vector2(0.117,-0.037)],32 if not car.simple_model else 24,false,true)
+						complete = await _revolve(tool,side,[Vector2(0,-0.054),Vector2(0.064,-0.050),Vector2(0.104,-0.043),Vector2(0.117,-0.037)],32 if not car.simple_model else 24,false,true,cooperate)
+				if not complete: return
 			tool.index()
 			tool.generate_tangents()
 			meshes[key] = tool.commit()
@@ -47,11 +49,12 @@ static func build(car: CarVisual) -> void:
 		if kind=="Lenses": part.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
 		car.body.add_child(part)
 
-static func _revolve(tool: SurfaceTool, side: float, profile: Array[Vector2], segments: int, closed: bool, smooth: bool = false) -> void:
+static func _revolve(tool: SurfaceTool, side: float, profile: Array[Vector2], segments: int, closed: bool, smooth: bool = false, cooperate: Callable = Callable()) -> bool:
 	for row: int in range(profile.size() if closed else profile.size()-1):
 		var p: Vector2 = profile[row]
 		var q: Vector2 = profile[(row+1)%profile.size()]
 		for segment: int in range(segments):
+			if not cooperate.is_null() and (not cooperate.is_valid() or not await cooperate.call()): return false
 			var a: float = segment*TAU/segments
 			var b: float = (segment+1)*TAU/segments
 			var corners: Array[Vector3] = [point(side,p.x,a,p.y),point(side,p.x,b,p.y),point(side,q.x,b,q.y),point(side,q.x,a,q.y)]
@@ -80,3 +83,4 @@ static func _revolve(tool: SurfaceTool, side: float, profile: Array[Vector2], se
 					tool.set_normal(normals[index])
 					tool.set_uv(Vector2((corners[index].x-side*OFFSET)/0.234+0.5,(corners[index].y-CENTER)/0.234+0.5))
 					tool.add_vertex(corners[index])
+	return true

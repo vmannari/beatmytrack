@@ -60,7 +60,7 @@ func run() -> void:
 	check(game.sim.state.tick == 0 and game.sim.state.position == origin,"red lights hold canonical car stationary")
 	check(game.race_cues.stage == 0,"lights extinguish at countdown boundary")
 	game._physics_process(1.0/120)
-	check(game.sim.state.launch_result == "False start" and game.online_frames[0][4] == 2,"early press recorded and penalized")
+	check(game.sim.state.launch_result == "False start" and preload("res://race/input_record.gd").unpack(game.online_frames[0])[4] == 2,"early press recorded and penalized")
 	check(int(game.rewind_history.entries[0].state.launch_delay_until) == 72,"tick-zero rewind checkpoint retains early penalty")
 	game.restart()
 	check(not game.launch_early and not game.launch_countdown_seen,"restart clears launch latch")

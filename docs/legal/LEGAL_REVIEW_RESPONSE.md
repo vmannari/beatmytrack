@@ -1,6 +1,8 @@
 # Beat my track terms review response
 
-The revised [terms draft](TERMS_DRAFT.md) incorporates the supplied review and the publisher's subsequent decisions: **minimum age 13**, initial distribution in the **EU, US and Canada**, and operational/commercial wording for service discontinuation. It remains a draft. Publisher details, shutdown notice duration, product-specific withdrawal handling and regional implementation are still publication gates.
+This records the first review's disposition in revision 2 on 24 October 2026. The [second-review response](SECOND_LEGAL_REVIEW_RESPONSE.md) records revisions 3–4; the [publisher decisions](PUBLISHER_DECISIONS_2026_10_25.md) supersede the earlier permanent-product/automatic-restoration proposals, pending publishing-economy choices and notice period. The current [terms draft](TERMS_DRAFT.md) is revision 6, with a twelve-month non-renewing offer and no transfer after voluntary whole-account deletion. The statements below are preserved as review history, not current approval.
+
+Revision 2 incorporated the supplied review and the publisher's subsequent decisions: **minimum age 13**, initial distribution in the **EU, US and Canada**, and operational/commercial wording for service discontinuation. Publisher details, shutdown notice duration, product-specific withdrawal handling and regional implementation remained publication gates.
 
 The supplied review describes itself as a specialist-style risk review, not a formal opinion from retained Finnish counsel. Its [exact text](../evidence/launch-compliance-2026-10-24/review-input.txt) and the [draft it reviewed](../evidence/launch-compliance-2026-10-24/terms-before-user-review.txt) are retained for comparison. The evidence report records their hashes. This response does not treat the review as legal sign-off.
 

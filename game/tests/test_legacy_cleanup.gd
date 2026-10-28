@@ -31,7 +31,7 @@ func run() -> void:
 	var pigment: Dictionary = {"version":1,"colors":{"body":"9a3e50","accent":"e4b74c"}}
 	var imported: String = "a".repeat(64)
 	var old: Dictionary = {"schema":1,"records":{"b".repeat(64):{"race":54.123,"flying":20.457}},
-		"settings":{"control_layout":layout,"vehicle_liveries":{"compact":pigment},"favorites":["starter_circuit"],
+		"settings":{"control_layout":layout,"vehicle_liveries":{"compact":pigment},"favorites":["ellipse"],
 		"cosmetic_legacy":["livery/flames"],"music_record":imported,"music_records":[{"id":imported,"title":"Private LP","format":"wav"}]}}
 	# Use a catalogued owned pattern without depending on any entitlement API.
 	old.settings.cosmetic_legacy = []

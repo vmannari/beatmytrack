@@ -6,6 +6,7 @@ signal race_verified
 const Client = preload("res://backend/backend_client.gd")
 const PREPARED_TRACKS = preload("res://backend/prepared_track_cache.gd")
 const INPUT_RECOVERY = preload("res://backend/pending_input_recovery.gd")
+const RACE_COMPATIBILITY = preload("res://backend/race_compatibility.gd")
 var client: Node
 var entries: Array[Dictionary] = []
 var status: String = "Cloud tracks have not been refreshed."
@@ -30,6 +31,10 @@ var _retry_deadlines: Dictionary = {}
 var _write_deadlines: Dictionary = {}
 var _flush_deadlines: Dictionary = {}
 var profile_local_io_us: int = 0
+var background_allowed: Callable
+var _empty_outboxes: Dictionary = {}
+var _migrated_outboxes: Dictionary = {}
+var profile_flush_passes: int = 0
 const MAX_FLUSH_JOBS: int = 16
 
 func _ready() -> void:
@@ -44,11 +49,12 @@ func _ensure_result_saves() -> void:
 	result_saves.changed.connect(changed.emit)
 	result_saves.saved.connect(func(_id: String) -> void: flush_outbox())
 
-func enqueue_completed(ticket_data: Dictionary, frames: Array, publish: String = "", rewinds: Array = []) -> bool:
+func enqueue_completed(ticket_data: Dictionary, frames: Variant, publish: String = "", rewinds: Array = []) -> bool:
 	_ensure_result_saves()
-	var captured: Dictionary = ticket_data.duplicate(true)
+	var captured: Dictionary = ticket_data.duplicate()
 	captured["_owner_id"] = str(ticket_data.get("_owner_id",client.player.get("id","")))
 	captured["_origin"] = str(ticket_data.get("_origin",client.base_url()))
+	if not captured.has("_wire_options") and client.has_method("race_submission_options"): captured._wire_options = client.race_submission_options()
 	if not captured.has("_submit_key"): captured["_submit_key"] = client.new_operation_key()
 	captured.erase("_publish_key")
 	return result_saves.enqueue(captured,frames,publish,rewinds)
@@ -61,6 +67,7 @@ func _save_pending_job(path: String, job: Dictionary) -> bool:
 	# Write the work marker first so a crash cannot strand a durable replay.
 	if active and not _write(_pending_marker(path),{"job":path.get_file()}): return false
 	if not _write(path,job): return false
+	if active: _empty_outboxes.erase(path.get_base_dir())
 	if not active and FileAccess.file_exists(_pending_marker(path)): DirAccess.remove_absolute(_pending_marker(path))
 	return true
 
@@ -69,6 +76,10 @@ static func _discover_pending(directory: String) -> Array[Dictionary]:
 	if not DirAccess.dir_exists_absolute(directory): return result
 	var access: DirAccess = DirAccess.open(directory)
 	if access == null: return result
+	# A manifest precedes the payload. Finish interrupted multi-file commits before
+	# scanning jobs, using only the original operation/account/byte identity.
+	for staged: String in access.get_files():
+		if staged.ends_with(".stage.json"): _recover_staged(directory,staged)
 	access.list_dir_begin()
 	var filename: String = access.get_next()
 	while not filename.is_empty():
@@ -87,13 +98,24 @@ static func _discover_pending(directory: String) -> Array[Dictionary]:
 	return result
 
 static func _input_failure_repair(directory: String, filename: String, job: Dictionary) -> Dictionary:
-	# Repair only the local encoder rejection introduced by the trajectory cutover.
+	# Repair only known local encoder failures, never a server rejection.
 	# This scan already runs on an owned I/O worker; keep large JSON off the UI.
-	if job.get("failure") != "INVALID_REPLAY" or job.has("run_id") or job.has("done") or job.get("dismissed",false): return {}
+	if job.get("failure") not in ["INVALID_REPLAY","REPLAY_RECOVERY_REQUIRED"] or job.has("run_id") or job.has("done") or job.get("dismissed",false): return {}
 	if job.get("submission_schema") != "bmt-trajectory-v1" or not job.get("ticket") is String or not job.get("key") is String: return {}
 	var name: String = str(job.ticket).sha256_text()
 	if filename != name+".job.json" or job.get("replay") != name+".replay.json": return {}
-	var packet: Dictionary = INPUT_RECOVERY.replay(_load_replay(directory.path_join(str(job.replay)),str(job.get("replay_hash",""))))
+	var recording: Dictionary = _load_replay(directory.path_join(str(job.replay)),str(job.get("replay_hash","")))
+	var packet: Dictionary
+	if job.get("failure") == "REPLAY_RECOVERY_REQUIRED":
+		var options: Variant = job.get("wire_options")
+		if recording.get("schema") != "bmt-local-trajectory-v1" or not options is Dictionary or options.size() != 3 or not Client._whole(options.get("result"),1,1) or not Client._whole(options.get("path"),0,1) or not options.get("incidents") is bool: return {}
+		var count: int = preload("res://race/input_record.gd").count(recording)
+		if not recording.get("claimed_lap_ticks") is Array or not recording.get("rewinds",[]) is Array: return {}
+		if not recording.get("race_proof") is Dictionary or not recording.get("ghost",{}) is Dictionary: return {}
+		if not Client._rounded_lap_mismatch(count,recording.get("rewinds",[]),recording.claimed_lap_ticks): return {}
+		packet = Client._pack_trajectory(count,recording.get("race_proof",{}),recording.get("rewinds",[]),recording.get("ghost",{}),options.incidents,int(options.path) == 1)
+	else:
+		packet = INPUT_RECOVERY.replay(recording)
 	if packet.is_empty(): return {}
 	var restored: Dictionary = job.duplicate(true)
 	for key: String in ["failure","rejection_status","retryable","retry_at","retry_server_at","retry_streak"]: restored.erase(key)
@@ -109,9 +131,11 @@ func _recover_pending(directory: String) -> bool:
 	if thread.start(_discover_pending.bind(directory)) != OK: return false
 	while thread.is_alive(): await get_tree().process_frame
 	var plans: Array[Dictionary] = thread.wait_to_finish()
+	if not _background_allowed(): return false
 	var count: int = 0
 	for plan: Dictionary in plans:
 		if origin != client.base_url() or owner != str(client.player.get("id","")): return false
+		if not _background_allowed(): return false
 		var filename: String = str(plan.filename)
 		var path: String = directory.path_join(filename)
 		if plan.has("repair"):
@@ -217,6 +241,7 @@ func _write(path: String, value: Dictionary) -> bool:
 	return result
 
 static func _write_file(path: String, value: Dictionary) -> bool:
+	path = ProjectSettings.globalize_path(path).simplify_path()
 	var encoded: String = JSON.stringify(value)
 	if encoded.to_utf8_buffer().size() > 8388608: return false
 	DirAccess.make_dir_recursive_absolute(path.get_base_dir())
@@ -590,13 +615,11 @@ func ticket(track: NativeTrack, creator_test: bool = false, vehicle_id: String =
 	if str(manifest.get("engine_version","")) != engine_version or int(manifest.get("tick_rate",0)) != VehicleSimulation.TICK_RATE or manifest.get("track_schema") != TrackDocument.SCHEMA or manifest.get("replay_schema") != "bmt-replay-v1" or manifest.get("verifier_version") != "canonical-verifier-1":
 		last_error = "The server requires a different verification contract. Update the game or backend."
 		return {}
-	if str(manifest.physics_version) != VehicleSimulation.PHYSICS_VERSION or str(manifest.compiler_version) != TrackCompiler.VERSION or str(manifest.rules_key) != RaceRules.KEY:
+	if not RACE_COMPATIBILITY.physics_matches(str(manifest.physics_version),selected_vehicle) or str(manifest.compiler_version) != TrackCompiler.VERSION or str(manifest.rules_key) != RaceRules.KEY:
 		last_error = "The server requires a different game build."
 		return {}
 	var config: HandlingConfig = attempt_handling if attempt_handling != null else VehicleCatalog.config(selected_vehicle) if creator_test or not vehicle_id.is_empty() else HandlingSelection.config()
-	var values: Dictionary = {}
-	for property: Dictionary in config.get_property_list():
-		if int(property.usage) & PROPERTY_USAGE_SCRIPT_VARIABLE: values[str(property.name)] = config.get(str(property.name))
+	var values: Dictionary = config.snapshot()
 	if str(manifest.config_hash) != JSON.stringify(values,"",true).sha256_text():
 		last_error = "Selected handling differs from the server's race rules."
 		return {}
@@ -610,16 +633,57 @@ static func _save_pending_job_files(path: String, job: Dictionary) -> bool:
 	if not _write_file(_pending_marker(path),{"job":path.get_file()}): return false
 	return _write_file(path,job)
 
-static func _queue_run_io(ticket_data: Dictionary, frames: Array, _publish_version: String, rewinds: Array, root_path: String, owner: String, queued_server_at: int = 0) -> bool:
-	if frames.is_empty():
+static func _recover_staged(directory: String, filename: String) -> bool:
+	var stage_path: String = directory.path_join(filename)
+	var stage: Dictionary = _read_file(stage_path)
+	if stage.get("schema") != "bmt-result-commit-v1" or not stage.get("job") is Dictionary: return false
+	var job: Dictionary = stage.job
+	var name: String = str(job.get("ticket","")).sha256_text()
+	if filename != name+".stage.json" or job.get("replay") != name+".replay.json" or str(stage.get("owner","")).sha256_text() != directory.get_base_dir().get_file(): return false
+	if str(job.get("key","")).is_empty(): return false
+	var payload: String = directory.path_join(str(job.replay))
+	var expected: String = str(job.get("replay_hash",""))
+	if not _replay_integrity(payload,expected):
+		if not _replay_integrity(payload+".tmp",expected) or DirAccess.rename_absolute(payload+".tmp",payload) != OK: return false
+	var path: String = directory.path_join(name+".job.json")
+	var current: Dictionary = _read_file(path)
+	if current.has("_read_error"): return false
+	if not current.is_empty():
+		if current.get("key") != job.key or current.get("replay_hash") != expected: return false
+		# Never replace an accepted reply, completion, or retry state with staging.
+		DirAccess.remove_absolute(stage_path)
+		return true
+	if not _save_pending_job_files(path,job): return false
+	DirAccess.remove_absolute(stage_path)
+	return true
+
+static func _queue_run_io(ticket_data: Dictionary, frames: Variant, _publish_version: String, rewinds: Array, root_path: String, owner: String, queued_server_at: int = 0, fault: String = "") -> bool:
+	if frames.is_empty() or frames.size() > 216000:
 		return false
 	var directory: String = root_path.path_join("players").path_join(owner.sha256_text()).path_join("runs")
 	var name: String = str(ticket_data.ticket_id).sha256_text()
 	var path: String = directory.path_join(name+".job.json")
 	var existing: Dictionary = _read_file(path)
-	var recording: Dictionary = {"frames":frames,"rewinds":rewinds}
-	if ticket_data.has("_race_proof"): recording.race_proof = ticket_data._race_proof
-	if ticket_data.has("_race_ghost"): recording.ghost = ticket_data._race_ghost
+	if existing.has("_read_error"): return false
+	# New trajectory journals retain the actual proof and input count, not unused
+	# control arrays. Existing journals keep their original bytes/hash/retry body.
+	var packet: RefCounted = ticket_data.get("_evidence")
+	if packet != null: packet.seal_rows()
+	var proof: Dictionary = packet.proof if packet != null else ticket_data.get("_race_proof",{})
+	var ghost: Dictionary = packet.ghost if packet != null else ticket_data.get("_race_ghost",{})
+	if packet != null and packet.ghost_source != null: ghost = packet.ghost_source.recording("race")
+	var native_trajectory: bool = not proof.is_empty() and (existing.is_empty() or existing.get("local_recording_schema") == "bmt-local-trajectory-v1")
+	var recording: Dictionary
+	if native_trajectory:
+		recording = {"schema":"bmt-local-trajectory-v1","input_count":frames.size(),"rewinds":rewinds}
+	else:
+		var inputs: Array = preload("res://race/input_record.gd").legacy(frames)
+		if inputs.is_empty(): return false
+		recording = {"frames":inputs,"rewinds":rewinds}
+	if not proof.is_empty(): recording.race_proof = proof
+	if not ghost.is_empty(): recording.ghost = ghost
+	if int(ticket_data.get("_wire_options",{}).get("result",0)) == 1 and ticket_data.get("_claimed_lap_ticks") is Array:
+		recording.claimed_lap_ticks = ticket_data._claimed_lap_ticks
 	var replay_hash: String = JSON.stringify(recording).sha256_text()
 	if existing.has("_read_error"):
 		return false
@@ -627,19 +691,35 @@ static func _queue_run_io(ticket_data: Dictionary, frames: Array, _publish_versi
 		if str(existing.get("replay_hash","")) != replay_hash: return false
 		if existing.has("run_id"): return true
 		return _replay_integrity(directory.path_join(name+".replay.json"),replay_hash)
-	var saved: bool = _write_file(directory.path_join(name+".replay.json"),recording)
-	if saved:
-		var job: Dictionary = {"ticket":ticket_data.ticket_id,"replay":name+".replay.json","replay_hash":replay_hash,"key":ticket_data.get("_submit_key",Client.new_idempotency_key()),"publish":"","queued_server_at":queued_server_at,"submission_schema":"bmt-trajectory-v1"}
-		if ticket_data.get("_wire_options") is Dictionary: job.wire_options = ticket_data._wire_options.duplicate(true)
-		saved = _save_pending_job_files(path,job)
-	return saved
+	var stage_path: String = directory.path_join(name+".stage.json")
+	var staged: Dictionary = _read_file(stage_path)
+	if staged.has("_read_error"): return false
+	var job: Dictionary = {"ticket":ticket_data.ticket_id,"replay":name+".replay.json","replay_hash":replay_hash,"key":ticket_data.get("_submit_key",Client.new_idempotency_key()),"publish":"","queued_server_at":queued_server_at,"submission_schema":"bmt-trajectory-v1"}
+	if native_trajectory: job.local_recording_schema = "bmt-local-trajectory-v1"
+	if ticket_data.get("_wire_options") is Dictionary: job.wire_options = ticket_data._wire_options.duplicate(true)
+	if not staged.is_empty():
+		if staged.get("owner") != owner or not staged.get("job") is Dictionary or staged.job.get("replay_hash") != replay_hash: return false
+		job = staged.job
+	else:
+		var metadata: Dictionary = ticket_data.duplicate()
+		for key: String in ["_evidence","_race_proof","_race_ghost","_race_ghost_source"]: metadata.erase(key)
+		if not _write_file(stage_path,{"schema":"bmt-result-commit-v1","owner":owner,"origin":ticket_data.get("_origin",""),"ticket":metadata,"job":job}): return false
+	if fault in ["manifest","no_space"]: return false
+	if not _write_file(directory.path_join(name+".replay.json"),recording): return false
+	if fault == "payload": return false
+	if not _write_file(_pending_marker(path),{"job":path.get_file()}): return false
+	if fault == "marker": return false
+	if not _write_file(path,job): return false
+	if fault == "job": return false
+	DirAccess.remove_absolute(stage_path)
+	return true
 
 func _submission_ticket(ticket_data: Dictionary) -> Dictionary:
-	var pinned: Dictionary = ticket_data.duplicate(true)
-	if client.has_method("race_submission_options"): pinned._wire_options = client.race_submission_options()
+	var pinned: Dictionary = ticket_data.duplicate()
+	if not pinned.has("_wire_options") and client.has_method("race_submission_options"): pinned._wire_options = client.race_submission_options()
 	return pinned
 
-func queue_run(ticket_data: Dictionary, frames: Array, publish_version: String = "", rewinds: Array = []) -> bool:
+func queue_run(ticket_data: Dictionary, frames: Variant, publish_version: String = "", rewinds: Array = []) -> bool:
 	# Synchronous compatibility for small local diagnostics. The runtime uses
 	# queue_run_async so replay hashing, encoding and atomic writes yield frames.
 	var owner: String = str(ticket_data.get("_owner_id",client.player.get("id","")))
@@ -647,17 +727,21 @@ func queue_run(ticket_data: Dictionary, frames: Array, publish_version: String =
 	if ticket_data.is_empty() or owner.is_empty() or origin.is_empty(): return false
 	var root_path: String = (root_override if not root_override.is_empty() else "user://cloud").path_join(origin.sha256_text())
 	var saved: bool = _queue_run_io(_submission_ticket(ticket_data),frames,publish_version,rewinds,root_path,owner,client.server_now() if client.has_method("server_now") else 0)
-	if saved: changed.emit()
+	if saved:
+		_empty_outboxes.erase(root_path.path_join("players").path_join(owner.sha256_text()).path_join("runs"))
+		changed.emit()
 	else: last_error = "The race could not be saved. Free storage and retry."
 	return saved
 
-func queue_run_async(ticket_data: Dictionary, frames: Array, publish_version: String = "", rewinds: Array = []) -> bool:
+func queue_run_async(ticket_data: Dictionary, frames: Variant, publish_version: String = "", rewinds: Array = []) -> bool:
 	var owner: String = str(ticket_data.get("_owner_id",client.player.get("id","")))
 	var origin: String = str(ticket_data.get("_origin",client.base_url()))
 	if ticket_data.is_empty() or owner.is_empty() or origin.is_empty(): return false
 	var root_path: String = (root_override if not root_override.is_empty() else "user://cloud").path_join(origin.sha256_text())
 	var saved: Variant = await client._background(_queue_run_io.bind(_submission_ticket(ticket_data),frames,publish_version,rewinds,root_path,owner,client.server_now() if client.has_method("server_now") else 0))
-	if saved == true: changed.emit()
+	if saved == true:
+		_empty_outboxes.erase(root_path.path_join("players").path_join(owner.sha256_text()).path_join("runs"))
+		changed.emit()
 	else: last_error = "The race could not be saved. Free storage and retry."
 	return saved == true
 
@@ -764,6 +848,7 @@ func _save_job(path: String, job: Dictionary) -> void:
 
 func _migrate_outbox() -> bool:
 	var path: String = outbox_path()
+	if _migrated_outboxes.has(path): return true
 	var legacy: Dictionary = _read(path)
 	if legacy.has("_read_error"):
 		status = "Previous uploads need recovery; the original file was preserved."
@@ -790,7 +875,8 @@ func _migrate_outbox() -> bool:
 		if not _save_pending_job(target,job): return false
 	if FileAccess.file_exists(path):
 		if FileAccess.file_exists(path+".migrated"): return false
-		return DirAccess.rename_absolute(path,path+".migrated") == OK
+		if DirAccess.rename_absolute(path,path+".migrated") != OK: return false
+	_migrated_outboxes[path] = true
 	return true
 
 func upload_jobs() -> Array[Dictionary]:
@@ -862,6 +948,7 @@ func retry_upload(ticket_id: String) -> bool:
 	return _save_pending_job(str(job._path),job)
 
 func _submit_saved(job: Dictionary, path: String) -> Dictionary:
+	if not _background_allowed(): return _deferred_background()
 	var origin: String = str(client.base_url())
 	var owner: String = str(client.player.get("id",""))
 	# A pre-update job may have been accepted with an older wire envelope.
@@ -872,33 +959,46 @@ func _submit_saved(job: Dictionary, path: String) -> Dictionary:
 		if origin != client.base_url() or owner != str(client.player.get("id","")): return {"ok":false,"status":0,"error":"ACCOUNT_CHANGED","data":{}}
 		if not recovered.ok: return recovered
 		if recovered.data.run != null: return {"ok":true,"status":200,"data":recovered.data.run,"error":""}
+	if not _background_allowed(): return _deferred_background()
 	var preparation: int = Time.get_ticks_usec()
 	var loaded: Variant = await client._background(_load_replay.bind(path.get_base_dir().path_join(str(job.get("replay",""))),str(job.get("replay_hash",""))))
 	if origin != client.base_url() or owner != str(client.player.get("id","")): return {"ok":false,"status":0,"error":"ACCOUNT_CHANGED","data":{}}
-	if not loaded is Dictionary or not loaded.get("frames") is Array:
+	if not _background_allowed(): return _deferred_background()
+	if not loaded is Dictionary:
 		return {"ok":false,"status":422,"error":"REPLAY_RECOVERY_REQUIRED","data":{}}
+	var input_count: int = preload("res://race/input_record.gd").count(loaded)
+	if input_count <= 0: return {"ok":false,"status":422,"error":"REPLAY_RECOVERY_REQUIRED","data":{}}
 	var packet: Dictionary = {}
-	if loaded.has("race_proof") and job.has("wire_options"):
-		var options: Variant = job.wire_options
-		if not options is Dictionary or options.size() != 2 or not Client._whole(options.get("path"),0,1) or not options.get("incidents") is bool:
+	if loaded.has("race_proof"):
+		var options: Variant = job.get("wire_options",client.race_submission_options())
+		if not options is Dictionary or options.size() not in [2,3] or not Client._whole(options.get("path"),0,1) or not options.get("incidents") is bool or (options.size() == 3 and not options.has("result")) or (options.has("result") and not Client._whole(options.result,1,1)):
 			return {"ok":false,"status":422,"error":"REPLAY_RECOVERY_REQUIRED","data":{}}
+		if not job.has("wire_options"): job.wire_options = options.duplicate(true)
 		if not bool(client._capabilities.get("trajectory_verification",false)) or (int(options.path) == 1 and int(client._capabilities.get("race_path_wire_version",0)) < 1):
 			await client.request_api("/bootstrap")
 			if origin != client.base_url() or owner != str(client.player.get("id","")): return {"ok":false,"status":0,"error":"ACCOUNT_CHANGED","data":{}}
+			if not _background_allowed(): return _deferred_background()
 			if not bool(client._capabilities.get("trajectory_verification",false)) or (int(options.path) == 1 and int(client._capabilities.get("race_path_wire_version",0)) < 1):
 				return {"ok":false,"status":503,"error":"SUBMISSION_SERVER_UPDATE_REQUIRED","data":{}}
-		var encoded: Variant = await client._background(Client._pack_trajectory.bind(loaded.frames.size(),loaded.race_proof,loaded.get("rewinds",[]),loaded.get("ghost",{}),options.incidents,int(options.path) == 1))
+		if int(options.get("result",0)) == 1 and int(client._capabilities.get("non_improving_runs_version",0)) != 1:
+			return {"ok":false,"status":503,"error":"SUBMISSION_SERVER_UPDATE_REQUIRED","data":{}}
+		var claims: Array = loaded.get("claimed_lap_ticks",[]) if int(options.get("result",0)) == 1 else []
+		if Client._rounded_lap_mismatch(input_count,loaded.get("rewinds",[]),claims): claims = []
+		var encoded: Variant = await client._background(Client._pack_trajectory.bind(input_count,loaded.race_proof,loaded.get("rewinds",[]),loaded.get("ghost",{}),options.incidents,int(options.path) == 1,claims))
 		if origin != client.base_url() or owner != str(client.player.get("id","")): return {"ok":false,"status":0,"error":"ACCOUNT_CHANGED","data":{}}
+		if not _background_allowed(): return _deferred_background()
 		if not encoded is Dictionary or encoded.is_empty(): return {"ok":false,"status":422,"error":"REPLAY_RECOVERY_REQUIRED","data":{}}
 		packet = encoded
 	if not loaded.has("race_proof"):
 		if not looked_up:
+			if not _background_allowed(): return _deferred_background()
 			var recovered: Dictionary = await _lookup_submission(str(job.ticket))
 			if origin != client.base_url() or owner != str(client.player.get("id","")): return {"ok":false,"status":0,"error":"ACCOUNT_CHANGED","data":{}}
 			if not recovered.ok: return recovered
 			if recovered.data.run != null: return {"ok":true,"status":200,"data":recovered.data.run,"error":""}
 		var encoded: Variant = await client._background(INPUT_RECOVERY.replay.bind(loaded))
 		if origin != client.base_url() or owner != str(client.player.get("id","")): return {"ok":false,"status":0,"error":"ACCOUNT_CHANGED","data":{}}
+		if not _background_allowed(): return _deferred_background()
 		if not encoded is Dictionary or encoded.is_empty(): return {"ok":false,"status":422,"error":"REPLAY_RECOVERY_REQUIRED","data":{}}
 		packet = encoded
 	job.submission_schema = packet.schema if not packet.is_empty() else "bmt-trajectory-v1"
@@ -907,7 +1007,11 @@ func _submit_saved(job: Dictionary, path: String) -> Dictionary:
 	if client.has_method("note_upload_age"): client.note_upload_age(str(job.key),int(queued) if Client._whole(queued,1000000000,9999999999) else 0)
 	if client.has_method("note_request_preparation"): client.note_request_preparation(str(job.key),Time.get_ticks_usec()-preparation)
 	var response: Dictionary
-	if not packet.is_empty(): response = await client.request_api("/runs",HTTPClient.METHOD_POST,{"ticket_id":str(job.ticket),"replay":packet},str(job.key),true)
+	if not packet.is_empty():
+		# The normalized wire packet owns what remains necessary. Release the
+		# larger decoded proof before serialization/network waits overlap a save.
+		loaded = {}
+		response = await client.request_api("/runs",HTTPClient.METHOD_POST,{"ticket_id":str(job.ticket),"replay":packet},str(job.key),true)
 	else: response = await client.submit_run(str(job.ticket),loaded.frames,str(job.key),loaded.get("rewinds",[]),loaded.get("race_proof",{}),loaded.get("ghost",{}))
 	if origin != client.base_url() or owner != str(client.player.get("id","")): return {"ok":false,"status":0,"error":"ACCOUNT_CHANGED","data":{}}
 	# An original in-flight envelope can win after the first lookup. Its accepted
@@ -928,18 +1032,37 @@ func _lookup_submission(ticket_id: String) -> Dictionary:
 		return {"ok":false,"status":502,"error":"INVALID_RESPONSE","data":{}}
 	return response
 
+func invalidate_outbox() -> void:
+	# An account/profile transition can expose work from an earlier process.
+	# Local queue writes invalidate immediately; idle timer ticks do not.
+	var path: String = outbox_path()
+	var directory: String = path.get_base_dir().path_join("runs")
+	_empty_outboxes.erase(directory)
+	_migrated_outboxes.erase(path)
+	_recovered_outboxes.erase(directory)
+
+func _background_allowed() -> bool:
+	return not background_allowed.is_valid() or bool(background_allowed.call())
+
+func _deferred_background() -> Dictionary:
+	return {"ok":false,"status":0,"error":"BACKGROUND_DEFERRED","data":{}}
+
 func flush_outbox() -> void:
 	if flushing or not client.signed_in(): return
+	if not _background_allowed(): return
+	if _empty_outboxes.has(outbox_path().get_base_dir().path_join("runs")): return
 	flushing = true
+	profile_flush_passes += 1
 	await _flush_jobs()
 	flushing = false
 	changed.emit()
 
 func _wait_for_upload(run_id: String, ticket_id: String, owner: String, origin: String) -> void:
 	if str(client.player.get("id","")) != owner or client.base_url() != origin: return
+	if not _background_allowed(): return
 	var response: Dictionary = await client.wait_for_run(run_id,ticket_id)
 	if not is_inside_tree() or str(client.player.get("id","")) != owner or client.base_url() != origin: return
-	if response.ok and response.data.status in ["verified","rejected","failed"]:
+	if response.ok and response.data.status in ["verified","skipped","rejected","failed"]:
 		_retry_deadlines[ticket_id] = 0
 		await flush_outbox()
 
@@ -951,13 +1074,17 @@ func _flush_jobs() -> void:
 	if Time.get_ticks_msec() < int(_flush_deadlines.get(request_scope,0)): return
 	var directory: String = outbox_path().get_base_dir().path_join("runs")
 	if not await _recover_pending(directory) or str(client.player.get("id","")) != owner or client.base_url() != origin: return
+	if not _background_allowed(): return
 	var jobs: Array[Dictionary] = _pending_jobs(directory)
+	if jobs.is_empty() and not _pending_iterators.has(directory.get_base_dir().path_join("pending")):
+		_empty_outboxes[directory] = true
+		return
 	var polled: Dictionary = {}
 	var ids := PackedStringArray()
 	for job: Dictionary in jobs:
 		if not job.has("run_id") or job.has("failure") or not _job_ready(job): continue
 		var recent: Dictionary = client.recent_run(str(job.ticket)) if client.has_method("recent_run") else {}
-		if Client.valid_run(recent) and str(recent.run_id) == str(job.run_id) and recent.status in ["verified","rejected","failed"]:
+		if Client.valid_run(recent) and str(recent.run_id) == str(job.run_id) and recent.status in ["verified","skipped","rejected","failed"]:
 			polled[str(job.run_id)] = recent
 		else: ids.append("ids="+str(job.run_id).uri_encode())
 	var batch: Dictionary = {}
@@ -978,6 +1105,7 @@ func _flush_jobs() -> void:
 		var path: String = str(job._path)
 		job.erase("_path")
 		if str(client.player.get("id","")) != owner or client.base_url() != origin: break
+		if not _background_allowed(): break
 		if job.has("done") or not _job_ready(job): continue
 		if job.has("failure"):
 			if job.get("failure","") != "verifier_unavailable" or not job.get("retryable",false): continue
@@ -1002,6 +1130,7 @@ func _flush_jobs() -> void:
 		if not job.has("run_id"):
 			if not _reserve_background_write(request_scope): continue
 			response = await _submit_saved(job,path)
+			if response.get("error") == "BACKGROUND_DEFERRED": break
 			checked = true
 			if str(client.player.get("id","")) != owner or client.base_url() != origin: break
 			if response.ok and not Client.valid_run(response.get("data")): response = {"ok":false,"status":502,"error":"INVALID_RESPONSE","data":{}}
@@ -1021,6 +1150,7 @@ func _flush_jobs() -> void:
 			_save_job(path,job)
 			if client.has_method("wait_for_run") and response.data.status in ["queued","verifying"]:
 				_wait_for_upload.call_deferred(str(job.run_id),str(job.ticket),owner,origin)
+		if not _background_allowed(): break
 		if polled.has(str(job.run_id)): response = {"ok":true,"status":200,"data":polled[str(job.run_id)]}
 		elif not batch.is_empty() and not batch.ok: response = batch
 		elif response.is_empty():
@@ -1036,6 +1166,7 @@ func _flush_jobs() -> void:
 				continue
 			# Reconcile the original ticket/key/content. Never mint a replacement attempt.
 			var recovered: Dictionary = await _submit_saved(job,path)
+			if recovered.get("error") == "BACKGROUND_DEFERRED": break
 			if str(client.player.get("id","")) != owner or client.base_url() != origin: break
 			if recovered.ok and Client.valid_run(recovered.get("data")):
 				if str(recovered.data.run_id) == str(job.run_id): job.missing_checks = int(job.get("missing_checks",0))+1
@@ -1056,13 +1187,13 @@ func _flush_jobs() -> void:
 				_pause_flush(request_scope,response)
 				return
 			continue
-		if response.data.status == "verified":
+		if response.data.status in ["verified","skipped"]:
 			if not str(job.get("publish","")).is_empty():
 				# Preserve the recorded race and obsolete metadata; accepted race
 				# retries cannot create a publication as an implicit side effect.
 				job.publication_requires_explicit_request = true
 			job.done = true
-			status = "Race verified"
+			status = "Race completed" if response.data.status == "skipped" else "Race verified"
 		elif response.data.status in ["rejected","failed"]:
 			job.failure = str(response.data.get("failure_code","verification_failed"))
 			job.retryable = bool(response.data.get("retryable",false))
@@ -1078,6 +1209,7 @@ func _flush_jobs() -> void:
 	if checked: run_connection_failed = unavailable
 
 func _reserve_background_write(request_scope: String) -> bool:
+	if not _background_allowed(): return false
 	if Time.get_ticks_msec() < int(_write_deadlines.get(request_scope,0)): return false
 	# Result uploads cost four units. Leave room in the shared account budget
 	# for actual race starts, resume operations and player actions.

@@ -237,7 +237,7 @@ static func longitudinal_budget(config: HandlingConfig, speed: float, grip: floa
 	return config.longitudinal_grip*grip*sqrt(maxf(0.25,1.0-usage*usage*0.65))
 
 static func braking_acceleration(config: HandlingConfig, speed: float, grip: float, k: float) -> float:
-	return minf(config.braking_force/config.mass,longitudinal_budget(config,speed,grip,k))
+	return minf(config.maximum_deceleration(),longitudinal_budget(config,speed,grip,k))
 
 static func drive_acceleration(config: HandlingConfig, speed: float, grip: float, drag_rate: float, k: float = 0.0) -> float:
 	var force: float = config.engine_force/config.mass*(1.0-0.45*clampf(speed/config.maximum_speed,0.0,1.0))

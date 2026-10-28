@@ -189,6 +189,19 @@ static func build_aero(car: CarVisual) -> void:
 			var edge: float = pow(maxf(0,1-pow(absf(x)/0.65,12)),0.5)
 			var base: Vector3 = CompactCoachwork.roof_point(x/0.63,0.94)
 			return Vector3(x,base.y+0.025+0.018*edge*(0.5+0.5*cos(a))+sin(a)*0.012,base.z+0.095+cos(a)*0.115),paint,64,24)
+		# A continuous moulded root joins the existing blade to the actual roof.
+		# Its lower return seats below both prepared roof sampling levels.
+		var root_embed: float = 0.010 if simple_parts else 0.004
+		CompactKitSurface.solid(root,"aero6/liproot",func(u: float,v: float) -> Vector3:
+			var x: float = lerpf(-0.59,0.59,u)
+			var base: Vector3 = CompactCoachwork.roof_point(x/0.63,0.94)
+			var front: Vector3 = CompactCoachwork.roof_point(x/0.63,0)
+			var rear: Vector3 = CompactCoachwork.roof_point(x/0.63,1)
+			var roof_front: float = CompactCoachwork.roof_point(x/0.63,(base.z-0.012-front.z)/(rear.z-front.z)).y-root_embed
+			var roof_rear: float = CompactCoachwork.roof_point(x/0.63,(base.z+0.068-front.z)/(rear.z-front.z)).y-root_embed
+			var section: Array[Vector2] = [Vector2(-0.012,roof_front),Vector2(0.068,roof_rear),Vector2(0.068,base.y+0.029),Vector2(-0.012,base.y+0.028)]
+			var q: Vector2 = CompactKitSurface.contour(section,v,0.002)
+			return Vector3(x,q.y,base.z+q.x),paint,40,16)
 		return
 static func build_body(car: CarVisual) -> void:
 	simple_parts = car.simple_model

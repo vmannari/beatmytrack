@@ -1,5 +1,13 @@
 # Beat my track
 
+The electric car's [clean bonnet outline](docs/ELECTRIC_CLEAN_BONNET_2026_10_26.md) removes the outward nose hooks with a clean tapered seam. Matched native Garage and reference-angle views are linked in the report.
+
+The electric car's [hood and wing correction](docs/ELECTRIC_HOOD_FAIRING_2026_10_26.md) removes the pinched outer shoulder, with matched native Garage views and retained taper/nose checks.
+
+The electric car's [rear and whole-car quality pass](docs/ELECTRIC_QUALITY_PASS_2026_10_25.md) adds a sculpted tail, layered lamps, fitted glazing and mirrors, flush handles and closed wheel cavities. Matched native before/after views are linked in the report.
+
+The electric car's [smooth nose correction](docs/ELECTRIC_SMOOTH_NOSE_2026_10_25.md) adds a smooth nose profile, an inward-tapered bonnet and consistent reflections across its fitted border. Matched side views and actual mesh measurements are linked in the report.
+
 Beat my track is a Godot racing game and local track editor for Windows and Android.
 Ordinary races have five laps and five fictional cars: Compact, Pickup, Classic,
 Formula and Kart. The app includes Free Race discovery, local creation and untimed
@@ -34,9 +42,11 @@ the app. Garage test driving is untimed and does not award race records.
 
 ## Local tracks and saves
 
-The shipping built-in catalog contains the original Starter Circuit. Published
-online tracks are discovered from the configured backend; the historical Slicks
-collection is retained only as excluded regression fixtures.
+The shipping built-in catalog contains Ellipse and
+[five original Storm circuits](docs/STORM_FIVE_TRACKS_2026_10_25.md). The Storm
+tracks also have importable creator files. Published online tracks are discovered
+from the configured backend; the new Storm collection has not been published
+online. The historical Slicks collection remains excluded regression fixtures.
 
 Creator import accepts `creator-track-v5`; prepared native tracks use
 `surface-grid-v2`. Older creator formats and the retired Coast alias are rejected.

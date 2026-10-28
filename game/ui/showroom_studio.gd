@@ -56,7 +56,7 @@ static func build(world: Node3D, car: CarVisual) -> void:
 static func _studio_glass(node: Node, materials: Dictionary) -> void:
 	if node is MeshInstance3D:
 		var surface: Material = node.get_active_material(0)
-		if surface is ShaderMaterial and surface.shader == preload("res://vehicle/window_reflection.gdshader"):
+		if surface is ShaderMaterial and surface.shader in [preload("res://vehicle/window_reflection.gdshader"),preload("res://vehicle/electric_glass.gdshader")]:
 			if not materials.has(surface):
 				var studio: ShaderMaterial = surface.duplicate() as ShaderMaterial
 				studio.set_shader_parameter("studio_mode",true)

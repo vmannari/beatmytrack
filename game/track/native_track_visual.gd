@@ -2,7 +2,8 @@ class_name NativeTrackVisual
 extends Node3D
 ## Original matte track kit derived solely from native surface geometry.
 
-const VERSION: String = "track-kit-214-winter-road-edge-snow"
+const VERSION: String = "track-kit-216-compacted-material-blends"
+var piece_road_materials: bool = false
 var desert_relief: RefCounted
 const GRASS_VERGE = preload("res://track/grass_road_verge.gd")
 const ROAD_HEIGHT = preload("res://track/road_surface_height.gd")
@@ -51,6 +52,7 @@ var uniform_terrain_regions: bool = true
 var _menu_slices: bool = false
 var profile_build: bool = false
 var build_costs: Dictionary = {}
+var build_stage: String = "initial"
 var preserve_relief_surfaces: bool = false
 var build_current: Callable
 
@@ -184,23 +186,28 @@ func build(track: NativeTrack, bridge: BridgePresentation, menu_slices: bool = f
 		# Keep moon/ambient light, but exclude pointless point-light evaluation.
 		(get_child(get_child_count()-1) as MeshInstance3D).layers = 2
 	var editor_first: int = get_child_count()
+	build_stage = "terrain"
 	await _build_terrain(track)
 	_tag_editor_children(editor_first,"terrain")
 	if _menu_slices and not _build_is_current(): return
 	editor_first = get_child_count()
+	build_stage = "roads"
 	await _build_creator_roads(track)
 	if _menu_slices and not _build_is_current(): return
 	if track.metadata.get("creator_document",{}).get("pieces",[]).is_empty(): await _build_kerbs(track)
 	_tag_editor_children(editor_first,"road")
 	if _menu_slices and not _build_is_current(): return
 	editor_first = get_child_count()
+	build_stage = "barriers"
 	await _build_barriers(track)
 	_tag_editor_children(editor_first,"barrier")
 	if _menu_slices and not _build_is_current(): return
 	if editor_preview:
 		await refresh_editor_objects(track,true,_menu_slices)
 	else:
+		build_stage = "cover"
 		await _build_low_cover(track)
+		build_stage = "objects"
 		await _build_placed_objects(track)
 	if _menu_slices and not _build_is_current(): return
 	editor_first = get_child_count()
@@ -214,12 +221,14 @@ func build(track: NativeTrack, bridge: BridgePresentation, menu_slices: bool = f
 	_tag_editor_children(editor_first,"features")
 	if desert_relief != null: await desert_relief.apply(self,_menu_slices)
 	if _menu_slices and not _build_is_current(): return
+	build_stage = "partition"
 	await _partition_bank_meshes()
 	if _menu_slices and not _build_is_current(): return
 	if theme_id == "night_city" and cache_race_world and not editor_preview:
 		var light_budget: Node3D = preload("res://track/night_light_budget.gd").new()
 		light_budget.name = "NightLightBudget"; add_child(light_budget)
 	if reuse_world:
+		build_stage = "cache"
 		if _menu_slices: await PREPARED_WORLDS.remember_cooperative(world_key,self,track)
 		else: PREPARED_WORLDS.remember(world_key,self,track)
 	if _menu_slices and not _build_is_current(): return
@@ -623,6 +632,7 @@ func _add_lit_terrain_tiles(track: NativeTrack, surface: Material, height: float
 
 
 func _build_creator_roads(track: NativeTrack) -> void:
+	piece_road_materials = RoadPieces.has_materials(track.metadata.get("creator_document",{}))
 	if ground_support == null or ground_support.track != track: ground_support = ROAD_HEIGHT.new(track)
 	var document: Dictionary = track.metadata.get("creator_document",{})
 	var pieces: Array = document.get("pieces",[])
@@ -778,7 +788,7 @@ func _build_creator_roads(track: NativeTrack) -> void:
 				if union_road: desert_road_union.add(polygon,points,axis_cache)
 				else: counts[1] += _road_polygon(asphalt,polygon,0.012,points,axis_cache)
 			if theme_id == "desert": axis_cache["desert_blend_sampler"] = desert_road_union
-			var dirt: bool = document.get("surface","asphalt") == "dirt"
+			var dirt: bool = RoadPieces.material(piece,document) == "gravel"
 			var border_contours: Array[PackedVector2Array] = []
 			if piece.kind == "spline": border_contours = RoadEdges.presentation_contours(pieces,index,-0.20,topology)
 			else: border_contours = marking_join.contours
@@ -842,8 +852,8 @@ func _build_creator_roads(track: NativeTrack) -> void:
 	await _build_kerbs(track)
 	if _menu_slices and not _build_is_current(): return
 	if counts[0]: await _commit_creator_road(shoulders,TrackTheme.DESERT_SHOULDER if theme_id == "desert" else colors[2].darkened(0.20),texture,road_texture,track.half_extent,true)
-	if counts[1]: await _commit_creator_road(asphalt,colors[2] if document.get("surface","asphalt") == "dirt" else colors[0],texture,road_texture,track.half_extent,false,false,false,document.get("surface","asphalt") == "asphalt")
-	if fringe_count and theme_id != "winter" and document.get("surface","asphalt") == "asphalt": await _commit_creator_road(asphalt_fringe,colors[0],texture,road_texture,track.half_extent,false,false,false,true,true)
+	if counts[1]: await _commit_creator_road(asphalt,colors[2] if document.get("surface","asphalt") == "dirt" and not piece_road_materials else colors[0],texture,road_texture,track.half_extent,false,false,false,document.get("surface","asphalt") == "asphalt" or piece_road_materials)
+	if fringe_count and theme_id != "winter" and (document.get("surface","asphalt") == "asphalt" or piece_road_materials): await _commit_creator_road(asphalt_fringe,colors[0],texture,road_texture,track.half_extent,false,false,false,true,true)
 	if counts[2] and theme_id not in ["desert","winter"]: await _commit_creator_road(markings,Color("c8ccc2"),texture,road_texture,track.half_extent,false,false,false,false,false,true)
 	if ground_count: await _commit_creator_road(ground_skirt,colors[1],texture,road_texture,track.half_extent,false,true)
 	if cache_road_meshes and (not _menu_slices or is_inside_tree()):
@@ -962,7 +972,7 @@ func _prepare_road_piece(track: NativeTrack, index: int, ctx: Dictionary) -> Dic
 		if union_road: desert_road_union.add(polygon,points,axis_cache)
 		else: counts[1] += _road_polygon(asphalt,polygon,0.012,points,axis_cache)
 	if theme_id == "desert": axis_cache["desert_blend_sampler"] = desert_road_union
-	var dirt: bool = document.get("surface","asphalt") == "dirt"
+	var dirt: bool = RoadPieces.material(piece,document) == "gravel"
 	var border_contours: Array[PackedVector2Array] = []
 	if piece.kind == "spline": border_contours = RoadEdges.presentation_contours(pieces,index,-0.20,topology)
 	else: border_contours = marking_join.contours
@@ -1010,6 +1020,7 @@ func _prepare_road_piece(track: NativeTrack, index: int, ctx: Dictionary) -> Dic
 
 
 func _install_prepared_roads(track: NativeTrack, packet: Dictionary) -> void:
+	piece_road_materials = RoadPieces.has_materials(track.metadata.get("creator_document",{}))
 	_share_road_materials = editor_preview
 	_road_materials.clear()
 	editor_dirty_tiles = packet.get("dirty_tiles",{})
@@ -1582,6 +1593,8 @@ func _commit_creator_road(tool: SurfaceTool, color: Color, mask: Texture2D, road
 	material.set_shader_parameter("overlay_mask",mask)
 	material.set_shader_parameter("verge_blend_mask",mask)
 	material.set_shader_parameter("road_mask",road_mask)
+	material.set_shader_parameter("piece_materials",piece_road_materials)
+	material.set_shader_parameter("gravel_road_base",TrackTheme.DESERT[0])
 	material.set_shader_parameter("road_mask_texel",Vector2(1.0/road_mask.get_width(),1.0/road_mask.get_height()))
 	material.set_shader_parameter("sand_color",TrackTheme.DESERT_SHOULDER if theme_id == "desert" else colors[2].darkened(0.20))
 	material.set_shader_parameter("map_extent",extent)
@@ -1985,7 +1998,8 @@ func _build_placed_objects(track: NativeTrack) -> void:
 	var night_tool:=SurfaceTool.new(); night_tool.begin(Mesh.PRIMITIVE_TRIANGLES)
 	var night_count: int=0
 	var night_sources: bool=false
-	for object: Dictionary in track.metadata.get("creator_document",{}).get("objects",[])+track.metadata.get("scenery_objects",[]):
+	var placed_objects: Array = CreatorPropVisual.GUARDRAIL.prepare(track.metadata.get("creator_document",{}).get("objects",[])+track.metadata.get("scenery_objects",[]))
+	for object: Dictionary in placed_objects:
 		if _menu_yield_due():
 			await get_tree().process_frame
 			if not is_inside_tree(): return
@@ -2045,7 +2059,7 @@ func _build_placed_objects(track: NativeTrack) -> void:
 			else: CreatorPropVisual.append(ink_tool,self,object.kind,center,object_scale,deg_to_rad(float(object.rotation)),float(object.get("length",-1.0)))
 			ink_count += 1
 			continue
-		if CreatorPropVisual.append(tool,self,object.kind,center,object_scale,deg_to_rad(float(object.rotation)),float(object.get("length",-1.0)),ContainerPaint.value(object) if object.kind == "container" else ""):
+		if CreatorPropVisual.append(tool,self,object.kind,center,object_scale,deg_to_rad(float(object.rotation)),float(object.get("length",-1.0)),ContainerPaint.value(object) if object.kind == "container" else "",true,object.get("_guardrail",{})):
 			count += 1
 			continue
 		if object.kind == "tree":

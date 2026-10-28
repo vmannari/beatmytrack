@@ -116,7 +116,7 @@ func run() -> void:
 	var audio := VehicleAudio.new()
 	root.add_child(audio)
 	audio.configure("compact",VehicleCatalog.config("compact"))
-	var track: NativeTrack = NativeTrack.read("res://resources/tracks/starter_circuit.json")
+	var track: NativeTrack = NativeTrack.read("res://resources/tracks/ellipse.json")
 	var state := VehicleState.new()
 	state.position = track.spawn
 	state.velocity = Vector2(3,24)

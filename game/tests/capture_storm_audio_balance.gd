@@ -20,7 +20,7 @@ func run() -> void:
 	for argument: String in OS.get_cmdline_user_args():
 		if argument.begins_with("--evidence-dir="): evidence_dir = argument.trim_prefix("--evidence-dir=")
 	DirAccess.make_dir_recursive_absolute(ProjectSettings.globalize_path(evidence_dir))
-	var track: NativeTrack = NativeTrack.read("res://resources/tracks/starter_circuit.json")
+	var track: NativeTrack = NativeTrack.read("res://resources/tracks/ellipse.json")
 	track.metadata.theme = "storm"
 	track.cells.fill(0)
 	var audio := VehicleAudio.new()

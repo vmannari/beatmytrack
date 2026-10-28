@@ -7,6 +7,11 @@ var search: LineEdit
 var items: ItemList
 var matches: Array[String] = []
 
+func _notification(what: int) -> void:
+	if what == NOTIFICATION_TRANSLATION_CHANGED and is_node_ready():
+		set_country(country_code)
+		if is_instance_valid(dialog) and dialog.visible: _filter(search.text)
+
 func _ready() -> void:
 	name = "PlayerCountryPicker"
 	custom_minimum_size.y = 54
@@ -18,7 +23,7 @@ func _ready() -> void:
 
 func set_country(code: String) -> void:
 	country_code = PlayerCountry.valid_code(code)
-	text = "Country: "+PlayerCountry.country_name(country_code) if not country_code.is_empty() else "Choose your country"
+	text = GameText.message("Country: {country}",{"country":PlayerCountry.country_name(country_code)}) if not country_code.is_empty() else tr("Choose your country")
 	icon = PlayerCountry.texture(country_code)
 	tooltip_text = "Shown beside your name in standings."
 
@@ -67,9 +72,10 @@ func _filter(query: String) -> void:
 	matches.clear()
 	query = query.strip_edges().to_lower()
 	for row: Dictionary in PlayerCountry.countries():
-		if not query.is_empty() and not str(row.name).to_lower().contains(query) and not str(row.code).to_lower().contains(query): continue
+		var localized: String = PlayerCountry.country_name(str(row.code))
+		if not query.is_empty() and not localized.to_lower().contains(query) and not str(row.name).to_lower().contains(query) and not str(row.code).to_lower().contains(query): continue
 		matches.append(str(row.code))
-		items.add_item(str(row.name)+"  ("+str(row.code)+")",PlayerCountry.texture(str(row.code)))
+		items.add_item(localized+"  ("+str(row.code)+")",PlayerCountry.texture(str(row.code)))
 		if row.code == country_code: items.select(items.item_count-1)
 
 func _choose(index: int) -> void:

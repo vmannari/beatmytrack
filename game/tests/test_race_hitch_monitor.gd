@@ -40,7 +40,7 @@ func run() -> void:
 	var records := SlowRecords.new()
 	records.path = output.path_join("disposable-records.json")
 	game.preference_records = records
-	game.initial_track = NativeTrack.read("res://resources/tracks/starter_circuit.json")
+	game.initial_track = NativeTrack.read("res://resources/tracks/ellipse.json")
 	game.production_mode = true
 	root.add_child(game)
 	var monitor: Node = game.hitch_diagnostics

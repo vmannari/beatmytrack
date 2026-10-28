@@ -148,6 +148,7 @@ func app_flow() -> void:
 		app.rivalry_section = "overview"
 		app._show_screen("rivalry")
 		await settle()
+		await dismiss_weekly_summary()
 		var next: Button = app.content.find_child("RivalryNextWeek",true,false)
 		check(next != null and not next.disabled,"complete week exposes one usable Continue action")
 		if DisplayServer.get_name() != "headless": await capture("finale",dimensions)

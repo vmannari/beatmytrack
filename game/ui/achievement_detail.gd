@@ -16,14 +16,16 @@ static func amount(f: Dictionary, value: int) -> String:
 	return number(value)
 
 static func requirement(f: Dictionary, target: int) -> String:
-	if f.metric == "distance_m": return "Drive %s km in completed races." % number(target/1000)
-	var result: String = f.description.replace("{n}",number(target))
-	if target == 1:
-		for plural: String in ["races","tracks","cars","biomes","times","challenges","weeks","friends"]:
-			result = result.replace("1 different "+plural,"1 "+plural.trim_suffix("s"))
-			result = result.replace("1 "+plural,"1 "+plural.trim_suffix("s"))
-		result = result.replace("1 Weekly Rivalry weeks","1 Weekly Rivalry week")
-	return result
+	if f.metric == "distance_m": return GameText.message("Drive %s km in completed races.") % number(target/1000)
+	var singular: String = singular_requirement(f.description)
+	return GameText.message(f.description,{"n":number(target)}) if singular == f.description else GameText.plural(singular,f.description,target,{"n":number(target)})
+
+static func singular_requirement(source: String) -> String:
+	# English source grammar only. Gettext chooses the target language's forms.
+	for plural: String in ["races","tracks","cars","biomes","times","challenges","weeks","friends"]:
+		source = source.replace("{n} different "+plural,"{n} "+plural.trim_suffix("s"))
+		source = source.replace("{n} "+plural,"{n} "+plural.trim_suffix("s"))
+	return source.replace("{n} Weekly Rivalry weeks","{n} Weekly Rivalry week")
 
 static func copy(parent: Node, text: String, size: int, muted: bool = false) -> Label:
 	var label: Label = MenuStyle.label(text,size,muted)
@@ -57,7 +59,8 @@ static func build(detail: VBoxContainer, footer: VBoxContainer, f: Dictionary, s
 	MenuStyle.fill(badge)
 	badge.offset_left = 12
 	badge.offset_right = -12
-	var status: Label = copy(mount,("HONOR EARNED" if f.prestige else TIER_NAMES[level].to_upper()+" EARNED") if level > 0 else "NOT YET EARNED",13)
+	var status: Label = copy(mount,"",13)
+	GameText.bind_upper(status,("Honor earned" if f.prestige else ["","Bronze earned","Silver earned","Gold earned","Platinum earned"][level]) if level > 0 else "Not yet earned")
 	status.name = "AchievementEarnedState"
 	status.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	status.add_theme_color_override("font_color",metal if level > 0 else MenuStyle.MUTED)
@@ -66,11 +69,15 @@ static func build(detail: VBoxContainer, footer: VBoxContainer, f: Dictionary, s
 	objective.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	objective.add_theme_constant_override("separation",6)
 	hero.add_child(objective)
-	var next_label: Label = copy(objective,"PRESTIGE HONOR" if complete and f.prestige else "COLLECTION COMPLETE" if complete else "PRESTIGE CHALLENGE" if f.prestige else "NEXT MEDAL / "+TIER_NAMES[next+1].to_upper(),14)
+	var next_label: Label = copy(objective,"",14)
+	GameText.bind_upper(next_label,"Prestige honor" if complete and f.prestige else "Collection complete" if complete else "Prestige challenge" if f.prestige else ["Next medal / Bronze","Next medal / Silver","Next medal / Gold","Next medal / Platinum"][next])
 	next_label.name = "AchievementNextTier"
 	next_label.add_theme_color_override("font_color",target_metal)
 	var description: Label = copy(objective,requirement(f,target),20)
 	description.name = "AchievementRequirement"
+	if f.metric != "distance_m":
+		var singular: String = singular_requirement(f.description)
+		GameText.bind(description,singular,{"n":number(target)},"" if singular == f.description else f.description,target)
 	# Binary honors have no meaningful partial progress to display.
 	if not f.prestige or target > 1:
 		var progress_row := HBoxContainer.new()
@@ -108,14 +115,15 @@ static func build(detail: VBoxContainer, footer: VBoxContainer, f: Dictionary, s
 			var stack := VBoxContainer.new()
 			stack.add_theme_constant_override("separation",0)
 			tile.add_child(stack)
-			var name_label: Label = copy(stack,TIER_NAMES[i+1]+("  ✓" if i < level else ""),15)
+			var name_label: Label = copy(stack,"",15)
+			GameText.bind(name_label,"{tier}{mark}",{"tier":GameText.message(TIER_NAMES[i+1]),"mark":"  ✓" if i < level else ""})
 			name_label.add_theme_color_override("font_color",AchievementBadge.METALS[i+1] if i <= level else MenuStyle.MUTED)
 			copy(stack,amount(f,int(f.tiers[i])),13,true)
 	var rarity: Dictionary = service.snapshot.get("rarity",{})
 	var population: int = int(rarity.get("eligible",0))
 	if f.scope != "local" and service.authenticated() and population >= 100:
 		var key: String = f.id+"/"+str(maxi(level,1))
-		var rarity_label: Label = copy(detail,"Earned by %.1f%% of drivers" % (100.0*float(rarity.get("unlocks",{}).get(key,0))/population),14,true)
+		var rarity_label: Label = copy(detail,GameText.message("Earned by %.1f%% of drivers") % (100.0*float(rarity.get("unlocks",{}).get(key,0))/population),14,true)
 		rarity_label.name = "AchievementRarity"
 	var divider := HSeparator.new()
 	footer.add_child(divider)
@@ -124,7 +132,7 @@ static func build(detail: VBoxContainer, footer: VBoxContainer, f: Dictionary, s
 	footer.add_child(actions)
 	var featured: bool = f.id in service.featured()
 	var full: bool = service.featured().size() >= 5 and not featured
-	var hint: String = "Trophy Room / %d of 5 on display" % service.featured().size()
+	var hint: String = GameText.message("Trophy Room / %d of 5 on display") % service.featured().size()
 	if level == 0: hint = "Earn this honor to display it." if f.prestige else "Earn Bronze to display this medal."
 	elif full: hint = "Remove a medal to make room."
 	var hint_label: Label = copy(actions,hint,15,true)

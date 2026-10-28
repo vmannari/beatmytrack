@@ -55,6 +55,9 @@ void fragment() {
 			|| texture(overlay_mask, map_uv).r < 0.5) { discard; }
 	// Keep-road protects the road mesh, not its grass skirt or gravel fringe.
 	vec3 mask = texture(overlay_mask,map_uv).rgb;
+	float loose_road = piece_materials && (asphalt_surface || road_marking) ? texture(road_mask,map_uv).g : 0.0;
+	if (piece_materials) { loose_road = road_material_coverage(loose_road,world_position.xz); }
+	vec2 material_metres = road_material_metres(world_position.xz,UV2);
 	if ((grass || gravel) && mask.g < 0.5 && mask.b < 0.5) { discard; }
 	float sand = 0.0;
 	if (gravel || (grass && !winter_snow && !desert_dunes)) { sand = sand_coverage(map_uv); }
@@ -139,6 +142,19 @@ void fragment() {
 			if (UV.x < -0.5) { ALBEDO = desert_join.rgb; relief_weight = 0.0; }
 		}
 	}
+	if (loose_road > 0.0 && asphalt_surface) {
+		float coverage = edge_fringe ? 1.0-smoothstep(0.3,1.0,UV.y) : 1.0;
+		vec3 stone = road_gravel_color(material_metres);
+		if (raised_road_edge && !edge_fringe) { stone *= desert_join.a; }
+		ALBEDO = mix(ALBEDO,stone,loose_road*coverage);
+		wet_coverage *= 1.0-loose_road;
+	}
+	if (piece_materials && road_marking) {
+		float paint = 1.0-smoothstep(0.0,0.5,loose_road);
+		if (paint < 0.001) { discard; }
+		vec3 under = mix(surface_detail(asphalt_base_color.rgb,world_position.xz,true),road_gravel_color(material_metres),loose_road);
+		ALBEDO = mix(under,ALBEDO,paint);
+	}
 	ROUGHNESS = 1.0;
  SPECULAR = 0.0;
  if (icy_road && asphalt_surface && !edge_fringe) {
@@ -157,12 +173,13 @@ void fragment() {
  }
  if (wet_road && (road_marking || kerb)) {
   ALBEDO *= 0.90;
-  ROUGHNESS = kerb ? 0.30 : 0.24;
-  SPECULAR = 0.5;
+  ROUGHNESS = mix(kerb ? 0.30 : 0.24,1.0,loose_road);
+  SPECULAR = 0.5*(1.0-loose_road);
  }
 	bool verge_detail = grass_shoulder && UV.x < -0.5;
 	NORMAL = grass_relief(world_position.xz,NORMAL,VIEW_MATRIX,verge_detail ? 0.0 : relief_weight);
 	NORMAL = sand_relief(world_position.xz,NORMAL,VIEW_MATRIX,verge_detail ? 0.0 : (grass || gravel) ? (1.0-relief_weight)*(grass_shoulder ? 0.25 : 1.0) : 0.0);
+	if (loose_road > 0.0 && asphalt_surface) NORMAL = sand_relief(world_position.xz,NORMAL,VIEW_MATRIX,loose_road*0.25);
 	NORMAL = winter_snow_relief(world_position.xz,NORMAL,VIEW_MATRIX,(grass || gravel) ? 1.0 : 0.0);
 	// Cosmetic skirts/loose sand carry dunes; the firm timed road stays smooth.
 	NORMAL = dune_relief(world_position.xz,NORMAL,VIEW_MATRIX,grass ? 1.0 : (gravel ? smoothstep(0.6,1.0,UV.y)*(1.0-sand) : 0.0));

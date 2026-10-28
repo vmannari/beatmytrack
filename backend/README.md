@@ -1,3 +1,11 @@
+<!-- STUDIO-USAGE-DEPLOY-20261027 -->
+**Usage & costs is deployed** to the existing private Studio. Reload Studio and select the workspace for live resource headroom and Ville-only partial cost attribution. The owner-enabled EU billing export is awaiting its first provider table/data; unavailable currency totals are intentional. Existing Google/MFA access, API/worker configuration and canonical game remain. [Deployment, live validation and remaining billing limits](../docs/STUDIO_USAGE_DEPLOY_2026_10_27.md).
+<!-- /STUDIO-USAGE-DEPLOY-20261027 -->
+
+<!-- STUDIO-USAGE-COSTS-20261027 -->
+Private Studio now includes the local **Usage & costs** workspace (`/admin#usage`): configured resource headroom, stale/missing-source coverage, aggregate endpoint work and a partial cost-per-active-player estimate restricted to Ville. Cloud metadata/Monitoring/log access and a detailed Billing export require explicit connection. No deployment or export creation was performed. See [configuration, tested behavior, screenshots and rollout limits](../docs/STUDIO_USAGE_COSTS_2026_10_27.md).
+<!-- /STUDIO-USAGE-COSTS-20261027 -->
+
 <!-- GAME-CONFIGURATION-20261024 -->
 Game Configuration is implemented locally in the app, gameplay API and private Studio. Open **Administration / Game Configuration** for ad cadence, audiences, publication/scheduling, emergency restrictions and preview, or **Administration / A/B testing** for 2-4-arm tests, exposure-based results and reviewed promotion. Apply matching migration0060 and API/Studio/worker/client sources with the subsequent migration chain; no deployment or live policy change was performed. Production provider/consent prerequisites remain. See [controls, evidence and rollout limits](../docs/GAME_CONFIGURATION_IMPLEMENTATION_2026_10_24.md).
 <!-- /GAME-CONFIGURATION-20261024 -->
@@ -11,6 +19,20 @@ SEC09/SEC10 source fixes use `python -m bmt_backend.http_server` for bounded pre
 <!-- /SEC09-SEC10-FIXES-20261024 -->
 
 # Beat my track backend
+
+## Public game website (25 October 2026)
+
+Published after owner approval at [Beat my track](https://bmt-stg-e7a444ab-api-tzgxkrwzva-ew.a.run.app/).
+The website-only derivative preserves the deployed backend; no migration or worker/Studio update.
+[Actual publication and rollback](../docs/GAME_WEBSITE_PUBLICATION_2026_10_25.md).
+
+The public API serves the Beat my track introduction at `/`, with direct links to
+`/account-deletion`, `/privacy` and `/community-rules`. The existing verified
+deletion flow remains authoritative. `public_ui/*` ships in the backend package;
+the private admin workload does not serve the homepage. For a local preview, run
+`.tools/backend-venv/Scripts/python.exe scripts/preview_public_website.py` from the
+repository root and open `http://127.0.0.1:8086`. The preview disables account
+actions and needs no database. [Implementation, screenshots and release checks](../docs/GAME_WEBSITE_2026_10_25.md).
 
 ## Current setup and release status — reviewed 2026-10-24
 
@@ -535,3 +557,13 @@ Clean Garage polling yields while a Game is retained. Dirty edits, pending ackno
 The discovery worker uses process-local five-second schedules for empty global bootstrap, accounting and cleanup checks, draining nonempty bounded batches without that delay. It claims only partitions with work or due rank/expiry/audit/health checks, preserving 30-second health turns and 60-second source-audit cadence. Global cleanup also runs when no partition is due. Deadlines advance after commit; diagnostic direct `step()` calls retain complete maintenance by default. Telemetry's process-local preparation schedule waits five seconds only after a confirmed ready queue; busy/credit-blocked legacy receipts are not called empty, server routing still works at exhausted client credit, and each process restart checks immediately. Existing worker resource limits and roles remain.
 
 Evidence and limits: `docs/evidence/scale-optimisations-2026-10-24/report.json`. Local fixture byte/query/CPU changes do not establish production bill savings. PostgreSQL contention/plans, representative load and physical-device CPU/battery remain unverified; no migration or deployment was performed.
+
+## Track of the Day
+
+Migration `0068_track_of_day` adds a permanent daily selection and logical-track
+history. The discovery worker chooses one shared UTC-day track from the top and
+trending unused tracks. `GET /v1/track-of-the-day` returns that pinned revision
+with current moderation/block checks; reads never select a track. The startup
+repeat exception closes permanently once eligible supply reaches 100. Deploy
+the matching worker/API/client and reapply explicit runtime grants after the
+migration chain. See [policy, tests and release limits](../docs/TRACK_OF_DAY_2026_10_25.md).

@@ -2,7 +2,7 @@ class_name SurfaceShaderVariants
 extends RefCounted
 ## Fixed visual-material flags become constants; samples and lighting stay intact.
 const FLAGS: Array[String] = ["hybrid_grass","desert_dunes","winter_snow","packed_sand","icy_road","wet_road","industrial_ground","industrial_asphalt"]
-const MATERIAL_FLAGS: Array[String] = ["gravel","grass_shoulder","grass","kerb","asphalt_surface","edge_fringe","road_marking","winter_width_data","winter_bridge_width_data","desert_bridge_width_data","smooth_road_bank","terrain_high_present","terrain_packed","terrain_uniform_enabled","terrain_region_low","raised_road_edge"]
+const MATERIAL_FLAGS: Array[String] = ["gravel","grass_shoulder","grass","kerb","asphalt_surface","edge_fringe","road_marking","winter_width_data","winter_bridge_width_data","desert_bridge_width_data","smooth_road_bank","terrain_high_present","terrain_packed","terrain_uniform_enabled","terrain_region_low","raised_road_edge","piece_materials","bridge_material_blend"]
 const INCLUDES: Dictionary = {
 	"res://track/night_ground.gdshaderinc":preload("res://track/night_ground.gdshaderinc"),
 	"res://track/winter_ground_snow.gdshaderinc":preload("res://track/winter_ground_snow.gdshaderinc"),

@@ -17,10 +17,21 @@ var delete_button: Button
 var cancel_button: Button
 var refresh_button: Button
 var save_button: Button
-var guest_button: Button
+var guest_button: BaseButton
 var footer: Label
 var divider: HBoxContainer
 var google_status: Label
+var column: VBoxContainer
+var accent: ColorRect
+var privacy_note: Label
+var terms_row: HBoxContainer
+var terms_check: CheckBox
+var terms_copy: RichTextLabel
+var terms_divider: HSeparator
+var terms_attention: bool = false
+var terms_idle_style: StyleBoxEmpty
+var terms_warning_style: StyleBoxFlat
+const TERMS_REQUIRED: String = "Please accept the Terms of Service to continue."
 
 func centered_label(text: String, font_size: int, muted: bool = false) -> Label:
 	var label: Label = MenuStyle.label(text, font_size, muted)
@@ -30,34 +41,62 @@ func centered_label(text: String, font_size: int, muted: bool = false) -> Label:
 	return label
 
 func _ready() -> void:
-	var style := MenuStyle.box(Color(0.045, 0.078, 0.12, 0.91), 28)
-	style.set_corner_radius_all(22)
-	style.border_color = Color(0.68, 0.77, 0.83, 0.40)
+	name = "AccountCard"
+	var style := MenuStyle.box(Color(0.035, 0.078, 0.095, 0.97), 28)
+	style.set_corner_radius_all(18)
+	style.border_color = Color("d4e0e5")
 	style.set_border_width_all(1)
 	style.shadow_color = Color(0, 0, 0, 0.3)
 	style.shadow_size = 16
 	add_theme_stylebox_override("panel", style)
-	var column := VBoxContainer.new()
-	column.add_theme_constant_override("separation", 14)
+	column = VBoxContainer.new()
+	column.add_theme_constant_override("separation", 10)
 	add_child(column)
-	title = centered_label("Sign in", 42)
+	var header := HBoxContainer.new()
+	header.add_theme_constant_override("separation", 12)
+	column.add_child(header)
+	var brand := MenuBrand.new()
+	brand.size_flags_horizontal = Control.SIZE_SHRINK_BEGIN
+	header.add_child(brand)
+	brand.custom_minimum_size = Vector2(180, 56)
+	var brand_space := Control.new()
+	brand_space.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	brand_space.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	header.add_child(brand_space)
+	var language := preload("res://ui/language_picker.gd").new()
+	language.show_label = false
+	language.compact = true
+	header.add_child(language)
+	title = MenuStyle.label("Ready to race?", 70)
+	title.name = "SignInHeading"
+	title.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 	column.add_child(title)
-	subtitle = centered_label("Your racing profile. Your next personal best.", 20, true)
+	subtitle = MenuStyle.label("Sign in to save results online, join events and race friends.", 26, true)
+	subtitle.add_theme_font_override("font", MenuStyle.BODY)
+	subtitle.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 	column.add_child(subtitle)
-	var space := Control.new()
-	space.custom_minimum_size.y = 6
-	column.add_child(space)
+	var accent_space := MarginContainer.new()
+	accent_space.add_theme_constant_override("margin_top", 8)
+	accent_space.add_theme_constant_override("margin_bottom", 8)
+	accent = ColorRect.new()
+	accent.color = Color("ffbf16")
+	accent.custom_minimum_size = Vector2(58, 4)
+	accent.size_flags_horizontal = Control.SIZE_SHRINK_BEGIN
+	accent.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	accent_space.add_child(accent)
+	column.add_child(accent_space)
 	google_button = preload("res://ui/google_sign_in_button.gd").new()
-	google_button.pressed.connect(account.sign_in_google)
+	google_button.prominent = true
+	google_button.pressed.connect(_sign_in.bind(account.sign_in_google))
 	google_button.name = "GoogleSignIn"
 	column.add_child(google_button)
-	google_button.custom_minimum_size.y = 80
+	google_button.custom_minimum_size.y = 68
 	google_status = centered_label("Google sign-in is awaiting setup.", 16, true)
 	column.add_child(google_status)
-	development_button = MenuStyle.button("Development · Beat My Track", account.sign_in_developer)
+	development_button = MenuStyle.button("Development · Beat My Track", _sign_in.bind(account.sign_in_developer))
 	development_button.name = "DevelopmentSignIn"
-	development_button.custom_minimum_size = Vector2(360, 60)
-	development_button.size_flags_horizontal = Control.SIZE_SHRINK_CENTER
+	development_button.custom_minimum_size = Vector2(0, 48)
+	development_button.size_flags_horizontal = Control.SIZE_FILL
 	development_button.add_theme_font_override("font", MenuStyle.BODY)
 	var dev_style := MenuStyle.box(Color(0.25, 0.30, 0.38, 0.68), 12)
 	dev_style.set_corner_radius_all(12)
@@ -91,26 +130,20 @@ func _ready() -> void:
 	column.add_child(cancel_button)
 	refresh_button = MenuStyle.button("Retry connection", account.refresh_options)
 	column.add_child(refresh_button)
-	divider = HBoxContainer.new()
-	for index: int in range(3):
-		if index == 1:
-			var or_label := centered_label("OR", 16, true)
-			or_label.autowrap_mode = TextServer.AUTOWRAP_OFF
-			or_label.custom_minimum_size.x = 48
-			divider.add_child(or_label)
-		else:
-			var line := HSeparator.new()
-			line.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-			line.size_flags_vertical = Control.SIZE_SHRINK_CENTER
-			divider.add_child(line)
-	column.add_child(divider)
-	guest_button = MenuStyle.button("Play as guest  ›", func() -> void: continue_requested.emit())
+	guest_button = LinkButton.new()
+	guest_button.text = "Play as guest"
+	guest_button.pressed.connect(func() -> void:
+		if _require_terms(): continue_requested.emit())
 	guest_button.name = "ContinueWithoutSignIn"
+	guest_button.custom_minimum_size.y = 48
+	guest_button.size_flags_horizontal = Control.SIZE_SHRINK_CENTER
 	guest_button.add_theme_font_override("font", MenuStyle.BODY)
-	guest_button.add_theme_color_override("font_color", Color("90d4ff"))
-	guest_button.add_theme_stylebox_override("normal", StyleBoxEmpty.new())
+	guest_button.add_theme_font_size_override("font_size", 22)
+	guest_button.add_theme_color_override("font_color", MenuStyle.TEXT)
+	guest_button.add_theme_color_override("font_disabled_color", MenuStyle.MUTED)
+	guest_button.add_theme_color_override("font_hover_color", MenuStyle.ACCENT)
 	column.add_child(guest_button)
-	footer = centered_label("You can sign in whenever you're ready.", 16, true)
+	footer = centered_label("Local progress stays on this device. Events require sign-in.", 17, true)
 	column.add_child(footer)
 	logout_button = MenuStyle.button("Sign out", account.sign_out)
 	logout_button.name = "SignOut"
@@ -118,14 +151,118 @@ func _ready() -> void:
 	delete_button = MenuStyle.button("Delete account",_confirm_deletion)
 	delete_button.name = "DeleteAccount"
 	column.add_child(delete_button)
-	var privacy: Button = MenuStyle.button("Privacy policy",func() -> void:
+	divider = HBoxContainer.new()
+	var line := HSeparator.new()
+	line.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	divider.add_child(line)
+	column.add_child(divider)
+	terms_row = HBoxContainer.new()
+	terms_row.name = "DraftTermsAgreement"
+	terms_row.add_theme_constant_override("separation", 10)
+	column.add_child(terms_row)
+	terms_check = CheckBox.new()
+	terms_check.name = "AgreeToDraftTerms"
+	terms_check.custom_minimum_size = Vector2(44, 48)
+	terms_check.add_theme_icon_override("unchecked", preload("res://assets/menu/sign_in_checkbox.svg"))
+	terms_check.add_theme_icon_override("checked", preload("res://assets/menu/sign_in_checkbox_checked.svg"))
+	var check_style := StyleBoxEmpty.new()
+	check_style.set_content_margin_all(8)
+	terms_idle_style = check_style
+	terms_warning_style = MenuStyle.box(Color(0.5, 0.12, 0.08, 0.2), 8)
+	terms_warning_style.border_color = Color("ff9a86")
+	terms_warning_style.set_border_width_all(2)
+	for state: String in ["normal", "hover", "pressed", "disabled"]:
+		terms_check.add_theme_stylebox_override(state, check_style)
+	terms_check.add_theme_stylebox_override("focus", MenuStyle.theme().get_stylebox("focus", "Button"))
+	terms_check.accessibility_name = tr("I agree to the draft Terms of Service")
+	terms_check.toggled.connect(func(_checked: bool) -> void: _update())
+	terms_row.add_child(terms_check)
+	terms_copy = RichTextLabel.new()
+	terms_copy.name = "DraftTermsLink"
+	terms_copy.bbcode_enabled = true
+	terms_copy.fit_content = true
+	terms_copy.scroll_active = false
+	terms_copy.custom_minimum_size.y = 48
+	terms_copy.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	terms_copy.add_theme_font_override("normal_font", MenuStyle.BODY)
+	terms_copy.add_theme_font_size_override("normal_font_size", 19)
+	var terms_inset := StyleBoxEmpty.new()
+	terms_inset.content_margin_top = 10
+	terms_copy.add_theme_stylebox_override("normal", terms_inset)
+	terms_copy.meta_clicked.connect(func(_meta: Variant) -> void: _open_terms())
+	terms_row.add_child(terms_copy)
+	terms_divider = HSeparator.new()
+	column.add_child(terms_divider)
+	var privacy := LinkButton.new()
+	privacy.text = "Privacy policy"
+	privacy.pressed.connect(func() -> void:
 		if not account.client.base_url().is_empty(): account.open_browser.call(account.client.base_url()+"/privacy"))
 	privacy.name = "AccountPrivacyPolicy"
+	privacy.custom_minimum_size.y = 44
+	privacy.size_flags_horizontal = Control.SIZE_SHRINK_CENTER
+	privacy.add_theme_font_override("font", MenuStyle.BODY)
+	privacy.add_theme_font_size_override("font_size", 17)
+	privacy.add_theme_color_override("font_color", MenuStyle.MUTED)
+	privacy.add_theme_color_override("font_disabled_color", MenuStyle.MUTED.darkened(0.2))
+	privacy.underline = LinkButton.UNDERLINE_MODE_ON_HOVER
 	privacy.disabled = account.client.base_url().is_empty()
 	column.add_child(privacy)
-	column.add_child(centered_label("Optional usage and performance sharing is off until you enable it in Settings → Privacy. Online racing sends the evidence needed to verify your results.",15,true))
+	privacy_note = centered_label("Optional usage and performance sharing is off until you enable it in Settings → Privacy. Online racing sends the evidence needed to verify your results.", 15, true)
+	column.add_child(privacy_note)
 	account.changed.connect(_update)
+	resized.connect(_fit_typography)
 	_update()
+
+func _notification(what: int) -> void:
+	if what == NOTIFICATION_TRANSLATION_CHANGED and is_instance_valid(title):
+		_fit_typography.call_deferred()
+		_update_terms_copy.call_deferred()
+
+func _update_terms_copy() -> void:
+	terms_check.accessibility_name = tr("I agree to the draft Terms of Service")
+	terms_check.accessibility_description = tr(TERMS_REQUIRED) if terms_attention else ""
+	terms_copy.text = "[center]" + GameText.message("I agree to the {terms}", {"terms":"[url=terms][color=#ffbf16]" + tr("Terms of Service (draft)") + "[/color][/url]"}) + "[/center]"
+	footer.text = TERMS_REQUIRED if terms_attention else "Local progress stays on this device. Events require sign-in."
+	footer.add_theme_color_override("font_color", Color("ff9a86") if terms_attention else MenuStyle.MUTED)
+
+func _require_terms() -> bool:
+	if terms_row.visible and not terms_check.button_pressed:
+		terms_attention = true
+		_update()
+		terms_check.grab_focus()
+		return false
+	return true
+
+func _sign_in(provider: Callable) -> void:
+	if account.busy or account.waiting_for_google: return
+	if _require_terms() and account.configured: provider.call()
+
+func _open_terms() -> void:
+	if has_node("DraftTermsDialog"): return
+	var dialog := preload("res://ui/draft_terms_dialog.gd").new()
+	add_child(dialog)
+	dialog.popup_centered()
+
+func _fit_typography() -> void:
+	if not is_instance_valid(title): return
+	var compact: bool = account.client.signed_in() or account.waiting_for_google or account.retry_available or not account.configured or account.show_development()
+	var long_copy: bool = not compact and tr(subtitle.text).length() > 70
+	var font_size: int = 36 if account.client.signed_in() else 40 if compact else 60 if long_copy else 70
+	var font: Font = title.get_theme_font("font")
+	var available: float = maxf(1, size.x - (40 if compact else 56))
+	while font_size > 32 and font.get_string_size(tr(title.text), HORIZONTAL_ALIGNMENT_LEFT, -1, font_size).x > available:
+		font_size -= 1
+	title.add_theme_font_size_override("font_size", font_size)
+	if not compact:
+		subtitle.add_theme_font_size_override("font_size", 22 if long_copy else 26)
+		column.add_theme_constant_override("separation", 6 if long_copy else 8)
+		var style: StyleBoxFlat = get_theme_stylebox("panel")
+		style.set_content_margin_all(24 if long_copy else 28)
+
+func fit_width() -> void:
+	if not is_inside_tree(): return
+	var compact: bool = account.client.signed_in() or account.waiting_for_google or account.retry_available or not account.configured or account.show_development()
+	custom_minimum_size.x = clampf(get_viewport_rect().size.x * 0.405, 600 if compact else 516, 620)
 
 func _save_name() -> void:
 	if country_picker.country_code.is_empty():
@@ -136,24 +273,9 @@ func _save_name() -> void:
 
 func _confirm_deletion() -> void:
 	if account.busy or not account.client.signed_in(): return
-	var dialog := ConfirmationDialog.new()
-	dialog.name = "DeleteAccountConfirmation"
-	dialog.title = "Delete account"
-	dialog.dialog_text = ""
-	var copy: Label = MenuStyle.label("Your sign-in identity, name, country and private online data will be removed.\n\nPublished tracks and historical standings stay under Removed account.\nLocal tracks, car condition and cosmetics stay on this device.\nSigning in again creates a separate account.",18,true)
-	copy.name = "DeleteAccountCopy"
-	copy.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
-	copy.custom_minimum_size.x = 500
-	dialog.add_child(copy)
-	dialog.ok_button_text = "Delete account permanently"
-	dialog.cancel_button_text = "Keep account"
-	dialog.confirmed.connect(account.delete_account.bind(str(account.client.player.get("id","")),account.client.base_url()))
-	dialog.confirmed.connect(dialog.queue_free)
-	dialog.canceled.connect(dialog.queue_free)
+	var dialog := preload("res://ui/account_deletion_dialog.gd").new()
 	add_child(dialog)
-	preload("res://ui/popup_style.gd").watch(dialog)
-	dialog.popup_centered(Vector2i(620,440))
-	dialog.get_cancel_button().grab_focus()
+	dialog.open_for(account)
 
 func _country_changed() -> void:
 	country_save.disabled = account.busy or country_picker.country_code == str(account.client.player.get("country_code",""))
@@ -165,8 +287,15 @@ func _update() -> void:
 	var signed_in: bool = account.client.signed_in()
 	var onboarding: bool = account.needs_username()
 	var waiting: bool = account.waiting_for_google
-	title.text = "Sign in" if not signed_in else "Choose your name" if onboarding else "Choose your country" if account.needs_country() else "Your account"
-	subtitle.text = "This is the name other racers will see." if onboarding else (account.player_name() if signed_in else "Your racing profile. Your next personal best.")
+	terms_row.visible = not signed_in and not waiting and OS.is_debug_build()
+	terms_divider.visible = terms_row.visible
+	var agreed: bool = not terms_row.visible or terms_check.button_pressed
+	if agreed: terms_attention = false
+	terms_check.add_theme_stylebox_override("normal", terms_warning_style if terms_attention else terms_idle_style)
+	_update_terms_copy()
+	title.text = "Ready to race?" if not signed_in else "Choose your name" if onboarding else "Choose your country" if account.needs_country() else "Your account"
+	subtitle.text = "This is the name other racers will see." if onboarding else (account.player_name() if signed_in else "Sign in to save results online, join events and race friends.")
+	subtitle.auto_translate_mode = Node.AUTO_TRANSLATE_MODE_DISABLED if signed_in and not onboarding else Node.AUTO_TRANSLATE_MODE_INHERIT
 	username.visible = onboarding
 	username.editable = not account.busy
 	save_button.visible = onboarding
@@ -182,10 +311,10 @@ func _update() -> void:
 	country_save.visible = signed_in and not onboarding
 	_country_changed()
 	google_button.visible = not signed_in and not waiting
-	google_button.disabled = account.busy or not account.configured
+	google_button.disabled = account.busy or (not account.configured and agreed)
 	google_status.visible = not signed_in and not waiting and not account.capabilities.is_empty() and not account.google_available()
 	development_button.visible = not signed_in and not waiting and account.show_development()
-	development_button.disabled = account.busy or not account.configured
+	development_button.disabled = account.busy or (not account.configured and agreed)
 	logout_button.visible = signed_in
 	logout_button.disabled = account.busy
 	delete_button.visible = signed_in
@@ -198,5 +327,17 @@ func _update() -> void:
 	divider.visible = not signed_in
 	guest_button.visible = not onboarding
 	guest_button.disabled = waiting
-	guest_button.text = "Continue racing  ›" if signed_in else "Play as guest  ›"
+	guest_button.text = "Continue racing  ›" if signed_in else "Play as guest"
 	footer.visible = not signed_in and not waiting
+	privacy_note.visible = signed_in
+	var compact: bool = signed_in or waiting or account.retry_available or not account.configured or account.show_development()
+	accent.get_parent().visible = not compact
+	# Additional provider/profile controls keep the previous 600-unit width.
+	fit_width()
+	subtitle.add_theme_font_size_override("font_size", 20 if compact else 26)
+	column.add_theme_constant_override("separation", 4 if compact else 8)
+	var style: StyleBoxFlat = get_theme_stylebox("panel")
+	style.set_content_margin_all(16 if compact else 28)
+	google_button.custom_minimum_size.y = 60 if compact else 68
+	custom_minimum_size.y = 0 if compact else 532
+	_fit_typography.call_deferred()

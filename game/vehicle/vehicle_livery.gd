@@ -10,8 +10,8 @@ static func empty_sticker() -> Dictionary:
 
 static func defaults(id: String) -> Dictionary:
 	return {"version":VERSION, "colors":{
-		"body":str({"compact":"30627d", "pickup":"944638", "classic":"739181", "formula":"c8ad58", "kart":"b96d43"}.get(id,"30627d")),
-		"accent":"e0d5b5" if id == "compact" else "d9d0b7", "detail":"c78e4c"},
+		"body":str({"compact":"30627d", "pickup":"944638", "classic":"739181", "formula":"c8ad58", "kart":"b96d43", "forklift":"d5a62d", "electric":"638d86"}.get(id,"30627d")),
+		"accent":"e0d5b5" if id == "compact" else "263c43" if id == "electric" else "d9d0b7", "detail":"9ba8ab" if id == "electric" else "c78e4c"},
 		"pattern":"plain", "stickers":{"hood":empty_sticker(), "roof":empty_sticker()}}
 
 static func _color(value: Variant) -> bool:

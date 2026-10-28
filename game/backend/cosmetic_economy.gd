@@ -3,6 +3,7 @@ extends Node
 signal changed
 const Shop = preload("res://persistence/cosmetic_catalog.gd")
 const IO = preload("res://backend/atomic_json.gd")
+const FRESH_MS: int = 15000
 var records: LocalRecords
 var client: Node
 var wallet: Dictionary = {}
@@ -15,6 +16,9 @@ var _path: String = ""
 var _storage_ok: bool = true
 var _epoch: int = 0
 var _timer: Timer
+var _read_at: int = -FRESH_MS
+var _refresh_again: bool = false
+var background_allowed: Callable
 
 func _ready() -> void:
 	_remember_legacy()
@@ -54,6 +58,8 @@ func sync_identity() -> void:
 	pending = {}
 	busy = false
 	refreshing = false
+	_read_at = -FRESH_MS
+	_refresh_again = false
 	_storage_ok = true
 	status = ""
 	_path = records.path.get_base_dir().path_join("economy/"+scope.sha256_text()+".json")
@@ -103,14 +109,25 @@ func _persist() -> bool:
 
 func _accept(value: Variant) -> bool:
 	if not Shop.valid_wallet(value): return false
-	if wallet.is_empty() or int(value.revision) >= int(wallet.revision): wallet = value.duplicate(true)
+	if wallet.is_empty() or int(value.revision) >= int(wallet.revision):
+		wallet = value.duplicate(true)
+		_read_at = Time.get_ticks_msec()
 	return true
 
-func refresh() -> void:
+func refresh(force: bool = false) -> void:
 	sync_identity()
-	if not authenticated() or refreshing or busy: return
+	if force: _read_at = -FRESH_MS
+	if not authenticated(): return
+	if background_allowed.is_valid() and not bool(background_allowed.call()):
+		if force: _refresh_again = true
+		return
+	if refreshing or busy:
+		if force: _refresh_again = true
+		return
+	if not force and pending.is_empty() and not wallet.is_empty() and Time.get_ticks_msec()-_read_at < FRESH_MS: return
 	var expected: String = scope
 	var epoch: int = _epoch
+	_refresh_again = false
 	refreshing = true
 	var response: Dictionary = await client.request_api("/economy",HTTPClient.METHOD_GET,{},"",true)
 	if _current_scope() != expected or epoch != _epoch: return
@@ -123,6 +140,12 @@ func refresh() -> void:
 	else: status = "Could not refresh coins. Reconnect to buy."
 	changed.emit()
 	if not pending.is_empty() and _storage_ok: await _send_purchase()
+	_resume_refresh()
+
+func _resume_refresh() -> void:
+	if not _refresh_again or refreshing or busy: return
+	_refresh_again = false
+	refresh.call_deferred(true)
 
 func purchase(id: String) -> bool:
 	sync_identity()
@@ -146,9 +169,11 @@ func purchase(id: String) -> bool:
 
 func _send_purchase() -> bool:
 	if busy or pending.is_empty() or not authenticated(): return false
+	if background_allowed.is_valid() and not bool(background_allowed.call()): return false
 	var expected: String = scope
 	var epoch: int = _epoch
 	var operation: Dictionary = pending.duplicate(true)
+	_read_at = -FRESH_MS
 	busy = true
 	status = "Completing purchase…"
 	changed.emit()
@@ -166,7 +191,8 @@ func _send_purchase() -> bool:
 	else: status = "Purchase pending. We’ll retry automatically."
 	if not _persist(): status = "Purchase recovery could not be saved. Reconnect to check ownership."
 	changed.emit()
-	if str(response.get("error","")) in ["INSUFFICIENT_COINS","COSMETIC_PRICE_CHANGED"]: refresh.call_deferred()
+	if str(response.get("error","")) in ["INSUFFICIENT_COINS","COSMETIC_PRICE_CHANGED"]: refresh.call_deferred(true)
+	_resume_refresh()
 	return success
 
 func reward_for(ticket: String) -> Dictionary:
@@ -180,12 +206,12 @@ func reward_for(ticket: String) -> Dictionary:
 			if not _persist(): status = "Coins are online. Local recovery could not be saved."
 			changed.emit()
 			if not pending.is_empty() and _storage_ok and not busy: _send_purchase.call_deferred()
-		elif completion.reward.status == "credited": refresh()
+		elif completion.reward.status == "credited": refresh(true)
 		return completion.reward.duplicate(true)
 	var response: Dictionary = await client.request_api("/economy/rewards/"+ticket,HTTPClient.METHOD_GET,{},"",true)
 	if _current_scope() != expected or epoch != _epoch: return {"status":"unavailable","amount":0,"rows":[]}
 	if response.ok:
-		if response.data.get("status") == "credited": refresh()
+		if response.data.get("status") == "credited": refresh(true)
 		return response.data
 	if int(response.get("status",0)) in [401,403,404,410]: return {"status":"unavailable","amount":0,"rows":[]}
 	return {"status":"pending","amount":0,"rows":[]}

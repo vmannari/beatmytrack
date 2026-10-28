@@ -44,13 +44,13 @@ func _load() -> void:
 	var response: Dictionary = await _adapter.profile(player_id)
 	if not is_inside_tree() or is_queued_for_deletion() or request != _request or _scope != _adapter.scope(): return
 	if response.ok and response.data.get("world_rank") != null:
-		_label.text = "World #%d · %d points" % [int(response.data.world_rank),int(response.data.points)]
+		_label.text = GameText.message("World #%d · %d points") % [int(response.data.world_rank),int(response.data.points)]
 		var career: Dictionary = response.data.get("career",{})
-		if not career.is_empty(): _label.text += "\nBest #%d · %d Circuit wins" % [int(career.peak_rank),int(career.victories)]
+		if not career.is_empty(): _label.text += GameText.message("\nBest #%d · %d Circuit wins") % [int(career.peak_rank),int(career.victories)]
 	elif response.ok and response.data.get("state") == "unranked":
 		_label.text = "Unranked · Finish five Circuit tracks"
 	if response.ok and show_honors:
 		var career: Dictionary = response.data.get("career",{})
 		honors_loaded.emit(career)
 		if not career.is_empty():
-			_label.text += "\n%d Top 100 weeks · %d No. 1 weeks · %d season titles" % [int(career.get("weeks_top100",0)),int(career.get("weeks_no1",0)),int(career.get("season_titles",0))]
+			_label.text += GameText.message("\n%d Top 100 weeks · %d No. 1 weeks · %d season titles") % [int(career.get("weeks_top100",0)),int(career.get("weeks_no1",0)),int(career.get("season_titles",0))]

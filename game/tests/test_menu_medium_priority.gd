@@ -175,7 +175,7 @@ func test_worker() -> void:
 	var browser := TrackBrowser.new()
 	browser.library = TrackLibrary.new(folder.path_join("tracks"))
 	browser.records = LocalRecords.new(folder.path_join("records.json"))
-	browser.selected_track = NativeTrack.read("res://resources/tracks/starter_circuit.json")
+	browser.selected_track = NativeTrack.read("res://resources/tracks/ellipse.json")
 	browser.state = {"section":"all","page":0}
 	root.add_child(browser)
 	await frames(2)
@@ -199,7 +199,7 @@ func test_worker() -> void:
 	var owner := TrackBrowser.new()
 	owner.library = TrackLibrary.new(folder.path_join("empty"))
 	owner.records = LocalRecords.new(folder.path_join("empty-records.json"))
-	owner.selected_track = browser.selected_track if is_instance_valid(browser) else NativeTrack.read("res://resources/tracks/starter_circuit.json")
+	owner.selected_track = browser.selected_track if is_instance_valid(browser) else NativeTrack.read("res://resources/tracks/ellipse.json")
 	owner.state = {"section":"all","page":0}
 	root.add_child(owner)
 	owner.set_process(false)

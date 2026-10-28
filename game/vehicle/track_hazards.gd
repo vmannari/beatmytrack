@@ -18,6 +18,7 @@ static func ramp_height(point: Vector2, objects: Array) -> float:
 		if object.kind != "jump" or not CreatorObjects.contains(object,point): continue
 		var local: Vector2 = (point-Vector2(object.position[0],object.position[1])).rotated(-deg_to_rad(float(object.rotation)))
 		var length: float = CreatorObjects.size_of(object).x
+		if object.has("jump_profile"): return JumpProfiles.height(object,local)
 		return (local.x/length+0.5)*float(object.get("scale",1.0))
 	return 0.0
 
@@ -25,6 +26,7 @@ static func launch(state: VehicleState, previous: Vector2, objects: Array) -> vo
 	if state.jump_cooldown > 0 or state.jump_height > 0.0 or state.track_elevated: return
 	for object: Dictionary in objects:
 		if object.kind != "jump": continue
+		if object.has("jump_profile") and JumpProfiles.rounded(JumpProfiles.id(object)): continue
 		var turn: float = -deg_to_rad(float(object.rotation))
 		var center := Vector2(object.position[0],object.position[1])
 		var before: Vector2 = (previous-center).rotated(turn)
@@ -33,6 +35,18 @@ static func launch(state: VehicleState, previous: Vector2, objects: Array) -> vo
 		if before.x < half.x and after.x >= half.x and after.x > before.x:
 			var crossing: float = lerpf(before.y,after.y,(half.x-before.x)/(after.x-before.x))
 			if absf(crossing) <= half.y and state.velocity.length() >= 5.0:
+				if object.has("jump_profile"):
+					# Derive lift from the authored lip and forward travel, without
+					# the old fixed upward kick. Sideways speed cannot amplify it.
+					var profile: String = JumpProfiles.id(object)
+					var forward_speed: float = state.velocity.rotated(turn).x
+					if forward_speed < 5.0: continue
+					state.jump_height = JumpProfiles.peak(profile)*float(object.get("scale",1.0))
+					state.jump_velocity = minf(2.2 if profile == "kicker_v1" else 1.6,forward_speed*JumpProfiles.peak(profile)/JumpProfiles.dimensions(profile).x)
+					state.bridge_descending = false
+					state.bridge_landing_speed = 0.0
+					state.jump_cooldown = 120
+					return
 				state.jump_height = float(object.get("scale",1.0))
 				state.bridge_descending = false
 				state.bridge_landing_speed = 0.0
@@ -44,6 +58,13 @@ static func launch(state: VehicleState, previous: Vector2, objects: Array) -> vo
 static func ramp_pitch(point: Vector2, forward: Vector2, objects: Array) -> float:
 	for object: Dictionary in objects:
 		if object.kind == "jump" and CreatorObjects.contains(object,point):
+			if object.has("jump_profile"):
+				var turn: float = -deg_to_rad(float(object.rotation))
+				var local: Vector2 = (point-Vector2(object.position[0],object.position[1])).rotated(turn)
+				# Sample inside the footprint at open ramp lips.
+				var half: Vector2 = CreatorObjects.size_of(object)*0.5
+				local.x = clampf(local.x,-half.x+0.01,half.x-0.01)
+				return atan(JumpProfiles.slope(object,local,forward.rotated(turn)))
 			var direction: Vector2 = Vector2.RIGHT.rotated(deg_to_rad(float(object.rotation)))
 			return atan(forward.dot(direction)/6.0)
 	return 0.0

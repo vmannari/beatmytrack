@@ -31,11 +31,9 @@ var _backgrounded: bool = false
 var _hall_id: int = 0
 var _last_tick: int = 0
 var _steered: bool = false
-var _braked: bool = false
 var _stopped_ticks: int = 0
 var _idle: float = 0.0
 var _closest: float = INF
-var _input_kind: String = "touch" if OS.has_feature("mobile") else "keyboard"
 var _screen: String = ""
 var _screen_time: float = 0.0
 var _topic: String = ""
@@ -103,12 +101,6 @@ func _notification(what: int) -> void:
 		_backgrounded = true
 		if is_instance_valid(view): view.hide()
 	elif what in [NOTIFICATION_APPLICATION_FOCUS_IN,NOTIFICATION_APPLICATION_RESUMED]: _backgrounded = false
-
-func _input(event: InputEvent) -> void:
-	if event is InputEventScreenTouch and event.pressed: _input_kind = "touch"
-	elif event is InputEventKey and event.pressed: _input_kind = "keyboard"
-	elif event is InputEventJoypadButton and event.pressed: _input_kind = "gamepad"
-	elif event is InputEventJoypadMotion and absf(event.axis_value) > 0.25: _input_kind = "gamepad"
 
 func _sync_layer() -> void:
 	_layer.layer = 26
@@ -269,16 +261,16 @@ func _hall(game: Node, delta: float) -> void:
 		_closest = distance
 		_idle = 0
 	if game.frame.steer != 0 and speed > 0.5: _steered = true
-	if game.frame.brake > 0: _braked = true
 	var reached: bool = position.distance_to(HALL_GOALS[progress.step]) < (9.0 if progress.step == 2 else 6.0)
 	var complete: bool = reached and game.frame.throttle > 0 if progress.step == 0 else reached and _steered if progress.step == 1 else false
 	if progress.step == 2:
-		_stopped_ticks = _stopped_ticks+elapsed if reached and _braked and speed < 0.8 else 0
+		# Judge the actual stop. A brake tap can end between presentation frames,
+		# and coasting or the handbrake must not leave a stopped player stranded.
+		_stopped_ticks = _stopped_ticks+elapsed if reached and speed < 0.8 else 0
 		complete = _stopped_ticks >= 24
 	if complete:
 		progress.advance(progress.step+1)
 		_steered = false
-		_braked = false
 		_stopped_ticks = 0
 		_idle = 0
 		_closest = INF
@@ -290,25 +282,20 @@ func _hall(game: Node, delta: float) -> void:
 			return
 	var stage: int = progress.step
 	var titles: Array[String] = ["1 / 3  ·  Get moving", "2 / 3  ·  Make a turn", "3 / 3  ·  Come to a stop"]
-	var instructions: Array[String] = ["Hold the accelerator and drive into the gold circle.", "Steer towards the next gold circle. Ease off the accelerator to turn more gently.", "Brake and stop inside the gold circle."]
-	if _input_kind == "keyboard":
-		instructions = ["Hold W or ↑ and drive into the gold circle.", "Use A / D or ← / → to reach the next gold circle. Ease off W to turn more gently.", "Hold S or ↓ to brake. Stop inside the gold circle."]
-	elif _input_kind == "gamepad":
-		instructions = ["Hold the right trigger and drive into the gold circle.", "Use the left stick to reach the next gold circle. Ease off the trigger before turning.", "Use the left trigger to brake. Stop inside the gold circle."]
-	elif game.hud.touch.analog_controls():
-		instructions = ["Touch the pedal control and slide up to accelerate into the gold circle.", "Touch the steering control and slide left or right towards the next gold circle.", "Touch the pedal control and slide down to brake inside the gold circle."]
-	_present("hall_%d_%s_%s_%s" % [stage,_input_kind,str(game.hud.touch.analog_controls()),str(_idle>25)],titles[stage],instructions[stage],"Reset car" if _idle>25 else "")
+	var touch: TouchControls = game.hud.touch
+	var instructions: Array[String] = ["Hold the highlighted accelerator and drive into the gold circle.", "Use the highlighted arrows to steer towards the next gold circle. Ease off the accelerator before turning.", "Use the highlighted brake to slow down. Release it and stop inside the gold circle."]
+	if touch.analog_controls():
+		instructions = ["Touch the highlighted pedal and slide up to accelerate into the gold circle.", "Touch the highlighted steering control and slide left or right towards the next gold circle.", "Slide down on the highlighted pedal to brake, then lift your finger and stop inside the gold circle."]
+	_present("hall_%d_%s_%s" % [stage,str(touch.layout.steering_type),str(_idle>25)],titles[stage],instructions[stage],"Reset car" if _idle>25 else "")
 	view.camera = game.camera
 	view.floor_target = HALL_GOALS[stage]
 	view.floor_radius = 9.0 if stage == 2 else 6.0
 	view.outlines.clear()
-	if _input_kind == "touch":
-		var touch: TouchControls = game.hud.touch
-		var groups: Dictionary = touch.group_rects()
-		var controls: Array[String] = []
-		if stage == 1: controls.assign([str(touch.layout.steering_type)] if touch.analog_controls() else ["steer_left","steer_right"])
-		else: controls.append("brake" if stage == 2 and not touch.analog_controls() else "accelerator")
-		for control: String in controls: view.outlines.append(touch.get_global_transform_with_canvas()*groups[control])
+	var groups: Dictionary = touch.group_rects()
+	var controls: Array[String] = []
+	if stage == 1: controls.assign([str(touch.layout.steering_type)] if touch.analog_controls() else ["steer_left","steer_right"])
+	else: controls.append("brake" if stage == 2 and not touch.analog_controls() else "accelerator")
+	for control: String in controls: view.outlines.append(touch.get_global_transform_with_canvas()*groups[control])
 	_avoid_driving_controls(game)
 
 func _avoid_driving_controls(game: Node) -> void:
@@ -324,7 +311,7 @@ func _avoid_driving_controls(game: Node) -> void:
 
 func _ready_card() -> void:
 	if _practising: _present("ready_compact", "", "", "First race")
-	else: _present("ready", "Ready for a race", "Try five laps on a gentle daylight circuit. Your time stays on this device; online racing is available from Race.", "First race", "Practise more")
+	else: _present("ready", "Ready for Ellipse", "Try five laps on Ellipse in daylight. Your time stays on this device; online racing is available from Race.", "First race", "Practise more")
 
 func _race(game: Node) -> void:
 	var session: TrackSession = game.track_session
@@ -387,7 +374,6 @@ func _primary() -> void:
 		app.game.restart()
 		_last_tick = 0
 		_steered = false
-		_braked = false
 		_stopped_ticks = 0
 		_idle = 0
 		_closest = INF
@@ -454,7 +440,6 @@ func _start_hall() -> void:
 		_idle = 0
 		_closest = INF
 		_steered = false
-		_braked = false
 		_stopped_ticks = 0
 		_running = true
 
@@ -466,7 +451,7 @@ func _start_first_race() -> void:
 	_release_input()
 	if is_instance_valid(app.game): app._leave_garage_free_drive()
 	var scope: String = app.lifecycle.scope()
-	lesson_track = NativeTrack.read("res://resources/tracks/starter_circuit.json")
+	lesson_track = NativeTrack.read("res://resources/tracks/ellipse.json")
 	if lesson_track == null:
 		_launching = false
 		app._notice("The tutorial circuit could not be opened. You can keep playing from Race.")

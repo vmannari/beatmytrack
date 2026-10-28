@@ -41,7 +41,7 @@ static func restore(car: CarVisual) -> bool:
 		holder.free()
 		for path: NodePath in entry.transforms: car.get_node(path).transform = entry.transforms[path]
 		for field: String in ["body"]: car.set(field,car.get_node(entry[field]))
-		for field: String in ["front_wheels","rolling_wheels","brake_lights"]:
+		for field: String in ["front_wheels","rear_wheels","rolling_wheels","brake_lights"]:
 			var nodes: Array = car.get(field)
 			for path: NodePath in entry[field]: nodes.append(car.get_node(path))
 		car.wheel_radii.assign(entry.wheel_radii)
@@ -95,7 +95,7 @@ static func remember(car: CarVisual) -> void:
 	var entry: Dictionary = {"key":key_for(car),"nodes":snapshot,"material_snapshots":material_snapshots,"bytes":bytes,"transforms":{},"paint_materials":car.paint_materials.duplicate(),"paint_variants":car.paint_variants.duplicate(true),"kit_frames":{},"wheel_radii":car.wheel_radii.duplicate(),"wheel_rest_positions":car.wheel_rest_positions.duplicate()}
 	for node: Node3D in nodes: entry.transforms[car.get_path_to(node)] = node.transform
 	entry.body = car.get_path_to(car.body)
-	for field: String in ["front_wheels","rolling_wheels","brake_lights"]:
+	for field: String in ["front_wheels","rear_wheels","rolling_wheels","brake_lights"]:
 		entry[field] = []
 		for node: Node in car.get(field): entry[field].append(car.get_path_to(node))
 	for field: String in ["brake_material","accent_roof","underside_material"]: entry[field] = car.get(field)

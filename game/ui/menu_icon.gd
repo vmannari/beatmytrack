@@ -1,6 +1,7 @@
 class_name MenuIcon
 extends RefCounted
 ## Original, consistent vector navigation glyphs, rasterized once by Godot.
+const CHALLENGES_ART: String = "<path d='M21 12a9 9 0 1 1-9-9m5 9a5 5 0 1 1-5-5m0 5 9-9m-5 0h5v5'/><circle cx='12' cy='12' r='1'/>"
 
 static var cache: Dictionary = {}
 
@@ -34,7 +35,7 @@ static func texture(kind: String, large: bool = false) -> Texture2D:
 		"close":"<path d='m5 5 14 14M19 5 5 19'/>",
 		"filter":"<path d='M3 4h18l-7 8v7l-4 2v-9Z'/>",
 		"trophy":"<path d='M7 3h10v7a5 5 0 0 1-10 0ZM7 5H3v3a5 5 0 0 0 5 5m9-8h4v3a5 5 0 0 1-5 5M12 15v5m-5 1h10'/>",
-		"target":"<circle cx='11' cy='13' r='8'/><circle cx='11' cy='13' r='4'/><path d='m11 13 9-10m-1 0v4h4'/>",
+		"target":CHALLENGES_ART,
 		"dice":"<g stroke-width='1.35'><path d='m12 2 9 5v10l-9 5-9-5V7Z' fill='white' fill-opacity='.10'/><path d='m3 7 9 5 9-5M12 12v10M3 7l9-5 9 5-9 5Z' fill='white' fill-opacity='.22'/><path d='m5 10 1.8 1v2L5 12Zm3 6 1.8 1v2L8 18Zm7-3 1.5-.85v1.8l-1.5.85Zm3-4 1.5-.85v1.8l-1.5.85Zm-3 9 1.5-.85v1.8L15 20Zm3-4 1.5-.85v1.8l-1.5.85Z' fill='white' stroke='none'/><path d='m10 6 2-1.1L14 6l-2 1.1Z' fill='white' stroke='none'/></g>",
 		"compass":"<circle cx='12' cy='12' r='9'/><path d='m16 8-2 6-6 2 2-6z'/>",
 		"person":"<circle cx='12' cy='7' r='4'/><path d='M5 22v-4c0-6 14-6 14 0v4'/>",

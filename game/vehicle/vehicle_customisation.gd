@@ -15,6 +15,17 @@ const OPTIONS: Dictionary = {
 	"body":[["stock","Original"],["street","Street"],["rally","Rally"],["club","Club sport"],
 		["heritage","Heritage"],["touring","Touring"],["wide","Wide arch"],["endurance","Endurance"],["gravel","Gravel"],["urban","Urban sport"]]}
 
+const DESCRIPTIONS: Dictionary = {
+	"hood":["Factory finish","Twin-bank vented hood","Raised intake","Sculpted centre bulge","Recessed heat extractor","Raised rear cowl","Paired intake openings","Rear-facing intake","Pressed reinforcement ribs","Vented centre bulge"],
+	"aero":["Factory finish","Subtle roof-edge extension","Raised trailing edge","Tall twin-mounted wing","Swept hatch extension","Low deck-mounted wing","Top-mounted wing supports","Two rear aero blades","Raised rally hoop","Long rear aero profile","Broad sculpted tail","Extended rear deck","Split rear wing"] ,
+	"rims":["Factory finish","Five broad spokes","Six split spokes","Swept turbine blades","Cross-spoke lattice","Deep recessed centre","Closed rally face","Six sculpted spokes","Ten narrow spokes","Three broad spokes"],
+	"body":["Factory finish","Low front lip and side skirts","Rally arches and mud flaps","Front splitter and sill extensions","Subtle classic arch trim","Touring lip and sill package","Extended wheel arches","Deep splitter and rear diffuser","Raised gravel trim and mud flaps","Sculpted street trim"]}
+
+static func description(category: String, option: String) -> String:
+	for index: int in range(OPTIONS[category].size()):
+		if OPTIONS[category][index][0]==option: return DESCRIPTIONS[category][index]
+	return ""
+
 static func defaults() -> Dictionary:
 	return {"version":VERSION,"hood":"stock","aero":"stock","rims":"stock","body":"stock"}
 

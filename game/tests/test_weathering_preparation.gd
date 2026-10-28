@@ -41,7 +41,7 @@ func run() -> void:
 			records.settings.vehicle_liveries = {id: livery}
 			game.preference_records = records
 		game.vehicle_id = id
-		game.initial_track = NativeTrack.read("res://resources/tracks/starter_circuit.json")
+		game.initial_track = NativeTrack.read("res://resources/tracks/ellipse.json")
 		game.production_mode = true
 		root.add_child(game)
 		game.hitch_diagnostics.persist_enabled = false

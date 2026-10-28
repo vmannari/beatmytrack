@@ -101,7 +101,7 @@ func run() -> void:
 func inspect_page(page: Control) -> void:
 	var winner: Control = page.find_child("RivalryPodium_1",true,false)
 	var runner: Control = page.find_child("RivalryPodium_2",true,false)
-	check(is_equal_approx(runner.size.y,winner.size.y) and is_equal_approx(runner.global_position.y,winner.global_position.y),"podium cards share their height and top edge")
+	check(is_equal_approx(runner.global_position.y-winner.global_position.y,1.0),"second place starts a subtle one unit below first")
 	check(winner.size.y <= 194,"compact podium preserves standings space")
 	var reference: Rect2 = page.find_child("RivalryPodiumFooter_1",true,false).get_global_rect()
 	for position: int in range(1,4):
@@ -120,7 +120,8 @@ func inspect_page(page: Control) -> void:
 		check(car.size.y >= 88 and car.fit_to_frame,"larger car previews fit the available frame")
 		check(car.viewport.size.x <= 1536 and car.viewport.size.y <= 768,"render targets retain existing bounds")
 		var card: PanelContainer = page.find_child("RivalryPodium_"+str(position),true,false)
-		check(is_equal_approx(card.size.y,winner.size.y) and is_equal_approx(card.global_position.y,winner.global_position.y),"every card shares the same top and bottom edges")
+		check(is_equal_approx(card.size.y,194.0-(position-1)) and is_equal_approx(card.global_position.y-winner.global_position.y,float(position-1)),"podium heights descend by one unit per position")
+		check(is_equal_approx(card.get_global_rect().end.y,winner.get_global_rect().end.y),"stepped podium cards retain a shared bottom edge")
 		var footer_style: StyleBoxFlat = footer.get_theme_stylebox("panel")
 		check(footer_style.corner_radius_top_left == 0 and footer_style.corner_radius_top_right == 0 and footer_style.border_width_top == 1,"footer joins the card as a full-width divided band")
 		check(card.get_global_rect().grow(-0.9).encloses(footer.get_global_rect()),"the metallic card outline continues around the entire name section")

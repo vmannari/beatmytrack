@@ -93,7 +93,7 @@ func formats() -> void:
 	var imported: Dictionary = storage.import_document(path)
 	check(imported == JSON.parse_string(JSON.stringify(current)),"current v5 import roundtrips exactly")
 	check(storage.export_document(imported,storage.directory.path_join("export.json")) == OK,"current format remains exportable")
-	check(NativeTrack.read("res://resources/tracks/starter_circuit.json") != null,"current native v2 circuit remains readable")
+	check(NativeTrack.read("res://resources/tracks/ellipse.json") != null,"current native v2 circuit remains readable")
 
 func current_budget() -> void:
 	var limits = preload("res://editor/creator_limits.gd")

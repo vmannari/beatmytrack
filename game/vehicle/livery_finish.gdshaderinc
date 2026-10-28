@@ -14,6 +14,7 @@ uniform vec4 hood_sticker;
 uniform vec4 roof_sticker;
 uniform int hood_emblem = -1;
 uniform int roof_emblem = -1;
+uniform bool rear_sticker = false;
 
 vec3 graphic_pigment(vec3 pigment, vec3 p, vec3 n) {
 	if (!graphics_enabled) return pigment;
@@ -48,6 +49,9 @@ vec3 panel_emblem(vec3 pigment, vec3 p, vec3 n, vec4 panel, float level, vec4 pl
 vec3 apply_graphics(vec3 pigment, vec3 p, vec3 n) {
 	if (!graphics_enabled) return pigment;
 	pigment = graphic_pigment(pigment,p,n);
-	pigment = panel_emblem(pigment,p,n,hood_panel,panel_levels.x,hood_sticker,hood_emblem);
+	// The Forklift has one rear-facing panel. Existing cars keep their X/Z mapping.
+	vec3 panel_point = rear_sticker ? vec3(p.x,p.z,-p.y) : p;
+	vec3 panel_normal = rear_sticker ? vec3(n.x,n.z,-n.y) : n;
+	pigment = panel_emblem(pigment,panel_point,panel_normal,hood_panel,panel_levels.x,hood_sticker,hood_emblem);
 	return panel_emblem(pigment,p,n,roof_panel,panel_levels.y,roof_sticker,roof_emblem);
 }

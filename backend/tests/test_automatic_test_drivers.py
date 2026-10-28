@@ -59,7 +59,7 @@ def test_automatic_population_requires_the_development_gate(drivers):
 
 
 @pytest.mark.godot
-def test_idle_backend_drives_verifies_and_recovers_without_operator_plan(tmp_path, real_verifier, monkeypatch):
+def test_explicit_local_pass_drives_verifies_and_recovers(tmp_path, real_verifier, monkeypatch):
     listener = socket.socket()
     listener.bind(("127.0.0.1", 0))
     url = f"http://127.0.0.1:{listener.getsockname()[1]}"
@@ -84,7 +84,8 @@ def test_idle_backend_drives_verifies_and_recovers_without_operator_plan(tmp_pat
         group = api.call("POST", "/rivalry/join", {"vehicle_id": "compact", "test_population": True,
             "automatic_test_drivers": True}, subject="developer", idempotency="automatic-native-join")
         assert group["driver_count"] == 14
-        assert process_one(app)  # Idle worker creates and uploads its own canonical drive.
+        assert not process_one(app)  # Empty workers never launch artificial controllers.
+        assert drive_idle(app)  # Explicit local operator pass creates an ordinary upload.
         with app.state.session_factory() as session:
             uploaded = session.scalar(select(Run))
             assert uploaded.status == "queued" and uploaded.time_ticks is None

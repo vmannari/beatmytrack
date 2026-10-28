@@ -36,6 +36,9 @@ DOMAIN_TABLES = frozenset(
         "discovery_bootstrap",
         "discovery_activity",
         "discovery_days",
+        "track_of_day_state",
+        "track_of_day_history",
+        "track_of_days",
         "discovery_boundaries",
         "discovery_changes",
         "discovery_collections",
@@ -207,6 +210,7 @@ TRIGGERS = frozenset([
     "bmt_leaderboard_pb", "bmt_leaderboard_player", "bmt_pb_projection",
     "bmt_pb_revision", "bmt_player_board_revision", "bmt_queue_delta",
     "bmt_reward_rank_pb", "bmt_reward_rank_player", "discovery_players_update",
+    "bmt_reward_player_revision", "bmt_reward_move_personal_bests", "bmt_reward_move_lap_personal_bests",
     "discovery_runs_insert", "discovery_runs_update", "discovery_track_versions_delete",
     "discovery_track_versions_insert", "discovery_track_versions_update",
     "discovery_tracks_delete", "discovery_tracks_insert", "discovery_tracks_update",
@@ -238,6 +242,8 @@ def relation_policy(workload):
         policy["session_families"] = {"SELECT": None, "UPDATE": {"revoked"}}
     else:
         raise ValueError("Unknown runtime workload")
+    for table in ("track_of_days", "track_of_day_history", "track_of_day_state"):
+        policy[table] = dict.fromkeys(("SELECT", "INSERT", "UPDATE") if workload == "worker" else ("SELECT",))
     return policy
 
 

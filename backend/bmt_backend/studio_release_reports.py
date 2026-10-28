@@ -20,7 +20,7 @@ def release_report(request, role, window, build_id, baseline, platform, device_m
         if filters[key]:
             conditions.append(getattr(Race, key) == filters[key])
     with request.app.state.studio_reporting.snapshot(
-        request.app.state.session_factory, request_id=request.state.request_id
+        request.app.state.session_factory, request_id=request.state.request_id, window=(first, until)
     ) as (db, storage):
         state = db.get(AnalysisState, 1)
         builds = list(db.scalars(select(Race.build_id).where(*conditions)

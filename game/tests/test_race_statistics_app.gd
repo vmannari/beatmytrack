@@ -47,7 +47,7 @@ func run() -> void:
 	app.product_telemetry.queue.clear(); app.product_telemetry._recount_budget()
 	app.client_quality.set_process(false)
 	app._show_screen("tracks")
-	var track: NativeTrack = NativeTrack.read("res://resources/tracks/starter_circuit.json")
+	var track: NativeTrack = NativeTrack.read("res://resources/tracks/ellipse.json")
 	track.metadata.cloud_version = Telemetry.uuid()
 	app.selected_track = track
 	await app._start_race(track,false,true)
@@ -84,7 +84,7 @@ func run() -> void:
 	check(packages().size() == 3 and packages()[2].event.id == completed_id,"duplicate results and later exit cannot duplicate a finished attempt")
 	check(app.product_telemetry._allowed,"results/exit leave post-race transport enabled")
 	await process_frame
-	var local: NativeTrack = NativeTrack.read("res://resources/tracks/starter_circuit.json")
+	var local: NativeTrack = NativeTrack.read("res://resources/tracks/ellipse.json")
 	local.metadata.erase("cloud_version"); app.selected_track = local
 	await app._start_race(local,true,true); freeze_game()
 	check(not app.client_quality._active,"actual creator/practice start excludes diagnostic capture")

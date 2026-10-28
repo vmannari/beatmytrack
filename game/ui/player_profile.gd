@@ -29,6 +29,7 @@ static func open(parent: Node, adapter: Node, row: Dictionary, car_id: String) -
 	return sheet
 
 static func bind_name(label: Label, action: Callable) -> void:
+	GameText.user_text(label)
 	label.set_meta("player_profile_action",action)
 	label.mouse_filter = Control.MOUSE_FILTER_STOP
 	label.focus_mode = Control.FOCUS_ALL
@@ -91,7 +92,7 @@ func _ready() -> void:
 	var country: Control = PlayerCountry.flag(str(driver.get("country_code","")),34)
 	country.name = "PlayerProfileCountry"
 	header.add_child(country)
-	var identity: Label = MenuStyle.label(str(driver.get("name","Player")),36)
+	var identity: Label = MenuStyle.user_label(str(driver.get("name","Player")),36)
 	identity.name = "PlayerProfileName"
 	identity.clip_text = true
 	identity.text_overrun_behavior = TextServer.OVERRUN_TRIM_ELLIPSIS
@@ -310,5 +311,5 @@ func _add_track(entry: Dictionary) -> void:
 	copy.add_child(track_name)
 	copy.add_child(MenuStyle.label(str(entry.get("theme","pine")).capitalize(),16,true))
 	if entry.get("rating_average") != null:
-		copy.add_child(MenuStyle.label("★ %.1f  ·  %d ratings" % [float(entry.rating_average),int(entry.get("rating_count",0))],16,true))
+		copy.add_child(MenuStyle.label(GameText.message("★ %.1f  ·  %d ratings") % [float(entry.rating_average),int(entry.get("rating_count",0))],16,true))
 	track_count += 1

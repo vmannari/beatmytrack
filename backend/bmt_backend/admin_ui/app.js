@@ -2,7 +2,15 @@
 const $=s=>document.querySelector(s), esc=v=>String(v??'—').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 let key='', role='', generation=0, reporting=null, authGeneration=0, readController=null;
 let dialogGeneration=0, dialogOpener=null, lastRenderedRoute='';
+let reportingPolicy={max_days:90};
+function setReportingPolicy(policy){
+ reportingPolicy=policy&&Number.isInteger(policy.max_days)&&policy.max_days>=1&&policy.max_days<=90?policy:{max_days:90};
+ for(const option of $('#days').options)option.disabled=option.value!=='custom'&&Number(option.value)>reportingPolicy.max_days;
+ if($('#days').selectedOptions[0]?.disabled)$('#days').value='7';
+ $('#days').title=reportingPolicy.mode==='shared_limited'?'Early-stage reports: up to 7 days. Refresh manually.':'Reporting window';
+}
 const sections=[['overview','Overview','\u25eb','START HERE'],['alarms','Operations & alarms','!',''],
+ ['usage','Usage & costs','\u25f4',''],
  ['product','Player behaviour','\u2197','UNDERSTAND'],['quality','Game quality','\u2301',''],['economy','Monetisation','\u25a3',''],
  ['tracks','Content & competitions','\u25b1','INVESTIGATE'],['cases','Player support','\u25c7',''],
  ['studio','Administration','\u25a4','MANAGE']];
@@ -35,6 +43,13 @@ function login(message=''){
  $('#main').removeAttribute('aria-busy');
  $('#main').innerHTML=`<div class="console-login">${intro('BMT Studio','Sign in with a dedicated administrator credential.')}<form id="login" class="card console-padding"><label for="key">Staff identity token or legacy key</label><input id="key" type="password" autocomplete="off" required minlength="32"><p class="console-note">Credentials remain in this tab’s memory. Lock or reload to clear access. Game sign-in credentials do not grant console access.</p><div class="console-actions"><button class="btn btn-primary">Connect</button></div><p id="login-error" class="console-error" ${message?'':'hidden'}>${esc(message)}</p></form></div>`;
  $('#login').onsubmit=async e=>{e.preventDefault();authGeneration++;key=$('#key').value;await render();};
+ const legacyForm=$('#login'), loginContainer=document.createElement('div'), expectedGeneration=authGeneration;
+ legacyForm.replaceWith(loginContainer);loginContainer.append(legacyForm);
+ // The managed flow replaces the legacy form only when it is configured.
+ if(window.StudioSignIn)window.StudioSignIn.mount(loginContainer,async token=>{
+  if(!loginContainer.isConnected||expectedGeneration!==authGeneration)return;
+  authGeneration++;key=token;await render();
+ },message,setReportingPolicy);
 }
 function tabs(items,current){return `<div class="tabs">${items.map(([id,label])=>`<a class="tab ${id===current?'active':''}" href="#${id}">${esc(label)}</a>`).join('')}</div>`;}
 function metric(name,value,target,note){return `<a href="#${target}" class="metric"><div class="metric-label">${esc(name)} →</div><div class="metric-value">${esc(value)}</div><div class="metric-meta">${esc(note)}</div></a>`;}
@@ -44,7 +59,7 @@ function reportingDates(){
  if(!reporting)return;
  const day=value=>new Date(value*1000).toISOString().slice(0,10);
  modal(`<h2>Reporting dates · UTC</h2><form id="reporting-dates"><label>From<input id="report-from" type="date" value="${day(reporting.since)}" required></label><label>Through<input id="report-through" type="date" value="${day(reporting.until-1)}" required></label><p id="dates-error" class="console-error" hidden></p><div class="console-actions"><button class="btn" type="button" data-close>Cancel</button><button class="btn btn-primary">Apply dates</button></div></form>`);
- $('#reporting-dates').onsubmit=event=>{event.preventDefault();const since=Date.parse($('#report-from').value+'T00:00:00Z')/1000,until=Date.parse($('#report-through').value+'T00:00:00Z')/1000+86400;if(!Number.isFinite(since)||!Number.isFinite(until)||since<0||until<=since||until-since>90*86400){$('#dates-error').hidden=false;$('#dates-error').textContent='Choose a range of 1–90 calendar days.';return;}const [path,qs]=location.hash.slice(1).split('?'),params=new URLSearchParams(qs);for(const name of ['all','offset','cursor'])params.delete(name);params.set('since',since);params.set('until',until);$('#days').value='custom';$('#dialog').close();location.hash=path+'?'+params;};
+ $('#reporting-dates').onsubmit=event=>{event.preventDefault();const since=Date.parse($('#report-from').value+'T00:00:00Z')/1000,until=Date.parse($('#report-through').value+'T00:00:00Z')/1000+86400;if(!Number.isFinite(since)||!Number.isFinite(until)||since<0||until<=since||until-since>reportingPolicy.max_days*86400){$('#dates-error').hidden=false;$('#dates-error').textContent=`Choose a range of 1–${reportingPolicy.max_days} calendar days.`;return;}const [path,qs]=location.hash.slice(1).split('?'),params=new URLSearchParams(qs);for(const name of ['all','offset','cursor'])params.delete(name);params.set('since',since);params.set('until',until);$('#days').value='custom';$('#dialog').close();location.hash=path+'?'+params;};
 }
 
 function playerType(value){return value===true?'Artificial':value===false?'Real':'Unavailable';}
@@ -86,10 +101,11 @@ async function render(){
  try{
   const overviewQuery=new URLSearchParams({days:$('#days').value==='custom'?'7':$('#days').value});
   if(params.has('since')){overviewQuery.set('since',params.get('since'));overviewQuery.set('until',params.get('until'));}
-  const d=await api((['alarms','quality','cases','competitions','publications','tracks','players','races','studio','system','economy','live','product','analytics'].includes(section)?'studio/context?':'overview?')+overviewQuery);if(ticket!==generation)return;
+  const d=await api((['usage','alarms','quality','cases','competitions','publications','tracks','players','races','studio','system','economy','live','product','analytics'].includes(section)?'studio/context?':'overview?')+overviewQuery);if(ticket!==generation)return;
   role=d.role;reporting=d;params=rangeParams(params);
   let html='';
   if(section==='alarms')html=await platformIncidents(id,params);
+  else if(section==='usage')html=await studioUsage(params);
   else if(section==='quality')html=await platformQuality(params);
   else if(['tracks','players'].includes(section))html=await catalogueView(section,id,params);
   else if(section==='competitions'&&!id)html=await platformCompetitions(params);
@@ -163,6 +179,7 @@ function search(){
  };
 }
 function clearAccess(){
+ if(window.StudioSignIn)window.StudioSignIn.lock().catch(()=>{});
  authGeneration++;key='';role='';reporting=null;readController?.abort();
  supportCurrent=null;supportBack.clear();studioCurrent=null;
  $('#role').textContent='Authentication required';$('#environment').textContent='Disconnected';

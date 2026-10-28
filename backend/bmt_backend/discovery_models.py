@@ -13,6 +13,32 @@ LIFETIME = 1800
 WINDOW = 7 * 86400
 
 
+class TrackOfDayState(Base):
+    """Permanent singleton fence; startup reuse ends once supply reaches 100."""
+    __tablename__ = "track_of_day_state"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    mature: Mapped[bool] = mapped_column(Boolean, default=False)
+    last_day: Mapped[int] = mapped_column(BigInteger, default=-1)
+
+
+class TrackOfDayHistory(Base):
+    """Logical track identities survive revisions and discovery retention."""
+    __tablename__ = "track_of_day_history"
+    track_id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    first_day: Mapped[int] = mapped_column(BigInteger)
+    last_day: Mapped[int] = mapped_column(BigInteger)
+
+
+class TrackOfDay(Base):
+    __tablename__ = "track_of_days"
+    day: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    policy: Mapped[str] = mapped_column(String(40))
+    track_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
+    version_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
+    reason: Mapped[str] = mapped_column(String(24))
+    selected_at: Mapped[int] = mapped_column(BigInteger)
+
+
 class DiscoveryPartition(Base):
     __tablename__ = "discovery_partitions"
     id: Mapped[int] = mapped_column(Integer, primary_key=True)

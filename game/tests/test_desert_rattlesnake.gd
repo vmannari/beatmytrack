@@ -146,7 +146,7 @@ func capture(snake: DesertRattlesnake) -> void:
 		var state := VehicleState.new()
 		var track: NativeTrack
 		if mode == "driving":
-			track = NativeTrack.read("res://resources/tracks/starter_circuit.json")
+			track = NativeTrack.read("res://resources/tracks/ellipse.json")
 			track.metadata.theme = "desert"
 			vehicle = VehicleAudio.new()
 			root.add_child(vehicle)

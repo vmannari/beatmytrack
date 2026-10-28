@@ -15,7 +15,7 @@ func check(value: bool, message: String) -> void:
 
 
 func run() -> void:
-	var track: NativeTrack = NativeTrack.read("res://resources/tracks/starter_circuit.json")
+	var track: NativeTrack = NativeTrack.read("res://resources/tracks/ellipse.json")
 	var config: HandlingConfig = VehicleCatalog.config("compact")
 	var state := VehicleState.new()
 	var distance: float = track.route_length * 0.3

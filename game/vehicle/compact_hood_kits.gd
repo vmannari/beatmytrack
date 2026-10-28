@@ -14,7 +14,7 @@ static func build(root: Node3D, kind: String, paint: Material, accent: Material)
 		"twin_scoop": holes = [Rect2(0.17,0.33,0.21,0.39),Rect2(0.62,0.33,0.21,0.39)]
 		"reverse": holes = [Rect2(0.33,0.29,0.34,0.44)]
 		"vented": holes = [Rect2(0.13,0.34,0.15,0.35),Rect2(0.72,0.34,0.15,0.35)]
-	CompactKits._patch(root,key+"sheet",func(u: float,v: float) -> Vector3: return CompactKits.hood_sample(kind,u,v),paint,Vector3.UP,88,32,false,holes)
+	var sheet: MeshInstance3D = CompactKits._patch(root,key+"sheet",func(u: float,v: float) -> Vector3: return CompactKits.hood_sample(kind,u,v),paint,Vector3.UP,88,32,false,holes)
 	for index: int in range(holes.size()):
 		var hole: Rect2 = holes[index]
 		var prefix: String = key+"opening"+str(index)+"/"
@@ -31,13 +31,64 @@ static func build(root: Node3D, kind: String, paint: Material, accent: Material)
 	if kind in ["dome","vented"]:
 		# A narrow fitted crown insert, with tapered ends rather than a rectangle
 		# laid over the whole hood; the owner's accent pigment remains independent.
-		CompactKits._patch(root,key+"crowninsert",func(u: float,v: float) -> Vector3:
-			var along: float = lerpf(0.24,0.78,v)
-			var span: float = 0.16*(0.25+0.75*smoothstep(0,0.15,v)*(1-smoothstep(0.85,1,v)))
-			return CompactKits.hood_sample(kind,0.5+(u-0.5)*span,along)+Vector3.UP*0.0012,accent,Vector3.UP,16,24)
+		_crown_insert(root,key+"crowninsert",sheet.mesh as ArrayMesh,accent)
 	for side: float in [-1,1]:
 		CompactKitSurface.solid(root,key+"panelgap"+str(side),func(u: float,v: float) -> Vector3:
 			return CompactKits.hood_sample(kind,0.5+side*0.494,u)+Vector3(cos(v*TAU)*0.0015,0.0008+sin(v*TAU)*0.0015,0),dark,32,8)
+
+static func _crown_insert(root: Node3D, key: String, sheet: ArrayMesh, accent: Material) -> void:
+	if CompactKits.simple_parts: key += "/simple"
+	CompactKits._load_prepared(key)
+	if not CompactKits.meshes.has(key):
+		# Clip the existing tapered outline against the final hood triangles.
+		# Every resulting face stays parallel to its supporting sheet face, even
+		# when the simple hood uses a coarser grid than the accent outline.
+		var outline := PackedVector2Array()
+		for side: float in [-1,1]:
+			for index: int in range(25):
+				var v: float = index/24.0 if side<0 else 1-index/24.0
+				var span: float = 0.16*(0.25+0.75*smoothstep(0,0.15,v)*(1-smoothstep(0.85,1,v)))
+				outline.append(Vector2(0.5+side*span*0.5,lerpf(0.24,0.78,v)))
+		var arrays: Array = sheet.surface_get_arrays(0)
+		var vertices: PackedVector3Array = arrays[Mesh.ARRAY_VERTEX]
+		var normals: PackedVector3Array = arrays[Mesh.ARRAY_NORMAL]
+		var uvs: PackedVector2Array = arrays[Mesh.ARRAY_TEX_UV]
+		var indices: PackedInt32Array = arrays[Mesh.ARRAY_INDEX]
+		var tool := SurfaceTool.new()
+		tool.begin(Mesh.PRIMITIVE_TRIANGLES)
+		for index: int in range(0,indices.size(),3):
+			var a: int = indices[index]
+			var b: int = indices[index+1]
+			var c: int = indices[index+2]
+			var triangle := PackedVector2Array([uvs[a],uvs[b],uvs[c]])
+			var bounds := Rect2(triangle[0],Vector2.ZERO).expand(triangle[1]).expand(triangle[2])
+			if not bounds.intersects(Rect2(0.42,0.24,0.16,0.54),true): continue
+			for clipped: PackedVector2Array in Geometry2D.intersect_polygons(triangle,outline):
+				var faces: PackedInt32Array = Geometry2D.triangulate_polygon(clipped)
+				for face: int in range(0,faces.size(),3):
+					var points: Array[Vector3] = []
+					var shades: Array[Vector3] = []
+					var mapping: Array[Vector2] = []
+					for corner: int in range(3):
+						var uv: Vector2 = clipped[faces[face+corner]]
+						var denom: float = (uvs[b]-uvs[a]).cross(uvs[c]-uvs[a])
+						var wb: float = (uv-uvs[a]).cross(uvs[c]-uvs[a])/denom
+						var wc: float = (uvs[b]-uvs[a]).cross(uv-uvs[a])/denom
+						var wa: float = 1-wb-wc
+						points.append(vertices[a]*wa+vertices[b]*wb+vertices[c]*wc+Vector3.UP*0.0012)
+						shades.append((normals[a]*wa+normals[b]*wb+normals[c]*wc).normalized())
+						mapping.append(uv)
+					var normal: Vector3 = (points[1]-points[0]).cross(points[2]-points[0])
+					if normal.length_squared()<1e-20: continue
+					var order: Array = [0,2,1] if normal.y>0 else [0,1,2]
+					for corner: int in order:
+						tool.set_normal(shades[corner])
+						tool.set_uv(mapping[corner])
+						tool.add_vertex(points[corner])
+		tool.index()
+		tool.generate_tangents()
+		CompactKits.meshes[key] = tool.commit()
+	CompactAero._attach(root,key,accent)
 
 static func _recess(root: Node3D, key: String, kind: String, hole: Rect2, dark: Material) -> void:
 	var corners: Array[Vector2] = [hole.position,Vector2(hole.end.x,hole.position.y),hole.end,Vector2(hole.position.x,hole.end.y)]

@@ -22,7 +22,7 @@ def process_job(app):
     except RuntimeError:
         heartbeat(app, worker_id, role="publication", phase="unavailable", coalesce=True)
         return False
-    heartbeat(app, worker_id, role="publication", phase="claiming", coalesce=True)
+    heartbeat(app, worker_id, role="publication", phase="idle", coalesce=True)
     return process_one(app)
 
 
@@ -30,12 +30,12 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--once", action="store_true")
     args = parser.parse_args()
-    from .app import create_app
     from .config import Settings
+    from .worker_app import create_worker_app
 
     # One additional bounded connection, within the existing service instance.
     settings = replace(Settings.from_env(), database_pool_size=1, database_pool_overflow=0)
-    app = create_app(settings)
+    app = create_worker_app(settings)
     run_worker(app, process_job, once=args.once, idle_seconds=0.25)
 
 

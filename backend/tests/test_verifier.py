@@ -9,9 +9,11 @@ import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from types import SimpleNamespace
+from typing import get_args
 
 import pytest
 
+from bmt_backend.vehicle_appearance import Appearance
 from bmt_backend.verifier import (
     _ENGINE_SLOT,
     MAX_FRAMES,
@@ -82,7 +84,7 @@ def test_new_contacts_do_not_relabel_historical_inputs(real_verifier):
     fixtures = ROOT / "game/tests/fixtures"
     document = json.loads((fixtures / "over_and_under.json").read_text())
     replay = json.loads((fixtures / "over_and_under_rejected_inputs.json").read_text())
-    assert real_verifier.manifest()["physics_version"] == "arcade-planar-0.66"
+    assert real_verifier.manifest()["physics_version"] == "arcade-planar-0.75"
     with pytest.raises(VerificationError, match="required laps"):
         real_verifier.verify_canonical_diagnostic(document, replay, "compact")
 
@@ -315,8 +317,8 @@ def test_real_engine_manifest_pins_every_competitive_config(real_verifier):
     manifest = real_verifier.manifest()
     assert manifest["engine_version"] == (ROOT / "godot-version.txt").read_text().strip()
     assert manifest["tick_rate"] == 120 and manifest["laps"] == 5
-    assert set(manifest["vehicles"]) == {"compact", "pickup", "classic", "formula", "kart"}
-    assert len({car["config_hash"] for car in manifest["vehicles"].values()}) == 5
+    assert set(manifest["vehicles"]) == set(get_args(Appearance.model_fields["vehicle_id"].annotation))
+    assert len({car["config_hash"] for car in manifest["vehicles"].values()}) == len(manifest["vehicles"])
     assert all(len(car["config_hash"]) == 64 for car in manifest["vehicles"].values())
 
 

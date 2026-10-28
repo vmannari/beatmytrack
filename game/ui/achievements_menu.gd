@@ -152,11 +152,11 @@ func _card(f: Dictionary, source: Dictionary, level: int) -> void:
 	progress.value = target if level == f.tiers.size() else value
 	progress.show_percentage = false
 	copy.add_child(progress)
-	var progress_text: String = "%.1f / %d km" % [value/1000.0,target/1000] if f.metric == "distance_m" else "%d / %d" % [value,target]
-	var tier_text: String = "Prestige" if f.prestige else TIER_NAMES[next+1]
-	var caption: String = "Prestige earned" if f.prestige else TIER_NAMES[level]+" complete"
-	if level < f.tiers.size(): caption = progress_text+"  /  "+tier_text+" next"
+	var progress_text: String = GameText.message("%.1f / %d km") % [value/1000.0,target/1000] if f.metric == "distance_m" else "%d / %d" % [value,target]
+	var caption: String = tr("Prestige earned") if f.prestige else tr(["","Bronze complete","Silver complete","Gold complete","Platinum complete"][level])
+	if level < f.tiers.size(): caption = GameText.message("{progress}  /  {next}",{"progress":progress_text,"next":tr("Prestige next" if f.prestige else ["Bronze next","Silver next","Gold next","Platinum next"][next])})
 	var progress_label: Label = MenuStyle.label(caption,16,true)
+	GameText.user_text(progress_label)
 	progress_label.text_overrun_behavior = TextServer.OVERRUN_TRIM_ELLIPSIS
 	copy.add_child(progress_label)
 
@@ -309,6 +309,7 @@ func _unhandled_key_input(event: InputEvent) -> void:
 
 func _notification(what: int) -> void:
 	if what == NOTIFICATION_VISIBILITY_CHANGED and not is_visible_in_tree(): _close_sheet()
+	if what == NOTIFICATION_TRANSLATION_CHANGED and is_instance_valid(grid): _rebuild.call_deferred()
 
 func _clear(container: Node) -> void:
 	for node: Node in container.get_children():
@@ -325,7 +326,7 @@ func _detail() -> void:
 		if f.id != selected: continue
 		var source: Dictionary = service.source(f)
 		var level: int = AchievementProgress.tier(f,source)
-		_sheet_eyebrow.text = str(f.category).to_upper()+" / ACHIEVEMENT"
+		GameText.bind(_sheet_eyebrow,"{category} / ACHIEVEMENT",{"category":tr(str(f.category)).to_upper()})
 		var style: StyleBoxFlat = _sheet_panel.get_theme_stylebox("panel").duplicate()
 		style.border_color = AchievementBadge.METALS[3 if f.prestige else maxi(level,1)].darkened(0.4)
 		_sheet_panel.add_theme_stylebox_override("panel",style)

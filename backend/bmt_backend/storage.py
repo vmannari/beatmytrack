@@ -10,6 +10,7 @@ import re
 import stat
 import tempfile
 import time
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Protocol
 
@@ -73,8 +74,27 @@ def canonical_json(data: dict) -> bytes:
     ).encode("utf-8")
 
 
+@dataclass(frozen=True, slots=True, init=False)
+class PreparedJSON:
+    """An immutable encoding and its digest, constructed together from JSON."""
+
+    body: bytes
+    digest: str
+
+    def __init__(self, data: dict):
+        body = canonical_json(data)
+        if len(body) > MAX_BLOB_BYTES:
+            raise ValueError("Object exceeds limit")
+        object.__setattr__(self, "body", body)
+        object.__setattr__(self, "digest", hashlib.sha256(body).hexdigest())
+
+
+def prepare_json(data):
+    return data if type(data) is PreparedJSON else PreparedJSON(data)
+
+
 class BlobStore(Protocol):
-    def put_json(self, data: dict) -> str: ...
+    def put_json(self, data: dict | PreparedJSON) -> str: ...
     def get_json(self, digest: str) -> dict: ...
     def list_objects(self, cursor: dict | None, limit: int) -> tuple[list[dict], dict | None]: ...
     def delete(self, digest: str) -> None: ...
@@ -100,11 +120,9 @@ class LocalBlobStore:
             raise ValueError("Invalid object digest")
         return self.root / digest[:2] / (digest + ".json")
 
-    def put_json(self, data: dict) -> str:
-        body = canonical_json(data)
-        if len(body) > 8 * 1024 * 1024:
-            raise ValueError("Object exceeds limit")
-        digest = hashlib.sha256(body).hexdigest()
+    def put_json(self, data: dict | PreparedJSON) -> str:
+        prepared = prepare_json(data)
+        body, digest = prepared.body, prepared.digest
         path = self._path(digest)
         path.parent.mkdir(parents=True, exist_ok=True)
         if path.exists():
@@ -281,12 +299,10 @@ class PinnedBlobStore:
             session.commit()
 
     def put_json(self, data):
-        body = canonical_json(data)
-        if len(body) > 8*1024*1024:
-            raise ValueError("Object exceeds limit")
-        key = hashlib.sha256(body).hexdigest()
+        prepared = prepare_json(data)
+        key = prepared.digest
         self._pin(key, publish=True)
-        return self.store.put_json(data)
+        return self.store.put_json(prepared)
 
     def get_json(self, digest):
         if not re.fullmatch(r"[0-9a-f]{64}", digest):

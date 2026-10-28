@@ -24,6 +24,7 @@ var _known: Dictionary = {}
 var _remote_seeded: bool = false
 var _activity_pending: bool = false
 var _activity_timer: SceneTreeTimer
+var refresh_allowed: Callable
 
 func authenticated() -> bool:
 	return client != null and client.signed_in()
@@ -86,9 +87,13 @@ func refresh_after_activity() -> void:
 func _refresh_activity() -> void:
 	_activity_timer = null
 	if not _activity_pending: return
+	if refresh_allowed.is_valid() and not bool(refresh_allowed.call()): return
 	if busy: return # The in-flight operation schedules the retained activity.
 	_activity_pending = false
 	refresh(true)
+
+func resume_pending() -> void:
+	if _activity_pending: refresh_after_activity()
 
 func valid(data: Variant) -> bool:
 	if not data is Dictionary or data.get("schema") != 1 or not data.get("states") is Dictionary: return false
@@ -103,6 +108,9 @@ func valid(data: Variant) -> bool:
 
 func refresh(activity: bool = false) -> void:
 	sync_identity()
+	if refresh_allowed.is_valid() and not bool(refresh_allowed.call()):
+		if activity: _activity_pending = true
+		return
 	if not authenticated() or busy or (not activity and Time.get_ticks_msec()-_attempt_at < 60000): return
 	var expected: String = scope
 	var epoch: int = _epoch

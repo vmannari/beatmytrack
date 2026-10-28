@@ -23,7 +23,7 @@ def read(d, player="Alice"):
     return d.client.get("/v1/me/appearances", headers=headers(d, player))
 
 
-def test_private_five_car_recovery_and_independent_devices(domain):
+def test_private_six_car_recovery_and_independent_devices(domain):
     assert read(domain).json() == {"appearances": {}}
     from bmt_backend.economy_models import CosmeticUnlock
     with domain.factory() as session:
@@ -31,7 +31,7 @@ def test_private_five_car_recovery_and_independent_devices(domain):
             session.add(CosmeticUnlock(player_id=domain.players["Alice"], item_id=item, price=0))
         session.commit()
     saved = {}
-    for vehicle in ("compact", "pickup", "classic", "formula", "kart"):
+    for vehicle in ("compact", "pickup", "classic", "formula", "kart", "forklift"):
         value = appearance(vehicle)
         if vehicle == "compact":
             value["customisation"]["body"] = "wide"

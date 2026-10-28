@@ -85,12 +85,13 @@ func _run() -> void:
 		# Batching intentionally reduces child count without removing geometry.
 		visual.batch_parts = false
 		root.add_child(visual)
-		check(visual.front_wheels.size() == 2 and visual.body.get_child_count() > 10,id + " detailed model has steering wheels and body")
+		var steering_wheels: Array[Node3D] = visual.rear_wheels if config.rear_steering else visual.front_wheels
+		check(steering_wheels.size() == 2 and visual.body.get_child_count() > 10,id + " detailed model has steering wheels and body")
 		var batched := CarVisual.new()
 		batched.vehicle_id = id
 		root.add_child(batched)
 		check(_body_triangles(batched.body) == _body_triangles(visual.body),id + " production batching retains all body triangles")
-		check(batched.front_wheels.size() == 2 and batched.rolling_wheels.size() == 4,id + " production model retains steering and rolling wheels")
+		check((batched.rear_wheels if config.rear_steering else batched.front_wheels).size() == 2 and batched.rolling_wheels.size() == 4,id + " production model retains steering and rolling wheels")
 		batched.queue_free()
 		visual.present(sim.state.position,sim.state.heading,sim.state,DriveFrame.new())
 		visual.present_suspension(sim.state,0)
@@ -109,7 +110,7 @@ func _run() -> void:
 		rolling.tick = 3
 		rolling.steering = 0.5
 		visual.present(Vector2(0,0.1), 0.0, rolling, DriveFrame.new())
-		check(visual.front_wheels[0].rotation.y < 0.0 and visual.rolling_wheels[0].rotation.x < 0.0,id + " steering and rolling coexist")
+		check(steering_wheels[0].rotation.y * (-1.0 if config.rear_steering else 1.0) < 0.0 and visual.rolling_wheels[0].rotation.x < 0.0,id + " steering and rolling coexist")
 		rolling.tick = 0
 		visual.present(Vector2(100,100), 0.0, rolling, DriveFrame.new())
 		check(is_zero_approx(visual.rolling_wheels[0].rotation.x),id + " restart resets wheel phase without teleport spin")

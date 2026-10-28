@@ -1,3 +1,8 @@
+<!-- KART-140-20261025 -->
+## Current top speed - 2026-10-25
+Kart-5 raises the cap to **140 km/h** (38.88889 m/s). Existing engine-force, steering, grip and brake settings remain. The speed-based power curve slightly quickens acceleration. See [current tuning and verification](KART_140_2026_10_25.md); the sections below retain their historical measurements.
+<!-- /KART-140-20261025 -->
+
 # Go-kart — 2026-09-16
 
 ## Requirements and behaviour

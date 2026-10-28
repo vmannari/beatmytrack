@@ -303,9 +303,7 @@ func stage(document: Dictionary, frames: Array = [], vehicle: String = "compact"
 static func _contract(document: Dictionary, vehicle: String) -> Dictionary:
 	var track: NativeTrack = TrackCompiler.compile(document)
 	var config: HandlingConfig = VehicleCatalog.config(vehicle)
-	var values: Dictionary = {}
-	for property: Dictionary in config.get_property_list():
-		if int(property.usage) & PROPERTY_USAGE_SCRIPT_VARIABLE: values[str(property.name)] = config.get(str(property.name))
+	var values: Dictionary = config.snapshot()
 	var engine: Dictionary = Engine.get_version_info()
 	var engine_version: String = "%s.%s.%s.%s.%s.%s" % [engine.major,engine.minor,engine.patch,engine.status,engine.build,str(engine.hash).left(9)]
 	return {"physics_version":VehicleSimulation.PHYSICS_VERSION,"rules_key":RaceRules.KEY,"engine_version":engine_version,

@@ -9,7 +9,7 @@ from datetime import datetime, timezone
 from typing import Literal
 from uuid import UUID
 
-from fastapi import APIRouter, HTTPException, Request
+from fastapi import APIRouter, HTTPException, Query, Request
 from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import func, select, update
 
@@ -17,6 +17,7 @@ from .commerce_models import Entitlements, ProductControl, PublicationSlot, Purc
 from .identity_models import Identity, Player, now
 from .middleware import ParsedJSONRoute
 from .tracks import DB, Auth
+from .usernames import username_key
 
 router = APIRouter(route_class=ParsedJSONRoute, tags=["entitlements"])
 CATALOG = {
@@ -46,14 +47,49 @@ def simulator_allowed(session, settings, player_id):
             Identity.player_id == player_id, Identity.provider == "development")) is not None)
 
 
-def lock_entitlements(session, player_id):
+def gift_recipient(session, buyer_id, recipient_id, product_id, *, settings=None, simulated=False):
+    if recipient_id is None:
+        return None
+    if CATALOG.get(product_id, {}).get("slots", 0) == 0:
+        raise HTTPException(422, "ONLY_TRACK_SLOTS_CAN_BE_GIFTED")
+    if recipient_id == buyer_id:
+        raise HTTPException(422, "CANNOT_GIFT_YOURSELF")
+    recipient = session.get(Player, recipient_id)
+    if (recipient is None or recipient.disabled or recipient.deleted_at is not None
+            or recipient.needs_username or recipient.is_test_driver):
+        raise HTTPException(404, "GIFT_RECIPIENT_UNAVAILABLE")
+    if simulated and not simulator_allowed(session, settings, recipient_id):
+        raise HTTPException(409, "GIFT_RECIPIENT_NOT_ELIGIBLE_FOR_SIMULATION")
+    return recipient
+
+
+def lock_purchase_accounts(session, buyer_id, recipient_id=None):
+    # Opposite-direction gifts acquire Player locks in the same order.
+    if recipient_id is not None:
+        recipient = session.get(Player, recipient_id)
+        if recipient is None:
+            raise HTTPException(404, "GIFT_RECIPIENT_UNAVAILABLE")
+    return {identity: lock_entitlements(session, identity, allow_inactive=identity != buyer_id)
+        for identity in sorted({buyer_id, recipient_id} - {None})}
+
+
+@router.get("/store/gift-recipient")
+def find_gift_recipient(session: DB, player: Auth, username: str = Query(min_length=1, max_length=40)):
+    recipient = session.scalar(select(Player).where(Player.username_key == username_key(username)))
+    if recipient is None:
+        raise HTTPException(404, "GIFT_RECIPIENT_UNAVAILABLE")
+    gift_recipient(session, player.id, recipient.id, "creator_slot_1")
+    return {"id": recipient.id, "display_name": recipient.display_name}
+
+
+def lock_entitlements(session, player_id, *, allow_inactive=False):
     # SQLite's FOR UPDATE is ignored. Reserve its writer before reading balances
     # so the same tests also exercise concurrent development-server purchases.
     if session.bind.dialect.name == "sqlite":
         session.execute(update(Player).where(Player.id == player_id).values(created_at=Player.created_at))
     player = session.scalar(select(Player).where(Player.id == player_id).with_for_update()
         .execution_options(populate_existing=True))
-    if player is None or player.disabled or player.deleted_at is not None:
+    if player is None or (not allow_inactive and (player.disabled or player.deleted_at is not None)):
         raise HTTPException(401, "INVALID_SESSION")
     row = session.get(Entitlements, player_id)
     if row is None:
@@ -125,8 +161,10 @@ def fulfill_verified(session, row, purchase, *, verified_at):
     """Caller verifies proof/account/product; transaction owns grant + permanent token ledger."""
     if purchase.product_id not in CATALOG or purchase.provider not in ("simulation", "google_play"):
         raise ValueError("Unknown verified product/provider")
-    if purchase.player_id != row.player_id:
+    if (purchase.recipient_player_id or purchase.player_id) != row.player_id:
         raise HTTPException(409, "PURCHASE_ACCOUNT_MISMATCH")
+    if purchase.recipient_player_id and not CATALOG[purchase.product_id]["slots"]:
+        raise HTTPException(422, "ONLY_TRACK_SLOTS_CAN_BE_GIFTED")
     if purchase.fulfilled_at is not None:
         return
     if purchase.state != "approved":
@@ -162,6 +200,7 @@ def _require_simulator(session, request, player):
 
 def _purchase_payload(purchase):
     return {"id": purchase.id, "product_id": purchase.product_id, "state": purchase.state,
+        "recipient_player_id": purchase.recipient_player_id,
         "simulated": purchase.provider == "simulation", "created_at": purchase.created_at}
 
 
@@ -195,6 +234,7 @@ class SimulatePurchase(BaseModel):
     request_id: str = Field(min_length=36, max_length=36)
     product_id: Literal["creator_slot_1", "creator_slots_5", "creator_slots_10", "ad_free_month", "ad_free_forever"]
     outcome: Literal["approved", "pending", "declined", "cancelled"] = "approved"
+    recipient_player_id: str | None = Field(None, min_length=36, max_length=36)
 
 
 @router.post("/development/purchases")
@@ -205,14 +245,23 @@ def simulate(payload: SimulatePurchase, request: Request, session: DB, player: A
     except ValueError:
         raise HTTPException(422, "INVALID_PURCHASE_ID") from None
     purchase_id = "simulation:" + hashlib.sha256(identity.encode()).hexdigest()
-    row = lock_entitlements(session, player.id)
+    if payload.recipient_player_id is not None:
+        try:
+            payload.recipient_player_id = str(UUID(payload.recipient_player_id))
+        except ValueError:
+            raise HTTPException(422, "INVALID_GIFT_RECIPIENT") from None
+    rows = lock_purchase_accounts(session, player.id, payload.recipient_player_id)
+    row = rows[player.id]
     purchase = session.get(Purchase, purchase_id)
     if purchase:
-        if purchase.player_id != player.id or purchase.product_id != payload.product_id:
+        if (purchase.player_id != player.id or purchase.product_id != payload.product_id
+                or purchase.recipient_player_id != payload.recipient_player_id):
             raise HTTPException(409, "PURCHASE_ALREADY_CLAIMED")
         # Permanent purchase identity survives short-lived API idempotency records.
         # A resolved pending order is returned on retry of the original request.
     else:
+        gift_recipient(session, player.id, payload.recipient_player_id, payload.product_id,
+            settings=request.app.state.settings, simulated=True)
         product = session.scalar(select(ProductControl).where(ProductControl.id == payload.product_id).with_for_update())
         if product is None or not product.enabled:
             raise HTTPException(409, "PRODUCT_DISABLED")
@@ -223,10 +272,10 @@ def simulate(payload: SimulatePurchase, request: Request, session: DB, player: A
                 .where(Purchase.player_id == player.id, Purchase.state == "pending")) >= 20:
             raise HTTPException(409, "RESOLVE_PENDING_PURCHASES_FIRST")
         purchase = Purchase(id=purchase_id, player_id=player.id, provider="simulation",
-            product_id=payload.product_id, state=payload.outcome)
+            product_id=payload.product_id, state=payload.outcome, recipient_player_id=payload.recipient_player_id)
         session.add(purchase)
         if payload.outcome == "approved":
-            fulfill_verified(session, row, purchase, verified_at=now())
+            fulfill_verified(session, rows[purchase.recipient_player_id or player.id], purchase, verified_at=now())
     session.flush()
     result = {"purchase": _purchase_payload(purchase),
         "entitlements": entitlement_payload(session, request.app.state.settings, row)}
@@ -272,15 +321,19 @@ class ResolvePurchase(BaseModel):
 @router.post("/development/purchases/{purchase_id}/resolve")
 def resolve(purchase_id: str, payload: ResolvePurchase, request: Request, session: DB, player: Auth):
     _require_simulator(session, request, player)
-    row = lock_entitlements(session, player.id)
     purchase = session.get(Purchase, purchase_id)
     if purchase is None or purchase.player_id != player.id or purchase.provider != "simulation":
         raise HTTPException(404, "PURCHASE_NOT_FOUND")
+    rows = lock_purchase_accounts(session, player.id, purchase.recipient_player_id)
+    row = rows[player.id]
+    session.refresh(purchase)
     if purchase.state != "pending" and purchase.state != payload.outcome:
         raise HTTPException(409, "PURCHASE_ALREADY_RESOLVED")
     purchase.state = payload.outcome
-    if purchase.state == "approved":
-        fulfill_verified(session, row, purchase, verified_at=now())
+    if purchase.state == "approved" and purchase.fulfilled_at is None:
+        gift_recipient(session, player.id, purchase.recipient_player_id, purchase.product_id,
+            settings=request.app.state.settings, simulated=True)
+        fulfill_verified(session, rows[purchase.recipient_player_id or player.id], purchase, verified_at=now())
     result = {"purchase": _purchase_payload(purchase),
         "entitlements": entitlement_payload(session, request.app.state.settings, row)}
     session.commit()

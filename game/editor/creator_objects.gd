@@ -54,6 +54,7 @@ static func dimensions(kind: String) -> Vector2:
 
 static func size_of(object: Dictionary) -> Vector2:
 	var size: Vector2 = dimensions(object.kind)*float(object.get("scale",1.0))
+	if object.kind == "jump": size = JumpProfiles.dimensions(JumpProfiles.id(object))*float(object.get("scale",1.0))
 	if object.kind == "speed_bump": size.y = float(object.get("span",size.y))
 	if object.kind in ObjectRuns.CONTINUOUS: size.x = float(object.get("length",size.x))
 	return size

@@ -106,6 +106,9 @@ func _cache_route() -> void:
 			high = high.max(Vector2(point.x,-point.y))
 	route_bounds = Rect2(low,(high-low).max(Vector2.ONE)) if low.is_finite() else Rect2(Vector2.ZERO,Vector2.ONE)
 
+func _notification(what: int) -> void:
+	if what == NOTIFICATION_TRANSLATION_CHANGED: queue_redraw()
+
 func _draw() -> void:
 	var footer: float = 50.0 if compact else FOOTER_HEIGHT
 	var image_area := Rect2(Vector2(2,2),Vector2(size.x-4,size.y-4 if preview_only else size.y-footer-1.0))
@@ -133,9 +136,9 @@ func _draw() -> void:
 	draw_string(MenuStyle.DISPLAY,Vector2(13,title_baseline),title,HORIZONTAL_ALIGNMENT_LEFT,title_width,title_size,MenuStyle.TEXT)
 	var creator: String = str(entry.creator)
 	if entry.get("creator_kind", "source") == "fictional": creator += " (fictional)"
-	draw_string(MenuStyle.BODY,Vector2(13,size.y-12),str(entry.get("draft_status","Draft")) if draft_mode else "by "+creator,HORIZONTAL_ALIGNMENT_LEFT,size.x-26,13,MenuStyle.MUTED)
+	draw_string(MenuStyle.BODY,Vector2(13,size.y-12),tr(str(entry.get("draft_status","Draft"))) if draft_mode else GameText.message("by {creator}",{"creator":creator}),HORIZONTAL_ALIGNMENT_LEFT,size.x-26,13,MenuStyle.MUTED)
 	var theme_id: String = str(entry.get("theme","pine"))
-	var biome: String = TrackTheme.title(theme_id).to_upper()
+	var biome: String = tr(TrackTheme.title(theme_id)).to_upper()
 	var biome_color: Color = preload("res://ui/biome_badge.gd").color(theme_id)
 	var badge: StyleBoxFlat = MenuStyle.box(Color("0b202be8"),0)
 	draw_style_box(badge,Rect2(10,10,MenuStyle.BODY.get_string_size(biome,HORIZONTAL_ALIGNMENT_LEFT,-1,11).x+34,23))
@@ -145,7 +148,7 @@ func _draw() -> void:
 		var status: String = draft_badge_text()
 		var status_width: float = maxf(67.0,MenuStyle.DISPLAY.get_string_size(status,HORIZONTAL_ALIGNMENT_LEFT,-1,15).x+12.0)
 		draw_style_box(MenuStyle.box(Color("25565a") if entry.get("tested",false) or status == "PUBLISHED" else Color("0069a0"),0),Rect2(size.x-status_width-10,10,status_width,23))
-		draw_string(MenuStyle.DISPLAY,Vector2(size.x-status_width-4,27),status,HORIZONTAL_ALIGNMENT_LEFT,status_width-12,15,MenuStyle.TEXT)
+		draw_string(MenuStyle.DISPLAY,Vector2(size.x-status_width-4,27),tr(status),HORIZONTAL_ALIGNMENT_LEFT,status_width-12,15,MenuStyle.TEXT)
 	if not draft_mode:
 		var rating_origin := Vector2(size.x-rating_width-13,title_baseline-MenuStyle.BODY.get_ascent(12))
 		var rated: bool = has_rating()

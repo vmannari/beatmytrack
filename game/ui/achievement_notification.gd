@@ -165,7 +165,7 @@ func _begin(item: Dictionary) -> void:
 	_badge.texture = AchievementBadge.texture(motif,tier)
 	_title.text = str(family.title)
 	_description.text = Detail.requirement(family,int(family.tiers[tier-1]))
-	_tier.text = "PRESTIGE" if family.prestige else Detail.TIER_NAMES[tier].to_upper()
+	GameText.bind_upper(_tier,"Prestige" if family.prestige else Detail.TIER_NAMES[tier])
 	_eyebrow.add_theme_color_override("font_color",_metal.lightened(0.25))
 	_tier.add_theme_color_override("font_color",_metal)
 	_layout()

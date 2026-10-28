@@ -121,6 +121,9 @@ func sample(state: VehicleState, track: NativeTrack, config: HandlingConfig, ses
 		frame.steer = 0
 		frame.throttle = 0
 		frame.brake = 255
+	if config.single_pedal:
+		frame.brake = 255 if tick < reverse_until else 0
+		if tick < reverse_until: frame.throttle = 255
 	return frame
 
 func _obstacle_normal(point: Vector2, state: VehicleState, track: NativeTrack, config: HandlingConfig) -> Vector2:

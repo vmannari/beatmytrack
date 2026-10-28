@@ -80,6 +80,13 @@ func run() -> void:
 func settle() -> void:
 	for frame: int in range(8): await process_frame
 
+func dismiss_weekly_summary() -> void:
+	if not is_instance_valid(app) or not is_instance_valid(app.root_ui): return
+	var dialog: Node = app.root_ui.get_node_or_null("RivalrySummaryDialog")
+	if dialog != null:
+		dialog.confirm_button.pressed.emit()
+		await settle()
+
 func capture(id: String, dimensions: Vector2i) -> void:
 	await RenderingServer.frame_post_draw
 	check(root.get_texture().get_image().save_png(evidence.path_join(id+"-%dx%d.png" % [dimensions.x,dimensions.y])) == OK,"save "+id+" native capture")

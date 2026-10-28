@@ -558,7 +558,7 @@ func _render(direction: int = 0) -> void:
 		return
 	var index: int = _index()
 	var item: Dictionary = stories[index]
-	_folio.text = "STORY %02d / %02d  ·  %s" % [index+1,stories.size(),Time.get_date_string_from_unix_time(int(item.get("created_at",0)))]
+	_folio.text = GameText.message("STORY %02d / %02d  ·  %s") % [index+1,stories.size(),Time.get_date_string_from_unix_time(int(item.get("created_at",0)))]
 	var columns := HBoxContainer.new()
 	columns.name = "EditorialColumns"
 	columns.size_flags_vertical = Control.SIZE_EXPAND_FILL
@@ -604,11 +604,11 @@ static func _category(item: Dictionary) -> String:
 
 static func _headline(item: Dictionary) -> String:
 	match str(item.get("kind","")):
-		"milestone": return "%s racers take the start." % _count(int(item.get("count",0)))
-		"world_record": return "A new %s record." % ("lap" if item.get("metric","") == "lap" else "track")
-		"friend_overtake": return "%s moves ahead." % str(item.get("actor_name","A friend"))
+		"milestone": return GameText.message("%s racers take the start.") % _count(int(item.get("count",0)))
+		"world_record": return GameText.message("A new %s record.") % (GameText.message("lap") if item.get("metric","") == "lap" else GameText.message("track"))
+		"friend_overtake": return GameText.message("%s moves ahead.") % str(item.get("actor_name",GameText.message("A friend")))
 		"percentile_drop": return "Time for a comeback."
-		"friend_track": return "%s's latest creation." % str(item.get("actor_name","A friend"))
+		"friend_track": return GameText.message("%s's latest creation.") % str(item.get("actor_name",GameText.message("A friend")))
 		"track_published": return "Your track is ready to race."
 	return "From the paddock."
 
@@ -624,7 +624,7 @@ func _story(parent: VBoxContainer, item: Dictionary) -> void:
 	var category := _text(byline,_category(item),16,RED)
 	category.size_flags_horizontal = Control.SIZE_SHRINK_BEGIN
 	category.autowrap_mode = TextServer.AUTOWRAP_OFF
-	_text(byline,"/  "+track.to_upper(),16,MUTED)
+	GameText.user_text(_text(byline,"/  "+track.to_upper(),16,MUTED))
 	var headline := _text(parent,_headline(item),48 if wide else 46,INK,true)
 	headline.name = "NewsHeadline"
 	headline.add_theme_font_override("font",_headline_font())
@@ -658,7 +658,7 @@ func _story(parent: VBoxContainer, item: Dictionary) -> void:
 		photo.mouse_filter = Control.MOUSE_FILTER_IGNORE
 		photograph.add_child(photo)
 		var photo_caption: String = VehicleCatalog.title(vehicle).capitalize()+". "
-		photo_caption += "Trackside file photograph." if file_photo else ("Lap" if item.get("metric","") == "lap" else "Track")+" times at "+track+"."
+		photo_caption += GameText.message("Trackside file photograph.") if file_photo else GameText.message("Lap times at {track}." if item.get("metric","") == "lap" else "Track times at {track}.",{"track":track})
 		var caption := _text(photograph,photo_caption,14,INK,true)
 		caption.name = "NewsPhotoCaption"
 		caption.add_theme_font_override("font",ITALIC)
@@ -682,20 +682,20 @@ func _story(parent: VBoxContainer, item: Dictionary) -> void:
 				if is_finite(p.x) and is_finite(p.y) and absf(p.x) <= 100000 and absf(p.y) <= 100000: map.points.append(p)
 	map_column.add_child(map)
 	_text(map_column,"CIRCUIT OUTLINE" if map.points.size() >= 2 else "OUTLINE UNAVAILABLE",14,MUTED).horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-	var metric: String = "lap" if item.get("metric","") == "lap" else "track"
-	var actor: String = str(item.get("actor_name","A racer"))
+	var metric: String = GameText.message("lap") if item.get("metric","") == "lap" else GameText.message("track")
+	var actor: String = str(item.get("actor_name",GameText.message("A racer")))
 	var body: String = ""
 	match str(item.get("kind","")):
-		"milestone": body = "Your track has welcomed %s racers.\n%s is making its name." % [_count(int(item.get("count",0))),track]
-		"world_record": body = "%s sets a new %s world record.\nThe pace rises at %s." % [actor,metric,track]
-		"friend_overtake": body = "%s beats your best %s time.\nA new target at %s." % [actor,metric,track]
-		"percentile_drop": body = "Your %s time is outside the top %d%%.\nThe chase continues at %s." % [metric,int(item.get("threshold",0)),track]
-		"friend_track": body = "%s unveils %s.\nA fresh circuit to try." % [actor,track]
-		"track_published": body = "%s is published.\nShare the link or take to the track." % track
+		"milestone": body = GameText.message("Your track has welcomed %s racers.\n%s is making its name.") % [_count(int(item.get("count",0))),track]
+		"world_record": body = GameText.message("%s sets a new %s world record.\nThe pace rises at %s.") % [actor,metric,track]
+		"friend_overtake": body = GameText.message("%s beats your best %s time.\nA new target at %s.") % [actor,metric,track]
+		"percentile_drop": body = GameText.message("Your %s time is outside the top %d%%.\nThe chase continues at %s.") % [metric,int(item.get("threshold",0)),track]
+		"friend_track": body = GameText.message("%s unveils %s.\nA fresh circuit to try.") % [actor,track]
+		"track_published": body = GameText.message("%s is published.\nShare the link or take to the track.") % track
 	if item.has("time_ticks"):
 		_text(map_column,_time(int(item.time_ticks),int(item.get("tick_rate",120)))+"  /  "+metric.to_upper(),19,RED).horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	if item.has("your_ticks"):
-		_text(map_column,"Your best  "+_time(int(item.your_ticks),int(item.get("tick_rate",120))),14,MUTED).horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+		_text(map_column,GameText.message("Your best")+"  "+_time(int(item.your_ticks),int(item.get("tick_rate",120))),14,MUTED).horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	var closing := HBoxContainer.new()
 	closing.name = "StoryClosing"
 	closing.add_theme_constant_override("separation",12)
@@ -753,7 +753,7 @@ func _brief(parent: Node, item: Dictionary, index: int) -> void:
 	_text(column,_category(item),14,RED)
 	var title := _text(column,_headline(item),22 if size.x >= 1360 else 21,INK,true)
 	title.resized.connect(_fit_headline.bind(title,22 if size.x >= 1360 else 21,17))
-	_text(column,str(item.get("track_name","")),16,MUTED)
+	GameText.user_text(_text(column,str(item.get("track_name","")),16,MUTED))
 	column.minimum_size_changed.connect(_update_brief_height.bind(column,button).call_deferred)
 	button.resized.connect(_update_brief_height.bind(column,button).call_deferred)
 
@@ -775,7 +775,7 @@ func _friend_card(item: Dictionary) -> void:
 	var name_column := VBoxContainer.new()
 	name_column.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	row.add_child(name_column)
-	_text(name_column,str(item.get("display_name","")),20,INK,true)
+	GameText.user_text(_text(name_column,str(item.get("display_name","")),20,INK,true))
 	var status: String = str(item.get("status",""))
 	_text(name_column,"Request sent" if status == "sent" else "Wants to race with you" if status == "received" else "Racing friend",13,MUTED)
 	if status == "received":

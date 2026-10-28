@@ -49,6 +49,9 @@ static func _barrier(tool: SurfaceTool, span: float) -> void:
 		PropGeometry.box(tool,Vector3(0,0.10,side*0.493),Vector3(maxf(0.02,span-0.08),0.06,0.017),Color("7a827a"),0.003)
 
 static func _fence(tool: SurfaceTool, kind: String, span: float, continuous: bool) -> void:
+	if kind == "guardrail":
+		preload("res://track/guardrail_visual.gd").append(tool,span)
+		return
 	var count: int = maxi(1,ceili(span/3.0))
 	var reach: float = span*0.5 if continuous else span*0.5-0.1
 	for i: int in range(count+1):
@@ -58,13 +61,6 @@ static func _fence(tool: SurfaceTool, kind: String, span: float, continuous: boo
 			PropGeometry.box(tool,Vector3(x,1.25,0),Vector3(0.24,0.09,0.24),WOOD.lightened(0.12),0.035)
 			for h: float in [0.42,1.02]:
 				PropGeometry.tube(tool,Vector3(x,h,-0.113),Vector3(x,h,-0.126),0.027,0.027,DARK,8)
-		elif kind == "guardrail":
-			for z: float in [-0.072,0.025]:
-				PropGeometry.beam(tool,Vector3(x,0,z),Vector3(x,1.25,z),0.15,0.035,METAL.darkened(0.20))
-			PropGeometry.beam(tool,Vector3(x,0,-0.024),Vector3(x,1.25,-0.024),0.033,0.10,METAL.darkened(0.1))
-			PropGeometry.box(tool,Vector3(x,0.80,0.035),Vector3(0.17,0.30,0.17),DARK,0.015)
-			PropGeometry.tube(tool,Vector3(x,0.80,0.146),Vector3(x,0.80,0.169),0.040,0.040,Color("ccd1c6"),8)
-			PropGeometry.box(tool,Vector3(x,1.20,0.06),Vector3(0.085,0.15,0.04),Color("bbab70"),0.012)
 		else:
 			PropGeometry.tube(tool,Vector3(x,0,0),Vector3(x,1.46,0),0.055,0.045,METAL,10)
 			PropGeometry.box(tool,Vector3(x,0.07,0),Vector3(0.20,0.14,0.20),DARK,0.02)
@@ -72,12 +68,6 @@ static func _fence(tool: SurfaceTool, kind: String, span: float, continuous: boo
 		for h: float in [0.42,1.02]:
 			PropGeometry.box(tool,Vector3(0,h,0.04),Vector3(span,0.18,0.15),WOOD,0.018)
 			PropGeometry.beam(tool,Vector3(-span*0.5,h+0.04,-0.041),Vector3(span*0.5,h+0.04,-0.041),0.023,0.008,WOOD.lightened(0.24))
-	elif kind == "guardrail":
-		var section: Array[Vector2] = [Vector2(0.57,0.087),Vector2(0.62,0.11),Vector2(0.72,0.16),Vector2(0.80,0.11),Vector2(0.88,0.16),Vector2(0.98,0.11),Vector2(1.03,0.087)]
-		for row: int in range(section.size()-1):
-			var a: Vector2 = section[row]; var b: Vector2 = section[row+1]
-			PropGeometry.face(tool,[Vector3(-span*0.5,a.x,a.y),Vector3(span*0.5,a.x,a.y),Vector3(span*0.5,b.x,b.y),Vector3(-span*0.5,b.x,b.y)],METAL.lightened(0.12 if row%2 == 0 else 0.02))
-			PropGeometry.face(tool,[Vector3(span*0.5,a.x,a.y-0.015),Vector3(-span*0.5,a.x,a.y-0.015),Vector3(-span*0.5,b.x,b.y-0.015),Vector3(span*0.5,b.x,b.y-0.015)],METAL.darkened(0.15))
 	else:
 		for h: float in [0.18,1.38]: PropGeometry.tube(tool,Vector3(-span*0.5,h,0),Vector3(span*0.5,h,0),0.024,0.024,METAL,6)
 		# Clipped diamond mesh, rather than a rectangular cage.

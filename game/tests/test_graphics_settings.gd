@@ -44,7 +44,7 @@ func run() -> void:
 
 func persistence() -> void:
 	check(GRAPHICS.preferences({}) == GRAPHICS.DEFAULTS,"existing profiles retain all automatic graphics defaults")
-	records.settings = {"favorites":["starter_circuit"],"simple_car_models":true}
+	records.settings = {"favorites":["ellipse"],"simple_car_models":true}
 	check(records.save_records() == OK,"old profile saves without new fields")
 	for field: String in GRAPHICS.DEFAULTS:
 		for value: String in GRAPHICS.OPTIONS[field]:
@@ -52,7 +52,7 @@ func persistence() -> void:
 			check(records.save_records() == OK,"graphics choice saves: "+field+"="+value)
 			var reopened := LocalRecords.new(records.path)
 			reopened.load_records()
-			check(reopened.settings.get(field) == value and reopened.settings.get("favorites") == ["starter_circuit"],"graphics choice reloads with unrelated settings: "+field+"="+value)
+			check(reopened.settings.get(field) == value and reopened.settings.get("favorites") == ["ellipse"],"graphics choice reloads with unrelated settings: "+field+"="+value)
 		for invalid: Variant in [null,true,1,0.5,[],{},"invalid"]:
 			var document: Dictionary = {"schema":LocalRecords.SCHEMA,"records":{},"settings":{field:invalid}}
 			check(LocalRecords._normalize(document).is_empty(),"reject malformed graphics choice: "+field+"="+str(invalid))
@@ -115,7 +115,7 @@ func settings_ui() -> void:
 	records.path = saved_path
 	page._reset()
 	check(page.draft_graphics == GRAPHICS.DEFAULTS and not page.draft_simple_models and records.settings.shadow_quality == "off","Reset graphics stages defaults and detailed cars")
-	check(page._apply() and records.settings.favorites == ["starter_circuit"],"Reset graphics preserves favorites")
+	check(page._apply() and records.settings.favorites == ["ellipse"],"Reset graphics preserves favorites")
 	for dimensions: Vector2i in [Vector2i(1280,720),Vector2i(960,540),Vector2i(1600,720)]:
 		root.size = dimensions
 		await settle()
@@ -180,7 +180,7 @@ func settings_ui() -> void:
 
 func races() -> void:
 	root.size = Vector2i(1280,720)
-	var track: NativeTrack = NativeTrack.read("res://resources/tracks/starter_circuit.json")
+	var track: NativeTrack = NativeTrack.read("res://resources/tracks/ellipse.json")
 	var shadow_view: SubViewport
 	var original_shadow: Image
 	var low_shadow: Image

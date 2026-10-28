@@ -21,6 +21,7 @@ router = APIRouter(route_class=ParsedJSONRoute, tags=["administration"])
 
 def purchase_record(row):
     return {"id": row.id, "player_id": row.player_id, "product_id": row.product_id,
+        "recipient_player_id": row.recipient_player_id,
         "provider": row.provider, "state": row.state, "created_at": row.created_at,
         "fulfilled_at": row.fulfilled_at, "simulated": row.provider == "simulation",
         "test_adjustment": row.id.startswith("simulation-adjustment:")}

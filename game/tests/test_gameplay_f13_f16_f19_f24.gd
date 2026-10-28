@@ -10,7 +10,7 @@ var metrics: Array = []
 
 class CountingCloud extends Node:
 	var enqueues: int = 0
-	func enqueue_completed(_ticket: Dictionary, _frames: Array, _version: String, _rewinds: Array) -> bool:
+	func enqueue_completed(_ticket: Dictionary, _frames: Variant, _version: String, _rewinds: Array) -> bool:
 		enqueues += 1
 		return true
 
@@ -36,7 +36,7 @@ func hazards() -> void:
 	check(old_track_script.reload()==OK,"frozen original cache validation")
 	var old_sim: GDScript = original("vehicle_simulation","VehicleSimulation")
 	var old_bumps: GDScript = original("speed_bumps","SpeedBumps")
-	var track: NativeTrack = NativeTrack.read("res://resources/tracks/starter_circuit.json")
+	var track: NativeTrack = NativeTrack.read("res://resources/tracks/ellipse.json")
 	var reference: RefCounted = old_track_script.new()
 	for property: Dictionary in track.get_property_list():
 		if int(property.usage)&PROPERTY_USAGE_SCRIPT_VARIABLE: reference.set(property.name,track.get(property.name))
@@ -126,7 +126,7 @@ func evidence_limits() -> void:
 	check(frames.size() == BUDGET.MAX_INPUTS and not budget.eligible(proof),"overflow is explicit and bounded")
 	var session := TrackSession.new(); var state := VehicleState.new()
 	# Rewinds reduce scored ticks, never the append-only input offset budget.
-	var rewound_budget: RefCounted = BUDGET.new(); var rewound_frames: Array = []
+	var rewound_budget: RefCounted = BUDGET.new(); var rewound_frames: Variant = []
 	var offsets: Array = []
 	for branch: int in range(3):
 		for tick: int in range(20): rewound_budget.append_input(rewound_frames,frame)
@@ -174,7 +174,7 @@ func compact_monitor() -> void:
 	game.set_physics_process(false); game.set_process(false)
 	game.production_mode = true; game.paused = false; game.countdown_ticks = 0
 	game.online_frames.resize(BUDGET.MAX_INPUTS)
-	game.online_frames.fill(DriveFrame.new().packed())
+	game.online_frames.fill(preload("res://race/input_record.gd").pack(DriveFrame.new()))
 	var tick_before: int = game.sim.state.tick
 	game._physics_process(VehicleSimulation.STEP)
 	check(game.sim.state.tick == tick_before+1 and game.attempt_evidence.overflow,"actual physics keeps driving past recording capacity")

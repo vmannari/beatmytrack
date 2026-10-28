@@ -10,6 +10,10 @@ const TOUCH_PADDING_BELOW: float = 216.0
 var vehicle_id: String = "compact":
 	set(value):
 		vehicle_id = value
+		_cached_hash = 0
+		_cached_groups.clear()
+		_cached_hit_rects.clear()
+		release_all()
 		queue_redraw()
 var driver: DriverInput
 var haptic_strength: float = SteeringHaptics.AMPLITUDE
@@ -58,6 +62,26 @@ func release_all() -> void:
 func analog_controls() -> bool:
 	return not layout.is_empty() and layout.steering_type != "buttons"
 
+func one_pedal() -> bool:
+	return vehicle_id == "electric"
+
+func _active_keys() -> Array[String]:
+	var keys: Array[String] = ControlLayout.active_keys(layout)
+	if one_pedal():
+		keys.erase("handbrake")
+		if "brake" not in keys: keys.insert(keys.size()-1,"brake") # Reserve its saved position for D/R.
+	return keys
+
+func direction_rect() -> Rect2:
+	if not layout.is_empty(): return _pedal_art(group_rects().brake,false)
+	var rect := Rect2(size.x-248,size.y-156,100,92)
+	var factor: float = control_scale*(1.15 if mobile_layout else 1.0)
+	var anchor := Vector2(size.x-24,size.y-64)
+	rect.position = anchor+(rect.position-anchor)*factor
+	rect.size *= factor
+	if left_handed: rect.position.x = size.x-rect.end.x
+	return rect
+
 func _release_finger(finger: int) -> void:
 	owners.erase(finger)
 	touch_origins.erase(finger)
@@ -85,7 +109,7 @@ func usable_area() -> Rect2:
 func group_rects() -> Dictionary:
 	if layout.is_empty(): return {}
 	var area: Rect2 = usable_area()
-	var fingerprint: int = hash(layout)
+	var fingerprint: int = hash([layout,vehicle_id])
 	if fingerprint != _cached_hash or area != _cached_area or _cached_groups.is_empty():
 		_cached_hash = fingerprint
 		_cached_area = area
@@ -94,7 +118,7 @@ func group_rects() -> Dictionary:
 
 func _resolve_groups(area: Rect2) -> Dictionary:
 	var result: Dictionary = {}
-	for key: String in ControlLayout.active_keys(layout):
+	for key: String in _active_keys():
 		var rect: Rect2 = ControlLayout.rect(layout,key,area)
 		# Resolve overlap after aspect-ratio/safe-area changes using nearest free position.
 		if _overlaps(rect,result):
@@ -113,7 +137,7 @@ func _resolve_groups(area: Rect2) -> Dictionary:
 	return result
 
 func _packed_rects(area: Rect2) -> Dictionary:
-	var keys: Array[String] = ControlLayout.active_keys(layout)
+	var keys: Array[String] = _active_keys()
 	keys.sort_custom(func(a: String,b: String) -> bool: return float(layout[a].x) < float(layout[b].x))
 	var total: float = 0.0
 	for key: String in keys: total += ControlLayout.extent(key,layout[key].scale).x
@@ -203,6 +227,7 @@ func zones() -> Array[Rect2]:
 			left = Rect2(steering.position,half)
 			right = Rect2(Vector2(steering.end.x-half.x,steering.position.y),half)
 		var gas: Rect2 = groups.accelerator
+		if one_pedal(): return [left,right,Rect2(),_pedal_art(gas,true),Rect2()]
 		var brake: Rect2 = groups.brake if not analog_controls() else Rect2(gas.position+Vector2(0,gas.size.y*0.5),Vector2(gas.size.x,gas.size.y*0.5))
 		if analog_controls(): gas.size.y *= 0.5
 		return [left, right, _pedal_art(brake,false), _pedal_art(gas,true), groups.handbrake.grow(-10)]
@@ -216,6 +241,9 @@ func zones() -> Array[Rect2]:
 		rect.size *= scale_value
 		if left_handed: rect.position.x = size.x - rect.end.x
 		result[i] = rect
+	if one_pedal():
+		result[2] = Rect2()
+		result[4] = Rect2()
 	return result
 
 
@@ -232,9 +260,9 @@ func touch_zones() -> Array[Rect2]:
 		if _cached_hit_hash == _cached_hash and _cached_hit_area == _cached_area and not _cached_hit_rects.is_empty(): return _cached_hit_rects
 		var rectangles: Array[Rect2] = zones()
 		var pedal: Rect2 = groups.accelerator
-		rectangles[2] = groups.brake if not analog_controls() else Rect2(pedal.position+Vector2(0,pedal.size.y*0.5),Vector2(pedal.size.x,pedal.size.y*0.5))
-		rectangles[4] = groups.handbrake
-		rectangles[3] = pedal if not analog_controls() else Rect2(pedal.position,Vector2(pedal.size.x,pedal.size.y*0.5))
+		rectangles[2] = Rect2() if one_pedal() else groups.brake if not analog_controls() else Rect2(pedal.position+Vector2(0,pedal.size.y*0.5),Vector2(pedal.size.x,pedal.size.y*0.5))
+		rectangles[4] = Rect2() if one_pedal() else groups.handbrake
+		rectangles[3] = pedal if one_pedal() or not analog_controls() else Rect2(pedal.position,Vector2(pedal.size.x,pedal.size.y*0.5))
 		if layout.steering_type == "buttons":
 			rectangles[0] = groups.steer_left
 			rectangles[1] = groups.steer_right
@@ -250,9 +278,13 @@ func touch_zones() -> Array[Rect2]:
 	var artwork: Array[Rect2] = zones()
 	var result: Array[Rect2] = []
 	for i: int in range(artwork.size()):
+		if not artwork[i].has_area():
+			result.append(Rect2())
+			continue
 		var rect: Rect2 = artwork[i].grow_individual(42, 48, 42, 72)
 		for j: int in range(artwork.size()):
 			if i == j: continue
+			if not artwork[j].has_area(): continue
 			var neighbor: Rect2 = artwork[j]
 			var split: float = (artwork[i].get_center().x + neighbor.get_center().x) * 0.5
 			if artwork[i].get_center().x < split:
@@ -267,11 +299,12 @@ func touch_zones() -> Array[Rect2]:
 func _expanded_targets(bases: Array[Rect2], bounds: Rect2) -> Array[Rect2]:
 	var result: Array[Rect2] = []
 	for base: Rect2 in bases:
-		result.append(base.grow_individual(TOUCH_PADDING.x,TOUCH_PADDING.y,TOUCH_PADDING.x,TOUCH_PADDING_BELOW).intersection(bounds))
+		result.append(base.grow_individual(TOUCH_PADDING.x,TOUCH_PADDING.y,TOUCH_PADDING.x,TOUCH_PADDING_BELOW).intersection(bounds) if base.has_area() else Rect2())
 	return result
 
 
 func action_at(point: Vector2) -> StringName:
+	if one_pedal() and direction_rect().grow(8).has_point(point): return &""
 	var rectangles: Array[Rect2] = touch_zones()
 	if not layout.is_empty():
 		# Button faces always win. Shared padding belongs to the nearest face,
@@ -372,6 +405,7 @@ func _update_finger(finger: int, point: Vector2) -> void:
 		var rect: Rect2 = group_rects().accelerator
 		var origin: Vector2 = touch_origins[finger]
 		pedal_value = TouchSteering.axis(origin.y-point.y,rect.size.y*TouchSteering.FULL_TRAVEL_RATIO)
+		if one_pedal(): pedal_value = maxf(0.0,pedal_value)
 		driver.set_touch(finger,&"accelerate" if pedal_value >= 0 else &"brake",absf(pedal_value))
 		return
 	_update_button(finger,point)
@@ -387,6 +421,7 @@ func pressed_mask() -> int:
 	var result: int = 0
 	if enabled:
 		for i: int in range(ACTIONS.size()):
+			if one_pedal() and i in [2,4]: continue
 			if Input.is_action_pressed(ACTIONS[i]) or _touch_pressed(ACTIONS[i]): result |= 1 << i
 	return result
 
@@ -438,16 +473,17 @@ func _draw() -> void:
 		var center: Vector2 = pedal.get_center()
 		draw_line(Vector2(center.x,pedal.position.y+24),Vector2(center.x,pedal.end.y-24),pedal_tint,3,true)
 		draw_line(center-Vector2(12,0),center+Vector2(12,0),pedal_tint,3,true)
-		for direction: float in [-1.0,1.0]:
+		for direction: float in ([-1.0] if one_pedal() else [-1.0,1.0]):
 			var tip := Vector2(center.x,center.y+direction*(pedal.size.y*0.5-24))
 			draw_line(tip,tip+Vector2(-7,-direction*7),pedal_tint,3,true)
 			draw_line(tip,tip+Vector2(7,-direction*7),pedal_tint,3,true)
 		if show_labels:
 			var font: Font = ThemeDB.fallback_font
 			draw_string(font,Vector2(center.x+20,pedal.position.y+42),"GAS",HORIZONTAL_ALIGNMENT_LEFT,-1,14,pedal_tint)
-			draw_string(font,Vector2(center.x+20,pedal.end.y-28),"BRAKE",HORIZONTAL_ALIGNMENT_LEFT,-1,14,pedal_tint)
+			if not one_pedal(): draw_string(font,Vector2(center.x+20,pedal.end.y-28),"BRAKE",HORIZONTAL_ALIGNMENT_LEFT,-1,14,pedal_tint)
 	for art: TouchControlArt in artwork:
 		art.visible = not analog_controls() or art.button_index == 4
+		if one_pedal() and art.button_index in [2,4]: art.visible = false
 		var rect: Rect2 = rectangles[art.button_index]
 		if art.artwork_rect != rect:
 			art.artwork_rect = rect

@@ -5,6 +5,16 @@ extends RefCounted
 static var cached_tire: ArrayMesh
 static var cached_simple_tire: ArrayMesh
 static var rear_tiles: Dictionary = {}
+const FRONT_CACHE_ENTRIES: int = 8
+const FRONT_CACHE_BYTES: int = 2 * 1024 * 1024
+static var front_tiles: Dictionary = {}
+static var front_cache_bytes: int = 0
+static var front_cache_generation: int = 0
+
+static func trim_front_cache() -> void:
+	front_tiles.clear()
+	front_cache_bytes = 0
+	front_cache_generation += 1
 
 static func tire(parent: Node3D, material: Material, simple: bool = false) -> void:
 	var cached: ArrayMesh = cached_simple_tire if simple else cached_tire
@@ -44,16 +54,18 @@ static func _attach_tire(parent: Node3D,resource: ArrayMesh) -> void:
 	mesh.material_override = tire_finish
 	parent.add_child(mesh)
 
-static func build(car: CarVisual, blue: Material, cream: Material, trim: Material, alloy: Material) -> void:
+static func build(car: CarVisual, blue: Material, cream: Material, trim: Material, alloy: Material, cooperate: Callable = Callable()) -> void:
 	var rubber := VisualGeometry.material(Color("303234"))
 	var bright := CompactFinish.alloy(Color("b5b8ae"))
 	var amber := VisualGeometry.material(Color("d58b32"))
-	_front(car, blue, cream, trim, alloy)
+	await _front(car, blue, cream, trim, alloy,cooperate)
+	if cooperate.is_valid() and not await cooperate.call(): return
 	# The arch rolls out from the actual body skin to a narrow dark opening lip.
 	for side: float in [-1.0,1.0]:
 		for axle: float in [-1.28,1.28]:
 			CompactCoachwork.build_arch(car,side,axle,blue,trim)
-		_door(car,side,trim)
+			if cooperate.is_valid() and not await cooperate.call(): return
+		await _door(car,side,trim,cooperate)
 		var handle_z: float=CompactCoachwork.DOOR_REAR-0.15
 		VisualGeometry.box(car.body,Vector3(0.018,0.046,0.17),Vector3(side*(CompactCoachwork.body_width(0.835,handle_z)+0.008),0.835,handle_z),trim)
 		VisualGeometry.box(car.body,Vector3(0.023,0.021,0.13),Vector3(side*(CompactCoachwork.body_width(0.846,handle_z)+0.019),0.846,handle_z),bright)
@@ -64,6 +76,7 @@ static func build(car: CarVisual, blue: Material, cream: Material, trim: Materia
 		# Slim drip rails, black windscreen gasket, separate wiper blades.
 		car._seam(car.body,Vector3(side*0.63,1.483,-0.34),Vector3(side*0.63,1.483,1.12),0.010,cream)
 		car._seam(car.body,Vector3(side*0.67,1.083,-0.934),Vector3(side*0.16,1.12,-0.886),0.023,trim)
+		if cooperate.is_valid() and not await cooperate.call(): return
 	for vent: int in range(18):
 		var u: float=lerpf(-0.4,0.4,vent/17.0)
 		var center: Vector3=CompactCoachwork.hood_point(u,0.965)
@@ -71,8 +84,11 @@ static func build(car: CarVisual, blue: Material, cream: Material, trim: Materia
 		var slot: MeshInstance3D=VisualGeometry.box(car.body,Vector3(0.014,0.002,0.025),center+Vector3.UP*0.001,trim)
 		slot.rotation.x=-atan2(slope.y,slope.z)
 	_wrap_bumper(car,trim,true)
-	CompactRearDesign.build(car,blue,trim,bright)
-	CompactFrontLamps.build(car)
+	if cooperate.is_valid() and not await cooperate.call(): return
+	await CompactRearDesign.build(car,blue,trim,bright,cooperate)
+	if cooperate.is_valid() and not await cooperate.call(): return
+	await CompactFrontLamps.build(car,cooperate)
+	if cooperate.is_valid() and not await cooperate.call(): return
 	for side: float in [-1.0,1.0]:
 		var bumper_u: float=CompactCoachwork.front_bumper_parameter(side*0.61)
 		var mount: Vector3=CompactCoachwork._bumper_point(false,bumper_u,0)
@@ -86,6 +102,7 @@ static func build(car: CarVisual, blue: Material, cream: Material, trim: Materia
 	for rotor: Node3D in car.rolling_wheels:
 		var side: float = signf((rotor.get_parent() as Node3D).position.x)
 		rim_detail(car.wheel_kit_frame(rotor),side,alloy,trim,bright)
+		if cooperate.is_valid() and not await cooperate.call(): return
 
 static func rim_detail(parent: Node3D,side: float,alloy: Material,trim: Material,bright: Material) -> void:
 	var lip := Node3D.new()
@@ -102,7 +119,7 @@ static func rim_detail(parent: Node3D,side: float,alloy: Material,trim: Material
 		bolt.rotation.z = PI*0.5
 
 
-static func _door(car: CarVisual,side: float,trim: Material) -> void:
+static func _door(car: CarVisual,side: float,trim: Material,cooperate: Callable = Callable()) -> void:
 	var path: Array[Vector2]=CompactCoachwork.door_outline()
 	var outline: Array[Vector2]=[path[0]]
 	# Open U around the metal door; the window frame continues above it.
@@ -124,12 +141,14 @@ static func _door(car: CarVisual,side: float,trim: Material) -> void:
 		var b: Vector2=outline[index+1]
 		var steps: int=maxi(1,int(ceil(a.distance_to(b)/0.025)))
 		for step: int in range(steps):
+			if cooperate.is_valid() and not await cooperate.call(): return
 			var p: Vector2=a.lerp(b,step/float(steps))
 			var q: Vector2=a.lerp(b,(step+1)/float(steps))
 			car._seam(seams,Vector3(side*(CompactCoachwork.body_width(p.y,p.x)+0.004),p.y,p.x),Vector3(side*(CompactCoachwork.body_width(q.y,q.x)+0.004),q.y,q.x),0.006,trim)
 	# Trace the painted door frame outside the glass, all the way to the rail.
 	for front: bool in [true,false]:
 		for segment: int in range(24):
+			if cooperate.is_valid() and not await cooperate.call(): return
 			var a: Vector3=_door_frame_point(side,front,lerpf(1.01,1.445,segment/24.0))
 			var b: Vector3=_door_frame_point(side,front,lerpf(1.01,1.445,(segment+1)/24.0))
 			car._seam(seams,a,b,0.004,trim)
@@ -140,14 +159,19 @@ static func _door_frame_point(side: float,front: bool,y: float) -> Vector3:
 	var point: Vector3=CompactCoachwork.cabin_side_point(side,0,height)
 	return Vector3(point.x+side*0.004,y,point.z+0.03 if front else CompactCoachwork.DOOR_REAR)
 
-static func _front(car: CarVisual, blue: Material, cream: Material, trim: Material, alloy: Material) -> void:
+static func _front(car: CarVisual, blue: Material, cream: Material, trim: Material, alloy: Material, cooperate: Callable = Callable()) -> void:
 	# Curved nose with a separate moulded rubber bumper wrapping both corners.
 	CompactCoachwork.build_nose(car,blue)
-	_nose_band(car,0.783,0.660,0.932,-0.009,trim)
+	if cooperate.is_valid() and not await cooperate.call(): return
+	await _nose_band(car,0.783,0.660,0.932,-0.009,trim,cooperate)
 	for side: float in [-1,1]:
-		_nose_tile(car,minf(side*0.79,side*0.828),maxf(side*0.79,side*0.828),0.688,0.908,-0.012,6,16,VisualGeometry.material(Color("b77929")))
+		if cooperate.is_valid() and not await cooperate.call(): return
+		await _nose_tile(car,minf(side*0.79,side*0.828),maxf(side*0.79,side*0.828),0.688,0.908,-0.012,6,16,VisualGeometry.material(Color("b77929")),cooperate)
+	if cooperate.is_valid() and not await CompactGrille.prepare(cooperate): return
 	CompactGrille.build(car)
+	if cooperate.is_valid() and not await cooperate.call(): return
 	_wrap_bumper(car,trim)
+	if cooperate.is_valid() and not await cooperate.call(): return
 	CompactCoachwork.build_hood(car,blue,cream)
 
 
@@ -221,16 +245,35 @@ static func _wrap_bumper(car: CarVisual, rubber: Material, rear: bool = false) -
 	CompactCoachwork.build_bumper(car,rear,rubber)
 
 
-static func _nose_band(car: CarVisual, half_width: float, bottom: float, top: float, offset: float, material: Material) -> void:
-	_nose_tile(car,-half_width,half_width,bottom,top,offset,40 if half_width>0.7 else 16,12 if half_width>0.7 else 1,material)
+static func _nose_band(car: CarVisual, half_width: float, bottom: float, top: float, offset: float, material: Material, cooperate: Callable = Callable()) -> void:
+	await _nose_tile(car,-half_width,half_width,bottom,top,offset,40 if half_width>0.7 else 16,12 if half_width>0.7 else 1,material,cooperate)
 
-static func _nose_tile(car: CarVisual, left: float, right: float, bottom: float, top: float, offset: float, columns: int, rows: int, material: Material) -> void:
+static func _nose_tile(car: CarVisual, left: float, right: float, bottom: float, top: float, offset: float, columns: int, rows: int, material: Material, cooperate: Callable = Callable()) -> void:
 	# The thin solid applique follows the shell in both directions. Its back is
 	# embedded in the steel; an old rectangular back wall cut across the corner.
 	var inset:=Vector3(0,0,0.024)
 	if car.simple_model:
 		columns = maxi(2,columns/2)
 		rows = maxi(1,rows/2)
+	var key: String = var_to_bytes([PackedFloat64Array([left,right,bottom,top,offset]),columns,rows]).hex_encode()
+	if front_tiles.has(key):
+		var tile:=MeshInstance3D.new()
+		tile.mesh=front_tiles[key].mesh
+		tile.material_override=material
+		car.body.add_child(tile)
+		return
+	# Keep sampled heights at double precision until the original Vector3
+	# construction. Rounding an intermediate height changes fitted normals.
+	var heights:=PackedFloat64Array()
+	var cache_generation: int=front_cache_generation
+	heights.resize((rows+1)*(columns+1))
+	for row: int in range(rows+1):
+		var y: float=lerpf(bottom,top,row/float(rows))
+		for column: int in range(columns+1):
+			var x: float=lerpf(left,right,column/float(columns))
+			heights[row*(columns+1)+column]=CompactCoachwork.front_skin(x,y)
+			if column%8==7 and cooperate.is_valid() and not await cooperate.call(): return
+		if cooperate.is_valid() and not await cooperate.call(): return
 	var tool:=SurfaceTool.new()
 	tool.begin(Mesh.PRIMITIVE_TRIANGLES)
 	for row: int in range(rows):
@@ -239,10 +282,10 @@ static func _nose_tile(car: CarVisual, left: float, right: float, bottom: float,
 		for column: int in range(columns):
 			var x0: float=lerpf(left,right,column/float(columns))
 			var x1: float=lerpf(left,right,(column+1)/float(columns))
-			var a:=Vector3(x0,y0,CompactCoachwork.front_skin(x0,y0)+offset)
-			var b:=Vector3(x1,y0,CompactCoachwork.front_skin(x1,y0)+offset)
-			var c:=Vector3(x1,y1,CompactCoachwork.front_skin(x1,y1)+offset)
-			var d:=Vector3(x0,y1,CompactCoachwork.front_skin(x0,y1)+offset)
+			var a:=Vector3(x0,y0,heights[row*(columns+1)+column]+offset)
+			var b:=Vector3(x1,y0,heights[row*(columns+1)+column+1]+offset)
+			var c:=Vector3(x1,y1,heights[(row+1)*(columns+1)+column+1]+offset)
+			var d:=Vector3(x0,y1,heights[(row+1)*(columns+1)+column]+offset)
 			var normal:=Vector3((b.z-a.z)/(x1-x0),(d.z-a.z)/(y1-y0),-1).normalized()
 			if left<-0.7 and right>0.7 and CompactGrille.overlaps([a,b,c,d]):
 				CompactGrille.cut_quad(tool,[a,b,c,d],[normal,normal,normal,normal],[Vector2.ZERO,Vector2.RIGHT,Vector2.ONE,Vector2.DOWN],false)
@@ -251,8 +294,19 @@ static func _nose_tile(car: CarVisual, left: float, right: float, bottom: float,
 			if row==rows-1:_tile_quad(tool,[d,c,c+inset,d+inset],Vector3.UP)
 			if column==0:_tile_quad(tool,[a,d,d+inset,a+inset],Vector3.LEFT)
 			if column==columns-1:_tile_quad(tool,[b,c,c+inset,b+inset],Vector3.RIGHT)
+			if column%8==7 and cooperate.is_valid() and not await cooperate.call(): return
+		if cooperate.is_valid() and not await cooperate.call(): return
+	var resource: ArrayMesh=tool.commit()
+	var cost: int=1024+resource.surface_get_array_len(0)*96+resource.surface_get_array_index_len(0)*4
+	if cost<=FRONT_CACHE_BYTES and cache_generation==front_cache_generation:
+		while not front_tiles.is_empty() and (front_tiles.size()>=FRONT_CACHE_ENTRIES or front_cache_bytes+cost>FRONT_CACHE_BYTES):
+			var oldest: Variant=front_tiles.keys()[0]
+			front_cache_bytes-=int(front_tiles[oldest].bytes)
+			front_tiles.erase(oldest)
+		front_tiles[key]={"mesh":resource,"bytes":cost}
+		front_cache_bytes+=cost
 	var tile:=MeshInstance3D.new()
-	tile.mesh=tool.commit()
+	tile.mesh=resource
 	tile.material_override=material
 	car.body.add_child(tile)
 

@@ -253,10 +253,12 @@ def admin_publication(publication_id: str, request: Request, session: DB):
 
 
 def _check_contract(contract, manifest, vehicle):
+    from .contracts import compatible_physics_versions
     expected = {**manifest, "config_hash": manifest.get("vehicles", {}).get(vehicle, {}).get("config_hash")}
     if (manifest.get("laps") != 5 or manifest.get("tick_rate") != 120
             or vehicle not in manifest.get("vehicles", {})
-            or any(contract.get(field) != expected.get(field) for field in CONTRACT_FIELDS)):
+            or contract.get("physics_version") not in compatible_physics_versions(manifest.get("physics_version"), vehicle)
+            or any(contract.get(field) != expected.get(field) for field in CONTRACT_FIELDS if field != "physics_version")):
         raise PublicationFailure("build_mismatch", "The saved creator lap requires its original track and game build. Its local recording is preserved.")
 
 
@@ -290,6 +292,10 @@ def process_one(app):
         snapshot = {field: getattr(intent, field) for field in ("id", "player_id", "content_hash", "replay_hash", "contract", "vehicle_id")}
         session.commit()
     manifest, result, failure, detail = None, None, None, None
+    worker_id = getattr(app.state, "worker_id", None)
+    if worker_id is not None:
+        from .operations import heartbeat
+        heartbeat(app, worker_id, phase="publishing", coalesce=True)
     try:
         document = app.state.blobs.get_json(snapshot["content_hash"])
         replay = app.state.blobs.get_json(snapshot["replay_hash"])

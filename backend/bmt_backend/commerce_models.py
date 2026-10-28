@@ -27,6 +27,8 @@ class Purchase(Base):
     # Namespaced provider token digest; no raw store credentials or receipt tokens.
     id: Mapped[str] = mapped_column(String(96), primary_key=True)
     player_id: Mapped[str] = mapped_column(ForeignKey("players.id"))
+    # Buyer owns the receipt; an immutable recipient receives only this pack.
+    recipient_player_id: Mapped[str | None] = mapped_column(ForeignKey("players.id"), nullable=True)
     provider: Mapped[str] = mapped_column(String(24))
     product_id: Mapped[str] = mapped_column(String(40))
     state: Mapped[str] = mapped_column(String(16))

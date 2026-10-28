@@ -1,3 +1,11 @@
+<!-- BACKEND-LOCAL-RACES-20261028 -->
+Artificial generation runs locally on demand: `./scripts/artificial-races.ps1` handles one attempt from the current batch; `-ListRivalries` and `-RivalryId <id>` handle existing artificial weekly fields. Cloud workers verify normal uploads. See [commands, recovery, measurements and release evidence](../../docs/BACKEND_RESOURCE_OPTIMISATION_2026_10_28.md).
+<!-- /BACKEND-LOCAL-RACES-20261028 -->
+
+<!-- FULL-BACKEND-DEPLOY-20261026 -->
+2026-10-26 full retained cloud rollout: API, worker, private Studio and all seven existing job definitions now use the common tested image at schema0070. Native/schema/GCS, live authority, discovery and original table-count checks pass; managed backup1793045662757 is retained. Private-record fingerprint export was rejected before execution; no such hashes or player records were exported. PC remains unchanged. See [the actual release, commands and acceptance limits](../../docs/FULL_BACKEND_DEPLOY_2026_10_26.md).
+<!-- /FULL-BACKEND-DEPLOY-20261026 -->
+
 <!-- SEC09-SEC10-FIXES-20261024 -->
 SEC09/SEC10 are repaired in source: all deployment HTTP entry points select `python -m bmt_backend.http_server`; retained Google updates also replace old command overrides. Production PostgreSQL startup verifies effective table/column/schema/sequence/function grants against the provisioning policy. Apply reviewed owner grants after migrations and verify production-mode startup during an authorized rollout. No deployment occurred for these fixes. See [actual tests, current-schema correction and rollout limits](../../docs/SEC09_SEC10_FIXES_2026_10_24.md).
 <!-- /SEC09-SEC10-FIXES-20261024 -->
@@ -352,7 +360,7 @@ measure CPU, memory and pool contention before increasing either setting.
 Small discovery requests have a separate bounded query pool; large bodies and
 expensive searches retain their narrower allowances.
 
-Broad Studio behaviour/release reports and their CSV exports require `BMT_STUDIO_ANALYSIS_DATABASE_URL` pointing
+The default `BMT_STUDIO_ANALYSIS_MODE=replica` requires broad Studio behaviour/release reports and their CSV exports to use `BMT_STUDIO_ANALYSIS_DATABASE_URL` pointing
 to a dedicated PostgreSQL hot standby with matching database/schema and a read-only
 credential. There is no primary fallback: an unconfigured, mismatched, catching-up or
 unavailable replica produces an actionable 503. The reader allows one report per
@@ -373,6 +381,8 @@ age is coverage metadata; a quiet, fully caught-up replica remains available.
 Exact arbitrary-window distinct/cohort queries still do linear
 analytical work on the replica and can hit the deadline; they no longer consume
 gameplay-database scan resources. Provision and load-test this replica separately.
+
+Early-stage exception approved and deployed 2026-10-25: the private Studio service may explicitly use `BMT_STUDIO_ANALYSIS_MODE=shared_limited` with the separate `bmt_studio_report` read-only credential on the existing database. This mode requires matching database/cluster/schema, no writer privileges or inherited roles, a seven-calendar-day population window, a total SQL budget capped at1,500ms, one report at a time and manual refresh. A one-connection reader pool, role connection limit, cross-process advisory lock, small work memory and disabled parallel query bound its resource use. Each report opens a fresh read-only snapshot; no aggregate cache or privacy-fence weakening is introduced. Replica mode remains the default and still rejects a primary. Only the private Studio service receives the reporting secret; game API/worker remain unchanged. [Actual SQL/browser/live checks and limitations](../../docs/STUDIO_SHARED_REPORTING_2026_10_25.md).
 
 For the 2026-10-24 Studio items 1–4 update, roll out matching API and admin assets
 together: directory cursors include the selected timestamp field; CSV schemas now

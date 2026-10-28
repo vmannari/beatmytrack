@@ -1,7 +1,7 @@
 extends RefCounted
 ## Original fitted snow caps and eave ice, baked into the existing opaque draw.
 ## Existing WinterScenery nature and Winter craft keep their own authored snow.
-const KINDS: Array[String] = ["pebbles","cliff","log","barrier","guardrail","cone","chevron","braking_board","flag","light","gantry","shed","hut"]
+const KINDS: Array[String] = ["pebbles","cliff","log","barrier","cone","chevron","braking_board","flag","light","gantry","shed","hut"]
 const SNOW := Color("e1eaf0")
 const SHADE := Color("afc6d8")
 
@@ -19,11 +19,6 @@ static func apply(source: ArrayMesh, kind: String, length: float = -1.0) -> Arra
 		"pebbles", "cliff": _stone_caps(snow,source,0.018 if kind == "pebbles" else 0.085,0.025 if kind == "pebbles" else 2.9)
 		"log": _sheet(snow,Vector3(0,0.40,0),3.88,0.64,0.07,2)
 		"barrier": _sheet(snow,Vector3(0,0.944,0),span,0.37,0.065)
-		"guardrail":
-			_sheet(snow,Vector3(0,1.033,0.085),span,0.11,0.05)
-			var count: int = maxi(1,ceili(span/3.0))
-			var reach: float = span*0.5 if length >= 0 else span*0.5-0.1
-			for i: int in range(count+1): _sheet(snow,Vector3(lerpf(-reach,reach,float(i)/count),1.25,0),0.18,0.16,0.035)
 		"cone":
 			_sheet(snow,Vector3(0,0.131,0),0.69,0.69,0.025)
 			_sheet(snow,Vector3(0,0.881,0),0.10,0.10,0.025)

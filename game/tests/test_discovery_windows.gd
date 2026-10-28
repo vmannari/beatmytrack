@@ -88,7 +88,7 @@ func run() -> void:
 	root.add_child(client)
 	client.configure("http://127.0.0.1:1")
 	client._capabilities = {"discovery_paging_version":3}
-	client.document = TrackDocument.from_builtin(NativeTrack.read("res://resources/tracks/starter_circuit.json"))
+	client.document = TrackDocument.from_builtin(NativeTrack.read("res://resources/tracks/ellipse.json"))
 	client.hash_value = JSON.stringify(client.document).sha256_text()
 	var cloud := Cloud.new()
 	cloud.client = client

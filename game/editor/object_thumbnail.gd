@@ -67,7 +67,7 @@ static func make(kind: String, title: String, chosen: bool, action: Callable, bi
 	button.button_pressed = chosen
 	button.pressed.connect(action)
 	EditorStyle.card(button,chosen)
-	button._cache_key = kind+"/"+TrackTheme.normalized(biome)+"/"+NativeTrackVisual.VERSION+"/"+CreatorPropVisual.VERSION+"/"+PREVIEW_VERSION+"/"+(color if kind == "container" else "")
+	button._cache_key = kind+"/"+TrackTheme.normalized(biome)+"/"+NativeTrackVisual.VERSION+"/"+CreatorPropVisual.VERSION+"/"+PREVIEW_VERSION+"/"+(color if kind == "container" else "")+("/"+JumpProfiles.VERSION if kind == "jump" else "")
 	var cached: Texture2D = _images.get(button._cache_key)
 	if cached != null: _images.erase(button._cache_key); _images[button._cache_key] = cached
 	button._kind = kind; button._biome = biome; button._color = color
@@ -105,6 +105,7 @@ static func _render_preview(button: Button, kind: String, biome: String, color: 
 	viewport.add_child(kit)
 	var track := NativeTrack.new()
 	var object: Dictionary = {"kind":kind,"position":[0,0],"rotation":0}
+	if kind == "jump": object["jump_profile"] = JumpProfiles.default_for(biome)
 	if kind == "container" and ContainerPaint.valid(color): object["color"] = color
 	track.metadata = {"creator_document":{"objects":[object]}}
 	track.tyre_origins = LooseTyres.positions(track.metadata.creator_document)

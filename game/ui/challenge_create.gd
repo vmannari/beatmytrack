@@ -11,7 +11,7 @@ const RULES := 3
 const RESULT := 4
 const FORMAT_TITLES: Dictionary = {"duel":"One-to-one","group":"Group race","three":"3×3","custom":"Custom challenge"}
 const FormatCard = preload("res://ui/challenge_format_card.gd")
-const POSTERS: Dictionary = {"duel":"res://assets/menu/challenges/one-to-one-v3.png","group":"res://assets/menu/challenges/group-race-v3.png","three":"res://assets/menu/challenges/three-by-three-v6.png"}
+const POSTERS: Dictionary = {"duel":"res://assets/menu/challenges/one-to-one-v3.png","group":"res://assets/menu/challenges/group-race-v3.png","three":"res://assets/menu/challenges/three-by-three-v9.png"}
 var adapter: ChallengesClient
 var entries: Array[Dictionary] = []
 var library: TrackLibrary
@@ -82,6 +82,9 @@ func locked_result() -> bool: return not initial_ticket.is_empty() or not result
 func _required_tracks() -> int: return 1 if results_only else 3 if selected_format == "three" else custom_track_count if selected_format == "custom" else 1
 func _entry() -> Dictionary: return _chosen_entries[0] if not _chosen_entries.is_empty() else {}
 func _vehicle_id() -> String: return VehicleCatalog.valid_id(initial_vehicle) if locked_result() else _chosen_car
+
+func _notification(what: int) -> void:
+	if what == NOTIFICATION_TRANSLATION_CHANGED and is_instance_valid(_create_button): _update.call_deferred()
 
 func _ready() -> void:
 	name = "ChallengeCreate"
@@ -228,7 +231,7 @@ func _ensure_browser() -> void:
 	_browser.selection_only = true
 	_browser.library = library
 	_browser.records = records
-	_browser.selected_track = selected_track if selected_track != null else NativeTrack.read("res://resources/tracks/starter_circuit.json")
+	_browser.selected_track = selected_track if selected_track != null else NativeTrack.read("res://resources/tracks/ellipse.json")
 	_browser.state = browser_state.duplicate(true)
 	_browser.state.erase("random_on_open")
 	_browser.state.erase("focus_track")
@@ -256,8 +259,9 @@ func _refresh_tracks() -> void:
 	if _required_tracks() > 1:
 		for index: int in range(_required_tracks()):
 			var title: String = str(_chosen_entries[index].name) if index < _chosen_entries.size() else "Choose track"
-			var slot := _button(_slot_row,str(index+1)+"  "+title,func() -> void: _active_slot = index; _refresh_tracks(),"ChallengeTrackSlot_"+str(index))
-			slot.tooltip_text = "Choose the track for slot "+str(index+1)
+			var slot := _button(_slot_row,"",func() -> void: _active_slot = index; _refresh_tracks(),"ChallengeTrackSlot_"+str(index))
+			GameText.bind(slot,"{index}  {title}",{"index":index+1,"title":title if index < _chosen_entries.size() else tr("Choose track")})
+			slot.tooltip_text = GameText.message("Choose the track for slot {index}",{"index":index+1})
 			slot.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 			slot.clip_text = true
 			slot.text_overrun_behavior = TextServer.OVERRUN_TRIM_ELLIPSIS
@@ -595,17 +599,20 @@ func _update() -> void:
 		card.chosen = selected_format == card.format_id
 		card.disabled = _submitting
 		card.refresh()
-	_rule_title.text = "CUSTOM CHALLENGE" if _step == RULES else FORMAT_TITLES[selected_format].to_upper()
-	var days: String = "24 hours" if duration == 86400 else "3 days" if duration == 259200 else "7 days"
-	var tries: String = "Unlimited tries" if attempt_limit == 0 else str(attempt_limit)+(" try" if attempt_limit == 1 else " tries")+" per driver"
+	GameText.bind_upper(_rule_title,"Custom challenge" if _step == RULES else FORMAT_TITLES[selected_format])
+	var days: String = tr("24 hours" if duration == 86400 else "3 days" if duration == 259200 else "7 days")
+	var tries: String = tr("Unlimited tries") if attempt_limit == 0 else GameText.plural("{count} try per driver","{count} tries per driver",attempt_limit)
 	_rule_details.text = {"duel":"One rival. Your time to beat.  ·  Unlimited tries","group":"One track. The whole crew.  ·  Unlimited tries","three":"Three tracks. Three tries on each.  ·  Lowest total time wins","custom":"Your format, your rules."}[selected_format]
 	if _step == TRACKS:
-		_rule_details.text = str(_chosen_entries.size())+" / "+str(_required_tracks())+" tracks selected"
-		if _required_tracks() == 1 and not _entry().is_empty(): _rule_details.text = str(_entry().name)
+		GameText.bind(_rule_details,"{selected} / {count} track selected",{"selected":_chosen_entries.size()},"{selected} / {count} tracks selected",_required_tracks())
+		if _required_tracks() == 1 and not _entry().is_empty(): GameText.bind(_rule_details,"{title}",{"title":str(_entry().name)})
 	elif _step == CAR:
-		_rule_details.text = days+" · "+("3 tries on each track" if selected_format == "three" else ("Unlimited tries" if attempt_limit == 0 else str(attempt_limit)+" tries on each track") if _required_tracks() > 1 else tries)+" · "+("Lowest total time wins" if _required_tracks() > 1 else "Best time wins")
-		if adapter.discovery_supported(): _rule_details.text += " · "+("Public" if adapter.creation_visibility == "public" else "Invitation only")
-	elif _step == RULES: _rule_details.text = "Choose your rules, then your track and car."
+		if _required_tracks() > 1: tries = GameText.plural("{count} try on each track","{count} tries on each track",3 if selected_format == "three" else attempt_limit) if selected_format == "three" or attempt_limit > 0 else tr("Unlimited tries")
+		var rules: String = GameText.message("{duration} · {tries} · {scoring}",{"duration":days,"tries":tries,"scoring":tr("Lowest total time wins" if _required_tracks() > 1 else "Best time wins")})
+		if adapter.discovery_supported(): rules = GameText.message("{rules} · {visibility}",{"rules":rules,"visibility":tr("Public" if adapter.creation_visibility == "public" else "Invitation only")})
+		GameText.bind(_rule_details,"{rules}",{"rules":rules})
+	elif _step == RULES: GameText.bind(_rule_details,"Choose your rules, then your track and car.")
+	else: GameText.bind(_rule_details,{"duel":"One rival. Your time to beat.  ·  Unlimited tries","group":"One track. The whole crew.  ·  Unlimited tries","three":"Three tracks. Three tries on each.  ·  Lowest total time wins","custom":"Your format, your rules."}[selected_format])
 	_tries_note.visible = _step == CAR and attempt_limit > 0
 	_notice.text = ""
 	if not current: _notice.text = "Sign in again to create this challenge."
@@ -637,8 +644,8 @@ func _update_result() -> void:
 	_close_button.disabled = _submitting
 	for button: Node in _rules_fields.find_children("*","Button",true,false):
 		(button as Button).disabled = _submitting or not current
-	_rule_title.text = str(_entry().get("name",""))
-	_rule_details.text = VehicleCatalog.title(_vehicle_id())
+	GameText.bind(_rule_title,"{title}",{"title":str(_entry().get("name",""))})
+	GameText.bind(_rule_details,VehicleCatalog.title(_vehicle_id()))
 	var total: float = float(result_context.get("total",0.0))
 	if verified: total = float(_source.get("ms",0))/1000.0
 	_time.text = MenuStyle.time_text(total) if total > 0 else ""

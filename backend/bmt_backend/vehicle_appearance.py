@@ -75,7 +75,7 @@ class Parts(Cosmetic):
 
 
 class Appearance(Cosmetic):
-    vehicle_id: Literal["compact", "pickup", "classic", "formula", "kart"]
+    vehicle_id: Literal["compact", "pickup", "classic", "formula", "kart", "electric", "forklift"]
     livery: Livery
     customisation: Parts
 

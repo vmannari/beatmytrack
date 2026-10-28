@@ -4,6 +4,11 @@ extends Resource
 
 const BODY_SCALE: float = 0.88 # Owner-requested smaller physical car, shared with visuals/trails.
 @export var vehicle_id: String = "compact"
+@export var rear_wheel_drive: bool = false # Optional driven rear-axle traction budget.
+@export var single_pedal: bool = false # Accelerator plus stopped D/R selection; no brake/handbrake pedals.
+@export_range(0.0, 30.0, 0.1) var regeneration: float = 0.0 # Lift-off deceleration, m/s²; one pedal blends automatic brakes.
+@export_range(0.05, 0.4, 0.01) var coast_pedal: float = 0.18 # Neutral accelerator point for one-pedal cars.
+@export var rear_steering: bool = false # Rear wheels oppose input; the fixed front axle leads the turn.
 @export var loose_surface_grip: float = 1.0 # Multiplier on loose soil only.
 @export var soil_drag_multiplier: float = 1.0
 @export var wheel_soil_drag: bool = true # Four wheel contacts apply soil resistance and asymmetric pull.
@@ -14,7 +19,7 @@ const BODY_SCALE: float = 0.88 # Owner-requested smaller physical car, shared wi
 @export var version: String = "handling-0.14"
 @export var progressive_handling: bool = true # Original and Original+ use the original steering model.
 @export_range(150.0, 3000.0, 10.0) var mass: float = 1050.0
-@export_range(1000.0, 35000.0, 100.0) var engine_force: float = 16500.0
+@export_range(1000.0, 80000.0, 100.0) var engine_force: float = 16500.0
 @export_range(2000.0, 30000.0, 100.0) var braking_force: float = 18000.0
 @export_range(0.0, 4.0, 0.1) var drag: float = 0.65 # N per (m/s)^2
 @export_range(0.0, 800.0, 10.0) var rolling_resistance: float = 180.0 # N
@@ -25,9 +30,18 @@ const BODY_SCALE: float = 0.88 # Owner-requested smaller physical car, shared wi
 @export_range(1.0, 40.0, 0.1) var countersteering_rate: float = 20.0 # normalized input/s while unwinding/reversing.
 @export_range(0.2, 1.0, 0.01) var steering_angle: float = 0.65 # radians
 @export_range(0.0, 0.95, 0.01) var high_speed_steering_reduction: float = 0.65
+@export_range(0.1, 1.0, 0.01) var low_speed_steering_scale: float = 1.0 # Full scale by 8 m/s; soften parking-speed lock only.
+@export_range(0.1, 1.0, 0.01) var low_speed_steering_rate_scale: float = 1.0 # Slow steering buildup at parking speed; retain quick unwind/countersteer.
+@export_range(0.02, 1.0, 0.01) var launch_lateral_response_scale: float = 1.0 # Retain some sideways momentum during a powered low-speed rear-drive turn.
+@export_range(0.1, 1.0, 0.01) var power_lateral_response_scale: float = 1.0 # Optional rear-drive power slide; lift and straight steering restore normal response.
+@export_range(0.5, 1.0, 0.01) var power_slide_full_pedal: float = 0.85 # Pedal position that fully develops the optional rear-drive slide.
+@export_range(0.0, 1.0, 0.01) var power_slide_high_speed_scale: float = 1.0 # Power-slide strength near maximum speed; full strength below 28 m/s.
+@export var continuous_turn_radius: bool = false # Apply a smooth curvature envelope at every speed, without a low-speed fade.
+@export_range(0.0, 20.0, 0.1) var low_speed_turn_radius: float = 0.0 # Base radius for continuous steering; legacy low-speed radius floor.
+@export_range(1.0, 80.0, 0.1) var low_speed_turn_acceleration: float = 9.0 # Continuous radius adds speed squared / this value; legacy acceleration bound.
 @export_range(1.0, 3.5, 0.05) var wheelbase: float = 2.55 * BODY_SCALE
 @export_range(6.0, 80.0, 0.25) var lateral_grip: float = 58.0 # maximum lateral acceleration
-@export_range(6.0, 30.0, 0.25) var longitudinal_grip: float = 19.0 # maximum longitudinal acceleration
+@export_range(6.0, 55.0, 0.25) var longitudinal_grip: float = 19.0 # maximum longitudinal acceleration
 @export_range(0.6, 1.4, 0.01) var front_grip: float = 1.0
 @export_range(0.6, 1.4, 0.01) var rear_grip: float = 1.0
 @export_range(0.1, 0.6, 0.01) var slip_threshold: float = 0.26 # radians
@@ -55,9 +69,38 @@ const BODY_SCALE: float = 0.88 # Owner-requested smaller physical car, shared wi
 @export_range(1.0, 2.5, 0.05) var collision_radius: float = 1.55 * BODY_SCALE # planar circle approximation
 
 
+func maximum_deceleration() -> float:
+	return regeneration if single_pedal else braking_force/mass
+
+
+func accelerator_for_acceleration(acceleration: float, drive_acceleration: float) -> float:
+	# Inverse of the one-pedal map for canonical development drivers. Zero demand
+	# holds the neutral pedal point; negative demand releases towards full regen.
+	if acceleration < 0.0:
+		return coast_pedal*(1.0-clampf(-acceleration/maxf(regeneration,0.001),0.0,1.0))
+	return coast_pedal+(1.0-coast_pedal)*clampf(acceleration/maxf(drive_acceleration,0.1),0.0,1.0)
+
+
 func snapshot() -> Dictionary:
 	var result: Dictionary = {}
 	for property: Dictionary in get_property_list():
 		if int(property.usage) & PROPERTY_USAGE_SCRIPT_VARIABLE and int(property.usage) & PROPERTY_USAGE_EDITOR:
 			result[property.name] = get(property.name)
+	# Additive vehicle capability: retain exact established front-steer config hashes.
+	if not rear_steering: result.erase("rear_steering")
+	if not rear_wheel_drive: result.erase("rear_wheel_drive")
+	if not single_pedal: result.erase("single_pedal")
+	if low_speed_steering_scale == 1.0: result.erase("low_speed_steering_scale")
+	if low_speed_steering_rate_scale == 1.0: result.erase("low_speed_steering_rate_scale")
+	if launch_lateral_response_scale == 1.0: result.erase("launch_lateral_response_scale")
+	if power_lateral_response_scale == 1.0: result.erase("power_lateral_response_scale")
+	if power_slide_full_pedal == 0.85: result.erase("power_slide_full_pedal")
+	if power_slide_high_speed_scale == 1.0: result.erase("power_slide_high_speed_scale")
+	if not continuous_turn_radius: result.erase("continuous_turn_radius")
+	if low_speed_turn_radius == 0.0:
+		result.erase("low_speed_turn_radius")
+		result.erase("low_speed_turn_acceleration")
+	if regeneration == 0.0:
+		result.erase("regeneration")
+		result.erase("coast_pedal")
 	return result

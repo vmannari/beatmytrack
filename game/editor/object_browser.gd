@@ -4,6 +4,7 @@ signal asset_chosen(kind: String)
 signal mode_chosen(mode: String)
 signal size_chosen(scale: float)
 signal span_chosen(span: float)
+signal jump_profile_chosen(profile: String)
 signal container_color_chosen(color: String)
 signal select_requested
 signal populate_requested
@@ -14,6 +15,7 @@ var current: String = "tree"
 var placement: String = "single"
 var stamp_scale: float = 1.0
 var stamp_span: float = 8.0
+var stamp_jump_profile: String = ""
 var stamp_container_color: String = ContainerPaint.DEFAULT
 var recent: Array[String] = []
 var tiles: HBoxContainer
@@ -151,13 +153,20 @@ func _tiles() -> void:
 func refresh() -> void:
 	if details == null: return
 	_tiles()
-	var key: Array = [current,placement,stamp_scale,stamp_span,biome,stamp_container_color]
+	var key: Array = [current,placement,stamp_scale,stamp_span,biome,stamp_container_color,stamp_jump_profile]
 	if key == _detail_key: return
 	_detail_key = key
 	_clear(details)
 	var behavior: Label = MenuStyle.label(CreatorCatalog.behavior(current),14)
 	behavior.name = "ObjectBehavior"
 	details.add_child(behavior)
+	if current == "jump":
+		var profile: String = stamp_jump_profile if stamp_jump_profile in JumpProfiles.IDS else JumpProfiles.default_for(biome)
+		behavior.text = JumpProfiles.description(profile)
+		details.add_child(preload("res://editor/jump_style_picker.gd").make(profile,func(value: String) -> void:
+			stamp_jump_profile = value
+			jump_profile_chosen.emit(value)
+			refresh()))
 	var family: Array = CreatorCatalog.family(current)
 	if not family.is_empty() and family[3].size()>1:
 		var variants := OptionButton.new()

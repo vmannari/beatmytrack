@@ -18,7 +18,7 @@ from sqlalchemy.orm import Session
 from .track_models import Run
 
 logger = logging.getLogger("bmt.run_signals")
-TERMINAL = ("verified", "rejected", "failed")
+TERMINAL = ("verified", "skipped", "rejected", "failed")
 MAX_PENDING = 64
 
 

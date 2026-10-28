@@ -15,8 +15,14 @@ class API extends Client:
 	var keys: Array[String] = []
 	var held: bool = false
 	var change_owner: bool = false
+	var slot_reads: int = 0
 	var reply: Dictionary = {"ok":true,"status":200,"data":{"state":"consumed","receipt_id":RACE,"used":1,"wallet":{"balance":2,"free":1,"reset_at":1900000000}},"error":""}
 	func request_api(_path: String, _method: HTTPClient.Method = HTTPClient.METHOD_GET, payload: Dictionary = {}, _key: String = "", _authenticated: bool = false) -> Dictionary:
+		# Publication retries now check entitlement before the keyed mutation.
+		# Count that precondition separately from the mutation-budget assertions.
+		if _path == "/me/entitlements":
+			slot_reads += 1
+			return {"ok":true,"status":200,"data":{"publishing_slots":1},"error":""}
 		bodies.append(payload.duplicate(true))
 		paths.append(_path)
 		keys.append(_key)
@@ -211,9 +217,11 @@ func run() -> void:
 
 	for rate_limited: bool in [false,true]:
 		api = fixture("outbox-client-%s"%rate_limited)
+		api._capabilities.trajectory_verification = true
 		var cloud: Node = cloud_for(api,"outbox-%s"%rate_limited)
+		var proof: Dictionary = {"schema":"bmt-race-proof-v1","samples":[[0,0,0,0,0,0,0,0],[1,1,0,0,1,0,0,0]]}
 		for index: int in range(20):
-			check(cloud.queue_run({"ticket_id":"outbox-ticket-%d"%index,"_submit_key":"original-key-%d"%index},[[0,255,0]]),"outbox backlog is durable")
+			check(cloud.queue_run({"ticket_id":"outbox-ticket-%d"%index,"_submit_key":"original-key-%d"%index,"_race_proof":proof,"_wire_options":{"path":0,"incidents":false}},[[0,255,0]]),"outbox backlog is durable")
 		api.reply = failure(429,"RATE_LIMITED",120) if rate_limited else {"ok":true,"status":202,"data":{"run_id":"run-fixture","status":"verified"},"error":""}
 		await cloud.flush_outbox()
 		await cloud.flush_outbox()
@@ -275,6 +283,7 @@ func run() -> void:
 	check(retry_flow._save(retry_path,retry_job),"publication retry journal saved")
 	api.reply = failure(503,"UNAVAILABLE")
 	await retry_flow.retry(retry_document)
+	check(api.slot_reads == 1,"explicit publication retry checks current publishing entitlement")
 	var pending_retry: Dictionary = retry_flow._read(retry_path)
 	var retry_key: String = str(pending_retry.get("publication_retry_key",""))
 	check(not retry_key.is_empty() and api.keys[0] == retry_key,"unknown publication retry keeps its saved operation key")
@@ -288,6 +297,9 @@ func run() -> void:
 	await retry_flow.retry(retry_document)
 	check(api.keys.size() == 1,"service-unavailable publication retry remains deferred after restart")
 	api._sample_time(1900000016) # Advance the authoritative fixture clock past the 15-second pause.
+	# Expire the local monotonic wait too; a wall/server-clock change alone
+	# must not accelerate a retry in a running scheduler.
+	for wait_key: String in retry_flow._batch_deadlines: retry_flow._batch_deadlines[wait_key] = 0
 	await retry_flow.retry(retry_document)
 	check(api.keys[1] == retry_key,"publication retry survives restart with exactly the same operation key")
 	var acknowledged: Dictionary = retry_flow._read(retry_path)

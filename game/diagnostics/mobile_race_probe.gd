@@ -25,7 +25,7 @@ var costs: Dictionary = {"sim":[],"rules":[],"ai":[],"present":[],"particles":[]
 var feature_stages: Array = []
 var surface_probe = preload("res://diagnostics/surface_material_probe.gd").new()
 var slow_frames: Array[Dictionary] = []
-var track_id: String = "starter_circuit"
+var track_id: String = "ellipse"
 var original_shadows: bool = true
 var record_samples: bool = false
 var driven_metres: float = 0.0
@@ -63,7 +63,7 @@ func _start() -> void:
 		scales = [0.667,0.667,0.667]
 		batches = [true,false,true]
 	var app: Node = get_parent()
-	var track: NativeTrack = NativeTrack.read("res://resources/tracks/starter_circuit.json")
+	var track: NativeTrack = NativeTrack.read("res://resources/tracks/ellipse.json")
 	if config is Dictionary and (config.has("track_id") or config.has("document_path")):
 		track_id = str(config.get("track_id","diagnostic_document"))
 		var document: Dictionary = TrackLibrary.new().import_document(str(config.document_path)) if config.has("document_path") else TrackLibrary.new().load_document(track_id)
@@ -279,6 +279,17 @@ func _process(_delta: float) -> void:
 	report.lamps_enabled = lamp_modes[stage]
 	report.lamp_count = game.find_children("*","OmniLight3D",true,false).size()
 	report.vehicle = VehicleCatalog.selected
+	var ambience: DesertAmbience = game.get("desert_ambience")
+	if ambience != null and ambience.enabled and ambience.output_enabled and ambience.wind.playing:
+		# Reference query is outside the completed timing window. Never wait on
+		# the driver mutex during ordinary presentation just to estimate phase.
+		var clock_started: int = Time.get_ticks_usec()
+		var since_mix: float = AudioServer.get_time_since_last_mix()
+		report.clock_reference_query_ms = float(Time.get_ticks_usec()-clock_started)/1000.0
+		var length: float = ambience.wind.stream.get_length()
+		var raw: float = ambience.wind.get_playback_position()
+		var estimated: float = float(ambience.playback_clock.sample(raw,length,Time.get_ticks_usec()))
+		report.clock_reference_error_ms = absf(wrapf(estimated-raw-since_mix,-length/2.0,length/2.0))*1000.0
 	report.frame_p99_ms = frame_ms[int(frame_ms.size()*0.99)]
 	report.over_25_ms = frame_ms.filter(func(value: float) -> bool: return value > 25.0).size()
 	report.over_33_ms = frame_ms.filter(func(value: float) -> bool: return value > 33.34).size()
@@ -325,6 +336,7 @@ func _process(_delta: float) -> void:
 		TouchControls.SteeringHaptics.diagnostic_synchronous = false
 		surface_probe.restore()
 		_set_particles_enabled(true)
+		if game.get("desert_sand_wind") != null: game.get("desert_sand_wind").visible = true
 		game.call("set_contact_lighting_enabled",true)
 		(game.get("trails") as SkidTrails).visible = true
 		(game.get("hud") as PlaygroundHUD).visible = true
@@ -376,6 +388,7 @@ func _configure_stage() -> void:
 		surface_probe.apply(feature)
 		game.set("profile_skip_telemetry",feature == "telemetry")
 		_set_particles_enabled(feature != "particles")
+		if game.get("desert_sand_wind") != null: game.get("desert_sand_wind").visible = feature != "desert_wind"
 		(game.get("trails") as SkidTrails).visible = feature != "trails"
 		(game.get("hud") as PlaygroundHUD).visible = feature != "hud"
 		if game.get("storm_weather") != null: game.get("storm_weather").visible = feature != "weather"

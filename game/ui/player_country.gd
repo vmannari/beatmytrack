@@ -5,6 +5,8 @@ const CATALOG: String = "res://assets/countries/countries.json"
 static var _countries: Array[Dictionary] = []
 static var _names: Dictionary = {}
 static var _textures: Dictionary = {}
+static var _localized: Dictionary = {}
+static var _localized_loaded: bool = false
 
 static func countries() -> Array[Dictionary]:
 	if _countries.is_empty():
@@ -26,7 +28,18 @@ static func valid_code(value: String) -> String:
 
 static func country_name(value: String) -> String:
 	var code: String = valid_code(value)
-	return str(_names.get(code,"Country not selected"))
+	if code.is_empty(): return GameText.message("Country not selected")
+	var locale: String = TranslationServer.get_locale()
+	if locale.begins_with("en"): return str(_names[code])
+	if not _localized_loaded:
+		_localized_loaded = true
+		var data: Variant = JSON.parse_string(FileAccess.get_file_as_string("res://localization/country_names.json"))
+		if data is Dictionary and data.get("languages") is Dictionary: _localized = data.languages
+	var base: String = locale.get_slice("_",0)
+	if base == "no": base = "nb"
+	var raw_labels: Variant = _localized.get(locale,_localized.get(base,{}))
+	var labels: Dictionary = raw_labels if raw_labels is Dictionary else {}
+	return str(labels.get(code,_names[code]))
 
 static func texture(value: String) -> Texture2D:
 	var code: String = valid_code(value)
@@ -47,4 +60,9 @@ static func flag(value: String, width: int = 28) -> TextureRect:
 	view.size_flags_vertical = Control.SIZE_SHRINK_CENTER
 	view.mouse_filter = Control.MOUSE_FILTER_PASS
 	view.texture_filter = CanvasItem.TEXTURE_FILTER_LINEAR_WITH_MIPMAPS
+	view.mouse_entered.connect(_refresh_flag_tooltip.bind(weakref(view)))
 	return view
+
+static func _refresh_flag_tooltip(reference: WeakRef) -> void:
+	var view: TextureRect = reference.get_ref() as TextureRect
+	if is_instance_valid(view): view.tooltip_text = country_name(str(view.get_meta("country_code","")))

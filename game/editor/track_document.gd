@@ -119,8 +119,10 @@ static func validate(data: Variant, require_race_route: bool = true) -> Array[St
 		if not data.get("objects") is Array or data.objects.size() > CAPACITY.MAX_OBJECTS:
 			return ["Use up to %d placed objects." % CAPACITY.MAX_OBJECTS]
 		for object: Variant in data.objects:
-			if not object is Dictionary or object.size() != 3+(1 if object.has("scale") else 0)+(1 if object.has("length") else 0)+(1 if object.has("span") else 0)+(1 if object.has("color") else 0) or not object.get("kind") is String or object.kind not in CreatorObjects.KINDS:
+			if not object is Dictionary or object.size() != 3+(1 if object.has("scale") else 0)+(1 if object.has("length") else 0)+(1 if object.has("span") else 0)+(1 if object.has("color") else 0)+(1 if object.has("jump_profile") else 0) or not object.get("kind") is String or object.kind not in CreatorObjects.KINDS:
 				return ["Choose an object from the built-in palette."]
+			if object.has("jump_profile") and (object.kind != "jump" or not object.jump_profile is String or object.jump_profile not in JumpProfiles.IDS):
+				return ["Choose a built-in jump or bump style."]
 			if object.has("color") and (object.kind != "container" or not ContainerPaint.valid(object.color)):
 				return ["Choose an opaque container colour."]
 			if object.has("span"):
@@ -165,7 +167,7 @@ static func validate(data: Variant, require_race_route: bool = true) -> Array[St
 		if not _number(stroke.width) or float(stroke.width) < 0.5 or float(stroke.width) > 40 or stroke.shape not in ["round","square"]: return ["Use a round or square brush, 0.5 to 40 metres wide."]
 		if not stroke.points is Array or stroke.points.is_empty() or stroke.points.size() > 512: return ["Paint stroke is too long."]
 		if stroke.get("mode","free") not in ["free","line","area"]: return ["Choose a surface placement mode."]
-		if stroke.get("mode","free") != "free" and (stroke.points.size() > 64 or stroke.points.size() < (3 if stroke.mode == "area" else 2)): return ["Use 2?64 line points or 3?64 area points."]
+		if stroke.get("mode","free") != "free" and (stroke.points.size() > 64 or stroke.points.size() < (3 if stroke.mode == "area" else 2)): return ["Use 2–64 line points or 3–64 area points."]
 		painted_points += stroke.points.size()
 		for point: Variant in stroke.points:
 			if not point is Array or point.size() != 2: return ["Invalid paint position."]

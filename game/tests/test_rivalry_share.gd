@@ -30,6 +30,10 @@ func current_dialog() -> AcceptDialog:
 
 func run() -> void:
 	OS.set_environment("BMT_API_URL", "")
+	if "--weekly-before" in OS.get_cmdline_user_args():
+		var original: GDScript = load("res://ui/weekly_rivalry_page.gd")
+		original.source_code = FileAccess.get_file_as_string("res://../docs/evidence/rivalry-weekly-continuity-2026-10-26/before/weekly_rivalry_page.gd")
+		check(original.reload() == OK,"task-start weekly page reloads only in isolated memory")
 	var manifest: String = preload("res://addons/bmt_challenges/export_plugin.gd").ChallengeExport.application_contents()
 	check(manifest.contains('android:name="org.beatmytrack.challenges.RivalryShareProvider"'),"Android export registers the actual image provider")
 	check(manifest.contains('android:authorities="${applicationId}.rivalry-share"') and manifest.contains('android:exported="false"') and manifest.contains('android:grantUriPermissions="true"'),"image provider stays private with package-specific temporary read grants")
@@ -51,7 +55,7 @@ func run() -> void:
 		for kind: String in ["unranked","perfect"]:
 			var snapshot: Dictionary = awarded_snapshot(kind)
 			if kind == "unranked":
-				for slot: int in range(5): snapshot.tracks[slot].entry.name = ["Infinity","Sightseeing","Looper","Curvy","Starter Circuit"][slot]
+				for slot: int in range(5): snapshot.tracks[slot].entry.name = ["Infinity","Sightseeing","Looper","Curvy","Ellipse"][slot]
 			else:
 				for slot: int in range(5): snapshot.tracks[slot].entry.name = "Snow Castle Championship Circuit - Long Route %d" % (slot+1)
 			app.rivalry.model.apply_snapshot(snapshot)
@@ -61,6 +65,7 @@ func run() -> void:
 			app.rivalry_section = "overview"
 			app._show_screen("rivalry")
 			await settle()
+			await dismiss_weekly_summary()
 			var share: Button = app.content.find_child("RivalryShareResults",true,false)
 			share.grab_focus()
 			var payload: String = app.rivalry.model.finale_share_text()

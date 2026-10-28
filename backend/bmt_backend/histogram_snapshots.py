@@ -32,12 +32,15 @@ def snapshot_key(version_id, vehicle_id, include_artificial):
     return {"version_id": version_id, "vehicle_id": vehicle_id, "include_artificial": include_artificial}
 
 
-def load_snapshot(session, version_id, vehicle_id, include_artificial):
+def load_snapshot(session, version_id, vehicle_id, include_artificial, *, metadata_out=None):
     key = snapshot_key(version_id, vehicle_id, include_artificial)
     metadata = session.execute(select(HistogramSnapshot.generation, HistogramSnapshot.source_revision,
-                                     HistogramSnapshot.invalidated, HistogramSnapshot.population).filter_by(**key)).first()
+                                     HistogramSnapshot.invalidated, HistogramSnapshot.population,
+                                     HistogramSnapshot.updated_at, HistogramSnapshot.next_refresh_at).filter_by(**key)).first()
     if metadata is None or not metadata.generation or metadata.invalidated:
         return None
+    if metadata_out is not None:
+        metadata_out.update(generated_at=metadata.updated_at, expires_at=metadata.next_refresh_at)
     def load():
         query = select(HistogramSnapshot.payload).filter_by(**key).where(
             HistogramSnapshot.generation == metadata.generation, HistogramSnapshot.invalidated.is_(False))

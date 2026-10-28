@@ -3,6 +3,7 @@ extends VBoxContainer
 const Adapter = preload("res://backend/world_ranking_client.gd")
 var client: Node
 var week_start: int = 0
+var compact: bool = false
 var label: Label
 var _adapter: Node
 var _scope: String
@@ -29,16 +30,16 @@ static func describe(data: Dictionary, week: int) -> String:
 	var text: String = "This week did not earn ranking points."
 	for result: Dictionary in data.get("results",[]):
 		if int(result.week_start) == week:
-			text = "Circuit #%d · %d points earned · %s" % [int(result.weekly_place),int(result.points),"Counting" if result.counting else "Reserve"]
+			text = GameText.message("Circuit #%d · %d points earned · %s") % [int(result.weekly_place),int(result.points),"Counting" if result.counting else "Reserve"]
 			break
 	if data.get("world_rank") != null:
-		text += "\nWorld #%d · %d points" % [int(data.world_rank),int(data.points)]
+		text += GameText.message("\nWorld #%d · %d points") % [int(data.world_rank),int(data.points)]
 	# Movement belongs to the latest publication, never a different ceremony.
 	if int(data.get("week_start",0)) == week:
-		text += " · %+d points" % int(data.get("net_change",0))
+		text += GameText.message(" · %+d points") % int(data.get("net_change",0))
 		if data.get("movement") != null:
 			var movement: int = int(data.movement)
-			text += "\nUp %d places" % movement if movement > 0 else "\nDown %d places" % absi(movement) if movement < 0 else "\nPosition unchanged"
+			text += GameText.message("\nUp %d places") % movement if movement > 0 else GameText.message("\nDown %d places") % absi(movement) if movement < 0 else "\nPosition unchanged"
 		elif data.get("world_rank") != null: text += "\nNew World Ranking entry"
 	return text
 
@@ -48,3 +49,4 @@ func _load() -> void:
 	var response: Dictionary = await _adapter.profile()
 	if not is_inside_tree() or is_queued_for_deletion() or request != _request or _scope != _adapter.scope(): return
 	label.text = describe(response.data,week_start) if response.ok else "World Ranking unavailable. Check the Garage newspaper."
+	if compact: label.text = label.text.replace("\n"," · ")

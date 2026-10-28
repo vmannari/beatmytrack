@@ -37,8 +37,12 @@ var status: Label
 var categories: Dictionary = {}
 var reset_button: Button
 var apply_button: Button
+var content_scroll: ScrollContainer
+var content_footer: HBoxContainer
+var licences_panel: Control
 
 const TITLES: Dictionary = {
+	"language": ["Language", "Changes apply immediately."],
 	"controls": ["Controls", "Choose how you steer and arrange your touch controls."],
 	"camera": ["Camera", "Choose the view you prefer while driving."],
 	"graphics": ["Graphics", "Applies from the next race. Menus and HUD stay sharp."],
@@ -48,6 +52,7 @@ const TITLES: Dictionary = {
 	"account": ["Account", "Manage the profile you race with."],
 	"privacy": ["Privacy", "Choose what optional information you share."],
 	"help": ["Help", "Learn to drive or revisit a game feature."],
+	"licences": ["Licences", "Third-party software and asset notices."],
 	"development": ["Development", "Test ads and simulate purchases without payment."],
 }
 
@@ -103,6 +108,7 @@ func _build_sidebar() -> void:
 	category_list.add_theme_constant_override("separation", 10)
 	category_scroll.add_child(category_list)
 	for item: Array in [
+		["language", "Language", "Game language", "gear"],
 		["controls", "Controls", "Steering and layout", "controller"],
 		["camera", "Camera", "View and road ahead", "compass"],
 		["graphics", "Graphics", "Image quality", "garage"],
@@ -112,11 +118,15 @@ func _build_sidebar() -> void:
 		["account", "Account", "Profile and sign-in", "person"],
 		["privacy", "Privacy", "Data and account removal", "gear"],
 		["help", "Help", "Tutorial and game tips", "help"],
+		["licences", "Licences", "Software and asset credits", "help"],
 		["development", "Development", "Ads and testing", "gear"],
 	]:
 		var id: String = item[0]
 		if id == "development" and not development_available: continue
-		var button: Button = MenuStyle.button("", _show_section.bind(id))
+		var button: Button = preload("res://ui/content_fit_button.gd").new()
+		button.pressed.connect(_show_section.bind(id))
+		button.mouse_default_cursor_shape = Control.CURSOR_POINTING_HAND
+		button.set_meta("audio_cue","select")
 		button.name = "SettingsCategory_" + id
 		button.mouse_filter = Control.MOUSE_FILTER_PASS
 		button.tooltip_text = item[1]
@@ -143,6 +153,8 @@ func _build_sidebar() -> void:
 		caption.add_theme_font_override("font", MenuStyle.DISPLAY)
 		copy.add_child(caption)
 		copy.add_child(_label(item[2], 15, true))
+		# Categories grow with wrapped translations instead of overlapping the next row.
+		button.watch_content(copy,66,24)
 		var arrow: TextureRect = _icon("arrow", 18)
 		row.add_child(arrow)
 		categories[id] = {"button": button, "caption": caption, "glyph": glyph, "arrow": arrow}
@@ -169,6 +181,7 @@ func _build_panel() -> void:
 	subtitle = _label("", 18, true)
 	header.add_child(subtitle)
 	var scroll := ScrollContainer.new()
+	content_scroll = scroll
 	scroll.name = "SettingsScroll"
 	scroll.horizontal_scroll_mode = ScrollContainer.SCROLL_MODE_DISABLED
 	scroll.size_flags_vertical = Control.SIZE_EXPAND_FILL
@@ -178,6 +191,7 @@ func _build_panel() -> void:
 	body.add_theme_constant_override("separation", 8)
 	scroll.add_child(body)
 	var footer := HBoxContainer.new()
+	content_footer = footer
 	column.add_child(footer)
 	status = _label("Changes are saved when you apply them.", 16, true)
 	status.name = "SettingsStatus"
@@ -198,7 +212,11 @@ func _show_section(id: String) -> void:
 	section = id
 	status.text = "Ad settings use Apply. Simulated purchases take effect immediately." if id == "development" else "Changes are saved when you apply them."
 	if id == "help": status.text = "Replay a lesson whenever you like."
-	apply_button.visible = id != "help"
+	apply_button.visible = id not in ["help","language","licences"]
+	content_scroll.visible = id != "licences"
+	content_footer.visible = id != "licences"
+	if is_instance_valid(licences_panel): licences_panel.visible = id == "licences"
+	if id == "language": status.text = ""
 	heading.text = TITLES[id][0]
 	subtitle.text = TITLES[id][1]
 	for key: String in categories:
@@ -210,12 +228,16 @@ func _show_section(id: String) -> void:
 		(item.button as Button).add_theme_stylebox_override("normal", style)
 		for field: String in ["caption", "glyph", "arrow"]:
 			(item[field] as Control).modulate = MenuStyle.ACCENT if selected else MenuStyle.MUTED
-	reset_button.visible = id not in ["account","privacy","help"]
+	reset_button.visible = id not in ["account","privacy","help","language","licences"]
 	reset_button.text = "Reset graphics" if id == "graphics" else "Reset audio" if id == "audio" else "Reset development" if id == "development" else "Reset ghosts" if id == "ghosts" else "Reset camera" if id == "camera" else "Reset haptics" if id == "haptics" else "Reset controls"
 	for child: Node in body.get_children():
 		body.remove_child(child)
 		child.queue_free()
 	match id:
+		"language":
+			var picker := preload("res://ui/language_picker.gd").new()
+			picker.show_label = false
+			body.add_child(picker)
 		"controls": _controls()
 		"camera": _camera()
 		"graphics": _graphics()
@@ -225,10 +247,25 @@ func _show_section(id: String) -> void:
 		"account": _account()
 		"privacy": _privacy()
 		"help": _help()
+		"licences": _licences()
 		"development": _development()
 	_keep_category_visible(id)
 
+func _licences() -> void:
+	if is_instance_valid(licences_panel): return
+	licences_panel = preload("res://ui/licences_panel.gd").new()
+	licences_panel.name = "LicencesPanel"
+	var column: Node = content_scroll.get_parent()
+	column.add_child(licences_panel)
+	column.move_child(licences_panel, content_scroll.get_index()+1)
+
 func _help() -> void:
+	var diagnostics: Button = MenuStyle.button("Copy diagnostic report",_copy_diagnostic_report)
+	diagnostics.name = "CopyDiagnosticReport"
+	body.add_child(diagnostics)
+	var explanation: Label = MenuStyle.label("Copies build, device and recent crash locations for support. No account details or recordings. Nothing is uploaded.",18)
+	explanation.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	body.add_child(explanation)
 	var replay: Button = MenuStyle.button("Replay tutorial",func() -> void: tutorial_requested.emit(),true)
 	replay.name = "ReplayTutorial"
 	body.add_child(replay)
@@ -237,6 +274,10 @@ func _help() -> void:
 		var button: Button = MenuStyle.button(item[1],func() -> void: help_requested.emit(topic))
 		button.name = "Help_"+topic
 		body.add_child(button)
+
+func _copy_diagnostic_report() -> void:
+	DisplayServer.clipboard_set(preload("res://diagnostics/support_report.gd").capture())
+	status.text = tr("Diagnostic report copied.")
 
 func _graphics() -> void:
 	_graphics_choice("shadow_quality","Shadow quality","Higher quality gives sharper car and scenery shadows.")
@@ -542,7 +583,9 @@ func _account() -> void:
 	var row: HBoxContainer = _row("AccountSettings", 18)
 	row.add_child(_icon("person", 36))
 	if signed_in: row.add_child(PlayerCountry.flag(country_code,32))
-	row.add_child(_copy(player_name, "Signed in" if signed_in else "Race locally or sign in to share tracks and submit verified times."))
+	var identity: VBoxContainer = _copy(player_name, "Signed in" if signed_in else "Race locally or sign in to share tracks and submit verified times.")
+	if signed_in: GameText.user_text(identity.get_child(0))
+	row.add_child(identity)
 	var manage: Button = MenuStyle.button("Manage account" if signed_in else "Sign in", func() -> void: account_requested.emit())
 	manage.name = "SettingsAccount"
 	manage.custom_minimum_size.x = 180

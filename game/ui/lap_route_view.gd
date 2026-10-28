@@ -71,6 +71,9 @@ func _sector_color(index: int) -> Color:
 	var delta: float = float(sectors[index].time)-float(fastest_sectors[index].time)
 	return Color("ed8056") if delta > 0.0005 else (Color("55dbaa") if delta < -0.0005 else Color("9bb6c5"))
 
+func _notification(what: int) -> void:
+	if what == NOTIFICATION_TRANSLATION_CHANGED: queue_redraw()
+
 func _draw() -> void:
 	if fitted.size() < 2: return
 	if miniature:
@@ -105,17 +108,17 @@ func _draw() -> void:
 		occupied.append(label_rect)
 		var label_pos: Vector2 = label_rect.position+Vector2(0,14)
 		draw_line(p,_leader_end(p,label_rect),Color("56707e"),1,true)
-		draw_string(MenuStyle.BODY,label_pos,"Sector %d" % (i+1),HORIZONTAL_ALIGNMENT_LEFT,-1,14,MenuStyle.TEXT)
-		draw_string(MenuStyle.BODY,label_pos+Vector2(0,18),("%.2f s" % sectors[i].time) if not lap.get("samples",[]).is_empty() else "\u2014",HORIZONTAL_ALIGNMENT_LEFT,-1,14,MenuStyle.MUTED)
+		draw_string(MenuStyle.BODY,label_pos,GameText.message("Sector %d") % (i+1),HORIZONTAL_ALIGNMENT_LEFT,-1,14,MenuStyle.TEXT)
+		draw_string(MenuStyle.BODY,label_pos+Vector2(0,18),(GameText.message("%.2f s") % sectors[i].time) if not lap.get("samples",[]).is_empty() else "\u2014",HORIZONTAL_ALIGNMENT_LEFT,-1,14,MenuStyle.MUTED)
 		if not lap.get("samples", []).is_empty() and not reference.get("samples", []).is_empty() and i < comparison.size():
 			var delta: float = float(sectors[i].time)-float(comparison[i].time)
-			draw_string(MenuStyle.BODY,label_pos+Vector2(0,36),"%+.2f s" % delta,HORIZONTAL_ALIGNMENT_LEFT,-1,14,_sector_color(i))
+			draw_string(MenuStyle.BODY,label_pos+Vector2(0,36),GameText.message("%+.2f s") % delta,HORIZONTAL_ALIGNMENT_LEFT,-1,14,_sector_color(i))
 	for event: Dictionary in lap.get("events", []):
 		_draw_incident(_screen(event.position), str(event.kind))
 	_draw_legend()
 	if selected_point >= 0: _draw_tooltip()
 	elif lap.get("samples",[]).is_empty():
-		draw_string(MenuStyle.BODY,Vector2(12,20),"Telemetry unavailable for this lap",HORIZONTAL_ALIGNMENT_LEFT,-1,16,MenuStyle.MUTED)
+		draw_string(MenuStyle.BODY,Vector2(12,20),GameText.message("Telemetry unavailable for this lap"),HORIZONTAL_ALIGNMENT_LEFT,-1,16,MenuStyle.MUTED)
 
 func _draw_race_markers() -> void:
 	var start: Vector2 = fitted[0]
@@ -207,20 +210,20 @@ static func _leader_end(anchor: Vector2, label_rect: Rect2) -> Vector2:
 
 func _draw_legend() -> void:
 	_draw_incident(Vector2(18,16), "collision")
-	draw_string(MenuStyle.BODY,Vector2(31,21),"Collision",HORIZONTAL_ALIGNMENT_LEFT,-1,14,MenuStyle.MUTED)
+	draw_string(MenuStyle.BODY,Vector2(31,21),GameText.message("Collision"),HORIZONTAL_ALIGNMENT_LEFT,-1,14,MenuStyle.MUTED)
 	_draw_incident(Vector2(18,40), "off_track")
-	draw_string(MenuStyle.BODY,Vector2(31,45),"Off track",HORIZONTAL_ALIGNMENT_LEFT,-1,14,MenuStyle.MUTED)
+	draw_string(MenuStyle.BODY,Vector2(31,45),GameText.message("Off track"),HORIZONTAL_ALIGNMENT_LEFT,-1,14,MenuStyle.MUTED)
 	var left: float = size.x*0.5-110
 	var y: float = size.y-16
 	if mode == "Sectors":
-		draw_string(MenuStyle.BODY,Vector2(size.x*0.5-145,y+4),"Green gains  •  grey matches  •  orange loses",HORIZONTAL_ALIGNMENT_LEFT,-1,14,MenuStyle.MUTED)
+		draw_string(MenuStyle.BODY,Vector2(size.x*0.5-145,y+4),GameText.message("Green gains  •  grey matches  •  orange loses"),HORIZONTAL_ALIGNMENT_LEFT,-1,14,MenuStyle.MUTED)
 		return
 	for i: int in range(100):
 		var t: float = i/99.0
 		var color: Color = speed_color(t) if mode == "Speed" else (Color("55dbaa").lerp(Color("9bb6c5"),t*2) if t < 0.5 else Color("9bb6c5").lerp(Color("ed8056"),(t-0.5)*2))
 		draw_rect(Rect2(left+i*2.2,y-7,2.3,8),color)
-	draw_string(MenuStyle.BODY,Vector2(left-58,y+2),"Slower" if mode == "Speed" else "Gaining",HORIZONTAL_ALIGNMENT_LEFT,-1,14,MenuStyle.MUTED)
-	draw_string(MenuStyle.BODY,Vector2(left+232,y+2),"Faster" if mode == "Speed" else "Losing",HORIZONTAL_ALIGNMENT_LEFT,-1,14,MenuStyle.MUTED)
+	draw_string(MenuStyle.BODY,Vector2(left-58,y+2),GameText.message("Slower") if mode == "Speed" else GameText.message("Gaining"),HORIZONTAL_ALIGNMENT_LEFT,-1,14,MenuStyle.MUTED)
+	draw_string(MenuStyle.BODY,Vector2(left+232,y+2),GameText.message("Faster") if mode == "Speed" else GameText.message("Losing"),HORIZONTAL_ALIGNMENT_LEFT,-1,14,MenuStyle.MUTED)
 
 func _draw_incident(at: Vector2, kind: String) -> void:
 	draw_circle(at,9,Color("08141e"),true,-1,true)
@@ -238,7 +241,7 @@ func _draw_tooltip() -> void:
 	var tooltip_box: Rect2 = _tooltip_rect()
 	var box_pos: Vector2 = tooltip_box.position
 	draw_style_box(MenuStyle.card(8),tooltip_box)
-	draw_string(MenuStyle.DISPLAY,box_pos+Vector2(10,23),"%d km/h" % roundi(float(p.speed)*3.6),HORIZONTAL_ALIGNMENT_LEFT,-1,23,MenuStyle.TEXT)
+	draw_string(MenuStyle.DISPLAY,box_pos+Vector2(10,23),GameText.message("%d km/h") % roundi(float(p.speed)*3.6),HORIZONTAL_ALIGNMENT_LEFT,-1,23,MenuStyle.TEXT)
 	draw_string(MenuStyle.BODY,box_pos+Vector2(10,44),"%d:%05.2f" % [int(float(p.elapsed)/60),fmod(float(p.elapsed),60)],HORIZONTAL_ALIGNMENT_LEFT,-1,16,MenuStyle.MUTED)
 
 func _tooltip_rect() -> Rect2:

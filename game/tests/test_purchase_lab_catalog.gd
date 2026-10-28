@@ -25,7 +25,7 @@ func run() -> void:
 	for _page: int in range(5):
 		if app.cloud.next_cursor.is_empty(): break
 		await app.cloud.refresh(true)
-	check(app.cloud.entries.size() == 27,"all 27 approved public tracks are discoverable")
+	check(app.cloud.entries.size() == 26,"all 26 approved public tracks are discoverable")
 	for metadata: Dictionary in app.cloud.entries:
 		var entry: Dictionary = app.cloud.entry_from_metadata(metadata)
 		var downloaded: bool = await app.cloud.download(entry)
@@ -40,7 +40,7 @@ func run() -> void:
 	app._show_screen("tracks")
 	var browser: Node = app.root_ui.find_child("TrackBrowser",true,false)
 	while browser != null and browser.loading: await process_frame
-	check(browser != null and browser.matches.size() == 27,"Race menu contains all catalog cards")
+	check(browser != null and browser.matches.size() == 26,"Race menu contains all catalog cards")
 	if browser != null and not browser.catalog.entries.is_empty():
 		browser._select(browser.catalog.entries[0])
 		while browser.selecting: await process_frame

@@ -159,7 +159,7 @@ func write_report(filename: String) -> void:
 	file.store_string(JSON.stringify(report, "\t")); file.close()
 
 func components_only() -> void:
-	var track: NativeTrack = NativeTrack.read("res://resources/tracks/starter_circuit.json")
+	var track: NativeTrack = NativeTrack.read("res://resources/tracks/ellipse.json")
 	await race(track, "components-prefs", true)
 	var material := ShaderMaterial.new()
 	material.shader = preload("res://track/creator_road.gdshader")

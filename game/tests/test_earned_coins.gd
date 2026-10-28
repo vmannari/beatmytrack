@@ -166,8 +166,8 @@ func garage_checks(economy: Node, records: LocalRecords, fake: FakeClient) -> vo
 	page.open_car(0)
 	await settle()
 	check(page._coin_balance.text.contains(str(economy.balance())),"Garage displays persisted balance")
-	var locked: LiveryTile = page.livery_menu.pattern_tiles[3]
-	check(locked.get_node("CoinPrice").text == "500 coins","locked livery price is visible")
+	var locked: Button = page.livery_menu.pattern_tiles[3]
+	check(locked.price.text == "500","locked livery price is visible")
 	var original: String = page.draft.pattern
 	page._select_livery(3)
 	await settle()

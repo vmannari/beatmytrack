@@ -23,7 +23,9 @@ func _ready() -> void:
 	refresh()
 
 func refresh() -> void:
-	tooltip_text = caption+". "+" ".join(description)+" "+audience+". "+tries
+	var translated_description: PackedStringArray = []
+	for line: String in description: translated_description.append(tr(line))
+	tooltip_text = tr(caption)+". "+" ".join(translated_description)+" "+tr(audience)+". "+tr(tries)
 	var style := MenuStyle.box(Color("172c36") if chosen else Color("10232f"),0)
 	style.set_corner_radius_all(0)
 	style.border_color = MenuStyle.ACCENT if chosen else Color("3b5462")
@@ -42,6 +44,9 @@ func refresh() -> void:
 
 func artwork_rect() -> Rect2:
 	return Rect2(1,1,size.x-2,maxf(92,size.y-2))
+
+func _notification(what: int) -> void:
+	if what == NOTIFICATION_TRANSLATION_CHANGED and is_inside_tree(): refresh()
 
 func _draw() -> void:
 	var inset: float = 19 if size.x >= 250 else 15
@@ -72,8 +77,9 @@ func _draw() -> void:
 	var strip := Rect2(8,size.y-72,size.x-16,64)
 	draw_rect(strip,MenuStyle.ACCENT if chosen else Color("091720f2"))
 	var label_color: Color = MenuStyle.INK if chosen else MenuStyle.TEXT
-	var title_width: float = MenuStyle.DISPLAY.get_string_size(caption.to_upper(),HORIZONTAL_ALIGNMENT_LEFT,-1,28).x
-	draw_string(MenuStyle.DISPLAY,Vector2(maxf(20,(size.x-title_width)*0.5),size.y-31),caption.to_upper(),HORIZONTAL_ALIGNMENT_LEFT,size.x-40,28,label_color*tint)
+	var display_caption: String = tr(caption).to_upper()
+	var title_width: float = MenuStyle.DISPLAY.get_string_size(display_caption,HORIZONTAL_ALIGNMENT_LEFT,-1,28).x
+	draw_string(MenuStyle.DISPLAY,Vector2(maxf(20,(size.x-title_width)*0.5),size.y-31),display_caption,HORIZONTAL_ALIGNMENT_LEFT,size.x-40,28,label_color*tint)
 	if chosen:
 		var marker := Vector2(size.x-21,21)
 		draw_circle(marker,10,MenuStyle.ACCENT,true,-1,true)

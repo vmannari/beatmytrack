@@ -26,6 +26,8 @@ vec2 desert_sand_finish(vec2 p, float weight) {
 }
 uniform bool icy_road = false;
 uniform bool wet_road = false;
+uniform bool piece_materials = false;
+uniform vec4 gravel_road_base : source_color = vec4(0.6745,0.5451,0.3529,1.0);
 global uniform float storm_ripple_time;
 global uniform bool storm_ripples_enabled;
 uniform bool packed_sand = false;
@@ -272,6 +274,22 @@ vec3 compacted_road(vec3 base, vec2 metres) {
 	float reference_value = OUTPUT_IS_SRGB ? desert_road_reference.x : desert_road_reference.y;
 	float pressed = clamp(dot(artwork,vec3(0.2126,0.7152,0.0722))/reference_value,0.82,1.18);
 	return base*mix(0.99,pressed,0.25);
+}
+
+vec3 road_gravel_color(vec2 metres) {
+	// The existing Desert road's settled directional texture and warm palette.
+	return compacted_road(gravel_road_base.rgb,metres)*(wet_road ? 0.84 : 1.0);
+}
+
+vec2 road_material_metres(vec2 p, vec2 encoded_axis) {
+	float angle = 0.5*atan(encoded_axis.y,encoded_axis.x+0.000001);
+	vec2 axis = vec2(cos(angle),sin(angle));
+	return vec2(dot(p,axis),dot(p,vec2(-axis.y,axis.x)));
+}
+
+float road_material_coverage(float weight, vec2 p) {
+	float grains = texture(surface_factors,p/5.0).g-0.5;
+	return clamp(weight+grains*0.12*4.0*weight*(1.0-weight),0.0,1.0);
 }
 
 // Winter's bank foot uses a settled deposit broken into wind-sized tongues

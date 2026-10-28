@@ -22,7 +22,7 @@ func build(parent: Node3D) -> void:
 		var phases: Dictionary = preload("res://track/desert_road_union.gd").phases(pieces,RoadPieces.prepare_endpoints(pieces))
 		for i: int in range(pieces.size()):
 			if pieces[i].kind == "bridge": bridge_phases.append(phases.get(i,{}))
-	CreatorBridgeVisual.build(parent,track.creator_bridges,theme,bridge_phases,ROAD_HEIGHT.is_asphalt(track))
+	CreatorBridgeVisual.build(parent,track.creator_bridges,theme,bridge_phases,ROAD_HEIGHT.is_asphalt(track),CreatorPreviewMasks.bridge_materials(track),track.half_extent)
 	# Empty native decks are common in the editor. The packed-array scan is
 	# bounded native work; avoid visiting every empty grid cell twice below.
 	if not roles.has(0) and not roles.has(4): return

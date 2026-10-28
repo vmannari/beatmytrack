@@ -40,9 +40,6 @@ def run_worker(app, process_job, *, once=False, control=None, install_signals=Tr
     control = control or WorkerControl()
     app.state.worker_control = control
     app.state.worker_id = new_id()
-    if not once:
-        from .driver_work import DriverWork
-        app.state.driver_work = DriverWork(app)
     worker_id = app.state.worker_id
     signals = getattr(app.state, "run_signals", None)
     if signals is not None and not once:
@@ -75,6 +72,9 @@ def run_worker(app, process_job, *, once=False, control=None, install_signals=Tr
                 if signals is not None:
                     signals.set_idle(not worked)
                 if not worked:
+                    retire = getattr(app.state.verifier, "retire_idle", None)
+                    if retire is not None:
+                        retire()
                     (signals.worker if signals is not None else control.stop).wait(idle_seconds)
         except BaseException as error:  # noqa: BLE001 - transport fatal job-thread errors to the supervisor
             errors.append(error)

@@ -23,7 +23,7 @@ func run() -> void:
 		if argument=="--capture-loop": verify_loop = true
 	DirAccess.make_dir_recursive_absolute(ProjectSettings.globalize_path(evidence_dir))
 	var game: Node = load("res://core/game.tscn").instantiate()
-	game.initial_track = NativeTrack.read("res://resources/tracks/starter_circuit.json")
+	game.initial_track = NativeTrack.read("res://resources/tracks/ellipse.json")
 	game.initial_track.metadata.theme = "storm"
 	root.add_child(game)
 	game.set_physics_process(false) # Held presentation, no race completion or record writes.

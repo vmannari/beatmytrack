@@ -27,7 +27,7 @@ CATALOG = json.loads(Path(__file__).with_name("achievement_catalog.json").read_t
 FAMILIES = CATALOG["families"]
 IDS = {f["id"] for f in FAMILIES if f["scope"] != "local"}
 BIOMES = ("pine", "desert", "winter", "storm", "night_city")
-CARS = ("compact", "pickup", "classic", "formula", "kart")
+CARS = ("compact", "pickup", "classic", "formula", "kart", "electric", "forklift")
 MAX_VALUE = 2**53 - 1
 
 

@@ -31,10 +31,7 @@ func manifest() -> Dictionary:
 	var vehicles: Dictionary = {}
 	for id: String in VehicleCatalog.IDS:
 		var config: HandlingConfig = VehicleCatalog.config(id)
-		var values: Dictionary = {}
-		for property: Dictionary in config.get_property_list():
-			if int(property.usage) & PROPERTY_USAGE_SCRIPT_VARIABLE:
-				values[str(property.name)] = config.get(property.name)
+		var values: Dictionary = config.snapshot()
 		vehicles[id] = {"handling_version":config.version,"config_hash":JSON.stringify(values,"",true).sha256_text()}
 	var engine: Dictionary = Engine.get_version_info()
 	var engine_version: String = "%s.%s.%s.%s.%s.%s" % [engine.major,engine.minor,engine.patch,engine.status,engine.build,str(engine.hash).left(9)]

@@ -7,7 +7,7 @@ account ratings and verified high scores in the actual game menus.
 ## Delivered behavior
 
 - Play refreshes published backend metadata in 100-item pages and merges it with
-  the installed Starter Circuit and existing local tracks. Selecting a cloud track
+  the installed Ellipse and existing local tracks. Selecting a cloud track
   downloads its immutable document, checks the server's SHA-256 against the exact
   response bytes, validates it, atomically caches it and compiles it in the existing
   selection worker. Browsing does not download full track documents.
@@ -104,7 +104,7 @@ Desktop evidence, inspected at 1280×720 and 960×540:
   The owner was asked whether these should seed the shared catalog or remain local
   until individually published. Pending that choice, all original files remain
   playable and editable under their existing ownership rules.
-- The bundled Starter Circuit remains an offline/local fixture; cloud competition
+- The bundled Ellipse remains an offline/local fixture; cloud competition
   is attached to published immutable versions. A larger registered shipping starter
   pack is not introduced by this change.
 - The current client downloads a complete metadata snapshot for responsive offline

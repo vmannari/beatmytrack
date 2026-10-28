@@ -1,15 +1,17 @@
 class_name VehicleCatalog
 extends RefCounted
 ## Authored local cars; no unlocks or purchases. IDs pin handling and artwork.
-const IDS: Array[String] = ["compact", "pickup", "classic", "formula", "kart"]
-const NAMES: Array[String] = ["COMPACT / 01", "HAULER / 02", "REARSPORT / 03", "FORMULA / 04", "KART / 05"]
-const CLASSES: Array[String] = ["Compact", "Pick-up", "Classic Sports", "Formula", "Go-kart"]
+const IDS: Array[String] = ["compact", "pickup", "classic", "formula", "kart", "forklift", "electric"]
+const NAMES: Array[String] = ["COMPACT / 01", "HAULER / 02", "REARSPORT / 03", "FORMULA / 04", "KART / 05", "FORKLIFT / 06", "VOLT / 07"]
+const CLASSES: Array[String] = ["Compact", "Pick-up", "Classic Sports", "Formula", "Go-kart", "Forklift", "Electric"]
 const DESCRIPTIONS: Array[String] = [
 	"Agile and forgiving. A versatile choice for mixed circuits.",
 	"Heavy power and loose-surface traction. Plan ahead: rotation and braking take longer.",
 	"Rear-heavy traction for fast exits. Lift in a corner to rotate; catch the rear early.",
 	"Precise asphalt grip. Low top speed, abrupt slides and harsh off-road penalties.",
-	"Quick off the line. Tight turns and strong grip; low speed on long straights."]
+	"Quick off the line. Tight turns and strong grip; low speed on long straights.",
+	"Rear-wheel steering swings the tail wide. Tight turns and heavy traction; a low top speed.",
+	"Instant rear-wheel power with responsive steering. Feed in the accelerator for a controlled slide; release to brake and stop. Select D or R while stopped. One pedal, no handbrake."]
 static var selected: String = "compact"
 
 static func valid_id(id: String) -> String:

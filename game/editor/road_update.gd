@@ -9,6 +9,7 @@ static func plan(before: NativeTrack, after: NativeTrack) -> Dictionary:
 	# Sand wear phases, relief and bounded snow deposits can depend on a whole
 	# connected component or earlier pieces. Keep their exact full preparation.
 	if next.get("theme","pine") in ["desert","winter"] or old.is_empty() or next.is_empty(): return {}
+	if RoadPieces.has_materials(old) != RoadPieces.has_materials(next): return {}
 	if next.get("theme","pine") == "pine" and (not reduced_verge(before) or not reduced_verge(after)): return {}
 	for key: String in ["theme","surface","base_track","layout","paint","objects","hidden_scenery"]:
 		if old.get(key) != next.get(key): return {}

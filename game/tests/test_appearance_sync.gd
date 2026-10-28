@@ -76,7 +76,7 @@ func run() -> void:
 	check(a.save_records() == OK,"selected car local setting")
 	var sa: Node = sync_for(a,fake)
 	await sa.refresh()
-	check(fake.saved.size() == 5,"all five authored cars upload without opening Rivalry")
+	check(fake.saved.size() == VehicleCatalog.IDS.size(),"all authored cars upload without opening Rivalry")
 	var sb: Node = sync_for(b,fake)
 	await sb.refresh()
 	for id: String in VehicleCatalog.IDS:

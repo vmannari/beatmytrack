@@ -35,7 +35,8 @@ func _init(data: NativeTrack) -> void:
 					floor_bins[cell].append(slot)
 
 static func is_asphalt(data: NativeTrack) -> bool:
-	return str(data.metadata.get("theme","pine")) not in ["desert","winter"] and data.metadata.get("creator_document",{}).get("surface","asphalt") == "asphalt"
+	var document: Dictionary = data.metadata.get("creator_document",{})
+	return str(data.metadata.get("theme","pine")) not in ["desert","winter"] and (document.get("surface","asphalt") == "asphalt" or RoadPieces.has_materials(document))
 
 static func clip_bridge_mouths(polygon: PackedVector2Array, pieces: Array, index: int, topology: Dictionary) -> PackedVector2Array:
 	for cut: Dictionary in RoadEdges._join_cuts(pieces,index,topology):

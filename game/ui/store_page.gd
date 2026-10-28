@@ -14,6 +14,7 @@ var working: bool = false
 var eligible: bool = false
 var entitlements: Dictionary = {}
 var products: Array = []
+var _catalog_loaded: bool = false
 var offer_order: Array = ["ad_free_forever","ad_free_month","creator_slot_1","creator_slots_5","creator_slots_10"]
 var page_preview: bool = false
 var _pending_revision: int = -1
@@ -28,6 +29,14 @@ var _restore: Button
 var _body: VBoxContainer
 var _cards: Array[Control] = []
 var _compact: bool = false
+var _dense: bool = false
+var _gift_dialog: ConfirmationDialog
+var _gift_username: LineEdit
+var _gift_message: Label
+var _gift_recipient: Dictionary = {}
+var _gift_product: String = ""
+var _gift_scope: String = ""
+var _gift_lookup: bool = false
 const ACCESS = preload("res://backend/store_access_cache.gd")
 
 const COPY: Dictionary = {
@@ -158,7 +167,7 @@ func _ready() -> void:
 	status.add_theme_color_override("font_color",MenuStyle.MUTED)
 	footer_copy.add_child(status)
 	resized.connect(_columns)
-	_columns()
+	_draw_products()
 	if not page_preview: activate()
 	elif is_instance_valid(client):
 		var access: RefCounted = ACCESS.for_service(client)
@@ -177,7 +186,7 @@ func activate() -> void:
 func _columns() -> void:
 	if not is_instance_valid(grid): return
 	grid.columns = 3 if size.x >= 900 else 2 if size.x >= 650 else 1
-	_header.vertical = size.x < 1000
+	_header.vertical = size.x < 760
 	_ad_offers.vertical = size.x < 900
 	_footer.vertical = size.x < 650
 	controls.vertical = size.x < 450
@@ -185,11 +194,23 @@ func _columns() -> void:
 		if row is BoxContainer: row.vertical = size.x < 650
 	_headline.add_theme_font_size_override("font_size",44 if size.x >= 1000 else 36 if size.x >= 650 else 30)
 	_compact = size.x < 1100
+	_dense = size.y < 680 and size.x >= 760
+	_body.add_theme_constant_override("separation",8 if _dense else 12)
+	var account: PanelContainer = find_child("StoreAccountStatus",true,false)
+	if account != null: account.add_theme_stylebox_override("panel",_panel_style(false,10 if _dense else 14))
+	for label: Node in find_children("*","Label",true,false):
+		if not label.has_meta("store_font_size"): continue
+		var base: int = int(label.get_meta("store_font_size"))
+		label.add_theme_font_size_override("font_size",maxi(16,base-(6 if base >= 28 else 2)) if _dense else base)
+	_headline.add_theme_font_size_override("font_size",34 if _dense else 44 if size.x >= 1000 else 36 if size.x >= 650 else 30)
 	for card: Control in _cards:
+		card.add_theme_stylebox_override("panel",_panel_style(bool(card.get_meta("highlight",false)),10 if _dense else 14))
+		card.get_child(0).add_theme_constant_override("separation",4 if _dense else 6)
 		var content: BoxContainer = card.find_child("StoreOfferContent",true,false) as BoxContainer
 		if content == null: continue
 		content.vertical = _compact
-		var checkout: Control = content.get_node("StoreCheckout")
+		var checkout: BoxContainer = content.get_node("StoreCheckout")
+		checkout.vertical = not _compact
 		checkout.custom_minimum_size.x = 0 if _compact else 170
 
 static func valid_catalog(data: Variant) -> bool:
@@ -211,9 +232,17 @@ func refresh(force: bool = true) -> void:
 	eligible = false
 	entitlements = {}
 	controls.hide()
+	summary.text = "Checking your access…"
+	_draw_products()
 	var result: Dictionary = {"ok":false,"error":"Online services are not configured."}
 	var scope: String = ACCESS.identity(client)
-	if is_instance_valid(client): result = await ACCESS.for_service(client).fetch(client,force)
+	if is_instance_valid(client):
+		var access: RefCounted = ACCESS.for_service(client)
+		var present_catalog: Callable = _present_catalog.bind(scope)
+		access.catalog_received.connect(present_catalog)
+		if not access.catalog.is_empty(): _present_catalog(access.catalog,scope)
+		result = await access.fetch(client,force)
+		access.catalog_received.disconnect(present_catalog)
 	if not is_inside_tree() or scope != ACCESS.identity(client):
 		working = false
 		return
@@ -229,19 +258,34 @@ func refresh(force: bool = true) -> void:
 		await _pending()
 	working = false
 
+func _present_catalog(data: Dictionary, scope: String) -> void:
+	if not is_inside_tree() or scope != ACCESS.identity(client): return
+	products = data.products.duplicate(true)
+	_catalog_loaded = true
+	_draw_products()
+
 func _present_access(result: Dictionary, scope: String) -> void:
 	products = result.data.products
+	_catalog_loaded = true
 	entitlements = result.get("entitlements",{})
 	eligible = OS.is_debug_build() and bool(entitlements.get("purchase_simulation",false))
 	controls.visible = eligible
 	if entitlements.is_empty():
 		summary.text = "Sign in to view your publishing slots and ad-free access."
 	else:
-		summary.text = "%d publishing slots · %s" % [int(entitlements.publishing_slots),"Forever ad-free" if entitlements.ad_free_forever else ("Ad-free until "+Time.get_date_string_from_unix_time(int(entitlements.ad_free_until))+" UTC" if entitlements.ad_free else "Ads enabled")]
+		_access_summary()
 	_draw_products()
 	status.text = "SIMULATION · No payment is taken." if eligible else "Store billing is not connected yet. Purchases are unavailable."
 	_presented_scope = scope
 	_presented_revision = int(result.get("revision",-1))
+
+func _access_summary() -> void:
+	if entitlements.is_empty() or not is_instance_valid(summary): return
+	var access: String = tr("Forever ad-free") if entitlements.ad_free_forever else (GameText.message("Ad-free until {date} UTC",{"date":Time.get_date_string_from_unix_time(int(entitlements.ad_free_until))}) if entitlements.ad_free else tr("Ads enabled"))
+	GameText.bind(summary,"{count} publishing slot · {access}",{"access":access},"{count} publishing slots · {access}",int(entitlements.publishing_slots))
+
+func _notification(what: int) -> void:
+	if what == NOTIFICATION_TRANSLATION_CHANGED and is_instance_valid(summary) and not entitlements.is_empty(): _access_summary.call_deferred()
 
 func _draw_products() -> void:
 	_cards.clear()
@@ -249,14 +293,21 @@ func _draw_products() -> void:
 		for child: Node in container.get_children(): container.remove_child(child); child.queue_free()
 	for child: Node in pending_rows.get_children(): pending_rows.remove_child(child); child.queue_free()
 	if not is_instance_valid(client) or not client.signed_in(): pending_rows.add_child(MenuStyle.button("Sign in",sign_in_requested.emit))
+	var displayed: Array = products
+	if not _catalog_loaded:
+		# Present known offer copy immediately; prices and availability stay server-owned.
+		displayed = []
+		for id: String in offer_order:
+			if id in COPY: displayed.append({"id":id,"title":TITLES[id],"price_eur":"","enabled":false})
 	for id: String in offer_order:
-		for product: Dictionary in products:
+		for product: Dictionary in displayed:
 			if str(product.id) != id: continue
 			var card: PanelContainer = _product_card(product)
 			if id.begins_with("ad_free"): _ad_offers.add_child(card)
 			else: grid.add_child(card)
 	_ad_offers.visible = _ad_offers.get_child_count() > 0
 	_slots_heading.visible = grid.get_child_count() > 0
+	_columns()
 
 func _panel_style(highlight: bool, padding: int = 14) -> StyleBoxFlat:
 	var style: StyleBoxFlat = MenuStyle.card(padding)
@@ -311,6 +362,7 @@ func _product_card(product: Dictionary) -> PanelContainer:
 	var card := PanelContainer.new()
 	card.name = "StoreCard_"+id
 	card.set_meta("telemetry_product_id",id)
+	card.set_meta("highlight",highlight)
 	card.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	card.size_flags_stretch_ratio = 1.6 if forever else 1.0
 	card.add_theme_stylebox_override("panel",_panel_style(highlight))
@@ -341,8 +393,9 @@ func _product_card(product: Dictionary) -> PanelContainer:
 	title_row.add_child(title)
 	copy.add_child(_benefit(str(COPY[id])))
 	copy.add_child(_benefit("Up to 3 free resumes per race"))
-	var checkout := VBoxContainer.new()
+	var checkout := BoxContainer.new()
 	checkout.name = "StoreCheckout"
+	checkout.vertical = not _compact
 	checkout.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	checkout.size_flags_vertical = Control.SIZE_SHRINK_CENTER
 	checkout.add_theme_constant_override("separation",6)
@@ -350,7 +403,7 @@ func _product_card(product: Dictionary) -> PanelContainer:
 		checkout.custom_minimum_size.x = 170
 		checkout.size_flags_stretch_ratio = 0.75
 	content.add_child(checkout)
-	var price: Label = _label("€"+str(product.price_eur),40)
+	var price: Label = _label(_price_text(product),40)
 	price.name = "StorePrice_"+id
 	price.horizontal_alignment = HORIZONTAL_ALIGNMENT_RIGHT
 	checkout.add_child(price)
@@ -373,7 +426,7 @@ func _slot_content(column: VBoxContainer, product: Dictionary, best: bool) -> vo
 		badge.size_flags_vertical = Control.SIZE_SHRINK_CENTER
 		heading.add_child(badge)
 		heading.move_child(price_group,-1)
-	var price: Label = MenuStyle.label("€"+str(product.price_eur),34)
+	var price: Label = _label(_price_text(product),34)
 	price.name = "StorePrice_"+id
 	price.horizontal_alignment = HORIZONTAL_ALIGNMENT_RIGHT
 	price_group.add_child(price)
@@ -384,8 +437,96 @@ func _slot_content(column: VBoxContainer, product: Dictionary, best: bool) -> vo
 	column.add_child(HSeparator.new())
 	var amount: String = str(product.price_eur)
 	if amount.is_valid_float() and float(amount) > 0.0:
-		column.add_child(MenuStyle.label("€%.2f per slot" % (float(amount)/int(SLOT_COUNTS[id])),16,true))
-	column.add_child(_buy_button(product,best))
+		var unit_price: Label = MenuStyle.label("",16,true)
+		GameText.bind(unit_price,"€{price} per slot",{"price":"%.2f" % (float(amount)/int(SLOT_COUNTS[id]))})
+		column.add_child(unit_price)
+	var actions := BoxContainer.new()
+	actions.name = "StoreSlotActions"
+	actions.add_theme_constant_override("separation",8)
+	column.add_child(actions)
+	var buy: Button = _buy_button(product,best)
+	buy.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	actions.add_child(buy)
+	var gift: Button = MenuStyle.button("Gift slots",_open_gift.bind(id))
+	gift.name = "StoreGift_"+id
+	gift.custom_minimum_size.y = 48
+	gift.disabled = not eligible or not bool(product.enabled) or adapter.has_pending_request()
+	actions.add_child(gift)
+	actions.resized.connect(func() -> void:
+		actions.vertical = buy.get_combined_minimum_size().x+gift.get_combined_minimum_size().x+8 > actions.size.x
+	)
+
+func _open_gift(product_id: String) -> void:
+	if working or not eligible or adapter.has_pending_request(): return
+	if not is_instance_valid(_gift_dialog):
+		_gift_dialog = ConfirmationDialog.new()
+		_gift_dialog.name = "StoreGiftDialog"
+		_gift_dialog.title = tr("Gift track slots")
+		_gift_dialog.dialog_hide_on_ok = false
+		_gift_dialog.min_size = Vector2i(320,260)
+		add_child(_gift_dialog)
+		var content := VBoxContainer.new()
+		content.add_theme_constant_override("separation",12)
+		_gift_dialog.add_child(content)
+		_gift_username = LineEdit.new()
+		_gift_username.name = "GiftUsername"
+		_gift_username.placeholder_text = tr("Recipient username")
+		_gift_username.max_length = 40
+		_gift_username.custom_minimum_size.y = 52
+		content.add_child(_gift_username)
+		_gift_username.text_changed.connect(func(_value: String) -> void:
+			_gift_recipient = {}
+			_gift_dialog.get_ok_button().text = tr("Find player")
+			_gift_message.text = ""
+		)
+		_gift_username.text_submitted.connect(func(_value: String) -> void: _confirm_gift())
+		_gift_message = _label("",18)
+		_gift_message.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+		_gift_message.custom_minimum_size = Vector2(280,80)
+		content.add_child(_gift_message)
+		_gift_dialog.confirmed.connect(_confirm_gift)
+	_gift_scope = ACCESS.identity(client)
+	_gift_dialog.title = tr("Gift track slots")
+	_gift_username.placeholder_text = tr("Recipient username")
+	_gift_product = product_id
+	_gift_recipient = {}
+	_gift_username.text = ""
+	_gift_message.text = ""
+	_gift_dialog.get_ok_button().text = tr("Find player")
+	_gift_dialog.get_ok_button().disabled = false
+	_gift_dialog.popup_centered(Vector2i(mini(440,int(get_viewport_rect().size.x)-32),280))
+	_gift_username.grab_focus()
+
+func _confirm_gift() -> void:
+	if working or _gift_lookup or not eligible or not _gift_dialog.visible: return
+	if _gift_scope != ACCESS.identity(client):
+		_gift_dialog.hide()
+		return
+	if _gift_recipient.is_empty():
+		var username: String = _gift_username.text.strip_edges()
+		if username.is_empty(): return
+		_gift_lookup = true
+		_gift_dialog.get_ok_button().disabled = true
+		var result: Dictionary = await client.request_api("/store/gift-recipient?username="+username.uri_encode(),HTTPClient.METHOD_GET,{},"",true)
+		_gift_lookup = false
+		if not is_inside_tree() or not _gift_dialog.visible: return
+		_gift_dialog.get_ok_button().disabled = false
+		if _gift_scope != ACCESS.identity(client) or username != _gift_username.text.strip_edges(): return
+		if not result.get("ok",false) or not result.get("data") is Dictionary or not result.data.get("id") is String or not result.data.get("display_name") is String:
+			_gift_message.text = tr("Player unavailable. Check the username and try again.")
+			return
+		_gift_recipient = result.data.duplicate()
+		_gift_message.text = GameText.message("Track slots: {count}\nRecipient: {player}\nTotal: €{price}",{"count":SLOT_COUNTS[_gift_product],"player":_gift_recipient.display_name,"price":_gift_price()})
+		_gift_dialog.get_ok_button().text = tr("Confirm gift")
+		return
+	var recipient_id: String = str(_gift_recipient.id)
+	_gift_dialog.hide()
+	await _purchase(_gift_product,recipient_id)
+
+func _gift_price() -> String:
+	for product: Dictionary in products:
+		if product.id == _gift_product: return str(product.price_eur)
+	return ""
 
 func _buy_button(product: Dictionary, highlight: bool) -> Button:
 	var id: String = str(product.id)
@@ -394,6 +535,7 @@ func _buy_button(product: Dictionary, highlight: bool) -> Button:
 	var caption: String = str(ACTIONS[id])
 	if available: caption = "Simulate · "+caption
 	elif owned_forever: caption = "Already ad-free forever"
+	elif not _catalog_loaded and (working or page_preview): caption = "Loading…"
 	elif not bool(product.enabled): caption = "Unavailable"
 	var button: Button = MenuStyle.button(caption,_purchase.bind(id),highlight)
 	button.name = "StoreBuy_"+id
@@ -408,6 +550,10 @@ func _buy_button(product: Dictionary, highlight: bool) -> Button:
 		button.add_theme_stylebox_override("normal",outline)
 	return button
 
+func _price_text(product: Dictionary) -> String:
+	if str(product.price_eur).is_empty(): return "…" if working or page_preview else "—"
+	return "€"+str(product.price_eur)
+
 func _pending() -> void:
 	var result: Dictionary = await adapter.catalog()
 	if not is_inside_tree() or not result.ok: return
@@ -420,16 +566,17 @@ func _pending() -> void:
 		var row := BoxContainer.new()
 		row.vertical = size.x < 650
 		pending_rows.add_child(row)
-		row.add_child(_label("Pending test payment: "+str(order.product_id),16))
+		var pending_caption: String = tr("Pending gift payment") if order.get("recipient_player_id") != null else tr("Pending test payment")
+		row.add_child(_label(pending_caption+": "+str(order.product_id),16))
 		for state: String in ["approved","declined","cancelled"]:
 			row.add_child(MenuStyle.button(state.capitalize(),_resolve.bind(str(order.id),state)))
 
-func _purchase(product_id: String) -> void:
+func _purchase(product_id: String, recipient_player_id: String = "") -> void:
 	if working or not eligible: return
 	if product_id in COPY: purchase_requested.emit(product_id)
 	working = true
 	status.text = "Processing simulated checkout…"
-	var result: Dictionary = await adapter.purchase(product_id,["approved","pending","declined","cancelled"][outcome.selected])
+	var result: Dictionary = await adapter.purchase(product_id,["approved","pending","declined","cancelled"][outcome.selected],recipient_player_id)
 	working = false
 	await _after(result)
 
@@ -451,15 +598,18 @@ func _after(result: Dictionary) -> void:
 	await refresh()
 	if not is_inside_tree(): return
 	status.text = "Simulated payment "+str(result.data.purchase.state)+". No payment taken." if result.ok else ("This item is unavailable right now." if result.get("error") == "PRODUCT_DISABLED" else str(result.get("error","Checkout failed. Refresh to recover.")))
+	if result.ok and result.data.purchase.get("recipient_player_id") != null and result.data.purchase.state == "approved":
+		status.text = tr("Simulated gift delivered. No payment taken.")
 
 func _label(text: String, font_size: int) -> Label:
 	var label: Label = MenuStyle.label(text,font_size)
+	label.set_meta("store_font_size",font_size)
 	label.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	return label
 
 func telemetry_exposures() -> Array[String]:
 	var result: Array[String] = []
-	if not is_visible_in_tree() or not is_instance_valid(grid): return result
+	if not _catalog_loaded or not is_visible_in_tree() or not is_instance_valid(grid): return result
 	var scroll: Control = get_node_or_null("StoreScroll") as Control
 	if scroll == null: return result
 	var visible: Rect2 = scroll.get_global_rect().intersection(get_viewport().get_visible_rect())

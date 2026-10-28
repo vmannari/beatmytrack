@@ -75,7 +75,7 @@ def prepared_geometry(app, document_hash, document=None):
 
 def validate_envelope(replay):
     if (type(replay) is not dict or replay.get("schema") != SCHEMA
-            or set(replay)-{"schema", "input_count", "race_proof", "rewinds", "ghost"}
+            or set(replay)-{"schema", "input_count", "race_proof", "rewinds", "ghost", "claimed_lap_ticks"}
             or type(replay.get("input_count")) is not int or not 1 <= replay["input_count"] <= MAX_FRAMES
             or type(replay.get("race_proof")) is not dict):
         raise VerificationError("Malformed trajectory envelope")
@@ -98,6 +98,12 @@ def validate_envelope(replay):
         offset, tick = event["input_offset"], event["to_tick"]
     if not 0 < duration(replay) <= MAX_FRAMES:
         raise VerificationError("Invalid trajectory duration")
+    if "claimed_lap_ticks" in replay:
+        laps = replay["claimed_lap_ticks"]
+        if (type(laps) is not list or len(laps) != 5
+                or any(type(value) is not int or not 0 < value <= MAX_FRAMES for value in laps)
+                or sum(laps) != duration(replay)):
+            raise VerificationError("Invalid claimed lap timing")
 
 
 def check(geometry, proof, ticks, vehicle, *, creator_test=False):
@@ -115,30 +121,38 @@ def check(geometry, proof, ticks, vehicle, *, creator_test=False):
     gate_slack = 0.0001 if geometry["manifest"].get("rules_key") == "standing-5-road-gates-v23" else 0.15
     start = geometry["creator_start"] if creator_test else geometry["start"]
     limit = geometry["maximum_speed"][vehicle] * 1.1 / 120.0
+    # The 5 cm allowance belongs to the ordinary six-tick capture interval.
+    # Scale it with elapsed time so inserting dense samples cannot buy speed.
+    # Cache the six squared bounds instead of exponentiating for every sample.
+    distance_limits = (0.0,) + tuple((limit*dt + 0.05*(dt/6))**2 for dt in range(1, 7))
+    number_types = (int, float)
     extent_x, extent_y = geometry["extent"]
     target_laps = 1 if creator_test else 5
     gate_index, laps, previous_tick, last_lap = 0, 0, -1, 0
     px, py, previous_layer = start
     lap_ticks = []
     nx, ny, origin, sx, sy, side_origin, low, high, expected_layer = gates[0]
-    gate_before = nx*px+ny*py+origin
+    gate_before = 0.0
     for sample in samples:
         if (type(sample) is not list or len(sample) != width
                 or type(sample[0]) is not int or type(sample[layer_index]) is not int or sample[layer_index] not in (0, 1)):
             raise VerificationError("Malformed trajectory sample")
         tick, x, y, layer = sample[0],sample[1],sample[2],sample[layer_index]
-        if (type(x) not in (int, float) or type(y) not in (int, float)
+        if (type(x) not in number_types or type(y) not in number_types
                 or not (-extent_x <= x <= extent_x and -extent_y <= y <= extent_y)):
             raise VerificationError("Trajectory is outside the track")
         if previous_tick < 0:
             if tick != 0 or (x-px)**2+(y-py)**2 > 0.15**2 or layer != previous_layer:
                 raise VerificationError("Trajectory does not begin at the race start")
+            # The recorded start may differ within tolerance. Gate crossings
+            # must use that actual position, just like every later segment.
+            gate_before = nx*x+ny*y+origin
         else:
             dt = tick-previous_tick
             if not 1 <= dt <= 6 or tick > ticks or laps == target_laps:
                 raise VerificationError("Trajectory timeline is incomplete")
             dx, dy = x-px, y-py
-            if dx*dx+dy*dy > (limit*dt+0.05)**2:
+            if dx*dx+dy*dy > distance_limits[dt]:
                 raise VerificationError("Trajectory jumps or exceeds the car speed limit")
             consumed = -1.0
             after = nx*x+ny*y+origin

@@ -26,6 +26,7 @@ from .track_models import digest, now
 
 router = APIRouter(route_class=ParsedJSONRoute, tags=["Studio governance"])
 ROUTES = {
+    "usage",
     "overview",
     "product",
     "quality",

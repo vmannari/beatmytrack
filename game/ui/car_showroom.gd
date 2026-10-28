@@ -3,6 +3,8 @@ extends SubViewportContainer
 ## Menu-only orbit camera over the actual race model. No simulation ownership.
 signal condition_changed
 signal trophy_tapped(position: Vector2)
+const PaintTransition = preload("res://ui/garage_paint_transition.gd")
+const KitTransition = preload("res://ui/garage_kit_transition.gd")
 var _wall_press := Vector2.INF
 var _wall_pointer: int = -2
 var condition: Dictionary = {}
@@ -18,6 +20,9 @@ var wash_effect: Node3D
 var pick_meshes: Array[Dictionary] = []
 var vehicle_id: String = "compact"
 var read_only: bool = false
+var preview_live_lighting: bool = false
+var cooperative_build: bool = false
+var showroom_ready: bool = false
 var garage_mode: bool = false
 var turntable: Node3D
 var roof: Node3D
@@ -30,10 +35,15 @@ var record_sleeves: Node3D
 var _record_settings: PackedByteArray = PackedByteArray()
 var _browse_position: float = NAN
 var camera_motion: Tween
+var customisation_orbit: Callable
 var car_motion: Tween
 var outgoing_pedestal: Node3D
 var incoming_reveal: GarageCarReveal
 var outgoing_reveal: GarageCarReveal
+var paint_motion: Tween
+var paint_transition: PaintTransition
+var kit_motion: Tween
+var kit_transition: KitTransition
 var interaction_inset_top: float = 0.0
 var interaction_inset_bottom: float = 0.0
 var framing_scale: float = 1.0
@@ -54,6 +64,7 @@ var _render_dirty: bool = true
 var _last_render_state: Array = []
 var render_requests: int = 0
 var _settle_draws: int = 0
+var _reflection_settle_draws: int = 0
 const DEFAULT_YAW: float = -0.70
 const GARAGE_CAMERA_YAW: float = 0.0
 const MIN_ELEVATION: float = PI / 36.0 # 5 degrees, always above the floor.
@@ -64,6 +75,7 @@ const CAR_HIDE_SECONDS: float = 0.26
 const CAR_REVEAL_SECONDS: float = 0.38
 
 func _ready() -> void:
+	if read_only: set_process(false)
 	if garage_mode: elevation = atan(0.16)
 	stretch = true
 	mouse_filter = Control.MOUSE_FILTER_IGNORE if read_only else Control.MOUSE_FILTER_STOP
@@ -71,7 +83,7 @@ func _ready() -> void:
 	showroom_viewport = viewport
 	viewport.own_world_3d = true
 	viewport.render_target_update_mode = SubViewport.UPDATE_ONCE
-	viewport.msaa_3d = Viewport.MSAA_2X if read_only else Viewport.MSAA_4X
+	viewport.msaa_3d = Viewport.MSAA_2X if read_only and not preview_live_lighting else Viewport.MSAA_4X
 	viewport.scaling_3d_scale = 1.0
 	# Render at display pixel density, including canvas/window scaling.
 	# The standalone viewport also keeps carousel renders genuinely one-shot.
@@ -91,11 +103,17 @@ func _ready() -> void:
 	viewport.add_child(world)
 	car = CarVisual.new()
 	car.vehicle_id = vehicle_id
+	car.garage_template = garage_mode
 	car.editable_kits = garage_mode and vehicle_id=="compact"
 	car.livery = livery
 	car.customisation = customisation
+	car.cooperative_build = cooperative_build
+	if cooperative_build: viewport.render_target_update_mode = SubViewport.UPDATE_DISABLED
 	world.add_child(car)
-	if garage_mode: turntable = GarageEnvironment.build(world, car, read_only)
+	while not car.model_ready:
+		await get_tree().process_frame
+		if not is_inside_tree() or is_queued_for_deletion(): return
+	if garage_mode: turntable = GarageEnvironment.build(world, car, read_only and not preview_live_lighting)
 	else: ShowroomStudio.build(world,car)
 	if garage_mode: roof = world.find_child("GarageRoof",true,false)
 	if garage_mode and not read_only: record_station = world.find_child("GarageRecordStation",true,false)
@@ -122,7 +140,8 @@ func _ready() -> void:
 	visibility_changed.connect(_reflection_visibility)
 	refresh_thumbnail()
 	camera.keep_aspect = Camera3D.KEEP_HEIGHT
-	if not read_only: _cache_pick_meshes(car)
+	if not read_only and not garage_mode: _cache_pick_meshes(car)
+	showroom_ready = true
 
 func refresh_thumbnail() -> void:
 	if not is_instance_valid(showroom_viewport): return
@@ -134,6 +153,8 @@ func refresh_thumbnail() -> void:
 	invalidate_render()
 
 func replace_car(id: String, paint: Dictionary, wear: Dictionary, parts: Dictionary = {}) -> void:
+	finish_kit_transition()
+	finish_paint_transition()
 	finish_car_transition()
 	_clear_gesture()
 	var previous_deck: Node3D = turntable
@@ -146,6 +167,7 @@ func replace_car(id: String, paint: Dictionary, wear: Dictionary, parts: Diction
 	customisation = parts.duplicate(true) if VehicleCustomisation.valid(parts) else VehicleCustomisation.defaults()
 	car = CarVisual.new()
 	car.vehicle_id = id
+	car.garage_template = garage_mode
 	car.editable_kits = garage_mode and id=="compact"
 	car.livery = livery
 	car.customisation = customisation
@@ -175,11 +197,19 @@ func replace_car(id: String, paint: Dictionary, wear: Dictionary, parts: Diction
 	car_motion.tween_callback(finish_car_transition)
 	if read_only: set_process(true)
 
-func apply_customisation(value: Dictionary) -> void:
+func apply_customisation(value: Dictionary, animate_kit: bool = false) -> void:
 	if vehicle_id != "compact" or not VehicleCustomisation.valid(value): return
-	if customisation==value: return
+	if customisation==value:
+		if not animate_kit: finish_kit_transition()
+		return
+	finish_kit_transition()
+	finish_paint_transition()
 	finish_car_transition()
 	set_wash_mode(false)
+	var sweep: KitTransition
+	if animate_kit and garage_mode and not read_only and is_visible_in_tree() and car.editable_kits:
+		sweep = KitTransition.new()
+		sweep.capture(car,value)
 	customisation = value.duplicate(true)
 	condition = weathering.snapshot()
 	if car.editable_kits:
@@ -192,6 +222,12 @@ func apply_customisation(value: Dictionary) -> void:
 		weathering.restore(condition)
 		pick_meshes.clear()
 		if not read_only: _cache_pick_meshes(car)
+		if sweep!=null:
+			kit_transition = sweep
+			sweep.install(car)
+			kit_motion = create_tween()
+			kit_motion.tween_method(sweep.set_progress,0.0,1.0,KitTransition.SECONDS).set_trans(Tween.TRANS_SINE).set_ease(Tween.EASE_IN_OUT)
+			kit_motion.tween_callback(finish_kit_transition)
 		refresh_thumbnail()
 		return
 	var previous: CarVisual = car
@@ -211,6 +247,13 @@ func apply_customisation(value: Dictionary) -> void:
 	pick_meshes.clear()
 	if not read_only: _cache_pick_meshes(car)
 	refresh_thumbnail()
+
+func finish_kit_transition() -> void:
+	if kit_motion!=null: kit_motion.kill()
+	kit_motion = null
+	if kit_transition!=null: kit_transition.restore()
+	kit_transition = null
+	invalidate_render()
 
 func _prepare_car_reveal(reveal: GarageCarReveal, model: CarVisual, deck: Node3D) -> void:
 	reveal.prepare(model)
@@ -250,6 +293,10 @@ func _orbit() -> void:
 	var target_height: float = 0.55 + (GarageEnvironment.DECK_HEIGHT if garage_mode else 0.0)
 	if garage_mode and not read_only: target_height += 0.45
 	if garage_mode and is_instance_valid(turntable): turntable.rotation.y = yaw - GARAGE_CAMERA_YAW
+	if not trophy_view and not record_view and customisation_orbit.is_valid():
+		if camera_motion != null and camera_motion.is_running(): camera_motion.kill()
+		customisation_orbit.call()
+		return
 	if not trophy_view and not record_view:
 		if camera_motion != null and camera_motion.is_running(): camera_motion.kill()
 		camera.position = Vector3(sin(angle)*horizontal, target_height + sin(elevation)*distance, -cos(angle)*horizontal)
@@ -261,6 +308,8 @@ func _update_roof() -> void:
 	if is_instance_valid(roof): roof.visible = camera.position.y < GarageEnvironment.ROOF_CUTAWAY_HEIGHT
 
 func _reflection_visibility() -> void:
+	if not is_visible_in_tree(): finish_kit_transition()
+	if not is_visible_in_tree(): finish_paint_transition()
 	if read_only and not is_visible_in_tree(): finish_car_transition()
 	if reflections != null: reflections.set_visible(is_visible_in_tree())
 	invalidate_render()
@@ -424,15 +473,39 @@ func _clear_gesture() -> void:
 	if wash_effect != null: wash_effect.reset()
 	queue_redraw()
 
-func apply_livery(value: Dictionary) -> void:
+func apply_livery(value: Dictionary, animate_paint: bool = false) -> void:
+	finish_kit_transition()
+	if livery == value:
+		if not animate_paint: finish_paint_transition()
+		return
+	finish_paint_transition()
 	finish_car_transition()
+	var sweep: PaintTransition
+	if animate_paint and garage_mode and not read_only and is_visible_in_tree() and is_instance_valid(car):
+		sweep = PaintTransition.new()
+		sweep.capture(car)
 	livery = value.duplicate(true)
 	if is_instance_valid(car):
 		car.apply_livery(livery)
 		weathering.refresh_paint()
+		if sweep != null and not sweep.bindings.is_empty():
+			paint_transition = sweep
+			sweep.install()
+			paint_motion = create_tween()
+			paint_motion.tween_method(sweep.set_progress,0.0,1.0,sweep.SECONDS).set_trans(Tween.TRANS_SINE).set_ease(Tween.EASE_IN_OUT)
+			paint_motion.tween_callback(finish_paint_transition)
 		refresh_thumbnail()
 
+func finish_paint_transition() -> void:
+	if paint_motion != null: paint_motion.kill()
+	paint_motion = null
+	if paint_transition != null: paint_transition.restore()
+	paint_transition = null
+	invalidate_render()
+
 func set_wash_mode(enabled: bool) -> void:
+	if enabled: finish_kit_transition()
+	if enabled: finish_paint_transition()
 	if enabled: finish_car_transition()
 	if enabled and wash_effect == null:
 		wash_effect = preload("res://ui/garage_wash_effect.gd").new()
@@ -512,11 +585,12 @@ func invalidate_render() -> void:
 	if is_instance_valid(showroom_viewport) and not is_visible_in_tree(): showroom_viewport.render_target_update_mode = SubViewport.UPDATE_DISABLED
 	if is_inside_tree() and is_visible_in_tree() and is_instance_valid(camera): _request_render()
 
-func _request_render() -> void:
-	_submit_render()
+func _request_render(reflection_changed: bool = true, room_animation: bool = false) -> void:
+	_submit_render(reflection_changed,room_animation)
 	# Match the existing podium's bounded radiance preparation. Native shadows,
 	# sky filtering and resized targets must finish before retaining this image.
 	_settle_draws = 3
+	if reflection_changed: _reflection_settle_draws = 3
 	_arm_render_settle()
 
 func _arm_render_settle() -> void:
@@ -527,13 +601,16 @@ func _arm_render_settle() -> void:
 func _finish_render() -> void:
 	if _settle_draws <= 0 or not is_inside_tree() or not is_visible_in_tree(): return
 	_settle_draws -= 1
-	_submit_render()
+	_submit_render(_reflection_settle_draws > 0)
+	_reflection_settle_draws = maxi(0,_reflection_settle_draws-1)
 	if _settle_draws > 0: _arm_render_settle.call_deferred()
 
-func _submit_render() -> void:
+func _submit_render(reflection_changed: bool = true, room_animation: bool = false) -> void:
 	if reflections != null:
 		reflections.sync()
-		reflections.request_draw()
+		# The record belongs to the room; it cannot change the car-only capture.
+		if reflection_changed: reflections.request_draw()
+		elif room_animation: reflections.request_draw(true,false)
 	showroom_viewport.render_target_update_mode = SubViewport.UPDATE_ONCE
 	_render_dirty = false
 	render_requests += 1
@@ -545,7 +622,9 @@ func _process(delta: float) -> void:
 	if not is_visible_in_tree():
 		washing = false
 		return
-	var animated: bool = (camera_motion != null and camera_motion.is_running()) or (car_motion != null and car_motion.is_running())
+	var animated: bool = (camera_motion != null and camera_motion.is_running()) or (car_motion != null and car_motion.is_running()) or (paint_motion != null and paint_motion.is_running()) or (kit_motion != null and kit_motion.is_running())
+	var reflection_animation: bool = animated
+	var room_animation: bool = false
 	if read_only:
 		if animated or _render_dirty: _request_render()
 		return
@@ -555,6 +634,7 @@ func _process(delta: float) -> void:
 		if music.mode == "menu" and music.music_enabled and music.menu_player.playing and not music.menu_player.stream_paused and not AudioServer.is_bus_mute(bus):
 			if record_vinyl != null: record_vinyl.rotation.y = wrapf(record_vinyl.rotation.y + delta * TAU * (100.0/3.0) / 60.0,0,TAU)
 			animated = true
+			room_animation = true
 	if weathering.snow_amount > 0.0 or weathering.slow_snow_amount > 0.0:
 		weathering.melt(delta)
 		wash_elapsed += delta
@@ -577,8 +657,10 @@ func _process(delta: float) -> void:
 	if wash_effect != null and (wash_effect.visible or (washing and wash_mode)):
 		wash_effect.advance(delta, washing and wash_mode)
 		animated = true
+		reflection_animation = true
 	var state: Array = _render_state()
-	if animated or _render_dirty or state != _last_render_state: _request_render()
+	if animated or _render_dirty or state != _last_render_state:
+		_request_render(reflection_animation or _render_dirty or state != _last_render_state,room_animation)
 	_last_render_state = state
 	if wash_mode: queue_redraw()
 
@@ -587,6 +669,7 @@ func _draw() -> void:
 		draw_arc(wash_pointer, 17.0, 0.0, TAU, 32, Color(0.65, 0.9, 1.0, 0.65), 1.5, true)
 
 func _cache_pick_meshes(node: Node3D) -> void:
+	if node.has_meta("garage_opening_proxy"): return
 	if node is MeshInstance3D and node.mesh != null:
 		var triangles: TriangleMesh = node.mesh.generate_triangle_mesh()
 		if triangles != null: pick_meshes.append({"node":node,"triangles":triangles,"bounds":node.mesh.get_aabb()})
@@ -635,6 +718,8 @@ func wash_at(location: Vector2, seconds: float) -> bool:
 	return true
 
 func _exit_tree() -> void:
+	finish_kit_transition()
+	finish_paint_transition()
 	# Garage layout moves leave/re-enter the tree within the same call.
 	# Keep captures through that transfer; release real detachments/destruction.
 	_dispose_detached_reflections.call_deferred()

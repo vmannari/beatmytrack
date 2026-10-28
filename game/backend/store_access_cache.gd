@@ -4,7 +4,9 @@ const MAX_SCOPES: int = 4
 const TTL_MS: int = 60000
 static var scopes: Dictionary = {}
 signal completed
+signal catalog_received(data: Dictionary)
 var value: Dictionary = {}
+var catalog: Dictionary = {}
 var refreshed: int = -1
 var busy: bool = false
 var reader: WeakRef
@@ -41,6 +43,9 @@ func fetch(service: Node, force: bool = false) -> Dictionary:
 	reader = weakref(service)
 	var scope: String = identity(service)
 	var result: Dictionary = await service.request_api("/store/products")
+	if scope == identity(service) and result.get("ok",false) and valid_catalog(result.get("data")):
+		catalog = result.data.duplicate(true)
+		catalog_received.emit(catalog.duplicate(true))
 	var owned: Dictionary = {}
 	var ownership_ok: bool = not service.signed_in()
 	if scope == identity(service) and result.get("ok",false) and valid_catalog(result.get("data")) and service.signed_in():

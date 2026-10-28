@@ -18,7 +18,7 @@ func run() -> void:
 	root.size = Vector2i(1280,720)
 	DirAccess.make_dir_recursive_absolute(ProjectSettings.globalize_path(OUT))
 	var game: Node = load("res://core/game.tscn").instantiate()
-	game.initial_track = NativeTrack.read("res://resources/tracks/starter_circuit.json")
+	game.initial_track = NativeTrack.read("res://resources/tracks/ellipse.json")
 	game.initial_track.metadata.theme = "storm"
 	root.add_child(game)
 	game.set_physics_process(false)

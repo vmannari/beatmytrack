@@ -17,6 +17,7 @@ SCRIPTS = {
         "creator_prop_costs",
         "spatial_bounds",
         "creator_objects",
+        "jump_profiles",
         "container_paint",
         "creator_scenery",
         "prepared_track_cache",
@@ -35,7 +36,7 @@ SCRIPTS = {
     ),
     "input": ("drive_frame", "route_driver", "profiled_route_driver", "racing_trajectory", "trajectory_mpc", "conservative_trajectory_mpc", "trajectory_handbrake", "trajectory_planner"),
     "persistence": ("track_library", "document_encoding", "document_read_cache"),
-    "race": ("race_rules", "track_session", "spline_gate_corridor", "rewind_history", "lap_telemetry", "personal_ghost_run", "attempt_evidence"),
+    "race": ("race_rules", "track_session", "spline_gate_corridor", "rewind_history", "lap_telemetry", "personal_ghost_run", "attempt_evidence", "input_record"),
     "track": (
         "builtin_tracks",
         "bridge_elevation",
@@ -94,7 +95,7 @@ def stage(repo: Path, destination: Path) -> None:
         source / "resources" / name
         for name in (
             "builtin_tracks.json",
-            "tracks/starter_circuit.json",
+            "tracks/ellipse.json",
         )
     )
     for file in files:

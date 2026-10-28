@@ -3,7 +3,7 @@ extends RefCounted
 ## Cosmetic exposure and local wash volume. Never writes canonical simulation or livery.
 const FINISH: Shader = preload("res://vehicle/vehicle_weathering.gdshader")
 const COLORS: Dictionary = {"desert": Color("c7ae7c"), "winter": Color("dce8ed"), "pine": Color("463225"), "night_city": Color("735a43"), "storm": Color("625340")}
-const HEIGHTS: Dictionary = {"compact": 1.5, "pickup": 1.95, "classic": 1.18, "formula": 0.65, "kart": 0.48}
+const HEIGHTS: Dictionary = {"compact": 1.5, "pickup": 1.95, "classic": 1.18, "formula": 0.65, "kart": 0.48, "forklift": 2.89, "electric": 1.52}
 const SLOW_RATE: float = 1.0 / 20.0
 const SCRUB_RATE: float = 1.15
 const SCRUB_RADIUS: float = 0.60
@@ -70,7 +70,7 @@ func configure(car: CarVisual, biome: String, config: HandlingConfig) -> void:
 	contacts.configure(config)
 	axle_half = config.wheelbase / (2.0 * HandlingConfig.BODY_SCALE)
 	wheel_half_span = config.track_width / (2.0 * HandlingConfig.BODY_SCALE)
-	wheel_radius = float({"compact": 0.37, "pickup": 0.44, "classic": 0.34, "formula": 0.34, "kart": 0.22}.get(car.vehicle_id, 0.37))
+	wheel_radius = float({"compact": 0.37, "pickup": 0.44, "classic": 0.34, "formula": 0.34, "electric": 0.37, "kart": 0.22, "forklift": 0.43}.get(car.vehicle_id, 0.37))
 	if not COLORS.has(theme): return
 	deposit_color = COLORS[theme]
 	var paints: Array[StandardMaterial3D] = []
@@ -82,7 +82,13 @@ func configure(car: CarVisual, biome: String, config: HandlingConfig) -> void:
 		var rotor: Node3D = car.rolling_wheels[index]
 		var rest := Transform3D(Basis.IDENTITY, car.wheel_rest_positions[index])
 		_wheel_frames.append({"rotor": rotor, "rest": rest})
+		var first_wheel_material: int = materials.size()
 		_bind(rotor, rotor.global_transform.affine_inverse(), paints, float(HEIGHTS.get(car.vehicle_id, 1.5)), {}, true, rest)
+		if car.vehicle_id == "forklift":
+			# The smaller rear tires need their own rim/film thresholds. Body spray
+			# keeps the existing front-radius reference; other cars stay exact.
+			for material_index: int in range(first_wheel_material,materials.size()):
+				materials[material_index].set_shader_parameter("wheel_radius",car.wheel_radii[index]/HandlingConfig.BODY_SCALE)
 	var first: bool = true
 	for binding: Dictionary in bindings:
 		# Keep the established body-volume mapping for existing saved wash

@@ -1,8 +1,8 @@
 """Automatic development fields, driven through ordinary authenticated race APIs.
 
-No score is written here. The idle verifier worker records one real drive at a
-time, uploads it, and gives normal player verification jobs priority. Reboots
-recover the same memberships and upload keys; older build/week data is retained.
+No score is written here. Generation is explicitly invoked locally; the cloud
+worker only verifies ordinary uploads. Reboots recover the same memberships
+and upload keys; older build/week data is retained.
 """
 from __future__ import annotations
 
@@ -72,7 +72,7 @@ def plan_for(app, group_id, api):
                      "display_name": player.display_name, "is_test_driver": True, "traits": driver.traits}
                     for driver, player in session.execute(select(TestDriverProfile, Player).join(Player).join(
                         RivalryMember, RivalryMember.player_id == Player.id
-                    ).where(RivalryMember.group_id == group.id, Player.disabled.is_(False)).order_by(
+                    ).where(RivalryMember.group_id == group.id, Player.disabled.is_(False), Player.is_test_driver.is_(True)).order_by(
                         TestDriverProfile.subject)).all()]
         if not profiles:
             return None
@@ -80,11 +80,8 @@ def plan_for(app, group_id, api):
         board = session.get(Board,
                             group.tracks[0]["board_id"])
         manifest = app.state.verifier.manifest()
-        from .runs import PINNED_FIELDS
-        if any(board.manifest.get(field) != manifest.get(field) for field in PINNED_FIELDS):
-            return None
-        vehicle = manifest.get("vehicles", {}).get(group.vehicle_id, {})
-        if board.manifest.get("config_hash") != vehicle.get("config_hash"):
+        from .job_contracts import capability_matches
+        if not capability_matches(board.manifest, manifest):
             return None
         plan = {"schema": SCHEMA, "api": api.url, "fleet": "auto-" + group.id,
                 "profiles": profiles, "vehicle_id": group.vehicle_id, "mode": "automatic",

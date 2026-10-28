@@ -1,5 +1,6 @@
 """Bounded offline controller process, separate from the service verifier API."""
 
+import atexit
 import hashlib
 import json
 import logging
@@ -8,6 +9,7 @@ import re
 import subprocess
 import tempfile
 import time
+from contextlib import contextmanager
 from pathlib import Path
 
 from .verifier import MAX_REQUEST_BYTES, GodotVerifier
@@ -42,10 +44,46 @@ class GenerationTimedOut(RuntimeError):
     """Defer a bounded generation failure rather than retrying it indefinitely."""
 
 
-def generate(settings, document, vehicle_id, traits, attempt=0, pace_scale=1.0, *, obstacle_detours=False, stop_event=None):
+@contextmanager
+def controller_engine(settings):
     verifier = GodotVerifier(settings)
-    verifier._check_engine()
-    with tempfile.TemporaryDirectory(prefix="bmt-test-drive-") as folder:
+    try:
+        verifier._check_engine()
+        yield verifier
+    finally:
+        verifier.close()
+        atexit.unregister(verifier.close)
+
+
+def publish_trajectory(source, target):
+    """Retain a complete derived plan before a later drive timeout or shutdown."""
+    if target is None:
+        return False
+    try:
+        raw = source.read_bytes() if source.stat().st_size <= 2_000_000 else b""
+        value = json.loads(raw, parse_constant=_reject_nonfinite_cache)
+        json.dumps(value, allow_nan=False)
+        if (not isinstance(value, dict) or not isinstance(value.get("rows"), list)
+                or not value["rows"] or not re.fullmatch(r"[a-f0-9]{64}", str(value.get("key", "")))):
+            return False
+    except (OSError, ValueError):
+        return False  # Native output can still be in the middle of its write.
+    with tempfile.NamedTemporaryFile(dir=target.parent, suffix=".tmp", delete=False) as stream:
+        temporary = Path(stream.name)
+        stream.write(raw)
+    try:
+        os.replace(temporary, target)
+    finally:
+        temporary.unlink(missing_ok=True)
+    _trim_trajectory_cache(target.parent)
+    return True
+
+
+def generate(settings, document, vehicle_id, traits, attempt=0, pace_scale=1.0, *, obstacle_detours=False,
+             stop_event=None, deadline=None):
+    if deadline is not None and time.monotonic() >= deadline:
+        raise GenerationTimedOut("Local attempt exhausted its generation budget")
+    with controller_engine(settings) as verifier, tempfile.TemporaryDirectory(prefix="bmt-test-drive-") as folder:
         directory = Path(folder)
         source, output = directory / "input.json", directory / "output.json"
         trajectory_output = directory / "trajectory.json"
@@ -116,10 +154,15 @@ def generate(settings, document, vehicle_id, traits, attempt=0, pace_scale=1.0, 
                 sort_keys=True, separators=(",", ":"), allow_nan=False).encode()).hexdigest()[:24]
             logger.info("driver_generation_started", extra={"generation_id": generation_id})
             generation_timeout = max(verifier.timeout, PLANNING_TIMEOUT_SECONDS)
-            deadline = time.monotonic() + generation_timeout
+            deadline = min(deadline, time.monotonic() + generation_timeout) if deadline is not None else time.monotonic() + generation_timeout
             observed_bytes = 0
+            trajectory_saved = False
             try:
                 while process.poll() is None:
+                    if not trajectory_saved:
+                        trajectory_saved = publish_trajectory(trajectory_output, cache_path)
+                        if trajectory_saved:
+                            logger.info("driver_trajectory_cached", extra={"generation_id": generation_id})
                     size = (directory / "engine.log").stat().st_size
                     if size > 65536:
                         raise RuntimeError("Test controller exceeded diagnostic output limit")
@@ -131,6 +174,8 @@ def generate(settings, document, vehicle_id, traits, attempt=0, pace_scale=1.0, 
                     if stop_event is not None and stop_event.is_set():
                         raise RuntimeError("Test controller stopped by worker shutdown")
                     if time.monotonic() >= deadline:
+                        logger.info("driver_generation_timed_out", extra={"generation_id": generation_id,
+                            "generation_seconds": round(time.monotonic() - generation_started, 3)})
                         raise GenerationTimedOut("Test controller exceeded its bounded generation time")
                     time.sleep(0.05)
             finally:
@@ -143,6 +188,8 @@ def generate(settings, document, vehicle_id, traits, attempt=0, pace_scale=1.0, 
                     if process.poll() is None:
                         process.kill()
                 process.wait()
+                if not trajectory_saved:
+                    publish_trajectory(trajectory_output, cache_path)
                 logger.info("driver_generation_stopped", extra={"generation_id": generation_id,
                     "generation_seconds": round(time.monotonic() - generation_started, 3)})
         if stop_event is not None and stop_event.is_set():
@@ -160,15 +207,6 @@ def generate(settings, document, vehicle_id, traits, attempt=0, pace_scale=1.0, 
         # The native loader validates content/physics/rules/handling identity.
         # Publish even after an honest noncompletion, so slower retry profiles
         # share the same planning work. Concurrent writers replace atomically.
-        if cache_path is not None and trajectory_output.is_file() and trajectory_output.stat().st_size <= 2_000_000:
-            with tempfile.NamedTemporaryFile(dir=cache_path.parent, suffix=".tmp", delete=False) as cache_file:
-                temporary = Path(cache_file.name)
-                cache_file.write(trajectory_output.read_bytes())
-            try:
-                os.replace(temporary, cache_path)
-            finally:
-                temporary.unlink(missing_ok=True)
-            _trim_trajectory_cache(cache_path.parent)
         if process.returncode == 2 and response.get("ok") is False:
             raise DriverDidNotFinish(str(response.get("error", "Driver did not finish")))
         if (

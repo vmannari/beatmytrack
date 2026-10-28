@@ -51,19 +51,33 @@ def competition(request: Request, role: Access):
 
 @router.get("/admin", include_in_schema=False)
 @router.get("/admin/", include_in_schema=False)
-def console():
+def console(request: Request):
+    settings = request.app.state.settings
+    identity_policy = ""
+    if settings.studio_identity_project:
+        domain = "https://" + settings.studio_identity_auth_domain
+        identity_policy = ("; connect-src 'self' https://identitytoolkit.googleapis.com "
+            "https://securetoken.googleapis.com https://www.googleapis.com " + domain
+            + "; frame-src " + domain + " https://accounts.google.com")
     return FileResponse(
         UI / "index.html",
         headers={
-            "Content-Security-Policy": "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; frame-ancestors 'none'; base-uri 'none'; form-action 'self'",
-            "Referrer-Policy": "no-referrer",
+            "Content-Security-Policy": "default-src 'self'; script-src 'self'"
+            + (" https://www.gstatic.com/firebasejs/12.4.0/ https://apis.google.com" if settings.studio_identity_project else "")
+            + "; style-src 'self' 'unsafe-inline'; img-src 'self' data:; frame-ancestors 'none'; base-uri 'none'; form-action 'self'"
+            + identity_policy,
+            "Referrer-Policy": "strict-origin-when-cross-origin" if settings.studio_identity_project else "no-referrer",
+            "Cross-Origin-Opener-Policy": "same-origin-allow-popups",
+            "Cache-Control": "no-store",
         },
     )
 
 
 @router.get("/admin/assets/{name}", include_in_schema=False)
 def asset(name: str):
-    if name not in ("app.js", "commerce.js", "support.js", "studio.js", "product_analytics.js", "operations.js", "style.css", "catalogue.js", "catalogue.css", "monitor.js", "network.js", "monitor.css", "monitor_views.js", "monitor_views.css", "insights.js", "insights.css", "platform.js", "platform.css", "game_config.js", "game_config.css", "ranking.js"):
+    if name in ("usage.js", "usage.css"):
+        return FileResponse(UI / name)
+    if name not in ("app.js", "signin.js", "commerce.js", "support.js", "studio.js", "product_analytics.js", "operations.js", "style.css", "catalogue.js", "catalogue.css", "monitor.js", "network.js", "monitor.css", "monitor_views.js", "monitor_views.css", "insights.js", "insights.css", "platform.js", "platform.css", "game_config.js", "game_config.css", "ranking.js"):
         raise HTTPException(404)
     return FileResponse(UI / name)
 
@@ -96,7 +110,7 @@ def overview(request: Request, role: Access, window: Window, days: int = Query(7
     stamp = now()
     with request.app.state.session_factory() as db:
         states = dict(db.execute(select(Run.status, func.count()).where(
-            Run.status.in_(("verified", "failed", "rejected")),
+            Run.status.in_(("verified", "skipped", "failed", "rejected")),
             Run.finished_at >= stamp - 300, Run.finished_at <= stamp).group_by(Run.status)).all())
         queue = db.get(QueueCapacity, 1)
         return {"role": role, "environment": request.app.state.settings.environment,

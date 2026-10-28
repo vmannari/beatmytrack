@@ -23,6 +23,7 @@ var _configuration_epoch: int = 1
 var _rotation_locks: Array[RefCounted] = []
 var _read_cache: Dictionary = {}
 var _encoding_threads: Array[Thread] = []
+var _background_busy: bool = false
 var _race_status_cache: Dictionary = {}
 var _run_waits: Dictionary = {}
 var _run_wait_requests: Array[HTTPRequest] = []
@@ -601,7 +602,7 @@ func run_read_path(path: String) -> String:
 
 func recent_completion(ticket_id: String) -> Dictionary:
 	var recent: Dictionary = recent_run(ticket_id)
-	if recent.get("status") not in ["verified","rejected","failed"]: return {}
+	if recent.get("status") not in ["verified","skipped","rejected","failed"]: return {}
 	var value: Variant = recent.get("completion")
 	return value if value is Dictionary and value.get("version") == 1 else {}
 
@@ -663,16 +664,24 @@ func wait_for_run(run_id: String, ticket_id: String) -> Dictionary:
 	pending.response = response
 	pending.done = true
 	_run_waits.erase(identity)
-	if response.ok and response.data.status in ["verified","rejected","failed"]: run_completed.emit()
+	if response.ok and response.data.status in ["verified","skipped","rejected","failed"]: run_completed.emit()
 	return response
 
 func _background(work: Callable) -> Variant:
+	# Bound JSON, trajectory and compression work across saving and uploading.
+	# Wait on frames rather than creating competing large encoder threads.
+	while _background_busy: await get_tree().process_frame
+	_background_busy = true
 	var thread := Thread.new()
-	if thread.start(work) != OK: return null
+	if thread.start(work) != OK:
+		_background_busy = false
+		return null
 	_encoding_threads.append(thread)
 	while thread.is_alive(): await get_tree().process_frame
 	_encoding_threads.erase(thread)
-	return thread.wait_to_finish()
+	var result: Variant = thread.wait_to_finish()
+	_background_busy = false
+	return result
 
 func _network_context_key(path: String, method: int, key: String) -> String:
 	return JSON.stringify([_session_generation,path,method,key]).sha256_text()
@@ -1055,10 +1064,43 @@ static func _normalize_proof(proof: Dictionary, include_incidents: bool) -> Dict
 	return result
 
 func race_submission_options() -> Dictionary:
-	return {"path":1 if int(_capabilities.get("race_path_wire_version",0)) >= 1 else 0,
+	var result: Dictionary = {"path":1 if int(_capabilities.get("race_path_wire_version",0)) >= 1 else 0,
 		"incidents":int(_capabilities.get("race_incident_rewards_version",0)) == 1}
+	if int(_capabilities.get("non_improving_runs_version",0)) == 1: result.result = 1
+	return result
 
-static func _pack_trajectory(count: int, proof: Dictionary, rewinds: Array, ghost: Dictionary = {}, include_incidents: bool = false, packed_path: bool = false) -> Dictionary:
+static func _lap_tick_summary(seconds: Array[float], elapsed_ticks: int, tick_rate: int = 120) -> Array:
+	# RaceProof captures each lap at its ending simulation tick. Difference the
+	# absolute crossing ticks; rounding five fractional lap durations loses ticks.
+	if seconds.size() != 5 or elapsed_ticks < 1 or elapsed_ticks > 216000 or tick_rate < 1: return []
+	var laps: Array = []
+	var total_seconds: float = 0.0
+	var previous: int = 0
+	for duration: float in seconds:
+		if not is_finite(duration) or duration <= 0.0: return []
+		total_seconds += duration
+		if total_seconds*tick_rate > elapsed_ticks: return []
+		var boundary: int = ceili(total_seconds*tick_rate)
+		if boundary <= previous or boundary > elapsed_ticks: return []
+		laps.append(boundary-previous)
+		previous = boundary
+	return laps if previous == elapsed_ticks else []
+
+static func _rounded_lap_mismatch(count: int, rewinds: Array, claims: Array) -> bool:
+	# Only the old five-lap rounding error is recoverable here. Its invalid hint
+	# never produced a wire body; omit it and submit the unchanged path normally.
+	if not _whole(count,1,216000) or claims.size() != 5 or rewinds.size() > 3: return false
+	var total: int = 0
+	for value: Variant in claims:
+		if not _whole(value,1,216000): return false
+		total += int(value)
+	var elapsed: int = count
+	for event: Variant in rewinds:
+		if not event is Dictionary or not _whole(event.get("from_tick"),0,216000) or not _whole(event.get("to_tick"),0,216000): return false
+		elapsed -= int(event.from_tick)-int(event.to_tick)
+	return elapsed > 0 and elapsed-total in [-2,-1,1,2,3]
+
+static func _pack_trajectory(count: int, proof: Dictionary, rewinds: Array, ghost: Dictionary = {}, include_incidents: bool = false, packed_path: bool = false, claimed_lap_ticks: Array = []) -> Dictionary:
 	# Normalize the small movement record without encoding/scanning control frames.
 	if not _whole(count,1,216000): return {}
 	var normalized: Dictionary = _normalize_proof(proof,include_incidents)
@@ -1073,6 +1115,18 @@ static func _pack_trajectory(count: int, proof: Dictionary, rewinds: Array, ghos
 	var path: Array = []
 	for row: Array in normalized.samples: path.append([row[0],row[1],row[2],row[6]])
 	var result: Dictionary = {"schema":"bmt-trajectory-v1","input_count":count,"race_proof":{"schema":"bmt-race-path-v1","samples":path},"rewinds":events}
+	if not claimed_lap_ticks.is_empty():
+		if claimed_lap_ticks.size() != 5: return {}
+		var laps: Array = []
+		var total: int = 0
+		for value: Variant in claimed_lap_ticks:
+			if not _whole(value,1,216000): return {}
+			laps.append(int(value))
+			total += int(value)
+		var elapsed: int = count
+		for event: Dictionary in events: elapsed -= int(event.from_tick)-int(event.to_tick)
+		if total != elapsed: return {}
+		result.claimed_lap_ticks = laps
 	if packed_path: result.race_proof = preload("res://backend/path_wire.gd").encode(result.race_proof)
 	if normalized.has("incidents"): result.race_proof.incidents = normalized.incidents
 	if not ghost.is_empty(): result.ghost = ghost
@@ -1098,13 +1152,21 @@ static func _text(value: Variant) -> bool:
 	return value is String and not value.is_empty() and value.length() <= 256
 
 static func valid_run(data: Variant) -> bool:
-	return data is Dictionary and _text(data.get("run_id")) and data.get("status") in ["queued","verifying","verified","rejected","failed"] and (data.status not in ["failed","rejected"] or _text(data.get("failure_code"))) and (not data.get("outcome") is Dictionary or _whole(data.get("slot"),0,4))
+	return data is Dictionary and _text(data.get("run_id")) and data.get("status") in ["queued","verifying","verified","skipped","rejected","failed"] and (data.status not in ["failed","rejected"] or _text(data.get("failure_code"))) and (data.status != "skipped" or data.get("skip_reason") == "no_improvement") and (not data.get("outcome") is Dictionary or _whole(data.get("slot"),0,4))
 
 static func valid_wallet(data: Variant) -> bool:
 	if not data is Dictionary: return false
 	for field: String in ["free_rewinds","ad_free"]:
 		if data.has(field) and not data[field] is bool: return false
 	return data is Dictionary and _whole(data.get("balance")) and _whole(data.get("free"),0,1) and _whole(data.get("reset_at"),1)
+
+static func valid_deletion_preview(data: Variant) -> bool:
+	if not data is Dictionary or data.get("schema_version") != 1 or not _text(data.get("player_id")): return false
+	for field: String in ["publishing_slots","coins","banked_resumes","cosmetic_unlocks","pending_purchases"]:
+		if not _whole(data.get(field)): return false
+	if not _whole(data.get("server_now"),1,253402300799) or not _whole(data.get("ad_free_until"),0,253402300799): return false
+	if not data.get("ad_free") is bool or not data.get("ad_free_forever") is bool: return false
+	return data.ad_free == (data.ad_free_forever or data.ad_free_until > data.server_now)
 
 static func valid_response(path: String, method: HTTPClient.Method, data: Variant) -> bool:
 	if not data is Dictionary: return false
@@ -1121,6 +1183,7 @@ static func valid_response(path: String, method: HTTPClient.Method, data: Varian
 			if not row is Dictionary or not _text(row.get("title")) or not _whole(row.get("amount")) or row.get("icon") not in ["flag","coin","timer","bars","trophy"] or row.get("eligible") != true: return false
 			total += int(row.amount)
 		return total == int(data.amount)
+	if endpoint == "/privacy/deletion-preview": return method == HTTPClient.METHOD_GET and valid_deletion_preview(data)
 	if endpoint == "/privacy/account-deletion": return data.get("status") in ["requested","complete"] and _text(data.get("player_id")) and data.get("tracks_retained") == true and data.get("standings_retained") == true and data.get("display_name") == "Removed account" and _whole(data.get("requested_at"),1)
 	if endpoint == "/community/terms": return _text(data.get("version")) and data.get("accepted") is bool and (method != HTTPClient.METHOD_GET or (data.get("text") is String and not data.text.is_empty() and data.text.length() <= 16384))
 	if endpoint == "/community/blocks":
@@ -1169,7 +1232,7 @@ static func valid_response(path: String, method: HTTPClient.Method, data: Varian
 		for item: Variant in data.items:
 			if not item is Dictionary or not _text(item.get("version_id")) or not _text(item.get("content_hash")): return false
 	if endpoint.begins_with("/rivalry/tickets/") and endpoint.ends_with("/result"):
-		return data.get("status") in ["upload_pending","queued","verifying","verified","rejected","failed","expired"] and (not data.get("outcome") is Dictionary or _whole(data.get("slot"),0,4))
+		return data.get("status") in ["upload_pending","queued","verifying","verified","skipped","rejected","failed","expired"] and (not data.get("outcome") is Dictionary or _whole(data.get("slot"),0,4))
 	return true
 
 func _checked(response: Dictionary, path: String, method: HTTPClient.Method) -> Dictionary:

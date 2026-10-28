@@ -1,4 +1,5 @@
 """Private conditional replies and bounded, best-effort refresh interest."""
+import gzip
 import logging
 from collections import OrderedDict
 from threading import Lock
@@ -61,13 +62,36 @@ def schedule_demand(request, background, version_id, vehicle_id, include_artific
     background.add_task(note_demand, app, dict(zip(("version_id", "vehicle_id", "include_artificial"), key)))
 
 
-def reply(request, background, identity, build):
+def reply(request, background, identity, build, *, compact=False):
     tag = '"' + digest(["histogram-http-v1", identity]) + '"'
-    headers = {"ETag": tag, "Cache-Control": "private, max-age=0, must-revalidate", "Vary": "Authorization"}
+    headers = {"ETag": "W/" + tag if compact else tag,
+               "Cache-Control": "private, max-age=0, must-revalidate",
+               "Vary": "Authorization, Accept-Encoding" if compact else "Authorization"}
     matches = [token.strip().removeprefix("W/") for token in request.headers.get("if-none-match", "").split(",")]
     if tag in matches or "*" in matches:
         return Response(status_code=304, headers=headers, background=background)
-    return JSONResponse(build(), headers=headers, background=background)
+    response = JSONResponse(build(), headers=headers, background=background)
+    if compact:
+        # Small position-only replies can fall below the global 1-KiB gzip
+        # threshold. Compress them too when negotiated and beneficial, so a
+        # shorter decoded reply does not cost more wire bytes than full bins.
+        for encoding in request.headers.get("accept-encoding", "").lower().split(","):
+            parts = [part.strip() for part in encoding.split(";")]
+            if parts[0] != "gzip":
+                continue
+            quality = next((part[2:] for part in parts[1:] if part.startswith("q=")), "1")
+            try:
+                accepted = 0 < float(quality) <= 1
+            except ValueError:
+                accepted = False
+            if accepted:
+                compressed = gzip.compress(response.body, compresslevel=3, mtime=0)
+                if len(compressed) < len(response.body):
+                    response.body = compressed
+                    response.headers["Content-Encoding"] = "gzip"
+                    response.headers["Content-Length"] = str(len(compressed))
+            break
+    return response
 
 
 def preparing(background):

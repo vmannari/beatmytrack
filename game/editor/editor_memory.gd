@@ -2,6 +2,7 @@ extends RefCounted
 ## One editor retention allowance, with explicit headroom for active replacements.
 ## Estimates describe owned streams, not RSS, Android PSS or driver allocation.
 const RETAINED_BUDGET: int = 64 * 1024 * 1024
+const GARAGE_BUDGET: int = 96 * 1024 * 1024
 const PRESSURE_HISTORY: int = 2 * 1024 * 1024
 const ROADS = preload("res://editor/road_preparation.gd")
 const HISTORY = preload("res://editor/editor_history.gd")
@@ -19,9 +20,15 @@ func tick(app: Node) -> void:
 	next_sample = Time.get_ticks_msec()+1000
 	if app.editor_preview_thread != null and not pressure_requested: return
 	telemetry = retained(app)
-	if not pressure_requested and telemetry.retained_bytes <= RETAINED_BUDGET: return
+	if not pressure_requested and telemetry.retained_bytes <= RETAINED_BUDGET and telemetry.optional_garage_bytes <= GARAGE_BUDGET: return
 	var force: bool = pressure_requested
 	var retry: bool = false
+	if app.has_method("_trim_hidden_garage") and (force or telemetry.optional_garage_bytes > GARAGE_BUDGET): app._trim_hidden_garage()
+	if force:
+		preload("res://vehicle/effect_render_preparation.gd").trim_cache(app)
+		CompactDetail.trim_front_cache()
+		preload("res://ui/garage_paint_icons.gd").images.clear()
+		CompactKitThumbnail.images.clear()
 	if is_instance_valid(app.editor_world): app.editor_world.trim_cache()
 	ObjectThumbnail.trim_cache()
 	retry = not READS.trim_cache() or retry
@@ -35,6 +42,7 @@ func tick(app: Node) -> void:
 	else: retry = true
 	if not force and retained(app).retained_bytes <= RETAINED_BUDGET: _finished(app,retry,force); return
 	WORLDS.trim_cache(0 if force else maxi(0,WORLDS.bytes_used()-(retained(app).retained_bytes-RETAINED_BUDGET)))
+	if force: preload("res://track/winter_road_snow_sources.gd").trim_cache()
 	if not force and retained(app).retained_bytes <= RETAINED_BUDGET: _finished(app,retry,force); return
 	retry = not CreatorPropVisual.trim_cache() or retry
 	if is_instance_valid(app.editor_world): app.editor_world.trim_prop_cache()
@@ -66,11 +74,29 @@ static func retained(app: Node) -> Dictionary:
 	var scenes: int = app.editor_world.visual_cache_bytes if is_instance_valid(app.editor_world) else 0
 	var props: int = CreatorPropVisual.cache_bytes
 	var other: Dictionary = {"read_bytes":READS.bytes,"encoding_bytes":ENCODING.bytes,"race_world_bytes":WORLDS.bytes_used(),
+		"effect_preparation_bytes":preload("res://vehicle/effect_render_preparation.gd").cache_bytes(app),"front_fitting_bytes":CompactDetail.front_cache_bytes,
+		"winter_source_bytes":preload("res://track/winter_road_snow_sources.gd").cache_bytes,
+		"garage_option_gpu_bytes":_option_texture_bytes(),
 		"thumbnail_bytes":ObjectThumbnail.cache_bytes,"boundary_bytes":RoadsideBoundary.cache_bytes,
 		"canvas_bytes":app.canvas.cache_bytes() if is_instance_valid(app.canvas) else 0,
 		"batch_model_bytes":app.editor_world.prop_cache_bytes() if is_instance_valid(app.editor_world) else 0}
+	# Texture residency is an estimate of decoded GPU surfaces, independent of
+	# compressed PNG sizes. Keep the categories visible in pressure telemetry.
+	var garage: Dictionary = app._garage_residency() if app.has_method("_garage_residency") else {}
+	var garage_bytes: int = 0
+	for category: String in garage: garage_bytes += int(garage[category])
 	var other_bytes: int = 0
 	for value: int in other.values(): other_bytes += value
 	return {"history_bytes":history,"road_packet_bytes":roads.packets,"road_section_bytes":roads.sections,"road_gpu_bytes":roads.gpu,
 		"compiled_bytes":compiled,"raster_bytes":raster,"detached_scene_bytes":scenes,"prop_bytes":props,
-		"other":other,"retained_bytes":history+roads.packets+roads.sections+roads.gpu+compiled+raster+scenes+props+other_bytes}
+		"other":other,"garage":garage,"optional_garage_bytes":garage_bytes,"retained_bytes":history+roads.packets+roads.sections+roads.gpu+compiled+raster+scenes+props+other_bytes}
+
+static func _option_texture_bytes() -> int:
+	var total: int = 0
+	var seen: Dictionary = {}
+	for cache: Dictionary in [preload("res://ui/garage_paint_icons.gd").images,CompactKitThumbnail.images]:
+		for texture: Texture2D in cache.values():
+			if texture == null or seen.has(texture.get_instance_id()): continue
+			seen[texture.get_instance_id()] = true
+			total += texture.get_width()*texture.get_height()*4
+	return total

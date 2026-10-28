@@ -1,6 +1,6 @@
 # Current Android build and device workflow
 
-Reviewed 2026-10-24 against [the development wrapper](../scripts/dev.ps1),
+Reviewed 2026-10-25 against [the development wrapper](../scripts/dev.ps1),
 [export preset](../game/export_presets.cfg) and native plugin configuration.
 Use pinned Godot **4.7.2.stable.official.ed1daf0bf** and matching templates. The
 `Android Debug` preset uses **Gradle**, minimum API **24**, **ARM64 + x86_64**,
@@ -48,8 +48,22 @@ use their configured HTTPS origin. See [account configuration](ACCOUNT_SIGN_IN.m
 
 ## Recorded deployments and remaining acceptance
 
-The latest recorded phone update is the **2026-10-23 slide-control build**:
-[receipt and APK/source hashes](evidence/phone-touch-slide-deployment-2026-10-23/report.json).
+The latest recorded phone update is the **2026-10-25 Desert performance build**
+`0.3.0-creator.249cd5b3842814025a1b236e52671fe9`, installed and hash/startup-verified
+on the OnePlus DN2103 with app data retained. The same Desert/Compact workload
+improves from about43 to59FPS; independent Android presentation p95 is16.990ms.
+See [measurements, exact scope and remaining acceptance](DESERT_PHONE_PERFORMANCE_2026_10_25.md)
+and [deployment/check receipt](evidence/desert-phone-performance-2026-10-25/report.json).
+
+The preceding **2026-10-25 current workspace build** was
+`0.3.0-creator.2f8163c3a95d18ced951ffbe6194f742`, installed on the OnePlus DN2103
+with Android 13. A frozen source copy passed import/startup and 134 focused
+driving/catalogue/menu checks. Installed version and APK SHA256 match; `install -r`
+retained the original installation/data, and device startup reached `APP_READY`
+with zero matched startup errors. The game is open at the sign-in/Guest screen.
+See [commands, source/APK hashes, screenshot and remaining acceptance](evidence/phone-current-deployment-2026-10-25/report.json).
+The earlier [2026-10-23 slide-control deployment](evidence/phone-touch-slide-deployment-2026-10-23/report.json)
+remains a separate historical receipt.
 The tablet's later-lap stutter update and its preceding sign-in build have separate
 [stutter deployment](evidence/tablet-lap-stutter-deployment-2026-10-23/report.json) and
 [sign-in deployment](evidence/tablet-sign-in-deployment-2026-10-23/report.json) receipts.
@@ -63,9 +77,10 @@ build/device-specific. AdMob demo integration exists; production placements,
 consent and verified production reward fulfillment require their separate gate.
 See [AdMob development](ADMOB_DEVELOPMENT.md).
 
-This documentation review performed no device attachment check, physical-device
-test, APK export or installation. Attachment state and ignored tool/build availability
-were not re-probed.
+The 2026-10-25 deployment checked the attached phone, exported/installed the APK
+and verified startup. Physical-touch driving, sustained performance and sign-in
+acceptance remain with the owner. It performed no backend deployment, purchase,
+track synchronization, app-data clearing or uninstall.
 
 ## Historical deployments and bootstrap notes
 

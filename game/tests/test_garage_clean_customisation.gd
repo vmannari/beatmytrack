@@ -21,6 +21,21 @@ func capture(label: String) -> void:
 	if DisplayServer.get_name() == "headless": return
 	check(root.get_texture().get_image().save_png(output.path_join(label+".png")) == OK,"capture "+label)
 
+func click(button: Button) -> void:
+	var point: Vector2 = button.get_global_rect().get_center()
+	var move := InputEventMouseMotion.new()
+	move.position = point
+	root.push_input(move,true)
+	await process_frame
+	for pressed: bool in [true,false]:
+		var event := InputEventMouseButton.new()
+		event.position = point
+		event.button_index = MOUSE_BUTTON_LEFT
+		event.pressed = pressed
+		root.push_input(event,true)
+		await process_frame
+	await settle()
+
 func wash_exterior(page: GaragePage, save: bool = true) -> void:
 	var effect: VehicleWeathering = page.showroom.weathering
 	# A real stroke makes the lazy exterior inspection necessary.
@@ -39,6 +54,7 @@ func _run() -> void:
 	output = ProjectSettings.globalize_path("res://../docs/evidence/garage-wash-forgiving-2026-10-18/"+renderer)
 	for argument: String in OS.get_cmdline_user_args():
 		if argument.begins_with("--evidence-root="): output = argument.trim_prefix("--evidence-root=")
+	output = ProjectSettings.globalize_path(output)
 	DirAccess.make_dir_recursive_absolute(output)
 	var folder: String = "user://clean_customisation_"+TrackLibrary.unique_id()
 	DirAccess.make_dir_recursive_absolute(folder)
@@ -64,15 +80,19 @@ func _run() -> void:
 	var kits: Dictionary = page.kit_draft.duplicate(true)
 	var saved: Dictionary = records.settings.duplicate(true)
 	check(page._customisation_locked and page.livery_menu == null,"dirty Customise shows requirement instead of editing controls")
-	check(page.tools.find_child("GarageWashRequirementMessage",true,false).text.contains("dirty"),"plain explanation visible")
+	check(page._wash_requirement.visible and page._wash_requirement.tooltip_text.contains("dirty"),"compact wash notice explains the cleanliness requirement")
+	check(not page.tools_panel.visible and page.customise_layout==null,"dirty car does not open or reserve a workbench sidebar")
+	for name: String in ["GarageTopView","GarageZoomIn","GarageZoomOut","GarageResetView"]:
+		check(page.find_child(name,true,false)==null,"view button removed: "+name)
 	for action: Callable in [page._select_livery.bind(2),page._preview_color.bind(Color.RED,"body"),page._choose_sticker.bind(1),page._move_sticker.bind(Vector2(0.2,0.2)),page._sticker_property.bind(0.8,"size"),page._centre_sticker,page._reset]:
 		action.call()
 		check(page.draft == paint and records.settings == saved,"dirty livery/colour/sticker/reset callback cannot change or save appearance")
 	for dimensions: Vector2i in [Vector2i(960,540),Vector2i(1280,720),Vector2i(1600,720)]:
 		root.size = dimensions
 		await settle()
-		var button: Control = page.tools.find_child("GarageWashForCustomisation",true,false)
-		check(root.get_visible_rect().encloses(page.tools_panel.get_global_rect()) and root.get_visible_rect().encloses(button.get_global_rect()),"wash requirement fits "+str(dimensions))
+		var button: Control = page.preview.find_child("GarageWashForCustomisation",true,false)
+		check(page.preview.get_global_rect().encloses(page._wash_requirement.get_global_rect()) and root.get_visible_rect().encloses(button.get_global_rect()),"wash overlay fits "+str(dimensions))
+		check(page._wash_requirement.size.y<=80 and not page.tools_panel.visible,"wash notice stays compact without a sidebar")
 		await capture("wash-required-livery-"+str(dimensions.x))
 	page._show_section("tuning")
 	await settle()
@@ -81,8 +101,9 @@ func _run() -> void:
 	page._reset_kits()
 	check(page.kit_draft == kits and records.settings == saved,"kit selection and reset cannot change dirty car")
 	await capture("wash-required-kits")
-	page.tools.find_child("GarageWashForCustomisation",true,false).pressed.emit()
+	await click(page.preview.find_child("GarageWashForCustomisation",true,false))
 	check(page.section == "care" and page.showroom.wash_mode,"Wash car opens actual manual washing")
+	check(not page.tools_panel.visible and not page._wash_requirement.visible,"washing hides the requirement without a sidebar")
 	check(page._wash_status_panel.visible and page._wash_status_panel.tooltip_text == "Wash the exterior before customising","wash view explains when more washing is needed")
 	check(page._wash_status_panel.mouse_filter == Control.MOUSE_FILTER_IGNORE and page._wash_status.mouse_filter == Control.MOUSE_FILTER_IGNORE and page._wash_status_icon.mouse_filter == Control.MOUSE_FILTER_IGNORE,"status does not intercept wash gestures")
 	for dimensions: Vector2i in [Vector2i(960,540),Vector2i(1280,720),Vector2i(1720,720)]:
@@ -145,6 +166,10 @@ func _run() -> void:
 		page._process(0.0)
 		page._show_section("customise")
 		check(page._customisation_locked,id+" dirty livery blocked")
+		check(not page.tools_panel.visible and page._wash_requirement.visible,id+" uses the compact wash overlay")
+		if id=="forklift":
+			await settle()
+			await capture("forklift-wash-required-overlay")
 		wash_exterior(page)
 		page._show_section("customise")
 		check(not page._customisation_locked,id+" actual exterior wash unlocks")

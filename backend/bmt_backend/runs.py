@@ -21,11 +21,13 @@ from .db import get_session
 from .economy_models import LeaderboardTieNode
 from .histogram_population import SNAPSHOT_OWN_LIMIT, HistogramPopulation
 from .identity_models import Player
+from .job_contracts import capability_matches
 from .leaderboard_ranks import tied_before, time_counts
 from .middleware import ParsedJSONRoute
 from .queueing import admit, check_capacity
 from .security import bearer, current_player
 from .security import digest as token_digest
+from .storage import prepare_json
 from .test_population import check_scope
 from .track_models import (
     Board,
@@ -127,6 +129,7 @@ def run_payload(run: Run) -> dict:
         "failure_code": run.failure_code,
         "retryable": run.status == "failed" and run.failure_code in ("verifier_unavailable", "build_mismatch", "build_unavailable"),
         "poll_after_ms": pending_poll_ms(run),
+        **({"skip_reason": "no_improvement"} if run.status == "skipped" else {}),
     }
 
 
@@ -172,11 +175,7 @@ def issue_ticket(payload: TicketRequest, request: Request, session: DB, player: 
         active = request.app.state.verifier.manifest()
     except RuntimeError:
         raise HTTPException(503, "Race verifier temporarily unavailable") from None
-    if (
-        any(active.get(field) != pinned[field] for field in PINNED_FIELDS)
-        or active.get("vehicles", {}).get(payload.vehicle_id)
-        != version.manifest["vehicles"][payload.vehicle_id]
-    ):
+    if not capability_matches(pinned, active):
         raise HTTPException(
             409, "This version requires a different verifier build; upload and test a new version"
         )
@@ -226,7 +225,8 @@ def submit(payload: SubmitRun, request: Request, session: DB, player: Auth, key:
     from .replay_wire import unpack_replay
     payload.replay = unpack_replay(payload.replay)
     validate_replay(payload.replay)
-    body = {"ticket_id": payload.ticket_id, "replay_hash": digest(payload.replay)}
+    prepared = prepare_json(payload.replay)
+    body = {"ticket_id": payload.ticket_id, "replay_hash": prepared.digest}
     old = replay_response(session, player.id, "submit_run", key, body)
     if old is not None:
         return old
@@ -246,15 +246,21 @@ def submit(payload: SubmitRun, request: Request, session: DB, player: Auth, key:
     # immutable submission after a lost response or prolonged network outage.
     if ticket.expires_at <= now():
         raise HTTPException(410, "Run ticket expired")
-    check_capacity(session, player.id, request.app.state.settings.max_queued_runs)
+    from .non_improving_runs import candidate, complete, no_improvement
+    proposed = candidate(payload.replay)
+    if proposed is None:
+        check_capacity(session, player.id, request.app.state.settings.max_queued_runs)
     from .resumes import validate_receipts
     validate_receipts(session, ticket.id, payload.replay)
     owner_id = player.id
     session.rollback()
-    replay_hash = request.app.state.blobs.put_json(payload.replay)
+    replay_hash = request.app.state.blobs.put_json(prepared)
     if replay_hash != body["replay_hash"]:
         raise HTTPException(503, "Replay storage hash mismatch")
-    session.scalar(select(Player).where(Player.id == owner_id).with_for_update())
+    owner = session.scalar(select(Player).where(Player.id == owner_id).with_for_update()
+        .execution_options(populate_existing=True))
+    if owner is None or owner.disabled or owner.deleted_at is not None:
+        raise HTTPException(401, "INVALID_SESSION")
     ticket = session.scalar(
         select(RunTicket)
         .where(RunTicket.id == payload.ticket_id, RunTicket.player_id == player.id)
@@ -270,7 +276,7 @@ def submit(payload: SubmitRun, request: Request, session: DB, player: Auth, key:
     if ticket.expires_at <= now():
         raise HTTPException(410, "Run ticket expired")
     board = session.get(Board, ticket.board_id)
-    check_scope(request, bool(board.manifest.get("test_population")), player)
+    check_scope(request, bool(board.manifest.get("test_population")), owner)
     require_published_admission(request, session, board)
     if board.manifest.get("purpose") == "creator_test":
         repeated = session.scalar(select(Run).where(Run.player_id == player.id,
@@ -278,6 +284,10 @@ def submit(payload: SubmitRun, request: Request, session: DB, player: Auth, key:
             .order_by(Run.created_at, Run.id).limit(1))
         if repeated is not None:
             return commit_response(session, player.id, "submit_run", key, body, run_payload(repeated))
+    if no_improvement(session, ticket, board, proposed):
+        validate_receipts(session, ticket.id, payload.replay, settle=True)
+        run = complete(session, ticket, board, replay_hash, payload.replay, proposed)
+        return commit_response(session, player.id, "submit_run", key, body, run_payload(run))
     check_capacity(session, player.id, request.app.state.settings.max_queued_runs)
     validate_receipts(session, ticket.id, payload.replay)
     admit(session, player.id, request.app.state.settings.max_queued_runs)
@@ -406,22 +416,23 @@ def retry_run(run_id: str, request: Request, session: DB, player: Auth, key: Key
     if run is None:
         raise HTTPException(404, "Run not found")
     check_scope(request, bool(session.get(Board, run.board_id).manifest.get("test_population")), player)
-    if run.status == "failed" and run.failure_code in ("verifier_unavailable", "build_mismatch", "build_unavailable"):
+    requested = run.status == "skipped"
+    if requested or (run.status == "failed" and run.failure_code in ("verifier_unavailable", "build_mismatch", "build_unavailable")):
         board = session.get(Board, run.board_id)
         require_published_admission(request, session, board)
         try:
             active = request.app.state.verifier.manifest()
         except RuntimeError:
             raise HTTPException(503, "Verifier temporarily unavailable; the original replay is retained") from None
-        creator_test = board.manifest.get("purpose") == "creator_test"
-        compatible = {**active, "laps":1} if creator_test else active
-        vehicle = active.get("vehicles", {}).get(board.vehicle_id, {})
-        if (any(board.manifest.get(field) != compatible.get(field) for field in PINNED_FIELDS)
-                or any(board.manifest.get(field) != vehicle.get(field) for field in ("handling_version", "config_hash"))):
+        if not capability_matches(board.manifest, active):
             raise HTTPException(409, "CONTRACT_UNSUPPORTED: this saved attempt requires its original verifier build")
         admit(session, player.id, request.app.state.settings.max_queued_runs)
         run.status, run.attempts, run.lease_until, run.lease_token = "queued", 0, 0, None
         run.failure_code, run.finished_at = None, None
+        if requested:
+            from .track_models import OperationState
+            session.merge(OperationState(id="verify:"+run.id, updated_at=now(), details={"reason":"competitive_reuse"}))
+            run.time_ticks, run.lap_ticks = None, None
     elif run.status == "rejected":
         raise HTTPException(409, "INVALID_REPLAY: complete a new valid attempt")
     return commit_response(session, player.id, scope, key, {}, run_payload(run))
@@ -701,7 +712,8 @@ def results_comparison(version_id: str, vehicle_id: str, request: Request, backg
                        race_from_ticks: int | None = Query(None, ge=1, le=MAX_FRAMES),
                        race_to_ticks: int | None = Query(None, ge=2, le=MAX_FRAMES * 2),
                        lap_from_ticks: int | None = Query(None, ge=1, le=MAX_FRAMES),
-                       lap_to_ticks: int | None = Query(None, ge=2, le=MAX_FRAMES * 2)):
+                       lap_to_ticks: int | None = Query(None, ge=2, le=MAX_FRAMES * 2),
+                       known_histogram: str = Query("", pattern=r"^(|[0-9a-f]{64})$")):
     """One deduplicated field of all available drivers, never a UI source choice."""
     for start, end in ((race_from_ticks, race_to_ticks), (lap_from_ticks, lap_to_ticks)):
         if (start is None) != (end is None) or start is not None and end <= start:
@@ -712,7 +724,8 @@ def results_comparison(version_id: str, vehicle_id: str, request: Request, backg
     include_artificial = request.app.state.settings.test_drivers_enabled
     test_id = digest({"version_id": version.id, **pinned, "test_population": True})
     from .histogram_snapshots import load_snapshot
-    snapshot = load_snapshot(session, version.id, vehicle_id, include_artificial)
+    freshness = {}
+    snapshot = load_snapshot(session, version.id, vehicle_id, include_artificial, metadata_out=freshness)
     from .histogram_http import preparing, reply, schedule_demand
     schedule_demand(request, background, version.id, vehicle_id, include_artificial, unavailable=snapshot is None)
     if snapshot is None:
@@ -729,10 +742,19 @@ def results_comparison(version_id: str, vehicle_id: str, request: Request, backg
                                      race_ticks, race_from_ticks, race_to_ticks, current_own=own_times.get("race"))
         lap = population_comparison(session, population_key, laps, board_id, "best_lap", bins, player.id,
                                     lap_ticks, lap_from_ticks, lap_to_ticks, current_own=own_times.get("best_lap"))
-        return {"board_id": board_id, "population_scope": "all",
-                "stats_revision": revision, "race": race, "best_lap": lap}
+        histogram_key = digest([board_id, generation, bins, race["bins"], lap["bins"]])
+        result = {"board_id": board_id, "population_scope": "all", "freshness": freshness,
+                  "histogram_key": histogram_key, "stats_revision": revision, "race": race, "best_lap": lap}
+        if known_histogram == histogram_key:
+            result["schema"] = "bmt-comparison-overlay-v1"
+            # Only a caller holding this exact pair of grids may omit them.
+            # Personal markers/positions are still computed for this request.
+            result["race"] = {key: value for key, value in race.items() if key != "bins"}
+            result["best_lap"] = {key: value for key, value in lap.items() if key != "bins"}
+        return result
     response = reply(request, background, [board_id, include_artificial, generation, player.id, own_times, bins,
-        race_ticks, lap_ticks, race_from_ticks, race_to_ticks, lap_from_ticks, lap_to_ticks], build)
+        race_ticks, lap_ticks, race_from_ticks, race_to_ticks, lap_from_ticks, lap_to_ticks,
+        known_histogram, freshness], build, compact=bool(known_histogram))
     session.commit()
     return response
 

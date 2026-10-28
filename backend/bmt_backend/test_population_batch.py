@@ -3,8 +3,9 @@ from __future__ import annotations
 
 import logging
 import uuid
-from collections import Counter
+from collections import Counter, defaultdict
 from pathlib import Path
+from types import SimpleNamespace
 
 from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel, ConfigDict, Field
@@ -14,7 +15,7 @@ from sqlalchemy.orm import aliased
 from .background_work import BackgroundControl, BackgroundYielded
 from .contracts import build_contract, current_manifest
 from .identity_models import Player
-from .rivalry_models import RivalryBest
+from .rivalry_models import RivalryBest, RivalryGroup
 from .test_driver_generator import CONTROLLER_VERSION
 from .test_driver_models import TestDriverProfile
 from .test_drivers import Fleet, Operator, create_fleet
@@ -93,6 +94,40 @@ class BatchRequest(BaseModel):
     inventory_digest: str = Field(min_length=64, max_length=64)
 
 
+class LocalClaim(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+    runner_id: str = Field(pattern=r"^[a-f0-9-]{36}$")
+
+
+class LocalOutcome(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+    lease_token: str = Field(pattern=r"^[a-f0-9-]{36}$")
+    run_id: str | None = Field(default=None, min_length=36, max_length=36)
+    failure: str | None = Field(default=None, pattern=r"^(timeout|not_finished|temporary_failure)$")
+
+
+@router.get("/dev/test-drivers/local-rivalries")
+def local_rivalries(session: DB, _operator: Operator):
+    rows = session.scalars(select(RivalryGroup).where(RivalryGroup.test_population.is_(True),
+        RivalryGroup.ends_at > now(), RivalryGroup.tracks[0]["automatic_test_drivers"].as_boolean().is_(True))
+        .order_by(RivalryGroup.created_at).limit(100)).all()
+    return {"groups": [{"group_id": g.id, "vehicle_id": g.vehicle_id, "ends_at": g.ends_at} for g in rows],
+        "execution": "local_on_demand"}
+
+
+@router.get("/dev/test-drivers/local-rivalries/{group_id}/plan")
+def local_rivalry_plan(group_id: str, request: Request, session: DB, _operator: Operator):
+    from .automatic_test_drivers import plan_for
+    group = session.get(RivalryGroup, group_id)
+    if (not group or not group.test_population or group.ends_at <= now() or not group.tracks
+            or not group.tracks[0].get("automatic_test_drivers")):
+        raise HTTPException(404, "Active artificial rivalry not found")
+    plan = plan_for(request.app, group_id, SimpleNamespace(url=request.app.state.settings.public_base_url))
+    if plan is None:
+        raise HTTPException(409, "Artificial rivalry build is unavailable")
+    return plan
+
+
 @router.post("/dev/test-drivers/batches")
 def create_batch(payload: BatchRequest, request: Request, session: DB, _operator: Operator):
     require_enabled(request)
@@ -108,6 +143,8 @@ def create_batch(payload: BatchRequest, request: Request, session: DB, _operator
             raise HTTPException(409, "BATCH_PARAMETERS_CHANGED")
         return batch_view(session, batch_id)
     guard = session.scalar(select(OperationState).where(OperationState.id == ACTIVE).with_for_update())
+    if guard and guard.details.get("status") == "running" and batch_view(session, guard.details["batch_id"])["complete"]:
+        guard.details = {**guard.details, "status": "complete"}
     if guard and guard.details.get("status") == "running":
         raise HTTPException(409, "A test population batch is already running")
     inventory = preview(request.app, session, payload.vehicle_id)
@@ -191,24 +228,139 @@ def batch_view(session, batch_id):
         raise HTTPException(404, "Test population batch not found")
     data = batch.details
     jobs = batch_jobs(session, batch_id)
-    counts = Counter(j.details["status"] for j in jobs)
+    # Completion is derived from ordinary server-verified runs; no always-on
+    # artificial-generation process is needed to update progress.
+    states = dict(session.execute(select(Run.id, Run.status).join(OperationState,
+        OperationState.details["run_id"].as_string() == Run.id).where(
+        OperationState.id.startswith("test-pop-job:"), OperationState.details["batch_id"].as_string() == batch_id)).all())
+    def status(job):
+        actual = states.get(job.details.get("run_id"))
+        return actual if job.details["status"] == "submitted" and actual in ("verified", "skipped", "rejected", "failed") else job.details["status"]
+    counts = Counter(status(j) for j in jobs)
+    complete = bool(jobs) and counts.get("verified", 0) + counts.get("skipped", 0) == data["jobs"]
+    verified_by_slot, completed_by_slot = defaultdict(set), defaultdict(set)
+    for job in jobs:
+        state = status(job)
+        if state == "verified":
+            verified_by_slot[job.details["slot"]].add(job.details["player_id"])
+        if state in ("verified", "skipped"):
+            completed_by_slot[job.details["slot"]].add(job.details["player_id"])
     per_track = []
     for slot, entry in enumerate(data["tracks"]):
-        verified = {j.details["player_id"] for j in jobs if j.details["slot"] == slot and j.details["status"] == "verified"}
         per_track.append({"name": entry["name"], "version_id": entry["version_id"],
-                          "verified_players": len(verified), "target": data["count"]})
-    return {"batch_id": batch_id, "status": data["status"], "test_population": True,
+                          "verified_players": len(verified_by_slot[slot]), "completed_players": len(completed_by_slot[slot]), "target": data["count"]})
+    return {"batch_id": batch_id, "status": "complete" if complete else data["status"], "test_population": True,
+            "execution": "local_on_demand",
             "controller_version": data.get("controller_version", "profiled-trajectory-5"),
             "vehicle_id": data["vehicle_id"], "driver_count": data["count"], "track_count": len(per_track),
             "jobs": dict(counts), "expected_jobs": data["jobs"], "tracks": per_track,
             "cleared_test_records": data["cleared_test_records"],
             "protected_real_records": data["protected_real_records"],
-            "complete": bool(jobs) and counts.get("verified", 0) == data["jobs"]}
+            "complete": complete}
+
+
+@router.get("/dev/test-drivers/batches/active")
+def active_batch(session: DB, _operator: Operator):
+    guard = session.get(OperationState, ACTIVE)
+    return {"batch": batch_view(session, guard.details["batch_id"]) if guard and guard.details.get("batch_id") else None}
 
 
 @router.get("/dev/test-drivers/batches/{batch_id}")
 def get_batch(batch_id: str, session: DB, _operator: Operator):
     return batch_view(session, batch_id)
+
+
+@router.post("/dev/test-drivers/batches/{batch_id}/claim")
+def claim_local(batch_id: str, payload: LocalClaim, request: Request, session: DB, _operator: Operator):
+    """Lease one artificial job; this endpoint never starts an engine."""
+    guard = session.scalar(select(OperationState).where(OperationState.id == ACTIVE).with_for_update())
+    batch = session.scalar(select(OperationState).where(OperationState.id == "test-pop-batch:"+batch_id).with_for_update())
+    if batch is None:
+        raise HTTPException(404, "Test population batch not found")
+    if not guard or guard.details.get("batch_id") != batch_id or guard.details.get("status") != "running":
+        if batch.details.get("status") == "complete":
+            return {"work": None, "batch": batch_view(session, batch_id)}
+        raise HTTPException(409, "ARTIFICIAL_BATCH_NOT_ACTIVE")
+    data = batch.details
+    if build_contract(data["manifest"]) != build_contract(request.app.state.verifier.manifest()):
+        raise HTTPException(409, "BATCH_BUILD_CHANGED")
+    at = now()
+    # Normal server verification can finish after a local pass exits. Reconcile
+    # only bounded submitted rows on the next explicit claim, never in a daemon.
+    completed = session.execute(select(OperationState, Run).join(Run,
+        OperationState.details["run_id"].as_string() == Run.id).where(
+        OperationState.id.startswith("test-pop-job:"), OperationState.details["batch_id"].as_string() == batch_id,
+        OperationState.details["status"].as_string() == "submitted",
+        Run.status.in_(("verified", "skipped", "rejected", "failed"))).limit(200)).all()
+    for item, run in completed:
+        value = {**item.details, "status": run.status, "time_ticks": run.time_ticks, "failure_code": run.failure_code}
+        if run.status in ("rejected", "failed") and value["attempt"] < 4:
+            value.update(status="waiting", attempt=value["attempt"]+1, due=at+10, lease_until=0)
+            value.pop("run_id", None)
+        item.details = value; item.updated_at = at
+    session.flush()
+    query = select(OperationState).where(OperationState.id.startswith("test-pop-job:"),
+        OperationState.details["batch_id"].as_string() == batch_id)
+    own = session.scalar(query.where(OperationState.details["status"].as_string() == "generating",
+        OperationState.details["runner_id"].as_string() == payload.runner_id,
+        OperationState.details["lease_until"].as_integer() > at).limit(1).with_for_update())
+    row = own or session.scalar(query.where(
+        OperationState.details["status"].as_string().in_(("waiting", "generating")),
+        OperationState.details["due"].as_integer() <= at,
+        OperationState.details["lease_until"].as_integer() <= at)
+        .order_by(OperationState.updated_at, OperationState.id).limit(1).with_for_update(skip_locked=True))
+    if row is None:
+        view = batch_view(session, batch_id)
+        if view["complete"]:
+            batch.details = {**batch.details, "status": "complete", "completed_at": at}
+            guard.details = {**guard.details, "status": "complete"}
+        session.commit()
+        return {"work": None, "batch": view}
+    job = dict(row.details)
+    profile = session.get(TestDriverProfile, job["player_id"])
+    player = session.get(Player, job["player_id"])
+    if not profile or not player or not player.is_test_driver or player.disabled or player.deleted_at is not None:
+        raise HTTPException(409, "ARTIFICIAL_PROFILE_UNAVAILABLE")
+    if own is None:
+        job.update(status="generating", runner_id=payload.runner_id, lease_token=str(uuid.uuid4()), lease_until=at+600)
+        row.details = job; row.updated_at = at
+    session.commit()
+    return {"work": {"job": job, "traits": profile.traits, "vehicle_id": data["vehicle_id"], "manifest": data["manifest"]}}
+
+
+@router.post("/dev/test-drivers/batches/{batch_id}/jobs/{job_id}/complete")
+def complete_local(batch_id: str, job_id: str, payload: LocalOutcome, session: DB, _operator: Operator):
+    if (payload.run_id is None) == (payload.failure is None):
+        raise HTTPException(422, "Provide one verified-upload receipt or failure category")
+    guard = session.scalar(select(OperationState).where(OperationState.id == ACTIVE).with_for_update())
+    if not guard or guard.details.get("batch_id") != batch_id:
+        raise HTTPException(409, "ARTIFICIAL_BATCH_NOT_ACTIVE")
+    row = session.scalar(select(OperationState).where(OperationState.id == "test-pop-job:"+job_id).with_for_update())
+    if row is None or row.details.get("batch_id") != batch_id:
+        raise HTTPException(404, "Artificial job not found")
+    job = dict(row.details)
+    # A retry of an acknowledged completion is harmless. An expired or replaced
+    # lease cannot overwrite a newer worker, even with a previously valid token.
+    if job.get("lease_token") != payload.lease_token:
+        raise HTTPException(409, "ARTIFICIAL_LEASE_REPLACED")
+    if job.get("status") in ("submitted", "verified", "skipped", "rejected", "failed") and payload.run_id == job.get("run_id"):
+        return {"status": job["status"]}
+    if job.get("status") != "generating" or job.get("lease_until", 0) <= now():
+        raise HTTPException(409, "ARTIFICIAL_LEASE_EXPIRED")
+    if payload.run_id:
+        run = session.get(Run, payload.run_id)
+        board = session.get(Board, run.board_id) if run else None
+        player = session.get(Player, job["player_id"])
+        if (not run or not board or not player or not player.is_test_driver or run.player_id != job["player_id"]
+                or board.version_id != job["version_id"] or not board.manifest.get("test_population")):
+            raise HTTPException(409, "ARTIFICIAL_UPLOAD_RECEIPT_MISMATCH")
+        job.update(status="submitted", run_id=run.id, lease_until=0)
+    else:
+        attempt = job["attempt"] + 1
+        job.update(status="waiting" if attempt <= 4 else "uncompleted", attempt=attempt,
+            due=now()+10*attempt, lease_until=0, failure_code="local_"+payload.failure)
+    row.details = job; row.updated_at = now(); session.commit()
+    return {"status": job["status"]}
 
 
 def drive_idle(app, *, generation_control=None):
@@ -235,14 +387,14 @@ def drive_idle(app, *, generation_control=None):
             job = dict(row.details)
             if job["status"] == "submitted":
                 run = session.get(Run, job["run_id"])
-                if run and run.status in ("verified", "rejected", "failed"):
+                if run and run.status in ("verified", "skipped", "rejected", "failed"):
                     job.update(status=run.status, time_ticks=run.time_ticks, failure_code=run.failure_code)
-                    if run.status != "verified" and job["attempt"] < 4:
+                    if run.status not in ("verified", "skipped") and job["attempt"] < 4:
                         job.update(status="waiting", attempt=job["attempt"]+1, due=now()+10)
                     row.details = job; row.updated_at = now(); changed = True
         if changed:
             session.commit()
-        if all(j.details["status"] == "verified" for j in jobs):
+        if all(j.details["status"] in ("verified", "skipped") for j in jobs):
             batch.details = {**data, "status": "complete", "completed_at": now()}
             guard.details = {**guard.details, "status": "complete"}
             session.commit()

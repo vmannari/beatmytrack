@@ -87,7 +87,7 @@ class RaceUses extends Control:
 			var center := Vector2(12+i*29,size.y*0.5)
 			if i < remaining: draw_circle(center,8,Color("24bceb"))
 			draw_arc(center,8,0,TAU,32,Color("69c8e5"),1.5,true)
-		var caption: String = "%d left this race" % remaining if remaining > 0 else "Race limit reached"
+		var caption: String = GameText.message("%d left this race") % remaining if remaining > 0 else "Race limit reached"
 		draw_string(RaceHUDStyle.BODY,Vector2(99,size.y*0.5+6),caption,HORIZONTAL_ALIGNMENT_LEFT,-1,15,Color("d2e2e7"))
 
 class WorldLabels extends Control:
@@ -99,7 +99,7 @@ class WorldLabels extends Control:
 			if panel.scene_camera.is_position_behind(item.world): continue
 			var point: Vector2 = panel.scene_camera.unproject_position(item.world)+Vector2(-20,28)
 			if point.x < 24 or point.x > size.x-70 or point.y < 115 or point.y > size.y-205 or forbidden.has_point(point): continue
-			var caption: String = "−%.1f s" % float(item.seconds)
+			var caption: String = GameText.message("−%.1f s") % float(item.seconds)
 			draw_string_outline(RaceHUDStyle.BODY,point,caption,HORIZONTAL_ALIGNMENT_LEFT,-1,15,3,Color("071015"))
 			draw_string(RaceHUDStyle.BODY,point,caption,HORIZONTAL_ALIGNMENT_LEFT,-1,15,Color("c3ddeb"))
 
@@ -234,8 +234,8 @@ func _select_seconds(seconds: float) -> void:
 
 func show_moment(state: VehicleState, session: TrackSession, labels: Array[Dictionary], world: Vector3, live: bool) -> void:
 	selected_seconds = (now_tick-state.tick)/120.0
-	details.text = "LAP %d / %d   ·   %.2f s" % [session.completed_laps+1,session.target_laps,session.race_time_seconds()]
-	slider.caption = "0.0 s" if live else "−%.1f s" % selected_seconds
+	details.text = GameText.message("LAP %d / %d   ·   %.2f s") % [session.completed_laps+1,session.target_laps,session.race_time_seconds()]
+	slider.caption = "0.0 s" if live else GameText.message("−%.1f s") % selected_seconds
 	slider.queue_redraw()
 	history_labels = labels
 	selected_world = world

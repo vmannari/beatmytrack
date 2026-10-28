@@ -65,7 +65,7 @@ func _identity_changed() -> void:
 	if not _same_account(): queue_free()
 
 func _sync_changed() -> void:
-	if selected_score == 0 or sending or not str(sync.status).begins_with("Race verified"): return
+	if selected_score == 0 or sending or not (str(sync.status).begins_with("Race verified") or str(sync.status).begins_with("Race completed")): return
 	if loading: reload_pending = true
 	else: _load()
 

@@ -11,6 +11,7 @@ from .config import Settings
 from .db import make_engine, make_session_factory
 from .discovery_daily import step as daily_step
 from .discovery_projection import DiscoveryMaintenance, health, repair_track, step
+from .track_of_day import step as track_of_day_step
 
 
 def main():
@@ -40,6 +41,7 @@ def main():
                 worked = step(factory, maintenance=maintenance)
                 if time.monotonic() >= daily_at:
                     daily_work = daily_step(factory)
+                    daily_work = track_of_day_step(factory) or daily_work
                     daily_at = time.monotonic() + (0.01 if daily_work else 30)
                     worked = daily_work or worked
                 if time.monotonic() >= report_at:

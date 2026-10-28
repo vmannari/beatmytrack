@@ -3,7 +3,7 @@ extends SceneTree
 func _initialize() -> void: call_deferred("run")
 
 func run() -> void:
-	var track := NativeTrack.read("res://resources/tracks/starter_circuit.json")
+	var track := NativeTrack.read("res://resources/tracks/ellipse.json")
 	var themes: Array[String] = []
 	var probe_seconds: float = 12.0
 	for argument: String in OS.get_cmdline_user_args():

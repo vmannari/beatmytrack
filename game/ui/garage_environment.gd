@@ -7,6 +7,7 @@ const ROOF_CUTAWAY_HEIGHT: float = 4.95
 static var surfaces: Dictionary = {}
 static var architecture_scene: PackedScene
 static var cabinet_meshes: Dictionary = {}
+const PREPARED_ARCHITECTURE: String = "res://assets/garage/workshop_v1.scn"
 
 static func deck_finish() -> ShaderMaterial:
 	var material := ShaderMaterial.new()
@@ -63,7 +64,9 @@ static func ring(parent: Node3D, radius: float, y: float, thickness: float, mate
 	node.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
 	parent.add_child(node)
 
-static func build(world: Node3D, car: CarVisual, thumbnail: bool) -> Node3D:
+static func build(world: Node3D, car: CarVisual, thumbnail: bool, use_prepared: bool = true) -> Node3D:
+	if use_prepared and architecture_scene == null and ResourceLoader.exists(PREPARED_ARCHITECTURE):
+		architecture_scene = load(PREPARED_ARCHITECTURE)
 	var shell := Node3D.new()
 	shell.name = "GarageArchitecture"
 	world.add_child(shell)
@@ -135,7 +138,7 @@ static func build_lighting(world: Node3D, thumbnail: bool, transparent: bool = f
 	environment.environment.background_color = Color.TRANSPARENT if transparent else Color("101923")
 	environment.environment.ambient_light_source = Environment.AMBIENT_SOURCE_COLOR
 	environment.environment.ambient_light_color = Color("b6c5d0")
-	environment.environment.ambient_light_energy = 0.34
+	environment.environment.ambient_light_energy = 0.36
 	if ShowroomStudio.cached_sky == null:
 		ShowroomStudio.cached_sky = Sky.new()
 		ShowroomStudio.cached_sky.radiance_size = Sky.RADIANCE_SIZE_128
@@ -147,9 +150,9 @@ static func build_lighting(world: Node3D, thumbnail: bool, transparent: bool = f
 	world.add_child(environment)
 	var key := DirectionalLight3D.new()
 	key.name = "GarageKey"
-	key.rotation_degrees = Vector3(-65, -38, 0)
+	key.rotation_degrees = Vector3(-58, -38, 0)
 	key.light_color = Color("f7e8cf")
-	key.light_energy = 0.78
+	key.light_energy = 0.90
 	key.shadow_enabled = not thumbnail
 	key.directional_shadow_mode = DirectionalLight3D.SHADOW_ORTHOGONAL
 	key.directional_shadow_max_distance = 12.0
@@ -158,7 +161,7 @@ static func build_lighting(world: Node3D, thumbnail: bool, transparent: bool = f
 	fill.name = "GarageFill"
 	fill.rotation_degrees = Vector3(-30, 135, 0)
 	fill.light_color = Color("96b3ce")
-	fill.light_energy = 0.18
+	fill.light_energy = 0.26
 	world.add_child(fill)
 	var rim := SpotLight3D.new()
 	rim.name = "GarageRim"

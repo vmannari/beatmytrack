@@ -139,9 +139,9 @@ func _refresh() -> void:
 		_profile = result.data
 		var rank_text: String = "Unranked" if _profile.get("world_rank") == null else "#%d" % int(_profile.world_rank)
 		var movement: String = ""
-		if _profile.get("movement") != null and int(_profile.movement) != 0: movement = " · %+d places" % int(_profile.movement)
-		summary.text = rank_text+"  ·  %d POINTS" % int(_profile.points)+movement
-		detail.text = "Best 12 / 26 weeks · %d earned · %+d total · %d points at risk next week" % [int(_profile.get("earned",0)),int(_profile.get("net_change",0)),int(_profile.get("points_at_risk",0))]
+		if _profile.get("movement") != null and int(_profile.movement) != 0: movement = GameText.message(" · %+d places") % int(_profile.movement)
+		summary.text = rank_text+GameText.message("  ·  %d POINTS") % int(_profile.points)+movement
+		detail.text = GameText.message("Best 12 / 26 weeks · %d earned · %+d total · %d points at risk next week") % [int(_profile.get("earned",0)),int(_profile.get("net_change",0)),int(_profile.get("points_at_risk",0))]
 	else:
 		status.text = "Ranking unavailable. Refresh to retry."
 		_controls()
@@ -180,7 +180,7 @@ func _load_page() -> void:
 	elif data.get("state") == "country_required":
 		status.text = "Choose your country in your account profile."
 	else:
-		status.text = "Published "+_date(int(data.get("published_at",0)))+" UTC · %d ranked drivers" % int(data.get("ranked_count",0))
+		status.text = "Published "+_date(int(data.get("published_at",0)))+GameText.message(" UTC · %d ranked drivers") % int(data.get("ranked_count",0))
 		if data.items.is_empty(): status.text += " · No ranked drivers in this view yet."
 	var built: int = 0
 	for row: Dictionary in data.items:
@@ -191,7 +191,7 @@ func _load_page() -> void:
 		var rank: Label = MenuStyle.label("#%d" % int(row.rank),20)
 		rank.custom_minimum_size.x = 80
 		line.add_child(rank)
-		var identity: Label = MenuStyle.label(str(row.name),20)
+		var identity: Label = MenuStyle.user_label(str(row.name),20)
 		identity.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 		identity.clip_text = true
 		line.add_child(identity)
@@ -220,12 +220,12 @@ func _clear_rows() -> void:
 func _show_results() -> void:
 	_clear_rows()
 	for row: Dictionary in _profile.get("results",[]):
-		var label: Label = MenuStyle.label("%s · #%d · %d points · %s" % [_date(int(row.week_start)),int(row.weekly_place),int(row.points),"Counting" if row.counting else "Reserve"],18)
+		var label: Label = MenuStyle.label(GameText.message("%s · #%d · %d points · %s") % [_date(int(row.week_start)),int(row.weekly_place),int(row.points),"Counting" if row.counting else "Reserve"],18)
 		label.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 		list.add_child(label)
 	var career: Dictionary = _profile.get("career",{})
 	status.text = "Finish all five tracks for one weekly ranking result."
-	if not career.is_empty(): status.text = "Best #%d among %d drivers (%s) · %d weeks in Top 100 · %d weeks at No. 1 · %d Circuit wins · %d season titles" % [int(career.peak_rank),int(career.peak_field),_date(int(career.peak_week)),int(career.weeks_top100),int(career.weeks_no1),int(career.victories),int(career.season_titles)]
+	if not career.is_empty(): status.text = GameText.message("Best #%d among %d drivers (%s) · %d weeks in Top 100 · %d weeks at No. 1 · %d Circuit wins · %d season titles") % [int(career.peak_rank),int(career.peak_field),_date(int(career.peak_week)),int(career.weeks_top100),int(career.weeks_no1),int(career.victories),int(career.season_titles)]
 
 func _forward() -> void:
 	if _busy or _next.is_empty() or _history.size() >= 8: return

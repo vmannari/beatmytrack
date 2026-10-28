@@ -7,12 +7,12 @@ from datetime import datetime, timezone
 
 from fastapi import APIRouter, HTTPException, Query, Request
 from pydantic import BaseModel, ConfigDict, Field
-from sqlalchemy import func, literal_column, or_, select, update
+from sqlalchemy import literal_column, or_, select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import aliased
 
 from .appearance_routes import owner_for_write
-from .contracts import build_contract
+from .contracts import compatible_physics_versions, vehicle_build_contract
 from .identity_models import Player
 from .middleware import ParsedJSONRoute
 from .rivalry_models import RivalryArchivedBest, RivalryBest, RivalryGroup, RivalryMember, RivalryTicket
@@ -82,13 +82,21 @@ def active_contract(request, vehicle):
     config = active.get("vehicles", {}).get(vehicle)
     if not config:
         raise HTTPException(422, "Vehicle is not allowed by the server manifest")
-    return active, digest({**build_contract(active), "vehicles": {vehicle: config}, "vehicle_id": vehicle})
+    return active, digest(vehicle_build_contract(active, vehicle))
 
 
-def compatible_fields(column, active):
+def compatible_contract_keys(active, vehicle, test_population=False):
+    """Keep existing memberships/circuits under their original immutable key."""
+    return [contract_scope(digest(vehicle_build_contract({**active, "physics_version": version}, vehicle)), test_population)
+            for version in compatible_physics_versions(active["physics_version"], vehicle)]
+
+
+def compatible_fields(column, active, vehicle):
     conditions = []
     for field in PINNED_FIELDS:
         values = [active[field]]
+        if field == "physics_version":
+            values = list(compatible_physics_versions(active[field], vehicle))
         if field == "rules_key" and active[field] in ("standing-5-road-gates-v18", "standing-5-road-gates-v19", "standing-5-road-gates-v20", "standing-5-road-gates-v21", "standing-5-road-gates-v22", "standing-5-road-gates-v23"):
             upper = int(active[field].rsplit("v", 1)[1])
             values += [f"standing-5-road-gates-v{n}" for n in range(12, upper)]
@@ -109,8 +117,9 @@ def eligible_query(active, vehicle):
                                    newer.number > TrackVersion.number).exists(),
             or_(Track.official.is_(True), (TrackVersion.rating_count > 0)
                 & (TrackVersion.rating_sum > 4 * TrackVersion.rating_count) & (TrackVersion.verified_finishers > 100)),
-            *compatible_fields(TrackVersion.manifest, active),
-            *[TrackVersion.manifest["vehicles"][vehicle][key].as_string() == value for key, value in config.items()]))
+            *compatible_fields(TrackVersion.manifest, active, vehicle),
+            *[TrackVersion.manifest["vehicles"][vehicle][key].as_string() == config[key]
+              for key in ("handling_version", "config_hash")]))
 
 
 def eligible_versions(session, active, vehicle):
@@ -129,10 +138,8 @@ def selected_slots(session, request, active, vehicle, test_population, *, timest
     if use_circuit and vehicle == "compact" and not test_population:
         from .world_ranking_models import Circuit
         circuit = session.scalar(select(Circuit).where(Circuit.week_start == week_window(timestamp)[0]))
-        if circuit is not None:
-            from .rivalry_planning import plan_contract
-            if circuit.contract_key == plan_contract(active, vehicle):
-                return circuit.tracks
+        if circuit is not None and circuit.contract_key in compatible_contract_keys(active, vehicle):
+            return circuit.tracks
     chosen = planned_versions(session, active, vehicle, timestamp)
     if len(chosen) < TRACK_COUNT:
         return []
@@ -161,7 +168,7 @@ def skill_score(session, player_id, vehicle, active, timestamp, test_population=
             Board.manifest["purpose"].as_string().is_(None),
             Board.manifest["test_population"].as_boolean().is_(True) if test_population else Board.manifest["test_population"].as_boolean().is_not(True),
             Board.manifest["rules_key"].as_string() == active["rules_key"],
-            Board.manifest["physics_version"].as_string() == active["physics_version"],
+            Board.manifest["physics_version"].as_string().in_(compatible_physics_versions(active["physics_version"], vehicle)),
             Board.manifest["config_hash"].as_string() == config["config_hash"])
         .order_by(PersonalBest.achieved_at.desc(), Board.id).limit(20)).all()
     if not own:
@@ -202,20 +209,25 @@ def rankings(rows, key, reverse=False):
     return rows
 
 
-def standings_data(session, group):
-    players = session.execute(select(Player.id, Player.display_name, Player.is_test_driver, Player.country_code).join(RivalryMember)
-        .where(RivalryMember.group_id == group.id, Player.disabled.is_(False)).order_by(Player.id)).all()
-    model = RivalryArchivedBest if group.archived else RivalryBest
-    bests = {(best.slot, best.player_id): best for best in session.scalars(select(model).where(model.group_id == group.id))}
+def standings_data(session, group, facts=None):
+    if facts is None:
+        players = session.execute(select(Player.id, Player.display_name, Player.is_test_driver, Player.country_code).join(RivalryMember)
+            .where(RivalryMember.group_id == group.id, Player.disabled.is_(False)).order_by(Player.id)).all()
+        model = RivalryArchivedBest if group.archived else RivalryBest
+        bests = {(best.slot, best.player_id): {"ticks": best.time_ticks, "run_id": getattr(best, "run_id", None)}
+                 for best in session.scalars(select(model).where(model.group_id == group.id))}
+    else:
+        players = [(p["id"], p["name"], p["is_test_driver"], p["country_code"]) for p in facts["players"]]
+        bests = {(best["slot"], best["id"]): best for best in facts["bests"]}
     totals = {pid: {"id": pid, "name": name, "is_test_driver": synthetic, "country_code": country, "points": 0, "completed": 0} for pid, name, synthetic, country in players}
     tracks = []
     for slot, entry in enumerate(group.tracks):
         rows = []
         for pid, name, synthetic, country in players:
             best = bests.get((slot, pid))
-            rows.append({"id": pid, "name": name, "is_test_driver": synthetic, "country_code": country, "ticks": best.time_ticks if best else None,
-                         "ms": round(best.time_ticks * 1000 / entry["tick_rate"]) if best else None,
-                         "run_id": getattr(best, "run_id", None) if best else None})
+            rows.append({"id": pid, "name": name, "is_test_driver": synthetic, "country_code": country, "ticks": best["ticks"] if best else None,
+                         "ms": round(best["ticks"] * 1000 / entry["tick_rate"]) if best else None,
+                         "run_id": best["run_id"] if best else None})
         rankings(rows, "ticks")
         for row in rows:
             row["points"] = POINTS[row["rank"] - 1] if row["rank"] else 0
@@ -229,13 +241,14 @@ def standings_data(session, group):
     return tracks, overall
 
 
-def snapshot(session, group, player_id, timestamp=None):
+def snapshot(session, group, player_id, timestamp=None, *, facts=None):
     timestamp = now() if timestamp is None else timestamp
-    tracks, overall = standings_data(session, group)
-    from .community import blocked_ids
-    blocked = set(session.scalars(blocked_ids(session, player_id)))
-    appearances = dict(session.execute(select(Player.id, Player.vehicle_appearances)
-        .where(Player.id.in_([row["id"] for row in overall]), Player.deleted_at.is_(None))).all())
+    if facts is None:
+        from .rivalry_reads import read_snapshot
+        facts = read_snapshot(session, group, player_id, timestamp)
+    tracks, overall = standings_data(session, group, facts)
+    blocked = set(facts["blocked"])
+    appearances = {p["id"]: p["appearances"] for p in facts["players"]}
     for row in overall:
         appearance = appearances.get(row["id"], {}).get(group.vehicle_id)
         if appearance is not None:
@@ -244,14 +257,8 @@ def snapshot(session, group, player_id, timestamp=None):
         if row["id"] in blocked:
             row["name"], row["country_code"] = "Blocked player", ""
             row.pop("appearance", None)
-    pending = session.scalar(select(func.count()).select_from(Run).join(RivalryTicket, RivalryTicket.ticket_id == Run.ticket_id)
-        .where(RivalryTicket.group_id == group.id, Run.status.in_(("queued", "verifying"))))
-    state = "active" if timestamp < group.ends_at else "settling" if pending else "complete"
-    personal_best_slots = []
-    if state == "complete":
-        personal_best_slots = sorted(session.scalars(select(RivalryTicket.slot).join(Run, Run.ticket_id == RivalryTicket.ticket_id)
-            .where(RivalryTicket.group_id == group.id, Run.player_id == player_id, Run.status == "verified",
-                   RivalryTicket.outcome["personal_best"].as_boolean().is_(True)).distinct()).all())
+    pending, state = facts["pending"], facts["state"]
+    personal_best_slots = facts["personal_best_slots"]
     iso = datetime.fromtimestamp(group.week_start, timezone.utc).isocalendar()
     result = {"group_id": group.id, "state": state, "week": iso.week, "year": iso.year,
               "world_circuit": {"id": group.world_circuit_id, "official": True, "required_tracks": 5,
@@ -262,27 +269,21 @@ def snapshot(session, group, player_id, timestamp=None):
               "automatic_test_drivers": bool(group.tracks[0].get("automatic_test_drivers", False)),
               "group_forming": len(overall) < 10, "standings": overall, "self_id": player_id, "tracks": [],
               "points_policy": list(POINTS), "pending_runs": pending, "personal_best_slots": personal_best_slots}
-    availability = dict(session.execute(select(TrackVersion.id,
-        (TrackVersion.state == "published") & Track.hidden.is_(False) & Player.disabled.is_(False))
-        .join(Track).join(Player, Player.id == Track.owner_id)
-        .where(TrackVersion.id.in_([item["version_id"] for item in group.tracks]))).all())
     for slot, pinned in enumerate(group.tracks):
         entry = pinned["entry"]
-        version = session.get(TrackVersion, pinned["version_id"])
+        version = facts["versions"].get(pinned["version_id"])
+        available = bool(version and version["available"] and version["owner_id"] not in blocked)
         if version is not None:
-            owner = session.get(Player, session.get(Track, version.track_id).owner_id)
-            if owner.id in blocked:
-                availability[version.id] = False
-            if owner.deleted_at is not None:
+            if version["deleted_at"] is not None:
                 # Refresh redacted source hashes as well as names for retained
                 # cohort snapshots; their board/score pins remain unchanged.
-                entry = {**entry, "creator": "Removed account", "content_hash": version.content_hash,
-                    "redacted_track_hash": version.redacted_track_hash, "canonical_track_hash": version.manifest.get("track_content_hash")}
-        if not availability.get(pinned["version_id"], False):
+                entry = {**entry, "creator": "Removed account", "content_hash": version["content_hash"],
+                    "redacted_track_hash": version["redacted_track_hash"], "canonical_track_hash": version["canonical_track_hash"]}
+        if not available:
             # Keep score/board pins while withdrawing objectionable public art/text.
             entry = {**entry, "name": "Unavailable track", "creator": "Unavailable creator", "points": []}
         result["tracks"].append({"slot": slot, "entry": entry, "board_id": pinned["board_id"],
-                                 "available": not group.archived and availability.get(pinned["version_id"], False),
+                                 "available": not group.archived and available,
                                  "entries": tracks[slot]})
     return result
 
@@ -330,13 +331,14 @@ def commit_join(session, player_id, key, body, group_id, circuit_id=None):
 @router.get("/rivalry/current")
 def current(request: Request, session: BoardDB, player: Auth, vehicle_id: str = Query(min_length=1, max_length=80), test_population: bool = False):
     check_scope(request, test_population, player)
-    active, contract = active_contract(request, vehicle_id)
-    contract = contract_scope(contract, test_population)
+    active, _contract = active_contract(request, vehicle_id)
+    contracts = compatible_contract_keys(active, vehicle_id, test_population)
     start, end, year, week = week_window(now())
     member = session.scalar(select(RivalryMember).where(RivalryMember.player_id == player.id,
-        RivalryMember.week_start == start, RivalryMember.contract_key == contract))
+        RivalryMember.week_start == start, RivalryMember.contract_key.in_(contracts))
+        .order_by(RivalryMember.joined_at.desc(), RivalryMember.group_id).limit(1))
     if member:
-        return conditional_snapshot(request, snapshot(session, session.get(RivalryGroup, member.group_id), player.id))
+        return snapshot_response(request, session, session.get(RivalryGroup, member.group_id), player.id)
     previous = session.scalar(select(RivalryMember).join(RivalryGroup)
         .where(RivalryMember.player_id == player.id, RivalryGroup.vehicle_id == vehicle_id,
                RivalryGroup.test_population.is_(test_population),
@@ -346,7 +348,7 @@ def current(request: Request, session: BoardDB, player: Auth, vehicle_id: str = 
         .order_by(RivalryMember.week_start.desc(), RivalryMember.joined_at.desc(),
                   RivalryGroup.created_at.desc(), RivalryGroup.id).limit(1))
     if previous:
-        return conditional_snapshot(request, snapshot(session, session.get(RivalryGroup, previous.group_id), player.id))
+        return snapshot_response(request, session, session.get(RivalryGroup, previous.group_id), player.id)
     return {"state": "not_joined", "test_population": test_population, "week": week, "year": year, "ends_at": end, "server_now": now(),
             "eligible_track_count": len(session.scalars(eligible_query(active, vehicle_id).limit(TRACK_COUNT)).all()),
             "eligible_track_count_capped": True, "required_track_count": TRACK_COUNT}
@@ -367,6 +369,7 @@ def join(payload: Join, request: Request, session: DB, player: Auth, key: Key):
         raise HTTPException(409, "USERNAME_REQUIRED")
     active, contract = active_contract(request, payload.vehicle_id)
     contract = contract_scope(contract, payload.test_population)
+    contracts = compatible_contract_keys(active, payload.vehicle_id, payload.test_population)
     timestamp = now()
     start, end, _, _ = week_window(timestamp)
     circuit_id = None
@@ -376,23 +379,26 @@ def join(payload: Join, request: Request, session: DB, player: Auth, key: Key):
         circuit = session.scalar(select(Circuit).where(Circuit.week_start == start))
         if circuit is None:
             raise HTTPException(503, "CIRCUIT_PREPARING")
-        if circuit.contract_key != contract:
+        if circuit.contract_key not in contracts:
             raise HTTPException(409, "CIRCUIT_BUILD_PINNED_UNTIL_NEXT_WEEK")
+        contract = circuit.contract_key
         circuit_id = circuit.id
     member = session.scalar(select(RivalryMember).where(RivalryMember.player_id == player.id,
-        RivalryMember.week_start == start, RivalryMember.contract_key == contract))
+        RivalryMember.week_start == start, RivalryMember.contract_key.in_(contracts))
+        .order_by(RivalryMember.joined_at.desc(), RivalryMember.group_id).limit(1))
     if member:
         return commit_join(session,player.id,key,body,member.group_id,circuit_id)
     session.scalar(select(Player).where(Player.id == player.id).with_for_update())
     member = session.scalar(select(RivalryMember).where(RivalryMember.player_id == player.id,
-        RivalryMember.week_start == start, RivalryMember.contract_key == contract))
+        RivalryMember.week_start == start, RivalryMember.contract_key.in_(contracts))
+        .order_by(RivalryMember.joined_at.desc(), RivalryMember.group_id).limit(1))
     if member:
         return commit_join(session,player.id,key,body,member.group_id,circuit_id)
     skill = skill_score(session, player.id, payload.vehicle_id, active, timestamp, payload.test_population)
     # Expensive candidate selection is read work outside the cohort reservation.
     prepared_slots = selected_slots(session,request,active,payload.vehicle_id,payload.test_population)
     band = min(9, skill // 100) if skill is not None else -1
-    group = reserve_open_group(session, start, contract, band, circuit_id)
+    group = reserve_compatible_group(session, start, contract, contracts, band, circuit_id)
     if group is None:
         # Only creation takes a guard. A busy open group must fill before another
         # is created; ordinary joins lock their group, never the whole skill band.
@@ -405,7 +411,7 @@ def join(payload: Join, request: Request, session: DB, player: Auth, key: Key):
             except IntegrityError:
                 pass
         session.scalar(select(OperationState).where(OperationState.id == lock_id).with_for_update())
-        group = reserve_open_group(session, start, contract, band, circuit_id)
+        group = reserve_compatible_group(session, start, contract, contracts, band, circuit_id)
     if group is None:
         if len(prepared_slots) < TRACK_COUNT:
             raise HTTPException(409, "NOT_ENOUGH_ELIGIBLE_TRACKS")
@@ -426,9 +432,17 @@ def join(payload: Join, request: Request, session: DB, player: Auth, key: Key):
                              contract_key=contract, skill_band=band, tracks=slots, member_count=1)
         session.add(group)
         session.flush()
-    session.add(RivalryMember(group_id=group.id, player_id=player.id, week_start=start, contract_key=contract, skill=skill))
+    session.add(RivalryMember(group_id=group.id, player_id=player.id, week_start=start, contract_key=group.contract_key, skill=skill))
     session.flush()
     return commit_join(session,player.id,key,body,group.id,circuit_id)
+
+
+def reserve_compatible_group(session, start, preferred, contracts, band, circuit_id):
+    for contract in (preferred, *(value for value in contracts if value != preferred)):
+        group = reserve_open_group(session, start, contract, band, circuit_id)
+        if group is not None:
+            return group
+    return None
 
 
 def open_group_candidates(start, contract, band):
@@ -469,7 +483,7 @@ def reserve_open_group(session, start, contract, band, circuit_id=None):
 @router.get("/rivalry/{group_id}")
 def view(group_id: str, request: Request, session: BoardDB, player: Auth):
     group, _ = require_member(session, group_id, player.id, request)
-    return conditional_snapshot(request, snapshot(session, group, player.id))
+    return snapshot_response(request, session, group, player.id)
 
 
 @router.post("/rivalry/{group_id}/tickets", status_code=201)
@@ -481,9 +495,8 @@ def ticket(group_id: str, payload: Race, request: Request, session: DB, player: 
     group, _ = require_member(session, group_id, player.id, request)
     if now() >= group.ends_at:
         raise HTTPException(410, "RIVALRY_WEEK_ENDED")
-    _active, contract = active_contract(request, group.vehicle_id)
-    contract = contract_scope(contract, group.test_population)
-    if contract != group.contract_key:
+    active, _contract = active_contract(request, group.vehicle_id)
+    if group.contract_key not in compatible_contract_keys(active, group.vehicle_id, group.test_population):
         raise HTTPException(409, "RIVALRY_BUILD_CHANGED")
     pinned = group.tracks[payload.slot]
     version = session.get(TrackVersion, pinned["version_id"])
@@ -515,16 +528,16 @@ def accept_verified(session, run, *, acceptance=None):
     if previous is None:
         personal_best = session.get(PersonalBest, (run.board_id, run.player_id))
         previous = personal_best.time_ticks if personal_best else 0
-    new_personal_best = not previous or run.time_ticks < previous
+    new_personal_best = run.status != "skipped" and (not previous or run.time_ticks < previous)
     best = session.get(RivalryBest, (group.id, run.player_id, binding.slot))
-    improved = best is None or run.time_ticks < best.time_ticks
+    improved = run.status != "skipped" and (best is None or run.time_ticks < best.time_ticks)
     if improved:
         if best is None:
             best = RivalryBest(group_id=group.id, player_id=run.player_id, slot=binding.slot)
             session.add(best)
         best.run_id, best.time_ticks, best.achieved_at = run.id, run.time_ticks, now()
         session.flush()
-    after_tracks, after_overall = standings_data(session, group)
+    after_tracks, after_overall = standings_data(session, group) if improved else (before_tracks, before_overall)
     after = next(row for row in after_tracks[binding.slot] if row["id"] == run.player_id)
     beaten = [row for row in before_tracks[binding.slot] if row["id"] != run.player_id and row["ticks"] is not None
               and run.time_ticks < row["ticks"] and (prior["ticks"] is None or row["ticks"] < prior["ticks"])] if improved else []
@@ -594,6 +607,11 @@ def ghost(group_id: str, slot: int, driver_id: str, request: Request, session: B
     session.commit()
     from .ghost_http import recording_response
     return recording_response(request, run_id, ghost_hash, owner_id, metadata=metadata, expected_run_id=expected_run_id, encoding=encoding)
+
+
+def snapshot_response(request, session, group, player_id):
+    from .rivalry_reads import response
+    return response(request, session, group, player_id, now())
 
 
 def conditional_snapshot(request, value):

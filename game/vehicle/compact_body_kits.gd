@@ -62,6 +62,21 @@ static func _arch(root: Node3D, key: String, kind: String, side: float, axle: fl
 		var y: float = 0.37+sin(angle)*q.x
 		var z: float = axle+cos(angle)*q.x
 		return Vector3(side*(CompactCoachwork.body_width(y,z)+CompactKits.arch_roll(q.x,axle)+maxf(0.009,q.y)),y,z),material,40,24)
+	# The visible flare and its existing clearance remain exact. A separate
+	# returned backing fills the previously open space behind that shell.
+	var embed: float = 0.007 if CompactKits.simple_parts else 0.004
+	var mounting_section: Array[Vector2] = [Vector2(0.423,0),Vector2(outer,0),Vector2(outer,1),Vector2(0.440,1),Vector2(0.423,1)]
+	CompactKitSurface.solid(root,key+"fendermount%s/%s"%[side,axle],func(u: float,v: float) -> Vector3:
+		# The surface UVs are float32; quantise cap samples identically so their
+		# endpoint vertices share exact positions with the swept section.
+		var parameter := Vector2(u,v)
+		var angle: float = lerpf(-0.10,PI+0.10,parameter.x)
+		var q: Vector2 = CompactKitSurface.contour(mounting_section,parameter.y,0.0008)
+		var y: float = 0.37+sin(angle)*q.x
+		var z: float = axle+cos(angle)*q.x
+		var rear_offset: float = lerpf(0.018,flare-0.007,clampf((q.x-0.423)/0.017,0,1)) if q.x<0.440 else lerpf(flare-0.007,0.009,(q.x-0.440)/(outer-0.440))
+		var offset: float = lerpf(-embed,rear_offset+0.005,q.y)
+		return Vector3(side*(CompactCoachwork.body_width(y,z)+CompactKits.arch_roll(q.x,axle)+offset),y,z),material,40 if CompactKits.simple_parts else 20,20)
 	if kind in ["rally","gravel","wide"]:
 		for index: int in range(7):
 			var angle: float = lerpf(0.10,PI-0.10,index/6.0)

@@ -1,5 +1,5 @@
 extends SceneTree
-## Dispatch through the real menu: orbit, pinch transitions, bounds and buttons.
+## Dispatch through the real menu: retained orbit/pinch/wheel and removed view buttons.
 var checks: int = 0
 var failures: int = 0
 var output: String = "res://../docs/evidence/garage-view-controls-2026-10-10"
@@ -37,6 +37,8 @@ func screenshot(label: String) -> void:
 
 func _run() -> void:
 	OS.set_environment("BMT_API_URL", "")
+	for argument: String in OS.get_cmdline_user_args():
+		if argument.begins_with("--evidence-root="): output = argument.trim_prefix("--evidence-root=")
 	output = ProjectSettings.globalize_path(output)
 	DirAccess.make_dir_recursive_absolute(output)
 	var directory: String = "user://garage_view_" + TrackLibrary.unique_id()
@@ -128,36 +130,14 @@ func _run() -> void:
 	drag(0,left+Vector2(100,0),Vector2(100,0))
 	check(view.zoom == stable_zoom and view.yaw == old_yaw, "late drag after cancellation is ignored")
 	touch(0,left,false)
-	for name: String in ["GarageZoomIn","GarageZoomOut","GarageResetView"]:
-		var button: Button = app.root_ui.find_child(name,true,false)
-		if name == "GarageResetView":
-			view.rotate_view(Vector2(40,30))
-			view.set_zoom(0.6)
-		check(button.custom_minimum_size.x >= 48 and button.custom_minimum_size.y >= 48, name + " touch size")
-		check(app.root_ui.get_node("MenuPageSwipe")._owns_gesture(app.root_ui,button.get_global_rect().get_center()), name + " gesture ownership")
-		var click := InputEventMouseButton.new()
-		click.position = button.get_global_rect().get_center()
-		click.global_position = click.position
-		click.button_index = MOUSE_BUTTON_LEFT
-		click.pressed = true
-		var hover := InputEventMouseMotion.new()
-		hover.position = click.position
-		hover.global_position = click.position
-		root.push_input(hover,true)
-		await process_frame
-		root.push_input(click,true)
-		await process_frame
-		click = click.duplicate() as InputEventMouseButton
-		click.pressed = false
-		root.push_input(click,true)
-		await process_frame
-		if name == "GarageZoomIn": check(view.zoom < 1.0,"actual zoom-in button")
-		elif name == "GarageZoomOut": check(is_equal_approx(view.zoom,1.0),"actual zoom-out button")
-		else: check(view.yaw == old_yaw and view.elevation == old_elevation and view.zoom == 1.0,"actual reset button")
-	var zoom_button: Control = app.root_ui.find_child("GarageZoomIn",true,false)
-	touch(0,zoom_button.get_global_rect().get_center(),true)
-	touch(0,zoom_button.get_global_rect().get_center(),false)
-	check(view.zoom < 1.0 and app.screen == "garage","touch zoom button without menu navigation")
+	for name: String in ["GarageTopView","GarageZoomIn","GarageZoomOut","GarageResetView"]:
+		check(app.root_ui.find_child(name,true,false)==null,"view control button removed: "+name)
+	check(view.interaction_inset_bottom==0,"former view-button area has no dead gesture strip")
+	var bottom: Vector2 = view.get_global_rect().end-Vector2(40,20)
+	touch(0,bottom,true)
+	drag(0,bottom-Vector2(40,0),Vector2(-40,0))
+	touch(0,bottom-Vector2(40,0),false)
+	check(view.yaw!=old_yaw and app.screen=="garage","bottom of showroom still turns the car without navigating")
 	view.reset_view()
 	touch(0,left,true)
 	view.hide()
@@ -193,8 +173,8 @@ func _run() -> void:
 		view.rotate_view(Vector2(-80,-20))
 		view.set_zoom(1.4)
 		await screenshot("low-wide-" + str(dimensions.x))
-		for name: String in ["GarageZoomIn","GarageZoomOut","GarageResetView"]:
-			check(app.root_ui.get_global_rect().encloses(app.root_ui.find_child(name,true,false).get_global_rect()),name + " within " + str(dimensions))
+		for name: String in ["GarageTopView","GarageZoomIn","GarageZoomOut","GarageResetView"]:
+			check(app.root_ui.find_child(name,true,false)==null,name + " absent at " + str(dimensions))
 	app.queue_free()
 	await process_frame
 	print("GARAGE_VIEW_CONTROLS: %d checks, %d failures" % [checks,failures])

@@ -185,7 +185,12 @@ struct Blend {
         Array keys=points.keys();
         for (int64_t i=0;i<keys.size();++i) {
             int index=int64_t(keys[i]); BlendPiece &piece=pieces[index];
-            piece.points=points[index]; piece.bounds=bounds.get(index,Rect2()); piece.settings=settings.get(index,Dictionary());
+            piece.points=points[index]; piece.bounds=bounds.get(index,Rect2());
+            // The pinned godot-cpp Dictionary move assignment constructs over
+            // its destination without releasing it. Use its releasing copy
+            // assignment so each blend piece drops the initial empty dictionary.
+            const Dictionary piece_settings=settings.get(index,Dictionary());
+            piece.settings=piece_settings;
             Array choices=candidates.get(index,Array());
             for (int64_t j=0;j<choices.size();++j) piece.candidates.push_back(int64_t(choices[j]));
             Array loops=outlines.get(index,Array());

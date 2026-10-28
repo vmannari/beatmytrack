@@ -264,14 +264,14 @@ func refresh_results() -> void:
 		scopes[index].add_theme_stylebox_override("normal",style)
 		scopes[index].add_theme_color_override("font_color",MenuStyle.INK if active else MenuStyle.TEXT)
 		scopes[index].add_theme_color_override("font_focus_color",MenuStyle.INK if active else MenuStyle.TEXT)
-	count_label.text = "%d track%s found" % [matches.size(),"" if matches.size() == 1 else "s"]
+	count_label.text = GameText.plural("{count} track found","{count} tracks found",matches.size())
 	if is_instance_valid(server_pages):
 		if server_pages.total >= 0:
-			count_label.text = "%d track%s found" % [int(server_pages.total),"" if int(server_pages.total) == 1 else "s"]
+			count_label.text = GameText.plural("{count} track found","{count} tracks found",int(server_pages.total))
 			if server_pages.has_method("status_text"): count_label.text = server_pages.status_text()
 		if server_pages.loading: count_label.text = "Searching…"
 		if not server_pages.error.is_empty(): count_label.text = server_pages.error
-	apply_button.text = "SHOW %d TRACK%s" % [matches.size(),"" if matches.size() == 1 else "S"]
+	apply_button.text = GameText.plural("SHOW {count} TRACK","SHOW {count} TRACKS",matches.size())
 	for child: Node in results.get_children():
 		results.remove_child(child)
 		child.queue_free()
@@ -285,10 +285,10 @@ func refresh_results() -> void:
 		empty.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 		results.add_child(empty)
 	more_button.visible = keyboard_height <= 0.0 and matches.size() > shown
-	more_button.text = "+ %d more tracks" % maxi(0,matches.size()-shown)
+	more_button.text = GameText.message("+ %d more tracks") % maxi(0,matches.size()-shown)
 	if is_instance_valid(server_pages) and server_pages.total > matches.size() and shown >= matches.size():
 		more_button.visible = keyboard_height <= 0.0
-		more_button.text = "BROWSE ALL %d MATCHES" % int(server_pages.total)
+		more_button.text = GameText.message("BROWSE ALL %d MATCHES") % int(server_pages.total)
 		if server_pages.has_method("windowed"): more_button.text = "BROWSE MATCHES"
 	_trap_focus()
 
@@ -336,7 +336,8 @@ func _result(entry: Dictionary) -> void:
 		title.add_text(text.substr(offset,query.length()))
 		title.pop()
 		title.add_text(text.substr(offset+query.length()))
-	var creator := MenuStyle.label("by "+str(entry.creator),16,true)
+	var creator := MenuStyle.label("",16,true)
+	GameText.bind(creator,"by {creator}",{"creator":str(entry.creator)})
 	creator.clip_text = true
 	creator.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	info.add_child(creator)

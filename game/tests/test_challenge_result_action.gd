@@ -6,7 +6,7 @@ var app: Node
 var evidence: String = "res://../docs/evidence/results-challenge-setup-2026-10-24/ui/actions"
 
 class ResultApp extends "res://core/app.gd":
-	func _save_result_upload(_completed_game: Node, _ticket_data: Dictionary, _frames: Array, _publish_version: String, _rewinds: Array) -> void:
+	func _save_result_upload(_completed_game: Node, _ticket_data: Dictionary, _frames: Variant, _publish_version: String, _rewinds: Array) -> void:
 		cloud_ticket = {}
 	func _try_race_ad(_finished_game: int, _panel: Control) -> void: pass
 

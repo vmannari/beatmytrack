@@ -45,7 +45,7 @@ func _ready() -> void:
 	for score: int in range(1,6):
 		var button := MenuStyle.button("",choose.bind(score))
 		button.name = "Rate%d" % score
-		button.tooltip_text = "Rate track %d out of 5" % score
+		button.tooltip_text = GameText.message("Rate track %d out of 5") % score
 		button.custom_minimum_size = Vector2(44,44)
 		button.expand_icon = true
 		button.icon_alignment = HORIZONTAL_ALIGNMENT_CENTER

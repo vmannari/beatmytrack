@@ -27,7 +27,7 @@ def dimensions(request, role, window, filters):
         if filters[field]:
             conditions.append(getattr(AnalysisDay, field) == filters[field])
     with request.app.state.studio_reporting.snapshot(
-        request.app.state.session_factory, request_id=request.state.request_id
+        request.app.state.session_factory, request_id=request.state.request_id, window=(first, until)
     ) as (db, storage):
         state = db.get(AnalysisState, 1)
         fields = (AnalysisDay.day, AnalysisDay.build_id, AnalysisDay.platform)

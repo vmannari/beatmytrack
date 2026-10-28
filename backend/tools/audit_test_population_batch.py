@@ -21,7 +21,7 @@ def audit(app, batch_id):
     assert settings.environment == "development" and settings.test_drivers_enabled
     with app.state.session_factory() as session:
         view = batch_view(session, batch_id)
-        assert view["complete"], "Audit requires every requested pair to be verified"
+        assert view["complete"], "Audit requires every requested pair to complete with verified bests"
         data = session.get(OperationState, "test-pop-batch:"+batch_id).details
         jobs = batch_jobs(session, batch_id)
         player_ids = set(data["player_ids"])
@@ -35,6 +35,8 @@ def audit(app, batch_id):
             Board.id.in_({r.board_id for r in runs.values()})))}
         bests = {(p.board_id, p.player_id): p for p in session.scalars(select(PersonalBest).where(
             PersonalBest.board_id.in_(boards), PersonalBest.player_id.in_(player_ids)))}
+        sources = {r.id: r for r in session.scalars(select(Run).where(
+            Run.id.in_({best.run_id for best in bests.values()})))}
         records = []
         for slot, entry in enumerate(data["tracks"]):
             rows = []
@@ -44,7 +46,7 @@ def audit(app, batch_id):
             for job in selected:
                 run = runs[job["run_id"]]
                 board = boards[run.board_id]
-                assert run.status == "verified" and run.player_id == job["player_id"]
+                assert run.status in ("verified", "skipped") and run.player_id == job["player_id"]
                 assert len(run.lap_ticks) == 5 and sum(run.lap_ticks) == run.time_ticks
                 assert run.time_ticks == job["time_ticks"]
                 assert board.version_id == entry["version_id"] and board.vehicle_id == data["vehicle_id"]
@@ -54,19 +56,25 @@ def audit(app, batch_id):
                 assert all(board.manifest.get(field) == vehicle[field]
                            for field in ("handling_version", "config_hash"))
                 best = bests[(board.id, run.player_id)]
+                source = sources[best.run_id]
+                assert source.status == "verified" and source.board_id == board.id and source.player_id == run.player_id
+                assert source.time_ticks == best.time_ticks
                 assert best.time_ticks <= run.time_ticks
                 rows.append({"player_id": run.player_id, "name": players[run.player_id].display_name,
-                             "run_id": run.id, "time_ticks": run.time_ticks,
+                             "run_id": run.id, "status": run.status, "time_ticks": run.time_ticks,
                              "lap_ticks": run.lap_ticks, "pb_time_ticks": best.time_ticks})
             values = [r["time_ticks"] for r in rows]
             records.append({"name": entry["name"], "version_id": entry["version_id"],
-                            "verified_players": len(rows), "personal_bests": len(rows),
+                            "verified_players": sum(r["status"] == "verified" for r in rows),
+                            "completed_players": len(rows), "personal_bests": len(rows),
                             "minimum_ticks": min(values), "median_ticks": statistics.median(values),
                             "maximum_ticks": max(values), "distinct_times": len(set(values)),
                             "records": sorted(rows, key=lambda r: (r["time_ticks"], r["player_id"]))})
         return {"batch_id": batch_id, "test_population": True, "vehicle_id": data["vehicle_id"],
                 "driver_count": len(player_ids), "track_count": len(records),
-                "verified_runs": len(runs), "verified_personal_bests": sum(t["personal_bests"] for t in records),
+                "verified_runs": sum(r.status == "verified" for r in runs.values()),
+                "skipped_runs": sum(r.status == "skipped" for r in runs.values()),
+                "verified_personal_bests": sum(t["personal_bests"] for t in records),
                 "laps_per_run": 5, "ticks_per_second": data["manifest"]["tick_rate"], "tracks": records}
 
 

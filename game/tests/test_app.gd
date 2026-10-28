@@ -58,7 +58,7 @@ func run() -> void:
 	app.cloud.load_cached()
 	# Race now lists backend publications. Seed a cached immutable fixture so
 	# this offline test still exercises real search, selection and racing.
-	var cached_doc: Dictionary = TrackDocument.from_builtin(NativeTrack.read("res://resources/tracks/starter_circuit.json"))
+	var cached_doc: Dictionary = TrackDocument.from_builtin(NativeTrack.read("res://resources/tracks/ellipse.json"))
 	var cached_body: String = JSON.stringify(cached_doc)
 	var cached_hash: String = cached_body.sha256_text()
 	var cached_version: String = "00000000-0000-4000-8000-000000000001"
@@ -524,6 +524,9 @@ func _check_test_drive() -> void:
 func _check_clean_result() -> void:
 	# This fixture targets the result-to-storage boundary. Actual ordered
 	# driving is covered above; it does not claim a second driven race.
+	# MA13 constructs Garage on first visit; explicitly warm it for retention checks.
+	app.call("_show_screen","garage")
+	while app.get("screen") != "garage": await process_frame
 	app._restore_cloud_selection("cloud_fixture-track")
 	var track: NativeTrack = app.get("selected_track")
 	app.call("_show_screen","tracks")

@@ -9,7 +9,7 @@ var viewport: SubViewport
 var image: TextureRect
 var cache_key: String
 
-static func make(category: String, option: Array, chosen: bool, action: Callable) -> CompactKitThumbnail:
+static func make(category: String, option: Array, chosen: bool, action: Callable, painted: bool = false) -> CompactKitThumbnail:
 	var button := CompactKitThumbnail.new()
 	button.name = "KitOption_"+str(option[0])
 	button.custom_minimum_size = Vector2(128,122)
@@ -20,8 +20,8 @@ static func make(category: String, option: Array, chosen: bool, action: Callable
 	button.set_selected(chosen)
 	button.cache_key = category+"/"+str(option[0])+"/kit-preview-8/"+RenderingServer.get_current_rendering_method()
 	button.image = TextureRect.new()
-	button.image.texture = images.get(button.cache_key)
-	if button.image.texture==null and use_prepared:
+	if not painted: button.image.texture = images.get(button.cache_key)
+	if not painted and button.image.texture==null and use_prepared:
 		var path: String = CompactKits.ASSET_ROOT.path_join("previews/"+RenderingServer.get_current_rendering_method()+"/"+category+"_"+str(option[0])+".png")
 		if ResourceLoader.exists(path):
 			button.image.texture = load(path) as Texture2D
@@ -37,8 +37,9 @@ static func make(category: String, option: Array, chosen: bool, action: Callable
 	button.image.offset_left = 4
 	button.image.offset_right = -4
 	button.image.offset_top = 4
-	button.image.offset_bottom = -48
+	button.image.offset_bottom = -46
 	var label := MenuStyle.label(str(option[1]),15)
+	label.name = "KitOptionTitle"
 	label.add_theme_font_override("font",MenuStyle.DISPLAY)
 	label.text_overrun_behavior = TextServer.OVERRUN_TRIM_ELLIPSIS
 	label.mouse_filter = Control.MOUSE_FILTER_IGNORE
@@ -47,13 +48,13 @@ static func make(category: String, option: Array, chosen: bool, action: Callable
 	label.set_anchors_and_offsets_preset(Control.PRESET_BOTTOM_WIDE)
 	label.offset_left = 3
 	label.offset_right = -3
-	label.offset_top = -48
-	label.offset_bottom = -25
-	if button.image.texture == null: button._build_preview(category,str(option[0]))
+	label.offset_top = -45
+	label.offset_bottom = -24
+	if button.image.texture == null and not painted: button._build_preview(category,str(option[0]))
 	return button
 
 func set_selected(chosen: bool) -> void:
-	preload("res://ui/garage_studio_style.gd").tile(self,chosen)
+	preload("res://ui/garage_studio_style.gd").tile(self,chosen,6)
 	add_theme_color_override("font_color",MenuStyle.ACCENT if chosen else MenuStyle.TEXT)
 
 func _ready() -> void:

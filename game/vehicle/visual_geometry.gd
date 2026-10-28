@@ -13,12 +13,13 @@ static func material(color: Color) -> StandardMaterial3D:
 	return result
 
 
-static func batch_static_parts(parent: Node3D) -> void:
+static func batch_static_parts(parent: Node3D, cooperate: Callable = Callable()) -> void:
 	# Keep body suspension, steering pivots and wheel-spin transforms separate.
 	# Only siblings with the same material and shadow mode are combined.
 	var groups: Dictionary = {}
 	for child: Node in parent.get_children():
-		if child is Node3D: batch_static_parts(child)
+		if cooperate.is_valid() and not await cooperate.call(): return
+		if child is Node3D: await batch_static_parts(child,cooperate)
 		if not child is MeshInstance3D or child.get_child_count() != 0: continue
 		var part := child as MeshInstance3D
 		if not part.visible or part.mesh == null or part.mesh.get_surface_count() != 1: continue
@@ -39,6 +40,7 @@ static func batch_static_parts(parent: Node3D) -> void:
 		var first := parts[0] as MeshInstance3D
 		var tool := SurfaceTool.new()
 		for part: MeshInstance3D in parts:
+			if cooperate.is_valid() and not await cooperate.call(): return
 			tool.append_from(part.mesh,0,part.transform)
 		if optimize_model_geometry:tool.index()
 		var combined := MeshInstance3D.new()
@@ -52,7 +54,7 @@ static func batch_static_parts(parent: Node3D) -> void:
 			part.queue_free()
 
 
-static func batch_car_parts(car: CarVisual) -> void:
+static func batch_car_parts(car: CarVisual, cooperate: Callable = Callable()) -> void:
 	# Merge matching fixed parts in each existing GPU transform frame. Steering,
 	# sprung body, wheel rolling and positioned details keep their live nodes.
 	var frames: Array[Node3D] = [car,car.body]
@@ -67,10 +69,12 @@ static func batch_car_parts(car: CarVisual) -> void:
 	for variant: Dictionary in car.paint_variants: protected.append(variant.material)
 	var fixed_materials: Dictionary = {}
 	for frame: Node3D in frames:
+		if cooperate.is_valid() and not await cooperate.call(): return
 		var parts: Array[MeshInstance3D] = []
 		_collect_fixed_parts(frame,frames,parts)
 		var groups: Dictionary = {}
 		for part: MeshInstance3D in parts:
+			if cooperate.is_valid() and not await cooperate.call(): return
 			var surface: Material = part.get_active_material(0)
 			if surface is StandardMaterial3D and surface not in protected:
 				var values: Array = []
@@ -95,6 +99,7 @@ static func batch_car_parts(car: CarVisual) -> void:
 			var bounds := AABB()
 			var initial: bool = true
 			for part: MeshInstance3D in group.parts:
+				if cooperate.is_valid() and not await cooperate.call(): return
 				var pose: Transform3D = part.transform
 				var ancestor: Node3D = part.get_parent()
 				while ancestor != frame:

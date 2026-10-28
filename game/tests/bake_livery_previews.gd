@@ -32,8 +32,8 @@ func _run() -> void:
 		world.add_child(camera)
 		camera.current = true
 		camera.fov = 32.0
-		var factor: float = (1.14 if id == "pickup" else 0.71 if id == "kart" else 0.95)*0.56
-		var target := Vector3(0,0.6,0)
+		var factor: float = (1.15 if id == "forklift" else 1.14 if id == "pickup" else 0.71 if id == "kart" else 0.95)*0.56
+		var target := Vector3(0,1.05 if id == "forklift" else 0.6,0)
 		camera.position = target+Vector3(-5,5,-8)*factor
 		camera.look_at(target)
 		var directory: String = "res://assets/liveries/previews_v2/"+id

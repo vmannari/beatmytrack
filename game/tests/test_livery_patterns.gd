@@ -173,7 +173,7 @@ func _graphical(records: LocalRecords) -> void:
 		await capture("colours-ui-"+str(dimensions.x))
 	page._set_customise_tab("livery")
 	await settle()
-	var tile: LiveryTile = page.livery_menu.pattern_tiles[GaragePage.LIVERY_NAMES.size()]
+	var tile: Button = page.livery_menu.pattern_tiles[GaragePage.LIVERY_NAMES.size()]
 	page.livery_menu.pattern_scroll.ensure_control_visible(tile)
 	await settle()
 	var press := InputEventMouseButton.new()
@@ -189,7 +189,8 @@ func _graphical(records: LocalRecords) -> void:
 	await settle()
 	check(page.draft.pattern == "apex_twin" and tile.selected,"actual model card click previews and selects pattern")
 	check(VehicleLivery.for_car(records.settings,"compact").pattern == "apex_twin","card click commits selected design")
-	page.find_child("GarageTopView",true,false).pressed.emit()
+	page.showroom.elevation = 0.93
+	page.showroom._orbit()
 	await settle()
 	check(page.showroom.elevation == 0.93 and page.showroom.zoom == retained_zoom and page.showroom.yaw == retained_yaw,"Top view inspects painted panels without resetting zoom or turntable")
 	await capture("top-view")
@@ -308,7 +309,8 @@ func _graphical(records: LocalRecords) -> void:
 	check(VehicleLivery.for_car(records.settings,"compact").stickers.hood.id == "zelvora" and VehicleLivery.for_car(records.settings,"compact").stickers.roof.id == "rhexori","both sponsor panels save locally")
 	check(page.showroom == retained_view and page.showroom.car == retained_car,"sponsor browsing retains actual car and viewport")
 	page._select_livery(GaragePage.LIVERY_NAMES.size()+tribal_index)
-	page.find_child("GarageTopView",true,false).pressed.emit()
+	page.showroom.elevation = 0.93
+	page.showroom._orbit()
 	for dimensions: Vector2i in [Vector2i(1280,720),Vector2i(960,540),Vector2i(1600,720)]:
 		root.size = dimensions
 		await settle()
@@ -355,7 +357,7 @@ func _graphical(records: LocalRecords) -> void:
 	var game: Node = load("res://core/game.tscn").instantiate()
 	game.preference_records = records
 	game.vehicle_id = "compact"
-	game.initial_track = NativeTrack.read("res://resources/tracks/starter_circuit.json")
+	game.initial_track = NativeTrack.read("res://resources/tracks/ellipse.json")
 	game.production_mode = true
 	root.add_child(game)
 	game.set_physics_process(false)

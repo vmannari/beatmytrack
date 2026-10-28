@@ -92,6 +92,7 @@ func _row(driver: Dictionary, own: Dictionary, pinned: bool = false) -> Control:
 		var marker: int = display_name.find(" T")
 		if marker >= 0 and display_name.substr(marker+2).contains("-"): display_name = display_name.substr(0,marker)
 	var identity: Label = _label(line,display_name,0,color,"Name")
+	GameText.user_text(identity)
 	if not is_player: preload("res://ui/player_profile.gd").bind_name(identity,func() -> void: player_requested.emit(driver))
 	identity.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	identity.clip_text = true
@@ -125,7 +126,7 @@ func _update_sticky() -> void:
 	var remaining: int = 0
 	for row: Control in rows.get_children():
 		if row.get_global_rect().end.y > scroll.get_global_rect().end.y+0.5: remaining += 1
-	more.text = "↓  %d more drivers" % remaining if remaining > 0 else "↑  Back to top"
+	more.text = GameText.message("↓  %d more drivers") % remaining if remaining > 0 else "↑  Back to top"
 
 func _next_page() -> void:
 	var bar: VScrollBar = scroll.get_v_scroll_bar()

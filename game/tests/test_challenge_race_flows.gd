@@ -3,7 +3,7 @@ extends "res://tests/test_rivalry_start_failure.gd"
 
 class FlowApp extends "res://core/app.gd":
 	var storage_blocked: bool = false
-	func _save_result_upload(_completed_game: Node, _ticket_data: Dictionary, _frames: Array, _publish_version: String, _rewinds: Array) -> void:
+	func _save_result_upload(_completed_game: Node, _ticket_data: Dictionary, _frames: Variant, _publish_version: String, _rewinds: Array) -> void:
 		if not storage_blocked: cloud_ticket = {}
 	func _try_race_ad(_finished_game: int, _panel: Control) -> void: pass
 
@@ -154,6 +154,10 @@ func run() -> void:
 	await app._start_challenge_race()
 	freeze()
 	check(app.game != null and app.challenge_racing and app.game.native_track.content_hash == tracks[0].content_hash,"first 3x3 start uses track one and a challenge ticket")
+	if app.game == null:
+		print("START_FAILURE cloud=",app.cloud.last_error," challenge=",app.challenges.error)
+		quit(1)
+		return
 	var panel: RaceResults = await finish()
 	check(panel != null and panel.find_child("ContinueResultChallenge",true,false) == null,"normal results remove the redundant Continue challenge button")
 	await capture("normal-results")
@@ -343,6 +347,21 @@ func run() -> void:
 		check(app.game == null and not app.challenge_practice,"guest Continue returns to challenge selection")
 		app.online.client._access_token = "isolated-fixture"
 		transport._access_token = "isolated-fixture"
+	# Storage reservations must precede server tickets/limited challenge tries.
+	cloud._ensure_result_saves()
+	var saves: Node = cloud.result_saves
+	var original_sink: Callable = saves.sink
+	saves.sink = Callable(); saves.set_process(false)
+	saves.jobs["blocked-fixture"] = {"frames":PackedInt64Array([0]),"bytes":saves.MAX_BYTES}
+	requests = transport.tickets.size()
+	await app._start_challenge_race()
+	check(transport.tickets.size()==requests and not app.cloud_starting and app.game==null,"full storage blocks challenge start before consuming a server try")
+	app.challenge_practice = false; app.challenge_racing = false
+	app._show_screen("tracks"); app.selected_track = tracks[0]
+	await app._start_race(tracks[0],false,true)
+	check(app.game!=null and app.game.preparation_complete,"full result allowance still permits ordinary offline driving")
+	if app.game!=null: app._leave_race()
+	saves.jobs.clear(); saves.sink = original_sink; saves.set_process(true)
 	app.queue_free()
 	await settle()
 	print("CHALLENGE_RACE_FLOWS: %d checks, %d failures" % [checks,failures])

@@ -96,7 +96,7 @@ func run() -> void:
 	# Execute the actual composition-root callback with rendering disabled.
 	var game: Node = load("res://core/game.tscn").instantiate()
 	game.vehicle_id = "compact"
-	game.initial_track = NativeTrack.read("res://resources/tracks/starter_circuit.json")
+	game.initial_track = NativeTrack.read("res://resources/tracks/ellipse.json")
 	root.add_child(game)
 	game.set_process(false)
 	game.set_physics_process(false)

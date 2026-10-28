@@ -10,7 +10,7 @@ from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 
 from .object_models import ObjectPack, ObjectPartition, PackedObject
 from .pack_io import PackIO
-from .storage import MAX_BLOB_BYTES, canonical_json, decode_blob_json
+from .storage import decode_blob_json, prepare_json
 from .track_models import OperationState, now
 
 PARTITIONS = 16
@@ -31,13 +31,11 @@ class PackedBlobStore:
             self.store.close()
 
     def put_json(self, data):
-        raw = canonical_json(data)
-        if len(raw) > MAX_BLOB_BYTES:
-            raise ValueError("Object exceeds limit")
-        digest = hashlib.sha256(raw).hexdigest()
+        prepared = prepare_json(data)
+        raw, digest = prepared.body, prepared.digest
         encoded = gzip.compress(raw, compresslevel=3, mtime=0)
         if len(encoded) + len(MAGIC) > self.settings.object_pack_bytes:
-            return self.store.put_json(data)
+            return self.store.put_json(prepared)
         stripe = int(digest[:2], 16) % PARTITIONS
         with self.factory() as session:
             session.execute(insert(session)(ObjectPartition).values(id=stripe, pending_bytes=0, lease_until=0, lease_token="", batch=[])

@@ -36,7 +36,7 @@ func run() -> void:
 	for i: int in range(4): await process_frame
 	check(instrument.draw_count > initial,"resizing rebuilds the instrument geometry")
 	panel.free()
-	var track := NativeTrack.read("res://resources/tracks/starter_circuit.json")
+	var track := NativeTrack.read("res://resources/tracks/ellipse.json")
 	var state := VehicleState.new()
 	state.position = track.spawn
 	state.velocity = Vector2(8,30)

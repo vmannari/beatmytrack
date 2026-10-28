@@ -3,6 +3,82 @@ extends RefCounted
 ## nodes, GPU particle ages, trail slots and canonical state remain untouched.
 # Winter breakups use distinct instanced ice/snow shaders and custom-data powder.
 const BATCH_NAMES: Array[String] = ["WoodFragments","LooseHayFragments","SnowChunks","IceShards","SnowPowder","GroundDrifts","BankPowder","AirborneGrains"]
+const Pool = preload("res://vehicle/effect_preparation_pool.gd")
+const POOL_NAME: String = "EffectPreparationPool"
+
+static func prepare(world: Node3D, effects: SandDust, camera: Camera3D, impact: TextureRect, owner: Node, draw: Callable, current: Callable) -> Dictionary:
+	# Keep begin() synchronous for isolated previews. Production draws exactly one
+	# newly bound particle proxy per interval and checks ownership after each await.
+	var prepared: Dictionary = begin(world,null,camera,impact)
+	prepared["complete"] = DisplayServer.get_name() == "headless"
+	if DisplayServer.get_name() == "headless": return prepared
+	if not _current(world,camera,current) or not is_instance_valid(owner): return prepared
+	var pool: Node3D = owner.get_node_or_null(POOL_NAME)
+	if pool == null:
+		pool = Pool.new()
+		pool.name = POOL_NAME
+		owner.add_child(pool)
+	prepared["pool"] = weakref(pool)
+	prepared["initialized"] = {}
+	prepared["reused"] = 0
+	var sources: Array[WeakRef] = []
+	if is_instance_valid(effects) and effects.is_visible_in_tree():
+		for source: Node in effects.get_children():
+			if source is GPUParticles3D and source.is_visible_in_tree(): sources.append(weakref(source))
+	for source_ref: WeakRef in sources:
+		if not _current(world,camera,current) or not is_instance_valid(pool): return prepared
+		var source: GPUParticles3D = source_ref.get_ref()
+		if source == null: return prepared
+		var particles: GPUParticles3D = pool.take("Covered"+str(source.name))
+		if bool(particles.get_meta("preparation_reused",false)): prepared.reused += 1
+		_configure_particle(particles,source,world,camera)
+		# Earlier staged proxies must remain drawable through the later lighting
+		# contexts even when a short-lived particle has already expired.
+		particles.one_shot = false
+		pool.measure(particles)
+		prepared.nodes.append(particles)
+		prepared.particles += 1
+		if not draw.is_valid() or not bool(await draw.call()): return prepared
+		if not _current(world,camera,current): return prepared
+		if is_instance_valid(particles): prepared.initialized[particles.get_instance_id()] = true
+	prepared.complete = true
+	return prepared
+
+static func _current(world: Variant, camera: Variant, current: Callable) -> bool:
+	return is_instance_valid(world) and world.is_inside_tree() and not world.is_queued_for_deletion() and is_instance_valid(camera) and current.is_valid() and bool(current.call())
+
+static func trim_cache(owner: Node) -> void:
+	var pool: Node = owner.get_node_or_null(POOL_NAME)
+	if pool != null: pool.trim()
+
+static func cache_bytes(owner: Node) -> int:
+	var pool: Node = owner.get_node_or_null(POOL_NAME)
+	return int(pool.bytes) if pool != null else 0
+
+static func _configure_particle(particles: GPUParticles3D, source: GPUParticles3D, world: Node3D, camera: Camera3D) -> void:
+	particles.emitting = false
+	particles.name = "Covered"+str(source.name)
+	particles.set_meta("preparation_key",str(particles.name))
+	particles.process_mode = Node.PROCESS_MODE_ALWAYS
+	for property: String in ["lifetime","fixed_fps","fract_delta","interpolate","local_coords","draw_order","collision_base_size","transform_align","cast_shadow","layers"]:
+		particles.set(property,source.get(property))
+	particles.amount = 1
+	particles.one_shot = true
+	particles.explosiveness = 1.0
+	particles.randomness = 0.0
+	particles.preprocess = minf(source.lifetime*0.2,0.05)
+	particles.process_material = source.process_material
+	particles.draw_passes = source.draw_passes
+	for index: int in range(source.draw_passes): particles.set_draw_pass_mesh(index,source.get_draw_pass_mesh(index))
+	particles.visibility_aabb = source.visibility_aabb
+	if particles.get_parent() == null: world.add_child(particles)
+	else: particles.reparent(world,false)
+	particles.transform = Transform3D.IDENTITY
+	particles.global_position = camera.global_position-camera.global_basis.z*maxf(camera.near+1.0,10.0)
+	particles.speed_scale = 1.0
+	particles.show()
+	particles.restart()
+	particles.emitting = true
 
 static func begin(world: Node3D, effects: SandDust, camera: Camera3D, impact: TextureRect = null) -> Dictionary:
 	var prepared: Dictionary = {"nodes":[],"restore":[],"particles":0,"batches":0,"damage_meshes":0,"canvas":0}
@@ -88,5 +164,9 @@ static func end(prepared: Dictionary) -> void:
 			entry.node.visible = entry.visible
 			entry.node.extra_cull_margin = entry.margin
 	for node: Variant in prepared.get("nodes",[]):
-		if is_instance_valid(node): node.free()
+		if not is_instance_valid(node): continue
+		var pool: Node = prepared.pool.get_ref() if prepared.has("pool") else null
+		if node is GPUParticles3D and is_instance_valid(pool):
+			pool.put(node,prepared.get("initialized",{}).has(node.get_instance_id()))
+		else: node.free()
 	prepared.clear()

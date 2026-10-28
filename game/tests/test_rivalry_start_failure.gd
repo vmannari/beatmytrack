@@ -54,9 +54,7 @@ func manifest(track: NativeTrack) -> Dictionary:
 	var engine: Dictionary = Engine.get_version_info()
 	var version: String = "%s.%s.%s.%s.%s.%s" % [engine.major,engine.minor,engine.patch,engine.status,engine.build,str(engine.hash).left(9)]
 	var config: HandlingConfig = VehicleCatalog.config("compact")
-	var values: Dictionary = {}
-	for property: Dictionary in config.get_property_list():
-		if int(property.usage) & PROPERTY_USAGE_SCRIPT_VARIABLE: values[str(property.name)] = config.get(str(property.name))
+	var values: Dictionary = config.snapshot()
 	return {"track_content_hash":track.content_hash,"engine_version":version,"tick_rate":VehicleSimulation.TICK_RATE,"track_schema":TrackDocument.SCHEMA,"replay_schema":"bmt-replay-v1","verifier_version":"canonical-verifier-1","physics_version":VehicleSimulation.PHYSICS_VERSION,"compiler_version":TrackCompiler.VERSION,"rules_key":RaceRules.KEY,"config_hash":JSON.stringify(values,"",true).sha256_text()}
 
 func start_late(done: Dictionary) -> void:

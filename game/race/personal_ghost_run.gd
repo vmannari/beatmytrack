@@ -14,6 +14,14 @@ var poses: Array = [] # tick, x, y, world height, heading, pitch, roll
 var lap_ends: Array[float] = []
 var overflow: bool = false
 
+func snapshot_for_save() -> RefCounted:
+	var copy: RefCounted = load("res://race/personal_ghost_run.gd").new()
+	copy.poses = poses.duplicate()
+	copy.lap_ends = lap_ends.duplicate()
+	copy.overflow = overflow
+	copy.poses.make_read_only(); copy.lap_ends.make_read_only()
+	return copy
+
 func capture(state: VehicleState, session: TrackSession, track: NativeTrack, bridge: BridgeElevation, handling: HandlingConfig, force: bool = false) -> void:
 	if overflow: return
 	if state.tick > MAX_TICKS:

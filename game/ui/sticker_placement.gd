@@ -54,6 +54,7 @@ func _draw() -> void:
 	var projection: Dictionary = LiveryCatalog.projection(vehicle_id)
 	_finish.set_shader_parameter("panel",projection[surface])
 	_finish.set_shader_parameter("bounds",projection.bounds)
+	_finish.set_shader_parameter("rear_panel",vehicle_id == "forklift")
 	var sticker: Dictionary = livery.stickers[surface]
 	_emblem.visible = sticker.id != "none"
 	if sticker.id == "none": return

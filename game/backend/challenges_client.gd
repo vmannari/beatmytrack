@@ -3,6 +3,7 @@ extends Node
 ## Invitations, retry identity and account fences stay outside the simulation.
 signal changed
 var client: Node
+var result_poll_allowed: Callable
 var cloud: Node
 var items: Array[Dictionary] = []
 var selected: Dictionary = {}
@@ -376,6 +377,12 @@ func _mutate(path: String, payload: Dictionary = {}) -> void:
 
 func source(version: String, vehicle: String, ticket_id: String = "") -> Dictionary:
 	var response: Dictionary = await _request("/challenges/sources?version_id="+version.uri_encode()+"&vehicle_id="+vehicle.uri_encode()+("&ticket_id="+ticket_id.uri_encode() if not ticket_id.is_empty() else ""))
+	if response.get("ok",false) and not ticket_id.is_empty() and (response.data.get("status") == "skipped" or (response.data.get("status") == "failed" and response.data.get("retryable",false))):
+		# Choosing this completed run as a new competitive target needs its path
+		# checked. Ordinary non-improving completions never make this request.
+		var requested: Dictionary = await _request("/runs/"+str(response.data.run_id)+"/retry",HTTPClient.METHOD_POST,{})
+		if requested.get("ok",false): return {"run_id":requested.data.run_id,"status":requested.data.status,"ms":null}
+		return {"status":"unavailable","error":friendly(str(requested.get("error","")))}
 	return response.data if response.get("ok",false) else {"status":"unavailable","error":friendly(str(response.get("error","")))}
 
 func ticket(stage_override: int = -1) -> Dictionary:
@@ -451,9 +458,10 @@ func _merge_pending(data: Dictionary) -> Dictionary:
 	return merged if valid_snapshot(merged) else {}
 
 func poll_result() -> void:
-	if _polling or result_ticket.is_empty() or result_state in ["verified","rejected","expired"]: return
+	if result_poll_allowed.is_valid() and not bool(result_poll_allowed.call()): return
+	if _polling or result_ticket.is_empty() or result_state in ["verified","skipped","rejected","expired"]: return
 	var recent: Dictionary = client.recent_run(result_ticket) if client.has_method("recent_run") else {}
-	var confirmed: bool = recent.get("status") == "verified" and _failures == 0
+	var confirmed: bool = recent.get("status") in ["verified","skipped"] and _failures == 0
 	if Time.get_ticks_msec() < _next_poll and not confirmed: return
 	var expected: String = result_ticket
 	var original: String = scope()
@@ -472,7 +480,7 @@ func poll_result() -> void:
 	var data: Dictionary = response.get("data",{}) if response.get("data") is Dictionary else {}
 	var pending_only: bool = data.get("schema") == "bmt-challenge-pending-v1"
 	if pending_only: data.challenge = _merge_pending(data)
-	var valid: bool = response.get("ok",false) and valid_snapshot(data.get("challenge")) and data.get("status") in ["upload_pending","queued","verifying","verified","rejected","failed","expired"]
+	var valid: bool = response.get("ok",false) and valid_snapshot(data.get("challenge")) and data.get("status") in ["upload_pending","queued","verifying","verified","skipped","rejected","failed","expired"]
 	var jitter: int = int(Crypto.new().generate_random_bytes(1)[0])*10
 	_next_poll = Time.get_ticks_msec()+maxi(1000,int(data.get("poll_after_ms",2500)))+jitter
 	if not valid:

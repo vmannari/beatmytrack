@@ -56,10 +56,11 @@ func run() -> void:
 	check(await cloud.queue_run_async({"ticket_id":"proof-fixture","_race_proof":proof},controls),"sparse movement proof persists with the completed result")
 	var proof_job: Dictionary = cloud.upload_job("proof-fixture")
 	var proof_saved: Variant = Cloud._load_replay(cloud.outbox_path().get_base_dir().path_join("runs").path_join(proof_job.replay),proof_job.replay_hash)
-	var proof_wire: Dictionary = preload("res://tests/fixtures/replay_wire_reference.gd").pack(proof_saved.frames,[],true,proof_saved.race_proof)
+	check(not proof_saved.has("frames") and int(proof_saved.input_count)==controls.size(),"new trajectory journal omits unused controls and retains exact count")
+	var proof_wire: Dictionary = preload("res://tests/fixtures/replay_wire_reference.gd").pack(controls,[],true,proof_saved.race_proof)
 	check(proof_wire.get("race_proof",{}) == proof,"saved movement evidence survives the durable round trip after restoring integer wire fields")
 	check(proof_wire.race_proof.samples[0][0] is int and proof_wire.race_proof.samples[0][6] is int,"restored float ticks and layer markers regain integer wire types")
-	check(preload("res://tests/fixtures/replay_wire_reference.gd").pack(proof_saved.frames,[],false,proof_saved.race_proof).race_proof == proof_wire.race_proof,"legacy wire fallback retains the same movement evidence")
+	check(preload("res://tests/fixtures/replay_wire_reference.gd").pack(controls,[],false,proof_saved.race_proof).race_proof == proof_wire.race_proof,"legacy wire fallback retains the same movement evidence")
 	client.remember_run({"ticket_id":"proof-fixture","status":"queued"})
 	await create_timer(0.3).timeout
 	check(client.recent_run("proof-fixture").is_empty(),"pending result cache cannot hide a newly verified finish for three seconds")

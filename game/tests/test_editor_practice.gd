@@ -23,7 +23,7 @@ func run() -> void:
 	for argument: String in OS.get_cmdline_user_args():
 		if argument.begins_with("--capture-practice="):
 			capture_path = argument.trim_prefix("--capture-practice=")
-	var track := NativeTrack.read("res://resources/tracks/starter_circuit.json")
+	var track := NativeTrack.read("res://resources/tracks/ellipse.json")
 	check(track != null, "real native practice fixture loads")
 	if track == null:
 		_finish()
@@ -232,12 +232,12 @@ func _check_creator_proof() -> void:
 		game.call("_physics_process",1.0/120.0)
 		if game.get("practice_validation").finished: break
 	check(game.get("practice_validation").finished,"creator proof completes one ordered lap with input controls")
-	var frames: Array = game.get("online_frames").duplicate(true)
+	var frames: PackedInt64Array = game.get("online_frames").duplicate()
 	check(not frames.is_empty() and frames.size() == sim.state.tick,"practice records every canonical input through completion")
 	game.call("_physics_process",1.0/120.0)
 	check(game.get("online_frames").size() == frames.size(),"proof freezes at completion while practice continues")
 	var output := FileAccess.open("res://../build/creator-practice-proof.json",FileAccess.WRITE)
-	output.store_string(JSON.stringify({"document":document,"replay":{"schema":"bmt-replay-v1","frames":frames,"race_proof":game.race_proof.recording(game.practice_validation)}}))
+	output.store_string(JSON.stringify({"document":document,"replay":{"schema":"bmt-replay-v1","frames":preload("res://race/input_record.gd").legacy(frames),"race_proof":game.race_proof.recording(game.practice_validation)}}))
 	output.close()
 	game.call("restart")
 	check(game.get("online_frames").is_empty(),"restart discards previous proof inputs")

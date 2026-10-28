@@ -41,33 +41,7 @@ static func build(parent: Node3D, object: Dictionary) -> void:
 			var y: float = 0.047+SpeedBumps.HEIGHT*scale_value*pow(cos(x/half.x*PI*0.5),2.0)
 			CreatorBridgeVisual.quad(tool,Vector3(x-0.007*scale_value,y,-half.y),Vector3(x+0.007*scale_value,y,-half.y),Vector3(x+0.007*scale_value,y,half.y),Vector3(x-0.007*scale_value,y,half.y),Color("69633e"))
 	elif object.kind == "jump":
-		var a := Vector3(-half.x,0.04,-half.y)
-		var b := Vector3(half.x,scale_value+0.04,-half.y)
-		var c := Vector3(half.x,scale_value+0.04,half.y)
-		var d := Vector3(-half.x,0.04,half.y)
-		CreatorBridgeVisual.quad(tool,a,b,c,d,Color("777465"))
-		CreatorBridgeVisual.quad(tool,a,Vector3(half.x,0.04,-half.y),b,a,Color("504f45"))
-		CreatorBridgeVisual.quad(tool,d,c,Vector3(half.x,0.04,half.y),d,Color("504f45"))
-		CreatorBridgeVisual.quad(tool,b,Vector3(half.x,0.04,-half.y),Vector3(half.x,0.04,half.y),c,Color("58594f"))
-		# Reinforced steel deck: panel seams follow the existing ramp slope.
-		for row: int in range(1,6):
-			var x: float = lerpf(-half.x,half.x,float(row)/6.0)
-			var y: float = (x/(half.x*2)+0.5)*scale_value+0.048
-			CreatorBridgeVisual.quad(tool,Vector3(x-0.009*scale_value,y,-half.y),Vector3(x+0.009*scale_value,y,-half.y),Vector3(x+0.009*scale_value,y,half.y),Vector3(x-0.009*scale_value,y,half.y),Color("4d5650"))
-		for side: float in [-1.0,1.0]:
-			PropGeometry.beam(tool,Vector3(-half.x,0.06,side*(half.y-0.065)),Vector3(half.x,scale_value+0.055,side*(half.y-0.065)),0.09*scale_value,0.025*scale_value,Color("b3b19a"))
-			for row: int in range(1,6):
-				var x: float = lerpf(-half.x,half.x,float(row)/6.0)
-				var y: float = (x/(half.x*2)+0.5)*scale_value
-				PropGeometry.beam(tool,Vector3(x,0.055,side*half.y),Vector3(x,y,side*half.y),0.065*scale_value,0.014*scale_value,Color("454f49"))
-		# Broad ivory chevron points toward the raised takeoff lip.
-		for side: float in [-1.0,1.0]:
-			var points: Array[Vector2] = [Vector2(-0.8,side*1.5),Vector2(-0.45,side*1.65),Vector2(1.1,0),Vector2(0.6,0)]
-			var v: Array[Vector3] = []
-			for p: Vector2 in points:
-				p *= scale_value
-				v.append(Vector3(p.x,(p.x/(half.x*2)+0.5)*scale_value+0.06,p.y))
-			CreatorBridgeVisual.quad(tool,v[0],v[1],v[2],v[3],Color("ded9bb"))
+		preload("res://track/jump_visual.gd").build(tool,object)
 	else:
 		var color := Color("1c252b") if object.kind == "oil" else Color("476a70")
 		for i: int in range(48):
@@ -98,6 +72,13 @@ static func build(parent: Node3D, object: Dictionary) -> void:
 	var material := ShaderMaterial.new()
 	material.shader = preload("res://track/hazard.gdshader")
 	material.set_shader_parameter("water",object.kind == "puddle")
+	if object.kind == "jump" and JumpProfiles.rounded(JumpProfiles.id(object)):
+		var sand: bool = JumpProfiles.id(object) == "dune_v1"
+		material.shader = preload("res://track/jump_earth.gdshader")
+		material.set_shader_parameter("sand_profile",sand)
+		material.set_shader_parameter("earth_color",TrackTheme.DESERT[0] if sand else Color("89734f"))
+		material.set_shader_parameter("desert_road_albedo",NativeTrackVisual.DESERT_ROAD_ALBEDO)
+		material.set_shader_parameter("desert_road_reference",NativeTrackVisual.desert_road_reference)
 	mesh.material_override = material
 	mesh.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
 	parent.add_child(mesh)

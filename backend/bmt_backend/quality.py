@@ -90,6 +90,7 @@ def report(request: Request, role: Access, window: Window, kind: str = "quality_
             "resolution": "UTC calendar day; partial-day requests include their entire day buckets",
             "coverage": {"enabled": request.app.state.settings.client_quality_enabled,
                 "guest": "unavailable", "crash_stack": "unavailable", "play_vitals": "unavailable",
+                "support_export": "Rebuilt clients offer a user-initiated local report in Settings > Help, including guest/opt-out reports. These reports are not uploaded into this dashboard.",
                 "spatial": "Client 1 Hz observations in 20 m cells; sampled presence, never verified race evidence.",
                 "sampling": "Historical schema-1 segment facts only. Current race capture is one schema-2 package with at most 128 cells and 32 segments; use /race-statistics for current device/OS evidence.",
                 "exit": "Android API 30+ OS process exits; previous process, not proven current-player crash/ANR.",

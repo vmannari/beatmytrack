@@ -60,14 +60,14 @@ func _run() -> void:
 	var menu: GarageLiveryMenu = page.livery_menu
 	var patterns: Control = menu.pattern_scroll
 	var car: CarVisual = page.showroom.car
-	var camera: Transform3D = page.showroom.camera.transform
+	var camera: Transform3D = page._customisation_camera._home
 	page._set_customise_tab("colours")
 	var picker: ColorPickerButton = page.pickers.body
 	for pass_index: int in range(4):
 		for tab: String in ["stickers","livery","colours"]:
 			page._set_customise_tab(tab)
 			check(page.livery_menu==menu and menu.pattern_scroll==patterns,"same native workbench/gallery retained")
-			check(page.showroom.car==car and page.showroom.camera.transform==camera,"menu switch retains actual car/camera")
+			check(page.showroom.car==car and page._customisation_camera._home==camera,"menu switch retains actual car and return-camera while editing focus changes")
 			check(page.pickers.body==picker,"colour picker retained")
 		page._show_section("tuning")
 		page._show_section("customise")

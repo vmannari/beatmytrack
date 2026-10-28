@@ -56,14 +56,14 @@ func _render(result: Dictionary) -> void:
 		return
 	var data: Dictionary = result.data
 	var entitlements: Dictionary = data.entitlements
-	summary.text = "%d publishing slots · %s" % [int(entitlements.publishing_slots),"Forever ad-free" if entitlements.ad_free_forever else ("Ad-free until " + Time.get_datetime_string_from_unix_time(int(entitlements.ad_free_until)).replace("T"," ") + " UTC" if entitlements.ad_free else "Ads enabled")]
+	summary.text = GameText.message("%d publishing slots · %s") % [int(entitlements.publishing_slots),"Forever ad-free" if entitlements.ad_free_forever else ("Ad-free until " + Time.get_datetime_string_from_unix_time(int(entitlements.ad_free_until)).replace("T"," ") + " UTC" if entitlements.ad_free else "Ads enabled")]
 	message.text = "Simulation only. Published slots stay consumed; ad-free access includes up to three rewinds per race."
 	if adapter.has_pending_request():
 		var retry: Button = MenuStyle.button("Retry saved purchase",_retry,true)
 		retry.name = "RetrySimulatedPurchase"
 		rows.add_child(retry)
 	for product: Dictionary in data.products:
-		var button: Button = MenuStyle.button("Simulate %s · €%s" % [product.title,product.price_eur],_purchase.bind(str(product.id)),true)
+		var button: Button = MenuStyle.button(GameText.message("Simulate %s · €%s") % [product.title,product.price_eur],_purchase.bind(str(product.id)),true)
 		button.name = "Simulate_"+str(product.id)
 		button.disabled = not bool(product.get("enabled",true)) or adapter.has_pending_request() or (bool(entitlements.ad_free_forever) and str(product.id).begins_with("ad_free"))
 		rows.add_child(button)

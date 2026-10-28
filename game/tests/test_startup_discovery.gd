@@ -9,7 +9,7 @@ func run() -> void:
 	root.add_child(client)
 	client.configure("http://127.0.0.1:1")
 	client._capabilities = {"discovery_paging_version":3}
-	client.document = TrackDocument.from_builtin(NativeTrack.read("res://resources/tracks/starter_circuit.json"))
+	client.document = TrackDocument.from_builtin(NativeTrack.read("res://resources/tracks/ellipse.json"))
 	client.hash_value = JSON.stringify(client.document).sha256_text()
 	var cloud := Cloud.new()
 	cloud.client = client
@@ -30,7 +30,7 @@ func run() -> void:
 	browser.library = TrackLibrary.new(folder.path_join("drafts"))
 	browser.records = LocalRecords.new(folder.path_join("records.json"))
 	browser.catalog = TrackCatalog.new(browser.library)
-	browser.selected_track = NativeTrack.read("res://resources/tracks/starter_circuit.json")
+	browser.selected_track = NativeTrack.read("res://resources/tracks/ellipse.json")
 	browser.cloud = cloud
 	browser.state = {}
 	root.add_child(browser)
@@ -70,7 +70,7 @@ func run() -> void:
 	warm.library = browser.library if is_instance_valid(browser) else TrackLibrary.new(folder.path_join("drafts"))
 	warm.records = LocalRecords.new(folder.path_join("records.json"))
 	warm.catalog = TrackCatalog.new(warm.library)
-	warm.selected_track = NativeTrack.read("res://resources/tracks/starter_circuit.json")
+	warm.selected_track = NativeTrack.read("res://resources/tracks/ellipse.json")
 	warm.cloud = reopened
 	warm.state = {}
 	root.add_child(warm)

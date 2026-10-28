@@ -7,7 +7,7 @@ func run() -> void:
 	var browser := TrackBrowser.new()
 	browser.library = library
 	browser.records = LocalRecords.new("user://unused-menu-profile-records.json")
-	browser.selected_track = NativeTrack.read("res://resources/tracks/starter_circuit.json")
+	browser.selected_track = NativeTrack.read("res://resources/tracks/ellipse.json")
 	browser.state = {"section":"all","page":0}
 	browser.size = Vector2(1280,620)
 	root.add_child(browser)

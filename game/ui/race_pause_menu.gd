@@ -85,13 +85,12 @@ func show_main() -> void:
 	_row("Settings","Camera, sound and controls","gear",_settings)
 	if hud.map_track != null and hud.map_track.metadata.has("cloud_version") and is_instance_valid(hud.community_client):
 		_row("Report track","Send a private content report","flag",func() -> void: preload("res://ui/community_safety_ui.gd").open(self,hud.community_client,"report",preload("res://ui/community_safety_ui.gd").track_target(hud.map_track)))
-		_row("Track creator","Report or block this player","flag",func() -> void: preload("res://ui/community_safety_ui.gd").open(self,hud.community_client,"player",preload("res://ui/community_safety_ui.gd").track_target(hud.map_track)))
 	_row("Help","Driving tips and controls","help",_help)
 	column.add_child(HSeparator.new())
 	_row("Quit","Return to garage" if hud.free_drive_mode else "Return to editor" if hud.editor_test else "Return to main menu","quit",func() -> void: hud.exit_requested.emit(),Color("ef6268"))
 
 func _row(title: String, subtitle: String, icon: String, action: Callable, accent: Color = Color("91a8b8")) -> Button:
-	var button := Button.new()
+	var button := preload("res://ui/content_fit_button.gd").new()
 	button.name = title.replace(" ","")
 	button.custom_minimum_size = Vector2(0,70)
 	button.pressed.connect(action)
@@ -106,13 +105,20 @@ func _row(title: String, subtitle: String, icon: String, action: Callable, accen
 		style.border_color = accent if title in ["Resume","Quit"] or state == "hover" else Color("203746")
 		button.add_theme_stylebox_override(state,style)
 	column.add_child(button)
+	# Button children do not contribute to its minimum size. Let the padded
+	# content determine the row height after fonts or wrapped text change.
+	var content := MarginContainer.new()
+	content.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+	content.add_theme_constant_override("margin_left",18)
+	content.add_theme_constant_override("margin_right",18)
+	content.add_theme_constant_override("margin_top",10)
+	content.add_theme_constant_override("margin_bottom",10)
+	content.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	button.add_child(content)
 	var row := HBoxContainer.new()
-	row.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
-	row.offset_left = 18
-	row.offset_right = -18
 	row.add_theme_constant_override("separation",18)
 	row.mouse_filter = Control.MOUSE_FILTER_IGNORE
-	button.add_child(row)
+	content.add_child(row)
 	var glyph := TextureRect.new()
 	glyph.texture = preload("res://ui/icons/rewind.svg") if icon == "restart" else MenuIcon.texture(icon)
 	# Mirror the return arrow for a clockwise restart, distinct from rewind.
@@ -126,9 +132,11 @@ func _row(title: String, subtitle: String, icon: String, action: Callable, accen
 	var words := VBoxContainer.new()
 	words.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	words.alignment = BoxContainer.ALIGNMENT_CENTER
+	words.add_theme_constant_override("separation",2)
 	words.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	row.add_child(words)
 	var heading := MenuStyle.label(title,24)
+	heading.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 	if title == "Resume": heading.add_theme_color_override("font_color",MenuStyle.INK)
 	heading.add_theme_font_override("font",MenuStyle.DISPLAY)
 	words.add_child(heading)
@@ -141,6 +149,7 @@ func _row(title: String, subtitle: String, icon: String, action: Callable, accen
 	arrow.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
 	row.add_child(arrow)
 	for label: Control in [heading,description,arrow]: label.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	button.watch_content(content,70)
 	return button
 
 func _help() -> void:

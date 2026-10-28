@@ -22,12 +22,13 @@ func button(node: Node, title: String) -> Button:
 	return null
 
 func run() -> void:
+	OS.set_environment("BMT_API_URL","")
 	capture = "--capture" in OS.get_cmdline_user_args()
 	root.size = Vector2i(1280,720)
 	var folder: String = "user://retirement_"+TrackLibrary.unique_id()
 	DirAccess.make_dir_recursive_absolute(folder)
 	var records := LocalRecords.new(folder+"/records.json")
-	records.settings["last_track"] = "slicks_freeway_test"
+	records.settings["last_track"] = "starter_circuit"
 	records.settings["favorites"] = ["slicks_1way_test"]
 	check(records.save_records() == OK,"existing preferences saved for retirement regression")
 	app = load("res://core/app.tscn").instantiate()
@@ -37,8 +38,10 @@ func run() -> void:
 	root.add_child(app)
 	while not app.startup_complete: await process_frame
 	app.online.client.configure("")
-	check(app.get("selected_track").identity == "starter_circuit","removed last-track selection falls back to original starter")
-	check(BuiltinTracks.ids() == ["starter_circuit"],"playable catalog contains no retired collection")
+	check(app.get("selected_track").identity == "ellipse","retired Starter Circuit preference falls back to Ellipse")
+	check(BuiltinTracks.ids() == ["ellipse","storm_freight","storm_switchyard","storm_timber","storm_quarry","storm_floodgate"],"playable catalog contains Ellipse and five original Storm circuits with no retired collection")
+	check(records.settings.last_track == "starter_circuit" and records.settings.favorites == ["slicks_1way_test"],"retirement preserves old preferences on disk")
+	check(BuiltinTracks.metadata("starter_circuit").is_empty() and not FileAccess.file_exists("res://resources/tracks/starter_circuit.json"),"Starter Circuit is absent from the native catalogue and resources")
 	for filename: String in DirAccess.open("res://resources/tracks").get_files():
 		check(not filename.begins_with("slicks_"),"runtime resource directory excludes legacy tracks")
 	var retired: Dictionary = TrackDocument.create_default()
@@ -54,8 +57,12 @@ func run() -> void:
 	for frame: int in range(8): await process_frame
 	var browser: TrackBrowser = app.get("root_ui").find_child("TrackBrowser",true,false)
 	while browser.loading: await process_frame
+	if not browser.matches.is_empty():
+		var sources: Dictionary = {}
+		for entry: Dictionary in browser.matches: sources[str(entry.get("source","unknown"))] = int(sources.get(str(entry.get("source","unknown")),0))+1
+		print("RETIREMENT_CATALOG: ",sources," api_configured=",not app.online.client.base_url().is_empty())
 	check(browser.matches.is_empty(),"isolated cloud-only Race has no publications and excludes the retired local remix")
-	check(button(app.get("root_ui"),"Delete track") == null,"bundled starter cannot be deleted as a user track")
+	check(button(app.get("root_ui"),"Delete track") == null,"bundled Ellipse cannot be deleted as a user track")
 	await screenshot("library")
 	var doc: Dictionary = TrackDocument.create_blank()
 	doc.id = "automatic_route"

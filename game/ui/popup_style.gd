@@ -12,6 +12,8 @@ var close_button: Button
 var header_action: Control
 var body: VBoxContainer
 var message: Label
+var message_scroll: ScrollContainer
+var message_padding: StyleBoxEmpty
 var shade_layer: CanvasLayer
 var shade: ColorRect
 var prior_focus: WeakRef
@@ -63,6 +65,7 @@ func _ready() -> void:
 	window.about_to_popup.connect(_opening)
 	window.visibility_changed.connect(_visibility_changed)
 	window.size_changed.connect(_layout.call_deferred)
+	window.get_parent().get_viewport().size_changed.connect(_layout.call_deferred)
 	window.borderless = true
 	window.transparent_bg = true
 	window.transparent = true
@@ -73,6 +76,7 @@ func _process(_delta: float) -> void:
 	if message != null and message.text != window.dialog_text:
 		message.text = window.dialog_text
 		message.visible = not window.dialog_text.is_empty()
+		_layout.call_deferred()
 
 func _prepare() -> void:
 	if prepared: return
@@ -81,7 +85,7 @@ func _prepare() -> void:
 	if not forms:
 		# Avoid zero-width wrapping expanding a message window before first layout.
 		window.wrap_controls = false
-		window.min_size = Vector2i(820,380)
+		window.min_size = Vector2i.ZERO
 		window.size = Vector2i(820,380)
 	var content: Array[Control] = []
 	if not window is FileDialog:
@@ -90,13 +94,22 @@ func _prepare() -> void:
 		body = VBoxContainer.new()
 		body.name = "PopupBody"
 		body.add_theme_constant_override("separation",14)
-		window.add_child(body)
+		if forms:
+			window.add_child(body)
+		else:
+			message_scroll = ScrollContainer.new()
+			message_scroll.name = "PopupMessageScroll"
+			message_scroll.horizontal_scroll_mode = ScrollContainer.SCROLL_MODE_DISABLED
+			window.add_child(message_scroll)
+			message_scroll.add_child(body)
+			body.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 		message = MenuStyle.label(window.dialog_text,19,true)
 		message.name = "PopupMessage"
 		message.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
-		if not window.dialog_text.is_empty(): message.custom_minimum_size.x = 380
+		if forms and not window.dialog_text.is_empty(): message.custom_minimum_size.x = 380
 		message.visible = not window.dialog_text.is_empty()
 		body.add_child(message)
+		if not forms: message.minimum_size_changed.connect(_layout.call_deferred)
 		for control: Control in content: control.reparent(body)
 		window.get_label().hide()
 		window.dialog_autowrap = true
@@ -106,6 +119,7 @@ func _prepare() -> void:
 	padding.content_margin_top = 88 if forms else 128
 	padding.content_margin_bottom = 24
 	window.add_theme_stylebox_override("panel",padding)
+	if not forms: message_padding = padding
 	window.add_theme_constant_override("buttons_min_height",56)
 	window.add_theme_constant_override("buttons_min_width",110)
 	window.add_theme_constant_override("buttons_separation",18)
@@ -172,7 +186,7 @@ func _opening() -> void:
 		message.visible = not window.dialog_text.is_empty()
 	header.text = window.title if window.title not in ["","Alert!","Please Confirm..."] else "Please confirm" if window is ConfirmationDialog else "Please note"
 	var title: String = header.text.to_lower()
-	var icon: String = "folder" if window is FileDialog or title.contains("import") else "delete" if title.contains("delete") or title.contains("discard") else "person" if title.contains("country") else "trophy" if (title.contains("scores") or title.contains("ranking")) else "star" if title.contains("rate") else "publish" if title.contains("uploads") else "target" if title.contains("challenge") else "edit" if forms else "help" if window is ConfirmationDialog else "check"
+	var icon: String = "folder" if window is FileDialog or title.contains("import") else "delete" if title.contains("delete") or title.contains("discard") else "person" if title.contains("country") or title.contains("profile") else "trophy" if (title.contains("scores") or title.contains("ranking")) else "star" if title.contains("rate") else "publish" if title.contains("uploads") else "target" if title.contains("challenge") else "edit" if forms else "help" if window is ConfirmationDialog else "check"
 	symbol.texture = MenuIcon.texture(icon,true)
 	_style_actions()
 	if not is_instance_valid(shade_layer):
@@ -196,6 +210,7 @@ func _center() -> void:
 
 func _layout() -> void:
 	if not prepared or not is_instance_valid(window) or not window.is_inside_tree(): return
+	if not forms: _layout_message()
 	var extent: Vector2 = Vector2(window.size)
 	art.size = extent
 	(art.material as ShaderMaterial).set_shader_parameter("panel_size",extent)
@@ -204,14 +219,44 @@ func _layout() -> void:
 	if is_instance_valid(header_action):
 		header_action.position = close_button.position-Vector2(58,0)
 		header_action.size = Vector2(52,52)
-	header.position = Vector2(86,24) if forms else Vector2(340,42)
-	header.size = Vector2(maxf(120,extent.x-header.position.x-76),60)
+	if forms:
+		header.position = Vector2(86,24)
+		header.size = Vector2(maxf(120,extent.x-header.position.x-76),60)
 	if is_instance_valid(header_action): header.size.x = maxf(120,header.size.x-58)
-	symbol.size = Vector2(38,38) if forms else Vector2(140,140)
-	symbol.position = Vector2(30,24) if forms else Vector2(92,extent.y*0.45-70)
+	if forms:
+		symbol.size = Vector2(38,38)
+		symbol.position = Vector2(30,24)
 	var actions: Control = window.get_ok_button().get_parent()
-	actions.position.x = 28
-	actions.size.x = extent.x-56
+	actions.position.x = 28 if forms else message_padding.content_margin_left
+	actions.size.x = extent.x-actions.position.x-(28 if forms else message_padding.content_margin_right)
+	if not forms and window.visible: _center()
+
+func _layout_message() -> void:
+	# Measure wrapped copy instead of letting a fixed-height native body cover its actions.
+	var available: Vector2 = window.get_parent().get_viewport().get_visible_rect().size-Vector2(32,32)
+	var width: float = minf(820,available.x)
+	var actions: Control = window.get_ok_button().get_parent()
+	var compact: bool = width < 760 or actions.get_combined_minimum_size().x > width-376
+	var short_window: bool = available.y < 440
+	var left: float = 28 if compact else 340
+	var right: float = 28 if compact else 36
+	header.add_theme_font_size_override("font_size",28 if short_window else 32 if compact else 40)
+	header.position = Vector2(left,24) if short_window else Vector2(86,24) if compact else Vector2(left,42)
+	header.size = Vector2(maxf(1,width-header.position.x-76),0)
+	header.size.y = maxf(60,header.get_minimum_size().y)
+	var top: float = ceilf(header.position.y+header.size.y+24)
+	message_padding.content_margin_left = left
+	message_padding.content_margin_right = right
+	message_padding.content_margin_top = top
+	var scrollbar_width: float = message_scroll.get_v_scroll_bar().get_combined_minimum_size().x if message_scroll.get_v_scroll_bar().visible else 0
+	body.size.x = width-left-right-scrollbar_width
+	message.size.x = body.size.x
+	var action_height: float = maxf(56,actions.get_combined_minimum_size().y)
+	var height: float = minf(available.y,maxf(380,top+body.get_combined_minimum_size().y+24+action_height+24))
+	window.size = Vector2i(ceili(width),ceili(height))
+	symbol.visible = not short_window
+	symbol.size = Vector2(38,38) if compact else Vector2(140,140)
+	symbol.position = Vector2(30,24) if compact else Vector2(92,height*0.45-70)
 
 func _visibility_changed() -> void:
 	if window.visible:

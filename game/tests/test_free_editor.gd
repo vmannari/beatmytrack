@@ -136,6 +136,9 @@ func _ui(doc: Dictionary) -> void:
 	check(root.get_visible_rect().encloses(tools_panel.get_global_rect()),"tool overlay fits viewport")
 	await _capture("fullscreen-tools")
 	tools_panel.hide()
+	# Swapping native previews above also rebuilds the visible editor world.
+	# Finish that existing input gate before testing physical paint gestures.
+	await _wait_preview(app)
 
 	canvas.protect_road = false # This scenario deliberately paints over the existing road.
 	canvas.brush_surface = 2; canvas.brush_width = 8
@@ -147,13 +150,13 @@ func _ui(doc: Dictionary) -> void:
 	canvas._gui_input(drag)
 	check(canvas.document.paint.is_empty(),"brush gesture stays transient until release")
 	touch.pressed = false; canvas._gui_input(touch)
-	while app.editor_preview_thread != null: await process_frame
+	await _wait_preview(app)
 	check(canvas.document.paint.size() == 1 and canvas.native_preview.cell_at(Vector2(0,-5)) == 2,"one finger paints a continuous physical stroke")
 	check((app.get("history") as Array).size() == 1,"a full brush gesture creates one undo entry")
 	app.call("_undo")
 	check((app.get("document") as Dictionary).paint.is_empty(),"undo removes a complete stroke")
 	app.call("_redo")
-	while app.editor_preview_thread != null: await process_frame
+	await _wait_preview(app)
 	await process_frame
 	canvas = app.get("canvas")
 	check(canvas.document.paint.size() == 1,"redo restores a complete stroke")
@@ -177,7 +180,7 @@ func _ui(doc: Dictionary) -> void:
 	check(TrackCompiler.compile(library.import_document(folder+"/exchange.json")).content_hash == canvas.native_preview.content_hash,"export/import preserves physical painted map")
 	app.call("_save_track_explicit")
 	await _capture("free-editor-saved")
-	var starter := NativeTrack.read("res://resources/tracks/starter_circuit.json")
+	var starter := NativeTrack.read("res://resources/tracks/ellipse.json")
 	var remix: Dictionary = TrackDocument.from_builtin(starter)
 	check(library.save_wip(remix) == OK,"starter remix is saved for current draft workflow")
 	app.call("_show_screen","drafts")
@@ -194,7 +197,7 @@ func _ui(doc: Dictionary) -> void:
 	canvas = app.get("canvas")
 	await _wait_preview(app)
 	check(canvas != null and canvas.document.id == remix.id,"Load track opens the saved starter remix")
-	check(canvas.native_preview.cells == NativeTrack.read("res://resources/tracks/starter_circuit.json").cells,"starter editing preserves native map geometry")
+	check(canvas.native_preview.cells == NativeTrack.read("res://resources/tracks/ellipse.json").cells,"starter editing preserves native map geometry")
 	# The preview dialog is owned by root app; close it before remix evidence.
 	for child: Node in app.get_children():
 		if child is Window: child.queue_free()
@@ -215,5 +218,5 @@ func _capture(name: String) -> void:
 
 func _wait_preview(app: Node) -> void:
 	var deadline: int = Time.get_ticks_msec()+15000
-	while app.editor_preview_thread != null and Time.get_ticks_msec()<deadline: await process_frame
-	check(app.editor_preview_thread == null and app.canvas.native_preview != null,"opened track collision preparation completes before native-grid editing assertions")
+	while (app.editor_commits.unsettled() or app.editor_preview_thread != null or app.canvas.preparing) and Time.get_ticks_msec()<deadline: await process_frame
+	check(not app.editor_commits.unsettled() and app.editor_preview_thread == null and app.canvas.native_preview != null and not app.canvas.preparing,"track commits, collision and visible world preparation finish before editing gestures")

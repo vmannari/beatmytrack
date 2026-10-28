@@ -144,7 +144,11 @@ func _browser_controls(parent: Control) -> void:
 	toggle.name = "ChallengeToggleFilters"
 	toggle.disabled = false
 	_mode = _choice(filters,"ChallengeModeFilter",["All formats","Time attack","Group race","3×3 series"],["all","beat","group","3x3"],mode_filter)
-	_vehicle = _choice(filters,"ChallengeCarFilter",["All cars","Compact","Pickup","Classic","Formula","Kart"],["","compact","pickup","classic","formula","kart"],vehicle_filter)
+	var car_names: Array[String] = ["All cars"]
+	var car_ids: Array[String] = [""]
+	car_names.append_array(VehicleCatalog.CLASSES)
+	car_ids.append_array(VehicleCatalog.IDS)
+	_vehicle = _choice(filters,"ChallengeCarFilter",car_names,car_ids,vehicle_filter)
 	_sort = _choice(filters,"ChallengeSort",["Ending soon","Newest first"] if folder in ["discover","friends"] else ["Newest first"],["ending","newest"] if folder in ["discover","friends"] else ["newest"],sort_order)
 	if not search.is_empty() or mode_filter != "all" or not vehicle_filter.is_empty():
 		var clear := _action(filters,"Clear",_clear_filters)
@@ -404,10 +408,11 @@ func _hub_detail(parent: Control) -> void:
 	var space := Control.new()
 	space.size_flags_vertical = Control.SIZE_EXPAND_FILL
 	identity.add_child(space)
-	var heading := MenuStyle.label(str(_stage_data().entry.name),32)
+	var heading := MenuStyle.user_label(str(_stage_data().entry.name),32)
 	heading.text_overrun_behavior = TextServer.OVERRUN_TRIM_ELLIPSIS
 	identity.add_child(heading)
-	var creator := MenuStyle.label("by "+str(selected.creator),15,true)
+	var creator := MenuStyle.label("",15,true)
+	GameText.bind(creator,"by {creator}",{"creator":str(selected.creator)})
 	creator.text_overrun_behavior = TextServer.OVERRUN_TRIM_ELLIPSIS
 	identity.add_child(creator)
 	var route := LapRouteView.new()
@@ -443,7 +448,7 @@ func _hub_detail(parent: Control) -> void:
 		if target != null:
 			var difference: int = int(own.ms)-int(target)
 			var shared_lead: bool = selected.mode != "beat" and selected.standings.any(func(row: Dictionary) -> bool: return row.get("ms") != null and int(row.ms) == int(target) and str(row.id) != str(selected.self_id))
-			var gap := MenuStyle.label("Target beaten" if difference < 0 and selected.mode == "beat" else "Joint lead" if difference == 0 and shared_lead else "You lead" if difference == 0 and selected.mode != "beat" else "Tied with target" if difference == 0 else "%+.3f s" % (float(difference)/1000.0),18,true)
+			var gap := MenuStyle.label("Target beaten" if difference < 0 and selected.mode == "beat" else "Joint lead" if difference == 0 and shared_lead else "You lead" if difference == 0 and selected.mode != "beat" else "Tied with target" if difference == 0 else GameText.message("%+.3f s") % (float(difference)/1000.0),18,true)
 			gap.name = "ChallengePersonalGap"
 			if difference < 0 or (difference == 0 and selected.mode != "beat"): gap.add_theme_color_override("font_color",MenuStyle.POSITIVE)
 			personal.add_child(gap)
@@ -453,8 +458,8 @@ func _hub_detail(parent: Control) -> void:
 	car.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	facts.add_child(car)
 	if _stage_data().get("attempt_limit") != null:
-		facts.add_child(MenuStyle.label("%d tries left" % int(_stage_data().attempts_remaining),16,true))
-	facts.add_child(MenuStyle.label("%d / %d drivers" % [selected.standings.size(),int(selected.get("capacity",2 if selected.mode == "beat" else 20))],16,true))
+		facts.add_child(MenuStyle.label(GameText.plural("{count} try left","{count} tries left",int(_stage_data().attempts_remaining)),16,true))
+	facts.add_child(MenuStyle.label(GameText.message("%d / %d drivers") % [selected.standings.size(),int(selected.get("capacity",2 if selected.mode == "beat" else 20))],16,true))
 	var heading_gutter := MarginContainer.new()
 	heading_gutter.add_theme_constant_override("margin_left",6)
 	heading_gutter.add_theme_constant_override("margin_right",30)
@@ -554,7 +559,7 @@ func _reward_caption(item: Dictionary) -> String:
 	if item.state != "active": return "Challenge ended"
 	if not rewards.get("eligible",false): return "Daily reward limit reached"
 	var amount: int = (0 if rewards.get("finish_earned",false) else int(rewards.get("finish",0)))+(0 if rewards.get("goal_earned",false) else int(rewards.get("goal",0)))
-	return "Up to %d Coins" % amount
+	return GameText.message("Up to %d Coins") % amount
 
 func _reward_strip(parent: Control, item: Dictionary) -> void:
 	var rewards: Dictionary = item.get("rewards",{})
@@ -585,10 +590,10 @@ func _reward_strip(parent: Control, item: Dictionary) -> void:
 		heading.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 		heading.text_overrun_behavior = TextServer.OVERRUN_TRIM_ELLIPSIS
 		lines.add_child(heading)
-		var amount := MenuStyle.label("Earned" if earned else "Ended" if item.state != "active" else "Daily limit" if signed_in and not rewards.get("eligible",false) else "+%d Coins" % int(rewards.get("finish" if index == 0 else "goal",0)),23)
+		var amount := MenuStyle.label("Earned" if earned else "Ended" if item.state != "active" else "Daily limit" if signed_in and not rewards.get("eligible",false) else GameText.message("+%d Coins") % int(rewards.get("finish" if index == 0 else "goal",0)),23)
 		amount.add_theme_color_override("font_color",MenuStyle.POSITIVE if earned else MenuStyle.ACCENT)
 		lines.add_child(amount)
-	goals.tooltip_text = "Rewards once per challenge · %d more reward challenges today" % int(rewards.get("remaining_today",0))
+	goals.tooltip_text = GameText.message("Rewards once per challenge · %d more reward challenges today") % int(rewards.get("remaining_today",0))
 	var explanation := MenuStyle.label("Sign in to earn Coins for verified races." if not signed_in else "Daily reward limit reached. Return tomorrow for more Coins.",14,true)
 	explanation.name = "ChallengeRewardRules"
 	explanation.visible = not signed_in or not rewards.get("eligible",false)
@@ -623,7 +628,7 @@ func _remaining_text(item: Dictionary) -> String:
 	var remaining: int = maxi(0,int(item.ends_at)-int(item.server_now)-(Time.get_ticks_msec()-_received_at)/1000)
 	if remaining == 0: return "Ending"
 	if remaining < 60: return "<1m left"
-	return "%dd %02dh left" % [remaining/86400,(remaining%86400)/3600] if remaining >= 86400 else "%dh %02dm left" % [remaining/3600,(remaining%3600)/60]
+	return GameText.message("%dd %02dh left") % [remaining/86400,(remaining%86400)/3600] if remaining >= 86400 else GameText.message("%dh %02dm left") % [remaining/3600,(remaining%3600)/60]
 
 func _detail(parent: Control) -> void:
 	var results := preload("res://ui/challenge_result_view.gd").new()
@@ -647,7 +652,7 @@ func _update_clock() -> void:
 		_clock.text = _remaining_text(selected)
 		return
 	var remaining: int = maxi(0,int(selected.ends_at)-int(selected.server_now)-(Time.get_ticks_msec()-_received_at)/1000)
-	_clock.text = str(selected.state).capitalize() if selected.state != "active" else "%dd %02dh" % [remaining/86400,(remaining%86400)/3600] if remaining >= 86400 else "%02dh %02dm" % [remaining/3600,(remaining%3600)/60]
+	_clock.text = str(selected.state).capitalize() if selected.state != "active" else GameText.message("%dd %02dh") % [remaining/86400,(remaining%86400)/3600] if remaining >= 86400 else GameText.message("%02dh %02dm") % [remaining/3600,(remaining%3600)/60]
 
 func _action(parent: Control, title: String, action: Callable, primary: bool = false) -> Button:
 	var button := MenuStyle.button(title,action,primary)

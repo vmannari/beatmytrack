@@ -167,7 +167,7 @@ func _race_details() -> void:
 		personal.add_child(badge)
 		_label(badge,"NEW PB",19,MenuStyle.INK).add_theme_font_override("font",MenuStyle.DISPLAY)
 		if previous > 0.0:
-			_label(personal,"-%.3f s" % (previous-int(result.ms)/1000.0),25,GREEN,"RivalryResultImprovement")
+			_label(personal,GameText.message("-%.3f s") % (previous-int(result.ms)/1000.0),25,GREEN,"RivalryResultImprovement")
 	if previous > 0.0:
 		_label(column,"Previous best: "+MenuStyle.time_text(previous),17,MenuStyle.MUTED,"RivalryResultPrevious")
 	var spacer := Control.new()
@@ -183,9 +183,9 @@ func _track_facts(parent: Control, theme_id: String) -> void:
 	facts.add_theme_constant_override("separation",12)
 	parent.add_child(facts)
 	var laps: int = int(details.get("laps",RaceRules.LAPS))
-	_fact(facts,MenuIcon.texture("resume"),"%d LAPS" % laps)
+	_fact(facts,MenuIcon.texture("resume"),GameText.message("%d LAPS") % laps)
 	if float(details.get("distance_m",0)) > 0.0:
-		_fact(facts,_fact_texture("road"),"%.2f KM" % (float(details.distance_m)/1000.0))
+		_fact(facts,_fact_texture("road"),GameText.message("%.2f KM") % (float(details.distance_m)/1000.0))
 	var weather: String = {"night_city":"NIGHT","storm":"RAIN","winter":"SNOW"}.get(theme_id,"DAYLIGHT")
 	_fact(facts,MenuIcon.texture(Badge.icon(theme_id)) if theme_id in ["night_city","storm","winter"] else _fact_texture("sun"),weather)
 	var surface: String = {"winter":"ICY","storm":"WET","desert":"PACKED SAND"}.get(theme_id,"DRY")
@@ -315,6 +315,7 @@ func _driver_row(driver: Dictionary, own: Dictionary) -> void:
 		var marker: int = display_name.find(" T")
 		if marker >= 0 and display_name.substr(marker+2).contains("-"): display_name = display_name.substr(0,marker)
 	var name_label: Label = _label(identity,display_name,18,color,"RivalryResultName_"+str(driver.id))
+	GameText.user_text(name_label)
 	if not player: preload("res://ui/player_profile.gd").bind_name(name_label,func() -> void: player_requested.emit(driver))
 	name_label.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	name_label.text_overrun_behavior = TextServer.OVERRUN_TRIM_ELLIPSIS
@@ -367,7 +368,7 @@ func _summary(parent: Control, count: int) -> void:
 	_label(score,WeeklyRivalryPage.rank_text(result.get("after",{})),38,MenuStyle.ACCENT,"RivalryResultPosition")
 	_label(score,"/ %d" % count,29)
 	score.add_child(VSeparator.new())
-	_label(score,"%+d pts" % int(result.points_delta) if result.has("points_delta") else "— pts",29,MenuStyle.ACCENT,"RivalryResultPoints")
+	_label(score,GameText.message("%+d pts") % int(result.points_delta) if result.has("points_delta") else "— pts",29,MenuStyle.ACCENT,"RivalryResultPoints")
 	if result.has_all(["overall_before","overall_after"]):
 		var progression := HBoxContainer.new()
 		progression.add_theme_constant_override("separation",8)

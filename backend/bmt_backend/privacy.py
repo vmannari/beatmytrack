@@ -47,6 +47,12 @@ class Preferences(BaseModel):
     analytics_enabled: bool
 
 
+@router.get("/v1/privacy/deletion-preview")
+def preview_deletion(request: Request, player=Depends(current_player), session=Depends(get_session)):
+    from .privacy_deletion_preview import deletion_preview
+    return deletion_preview(session, request.app.state.settings, player.id)
+
+
 def receipt(job):
     return {"status": "complete" if job.completed_at else "requested", "requested_at": job.requested_at,
             "player_id": job.player_id, "tracks_retained": True, "standings_retained": True, "display_name": REMOVED_NAME}
@@ -163,12 +169,14 @@ def web_identity(session, token):
 
 
 @router.post("/v1/privacy/web-session")
-def web_session(body: WebToken, session=Depends(get_session)):
+def web_session(body: WebToken, request: Request, session=Depends(get_session)):
     _row, player_id = web_identity(session, body.token)
     if player_id is None:
         return {"status": "pending"}
     player = session.get(Player, player_id)
-    return {"status": "ready", "display_name": player.display_name}
+    from .privacy_deletion_preview import deletion_preview
+    return {"status": "ready", "display_name": player.display_name,
+            "deletion_preview": deletion_preview(session, request.app.state.settings, player_id)}
 
 
 @router.post("/v1/privacy/web-delete", status_code=202)
@@ -427,7 +435,7 @@ def expire_records(app, session):
     if getattr(app.state, "news_prune_at", 0) <= now():
         pruned_news = cleanup_expired(session, now())
         app.state.news_prune_at = now() + 60
-    rows = session.scalars(select(Purchase).join(Player).where(Player.deleted_at.is_not(None),
+    rows = session.scalars(select(Purchase).join(Player, Purchase.player_id == Player.id).where(Player.deleted_at.is_not(None),
         Purchase.created_at < now() - app.state.settings.privacy_purchase_days * 86400).limit(BATCH)).all()
     for row in rows:
         session.delete(row)

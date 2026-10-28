@@ -9,7 +9,7 @@ from .economy import PRICES
 from .economy_models import CoinReward, CoinWallet, CosmeticUnlock
 
 logger = logging.getLogger("bmt.completion")
-TERMINAL = ("verified", "rejected", "failed")
+TERMINAL = ("verified", "skipped", "rejected", "failed")
 
 
 def enrich(session, runs, player_id, *, request=None):
@@ -57,7 +57,7 @@ def enrich(session, runs, player_id, *, request=None):
                     # Use the current result route's ownership/content/block
                     # checks. Never expose a cached competition view here.
                     values[run.id]["challenge_result"] = result(
-                        run.ticket_id, request, session, session.get(Player, player_id), compact=False)
+                        run.ticket_id, request, session, session.get(Player, player_id))
         except (HTTPException, SQLAlchemyError, RuntimeError, ValueError):
             values[run.id].pop("challenge_result", None)
             logger.warning("completion_challenge_unavailable")

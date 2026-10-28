@@ -98,7 +98,7 @@ func _build_hero() -> void:
 	icon.custom_minimum_size = Vector2(23,23)
 	event.add_child(icon)
 	_label(event,"WEEKLY RIVALRY",23,MenuStyle.TEXT,true)
-	var week: Label = _label(hero,"WEEK %02d" % model.week,16,MenuStyle.ACCENT,true)
+	var week: Label = _label(hero,GameText.message("WEEK %02d") % model.week,16,MenuStyle.ACCENT,true)
 	week.position = Vector2(28,67)
 	hero_heading = _label(hero,summary.title.replace("WEEK COMPLETE","WEEK\nCOMPLETE").replace("PODIUM FINISH","PODIUM\nFINISH").replace("WEEKLY CHAMPION","WEEKLY\nCHAMPION"),58,Color("ffe4a0") if summary.tier > 0 else MenuStyle.TEXT,true)
 	hero_heading.name = "ShareAwardTitle"

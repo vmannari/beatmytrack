@@ -179,7 +179,7 @@ func probe_worker_departure() -> void:
 	var browser := Browser.new()
 	browser.library = library
 	browser.records = LocalRecords.new(folder.path_join("unused.json"))
-	browser.selected_track = NativeTrack.read("res://resources/tracks/starter_circuit.json")
+	browser.selected_track = NativeTrack.read("res://resources/tracks/ellipse.json")
 	browser.state = {"section":"all","page":0}
 	root.add_child(browser)
 	await frames(2)

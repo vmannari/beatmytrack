@@ -14,7 +14,7 @@ func run() -> void:
 	root.size = Vector2i(1280,720)
 	VehicleCatalog.selected = "compact"
 	var game: Node = load("res://core/game.tscn").instantiate()
-	game.initial_track = NativeTrack.read("res://resources/tracks/starter_circuit.json")
+	game.initial_track = NativeTrack.read("res://resources/tracks/ellipse.json")
 	game.production_mode = true
 	root.add_child(game)
 	game.set_physics_process(false)

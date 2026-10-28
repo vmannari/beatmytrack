@@ -112,7 +112,7 @@ func _refresh() -> void:
 		restore_view = {}
 	var pages: int = maxi(1,ceili(float(matches.size())/PAGE_SIZE))
 	page = clampi(page,0,pages-1)
-	count.text = "%d drafts  ·  %d / %d" % [matches.size(),page+1,pages]
+	count.text = GameText.message("%d drafts  ·  %d / %d") % [matches.size(),page+1,pages]
 	previous.disabled = page == 0
 	next.disabled = page == pages-1
 	var visible_entries: Array[Dictionary] = matches.slice(page*PAGE_SIZE,(page+1)*PAGE_SIZE)
@@ -196,7 +196,9 @@ func _show_detail() -> void:
 	title.clip_text = true
 	title.tooltip_text = str(doc.name)
 	info.add_child(title)
-	info.add_child(MenuStyle.label(TrackTheme.title(str(doc.theme))+" biome",15,true))
+	var biome_label: Label = MenuStyle.label("",15,true)
+	GameText.bind(biome_label,"{biome} biome",{"biome":tr(TrackTheme.title(str(doc.theme)))})
+	info.add_child(biome_label)
 	info.add_child(MenuStyle.label("Last saved "+_stamp(item),14,true))
 	info.add_child(MenuStyle.label(_counts(doc),14,true))
 	if lifecycle != null:
@@ -285,7 +287,7 @@ func _load_entries() -> void:
 	if is_instance_valid(detail): _show_detail()
 
 static func _counts(doc: Dictionary) -> String:
-	return "%d road pieces  ·  %d objects" % [doc.get("piece_count",doc.pieces.size()),doc.get("object_count",doc.get("objects",[]).size())]
+	return GameText.message("%d road pieces  ·  %d objects") % [doc.get("piece_count",doc.pieces.size()),doc.get("object_count",doc.get("objects",[]).size())]
 
 static func _stamp(item: Dictionary) -> String:
 	if int(item.modified) <= 0: return "Unknown"

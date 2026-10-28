@@ -1,5 +1,18 @@
 # Documentation index
 
+- [Easy night verification (2026-10-27)](EASY_NIGHT_VERIFICATION_2026_10_27.md): the rewind recording passes the patched encoder and normal verifier; automatic live retry is confirmed accepted after a storage transport failure.
+
+- [Race result tick rounding (2026-10-27)](RACE_RESULT_TICK_ROUNDING_2026_10_27.md): correct the local lap-summary mismatch and recover intact saved uploads through normal verification.
+
+- [Electric clean bonnet outline (2026-10-26)](ELECTRIC_CLEAN_BONNET_2026_10_26.md): independent physical taper, removed nose hooks and matched native comparisons.
+- [Electric hood and wing correction (2026-10-26)](ELECTRIC_HOOD_FAIRING_2026_10_26.md): fair outer shoulder and matched shading; real-mesh regression and Garage comparison.
+- [Electric rear and whole-car quality (2026-10-25)](ELECTRIC_QUALITY_PASS_2026_10_25.md): sculpted tail, layered optics and fitted details; matched native comparison and checks.
+- [Electric smooth nose profile (2026-10-25)](ELECTRIC_SMOOTH_NOSE_2026_10_25.md): corrected S bend, matched side views, strict mesh curvature checks and native validation.
+
+- [Electric whole-front rounding (2026-10-25)](ELECTRIC_ROUNDED_FRONT_2026_10_25.md): owner-supplied Lucid photo, substantial silhouette change, matched native views and validation.
+
+- [Electric hood redesign using Lucid as the reference (2026-10-25)](ELECTRIC_LUCID_HOOD_2026_10_25.md): fitted clamshell geometry, native before/after views, prepared assets and validation.
+
 Reviewed against workspace source on **2026-10-24**. Use the guides below for current
 behavior. Dated reports and the older portions of status/plan files record what was
 implemented and tested at that checkpoint; their use of “current” does not make them
@@ -7,7 +20,8 @@ the present contract. The preserved blueprint remains an original proposal.
 
 | Topic | Current entry point | Implementation to consult |
 |---|---|---|
-| First-play tutorial | [Driving lesson and help](FIRST_PLAY_TUTORIAL_2026_10_24.md) | [Tutorial controller](../game/tutorial/tutorial_controller.gd), [Settings Help](../game/ui/settings_page.gd) |
+| Desert phone performance | [Measured phone improvement and remaining acceptance](DESERT_PHONE_PERFORMANCE_2026_10_25.md) | [Dune source cache](../game/track/desert_sand_wind.gd), [wind playback clock](../game/track/desert_playback_clock.gd) |
+| First-play tutorial | [Ellipse tutorial and track retirement](TUTORIAL_ELLIPSE_2026_10_25.md), [stop/touch correction](TUTORIAL_STOP_TOUCH_2026_10_25.md) | [Tutorial controller](../game/tutorial/tutorial_controller.gd), [Settings Help](../game/ui/settings_page.gd) |
 | SEC09 and SEC10 security fixes | [Implementation, evidence and rollout limits](SEC09_SEC10_FIXES_2026_10_24.md) | [Guarded HTTP server](../backend/bmt_backend/http_server.py), [effective grant policy](../backend/bmt_backend/database_privileges.py) |
 | Backend downloads and costs | [Implementation, validation and rollout gates](COST_OPTIMISATION_IMPLEMENTATION_2026_10_24.md) | [Google-only scenarios](GOOGLE_ONLY_COST_OPTIONS_2026_10_24.md), [cost profile](../backend/deploy/gcp/cost_profile.py) |
 | Run, build and checks | [Repository README](../README.md) | [Development wrapper](../scripts/dev.ps1), [engine pin](../godot-version.txt), [project settings](../game/project.godot) |
@@ -26,12 +40,12 @@ the present contract. The preserved blueprint remains an original proposal.
 | Backend operations | [Deployment runbook](../backend/deploy/README.md), [latest cloud release](SECURITY_DEPLOYMENT_2026_10_24.md), [PC release](LATEST_BACKEND_DEPLOY_2026_10_23.md), [Studio activation](STUDIO_PLATFORM_ACTIVATION.md) | [Migration chain](../backend/bmt_backend/migrations/versions), [worker supervisor](../backend/bmt_backend/service_worker.py) |
 | Security review | [Second pass and retained risks](SECURITY_SECOND_REVIEW_2026_10_24.md), [source fixes](SECURITY_FIXES_2026_10_24.md), [cloud rollout](SECURITY_DEPLOYMENT_2026_10_24.md) | [Request boundary](../backend/bmt_backend/middleware.py), [database grants](../backend/bmt_backend/database_privileges.py) |
 | Privacy and moderation | [Account privacy](ACCOUNT_PRIVACY_2026_10_14.md), [public-content safety](PUBLIC_CONTENT_SAFETY.md) | [Privacy service](../backend/bmt_backend/privacy.py) |
-| Launch compliance and terms | [Execution plan](legal/LAUNCH_COMPLIANCE_PLAN.md), [revised terms](legal/TERMS_DRAFT.md), [review response](legal/LEGAL_REVIEW_RESPONSE.md), [acceptance checklist](legal/LAUNCH_CHECKLIST.csv) | 13+, EU/US/Canada confirmed; publisher facts, notice period, regional processes and final legal/provider acceptance remain. |
+| Launch compliance and terms | [Execution plan](legal/LAUNCH_COMPLIANCE_PLAN.md), [terms revision 6](legal/TERMS_DRAFT.md), [publisher decisions](legal/PUBLISHER_DECISIONS_2026_10_25.md), [acceptance checklist](legal/LAUNCH_CHECKLIST.csv) | One-year non-renewing ad-free selected; reinstall retains existing-account access and voluntary account deletion ends it. Annual implementation and regional/provider acceptance remain; unpublished. |
 
 The source currently uses five-lap rules `standing-5-road-gates-v23`, physics
 `arcade-planar-0.66`, compiler `creator-compiler-27`, creator documents
 `creator-track-v5` and native tracks `surface-grid-v2`. Imported creator documents
-must use the current format. The public native catalogue contains Starter Circuit;
+must use the current format. The public native catalogue contains Ellipse;
 the retired Slicks corpus is diagnostic content.
 
 Track themes are Grass (`pine`), Desert (`desert`), Night (`night_city`), Winter
@@ -48,3 +62,5 @@ retain the chronological checkpoints, failures and acceptance work. The
 scope, source checks and limitations.
 
 Game Configuration and required A/B testing: [implemented controls, validation and rollout limits](GAME_CONFIGURATION_IMPLEMENTATION_2026_10_24.md), with the [broader interface/use-case specification](GAME_CONFIGURATION_INTERFACE_SPEC_2026_10_24.md).
+
+- [Track of the Day: permanent novelty, shared UTC selection and Race menu](TRACK_OF_DAY_2026_10_25.md).

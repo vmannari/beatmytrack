@@ -71,7 +71,7 @@ func run() -> void:
 	browser.catalog = catalog
 	browser.records = LocalRecords.new(folder.path_join("favorites.json"))
 	browser.state = state
-	browser.selected_track = NativeTrack.read("res://resources/tracks/starter_circuit.json")
+	browser.selected_track = NativeTrack.read("res://resources/tracks/ellipse.json")
 	root.size = Vector2i(1280,720)
 	root.add_child(browser)
 	# The retained horizontal carousel belongs to the selected track view.

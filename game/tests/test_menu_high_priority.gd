@@ -79,7 +79,12 @@ func run() -> void:
 	# Runtime audio/playback preferences and animation are unchanged.
 	GameSoundtrack.instance().music_enabled = false
 	report.static_pixel_fixture_music_paused = true
-	check(app.constructions.size()==1 and app.constructions[0].screen=="restoring","the one native construction runs behind the startup cover")
+	check(app.constructions.is_empty() and not is_instance_valid(app._retained_garage),"MA13 guest startup does not construct unrelated Garage worlds")
+	app._show_screen("garage")
+	while app.screen != "garage": await process_frame
+	app._show_screen("account")
+	await frames()
+	check(app.constructions.size()==1 and app.constructions[0].screen=="restoring","first Garage visit constructs one live showroom behind its cover")
 	var garage: GaragePage = app._retained_garage
 	var view: CarShowroom = garage.showroom
 	var world: SubViewport = view.showroom_viewport
@@ -227,7 +232,7 @@ func run() -> void:
 	app._navigate_menu_page("garage")
 	await settle()
 	check(is_equal_approx(view.weathering.dirt_amount,0.67) and view.car==model,"live native car receives newer race wear without reconstruction")
-	report.menu = {"covered_construction":app.constructions.duplicate(true),"neighbor_callback_ms":app.preparations.duplicate(),"settings_return_dispatch_ms":dispatch,"native_views_retained":6}
+	report.menu = {"covered_construction":app.constructions.duplicate(true),"neighbor_callback_ms":app.preparations.duplicate(),"settings_return_dispatch_ms":dispatch,"native_views_retained":garage.find_children("*","SubViewport",true,false).size()}
 	await test_folders()
 	# Changing storage invalidates retained cosmetics and supersedes old cover work.
 	var next_records := LocalRecords.new(folder.path_join("other/records.json"))
@@ -268,6 +273,9 @@ func compare_native_pixels(garage: GaragePage) -> void:
 	# A fresh synchronous construction is the original native geometry/render path.
 	var reference := GaragePage.new()
 	reference.records = app.records
+	# Match the production wall provider as well as records. An empty-provider
+	# reference hides the trophy wall and is not an identical native scene.
+	reference.achievements = app.achievements
 	root.add_child(reference)
 	reference.position = garage.global_position
 	reference.size = garage.size
@@ -308,6 +316,7 @@ func compare_native_pixels(garage: GaragePage) -> void:
 
 	var control := GaragePage.new()
 	control.records = app.records
+	control.achievements = app.achievements
 	root.add_child(control)
 	control.position = garage.global_position
 	control.size = garage.size
@@ -362,6 +371,8 @@ func test_folders() -> void:
 	adapter.client = service
 	adapter.reset()
 	adapter.folder = "received"
+	# Folder concurrency is exercised inside the current browser, after its landing.
+	app.challenge_browsing = true
 	app._show_screen("challenges")
 	app._stop_menu_page_motion()
 	adapter.refresh()

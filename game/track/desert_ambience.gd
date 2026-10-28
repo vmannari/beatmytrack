@@ -15,6 +15,8 @@ const SAND_MAX: float = 0.065625
 const OPEN_FADE: float = 2.0
 const FINISH_FADE: float = 0.6
 const WIND_ENVELOPE = preload("res://track/desert_wind_envelope.gd")
+const PLAYBACK_CLOCK = preload("res://track/desert_playback_clock.gd")
+var playback_clock: RefCounted = PLAYBACK_CLOCK.new()
 var rng := RandomNumberGenerator.new()
 var wind: AudioStreamPlayer
 var sand: AudioStreamPlayer
@@ -68,6 +70,7 @@ func _voice(label: String, stream: AudioStream) -> AudioStreamPlayer:
 
 
 func reset() -> void:
+	playback_clock.reset()
 	for voice: AudioStreamPlayer in [wind, sand]:
 		if voice == null: continue
 		voice.stop()
@@ -114,7 +117,10 @@ func _select_wind() -> void:
 func present(delta: float, paused: bool, finished: bool) -> void:
 	if not enabled or wind == null: return
 	for voice: AudioStreamPlayer in [wind, sand]: voice.stream_paused = paused or suspended
-	if paused or suspended or not is_finite(delta) or delta <= 0.0: return
+	if paused or suspended:
+		playback_clock.reset()
+		return
+	if not is_finite(delta) or delta <= 0.0: return
 	var step: float = minf(delta, 0.25)
 	if finished:
 		sand_lift = move_toward(sand_lift, 0.0, step / FINISH_FADE)
@@ -150,17 +156,21 @@ func present(delta: float, paused: bool, finished: bool) -> void:
 	# Follow the selected recording's audible cursor, including its random
 	# starting offset and loop wraps. Muting the bus still advances weather.
 	if output_enabled and wind.playing:
-		wind_cursor = fposmod(wind.get_playback_position() + AudioServer.get_time_since_last_mix() - output_latency, wind.stream.get_length())
+		var length: float = wind.stream.get_length()
+		wind_cursor = fposmod(float(playback_clock.sample(wind.get_playback_position(),length,Time.get_ticks_usec()))-output_latency,length)
 	else:
+		playback_clock.reset()
 		wind_cursor = fposmod(wind_cursor + step, wind.stream.get_length())
 	sand_lift = WIND_ENVELOPE.sample(wind_variant, wind_cursor) * lerpf(0.65, 1.0, strength) * fade
 
 
 func _notification(what: int) -> void:
 	if what in [NOTIFICATION_APPLICATION_FOCUS_OUT, NOTIFICATION_APPLICATION_PAUSED]:
+		playback_clock.reset()
 		suspended = true
 		for voice: AudioStreamPlayer in [wind, sand]:
 			if voice != null: voice.stream_paused = true
 	elif what in [NOTIFICATION_APPLICATION_FOCUS_IN, NOTIFICATION_APPLICATION_RESUMED]:
+		playback_clock.reset()
 		if suspended and enabled: output_latency = AudioServer.get_output_latency()
 		suspended = false

@@ -24,7 +24,7 @@ from .cursors import decode_cursor, encode_cursor
 from .identity_models import Player
 from .middleware import ParsedJSONRoute
 from .name_moderation import require_allowed_names
-from .runs import PINNED_FIELDS, _ticket_payload, board_manifest
+from .runs import _ticket_payload, board_manifest
 from .security import bearer, current_player
 from .track_models import (
     Board,
@@ -113,14 +113,12 @@ def available(session, code, *, lock=False):
 
 
 def compatible(request, pinned):
+    from .job_contracts import capability_matches
     try:
         active = request.app.state.verifier.manifest()
     except RuntimeError:
         raise HTTPException(503, "Race verifier temporarily unavailable") from None
-    config = active.get("vehicles", {}).get(pinned["vehicle_id"], {})
-    if (any(active.get(field) != pinned.get(field) for field in PINNED_FIELDS)
-            or pinned.get("handling_version") != config.get("handling_version")
-            or pinned.get("config_hash") != config.get("config_hash")):
+    if pinned.get("laps") != active.get("laps") or not capability_matches(pinned, active):
         raise HTTPException(409, "Challenge requires a different game build")
 
 
@@ -274,7 +272,9 @@ def sources(request: Request, session: DB, player: Auth,
                                           Run.board_id == board.id)) if ticket_id else session.get(Run, best.run_id) if best else None
     session.commit()
     return {"run_id": run.id if run else None, "status": run.status if run else "not_set",
-            "ms": round(run.time_ticks*1000/board.manifest["tick_rate"]) if run and run.time_ticks else None}
+            "ms": round(run.time_ticks*1000/board.manifest["tick_rate"]) if run and run.time_ticks else None,
+            **({"retryable":True} if run and run.status == "failed" and run.failure_code in
+               ("verifier_unavailable","build_mismatch","build_unavailable") else {})}
 
 
 def create_record(session, request, player, payload, key, scope, body):
@@ -381,15 +381,8 @@ def challenge_list(request, session, player, folder, search, mode, vehicle, sort
             active = request.app.state.verifier.manifest()
         except RuntimeError:
             raise HTTPException(503, "Race verifier temporarily unavailable") from None
-        for field in PINNED_FIELDS:
-            value = active.get(field)
-            column = Board.manifest[field].as_integer() if type(value) is int else Board.manifest[field].as_string()
-            query = query.where(column == value)
-        configurations = [and_(Board.vehicle_id == car,
-            Board.manifest["handling_version"].as_string() == config.get("handling_version"),
-            Board.manifest["config_hash"].as_string() == config.get("config_hash"))
-            for car, config in active.get("vehicles", {}).items()]
-        query = query.where(or_(*configurations) if configurations else False)
+        from .job_contracts import pinned_filter
+        query = query.where(pinned_filter(Board.manifest, active), Board.manifest["laps"].as_integer() == active.get("laps"))
         if player:
             query = query.where(Challenge.creator_id != player.id,
                 ~exists().where(ChallengeMember.challenge_id == Challenge.id, ChallengeMember.player_id == player.id))
@@ -559,7 +552,7 @@ def accept_verified(session, run, *, acceptance=None):
         accept(session, challenge, binding, run, member)
         return
     prior = member.time_ticks
-    improved = prior is None or run.time_ticks < prior
+    improved = run.status != "skipped" and (prior is None or run.time_ticks < prior)
     if improved:
         member.run_id, member.time_ticks = run.id, run.time_ticks
         session.flush()

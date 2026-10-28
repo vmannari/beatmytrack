@@ -152,8 +152,8 @@ func _track_summary() -> void:
 
 func _personal_result() -> void:
 	var own: Dictionary = _own()
-	var verified: bool = result_state == "verified" and bool(outcome.get("counted",false))
-	var rejected: bool = result_state in ["verified","rejected","expired"] and not verified
+	var verified: bool = result_state in ["verified","skipped"] and bool(outcome.get("counted",false))
+	var rejected: bool = result_state in ["verified","skipped","rejected","expired"] and not verified
 	var panel := _panel(_summary,"ChallengePersonalResult",18)
 	panel.size_flags_vertical = Control.SIZE_EXPAND_FILL
 	var status := HBoxContainer.new()
@@ -165,8 +165,8 @@ func _personal_result() -> void:
 	icon.stretch_mode = TextureRect.STRETCH_KEEP_ASPECT_CENTERED
 	icon.modulate = MenuStyle.POSITIVE if verified else MenuStyle.MUTED
 	status.add_child(icon)
-	var feedback: String = "Target beaten" if verified and outcome.get("beaten",false) and snapshot.mode == "beat" else "Time verified" if verified else "Not counted" if rejected else "Verifying"
-	if verified and outcome.get("gap_ms") != null: feedback += "  %+.3f s" % (float(outcome.gap_ms)/1000.0)
+	var feedback: String = "Race completed" if result_state == "skipped" and verified else "Target beaten" if verified and outcome.get("beaten",false) and snapshot.mode == "beat" else "Time verified" if verified else "Not counted" if rejected else "Verifying"
+	if verified and outcome.get("gap_ms") != null: feedback += GameText.message("  %+.3f s") % (float(outcome.gap_ms)/1000.0)
 	var status_label := _label(status,feedback,17,MenuStyle.POSITIVE if verified else MenuStyle.MUTED)
 	status_label.name = "ChallengeResultFeedback"
 	status_label.size_flags_horizontal = Control.SIZE_EXPAND_FILL
@@ -180,7 +180,7 @@ func _personal_result() -> void:
 	panel.add_child(position)
 	var rank := _label(position,"#%02d" % int(own.rank) if own.get("rank") != null else "—",32,MenuStyle.ACCENT)
 	rank.name = "ChallengeResultRank"
-	var caption := _label(position,"CURRENT POSITION" if own.get("rank") != null else "%d / %d tracks complete" % [int(own.get("completed_tracks",0)),snapshot.stages.size()] if _series() else "No ranked time yet",13,MenuStyle.MUTED)
+	var caption := _label(position,"CURRENT POSITION" if own.get("rank") != null else GameText.message("%d / %d tracks complete") % [int(own.get("completed_tracks",0)),snapshot.stages.size()] if _series() else "No ranked time yet",13,MenuStyle.MUTED)
 	caption.size_flags_vertical = Control.SIZE_SHRINK_CENTER
 	caption.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	caption.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
@@ -211,7 +211,7 @@ func _standings() -> void:
 	if own.get("ms") != null and value != null:
 		var difference: int = int(own.ms)-int(value)
 		var tied: bool = snapshot.mode != "beat" and snapshot.standings.any(func(row: Dictionary) -> bool: return str(row.id) != str(own.id) and row.get("ms") != null and int(row.ms) == int(own.ms))
-		var gap := _label(target,"Target beaten" if difference < 0 else "Tied with target" if difference == 0 and snapshot.mode == "beat" else "Joint lead" if difference == 0 and tied else "You lead" if difference == 0 else "+%.3f s to lead" % (float(difference)/1000.0),17,MenuStyle.POSITIVE if difference < 0 or difference == 0 and snapshot.mode != "beat" else MenuStyle.MUTED)
+		var gap := _label(target,"Target beaten" if difference < 0 else "Tied with target" if difference == 0 and snapshot.mode == "beat" else "Joint lead" if difference == 0 and tied else "You lead" if difference == 0 else GameText.message("+%.3f s to lead") % (float(difference)/1000.0),17,MenuStyle.POSITIVE if difference < 0 or difference == 0 and snapshot.mode != "beat" else MenuStyle.MUTED)
 		gap.name = "ChallengePersonalGap"
 		gap.custom_minimum_size.x = 130
 		gap.size_flags_vertical = Control.SIZE_SHRINK_CENTER
@@ -251,7 +251,7 @@ func _standings() -> void:
 		if driver.get("ms") != null and value != null:
 			var delta: int = int(driver.ms)-int(value)
 			gap = "—" if delta == 0 else "%+.3f" % (float(delta)/1000.0)
-		var time_text: String = MenuStyle.time_text(float(driver.ms)/1000.0) if driver.get("ms") != null else "%d/%d tracks" % [int(driver.get("completed_tracks",0)),snapshot.stages.size()] if _series() else "—"
+		var time_text: String = MenuStyle.time_text(float(driver.ms)/1000.0) if driver.get("ms") != null else GameText.message("%d/%d tracks") % [int(driver.get("completed_tracks",0)),snapshot.stages.size()] if _series() else "—"
 		_row(values,str(int(driver.rank)) if driver.get("rank") != null else "—",str(driver.name),time_text,gap,false,player)
 	if snapshot.standings.size() <= 1 and snapshot.state == "active":
 		var waiting := VBoxContainer.new()
@@ -264,7 +264,7 @@ func _standings() -> void:
 		help.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 	var facts := HBoxContainer.new()
 	_board.add_child(facts)
-	var drivers := _label(facts,"%d / %d drivers" % [snapshot.standings.size(),int(snapshot.get("capacity",2 if snapshot.mode == "beat" else 20))],15,MenuStyle.MUTED)
+	var drivers := _label(facts,GameText.message("%d / %d drivers") % [snapshot.standings.size(),int(snapshot.get("capacity",2 if snapshot.mode == "beat" else 20))],15,MenuStyle.MUTED)
 	drivers.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	var remaining: Variant = _stage().get("attempts_remaining")
 	var tries := _label(facts,"Unlimited tries" if remaining == null else "No tries remaining" if int(remaining) <= 0 else str(int(remaining))+" tries remaining",15,MenuStyle.MUTED)
@@ -299,7 +299,7 @@ func _rewards() -> void:
 		var goal := _label(row,("✓  " if earned else "•  ")+("Finish five laps" if index == 0 else "Beat the target" if snapshot.mode == "beat" else "Outrun a rival & lead"),15,MenuStyle.POSITIVE if earned else MenuStyle.MUTED)
 		goal.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 		goal.text_overrun_behavior = TextServer.OVERRUN_TRIM_ELLIPSIS
-		_label(row,"Earned" if earned else "Ended" if snapshot.state != "active" else "Daily limit" if signed_in and not rewards.get("eligible",false) else "+%d Coins" % int(rewards.get("finish" if index == 0 else "goal",0)),16,MenuStyle.POSITIVE if earned else MenuStyle.ACCENT)
+		_label(row,"Earned" if earned else "Ended" if snapshot.state != "active" else "Daily limit" if signed_in and not rewards.get("eligible",false) else GameText.message("+%d Coins") % int(rewards.get("finish" if index == 0 else "goal",0)),16,MenuStyle.POSITIVE if earned else MenuStyle.ACCENT)
 
 func _align_standings_header(header_reference: WeakRef, scroll_reference: WeakRef) -> void:
 	# Verification can replace this entire view before the deferred layout runs.
@@ -338,7 +338,7 @@ func _actions() -> void:
 func _update_clock() -> void:
 	if _clock == null: return
 	var remaining: int = maxi(0,int(snapshot.ends_at)-int(snapshot.server_now)-(Time.get_ticks_msec()-_received_at)/1000)
-	_clock.text = str(snapshot.state).capitalize() if snapshot.state != "active" else "Ending" if remaining == 0 else "%dd %02dh left" % [remaining/86400,(remaining%86400)/3600] if remaining >= 86400 else "%02dh %02dm left" % [remaining/3600,(remaining%3600)/60]
+	_clock.text = str(snapshot.state).capitalize() if snapshot.state != "active" else "Ending" if remaining == 0 else GameText.message("%dd %02dh left") % [remaining/86400,(remaining%86400)/3600] if remaining >= 86400 else GameText.message("%02dh %02dm left") % [remaining/3600,(remaining%3600)/60]
 
 func _resize_layout() -> void:
 	if _layout == null: return

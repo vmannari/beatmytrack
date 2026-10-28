@@ -1,3 +1,4 @@
+import asyncio
 import logging
 from contextlib import asynccontextmanager
 
@@ -8,7 +9,6 @@ from sqlalchemy.exc import SQLAlchemyError
 from starlette.concurrency import run_in_threadpool
 from starlette.middleware.gzip import GZipMiddleware
 
-from . import auth
 from .config import Settings
 from .db import make_engine, make_session_factory
 from .middleware import IdentityBudgets, RequestBoundary
@@ -16,57 +16,11 @@ from .observability import configure_logging, dependency_failure
 from .readiness import DependencyFailure, ReadinessProbe
 from .security import GoogleIdentityVerifier
 from .storage import make_blob_store
+from .workloads import administration_enabled
 
 
 def create_app(settings: Settings | None = None, *, engine=None, verifier=None, identity_verifier=None,
                analysis_engine=None):
-    from . import (
-        achievements,
-        admin,
-        admin_commerce,
-        admin_player_grants,
-        admin_purchase_controls,
-        admin_support,
-        appearance_routes,
-        browser_auth,
-        challenges,
-        commerce,
-        community,
-        discovery,
-        discovery_v3,
-        economy,
-        game_config,
-        network_health,
-        news,
-        privacy,
-        privacy_pages,
-        product_analytics,
-        publications,
-        quality,
-        race_statistics,
-        resumes,
-        rivalry,
-        runs,
-        studio,
-        studio_alarms,
-        studio_analysis,
-        studio_cases,
-        studio_catalogue,
-        studio_competitions,
-        studio_experiments,
-        studio_finance,
-        studio_governance,
-        studio_incidents,
-        studio_jobs,
-        studio_metrics,
-        studio_rivalry,
-        telemetry,
-        test_drivers,
-        test_population_batch,
-        track_links,
-        tracks,
-        world_ranking,
-    )
     from .verifier import GodotVerifier
 
     settings = settings or Settings.from_env()
@@ -78,13 +32,27 @@ def create_app(settings: Settings | None = None, *, engine=None, verifier=None, 
         # Warm the pinned, immutable contract before accepting concurrent races.
         # Auth-only isolated tests may omit an engine; deployed APIs configure it.
         adapter = application.state.verifier
+        idle_stop = asyncio.Event()
+        async def retire_idle_engine():
+            while not idle_stop.is_set():
+                try:
+                    await asyncio.wait_for(idle_stop.wait(), timeout=5)
+                except asyncio.TimeoutError:
+                    await run_in_threadpool(adapter.retire_idle)
+        idle_task = None
         try:
             if isinstance(adapter, GodotVerifier) and settings.godot_bin:
                 await run_in_threadpool(adapter.manifest)
+                if settings.persistent_verifier and settings.verifier_idle_seconds > 0:
+                    idle_task = asyncio.create_task(retire_idle_engine())
             yield
         finally:
+            idle_stop.set()
+            if idle_task is not None:
+                await idle_task
             application.state.http_costs.flush()
-            await run_in_threadpool(application.state.studio_reporting.close)
+            if hasattr(application.state, "studio_reporting"):
+                await run_in_threadpool(application.state.studio_reporting.close)
             await run_in_threadpool(application.state.run_signals.close)
             try:
                 await application.state.readiness.close()
@@ -106,8 +74,14 @@ def create_app(settings: Settings | None = None, *, engine=None, verifier=None, 
     from .database_privileges import verify_runtime
     verify_runtime(app.state.engine,settings)
     app.state.session_factory = make_session_factory(app.state.engine)
-    from .studio_reporting import StudioReporting
-    app.state.studio_reporting = StudioReporting(settings, engine=analysis_engine)
+    if administration_enabled(settings):
+        from .studio_reporting import StudioReporting
+        app.state.studio_reporting = StudioReporting(settings, engine=analysis_engine)
+        from .studio_identity import StudioIdentityVerifier
+        app.state.staff_identity_verifier = (StudioIdentityVerifier(settings) if settings.studio_identity_project
+                                             else GoogleIdentityVerifier(settings.studio_staff_audiences))
+        from .studio_usage_cloud import UsageCloud
+        app.state.studio_usage_cloud = UsageCloud(settings)
     from .run_signals import RunSignals
     app.state.run_signals = RunSignals(app.state.engine, capacity=settings.run_wait_capacity)
     app.state.engine._bmt_run_signals = app.state.run_signals
@@ -118,7 +92,6 @@ def create_app(settings: Settings | None = None, *, engine=None, verifier=None, 
     app.state.erasure_journal = make_journal(settings)
     app.state.verifier = verifier if verifier is not None else GodotVerifier(settings)
     app.state.identity_verifier = identity_verifier or GoogleIdentityVerifier(settings.google_client_ids)
-    app.state.staff_identity_verifier = GoogleIdentityVerifier(settings.studio_staff_audiences)
     app.state.readiness = ReadinessProbe(app)
     app.state.worker_heartbeat_memory = __import__("collections").OrderedDict()
     app.state.worker_heartbeat_lock = __import__("threading").RLock()
@@ -128,63 +101,10 @@ def create_app(settings: Settings | None = None, *, engine=None, verifier=None, 
     app.state.immutable_payloads = ImmutablePayloadCache()
     app.add_middleware(GZipMiddleware, minimum_size=1024, compresslevel=3)
     app.add_middleware(RequestBoundary, settings=settings, session_factory=app.state.session_factory, http_costs=app.state.http_costs)
-    from .workloads import administration_enabled
-    if administration_enabled(settings):
-        app.include_router(admin.router)
-        app.include_router(admin_commerce.router)
-        app.include_router(admin_purchase_controls.router)
-        app.include_router(admin_player_grants.router)
-        app.include_router(admin_support.router)
-        app.include_router(studio.router)
-        app.include_router(studio_analysis.router)
-        app.include_router(studio_metrics.router)
-        app.include_router(studio_jobs.router)
-        from . import studio_ranking
-        app.include_router(studio_ranking.router)
-        app.include_router(studio_incidents.router)
-        app.include_router(studio_finance.router)
-        app.include_router(studio_experiments.router)
-        app.include_router(game_config.router)
-        app.include_router(studio_governance.router)
-        app.include_router(studio_alarms.router)
-        app.include_router(studio_cases.router)
-        app.include_router(studio_competitions.router)
-        app.include_router(studio_rivalry.router)
-        app.include_router(studio_catalogue.router)
-        app.include_router(publications.admin_router, prefix="/v1")
     app.state.discovery_memory = __import__("collections").OrderedDict()
     app.state.discovery_lock = __import__("threading").RLock()
-    if settings.workload_role != "admin":
-        app.include_router(game_config.public_router)
-        app.include_router(studio_experiments.public_router)
-        app.include_router(telemetry.router)
-        app.include_router(community.router)
-        app.include_router(privacy.router)
-        app.include_router(privacy_pages.router)
-        app.include_router(product_analytics.router)
-        app.include_router(quality.router)
-        app.include_router(network_health.router)
-        app.include_router(news.router, prefix="/v1")
-        app.include_router(race_statistics.router)
-        app.include_router(auth.router, prefix="/v1")
-        app.include_router(browser_auth.router, prefix="/v1")
-        app.include_router(tracks.router, prefix="/v1")
-        app.include_router(discovery.router, prefix="/v1")
-        app.include_router(discovery_v3.router)
-        app.include_router(runs.router, prefix="/v1")
-        app.include_router(economy.router, prefix="/v1")
-        app.include_router(achievements.router, prefix="/v1")
-        app.include_router(resumes.router, prefix="/v1")
-        app.include_router(commerce.router, prefix="/v1")
-        app.include_router(publications.router, prefix="/v1")
-        app.include_router(rivalry.router, prefix="/v1")
-        app.include_router(appearance_routes.router, prefix="/v1")
-        app.include_router(challenges.router, prefix="/v1")
-        app.include_router(world_ranking.router)
-        app.include_router(challenges.preview_router)
-        app.include_router(track_links.router)
-        app.include_router(test_drivers.router, prefix="/v1")
-        app.include_router(test_population_batch.router, prefix="/v1")
+    from .http_routes import mount_routes
+    mount_routes(app, settings)
 
     @app.exception_handler(RequestValidationError)
     async def invalid_request(request: Request, _error):
@@ -229,6 +149,7 @@ def create_app(settings: Settings | None = None, *, engine=None, verifier=None, 
 
     @app.get("/v1/bootstrap", tags=["compatibility"])
     def bootstrap():
+        from .community import TERMS_VERSION
         return {
             "service": "beat-my-track",
             "api_version": "v1",
@@ -239,13 +160,14 @@ def create_app(settings: Settings | None = None, *, engine=None, verifier=None, 
                 "deletion_url": settings.public_base_url.rstrip("/") + "/account-deletion",
                 "policy_version": "bmt-privacy-v1", "tracks_retained": True, "standings_retained": True},
             "community_safety_version": 1,
-            "community_terms_version": community.TERMS_VERSION,
+            "community_terms_version": TERMS_VERSION,
             "community_rules_url": settings.public_base_url.rstrip("/") + "/community-rules",
             "google_configured": bool(settings.google_client_ids),
             "google_browser_configured": bool(settings.google_web_client_id),
             "development_auth": settings.dev_auth_enabled,
             "test_drivers": settings.test_drivers_enabled,
             "test_driver_upload_recovery": settings.test_drivers_enabled,
+            "test_driver_local_runner_version": 1,
             "purchase_simulation": settings.purchase_simulation_enabled,
             "entitlements_version": 1,
             "store_catalog_version": 1,
@@ -274,6 +196,7 @@ def create_app(settings: Settings | None = None, *, engine=None, verifier=None, 
             "verification": "trajectory-v1",
             "trajectory_verification": True,
             "race_path_wire_version": 1,
+            "non_improving_runs_version": 1,
             "submission_recovery_version": 1,
             "run_completion_version": 1,
             "challenge_pending_version": 1,
@@ -287,6 +210,7 @@ def create_app(settings: Settings | None = None, *, engine=None, verifier=None, 
             "discovery_paging_version": 3,
             "discovery_preview_version": 1,
             "discovery_daily_version": 1,
+            "track_of_day_version": 1,
             "max_request_bytes": settings.max_body_bytes,
             "upload_encodings": ["identity", "gzip"],
             "ghost_identity_version": 1,

@@ -4,7 +4,7 @@ Reviewed against the current source on 2026-10-24. Running the project normally
 opens the account/menu flow. For a direct diagnostic drive use:
 
 ```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1 -Action Run -Track starter_circuit
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1 -Action Run -Track ellipse
 ```
 
 W/Up accelerates, A/D or Left/Right steers, S/Down brakes and holds reverse at rest,
@@ -15,7 +15,7 @@ tuning, F3 records, F6 reloads the selected preset, F4 toggles overview, F7 cycl
 track diagnostics, F5 cycles the current built-in catalogue and yard, and F9 toggles
 the AI driver. These tuning shortcuts are gated out of ordinary production-mode races.
 
-The current catalogue contains Starter Circuit, not seven playable Slicks tracks.
+The current catalogue contains Ellipse, not seven playable Slicks tracks.
 Ordinary menu races use five laps; creator practice and Garage Test drive are
 untimed. Five cars, configurable camera modes and button/analog touch settings are
 implemented. Touch buttons accept slide entry and transfers between controls.

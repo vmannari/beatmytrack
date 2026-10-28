@@ -5,6 +5,12 @@ Reviewed 2026-10-24 against the [client](../game/backend/challenges_client.gd),
 [challenge API](../backend/bmt_backend/challenges.py) and
 [series service](../backend/bmt_backend/challenge_series.py).
 
+One-on-one and group flows were rechecked on 2026-10-25 with disposable local
+services and the pinned native client. The checks include three distinct group
+accounts, exact post-race creation, rankings, slower/tied retries, independent
+try exhaustion, account changes and multi-track starts. No challenge runtime fix
+was needed. [Commands, results and limits](CHALLENGE_CHECK_2026_10_25.md).
+
 Menu creation is **format → tracks → car**. One-to-one and Group race pin one track;
 3×3 pins three distinct tracks and one car, with three starts per stage and best-only
 summed standings. Custom rules allow **one to five distinct tracks**, with the

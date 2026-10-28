@@ -7,6 +7,13 @@ var pending: Dictionary = {}
 var active: RefCounted
 var active_value: Dictionary = {}
 var completed_writes: int = 0
+var background_allowed: Callable
+
+func _ready() -> void:
+	set_process(false)
+
+static func resume() -> void:
+	if is_instance_valid(instance): instance.set_process(instance.active != null or not instance.pending.is_empty())
 
 static func shared() -> Node:
 	if not is_instance_valid(instance):
@@ -44,6 +51,11 @@ func _process(_delta: float) -> void:
 		active = null
 		active_value = {}
 	if pending.is_empty():
+		set_process(false)
+		return
+	# An already dispatched atomic write may finish, but a late menu reply
+	# cannot start another optional disk snapshot while race work is gated.
+	if background_allowed.is_valid() and not bool(background_allowed.call()):
 		set_process(false)
 		return
 	var destination: String = pending.keys()[0]

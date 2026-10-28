@@ -124,6 +124,7 @@ static func blocks_ground(bridge: Dictionary, point: Vector2) -> bool:
 
 static func stamp(bridges: Array, ground: PackedInt32Array, deck: PackedInt32Array, grid: Vector2i, extent: Vector2, cell: float) -> void:
 	for bridge: Dictionary in bridges:
+		var road_kind: int = 2 if bridge.get("surface","") == "gravel" else 0
 		var start := Vector2(bridge.position[0],bridge.position[1])
 		var end: Vector2 = RoadPieces.end_pose(bridge).position
 		var reach: float = float(bridge.width)*0.5+RAIL+cell
@@ -137,13 +138,13 @@ static func stamp(bridges: Array, ground: PackedInt32Array, deck: PackedInt32Arr
 				# Union the road interiors before rails: a later rail must never
 				# close an earlier span's road at an elevated intersection.
 				if absf(p.y) <= float(bridge.width)*0.5:
-					deck[y*grid.x+x] = 0
-				elif deck[y*grid.x+x] != 0:
+					deck[y*grid.x+x] = road_kind
+				elif deck[y*grid.x+x] not in [0,2]:
 					deck[y*grid.x+x] = 4
 				# Only ramp approaches alter the ground. Water/road beneath
 				# the middle of a span remains exactly as authored.
 				if (p.x < 2.0 or p.x > float(bridge.length)-2.0) and absf(p.y) <= float(bridge.width)*0.5:
-					ground[y*grid.x+x] = 0
+					ground[y*grid.x+x] = road_kind
 				# Ground cars cannot enter the low underside from the tunnel or
 				# side. The upper ramp remains independently drivable. Preserve
 				# the open middle, where the deck has full vehicle clearance.

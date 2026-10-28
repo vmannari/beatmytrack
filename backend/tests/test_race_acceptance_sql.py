@@ -33,7 +33,8 @@ def test_repeat_acceptance_reuses_bounded_facts_without_history_or_ledger_reads(
     finally:
         event.remove(domain.app.state.engine, 'before_cursor_execute', record)
     assert len(queries) <= 30, queries
-    assert sum('FROM coin_milestones' in sql for sql in queries) == 1
+    # The single milestone query now joins the live board revision as well.
+    assert sum(sql.lstrip().upper().startswith('SELECT') and 'coin_milestones' in sql for sql in queries) == 1
     assert not any('FROM studio_coin_entries' in sql for sql in queries)
     assert not any('FROM rivalry_tickets' in sql or 'FROM challenge_tickets' in sql for sql in queries)
     assert not any('runs.id !=' in sql for sql in queries), 'Repeat races must not inspect old history'

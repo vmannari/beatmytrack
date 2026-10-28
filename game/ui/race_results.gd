@@ -14,6 +14,7 @@ var best: float
 var laps: Array[float]
 var clean: bool
 var saved: bool
+var verification_notice: String = ""
 var editor: bool
 var challenge_available: bool = false
 var challenge_active: bool = false
@@ -27,8 +28,16 @@ var comparison_label: Label
 var sector_table: PanelContainer
 var sector_rows: GridContainer
 var next_button: Button
+var retry_button: Button
 var lap_buttons: Array[Button] = []
 var mode_buttons: Array[Button] = []
+
+func _notification(what: int) -> void:
+	if what == NOTIFICATION_TRANSLATION_CHANGED and is_instance_valid(retry_button):
+		retry_button.text = _retry_caption()
+
+func _retry_caption() -> String:
+	return GameText.message("RACE AGAIN")+"\n"+GameText.message(_retry_motivation())
 
 func _ready() -> void:
 	name = "RaceResults"
@@ -76,7 +85,7 @@ func _header() -> void:
 	titles.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	row.add_child(titles)
 	titles.add_child(MenuStyle.label("RACE RESULT",30))
-	titles.add_child(MenuStyle.label("%s  /  %s  /  %d LAPS" % [circuit.to_upper(),vehicle_name.to_upper(),laps.size()],16,true))
+	titles.add_child(MenuStyle.label(GameText.message("%s  /  %s  /  %d LAPS") % [circuit.to_upper(),vehicle_name.to_upper(),laps.size()],16,true))
 	var brand := MenuStyle.label("B E A T   M Y   T R A C K",13,true)
 	brand.size_flags_vertical = Control.SIZE_SHRINK_CENTER
 	row.add_child(brand)
@@ -88,7 +97,7 @@ func _summary(parent: Control) -> void:
 	var timer := MenuStyle.label(MenuStyle.time_text(total), 94)
 	timer.name = "ResultTime"
 	body.add_child(timer)
-	var delta_text: String = "%+.3f s vs personal best" % (total-previous) if previous > 0 else "Your first benchmark"
+	var delta_text: String = GameText.message("%+.3f s vs personal best") % (total-previous) if previous > 0 else "Your first benchmark"
 	if previous > 0 and absf(total-previous) < 0.0005: delta_text = "Matched your personal best"
 	if not clean: delta_text = "Practice result"
 	var delta := MenuStyle.label(delta_text, 25, true)
@@ -107,7 +116,7 @@ func _summary(parent: Control) -> void:
 	var facts: Dictionary = get_meta("reward_facts", {})
 	if clean and previous > 0 and total < previous-0.0005:
 		title = "NEW PERSONAL BEST"
-		caption = "%.3f s faster than your previous best." % (previous-total)
+		caption = GameText.message("%.3f s faster than your previous best.") % (previous-total)
 	elif clean and bool(facts.get("incident_free", false)):
 		title = "CLEAN RACE"
 		caption = "Every lap. No collisions or off-track incidents."
@@ -118,7 +127,9 @@ func _summary(parent: Control) -> void:
 	headline.name = "RaceAchievement"
 	headline.add_theme_color_override("font_color", MenuStyle.ACCENT)
 	achievement.add_child(headline)
+	if not verification_notice.is_empty(): caption = (GameText.message("Saved locally.")+" " if saved else "")+verification_notice
 	var note := MenuStyle.label(caption, 16, true)
+	if not verification_notice.is_empty(): note.name = "RaceVerificationNotice"
 	note.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 	note.custom_minimum_size.x = 340
 	body.add_child(note)
@@ -156,7 +167,7 @@ func _lap_list(parent: Control) -> void:
 		button.add_theme_font_size_override("font_size", 23)
 		for color_state: String in ["font_color", "font_hover_color", "font_pressed_color", "font_focus_color", "font_disabled_color"]:
 			button.add_theme_color_override(color_state, MenuStyle.ACCENT if i == result.fastest else MenuStyle.TEXT)
-		button.tooltip_text = "Lap %d / %s" % [i+1, "Standing start" if i == 0 else "Flying lap"]
+		button.tooltip_text = GameText.message("Lap %d / %s") % [i+1, "Standing start" if i == 0 else "Flying lap"]
 	var stats := VBoxContainer.new()
 	stats.custom_minimum_size.x = 210
 	stats.add_theme_constant_override("separation", 3)
@@ -178,9 +189,11 @@ func _lap_list(parent: Control) -> void:
 			peak = maxf(peak, speeds.y)
 		for event: Dictionary in lap.get("events", []):
 			if str(event.kind) == "collision": collisions += 1
-	average_label.text = "%d km/h" % roundi(weighted/duration) if duration > 0 else "\u2014"
-	top_label.text = "%d km/h" % roundi(peak) if duration > 0 else "\u2014"
-	comparison_label.text = "%d collisions" % collisions if duration > 0 else "Incidents unavailable"
+	average_label.text = GameText.message("%d km/h") % roundi(weighted/duration) if duration > 0 else "\u2014"
+	top_label.text = GameText.message("%d km/h") % roundi(peak) if duration > 0 else "\u2014"
+	if duration > 0:
+		comparison_label.text = GameText.plural("{count} collision","{count} collisions",collisions)
+	else: comparison_label.text = "Incidents unavailable"
 
 func _visualization(parent: Control) -> void:
 	var body: VBoxContainer = _card(parent,4)
@@ -260,7 +273,12 @@ func _actions() -> void:
 	row.name = "ResultsActions"
 	row.add_theme_constant_override("separation",16)
 	add_child(row)
-	var retry := MenuStyle.button("\u21bb   RACE AGAIN\n"+_retry_motivation(),func() -> void: retry_requested.emit())
+	var retry := MenuStyle.button(_retry_caption(),func() -> void: retry_requested.emit())
+	retry_button = retry
+	retry.auto_translate_mode = Node.AUTO_TRANSLATE_MODE_DISABLED
+	retry.icon = MenuIcon.texture("restart")
+	retry.expand_icon = true
+	retry.add_theme_constant_override("icon_max_width",24)
 	retry.name = "RetryRace"
 	retry.add_theme_stylebox_override("normal",_panel_style(8))
 	row.add_child(retry)
@@ -286,9 +304,9 @@ func select_lap(index: int) -> void:
 			if i != selected_lap and state in ["hover", "focus"]: style.bg_color = Color(0.07,0.15,0.20,0.30)
 			lap_buttons[i].add_theme_stylebox_override(state,style)
 	var lap: Dictionary = result.laps[selected_lap]
-	lap_heading.text = "LAP %02d / %s" % [selected_lap+1,"FASTEST LAP" if selected_lap == result.fastest else ("STANDING START" if selected_lap == 0 else "FLYING LAP")]
-	if _is_lap_pb(selected_lap): lap_heading.text = "LAP %02d / PERSONAL BEST" % (selected_lap+1)
-	if not lap.valid: lap_heading.text = "LAP %02d / INVALID" % (selected_lap+1)
+	lap_heading.text = GameText.message("LAP %02d / %s") % [selected_lap+1,"FASTEST LAP" if selected_lap == result.fastest else ("STANDING START" if selected_lap == 0 else "FLYING LAP")]
+	if _is_lap_pb(selected_lap): lap_heading.text = GameText.message("LAP %02d / PERSONAL BEST") % (selected_lap+1)
+	if not lap.valid: lap_heading.text = GameText.message("LAP %02d / INVALID") % (selected_lap+1)
 	map.show_lap(lap,result.laps[result.fastest] if result.fastest >= 0 else {})
 	_update_sectors(lap)
 
@@ -320,10 +338,10 @@ func _update_sectors(lap: Dictionary) -> void:
 		var comparable: bool = available and not map.reference.get("samples",[]).is_empty() and i < reference.size()
 		var delta: float = float(sectors[i].time)-float(reference[i].time) if comparable else 0.0
 		var delta_color: Color = Color("ed8056") if delta > 0.0005 else (Color("55dbaa") if delta < -0.0005 else Color("9bb6c5"))
-		var title := MenuStyle.label("\u25cf  S%d" % (i+1),18)
+		var title := MenuStyle.label(GameText.message("\u25cf  S%d") % (i+1),18)
 		title.add_theme_color_override("font_color",delta_color)
 		sector_rows.add_child(title)
-		sector_rows.add_child(MenuStyle.label("%.2f s" % sectors[i].time if available else "\u2014",19))
+		sector_rows.add_child(MenuStyle.label(GameText.message("%.2f s") % sectors[i].time if available else "\u2014",19))
 		var difference := MenuStyle.label("%+.3f" % delta if comparable else "\u2014",18)
 		difference.add_theme_color_override("font_color",delta_color)
 		sector_rows.add_child(difference)
@@ -342,7 +360,7 @@ static func _panel_style(padding: int) -> StyleBoxFlat:
 
 func _retry_motivation() -> String:
 	if not clean: return "Set a timed benchmark"
-	if previous > 0 and total > previous+0.0005: return "%.3f s to beat your PB" % (total-previous)
+	if previous > 0 and total > previous+0.0005: return GameText.message("%.3f s to beat your PB") % (total-previous)
 	return "Beat your new benchmark" if best > 0 else "Find your next fastest lap"
 
 func _is_lap_pb(index: int) -> bool:

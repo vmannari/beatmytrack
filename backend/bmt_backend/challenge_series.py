@@ -102,13 +102,13 @@ def accept(session, challenge, binding, run, member):
         binding.outcome = {"counted": False}
         return
     prior = own.time_ticks
-    improved = prior is None or run.time_ticks < prior
+    improved = run.status != "skipped" and (prior is None or run.time_ticks < prior)
     if improved:
         own.time_ticks, own.run_id = run.time_ticks, run.id
     session.flush()
     bests = session.scalars(select(ChallengeStageMember).where(
         ChallengeStageMember.challenge_id == challenge.id, ChallengeStageMember.player_id == run.player_id)).all()
-    if all(row.time_ticks is not None for row in bests) and len(bests) == challenge.track_count:
+    if run.status != "skipped" and all(row.time_ticks is not None for row in bests) and len(bests) == challenge.track_count:
         member.time_ticks = sum(row.time_ticks for row in bests)
         member.run_id = run.id
     session.flush()

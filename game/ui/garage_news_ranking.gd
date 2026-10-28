@@ -125,8 +125,8 @@ func refresh() -> void:
 	_busy = false
 	if response.ok:
 		var data: Dictionary = response.data
-		summary.text = "World #%d · %d points" % [int(data.world_rank),int(data.points)] if data.get("world_rank") != null else "World Ranking"
-		if data.get("movement") != null: summary.text += " · %+d places" % int(data.movement)
+		summary.text = GameText.message("World #%d · %d points") % [int(data.world_rank),int(data.points)] if data.get("world_rank") != null else "World Ranking"
+		if data.get("movement") != null: summary.text += GameText.message(" · %+d places") % int(data.movement)
 	else: summary.text = "World Ranking"
 	_cursor = ""
 	_history.clear()
@@ -154,10 +154,10 @@ func _load_page() -> void:
 		return
 	var data: Dictionary = response.data
 	_next = str(data.next_cursor)
-	status.text = "Published %s UTC" % Time.get_date_string_from_unix_time(int(data.get("published_at",0)))
+	status.text = GameText.message("Published %s UTC") % Time.get_date_string_from_unix_time(int(data.get("published_at",0)))
 	if data.get("state") == "not_started":
 		status.text = "Complete five Compact Circuit tracks to earn a ranking."
-		if int(data.get("launch_week",0)) > 0: status.text = "Circuit opens %s UTC." % Time.get_date_string_from_unix_time(int(data.launch_week))
+		if int(data.get("launch_week",0)) > 0: status.text = GameText.message("Circuit opens %s UTC.") % Time.get_date_string_from_unix_time(int(data.launch_week))
 	elif data.get("state") == "country_required": status.text = "Choose your country in your account profile."
 	elif data.items.is_empty(): status.text = "No ranked drivers in this view yet."
 	for index: int in range(data.items.size()):

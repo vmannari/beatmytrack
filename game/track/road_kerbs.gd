@@ -91,7 +91,7 @@ func _native_vertex_height(node: Vector2i, selected: PackedByteArray) -> float:
 
 static func creator_segments(document: Dictionary, selected_kind: String = "", presentation: bool = false, cancelled: Callable = Callable()) -> Array[Dictionary]:
 	var result: Array[Dictionary] = []
-	if document.get("surface","asphalt") == "dirt": return result
+	if document.get("surface","asphalt") == "dirt" and not RoadPieces.has_materials(document): return result
 	var pieces: Array = document.get("pieces",[])
 	var topology: Dictionary = RoadPieces.prepare_endpoints(pieces)
 	var outlines: Array[Dictionary] = []
@@ -109,6 +109,7 @@ static func creator_segments(document: Dictionary, selected_kind: String = "", p
 			outlines.append({"index":index,"polygon":polygon,"bounds":bounds,"hole":pieces[index].kind == "spline" and Geometry2D.is_polygon_clockwise(polygon)})
 	for index: int in range(pieces.size()):
 		if pieces[index].kind == "bridge": continue
+		if RoadPieces.material(pieces[index],document) == "gravel": continue
 		if not selected_kind.is_empty() and pieces[index].kind != selected_kind: continue
 		if _cancelled(cancelled): return []
 		var points: PackedVector2Array = RoadPieces.samples(pieces[index])

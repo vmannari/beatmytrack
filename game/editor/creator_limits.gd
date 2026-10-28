@@ -30,6 +30,7 @@ static func _object_bytes(object: Dictionary, theme: String, instanced: Dictiona
 	var kind: String = str(object.get("kind",""))
 	var key: String = theme+"/"+kind
 	var cost: int = int(COSTS.BYTES.get(key,COSTS.BYTES.get("pine/"+kind,4096)))
+	if kind == "jump" and object.has("jump_profile"): cost = maxi(cost,384000) # Bounded sampled profiles, including rounded shoulders.
 	if not tyre_cost(kind): return cost
 	var bytes: int = tyre_cost(kind)*192
 	if not instanced.has("tyres"): bytes += cost; instanced["tyres"] = true

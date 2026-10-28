@@ -129,22 +129,22 @@ func _refresh() -> void:
 	var item: Dictionary = Library.CATALOG[browse_index]
 	var current: Dictionary = Library.selected(records.settings)
 	var enabled: bool = records.settings.get("music_enabled",true)
-	crate.accessibility_name = "LP collection · "+item.title
-	crate.tooltip_text = item.title+" · "+("Available" if Library.playable(item.id) else "Music coming later")
+	crate.accessibility_name = GameText.message("LP collection · {title}",{"title":item.title})
+	crate.tooltip_text = item.title+" · "+tr("Available" if Library.playable(item.id) else "Music coming later")
 	album_counter.text = "%02d / %02d" % [browse_index+1,Library.CATALOG.size()]
 	previous_button.disabled = browse_index==0
 	next_button.disabled = browse_index==Library.CATALOG.size()-1
 	var available: bool = Library.playable(item.id)
 	play_button.disabled = not available
-	play_button.text = "Music coming later" if not available else "Play "+item.title
+	GameText.bind(play_button,"Music coming later" if not available else "Play {title}",{"title":item.title})
 	play_button.visible = available and current.id!=item.id
 	play_button.icon = Hardware.texture("play")
-	play_button.tooltip_text = "Play "+item.title
+	play_button.tooltip_text = GameText.message("Play {title}",{"title":item.title})
 	play_button.accessibility_name = play_button.tooltip_text
 	transport.icon = Hardware.texture("pause" if enabled else "play")
-	transport.tooltip_text = ("Pause " if enabled else "Play ")+current.title
+	transport.tooltip_text = GameText.message("Pause {title}" if enabled else "Play {title}",{"title":current.title})
 	transport.accessibility_name = transport.tooltip_text
-	status.text = ("Playing · " if enabled else "Paused · ")+current.title
+	GameText.bind(status,"Playing · {title}" if enabled else "Paused · {title}",{"title":current.title})
 	status.tooltip_text = status.text
 	var has_other_record: bool = Library.entries().any(func(release: Dictionary) -> bool: return release.id!=current.id and Library.playable(release.id))
 	for button: Button in [skip_previous,skip_next]:
@@ -153,6 +153,9 @@ func _refresh() -> void:
 		button.accessibility_name = button.tooltip_text
 	_update_volume_caption()
 	changed.emit()
+
+func _notification(what: int) -> void:
+	if what == NOTIFICATION_TRANSLATION_CHANGED and is_instance_valid(status): _refresh.call_deferred()
 
 func _play_browsed() -> void:
 	var item: Dictionary = Library.CATALOG[browse_index]

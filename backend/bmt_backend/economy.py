@@ -146,7 +146,7 @@ def reward(ticket_id: str, request: Request, session: DB, player: Auth):
             raise OSError("Archived reward is missing")
         value = decrypt(secret, run_id, stored)
         return {"status": "credited", "amount": value["amount"], "rows": value["rows"]}
-    status = "credited" if receipt else "unavailable" if run and run.status in ("verified", "rejected", "failed") else "pending"
+    status = "credited" if receipt else "unavailable" if run and run.status in ("verified", "skipped", "rejected", "failed") else "pending"
     return {"status": status, "amount": receipt.amount if receipt else 0, "rows": receipt.rows if receipt else []}
 
 
@@ -161,9 +161,12 @@ def accept_verified(session, run, previous, *, incident_free=False, acceptance=N
     """Caller holds Player and commits the award in the verification transaction."""
     board = acceptance.board if acceptance else session.get(Board, run.board_id)
     player = session.get(Player, run.player_id)
-    if (run.status != "verified" or run.reward_archive_hash or board.manifest.get("purpose") == "creator_test"
+    if (run.status not in ("verified", "skipped") or run.reward_archive_hash or board.manifest.get("purpose") == "creator_test"
             or player.is_test_driver or (acceptance.reward if acceptance else session.get(CoinReward, run.id)) is not None):
         return
+    if run.status == "skipped" and (not all(previous) or run.time_ticks < previous[0]
+                                   or min(run.lap_ticks[1:]) < previous[1]):
+        raise ValueError("Unverified completion cannot award a personal best")
     if acceptance:
         # The worker already owns Player's write lock before loading Acceptance.
         # Keep that lock through commit; do not issue a second locking SELECT.
@@ -185,8 +188,14 @@ def accept_verified(session, run, previous, *, incident_free=False, acceptance=N
     if binding and binding.outcome and binding.outcome.get("counted"):
         scopes.extend(("challenge/attempt/" + binding.challenge_id, "challenge/beaten/" + binding.challenge_id,
                        "challenge/day/" + str(run.created_at // 86400)))
-    milestones = {row.scope: row for row in session.scalars(select(CoinMilestone).where(
-        CoinMilestone.player_id == run.player_id, CoinMilestone.scope.in_(scopes)))}
+    # Read live revisions with the existing milestone query. Acceptance's Board
+    # object can predate the PB triggers fired during this same transaction.
+    milestone_rows = session.execute(select(CoinMilestone, Board.stats_revision, Board.lap_revision)
+        .select_from(Board).outerjoin(CoinMilestone,
+            (CoinMilestone.player_id == run.player_id) & CoinMilestone.scope.in_(scopes))
+        .where(Board.id == board.id)).all()
+    milestones = {row.scope: row for row, _, _ in milestone_rows if row is not None}
+    revisions = tuple(milestone_rows[0][1:])
 
     def add(title, amount, icon="flag"):
         rows.append({"title": title, "amount": amount, "icon": icon, "eligible": True, "status": "Credited"})
@@ -222,12 +231,13 @@ def accept_verified(session, run, previous, *, incident_free=False, acceptance=N
         add("New race PB", 100, "timer")
     if previous[1] and flying < previous[1]:
         add("New lap PB", 100, "timer")
-    from .reward_ranks import percentile_amount
+    from .reward_rank_cache import percentile_amount
     for metric, ticks in (("race", run.time_ticks), ("lap", flying)):
         earned = milestones.get(metric + "/" + board.id)
         if earned is not None and earned.value >= 500:
             continue
-        amount = percentile_amount(session, board.id, metric, ticks)
+        amount = percentile_amount(session, run.player_id, board.id, metric, ticks,
+                                   revisions, earned.value if earned is not None else 0)
         if amount and milestone(metric + "/" + board.id, amount):
             add("Race percentile tier" if metric == "race" else "Best-lap percentile tier", amount, "bars")
     if binding and binding.outcome and binding.outcome.get("counted"):

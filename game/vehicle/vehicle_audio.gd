@@ -137,9 +137,10 @@ func configure(id: String, config: HandlingConfig, car: Node3D = null) -> void:
 	if car!=null: visible_contact.configure(car,car is CarVisual)
 	else: visible_contact.outline = PackedVector2Array()
 	# Only the selected vehicle's six engine loops are retained by this race.
+	var bank_id: String = "pickup" if model.vehicle_id == "forklift" else model.vehicle_id
 	for i: int in range(3):
-		engine_load[i].stream = _stream(model.vehicle_id+"_%d_load"%i,true)
-		engine_coast[i].stream = _stream(model.vehicle_id+"_%d_coast"%i,true)
+		engine_load[i].stream = _stream(bank_id+"_%d_load"%i,true)
+		engine_coast[i].stream = _stream(bank_id+"_%d_coast"%i,true)
 	reset()
 
 func reset() -> void:
@@ -484,6 +485,9 @@ func present(state: VehicleState, frame: DriveFrame, track: NativeTrack, delta: 
 	var load_blend: float = clampf(model.load_amount,0.08,1.0)
 	var load_gains: Vector2 = EngineAudioBlend.load_gains(load_blend)
 	var engine_level: float = lerpf(0.31,0.72,load_blend)
+	if model.vehicle_id == "electric":
+		# No combustion idle or gear changes; the motor rises with wheel speed.
+		engine_level = lerpf(0.12,0.38,load_blend) * smoothstep(0.15,3.0,state.velocity.length())
 	if model.shift_remaining>0.0: engine_level *= 0.56
 	engine_envelope = lerpf(engine_envelope,engine_level,1.0-exp(-dt*22.0))
 	for i: int in range(3):

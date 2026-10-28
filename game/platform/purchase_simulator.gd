@@ -49,7 +49,7 @@ func catalog() -> Dictionary:
 func has_pending_request() -> bool:
 	return is_instance_valid(client) and client.signed_in() and FileAccess.file_exists(_path())
 
-func purchase(product_id: String, outcome: String) -> Dictionary:
+func purchase(product_id: String, outcome: String, recipient_player_id: String = "") -> Dictionary:
 	var guard: Dictionary = _guard()
 	if not guard.ok: return guard
 	var path: String = _path()
@@ -57,6 +57,7 @@ func purchase(product_id: String, outcome: String) -> Dictionary:
 	if journal.has("_read_error"): return {"ok":false,"error":"Could not read purchase recovery. Preserve the file and check storage."}
 	if not journal.is_empty(): return {"ok":false,"error":"Retry the saved purchase before starting another."}
 	journal = {"request_id":_uuid(),"product_id":product_id,"outcome":outcome}
+	if not recipient_player_id.is_empty(): journal.recipient_player_id = recipient_player_id
 	if not AtomicJSON.write(path,journal,4096): return {"ok":false,"error":"Could not save purchase recovery. Free storage and retry."}
 	return await _send_saved(path,journal)
 

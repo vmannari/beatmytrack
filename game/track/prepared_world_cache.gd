@@ -76,7 +76,9 @@ static func restore_cooperative(key: Array, visual: NativeTrackVisual) -> bool:
 		entry = entries.pop_at(index); entries.append(entry); break
 	if entry.is_empty(): return false
 	if not await visual._yield_build(): return false
+	var instantiate_started: int = Time.get_ticks_usec() if visual.profile_build else 0
 	var holder: Node3D = entry.scene.instantiate()
+	if visual.profile_build: visual.build_costs.cache_instantiate_us = Time.get_ticks_usec()-instantiate_started
 	var lease: Node = preload("res://race/install_staging.gd").new()
 	lease.name = "RaceInstallStaging"; lease.staged = holder; visual.add_child(lease)
 	var tyres: Node3D = holder.get_child(entry.tyres) if int(entry.tyres) >= 0 else null
@@ -114,10 +116,12 @@ static func remember_cooperative(key: Array, visual: NativeTrackVisual, track: N
 		if not await visual._yield_build():
 			if is_instance_valid(lease): lease.free()
 			return
+		var duplicate_started: int = Time.get_ticks_usec() if visual.profile_build else 0
 		var copy: Node = child.duplicate(Node.DUPLICATE_GROUPS | Node.DUPLICATE_SCRIPTS)
 		holder.add_child(copy)
 		_own(copy,holder)
 		_isolate_instances(copy)
+		if visual.profile_build: visual.build_costs.cache_duplicate_max_us = maxi(int(visual.build_costs.get("cache_duplicate_max_us",0)),Time.get_ticks_usec()-duplicate_started)
 	if not await visual._yield_build():
 		if is_instance_valid(lease): lease.free()
 		return

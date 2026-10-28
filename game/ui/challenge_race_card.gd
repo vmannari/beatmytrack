@@ -11,6 +11,7 @@ var _route_size := Vector2(-1,-1)
 var _route_points: PackedVector2Array
 
 func _ready() -> void:
+	GameText.user_text(self)
 	custom_minimum_size = Vector2(218,226)
 	size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	clip_contents = true
@@ -34,6 +35,9 @@ func _ready() -> void:
 	mouse_entered.connect(queue_redraw)
 	mouse_exited.connect(queue_redraw)
 
+func _notification(what: int) -> void:
+	if what == NOTIFICATION_TRANSLATION_CHANGED: queue_redraw()
+
 func _draw() -> void:
 	if scenery == null: return
 	var art := Rect2(3,3,size.x-6,96)
@@ -52,6 +56,7 @@ func _draw() -> void:
 		draw_polyline(_route_points,Color("08131bcc"),5,true)
 		draw_polyline(_route_points,Color("f4eee0"),2,true)
 	var format: String = "3×3 SERIES" if item.mode == "3x3" else "CUSTOM CHALLENGE" if ChallengesClient.is_series(item) else "TIME ATTACK" if item.mode == "beat" else "GROUP RACE"
+	format = tr(format)
 	var badge_width: float = MenuStyle.DISPLAY.get_string_size(format,HORIZONTAL_ALIGNMENT_LEFT,-1,14).x+16
 	draw_style_box(MenuStyle.box(Color("08151eeb"),0),Rect2(10,10,badge_width,24))
 	draw_string(MenuStyle.DISPLAY,Vector2(18,28),format,HORIZONTAL_ALIGNMENT_LEFT,badge_width-12,14,MenuStyle.TEXT)
@@ -59,11 +64,11 @@ func _draw() -> void:
 		draw_circle(Vector2(size.x-20,22),8,MenuStyle.ACCENT,true,-1,true)
 		draw_texture_rect(MenuIcon.texture("check",true),Rect2(size.x-25,17,10,10),false,MenuStyle.INK)
 	draw_string(MenuStyle.DISPLAY,Vector2(14,125),str(item.entry.name),HORIZONTAL_ALIGNMENT_LEFT,size.x-28,23,MenuStyle.TEXT)
-	draw_string(MenuStyle.BODY,Vector2(14,145),"by "+str(item.creator),HORIZONTAL_ALIGNMENT_LEFT,size.x-28,14,MenuStyle.MUTED)
-	var target: String = MenuStyle.time_text(float(target_ms)/1000.0) if target_ms != null else "Set the first time"
+	draw_string(MenuStyle.BODY,Vector2(14,145),GameText.message("by {creator}",{"creator":str(item.creator)}),HORIZONTAL_ALIGNMENT_LEFT,size.x-28,14,MenuStyle.MUTED)
+	var target: String = MenuStyle.time_text(float(target_ms)/1000.0) if target_ms != null else tr("Set the first time")
 	draw_string(MenuStyle.DISPLAY,Vector2(14,177),target,HORIZONTAL_ALIGNMENT_LEFT,size.x-28,29 if target_ms != null else 24,MenuStyle.ACCENT)
 	var car: String = VehicleCatalog.title(str(item.vehicle_id))
-	draw_string(MenuStyle.BODY,Vector2(14,198),car+" · "+(str(item.stages.size())+" tracks" if ChallengesClient.is_series(item) else "5 laps"),HORIZONTAL_ALIGNMENT_LEFT,size.x-28,14,MenuStyle.MUTED)
+	draw_string(MenuStyle.BODY,Vector2(14,198),GameText.message("{car} · {distance}",{"car":car,"distance":GameText.plural("{count} track","{count} tracks",item.stages.size()) if ChallengesClient.is_series(item) else GameText.plural("{count} lap","{count} laps",5)}),HORIZONTAL_ALIGNMENT_LEFT,size.x-28,14,MenuStyle.MUTED)
 	draw_string(MenuStyle.BODY,Vector2(14,218),remaining,HORIZONTAL_ALIGNMENT_LEFT,size.x-28,13,MenuStyle.MUTED)
 	var remaining_width: float = MenuStyle.BODY.get_string_size(remaining,HORIZONTAL_ALIGNMENT_LEFT,-1,13).x
 	if size.x >= 250 and remaining_width+MenuStyle.BODY.get_string_size(reward,HORIZONTAL_ALIGNMENT_LEFT,-1,13).x+36 <= size.x:

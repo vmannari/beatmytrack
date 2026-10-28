@@ -48,7 +48,7 @@ func run() -> void:
 	root.add_child(app)
 	while not app.startup_complete: await process_frame
 	app._show_screen("tracks")
-	var track := NativeTrack.read("res://resources/tracks/starter_circuit.json")
+	var track := NativeTrack.read("res://resources/tracks/ellipse.json")
 	track.metadata.cloud_version = "isolated-loading-fixture"
 	app.selected_track = track
 	app._start_race(track, false, true)
@@ -137,7 +137,7 @@ func _capture_layouts(track: NativeTrack) -> void:
 		for biome: String in ["pine", "desert", "winter", "night_city", "storm"]:
 			var loading := Loading.new()
 			root.add_child(loading)
-			loading.configure("Starter Circuit", biome, track.route)
+			loading.configure("Ellipse", biome, track.route)
 			loading.stage("Loading track…")
 			await process_frame
 			await process_frame

@@ -313,7 +313,7 @@ func _test_migration() -> void:
 	var directory: String = "user://control_migration_" + TrackLibrary.unique_id()
 	DirAccess.make_dir_recursive_absolute(directory)
 	var store := LocalRecords.new(directory.path_join("records.json"))
-	store.settings = {"control_layout":legacy.duplicate(true),"favorites":["starter_circuit"]}
+	store.settings = {"control_layout":legacy.duplicate(true),"favorites":["ellipse"]}
 	check(store.save_records() == OK, "existing v1 layout can still be saved")
 	var reloaded := LocalRecords.new(store.path)
 	reloaded.load_records()
@@ -321,7 +321,7 @@ func _test_migration() -> void:
 	reloaded.settings.control_layout = converted.duplicate(true)
 	check(reloaded.save_records() == OK, "converted v2 layout saves atomically")
 	reloaded.load_records()
-	check(reloaded.settings.control_layout.version == 2 and reloaded.settings.favorites == ["starter_circuit"], "v2 reload preserves unrelated preferences")
+	check(reloaded.settings.control_layout.version == 2 and reloaded.settings.favorites == ["ellipse"], "v2 reload preserves unrelated preferences")
 	for file: String in DirAccess.get_files_at(directory): DirAccess.remove_absolute(directory.path_join(file))
 	DirAccess.remove_absolute(directory)
 	for key: String in ["steer_left", "steer_right", "brake", "handbrake"]:

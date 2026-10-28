@@ -36,7 +36,7 @@ class VoteClient extends Base.TicketClient:
 
 class RaceCloud extends Cloud:
 	var queued: int = 0
-	func enqueue_completed(_ticket: Dictionary, _frames: Array, _publish: String = "", _rewinds: Array = []) -> bool:
+	func enqueue_completed(_ticket: Dictionary, _frames: Variant, _publish: String = "", _rewinds: Array = []) -> bool:
 		queued += 1
 		return true
 
@@ -82,7 +82,7 @@ func drive(game: Node) -> void:
 		game.sim.step(frame,game.native_track)
 		game.track_session.advance(game.native_track,before,game.sim.state.position,game.sim.state.route_index,game.sim.state.track_elevated)
 		game.lap_telemetry.observe(game.track_session,game.native_track,game.sim.state.position,game.sim.state.velocity.length(),false)
-		game.online_frames.append([frame.steer,frame.throttle,frame.brake])
+		game.online_frames.append(preload("res://race/input_record.gd").pack(frame))
 		if game.track_session.finished: break
 	check(game.track_session.finished and game.track_session.completed_laps == 5,"actual canonical driving completes all five ordered laps")
 	game._begin_finish()

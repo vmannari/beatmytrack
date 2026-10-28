@@ -17,13 +17,13 @@ func run() -> void:
 	var folder: String = "user://menu_presentation_"+TrackLibrary.unique_id()
 	DirAccess.make_dir_recursive_absolute(folder)
 	var store := LocalRecords.new(folder.path_join("records.json"))
-	store.settings["last_track"] = "starter_circuit"
-	store.settings["favorites"] = ["starter_circuit"]
+	store.settings["last_track"] = "ellipse"
+	store.settings["favorites"] = ["ellipse"]
 	store.settings["steering_haptics"] = 0.0
 	check(store.save_records() == OK,"resume identity and favorites share the recoverable save")
 	var reloaded := LocalRecords.new(store.path)
 	reloaded.load_records()
-	check(reloaded.settings.get("last_track") == "starter_circuit","the last raced circuit survives relaunch")
+	check(reloaded.settings.get("last_track") == "ellipse","the last raced circuit survives relaunch")
 	check(reloaded.settings.get("steering_haptics") == 0.0,"disabled haptics survives relaunch")
 	store.settings.steering_haptics = 0.5
 	check(store.save_records() == OK,"haptic strength can be saved")
@@ -32,7 +32,7 @@ func run() -> void:
 	store.settings.steering_haptics = 1.1
 	check(store.save_records() == ERR_INVALID_DATA and store.settings.steering_haptics == 0.5,"invalid haptic strength rolls back to committed value")
 	store.settings["last_track"] = "../outside"
-	check(store.save_records() == ERR_INVALID_DATA and store.settings.get("last_track") == "starter_circuit","invalid resume identifiers cannot overwrite saved preferences")
+	check(store.save_records() == ERR_INVALID_DATA and store.settings.get("last_track") == "ellipse","invalid resume identifiers cannot overwrite saved preferences")
 	var provider := TrackDiscoveryProvider.new()
 	check(provider.record_snapshot("missing").is_empty(),"missing cloud data stays unavailable")
 	check(TrackDiscoveryProvider.is_rival({"time_beaten":true}),"beaten PB marks rival")

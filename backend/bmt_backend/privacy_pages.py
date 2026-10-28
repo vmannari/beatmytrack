@@ -14,7 +14,7 @@ HEADERS = {"Content-Security-Policy": "default-src 'none'; script-src 'self'; st
 def page(title, body):
     return HTMLResponse('<!doctype html><html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">'
         f'<title>{escape(title)} · Beat my track</title><link rel="stylesheet" href="/privacy/style.css">'
-        '<body><main><nav><a href="/privacy">Privacy</a><a href="/account-deletion">Delete account</a><a href="/community-rules">Community rules</a></nav>'
+        '<body><main><nav><a href="/">Home</a><a href="/privacy">Privacy</a><a href="/account-deletion">Delete account</a><a href="/community-rules">Community rules</a></nav>'
         f'<p class="brand">BEAT MY TRACK</p><h1>{escape(title)}</h1>{body}</main></body></html>', headers=HEADERS)
 
 
@@ -52,6 +52,10 @@ def deletion_page(request: Request):
     return page("Delete your account", '''<p>Remove your Beat my track online account even if you have uninstalled the game.</p>
 <section><h2>What happens</h2><p>Your sign-in identity, racing name, country, private recordings and account-linked analytics are removed. Published tracks and historical standings remain under <strong>Removed account</strong>. Signing in again starts a separate account.</p><p>Local tracks, paint, parts and car condition on your device remain. This does not delete your Google account or cancel a provider subscription. Minimal purchase/security records and expiring backups follow the <a href="/privacy">privacy policy</a>.</p></section>
 <button id="signin"''' + ("" if configured else " disabled") + '''>Verify with Google</button>
-<section id="confirm" hidden><h2>Confirm deletion</h2><p>Account: <strong id="name"></strong></p><p>This permanently removes access to this account. Published tracks and historical results stay under “Removed account”.</p><label><input id="agreement" type="checkbox"> I understand and want to delete this account.</label><button id="delete" disabled>Delete account permanently</button></section>
+<section id="confirm" hidden><h2>Confirm deletion</h2><p>Account: <strong id="name"></strong></p>
+<h3>What you will permanently lose</h3><ul id="benefits"></ul>
+<p><strong>Deleting this whole account permanently removes these balances, online unlocks and remaining ad-free access, including paid benefits. They cannot be restored or transferred to a new account. Reinstalling the game does not recover a deleted account.</strong></p>
+<p>Your private online data and account access will also be removed. Published tracks and historical results stay under “Removed account”. Local tracks, car condition and local cosmetics stay on your device. Mandatory consumer rights and outstanding purchase claims remain.</p>
+<label><input id="agreement" type="checkbox"> I understand that this account and its remaining benefits will be permanently lost.</label><button id="delete" disabled>Delete account permanently</button></section>
 <p id="status" role="status" aria-live="polite">''' + ("Verify the Google identity used for your account. No new game account will be created." if configured else "Google web verification is awaiting service configuration. Use Delete account in the game for a signed-in account.") + '''</p>
 <script src="/privacy/deletion.js" defer></script>''')

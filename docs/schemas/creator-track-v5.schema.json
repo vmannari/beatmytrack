@@ -203,6 +203,11 @@
             "maximum": 3.0,
             "default": 1.0
           },
+          "jump_profile": {
+            "type": "string",
+            "enum": ["low_ramp_v1", "kicker_v1", "tabletop_v1", "roller_v1", "dune_v1"],
+            "description": "Versioned jump or rounded bump profile. Omitted retains the original ramp contract."
+          },
           "color": {
             "type": "string",
             "pattern": "^#[0-9a-fA-F]{6}$",
@@ -210,6 +215,10 @@
           }
         },
         "allOf": [
+          {
+            "if": {"required": ["jump_profile"]},
+            "then": {"properties": {"kind": {"const": "jump"}}}
+          },
           {
             "if": {"required": ["color"]},
             "then": {"properties": {"kind": {"const": "container"}}}
@@ -508,6 +517,11 @@
             "minimum": 6,
             "maximum": 20,
             "description": "Taper-only width at the converging end. Flip chooses which road edge remains straight. Domain validation also requires this not to exceed width."
+          },
+          "surface": {
+            "type": "string",
+            "enum": ["asphalt", "gravel"],
+            "description": "Optional road-piece material in Grass (pine) and Storm. Omission inherits the document surface; legacy dirt maps to gravel. Other themes retain this choice but use their original biome material. Applies to the ground or bridge deck independently."
           },
           "flip": {
             "type": "boolean"

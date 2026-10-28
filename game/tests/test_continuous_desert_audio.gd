@@ -18,7 +18,7 @@ func settle(audio: VehicleAudio, state: VehicleState, frame: DriveFrame, track: 
 		audio.present(state,frame,track,1.0/60.0,false)
 
 func run() -> void:
-	var track: NativeTrack = NativeTrack.read("res://resources/tracks/starter_circuit.json")
+	var track: NativeTrack = NativeTrack.read("res://resources/tracks/ellipse.json")
 	track.cells.fill(0)
 	track.metadata.theme = "desert"
 	var state := VehicleState.new()

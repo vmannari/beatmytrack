@@ -72,6 +72,7 @@ var run_draw: PackedVector2Array = []
 var drawing_run: bool = false
 var stamp_scale: float = 1.0
 var stamp_span: float = 8.0
+var stamp_jump_profile: String = ""
 var stamp_container_color: String = ContainerPaint.DEFAULT
 var bump_end_drag: int = -1
 var bump_before_drag: Dictionary = {}
@@ -560,6 +561,7 @@ func _place(point: Vector2) -> void:
 		var object: Dictionary = {"kind":stamp_kind,"position":[position.x,position.y],"rotation":stamp_rotation}
 		if stamp_scale != 1.0: object["scale"]=stamp_scale
 		if stamp_kind == "speed_bump": object["span"] = stamp_span
+		if stamp_kind == "jump": object["jump_profile"] = stamp_jump_profile if stamp_jump_profile in JumpProfiles.IDS else JumpProfiles.default_for(str(document.theme))
 		if stamp_kind == "container": object["color"] = stamp_container_color
 		var admission: String = preload("res://editor/creator_limits.gd").addition_error(document.objects,[object],str(document.theme))
 		if not admission.is_empty(): hint_changed.emit(admission); return
@@ -1019,7 +1021,7 @@ func _draw_piece(piece: Dictionary, is_ghost: bool, controls: bool = true) -> vo
 		right.append(to_screen(points[i]-normal))
 	# Individual triangles also handle a deliberately tight bend whose inner
 	# edge folds over itself; a single outline is not a simple polygon there.
-	var tint: Color = Color(0.01,0.76,0.85,0.4 if is_ghost else 0.23) if controls else Color("61533e") if document.surface == "dirt" else Color("45494c")
+	var tint: Color = Color(0.01,0.76,0.85,0.4 if is_ghost else 0.23) if controls else Color("8b8070") if RoadPieces.material(piece,document) == "gravel" else Color("45494c")
 	if piece.kind == "spline":
 		var border: Dictionary = _spline_preview(piece)
 		for patch: PackedVector2Array in border.surface:

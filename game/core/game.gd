@@ -48,7 +48,7 @@ var rating_records: LocalRecords
 var cloud_rating: Node
 var preference_records: LocalRecords
 var attempt_evidence: RefCounted = preload("res://race/attempt_evidence.gd").new()
-var online_frames: Array = []
+var online_frames := PackedInt64Array()
 var online_rewinds: Array = []
 var race_proof = preload("res://backend/race_proof.gd").new()
 var resume_client: Node
@@ -83,6 +83,7 @@ var driver := DriverInput.new()
 var launch_early: bool = false
 var launch_countdown_seen: bool = false
 var frame := DriveFrame.new()
+var tire_effect_frame := DriveFrame.new()
 var recorder := HandlingRecorder.new()
 var car: CarVisual
 var car_weathering := VehicleWeathering.new()
@@ -100,6 +101,9 @@ var drift_haptics = preload("res://platform/drift_haptics.gd").new()
 var drift_haptics_enabled: bool = true
 var hud: PlaygroundHUD
 var paused: bool = false
+var _paused_presentation_key: Array = []
+var presentation_world_updates: int = 0
+var world_render_preparation: Node
 var previous_position: Vector2
 var previous_heading: float = 0.0
 var demo_capture: bool = false
@@ -237,13 +241,20 @@ func _ready() -> void:
 	world.add_child(checkpoint_marker)
 	preparation_mark = Time.get_ticks_usec() if profile_enabled else 0
 	car = CarVisual.new()
+	car.cooperative_build = cooperative_preparation
 	car.vehicle_id = vehicle_id
 	car.simple_model = preference_records != null and bool(preference_records.settings.get("simple_car_models",false))
 	if preference_records != null:
 		car.livery = VehicleLivery.for_car(preference_records.settings, vehicle_id)
 		car.customisation = VehicleCustomisation.for_car(preference_records.settings, vehicle_id)
 	world.add_child(car)
+	while not car.model_ready:
+		if not await _preparation_checkpoint(): return
 	if profile_enabled: preparation_costs.car_us = Time.get_ticks_usec()-preparation_mark
+	if profile_enabled:
+		preparation_costs.car_yields = car.model_yields
+		preparation_costs.car_slice_max_us = car.model_max_slice_us
+		preparation_costs.car_slice_at = car.model_slice_at
 	# Weather is created before the car during startup; bind its real footprint
 	# as soon as the presentation node exists.
 	if winter_snow_wind != null: winter_snow_wind.car_visual = car
@@ -277,6 +288,13 @@ func _ready() -> void:
 	vehicle_audio.configure(vehicle_id,handling,car)
 	if profile_enabled: preparation_costs.effects_audio_wall_us = Time.get_ticks_usec()-preparation_mark
 	if not await _preparation_checkpoint(): return
+	if cooperative_preparation and DisplayServer.get_name() != "headless":
+		preparation_mark = Time.get_ticks_usec() if profile_enabled else 0
+		world_render_preparation = preload("res://race/world_render_preparation.gd").new()
+		add_child(world_render_preparation)
+		world_render_preparation.hold(world)
+		if profile_enabled: preparation_costs.hold_us = Time.get_ticks_usec()-preparation_mark
+	preparation_mark = Time.get_ticks_usec() if profile_enabled else 0
 	camera = FollowCamera.new()
 	if preference_records != null:
 		camera.set_mode(str(preference_records.settings.get("camera_mode", "overhead")))
@@ -293,6 +311,10 @@ func _ready() -> void:
 	hud.config = handling
 	hud.driver = driver
 	add_child(hud)
+	hud.direction_requested.connect(func() -> void:
+		if sim.state.velocity.length() > 0.15: return
+		driver.reverse_selected = not driver.reverse_selected
+		hud.direction_button.text = "R" if driver.reverse_selected else "D")
 	impact_cracks = ImpactCracksEffect.new()
 	add_child(impact_cracks)
 	hud.restart_requested.connect(func() -> void:
@@ -337,16 +359,21 @@ func _ready() -> void:
 	resume_credits.client = resume_client
 	resume_credits.show_ads = OS.is_debug_build() and preference_records != null and bool(preference_records.settings.get("development_show_ads", false))
 	add_child(resume_credits)
+	if profile_enabled: preparation_costs.hud_setup_us = Time.get_ticks_usec()-preparation_mark
 	if not await _preparation_checkpoint(): return
+	preparation_mark = Time.get_ticks_usec() if profile_enabled else 0
 	restart()
+	if profile_enabled: preparation_costs.restart_us = Time.get_ticks_usec()-preparation_mark
 	preparation_complete = true
 	if _preparation_backgrounded and not paused: toggle_pause(false)
 	if "--race-hitch-detail" in OS.get_cmdline_user_args(): hitch_diagnostics_detailed = true
 	if hitch_diagnostics_enabled:
+		preparation_mark = Time.get_ticks_usec() if profile_enabled else 0
 		hitch_diagnostics = preload("res://diagnostics/race_hitch_monitor.gd").new()
 		hitch_diagnostics.game = self
 		hitch_diagnostics.detailed = hitch_diagnostics_detailed
 		add_child(hitch_diagnostics)
+		if profile_enabled: preparation_costs.diagnostics_us = Time.get_ticks_usec()-preparation_mark
 	print("PLAYGROUND_READY")
 	if OS.is_debug_build():
 		for argument: String in OS.get_cmdline_user_args():
@@ -382,6 +409,9 @@ func _advance_physics(_delta: float) -> void:
 	race_cues.show_start(0, sim.state.tick) if production_mode and not editor_test else race_cues.reset()
 	previous_position = sim.state.position
 	previous_heading = sim.state.heading
+	if hud.direction_button != null:
+		hud.direction_button.disabled = sim.state.velocity.length() > 0.15
+		hud.direction_button.text = "R" if driver.reverse_selected else "D"
 	var layer_before_step: int = int(sim.state.track_elevated)
 	frame = driver.sample()
 	var profile_start: int = Time.get_ticks_usec() if profile_enabled else 0
@@ -448,10 +478,11 @@ func _advance_physics(_delta: float) -> void:
 		if production_mode and track_session.finished:
 			_begin_finish()
 	profile_start = Time.get_ticks_usec() if profile_enabled else 0
-	if trails.visible: trails.sample(sim.state, frame, bridge_presentation, native_track)
+	var tire_input: DriveFrame = _tire_effect_frame(frame)
+	if trails.visible: trails.sample(sim.state, tire_input, bridge_presentation, native_track)
 	if profile_enabled: profile_trails_us += Time.get_ticks_usec() - profile_start
 	var particle_start: int = Time.get_ticks_usec() if profile_enabled else 0
-	if sand_dust.visible: sand_dust.sample(sim.state, frame, native_track, bridge_presentation)
+	if sand_dust.visible: sand_dust.sample(sim.state, tire_input, native_track, bridge_presentation)
 	if profile_enabled: profile_particles_us += Time.get_ticks_usec() - particle_start
 	recorder.append(frame, sim.state)
 	if recorder.active and recorder.frames.size() >= HandlingRecorder.LIMIT:
@@ -498,8 +529,8 @@ func _advance_finish() -> void:
 	var steering: float = finish_sim.state.steering * 0.97
 	frame = DriveFrame.sample(steering, 0.0, 0.22)
 	finish_sim.step(frame, yard)
-	trails.sample(finish_sim.state, frame, bridge_presentation, native_track)
-	sand_dust.sample(finish_sim.state, frame, native_track, bridge_presentation)
+	trails.sample(finish_sim.state, _tire_effect_frame(frame), bridge_presentation, native_track)
+	sand_dust.sample(finish_sim.state, _tire_effect_frame(frame), native_track, bridge_presentation)
 	finish_ticks += 1
 	race_cues.show_finish(minf(float(finish_ticks) / FINISH_TICKS,0.75) if finish_rating_pending else float(finish_ticks) / FINISH_TICKS)
 	if finish_rating_pending and finish_ticks >= 90: race_cues.show_rating()
@@ -514,6 +545,17 @@ func _complete_finish() -> void:
 	if is_instance_valid(cloud_rating): cloud_rating.abandon()
 	race_cues.reveal_results()
 	race_completed.emit()
+
+
+func _tire_effect_frame(input_frame: DriveFrame) -> DriveFrame:
+	if not handling.single_pedal: return input_frame
+	# D/R is a replay command, never a locked-wheel brake effect. Actual slip,
+	# yaw and surface contacts still drive the ordinary marks and particles.
+	tire_effect_frame.steer = input_frame.steer
+	tire_effect_frame.throttle = input_frame.throttle
+	tire_effect_frame.brake = 0
+	tire_effect_frame.handbrake = 0
+	return tire_effect_frame
 
 
 func _process(delta: float) -> void:
@@ -556,6 +598,21 @@ func _present_frame_scoped(delta: float) -> void:
 	if desert_sand_wind != null: desert_sand_wind.present(delta, point, desert_ambience.strength, paused, finish_sim != null, desert_ambience.sand_lift)
 	if winter_snow_wind != null: winter_snow_wind.present(delta, point, winter_wind.strength, paused, finish_sim != null)
 	var heading: float = lerp_angle(previous_heading, presented.state.heading, weight)
+	if paused:
+		var pause_key: Array = [presented.state.tick,point,heading,countdown_ticks,finish_ticks,rewind_selected,overview,
+			camera.mode,camera.speed_zoom_enabled,camera.speed_zoom_strength,get_viewport().get_visible_rect().size,
+			TranslationServer.get_locale(),recorder.active,contact_lighting_enabled,ghost_mode,personal_ghost.mesh if personal_ghost != null else null]
+		if pause_key == _paused_presentation_key:
+			# Ambience/menu/music fades and camera settling remain live. Surface,
+			# vehicle, props and HUD state are unchanged until an explicit invalidation.
+			vehicle_audio.present(presented.state,frame,native_track,delta,true,countdown_ticks>0)
+			GameSoundtrack.instance().present_race(self,sim.state,native_track,handling,track_session,true,countdown_ticks>0,finish_sim!=null)
+			camera.follow(point,presented.state.velocity,heading,delta)
+			return
+		_paused_presentation_key = pause_key
+	elif not _paused_presentation_key.is_empty():
+		_paused_presentation_key.clear()
+	presentation_world_updates += 1
 	_present_personal_ghost(weight)
 	var water_start: int = Time.get_ticks_usec() if profile_enabled else 0
 	var water_depth: float = _presentation_water_depth(point)
@@ -655,6 +712,7 @@ func _present_drift_haptics(delta: float) -> void:
 
 func restart() -> void:
 	if is_instance_valid(rewind_panel): return
+	_paused_presentation_key.clear()
 	drift_haptics.reset()
 	online_frames.clear()
 	attempt_evidence = preload("res://race/attempt_evidence.gd").new()
@@ -667,6 +725,10 @@ func restart() -> void:
 	if resume_credits != null: resume_credits.begin(resume_ticket_id)
 	recorder.active = false
 	driver.clear()
+	driver.reverse_selected = false
+	if hud.direction_button != null:
+		hud.direction_button.text = "D"
+		hud.direction_button.disabled = false
 	frame = DriveFrame.new()
 	paused = false
 	if hud != null and hud.pause_menu != null: hud.pause_menu.hide()
@@ -697,7 +759,8 @@ func restart() -> void:
 	if preference_records != null: GameSoundtrack.instance().apply_settings(preference_records.settings)
 	GameSoundtrack.instance().begin_race(self,str(native_track.metadata.get("theme","pine")) if native_track != null else "pine",sim.state)
 	practice_validation = TrackSession.new(120,1)
-	practice_validation_eligible = true
+	var authored: Dictionary = native_track.metadata.get("creator_document",{}) if native_track!=null else {}
+	practice_validation_eligible = authored.has("start_line") and RoadPieces.route_from_pieces(authored).ok
 	checkpoint_marker.previous_gate = -2
 	checkpoint_marker.visible = false
 	hud.checkpoint_notice.clear()
@@ -776,6 +839,7 @@ func toggle_pause(capture: bool = true) -> void:
 	if production_mode and not editor_test and track_session.finished: return
 	if not paused and capture: hud.pause_menu.capture_race()
 	paused = not paused
+	if paused and is_instance_valid(camera): camera.clear_shake()
 	if sand_dust != null: sand_dust.set_water_paused(paused)
 	hud.pause_menu.visible = paused
 	if paused: hud.pause_menu.show_main()

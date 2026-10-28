@@ -51,7 +51,7 @@ func run() -> void:
 	var warm_garage: Control = app.menu_neighbors[2].body
 	var selector: Button = warm_garage.find_child("GarageCar_compact",true,false)
 	check(selector.get_mouse_filter_with_override() == Control.MOUSE_FILTER_IGNORE and selector.get_focus_mode_with_override() == Control.FOCUS_NONE, "warmed page descendants reject mouse and keyboard focus")
-	var next_track := NativeTrack.read("res://resources/tracks/starter_circuit.json")
+	var next_track := NativeTrack.read("res://resources/tracks/ellipse.json")
 	next_track.identity = "quality_new_selection"
 	next_track.metadata.title = "New selected circuit"
 	app.selected_track = next_track
@@ -85,7 +85,7 @@ func run() -> void:
 	var local := TrackBrowser.new()
 	local.library = TrackLibrary.new(directory)
 	local.records = LocalRecords.new(directory.path_join("unused.json"))
-	local.selected_track = NativeTrack.read("res://resources/tracks/starter_circuit.json")
+	local.selected_track = NativeTrack.read("res://resources/tracks/ellipse.json")
 	local.builtin_ids = BuiltinTracks.ids()
 	local.state = {}
 	local.size = Vector2(1280, 620)
@@ -118,7 +118,7 @@ func run() -> void:
 	var callbacks := CallbackBrowser.new()
 	callbacks.library = TrackLibrary.new(directory)
 	callbacks.records = LocalRecords.new(directory.path_join("unused.json"))
-	callbacks.selected_track = NativeTrack.read("res://resources/tracks/starter_circuit.json")
+	callbacks.selected_track = NativeTrack.read("res://resources/tracks/ellipse.json")
 	callbacks.state = {}
 	callbacks.size = Vector2(1280,620)
 	root.add_child(callbacks)

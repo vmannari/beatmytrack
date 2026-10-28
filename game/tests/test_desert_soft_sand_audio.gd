@@ -15,7 +15,7 @@ func check(ok: bool, message: String) -> void:
 		print("FAIL: "+message)
 
 func make_track() -> NativeTrack:
-	var track: NativeTrack = NativeTrack.read("res://resources/tracks/starter_circuit.json")
+	var track: NativeTrack = NativeTrack.read("res://resources/tracks/ellipse.json")
 	track.metadata.theme = "desert"
 	track.metadata.erase("creator_document")
 	track.cells.fill(0)

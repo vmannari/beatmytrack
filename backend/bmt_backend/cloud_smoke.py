@@ -8,7 +8,9 @@ from dataclasses import replace
 from pathlib import Path
 
 from sqlalchemy import text
+from sqlalchemy.orm import Session
 
+from .catalog_builds import check_catalog
 from .config import Settings
 from .db import make_engine
 from .gcs_storage import GCSBlobStore
@@ -49,6 +51,8 @@ def check(settings, owner, fixture_path=Path("/opt/bmt/acceptance/verified_oval.
             if (connection.execute(text("SELECT 1 FROM pg_roles WHERE rolname='cloudsqlsuperuser'")).scalar()
                     and connection.execute(text("SELECT pg_has_role(current_user,'cloudsqlsuperuser','MEMBER')")).scalar()):
                 raise RuntimeError("Application role inherits Cloud SQL administration")
+        with Session(engine) as session:
+            catalogue = check_catalog(session, verifier.manifest())
         fixture = json.loads(fixture_path.read_text())
         result = verifier.verify_canonical_diagnostic(fixture["document"], fixture["replay"], fixture["vehicle_id"], capture_ghost=False)
         # Same existing oval golden proof checked during image build; its saved
@@ -67,6 +71,7 @@ def check(settings, owner, fixture_path=Path("/opt/bmt/acceptance/verified_oval.
         if cursor or {row["digest"] for row in rows} != set(keys):
             raise RuntimeError("Staging object listing differs from publications")
         return {"status": "passed", "schema": SCHEMA_HEAD, "storage_objects": len(keys),
+            "catalogue": catalogue,
             "results_comparison_route": True,
             "canonical_ticks": result["time_ticks"], "player_writes": 0}
     finally:

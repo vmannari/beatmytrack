@@ -64,7 +64,7 @@ func _run() -> void:
 		check(page.tools_panel.position.x>=page.preview.get_rect().end.x,"workbench remains beside live car")
 		check(page.get_global_rect().encloses(page.tools_panel.get_global_rect()) and page.get_global_rect().encloses(page.actions.get_global_rect()),"workbench and footer fit")
 		check(page.kit_cards.columns==2 and page.kit_scroll.horizontal_scroll_mode==ScrollContainer.SCROLL_MODE_DISABLED,"two columns with no horizontal clipping")
-		check(page.tools_panel.find_child("GarageResetKits",true,false)!=null and page.preview.get_node("GarageViewControls/GarageTopView").visible,"header reset and matching view tools available")
+		check(page.tools_panel.find_child("GarageResetKits",true,false)!=null and page.preview.find_child("GarageTopView",true,false)==null,"kit reset remains without a showroom view button")
 		for category: String in VehicleCustomisation.CATEGORIES:
 			page._select_kit_category(category)
 			await settle()

@@ -4,6 +4,9 @@ const WIND := Vector2(0.91, 0.414608)
 const SIDE := Vector2(WIND.y, -WIND.x) # World-XZ side expressed in simulator XY.
 const MAX_SIZE: int = 512
 const REACH: float = 15.2 # Twice the unchanged maximum stream radius.
+const MAX_CACHE_BYTES: int = 8 * 1024 * 1024
+static var entries: Array[Dictionary] = []
+static var cache_bytes: int = 0
 var texture: ImageTexture
 var image: Image
 var bounds := Vector4.ZERO
@@ -13,6 +16,14 @@ var polygons: Array[PackedVector2Array] = []
 
 func prepare(track: NativeTrack) -> void:
 	polygons.clear(); origins.clear(); step = Vector2(2.0, 10.0)
+	var key: Array = [track.content_hash,track.grid_width,track.grid_height,track.cell_size,track.half_extent,WIND,SIDE,REACH,MAX_SIZE]
+	if not track.content_hash.is_empty():
+		for index: int in range(entries.size()):
+			if entries[index].key != key: continue
+			var cached: Dictionary = entries.pop_at(index); entries.append(cached)
+			texture = cached.texture; image = cached.image; bounds = cached.bounds; step = cached.step
+			origins = cached.origins.duplicate(); polygons.assign(cached.polygons)
+			return
 	var pieces: Array = track.metadata.get("creator_document", {}).get("pieces", [])
 	var topology: Dictionary = RoadPieces.prepare_endpoints(pieces)
 	for index: int in range(pieces.size()):
@@ -68,6 +79,18 @@ func prepare(track: NativeTrack) -> void:
 			for column: int in range(maxi(0, floori((origin.x - lo.x) / step.x)), mini(size.x, ceili((origin.x + REACH - lo.x) / step.x))):
 				image.set_pixel(column, row, Color(origin.x, origin.y, 0.0, 1.0))
 	texture = ImageTexture.create_from_image(image)
+	# CPU pixels plus decoded GPU texture and owned source geometry. Share only
+	# this immutable lookup; each race still owns its wind animation/materials.
+	var bytes: int = image.get_width()*image.get_height()*32+origins.size()*16+1024
+	for polygon: PackedVector2Array in polygons: bytes += polygon.size()*16+64
+	if not track.content_hash.is_empty() and bytes <= MAX_CACHE_BYTES:
+		trim_cache(MAX_CACHE_BYTES-bytes)
+		while entries.size() >= 4: cache_bytes -= int(entries.pop_front().bytes)
+		entries.append({"key":key,"texture":texture,"image":image,"bounds":bounds,"step":step,"origins":origins.duplicate(),"polygons":polygons.duplicate(),"bytes":bytes})
+		cache_bytes += bytes
+
+static func trim_cache(allowance: int = 0) -> void:
+	while not entries.is_empty() and cache_bytes > allowance: cache_bytes -= int(entries.pop_front().bytes)
 
 func bind(material: ShaderMaterial) -> void:
 	material.set_shader_parameter("snow_edge_sources", true)

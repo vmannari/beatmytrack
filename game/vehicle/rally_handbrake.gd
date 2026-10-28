@@ -9,6 +9,7 @@ static func forces(config: HandlingConfig, longitudinal: float, lateral: float, 
 	var front_velocity := Vector2(lateral + yaw * arm, longitudinal)
 	var rear_velocity := Vector2(lateral - yaw * arm, longitudinal)
 	var front_side := Vector2(cos(steering), -sin(steering))
+	if config.rear_steering: front_side = Vector2.RIGHT
 	var effective_mass: float = 1.0 / (1.0 / config.mass + arm * arm / config.rotational_inertia)
 	var stiffness: float = minf(config.mass * config.lateral_response * 0.5, effective_mass / dt)
 	var front_capacity: float = config.mass * config.lateral_grip * config.front_grip * grip * 0.5
@@ -16,6 +17,9 @@ static func forces(config: HandlingConfig, longitudinal: float, lateral: float, 
 	var front_force: Vector2 = front_side * clampf(-front_velocity.dot(front_side) * stiffness, -front_capacity, front_capacity)
 	var rear_lateral: float = lerpf(1.0, 0.35, recovery)
 	var rear_rolling := Vector2(clampf(-rear_velocity.x * stiffness, -rear_capacity * rear_lateral, rear_capacity * rear_lateral),0)
+	if config.rear_steering:
+		var rear_side := Vector2(cos(steering), sin(steering))
+		rear_rolling = rear_side * clampf(-rear_velocity.dot(rear_side) * stiffness, -rear_capacity * rear_lateral, rear_capacity * rear_lateral)
 	# The friction vector of a locked tire shares its budget between braking
 	# and sideways resistance; rear wheels roll again immediately on release.
 	var rear_locked: Vector2 = -rear_velocity.normalized() * minf(rear_capacity * 0.45, rear_velocity.length() * effective_mass / dt)

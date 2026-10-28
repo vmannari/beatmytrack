@@ -103,6 +103,9 @@ func _gui_input(event: InputEvent) -> void:
 	else: return
 	accept_event()
 
+func _notification(what: int) -> void:
+	if what == NOTIFICATION_TRANSLATION_CHANGED: queue_redraw()
+
 func _draw() -> void:
 	var width: float = size.x
 	var compact: bool = size.y < 240
@@ -147,6 +150,7 @@ func _draw() -> void:
 			if distance<0.5 and not Library.playable(Library.CATALOG[index].id):
 				var small_stamp: bool = card_side<120
 				var caption: String = "COMING LATER" if small_stamp else "MUSIC COMING LATER"
+				caption = tr(caption)
 				var stamp := Rect2(rect.position+Vector2(6,height-(23 if small_stamp else 29)),Vector2(card_side-12,15 if small_stamp else 21))
 				draw_rect(stamp,Color(0.025,0.055,0.07,0.93*alpha))
 				draw_string(MenuStyle.DISPLAY,stamp.position+Vector2(4,11 if small_stamp else 15),caption,HORIZONTAL_ALIGNMENT_LEFT,stamp.size.x-8,9 if small_stamp else 12,Color(0.78,0.81,0.78,alpha))

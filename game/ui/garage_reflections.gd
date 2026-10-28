@@ -12,6 +12,7 @@ var deck_material: ShaderMaterial
 var enabled: bool = true
 var _visible: bool = false
 var _synced: Array = []
+var draw_requests: PackedInt64Array = PackedInt64Array([0,0])
 
 func build(source: CarShowroom, world: Node3D, stage: Node3D) -> void:
 	owner = source
@@ -97,12 +98,15 @@ func sync() -> void:
 	set_visible(owner.is_visible_in_tree())
 	request_draw()
 
-func request_draw() -> void:
+func request_draw(room: bool = true, car: bool = true) -> void:
 	if not enabled or not owner.is_visible_in_tree(): return
-	for view: SubViewport in views: view.render_target_update_mode = SubViewport.UPDATE_ONCE
+	for index: int in range(views.size()):
+		if not (room if index == 0 else car): continue
+		views[index].render_target_update_mode = SubViewport.UPDATE_ONCE
+		draw_requests[index] += 1
 
 func set_visible(active: bool) -> void:
-	if active == _visible: return
+	if active and _visible: return
 	_visible = active
 	if active: request_draw()
 	else:

@@ -55,6 +55,7 @@ func _ready() -> void:
 	var column := VBoxContainer.new()
 	column.add_theme_constant_override("separation", 16)
 	panel.add_child(column)
+	column.add_child(MenuBrand.new())
 	var heading := MenuStyle.label("LOADING TRACK", 20)
 	heading.add_theme_color_override("font_color", MenuStyle.ACCENT)
 	column.add_child(heading)
@@ -94,7 +95,7 @@ func _ready() -> void:
 func configure(title: String, theme_id: String, points: PackedVector2Array, practice: bool = false) -> void:
 	title_label.text = title
 	scenery.texture = TrackTile.scenery_texture(theme_id)
-	facts_label.text = TrackTheme.title(theme_id) + "  ·  " + ("Practice (untimed)" if practice else "5 laps") + "  ·  " + VehicleCatalog.title()
+	GameText.bind(facts_label,"{biome}  ·  {race}  ·  {car}",{"biome":tr(TrackTheme.title(theme_id)),"race":tr("Practice (untimed)" if practice else "5 laps"),"car":tr(VehicleCatalog.title())})
 	route = points
 	route_view.queue_redraw()
 

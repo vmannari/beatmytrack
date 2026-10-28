@@ -318,7 +318,7 @@ func _safe_properties(name: String, properties: Dictionary) -> Dictionary:
 			elif key == "track_version_id" and value is String and _uuid_pattern.search(value) != null: safe[key] = value
 			continue
 		if key in ["track_version_id","ticket_id","challenge_id"] and value is String and _uuid_pattern.search(value) != null: safe[key] = value
-		elif key == "car_id" and value in ["compact","pickup","classic","formula","kart"]: safe[key] = value
+		elif key == "car_id" and value in VehicleCatalog.IDS: safe[key] = value
 		elif key == "mode" and value in ["free","rivalry","challenge","creator"]: safe[key] = value
 		elif key == "biome" and value in ["pine","desert","night_city","winter","storm"]: safe[key] = value
 		elif key == "reason" and value in ["launch","resume","inactivity","finished","restart","exit","background","unknown","save","publish","edit","test","open","join","create","share"]: safe[key] = value

@@ -5,13 +5,19 @@ const PLATE_CENTER: float=0.4856
 static var meshes: Dictionary={}
 static var lettering: Dictionary={}
 
-static func build(car: CarVisual,paint: Material,trim: Material,metal: Material) -> void:
+static func build(car: CarVisual,paint: Material,trim: Material,metal: Material,cooperate: Callable=Callable()) -> void:
 	_lamps(car,trim)
+	if cooperate.is_valid() and not await cooperate.call(): return
 	_tailgate(car,paint,trim)
+	if cooperate.is_valid() and not await cooperate.call(): return
 	_bumper_bevel(car)
+	if cooperate.is_valid() and not await cooperate.call(): return
 	_plate(car,trim,metal)
+	if cooperate.is_valid() and not await cooperate.call(): return
 	_window(car,trim)
+	if cooperate.is_valid() and not await cooperate.call(): return
 	_exhaust(car,trim,metal)
+	if cooperate.is_valid() and not await cooperate.call(): return
 	var lower: MeshInstance3D=VisualGeometry.box(car.body,Vector3(1.38,0.048,0.09),Vector3(0,0.350,1.989),car.underside_material)
 	lower.name="RearLowerValanceShadow"
 

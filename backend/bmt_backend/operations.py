@@ -23,7 +23,8 @@ def heartbeat(app, worker_id: str, *, coalesce=False, **details):
         pending = {**(entry["pending"] if entry else {}), **copy.deepcopy(details)}
         control = getattr(app.state, "worker_control", None)
         stopping = control and (control.requested_at is not None or control.stop.is_set())
-        interval = min(1.0, app.state.settings.worker_stale_seconds / 4)
+        stable_idle = pending.get("phase") == "idle" and entry is not None and entry.get("phase") == "idle"
+        interval = min(30.0 if stable_idle else 1.0, app.state.settings.worker_stale_seconds / 4)
         force = (not coalesce or entry is None or "lifecycle" in pending or stopping
                  or "build" in details and details["build"] != entry["build"])
         if not force and time.monotonic() - entry["written"] < interval:
@@ -45,6 +46,8 @@ def heartbeat(app, worker_id: str, *, coalesce=False, **details):
             if entry["pending"].get(key) == value:
                 entry["pending"].pop(key, None)
         entry.update(written=time.monotonic(), build=stored_build)
+        if "phase" in pending:
+            entry["phase"] = pending["phase"]
         memory.move_to_end(worker_id)
         while len(memory) > 64:
             memory.popitem(last=False)

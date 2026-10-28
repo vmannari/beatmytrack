@@ -6,7 +6,7 @@ const RAIL_TOP: Color = Color("858681")
 const RAIL_SIDE: Color = Color("60635f")
 const ASPHALT_EDGE = preload("res://track/asphalt_edge_profile.gd")
 
-static func build(parent: Node3D, bridges: Array, theme: String = "pine", road_phases: Array[Dictionary] = [], raise_asphalt: bool = true) -> void:
+static func build(parent: Node3D, bridges: Array, theme: String = "pine", road_phases: Array[Dictionary] = [], raise_asphalt: bool = true, material_blend: Image = null, map_extent: Vector2 = Vector2.ZERO) -> void:
 	if bridges.is_empty(): return
 	ContactShading.build_bridges(parent,bridges)
 	var tool := SurfaceTool.new()
@@ -20,6 +20,8 @@ static func build(parent: Node3D, bridges: Array, theme: String = "pine", road_p
 		deck.set_normal(Vector3.UP); deck.set_uv2(Vector2.RIGHT)
 	for span_index: int in range(bridges.size()):
 		var span: Dictionary = bridges[span_index]
+		var loose: bool = theme in ["pine","storm"] and span.get("surface","") == "gravel"
+		if theme in ["pine","storm"]: deck.set_uv2(Vector2(1.0,1.0 if loose else 0.0))
 		if theme == "desert":
 			DesertBridgeVisual.append(tool,deck,span,bridges,road_phases[span_index] if span_index < road_phases.size() else {})
 			continue
@@ -44,7 +46,7 @@ static func build(parent: Node3D, bridges: Array, theme: String = "pine", road_p
 					var offset_b: float = preload("res://track/road_surface_height.gd").bridge_offset(b,float(span.length),0.025,road_lift)
 					var outward: Vector3 = VisualGeometry.world(Vector2(0.0,side).rotated(deg_to_rad(float(span.heading))))
 					ASPHALT_EDGE.append(lip,vertex(span,a,side*(half-radius),offset_a),vertex(span,b,side*(half-radius),offset_b),
-						outward,outward,0.0,0.0,Vector2(a,side*(half-radius)),Vector2(b,side*(half-radius)),Vector2.RIGHT,false,Vector2(0.0,side),up)
+						outward,outward,0.0,0.0,Vector2(a,side*(half-radius)),Vector2(b,side*(half-radius)),Vector2(1.0,1.0 if loose else 0.0),false,Vector2(0.0,side),up)
 			for side: float in [-1.0,1.0]:
 				for run: Vector2 in CreatorBridges.clip_runs(rails[side],a,b):
 					var inner: float = half*side
@@ -63,7 +65,7 @@ static func build(parent: Node3D, bridges: Array, theme: String = "pine", road_p
 					wall(tool,span,run.x,run.y,rail,0.65,0.85,RAIL_SIDE)
 					wall(tool,span,run.x,run.y,back,0.65,0.85,RAIL_SIDE)
 					strip(tool,span,run.x,run.y,rail,back,0.65,RAIL_SIDE)
-					strip(tool,span,run.x,run.y,(half-0.30)*side,(half-0.18)*side,0.033,Color("d9d8cc"),{},road_lift)
+					if not loose: _marking(tool,span,run.x,run.y,side,road_lift,material_blend,map_extent)
 			strip(tool,span,a,b,-half-CreatorBridges.RAIL,half+CreatorBridges.RAIL,-0.42,Color("293e4a"))
 		# Sparse slim steel uprights, all within the existing solid rail strip.
 		var posts: int = maxi(1,ceili(float(span.length)/8.0))
@@ -89,8 +91,12 @@ static func build(parent: Node3D, bridges: Array, theme: String = "pine", road_p
 				if CreatorBridges.clip_runs(rails[side],u,u+0.001).is_empty(): continue
 				quad(tool,vertex(span,u,(half+0.14)*side,0.65),vertex(span,u,(half+0.34)*side,0.65),vertex(span,u,(half+0.34)*side,0.85),vertex(span,u,(half+0.14)*side,0.85),RAIL_SIDE)
 		# Small approach markings explain which ends can be driven onto.
-		for u: float in [2.0,float(span.length)-2.0]:
-			for side: float in [-1.0,1.0]: strip(tool,span,u,u+0.18,side*1.0,side*2.0,0.04,Color("d5d6bb"),{},road_lift)
+		if not loose:
+			for u: float in [2.0,float(span.length)-2.0]:
+				for side: float in [-1.0,1.0]:
+					var p := Vector2(span.position[0],span.position[1])+Vector2(u,side*1.5).rotated(deg_to_rad(float(span.heading)))
+					var paint: float = _paint_strength(p,material_blend,map_extent)
+					if paint > 0.001: strip(tool,span,u,u+0.18,side*(1.5-paint*0.5),side*(1.5+paint*0.5),0.04,Color("d5d6bb"),{},road_lift)
 	tool.generate_normals()
 	var mesh := MeshInstance3D.new()
 	mesh.add_to_group("race_bridge_rendering")
@@ -121,6 +127,13 @@ static func build(parent: Node3D, bridges: Array, theme: String = "pine", road_p
 	if theme == "desert": asphalt.shader = preload("res://track/desert_bridge_road.gdshader")
 	asphalt.set_shader_parameter("surface_factors", preload("res://assets/textures/surface_factors_v1.png"))
 	asphalt.set_shader_parameter("road_color",TrackTheme.palette(theme)[0])
+	asphalt.set_shader_parameter("sand_color",TrackTheme.palette(theme)[2].darkened(0.20))
+	asphalt.set_shader_parameter("piece_materials",theme in ["pine","storm"] and bridges.any(func(span: Dictionary) -> bool: return span.has("surface")))
+	asphalt.set_shader_parameter("gravel_road_base",TrackTheme.DESERT[0])
+	asphalt.set_shader_parameter("bridge_material_blend",material_blend != null)
+	if material_blend != null:
+		asphalt.set_shader_parameter("bridge_blend_mask",ImageTexture.create_from_image(material_blend))
+		asphalt.set_shader_parameter("bridge_map_extent",map_extent)
 	asphalt.set_shader_parameter("industrial_asphalt",theme == "night_city")
 	if theme == "night_city": asphalt.set_shader_parameter("night_asphalt_wear",NativeTrackVisual.NIGHT_ASPHALT_WEAR)
 	asphalt.set_shader_parameter("icy_road",theme == "winter")
@@ -143,6 +156,27 @@ static func build(parent: Node3D, bridges: Array, theme: String = "pine", road_p
 	road.material_override = asphalt
 	road.layers = 1 # Continuous Lambert response rejects lights below the road normal.
 	parent.add_child(road)
+
+static func _marking(tool: SurfaceTool, span: Dictionary, a: float, b: float, side: float, road_lift: float, blend: Image, extent: Vector2) -> void:
+	var half: float = float(span.width)*0.5
+	if blend == null:
+		strip(tool,span,a,b,(half-0.30)*side,(half-0.18)*side,0.033,Color("d9d8cc"),{},road_lift)
+		return
+	var center: float = (half-0.24)*side
+	var widths: Array[float] = []
+	for along: float in [a,b]:
+		var p := Vector2(span.position[0],span.position[1])+Vector2(along,center).rotated(deg_to_rad(float(span.heading)))
+		widths.append(0.06*_paint_strength(p,blend,extent))
+	if maxf(widths[0],widths[1]) < 0.001: return
+	var height_a: float = road_lift+lerpf(0.018,0.033,smoothstep(0.0,1.0,minf(a,float(span.length)-a))) if road_lift > 0.0 else 0.033
+	var height_b: float = road_lift+lerpf(0.018,0.033,smoothstep(0.0,1.0,minf(b,float(span.length)-b))) if road_lift > 0.0 else 0.033
+	quad(tool,vertex(span,a,center-widths[0],height_a),vertex(span,b,center-widths[1],height_b),vertex(span,b,center+widths[1],height_b),vertex(span,a,center+widths[0],height_a),Color("d9d8cc"))
+
+static func _paint_strength(p: Vector2, blend: Image, extent: Vector2) -> float:
+	if blend == null: return 1.0
+	var x: int = clampi(floori((p.x+extent.x)/(extent.x*2.0)*blend.get_width()),0,blend.get_width()-1)
+	var y: int = clampi(floori((extent.y-p.y)/(extent.y*2.0)*blend.get_height()),0,blend.get_height()-1)
+	return 1.0-smoothstep(0.0,0.5,blend.get_pixel(x,y).b)
 
 static func vertex(span: Dictionary, along: float, across: float, offset: float) -> Vector3:
 	var p: Vector2 = Vector2(span.position[0],span.position[1])+Vector2(along,across).rotated(deg_to_rad(float(span.heading)))

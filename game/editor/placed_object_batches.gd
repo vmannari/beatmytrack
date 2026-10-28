@@ -25,6 +25,7 @@ func refresh(kit: NativeTrackVisual, track: NativeTrack, sliced: bool, current: 
 	var objects: Array = track.metadata.get("creator_document",{}).get("objects",[]).duplicate(true)
 	var tyres: PackedVector2Array = track.tyre_origins.duplicate()
 	if objects == sources and tyres == tyre_origins and updates > 0 and ground_key == track.content_hash: return false
+	var visual_objects: Array = CreatorPropVisual.GUARDRAIL.prepare(objects)
 	var desired: Dictionary = {}
 	var next_models: Dictionary = {}
 	var separate: Dictionary = {}
@@ -36,7 +37,7 @@ func refresh(kit: NativeTrackVisual, track: NativeTrack, sliced: bool, current: 
 				for pending: NativeTrackVisual in pending_nodes: pending.free()
 				return false
 			kit._slice_started = Time.get_ticks_usec()
-		var object: Dictionary = objects[index]
+		var object: Dictionary = visual_objects[index]
 		var kind: String = object.kind
 		if kind in ["tyre_stack","tyre_wall"]: continue
 		# Preserve the original lamp glow orientation, movable nodes and damage phases.

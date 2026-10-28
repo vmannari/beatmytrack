@@ -29,7 +29,7 @@ CONTROL_BODY_SECONDS = 5.0
 CONTROL_BODY_STALL_SECONDS = 2.0
 from .discovery_guard import costly
 from .json_data import parse_json as parse_body
-from .observability import dependency_failure
+from .observability import dependency_failure, failure_site
 from .security import digest
 
 log = logging.getLogger("bmt.requests")
@@ -608,7 +608,7 @@ class RequestBoundary:
         except Exception as exc:
             # Exception text/traceback can contain credentials or submitted
             # values. The structured logger keeps only its type and request ID.
-            log.error("request_failed", extra={"request_id": request_id, "exception_type": type(exc).__name__})
+            log.error("request_failed", extra={"request_id": request_id, "exception_type": type(exc).__name__, "failure_site": failure_site(exc)})
             if response_started:
                 raise
             return await error(500, "INTERNAL_ERROR")

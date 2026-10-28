@@ -108,7 +108,7 @@ func _check_preferences() -> void:
 	var folder: String = "user://drift_haptics_"+TrackLibrary.unique_id()
 	DirAccess.make_dir_recursive_absolute(folder)
 	var store := LocalRecords.new(folder.path_join("records.json"))
-	store.settings = {"favorites":["starter_circuit"], "steering_haptics":0.0}
+	store.settings = {"favorites":["ellipse"], "steering_haptics":0.0}
 	check(store.save_records() == OK, "old profile without drift preference remains valid")
 	var page := SettingsPage.new()
 	page.records = store
@@ -134,7 +134,7 @@ func _check_preferences() -> void:
 	check(page._apply(), "failed save can be retried")
 	store.settings.drift_haptics = "false"
 	check(store.save_records() == ERR_INVALID_DATA and store.settings.drift_haptics == true, "malformed drift preference is rejected with recoverable rollback")
-	check(store.settings.favorites == ["starter_circuit"], "drift edits preserve unrelated preferences")
+	check(store.settings.favorites == ["ellipse"], "drift edits preserve unrelated preferences")
 	page.queue_free()
 	await process_frame
 	for filename: String in DirAccess.get_files_at(folder): DirAccess.remove_absolute(folder.path_join(filename))

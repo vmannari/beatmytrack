@@ -67,7 +67,7 @@ func load_page(nearby: bool = false) -> void:
 	if response.ok:
 		rows.clear()
 		player_names.clear()
-		rows.add_text("%d verified racers\n\n" % int(response.data.population))
+		rows.add_text(GameText.message("%d verified racers\n\n") % int(response.data.population))
 		for item: Dictionary in response.data.items:
 			player_names[str(item.get("player_id",item.get("id","")))] = str(item.display_name)
 			rows.add_image(PlayerCountry.texture(str(item.get("country_code",""))),28,21)

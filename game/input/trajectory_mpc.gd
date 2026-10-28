@@ -59,7 +59,7 @@ func control(state: VehicleState, trajectory: RacingTrajectory, progress: float,
 	var speed_goal: float = minf(_speed_limit(reference.curvature,float(reference.grip)*state.grip),minf(reference.speed,braking_preview.speed)*pace)
 	var slope: float = (float(trajectory.at(progress+2.0).speed)-float(trajectory.at(progress-2.0).speed))*pace/4.0
 	var feed_acceleration: float = speed*slope
-	guidance_acceleration = clampf(feed_acceleration+(speed_goal-speed)*lerpf(2.1,2.8,minf(skill*2.0,1.0)),-config.braking_force/config.mass,RacingTrajectory.drive_acceleration(config,speed,reference.grip,reference.drag,reference.curvature))
+	guidance_acceleration = clampf(feed_acceleration+(speed_goal-speed)*lerpf(2.1,2.8,minf(skill*2.0,1.0)),-config.maximum_deceleration(),RacingTrajectory.drive_acceleration(config,speed,reference.grip,reference.drag,reference.curvature))
 	var normal := Vector2(cos(reference.heading),-sin(reference.heading))
 	initial = PackedFloat64Array([(state.position-reference.point).dot(normal),wrapf(state.heading-reference.heading,-PI,PI),state.yaw_rate,state.velocity.dot(state.right()),state.velocity.length()-maxf(2.0,state.velocity.length())])
 	var heading_goal: float = atan(speed*float(reference.curvature)/config.lateral_response)
@@ -187,7 +187,8 @@ func control(state: VehicleState, trajectory: RacingTrajectory, progress: float,
 	var alignment: float = clampf(absf(state.velocity.dot(state.forward()))/maxf(absf(lateral),0.01),0.0,1.0)
 	var scrub: float = maxf(0.0,lateral*lateral-remaining*remaining)*(1.0-config.corner_energy_retention*alignment)/maxf(2.0*speed*VehicleSimulation.STEP,0.1)
 	var pedal: float = previous_acceleration+drag+scrub
-	if pedal >= 0.0: frame.throttle = clampi(roundi(pedal/maxf(0.1,force)*255.0),0,255)
+	if config.single_pedal: frame.throttle = roundi(config.accelerator_for_acceleration(pedal,force)*255.0)
+	elif pedal >= 0.0: frame.throttle = clampi(roundi(pedal/maxf(0.1,force)*255.0),0,255)
 	else: frame.brake = clampi(roundi(-pedal/(config.braking_force/config.mass)*255.0),0,255)
 	return TrajectoryHandbrake.refine(state,track,trajectory,progress,config,frame,pace) if track != null else frame
 

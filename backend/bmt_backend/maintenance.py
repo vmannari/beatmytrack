@@ -61,7 +61,7 @@ def retain(factory, blobs, days: int = 90, *, apply: bool = False, offline: bool
             retire_evidence(retired_intents, retired_uploads)
             session.flush()
         candidates = session.scalars(select(Run).where(
-            Run.status.in_(("verified", "failed", "rejected")), Run.finished_at < cutoff,
+            Run.status.in_(("verified", "skipped", "failed", "rejected")), Run.finished_at < cutoff,
             ~Run.id.in_(select(PersonalBest.run_id)),
             ~Run.id.in_(select(LapPersonalBest.run_id)),
             ~Run.id.in_(select(RivalryBest.run_id)),
@@ -160,6 +160,7 @@ def retain(factory, blobs, days: int = 90, *, apply: bool = False, offline: bool
                         .on_conflict_do_nothing(index_elements=[ObjectGarbageCandidate.digest]))
             session.execute(delete(ResumeReceipt).where(ResumeReceipt.race_id.in_(races)))
             session.execute(delete(ResumeRace).where(ResumeRace.id.in_(races)))
+            session.execute(delete(OperationState).where(OperationState.id.in_(["verify:"+run_id for run_id in run_ids])))
             session.execute(delete(Run).where(Run.id.in_(run_ids)))
             session.execute(delete(RunTicket).where(RunTicket.id.in_(tickets)))
             retired_reference = or_(

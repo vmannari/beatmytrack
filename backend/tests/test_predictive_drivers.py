@@ -115,6 +115,8 @@ def test_controller_parse_errors_fail_promptly_and_stop_owned_process(monkeypatc
             pass
         def _check_engine(self):
             pass
+        def close(self):
+            pass
     def fail_process(command, **kwargs):
         if command[0] != sys.executable:
             return original(command, **kwargs)

@@ -2,7 +2,7 @@
 
 **Draft for publisher and regional legal review. Not effective or published.**
 
-Proposed version: `bmt-terms-draft-2026-10-24-r2`. Effective date: **[TO BE SET AFTER REVIEW]**.
+Proposed version: `bmt-terms-draft-2026-10-25-r6`. Effective date: **[TO BE SET AFTER REVIEW]**.
 
 These terms cover Beat my track, online racing, creation/sharing and available purchases. They explain player conduct, service changes and what happens when something goes wrong.
 
@@ -44,9 +44,9 @@ Ordinary racing has no paid retry or energy requirement. Current optional produc
 
 Use sign-in honestly, protect access to your identity provider, and report suspected misuse. You are responsible for your conduct, not automatically for every unauthorised action by someone else.
 
-Real purchases require an identified, signed-in game account; guests cannot use paid checkout. The same account on another supported device can recover benefits and information actually held by the service. This is not a complete device backup: local drafts, records, caches and settings may need separate backup or transfer.
+Real purchases require an identified, signed-in game account; guests cannot use paid checkout. Uninstalling or reinstalling the app does not delete that account or end its unexpired purchase benefits. Signing into the same existing account on a supported device can recover those benefits and information actually held by the service. This is not a complete device backup: local drafts, records, caches and settings may need separate backup or transfer.
 
-Recovery of a consumed publishing pack restores remaining verified allocations, not the original pack a second time. Keep backups of valuable local drafts using available export/save facilities. We remain responsible for security/recovery measures required by law. Account deletion has different consequences under section 12.
+Recovery of a consumed publishing pack on the same existing account restores remaining verified allocations, not the original pack a second time. This ordinary recovery is different from voluntary account deletion: account-bound purchase benefits do not carry over to a new account under section 12, subject to mandatory rights and applicable store requirements. Keep backups of valuable local drafts using available export/save facilities. We remain responsible for security/recovery measures required by law.
 
 ## 6 Fair play and competition
 
@@ -56,17 +56,23 @@ Results follow the relevant content/rules version and evidence checks. On reason
 
 Account/content actions follow section 11. We cannot promise prevention or immediate detection of every cheat.
 
-## 7 Player contributions and sharing permissions
+## 7 Player contributions and published tracks
 
 Supplied road pieces, vehicles, scenery, textures, audio and software remain ours or our licensors'. You retain rights in your original layouts and other original contributions to the extent they receive legal protection. Using supplied assets does not transfer ownership of those assets.
 
 Submit only content you have the right to share. Do not include protected work, confidential information or personal data without an appropriate right/legal basis. Follow the community rules.
 
-When you choose to submit, publish or share content, you grant a non-exclusive, worldwide, royalty-free licence to host, reproduce, technically adapt, display and distribute it as needed for those features. This includes track previews/downloads, public/private challenges, authorised ghost playback, relevant leaderboard/profile information, podium appearances, moderation and compatibility processing. We respect the feature's disclosed audience/privacy controls; private submission alone does not authorise public distribution. Other players may race/use deliberately shared tracks through the intended features.
+**Published tracks.** By deliberately publishing a track under these terms, you grant us a worldwide, non-exclusive, royalty-free, transferable and sublicensable licence, for the duration of the applicable rights, to use, reproduce, host, distribute, display, modify, adapt and create derivative versions of your original contributions in that track. The purposes are to operate, maintain, develop, improve, promote and commercially exploit Beat my track, its future versions, supported platforms and related game services. This includes use in game listings, trailers and other promotion of those services. No royalty is payable for uses within this licence, subject to mandatory rights.
 
-Service providers and a successor under section 19 may use this licence for the same purposes and within the same limits. It does not transfer ownership of your contributions or permit unrelated sales or AI training. External advertising featuring a player's original contribution requires separate permission or another applicable right.
+You expressly permit us to make adaptations and derivative versions for those purposes, including compatibility with changed physics, road components, vehicles, graphics, technical systems and platforms, and adaptations for new gameplay. This does not give players a right to overwrite an existing publication or silently replace the track version used by recorded races, rivalries or challenges. Adapted racing layouts need their own content/rules version; sections 6 and 13 govern changes affecting play and competition. We may grant the necessary permissions to service providers, distribution partners, players using the intended features and successor operators, within the same purposes and limits. This does not authorise unrelated standalone sales of your contributions, unrelated advertising or AI training.
 
-Previously downloaded copies may remain after removal. Continued retention/use remains subject to personal-data rights and any mandatory content-retrieval rights.
+Publishing fixes that track's published layout and identity. Players cannot edit, replace, hide, delete or withdraw that publication, including by deleting their account. This preserves the references used by races, rivalries, challenges, ghosts and leaderboards. A changed layout, if offered for publication, must be published as a separate track using another allocation; it cannot replace the existing publication. You may continue editing or deleting unpublished local drafts without altering a published track. Other players may continue using published tracks. This licence is intended to continue after account deletion, termination or a change of operator, to the extent permitted by law; it is not revocable merely because you later change your mind.
+
+We retain the rights to make the separately versioned adaptations described above and to restrict, unpublish or remove tracks where reasonably necessary for moderation, legal compliance, privacy, security, compatibility or operation of the game. Mandatory correction, erasure or removal obligations remain. We do not promise indefinite hosting, playability or unchanged game physics for any track. Publishing spends the allocation described in section 8; removal does not automatically replenish it.
+
+**Other submissions.** For private submissions, ghosts, profile information and other shared content outside the published-track licence, you grant a non-exclusive, worldwide, royalty-free licence to host, reproduce, technically adapt, display and distribute it as needed for the features you choose, including verification, authorised sharing/playback, challenges, leaderboards, podiums and moderation. Service providers and successors may exercise this licence within those limits. Private submission alone does not authorise public distribution or promotion; disclosed audience/privacy controls apply. This licence does not authorise unrelated sales or AI training.
+
+You retain copyright in your protected contributions. We respect applicable attribution and moral rights; these terms are not a blanket waiver of them or a promise to retain identifying profile data. A track licence is not consent to use your personal identity in advertising. We handle identifying information under the privacy notice, including removal or anonymisation where required. Previously downloaded copies may remain after removal, subject to applicable rights. Neither licence overrides mandatory personal-data, content-retrieval or cessation-of-use rights on termination. Where the law requires removal, restricted use or retrieval of content, we will comply. Broader permissions do not apply retroactively to tracks shared under an earlier agreement without a valid legal basis or the required fresh agreement.
 
 ## 8 Purchases and entitlements
 
@@ -74,7 +80,7 @@ Only release-store products actually offered can be purchased. Checkout identifi
 
 Confirm the game account before checkout. Paid benefits attach to that account. Pending, cancelled or unverified transactions grant nothing. Contact support about an undelivered confirmed payment.
 
-The following descriptions reflect the current entitlement model and must match release checkout before sales:
+The following descriptions state the intended launch benefits and must match the implemented release checkout before sales:
 
 | Product | Benefit |
 | --- | --- |
@@ -82,13 +88,15 @@ The following descriptions reflect the current entitlement model and must match 
 | 5 publishing slots | Five additional single-use publishing allocations. |
 | 10 publishing slots | Ten additional single-use publishing allocations. |
 | One month ad-free | One calendar month of the ad-free/resume benefits below, without automatic renewal. |
-| Permanent ad-free | The same benefits without a scheduled entitlement expiry while the relevant service is supplied. This does not promise lifetime hosting/maintenance; section 14 and mandatory remedies apply. |
+| One year ad-free | Twelve months of the same account-bound ad-free/resume benefits, paid once, without automatic renewal. The offer and account show the exact expiry date. Voluntary deletion of the game account ends the remaining benefit without carry-over to a new account under section 12. Mandatory rights and applicable store requirements remain; section 14 governs early service withdrawal. |
 
-Eligible accounts start with one initial free publishing allocation, not a monthly allowance. Successful non-exempt publication consumes one allocation, including a new published revision. Same-version retries and failed/unverified publications consume none. Spent allocations are not reusable; hiding/removing a track, including moderation removal, does not automatically return them. Unused purchased allocations have no scheduled expiry while the account/relevant service remain available, subject to sections 9, 11, 12 and 14.
+Eligible accounts start with one initial free publishing allocation, not a monthly allowance. Successful non-exempt publication of a new track consumes one allocation. A changed layout must be a separate publication; the creator cannot revise or replace a published track. Exact retries of the same accepted publication and failed/unverified publications consume no additional allocation. Spent allocations are not reusable; removal, including moderation removal, does not automatically return them. We may offer additional allocations through specified race rewards or promotions under their published eligibility rules; no recurring or particular future reward is promised. Unused purchased allocations have no scheduled expiry while the account/relevant service remain available, subject to sections 9, 11, 12 and 14.
 
-Active ad-free access suppresses automatic interruption ads and allows the standard race resumes without rewarded ads or spending banked/daily resumes. The maximum remains three resumes per race. It does not add publishing capacity or unlimited resumes. Any separate future rewarded offer must clearly state its benefit without contradicting purchased rights.
+Active ad-free access suppresses automatic interruption ads and allows the standard race resumes without rewarded ads or spending banked/daily resumes. The current advertising formats are interstitials and rewarded resume offers; no banner placement forms part of the current offer. We will not introduce compulsory banner or other advertising that contradicts an existing ad-free purchase. The maximum remains three resumes per race. It does not add publishing capacity or unlimited resumes. Any separate future rewarded offer must clearly state its benefit without contradicting purchased rights.
 
-Monthly expiry uses UTC: add one calendar month to the later of existing monthly expiry or verified grant time, keeping the time of day and clamping to the target month's last day. For example, 31 January 2027 at 12:00 UTC becomes 28 February at 12:00 UTC; adding another month to that expiry gives 28 March, not 31 March. Show the resulting expiry in the account/store. Each verified purchase extends once. Permanent access takes precedence.
+An authorised resume does not by itself disqualify an otherwise valid race from official records or Weekly Rivalry. The same verification, mode rules and three-resume limit apply regardless of how a resume is obtained. Official World Circuit races provide up to three free resumes to all participants. Creator verification for publishing is different: its qualifying run must not use resumes. Ad-free access does not bypass these checks or guarantee acceptance of a result.
+
+Monthly expiry uses UTC: add one calendar month to the later of existing monthly expiry or verified grant time, keeping the time of day and clamping to the target month's last day. For example, 31 January 2027 at 12:00 UTC becomes 28 February at 12:00 UTC; adding another month to that expiry gives 28 March, not 31 March. The annual offer provides twelve months and identifies its start, exact expiry and any extension of existing ad-free time before payment. Show the resulting expiry in the account/store and keep it consistent with the verified provider entitlement. Each verified purchase grants or extends its stated benefit once. Neither timed product renews automatically; another charge requires another purchase.
 
 Earned Coins and racing points have no cash redemption/transfer function offered by us; this does not remove statutory repayment/compensation rights. Current products do not sell Coins or XP.
 
@@ -112,7 +120,9 @@ The privacy notice and applicable consent process govern advertising and optiona
 
 The rules cover racing/profile names, track names/descriptions/layouts/content, challenges, car appearances, reports/appeals and other service use. They prohibit offensive/abusive content, hate/discrimination, explicit sexual material, threats, unlawful defamation, bullying, harassment, private-information disclosure, impersonation, fraud, cheating and deliberate disruption. Disguising prohibited content with symbols, spelling or track shapes, malicious reporting, evading restrictions and other material breaches are also prohibited.
 
-We assess evidence and context. An allegation, disliked name, strong competitive result or ordinary collision is not automatically a breach. Good-faith criticism, complaints, appeals and refund requests are not misconduct merely because they challenge us.
+We use automated local word and pattern checks to reject prohibited new or changed player/track names, including names used in new challenges. A rejected name may need changing before submission; the filter does not itself impose a permanent account ban. These checks can make mistakes and do not detect every violation. Reports and appeals are reviewed by a person; request human review of a suspected filtering error through the support/review contact below. We explain relevant automated involvement in restriction decisions where required.
+
+We assess evidence and context. An allegation, filter match, disliked name, strong competitive result or ordinary collision is not automatically proof of misconduct. Good-faith criticism, complaints, appeals and refund requests are not misconduct merely because they challenge us.
 
 Use in-game reporting or send an illegal-content notice to **[PUBLIC NOTICE URL OR EMAIL]**; no game account is required for that notice. Identify the content, concern and relevant information.
 
@@ -126,9 +136,13 @@ A lawful ban may prevent access to account-dependent paid benefits. We do not of
 
 Request deletion in the game or at **[ACCOUNT DELETION URL]**. The privacy notice explains erasure, lawful retention and requests concerning retained personal content.
 
-Deletion permanently closes the account and erases its entitlement records, including unused allocations and monthly/permanent ad-free access. Normal recovery cannot restore the deleted account/erased benefits; later Google sign-in creates a new game account. Disclose this before confirmation. Where possible, seek purchase recovery/refunds before deletion.
+Voluntary deletion of the whole game account permanently closes it and ends all purchase benefits linked to it, including unused purchased publishing allocations and any remaining monthly or annual ad-free time. These benefits are not retained for or transferred to a new game account. Reinstalling the app or signing in again after account deletion does not recreate the erased account, progress, history or purchase benefits; a later signup creates a separate account. Spent publishing allocations are not replenished. We will clearly warn you before confirmation that account deletion is permanent and ends the remaining paid benefits. This is different from uninstalling/reinstalling while keeping the existing account under section 5.
 
-Deletion does not waive outstanding legal claims or applicable store remedies. A provider receipt may still support a remedy; deletion itself does not promise restoration to a new account. It does not delete your Google account or local files. A future renewing product would require separate cancellation information; the current monthly product does not renew automatically.
+Voluntary account deletion does not itself entitle you to a replacement grant or discretionary refund for those ended benefits. This policy does not remove mandatory consumer rights, outstanding claims, applicable store requirements or any remedy they require. It does not erase the purchasing store's transaction records. Contact **[SUPPORT EMAIL]** about an undelivered purchase, incorrect deletion, refund claim or other purchase problem. We will investigate and provide any remedy owed under applicable law and store rules, without demanding a second payment for it. There is no contractual promise to restore ended benefits to a replacement game account.
+
+Previously published tracks are not automatically deleted with the account and may remain available under section 7's continuing licence. We remove or anonymise associated identifying information where required and assess lawful requests concerning retained content. Retaining a game object does not itself permit retaining all personal data associated with it.
+
+We erase personal data as required but may retain the minimum purchase, accounting, fraud-prevention, restriction or claims records where lawfully necessary for the purposes and periods explained in the privacy notice. Deletion does not waive outstanding legal claims or store remedies, delete your store/Google account or remove local files on your devices. A future renewing product would require separate cancellation information; the current monthly product does not renew automatically.
 
 ## 13 Updates and major gameplay changes
 
@@ -140,17 +154,19 @@ Changes beyond those needed for conformity require clear information and no addi
 
 For a more than minor negative effect on access/use, we will give the required advance information on a durable medium and explain the applicable free termination/remedy route or option to retain an unchanged conforming service. Necessary update duties remain.
 
-## 14 Outages and discontinuation
+## 14 Outages regional withdrawal and discontinuation
 
 Maintenance, incidents and dependencies may interrupt online features. We will give practicable notice of planned material interruptions and take reasonable restoration steps; no separate personal-player uptime SLA is offered.
 
 We may discontinue online services for legitimate operational, technical, legal or commercial reasons, including commercial unsustainability, costs the game cannot reasonably support, or inability to continue necessary technical/operational arrangements. This does not override existing commitments or consumer rights; hosting/maintenance is not promised indefinitely.
 
-**[BEFORE PUBLICATION: SET PLANNED SHUTDOWN NOTICE PERIOD AND CHANNELS.]** We will give that notice and any longer legally required notice before planned closure, explaining the features/date, paid benefits, outstanding orders, content retrieval and personal data. Urgent legal/security or comparable unavoidable reasons may require earlier action. We will stop sales of benefits that cannot be supplied as agreed and provide required remedies. Necessary update obligations must also be addressed.
+We may also suspend, restrict or discontinue distribution of the game or all or part of its services in particular countries or regions for legitimate legal, regulatory, operational or commercial reasons. These include applicable legal or regulatory requirements, or changes in their interpretation or enforcement, that make continued operation unlawful or make the costs or complexity of compliance no longer reasonably sustainable in that territory. We may continue operating elsewhere. Any territorial restrictions must be lawful and proportionate; regional withdrawal does not remove existing commitments or mandatory consumer rights.
 
-Shutdown may end sign-in, discovery/downloads, verification, rankings/competitions, synchronisation and online purchases/rewards. Offline features may continue where supported by the installed version, local content and compatible devices; not every feature is guaranteed to survive. Apply required retrieval and privacy arrangements.
+We will announce planned global or regional withdrawal in the game at least **60 days in advance**, and give any longer notice or additional form of notice required by law. The notice will explain the affected countries/regions, features, effective date, any known suspension duration, paid benefits, outstanding orders, content retrieval and personal data. We will explain whether the change affects new downloads/registrations, purchases, existing online access or a combination. Urgent legal/security or comparable unavoidable reasons may require earlier action; we will notify affected players as soon as reasonably possible and comply with applicable notice/remedy requirements. We will stop sales of benefits that cannot be supplied as agreed and provide required remedies. Necessary update obligations must also be addressed.
 
-Disclose these limits prominently before purchase, particularly for permanent ad-free and publishing offers. A non-expiring entitlement is not lifetime hosting and does not waive remedies when service ends.
+Global or regional withdrawal may end sign-in, discovery/downloads, verification, rankings/competitions, synchronisation and online purchases/rewards for affected players. Offline features may continue where supported by the installed version, local content and compatible devices; not every feature is guaranteed to survive. Apply required retrieval and privacy arrangements.
+
+Disclose these limits prominently before purchase, particularly for monthly/annual ad-free and publishing offers. A planned withdrawal before a purchased period ends does not remove applicable refund or other remedy rights for the affected benefit. Neither timed access nor a publishing allocation promises indefinite hosting.
 
 ## 15 Bugs and realistic service limits
 
@@ -186,6 +202,6 @@ We may sell, assign, license or transfer the game business and IP/assets we own 
 
 We may appoint others to maintain, develop, publish, support or operate the game. Delegation alone does not release our obligations. A player-contract transfer must be legally effective, preserve consumer guarantees as required and include the successor assuming affected commitments and any necessary notice/agreement. Identify the new party/contact/effective date when required. Transfer alone waives no existing claim or paid benefit.
 
-Section 7 permissions may pass with the business for the same operating/development purposes and limits, without transferring ownership of players' contributions.
+Section 7 permissions may pass with the business for the same purposes and limits, including the published-track development, adaptation, promotion and commercial uses expressly covered there, without transferring ownership of players' contributions.
 
 Data disclosure/handover needs a lawful basis, transparency, minimisation, security and relevant international-transfer safeguards. Identify the responsible controller and update notices where required. Terms acceptance is not blanket consent to unrelated data use. Successor changes remain subject to sections 13 and 18.

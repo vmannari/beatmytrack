@@ -1,7 +1,8 @@
 class_name CreatorPropVisual
 extends RefCounted
 ## Original shared meshes for world placement and browser thumbnails.
-const VERSION: String = "authored-props-15-ice-compact"
+const VERSION: String = "authored-props-16-guardrail-ends"
+const GUARDRAIL = preload("res://track/guardrail_visual.gd")
 const WINTER_FINISH = preload("res://track/winter_prop_finish.gd")
 const CACHE_LIMIT: int = 96
 static var meshes: Dictionary = {}
@@ -27,8 +28,11 @@ static func _key(kind: String, theme: String, length: float, color: String, opti
 	var paint: String = ContainerPaint.value({"color":color}) if kind == "container" else ""
 	return "%s/%s/%s/%s/%s/%s" % [VERSION,kind,theme,str(length),paint,str(optimize)]
 
-static func _build_model(tool: SurfaceTool, kit: Node, kind: String, length: float, color: String, optimize: bool = true) -> bool:
+static func _build_model(tool: SurfaceTool, kit: Node, kind: String, length: float, color: String, optimize: bool = true, guardrail: Dictionary = {}) -> bool:
 	var paint: String = ContainerPaint.value({"color":color}) if kind == "container" else ""
+	if kind == "guardrail":
+		GUARDRAIL.append(tool,length if length >= 0.0 else 6.0,guardrail,kit.theme_id == "winter")
+		return true
 	if PropNature.append(tool,kit,kind,Vector3.ZERO,1.0,0.0,optimize): return true
 	if PropEquipment.append(tool,kit,kind,Vector3.ZERO,1.0,0.0,length,paint,optimize): return true
 	if PropStructures.append(tool,kit,kind,Vector3.ZERO,1.0,0.0,optimize): return true
@@ -90,14 +94,15 @@ static func _admit(cache: Dictionary, key: String, mesh: Mesh, limit: int) -> vo
 	cache[key] = mesh; _touch(mesh)
 
 
-static func append(tool: SurfaceTool, kit: Node, kind: String, center: Vector3, scale: float, turn: float, section_length: float = -1.0, color: String = "", optimize: bool = true) -> bool:
+static func append(tool: SurfaceTool, kit: Node, kind: String, center: Vector3, scale: float, turn: float, section_length: float = -1.0, color: String = "", optimize: bool = true, guardrail: Dictionary = {}) -> bool:
 	assert(Thread.is_main_thread())
 	var length: float = section_length/scale if section_length >= 0 else -1.0
 	var key: String = _key(kind,kit.theme_id,length,color,optimize)
+	if kind == "guardrail" and not guardrail.is_empty(): key += "/"+JSON.stringify(guardrail,"",true)
 	var model: Mesh = meshes.get(key)
 	if model == null:
 		var local: SurfaceTool = PropGeometry.model(0.045 if optimize else -1.0)
-		if not _build_model(local,kit,kind,length,color,optimize): return false
+		if not _build_model(local,kit,kind,length,color,optimize,guardrail): return false
 		# Egyptian relief already has authored facet normals. Rebuilding them
 		# after append smooths across tiny stone bevels and shades the flat faces
 		# like deep triangular dents under the low Desert sun.

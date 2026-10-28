@@ -25,7 +25,7 @@ func run() -> void:
 		world.show_menu()
 		world._process(1.0)
 		var game: Node = load("res://core/game.tscn").instantiate()
-		game.initial_track = NativeTrack.read("res://resources/tracks/starter_circuit.json")
+		game.initial_track = NativeTrack.read("res://resources/tracks/ellipse.json")
 		game.initial_track.metadata.theme = theme
 		root.add_child(game)
 		game.set_physics_process(false)

@@ -43,7 +43,7 @@ func _run() -> void:
 	root.add_child(holder)
 	var page := GaragePage.new()
 	page.records = records
-	page.circuit_title = "STARTER CIRCUIT"
+	page.circuit_title = "ELLIPSE"
 	var build_began: int = Time.get_ticks_usec()
 	holder.add_child(page)
 	page._show_section("customise")

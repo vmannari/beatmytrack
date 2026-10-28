@@ -24,8 +24,11 @@ func run() -> void:
 	preload("res://vehicle/prepared_car_cache.gd").enabled = false
 	var directory: String = "res://assets/news/vehicles"
 	var evidence: String = "res://../docs/evidence/garage-news-rivalry-view-2026-10-17"
+	var only_vehicle: String = ""
 	for argument: String in OS.get_cmdline_user_args():
 		if argument.begins_with("--evidence-root="): evidence = argument.trim_prefix("--evidence-root=")
+		if argument.begins_with("--vehicle="): only_vehicle = argument.trim_prefix("--vehicle=")
+	assert(only_vehicle.is_empty() or only_vehicle in VehicleCatalog.IDS)
 	DirAccess.make_dir_recursive_absolute(ProjectSettings.globalize_path(directory))
 	DirAccess.make_dir_recursive_absolute(ProjectSettings.globalize_path(evidence))
 	var viewport := SubViewport.new()
@@ -39,6 +42,7 @@ func run() -> void:
 	viewport.add_child(background)
 	var report: Dictionary = {"renderer":RenderingServer.get_current_rendering_method(),"size":[PHOTO_SIZE.x,PHOTO_SIZE.y],"fill":FILL,"view_source":"res://ui/rivalry_victory_car.gd","cars":[]}
 	for id: String in VehicleCatalog.IDS:
+		if not only_vehicle.is_empty() and id != only_vehicle: continue
 		var view := VictoryCar.new()
 		view.vehicle_id = id
 		view.podium_presentation = true

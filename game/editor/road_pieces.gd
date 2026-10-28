@@ -13,6 +13,38 @@ const JOIN_DISTANCE: float = 0.15
 const JOIN_ANGLE: float = 2.0
 
 
+static func material(piece: Dictionary, document: Dictionary) -> String:
+	var value: String = str(piece.get("surface",document.get("surface","asphalt"))) if str(document.get("theme","pine")) in ["pine","storm"] else str(document.get("surface","asphalt"))
+	return "gravel" if value in ["gravel","dirt"] else "asphalt"
+
+
+static func has_materials(document: Dictionary) -> bool:
+	return str(document.get("theme","pine")) in ["pine","storm"] and document.get("pieces",[]).any(func(piece: Dictionary) -> bool: return piece.has("surface"))
+
+
+static func stamp_materials(document: Dictionary, cells: PackedInt32Array, grid: Vector2i, extent: Vector2, cell_size: float, margin: float = 0.0, mask: PackedInt32Array = PackedInt32Array(), cancelled: Callable = Callable()) -> void:
+	# Use joined mouths rather than each sample's round raster cap. The same
+	# boundary selects the driving surface and the smooth cosmetic road edge.
+	var pieces: Array = document.pieces
+	var topology: Dictionary = prepare_endpoints(pieces)
+	for index: int in range(pieces.size()):
+		if cancelled.is_valid() and cancelled.call(): return
+		if pieces[index].kind == "bridge": continue
+		var kind: int = 2 if material(pieces[index],document) == "gravel" else 0
+		var contours: Array[PackedVector2Array] = RoadEdges.presentation_contours(pieces,index,margin,topology)
+		for polygon: PackedVector2Array in SplineBorders.surface(contours):
+			var bounds: Rect2i = SurfacePaint.cell_bounds(polygon,extent,cell_size,grid)
+			for y: int in range(bounds.position.y,bounds.end.y):
+				if cancelled.is_valid() and cancelled.call(): return
+				for x: int in range(bounds.position.x,bounds.end.x):
+					var at: int = y*grid.x+x
+					if cells[at] not in [0,2]: continue
+					var point := Vector2((x+0.5)*cell_size-extent.x,extent.y-(y+0.5)*cell_size)
+					if not Geometry2D.is_point_in_polygon(point,polygon): continue
+					cells[at] = kind
+					if not mask.is_empty(): mask[at] = kind
+
+
 static func create(kind: String, position: Vector2, heading: float = 0.0, width: float = 10.0) -> Dictionary:
 	if kind not in KINDS: return {}
 	var piece: Dictionary = {"kind":kind, "position":[position.x,position.y], "heading":fposmod(heading,360.0),
@@ -29,8 +61,9 @@ static func create(kind: String, position: Vector2, heading: float = 0.0, width:
 
 
 static func validate(piece: Variant) -> Array[String]:
-	if not piece is Dictionary or piece.size() != KEYS.size() + (1 if piece.has("angle") else 0) + (1 if piece.has("height") else 0) + (1 if piece.has("curvature") else 0) + (1 if piece.has("narrow_width") else 0) + (1 if piece.has("spline_points") else 0) + (1 if piece.has("point_widths") else 0) or not piece.has_all(KEYS):
+	if not piece is Dictionary or piece.size() != KEYS.size() + (1 if piece.has("angle") else 0) + (1 if piece.has("height") else 0) + (1 if piece.has("curvature") else 0) + (1 if piece.has("narrow_width") else 0) + (1 if piece.has("spline_points") else 0) + (1 if piece.has("point_widths") else 0) + (1 if piece.has("surface") else 0) or not piece.has_all(KEYS):
 		return ["Invalid road section."]
+	if piece.has("surface") and piece.surface not in ["asphalt","gravel"]: return ["Choose asphalt or gravel for the road section."]
 	if piece.kind == "spline":
 		var spline_errors: Array[String] = SplineRoad.validate(piece)
 		if not spline_errors.is_empty(): return spline_errors

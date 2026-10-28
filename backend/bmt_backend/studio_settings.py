@@ -16,6 +16,32 @@ def mapping(value):
 
 
 def validate_studio_settings(settings):
+    from .studio_usage_settings import validate_settings as validate_usage
+    validate_usage(settings)
+    if settings.studio_analysis_mode not in ("replica", "shared_limited"):
+        raise ValueError("Invalid Studio analysis mode")
+    if settings.studio_analysis_mode == "shared_limited":
+        from sqlalchemy.engine import make_url
+        if settings.workload_role != "admin" or not settings.studio_analysis_database_url:
+            raise ValueError("Limited shared reporting requires the private admin service and a separate reader URL")
+        reader = make_url(settings.studio_analysis_database_url)
+        primary = make_url(settings.database_url)
+        if (reader.drivername != "postgresql+psycopg" or reader.username != "bmt_studio_report"
+                or reader.username == primary.username):
+            raise ValueError("Limited shared reporting requires the dedicated bmt_studio_report credential")
+    identity = (settings.studio_identity_project, settings.studio_identity_tenant,
+                settings.studio_identity_api_key, settings.studio_identity_auth_domain)
+    if any(identity):
+        if not all(identity) or not re.fullmatch(r"[a-z][a-z0-9-]{4,61}[a-z0-9]", identity[0]):
+            raise ValueError("Studio Identity Platform requires project, tenant, API key and auth domain")
+        if not re.fullmatch(r"[A-Za-z0-9-]{1,128}", identity[1]):
+            raise ValueError("Invalid Studio identity tenant")
+        if identity[3] != identity[0] + ".firebaseapp.com":
+            raise ValueError("Studio auth domain must belong to the configured identity project")
+        if settings.studio_staff_audiences != (identity[0],):
+            raise ValueError("Identity Platform staff audience must be its dedicated project audience")
+        if settings.workload_role != "admin":
+            raise ValueError("Studio identity configuration belongs only to the private admin service")
     staff = mapping(settings.studio_staff_subjects)
     for subject, record in staff.items():
         if (

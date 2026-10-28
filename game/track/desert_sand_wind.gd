@@ -32,6 +32,8 @@ var anchor_heights: Dictionary = {}
 var anchor_roots: Dictionary = {}
 var source_surface: RefCounted
 var source_samples: int = 0
+var source_queries: int = 0
+var crest_tiles: Dictionary = {}
 var lift_history := PackedFloat32Array()
 var lift_elapsed: float = 0.0
 var previous_lift: float = 0.0
@@ -45,6 +47,8 @@ func configure(data: NativeTrack, visual: NativeTrackVisual = null) -> void:
 	anchor_heights.clear()
 	anchor_roots.clear()
 	source_samples = 0
+	source_queries = 0
+	crest_tiles.clear()
 	source_surface = SOURCE_SURFACE.new()
 	if enabled:
 		if is_instance_valid(visual): source_surface.prepare(visual)
@@ -82,29 +86,45 @@ func _prepare_crests(focus: Vector2) -> void:
 	anchor_heights.clear()
 	for source: Vector2 in retained: anchor_heights[source] = retained[source][0].y
 	source_samples = 0
+	source_queries = 0
 	var tile := Vector2i((Vector2(focus.x, -focus.y) / DUNE_EDGES.TILE).floor())
+	# Road/bridge support and artwork roots are immutable until configure().
+	# Retain only the same nine local tiles that discovery already visits.
+	for key: Vector2i in crest_tiles.keys():
+		if absi(key.x - tile.x) > 1 or absi(key.y - tile.y) > 1: crest_tiles.erase(key)
 	for y: int in range(tile.y - 1, tile.y + 2):
 		for x: int in range(tile.x - 1, tile.x + 2):
-			for guide: Array in DUNE_EDGES.ROOTS:
-				var roots := PackedVector3Array()
-				for uv: Vector2 in guide:
-					source_samples += 1
-					var world_xz: Vector2 = (Vector2(x, y) + uv) * DUNE_EDGES.TILE
-					var point := Vector2(world_xz.x, -world_xz.y)
-					if absf(point.x) >= track.half_extent.x or absf(point.y) >= track.half_extent.y or track.cell_at(point) not in [1, 2]: break
-					if track.has_overhead_bridge(point, false) or not source_surface.clear(point): break
-					var loose: bool = true
-					for offset: Vector2 in [Vector2(2.5, 0), Vector2(-2.5, 0), Vector2(0, 2.5), Vector2(0, -2.5)]:
-						if track.cell_at(point + offset) not in [1, 2]: loose = false; break
-					if not loose: break
-					var at: Vector3 = VisualGeometry.world(point)
-					at.y = ground_height + (float(relief.height(point)) if relief != null else 0.0) + 0.025
-					roots.append(at)
-				if roots.size() != PUFFS_PER_PATCH: continue
+			var key := Vector2i(x, y)
+			if not crest_tiles.has(key):
+				crest_tiles[key] = _crest_tile(key)
+				source_queries += int(crest_tiles[key].samples)
+			source_samples += int(crest_tiles[key].samples)
+			for roots: PackedVector3Array in crest_tiles[key].roots:
 				var at: Vector3 = roots[PUFFS_PER_PATCH / 2]
 				var source := Vector2(at.x, -at.z)
 				anchor_roots[source] = roots
 				anchor_heights[source] = at.y
+
+func _crest_tile(tile: Vector2i) -> Dictionary:
+	var samples: int = 0
+	var accepted: Array[PackedVector3Array] = []
+	for guide: Array in DUNE_EDGES.ROOTS:
+		var roots := PackedVector3Array()
+		for uv: Vector2 in guide:
+			samples += 1
+			var world_xz: Vector2 = (Vector2(tile) + uv) * DUNE_EDGES.TILE
+			var point := Vector2(world_xz.x, -world_xz.y)
+			if absf(point.x) >= track.half_extent.x or absf(point.y) >= track.half_extent.y or track.cell_at(point) not in [1, 2]: break
+			if track.has_overhead_bridge(point, false) or not source_surface.clear(point): break
+			var loose: bool = true
+			for offset: Vector2 in [Vector2(2.5, 0), Vector2(-2.5, 0), Vector2(0, 2.5), Vector2(0, -2.5)]:
+				if track.cell_at(point + offset) not in [1, 2]: loose = false; break
+			if not loose: break
+			var at: Vector3 = VisualGeometry.world(point)
+			at.y = ground_height + (float(relief.height(point)) if relief != null else 0.0) + 0.025
+			roots.append(at)
+		if roots.size() == PUFFS_PER_PATCH: accepted.append(roots)
+	return {"samples":samples,"roots":accepted}
 
 func reset() -> void:
 	elapsed = 0.0

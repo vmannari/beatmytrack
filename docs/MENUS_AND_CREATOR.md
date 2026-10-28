@@ -8,7 +8,7 @@ sign-in and Guest play are offered. See [account setup](ACCOUNT_SIGN_IN.md).
 - **Race** contains Free Race, Weekly Rivalry and Challenges. Free Race browses
   public/cached tracks with Search, Filters, Random and favorites. Both list and
   carousel expose loaded cards; background preloading stops at a failed response.
-  The packaged built-in catalogue contains Starter Circuit, with additional local
+  The packaged built-in catalogue contains Ellipse, with additional local
   creations and downloaded tracks. The old Slicks collection is diagnostic only.
 - **Ordinary races** have five laps and a standing countdown. Results show local
   performance first; authenticated competitive results require canonical server

@@ -70,7 +70,7 @@ func run() -> void:
 	preloader.prime(first,"compact")
 	check(preloader._active == 2,"two initial background comparisons are held")
 	preloader.prime(distant,"compact")
-	check(preloader._queue.size() == 6 and preloader._queue.all(func(job: Dictionary) -> bool: return job.version in distant.map(func(entry: Dictionary) -> String: return entry.version_id)),"far window replaces old queued speculation instead of dropping new tracks")
+	check(preloader._queue.size() == 2 and preloader._queue.all(func(job: Dictionary) -> bool: return job.version in distant.map(func(entry: Dictionary) -> String: return entry.version_id)),"far window replaces old queued speculation within the retained two-track cap")
 	var start: int = Time.get_ticks_usec()
 	foreground(preloader,"window-version-45")
 	await wait_frames()

@@ -103,10 +103,12 @@ static func cap_point(rear: bool,u: float,v: float) -> Vector3:
 	var join: float=REAR if rear else FRONT
 	var side_x: float=side_width(join,y)
 	var top_round: float=(rear_shoulder_round(ztop) if rear else front_shoulder_round(ztop))*smoothstep(0.68,1.0,absf(a))*v
-	var x: float=a*lerpf(top_width(ztop)-top_round+0.045*sin(PI*v)-0.045*pow(1-v,2),side_x,smoothstep(0.88,1.0,absf(a)))
+	var blend_to_side: float=pow(absf(a),2.0) if rear else smoothstep(0.88,1.0,absf(a))
+	var x: float=a*lerpf(top_width(ztop)-top_round+0.045*sin(PI*v)-0.045*pow(1-v,2),side_x,blend_to_side)
 	if rear:
-		x=lerpf(x,deck_point(u,1.0).x,smoothstep(0.80,1.0,v))
-		x=lerpf(x,a*side_x,smoothstep(0.92,1.0,absf(a)))
+		var deck_side: float=side_width(REAR,shoulder(REAR))
+		var upper_x: float=deck_point(u,1.0).x+a*pow(absf(a),2.0)*(side_x-deck_side)
+		x=lerpf(x,upper_x,smoothstep(0.80,1.0,v))
 	else:
 		x=lerpf(x,hood_point(u,0.0).x,smoothstep(0.80,1.0,v))
 	return Vector3(x,y,z)
@@ -171,14 +173,24 @@ static func build(car: CarVisual,paint: Material,trim: Material,bright: Material
 	var body: Node3D=car.body
 	var simple: bool=car.simple_model
 	M.patch(body,"ReferenceHood",80,48,hood_point,paint,Vector3.UP,simple)
-	M.patch(body,"ReferenceRearDeck",56,20,deck_point,paint,Vector3.UP,simple)
+	# Matching transverse stations make the deck and curved tail share the
+	# same polygon edge, including the tightly rounded corners.
+	M.patch(body,"ReferenceRearDeck",80,20,deck_point,paint,Vector3.UP,simple)
 	for side: float in [-1.0,1.0]:
 		var hint:=Vector3(side,0,0)
 		M.patch(body,"ReferenceSide"+str(side),160,32,func(u: float,v: float)->Vector3:
-			var z: float=lerpf(FRONT,REAR,u)
+			# Share the hood and deck edge stations, so curved boundaries meet
+			# as actual triangles rather than only as mathematical surfaces.
+			var z: float
+			if u <= 0.30:
+				z=lerpf(FRONT,-1.02,u/0.30)
+			elif u <= 0.875:
+				z=lerpf(-1.02,1.70,(u-0.30)/0.575)
+			else:
+				z=lerpf(1.70,REAR,(u-0.875)/0.125)
 			var y: float=lerpf(wheel_bottom(z),shoulder(z),1.0-pow(1.0-v,1.8))
 			var t: float=clampf((y-0.24)/(shoulder(z)-0.24),0,1)
-			var offset: float=0.05*pow(1-t,2)*(1-smoothstep(FRONT,FRONT+0.20,z))-0.12*pow(1-t,2)*smoothstep(REAR-0.16,REAR,z)
+			var offset: float=0.05*pow(1-t,2)*(1-smoothstep(FRONT,FRONT+0.20,z))-0.12*pow(1-t,2)*smoothstep(REAR-0.25,REAR,z)
 			return side_point(side,z,y)+Vector3(0,0,offset),paint,hint,simple)
 		# The moulded lower sill rises at the back and carries the strong black blade.
 		M.patch(body,"ReferenceSill"+str(side),64,4,func(u: float,v: float)->Vector3:
@@ -208,7 +220,8 @@ static func build(car: CarVisual,paint: Material,trim: Material,bright: Material
 	M.patch(body,"ReferenceFrontUpper",80,36,func(u: float,v: float)->Vector3:
 		return cap_point(false,u,v),paint,Vector3.FORWARD,simple,Callable(),func(u: float,v: float)->Vector3:
 		return front_normal(u,v))
-	M.patch(body,"ReferenceRear",80,64,func(u: float,v: float)->Vector3:return cap_point(true,u,v),paint,Vector3.BACK,simple)
+	# Match the side panel's vertical stations at both rear corners.
+	M.patch(body,"ReferenceRear",80,32,func(u: float,v: float)->Vector3:return cap_point(true,u,v),paint,Vector3.BACK,simple)
 	# The slim light guide follows the closed electric nose.
 	M.patch(body,"ReferenceFrontLampHousing",72,4,func(u: float,v: float)->Vector3:
 		return cap_point(false,u,front_lamp_v(u,v,false))+Vector3.FORWARD*0.003,trim,Vector3.FORWARD,simple)

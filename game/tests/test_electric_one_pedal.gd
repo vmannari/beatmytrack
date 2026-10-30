@@ -15,7 +15,7 @@ func check(ok: bool, label: String) -> void:
 func run() -> void:
 	for argument: String in OS.get_cmdline_user_args():
 		if argument.begins_with("--evidence-root="): output = argument.trim_prefix("--evidence-root=")
-	var config: HandlingConfig = VehicleCatalog.config("electric")
+	var config: HandlingConfig = load("res://../docs/evidence/electric-brake-reverse-2026-10-28/before/game/resources/cars/electric.tres") as HandlingConfig
 	check(config.single_pedal and config.rear_wheel_drive,"strict accelerator-only rear-drive tune")
 	var lift := VehicleSimulation.new(config)
 	lift.state.velocity = Vector2(0,20)

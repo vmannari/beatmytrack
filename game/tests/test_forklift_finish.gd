@@ -242,10 +242,10 @@ func _garage() -> void:
 	var button: Button = page.livery_menu.active_control("StickerHood")
 	check(button != null and button.text == "Rear" and page.livery_menu.active_control("StickerRoof") == null,"actual Garage offers only Rear")
 	page._choose_sticker_surface("hood")
-	page._choose_sticker(LiveryCatalog.sticker_index("zelvora")+1)
+	page._choose_sticker(LiveryCatalog.sticker_index("crest")+1)
 	await create_timer(0.6).timeout
 	await settle()
-	check(page.draft.stickers.hood.id == "zelvora" and page.draft.stickers.hood.rotation == 0.0,"new rear wordmark starts upright")
+	check(page.draft.stickers.hood.id == "crest" and page.draft.stickers.hood.rotation == 0.0,"new rear emblem starts upright")
 	var focused: Vector3 = page.showroom.car.to_local(page._customisation_camera.target)
 	check(focused.z>1.2*HandlingConfig.BODY_SCALE,"actual Garage focuses the rear panel")
 	await capture("garage-rear-sticker-1280")

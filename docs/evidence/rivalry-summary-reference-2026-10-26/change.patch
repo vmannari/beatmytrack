@@ -1,0 +1,1003 @@
+--- a/game/core/app.gd
++++ b/game/core/app.gd
+@@ -2278,16 +2278,38 @@
+ 			return
+ 	var dialog := preload("res://ui/rivalry_summary_dialog.gd").new()
+ 	dialog.summary = rivalry.model.finale_summary()
++	dialog.summary.personal_bests = rivalry.model.personal_best_slots.size()
++	var opponent: Dictionary = {}
++	for driver: Dictionary in rivalry.model.standing():
++		if driver.id != WeeklyRivalry.SELF:
++			opponent = driver
++			break
++	dialog.summary.opponent_points = opponent.get("points")
++	dialog.summary.lead = int(dialog.summary.points)-int(opponent.get("points",0))
++	var own: Dictionary = WeeklyRivalry.self_row(rivalry.model.standing())
++	dialog.player_name = online.player_name() if online.client.signed_in() else str(own.get("name",GameText.message("You")))
++	if dialog.player_name.is_empty(): dialog.player_name = str(own.get("name",GameText.message("You")))
++	dialog.vehicle_id = rivalry.model.vehicle_id
++	dialog.livery = VehicleLivery.for_car(records.settings,rivalry.model.vehicle_id)
++	dialog.customisation = VehicleCustomisation.for_car(records.settings,rivalry.model.vehicle_id)
++	dialog.condition = VehicleCondition.read(records,rivalry.model.vehicle_id)
+ 	dialog.week = rivalry.model.week
+ 	dialog.circuit = rivalry.circuit_mode
+ 	dialog.receipt_key = key
+ 	dialog.payload = payload
+ 	var owner_id: int = root_ui.get_instance_id()
+ 	dialog.context_current = func() -> bool: return is_instance_valid(root_ui) and root_ui.get_instance_id() == owner_id and _rivalry_summary_key() == key
++	dialog.continue_available = func() -> bool: return dialog.context_current.call() and not rivalry.busy and not cloud_starting
+ 	var reviewed: Callable = func() -> void:
+ 		if is_instance_valid(root_ui) and root_ui.get_instance_id() == owner_id and _rivalry_summary_key() == key and rivalry.model.finale_share_text() == payload: _reviewed_rivalry_summaries[key] = true
+ 	dialog.confirmed.connect(reviewed)
+ 	dialog.canceled.connect(reviewed)
++	dialog.continue_requested.connect(func() -> void:
++		if not dialog.context_current.call() or rivalry.busy or cloud_starting or rivalry.model.finale_share_text() != payload: return
++		reviewed.call()
++		dialog.hide()
++		dialog.queue_free()
++		rivalry.continue_week())
+ 	_own_dialog(dialog)
+ 	dialog.present()
+ 
+--- a/game/ui/rivalry_summary_dialog.gd
++++ b/game/ui/rivalry_summary_dialog.gd
+@@ -1,18 +1,36 @@
+ extends "res://ui/fault_dialog.gd"
+-## Read-only weekly celebration. Closing this never acknowledges or rolls a week.
+-const AwardArt = preload("res://ui/rivalry_award_art.gd")
++## Championship sheet; only the explicit Continue action can roll over a week.
++signal continue_requested
++const Banner = preload("res://ui/rivalry_summary_banner.gd")
++const ProfileCar = preload("res://ui/profile_car.gd")
++const DESIGN := Vector2(880,540)
+ var summary: Dictionary = {}
+ var week: int = 0
+ var circuit: bool = false
++var player_name: String = ""
++var vehicle_id: String = "compact"
++var livery: Dictionary = {}
++var customisation: Dictionary = {}
++var condition: Dictionary = {}
+ var context_current: Callable
++var continue_available: Callable
+ var receipt_key: String = ""
+ var payload: String = ""
++var canvas: Control
+ var hero: Control
+ var ornament: Control
+ var perfect: Label
+-var metrics: HBoxContainer
++var position_label: Label
++var rank_label: Label
++var driver_label: Label
++var player_points: Label
++var opponent_points: Label
++var lead_label: Label
++var vehicle: Control
++var metrics: Control
+ var metric_labels: Array[Label] = []
+-var highlights: GridContainer
++var continue_button: Button
++var display_face: Font
+ 
+ func _ready() -> void:
+ 	name = "RivalrySummaryDialog"
+@@ -23,113 +41,220 @@
+ 	unresizable = true
+ 	exclusive = true
+ 	wrap_controls = false
+-	min_size = Vector2i(600,440)
++	min_size = Vector2i(480,300)
+ 	add_theme_stylebox_override("panel",StyleBoxEmpty.new())
+ 	get_label().hide()
+ 	get_ok_button().hide()
+ 	summary = summary.duplicate(true)
++	display_face = MenuStyle.DISPLAY.duplicate()
++	display_face.fallbacks = []
+ 	surface = PanelContainer.new()
+ 	surface.name = "WeeklySummarySurface"
+ 	surface.theme = MenuStyle.theme()
+-	var frame: StyleBoxFlat = MenuStyle.popup_panel(20)
+-	frame.border_color = Color("b59a45") if int(summary.tier) >= 2 else MenuStyle.POPUP_BORDER
+-	frame.border_width_top = 2
++	var frame: StyleBoxFlat = MenuStyle.popup_panel(0)
++	frame.bg_color = Color("06141c")
++	frame.border_color = MenuStyle.ACCENT
++	frame.set_border_width_all(2)
++	frame.set_corner_radius_all(12)
+ 	surface.add_theme_stylebox_override("panel",frame)
+ 	add_child(surface)
+ 	MenuStyle.fill(surface)
+-	details = VBoxContainer.new()
+-	details.add_theme_constant_override("separation",10)
+-	surface.add_child(details)
+-	var header := HBoxContainer.new()
+-	header.add_theme_constant_override("separation",12)
+-	details.add_child(header)
+-	var event: Label = _summary_label(header,"COMPACT CIRCUIT" if circuit else "WEEKLY RIVALRY",20,MenuStyle.MUTED)
+-	event.add_theme_font_override("font",MenuStyle.DISPLAY)
+-	event.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+-	event.size_flags_vertical = Control.SIZE_SHRINK_CENTER
+-	var date: Label = _summary_label(header,GameText.message("WEEK %02d") % week,18,MenuStyle.ACCENT)
+-	date.name = "WeeklySummaryWeek"
+-	date.custom_minimum_size.x = date.get_theme_font("font").get_string_size(date.text,HORIZONTAL_ALIGNMENT_LEFT,-1,18).x+2
+-	date.size_flags_vertical = Control.SIZE_SHRINK_CENTER
+-	close_button = MenuStyle.button("",_cancel)
+-	close_button.name = "WeeklySummaryClose"
+-	close_button.icon = MenuIcon.texture("close")
+-	close_button.icon_alignment = HORIZONTAL_ALIGNMENT_CENTER
+-	close_button.tooltip_text = "Close"
+-	close_button.custom_minimum_size = Vector2(52,52)
+-	close_button.add_theme_stylebox_override("normal",MenuStyle.box(Color.TRANSPARENT,0))
+-	header.add_child(close_button)
+-	hero = Control.new()
+-	hero.name = "WeeklySummaryCelebration"
+-	hero.custom_minimum_size.y = 128
+-	hero.size_flags_vertical = Control.SIZE_EXPAND_FILL
+-	details.add_child(hero)
+-	ornament = AwardArt.new()
+-	ornament.name = "WeeklySummaryDecorations"
+-	ornament.tier = int(summary.tier)
+-	hero.add_child(ornament)
+-	heading = _summary_label(hero,GameText.message(str(summary.title)),42,Color("ffe49a") if int(summary.tier) > 0 else MenuStyle.TEXT)
+-	heading.name = "WeeklySummaryAward"
+-	heading.add_theme_font_override("font",MenuStyle.DISPLAY)
+-	heading.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+-	perfect = _summary_label(hero,"PERFECT WEEK",18,MenuStyle.ACCENT)
+-	perfect.name = "WeeklySummaryPerfect"
+-	perfect.add_theme_font_override("font",MenuStyle.DISPLAY)
+-	perfect.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+-	perfect.visible = bool(summary.perfect)
+-	metrics = HBoxContainer.new()
+-	metrics.name = "WeeklySummaryMetrics"
+-	metrics.add_theme_constant_override("separation",10)
+-	details.add_child(metrics)
+-	for fact: Array in [["FINAL POSITION","—" if summary.rank == null else "%d / %d" % [int(summary.rank),int(summary.drivers)]],["TOTAL POINTS",str(int(summary.points))],["TRACK VICTORIES","%d / 5" % int(summary.wins)]]:
+-		var panel := PanelContainer.new()
+-		panel.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+-		panel.add_theme_stylebox_override("panel",MenuStyle.card(8))
+-		metrics.add_child(panel)
+-		var box := VBoxContainer.new()
+-		box.add_theme_constant_override("separation",2)
+-		panel.add_child(box)
+-		var number: Label = _summary_label(box,str(fact[1]),34,MenuStyle.ACCENT)
+-		number.add_theme_font_override("font",MenuStyle.DISPLAY)
+-		metric_labels.append(number)
+-		_summary_label(box,str(fact[0]),12,MenuStyle.MUTED)
+-	highlights = GridContainer.new()
+-	highlights.name = "WeeklySummaryHighlights"
+-	highlights.columns = 2
+-	highlights.add_theme_constant_override("h_separation",16)
+-	highlights.add_theme_constant_override("v_separation",4)
+-	details.add_child(highlights)
+-	for fact: String in summary.highlights:
+-		var item: Label = _summary_label(highlights,("✓  " if int(summary.completed) > 0 else "")+fact,15,MenuStyle.POSITIVE if int(summary.completed) > 0 else MenuStyle.MUTED)
+-		item.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+-	confirm_button = MenuStyle.button("Back to results",_confirm,true)
+-	confirm_button.name = "WeeklySummaryViewResults"
+-	confirm_button.custom_minimum_size.y = 54
+-	confirm_button.add_theme_color_override("font_focus_color",MenuStyle.INK)
+-	confirm_button.add_theme_color_override("font_pressed_color",MenuStyle.INK)
+-	details.add_child(confirm_button)
+-	hero.resized.connect(_layout)
++	canvas = Control.new()
++	canvas.name = "WeeklySummaryCanvas"
++	surface.add_child(canvas)
++	_build_header()
++	_build_hero()
++	_build_comparison()
++	_build_metrics()
++	_build_actions()
++	canvas.resized.connect(_layout)
+ 	about_to_popup.connect(_opening)
+ 	visibility_changed.connect(_visibility_changed)
+ 	get_parent().get_viewport().size_changed.connect(_fit_to_view)
+ 	_layout()
+ 
+-func _summary_label(parent: Control, value: String, font_size: int, color: Color) -> Label:
++func _build_header() -> void:
++	_summary_label(canvas,"COMPACT CIRCUIT" if circuit else "WEEKLY RIVALRY",20,MenuStyle.MUTED,Rect2(28,23,610,28))
++	var date: Label = _summary_label(canvas,GameText.message("WEEK %02d") % week,18,MenuStyle.ACCENT,Rect2(665,24,130,28))
++	date.name = "WeeklySummaryWeek"
++	date.horizontal_alignment = HORIZONTAL_ALIGNMENT_RIGHT
++	close_button = MenuStyle.button("",_cancel)
++	close_button.name = "WeeklySummaryClose"
++	close_button.icon = MenuIcon.texture("close",true)
++	close_button.expand_icon = true
++	close_button.add_theme_constant_override("icon_max_width",24)
++	close_button.icon_alignment = HORIZONTAL_ALIGNMENT_CENTER
++	close_button.tooltip_text = "Close"
++	close_button.add_theme_stylebox_override("normal",MenuStyle.box(Color.TRANSPARENT,0))
++	canvas.add_child(close_button)
++	_place(close_button,Rect2(812,12,52,52))
++	_line(canvas,Rect2(1,64,878,1),MenuStyle.BORDER)
++
++func _build_hero() -> void:
++	hero = Control.new()
++	hero.name = "WeeklySummaryCelebration"
++	hero.clip_contents = true
++	canvas.add_child(hero)
++	_place(hero,Rect2(0,65,880,195))
++	ornament = Banner.new()
++	ornament.name = "WeeklySummaryDecorations"
++	ornament.tier = int(summary.tier)
++	hero.add_child(ornament)
++	MenuStyle.fill(ornament)
++	position_label = _summary_label(hero,_place_caption(),22,MenuStyle.ACCENT,Rect2(103,14,420,28))
++	position_label.name = "WeeklySummaryPlace"
++	var titles: Dictionary = {"WEEKLY CHAMPION":"Weekly Champion","PODIUM FINISH":"PODIUM\nFINISH","WEEK COMPLETE":"Week complete"}
++	var title_source: String = titles.get(str(summary.title),str(summary.title))
++	heading = _summary_label(hero,GameText.message(title_source).replace("\n"," ").to_upper(),72,MenuStyle.ACCENT if int(summary.tier) > 0 else MenuStyle.TEXT,Rect2(103,35,420,90))
++	heading.name = "WeeklySummaryAward"
++	var bold := FontVariation.new()
++	bold.base_font = _font_for(heading.text)
++	bold.variation_embolden = 0.3
++	bold.variation_transform = Transform2D(Vector2(0.92,0),Vector2(0,1),Vector2.ZERO)
++	bold.spacing_glyph = -7
++	bold.spacing_top = -10
++	bold.spacing_bottom = -10
++	heading.add_theme_font_override("font",bold)
++	driver_label = _summary_label(hero,player_name.to_upper(),46,MenuStyle.TEXT,Rect2(103,128,420,57))
++	driver_label.name = "WeeklySummaryDriver"
++	GameText.user_text(driver_label)
++	perfect = _summary_label(hero,"PERFECT WEEK",18,MenuStyle.ACCENT,Rect2(329,151,192,25))
++	perfect.name = "WeeklySummaryPerfect"
++	perfect.visible = bool(summary.perfect)
++	if perfect.visible: driver_label.size.x = 215
++	var rank_text: String = "—" if summary.rank == null else "%02d" % int(summary.rank)
++	rank_label = _summary_label(hero,rank_text,178,MenuStyle.ACCENT if summary.rank != null else MenuStyle.MUTED,Rect2(564,-3,159,191))
++	rank_label.name = "WeeklySummaryRank"
++	var italic := FontVariation.new()
++	italic.base_font = display_face
++	italic.variation_embolden = 0.3
++	italic.variation_transform = Transform2D(Vector2(0.9,0),Vector2(-0.18,1),Vector2.ZERO)
++	italic.spacing_glyph = -12
++	italic.spacing_top = -15
++	italic.spacing_bottom = -15
++	rank_label.add_theme_font_override("font",italic)
++	_line(canvas,Rect2(1,260,878,1),MenuStyle.BORDER)
++
++func _build_comparison() -> void:
++	_card(canvas,Rect2(34,277,286,76))
++	_card(canvas,Rect2(560,277,286,76))
++	vehicle = ProfileCar.make_preview(vehicle_id,livery,customisation)
++	vehicle.name = "WeeklySummaryVehicle"
++	vehicle.condition = condition.duplicate(true)
++	canvas.add_child(vehicle)
++	_place(vehicle,Rect2(47,287,87,56))
++	ProfileCar.apply_presentation(vehicle)
++	var own_name: Label = _summary_label(canvas,player_name.to_upper(),21,MenuStyle.MUTED,Rect2(167,282,141,28))
++	GameText.user_text(own_name)
++	player_points = _summary_label(canvas,_points(int(summary.points)),39,MenuStyle.ACCENT,Rect2(167,305,141,45))
++	player_points.name = "WeeklySummaryPlayerPoints"
++	var opponent: Label = _summary_label(canvas,"CO-LEADER" if bool(summary.champion) and int(summary.get("lead",0)) == 0 else "RUNNER-UP" if bool(summary.champion) else "LEADER",21,MenuStyle.MUTED,Rect2(572,282,262,28))
++	opponent.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
++	opponent_points = _summary_label(canvas,"—" if summary.get("opponent_points") == null else _points(int(summary.opponent_points)),35,MenuStyle.MUTED,Rect2(572,305,262,43))
++	opponent_points.name = "WeeklySummaryOpponentPoints"
++	opponent_points.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
++	var comparison := Banner.new()
++	comparison.kind = "comparison"
++	canvas.add_child(comparison)
++	_place(comparison,Rect2(330,296,220,38))
++	var lead: String = "UNRANKED" if summary.rank == null else "TIED FOR LEAD" if int(summary.get("lead",0)) == 0 else GameText.message("+%d POINT LEAD") % int(summary.lead) if bool(summary.champion) else GameText.message("%d PTS TO LEAD") % absi(int(summary.get("lead",0)))
++	if summary.get("opponent_points") == null: lead = "WEEK COMPLETE"
++	lead_label = _summary_label(canvas,lead,21,MenuStyle.POSITIVE,Rect2(362,299,156,30))
++	lead_label.name = "WeeklySummaryLead"
++	lead_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
++
++func _build_metrics() -> void:
++	metrics = Control.new()
++	metrics.name = "WeeklySummaryMetrics"
++	canvas.add_child(metrics)
++	_place(metrics,Rect2(34,370,812,76))
++	var facts: Array = [["FINAL POSITION","—" if summary.rank == null else "%d / %d" % [int(summary.rank),int(summary.drivers)],"flag"],["TRACK VICTORIES","%d / 5" % int(summary.wins),"trophy"],["PERSONAL BESTS","%d / 5" % int(summary.get("personal_bests",0)),"clock"]]
++	for index: int in range(3):
++		var card: Control = _card(metrics,Rect2(index*275,0,262,76))
++		var number: Label = _summary_label(card,str(facts[index][1]),37,MenuStyle.ACCENT,Rect2(16,3,196,46))
++		metric_labels.append(number)
++		_summary_label(card,str(facts[index][0]),16,MenuStyle.MUTED,Rect2(16,49,226,23))
++		var icon := TextureRect.new()
++		icon.texture = MenuIcon.texture(str(facts[index][2]),true)
++		icon.expand_mode = TextureRect.EXPAND_IGNORE_SIZE
++		icon.stretch_mode = TextureRect.STRETCH_KEEP_ASPECT_CENTERED
++		icon.modulate = MenuStyle.MUTED
++		icon.mouse_filter = Control.MOUSE_FILTER_IGNORE
++		card.add_child(icon)
++		_place(icon,Rect2(210,22,32,32))
++
++func _build_actions() -> void:
++	confirm_button = MenuStyle.button("VIEW RESULTS",_confirm)
++	confirm_button.name = "WeeklySummaryViewResults"
++	var outline: StyleBoxFlat = MenuStyle.box(Color.TRANSPARENT,0)
++	outline.border_color = MenuStyle.ACCENT
++	outline.set_border_width_all(2)
++	confirm_button.add_theme_stylebox_override("normal",outline)
++	canvas.add_child(confirm_button)
++	_place(confirm_button,Rect2(34,466,294,54))
++	continue_button = MenuStyle.button("CONTINUE TO NEXT WEEK",_continue,true)
++	continue_button.name = "WeeklySummaryContinue"
++	continue_button.add_theme_color_override("font_focus_color",MenuStyle.INK)
++	continue_button.add_theme_color_override("font_pressed_color",MenuStyle.INK)
++	canvas.add_child(continue_button)
++	_place(continue_button,Rect2(344,466,502,54))
++
++func _summary_label(parent: Control, value: String, font_size: int, color: Color, rectangle: Rect2) -> Label:
+ 	var label := MenuStyle.label(value,font_size)
++	label.add_theme_font_override("font",_font_for(GameText.message(value)))
+ 	label.add_theme_color_override("font_color",color)
+ 	label.clip_text = true
+ 	label.text_overrun_behavior = TextServer.OVERRUN_TRIM_ELLIPSIS
+ 	label.tooltip_text = value
++	label.set_meta("summary_height",rectangle.size.y)
+ 	parent.add_child(label)
++	_place(label,rectangle)
+ 	return label
++
++func _font_for(value: String) -> Font:
++	# Fallback fonts have taller line metrics. Keep the reference's Latin cap
++	# height while retaining the shared script coverage for translated text/names.
++	for index: int in range(value.length()):
++		if not display_face.has_char(value.unicode_at(index)): return MenuStyle.DISPLAY
++	return display_face
++
++func _place(node: Control, rectangle: Rect2) -> void:
++	node.position = rectangle.position
++	node.size = rectangle.size
++
++func _card(parent: Control, rectangle: Rect2) -> Control:
++	var panel := Panel.new()
++	var frame: StyleBoxFlat = MenuStyle.card(0)
++	frame.bg_color = Color("091a24")
++	frame.border_color = MenuStyle.BORDER
++	panel.add_theme_stylebox_override("panel",frame)
++	parent.add_child(panel)
++	_place(panel,rectangle)
++	return panel
++
++func _line(parent: Control, rectangle: Rect2, color: Color) -> void:
++	var line := ColorRect.new()
++	line.color = color
++	line.mouse_filter = Control.MOUSE_FILTER_IGNORE
++	parent.add_child(line)
++	_place(line,rectangle)
++
++func _points(value: int) -> String:
++	return "%d %s" % [value,GameText.message("PTS")]
++
++func _place_caption() -> String:
++	if summary.rank == null: return GameText.message("UNRANKED")
++	var rank: int = int(summary.rank)
++	var suffix: String = "TH" if rank%100 in [11,12,13] else "ST" if rank%10 == 1 else "ND" if rank%10 == 2 else "RD" if rank%10 == 3 else "TH"
++	return "%d%s PLACE" % [rank,suffix] if TranslationServer.get_locale().begins_with("en") else GameText.message("FINAL POSITION")+" #"+str(rank)
+ 
+ func present() -> void:
+ 	popup_centered(_target_size())
+ 	_layout.call_deferred()
+ 
+ func _target_size() -> Vector2i:
+-	var bounds: Vector2 = get_parent().get_viewport().get_visible_rect().size
+-	return Vector2i(minf(880,bounds.x-48),minf(maxf(520,surface.get_combined_minimum_size().y),bounds.y-48))
++	var bounds: Vector2 = get_parent().get_viewport().get_visible_rect().size-Vector2(48,48)
++	return Vector2i(DESIGN*minf(1,minf(bounds.x/DESIGN.x,bounds.y/DESIGN.y)))
+ 
+ func _fit_to_view() -> void:
+ 	if not visible: return
+@@ -137,32 +262,47 @@
+ 	position = Vector2i((get_parent().get_viewport().get_visible_rect().size-Vector2(size))*0.5)
+ 	_layout.call_deferred()
+ 
++func _fit_label(label: Label, preferred: int, minimum: int) -> void:
++	var font: Font = label.get_theme_font("font")
++	var words: String = label.text
++	var font_size: int = preferred
++	var height: float = float(label.get_meta("summary_height"))
++	while font_size > minimum and (font.get_string_size(words,HORIZONTAL_ALIGNMENT_LEFT,-1,font_size).x > label.size.x-4 or font.get_height(font_size) > height): font_size -= 1
++	label.add_theme_font_size_override("font_size",font_size)
++	label.size.y = maxf(float(label.get_meta("summary_height")),label.get_combined_minimum_size().y)
++
+ func _layout() -> void:
+-	if not is_instance_valid(hero) or not is_instance_valid(heading): return
+-	var font: Font = heading.get_theme_font("font")
+-	var font_size: int = 42
+-	var crown_space: float = 38 if int(summary.tier) >= 2 else 0
+-	var perfect_height: float = perfect.get_combined_minimum_size().y if perfect.visible else 0
+-	var title_height: float = 0
+-	while true:
+-		heading.add_theme_font_size_override("font_size",font_size)
+-		title_height = heading.get_combined_minimum_size().y
+-		var total: float = crown_space+title_height+(perfect_height+6 if perfect.visible else 0)
+-		if font_size <= 24 or (font.get_string_size(heading.text,HORIZONTAL_ALIGNMENT_LEFT,-1,font_size).x <= hero.size.x-128 and total <= hero.size.y): break
+-		font_size -= 1
+-	var group_height: float = crown_space+title_height+(perfect_height+6 if perfect.visible else 0)
+-	var title_top: float = maxf(0,(hero.size.y-group_height)*0.5)+crown_space
+-	heading.position = Vector2(64,title_top)
+-	heading.size = Vector2(maxf(0,hero.size.x-128),title_height)
+-	var words_width: float = font.get_string_size(heading.text,HORIZONTAL_ALIGNMENT_LEFT,-1,font_size).x
+-	ornament.position = Vector2((hero.size.x-words_width-112)*0.5,title_top)
+-	ornament.size = Vector2(words_width+112,title_height)
+-	ornament.crown_center_y = -26
+-	ornament.queue_redraw()
+-	perfect.position = Vector2(0,title_top+title_height+6)
+-	perfect.size = Vector2(hero.size.x,perfect_height)
++	if not is_instance_valid(canvas) or not is_instance_valid(heading): return
++	var scale_factor: float = minf(canvas.size.x/DESIGN.x,canvas.size.y/DESIGN.y)
++	for child: Control in canvas.get_children():
++		if not child.has_meta("summary_position"): child.set_meta("summary_position",child.position)
++		child.position = Vector2(child.get_meta("summary_position"))*scale_factor
++		child.scale = Vector2.ONE*scale_factor
++	_fit_label(heading,82,34)
++	_fit_label(driver_label,46,24)
++	_fit_label(rank_label,200,84)
++	_fit_label(player_points,39,25)
++	_fit_label(lead_label,21,15)
++	for button: Button in [confirm_button,continue_button]:
++		var font: Font = button.get_theme_font("font")
++		var font_size: int = 23
++		while font_size > 16 and font.get_string_size(GameText.message(button.text),HORIZONTAL_ALIGNMENT_LEFT,-1,font_size).x > button.size.x-24: font_size -= 1
++		button.add_theme_font_size_override("font_size",font_size)
++
++func _continue() -> void:
++	if not visible or continue_button.disabled: return
++	continue_button.disabled = true
++	continue_requested.emit()
++
++func _input(event: InputEvent) -> void:
++	if visible and event is InputEventKey and event.pressed and not event.echo and event.keycode in [KEY_ENTER,KEY_KP_ENTER] and gui_get_focus_owner() == continue_button:
++		_continue()
++		get_viewport().set_input_as_handled()
++		return
++	super._input(event)
+ 
+ func _process(_delta: float) -> void:
+ 	if visible and context_current.is_valid() and not context_current.call():
+ 		hide()
+ 		queue_free()
++	elif visible and continue_available.is_valid(): continue_button.disabled = not continue_available.call()
+--- a/game/tests/test_rivalry_summary_popup.gd
++++ b/game/tests/test_rivalry_summary_popup.gd
+@@ -5,10 +5,16 @@
+ 
+ func run() -> void:
+ 	OS.set_environment("BMT_API_URL","")
+-	evidence = ProjectSettings.globalize_path("res://../docs/evidence/rivalry-summary-popup-2026-10-26/ui")
++	evidence = ProjectSettings.globalize_path("res://../docs/evidence/rivalry-summary-reference-2026-10-26/ui")
+ 	if RenderingServer.get_current_rendering_method() == "mobile": evidence += "/mobile"
+ 	DirAccess.make_dir_recursive_absolute(evidence)
+ 	var before: bool = "--summary-before" in OS.get_cmdline_user_args()
++	var reference_before: bool = "--reference-before" in OS.get_cmdline_user_args()
++	if reference_before:
++		for source: String in ["res://ui/rivalry_summary_dialog.gd","res://core/app.gd"]:
++			var original: GDScript = load(source)
++			original.source_code = FileAccess.get_file_as_string("res://../docs/evidence/rivalry-summary-reference-2026-10-26/before/"+source.get_file())
++			check(original.reload() == OK,"task-start popup source loads only in isolated memory")
+ 	if before:
+ 		var script: GDScript = load("res://core/app.gd")
+ 		script.source_code = FileAccess.get_file_as_string("res://../docs/evidence/rivalry-summary-popup-2026-10-26/before/app.gd")
+@@ -23,6 +29,15 @@
+ 	service = Completion.DelayedClient.new()
+ 	root.add_child(service)
+ 	app.rivalry.client = service
++	if reference_before:
++		await show_summary("champion","original-reference")
++		var original: AcceptDialog = current()
++		check(original != null,"task-start popup still opens")
++		check(original.find_child("WeeklySummaryContinue",true,false) != null,"reference popup includes the explicit Continue action")
++		check(original.find_child("WeeklySummaryRank",true,false) != null,"reference popup presents the oversized earned rank")
++		check(original.find_child("WeeklySummaryOpponentPoints",true,false) != null,"reference popup compares actual runner-up points")
++		await finish()
++		return
+ 	if before:
+ 		await show_summary("champion","before")
+ 		check(current() != null,"a completed week automatically opens its decorated summary")
+@@ -37,13 +52,22 @@
+ 			check(dialog != null and dialog.visible,kind+" automatically presents the completed weekly summary")
+ 			if dialog == null: continue
+ 			var summary: Dictionary = app.rivalry.model.finale_summary()
+-			var values: Array[String] = ["—" if summary.rank == null else "%d / %d" % [int(summary.rank),int(summary.drivers)],str(int(summary.points)),"%d / 5" % int(summary.wins)]
++			var values: Array[String] = ["—" if summary.rank == null else "%d / %d" % [int(summary.rank),int(summary.drivers)],"%d / 5" % int(summary.wins),"%d / 5" % app.rivalry.model.personal_best_slots.size()]
+ 			for index: int in range(3): check(dialog.metric_labels[index].text == values[index],kind+" metric uses actual final facts")
+ 			check(dialog.ornament.tier == summary.tier,kind+" decorations match the earned achievement")
+ 			check(dialog.perfect.visible == (kind == "perfect"),"Perfect Week requires the actual five outright victories")
+-			check(dialog.find_child("RivalryNextWeek",true,false) == null,"summary offers review without a rollover action")
++			check(dialog.continue_button.is_visible_in_tree() and not dialog.continue_button.disabled,"reference sheet includes the explicit Continue action")
++			check(dialog.player_points.text == "%d PTS" % int(summary.points),"points comparison uses the actual player's score")
++			check(dialog.rank_label.text == ("—" if summary.rank == null else "%02d" % int(summary.rank)),"oversized position is the actual earned rank")
++			check(dialog.vehicle.vehicle_id == app.rivalry.model.vehicle_id and dialog.vehicle.livery == VehicleLivery.for_car(app.records.settings,app.rivalry.model.vehicle_id),"small car uses the actual vehicle and local cosmetics")
++			var opponent: Dictionary = {}
++			for row: Dictionary in app.rivalry.model.standing():
++				if row.id != WeeklyRivalry.SELF: opponent = row; break
++			check(dialog.opponent_points.text == "%d PTS" % int(opponent.points),"comparison uses the actual runner-up or leader score")
++			if summary.champion: check(dialog.lead_label.text.contains(str(int(summary.points)-int(opponent.points))) if int(summary.points) != int(opponent.points) else dialog.lead_label.text == "TIED FOR LEAD","lead badge cannot invent a winning margin")
+ 			check(dialog.find_children("*","ScrollContainer",true,false).is_empty(),"summary fits without a scrollbar")
+ 			check_bounds(dialog,kind+str(dimensions))
++			if dimensions == Vector2i(1280,720) and kind in ["champion","middle"]: print("REFERENCE_SHEET ",kind," title=",dialog.heading.get_global_rect()," font=",dialog.heading.get_theme_font_size("font_size")," name=",dialog.driver_label.get_global_rect())
+ 			var page: Control = app.content.find_child("WeeklyRivalryPage",true,false)
+ 			var rectangles: Dictionary = geometry(page)
+ 			var state: String = model_state()
+@@ -74,6 +98,7 @@
+ 			await dismiss_weekly_summary()
+ 	TranslationServer.set_locale("en")
+ 	await lifecycle()
++	await continue_flow()
+ 	await finish()
+ 
+ func current() -> AcceptDialog:
+@@ -109,16 +134,19 @@
+ 	check(root.get_visible_rect().encloses(Rect2(Vector2(dialog.position),Vector2(dialog.size))),context+" popup fits its viewport")
+ 	for label: Label in dialog.surface.find_children("*","Label",true,false):
+ 		if label.is_visible_in_tree(): check(bounds.grow(0.5).encloses(label.get_global_rect()),context+" text fits: "+label.text)
++	for button: Button in dialog.surface.find_children("*","Button",true,false):
++		if button.is_visible_in_tree(): check(bounds.encloses(button.get_global_rect()) and button.get_global_rect().size.y >= 52,context+" button fits and keeps a touch target: "+button.name)
+ 	check(bounds.encloses(dialog.confirm_button.get_global_rect()) and dialog.confirm_button.size.y >= 52,"review button remains visible and usable")
+ 	var date: Label = dialog.find_child("WeeklySummaryWeek",true,false)
+ 	check(date.text == GameText.message("WEEK %02d") % dialog.week and date.size.x >= date.get_theme_font("font").get_string_size(date.text,HORIZONTAL_ALIGNMENT_LEFT,-1,18).x,"actual week remains readable in the popup header")
+-	check(dialog.hero.get_global_rect().end.y <= dialog.metrics.get_global_rect().position.y,"decorations and title clear the result metrics")
+-	if int(dialog.summary.tier) >= 2:
+-		var crown: Rect2 = dialog.ornament.get_global_transform()*dialog.ornament.crown_rect()
+-		check(dialog.hero.get_global_rect().encloses(crown),context+" crown remains inside its celebration slot")
+-		check(crown.end.y+6 <= dialog.heading.global_position.y+0.5,"crown stays clear of the award title")
++	check(dialog.hero.get_global_rect().end.y <= dialog.player_points.get_global_rect().position.y,"banner clears the points comparison")
++	check(dialog.player_points.get_global_rect().end.y <= dialog.metrics.get_global_rect().position.y,"comparison clears the three result cards")
++	check(dialog.heading.get_global_rect().end.x < dialog.rank_label.get_global_rect().position.x,"award title stays clear of the oversized rank")
++	check(dialog.heading.get_global_rect().end.y <= dialog.driver_label.get_global_rect().position.y,"player name stays below the award title")
++	check(bounds.encloses(dialog.continue_button.get_global_rect()) and dialog.continue_button.size.y >= 52,"Continue remains visible and usable")
++	check(dialog.confirm_button.get_global_rect().end.x+8 <= dialog.continue_button.get_global_rect().position.x,"the two actions keep separate hit targets")
+ 	if dialog.perfect.visible:
+-		check(dialog.heading.get_global_rect().end.y+5 <= dialog.perfect.global_position.y,"Perfect Week badge clears the award heading")
++		check(dialog.driver_label.get_global_rect().end.x+6 <= dialog.perfect.global_position.x,"Perfect Week badge clears the player name")
+ 
+ func lifecycle() -> void:
+ 	await show_summary("champion","active","active")
+@@ -157,13 +185,17 @@
+ 	app._rivalry()
+ 	await settle()
+ 	check(current() == dialog and dialog.visible,"background refresh does not interrupt an open summary")
++	check(dialog.continue_button.disabled,"background refresh disables the summary's Continue action")
+ 	app.rivalry.busy = false
+ 	app._rivalry()
+ 	await settle()
+ 	check(current() == dialog,"refresh never stacks a second summary")
+ 	var key: String = dialog.receipt_key
+ 	app.rivalry.snapshot_scope = "different-account"
+-	await settle()
++	var stale_calls: int = service.calls.size()
++	dialog.continue_button.pressed.emit()
++	await settle()
++	check(service.calls.size() == stale_calls,"a stale account's summary cannot advance a week")
+ 	check(current() == null,"account scope invalidates the old summary")
+ 	check(not app._reviewed_rivalry_summaries.has(key),"invalidated results are not marked as reviewed")
+ 	app.rivalry.snapshot_scope = app.rivalry.scope()
+@@ -233,6 +265,40 @@
+ 	await settle()
+ 	check(current() == null and service.calls.size() == calls,"Enter dismisses only the summary and cannot activate Continue on release")
+ 
++func continue_flow() -> void:
++	await show_summary("champion","explicit-continue")
++	var dialog: AcceptDialog = current()
++	var calls: int = service.calls.size()
++	dialog.continue_button.grab_focus()
++	var enter := InputEventKey.new()
++	enter.keycode = KEY_ENTER
++	enter.pressed = true
++	dialog.push_input(enter,true)
++	# An immediate second activation cannot submit a duplicate request.
++	dialog.continue_button.pressed.emit()
++	await settle()
++	check(current() == null,"explicit Continue closes the sheet")
++	check(service.calls.size() == calls+1 and service.pending_path.ends_with("/continue"),"summary Continue uses the existing single scoped acknowledgement")
++	var operation: String = service.calls[-1].key
++	var next: Button = app.content.find_child("RivalryNextWeek",true,false)
++	check(next != null and next.disabled,"underlying Continue stays disabled while the summary's request is running")
++	service.respond({"ok":false,"data":{},"error":"CONNECTION_FAILED"})
++	await settle()
++	check(current() == null and app.rivalry.model.completed and not app.rivalry.error.is_empty(),"failed summary Continue keeps the weekly results and existing retry error")
++	next = app.content.find_child("RivalryNextWeek",true,false)
++	check(next != null and not next.disabled,"failed rollover can be retried from the unchanged results screen")
++	next.pressed.emit()
++	check(service.calls[-1].key == operation,"main-screen retry reuses the popup's original operation key")
++	service.respond({"ok":true,"data":{"acknowledged":true}})
++	await settle()
++	check(service.pending_path == "/rivalry/join" and app.rivalry.busy,"summary Continue keeps the existing acknowledgement then enrollment sequence")
++	var active: Dictionary = fixture()
++	active.group_id = "reference-next-week"
++	active.week = 42
++	service.respond({"ok":true,"data":active})
++	await settle()
++	check(app.rivalry.model.week == 42 and not app.rivalry.model.completed and current() == null,"successful enrollment returns to the normal populated weekly overview")
++
+ func finish() -> void:
+ 	app.queue_free()
+ 	service.queue_free()
+--- a/AGENTS.md
++++ b/AGENTS.md
+@@ -1,3 +1,8 @@
++<!-- RIVALRY-SUMMARY-REFERENCE-20261026 -->
++## Rivalry results popup follows supplied reference (2026-10-26)
++RSR01-RSR04/R01/Q01: Gold-framed sheet replaces centered laurels with large left award/player banner, actual oversized rank, original trophy/checkers, actual player/runner-up comparison and lead badge. Final position, contested wins and validated PB count occupy three cards; the tiny native car uses event vehicle/local cosmetics. View results/close/Escape dismiss; the reference's explicit Continue calls the existing scoped acknowledgement/enrollment once. Busy/stale guards, operation-key reuse, failed retry on unchanged main results and successful next-week return pass. This supersedes only the earlier popup-only dismissal requirement. Final1437Compatibility/1437desktopMobile, retained weekly layout3012/rollover38/parser1281 pass; task-start popup6checks/3expected failures, initial spacing1344/14fail and subsequent corrected runs are retained. Weekly page/share/art/model/adapter and profile studio factory remain exact; concurrent App/header-profile work is excluded from the review patch. Sources, commands, native views, limits and checkpoint: docs/RIVALRY_SUMMARY_REFERENCE_2026_10_26.md and docs/evidence/rivalry-summary-reference-2026-10-26/report.json. Reload and owner/device appearance/touch/translation acceptance remain; a rapid-resize retained header-car artifact behind the scrim is outside this popup pass. No attachment/device test, APK, auth/purchase, owner-save/live mutation, deployment or owner-process restart; no staging/commit. Concurrent changes preserved.
++<!-- /RIVALRY-SUMMARY-REFERENCE-20261026 -->
++
+ <!-- ELECTRIC-POWERED-DRIFT-20261026 -->
+ ## Electric drift under acceleration and steering (2026-10-26)
+ EPD01-EPD03/R01/Q01: Owner requests some drift while accelerating and turning. Electric-16/physics0.74 adds opt-in0.55 powered lateral response beyond the old29kmh launch fade, smoothly gated by forward power/actual steering and shared with launch response without stacked reductions. Lifting/light pedal/straight wheels/reverse retain old arithmetic. Actual36/72/108kmh powered slip2.356/2.033/1.652to4.738/4.091/3.352deg;36cases peak7.326deg under the original8deg ceiling and retain>=97.62% speed, with symmetric exact replay/recovery. All prior electric fields except version, all18 ordinary circle results and2400-tick straight D/R propulsion/braking remain exact. New275, primary530/held53/corner32/launch111/low87/speed57/car60/release38/one-pedal63/power19/balance18/response86/radius64/turn61/Over-under7/normal20/laps6/handling88/rewind61/parser1281/import and actual Game75Compatibility+75desktopMobile pass. Native full accelerator/steering slip3.568to6.891deg; requested track has five ordered laps/zero contacts, independently accepted36278-input/302310ms replay. Backend72pass/twoexisting exclusions pass. Six other car hashes and1200 ticks each remain exact; only global physics/EV0906641a fixture entry change. Initial269/3 quantized-threshold findings,8.107deg trial and missing concurrent header-photo interruption are retained; no old behavior bound is relaxed. Sources, commands, hashes and task-only patch: docs/ELECTRIC_POWERED_DRIFT_2026_10_26.md and docs/evidence/electric-powered-drift-2026-10-26/report.json. Reload/rebuild, matching verifier rollout and owner driving acceptance remain. No physical-device attachment check/test, APK, purchase, live mutation, deployment, merge, staging, commit or owner-process restart; concurrent work preserved.
+--- a/DEVELOPMENT_STATUS.md
++++ b/DEVELOPMENT_STATUS.md
+@@ -1,3 +1,8 @@
++<!-- RIVALRY-SUMMARY-REFERENCE-20261026 -->
++## Rivalry results popup follows supplied reference (2026-10-26)
++RSR01-RSR04/R01/Q01: Gold-framed sheet replaces centered laurels with large left award/player banner, actual oversized rank, original trophy/checkers, actual player/runner-up comparison and lead badge. Final position, contested wins and validated PB count occupy three cards; the tiny native car uses event vehicle/local cosmetics. View results/close/Escape dismiss; the reference's explicit Continue calls the existing scoped acknowledgement/enrollment once. Busy/stale guards, operation-key reuse, failed retry on unchanged main results and successful next-week return pass. This supersedes only the earlier popup-only dismissal requirement. Final1437Compatibility/1437desktopMobile, retained weekly layout3012/rollover38/parser1281 pass; task-start popup6checks/3expected failures, initial spacing1344/14fail and subsequent corrected runs are retained. Weekly page/share/art/model/adapter and profile studio factory remain exact; concurrent App/header-profile work is excluded from the review patch. Sources, commands, native views, limits and checkpoint: docs/RIVALRY_SUMMARY_REFERENCE_2026_10_26.md and docs/evidence/rivalry-summary-reference-2026-10-26/report.json. Reload and owner/device appearance/touch/translation acceptance remain; a rapid-resize retained header-car artifact behind the scrim is outside this popup pass. No attachment/device test, APK, auth/purchase, owner-save/live mutation, deployment or owner-process restart; no staging/commit. Concurrent changes preserved.
++<!-- /RIVALRY-SUMMARY-REFERENCE-20261026 -->
++
+ <!-- HEADER-CAR-ICON-TRANSITION-20261026 -->
+ ## Selected header car picture transition (2026-10-26)
+ HIT01-HIT03/R01/Q01: Selected header car picture crossfades/slides over0.24s, reusing cached PNGs and the existing Control with one temporary outgoing picture. Rapid requests coalesce to the latest car; first attachment is immediate, same-car refresh is stable, and hide/resize/detach/free settles and clears. Actual keyboard/mouse selection/save, navigation/account ownership and no-new-viewport guards pass:51headless/61Compatibility/61desktopMobile, parser1282. Native frames cover960/1280/1720. Runtime scope is profile_car.gd; original offline studio/camera factory text, dropdown motion, static assets, App and concurrent work remain. Commands, captures, hashes and scoped checkpoint: docs/HEADER_CAR_ICON_TRANSITION_2026_10_26.md and docs/evidence/header-car-icon-transition-2026-10-26/report.json. Reload and owner/device motion/touch/frame-pacing acceptance remain. No attachment/device test, APK, purchase, live mutation, deployment, staging, commit, merge or owner-process restart.
+--- /dev/null
++++ b/game/ui/rivalry_summary_banner.gd
+@@ -0,0 +1,47 @@
++extends Control
++## Original checkerboard and trophy geometry for the results sheet.
++var tier: int = 0
++var kind: String = "banner"
++
++func _ready() -> void:
++	mouse_filter = Control.MOUSE_FILTER_IGNORE
++	resized.connect(queue_redraw)
++
++func _draw() -> void:
++	if kind == "comparison":
++		draw_line(Vector2(0,19),Vector2(size.x,19),MenuStyle.MUTED,1,true)
++		var badge := PackedVector2Array([Vector2(33,3),Vector2(188,3),Vector2(181,35),Vector2(26,35)])
++		draw_colored_polygon(badge,Color("06141c"))
++		badge.append(badge[0])
++		draw_polyline(badge,MenuStyle.POSITIVE,1,true)
++		return
++	var faint := Color("87a5b6",0.13)
++	for side: int in range(2):
++		for row: int in range(7):
++			for column: int in range(2):
++				if (row+column)%2 != 0: continue
++				var x: float = (18 if side == 0 else size.x-41)+column*24-row*5
++				var y: float = row*28+5
++				draw_colored_polygon(PackedVector2Array([Vector2(x,y),Vector2(x+24,y),Vector2(x+19,y+28),Vector2(x-5,y+28)]),faint)
++	draw_line(Vector2(103,126),Vector2(516,126),Color(MenuStyle.ACCENT,0.8),1.3,true)
++	draw_line(Vector2(565,17),Vector2(532,178),Color(MenuStyle.ACCENT,0.5),1,true)
++	if tier > 0: _trophy(Rect2(739,37,68,79),MenuStyle.ACCENT if tier >= 2 else Color("b8cbd5"))
++	else: draw_texture_rect(MenuIcon.texture("flag",true),Rect2(743,47,59,59),false,MenuStyle.MUTED)
++	for row: int in range(2):
++		for column: int in range(8):
++			if (row+column)%2 != 0: continue
++			var x: float = 723+column*11-row*3
++			var y: float = 128+row*11
++			draw_colored_polygon(PackedVector2Array([Vector2(x,y),Vector2(x+11,y),Vector2(x+8,y+11),Vector2(x-3,y+11)]),Color("a4bac7",0.5))
++
++func _trophy(rect: Rect2, color: Color) -> void:
++	draw_set_transform(rect.position,0,rect.size/Vector2(68,79))
++	draw_colored_polygon(PackedVector2Array([Vector2(13,5),Vector2(55,5),Vector2(55,27),Vector2(51,39),Vector2(42,47),Vector2(38,48),Vector2(38,65),Vector2(48,67),Vector2(48,73),Vector2(20,73),Vector2(20,67),Vector2(30,65),Vector2(30,48),Vector2(25,47),Vector2(16,39),Vector2(13,27)]),color)
++	draw_polyline(PackedVector2Array([Vector2(13,13),Vector2(2,13),Vector2(3,29),Vector2(10,39),Vector2(22,43)]),color,4,true)
++	draw_polyline(PackedVector2Array([Vector2(55,13),Vector2(66,13),Vector2(65,29),Vector2(58,39),Vector2(46,43)]),color,4,true)
++	var star := PackedVector2Array()
++	for index: int in range(10):
++		var angle: float = -PI*0.5+index*PI/5
++		star.append(Vector2(34,25)+Vector2(cos(angle),sin(angle))*(12 if index%2 == 0 else 5))
++	draw_colored_polygon(star,Color("06141c"))
++	draw_set_transform(Vector2.ZERO)
+--- /dev/null
++++ b/docs/RIVALRY_SUMMARY_REFERENCE_2026_10_26.md
+@@ -0,0 +1,21 @@
++# Rivalry results popup reference, 2026-10-26
++
++The owner's supplied popup replaces the earlier centered laurel summary. The weekly page remains intact beneath it. The new reference explicitly adds Continue to next week inside the popup, superseding the earlier popup-only dismissal requirement; the existing main-screen Continue remains.
++
++RSR01: A gold-framed dark sheet has a separated header, left-aligned place/award/player banner, oversized two-digit actual rank, original vector trophy/checker details and a diagonal divider. The comparison row shows the actual player's points and small native vehicle preview, a signed lead badge, and runner-up points. Podium, ordinary, unranked and shared championships retain their true title/rank; a joint winner compares against a co-leader rather than claiming an exclusive lead. The Perfect Week marker still requires five outright contested victories.
++
++RSR02: The three lower cards show final position, contested track victories and personal bests. Personal bests use the validated distinct `personal_best_slots` count, including zero; the design's example values are not hardcoded. The opponent is the first other driver in the authoritative standings, so non-winners compare against the leader. The miniature uses the existing ProfileCar studio with the actual event vehicle, local paint, parts and condition, one owned static viewport and its existing bounded preparation. No camera, model or shared profile source changes are made.
++
++RSR03: View results, close and Escape only dismiss. Initial keyboard focus is View results; Enter dismisses there. Explicitly focusing Continue and pressing Enter, or clicking Continue, invokes the existing adapter's scoped acknowledgement/enrollment flow once. A valid click marks the summary reviewed and closes it before the request; main Continue remains disabled while that request runs. Failure returns to the same completed weekly view with the existing error and retry. Retry reuses the original operation key. Stale accounts/memberships, background busy state and changed final payloads cannot advance a week from the sheet. No automatic dismissal acknowledges or enrolls.
++
++RSR04/R01: The 880x540 reference composition stays together on resize and fits the viewport without a popup scrollbar. Header/date, typography, comparison, all three cards, Perfect Week marker and all three button targets are checked against actual bounds. A separate Latin display face avoids tall fallback line metrics; translated or user text requiring other scripts retains the shared font coverage. Existing catalogue translations are reused, with English fallback for new or previously uncatalogued phrases. Owner translation/appearance/touch acceptance remains.
++
++Q01: The real-App popup suite checks six award states at four sizes, live resize, English/German/Finnish/Japanese layouts, exact data/cosmetics, modal input/focus, stale snapshots/accounts/navigation, other-window deferral, review suppression and explicit Continue failure/retry/success. The original read-only popup assertions are replaced only where this reference changes the approved behavior and composition; all underlying data, dismissal, geometry, modal and adapter guards remain. Original sources and initial 1344-check/14-failure name-spacing regression are retained. The oversized first close-icon render was corrected with an explicit icon width and strengthened button-bound checks. A spacing pass has 1437 checks/0 failures before the final typography refinement.
++
++Final native popup checks pass **1437 Compatibility** and **1437 desktop Mobile**. Retained weekly layout passes **3012**, Continue/rollover passes **38**, and the parser passes **1281 scripts**. The task-start popup comparison runs the old App and popup only in isolated engine memory and retains the expected failures for its missing reference elements. Exact commands, counts, diagnostics, source/image hashes and the task-only Git-checkable patch are in [report.json](evidence/rivalry-summary-reference-2026-10-26/report.json).
++
++Runtime scope is `rivalry_summary_dialog.gd`, the new `rivalry_summary_banner.gd`, and the summary construction/action bindings in `app.gd`. The weekly page, original award art, Share dialog, Rivalry model and adapter are byte-identical to the task-start snapshots. The existing ProfileCar studio factory and presentation methods also remain exact; concurrent header-picture changes in that source are preserved. Concurrent App/profile work is excluded from the task-only patch.
++
++[Champion popup](evidence/rivalry-summary-reference-2026-10-26/ui/champion-1280x720.png), [Perfect Week](evidence/rivalry-summary-reference-2026-10-26/ui/perfect-960x540.png) and [results after dismissal](evidence/rivalry-summary-reference-2026-10-26/ui/results-1280x720.png) are actual native captures; desktop Mobile counterparts are under `ui/mobile`. Rapid-resize captures include a transient enlarged retained header-car image behind the scrim. The unchanged header/profile rendering is outside the popup geometry pass; no fix for that artifact is claimed here.
++
++Tests use unique disposable saves beneath `build/rivalry-summary-reference/userdata`, disable `BMT_API_URL`, and use a delayed local fixture service. Reload and owner/device appearance, touch and translation acceptance remain. No physical-device test or attachment check, APK/build/install, real authentication/purchase, owner-save or live database mutation, deployment or owner-process restart was performed. No staging or commit; concurrent changes are preserved.
+--- /dev/null
++++ b/game/ui/rivalry_summary_banner.gd.uid
+@@ -0,0 +1 @@
++uid://bgcy27ks0rjh1
+--- /dev/null
++++ b/docs/evidence/rivalry-summary-reference-2026-10-26/report.json
+@@ -0,0 +1,178 @@
++{
++  "requirements": [
++    "RSR01",
++    "RSR02",
++    "RSR03",
++    "RSR04",
++    "R01",
++    "Q01"
++  ],
++  "engine": "4.7.2.stable.official.ed1daf0bf",
++  "changed_files": [
++    "game/core/app.gd",
++    "game/ui/rivalry_summary_dialog.gd",
++    "game/tests/test_rivalry_summary_popup.gd",
++    "game/ui/rivalry_summary_banner.gd",
++    "docs/RIVALRY_SUMMARY_REFERENCE_2026_10_26.md",
++    "game/ui/rivalry_summary_banner.gd.uid",
++    "AGENTS.md",
++    "DEVELOPMENT_STATUS.md"
++  ],
++  "source_sha256": {
++    "game/core/app.gd": "4643557f2d6ad16dd83001232181c18c0d0028654fe997fcd909ca9a822fa50b",
++    "game/ui/rivalry_summary_dialog.gd": "09fe1d9f2117a29d92ee34fcef8e6470f7c8caac8ad0ed1b5f583fb98c1eef29",
++    "game/tests/test_rivalry_summary_popup.gd": "6ff2560dcdcb8529ee2ed261c7d982b12f9970d9960f79e6dd2336d561eaa8e2",
++    "game/ui/rivalry_summary_banner.gd": "f4e2f342b1ce8d2198d86d6ad4476288b4e634357272f44003af0cc588114a0c",
++    "docs/RIVALRY_SUMMARY_REFERENCE_2026_10_26.md": "0d9130b950d899800da557ab52005019a595f7e2434762ff02e5466a85db2b6d",
++    "game/ui/rivalry_summary_banner.gd.uid": "848fc475781cbf3df7658b434fdfb89893a5daf43ba7d3d3f99bcdaf096fc73f"
++  },
++  "before_sha256": {
++    "app.gd": "4db96d13d61d7fa5ddf0f9385a350ab7ea8663abe30d8ad1cabbd56658cb1a91",
++    "profile_car.gd": "f2095c9c80348d46ef72437233f1beaf80eb68a15fb8407df9c724c228a172af",
++    "rivalry_award_art.gd": "86de544b06b5e2e8d23c030729f5b9ce092554c3274e091d928068a84b3d5801",
++    "rivalry_share_dialog.gd": "a06e6184372e920efb3a0f4837b845b712dab12361be5b41724ad76e8869237d",
++    "rivalry_summary_dialog.gd": "407f64c26ec720ddbfb5e45e7d765893a7e75278272f173b29375d031d591bcf",
++    "test_rivalry_summary_popup.gd": "e8050eb9f70685709c8472ae24a72be42596e23991d8e438bc61fe3efc5e5d4e",
++    "weekly_rivalry.gd": "e52246200800d0c891afa7d2d8c856e9709d05c0115d41b0001af85422ce2442",
++    "weekly_rivalry_client.gd": "a7078ee8e0df0ce958ff60bdf8731284f8c10e490c983f1fc58c5bd20d36e715",
++    "weekly_rivalry_page.gd": "fc4f8f22670e9cbc7ce9699d2bbe02fc4753226e76cbb4bb46654e2ae47e6360"
++  },
++  "unchanged_task_start_sources": {
++    "game/ui/rivalry_award_art.gd": true,
++    "game/ui/rivalry_share_dialog.gd": true,
++    "game/race/weekly_rivalry.gd": true,
++    "game/backend/weekly_rivalry_client.gd": true,
++    "game/ui/weekly_rivalry_page.gd": true
++  },
++  "concurrent_profile": {
++    "before_sha256": "f2095c9c80348d46ef72437233f1beaf80eb68a15fb8407df9c724c228a172af",
++    "current_sha256": "1d18a9d645bb67da631786e40561b8c1737123f6b65c4457221c72959f3917fc",
++    "studio_factory_and_presentation_methods_exact": true,
++    "header_picture_changes": "Concurrent work preserved and excluded."
++  },
++  "images": {
++    "ui/champion-1280x720.png": "af688ce803c162f5407960b94fea7450c294a8b440c125b3b14edf6c00dedaa2",
++    "ui/champion-1600x720.png": "b0b9f9733deea19ff60f7bc6c57aaffb28b3350e1af11de9383dd033d499798b",
++    "ui/champion-1938x1282.png": "3dada290899552b2b86e816e54fed9558372fb416cac09f053346e969f5d6eb9",
++    "ui/champion-960x540.png": "24b8f9995948c796b06e0d4cda52670e04e468336bdb48d065a6fcbab894032e",
++    "ui/locale-de-1280x720.png": "eb729ce84599526f20624c6cc5b47bd416db7ce6d37162a71e4f6e4ea7e51468",
++    "ui/locale-en-1280x720.png": "280083771a2840a71986df3299d360755e7ef441acb5f0338731fc4873ebebd6",
++    "ui/locale-fi-1280x720.png": "0b9f2cb5201c49271b2836323b05f030a70bf732581a48b87a460465ada1cc2d",
++    "ui/locale-ja-1280x720.png": "9e6095d20bbd9a15761f65be41c7c5fa7a881c0096335a2ba72beb8a1f9e5efb",
++    "ui/mobile/champion-1280x720.png": "db90732143e957b3740a784f7e8a0aabda0337cfd7a7fb727b9aa6c9114dd760",
++    "ui/mobile/champion-1600x720.png": "8953882eeeaa927ed34ccdebf5ee12d2db3a07122b4fbc3f787b056ddd9d31c1",
++    "ui/mobile/champion-1938x1282.png": "57101a7bb24db6a1ae3a481c4c67804f76c537fe335c3cf0e6049da2d5596e6d",
++    "ui/mobile/champion-960x540.png": "c656cbff9bedfac76bf2dfc6677787ffc4e3576dcc407c176583e3ec3f8a6481",
++    "ui/mobile/locale-de-1280x720.png": "7575361c75d1e794a0d1e3dcc7dea300326929efae035ca164dd4ea8fb4c3268",
++    "ui/mobile/locale-en-1280x720.png": "31afa874b7a42ed72fb34fb58925c475a8d512b25ac140f96d246653002352a0",
++    "ui/mobile/locale-fi-1280x720.png": "c1059055bf33817733a867d343214813dc0ca086a7445ff7937a8e93ff10e0b0",
++    "ui/mobile/locale-ja-1280x720.png": "849b7af63bf8bfd0ad9e265d6321817b0378150b6cdb191e78fc8f6d18fbec4f",
++    "ui/mobile/perfect-1280x720.png": "91e01d9191de9ec65bf7505dfeb3ab0310f8f138be35e2441dd0fadd40b2148d",
++    "ui/mobile/perfect-1600x720.png": "25e4b67f9b165762e0d17c7a1c9fef4826b3b0e43cf094d5e662b816e222f15c",
++    "ui/mobile/perfect-1938x1282.png": "62f34cda50b307a94c1c2cbc2fcc8f803431cdfb1bfe008687665c842bd30b54",
++    "ui/mobile/perfect-960x540.png": "e2d8fe3c6ea670bc7be58f6167ea4ce889fbee5acf9c2c0995f8466fe32be3ca",
++    "ui/mobile/results-1280x720.png": "b40dd55e5e84c171c0370a6dc45200d3d631ece0606e21465d83a2004eca3aa1",
++    "ui/mobile/results-1600x720.png": "6c9e516a0f6e6fa41189a82f1683643aaa9a8c533afd43fa8f6737972048adc9",
++    "ui/mobile/results-1938x1282.png": "e95ceb3ab43b084f10f624c524709bc3a7510f057fd239e31c4ba3f99efbba1a",
++    "ui/mobile/results-960x540.png": "6ae202e80b54580d53c4e2e39f7029ebbf3288acbaa4fe43b35ca0fe38199cec",
++    "ui/mobile/unranked-1280x720.png": "08e9b655f38fce0cb779e52dfeb6e3631f9bc0688f63d805c620ca3add10847e",
++    "ui/mobile/unranked-1600x720.png": "2ba6b7ad2029f109d84353b6f8ec78bfd5c56719936e4b145b9740e364855416",
++    "ui/mobile/unranked-1938x1282.png": "6f7d0c15d23897fb8d127e96dff2b85bd93d2e97b45a622ec85f4feef3ba2262",
++    "ui/mobile/unranked-960x540.png": "c1fd3d588bbba29bad6cb750e1c7642a43404cc444a897139537e69dcdc6bf70",
++    "ui/perfect-1280x720.png": "7f6d982a30fa2d4188ba88dbdcf5813ac8b35dbaaa33f78a7b259a1b0ce8a830",
++    "ui/perfect-1600x720.png": "304d3b97dcd130ef85c6fb4715575296859be2f4b1db92c0457680f12d3410ed",
++    "ui/perfect-1938x1282.png": "0f0f84093d37d8896d27e258da7aeb564c84fb472fd6c5ea3104cd4a17262ea8",
++    "ui/perfect-960x540.png": "7b6225f823e6ccea0840bfad83292947bd3dd7c994ff90a9186a6071456c79b1",
++    "ui/results-1280x720.png": "e1bc21d2549f73b49838313bbd0a87a56c9ad72f7640cab4613acbffcb825ace",
++    "ui/results-1600x720.png": "eef86b323676bc8477b1694f8c8056c0eccdad9d7a8e35bbcc047292cbc4b187",
++    "ui/results-1938x1282.png": "f07d2dea8ea6352f5c129f291bae7c1c7eadbf620c5093050c290e5aa8d86c2b",
++    "ui/results-960x540.png": "003bf8c5efb78ceb57168f55db286be5dc81653bd6b455c6126e1251caf370ef",
++    "ui/unranked-1280x720.png": "cf33daa1903a5d91ab2738b6ddd8c2e2eddad76717168702a5857049e0f2d8c7",
++    "ui/unranked-1600x720.png": "0ef45ae8e13ad5e053b5f6762e5ef68d216f1240593e32be763578673578df0a",
++    "ui/unranked-1938x1282.png": "1c3a725caccc4ab9d179c5b193d3d71d0ba3ddf14e195b665327e466231c90d0",
++    "ui/unranked-960x540.png": "44b3f45d768fcb246288b4670d2b78860cfcc452e917bd7c659908eb7d2ba0e3"
++  },
++  "logs": {
++    "final-compatibility.log": {
++      "sha256": "efb848124817a2c6aba07503ebc36771af301d601224a169797252aabe7df8fe",
++      "summary": "RIVALRY_SUMMARY_POPUP: 1437 checks, 0 failures",
++      "findings": []
++    },
++    "final-mobile.log": {
++      "sha256": "9a5945bf3810f460f1e89516fd7ecf66990e3625a508a08c3001cf3fbe699c43",
++      "summary": "RIVALRY_SUMMARY_POPUP: 1437 checks, 0 failures",
++      "findings": []
++    },
++    "initial-native.log": {
++      "sha256": "2e06441f6586817e33a9a2888869bc15048188c434dd2b55e5c2ed50310cf5d2",
++      "summary": "RIVALRY_SUMMARY_POPUP: 1344 checks, 14 failures",
++      "findings": [
++        "player name stays below the award title\r",
++        "player name stays below the award title\r",
++        "player name stays below the award title\r",
++        "player name stays below the award title\r",
++        "player name stays below the award title\r",
++        "player name stays below the award title\r",
++        "player name stays below the award title\r",
++        "player name stays below the award title\r",
++        "player name stays below the award title\r",
++        "player name stays below the award title\r",
++        "player name stays below the award title\r",
++        "player name stays below the award title\r",
++        "player name stays below the award title\r",
++        "player name stays below the award title\r"
++      ]
++    },
++    "original-popup.log": {
++      "sha256": "d121afaf9854d5a2b3442ad9d8383f5d47e26c97eb4b2b62d828d32f3316c243",
++      "summary": "RIVALRY_SUMMARY_POPUP: 6 checks, 3 failures",
++      "findings": [
++        "reference popup includes the explicit Continue action\r",
++        "reference popup presents the oversized earned rank\r",
++        "reference popup compares actual runner-up points\r"
++      ]
++    },
++    "parser.log": {
++      "sha256": "7b6ab4d245c35c17c1da34c23b15dce8c3fc0014e45b958d8fe26ac701b6cabd",
++      "summary": "SCRIPT_PARSE: 1281 scripts, 0 failures",
++      "findings": []
++    },
++    "popup-compatibility.log": {
++      "sha256": "7a9e0a0dd9f36ee33181732a031566fc0b838b0b382acf6558d63219fc064f39",
++      "summary": "RIVALRY_SUMMARY_POPUP: 1437 checks, 0 failures",
++      "findings": []
++    },
++    "spacing-native.log": {
++      "sha256": "57263430305a8f047ab75b998f41b50fca85870963d074c93f925a6d156a345f",
++      "summary": "RIVALRY_SUMMARY_POPUP: 1437 checks, 0 failures",
++      "findings": []
++    },
++    "week-completion.log": {
++      "sha256": "e7177deb9167e50e4d824de42db8d4ce3d32eecb7cb0391e3682857dc313b938",
++      "summary": "RIVALRY_WEEK_COMPLETION: 38 checks, 0 failures",
++      "findings": []
++    },
++    "weekly-layout.log": {
++      "sha256": "055c8c0fa783406332539e657ba3aaab3c85aca79a051f7f8572198908021808",
++      "summary": "RIVALRY_WEEKLY_CONTINUITY: 3012 checks, 0 failures",
++      "findings": []
++    }
++  },
++  "commands": [
++    "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1 -Action TestScript -ScriptPath res://tests/test_rivalry_summary_popup.gd -Graphical",
++    "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1 -Action TestScript -ScriptPath res://tests/test_rivalry_summary_popup.gd -Graphical -RenderingMethod mobile",
++    "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1 -Action TestScript -ScriptPath res://tests/test_rivalry_summary_popup.gd -TestArgument '--reference-before'",
++    "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1 -Action TestScript -ScriptPath res://tests/test_rivalry_finale_layout.gd",
++    "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1 -Action TestScript -ScriptPath res://tests/test_rivalry_week_completion.gd",
++    "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1 -Action TestScript -ScriptPath res://tests/test_script_parse.gd",
++    "git apply --reverse --check docs/evidence/rivalry-summary-reference-2026-10-26/change.patch",
++    "git diff --check -- game/core/app.gd game/ui/rivalry_summary_dialog.gd game/tests/test_rivalry_summary_popup.gd game/ui/rivalry_summary_banner.gd docs/RIVALRY_SUMMARY_REFERENCE_2026_10_26.md game/ui/rivalry_summary_banner.gd.uid AGENTS.md DEVELOPMENT_STATUS.md"
++  ],
++  "environment": "APPDATA=<workspace>/build/rivalry-summary-reference/userdata; local delayed fixture; tests disable BMT_API_URL",
++  "behavior": "Dismissal is read-only. Only the explicit Continue action invokes the existing scoped acknowledgement/enrollment; failure retries on the unchanged weekly page with the same operation key.",
++  "limitations": [
++    "No physical-device test or attachment check, APK, real auth/purchase, owner-save/live database mutation, deployment, owner-process restart, staging or commit.",
++    "Reload and owner/device appearance/touch/translation acceptance remain; uncatalogued phrases have English fallback.",
++    "Rapid-resize capture contains an enlarged retained header-car image behind the scrim. Shared profile/header rendering is outside the popup geometry pass."
++  ]
++}
+--- /dev/null
++++ b/docs/evidence/rivalry-summary-reference-2026-10-26/checkpoint.py
+@@ -0,0 +1,109 @@
++"""Scope the reference-popup review patch around concurrent shared App work."""
++from pathlib import Path
++import difflib
++import hashlib
++import json
++import re
++
++BASE = Path(__file__).resolve().parent
++ROOT = BASE.parents[2]
++REL = BASE.relative_to(ROOT).as_posix()
++TAG = "RIVALRY-SUMMARY-REFERENCE-20261026"
++BLOCK = f"""<!-- {TAG} -->
++## Rivalry results popup follows supplied reference (2026-10-26)
++RSR01-RSR04/R01/Q01: Gold-framed sheet replaces centered laurels with large left award/player banner, actual oversized rank, original trophy/checkers, actual player/runner-up comparison and lead badge. Final position, contested wins and validated PB count occupy three cards; the tiny native car uses event vehicle/local cosmetics. View results/close/Escape dismiss; the reference's explicit Continue calls the existing scoped acknowledgement/enrollment once. Busy/stale guards, operation-key reuse, failed retry on unchanged main results and successful next-week return pass. This supersedes only the earlier popup-only dismissal requirement. Final1437Compatibility/1437desktopMobile, retained weekly layout3012/rollover38/parser1281 pass; task-start popup6checks/3expected failures, initial spacing1344/14fail and subsequent corrected runs are retained. Weekly page/share/art/model/adapter and profile studio factory remain exact; concurrent App/header-profile work is excluded from the review patch. Sources, commands, native views, limits and checkpoint: docs/RIVALRY_SUMMARY_REFERENCE_2026_10_26.md and docs/evidence/rivalry-summary-reference-2026-10-26/report.json. Reload and owner/device appearance/touch/translation acceptance remain; a rapid-resize retained header-car artifact behind the scrim is outside this popup pass. No attachment/device test, APK, auth/purchase, owner-save/live mutation, deployment or owner-process restart; no staging/commit. Concurrent changes preserved.
++<!-- /{TAG} -->
++
++"""
++
++
++def read(path):
++    return path.read_bytes().decode("utf-8-sig")
++
++
++def sha(path):
++    return hashlib.sha256(path.read_bytes()).hexdigest()
++
++
++def body(text):
++    start = text.index("func _maybe_rivalry_summary() -> void:")
++    end = text.index("func _share_rivalry_results() -> void:", start)
++    return text[start:end]
++
++
++def remove_block(text):
++    return re.sub(rf"<!-- {TAG} -->.*?<!-- /{TAG} -->\n\n?", "", text, count=1, flags=re.S)
++
++
++for name in ["AGENTS.md", "DEVELOPMENT_STATUS.md"]:
++    path = ROOT / name
++    current = path.read_bytes()
++    if f"<!-- {TAG} -->".encode() not in current:
++        path.write_bytes(BLOCK.encode() + current)
++    else:
++        path.write_bytes(BLOCK.encode() + remove_block(current.decode("utf-8-sig")).encode())
++
++modified = ["game/core/app.gd", "game/ui/rivalry_summary_dialog.gd", "game/tests/test_rivalry_summary_popup.gd"]
++added = ["game/ui/rivalry_summary_banner.gd", "docs/RIVALRY_SUMMARY_REFERENCE_2026_10_26.md"]
++if (ROOT / "game/ui/rivalry_summary_banner.gd.uid").exists(): added.append("game/ui/rivalry_summary_banner.gd.uid")
++unchanged = {}
++for path in (BASE / "before").iterdir():
++    if path.name in ["app.gd", "rivalry_summary_dialog.gd", "test_rivalry_summary_popup.gd", "profile_car.gd"]: continue
++    area = "backend" if path.name == "weekly_rivalry_client.gd" else "race" if path.name == "weekly_rivalry.gd" else "ui"
++    current = ROOT / "game" / area / path.name
++    unchanged[current.relative_to(ROOT).as_posix()] = current.read_bytes() == path.read_bytes()
++assert all(unchanged.values()), unchanged
++profile = ROOT / "game/ui/profile_car.gd"
++profile_before = BASE / "before/profile_car.gd"
++factory = "static func make_preview("
++assert read(profile).split(factory,1)[1] == read(profile_before).split(factory,1)[1]
++
++logs = {}
++for path in sorted(BASE.glob("*.log")):
++    raw = path.read_bytes()
++    text = raw.decode("utf-16" if raw.startswith((b"\xff\xfe",b"\xfe\xff")) else "utf-8-sig")
++    summaries = re.findall(r"[^\r\n]*\d+ (?:checks|scripts), \d+ failures[^\r\n]*", text)
++    logs[path.name] = {"sha256":sha(path), "summary":summaries[-1] if summaries else None,
++                       "findings":re.findall(r"^FAIL: (.*)$", text, re.M)}
++for name in ["final-compatibility.log", "final-mobile.log", "weekly-layout.log", "week-completion.log", "parser.log"]:
++    assert logs[name]["summary"] and ", 0 failures" in logs[name]["summary"], name
++
++commands = [
++    "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1 -Action TestScript -ScriptPath res://tests/test_rivalry_summary_popup.gd -Graphical",
++    "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1 -Action TestScript -ScriptPath res://tests/test_rivalry_summary_popup.gd -Graphical -RenderingMethod mobile",
++    "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1 -Action TestScript -ScriptPath res://tests/test_rivalry_summary_popup.gd -TestArgument '--reference-before'",
++]
++for script in ["test_rivalry_finale_layout.gd", "test_rivalry_week_completion.gd", "test_script_parse.gd"]:
++    commands.append("powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1 -Action TestScript -ScriptPath res://tests/" + script)
++commands.extend(["git apply --reverse --check " + REL + "/change.patch", "git diff --check -- " + " ".join(modified + added + ["AGENTS.md", "DEVELOPMENT_STATUS.md"])])
++report = {
++    "requirements":["RSR01","RSR02","RSR03","RSR04","R01","Q01"],
++    "engine":read(ROOT / "godot-version.txt").strip(),
++    "changed_files":modified + added + ["AGENTS.md","DEVELOPMENT_STATUS.md"],
++    "source_sha256":{name:sha(ROOT / name) for name in modified + added},
++    "before_sha256":{p.name:sha(p) for p in sorted((BASE / "before").iterdir())},
++    "unchanged_task_start_sources":unchanged,
++    "concurrent_profile":{"before_sha256":sha(profile_before),"current_sha256":sha(profile),"studio_factory_and_presentation_methods_exact":True,"header_picture_changes":"Concurrent work preserved and excluded."},
++    "images":{p.relative_to(BASE).as_posix():sha(p) for p in sorted((BASE / "ui").rglob("*.png"))},
++    "logs":logs,
++    "commands":commands,
++    "environment":"APPDATA=<workspace>/build/rivalry-summary-reference/userdata; local delayed fixture; tests disable BMT_API_URL",
++    "behavior":"Dismissal is read-only. Only the explicit Continue action invokes the existing scoped acknowledgement/enrollment; failure retries on the unchanged weekly page with the same operation key.",
++    "limitations":["No physical-device test or attachment check, APK, real auth/purchase, owner-save/live database mutation, deployment, owner-process restart, staging or commit.",
++                   "Reload and owner/device appearance/touch/translation acceptance remain; uncatalogued phrases have English fallback.",
++                   "Rapid-resize capture contains an enlarged retained header-car image behind the scrim. Shared profile/header rendering is outside the popup geometry pass."]
++}
++(BASE / "report.json").write_text(json.dumps(report,ensure_ascii=False,indent=2)+"\n",encoding="utf-8",newline="\n")
++patch = []
++for name in modified:
++    current = read(ROOT / name)
++    before = read(BASE / "before" / Path(name).name)
++    if name == "game/core/app.gd": before = current.replace(body(current),body(before),1)
++    patch.extend(difflib.unified_diff(before.splitlines(True),current.splitlines(True),fromfile="a/"+name,tofile="b/"+name))
++for name in ["AGENTS.md","DEVELOPMENT_STATUS.md"]:
++    current = read(ROOT / name)
++    patch.extend(difflib.unified_diff(remove_block(current).splitlines(True),current.splitlines(True),fromfile="a/"+name,tofile="b/"+name))
++for name in added + [REL+"/report.json",REL+"/checkpoint.py"]:
++    patch.extend(difflib.unified_diff([],read(ROOT / name).splitlines(True),fromfile="/dev/null",tofile="b/"+name))
++(BASE / "change.patch").write_text("".join(patch),encoding="utf-8",newline="\n")
++print(json.dumps({"unchanged_sources":unchanged,"native_images":len(report["images"]),"final_popup":logs["final-compatibility.log"]["summary"]},indent=2))

@@ -1,0 +1,7 @@
+$ErrorActionPreference = 'Stop'
+$repoRoot = (Resolve-Path (Join-Path $PSScriptRoot '../..')).Path
+$source = Join-Path $PSScriptRoot 'source'
+$env:GIT_DIR = Join-Path $repoRoot '.git'
+$env:GIT_WORK_TREE = $source
+& (Join-Path $source 'scripts/dev.ps1') -Action ExportAndroid -QuickValidation -CommandTimeoutSeconds 1800
+exit $LASTEXITCODE

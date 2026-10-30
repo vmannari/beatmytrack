@@ -1,0 +1,175 @@
+{
+  "requirements": [
+    "UCR01",
+    "UCR02",
+    "UCR03",
+    "UCR04",
+    "UCR05",
+    "R01",
+    "Q01"
+  ],
+  "status": "deployed",
+  "deployment": {
+    "revision": "bmt-stg-e7a444ab-studio-00018-kuq",
+    "image": "europe-west1-docker.pkg.dev/beat-my-track/bmt-stg-e7a444ab-images/studio@sha256:8e52a8a697ab2387659b814e18f751b96640d5f830e740e1557afa56fcc77762",
+    "checks": {
+      "/health": 200,
+      "/ready": 200,
+      "/admin": 200,
+      "/admin/assets/usage.js": 200,
+      "/admin/assets/usage.css": 200,
+      "/v1/admin/auth/config": 200,
+      "/v1/admin/usage-costs": 401,
+      "/v1/auth/google/challenge": 404,
+      "anonymous_edge": 403
+    },
+    "api_unchanged": true,
+    "worker_unchanged": true,
+    "seven_existing_jobs_unchanged": true,
+    "studio_settings_and_invoker_iam_unchanged": true,
+    "schema_migration": false,
+    "probe_job_removed": true,
+    "finished_at": "2026-10-27T19:53:31.732870+00:00"
+  },
+  "findings": {
+    "initial_report_gaps": "baseline-reproduction.json",
+    "billing": {
+      "inspected_at": "2026-10-27T19:52:13.772077+00:00",
+      "configured_export_table_present": true,
+      "exact_table_name_matches": true,
+      "table_rows_metadata": "0",
+      "table_bytes_metadata": "0",
+      "partition": {
+        "type": "DAY"
+      },
+      "streaming_buffer_present": false,
+      "independent_query_scope": "Backend project and same seven UTC dates; no ingestion-partition predicate; aggregate only",
+      "bytes_processed": "0",
+      "currencies": [],
+      "report_billing_status": "no_data",
+      "schema_fields": [
+        "billing_account_id",
+        "service",
+        "sku",
+        "usage_start_time",
+        "usage_end_time",
+        "project",
+        "labels",
+        "system_labels",
+        "location",
+        "resource",
+        "tags",
+        "price",
+        "subscription",
+        "transaction_type",
+        "seller_name",
+        "export_time",
+        "cost",
+        "currency",
+        "currency_conversion_rate",
+        "usage",
+        "credits",
+        "invoice",
+        "cost_type",
+        "adjustment_info",
+        "cost_at_list",
+        "cost_at_effective_price_default",
+        "cost_at_list_consumption_model",
+        "consumption_model"
+      ]
+    },
+    "capacity_comparison": "capacity-audit-comparison.json",
+    "ville_measured_full_cost_available": false,
+    "ville_model": "low-confidence client-request-share scenario; only Ville eligible; idle/worker/SQL/storage/tax/unidentified charges unallocated",
+    "forecast_available": false
+  },
+  "validation": {
+    "exact_image": {
+      "tests": 108,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    "passed": 108,
+    "legacy_fixture": "One generic public-workload snapshot fixture deselected; its unchanged assertions execute through the explicit private-admin fixture.",
+    "browser_checks": 14,
+    "browser_page_errors": [],
+    "live_resources": 58,
+    "live_endpoint_summary_rows": 38,
+    "live_summary": {
+      "unknown": 33,
+      "configured": 2,
+      "normal": 20,
+      "warning": 0,
+      "critical": 3
+    },
+    "live_account_found": true,
+    "live_activity": {
+      "all_observed_requests": 0,
+      "active_players": 0,
+      "active_days": 0,
+      "fresh": true,
+      "status": "observed",
+      "processed_through": 1793130643,
+      "requests": 0,
+      "full_window_observed": true,
+      "binding": "unique claimed username Ville"
+    },
+    "live_asset_shell": "live-browser.json",
+    "live_aggregate_local_preview": "live-aggregate-preview.json",
+    "local_proxy": "local-proxy.json",
+    "ruff": "passes both runtime modules, both test modules and browser script",
+    "device_test_performed": false,
+    "authenticated_owner_browser_session_used": false
+  },
+  "scope": {
+    "runtime_changed": [
+      "studio_usage.py",
+      "studio_usage_cloud.py",
+      "admin_ui/usage.js",
+      "admin_ui/usage.css"
+    ],
+    "unchanged_package_files": 338,
+    "base_image": "europe-west1-docker.pkg.dev/beat-my-track/bmt-stg-e7a444ab-images/studio@sha256:77d75aab74b345084fd50e4ab339a19917e5cd4260c2a2a5763cbd5bcc55b332",
+    "schema_changed": false,
+    "game_api_worker_existing_jobs_settings_iam_changed": false,
+    "player_records_exported_or_mutated": false,
+    "owner_process_restart": false,
+    "main_index_staging_or_commit": false
+  },
+  "actual_commands": [
+    "python -m pytest tests/test_studio_usage.py tests/test_studio_usage_review.py -q --disable-warnings -m \"not postgres\" --maxfail=2 (47 pass before final historical-floor guard; final image suite includes the guard)",
+    "python scripts/test_studio_usage_console.py --output docs/evidence/studio-usage-review-2026-10-27 (14 pass)",
+    "python -m ruff check backend/bmt_backend/studio_usage.py backend/bmt_backend/studio_usage_cloud.py backend/tests/test_studio_usage.py backend/tests/test_studio_usage_review.py scripts/test_studio_usage_console.py",
+    "python build/studio-usage-review-2026-10-27/release.py build",
+    "python build/studio-usage-review-2026-10-27/release.py test (final108 pass; first107 pass retained)",
+    "python build/studio-usage-review-2026-10-27/release.py push",
+    "python build/studio-usage-review-2026-10-27/release.py canary",
+    "python build/studio-usage-review-2026-10-27/release.py probe",
+    "Independent 100MB-capped BigQuery project/date reconciliation; no partition predicate; 0 rows/bytes returned",
+    "python build/studio-usage-review-2026-10-27/release.py promote",
+    "python build/studio-usage-review-2026-10-27/release.py finish",
+    "python build/studio-usage-review-2026-10-27/check_shell.py",
+    "python build/studio-usage-review-2026-10-27/render_snapshot.py",
+    "Direct requests trust_env=False http://127.0.0.1:8182/admin and both deployed usage assets (200; source hashes exact)"
+  ],
+  "artifacts": {
+    "real_aggregate_preview": "live-aggregate-overview.png",
+    "capacity_preview": "live-aggregate-capacity.png",
+    "synthetic_desktop": "usage-overview-final.png",
+    "synthetic_narrow": "usage-narrow.png",
+    "attempts": "initial-attempts.json",
+    "source_hashes": "source-hashes.json",
+    "checkpoint": "studio-usage-review.patch"
+  },
+  "limitations": [
+    "The real export table is present but empty. Actual nonempty currency totals and delivery coverage still need independent reconciliation after arrival.",
+    "No final-invoice forecast, full per-player CPU/database/storage attribution or measured cost per active player.",
+    "Request attempts are a low-confidence scenario proxy; current billing mode does not prove historical mode.",
+    "Provider sampling can miss brief events; bounds and earlier observations do not prove current sustained overload.",
+    "Missing quota/inactive-job/policy series remain unknown and coverage is not exhaustive.",
+    "Authenticated data-page interaction uses a synthetic local fixture; the real-aggregate preview renders sanitized live operator observations locally. No owner MFA credential is used.",
+    "No physical-device test. Owner visual acceptance and sustained worker load/memory/cost diagnosis remain."
+  ],
+  "checkpoint_verified": true
+}

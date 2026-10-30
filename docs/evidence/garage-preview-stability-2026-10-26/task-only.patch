@@ -1,0 +1,548 @@
+diff --git a/game/ui/garage_page.gd b/game/ui/garage_page.gd
+--- a/game/ui/garage_page.gd
++++ b/game/ui/garage_page.gd
+@@ -505,7 +505,7 @@
+ 	heading.size.x = maxf(100,minf(520,_workshop_tabs.position.x-heading.position.x-12))
+ 
+ func _workshop_overlay_button(destination: String, caption: String, active: bool) -> Button:
+-	var button: Button = MenuStyle.button("",_show_section.bind(destination))
++	var button: Button = MenuStyle.button("",_navigate_section.bind(destination))
+ 	button.name = "Workshop"+caption
+ 	button.set_meta("workshop_caption",caption)
+ 	button.tooltip_text = caption
+@@ -546,7 +546,7 @@
+ 	for entry: Array in destinations:
+ 		var destination: String = entry[0]
+ 		var active: bool = destination == section or (destination == "workshop" and section in ["customise","tuning","care"])
+-		var button := MenuStyle.button("", _show_section.bind(destination), active)
++		var button := MenuStyle.button("", _navigate_section.bind(destination), active)
+ 		button.name = "Garage" + ("Browse" if destination == "cars" else destination.capitalize())
+ 		button.icon = RailIcons.texture(destination)
+ 		button.texture_filter = CanvasItem.TEXTURE_FILTER_LINEAR_WITH_MIPMAPS
+@@ -858,6 +858,11 @@
+ 			for index: int in range(kit_cards.get_child_count()):
+ 				(kit_cards.get_child(index) as Button).set_selected(kit_draft[kit_category] == VehicleCustomisation.OPTIONS[kit_category][index][0])
+ 	if photo_changed and section=="tuning": _refresh_kit_preview()
++
++func _navigate_section(next: String) -> void:
++	var destination: String = _workshop_section if next=="workshop" else next
++	if destination=="tuning" and section=="tuning": return
++	_show_section(destination)
+ 
+ func _show_section(next: String) -> void:
+ 	if next == "workshop": next = _workshop_section
+@@ -1051,7 +1056,17 @@
+ 		showroom.weathering.restore(current)
+ 		_condition_saved = current.duplicate(true)
+ 		_condition_presented = showroom.weathering.snapshot()
+-	return _cleanliness.is_clean(showroom)
++	# Work is gated by the equipped exterior. A new preview must not turn the
++	# same saved wash strokes into a dirty-car rejection and rebuild the menu.
++	var previewed: Dictionary = {}
++	if _cosmetic_preview.get("kind","")=="kit" and showroom.customisation!=kit_draft:
++		previewed = showroom.customisation.duplicate(true)
++		showroom.apply_customisation(kit_draft)
++	var clean: bool = _cleanliness.is_clean(showroom)
++	if not previewed.is_empty():
++		showroom.apply_customisation(previewed)
++		_condition_presented = showroom.weathering.snapshot()
++	return clean
+ 
+ func _set_customise_layout(active: bool) -> void:
+ 	if active and not is_instance_valid(customise_layout):
+@@ -1128,6 +1143,7 @@
+ 
+ func _select_kit_category(category: String) -> void:
+ 	if category not in VehicleCustomisation.CATEGORIES or section != "tuning": return
++	if category==kit_category: return
+ 	_cancel_cosmetic_preview(false)
+ 	kit_category = category
+ 	for id: String in kit_categories:
+@@ -1182,11 +1198,11 @@
+ 
+ func _preview_kit(category: String, option: String) -> void:
+ 	if section != "tuning" or vehicle_id != "compact" or category != kit_category: return
+-	if not _require_clean_car(): return
+ 	var value: Dictionary = kit_draft.duplicate(true)
+ 	value[category] = option
+ 	if not VehicleCustomisation.valid(value): return
+ 	_cancel_cosmetic_preview(false)
++	if not _require_clean_car(): return
+ 	if value != kit_draft:
+ 		_cosmetic_preview = {"kind":"kit","category":category,"option":option,"scope":"" if economy == null else economy.scope}
+ 		GameText.bind(_preview_hint,"PREVIEW · {part}",{"part":tr(str(VehicleCustomisation.LABELS[category]))})
+diff --git a/game/ui/garage_customisation_camera.gd b/game/ui/garage_customisation_camera.gd
+--- a/game/ui/garage_customisation_camera.gd
++++ b/game/ui/garage_customisation_camera.gd
+@@ -14,9 +14,13 @@
+ var _home_zoom: float
+ var _body_key: Array = []
+ var _body_bounds: AABB
++var _viewport_size := Vector2i.ZERO
+ 
+ func focus(showroom: CarShowroom, category: String) -> void:
+ 	if not is_instance_valid(showroom) or not showroom.is_inside_tree() or not showroom.garage_mode or showroom.read_only: return
++	if _showroom==showroom and focused_category==category:
++		if _viewport_size!=showroom.showroom_viewport.size: _resize_focus(showroom)
++		return
+ 	showroom.finish_car_transition()
+ 	if focused_category.is_empty():
+ 		if showroom.camera_motion != null and showroom.camera_motion.is_running(): showroom._orbit()
+@@ -67,13 +71,39 @@
+ 	_distance = distance
+ 	_focus_zoom = showroom.zoom
+ 	_focus_elevation = showroom.elevation
++	_viewport_size = showroom.showroom_viewport.size
+ 	showroom.customisation_orbit = _orbit.bind(showroom)
+ 	var position: Vector3 = target+_direction*distance
+ 	var destination := Transform3D(Basis.IDENTITY,position).looking_at(target)
++	_animate(showroom,destination)
++
++func _animate(showroom: CarShowroom, destination: Transform3D) -> void:
+ 	if showroom.camera_motion != null: showroom.camera_motion.kill()
+ 	var start: Transform3D = showroom.camera.transform
+ 	showroom.camera_motion = showroom.create_tween()
+ 	showroom.camera_motion.tween_method(_blend.bind(showroom,start,destination),0.0,1.0,0.42).set_trans(Tween.TRANS_CUBIC).set_ease(Tween.EASE_IN_OUT)
++
++func _resize_focus(showroom: CarShowroom) -> void:
++	# A resize can refit distance without discarding the player's angle or zoom.
++	var moving: bool = showroom.camera_motion!=null and showroom.camera_motion.is_running()
++	var direction: Vector3 = _direction if moving else showroom.camera.basis.z.normalized()
++	var previous_aspect: float = float(_viewport_size.x)/maxf(1.0,_viewport_size.y)
++	var aspect: float = showroom.size.x/maxf(1.0,showroom.size.y)
++	target = showroom.car.global_transform*_local_target
++	if focused_category in ["body","body_kit"]:
++		_distance = _fit_body(showroom,_model_bounds(showroom.car),target,direction)
++	else:
++		_distance *= maxf(1.0,0.95/maxf(0.4,aspect))/maxf(1.0,0.95/maxf(0.4,previous_aspect))
++	_direction = direction
++	_focus_elevation = showroom.elevation
++	_viewport_size = showroom.showroom_viewport.size
++	var position: Vector3 = target+direction*_distance*showroom.zoom/_focus_zoom
++	var destination := Transform3D(Basis.IDENTITY,position).looking_at(target)
++	if moving: _animate(showroom,destination)
++	else:
++		showroom.camera.transform = destination
++		showroom._update_roof()
++		showroom.invalidate_render()
+ 
+ func _model_bounds(car: CarVisual) -> AABB:
+ 	var key: Array = [car.get_instance_id(),car.customisation]
+diff --git a/game/tests/test_customisation_carousel.gd b/game/tests/test_customisation_carousel.gd
+--- a/game/tests/test_customisation_carousel.gd
++++ b/game/tests/test_customisation_carousel.gd
+@@ -403,7 +403,18 @@
+ 	root.add_child(app)
+ 	while not app.startup_complete: await process_frame
+ 	app._show_screen("garage")
+-	page = app.root_ui.find_child("GaragePage",true,false)
++	page = null
++	var deadline: int = Time.get_ticks_msec()+30000
++	while Time.get_ticks_msec()<deadline:
++		if is_instance_valid(app.root_ui): page = app.root_ui.find_child("GaragePage",true,false)
++		if app.screen=="garage" and is_instance_valid(page) and page.is_visible_in_tree(): break
++		await process_frame
++	var ready: bool = app.screen=="garage" and is_instance_valid(page) and page.is_visible_in_tree()
++	check(ready,"actual App completes covered Garage preparation")
++	if not ready:
++		app.queue_free()
++		await process_frame
++		return
+ 	page.open_car(0)
+ 	await settle()
+ 	for dimensions: Vector2i in [Vector2i(960,540),Vector2i(1280,720),Vector2i(1720,900)]:
+diff --git a/AGENTS.md b/AGENTS.md
+--- a/AGENTS.md
++++ b/AGENTS.md
+@@ -1,3 +1,8 @@
++<!-- GARAGE-PREVIEW-STABILITY-20261026 -->
++## Stable rear-aero and body-kit selection (2026-10-26)
++GPS01-GPS03/R01/Q01: Same-category previews retain the camera, user orbit/zoom and incoming animation; real resize refits distance without changing direction. Browsing checks the equipped exterior before previewing; other gates inspect equipped geometry and restore the preview. Unchanged wash thresholds and genuine newer-dirt locking remain. Active category/Parts/Workshop clicks keep selection. Original native402/218fail and expanded headless593/343fail retain four actual resets and up to2.655world-unit origin drift; fixed63 sampled transitions per renderer show zero resets/drift. Stability646headless/658Compatibility/658desktopMobile, retained configurator647/647 and parser1234/import pass. Actual-App fixture now waits for covered Garage readiness; initial fixture errors are preserved. Runtime scope is two Garage UI files; geometry, physics, save formats, masks and purchase/account fences remain. Commands, native pairs, exact sources and task-only checkpoint: docs/GARAGE_PREVIEW_STABILITY_2026_10_26.md and docs/evidence/garage-preview-stability-2026-10-26/report.json. Reload and owner/device input acceptance remain. No attachment/device test, APK, real purchase, live mutation, deployment, merge or owner-process restart; concurrent work preserved.
++<!-- /GARAGE-PREVIEW-STABILITY-20261026 -->
++
+ <!-- STORM-ROAD-PARTS-20261026 -->
+ ## Storm tracks corrected to normal editor road parts (2026-10-26)
+ RP01-RP04/R01/Q01: Owner rejects layout-only roads that fail editor validation. Replace them with 31/31/29/33/33 ordinary Straight/Curve parts in closed loops, placed start lines and actual editor-generated routes; no fallback layout. All 207 deliberately placed objects remain. Original source30checks/25fail and initial JSON/autosave fixture failures are retained. Canonical/editor40, driving180 (175 ordered laps across seven cars, zero contacts, five exact replays), geometry65, actual App Edit/Test-drive86Compatibility/86desktopMobile, owner preparation46/live read36 and parser1233 pass. Actual owner copies and the existing Switchyard WIP are repaired with exact private backups; 254 unrelated library files and creation dates remain. Draft cards now show road previews/counts. Source/native resources and download/publication-source packs are refreshed. Physics/config/camera/validators are untouched by this task. Commands, native views, hashes, original failures and task-only patch: docs/STORM_ROAD_PARTS_2026_10_26.md and docs/evidence/storm-road-parts-2026-10-26/report.json. Reopen Load track; owner/device acceptance and any separate online publication remain. No attachment/device test, APK, purchase, backend mutation, deployment, merge or owner-process restart; concurrent work preserved.
+diff --git a/DEVELOPMENT_STATUS.md b/DEVELOPMENT_STATUS.md
+--- a/DEVELOPMENT_STATUS.md
++++ b/DEVELOPMENT_STATUS.md
+@@ -1,3 +1,8 @@
++<!-- GARAGE-PREVIEW-STABILITY-20261026 -->
++## Stable rear-aero and body-kit selection (2026-10-26)
++GPS01-GPS03/R01/Q01: Same-category previews retain the camera, user orbit/zoom and incoming animation; real resize refits distance without changing direction. Browsing checks the equipped exterior before previewing; other gates inspect equipped geometry and restore the preview. Unchanged wash thresholds and genuine newer-dirt locking remain. Active category/Parts/Workshop clicks keep selection. Original native402/218fail and expanded headless593/343fail retain four actual resets and up to2.655world-unit origin drift; fixed63 sampled transitions per renderer show zero resets/drift. Stability646headless/658Compatibility/658desktopMobile, retained configurator647/647 and parser1234/import pass. Actual-App fixture now waits for covered Garage readiness; initial fixture errors are preserved. Runtime scope is two Garage UI files; geometry, physics, save formats, masks and purchase/account fences remain. Commands, native pairs, exact sources and task-only checkpoint: docs/GARAGE_PREVIEW_STABILITY_2026_10_26.md and docs/evidence/garage-preview-stability-2026-10-26/report.json. Reload and owner/device input acceptance remain. No attachment/device test, APK, real purchase, live mutation, deployment, merge or owner-process restart; concurrent work preserved.
++<!-- /GARAGE-PREVIEW-STABILITY-20261026 -->
++
+ <!-- STORM-ROAD-PARTS-20261026 -->
+ ## Storm tracks corrected to normal editor road parts (2026-10-26)
+ RP01-RP04/R01/Q01: Owner rejects layout-only roads that fail editor validation. Replace them with 31/31/29/33/33 ordinary Straight/Curve parts in closed loops, placed start lines and actual editor-generated routes; no fallback layout. All 207 deliberately placed objects remain. Original source30checks/25fail and initial JSON/autosave fixture failures are retained. Canonical/editor40, driving180 (175 ordered laps across seven cars, zero contacts, five exact replays), geometry65, actual App Edit/Test-drive86Compatibility/86desktopMobile, owner preparation46/live read36 and parser1233 pass. Actual owner copies and the existing Switchyard WIP are repaired with exact private backups; 254 unrelated library files and creation dates remain. Draft cards now show road previews/counts. Source/native resources and download/publication-source packs are refreshed. Physics/config/camera/validators are untouched by this task. Commands, native views, hashes, original failures and task-only patch: docs/STORM_ROAD_PARTS_2026_10_26.md and docs/evidence/storm-road-parts-2026-10-26/report.json. Reopen Load track; owner/device acceptance and any separate online publication remain. No attachment/device test, APK, purchase, backend mutation, deployment, merge or owner-process restart; concurrent work preserved.
+diff --git a/game/tests/test_garage_preview_stability.gd b/game/tests/test_garage_preview_stability.gd
+--- /dev/null
++++ b/game/tests/test_garage_preview_stability.gd
+@@ -0,0 +1,191 @@
++extends SceneTree
++## Real pointer selection after orbit/zoom, including a genuinely washed car.
++const Fixture = preload("res://tests/test_customisation_carousel.gd")
++var checks: int = 0
++var failures: int = 0
++var output: String
++var page: GaragePage
++var rows: Array[Dictionary] = []
++
++func _initialize() -> void: run.call_deferred()
++
++func check(value: bool, label: String) -> void:
++	checks += 1
++	if not value:
++		failures += 1
++		print("FAIL: "+label)
++
++func settle() -> void:
++	while page._workbench_focus_pending or page._menu_motion!=null or page.showroom.camera_motion!=null and page.showroom.camera_motion.is_running(): await process_frame
++	for tick: int in range(8): await process_frame
++	if DisplayServer.get_name()!="headless": await RenderingServer.frame_post_draw
++
++func capture(name: String) -> void:
++	if DisplayServer.get_name()=="headless": return
++	await RenderingServer.frame_post_draw
++	check(root.get_texture().get_image().save_png(output.path_join(name+".png"))==OK,"capture "+name)
++
++func click(button: Button, touch: bool = false) -> void:
++	var at: Vector2 = button.get_global_rect().get_center()
++	for pressed: bool in [true,false]:
++		if touch:
++			var event := InputEventScreenTouch.new()
++			event.index = 7
++			event.position = at
++			event.pressed = pressed
++			root.push_input(event,true)
++		else:
++			var event := InputEventMouseButton.new()
++			event.button_index = MOUSE_BUTTON_LEFT
++			event.position = at
++			event.pressed = pressed
++			root.push_input(event,true)
++		await process_frame
++
++func choose(index: int, touch: bool = false) -> void:
++	var button: Button = page.kit_cards.get_child(index)
++	page.kit_scroll.ensure_control_visible(button)
++	for tick: int in range(3): await process_frame
++	await click(button,touch)
++
++func washed_fixture(precise: bool = false) -> void:
++	page._show_section("care")
++	await settle()
++	var dirty: Dictionary = VehicleWeathering.new().snapshot()
++	dirty.dirt = 0.85
++	dirty.slow_dirt = 1.0 if precise else 0.25
++	check(VehicleCondition.save(page.records,"compact",dirty)==OK,"seed isolated dirt")
++	page._process(0.0)
++	var effect: VehicleWeathering = page.showroom.weathering
++	var inspector := GarageCleanliness.new()
++	check(not inspector.is_clean(page.showroom),"fixture begins genuinely dirty")
++	if precise:
++		# A diagnostic mask cleans exactly the equipped exterior's trilinear cells.
++		var mask := PackedByteArray()
++		mask.resize(VehicleCondition.CELLS)
++		mask.fill(0)
++		for point: Vector3 in inspector.points:
++			var cell: Vector3 = ((point-effect.bounds.position)/effect.bounds.size).clamp(Vector3.ZERO,Vector3.ONE)*15.0
++			var low := Vector3i(cell.floor())
++			var high := Vector3i(cell.ceil())
++			for x: int in [low.x,high.x]:
++				for y: int in [low.y,high.y]:
++					for z: int in [low.z,high.z]: mask[y*256+z*16+x] = 255
++		dirty.wash = Marshalls.raw_to_base64(mask)
++		dirty.slow_wash = dirty.wash
++		effect.restore(dirty)
++	else:
++		effect.begin_wash_batch()
++		for point: Vector3 in inspector.points: effect.wash(point,8.0)
++		effect.end_wash_batch()
++	check(inspector.is_clean(page.showroom),"actual exterior strokes clean the equipped car")
++	page._save_condition()
++	check(effect.wash_image.get_data().count(0)>0,"washed fixture retains untouched interior cells")
++
++func run() -> void:
++	OS.set_environment("BMT_API_URL","")
++	GameSoundtrack.instance().music_enabled = false
++	output = "res://../docs/evidence/garage-preview-stability-2026-10-26/native"
++	for argument: String in OS.get_cmdline_user_args():
++		if argument.begins_with("--evidence-root="): output = argument.trim_prefix("--evidence-root=")
++	output = ProjectSettings.globalize_path(output)
++	DirAccess.make_dir_recursive_absolute(output)
++	root.size = Vector2i(1280,720)
++	root.content_scale_size = root.size
++	root.theme = MenuStyle.theme()
++	VehicleCatalog.selected = "compact"
++	var host := Control.new()
++	root.add_child(host)
++	MenuStyle.fill(host)
++	var shop: Node = Fixture.Shop.new()
++	host.add_child(shop)
++	page = GaragePage.new()
++	page.records = LocalRecords.new("user://preview_stability_"+TrackLibrary.unique_id()+".json")
++	page.economy = shop
++	host.add_child(page)
++	MenuStyle.fill(page)
++	page.offset_top = 110
++	page.open_car(0)
++	await settle()
++	for fixture: String in ["clean","washed","exterior-mask"]:
++		if fixture!="clean": await washed_fixture(fixture=="exterior-mask")
++		for category: String in ["aero","body"]:
++			page._show_section("tuning")
++			await settle()
++			page._select_kit_category(category)
++			await settle()
++			var home: Transform3D = page._customisation_camera._home
++			page.showroom.rotate_view(Vector2(35,9))
++			page.showroom.zoom_by(0.86)
++			var camera: Transform3D = page.showroom.camera.transform
++			var yaw: float = page.showroom.yaw
++			var elevation: float = page.showroom.elevation
++			var zoom: float = page.showroom.zoom
++			var saved: Dictionary = page.records.settings.duplicate(true)
++			await capture(fixture+"-"+category+"-before")
++			var options: Array = VehicleCustomisation.OPTIONS[category]
++			for index: int in range(1,options.size()):
++				var option: String = str(options[index][0])
++				var label: String = fixture+"/"+category+"/"+option
++				await choose(index,index%2==0)
++				for tick: int in range(5):
++					check(page.showroom.camera.transform.is_equal_approx(camera),"selection keeps camera steady "+label)
++					await process_frame
++				await settle()
++				check(page.showroom.customisation[category]==option and page._cosmetic_preview.get("option","")==option,"latest selected preview persists "+label)
++				check(page.kit_shelf.counter.text=="%02d / %02d" % [index+1,options.size()],"list selection persists "+label)
++				check(page.showroom.yaw==yaw and page.showroom.elevation==elevation and page.showroom.zoom==zoom,"selection retains user orbit values "+label)
++				check(page.records.settings==saved and shop.purchases==0,"browsing leaves equipped/save/purchases exact "+label)
++				rows.append({"fixture":fixture,"category":category,"option":option,"actual":page.showroom.customisation[category],"camera_origin":str(page.showroom.camera.position),"expected_origin":str(camera.origin),"preview":page._cosmetic_preview.duplicate(true)})
++			await capture(fixture+"-"+category+"-after")
++			await click(page.kit_categories[category])
++			await settle()
++			check(page.showroom.customisation[category]==str(options[-1][0]),"clicking active category retains preview "+fixture+"/"+category)
++			check(page.showroom.camera.transform.is_equal_approx(camera),"clicking active category retains view "+fixture+"/"+category)
++			for navigation: Button in [page._workshop_tabs.get_node("WorkshopParts"),page.rail.get_node("GarageWorkshop")]:
++				await click(navigation,true)
++				await settle()
++				check(page.showroom.customisation[category]==str(options[-1][0]),"active Workshop navigation retains selection")
++				check(page.showroom.camera.transform.is_equal_approx(camera),"active Workshop navigation retains camera")
++			for index: int in [1,2,3]: await choose(index,true)
++			await settle()
++			check(page.showroom.customisation[category]==str(options[3][0]),"rapid choices retain the latest option")
++			check(page.showroom.camera.transform.is_equal_approx(camera),"rapid choices do not restart camera focus")
++			var direction: Vector3 = page.showroom.camera.basis.z
++			root.size = Vector2i(1040,620)
++			root.content_scale_size = root.size
++			await settle()
++			check(page.showroom.camera.basis.z.dot(direction)>0.99999,"resize preserves current viewing direction")
++			check(page.showroom.customisation[category]==str(options[3][0]) and page.showroom.yaw==yaw and page.showroom.elevation==elevation and page.showroom.zoom==zoom,"resize preserves selection and user orbit values")
++			root.size = Vector2i(1280,720)
++			root.content_scale_size = root.size
++			await settle()
++			page._show_section("cars")
++			await settle()
++			check(page.showroom.camera.transform.is_equal_approx(home),"leaving restores preceding Garage view")
++	page._show_section("tuning")
++	await settle()
++	page._select_kit_category("aero")
++	var incoming: Tween = page.showroom.camera_motion
++	await choose(1)
++	await choose(2,true)
++	check(page.showroom.camera_motion==incoming,"rapid choices retain the category-entry animation")
++	await settle()
++	check(page.showroom.customisation.aero=="ducktail","latest choice survives incoming focus animation")
++	var equipped: Dictionary = page.kit_draft.duplicate(true)
++	var dirty: Dictionary = VehicleWeathering.new().snapshot()
++	dirty.dirt = 1.0
++	dirty.slow_dirt = 1.0
++	check(VehicleCondition.save(page.records,"compact",dirty)==OK,"external dirty state saves")
++	page._process(0.0)
++	await settle()
++	check(page._customisation_locked and page._cosmetic_preview.is_empty() and page.showroom.customisation==equipped,"genuine newer dirt still cancels preview and locks editing")
++	page._preview_kit("aero","wing")
++	check(page._cosmetic_preview.is_empty() and page.showroom.customisation==equipped and shop.purchases==0,"dirty guard remains authoritative after failed preview attempt")
++	var file: FileAccess = FileAccess.open(output.path_join("transitions.json"),FileAccess.WRITE)
++	file.store_string(JSON.stringify(rows,"\t"))
++	file.close()
++	host.queue_free()
++	await process_frame
++	print("GARAGE_PREVIEW_STABILITY: %d checks, %d failures" % [checks,failures])
++	quit(1 if failures else 0)
+diff --git a/game/tests/test_garage_preview_stability.gd.uid b/game/tests/test_garage_preview_stability.gd.uid
+--- /dev/null
++++ b/game/tests/test_garage_preview_stability.gd.uid
+@@ -0,0 +1 @@
++uid://d1ub1fj1af7bf
+diff --git a/docs/GARAGE_PREVIEW_STABILITY_2026_10_26.md b/docs/GARAGE_PREVIEW_STABILITY_2026_10_26.md
+--- /dev/null
++++ b/docs/GARAGE_PREVIEW_STABILITY_2026_10_26.md
+@@ -0,0 +1,24 @@
++# Stable Garage option previews — 2026-10-26
++
++GPS01–GPS03/R01/Q01 fix the reported rear-aero and body-kit camera jumps and selection resets.
++
++Each option used to restart the category focus, recomputing its direction from the rotated car and discarding the player's current angle/zoom. Focus is now retained within the same showroom/category. Real viewport resizing refits distance while preserving viewing direction and user orbit values. A new category still gets its existing smooth entry animation, and leaving editing restores the preceding Garage camera.
++
++The cleanliness guard was also inspecting temporary preview geometry. A mask that cleaned the equipped exterior could fail on different preview surfaces; the next selection then rebuilt the workbench and cleared the choice. Browsing now restores the equipped model before checking cleanliness. Other gated operations inspect the equipped exterior and restore the preview without changing its selection or saved wash data. All cleanliness thresholds remain unchanged. Genuine newer dirt still cancels the preview and locks editing. Re-clicking the active category or active Parts/Workshop navigation preserves selection and camera; other navigation and internal refresh behavior remain.
++
++Runtime scope is only `game/ui/garage_page.gd` and `game/ui/garage_customisation_camera.gd`. Geometry, economy, physics, cleanliness sampling/thresholds and persistence formats are unchanged.
++
++The focused native regression uses actual pointer input after rotation and zoom, every non-stock rear-aero/body option, rapid choices, incoming camera animation, active navigation, resizing and a real newer dirty state. Fixtures include a clean car, actual exterior washing with untouched interior cells, and a diagnostic trilinear mask that cleans the equipped exterior precisely. Original runtime: 402 native checks / 218 failures; expanded headless regression: 593 / 343. The latter records four actual selection resets and up to 2.655 world units of camera-origin displacement. The final 63 sampled option transitions have no selection resets or reported origin displacement in either desktop renderer.
++
++Final stability checks pass **646 headless / 658 Compatibility / 658 desktop Mobile**. The retained configurator suite passes **647 per desktop renderer**, including purchase/save/account fences, comparison, all seven model fits and exact return-camera behavior. Its actual-App fixture now explicitly waits for covered Garage preparation and asserts readiness; the initial stale synchronous-entry errors are retained. The pinned import and full parser (**1234 scripts**) pass. Complete commands/hashes are recorded in [report.json](evidence/garage-preview-stability-2026-10-26/report.json).
++
++```powershell
++powershell -NoProfile -ExecutionPolicy Bypass -File docs/evidence/garage-preview-stability-2026-10-26/run.ps1 -Mode gl_compatibility
++powershell -NoProfile -ExecutionPolicy Bypass -File docs/evidence/garage-preview-stability-2026-10-26/run.ps1 -Mode mobile
++powershell -NoProfile -ExecutionPolicy Bypass -File docs/evidence/garage-preview-stability-2026-10-26/run.ps1 -Test test_customisation_carousel -Mode gl_compatibility
++powershell -NoProfile -ExecutionPolicy Bypass -File docs/evidence/garage-preview-stability-2026-10-26/run.ps1 -Test test_script_parse -Mode headless
++```
++
++[Review native before/after transitions](evidence/garage-preview-stability-2026-10-26/review.html). Exact original sources, failed baseline logs, diagnostic rows and the reverse-checked task-only patch remain in the evidence directory. Tests use isolated APPDATA, local records and the existing offline Shop fixture.
++
++Reload and owner appearance/input acceptance remain. Mobile means Windows Vulkan. No device attachment check or phone/tablet test, APK, real purchase, live mutation, deployment, merge or owner-process restart was performed. Concurrent work is preserved; no staging or commit is implied.
+diff --git a/docs/evidence/garage-preview-stability-2026-10-26/run.ps1 b/docs/evidence/garage-preview-stability-2026-10-26/run.ps1
+--- /dev/null
++++ b/docs/evidence/garage-preview-stability-2026-10-26/run.ps1
+@@ -0,0 +1,17 @@
++param([string]$Test='test_garage_preview_stability',[ValidateSet('headless','gl_compatibility','mobile')][string]$Mode='headless',[switch]$Before,[switch]$Import)
++$ErrorActionPreference='Stop'
++if ($Import) {$Test='import';$Mode='headless'}
++$kitRepo=(Resolve-Path (Join-Path $PSScriptRoot '../../..')).Path
++$kitOutput=Join-Path $PSScriptRoot $(if ($Before) {"before/$Mode"} else {"$Test-$Mode"})
++New-Item -ItemType Directory -Force -Path $kitOutput | Out-Null
++$env:APPDATA=Join-Path $kitRepo "build/garage-preview-stability-2026-10-26/$(if ($Before) {'before'} else {"$Test-$Mode"})/user"
++New-Item -ItemType Directory -Force -Path $env:APPDATA | Out-Null
++$kitArgs=@('-NoProfile','-ExecutionPolicy','Bypass','-File',(Join-Path $kitRepo 'scripts/dev.ps1'),'-Action','TestScript','-ScriptPath',"res://tests/$Test.gd",'-CommandTimeoutSeconds','240','-TestArgument',"--evidence-root=$kitOutput")
++if ($Import) {$kitArgs=@('-NoProfile','-ExecutionPolicy','Bypass','-File',(Join-Path $kitRepo 'scripts/dev.ps1'),'-Action','Import','-CommandTimeoutSeconds','180')}
++if ($Mode -ne 'headless') {$kitArgs+=@('-Graphical','-RenderingMethod',$Mode,'-RenderingDriver',$(if ($Mode -eq 'mobile') {'vulkan'} else {'opengl3'}))}
++$kitStarted=[DateTime]::UtcNow
++& powershell @kitArgs *> (Join-Path $kitOutput 'console.log')
++$kitCode=$LASTEXITCODE
++@{arguments=$kitArgs;exit_code=$kitCode;started_utc=$kitStarted.ToString('o');duration_seconds=([DateTime]::UtcNow-$kitStarted).TotalSeconds}|ConvertTo-Json -Depth 5|Set-Content -Encoding UTF8 (Join-Path $kitOutput 'command.json')
++Get-Content (Join-Path $kitOutput 'console.log') -Tail 16
++exit $kitCode
+diff --git a/docs/evidence/garage-preview-stability-2026-10-26/record.py b/docs/evidence/garage-preview-stability-2026-10-26/record.py
+--- /dev/null
++++ b/docs/evidence/garage-preview-stability-2026-10-26/record.py
+@@ -0,0 +1,85 @@
++"""Record actual preview transitions and a reverse-checkable task patch."""
++from pathlib import Path
++import difflib
++import hashlib
++import json
++import math
++import re
++import subprocess
++
++EVIDENCE = Path(__file__).resolve().parent
++ROOT = EVIDENCE.parents[2]
++EXISTING = ["game/ui/garage_page.gd", "game/ui/garage_customisation_camera.gd",
++            "game/tests/test_customisation_carousel.gd", "AGENTS.md", "DEVELOPMENT_STATUS.md"]
++NEW = ["game/tests/test_garage_preview_stability.gd", "game/tests/test_garage_preview_stability.gd.uid",
++       "docs/GARAGE_PREVIEW_STABILITY_2026_10_26.md"]
++NEW += ["docs/evidence/garage-preview-stability-2026-10-26/"+name
++        for name in ("run.ps1", "record.py", "review.html")]
++
++
++def sha(path):
++    return hashlib.sha256(path.read_bytes()).hexdigest()
++
++
++def log_text(path):
++    data = path.read_bytes()
++    return data.decode("utf-16" if data.startswith(b"\xff\xfe") else "utf-8-sig", errors="replace")
++
++
++patch, sources = [], []
++for name in EXISTING + NEW:
++    target, before = ROOT / name, EVIDENCE / "before" / name
++    original = before.read_text(encoding="utf-8") if before.exists() else ""
++    current = target.read_text(encoding="utf-8")
++    if original != current:
++        patch.append(f"diff --git a/{name} b/{name}\n")
++        patch.extend(difflib.unified_diff(original.splitlines(True), current.splitlines(True),
++                     fromfile=f"a/{name}" if before.exists() else "/dev/null", tofile=f"b/{name}"))
++    sources.append({"path": name, "sha256": sha(target),
++                    "before_sha256": sha(before) if before.exists() else None})
++checkpoint = EVIDENCE / "task-only.patch"
++checkpoint.write_text("".join(patch), encoding="utf-8", newline="\n")
++reverse = subprocess.run(["git", "apply", "--check", "--reverse", str(checkpoint)],
++                         cwd=ROOT, capture_output=True, text=True)
++runs = []
++for path in sorted(EVIDENCE.rglob("command.json")):
++    log = path.with_name("console.log")
++    content = log_text(log)
++    runs.append({"directory": path.parent.relative_to(EVIDENCE).as_posix(),
++                 **json.loads(path.read_text(encoding="utf-8-sig")),
++                 "summary": re.findall(r"(?:GARAGE_PREVIEW_STABILITY|CUSTOMISATION_CAROUSEL|SCRIPT_PARSE):[^\r\n]+", content),
++                 "failures": re.findall(r"^FAIL:[^\r\n]+", content, re.M), "log_sha256": sha(log)})
++transitions = []
++for path in sorted(EVIDENCE.rglob("transitions.json")):
++    rows = json.loads(path.read_text(encoding="utf-8"))
++    vector = lambda value: [float(part) for part in value.strip("()").split(",")]
++    distances = [math.dist(vector(row["camera_origin"]),vector(row["expected_origin"])) for row in rows]
++    transitions.append({"path": path.relative_to(EVIDENCE).as_posix(), "sha256": sha(path),
++                        "rows": len(rows), "selection_resets": sum(row["actual"]!=row["option"] for row in rows),
++                        "max_reported_origin_delta_world_units": max(distances,default=0.0)})
++report = {
++    "date": "2026-10-26", "requirements": ["GPS01", "GPS02", "GPS03", "R01", "Q01"],
++    "engine": (ROOT / "godot-version.txt").read_text().strip(), "sources": sources,
++    "runs": runs, "transitions": transitions,
++    "behavior": {"same_category": "Retain focus, player orbit/zoom and current category-entry animation",
++                 "resize": "Refit distance while retaining direction, orbit values and selected preview",
++                 "cleanliness": "Check equipped geometry with unchanged masks and thresholds; genuinely newer dirt still locks",
++                 "active_navigation": "Active Parts/category/Workshop input does not clear the preview; internal refresh remains"},
++    "initial_fixture_correction": "Retained actual-App test waits for covered Garage preparation, asserts readiness and preserves every original check",
++    "initial_logs": [{"path": path.relative_to(EVIDENCE).as_posix(), "sha256": sha(path)}
++                     for path in sorted((EVIDENCE / "initial").glob("*.log"))],
++    "captures": [{"path": path.relative_to(EVIDENCE).as_posix(), "sha256": sha(path)}
++                 for path in sorted(EVIDENCE.rglob("*.png"))],
++    "cleanliness_script_audit_sha256": sha(ROOT / "game/ui/garage_cleanliness.gd"),
++    "checkpoint": {"path": "task-only.patch", "sha256": sha(checkpoint),
++                   "reverse_check_exit": reverse.returncode, "stderr": reverse.stderr},
++    "remaining_acceptance": ["client reload", "owner camera/selection feel", "physical-device input review"],
++    "limits": ["Windows Compatibility and Vulkan Mobile; injected mouse/touch", "no attachment check or physical-device test",
++               "no APK", "no real purchase or live mutation", "no deployment, merge or owner-process restart",
++               "concurrent work preserved; no staging or commit"],
++}
++(EVIDENCE / "report.json").write_text(json.dumps(report,indent=2)+"\n",encoding="utf-8")
++print(json.dumps({"runs": [{"name":run["directory"],"exit":run["exit_code"],"summary":run["summary"]} for run in runs],
++                  "transition_stats":transitions,"checkpoint_reverse_exit":reverse.returncode,"checkpoint_error":reverse.stderr},indent=2))
++failed_final = any(run["exit_code"]!=0 for run in runs if not run["directory"].startswith("before/"))
++raise SystemExit(reverse.returncode or int(failed_final))
+diff --git a/docs/evidence/garage-preview-stability-2026-10-26/review.html b/docs/evidence/garage-preview-stability-2026-10-26/review.html
+--- /dev/null
++++ b/docs/evidence/garage-preview-stability-2026-10-26/review.html
+@@ -0,0 +1,29 @@
++<!doctype html>
++<html lang="en">
++<meta charset="utf-8">
++<meta name="viewport" content="width=device-width,initial-scale=1">
++<title>Stable Garage option previews</title>
++<style>
++body{margin:0;background:#0b141b;color:#edf1f3;font:16px/1.5 system-ui,sans-serif}main{max-width:1600px;margin:auto;padding:24px}h1,h2{line-height:1.2}p{max-width:1000px;color:#b6c5ce}a{color:#ffd541}figure{margin:20px 0}img{display:block;width:100%;height:auto;border:1px solid #354750;border-radius:5px}figcaption{color:#b6c5ce;margin:8px 0 16px}.pair{display:grid;grid-template-columns:1fr 1fr;gap:16px}@media(max-width:900px){.pair{grid-template-columns:1fr}}
++</style>
++<main>
++<h1>Stable rear-aero and body-kit selection</h1>
++<p>Native Garage regression, 26 October 2026. The player rotates and zooms first, then browses all non-stock rear-aero/body options with mouse and touch. The chosen preview and camera remain in place. Real viewport resizing preserves the angle and user orbit values.</p>
++<h2>Rear aero — fixed</h2>
++<div class="pair">
++<figure><img src="test_garage_preview_stability-gl_compatibility/clean-aero-before.png" alt="Rear-aero view after the player rotates and zooms"><figcaption>Player's view before browsing.</figcaption></figure>
++<figure><img src="test_garage_preview_stability-gl_compatibility/clean-aero-after.png" alt="Last rear-aero choice with the same camera"><figcaption>After browsing: selected aero changes; camera stays.</figcaption></figure>
++</div>
++<h2>Clean equipped exterior — fixed</h2>
++<div class="pair">
++<figure><img src="test_garage_preview_stability-mobile/exterior-mask-body-before.png" alt="Clean equipped car before body-kit browsing"><figcaption>Equipped exterior is clean; interior voxels need no washing.</figcaption></figure>
++<figure><img src="test_garage_preview_stability-mobile/exterior-mask-body-after.png" alt="Selected body kit stays previewed from the same angle"><figcaption>Preview remains selected without a false wash rejection.</figcaption></figure>
++</div>
++<details><summary>Original camera movement</summary><div class="pair">
++<figure><img src="before/native/clean-aero-before.png" alt="Original code before browsing, showing the rotated player view"><figcaption>Before selecting aero.</figcaption></figure>
++<figure><img src="before/native/clean-aero-after.png" alt="Original code has changed the camera framing"><figcaption>Original behavior: focus restarts and replaces the player's view.</figcaption></figure>
++</div></details>
++<p>The expanded original regression records four selection resets and up to 2.655 world units of camera-origin drift. The fixed desktop runs record zero resets and zero reported origin drift across 63 sampled option transitions each. Purchase/save/account guards and genuine newer-dirt locking remain. <a href="report.json">Commands, exact outcomes and transition data</a>.</p>
++<p>Desktop Compatibility and Vulkan Mobile only. No device attachment check/test, APK, real purchase, deployment or owner-process restart. Reload and owner/device acceptance remain.</p>
++</main>
++</html>

@@ -1,26 +1,28 @@
 class_name ObjectBrowser
 extends PanelContainer
+const Properties = preload("res://editor/object_properties.gd")
 signal asset_chosen(kind: String)
 signal mode_chosen(mode: String)
 signal size_chosen(scale: float)
 signal span_chosen(span: float)
-signal jump_profile_chosen(profile: String)
 signal container_color_chosen(color: String)
 signal select_requested
 signal populate_requested
 signal rotation_requested
+signal rotation_chosen(angle: float)
+signal controls_requested
+signal snap_chosen(step: float)
 var category: String = "All"
 var biome: String = "pine"
 var current: String = "tree"
 var placement: String = "single"
 var stamp_scale: float = 1.0
 var stamp_span: float = 8.0
-var stamp_jump_profile: String = ""
 var stamp_container_color: String = ContainerPaint.DEFAULT
 var recent: Array[String] = []
 var tiles: HBoxContainer
-var details: VBoxContainer
-var options: PopupPanel
+var details: HBoxContainer
+var options: Properties
 var categories: HBoxContainer
 var page: int = 0
 var previous: Button
@@ -31,6 +33,11 @@ var _detail_key: Array = []
 var _styled_category: String = ""
 var rotation_button: Button
 var stamp_rotation: float = 0.0
+var snap_step: float = 1.0:
+	set(value):
+		snap_step = value
+		var control: OptionButton = find_child("ObjectSnap",true,false) as OptionButton
+		if control != null: control.select(0 if value == 1.0 else 1 if value > 0 else 2)
 
 func _ready() -> void:
 	name = "ObjectBrowser"
@@ -46,12 +53,14 @@ func _ready() -> void:
 			category = value; page = 0; _tiles())
 		button.name = "Category_"+value
 		categories.add_child(button)
-	rotation_button = _button("",func() -> void: rotation_requested.emit())
-	rotation_button.name = "ObjectRotation"
-	rotation_button.tooltip_text = "16 orientations or Free rotation"
-	rotation_button.custom_minimum_size = Vector2(76,44)
-	top.add_child(rotation_button)
-	set_stamp_rotation(stamp_rotation)
+	var snapping := OptionButton.new()
+	snapping.name = "ObjectSnap"
+	EditorStyle.apply(snapping); snapping.custom_minimum_size = Vector2(112,44)
+	for label: String in ["Snap: 1 m","Snap: 0.25 m","Snap: off"]: snapping.add_item(label)
+	snapping.select(0 if snap_step == 1.0 else 1 if snap_step > 0 else 2)
+	snapping.item_selected.connect(func(index: int) -> void:
+		snap_step = [1.0,0.25,0.0][index]; snap_chosen.emit(snap_step))
+	top.add_child(snapping)
 	var populate: Button = _button("Populate",func() -> void: populate_requested.emit())
 	populate.name = "PopulateObjects"
 	populate.custom_minimum_size = Vector2(100,44)
@@ -72,7 +81,7 @@ func _ready() -> void:
 	next.custom_minimum_size=Vector2(44,82)
 	paging.add_child(next)
 	resized.connect(func() -> void:
-		var count: int=maxi(1,int((size.x-120)/110))
+		var count: int=maxi(1,int((size.x-120)/118))
 		if count!=page_size: page_size=count; page=0; _tiles())
 	visibility_changed.connect(func() -> void:
 		if is_visible_in_tree():
@@ -80,14 +89,11 @@ func _ready() -> void:
 				var allowed: Array = CreatorCatalog.filtered("All","",[],biome)
 				if not allowed.is_empty(): choose(allowed[0][0])
 			_tiles())
-	options=PopupPanel.new()
-	options.name="ObjectOptionsPopup"
-	options.add_theme_stylebox_override("panel",EditorStyle.panel())
+	options = Properties.new()
+	options.name = "ObjectControls"
+	options.hide()
 	add_child(options)
-	preload("res://ui/popup_style.gd").watch(options)
-	details=VBoxContainer.new()
-	details.add_theme_constant_override("separation",8)
-	options.add_child(details)
+	details = options
 	refresh()
 
 func _scroll_row(parent: Node) -> HBoxContainer:
@@ -132,13 +138,13 @@ func _tiles() -> void:
 	page = clampi(page,0,maxi(0,(entries.size()-1)/page_size))
 	previous.visible=page>0
 	next.visible=(page+1)*page_size<entries.size()
-	var key: Array = [biome,category if entries.is_empty() else "",stamp_container_color]
+	var key: Array = [biome,category if entries.is_empty() else "",stamp_container_color,current]
 	for index: int in range(page*page_size,mini(entries.size(),(page+1)*page_size)): key.append(entries[index][0])
 	if key == _tile_key:
 		for tile: Node in tiles.get_children():
 			if not tile is Button: continue
 			var family: Array = CreatorCatalog.family(tile.name.trim_prefix("Asset_"))
-			var chosen: bool = not family.is_empty() and current in family[3]
+			var chosen: bool = not family.is_empty() and (current == family[0] or current in family[3])
 			if tile.button_pressed == chosen: continue
 			tile.set_pressed_no_signal(chosen)
 			EditorStyle.card(tile,chosen)
@@ -147,78 +153,26 @@ func _tiles() -> void:
 	_clear(tiles)
 	for index: int in range(page*page_size,mini(entries.size(),(page+1)*page_size)):
 		var asset: Array = entries[index]
-		tiles.add_child(ObjectThumbnail.make(asset[0],asset[1],current in asset[3],_activate_asset.bind(asset[0]),biome,stamp_container_color if asset[0] == "container" else ""))
+		var chosen: bool = current == asset[0] or current in asset[3]
+		var kind: String = current if chosen else str(asset[0])
+		var title: String = CreatorCatalog.label(current) if chosen and current != asset[0] else str(asset[1])
+		var tile: Button = ObjectThumbnail.make(kind,title,chosen,_activate_asset.bind(asset[0]),biome,stamp_container_color if asset[0] == "container" else "")
+		tile.name = "Asset_"+str(asset[0]); tiles.add_child(tile)
 	if entries.is_empty(): tiles.add_child(MenuStyle.label("No matching objects" if category!="Recent" else "Choose an object to add it here",16))
 
 func refresh() -> void:
-	if details == null: return
+	if not is_instance_valid(tiles): return
 	_tiles()
-	var key: Array = [current,placement,stamp_scale,stamp_span,biome,stamp_container_color,stamp_jump_profile]
-	if key == _detail_key: return
-	_detail_key = key
-	_clear(details)
-	var behavior: Label = MenuStyle.label(CreatorCatalog.behavior(current),14)
-	behavior.name = "ObjectBehavior"
-	details.add_child(behavior)
-	if current == "jump":
-		var profile: String = stamp_jump_profile if stamp_jump_profile in JumpProfiles.IDS else JumpProfiles.default_for(biome)
-		behavior.text = JumpProfiles.description(profile)
-		details.add_child(preload("res://editor/jump_style_picker.gd").make(profile,func(value: String) -> void:
-			stamp_jump_profile = value
-			jump_profile_chosen.emit(value)
-			refresh()))
-	var family: Array = CreatorCatalog.family(current)
-	if not family.is_empty() and family[3].size()>1:
-		var variants := OptionButton.new()
-		variants.name = "ObjectVariant"
-		EditorStyle.apply(variants)
-		variants.custom_minimum_size = Vector2(125,40)
-		for kind: String in family[3]: variants.add_item(CreatorCatalog.label(kind))
-		variants.select(family[3].find(current))
-		variants.item_selected.connect(func(index: int) -> void: choose(family[3][index]))
-		details.add_child(variants)
-	if current == "speed_bump":
-		var width: Label = MenuStyle.label("Width: %.2f m" % stamp_span,16)
-		details.add_child(width)
-		var slider := HSlider.new()
-		slider.name = "SpeedBumpWidth"
-		slider.min_value = SpeedBumpEdit.MIN_SPAN
-		slider.max_value = SpeedBumpEdit.MAX_SPAN
-		slider.step = 0.25
-		slider.value = stamp_span
-		slider.custom_minimum_size = Vector2(280,48)
-		slider.value_changed.connect(func(value: float) -> void:
-			stamp_span = value
-			width.text = "Width: %.2f m" % value
-			span_chosen.emit(value))
-		details.add_child(slider)
-	elif current not in CreatorCatalog.LINES:
-		var sizes := OptionButton.new()
-		sizes.name = "ObjectSize"
-		EditorStyle.apply(sizes)
-		sizes.custom_minimum_size = Vector2(95,40)
-		var presets: Array[float] = CreatorCatalog.size_presets(current)
-		for title: String in (["8 m","16 m","24 m"] if current=="cliff" else ["Small","Medium","Large"]): sizes.add_item(title)
-		sizes.select(0 if stamp_scale<presets[1] else 2 if stamp_scale>presets[1] else 1)
-		sizes.item_selected.connect(func(index: int) -> void:
-			stamp_scale = presets[index]; size_chosen.emit(stamp_scale))
-		details.add_child(sizes)
-	if current == "container":
-		details.add_child(ContainerColorButton.make(stamp_container_color,func(color: String) -> void:
-			stamp_container_color = color
-			container_color_chosen.emit(color)
-			refresh()))
-	if current in CreatorCatalog.LINES:
-		for mode: String in ["single","line","curve","road edge"]:
-			var button: Button = _button(mode.capitalize(),func() -> void:
-				placement=mode; mode_chosen.emit(mode); refresh())
-			button.name="Placement_"+mode.replace(" ","_")
-			EditorStyle.apply(button,placement==mode)
-			details.add_child(button)
+
+func open_properties() -> void:
+	controls_requested.emit()
 
 func _activate_asset(kind: String) -> void:
 	if not CreatorCatalog.available(kind,biome): return
-	var already_selected: bool=current==kind
-	choose(kind)
-	if already_selected:
-		options.popup(Rect2i(Vector2i(get_global_rect().end-Vector2(330,360)),Vector2i(320,250)))
+	if CreatorCatalog.JUMP_ASSETS.has(kind):
+		choose(kind)
+		return
+	var family: Array = CreatorCatalog.family(kind)
+	# A highlighted card can be the default while the canvas is in selection
+	# mode. Every card tap must activate placement; keep a chosen family variant.
+	choose(current if not family.is_empty() and current in family[3] else kind)

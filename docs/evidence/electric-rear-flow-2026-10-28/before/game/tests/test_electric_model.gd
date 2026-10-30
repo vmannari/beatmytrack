@@ -1,0 +1,135 @@
+extends SceneTree
+## Actual meshes/materials and matched native review views; no player data.
+const COACH = preload("res://vehicle/electric_coachwork.gd")
+const OUTPUT: String = "res://../docs/evidence/electric-car-2026-10-25/model"
+var checks: int = 0
+var failures: int = 0
+var counts: Dictionary = {}
+var lightbar_metrics: Dictionary = {}
+var output: String = OUTPUT
+
+func _initialize() -> void: run.call_deferred()
+func check(ok: bool, label: String) -> void:
+	checks += 1
+	if not ok:
+		failures += 1
+		print("FAIL: "+label)
+
+func triangles(node: Node) -> int:
+	var count: int = 0
+	if node is MeshInstance3D: count += node.mesh.get_faces().size()/3
+	for child: Node in node.get_children(): count += triangles(child)
+	return count
+
+func settle() -> void:
+	for tick: int in range(5): await process_frame
+	if DisplayServer.get_name() != "headless": await RenderingServer.frame_post_draw
+
+func run() -> void:
+	for argument: String in OS.get_cmdline_user_args():
+		if argument.begins_with("--evidence-root="): output = argument.trim_prefix("--evidence-root=")
+	DirAccess.make_dir_recursive_absolute(ProjectSettings.globalize_path(output))
+	root.size = Vector2i(1280,720)
+	var viewport := SubViewport.new()
+	viewport.size = root.size
+	viewport.own_world_3d = true
+	viewport.msaa_3d = Viewport.MSAA_4X
+	viewport.render_target_update_mode = SubViewport.UPDATE_ALWAYS
+	root.add_child(viewport)
+	var manifest: Dictionary = JSON.parse_string(FileAccess.get_file_as_string(COACH.ASSET_ROOT+"/manifest.json"))
+	check(manifest.source_sha256 == FileAccess.get_sha256("res://vehicle/electric_coachwork.gd") and manifest.model_sha256 == FileAccess.get_sha256("res://vehicle/electric_car_model.gd"),"offline meshes match exact authored sources")
+	for simple: bool in [false,true]:
+		var car := CarVisual.new()
+		car.vehicle_id = "electric"
+		car.simple_model = simple
+		car.batch_parts = false
+		root.add_child(car)
+		var raw: int = triangles(car)
+		var finite: bool = true
+		for mesh: MeshInstance3D in car.find_children("*","MeshInstance3D",true,false):
+			for surface: int in range(mesh.mesh.get_surface_count()):
+				var arrays: Array = mesh.mesh.surface_get_arrays(surface)
+				for point: Vector3 in arrays[Mesh.ARRAY_VERTEX]: finite = finite and point.is_finite()
+				if arrays[Mesh.ARRAY_NORMAL] != null:
+					for normal: Vector3 in arrays[Mesh.ARRAY_NORMAL]: finite = finite and normal.is_finite() and normal.length_squared() > 0.5
+		check(finite,"finite curved geometry and proper normals, simple="+str(simple))
+		check(is_equal_approx(car.paint_materials.body.roughness,0.34) and is_equal_approx(car.paint_materials.body.metallic,0.16) and car.paint_materials.body.clearcoat_enabled and is_equal_approx(car.paint_materials.body.clearcoat,CompactFinish.paint(Color.WHITE).clearcoat),"calibrated electric automotive paint and retained clearcoat, simple="+str(simple))
+		check(car.front_wheels.size() == 2 and car.rolling_wheels.size() == 4,"all wheel articulation survives detailed model")
+		check(car.front_wheels[0].get_node_or_null("BrakeAssembly") != null and car.rolling_wheels[0].get_node_or_null("BrakeAssembly") == null,"front caliper follows steering and never rolls with the rim")
+		check(raw > 20000 and raw < 170000,"bounded detailed triangle count, simple="+str(simple))
+		var assembled := CarVisual.new()
+		assembled.vehicle_id = "electric"
+		assembled.simple_model = simple
+		root.add_child(assembled)
+		check(raw == triangles(assembled),"production batching preserves all authored triangles, simple="+str(simple))
+		counts["simple" if simple else "full"] = raw
+		car.free()
+		assembled.free()
+	check(int(counts.simple) < int(counts.full),"optional simpler model reduces curved-surface sampling")
+	if DisplayServer.get_name() != "headless":
+		for id: String in ["compact","electric"]:
+			var world := Node3D.new()
+			viewport.add_child(world)
+			var car := CarVisual.new()
+			car.vehicle_id = id
+			car.livery = VehicleLivery.defaults(id)
+			world.add_child(car)
+			ShowroomStudio.build(world,car)
+			var camera := Camera3D.new()
+			world.add_child(camera)
+			camera.current = true
+			camera.fov = 32
+			var shots: Array = [
+				["front",Vector3(-5,3.2,-7),Vector3(0,0.6,0)],
+				["rear",Vector3(5,3.0,7),Vector3(0,0.6,0)],
+				["side",Vector3(-7,1.6,0),Vector3(0,0.65,0)],
+				["top",Vector3(0,7,0.001),Vector3(0,0.5,0)],
+				["optics",Vector3(-2.0,1.1,-3.7),Vector3(-0.3,0.70,-1.8)],
+				["wheel",Vector3(-2.8,0.9,-2.2),Vector3(-0.75,0.37,-1.2)]]
+			for shot: Array in shots:
+				camera.position = shot[1]
+				camera.look_at(shot[2])
+				await settle()
+				check(viewport.get_texture().get_image().save_png(output.path_join(id+"-"+str(shot[0])+".png")) == OK,"actual model capture "+id+" "+str(shot[0]))
+			if id == "electric":
+				for night: bool in [false,true]:
+					car.set_night_headlights(night)
+					camera.position = Vector3(0,1.1,-5.1)
+					camera.look_at(car.body.to_global(COACH.lightbar_point(0.5,0.5)))
+					await settle()
+					var pixels: Image = viewport.get_texture().get_image()
+					var visible_samples: int = 0
+					for sample: int in range(49):
+						var point: Vector2 = camera.unproject_position(car.body.to_global(COACH.lightbar_point(lerpf(0.03,0.97,sample/48.0),0.5)))
+						var lit: bool = false
+						for dx: int in range(-1,2):
+							for dy: int in range(-1,2):
+								var pixel: Color = pixels.get_pixel(clampi(roundi(point.x)+dx,0,pixels.get_width()-1),clampi(roundi(point.y)+dy,0,pixels.get_height()-1))
+								lit = lit or (pixel.r>0.60 and pixel.g>0.65 and pixel.b>0.65)
+						if lit: visible_samples += 1
+					check(visible_samples == 49,"actual unbroken front light across all 49 samples, night="+str(night))
+					var span: float = camera.unproject_position(car.body.to_global(COACH.lightbar_point(0,0.5))).distance_to(camera.unproject_position(car.body.to_global(COACH.lightbar_point(1,0.5))))
+					var thickness: float = camera.unproject_position(car.body.to_global(COACH.lightbar_point(0.5,0))).distance_to(camera.unproject_position(car.body.to_global(COACH.lightbar_point(0.5,1))))
+					lightbar_metrics["night" if night else "day"] = {"visible_samples":visible_samples,"span_pixels":span,"thickness_pixels":thickness}
+					check(span > 500 and span/maxf(thickness,0.1)>65,"native light is wide and narrow, night="+str(night))
+					check(pixels.save_png(output.path_join("electric-lightbar-"+("night" if night else "day")+".png")) == OK,"native continuous lightbar capture")
+				car.set_night_headlights(true)
+				camera.position = Vector3(-5,2.4,-7)
+				camera.look_at(Vector3(0,0.65,0))
+				await settle()
+				check(viewport.get_texture().get_image().save_png(output.path_join("electric-headlights.png")) == OK,"fitted night optical lenses")
+				car.set_night_headlights(false)
+				var state := VehicleState.new()
+				state.velocity = Vector2(0,20)
+				car.present(Vector2.ZERO,0,state,DriveFrame.new())
+				camera.position = Vector3(5,3,7)
+				camera.look_at(Vector3(0,0.65,0))
+				await settle()
+				check(car.rear_braking and viewport.get_texture().get_image().save_png(output.path_join("electric-regeneration.png")) == OK,"native regenerative brake lights")
+			world.free()
+	viewport.free()
+	var report := FileAccess.open(output+"/report.json",FileAccess.WRITE)
+	report.store_string(JSON.stringify({"checks":checks,"failures":failures,"triangles":counts,"lightbar":lightbar_metrics},"\t"))
+	report.close()
+	print("ELECTRIC_MODEL: %d checks, %d failures, triangles %s" % [checks,failures,JSON.stringify(counts)])
+	quit(1 if failures else 0)

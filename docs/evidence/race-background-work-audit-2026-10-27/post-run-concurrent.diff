@@ -1,0 +1,37 @@
+--- audited/game/ui/garage_preloader.gd
++++ post-run/game/ui/garage_preloader.gd
+@@ -48,7 +48,11 @@
+ 	for path: String in _wanted:
+ 		if _pending.size()>=MAX_PENDING: break
+ 		if _resources.has(path) or _pending.has(path) or _failed.has(path): continue
+-		if ResourceLoader.exists(path) and ResourceLoader.load_threaded_request(path)==OK: _pending.append(path)
++		if not ResourceLoader.exists(path): continue
++		# The dummy backend's mesh RID allocator cannot overlap worker loads
++		# with scene construction. Native renderers retain threaded asset reads.
++		if DisplayServer.get_name()=="headless": _resources[path]=load(path)
++		elif ResourceLoader.load_threaded_request(path)==OK: _pending.append(path)
+ 	if not _allowed(): return
+ 	if studio==null:
+ 		for path: String in _wanted:
+--- audited/game/ui/garage_preloaded_studio.gd
++++ post-run/game/ui/garage_preloaded_studio.gd
+@@ -7,6 +7,7 @@
+ var adopted: bool=false
+ var warming: bool=false
+ var warm_draws: int=0
++var max_draw_ms: float=0.0
+ var _pending: Array[Dictionary]=[]
+ var _held: Array[Dictionary]=[]
+ 
+@@ -67,9 +68,11 @@
+ 
+ func _draw() -> void:
+ 	if not _allowed(): return
++	var began: int=Time.get_ticks_usec()
+ 	_submit_render()
+ 	warm_draws+=1
+ 	if DisplayServer.get_name()!="headless": await RenderingServer.frame_post_draw
++	max_draw_ms=maxf(max_draw_ms,(Time.get_ticks_usec()-began)/1000.0)
+ 	if is_inside_tree() and not is_queued_for_deletion(): await get_tree().process_frame
+ 
+ func adopt() -> void:

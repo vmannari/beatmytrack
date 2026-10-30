@@ -1,0 +1,797 @@
+diff --git a/game/vehicle/forklift_model.gd b/game/vehicle/forklift_model.gd
+--- a/game/vehicle/forklift_model.gd
++++ b/game/vehicle/forklift_model.gd
+@@ -54,7 +54,7 @@
+ 			_box(body,Vector3(0.18,0.005,0.005),Vector3(side*0.55,1.064+line*0.023,1.61),0.002,car.brake_material,1,"TailLensFlute")
+ 		_box(body,Vector3(0.14,0.025,0.32),Vector3(side*0.53,0.677,1.54),0.009,amber,detail,"WarningMark")
+ 	# Curved exhaust stack and its heat shield behind the operator, below the guard.
+-	_pipe(body,[Vector3(0.58,1.24,0.94),Vector3(0.62,1.50,0.98),Vector3(0.62,2.03,0.98),Vector3(0.59,2.12,1.02)],0.032,dark)
++	_exhaust(body,dark,car.simple_model)
+ 	_box(body,Vector3(0.12,0.43,0.11),Vector3(0.62,1.71,0.99),0.035,steel,detail,"ExhaustShield")
+ 	for vent: int in range(6):
+ 		_box(body,Vector3(0.07,0.008,0.004),Vector3(0.62,1.56+vent*0.058,1.049),0.002,dark,1,"ShieldVent")
+@@ -151,7 +151,12 @@
+ 	column.position = Vector3(-0.16,1.61,-0.40)
+ 	column.rotation.x = 0.40
+ 	VisualGeometry.cylinder(column,0.040,0.41,Vector3(0,-0.21,0),dark,true)
+-	VisualGeometry.ring(column,Vector3.ZERO,0.202,0.019,rubber)
++	var rim := TorusMesh.new()
++	rim.inner_radius = 0.183
++	rim.outer_radius = 0.221
++	rim.rings = 24 if car.simple_model else 48
++	rim.ring_segments = 6 if car.simple_model else 10
++	_attach(column,rim,rubber,"SteeringWheelRim")
+ 	VisualGeometry.cylinder(column,0.055,0.038,Vector3.ZERO,dark,true)
+ 	for spoke: int in range(3):
+ 		var angle: float = spoke*TAU/3.0+0.35
+@@ -214,9 +219,7 @@
+ 		var pulley := VisualGeometry.cylinder(parent,0.11,0.105,Vector3(side*0.31,2.47,-1.23),steel,true)
+ 		pulley.rotation.z = PI*0.5
+ 		_bolt(parent,Vector3(side*0.37,2.47,-1.23),Vector3(side,0,0),0.025,bright)
+-		var links: int = 10 if car.simple_model else 26
+-		for index: int in range(links):
+-			_box(parent,Vector3(0.055,0.030,0.025),Vector3(side*0.31,0.68+index*1.75/links,-1.36),0.007,steel,1,"LiftChainLink")
++		_lift_chain(parent,carriage,side,steel,dark,car.simple_model)
+ 		_box(parent,Vector3(0.29,0.18,0.20),Vector3(x,0.44,-1.23),0.035,dark,detail,"MastPivotHousing")
+ 		_bolt(parent,Vector3(x+side*0.17,0.44,-1.23),Vector3(side,0,0),0.055,steel)
+ 		_fork(carriage,side*0.43,steel,car.simple_model)
+@@ -236,7 +239,7 @@
+ 	var triangles: PackedInt32Array = Geometry2D.triangulate_polygon(profile)
+ 	for side: float in [-1.0,1.0]:
+ 		for index: int in range(0,triangles.size(),3):
+-			var order: Array = [0,1,2] if side<0.0 else [2,1,0]
++			var order: Array = [2,1,0] if side<0.0 else [0,1,2]
+ 			for vertex: int in order:
+ 				var p: Vector2 = profile[triangles[index+vertex]]
+ 				tool.set_normal(Vector3(side,0,0)); tool.set_uv(Vector2(p.x,p.y)); tool.add_vertex(Vector3(x+side*0.10,p.y,p.x))
+@@ -303,6 +306,102 @@
+ 		var pipe := VisualGeometry.cylinder(parent,radius,a.distance_to(b),(a+b)*0.5,material,true)
+ 		pipe.quaternion = Quaternion(Vector3.UP,(b-a).normalized())
+ 
++static func _lift_chain(parent: Node3D, carriage: Node3D, side: float, steel: Material, dark: Material, simple: bool) -> void:
++	# A leaf chain has paired continuous side plates and transverse pins. The
++	# fixed return rises behind the sheave and wraps to the raised carriage.
++	var suffix: String = "Left" if side<0.0 else "Right"
++	var mechanism := Node3D.new()
++	mechanism.name = "LiftMechanism"+suffix
++	parent.add_child(mechanism)
++	var x: float = side*0.31
++	var path: Array[Vector3] = [Vector3(x,0.47,-1.11),Vector3(x,2.47,-1.11)]
++	var arc_steps: int = 8 if simple else 16
++	for index: int in range(1,arc_steps+1):
++		var angle: float = index*PI/arc_steps
++		path.append(Vector3(x,2.47+sin(angle)*0.12,-1.23+cos(angle)*0.12))
++	path.append(Vector3(x,1.10+TRANSPORT_LIFT,-1.35))
++	var tool := SurfaceTool.new()
++	tool.begin(Mesh.PRIMITIVE_TRIANGLES)
++	for plate: float in [-1.0,1.0]:
++		for index: int in range(path.size()-1):
++			var corners: Array[Vector3] = []
++			for pair: Vector2i in [Vector2i(index,1),Vector2i(index+1,1),Vector2i(index+1,-1),Vector2i(index,-1)]:
++				var point: Vector3 = path[pair.x]
++				var tangent: Vector3 = (path[mini(pair.x+1,path.size()-1)]-path[maxi(pair.x-1,0)]).normalized()
++				var normal := Vector3(0,-tangent.z,tangent.y)
++				corners.append(point+Vector3(plate*0.029,0,0)+normal*pair.y*0.010)
++			_solid_strip(tool,corners,Vector3(-plate*0.014,0,0),Vector3(plate,0,0),index==0,index==path.size()-2)
++	_attach(mechanism,tool.commit(),steel,"LiftChain"+suffix)
++	# Pins share the route at a bounded pitch, including the bend. Racing keeps
++	# the full chain silhouette while reducing only the small transverse detail.
++	var length: float = 0.0
++	for index: int in range(path.size()-1): length += path[index].distance_to(path[index+1])
++	var count: int = ceili(length/(0.13 if simple else 0.065))
++	var segment: int = 0
++	var traversed: float = 0.0
++	for index: int in range(count+1):
++		var distance: float = length*index/count
++		while segment<path.size()-2 and traversed+path[segment].distance_to(path[segment+1])<distance:
++			traversed += path[segment].distance_to(path[segment+1])
++			segment += 1
++		var point: Vector3 = path[segment].lerp(path[segment+1],(distance-traversed)/path[segment].distance_to(path[segment+1]))
++		var pin := VisualGeometry.cylinder(mechanism,0.009,0.066,point,dark,true)
++		pin.name = "ChainPin"
++		pin.rotation.z = PI*0.5
++		var mesh: CylinderMesh = pin.mesh.duplicate() as CylinderMesh
++		mesh.radial_segments = 6
++		pin.mesh = mesh
++	_box(mechanism,Vector3(0.10,0.12,0.16),Vector3(x,0.47,-1.15),0.012,dark,1,"FixedChainAnchor"+suffix)
++	_box(carriage,Vector3(0.10,0.13,0.13),Vector3(x,1.10,-1.37),0.014,steel,1,"CarriageChainAnchor"+suffix)
++
++static func _exhaust(parent: Node3D, surface: Material, simple: bool) -> void:
++	# Continuous outer wall, dark inner bore and annular ends. There is no disk
++	# across the outlet, and cylinder caps cannot protrude through the bends.
++	var stack := Node3D.new()
++	stack.name = "HollowExhaustStack"
++	parent.add_child(stack)
++	var points: Array[Vector3] = [Vector3(0.58,1.24,0.94),Vector3(0.62,1.50,0.98),Vector3(0.62,2.03,0.98),Vector3(0.59,2.12,1.02)]
++	var segments: int = 12 if simple else 24
++	var rings: Array[Array] = []
++	var normals: Array[Array] = []
++	var tangents: Array[Vector3] = []
++	for index: int in range(points.size()):
++		var tangent: Vector3 = (points[mini(index+1,points.size()-1)]-points[maxi(index-1,0)]).normalized()
++		tangents.append(tangent)
++		var u: Vector3 = Vector3.RIGHT.slide(tangent).normalized()
++		var v: Vector3 = tangent.cross(u).normalized()
++		var radial: Array[Vector3] = []
++		for step: int in range(segments): radial.append(u*cos(step*TAU/segments)+v*sin(step*TAU/segments))
++		normals.append(radial)
++		var ring: Array[Vector3] = []
++		for radius: float in [0.032,0.024]:
++			for normal: Vector3 in radial: ring.append(points[index]+normal*radius)
++		rings.append(ring)
++	var outer := SurfaceTool.new()
++	var inner := SurfaceTool.new()
++	outer.begin(Mesh.PRIMITIVE_TRIANGLES)
++	inner.begin(Mesh.PRIMITIVE_TRIANGLES)
++	for index: int in range(points.size()-1):
++		for step: int in range(segments):
++			var next: int = (step+1)%segments
++			for wall: int in range(2):
++				var offset: int = wall*segments
++				var sign_normal: float = 1.0 if wall==0 else -1.0
++				_smooth_quad(outer if wall==0 else inner,[rings[index][offset+step],rings[index][offset+next],rings[index+1][offset+next],rings[index+1][offset+step]],[normals[index][step]*sign_normal,normals[index][next]*sign_normal,normals[index+1][next]*sign_normal,normals[index+1][step]*sign_normal])
++	for end: int in [0,points.size()-1]:
++		for step: int in range(segments):
++			var next: int = (step+1)%segments
++			_face(outer,[rings[end][step],rings[end][next],rings[end][segments+next],rings[end][segments+step]],tangents[end]*(-1.0 if end==0 else 1.0))
++	_attach(stack,outer.commit(),surface,"ExhaustOuterWall")
++	_attach(stack,inner.commit(),CompactFinish.rubber(Color("080d0f")),"ExhaustBore")
++
++static func _smooth_quad(tool: SurfaceTool, points: Array[Vector3], normals: Array[Vector3]) -> void:
++	var reverse: bool = (points[1]-points[0]).cross(points[2]-points[0]).dot(normals[0]+normals[1]+normals[2]+normals[3])>0.0
++	for index: int in ([0,2,1,0,3,2] if reverse else [0,1,2,0,2,3]):
++		tool.set_normal(normals[index])
++		tool.set_uv(Vector2(points[index].x+points[index].z,points[index].y))
++		tool.add_vertex(points[index])
++
+ static func _box(parent: Node3D, size: Vector3, center: Vector3, radius: float, material: Material, detail: int, label: String) -> MeshInstance3D:
+ 	var key: String = str([size,radius,detail])
+ 	if not meshes.has(key):
+diff --git a/AGENTS.md b/AGENTS.md
+--- a/AGENTS.md
++++ b/AGENTS.md
+@@ -2,6 +2,11 @@
+ ## Kart competition helmet redesign override (2026-10-25)
+ KH01-KH03/V02-V05/R01/Q01: Owner rejects the prior helmet. Original full-face competition shell replaces its spherical construction with a lower crown, shaped jaw/cheeks, real eye aperture, fitted visor/seal/brow, hinge hardware and tucked neck roll. Other196 prepared mesh binaries are identical;12 old helmet resources retire into exact-backed-up evidence and22 new resources bring the current manifest to218. Full/simple88600/26244 triangles; matching body shadow and catalogue/news/all49 livery photos refreshed. Model75Compatibility/75desktopMobile and actual Garage/race14/14 pass. First-review shading bands were corrected; concurrent translation/font parser/import failures remain recorded; final parser1160 passes after its font cache becomes available. No invariant or threshold weakened; physics/config/camera hashes retained. Commands, native matched close-ups and task-only checkpoint: docs/KART_HELMET_REDESIGN_2026_10_25.md and docs/evidence/kart-helmet-redesign-2026-10-25/report.json. Reload and owner/device appearance/cost acceptance remain. No device attachment check/test, APK, real authentication/purchase, live mutation, deployment or owner-process restart; concurrent work preserved.
+ <!-- /KART-HELMET-REDESIGN-20261025 -->
++
++<!-- FORKLIFT-MODEL-FIXES-20261025 -->
++## Forklift model review corrections (2026-10-25)
++FR01-FR04/R01/G01/Q01: Correct fork side winding, give the steering rim a closed round grip, connect paired leaf-chain plates/pins over the sheaves to fixed/carriage anchors, and open the upper exhaust with a dark bore and metal lip. Both detail levels retain raised forks, body/rear sticker and exact handling/simulation sources. Native97Compatibility/97desktopMobile, actual Garage/driving111, clearance/turning204 and parser1160 pass; all49 appearance photos/catalogue art refreshed and imported. Detailed/racing149328/51680 triangles,41 prepared meshes. Old-source43checks/18fail and initial font-import/lip-ray diagnostic failures retained. Commands, native before/after and scoped checkpoint: docs/FORKLIFT_MODEL_FIXES_2026_10_25.md and docs/evidence/forklift-model-fixes-2026-10-25/report.json. Reload and owner/device appearance/cost acceptance remain. No device attachment check/test, APK, live mutation, purchase, deployment or owner-process restart; concurrent work preserved.
++<!-- /FORKLIFT-MODEL-FIXES-20261025 -->
+ 
+ <!-- KART-REFINEMENT-20261025 -->
+ ## Kart model and mechanical refinement override (2026-10-25)
+diff --git a/DEVELOPMENT_STATUS.md b/DEVELOPMENT_STATUS.md
+--- a/DEVELOPMENT_STATUS.md
++++ b/DEVELOPMENT_STATUS.md
+@@ -7,6 +7,11 @@
+ ## Electric model visual review (2026-10-25)
+ MREV01-MREV03/Q01: Fresh matched Compact/electric native views pass34 checks per renderer (Compatibility/desktopMobile), full154276/simple55700 triangles and49/49 day/night light-bar samples. Visual review still finds sharp primary body joins, an unfinished rear-door lower seam and raised rear plate/lamp overlays instead of formed recesses. These are open findings, not completed fixes or AAA acceptance. Prioritized source-linked findings, commands, native comparison, hashes and task-only checkpoint: docs/evidence/electric-model-review-2026-10-25/review.json and gallery.html. Runtime/model/handling files unchanged. Owner/device appearance and mobile cost acceptance remain; no attachment/device test, APK, live mutation, purchase, deployment or owner-process restart. Concurrent work preserved.
+ <!-- /ELECTRIC-MODEL-REVIEW-20261025 -->
++
++<!-- FORKLIFT-MODEL-FIXES-20261025 -->
++## Forklift model review corrections (2026-10-25)
++FR01-FR04/R01/G01/Q01: Correct fork side winding, give the steering rim a closed round grip, connect paired leaf-chain plates/pins over the sheaves to fixed/carriage anchors, and open the upper exhaust with a dark bore and metal lip. Both detail levels retain raised forks, body/rear sticker and exact handling/simulation sources. Native97Compatibility/97desktopMobile, actual Garage/driving111, clearance/turning204 and parser1160 pass; all49 appearance photos/catalogue art refreshed and imported. Detailed/racing149328/51680 triangles,41 prepared meshes. Old-source43checks/18fail and initial font-import/lip-ray diagnostic failures retained. Commands, native before/after and scoped checkpoint: docs/FORKLIFT_MODEL_FIXES_2026_10_25.md and docs/evidence/forklift-model-fixes-2026-10-25/report.json. Reload and owner/device appearance/cost acceptance remain. No device attachment check/test, APK, live mutation, purchase, deployment or owner-process restart; concurrent work preserved.
++<!-- /FORKLIFT-MODEL-FIXES-20261025 -->
+ 
+ <!-- KART-REFINEMENT-20261025 -->
+ ## Kart model and mechanical refinement override (2026-10-25)
+diff --git a/docs/PHASE_0_PLAN.md b/docs/PHASE_0_PLAN.md
+--- a/docs/PHASE_0_PLAN.md
++++ b/docs/PHASE_0_PLAN.md
+@@ -7,6 +7,11 @@
+ ## Electric model visual review (2026-10-25)
+ MREV01-MREV03/Q01: Fresh matched Compact/electric native views pass34 checks per renderer (Compatibility/desktopMobile), full154276/simple55700 triangles and49/49 day/night light-bar samples. Visual review still finds sharp primary body joins, an unfinished rear-door lower seam and raised rear plate/lamp overlays instead of formed recesses. These are open findings, not completed fixes or AAA acceptance. Prioritized source-linked findings, commands, native comparison, hashes and task-only checkpoint: docs/evidence/electric-model-review-2026-10-25/review.json and gallery.html. Runtime/model/handling files unchanged. Owner/device appearance and mobile cost acceptance remain; no attachment/device test, APK, live mutation, purchase, deployment or owner-process restart. Concurrent work preserved.
+ <!-- /ELECTRIC-MODEL-REVIEW-20261025 -->
++
++<!-- FORKLIFT-MODEL-FIXES-20261025 -->
++## Forklift model review corrections (2026-10-25)
++FR01-FR04/R01/G01/Q01: Correct fork side winding, give the steering rim a closed round grip, connect paired leaf-chain plates/pins over the sheaves to fixed/carriage anchors, and open the upper exhaust with a dark bore and metal lip. Both detail levels retain raised forks, body/rear sticker and exact handling/simulation sources. Native97Compatibility/97desktopMobile, actual Garage/driving111, clearance/turning204 and parser1160 pass; all49 appearance photos/catalogue art refreshed and imported. Detailed/racing149328/51680 triangles,41 prepared meshes. Old-source43checks/18fail and initial font-import/lip-ray diagnostic failures retained. Commands, native before/after and scoped checkpoint: docs/FORKLIFT_MODEL_FIXES_2026_10_25.md and docs/evidence/forklift-model-fixes-2026-10-25/report.json. Reload and owner/device appearance/cost acceptance remain. No device attachment check/test, APK, live mutation, purchase, deployment or owner-process restart; concurrent work preserved.
++<!-- /FORKLIFT-MODEL-FIXES-20261025 -->
+ 
+ <!-- KART-REFINEMENT-20261025 -->
+ ## Kart model and mechanical refinement override (2026-10-25)
+diff --git a/game/tests/test_forklift_model_finish.gd b/game/tests/test_forklift_model_finish.gd
+new file mode 100644
+--- /dev/null
++++ b/game/tests/test_forklift_model_finish.gd
+@@ -0,0 +1,140 @@
++extends "res://tests/review_forklift_model.gd"
++## Regression for the four native model-review defects, in both detail variants.
++var checks: int = 0
++var failures: int = 0
++var before: bool = false
++
++func check(ok: bool, label: String) -> void:
++	checks += 1
++	if not ok:
++		failures += 1
++		print("FAIL: ",label)
++
++func make_car(simple: bool, batch: bool = false) -> CarVisual:
++	var car := CarVisual.new()
++	car.vehicle_id = "forklift"; car.simple_model = simple; car.batch_parts = batch
++	root.add_child(car)
++	if before:
++		car.graphics.restore_originals()
++		for child: Node in car.body.get_children(): child.free()
++		load("res://../docs/evidence/forklift-model-fixes-2026-10-25/before/game__vehicle__forklift_model.gd").build(car)
++		car.graphics = LiveryGraphics.new()
++		car.graphics.configure(car)
++	return car
++
++func merged_mesh(parent: Node3D) -> MeshInstance3D:
++	var tool := SurfaceTool.new()
++	for part: MeshInstance3D in parent.find_children("*","MeshInstance3D",true,false):
++		for surface: int in range(part.mesh.get_surface_count()):
++			tool.append_from(part.mesh,surface,parent.global_transform.affine_inverse()*part.global_transform)
++	var result := MeshInstance3D.new()
++	result.mesh = tool.commit()
++	return result
++
++func ray_hits(part: MeshInstance3D, a: Vector3, b: Vector3) -> bool:
++	var vertices: PackedVector3Array = part.mesh.get_faces()
++	var direction: Vector3 = (b-a).normalized()
++	for index: int in range(0,vertices.size(),3):
++		# Normalize before the engine's determinant tolerance: a short segment
++		# otherwise rejects the small but valid triangles of the exhaust lip.
++		var hit: Variant = Geometry3D.ray_intersects_triangle(a,direction,vertices[index],vertices[index+1],vertices[index+2])
++		if hit != null and (hit-a).dot(direction)<=a.distance_to(b)+0.000001: return true
++	return false
++
++func solid(part: MeshInstance3D, label: String) -> Dictionary:
++	var data: Dictionary = topology(part)
++	check(data.boundary_edges == 0 and data.inconsistent_edges == 0,label+" is a closed consistently wound solid")
++	check(data.normal_disagreements == 0 and absf(data.signed_volume)>0.000001,label+" exterior faces match outward normals")
++	return data
++
++func geometry(simple: bool) -> void:
++	var car: CarVisual = make_car(simple)
++	var data: Dictionary = {}
++	for pattern: String in ["ForgedFork*","FormedSideSkin*","RolledWheelArch*"]:
++		for part: MeshInstance3D in car.find_children(pattern,"MeshInstance3D",true,false): data[part.name] = solid(part,str(part.name))
++	var rim: MeshInstance3D = car.find_child("SteeringWheelRim",true,false)
++	check(rim != null,"steering rim has independent solid geometry")
++	if rim != null:
++		data.steering_rim = solid(rim,"steering rim")
++		check(rim.mesh.get_aabb().size.y>0.03,"steering grip has round-section thickness")
++		check((rim.get_active_material(0) as BaseMaterial3D).cull_mode == BaseMaterial3D.CULL_BACK,"closed rim retains ordinary exterior culling")
++		var point := Vector3(cos(0.37)*0.202,0,sin(0.37)*0.202)
++		check(ray_hits(rim,point+Vector3.UP*0.08,point-Vector3.UP*0.08),"rim has a surface above the wheel plane")
++		check(ray_hits(rim,point-Vector3.UP*0.08,point+Vector3.UP*0.08),"rim has a surface below the wheel plane")
++	for side: String in ["Left","Right"]:
++		var chain: MeshInstance3D = car.find_child("LiftChain"+side,true,false)
++		check(chain != null,"continuous "+side+" leaf chain replaces detached blocks")
++		if chain == null: continue
++		data["chain_"+side] = solid(chain,side+" chain plates")
++		var x: float = -0.31 if side=="Left" else 0.31
++		# Sample between detail pins: the continuous side plates carry the route.
++		for point: Vector3 in [Vector3(x,1.833,-1.11),Vector3(x,1.833,-1.35),Vector3(x,2.585,-1.23)]:
++			check(ray_hits(chain,point-Vector3.RIGHT*0.08,point+Vector3.RIGHT*0.08),side+" chain has both vertical runs and a pulley wrap")
++		var fixed: MeshInstance3D = car.find_child("FixedChainAnchor"+side,true,false)
++		var moving: MeshInstance3D = car.find_child("CarriageChainAnchor"+side,true,false)
++		check(fixed != null and moving != null,side+" chain has fixed and moving anchors")
++		if fixed != null and moving != null:
++			var fixed_box: AABB = car.body.global_transform.affine_inverse()*fixed.global_transform*fixed.mesh.get_aabb()
++			var moving_box: AABB = car.body.global_transform.affine_inverse()*moving.global_transform*moving.mesh.get_aabb()
++			check(fixed_box.has_point(Vector3(x,0.47,-1.11)),side+" fixed chain termination reaches its anchor")
++			check(moving_box.has_point(Vector3(x,1.70,-1.35)) and moving.get_parent().name == "RaisedForkCarriage",side+" front chain reaches the raised carriage anchor")
++	check(car.find_children("LiftChainLink*","MeshInstance3D",true,false).is_empty(),"detached old chain blocks are absent")
++	var stack: Node3D = car.find_child("HollowExhaustStack",true,false)
++	check(stack != null,"upper stack has a hollow wall assembly")
++	if stack != null:
++		var exhaust: MeshInstance3D = merged_mesh(stack)
++		data.exhaust_wall = solid(exhaust,"exhaust wall and annular ends")
++		var end := Vector3(0.59,2.12,1.02)
++		var axis: Vector3 = (end-Vector3(0.62,2.03,0.98)).normalized()
++		var u: Vector3 = Vector3.RIGHT.slide(axis).normalized()
++		check(not ray_hits(exhaust,end+axis*0.04,end-axis*0.045),"exhaust bore stays open below its outlet")
++		for angle: float in [0.31,0.97]:
++			# Avoid the exact shared edge between neighbouring lip triangles.
++			var radial: Vector3 = (u*cos(angle)+axis.cross(u)*sin(angle))*0.028
++			check(ray_hits(exhaust,end+radial+axis*0.04,end+radial-axis*0.045),"exhaust opening retains an annular metal lip")
++		exhaust.free()
++	metrics["racing" if simple else "detailed"] = data
++	car.free()
++	await process_frame
++
++func run() -> void:
++	OS.set_environment("BMT_API_URL","")
++	before = "--before" in OS.get_cmdline_user_args()
++	graphical = DisplayServer.get_name() != "headless"
++	output = ProjectSettings.globalize_path("res://../docs/evidence/forklift-model-fixes-2026-10-25").path_join(("before-" if before else "")+(RenderingServer.get_current_rendering_method() if graphical else "headless"))
++	DirAccess.make_dir_recursive_absolute(output)
++	root.size = Vector2i(1280,960)
++	var config: Dictionary = VehicleCatalog.config("forklift").snapshot()
++	for simple: bool in [false,true]: await geometry(simple)
++	if graphical:
++		var world := Node3D.new()
++		root.add_child(world)
++		var car: CarVisual = make_car(false)
++		car.reparent(world)
++		var value: Dictionary = VehicleLivery.defaults("forklift")
++		value.stickers.hood.id = "crest"; value.stickers.hood.size = 0.95
++		car.apply_livery(value)
++		ShowroomStudio.build(world,car)
++		camera = Camera3D.new()
++		world.add_child(camera); camera.current = true; camera.fov = 35
++		await capture("front-overview",Vector3(-5.4,3.6,-6.4),Vector3(0,1.25,-0.38))
++		await capture("rear-overview",Vector3(-4.7,3.2,5.2),Vector3(0,1.22,0.15))
++		await capture("mast-front",Vector3(-1.7,1.95,-4.2),Vector3(0,1.65,-1.35))
++		await capture("mast-pulley",Vector3(-1.1,2.85,-2.55),Vector3(-0.20,2.43,-1.23))
++		await capture("cockpit-top",Vector3(-1.6,3.4,1.5),Vector3(-0.05,1.45,-0.23))
++		await capture("cockpit-low",Vector3(-1.9,1.33,-0.05),Vector3(-0.16,1.61,-0.40))
++		await capture("exhaust-outlet",Vector3(1.25,2.74,1.85),Vector3(0.61,1.99,1.0))
++		await capture("fork-underside",Vector3(-1.6,0.38,-3.4),Vector3(0,0.89,-2.05))
++		await capture("fork-side",Vector3(-2.8,1.0,-2.1),Vector3(-0.43,0.98,-1.95))
++		VisualGeometry.batch_static_parts(car)
++		await capture("batched-fork-side",Vector3(-2.8,1.0,-2.1),Vector3(-0.43,0.98,-1.95))
++		await capture("batched-cockpit-low",Vector3(-1.9,1.33,-0.05),Vector3(-0.16,1.61,-0.40))
++		await capture("batched-mast-front",Vector3(-1.7,1.95,-4.2),Vector3(0,1.65,-1.35))
++		await capture("batched-exhaust-outlet",Vector3(1.25,2.74,1.85),Vector3(0.61,1.99,1.0))
++		world.free()
++	check(config == VehicleCatalog.config("forklift").snapshot(),"model corrections leave the versioned handling unchanged")
++	var report := FileAccess.open(output.path_join("metrics.json"),FileAccess.WRITE)
++	report.store_string(JSON.stringify({"checks":checks,"failures":failures,"metrics":metrics},"\t"))
++	report.close()
++	print("FORKLIFT_MODEL_FINISH: %d checks, %d failures" % [checks,failures])
++	quit(1 if failures else 0)
+diff --git a/game/tests/test_forklift_model_finish.gd.uid b/game/tests/test_forklift_model_finish.gd.uid
+new file mode 100644
+--- /dev/null
++++ b/game/tests/test_forklift_model_finish.gd.uid
+@@ -0,0 +1 @@
++uid://c5dhvudnadub1
+diff --git a/game/tests/review_forklift_model.gd.uid b/game/tests/review_forklift_model.gd.uid
+new file mode 100644
+--- /dev/null
++++ b/game/tests/review_forklift_model.gd.uid
+@@ -0,0 +1 @@
++uid://cwihm0kd24mwa
+diff --git a/docs/FORKLIFT_MODEL_FIXES_2026_10_25.md b/docs/FORKLIFT_MODEL_FIXES_2026_10_25.md
+new file mode 100644
+--- /dev/null
++++ b/docs/FORKLIFT_MODEL_FIXES_2026_10_25.md
+@@ -0,0 +1,41 @@
++# Forklift model corrections - 2026-10-25
++
++FR01-FR04/R01/G01/Q01 resolve the four findings in [the model review](FORKLIFT_MODEL_REVIEW_2026_10_25.md). The native procedural model now has correctly wound fork sides, a closed round steering grip, continuous paired leaf-chain plates with pins, pulley wraps and fixed/carriage anchors, and a hollow exhaust with a dark bore and annular lip.
++
++[Native before/after gallery](evidence/forklift-model-fixes-2026-10-25/report.html) · [Measurements and commands](evidence/forklift-model-fixes-2026-10-25/report.json)
++
++The change is confined to `game/vehicle/forklift_model.gd`. Existing fork profiles, 0.60 model-metre carriage lift, body shells, rear sticker, upper exhaust location and wheel articulation remain. Handling resource `forklift-3`, shared simulation, `CarVisual`, model dispatch and livery projection sources match their saved task-start SHA-256 hashes. The config hash remains `b8efe40fee6eafba448a1b6d3af917f3cc5bc05481ef3d6379835235f0d66cd6`.
++
++## Corrections and evidence
++
++| Requirement | Change | Native evidence |
++|---|---|---|
++| FR01 | Reverse the two fork-profile side-face triangle orders. Each fork goes from 18 inconsistent edges and 14 triangles disagreeing with its normal to zero. Both detail variants remain closed. | `fork-side.png`, `fork-underside.png`, `batched-fork-side.png` |
++| FR02 | Replace the flat steering annulus with a closed torus, 38 mm grip thickness in model coordinates. Exterior back-face culling remains enabled. | `cockpit-top.png`, `cockpit-low.png`, `batched-cockpit-low.png` |
++| FR03 | Continuous paired chain plates run from a fixed base anchor, around the existing sheave, to an anchor on the raised carriage. Low-detail geometry retains the continuous silhouette and reduces pin density/curve segments. | `mast-front.png`, `mast-pulley.png`, `batched-mast-front.png` |
++| FR04 | A continuous swept outer wall and dark inner wall replace overlapping capped exhaust cylinders. A 24 mm-radius bore remains open within the 32 mm-radius outside wall. | `exhaust-outlet.png`, `batched-exhaust-outlet.png` |
++
++The detailed/racing models contain 149,328/51,680 triangles, compared with 146,432/49,472 at task start, and 41 prepared mesh instances versus 40. This is a small geometry increase, not a device performance certification. All 49 native Forklift appearance photos and the catalogue illustration are refreshed; their existing filtering/import configuration remains.
++
++## Validation actually run
++
++All normal builds and checks use `scripts/dev.ps1` with pinned Godot `4.7.2.stable.official.ed1daf0bf`. Commands, raw logs and JSON measurements are retained in the evidence folder.
++
++| Check | Actual result |
++|---|---|
++| New `test_forklift_model_finish.gd --before`, saved pre-fix source | 43 checks, 18 failures; reproduces both forks' winding and the missing solid rim, continuous chains and hollow stack |
++| Same regression, current model, Compatibility | 97 checks, zero failures; 13 native close-up/overview captures |
++| Same regression, desktop Mobile | 97 checks, zero failures; 13 captures including the production static merger |
++| Existing `test_forklift.gd`, Compatibility, separate evidence directory and `--bake-art` | 111 checks, zero failures; actual Garage 1280/960, driving, both detail levels, retained rear steering/replay, weathering and bounded 80 km/h |
++| Existing `test_forklift_clearance.gd`, separate evidence directory | 204 checks, zero failures; 54 bridge traversals, 20 turning cases, recovery, rail blocking, fork clearance and exact replay |
++| Native `bake_livery_previews.gd --vehicle=forklift` | All 49 captures complete |
++| Pinned `Import` after artwork refresh | Pass; all 50 native PNGs imported |
++| Full script parser | 1,160 scripts, zero failures |
++
++The regression measures boundary/shared-edge orientation and normal agreement for the forks, body/arches, steering grip, chain plates and combined exhaust walls. Rays check the steering grip above/below its plane, both chain runs and the wrap, and the open exhaust bore with a surrounding metal lip. It checks fixed/moving anchors and verifies the unchanged handling snapshot. The historical review script and evidence remain intact; the new test inherits only its reusable topology/capture helpers and writes to a separate folder.
++
++Initial failures are retained. A concurrently added symbol font was not yet imported; the normal wrapper aborted during preload before the editor could import it. One bootstrap import used the exact pinned executable directly, allowing the initial autoload errors to occur and the font import to finish; that run exits 1 and is not a passing validation. Normal wrapper checks then resume without changing the font source or wrapper. The initial lip test used a short segment on small triangles; the segment-scaled determinant tolerance rejected valid detailed lip faces. A normalized ray with the same finite length and samples away from shared triangle edges corrects the diagnostic; the bore/lip assertions remain and both detail variants pass. These diagnostic corrections did not change production geometry or weaken a production invariant.
++
++Changed files: the Forklift model, new regression/UID, generated UID for the inherited review helper, native catalogue/appearance PNGs, this guide, evidence and task-only status entries. Text changes are in a scoped Git-checkable patch; refreshed native assets are in a separate archive. The patch is checked against saved task-start files without changing the owner's index or HEAD. Unrelated Kart, fonts/localization, Desert, website and account work is preserved.
++
++No device attachment check or physical-device test, APK, purchase, live mutation, deployment or owner-process restart was performed. Reload the client to see the model and artwork. Owner/device appearance and frame-pacing acceptance remain.
+diff --git a/docs/evidence/forklift-model-fixes-2026-10-25/report.html b/docs/evidence/forklift-model-fixes-2026-10-25/report.html
+new file mode 100644
+--- /dev/null
++++ b/docs/evidence/forklift-model-fixes-2026-10-25/report.html
+@@ -0,0 +1,47 @@
++<!doctype html>
++<html lang="en">
++<meta charset="utf-8">
++<meta name="viewport" content="width=device-width, initial-scale=1">
++<title>Forklift corrections — 25 October 2026</title>
++<style>
++body{max-width:1440px;margin:auto;padding:32px;background:#172129;color:#edf1f3;font:17px/1.5 system-ui,sans-serif}h1{font-size:30px}h2{font-size:23px;margin-top:36px}a{color:#e7c36a}.pair,.views{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:20px}figure{margin:0}img{display:block;width:100%;height:auto;background:#111922}figcaption{padding:9px 0;color:#c2cbd1}summary{cursor:pointer;padding:10px 0}p{max-width:1100px}@media(max-width:760px){.pair,.views{grid-template-columns:1fr}body{padding:16px}}
++</style>
++<h1>Forklift: four model issues fixed</h1>
++<p>Native pinned Godot screenshots. The left image in each comparison is the reviewed model; the right is the corrected model at the same diagnostic pose and studio lighting. <a href="../../FORKLIFT_MODEL_FIXES_2026_10_25.md">Scope and validation</a> · <a href="report.json">Report</a></p>
++<h2>Fork faces point outward</h2>
++<p>Both forks, in both detail variants: inconsistent shared edges 18 → 0; triangles disagreeing with their normals 14 → 0.</p>
++<div class="pair">
++<figure><a href="../forklift-review-2026-10-25/gl_compatibility/fork-side.png"><img src="../forklift-review-2026-10-25/gl_compatibility/fork-side.png" alt="Fork profile before correction"></a><figcaption>Before: exterior side culled.</figcaption></figure>
++<figure><a href="gl_compatibility/fork-side.png"><img src="gl_compatibility/fork-side.png" alt="Correctly oriented solid fork side"></a><figcaption>After: visible exterior side and correct blade thickness.</figcaption></figure>
++</div>
++<h2>Steering grip has real thickness</h2>
++<div class="pair">
++<figure><a href="../forklift-review-2026-10-25/gl_compatibility/cockpit-low.png"><img src="../forklift-review-2026-10-25/gl_compatibility/cockpit-low.png" alt="Steering rim missing from below before correction"></a><figcaption>Before: rim disappears below its plane.</figcaption></figure>
++<figure><a href="gl_compatibility/cockpit-low.png"><img src="gl_compatibility/cockpit-low.png" alt="Round steering grip visible from below"></a><figcaption>After: closed round grip, ordinary back-face culling.</figcaption></figure>
++</div>
++<h2>Continuous lift chain and pulley wrap</h2>
++<div class="pair">
++<figure><a href="../forklift-review-2026-10-25/gl_compatibility/mast-front.png"><img src="../forklift-review-2026-10-25/gl_compatibility/mast-front.png" alt="Disconnected chain blocks before correction"></a><figcaption>Before: detached blocks.</figcaption></figure>
++<figure><a href="gl_compatibility/mast-front.png"><img src="gl_compatibility/mast-front.png" alt="Continuous leaf chains after correction"></a><figcaption>After: paired plates, transverse pins and carriage anchors.</figcaption></figure>
++</div>
++<figure><a href="gl_compatibility/mast-pulley.png"><img src="gl_compatibility/mast-pulley.png" alt="Chain wrap over each pulley"></a><figcaption>Close-up: both chains continue over their sheaves to the return runs.</figcaption></figure>
++<h2>Open exhaust bore</h2>
++<div class="pair">
++<figure><a href="../forklift-review-2026-10-25/gl_compatibility/exhaust-outlet.png"><img src="../forklift-review-2026-10-25/gl_compatibility/exhaust-outlet.png" alt="Solid cap at the old exhaust outlet"></a><figcaption>Before: solid disk.</figcaption></figure>
++<figure><a href="gl_compatibility/exhaust-outlet.png"><img src="gl_compatibility/exhaust-outlet.png" alt="Open dark exhaust bore with metal lip"></a><figcaption>After: dark inner wall and metal lip; open through the outlet.</figcaption></figure>
++</div>
++<details><summary>Desktop Mobile captures after production batching</summary><div class="views">
++<figure><img src="mobile/batched-fork-side.png" alt="Corrected fork in Mobile"><figcaption>Fork faces.</figcaption></figure>
++<figure><img src="mobile/batched-cockpit-low.png" alt="Corrected steering rim in Mobile"><figcaption>Steering grip.</figcaption></figure>
++<figure><img src="mobile/batched-mast-front.png" alt="Connected chains in Mobile"><figcaption>Lift chains.</figcaption></figure>
++<figure><img src="mobile/batched-exhaust-outlet.png" alt="Open exhaust in Mobile"><figcaption>Exhaust bore.</figcaption></figure>
++</div></details>
++<h2>Complete vehicle</h2>
++<div class="views">
++<figure><img src="gl_compatibility/front-overview.png" alt="Corrected Forklift front overview"><figcaption>Updated front.</figcaption></figure>
++<figure><img src="gl_compatibility/rear-overview.png" alt="Forklift rear sticker and retained body"><figcaption>Retained body, single rear sticker and upper stack.</figcaption></figure>
++<figure><img src="integration/gl_compatibility/garage-1280.png" alt="Corrected Forklift in the actual Garage"><figcaption>Actual Garage, 1280 × 720.</figcaption></figure>
++<figure><img src="integration/gl_compatibility/gameplay.png" alt="Corrected Forklift in driving view"><figcaption>Actual driving view.</figcaption></figure>
++</div>
++<p>97 focused checks pass per renderer; actual Garage/driving 111 and bridge/turning 204 pass. Handling remains forklift-3 at 80 km/h. No physical-device test or device performance claim.</p>
++</html>
+diff --git a/docs/evidence/forklift-model-fixes-2026-10-25/report.json b/docs/evidence/forklift-model-fixes-2026-10-25/report.json
+new file mode 100644
+--- /dev/null
++++ b/docs/evidence/forklift-model-fixes-2026-10-25/report.json
+@@ -0,0 +1,343 @@
++{
++  "date": "2026-10-25",
++  "requirements": [
++    "FR01",
++    "FR02",
++    "FR03",
++    "FR04",
++    "R01",
++    "G01",
++    "Q01"
++  ],
++  "engine": "4.7.2.stable.official.ed1daf0bf",
++  "hardware": "Desktop NVIDIA GeForce RTX 3090",
++  "changes": [
++    "Outward fork side-face winding",
++    "Closed round-section steering grip",
++    "Continuous paired leaf-chain plates, pins, pulley wraps and fixed/carriage anchors",
++    "Hollow upper exhaust with dark bore and annular lip"
++  ],
++  "handling": {
++    "version": "forklift-3",
++    "config_hash": "b8efe40fee6eafba448a1b6d3af917f3cc5bc05481ef3d6379835235f0d66cd6",
++    "measured_maximum_kph": 79.9999969482422,
++    "unchanged_sources": {
++      "game/resources/cars/forklift.tres": true,
++      "game/vehicle/vehicle_simulation.gd": true,
++      "game/vehicle/car_visual.gd": true,
++      "game/vehicle/livery_catalog.gd": true,
++      "game/vehicle/livery_finish.gdshaderinc": true,
++      "game/vehicle/vehicle_models.gd": true
++    }
++  },
++  "model": {
++    "maximum_speed_kph": 79.9999969482422,
++    "meshes_detailed": 41,
++    "meshes_racing": 41,
++    "triangles_detailed": 149328,
++    "triangles_racing": 51680,
++    "turn_-3.0_-0.6": {
++      "front_side_speed": 0.240091629540307,
++      "heading": 0.697108984203401,
++      "rear_side_speed": -1.91233760884939
++    },
++    "turn_-3.0_0.6": {
++      "front_side_speed": -0.240091629540307,
++      "heading": -0.697108984203401,
++      "rear_side_speed": 1.91233760884939
++    },
++    "turn_5.0_-0.6": {
++      "front_side_speed": 0.419222107746151,
++      "heading": -1.02551891055484,
++      "rear_side_speed": 3.31784559168622
++    },
++    "turn_5.0_0.6": {
++      "front_side_speed": -0.419222107746151,
++      "heading": 1.02551891055484,
++      "rear_side_speed": -3.31784559168622
++    }
++  },
++  "focused": {
++    "compatibility": {
++      "checks": 97,
++      "failures": 0
++    },
++    "desktop_mobile": {
++      "checks": 97,
++      "failures": 0
++    }
++  },
++  "commands": [
++    {
++      "command": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1 TestScript -ScriptPath res://tests/test_forklift_model_finish.gd -TestArgument --before -CommandTimeoutSeconds 180",
++      "result": "43 checks, 18 failures on exact saved old model; expected reproduction"
++    },
++    {
++      "command": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1 TestScript -ScriptPath res://tests/test_forklift_model_finish.gd -Graphical -RenderingMethod gl_compatibility -CommandTimeoutSeconds 180",
++      "result": "97 checks, zero failures",
++      "log": "logs/model-compatibility.log"
++    },
++    {
++      "command": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1 TestScript -ScriptPath res://tests/test_forklift_model_finish.gd -Graphical -RenderingMethod mobile -CommandTimeoutSeconds 180",
++      "result": "97 checks, zero failures",
++      "log": "logs/model-mobile.log"
++    },
++    {
++      "command": "powershell -NoProfile -ExecutionPolicy Bypass -Command \"& './scripts/dev.ps1' TestScript -ScriptPath res://tests/test_forklift.gd -Graphical -RenderingMethod gl_compatibility -CommandTimeoutSeconds 300 -TestArgument @('--evidence-dir=res://../docs/evidence/forklift-model-fixes-2026-10-25/integration','--bake-art')\"",
++      "result": "111 checks, zero failures",
++      "log": "logs/integration-compatibility.log"
++    },
++    {
++      "command": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1 TestScript -ScriptPath res://tests/test_forklift_clearance.gd -TestArgument --evidence-dir=res://../docs/evidence/forklift-model-fixes-2026-10-25/clearance -CommandTimeoutSeconds 180",
++      "result": "204 checks, zero failures; 54 bridge traversals and 20 turning cases",
++      "log": "logs/clearance.log"
++    },
++    {
++      "command": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1 TestScript -ScriptPath res://tests/bake_livery_previews.gd -Graphical -RenderingMethod gl_compatibility -TestArgument --vehicle=forklift -CommandTimeoutSeconds 180",
++      "result": "49 captures complete",
++      "log": "logs/previews.log"
++    },
++    {
++      "command": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1 Import -CommandTimeoutSeconds 300",
++      "result": "pass after bootstrap and final artwork refresh",
++      "log": "logs/final-import.log"
++    },
++    {
++      "command": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1 TestScript -ScriptPath res://tests/test_script_parse.gd -CommandTimeoutSeconds 180",
++      "result": "1160 scripts, zero failures",
++      "log": "logs/parser.log"
++    }
++  ],
++  "refreshed_pngs": [
++    {
++      "path": "game/assets/liveries/previews_v2/forklift/aero_cut.png",
++      "sha256": "fec41d99702f4ed19086e1545d07687db5b9413afd11061ffdd7228815d1e4cd"
++    },
++    {
++      "path": "game/assets/liveries/previews_v2/forklift/apex_twin.png",
++      "sha256": "10eb40b09898aa022d65201fe5ef81a2d8ad644e911135a82cba264f61654736"
++    },
++    {
++      "path": "game/assets/liveries/previews_v2/forklift/art_deco.png",
++      "sha256": "636a3f52f00ffc19ca300b703c59f891f20c4e415f3ddfe8d57b496e23ebfaa9"
++    },
++    {
++      "path": "game/assets/liveries/previews_v2/forklift/checker_fade.png",
++      "sha256": "c65cc34fc9fa4332fe233e1fadc92874e12a99d2c561216b6e87bef521c0e006"
++    },
++    {
++      "path": "game/assets/liveries/previews_v2/forklift/chevron.png",
++      "sha256": "d7b34196c6cb2e919ca94da593844c68dee5461c54d2f96015ce7c066ee48a57"
++    },
++    {
++      "path": "game/assets/liveries/previews_v2/forklift/circuit.png",
++      "sha256": "c2584cc0ab064e1e7666818950162d2fafb3eb212984e220b68996e02cba6561"
++    },
++    {
++      "path": "game/assets/liveries/previews_v2/forklift/coastal_wave.png",
++      "sha256": "8753cb02b5a0ae0603e378d4ed628d627783165b39a741595a1022944839d384"
++    },
++    {
++      "path": "game/assets/liveries/previews_v2/forklift/contour.png",
++      "sha256": "60d92c3ba12f1349340217ed27a1fdbbaa9e3e59f68a6ada964df15e99ccf17f"
++    },
++    {
++      "path": "game/assets/liveries/previews_v2/forklift/crossfire.png",
++      "sha256": "fd1b23d22ce01e2a44ef763c06ad390bb91e7627e618a152e0447cc99cc0c706"
++    },
++    {
++      "path": "game/assets/liveries/previews_v2/forklift/delta_wing.png",
++      "sha256": "a8deff79d483b27da93a00288d246a4f3fa92cd3fd54247e9fc5c71d086cb8cb"
++    },
++    {
++      "path": "game/assets/liveries/previews_v2/forklift/digital_camo.png",
++      "sha256": "f67e1a0a397bbfb43fe6da8cfe55e18897b12465b8ec47d0cbde746c073af59b"
++    },
++    {
++      "path": "game/assets/liveries/previews_v2/forklift/endurance.png",
++      "sha256": "d1ceaebf1b165a4420e8a75b2b3e5efe4ee1c6d102c48e44c64a03baf8ffc95e"
++    },
++    {
++      "path": "game/assets/liveries/previews_v2/forklift/flame.png",
++      "sha256": "19f1f29ed142f16fd026f45b3399cdc4f4edf4a5579c6750d289e964100b9cfd"
++    },
++    {
++      "path": "game/assets/liveries/previews_v2/forklift/forged_hex.png",
++      "sha256": "84ccedb175d74556eb52277f1fbbf91ed8b17ae47b35c9adb8a6d3c516f1ecc5"
++    },
++    {
++      "path": "game/assets/liveries/previews_v2/forklift/fracture.png",
++      "sha256": "4cd85f12c8a0388c2a0d62224b153f33580d2be6b807e442b9d26dcd66dec0f2"
++    },
++    {
++      "path": "game/assets/liveries/previews_v2/forklift/graffiti_slash.png",
++      "sha256": "748559e86bb369af5f13e64aa6adbe701988eb112d6c7ff92f140114cb720fa6"
++    },
++    {
++      "path": "game/assets/liveries/previews_v2/forklift/halftone.png",
++      "sha256": "b83f8f1387ce7c6c69fa4b385210d5b4d8020a512f4017b25bf88cf80e4406bb"
++    },
++    {
++      "path": "game/assets/liveries/previews_v2/forklift/heritage_sweep.png",
++      "sha256": "1c997fe2137c251c22db1617a81692f68073f6ad885cdcf1838ac4a518f3d033"
++    },
++    {
++      "path": "game/assets/liveries/previews_v2/forklift/herringbone.png",
++      "sha256": "c81e5fdeae48594db8f276557d729be3020ccba623d6584952cf5a105e49fb60"
++    },
++    {
++      "path": "game/assets/liveries/previews_v2/forklift/ink_brush.png",
++      "sha256": "e2a61c3f3bcdef6fe42594a80a5957a6080065016700bb3774525f42eabe818e"
++    },
++    {
++      "path": "game/assets/liveries/previews_v2/forklift/lightning.png",
++      "sha256": "ba7791145cee474d41e45fd0636640d93175ec3cbe68a5506e432132637ddedf"
++    },
++    {
++      "path": "game/assets/liveries/previews_v2/forklift/midnight.png",
++      "sha256": "18098e9bf811a97185c83824dc5c76d05915cb0ab6306c1ba9b8878e888a32c5"
++    },
++    {
++      "path": "game/assets/liveries/previews_v2/forklift/monza_fan.png",
++      "sha256": "dda6ba1bb1715d4d8004d025b5d92b921f36a2d0b7c0899109b43a4afced3d73"
++    },
++    {
++      "path": "game/assets/liveries/previews_v2/forklift/nightfall.png",
++      "sha256": "bf430d89142af3b490fc2104ef74715cae5d45a498b593305be380b36cb1aae7"
++    },
++    {
++      "path": "game/assets/liveries/previews_v2/forklift/offset_gt.png",
++      "sha256": "3ed9ce809631be18ab2c08a6123e5196c539ad709eaf3249071d9d2a6bcdea1f"
++    },
++    {
++      "path": "game/assets/liveries/previews_v2/forklift/op_art.png",
++      "sha256": "140e24c55e3208516ce0d884d16e9c66f76d8a9a381d6c881d2227b2cc1cb979"
++    },
++    {
++      "path": "game/assets/liveries/previews_v2/forklift/orbit.png",
++      "sha256": "2e7a25634315ee2e2269a6b23c726378f23e6713d23908921f48f40698f6dd48"
++    },
++    {
++      "path": "game/assets/liveries/previews_v2/forklift/paint_splash.png",
++      "sha256": "efcdd9e74a1e443ae4fbcdc861d2ac1eae6babd7ff45b19fdc89b7fa186a4c51"
++    },
++    {
++      "path": "game/assets/liveries/previews_v2/forklift/paisley_drift.png",
++      "sha256": "98daab0626c91351475c54d093c50bd308c40e884fa3e508b140da3fd79fdfda"
++    },
++    {
++      "path": "game/assets/liveries/previews_v2/forklift/petal_drift.png",
++      "sha256": "dcd5db150fe5e500189b1d32fc66f25d31499cc2495ceb0b73640d6f2029277c"
++    },
++    {
++      "path": "game/assets/liveries/previews_v2/forklift/pinstripe_club.png",
++      "sha256": "2523129fd7c7aa0822a7bf0aab28e948281ad317fbbf847abbe111dbced900ce"
++    },
++    {
++      "path": "game/assets/liveries/previews_v2/forklift/prism.png",
++      "sha256": "ab7431fae65b957a09bb55d1065c3cb87ac2be963d2d17e0072abf9aa27cc3cf"
++    },
++    {
++      "path": "game/assets/liveries/previews_v2/forklift/pulse.png",
++      "sha256": "fea78cd325562781f9a0bd402c1cb97f600144c7f906074e06d0b1b8e26dec7d"
++    },
++    {
++      "path": "game/assets/liveries/previews_v2/forklift/rally_blocks.png",
++      "sha256": "2b7e369d2337ee55727bec6c9434c3150e39423e2fbbb4b9b0bedb8a509902fe"
++    },
++    {
++      "path": "game/assets/liveries/previews_v2/forklift/ribbon_weave.png",
++      "sha256": "67347f0a6006f10f4e365908b473d3eaf723b5e5cb460a595af8f26dcede3f22"
++    },
++    {
++      "path": "game/assets/liveries/previews_v2/forklift/saber.png",
++      "sha256": "6f30d3b4ff27de9a1c8433be09a8e9816c1b35b0e258ef68a0e191492cc4ed13"
++    },
++    {
++      "path": "game/assets/liveries/previews_v2/forklift/scale_shift.png",
++      "sha256": "a1457b52c23185ab771660f1879983512b19ba4ef489b270d10da541d412fd47"
++    },
++    {
++      "path": "game/assets/liveries/previews_v2/forklift/scallop.png",
++      "sha256": "e76d8a2f60531510170ade914b0a9955987f6f7fcd9854cd25545731fc505b9c"
++    },
++    {
++      "path": "game/assets/liveries/previews_v2/forklift/split_grid.png",
++      "sha256": "fbde11526e62eb85e1300bc3925b494031982707b17827d3443bbc26d190491d"
++    },
++    {
++      "path": "game/assets/liveries/previews_v2/forklift/sunburst.png",
++      "sha256": "901d45197680b6acbad5fd507e7c86d8479212b2075e711b7a9e358c69f9fb43"
++    },
++    {
++      "path": "game/assets/liveries/previews_v2/forklift/tiger.png",
++      "sha256": "741248bf0df8dbcf23f57b424815415a03788ce18aa75aa79ad9c2f928131842"
++    },
++    {
++      "path": "game/assets/liveries/previews_v2/forklift/topo_rally.png",
++      "sha256": "b09a690788741c8f1838d0ca23379959c4aa0b3a4e57d32154d12d98fbc1b2d1"
++    },
++    {
++      "path": "game/assets/liveries/previews_v2/forklift/tribal_crest.png",
++      "sha256": "4134f23a297ac44d497869d3fcb671dea276cc9c8697e51802b6ee3c90e3e920"
++    },
++    {
++      "path": "game/assets/liveries/previews_v2/forklift/tribal_fang.png",
++      "sha256": "75aee86d0cb6d4d4997fd52542bba5b47fefd1f7b3ff75499fde501156f52535"
++    },
++    {
++      "path": "game/assets/liveries/previews_v2/forklift/tribal_flow.png",
++      "sha256": "07e8451a3fd745bea190380250b7a4177c00ef68a4da4868df4960c69150c533"
++    },
++    {
++      "path": "game/assets/liveries/previews_v2/forklift/tribal_surge.png",
++      "sha256": "8b8a70dfcd3eae0d9daccf8909c5a6877513764260e79b1c3efac6e367d517ae"
++    },
++    {
++      "path": "game/assets/liveries/previews_v2/forklift/tribal_thorn.png",
++      "sha256": "fdc06828a514f221ec214b83ca416d53d9be1bddb51ec39ae68fe796fef04fa0"
++    },
++    {
++      "path": "game/assets/liveries/previews_v2/forklift/tribal_wing.png",
++      "sha256": "b24d47e07b82d7c05585303d98cd79bd0818a2784ebb82edc7d29be58f445554"
++    },
++    {
++      "path": "game/assets/liveries/previews_v2/forklift/velocity.png",
++      "sha256": "1bb0cbc37d4d0bc7f0d55e103ee9edfb475ddef3874c09b84d9e6e31a5b4f12d"
++    },
++    {
++      "path": "game/assets/menu/forklift_illustration_v1.png",
++      "sha256": "553e996df0b167b9f0596e7f3093a06c8b3bb594e0e9916a1cc036d34be7c208"
++    }
++  ],
++  "sources_sha256": {
++    "game/vehicle/forklift_model.gd": "f9c19bbb31bbeffd7f8f3fc3977afcb2d4105ca0559328e7eeaa5b315a2a45e4",
++    "game/resources/cars/forklift.tres": "39e48f40bea9915fd14702dca41c25b346cc1204435c176890cb942925feb89f",
++    "game/vehicle/vehicle_simulation.gd": "8dd708534e7c325f29c2c97047b9f55bed364e3a02409f7c973867021de690f4",
++    "game/vehicle/car_visual.gd": "c2205a6c6e78341071a1b58033e79cb1785e827f521713d2f428cba642d113ab",
++    "game/vehicle/livery_catalog.gd": "42b3b48cb576946cbd9af7445219a3fc8f508e18c3903cf823cd2d59018365da",
++    "game/vehicle/livery_finish.gdshaderinc": "fe44f142fa828e3cdaba8d94328f2f26e55fd6c81818ae5721f9673b663188b5",
++    "game/vehicle/vehicle_models.gd": "fc35c51b9c23d88a1ffcb15662c29b7f113939cee3ff8db2e63d4a70bc003e48",
++    "game/tests/test_forklift_model_finish.gd": "0abead0a87e9a0d4531ad185d0a7c1deec42600e4f711a9b49c739cb6c21b752",
++    "game/tests/review_forklift_model.gd": "370db944e9a6e25ae00bb29d33a44522cd7f63de9906a4dd85b6feef3dc01fe7"
++  },
++  "initial_failures": [
++    "Exact saved pre-fix model: 43 checks, 18 failures; baseline retained.",
++    "New symbol font unimported: headless test and normal Import abort on preload; logs retained.",
++    "Exact pinned executable used once directly with --headless --path game --editor --import so font import can complete despite initial autoload errors; exit 1, not a passing validation. No source/wrapper modification. Then normal wrapper checks pass.",
++    "Initial finite segment lip ray: 95 checks, 1 failure; first Compatibility sample adjustment: 97 checks, 2 failures. Normalized ray avoids small-triangle determinant scaling, retains finite length and open-bore/lip requirements; final both variants pass."
++  ],
++  "bootstrap_command": "& 'C:/apps/Godot 4.7.2/Godot_v4.7.2-stable_win64_console.exe' --headless --path 'C:/Codes/Godot/Beat my track/game' --editor --import",
++  "limitations": [
++    "No physical-device or attachment check",
++    "No APK, purchase, live mutation, deployment or owner-process restart",
++    "No device performance certification",
++    "Owner/device appearance and frame-pacing acceptance remain"
++  ],
++  "checkpoint": {
++    "text": "checkpoint.patch",
++    "native_assets": "checkpoint-assets.zip",
++    "base": "build/forklift-model-fixes/checkpoint-base",
++    "git_apply_check": true
++  }
++}

@@ -49,6 +49,7 @@ func tick(app: Node) -> void:
 	if not force and retained(app).retained_bytes <= RETAINED_BUDGET: _finished(app,retry,force); return
 	NativeTrackVisual.trim_editor_cache()
 	if force:
+		app.editor_session.primed = {}
 		HISTORY.trim(app.history,app.redo_history,PRESSURE_HISTORY)
 		if is_instance_valid(app.canvas): app.canvas.trim_cache()
 	# Roadside runs can also be prepared by a population worker. Defer this
@@ -65,7 +66,7 @@ func _finished(app: Node, retry: bool, force: bool) -> void:
 
 static func retained(app: Node) -> Dictionary:
 	var roads: Dictionary = ROADS.residency()
-	var history: int = HISTORY.bytes_used([app.history,app.redo_history,app.editor_gesture_history,app.editor_gesture_redo])
+	var history: int = HISTORY.bytes_used([app.history,app.redo_history,app.editor_gesture_history,app.editor_gesture_redo,[app.editor_session.primed] if not app.editor_session.primed.is_empty() else []])
 	var compiled: int = 0
 	if app.editor_preview_thread == null:
 		for entry: Dictionary in app.editor_compiled_cache: compiled += int(entry.bytes)

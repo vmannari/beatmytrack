@@ -17,6 +17,9 @@ static func build(car: CarVisual, id: String) -> void:
 	var trim: StandardMaterial3D = VisualGeometry.material(Color("182126"))
 	var glass: StandardMaterial3D = VisualGeometry.material(Color("304957"))
 	match id:
+		"hovercraft":
+			preload("res://vehicle/hovercraft_model.gd").build(car)
+			return
 		"electric":
 			preload("res://vehicle/electric_car_model.gd").build(car)
 			return

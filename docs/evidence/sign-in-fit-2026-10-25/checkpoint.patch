@@ -1,0 +1,282 @@
+diff --git a/game/core/app.gd b/game/core/app.gd
+--- a/game/core/app.gd
++++ b/game/core/app.gd
+@@ -1379,31 +1379,32 @@
+ 	root_ui.add_child(background)
+ 	var margin := MarginContainer.new()
+ 	MenuStyle.fill(margin)
+-	for side: String in ["left", "right", "top", "bottom"]: margin.add_theme_constant_override("margin_" + side, 24)
++	for side: String in ["left", "right", "top", "bottom"]: margin.add_theme_constant_override("margin_" + side, 16)
+ 	root_ui.add_child(margin)
+-	var scroll := ScrollContainer.new()
+-	scroll.size_flags_vertical = Control.SIZE_EXPAND_FILL
+-	scroll.horizontal_scroll_mode = ScrollContainer.SCROLL_MODE_DISABLED
+-	margin.add_child(scroll)
+ 	var center := CenterContainer.new()
+ 	center.size_flags_vertical = Control.SIZE_EXPAND_FILL
+ 	center.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+-	scroll.add_child(center)
++	margin.add_child(center)
+ 	var column := VBoxContainer.new()
+-	column.add_theme_constant_override("separation", 20)
++	column.add_theme_constant_override("separation", 8)
+ 	center.add_child(column)
+ 	var brand_space := Control.new()
+-	brand_space.custom_minimum_size.y = 94
++	brand_space.custom_minimum_size.y = 64
+ 	column.add_child(brand_space)
+ 	var brand := MenuBrand.new()
+-	brand.scale = Vector2(1.5, 1.5)
+ 	brand_space.add_child(brand)
+-	brand_space.resized.connect(func() -> void: brand.position = Vector2((brand_space.size.x - 294) * 0.5, 0))
++	brand_space.resized.connect(func() -> void: brand.position = Vector2((brand_space.size.x - 196) * 0.5, 0))
+ 	var panel := preload("res://ui/account_panel.gd").new()
+ 	panel.account = online
+-	panel.custom_minimum_size.x = 520
++	panel.custom_minimum_size.x = 600
+ 	panel.continue_requested.connect(_continue_from_account)
+ 	column.add_child(panel)
++	# Extra status copy takes priority over decorative space above the card.
++	var fit_brand := func() -> void:
++		brand_space.visible = panel.get_combined_minimum_size().y + 72 <= root_ui.size.y - 32
++	panel.minimum_size_changed.connect(fit_brand)
++	root_ui.resized.connect(fit_brand)
++	fit_brand.call_deferred()
+ 
+ func _continue_from_account() -> void:
+ 	_open_rivalry()
+diff --git a/game/ui/account_panel.gd b/game/ui/account_panel.gd
+--- a/game/ui/account_panel.gd
++++ b/game/ui/account_panel.gd
+@@ -30,7 +30,7 @@
+ 	return label
+ 
+ func _ready() -> void:
+-	var style := MenuStyle.box(Color(0.045, 0.078, 0.12, 0.91), 28)
++	var style := MenuStyle.box(Color(0.045, 0.078, 0.12, 0.91), 16)
+ 	style.set_corner_radius_all(22)
+ 	style.border_color = Color(0.68, 0.77, 0.83, 0.40)
+ 	style.set_border_width_all(1)
+@@ -38,26 +38,23 @@
+ 	style.shadow_size = 16
+ 	add_theme_stylebox_override("panel", style)
+ 	var column := VBoxContainer.new()
+-	column.add_theme_constant_override("separation", 14)
++	column.add_theme_constant_override("separation", 8)
+ 	add_child(column)
+-	title = centered_label("Sign in", 42)
++	title = centered_label("Sign in", 32)
+ 	column.add_child(title)
+ 	subtitle = centered_label("Your racing profile. Your next personal best.", 20, true)
+ 	column.add_child(subtitle)
+ 	column.add_child(preload("res://ui/language_picker.gd").new())
+-	var space := Control.new()
+-	space.custom_minimum_size.y = 6
+-	column.add_child(space)
+ 	google_button = preload("res://ui/google_sign_in_button.gd").new()
+ 	google_button.pressed.connect(account.sign_in_google)
+ 	google_button.name = "GoogleSignIn"
+ 	column.add_child(google_button)
+-	google_button.custom_minimum_size.y = 80
++	google_button.custom_minimum_size.y = 60
+ 	google_status = centered_label("Google sign-in is awaiting setup.", 16, true)
+ 	column.add_child(google_status)
+ 	development_button = MenuStyle.button("Development · Beat My Track", account.sign_in_developer)
+ 	development_button.name = "DevelopmentSignIn"
+-	development_button.custom_minimum_size = Vector2(360, 60)
++	development_button.custom_minimum_size = Vector2(360, 54)
+ 	development_button.size_flags_horizontal = Control.SIZE_SHRINK_CENTER
+ 	development_button.add_theme_font_override("font", MenuStyle.BODY)
+ 	var dev_style := MenuStyle.box(Color(0.25, 0.30, 0.38, 0.68), 12)
+@@ -137,24 +134,9 @@
+ 
+ func _confirm_deletion() -> void:
+ 	if account.busy or not account.client.signed_in(): return
+-	var dialog := ConfirmationDialog.new()
+-	dialog.name = "DeleteAccountConfirmation"
+-	dialog.title = "Delete account"
+-	dialog.dialog_text = ""
+-	var copy: Label = MenuStyle.label("Your sign-in identity, name, country and private online data will be removed.\n\nPublished tracks and historical standings stay under Removed account.\nLocal tracks, car condition and cosmetics stay on this device.\nSigning in again creates a separate account.",18,true)
+-	copy.name = "DeleteAccountCopy"
+-	copy.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+-	copy.custom_minimum_size.x = 500
+-	dialog.add_child(copy)
+-	dialog.ok_button_text = "Delete account permanently"
+-	dialog.cancel_button_text = "Keep account"
+-	dialog.confirmed.connect(account.delete_account.bind(str(account.client.player.get("id","")),account.client.base_url()))
+-	dialog.confirmed.connect(dialog.queue_free)
+-	dialog.canceled.connect(dialog.queue_free)
++	var dialog := preload("res://ui/account_deletion_dialog.gd").new()
+ 	add_child(dialog)
+-	preload("res://ui/popup_style.gd").watch(dialog)
+-	dialog.popup_centered(Vector2i(620,440))
+-	dialog.get_cancel_button().grab_focus()
++	dialog.open_for(account)
+ 
+ func _country_changed() -> void:
+ 	country_save.disabled = account.busy or country_picker.country_code == str(account.client.player.get("country_code",""))
+diff --git a/AGENTS.md b/AGENTS.md
+--- a/AGENTS.md
++++ b/AGENTS.md
+@@ -1,3 +1,8 @@
++<!-- SIGN-IN-FIT-20261025 -->
++## Sign-in card window fit (2026-10-25)
++2026-10-25 SIF01-SIF02/R01/Q01: Sign-in card fits without scrolling: compact 600-unit card, preserved actions/language/privacy, and a decorative brand that yields space to longer status messages. Native geometry passes 763 headless / 760 Compatibility / 763 desktop Mobile checks across four windows and nine states; retained message/resize checks, localization60 and App141 pass. Initial baseline21 overflows and intermediate fixture/logo failures retained. Native views, commands, source hashes and task-only patch: docs/SIGN_IN_FIT_2026_10_25.md and docs/evidence/sign-in-fit-2026-10-25/report.json. Client reload and owner/device acceptance remain; no device attachment check/test, APK, real authentication/purchase, live mutation, deployment or owner-process restart. Concurrent work preserved.
++<!-- /SIGN-IN-FIT-20261025 -->
++
+ <!-- ELECTRIC-REFINEMENT-20261025 -->
+ ## Strict electric one-pedal and model correction override (2026-10-25)
+ The owner rejects the previous electric model and requests serious visual improvement, only one accelerator, no handbrake, stronger immediate regeneration to a complete stop, and D/R in the former brake-pedal position. This supersedes electric-1's explicit brake/reverse and handbrake behavior. ER01-ER03/R01/G01/Q01: Rebuilt flowing coachwork/fitted glazing, recessed projector optics and formed split wheels retain Compact finishes; 470 prepared v2 meshes replace v1, with all49 photos refreshed. Physics0.68/electric-2 pins the single accelerator/D/R semantics; full release11m/s? stops72km/h in1.8s/17.842m and holds exact zero. Moving D/R changes are rejected; every method/handedness uses the saved brake position and no gas hit padding; restart restores D. Reverse direction commands cannot create false brake smoke or powered surface sound. Focused63+60, native UI59Compatibility/59desktopMobile, model28+28, six-car exact tick equivalence, all-car143five-lap/handling88/rewind61/App141/controls407/surface36/parser1137 and backend72pass/2explicit deselections pass. Initial fixture/import/cleanup/layout failures are retained. Native first-use desktop hitches remain recorded. Evidence, commands and scoped Git-checked checkpoint: docs/ELECTRIC_REFINEMENT_2026_10_25.md and docs/evidence/electric-refinement-2026-10-25/report.json. Reload, matching online rollout and owner/device model/feel/cost acceptance remain; no AAA certification, device attachment check/test, APK, live mutation, purchase, deployment or owner-process restart. Concurrent work preserved.
+diff --git a/DEVELOPMENT_STATUS.md b/DEVELOPMENT_STATUS.md
+--- a/DEVELOPMENT_STATUS.md
++++ b/DEVELOPMENT_STATUS.md
+@@ -1,3 +1,7 @@
++<!-- SIGN-IN-FIT-20261025 -->
++2026-10-25 SIF01-SIF02/R01/Q01: Sign-in card fits without scrolling: compact 600-unit card, preserved actions/language/privacy, and a decorative brand that yields space to longer status messages. Native geometry passes 763 headless / 760 Compatibility / 763 desktop Mobile checks across four windows and nine states; retained message/resize checks, localization60 and App141 pass. Initial baseline21 overflows and intermediate fixture/logo failures retained. Native views, commands, source hashes and task-only patch: docs/SIGN_IN_FIT_2026_10_25.md and docs/evidence/sign-in-fit-2026-10-25/report.json. Client reload and owner/device acceptance remain; no device attachment check/test, APK, real authentication/purchase, live mutation, deployment or owner-process restart. Concurrent work preserved.
++<!-- /SIGN-IN-FIT-20261025 -->
++
+ <!-- ELECTRIC-REFINEMENT-20261025 -->
+ ## Strict electric one-pedal and model correction override (2026-10-25)
+ The owner rejects the previous electric model and requests serious visual improvement, only one accelerator, no handbrake, stronger immediate regeneration to a complete stop, and D/R in the former brake-pedal position. This supersedes electric-1's explicit brake/reverse and handbrake behavior. ER01-ER03/R01/G01/Q01: Rebuilt flowing coachwork/fitted glazing, recessed projector optics and formed split wheels retain Compact finishes; 470 prepared v2 meshes replace v1, with all49 photos refreshed. Physics0.68/electric-2 pins the single accelerator/D/R semantics; full release11m/s? stops72km/h in1.8s/17.842m and holds exact zero. Moving D/R changes are rejected; every method/handedness uses the saved brake position and no gas hit padding; restart restores D. Reverse direction commands cannot create false brake smoke or powered surface sound. Focused63+60, native UI59Compatibility/59desktopMobile, model28+28, six-car exact tick equivalence, all-car143five-lap/handling88/rewind61/App141/controls407/surface36/parser1137 and backend72pass/2explicit deselections pass. Initial fixture/import/cleanup/layout failures are retained. Native first-use desktop hitches remain recorded. Evidence, commands and scoped Git-checked checkpoint: docs/ELECTRIC_REFINEMENT_2026_10_25.md and docs/evidence/electric-refinement-2026-10-25/report.json. Reload, matching online rollout and owner/device model/feel/cost acceptance remain; no AAA certification, device attachment check/test, APK, live mutation, purchase, deployment or owner-process restart. Concurrent work preserved.
+diff --git a/docs/PHASE_0_PLAN.md b/docs/PHASE_0_PLAN.md
+--- a/docs/PHASE_0_PLAN.md
++++ b/docs/PHASE_0_PLAN.md
+@@ -1,3 +1,7 @@
++<!-- SIGN-IN-FIT-20261025 -->
++2026-10-25 SIF01-SIF02/R01/Q01: Sign-in card fits without scrolling: compact 600-unit card, preserved actions/language/privacy, and a decorative brand that yields space to longer status messages. Native geometry passes 763 headless / 760 Compatibility / 763 desktop Mobile checks across four windows and nine states; retained message/resize checks, localization60 and App141 pass. Initial baseline21 overflows and intermediate fixture/logo failures retained. Native views, commands, source hashes and task-only patch: docs/SIGN_IN_FIT_2026_10_25.md and docs/evidence/sign-in-fit-2026-10-25/report.json. Client reload and owner/device acceptance remain; no device attachment check/test, APK, real authentication/purchase, live mutation, deployment or owner-process restart. Concurrent work preserved.
++<!-- /SIGN-IN-FIT-20261025 -->
++
+ <!-- ELECTRIC-REFINEMENT-20261025 -->
+ ## Strict electric one-pedal and model correction override (2026-10-25)
+ The owner rejects the previous electric model and requests serious visual improvement, only one accelerator, no handbrake, stronger immediate regeneration to a complete stop, and D/R in the former brake-pedal position. This supersedes electric-1's explicit brake/reverse and handbrake behavior. ER01-ER03/R01/G01/Q01: Rebuilt flowing coachwork/fitted glazing, recessed projector optics and formed split wheels retain Compact finishes; 470 prepared v2 meshes replace v1, with all49 photos refreshed. Physics0.68/electric-2 pins the single accelerator/D/R semantics; full release11m/s? stops72km/h in1.8s/17.842m and holds exact zero. Moving D/R changes are rejected; every method/handedness uses the saved brake position and no gas hit padding; restart restores D. Reverse direction commands cannot create false brake smoke or powered surface sound. Focused63+60, native UI59Compatibility/59desktopMobile, model28+28, six-car exact tick equivalence, all-car143five-lap/handling88/rewind61/App141/controls407/surface36/parser1137 and backend72pass/2explicit deselections pass. Initial fixture/import/cleanup/layout failures are retained. Native first-use desktop hitches remain recorded. Evidence, commands and scoped Git-checked checkpoint: docs/ELECTRIC_REFINEMENT_2026_10_25.md and docs/evidence/electric-refinement-2026-10-25/report.json. Reload, matching online rollout and owner/device model/feel/cost acceptance remain; no AAA certification, device attachment check/test, APK, live mutation, purchase, deployment or owner-process restart. Concurrent work preserved.
+diff --git a/game/tests/capture_sign_in_fit.gd b/game/tests/capture_sign_in_fit.gd
+--- /dev/null
++++ b/game/tests/capture_sign_in_fit.gd
+@@ -0,0 +1,84 @@
++extends SceneTree
++## Native sign-in captures and geometry checks; persistence uses fresh fixtures.
++var app: Node
++var failures: int = 0
++var checks: int = 0
++var output: String = ""
++func _initialize() -> void: run.call_deferred()
++func run() -> void:
++	OS.set_environment("BMT_API_URL", "")
++	for argument: String in OS.get_cmdline_user_args():
++		if argument.begins_with("--output="): output = argument.trim_prefix("--output=")
++	var folder: String = "user://sign_in_fit_" + TrackLibrary.unique_id()
++	DirAccess.make_dir_recursive_absolute(folder)
++	app = load("res://core/app.tscn").instantiate()
++	app.records = LocalRecords.new(folder.path_join("records.json"))
++	app.library = TrackLibrary.new(folder.path_join("tracks"))
++	app.cloud_root_override = folder.path_join("cloud")
++	root.add_child(app)
++	var deadline: int = Time.get_ticks_msec() + 20000
++	while not app.startup_complete and Time.get_ticks_msec() < deadline: await process_frame
++	for dimensions: Vector2i in [Vector2i(1280,720), Vector2i(960,540), Vector2i(1600,720), Vector2i(800,600)]:
++		root.size = dimensions
++		for state: String in ["offline", "google", "setup", "retry", "waiting", "name", "country", "account", "long-error"]:
++			var account: Node = app.online
++			account.client._access_token = "fixture" if state in ["name", "country", "account"] else ""
++			account.client.player = {"id":"fixture", "display_name":"Fit fixture", "needs_username":state == "name", "country_code":"" if state in ["name", "country"] else "FI"}
++			account.configured = state != "offline"
++			account.capabilities = {"development_auth":state != "google", "google_browser_configured":state != "setup"}
++			account.retry_available = state == "retry"
++			account.waiting_for_google = state == "waiting"
++			account.message = "Online sign-in is not configured yet." if state == "offline" else "Could not connect. Check your connection and try again." if state == "retry" else "Complete sign-in in your browser, then return here." if state == "waiting" else ""
++			if state == "long-error":
++				account.retry_available = true
++				account.message = "Could not connect. Check your connection and try again. Your sign-in could not be completed. Please return to the game and retry the connection."
++			app._show_screen("account")
++			for _frame: int in range(10): await process_frame
++			var panel: Control = app.root_ui.find_child("GoogleSignIn", true, false).get_parent().get_parent()
++			var bounds: Rect2 = root.get_visible_rect()
++			var fits: bool = bounds.grow(-16).encloses(panel.get_global_rect())
++			checks += 1
++			if not fits: failures += 1
++			print("FIT %dx%d %s viewport=%s card=%s min=%s fits=%s" % [dimensions.x,dimensions.y,state,bounds,panel.get_global_rect(),panel.get_combined_minimum_size(),fits])
++			for child: Node in panel.find_children("*", "Control", true, false):
++				var control := child as Control
++				if not control.is_visible_in_tree(): continue
++				checks += 1
++				if not panel.get_global_rect().encloses(control.get_global_rect()):
++					failures += 1
++					print("FAIL: card clips ",control.name," ", control.get_global_rect())
++			var ancestor: Node = panel.get_parent()
++			while ancestor != app.root_ui:
++				checks += 1
++				if ancestor is ScrollContainer:
++					failures += 1
++					print("FAIL: sign-in still scrolls")
++				ancestor = ancestor.get_parent()
++			if not output.is_empty() and DisplayServer.get_name() != "headless":
++				DirAccess.make_dir_recursive_absolute(output)
++				await RenderingServer.frame_post_draw
++				root.get_texture().get_image().save_png(output.path_join("%s-%dx%d.png" % [state,dimensions.x,dimensions.y]))
++	# Provider responses and window changes must refit the retained card too.
++	root.size = Vector2i(960,540)
++	app.online.client._access_token = ""
++	app.online.client.player = {}
++	app._show_screen("account")
++	var retained: Control = app.root_ui.find_child("GoogleSignIn", true, false).get_parent().get_parent()
++	for message: String in ["Could not connect. Check your connection and try again. Your sign-in could not be completed. Please return to the game and retry the connection.", ""]:
++		app.online.message = message
++		app.online.changed.emit()
++		for _frame: int in range(10): await process_frame
++		checks += 1
++		if not is_instance_valid(retained) or not root.get_visible_rect().grow(-16).encloses(retained.get_global_rect()):
++			failures += 1
++			print("FAIL: retained sign-in does not refit after provider response")
++	root.size = Vector2i(800,600)
++	for _frame: int in range(10): await process_frame
++	checks += 1
++	if not root.get_visible_rect().grow(-16).encloses(retained.get_global_rect()):
++		failures += 1
++		print("FAIL: retained sign-in does not refit after resize")
++	app.queue_free()
++	await process_frame
++	print("SIGN_IN_FIT: %d checks, %d failures" % [checks,failures])
++	quit(1 if failures else 0)
+diff --git a/docs/SIGN_IN_FIT_2026_10_25.md b/docs/SIGN_IN_FIT_2026_10_25.md
+--- /dev/null
++++ b/docs/SIGN_IN_FIT_2026_10_25.md
+@@ -0,0 +1,39 @@
++# Sign-in card fits the window — 2026-10-25
++
++SIF01: Fit the complete sign-in card within the window without scrolling.
++SIF02: Keep provider, Guest, language, privacy, retry and account setup controls visible.
++R01/Q01: Verify actual native layouts and retain a patch containing only this task.
++
++The screen now centers a 600-unit-wide card directly inside the window margins. The card uses 16-unit padding, eight-unit gaps, a 32-unit heading and the existing full-size action targets. Google artwork stays proportional at a 60-unit height. The decorative brand above the card uses its native size and hides when longer status copy needs the space. Provider responses and window resizing recompute that decision. All existing authentication and privacy behavior remains in its existing controllers.
++
++Changed runtime files: `game/core/app.gd` (account composition only) and `game/ui/account_panel.gd` (spacing and dimensions only). Existing uncommitted localization and other work is preserved. `game/tests/capture_sign_in_fit.gd` captures isolated native views and checks the actual card/control rectangles, absence of scrolling ancestors and retained response/resize behavior. Project summaries and this report record the change. The runner also refreshes its established build identity files; these are excluded from the task patch.
++
++The original native diagnostic found 21 overflowing cards in 32 state/window combinations. The offline card was 712 units high, beginning at y=138 in a 720-unit viewport. The corrected offline card is 549 units high and begins at y=121. The retry card is 611 units high; the longer error fixture is 661 units high and stays inside the window with the brand hidden. Every checked card has at least 16 logical units of window clearance.
++
++Actual commands from the repository root used the pinned 4.7.2 standard console build:
++
++```powershell
++powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1 -Action TestScript -ScriptPath res://tests/capture_sign_in_fit.gd
++powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1 -Action TestScript -ScriptPath res://tests/capture_sign_in_fit.gd -Graphical -RenderingMethod gl_compatibility -TestArgument '--output=C:/Codes/Godot/Beat my track/docs/evidence/sign-in-fit-2026-10-25/final-compatibility'
++powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1 -Action TestScript -ScriptPath res://tests/capture_sign_in_fit.gd -Graphical -RenderingMethod mobile -TestArgument '--output=C:/Codes/Godot/Beat my track/docs/evidence/sign-in-fit-2026-10-25/mobile'
++powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1 -Action TestScript -ScriptPath res://tests/test_localization.gd
++powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1 -Action TestApp
++git diff --check -- game/core/app.gd game/ui/account_panel.gd
++git apply --reverse --check docs/evidence/sign-in-fit-2026-10-25/checkpoint.patch
++```
++
++The final geometry diagnostic passed 763 checks headless and 763 on desktop Mobile. Native Compatibility passed 760 checks before the final three retained response/resize checks were added to the diagnostic; runtime sources were identical. Four window sizes (1280×720, 960×540, 1600×720 and 800×600), nine account states and all visible control bounds were checked. Existing localization passed 60 checks; the existing app flow passed 141. These are native desktop results, not physical-device results.
++
++Initial setup attempts encountered sandbox certificate/directory access restrictions and PowerShell execution-policy restrictions; the supported runner with process-local execution-policy bypass and reviewed native execution completed. An intermediate diagnostic reported 39 failures: 36 incorrectly counted the hidden country-selector popup's own scroll list; three exposed the logo's comparison against an expanding container instead of the actual available window height. The diagnostic now checks the card's ancestors, and the implementation compares against the window. The original inset/containment requirements were retained. Logs remain in the evidence folder.
++
++Native views:
++
++- [Before, 960×540](evidence/sign-in-fit-2026-10-25/before/offline-960x540.png)
++- [Complete card, 960×540](evidence/sign-in-fit-2026-10-25/final-compatibility/offline-960x540.png)
++- [Retry state, 960×540](evidence/sign-in-fit-2026-10-25/final-compatibility/retry-960x540.png)
++- [Long error, 960×540](evidence/sign-in-fit-2026-10-25/final-compatibility/long-error-960x540.png)
++- [Desktop Mobile, 960×540](evidence/sign-in-fit-2026-10-25/mobile/offline-960x540.png)
++
++Machine-readable results, source hashes, retained failures and the task-only review patch are in `docs/evidence/sign-in-fit-2026-10-25/report.json` and `checkpoint.patch`. The patch is checked in reverse against the working files without staging or reverting concurrent work.
++
++Remaining acceptance: reload the client/view and review the layout and touch interaction on the owner's device. The existing canvas stretch establishes at least a 720-unit logical height for landscape windows. Arbitrarily long future messages or unapproved translations are outside the measured fixtures. No device attachment check or physical-device test was performed. No APK, deployment, real sign-in/purchase, owner-process restart or live backend mutation was performed.

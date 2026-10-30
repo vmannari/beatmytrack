@@ -1,0 +1,333 @@
+--- a/game/ui/popup_style.gd
++++ b/game/ui/popup_style.gd
+@@ -12,6 +12,8 @@
+ var header_action: Control
+ var body: VBoxContainer
+ var message: Label
++var message_scroll: ScrollContainer
++var message_padding: StyleBoxEmpty
+ var shade_layer: CanvasLayer
+ var shade: ColorRect
+ var prior_focus: WeakRef
+@@ -63,6 +65,7 @@
+ 	window.about_to_popup.connect(_opening)
+ 	window.visibility_changed.connect(_visibility_changed)
+ 	window.size_changed.connect(_layout.call_deferred)
++	window.get_parent().get_viewport().size_changed.connect(_layout.call_deferred)
+ 	window.borderless = true
+ 	window.transparent_bg = true
+ 	window.transparent = true
+@@ -73,6 +76,7 @@
+ 	if message != null and message.text != window.dialog_text:
+ 		message.text = window.dialog_text
+ 		message.visible = not window.dialog_text.is_empty()
++		_layout.call_deferred()
+ 
+ func _prepare() -> void:
+ 	if prepared: return
+@@ -81,7 +85,7 @@
+ 	if not forms:
+ 		# Avoid zero-width wrapping expanding a message window before first layout.
+ 		window.wrap_controls = false
+-		window.min_size = Vector2i(820,380)
++		window.min_size = Vector2i.ZERO
+ 		window.size = Vector2i(820,380)
+ 	var content: Array[Control] = []
+ 	if not window is FileDialog:
+@@ -90,13 +94,22 @@
+ 		body = VBoxContainer.new()
+ 		body.name = "PopupBody"
+ 		body.add_theme_constant_override("separation",14)
+-		window.add_child(body)
++		if forms:
++			window.add_child(body)
++		else:
++			message_scroll = ScrollContainer.new()
++			message_scroll.name = "PopupMessageScroll"
++			message_scroll.horizontal_scroll_mode = ScrollContainer.SCROLL_MODE_DISABLED
++			window.add_child(message_scroll)
++			message_scroll.add_child(body)
++			body.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+ 		message = MenuStyle.label(window.dialog_text,19,true)
+ 		message.name = "PopupMessage"
+ 		message.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+-		if not window.dialog_text.is_empty(): message.custom_minimum_size.x = 380
++		if forms and not window.dialog_text.is_empty(): message.custom_minimum_size.x = 380
+ 		message.visible = not window.dialog_text.is_empty()
+ 		body.add_child(message)
++		if not forms: message.minimum_size_changed.connect(_layout.call_deferred)
+ 		for control: Control in content: control.reparent(body)
+ 		window.get_label().hide()
+ 		window.dialog_autowrap = true
+@@ -106,6 +119,7 @@
+ 	padding.content_margin_top = 88 if forms else 128
+ 	padding.content_margin_bottom = 24
+ 	window.add_theme_stylebox_override("panel",padding)
++	if not forms: message_padding = padding
+ 	window.add_theme_constant_override("buttons_min_height",56)
+ 	window.add_theme_constant_override("buttons_min_width",110)
+ 	window.add_theme_constant_override("buttons_separation",18)
+@@ -196,6 +210,7 @@
+ 
+ func _layout() -> void:
+ 	if not prepared or not is_instance_valid(window) or not window.is_inside_tree(): return
++	if not forms: _layout_message()
+ 	var extent: Vector2 = Vector2(window.size)
+ 	art.size = extent
+ 	(art.material as ShaderMaterial).set_shader_parameter("panel_size",extent)
+@@ -204,14 +219,44 @@
+ 	if is_instance_valid(header_action):
+ 		header_action.position = close_button.position-Vector2(58,0)
+ 		header_action.size = Vector2(52,52)
+-	header.position = Vector2(86,24) if forms else Vector2(340,42)
+-	header.size = Vector2(maxf(120,extent.x-header.position.x-76),60)
++	if forms:
++		header.position = Vector2(86,24)
++		header.size = Vector2(maxf(120,extent.x-header.position.x-76),60)
+ 	if is_instance_valid(header_action): header.size.x = maxf(120,header.size.x-58)
+-	symbol.size = Vector2(38,38) if forms else Vector2(140,140)
+-	symbol.position = Vector2(30,24) if forms else Vector2(92,extent.y*0.45-70)
++	if forms:
++		symbol.size = Vector2(38,38)
++		symbol.position = Vector2(30,24)
+ 	var actions: Control = window.get_ok_button().get_parent()
+-	actions.position.x = 28
+-	actions.size.x = extent.x-56
++	actions.position.x = 28 if forms else message_padding.content_margin_left
++	actions.size.x = extent.x-actions.position.x-(28 if forms else message_padding.content_margin_right)
++	if not forms and window.visible: _center()
++
++func _layout_message() -> void:
++	# Measure wrapped copy instead of letting a fixed-height native body cover its actions.
++	var available: Vector2 = window.get_parent().get_viewport().get_visible_rect().size-Vector2(32,32)
++	var width: float = minf(820,available.x)
++	var actions: Control = window.get_ok_button().get_parent()
++	var compact: bool = width < 760 or actions.get_combined_minimum_size().x > width-376
++	var short_window: bool = available.y < 440
++	var left: float = 28 if compact else 340
++	var right: float = 28 if compact else 36
++	header.add_theme_font_size_override("font_size",28 if short_window else 32 if compact else 40)
++	header.position = Vector2(left,24) if short_window else Vector2(86,24) if compact else Vector2(left,42)
++	header.size = Vector2(maxf(1,width-header.position.x-76),0)
++	header.size.y = maxf(60,header.get_minimum_size().y)
++	var top: float = ceilf(header.position.y+header.size.y+24)
++	message_padding.content_margin_left = left
++	message_padding.content_margin_right = right
++	message_padding.content_margin_top = top
++	var scrollbar_width: float = message_scroll.get_v_scroll_bar().get_combined_minimum_size().x if message_scroll.get_v_scroll_bar().visible else 0
++	body.size.x = width-left-right-scrollbar_width
++	message.size.x = body.size.x
++	var action_height: float = maxf(56,actions.get_combined_minimum_size().y)
++	var height: float = minf(available.y,maxf(380,top+body.get_combined_minimum_size().y+24+action_height+24))
++	window.size = Vector2i(ceili(width),ceili(height))
++	symbol.visible = not short_window
++	symbol.size = Vector2(38,38) if compact else Vector2(140,140)
++	symbol.position = Vector2(30,24) if compact else Vector2(92,height*0.45-70)
+ 
+ func _visibility_changed() -> void:
+ 	if window.visible:
+--- /dev/null
++++ b/game/tests/test_customisation_purchase_layout.gd
+@@ -0,0 +1,160 @@
++extends SceneTree
++## Real purchase dialog builder with an in-memory economy; no account or save writes.
++const Chrome = preload("res://ui/popup_style.gd")
++var checks: int = 0
++var failures: int = 0
++var output: String = "res://../docs/evidence/customisation-purchase-layout-2026-10-26/baseline"
++var page: GaragePage
++var economy: FixtureEconomy
++var applications: int = 0
++var accounts: int = 0
++
++class FixturePage extends GaragePage:
++	func _ready() -> void: set_process(false)
++	func _notification(_what: int) -> void: pass
++	func _exit_tree() -> void: pass
++
++class FixtureEconomy extends Node:
++	var scope: String = "isolated-purchase-layout"
++	var busy: bool = false
++	var pending: Dictionary = {}
++	var coins: int = 2150
++	var signed_in: bool = true
++	var calls: int = 0
++	func authenticated() -> bool: return signed_in
++	func owns(_id: String) -> bool: return false
++	func balance() -> int: return coins
++	func price(_id: String) -> int: return 750
++	func purchase(_id: String) -> bool:
++		calls += 1
++		await get_tree().process_frame
++		return true
++
++func _initialize() -> void: run.call_deferred()
++
++func check(value: bool, label: String) -> void:
++	checks += 1
++	if not value:
++		failures += 1
++		print("FAIL: "+label)
++
++func settle() -> void:
++	for frame: int in range(12): await process_frame
++	if DisplayServer.get_name() != "headless": await RenderingServer.frame_post_draw
++
++func capture(label: String) -> void:
++	if DisplayServer.get_name() == "headless": return
++	check(root.get_texture().get_image().save_png(output.path_join(label+".png")) == OK,"capture "+label)
++
++func open_purchase(title: String = "Twin intakes", id: String = "compact/hood/twin_intakes") -> ConfirmationDialog:
++	check(not page._require_owned(id,title,func() -> void: applications += 1),"locked item waits for confirmation")
++	await settle()
++	return page._purchase_dialog
++
++func inspect(dialog: ConfirmationDialog, label: String) -> void:
++	var chrome: Node = dialog.get_node("PopupStyle")
++	var bounds := Rect2(Vector2.ZERO,Vector2(dialog.size))
++	var actions: Control = dialog.get_ok_button().get_parent()
++	var message_rect: Rect2 = chrome.message.get_global_rect()
++	var body_rect: Rect2 = chrome.body.get_global_rect()
++	var visible_body: Rect2 = chrome.message_scroll.get_global_rect() if chrome.get("message_scroll") != null else body_rect
++	check(root.get_visible_rect().encloses(Rect2(Vector2(dialog.position),Vector2(dialog.size))),label+": popup fits viewport")
++	check(bounds.encloses(chrome.header.get_global_rect()),label+": heading fits panel")
++	check(chrome.header.get_global_rect().end.y+12 <= visible_body.position.y,label+": body clears heading")
++	check(visible_body.end.y+12 <= actions.position.y,label+": body clears actions")
++	check(visible_body.size.y >= 64,label+": message keeps a usable visible area")
++	check(message_rect.size.y+1 >= chrome.message.get_minimum_size().y,label+": full message has its natural height")
++	check(not chrome.header.get_global_rect().intersects(chrome.close_button.get_global_rect()),label+": title clears Close")
++	for button: Button in [dialog.get_ok_button(),dialog.get_cancel_button(),chrome.close_button]:
++		check(bounds.encloses(button.get_global_rect()),label+": button fits panel "+button.text)
++		check(button.size.y >= 48,label+": touch height "+button.text)
++	print("PURCHASE_RECT: ",label," viewport=",root.get_visible_rect()," panel=",dialog.size," message=",message_rect," body=",body_rect," actions=",actions.get_global_rect())
++
++func dismiss(dialog: ConfirmationDialog) -> void:
++	dialog.get_cancel_button().pressed.emit()
++	await settle()
++	check(page._purchase_dialog == null and not is_instance_valid(dialog),"Cancel releases the owned purchase popup")
++
++func run() -> void:
++	OS.set_environment("BMT_API_URL","")
++	GameFonts.configure("en")
++	for argument: String in OS.get_cmdline_user_args():
++		if argument.begins_with("--evidence="): output = argument.trim_prefix("--evidence=")
++	DirAccess.make_dir_recursive_absolute(ProjectSettings.globalize_path(output))
++	root.gui_embed_subwindows = true
++	node_added.connect(func(node: Node) -> void:
++		if node is Window: Chrome.watch(node))
++	var background := ColorRect.new()
++	background.color = Color("101a26")
++	root.add_child(background)
++	MenuStyle.fill(background)
++	page = FixturePage.new()
++	root.add_child(page)
++	MenuStyle.fill(page)
++	economy = FixtureEconomy.new()
++	root.add_child(economy)
++	page.economy = economy
++	page.account_requested.connect(func() -> void: accounts += 1)
++	for dimensions: Vector2i in [Vector2i(1138,535),Vector2i(960,540),Vector2i(1280,720),Vector2i(1720,960),Vector2i(540,960),Vector2i(640,360)]:
++		root.size = dimensions
++		await settle()
++		var dialog: ConfirmationDialog = await open_purchase()
++		var label: String = "%dx%d" % [dimensions.x,dimensions.y]
++		inspect(dialog,label)
++		check(dialog.dialog_text.contains("750") and dialog.dialog_text.contains("2150"),"actual price/balance are retained")
++		check(not dialog.get_ok_button().disabled,"affordable item can be bought")
++		await capture(label)
++		await dismiss(dialog)
++	root.size = Vector2i(960,540)
++	for state: String in ["unaffordable","busy","pending","guest","paint"]:
++		economy.coins = 100 if state == "unaffordable" else 2150
++		economy.busy = state == "busy"
++		economy.pending = {"item_id":"fixture"} if state == "pending" else {}
++		economy.signed_in = state != "guest"
++		var dialog: ConfirmationDialog = await open_purchase("Twin intakes" if state != "paint" else "Checker fade","livery/checker_fade" if state == "paint" else "compact/hood/twin_intakes")
++		inspect(dialog,state)
++		check(dialog.get_ok_button().disabled == (state in ["unaffordable","busy","pending"]),state+": purchase availability is preserved")
++		await capture(state)
++		if state == "guest":
++			dialog.get_ok_button().pressed.emit()
++			await settle()
++			check(accounts == 1 and economy.calls == 0,"guest confirmation requests account without a purchase")
++		elif state == "paint":
++			dialog.get_ok_button().pressed.emit()
++			await settle()
++			check(economy.calls == 1 and applications == 1,"confirmation buys and applies once through the original callback")
++		else: await dismiss(dialog)
++	economy.signed_in = true
++	for locale: String in ["en","de","fr","fi","pt_BR","ja","ko"]:
++		TranslationServer.set_locale(locale)
++		GameFonts.configure(locale)
++		var dialog: ConfirmationDialog = await open_purchase()
++		inspect(dialog,"locale-"+locale)
++		await capture("locale-"+locale)
++		await dismiss(dialog)
++	TranslationServer.set_locale("en")
++	GameFonts.configure("en")
++	# Exercise small logical viewports independently of the production canvas stretch.
++	root.content_scale_size = Vector2i.ZERO
++	root.size = Vector2i(640,360)
++	await settle()
++	var long_dialog: ConfirmationDialog = await open_purchase("Twin intakes with a longer translated customisation name")
++	long_dialog.dialog_text += "\n"+"More detailed unlock information. ".repeat(80)
++	await settle()
++	inspect(long_dialog,"short-overflow")
++	var chrome: Node = long_dialog.get_node("PopupStyle")
++	check(chrome.message_scroll != null and chrome.message_scroll.get_v_scroll_bar().visible,"overflow has a vertical scrollbar above the actions")
++	chrome.message_scroll.scroll_vertical = ceili(chrome.message_scroll.get_v_scroll_bar().max_value)
++	await settle()
++	check(chrome.message.get_global_rect().end.y <= chrome.message_scroll.get_global_rect().end.y+1,"scroll reaches the final message line")
++	await capture("short-overflow")
++	root.size = Vector2i(540,960)
++	await settle()
++	inspect(long_dialog,"portrait-resize")
++	await capture("portrait-resize")
++	await dismiss(long_dialog)
++	page.queue_free()
++	economy.queue_free()
++	await process_frame
++	print("CUSTOMISATION_PURCHASE_LAYOUT: %d checks, %d failures" % [checks,failures])
++	quit(1 if failures else 0)
+--- /dev/null
++++ b/docs/CUSTOMISATION_PURCHASE_LAYOUT_2026_10_26.md
+@@ -0,0 +1,39 @@
++# Customisation purchase layout — 2026-10-26
++
++The owner supplied a purchase confirmation in which the permanent-unlock text overlaps Buy/Cancel. CPL01 fixes the text/action separation; CPL02 keeps the message accessible during resizing and overflow; CPL03 preserves the existing purchase/sign-in callbacks and availability rules. R01 covers other shared popups; Q01 covers native renderer checks.
++
++The shared message-only popup had a fixed 820×380 minimum and body padding that left insufficient space after the application's multilingual font fallbacks increased line height. With the real font configuration, the original builder fails 10 of 182 checks. The ordinary message reaches y=317 while the buttons start at y=298.
++
++`game/ui/popup_style.gd` now measures the wrapped heading and body, fits the height to the parent viewport, and puts the native actions beneath the text column. A vertical scroll container clips overflowing copy above the actions. Compact typography and a smaller icon arrangement accommodate narrow windows; short windows omit the decorative icon. Parent resizing and message changes recalculate the layout. Form/file dialogs retain their existing body arrangement.
++
++The ordinary purchase is now 820×421: message y=126–315, buttons y=339–397, with a 24-unit gap. The insufficient-balance message expands the panel to 453 units. Native Buy, Cancel, Close and account/purchase callbacks remain in their existing code. The original `garage_page.gd` is byte-identical to the task-start snapshot; no economy code changes.
++
++Changed files are the shared popup helper, `game/tests/test_customisation_purchase_layout.gd`, this document, and the evidence folder. The test uses the real `GaragePage._require_owned` method with an in-memory economy and a lightweight page host. It invokes no live account, purchase or save operation. Existing concurrent changes, including the profile-icon branch in the shared helper, are retained.
++
++Actual validation:
++
++| Check | Result |
++|---|---|
++| Original purchase layout, configured app fonts | 182 checks, 10 failures; retained in `baseline.log` |
++| Final native Compatibility | 337 checks, 0 failures |
++| Final desktop Mobile/Vulkan | 337 checks, 0 failures |
++| Existing shared popup suite, native Compatibility | 157 checks, 0 failures |
++| Existing script parser | 1,287 scripts, 0 failures |
++
++The focused suite covers six production-stretched window sizes (1138×535, 960×540, 1280×720, 1720×960, 540×960, 640×360), seven locale/font configurations, affordable/unaffordable/busy/pending/guest/paint states, native confirmation/sign-in/cancel semantics, a long heading/body, scrolling to the last line, and live resizing between raw 640×360 and 540×960 logical viewports. The existing translations retain some English fallback copy; this task does not supply translations. These are desktop rendering checks, not physical-device results.
++
++The first extended run passed 317 checks but visual review showed a nearly empty message area with the extreme title in the short window. The final run adds a minimum 64-unit visible-message assertion and adjusts short-window heading typography; no original assertion is removed or relaxed. Early setup runs encountered Windows execution policy, an invalid test color constant, and sandbox certificate access; corrected commands and isolated data allowed the engine checks to complete.
++
++Commands actually run use the pinned engine through the repository entry point. For each check, `APPDATA` points to a task-owned subdirectory of `docs/evidence/customisation-purchase-layout-2026-10-26`:
++
++```powershell
++powershell -NoProfile -ExecutionPolicy Bypass -File ./scripts/dev.ps1 -Action TestScript -ScriptPath res://tests/test_customisation_purchase_layout.gd -Graphical -RenderingMethod gl_compatibility -TestArgument "--evidence=res://../docs/evidence/customisation-purchase-layout-2026-10-26/final-gl_compatibility" -CommandTimeoutSeconds 120
++powershell -NoProfile -ExecutionPolicy Bypass -File ./scripts/dev.ps1 -Action TestScript -ScriptPath res://tests/test_customisation_purchase_layout.gd -Graphical -RenderingMethod mobile -RenderingDriver vulkan -TestArgument "--evidence=res://../docs/evidence/customisation-purchase-layout-2026-10-26/final-mobile" -CommandTimeoutSeconds 180
++powershell -NoProfile -ExecutionPolicy Bypass -File ./scripts/dev.ps1 -Action TestScript -ScriptPath res://tests/test_popup_style.gd -Graphical -RenderingMethod gl_compatibility -TestArgument "--evidence=res://../docs/evidence/customisation-purchase-layout-2026-10-26/shared" -CommandTimeoutSeconds 180
++powershell -NoProfile -ExecutionPolicy Bypass -File ./scripts/dev.ps1 -Action TestScript -ScriptPath res://tests/test_script_parse.gd -CommandTimeoutSeconds 180
++git apply --reverse --check docs/evidence/customisation-purchase-layout-2026-10-26/checkpoint.patch
++```
++
++Native before/after screenshots, logs, task-start source, task-only checkpoint patch and hashes are in `docs/evidence/customisation-purchase-layout-2026-10-26`. The build entry point refreshes generated build identity as usual; generated identity and unrelated concurrent work are excluded from the checkpoint.
++
++Reload/rebuild the game to use the code. Owner appearance/touch acceptance and a physical-device check remain. No device attachment check or device test was performed. No APK, real authentication/purchase, live mutation, deployment, staging, commit, merge or owner-process restart was performed.

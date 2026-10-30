@@ -1,0 +1,175 @@
+extends SceneTree
+## Native menu review with isolated local data and no service connection.
+var output: String
+var report: Dictionary = {}
+
+func _initialize() -> void: run.call_deferred()
+
+func settle() -> void:
+	for _frame: int in range(12): await process_frame
+	await RenderingServer.frame_post_draw
+
+func shot(label: String) -> void:
+	await settle()
+	root.get_texture().get_image().save_png(output.path_join(label+".png"))
+
+func key(code: Key) -> void:
+	var event := InputEventKey.new()
+	event.keycode = code
+	event.physical_keycode = code
+	event.pressed = true
+	root.push_input(event)
+	await process_frame
+	event = event.duplicate()
+	event.pressed = false
+	root.push_input(event)
+	await process_frame
+
+func click(point: Vector2) -> void:
+	var move := InputEventMouseMotion.new()
+	move.position = point
+	root.push_input(move)
+	var event := InputEventMouseButton.new()
+	event.position = point
+	event.button_index = MOUSE_BUTTON_LEFT
+	event.pressed = true
+	root.push_input(event)
+	await process_frame
+	event = event.duplicate()
+	event.pressed = false
+	root.push_input(event)
+	await process_frame
+
+func run() -> void:
+	OS.set_environment("BMT_API_URL","")
+	var baseline: bool = OS.get_environment("BMT_PROFILE_CAR_BASELINE") == "1"
+	var destination: String = OS.get_environment("BMT_PROFILE_CAR_OUTPUT")
+	if destination.is_empty(): destination = "res://../docs/evidence/profile-active-car-2026-10-25"
+	output = ProjectSettings.globalize_path(destination.path_join(RenderingServer.get_current_rendering_method()))
+	DirAccess.make_dir_recursive_absolute(output)
+	root.size = Vector2i(1280,720)
+	root.gui_embed_subwindows = true
+	var source: GDScript = load("res://core/app.gd")
+	if baseline:
+		source = GDScript.new()
+		source.source_code = FileAccess.get_file_as_string("res://../docs/evidence/profile-active-car-2026-10-25/before/app.gd.txt")
+		if source.reload() != OK: quit(1); return
+	var app: Node = source.new()
+	var folder: String = "user://profile_car_"+TrackLibrary.unique_id()
+	DirAccess.make_dir_recursive_absolute(folder)
+	app.library = TrackLibrary.new(folder.path_join("tracks"))
+	app.records = LocalRecords.new(folder.path_join("records.json"))
+	app.cloud_root_override = folder.path_join("cloud")
+	root.add_child(app)
+	while not app.startup_complete: await process_frame
+	app.race_area_mode = "free"
+	app._show_screen("tracks")
+	await settle()
+	if baseline:
+		await shot("before-compact")
+	else:
+		for id: String in VehicleCatalog.IDS:
+			app._select_vehicle(VehicleCatalog.IDS.find(id))
+			await shot("active-"+id)
+			var icon: Control = app.account_button.get_node("MenuProfileCar")
+			var image: Image = icon.preview.viewport.get_texture().get_image()
+			var opaque: int = 0
+			var low: Vector2i = image.get_size()
+			var high := Vector2i(-1,-1)
+			for y: int in range(image.get_height()):
+				for x: int in range(image.get_width()):
+					if image.get_pixel(x,y).a > 0.5:
+						opaque += 1
+						low = low.min(Vector2i(x,y))
+						high = high.max(Vector2i(x,y))
+			var center_error: Vector2 = (Vector2(low+high+Vector2i.ONE)*0.5-Vector2(image.get_size())*0.5)*icon.size/Vector2(image.get_size())
+			report[id] = {"rendered_vehicle":icon.preview.car.vehicle_id,"preview_bounds":str(icon.get_global_rect()),"button_bounds":str(app.account_button.get_global_rect()),"render_size":str(image.get_size()),"opaque_pixels":opaque,"visible_center_error":str(center_error),"vertical_center_error":center_error.y}
+			if id == "forklift":
+				app.account_button.text = "Ville"
+				app.account_button.add_theme_color_override("font_color",MenuStyle.ACCENT)
+				await shot("named-forklift")
+				app.account_button.text = "Guest"
+				app.account_button.remove_theme_color_override("font_color")
+		app._select_vehicle(0)
+		var paint: Dictionary = VehicleLivery.defaults("compact")
+		paint.colors.body = "c82e37"
+		var parts: Dictionary = VehicleCustomisation.defaults()
+		parts.hood = "cowl"
+		parts.aero = "splitwing"
+		app.records.settings.vehicle_liveries = {"compact":paint}
+		app.records.settings.vehicle_customisation = {"compact":parts}
+		report.appearance_save = app.records.save_records()
+		await shot("customised-compact")
+		var icon: Control = app.account_button.get_node("MenuProfileCar")
+		report.appearance_updated = icon.preview.livery == paint and icon.preview.customisation == parts
+		var preview_id: int = icon.preview.get_instance_id()
+		icon.refresh()
+		report.unchanged_render_retained = icon.preview.get_instance_id() == preview_id
+		app.account_button.text = "Alexandria Longname"
+		await shot("long-name")
+		report.long_name_button_width = app.account_button.size.x
+		app.account_button.text = "Guest"
+		for dimensions: Vector2i in [Vector2i(960,540),Vector2i(1720,900)]:
+			root.size = dimensions
+			await shot("menu-%dx%d" % [dimensions.x,dimensions.y])
+			var settings: Control = app.root_ui.find_child("MenuSettings",true,false)
+			report[str(dimensions)] = {"profile_bounds":str(app.account_button.get_global_rect()),"settings_bounds":str(settings.get_global_rect()),"fits":root.get_visible_rect().encloses(settings.get_global_rect())}
+		root.size = Vector2i(1280,720)
+		await settle()
+		var touch := InputEventScreenTouch.new()
+		touch.index = 0
+		touch.position = icon.get_global_rect().get_center()
+		touch.pressed = true
+		root.push_input(touch)
+		await process_frame
+		touch = touch.duplicate()
+		touch.pressed = false
+		root.push_input(touch)
+		await shot("car-dropdown")
+		var picker: MenuButton = app.account_button.get_node("MenuCarPicker")
+		var popup: PopupMenu = picker.get_popup()
+		report.car_opens_dropdown = popup.visible and app.screen == "tracks"
+		report.dropdown_car_count = popup.item_count
+		report.checked_active_car = popup.is_item_checked(VehicleCatalog.IDS.find(VehicleCatalog.selected))
+		for _step: int in range(VehicleCatalog.IDS.size()-1): await key(KEY_DOWN)
+		await key(KEY_ENTER)
+		await shot("dropdown-selected-electric")
+		report.keyboard_selects_car = VehicleCatalog.selected == "electric" and not popup.visible and app.screen == "tracks"
+		var reloaded := LocalRecords.new(app.records.path)
+		reloaded.load_records()
+		report.selection_saved = reloaded.settings.get("selected_car") == "electric"
+		# Opening then cancelling must leave the selected car intact.
+		await click(icon.get_global_rect().get_center())
+		await settle()
+		await key(KEY_ESCAPE)
+		await settle()
+		report.escape_cancels = not popup.visible and VehicleCatalog.selected == "electric"
+		await click(icon.get_global_rect().get_center())
+		await settle()
+		var panel: StyleBox = popup.get_theme_stylebox("panel")
+		var row_height: float = (popup.size.y-panel.get_minimum_size().y)/popup.item_count
+		await click(Vector2(popup.position)+Vector2(80,panel.get_content_margin(SIDE_TOP)+row_height*5.5))
+		await shot("dropdown-selected-forklift")
+		report.mouse_selects_car = VehicleCatalog.selected == "forklift" and not popup.visible and app.screen == "tracks"
+		reloaded.load_records()
+		report.mouse_selection_saved = reloaded.settings.get("selected_car") == "forklift"
+		# Only the name half navigates to the player's profile.
+		touch = InputEventScreenTouch.new()
+		touch.index = 0
+		touch.position = app.account_button.get_global_rect().end-Vector2(36,32)
+		touch.pressed = true
+		root.push_input(touch)
+		await process_frame
+		touch = touch.duplicate()
+		touch.pressed = false
+		root.push_input(touch)
+		await shot("profile-opened-from-name")
+		report.name_opens_profile = app.screen == "profile"
+		var file := FileAccess.open(output.path_join("capture-report.json"),FileAccess.WRITE)
+		file.store_string(JSON.stringify(report,"\t"))
+		file.close()
+		print("PROFILE_CAR_REVIEW: ",JSON.stringify(report))
+	root.remove_child(app)
+	app.queue_free()
+	await process_frame
+	quit()

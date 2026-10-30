@@ -1,0 +1,503 @@
+--- a/game/track/prop_equipment.gd
++++ b/game/track/prop_equipment.gd
+@@ -49,6 +49,9 @@
+ 		PropGeometry.box(tool,Vector3(0,0.10,side*0.493),Vector3(maxf(0.02,span-0.08),0.06,0.017),Color("7a827a"),0.003)
+ 
+ static func _fence(tool: SurfaceTool, kind: String, span: float, continuous: bool) -> void:
++	if kind == "guardrail":
++		preload("res://track/guardrail_visual.gd").append(tool,span)
++		return
+ 	var count: int = maxi(1,ceili(span/3.0))
+ 	var reach: float = span*0.5 if continuous else span*0.5-0.1
+ 	for i: int in range(count+1):
+@@ -58,13 +61,6 @@
+ 			PropGeometry.box(tool,Vector3(x,1.25,0),Vector3(0.24,0.09,0.24),WOOD.lightened(0.12),0.035)
+ 			for h: float in [0.42,1.02]:
+ 				PropGeometry.tube(tool,Vector3(x,h,-0.113),Vector3(x,h,-0.126),0.027,0.027,DARK,8)
+-		elif kind == "guardrail":
+-			for z: float in [-0.072,0.025]:
+-				PropGeometry.beam(tool,Vector3(x,0,z),Vector3(x,1.25,z),0.15,0.035,METAL.darkened(0.20))
+-			PropGeometry.beam(tool,Vector3(x,0,-0.024),Vector3(x,1.25,-0.024),0.033,0.10,METAL.darkened(0.1))
+-			PropGeometry.box(tool,Vector3(x,0.80,0.035),Vector3(0.17,0.30,0.17),DARK,0.015)
+-			PropGeometry.tube(tool,Vector3(x,0.80,0.146),Vector3(x,0.80,0.169),0.040,0.040,Color("ccd1c6"),8)
+-			PropGeometry.box(tool,Vector3(x,1.20,0.06),Vector3(0.085,0.15,0.04),Color("bbab70"),0.012)
+ 		else:
+ 			PropGeometry.tube(tool,Vector3(x,0,0),Vector3(x,1.46,0),0.055,0.045,METAL,10)
+ 			PropGeometry.box(tool,Vector3(x,0.07,0),Vector3(0.20,0.14,0.20),DARK,0.02)
+@@ -72,12 +68,6 @@
+ 		for h: float in [0.42,1.02]:
+ 			PropGeometry.box(tool,Vector3(0,h,0.04),Vector3(span,0.18,0.15),WOOD,0.018)
+ 			PropGeometry.beam(tool,Vector3(-span*0.5,h+0.04,-0.041),Vector3(span*0.5,h+0.04,-0.041),0.023,0.008,WOOD.lightened(0.24))
+-	elif kind == "guardrail":
+-		var section: Array[Vector2] = [Vector2(0.57,0.087),Vector2(0.62,0.11),Vector2(0.72,0.16),Vector2(0.80,0.11),Vector2(0.88,0.16),Vector2(0.98,0.11),Vector2(1.03,0.087)]
+-		for row: int in range(section.size()-1):
+-			var a: Vector2 = section[row]; var b: Vector2 = section[row+1]
+-			PropGeometry.face(tool,[Vector3(-span*0.5,a.x,a.y),Vector3(span*0.5,a.x,a.y),Vector3(span*0.5,b.x,b.y),Vector3(-span*0.5,b.x,b.y)],METAL.lightened(0.12 if row%2 == 0 else 0.02))
+-			PropGeometry.face(tool,[Vector3(span*0.5,a.x,a.y-0.015),Vector3(-span*0.5,a.x,a.y-0.015),Vector3(-span*0.5,b.x,b.y-0.015),Vector3(span*0.5,b.x,b.y-0.015)],METAL.darkened(0.15))
+ 	else:
+ 		for h: float in [0.18,1.38]: PropGeometry.tube(tool,Vector3(-span*0.5,h,0),Vector3(span*0.5,h,0),0.024,0.024,METAL,6)
+ 		# Clipped diamond mesh, rather than a rectangular cage.
+--- a/game/track/creator_prop_visual.gd
++++ b/game/track/creator_prop_visual.gd
+@@ -1,7 +1,8 @@
+ class_name CreatorPropVisual
+ extends RefCounted
+ ## Original shared meshes for world placement and browser thumbnails.
+-const VERSION: String = "authored-props-15-ice-compact"
++const VERSION: String = "authored-props-16-guardrail-ends"
++const GUARDRAIL = preload("res://track/guardrail_visual.gd")
+ const WINTER_FINISH = preload("res://track/winter_prop_finish.gd")
+ const CACHE_LIMIT: int = 96
+ static var meshes: Dictionary = {}
+@@ -27,8 +28,11 @@
+ 	var paint: String = ContainerPaint.value({"color":color}) if kind == "container" else ""
+ 	return "%s/%s/%s/%s/%s/%s" % [VERSION,kind,theme,str(length),paint,str(optimize)]
+ 
+-static func _build_model(tool: SurfaceTool, kit: Node, kind: String, length: float, color: String, optimize: bool = true) -> bool:
++static func _build_model(tool: SurfaceTool, kit: Node, kind: String, length: float, color: String, optimize: bool = true, guardrail: Dictionary = {}) -> bool:
+ 	var paint: String = ContainerPaint.value({"color":color}) if kind == "container" else ""
++	if kind == "guardrail":
++		GUARDRAIL.append(tool,length if length >= 0.0 else 6.0,guardrail,kit.theme_id == "winter")
++		return true
+ 	if PropNature.append(tool,kit,kind,Vector3.ZERO,1.0,0.0,optimize): return true
+ 	if PropEquipment.append(tool,kit,kind,Vector3.ZERO,1.0,0.0,length,paint,optimize): return true
+ 	if PropStructures.append(tool,kit,kind,Vector3.ZERO,1.0,0.0,optimize): return true
+@@ -90,14 +94,15 @@
+ 	cache[key] = mesh; _touch(mesh)
+ 
+ 
+-static func append(tool: SurfaceTool, kit: Node, kind: String, center: Vector3, scale: float, turn: float, section_length: float = -1.0, color: String = "", optimize: bool = true) -> bool:
++static func append(tool: SurfaceTool, kit: Node, kind: String, center: Vector3, scale: float, turn: float, section_length: float = -1.0, color: String = "", optimize: bool = true, guardrail: Dictionary = {}) -> bool:
+ 	assert(Thread.is_main_thread())
+ 	var length: float = section_length/scale if section_length >= 0 else -1.0
+ 	var key: String = _key(kind,kit.theme_id,length,color,optimize)
++	if kind == "guardrail" and not guardrail.is_empty(): key += "/"+JSON.stringify(guardrail,"",true)
+ 	var model: Mesh = meshes.get(key)
+ 	if model == null:
+ 		var local: SurfaceTool = PropGeometry.model(0.045 if optimize else -1.0)
+-		if not _build_model(local,kit,kind,length,color,optimize): return false
++		if not _build_model(local,kit,kind,length,color,optimize,guardrail): return false
+ 		# Egyptian relief already has authored facet normals. Rebuilding them
+ 		# after append smooths across tiny stone bevels and shades the flat faces
+ 		# like deep triangular dents under the low Desert sun.
+--- a/game/track/native_track_visual.gd
++++ b/game/track/native_track_visual.gd
+@@ -1997,7 +1997,8 @@
+ 	var night_tool:=SurfaceTool.new(); night_tool.begin(Mesh.PRIMITIVE_TRIANGLES)
+ 	var night_count: int=0
+ 	var night_sources: bool=false
+-	for object: Dictionary in track.metadata.get("creator_document",{}).get("objects",[])+track.metadata.get("scenery_objects",[]):
++	var placed_objects: Array = CreatorPropVisual.GUARDRAIL.prepare(track.metadata.get("creator_document",{}).get("objects",[])+track.metadata.get("scenery_objects",[]))
++	for object: Dictionary in placed_objects:
+ 		if _menu_yield_due():
+ 			await get_tree().process_frame
+ 			if not is_inside_tree(): return
+@@ -2057,7 +2058,7 @@
+ 			else: CreatorPropVisual.append(ink_tool,self,object.kind,center,object_scale,deg_to_rad(float(object.rotation)),float(object.get("length",-1.0)))
+ 			ink_count += 1
+ 			continue
+-		if CreatorPropVisual.append(tool,self,object.kind,center,object_scale,deg_to_rad(float(object.rotation)),float(object.get("length",-1.0)),ContainerPaint.value(object) if object.kind == "container" else ""):
++		if CreatorPropVisual.append(tool,self,object.kind,center,object_scale,deg_to_rad(float(object.rotation)),float(object.get("length",-1.0)),ContainerPaint.value(object) if object.kind == "container" else "",true,object.get("_guardrail",{})):
+ 			count += 1
+ 			continue
+ 		if object.kind == "tree":
+--- a/game/track/winter_prop_finish.gd
++++ b/game/track/winter_prop_finish.gd
+@@ -1,7 +1,7 @@
+ extends RefCounted
+ ## Original fitted snow caps and eave ice, baked into the existing opaque draw.
+ ## Existing WinterScenery nature and Winter craft keep their own authored snow.
+-const KINDS: Array[String] = ["pebbles","cliff","log","barrier","guardrail","cone","chevron","braking_board","flag","light","gantry","shed","hut"]
++const KINDS: Array[String] = ["pebbles","cliff","log","barrier","cone","chevron","braking_board","flag","light","gantry","shed","hut"]
+ const SNOW := Color("e1eaf0")
+ const SHADE := Color("afc6d8")
+ 
+@@ -19,11 +19,6 @@
+ 		"pebbles", "cliff": _stone_caps(snow,source,0.018 if kind == "pebbles" else 0.085,0.025 if kind == "pebbles" else 2.9)
+ 		"log": _sheet(snow,Vector3(0,0.40,0),3.88,0.64,0.07,2)
+ 		"barrier": _sheet(snow,Vector3(0,0.944,0),span,0.37,0.065)
+-		"guardrail":
+-			_sheet(snow,Vector3(0,1.033,0.085),span,0.11,0.05)
+-			var count: int = maxi(1,ceili(span/3.0))
+-			var reach: float = span*0.5 if length >= 0 else span*0.5-0.1
+-			for i: int in range(count+1): _sheet(snow,Vector3(lerpf(-reach,reach,float(i)/count),1.25,0),0.18,0.16,0.035)
+ 		"cone":
+ 			_sheet(snow,Vector3(0,0.131,0),0.69,0.69,0.025)
+ 			_sheet(snow,Vector3(0,0.881,0),0.10,0.10,0.025)
+--- a/game/editor/placed_object_batches.gd
++++ b/game/editor/placed_object_batches.gd
+@@ -25,6 +25,7 @@
+ 	var objects: Array = track.metadata.get("creator_document",{}).get("objects",[]).duplicate(true)
+ 	var tyres: PackedVector2Array = track.tyre_origins.duplicate()
+ 	if objects == sources and tyres == tyre_origins and updates > 0 and ground_key == track.content_hash: return false
++	var visual_objects: Array = CreatorPropVisual.GUARDRAIL.prepare(objects)
+ 	var desired: Dictionary = {}
+ 	var next_models: Dictionary = {}
+ 	var separate: Dictionary = {}
+@@ -36,7 +37,7 @@
+ 				for pending: NativeTrackVisual in pending_nodes: pending.free()
+ 				return false
+ 			kit._slice_started = Time.get_ticks_usec()
+-		var object: Dictionary = objects[index]
++		var object: Dictionary = visual_objects[index]
+ 		var kind: String = object.kind
+ 		if kind in ["tyre_stack","tyre_wall"]: continue
+ 		# Preserve the original lamp glow orientation, movable nodes and damage phases.
+--- /dev/null
++++ b/game/track/guardrail_visual.gd
+@@ -0,0 +1,127 @@
++extends RefCounted
++## Presentation-only continuity across the editor's short fitted road-edge chords.
++const JOIN_TOLERANCE: float = 0.002
++const POST_SPACING: float = 3.0
++const RAMP_LENGTH: float = 3.0
++const METAL := Color("7d8988")
++const DARK := Color("354442")
++
++static func prepare(objects: Array) -> Array:
++	var result: Array = objects.duplicate()
++	var nodes: Array = []
++	var buckets: Dictionary = {}
++	var edges: Array = []
++	for index: int in range(objects.size()):
++		var object: Dictionary = objects[index]
++		if object.kind != "guardrail" or object.has("_guardrail"): continue
++		var scale: float = float(object.get("scale",1.0))
++		var length: float = CreatorObjects.size_of(object).x
++		var center := Vector2(object.position[0],object.position[1])
++		var arm: Vector2 = Vector2.from_angle(deg_to_rad(float(object.rotation)))*length*0.5
++		var a: int = _node(nodes,buckets,center-arm,scale)
++		var b: int = _node(nodes,buckets,center+arm,scale)
++		var edge: int = edges.size()
++		edges.append({"index":index,"a":a,"b":b,"length":length,"scale":scale})
++		nodes[a].edges.append(edge); nodes[b].edges.append(edge)
++	# Start at exposed ends, then handle closed loops. Coordinate ordering makes
++	# the stationing independent of saved object order and section direction.
++	var seeds: Array = []
++	for index: int in range(nodes.size()):
++		if nodes[index].edges.size() != 2: seeds.append(index)
++	seeds.sort_custom(func(a: int,b: int) -> bool: return _less(nodes[a].point,nodes[b].point))
++	var loops: Array = range(nodes.size())
++	loops.sort_custom(func(a: int,b: int) -> bool: return _less(nodes[a].point,nodes[b].point))
++	seeds.append_array(loops)
++	var visited: Dictionary = {}
++	for seed: int in seeds:
++		for first: int in nodes[seed].edges:
++			if visited.has(first): continue
++			var chain: Array = []
++			var node: int = seed
++			var edge: int = first
++			var total: float = 0.0
++			var closed: bool = false
++			while not visited.has(edge):
++				visited[edge] = true
++				var source: Dictionary = edges[edge]
++				var reverse: bool = source.b == node
++				chain.append({"source":source,"reverse":reverse,"offset":total})
++				total += float(source.length)
++				node = source.a if reverse else source.b
++				if nodes[node].edges.size() != 2: break
++				if node == seed: closed = true; break
++				edge = nodes[node].edges[1] if nodes[node].edges[0] == edge else nodes[node].edges[0]
++			var scale: float = float(edges[first].scale)
++			var count: int = maxi(1,floori(total/(POST_SPACING*scale)))
++			var next_post: int = 0
++			for part: Dictionary in chain:
++				var source: Dictionary = part.source
++				var begin: float = float(part.offset)
++				var end: float = begin+float(source.length)
++				var posts := PackedFloat32Array()
++				while next_post < count:
++					var distance: float = total*(next_post+0.5)/count
++					if distance >= end: break
++					var x: float = (distance-begin-float(source.length)*0.5)/scale
++					posts.append(-x if part.reverse else x)
++					next_post += 1
++				posts.sort()
++				var object: Dictionary = objects[source.index].duplicate(true)
++				object["_guardrail"] = {"start":(end if part.reverse else begin)/scale,"end":(begin if part.reverse else end)/scale,"total":total/scale,"closed":closed,"lower_start":nodes[seed].edges.size() == 1,"lower_end":nodes[node].edges.size() == 1,"posts":posts}
++				result[source.index] = object
++	return result
++
++static func _less(a: Vector2, b: Vector2) -> bool:
++	return a.x < b.x if a.x != b.x else a.y < b.y
++
++static func _node(nodes: Array, buckets: Dictionary, point: Vector2, scale: float) -> int:
++	var cell := Vector2i((point/0.01).floor())
++	for x: int in range(-1,2):
++		for y: int in range(-1,2):
++			for index: int in buckets.get(cell+Vector2i(x,y),[]):
++				if is_equal_approx(float(nodes[index].scale),scale) and point.distance_to(nodes[index].point) <= JOIN_TOLERANCE: return index
++	var index: int = nodes.size()
++	nodes.append({"point":point,"scale":scale,"edges":[]})
++	if not buckets.has(cell): buckets[cell] = []
++	buckets[cell].append(index)
++	return index
++
++static func standalone(span: float) -> Dictionary:
++	var posts := PackedFloat32Array()
++	var count: int = maxi(1,floori(span/POST_SPACING))
++	for i: int in range(count): posts.append(span*((i+0.5)/count-0.5))
++	return {"start":0.0,"end":span,"total":span,"closed":false,"lower_start":true,"lower_end":true,"posts":posts}
++
++static func height(x: float, span: float, profile: Dictionary) -> float:
++	if profile.closed: return 1.0
++	var station: float = lerpf(float(profile.start),float(profile.end),clampf(x/span+0.5,0.0,1.0))
++	var ramp: float = minf(RAMP_LENGTH,float(profile.total)*0.5)
++	var distance: float = minf(station if profile.lower_start else INF,float(profile.total)-station if profile.lower_end else INF)
++	return smoothstep(0.0,ramp,distance)
++
++static func append(tool: SurfaceTool, span: float, context: Dictionary = {}, winter: bool = false) -> void:
++	var profile: Dictionary = standalone(span) if context.is_empty() else context
++	for x: float in profile.posts: _post(tool,x,height(x,span,profile),winter)
++	var section: Array[Vector2] = [Vector2(0.57,0.087),Vector2(0.62,0.11),Vector2(0.72,0.16),Vector2(0.80,0.11),Vector2(0.88,0.16),Vector2(0.98,0.11),Vector2(1.03,0.087)]
++	var count: int = maxi(1,ceili(span/0.35))
++	for i: int in range(count):
++		var x0: float = span*(float(i)/count-0.5)
++		var x1: float = span*(float(i+1)/count-0.5)
++		var h0: float = height(x0,span,profile)
++		var h1: float = height(x1,span,profile)
++		for row: int in range(section.size()-1):
++			var a: Vector2 = section[row]; var b: Vector2 = section[row+1]
++			PropGeometry.face(tool,[Vector3(x0,a.x*h0,a.y),Vector3(x1,a.x*h1,a.y),Vector3(x1,b.x*h1,b.y),Vector3(x0,b.x*h0,b.y)],METAL.lightened(0.12 if row%2 == 0 else 0.02))
++			PropGeometry.face(tool,[Vector3(x1,a.x*h1,a.y-0.015),Vector3(x0,a.x*h0,a.y-0.015),Vector3(x0,b.x*h0,b.y-0.015),Vector3(x1,b.x*h1,b.y-0.015)],METAL.darkened(0.15))
++		if winter:
++			PropGeometry.face(tool,[Vector3(x0,1.075*h0,0.025),Vector3(x1,1.075*h1,0.025),Vector3(x1,1.065*h1,0.14),Vector3(x0,1.065*h0,0.14)],Color("e1eaf0"),Vector3.UP)
++
++static func _post(tool: SurfaceTool, x: float, h: float, winter: bool) -> void:
++	if h < 0.18: return
++	for z: float in [-0.072,0.025]:
++		PropGeometry.beam(tool,Vector3(x,0,z),Vector3(x,1.25*h,z),0.15,0.035,METAL.darkened(0.20))
++	PropGeometry.beam(tool,Vector3(x,0,-0.024),Vector3(x,1.25*h,-0.024),0.033,0.10,METAL.darkened(0.1))
++	PropGeometry.box(tool,Vector3(x,0.80*h,0.035),Vector3(0.17,0.30*h,0.17),DARK,minf(0.015,0.03*h))
++	PropGeometry.tube(tool,Vector3(x,0.80*h,0.146),Vector3(x,0.80*h,0.169),0.040*h,0.040*h,Color("ccd1c6"),8)
++	PropGeometry.box(tool,Vector3(x,1.20*h,0.06),Vector3(0.085,0.15*h,0.04),Color("bbab70"),minf(0.012,0.02*h))
++	if winter: PropGeometry.box(tool,Vector3(x,1.267*h,-0.024),Vector3(0.18,0.035*h,0.16),Color("e1eaf0"),minf(0.012,0.015*h))
+--- /dev/null
++++ b/game/track/guardrail_visual.gd.uid
+@@ -0,0 +1 @@
++uid://cds2cuxjb4j15
+--- /dev/null
++++ b/game/tests/test_guardrail_ends.gd
+@@ -0,0 +1,217 @@
++extends "res://tests/test_editor_incremental_objects.gd"
++## Real fitted runs, topology, finite geometry and race/editor parity.
++const RAIL = preload("res://track/guardrail_visual.gd")
++
++func run() -> void:
++	root.size = Vector2i(1280,720)
++	evidence = ProjectSettings.globalize_path("res://../docs/evidence/guardrail-ends-2026-10-27/"+RenderingServer.get_current_rendering_method())
++	for arg: String in OS.get_cmdline_user_args():
++		if arg.begins_with("--output="): evidence = arg.trim_prefix("--output=")
++	DirAccess.make_dir_recursive_absolute(evidence)
++	baseline_geometry()
++	topology_cases()
++	for theme: String in ["pine","winter"]: await parity(theme)
++	await editor_flow()
++	print("GUARDRAIL_ENDS: %d checks, %d failures" % [checks,failures])
++	quit(1 if failures else 0)
++
++func baseline_geometry() -> void:
++	var old := GDScript.new()
++	old.source_code = FileAccess.get_file_as_string("res://../docs/evidence/guardrail-ends-2026-10-27/before/game/track/prop_equipment.gd").replace("\r\n","\n").replace("class_name PropEquipment\n","")
++	check(old.reload() == OK,"exact original equipment source compiles in isolated memory")
++	var legacy: SurfaceTool = PropGeometry.model()
++	old._fence(legacy,"guardrail",6.0,true)
++	var revised: SurfaceTool = PropGeometry.model()
++	RAIL.append(revised,6.0)
++	var before: PackedVector3Array = PropGeometry.finish(legacy).surface_get_arrays(0)[Mesh.ARRAY_VERTEX]
++	var after: PackedVector3Array = PropGeometry.finish(revised).surface_get_arrays(0)[Mesh.ARRAY_VERTEX]
++	var old_end_height: float = 0.0; var new_end_height: float = 0.0
++	for p: Vector3 in before:
++		if absf(absf(p.x)-3.0) < 0.00001: old_end_height = maxf(old_end_height,p.y)
++	for p: Vector3 in after:
++		if absf(absf(p.x)-3.0) < 0.00001: new_end_height = maxf(new_end_height,p.y)
++	check(old_end_height > 1.0,"original geometry reproduces the abrupt full-height rail ends")
++	check(new_end_height == 0.0,"actual revised terminal vertices meet ground at both ends")
++	for kind: String in ["fence","wire_fence"]:
++		var a: SurfaceTool = PropGeometry.model(); var b: SurfaceTool = PropGeometry.model()
++		old._fence(a,kind,6.0,true); PropEquipment._fence(b,kind,6.0,true)
++		check(PropGeometry.finish(a).surface_get_arrays(0) == PropGeometry.finish(b).surface_get_arrays(0),kind+" retains exact original mesh arrays")
++	print("GUARDRAIL_TERMINAL_HEIGHT original=",old_end_height," revised=",new_end_height)
++
++func stations(objects: Array) -> PackedVector2Array:
++	var result := PackedVector2Array()
++	for object: Dictionary in RAIL.prepare(objects):
++		var point := Vector2(object.position[0],object.position[1])
++		for x: float in object._guardrail.posts:
++			result.append(point+Vector2(x*float(object.get("scale",1.0)),0).rotated(deg_to_rad(float(object.rotation))))
++	result.sort()
++	return result
++
++func audit(objects: Array, label: String) -> void:
++	var before: Array = objects.duplicate(true)
++	var prepared: Array = RAIL.prepare(objects)
++	check(objects == before,label+" leaves canonical authored objects exact")
++	var count: int = 0
++	var valid: bool = true
++	for object: Dictionary in prepared:
++		var profile: Dictionary = object._guardrail
++		var span: float = CreatorObjects.size_of(object).x/float(object.get("scale",1.0))
++		count += profile.posts.size()
++		var tool: SurfaceTool = PropGeometry.model()
++		RAIL.append(tool,span,profile)
++		var arrays: Array = PropGeometry.finish(tool).surface_get_arrays(0)
++		for p: Vector3 in arrays[Mesh.ARRAY_VERTEX]: valid = valid and p.is_finite() and p.y >= -0.00001
++		for n: Vector3 in arrays[Mesh.ARRAY_NORMAL]: valid = valid and n.is_finite() and n.length() > 0.9
++	check(valid,label+" produces finite above-ground vertices and unit normals")
++	print("GUARDRAIL_FIXTURE ",label," sections=",objects.size()," posts=",count)
++
++func topology_cases() -> void:
++	var path := PackedVector2Array([Vector2(-12,0),Vector2(12,0)])
++	var straight: Array = ObjectRuns.build(path,"guardrail",1.0,96)
++	check(straight.size() == 4,"straight fixture has four original six-metre sections")
++	audit(straight,"straight")
++	var prepared: Array = RAIL.prepare(straight)
++	check(stations(straight).size() == 8,"24m run uses eight posts instead of twelve overlapping section posts")
++	for object: Dictionary in prepared:
++		var p: Dictionary = object._guardrail
++		var span: float = CreatorObjects.size_of(object).x
++		check(is_zero_approx(RAIL.height(-span*0.5,span,p)) if is_zero_approx(p.start) else RAIL.height(-span*0.5,span,p) == 1.0,"only the exposed start lowers to ground")
++		check(is_zero_approx(RAIL.height(span*0.5,span,p)) if is_equal_approx(p.end,p.total) else RAIL.height(span*0.5,span,p) == 1.0,"only the exposed finish lowers to ground")
++	var short_sections: Array = []
++	for i: int in range(48): short_sections.append({"kind":"guardrail","position":[-11.75+i*0.5,0.0],"rotation":0.0,"length":0.5})
++	check(stations(short_sections) == stations(straight),"half-metre curve chords cannot multiply posts or reset spacing")
++	var reversed: Array = straight.duplicate(true); reversed.reverse()
++	for object: Dictionary in reversed: object.rotation = 180.0
++	var a: PackedVector2Array = stations(straight); var b: PackedVector2Array = stations(reversed)
++	var equal: bool = a.size() == b.size()
++	for i: int in range(mini(a.size(),b.size())): equal = equal and a[i].distance_to(b[i]) < 0.00001
++	check(equal,"saved ordering and reversed sections preserve physical post positions")
++	for scale: float in [0.5,0.75,1.5,2.0]: audit(ObjectRuns.build(path,"guardrail",scale,96),"scale "+str(scale))
++	for length: float in [0.01,0.2,1.0,3.0,6.0,18.0]:
++		audit([{"kind":"guardrail","position":[0.0,0.0],"rotation":0.0,"length":length}],"isolated length "+str(length))
++		var p: Dictionary = RAIL.standalone(length)
++		check(RAIL.height(-length*0.5,length,p) == 0.0 and RAIL.height(length*0.5,length,p) == 0.0,"both isolated ends start at ground")
++		check(is_equal_approx(RAIL.height(0,length,p),1.0),"short isolated rail retains a readable middle")
++	var loop: Array = ObjectRuns.build(PackedVector2Array([Vector2(0,0),Vector2(12,0),Vector2(12,12),Vector2(0,12),Vector2(0,0)]),"guardrail",1.0,96)
++	for object: Dictionary in RAIL.prepare(loop): check(object._guardrail.closed,"closed loop has no invented lowered terminals")
++	audit(loop,"closed loop")
++	var gap: Array = straight.duplicate(true); gap.remove_at(1)
++	var pieces: Array = RAIL.prepare(gap)
++	check(pieces[0]._guardrail.total == 6.0 and pieces[1]._guardrail.total == 12.0,"deletion creates two independently terminated runs")
++	var branch: Array = straight.duplicate(true); branch.append({"kind":"guardrail","position":[0.0,3.0],"rotation":90.0,"length":6.0})
++	audit(branch,"branch")
++	for object: Dictionary in RAIL.prepare(branch):
++		var center := Vector2(object.position[0],object.position[1])
++		var span: float = CreatorObjects.size_of(object).x
++		for x: float in [-span*0.5,span*0.5]:
++			if (center+Vector2(x,0).rotated(deg_to_rad(float(object.rotation)))).length() < 0.001:
++				check(RAIL.height(x,span,object._guardrail) == 1.0,"shared branch junction stays full height")
++	var mixed: Array = straight.duplicate(true); mixed.append({"kind":"fence","position":[15.0,0.0],"rotation":0.0})
++	check(not RAIL.prepare(mixed)[-1].has("_guardrail"),"wooden and wire fences keep their own model")
++	# The actual road-edge fitter creates many small sections around this turn.
++	var road: Dictionary = RoadPieces.create("curve",Vector2(-20,0),0.0,10.0); road.radius = 20.0
++	var doc: Dictionary = TrackDocument.create_blank(); doc.pieces = [road]
++	var run: Array = RoadPieces.barrier_run(doc,Vector2(-20,-7),Vector2(7,20),"guardrail")
++	check(not run.is_empty(),"actual road-edge action creates a curved run")
++	audit(run,"road-edge curve")
++	var posts: PackedVector2Array = stations(run)
++	var minimum: float = INF
++	for i: int in range(posts.size()):
++		for j: int in range(i+1,posts.size()): minimum = minf(minimum,posts[i].distance_to(posts[j]))
++	check(minimum > 2.7,"curved road-edge posts stay separated across fitted seams")
++	print("GUARDRAIL_ROAD_EDGE sections=",run.size()," posts=",posts.size()," minimum_post_distance_m=",minimum)
++
++func fixture(objects: Array, theme: String) -> NativeTrack:
++	var track := NativeTrack.new()
++	track.metadata = {"creator_document":{"objects":objects},"scenery_objects":[],"theme":theme}
++	return track
++
++func parity(theme: String) -> void:
++	var path := PackedVector2Array([Vector2(-12,0),Vector2(-6,0),Vector2(-2,1),Vector2(2,3),Vector2(6,5),Vector2(12,5)])
++	var objects: Array = ObjectRuns.build(path,"guardrail",1.0,96)
++	var track: NativeTrack = fixture(objects,theme)
++	var original: Dictionary = track.metadata.duplicate(true)
++	var race := NativeTrackVisual.new(); race.theme_id = theme; race.colors = TrackTheme.palette(theme)
++	var editor := NativeTrackVisual.new(); editor.theme_id = theme; editor.colors = race.colors
++	root.add_child(race); root.add_child(editor)
++	await race._build_placed_objects(track)
++	await editor.refresh_editor_objects(track,false)
++	check(same_triangles(triangles(race),triangles(editor)),theme+" connected run has exact editor/race triangles and normals")
++	check(track.metadata == original,theme+" render context never reaches track data")
++	await render_closeup(race,objects,theme)
++	var changed: Array = objects.duplicate(true); changed.remove_at(changed.size()/2)
++	var revised: NativeTrack = fixture(changed,theme)
++	await editor.refresh_editor_objects(revised,false)
++	var independent := NativeTrackVisual.new(); independent.theme_id = theme; independent.colors = race.colors
++	await independent._build_placed_objects(revised)
++	check(same_triangles(triangles(independent),triangles(editor)),theme+" deletion updates neighbouring terminal meshes")
++	await editor.refresh_editor_objects(track,false)
++	check(same_triangles(triangles(race),triangles(editor)),theme+" restoring sections restores original complete run")
++	independent.free(); race.queue_free(); editor.queue_free(); await process_frame
++
++func render_closeup(race: NativeTrackVisual, objects: Array, theme: String) -> void:
++	if DisplayServer.get_name() == "headless": return
++	var viewport := SubViewport.new(); viewport.size = Vector2i(1280,720); viewport.own_world_3d = true
++	viewport.render_target_update_mode = SubViewport.UPDATE_ALWAYS; root.add_child(viewport)
++	race.reparent(viewport)
++	var camera := Camera3D.new(); camera.projection = Camera3D.PROJECTION_ORTHOGONAL; camera.size = 20.0
++	viewport.add_child(camera); camera.look_at_from_position(Vector3(7,17,22),Vector3(0,0,-2)); camera.current = true
++	var sunlight := DirectionalLight3D.new(); sunlight.rotation_degrees = Vector3(-55,-30,0); sunlight.shadow_enabled = true; viewport.add_child(sunlight)
++	var ambient := WorldEnvironment.new(); ambient.environment = Environment.new()
++	ambient.environment.background_mode = Environment.BG_COLOR; ambient.environment.background_color = Color("45535a")
++	ambient.environment.ambient_light_source = Environment.AMBIENT_SOURCE_COLOR; ambient.environment.ambient_light_energy = 0.55; viewport.add_child(ambient)
++	var ground := Node3D.new(); viewport.add_child(ground)
++	VisualGeometry.box(ground,Vector3(200,0.12,200),Vector3(0,-0.06,0),VisualGeometry.material(Color("becbd1") if theme == "winter" else Color("718263")))
++	for frame: int in range(5): await RenderingServer.frame_post_draw
++	check(viewport.get_texture().get_image().save_png(evidence.path_join(theme+"-run-closeup.png")) == OK,theme+" native closeup shows true ground terminals")
++	if theme == "pine":
++		var old := GDScript.new()
++		old.source_code = FileAccess.get_file_as_string("res://../docs/evidence/guardrail-ends-2026-10-27/before/game/track/prop_equipment.gd").replace("\r\n","\n").replace("class_name PropEquipment\n","")
++		check(old.reload() == OK,"original renderer loads for matched visual comparison")
++		var tool: SurfaceTool = PropGeometry.model()
++		for object: Dictionary in objects:
++			var local: SurfaceTool = PropGeometry.model()
++			old._fence(local,"guardrail",CreatorObjects.size_of(object).x,true)
++			PropGeometry.append_transformed(tool,local,Vector3(object.position[0],0.014,-object.position[1]),1.0,deg_to_rad(float(object.rotation)))
++		var mesh := MeshInstance3D.new(); mesh.mesh = PropGeometry.finish(tool)
++		var material := VisualGeometry.material(Color.WHITE); material.vertex_color_use_as_albedo = true; material.vertex_color_is_srgb = true; material.cull_mode = BaseMaterial3D.CULL_DISABLED
++		mesh.material_override = material; viewport.add_child(mesh); race.hide()
++		for frame: int in range(5): await RenderingServer.frame_post_draw
++		check(viewport.get_texture().get_image().save_png(evidence.path_join("pine-original-closeup.png")) == OK,"matched original view records abrupt ends and crowded seam posts")
++	race.reparent(root); race.show(); viewport.queue_free(); await process_frame
++
++func editor_flow() -> void:
++	var storage: String = evidence.path_join("storage")
++	app = load("res://core/app.tscn").instantiate()
++	app.library = TrackLibrary.new(storage); app.records = LocalRecords.new(storage.path_join("records.json")); app.cloud_root_override = storage.path_join("cloud")
++	root.add_child(app)
++	while not app.startup_complete: await process_frame
++	var doc: Dictionary = TrackDocument.create_blank(); doc.id = "guardrail_review"; doc.name = "Guardrail review"
++	var piece: Dictionary = RoadPieces.create("spline",Vector2(-27,-10),0.0,10.0)
++	piece.spline_points = [[0.0,0.0],[18.0,0.0],[32.0,9.0],[38.0,25.0],[57.0,28.0]]
++	doc.pieces = [piece]
++	app.document = doc; app.canvas = null; app.editor_view.clear(); app.call("_show_screen","create")
++	await settle()
++	app.call("_editor_category","objects"); app.call("_choose_object","guardrail"); app.call("_object_placement","road edge")
++	app.object_browser.current = "guardrail"; app.object_browser.category = "Barriers"; app.object_browser.refresh()
++	app.canvas._place(app.canvas.to_screen(Vector2(-27,-17)))
++	app.canvas._place(app.canvas.to_screen(Vector2(30,25)))
++	await settle()
++	check(not app.document.objects.is_empty(),"real editor gestures place the curved guardrail")
++	var placed: Dictionary = app.document.duplicate(true)
++	check(app.history.size() == 1,"complete guardrail run is one undo operation")
++	check(app.library.load_wip(doc.id) == JSON.parse_string(JSON.stringify(placed)),"autosave retains exact original objects without render metadata")
++	app.canvas.fit()
++	await screenshot("editor-curved-run")
++	app.call("_undo"); await settle()
++	check(app.document.objects.is_empty(),"undo removes the whole run")
++	app.call("_redo"); await settle()
++	check(app.document == placed,"redo restores exact authored run")
++	app.canvas.zoom_by(2.0,app.canvas.to_screen(Vector2(-20,-17)))
++	await screenshot("editor-ground-terminal")
++	app.queue_free(); await process_frame
++
++func screenshot(label: String) -> void:
++	if DisplayServer.get_name() == "headless": return
++	for frame: int in range(4): await RenderingServer.frame_post_draw
++	check(root.get_texture().get_image().save_png(evidence.path_join(label+".png")) == OK,"capture "+label)
+--- /dev/null
++++ b/game/tests/test_guardrail_ends.gd.uid
+@@ -0,0 +1 @@
++uid://npksrwq18fja

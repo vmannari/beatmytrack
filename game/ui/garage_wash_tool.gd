@@ -9,16 +9,17 @@ var _motion: Tween
 
 static func make(tool: String, action: Callable) -> Button:
 	var tile := preload("res://ui/garage_wash_tool.gd").new()
-	tile.name = "GarageWashHose" if tool == "hose" else "GarageWashMitt"
-	tile.tooltip_text = "Hose · Rinse fine dust; wash heavy dirt slowly" if tool == "hose" else "Wash mitt · Scrub stubborn dirt"
-	tile.accessibility_name = "Hose" if tool == "hose" else "Wash mitt"
-	tile.toggle_mode = true
+	tile.name = "GarageSuperWash" if tool == "super" else "GarageWashHose" if tool == "hose" else "GarageWashMitt"
+	tile.tooltip_text = "Super Wash" if tool == "super" else "Hose · Rinse fine dust; wash heavy dirt slowly" if tool == "hose" else "Wash mitt · Scrub stubborn dirt"
+	tile.accessibility_name = "Super Wash" if tool == "super" else "Hose" if tool == "hose" else "Wash mitt"
+	tile.toggle_mode = tool != "super"
 	tile.mouse_default_cursor_shape = Control.CURSOR_POINTING_HAND
 	tile.set_meta("audio_cue","select")
 	tile.pressed.connect(action)
 	tile.photo = TextureRect.new()
 	tile.photo.name = "ToolPicture"
-	tile.photo.texture = load("res://assets/menu/garage/"+tool+"-v1.png")
+	var picture: String = "super-v2.png" if tool == "super" else tool+"-v1.png"
+	tile.photo.texture = load("res://assets/menu/garage/"+picture)
 	tile.photo.texture_filter = CanvasItem.TEXTURE_FILTER_LINEAR_WITH_MIPMAPS
 	tile.photo.expand_mode = TextureRect.EXPAND_IGNORE_SIZE
 	tile.photo.stretch_mode = TextureRect.STRETCH_KEEP_ASPECT_CENTERED
@@ -29,14 +30,15 @@ static func make(tool: String, action: Callable) -> Button:
 	tile.photo.offset_right = -14
 	tile.photo.offset_top = 10
 	tile.photo.offset_bottom = -52
-	tile.title = MenuStyle.label("Hose" if tool == "hose" else "Wash mitt",22)
+	tile.title = MenuStyle.label("Super Wash" if tool == "super" else "Hose" if tool == "hose" else "Wash mitt",22)
 	tile.title.add_theme_font_override("font",MenuStyle.DISPLAY)
 	tile.add_child(tile.title)
 	tile.title.set_anchors_and_offsets_preset(Control.PRESET_BOTTOM_WIDE)
 	tile.title.offset_left = 12
+	tile.title.offset_right = -12
 	tile.title.offset_top = -51
 	tile.title.offset_bottom = -26
-	tile.detail = MenuStyle.label("RINSE" if tool == "hose" else "DEEP CLEAN",11,true)
+	tile.detail = MenuStyle.label("" if tool == "super" else "RINSE" if tool == "hose" else "DEEP CLEAN",11,true)
 	tile.detail.add_theme_constant_override("outline_size",0)
 	tile.add_child(tile.detail)
 	tile.detail.set_anchors_and_offsets_preset(Control.PRESET_BOTTOM_WIDE)
@@ -72,6 +74,12 @@ func sync_selection(selected: bool) -> void:
 
 func _resize_photo() -> void:
 	photo.pivot_offset = photo.size*0.5
+	var available: float = maxf(1.0,size.x-title.offset_left+title.offset_right)
+	var font: Font = title.get_theme_font("font")
+	var font_size: int = 22
+	while font_size > 14 and font.get_string_size(GameText.message(title.text),HORIZONTAL_ALIGNMENT_LEFT,-1,font_size).x > available:
+		font_size -= 1
+	title.add_theme_font_size_override("font_size",font_size)
 
 func _hover(active: bool) -> void:
 	if _motion != null: _motion.kill()

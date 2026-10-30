@@ -1,0 +1,15 @@
+extends SceneTree
+func _initialize() -> void: run.call_deferred()
+func run() -> void:
+    var failures: int=0
+    for name: String in ["test_electric_corner_authority","test_electric_launch_drift","test_electric_powered_drift","test_electric_190","test_electric_over_under","test_electric_normal_tracks"]:
+        var source: GDScript=load("res://../build/electric-character-evidence-restore/"+name+".gd")
+        if source==null or not source.can_instantiate():
+            failures+=1
+            continue
+        var instance: RefCounted=source.new()
+        instance.run()
+        failures+=instance.failures
+        print("RESTORED ",name," failures=",instance.failures)
+    print("EVIDENCE_RESTORE failures=",failures)
+    quit(1 if failures else 0)

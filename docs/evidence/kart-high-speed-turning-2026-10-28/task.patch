@@ -1,0 +1,480 @@
+--- a/game/resources/cars/kart.tres
++++ b/game/resources/cars/kart.tres
+@@ -2,7 +2,7 @@
+ [ext_resource type="Script" path="res://vehicle/handling_config.gd" id="1"]
+ [resource]
+ script = ExtResource("1")
+-version = "kart-5"
++version = "kart-6"
+ vehicle_id = "kart"
+ profile_name = "Kart"
+ mass = 260.0
+@@ -19,7 +19,7 @@
+ wheelbase = 1.55
+ track_width = 1.25
+ collision_radius = 1.05
+-lateral_grip = 72.0
++lateral_grip = 80.0
+ longitudinal_grip = 29.0
+ lateral_response = 30.0
+ maximum_yaw_rate = 4.0
+--- a/game/tests/test_kart.gd
++++ b/game/tests/test_kart.gd
+@@ -77,7 +77,7 @@
+ 
+ func _check_top_speed(kart: HandlingConfig) -> void:
+ 	check(absf(kart.maximum_speed*3.6-140.0) < 0.001,"kart has the owner-requested 140 km/h cap")
+-	check(kart.version == "kart-5","higher speed has a separate handling identity")
++	check(kart.version == "kart-6","current cornering tune retains a separate handling identity")
+ 	var previous: HandlingConfig = kart.duplicate() as HandlingConfig
+ 	previous.version = "kart-4"
+ 	previous.maximum_speed = 30.0
+--- /dev/null
++++ b/game/tests/test_kart_high_speed_turning.gd
+@@ -0,0 +1,115 @@
++extends SceneTree
++## Compare actual velocity paths at matched speeds against the saved kart-5 tune.
++
++const EVIDENCE: String = "res://../docs/evidence/kart-high-speed-turning-2026-10-28"
++var checks: int = 0
++var failures: int = 0
++
++func _initialize() -> void:
++	run.call_deferred()
++
++func check(ok: bool, label: String) -> void:
++	checks += 1
++	if not ok:
++		failures += 1
++		print("FAIL: ",label)
++
++func circle(config: HandlingConfig, kph: float, steering: float) -> Dictionary:
++	var speed: float = kph/3.6
++	var sim := VehicleSimulation.new(config)
++	sim.state.velocity = Vector2(0,speed)
++	var frames: Array[DriveFrame] = []
++	var integral: float = 0.0
++	var distance: float = 0.0
++	var angle: float = 0.0
++	var minimum_speed: float = INF
++	var maximum_speed: float = 0.0
++	var peak_slip: float = 0.0
++	for tick: int in range(120*45):
++		var travel_speed: float = sim.state.velocity.length()
++		var error: float = speed-travel_speed
++		integral = clampf(integral+error*VehicleSimulation.STEP*4.0,-5.0,12.0)
++		var drag: float = (config.rolling_resistance+config.drag*travel_speed*travel_speed)/config.mass
++		var power: float = config.engine_force/config.mass*(1.0-0.45*travel_speed/config.maximum_speed)
++		var frame := DriveFrame.sample(steering,clampf((error*5.0+integral+drag)/power,0,1),0)
++		frames.append(frame)
++		var position: Vector2 = sim.state.position
++		var velocity: Vector2 = sim.state.velocity
++		sim.step(frame)
++		if tick >= 360:
++			distance += sim.state.position.distance_to(position)
++			angle += velocity.angle_to(sim.state.velocity)*-signf(steering)
++			minimum_speed = minf(minimum_speed,sim.state.velocity.length())
++			maximum_speed = maxf(maximum_speed,sim.state.velocity.length())
++			peak_slip = maxf(peak_slip,absf(rad_to_deg(sim.state.slip_angle())))
++		if angle >= TAU: break
++	var final: Array = sim.state.snapshot()
++	var recovery_ms: float = 0.0
++	for tick: int in range(240):
++		sim.step(DriveFrame.sample(0,0.5,0))
++		if recovery_ms == 0.0 and absf(sim.state.slip_angle()) < 0.01 and absf(sim.state.yaw_rate) < 0.01:
++			recovery_ms = (tick+1)*1000.0/120.0
++	var replay := VehicleSimulation.new(config)
++	replay.state.velocity = Vector2(0,speed)
++	# Four canonical steps per presentation frame (30 Hz) must match 120 Hz.
++	for start: int in range(0,frames.size(),4):
++		for index: int in range(start,mini(start+4,frames.size())): replay.step(frames[index])
++	return {"radius":distance/maxf(angle,0.00001),"angle":angle,"minimum_kph":minimum_speed*3.6,"maximum_kph":maximum_speed*3.6,"peak_slip_deg":peak_slip,"recovery_ms":recovery_ms,"replay_exact":final==replay.state.snapshot(),"ticks":frames.size()}
++
++func run() -> void:
++	var old: HandlingConfig = load("res://tests/fixtures/kart_high_speed_turning_before.tres")
++	var current: HandlingConfig = VehicleCatalog.config("kart")
++	var output: String = EVIDENCE
++	for arg: String in OS.get_cmdline_user_args():
++		if arg.begins_with("--evidence-root="): output = arg.trim_prefix("--evidence-root=")
++	DirAccess.make_dir_recursive_absolute(ProjectSettings.globalize_path(output))
++	check(old.version == "kart-5" and current.version == "kart-6","distinct identity for high-speed cornering")
++	check(current.lateral_grip == 80.0,"modest high-speed cornering grip increase")
++	var before_fields: Dictionary = old.snapshot()
++	var after_fields: Dictionary = current.snapshot()
++	for field: String in ["version","lateral_grip"]:
++		before_fields.erase(field)
++		after_fields.erase(field)
++	check(before_fields == after_fields,"only cornering grip and version change")
++	var turns: Array[Dictionary] = []
++	for kph: float in [10.0,20.0,30.0,40.0,60.0,80.0,100.0,120.0,140.0]:
++		for steering: float in [0.45,1.0]:
++			var before := circle(old,kph,steering)
++			var after := circle(current,kph,steering)
++			var mirror := circle(current,kph,-steering)
++			var ratio: float = after.radius/before.radius
++			var label: String = "%s km/h, steer %s" % [kph,steering]
++			check(before.angle >= TAU and after.angle >= TAU,"complete actual circles: "+label)
++			check(before.minimum_kph > kph*0.98 and after.minimum_kph > kph*0.98 and after.maximum_kph <= kph*1.02,"maintained matched speed: "+label)
++			check(ratio >= 0.86 and ratio <= 1.002,"bounded tightening without wider turns: "+label)
++			if kph <= 30: check(absf(ratio-1.0)<0.01,"low-speed turns stay within one percent: "+label)
++			if kph >= 80 and steering == 1.0 or kph >= 100:
++				check(ratio < 0.95,"high-speed radius at least five percent shorter: "+label)
++			check(is_equal_approx(after.radius,mirror.radius),"left/right symmetry: "+label)
++			check(after.replay_exact and mirror.replay_exact,"exact 120/30 Hz replay: "+label)
++			check(after.peak_slip_deg < 12.0,"kart retains its planted cornering: "+label)
++			check(after.recovery_ms > 0 and after.recovery_ms <= 350.0,"steering release settles quickly: "+label)
++			turns.append({"kph":kph,"steering":steering,"before":before,"after":after,"radius_ratio":ratio})
++	for mode: int in range(4):
++		var before := VehicleSimulation.new(old)
++		var after := VehicleSimulation.new(current)
++		if mode == 1 or mode == 2:
++			before.state.velocity = Vector2(0,old.maximum_speed)
++			after.state.velocity = before.state.velocity
++		var exact: bool = true
++		for tick: int in range(3600):
++			var frame := DriveFrame.sample(0,1 if mode == 0 else 0,1 if mode == 1 or mode == 3 else 0)
++			before.step(frame)
++			after.step(frame)
++			exact = exact and before.state.snapshot() == after.state.snapshot()
++		check(exact,"straight power/brake/lift/reverse stays tick-exact, mode="+str(mode))
++		if mode == 0: check(absf(after.state.velocity.length()*3.6-140.0)<0.001,"140 km/h top speed retained")
++	var track: NativeTrack = NativeTrack.read("res://tests/fixtures/legacy_tracks/slicks_arto4_test.json")
++	var records := LocalRecords.new("user://kart_high_speed_identity.json")
++	check(records.key_for(track,old) != records.key_for(track,current),"historical PB rules stay separate")
++	var report: Dictionary = {"checks":checks,"failures":failures,"turns":turns,"handling_version":current.version,"config_hash":JSON.stringify(current.snapshot(),"",true).sha256_text(),"physics_version":VehicleSimulation.PHYSICS_VERSION}
++	var file := FileAccess.open(output+"/turning.json",FileAccess.WRITE)
++	file.store_string(JSON.stringify(report,"\t"))
++	file.close()
++	print("KART_HIGH_SPEED_TURNING: %d checks, %d failures" % [checks,failures])
++	quit(1 if failures else 0)
+--- /dev/null
++++ b/game/tests/fixtures/kart_high_speed_turning_before.tres
+@@ -0,0 +1,39 @@
++[gd_resource type="Resource" script_class="HandlingConfig" load_steps=2 format=3]
++[ext_resource type="Script" path="res://vehicle/handling_config.gd" id="1"]
++[resource]
++script = ExtResource("1")
++version = "kart-5"
++vehicle_id = "kart"
++profile_name = "Kart"
++mass = 260.0
++engine_force = 6200.0
++braking_force = 7200.0
++rolling_resistance = 55.0
++drag = 0.35
++maximum_speed = 38.88889
++rotational_inertia = 100.0
++steering_rate = 24.0
++countersteering_rate = 28.0
++steering_angle = 0.92
++high_speed_steering_reduction = 0.58
++wheelbase = 1.55
++track_width = 1.25
++collision_radius = 1.05
++lateral_grip = 72.0
++longitudinal_grip = 29.0
++lateral_response = 30.0
++maximum_yaw_rate = 4.0
++slip_threshold = 0.30
++sliding_grip = 0.88
++grip_recovery = 8.0
++countersteer_assistance = 0.35
++brake_rotation = 0.08
++brake_grip_loss = 0.04
++throttle_grip_loss = 0.0
++collision_energy_loss = 0.45
++loose_surface_grip = 0.75
++soil_drag_multiplier = 5.5
++wheel_soil_drag = true
++dirty_tire_grip_loss = 0.40
++tire_pickup_distance = 12.0
++tire_clean_distance = 100.0
+--- a/backend/tests/fixtures/verified_oval.json
++++ b/backend/tests/fixtures/verified_oval.json
+@@ -64442,8 +64442,8 @@
+         "handling_version": "cars-1"
+       },
+       "kart": {
+-        "config_hash": "0d232a39393d7146aafa737e59d8b0bfd87292f1c4556614089a82e445e00873",
+-        "handling_version": "kart-5"
++        "config_hash": "9faf4795507b76a82d36c54745ec3c4a689576aa54a5b1c2613c24e8ced280d1",
++        "handling_version": "kart-6"
+       },
+       "pickup": {
+         "config_hash": "0e265623b5cc55b9d62983f01e423466c54374de164442b4df95623fc670d03f",
+--- /dev/null
++++ b/docs/KART_HIGH_SPEED_TURNING_2026_10_28.md
+@@ -0,0 +1,45 @@
++# Shorter go-kart turns at higher speeds - 2026-10-28
++
++KHT01 tightens the go-kart's actual driven turning radius at higher speeds. Kart-6 raises lateral grip from 72 to 80 m/s², within the existing authored range. This increases the available cornering force where the current kart runs out of grip. KHT02 retains its steering angle/ramp/reduction, yaw cap, power, brakes, reverse, soil penalties, geometry and 140 km/h cap. Shared physics stays `arcade-planar-0.75`. R01 preserves concurrent work; Q01 checks matched-speed paths, symmetry, recovery, deterministic replay and five-lap verification.
++
++Full-steering radii are measured from travelled distance divided by accumulated travel-direction angle after three seconds of settling. The quantized pedal controller holds the same requested speed using each unmodified handling resource; smaller radii cannot pass by slowing down.
++
++| Speed | Kart-5 | Kart-6 | Shorter radius |
++| --- | --- | --- | --- |
++| 80 km/h | 6.860 m | 6.183 m | 9.86% |
++| 100 km/h | 10.707 m | 9.634 m | 10.01% |
++| 120 km/h | 15.420 m | 13.875 m | 10.02% |
++| 140 km/h | 20.994 m | 18.891 m | 10.02% |
++
++At 45% steering the reductions are 2.36% at 80, 7.04% at 100, 9.57% at 120 and 9.95% at 140 km/h. Full-steering circles through 60 km/h remain effectively unchanged; all sampled 10-30 km/h circles remain within 0.004% of the previous radius. This changes the high-speed radius relative to the prior tune; the radius still grows naturally as speed rises.
++
++The focused regression passes 148 checks with no failures. The original tune fails 10 of those same checks before the change, covering the expected identity, higher-speed radius and PB separation. Eighteen speed/steering pairs cover 10-140 km/h with matched-speed original/revised circles and mirrored revised circles. All circles complete, maintain at least 98% of requested speed, stay within the bounded tightening envelope, retain less than 12 degrees of slip, settle within 350 ms and replay exactly at 120/30 Hz step batches. Four 3,600-tick straight acceleration/braking/lift/reverse sequences remain tick-exact against Kart-5; sustained top speed is still 140 km/h.
++
++Retained kart 42/0, cross-car checks plus kart laps 113/0, shared handling 88/0 and rewind 61/0 pass. Kart completes five laps on Arto4, Hiekka and Ovaali3 with zero contacts and exact input replay. A separate native engine verifies a 12,787-input five-lap generated race at 106,554 ms with lap ticks `[2621, 2541, 2542, 2541, 2542]`. The retained Compact backend five-lap replay also passes. The pinned preferred dependency parse for the new regression passes.
++
++Two broader checks retain unrelated failures. The project-wide parser stops at `game/tests/fixtures/parking_hall_before/garage_page.gd:67`, whose saved Garage methods call the missing `_build_wash_requirement()`; this fixture and its base Garage source are outside this task. The backend manifest assertion expects retired `classic` and `formula` IDs because the appearance schema retains historical identities while the active catalogue has six vehicles. The catalogue and canonical sources are byte-exact against task start, and kart resource tuning cannot change that ID set. The original assertions remain untouched. The two selected backend tests therefore report one pass and one failure, rather than a full backend pass.
++
++The first sandboxed native invocation cannot read the Windows root certificate store. Offline native runs use a task-owned APPDATA profile and empty API URL through the existing automatic escalation path. The first independent verification helper assumes every active car exists in the older local fixture and stops on its absent Hovercraft entry after successfully verifying the race. The corrected helper records that missing coverage and checks every present contract; the Hovercraft fixture is not invented or modified. Raw initial logs remain in the evidence folder.
++
++Runtime scope is one resource: `game/resources/cars/kart.tres`. Supporting changes add the focused regression and an exact Kart-5 test fixture, update only the current identity assertion in `test_kart.gd`, and refresh only Kart's expected version/hash in the local backend fixture. The new configuration hash is `9faf4795507b76a82d36c54745ec3c4a689576aa54a5b1c2613c24e8ced280d1`. Shared simulation/config/catalogue sources and six other car-resource sources remain byte-exact against task start. Documentation, raw receipts and the checked source-only patch are in [the evidence folder](evidence/kart-high-speed-turning-2026-10-28/report.json). Generated build identities are archived and excluded from that patch; concurrent source changes remain preserved. The patch uses no main Git index.
++
++Commands actually run, with `$env:APPDATA` set to the task-owned `tmp/kart-high-speed-turning-profile` and `$env:BMT_API_URL=''`:
++
++```powershell
++powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1 -Action TestScript -ScriptPath res://tests/test_kart_high_speed_turning.gd
++powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1 -Action TestScript -ScriptPath res://tests/test_kart.gd
++powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1 -Action TestScript -ScriptPath res://tests/test_cars.gd -TestArgument '--car=kart'
++powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1 -Action TestScript -ScriptPath res://tests/test_handling.gd
++powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1 -Action TestScript -ScriptPath res://tests/test_rewind.gd
++powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1 -Action TestScript -ScriptPath res://tests/export_kart_speed_replay.gd -TestArgument '--output=res://../docs/evidence/kart-high-speed-turning-2026-10-28/kart-race.json'
++powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1 -Action TestScript -ScriptPath res://tests/test_script_parse.gd
++powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1 -Action CheckScript -ScriptPath res://tests/test_kart_high_speed_turning.gd
++./.tools/backend-secure-venv/Scripts/python.exe docs/evidence/kart-high-speed-turning-2026-10-28/verify_canonical.py
++./.tools/backend-secure-venv/Scripts/python.exe -m pytest backend/tests/test_verifier.py::test_real_engine_manifest_pins_every_competitive_config backend/tests/test_verifier.py::test_real_five_lap_race_replays_identically -q --basetemp=tmp/kart-high-speed-backend-tests
++./.tools/backend-secure-venv/Scripts/python.exe docs/evidence/kart-high-speed-turning-2026-10-28/summarize.py
++./.tools/backend-secure-venv/Scripts/python.exe docs/evidence/kart-high-speed-turning-2026-10-28/checkpoint.py
++```
++
++The original focused run additionally sets `--evidence-root=res://../docs/evidence/kart-high-speed-turning-2026-10-28/original`. Python verification uses the pinned `BMT_GODOT_BIN`, local `BMT_GAME_PROJECT` and `PYTHONPATH=backend`; it never connects to the live service.
++
++Reload/rebuild and matching backend/online car contracts are required before online use of Kart-6. Owner driving-feel and physical-device acceptance remain. No physical-device attachment query/test, APK/export, owner-save mutation, live submission/deployment, authentication/purchase, owner-process restart, main-index staging, commit or merge was performed. No UI/art change or phone-performance claim is made. The broader failures above remain release/merge limitations.
+--- a/docs/KART.md
++++ b/docs/KART.md
+@@ -1,3 +1,8 @@
++<!-- KART-HIGH-SPEED-TURNING-20261028 -->
++## Shorter go-kart turns at higher speeds (2026-10-28)
++KHT01-KHT02/R01/Q01: Kart-6 changes only version and lateral grip72to80. Matched-speed full-steering radii are9.86-10.02% shorter at80-140km/h;100km/h10.707to9.634m. Low-speed10-30km/h circles stay within0.004%. Power/brakes/reverse/140kmh/shared physics0.75 remain;14,400 straight ticks are exact. Focused148/0 versus original148/10, retained kart42/cars113/handling88/rewind61 and preferred dependency parse pass. Three five-lap tracks have zero contacts/exact replay; independent12,787-input race accepts106554ms. Broader parser retains unrelated Garage-fixture missing method; selected backend1pass/1retired-car manifest failure. Initial sandbox certificate and helper missing-Hovercraft-fixture findings retained. One runtime resource; new regression/exact baseline/local fixture identity refresh and checked source-only patch. Commands, hashes, measurements and limits: docs/KART_HIGH_SPEED_TURNING_2026_10_28.md and docs/evidence/kart-high-speed-turning-2026-10-28/report.json. Reload/rebuild, matching online contract rollout and owner/device feel acceptance remain. No device query/test, APK, live mutation/deployment, owner-save/process change or main-index staging/commit/merge. Concurrent sources and generated metadata excluded from checkpoint.
++<!-- /KART-HIGH-SPEED-TURNING-20261028 -->
++
+ <!-- KART-140-20261025 -->
+ ## Current top speed - 2026-10-25
+ Kart-5 raises the cap to **140 km/h** (38.88889 m/s). Existing engine-force, steering, grip and brake settings remain. The speed-based power curve slightly quickens acceleration. See [current tuning and verification](KART_140_2026_10_25.md); the sections below retain their historical measurements.
+--- a/AGENTS.md
++++ b/AGENTS.md
+@@ -1,3 +1,8 @@
++<!-- KART-HIGH-SPEED-TURNING-20261028 -->
++## Shorter go-kart turns at higher speeds (2026-10-28)
++KHT01-KHT02/R01/Q01: Kart-6 changes only version and lateral grip72to80. Matched-speed full-steering radii are9.86-10.02% shorter at80-140km/h;100km/h10.707to9.634m. Low-speed10-30km/h circles stay within0.004%. Power/brakes/reverse/140kmh/shared physics0.75 remain;14,400 straight ticks are exact. Focused148/0 versus original148/10, retained kart42/cars113/handling88/rewind61 and preferred dependency parse pass. Three five-lap tracks have zero contacts/exact replay; independent12,787-input race accepts106554ms. Broader parser retains unrelated Garage-fixture missing method; selected backend1pass/1retired-car manifest failure. Initial sandbox certificate and helper missing-Hovercraft-fixture findings retained. One runtime resource; new regression/exact baseline/local fixture identity refresh and checked source-only patch. Commands, hashes, measurements and limits: docs/KART_HIGH_SPEED_TURNING_2026_10_28.md and docs/evidence/kart-high-speed-turning-2026-10-28/report.json. Reload/rebuild, matching online contract rollout and owner/device feel acceptance remain. No device query/test, APK, live mutation/deployment, owner-save/process change or main-index staging/commit/merge. Concurrent sources and generated metadata excluded from checkpoint.
++<!-- /KART-HIGH-SPEED-TURNING-20261028 -->
++
+ <!-- OBJECT-PROPERTIES-20261028 -->
+ ## Object properties redesigned (2026-10-28)
+ OP01-OP06/Q01: Visible Properties opens a shared named inspector for placement and selected objects. Size presets/dimensions, exact visual orientation and illustrated fence modes preserve choices; contextual width/paint, undo and stale-selection fences remain. Final native94/0 each Compatibility/desktop Mobile, retained rotation60/0/workflow254/0 and scoped253 translations pass. Fourteen captures each include four viewports and Finnish/German. Original menu fixture failures/obsolete dropdown crash, historical Garage parser failure and broad localization gaps remain recorded. Initial input-routing and theme-margin corrections retained. Four runtime files plus one new regression/23 translation rows; concurrent editor/jump/catalogue/vehicle/backend work and metadata preserved. Checked source-only patch uses a reconstructed task inverse. Reload and owner/Android quality/input acceptance remain; no device query/test, APK, deployment, owner-save/process mutation or main-index staging/commit/merge. See docs/OBJECT_PROPERTIES_2026_10_28.md and docs/evidence/object-properties-2026-10-28/report.json.
+--- a/DEVELOPMENT_STATUS.md
++++ b/DEVELOPMENT_STATUS.md
+@@ -1,3 +1,8 @@
++<!-- KART-HIGH-SPEED-TURNING-20261028 -->
++## Shorter go-kart turns at higher speeds (2026-10-28)
++KHT01-KHT02/R01/Q01: Kart-6 changes only version and lateral grip72to80. Matched-speed full-steering radii are9.86-10.02% shorter at80-140km/h;100km/h10.707to9.634m. Low-speed10-30km/h circles stay within0.004%. Power/brakes/reverse/140kmh/shared physics0.75 remain;14,400 straight ticks are exact. Focused148/0 versus original148/10, retained kart42/cars113/handling88/rewind61 and preferred dependency parse pass. Three five-lap tracks have zero contacts/exact replay; independent12,787-input race accepts106554ms. Broader parser retains unrelated Garage-fixture missing method; selected backend1pass/1retired-car manifest failure. Initial sandbox certificate and helper missing-Hovercraft-fixture findings retained. One runtime resource; new regression/exact baseline/local fixture identity refresh and checked source-only patch. Commands, hashes, measurements and limits: docs/KART_HIGH_SPEED_TURNING_2026_10_28.md and docs/evidence/kart-high-speed-turning-2026-10-28/report.json. Reload/rebuild, matching online contract rollout and owner/device feel acceptance remain. No device query/test, APK, live mutation/deployment, owner-save/process change or main-index staging/commit/merge. Concurrent sources and generated metadata excluded from checkpoint.
++<!-- /KART-HIGH-SPEED-TURNING-20261028 -->
++
+ <!-- JUMP-PALETTE-OBJECTS-20261028 -->
+ ## Each jump is a separate palette object (2026-10-28)
+ Five separate named cards replace the grouped jump/style workflow. Real touch/reselect, distinct actual previews, Recent, copy/Undo/reload and editor return pass:3365headless/3379Compatibility/3379desktopMobile; worker9000 exact states. Controls reproduce existing gesture/cancellation failures; old properties-selector and concurrent parser findings remain recorded. Four runtime files; current concurrent editor/physics work preserved and excluded from the checked review patch. See docs/JUMP_PALETTE_OBJECTS_2026_10_28.md and docs/evidence/jump-palette-objects-2026-10-28/report.json. Reload and owner/device acceptance remain. No device query/test, APK, deployment, owner-save/live mutation, owner-process restart or root staging/commit/merge.
+--- a/docs/PHASE_0_PLAN.md
++++ b/docs/PHASE_0_PLAN.md
+@@ -1,3 +1,8 @@
++<!-- KART-HIGH-SPEED-TURNING-20261028 -->
++## Shorter go-kart turns at higher speeds (2026-10-28)
++KHT01-KHT02/R01/Q01: Kart-6 changes only version and lateral grip72to80. Matched-speed full-steering radii are9.86-10.02% shorter at80-140km/h;100km/h10.707to9.634m. Low-speed10-30km/h circles stay within0.004%. Power/brakes/reverse/140kmh/shared physics0.75 remain;14,400 straight ticks are exact. Focused148/0 versus original148/10, retained kart42/cars113/handling88/rewind61 and preferred dependency parse pass. Three five-lap tracks have zero contacts/exact replay; independent12,787-input race accepts106554ms. Broader parser retains unrelated Garage-fixture missing method; selected backend1pass/1retired-car manifest failure. Initial sandbox certificate and helper missing-Hovercraft-fixture findings retained. One runtime resource; new regression/exact baseline/local fixture identity refresh and checked source-only patch. Commands, hashes, measurements and limits: docs/KART_HIGH_SPEED_TURNING_2026_10_28.md and docs/evidence/kart-high-speed-turning-2026-10-28/report.json. Reload/rebuild, matching online contract rollout and owner/device feel acceptance remain. No device query/test, APK, live mutation/deployment, owner-save/process change or main-index staging/commit/merge. Concurrent sources and generated metadata excluded from checkpoint.
++<!-- /KART-HIGH-SPEED-TURNING-20261028 -->
++
+ <!-- HOVERCRAFT-UFO-FEEL-20261028 -->
+ ## UFO-inspired hovercraft with controlled slide recovery (2026-10-28)
+ HUF01-HUF04/R01/Q01: Owner requests Slicks UFO feel, then rejects the raw candidate as uncontrollable. Hovercraft4 separates heading/world thrust; no backwards-steering reversal or parked throttle gate. Final yaw cap2.6/inertia200/steering18, coasting0.35 and powered dissipative side recovery1.8 reduce twitch/long drift;12000N/130kmh cap and full-vector braking/held reverse remain. Quarter-turn0.675s/release overshoot10.534deg;0.75s sideways coast11.2442 versus powered2.9200m/s. Final92/0, historical127/0,16800 exact legacy states, native Game14/0/four captures and parser1402/0 pass; independent normal/canonical five-lap28346ticks/236217ms/zero contacts agrees. Three runtime files; old paths/hashes default exact. Official author vehicle labels inspected; no exact original-equation claim/executable/code/art use. Rejected3 and initial fixture warnings/assertion retained. Reload, owner feel/device acceptance and matching authorized backend rollout remain. No device query/test, APK, live/owner-save write, owner restart or main-index staging/commit/merge. See docs/HOVERCRAFT_UFO_FEEL_2026_10_28.md and docs/evidence/hovercraft-ufo-feel-2026-10-28/report.json. Concurrent work preserved.
+--- /dev/null
++++ b/docs/evidence/kart-high-speed-turning-2026-10-28/verify_canonical.py
+@@ -0,0 +1,40 @@
++"""Offline native verification of the recorded current-kart five-lap race."""
++from pathlib import Path
++from types import SimpleNamespace
++import json
++import sys
++
++ROOT = Path(__file__).resolve().parents[3]
++OUT = Path(__file__).resolve().parent
++sys.path.insert(0, str(ROOT / "backend"))
++from bmt_backend.verifier import GodotVerifier
++
++race = json.loads((OUT / "kart-race.json").read_text())["result"]
++turning = json.loads((OUT / "turning.json").read_text())
++verifier = GodotVerifier(SimpleNamespace(
++    godot_bin=r"C:\apps\Godot 4.7.2\Godot_v4.7.2-stable_win64_console.exe",
++    game_project=ROOT / "game", verifier_timeout_seconds=90))
++try:
++    result = verifier.verify_canonical_diagnostic(race["document"], race["replay"], "kart")
++    assert result["time_ticks"] == race["time_ticks"]
++    assert len(result["lap_ticks"]) == 5
++    assert result["manifest"]["vehicles"]["kart"] == {
++        "handling_version": "kart-6", "config_hash": turning["config_hash"]}
++    assert result["manifest"]["physics_version"] == turning["physics_version"]
++    fixture = json.loads((ROOT / "backend/tests/fixtures/verified_oval.json").read_text())
++    expected = fixture["expected_manifest"]["vehicles"]
++    absent = []
++    for car, contract in result["manifest"]["vehicles"].items():
++        if car not in expected:
++            absent.append(car)
++            continue
++        assert contract == expected[car], (car, contract, expected[car])
++    receipt = {"input_count": len(race["replay"]["frames"]),
++               "time_ticks": result["time_ticks"], "time_ms": result["time_ms"],
++               "lap_ticks": result["lap_ticks"], "kart": result["manifest"]["vehicles"]["kart"],
++               "existing_local_fixture_contracts_match": True,
++               "active_cars_absent_from_older_fixture": absent}
++    (OUT / "canonical-verification.json").write_text(json.dumps(receipt, indent=2) + "\n")
++    print(json.dumps(receipt))
++finally:
++    verifier.close()
+--- /dev/null
++++ b/docs/evidence/kart-high-speed-turning-2026-10-28/summarize.py
+@@ -0,0 +1,63 @@
++"""Collect measured receipts and audit the narrow resource/fixture change."""
++from pathlib import Path
++import hashlib
++import json
++import re
++
++ROOT = Path(__file__).resolve().parents[3]
++OUT = Path(__file__).resolve().parent
++turning = json.loads((OUT / "turning.json").read_text())
++canonical = json.loads((OUT / "canonical-verification.json").read_text())
++original = json.loads((OUT / "original/turning.json").read_text())
++retained = []
++for row in json.loads((OUT / "before/retained-hashes.json").read_text(encoding="utf-8-sig")):
++    path = Path(row["Path"])
++    if path == ROOT / "game/resources/cars/kart.tres":
++        continue
++    actual = hashlib.sha256(path.read_bytes()).hexdigest()
++    retained.append({"file": path.relative_to(ROOT).as_posix(),
++                     "before_sha256": row["Hash"].lower(), "current_sha256": actual,
++                     "exact": actual == row["Hash"].lower()})
++
++def summary(log, pattern):
++    text = (OUT / "logs" / log).read_text(encoding="utf-16")
++    match = re.search(pattern, text)
++    assert match, (log, text[-1000:])
++    return {"checks": int(match[1]), "failures": int(match[2])}
++
++before = json.loads((OUT / "before/backend/tests/fixtures/verified_oval.json").read_text())
++after = json.loads((ROOT / "backend/tests/fixtures/verified_oval.json").read_text())
++before["expected_manifest"]["vehicles"]["kart"] = after["expected_manifest"]["vehicles"]["kart"]
++assert before == after, "Unexpected concurrent fixture differences need separate attribution"
++assert (ROOT / "game/tests/fixtures/kart_high_speed_turning_before.tres").read_text() == (
++    OUT / "before/game/resources/cars/kart.tres").read_text()
++
++receipt = {
++    "date": "2026-10-28", "requirements": ["KHT01", "KHT02", "R01", "Q01"],
++    "focused": {"checks": turning["checks"], "failures": turning["failures"]},
++    "task_start_control": {"checks": original["checks"], "failures": original["failures"]},
++    "kart": summary("test_kart.log", r"KART_TESTS: (\d+) checks, (\d+) failures"),
++    "cars_kart_laps": summary("test_cars.log", r"CAR_TESTS: (\d+) checks, (\d+) failures"),
++    "handling": summary("test_handling.log", r"HANDLING_TESTS: (\d+) checks, (\d+) failures"),
++    "rewind": summary("test_rewind.log", r"Rewind: (\d+) checks, (\d+) failures"),
++    "canonical": canonical,
++    "turns": turning["turns"], "handling_version": turning["handling_version"],
++    "config_hash": turning["config_hash"], "physics_version": turning["physics_version"],
++    "retained_sources": retained,
++    "only_kart_entry_changed_in_local_backend_fixture": True,
++    "baseline_test_fixture_exact": True,
++    "broader_checks": {
++        "backend": {"passed": 1, "failed": 1,
++                    "failure": "test_real_engine_manifest_pins_every_competitive_config expects retired classic/formula IDs retained in Appearance"},
++        "global_parse": {"passed": False, "failure": "tests/fixtures/parking_hall_before/garage_page.gd:67 calls missing _build_wash_requirement()"}},
++    "preferred_kart_dependency_parse": {"passed": True, "log": "logs/preferred-parse.log"},
++    "initial_findings": [
++        "Sandboxed native engine cannot read Windows certificate store; task-profile offline native runs used automatic escalation.",
++        "Initial verification helper assumed every active car existed in the older fixture; Hovercraft is absent. Record missing coverage while retaining every present contract assertion."],
++    "limits": ["No device attachment query or physical-device test", "No APK/export or deployment",
++               "No owner save or owner process change", "No main-index staging, commit or merge",
++               "Reload/rebuild, matching backend contract rollout and owner/device feel acceptance remain"],
++}
++(OUT / "report.json").write_text(json.dumps(receipt, indent=2)+"\n")
++print(json.dumps({key: receipt[key] for key in ["focused", "task_start_control", "kart", "cars_kart_laps", "handling", "rewind", "canonical"]}))
++print("Retained source mismatches:", [row["file"] for row in retained if not row["exact"]])
+--- /dev/null
++++ b/docs/evidence/kart-high-speed-turning-2026-10-28/checkpoint.py
+@@ -0,0 +1,72 @@
++"""Build and check a task-only patch without changing the main Git index."""
++from pathlib import Path
++import difflib
++import hashlib
++import json
++import os
++import re
++import subprocess
++
++ROOT = Path(__file__).resolve().parents[3]
++OUT = Path(__file__).resolve().parent
++MEMO = "KART-HIGH-SPEED-TURNING-20261028"
++FILES = [
++    "game/resources/cars/kart.tres",
++    "game/tests/test_kart.gd",
++    "game/tests/test_kart_high_speed_turning.gd",
++    "game/tests/fixtures/kart_high_speed_turning_before.tres",
++    "backend/tests/fixtures/verified_oval.json",
++    "docs/KART_HIGH_SPEED_TURNING_2026_10_28.md", "docs/KART.md",
++    "AGENTS.md", "DEVELOPMENT_STATUS.md", "docs/PHASE_0_PLAN.md",
++    "docs/evidence/kart-high-speed-turning-2026-10-28/verify_canonical.py",
++    "docs/evidence/kart-high-speed-turning-2026-10-28/summarize.py",
++    "docs/evidence/kart-high-speed-turning-2026-10-28/checkpoint.py",
++]
++
++patch = []
++hashes = {}
++for relative in FILES:
++    current = (ROOT / relative).read_text(encoding="utf-8")
++    saved = OUT / "before" / relative
++    previous = saved.read_text(encoding="utf-8") if saved.exists() else ""
++    # Retain concurrent edits in shared documents/tests/fixture as the patch base.
++    if relative in {"AGENTS.md", "DEVELOPMENT_STATUS.md", "docs/PHASE_0_PLAN.md", "docs/KART.md"}:
++        previous, count = re.subn(
++            rf"<!-- {MEMO} -->.*?<!-- /{MEMO} -->\n\n", "", current, flags=re.S)
++        assert count == 1, (relative, count)
++    elif relative == "backend/tests/fixtures/verified_oval.json":
++        old = json.loads(previous)["expected_manifest"]["vehicles"]["kart"]
++        new = json.loads(current)["expected_manifest"]["vehicles"]["kart"]
++        previous = current.replace(new["config_hash"], old["config_hash"]).replace(
++            '"handling_version": "kart-6"', '"handling_version": "kart-5"')
++        assert previous != current
++    elif relative == "game/tests/test_kart.gd":
++        previous = current.replace(
++            'check(kart.version == "kart-6","current cornering tune retains a separate handling identity")',
++            'check(kart.version == "kart-5","higher speed has a separate handling identity")')
++        assert previous != current
++    hashes[relative] = hashlib.sha256((ROOT / relative).read_bytes()).hexdigest()
++    for name, contents in [("scope-base", previous), ("scope-current", current)]:
++        if not contents:
++            continue
++        target = OUT / name / relative
++        target.parent.mkdir(parents=True, exist_ok=True)
++        target.write_text(contents, encoding="utf-8", newline="\n")
++    patch.extend(difflib.unified_diff(
++        previous.splitlines(True), current.splitlines(True),
++        fromfile="a/"+relative if previous else "/dev/null", tofile="b/"+relative))
++
++patch_path = OUT / "task.patch"
++patch_path.write_text("".join(patch), encoding="utf-8", newline="\n")
++reverse = subprocess.run(["git", "apply", "--reverse", "--check", str(patch_path)],
++                         cwd=ROOT, capture_output=True, text=True)
++environment = dict(os.environ, GIT_CEILING_DIRECTORIES=str(OUT))
++forward = subprocess.run(["git", "apply", "--check", str(patch_path)],
++                         cwd=OUT / "scope-base", env=environment, capture_output=True, text=True)
++receipt = {"source_hashes": hashes, "reverse_apply_check": reverse.returncode,
++           "forward_apply_check": forward.returncode,
++           "diagnostics": {"reverse": reverse.stderr, "forward": forward.stderr},
++           "main_index_used": False}
++(OUT / "checkpoint.json").write_text(json.dumps(receipt, indent=2)+"\n")
++print(json.dumps({key: value for key, value in receipt.items() if key != "source_hashes"}))
++assert reverse.returncode == forward.returncode == 0

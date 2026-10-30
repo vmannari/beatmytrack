@@ -4,7 +4,8 @@ param(
     [switch]$ListRivalries,
     [ValidateRange(1,20)][int]$MaxJobs = 1,
     [ValidateRange(0.5,8)][double]$Cpus = 1,
-    [switch]$Inspect
+    [switch]$Inspect,
+    [switch]$PrepareOnly
 )
 $ErrorActionPreference = "Stop"
 $workspaceRoot = Split-Path -Parent $PSScriptRoot
@@ -15,5 +16,6 @@ if ($BatchId) { $arguments += @("--batch", $BatchId) }
 if ($RivalryId) { $arguments += @("--rivalry", $RivalryId) }
 if ($ListRivalries) { $arguments += "--list-rivalries" }
 if ($Inspect) { $arguments += "--inspect" }
+if ($PrepareOnly) { $arguments += "--prepare-only" }
 & $interpreter @arguments
 if ($LASTEXITCODE -ne 0) { throw "Local artificial-race command failed. Its journal is preserved for retry." }

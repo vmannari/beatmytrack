@@ -1,0 +1,941 @@
+diff --git a/game/vehicle/forklift_model.gd b/game/vehicle/forklift_model.gd
+--- a/game/vehicle/forklift_model.gd
++++ b/game/vehicle/forklift_model.gd
+@@ -82,8 +82,8 @@
+ 			var y: float = lerpf(lower,upper,coordinate.y)
+ 			var x: float = 0.82-0.045*pow((y-0.75)/0.55,2.0)-0.08*smoothstep(1.25,1.50,z)
+ 			corners.append(Vector3(side*x,y,z))
+-		_quad(tool,corners,Vector3(side,0.10,0).normalized(),side<0.0)
+-	_attach(car.body,tool.commit(),paint,"FormedSideSkin")
++		_solid_strip(tool,corners,Vector3(-side*0.065,0,0),Vector3(side,0,0),index==0,index==steps-1)
++	_attach(car.body,tool.commit(),paint,"FormedSideSkinLeft" if side<0.0 else "FormedSideSkinRight")
+ 
+ static func _arch(car: CarVisual, side: float, z: float, tire: float, paint: Material, trim: Material) -> void:
+ 	var tool := SurfaceTool.new()
+@@ -95,15 +95,35 @@
+ 		var corners: Array[Vector3] = []
+ 		for pair: Vector2 in [Vector2(a,0),Vector2(b,0),Vector2(b,1),Vector2(a,1)]:
+ 			var radius: float = tire+lerpf(0.048,0.086,pair.y)
+-			corners.append(Vector3(side*lerpf(0.827,0.803,pair.y),tire+sin(pair.x)*radius,z+cos(pair.x)*radius))
+-		_quad(tool,corners,Vector3(side,0.1,0).normalized(),side<0.0)
+-	_attach(car.body,tool.commit(),paint,"RolledWheelArch")
++			# The rolled rim sits outside the side skin instead of sharing its face.
++			corners.append(Vector3(side*lerpf(0.857,0.833,pair.y),tire+sin(pair.x)*radius,z+cos(pair.x)*radius))
++		_solid_strip(tool,corners,Vector3(-side*0.045,0,0),Vector3(side,0,0),index==0,index==steps-1)
++	_attach(car.body,tool.commit(),paint,"RolledWheelArch%s%s" % ["Left" if side<0.0 else "Right","Front" if z<0.0 else "Rear"])
+ 	# Thin inner lip separates paint from tire without filling the opening.
+ 	var path: Array[Vector3] = []
+ 	for index: int in range(steps+1):
+ 		var angle: float = lerpf(-0.12,PI+0.12,index/float(steps))
+-		path.append(Vector3(side*0.831,tire+sin(angle)*(tire+0.041),z+cos(angle)*(tire+0.041)))
++		path.append(Vector3(side*0.861,tire+sin(angle)*(tire+0.041),z+cos(angle)*(tire+0.041)))
+ 	_pipe(car.body,path,0.009,trim)
++
++static func _solid_strip(tool: SurfaceTool, outer: Array[Vector3], inset: Vector3, outward: Vector3, first: bool, last: bool) -> void:
++	# A closed formed-steel shell: outer/inner skins, rolled returns and end caps.
++	var inner: Array[Vector3] = []
++	for point: Vector3 in outer: inner.append(point+inset)
++	_face(tool,outer,outward)
++	_face(tool,inner,-outward)
++	var lower: Vector3 = outer[0]+outer[1]-outer[2]-outer[3]
++	var start: Vector3 = outer[0]+outer[3]-outer[1]-outer[2]
++	_face(tool,[outer[0],outer[1],inner[1],inner[0]],lower)
++	_face(tool,[outer[3],inner[3],inner[2],outer[2]],-lower)
++	if first: _face(tool,[outer[0],inner[0],inner[3],outer[3]],start)
++	if last: _face(tool,[outer[1],outer[2],inner[2],inner[1]],-start)
++
++static func _face(tool: SurfaceTool, points: Array[Vector3], outward: Vector3) -> void:
++	var normal: Vector3 = (points[1]-points[0]).cross(points[2]-points[0]).normalized()
++	if normal.dot(outward)<0.0: normal = -normal
++	# Godot's front faces wind clockwise; normals face out of the solid shell.
++	_quad(tool,points,normal,(points[1]-points[0]).cross(points[2]-points[0]).dot(normal)>0.0)
+ 
+ static func _operator(car: CarVisual, seat: Material, rubber: Material, dark: Material, steel: Material, bright: Material, detail: int) -> void:
+ 	var parent: Node3D = car.body
+diff --git a/game/vehicle/livery_catalog.gd b/game/vehicle/livery_catalog.gd
+--- a/game/vehicle/livery_catalog.gd
++++ b/game/vehicle/livery_catalog.gd
+@@ -28,6 +28,9 @@
+ static func has_roof(id: String) -> bool:
+ 	return id in ["compact", "pickup", "classic", "electric"]
+ 
++static func sticker_label(id: String, panel: String) -> String:
++	return "Rear" if id == "forklift" and panel == "hood" else panel.capitalize()
++
+ static func projection(id: String) -> Dictionary:
+ 	return {
+ 		"electric": {"bounds":Vector3(1.92,1.52,4.60), "hood":Vector4(-0.69,-2.04,1.38,1.03), "roof":Vector4(-0.61,-0.34,1.22,1.00), "levels":Vector2(0.94,1.48)},
+@@ -36,5 +39,6 @@
+ 		"classic": {"bounds":Vector3(1.82,1.36,4.20), "hood":Vector4(-0.60,-1.85,1.20,1.03), "roof":Vector4(-0.53,-0.18,1.06,0.63), "levels":Vector2(0.77,1.29)},
+ 		"formula": {"bounds":Vector3(1.83,0.86,4.58), "hood":Vector4(-0.24,-1.78,0.48,1.30), "roof":Vector4(0,0,1,1), "levels":Vector2(0.46,10)},
+ 		"kart": {"bounds":Vector3(1.52,0.65,2.70), "hood":Vector4(-0.48,-1.29,0.96,0.42), "roof":Vector4(0,0,1,1), "levels":Vector2(0.36,10)},
+-		"forklift": {"bounds":Vector3(1.88,2.89,4.24), "hood":Vector4(-0.63,0.64,1.26,0.79), "roof":Vector4(0,0,1,1), "levels":Vector2(1.49,10)}
++		# The existing primary sticker slot maps onto rear X/-Y, between the lamps.
++		"forklift": {"bounds":Vector3(1.88,2.89,4.24), "hood":Vector4(-0.39,-1.24,0.78,0.44), "roof":Vector4(0,0,1,1), "levels":Vector2(1.54,10)}
+ 	}.get(id, {})
+diff --git a/game/vehicle/livery_graphics.gd b/game/vehicle/livery_graphics.gd
+--- a/game/vehicle/livery_graphics.gd
++++ b/game/vehicle/livery_graphics.gd
+@@ -50,6 +50,7 @@
+ 	var projection: Dictionary = LiveryCatalog.projection(id)
+ 	finish.set_shader_parameter("graphic_bounds",projection.bounds)
+ 	finish.set_shader_parameter("panel_levels",projection.levels)
++	finish.set_shader_parameter("rear_sticker",id == "forklift")
+ 	for panel: String in VehicleLivery.SURFACES:
+ 		var rectangle: Vector4 = projection[panel]
+ 		var sticker: Dictionary = value.stickers[panel]
+diff --git a/game/vehicle/livery_finish.gdshaderinc b/game/vehicle/livery_finish.gdshaderinc
+--- a/game/vehicle/livery_finish.gdshaderinc
++++ b/game/vehicle/livery_finish.gdshaderinc
+@@ -14,6 +14,7 @@
+ uniform vec4 roof_sticker;
+ uniform int hood_emblem = -1;
+ uniform int roof_emblem = -1;
++uniform bool rear_sticker = false;
+ 
+ vec3 graphic_pigment(vec3 pigment, vec3 p, vec3 n) {
+ 	if (!graphics_enabled) return pigment;
+@@ -48,6 +49,9 @@
+ vec3 apply_graphics(vec3 pigment, vec3 p, vec3 n) {
+ 	if (!graphics_enabled) return pigment;
+ 	pigment = graphic_pigment(pigment,p,n);
+-	pigment = panel_emblem(pigment,p,n,hood_panel,panel_levels.x,hood_sticker,hood_emblem);
++	// The Forklift has one rear-facing panel. Existing cars keep their X/Z mapping.
++	vec3 panel_point = rear_sticker ? vec3(p.x,p.z,-p.y) : p;
++	vec3 panel_normal = rear_sticker ? vec3(n.x,n.z,-n.y) : n;
++	pigment = panel_emblem(pigment,panel_point,panel_normal,hood_panel,panel_levels.x,hood_sticker,hood_emblem);
+ 	return panel_emblem(pigment,p,n,roof_panel,panel_levels.y,roof_sticker,roof_emblem);
+ }
+diff --git a/game/ui/garage_livery_menu.gd b/game/ui/garage_livery_menu.gd
+--- a/game/ui/garage_livery_menu.gd
++++ b/game/ui/garage_livery_menu.gd
+@@ -219,7 +219,7 @@
+ 	content.add_child(panels)
+ 	for panel: String in VehicleLivery.SURFACES:
+ 		if panel == "roof" and not LiveryCatalog.has_roof(page.vehicle_id): continue
+-		var button := MenuStyle.tab(panel.capitalize(),page._choose_sticker_surface.bind(panel),panel == page._sticker_surface)
++		var button := MenuStyle.tab(LiveryCatalog.sticker_label(page.vehicle_id,panel),page._choose_sticker_surface.bind(panel),panel == page._sticker_surface)
+ 		button.name = "Sticker"+panel.capitalize()
+ 		button.custom_minimum_size.y = 48
+ 		button.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+diff --git a/game/ui/garage_page.gd b/game/ui/garage_page.gd
+--- a/game/ui/garage_page.gd
++++ b/game/ui/garage_page.gd
+@@ -1242,6 +1242,7 @@
+ 	_sticker_editing = false
+ 	_customise_tab = tab
+ 	_show_section("customise")
++	if tab == "stickers" and vehicle_id == "forklift": _customisation_camera.focus(showroom,_sticker_surface)
+ 
+ func _preset_count() -> int:
+ 	return LIVERY_NAMES.size()+LiveryCatalog.patterns.size()
+@@ -1304,7 +1305,8 @@
+ 	back.custom_minimum_size = Vector2(72,44)
+ 	header.add_child(back)
+ 	var index: int = LiveryCatalog.sticker_index(draft.stickers[_sticker_surface].id)
+-	var title_text: String = _sticker_surface.capitalize()+" · "+LiveryCatalog.stickers[index].title if index >= 0 else _sticker_surface.capitalize()
++	var panel_label: String = LiveryCatalog.sticker_label(vehicle_id,_sticker_surface)
++	var title_text: String = panel_label+" · "+LiveryCatalog.stickers[index].title if index >= 0 else panel_label
+ 	var title: Label = MenuStyle.label(title_text,20)
+ 	title.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+ 	title.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
+@@ -1364,14 +1366,15 @@
+ func _edit_sticker_position(active: bool) -> void:
+ 	_sticker_editing = active
+ 	_show_section("customise")
++	if active: _customisation_camera.focus(showroom,_sticker_surface)
+ 
+ func _choose_sticker(index: int) -> void:
+ 	if index < 0 or index > LiveryCatalog.stickers.size(): return
+ 	if not _require_clean_car(): return
+-	# New sponsor wordmarks face the reader standing in front of the car.
++	# New wordmarks face the reader at the panel: rear on Forklift, front on others.
+ 	# Replacing an existing decal retains the owner's placement and rotation.
+ 	if index > 0 and draft.stickers[_sticker_surface].id == "none" and LiveryCatalog.stickers[index-1].category == "sponsors":
+-		draft.stickers[_sticker_surface].rotation = 180.0
++		draft.stickers[_sticker_surface].rotation = 0.0 if vehicle_id == "forklift" else 180.0
+ 	draft.stickers[_sticker_surface].id = "none" if index == 0 else LiveryCatalog.stickers[index-1].id
+ 	_preview_sticker()
+ 	_customisation_camera.focus(showroom,_sticker_surface)
+diff --git a/game/ui/garage_customisation_camera.gd b/game/ui/garage_customisation_camera.gd
+--- a/game/ui/garage_customisation_camera.gd
++++ b/game/ui/garage_customisation_camera.gd
+@@ -40,6 +40,10 @@
+ 			local_target = Vector3(0,1.5,0.1)
+ 			direction = Vector3(0.5,4,-1.5)
+ 			distance = 3.3
++	if showroom.car.vehicle_id == "forklift" and category == "hood":
++		local_target = Vector3(0,1.02,1.56)
++		direction = Vector3(0.5,0.8,4)
++		distance = 2.6
+ 	# Narrow landscape panes still fit the selected region horizontally.
+ 	var aspect: float = showroom.size.x / maxf(1.0,showroom.size.y)
+ 	distance *= maxf(1.0,0.95/maxf(0.4,aspect))
+diff --git a/game/ui/sticker_placement.gd b/game/ui/sticker_placement.gd
+--- a/game/ui/sticker_placement.gd
++++ b/game/ui/sticker_placement.gd
+@@ -54,6 +54,7 @@
+ 	var projection: Dictionary = LiveryCatalog.projection(vehicle_id)
+ 	_finish.set_shader_parameter("panel",projection[surface])
+ 	_finish.set_shader_parameter("bounds",projection.bounds)
++	_finish.set_shader_parameter("rear_panel",vehicle_id == "forklift")
+ 	var sticker: Dictionary = livery.stickers[surface]
+ 	_emblem.visible = sticker.id != "none"
+ 	if sticker.id == "none": return
+diff --git a/game/ui/sticker_panel.gdshader b/game/ui/sticker_panel.gdshader
+--- a/game/ui/sticker_panel.gdshader
++++ b/game/ui/sticker_panel.gdshader
+@@ -5,8 +5,13 @@
+ uniform vec4 detail_colour : source_color;
+ uniform vec4 panel;
+ uniform vec3 bounds;
++uniform bool rear_panel = false;
+ void fragment() {
+ 	vec2 body_uv = (panel.xy+UV*panel.zw)/bounds.xz+vec2(0.5);
++	if (rear_panel) {
++		vec2 point = panel.xy+UV*panel.zw;
++		body_uv = vec2(point.x/bounds.x+0.5,1.0+point.y/bounds.y);
++	}
+ 	vec2 masks = patterned ? texture(TEXTURE,body_uv).rg : vec2(0.0);
+ 	COLOR = vec4(mix(mix(body_colour.rgb,accent_colour.rgb,masks.r),detail_colour.rgb,masks.g),1.0);
+ }
+diff --git a/AGENTS.md b/AGENTS.md
+--- a/AGENTS.md
++++ b/AGENTS.md
+@@ -1,3 +1,18 @@
++<!-- DELETION-BENEFITS-WARNING-20261025 -->
++## Remaining-benefits account deletion warning (2026-10-25)
++ADW01-ADW03/R01/Q01: Native and verified web deletion list current publishing slots, coins, banked resumes, online cosmetic unlocks, pending purchases and remaining ad-free expiry, with explicit permanent paid-benefit loss and preserved local/public content and mandatory claims. Private read-only preview never grants resources; load failures, malformed/wrong-owner replies and native login changes cannot confirm. Existing erasure/retry protocol remains. Backend23, native42 Compatibility, browser23, privacy27, disposable HTTP integration1, App141 and parser1142 pass; initial environment/fixture/layout failures remain recorded. Scope, commands, captures and task-only checkpoint: docs/ACCOUNT_DELETION_WARNING_2026_10_25.md and docs/evidence/deletion-benefits-warning-2026-10-25/report.json. Matching API/web rollout, rebuilt client, translations and owner/device acceptance remain; annual SKU/provider lifecycle is separate. No physical-device check/test, APK, live deletion/purchase, deployment, migration or owner-process restart; concurrent work preserved.
++<!-- /DELETION-BENEFITS-WARNING-20261025 -->
++
++<!-- ELECTRIC-LIGHTBAR-20261025 -->
++## Electric continuous nose light override (2026-10-25)
++The owner requests one long narrow front light in the direction of recent Tesla light bars. ELB01-ELB02/R01/G01/Q01: Replace the separate electric projectors/short guides with one curved, recessed continuous diffuser, rounded tips and the original badge below it. Day/night use the same surface with one night lens and the retained single bounded road light. Native model34Compatibility/34desktopMobile pass, including all49 visible samples across the bar in both modes; actual Garage/race59 and parser1142 pass. The diagnostic frontal pose was moved closer after two initial span failures; thresholds and production camera remain. Refresh/import catalogue/all49 photos; 437 prepared v3 meshes replace the exact-backed-up v2 cache. Full/simple triangles154276/55700; strict one-pedal/strong complete stop/RWD/D-R brake-position controls and physics/config hashes remain. Evidence, native before/after views, commands and scoped Git-checked checkpoint: docs/ELECTRIC_LIGHTBAR_2026_10_25.md and docs/evidence/electric-lightbar-2026-10-25/report.json. Reload and owner/device appearance/cost acceptance remain. No device attachment check/test, APK, live mutation, purchase, deployment or owner-process restart; concurrent work preserved.
++<!-- /ELECTRIC-LIGHTBAR-20261025 -->
++
++<!-- FORKLIFT-BODY-STICKER-20261025 -->
++## Forklift solid body and single rear sticker override (2026-10-25)
++2026-10-25 FS01-FS03/R01/Q01: Forklift sides and all four arches now have closed inner/outer shells and edge returns; original194 open edges become zero in detailed/racing models. Rear-facing paint projection places one sticker between the tail lights, with a single Rear location, matching placement board, upright new wordmarks and actual rear-camera focus through editing. Existing saved sticker data and driving retained. Native focused59headless/77Compatibility/78desktopMobile, Forklift98/107-with-bake and parser1142 pass; all49 current native appearance photos refreshed and filtered. Broader livery suite retains pre-existing preview/old-five-car fixture failures; other-car projection matrix passes every pattern. Initial save-rounding assertion and placement-camera image retained. Evidence and scoped checkpoint: docs/FORKLIFT_BODY_STICKER_2026_10_25.md and docs/evidence/forklift-body-sticker-2026-10-25/report.json. Client reload and owner/device appearance/frame-pacing acceptance remain. No attachment/device test, APK, purchase, live mutation, deployment or owner-process restart; concurrent work preserved.
++<!-- /FORKLIFT-BODY-STICKER-20261025 -->
++
+ <!-- MULTILINGUAL-PREP-20261025 -->
+ ## Multilingual preparation and login/Settings language (2026-10-25)
+ 2026-10-25 ML01-ML05/R01/G01/Q01: Shared login and Settings language choice applies immediately and saves atomically per installation before account/tutorial UI; system/English fallback, failed-save recovery and retained provider/input/staged Settings state are tested. Packaged approved-locale manifest, gettext source/English catalogues, formatted-message lookup, named bindings, plural helpers and authored-name protection prepare subsequent translations. Expanded categories grow instead of overlapping. Focused60headless/66Compatibility/66desktopMobile, tooling9/App141/records54/graphics146/results515/challenges216/Weekly1124/tutorial168 (real Ellipse7116ticks/five laps) and final parser1138 pass. Initial sandbox, standalone-autoload, fixture case/encoding, named-placeholder pseudo and transient archived-Garage parser failures remain recorded; no assertions weakened. Commands, final native views, source hashes and task-only Git-checked patch: docs/LOCALIZATION_2026_10_25.md and docs/evidence/localization-2026-10-25/report.json. English is the only approved shipping language; French is an export-excluded fixture. Full translations, remaining older phrase composition/baked artwork, chosen-script fonts/RTL and owner/device acceptance remain language-release work. No attachment/device test, APK, real sign-in/purchase, live mutation, deployment or owner-process restart by this task. Concurrent login sizing, Garage/sticker, vehicle, controls and backend/deployment work preserved.
+diff --git a/DEVELOPMENT_STATUS.md b/DEVELOPMENT_STATUS.md
+--- a/DEVELOPMENT_STATUS.md
++++ b/DEVELOPMENT_STATUS.md
+@@ -1,3 +1,17 @@
++<!-- DELETION-BENEFITS-WARNING-20261025 -->
++## Remaining-benefits account deletion warning (2026-10-25)
++ADW01-ADW03/R01/Q01: Native and verified web deletion list current publishing slots, coins, banked resumes, online cosmetic unlocks, pending purchases and remaining ad-free expiry, with explicit permanent paid-benefit loss and preserved local/public content and mandatory claims. Private read-only preview never grants resources; load failures, malformed/wrong-owner replies and native login changes cannot confirm. Existing erasure/retry protocol remains. Backend23, native42 Compatibility, browser23, privacy27, disposable HTTP integration1, App141 and parser1142 pass; initial environment/fixture/layout failures remain recorded. Scope, commands, captures and task-only checkpoint: docs/ACCOUNT_DELETION_WARNING_2026_10_25.md and docs/evidence/deletion-benefits-warning-2026-10-25/report.json. Matching API/web rollout, rebuilt client, translations and owner/device acceptance remain; annual SKU/provider lifecycle is separate. No physical-device check/test, APK, live deletion/purchase, deployment, migration or owner-process restart; concurrent work preserved.
++<!-- /DELETION-BENEFITS-WARNING-20261025 -->
++
++<!-- ELECTRIC-LIGHTBAR-20261025 -->
++## Electric continuous nose light override (2026-10-25)
++The owner requests one long narrow front light in the direction of recent Tesla light bars. ELB01-ELB02/R01/G01/Q01: Replace the separate electric projectors/short guides with one curved, recessed continuous diffuser, rounded tips and the original badge below it. Day/night use the same surface with one night lens and the retained single bounded road light. Native model34Compatibility/34desktopMobile pass, including all49 visible samples across the bar in both modes; actual Garage/race59 and parser1142 pass. The diagnostic frontal pose was moved closer after two initial span failures; thresholds and production camera remain. Refresh/import catalogue/all49 photos; 437 prepared v3 meshes replace the exact-backed-up v2 cache. Full/simple triangles154276/55700; strict one-pedal/strong complete stop/RWD/D-R brake-position controls and physics/config hashes remain. Evidence, native before/after views, commands and scoped Git-checked checkpoint: docs/ELECTRIC_LIGHTBAR_2026_10_25.md and docs/evidence/electric-lightbar-2026-10-25/report.json. Reload and owner/device appearance/cost acceptance remain. No device attachment check/test, APK, live mutation, purchase, deployment or owner-process restart; concurrent work preserved.
++<!-- /ELECTRIC-LIGHTBAR-20261025 -->
++
++<!-- FORKLIFT-BODY-STICKER-20261025 -->
++2026-10-25 FS01-FS03/R01/Q01: Forklift sides and all four arches now have closed inner/outer shells and edge returns; original194 open edges become zero in detailed/racing models. Rear-facing paint projection places one sticker between the tail lights, with a single Rear location, matching placement board, upright new wordmarks and actual rear-camera focus through editing. Existing saved sticker data and driving retained. Native focused59headless/77Compatibility/78desktopMobile, Forklift98/107-with-bake and parser1142 pass; all49 current native appearance photos refreshed and filtered. Broader livery suite retains pre-existing preview/old-five-car fixture failures; other-car projection matrix passes every pattern. Initial save-rounding assertion and placement-camera image retained. Evidence and scoped checkpoint: docs/FORKLIFT_BODY_STICKER_2026_10_25.md and docs/evidence/forklift-body-sticker-2026-10-25/report.json. Client reload and owner/device appearance/frame-pacing acceptance remain. No attachment/device test, APK, purchase, live mutation, deployment or owner-process restart; concurrent work preserved.
++<!-- /FORKLIFT-BODY-STICKER-20261025 -->
++
+ <!-- MULTILINGUAL-PREP-20261025 -->
+ ## Multilingual preparation and login/Settings language (2026-10-25)
+ 2026-10-25 ML01-ML05/R01/G01/Q01: Shared login and Settings language choice applies immediately and saves atomically per installation before account/tutorial UI; system/English fallback, failed-save recovery and retained provider/input/staged Settings state are tested. Packaged approved-locale manifest, gettext source/English catalogues, formatted-message lookup, named bindings, plural helpers and authored-name protection prepare subsequent translations. Expanded categories grow instead of overlapping. Focused60headless/66Compatibility/66desktopMobile, tooling9/App141/records54/graphics146/results515/challenges216/Weekly1124/tutorial168 (real Ellipse7116ticks/five laps) and final parser1138 pass. Initial sandbox, standalone-autoload, fixture case/encoding, named-placeholder pseudo and transient archived-Garage parser failures remain recorded; no assertions weakened. Commands, final native views, source hashes and task-only Git-checked patch: docs/LOCALIZATION_2026_10_25.md and docs/evidence/localization-2026-10-25/report.json. English is the only approved shipping language; French is an export-excluded fixture. Full translations, remaining older phrase composition/baked artwork, chosen-script fonts/RTL and owner/device acceptance remain language-release work. No attachment/device test, APK, real sign-in/purchase, live mutation, deployment or owner-process restart by this task. Concurrent login sizing, Garage/sticker, vehicle, controls and backend/deployment work preserved.
+diff --git a/docs/PHASE_0_PLAN.md b/docs/PHASE_0_PLAN.md
+--- a/docs/PHASE_0_PLAN.md
++++ b/docs/PHASE_0_PLAN.md
+@@ -1,3 +1,17 @@
++<!-- DELETION-BENEFITS-WARNING-20261025 -->
++## Remaining-benefits account deletion warning (2026-10-25)
++ADW01-ADW03/R01/Q01: Native and verified web deletion list current publishing slots, coins, banked resumes, online cosmetic unlocks, pending purchases and remaining ad-free expiry, with explicit permanent paid-benefit loss and preserved local/public content and mandatory claims. Private read-only preview never grants resources; load failures, malformed/wrong-owner replies and native login changes cannot confirm. Existing erasure/retry protocol remains. Backend23, native42 Compatibility, browser23, privacy27, disposable HTTP integration1, App141 and parser1142 pass; initial environment/fixture/layout failures remain recorded. Scope, commands, captures and task-only checkpoint: ACCOUNT_DELETION_WARNING_2026_10_25.md and docs/evidence/deletion-benefits-warning-2026-10-25/report.json. Matching API/web rollout, rebuilt client, translations and owner/device acceptance remain; annual SKU/provider lifecycle is separate. No physical-device check/test, APK, live deletion/purchase, deployment, migration or owner-process restart; concurrent work preserved.
++<!-- /DELETION-BENEFITS-WARNING-20261025 -->
++
++<!-- ELECTRIC-LIGHTBAR-20261025 -->
++## Electric continuous nose light override (2026-10-25)
++The owner requests one long narrow front light in the direction of recent Tesla light bars. ELB01-ELB02/R01/G01/Q01: Replace the separate electric projectors/short guides with one curved, recessed continuous diffuser, rounded tips and the original badge below it. Day/night use the same surface with one night lens and the retained single bounded road light. Native model34Compatibility/34desktopMobile pass, including all49 visible samples across the bar in both modes; actual Garage/race59 and parser1142 pass. The diagnostic frontal pose was moved closer after two initial span failures; thresholds and production camera remain. Refresh/import catalogue/all49 photos; 437 prepared v3 meshes replace the exact-backed-up v2 cache. Full/simple triangles154276/55700; strict one-pedal/strong complete stop/RWD/D-R brake-position controls and physics/config hashes remain. Evidence, native before/after views, commands and scoped Git-checked checkpoint: docs/ELECTRIC_LIGHTBAR_2026_10_25.md and docs/evidence/electric-lightbar-2026-10-25/report.json. Reload and owner/device appearance/cost acceptance remain. No device attachment check/test, APK, live mutation, purchase, deployment or owner-process restart; concurrent work preserved.
++<!-- /ELECTRIC-LIGHTBAR-20261025 -->
++
++<!-- FORKLIFT-BODY-STICKER-20261025 -->
++2026-10-25 FS01-FS03/R01/Q01: Forklift sides and all four arches now have closed inner/outer shells and edge returns; original194 open edges become zero in detailed/racing models. Rear-facing paint projection places one sticker between the tail lights, with a single Rear location, matching placement board, upright new wordmarks and actual rear-camera focus through editing. Existing saved sticker data and driving retained. Native focused59headless/77Compatibility/78desktopMobile, Forklift98/107-with-bake and parser1142 pass; all49 current native appearance photos refreshed and filtered. Broader livery suite retains pre-existing preview/old-five-car fixture failures; other-car projection matrix passes every pattern. Initial save-rounding assertion and placement-camera image retained. Evidence and scoped checkpoint: docs/FORKLIFT_BODY_STICKER_2026_10_25.md and docs/evidence/forklift-body-sticker-2026-10-25/report.json. Client reload and owner/device appearance/frame-pacing acceptance remain. No attachment/device test, APK, purchase, live mutation, deployment or owner-process restart; concurrent work preserved.
++<!-- /FORKLIFT-BODY-STICKER-20261025 -->
++
+ <!-- MULTILINGUAL-PREP-20261025 -->
+ ## Multilingual preparation and login/Settings language (2026-10-25)
+ 2026-10-25 ML01-ML05/R01/G01/Q01: Shared login and Settings language choice applies immediately and saves atomically per installation before account/tutorial UI; system/English fallback, failed-save recovery and retained provider/input/staged Settings state are tested. Packaged approved-locale manifest, gettext source/English catalogues, formatted-message lookup, named bindings, plural helpers and authored-name protection prepare subsequent translations. Expanded categories grow instead of overlapping. Focused60headless/66Compatibility/66desktopMobile, tooling9/App141/records54/graphics146/results515/challenges216/Weekly1124/tutorial168 (real Ellipse7116ticks/five laps) and final parser1138 pass. Initial sandbox, standalone-autoload, fixture case/encoding, named-placeholder pseudo and transient archived-Garage parser failures remain recorded; no assertions weakened. Commands, final native views, source hashes and task-only Git-checked patch: docs/LOCALIZATION_2026_10_25.md and docs/evidence/localization-2026-10-25/report.json. English is the only approved shipping language; French is an export-excluded fixture. Full translations, remaining older phrase composition/baked artwork, chosen-script fonts/RTL and owner/device acceptance remain language-release work. No attachment/device test, APK, real sign-in/purchase, live mutation, deployment or owner-process restart by this task. Concurrent login sizing, Garage/sticker, vehicle, controls and backend/deployment work preserved.
+diff --git a/docs/FORKLIFT_2026_10_25.md b/docs/FORKLIFT_2026_10_25.md
+--- a/docs/FORKLIFT_2026_10_25.md
++++ b/docs/FORKLIFT_2026_10_25.md
+@@ -1,4 +1,6 @@
+ # Forklift â€” 2026-10-25
++
++Current body/sticker correction: [solid side panels and one rear sticker](FORKLIFT_BODY_STICKER_2026_10_25.md).
+ 
+ Current clearance/speed/turning correction: [Forklift raised forks and 66.6 km/h](FORKLIFT_CLEARANCE_2026_10_25.md). The historical `forklift-1` values below are superseded by `forklift-2`.
+ 
+diff --git a/game/tests/test_forklift_finish.gd b/game/tests/test_forklift_finish.gd
+new file mode 100644
+--- /dev/null
++++ b/game/tests/test_forklift_finish.gd
+@@ -0,0 +1,273 @@
++extends SceneTree
++## Closed body shells and an actually visible single rear sticker, including Garage.
++var checks: int = 0
++var failures: int = 0
++var graphical: bool = false
++var output: String
++var metrics: Dictionary = {}
++
++func _initialize() -> void: _run.call_deferred()
++
++func check(ok: bool, label: String) -> void:
++	checks += 1
++	if not ok:
++		failures += 1
++		print("FAIL: ",label)
++
++func settle() -> void:
++	for tick: int in range(10): await process_frame
++	if graphical: await RenderingServer.frame_post_draw
++
++func capture(label: String) -> Image:
++	await settle()
++	if not graphical: return null
++	var pixels: Image = root.get_texture().get_image()
++	check(pixels.save_png(output.path_join(label+".png")) == OK,"native capture "+label)
++	return pixels
++
++func _run() -> void:
++	OS.set_environment("BMT_API_URL", "")
++	graphical = DisplayServer.get_name() != "headless"
++	output = ProjectSettings.globalize_path("res://../docs/evidence/forklift-body-sticker-2026-10-25").path_join(RenderingServer.get_current_rendering_method() if graphical else "headless")
++	DirAccess.make_dir_recursive_absolute(output)
++	root.size = Vector2i(960,720)
++	var config: Dictionary = VehicleCatalog.config("forklift").snapshot()
++	for simple: bool in [false,true]: await _geometry(simple)
++	await _baseline()
++	check(not LiveryCatalog.has_roof("forklift") and LiveryCatalog.sticker_label("forklift","hood") == "Rear","Forklift has one named rear location")
++	check(LiveryCatalog.sticker_label("compact","hood") == "Hood" and LiveryCatalog.sticker_label("compact","roof") == "Roof","existing panel labels remain intact")
++	var value: Dictionary = VehicleLivery.defaults("forklift")
++	value.stickers.hood.id = "crest"
++	check(VehicleLivery.valid(value) and VehicleLivery.normalize(value,"forklift") == value,"existing saved primary sticker maps to rear without data loss")
++	var finish := ShaderMaterial.new()
++	finish.shader = LiveryGraphics.FINISH
++	LiveryGraphics.uniforms(finish,value,"forklift")
++	check(finish.get_shader_parameter("rear_sticker") == true and finish.get_shader_parameter("roof_emblem") == -1,"rear projection is enabled and the unused roof slot is suppressed")
++	LiveryGraphics.uniforms(finish,value,"compact")
++	check(finish.get_shader_parameter("rear_sticker") == false,"other cars retain the original projection")
++	await _other_cars()
++	var previews_valid: bool = true
++	var names: Array[String] = ["midnight"]
++	for pattern: Dictionary in LiveryCatalog.patterns: names.append(pattern.id)
++	for label: String in names:
++		var photo: Texture2D = load("res://assets/liveries/previews_v2/forklift/"+label+".png")
++		previews_valid = previews_valid and photo != null and photo.get_size() == Vector2(320,200) and photo.get_image().has_mipmaps()
++	check(previews_valid,"all refreshed Forklift appearance photos are native, bounded and filtered")
++	metrics.native_previews = names.size()
++	if graphical: await _render()
++	await _garage()
++	check(config == VehicleCatalog.config("forklift").snapshot(),"finish correction cannot change Forklift handling")
++	var report := FileAccess.open(output.path_join("metrics.json"),FileAccess.WRITE)
++	report.store_string(JSON.stringify({"checks":checks,"failures":failures,"metrics":metrics},"\t"))
++	report.close()
++	print("FORKLIFT_FINISH_METRICS ",JSON.stringify(metrics))
++	print("FORKLIFT_FINISH_TESTS: %d checks, %d failures" % [checks,failures])
++	quit(1 if failures else 0)
++
++func _topology(part: MeshInstance3D) -> Dictionary:
++	var edges: Dictionary = {}
++	var direction: Dictionary = {}
++	var faces: PackedVector3Array = part.mesh.get_faces()
++	var volume: float = 0.0
++	for index: int in range(0,faces.size(),3):
++		volume += faces[index].dot(faces[index+1].cross(faces[index+2]))/6.0
++		for edge: int in range(3):
++			var a: String = str(faces[index+edge].snapped(Vector3.ONE*0.000001))
++			var b: String = str(faces[index+(edge+1)%3].snapped(Vector3.ONE*0.000001))
++			var key: String = a+"/"+b if a<b else b+"/"+a
++			edges[key] = int(edges.get(key,0))+1
++			direction[key] = int(direction.get(key,0))+(1 if a<b else -1)
++	var boundary: int = 0
++	var inconsistent: int = 0
++	for key: String in edges:
++		if edges[key] != 2: boundary += 1
++		if direction[key] != 0: inconsistent += 1
++	return {"boundary_edges":boundary,"inconsistent_edges":inconsistent,"volume":absf(volume),"triangles":faces.size()/3}
++
++func _geometry(simple: bool) -> void:
++	var car := CarVisual.new()
++	car.vehicle_id = "forklift"; car.batch_parts = false; car.simple_model = simple
++	root.add_child(car)
++	var shells: Array[Node] = car.find_children("FormedSideSkin*","MeshInstance3D",true,false)+car.find_children("RolledWheelArch*","MeshInstance3D",true,false)
++	check(shells.size() == 6,"both sides and all four arches have independent solid shells")
++	var data: Dictionary = {}
++	for part: MeshInstance3D in shells:
++		var topology: Dictionary = _topology(part)
++		data[part.name] = topology
++		check(topology.boundary_edges == 0 and topology.volume > 0.00001,"closed solid "+part.name)
++		check(topology.inconsistent_edges == 0,"consistent outward winding "+part.name)
++	metrics["racing_shells" if simple else "detailed_shells"] = data
++	car.queue_free()
++	await process_frame
++
++func _baseline() -> void:
++	# Rebuild the exact saved body in this isolated process, retaining the same wheels.
++	var old_model: Variant = load("res://../docs/evidence/forklift-body-sticker-2026-10-25/before/game__vehicle__forklift_model.gd")
++	var world := Node3D.new()
++	root.add_child(world)
++	var car := CarVisual.new()
++	car.vehicle_id = "forklift"; car.batch_parts = false
++	world.add_child(car)
++	car.graphics.restore_originals()
++	for child: Node in car.body.get_children(): child.free()
++	old_model.build(car)
++	car.graphics = LiveryGraphics.new()
++	car.graphics.configure(car)
++	var side: MeshInstance3D = car.find_child("FormedSideSkin",true,false)
++	var topology: Dictionary = _topology(side)
++	metrics.original_side = topology
++	check(topology.boundary_edges>0,"actual task-start side reproduces the open sheet")
++	if graphical:
++		ShowroomStudio.build(world,car)
++		var camera := Camera3D.new()
++		world.add_child(camera)
++		camera.current = true
++		camera.fov = 32
++		camera.look_at_from_position(Vector3(-4,2.2,4),Vector3(0,1.0,0))
++		var value: Dictionary = VehicleLivery.defaults("forklift")
++		value.stickers.hood.id = "crest"; value.stickers.hood.size = 0.95
++		car.apply_livery(value)
++		for binding: Dictionary in car.graphics.bindings:
++			binding.finish.set_shader_parameter("rear_sticker",false)
++			binding.finish.set_shader_parameter("hood_panel",Vector4(-0.63,0.64,1.26,0.79))
++			binding.finish.set_shader_parameter("panel_levels",Vector2(1.49,10))
++			binding.finish.set_shader_parameter("hood_sticker",Vector4(0.5,0.5,0.79*0.95,0))
++		await capture("before-sides-sticker")
++	world.queue_free()
++	await process_frame
++
++func _emblem(car: CarVisual, enabled: bool, wear: VehicleWeathering = null) -> void:
++	if wear != null:
++		for binding: Dictionary in wear.bindings:
++			if binding.graphics: binding.finish.set_shader_parameter("hood_emblem",0 if enabled else -1)
++	else:
++		for binding: Dictionary in car.graphics.bindings: binding.finish.set_shader_parameter("hood_emblem",0 if enabled else -1)
++
++func _other_cars() -> void:
++	for id: String in VehicleCatalog.IDS:
++		if id == "forklift": continue
++		var car := CarVisual.new()
++		car.vehicle_id = id; car.simple_model = true
++		root.add_child(car)
++		var meshes: int = car.find_children("*","MeshInstance3D",true,false).size()
++		var projections_retained: bool = true
++		for pattern: Dictionary in LiveryCatalog.patterns:
++			var value: Dictionary = VehicleLivery.defaults(id)
++			value.pattern = pattern.id
++			value.stickers.hood.id = "crest"; value.stickers.roof.id = "compass"
++			car.apply_livery(value)
++			for binding: Dictionary in car.graphics.bindings:
++				projections_retained = projections_retained and binding.finish.get_shader_parameter("rear_sticker") == false and binding.finish.get_shader_parameter("hood_emblem") == 0
++				projections_retained = projections_retained and binding.finish.get_shader_parameter("roof_emblem") == (2 if LiveryCatalog.has_roof(id) else -1)
++		check(projections_retained,id+" retains original panel mapping through every pattern")
++		var wear := VehicleWeathering.new()
++		wear.configure(car,"pine",VehicleCatalog.config(id))
++		wear.dirt_amount = 0.2; wear._update_finish()
++		var weathering_retained: bool = true
++		for binding: Dictionary in wear.bindings:
++			if binding.graphics: weathering_retained = weathering_retained and binding.finish.get_shader_parameter("rear_sticker") == false
++		check(weathering_retained,id+" weathered paint retains its projection")
++		check(car.find_children("*","MeshInstance3D",true,false).size() == meshes,id+" projection adds no geometry")
++		car.queue_free()
++		await process_frame
++
++func _difference(a: Image, b: Image) -> int:
++	var changed: int = 0
++	for y: int in range(a.get_height()):
++		for x: int in range(a.get_width()):
++			var p: Color = a.get_pixel(x,y)
++			var q: Color = b.get_pixel(x,y)
++			if maxf(absf(p.r-q.r),maxf(absf(p.g-q.g),absf(p.b-q.b)))>0.04: changed += 1
++	return changed
++
++func _render() -> void:
++	var world := Node3D.new()
++	root.add_child(world)
++	var car := CarVisual.new()
++	car.vehicle_id = "forklift"
++	world.add_child(car)
++	ShowroomStudio.build(world,car)
++	var camera := Camera3D.new()
++	world.add_child(camera)
++	camera.current = true
++	camera.fov = 32
++	var value: Dictionary = VehicleLivery.defaults("forklift")
++	value.stickers.hood.id = "crest"; value.stickers.hood.size = 0.95
++	car.apply_livery(value)
++	for pose: String in ["rear","front","side","top"]:
++		var target := Vector3(0,1.02,0)*HandlingConfig.BODY_SCALE
++		var offset: Vector3 = {"rear":Vector3(0,0.15,4),"front":Vector3(0,0.15,-5),"side":Vector3(5,0.15,0),"top":Vector3(0,6,0.01)}[pose]
++		camera.look_at_from_position(target+offset,target)
++		_emblem(car,false)
++		var plain: Image = await capture(pose+"-without-sticker")
++		_emblem(car,true)
++		var sticker: Image = await capture(pose+"-sticker")
++		var difference: int = _difference(plain,sticker)
++		metrics[pose+"_sticker_pixels"] = difference
++		check(difference>600 if pose=="rear" else difference<8,"sticker visible only on clear rear face: "+pose)
++	camera.look_at_from_position(Vector3(-4,2.2,4),Vector3(0,1.0,0))
++	await capture("solid-sides-rear")
++	var wear := VehicleWeathering.new()
++	wear.configure(car,"pine",VehicleCatalog.config("forklift"))
++	wear.dirt_amount = 0.22
++	wear._update_finish()
++	camera.look_at_from_position(Vector3(0,1.05,4),Vector3(0,1.0,0))
++	_emblem(car,false,wear)
++	var dirty_plain: Image = await capture("weathered-without-sticker")
++	_emblem(car,true,wear)
++	var dirty_sticker: Image = await capture("weathered-sticker")
++	metrics.weathered_sticker_pixels = _difference(dirty_plain,dirty_sticker)
++	check(int(metrics.weathered_sticker_pixels)>300,"rear sticker survives normal weathering")
++	world.queue_free()
++	await process_frame
++
++func _garage() -> void:
++	root.size = Vector2i(1280,720)
++	var directory: String = ProjectSettings.globalize_path("res://../build/forklift-finish/"+TrackLibrary.unique_id())
++	DirAccess.make_dir_recursive_absolute(directory)
++	var app: Node = load("res://core/app.tscn").instantiate()
++	app.records = LocalRecords.new(directory.path_join("records.json"))
++	app.library = TrackLibrary.new(directory)
++	app.cloud_root_override = directory.path_join("cloud")
++	root.add_child(app)
++	while not app.startup_complete: await process_frame
++	app._show_screen("garage")
++	await settle()
++	var page: GaragePage = app.root_ui.find_child("GaragePage",true,false)
++	page.preview_car(VehicleCatalog.IDS.find("forklift"))
++	page._confirm_car()
++	await create_timer(0.8).timeout
++	page._set_customise_tab("stickers")
++	await settle()
++	var button: Button = page.livery_menu.active_control("StickerHood")
++	check(button != null and button.text == "Rear" and page.livery_menu.active_control("StickerRoof") == null,"actual Garage offers only Rear")
++	page._choose_sticker_surface("hood")
++	page._choose_sticker(LiveryCatalog.sticker_index("zelvora")+1)
++	await create_timer(0.6).timeout
++	await settle()
++	check(page.draft.stickers.hood.id == "zelvora" and page.draft.stickers.hood.rotation == 0.0,"new rear wordmark starts upright")
++	var focused: Vector3 = page.showroom.car.to_local(page._customisation_camera.target)
++	check(focused.z>1.2*HandlingConfig.BODY_SCALE,"actual Garage focuses the rear panel")
++	await capture("garage-rear-sticker-1280")
++	page._edit_sticker_position(true)
++	await create_timer(0.5).timeout
++	page._move_sticker(Vector2(0.47,0.51))
++	page._sticker_property(0.91,"size")
++	page._sticker_property(-8.0,"rotation")
++	page._save()
++	await settle()
++	check(page._sticker_board.vehicle_id == "forklift" and page._sticker_board.surface == "hood","rear placement uses the compatible saved slot")
++	check(page._customisation_camera.focused_category == "hood" and page.showroom.car.to_local(page._customisation_camera.target).z>1.2*HandlingConfig.BODY_SCALE,"placement retains a view of the actual rear sticker")
++	var reopened := LocalRecords.new(app.records.path)
++	reopened.load_records()
++	var saved: Dictionary = VehicleLivery.for_car(reopened.settings,"forklift").stickers.hood
++	var retained: bool = saved.id == page.draft.stickers.hood.id
++	for property: String in ["x","y","size","rotation"]: retained = retained and is_equal_approx(float(saved[property]),float(page.draft.stickers.hood[property]))
++	check(retained,"rear placement/size/rotation survive reload")
++	root.size = Vector2i(960,540)
++	await capture("garage-rear-placement-960")
++	page._edit_sticker_position(false)
++	page._choose_sticker(0)
++	check(page.draft.stickers.hood.id == "none","rear sticker can be removed normally")
++	app.queue_free()
++	await process_frame
+diff --git a/game/tests/test_forklift_finish.gd.uid b/game/tests/test_forklift_finish.gd.uid
+new file mode 100644
+--- /dev/null
++++ b/game/tests/test_forklift_finish.gd.uid
+@@ -0,0 +1 @@
++uid://c3ci1g3tptb3q
+diff --git a/docs/FORKLIFT_BODY_STICKER_2026_10_25.md b/docs/FORKLIFT_BODY_STICKER_2026_10_25.md
+new file mode 100644
+--- /dev/null
++++ b/docs/FORKLIFT_BODY_STICKER_2026_10_25.md
+@@ -0,0 +1,33 @@
++# Forklift solid sides and rear sticker - 2026-10-25
++
++FS01-FS03/R01/Q01 address the owner's thin-side rendering artefacts and obscured stickers. The Forklift now has closed side skins and wheel-arch shells, plus one sticker location on the clear rear counterweight between the tail lights. [Native before/after gallery](evidence/forklift-body-sticker-2026-10-25/report.html) and [evidence report](evidence/forklift-body-sticker-2026-10-25/report.json).
++
++FS01 gives the formed sides 0.065 model metres of thickness and the rolled arches 0.045 model metres, including inner faces, edge returns and end caps. Arch trim sits 0.030 model metres farther out to avoid overlapping the side face. Both sides and all four arches are closed in detailed and racing models, with zero boundary or inconsistent edges. The saved original side has 194 open boundary edges. Detailed/racing models contain 146,792/49,688 triangles and retain 40 prepared mesh instances. This is a presentation change; handling, raised forks, speed, steering, body scale and collision remain as previously tuned.
++
++FS02 reuses the existing primary sticker data slot on a rear-facing X/-Y projection. Its paint area is 0.78 by 0.44 model metres between the lights. The placement is pigment in the opaque paint shader, so no extra decal plane or overlapping draw pass is introduced. The old engine-lid sticker was hidden by the cooling recess/louvres. Only the rear sticker is enabled on the Forklift; its unused roof slot is not displayed. Existing saved sticker IDs, position, size and rotation remain intact, with no schema or backend change. New sponsor wordmarks start upright on the rear; other cars retain their existing orientation.
++
++Garage offers a single **Rear** location. Selecting Stickers, selecting that location or entering placement focuses the actual rear panel. The placement board uses the matching rear paint projection. Leaving placement restores the normal preceding-view behavior. Existing Workshop navigation, ownership, preview, cleanliness and explicit purchase/equip rules remain.
++
++FS03 refreshes all 49 current Forklift appearance photos and the native catalogue illustration. The photos now generate mipmaps like the established filtered previews. Other cars' images are not changed.
++
++All engine commands use `powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1` and pinned Godot `4.7.2.stable.official.ed1daf0bf`; the two-argument artwork bake uses a PowerShell `-Command` array invocation instead.
++
++| Actual command/check | Result |
++|---|---|
++| `TestScript -ScriptPath res://tests/test_forklift_finish.gd` | 59 checks, zero failures |
++| Same with `-Graphical -RenderingMethod gl_compatibility` | 77 checks, zero failures; before the final preview-filter assertion was added |
++| Same with `-Graphical -RenderingMethod mobile` | 78 checks, zero failures; includes the final preview-filter assertion; desktop renderer |
++| `TestScript -ScriptPath res://tests/test_forklift.gd -TestArgument '--evidence-dir=res://../docs/evidence/forklift-body-sticker-2026-10-25/regression'` | 98 checks, zero failures; batching, canonical original-car traces, rear steering, save and real offline race |
++| Same with `-Graphical -RenderingMethod gl_compatibility` and array arguments for evidence directory plus `--bake-art` | 107 checks, zero failures |
++| `TestScript -ScriptPath res://tests/bake_livery_previews.gd -Graphical -RenderingMethod gl_compatibility -TestArgument '--vehicle=forklift'` | 49 native captures complete |
++| `Import` | Pass; refreshed native artwork and filtered previews |
++| `TestScript -ScriptPath res://tests/test_script_parse.gd` | 1,142 scripts, zero failures |
++| `TestScript -ScriptPath res://tests/test_livery_patterns.gd` | Fails: pre-existing unfiltered new-car previews, then stale five-car fixture asks pattern index 50 from 48 entries. Forklift preview filtering is corrected here; Electric images and that test are unchanged. |
++
++The focused test verifies real closed-mesh topology in both detail levels, loads the saved original body into an isolated process for the before render, and compares native sticker-on/off images. Compatibility records 13,616 changed rear pixels, zero front/side/top pixels and 13,640 weathered rear pixels. Mobile measurements are retained in its report. Both verify the actual Garage's one location, camera, placement, removal and save reload. A supplemental matrix exercises every pattern on each of the other six cars, including weathered paint, preserving their original panel mapping and mesh counts.
++
++The first save assertion compared binary floating-point dictionary values after JSON encoding and failed on rounding below visible placement precision. IDs remain exact; the corrected assertion compares all four numeric placement fields with the engine's approximate-number comparison. The initial 38-check/one-failure log remains. The first graphical run passed 58 checks but its short placement screenshot revealed a camera reset to the front; the correction adds an explicit placement-camera regression and retains that initial image/log. No failing production behavior or legacy assertion was hidden or removed.
++
++Changed runtime sources: `game/vehicle/forklift_model.gd`, `livery_catalog.gd`, `livery_graphics.gd`, `livery_finish.gdshaderinc`; `game/ui/garage_page.gd`, `garage_livery_menu.gd`, `garage_customisation_camera.gd`, `sticker_placement.gd`, `sticker_panel.gdshader`. New test: `game/tests/test_forklift_finish.gd`. Native assets, status files and the original Forklift guide accompany the change. The scoped source patch and native asset payload preserve concurrent workspace work without changing the Git index or HEAD.
++
++No phone/tablet attachment check or physical-device test, APK, purchase, live backend mutation, deployment or owner-process restart was performed. Reload the game to use the changed model, shader and previews. Owner/device appearance and frame-pacing acceptance remain.
+diff --git a/docs/evidence/forklift-body-sticker-2026-10-25/before/game__vehicle__forklift_model.gd b/docs/evidence/forklift-body-sticker-2026-10-25/before/game__vehicle__forklift_model.gd
+new file mode 100644
+--- /dev/null
++++ b/docs/evidence/forklift-body-sticker-2026-10-25/before/game__vehicle__forklift_model.gd
+@@ -0,0 +1,339 @@
++extends RefCounted
++## Original counterbalance forklift. Same finish, tire kit and material batching as Compact.
++## All dimensions are model metres. Wheels remain independent steering/rolling frames.
++static var meshes: Dictionary = {}
++const TRANSPORT_LIFT: float = 0.60 # Raised carriage; model metres, before shared body scale.
++
++static func build(car: CarVisual) -> void:
++	var paint := CompactFinish.paint(Color("d5a62d"))
++	var accent := CompactFinish.paint(Color("e0d5b5"))
++	var steel := CompactFinish.alloy(Color("687576"))
++	var bright := CompactFinish.alloy(Color("bac5c1"))
++	var dark := CompactFinish.paint(Color("273439"))
++	dark.roughness = 0.54
++	var rubber := CompactFinish.rubber(Color("172024"))
++	var seat := CompactFinish.rubber(Color("343d3e"))
++	var amber := CompactFinish.paint(Color("c58025"))
++	car.brake_material = CompactFinish.paint(Color("802d2b"))
++	car.paint_materials = {"body":paint,"accent":accent}
++	var detail: int = 1 if car.simple_model else 3
++	var body: Node3D = car.body
++	# Cast rear counterweight: rounded shoulders and an inset, removable engine lid.
++	_box(body,Vector3(1.69,0.80,0.97),Vector3(0,1.02,1.07),0.17,paint,detail,"CastCounterweight")
++	_box(body,Vector3(1.43,0.055,0.83),Vector3(0,1.441,1.04),0.024,rubber,detail,"EngineLidGasket")
++	_box(body,Vector3(1.39,0.065,0.79),Vector3(0,1.476,1.04),0.028,accent,detail,"EngineLid")
++	_box(body,Vector3(0.83,0.008,0.49),Vector3(0,1.511,1.06),0.012,rubber,1,"CoolingRecess")
++	for index: int in range(10):
++		_box(body,Vector3(0.78,0.016,0.022),Vector3(0,1.519,0.848+index*0.047),0.007,dark,1,"CoolingLouvre")
++	# Separate side skins have actual wheel openings rather than hiding the tires.
++	for side: float in [-1.0,1.0]:
++		_side_skin(car,side,paint)
++		_box(body,Vector3(0.025,0.36,0.62),Vector3(side*0.842,1.02,0.31),0.012,rubber,detail,"SidePanelRecess")
++		_box(body,Vector3(0.034,0.32,0.58),Vector3(side*0.855,1.02,0.31),0.012,paint,detail,"ServicePanel")
++		for z: float in [0.07,0.55]:
++			_bolt(body,Vector3(side*0.877,1.12,z),Vector3(side,0,0),0.012,bright)
++		_box(body,Vector3(0.014,0.055,0.24),Vector3(side*0.881,1.02,0.32),0.009,dark,detail,"PanelHandle")
++		_box(body,Vector3(0.28,0.09,0.68),Vector3(side*0.81,0.57,-0.13),0.035,dark,detail,"EntryStep")
++		for ridge: int in range(8):
++			_box(body,Vector3(0.25,0.009,0.018),Vector3(side*0.81,0.62,-0.41+ridge*0.079),0.004,steel,1,"StepGrip")
++		_arch(car,side,-config_axle(),0.43,paint,rubber)
++		_arch(car,side,config_axle(),0.30,paint,rubber)
++	_box(body,Vector3(1.49,0.13,2.68),Vector3(0,0.37,0.17),0.055,rubber,detail,"Chassis")
++	_box(body,Vector3(1.31,0.10,1.33),Vector3(0,0.81,-0.27),0.035,dark,detail,"OperatorFloor")
++	for index: int in range(10):
++		_box(body,Vector3(0.027,0.008,0.81),Vector3(-0.49+index*0.108,0.866,-0.32),0.004,rubber,1,"FloorGrip")
++	_operator(car,seat,rubber,dark,steel,bright,detail)
++	_guard(car,dark,steel,bright,rubber,accent,amber,detail)
++	_mast(car,dark,steel,bright,rubber,detail)
++	# Recessed rear light assemblies, perimeter bumper, tow eye and safety bars.
++	_box(body,Vector3(1.52,0.19,0.15),Vector3(0,0.57,1.59),0.055,rubber,detail,"RearBumper")
++	for side: float in [-1.0,1.0]:
++		_box(body,Vector3(0.27,0.17,0.06),Vector3(side*0.55,1.10,1.548),0.032,rubber,detail,"TailLampRecess")
++		_box(body,Vector3(0.22,0.11,0.045),Vector3(side*0.55,1.10,1.584),0.023,car.brake_material,detail,"TailLampLens")
++		for line: int in range(4):
++			_box(body,Vector3(0.18,0.005,0.005),Vector3(side*0.55,1.064+line*0.023,1.61),0.002,car.brake_material,1,"TailLensFlute")
++		_box(body,Vector3(0.14,0.025,0.32),Vector3(side*0.53,0.677,1.54),0.009,amber,detail,"WarningMark")
++	var tow := VisualGeometry.cylinder(body,0.065,0.09,Vector3(0,0.55,1.71),steel,true)
++	tow.rotation.x = PI*0.5
++	_bolt(body,Vector3(0,0.55,1.77),Vector3.BACK,0.025,dark)
++	# Curved exhaust stack and its heat shield behind the operator, below the guard.
++	_pipe(body,[Vector3(0.58,1.24,0.94),Vector3(0.62,1.50,0.98),Vector3(0.62,2.03,0.98),Vector3(0.59,2.12,1.02)],0.032,dark)
++	_box(body,Vector3(0.12,0.43,0.11),Vector3(0.62,1.71,0.99),0.035,steel,detail,"ExhaustShield")
++	for vent: int in range(6):
++		_box(body,Vector3(0.07,0.008,0.004),Vector3(0.62,1.56+vent*0.058,1.049),0.002,dark,1,"ShieldVent")
++
++static func config_axle() -> float:
++	return 1.72/(2.0*HandlingConfig.BODY_SCALE)
++
++static func _side_skin(car: CarVisual, side: float, paint: Material) -> void:
++	var tool := SurfaceTool.new()
++	tool.begin(Mesh.PRIMITIVE_TRIANGLES)
++	var steps: int = 36 if car.simple_model else 96
++	for index: int in range(steps):
++		var corners: Array[Vector3] = []
++		for coordinate: Vector2 in [Vector2(0,0),Vector2(1,0),Vector2(1,1),Vector2(0,1)]:
++			var z: float = lerpf(-1.27,1.48,(index+coordinate.x)/steps)
++			var lower: float = 0.39
++			for axle: float in [-config_axle(),config_axle()]:
++				var radius: float = (0.43 if axle<0.0 else 0.30)+0.065
++				var offset: float = absf(z-axle)
++				if offset<radius: lower = maxf(lower,(0.43 if axle<0.0 else 0.30)+sqrt(radius*radius-offset*offset))
++			var upper: float = 1.12-0.10*smoothstep(-0.75,-0.25,z)
++			var y: float = lerpf(lower,upper,coordinate.y)
++			var x: float = 0.82-0.045*pow((y-0.75)/0.55,2.0)-0.08*smoothstep(1.25,1.50,z)
++			corners.append(Vector3(side*x,y,z))
++		_quad(tool,corners,Vector3(side,0.10,0).normalized(),side<0.0)
++	_attach(car.body,tool.commit(),paint,"FormedSideSkin")
++
++static func _arch(car: CarVisual, side: float, z: float, tire: float, paint: Material, trim: Material) -> void:
++	var tool := SurfaceTool.new()
++	tool.begin(Mesh.PRIMITIVE_TRIANGLES)
++	var steps: int = 18 if car.simple_model else 40
++	for index: int in range(steps):
++		var a: float = lerpf(-0.12,PI+0.12,index/float(steps))
++		var b: float = lerpf(-0.12,PI+0.12,(index+1)/float(steps))
++		var corners: Array[Vector3] = []
++		for pair: Vector2 in [Vector2(a,0),Vector2(b,0),Vector2(b,1),Vector2(a,1)]:
++			var radius: float = tire+lerpf(0.048,0.086,pair.y)
++			corners.append(Vector3(side*lerpf(0.827,0.803,pair.y),tire+sin(pair.x)*radius,z+cos(pair.x)*radius))
++		_quad(tool,corners,Vector3(side,0.1,0).normalized(),side<0.0)
++	_attach(car.body,tool.commit(),paint,"RolledWheelArch")
++	# Thin inner lip separates paint from tire without filling the opening.
++	var path: Array[Vector3] = []
++	for index: int in range(steps+1):
++		var angle: float = lerpf(-0.12,PI+0.12,index/float(steps))
++		path.append(Vector3(side*0.831,tire+sin(angle)*(tire+0.041),z+cos(angle)*(tire+0.041)))
++	_pipe(car.body,path,0.009,trim)
++
++static func _operator(car: CarVisual, seat: Material, rubber: Material, dark: Material, steel: Material, bright: Material, detail: int) -> void:
++	var parent: Node3D = car.body
++	_box(parent,Vector3(0.49,0.15,0.44),Vector3(0,1.02,0.25),0.035,steel,detail,"SeatSuspension")
++	for side: float in [-1.0,1.0]:
++		_box(parent,Vector3(0.04,0.06,0.59),Vector3(side*0.21,1.10,0.24),0.013,dark,detail,"SeatRail")
++	_box(parent,Vector3(0.63,0.17,0.58),Vector3(0,1.20,0.22),0.077,seat,detail,"SeatCushion")
++	_box(parent,Vector3(0.50,0.11,0.47),Vector3(0,1.273,0.19),0.045,rubber,detail,"SeatInset")
++	var back: MeshInstance3D = _box(parent,Vector3(0.65,0.66,0.18),Vector3(0,1.54,0.50),0.082,seat,detail,"SeatBack")
++	back.rotation.x = -0.12
++	for side: float in [-1.0,1.0]:
++		_box(parent,Vector3(0.10,0.31,0.13),Vector3(side*0.27,1.49,0.38),0.045,rubber,detail,"SeatBolster")
++		_box(parent,Vector3(0.035,0.018,0.37),Vector3(side*0.30,1.306,0.22),0.008,dark,1,"SeatStitch")
++	_box(parent,Vector3(0.045,0.075,0.07),Vector3(0.35,1.20,0.23),0.012,rubber,detail,"SeatBeltBuckle")
++	_box(parent,Vector3(0.031,0.012,0.035),Vector3(0.35,1.24,0.23),0.006,car.brake_material,1,"BeltRelease")
++	_box(parent,Vector3(0.87,0.24,0.29),Vector3(0,1.27,-0.66),0.065,dark,detail,"InstrumentConsole")
++	var gauges := Node3D.new()
++	parent.add_child(gauges)
++	gauges.position = Vector3(-0.19,1.405,-0.63)
++	gauges.rotation.x = 0.35
++	for x: float in [-0.10,0.10]:
++		var bezel := VisualGeometry.cylinder(gauges,0.067,0.012,Vector3(x,0,0),steel,true)
++		VisualGeometry.cylinder(gauges,0.056,0.016,Vector3(x,0.004,0),rubber,true)
++		_box(gauges,Vector3(0.006,0.003,0.036),Vector3(x+0.006,0.014,-0.006),0.002,bright,1,"GaugeNeedle")
++		bezel.name = "InstrumentBezel"
++	var column := Node3D.new()
++	parent.add_child(column)
++	column.position = Vector3(-0.16,1.61,-0.40)
++	column.rotation.x = 0.40
++	VisualGeometry.cylinder(column,0.040,0.41,Vector3(0,-0.21,0),dark,true)
++	VisualGeometry.ring(column,Vector3.ZERO,0.202,0.019,rubber)
++	VisualGeometry.cylinder(column,0.055,0.038,Vector3.ZERO,dark,true)
++	for spoke: int in range(3):
++		var angle: float = spoke*TAU/3.0+0.35
++		_beam(column,Vector3.ZERO,Vector3(cos(angle)*0.185,0,sin(angle)*0.185),0.023,dark,1)
++	for index: int in range(3):
++		var x: float = 0.36+index*0.105
++		_box(parent,Vector3(0.08,0.045,0.14),Vector3(x,1.10,-0.10),0.018,rubber,detail,"LeverGaiter")
++		_pipe(parent,[Vector3(x,1.11,-0.10),Vector3(x,1.30,-0.16),Vector3(x,1.45,-0.22)],0.012,steel)
++		_box(parent,Vector3(0.058,0.076,0.058),Vector3(x,1.46,-0.22),0.027,rubber,detail,"LeverGrip")
++	for x: float in [-0.27,0.22]:
++		var pedal: MeshInstance3D = _box(parent,Vector3(0.14,0.028,0.18),Vector3(x,0.91,-0.64),0.015,rubber,detail,"Pedal")
++		pedal.rotation.x = -0.30
++		for rib: int in range(4):
++			_box(parent,Vector3(0.12,0.007,0.012),Vector3(x,0.944-rib*0.012,-0.70+rib*0.035),0.003,steel,1,"PedalRib")
++
++static func _guard(car: CarVisual, dark: Material, steel: Material, bright: Material, rubber: Material, accent: Material, amber: Material, detail: int) -> void:
++	var parent: Node3D = car.body
++	for side: float in [-1.0,1.0]:
++		for z: float in [-0.77,0.74]:
++			_beam(parent,Vector3(side*0.65,1.02,z),Vector3(side*0.71,2.61,z+0.06),0.078,dark,detail)
++			_box(parent,Vector3(0.17,0.11,0.19),Vector3(side*0.65,1.05,z),0.021,steel,detail,"GuardFoot")
++			_bolt(parent,Vector3(side*0.74,1.06,z),Vector3(side,0,0),0.021,bright)
++		_box(parent,Vector3(0.13,0.12,1.85),Vector3(side*0.71,2.65,0.02),0.033,dark,detail,"GuardSideRail")
++		_box(parent,Vector3(0.25,0.17,0.16),Vector3(side*0.70,2.47,-0.81),0.045,rubber,detail,"WorkLampHousing")
++		_box(parent,Vector3(0.21,0.12,0.025),Vector3(side*0.70,2.47,-0.902),0.025,bright,detail,"WorkLampReflector")
++		_box(parent,Vector3(0.18,0.09,0.018),Vector3(side*0.70,2.47,-0.921),0.020,accent,detail,"WorkLampLens")
++		for index: int in range(4):
++			_box(parent,Vector3(0.026,0.058,0.006),Vector3(side*0.70-0.059+index*0.040,2.47,-0.932),0.007,bright,1,"LEDOptic")
++		_pipe(parent,[Vector3(side*0.70,2.23,-0.69),Vector3(side*0.86,2.23,-0.62),Vector3(side*0.88,2.17,-0.58)],0.014,dark)
++		_box(parent,Vector3(0.17,0.23,0.07),Vector3(side*0.88,2.13,-0.54),0.037,rubber,detail,"MirrorHousing")
++		_box(parent,Vector3(0.13,0.18,0.008),Vector3(side*0.88,2.13,-0.50),0.025,bright,detail,"MirrorGlass")
++	for z: float in [-0.85,0.90]:
++		_box(parent,Vector3(1.49,0.12,0.12),Vector3(0,2.65,z),0.031,dark,detail,"GuardCrossRail")
++	for index: int in range(6):
++		_box(parent,Vector3(1.34,0.052,0.061),Vector3(0,2.675,-0.65+index*0.27),0.017,dark,detail,"GuardSlat")
++	var beacon_base := VisualGeometry.cylinder(parent,0.115,0.044,Vector3(0.55,2.74,0.65),rubber,true)
++	beacon_base.name = "BeaconBase"
++	VisualGeometry.cylinder(parent,0.087,0.14,Vector3(0.55,2.83,0.65),amber,true)
++	VisualGeometry.cylinder(parent,0.089,0.021,Vector3(0.55,2.908,0.65),amber,true)
++	for index: int in range(3):
++		VisualGeometry.ring(parent,Vector3(0.55,2.784+index*0.039,0.65),0.086,0.004,amber)
++
++static func _mast(car: CarVisual, dark: Material, steel: Material, bright: Material, rubber: Material, detail: int) -> void:
++	var parent: Node3D = car.body
++	var carriage := Node3D.new()
++	carriage.name = "RaisedForkCarriage"
++	carriage.position.y = TRANSPORT_LIFT
++	parent.add_child(carriage)
++	for side: float in [-1.0,1.0]:
++		var x: float = side*0.52
++		# Open channel section and its polished sliding face.
++		_box(parent,Vector3(0.045,2.47,0.24),Vector3(x+side*0.061,1.49,-1.23),0.009,dark,detail,"MastWeb")
++		for z: float in [-1.345,-1.115]:
++			_box(parent,Vector3(0.17,2.47,0.034),Vector3(x,1.49,z),0.009,dark,detail,"MastFlange")
++		_box(parent,Vector3(0.035,2.30,0.022),Vector3(x-side*0.038,1.49,-1.355),0.006,steel,detail,"MastSlidingRail")
++		VisualGeometry.cylinder(parent,0.078,0.99,Vector3(side*0.29,0.98,-1.19),dark,true)
++		VisualGeometry.cylinder(parent,0.045,1.31,Vector3(side*0.29,1.89,-1.19),bright,true)
++		VisualGeometry.cylinder(parent,0.090,0.065,Vector3(side*0.29,1.49,-1.19),steel,true)
++		_pipe(parent,[Vector3(side*0.29,0.63,-1.11),Vector3(side*0.38,0.60,-1.01),Vector3(side*0.44,0.88,-1.01),Vector3(side*0.43,1.63,-1.07),Vector3(side*0.38,2.38,-1.18)],0.018,rubber)
++		var pulley := VisualGeometry.cylinder(parent,0.11,0.105,Vector3(side*0.31,2.47,-1.23),steel,true)
++		pulley.rotation.z = PI*0.5
++		_bolt(parent,Vector3(side*0.37,2.47,-1.23),Vector3(side,0,0),0.025,bright)
++		var links: int = 10 if car.simple_model else 26
++		for index: int in range(links):
++			_box(parent,Vector3(0.055,0.030,0.025),Vector3(side*0.31,0.68+index*1.75/links,-1.36),0.007,steel,1,"LiftChainLink")
++		_box(parent,Vector3(0.29,0.18,0.20),Vector3(x,0.44,-1.23),0.035,dark,detail,"MastPivotHousing")
++		_bolt(parent,Vector3(x+side*0.17,0.44,-1.23),Vector3(side,0,0),0.055,steel)
++		_fork(carriage,side*0.43,steel,car.simple_model)
++	_box(parent,Vector3(1.20,0.15,0.25),Vector3(0,2.72,-1.23),0.032,dark,detail,"MastCrosshead")
++	for y: float in [0.54,1.10]:
++		_box(carriage,Vector3(1.31,0.12,0.13),Vector3(0,y,-1.42),0.018,steel,detail,"CarriageCrossmember")
++	for side: float in [-1.0,1.0]:
++		_box(carriage,Vector3(0.075,0.63,0.075),Vector3(side*0.62,0.83,-1.42),0.014,dark,detail,"BackrestFrame")
++	for index: int in range(7):
++		_box(carriage,Vector3(0.029,0.50,0.043),Vector3(-0.53+index*0.177,0.83,-1.42),0.008,dark,detail,"LoadBackrest")
++
++static func _fork(parent: Node3D, x: float, steel: Material, simple: bool) -> void:
++	# Extruded L profile: forged heel, sloping top and a thin tapered toe.
++	var profile := PackedVector2Array([Vector2(-1.45,0.18),Vector2(-2.58,0.18),Vector2(-2.65,0.198),Vector2(-2.59,0.223),Vector2(-1.68,0.277),Vector2(-1.60,0.293),Vector2(-1.565,0.332),Vector2(-1.565,1.02),Vector2(-1.45,1.02)])
++	var tool := SurfaceTool.new()
++	tool.begin(Mesh.PRIMITIVE_TRIANGLES)
++	var triangles: PackedInt32Array = Geometry2D.triangulate_polygon(profile)
++	for side: float in [-1.0,1.0]:
++		for index: int in range(0,triangles.size(),3):
++			var order: Array = [0,1,2] if side<0.0 else [2,1,0]
++			for vertex: int in order:
++				var p: Vector2 = profile[triangles[index+vertex]]
++				tool.set_normal(Vector3(side,0,0)); tool.set_uv(Vector2(p.x,p.y)); tool.add_vertex(Vector3(x+side*0.10,p.y,p.x))
++	for index: int in range(profile.size()):
++		var a: Vector2 = profile[index]
++		var b: Vector2 = profile[(index+1)%profile.size()]
++		var normal := Vector3(0,b.x-a.x,a.y-b.y).normalized()
++		_quad(tool,[Vector3(x-0.10,a.y,a.x),Vector3(x+0.10,a.y,a.x),Vector3(x+0.10,b.y,b.x),Vector3(x-0.10,b.y,b.x)],normal)
++	_attach(parent,tool.commit(),steel,"ForgedForkLeft" if x<0.0 else "ForgedForkRight")
++	_box(parent,Vector3(0.11,0.08,0.16),Vector3(x,1.04,-1.43),0.016,steel,1 if simple else 3,"ForkLock")
++
++static func wheel(car: CarVisual, center: Vector3, radius: float, width: float) -> void:
++	var pivot := Node3D.new()
++	pivot.position = center
++	car.add_child(pivot)
++	CompactDetail.tire(pivot,CompactFinish.rubber(Color("172024")),car.simple_model)
++	var tire: MeshInstance3D = pivot.get_child(0)
++	tire.scale = Vector3(width/0.28,radius/0.37,radius/0.37)
++	var rim := CompactFinish.paint(Color("b3b5a9"))
++	rim.metallic = 0.48
++	var dark := CompactFinish.rubber(Color("263034"))
++	var bright := CompactFinish.alloy(Color("9ba7a5"))
++	var side: float = signf(center.x)
++	var scale_factor: float = radius/0.43
++	var face: float = width*0.48
++	# Recessed pressed-steel dish, rolled rim lip, raised hub and six lug nuts.
++	var dish := VisualGeometry.cylinder(pivot,radius*0.63,width*0.85,Vector3.ZERO,rim,true)
++	dish.rotation.z = PI*0.5
++	var well := VisualGeometry.cylinder(pivot,radius*0.47,0.018,Vector3(side*(face+0.005),0,0),dark,true)
++	well.rotation.z = PI*0.5
++	var hub := VisualGeometry.cylinder(pivot,radius*0.26,0.050,Vector3(side*(face+0.023),0,0),rim,true)
++	hub.rotation.z = PI*0.5
++	var lip := Node3D.new()
++	pivot.add_child(lip)
++	lip.position.x = side*(face+0.008)
++	lip.rotation.z = PI*0.5
++	VisualGeometry.ring(lip,Vector3.ZERO,radius*0.59,0.018*scale_factor,bright)
++	VisualGeometry.ring(lip,Vector3.ZERO,radius*0.48,0.009*scale_factor,rim)
++	for index: int in range(6):
++		var angle: float = index*TAU/6.0
++		_bolt(pivot,Vector3(side*(face+0.047),sin(angle)*radius*0.18,cos(angle)*radius*0.18),Vector3(side,0,0),0.016*scale_factor,bright)
++		var hole := VisualGeometry.cylinder(pivot,0.032*scale_factor,0.012,Vector3(side*(face+0.016),sin(angle)*radius*0.48,cos(angle)*radius*0.48),dark,true)
++		hole.rotation.z = PI*0.5
++	# A valve stem adds scale without additional moving frames.
++	_beam(pivot,Vector3(side*face,0,radius*0.52),Vector3(side*(face+0.032),0,radius*0.52),0.012,dark,1)
++	if center.z>0.0: car.rear_wheels.append(pivot)
++	car.register_rolling_wheel(pivot,radius)
++
++static func _bolt(parent: Node3D, point: Vector3, normal: Vector3, radius: float, material: Material) -> void:
++	var bolt := VisualGeometry.cylinder(parent,radius,0.014,point,material,true)
++	bolt.quaternion = Quaternion(Vector3.UP,normal)
++	var mesh := bolt.mesh.duplicate() as CylinderMesh
++	mesh.radial_segments = 6
++	bolt.mesh = mesh
++
++static func _beam(parent: Node3D, a: Vector3, b: Vector3, width: float, material: Material, detail: int) -> void:
++	var mesh: MeshInstance3D = _box(parent,Vector3(width,width,a.distance_to(b)),(a+b)*0.5,width*0.20,material,detail,"WeldedBeam")
++	mesh.quaternion = Quaternion(Vector3.BACK,(b-a).normalized())
++
++static func _pipe(parent: Node3D, points: Array[Vector3], radius: float, material: Material) -> void:
++	for index: int in range(points.size()-1):
++		var a: Vector3 = points[index]
++		var b: Vector3 = points[index+1]
++		var pipe := VisualGeometry.cylinder(parent,radius,a.distance_to(b),(a+b)*0.5,material,true)
++		pipe.quaternion = Quaternion(Vector3.UP,(b-a).normalized())
++
++static func _box(parent: Node3D, size: Vector3, center: Vector3, radius: float, material: Material, detail: int, label: String) -> MeshInstance3D:
++	var key: String = str([size,radius,detail])
++	if not meshes.has(key):
++		var tool := SurfaceTool.new()
++		tool.begin(Mesh.PRIMITIVE_TRIANGLES)
++		var half: Vector3 = size*0.5
++		var r: float = minf(radius,minf(half.x,minf(half.y,half.z))*0.95)
++		var inner: Vector3 = half-Vector3.ONE*r
++		for face: int in range(3):
++			var u: int = (face+1)%3
++			var v: int = (face+2)%3
++			var us: Array[float] = _samples(half[u],r,detail)
++			var vs: Array[float] = _samples(half[v],r,detail)
++			for side: float in [-1.0,1.0]:
++				for row: int in range(us.size()-1):
++					for col: int in range(vs.size()-1):
++						for index: int in ([0,1,2,0,2,3] if side<0.0 else [2,1,0,3,2,0]):
++							var q := Vector3.ZERO
++							q[face] = side*half[face]
++							q[u] = us[row+(1 if index in [1,2] else 0)]
++							q[v] = vs[col+(1 if index in [2,3] else 0)]
++							var clipped: Vector3 = q.clamp(-inner,inner)
++							var normal: Vector3 = (q-clipped).normalized()
++							tool.set_normal(normal)
++							tool.set_uv(Vector2(q[u]/size[u]+0.5,q[v]/size[v]+0.5))
++							tool.add_vertex(clipped+normal*r)
++		tool.index()
++		meshes[key] = tool.commit()
++	var result: MeshInstance3D = _attach(parent,meshes[key],material,label)
++	result.position = center
++	return result
++
++static func _samples(half: float, radius: float, detail: int) -> Array[float]:
++	var result: Array[float] = []
++	for index: int in range(detail+1): result.append(lerpf(-half,-half+radius,index/float(detail)))
++	for index: int in range(detail+1): result.append(lerpf(half-radius,half,index/float(detail)))
++	return result
++
++static func _attach(parent: Node3D, resource: Mesh, material: Material, label: String) -> MeshInstance3D:
++	var result := MeshInstance3D.new()
++	result.name = label
++	result.mesh = resource
++	result.material_override = material
++	parent.add_child(result)
++	return result
++
++static func _quad(tool: SurfaceTool, points: Array[Vector3], normal: Vector3, reverse: bool = false) -> void:
++	for index: int in ([0,2,1,0,3,2] if reverse else [0,1,2,0,2,3]):
++		tool.set_normal(normal)
++		tool.set_uv(Vector2(points[index].x+points[index].z,points[index].y))
++		tool.add_vertex(points[index])

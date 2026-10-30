@@ -1,0 +1,400 @@
+--- a/game/core/app.gd
++++ b/game/core/app.gd
+@@ -71,4 +71,5 @@
+ var canvas: EditorCanvas
+ var editor_status: Label
++var editor_guidance: String = ""
+ var test_button: Button
+ var publish_button: Button
+@@ -552,5 +553,5 @@
+ 		return
+ 	_garage_picture_navigation+=1
+-	if next=="garage" and is_instance_valid(_garage_preloader) and not _garage_preloader.pictures_ready():
++	if next=="garage" and DisplayServer.get_name()!="headless" and is_instance_valid(_garage_preloader) and not _garage_preloader.pictures_ready():
+ 		if screen=="garage" and is_instance_valid(_retained_garage) and _retained_garage.records!=records: _show_screen("restoring")
+ 		_open_garage_with_pictures(_garage_picture_navigation,records)
+@@ -622,5 +623,5 @@
+ 	if is_instance_valid(canvas):
+ 		if canvas.document.get("id","") == document.get("id",""): _stash_pending_tool()
+-		editor_view = {"zoom":canvas.zoom,"pan":canvas.pan,"mode":canvas.mode,"selected":canvas.selected,"selected_object":canvas.selected_object,"stamp_kind":canvas.stamp_kind,"stamp_scale":canvas.stamp_scale,"stamp_span":canvas.stamp_span,"stamp_jump_profile":canvas.stamp_jump_profile,"stamp_container_color":canvas.stamp_container_color,"run_shape":canvas.run_shape,"free_run":canvas.free_run,"brush_surface":canvas.brush_surface,"brush_width":canvas.brush_width,"paint_mode":canvas.paint_mode,"brush_shape":canvas.brush_shape,"selected_piece":canvas.selected_piece}
++		editor_view = {"zoom":canvas.zoom,"pan":canvas.pan,"mode":canvas.mode,"selected":canvas.selected,"selected_object":canvas.selected_object,"stamp_kind":canvas.stamp_kind,"stamp_scale":canvas.stamp_scale,"stamp_span":canvas.stamp_span,"stamp_jump_profile":canvas.stamp_jump_profile,"stamp_container_color":canvas.stamp_container_color,"run_shape":canvas.run_shape,"free_run":canvas.free_run,"brush_surface":canvas.brush_surface,"brush_width":canvas.brush_width,"paint_mode":canvas.paint_mode,"brush_shape":canvas.brush_shape,"selected_piece":canvas.selected_piece,"selected_objects":canvas.object_indices(),"multi_select":canvas.multi_select,"object_snap":canvas.object_snap,"detailed_scenery":not editor_world._detail.enabled if is_instance_valid(editor_world) else false}
+ 	screen = next
+ 	if screen == "store": _telemetry_observe("store_opened",{},str(_navigation_generation))
+@@ -1087,4 +1088,9 @@
+ 	var direction: int = 1 if distance < 0.0 else -1
+ 	menu_neighbor_direction = direction
++	if menu_neighbors.has(direction) and menu_neighbors[direction].screen=="garage" and not _garage_pictures_ready():
++		for neighbor: Dictionary in menu_neighbors.values(): neighbor.body.hide()
++		menu_body.position.x=signf(distance)*64.0*(1.0-exp(-absf(distance)/160.0))
++		menu_drag_offset=0.0
++		return
+ 	# A neighbor is also an entry route. Do not expose its unresolved cards under
+ 	# the finger while the initial membership request is still in flight.
+@@ -1241,4 +1247,8 @@
+ 
+ func _commit_menu_neighbor(direction: int) -> void:
++	if menu_neighbors[direction].screen=="garage" and DisplayServer.get_name()!="headless" and not _garage_preloader.pictures_ready():
++		_stop_menu_edge_motion()
++		_show_screen("garage")
++		return
+ 	if menu_neighbors[direction].screen == "rivalry" and _rivalry_needs_entry_data():
+ 		_stop_menu_edge_motion()
+@@ -1329,4 +1339,8 @@
+ 
+ func _navigate_menu_page(next: String) -> void:
++	_garage_picture_navigation+=1
++	if next=="garage" and not _garage_pictures_ready():
++		_show_screen(next)
++		return
+ 	# Explicit refreshes still use _show_screen. User navigation promotes the same
+ 	# already warmed controls as swipes, avoiding shell/layout rebuilding on taps.
+@@ -2673,8 +2687,15 @@
+ 	if is_instance_valid(_garage_preloader): _garage_preloader.evict()
+ 	if not is_instance_valid(_retained_garage) or _retained_garage.is_visible_in_tree(): return
++	_discard_suspended_menu()
+ 	var retired: GaragePage = _retained_garage
+ 	_retained_garage = null
+ 	retired.get_parent().remove_child(retired)
+ 	retired.queue_free()
++	for direction: int in menu_neighbors.keys():
++		if menu_neighbors[direction].screen!="garage": continue
++		var body: Control=menu_neighbors[direction].body
++		menu_neighbors.erase(direction)
++		body.get_parent().remove_child(body)
++		body.queue_free()
+ 
+ func _rebuild_profile_menu(destination: String) -> void:
+@@ -2700,9 +2721,11 @@
+ 
+ func _open_garage_with_pictures(request: int,owner_records: LocalRecords) -> void:
+-	var current: Callable=func() -> bool: return is_inside_tree() and request==_garage_picture_navigation and records==owner_records
++	var generation: int=_navigation_generation
++	var current: Callable=func() -> bool: return is_inside_tree() and request==_garage_picture_navigation and generation==_navigation_generation and records==owner_records
+ 	if await _garage_preloader.prepare_pictures(current):
+ 		if current.call(): _show_screen("garage")
+ 
+ func _garage_pictures_ready() -> bool:
++	if DisplayServer.get_name()=="headless": return true
+ 	return is_instance_valid(_garage_preloader) and _garage_preloader.pictures_ready()
+ 
+@@ -3009,4 +3032,6 @@
+ 		editor_issue_cursor = -1
+ 	editor_world = EditorWorld.new()
++	editor_world._detail.enabled = not bool(editor_view.get("detailed_scenery",false))
++	editor_session.prime(document)
+ 	editor_world.theme_id = str(document.theme)
+ 	root_ui.add_child(editor_world)
+@@ -3022,4 +3047,7 @@
+ 		canvas.selected_object = mini(int(editor_view.get("selected_object",-1)),document.objects.size()-1)
+ 		canvas.selected_piece = mini(int(editor_view.get("selected_piece",-1)),document.pieces.size()-1)
++		canvas.multi_select = bool(editor_view.get("multi_select",false))
++		canvas.selected_objects.assign(editor_view.get("selected_objects",[]))
++		canvas.object_snap = float(editor_view.get("object_snap",1.0))
+ 		canvas.stamp_kind = str(editor_view.get("stamp_kind","tree"))
+ 		canvas.stamp_scale = float(editor_view.get("stamp_scale",1.0))
+@@ -3124,5 +3152,5 @@
+ 	overlay.add_child(top)
+ 	top.set_anchors_and_offsets_preset(Control.PRESET_TOP_RIGHT)
+-	top.offset_left = -516; top.offset_right = -80; top.offset_top = 16
++	top.offset_left = -600; top.offset_right = -80; top.offset_top = 16
+ 	top.grow_horizontal = Control.GROW_DIRECTION_BEGIN
+ 	top.add_theme_constant_override("separation",8)
+@@ -3137,4 +3165,8 @@
+ 	settings.tooltip_text = "Map settings"
+ 	top.add_child(settings)
++	var save_action: Button = EditorStyle.button("Save",_save_track_explicit)
++	save_action.name = "EditorSaveAction"
++	save_action.custom_minimum_size = Vector2(76,52)
++	top.add_child(save_action)
+ 	test_button = EditorButton.action("Test","play",_test_document)
+ 	test_button.custom_minimum_size=Vector2(104,52)
+@@ -3198,5 +3230,5 @@
+ 	surface_toolbar = PanelContainer.new()
+ 	surface_toolbar.name = "SurfacePlacementToolbar"
+-	surface_toolbar.add_theme_stylebox_override("panel",StyleBoxEmpty.new())
++	surface_toolbar.add_theme_stylebox_override("panel",EditorStyle.panel())
+ 	overlay.add_child(surface_toolbar)
+ 	surface_toolbar.set_anchors_and_offsets_preset(Control.PRESET_CENTER_TOP)
+@@ -3216,8 +3248,9 @@
+ 	editor_status.name = "EditorFeedback"
+ 	editor_status.position = Vector2(16,128)
+-	editor_status.size = Vector2(280,64)
++	editor_status.size = Vector2(320,80)
+ 	editor_status.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+-	# Retain status text for internal feedback consumers, without a canvas-wide hint bar.
+-	editor_status.hide()
++	editor_status.add_theme_font_size_override("font_size",15)
++	editor_status.add_theme_stylebox_override("normal",EditorStyle.panel())
++	editor_status.show()
+ 	editor_save_button = EditorStyle.button("Draft",_retry_editor_save)
+ 	editor_save_button.name = "EditorSaveState"
+@@ -3248,5 +3281,5 @@
+ 	object_browser.set_anchors_and_offsets_preset(Control.PRESET_BOTTOM_WIDE)
+ 	object_browser.offset_left = 108; object_browser.offset_right = -112
+-	object_browser.offset_top = -160; object_browser.offset_bottom = -16
++	object_browser.offset_top = -174; object_browser.offset_bottom = -16
+ 	object_browser.hide()
+ 	object_browser.asset_chosen.connect(_choose_object)
+@@ -3257,4 +3290,6 @@
+ 	object_browser.rotation_requested.connect(_object_rotation_dialog)
+ 	object_browser.rotation_chosen.connect(_set_object_rotation)
++	object_browser.snap_step = canvas.object_snap
++	object_browser.snap_chosen.connect(func(step: float) -> void: canvas.object_snap = step)
+ 	object_browser.select_requested.connect(func() -> void:
+ 		canvas.cancel_gesture(); canvas.mode="objects"; _build_editor_tools())
+@@ -3276,4 +3311,12 @@
+ 	metadata.add_child(share_button)
+ 	metadata.add_child(EditorStyle.button("Help",_editor_help))
++	var detail: CheckButton = CheckButton.new()
++	detail.name = "EditorDetailedScenery"
++	detail.text = "Detailed scenery"
++	detail.button_pressed = not editor_world._detail.enabled
++	detail.custom_minimum_size.y = 48
++	detail.toggled.connect(func(enabled: bool) -> void:
++		editor_world._detail.enabled = not enabled)
++	metadata.add_child(detail)
+ 	if str(document.theme) == "night_city":
+ 		var lighting: Button = EditorStyle.button("Race lighting",func() -> void: pass)
+@@ -3333,5 +3376,7 @@
+ 	var label_id: int = editor_status.get_instance_id()
+ 	get_tree().create_timer(4.0).timeout.connect(func() -> void:
+-		if generation == editor_hint_generation and is_instance_valid(editor_status) and editor_status.get_instance_id() == label_id and editor_save_error == OK: editor_status.hide())
++		if generation == editor_hint_generation and is_instance_valid(editor_status) and editor_status.get_instance_id() == label_id and editor_save_error == OK:
++			editor_status.text = editor_guidance
++			editor_status.show())
+ 
+ func _update_editor_save_state() -> void:
+@@ -3358,7 +3403,7 @@
+ 		editor_save_button.tooltip_text = "The saved original matches this document."
+ 	else:
+-		editor_save_button.text = "WIP recovery saved" if (editor_wip_store == library and document == editor_wip_snapshot) else "Unsaved draft"
++		editor_save_button.text = "Autosaved draft" if (editor_wip_store == library and document == editor_wip_snapshot) else "Unsaved draft"
+ 		editor_save_button.disabled = true
+-		editor_save_button.tooltip_text = "Recovery is separate from the saved original. Use Map → Save or Ctrl+S to keep it."
++		editor_save_button.tooltip_text = "Your draft is kept separately. Save updates the named track."
+ 
+ func _retry_editor_save() -> void:
+@@ -3512,8 +3557,9 @@
+ 		var piece: Dictionary = canvas.ghost if not canvas.ghost.is_empty() else document.pieces[canvas.selected_piece] if canvas.selected_piece >= 0 else {}
+ 		if piece.is_empty():
+-			_context_button("Start line","race",canvas.choose_start_line)
++			var start_action: Button = _context_button("Start line","race",canvas.choose_start_line)
++			start_action.disabled = document.pieces.is_empty() and document.layout.is_empty() and document.base_track == "" and document.paint.is_empty()
+ 			for kind: String in RoadPieces.KINDS:
+ 				_context_button(preload("res://editor/road_piece_catalog.gd").title(kind),kind,canvas.choose_piece.bind(kind))
+-			editor_status.text = "Choose a section · drag empty ground to pan · pinch to zoom"
++			editor_status.text = "Choose Straight or Curve to begin. Two fingers move the view." if document.pieces.is_empty() else "Choose another section, or place the start line."
+ 		elif editor_geometry != "" and piece.kind == "bridge":
+ 			_context_button("Back","back",func() -> void:
+@@ -3572,8 +3618,9 @@
+ 	elif category == "paint":
+ 		for pair: Array in [[1,"Grass"],[2,"Sand"],[3,"Water"]]:
+-			_context_button(pair[1],"terrain_dirt" if pair[0] == 2 else "terrain_"+pair[1].to_lower(),func() -> void:
++			var surface_button: Button = _context_button(preload("res://editor/surface_labels.gd").title(pair[0],biome),preload("res://editor/surface_labels.gd").glyph(pair[0],biome),func() -> void:
+ 				canvas.brush_surface = pair[0]
+ 				canvas.mode = "paint"
+ 				_build_editor_tools(),canvas.mode == "paint" and canvas.brush_surface == pair[0])
++			(surface_button as EditorButton).surface_tint = TrackTheme.palette(biome)[pair[0]]
+ 		_context_button("Puddle","terrain_puddle",_choose_hazard.bind("puddle"))
+ 		_build_paint_tools()
+@@ -3582,16 +3629,28 @@
+ 		if canvas.selected_object >= 0 and canvas.mode == "objects":
+ 			editor_status.text=CreatorObjects.description(document.objects[canvas.selected_object].kind)
+-			var properties: Button = _context_button("Properties","options",_selected_object_properties)
+-			properties.name = "SelectedObjectProperties"
+-			properties.tooltip_text = "Size, orientation and object settings"
+-			_context_button("Copy","objects",_duplicate_object)
++			if canvas.object_indices().size() == 1:
++				var properties: Button = _context_button("Properties","options",_selected_object_properties)
++				properties.name = "SelectedObjectProperties"
++				properties.tooltip_text = "Size, orientation and object settings"
++			else:
++				editor_status.text = GameText.message("%d objects selected · drag one to move the group") % canvas.object_indices().size()
++				_context_button("Rotate","rotate",_rotate_object)
++			if canvas.multi_select and canvas.object_indices().size() == 1: editor_status.text = "Multi-select: tap to add or remove; drag to move."
++			_context_button("Copy","copy",_duplicate_object)
++			var multiple: Button = _context_button("Multi-select","multi_select",canvas.toggle_multi_select,canvas.multi_select)
++			multiple.name = "MultiSelectObjects"
++			_context_button("Next object","cycle_objects",canvas.cycle_objects)
+ 			_context_button("Delete","delete",_delete_selection)
+ 			if canvas.issue_marker != Vector2.INF: _context_button("Move start","race",canvas.choose_start_line)
+ 			_context_button("Palette","more",func() -> void:
++				canvas.multi_select = false
+ 				canvas.selected_object = -1
+ 				_build_editor_tools())
+ 		else:
+-			editor_status.text = CreatorCatalog.label(canvas.stamp_kind)+" / "+("Drag a curve; release to place" if canvas.run_shape=="curve" else "Drag a line, or tap its two ends" if canvas.mode=="run" else "Tap empty ground to place / tap an object to edit")
++			var stamp_label: String = CreatorCatalog.label(CreatorCatalog.jump_asset(canvas.stamp_jump_profile,str(document.theme))) if canvas.stamp_kind == "jump" else CreatorCatalog.label(canvas.stamp_kind)
++			editor_status.text = stamp_label+" / "+("Drag a curve; release to place" if canvas.run_shape=="curve" else "Drag a line, or tap its two ends" if canvas.mode=="run" else "Tap empty ground to place / tap an object to edit")
+ 			if canvas.mode=="objects": editor_status.text="Tap an object to move, rotate or delete"
++	editor_guidance = editor_status.text
++	if editor_save_error == OK: editor_status.show()
+ 
+ 	var context_width: float = 0
+@@ -3746,5 +3805,7 @@
+ 		if canvas.selected_object < 0: return
+ 		_remember()
+-		document.objects.remove_at(canvas.selected_object)
++		var indices: Array[int] = canvas.object_indices()
++		indices.reverse()
++		for index: int in indices: document.objects.remove_at(index)
+ 		canvas.selected_object = -1
+ 	else: return
+@@ -3802,6 +3863,9 @@
+ 	canvas.stamp_rotation = angle
+ 	if canvas.selected_object >= 0 and not is_equal_approx(float(document.objects[canvas.selected_object].rotation),angle):
++		var proposed: Array = preload("res://editor/object_editing.gd").rotated(document.objects,canvas.object_indices(),angle-float(document.objects[canvas.selected_object].rotation))
++		if proposed.is_empty(): _editor_hint("Keep the whole selection inside the map."); return
++		if not canvas.admit("objects",proposed): return
+ 		_remember()
+-		document.objects[canvas.selected_object].rotation = angle
++		document.objects = proposed
+ 		_commit_selection()
+ 	else: _build_editor_tools()
+@@ -3864,11 +3928,20 @@
+ 
+ func _duplicate_object() -> void:
+-	if canvas.selected_object < 0 or document.objects.size() >= preload("res://editor/creator_limits.gd").MAX_OBJECTS: return
+-	var object: Dictionary = document.objects[canvas.selected_object].duplicate(true)
+-	object.position = [clampf(float(object.position[0])+4,-110,110),clampf(float(object.position[1])+4,-110,110)]
+-	var admission: String = preload("res://editor/creator_limits.gd").addition_error(document.objects,[object],str(document.theme))
++	if canvas.selected_object < 0: return
++	if document.objects.size() >= preload("res://editor/creator_limits.gd").MAX_OBJECTS:
++		_editor_hint("Remove an object before adding more."); return
++	var indices: Array[int] = canvas.object_indices()
++	var moved: Array = preload("res://editor/object_editing.gd").moved(document.objects,indices,Vector2(4,4))
++	var additions: Array = []
++	for index: int in indices: additions.append(moved[index])
++	var admission: String = preload("res://editor/creator_limits.gd").addition_error(document.objects,additions,str(document.theme))
+ 	if not admission.is_empty(): _editor_hint(admission); return
++	if not canvas.admit("objects",document.objects+additions): return
+ 	_remember()
+-	document.objects.append(object)
++	var first: int = document.objects.size()
++	document.objects.append_array(additions)
++	canvas.multi_select = additions.size() > 1 or canvas.multi_select
++	canvas.selected_objects.clear()
++	for index: int in range(first,document.objects.size()): canvas.selected_objects.append(index)
+ 	canvas.selected_object = document.objects.size()-1
+ 	canvas.mode = "objects"
+@@ -3915,5 +3988,5 @@
+ 	if not is_instance_valid(editor_status): return
+ 	var errors: Array[String] = TrackDocument.validate(document)
+-	editor_status.text = "Waypoints are generated from connected roads. Changes save automatically." if errors.is_empty() else errors[0]
++	editor_status.text = editor_guidance if errors.is_empty() else errors[0]
+ 	test_button.disabled = not errors.is_empty()
+ 	publish_button.disabled = not errors.is_empty() or lifecycle == null or not lifecycle.ready_to_publish(document)
+@@ -3943,5 +4016,5 @@
+ 			editor_wip_snapshot = receipt.document.duplicate(true); editor_wip_store = storage; editor_wip_disk_hash = receipt.digest
+ 			editor_wip_saved = TrackLibrary.draft_fingerprint(receipt.document)
+-			if is_instance_valid(editor_status) and editor_status.text == "Saving...": editor_status.text = "WIP autosaved. Saved original unchanged."
++			if is_instance_valid(editor_status) and editor_status.text == "Saving...": editor_status.text = editor_guidance
+ 		elif not _editor_exiting and is_inside_tree(): _editor_hint(editor_save_message)
+ 		if not _editor_exiting and is_inside_tree(): _update_editor_save_state()
+@@ -4418,5 +4491,5 @@
+ 	if is_instance_valid(canvas):
+ 		canvas.cancel_gesture()
+-		editor_view = {"zoom":canvas.zoom,"pan":canvas.pan,"mode":canvas.mode,"selected":canvas.selected,"selected_object":canvas.selected_object,"stamp_kind":canvas.stamp_kind,"stamp_scale":canvas.stamp_scale,"stamp_span":canvas.stamp_span,"stamp_jump_profile":canvas.stamp_jump_profile,"stamp_container_color":canvas.stamp_container_color,"run_shape":canvas.run_shape,"free_run":canvas.free_run,"brush_surface":canvas.brush_surface,"brush_width":canvas.brush_width,"paint_mode":canvas.paint_mode,"brush_shape":canvas.brush_shape,"selected_piece":canvas.selected_piece}
++		editor_view = {"zoom":canvas.zoom,"pan":canvas.pan,"mode":canvas.mode,"selected":canvas.selected,"selected_object":canvas.selected_object,"stamp_kind":canvas.stamp_kind,"stamp_scale":canvas.stamp_scale,"stamp_span":canvas.stamp_span,"stamp_jump_profile":canvas.stamp_jump_profile,"stamp_container_color":canvas.stamp_container_color,"run_shape":canvas.run_shape,"free_run":canvas.free_run,"brush_surface":canvas.brush_surface,"brush_width":canvas.brush_width,"paint_mode":canvas.paint_mode,"brush_shape":canvas.brush_shape,"selected_piece":canvas.selected_piece,"selected_objects":canvas.object_indices(),"multi_select":canvas.multi_select,"object_snap":canvas.object_snap,"detailed_scenery":not editor_world._detail.enabled if is_instance_valid(editor_world) else false}
+ 	_stop_menu_page_motion()
+ 	_practice_editor_context = {}
+@@ -5149,5 +5222,7 @@
+ 	var materials := OptionButton.new()
+ 	materials.custom_minimum_size.y = 54
+-	for label: String in ["Grass / erase","Sand","Water","Barrier","Kerb","Rough ground","Low obstacles"]: materials.add_item(label)
++	for surface: int in range(1,8):
++		var label: String = preload("res://editor/surface_labels.gd").title(surface,str(document.theme))
++		materials.add_item(GameText.message(label)+(" / "+GameText.message("Erase") if surface == 1 else ""))
+ 	materials.selected = canvas.brush_surface-1
+ 	materials.item_selected.connect(func(index: int) -> void:
+@@ -5163,11 +5238,12 @@
+ 			canvas.mode = value
+ 			_build_editor_tools(),canvas.mode == value))
+-	var shapes := OptionButton.new()
+-	shapes.custom_minimum_size.y = 54
+-	shapes.add_item("Round brush")
+-	shapes.add_item("Square brush")
+-	shapes.selected = 1 if canvas.brush_shape == "square" else 0
+-	shapes.item_selected.connect(func(index: int) -> void: canvas.brush_shape = "square" if index else "round")
+-	editor_inspector.add_child(shapes)
++	if canvas.paint_mode != "area":
++		var shapes := OptionButton.new()
++		shapes.custom_minimum_size.y = 54
++		shapes.add_item("Round brush")
++		shapes.add_item("Square brush")
++		shapes.selected = 1 if canvas.brush_shape == "square" else 0
++		shapes.item_selected.connect(func(index: int) -> void: canvas.brush_shape = "square" if index else "round")
++		editor_inspector.add_child(shapes)
+ 	var help := MenuStyle.label("Tap to add points; drag dots to reshape. Confirm to place. Free painting commits on release.",16,true)
+ 	if document.base_track != "": help.text += " Remix paints ground only."
+@@ -5239,7 +5315,13 @@
+ 			KEY_3: _editor_category("objects")
+ 			KEY_4: canvas.choose_start_line()
+-			KEY_Q: _change_piece("heading",-15.0)
+-			KEY_E: _change_piece("heading",15.0)
+-			KEY_TAB: canvas.cycle_piece()
++			KEY_Q:
++				if canvas.mode in ["objects","place"]: _set_object_rotation(_object_rotation()-22.5)
++				else: _change_piece("heading",-15.0)
++			KEY_E:
++				if canvas.mode in ["objects","place"]: _set_object_rotation(_object_rotation()+22.5)
++				else: _change_piece("heading",15.0)
++			KEY_TAB:
++				if canvas.mode == "objects": canvas.cycle_objects()
++				else: canvas.cycle_piece()
+ 			_: handled = false
+ 	if handled: get_viewport().set_input_as_handled()
+@@ -5782,13 +5864,15 @@
+ 
+ func _choose_object(kind: String) -> void:
++	var family: Array = CreatorCatalog.family(kind)
++	var same_family: bool = kind == canvas.stamp_kind or (not family.is_empty() and canvas.stamp_kind in family[3])
++	if CreatorCatalog.JUMP_ASSETS.has(kind): same_family = same_family and canvas.stamp_jump_profile == str(CreatorCatalog.JUMP_ASSETS[kind])
++	var placement: String = object_browser.placement if same_family else "single"
+ 	canvas.cancel_gesture()
+ 	var jump_profile: String = str(CreatorCatalog.JUMP_ASSETS.get(kind,""))
++	canvas.multi_select = false
+ 	canvas.stamp_kind="jump" if not jump_profile.is_empty() else kind
+ 	if canvas.stamp_kind == "jump":
+ 		canvas.stamp_jump_profile = jump_profile if not jump_profile.is_empty() else JumpProfiles.default_for(str(document.theme))
+ 		object_browser.current = CreatorCatalog.jump_asset(canvas.stamp_jump_profile,str(document.theme))
+-	var family: Array = CreatorCatalog.family(kind)
+-	var same_family: bool = kind == canvas.stamp_kind or (not family.is_empty() and canvas.stamp_kind in family[3])
+-	var placement: String = object_browser.placement if same_family else "single"
+ 	if is_instance_valid(editor_world): editor_world.warm_prop(canvas.stamp_kind,CreatorCatalog.default_scale(kind),canvas.stamp_container_color)
+ 	if not same_family: canvas.stamp_scale=CreatorCatalog.default_scale(kind)
+@@ -5846,4 +5930,5 @@
+ 		var admission: String = preload("res://editor/creator_limits.gd").addition_error(document.objects,objects,str(document.theme))
+ 		if not admission.is_empty(): _editor_hint(admission); return
++		if not canvas.admit("objects",document.objects+objects): return
+ 		_remember()
+ 		document.objects.append_array(objects)
+@@ -6266,4 +6351,7 @@
+ 			button.add_theme_stylebox_override(state,style)
+ 		segments.add_child(button)
++	if canvas.paint_mode == "area":
++		_surface_point_controls()
++		return
+ 	var brush := VBoxContainer.new()
+ 	brush.custom_minimum_size.x = 178
+@@ -6314,2 +6402,20 @@
+ 	options.size_flags_vertical = Control.SIZE_SHRINK_END
+ 	surface_actions.add_child(options)
++
++func _surface_point_controls() -> void:
++	var area := VBoxContainer.new()
++	surface_actions.add_child(area)
++	area.add_child(MenuStyle.label(GameText.message("Area · %d points") % canvas.paint_points.size(),18))
++	var row := HBoxContainer.new(); row.add_theme_constant_override("separation",6); area.add_child(row)
++	var remove: Button = EditorStyle.button("Undo point",func() -> void:
++		if not canvas.paint_points.is_empty(): canvas.paint_points.pop_back()
++		_build_editor_tools())
++	remove.name = "AreaRemovePoint"; remove.custom_minimum_size = Vector2(90,54)
++	remove.disabled = canvas.paint_points.is_empty(); row.add_child(remove)
++	var cancel: Button = EditorStyle.button("Cancel",func() -> void: canvas.cancel_gesture(); _build_editor_tools())
++	cancel.name = "AreaCancel"; cancel.custom_minimum_size = Vector2(72,54); row.add_child(cancel)
++	var confirm: Button = EditorStyle.button("Place",func() -> void: canvas.confirm_paint(); _build_editor_tools())
++	confirm.name = "AreaConfirm"; confirm.custom_minimum_size = Vector2(72,54)
++	confirm.disabled = canvas.paint_points.size() < 3; row.add_child(confirm)
++	var options: Button = EditorButton.make("","options",func() -> void: editor_tools_panel.visible = not editor_tools_panel.visible)
++	options.name = "SurfaceOptions"; options.size_flags_vertical = Control.SIZE_SHRINK_END; surface_actions.add_child(options)

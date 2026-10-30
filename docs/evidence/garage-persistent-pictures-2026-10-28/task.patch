@@ -1,0 +1,425 @@
+--- a/game/ui/garage_preview_cache.gd
++++ b/game/ui/garage_preview_cache.gd
+@@ -19,6 +19,7 @@
+ var file_io_us: int = 0
+ var can_render: Callable
+ var prepared_picture: Dictionary={}
++var pending_writes: Array[Dictionary]=[]
+ var _last_input: int=0
+ var _touches: Dictionary={}
+ var idle_ms: int=750
+@@ -85,13 +86,23 @@
+ 	if not pending_pictures.is_empty() and is_instance_valid(tree): tree.process_frame.connect(_poll_pictures.bind(tree_ref),CONNECT_ONE_SHOT)
+ 
+ func identity(view: CarShowroom) -> String:
+-	return JSON.stringify([VERSION,Build.ID,view.vehicle_id,view.livery,view.condition,view.customisation]).sha256_text()
++	return JSON.stringify([VERSION,Build.GARAGE_PREVIEW_SHA256,view.vehicle_id,view.livery,_visible_condition(view.condition),view.customisation]).sha256_text()
++
++func _visible_condition(value: Dictionary) -> Dictionary:
++	# A saved clean snapshot has the same original finish as an absent condition.
++	if not value.is_empty() and value.get("version") != 1: return value
++	for field: String in ["dirt","snow","slow_dirt","slow_snow","wetness","mud","smudge"]:
++		if float(value.get(field,0.0)) != 0.0: return value
++	return {}
+ 
+ func request(view: CarShowroom) -> void:
+ 	var key: String = identity(view)
+ 	if prepared_picture.get("vehicle")==view.vehicle_id and prepared_picture.get("paint")==view.livery and prepared_picture.get("condition")==view.condition and prepared_picture.get("parts")==view.customisation:
+ 		cache_hits+=1
+ 		view.publish_preview(key,prepared_picture.texture)
++		if not directory.is_empty() and prepared_picture.get("persisted_key","")!=key:
++			pending_writes.append({"key":key,"texture":prepared_picture.texture})
++			prepared_picture.persisted_key=key
+ 		return
+ 	if _default(view):
+ 		var texture: Texture2D = catalogue_texture(view.vehicle_id)
+@@ -106,7 +117,7 @@
+ 	queued.append({"view":weakref(view),"key":key,"vehicle":view.vehicle_id,"paint":view.livery.duplicate(true),"condition":view.condition.duplicate(true),"parts":view.customisation.duplicate(true),"read":true})
+ 
+ func _default(view: CarShowroom) -> bool:
+-	return view.livery == VehicleLivery.for_car({},view.vehicle_id) and view.condition.is_empty() and view.customisation == VehicleCustomisation.defaults()
++	return view.livery == VehicleLivery.for_car({},view.vehicle_id) and _visible_condition(view.condition).is_empty() and view.customisation == VehicleCustomisation.defaults()
+ 
+ func _current(job: Dictionary, visible: bool = false) -> bool:
+ 	var view: Object = _view(job)
+@@ -138,7 +149,7 @@
+ 				io.view.get_ref().publish_preview(io.key,ImageTexture.create_from_image(result.image))
+ 			else:
+ 				io.read = result.get("image") is Image
+-				queued.push_front(io)
++				queued.append(io)
+ 		io = {}
+ 	if not active.is_empty():
+ 		if not _current(active,true):
+@@ -155,14 +166,26 @@
+ 			renderer._submit_render()
+ 		elif not RenderingServer.frame_post_draw.is_connected(_capture): RenderingServer.frame_post_draw.connect(_capture,CONNECT_ONE_SHOT)
+ 		return
++	# Read every visible saved PNG before starting a missing car's native world.
++	# A cold miss must not hold already stored pictures behind its construction.
++	if not directory.is_empty():
++		for index: int in range(queued.size()):
++			var next: Dictionary=queued[index]
++			if next.read and _current(next,true):
++				queued.remove_at(index)
++				io=next
++				worker=Work.start(_read.bind(directory.path_join(next.key+".png")),get_tree())
++				return
++	if not pending_writes.is_empty():
++		var picture: Dictionary=pending_writes.pop_front()
++		if not directory.is_empty():
++			io={"key":picture.key,"read":false}
++			worker=Work.start(_write.bind(directory,picture.key,picture.texture.get_image()),get_tree())
++			return
+ 	for _index: int in range(queued.size()):
+ 		var next: Dictionary = queued.pop_front()
+ 		if not _current(next): continue
+ 		if not _current(next,true): queued.append(next); continue
+-		if next.read and not directory.is_empty():
+-			io = next
+-			worker = Work.start(_read.bind(directory.path_join(next.key+".png")),get_tree())
+-			return
+ 		if DisplayServer.get_name() == "headless": continue
+ 		if not _render_allowed():
+ 			queued.push_front(next)
+@@ -205,6 +228,7 @@
+ 	_finish()
+ 	if worker != null: worker.cancel()
+ 	queued.clear()
++	pending_writes.clear()
+ 
+ static func _read(cancelled: Callable, path: String) -> Dictionary:
+ 	var started: int = Time.get_ticks_usec()
+--- a/game/ui/garage_preview_renderer.gd
++++ b/game/ui/garage_preview_renderer.gd
+@@ -5,6 +5,9 @@
+ 
+ func refresh_thumbnail() -> void:
+ 	super.refresh_thumbnail()
+-	if is_instance_valid(showroom_viewport): showroom_viewport.render_target_update_mode=SubViewport.UPDATE_DISABLED
++	if is_instance_valid(showroom_viewport):
++		# Persisted pictures have a fixed format, independent of window/DPI scale.
++		showroom_viewport.size=Vector2i(2048,512)
++		showroom_viewport.render_target_update_mode=SubViewport.UPDATE_DISABLED
+ 	if reflections!=null:
+ 		for view: SubViewport in reflections.views: view.render_target_update_mode=SubViewport.UPDATE_DISABLED
+--- a/game/ui/garage_preloaded_studio.gd
++++ b/game/ui/garage_preloaded_studio.gd
+@@ -38,6 +38,11 @@
+ func invalidate_render() -> void:
+ 	if adopted: super.invalidate_render()
+ 	else: _render_dirty=true
++
++func refresh_thumbnail() -> void:
++	super.refresh_thumbnail()
++	if not _thumbnail_state.is_empty() and is_instance_valid(showroom_viewport):
++		showroom_viewport.size=Vector2i(2048,512)
+ 
+ func _process(delta: float) -> void:
+ 	if adopted: super._process(delta)
+--- a/scripts/build_identity.ps1
++++ b/scripts/build_identity.ps1
+@@ -1,5 +1,23 @@
+ # Deterministic client identity, including uncommitted shipping sources.
+ # Dot-source from dev.ps1; no network, credentials or player files are read.
++function Test-GaragePreviewSource([string]$Relative) {
++    # Match the native preview baker's conservative model/room dependencies.
++    # Menu layout, translations, backend and build metadata do not repaint a car.
++    if ($Relative -match '^game/(vehicle/|assets/(garage/|liveries/)|resources/(cars/|[^/]+\.tres$))' -or
++        $Relative -in @('godot-version.txt', 'game/project.godot', 'game/soundtrack/record_library.gd')) { return $true }
++    if ($Relative -match '^game/ui/(showroom_|studio_)' -or $Relative -match '^game/ui/garage_.*\.gdshader(inc)?$') { return $true }
++    return $Relative -in @(
++        'game/ui/car_showroom.gd', 'game/ui/garage_preview_renderer.gd', 'game/ui/garage_car_cache.gd',
++        'game/ui/garage_preloaded_studio.gd', 'game/ui/handling_selection.gd',
++        'game/ui/garage_environment.gd', 'game/ui/garage_reflections.gd', 'game/ui/garage_details.gd',
++        'game/ui/garage_drain.gd', 'game/ui/garage_furnishings.gd', 'game/ui/garage_materials.gd',
++        'game/ui/garage_workshop.gd', 'game/ui/garage_record_station.gd', 'game/ui/garage_lp_box.gd',
++        'game/ui/garage_plant.gd', 'game/ui/garage_car_reveal.gd', 'game/ui/garage_wash_effect.gd',
++        'game/ui/garage_wash_geometry.gd', 'game/ui/garage_wash_tool.gd', 'game/ui/garage_hose_geometry.gd',
++        'game/ui/garage_hose_rig.gd'
++    )
++}
++
+ function Write-ClientBuildIdentity([string]$RepositoryRoot, [string]$OutputDirectory) {
+     $projectPath = Join-Path $RepositoryRoot 'game/project.godot'
+     $projectText = [System.IO.File]::ReadAllText($projectPath)
+@@ -22,7 +40,9 @@
+     } | Sort-Object -Unique)
+     $encoding = New-Object System.Text.UTF8Encoding($false)
+     $digest = [System.Security.Cryptography.SHA256]::Create()
++    $previewDigest = [System.Security.Cryptography.SHA256]::Create()
+     $fileCount = 0
++    $previewFileCount = 0
+     try {
+         foreach ($relative in $paths) {
+             $absolute = Join-Path $RepositoryRoot $relative
+@@ -37,13 +57,19 @@
+             finally { $fileDigest.Dispose() }
+             $record = $encoding.GetBytes($relative + "`n" + $fileHash + "`n")
+             [void]$digest.TransformBlock($record, 0, $record.Length, $record, 0)
++            if (Test-GaragePreviewSource $relative) {
++                [void]$previewDigest.TransformBlock($record, 0, $record.Length, $record, 0)
++                $previewFileCount++
++            }
+             $fileCount++
+         }
+         [void]$digest.TransformFinalBlock([byte[]]@(), 0, 0)
+         $sourceHash = ([BitConverter]::ToString($digest.Hash)).Replace('-', '').ToLowerInvariant()
+-    } finally { $digest.Dispose() }
++        [void]$previewDigest.TransformFinalBlock([byte[]]@(), 0, 0)
++        $previewHash = ([BitConverter]::ToString($previewDigest.Hash)).Replace('-', '').ToLowerInvariant()
++    } finally { $digest.Dispose(); $previewDigest.Dispose() }
+     $identifier = $baseVersion + '.' + $sourceHash.Substring(0, 32)
+-    $identityText = "extends RefCounted`n# Generated by scripts/dev.ps1. Never recompute during gameplay.`nconst ID: String = `"$identifier`"`nconst SOURCE_SHA256: String = `"$sourceHash`"`n"
++    $identityText = "extends RefCounted`n# Generated by scripts/dev.ps1. Never recompute during gameplay.`nconst ID: String = `"$identifier`"`nconst SOURCE_SHA256: String = `"$sourceHash`"`nconst GARAGE_PREVIEW_SHA256: String = `"$previewHash`"`n"
+     $identityPath = Join-Path $RepositoryRoot 'game/core/build_identity.gd'
+     [System.IO.Directory]::CreateDirectory((Split-Path -Parent $identityPath)) | Out-Null
+     $nextProject = [regex]::Replace($projectText, '(?m)^config/version="[^"]*"\r?$', ('config/version="' + $identifier + '"'))
+@@ -56,7 +82,7 @@
+     }
+     if ($OutputDirectory) {
+         [System.IO.Directory]::CreateDirectory($OutputDirectory) | Out-Null
+-        $receipt = @{ build_id = $identifier; source_sha256 = $sourceHash; source_files = $fileCount }
++        $receipt = @{ build_id = $identifier; source_sha256 = $sourceHash; source_files = $fileCount; garage_preview_sha256 = $previewHash; garage_preview_files = $previewFileCount }
+         [System.IO.File]::WriteAllText((Join-Path $OutputDirectory 'client-build-identity.json'), ($receipt | ConvertTo-Json) + "`n", $encoding)
+     }
+     return $identifier
+--- a/scripts/test_build_identity.ps1
++++ b/scripts/test_build_identity.ps1
+@@ -26,4 +26,37 @@
+ $project = [System.IO.File]::ReadAllText((Join-Path $fixtureRoot 'game/project.godot'))
+ $identity = [System.IO.File]::ReadAllText((Join-Path $fixtureRoot 'game/core/build_identity.gd'))
+ if (-not $project.Contains('config/version="' + $untracked + '"') -or -not $identity.Contains('const ID: String = "' + $untracked + '"')) { throw 'Runtime and export versions must match.' }
+-Write-Host 'BUILD_IDENTITY: 7 checks passed; isolated fixture retained in build/.'
++function Get-PreviewHash {
++    $text = [System.IO.File]::ReadAllText((Join-Path $fixtureRoot 'game/core/build_identity.gd'))
++    $match = [regex]::Match($text, 'GARAGE_PREVIEW_SHA256: String = "([a-f0-9]{64})"')
++    if (-not $match.Success) { throw 'Generated preview fingerprint is missing.' }
++    return $match.Groups[1].Value
++}
++$previewBefore = Get-PreviewHash
++[System.IO.Directory]::CreateDirectory((Join-Path $fixtureRoot 'game/ui')) | Out-Null
++[System.IO.File]::WriteAllText((Join-Path $fixtureRoot 'game/ui/garage_page.gd'), '# changed label', $encoding)
++$menuBuild = Write-ClientBuildIdentity $fixtureRoot $fixtureRoot
++if ($menuBuild -ceq $untracked -or (Get-PreviewHash) -cne $previewBefore) { throw 'Menu changes must update the build while retaining saved preview pictures.' }
++[System.IO.Directory]::CreateDirectory((Join-Path $fixtureRoot 'game/vehicle')) | Out-Null
++[System.IO.File]::WriteAllText((Join-Path $fixtureRoot 'game/vehicle/compact_coachwork.gd'), '# first body', $encoding)
++Write-ClientBuildIdentity $fixtureRoot $fixtureRoot | Out-Null
++$bodyPreview = Get-PreviewHash
++if ($bodyPreview -ceq $previewBefore) { throw 'A new model source must invalidate old pictures.' }
++[System.IO.File]::WriteAllText((Join-Path $fixtureRoot 'game/vehicle/compact_coachwork.gd'), '# revised body', $encoding)
++Write-ClientBuildIdentity $fixtureRoot $fixtureRoot | Out-Null
++$revisedPreview = Get-PreviewHash
++if ($revisedPreview -ceq $bodyPreview) { throw 'A model edit must invalidate old pictures.' }
++[System.IO.Directory]::CreateDirectory((Join-Path $fixtureRoot 'game/assets/liveries')) | Out-Null
++[System.IO.File]::WriteAllText((Join-Path $fixtureRoot 'game/assets/liveries/stripe.svg'), '<svg/>', $encoding)
++Write-ClientBuildIdentity $fixtureRoot $fixtureRoot | Out-Null
++$liveryPreview = Get-PreviewHash
++if ($liveryPreview -ceq $revisedPreview) { throw 'Livery artwork must invalidate old pictures.' }
++[System.IO.File]::WriteAllText((Join-Path $fixtureRoot 'game/ui/garage_reflections.gd'), '# revised reflections', $encoding)
++Write-ClientBuildIdentity $fixtureRoot $fixtureRoot | Out-Null
++if ((Get-PreviewHash) -ceq $liveryPreview) { throw 'Lighting/reflection changes must invalidate old pictures.' }
++$renderPreview = Get-PreviewHash
++$project = [System.IO.File]::ReadAllText((Join-Path $fixtureRoot 'game/project.godot'))
++[System.IO.File]::WriteAllText((Join-Path $fixtureRoot 'game/project.godot'), $project + "`n[rendering]`nrenderer/rendering_method=`"mobile`"`n", $encoding)
++Write-ClientBuildIdentity $fixtureRoot $fixtureRoot | Out-Null
++if ((Get-PreviewHash) -ceq $renderPreview) { throw 'Project rendering changes must invalidate old pictures.' }
++Write-Host 'BUILD_IDENTITY: 13 checks passed; isolated fixture retained in build/.'
+--- /dev/null
++++ b/game/tests/test_garage_persistent_pictures.gd
+@@ -0,0 +1,195 @@
++extends SceneTree
++## Separate-process native capture/reuse and durable prepared-picture regression.
++const Cache = preload("res://ui/garage_preview_cache.gd")
++const Thumbnail = preload("res://ui/garage_cached_thumbnail.gd")
++var checks: int=0
++var failures: int=0
++var output: String
++var folder: String
++var phase: String="seed"
++var fixture_pictures: String=""
++var vehicle_ids: Array[String]=[]
++var capture_scale: float=1.0
++var service: Node
++var host: Control
++var cards: Dictionary={}
++var metrics: Dictionary={}
++
++func _initialize() -> void: run.call_deferred()
++func check(ok: bool,label: String) -> void:
++	checks+=1
++	if not ok: failures+=1;print("FAIL: ",label)
++
++func checksum(image: Image) -> String:
++	var digest:=HashingContext.new()
++	digest.start(HashingContext.HASH_SHA256)
++	digest.update(image.get_data())
++	return digest.finish().hex_encode()
++
++func card(id: String,index: int) -> CarShowroom:
++	var view: CarShowroom=Thumbnail.new()
++	view.vehicle_id=id
++	view.livery=VehicleLivery.for_car({},id)
++	view.livery.colors.body="c72d34"
++	view.condition=VehicleWeathering.new().snapshot()
++	view.condition.dirt=0.35
++	view.condition.slow_dirt=0.2
++	view.customisation=VehicleCustomisation.defaults()
++	view.preview_service=service
++	view.position=Vector2(12+(index%3)*220,12+floori(index/3.0)*140)
++	view.size=Vector2(174,104)
++	host.add_child(view)
++	return view
++
++func wait_for_pictures(expected: int) -> void:
++	var deadline: int=Time.get_ticks_msec()+45000
++	while Time.get_ticks_msec()<deadline:
++		var ready: int=0
++		for view: CarShowroom in cards.values():
++			if view.displayed_key==view.preview_key: ready+=1
++		if ready>=expected: return
++		await process_frame
++	var renderer: CarShowroom=service.renderer
++	print("PERSISTENT_WAIT: ",JSON.stringify({"ready":expected,"active":service.active.get("vehicle",""),"queued":service.queued.size(),"frames":service.frames,"render_allowed":service._render_allowed(),"showroom_ready":renderer.showroom_ready if renderer!=null else false,"model_ready":renderer.car.model_ready if renderer!=null and renderer.car!=null else false,"input_pressed":Input.is_anything_pressed(),"touches":service._touches,"focus":str(root.gui_get_focus_owner())}))
++	check(false,"all expected pictures arrive before the deadline")
++
++func wait_for_io() -> void:
++	var deadline: int=Time.get_ticks_msec()+10000
++	while (service.worker!=null or not service.get("pending_writes").is_empty()) and Time.get_ticks_msec()<deadline: await process_frame
++	check(service.worker==null and service.get("pending_writes").is_empty(),"picture writes finish before closing the process")
++
++func run() -> void:
++	for arg: String in OS.get_cmdline_user_args():
++		if arg.begins_with("--output="): output=arg.trim_prefix("--output=")
++		if arg.begins_with("--cache="): folder=arg.trim_prefix("--cache=")
++		if arg.begins_with("--phase="): phase=arg.trim_prefix("--phase=")
++		if arg.begins_with("--fixture-pictures="): fixture_pictures=arg.trim_prefix("--fixture-pictures=")
++		if arg.begins_with("--cars="): vehicle_ids.assign(arg.trim_prefix("--cars=").split(","))
++		if arg.begins_with("--scale="): capture_scale=float(arg.trim_prefix("--scale="))
++	if vehicle_ids.is_empty(): vehicle_ids.assign(VehicleCatalog.IDS)
++	if "--procedural" in OS.get_cmdline_user_args():
++		preload("res://ui/garage_car_cache.gd").enabled=false
++		preload("res://vehicle/prepared_car_cache.gd").enabled=false
++	if folder.is_empty(): folder="user://garage-persistent-pictures"
++	root.size=Vector2i(roundi(1280*capture_scale),roundi(720*capture_scale))
++	host=Control.new()
++	host.theme=MenuStyle.theme()
++	root.add_child(host)
++	MenuStyle.fill(host)
++	host.scale=Vector2(capture_scale,capture_scale)
++	service=Cache.new()
++	if "--original-renderer" in OS.get_cmdline_user_args():
++		service.free()
++		var original:=GDScript.new()
++		original.source_code=FileAccess.get_file_as_string("res://../docs/evidence/garage-persistent-pictures-2026-10-28/before/game/ui/garage_preview_renderer.gd")
++		check(original.reload()==OK,"compile the exact task-start capture renderer")
++		var control:=GDScript.new()
++		control.source_code=FileAccess.get_file_as_string("res://ui/garage_preview_cache.gd").replace('preload("res://ui/garage_preview_renderer.gd").new()','get_meta("original_renderer").new()')
++		check(control.reload()==OK,"compile the unchanged cache with only the original-renderer fixture")
++		service=control.new()
++		service.set_meta("original_renderer",original)
++	service.directory=folder
++	service.idle_ms=0
++	host.add_child(service)
++	metrics.build_id=preload("res://core/build_identity.gd").ID
++	metrics.preview_revision=preload("res://core/build_identity.gd").GARAGE_PREVIEW_SHA256
++	metrics.cars=vehicle_ids
++	metrics.capture_scale=capture_scale
++	# Reuse must work even while deliberate input prohibits native GPU work.
++	service.can_render=func() -> bool: return phase=="seed"
++	var began: int=Time.get_ticks_usec()
++	for index: int in range(vehicle_ids.size()):
++		var id: String=vehicle_ids[index]
++		cards[id]=card(id,index)
++	# A controlled PNG-import case checks decoder/upload on another renderer
++	# independently of the concurrently changing native model construction.
++	if not fixture_pictures.is_empty():
++		var fixture: Dictionary=JSON.parse_string(FileAccess.get_file_as_string(fixture_pictures.path_join("pixels.json")))
++		var images: Dictionary={}
++		for file: String in DirAccess.get_files_at(fixture_pictures):
++			if not file.ends_with(".png"): continue
++			var image:=Image.load_from_file(fixture_pictures.path_join(file))
++			images[checksum(image)]=image
++		DirAccess.make_dir_recursive_absolute(folder)
++		for id: String in cards:
++			check(images.has(fixture[id]),"import exact native PNG fixture "+id)
++			if images.has(fixture[id]): check(images[fixture[id]].save_png(folder.path_join(cards[id].preview_key+".png"))==OK,"store owned PNG fixture "+id)
++		var file:=FileAccess.open(folder.path_join("pixels.json"),FileAccess.WRITE)
++		file.store_string(JSON.stringify(fixture))
++		file.close()
++		began=Time.get_ticks_usec()
++	await wait_for_pictures(vehicle_ids.size())
++	metrics.ready_ms=(Time.get_ticks_usec()-began)/1000.0
++	await wait_for_io()
++	metrics.renders=service.renders
++	metrics.cache_hits=service.cache_hits
++	check(service.renders==(vehicle_ids.size() if phase=="seed" else 0),"only the first process constructs previews; restart reuses pictures")
++	var manifest: Dictionary={}
++	if phase!="seed": manifest=JSON.parse_string(FileAccess.get_file_as_string(folder.path_join("pixels.json")))
++	var hashes: Dictionary={}
++	for id: String in cards:
++		var view: CarShowroom=cards[id]
++		check(view.car==null and view.showroom_viewport==null,"thumbnail owns no native world "+id)
++		check(view.displayed_key==view.preview_key,"stored picture has the exact saved appearance "+id)
++		if view._image.texture==null: continue
++		check(view._image.texture.get_size()==Vector2(2048,512),"picture has the persistent pixel dimensions at any display scale "+id)
++		hashes[id]=checksum(view._image.texture.get_image())
++		check(FileAccess.file_exists(folder.path_join(view.preview_key+".png")),"native picture is stored on disk "+id)
++		if phase!="seed": check(hashes[id]==manifest[id],"new-process PNG pixels match the first capture exactly "+id)
++	if phase=="seed":
++		var file:=FileAccess.open(folder.path_join("pixels.json"),FileAccess.WRITE)
++		file.store_string(JSON.stringify(hashes))
++		file.close()
++	metrics.pixel_hashes=hashes
++	# A persisted clean condition must use the existing exact factory image.
++	for id: String in cards:
++		var view: CarShowroom=cards[id]
++		var saved: Dictionary=view.condition
++		view.condition={}
++		var empty_key: String=service.identity(view)
++		view.condition=VehicleWeathering.new().snapshot()
++		check(service.identity(view)==empty_key,"clean saved snapshot shares the empty-condition picture "+id)
++		view.livery=VehicleLivery.for_car({},id)
++		check(service._default(view),"clean default appearance uses the bundled picture "+id)
++		view.livery.colors.body="c72d34"
++		view.condition=saved
++	if DisplayServer.get_name()!="headless":
++		await RenderingServer.frame_post_draw
++		check(root.get_texture().get_image().save_png(output.path_join(phase+"-pictures.png"))==OK,"capture all current exact stored pictures")
++	if phase=="reuse" and vehicle_ids.size()>1: await mixed_and_prepared()
++	host.queue_free()
++	for _frame: int in range(4): await process_frame
++	metrics.checks=checks
++	metrics.failures=failures
++	metrics.phase=phase
++	var result:=FileAccess.open(output.path_join(phase+".json"),FileAccess.WRITE)
++	result.store_string(JSON.stringify(metrics,"  "))
++	print("PERSISTENT_PICTURES: ",JSON.stringify(metrics))
++	quit(1 if failures else 0)
++
++func mixed_and_prepared() -> void:
++	var first: CarShowroom=cards.compact
++	var exact: Texture2D=first._image.texture
++	var saved_key: String=first.preview_key
++	check(DirAccess.remove_absolute(folder.path_join(saved_key+".png"))==OK,"remove only the owned first-car fixture PNG")
++	service.queued.clear()
++	for view: CarShowroom in cards.values():
++		view.preview_key=""
++		view.refresh_thumbnail()
++	var began: int=Time.get_ticks_usec()
++	await wait_for_pictures(vehicle_ids.size()-1)
++	metrics.mixed_cached_ready_ms=(Time.get_ticks_usec()-began)/1000.0
++	check(first._image.texture==null and first._placeholder.visible,"a missing exact picture waits without substituting another livery")
++	check(service.renders==0 and service.renderer==null,"a cold first card cannot block six stored pictures or start a world while input is gated")
++	service.queued.clear()
++	# Simulate the actual preloader handoff with this exact captured texture.
++	service.prepared_picture={"vehicle":first.vehicle_id,"paint":first.livery.duplicate(true),"condition":first.condition.duplicate(true),"parts":first.customisation.duplicate(true),"texture":exact}
++	service.request(first)
++	check(first._image.texture==exact,"prepared handoff publishes its existing exact photograph immediately")
++	await wait_for_io()
++	check(FileAccess.file_exists(folder.path_join(saved_key+".png")),"the preloaded picture is persisted without a second capture")
++	service.prepared_picture={}
++	first.preview_key=""
++	first.refresh_thumbnail()
++	await wait_for_pictures(vehicle_ids.size())
++	check(service.renders==0 and checksum(first._image.texture.get_image())==checksum(exact.get_image()),"preloaded PNG survives without its live renderer or prepared texture")

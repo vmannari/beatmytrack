@@ -1,0 +1,376 @@
+--- a/game/core/app.gd
++++ b/game/core/app.gd
+@@ -2075,7 +2075,7 @@
+ 	var points := PackedVector2Array()
+ 	for point: Array in stage.entry.points: points.append(Vector2(point[0],point[1]))
+ 	loading.configure(str(stage.entry.name),str(stage.entry.get("theme","pine")),points)
+-	loading.stage("Connecting raceâ€¦")
++	loading.stage("Connecting race…")
+ 	await _present_race_loading()
+ 	if not _race_loading_matches(loading_id): return
+ 	if not _challenge_selection_current(original,navigation,str(selected.code),stage_index):
+@@ -2504,7 +2504,7 @@
+ 	var points := PackedVector2Array()
+ 	for point: Array in metadata.get("points", []): points.append(Vector2(point[0], point[1]))
+ 	loading.configure(str(metadata.get("name", "Weekly Rivalry")), str(metadata.get("theme", "pine")), points)
+-	loading.stage("Connecting raceâ€¦")
++	loading.stage("Connecting race…")
+ 	await _present_race_loading()
+ 	if not _race_loading_matches(loading_id): return
+ 	if navigation != _navigation_generation or original_scope != rivalry.scope():
+@@ -2542,7 +2542,7 @@
+ 		_notice(rivalry.error)
+ 		return
+ 	var entry: Dictionary = cloud.entry_from_metadata(rivalry.model.tracks[index].entry)
+-	loading.stage("Downloading trackâ€¦")
++	loading.stage("Downloading track…")
+ 	var downloaded: Dictionary = await cloud.download_document(entry)
+ 	if not _race_loading_matches(loading_id): return
+ 	if navigation != _navigation_generation or original_scope != rivalry.scope():
+@@ -2556,7 +2556,7 @@
+ 		_rivalry()
+ 		_notice(rivalry.error)
+ 		return
+-	loading.stage("Preparing trackâ€¦")
++	loading.stage("Preparing track…")
+ 	await _present_race_loading()
+ 	if not _race_loading_matches(loading_id): return
+ 	if navigation != _navigation_generation or original_scope != rivalry.scope():
+@@ -2576,7 +2576,7 @@
+ 		_rivalry()
+ 		_notice(rivalry.error)
+ 		return
+-	loading.stage("Loading ghostâ€¦")
++	loading.stage("Loading ghost…")
+ 	var recording: Dictionary = await _rivalry_ghost(index,choice,true)
+ 	if not _race_loading_matches(loading_id): return
+ 	cloud_starting = false
+@@ -2716,8 +2716,8 @@
+ 	var loading: RaceLoading = _open_race_loading()
+ 	var loading_id: int = loading.get_instance_id()
+ 	loading.configure("Parking hall","night_city",PackedVector2Array(),true)
+-	loading.facts_label.text = "P1 parking hall Â· Free drive Â· 120 Ã— 72 m"
+-	loading.stage("Opening parking hallâ€¦")
++	loading.facts_label.text = "P1 parking hall · Free drive · 120 × 72 m"
++	loading.stage("Opening parking hall…")
+ 	cloud_starting = true
+ 	await _present_race_loading()
+ 	if _race_preparation_changed(loading_id,original_scope,navigation,"garage",vehicle,selection): return
+@@ -2799,7 +2799,7 @@
+ 	var loading_id: int = loading.get_instance_id()
+ 	# The article has no biome metadata; show only known facts until it arrives.
+ 	loading.scenery.texture = null
+-	loading.facts_label.text = "5 laps  Â·  "+VehicleCatalog.title()
++	loading.facts_label.text = "5 laps  ·  "+VehicleCatalog.title()
+ 	loading.stage("Opening track...")
+ 	cloud_starting = true
+ 	await _present_race_loading()
+@@ -3179,7 +3179,7 @@
+ 	editor_loading.set_anchors_and_offsets_preset(Control.PRESET_CENTER_TOP)
+ 	editor_loading.offset_left = -110; editor_loading.offset_right = 110
+ 	editor_loading.offset_top = 198; editor_loading.offset_bottom = 240
+-	var preparing: Label = MenuStyle.label("Preparing trackâ€¦",17)
++	var preparing: Label = MenuStyle.label("Preparing track…",17)
+ 	preparing.mouse_filter = Control.MOUSE_FILTER_IGNORE
+ 	preparing.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+ 	editor_loading.add_child(preparing)
+@@ -4208,7 +4208,7 @@
+ 		_close_race_loading(overlay_id)
+ 		_notice(cloud.last_error if not cloud.last_error.is_empty() else "Track download failed. Check your connection and try again.")
+ 		return
+-	overlay.stage("Preparing trackâ€¦")
++	overlay.stage("Preparing track…")
+ 	var ready: Variant = await online.client._background(cloud.compile_document.bind(entry,downloaded))
+ 	if _race_preparation_changed(overlay_id,scope,navigation,starting_screen,vehicle,selection): return
+ 	if not ready is NativeTrack:
+@@ -4254,7 +4254,7 @@
+ 	if not await _await_selected_preparation(track,loading_id,original_scope,navigation_generation,starting_screen,selected_vehicle,starting_selection): return
+ 	cloud_ticket = {}
+ 	if not offline_only and not from_editor and track.metadata.has("cloud_version") and online.client.signed_in():
+-		loading.stage("Connecting raceâ€¦")
++		loading.stage("Connecting race…")
+ 		var issued: Dictionary = await cloud.ticket(track,false,attempt_vehicle,null,rivalry_issued) if not rivalry_issued.is_empty() else await cloud.ticket(track)
+ 		if not _race_loading_matches(loading_id): return
+ 		if _race_preparation_changed(loading_id,original_scope,navigation_generation,starting_screen,selected_vehicle,starting_selection): return
+@@ -4287,7 +4287,7 @@
+ 					_start_race(track,from_editor,true))
+ 			offline_dialog.popup_centered()
+ 			return
+-	loading.stage("Loading trackâ€¦")
++	loading.stage("Loading track…")
+ 	await _present_race_loading()
+ 	if not _race_loading_matches(loading_id): return
+ 	if _race_preparation_changed(loading_id,original_scope,navigation_generation,starting_screen,selected_vehicle,starting_selection): return
+@@ -4384,7 +4384,7 @@
+ 	hud.touch.show_labels = bool(records.settings.get("control_labels", true))
+ 	# Render the prepared world once with the countdown/input still frozen.
+ 	game.call("_process", 0.0)
+-	loading.stage("Preparing startâ€¦")
++	loading.stage("Preparing start…")
+ 	var prepared_finish: VehicleWeathering = game.get("car_weathering")
+ 	var finish_warmed: bool = prepared_finish.begin_render_warmup()
+ 	var prepared_personal_ghost: PersonalGhost = game.get("personal_ghost")
+--- a/game/localization/messages.pot
++++ b/game/localization/messages.pot
+@@ -717,12 +717,8 @@
+ msgid "5 laps"
+ msgstr ""
+ 
+-#: game/ui/challenge_result_view.gd:137
++#: game/core/app.gd:2802 game/ui/challenge_result_view.gd:137
+ msgid "5 laps  ·  "
+-msgstr ""
+-
+-#: game/core/app.gd:2814
+-msgid "5 laps  Â·  "
+ msgstr ""
+ 
+ #: game/ui/challenges_page.gd:457
+@@ -2687,8 +2683,8 @@
+ msgid "ConnectedWashHose"
+ msgstr ""
+ 
+-#: game/core/app.gd:2091 game/core/app.gd:2519 game/core/app.gd:4269
+-msgid "Connecting raceâ€¦"
++#: game/core/app.gd:2078 game/core/app.gd:2507 game/core/app.gd:4257
++msgid "Connecting race…"
+ msgstr ""
+ 
+ #: game/backend/account_controller.gd:196
+@@ -3301,8 +3297,8 @@
+ msgid "Downloading track..."
+ msgstr ""
+ 
+-#: game/core/app.gd:2557
+-msgid "Downloading trackâ€¦"
++#: game/core/app.gd:2545
++msgid "Downloading track…"
+ msgstr ""
+ 
+ #: game/core/app.gd:3180 game/ui/track_tile.gd:139
+@@ -4921,8 +4917,8 @@
+ msgid "Loading drafts…"
+ msgstr ""
+ 
+-#: game/core/app.gd:2591
+-msgid "Loading ghostâ€¦"
++#: game/core/app.gd:2579
++msgid "Loading ghost…"
+ msgstr ""
+ 
+ #: game/ui/track_showroom.gd:15
+@@ -4961,8 +4957,8 @@
+ msgid "Loading tracks…"
+ msgstr ""
+ 
+-#: game/core/app.gd:4302
+-msgid "Loading trackâ€¦"
++#: game/core/app.gd:4290
++msgid "Loading track…"
+ msgstr ""
+ 
+ #: game/ui/cloud_leaderboard.gd:56
+@@ -5917,8 +5913,8 @@
+ msgid "Opening Google sign-in…"
+ msgstr ""
+ 
+-#: game/core/app.gd:2732
+-msgid "Opening parking hallâ€¦"
++#: game/core/app.gd:2720
++msgid "Opening parking hall…"
+ msgstr ""
+ 
+ #: game/core/app.gd:2815
+@@ -5977,8 +5973,8 @@
+ msgid "Owned"
+ msgstr ""
+ 
+-#: game/core/app.gd:2731
+-msgid "P1 parking hall Â· Free drive Â· 120 Ã— 72 m"
++#: game/core/app.gd:2719
++msgid "P1 parking hall · Free drive · 120 × 72 m"
+ msgstr ""
+ 
+ #: game/ui/weekly_rivalry_result.gd:191
+@@ -6417,6 +6413,11 @@
+ msgid "Please Confirm..."
+ msgstr ""
+ 
++
++#: game/ui/account_panel.gd
++msgid "Please accept the Terms of Service to continue."
++msgstr ""
++
+ #: game/ui/popup_style.gd:187
+ msgid "Please confirm"
+ msgstr ""
+@@ -6513,16 +6514,16 @@
+ msgid "Preparing scenery…"
+ msgstr ""
+ 
+-#: game/core/app.gd:4399
+-msgid "Preparing startâ€¦"
++#: game/core/app.gd:4387
++msgid "Preparing start…"
+ msgstr ""
+ 
+ #: game/core/app.gd:2834
+ msgid "Preparing track..."
+ msgstr ""
+ 
+-#: game/core/app.gd:2571 game/core/app.gd:3194 game/core/app.gd:4223
+-msgid "Preparing trackâ€¦"
++#: game/core/app.gd:2559 game/core/app.gd:3182 game/core/app.gd:4211
++msgid "Preparing track…"
+ msgstr ""
+ 
+ #: game/ui/control_layout_editor.gd:98
+@@ -10890,8 +10891,3 @@
+ #: game/ui/player_profile.gd:314
+ msgid "★ %.1f  ·  %d ratings"
+ msgstr ""
+-
+-
+-#: game/ui/account_panel.gd
+-msgid "Please accept the Terms of Service to continue."
+-msgstr ""
+--- a/game/localization/en.po
++++ b/game/localization/en.po
+@@ -717,13 +717,9 @@
+ msgid "5 laps"
+ msgstr "5 laps"
+ 
+-#: game/ui/challenge_result_view.gd:137
++#: game/core/app.gd:2802 game/ui/challenge_result_view.gd:137
+ msgid "5 laps  ·  "
+ msgstr "5 laps  ·  "
+-
+-#: game/core/app.gd:2814
+-msgid "5 laps  Â·  "
+-msgstr "5 laps  Â·  "
+ 
+ #: game/ui/challenges_page.gd:457
+ msgid "5 laps · "
+@@ -2687,9 +2683,9 @@
+ msgid "ConnectedWashHose"
+ msgstr "ConnectedWashHose"
+ 
+-#: game/core/app.gd:2091 game/core/app.gd:2519 game/core/app.gd:4269
+-msgid "Connecting raceâ€¦"
+-msgstr "Connecting raceâ€¦"
++#: game/core/app.gd:2078 game/core/app.gd:2507 game/core/app.gd:4257
++msgid "Connecting race…"
++msgstr "Connecting race…"
+ 
+ #: game/backend/account_controller.gd:196
+ msgid "Connecting to Google…"
+@@ -3301,9 +3297,9 @@
+ msgid "Downloading track..."
+ msgstr "Downloading track..."
+ 
+-#: game/core/app.gd:2557
+-msgid "Downloading trackâ€¦"
+-msgstr "Downloading trackâ€¦"
++#: game/core/app.gd:2545
++msgid "Downloading track…"
++msgstr "Downloading track…"
+ 
+ #: game/core/app.gd:3180 game/ui/track_tile.gd:139
+ msgid "Draft"
+@@ -4921,9 +4917,9 @@
+ msgid "Loading drafts…"
+ msgstr "Loading drafts…"
+ 
+-#: game/core/app.gd:2591
+-msgid "Loading ghostâ€¦"
+-msgstr "Loading ghostâ€¦"
++#: game/core/app.gd:2579
++msgid "Loading ghost…"
++msgstr "Loading ghost…"
+ 
+ #: game/ui/track_showroom.gd:15
+ msgid "Loading preview…"
+@@ -4961,9 +4957,9 @@
+ msgid "Loading tracks…"
+ msgstr "Loading tracks…"
+ 
+-#: game/core/app.gd:4302
+-msgid "Loading trackâ€¦"
+-msgstr "Loading trackâ€¦"
++#: game/core/app.gd:4290
++msgid "Loading track…"
++msgstr "Loading track…"
+ 
+ #: game/ui/cloud_leaderboard.gd:56
+ msgid "Loading verified scores…"
+@@ -5917,9 +5913,9 @@
+ msgid "Opening Google sign-in…"
+ msgstr "Opening Google sign-in…"
+ 
+-#: game/core/app.gd:2732
+-msgid "Opening parking hallâ€¦"
+-msgstr "Opening parking hallâ€¦"
++#: game/core/app.gd:2720
++msgid "Opening parking hall…"
++msgstr "Opening parking hall…"
+ 
+ #: game/core/app.gd:2815
+ msgid "Opening track..."
+@@ -5977,9 +5973,9 @@
+ msgid "Owned"
+ msgstr "Owned"
+ 
+-#: game/core/app.gd:2731
+-msgid "P1 parking hall Â· Free drive Â· 120 Ã— 72 m"
+-msgstr "P1 parking hall Â· Free drive Â· 120 Ã— 72 m"
++#: game/core/app.gd:2719
++msgid "P1 parking hall · Free drive · 120 × 72 m"
++msgstr "P1 parking hall · Free drive · 120 × 72 m"
+ 
+ #: game/ui/weekly_rivalry_result.gd:191
+ msgid "PACKED SAND"
+@@ -6417,6 +6413,11 @@
+ msgid "Please Confirm..."
+ msgstr "Please Confirm..."
+ 
++
++#: game/ui/account_panel.gd
++msgid "Please accept the Terms of Service to continue."
++msgstr "Please accept the Terms of Service to continue."
++
+ #: game/ui/popup_style.gd:187
+ msgid "Please confirm"
+ msgstr "Please confirm"
+@@ -6513,17 +6514,17 @@
+ msgid "Preparing scenery…"
+ msgstr "Preparing scenery…"
+ 
+-#: game/core/app.gd:4399
+-msgid "Preparing startâ€¦"
+-msgstr "Preparing startâ€¦"
++#: game/core/app.gd:4387
++msgid "Preparing start…"
++msgstr "Preparing start…"
+ 
+ #: game/core/app.gd:2834
+ msgid "Preparing track..."
+ msgstr "Preparing track..."
+ 
+-#: game/core/app.gd:2571 game/core/app.gd:3194 game/core/app.gd:4223
+-msgid "Preparing trackâ€¦"
+-msgstr "Preparing trackâ€¦"
++#: game/core/app.gd:2559 game/core/app.gd:3182 game/core/app.gd:4211
++msgid "Preparing track…"
++msgstr "Preparing track…"
+ 
+ #: game/ui/control_layout_editor.gd:98
+ msgid "Preset"
+@@ -10890,8 +10891,3 @@
+ #: game/ui/player_profile.gd:314
+ msgid "★ %.1f  ·  %d ratings"
+ msgstr "★ %.1f  ·  %d ratings"
+-
+-
+-#: game/ui/account_panel.gd
+-msgid "Please accept the Terms of Service to continue."
+-msgstr "Please accept the Terms of Service to continue."

@@ -31,8 +31,7 @@ func _ready() -> void:
 	selector = OptionButton.new()
 	selector.name = "NewspaperRankingScope"
 	selector.custom_minimum_size.y = 52
-	selector.add_theme_color_override("font_color",newspaper.INK)
-	selector.add_theme_stylebox_override("normal",newspaper._box(Color("e3dbc6")))
+	_style_scope_selector()
 	for caption: String in ["World","Country","Friends","Season"]: selector.add_item(caption)
 	selector.item_selected.connect(func(_index: int) -> void:
 		_cursor = ""
@@ -75,6 +74,51 @@ func _ready() -> void:
 	visibility_changed.connect(func() -> void:
 		if not _active(): _invalidate())
 	refresh.call_deferred()
+
+func _style_scope_selector() -> void:
+	# Style the closed control in every state before it enters the tree. Loading
+	# temporarily disables it, so that state must use the same paper and ink.
+	selector.add_theme_font_override("font",MenuStyle.DISPLAY)
+	selector.add_theme_font_size_override("font_size",21)
+	for state: String in ["font_color","font_hover_color","font_pressed_color","font_focus_color","font_hover_pressed_color","font_disabled_color"]:
+		selector.add_theme_color_override(state,newspaper.INK)
+	selector.add_theme_stylebox_override("normal",newspaper._box(Color("e3dbc6")))
+	selector.add_theme_stylebox_override("disabled",newspaper._box(Color("e3dbc6")))
+	selector.add_theme_stylebox_override("hover",newspaper._box(Color("d8cfb8")))
+	selector.add_theme_stylebox_override("pressed",newspaper._box(Color("d0c6ad")))
+	var focus: StyleBoxFlat = newspaper._box(Color.TRANSPARENT)
+	focus.border_color = newspaper.RED
+	focus.set_border_width_all(2)
+	selector.add_theme_stylebox_override("focus",focus)
+	selector.add_theme_constant_override("modulate_arrow",1)
+	var popup: PopupMenu = selector.get_popup()
+	# App's global popup watcher runs when the selector is attached. Mark this
+	# popup first so it keeps its newspaper chrome rather than the dark menu.
+	popup.set_meta("menu_popup_custom",true)
+	var paper: StyleBoxFlat = newspaper._box(Color("eee7d4"),10)
+	paper.border_color = Color("8a8675")
+	paper.set_border_width_all(1)
+	paper.shadow_color = Color(0,0,0,0.25)
+	paper.shadow_size = 6
+	popup.add_theme_stylebox_override("panel",paper)
+	popup.add_theme_stylebox_override("hover",newspaper._box(Color("d8cfb8"),6))
+	popup.add_theme_font_override("font",MenuStyle.DISPLAY)
+	popup.add_theme_font_size_override("font_size",21)
+	popup.add_theme_color_override("font_color",newspaper.INK)
+	popup.add_theme_color_override("font_hover_color",newspaper.INK)
+	popup.add_theme_color_override("font_disabled_color",newspaper.MUTED)
+	popup.add_theme_color_override("font_accelerator_color",newspaper.MUTED)
+	popup.add_theme_constant_override("v_separation",26)
+	popup.about_to_popup.connect(_fit_scope_popup.call_deferred)
+
+func _fit_scope_popup() -> void:
+	if not is_instance_valid(selector) or not selector.is_inside_tree(): return
+	var popup: PopupMenu = selector.get_popup()
+	if not popup.visible: return
+	var window: Window = selector.get_window()
+	if window == null or not window.gui_embed_subwindows: return
+	var limit: Vector2i = window.size-popup.size-Vector2i(8,8)
+	popup.position = Vector2i(clampi(popup.position.x,8,maxi(8,limit.x)),clampi(popup.position.y,8,maxi(8,limit.y)))
 
 func _active() -> bool:
 	return is_inside_tree() and not is_queued_for_deletion() and newspaper._active() and newspaper._tab == "ranking"

@@ -1,0 +1,251 @@
+--- a/AGENTS.md
++++ b/AGENTS.md
+@@ -0,0 +1,5 @@
++<!-- HEADER-CAR-MOTION-20261026 -->
++## Header car dropdown animations (2026-10-26)
++HCM01-HCM03/R01/Q01: Header car dropdown opens with a0.22s eased fade/downward settle and closes with a0.15s upward fade. Native selection/save/filtering/pictures remain. One cropped last-frame exit is input-transparent; reopen/hide/resize/teardown clear resources, with no idle animation processing. Both native renderers pass72 combined observations at960/1280/1720; parser1279 passes. Initial native-target/copy/coordinate/capture-timing findings remain. Runtime scope is one new helper and picker setup; icon helper is exact. Commands, native frames, hashes, limitations and scoped patch: docs/HEADER_CAR_MOTION_2026_10_26.md and docs/evidence/header-car-motion-2026-10-26/report.json. Reload and owner/device motion/touch/frame-pacing acceptance remain. No attachment/device test, APK, purchase, live mutation, deployment, staging, commit or owner-process restart; concurrent work preserved.
++<!-- /HEADER-CAR-MOTION-20261026 -->
++
+--- a/DEVELOPMENT_STATUS.md
++++ b/DEVELOPMENT_STATUS.md
+@@ -0,0 +1,5 @@
++<!-- HEADER-CAR-MOTION-20261026 -->
++## Header car dropdown animations (2026-10-26)
++HCM01-HCM03/R01/Q01: Header car dropdown opens with a0.22s eased fade/downward settle and closes with a0.15s upward fade. Native selection/save/filtering/pictures remain. One cropped last-frame exit is input-transparent; reopen/hide/resize/teardown clear resources, with no idle animation processing. Both native renderers pass72 combined observations at960/1280/1720; parser1279 passes. Initial native-target/copy/coordinate/capture-timing findings remain. Runtime scope is one new helper and picker setup; icon helper is exact. Commands, native frames, hashes, limitations and scoped patch: docs/HEADER_CAR_MOTION_2026_10_26.md and docs/evidence/header-car-motion-2026-10-26/report.json. Reload and owner/device motion/touch/frame-pacing acceptance remain. No attachment/device test, APK, purchase, live mutation, deployment, staging, commit or owner-process restart; concurrent work preserved.
++<!-- /HEADER-CAR-MOTION-20261026 -->
++
+--- a/docs/PHASE_0_PLAN.md
++++ b/docs/PHASE_0_PLAN.md
+@@ -0,0 +1,5 @@
++<!-- HEADER-CAR-MOTION-20261026 -->
++## Header car dropdown animations (2026-10-26)
++HCM01-HCM03/R01/Q01: Header car dropdown opens with a0.22s eased fade/downward settle and closes with a0.15s upward fade. Native selection/save/filtering/pictures remain. One cropped last-frame exit is input-transparent; reopen/hide/resize/teardown clear resources, with no idle animation processing. Both native renderers pass72 combined observations at960/1280/1720; parser1279 passes. Initial native-target/copy/coordinate/capture-timing findings remain. Runtime scope is one new helper and picker setup; icon helper is exact. Commands, native frames, hashes, limitations and scoped patch: docs/HEADER_CAR_MOTION_2026_10_26.md and docs/evidence/header-car-motion-2026-10-26/report.json. Reload and owner/device motion/touch/frame-pacing acceptance remain. No attachment/device test, APK, purchase, live mutation, deployment, staging, commit or owner-process restart; concurrent work preserved.
++<!-- /HEADER-CAR-MOTION-20261026 -->
++
+--- a/game/ui/header_car_picker.gd
++++ b/game/ui/header_car_picker.gd
+@@ -27,6 +27,9 @@
+ 	add_child(icons)
+ 	popup.about_to_popup.connect(_populate)
+ 	popup.id_pressed.connect(_choose)
++	var motion := preload("res://ui/header_car_motion.gd").new()
++	motion.popup = popup
++	add_child(motion)
+ 	_populate()
+ 
+ func _populate() -> void:
+--- a/game/tests/capture_profile_car.gd
++++ b/game/tests/capture_profile_car.gd
+@@ -44,6 +44,65 @@
+ 	event.pressed = false
+ 	root.push_input(event)
+ 	await process_frame
++
++func motion_review(picker: MenuButton) -> void:
++	var popup: PopupMenu = picker.get_popup()
++	var motion: Node = picker.get_node("HeaderCarMotion")
++	var samples: Array[Dictionary] = []
++	for extent: Vector2i in [Vector2i(960,540),Vector2i(1280,720),Vector2i(1720,900)]:
++		var frames: Dictionary = {}
++		popup.hide()
++		root.size = extent
++		await create_timer(0.25).timeout
++		await click(root.get_final_transform()*picker.get_global_rect().get_center())
++		await RenderingServer.frame_post_draw
++		var entry: Dictionary = {"extent":str(extent),"opening_progress":motion.progress,"popup_position":str(popup.position),"popup_size":str(popup.size)}
++		frames["open-start"] = root.get_texture().get_image()
++		await create_timer(0.07).timeout
++		await RenderingServer.frame_post_draw
++		frames["open-mid"] = root.get_texture().get_image()
++		await create_timer(0.23).timeout
++		await RenderingServer.frame_post_draw
++		entry.open_settled = popup.visible and motion.tween == null and popup.canvas_transform == Transform2D.IDENTITY
++		frames["open"] = root.get_texture().get_image()
++		await create_timer(0.04).timeout
++		var close_begin: int = Time.get_ticks_usec()
++		await key(KEY_ESCAPE)
++		await RenderingServer.frame_post_draw
++		entry.exit_present = not popup.visible and is_instance_valid(motion.exit_image)
++		entry.close_capture_ms = (Time.get_ticks_usec()-close_begin)/1000.0
++		entry.exit_alpha = motion.exit_image.modulate.a if is_instance_valid(motion.exit_image) else 0.0
++		entry.exit_bounds = str(motion.exit_image.get_global_rect()) if is_instance_valid(motion.exit_image) else "none"
++		frames["close-start"] = root.get_texture().get_image()
++		await create_timer(0.06).timeout
++		await RenderingServer.frame_post_draw
++		frames["close-mid"] = root.get_texture().get_image()
++		await create_timer(0.18).timeout
++		await RenderingServer.frame_post_draw
++		entry.exit_cleaned = motion.tween == null and motion.exit_image == null and picker.icons.active_worlds == 0
++		frames["closed"] = root.get_texture().get_image()
++		for label: String in frames:
++			frames[label].save_png(output.path_join("motion-%dx%d-%s.png" % [extent.x,extent.y,label]))
++		samples.append(entry)
++	root.size = Vector2i(1280,720)
++	await settle()
++	# A rapid close/reopen must replace the outgoing visual, and hiding cancels both.
++	await click(root.get_final_transform()*picker.get_global_rect().get_center())
++	await create_timer(0.04).timeout
++	await key(KEY_ESCAPE)
++	await click(root.get_final_transform()*picker.get_global_rect().get_center())
++	report.motion_reopen = popup.visible and motion.exit_image == null
++	await create_timer(0.26).timeout
++	report.motion_reopen_settled = popup.visible and motion.tween == null
++	picker.hide()
++	report.motion_hide_cleanup = not popup.visible and motion.tween == null and motion.exit_image == null
++	picker.show()
++	await settle()
++	picker.show_popup()
++	await icons_ready(picker)
++	await create_timer(0.26).timeout
++	report.motion_returned_open = popup.visible
++	report.motion_samples = samples
+ 
+ func run() -> void:
+ 	OS.set_environment("BMT_API_URL","")
+@@ -133,6 +192,7 @@
+ 		var picker: MenuButton = app.account_button.get_node("MenuCarPicker")
+ 		var popup: PopupMenu = picker.get_popup()
+ 		await icons_ready(picker)
++		if OS.get_environment("BMT_HEADER_MOTION_REVIEW") == "1": await motion_review(picker)
+ 		await shot("car-dropdown")
+ 		report.car_opens_dropdown = popup.visible and app.screen == "tracks"
+ 		report.dropdown_car_count = popup.item_count
+--- /dev/null
++++ b/game/ui/header_car_motion.gd
+@@ -0,0 +1,102 @@
++extends Node
++## Animate the native menu; its last rendered frame handles the brief exit.
++const OPEN_SECONDS: float = 0.22
++const CLOSE_SECONDS: float = 0.15
++var popup: PopupMenu
++var tint: CanvasModulate
++var tween: Tween
++var exit_layer: CanvasLayer
++var exit_image: TextureRect
++var has_frame: bool = false
++var progress: float = 1.0
++
++func _ready() -> void:
++	name = "HeaderCarMotion"
++	tint = CanvasModulate.new()
++	popup.add_child(tint)
++	popup.about_to_popup.connect(_opening)
++	popup.popup_hide.connect(_closing)
++	get_parent().visibility_changed.connect(_owner_visibility_changed)
++	get_viewport().size_changed.connect(_reset)
++
++func _opening() -> void:
++	_reset()
++	_apply_open(0.0)
++	RenderingServer.frame_post_draw.connect(_frame_drawn,CONNECT_ONE_SHOT)
++	tween = create_tween()
++	tween.set_trans(Tween.TRANS_CUBIC).set_ease(Tween.EASE_OUT)
++	tween.tween_method(_apply_open,0.0,1.0,OPEN_SECONDS)
++	tween.finished.connect(_open_finished)
++
++func _apply_open(value: float) -> void:
++	progress = value
++	var scale := Vector2(lerpf(0.985,1.0,value),lerpf(0.96,1.0,value))
++	popup.canvas_transform = Transform2D(Vector2(scale.x,0),Vector2(0,scale.y),Vector2(popup.size.x*(1.0-scale.x)*0.5,-10.0*(1.0-value)))
++	tint.color = Color(1,1,1,value)
++
++func _open_finished() -> void:
++	tween = null
++	_apply_open(1.0)
++
++func _frame_drawn() -> void:
++	has_frame = popup.visible
++
++func _closing() -> void:
++	_stop_tween()
++	if not get_parent().is_visible_in_tree() or not has_frame or not popup.is_embedded() or DisplayServer.get_name() == "headless":
++		_reset()
++		return
++	# Window releases its own target on hide. The containing viewport still has
++	# the last completed menu frame; retain only that small crop for this exit.
++	var frame: Image = get_viewport().get_texture().get_image()
++	var viewport_transform: Transform2D = get_viewport().get_final_transform()
++	var pixel_bounds: Rect2 = viewport_transform*Rect2(Vector2(popup.position),Vector2(popup.size))
++	var bounds := Rect2i(pixel_bounds.position.floor(),pixel_bounds.end.ceil()-pixel_bounds.position.floor()).intersection(Rect2i(Vector2i.ZERO,frame.get_size()))
++	if not bounds.has_area():
++		_reset()
++		return
++	exit_layer = CanvasLayer.new()
++	exit_layer.name = "HeaderCarExit"
++	exit_layer.layer = 100
++	add_child(exit_layer)
++	exit_image = TextureRect.new()
++	exit_image.texture = ImageTexture.create_from_image(frame.get_region(bounds))
++	exit_image.expand_mode = TextureRect.EXPAND_IGNORE_SIZE
++	exit_image.mouse_filter = Control.MOUSE_FILTER_IGNORE
++	var canvas_bounds: Rect2 = viewport_transform.affine_inverse()*Rect2(bounds)
++	exit_image.position = canvas_bounds.position
++	exit_image.size = canvas_bounds.size
++	exit_image.pivot_offset = Vector2(exit_image.size.x*0.5,0)
++	exit_layer.add_child(exit_image)
++	tween = create_tween().set_parallel(true)
++	tween.set_trans(Tween.TRANS_QUAD).set_ease(Tween.EASE_IN)
++	tween.tween_property(exit_image,"modulate:a",0.0,CLOSE_SECONDS)
++	tween.tween_property(exit_image,"position:y",exit_image.position.y-8.0,CLOSE_SECONDS)
++	tween.tween_property(exit_image,"scale",Vector2(0.985,0.96),CLOSE_SECONDS)
++	tween.finished.connect(_reset)
++
++func _stop_tween() -> void:
++	if tween != null: tween.kill()
++	tween = null
++
++func _reset() -> void:
++	_stop_tween()
++	if RenderingServer.frame_post_draw.is_connected(_frame_drawn): RenderingServer.frame_post_draw.disconnect(_frame_drawn)
++	if is_instance_valid(exit_layer):
++		remove_child(exit_layer)
++		exit_layer.queue_free()
++	exit_layer = null
++	exit_image = null
++	has_frame = false
++	if is_instance_valid(popup): popup.canvas_transform = Transform2D.IDENTITY
++	if is_instance_valid(tint): tint.color = Color.WHITE
++	progress = 1.0
++
++func _owner_visibility_changed() -> void:
++	if get_parent().is_visible_in_tree(): return
++	_reset()
++	popup.hide()
++
++func _exit_tree() -> void:
++	_reset()
++	if is_instance_valid(tint): tint.queue_free()
+--- /dev/null
++++ b/game/ui/header_car_motion.gd.uid
+@@ -0,0 +1 @@
++uid://fw4raacnpuy0
+--- /dev/null
++++ b/docs/HEADER_CAR_MOTION_2026_10_26.md
+@@ -0,0 +1,27 @@
++# Header car dropdown motion (2026-10-26)
++
++HCM01: Animate opening. HCM02: Animate closing on native dismissal or selection. HCM03: Preserve native input, saved selection, pictures, filtering and cleanup. R01/Q01: Record native views, actual checks and a scoped review patch.
++
++The header dropdown fades in, moves down ten UI units and settles from a small inset scale over 0.22 seconds, using cubic ease out. Closing takes 0.15 seconds with a small upward movement, contraction and fade. The native menu continues to own selection and dismissal. Its last completed containing-viewport frame supplies one cropped, input-transparent exit image because the native Window releases its own rendering target when hidden. The crop accounts for viewport scaling at smaller and larger windows.
++
++Runtime changes are the new `game/ui/header_car_motion.gd` helper and its three-line setup in `game/ui/header_car_picker.gd`. A new selection cancels the preceding exit. Hiding, removal and resizing clear animation state and temporary resources. There is no idle animation processing or additional retained viewport/world. The icon helper was restored byte-exact to its preceding checkpoint after an unsuccessful temporary buffer experiment.
++
++The existing `game/tests/capture_profile_car.gd` review optionally captures opening, settled, closing and closed frames at 960×540, 1280×720 and 1720×900. It additionally checks rapid reopening and hiding during animation, then reruns its original selection, persistence, six pictures, active-car exclusion, Escape, Profile-name navigation, cache reuse and studio-cleanup observations. Final frames are collected in memory and written after each motion cycle so PNG compression does not distort playback timing. Earlier failed prototypes, coordinate errors and review-restoration findings remain in the evidence folders/report; no retained selection or visibility requirement was relaxed.
++
++Actual commands used pinned Godot 4.7.2 via the repository runner, process-local `APPDATA` and `LOCALAPPDATA` at `build/header-car-motion-appdata`, and the review's disabled backend connection:
++
++```powershell
++$env:APPDATA = Join-Path (Get-Location) 'build/header-car-motion-appdata'
++$env:LOCALAPPDATA = $env:APPDATA
++$env:BMT_HEADER_MOTION_REVIEW = '1'
++$env:BMT_PROFILE_CAR_OUTPUT = 'res://../docs/evidence/header-car-motion-2026-10-26/motion-captures'
++powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1 -Action TestScript -ScriptPath res://tests/capture_profile_car.gd -Graphical -RenderingMethod gl_compatibility -CommandTimeoutSeconds 180
++powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1 -Action TestScript -ScriptPath res://tests/capture_profile_car.gd -Graphical -RenderingMethod mobile -CommandTimeoutSeconds 180
++powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1 -Action TestScript -ScriptPath res://tests/test_script_parse.gd -CommandTimeoutSeconds 180
++```
++
++Both native reviews pass all 72 combined Boolean/count/progression/cleanup observations checked from their JSON reports. All 1,279 scripts compile. There are 18 motion stills per renderer; selected opening, settled and closing frames were visually inspected, including compact scaling. The two native key-event-to-exit-capture observations range from 24.1 to 26.0 ms across their three sizes; those include simulated input frames and are not a readback benchmark or phone performance claim. Initial sandboxed attempts failed on local log/certificate-store access; successful native and parser runs used reviewed certificate-store access with isolated test data.
++
++Review the [opening](evidence/header-car-motion-2026-10-26/motion-captures/gl_compatibility/motion-960x540-open-start.png), [closing](evidence/header-car-motion-2026-10-26/motion-captures/gl_compatibility/motion-1280x720-close-mid.png) and [desktop Mobile closing](evidence/header-car-motion-2026-10-26/motion-captures/mobile/motion-960x540-close-mid.png) frames. Measurements, source hashes, actual logs and the task-only patch are in `docs/evidence/header-car-motion-2026-10-26/`. The patch is checked in reverse against current files and forward against exact task-start copies without staging or committing concurrent changes.
++
++Reload and owner motion/touch acceptance remain. One containing-viewport readback occurs per close; physical-device frame pacing remains unmeasured. External, unembedded OS popup windows retain immediate native dismissal; the game's embedded popup receives both animations. No device attachment check or device test, APK, real authentication/purchase, live account/backend mutation, deployment, staging, commit or owner-process restart was performed.

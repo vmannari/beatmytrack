@@ -1,0 +1,18 @@
+--- a/game/core/app.gd
++++ b/game/core/app.gd
+@@ -2674,6 +2674,15 @@
+ 			_discard_preparing_game(prepared_game)
+ 			return
+ 	if not is_instance_valid(prepared_game) or game != prepared_game: return
++	if is_instance_valid(prepared_game.world_render_preparation):
++		loading.stage("Preparing graphics...")
++		var stage_current: Callable = _race_installation_current.bind(loading_id,original_scope,navigation,"garage",vehicle,selection)
++		if not await prepared_game.world_render_preparation.prepare(_present_race_loading,stage_current):
++			if is_queued_for_deletion(): return
++			_race_preparation_changed(loading_id,original_scope,navigation,"garage",vehicle,selection)
++			if is_instance_valid(prepared_game): _discard_preparing_game(prepared_game)
++			_close_race_loading(loading_id)
++			return
+ 	var touch: TouchControls = game.hud.touch
+ 	touch.control_scale = ui_touch_scale
+ 	touch.left_handed = ui_left_handed

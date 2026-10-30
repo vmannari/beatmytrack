@@ -1,6 +1,6 @@
 """Regression tests for extraction and translator mistakes, using only the stdlib."""
-import unittest
 import json
+import unittest
 
 import localization as catalog
 
@@ -32,6 +32,18 @@ class CatalogTests(unittest.TestCase):
         self.assertEqual(catalog.placeholders("Within 1% of average; 10% faster"), ([], []))
         self.assertEqual(catalog.placeholders("%6.2f m/s · %s · %d"), ([], ["f", "s", "d"]))
         self.assertEqual(catalog.placeholders("{name}, {count} laps"), catalog.placeholders("{count} tours, {name}"))
+
+    def test_damaged_source_and_translation_characters_are_rejected(self):
+        messages = {("", "Loading…"): {"plural": "", "references": set()}}
+        entries = catalog.parse_po(catalog.render(messages, True))
+        entries[("", "Loading…")]["msgstr"] = "Loading" + '…'.encode().decode('cp1252')
+        self.assertTrue(any('damaged text encoding in msgstr' in error
+                            for error in catalog.validate(entries, messages, 'en')))
+        source = 'Bad \ufffd text'
+        messages = {("", source): {"plural": "", "references": set()}}
+        entries = catalog.parse_po(catalog.render(messages, True))
+        self.assertTrue(any('damaged text encoding in msgid' in error
+                            for error in catalog.validate(entries, messages, 'en')))
 
     def test_context_and_plural_extraction_respects_code_boundaries(self):
         text = '''# tr("Comment", "unused")

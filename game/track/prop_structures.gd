@@ -58,16 +58,28 @@ static func _vehicle(tool: SurfaceTool, kind: String) -> void:
 	if wreck: roof = 1.15; roof_front = 0.10
 	var glass := Color("324e59")
 	if wreck: glass = Color("273231")
-	PropGeometry.face(tool,[Vector3(front,belt,-0.79),Vector3(half,belt-0.08,-0.73),Vector3(half,belt-0.08,0.73),Vector3(front,belt,0.79)],paint.lightened(0.08))
+	if not wreck:
+		PropGeometry.face(tool,[Vector3(front,belt,-0.79),Vector3(half,belt-0.08,-0.73),Vector3(half,belt-0.08,0.73),Vector3(front,belt,0.79)],paint.lightened(0.08))
+	else:
+		# An actual opening exposes the engine, with a folded bonnet at one side.
+		PropGeometry.face(tool,[Vector3(front,belt,-0.79),Vector3(half,belt-0.08,-0.73),Vector3(half,belt-0.08,-0.50),Vector3(front,belt,-0.52)],paint)
+		PropGeometry.face(tool,[Vector3(front,belt,0.52),Vector3(half,belt-0.08,0.50),Vector3(half,belt-0.08,0.73),Vector3(front,belt,0.79)],paint.darkened(0.15))
+		PropGeometry.box(tool,Vector3(1.52,0.69,0),Vector3(0.83,0.08,1.02),DARK.darkened(0.24),0.02)
 	PropGeometry.face(tool,[Vector3(-half,belt-0.08,-0.73),Vector3(rear,belt,-0.79),Vector3(rear,belt,0.79),Vector3(-half,belt-0.08,0.73)],paint.lightened(0.06))
-	PropGeometry.face(tool,[Vector3(roof_rear,roof,-0.68),Vector3(roof_front,roof,-0.68),Vector3(roof_front,roof,0.68),Vector3(roof_rear,roof,0.68)],paint.lightened(0.16))
+	var middle: float = (roof_rear+roof_front)*0.5
+	var crown: float = 0.035 if not wreck else -0.17
+	var skew: float = 0.0 if not wreck else -0.13
+	PropGeometry.face(tool,[Vector3(roof_rear,roof,-0.68),Vector3(middle,roof+crown,-0.68),Vector3(middle,roof+crown+skew,0.68),Vector3(roof_rear,roof,0.68)],paint.lightened(0.12))
+	PropGeometry.face(tool,[Vector3(middle,roof+crown,-0.68),Vector3(roof_front,roof,-0.68),Vector3(roof_front,roof,0.68),Vector3(middle,roof+crown+skew,0.68)],paint.lightened(0.08))
 	PropGeometry.face(tool,[Vector3(front,belt,-0.79),Vector3(front,belt,0.79),Vector3(roof_front,roof,0.68),Vector3(roof_front,roof,-0.68)],paint)
 	PropGeometry.face(tool,[Vector3(front-0.065,belt+0.07,-0.71),Vector3(front-0.065,belt+0.07,0.71),Vector3(roof_front+0.045,roof-0.09,0.62),Vector3(roof_front+0.045,roof-0.09,-0.62)],glass)
 	PropGeometry.face(tool,[Vector3(rear,belt,0.79),Vector3(rear,belt,-0.79),Vector3(roof_rear,roof,-0.68),Vector3(roof_rear,roof,0.68)],paint)
 	if not van:
 		PropGeometry.face(tool,[Vector3(rear+0.06,belt+0.06,0.72),Vector3(rear+0.06,belt+0.06,-0.72),Vector3(roof_rear-0.03,roof-0.10,-0.61),Vector3(roof_rear-0.03,roof-0.10,0.61)],glass)
 	for side: float in [-1.0,1.0]:
-		PropGeometry.face(tool,[Vector3(rear,belt,side*0.79),Vector3(front,belt,side*0.79),Vector3(roof_front,roof,side*0.68),Vector3(roof_rear,roof,side*0.68)],paint)
+		var roof_middle := Vector3(middle,roof+crown+(skew if side > 0 else 0.0),side*0.68)
+		PropGeometry.face(tool,[Vector3(rear,belt,side*0.79),Vector3(middle,belt,side*0.79),roof_middle,Vector3(roof_rear,roof,side*0.68)],paint)
+		PropGeometry.face(tool,[Vector3(middle,belt,side*0.79),Vector3(front,belt,side*0.79),Vector3(roof_front,roof,side*0.68),roof_middle],paint)
 		var window_rear: float = -0.20 if van else rear+0.14
 		var upper_rear: float = -0.20 if van else roof_rear+0.06
 		PropGeometry.face(tool,[Vector3(window_rear,belt+0.09,side*0.799),Vector3(front-0.15,belt+0.09,side*0.799),Vector3(roof_front-0.03,roof-0.10,side*0.701),Vector3(upper_rear,roof-0.10,side*0.701)],glass)
@@ -97,6 +109,10 @@ static func _vehicle(tool: SurfaceTool, kind: String) -> void:
 		for side: float in [-1.0,1.0]:
 			PropGeometry.face(tool,[Vector3(-0.73,0.58,side*0.848),Vector3(-0.26,0.52,side*0.849),Vector3(-0.05,0.74,side*0.849),Vector3(-0.61,0.79,side*0.849)],Color("a16e45"))
 		PropGeometry.beam(tool,Vector3(-0.9,1.15,-0.68),Vector3(0.1,1.15,-0.68),0.045,0.045,Color("aa8970"))
+		# Sparse pale fractures make the missing/damaged glazing read from above.
+		for side: float in [-1.0,1.0]:
+			PropGeometry.beam(tool,Vector3(front-0.07,belt+0.09,side*0.52),Vector3(roof_front+0.05,roof-0.10,side*0.16),0.014,0.012,Color("8b9c99"))
+		PropGeometry.beam(tool,Vector3(-0.60,roof-0.01,0.67),Vector3(-0.18,roof-0.23,0.66),0.06,0.04,DARK)
 
 static func _arch(x: float, axle: float) -> float:
 	var d: float = minf(absf(x-axle),absf(x+axle))

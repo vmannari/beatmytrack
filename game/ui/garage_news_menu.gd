@@ -23,7 +23,12 @@ var _poll_count: int = 0
 var _refresh_button: Button
 var _waiting: bool = false
 var _selected_id: String = ""
+var _reading_scope: String = ""
+var _local_read_ids: Dictionary = {}
 var _scroll: ScrollContainer
+var _brief_scroll: ScrollContainer
+var _brief_offset: int = 0
+var _brief_restore_pending: bool = false
 var _folio: Label
 var _previous: Button
 var _next: Button
@@ -37,6 +42,7 @@ var _layout_size := Vector2.ZERO
 var _layout_queued: bool = false
 var _spread: PanelContainer
 var _story_motion: Tween
+var _tab_turn: bool = false
 var _outgoing_story: Control
 var _turn_viewport: SubViewport
 var _turn_material: ShaderMaterial
@@ -109,6 +115,8 @@ func _build_paper() -> void:
 	_vertical_rule(header)
 	_tagline = _text(header,"YOUR RACING WORLD,\nIN PRINT",17,MUTED)
 	_tagline.name = "NewsTagline"
+	_tagline.autowrap_mode = TextServer.AUTOWRAP_OFF
+	_tagline.size_flags_horizontal = Control.SIZE_SHRINK_BEGIN
 	_tagline.size_flags_vertical = Control.SIZE_SHRINK_CENTER
 	var controls := HFlowContainer.new()
 	_controls = controls
@@ -220,10 +228,7 @@ func _apply_layout() -> void:
 	if _tab != "ranking": _render()
 
 func _layout_header() -> void:
-	var ranking: bool = _tab == "ranking"
-	_masthead.add_theme_font_size_override("font_size",34 if ranking else 44 if size.x < 1100 else 64 if size.x >= 1360 else 58)
-	_tagline.visible = not ranking
-	_eyebrow.visible = not ranking
+	_masthead.add_theme_font_size_override("font_size",44 if size.x < 1100 else 64 if size.x >= 1360 else 58)
 	for button: Button in _tabs.values(): button.add_theme_font_size_override("font_size",19)
 	_controls.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	_controls.size_flags_vertical = Control.SIZE_SHRINK_CENTER
@@ -262,11 +267,15 @@ func _visibility_changed() -> void:
 	else: _open.call_deferred()
 
 func _select_tab(id: String) -> void:
+	var tabs: Array[String] = ["news","friends","ranking"]
+	var old_index: int = tabs.find(_tab)
+	var new_index: int = tabs.find(id)
+	var direction: int = 0 if old_index == new_index or new_index < 0 else 1 if new_index > old_index else -1
 	_tab = id
 	_waiting = false
 	_poll.stop()
 	_scroll.scroll_vertical = 0
-	_render()
+	_render(direction,direction != 0)
 	if _tab != "ranking": _open()
 
 func _open() -> void:
@@ -370,6 +379,19 @@ func _stories() -> Array:
 		return _examples
 	return service.items if service != null and service.available() else []
 
+func _story_read(item: Dictionary, examples: bool) -> bool:
+	var id: String = str(item.get("id",""))
+	return service.story_read(id,examples) if service != null else _local_read_ids.has(id)
+
+func _mark_story_read(item: Dictionary, examples: bool) -> void:
+	var id: String = str(item.get("id",""))
+	if service != null: service.mark_story_read(id,examples)
+	elif not id.is_empty(): _local_read_ids[id] = true
+
+func _more_stories() -> void:
+	if _active() and _tab == "news" and service != null and not service.busy:
+		await service.more()
+
 func _index() -> int:
 	var stories: Array = _stories()
 	for index: int in range(stories.size()):
@@ -397,6 +419,7 @@ func _step(direction: int) -> void:
 func _finish_story_turn() -> void:
 	if _story_motion != null: _story_motion.kill()
 	_story_motion = null
+	_tab_turn = false
 	if is_instance_valid(_outgoing_story):
 		_outgoing_story.get_parent().remove_child(_outgoing_story)
 		_outgoing_story.queue_free()
@@ -485,9 +508,14 @@ func _update_column_minimum(content: Control, slot: Control) -> void:
 	if slot.size.x > 1.0 and is_equal_approx(content.size.x,slot.size.x):
 		slot.custom_minimum_size.y = content.get_combined_minimum_size().y
 
-func _render(direction: int = 0) -> void:
+func _render(direction: int = 0, tab_turn: bool = false) -> void:
 	if not is_instance_valid(_list): return
-	_finish_story_turn()
+	if is_instance_valid(_brief_scroll) and not _brief_restore_pending: _brief_offset = _brief_scroll.scroll_vertical
+	_brief_scroll = null
+	_brief_restore_pending = false
+	# Feed updates may arrive while a tab is turning; update the live page
+	# underneath without interrupting the printed sheet.
+	if direction != 0 or not _tab_turn: _finish_story_turn()
 	var outgoing: Control
 	if direction != 0 and _list.get_child_count() > 0:
 		outgoing = _paper
@@ -502,6 +530,11 @@ func _render(direction: int = 0) -> void:
 		_retire_story(outgoing)
 		_build_paper()
 		_prepare_page_turn(outgoing,direction)
+		_tab_turn = tab_turn
+		_set_story_turn(0.0)
+		_story_motion = create_tween()
+		_story_motion.tween_method(_set_story_turn,0.0,1.0,STORY_TURN_SECONDS).set_trans(Tween.TRANS_CUBIC).set_ease(Tween.EASE_IN_OUT)
+		_story_motion.tween_callback(_finish_story_turn)
 	for child: Node in _list.get_children():
 		_list.remove_child(child)
 		child.queue_free()
@@ -522,6 +555,11 @@ func _render(direction: int = 0) -> void:
 	_add_row.visible = _tab == "friends" and service != null and service.available()
 	var examples: bool = _using_examples()
 	var stories: Array = _stories()
+	var reading_scope: String = "examples" if examples else service.scope() if service != null else ""
+	if reading_scope != _reading_scope:
+		_reading_scope = reading_scope
+		_selected_id = ""
+		_brief_offset = 0
 	var can_more: bool = not examples and service != null and not service.next_cursor.is_empty()
 	_refresh_button.disabled = service == null or not service.available() or service.busy
 	_previous.visible = _tab == "news"
@@ -558,6 +596,8 @@ func _render(direction: int = 0) -> void:
 		return
 	var index: int = _index()
 	var item: Dictionary = stories[index]
+	_selected_id = str(item.get("id",""))
+	if _active(): _mark_story_read(item,examples)
 	_folio.text = GameText.message("STORY %02d / %02d  ·  %s") % [index+1,stories.size(),Time.get_date_string_from_unix_time(int(item.get("created_at",0)))]
 	var columns := HBoxContainer.new()
 	columns.name = "EditorialColumns"
@@ -568,25 +608,66 @@ func _render(direction: int = 0) -> void:
 	lead.name = "LeadStory"
 	lead.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	lead.size_flags_stretch_ratio = 1.85
-	lead.add_theme_constant_override("separation",6)
+	lead.add_theme_constant_override("separation",3 if size.y < 620 else 6)
 	_column_slot(columns,lead,1.85)
 	_story(lead,item)
-	if outgoing != null:
-		_set_story_turn(0.0)
-		_story_motion = create_tween()
-		_story_motion.tween_method(_set_story_turn,0.0,1.0,STORY_TURN_SECONDS).set_trans(Tween.TRANS_CUBIC).set_ease(Tween.EASE_IN_OUT)
-		_story_motion.tween_callback(_finish_story_turn)
-	if stories.size() < 2: return
+	if stories.size() < 2 and not can_more: return
 	_vertical_rule(columns)
 	var briefs := VBoxContainer.new()
 	briefs.name = "OtherStories"
 	briefs.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	briefs.add_theme_constant_override("separation",5)
+	briefs.add_theme_constant_override("separation",1)
 	_column_slot(columns,briefs)
-	_text(briefs,"ELSEWHERE IN YOUR GARAGE",16,RED)
-	for offset: int in range(1,mini(stories.size(),4)):
-		var other: int = (index+offset)%stories.size()
-		_brief(briefs,stories[other],other)
+	_text(briefs,"ELSEWHERE IN YOUR GARAGE",14,RED)
+	var brief_scroll: ScrollContainer = preload("res://ui/vertical_swipe_scroll.gd").new()
+	_brief_scroll = brief_scroll
+	brief_scroll.name = "OtherStoriesScroll"
+	brief_scroll.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	brief_scroll.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	brief_scroll.horizontal_scroll_mode = ScrollContainer.SCROLL_MODE_DISABLED
+	brief_scroll.follow_focus = true
+	briefs.add_child(brief_scroll)
+	var brief_list := VBoxContainer.new()
+	brief_list.name = "OtherStoriesList"
+	brief_list.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	brief_list.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	brief_list.add_theme_constant_override("separation",1)
+	brief_scroll.add_child(brief_list)
+	# Keep feed/navigation order intact; only the side list groups unread first.
+	for read: bool in [false,true]:
+		for other: int in range(stories.size()):
+			if other != index and _story_read(stories[other],examples) == read:
+				_brief(brief_list,stories[other],other)
+	if can_more:
+		var more := _button("Load older stories",_more_stories)
+		more.name = "NewsLoadOlder"
+		brief_list.add_child(more)
+	brief_scroll.resized.connect(_size_briefs.bind(brief_scroll,brief_list).call_deferred)
+	_size_briefs.call_deferred(brief_scroll,brief_list)
+	_brief_restore_pending = true
+	_restore_brief_scroll.call_deferred(brief_scroll,_brief_offset)
+
+func _size_briefs(scroll: ScrollContainer, list: VBoxContainer) -> void:
+	if not is_instance_valid(scroll) or not is_instance_valid(list) or scroll.size.y <= 1.0: return
+	var separation: int = list.get_theme_constant("separation")
+	var row: int = 0
+	var rule_height: float = 0.0
+	for child: Control in list.get_children():
+		if child is HSeparator:
+			rule_height = child.get_combined_minimum_size().y
+		elif child is Button and child.name.begins_with("NewsBrief"):
+			# Divide the viewport into five whole rows, distributing remainder
+			# pixels so a sixth headline cannot peek in at the bottom.
+			var slot: float = floorf((row+1)*scroll.size.y/5.0)-floorf(row*scroll.size.y/5.0)
+			child.set_meta("news_row_height",maxf(40.0,slot-rule_height-2*separation))
+			_update_brief_height(child.get_child(0).get_child(0),child)
+			row += 1
+
+func _restore_brief_scroll(scroll: ScrollContainer, offset: int) -> void:
+	await get_tree().process_frame
+	if is_instance_valid(scroll) and scroll == _brief_scroll:
+		scroll.scroll_vertical = offset
+		_brief_restore_pending = false
 
 func _empty(title: String, detail: String) -> void:
 	_text(_list,title,30,INK,true)
@@ -612,12 +693,37 @@ static func _headline(item: Dictionary) -> String:
 		"track_published": return "Your track is ready to race."
 	return "From the paddock."
 
+func _story_uses_local_appearance(item: Dictionary, file_photo: bool) -> bool:
+	var own: bool = file_photo or item.get("kind","") == "percentile_drop"
+	if service != null and service.client != null:
+		var actor_id: String = str(item.get("actor_id",""))
+		own = own or (not actor_id.is_empty() and actor_id == str(service.client.player.get("id","")))
+	return own
+
+func _story_appearance(item: Dictionary, vehicle: String, file_photo: bool) -> Dictionary:
+	if _story_uses_local_appearance(item,file_photo) and page is GaragePage and page.records != null:
+		return preload("res://persistence/appearance_state.gd").car(page.records.settings,vehicle)
+	var appearance: Variant = item.get("appearance",{})
+	if preload("res://persistence/appearance_state.gd").valid_car(appearance) and appearance.vehicle_id == vehicle:
+		return appearance.duplicate(true)
+	return {}
+
+func _reveal_news_car(view: Control, fallback: Control, loading: Control) -> void:
+	while is_instance_valid(view) and view.is_inside_tree() and not view.presentation_ready:
+		await get_tree().process_frame
+	if is_instance_valid(view) and view.is_inside_tree() and is_instance_valid(fallback):
+		fallback.hide()
+		if is_instance_valid(loading): loading.hide()
+		view.show()
+
 func _story(parent: VBoxContainer, item: Dictionary) -> void:
 	var track: String = str(item.get("track_name",""))
 	var vehicle: String = str(item.get("vehicle_id",""))
 	var file_photo: bool = vehicle.is_empty() and item.get("kind","") == "milestone"
 	if file_photo: vehicle = VehicleCatalog.selected
+	var appearance: Dictionary = _story_appearance(item,vehicle,file_photo) if vehicle in VehicleCatalog.IDS else {}
 	var wide: bool = size.x >= 1360
+	var short_page: bool = size.y < 620
 	var byline := HBoxContainer.new()
 	byline.add_theme_constant_override("separation",12)
 	parent.add_child(byline)
@@ -625,13 +731,14 @@ func _story(parent: VBoxContainer, item: Dictionary) -> void:
 	category.size_flags_horizontal = Control.SIZE_SHRINK_BEGIN
 	category.autowrap_mode = TextServer.AUTOWRAP_OFF
 	GameText.user_text(_text(byline,"/  "+track.to_upper(),16,MUTED))
-	var headline := _text(parent,_headline(item),48 if wide else 46,INK,true)
+	var headline_size: int = 42 if short_page else 48 if wide else 46
+	var headline := _text(parent,_headline(item),headline_size,INK,true)
 	headline.name = "NewsHeadline"
 	headline.add_theme_font_override("font",_headline_font())
-	headline.resized.connect(_fit_headline.bind(headline,48 if wide else 46,32))
+	headline.resized.connect(_fit_headline.bind(headline,headline_size,32))
 	var media := HBoxContainer.new()
 	media.name = "StoryMedia"
-	media.custom_minimum_size.y = 158
+	media.custom_minimum_size.y = 142 if short_page else 158
 	media.size_flags_vertical = Control.SIZE_EXPAND_FILL
 	media.add_theme_constant_override("separation",16)
 	parent.add_child(media)
@@ -642,6 +749,12 @@ func _story(parent: VBoxContainer, item: Dictionary) -> void:
 		photograph.size_flags_stretch_ratio = 1.5
 		photograph.add_theme_constant_override("separation",5)
 		_column_slot(media,photograph,1.5)
+		var photo_frame := PanelContainer.new()
+		photo_frame.name = "NewsPhotoFrame"
+		photo_frame.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+		photo_frame.size_flags_vertical = Control.SIZE_EXPAND_FILL
+		photo_frame.add_theme_stylebox_override("panel",StyleBoxEmpty.new())
+		photograph.add_child(photo_frame)
 		var photo := TextureRect.new()
 		photo.name = "NewsCarPhoto"
 		photo.texture = load("res://assets/news/vehicles/%s.png" % vehicle)
@@ -652,28 +765,56 @@ func _story(parent: VBoxContainer, item: Dictionary) -> void:
 		photo.material = _photo_ink
 		photo.expand_mode = TextureRect.EXPAND_IGNORE_SIZE
 		photo.stretch_mode = TextureRect.STRETCH_KEEP_ASPECT_CENTERED
-		photo.custom_minimum_size.y = 132
+		photo.custom_minimum_size.y = 116 if short_page else 132
 		photo.size_flags_vertical = Control.SIZE_EXPAND_FILL
 		photo.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 		photo.mouse_filter = Control.MOUSE_FILTER_IGNORE
-		photograph.add_child(photo)
-		var photo_caption: String = VehicleCatalog.title(vehicle).capitalize()+". "
-		photo_caption += GameText.message("Trackside file photograph.") if file_photo else GameText.message("Lap times at {track}." if item.get("metric","") == "lap" else "Track times at {track}.",{"track":track})
-		var caption := _text(photograph,photo_caption,14,INK,true)
-		caption.name = "NewsPhotoCaption"
-		caption.add_theme_font_override("font",ITALIC)
-		caption.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+		photo_frame.add_child(photo)
+		if not appearance.is_empty():
+			# Do not show a stock car while the real livery is being prepared.
+			photo.modulate.a = 0.0
+			var view: Control = preload("res://ui/rivalry_victory_car.gd").new()
+			view.name = "NewsLiveryCar"
+			view.vehicle_id = vehicle
+			view.livery = VehicleLivery.normalize(appearance.livery,vehicle)
+			view.customisation = appearance.customisation.duplicate(true)
+			view.simple_model = true
+			view.podium_presentation = true
+			view.fit_to_frame = true
+			view.cooperative_build = true
+			view.build_budget_us = 24000
+			view.custom_minimum_size.y = 116 if short_page else 132
+			view.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+			view.size_flags_vertical = Control.SIZE_EXPAND_FILL
+			view.hide()
+			photo_frame.add_child(view)
+			var loading := _text(photo_frame,"Preparing car…",13,MUTED,true)
+			loading.name = "NewsCarLoading"
+			loading.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+			loading.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
+			_reveal_news_car(view,photo,loading)
+		if appearance.is_empty() or not _story_uses_local_appearance(item,file_photo):
+			var car_name: String = VehicleCatalog.title(vehicle).capitalize()
+			var actor_name: String = str(item.get("actor_name",""))
+			var photo_caption: String = GameText.message("{car} · illustration",{"car":car_name}) if appearance.is_empty() else GameText.message("{driver} · {car}",{"driver":actor_name,"car":car_name})
+			var caption := _text(photograph,photo_caption,13,MUTED,true)
+			caption.name = "NewsPhotoCaption"
+			caption.add_theme_font_override("font",ITALIC)
+			caption.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 		_vertical_rule(media).name = "NewsImageDivider"
 	var map_column := VBoxContainer.new()
 	map_column.name = "NewsMapColumn"
-	map_column.add_theme_constant_override("separation",4)
+	map_column.add_theme_constant_override("separation",3)
 	map_column.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	_column_slot(media,map_column)
+	var circuit_label := _text(map_column,"CIRCUIT OUTLINE",13,RED)
+	circuit_label.name = "NewsCircuitLabel"
+	circuit_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	var map := Art.new()
 	map.name = "NewsCircuit"
 	map.kind = "circuit"
 	map.size_flags_vertical = Control.SIZE_EXPAND_FILL
-	map.custom_minimum_size.y = 90
+	map.custom_minimum_size.y = 60 if short_page else 90
 	var raw: Variant = item.get("track_points",[])
 	if raw is Array:
 		for point: Variant in raw.slice(0,96):
@@ -681,7 +822,7 @@ func _story(parent: VBoxContainer, item: Dictionary) -> void:
 				var p := Vector2(float(point[0]),float(point[1]))
 				if is_finite(p.x) and is_finite(p.y) and absf(p.x) <= 100000 and absf(p.y) <= 100000: map.points.append(p)
 	map_column.add_child(map)
-	_text(map_column,"CIRCUIT OUTLINE" if map.points.size() >= 2 else "OUTLINE UNAVAILABLE",14,MUTED).horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	if map.points.size() < 2: circuit_label.text = "OUTLINE UNAVAILABLE"
 	var metric: String = GameText.message("lap") if item.get("metric","") == "lap" else GameText.message("track")
 	var actor: String = str(item.get("actor_name",GameText.message("A racer")))
 	var body: String = ""
@@ -693,14 +834,28 @@ func _story(parent: VBoxContainer, item: Dictionary) -> void:
 		"friend_track": body = GameText.message("%s unveils %s.\nA fresh circuit to try.") % [actor,track]
 		"track_published": body = GameText.message("%s is published.\nShare the link or take to the track.") % track
 	if item.has("time_ticks"):
-		_text(map_column,_time(int(item.time_ticks),int(item.get("tick_rate",120)))+"  /  "+metric.to_upper(),19,RED).horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+		var result := HBoxContainer.new()
+		result.name = "NewsResult"
+		result.size_flags_horizontal = Control.SIZE_SHRINK_CENTER
+		result.add_theme_constant_override("separation",9)
+		map_column.add_child(result)
+		var record := _text(result,_time(int(item.time_ticks),int(item.get("tick_rate",120))),21,INK,true)
+		record.name = "NewsRecordTime"
+		record.add_theme_font_override("font",_headline_font())
+		record.size_flags_horizontal = Control.SIZE_SHRINK_BEGIN
+		record.autowrap_mode = TextServer.AUTOWRAP_OFF
+		var result_metric := _text(result,metric.to_upper(),13,RED)
+		result_metric.name = "NewsRecordMetric"
+		result_metric.size_flags_horizontal = Control.SIZE_SHRINK_BEGIN
+		result_metric.size_flags_vertical = Control.SIZE_SHRINK_CENTER
+		result_metric.autowrap_mode = TextServer.AUTOWRAP_OFF
 	if item.has("your_ticks"):
 		_text(map_column,GameText.message("Your best")+"  "+_time(int(item.your_ticks),int(item.get("tick_rate",120))),14,MUTED).horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	var closing := HBoxContainer.new()
 	closing.name = "StoryClosing"
 	closing.add_theme_constant_override("separation",12)
 	parent.add_child(closing)
-	var article := _text(closing,body,18 if wide else 16,INK,true)
+	var article := _text(closing,body,16 if wide and not short_page else 14,INK,true)
 	article.name = "NewsArticle"
 	article.size_flags_vertical = Control.SIZE_SHRINK_CENTER
 	if not str(item.get("version_id","")).is_empty() and page.has_signal("news_share_requested"):
@@ -738,29 +893,46 @@ func _brief(parent: Node, item: Dictionary, index: int) -> void:
 	var button := _button("",_choose.bind(index))
 	button.name = "NewsBrief"+str(index)
 	button.size_flags_vertical = Control.SIZE_EXPAND_FILL
-	button.custom_minimum_size.y = 80
+	button.custom_minimum_size.y = 40
 	parent.add_child(button)
 	var margin := MarginContainer.new()
 	margin.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	button.add_child(margin)
 	MenuStyle.fill(margin)
-	for side: String in ["left","right","top","bottom"]: margin.add_theme_constant_override("margin_"+side,6)
+	for side: String in ["left","right"]: margin.add_theme_constant_override("margin_"+side,6)
+	for side: String in ["top","bottom"]: margin.add_theme_constant_override("margin_"+side,2)
 	var column := VBoxContainer.new()
 	column.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	column.alignment = BoxContainer.ALIGNMENT_CENTER
-	column.add_theme_constant_override("separation",5)
+	column.add_theme_constant_override("separation",0)
 	margin.add_child(column)
-	_text(column,_category(item),14,RED)
-	var title := _text(column,_headline(item),22 if size.x >= 1360 else 21,INK,true)
-	title.resized.connect(_fit_headline.bind(title,22 if size.x >= 1360 else 21,17))
-	GameText.user_text(_text(column,str(item.get("track_name","")),16,MUTED))
+	var metadata := HBoxContainer.new()
+	metadata.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	metadata.add_theme_constant_override("separation",6)
+	column.add_child(metadata)
+	var category := _text(metadata,_category(item),10,RED)
+	category.size_flags_horizontal = Control.SIZE_SHRINK_BEGIN
+	category.custom_minimum_size.x = minf(140.0,category.get_theme_font("font").get_string_size(category.text,HORIZONTAL_ALIGNMENT_LEFT,-1,10).x+2.0)
+	var track := _text(metadata,str(item.get("track_name","")),10,MUTED)
+	GameText.user_text(track)
+	if not _story_read(item,_using_examples()):
+		var unread := _text(metadata,"NEW",10,RED)
+		unread.name = "NewsUnread"
+		unread.size_flags_horizontal = Control.SIZE_SHRINK_END
+		unread.autowrap_mode = TextServer.AUTOWRAP_OFF
+	var title := _text(column,_headline(item),17 if size.x >= 1360 else 16,INK,true)
+	title.resized.connect(_fit_headline.bind(title,17 if size.x >= 1360 else 16,14))
+	for label: Label in [category,title,track]:
+		label.autowrap_mode = TextServer.AUTOWRAP_OFF
+		label.clip_text = true
+		label.text_overrun_behavior = TextServer.OVERRUN_TRIM_ELLIPSIS
 	column.minimum_size_changed.connect(_update_brief_height.bind(column,button).call_deferred)
 	button.resized.connect(_update_brief_height.bind(column,button).call_deferred)
 
 func _update_brief_height(column: Control, button: Control) -> void:
 	if not is_instance_valid(column) or not is_instance_valid(button): return
 	if column.size.x > 1.0 and absf(column.size.x-(button.size.x-12)) < 0.5:
-		button.custom_minimum_size.y = maxf(80,column.get_combined_minimum_size().y+12)
+		button.custom_minimum_size.y = maxf(float(button.get_meta("news_row_height",40)),column.get_combined_minimum_size().y+4)
 
 func _fit_headline(label: Label, maximum: int, minimum: int) -> void:
 	if label.size.x <= 0: return

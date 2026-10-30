@@ -1,0 +1,243 @@
+diff --git a/game/core/app.gd b/game/core/app.gd
+--- a/game/core/app.gd
++++ b/game/core/app.gd
+@@ -687,6 +687,11 @@
+ 		state_style.content_margin_left = 104
+ 		state_style.content_margin_right = 16
+ 		account_button.add_theme_stylebox_override(state, state_style)
++	var car_picker := preload("res://ui/header_car_picker.gd").new()
++	car_picker.vehicle_selected.connect(_select_header_vehicle)
++	account_button.add_child(car_picker)
++	car_picker.set_anchors_and_offsets_preset(Control.PRESET_LEFT_WIDE)
++	car_picker.offset_right = 100
+ 	var profile_car := preload("res://ui/profile_car.gd").new()
+ 	profile_car.name = "MenuProfileCar"
+ 	profile_car.records = records
+@@ -5774,6 +5779,19 @@
+ 		var properties: Dictionary = {"track_version_id":str(exposure.entry.get("version_id","")),"car_id":VehicleCatalog.selected,"biome":str(exposure.entry.get("theme","")),"mode":"free","position":int(exposure.position)}
+ 		_telemetry_observe("track_exposed",properties,str(_navigation_generation)+"/"+str(properties.track_version_id)+"/"+str(properties.car_id))
+ 
++func _select_header_vehicle(index: int) -> void:
++	if index < 0 or index >= VehicleCatalog.IDS.size() or VehicleCatalog.IDS[index] == VehicleCatalog.selected: return
++	_select_vehicle(index)
++	if is_instance_valid(_retained_garage) and _retained_garage.records == records:
++		_retained_garage.refresh_selection()
++	if not is_instance_valid(content): return
++	var daily_car: OptionButton = content.find_child("DailyCar",true,false)
++	if daily_car != null: daily_car.select(index)
++	var browser: TrackBrowser = content.find_child("TrackBrowser",true,false) as TrackBrowser
++	if browser != null:
++		browser._show_detail()
++		browser._warm_visible_comparisons(maxi(0,int(browser.gallery.scroll_horizontal/browser.tile_stride)-1))
++
+ func _select_vehicle(index: int) -> void:
+ 	var chosen: String = VehicleCatalog.IDS[clampi(index,0,VehicleCatalog.IDS.size()-1)]
+ 	_telemetry_observe("car_selected",{"car_id":chosen})
+diff --git a/game/ui/header_car_picker.gd b/game/ui/header_car_picker.gd
+new file mode 100644
+--- /dev/null
++++ b/game/ui/header_car_picker.gd
+@@ -0,0 +1,35 @@
++extends MenuButton
++## The car half of the header; the adjacent player name opens Profile.
++signal vehicle_selected(index: int)
++
++func _ready() -> void:
++	name = "MenuCarPicker"
++	tooltip_text = "Choose car"
++	focus_mode = Control.FOCUS_ALL
++	mouse_filter = Control.MOUSE_FILTER_STOP
++	mouse_default_cursor_shape = Control.CURSOR_POINTING_HAND
++	set_meta("audio_cue","select")
++	add_theme_stylebox_override("normal",StyleBoxEmpty.new())
++	add_theme_stylebox_override("hover",MenuStyle.box(Color(1,1,1,0.07),0))
++	add_theme_stylebox_override("pressed",MenuStyle.box(Color(MenuStyle.ACCENT,0.12),0))
++	var popup: PopupMenu = get_popup()
++	popup.name = "HeaderCarDropdown"
++	preload("res://ui/popup_style.gd").watch(popup)
++	popup.add_theme_constant_override("v_separation",26)
++	popup.about_to_popup.connect(_populate)
++	popup.id_pressed.connect(_choose)
++	_populate()
++
++func _populate() -> void:
++	var popup: PopupMenu = get_popup()
++	popup.clear()
++	for index: int in range(VehicleCatalog.IDS.size()):
++		var id: String = VehicleCatalog.IDS[index]
++		popup.add_radio_check_item(VehicleCatalog.CLASSES[index],index)
++		popup.set_item_checked(index,id == VehicleCatalog.selected)
++	popup.set_focused_item(VehicleCatalog.IDS.find(VehicleCatalog.selected))
++
++func _choose(index: int) -> void:
++	if not is_inside_tree() or not is_visible_in_tree(): return
++	if index < 0 or index >= VehicleCatalog.IDS.size(): return
++	vehicle_selected.emit(index)
+diff --git a/game/ui/header_car_picker.gd.uid b/game/ui/header_car_picker.gd.uid
+new file mode 100644
+--- /dev/null
++++ b/game/ui/header_car_picker.gd.uid
+@@ -0,0 +1 @@
++uid://cy5ta17w6gb6k
+diff --git a/game/ui/track_of_day_page.gd b/game/ui/track_of_day_page.gd
+--- a/game/ui/track_of_day_page.gd
++++ b/game/ui/track_of_day_page.gd
+@@ -75,6 +75,8 @@
+ 
+ func activate() -> void:
+ 	page_preview = false
++	var cars: OptionButton = find_child("DailyCar",true,false)
++	if cars != null: cars.select(VehicleCatalog.IDS.find(VehicleCatalog.selected))
+ 	if entry.is_empty() and not _busy: refresh()
+ 
+ func refresh() -> void:
+diff --git a/game/tests/capture_profile_car.gd b/game/tests/capture_profile_car.gd
+--- a/game/tests/capture_profile_car.gd
++++ b/game/tests/capture_profile_car.gd
+@@ -13,12 +13,42 @@
+ 	await settle()
+ 	root.get_texture().get_image().save_png(output.path_join(label+".png"))
+ 
++func key(code: Key) -> void:
++	var event := InputEventKey.new()
++	event.keycode = code
++	event.physical_keycode = code
++	event.pressed = true
++	root.push_input(event)
++	await process_frame
++	event = event.duplicate()
++	event.pressed = false
++	root.push_input(event)
++	await process_frame
++
++func click(point: Vector2) -> void:
++	var move := InputEventMouseMotion.new()
++	move.position = point
++	root.push_input(move)
++	var event := InputEventMouseButton.new()
++	event.position = point
++	event.button_index = MOUSE_BUTTON_LEFT
++	event.pressed = true
++	root.push_input(event)
++	await process_frame
++	event = event.duplicate()
++	event.pressed = false
++	root.push_input(event)
++	await process_frame
++
+ func run() -> void:
+ 	OS.set_environment("BMT_API_URL","")
+ 	var baseline: bool = OS.get_environment("BMT_PROFILE_CAR_BASELINE") == "1"
+-	output = ProjectSettings.globalize_path("res://../docs/evidence/profile-active-car-2026-10-25/"+RenderingServer.get_current_rendering_method())
++	var destination: String = OS.get_environment("BMT_PROFILE_CAR_OUTPUT")
++	if destination.is_empty(): destination = "res://../docs/evidence/profile-active-car-2026-10-25"
++	output = ProjectSettings.globalize_path(destination.path_join(RenderingServer.get_current_rendering_method()))
+ 	DirAccess.make_dir_recursive_absolute(output)
+ 	root.size = Vector2i(1280,720)
++	root.gui_embed_subwindows = true
+ 	var source: GDScript = load("res://core/app.gd")
+ 	if baseline:
+ 		source = GDScript.new()
+@@ -95,8 +125,46 @@
+ 		touch = touch.duplicate()
+ 		touch.pressed = false
+ 		root.push_input(touch)
+-		await shot("profile-opened-from-car")
+-		report.profile_opened_from_car = app.screen == "profile"
++		await shot("car-dropdown")
++		var picker: MenuButton = app.account_button.get_node("MenuCarPicker")
++		var popup: PopupMenu = picker.get_popup()
++		report.car_opens_dropdown = popup.visible and app.screen == "tracks"
++		report.dropdown_car_count = popup.item_count
++		report.checked_active_car = popup.is_item_checked(VehicleCatalog.IDS.find(VehicleCatalog.selected))
++		for _step: int in range(VehicleCatalog.IDS.size()-1): await key(KEY_DOWN)
++		await key(KEY_ENTER)
++		await shot("dropdown-selected-electric")
++		report.keyboard_selects_car = VehicleCatalog.selected == "electric" and not popup.visible and app.screen == "tracks"
++		var reloaded := LocalRecords.new(app.records.path)
++		reloaded.load_records()
++		report.selection_saved = reloaded.settings.get("selected_car") == "electric"
++		# Opening then cancelling must leave the selected car intact.
++		await click(icon.get_global_rect().get_center())
++		await settle()
++		await key(KEY_ESCAPE)
++		await settle()
++		report.escape_cancels = not popup.visible and VehicleCatalog.selected == "electric"
++		await click(icon.get_global_rect().get_center())
++		await settle()
++		var panel: StyleBox = popup.get_theme_stylebox("panel")
++		var row_height: float = (popup.size.y-panel.get_minimum_size().y)/popup.item_count
++		await click(Vector2(popup.position)+Vector2(80,panel.get_content_margin(SIDE_TOP)+row_height*5.5))
++		await shot("dropdown-selected-forklift")
++		report.mouse_selects_car = VehicleCatalog.selected == "forklift" and not popup.visible and app.screen == "tracks"
++		reloaded.load_records()
++		report.mouse_selection_saved = reloaded.settings.get("selected_car") == "forklift"
++		# Only the name half navigates to the player's profile.
++		touch = InputEventScreenTouch.new()
++		touch.index = 0
++		touch.position = app.account_button.get_global_rect().end-Vector2(36,32)
++		touch.pressed = true
++		root.push_input(touch)
++		await process_frame
++		touch = touch.duplicate()
++		touch.pressed = false
++		root.push_input(touch)
++		await shot("profile-opened-from-name")
++		report.name_opens_profile = app.screen == "profile"
+ 		var file := FileAccess.open(output.path_join("capture-report.json"),FileAccess.WRITE)
+ 		file.store_string(JSON.stringify(report,"\t"))
+ 		file.close()
+diff --git a/game/tests/probe_header_car_baseline.gd b/game/tests/probe_header_car_baseline.gd
+new file mode 100644
+--- /dev/null
++++ b/game/tests/probe_header_car_baseline.gd
+@@ -0,0 +1,10 @@
++extends "res://tests/test_app.gd"
++## Compare the existing App regression with exact task-start runtime sources.
++func _initialize() -> void:
++	for entry: Array in [["res://core/app.gd","app.gd.txt"],["res://ui/track_of_day_page.gd","track_of_day_page.gd.txt"]]:
++		var source: GDScript = load(entry[0])
++		source.source_code = FileAccess.get_file_as_string("res://../docs/evidence/header-car-dropdown-2026-10-26/before/"+entry[1])
++		if source.reload() != OK:
++			quit(1)
++			return
++	super._initialize()
+diff --git a/game/tests/probe_header_car_baseline.gd.uid b/game/tests/probe_header_car_baseline.gd.uid
+new file mode 100644
+--- /dev/null
++++ b/game/tests/probe_header_car_baseline.gd.uid
+@@ -0,0 +1 @@
++uid://5x7b5uj7wxlr
+diff --git a/docs/HEADER_CAR_DROPDOWN_2026_10_26.md b/docs/HEADER_CAR_DROPDOWN_2026_10_26.md
+new file mode 100644
+--- /dev/null
++++ b/docs/HEADER_CAR_DROPDOWN_2026_10_26.md
+@@ -0,0 +1,28 @@
++# Header car dropdown (2026-10-26)
++
++HCD01: Clicking the header car opens a dropdown containing all seven cars, with the active car checked. HCD02: Selecting an entry updates and saves the active car without opening Profile. HCD03: Clicking the adjacent player name opens Profile. R01/Q01: Retain native screenshots, actual input/save results and a task-only checkpoint.
++
++`game/ui/header_car_picker.gd` adds a native MenuButton over the car half of the existing header. Its popup uses the shared menu styling, existing localized car classes and radio selection. The current larger, centered car preview and wide name area remain. No dropdown arrow is added. The name half keeps the original profile action.
++
++`game/core/app.gd` connects selection to the existing preference-saving flow, refreshes the retained Garage, updates the visible daily-car selector and refreshes Free Race comparisons for the new car. `game/ui/track_of_day_page.gd` synchronizes its selector when a retained daily page becomes active. Shared vehicle rendering, models, handling, online contracts and purchase rules are unchanged.
++
++`game/tests/capture_profile_car.gd` now supports a separate evidence destination and the new split interaction. It records actual touch on the header car, all seven menu entries, the checked active car, arrow-key/Enter selection, mouse selection, saved preference reload, Escape dismissal and an actual touch on the name. The previous assertion that the entire car/name button opens Profile is superseded by this request. Existing all-car, saved appearance, unchanged-render, long-name and window-fit measurements remain.
++
++Commands use the pinned Godot 4.7.2 runner, with process-local `APPDATA` and `LOCALAPPDATA` redirected to `build/header-car-dropdown-appdata`. Captures set `BMT_PROFILE_CAR_OUTPUT=res://../docs/evidence/header-car-dropdown-2026-10-26`. Native execution uses reviewed Windows certificate-store access.
++
++```powershell
++powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1 -Action TestScript -ScriptPath res://tests/capture_profile_car.gd -Graphical -RenderingMethod gl_compatibility -CommandTimeoutSeconds 180
++powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1 -Action TestScript -ScriptPath res://tests/capture_profile_car.gd -Graphical -RenderingMethod mobile -CommandTimeoutSeconds 180
++powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1 -Action TestApp -CommandTimeoutSeconds 180
++powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1 -Action TestScript -ScriptPath res://tests/probe_header_car_baseline.gd -CommandTimeoutSeconds 180
++powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1 -Action TestScript -ScriptPath res://tests/test_track_of_day.gd -CommandTimeoutSeconds 180
++powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1 -Action Import -CommandTimeoutSeconds 180
++```
++
++Final native Compatibility and desktop Mobile reviews pass every recorded dropdown, mouse/keyboard selection, persistence, Escape, name navigation and retained appearance/window measurement. The broader App suite reports **141 checks, two failures** in Garage retention before and after an ordinary race. Reloading the exact task-start App and daily-page sources only in isolated process memory reproduces the same two failures at the same 141 checks; these remain outside this task. The separate daily HTTP integration stops at three checks/one failure because its required `BMT_TOTD_API_URL` fixture is not configured; no integration pass is claimed. Import completes with the environment's nonfatal missing Android build-tools notice.
++
++Final results and source hashes are recorded in `evidence/header-car-dropdown-2026-10-26/report.json`, with native measurements in each renderer's `capture-report.json`. The initial attempt referenced an unavailable forklift news photograph; the final dropdown uses consistent native text/radio rows. Initial keyboard diagnostics pushed events into the popup viewport and then assumed End selected the last item. Corrected diagnostics route full key press/release events through the root window and use ordinary Down arrows followed by Enter. The initial failed measurements and runner logs are retained; no interaction/save requirement was relaxed.
++
++Review the [dropdown](evidence/header-car-dropdown-2026-10-26/gl_compatibility/car-dropdown.png), [mouse-selected forklift](evidence/header-car-dropdown-2026-10-26/gl_compatibility/dropdown-selected-forklift.png) and [Profile opened from the name](evidence/header-car-dropdown-2026-10-26/gl_compatibility/profile-opened-from-name.png). The task-only source patch is checked in reverse against current files and forward against exact task-start sources. Concurrent work and generated build identity updates are excluded.
++
++Reload and owner/device appearance/input acceptance remain. No device attachment check or physical-device test, APK, live mutation, purchase, deployment or owner-process restart was performed.

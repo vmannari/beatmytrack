@@ -47,7 +47,7 @@ static func prepare(data: Variant) -> Dictionary:
 	return result
 
 static func upgrade_livery(value: Dictionary, car: String) -> Dictionary:
-	if car not in VehicleCatalog.IDS or value.size() != 2 or value.get("version") != 1: return {}
+	if car not in VehicleCatalog.ALL_IDS or value.size() != 2 or value.get("version") != 1: return {}
 	var colors: Variant = value.get("colors")
 	if not colors is Dictionary or colors.size() != 2: return {}
 	for key: String in ["body","accent"]:

@@ -1,0 +1,111 @@
+--- a/game/ui/garage_cached_thumbnail.gd
++++ b/game/ui/garage_cached_thumbnail.gd
+@@ -4,6 +4,7 @@
+ var preview_key: String = ""
+ var displayed_key: String = ""
+ var _image: TextureRect
++var _placeholder: CenterContainer
+ 
+ func _ready() -> void:
+ 	read_only = true
+@@ -16,6 +17,26 @@
+ 	_image.texture_filter = CanvasItem.TEXTURE_FILTER_LINEAR
+ 	add_child(_image)
+ 	MenuStyle.fill(_image)
++	_placeholder = CenterContainer.new()
++	_placeholder.name = "PreviewLoading"
++	_placeholder.mouse_filter = Control.MOUSE_FILTER_IGNORE
++	add_child(_placeholder)
++	MenuStyle.fill(_placeholder)
++	var column := VBoxContainer.new()
++	column.mouse_filter = Control.MOUSE_FILTER_IGNORE
++	column.add_theme_constant_override("separation", 4)
++	_placeholder.add_child(column)
++	var emblem := TextureRect.new()
++	emblem.texture = preload("res://ui/garage_mode_icons.gd").texture("cars")
++	emblem.custom_minimum_size = Vector2(28,28)
++	emblem.expand_mode = TextureRect.EXPAND_IGNORE_SIZE
++	emblem.stretch_mode = TextureRect.STRETCH_KEEP_ASPECT_CENTERED
++	emblem.modulate = MenuStyle.MUTED
++	emblem.mouse_filter = Control.MOUSE_FILTER_IGNORE
++	column.add_child(emblem)
++	var caption: Label = MenuStyle.label("Loading preview…",16,true)
++	caption.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
++	column.add_child(caption)
+ 	set_process(false)
+ 	refresh_thumbnail()
+ 
+@@ -28,12 +49,14 @@
+ 	# Exact stock, prepared and cached pictures publish through the same guard.
+ 	displayed_key = ""
+ 	_image.texture = null
++	_placeholder.show()
+ 	preview_service.request(self)
+ 
+ func publish_preview(key: String, value: Texture2D) -> void:
+ 	if key == preview_key and _image != null and value != null:
+ 		_image.texture = value
+ 		displayed_key = key
++		_placeholder.hide()
+ 
+ func apply_livery(value: Dictionary, _animate_paint: bool = false) -> void:
+ 	livery = value.duplicate(true)
+--- a/game/tests/test_garage_entry_carousel.gd
++++ b/game/tests/test_garage_entry_carousel.gd
+@@ -71,6 +71,8 @@
+ 		var card: CarShowroom = page.thumbnails[id]
+ 		check(card.condition==conditions[id],"saved condition retained "+id)
+ 		check(card._image.texture==null,"cold custom preview never displays a stock livery "+id)
++		var loading: Control=card.get_node_or_null("PreviewLoading")
++		check(loading!=null and loading.visible,"uncached custom car visibly loads instead of leaving an empty card "+id)
+ 		check(card.car==null and card.showroom_viewport==null,"carousel picture owns no world "+id)
+ 		if not baseline:
+ 			check(card.displayed_key=="","pending custom preview has no published appearance "+id)
+@@ -87,6 +89,31 @@
+ 	await create_timer(0.4).timeout
+ 	await frames()
+ 	await capture("baseline-saved-cars-settled" if baseline else "saved-cars-settled")
++	if DisplayServer.get_name() != "headless":
++		var arrivals: Dictionary={}
++		for offset: int in [0, 10000]:
++			page.gallery.scroll_horizontal=offset
++			await frames(2)
++			var until: int=Time.get_ticks_msec()+45000
++			while Time.get_ticks_msec()<until:
++				var missing: bool=false
++				for id: String in page.thumbnails:
++					var tile: CarShowroom=page.thumbnails[id]
++					if not page._preview_service._on_screen(tile): continue
++					if tile.displayed_key!=tile.preview_key: missing=true
++					elif not arrivals.has(id):
++						arrivals[id]=(Time.get_ticks_usec()-began)/1000.0
++						var loading: Control=tile.get_node_or_null("PreviewLoading")
++						check(loading!=null and not loading.visible,"exact native image replaces loading state "+id)
++				if not missing: break
++				await process_frame
++			await capture("delivery-"+str(offset))
++		for id: String in page.thumbnails:
++			check(arrivals.has(id),"natural queue delivers custom car "+id)
++		metrics.arrivals_ms=arrivals
++		print("DELIVERY_ARRIVALS: ",JSON.stringify(arrivals))
++		page.gallery.scroll_horizontal=0
++		await frames(2)
+ 	if not baseline and DisplayServer.get_name() != "headless":
+ 		# Keep the service focused on one miss while exercising both stale-job
+ 		# protection and exact publication without a different livery appearing.
+@@ -104,6 +131,7 @@
+ 		check(card._image.texture==null,"changing a saved finish clears a different appearance immediately")
+ 		card.publish_preview(superseded,GradientTexture2D.new())
+ 		check(card.displayed_key!=superseded,"superseded capture cannot replace the current car picture")
++		check(card._placeholder.visible,"stale completion cannot dismiss loading for the current appearance")
+ 		var deadline: int = Time.get_ticks_msec()+45000
+ 		while card.displayed_key!=card.preview_key and Time.get_ticks_msec()<deadline: await process_frame
+ 		check(card.displayed_key==card.preview_key,"first published picture has the exact saved paint and condition")
+@@ -155,6 +183,7 @@
+ 	test_card.condition=conditions.compact
+ 	test_card.refresh_thumbnail()
+ 	check(test_card._image.texture==null,"condition change clears the previous appearance")
++	check(test_card._placeholder.visible,"condition invalidation restores the loading state")
+ 	test_card.condition={}
+ 	test_card.apply_livery(default_paint)
+ 	var parts: Dictionary=VehicleCustomisation.defaults()

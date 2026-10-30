@@ -1,0 +1,607 @@
+diff --git a/game/ui/track_of_day_page.gd b/game/ui/track_of_day_page.gd
+index 78b69fb8d..a179fb279 100644
+--- a/game/ui/track_of_day_page.gd
++++ b/game/ui/track_of_day_page.gd
+@@ -1,8 +1,9 @@
+ extends HBoxContainer
+-## A single backend-selected revision, with no client-side random fallback.
++## Featured daily event; the backend owns selection and the ordinary race boundary.
+ signal mode_requested(mode: String)
+ signal race_requested(entry: Dictionary)
+ signal vehicle_selected(index: int)
++const Badge = preload("res://ui/biome_badge.gd")
+ var client: Node
+ var cloud: Node
+ var page_preview: bool = false
+@@ -13,11 +14,20 @@ var _sample_msec: int = 0
+ var _busy: bool = false
+ var _expired_refresh: bool = false
+ var _retry_msec: int = 0
++var _last_second: int = -1
+ var _status: Label
+ var _countdown: Label
++var _countdown_panel: PanelContainer
+ var _card_slot: VBoxContainer
+ var _race: Button
+ var _retry: Button
++var _stage: Control
++var _hero: PanelContainer
++var _state: VBoxContainer
++var _race_panel: PanelContainer
++var _rating: Label
++var _rating_row: HBoxContainer
++var _race_heading: Label
+ 
+ func _ready() -> void:
+ 	name = "TrackOfDayPage"
+@@ -34,41 +44,229 @@ func _ready() -> void:
+ 	add_child(scroll)
+ 	var column := VBoxContainer.new()
+ 	column.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+-	column.add_theme_constant_override("separation",12)
++	column.add_theme_constant_override("separation",20)
+ 	scroll.add_child(column)
+-	var title: Label = MenuStyle.label("Track of the day",32)
++	_build_header(column)
++	_stage = Control.new()
++	_stage.name = "DailyEvent"
++	_stage.size_flags_horizontal = Control.SIZE_EXPAND_FILL
++	column.add_child(_stage)
++	_build_hero()
++	_build_race_panel()
++	_stage.resized.connect(_arrange)
++	_race_panel.minimum_size_changed.connect(_arrange.call_deferred)
++	_arrange.call_deferred()
++	if not page_preview: refresh()
++
++func _build_header(parent: Control) -> void:
++	var header := HBoxContainer.new()
++	header.add_theme_constant_override("separation",24)
++	parent.add_child(header)
++	var identity := VBoxContainer.new()
++	identity.size_flags_horizontal = Control.SIZE_EXPAND_FILL
++	identity.add_theme_constant_override("separation",4)
++	header.add_child(identity)
++	var title: Label = MenuStyle.label("Track of the day",38)
+ 	title.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+-	column.add_child(title)
+-	var subtitle: Label = MenuStyle.label("One track. Everyone. A new pick every day.",20,true)
++	identity.add_child(title)
++	var subtitle: Label = MenuStyle.label("One track. Everyone. A new pick every day.",18,true)
+ 	subtitle.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+-	column.add_child(subtitle)
+-	_countdown = MenuStyle.label("",20,true)
+-	column.add_child(_countdown)
+-	_status = MenuStyle.label("Loading today's track…",22,true)
+-	_status.name = "DailyStatus"
+-	_status.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+-	column.add_child(_status)
++	identity.add_child(subtitle)
++	_countdown_panel = PanelContainer.new()
++	_countdown_panel.name = "DailyCountdown"
++	_countdown_panel.size_flags_vertical = Control.SIZE_SHRINK_CENTER
++	_countdown_panel.add_theme_stylebox_override("panel",_panel_style(16))
++	header.add_child(_countdown_panel)
++	var row := HBoxContainer.new()
++	row.add_theme_constant_override("separation",10)
++	_countdown_panel.add_child(row)
++	row.add_child(_icon("clock",24,MenuStyle.ACCENT))
++	_countdown = MenuStyle.label("",20)
++	GameText.user_text(_countdown)
++	row.add_child(_countdown)
++	_countdown_panel.hide()
++
++func _build_hero() -> void:
++	_hero = PanelContainer.new()
++	_hero.name = "DailyFeature"
++	_hero.clip_contents = true
++	_hero.add_theme_stylebox_override("panel",_panel_style(0))
++	_stage.add_child(_hero)
+ 	_card_slot = VBoxContainer.new()
+ 	_card_slot.name = "DailyTrack"
+-	column.add_child(_card_slot)
++	_hero.add_child(_card_slot)
++	_state = VBoxContainer.new()
++	_state.name = "DailyState"
++	_state.alignment = BoxContainer.ALIGNMENT_CENTER
++	_state.add_theme_constant_override("separation",24)
++	var padding := MarginContainer.new()
++	padding.mouse_filter = Control.MOUSE_FILTER_IGNORE
++	for side: String in ["left","right"]: padding.add_theme_constant_override("margin_"+side,48)
++	_hero.add_child(padding)
++	padding.add_child(_state)
++	var emblem := TextureRect.new()
++	emblem.texture = preload("res://ui/race_mode_icons.gd").texture("sun")
++	emblem.custom_minimum_size = Vector2(88,88)
++	emblem.size_flags_horizontal = Control.SIZE_SHRINK_CENTER
++	emblem.expand_mode = TextureRect.EXPAND_IGNORE_SIZE
++	emblem.stretch_mode = TextureRect.STRETCH_KEEP_ASPECT_CENTERED
++	emblem.modulate = Color("b2a46c")
++	_state.add_child(emblem)
++	_status = MenuStyle.label("Loading today's track…",28,true)
++	_status.name = "DailyStatus"
++	_status.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
++	_status.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
++	_state.add_child(_status)
++
++func _build_race_panel() -> void:
++	_race_panel = PanelContainer.new()
++	_race_panel.name = "DailyRacePanel"
++	_race_panel.add_theme_stylebox_override("panel",_panel_style(24))
++	_stage.add_child(_race_panel)
++	var column := VBoxContainer.new()
++	column.add_theme_constant_override("separation",18)
++	_race_panel.add_child(column)
++	_race_heading = MenuStyle.label("Race",30)
++	_race_heading.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
++	column.add_child(_race_heading)
++	var format_row := HBoxContainer.new()
++	format_row.add_child(_icon("flag",22,MenuStyle.MUTED))
++	format_row.add_child(MenuStyle.label("5 laps",20,true))
++	column.add_child(format_row)
++	_rating_row = HBoxContainer.new()
++	_rating_row.add_child(_icon("star_filled",20,MenuStyle.ACCENT))
++	_rating = MenuStyle.label("",18)
++	GameText.user_text(_rating)
++	_rating_row.add_child(_rating)
++	column.add_child(_rating_row)
++	_rating_row.hide()
++	column.add_child(HSeparator.new())
++	column.add_child(MenuStyle.label("Choose car",16,true))
+ 	var cars := OptionButton.new()
+ 	cars.name = "DailyCar"
+-	cars.custom_minimum_size.y = 48
++	cars.custom_minimum_size.y = 54
+ 	cars.tooltip_text = "Choose car"
++	cars.add_theme_font_size_override("font_size",20)
++	cars.clip_text = true
+ 	for title_text: String in VehicleCatalog.NAMES: cars.add_item(title_text)
+ 	cars.select(VehicleCatalog.IDS.find(VehicleCatalog.selected))
+ 	cars.item_selected.connect(func(index: int) -> void: vehicle_selected.emit(index))
+ 	column.add_child(cars)
++	var space := Control.new()
++	space.size_flags_vertical = Control.SIZE_EXPAND_FILL
++	column.add_child(space)
+ 	_race = MenuStyle.button("Race",_request_race,true)
+ 	_race.name = "DailyRace"
+-	_race.custom_minimum_size.y = 56
++	_race.custom_minimum_size.y = 64
++	_race.icon = MenuIcon.texture("arrow")
++	_race.icon_alignment = HORIZONTAL_ALIGNMENT_RIGHT
++	_race.add_theme_constant_override("h_separation",14)
++	_race.add_theme_color_override("icon_normal_color",MenuStyle.INK)
++	_race.add_theme_color_override("icon_hover_color",MenuStyle.INK)
++	_race.add_theme_font_size_override("font_size",28)
+ 	_race.disabled = true
+ 	column.add_child(_race)
+-	_retry = MenuStyle.button("Retry",refresh)
++	_retry = MenuStyle.button("Retry",refresh,true)
+ 	_retry.name = "DailyRetry"
+ 	column.add_child(_retry)
+ 	_retry.hide()
+-	if not page_preview: refresh()
++	for button: Button in [_race,_retry]:
++		for state: String in ["font_focus_color","icon_focus_color","icon_pressed_color"]:
++			button.add_theme_color_override(state,MenuStyle.INK)
++
++func _arrange() -> void:
++	if not is_instance_valid(_race_panel): return
++	var width: float = _stage.size.x
++	var height: float = maxf(440,_race_panel.get_combined_minimum_size().y)
++	var stacked: bool = width < 860
++	_stage.custom_minimum_size.y = height+460 if stacked else height
++	_hero.position = Vector2.ZERO
++	_hero.size = Vector2(width if stacked else maxf(200,width-360),440 if stacked else height)
++	_race_panel.position = Vector2(0,460) if stacked else Vector2(width-340,0)
++	_race_panel.size = Vector2(width if stacked else 340,height)
++
++func _panel_style(padding: int) -> StyleBoxFlat:
++	var style: StyleBoxFlat = MenuStyle.box(Color("0b1a26f5"),padding)
++	style.set_corner_radius_all(10)
++	style.set_border_width_all(1)
++	style.border_color = Color("3b5362")
++	return style
++
++func _icon(kind: String, extent: int, color: Color) -> TextureRect:
++	var glyph := TextureRect.new()
++	glyph.texture = MenuIcon.texture(kind,true)
++	glyph.custom_minimum_size = Vector2(extent,extent)
++	glyph.expand_mode = TextureRect.EXPAND_IGNORE_SIZE
++	glyph.stretch_mode = TextureRect.STRETCH_KEEP_ASPECT_CENTERED
++	glyph.modulate = color
++	glyph.mouse_filter = Control.MOUSE_FILTER_IGNORE
++	return glyph
++
++func _show_track() -> void:
++	var card := preload("res://ui/track_of_day_art.gd").new()
++	card.name = "DailyTrackCard"
++	card.entry = entry
++	card.size_flags_vertical = Control.SIZE_EXPAND_FILL
++	card.pressed.connect(_request_race)
++	_card_slot.add_child(card)
++	var inset := MarginContainer.new()
++	inset.mouse_filter = Control.MOUSE_FILTER_IGNORE
++	for side: String in ["left","right","top","bottom"]: inset.add_theme_constant_override("margin_"+side,28)
++	card.add_child(inset)
++	MenuStyle.fill(inset)
++	var overlay := VBoxContainer.new()
++	overlay.mouse_filter = Control.MOUSE_FILTER_IGNORE
++	overlay.add_theme_constant_override("separation",6)
++	inset.add_child(overlay)
++	var top := HBoxContainer.new()
++	top.mouse_filter = Control.MOUSE_FILTER_IGNORE
++	overlay.add_child(top)
++	top.add_child(Badge.view(str(entry.theme),18))
++	var gap := Control.new()
++	gap.mouse_filter = Control.MOUSE_FILTER_IGNORE
++	gap.size_flags_horizontal = Control.SIZE_EXPAND_FILL
++	top.add_child(gap)
++	var day: Label = MenuStyle.label(Time.get_date_string_from_unix_time(_server_now),16)
++	GameText.user_text(day)
++	top.add_child(day)
++	var space := Control.new()
++	space.mouse_filter = Control.MOUSE_FILTER_IGNORE
++	space.size_flags_vertical = Control.SIZE_EXPAND_FILL
++	overlay.add_child(space)
++	var caption := VBoxContainer.new()
++	caption.mouse_filter = Control.MOUSE_FILTER_IGNORE
++	caption.add_theme_constant_override("separation",6)
++	overlay.add_child(caption)
++	var title: Label = MenuStyle.user_label(str(entry.name),46)
++	title.name = "DailyTrackName"
++	title.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
++	title.max_lines_visible = 2
++	title.text_overrun_behavior = TextServer.OVERRUN_TRIM_ELLIPSIS
++	title.tooltip_text = str(entry.name)
++	caption.add_child(title)
++	var creator: Label = MenuStyle.label("",20,true)
++	GameText.bind(creator,"by {creator}",{"creator":str(entry.creator)})
++	creator.text_overrun_behavior = TextServer.OVERRUN_TRIM_ELLIPSIS
++	creator.tooltip_text = str(entry.creator)
++	caption.add_child(creator)
++	caption.resized.connect(func() -> void: card.reserve_caption(caption.size.y))
++	_update_rating()
++	_rating_row.show()
++	_card_slot.show()
++	_state.hide()
++	_countdown_panel.show()
++	_status.hide()
++	_race.disabled = false
++	_race_heading.text = "Ready to race?"
++	_arrange.call_deferred()
++
++func _update_rating() -> void:
++	_rating.text = "%.1f (%d)" % [float(entry.rating_average),int(entry.rating_count)] if entry.get("rating_average") != null else tr("Unrated (0)")
++
++func _notification(what: int) -> void:
++	if what == NOTIFICATION_TRANSLATION_CHANGED:
++		_last_second = -1
++		if is_instance_valid(_rating) and not entry.is_empty(): _update_rating()
+ 
+ func _exit_tree() -> void:
+ 	if is_instance_valid(client): client.cancel_public_reads(get_instance_id())
+@@ -83,8 +281,15 @@ func refresh() -> void:
+ 	if _busy or not is_inside_tree(): return
+ 	_busy = true
+ 	_retry_msec = 0
++	_ends_at = 0
++	_last_second = -1
+ 	_race.disabled = true
++	_race_heading.text = "Race"
+ 	_retry.hide()
++	_card_slot.hide()
++	_rating_row.hide()
++	_countdown_panel.hide()
++	_state.show()
+ 	_status.show()
+ 	_status.text = "Loading today's track…"
+ 	var response: Dictionary = await client.request_api("/track-of-the-day",HTTPClient.METHOD_GET,{},"",true) if client.signed_in() else await client.request_public("/track-of-the-day",get_instance_id())
+@@ -113,21 +318,16 @@ func refresh() -> void:
+ 		entry = {}
+ 		_status.text = "No track is available today. Check back tomorrow."
+ 		return
+-	var card := TrackTile.new()
+-	card.name = "DailyTrackCard"
+-	card.entry = entry
+-	card.pressed.connect(_request_race)
+-	_card_slot.add_child(card)
+-	card.get_node("ToggleFavorite").hide()
+-	card.custom_minimum_size.y = 260
+-	_status.hide()
+-	_race.disabled = false
++	_show_track()
++	_process(0.0)
+ 
+ func _process(_delta: float) -> void:
+ 	if not page_preview and not _busy and _retry_msec > 0 and Time.get_ticks_msec() >= _retry_msec: refresh()
+ 	if _ends_at <= 0: return
+ 	var remaining: int = maxi(0,_ends_at-_server_now-int((Time.get_ticks_msec()-_sample_msec)/1000))
+-	_countdown.text = tr("Next track in %s") % ("%02d:%02d:%02d" % [remaining/3600,(remaining/60)%60,remaining%60])
++	if remaining != _last_second:
++		_last_second = remaining
++		_countdown.text = tr("Next track in %s") % ("%02d:%02d:%02d" % [remaining/3600,(remaining/60)%60,remaining%60])
+ 	if remaining == 0:
+ 		_race.disabled = true
+ 		if not _busy and not _expired_refresh and not page_preview:
+diff --git a/game/ui/track_of_day_art.gd b/game/ui/track_of_day_art.gd
+new file mode 100644
+--- /dev/null
++++ b/game/ui/track_of_day_art.gd
+@@ -0,0 +1,36 @@
++extends TrackTile
++## Featured daily route using the existing authored biome artwork and exact feed geometry.
++static var _shade: GradientTexture2D
++var caption_height: float = 140
++
++func _ready() -> void:
++	super._ready()
++	get_node("ToggleFavorite").hide()
++	custom_minimum_size = Vector2(200,440)
++	preview_only = true
++	if _shade == null:
++		var gradient := Gradient.new()
++		gradient.colors = PackedColorArray([Color(0.025,0.06,0.085,0),Color(0.025,0.06,0.085,0.98)])
++		_shade = GradientTexture2D.new()
++		_shade.width = 8
++		_shade.height = 256
++		_shade.fill_from = Vector2(0.5,0)
++		_shade.fill_to = Vector2(0.5,1)
++		_shade.gradient = gradient
++
++func reserve_caption(height: float) -> void:
++	caption_height = height+56
++	_projected_size = Vector2(-1,-1)
++	queue_redraw()
++
++func _draw() -> void:
++	var area := Rect2(Vector2.ZERO,size)
++	_draw_terrain(area)
++	if _shade != null: draw_texture_rect(_shade,Rect2(0,size.y*0.42,size.x,size.y*0.58),false)
++	# Keep the actual route above the title instead of laying text over its corners.
++	_draw_route(Rect2(20,36,maxf(1,size.x-40),maxf(1,size.y-caption_height-44)))
++	var frame: StyleBoxFlat = MenuStyle.box(Color.TRANSPARENT,0)
++	frame.set_corner_radius_all(10)
++	frame.set_border_width_all(2 if has_focus() else 1)
++	frame.border_color = MenuStyle.ACCENT if has_focus() else Color("81999d99") if is_hovered() else Color("455e6c")
++	draw_style_box(frame,area)
+diff --git a/game/tests/test_track_of_day_presentation.gd b/game/tests/test_track_of_day_presentation.gd
+new file mode 100644
+--- /dev/null
++++ b/game/tests/test_track_of_day_presentation.gd
+@@ -0,0 +1,236 @@
++extends SceneTree
++## Actual App presentation with explicit synthetic feed responses; no live service or player data.
++var checks: int = 0
++var failures: int = 0
++var app: Node
++var page: Node
++var service: Feed
++var output: String
++var baseline: bool
++var emitted: Array[Dictionary] = []
++
++class Feed extends Node:
++	signal released
++	var response: Dictionary = {}
++	var held: bool = false
++	var authenticated: bool = false
++	var public_calls: int = 0
++	var private_calls: int = 0
++	func signed_in() -> bool: return authenticated
++	func cancel_public_reads(_owner: int) -> void: pass
++	func request_public(_path: String, _owner: int) -> Dictionary:
++		public_calls += 1
++		if held: await released
++		return response.duplicate(true)
++	func request_api(_path: String, _method: int, _body: Dictionary, _key: String, _auth: bool) -> Dictionary:
++		private_calls += 1
++		if held: await released
++		return response.duplicate(true)
++
++func _initialize() -> void: run.call_deferred()
++
++func check(ok: bool, message: String) -> void:
++	checks += 1
++	if not ok:
++		failures += 1
++		print("FAIL: "+message)
++
++func settle() -> void:
++	if app.menu_page_motion != null: app._finish_menu_page_slide()
++	for _frame: int in range(8): await process_frame
++
++func capture(id: String) -> void:
++	if output.is_empty() or DisplayServer.get_name() == "headless": return
++	await RenderingServer.frame_post_draw
++	check(root.get_texture().get_image().save_png(output.path_join(id+".png")) == OK,"capture "+id)
++
++func pick(theme_id: String = "pine") -> Dictionary:
++	var document: Dictionary = JSON.parse_string(FileAccess.get_file_as_string("res://resources/creator_tracks/lantern_village.json"))
++	return {"ok":true,"data":{"ends_at":1793232000,"server_now":1793209705,"track":{
++		"track_id":"00000000-0000-0000-0000-000000000001","version_id":"00000000-0000-0000-0000-000000000002",
++		"content_hash":"a".repeat(64),"name":document.name,"creator":document.creator,"theme":theme_id,
++		"points":document.points,"rating_average":4.7,"rating_count":128}}}
++
++func click(point: Vector2) -> void:
++	for down: bool in [true,false]:
++		var event := InputEventMouseButton.new()
++		event.position = point
++		event.global_position = point
++		event.button_index = MOUSE_BUTTON_LEFT
++		event.button_mask = MOUSE_BUTTON_MASK_LEFT if down else 0
++		event.pressed = down
++		root.push_input(event,true)
++
++func run() -> void:
++	create_timer(180).timeout.connect(func() -> void: print("FAIL: daily presentation deadline"); quit(1))
++	OS.set_environment("BMT_API_URL","")
++	output = OS.get_environment("BMT_DAILY_PAGE_OUTPUT")
++	baseline = OS.get_environment("BMT_DAILY_PAGE_BASELINE") == "1"
++	if not output.is_empty(): DirAccess.make_dir_recursive_absolute(output)
++	root.size = Vector2i(1280,720)
++	var directory: String = "user://daily_presentation_"+TrackLibrary.unique_id()
++	DirAccess.make_dir_recursive_absolute(directory)
++	app = load("res://core/app.tscn").instantiate()
++	app.library = TrackLibrary.new(directory.path_join("tracks"))
++	app.records = LocalRecords.new(directory.path_join("records.json"))
++	app.cloud_root_override = directory.path_join("cloud")
++	root.add_child(app)
++	while not app.startup_complete: await process_frame
++	app._show_screen("daily")
++	await settle()
++	page = app.content.find_child("TrackOfDayPage",true,false)
++	service = Feed.new()
++	root.add_child(service)
++	page.client = service
++	# Observe the existing race boundary without starting a synthetic online race.
++	for connection: Dictionary in page.race_requested.get_connections(): page.race_requested.disconnect(connection.callable)
++	page.race_requested.connect(func(value: Dictionary) -> void: emitted.append(value))
++	service.response = pick()
++	await page.refresh()
++	await settle()
++	check(not page.entry.is_empty() and not page._race.disabled,"valid public pick is actionable")
++	check(service.public_calls == 1,"signed-out page uses public authority")
++	for dimensions: Vector2i in [Vector2i(1280,720),Vector2i(960,540),Vector2i(844,390)]:
++		root.size = dimensions
++		await settle()
++		var scroll: ScrollContainer = page.find_child("DailyScroll",true,false)
++		scroll.scroll_vertical = 0
++		await capture("ready-%dx%d" % [dimensions.x,dimensions.y])
++		check(page._race.get_combined_minimum_size().y >= 48,"race touch target "+str(dimensions))
++		if not baseline:
++			check(scroll.get_global_rect().encloses(page._race.get_global_rect()),"race action visible without scrolling "+str(dimensions))
++			var hero: Control = page.find_child("DailyTrackCard",true,false)
++			check(hero != null and hero.size.x >= 400 and hero.size.y >= 400,"featured route has a substantial display area "+str(dimensions))
++	root.size = Vector2i(1280,720)
++	for theme_id: String in ["desert","winter","night_city","storm"]:
++		service.response = pick(theme_id)
++		await page.refresh()
++		await settle()
++		check(str(page.entry.theme) == theme_id,"selected biome remains exact: "+theme_id)
++		await capture("biome-"+theme_id)
++	service.response = pick()
++	service.response.data.track.name = "The extraordinarily long circuit name used to check the featured track title"
++	service.response.data.track.creator = "A creator with a long name and {count} kept as literal text"
++	service.response.data.track.rating_average = null
++	service.response.data.track.rating_count = 0
++	await page.refresh()
++	await settle()
++	await capture("long-name-unrated")
++	if not baseline:
++		var title: Label = page.find_child("DailyTrackName",true,false)
++		check(title != null and title.text == str(service.response.data.track.name),"track name remains user text")
++		check(title != null and title.get_global_rect().end.x <= page.find_child("DailyTrackCard",true,false).get_global_rect().end.x,"long title stays inside hero")
++		var art: Control = page.find_child("DailyTrackCard",true,false)
++		for path: PackedVector2Array in art._projected_paths:
++			var bottom: float = -INF
++			for point: Vector2 in path: bottom = maxf(bottom,point.y)
++			check(art.global_position.y+bottom+8 <= title.global_position.y,"long caption does not cover the actual route")
++	service.held = true
++	page.refresh()
++	await settle()
++	check(page._busy and page._race.disabled,"refresh fences racing while authority is pending")
++	var pending_calls: int = service.public_calls
++	page.refresh()
++	page._request_race()
++	check(service.public_calls == pending_calls,"pending authority cannot be duplicated by refresh or race")
++	await capture("loading")
++	service.response = {"ok":false,"status":503}
++	service.held = false
++	service.released.emit()
++	await settle()
++	check(page.entry.is_empty() and page._race.disabled and page._retry.visible,"unavailable pick offers recovery without a race")
++	if not baseline: check(not page._countdown.is_visible_in_tree(),"failure removes the old day's countdown")
++	await capture("unavailable")
++	service.response = pick()
++	var before: int = service.public_calls
++	page._retry_msec = Time.get_ticks_msec()-1
++	page._process(0.0)
++	await settle()
++	check(service.public_calls == before+1 and not page.entry.is_empty(),"preparing retry uses one fresh authority read")
++	service.response = {"ok":true,"data":{"ends_at":1793232000,"server_now":1793209705,"track":null}}
++	await page.refresh()
++	await settle()
++	check(page.entry.is_empty() and page._race.disabled,"empty day never invents a circuit")
++	await capture("empty-day")
++	service.response = pick()
++	service.authenticated = true
++	await page.refresh()
++	check(service.private_calls == 1 and not page.entry.is_empty(),"authenticated read path retained")
++	page._ends_at = page._server_now
++	page._process(0.0)
++	await settle()
++	check(page._ends_at > page._server_now and not page._race.disabled,"midnight refresh restores an authoritative pick")
++	service.response.data.track.version_id = "00000000-0000-0000-0000-000000000003"
++	await page._request_race()
++	check(emitted.is_empty(),"rollover during race recheck cannot start the previous revision")
++	await page._request_race()
++	check(emitted.size() == 1 and str(emitted[0].version_id) == str(service.response.data.track.version_id),"unchanged rechecked revision emits the ordinary race boundary once")
++	if not baseline:
++		await settle()
++		var hero: Control = page.find_child("DailyTrackCard",true,false)
++		click(hero.global_position+Vector2(60,120))
++		await settle()
++		check(emitted.size() == 2,"native click reaches the featured preview through its overlay")
++		page._race.grab_focus()
++		await settle()
++		check(page._race.has_focus(),"primary action retains keyboard focus")
++		await capture("keyboard-focus")
++	var cars: OptionButton = page.find_child("DailyCar",true,false)
++	cars.item_selected.emit(VehicleCatalog.IDS.find("compact"))
++	check(VehicleCatalog.selected == "compact","ordinary car picker retained")
++	TranslationServer.set_locale("fi")
++	GameText.refresh(self)
++	await settle()
++	await capture("finnish")
++	TranslationServer.set_locale("en")
++	GameText.refresh(self)
++	if not baseline:
++		for locale_id: String in ["en","fr","es","de","pt_BR","ja","ko","nl","it","fi","sv","nb"]:
++			TranslationServer.set_locale(locale_id)
++			GameText.refresh(self)
++			await settle()
++			var locale_scroll: ScrollContainer = page.find_child("DailyScroll",true,false)
++			check(locale_scroll.get_global_rect().encloses(page._race.get_global_rect()),"translated action fits without scrolling: "+locale_id)
++			check(page._countdown_panel.get_global_rect().end.x <= root.get_visible_rect().end.x+1,"translated countdown stays inside canvas: "+locale_id)
++		TranslationServer.set_locale("en")
++		GameText.refresh(self)
++		service.response = pick()
++		service.response.data.track.content_hash = "invalid"
++		await page.refresh()
++		check(page.entry.is_empty() and page._race.disabled,"malformed metadata cannot create a race")
++		# Exercise the component's narrow layout independently of the global menu header.
++		app.root_ui.hide()
++		var previous_scale: Vector2i = root.content_scale_size
++		root.content_scale_size = Vector2i(760,900)
++		root.size = Vector2i(760,900)
++		var narrow := preload("res://ui/track_of_day_page.gd").new()
++		narrow.theme = MenuStyle.theme()
++		narrow.client = service
++		narrow.cloud = app.cloud
++		narrow.page_preview = true
++		root.add_child(narrow)
++		MenuStyle.fill(narrow)
++		service.response = pick("winter")
++		await narrow.refresh()
++		await settle()
++		var narrow_scroll: ScrollContainer = narrow.find_child("DailyScroll",true,false)
++		check(narrow._race_panel.position.y >= narrow._hero.size.y,"narrow layout stacks race controls below the preview")
++		await capture("narrow-top")
++		narrow_scroll.scroll_vertical = 9999
++		await settle()
++		check(narrow_scroll.get_global_rect().intersects(narrow._race.get_global_rect()),"narrow layout keeps the race action reachable")
++		await capture("narrow-race")
++		var private_calls: int = service.private_calls
++		narrow._ends_at = narrow._server_now
++		narrow._process(0.0)
++		check(narrow._race.disabled and service.private_calls == private_calls,"preview page cannot refresh or race at rollover")
++		narrow.queue_free()
++		await process_frame
++		root.content_scale_size = previous_scale
++		root.size = Vector2i(1280,720)
++		app.root_ui.show()
++	app.queue_free()
++	service.queue_free()
++	await process_frame
++	print("DAILY_PRESENTATION%s: %d checks, %d failures" % ["_BASELINE" if baseline else "",checks,failures])
++	quit(1 if failures else 0)

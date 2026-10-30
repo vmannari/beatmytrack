@@ -9,12 +9,12 @@ BUILD_FIELDS = (
     "compiler_version", "track_schema", "replay_schema", "tick_rate", "laps", "vehicles",
 )
 
-# .75 changes only optional Electric slide controls. The other six integrators
-# and configuration hashes retain .74 behavior (native differential regression).
+# .75 and .76 change only optional Electric handling. The other six integrators
+# and configuration hashes retain .74 behavior.
 # This is an explicit, symmetric compatibility declaration, not a version range.
 # Car tuning belongs in its handling version/hash; reserve a shared physics bump
 # for changes affecting shared simulation. Never infer equivalence by ordering.
-ELECTRIC_ONLY_PHYSICS = ("arcade-planar-0.74", "arcade-planar-0.75")
+ELECTRIC_ONLY_PHYSICS = ("arcade-planar-0.74", "arcade-planar-0.75", "arcade-planar-0.76")
 UNCHANGED_VEHICLES = frozenset(("compact", "pickup", "classic", "formula", "kart", "forklift"))
 
 

@@ -1,0 +1,730 @@
+--- a/game/core/app.gd
++++ b/game/core/app.gd
+@@ -532,6 +532,7 @@
+ 	_garage_preloader=preload("res://ui/garage_preloader.gd").new()
+ 	_garage_preloader.app=self
+ 	add_child(_garage_preloader)
++	await header_car_cache.prepare_selected()
+ 	await _garage_preloader.prepare_pictures()
+ 	_show_screen(capture_screen if not capture_path.is_empty() else "rivalry" if online.profile_ready() else "account")
+ 	startup_complete = true
+@@ -2741,7 +2742,7 @@
+ 	return await _garage_preloader.prepare_pictures(current)
+ 
+ func _header_car_capture_allowed() -> bool:
+-	return startup_complete and not is_instance_valid(game) and _background_work_allowed() and screen not in ["account","restoring"]
++	return (startup_complete or header_car_cache.preparing_selected) and not is_instance_valid(game) and _background_work_allowed() and (screen != "restoring" or header_car_cache.preparing_selected)
+ 
+ func _header_car_picture_ready(vehicle: String) -> void:
+ 	if not is_instance_valid(account_button): return
+--- a/game/ui/header_car_appearance_cache.gd
++++ b/game/ui/header_car_appearance_cache.gd
+@@ -23,6 +23,7 @@
+ var _draws: int = 0
+ var _stage: String = ""
+ var _debounce: Timer
++var preparing_selected: bool = false
+ 
+ func _ready() -> void:
+ 	_debounce = Timer.new()
+@@ -78,6 +79,26 @@
+ 
+ func idle() -> bool:
+ 	return _jobs.is_empty() and _io == null and canvas == null and _debounce.is_stopped()
++
++func prepare_selected() -> bool:
++	if DisplayServer.get_name() == "headless": return Icons.ready(VehicleCatalog.selected,records)
++	preparing_selected = true
++	var target: String = ""
++	var deadline: int = Time.get_ticks_msec()+45000
++	while is_inside_tree() and records != null and not Icons.ready(VehicleCatalog.selected,records):
++		if Time.get_ticks_msec() >= deadline: break
++		var key: String = Icons.appearance_key(VehicleCatalog.selected,records)
++		if key != target:
++			target = key
++			_scan()
++			# The visible selection comes before other cars in the dropdown.
++			for index: int in range(_jobs.size()):
++				if _jobs[index].key == key:
++					_jobs.push_front(_jobs.pop_at(index))
++					break
++		await get_tree().process_frame
++	preparing_selected = false
++	return Icons.ready(VehicleCatalog.selected,records)
+ 
+ func _process(_delta: float) -> void:
+ 	var permitted: bool = allowed.is_valid() and bool(allowed.call())
+@@ -166,6 +187,7 @@
+ 	_stage = ""
+ 
+ func _exit_tree() -> void:
++	preparing_selected = false
+ 	if records != null and records.appearance_committed.is_connected(_committed): records.appearance_committed.disconnect(_committed)
+ 	if is_instance_valid(_debounce): _debounce.stop()
+ 	_release()
+--- a/game/ui/header_car_icons.gd
++++ b/game/ui/header_car_icons.gd
+@@ -14,10 +14,18 @@
+ 	if records != null:
+ 		var key: String = appearance_key(id,records)
+ 		if customized.has(key): return customized[key]
++		# A factory picture misrepresents a saved design while its image loads.
++		if not stock_appearance(id,records): return null
+ 	if not images.has(id):
+ 		images[id] = load(DIRECTORY+id+".png") as Texture2D
+ 		texture_loads += 1
+ 	return images[id]
++
++static func stock_appearance(vehicle: String, records: LocalRecords) -> bool:
++	return VehicleLivery.for_car(records.settings,vehicle) == VehicleLivery.defaults(vehicle) and VehicleCustomisation.for_car(records.settings,vehicle) == VehicleCustomisation.defaults()
++
++static func ready(vehicle: String, records: LocalRecords) -> bool:
++	return records != null and (stock_appearance(vehicle,records) or customized.has(appearance_key(vehicle,records)))
+ 
+ static func appearance_key(vehicle: String, records: LocalRecords) -> String:
+ 	return JSON.stringify([VERSION,Build.ID,RenderingServer.get_current_rendering_method(),records.path,vehicle,VehicleLivery.for_car(records.settings,vehicle),VehicleCustomisation.for_car(records.settings,vehicle)],"",true).sha256_text()
+--- a/AGENTS.md
++++ b/AGENTS.md
+@@ -2,6 +2,11 @@
+ ## Stronger Electric powered drift (2026-10-29)
+ EPD01-EPD02/R01/Q01: Electric25 changes only version and powered lateral response0.25to0.235. At50kmh/full steer/65%pedal slip22.806to24.028deg(+5.36%); onset258.3to250ms/recovery200ms.84 cases peak24.550deg, recovery<=216.667ms and speed>=98.161% prior; all accelerate. New417/0, retained controls102/acceleration417/historical drift417/turning430/five-lap7 and owned dependency parse pass.34,773-input five-lap race has zero contacts/exact replay; independent canonical accepts289771ms. Motor41000N/brakes/regen20/steering/limits/shared physics retained. Historical increments isolate0.25 without weakening assertions. One runtime resource/new probe+regression/four fixture adaptations/local Electric manifest identity; initial missing-output-directory failure retained and corrected by runner. Source-only checkpoint round-trips; concurrent model edits/identities preserved. Commands/hashes/limits: docs/ELECTRIC_STRONGER_POWERED_DRIFT_2026_10_29.md and docs/evidence/electric-stronger-powered-drift-2026-10-29/report.json. Reload/rebuild, matching authorised backend contract rollout and owner feel acceptance remain. No device query/test, APK, owner-save/live/backend mutation, deployment, owner restart or main-index staging/commit/merge.
+ <!-- /ELECTRIC-STRONGER-POWERED-DRIFT-20261029 -->
++
++<!-- PROFILE-CAR-STARTUP-20261029 -->
++## Profile car uses its equipped livery at startup (2026-10-29)
++PCS01-PCS02/R01/Q01: Selected equipped PNG prepares before the startup cover clears; account-screen work can finish, and missing custom pictures never substitute factory paint. Three runtime sources;95/0 native checks across Compact cold/restart, kart and desktop Mobile with zero wrong visible frames. Existing race85/3 reproduces exactly in an in-memory before control; all header/race/owner fences pass. Concurrent App biome descriptions and other work preserved. Commands, pictures, hashes and scoped checkpoint: docs/PROFILE_CAR_STARTUP_2026_10_29.md and docs/evidence/profile-car-startup-2026-10-29/report.json. Reload and owner/device acceptance remain; no device query/test, APK, real auth, owner-save/live mutation, deployment, owner-process restart or main-index writes.
++<!-- /PROFILE-CAR-STARTUP-20261029 -->
+ 
+ <!-- LOGO-TIRE-WIDTH-20261029 -->
+ ## Consistent B-logo tire ribbons (2026-10-29)
+--- a/DEVELOPMENT_STATUS.md
++++ b/DEVELOPMENT_STATUS.md
+@@ -2,6 +2,11 @@
+ ## Stronger Electric powered drift (2026-10-29)
+ EPD01-EPD02/R01/Q01: Electric25 changes only version and powered lateral response0.25to0.235. At50kmh/full steer/65%pedal slip22.806to24.028deg(+5.36%); onset258.3to250ms/recovery200ms.84 cases peak24.550deg, recovery<=216.667ms and speed>=98.161% prior; all accelerate. New417/0, retained controls102/acceleration417/historical drift417/turning430/five-lap7 and owned dependency parse pass.34,773-input five-lap race has zero contacts/exact replay; independent canonical accepts289771ms. Motor41000N/brakes/regen20/steering/limits/shared physics retained. Historical increments isolate0.25 without weakening assertions. One runtime resource/new probe+regression/four fixture adaptations/local Electric manifest identity; initial missing-output-directory failure retained and corrected by runner. Source-only checkpoint round-trips; concurrent model edits/identities preserved. Commands/hashes/limits: docs/ELECTRIC_STRONGER_POWERED_DRIFT_2026_10_29.md and docs/evidence/electric-stronger-powered-drift-2026-10-29/report.json. Reload/rebuild, matching authorised backend contract rollout and owner feel acceptance remain. No device query/test, APK, owner-save/live/backend mutation, deployment, owner restart or main-index staging/commit/merge.
+ <!-- /ELECTRIC-STRONGER-POWERED-DRIFT-20261029 -->
++
++<!-- PROFILE-CAR-STARTUP-20261029 -->
++## Profile-car startup livery corrected (2026-10-29)
++PCS01-PCS02/R01/Q01: Exact equipped image is ready before the menu; account-screen completion and accurate cache-miss behavior remain. Native95/0 across Compact cold/restart, kart and desktop Mobile; zero visible factory-livery frames. Broader race85/3 matches the before control exactly, with header isolation assertions passing. [Commands, images, checkpoint and limits](docs/PROFILE_CAR_STARTUP_2026_10_29.md). Reload/owner/device acceptance remain. No device query/test, APK, real auth, owner-save/live mutation, deployment, owner-process restart or main-index writes; concurrent work preserved.
++<!-- /PROFILE-CAR-STARTUP-20261029 -->
+ 
+ <!-- LOGO-TIRE-WIDTH-20261029 -->
+ ## Consistent B-logo tire ribbons (2026-10-29)
+--- a/docs/PHASE_0_PLAN.md
++++ b/docs/PHASE_0_PLAN.md
+@@ -2,6 +2,11 @@
+ ## Stronger Electric powered drift (2026-10-29)
+ EPD01-EPD02/R01/Q01: Electric25 changes only version and powered lateral response0.25to0.235. At50kmh/full steer/65%pedal slip22.806to24.028deg(+5.36%); onset258.3to250ms/recovery200ms.84 cases peak24.550deg, recovery<=216.667ms and speed>=98.161% prior; all accelerate. New417/0, retained controls102/acceleration417/historical drift417/turning430/five-lap7 and owned dependency parse pass.34,773-input five-lap race has zero contacts/exact replay; independent canonical accepts289771ms. Motor41000N/brakes/regen20/steering/limits/shared physics retained. Historical increments isolate0.25 without weakening assertions. One runtime resource/new probe+regression/four fixture adaptations/local Electric manifest identity; initial missing-output-directory failure retained and corrected by runner. Source-only checkpoint round-trips; concurrent model edits/identities preserved. Commands/hashes/limits: ELECTRIC_STRONGER_POWERED_DRIFT_2026_10_29.md and docs/evidence/electric-stronger-powered-drift-2026-10-29/report.json. Reload/rebuild, matching authorised backend contract rollout and owner feel acceptance remain. No device query/test, APK, owner-save/live/backend mutation, deployment, owner restart or main-index staging/commit/merge.
+ <!-- /ELECTRIC-STRONGER-POWERED-DRIFT-20261029 -->
++
++<!-- PROFILE-CAR-STARTUP-20261029 -->
++## Equipped header image before first menu (2026-10-29)
++PCS01-PCS02/R01/Q01: Startup prepares selected saved paint/sticker/kit; cache misses stay empty and account work can finish. Native95/0, stable restart zero captures and identical broader race85/3 before/after control. [Evidence and remaining acceptance](PROFILE_CAR_STARTUP_2026_10_29.md). Reload/owner/device acceptance remain; no device query/test, APK, real auth, owner-save/live mutation, deployment, owner-process restart or main-index writes. Concurrent App/other edits preserved.
++<!-- /PROFILE-CAR-STARTUP-20261029 -->
+ 
+ <!-- LOGO-TIRE-WIDTH-20261029 -->
+ ## Consistent B-logo tire ribbons (2026-10-29)
+--- /dev/null
++++ b/game/tests/test_profile_car_startup.gd
+@@ -0,0 +1,146 @@
++extends SceneTree
++## Real startup with an on-disk equipped appearance, before any menu navigation.
++const Icons = preload("res://ui/header_car_icons.gd")
++const Profile = preload("res://ui/profile_car.gd")
++var checks: int = 0
++var failures: int = 0
++var app: Node
++var output: String
++var profile: String
++var phase: String = "seed"
++var vehicle: String = "compact"
++var wrong_draws: int = 0
++var metrics: Dictionary = {}
++
++class StartupMenuApp extends "res://core/app.gd":
++	func _show_screen(next: String) -> void:
++		# Offline guests normally start on sign-in, which has no header. Route
++		# only that startup destination to the normal menu, without real auth.
++		super._show_screen("tracks" if not startup_complete and next == "account" else next)
++
++func _initialize() -> void: run.call_deferred()
++func check(value: bool, label: String) -> void:
++	checks += 1
++	if not value: failures += 1; print("FAIL: ",label)
++func frames(count: int = 4) -> void:
++	for _frame: int in range(count): await process_frame
++func picture() -> Texture2D:
++	return app.account_button.get_node("MenuProfileCar").preview.texture
++func monitor_draw() -> void:
++	if not is_instance_valid(app) or not is_instance_valid(app._retained_profile_car): return
++	var icon: Control = app._retained_profile_car
++	if icon.is_visible_in_tree() and icon.preview != null and icon.preview.texture != null and icon.preview.texture == Icons.texture(VehicleCatalog.selected): wrong_draws += 1
++func shot(label: String) -> void:
++	await RenderingServer.frame_post_draw
++	check(root.get_texture().get_image().save_png(output.path_join(label+".png")) == OK,"capture "+label)
++func wait_cache() -> void:
++	var deadline: int = Time.get_ticks_msec()+30000
++	while not app.header_car_cache.idle() and Time.get_ticks_msec()<deadline: await process_frame
++	check(app.header_car_cache.idle(),"account-screen appearance work finishes")
++	await create_timer(0.35).timeout
++
++func run() -> void:
++	OS.set_environment("BMT_API_URL","")
++	for arg: String in OS.get_cmdline_user_args():
++		if arg.begins_with("--output="): output = arg.trim_prefix("--output=")
++		if arg.begins_with("--profile="): profile = arg.trim_prefix("--profile=")
++		if arg.begins_with("--phase="): phase = arg.trim_prefix("--phase=")
++		if arg.begins_with("--car="): vehicle = arg.trim_prefix("--car=")
++	if DisplayServer.get_name() == "headless": quit(1); return
++	create_timer(150).timeout.connect(func() -> void: print("FAIL: startup regression deadline"); quit(1))
++	root.size = Vector2i(1280,720)
++	root.gui_embed_subwindows = true
++	check(DirAccess.make_dir_recursive_absolute(profile) == OK,"create isolated saved-profile fixture")
++	var records := LocalRecords.new(profile.path_join("records.json"))
++	var paint: Dictionary = VehicleLivery.defaults(vehicle)
++	paint.colors.body = "32b5d7"
++	paint.colors.accent = "f4dc52"
++	paint.pattern = "offset_gt"
++	paint.stickers.hood.id = LiveryCatalog.stickers[0].id
++	var parts: Dictionary = VehicleCustomisation.defaults()
++	if vehicle == "compact": parts.body = "wide"; parts.hood = "cowl"
++	if vehicle == "kart": parts.merge({"hood":"enduro","aero":"blade","rims":"six","body":"wedge"},true)
++	if phase == "seed":
++		records.settings = {"selected_car":vehicle,"music_enabled":false,"vehicle_liveries":{vehicle:paint},"vehicle_customisation":{vehicle:parts}}
++		check(records.save_records() == OK,"save equipped paint, sticker and fitted parts")
++	Icons.customized.clear()
++	records.load_records()
++	check(Icons.texture(vehicle,records) == null,"a missing customized image never substitutes factory paint")
++	var stock := LocalRecords.new(profile.path_join("stock.json"))
++	check(Icons.texture(vehicle,stock) == Icons.texture(vehicle),"unmodified cars keep their bundled factory picture")
++	app = StartupMenuApp.new()
++	app.records = records
++	app.library = TrackLibrary.new(profile.path_join("tracks"))
++	app.cloud_root_override = profile.path_join("cloud")
++	RenderingServer.frame_pre_draw.connect(monitor_draw)
++	var began: int = Time.get_ticks_usec()
++	root.add_child(app)
++	while not app.startup_complete:
++		app._publishing_slots_foreground = true
++		await process_frame
++	metrics.startup_ms = (Time.get_ticks_usec()-began)/1000.0
++	app._garage_preloader.idle_ms = 100000
++	check(app.screen == "tracks","inspect the first startup menu without follow-up navigation")
++	check(VehicleCatalog.selected == vehicle and VehicleLivery.for_car(records.settings,vehicle) == paint and VehicleCustomisation.for_car(records.settings,vehicle) == parts,"startup loads the exact saved selection and appearance")
++	var key: String = Icons.appearance_key(vehicle,records)
++	check(Icons.customized.has(key),"equipped image is ready before startup completes")
++	check(picture() != null and picture() == Icons.customized.get(key),"first header picture has the equipped livery")
++	check(picture() != Icons.texture(vehicle),"first header picture does not use factory paint")
++	check(app._retained_profile_car._change == null,"startup does not fade out a wrong factory picture")
++	metrics.startup_captures = app.header_car_cache.captures
++	metrics.startup_disk_hits = app.header_car_cache.disk_hits
++	check(metrics.startup_captures == (1 if phase == "seed" else 0),"cold startup captures once; separate-process restart reuses PNG")
++	check(metrics.startup_disk_hits == (0 if phase == "seed" else 1),"warm startup reads the exact saved PNG")
++	await shot("first-menu")
++	check(wrong_draws == 0,"no visible frame displays the factory livery")
++	if failures == 0:
++		await reference(paint,parts)
++		app._show_screen("account")
++		paint.colors.body = "b137d4"
++		records.settings.vehicle_liveries[vehicle] = paint.duplicate(true)
++		check(records.save_records() == OK,"commit a new appearance while account stays open")
++		await wait_cache()
++		check(Icons.customized.has(Icons.appearance_key(vehicle,records)),"appearance finishes while account screen stays open")
++		app._show_screen("tracks")
++		check(picture() != null and picture() == Icons.customized.get(Icons.appearance_key(vehicle,records)),"account screen receives the newly equipped livery")
++		await reference(paint,parts)
++		await shot("account-updated")
++		# Leave the original appearance on disk for a fresh-process PNG reuse run.
++		paint.colors.body = "32b5d7"
++		records.settings.vehicle_liveries[vehicle] = paint
++		check(records.save_records() == OK,"restore only the fixture's initial equipped appearance")
++		await wait_cache()
++	check(wrong_draws == 0,"updates never show factory paint for a customized car")
++	metrics.merge({"phase":phase,"car":vehicle,"checks":checks,"failures":failures,"wrong_visible_frames":wrong_draws,"captures":app.header_car_cache.captures,"disk_hits":app.header_car_cache.disk_hits,"peak_worlds":app.header_car_cache.peak_worlds})
++	FileAccess.open(output.path_join("report.json"),FileAccess.WRITE).store_string(JSON.stringify(metrics,"  "))
++	RenderingServer.frame_pre_draw.disconnect(monitor_draw)
++	app.queue_free()
++	await frames(10)
++	print("PROFILE_CAR_STARTUP: ",JSON.stringify(metrics))
++	quit(1 if failures else 0)
++
++func reference(paint: Dictionary, parts: Dictionary) -> void:
++	var canvas := SubViewport.new()
++	canvas.size = Icons.SIZE
++	canvas.disable_3d = true
++	canvas.transparent_bg = true
++	canvas.render_target_update_mode = SubViewport.UPDATE_ALWAYS
++	root.add_child(canvas)
++	var view: Control = Profile.make_preview(vehicle,paint,parts)
++	view.size = Vector2(Icons.SIZE)
++	canvas.add_child(view)
++	Profile.apply_presentation(view)
++	for _frame: int in range(7): await RenderingServer.frame_post_draw
++	var expected: Image = canvas.get_texture().get_image()
++	var actual: Image = picture().get_image()
++	var difference: float = 0.0
++	for y: int in range(Icons.SIZE.y):
++		for x: int in range(Icons.SIZE.x):
++			var a: Color = actual.get_pixel(x,y)
++			var b: Color = expected.get_pixel(x,y)
++			if b.a>0 and b.a<1: b = Color(minf(1,b.r/b.a),minf(1,b.g/b.a),minf(1,b.b/b.a),b.a)
++			difference += absf(a.r-b.r)+absf(a.g-b.g)+absf(a.b-b.b)+absf(a.a-b.a)
++	var mean: float = difference/float(Icons.SIZE.x*Icons.SIZE.y)
++	check(mean<0.02,"header pixels match independently rendered saved paint, sticker and kit: "+str(mean))
++	canvas.queue_free()
++	await frames()
+--- /dev/null
++++ b/game/tests/test_profile_car_race_control.gd
+@@ -0,0 +1,11 @@
++extends "res://tests/test_race_optional_work.gd"
++## Retain every assertion, reverting only this task in the process's script cache.
++func _initialize() -> void:
++	for name: String in ["header_car_icons","header_car_appearance_cache"]:
++		var script: GDScript = load("res://ui/"+name+".gd")
++		script.source_code = FileAccess.get_file_as_string("res://../docs/evidence/profile-car-startup-2026-10-29/before/game/ui/"+name+".gd")
++		assert(script.reload(true) == OK)
++	var app_script: GDScript = load("res://core/app.gd")
++	app_script.source_code = app_script.source_code.replace("\tawait header_car_cache.prepare_selected()\n","").replace('return (startup_complete or header_car_cache.preparing_selected) and not is_instance_valid(game) and _background_work_allowed() and (screen != "restoring" or header_car_cache.preparing_selected)','return startup_complete and not is_instance_valid(game) and _background_work_allowed() and screen not in ["account","restoring"]')
++	assert(app_script.reload(true) == OK)
++	super._initialize()
+--- /dev/null
++++ b/docs/evidence/profile-car-startup-2026-10-29/before/game/ui/header_car_icons.gd
+@@ -0,0 +1,28 @@
++extends RefCounted
++## Header widgets only display textures. Equipped appearances are cached by App.
++const Build = preload("res://core/build_identity.gd")
++const VERSION: String = "header-equipped-1"
++const CUSTOM_LIMIT: int = 14
++const SIZE := Vector2i(176,112)
++const DIRECTORY: String = "res://assets/menu/header_cars_v1/"
++static var images: Dictionary = {}
++static var texture_loads: int = 0
++static var customized: Dictionary = {}
++
++static func texture(vehicle: String, records: LocalRecords = null) -> Texture2D:
++	var id: String = VehicleCatalog.valid_id(vehicle)
++	if records != null:
++		var key: String = appearance_key(id,records)
++		if customized.has(key): return customized[key]
++	if not images.has(id):
++		images[id] = load(DIRECTORY+id+".png") as Texture2D
++		texture_loads += 1
++	return images[id]
++
++static func appearance_key(vehicle: String, records: LocalRecords) -> String:
++	return JSON.stringify([VERSION,Build.ID,RenderingServer.get_current_rendering_method(),records.path,vehicle,VehicleLivery.for_car(records.settings,vehicle),VehicleCustomisation.for_car(records.settings,vehicle)],"",true).sha256_text()
++
++static func publish(key: String, pixels: Image) -> void:
++	pixels.generate_mipmaps()
++	if customized.size() >= CUSTOM_LIMIT: customized.erase(customized.keys()[0])
++	customized[key] = ImageTexture.create_from_image(pixels)
+--- /dev/null
++++ b/docs/evidence/profile-car-startup-2026-10-29/before/game/ui/header_car_appearance_cache.gd
+@@ -0,0 +1,212 @@
++extends Node
++## One cooperative capture on an equipped-appearance miss; menu visits read PNGs.
++signal changed(vehicle: String)
++const Icons = preload("res://ui/header_car_icons.gd")
++const Work = preload("res://editor/work_job.gd")
++const SIZE := Vector2i(176,112)
++const FILE_LIMIT: int = 14
++var records: LocalRecords
++var allowed: Callable
++var directory: String
++var captures: int = 0
++var disk_hits: int = 0
++var peak_worlds: int = 0
++var active_worlds: int = 0
++var canvas: SubViewport
++var studio: Control
++var _epoch: int = 0
++var _jobs: Array[Dictionary] = []
++var _current: Dictionary = {}
++var _io: RefCounted
++var _io_job: Dictionary = {}
++var _io_kind: String = ""
++var _draws: int = 0
++var _stage: String = ""
++var _debounce: Timer
++
++func _ready() -> void:
++	_debounce = Timer.new()
++	_debounce.one_shot = true
++	_debounce.wait_time = 0.35
++	_debounce.timeout.connect(_scan)
++	add_child(_debounce)
++	set_process(false)
++
++func bind_records(value: LocalRecords) -> void:
++	if records == value: return
++	if records != null and records.appearance_committed.is_connected(_committed): records.appearance_committed.disconnect(_committed)
++	_epoch += 1
++	_debounce.stop()
++	_jobs.clear()
++	_current = {}
++	_release()
++	if _io != null: _io.cancel()
++	_io_job = {}
++	records = value
++	if records != null:
++		directory = records.path.get_base_dir().path_join("header_appearance_icons")
++		records.appearance_committed.connect(_committed)
++		_scan()
++
++func _committed() -> void:
++	_debounce.start()
++
++func _scan() -> void:
++	if records == null: return
++	for vehicle: String in VehicleCatalog.IDS:
++		var paint: Dictionary = VehicleLivery.for_car(records.settings,vehicle)
++		var parts: Dictionary = VehicleCustomisation.for_car(records.settings,vehicle)
++		var key: String = Icons.appearance_key(vehicle,records)
++		if paint == VehicleLivery.defaults(vehicle) and parts == VehicleCustomisation.defaults():
++			changed.emit(vehicle)
++			continue
++		if Icons.customized.has(key):
++			changed.emit(vehicle)
++			continue
++		if _current.get("key") == key or _io_job.get("key") == key: continue
++		var pending: bool = false
++		for job: Dictionary in _jobs:
++			if job.key == key: pending = true
++		if pending: continue
++		for index: int in range(_jobs.size()-1,-1,-1):
++			if _jobs[index].vehicle == vehicle: _jobs.remove_at(index)
++		_jobs.append({"vehicle":vehicle,"paint":paint,"parts":parts,"key":key,"epoch":_epoch,"read":true})
++	set_process(not _jobs.is_empty() or _io != null or canvas != null)
++
++func _valid(job: Dictionary) -> bool:
++	return not job.is_empty() and records != null and job.epoch == _epoch and job.key == Icons.appearance_key(job.vehicle,records)
++
++func idle() -> bool:
++	return _jobs.is_empty() and _io == null and canvas == null and _debounce.is_stopped()
++
++func _process(_delta: float) -> void:
++	var permitted: bool = allowed.is_valid() and bool(allowed.call())
++	# Keep at most the existing completed job until its consumer is eligible.
++	# Invalid owner/appearance results can be discarded without GPU publication.
++	if _io != null and _io.done and (permitted or _io_job.is_empty() or _io_job.get("epoch",-1)!=_epoch):
++		var result: Dictionary = _io.result if _io.result is Dictionary else {}
++		_io = null
++		if _valid(_io_job):
++			if result.get("image") is Image:
++				if _io_kind == "read": disk_hits += 1
++				Icons.publish(_io_job.key,result.image)
++				changed.emit(_io_job.vehicle)
++			elif _io_kind == "read" and DisplayServer.get_name() != "headless":
++				_io_job.read = false
++				_jobs.push_front(_io_job)
++		_io_job = {}
++		_io_kind = ""
++	if not permitted:
++		if canvas != null:
++			if _valid(_current): _jobs.push_front(_current)
++			_release()
++		return
++	if canvas != null and not _valid(_current): _release()
++	if _stage == "build" and studio.presentation_ready:
++		load("res://ui/profile_car.gd").apply_presentation(studio)
++		_stage = "draw"
++		_draws = 5
++		RenderingServer.frame_post_draw.connect(_after_draw)
++	if _stage == "draw":
++		canvas.render_target_update_mode = SubViewport.UPDATE_ONCE
++		studio.viewport.render_target_update_mode = SubViewport.UPDATE_ONCE
++	if canvas == null and _io == null:
++		while not _jobs.is_empty():
++			var job: Dictionary = _jobs.pop_front()
++			if not _valid(job): continue
++			if Icons.customized.has(job.key): changed.emit(job.vehicle); continue
++			if job.read:
++				_io_job = job
++				_io_kind = "read"
++				_io = Work.start(_read.bind(directory.path_join(job.key+".png")),get_tree())
++			else:
++				_current = job
++				canvas = SubViewport.new()
++				canvas.size = SIZE
++				canvas.disable_3d = true
++				canvas.transparent_bg = true
++				canvas.render_target_update_mode = SubViewport.UPDATE_DISABLED
++				add_child(canvas)
++				studio = load("res://ui/profile_car.gd").make_preview(job.vehicle,job.paint,job.parts)
++				studio.size = Vector2(SIZE)
++				studio.cooperative_build = true
++				studio.cache_rest_pose = false
++				_stage = "build"
++				canvas.add_child(studio)
++				active_worlds += 1
++				canvas.tree_exited.connect(func() -> void: active_worlds -= 1,CONNECT_ONE_SHOT)
++				peak_worlds = maxi(peak_worlds,active_worlds)
++			break
++	if idle(): set_process(false)
++
++func _after_draw() -> void:
++	if canvas == null or _stage != "draw": return
++	if not allowed.is_valid() or not bool(allowed.call()):
++		if _valid(_current): _jobs.push_front(_current)
++		_release()
++		return
++	_draws -= 1
++	if _draws > 0: return
++	if _valid(_current):
++		var pixels: Image = canvas.get_texture().get_image()
++		captures += 1
++		_io_job = _current
++		_io_kind = "write"
++		_io = Work.start(_write.bind(directory,_current.key,pixels),get_tree())
++	_release()
++
++func _release() -> void:
++	if RenderingServer.frame_post_draw.is_connected(_after_draw): RenderingServer.frame_post_draw.disconnect(_after_draw)
++	if is_instance_valid(canvas):
++		remove_child(canvas)
++		canvas.queue_free()
++	canvas = null
++	studio = null
++	_current = {}
++	_stage = ""
++
++func _exit_tree() -> void:
++	if records != null and records.appearance_committed.is_connected(_committed): records.appearance_committed.disconnect(_committed)
++	if is_instance_valid(_debounce): _debounce.stop()
++	_release()
++	if _io != null: _io.cancel()
++	_io = null
++	_io_job.clear()
++	_jobs.clear()
++	records = null
++	allowed = Callable()
++
++static func _read(cancelled: Callable, path: String) -> Dictionary:
++	var file := FileAccess.open(path,FileAccess.READ)
++	if file == null or file.get_length() > 131072 or cancelled.call(): return {}
++	var bytes: PackedByteArray = file.get_buffer(file.get_length())
++	if bytes.size()<33 or bytes.slice(0,8)!=PackedByteArray([137,80,78,71,13,10,26,10]) or bytes.slice(16,24)!=PackedByteArray([0,0,0,176,0,0,0,112]): return {}
++	var pixels := Image.new()
++	if pixels.load_png_from_buffer(bytes)!=OK or pixels.get_size()!=SIZE: return {}
++	return {"image":pixels}
++
++static func _write(cancelled: Callable, path: String, key: String, pixels: Image) -> Dictionary:
++	pixels.convert(Image.FORMAT_RGBA8)
++	for y: int in range(SIZE.y):
++		if cancelled.call(): return {}
++		for x: int in range(SIZE.x):
++			var color: Color = pixels.get_pixel(x,y)
++			if color.a > 0 and color.a < 1:
++				pixels.set_pixel(x,y,Color(minf(1,color.r/color.a),minf(1,color.g/color.a),minf(1,color.b/color.a),color.a))
++	if DirAccess.make_dir_recursive_absolute(path)!=OK: return {"image":pixels}
++	var destination: String = path.path_join(key+".png")
++	var temporary: String = path.path_join(key+"-"+str(Time.get_ticks_usec())+".tmp.png")
++	if pixels.save_png(temporary)==OK:
++		if cancelled.call():
++			DirAccess.remove_absolute(temporary)
++			return {}
++		if FileAccess.file_exists(destination): DirAccess.remove_absolute(destination)
++		if DirAccess.rename_absolute(temporary,destination)!=OK: DirAccess.remove_absolute(temporary)
++	var folder := DirAccess.open(path)
++	if folder == null: return {} if cancelled.call() else {"image":pixels}
++	var files: Array[Dictionary] = []
++	for name: String in folder.get_files():
++		if name.ends_with(".png") and name.trim_suffix(".png").length()==64 and name.trim_suffix(".png").is_valid_hex_number(): files.append({"name":name,"time":FileAccess.get_modified_time(path.path_join(name))})
++	files.sort_custom(func(a: Dictionary,b: Dictionary) -> bool: return a.time<b.time)
++	while files.size()>FILE_LIMIT: DirAccess.remove_absolute(path.path_join(files.pop_front().name))
++	return {} if cancelled.call() else {"image":pixels}
+--- /dev/null
++++ b/docs/PROFILE_CAR_STARTUP_2026_10_29.md
+@@ -0,0 +1,45 @@
++# Saved profile-car livery at startup (2026-10-29)
++
++The header next to the profile name could show factory paint despite loading the correct saved livery. The equipped-image worker required `startup_complete` and excluded both restoring and account screens. Its texture lookup returned a bundled factory picture on a cache miss, so the first menu could show the wrong design and the account screen could indefinitely postpone its replacement.
++
++| Requirement | Change |
++| --- | --- |
++| PCS01 | Prepare the exact selected car's equipped image under the existing startup cover, before revealing the menu. Prioritize that car over queued dropdown pictures; reuse its persisted PNG when available. |
++| PCS02 | Allow equipped-image completion on the account screen. A customized appearance awaiting its picture uses an empty image instead of incorrectly claiming factory paint. Actual stock cars retain bundled pictures. |
++| R01/Q01 | Keep account/appearance validation, one temporary renderer, debouncing, disk cache and race-work gates. Record actual first-frame native evidence and separate-process restart behavior. |
++
++Runtime changes are limited to `game/core/app.gd` (one startup call and one policy expression), `game/ui/header_car_appearance_cache.gd` (bounded selected-car preparation), and `game/ui/header_car_icons.gd` (readiness and accurate missing-image behavior). No vehicle geometry, saved appearance, handling or backend contract changes.
++
++`game/tests/test_profile_car_startup.gd` loads actual on-disk synthetic settings, including paint, sticker and fitted parts. An offline guest normally starts on a sign-in page without a profile header; the fixture overrides only that startup destination to reveal the normal Free Race menu. It retains the real App startup and image worker, without real authentication. It inspects the texture before any follow-up navigation, counts every visible factory-picture frame, compares against an independent native render, and verifies appearance changes while the account screen remains open. The new race-control helper retains the existing regression's assertions and reverts just this task in process memory.
++
++| Actual native run | Checks | Failures | First-menu factory frames |
++| --- | ---: | ---: | ---: |
++| Original startup, Compatibility | 13 | 6 | 1 |
++| Compact cold start, Compatibility | 24 | 0 | 0 |
++| Compact separate-process restart, stable revision | 23 | 0 | 0 |
++| Kart cold start, Compatibility | 24 | 0 | 0 |
++| Compact cold start, desktop Mobile | 24 | 0 | 0 |
++
++The stable-revision restart needs zero startup captures and one PNG read; observed startup is 345.476 ms. Cold Compact startup is 2128.923 ms in Compatibility and 5912.580 ms in desktop Mobile, including other startup work. These are individual desktop observations, not performance guarantees. The startup helper has a 45-second bound. If a customized image remains unavailable, the slot stays empty and the existing worker can finish later; it does not show factory paint.
++
++The existing headless `test_race_optional_work.gd` run reports 85 checks with three failures: empty Garage preloader sleep, sleep after a wake during racing, and visible pending Rivalry polling. The in-memory before control retains all 85 checks and reproduces exactly the same three failures. All header completion/publication, racing exclusion, account replacement and appearance replacement assertions pass in both runs. The App file receives a concurrent change to biome descriptions during the broader run; those edits are preserved and excluded from the task patch. The final current App and its dependencies pass the pinned engine's targeted `CheckScript` parse.
++
++First-menu images were visually inspected: [original factory picture](evidence/profile-car-startup-2026-10-29/before-startup-menu/first-menu.png), [correct equipped Compact](evidence/profile-car-startup-2026-10-29/compact-cold-final/first-menu.png), [equipped kart](evidence/profile-car-startup-2026-10-29/kart-cold/first-menu.png), and [desktop Mobile](evidence/profile-car-startup-2026-10-29/compact-mobile/first-menu.png). Each passing native run also captures the updated account appearance after returning to the menu.
++
++Actual commands use pinned Godot 4.7.2 through `scripts/dev.ps1`. The runner sets a workspace-local `APPDATA` and an empty `BMT_API_URL`:
++
++```text
++python docs/evidence/profile-car-startup-2026-10-29/run_checks.py before-startup-menu test_profile_car_startup.gd gl_compatibility --profile=user://profile-startup-before-menu --phase=seed
++python docs/evidence/profile-car-startup-2026-10-29/run_checks.py compact-cold-final test_profile_car_startup.gd gl_compatibility --profile=user://profile-startup-compact-final --phase=seed
++python docs/evidence/profile-car-startup-2026-10-29/run_checks.py compact-restart-stable test_profile_car_startup.gd gl_compatibility --profile=user://profile-startup-compact-final --phase=reuse
++python docs/evidence/profile-car-startup-2026-10-29/run_checks.py kart-cold test_profile_car_startup.gd gl_compatibility --profile=user://profile-startup-kart --phase=seed --car=kart
++python docs/evidence/profile-car-startup-2026-10-29/run_checks.py compact-mobile test_profile_car_startup.gd mobile --profile=user://profile-startup-mobile --phase=seed
++python docs/evidence/profile-car-startup-2026-10-29/run_checks.py race-optional-work test_race_optional_work.gd headless
++python docs/evidence/profile-car-startup-2026-10-29/run_checks.py race-optional-before-control test_profile_car_race_control.gd headless
++python docs/evidence/profile-car-startup-2026-10-29/run_checks.py app-parse res://core/app.gd check
++python docs/evidence/profile-car-startup-2026-10-29/build_checkpoint.py
++```
++
++Initial attempts are retained: the sandbox cannot read the Windows certificate store; normal-access offline runs resolve this. The first fixture tried inspecting a nonexistent sign-in header and was corrected to route only the startup destination. The first independent reference viewport did not request drawing; explicitly enabling viewport drawing fixes that fixture failure without changing the comparison tolerance. One restart crosses a changed full build identity, correctly regenerates the picture, and fails the fixture's zero-capture expectation; the subsequent stable-revision restart passes unchanged. Original logs, commands, reports and source hashes remain in the evidence directory.
++
++The task source checkpoint excludes concurrent changes, checks forward and reverse application in a disposable local repository, and compares source contents with line endings normalized. It does not stage or commit the main index. Reload/rebuild and owner confirmation remain. No physical-device attachment query or device test, APK, owner-save/session edit, real authentication, live API write, deployment, or owner-process restart was performed. The startup rendering proof uses synthetic local appearances; live signed-in restoration and all-car/device performance are not certified.
+--- /dev/null
++++ b/docs/evidence/profile-car-startup-2026-10-29/run_checks.py
+@@ -0,0 +1,53 @@
++import hashlib
++import json
++import os
++from pathlib import Path
++import subprocess
++import sys
++import time
++
++ROOT = next(p for p in Path(__file__).resolve().parents if (p / 'godot-version.txt').exists())
++OUT = Path(__file__).resolve().parent
++label, script, mode = sys.argv[1:4]
++destination = OUT / label
++destination.mkdir(parents=True, exist_ok=True)
++environment = os.environ.copy()
++environment['APPDATA'] = str(ROOT / 'build/profile-car-startup-user')
++environment['BMT_API_URL'] = ''
++Path(environment['APPDATA']).mkdir(parents=True, exist_ok=True)
++paths = ['game/core/app.gd', 'game/ui/header_car_appearance_cache.gd',
++         'game/ui/header_car_icons.gd', 'game/tests/test_profile_car_startup.gd']
++
++def hashes():
++    return {p: hashlib.sha256((ROOT / p).read_bytes()).hexdigest() for p in paths}
++
++def quote(value):
++    return "'" + str(value).replace("'", "''") + "'"
++
++launch = '& ' + quote(ROOT / 'scripts/dev.ps1')
++launch += ' -Action ' + quote('CheckScript' if mode == 'check' else 'TestScript')
++launch += ' -ScriptPath ' + quote(script if script.startswith('res://') else 'res://tests/' + script)
++if mode != 'check':
++    arguments = ['--output=' + str(destination)] + sys.argv[4:]
++    launch += ' -TestArgument @(' + ','.join(quote(a) for a in arguments) + ')'
++if mode not in ('check', 'headless'):
++    launch += ' -Graphical -RenderingMethod ' + quote(mode)
++launch_path = destination / 'launch.ps1'
++launch_path.write_text("$ErrorActionPreference = 'Stop'\n" + launch + '\n', encoding='utf-8')
++command = ['powershell', '-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', str(launch_path)]
++before = hashes()
++started = time.monotonic()
++with (destination / 'run.log').open('w', encoding='utf-8') as log:
++    result = subprocess.run(command, cwd=ROOT, env=environment, stdout=log,
++                            stderr=subprocess.STDOUT, timeout=220)
++raw = (destination / 'run.log').read_text(encoding='utf-8', errors='replace')
++errors = [line for line in raw.splitlines() if any(x in line for x in
++          ('SCRIPT ERROR:', 'FAIL:', 'Parse Error:', 'ERROR:', 'FullyQualifiedErrorId'))]
++record = {'command': command, 'mode': mode, 'exit_code': result.returncode or int(bool(errors)),
++          'errors': errors, 'seconds': time.monotonic()-started,
++          'before_hashes': before, 'after_hashes': hashes(),
++          'isolated_appdata': environment['APPDATA'], 'backend_url': environment['BMT_API_URL']}
++(destination / 'command.json').write_text(json.dumps(record, indent=2), encoding='utf-8')
++print(json.dumps(record))
++print(raw[-2400:])
++sys.exit(record['exit_code'])
+--- /dev/null
++++ b/docs/evidence/profile-car-startup-2026-10-29/build_checkpoint.py
+@@ -0,0 +1,87 @@
++"""Task-baseline patch, checked in a disposable repository without the main index."""
++import difflib
++import hashlib
++import json
++from pathlib import Path
++import shutil
++import subprocess
++import tempfile
++
++OUT = Path(__file__).resolve().parent
++ROOT = next(p for p in OUT.parents if (p / 'godot-version.txt').exists())
++EXISTING = ['game/core/app.gd', 'game/ui/header_car_appearance_cache.gd',
++            'game/ui/header_car_icons.gd', 'AGENTS.md', 'DEVELOPMENT_STATUS.md',
++            'docs/PHASE_0_PLAN.md']
++NEW = ['game/tests/test_profile_car_startup.gd',
++       'game/tests/test_profile_car_race_control.gd',
++       'docs/evidence/profile-car-startup-2026-10-29/before/game/ui/header_car_icons.gd',
++       'docs/evidence/profile-car-startup-2026-10-29/before/game/ui/header_car_appearance_cache.gd',
++       'docs/PROFILE_CAR_STARTUP_2026_10_29.md',
++       'docs/evidence/profile-car-startup-2026-10-29/run_checks.py',
++       'docs/evidence/profile-car-startup-2026-10-29/build_checkpoint.py']
++parts = []
++hashes = {}
++for name in EXISTING + NEW:
++    before = (OUT / 'before' / name).read_bytes() if name in EXISTING else b''
++    after = (ROOT / name).read_bytes()
++    if name == 'game/core/app.gd':
++        # Retain concurrent biome-description edits outside this task's two hunks.
++        text = after.decode('utf-8')
++        assert text.count('await header_car_cache.prepare_selected()') == 1
++        text = text.replace('\tawait header_car_cache.prepare_selected()\n', '', 1)
++        current = 'return (startup_complete or header_car_cache.preparing_selected) and not is_instance_valid(game) and _background_work_allowed() and (screen != "restoring" or header_car_cache.preparing_selected)'
++        assert text.count(current) == 1
++        text = text.replace(current, 'return startup_complete and not is_instance_valid(game) and _background_work_allowed() and screen not in ["account","restoring"]', 1)
++        before = text.encode('utf-8')
++    if name in ['AGENTS.md', 'DEVELOPMENT_STATUS.md', 'docs/PHASE_0_PLAN.md']:
++        text = after.decode('utf-8')
++        begin = '<!-- PROFILE-CAR-STARTUP-20261029 -->'
++        end = '<!-- /PROFILE-CAR-STARTUP-20261029 -->'
++        assert text.count(begin) == 1 and text.count(end) == 1
++        start = text.index(begin)
++        finish = text.index(end) + len(end)
++        if text[finish:finish+2] == '\r\n': finish += 2
++        elif text[finish:finish+1] == '\n': finish += 1
++        if text[finish:finish+2] == '\r\n': finish += 2
++        elif text[finish:finish+1] == '\n': finish += 1
++        before = (text[:start] + text[finish:]).encode('utf-8')
++    if name in EXISTING:
++        checkpoint_before = OUT / 'checkpoint-before' / name
++        checkpoint_before.parent.mkdir(parents=True, exist_ok=True)
++        checkpoint_before.write_bytes(before)
++    parts.extend(difflib.unified_diff(before.decode('utf-8').splitlines(True),
++                                     after.decode('utf-8').splitlines(True),
++                                     fromfile='a/' + name if name in EXISTING else '/dev/null',
++                                     tofile='b/' + name))
++    hashes[name] = {'before': hashlib.sha256(before).hexdigest() if before else None,
++                    'after': hashlib.sha256(after).hexdigest()}
++patch = OUT / 'source.patch'
++patch.write_text(''.join(parts), encoding='utf-8', newline='\n')
++sandbox = Path(tempfile.mkdtemp(prefix='profile-car-checkpoint-', dir=ROOT / 'tmp'))
++commands = []
++
++def git(*args):
++    command = ['git', '-C', str(sandbox), *args]
++    result = subprocess.run(command, text=True, capture_output=True, check=True)
++    commands.append({'command': command, 'stdout': result.stdout, 'stderr': result.stderr})
++
++git('init', '-q')
++for name in EXISTING:
++    destination = sandbox / name
++    destination.parent.mkdir(parents=True, exist_ok=True)
++    shutil.copyfile(OUT / 'checkpoint-before' / name, destination)
++git('apply', '--check', str(patch))
++git('apply', str(patch))
++forward = all((sandbox / name).read_bytes().replace(b'\r\n', b'\n') ==
++              (ROOT / name).read_bytes().replace(b'\r\n', b'\n') for name in EXISTING + NEW)
++assert forward
++git('apply', '--reverse', '--check', str(patch))
++git('apply', '--reverse', str(patch))
++reverse = all((sandbox / name).read_bytes().replace(b'\r\n', b'\n') ==
++              (OUT / 'checkpoint-before' / name).read_bytes().replace(b'\r\n', b'\n') for name in EXISTING)
++assert reverse and all(not (sandbox / name).exists() for name in NEW)
++record = {'files': hashes, 'forward_contents': forward, 'reverse_contents': reverse,
++          'commands': commands, 'sandbox': str(sandbox),
++          'main_index_touched': False, 'patch_sha256': hashlib.sha256(patch.read_bytes()).hexdigest()}
++(OUT / 'checkpoint.json').write_text(json.dumps(record, indent=2), encoding='utf-8')
++print(json.dumps({'files': len(hashes), 'forward_contents': forward, 'reverse_contents': reverse}))

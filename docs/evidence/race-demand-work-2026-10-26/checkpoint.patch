@@ -1,0 +1,1109 @@
+--- a/game/core/app.gd
++++ b/game/core/app.gd
+@@ -229,8 +229,17 @@
+ 		_publishing_slots_foreground = true
+ 		if race_ad_breaks != null: race_ad_breaks.observe_time(false)
+ 		_refresh_creation_slots(true)
+-		if achievements != null: achievements.refresh()
+-		if appearance_sync != null and not is_instance_valid(game): appearance_sync.refresh_if_stale()
++		if appearance_sync != null and _background_work_allowed() and screen == "garage": appearance_sync.refresh_if_stale()
++
++func _background_work_allowed() -> bool:
++	if cloud_starting or is_instance_valid(race_loading): return false
++	if not is_instance_valid(game): return true
++	var session: TrackSession = game.get("track_session")
++	return session != null and session.finished
++
++func _result_poll_allowed(area: String) -> bool:
++	if not _background_work_allowed(): return false
++	return (screen == "challenges" or challenge_result_view) if area == "challenges" else (screen == "rivalry" or rivalry_racing)
+ 
+ func _refresh_creation_slots(force: bool = false) -> void:
+ 	if not _publishing_slots_foreground or screen not in ["create","drafts"] or is_instance_valid(game): return
+@@ -260,6 +269,11 @@
+ 	if race_ad_breaks != null:
+ 		race_ad_breaks.enabled = OS.is_debug_build() and bool(records.settings.get("development_show_ads",false))
+ 		race_ad_breaks.observe_time(_ad_play_active())
++	# Hidden editor/menu state cannot supply information the active race uses.
++	# A real OS pressure signal remains actionable while driving.
++	if not _background_work_allowed():
++		if editor_memory.pressure_requested: editor_memory.tick(self)
++		return
+ 	_poll_selected_preparation()
+ 	editor_commits.poll()
+ 	_apply_editor_commits()
+@@ -339,6 +353,7 @@
+ 	if OS.is_debug_build() and OS.get_environment("BMT_PURCHASE_LAB") == "true":
+ 		online.client.session_path = records.path.get_base_dir().path_join("purchase_lab_session.cfg")
+ 	add_child(online)
++	online.client.resume_recovery.background_allowed = _background_work_allowed
+ 	race_ad_breaks = preload("res://platform/race_ad_breaks.gd").new()
+ 	race_ad_breaks.client = online.client
+ 	race_ad_breaks.storage_path = profile_root.path_join("ad_cadence.json")
+@@ -347,10 +362,11 @@
+ 	cosmetic_economy = preload("res://backend/cosmetic_economy.gd").new()
+ 	cosmetic_economy.records = records
+ 	cosmetic_economy.client = online.client
++	cosmetic_economy.background_allowed = _background_work_allowed
+ 	add_child(cosmetic_economy)
+ 	appearance_sync = preload("res://backend/appearance_sync.gd").new()
+ 	appearance_sync.client = online.client
+-	appearance_sync.clean_poll_allowed = func() -> bool: return not is_instance_valid(game)
++	appearance_sync.refresh_allowed = _background_work_allowed
+ 	add_child(appearance_sync)
+ 	appearance_sync.bind_records(records)
+ 	appearance_sync.changed.connect(_garage_appearance_changed)
+@@ -361,6 +377,7 @@
+ 	header_car_cache.bind_records(records)
+ 	achievements = preload("res://backend/achievements_client.gd").new()
+ 	achievements.client = online.client
++	achievements.refresh_allowed = _background_work_allowed
+ 	achievements.records = records
+ 	achievements.directory = profile_root.path_join("achievement_cache")
+ 	add_child(achievements)
+@@ -391,11 +408,13 @@
+ 	cloud.changed.connect(_prime_free_race_comparisons)
+ 	cloud.race_verified.connect(achievements.refresh_after_activity)
+ 	cloud.client = online.client
++	cloud.background_allowed = _background_work_allowed
+ 	cloud.root_override = cloud_root_override
+ 	add_child(cloud)
+ 	cloud.load_cached()
+ 	rivalry = preload("res://backend/weekly_rivalry_client.gd").new()
+ 	rivalry.client = online.client
++	rivalry.result_poll_allowed = _result_poll_allowed.bind("rivalry")
+ 	rivalry.appearance_sync = appearance_sync.refresh
+ 	rivalry.appearance_provider = func(id: String) -> Dictionary:
+ 		return {"vehicle_id":id,"livery":VehicleLivery.for_car(records.settings,id),"customisation":VehicleCustomisation.for_car(records.settings,id)}
+@@ -405,6 +424,7 @@
+ 	preload("res://backend/world_ranking_client.gd").for_client(online.client).circuit_requested.connect(_open_world_circuit)
+ 	challenges = ChallengesClient.new()
+ 	challenges.client = online.client
++	challenges.result_poll_allowed = _result_poll_allowed.bind("challenges")
+ 	challenges.cloud = cloud
+ 	add_child(challenges)
+ 	challenges.changed.connect(_challenges_changed)
+@@ -418,6 +438,7 @@
+ 	rivalry_timer.wait_time = 0.5
+ 	rivalry_timer.autostart = true
+ 	rivalry_timer.timeout.connect(func() -> void:
++		if not _background_work_allowed(): return
+ 		if challenges != null: challenges.poll_result()
+ 		if screen == "challenges" and challenge_browsing and not is_instance_valid(game) and not challenges.busy:
+ 			challenge_refresh_ticks += 1
+@@ -443,7 +464,7 @@
+ 	sync_timer.wait_time = 1.0
+ 	sync_timer.autostart = true
+ 	sync_timer.timeout.connect(func() -> void:
+-		if not online.busy and not cloud_starting:
++		if not online.busy and _background_work_allowed():
+ 			_refresh_creation_slots()
+ 			cloud.flush_outbox()
+ 			if not is_instance_valid(game): lifecycle.process_jobs())
+@@ -509,7 +530,8 @@
+ 
+ func _show_screen(next: String) -> void:
+ 	if next != "tracks" and discovery_provider != null: discovery_provider.comparisons.cancel_speculation()
+-	if appearance_sync != null: appearance_sync.refresh_if_stale()
++	if appearance_sync != null and (next == "garage" or appearance_sync._needs_recovery()): appearance_sync.refresh_if_stale()
++	if achievements != null: achievements.resume_pending()
+ 	if game_configuration != null:
+ 		game_configuration.set_transport_allowed(not is_instance_valid(game) or (game.get("track_session") != null and bool(game.get("track_session").finished)))
+ 		game_configuration.enter_menu()
+@@ -1309,6 +1331,7 @@
+ 		if startup_complete: _telemetry_observe("menu_ready",{},"ready")
+ 	var previous_profile: String = active_profile
+ 	_select_player_storage()
++	if cloud != null and previous_profile != active_profile: cloud.invalidate_outbox()
+ 	if cosmetic_economy != null:
+ 		cosmetic_economy.bind_records(records)
+ 		cosmetic_economy.refresh()
+@@ -2685,7 +2708,7 @@
+ 	await _present_race_loading()
+ 	if _race_preparation_changed(loading_id,original_scope,navigation,"garage",vehicle,selection): return
+ 	_stop_menu_page_motion()
+-	root_ui.hide()
++	_race_menu_visible(false)
+ 	game = preload("res://garage/parking_hall_drive.tscn").instantiate()
+ 	game.process_mode = Node.PROCESS_MODE_DISABLED
+ 	game.cooperative_preparation = true
+@@ -2732,7 +2755,7 @@
+ 	remove_child(previous_game)
+ 	previous_game.queue_free()
+ 	if product_telemetry != null: product_telemetry.set_transport_allowed(true)
+-	root_ui.show()
++	_race_menu_visible(true)
+ 	GameSoundtrack.instance().show_menu()
+ 	if not _queued_track_link.is_empty():
+ 		var value: String = _queued_track_link
+@@ -4029,11 +4052,25 @@
+ var test_return_to_drafts: bool = false
+ var test_document_snapshot: Dictionary = {}
+ var _practice_editor_context: Dictionary = {}
++var _race_menu_processing: Dictionary = {}
++
++func _race_menu_visible(value: bool) -> void:
++	if not is_instance_valid(root_ui): return
++	var identity: int = root_ui.get_instance_id()
++	if not value:
++		if _race_menu_processing.get("root",0) != identity:
++			_race_menu_processing = {"root":identity,"mode":root_ui.process_mode}
++		root_ui.process_mode = Node.PROCESS_MODE_DISABLED
++	else:
++		if _race_menu_processing.get("root",0) == identity: root_ui.process_mode = _race_menu_processing.mode
++		_race_menu_processing.clear()
++	root_ui.visible = value
+ var _draft_test_save_context: Dictionary = {}
+ var _draft_test_save_dialog: AcceptDialog
+ 
+ func _open_race_loading(track: NativeTrack = null, practice: bool = false) -> RaceLoading:
+ 	if product_telemetry != null: product_telemetry.set_transport_allowed(false)
++	if discovery_provider != null: discovery_provider.comparisons.cancel_speculation()
+ 	_stop_menu_page_motion()
+ 	race_loading = RaceLoading.new()
+ 	add_child(race_loading)
+@@ -4092,7 +4129,7 @@
+ 	cloud_ticket = {}
+ 	cloud_starting = false
+ 	_close_race_loading(expected_id)
+-	root_ui.visible = true
++	_race_menu_visible(true)
+ 	_show_screen(screen)
+ 	_notice("Race loading timed out. Try again.")
+ 
+@@ -4245,8 +4282,7 @@
+ 	_practice_editor_context = {}
+ 	if from_editor and screen == "create" and is_instance_valid(canvas) and canvas.document == document:
+ 		_practice_editor_context = {"root":root_ui.get_instance_id(),"navigation":_navigation_generation,"mode":root_ui.process_mode}
+-		root_ui.process_mode = Node.PROCESS_MODE_DISABLED
+-	root_ui.visible = false
++	_race_menu_visible(false)
+ 	game = GAME_SCENE.instantiate()
+ 	game.profile_enabled = race_profile_enabled
+ 	game.set("vehicle_id",attempt_vehicle)
+@@ -4405,7 +4441,7 @@
+ 	if not _practice_editor_context.is_empty() and is_instance_valid(root_ui) and root_ui.get_instance_id() == _practice_editor_context.root:
+ 		root_ui.process_mode = _practice_editor_context.mode
+ 	_practice_editor_context = {}
+-	root_ui.visible = true
++	_race_menu_visible(true)
+ 
+ func _prepare_night_lighting(loading_id: int, prepared_game: Node) -> Dictionary:
+ 	var summary: Dictionary = {"drawn":false,"items":0,"contexts":0,"sets":0,"elapsed_ms":0.0,"truncated":0,"light_limit":false}
+@@ -4497,7 +4533,7 @@
+ 	if document != test_document_snapshot or canvas.document != document: return false
+ 	_close_race_loading()
+ 	root_ui.process_mode = _practice_editor_context.mode
+-	root_ui.show()
++	_race_menu_visible(true)
+ 	NativeTrackVisual.reserve_editor_sections()
+ 	GameSoundtrack.instance().show_menu()
+ 	_update_editor_issues()
+@@ -4580,7 +4616,7 @@
+ 	menu_body = null
+ 	menu_body_slot = null
+ 	menu_body_backgrounds.clear()
+-	root_ui.visible = true
++	_race_menu_visible(true)
+ 	for child: Node in root_ui.get_children():
+ 		root_ui.remove_child(child)
+ 		child.queue_free()
+@@ -4892,7 +4928,7 @@
+ 	if not cloud_ticket.is_empty():
+ 		cloud_ticket._owner_id = account_id
+ 		cloud_ticket._origin = origin
+-	root_ui.visible = false
++	_race_menu_visible(false)
+ 	(game.get("hud") as PlaygroundHUD).show()
+ 	game.set("resume_ticket_id",str(cloud_ticket.get("ticket_id","")))
+ 	game.set("preference_records",records) # A confirmed restart begins a new attempt.
+--- a/game/backend/cloud_tracks.gd
++++ b/game/backend/cloud_tracks.gd
+@@ -30,6 +30,10 @@
+ var _write_deadlines: Dictionary = {}
+ var _flush_deadlines: Dictionary = {}
+ var profile_local_io_us: int = 0
++var background_allowed: Callable
++var _empty_outboxes: Dictionary = {}
++var _migrated_outboxes: Dictionary = {}
++var profile_flush_passes: int = 0
+ const MAX_FLUSH_JOBS: int = 16
+ 
+ func _ready() -> void:
+@@ -62,6 +66,7 @@
+ 	# Write the work marker first so a crash cannot strand a durable replay.
+ 	if active and not _write(_pending_marker(path),{"job":path.get_file()}): return false
+ 	if not _write(path,job): return false
++	if active: _empty_outboxes.erase(path.get_base_dir())
+ 	if not active and FileAccess.file_exists(_pending_marker(path)): DirAccess.remove_absolute(_pending_marker(path))
+ 	return true
+ 
+@@ -114,9 +119,11 @@
+ 	if thread.start(_discover_pending.bind(directory)) != OK: return false
+ 	while thread.is_alive(): await get_tree().process_frame
+ 	var plans: Array[Dictionary] = thread.wait_to_finish()
++	if not _background_allowed(): return false
+ 	var count: int = 0
+ 	for plan: Dictionary in plans:
+ 		if origin != client.base_url() or owner != str(client.player.get("id","")): return false
++		if not _background_allowed(): return false
+ 		var filename: String = str(plan.filename)
+ 		var path: String = directory.path_join(filename)
+ 		if plan.has("repair"):
+@@ -708,7 +715,9 @@
+ 	if ticket_data.is_empty() or owner.is_empty() or origin.is_empty(): return false
+ 	var root_path: String = (root_override if not root_override.is_empty() else "user://cloud").path_join(origin.sha256_text())
+ 	var saved: bool = _queue_run_io(_submission_ticket(ticket_data),frames,publish_version,rewinds,root_path,owner,client.server_now() if client.has_method("server_now") else 0)
+-	if saved: changed.emit()
++	if saved:
++		_empty_outboxes.erase(root_path.path_join("players").path_join(owner.sha256_text()).path_join("runs"))
++		changed.emit()
+ 	else: last_error = "The race could not be saved. Free storage and retry."
+ 	return saved
+ 
+@@ -718,7 +727,9 @@
+ 	if ticket_data.is_empty() or owner.is_empty() or origin.is_empty(): return false
+ 	var root_path: String = (root_override if not root_override.is_empty() else "user://cloud").path_join(origin.sha256_text())
+ 	var saved: Variant = await client._background(_queue_run_io.bind(_submission_ticket(ticket_data),frames,publish_version,rewinds,root_path,owner,client.server_now() if client.has_method("server_now") else 0))
+-	if saved == true: changed.emit()
++	if saved == true:
++		_empty_outboxes.erase(root_path.path_join("players").path_join(owner.sha256_text()).path_join("runs"))
++		changed.emit()
+ 	else: last_error = "The race could not be saved. Free storage and retry."
+ 	return saved == true
+ 
+@@ -825,6 +836,7 @@
+ 
+ func _migrate_outbox() -> bool:
+ 	var path: String = outbox_path()
++	if _migrated_outboxes.has(path): return true
+ 	var legacy: Dictionary = _read(path)
+ 	if legacy.has("_read_error"):
+ 		status = "Previous uploads need recovery; the original file was preserved."
+@@ -851,7 +863,8 @@
+ 		if not _save_pending_job(target,job): return false
+ 	if FileAccess.file_exists(path):
+ 		if FileAccess.file_exists(path+".migrated"): return false
+-		return DirAccess.rename_absolute(path,path+".migrated") == OK
++		if DirAccess.rename_absolute(path,path+".migrated") != OK: return false
++	_migrated_outboxes[path] = true
+ 	return true
+ 
+ func upload_jobs() -> Array[Dictionary]:
+@@ -923,6 +936,7 @@
+ 	return _save_pending_job(str(job._path),job)
+ 
+ func _submit_saved(job: Dictionary, path: String) -> Dictionary:
++	if not _background_allowed(): return _deferred_background()
+ 	var origin: String = str(client.base_url())
+ 	var owner: String = str(client.player.get("id",""))
+ 	# A pre-update job may have been accepted with an older wire envelope.
+@@ -933,9 +947,11 @@
+ 		if origin != client.base_url() or owner != str(client.player.get("id","")): return {"ok":false,"status":0,"error":"ACCOUNT_CHANGED","data":{}}
+ 		if not recovered.ok: return recovered
+ 		if recovered.data.run != null: return {"ok":true,"status":200,"data":recovered.data.run,"error":""}
++	if not _background_allowed(): return _deferred_background()
+ 	var preparation: int = Time.get_ticks_usec()
+ 	var loaded: Variant = await client._background(_load_replay.bind(path.get_base_dir().path_join(str(job.get("replay",""))),str(job.get("replay_hash",""))))
+ 	if origin != client.base_url() or owner != str(client.player.get("id","")): return {"ok":false,"status":0,"error":"ACCOUNT_CHANGED","data":{}}
++	if not _background_allowed(): return _deferred_background()
+ 	if not loaded is Dictionary:
+ 		return {"ok":false,"status":422,"error":"REPLAY_RECOVERY_REQUIRED","data":{}}
+ 	var input_count: int = preload("res://race/input_record.gd").count(loaded)
+@@ -949,6 +965,7 @@
+ 		if not bool(client._capabilities.get("trajectory_verification",false)) or (int(options.path) == 1 and int(client._capabilities.get("race_path_wire_version",0)) < 1):
+ 			await client.request_api("/bootstrap")
+ 			if origin != client.base_url() or owner != str(client.player.get("id","")): return {"ok":false,"status":0,"error":"ACCOUNT_CHANGED","data":{}}
++			if not _background_allowed(): return _deferred_background()
+ 			if not bool(client._capabilities.get("trajectory_verification",false)) or (int(options.path) == 1 and int(client._capabilities.get("race_path_wire_version",0)) < 1):
+ 				return {"ok":false,"status":503,"error":"SUBMISSION_SERVER_UPDATE_REQUIRED","data":{}}
+ 		if int(options.get("result",0)) == 1 and int(client._capabilities.get("non_improving_runs_version",0)) != 1:
+@@ -956,16 +973,19 @@
+ 		var claims: Array = loaded.get("claimed_lap_ticks",[]) if int(options.get("result",0)) == 1 else []
+ 		var encoded: Variant = await client._background(Client._pack_trajectory.bind(input_count,loaded.race_proof,loaded.get("rewinds",[]),loaded.get("ghost",{}),options.incidents,int(options.path) == 1,claims))
+ 		if origin != client.base_url() or owner != str(client.player.get("id","")): return {"ok":false,"status":0,"error":"ACCOUNT_CHANGED","data":{}}
++		if not _background_allowed(): return _deferred_background()
+ 		if not encoded is Dictionary or encoded.is_empty(): return {"ok":false,"status":422,"error":"REPLAY_RECOVERY_REQUIRED","data":{}}
+ 		packet = encoded
+ 	if not loaded.has("race_proof"):
+ 		if not looked_up:
++			if not _background_allowed(): return _deferred_background()
+ 			var recovered: Dictionary = await _lookup_submission(str(job.ticket))
+ 			if origin != client.base_url() or owner != str(client.player.get("id","")): return {"ok":false,"status":0,"error":"ACCOUNT_CHANGED","data":{}}
+ 			if not recovered.ok: return recovered
+ 			if recovered.data.run != null: return {"ok":true,"status":200,"data":recovered.data.run,"error":""}
+ 		var encoded: Variant = await client._background(INPUT_RECOVERY.replay.bind(loaded))
+ 		if origin != client.base_url() or owner != str(client.player.get("id","")): return {"ok":false,"status":0,"error":"ACCOUNT_CHANGED","data":{}}
++		if not _background_allowed(): return _deferred_background()
+ 		if not encoded is Dictionary or encoded.is_empty(): return {"ok":false,"status":422,"error":"REPLAY_RECOVERY_REQUIRED","data":{}}
+ 		packet = encoded
+ 	job.submission_schema = packet.schema if not packet.is_empty() else "bmt-trajectory-v1"
+@@ -999,15 +1019,34 @@
+ 		return {"ok":false,"status":502,"error":"INVALID_RESPONSE","data":{}}
+ 	return response
+ 
++func invalidate_outbox() -> void:
++	# An account/profile transition can expose work from an earlier process.
++	# Local queue writes invalidate immediately; idle timer ticks do not.
++	var path: String = outbox_path()
++	var directory: String = path.get_base_dir().path_join("runs")
++	_empty_outboxes.erase(directory)
++	_migrated_outboxes.erase(path)
++	_recovered_outboxes.erase(directory)
++
++func _background_allowed() -> bool:
++	return not background_allowed.is_valid() or bool(background_allowed.call())
++
++func _deferred_background() -> Dictionary:
++	return {"ok":false,"status":0,"error":"BACKGROUND_DEFERRED","data":{}}
++
+ func flush_outbox() -> void:
+ 	if flushing or not client.signed_in(): return
++	if not _background_allowed(): return
++	if _empty_outboxes.has(outbox_path().get_base_dir().path_join("runs")): return
+ 	flushing = true
++	profile_flush_passes += 1
+ 	await _flush_jobs()
+ 	flushing = false
+ 	changed.emit()
+ 
+ func _wait_for_upload(run_id: String, ticket_id: String, owner: String, origin: String) -> void:
+ 	if str(client.player.get("id","")) != owner or client.base_url() != origin: return
++	if not _background_allowed(): return
+ 	var response: Dictionary = await client.wait_for_run(run_id,ticket_id)
+ 	if not is_inside_tree() or str(client.player.get("id","")) != owner or client.base_url() != origin: return
+ 	if response.ok and response.data.status in ["verified","skipped","rejected","failed"]:
+@@ -1022,7 +1061,11 @@
+ 	if Time.get_ticks_msec() < int(_flush_deadlines.get(request_scope,0)): return
+ 	var directory: String = outbox_path().get_base_dir().path_join("runs")
+ 	if not await _recover_pending(directory) or str(client.player.get("id","")) != owner or client.base_url() != origin: return
++	if not _background_allowed(): return
+ 	var jobs: Array[Dictionary] = _pending_jobs(directory)
++	if jobs.is_empty() and not _pending_iterators.has(directory.get_base_dir().path_join("pending")):
++		_empty_outboxes[directory] = true
++		return
+ 	var polled: Dictionary = {}
+ 	var ids := PackedStringArray()
+ 	for job: Dictionary in jobs:
+@@ -1049,6 +1092,7 @@
+ 		var path: String = str(job._path)
+ 		job.erase("_path")
+ 		if str(client.player.get("id","")) != owner or client.base_url() != origin: break
++		if not _background_allowed(): break
+ 		if job.has("done") or not _job_ready(job): continue
+ 		if job.has("failure"):
+ 			if job.get("failure","") != "verifier_unavailable" or not job.get("retryable",false): continue
+@@ -1073,6 +1117,7 @@
+ 		if not job.has("run_id"):
+ 			if not _reserve_background_write(request_scope): continue
+ 			response = await _submit_saved(job,path)
++			if response.get("error") == "BACKGROUND_DEFERRED": break
+ 			checked = true
+ 			if str(client.player.get("id","")) != owner or client.base_url() != origin: break
+ 			if response.ok and not Client.valid_run(response.get("data")): response = {"ok":false,"status":502,"error":"INVALID_RESPONSE","data":{}}
+@@ -1092,6 +1137,7 @@
+ 			_save_job(path,job)
+ 			if client.has_method("wait_for_run") and response.data.status in ["queued","verifying"]:
+ 				_wait_for_upload.call_deferred(str(job.run_id),str(job.ticket),owner,origin)
++		if not _background_allowed(): break
+ 		if polled.has(str(job.run_id)): response = {"ok":true,"status":200,"data":polled[str(job.run_id)]}
+ 		elif not batch.is_empty() and not batch.ok: response = batch
+ 		elif response.is_empty():
+@@ -1107,6 +1153,7 @@
+ 				continue
+ 			# Reconcile the original ticket/key/content. Never mint a replacement attempt.
+ 			var recovered: Dictionary = await _submit_saved(job,path)
++			if recovered.get("error") == "BACKGROUND_DEFERRED": break
+ 			if str(client.player.get("id","")) != owner or client.base_url() != origin: break
+ 			if recovered.ok and Client.valid_run(recovered.get("data")):
+ 				if str(recovered.data.run_id) == str(job.run_id): job.missing_checks = int(job.get("missing_checks",0))+1
+@@ -1149,6 +1196,7 @@
+ 	if checked: run_connection_failed = unavailable
+ 
+ func _reserve_background_write(request_scope: String) -> bool:
++	if not _background_allowed(): return false
+ 	if Time.get_ticks_msec() < int(_write_deadlines.get(request_scope,0)): return false
+ 	# Result uploads cost four units. Leave room in the shared account budget
+ 	# for actual race starts, resume operations and player actions.
+--- a/game/backend/appearance_sync.gd
++++ b/game/backend/appearance_sync.gd
+@@ -11,7 +11,7 @@
+ var _applying: bool = false
+ var _debounce: Timer
+ var _poll: Timer
+-var clean_poll_allowed: Callable
++var refresh_allowed: Callable
+ var _last_success_msec: int = -1
+ 
+ func _ready() -> void:
+@@ -41,20 +41,29 @@
+ 	_last_success_msec = -1
+ 	if records != null: records.appearance_committed.connect(_committed)
+ 	if is_instance_valid(_debounce): _debounce.stop()
++	if is_instance_valid(_poll):
++		if not _scope.is_empty() and _needs_recovery(): _poll.start()
++		else: _poll.stop()
+ 
+ func _committed() -> void:
+-	if not _applying and not scope().is_empty() and _scope == scope(): _debounce.start()
++	if not _applying and not scope().is_empty() and _scope == scope():
++		_debounce.start()
++		_poll.start()
+ 
+ func _needs_recovery() -> bool:
+ 	if records == null: return false
+-	if not status.is_empty() or not records.settings.has(State.KEY) or not State.pending(records.settings).is_empty(): return true
++	if not records.settings.has(State.KEY) or not State.pending(records.settings).is_empty(): return true
+ 	var base: Dictionary = State.baseline(records.settings)
+ 	for id: String in VehicleCatalog.IDS:
+ 		if State.authored(records.settings,id) and State.car(records.settings,id) != base.get(id): return true
+ 	return false
+ 
+ func _poll_refresh() -> void:
+-	if not _needs_recovery() and clean_poll_allowed.is_valid() and not bool(clean_poll_allowed.call()): return
++	# An unchanged local baseline gives no reason to fetch every 30 seconds.
++	# A visible consumer/foreground return can explicitly request freshness.
++	if not _needs_recovery():
++		_poll.stop()
++		return
+ 	refresh()
+ 
+ func refresh_if_stale() -> void:
+@@ -75,14 +84,20 @@
+ 
+ func refresh() -> void:
+ 	if records == null or busy or _scope.is_empty() or scope() != _scope: return
++	if refresh_allowed.is_valid() and not bool(refresh_allowed.call()): return
++	if _poll.is_stopped(): _poll.start()
+ 	var epoch: int = _epoch
+ 	var owner: LocalRecords = records
+ 	busy = true
+ 	var response: Dictionary = await client.request_api("/me/appearances",HTTPClient.METHOD_GET,{},"",true)
+ 	if not _current(epoch,owner): return
++	if refresh_allowed.is_valid() and not bool(refresh_allowed.call()):
++		busy = false
++		return
+ 	if not response.get("ok",false) or not State.valid_collection(response.get("data",{}).get("appearances")):
+ 		status = "Garage sync needs a server update." if response.get("status",0) == 404 else "Garage changes saved on this device. Sync will retry."
+ 		busy = false
++		if not _needs_recovery(): _poll.stop()
+ 		changed.emit()
+ 		return
+ 	status = ""
+@@ -91,6 +106,7 @@
+ 	var base: Dictionary = State.baseline(records.settings)
+ 	var pending: Dictionary = State.pending(records.settings)
+ 	for id: String in VehicleCatalog.IDS:
++		if refresh_allowed.is_valid() and not bool(refresh_allowed.call()): break
+ 		var local: Dictionary = State.car(records.settings,id)
+ 		var previous: Variant = base.get(id)
+ 		var server: Variant = remote.get(id)
+@@ -143,4 +159,5 @@
+ 			if State.authored(records.settings,id) and State.car(records.settings,id) != base.get(id):
+ 				_debounce.start()
+ 				break
++	if not _needs_recovery(): _poll.stop()
+ 	changed.emit()
+--- a/game/backend/cosmetic_economy.gd
++++ b/game/backend/cosmetic_economy.gd
+@@ -18,6 +18,7 @@
+ var _timer: Timer
+ var _read_at: int = -FRESH_MS
+ var _refresh_again: bool = false
++var background_allowed: Callable
+ 
+ func _ready() -> void:
+ 	_remember_legacy()
+@@ -117,12 +118,16 @@
+ 	sync_identity()
+ 	if force: _read_at = -FRESH_MS
+ 	if not authenticated(): return
++	if background_allowed.is_valid() and not bool(background_allowed.call()):
++		if force: _refresh_again = true
++		return
+ 	if refreshing or busy:
+ 		if force: _refresh_again = true
+ 		return
+ 	if not force and pending.is_empty() and not wallet.is_empty() and Time.get_ticks_msec()-_read_at < FRESH_MS: return
+ 	var expected: String = scope
+ 	var epoch: int = _epoch
++	_refresh_again = false
+ 	refreshing = true
+ 	var response: Dictionary = await client.request_api("/economy",HTTPClient.METHOD_GET,{},"",true)
+ 	if _current_scope() != expected or epoch != _epoch: return
+@@ -164,6 +169,7 @@
+ 
+ func _send_purchase() -> bool:
+ 	if busy or pending.is_empty() or not authenticated(): return false
++	if background_allowed.is_valid() and not bool(background_allowed.call()): return false
+ 	var expected: String = scope
+ 	var epoch: int = _epoch
+ 	var operation: Dictionary = pending.duplicate(true)
+--- a/game/backend/achievements_client.gd
++++ b/game/backend/achievements_client.gd
+@@ -24,6 +24,7 @@
+ var _remote_seeded: bool = false
+ var _activity_pending: bool = false
+ var _activity_timer: SceneTreeTimer
++var refresh_allowed: Callable
+ 
+ func authenticated() -> bool:
+ 	return client != null and client.signed_in()
+@@ -86,9 +87,13 @@
+ func _refresh_activity() -> void:
+ 	_activity_timer = null
+ 	if not _activity_pending: return
++	if refresh_allowed.is_valid() and not bool(refresh_allowed.call()): return
+ 	if busy: return # The in-flight operation schedules the retained activity.
+ 	_activity_pending = false
+ 	refresh(true)
++
++func resume_pending() -> void:
++	if _activity_pending: refresh_after_activity()
+ 
+ func valid(data: Variant) -> bool:
+ 	if not data is Dictionary or data.get("schema") != 1 or not data.get("states") is Dictionary: return false
+@@ -103,6 +108,9 @@
+ 
+ func refresh(activity: bool = false) -> void:
+ 	sync_identity()
++	if refresh_allowed.is_valid() and not bool(refresh_allowed.call()):
++		if activity: _activity_pending = true
++		return
+ 	if not authenticated() or busy or (not activity and Time.get_ticks_msec()-_attempt_at < 60000): return
+ 	var expected: String = scope
+ 	var epoch: int = _epoch
+--- a/game/backend/challenges_client.gd
++++ b/game/backend/challenges_client.gd
+@@ -3,6 +3,7 @@
+ ## Invitations, retry identity and account fences stay outside the simulation.
+ signal changed
+ var client: Node
++var result_poll_allowed: Callable
+ var cloud: Node
+ var items: Array[Dictionary] = []
+ var selected: Dictionary = {}
+@@ -457,6 +458,7 @@
+ 	return merged if valid_snapshot(merged) else {}
+ 
+ func poll_result() -> void:
++	if result_poll_allowed.is_valid() and not bool(result_poll_allowed.call()): return
+ 	if _polling or result_ticket.is_empty() or result_state in ["verified","skipped","rejected","expired"]: return
+ 	var recent: Dictionary = client.recent_run(result_ticket) if client.has_method("recent_run") else {}
+ 	var confirmed: bool = recent.get("status") in ["verified","skipped"] and _failures == 0
+--- a/game/backend/weekly_rivalry_client.gd
++++ b/game/backend/weekly_rivalry_client.gd
+@@ -3,6 +3,7 @@
+ signal changed
+ var circuit_mode: bool = false
+ var client: Node
++var result_poll_allowed: Callable
+ var appearance_provider: Callable
+ var appearance_sync: Callable
+ var _synced_appearance: String = ""
+@@ -332,6 +333,7 @@
+ 	return recording
+ 
+ func poll_result() -> void:
++	if result_poll_allowed.is_valid() and not bool(result_poll_allowed.call()): return
+ 	if busy or result_polling or result_ticket.is_empty() or snapshot_scope != scope(): return
+ 	var current_msec: int = Time.get_ticks_msec()
+ 	if _poll_ticket != result_ticket:
+--- a/game/backend/resume_recovery.gd
++++ b/game/backend/resume_recovery.gd
+@@ -14,9 +14,20 @@
+ var _instance_nonce: String = Crypto.new().generate_random_bytes(24).hex_encode()
+ static var _process_nonce: String = Crypto.new().generate_random_bytes(24).hex_encode()
+ var profile_callback_us: int = 0
++var background_allowed: Callable
++var _empty_directory: String = ""
+ const Files = preload("res://backend/atomic_json.gd")
+ const REQUEST_INTERVAL_SECONDS: int = 5
+ const MAX_INSPECTED: int = 64
++
++func _ready() -> void:
++	if client != null and client.has_signal("identity_changed"): client.identity_changed.connect(_wake)
++	if client != null and not client.signed_in(): set_process(false)
++
++func _wake() -> void:
++	_empty_directory = ""
++	_next_msec = 0
++	set_process(client != null and client.signed_in())
+ 
+ func _directory(owner: String, origin: String) -> String:
+ 	var base: String = root_override if not root_override.is_empty() else client.session_path.get_base_dir().path_join("resume_recovery") if not client.session_path.is_empty() else "user://resume_recovery"
+@@ -61,13 +72,17 @@
+ 	# A failed ownership journal must stop consumption before any charge.
+ 	if active.has(str(entry.begin_key)) and not bool(active[str(entry.begin_key)].saved): return false
+ 	var path: String = _directory(str(entry.owner),str(entry.origin)).path_join(str(entry.consume_key).sha256_text()+".json")
+-	return Files.write(path,entry,32768)
++	var saved: bool = Files.write(path,entry,32768)
++	if saved: _wake()
++	return saved
+ 
+ func discard(entry: Dictionary) -> void:
+ 	if not entry.has_all(["owner","origin","consume_key"]): return
+ 	DirAccess.remove_absolute(_directory(str(entry.owner),str(entry.origin)).path_join(str(entry.consume_key).sha256_text()+".json"))
+ 
+ func _process(_delta: float) -> void:
++	if background_allowed.is_valid() and not bool(background_allowed.call()): return
++	if not _empty_directory.is_empty() and _empty_directory == _directory(str(client.player.get("id","")),str(client.base_url())): return
+ 	if not busy and Time.get_ticks_msec() >= _next_msec:
+ 		var started: int = Time.get_ticks_usec()
+ 		_next_msec = Time.get_ticks_msec()+5000+int(Crypto.new().generate_random_bytes(1)[0])*10
+@@ -77,10 +92,13 @@
+ 
+ func reconcile() -> void:
+ 	if busy or not client.signed_in() or not bool(client._capabilities.get("resume_recovery",false)): return
++	if background_allowed.is_valid() and not bool(background_allowed.call()): return
+ 	busy = true
+ 	var owner: String = str(client.player.get("id",""))
+ 	var origin: String = str(client.base_url())
+ 	var directory: String = _directory(owner,origin)
++	_empty_directory = ""
++	set_process(true)
+ 	if not _ready_scope(directory):
+ 		busy = false
+ 		return
+@@ -94,16 +112,26 @@
+ 		return
+ 	# Re-read after acquiring the shared lock. The preceding instance may have
+ 	# changed both the retry deadline and a journal while this one waited.
+-	if str(client.player.get("id","")) == owner and client.base_url() == origin and _ready_scope(directory):
++	var allowed: bool = not background_allowed.is_valid() or bool(background_allowed.call())
++	if allowed and str(client.player.get("id","")) == owner and client.base_url() == origin and _ready_scope(directory):
+ 		await _reconcile_locked(directory,owner,origin)
+ 	_scope_lock.release()
+ 	_scope_lock = null
+ 	busy = false
+ 
+ func _reconcile_locked(directory: String, owner: String, origin: String) -> void:
++	if background_allowed.is_valid() and not bool(background_allowed.call()): return
+ 	var filenames: PackedStringArray = DirAccess.get_files_at(directory) if DirAccess.dir_exists_absolute(directory) else PackedStringArray()
++	var has_journals: bool = false
++	for filename: String in filenames:
++		if filename.ends_with(".json") and not filename.begins_with("."): has_journals = true; break
++	if not has_journals:
++		_empty_directory = directory
++		set_process(false)
++		return
+ 	var start: int = int(_cursor.get(directory,0)) % maxi(1,filenames.size())
+ 	for offset: int in range(mini(MAX_INSPECTED,filenames.size())):
++		if background_allowed.is_valid() and not bool(background_allowed.call()): return
+ 		var index: int = (start+offset) % filenames.size()
+ 		_cursor[directory] = index+1
+ 		var filename: String = filenames[index]
+--- a/game/tests/test_backend_reuse.gd
++++ b/game/tests/test_backend_reuse.gd
+@@ -43,6 +43,8 @@
+ 		return {"ok":true,"status":200,"data":data,"error":""}
+ 
+ class ComparisonClient extends Node:
++	var player: Dictionary = {"id":"reuse-alice"}
++	func base_url() -> String: return "http://reuse-fixture.invalid"
+ 	var packet: Dictionary = {}
+ 	var hold: bool = true
+ 	var paths: Array[String] = []
+--- a/game/tests/test_resume_recovery_budget.gd
++++ b/game/tests/test_resume_recovery_budget.gd
+@@ -15,8 +15,14 @@
+ 	var keys: Array[String] = []
+ 	var held: bool = false
+ 	var change_owner: bool = false
++	var slot_reads: int = 0
+ 	var reply: Dictionary = {"ok":true,"status":200,"data":{"state":"consumed","receipt_id":RACE,"used":1,"wallet":{"balance":2,"free":1,"reset_at":1900000000}},"error":""}
+ 	func request_api(_path: String, _method: HTTPClient.Method = HTTPClient.METHOD_GET, payload: Dictionary = {}, _key: String = "", _authenticated: bool = false) -> Dictionary:
++		# Publication retries now check entitlement before the keyed mutation.
++		# Count that precondition separately from the mutation-budget assertions.
++		if _path == "/me/entitlements":
++			slot_reads += 1
++			return {"ok":true,"status":200,"data":{"publishing_slots":1},"error":""}
+ 		bodies.append(payload.duplicate(true))
+ 		paths.append(_path)
+ 		keys.append(_key)
+@@ -211,9 +217,11 @@
+ 
+ 	for rate_limited: bool in [false,true]:
+ 		api = fixture("outbox-client-%s"%rate_limited)
++		api._capabilities.trajectory_verification = true
+ 		var cloud: Node = cloud_for(api,"outbox-%s"%rate_limited)
++		var proof: Dictionary = {"schema":"bmt-race-proof-v1","samples":[[0,0,0,0,0,0,0,0],[1,1,0,0,1,0,0,0]]}
+ 		for index: int in range(20):
+-			check(cloud.queue_run({"ticket_id":"outbox-ticket-%d"%index,"_submit_key":"original-key-%d"%index},[[0,255,0]]),"outbox backlog is durable")
++			check(cloud.queue_run({"ticket_id":"outbox-ticket-%d"%index,"_submit_key":"original-key-%d"%index,"_race_proof":proof,"_wire_options":{"path":0,"incidents":false}},[[0,255,0]]),"outbox backlog is durable")
+ 		api.reply = failure(429,"RATE_LIMITED",120) if rate_limited else {"ok":true,"status":202,"data":{"run_id":"run-fixture","status":"verified"},"error":""}
+ 		await cloud.flush_outbox()
+ 		await cloud.flush_outbox()
+@@ -275,6 +283,7 @@
+ 	check(retry_flow._save(retry_path,retry_job),"publication retry journal saved")
+ 	api.reply = failure(503,"UNAVAILABLE")
+ 	await retry_flow.retry(retry_document)
++	check(api.slot_reads == 1,"explicit publication retry checks current publishing entitlement")
+ 	var pending_retry: Dictionary = retry_flow._read(retry_path)
+ 	var retry_key: String = str(pending_retry.get("publication_retry_key",""))
+ 	check(not retry_key.is_empty() and api.keys[0] == retry_key,"unknown publication retry keeps its saved operation key")
+@@ -288,6 +297,9 @@
+ 	await retry_flow.retry(retry_document)
+ 	check(api.keys.size() == 1,"service-unavailable publication retry remains deferred after restart")
+ 	api._sample_time(1900000016) # Advance the authoritative fixture clock past the 15-second pause.
++	# Expire the local monotonic wait too; a wall/server-clock change alone
++	# must not accelerate a retry in a running scheduler.
++	for wait_key: String in retry_flow._batch_deadlines: retry_flow._batch_deadlines[wait_key] = 0
+ 	await retry_flow.retry(retry_document)
+ 	check(api.keys[1] == retry_key,"publication retry survives restart with exactly the same operation key")
+ 	var acknowledged: Dictionary = retry_flow._read(retry_path)
+--- /dev/null
++++ b/game/tests/test_race_work_demand.gd
+@@ -0,0 +1,285 @@
++extends SceneTree
++## Demand-driven work regression: real App/race, private records, synthetic transport.
++## Forced timer probes reproduce due work; they are not traffic-rate estimates.
++const STATE = preload("res://persistence/appearance_state.gd")
++var checks: int = 0
++var failures: int = 0
++var app: Node
++var report: Dictionary = {"schema":1,"scope":"Actual App demand-driven work regression; private records and synthetic transport","observations":{},"probes":{}}
++var output: String = "res://../docs/evidence/race-demand-work-2026-10-26/runtime.json"
++const AUDITED_SOURCES: Array[String] = ["core/app.gd","core/game.gd","backend/cloud_tracks.gd","backend/appearance_sync.gd","backend/cosmetic_economy.gd","backend/achievements_client.gd","backend/challenges_client.gd","backend/weekly_rivalry_client.gd","backend/product_telemetry.gd","backend/game_configuration.gd","backend/client_quality.gd","backend/resume_recovery.gd","backend/comparison_preloader.gd","editor/editor_memory.gd","diagnostics/race_hitch_monitor.gd","ui/track_browser.gd","persistence/condition_store.gd"]
++
++func source_hashes() -> Dictionary:
++	var result: Dictionary = {}
++	for path: String in AUDITED_SOURCES: result[path] = FileAccess.get_sha256("res://"+path)
++	return result
++
++class SyntheticClient extends "res://backend/backend_client.gd":
++	var phase: String = "setup"
++	var calls: Array[Dictionary] = []
++	func request_api(path: String, method: HTTPClient.Method = HTTPClient.METHOD_GET, _payload: Dictionary = {}, _key: String = "", _authenticated: bool = false) -> Dictionary:
++		return await intercepted(path,method)
++	func _send(path: String, method: HTTPClient.Method, _payload: Dictionary, _authorized: bool, _key: String = "", _headers: PackedStringArray = [], _owner: int = 0) -> Dictionary:
++		return await intercepted(path,method)
++	func intercepted(path: String, method: HTTPClient.Method) -> Dictionary:
++		calls.append({"phase":phase,"path":path,"method":method,"msec":Time.get_ticks_msec()})
++		await get_tree().process_frame
++		return {"ok":false,"status":503,"error":"AUDIT_SYNTHETIC_OFFLINE","data":{}}
++
++func _initialize() -> void: run.call_deferred()
++func check(ok: bool, label: String) -> void:
++	checks += 1
++	if not ok: failures += 1; print("AUDIT_FAIL: ",label)
++func frames(count: int = 8) -> void:
++	for _index: int in range(count): await process_frame
++func paths(client: Node, phase: String) -> Array:
++	return client.calls.filter(func(row: Dictionary) -> bool: return row.phase == phase).map(func(row: Dictionary) -> String: return row.path)
++func inventory(node: Node, result: Dictionary, game: Node) -> void:
++	if node == game: return
++	var script: Script = node.get_script()
++	if node.can_process() and (node.is_processing() or node.is_physics_processing()) and script != null:
++		result.processing.append({"path":str(node.get_path()),"script":script.resource_path,"process":node.is_processing(),"physics":node.is_physics_processing()})
++	if node is Timer and node.can_process() and not node.is_stopped():
++		result.timers.append({"path":str(node.get_path()),"seconds":node.wait_time})
++	if node is SubViewport:
++		result.viewports.append({"path":str(node.get_path()),"update_mode":node.render_target_update_mode,"can_process":node.can_process()})
++	for child: Node in node.get_children(): inventory(child,result,game)
++func emit_app_timer(seconds: float) -> void:
++	for child: Node in app.get_children():
++		if child is Timer and is_equal_approx(child.wait_time,seconds): child.timeout.emit()
++	await frames()
++	while app.cloud.flushing: await process_frame
++
++func run() -> void:
++	report.sources_at_start = source_hashes()
++	OS.set_environment("BMT_API_URL","")
++	root.size = Vector2i(1280,720)
++	for argument: String in OS.get_cmdline_user_args():
++		if argument.begins_with("--report="): output = argument.trim_prefix("--report=")
++	var folder: String = "user://race-work-audit-"+TrackLibrary.unique_id()
++	app = load("res://core/app.tscn").instantiate()
++	app.records = LocalRecords.new(folder.path_join("records.json"))
++	app.records.settings.music_enabled = false
++	app.records.settings.optional_analytics = true
++	app.library = TrackLibrary.new(folder.path_join("tracks"))
++	app.cloud_root_override = folder.path_join("cloud")
++	root.add_child(app)
++	while not app.startup_complete: await process_frame
++	app._show_screen("garage")
++	while is_instance_valid(app._retained_garage) and not app._retained_garage.showroom.showroom_ready: await process_frame
++	await frames(30)
++	var track: NativeTrack = NativeTrack.read("res://resources/tracks/"+str(app.BUILTIN_IDS[0])+".json")
++	track.metadata.cloud_version = "audit-private-fixture"
++	app._show_screen("tracks"); app.selected_track = track
++	await app._start_race(track,false,true)
++	check(is_instance_valid(app.game) and app.game.preparation_complete,"Actual App race prepared")
++	if not is_instance_valid(app.game): quit(1); return
++	app.game.countdown_ticks = 0
++	await frames(20)
++	check(not app.game.paused and app.game.finish_sim == null,"Race actively simulates")
++	check(not app.product_telemetry._allowed and not app.game_configuration._allowed,"Telemetry and configuration transport gated")
++	check(is_instance_valid(app._retained_garage) and not app._retained_garage.can_process(),"Parked Garage processing disabled")
++	var listing: Dictionary = {"processing":[],"timers":[],"viewports":[]}
++	inventory(app,listing,app.game)
++	check(listing.viewports.size() == 3 and listing.viewports.all(func(row: Dictionary) -> bool: return row.update_mode == SubViewport.UPDATE_DISABLED and not row.can_process),"All three parked Garage viewports disabled")
++	report.observations.background_nodes = listing
++	report.observations.menu_root = {"visible":app.root_ui.is_visible_in_tree(),"can_process":app.root_ui.can_process(),"process_mode":app.root_ui.process_mode}
++	var memory_before: int = app.editor_memory.next_sample
++	var tick_before: int = app.game.sim.state.tick
++	var position_before: Vector2 = app.game.sim.state.position
++	var driving: bool = "--drive" in OS.get_cmdline_user_args()
++	if driving: Input.action_press("accelerate")
++	var profile_before: int = app.game.hitch_diagnostics.observer_total_us
++	var count_before: int = app.game.hitch_diagnostics.observed_frames
++	await create_timer(2.5).timeout
++	report.observations.guest_race = {"ticks":app.game.sim.state.tick-tick_before,"editor_memory_sampled":app.editor_memory.next_sample>memory_before,"diagnostic_frames":app.game.hitch_diagnostics.observed_frames-count_before,"diagnostic_callback_us":app.game.hitch_diagnostics.observer_total_us-profile_before,"diagnostic_detail":app.game.hitch_diagnostics.detailed}
++	report.observations.guest_race.driving = driving
++	report.observations.guest_race.distance_from_start_m = app.game.sim.state.position.distance_to(position_before)
++	if driving: check(report.observations.guest_race.distance_from_start_m>1,"Accelerator input moves real race simulation")
++	check(app.game.sim.state.tick>tick_before,"Canonical race advances during measurement")
++	check(not report.observations.guest_race.editor_memory_sampled,"No routine editor/Garage memory sampling during race")
++	check(not app.root_ui.can_process(),"Hidden race menu processing is suspended")
++	# Attach synthetic account after race entry: no sign-in or race-ticket requests.
++	# Production App callbacks and service logic remain unchanged.
++	var client := SyntheticClient.new()
++	client._base_url = "https://race-work-audit.invalid"
++	client._access_token = "synthetic-not-a-credential"
++	client.player = {"id":"audit-driver","display_name":"Audit Driver","country_code":"FI","needs_username":false}
++	client.session_path = folder.path_join("synthetic-session.cfg")
++	client._capabilities = {"batch_run_status":true,"resume_recovery":true}
++	app.add_child(client)
++	app.online.client = client
++	for field: String in ["cloud","cosmetic_economy","appearance_sync","achievements","rivalry","challenges","product_telemetry","game_configuration","race_ad_breaks"]: app.get(field).client = client
++	client.game_configuration = app.game_configuration
++	client.resume_recovery.background_allowed = app._background_work_allowed
++	app.cosmetic_economy.sync_identity()
++	app.achievements.sync_identity()
++	app.appearance_sync.bind_records(app.records)
++	var baseline: Dictionary = {}
++	for id: String in VehicleCatalog.IDS: baseline[id] = STATE.car(app.records.settings,id)
++	app.records.settings[STATE.KEY] = {"version":1,"baseline":baseline,"pending":{}}
++	app.appearance_sync.status = ""
++	await frames()
++	client.phase = "clean_due_timers"
++	app.appearance_sync._poll_refresh()
++	app.cosmetic_economy._timer.timeout.emit()
++	app.product_telemetry.pump()
++	app.game_configuration.pump()
++	await emit_app_timer(1.0)
++	await emit_app_timer(0.5)
++	await frames()
++	report.probes.clean_due_timers = paths(client,client.phase)
++	check(report.probes.clean_due_timers.is_empty(),"Clean due timers make no synthetic HTTP request")
++	var empty_flush_costs: Array[int] = []
++	for _sample: int in range(8):
++		var flush_start: int = Time.get_ticks_usec()
++		await app.cloud.flush_outbox()
++		empty_flush_costs.append(Time.get_ticks_usec()-flush_start)
++	report.observations.empty_outbox_flush_us = empty_flush_costs
++	client.phase = "pending_outbox"
++	var ticket: String = "audit-previous-race"
++	var job_path: String = app.cloud.outbox_path().get_base_dir().path_join("runs").path_join(ticket.sha256_text()+".job.json")
++	check(app.cloud._save_pending_job(job_path,{"ticket":ticket,"key":"audit-existing-operation","run_id":"audit-existing-run"}),"Private previous-run journal saved")
++	await emit_app_timer(1.0)
++	report.probes.pending_outbox = paths(client,client.phase)
++	check(report.probes.pending_outbox.is_empty(),"Pending old uploads do not poll during active race")
++	var flush_passes: int = app.cloud.profile_flush_passes
++	await app.cloud.flush_outbox()
++	check(app.cloud.profile_flush_passes == flush_passes,"Completion-triggered direct flush is also gated")
++	client.phase = "pending_appearance"
++	app.appearance_sync.status = "Fixture: pending recovery"
++	app.records.settings[STATE.KEY].pending.compact = baseline.compact.duplicate(true)
++	app.appearance_sync._poll.timeout.emit()
++	await frames()
++	report.probes.pending_appearance = paths(client,client.phase)
++	check(report.probes.pending_appearance.is_empty(),"Appearance recovery remains pending during race")
++	client.phase = "pending_purchase"
++	app.cosmetic_economy.pending = {"item_id":str(app.cosmetic_economy.Shop.items().keys()[0]),"key":"audit-existing-purchase","expected_price":1}
++	app.cosmetic_economy._timer.timeout.emit()
++	await frames()
++	report.probes.pending_purchase = paths(client,client.phase)
++	check(report.probes.pending_purchase.is_empty() and not app.cosmetic_economy.pending.is_empty(),"Purchase recovery preserves pending operation without race-time reads or writes")
++	client.phase = "pending_result_polls"
++	app.challenges.result_ticket = "audit-old-challenge"
++	app.challenges.result_state = "queued"
++	app.challenges._next_poll = 0
++	app.rivalry.result_ticket = "audit-old-rivalry"
++	app.rivalry.snapshot_scope = app.rivalry.scope()
++	app.rivalry.model.sample = false
++	app.rivalry_result_pending = true
++	await emit_app_timer(0.5)
++	report.probes.pending_result_polls = paths(client,client.phase)
++	check(report.probes.pending_result_polls.is_empty(),"Old challenge/rivalry results are not polled during race")
++	app.challenges.poll_result(); app.rivalry.poll_result()
++	await frames()
++	check(paths(client,client.phase).is_empty(),"Direct result-completion callbacks obey demand gate")
++	client.phase = "focus_return"
++	app.achievements._attempt_at = -60000
++	app._notification(Node.NOTIFICATION_APPLICATION_FOCUS_IN)
++	await frames()
++	report.probes.focus_return = paths(client,client.phase)
++	check(report.probes.focus_return.is_empty(),"Focus return does not refresh unused achievement data")
++	client.phase = "race_achievement_event"
++	app.achievements.refresh_after_activity()
++	await create_timer(0.5).timeout
++	check(paths(client,client.phase).is_empty() and app.achievements._activity_pending,"Real achievement invalidation is retained without race-time transport")
++	var parked_root: Control = app.root_ui
++	app._race_menu_visible(true)
++	check(parked_root.can_process(),"Retained race menu restores its original process mode")
++	app._race_menu_visible(false)
++	check(not parked_root.can_process(),"Retry can suspend the same menu again")
++	var memory_trims: int = app.editor_memory.trims
++	var pressure_tick: int = app.game.sim.state.tick
++	app._notification(Node.NOTIFICATION_OS_MEMORY_WARNING)
++	app._process(0.0)
++	check(app.editor_memory.trims>memory_trims and app.game.sim.state.tick == pressure_tick,"Real memory pressure still trims without stepping race simulation")
++	# Return to the actual menu; pending operations now have consumers and
++	# their original operation identities must remain intact.
++	Input.action_release("accelerate")
++	client.phase = "menu_recovery"
++	app._leave_race()
++	await frames(12)
++	check(not is_instance_valid(app.game) and app.root_ui.is_visible_in_tree() and app.root_ui.can_process(),"Race exit restores usable menu")
++	app.cosmetic_economy._timer.timeout.emit()
++	app.appearance_sync._poll.timeout.emit()
++	await emit_app_timer(1.0)
++	await create_timer(0.5).timeout
++	var recovery: Array = paths(client,client.phase)
++	report.probes.menu_recovery = recovery
++	check(recovery.any(func(path: String) -> bool: return path.begins_with("/runs/status?")),"Durable old upload resumes after race")
++	check("/me/appearances" in recovery,"Pending appearance sync resumes after race")
++	check("/economy/purchases" in recovery and app.cosmetic_economy.pending.key == "audit-existing-purchase","Pending purchase retries with original identity")
++	check("/achievements" in recovery,"Receipt-driven achievement invalidation resumes after race")
++	client.phase = "clean_menu_appearance"
++	app.appearance_sync.status = ""
++	app.records.settings[STATE.KEY].pending = {}
++	for _index: int in range(3): app.appearance_sync._poll.timeout.emit()
++	await frames()
++	check(not "/me/appearances" in paths(client,client.phase),"Clean appearance never polls merely because timer expires")
++	check(app.appearance_sync._poll.is_stopped(),"Clean appearance has no running periodic timer")
++	app.appearance_sync.status = "Earlier read failed"
++	app.appearance_sync._poll.timeout.emit()
++	await frames()
++	check(not "/me/appearances" in paths(client,client.phase),"A failed clean read is not an unsatisfied operation or an automatic polling reason")
++	client.phase = "hidden_results"
++	app.challenges._next_poll = 0; app.rivalry._next_poll_msec = 0
++	await emit_app_timer(0.5)
++	check(paths(client,client.phase).is_empty(),"Hidden challenge/rivalry results have no polling consumer")
++	client.phase = "visible_challenge_result"
++	app._show_screen("challenges")
++	app.challenges._next_poll = 0
++	app.challenges.poll_result()
++	await frames()
++	check(paths(client,client.phase).any(func(path: String) -> bool: return path.begins_with("/challenge-results/")),"Visible pending challenge result still polls")
++	client.phase = "visible_rivalry_result"
++	app._show_screen("rivalry")
++	app.rivalry._next_poll_msec = 0
++	app.rivalry.poll_result()
++	await frames()
++	check(paths(client,client.phase).any(func(path: String) -> bool: return path.begins_with("/rivalry/tickets/")),"Visible pending rivalry result still polls")
++	client.phase = "empty_outbox"
++	var empty_cloud: Node = load("res://backend/cloud_tracks.gd").new()
++	empty_cloud.client = client; empty_cloud.root_override = folder.path_join("empty-cloud")
++	app.add_child(empty_cloud)
++	await empty_cloud.flush_outbox()
++	var empty_passes: int = empty_cloud.profile_flush_passes
++	for _index: int in range(8): await empty_cloud.flush_outbox()
++	check(empty_cloud.profile_flush_passes == empty_passes,"Known-empty outbox performs no repeated scan")
++	var next_ticket: String = "audit-new-result"
++	var next_path: String = empty_cloud.outbox_path().get_base_dir().path_join("runs").path_join(next_ticket.sha256_text()+".job.json")
++	empty_cloud._save_pending_job(next_path,{"ticket":next_ticket,"key":"audit-existing-operation-2","run_id":"audit-existing-run-2"})
++	await empty_cloud.flush_outbox()
++	check(empty_cloud.profile_flush_passes>empty_passes and paths(client,client.phase).any(func(path: String) -> bool: return path.contains("audit-existing-run-2")),"New durable result wakes an idle outbox")
++	check(app.cloud.upload_job(ticket).key == "audit-existing-operation","Race deferral preserves original upload identity")
++	for asynchronous: bool in [false,true]:
++		var writer: Node = load("res://backend/cloud_tracks.gd").new()
++		writer.client = client; writer.root_override = folder.path_join("writer-"+str(asynchronous))
++		app.add_child(writer)
++		await writer.flush_outbox()
++		var before_write: int = writer.profile_flush_passes
++		var ticket_data: Dictionary = {"ticket_id":"audit-writer-"+str(asynchronous),"_submit_key":"audit-writer-original-key"}
++		var saved: bool = await writer.queue_run_async(ticket_data,[[0,255,0]]) if asynchronous else writer.queue_run(ticket_data,[[0,255,0]])
++		await writer.flush_outbox()
++		check(saved and writer.profile_flush_passes>before_write and writer.upload_job(ticket_data.ticket_id).key == ticket_data._submit_key,"Actual synchronous/asynchronous result writer wakes idle outbox with original key")
++	client.phase = "empty_resume_recovery"
++	await client.resume_recovery.reconcile()
++	var recovery_callbacks: int = client.resume_recovery.profile_callback_us
++	client.resume_recovery._next_msec = 0
++	client.resume_recovery._process(0.0)
++	check(not client.resume_recovery.is_processing() and client.resume_recovery.profile_callback_us == recovery_callbacks,"Empty resume-recovery journal sleeps without rescanning")
++	var journal: Dictionary = {"owner":"audit-driver","origin":client.base_url(),"begin_key":"audit-resume-begin","consume_key":"audit-resume-consume","stage":"pending","race_id":"cccccccc-cccc-cccc-cccc-cccccccccccc","ticket_id":"bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb","selection":{"ordinal":1,"input_offset":100,"from_tick":100,"to_tick":50,"recovery":"v1"}}
++	check(client.resume_recovery.save(journal) and client.resume_recovery.is_processing(),"Saving a real pending recovery operation wakes its worker")
++	report.calls = client.calls
++	report.checks = checks; report.failures = failures
++	report.renderer = RenderingServer.get_current_rendering_method()
++	report.display = DisplayServer.get_name()
++	report.sources_at_end = source_hashes()
++	var target: String = ProjectSettings.globalize_path(output)
++	DirAccess.make_dir_recursive_absolute(target.get_base_dir())
++	var file := FileAccess.open(target,FileAccess.WRITE)
++	file.store_string(JSON.stringify(report,"  ")); file.close()
++	# Do not invoke leave-race: it would deliberately start menu refresh work.
++	Input.action_release("accelerate")
++	app.queue_free(); await frames(8)
++	print("RACE_DEMAND_WORK: ",checks," checks, ",failures," failures")
++	quit(1 if failures else 0)
+--- /dev/null
++++ b/docs/RACE_DEMAND_WORK_2026_10_26.md
+@@ -0,0 +1,64 @@
++# Demand-driven work during racing — 2026-10-26
++
++The race client now suppresses the optional work identified in `RACE_BACKGROUND_WORK_AUDIT_2026_10_26.md`. A timer expiring or window focus returning is not, by itself, a reason to fetch unused data. A visible result, a newly committed edit, an account transition or a durable unfinished operation provides a concrete reason to work.
++
++These are client changes. No backend schema, verifier, physics, vehicle configuration, recording format or gameplay input changes are included. No backend deployment, APK, device test, real authentication/purchase, owner-save mutation, owner-process restart, staging, commit or merge was performed.
++
++## Runtime behavior
++
++| Work | New behavior | What still wakes it |
++| --- | --- | --- |
++| Appearance reads | No clean 30-second server polling. The timer stops when there is no unfinished sync. An error from an otherwise clean read does not turn into automatic polling. | Actual appearance commits, unsatisfied durable edits/acknowledgements, account adoption, or explicit freshness requested by the Garage. |
++| Empty upload outbox | Initial recovery checks the scoped journal. Once empty, timer ticks perform no further scan or migration read. | Both actual synchronous/asynchronous result writers and direct durable-job writes clear the empty marker. A profile transition explicitly invalidates recovery state. |
++| Empty resume recovery | A signed-out adapter does not process. An empty signed-in journal stops processing instead of repeatedly making directories, taking a recovery lease and scanning. | Identity changes or successfully saving an unfinished recovery operation. Explicit recovery still validates the journal and account ownership. |
++| Previous uploads and purchase/appearance recovery | Start and completion-triggered entry points defer optional work during preparation and an unfinished race, including pause. | Known pending operations resume with existing backoff in a menu/result context. Original operation identities and journals remain. |
++| Challenge/rivalry result polling | Background timer and direct completion callbacks obey the same consumer predicate. Unrelated hidden results do not poll. | A visible relevant result/context outside active driving. Existing receipt reuse and per-ticket backoff remain. |
++| Achievement reads | Focus return no longer fetches achievements. A receipt/publication event still invalidates them; an event arriving during racing is retained and coalesced. | The deferred event resumes on menu entry, or the existing explicit achievement consumer requests data. |
++| Hidden menu/editor work | Ordinary races, Garage free drive and retries suspend the retained menu's process mode as well as hiding it. Routine editor polling and retained-Garage memory inventory stop during active racing. Queued speculative comparisons are cancelled when covered race preparation begins. | Results/return/cancellation restore the appropriate menu mode. The selected preparation needed for race entry still has its explicit awaited poll. A real OS memory warning still runs the memory-pressure handler. |
++
++The App supplies the policy to each service rather than relying only on a timer guard. This covers direct result callbacks, purchase retry chaining and uploads resumed from a saved-result/long-poll callback. Upload preparation checks again after asynchronous reads/packing; it defers without changing the operation into a failure. An upload already acknowledged by the server retains its durable acknowledgement before optional follow-up work is deferred.
++
++The shared predicate blocks optional work while covered preparation is active and while an existing race has not finished. Finishing unlocks result consumers; pausing an unfinished race does not unlock unrelated work. The menu helper stores the existing process mode and restores it for retained editor/Garage returns, preparation cancellation, results and restart.
++
++Required current-race saves, canonical ticks, input evidence, rewind history, explicitly requested resume/charge operations, account safety and actual memory pressure remain available. Bounded consent-based quality counters and compact release hitch diagnostics remain. Existing in-flight requests can complete; this change is not a blanket cancellation of every network request or an assertion of zero background callbacks.
++
++## Validation
++
++`game/tests/test_race_work_demand.gd` exercises the actual App and production race with a real parked Garage, private records and a synthetic signed-in transport. The vehicle is driven with the actual accelerator action. Existing service callbacks execute unchanged except for the production policy added by this task. The fixture's transport returns synthetic 503 responses; it cannot send real HTTP requests or create real purchases.
++
++The actual-App regression covers:
++
++- No routine memory inventory during driving; all three parked Garage viewports remain disabled.
++- No HTTP from clean, pending upload, appearance, purchase, challenge/rivalry-result or focus-return probes during the active race, including direct service entry points.
++- Receipt-driven achievement invalidation retained during racing and delivered after return.
++- Pending uploads, appearance sync and purchase retries resume after return; the original upload/purchase keys remain unchanged.
++- Hidden result contexts do not poll; relevant visible result contexts still do.
++- A confirmed-empty outbox does not rescan. Both real result-writing paths wake an idle outbox.
++- An empty resume journal sleeps; saving a valid new operation wakes it.
++- Clean appearance polling stops its timer; a failed clean read alone does not fetch again.
++- Retained menu processing restores correctly, and an actual memory-pressure notification still trims without stepping the simulation.
++
++Final run details and exact commands are in `docs/evidence/race-demand-work-2026-10-26/report.json` and the copied logs. The headless and native desktop reports record hashes at the beginning and end of each run. Tests use the pinned Godot 4.7.2 build, private APPDATA/LOCALAPPDATA and synthetic account/storage paths. The native Compatibility window is positioned offscreen; no owner-window input is sent.
++
++The two final actual-App runs passed **40 checks each**; the selected functional suites passed **1,168 assertions** in total. The project parser loaded **1,309 scripts with zero failures**. Assertions from repeated intermediate runs and the separate failing AI witness are not included in that passing total. All 17 audited source hashes stayed unchanged within both final App runs.
++
++Selected retained checks include appearance conflict/lost-reply recovery, real Garage coin controls, achievement state/UI, upload rate limits and durable retry keys, multi-instance resume ownership, old input-only upload recovery, challenge result actions, all seven Garage test-drive/return paths and the actual App editor save-failure/restart/return round trip. A full project script parse is also run. The report distinguishes final results from intermediate attempts rather than counting repeated runs as extra coverage.
++
++Two test adapters needed updates to their existing contracts, without relaxing their assertions:
++
++- `test_backend_reuse.gd`: the comparison mock now supplies `base_url()` and player identity required by the current preloader's account-scope fence. The preloader itself is unchanged by this task.
++- `test_resume_recovery_budget.gd`: newly queued fixture runs now include the current trajectory proof/options and advertised capability. The publication retry mock supplies the current entitlement precondition, counted separately from mutation-budget assertions. Its clock fixture expires the local monotonic deadline as well as advancing server time; a clock adjustment alone is not permission to accelerate retry. Existing pacing/key assertions remain, with an additional entitlement-check assertion.
++
++Initial comparison failures, the original recovery-budget timeout/script error, the subsequent publication-mock failures and the intermediate passing runs are retained under `build/race-demand-work-2026-10-26` and indexed in the evidence.
++
++An additional direct-Game AI witness (`test_editor_practice.gd`) ran 39 checks with four failures: its driver recorded zero completed ordered laps and 27,678 contacts, then could not produce the expected finish state. It instantiates the unchanged Game directly rather than exercising the modified App race policy. `game/core/game.gd` still matches the original audit's byte hash. This failure and its script error are preserved; no driving assertions or physics were changed to make it pass. The actual App editor round-trip test separately passes all 16 checks.
++
++Passing App/Garage probes emitted a two-instance ObjectDB warning on process exit. A verbose run identified two `RefCounted` objects with reference count zero, without identifying a script owner. This is recorded rather than treated as proof of a growing in-race memory leak or a clean-exit guarantee. Godot also emitted the root-certificate-store initialization error; the fixtures use no real HTTP. There were no script errors in the final passing targeted suites.
++
++Desktop functional checks do not establish Android CPU/GPU cost, long-session behavior or all weather/mode combinations. This work does not claim a measured frame-rate improvement. Rebuild/reload the client to apply it; physical-device driving/return/recovery acceptance remains.
++
++## Review scope
++
++The task-start byte snapshots, hashes, exact commands, original failures, final results and a patch against those snapshots are retained. The scoped patch includes only this task's App/service changes, adapter maintenance, new regression and this report. The earlier audit and its original evidence remain intact. Concurrent workspace work is preserved.
++
++Concurrent header-car/Garage edits appeared in App and separate account-cache edits appeared in the comparison preloader while this task ran. They are retained in the workspace and excluded from the task patch. For the overlapping App file, the review base folds those concurrent edits into a copy of the baseline before applying only this task's changes. Original task-start bytes are separately archived; no live source was restored or overwritten to construct the review base.

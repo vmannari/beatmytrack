@@ -3,6 +3,7 @@ extends RefCounted
 const G = preload("res://vehicle/kart_geometry.gd")
 const Detail = preload("res://vehicle/kart_detail.gd")
 const Panels = preload("res://vehicle/kart_bodywork.gd")
+const Kits = preload("res://vehicle/kart_kits.gd")
 
 static func build(car: CarVisual) -> void:
 	car.body.name = "KartChassis"
@@ -17,29 +18,26 @@ static func build(car: CarVisual) -> void:
 	var chassis := CompactFinish.paint(Color("3b3431"))
 	chassis.roughness = 0.50
 	car.paint_materials = {"body":paint,"accent":accent}
-	_body(car,paint,accent,trim,chassis,metal,bright)
+	_body(car,trim,chassis,metal,bright)
 	_driver(car,trim,metal)
 	_engine(car,trim,metal,bright)
-	Detail.body(car,trim,metal)
+	build_nose(car)
+	build_pods(car)
+	build_bumper(car)
+	Detail.brackets(car,metal)
 	Detail.mechanical(car,trim,metal,bright)
 	var config: HandlingConfig = VehicleCatalog.config("kart")
 	for side: float in [-1.0,1.0]:
 		for axle: float in [-1.0,1.0]:
 			_wheel(car,Vector3(side*config.track_width/(2*HandlingConfig.BODY_SCALE),0.22,axle*config.wheelbase/(2*HandlingConfig.BODY_SCALE)),trim,metal,bright)
 
-static func _body(car: CarVisual, paint: Material, accent: Material, trim: Material, chassis: Material, metal: Material, bright: Material) -> void:
+static func _body(car: CarVisual, trim: Material, chassis: Material, metal: Material, bright: Material) -> void:
 	var p: Node3D = car.body
 	var s: bool = car.simple_model
 	G.rounded(p,"FloorTray",Vector3(0,0.147,-0.20),Vector3(0.83,0.028,1.69),0.012,metal,s)
 	for side: float in [-1.0,1.0]:
 		G.tube(p,"BentMainRail",[Vector3(side*0.20,0.17,-1.10),Vector3(side*0.42,0.17,-0.95),Vector3(side*0.44,0.17,-0.30),Vector3(side*0.42,0.17,0.57),Vector3(side*0.30,0.17,1.08)],0.032,chassis,s,40)
 		G.tube(p,"SideProtection",[Vector3(side*0.43,0.19,-0.59),Vector3(side*0.68,0.19,-0.46),Vector3(side*0.69,0.19,0.38),Vector3(side*0.43,0.19,0.54)],0.024,metal,s)
-		var pod := Node3D.new()
-		pod.position.x = side*0.535
-		p.add_child(pod)
-		var pod_profile: Array[Vector4] = [Vector4(-0.60,0.075,0.28,0.045),Vector4(-0.48,0.155,0.28,0.095),Vector4(-0.12,0.160,0.29,0.105),Vector4(0.34,0.147,0.275,0.09),Vector4(0.49,0.10,0.25,0.05)]
-		Panels.formed(pod,"FormedSidePod",pod_profile,paint,s)
-		_fitted_inlay(pod,"PodInsetStripe",pod.get_child(-1),pod_profile,0.047,0.17,0.84,accent,s)
 		# Pedal spindle, forged pedal plate and anti-slip ribs are visible in the footwell.
 		G.tube(p,"PedalLever",[Vector3(side*0.25,0.18,-0.84),Vector3(side*0.19,0.25,-0.92),Vector3(side*0.17,0.30,-0.93)],0.012,bright,s,8)
 		var pedal: MeshInstance3D = G.rounded(p,"PedalPlate",Vector3(side*0.17,0.28,-0.94),Vector3(0.11,0.13,0.023),0.010,metal,s)
@@ -49,30 +47,7 @@ static func _body(car: CarVisual, paint: Material, accent: Material, trim: Mater
 			Detail.fastener(p,"TrayRivet",Vector3(side*0.39,0.162,z),Vector3.UP,0.008,bright)
 	preload("res://vehicle/kart_driver.gd").seat_stays(p,metal,s)
 	G.tube(p,"FrontCrossmember",[Vector3(-0.49,0.19,-0.88),Vector3(0,0.19,-0.88),Vector3(0.49,0.19,-0.88)],0.026,chassis,s,12)
-	G.tube(p,"RearProtection",[Vector3(-0.75,0.18,1.22),Vector3(-0.69,0.18,1.30),Vector3(-0.32,0.18,1.32),Vector3(0.32,0.18,1.32),Vector3(0.69,0.18,1.30),Vector3(0.75,0.18,1.22)],0.037,trim,s,40)
-	for side: float in [-1.0,1.0]:
-		G.tube(p,"RearBumperChassisMount",[Vector3(side*0.30,0.17,1.04),Vector3(side*0.35,0.18,1.17),Vector3(side*0.35,0.18,1.32)],0.022,metal,s,16)
-		G.ellipsoid(p,"RearBumperEndCap",Vector3(side*0.75,0.18,1.22),Vector3.ONE*0.037,trim,s)
 	G.tube(p,"LiveRearAxle",[Vector3(-0.72,0.22,0.88),Vector3(0.72,0.22,0.88)],0.026,metal,s,8)
-	# Keep the entire broad nose ahead of the front tyres' full steering sweep.
-	Panels.formed(p,"NoseLowerReturn",[Vector4(-1.40,0.50,0.185,0.018),Vector4(-1.375,0.68,0.185,0.025),Vector4(-1.25,0.735,0.19,0.028),Vector4(-1.195,0.60,0.19,0.020)],trim,s)
-	var nose_profile: Array[Vector4] = [Vector4(-1.40,0.49,0.255,0.045),Vector4(-1.385,0.63,0.265,0.070),Vector4(-1.345,0.70,0.280,0.085),Vector4(-1.245,0.72,0.285,0.095),Vector4(-1.212,0.65,0.275,0.080),Vector4(-1.20,0.59,0.260,0.055)]
-	Panels.formed(p,"SculptedFrontFairing",nose_profile,paint,s)
-	var nose: MeshInstance3D = p.get_child(-1)
-	_fitted_inlay(p,"NoseInlayKeyline",nose,nose_profile,0.075,0.18,0.96,trim,s,0.0007)
-	_fitted_inlay(p,"NoseCenterInlay",nose,nose_profile,0.065,0.18,0.96,accent,s)
-	var fairing := Node3D.new()
-	p.add_child(fairing)
-	var fairing_profile: Array[Vector4] = [Vector4(-1.235,0.13,0.37,0.032),Vector4(-0.87,0.155,0.425,0.035),Vector4(-0.64,0.19,0.515,0.045),Vector4(-0.41,0.175,0.565,0.037),Vector4(-0.35,0.145,0.55,0.027)]
-	Panels.formed(fairing,"NassauFairing",fairing_profile,paint,s)
-	_fitted_inlay(p,"FairingInlayKeyline",fairing.get_child(-1),fairing_profile,0.072,0.06,0.94,trim,s,0.0007)
-	_fitted_inlay(p,"FairingCenterInlay",fairing.get_child(-1),fairing_profile,0.064,0.06,0.94,accent,s)
-	# Fitted little light housings retain the established night/brake presentation.
-	for side: float in [-1.0,1.0]:
-		G.rounded(p,"RearLampBezel",Vector3(side*0.55,0.225,1.31),Vector3(0.16,0.09,0.045),0.018,trim,s)
-		G.rounded(p,"RearLampLens",Vector3(side*0.55,0.225,1.335),Vector3(0.125,0.055,0.015),0.007,car.brake_material,s)
-		G.rounded(p,"FrontLampRecess",Vector3(side*0.33,0.25,-1.398),Vector3(0.12,0.048,0.025),0.012,trim,s)
-		G.rounded(p,"FrontLampGlass",Vector3(side*0.33,0.25,-1.412),Vector3(0.092,0.024,0.010),0.004,CompactFinish.alloy(Color("a5b5af")),s)
 
 static func _clip_inlay(polygon: Array[Dictionary], normal: Vector3, offset: float) -> Array[Dictionary]:
 	var result: Array[Dictionary] = []
@@ -225,6 +200,93 @@ static func _wheel(car: CarVisual, center: Vector3, trim: Material, metal: Mater
 	var rubber := ShaderMaterial.new()
 	rubber.shader = preload("res://vehicle/kart_slick.gdshader")
 	G.lathe(pivot,"SlickTyre",[Vector2(-0.135,0.12),Vector2(-0.137,0.175),Vector2(-0.129,0.202),Vector2(-0.105,0.217),Vector2(-0.076,0.22),Vector2(0.076,0.22),Vector2(0.105,0.217),Vector2(0.129,0.202),Vector2(0.137,0.175),Vector2(0.135,0.12)],rubber,s)
+	build_rims(car,pivot,side)
+	var bearing := VisualGeometry.cylinder(pivot,0.029,0.30,Vector3.ZERO,metal,true)
+	bearing.rotation.z = PI*0.5
+	if center.z < 0: car.front_wheels.append(pivot)
+	car.register_rolling_wheel(pivot,0.22)
+
+static func build_nose(car: CarVisual) -> void:
+	var p: Node3D = car.new_kit_frame("hood",car.body) if car.editable_kits else car.body
+	var s: bool = car.simple_model
+	var paint: Material = car.paint_materials.body
+	var accent: Material = car.paint_materials.accent
+	var trim: Material = CompactFinish.rubber(Color("171e22"))
+	var kind: String = str(car.customisation.hood)
+	var suffix: String = Kits.suffix(kind)
+	# Keep the entire broad nose ahead of the front tyres' full steering sweep.
+	Panels.formed(p,"NoseLowerReturn"+suffix,[Vector4(-1.40,0.50,0.185,0.018),Vector4(-1.375,0.68,0.185,0.025),Vector4(-1.25,0.735,0.19,0.028),Vector4(-1.195,0.60,0.19,0.020)],trim,s)
+	var nose_profile: Array[Vector4] = [Vector4(-1.40,0.49,0.255,0.045),Vector4(-1.385,0.63,0.265,0.070),Vector4(-1.345,0.70,0.280,0.085),Vector4(-1.245,0.72,0.285,0.095),Vector4(-1.212,0.65,0.275,0.080),Vector4(-1.20,0.59,0.260,0.055)]
+	nose_profile = Kits.nose_profile(kind,nose_profile)
+	Kits.panel(p,"SculptedFrontFairing"+suffix,nose_profile,paint,s,kind)
+	var nose: MeshInstance3D = p.get_child(-1)
+	_fitted_inlay(p,"NoseInlayKeyline"+suffix,nose,nose_profile,0.075,0.18,0.96,trim,s,0.0007)
+	_fitted_inlay(p,"NoseCenterInlay"+suffix,nose,nose_profile,0.065,0.18,0.96,accent,s)
+	var fairing := Node3D.new()
+	p.add_child(fairing)
+	var fairing_profile: Array[Vector4] = [Vector4(-1.235,0.13,0.37,0.032),Vector4(-0.87,0.155,0.425,0.035),Vector4(-0.64,0.19,0.515,0.045),Vector4(-0.41,0.175,0.565,0.037),Vector4(-0.35,0.145,0.55,0.027)]
+	fairing_profile = Kits.fairing_profile(kind,fairing_profile)
+	Kits.panel(fairing,"NassauFairing"+suffix,fairing_profile,paint,s,kind)
+	_fitted_inlay(p,"FairingInlayKeyline"+suffix,fairing.get_child(-1),fairing_profile,0.072,0.06,0.94,trim,s,0.0007)
+	_fitted_inlay(p,"FairingCenterInlay"+suffix,fairing.get_child(-1),fairing_profile,0.064,0.06,0.94,accent,s)
+	Detail.nose(car,CompactFinish.alloy(Color("6e7778")))
+	for side: float in [-1.0,1.0]:
+		if kind=="stock":
+			G.rounded(p,"FrontLampRecess",Vector3(side*0.33,0.25,-1.398),Vector3(0.12,0.048,0.025),0.012,trim,s)
+			G.rounded(p,"FrontLampGlass",Vector3(side*0.33,0.25,-1.412),Vector3(0.092,0.024,0.010),0.004,CompactFinish.alloy(Color("a5b5af")),s)
+		else:
+			# The original fixed lamps were hidden inside several sealed kit noses.
+			var hit: Dictionary = nose.mesh.generate_triangle_mesh().intersect_ray(Vector3(side*0.33,nose_profile[0].z,-2),Vector3.BACK)
+			assert(not hit.is_empty(),"Kart lamp requires actual nose backing")
+			var mount := Node3D.new()
+			mount.name = "KitFrontLampMount_"+("left" if side<0 else "right")
+			mount.position = hit.position+hit.normal*0.004
+			mount.quaternion = Quaternion(Vector3.FORWARD,hit.normal)
+			p.add_child(mount)
+			G.rounded(mount,"FrontLampRecess",Vector3.ZERO,Vector3(0.12,0.048,0.025),0.012,trim,s)
+			G.rounded(mount,"FrontLampGlass",Vector3(0,0,-0.014),Vector3(0.092,0.024,0.010),0.004,CompactFinish.alloy(Color("a5b5af")),s)
+
+static func build_pods(car: CarVisual) -> void:
+	var p: Node3D = car.new_kit_frame("body",car.body) if car.editable_kits else car.body
+	var s: bool = car.simple_model
+	var paint: Material = car.paint_materials.body
+	var accent: Material = car.paint_materials.accent
+	var kind: String = str(car.customisation.body)
+	var suffix: String = Kits.suffix(kind)
+	for side: float in [-1.0,1.0]:
+		var pod := Node3D.new()
+		pod.position.x = side*0.535
+		p.add_child(pod)
+		var pod_profile: Array[Vector4] = [Vector4(-0.60,0.075,0.28,0.045),Vector4(-0.48,0.155,0.28,0.095),Vector4(-0.12,0.160,0.29,0.105),Vector4(0.34,0.147,0.275,0.09),Vector4(0.49,0.10,0.25,0.05)]
+		pod_profile = Kits.pod_profile(kind,pod_profile)
+		Kits.panel(pod,"FormedSidePod"+suffix,pod_profile,paint,s,kind,true)
+		_fitted_inlay(pod,"PodInsetStripe"+suffix,pod.get_child(-1),pod_profile,0.047,0.17,0.84,accent,s)
+	Detail.pods(car,CompactFinish.rubber(Color("171e22")),CompactFinish.alloy(Color("6e7778")))
+
+static func build_bumper(car: CarVisual) -> void:
+	var p: Node3D = car.new_kit_frame("aero",car.body) if car.editable_kits else car.body
+	var s: bool = car.simple_model
+	var trim: Material = CompactFinish.rubber(Color("171e22"))
+	var metal: Material = CompactFinish.alloy(Color("6e7778"))
+	if car.customisation.aero=="stock":
+		G.tube(p,"RearProtection",[Vector3(-0.75,0.18,1.22),Vector3(-0.69,0.18,1.30),Vector3(-0.32,0.18,1.32),Vector3(0.32,0.18,1.32),Vector3(0.69,0.18,1.30),Vector3(0.75,0.18,1.22)],0.037,trim,s,40)
+		for side: float in [-1.0,1.0]:
+			G.tube(p,"RearBumperChassisMount",[Vector3(side*0.30,0.17,1.04),Vector3(side*0.35,0.18,1.17),Vector3(side*0.35,0.18,1.32)],0.022,metal,s,16)
+			G.ellipsoid(p,"RearBumperEndCap",Vector3(side*0.75,0.18,1.22),Vector3.ONE*0.037,trim,s)
+	else: Kits.bumper(car,p,trim,metal)
+	for side: float in [-1.0,1.0]:
+		G.rounded(p,"RearLampBezel",Vector3(side*0.55,0.225,1.31),Vector3(0.16,0.09,0.045),0.018,trim,s)
+		G.rounded(p,"RearLampLens",Vector3(side*0.55,0.225,1.335),Vector3(0.125,0.055,0.015),0.007,car.brake_material,s)
+
+static func build_rims(car: CarVisual, wheel: Node3D, side: float) -> void:
+	var pivot: Node3D = car.new_kit_frame("rims",wheel) if car.editable_kits else wheel
+	var s: bool = car.simple_model
+	var metal: Material = CompactFinish.alloy(Color("6e7778"))
+	var bright: Material = CompactFinish.alloy(Color("a8aea9"))
+	var trim: Material = CompactFinish.rubber(Color("171e22"))
+	if car.customisation.rims!="stock":
+		Kits.rim(car,pivot,side,metal,bright,trim)
+		return
 	var magnesium := CompactFinish.alloy(Color("807b68"))
 	magnesium.roughness = 0.43
 	G.lathe(pivot,"DishedMagnesiumRim",[Vector2(-0.138,0.115),Vector2(-0.138,0.135),Vector2(-0.120,0.145),Vector2(-0.101,0.127),Vector2(0.101,0.127),Vector2(0.120,0.145),Vector2(0.138,0.135),Vector2(0.138,0.115),Vector2(0.103,0.111),Vector2(-0.103,0.111),Vector2(-0.138,0.115)],magnesium,s)
@@ -238,7 +300,3 @@ static func _wheel(car: CarVisual, center: Vector3, trim: Material, metal: Mater
 		var a: float = TAU*bolt/3
 		G.ellipsoid(pivot,"WheelNut",Vector3(side*0.111,sin(a)*0.052,cos(a)*0.052),Vector3(0.009,0.008,0.008),bright,s)
 	G.tube(pivot,"ValveStem",[Vector3(side*0.13,0.095,-0.066),Vector3(side*0.15,0.10,-0.069)],0.004,trim,s,4)
-	var bearing := VisualGeometry.cylinder(pivot,0.029,0.30,Vector3.ZERO,metal,true)
-	bearing.rotation.z = PI*0.5
-	if center.z < 0: car.front_wheels.append(pivot)
-	car.register_rolling_wheel(pivot,0.22)

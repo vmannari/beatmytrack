@@ -1,0 +1,30 @@
+--- a/game/ui/weekly_rivalry_page.gd
++++ b/game/ui/weekly_rivalry_page.gd
+@@ -49,6 +49,12 @@
+ const QUIET_BORDER := Color("2e495a88")
+ const Badge = preload("res://ui/biome_badge.gd")
+ const TrackAccent = preload("res://ui/rivalry_track_accents.gd")
++
++class TrackProfile extends LapRouteView:
++	func _draw() -> void:
++		if fitted.size() < 2: return
++		draw_polyline(fitted,Color("071b29e8"),5.0,true)
++		draw_polyline(fitted,Color("f0ede0"),2.0,true)
+ 
+ func _ready() -> void:
+ 	name = "WeeklyRivalryPage"
+@@ -947,6 +953,14 @@
+ 	art.stretch_mode = TextureRect.STRETCH_KEEP_ASPECT_COVERED
+ 	thumbnail.add_child(art)
+ 	MenuStyle.fill(art)
++	var profile := TrackProfile.new()
++	profile.name = "RivalryTrackProfile_"+str(index)
++	profile.miniature = true
++	for point: Array in track.document.get("points",[]): profile.route.append(Vector2(point[0],point[1]))
++	thumbnail.add_child(profile)
++	MenuStyle.fill(profile)
++	# Leave the numbered corner clear while fitting the actual saved route.
++	profile.offset_left = 24
+ 	var number := PanelContainer.new()
+ 	number.name = "RivalryTrackNumber_"+str(index)
+ 	var number_style: StyleBoxFlat = MenuStyle.box(Color("071b29ed"),1)

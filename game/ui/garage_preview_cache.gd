@@ -19,6 +19,11 @@ var readback_us: int = 0
 var file_io_us: int = 0
 var can_render: Callable
 var prepared_picture: Dictionary={}
+var pending_writes: Array[Dictionary]=[]
+var ready_pictures: Dictionary={}
+var remember_pictures: bool=false
+var immediate_reads: bool=false
+var warm_views: Dictionary={}
 var _last_input: int=0
 var _touches: Dictionary={}
 var idle_ms: int=750
@@ -85,32 +90,108 @@ static func _poll_pictures(tree_ref: WeakRef) -> void:
 	if not pending_pictures.is_empty() and is_instance_valid(tree): tree.process_frame.connect(_poll_pictures.bind(tree_ref),CONNECT_ONE_SHOT)
 
 func identity(view: CarShowroom) -> String:
-	return JSON.stringify([VERSION,Build.ID,view.vehicle_id,view.livery,view.condition,view.customisation]).sha256_text()
+	# Older generated identities do not have a per-car revision. Keep their
+	# conservative shared fingerprint until the next normal build refresh.
+	var identity_script: Script = Build
+	var revisions: Dictionary = identity_script.get_script_constant_map().get("GARAGE_PREVIEW_VEHICLE_SHA256",{})
+	var revision: String = str(revisions.get(view.vehicle_id,Build.GARAGE_PREVIEW_SHA256))
+	return JSON.stringify([VERSION,revision,view.vehicle_id,view.livery,_visible_condition(view.condition),view.customisation]).sha256_text()
+
+func _visible_condition(value: Dictionary) -> Dictionary:
+	# A saved clean snapshot has the same original finish as an absent condition.
+	if not value.is_empty() and value.get("version") != 1: return value
+	for field: String in ["dirt","snow","slow_dirt","slow_snow","wetness","mud","smudge"]:
+		if float(value.get(field,0.0)) != 0.0: return value
+	return {}
+
+func warm_records(records: LocalRecords) -> void:
+	remember_pictures=true
+	immediate_reads=true
+	directory=records.path+".garage-previews"
+	for id: String in VehicleCatalog.IDS:
+		var view: CarShowroom=warm_views.get(id)
+		var fresh: bool=view==null
+		if fresh:
+			view=preload("res://ui/garage_cached_thumbnail.gd").new()
+			view.vehicle_id=id
+			view.preview_service=self
+			view.hide()
+			warm_views[id]=view
+		view.livery=VehicleLivery.for_car(records.settings,id)
+		view.condition=VehicleCondition.read(records,id)
+		view.customisation=VehicleCustomisation.for_car(records.settings,id)
+		if fresh: add_child(view)
+		else: view.refresh_thumbnail()
+		if view.displayed_key==view.preview_key and view._image.texture!=null: _publish(view,view.preview_key,view._image.texture)
+
+func pictures_ready() -> bool:
+	if warm_views.size()!=VehicleCatalog.IDS.size(): return false
+	for view: CarShowroom in warm_views.values():
+		if _remembered(view.vehicle_id,view.preview_key)==null: return false
+	return true
+
+func _remembered(vehicle: String,key: String) -> Texture2D:
+	if not remember_pictures or directory.is_empty(): return null
+	var picture: Dictionary=ready_pictures.get(vehicle,{})
+	return picture.get("texture") if picture.get("key")==key else null
+
+func _publish(view: CarShowroom,key: String,texture: Texture2D) -> void:
+	if view.preview_key!=key or texture==null: return
+	if remember_pictures and not directory.is_empty(): ready_pictures[view.vehicle_id]={"key":key,"texture":texture}
+	view.publish_preview(key,texture)
+
+func picture_bytes(seen: Dictionary) -> int:
+	var bytes: int=0
+	var textures: Array=[]
+	for picture: Dictionary in ready_pictures.values(): textures.append(picture.texture)
+	for view: CarShowroom in warm_views.values():
+		if view._image!=null: textures.append(view._image.texture)
+	for texture: Texture2D in textures:
+		if texture==null or seen.has(texture.get_instance_id()): continue
+		seen[texture.get_instance_id()]=true
+		bytes+=texture.get_width()*texture.get_height()*4
+	return bytes
 
 func request(view: CarShowroom) -> void:
 	var key: String = identity(view)
+	var remembered: Texture2D=_remembered(view.vehicle_id,key)
+	if remembered!=null:
+		cache_hits+=1
+		if prepared_picture.get("vehicle")==view.vehicle_id: prepared_picture={}
+		view.publish_preview(key,remembered)
+		return
 	if prepared_picture.get("vehicle")==view.vehicle_id and prepared_picture.get("paint")==view.livery and prepared_picture.get("condition")==view.condition and prepared_picture.get("parts")==view.customisation:
 		cache_hits+=1
-		view.publish_preview(key,prepared_picture.texture)
+		_publish(view,key,prepared_picture.texture)
+		if not directory.is_empty() and prepared_picture.get("persisted_key","")!=key:
+			pending_writes.append({"key":key,"texture":prepared_picture.texture})
+			prepared_picture.persisted_key=key
 		return
 	if _default(view):
 		var texture: Texture2D = catalogue_texture(view.vehicle_id)
 		if texture != null:
 			cache_hits += 1
-			view.publish_preview(key,texture)
+			_publish(view,key,texture)
+			return
+	if immediate_reads and not directory.is_empty():
+		var result: Dictionary=_read(func() -> bool: return false,directory.path_join(key+".png"))
+		file_io_us+=int(result.us)
+		if result.image is Image:
+			cache_hits+=1
+			_publish(view,key,ImageTexture.create_from_image(result.image))
 			return
 	for index: int in range(queued.size()-1,-1,-1):
 		if queued[index].view.get_ref() == view or not _current(queued[index]): queued.remove_at(index)
 	if active.get("key") == key and active.view.get_ref() == view: return
 	if io.get("key") == key and _view(io) == view: return
-	queued.append({"view":weakref(view),"key":key,"vehicle":view.vehicle_id,"paint":view.livery.duplicate(true),"condition":view.condition.duplicate(true),"parts":view.customisation.duplicate(true),"read":true})
+	queued.append({"view":weakref(view),"key":key,"vehicle":view.vehicle_id,"paint":view.livery.duplicate(true),"condition":view.condition.duplicate(true),"parts":view.customisation.duplicate(true),"read":not immediate_reads})
 
 func _default(view: CarShowroom) -> bool:
-	return view.livery == VehicleLivery.for_car({},view.vehicle_id) and view.condition.is_empty() and view.customisation == VehicleCustomisation.defaults()
+	return view.livery == VehicleLivery.for_car({},view.vehicle_id) and _visible_condition(view.condition).is_empty() and view.customisation == VehicleCustomisation.defaults()
 
 func _current(job: Dictionary, visible: bool = false) -> bool:
 	var view: Object = _view(job)
-	return is_instance_valid(view) and view.preview_key == job.key and (not visible or _on_screen(view))
+	return is_instance_valid(view) and view.preview_key == job.key and (not visible or warm_views.get(view.vehicle_id)==view or _on_screen(view))
 
 func _on_screen(view: Control) -> bool:
 	if not view.is_visible_in_tree(): return false
@@ -127,20 +208,28 @@ func _view(job: Dictionary) -> Object:
 	return reference.get_ref() if reference != null else null
 
 func _process(_delta: float) -> void:
-	if worker != null:
-		if not worker.done: return
+	if worker != null and worker.done:
 		var result: Dictionary = worker.result if worker.result is Dictionary else {}
 		file_io_us += int(result.get("us",0))
 		worker = null
 		if io.get("read",false) and _current(io):
 			if result.get("image") is Image and _current(io,true):
 				cache_hits += 1
-				io.view.get_ref().publish_preview(io.key,ImageTexture.create_from_image(result.image))
+				_publish(io.view.get_ref(),io.key,ImageTexture.create_from_image(result.image))
 			else:
 				io.read = result.get("image") is Image
-				queued.push_front(io)
+				queued.append(io)
 		io = {}
+	# A read can satisfy a queued view, so finish it before starting another
+	# capture. A write owns only an Image and may run alongside the next world.
+	if worker != null and io.get("read",false): return
+	if worker == null and not active.is_empty() and not pending_writes.is_empty(): _start_write()
 	if not active.is_empty():
+		var remembered: Texture2D=_remembered(active.vehicle,active.key)
+		if _current(active) and remembered!=null:
+			_publish(active.view.get_ref(),active.key,remembered)
+			_finish()
+			return
 		if not _current(active,true):
 			if _current(active): queued.push_front(active)
 			_finish()
@@ -153,16 +242,33 @@ func _process(_delta: float) -> void:
 		frames -= 1
 		if frames >= 0:
 			renderer._submit_render()
-		elif not RenderingServer.frame_post_draw.is_connected(_capture): RenderingServer.frame_post_draw.connect(_capture,CONNECT_ONE_SHOT)
+		elif (worker == null or pending_writes.is_empty()) and not RenderingServer.frame_post_draw.is_connected(_capture): RenderingServer.frame_post_draw.connect(_capture,CONNECT_ONE_SHOT)
 		return
+	# Read every visible saved PNG before starting a missing car's native world.
+	# A cold miss must not hold already stored pictures behind its construction.
+	if worker == null and not directory.is_empty():
+		for index: int in range(queued.size()):
+			var next: Dictionary=queued[index]
+			if next.read and _current(next,true):
+				queued.remove_at(index)
+				io=next
+				worker=Work.start(_read.bind(directory.path_join(next.key+".png")),get_tree())
+				return
+	elif worker != null and not directory.is_empty():
+		for next: Dictionary in queued:
+			if next.read and _current(next,true): return
+	if worker == null and not pending_writes.is_empty(): _start_write()
 	for _index: int in range(queued.size()):
 		var next: Dictionary = queued.pop_front()
 		if not _current(next): continue
-		if not _current(next,true): queued.append(next); continue
 		if next.read and not directory.is_empty():
-			io = next
-			worker = Work.start(_read.bind(directory.path_join(next.key+".png")),get_tree())
-			return
+			queued.append(next)
+			continue
+		var remembered: Texture2D=_remembered(next.vehicle,next.key)
+		if remembered!=null:
+			_publish(next.view.get_ref(),next.key,remembered)
+			continue
+		if not _current(next,true): queued.append(next); continue
 		if DisplayServer.get_name() == "headless": continue
 		if not _render_allowed():
 			queued.push_front(next)
@@ -188,11 +294,18 @@ func _capture() -> void:
 		var started: int = Time.get_ticks_usec()
 		var image: Image = renderer.showroom_viewport.get_texture().get_image()
 		readback_us += Time.get_ticks_usec()-started
-		active.view.get_ref().publish_preview(active.key,ImageTexture.create_from_image(image))
+		_publish(active.view.get_ref(),active.key,ImageTexture.create_from_image(image))
 		if not directory.is_empty():
-			io = {"key":active.key,"read":false}
-			worker = Work.start(_write.bind(directory,active.key,image),get_tree())
+			pending_writes.append({"key":active.key,"image":image})
 	_finish()
+
+func _start_write() -> void:
+	var picture: Dictionary=pending_writes.pop_front()
+	if directory.is_empty(): return
+	var image: Image=picture.get("image")
+	if image==null: image=picture.texture.get_image()
+	io={"key":picture.key,"read":false}
+	worker=Work.start(_write.bind(directory,picture.key,image),get_tree())
 
 func _finish() -> void:
 	if RenderingServer.frame_post_draw.is_connected(_capture): RenderingServer.frame_post_draw.disconnect(_capture)
@@ -205,6 +318,7 @@ func _exit_tree() -> void:
 	_finish()
 	if worker != null: worker.cancel()
 	queued.clear()
+	pending_writes.clear()
 
 static func _read(cancelled: Callable, path: String) -> Dictionary:
 	var started: int = Time.get_ticks_usec()

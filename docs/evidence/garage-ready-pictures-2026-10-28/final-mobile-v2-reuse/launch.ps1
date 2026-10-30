@@ -1,0 +1,2 @@
+$ErrorActionPreference = 'Stop'
+& 'C:\Codes\Godot\Beat my track\scripts\dev.ps1' -Action 'TestScript' -ScriptPath 'res://tests/test_garage_ready_pictures.gd' -TestArgument @('--output=C:\Codes\Godot\Beat my track\docs\evidence\garage-ready-pictures-2026-10-28\final-mobile-v2-reuse','--phase=reuse','--profile=C:\Codes\Godot\Beat my track\build\garage-ready-profile-final-mobile-v2') -Graphical -RenderingMethod 'mobile'

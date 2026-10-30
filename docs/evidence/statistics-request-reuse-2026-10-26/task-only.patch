@@ -1,0 +1,1196 @@
+--- a/game/backend/comparison_preloader.gd
++++ b/game/backend/comparison_preloader.gd
+@@ -3,6 +3,8 @@
+ const MAX_TARGETS: int = 2
+ const MAX_ACTIVE: int = 2
+ const MAX_FOREGROUND: int = 1
++const REUSE = preload("res://backend/comparison_reuse.gd")
++const PREVIEW_LIMIT: int = 3
+ var cache = preload("res://backend/menu_snapshot_cache.gd").new()
+ var client: Node
+ var _generation: int = 0
+@@ -18,22 +20,52 @@
+ var _speculative_used: int = 0
+ var _cancelled_before_start: int = 0
+ var _foreground_started: int = 0
++var _speculation_enabled: bool = true
++var _comparison_flights: Dictionary = {}
++var _actor_scope: String = ""
++var _requested_scope: String = ""
+ signal completed(key: String)
+ 
++func _service_scope(service: Node) -> String:
++	if not is_instance_valid(service): return ""
++	var actor: Variant = service.get("player")
++	return str(service.base_url())+"/"+str(actor.get("id","") if actor is Dictionary else "")+"/"+str(service.test_drivers_available() if service.has_method("test_drivers_available") else false)
++
++func _current_scope() -> bool:
++	return is_instance_valid(client) and not _actor_scope.is_empty() and _actor_scope == _service_scope(client)
++
+ func configure(service: Node, path: String, scope: String) -> void:
+-	if client == service and cache.path == path and cache.scope == scope: return
++	var actor_scope: String = _service_scope(service)
++	if client == service and cache.path == path and _requested_scope == scope and actor_scope == _actor_scope: return
+ 	client = service
++	_actor_scope = actor_scope
++	_requested_scope = scope
+ 	_generation += 1
+ 	_queue.clear()
+ 	_pending.clear()
+ 	_finished.clear()
+ 	_boards.clear()
++	_comparison_flights.clear()
+ 	_speculated.clear()
+ 	_speculative_started = 0
+ 	_speculative_used = 0
+ 	_cancelled_before_start = 0
+ 	_foreground_started = 0
+-	cache.configure(path,scope)
++	cache.max_age_seconds = REUSE.MAX_SECONDS
++	# Bind disk data to the actual service identity as well as the caller's
++	# scope, including the brief interval before account-change callbacks run.
++	cache.configure(path,scope+"/actor/"+actor_scope.sha256_text())
++
++func cancel_speculation() -> void:
++	_speculation_enabled = false
++	var retained: Array[Dictionary] = []
++	for job: Dictionary in _queue:
++		if job.get("foreground",false): retained.append(job)
++		else:
++			_pending.erase(job.key)
++			_cancelled_before_start += 1
++	_queue = retained
++	completed.emit("")
+ 
+ func diagnostics() -> Dictionary:
+ 	return {"speculative_started":_speculative_started,"speculative_used":_speculative_used,
+@@ -49,7 +81,8 @@
+ 	return JSON.stringify([version,vehicle,VehicleCatalog.config(vehicle).snapshot(),VehicleSimulation.PHYSICS_VERSION,RaceRules.KEY,TrackCompiler.VERSION,Engine.get_version_info().string,RaceComplete.COMPARISON_BINS],"",true).sha256_text()
+ 
+ func prime(entries: Array, vehicle: String) -> void:
+-	if not is_instance_valid(client) or not client.signed_in(): return
++	if not _current_scope() or not client.signed_in(): return
++	_speculation_enabled = true
+ 	var wanted: Array[Dictionary] = []
+ 	var seen: Dictionary = {}
+ 	for entry: Dictionary in entries:
+@@ -78,14 +111,92 @@
+ 	_pump()
+ 
+ func peek(version: String, vehicle: String) -> Dictionary:
++	if not _current_scope(): return {}
+ 	var identity: String = key(version,vehicle)
+ 	var cached: Dictionary = cache.read(identity)
+ 	if not cached.is_empty():
+-		if cached.get("packet") is Dictionary and valid(cached.packet): return cached
+-		cache.forget(identity)
++		if cached.get("packet") is Dictionary and valid(cached.packet) and REUSE.fresh(cached): return _fresh_board(cached)
+ 	var value: Dictionary = _finished.get(identity,{})
+ 	var age: int = int(Time.get_unix_time_from_system())-int(value.get("_fetched_at",0))
+-	return value if age >= 0 and age < cache.max_age_seconds else {}
++	if value.has("packet") and valid(value.packet) and REUSE.fresh(value): return _fresh_board(value)
++	return value if value.has("comparison_error") and age >= 0 and age < REUSE.LEGACY_SECONDS else {}
++
++func _fresh_board(value: Dictionary) -> Dictionary:
++	var result: Dictionary = value.duplicate(true)
++	var age: int = int(Time.get_unix_time_from_system())-int(value.get("_board_fetched_at",value.get("_fetched_at",0)))
++	if age < 0 or age >= REUSE.LEGACY_SECONDS:
++		result.erase("friends")
++		result.erase("board_error")
++	return result
++
++func remember_comparison(version: String, vehicle: String, packet: Dictionary, candidates: Array = [], bests: Array = []) -> void:
++	if not _current_scope() or not valid(packet): return
++	var identity: String = key(version,vehicle)
++	var value: Dictionary = _finished.get(identity,cache.read(identity)).duplicate(true)
++	value.packet = packet.duplicate(true)
++	value._fetched_at = int(Time.get_unix_time_from_system())
++	value._candidate_ticks = candidates.duplicate()
++	value._best_ticks = bests.duplicate()
++	value.erase("comparison_error")
++	_finished[identity] = value
++	while _finished.size() > 32: _finished.erase(_finished.keys()[0])
++	cache.remember(identity,value)
++
++func remember_board(version: String, vehicle: String, rows: Array, error: String) -> void:
++	if not _current_scope(): return
++	var identity: String = key(version,vehicle)
++	var value: Dictionary = _finished.get(identity,cache.read(identity)).duplicate(true)
++	value.friends = rows.duplicate(true)
++	value.board_error = error
++	value._board_fetched_at = int(Time.get_unix_time_from_system())
++	_finished[identity] = value
++	while _finished.size() > 32: _finished.erase(_finished.keys()[0])
++	if value.has("packet"): cache.remember(identity,value)
++
++func comparison(version: String, vehicle: String, race_ticks: int, lap_ticks: int, bests: Array = [], frame: Dictionary = {}) -> Dictionary:
++	if not _current_scope(): return {"ok":false,"data":{}}
++	var generation: int = _generation
++	var value: Dictionary = peek(version,vehicle)
++	if not value.has("packet") and pending(version,vehicle): value = await fetch(version,vehicle)
++	if generation != _generation or not _current_scope(): return {"ok":false,"data":{}}
++	if value.has("packet") and REUSE.matches(value,race_ticks,lap_ticks) and REUSE.same_bests(value,bests):
++		_consumed(key(version,vehicle),value)
++		return {"ok":true,"data":value.packet.duplicate(true),"cached":true}
++	var packet: Dictionary = value.get("packet",{})
++	var path: String = "/track-versions/"+version.uri_encode()+"/results-comparison?vehicle_id="+vehicle.uri_encode()+"&bins=%d" % RaceComplete.COMPARISON_BINS
++	if race_ticks > 0: path += "&race_ticks=%d" % race_ticks
++	if lap_ticks > 0: path += "&lap_ticks=%d" % lap_ticks
++	var overlay: bool = not packet.is_empty() and REUSE.fresh(value) and REUSE.same_bests(value,bests) and REUSE.contains_candidates(packet,race_ticks,lap_ticks) and str(packet.get("histogram_key","")).length() == 64
++	path += REUSE.frame_query(packet if overlay else frame)
++	if overlay: path += "&known_histogram="+str(packet.histogram_key)
++	var flight_key: String = str(generation)+path
++	if _comparison_flights.has(flight_key):
++		var flight: Dictionary = _comparison_flights[flight_key]
++		while not flight.done:
++			await client.get_tree().process_frame
++			if generation != _generation or not _current_scope(): return {"ok":false,"data":{}}
++		return flight.response.duplicate(true)
++	if _comparison_flights.size() >= 8: return {"ok":false,"data":{}}
++	var flight: Dictionary = {"done":false,"response":{}}
++	_comparison_flights[flight_key] = flight
++	var response: Dictionary = await client.request_api(path,HTTPClient.METHOD_GET,{},"",true)
++	if generation != _generation or not _current_scope(): response = {"ok":false,"data":{}}
++	if response.get("ok",false) and overlay and REUSE.merge_overlay(response.get("data",{}),packet).is_empty():
++		# An incompatible/corrupt omission cannot make the comparison unusable.
++		# Retry once without the optional dictionary hint, retaining the frame.
++		response = await client.request_api(path.get_slice("&known_histogram=",0),HTTPClient.METHOD_GET,{},"",true)
++		if generation != _generation or not _current_scope(): response = {"ok":false,"data":{}}
++	if response.get("ok",false):
++		var merged: Dictionary = REUSE.merge_overlay(response.get("data",{}),packet)
++		if valid(merged):
++			response = response.duplicate(true)
++			response.data = merged
++			remember_comparison(version,vehicle,merged,[race_ticks,lap_ticks],bests)
++		else: response = {"ok":false,"data":{}}
++	flight.response = response
++	flight.done = true
++	_comparison_flights.erase(flight_key)
++	return response
+ 
+ func pending(version: String, vehicle: String) -> bool:
+ 	return _pending.has(key(version,vehicle))
+@@ -94,6 +205,7 @@
+ 	return _boards.has(key(version,vehicle))
+ 
+ func fetch(version: String, vehicle: String) -> Dictionary:
++	if not _current_scope(): return {}
+ 	var identity: String = key(version,vehicle)
+ 	var value: Dictionary = peek(version,vehicle)
+ 	if value.has("packet") or value.has("comparison_error"): return _consumed(identity,value.duplicate(true))
+@@ -116,9 +228,13 @@
+ 	_pump()
+ 	while generation == _generation and _pending.has(identity):
+ 		await completed
+-	return _consumed(identity,peek(version,vehicle).duplicate(true)) if generation == _generation else {}
++	return _consumed(identity,peek(version,vehicle).duplicate(true)) if generation == _generation and _current_scope() else {}
+ 
+ func _pump() -> void:
++	if not _current_scope():
++		for job: Dictionary in _queue: _pending.erase(job.key)
++		_queue.clear()
++		return
+ 	if _foreground_active < MAX_FOREGROUND:
+ 		for index: int in range(_queue.size()):
+ 			if not _queue[index].get("foreground",false): continue
+@@ -129,13 +245,18 @@
+ 		# A newer selected track can use a free background slot while an older
+ 		# foreground request is still in flight; total comparison jobs stay <=3.
+ 		var job: Dictionary = _queue.pop_front()
++		if not _speculation_enabled and not job.get("foreground",false):
++			_pending.erase(job.key)
++			_cancelled_before_start += 1
++			continue
++		job.requested = job.get("foreground",false)
+ 		job.foreground = false
+ 		_active += 1
+ 		_run(job)
+ 
+ func _run(job: Dictionary) -> void:
+ 	var service: Node = client
+-	if job.get("foreground",false): _foreground_started += 1
++	if job.get("foreground",false) or job.get("requested",false): _foreground_started += 1
+ 	else:
+ 		_speculative_started += 1
+ 		_speculated[job.key] = true
+@@ -143,18 +264,20 @@
+ 	var board: Dictionary = {"done":false,"friends":[],"error":""}
+ 	_board(service,job,board)
+ 	var response: Dictionary = await service.request_api("/track-versions/"+str(job.version).uri_encode()+"/results-comparison?vehicle_id="+str(job.vehicle).uri_encode()+"&bins=%d" % RaceComplete.COMPARISON_BINS,HTTPClient.METHOD_GET,{},"",true)
+-	if int(job.generation) == _generation:
++	if int(job.generation) == _generation and _current_scope():
+ 		var value: Dictionary = {"_fetched_at":int(Time.get_unix_time_from_system())}
+ 		if board.done:
+ 			value.friends = board.friends
+ 			value.board_error = board.error
+ 		if response.get("ok",false) and valid(response.get("data",{})):
+ 			value.packet = response.data
++			if board.done: value._board_fetched_at = board.get("at",value._fetched_at)
+ 			cache.remember(job.key,value)
+ 		else: value.comparison_error = "Comparison unavailable"
+ 		_finished[job.key] = value
+ 		while _finished.size() > 32: _finished.erase(_finished.keys()[0])
+ 		_pending.erase(job.key)
++	elif int(job.generation) == _generation: _pending.erase(job.key)
+ 	if job.get("foreground",false): _foreground_active -= 1
+ 	else: _active -= 1
+ 	completed.emit(str(job.key))
+@@ -171,21 +294,26 @@
+ 
+ func _board(service: Node, job: Dictionary, board: Dictionary) -> void:
+ 	_boards[job.key] = job.generation
+-	var response: Dictionary = await service.request_public("/track-versions/"+str(job.version).uri_encode()+"/leaderboard?vehicle_id="+str(job.vehicle).uri_encode(),0)
++	var response: Dictionary = await service.request_public("/track-versions/"+str(job.version).uri_encode()+"/leaderboard?vehicle_id="+str(job.vehicle).uri_encode()+"&limit=%d" % PREVIEW_LIMIT,0)
+ 	if response.get("ok",false):
+ 		for item: Dictionary in response.data.get("items",[]):
+ 			board.friends.append({"player":"%d. %s" % [int(item.rank),str(item.display_name)],"country_code":str(item.get("country_code","")),"race_ms":float(item.time_ticks)*1000.0/VehicleSimulation.TICK_RATE})
+ 	else: board.error = str(response.get("error","Unavailable"))
+ 	board.done = true
+-	if int(job.generation) == _generation:
++	board.at = int(Time.get_unix_time_from_system())
++	if int(job.generation) == _generation and _current_scope():
+ 		_boards.erase(job.key)
+ 		var value: Dictionary = _finished.get(job.key,{"_fetched_at":int(Time.get_unix_time_from_system())})
+ 		value.friends = board.friends
+ 		value.board_error = board.error
++		value._board_fetched_at = board.at
+ 		_finished[job.key] = value
+ 		while _finished.size() > 32: _finished.erase(_finished.keys()[0])
+ 		if value.has("packet"): cache.remember(job.key,value)
+ 		completed.emit(str(job.key))
++	elif int(job.generation) == _generation:
++		_boards.erase(job.key)
++		completed.emit(str(job.key))
+ 
+ static func valid(data: Dictionary) -> bool:
+ 	return data.get("population_scope","") == "all" and data.get("race") is Dictionary and data.get("best_lap") is Dictionary and RaceComplete._valid_distribution(data.race,"race",str(data.get("board_id",""))) and RaceComplete._valid_distribution(data.best_lap,"best_lap",str(data.get("board_id","")))
+--- a/game/ui/track_browser.gd
++++ b/game/ui/track_browser.gd
+@@ -24,7 +24,10 @@
+ var builtin_ids: Array[String]
+ var selected_track: NativeTrack
+ var state: Dictionary
+-var page_preview: bool = false
++var page_preview: bool = false:
++	set(value):
++		page_preview = value
++		if value and discovery != null: discovery.comparisons.cancel_speculation()
+ var catalog: TrackCatalog
+ var matches: Array[Dictionary] = []
+ var grid: GridContainer
+@@ -99,6 +102,8 @@
+ var _preparation_since: int = 0
+ var _preparation_sent: bool = false
+ const PREPARATION_SETTLE_MS: int = 650
++const COMPARISON_REUSE = preload("res://backend/comparison_reuse.gd")
++var _comparison_attempts: Dictionary = {}
+ 
+ func _ready() -> void:
+ 	size_flags_vertical = Control.SIZE_EXPAND_FILL
+@@ -351,6 +356,8 @@
+ 		track_list.scroll_vertical = ceili(top+_list_stride.y-12-track_list.size.y)
+ 
+ func _set_list_open(value: bool, animate: bool = false) -> void:
++	if value and discovery != null: discovery.comparisons.cancel_speculation()
++	if list_open and not value: _comparison_selection = ""
+ 	list_open = value
+ 	race_button.visible = not value
+ 	for button: Button in [random_button,filter_button,find_child("RaceSearch",true,false)]:
+@@ -494,6 +501,7 @@
+ func activate_page() -> void:
+ 	if not page_preview: return
+ 	page_preview = false
++	_comparison_selection = ""
+ 	# The cached controls and metadata are already current. Rebuilding both
+ 	# sections here introduces a visible hitch just as the page finishes arriving.
+ 	if catalog.indexed_revision != library.revision:
+@@ -877,6 +885,7 @@
+ 
+ func _show_preview_comparison(entry: Dictionary, serial: int, vehicle: String) -> void:
+ 	var scope: String = _comparison_scope()
++	discovery.comparisons.configure(cloud.client,discovery.snapshot_cache.path+".comparisons.json" if not discovery.snapshot_cache.path.is_empty() else "",discovery.snapshot_cache.scope)
+ 	var value: Dictionary = await discovery.comparisons.fetch(str(entry.get("version_id","")),vehicle)
+ 	if not is_inside_tree() or scope != _comparison_scope() or (not selecting and not selected_track.metadata.get("metadata_only",false)) or serial != _selection_serial or VehicleCatalog.selected != vehicle or preview_entry.get("version_id","") != entry.get("version_id",""): return
+ 	var snapshot: Dictionary = {}
+@@ -950,6 +959,7 @@
+ 	preparation_requested.emit(selected_track)
+ 
+ func _exit_tree() -> void:
++	discovery.comparisons.cancel_speculation()
+ 	_selection_serial += 1
+ 	if _view_motion != null:
+ 		_view_motion.kill()
+@@ -1007,7 +1017,9 @@
+ 
+ func _comparison_warmed(identity: String) -> void:
+ 	if page_preview or not selected_track.metadata.get("metadata_only",false): return
+-	if identity == discovery.comparisons.key(str(selected_track.metadata.cloud_version),VehicleCatalog.selected): _show_detail()
++	if identity == discovery.comparisons.key(str(selected_track.metadata.cloud_version),VehicleCatalog.selected):
++		_comparison_selection = ""
++		_show_detail()
+ 
+ func _load_cloud_detail(track: NativeTrack) -> void:
+ 	var scope: String = _comparison_scope()
+@@ -1017,6 +1029,8 @@
+ 	var request_key: String = _comparison_selection_key(track)
+ 	if _cloud_detail_pending.has(request_key): return
+ 	_comparison_selection = request_key
++	_comparison_attempts[request_key] = Time.get_ticks_msec()
++	while _comparison_attempts.size() > 32: _comparison_attempts.erase(_comparison_attempts.keys()[0])
+ 	_cloud_detail_pending[request_key] = true
+ 	if _detail_wait_key != request_key:
+ 		_detail_wait_key = request_key
+@@ -1026,6 +1040,7 @@
+ 	var snapshot: Dictionary = discovery.record_snapshot(key)
+ 	var had_comparison: bool = _comparison_ready(snapshot)
+ 	var preloader = discovery.comparisons
++	preloader.configure(cloud.client,discovery.snapshot_cache.path+".comparisons.json" if not discovery.snapshot_cache.path.is_empty() else "",discovery.snapshot_cache.scope)
+ 	var warmed: Dictionary = preloader.peek(str(track.metadata.cloud_version),vehicle)
+ 	if not had_comparison and warmed.get("packet") is Dictionary and _apply_cloud_comparison(snapshot,warmed.packet,track):
+ 		for field: String in ["friends","board_error"]:
+@@ -1037,20 +1052,12 @@
+ 	if snapshot.get("comparison_scope","") != "all" or int(snapshot.get("comparison_bins",0)) != RaceComplete.COMPARISON_BINS:
+ 		for obsolete: String in ["race_distribution","lap_distribution","race_rank","race_top_percent","test_population","population"]: snapshot.erase(obsolete)
+ 	if cloud.client.signed_in():
+-		var path: String = "/track-versions/"+str(track.metadata.cloud_version)+"/results-comparison?vehicle_id="+vehicle.uri_encode()+GameText.message("&bins=%d") % RaceComplete.COMPARISON_BINS
+ 		var local: Dictionary = records.records.get(key,{})
+ 		var race_ms: int = _personal_best_ms(snapshot,local,"race")
+ 		var lap_ms: int = _personal_best_ms(snapshot,local,"lap")
+-		if race_ms > 0: path += "&race_ticks=%d" % roundi(float(race_ms)*VehicleSimulation.TICK_RATE/1000.0)
+-		if lap_ms > 0: path += "&lap_ticks=%d" % roundi(float(lap_ms)*VehicleSimulation.TICK_RATE/1000.0)
+-		path += _cached_frame_query(snapshot.get("race_distribution",{}),"race")
+-		path += _cached_frame_query(snapshot.get("lap_distribution",{}),"lap")
+-		var comparison: Dictionary
+-		var needs_overlay: bool = race_ms > 0 or lap_ms > 0 or had_comparison
+-		if not needs_overlay and (warmed.has("packet") or preloader.pending(str(track.metadata.cloud_version),vehicle)):
+-			warmed = await preloader.fetch(str(track.metadata.cloud_version),vehicle)
+-			comparison = {"ok":warmed.has("packet"),"data":warmed.get("packet",{})}
+-		else: comparison = await cloud.client.request_api(path,HTTPClient.METHOD_GET,{},"",true)
++		var race_ticks: int = roundi(float(race_ms)*VehicleSimulation.TICK_RATE/1000.0) if race_ms > 0 else 0
++		var lap_ticks: int = roundi(float(lap_ms)*VehicleSimulation.TICK_RATE/1000.0) if lap_ms > 0 else 0
++		var comparison: Dictionary = await preloader.comparison(str(track.metadata.cloud_version),vehicle,race_ticks,lap_ticks,[race_ticks,lap_ticks],_snapshot_frame(snapshot))
+ 		if not is_inside_tree() or scope != _comparison_scope() or track != selected_track or serial != _selection_serial or VehicleCatalog.selected != vehicle or request_key != _comparison_selection_key(track):
+ 			_cloud_detail_pending.erase(request_key)
+ 			return
+@@ -1090,7 +1097,7 @@
+ 			discovery.remember_record(key,snapshot)
+ 			if is_inside_tree() and serial == _selection_serial: _show_detail()
+ 			return
+-	var response: Dictionary = await cloud.client.request_public("/track-versions/"+str(track.metadata.cloud_version)+"/leaderboard?vehicle_id="+vehicle.uri_encode(),get_instance_id())
++	var response: Dictionary = await cloud.client.request_public("/track-versions/"+str(track.metadata.cloud_version)+"/leaderboard?vehicle_id="+vehicle.uri_encode()+"&limit=3",get_instance_id())
+ 	if not is_inside_tree() or scope != _comparison_scope() or track != selected_track or serial != _selection_serial or VehicleCatalog.selected != vehicle:
+ 		return
+ 	var standings: Array = []
+@@ -1100,6 +1107,7 @@
+ 	var snapshot: Dictionary = discovery.record_snapshot(key)
+ 	snapshot.friends = standings
+ 	snapshot.board_error = "" if response.ok else str(response.error)
++	preloader.remember_board(version,vehicle,standings,str(snapshot.board_error))
+ 	discovery.remember_record(key,snapshot)
+ 	if is_inside_tree() and serial == _selection_serial: _show_detail()
+ 
+@@ -1135,6 +1143,9 @@
+ 			snapshot.population = int(histogram.comparison.population)
+ 	snapshot.comparison_scope = "all"
+ 	snapshot.comparison_bins = RaceComplete.COMPARISON_BINS
++	snapshot._comparison_packet = data.duplicate(true)
++	var retained: Dictionary = discovery.comparisons.peek(str(track.metadata.get("cloud_version","")),VehicleCatalog.selected) if track != null else {}
++	snapshot._comparison_fetched_at = int(retained.get("_fetched_at",Time.get_unix_time_from_system()))
+ 	snapshot.erase("comparison_error")
+ 	snapshot.erase("test_population")
+ 	_align_personal_comparison(snapshot,local)
+@@ -1167,6 +1178,18 @@
+ 	var edges: Array = distribution.get("edges_ms",[])
+ 	if edges.size() < 2: return ""
+ 	return "&%s_from_ticks=%d&%s_to_ticks=%d" % [metric,roundi(float(edges[0])*VehicleSimulation.TICK_RATE/1000.0),metric,roundi(float(edges[-1])*VehicleSimulation.TICK_RATE/1000.0)]
++
++static func _snapshot_frame(snapshot: Dictionary) -> Dictionary:
++	if snapshot.get("_comparison_packet") is Dictionary: return snapshot._comparison_packet
++	var result: Dictionary = {}
++	for pair: Array in [["race","race_distribution"],["best_lap","lap_distribution"]]:
++		var edges: Array = snapshot.get(pair[1],{}).get("edges_ms",[])
++		if edges.size() >= 2: result[pair[0]] = {"bins":[{"from_ticks":roundi(float(edges[0])*VehicleSimulation.TICK_RATE/1000.0),"to_ticks_exclusive":roundi(float(edges[-1])*VehicleSimulation.TICK_RATE/1000.0)}]}
++	return result
++
++func _comparison_expired(snapshot: Dictionary, request_key: String) -> bool:
++	if snapshot.has("comparison_error") or Time.get_ticks_msec()-int(_comparison_attempts.get(request_key,-30000)) < 30000: return false
++	return not COMPARISON_REUSE.fresh({"packet":snapshot.get("_comparison_packet",{}),"_fetched_at":snapshot.get("_comparison_fetched_at",0)})
+ 
+ func _open_scores() -> void:
+ 	var dialog := preload("res://ui/cloud_leaderboard.gd").new()
+@@ -1262,7 +1285,7 @@
+ 			if not snapshot.has(field) and warmed.has(field): snapshot[field] = warmed[field]
+ 		if not page_preview and cloud.client.signed_in():
+ 			var request_key: String = _comparison_selection_key(selected_track)
+-			if _comparison_selection != request_key:
++			if _comparison_selection != request_key or (known_contract and not _cloud_detail_pending.has(request_key) and _comparison_expired(snapshot,request_key)):
+ 				if known_contract: _load_cloud_detail(selected_track)
+ 				else:
+ 					_comparison_selection = request_key
+@@ -1291,7 +1314,7 @@
+ 	# one comparison read when the actual page is visible, including promotion.
+ 	if not metadata_only and not page_preview and cloud != null and selected_track.metadata.has("cloud_version") and _selected_is_available():
+ 		var request_key: String = _comparison_selection_key(selected_track)
+-		var unresolved: bool = not _comparison_ready(snapshot) and not snapshot.has("comparison_error") and not _cloud_detail_pending.has(request_key)
++		var unresolved: bool = (not _comparison_ready(snapshot) or _comparison_expired(snapshot,request_key)) and not snapshot.has("comparison_error") and not _cloud_detail_pending.has(request_key)
+ 		if _comparison_selection != request_key or unresolved:
+ 			_load_cloud_detail(selected_track)
+ 			snapshot = discovery.record_snapshot(key)
+--- a/game/ui/race_complete.gd
++++ b/game/ui/race_complete.gd
+@@ -25,6 +25,7 @@
+ var lap_time_caption: Label
+ var comparison_scope: String = "all"
+ var last_comparison: Dictionary = {}
++var comparison_cache: RefCounted
+ const COMPARISON_BINS: int = 16
+ var vehicle_id: String = "compact"
+ var facts: Dictionary
+@@ -417,7 +418,15 @@
+ 	if flying > 0: path += "&lap_ticks=%d" % roundi(flying*VehicleSimulation.TICK_RATE)
+ 	path += _frame_query(last_comparison.get("race",{}),"race")
+ 	path += _frame_query(last_comparison.get("best_lap",{}),"lap")
+-	var response: Dictionary = await cloud_client.request_api(path,HTTPClient.METHOD_GET,{},"",true)
++	var response: Dictionary
++	if comparison_cache != null:
++		var best_race: float = results.best if results.best > 0 else results.previous
++		var best_lap: float = float(facts.get("previous_lap",0))
++		if results.clean and not results.editor:
++			if results.total > 0: best_race = minf(best_race,results.total) if best_race > 0 else results.total
++			if flying > 0: best_lap = minf(best_lap,flying) if best_lap > 0 else flying
++		response = await comparison_cache.comparison(cloud_version,vehicle_id,roundi(results.total*VehicleSimulation.TICK_RATE),roundi(flying*VehicleSimulation.TICK_RATE),[roundi(best_race*VehicleSimulation.TICK_RATE),roundi(best_lap*VehicleSimulation.TICK_RATE)],last_comparison)
++	else: response = await cloud_client.request_api(path,HTTPClient.METHOD_GET,{},"",true)
+ 	if not is_inside_tree(): return
+ 	if not response.ok or not _apply_comparison(response.data): _comparison_unavailable("Comparison unavailable")
+ 	standings_busy = false
+--- a/game/core/app.gd
++++ b/game/core/app.gd
+@@ -502,7 +529,9 @@
+ 	if not capture_path.is_empty(): _capture()
+ 
+ func _show_screen(next: String) -> void:
+-	if appearance_sync != null: appearance_sync.refresh_if_stale()
++	if next != "tracks" and discovery_provider != null: discovery_provider.comparisons.cancel_speculation()
++	if appearance_sync != null and (next == "garage" or appearance_sync._needs_recovery()): appearance_sync.refresh_if_stale()
++	if achievements != null: achievements.resume_pending()
+ 	if game_configuration != null:
+ 		game_configuration.set_transport_allowed(not is_instance_valid(game) or (game.get("track_session") != null and bool(game.get("track_session").finished)))
+ 		game_configuration.enter_menu()
+@@ -1336,6 +1376,9 @@
+ 
+ func _prime_free_race_comparisons() -> void:
+ 	if cloud == null or is_instance_valid(game) or not online.client.signed_in(): return
++	if screen != "tracks":
++		discovery_provider.comparisons.cancel_speculation()
++		return
+ 	if screen == "tracks" and startup_complete: return # Visible carousel owns its warming window.
+ 	var scope: String = online.client.base_url()+"/"+str(online.client.player.get("id",""))+"/"+str(online.client.test_drivers_available())
+ 	discovery_provider.configure_cache(cloud.cache_root().path_join("menu/"+scope.sha256_text()+".json"),scope)
+@@ -1344,6 +1387,11 @@
+ 		entries.append({"version_id":selected_track.metadata.cloud_version})
+ 	for entry: Dictionary in cloud.entries.slice(0,6): entries.append(entry)
+ 	discovery_provider.prime_comparisons(online.client,entries,VehicleCatalog.selected)
++
++func _configure_result_comparisons() -> void:
++	var scope: String = online.client.base_url()+"/"+str(online.client.player.get("id",""))+"/"+str(online.client.test_drivers_available())
++	discovery_provider.configure_cache(cloud.cache_root().path_join("menu/"+scope.sha256_text()+".json"),scope)
++	discovery_provider.comparisons.configure(online.client,discovery_provider.snapshot_cache.path+".comparisons.json",scope)
+ 
+ func _select_player_storage() -> void:
+ 	var identity: String = str(online.client.player.get("id", "")) if online.client.signed_in() else ""
+@@ -3993,11 +4048,25 @@
+ var test_return_to_drafts: bool = false
+ var test_document_snapshot: Dictionary = {}
+ var _practice_editor_context: Dictionary = {}
++var _race_menu_processing: Dictionary = {}
++
++func _race_menu_visible(value: bool) -> void:
++	if not is_instance_valid(root_ui): return
++	var identity: int = root_ui.get_instance_id()
++	if not value:
++		if _race_menu_processing.get("root",0) != identity:
++			_race_menu_processing = {"root":identity,"mode":root_ui.process_mode}
++		root_ui.process_mode = Node.PROCESS_MODE_DISABLED
++	else:
++		if _race_menu_processing.get("root",0) == identity: root_ui.process_mode = _race_menu_processing.mode
++		_race_menu_processing.clear()
++	root_ui.visible = value
+ var _draft_test_save_context: Dictionary = {}
+ var _draft_test_save_dialog: AcceptDialog
+ 
+ func _open_race_loading(track: NativeTrack = null, practice: bool = false) -> RaceLoading:
+ 	if product_telemetry != null: product_telemetry.set_transport_allowed(false)
++	if discovery_provider != null: discovery_provider.comparisons.cancel_speculation()
+ 	_stop_menu_page_motion()
+ 	race_loading = RaceLoading.new()
+ 	add_child(race_loading)
+@@ -4730,6 +4798,8 @@
+ 	page.rating_records = records
+ 	page.rating_track_id = (game.get("native_track") as NativeTrack).identity
+ 	page.cloud_client = online.client
++	_configure_result_comparisons()
++	page.comparison_cache = discovery_provider.comparisons
+ 	page.cloud_sync = cloud
+ 	var finish_vote: Variant = game.get("cloud_rating")
+ 	if is_instance_valid(finish_vote): page.finish_vote = finish_vote
+--- a/backend/bmt_backend/runs.py
++++ b/backend/bmt_backend/runs.py
+@@ -719,7 +719,8 @@
+                        race_from_ticks: int | None = Query(None, ge=1, le=MAX_FRAMES),
+                        race_to_ticks: int | None = Query(None, ge=2, le=MAX_FRAMES * 2),
+                        lap_from_ticks: int | None = Query(None, ge=1, le=MAX_FRAMES),
+-                       lap_to_ticks: int | None = Query(None, ge=2, le=MAX_FRAMES * 2)):
++                       lap_to_ticks: int | None = Query(None, ge=2, le=MAX_FRAMES * 2),
++                       known_histogram: str = Query("", pattern=r"^(|[0-9a-f]{64})$")):
+     """One deduplicated field of all available drivers, never a UI source choice."""
+     for start, end in ((race_from_ticks, race_to_ticks), (lap_from_ticks, lap_to_ticks)):
+         if (start is None) != (end is None) or start is not None and end <= start:
+@@ -730,7 +731,8 @@
+     include_artificial = request.app.state.settings.test_drivers_enabled
+     test_id = digest({"version_id": version.id, **pinned, "test_population": True})
+     from .histogram_snapshots import load_snapshot
+-    snapshot = load_snapshot(session, version.id, vehicle_id, include_artificial)
++    freshness = {}
++    snapshot = load_snapshot(session, version.id, vehicle_id, include_artificial, metadata_out=freshness)
+     from .histogram_http import preparing, reply, schedule_demand
+     schedule_demand(request, background, version.id, vehicle_id, include_artificial, unavailable=snapshot is None)
+     if snapshot is None:
+@@ -747,10 +749,19 @@
+                                      race_ticks, race_from_ticks, race_to_ticks, current_own=own_times.get("race"))
+         lap = population_comparison(session, population_key, laps, board_id, "best_lap", bins, player.id,
+                                     lap_ticks, lap_from_ticks, lap_to_ticks, current_own=own_times.get("best_lap"))
+-        return {"board_id": board_id, "population_scope": "all",
+-                "stats_revision": revision, "race": race, "best_lap": lap}
++        histogram_key = digest([board_id, generation, bins, race["bins"], lap["bins"]])
++        result = {"board_id": board_id, "population_scope": "all", "freshness": freshness,
++                  "histogram_key": histogram_key, "stats_revision": revision, "race": race, "best_lap": lap}
++        if known_histogram == histogram_key:
++            result["schema"] = "bmt-comparison-overlay-v1"
++            # Only a caller holding this exact pair of grids may omit them.
++            # Personal markers/positions are still computed for this request.
++            result["race"] = {key: value for key, value in race.items() if key != "bins"}
++            result["best_lap"] = {key: value for key, value in lap.items() if key != "bins"}
++        return result
+     response = reply(request, background, [board_id, include_artificial, generation, player.id, own_times, bins,
+-        race_ticks, lap_ticks, race_from_ticks, race_to_ticks, lap_from_ticks, lap_to_ticks], build)
++        race_ticks, lap_ticks, race_from_ticks, race_to_ticks, lap_from_ticks, lap_to_ticks,
++        known_histogram, freshness], build, compact=bool(known_histogram))
+     session.commit()
+     return response
+ 
+--- a/backend/bmt_backend/histogram_snapshots.py
++++ b/backend/bmt_backend/histogram_snapshots.py
+@@ -32,12 +32,15 @@
+     return {"version_id": version_id, "vehicle_id": vehicle_id, "include_artificial": include_artificial}
+ 
+ 
+-def load_snapshot(session, version_id, vehicle_id, include_artificial):
++def load_snapshot(session, version_id, vehicle_id, include_artificial, *, metadata_out=None):
+     key = snapshot_key(version_id, vehicle_id, include_artificial)
+     metadata = session.execute(select(HistogramSnapshot.generation, HistogramSnapshot.source_revision,
+-                                     HistogramSnapshot.invalidated, HistogramSnapshot.population).filter_by(**key)).first()
++                                     HistogramSnapshot.invalidated, HistogramSnapshot.population,
++                                     HistogramSnapshot.updated_at, HistogramSnapshot.next_refresh_at).filter_by(**key)).first()
+     if metadata is None or not metadata.generation or metadata.invalidated:
+         return None
++    if metadata_out is not None:
++        metadata_out.update(generated_at=metadata.updated_at, expires_at=metadata.next_refresh_at)
+     def load():
+         query = select(HistogramSnapshot.payload).filter_by(**key).where(
+             HistogramSnapshot.generation == metadata.generation, HistogramSnapshot.invalidated.is_(False))
+--- a/backend/bmt_backend/histogram_http.py
++++ b/backend/bmt_backend/histogram_http.py
+@@ -1,4 +1,5 @@
+ """Private conditional replies and bounded, best-effort refresh interest."""
++import gzip
+ import logging
+ from collections import OrderedDict
+ from threading import Lock
+@@ -61,13 +62,36 @@
+     background.add_task(note_demand, app, dict(zip(("version_id", "vehicle_id", "include_artificial"), key)))
+ 
+ 
+-def reply(request, background, identity, build):
++def reply(request, background, identity, build, *, compact=False):
+     tag = '"' + digest(["histogram-http-v1", identity]) + '"'
+-    headers = {"ETag": tag, "Cache-Control": "private, max-age=0, must-revalidate", "Vary": "Authorization"}
++    headers = {"ETag": "W/" + tag if compact else tag,
++               "Cache-Control": "private, max-age=0, must-revalidate",
++               "Vary": "Authorization, Accept-Encoding" if compact else "Authorization"}
+     matches = [token.strip().removeprefix("W/") for token in request.headers.get("if-none-match", "").split(",")]
+     if tag in matches or "*" in matches:
+         return Response(status_code=304, headers=headers, background=background)
+-    return JSONResponse(build(), headers=headers, background=background)
++    response = JSONResponse(build(), headers=headers, background=background)
++    if compact:
++        # Small position-only replies can fall below the global 1-KiB gzip
++        # threshold. Compress them too when negotiated and beneficial, so a
++        # shorter decoded reply does not cost more wire bytes than full bins.
++        for encoding in request.headers.get("accept-encoding", "").lower().split(","):
++            parts = [part.strip() for part in encoding.split(";")]
++            if parts[0] != "gzip":
++                continue
++            quality = next((part[2:] for part in parts[1:] if part.startswith("q=")), "1")
++            try:
++                accepted = 0 < float(quality) <= 1
++            except ValueError:
++                accepted = False
++            if accepted:
++                compressed = gzip.compress(response.body, compresslevel=3, mtime=0)
++                if len(compressed) < len(response.body):
++                    response.body = compressed
++                    response.headers["Content-Encoding"] = "gzip"
++                    response.headers["Content-Length"] = str(len(compressed))
++            break
++    return response
+ 
+ 
+ def preparing(background):
+--- a/game/tests/test_carousel_histograms.gd
++++ b/game/tests/test_carousel_histograms.gd
+@@ -70,7 +70,7 @@
+ 	preloader.prime(first,"compact")
+ 	check(preloader._active == 2,"two initial background comparisons are held")
+ 	preloader.prime(distant,"compact")
+-	check(preloader._queue.size() == 6 and preloader._queue.all(func(job: Dictionary) -> bool: return job.version in distant.map(func(entry: Dictionary) -> String: return entry.version_id)),"far window replaces old queued speculation instead of dropping new tracks")
++	check(preloader._queue.size() == 2 and preloader._queue.all(func(job: Dictionary) -> bool: return job.version in distant.map(func(entry: Dictionary) -> String: return entry.version_id)),"far window replaces old queued speculation within the retained two-track cap")
+ 	var start: int = Time.get_ticks_usec()
+ 	foreground(preloader,"window-version-45")
+ 	await wait_frames()
+--- a/docs/schemas/results-comparison-v1.schema.json
++++ b/docs/schemas/results-comparison-v1.schema.json
+@@ -7,6 +7,17 @@
+     "board_id": {"type": "string", "minLength": 1},
+     "population_scope": {"const": "all"},
+     "stats_revision": {"type": "integer", "minimum": 0},
++    "histogram_key": {"type": "string", "pattern": "^[0-9a-f]{64}$", "description": "Identity of this exact generation and pair of bin grids; may be sent as known_histogram to omit unchanged bins."},
++    "freshness": {
++      "type": "object",
++      "required": ["generated_at", "expires_at"],
++      "properties": {
++        "generated_at": {"type": "integer", "minimum": 0},
++        "expires_at": {"type": "integer", "minimum": 0}
++      },
++      "additionalProperties": false,
++      "description": "Absolute UTC epoch seconds from the durable server snapshot. expires_at is the next scheduled population-dependent validation, including unchanged-generation validation; a client must not restart it on download. Client reuse is additionally bounded to one hour from receipt. Older servers omit these optional fields and retain the legacy ten-minute client fallback. Personal best, account, car/rules and frame matching are additional reuse requirements."
++    },
+     "race": {"$ref": "time-histogram-v1.schema.json"},
+     "best_lap": {"$ref": "time-histogram-v1.schema.json"}
+   },
+--- a/AGENTS.md
++++ b/AGENTS.md
+@@ -1,3 +1,8 @@
++<!-- STATISTICS-REQUEST-REUSE-20261026 -->
++## Histogram and track-detail request reuse (2026-10-26)
++SRR01-SRR04/R01/Q01: Fresh matching race/lap PBs reuse private histograms until the server snapshot's absolute population-dependent expiry. Slower results retain exact bins and fetch their own position through a keyed, compressed omission response; changes in PB, frame, generation or identity refresh safely. Three-row leaderboard previews, independent refreshed-board reuse and queued-speculation cancellation reduce unused reads. Actual account binding includes persisted caches and early identity changes. Focused42headless/43Compatibility/43desktopMobile, instant25/personal17/carousel20/startup22/results37/download122/App141/parser1295 and backend33 plus protocol3/local verifier1 pass. Two-driver fixture compressed comparison bodies600to373bytes; no player-day/bill forecast. Original six-target carousel20/1 reproduces with task-start two-target code; only superseded count changes. Existing0054 downgrade failure reproduces with task-start modules in isolated memory. Initial adapter/lifetime, sandbox-verifier and concurrent transient parser findings remain recorded. 650ms track preparation, two-viewport discovery reserve, geometry, physics, scoring and rewards remain. Matching API/client reload and owner/device acceptance remain; no device attachment check/test, APK, live mutation, deployment, owner-process restart, staging or commit. Concurrent App/profile and other work preserved and excluded. Sources, commands, captures, hashes and scoped patch: docs/STATISTICS_REQUEST_REUSE_2026_10_26.md and docs/evidence/statistics-request-reuse-2026-10-26/report.json.
++<!-- /STATISTICS-REQUEST-REUSE-20261026 -->
++
+ <!-- HEADER-CAR-MOTION-20261026 -->
+ ## Header car dropdown animations (2026-10-26)
+ HCM01-HCM03/R01/Q01: Header car dropdown opens with a0.22s eased fade/downward settle and closes with a0.15s upward fade. Native selection/save/filtering/pictures remain. One cropped last-frame exit is input-transparent; reopen/hide/resize/teardown clear resources, with no idle animation processing. Both native renderers pass72 combined observations at960/1280/1720; parser1279 passes. Initial native-target/copy/coordinate/capture-timing findings remain. Runtime scope is one new helper and picker setup; icon helper is exact. Commands, native frames, hashes, limitations and scoped patch: docs/HEADER_CAR_MOTION_2026_10_26.md and docs/evidence/header-car-motion-2026-10-26/report.json. Reload and owner/device motion/touch/frame-pacing acceptance remain. No attachment/device test, APK, purchase, live mutation, deployment, staging, commit or owner-process restart; concurrent work preserved.
+--- a/DEVELOPMENT_STATUS.md
++++ b/DEVELOPMENT_STATUS.md
+@@ -1,3 +1,8 @@
++<!-- STATISTICS-REQUEST-REUSE-20261026 -->
++## Histogram and track-detail request reuse (2026-10-26)
++SRR01-SRR04/R01/Q01: Fresh matching race/lap PBs reuse private histograms until the server snapshot's absolute population-dependent expiry. Slower results retain exact bins and fetch their own position through a keyed, compressed omission response; changes in PB, frame, generation or identity refresh safely. Three-row leaderboard previews, independent refreshed-board reuse and queued-speculation cancellation reduce unused reads. Actual account binding includes persisted caches and early identity changes. Focused42headless/43Compatibility/43desktopMobile, instant25/personal17/carousel20/startup22/results37/download122/App141/parser1295 and backend33 plus protocol3/local verifier1 pass. Two-driver fixture compressed comparison bodies600to373bytes; no player-day/bill forecast. Original six-target carousel20/1 reproduces with task-start two-target code; only superseded count changes. Existing0054 downgrade failure reproduces with task-start modules in isolated memory. Initial adapter/lifetime, sandbox-verifier and concurrent transient parser findings remain recorded. 650ms track preparation, two-viewport discovery reserve, geometry, physics, scoring and rewards remain. Matching API/client reload and owner/device acceptance remain; no device attachment check/test, APK, live mutation, deployment, owner-process restart, staging or commit. Concurrent App/profile and other work preserved and excluded. Sources, commands, captures, hashes and scoped patch: docs/STATISTICS_REQUEST_REUSE_2026_10_26.md and docs/evidence/statistics-request-reuse-2026-10-26/report.json.
++<!-- /STATISTICS-REQUEST-REUSE-20261026 -->
++
+ <!-- HEADER-CAR-MOTION-20261026 -->
+ ## Header car dropdown animations (2026-10-26)
+ HCM01-HCM03/R01/Q01: Header car dropdown opens with a0.22s eased fade/downward settle and closes with a0.15s upward fade. Native selection/save/filtering/pictures remain. One cropped last-frame exit is input-transparent; reopen/hide/resize/teardown clear resources, with no idle animation processing. Both native renderers pass72 combined observations at960/1280/1720; parser1279 passes. Initial native-target/copy/coordinate/capture-timing findings remain. Runtime scope is one new helper and picker setup; icon helper is exact. Commands, native frames, hashes, limitations and scoped patch: docs/HEADER_CAR_MOTION_2026_10_26.md and docs/evidence/header-car-motion-2026-10-26/report.json. Reload and owner/device motion/touch/frame-pacing acceptance remain. No attachment/device test, APK, purchase, live mutation, deployment, staging, commit or owner-process restart; concurrent work preserved.
+--- a/docs/PHASE_0_PLAN.md
++++ b/docs/PHASE_0_PLAN.md
+@@ -1,3 +1,8 @@
++<!-- STATISTICS-REQUEST-REUSE-20261026 -->
++## Histogram and track-detail request reuse (2026-10-26)
++SRR01-SRR04/R01/Q01: Fresh matching race/lap PBs reuse private histograms until the server snapshot's absolute population-dependent expiry. Slower results retain exact bins and fetch their own position through a keyed, compressed omission response; changes in PB, frame, generation or identity refresh safely. Three-row leaderboard previews, independent refreshed-board reuse and queued-speculation cancellation reduce unused reads. Actual account binding includes persisted caches and early identity changes. Focused42headless/43Compatibility/43desktopMobile, instant25/personal17/carousel20/startup22/results37/download122/App141/parser1295 and backend33 plus protocol3/local verifier1 pass. Two-driver fixture compressed comparison bodies600to373bytes; no player-day/bill forecast. Original six-target carousel20/1 reproduces with task-start two-target code; only superseded count changes. Existing0054 downgrade failure reproduces with task-start modules in isolated memory. Initial adapter/lifetime, sandbox-verifier and concurrent transient parser findings remain recorded. 650ms track preparation, two-viewport discovery reserve, geometry, physics, scoring and rewards remain. Matching API/client reload and owner/device acceptance remain; no device attachment check/test, APK, live mutation, deployment, owner-process restart, staging or commit. Concurrent App/profile and other work preserved and excluded. Sources, commands, captures, hashes and scoped patch: docs/STATISTICS_REQUEST_REUSE_2026_10_26.md and docs/evidence/statistics-request-reuse-2026-10-26/report.json.
++<!-- /STATISTICS-REQUEST-REUSE-20261026 -->
++
+ <!-- HEADER-CAR-MOTION-20261026 -->
+ ## Header car dropdown animations (2026-10-26)
+ HCM01-HCM03/R01/Q01: Header car dropdown opens with a0.22s eased fade/downward settle and closes with a0.15s upward fade. Native selection/save/filtering/pictures remain. One cropped last-frame exit is input-transparent; reopen/hide/resize/teardown clear resources, with no idle animation processing. Both native renderers pass72 combined observations at960/1280/1720; parser1279 passes. Initial native-target/copy/coordinate/capture-timing findings remain. Runtime scope is one new helper and picker setup; icon helper is exact. Commands, native frames, hashes, limitations and scoped patch: docs/HEADER_CAR_MOTION_2026_10_26.md and docs/evidence/header-car-motion-2026-10-26/report.json. Reload and owner/device motion/touch/frame-pacing acceptance remain. No attachment/device test, APK, purchase, live mutation, deployment, staging, commit or owner-process restart; concurrent work preserved.
+--- /dev/null
++++ b/game/backend/comparison_reuse.gd
+@@ -0,0 +1,68 @@
++extends RefCounted
++## Private presentation freshness; never authorizes results, scoring or rewards.
++const LEGACY_SECONDS: int = 600
++const MAX_SECONDS: int = 3600
++
++static func ticks(value: Variant) -> int:
++	return int(value) if value is int or value is float else 0
++
++static func fresh(value: Dictionary, clock: int = -1) -> bool:
++	if clock < 0: clock = int(Time.get_unix_time_from_system())
++	var received: int = int(value.get("_fetched_at",0))
++	if received <= 0 or clock < received or clock-received >= MAX_SECONDS: return false
++	var packet: Dictionary = value.get("packet",{})
++	if packet.is_empty(): return false
++	if not packet.has("freshness"): return clock-received < LEGACY_SECONDS
++	var freshness: Variant = packet.freshness
++	if not freshness is Dictionary: return false
++	for field: String in ["generated_at","expires_at"]:
++		var number: Variant = freshness.get(field)
++		if not (number is int or number is float) or not is_finite(float(number)) or float(number) != floorf(float(number)): return false
++	var generated: int = int(freshness.generated_at)
++	var expires: int = int(freshness.expires_at)
++	return generated > 0 and generated <= clock and expires > generated and clock < expires
++
++static func matches(value: Dictionary, race_ticks: int, lap_ticks: int) -> bool:
++	if not fresh(value): return false
++	for pair: Array in [["race",race_ticks],["best_lap",lap_ticks]]:
++		var wanted: int = pair[1]
++		if wanted <= 0: continue
++		var metric: Dictionary = value.packet.get(pair[0],{})
++		var position: Variant = metric.get("comparison")
++		if position is Dictionary and int(position.get("candidate_ticks",-1)) == wanted: continue
++		if position == null and ticks(metric.get("own_best_ticks")) == wanted and int(metric.get("opponent_count",1)) == 0: continue
++		var requested: Array = value.get("_candidate_ticks",[])
++		if position == null and int(metric.get("opponent_count",1)) == 0 and requested.size() == 2 and int(requested[0 if pair[0] == "race" else 1]) == wanted: continue
++		return false
++	return true
++
++static func same_bests(value: Dictionary, bests: Array) -> bool:
++	if bests.is_empty(): return true
++	var previous: Array = value.get("_best_ticks",[])
++	if previous.size() != 2:
++		previous = [value.packet.race.get("own_best_ticks",0),value.packet.best_lap.get("own_best_ticks",0)]
++	return ticks(previous[0]) == ticks(bests[0]) and ticks(previous[1]) == ticks(bests[1])
++
++static func frame_query(packet: Dictionary) -> String:
++	var result: String = ""
++	for pair: Array in [["race","race"],["best_lap","lap"]]:
++		var bins: Array = packet.get(pair[0],{}).get("bins",[])
++		if not bins.is_empty(): result += "&%s_from_ticks=%d&%s_to_ticks=%d" % [pair[1],int(bins[0].from_ticks),pair[1],int(bins[-1].to_ticks_exclusive)]
++	return result
++
++static func contains_candidates(packet: Dictionary, race_ticks: int, lap_ticks: int) -> bool:
++	for pair: Array in [["race",race_ticks],["best_lap",lap_ticks]]:
++		if int(pair[1]) <= 0: continue
++		var bins: Array = packet.get(pair[0],{}).get("bins",[])
++		if bins.is_empty() or int(pair[1]) < int(bins[0].from_ticks) or int(pair[1]) >= int(bins[-1].to_ticks_exclusive): return false
++	return true
++
++static func merge_overlay(packet: Dictionary, retained: Dictionary) -> Dictionary:
++	if packet.get("schema","") != "bmt-comparison-overlay-v1": return packet
++	if str(packet.get("histogram_key","")).is_empty() or packet.histogram_key != retained.get("histogram_key") or packet.get("board_id") != retained.get("board_id"): return {}
++	var result: Dictionary = packet.duplicate(true)
++	result.erase("schema")
++	for metric: String in ["race","best_lap"]:
++		if not result.get(metric) is Dictionary or not retained.get(metric,{}).get("bins") is Array: return {}
++		result[metric].bins = retained[metric].bins.duplicate(true)
++	return result
+--- /dev/null
++++ b/game/tests/test_statistics_request_reuse.gd
+@@ -0,0 +1,214 @@
++extends "res://tests/test_startup_histogram.gd"
++const PRELOADER = preload("res://backend/comparison_preloader.gd")
++const REUSE = preload("res://backend/comparison_reuse.gd")
++var summary: Dictionary = {}
++var late_response: Dictionary = {}
++
++func late_comparison(preloader: RefCounted) -> void:
++	late_response = await preloader.comparison("late-account","compact",13000,2500,[13000,2500])
++
++class ReuseService extends StartupService:
++	var bad_overlay: bool = false
++	func request_public(path: String, _owner: int) -> Dictionary:
++		paths.append(path)
++		while hold_board: await get_tree().process_frame
++		var rows: Array = []
++		var limit: int = 3 if path.contains("limit=3") else 20
++		for index: int in limit: rows.append({"rank":index+1,"player_id":"fixture-%d" % index,"display_name":"Fixture_%02d" % (index+1),"country_code":"FI","time_ticks":12240+index*12})
++		return {"ok":true,"data":{"board_id":"fixture","population":20,"items":rows,"next_cursor":null,"next_offset":null},"error":""}
++	func request_api(path: String, _method: int = HTTPClient.METHOD_GET, _body: Dictionary = {}, _key: String = "", _auth: bool = false) -> Dictionary:
++		if path.contains("/leaderboard"): return await request_public(path,0)
++		paths.append(path)
++		while hold_comparison: await get_tree().process_frame
++		var data: Dictionary = packet.duplicate(true)
++		for pair: Array in [["race","race"],["best_lap","lap"]]:
++			for part: String in path.split("&"):
++				if part.begins_with(pair[1]+"_ticks="):
++					data[pair[0]].comparison = {"candidate_ticks":int(part.get_slice("=",1)),"position":50,"population":100,"top_percent":50}
++		if path.contains("known_histogram="):
++			data.schema = "bmt-comparison-overlay-v1"
++			for metric: String in ["race","best_lap"]: data[metric].erase("bins")
++			if bad_overlay: data.histogram_key = "b".repeat(64)
++		return {"ok":true,"data":data,"error":""}
++
++func comparisons(service: ReuseService) -> int:
++	return service.paths.filter(func(path: String) -> bool: return path.contains("results-comparison")).size()
++
++func run() -> void:
++	folder = ProjectSettings.globalize_path("res://../build/statistics-request-reuse/fixture-"+TrackLibrary.unique_id())
++	evidence = ""
++	DirAccess.make_dir_recursive_absolute(folder)
++	VehicleCatalog.selected = "compact"
++	var fixture: Dictionary = JSON.parse_string(FileAccess.get_file_as_string("res://../docs/evidence/instant-comparisons-2026-10-10/slippery-compact-packet.json"))
++	var clock: int = int(Time.get_unix_time_from_system())
++	fixture.packet.freshness = {"generated_at":clock-10,"expires_at":clock+900}
++	fixture.packet.histogram_key = "a".repeat(64)
++	for pair: Array in [["race",13000],["best_lap",2500]]:
++		fixture.packet[pair[0]].own_best_ticks = pair[1]
++		fixture.packet[pair[0]].opponent_count = 99
++		fixture.packet[pair[0]].comparison = {"candidate_ticks":pair[1],"position":50,"population":100,"top_percent":50}
++	var service := ReuseService.new()
++	service.packet = fixture.packet
++	service.hold_comparison = false
++	service.hold_board = false
++	root.add_child(service)
++	var provider := TrackDiscoveryProvider.new()
++	provider.configure_cache(folder.path_join("records.json"),"fixture/account-a")
++	provider.prime_comparisons(service,[fixture.entry],"compact")
++	await settle()
++	check(service.paths.size() == 2,"one cold prefetch uses one chart read and one three-row leaderboard")
++	check(service.paths[0].contains("limit=3"),"prefetched leaderboard requests only the three displayed rows")
++	var doc: Dictionary = JSON.parse_string(FileAccess.get_file_as_string("res://../docs/evidence/instant-comparisons-2026-10-10/slippery-document.json"))
++	var track: NativeTrack = TrackCompiler.compile(doc)
++	track.metadata.cloud_version = fixture.entry.version_id
++	track.metadata.title = "Statistics reuse"
++	var browser: TrackBrowser = make_browser(service,track,true,provider)
++	var key: String = browser.records.key_for(track,HandlingSelection.config())
++	browser.records.records[key] = {"race_ms":roundi(13000.0*1000.0/120.0),"flying_ms":roundi(2500.0*1000.0/120.0)}
++	browser.page_preview = false
++	browser._show_detail()
++	await settle()
++	check(comparisons(service) == 1,"matching verified race/lap PB opens from the fresh prefetch without another histogram request")
++	check(provider.comparisons.diagnostics().speculative_used == 1,"cache hits count actual prefetch consumption for later hit-rate measurement")
++	check(texts(browser).contains("Fixture_03") and not texts(browser).contains("Fixture_04"),"same three standing entries remain visible")
++	for repeat: int in 3: browser._show_detail()
++	check(comparisons(service) == 1,"unchanged detail redraws issue zero comparison reads")
++	var cache_identity: String = PRELOADER.key(fixture.entry.version_id,"compact")
++	var stale_board: Dictionary = provider.comparisons._finished[cache_identity].duplicate(true)
++	stale_board._board_fetched_at = clock-601
++	provider.comparisons._finished[cache_identity] = stale_board
++	provider.comparisons.cache.remember(cache_identity,stale_board)
++	var board_reads: int = service.paths.filter(func(path: String) -> bool: return path.contains("leaderboard")).size()
++	await browser._load_cloud_detail(track)
++	await browser._load_cloud_detail(track)
++	check(service.paths.filter(func(path: String) -> bool: return path.contains("leaderboard")).size() == board_reads+1,"a refreshed three-row leaderboard is shared by repeated detail consumers")
++	check(comparisons(service) == 1 and int(provider.comparisons.peek(fixture.entry.version_id,"compact")._fetched_at) == int(stale_board._fetched_at),"refreshing standings does not re-fetch histograms or renew their receipt timestamp")
++	if DisplayServer.get_name() != "headless":
++		await RenderingServer.frame_post_draw
++		var image_path: String = ProjectSettings.globalize_path("res://../docs/evidence/statistics-request-reuse-2026-10-26/cache-detail-"+RenderingServer.get_current_rendering_method()+".png")
++		check(root.get_texture().get_image().save_png(image_path) == OK,"save actual browser cache-hit appearance")
++	var retained: Dictionary = provider.comparisons.peek(fixture.entry.version_id,"compact")
++	check(REUSE.fresh(retained,clock+899) and not REUSE.fresh(retained,clock+900),"absolute server expiry bounds reuse")
++	var old: Dictionary = retained.duplicate(true)
++	old._fetched_at = clock+899
++	check(not REUSE.fresh(old,clock+900),"receiving an old snapshot again cannot restart its deadline")
++	var expired: Dictionary = retained.duplicate(true)
++	expired.packet.freshness.expires_at = clock-1
++	check(not REUSE.fresh(expired,clock),"expired server metadata cannot be reused")
++	var future: Dictionary = retained.duplicate(true)
++	future._fetched_at = clock+1
++	check(not REUSE.fresh(future,clock),"backward local clock changes cannot extend reuse")
++	var legacy: Dictionary = retained.duplicate(true)
++	legacy.packet.erase("freshness")
++	check(REUSE.fresh(legacy,clock+599) and not REUSE.fresh(legacy,clock+600),"older backend responses retain the bounded ten-minute fallback")
++	check(not REUSE.matches(retained,12900,2500) and not REUSE.matches(retained,13000,2490),"race PB and flying-lap PB changes independently invalidate cached positions")
++	var unchanged: Dictionary = await provider.comparisons.comparison(fixture.entry.version_id,"compact",13000,2500,[13000,2500])
++	check(unchanged.get("cached",false) and comparisons(service) == 1,"unchanged PB consumes no HTTP request")
++	var slower: Dictionary = await provider.comparisons.comparison(fixture.entry.version_id,"compact",13100,2510,[13000,2500])
++	check(service.paths[-1].contains("known_histogram="),"slower result with unchanged PB requests positions without histogram bins")
++	check(slower.ok and slower.data.race.bins == fixture.packet.race.bins and slower.data.race.comparison.candidate_ticks == 13100,"overlay retains the exact bars and binds the slower result's position")
++	var before: int = comparisons(service)
++	var repeated: Dictionary = await provider.comparisons.comparison(fixture.entry.version_id,"compact",13100,2510,[13000,2500])
++	check(repeated.ok and comparisons(service) == before,"identical slower-result consumers reuse their cached comparison")
++	var improved: Dictionary = await provider.comparisons.comparison(fixture.entry.version_id,"compact",12900,2500,[12900,2500])
++	check(improved.ok and not service.paths[-1].contains("known_histogram="),"new race PB requests a complete refreshed comparison")
++	var improved_lap: Dictionary = await provider.comparisons.comparison(fixture.entry.version_id,"compact",12900,2490,[12900,2490])
++	check(improved_lap.ok and not service.paths[-1].contains("known_histogram="),"best-lap improvement also requests a complete comparison")
++	var wrong: Dictionary = fixture.packet.duplicate(true)
++	wrong.schema = "bmt-comparison-overlay-v1"
++	wrong.histogram_key = "b".repeat(64)
++	check(REUSE.merge_overlay(wrong,fixture.packet).is_empty(),"an overlay cannot use a different population/grid identity")
++	var outside: Dictionary = await provider.comparisons.comparison(fixture.entry.version_id,"compact",999999,2490,[12900,2490])
++	check(outside.ok and not service.paths[-1].contains("known_histogram="),"a time outside the retained chart frame requests full histogram data")
++	while not preload("res://backend/menu_snapshot_writer.gd").idle(): await process_frame
++	var restarted := PRELOADER.new()
++	restarted.configure(service,provider.comparisons.cache.path,"fixture/account-a")
++	check(restarted.peek(fixture.entry.version_id,"compact").has("packet"),"fresh validated histograms survive adapter restart")
++	restarted.configure(service,provider.comparisons.cache.path,"fixture/account-b")
++	check(restarted.peek(fixture.entry.version_id,"compact").is_empty(),"private comparisons never cross accounts")
++	check(provider.comparisons.peek(fixture.entry.version_id,"kart").is_empty(),"different vehicle/configuration cannot reuse a packet")
++	provider.comparisons.remember_comparison(fixture.entry.version_id,"compact",fixture.packet,[13000,2500],[13000,2500])
++	var source := RaceResults.new()
++	source.laps = [30.0,20.0,20.0,20.0,19.1666666667]
++	source.total = 13100.0/120.0
++	source.best = 13000.0/120.0
++	source.previous = source.best
++	source.clean = true
++	var result_page := RaceComplete.new()
++	result_page.results = source
++	result_page.facts = {"flying":2510.0/120.0,"previous_lap":2500.0/120.0}
++	result_page.cloud_client = service
++	result_page.comparison_cache = provider.comparisons
++	root.add_child(result_page)
++	result_page.cloud_version = fixture.entry.version_id
++	await result_page._refresh_rank()
++	check(service.paths[-1].contains("known_histogram=") and result_page.last_comparison.race.bins == fixture.packet.race.bins,"actual results panel reuses the unchanged-PB bars through a position-only response")
++	check(result_page.last_comparison.race.comparison.candidate_ticks == 13100 and result_page.global_rank.text == "TOP 50%","the slower result keeps its own position rather than borrowing the PB placement")
++	before = comparisons(service)
++	await result_page._refresh_rank()
++	check(comparisons(service) == before,"same results panel consumers cause no repeat histogram or position request")
++	source.total = 13200.0/120.0
++	await result_page._refresh_rank()
++	check(result_page.last_comparison.race.comparison.candidate_ticks == 13200 and service.paths[-1].contains("known_histogram="),"another non-improving race receives its own position while retaining exact bins")
++	service.bad_overlay = true
++	before = comparisons(service)
++	var recovered: Dictionary = await provider.comparisons.comparison(fixture.entry.version_id,"compact",13300,2510,[13000,2500])
++	check(recovered.ok and comparisons(service) == before+2 and not service.paths[-1].contains("known_histogram="),"a mismatched overlay retries exactly once with a full response")
++	service.bad_overlay = false
++	service.player.id = "other-account"
++	check(provider.comparisons.peek(fixture.entry.version_id,"compact").is_empty(),"account changes reject already-cached private data before reconfiguration")
++	var denied: Dictionary = await provider.comparisons.comparison(fixture.entry.version_id,"compact",13300,2510,[13000,2500])
++	check(not denied.ok,"a stale account-bound cache cannot issue a new-account comparison")
++	provider.comparisons.configure(service,provider.comparisons.cache.path,"fixture/account-a")
++	check(provider.comparisons.peek(fixture.entry.version_id,"compact").is_empty(),"even an unchanged caller scope cannot expose the previous actor's persisted cache")
++	service.player.id = "you"
++	provider.comparisons.configure(service,provider.comparisons.cache.path,"fixture/account-a")
++	service.hold_comparison = true
++	late_comparison(provider.comparisons)
++	await settle()
++	service.player.id = "other-account"
++	service.hold_comparison = false
++	await settle()
++	check(not late_response.get("ok",true),"late responses are fenced even before the main account-change callback reconfigures caches")
++	service.player.id = "you"
++	check(provider.comparisons.peek("late-account","compact").is_empty(),"late old-account response was not persisted")
++	result_page.queue_free()
++	source.free()
++	await settle()
++	var boards_before: int = service.paths.filter(func(path: String) -> bool: return path.contains("leaderboard")).size()
++	browser._open_scores()
++	await settle()
++	check(service.paths.filter(func(path: String) -> bool: return path.contains("leaderboard")).size() == boards_before+1 and not service.paths[-1].contains("limit=3"),"full scores are fetched on explicit dialog opening rather than prefetched")
++	service.hold_board = true
++	service.hold_comparison = true
++	provider.comparisons.prime([{"version_id":"unused-a"},{"version_id":"unused-b"}],"compact")
++	provider.comparisons.prime([{"version_id":"queued-a"},{"version_id":"queued-b"}],"compact")
++	check(provider.comparisons._queue.size() == 2,"fixture holds two genuinely queued speculative jobs")
++	var held_reads: int = service.paths.size()
++	browser.page_preview = true
++	check(provider.comparisons._queue.is_empty(),"leaving the active browser clears queued background statistics")
++	service.hold_board = false
++	service.hold_comparison = false
++	await settle()
++	await settle()
++	check(service.paths.size() == held_reads,"finishing old requests does not restart cancelled queued speculation")
++	var foreground: Dictionary = await provider.comparisons.fetch("foreground-after-cancel","compact")
++	check(foreground.has("packet"),"explicit foreground consumers still work after speculation is cancelled")
++	var stale_packet: Dictionary = fixture.packet.duplicate(true)
++	stale_packet.freshness.expires_at = clock-1
++	provider.comparisons.remember_comparison("expired","compact",stale_packet)
++	check(provider.comparisons.peek("expired","compact").is_empty(),"disk and memory caches both reject expired packets")
++	before = comparisons(service)
++	var refreshed: Dictionary = await provider.comparisons.comparison("expired","compact",13000,2500,[13000,2500])
++	check(refreshed.ok and comparisons(service) == before+1,"an expired snapshot performs exactly one complete refresh")
++	summary = {"checks":checks,"failures":failures,"matching_PB_histogram_reads":1,"preview_limit":3,"cancelled_queue_did_not_restart":service.paths.size() >= held_reads,"engine":Engine.get_version_info().string}
++	var output := FileAccess.open(ProjectSettings.globalize_path("res://../docs/evidence/statistics-request-reuse-2026-10-26/native.json"),FileAccess.WRITE)
++	output.store_string(JSON.stringify(summary,"  "))
++	output.close()
++	browser.cloud.queue_free()
++	browser.queue_free()
++	service.queue_free()
++	await settle()
++	while not preload("res://backend/menu_snapshot_writer.gd").idle(): await process_frame
++	print("STATISTICS_REUSE ",JSON.stringify(summary))
++	quit(1 if failures else 0)
+--- /dev/null
++++ b/backend/tests/test_statistics_request_reuse.py
+@@ -0,0 +1,99 @@
++"""Absolute snapshot freshness and exact-grid omission for private comparisons."""
++import json
++import os
++from pathlib import Path
++
++from sqlalchemy import select
++from test_domains import domain as domain_fixture
++from test_domains import headers, public_course, race
++
++from bmt_backend.histogram_snapshots import refresh_all_for_diagnostics, refresh_interval
++from bmt_backend.track_models import HistogramSnapshot
++
++domain = domain_fixture
++
++
++def ready(domain):
++    version, _ = public_course(domain)
++    race(domain, version, "Alice", frames=20)
++    refresh_all_for_diagnostics(domain.app)
++    route = f'/v1/track-versions/{version["version_id"]}/results-comparison?vehicle_id=compact&bins=16'
++    return version, route
++
++
++def test_freshness_is_absolute_snapshot_metadata(domain):
++    version, route = ready(domain)
++    response = domain.client.get(route, headers=headers(domain))
++    assert response.status_code == 200
++    data = response.json()
++    with domain.app.state.session_factory() as session:
++        row = session.scalar(select(HistogramSnapshot).where(
++            HistogramSnapshot.version_id == version["version_id"],
++            HistogramSnapshot.vehicle_id == "compact", HistogramSnapshot.include_artificial.is_(False)))
++        assert data["freshness"] == {"generated_at": row.updated_at, "expires_at": row.next_refresh_at}
++        assert row.next_refresh_at - row.updated_at == refresh_interval(row.population, domain.app.state.settings.histogram_refresh_seconds)
++    again = domain.client.get(route, headers=headers(domain))
++    assert again.json()["freshness"] == data["freshness"]
++    conditional = domain.client.get(route, headers={**headers(domain), "If-None-Match": response.headers["etag"]})
++    assert conditional.status_code == 304
++    assert len(data["histogram_key"]) == 64
++
++
++def test_only_exact_retained_grids_can_omit_bins(domain):
++    _, route = ready(domain)
++    full = domain.client.get(route + "&race_ticks=20&lap_ticks=5", headers=headers(domain)).json()
++    # Preserve the visible frame while comparing a different (slower) result.
++    frame = "".join(f'&{prefix}_from_ticks={full[metric]["bins"][0]["from_ticks"]}'
++                    f'&{prefix}_to_ticks={full[metric]["bins"][-1]["to_ticks_exclusive"]}'
++                    for metric, prefix in (("race", "race"), ("best_lap", "lap")) if full[metric]["bins"])
++    candidate = route + "&race_ticks=21&lap_ticks=6" + frame
++    expected = domain.client.get(candidate, headers=headers(domain)).json()
++    response = domain.client.get(candidate + "&known_histogram=" + full["histogram_key"], headers=headers(domain))
++    overlay = response.json()
++    assert overlay["schema"] == "bmt-comparison-overlay-v1"
++    assert overlay["histogram_key"] == full["histogram_key"]
++    assert "bins" not in overlay["race"] and "bins" not in overlay["best_lap"]
++    for metric in ("race", "best_lap"):
++        assert overlay[metric] == {key: value for key, value in expected[metric].items() if key != "bins"}
++        overlay[metric]["bins"] = full[metric]["bins"]
++    overlay.pop("schema")
++    assert overlay == expected
++    full_response = domain.client.get(candidate, headers=headers(domain))
++    assert len(response.content) < len(full_response.content)
++    assert response.headers["content-encoding"] == "gzip"
++    assert int(response.headers["content-length"]) < int(full_response.headers["content-length"])
++    assert "Accept-Encoding" in response.headers["vary"]
++    cached_overlay = domain.client.get(candidate + "&known_histogram=" + full["histogram_key"],
++                                       headers={**headers(domain), "If-None-Match": response.headers["etag"]})
++    assert cached_overlay.status_code == 304 and "Accept-Encoding" in cached_overlay.headers["vary"]
++    uncompressed = domain.client.get(candidate + "&known_histogram=" + full["histogram_key"],
++                                     headers={**headers(domain), "Accept-Encoding": "identity"})
++    assert "content-encoding" not in uncompressed.headers
++    assert uncompressed.json() == response.json()
++    refused = domain.client.get(candidate + "&known_histogram=" + full["histogram_key"],
++                               headers={**headers(domain), "Accept-Encoding": "gzip;q=0, identity"})
++    assert "content-encoding" not in refused.headers
++    if destination := os.environ.get("BMT_REQUEST_REUSE_EVIDENCE"):
++        Path(destination).write_text(json.dumps({"full": expected, "overlay": response.json(),
++            "decoded_bytes": {"full":len(full_response.content), "overlay":len(response.content)},
++            "wire_body_bytes": {"full":int(full_response.headers["content-length"]),
++                                "overlay":int(response.headers["content-length"])},
++            "scope":"Disposable two-driver test fixture; not production traffic or HTTP-header totals"}, indent=2)+"\n")
++    wrong = domain.client.get(candidate + "&known_histogram=" + "a" * 64, headers=headers(domain)).json()
++    assert "schema" not in wrong and "bins" in wrong["race"]
++    assert domain.client.get(candidate + "&known_histogram=invalid", headers=headers(domain)).status_code == 422
++
++
++def test_new_snapshot_expiry_changes_validator_without_restarting_client_age(domain):
++    version, route = ready(domain)
++    first = domain.client.get(route, headers=headers(domain))
++    with domain.app.state.session_factory() as session:
++        row = session.scalar(select(HistogramSnapshot).where(
++            HistogramSnapshot.version_id == version["version_id"],
++            HistogramSnapshot.vehicle_id == "compact", HistogramSnapshot.include_artificial.is_(False)))
++        row.next_refresh_at += 1
++        session.commit()
++    changed = domain.client.get(route, headers={**headers(domain), "If-None-Match": first.headers["etag"]})
++    assert changed.status_code == 200
++    assert changed.json()["freshness"]["expires_at"] == first.json()["freshness"]["expires_at"] + 1
++    assert changed.json()["histogram_key"] == first.json()["histogram_key"]
+--- /dev/null
++++ b/docs/schemas/results-comparison-overlay-v1.schema.json
+@@ -0,0 +1,36 @@
++{
++  "$schema": "https://json-schema.org/draft/2020-12/schema",
++  "title": "Position update for an exact retained pair of histograms",
++  "type": "object",
++  "required": ["schema", "board_id", "population_scope", "stats_revision", "histogram_key", "freshness", "race", "best_lap"],
++  "properties": {
++    "schema": {"const": "bmt-comparison-overlay-v1"},
++    "board_id": {"type": "string", "minLength": 1},
++    "population_scope": {"const": "all"},
++    "stats_revision": {"type": "integer", "minimum": 0},
++    "histogram_key": {"$ref": "results-comparison-v1.schema.json#/properties/histogram_key"},
++    "freshness": {"$ref": "results-comparison-v1.schema.json#/properties/freshness"},
++    "race": {"$ref": "#/$defs/metric"},
++    "best_lap": {"$ref": "#/$defs/metric"}
++  },
++  "$defs": {
++    "metric": {
++      "type": "object",
++      "required": ["board_id", "metric", "population", "minimum_ticks", "maximum_ticks", "own_best_ticks", "opponent_count", "comparison"],
++      "properties": {
++        "board_id": {"type": "string"},
++        "metric": {"enum": ["race", "best_lap"]},
++        "population": {"type": "integer", "minimum": 0},
++        "minimum_ticks": {"type": ["integer", "null"], "minimum": 1},
++        "maximum_ticks": {"type": ["integer", "null"], "minimum": 1},
++        "own_best_ticks": {"type": ["integer", "null"], "minimum": 1},
++        "opponent_count": {"type": "integer", "minimum": 0},
++        "comparison": {"$ref": "time-histogram-v1.schema.json#/properties/comparison"},
++        "comparison_approximate": {"type": "boolean"}
++      },
++      "additionalProperties": false
++    }
++  },
++  "additionalProperties": false,
++  "description": "Returned only when known_histogram matches the server's exact board, generation and bin grids. Both metrics omit bins together. The caller merges only with that exact retained key, then applies ordinary full-response validation. Different generations, changed bounds and unknown keys return a complete legacy-compatible response instead. Markers/positions bind this request's candidate ticks and preserve existing large-population approximation semantics. No record, scoring or reward mutation."
++}
+--- /dev/null
++++ b/docs/STATISTICS_REQUEST_REUSE_2026_10_26.md
+@@ -0,0 +1,44 @@
++# Histogram and track-detail request reuse
++
++Free Race now reuses a fresh, matching personal comparison instead of downloading it again. The server supplies the durable histogram's generation time and absolute expiry. That expiry follows the existing population-dependent worker cadence: about five minutes at 100 drivers, fifteen at 1,000 and forty-seven at 10,000, capped at an hour. Receiving the same old snapshot again cannot restart its deadline.
++
++| Requirement | Resulting behavior |
++| --- | --- |
++| SRR01 histogram freshness | The private cache matches the track revision, car/configuration, rules/compiler/engine contract, actual backend/account/population scope, candidate times and both personal bests. Fresh matching race/lap PBs need no histogram request. Expiry, race PB improvement and flying-lap PB improvement independently trigger refresh. Legacy servers keep a bounded ten-minute fallback. |
++| SRR02 result positions | A slower result still has its own position. With unchanged PBs and a fresh retained frame, the request sends its exact histogram key; the server returns current candidate positions and metadata without repeating the bins. A changed generation/frame returns a full response. The client validates the merged pair atomically and retries a corrupt omission once without the optional hint. |
++| SRR03 leaderboard size | The preloader and direct detail path request `limit=3`, matching the three visible standings. The full paginated High scores list is fetched only on explicit opening. Refreshed previews are shared; their separate ten-minute lifetime does not renew histogram age. |
++| SRR04 unused speculation | Departure, preview demotion, list return and browser cleanup clear queued speculative jobs. Startup/account/car events on other screens no longer start unused Free Race statistics. Already-started shared reads can finish; explicit foreground consumers remain usable. The retained two-track/three-active-job bounds remain. |
++| R01 preservation | Keep the 650-ms selected-track preparation, exact document/ghost caches, accepted two-viewport discovery reserve, geometry, rendering, personal-best/race validation, competitive standings, rewards and account transaction fences. |
++| Q01 evidence | Retain focused native/HTTP checks, both desktop renderers, old-source controls, source hashes and a task-only patch. No device test, deployment, owner-process restart, staging or commit. |
++
++## Implementation
++
++`backend/bmt_backend/histogram_snapshots.py` exposes existing snapshot timestamps through an optional metadata output, retaining the previous three-part return contract. `runs.py` adds optional `freshness` and `histogram_key` fields and accepts `known_histogram`. Only an exact board/generation/grid identity omits both bin arrays; candidate tick positions still use the existing checker and large-population approximation rules. Full replies remain compatible with older clients. Schemas are [full comparison](schemas/results-comparison-v1.schema.json) and [position-only comparison](schemas/results-comparison-overlay-v1.schema.json).
++
++`histogram_http.py` compresses negotiated compact replies when beneficial, including replies below the global 1-KiB threshold. Otherwise a shorter decoded response could use more wire bytes than the already-compressed full response. These representations use private weak validators and consistent `Vary` metadata. Identity-only clients receive ordinary JSON; `gzip;q=0` is respected for these compact responses.
++
++`comparison_reuse.gd` centralizes freshness, PB matching, frame hints and omission merging. `comparison_preloader.gd` owns bounded persisted packets, coalesced foreground comparison reads and queue cancellation. Its disk envelope binds the actual service/account/population identity as well as the caller's scope. Earlier envelopes miss once under the stronger namespace; player saves and downloaded track documents need no migration. Receipt timestamps remain unchanged when only leaderboard data changes. Failed, future-clock, expired, malformed and wrong-account values cannot count as fresh comparison hits.
++
++`track_browser.gd` consumes the shared packet and preserves local/verified PB alignment. `race_complete.gd` uses the same cache supplied by App: it retains the bars for a non-improving race while displaying that race's own position and marker. Account changes fence cached hits and in-flight replies even before the main identity callback reconfigures the views. Existing scene construction, chart resolution, labels and layout remain.
++
++## Measured result
++
++The disposable two-driver HTTP fixture returned **2,430 decoded / 600 compressed body bytes** for a complete comparison and **869 decoded / 373 compressed body bytes** for the matching position-only reply: **37.8% fewer body bytes** in that fixture. These numbers exclude HTTP headers and do not forecast player-day traffic or provider bills. The largest request reduction is a fresh matching PB: the fixture's initial histogram read is reused by later detail consumers, with zero additional comparison reads until a relevant change or expiry.
++
++The native fixture also verifies actual result-page marker/position binding, independent race/lap PB changes, restart persistence, same-caller-scope account changes, clock/expiry boundaries, corrupt omission fallback, frame changes, repeated leaderboard consumers and cancellation followed by a valid foreground read. The final per-suite counts and source hashes are recorded in [report.json](evidence/statistics-request-reuse-2026-10-26/report.json). Actual mock browser captures are [Compatibility](evidence/statistics-request-reuse-2026-10-26/cache-detail-gl_compatibility.png) and [desktop Mobile](evidence/statistics-request-reuse-2026-10-26/cache-detail-mobile.png); their fixture names and standings are not live player records.
++
++## Validation and controls
++
++All native commands use the pinned Godot 4.7.2 through `scripts/dev.ps1` with isolated `APPDATA`. The focused script is `res://tests/test_statistics_request_reuse.gd`; it was also run with `-Graphical -RenderingMethod gl_compatibility` and `mobile`. Retained checks cover instant/personal/carousel/startup histograms, results histograms, download caches, App and script parsing. Logs contain the actual commands' build identities and outcomes.
++
++The backend command runs `test_statistics_request_reuse.py`, `test_histogram_snapshots.py`, `test_histogram_followup.py`, `test_compact_histograms.py` and `test_population_batch.py` with `-k 'not postgres and not test_migration_backfills_snapshots_without_rewriting_results' -m 'not godot'`. The real local five-lap verifier case was run separately with isolated app data and permitted native engine access. The protocol fixture additionally checks conditional replies, compression negotiation and exact full/omitted-grid equivalence.
++
++The original carousel test expected six queued targets despite the task-start production cap already being two. Its original 20-check/one-failure result reproduces with the exact task-start preloader loaded separately. Only that superseded count is updated to two; target replacement, foreground priority and other guards remain. The backend migration test still fails at the existing `0054` downgrade guard, identically with task-start modules executed only in memory. Both original failures and controls remain in evidence.
++
++Initial native findings included an unconfigured mock adapter and a freed-service callback; those lifetime/configuration guards were corrected. A sandboxed verifier initialization failed, then passed with isolated native access. A later concurrent Rivalry edit briefly referenced an undeclared polling callback; that file was preserved and its concurrent declaration resolved the parse error before final checks. PostgreSQL calibration was unavailable; no database service was started or changed.
++
++## Remaining acceptance
++
++Reload/rebuild the client and roll out the matching API to use server-directed expiry and smaller position replies. Older APIs retain bounded full-response behavior. This task performs no deployment. Owner/device navigation, touch, slow-network and loading-performance acceptance remain; desktop renderer checks do not establish phone latency or production request frequency. No attachment check, physical-device test, APK/AAB, real authentication/purchase, live account/backend mutation, owner-process restart, staging or commit was performed.
++
++The scoped patch excludes concurrent App/profile and other independent work. Generated development build identities are command artifacts, not feature changes.
+--- /dev/null
++++ b/game/backend/comparison_reuse.gd.uid
+@@ -0,0 +1 @@
++uid://d3cv8fpf36hqy
+--- /dev/null
++++ b/game/tests/test_statistics_request_reuse.gd.uid
+@@ -0,0 +1 @@
++uid://ded5u7htvilde

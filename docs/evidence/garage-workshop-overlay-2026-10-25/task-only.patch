@@ -1,0 +1,365 @@
+diff --git a/game/ui/garage_page.gd b/game/ui/garage_page.gd
+--- a/game/ui/garage_page.gd
++++ b/game/ui/garage_page.gd
+@@ -59,7 +59,7 @@
+ var section: String = "cars"
+ var _car_menu_open: bool = false
+ var _workshop_section: String = "customise"
+-var _workshop_tabs: VBoxContainer
++var _workshop_tabs: HBoxContainer
+ var gallery: ScrollContainer
+ var gallery_slot: Control
+ var gallery_content: Control
+@@ -128,11 +128,6 @@
+ 	_preview_column.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+ 	_preview_column.add_theme_constant_override("separation",8)
+ 	main.add_child(_preview_column)
+-	_workshop_tabs = VBoxContainer.new()
+-	_workshop_tabs.name = "GarageWorkshopTabs"
+-	_workshop_tabs.add_theme_constant_override("separation",8)
+-	_layout.add_child(_workshop_tabs)
+-	_layout.move_child(_workshop_tabs,1)
+ 	_preview_slot = Control.new()
+ 	_preview_slot.size_flags_vertical = Control.SIZE_EXPAND_FILL
+ 	_preview_slot.custom_minimum_size.y = 250
+@@ -177,6 +172,7 @@
+ 	shade.offset_bottom = 80
+ 	heading = MenuStyle.label(VehicleCatalog.title(vehicle_id), 36)
+ 	heading.name = "GarageCarTitle"
++	heading.text_overrun_behavior = TextServer.OVERRUN_TRIM_ELLIPSIS
+ 	preview.add_child(heading)
+ 	heading.position = Vector2(24, 14)
+ 	heading.size = Vector2(520, 46)
+@@ -191,6 +187,11 @@
+ 	_preview_hint.offset_right = 240
+ 	_preview_hint.offset_bottom = -64
+ 	_build_view_controls()
++	_workshop_tabs = HBoxContainer.new()
++	_workshop_tabs.name = "GarageWorkshopTabs"
++	_workshop_tabs.mouse_filter = Control.MOUSE_FILTER_IGNORE
++	_workshop_tabs.add_theme_constant_override("separation",6)
++	preview.add_child(_workshop_tabs)
+ 	_build_carousel()
+ 	_actions_slot = Control.new()
+ 	main.add_child(_actions_slot)
+@@ -453,6 +454,7 @@
+ 		preview.custom_minimum_size.y = preview_height
+ 		_sync_menu_minimums()
+ 	if preview.visible: _place_menu_panel(preview,_slot_rect(_preview_slot),"")
++	_layout_workshop_overlay()
+ 	if is_instance_valid(view_hint): view_hint.visible = section not in ["customise","tuning"] or preview.size.x >= 420
+ 	_place_menu_panel(rail,_slot_rect(_rail_slot),"left")
+ 	if tools_panel.visible: _place_menu_panel(tools_panel,_slot_rect(_tools_slot),"right")
+@@ -469,6 +471,55 @@
+ 	for entry: Dictionary in _departures:
+ 		entry.panel.position = entry.start.position.lerp(entry.finish.position,minf(1.0,_menu_weight/0.45))
+ 	_layout_presented = true
++
++func _layout_workshop_overlay() -> void:
++	if not is_instance_valid(_workshop_tabs) or not _workshop_tabs.visible:
++		if is_instance_valid(heading): heading.size.x = 520
++		return
++	var captions: bool = preview.size.x >= 720
++	for button: Button in _workshop_tabs.get_children():
++		var caption: String = str(button.get_meta("workshop_caption")) if captions else ""
++		var caption_key: String = caption+"/"+TranslationServer.get_locale()
++		if button.get_meta("workshop_caption_key","") != caption_key:
++			button.text = caption
++			# Expanded icons do not contribute their width to Button's minimum.
++			button.custom_minimum_size.x = 52 if not captions else button.get_theme_font("font").get_string_size(GameText.message(caption),HORIZONTAL_ALIGNMENT_LEFT,-1,18).x+46
++			button.set_meta("workshop_caption_key",caption_key)
++	_workshop_tabs.size = _workshop_tabs.get_combined_minimum_size()
++	_workshop_tabs.position = Vector2(preview.size.x-_workshop_tabs.size.x-16,14)
++	heading.size.x = maxf(100,minf(520,_workshop_tabs.position.x-heading.position.x-12))
++
++func _workshop_overlay_button(destination: String, caption: String, active: bool) -> Button:
++	var button: Button = MenuStyle.button("",_show_section.bind(destination))
++	button.name = "Workshop"+caption
++	button.set_meta("workshop_caption",caption)
++	button.tooltip_text = caption
++	button.accessibility_name = caption
++	button.icon = RailIcons.texture(destination)
++	button.expand_icon = true
++	button.texture_filter = CanvasItem.TEXTURE_FILTER_LINEAR_WITH_MIPMAPS
++	button.custom_minimum_size = Vector2(52,48)
++	button.add_theme_constant_override("icon_max_width",24)
++	button.add_theme_constant_override("h_separation",6)
++	button.add_theme_font_size_override("font_size",18)
++	for state: String in ["normal","hover","pressed","disabled","focus"]:
++		var surface := MenuStyle.box(Color("172a34f2") if active else Color("0c1821ed"),8)
++		surface.set_corner_radius_all(7)
++		surface.border_color = MenuStyle.ACCENT if active else Color("3b515e")
++		surface.set_border_width_all(1)
++		surface.border_width_bottom = 2 if active else 1
++		if state == "hover": surface.bg_color = Color("263c48")
++		elif state == "pressed": surface.bg_color = MenuStyle.ACCENT
++		elif state == "focus":
++			surface.bg_color = Color.TRANSPARENT
++			surface.border_color = MenuStyle.ACCENT
++			surface.set_border_width_all(2)
++			surface.set_expand_margin_all(-3)
++		button.add_theme_stylebox_override(state,surface)
++	for ink: String in ["font_color","font_hover_color","font_focus_color","icon_normal_color","icon_hover_color","icon_focus_color"]:
++		button.add_theme_color_override(ink,MenuStyle.ACCENT if active else MenuStyle.TEXT)
++	button.add_theme_color_override("icon_pressed_color",MenuStyle.INK)
++	return button
+ 
+ func _build_rail() -> void:
+ 	for child: Node in rail.get_children():
+@@ -826,13 +877,8 @@
+ 	for child: Node in _workshop_tabs.get_children():
+ 		_workshop_tabs.remove_child(child)
+ 		child.queue_free()
+-	_workshop_tabs.add_child(MenuStyle.label("WORKSHOP",18,true))
+ 	for entry: Array in [["customise","Appearance"],["tuning","Parts"],["care","Wash"]]:
+-		var tab := MenuStyle.tab(str(entry[1]),_show_section.bind(str(entry[0])),next == entry[0])
+-		tab.name = "Workshop"+str(entry[1])
+-		tab.custom_minimum_size = Vector2(132,52)
+-		tab.add_theme_font_size_override("font_size",18)
+-		tab.size_flags_horizontal = Control.SIZE_EXPAND_FILL
++		var tab: Button = _workshop_overlay_button(str(entry[0]),str(entry[1]),next == entry[0])
+ 		_workshop_tabs.add_child(tab)
+ 	_update_wash_status()
+ 	# The newspaper takes the desk. Keep the live car attached and dormant so
+@@ -842,8 +888,8 @@
+ 	_preview_slot.visible = next not in ["news","achievements"]
+ 	_actions_slot.visible = next not in ["news","achievements","customise","tuning"]
+ 	actions.visible = _actions_slot.visible
+-	if is_instance_valid(_coin_balance): _coin_balance.visible = next not in ["customise","tuning"]
+-	if is_instance_valid(_coin_status): _coin_status.visible = next not in ["customise","tuning"]
++	if is_instance_valid(_coin_balance): _coin_balance.visible = next not in ["customise","tuning","care"]
++	if is_instance_valid(_coin_status): _coin_status.visible = next not in ["customise","tuning","care"]
+ 	_tools_slot.size_flags_vertical = Control.SIZE_EXPAND_FILL if next in ["news","achievements"] or is_instance_valid(customise_layout) else Control.SIZE_FILL
+ 	tools.size_flags_vertical = Control.SIZE_EXPAND_FILL if next in ["news","achievements"] or is_instance_valid(customise_layout) else Control.SIZE_FILL
+ 	if next == "news": tools_panel.add_theme_stylebox_override("panel",StyleBoxEmpty.new())
+diff --git a/game/tests/test_garage_sidebar.gd b/game/tests/test_garage_sidebar.gd
+--- a/game/tests/test_garage_sidebar.gd
++++ b/game/tests/test_garage_sidebar.gd
+@@ -70,7 +70,7 @@
+ 
+ func run() -> void:
+ 	OS.set_environment("BMT_API_URL","")
+-	var evidence_root: String = "res://../docs/evidence/garage-workshop-sidebar-2026-10-25/native"
++	var evidence_root: String = "res://../docs/evidence/garage-workshop-overlay-2026-10-25/native"
+ 	for argument: String in OS.get_cmdline_user_args():
+ 		if argument.begins_with("--evidence-root="): evidence_root = argument.trim_prefix("--evidence-root=")
+ 	before = "--before" in OS.get_cmdline_user_args()
+@@ -103,12 +103,20 @@
+ 		rail_bounds("selected "+str(dimensions))
+ 		# Workshop owns the three car tasks; media keep their own rail entries.
+ 		check(page.rail.get_child_count() == 5,"five stable destinations including Workshop")
+-		check(page._workshop_tabs.visible,"Workshop side submenu visible after selecting car")
++		check(page._workshop_tabs.visible,"Workshop overlay visible after selecting car")
++		if not before:
++			check(page._workshop_tabs.get_parent()==page.preview,"Workshop controls overlay the car view")
++			check(page._workshop_tabs.get_child_count()==3,"three compact overlay buttons without a submenu heading")
++			check(absf(page.preview.global_position.x-page.rail.get_global_rect().end.x-12)<1,"overlay consumes no separate layout column")
+ 		for tab: Control in page._workshop_tabs.get_children():
+ 			if not tab is Button: continue
+ 			check(root.get_visible_rect().encloses(tab.get_global_rect()),"Workshop tab fits window")
+ 			check(tab.size.y >= 48,"Workshop submenu touch target")
+-			check(tab.get_global_rect().end.x <= page.preview.global_position.x,"Workshop action stays left of the car")
++			if not before:
++				check(page.preview.get_global_rect().encloses(tab.get_global_rect()),"overlay button fits inside car view")
++				check(not tab.get_global_rect().intersects(page.heading.get_global_rect()),"overlay clears the car name")
++				check(not tab.get_global_rect().intersects(page.preview.get_node("GarageViewControls").get_global_rect()),"overlay clears the view controls")
++				check(tab.icon!=null and not tab.tooltip_text.is_empty() and not tab.accessibility_name.is_empty(),"overlay has a named mode icon")
+ 		check(page.rail.get_node_or_null("GarageCare") == null and page.rail.get_node_or_null("GarageCustomise") == null and page.rail.get_node_or_null("GarageTuning") == null,"car tasks are grouped in the side submenu")
+ 		await capture("customise-"+str(dimensions.x))
+ 		var rects: Array = []
+@@ -118,9 +126,17 @@
+ 		for button: Node in page.rail.get_children(): positions.append(button.get_global_rect())
+ 		for destination: String in ["care","tuning","records","trophies","news"]:
+ 			var target: Button = page._workshop_tabs.get_node("WorkshopWash" if destination == "care" else "WorkshopParts") if destination in ["care","tuning"] else page.rail.get_node("Garage"+destination.capitalize())
+-			await click(target,destination in ["records","news"])
++			var yaw: float = page.showroom.yaw
++			var zoom: float = page.showroom.zoom
++			await click(target,destination in ["care","records","news"])
+ 			await settle()
+ 			check(page.section == destination,"pointer opens "+destination+" "+str(dimensions))
++			if destination in ["care","tuning"]:
++				check(page.showroom.yaw==yaw and page.showroom.zoom==zoom,"overlay click does not orbit or zoom the car")
++				check(page.preview.get_global_rect().encloses(page._workshop_tabs.get_global_rect()),"overlay follows resized car view "+destination)
++				if destination=="care":
++					check(not page._workshop_tabs.get_global_rect().intersects(page._wash_status_panel.get_global_rect()),"overlay clears cleanliness status")
++					check(not page._workshop_tabs.get_global_rect().intersects(page.preview.get_node("GarageWashTools").get_global_rect()),"overlay clears washing tools")
+ 			check(page._preview_column.visible == (destination != "news"),"preview column follows destination "+destination)
+ 			if destination == "news":
+ 				check(page.tools_panel.global_position.y <= page.global_position.y+1,"News keeps its full-height layout")
+@@ -132,7 +148,7 @@
+ 		await click(page.rail.get_node("GarageWorkshop"))
+ 		await settle()
+ 		check(page.section == "tuning","Workshop remembers Parts after News")
+-		check(page._workshop_tabs.visible,"returning to Workshop restores the side submenu")
++		check(page._workshop_tabs.visible,"returning to Workshop restores overlay controls")
+ 		check(not page.actions.visible and page.actions.get_child_count()==0,"customisation has no bottom button row "+str(dimensions))
+ 		check(page.get_global_rect().encloses(page.tools_panel.get_global_rect()),"workshop controls fit "+str(dimensions))
+ 		check(root.get_visible_rect().encloses(page.tools_panel.get_global_rect()),"workshop controls fit window "+str(dimensions))
+diff --git a/game/tests/test_customisation_carousel.gd b/game/tests/test_customisation_carousel.gd
+--- a/game/tests/test_customisation_carousel.gd
++++ b/game/tests/test_customisation_carousel.gd
+@@ -165,8 +165,8 @@
+ 		check(page.tools_panel.get_global_rect().encloses(page.kit_shelf.equip.get_global_rect()),"equip fits "+str(dimensions))
+ 		check(page.tools_panel.get_global_rect().encloses(page.kit_scroll.get_global_rect()),"carousel fits "+str(dimensions))
+ 		check(not page.actions.visible and page.actions.get_child_count() == 0,"customisation has no bottom buttons "+str(dimensions))
+-		check(page._workshop_tabs.visible,"Workshop side submenu groups the car tasks")
+-		check(page._workshop_tabs.get_global_rect().end.x <= page.preview.global_position.x,"Workshop submenu stays left of the car")
++		check(page._workshop_tabs.visible,"Workshop overlay groups the car tasks")
++		check(page._workshop_tabs.get_parent()==page.preview and page.preview.get_global_rect().encloses(page._workshop_tabs.get_global_rect()),"Workshop buttons overlay the car within its bounds")
+ 		check(absf(page.preview.global_position.y-page.tools_panel.global_position.y)<1,"no navigation row above the car")
+ 		check(not page.kit_shelf.photo.visible and page.kit_shelf.detail_viewport == null,"Garage view replaces the separate detail photo")
+ 		check(page.kit_scroll.size.y > page.kit_shelf.size.y*0.45,"parts use most of the Customise card")
+diff --git a/AGENTS.md b/AGENTS.md
+--- a/AGENTS.md
++++ b/AGENTS.md
+@@ -1,3 +1,8 @@
++<!-- GARAGE-WORKSHOP-OVERLAY-20261025 -->
++## Garage Workshop overlay navigation override (2026-10-25)
++2026-10-25 GWO01-GWO03/R01/Q01: Workshop Appearance/Parts/Wash are compact buttons over the car view, replacing the rejected separate submenu column. Wide views show icons/captions; narrow views keep icons/tooltips/accessibility names. Selected-state feedback, cached locale-aware caption widths and header clearance retain 52x48 logical targets without covering the car name, wash status/tools or view controls. Five primary destinations, remembered Workshop mode, actual car/camera/condition and preview/equip authority remain. Native sidebar526headless/538Compatibility/538desktopMobile, customisation320/App141/parser1175 pass. Initial missing caption-icon space is retained and corrected. Before/after views, commands, hashes and scoped checkpoint: docs/GARAGE_WORKSHOP_OVERLAY_2026_10_25.md and docs/evidence/garage-workshop-overlay-2026-10-25/report.json. Reload and owner/device visual/touch acceptance remain. No attachment/device test, APK, real purchase, live mutation, deployment or owner-process restart; concurrent work preserved.
++<!-- /GARAGE-WORKSHOP-OVERLAY-20261025 -->
++
+ <!-- ELECTRIC-LOW-SPEED-STEERING-20261025 -->
+ ## Calmer electric steering at very low speed override (2026-10-25)
+ 2026-10-25 ELS01-ELS04/R01/Q01: Electric-7 uses0.60 steering-angle scale through2m/s, smoothly fading to the accepted full response at8m/s(28.8km/h). Actual0.2s full-lock direction response falls48.7% at3.6km/h,45.2% at10.8,26.2% at18 and4.2% at25.2, with symmetric forward/reverse touch control. All135 high-speed step cases and four full-second cornering runs are tick-exact versus accepted physics0.69/electric-6. Straight softened launch/strong release stop0.767s/7.563m remain exact; six other cars match2400 ticks each. Low-speed63/release38/electric60/one-pedal63/power19/balance22/response86/turn61/laps6/actual-App60Compatibility/60desktopMobile, backend72pass/2existing exclusions, actual13270input five-lap server replay and parser1172/import pass. Owner low-speed correction supersedes the old low-speed powered-turn equivalence assertion; straight power and exact high-speed turns are checked separately without weaker tolerances. Physics0.70/config7d10eaf9 pin the change; six other config hashes including kart-5 and exact model/presentation/input remain. Commands, hashes and task-only Git-checked checkpoint: docs/ELECTRIC_LOW_SPEED_STEERING_2026_10_25.md and docs/evidence/electric-low-speed-steering-2026-10-25/report.json. Client reload, matching client/verifier rollout and owner/device steering feel remain; no attachment/device test, APK, live mutation, purchase, deployment or owner-process restart. Concurrent work preserved.
+diff --git a/DEVELOPMENT_STATUS.md b/DEVELOPMENT_STATUS.md
+--- a/DEVELOPMENT_STATUS.md
++++ b/DEVELOPMENT_STATUS.md
+@@ -1,3 +1,7 @@
++<!-- GARAGE-WORKSHOP-OVERLAY-20261025 -->
++2026-10-25 GWO01-GWO03/R01/Q01: Workshop Appearance/Parts/Wash are compact buttons over the car view, replacing the rejected separate submenu column. Wide views show icons/captions; narrow views keep icons/tooltips/accessibility names. Selected-state feedback, cached locale-aware caption widths and header clearance retain 52x48 logical targets without covering the car name, wash status/tools or view controls. Five primary destinations, remembered Workshop mode, actual car/camera/condition and preview/equip authority remain. Native sidebar526headless/538Compatibility/538desktopMobile, customisation320/App141/parser1175 pass. Initial missing caption-icon space is retained and corrected. Before/after views, commands, hashes and scoped checkpoint: docs/GARAGE_WORKSHOP_OVERLAY_2026_10_25.md and docs/evidence/garage-workshop-overlay-2026-10-25/report.json. Reload and owner/device visual/touch acceptance remain. No attachment/device test, APK, real purchase, live mutation, deployment or owner-process restart; concurrent work preserved.
++<!-- /GARAGE-WORKSHOP-OVERLAY-20261025 -->
++
+ <!-- ELECTRIC-LOW-SPEED-STEERING-20261025 -->
+ ## Calmer electric steering at very low speed override (2026-10-25)
+ 2026-10-25 ELS01-ELS04/R01/Q01: Electric-7 uses0.60 steering-angle scale through2m/s, smoothly fading to the accepted full response at8m/s(28.8km/h). Actual0.2s full-lock direction response falls48.7% at3.6km/h,45.2% at10.8,26.2% at18 and4.2% at25.2, with symmetric forward/reverse touch control. All135 high-speed step cases and four full-second cornering runs are tick-exact versus accepted physics0.69/electric-6. Straight softened launch/strong release stop0.767s/7.563m remain exact; six other cars match2400 ticks each. Low-speed63/release38/electric60/one-pedal63/power19/balance22/response86/turn61/laps6/actual-App60Compatibility/60desktopMobile, backend72pass/2existing exclusions, actual13270input five-lap server replay and parser1172/import pass. Owner low-speed correction supersedes the old low-speed powered-turn equivalence assertion; straight power and exact high-speed turns are checked separately without weaker tolerances. Physics0.70/config7d10eaf9 pin the change; six other config hashes including kart-5 and exact model/presentation/input remain. Commands, hashes and task-only Git-checked checkpoint: docs/ELECTRIC_LOW_SPEED_STEERING_2026_10_25.md and docs/evidence/electric-low-speed-steering-2026-10-25/report.json. Client reload, matching client/verifier rollout and owner/device steering feel remain; no attachment/device test, APK, live mutation, purchase, deployment or owner-process restart. Concurrent work preserved.
+diff --git a/docs/GARAGE_WORKSHOP_OVERLAY_2026_10_25.md b/docs/GARAGE_WORKSHOP_OVERLAY_2026_10_25.md
+--- /dev/null
++++ b/docs/GARAGE_WORKSHOP_OVERLAY_2026_10_25.md
+@@ -0,0 +1,25 @@
++# Garage Workshop overlay navigation — 2026-10-25
++
++GWO01–GWO03/R01/Q01 replace the rejected vertical Workshop submenu with three compact overlay buttons inside the car view. This supersedes the separate side-column placement in GWS01.
++
++Appearance, Parts and Wash sit at the upper-right of the showroom. Wide views show the existing mode icons and captions; narrow views show the icons with translated tooltips and accessible names. The selected mode uses a small gold frame. Each button retains a 52×48 logical minimum. Captions reserve actual icon width and are measured only when the locale or caption mode changes. The overlay occupies the existing protected header area, and the car title yields width when needed. Care's duplicate coin readout yields this area to navigation; purchase balances remain in the customisation workbench.
++
++The separate submenu column and WORKSHOP heading are removed, releasing their width to the car. Five primary rail destinations, the remembered Workshop mode, Appearance/Parts/Wash actions, retained actual car/camera/condition, washing, media views and cosmetic preview/equip authority remain. Overlay controls hide outside Workshop. The bottom customisation buttons are not reintroduced.
++
++Runtime edits are confined to `game/ui/garage_page.gd`. `test_garage_sidebar.gd` now checks overlay parentage and bounds, no reserved column, clearance from the title/view controls/wash status/tools, named icons, pointer/touch navigation, unchanged orbit/zoom, fixed primary rail and remembered mode. `test_customisation_carousel.gd` replaces its superseded side-column assertion with actual overlay bounds; preview/equip/cancel and save assertions remain.
++
++Native baseline: 484 checks pass. Final sidebar checks: 526 headless / 538 Compatibility / 538 desktop Mobile, all passing. Existing customisation checks pass 320 headless. App/parser results, expanded commands, hashes and a reverse-checkable task-only checkpoint are recorded in [report.json](evidence/garage-workshop-overlay-2026-10-25/report.json). Initial capture inspection found captioned buttons not reserving icon width; `initial/caption-icon-space.png` retains that view, and final captions include the icons.
++
++```powershell
++powershell -NoProfile -ExecutionPolicy Bypass -File docs/evidence/garage-workshop-overlay-2026-10-25/run.ps1 -Mode headless
++powershell -NoProfile -ExecutionPolicy Bypass -File docs/evidence/garage-workshop-overlay-2026-10-25/run.ps1 -Mode gl_compatibility
++powershell -NoProfile -ExecutionPolicy Bypass -File docs/evidence/garage-workshop-overlay-2026-10-25/run.ps1 -Mode mobile
++```
++
++The same isolated runner was used with `-Test test_customisation_carousel`, `-Test test_app` and `-Test test_script_parse`, each in headless mode. All commands use the pinned Godot build via `scripts/dev.ps1`, with task-local APPDATA and fixture records. No staging/commit is implied.
++
++[View native before/after and all Workshop modes](evidence/garage-workshop-overlay-2026-10-25/review.html).
++
++![Actual overlay controls on the car](evidence/garage-workshop-overlay-2026-10-25/test_garage_sidebar-gl_compatibility/customise-1600.png)
++
++Reload and owner visual/touch acceptance remain. Desktop Mobile is Windows Vulkan; no phone/tablet attachment check or physical-device test was performed. No APK, real purchase, live mutation, deployment or owner-process restart. Concurrent work is preserved.
+diff --git a/docs/evidence/garage-workshop-overlay-2026-10-25/run.ps1 b/docs/evidence/garage-workshop-overlay-2026-10-25/run.ps1
+--- /dev/null
++++ b/docs/evidence/garage-workshop-overlay-2026-10-25/run.ps1
+@@ -0,0 +1,18 @@
++﻿param([string]$Test='test_garage_sidebar',[ValidateSet('headless','gl_compatibility','mobile')][string]$Mode='headless')
++$ErrorActionPreference='Stop'
++$customRepo=(Resolve-Path (Join-Path $PSScriptRoot '../../..')).Path
++$customOutput=Join-Path $PSScriptRoot "$Test-$Mode"
++New-Item -ItemType Directory -Force -Path $customOutput | Out-Null
++$env:APPDATA=Join-Path $customRepo "build/garage-workshop-overlay-2026-10-25/$Test-$Mode/user"
++New-Item -ItemType Directory -Force -Path $env:APPDATA | Out-Null
++$customArgs=@('-NoProfile','-ExecutionPolicy','Bypass','-File',(Join-Path $customRepo 'scripts/dev.ps1'),'-Action','TestScript','-ScriptPath',"res://tests/$Test.gd",'-CommandTimeoutSeconds','240','-TestArgument',"--evidence-root=$customOutput")
++if ($Mode -ne 'headless') {$customArgs+=@('-Graphical','-RenderingMethod',$Mode,'-RenderingDriver',$(if ($Mode -eq 'mobile') {'vulkan'} else {'opengl3'}))}
++$customStarted=[DateTime]::UtcNow
++& powershell @customArgs *> (Join-Path $customOutput 'console.log')
++$customCode=$LASTEXITCODE
++@{arguments=$customArgs;exit_code=$customCode;started_utc=$customStarted.ToString('o');duration_seconds=([DateTime]::UtcNow-$customStarted).TotalSeconds}|ConvertTo-Json -Depth 5|Set-Content -Encoding UTF8 (Join-Path $customOutput 'command.json')
++Get-Content (Join-Path $customOutput 'console.log') -Tail 28
++exit $customCode
++
++
++
+diff --git a/docs/evidence/garage-workshop-overlay-2026-10-25/record.py b/docs/evidence/garage-workshop-overlay-2026-10-25/record.py
+--- /dev/null
++++ b/docs/evidence/garage-workshop-overlay-2026-10-25/record.py
+@@ -0,0 +1,64 @@
++"""Record actual native checks and a scoped, reverse-checkable task patch."""
++from pathlib import Path
++import difflib
++import hashlib
++import json
++import re
++import subprocess
++
++EVIDENCE = Path(__file__).resolve().parent
++ROOT = EVIDENCE.parents[2]
++EXISTING = ["game/ui/garage_page.gd", "game/tests/test_garage_sidebar.gd",
++            "game/tests/test_customisation_carousel.gd", "AGENTS.md", "DEVELOPMENT_STATUS.md"]
++NEW = ["docs/GARAGE_WORKSHOP_OVERLAY_2026_10_25.md"]
++NEW += ["docs/evidence/garage-workshop-overlay-2026-10-25/"+name
++        for name in ("run.ps1", "record.py", "review.html")]
++
++def sha(path):
++    return hashlib.sha256(path.read_bytes()).hexdigest()
++
++def log_text(path):
++    data = path.read_bytes()
++    return data.decode("utf-16" if data.startswith(b"\xff\xfe") else "utf-8-sig", errors="replace")
++
++patch, sources = [], []
++for name in EXISTING + NEW:
++    target = ROOT / name
++    before = EVIDENCE / "before" / name
++    original = before.read_text(encoding="utf-8") if before.exists() else ""
++    current = target.read_text(encoding="utf-8")
++    patch.append(f"diff --git a/{name} b/{name}\n")
++    patch.extend(difflib.unified_diff(original.splitlines(True), current.splitlines(True),
++        fromfile=f"a/{name}" if before.exists() else "/dev/null", tofile=f"b/{name}"))
++    sources.append({"path": name, "sha256": sha(target), "before_sha256": sha(before) if before.exists() else None})
++checkpoint = EVIDENCE / "task-only.patch"
++checkpoint.write_text("".join(patch), encoding="utf-8", newline="\n")
++result = subprocess.run(["git", "apply", "--check", "--reverse", str(checkpoint)],
++                        cwd=ROOT, capture_output=True, text=True)
++runs = []
++for path in sorted(EVIDENCE.glob("*/command.json")):
++    command = json.loads(path.read_text(encoding="utf-8-sig"))
++    log = path.with_name("console.log")
++    summaries = re.findall(r"(?:CUSTOMISATION_CAROUSEL|GARAGE_SIDEBAR|APP_TESTS|SCRIPT_PARSE):[^\r\n]+",log_text(log))
++    runs.append({"directory": path.parent.name, **command, "summary": summaries, "log_sha256": sha(log)})
++report = {
++    "date": "2026-10-25", "requirements": ["GWO01", "GWO02", "GWO03", "R01", "Q01"],
++    "engine": (ROOT / "godot-version.txt").read_text().strip(),
++    "runs": runs, "sources": sources,
++    "baseline": {"log": "before/console.log", "summary": "GARAGE_SIDEBAR: 484 checks, 0 failures"},
++    "initial_visual_correction": {"image": "initial/caption-icon-space.png",
++        "finding": "Native expanded icons need explicit width beside captions; corrected without changing touch targets"},
++    "captures": [{"path": str(path.relative_to(EVIDENCE)).replace("\\", "/"), "sha256": sha(path)}
++                 for path in sorted(EVIDENCE.rglob("*.png"))],
++    "checkpoint": {"path": "task-only.patch", "sha256": sha(checkpoint),
++                   "reverse_check_exit": result.returncode, "stderr": result.stderr},
++    "remaining_acceptance": ["client reload", "owner appearance and touch", "physical-device acceptance"],
++    "limits": ["Windows desktop renderers only", "no phone/tablet attachment check or physical-device test",
++               "no APK", "no real purchase or live mutation", "no deployment or owner-process restart",
++               "concurrent work preserved"],
++}
++(EVIDENCE / "report.json").write_text(json.dumps(report, indent=2)+"\n", encoding="utf-8")
++print(json.dumps({"runs": [{"name": run["directory"], "exit": run["exit_code"], "summary": run["summary"]}
++                           for run in runs], "checkpoint_reverse_exit": result.returncode,
++                  "checkpoint_error": result.stderr}, indent=2))
++raise SystemExit(result.returncode)
+diff --git a/docs/evidence/garage-workshop-overlay-2026-10-25/review.html b/docs/evidence/garage-workshop-overlay-2026-10-25/review.html
+--- /dev/null
++++ b/docs/evidence/garage-workshop-overlay-2026-10-25/review.html
+@@ -0,0 +1,8 @@
++<!doctype html><html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Garage Workshop overlay controls</title>
++<style>body{margin:28px auto;max-width:1500px;padding:0 20px;background:#080f16;color:#f1f4f3;font:17px system-ui}h1,h2{font-weight:600}p,figcaption{color:#a4bac7}a,summary{color:#ffd348}figure{margin:20px 0}img{width:100%;display:block;border-radius:7px}figcaption{padding:10px 0}.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(360px,1fr));gap:20px}summary{cursor:pointer}</style>
++<h1>Workshop controls on the car view</h1><p>Actual native captures from isolated local records. Appearance, Parts and Wash float over the protected top edge of the showroom.</p>
++<figure><img src="test_garage_sidebar-gl_compatibility/customise-1600.png" alt="Wide Garage with captioned overlay buttons"><figcaption>Wide view: icons and labels. The car gains the width previously used by the submenu.</figcaption></figure>
++<div class="grid"><figure><img src="test_garage_sidebar-gl_compatibility/customise-960.png" alt="Narrow Garage with overlay icons"><figcaption>Narrow view: compact icons, tooltips and accessible names.</figcaption></figure><figure><img src="test_garage_sidebar-gl_compatibility/tuning-1280.png" alt="Parts mode"><figcaption>Parts: selected spanner, retained customisation workbench.</figcaption></figure><figure><img src="test_garage_sidebar-gl_compatibility/care-1280.png" alt="Wash mode"><figcaption>Wash: the navigation clears the status and washing tools.</figcaption></figure></div>
++<details><summary>Before: separate Workshop column</summary><figure><img src="before/native/customise-1600.png" alt="Previous separate Workshop submenu"></figure></details>
++<details><summary>Desktop Mobile / Vulkan</summary><figure><img src="test_garage_sidebar-mobile/customise-1600.png" alt="Overlay controls on Vulkan"></figure></details>
++<p><a href="report.json">Actual checks, commands, source hashes and limitations</a> · <a href="task-only.patch">Scoped checkpoint</a></p><p>Client reload and owner visual/touch acceptance remain. No physical-device test was performed.</p></html>

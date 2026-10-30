@@ -69,18 +69,20 @@ class Parts(Cosmetic):
     @field_validator("hood", "aero", "rims", "body")
     @classmethod
     def known_part(cls, value, info):
-        if value not in CATALOG["parts"][info.field_name]:
+        if value not in CATALOG["parts"][info.field_name] + CATALOG["kart_parts"][info.field_name]:
             raise ValueError("Unknown part")
         return value
 
 
 class Appearance(Cosmetic):
-    vehicle_id: Literal["compact", "pickup", "classic", "formula", "kart", "electric", "forklift"]
+    vehicle_id: Literal["compact", "pickup", "classic", "formula", "kart", "electric", "forklift", "hovercraft"]
     livery: Livery
     customisation: Parts
 
     @model_validator(mode="after")
     def fitted_parts(self):
-        if self.vehicle_id != "compact" and any(v != "stock" for k, v in self.customisation.model_dump().items() if k != "version"):
-            raise ValueError("Parts are fitted to Compact only")
+        catalog = CATALOG["parts"] if self.vehicle_id == "compact" else CATALOG["kart_parts"] if self.vehicle_id == "kart" else {}
+        for category, option in self.customisation.model_dump().items():
+            if category != "version" and option not in catalog.get(category, ["stock"]):
+                raise ValueError("Part is not fitted to this vehicle")
         return self

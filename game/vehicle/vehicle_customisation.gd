@@ -21,34 +21,72 @@ const DESCRIPTIONS: Dictionary = {
 	"rims":["Factory finish","Five broad spokes","Six split spokes","Swept turbine blades","Cross-spoke lattice","Deep recessed centre","Closed rally face","Six sculpted spokes","Ten narrow spokes","Three broad spokes"],
 	"body":["Factory finish","Low front lip and side skirts","Rally arches and mud flaps","Front splitter and sill extensions","Subtle classic arch trim","Touring lip and sill package","Extended wheel arches","Deep splitter and rear diffuser","Raised gravel trim and mud flaps","Sculpted street trim"]}
 
-static func description(category: String, option: String) -> String:
-	for index: int in range(OPTIONS[category].size()):
-		if OPTIONS[category][index][0]==option: return DESCRIPTIONS[category][index]
+const KIT_CARS: Array[String] = ["compact","kart"]
+const KART_LABELS: Dictionary = {"hood":"Nose","aero":"Rear bumper","rims":"Rims","body":"Side pods"}
+const KART_OPTIONS: Dictionary = {
+	"hood":[["stock","Original"],["sprint","Sprint nose"],["enduro","Endurance nose"],["wedge","Wedge nose"],
+		["arrow","Arrow nose"],["split","Channel nose"],["shield","Shield nose"],["retro","Rounded nose"]],
+	"aero":[["stock","Original"],["loop","Wraparound bumper"],["blade","Wide rear bumper"],["twin","Twin rear bumper"],
+		["oval","Oval bumper"],["cage","Cross brace bumper"],["panel","Slotted bumper"],["chevron","Chevron bumper"]],
+	"rims":[["stock","Original"],["three","Three spoke"],["six","Split six"],["disc","Disc wheel"],
+		["turbine","Turbine wheel"],["mesh","Cross mesh wheel"],["dish","Deep dish wheel"],["star","Five point wheel"]],
+	"body":[["stock","Original"],["sprint","Sprint pods"],["enduro","Endurance pods"],["wedge","Wedge pods"],
+		["blade","Blade pods"],["channel","Channel pods"],["rounded","Rounded pods"],["box","Box pods"]]}
+const KART_DESCRIPTIONS: Dictionary = {
+	"hood":["Factory finish","Low broad nose with a narrow fairing","Raised nose with a broad fairing","Angular nose with a tapered fairing",
+		"Pointed nose with a raised centre spine","Twin shoulders around a recessed channel","Broad flat shield with squared shoulders","Rounded bumper with a slender fairing"],
+	"aero":["Factory finish","Moulded bumper with swept ends","Broad low bumper on twin stays","Two bumper rails on twin stays",
+		"Closed oval rail with a centre badge","Tubular frame with diagonal cross braces","Moulded shield with two open slots","Angled bumper with a low centre"],
+	"rims":["Factory finish","Three broad magnesium spokes","Six paired magnesium spokes","Recessed solid magnesium face",
+		"Nine swept solid turbine blades","Crossed bronze spokes with an open centre","Deep bowl with a rolled outer lip","Five broad forged spokes"],
+	"body":["Factory finish","Low side pods with short returns","Deep side pods with raised shoulders","Tapered side pods with angular shoulders",
+		"Low sharp shoulders and a thin trailing edge","Deep channel between raised shoulders","Smooth rounded capsule side pods","Squared side pods with broad flat sides"]}
+
+static func supported(id: String) -> bool:
+	return id in KIT_CARS
+
+static func options(category: String, id: String = "compact") -> Array:
+	return (KART_OPTIONS if id=="kart" else OPTIONS).get(category,[]) if supported(id) else []
+
+static func label(category: String, id: String = "compact") -> String:
+	return str((KART_LABELS if id=="kart" else LABELS).get(category,""))
+
+static func description(category: String, option: String, id: String = "compact") -> String:
+	var choices: Array = options(category,id)
+	for index: int in range(choices.size()):
+		if choices[index][0]==option: return (KART_DESCRIPTIONS if id=="kart" else DESCRIPTIONS)[category][index]
 	return ""
 
 static func defaults() -> Dictionary:
 	return {"version":VERSION,"hood":"stock","aero":"stock","rims":"stock","body":"stock"}
 
-static func valid(value: Variant) -> bool:
+static func valid(value: Variant, id: String = "") -> bool:
 	if not value is Dictionary or value.size() != 5 or value.get("version") != VERSION: return false
+	# A conditional [id] is an untyped Array, even beside typed KIT_CARS.
+	# Keep both validation paths typed without aborting save/sync admission.
+	var cars: Array[String] = []
+	if id.is_empty(): cars.assign(KIT_CARS)
+	else: cars.append(id)
 	for category: String in CATEGORIES:
 		if not value.get(category) is String: return false
 		var found: bool = false
-		for option: Array in OPTIONS[category]:
-			if value[category] == option[0]: found = true
+		for car: String in cars:
+			for option: Array in options(category,car):
+				if value[category] == option[0]: found = true
+		if not supported(id) and not id.is_empty(): found = value[category]=="stock"
 		if not found: return false
 	return true
 
 static func for_car(settings: Dictionary, id: String) -> Dictionary:
 	var collection: Variant = settings.get("vehicle_customisation",{})
 	var value: Variant = collection.get(id,{}) if collection is Dictionary else {}
-	if id != "compact" or not valid(value): return defaults()
+	if not supported(id) or not valid(value,id): return defaults()
 	var normalized: Dictionary = value.duplicate(true)
 	normalized.version = VERSION
 	return normalized
 
 static func valid_collection(value: Variant) -> bool:
-	if not value is Dictionary or value.size() > 1: return false
+	if not value is Dictionary or value.size() > KIT_CARS.size(): return false
 	for id: Variant in value:
-		if id != "compact" or not valid(value[id]): return false
+		if not id is String or not supported(id) or not valid(value[id],id): return false
 	return true

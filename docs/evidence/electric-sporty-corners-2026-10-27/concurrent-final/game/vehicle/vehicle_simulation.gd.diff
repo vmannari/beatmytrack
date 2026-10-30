@@ -1,0 +1,13 @@
+--- task-start
++++ concurrent-current
+@@ -240,6 +240,10 @@
+ 		var power_start: float = maxf(0.46,config.coast_pedal+0.20)
+ 		var power_end: float = maxf(power_start+0.01,config.power_slide_full_pedal)
+ 		var power_slide: float = smoothstep(power_start,power_end,throttle) * smoothstep(0.1,0.45,absf(state.steering))
++		if config.power_slide_high_speed_scale < 1.0:
++			# Retain a planted fast sweep while making ordinary powered corners looser.
++			# The optional fade is continuous and cannot add steering or motor force.
++			power_slide *= lerpf(1.0,config.power_slide_high_speed_scale,smoothstep(28.0,maxf(28.01,config.maximum_speed),speed))
+ 		var power_response: float = config.lateral_response * lerpf(1.0,config.power_lateral_response_scale,power_slide)
+ 		lateral_response = minf(lateral_response,power_response)
+ 	var lateral_acceleration: float = clampf((target_lateral - lateral) * lateral_response * tire_grip, -grip_limit, grip_limit)

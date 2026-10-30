@@ -1,0 +1,177 @@
+--- task-only-app
+
++++ observed-app
+
+@@ -611,8 +611,8 @@
+
+ 	# _process; a newly opened document supersedes its output without joining.
+ 	if is_instance_valid(object_browser):
+-		object_browser_state={"category":object_browser.category,"recent":object_browser.recent.duplicate(),"current":object_browser.current,"placement":object_browser.placement,"stamp_scale":object_browser.stamp_scale,"stamp_span":object_browser.stamp_span}
++		object_browser_state={"category":object_browser.category,"recent":object_browser.recent.duplicate(),"current":object_browser.current,"placement":object_browser.placement,"stamp_scale":object_browser.stamp_scale,"stamp_span":object_browser.stamp_span,"stamp_jump_profile":object_browser.stamp_jump_profile}
+ 	if is_instance_valid(canvas):
+ 		if canvas.document.get("id","") == document.get("id",""): _stash_pending_tool()
+-		editor_view = {"zoom":canvas.zoom,"pan":canvas.pan,"mode":canvas.mode,"selected":canvas.selected,"selected_object":canvas.selected_object,"stamp_kind":canvas.stamp_kind,"stamp_scale":canvas.stamp_scale,"stamp_span":canvas.stamp_span,"stamp_container_color":canvas.stamp_container_color,"run_shape":canvas.run_shape,"free_run":canvas.free_run,"brush_surface":canvas.brush_surface,"brush_width":canvas.brush_width,"paint_mode":canvas.paint_mode,"brush_shape":canvas.brush_shape,"selected_piece":canvas.selected_piece}
++		editor_view = {"zoom":canvas.zoom,"pan":canvas.pan,"mode":canvas.mode,"selected":canvas.selected,"selected_object":canvas.selected_object,"stamp_kind":canvas.stamp_kind,"stamp_scale":canvas.stamp_scale,"stamp_span":canvas.stamp_span,"stamp_jump_profile":canvas.stamp_jump_profile,"stamp_container_color":canvas.stamp_container_color,"run_shape":canvas.run_shape,"free_run":canvas.free_run,"brush_surface":canvas.brush_surface,"brush_width":canvas.brush_width,"paint_mode":canvas.paint_mode,"brush_shape":canvas.brush_shape,"selected_piece":canvas.selected_piece}
+ 	screen = next
+ 	if screen == "store": _telemetry_observe("store_opened",{},str(_navigation_generation))
+@@ -1503,32 +1503,33 @@
+
+ 	var margin := MarginContainer.new()
+ 	MenuStyle.fill(margin)
+-	for side: String in ["left", "right", "top", "bottom"]: margin.add_theme_constant_override("margin_" + side, 16)
++	for side: String in ["left", "right", "top", "bottom"]: margin.add_theme_constant_override("margin_" + side, 32)
+ 	root_ui.add_child(margin)
++	var row := HBoxContainer.new()
++	margin.add_child(row)
++	var scenery_space := Control.new()
++	scenery_space.mouse_filter = Control.MOUSE_FILTER_IGNORE
++	scenery_space.size_flags_horizontal = Control.SIZE_EXPAND_FILL
++	row.add_child(scenery_space)
+ 	var center := CenterContainer.new()
+ 	center.size_flags_vertical = Control.SIZE_EXPAND_FILL
+ 	center.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+-	margin.add_child(center)
+-	var column := VBoxContainer.new()
+-	column.add_theme_constant_override("separation", 8)
+-	center.add_child(column)
+-	var brand_space := Control.new()
+-	brand_space.custom_minimum_size.y = 64
+-	column.add_child(brand_space)
+-	var brand := MenuBrand.new()
+-	brand_space.add_child(brand)
+-	brand_space.resized.connect(func() -> void: brand.position = Vector2((brand_space.size.x - 196) * 0.5, 0))
++	center.size_flags_stretch_ratio = 0.01
++	row.add_child(center)
+ 	var panel := preload("res://ui/account_panel.gd").new()
+ 	panel.account = online
+-	panel.custom_minimum_size.x = 600
+ 	# Finish the guest button's input dispatch before replacing its menu tree.
+ 	# Otherwise that same release can activate the newly created car picker.
+ 	panel.continue_requested.connect(_continue_from_account,CONNECT_DEFERRED)
+-	column.add_child(panel)
+-	# Extra status copy takes priority over decorative space above the card.
+-	var fit_brand := func() -> void:
+-		brand_space.visible = panel.get_combined_minimum_size().y + 72 <= root_ui.size.y - 32
+-	panel.minimum_size_changed.connect(fit_brand)
+-	root_ui.resized.connect(fit_brand)
+-	fit_brand.call_deferred()
++	center.add_child(panel)
++	var fit_card := func() -> void:
++		var wide: bool = root_ui.size.x / maxf(root_ui.size.y, 1.0) >= 1.4
++		scenery_space.visible = wide
++		center.size_flags_horizontal = Control.SIZE_FILL if wide else Control.SIZE_EXPAND_FILL
++		panel.custom_minimum_size.x = clampf(root_ui.size.x * 0.405, 516, 620)
++		var inset: int = roundi(maxf(32, root_ui.size.x * 0.046)) if wide else 32
++		margin.add_theme_constant_override("margin_left", inset)
++		margin.add_theme_constant_override("margin_right", inset)
++	root_ui.resized.connect(fit_card)
++	fit_card.call_deferred()
+ 
+ func _continue_from_account() -> void:
+@@ -2981,4 +2982,5 @@
+
+ 		canvas.stamp_scale = float(editor_view.get("stamp_scale",1.0))
+ 		canvas.stamp_span = float(editor_view.get("stamp_span",8.0))
++		canvas.stamp_jump_profile = str(editor_view.get("stamp_jump_profile",""))
+ 		canvas.run_shape = str(editor_view.get("run_shape","line"))
+ 		canvas.free_run = bool(editor_view.get("free_run",false))
+@@ -3198,4 +3200,5 @@
+
+ 	object_browser.current = canvas.stamp_kind
+ 	object_browser.stamp_span = canvas.stamp_span
++	object_browser.stamp_jump_profile = canvas.stamp_jump_profile
+ 	object_browser.stamp_container_color = canvas.stamp_container_color
+ 	object_browser.biome = str(document.get("biome",document.theme))
+@@ -3209,4 +3212,5 @@
+
+ 	object_browser.size_chosen.connect(func(value: float) -> void: canvas.stamp_scale=value)
+ 	object_browser.span_chosen.connect(func(value: float) -> void: canvas.stamp_span=value)
++	object_browser.jump_profile_chosen.connect(_jump_profile)
+ 	object_browser.container_color_chosen.connect(_container_colour)
+ 	object_browser.rotation_requested.connect(_object_rotation_dialog)
+@@ -3321,5 +3325,5 @@
+
+ func _capture_pending_tool() -> Dictionary:
+ 	var state: Dictionary = {"mode":canvas.mode}
+-	var keys: Array = {"road":["ghost","piece_kind","snap_matched"],"paint":["paint_points","paint_mode","brush_surface","brush_width","brush_shape","protect_road","stamp_kind","stamp_scale"],"objects":["run_start","run_preview","run_draw","run_shape","free_run","stamp_kind","stamp_scale","stamp_span","stamp_rotation","stamp_container_color"]}[_editor_tool()]
++	var keys: Array = {"road":["ghost","piece_kind","snap_matched"],"paint":["paint_points","paint_mode","brush_surface","brush_width","brush_shape","protect_road","stamp_kind","stamp_scale"],"objects":["run_start","run_preview","run_draw","run_shape","free_run","stamp_kind","stamp_scale","stamp_span","stamp_jump_profile","stamp_rotation","stamp_container_color"]}[_editor_tool()]
+ 	for key: String in keys:
+ 		var value: Variant = canvas.get(key)
+@@ -3499,4 +3503,9 @@
+
+ 				_context_button("Rotate","rotate",_change_piece.bind("heading",15.0))
+ 			_context_button("Flip","flip",_change_piece.bind("flip",1.0))
++			if document.theme in ["pine","storm"]:
++				for surface: String in ["asphalt","gravel"]:
++					var material_button: Button = _context_button(surface.capitalize(),"terrain_road" if surface == "asphalt" else "terrain_dirt",_set_piece_material.bind(surface),RoadPieces.material(piece,document) == surface)
++					material_button.name = "RoadMaterial_"+surface
++					material_button.tooltip_text = "Road material for this section"
+ 			_context_button("Snap on" if canvas.snap_enabled else "Snap off","snap",func() -> void:
+ 				canvas.snap_enabled = not canvas.snap_enabled
+@@ -3539,4 +3548,8 @@
+
+ 			if document.objects[canvas.selected_object].kind == "container":
+ 				editor_context.add_child(ContainerColorButton.make(ContainerPaint.value(document.objects[canvas.selected_object]),_container_colour))
++			if document.objects[canvas.selected_object].kind == "jump":
++				var profile: String = JumpProfiles.id(document.objects[canvas.selected_object])
++				editor_context.add_child(JumpProfiles.selector(profile,_jump_profile,profile == "legacy"))
++				editor_status.text = JumpProfiles.description(profile)
+ 			if canvas.issue_marker != Vector2.INF: _context_button("Move start","race",canvas.choose_start_line)
+ 			_context_button("Palette","more",func() -> void:
+@@ -3552,4 +3565,20 @@
+
+ 	_update_editor_save_state()
+ 	canvas.refresh()
++
++func _set_piece_material(surface: String) -> void:
++	if not is_instance_valid(canvas) or document.theme not in ["pine","storm"] or surface not in ["asphalt","gravel"]: return
++	var is_ghost: bool = not canvas.ghost.is_empty()
++	if not is_ghost and (canvas.selected_piece < 0 or canvas.selected_piece >= document.pieces.size()): return
++	var piece: Dictionary = (canvas.ghost if is_ghost else document.pieces[canvas.selected_piece]).duplicate(true)
++	if RoadPieces.material(piece,document) == surface:
++		_build_editor_tools()
++		return
++	piece.surface = surface
++	if is_ghost: canvas.ghost = piece
++	else:
++		_remember()
++		document.pieces[canvas.selected_piece] = piece
++		_save_draft(true)
++	_build_editor_tools()
+ 
+ func _change_piece(key: String, delta: float) -> void:
+@@ -4303,5 +4332,5 @@
+
+ 	if is_instance_valid(canvas):
+ 		canvas.cancel_gesture()
+-		editor_view = {"zoom":canvas.zoom,"pan":canvas.pan,"mode":canvas.mode,"selected":canvas.selected,"selected_object":canvas.selected_object,"stamp_kind":canvas.stamp_kind,"stamp_scale":canvas.stamp_scale,"stamp_span":canvas.stamp_span,"stamp_container_color":canvas.stamp_container_color,"run_shape":canvas.run_shape,"free_run":canvas.free_run,"brush_surface":canvas.brush_surface,"brush_width":canvas.brush_width,"paint_mode":canvas.paint_mode,"brush_shape":canvas.brush_shape,"selected_piece":canvas.selected_piece}
++		editor_view = {"zoom":canvas.zoom,"pan":canvas.pan,"mode":canvas.mode,"selected":canvas.selected,"selected_object":canvas.selected_object,"stamp_kind":canvas.stamp_kind,"stamp_scale":canvas.stamp_scale,"stamp_span":canvas.stamp_span,"stamp_jump_profile":canvas.stamp_jump_profile,"stamp_container_color":canvas.stamp_container_color,"run_shape":canvas.run_shape,"free_run":canvas.free_run,"brush_surface":canvas.brush_surface,"brush_width":canvas.brush_width,"paint_mode":canvas.paint_mode,"brush_shape":canvas.brush_shape,"selected_piece":canvas.selected_piece}
+ 	_stop_menu_page_motion()
+ 	_practice_editor_context = {}
+@@ -5670,8 +5699,25 @@
+
+ 	canvas.cancel_gesture()
+ 	canvas.stamp_kind=kind
++	if kind == "jump" and canvas.stamp_jump_profile not in JumpProfiles.IDS:
++		canvas.stamp_jump_profile = JumpProfiles.default_for(str(document.theme))
++	object_browser.stamp_jump_profile = canvas.stamp_jump_profile
+ 	canvas.stamp_scale=CreatorCatalog.default_scale(kind)
+ 	object_browser.stamp_scale=canvas.stamp_scale
+ 	canvas.selected_object=-1
+ 	_object_placement("single")
++
++func _jump_profile(profile: String) -> void:
++	if profile not in JumpProfiles.IDS or not is_instance_valid(canvas): return
++	canvas.cancel_gesture()
++	canvas.stamp_jump_profile = profile
++	if is_instance_valid(object_browser):
++		object_browser.stamp_jump_profile = profile
++		object_browser.refresh()
++	if canvas.selected_object < 0 or canvas.mode != "objects": return
++	var object: Dictionary = document.objects[canvas.selected_object]
++	if object.kind != "jump" or JumpProfiles.id(object) == profile: return
++	_remember()
++	object["jump_profile"] = profile
++	_commit_selection()
+ 
+ func _container_colour(color: String) -> void:

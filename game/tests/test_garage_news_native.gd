@@ -144,7 +144,8 @@ func run() -> void:
 		{"id":"two","kind":"world_record","metric":"lap","actor_name":"Bob","time_ticks":15223,"tick_rate":120,"vehicle_id":"compact","track_name":"Underpass","created_at":1792152000},
 		{"id":"three","kind":"friend_overtake","metric":"race","actor_name":"Bob","time_ticks":75223,"tick_rate":120,"vehicle_id":"compact","track_name":"Dust cloud","created_at":1792152000},
 		{"id":"four","kind":"percentile_drop","metric":"lap","threshold":5,"vehicle_id":"compact","track_name":"Underpass","created_at":1792152000},
-		{"id":"five","kind":"friend_track","actor_id":"bob","actor_name":"Bob","track_name":"Dust cloud","version_id":"11111111-2222-4333-8444-555555555555","created_at":1792152000}]
+		{"id":"five","kind":"friend_track","actor_id":"bob","actor_name":"Bob","track_name":"Dust cloud","version_id":"11111111-2222-4333-8444-555555555555","created_at":1792152000},
+		{"id":"six","kind":"world_record","metric":"lap","actor_name":"Sam","time_ticks":15223,"tick_rate":120,"vehicle_id":"compact","track_name":"Underpass","created_at":1792152000}]
 	var underpass: Dictionary = JSON.parse_string(FileAccess.get_file_as_string("res://tests/fixtures/underpass.json"))
 	var dust: Dictionary = JSON.parse_string(FileAccess.get_file_as_string("res://tests/fixtures/dust_cloud.json"))
 	for index: int in range(service.items.size()):
@@ -170,6 +171,10 @@ func run() -> void:
 		check(backend.calls.is_empty(),"cached News entry makes no request")
 		await capture("news-"+str(dimensions.x))
 		var menu: Node = page.tools.find_child("GarageNewsMenu",true,false)
+		var briefs: Array[Node] = menu.find_children("NewsBrief*","Button",true,false)
+		check(briefs.size() == 5,"five other stories are offered at "+str(dimensions))
+		for brief: Button in briefs:
+			check(brief.size.y >= 40 and menu._scroll.get_global_rect().encloses(brief.get_global_rect()),"complete brief touch target fits at "+str(dimensions))
 		var masthead: Label = menu.find_child("NewsMasthead",true,false)
 		var tagline: Label = menu.find_child("NewsTagline",true,false)
 		var reference_columns: Array[Rect2] = editorial_bounds(menu)
@@ -224,6 +229,19 @@ func run() -> void:
 		check(backend.calls.is_empty(),"friend publication browsing needs no request")
 		await capture("friend-track-"+str(dimensions.x))
 		menu._select_tab("friends")
+		var tab_turn: Tween = menu._story_motion
+		check(tab_turn != null and menu._tab == "friends", "Friends tab begins a page turn at "+str(dimensions))
+		if tab_turn != null:
+			tab_turn.pause()
+			check(menu._outgoing_story.get_global_rect().is_equal_approx(menu._paper.get_global_rect()), "tab turn covers the complete newspaper")
+			check(menu._outgoing_story.find_child("OutgoingNewsMasthead",true,false) != null and menu._outgoing_story.find_child("OutgoingNewsFooter",true,false) != null, "tab turn prints the old header and footer")
+			tab_turn.custom_step(menu.STORY_TURN_SECONDS/2.0)
+			await frame()
+			await frame()
+			check(menu._turn_material.get_shader_parameter("progress") > 0.0 and menu._turn_material.get_shader_parameter("progress") < 1.0, "tab sheet is visibly in mid-turn")
+			check(menu._turn_viewport.get_texture().get_image().get_pixel(8,8).a > 0.99 and menu._list.modulate == Color.WHITE, "old page is opaque and incoming page remains visible")
+			await capture("friends-tab-turn-"+str(dimensions.x))
+			tab_turn.play()
 		await settle()
 		check(app.root_ui.get_global_rect().encloses(page.tools_panel.get_global_rect()),"Friends panel fits "+str(dimensions))
 		await capture("friends-"+str(dimensions.x))

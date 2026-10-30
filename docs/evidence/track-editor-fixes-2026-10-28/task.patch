@@ -1,0 +1,1437 @@
+diff --git a/game/core/app.gd b/game/core/app.gd
+--- a/game/core/app.gd
++++ b/game/core/app.gd
+@@ -2954,6 +2954,7 @@
+ 		editor_wip_disk_hash = ""
+ 		editor_issue_cursor = -1
+ 	editor_world = EditorWorld.new()
++	editor_session.prime(document)
+ 	editor_world.theme_id = str(document.theme)
+ 	root_ui.add_child(editor_world)
+ 	MenuStyle.fill(editor_world)
+@@ -3222,6 +3223,12 @@
+ 	share_button=EditorStyle.button("Share",_share_dialog)
+ 	metadata.add_child(share_button)
+ 	metadata.add_child(EditorStyle.button("Help",_editor_help))
++	if str(document.theme) == "night_city":
++		var lighting: Button = EditorStyle.button("Race lighting",func() -> void: pass)
++		lighting.name = "EditorRaceLighting"
++		lighting.toggle_mode = true
++		lighting.toggled.connect(editor_world.set_race_lighting_preview)
++		metadata.add_child(lighting)
+ 	canvas.selection_changed.connect(_build_editor_tools)
+ 	_restore_pending_tool(_editor_tool())
+ 	_build_editor_tools()
+@@ -3364,8 +3371,10 @@
+ 		elif canvas.run_preview.is_empty():
+ 			_editor_hint("Finish the object run, or cancel it before saving.")
+ 		else:
++			var additions: Array = preload("res://editor/creator_limits.gd").take(document.objects,canvas.run_preview,str(document.theme))
++			if not canvas.admit("objects",document.objects+additions): return false
+ 			_remember()
+-			document.objects.append_array(preload("res://editor/creator_limits.gd").take(document.objects,canvas.run_preview,str(document.theme)))
++			document.objects.append_array(additions)
+ 			canvas.run_preview.clear(); canvas.run_draw.clear(); canvas.run_start = Vector2.INF
+ 			_save_draft(true)
+ 		_stash_pending_tool()
+@@ -3377,12 +3386,12 @@
+ 	_build_editor_tools()
+ 	return true
+ 
+-func _resolve_editor_previews(after: Callable) -> void:
++func _resolve_editor_previews(after: Callable, message: String = "Confirm or discard the pending previews before selecting an issue.") -> void:
+ 	if root_ui.find_child("PendingPreviewDialog",true,false) != null: return
+ 	var dialog := ConfirmationDialog.new()
+ 	dialog.name = "PendingPreviewDialog"
+ 	dialog.title = "Pending previews"
+-	dialog.dialog_text = "Confirm or discard the pending previews before selecting an issue."
++	dialog.dialog_text = message
+ 	dialog.ok_button_text = "Confirm previews"
+ 	dialog.add_button("Discard previews",true,"discard")
+ 	dialog.confirmed.connect(func() -> void:
+@@ -3391,6 +3400,7 @@
+ 		dialog.queue_free())
+ 	dialog.custom_action.connect(func(action: StringName) -> void:
+ 		if action == &"discard":
++			dialog.hide()
+ 			_discard_editor_previews()
+ 			dialog.queue_free()
+ 			after.call())
+@@ -3586,13 +3596,16 @@
+ 	piece = canvas.anchored_change(before,piece,key)
+ 	var errors: Array[String] = RoadPieces.validate(piece)
+ 	if not errors.is_empty():
+-		editor_status.text = errors[0]
++		_editor_hint(errors[0])
+ 		return
+ 	if not canvas._valid_bridge_edit(piece,canvas.selected_piece): return
+ 	if is_ghost:
+ 		canvas.ghost = piece
+ 		canvas.snap_matched = false
+ 	else:
++		var proposed: Array = document.pieces.duplicate()
++		proposed[canvas.selected_piece] = piece
++		if not canvas.admit("pieces",proposed): return
+ 		_remember()
+ 		document.pieces[canvas.selected_piece] = piece
+ 		_save_draft(true)
+@@ -3680,6 +3693,13 @@
+ 	canvas.refresh()
+ 
+ func _commit_selection() -> void:
++	var error: String = preload("res://editor/authoring_admission.gd").error(document)
++	if not error.is_empty():
++		if not history.is_empty():
++			document = preload("res://editor/editor_history.gd").restore(history.pop_back())
++			_restore_editor_history()
++		_editor_hint(error)
++		return
+ 	if canvas.mode in ["move","add"]: document.route_override = true
+ 	canvas.refresh()
+ 	_save_draft(true)
+@@ -3783,6 +3803,7 @@
+ 
+ func _set_document_value(key: String, value: Variant) -> void:
+ 	if key in ["theme", "biome", "creator"]: return
++	if not canvas.admit(key,value): return
+ 	_remember()
+ 	document[key] = value
+ 	_save_draft(true)
+@@ -3984,8 +4005,8 @@
+ 	await _publish_saved_draft("wip:"+str(document.id))
+ 
+ func _share_dialog() -> void:
+-	if not canvas.paint_points.is_empty():
+-		_notice("Confirm or cancel the surface preview first.")
++	if _has_pending_editor_work():
++		_resolve_editor_previews(_share_dialog,"Confirm or discard the pending previews before sharing this circuit.")
+ 		return
+ 	if _save_draft() != OK:
+ 		_notice("Could not save: "+library.last_error)
+@@ -5758,6 +5779,7 @@
+ 		if objects.is_empty() or document.objects.size()+objects.size() > ObjectPopulation.MAX_OBJECTS: return
+ 		var admission: String = preload("res://editor/creator_limits.gd").addition_error(document.objects,objects,str(document.theme))
+ 		if not admission.is_empty(): _editor_hint(admission); return
++		if not canvas.admit("objects",document.objects+objects): return
+ 		_remember()
+ 		document.objects.append_array(objects)
+ 		document["automatic_scenery"] = false
+diff --git a/game/editor/editor_canvas.gd b/game/editor/editor_canvas.gd
+--- a/game/editor/editor_canvas.gd
++++ b/game/editor/editor_canvas.gd
+@@ -184,12 +184,12 @@
+ 	queue_redraw()
+ 
+ func cancel_gesture() -> void:
++	_rollback_navigation_edit()
+ 	pending_paint_accept = false
+ 	run_draw.clear()
+ 	drawing_run=false
+ 	run_preview.clear()
+ 	run_start=Vector2.INF
+-	if dragging and changed_in_gesture: edit_finished.emit()
+ 	paint_points.clear()
+ 	pending_stamp = false
+ 	dragging = false
+@@ -256,6 +256,7 @@
+ 			var was_pinching: bool = touches.size() >= 2
+ 			touches.erase(event.index)
+ 			if event.canceled:
++				if event.index == active_pointer: _rollback_navigation_edit()
+ 				pending_paint_accept = false
+ 				paint_handle = -1
+ 				drawing_run=false
+@@ -307,6 +308,12 @@
+ 	gesture.capture(document,mode)
+ 	edit_started.emit()
+ 
++func admit(field: String, value: Variant) -> bool:
++	var error: String = preload("res://editor/authoring_admission.gd").replacement(document,field,value)
++	if error.is_empty(): return true
++	hint_changed.emit(error)
++	return false
++
+ func _begin(point: Vector2, pointer: int) -> void:
+ 	fit_pending_native = false
+ 	active_pointer = pointer
+@@ -394,6 +401,11 @@
+ 				if CreatorObjects.contains(object,to_world(point)) or to_screen(Vector2(object.position[0],object.position[1])).distance_to(point) < 24:
+ 					var admission: String = preload("res://editor/creator_limits.gd").addition_error(document.objects,[object],str(document.theme))
+ 					if not admission.is_empty(): hint_changed.emit(admission); break
++					var proposed: Dictionary = document.duplicate()
++					proposed.objects = document.objects+[object]
++					proposed.hidden_scenery = document.get("hidden_scenery",[])+[CreatorScenery.key(object)]
++					admission = preload("res://editor/authoring_admission.gd").error(proposed,"objects")
++					if not admission.is_empty(): hint_changed.emit(admission); break
+ 					_start_edit()
+ 					if not document.has("hidden_scenery"): document["hidden_scenery"] = []
+ 					document.hidden_scenery.append(CreatorScenery.key(object))
+@@ -502,6 +514,7 @@
+ 		if pose.is_empty():
+ 			hint_changed.emit("Place the start line on a road.")
+ 			return
++		if not admit("start_line",pose): return
+ 		_start_edit()
+ 		document["start_line"] = pose
+ 		mode = "road"
+@@ -511,7 +524,6 @@
+ 		queue_redraw()
+ 		return
+ 	if mode == "start":
+-		_start_edit()
+ 		var heading: float = 0.0
+ 		if native_preview != null:
+ 			var nearest_route: float = INF
+@@ -530,7 +542,10 @@
+ 				if distance < nearest_piece and distance <= float(piece.width)*float(piece.width)*0.25:
+ 					nearest_piece = distance
+ 					heading = fposmod(rad_to_deg((samples[i+1]-samples[i]).angle()),360)
+-		document["practice_start"] = {"position":[position.x,position.y],"heading":heading}
++		var pose: Dictionary = {"position":[position.x,position.y],"heading":heading}
++		if not admit("practice_start",pose): return
++		_start_edit()
++		document["practice_start"] = pose
+ 		mode = "road"
+ 		document_changed.emit()
+ 		edit_finished.emit()
+@@ -545,6 +560,7 @@
+ 			run_preview = _object_run(run_start,position)
+ 			run_preview = preload("res://editor/creator_limits.gd").take(document.objects,run_preview,str(document.theme))
+ 			if not run_preview.is_empty():
++				if not admit("objects",document.objects+run_preview): return
+ 				_start_edit()
+ 				document.objects.append_array(run_preview)
+ 				document_changed.emit()
+@@ -565,6 +581,7 @@
+ 		if stamp_kind == "container": object["color"] = stamp_container_color
+ 		var admission: String = preload("res://editor/creator_limits.gd").addition_error(document.objects,[object],str(document.theme))
+ 		if not admission.is_empty(): hint_changed.emit(admission); return
++		if not admit("objects",document.objects+[object]): return
+ 		_start_edit()
+ 		document.objects.append(object)
+ 		selected_object = document.objects.size()-1
+@@ -594,6 +611,9 @@
+ 	if drawing_run:
+ 		run_preview = preload("res://editor/creator_limits.gd").take(document.objects,run_preview,str(document.theme))
+ 		if not run_preview.is_empty():
++			if not admit("objects",document.objects+run_preview):
++				drawing_run = false; active_pointer = -99
++				return
+ 			_start_edit()
+ 			document.objects.append_array(run_preview)
+ 			document_changed.emit()
+@@ -617,7 +637,11 @@
+ 	paint_handle = -1
+ 	if pending_stamp: _place(press_position)
+ 	if dragging and changed_in_gesture:
+-		edit_finished.emit()
++		var error: String = preload("res://editor/authoring_admission.gd").error(document,"pieces" if mode == "road" else "objects" if mode == "objects" else mode)
++		if not error.is_empty():
++			_rollback_navigation_edit()
++			hint_changed.emit(error)
++		else: edit_finished.emit()
+ 		if geometry_drag != "" or spline_point_drag >= 0 or bump_end_drag >= 0: selection_changed.emit()
+ 	bump_end_drag = -1
+ 	pending_stamp = false
+@@ -746,7 +770,7 @@
+ 		if not errors.is_empty():
+ 			hint_changed.emit(errors[0])
+ 			return
+-		if document.pieces.size() >= RoadPieces.MAX_PIECES: return
++		if not admit("pieces",document.pieces+[ghost]): return
+ 		if not _valid_bridge_edit(ghost,-1): return
+ 		_start_edit()
+ 		document.pieces.append(ghost.duplicate(true))
+@@ -952,7 +976,8 @@
+ 			trial[geometry_drag] = clampf(float(trial[geometry_drag]),lower,upper)
+ 		if piece.kind == "s_bend" and geometry_drag == "radius": trial.height = RoadPieces.height(piece_before_drag)
+ 		trial = anchored_change(piece_before_drag,trial,geometry_drag)
+-		if not RoadPieces.validate(trial).is_empty(): return
++		var errors: Array[String] = RoadPieces.validate(trial)
++		if not errors.is_empty(): hint_changed.emit(errors[0]); return
+ 		if trial == piece or not _valid_bridge_edit(trial,selected_piece): return
+ 		if ghost.is_empty() and not changed_in_gesture: _start_edit()
+ 		changed_in_gesture = true
+@@ -1136,7 +1161,15 @@
+ 		var nodes: PackedVector2Array = SplineRoad.points(piece)
+ 		var tangent: Vector2 = SplineRoad.tangent(nodes,2).normalized()
+ 		return Rect2(to_screen(nodes[2]-tangent.orthogonal()*(float(piece.width)*0.5+6.0))-Vector2(28,28),Vector2(56,56))
+-	return Rect2(to_screen(points[points.size()/4 if piece.kind != "bridge" else points.size()/2])-Vector2(28,28),Vector2(56,56))
++	var center: Vector2 = to_screen(points[points.size()/4 if piece.kind != "bridge" else points.size()/2])
++	if document.has("start_line"):
++		var controls: Dictionary = start_controls()
++		var away: Vector2 = Vector2(controls.forward).orthogonal()
++		# The complete square and finger-sized arrow circle stay disjoint at
++		# every zoom. The same rectangle owns both drawing and input.
++		if Rect2(center-Vector2(28,28),Vector2(56,56)).grow(34).has_point(controls.flip):
++			center = Vector2(controls.flip)+away*80.0
++	return Rect2(center-Vector2(28,28),Vector2(56,56))
+ 
+ func geometry_keys(piece: Dictionary) -> Array[String]:
+ 	return preload("res://editor/road_piece_catalog.gd").handles(str(piece.kind))
+@@ -1346,8 +1379,11 @@
+ 
+ func flip_start_line() -> void:
+ 	if not document.has("start_line"): return
++	var pose: Dictionary = document.start_line.duplicate(true)
++	pose.heading = fposmod(float(pose.heading)+180.0,360.0)
++	if not admit("start_line",pose): return
+ 	_start_edit()
+-	document.start_line.heading = fposmod(float(document.start_line.heading)+180.0,360.0)
++	document.start_line = pose
+ 	document_changed.emit()
+ 	edit_finished.emit()
+ 	queue_redraw()
+@@ -1394,8 +1430,10 @@
+ 	if document.paint.size() >= 256:
+ 		hint_changed.emit("Paint limit reached. Undo a stroke to keep editing.")
+ 		return
++	var stroke: Dictionary = {"surface":brush_surface,"width":brush_width,"shape":brush_shape,"points":paint_points.duplicate(true),"protect_road":protect_road and brush_surface != 0,"mode":paint_mode}
++	if not admit("paint",document.paint+[stroke]): return
+ 	_start_edit()
+-	document.paint.append({"surface":brush_surface,"width":brush_width,"shape":brush_shape,"points":paint_points.duplicate(true),"protect_road":protect_road and brush_surface != 0,"mode":paint_mode})
++	document.paint.append(stroke)
+ 	paint_points.clear()
+ 	paint_handle = -1
+ 	document_changed.emit()
+diff --git a/game/editor/editor_world.gd b/game/editor/editor_world.gd
+--- a/game/editor/editor_world.gd
++++ b/game/editor/editor_world.gd
+@@ -27,6 +27,7 @@
+ var preparation_metrics: Dictionary = {}
+ var _initial_preparation_done: bool = false
+ var _applied_theme: String = ""
++var race_lighting_preview: bool = false
+ var _prop_job: RefCounted
+ var _prop_request: Dictionary = {}
+ var _prop_generation: int = 0
+@@ -355,12 +356,22 @@
+ 	_mark_presented()
+ 	viewport.render_target_update_mode = SubViewport.UPDATE_ONCE
+ 
+-func _apply_theme(theme: String) -> void:
++func set_race_lighting_preview(enabled: bool) -> void:
++	race_lighting_preview = enabled
++	_apply_theme(theme_id,true)
++	viewport.render_target_update_mode = SubViewport.UPDATE_ONCE
++
++func _apply_theme(theme: String, force: bool = false) -> void:
+ 	var normalized: String = TrackTheme.normalized(theme)
+-	if _applied_theme == normalized: return
++	if _applied_theme == normalized and not force: return
+ 	theme_id = normalized; _applied_theme = normalized
+ 	var palette: Array[Color] = TrackTheme.palette(theme_id)
+ 	TrackTheme.apply_lighting(theme_id,environment,sunlight)
++	if theme_id == "night_city" and not race_lighting_preview:
++		environment.ambient_light_color = Color("bac8ce")
++		environment.ambient_light_energy = 0.48
++		sunlight.light_color = Color("dce7ff")
++		sunlight.light_energy = 0.85
+ 	environment.background_color = palette[1]
+ 	ground_material.albedo_color = palette[1]
+ 
+diff --git a/game/editor/editor_history.gd b/game/editor/editor_history.gd
+--- a/game/editor/editor_history.gd
++++ b/game/editor/editor_history.gd
+@@ -12,26 +12,43 @@
+ 		if key == "objects" and document[key] is Array:
+ 			var chunks: Array = []
+ 			var prior: Array = old.get(key,{}).get("objects",[])
++			var blocks: Array = []
++			var old_blocks: Array = old.get(key,{}).get("blocks",[])
+ 			var reusable: Dictionary = {}
+ 			if prior.size() != document[key].size():
+-				for chunk: Dictionary in prior: reusable[chunk.data] = chunk
+-			for index: int in range(document[key].size()):
+-				var packed: PackedByteArray = var_to_bytes(document[key][index])
+-				if index < prior.size() and prior[index].data == packed: chunks.append(prior[index])
+-				else:
+-					if reusable.is_empty() and ((index+1 < prior.size() and prior[index+1].data == packed) or (index>0 and index-1<prior.size() and prior[index-1].data == packed)):
+-						for chunk: Dictionary in prior: reusable[chunk.data] = chunk
+-					if reusable.has(packed): chunks.append(reusable[packed])
+-					else: sequence += 1; chunks.append({"id":sequence,"data":packed})
+-			var blocks: Array = []
+-			var old_blocks: Array = old.get(key,{}).get("blocks",[])
+-			for start: int in range(0,chunks.size(),64):
+-				var members: Array = chunks.slice(start,mini(start+64,chunks.size()))
++				for chunk: Dictionary in prior: reusable[chunk.value] = chunk
++			for start: int in range(0,document[key].size(),64):
++				var block_index: int = start/64
++				var source: Array = document[key].slice(start,mini(start+64,document[key].size()))
++				if block_index < old_blocks.size() and old_blocks[block_index].source == source:
++					blocks.append(old_blocks[block_index])
++					chunks.append_array(old_blocks[block_index].objects)
++					continue
++				var members: Array = []
++				var frozen: Array = []
+ 				var ids := PackedInt64Array()
+-				for chunk: Dictionary in members: ids.append(chunk.id)
+-				var index: int = start/64
+-				if index < old_blocks.size() and old_blocks[index].ids == ids: blocks.append(old_blocks[index])
+-				else: sequence += 1; blocks.append({"id":sequence,"ids":ids,"objects":members})
++				for offset: int in range(source.size()):
++					var index: int = start+offset
++					var value: Dictionary = source[offset]
++					var chunk: Dictionary
++					if index < prior.size() and prior[index].value == value: chunk = prior[index]
++					else:
++						if reusable.is_empty() and ((index+1 < prior.size() and prior[index+1].value == value) or (index>0 and index-1<prior.size() and prior[index-1].value == value)):
++							for item: Dictionary in prior: reusable[item.value] = item
++						if reusable.has(value): chunk = reusable[value]
++						else:
++							var snapshot: Dictionary = value.duplicate(true)
++							_freeze(snapshot)
++							var packed: PackedByteArray = var_to_bytes(snapshot)
++							sequence += 1
++							chunk = {"id":sequence,"data":packed,"value":snapshot,"bytes":packed.size()*2+512}
++					members.append(chunk); frozen.append(chunk.value); ids.append(chunk.id)
++				frozen.make_read_only()
++				chunks.append_array(members)
++				var allocations: Dictionary = {}
++				for chunk: Dictionary in members: allocations[chunk.id] = chunk.bytes
++				sequence += 1
++				blocks.append({"id":sequence,"ids":ids,"objects":members,"source":frozen,"allocations":allocations})
+ 			fields[key] = {"objects":chunks,"blocks":blocks}
+ 			continue
+ 		var data: PackedByteArray = var_to_bytes(document[key])
+@@ -40,6 +57,26 @@
+ 			sequence += 1
+ 			fields[key] = {"id":sequence,"data":data}
+ 	return {"snapshot":fields}
++
++static func _freeze(value: Variant) -> void:
++	if value is Dictionary:
++		for child: Variant in value.values(): _freeze(child)
++		value.make_read_only()
++	elif value is Array:
++		for child: Variant in value: _freeze(child)
++		value.make_read_only()
++
++static func matches(entry: Dictionary, document: Dictionary) -> bool:
++	if entry.is_empty() or entry.snapshot.size() != document.size(): return false
++	for key: Variant in document:
++		if not entry.snapshot.has(key): return false
++		var field: Dictionary = entry.snapshot[key]
++		if field.has("objects"):
++			if field.objects.size() != document[key].size(): return false
++			for index: int in range(field.blocks.size()):
++				if field.blocks[index].source != document[key].slice(index*64,mini(index*64+64,document[key].size())): return false
++		elif field.data != var_to_bytes(document[key]): return false
++	return true
+ 
+ static func restore(entry: Dictionary) -> Dictionary:
+ 	var result: Dictionary = {}
+@@ -53,6 +90,7 @@
+ 
+ static func bytes_used(stacks: Array) -> int:
+ 	var seen: Dictionary = {}
++	var allocations: Dictionary = {}
+ 	var total: int = 0
+ 	for stack: Array in stacks:
+ 		for entry: Dictionary in stack:
+@@ -63,14 +101,15 @@
+ 					total += chunk.blocks.size()*8
+ 					for block: Dictionary in chunk.blocks:
+ 						if seen.has(block.id): continue
+-						seen[block.id] = true; total += 128+block.objects.size()*16
+-						for object: Dictionary in block.objects:
+-							if seen.has(object.id): continue
+-							seen[object.id] = true; total += object.data.size()+128
++						seen[block.id] = true; total += 128+block.objects.size()*64
++						# Native dictionary merging deduplicates shared object chunks
++						# without dispatching a script loop for all 4096 each edit.
++						allocations.merge(block.allocations,false)
+ 					continue
+ 				if seen.has(chunk.id): continue
+ 				seen[chunk.id] = true
+ 				total += chunk.data.size()+128
++	for weight: int in allocations.values(): total += weight
+ 	return total
+ 
+ static func trim(history: Array, redo: Array, allowance: int = BUDGET) -> void:
+diff --git a/game/editor/editor_session.gd b/game/editor/editor_session.gd
+--- a/game/editor/editor_session.gd
++++ b/game/editor/editor_session.gd
+@@ -11,9 +11,20 @@
+ var validated: Dictionary = {}
+ var errors: Array[String] = []
+ var workflow: Dictionary = {}
++var primed: Dictionary = {}
++
++func prime(document: Dictionary) -> void:
++	# Loaded large scenes prepare their first checkpoint during editor setup,
++	# before pointer input is enabled. Revalidate the complete value on use.
++	if not undo.is_empty() or not redo.is_empty(): return
++	var snapshots: Array = [HISTORY.capture(document)]
++	HISTORY.trim(snapshots,[])
++	primed = snapshots[0] if not snapshots.is_empty() else {}
+ 
+ func remember(document: Dictionary) -> void:
+-	undo.append(HISTORY.capture(document,undo.back() if not undo.is_empty() else {}))
++	var previous: Dictionary = undo.back() if not undo.is_empty() else redo.back() if not redo.is_empty() else primed
++	undo.append(primed if HISTORY.matches(primed,document) else HISTORY.capture(document,previous))
++	primed = {}
+ 	redo.clear()
+ 	HISTORY.trim(undo,redo)
+ 
+diff --git a/game/editor/editor_memory.gd b/game/editor/editor_memory.gd
+--- a/game/editor/editor_memory.gd
++++ b/game/editor/editor_memory.gd
+@@ -49,6 +49,7 @@
+ 	if not force and retained(app).retained_bytes <= RETAINED_BUDGET: _finished(app,retry,force); return
+ 	NativeTrackVisual.trim_editor_cache()
+ 	if force:
++		app.editor_session.primed = {}
+ 		HISTORY.trim(app.history,app.redo_history,PRESSURE_HISTORY)
+ 		if is_instance_valid(app.canvas): app.canvas.trim_cache()
+ 	# Roadside runs can also be prepared by a population worker. Defer this
+@@ -65,7 +66,7 @@
+ 
+ static func retained(app: Node) -> Dictionary:
+ 	var roads: Dictionary = ROADS.residency()
+-	var history: int = HISTORY.bytes_used([app.history,app.redo_history,app.editor_gesture_history,app.editor_gesture_redo])
++	var history: int = HISTORY.bytes_used([app.history,app.redo_history,app.editor_gesture_history,app.editor_gesture_redo,[app.editor_session.primed] if not app.editor_session.primed.is_empty() else []])
+ 	var compiled: int = 0
+ 	if app.editor_preview_thread == null:
+ 		for entry: Dictionary in app.editor_compiled_cache: compiled += int(entry.bytes)
+diff --git a/game/editor/road_sections.gd b/game/editor/road_sections.gd
+--- a/game/editor/road_sections.gd
++++ b/game/editor/road_sections.gd
+@@ -2,6 +2,7 @@
+ ## Immutable CPU work shares the road LRU and its existing byte budget.
+ const VERSION: String = "editor-road-sections-1"
+ const UPLOAD_VERTICES: int = 12288
++static var native_streams: bool = true
+ var hits: int = 0
+ var misses: int = 0
+ var reused: Dictionary = {}
+@@ -34,6 +35,8 @@
+ 
+ static func append_arrays(tool: SurfaceTool, arrays: Array) -> void:
+ 	if arrays.is_empty() or arrays[Mesh.ARRAY_VERTEX] == null: return
++	var native: RefCounted = preload("res://track/geometry_acceleration.gd").roads() if native_streams else null
++	if native != null and native.has_method("editor_append") and native.call("editor_append",tool,arrays): return
+ 	var vertices: PackedVector3Array = arrays[Mesh.ARRAY_VERTEX]
+ 	var indices: PackedInt32Array = arrays[Mesh.ARRAY_INDEX] if arrays[Mesh.ARRAY_INDEX] != null else PackedInt32Array()
+ 	for cursor: int in range(indices.size() if not indices.is_empty() else vertices.size()):
+@@ -48,6 +51,10 @@
+ 	# Whole triangles, original attributes and order. Indexed surfaces retain
+ 	# shared vertices within each upload; no clipping, welding or new normals.
+ 	if arrays.is_empty() or arrays[Mesh.ARRAY_VERTEX] == null or arrays[Mesh.ARRAY_VERTEX].is_empty(): return []
++	var native: RefCounted = preload("res://track/geometry_acceleration.gd").roads() if native_streams else null
++	if native != null and native.has_method("editor_split"):
++		var prepared: Array = native.call("editor_split",arrays,tile_size)
++		if not prepared.is_empty(): return prepared
+ 	var vertices: PackedVector3Array = arrays[Mesh.ARRAY_VERTEX]
+ 	var indices: PackedInt32Array = arrays[Mesh.ARRAY_INDEX] if arrays[Mesh.ARRAY_INDEX] != null else PackedInt32Array()
+ 	var count: int = indices.size() if not indices.is_empty() else vertices.size()
+diff --git a/game/race/world_render_preparation.gd b/game/race/world_render_preparation.gd
+--- a/game/race/world_render_preparation.gd
++++ b/game/race/world_render_preparation.gd
+@@ -5,11 +5,12 @@
+ var pending: Array[Dictionary] = []
+ var frame_groups: int = 0
+ var draw_us_max: int = 0
++var _material_keys: Dictionary = {}
+ 
+ func hold(world: Node) -> void:
+ 	for geometry: GeometryInstance3D in world.find_children("*","GeometryInstance3D",true,false):
+ 		if not geometry.is_visible_in_tree(): continue
+-		var key: String = _key(geometry)
++		var key: String = _key(geometry,_material_keys)
+ 		if warmed.has(key): continue
+ 		pending.append({"node":weakref(geometry),"key":key})
+ 		geometry.hide()
+@@ -31,7 +32,9 @@
+ 					var distance: Vector3 = (node.to_local(camera.global_position)-bounds.get_center()).abs()
+ 					node.extra_cull_margin = maxf(node.extra_cull_margin,maxf(distance.x,maxf(distance.y,distance.z))+camera.near+1.0)
+ 				node.show()
+-			pending.remove_at(index); shown += 1
++				shown += 1
++			pending.remove_at(index)
++		if shown == 0: continue
+ 		var began: int = Time.get_ticks_usec()
+ 		var drawn: bool = await draw.call()
+ 		for entry: Dictionary in margins:
+@@ -43,21 +46,51 @@
+ 		if drawn:
+ 			if warmed.size() >= 512: warmed.clear()
+ 			warmed[key] = true
++			# One bounded batch has submitted this exact program/format/shadow
++			# combination. Remaining instances need visibility, not another draw
++			# of the same compiled program. The final covered world draw remains.
++			for index: int in range(pending.size()-1,-1,-1):
++				if pending[index].key != key: continue
++				var node: Object = pending[index].node.get_ref()
++				if is_instance_valid(node): node.show()
++				pending.remove_at(index)
++	_material_keys.clear()
+ 	return current.call()
+ 
+-static func _key(node: GeometryInstance3D) -> String:
++static func _key(node: GeometryInstance3D, materials: Dictionary = {}) -> String:
+ 	var mesh: Mesh = node.mesh if node is MeshInstance3D else node.multimesh.mesh if node is MultiMeshInstance3D and node.multimesh != null else null
+-	var parts: Array = [node.get_class(),node.cast_shadow]
++	var parts: Array = [node.get_class(),node.cast_shadow,node.layers]
+ 	if mesh != null:
+ 		for surface: int in range(mesh.get_surface_count()):
+ 			var material: Material = node.get_active_material(surface) if node is MeshInstance3D else node.material_override if node.material_override != null else mesh.surface_get_material(surface)
+ 			# Identity inspection must not force lazy backend shader creation here.
+-			parts.append(material.shader.get_instance_id() if material is ShaderMaterial and material.shader != null else material.get_instance_id() if material != null else 0)
++			parts.append(_material_key(material,materials))
+ 			parts.append(mesh.surface_get_format(surface) if mesh is ArrayMesh else mesh.get_class())
+ 	return str(parts)
++
++static func _material_key(material: Material, cache: Dictionary) -> String:
++	if material == null: return "none"
++	var id: int = material.get_instance_id()
++	if cache.has(id): return cache[id]
++	var features: Array = [material.get_class()]
++	if material is ShaderMaterial:
++		features.append(material.shader.get_instance_id() if material.shader != null else 0)
++	elif material is BaseMaterial3D:
++		for property: Dictionary in material.get_property_list():
++			if not int(property.usage)&PROPERTY_USAGE_STORAGE: continue
++			if property.name in ["resource_local_to_scene","resource_name","resource_path","next_pass"]: continue
++			var value: Variant = material.get(property.name)
++			if value is bool or value is int: features.append([property.name,value])
++			elif property.hint == PROPERTY_HINT_RESOURCE_TYPE and "Texture" in str(property.hint_string): features.append([property.name,value != null])
++	else: features.append(id)
++	features.append(_material_key(material.next_pass,cache))
++	var result: String = str(features).sha256_text()
++	cache[id] = result
++	return result
+ 
+ func _exit_tree() -> void:
+ 	for entry: Dictionary in pending:
+ 		var node: Object = entry.node.get_ref()
+ 		if is_instance_valid(node): node.show()
+ 	pending.clear()
++	_material_keys.clear()
+diff --git a/native/track_geometry/track_geometry.cpp b/native/track_geometry/track_geometry.cpp
+--- a/native/track_geometry/track_geometry.cpp
++++ b/native/track_geometry/track_geometry.cpp
+@@ -123,6 +123,7 @@
+ }
+ 
+ #include "road_geometry.hpp"
++#include "editor_streams.hpp"
+ #include "raster_geometry.hpp"
+ #include "winter_geometry.hpp"
+ 
+@@ -146,6 +147,8 @@
+         ClassDB::bind_method(D_METHOD("road_emit","triangles","paths","settings","blend","theme","mode","height","geometry","tool","cancelled"),&BmtTrackGeometry::road_emit);
+         ClassDB::bind_method(D_METHOD("road_finish","arrays","flags","cancelled"),&BmtTrackGeometry::road_finish);
+         ClassDB::bind_method(D_METHOD("road_unpack","arrays","normals"),&BmtTrackGeometry::road_unpack);
++        ClassDB::bind_method(D_METHOD("editor_split","arrays","tile_size"),&BmtTrackGeometry::editor_split);
++        ClassDB::bind_method(D_METHOD("editor_append","tool","arrays"),&BmtTrackGeometry::editor_append);
+         ClassDB::bind_method(D_METHOD("road_edges","contours","cuts","outlines","joined","index","swept","winter","geometry","cancelled"),&BmtTrackGeometry::road_edges);
+         ClassDB::bind_method(D_METHOD("road_polygon","polygon","points","settings","blend","theme","height","geometry","tool","cancelled"),&BmtTrackGeometry::road_polygon);
+     }
+@@ -179,6 +182,8 @@
+     }
+     Array road_finish(const Array &arrays,const Dictionary &flags,const Callable &cancelled) const { return road_geometry::finish(arrays,flags,cancelled); }
+     Array road_unpack(const Array &arrays,bool normals) const { return road_geometry::unpack(arrays,normals); }
++    Array editor_split(const Array &arrays,double tile_size) const {return editor_streams::split(arrays,tile_size);}
++    bool editor_append(Object *tool,const Array &arrays) const {return editor_streams::append(tool,arrays);}
+     Dictionary road_edges(const Array &contours,const Array &cuts,const Array &outlines,const Array &joined,int64_t index,bool swept,bool winter,Object *geometry,const Callable &cancelled) const {
+         return road_geometry::edge_samples(contours,cuts,outlines,joined,int(index),swept,winter,geometry,cancelled);
+     }
+diff --git a/native/track_geometry/road_geometry.hpp b/native/track_geometry/road_geometry.hpp
+--- a/native/track_geometry/road_geometry.hpp
++++ b/native/track_geometry/road_geometry.hpp
+@@ -364,6 +364,15 @@
+     for (int64_t i=0;i<input_cuts.size();++i) {
+         Dictionary cut=input_cuts[i];cuts.push_back({cut["point"],cut["normal"],double(cut["span"])});
+     }
++    // Decode immutable outline fields once, rather than crossing the Variant
++    // dictionary boundary for every 20 cm roadside probe on every section.
++    struct EdgeOutline { Polygon polygon; Rect2 bounds; int index; bool hole; };
++    std::vector<EdgeOutline> edge_outlines;
++    edge_outlines.reserve(outlines.size());
++    for (int64_t i=0;i<outlines.size();++i) {
++        Dictionary outline=outlines[i];
++        edge_outlines.push_back({outline["polygon"],outline["bounds"],int(int64_t(outline["index"])),bool(outline.get("hole",false))});
++    }
+     PackedVector2Array result;
+     for (int64_t loop=0;loop<contours.size();++loop) {
+         Polygon polygon=contours[loop];if (polygon.size()<3) continue;
+@@ -383,15 +392,15 @@
+                 if (bool(contains(geometry,midpoint+outward,polygon))!=hole) outward=-outward;
+                 Vector2 probe=midpoint+outward;
+                 std::map<int,int> coverage;
+-                for (int64_t i=0;i<outlines.size();++i) {
+-                    Dictionary outline=outlines[i];int other=int64_t(outline["index"]);Rect2 bounds=outline["bounds"];
+-                    if (other==index || !bounds.has_point(probe)) continue;
++                for (const EdgeOutline &outline:edge_outlines) {
++                    int other=outline.index;
++                    if (other==index || !outline.bounds.has_point(probe)) continue;
+                     bool neighbor=false;
+                     for (int64_t j=0;j<joined.size();++j) {
+                         Dictionary join=joined[j];
+                         if (int64_t(join["index"])==other && probe.distance_to(Vector2(join["position"]))<double(join["width"])) {neighbor=true;break;}
+                     }
+-                    if (!neighbor && bool(contains(geometry,probe,outline["polygon"]))) coverage[other]+=bool(outline.get("hole",false))?-1:1;
++                    if (!neighbor && bool(contains(geometry,probe,outline.polygon))) coverage[other]+=outline.hole?-1:1;
+                 }
+                 bool exposed=true;
+                 for (auto value:coverage) if (value.second>0) {exposed=false;break;}
+diff --git a/native/track_geometry/PROVENANCE.md b/native/track_geometry/PROVENANCE.md
+--- a/native/track_geometry/PROVENANCE.md
++++ b/native/track_geometry/PROVENANCE.md
+@@ -5,6 +5,8 @@
+ `road_geometry.hpp` additionally ports the existing presentation-only shoulder overlap solver, road/fringe UV sampling, exposed-edge sampling and mesh finishing from `shoulder_mesh.gd`, `desert_road_union.gd`, `road_fringe_mesh.gd`, `native_track_visual.gd` and `editor/road_preparation.gd`. It keeps ordered clipping ownership, original scalar/vector rounding boundaries, subdivision, winding, material attributes and the engine's triangulation/intersection/indexing. Grass stones and blades retain their original GDScript emission.
+ 
+ `road_engine_api.hpp` uses the official godot-cpp typed ptrcall convention and method hashes from the pinned checkout's `gdextension/extension_api.json`. These headers are original project integration code; no new library or SDK is introduced. Native road jobs have cancellation and a retained scalar fallback. Windows rebuilds use content-addressed DLL names so an already running editor can retain its loaded library while new processes use the new build.
++
++The 28 October 2026 editor review adds original `editor_streams.hpp`, ported from `editor/road_sections.gd`. Optional `editor_split` and `editor_append` keep whole-triangle order, packed attributes, centroid tiles, index remapping and the existing 12,288-vertex upload bound. Unsupported channels or unavailable methods retain the scalar implementation. Exposed-edge sampling also decodes immutable outline fields once per call, retaining the original probe/order/coverage tests. These CPU presentation changes leave compiler, simulation and content contracts unchanged. Exact stream and five-theme road comparisons, native pixel checks, build fingerprints and remaining cold-entry latency are recorded in [TRACK_EDITOR_FIXES_2026_10_28.md](../../docs/TRACK_EDITOR_FIXES_2026_10_28.md).
+ 
+ 
+ `winter_geometry.hpp` ports the original snowbank row profiles, finite-difference normals, winding-preserving section emission and Winter marker selection from `native_track_visual.gd` and `winter_scenery.gd`. The pinned engine Noise API retains the original FastNoiseLite field. Existing snow deposits, materials and canonical snow contacts remain unchanged.
+diff --git a/game/editor/authoring_admission.gd b/game/editor/authoring_admission.gd
+new file mode 100644
+--- /dev/null
++++ b/game/editor/authoring_admission.gd
+@@ -0,0 +1,35 @@
++extends RefCounted
++## Aggregate limits for already domain-validated UI edits. Imports retain the
++## complete TrackDocument validator; unfinished racing routes remain legal.
++static func error(document: Dictionary, field: String = "") -> String:
++	if document.get("hidden_scenery",[]).size() > 256: return "Too many removed scenery trees."
++	if field.is_empty() or field == "pieces":
++		if document.pieces.size() > RoadPieces.MAX_PIECES: return "Use up to 96 road sections."
++		var length: float = 0.0
++		for piece: Dictionary in document.pieces:
++			var points: PackedVector2Array = RoadPieces.samples(piece)
++			for index: int in range(1,points.size()): length += points[index-1].distance_to(points[index])
++		if length > 4000.0: return "Use up to 4000 metres of road sections."
++	if field.is_empty() or field == "paint":
++		if document.paint.size() > 256: return "Use up to 256 paint strokes; undo a stroke or start a new map."
++		var points: int = 0
++		for stroke: Dictionary in document.paint: points += stroke.points.size()
++		if points > 16384: return "The map has too many paint points."
++	if field.is_empty() or field == "objects":
++		var capacity: String = preload("res://editor/creator_limits.gd").error(document.objects,str(document.theme))
++		if not capacity.is_empty(): return capacity
++	var encoded_bytes: int = JSON.stringify(document,"",true).to_utf8_buffer().size()
++	if encoded_bytes > TrackDocument.MAX_BYTES:
++		return "This creator track exceeds %d KB." % (TrackDocument.MAX_BYTES/1024)
++	# The writer derives up to 96 route points from connected sections. Only
++	# documents near the byte ceiling need that expensive exact second check.
++	if not document.pieces.is_empty() and encoded_bytes > TrackDocument.MAX_BYTES-16384:
++		var route: Dictionary = RoadPieces.route_from_pieces(document)
++		if route.ok and JSON.stringify(route.document,"",true).to_utf8_buffer().size() > TrackDocument.MAX_BYTES:
++			return "This creator track exceeds %d KB." % (TrackDocument.MAX_BYTES/1024)
++	return ""
++
++static func replacement(document: Dictionary, field: String, value: Variant) -> String:
++	var proposed: Dictionary = document.duplicate()
++	proposed[field] = value
++	return error(proposed,field)
+diff --git a/native/track_geometry/editor_streams.hpp b/native/track_geometry/editor_streams.hpp
+new file mode 100644
+--- /dev/null
++++ b/native/track_geometry/editor_streams.hpp
+@@ -0,0 +1,107 @@
++// Original exact ports of the editor's stream-copy loops. No GPU resources.
++#include <godot_cpp/variant/packed_byte_array.hpp>
++namespace editor_streams {
++template<class Packed> Variant select(const Variant &input,const std::vector<int> &indices,int stride) {
++    Packed source=input, output; output.resize(int64_t(indices.size())*stride);
++    auto *destination=output.ptrw(); const auto *values=source.ptr();
++    int64_t cursor=0;
++    for (int index:indices) for (int component=0;component<stride;++component)
++        destination[cursor++]=values[int64_t(index)*stride+component];
++    return output;
++}
++inline int length(const Variant &value) {
++    switch(value.get_type()) {
++        case Variant::PACKED_VECTOR3_ARRAY:return PackedVector3Array(value).size();
++        case Variant::PACKED_VECTOR2_ARRAY:return PackedVector2Array(value).size();
++        case Variant::PACKED_COLOR_ARRAY:return PackedColorArray(value).size();
++        case Variant::PACKED_FLOAT32_ARRAY:return PackedFloat32Array(value).size();
++        case Variant::PACKED_FLOAT64_ARRAY:return PackedFloat64Array(value).size();
++        case Variant::PACKED_INT32_ARRAY:return PackedInt32Array(value).size();
++        case Variant::PACKED_BYTE_ARRAY:return PackedByteArray(value).size();
++        default:return -1;
++    }
++}
++inline Variant copy(const Variant &value,const std::vector<int> &indices,int stride) {
++    switch(value.get_type()) {
++        case Variant::PACKED_VECTOR3_ARRAY:return select<PackedVector3Array>(value,indices,stride);
++        case Variant::PACKED_VECTOR2_ARRAY:return select<PackedVector2Array>(value,indices,stride);
++        case Variant::PACKED_COLOR_ARRAY:return select<PackedColorArray>(value,indices,stride);
++        case Variant::PACKED_FLOAT32_ARRAY:return select<PackedFloat32Array>(value,indices,stride);
++        case Variant::PACKED_FLOAT64_ARRAY:return select<PackedFloat64Array>(value,indices,stride);
++        case Variant::PACKED_INT32_ARRAY:return select<PackedInt32Array>(value,indices,stride);
++        case Variant::PACKED_BYTE_ARRAY:return select<PackedByteArray>(value,indices,stride);
++        default:return Variant();
++    }
++}
++inline Array split(const Array &arrays,double tile_size) {
++    if (arrays.size()!=13 || arrays[0].get_type()!=Variant::PACKED_VECTOR3_ARRAY || !(tile_size>0)) return {};
++    PackedVector3Array vertices=arrays[0];
++    if (vertices.is_empty()) return {};
++    PackedInt32Array indices;
++    if (arrays[12].get_type()==Variant::PACKED_INT32_ARRAY) indices=arrays[12];
++    bool indexed=!indices.is_empty(); int count=indexed?indices.size():vertices.size();
++    if (count%3!=0) return {};
++    for (int channel=0;channel<12;++channel) {
++        if (arrays[channel].get_type()==Variant::NIL) continue;
++        int size=length(arrays[channel]);
++        if (size<0 || size%vertices.size()!=0) return {};
++    }
++    std::map<std::pair<int,int>,int> lookup;
++    std::vector<std::vector<int>> tiles;
++    for (int first=0;first<count;first+=3) {
++        Vector3 center;
++        for (int cursor=first;cursor<first+3;++cursor) {
++            int index=indexed?indices[cursor]:cursor;
++            if (index<0 || index>=vertices.size()) return {};
++            center+=vertices[index];
++        }
++        center/=3.0f;
++        std::pair<int,int> tile{int(std::floor(double(center.x)/tile_size)),int(std::floor(double(center.z)/tile_size))};
++        auto found=lookup.find(tile); int slot;
++        if (found==lookup.end()) {slot=tiles.size();lookup[tile]=slot;tiles.emplace_back();}
++        else slot=found->second;
++        for (int cursor=first;cursor<first+3;++cursor) tiles[slot].push_back(indexed?indices[cursor]:cursor);
++    }
++    Array result;
++    for (const auto &tile:tiles) for (size_t first=0;first<tile.size();first+=12288) {
++        std::vector<int> selected; PackedInt32Array mapped; std::map<int,int> remap;
++        for (size_t cursor=first;cursor<std::min(first+12288,tile.size());++cursor) {
++            int original=tile[cursor];
++            if (!indexed) {selected.push_back(original);continue;}
++            auto found=remap.find(original); int slot;
++            if (found==remap.end()) {slot=selected.size();remap[original]=slot;selected.push_back(original);}
++            else slot=found->second;
++            mapped.append(slot);
++        }
++        Array part;part.resize(13);
++        for (int channel=0;channel<12;++channel) if (arrays[channel].get_type()!=Variant::NIL)
++            part[channel]=copy(arrays[channel],selected,length(arrays[channel])/vertices.size());
++        if (indexed) part[12]=mapped;
++        result.append(part);
++    }
++    return result;
++}
++inline bool append(Object *tool,const Array &arrays) {
++    if (!tool || arrays.size()!=13 || arrays[0].get_type()!=Variant::PACKED_VECTOR3_ARRAY) return false;
++    PackedVector3Array vertices=arrays[0], normals;
++    PackedVector2Array uv,uv2;PackedColorArray colors;PackedInt32Array indices;
++    if (arrays[1].get_type()==Variant::PACKED_VECTOR3_ARRAY) normals=arrays[1];
++    if (arrays[3].get_type()==Variant::PACKED_COLOR_ARRAY) colors=arrays[3];
++    if (arrays[4].get_type()==Variant::PACKED_VECTOR2_ARRAY) uv=arrays[4];
++    if (arrays[5].get_type()==Variant::PACKED_VECTOR2_ARRAY) uv2=arrays[5];
++    if (arrays[12].get_type()==Variant::PACKED_INT32_ARRAY) indices=arrays[12];
++    for (int size:{int(normals.size()),int(colors.size()),int(uv.size()),int(uv2.size())})
++        if (size!=0 && size!=vertices.size()) return false;
++    for (int i=0;i<indices.size();++i) if (indices[i]<0 || indices[i]>=vertices.size()) return false;
++    for (int cursor=0;cursor<(indices.is_empty()?vertices.size():indices.size());++cursor) {
++        int i=indices.is_empty()?cursor:indices[cursor];
++        if (i<0 || i>=vertices.size()) return false;
++        if (!normals.is_empty()) road_geometry::set_normal(tool,normals[i]);
++        if (!uv.is_empty()) road_geometry::set_uv(tool,uv[i]);
++        if (!uv2.is_empty()) road_geometry::set_uv2(tool,uv2[i]);
++        if (!colors.is_empty()) road_geometry::set_color(tool,colors[i]);
++        road_geometry::add_vertex(tool,vertices[i]);
++    }
++    return true;
++}
++}
+diff --git a/scripts/translations/track_editor_review_fixes.tsv b/scripts/translations/track_editor_review_fixes.tsv
+new file mode 100644
+--- /dev/null
++++ b/scripts/translations/track_editor_review_fixes.tsv
+@@ -0,0 +1,3 @@
++msgid	de	es	fi	fr	it	ja	ko	nb	nl	pt_BR	sv
++Race lighting	Rennbeleuchtung	Iluminación de carrera	Kilpailuvalaistus	Éclairage de course	Illuminazione di gara	レース照明	레이스 조명	Løpsbelysning	Raceverlichting	Iluminação de corrida	Tävlingsbelysning
++Confirm or discard the pending previews before sharing this circuit.	Bestätige oder verwerfe die ausstehenden Vorschauen, bevor du diese Strecke teilst.	Confirma o descarta las vistas previas pendientes antes de compartir este circuito.	Vahvista tai hylkää odottavat esikatselut ennen tämän radan jakamista.	Confirmez ou annulez les aperçus en attente avant de partager ce circuit.	Conferma o scarta le anteprime in sospeso prima di condividere questo circuito.	このサーキットを共有する前に、保留中のプレビューを確定または破棄してください。	이 서킷을 공유하기 전에 대기 중인 미리보기를 확정하거나 삭제하세요.	Bekreft eller forkast de ventende forhåndsvisningene før du deler denne banen.	Bevestig of verwijder de openstaande voorbeelden voordat je dit circuit deelt.	Confirme ou descarte as prévias pendentes antes de compartilhar este circuito.	Bekräfta eller kasta de väntande förhandsvisningarna innan du delar den här banan.
+diff --git a/game/tests/test_editor_review_items.gd b/game/tests/test_editor_review_items.gd
+new file mode 100644
+--- /dev/null
++++ b/game/tests/test_editor_review_items.gd
+@@ -0,0 +1,115 @@
++extends "res://tests/audit_track_editor_2026_10_28.gd"
++## Regression coverage for the eight editor review findings. Workspace-only saves.
++var checks: int = 0
++var failures: int = 0
++func check(ok: bool, message: String) -> void:
++	checks += 1
++	if not ok: failures += 1; print("FAIL: ",message)
++func observe(key: String, value: Variant) -> void:
++	# The review-only fixture labels the proposed 4080 m as "after_metres".
++	# Its committed sections are all 120 m: report their actual retained total.
++	if key == "road_global_limit": value.after_metres = value.after_pieces*120.0
++	super.observe(key,value)
++	match key:
++		"paint_global_limit":
++			check(value.baseline_errors.is_empty() and value.baseline_save == OK,"paint boundary starts recoverable")
++			check(value.after_strokes == 32 and value.pending_points_after_confirm == 2,"excess paint remains a preview")
++			check(value.errors.is_empty() and value.save_error == OK and value.recovery_strokes == 32,"rejected paint keeps exact recoverable data")
++		"road_global_limit":
++			check(value.after_metres == 3960.0,"rejected section leaves the committed road length unchanged")
++			check(value.baseline_errors.is_empty() and value.baseline_save == OK,"road boundary starts recoverable")
++			check(value.after_pieces == 33 and value.ghost_retained,"excess road remains a preview")
++			check(value.errors.is_empty() and value.save_error == OK and value.recovery_pieces == 33,"rejected road keeps exact recoverable data")
++		"cancelled_object_touch","cancel_gesture_after_drag":
++			check(value.position == [0.0,0.0],key+" rolls back movement")
++			check(value.signals.finished == 0 and value.signals.cancelled == 1,key+" cancels exactly one transaction")
++		"invalid_parameter_feedback":
++			check(value.unchanged and value.status_visible and not value.text.is_empty(),"rejected parameter has visible feedback")
++		"escape_during_object_drag":
++			check(value.before_escape == [10.0,0.0] and value.after_escape == [0.0,0.0],"Esc restores the actual moved object")
++			check(value.wip_position == [0.0,0.0] and value.undo_entries == 0,"Esc restores WIP and grouped undo")
++		"share_pending_road": check(value.pending_work and not value.dialog_open,"Share waits for preview resolution")
++		"road_accept_start_flip_overlap": check(value.overlap_size == [0.0,0.0] and value.heading_after == value.heading_before,"separate accept and direction targets")
++
++func handles_and_lighting() -> void:
++	var canvas := EditorCanvas.new(); root.add_child(canvas); canvas.size = Vector2(1280,720)
++	canvas.document = TrackDocument.create_blank()
++	for heading: float in [0.0,45.0,90.0,135.0,180.0,225.0,270.0,315.0]:
++		var piece: Dictionary = RoadPieces.create("straight",Vector2(-30,0),heading,6)
++		piece.length = 56.0; canvas.document.pieces = [piece]
++		canvas.document["start_line"] = {"position":piece.position.duplicate(),"heading":heading}
++		for scale: float in [1.0,4.0,8.0]:
++			canvas.zoom = scale/8.0; canvas.selected_piece = 0
++			var accept: Rect2 = canvas.piece_accept_rect(piece)
++			var flip: Vector2 = canvas.start_controls().flip
++			var nearest: Vector2 = flip.clamp(accept.position,accept.end)
++			check(flip.distance_to(nearest) > 28.0,"accept avoids arrow circle at %s/%s" % [heading,scale])
++			var before: float = canvas.document.start_line.heading
++			touch(canvas,accept.get_center(),true); touch(canvas,accept.get_center(),false)
++			check(canvas.selected_piece == -1 and canvas.document.start_line.heading == before,"accept deselects without changing heading")
++	var world := EditorWorld.new(); world.theme_id = "night_city"; root.add_child(world)
++	check(world.environment.ambient_light_energy >= 0.35 and world.sunlight.light_energy >= 0.5,"Night defaults to readable authoring light")
++	world.set_race_lighting_preview(true)
++	check(is_equal_approx(world.environment.ambient_light_energy,0.045) and is_equal_approx(world.sunlight.light_energy,0.025),"Night race preview retains exact racing light")
++	world.set_race_lighting_preview(false)
++	check(world.environment.ambient_light_energy >= 0.35,"authoring light restores")
++	world.queue_free(); canvas.queue_free(); await process_frame
++
++func share_choices() -> void:
++	app = load("res://core/app.tscn").instantiate()
++	app.library = TrackLibrary.new(out+"/share-storage")
++	app.records = LocalRecords.new(out+"/share-records.json")
++	app.cloud_root_override = out+"/share-cloud"; root.add_child(app)
++	while not app.startup_complete: await process_frame
++	app.document = TrackDocument.create_blank(); app.document.id = "share_choices"
++	app._show_screen("create"); await settle("share_entry")
++	app.canvas.choose_piece("straight"); app._share_dialog()
++	var dialog: ConfirmationDialog = app.root_ui.find_child("PendingPreviewDialog",true,false)
++	check(dialog != null and dialog.visible,"Share opens explicit resolution")
++	dialog.canceled.emit(); await process_frame
++	check(not app.canvas.ghost.is_empty() and app.document.pieces.is_empty(),"Cancel retains preview and original")
++	app._share_dialog(); dialog = app.root_ui.find_child("PendingPreviewDialog",true,false)
++	dialog.confirmed.emit(); await process_frame
++	check(app.document.pieces.size() == 1 and app.canvas.ghost.is_empty(),"Confirm includes the road in the shared document")
++	check(app.library.load_wip(app.document.id).pieces.size() == 1,"Confirm saves exactly the shared document")
++	for notice: Node in app.root_ui.find_children("*","AcceptDialog",true,false): notice.hide(); notice.queue_free()
++	await process_frame
++	app.canvas.choose_piece("straight"); app._editor_category("paint")
++	app.canvas.paint_mode = "line"; app.canvas.paint_points = [[20.0,20.0],[25.0,25.0]]
++	app._editor_category("objects"); app._share_dialog()
++	dialog = app.root_ui.find_child("PendingPreviewDialog",true,false)
++	check(dialog != null,"hidden road and paint previews require resolution")
++	dialog.custom_action.emit(&"discard"); await process_frame
++	check(not app._has_pending_editor_work() and app.document.pieces.size() == 1 and app.document.paint.is_empty(),"Discard resolves all tools without adding work")
++	app.queue_free(); await process_frame
++
++func history_integrity() -> void:
++	var history = preload("res://editor/editor_history.gd")
++	var session = preload("res://editor/editor_session.gd").new()
++	var document: Dictionary = TrackDocument.create_blank()
++	for index: int in range(4096): document.objects.append({"kind":"grass_clump","position":[float(index%64)-32,float(index/64)-32],"rotation":0.0})
++	session.prime(document)
++	check(not session.primed.is_empty() and history.matches(session.primed,document),"loaded large document primes an exact immutable checkpoint")
++	var expected: Dictionary = document.duplicate(true)
++	session.begin_gesture(document); document.objects[0].position[0] += 2.0
++	session.cancel_gesture()
++	check(session.undo.is_empty() and session.primed.is_empty(),"cancel releases a consumed primed checkpoint without adding history")
++	document = expected.duplicate(true); session.prime(document)
++	document.objects[0].position[0] += 1.0
++	session.remember(document)
++	check(history.restore(session.undo[0]) == document,"changed data rejects stale priming and captures its exact replacement")
++	var restored: Dictionary = history.restore(session.undo[0])
++	restored.objects[0].position[0] += 3.0
++	check(history.restore(session.undo[0]) == document,"restored history is editable and cannot mutate checkpoint values")
++	check(history.bytes_used([session.undo,session.redo]) <= history.BUDGET,"large history retains the original shared allowance")
++
++func run() -> void:
++	out = ProjectSettings.globalize_path("res://../docs/evidence/track-editor-fixes-2026-10-28/focused/"+DisplayServer.get_name()+"-"+RenderingServer.get_current_rendering_method())
++	DirAccess.make_dir_recursive_absolute(out); root.size = Vector2i(1280,720)
++	paint_admission(); road_admission(); await interrupted_drag(); await editor_feedback()
++	await handles_and_lighting(); await share_choices(); history_integrity()
++	var file := FileAccess.open(out+"/results.json",FileAccess.WRITE)
++	file.store_string(JSON.stringify({"checks":checks,"failures":failures,"observations":observations},"\t")); file.close()
++	await create_timer(0.3).timeout
++	print("EDITOR_REVIEW_ITEMS: %d checks, %d failures" % [checks,failures])
++	quit(1 if failures else 0)
+diff --git a/game/tests/test_editor_admission_bytes.gd b/game/tests/test_editor_admission_bytes.gd
+new file mode 100644
+--- /dev/null
++++ b/game/tests/test_editor_admission_bytes.gd
+@@ -0,0 +1,52 @@
++extends SceneTree
++## Real valid-domain data across the durable writer's byte boundary.
++var checks: int = 0
++var failures: int = 0
++func _initialize() -> void: run.call_deferred()
++func check(ok: bool, label: String) -> void:
++	checks += 1
++	if not ok: failures += 1; print("FAIL: ",label)
++func run() -> void:
++	var doc: Dictionary = TrackDocument.create_blank(); doc.id = "byte_admission"
++	var object: Dictionary = {"kind":"grass_clump","position":[12.1234567890123,-34.1234567890123],"rotation":123.123456789012,"scale":1.1234567890123}
++	for index: int in range(4096): doc.objects.append(object.duplicate(true))
++	var points: Array = []
++	for index: int in range(512): points.append([12.1234567890123,-34.1234567890123])
++	for index: int in range(32): doc.paint.append({"surface":2,"width":1.0,"shape":"round","points":points.duplicate(true)})
++	# Fit in at most twelve size queries; never incrementally stringify a
++	# growing maximum-sized fixture thousands of times.
++	var low: int = 0; var high: int = doc.objects.size()
++	while low < high:
++		var middle: int = (low+high+1)/2
++		var trial: Dictionary = doc.duplicate(); trial.objects = doc.objects.slice(0,middle)
++		if JSON.stringify(trial,"",true).to_utf8_buffer().size() <= TrackDocument.MAX_BYTES: low = middle
++		else: high = middle-1
++	doc.objects = doc.objects.slice(0,low)
++	check(low > 0 and low < 4096,"real domain data straddles the byte ceiling")
++	check(TrackDocument.validate(doc,false).is_empty(),"byte fixture respects all domain limits")
++	var canvas := EditorCanvas.new(); canvas.document = doc
++	var proposed: Array = doc.objects+[object]
++	check(not canvas.admit("objects",proposed),"one valid object above the byte ceiling is rejected")
++	check(canvas.document == doc and canvas.document.objects.size() == low,"rejected candidate leaves exact live data")
++	var library := TrackLibrary.new("user://editor_byte_admission")
++	check(library.save_wip(doc) == OK,"admitted document remains durably writable")
++	check(library.load_wip(doc.id) == JSON.parse_string(JSON.stringify(doc,"",true)),"recovery matches all admitted data")
++	var closed: Dictionary = doc.duplicate(); closed.pieces = []
++	var position := Vector2(-28,-18); var heading: float = 0.0
++	for kind: String in ["straight","hairpin","straight","hairpin"]:
++		var piece: Dictionary = RoadPieces.create(kind,position,heading)
++		piece.length = 56.0 if kind == "straight" else 0.0; piece.radius = 18.0
++		closed.pieces.append(piece)
++		var pose: Dictionary = RoadPieces.end_pose(piece); position = pose.position; heading = pose.heading
++	var excess: int = JSON.stringify(closed,"",true).to_utf8_buffer().size()-TrackDocument.MAX_BYTES
++	var per_object: int = JSON.stringify(object,"",true).to_utf8_buffer().size()+1
++	closed.objects = closed.objects.slice(0,low-maxi(0,ceili(float(excess)/per_object)))
++	var derived: Dictionary = RoadPieces.route_from_pieces(closed)
++	check(derived.ok,"closed near-limit fixture has an exact derived lap")
++	check(JSON.stringify(closed,"",true).to_utf8_buffer().size() <= TrackDocument.MAX_BYTES and JSON.stringify(derived.document,"",true).to_utf8_buffer().size() > TrackDocument.MAX_BYTES,"route derivation alone crosses the durable byte ceiling")
++	var base: Dictionary = closed.duplicate(); base.pieces = []; canvas.document = base
++	check(not canvas.admit("pieces",closed.pieces),"admission accounts for the writer's larger derived route")
++	check(canvas.document.pieces.is_empty(),"rejected derived route leaves pending road outside live data")
++	canvas.free()
++	print("EDITOR_ADMISSION_BYTES: %d checks, %d failures; objects=%d bytes=%d" % [checks,failures,low,JSON.stringify(doc,"",true).to_utf8_buffer().size()])
++	quit(1 if failures else 0)
+diff --git a/game/tests/test_editor_graphics_preparation.gd b/game/tests/test_editor_graphics_preparation.gd
+new file mode 100644
+--- /dev/null
++++ b/game/tests/test_editor_graphics_preparation.gd
+@@ -0,0 +1,61 @@
++extends SceneTree
++const PREPARATION = preload("res://race/world_render_preparation.gd")
++var checks: int = 0
++var failures: int = 0
++class Stage extends Node3D:
++	var camera: Camera3D
++func _initialize() -> void: run.call_deferred()
++func check(ok: bool, label: String) -> void:
++	checks += 1
++	if not ok: failures += 1; print("FAIL: ",label)
++func run() -> void:
++	root.size = Vector2i(640,360)
++	var stage := Stage.new(); root.add_child(stage)
++	stage.camera = Camera3D.new(); stage.add_child(stage.camera)
++	stage.camera.position = Vector3(0,20,0); stage.camera.rotation.x = -PI/2; stage.camera.projection = Camera3D.PROJECTION_ORTHOGONAL; stage.camera.size = 24
++	var sun := DirectionalLight3D.new(); stage.add_child(sun); sun.rotation_degrees = Vector3(-60,-30,0)
++	var meshes: Array[MeshInstance3D] = []
++	for index: int in range(80):
++		var node := MeshInstance3D.new(); node.mesh = BoxMesh.new(); node.position = Vector3(index%10-4.5,0,index/10-3.5)
++		var material := StandardMaterial3D.new(); material.albedo_color = Color.from_hsv(float(index)/80,0.7,0.8)
++		node.material_override = material; stage.add_child(node); meshes.append(node)
++	var key: String = PREPARATION._key(meshes[0])
++	for node: MeshInstance3D in meshes: check(PREPARATION._key(node) == key,"color-only material variants share a program")
++	meshes[1].layers = 2; check(PREPARATION._key(meshes[1]) != key,"lighting layers remain distinct"); meshes[1].layers = 1
++	(meshes[1].material_override as StandardMaterial3D).transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
++	check(PREPARATION._key(meshes[1]) != key,"shader flags remain distinct")
++	(meshes[1].material_override as StandardMaterial3D).transparency = BaseMaterial3D.TRANSPARENCY_DISABLED
++	(meshes[1].material_override as StandardMaterial3D).next_pass = StandardMaterial3D.new()
++	check(PREPARATION._key(meshes[1]) != key,"next-pass programs remain distinct")
++	(meshes[1].material_override as StandardMaterial3D).next_pass = null
++	var before: PackedByteArray
++	if DisplayServer.get_name() != "headless":
++		for frame: int in range(4): await RenderingServer.frame_post_draw
++		before = root.get_texture().get_image().get_data()
++	var preparation = PREPARATION.new(); stage.add_child(preparation); PREPARATION.warmed.clear()
++	preparation.hold(stage)
++	check(meshes.all(func(node: MeshInstance3D) -> bool: return not node.visible),"all pending geometry is held")
++	var observed: Dictionary = {"draws":0,"maximum":0}
++	var draw: Callable = func() -> bool:
++		observed.draws += 1
++		var shown: int = 0
++		for node: MeshInstance3D in meshes:
++			if node.visible: shown += 1
++		observed.maximum = maxi(observed.maximum,shown)
++		if DisplayServer.get_name() != "headless": await RenderingServer.frame_post_draw
++		else: await process_frame
++		return true
++	check(await preparation.prepare(draw,func() -> bool: return true),"current preparation completes")
++	check(observed.draws == 1 and observed.maximum == 8,"one bounded submission prepares eighty equivalent programs")
++	check(meshes.all(func(node: MeshInstance3D) -> bool: return node.visible and is_zero_approx(node.extra_cull_margin)),"all original geometry and cull margins restore")
++	if DisplayServer.get_name() != "headless":
++		for frame: int in range(4): await RenderingServer.frame_post_draw
++		check(root.get_texture().get_image().get_data() == before,"final native pixels remain exact")
++	preparation.hold(stage); check(preparation.pending.is_empty(),"already prepared programs remain visible")
++	PREPARATION.warmed.clear(); preparation.hold(stage)
++	check(not await preparation.prepare(draw,func() -> bool: return false),"obsolete preparation stops")
++	preparation.queue_free(); await process_frame
++	check(meshes.all(func(node: MeshInstance3D) -> bool: return node.visible),"cancellation teardown releases every held node")
++	stage.queue_free(); await process_frame
++	print("EDITOR_GRAPHICS_PREPARATION: %d checks, %d failures" % [checks,failures])
++	quit(1 if failures else 0)
+diff --git a/game/tests/test_editor_streams.gd b/game/tests/test_editor_streams.gd
+new file mode 100644
+--- /dev/null
++++ b/game/tests/test_editor_streams.gd
+@@ -0,0 +1,39 @@
++extends SceneTree
++const STREAMS = preload("res://editor/road_sections.gd")
++var checks: int = 0
++var failures: int = 0
++func _initialize() -> void: run.call_deferred()
++func check(ok: bool, label: String) -> void:
++	checks += 1
++	if not ok: failures += 1; print("FAIL: ",label)
++func run() -> void:
++	var native: RefCounted = preload("res://track/geometry_acceleration.gd").roads()
++	check(native != null and native.has_method("editor_split") and native.has_method("editor_append"),"current native stream kernels load")
++	var timing: Array = []
++	for indexed: bool in [false,true]:
++		for count: int in [3,300,12288,12300,48000]:
++			var tool := SurfaceTool.new(); tool.begin(Mesh.PRIMITIVE_TRIANGLES)
++			for index: int in range(count):
++				tool.set_normal(Vector3.UP); tool.set_color(Color(float(index%13)/13.0,0.25,0.75,1))
++				tool.set_uv(Vector2(index%19,index%31)); tool.set_uv2(Vector2(index%41,index%53))
++				tool.add_vertex(Vector3(float(index%120)-60,float(index%3)*0.01,float(index/120)-80))
++			if indexed: tool.index()
++			var arrays: Array = tool.commit_to_arrays()
++			for tile: float in [16.0,32.0,100000.0]:
++				STREAMS.native_streams = false
++				var began: int = Time.get_ticks_usec(); var expected: Array = STREAMS.split(arrays,tile)
++				var old_ms: float = (Time.get_ticks_usec()-began)/1000.0
++				STREAMS.native_streams = true
++				began = Time.get_ticks_usec(); var actual: Array = STREAMS.split(arrays,tile)
++				var new_ms: float = (Time.get_ticks_usec()-began)/1000.0
++				check(var_to_bytes(expected) == var_to_bytes(actual),"split retains exact ordered streams %s/%s/%s" % [indexed,count,tile])
++				timing.append({"indexed":indexed,"vertices":count,"tile":tile,"script_ms":old_ms,"native_ms":new_ms})
++			STREAMS.native_streams = false
++			var reference := SurfaceTool.new(); reference.begin(Mesh.PRIMITIVE_TRIANGLES); STREAMS.append_arrays(reference,arrays)
++			STREAMS.native_streams = true
++			var rebuilt := SurfaceTool.new(); rebuilt.begin(Mesh.PRIMITIVE_TRIANGLES); STREAMS.append_arrays(rebuilt,arrays)
++			check(var_to_bytes(reference.commit_to_arrays()) == var_to_bytes(rebuilt.commit_to_arrays()),"append retains complete attributes and order")
++	var file := FileAccess.open("res://../docs/evidence/track-editor-fixes-2026-10-28/streams.json",FileAccess.WRITE)
++	file.store_string(JSON.stringify({"checks":checks,"failures":failures,"timing":timing},"\t")); file.close()
++	print("EDITOR_STREAMS: %d checks, %d failures" % [checks,failures])
++	quit(1 if failures else 0)
+diff --git a/game/tests/test_editor_shipping_parse.gd b/game/tests/test_editor_shipping_parse.gd
+new file mode 100644
+--- /dev/null
++++ b/game/tests/test_editor_shipping_parse.gd
+@@ -0,0 +1,5 @@
++extends "res://tests/test_script_parse.gd"
++## Supplement the unmodified whole-tree check with the exportable source scope.
++func scan(path: String) -> void:
++	if path == "res://tests": return
++	super.scan(path)
+diff --git a/game/tests/profile_editor_fixed_history.gd b/game/tests/profile_editor_fixed_history.gd
+new file mode 100644
+--- /dev/null
++++ b/game/tests/profile_editor_fixed_history.gd
+@@ -0,0 +1,22 @@
++extends SceneTree
++const SESSION = preload("res://editor/editor_session.gd")
++const HISTORY = preload("res://editor/editor_history.gd")
++func _initialize() -> void: run.call_deferred()
++func run() -> void:
++	var rows: Array = []
++	for count: int in [32,512,4096]:
++		var session = SESSION.new(); var doc: Dictionary = TrackDocument.create_blank()
++		for index: int in range(count): doc.objects.append({"kind":"grass_clump","position":[float(index%64)-32,float(index/64)-32],"rotation":0.0})
++		var setup_started: int = Time.get_ticks_usec(); session.prime(doc)
++		var setup_ms: float = (Time.get_ticks_usec()-setup_started)/1000.0
++		var samples: Array[float] = []
++		for revision: int in range(40):
++			doc.objects[10].rotation = float(revision)
++			var began: int = Time.get_ticks_usec(); session.remember(doc)
++			samples.append((Time.get_ticks_usec()-began)/1000.0)
++		var sorted: Array[float] = samples.duplicate(); sorted.sort()
++		var row: Dictionary = {"objects":count,"setup_ms":setup_ms,"history_size":session.undo.size(),"history_bytes":HISTORY.bytes_used([session.undo,session.redo]),
++			"samples_ms":samples,"median_ms":sorted[20],"p95_ms":sorted[38],"max_ms":sorted[-1]}
++		rows.append(row); print("TRACK_EDITOR_HISTORY ",JSON.stringify(row))
++	var file := FileAccess.open("res://../docs/evidence/track-editor-fixes-2026-10-28/history-profile.json",FileAccess.WRITE)
++	file.store_string(JSON.stringify(rows,"\t")); file.close(); quit()
+diff --git a/game/tests/profile_editor_fixed_preparation.gd b/game/tests/profile_editor_fixed_preparation.gd
+new file mode 100644
+--- /dev/null
++++ b/game/tests/profile_editor_fixed_preparation.gd
+@@ -0,0 +1,38 @@
++extends "res://tests/test_editor_t01_t04.gd"
++var stages: Dictionary = {}
++var last_tick: int = 0
++var last_stage: String = ""
++func _process(_delta: float) -> bool:
++	var now: int = Time.get_ticks_usec()
++	if last_tick != 0: stages[last_stage] = int(stages.get(last_stage,0))+now-last_tick
++	last_tick = now; last_stage = "idle"
++	if is_instance_valid(app):
++		if app.editor_commits.unsettled(): last_stage = "analysis"
++		elif app.editor_preview_thread != null: last_stage = "preview_worker"
++		elif is_instance_valid(app.editor_world) and app.editor_world._building: last_stage = "visual"
++	return false
++func record(label: String, values: Dictionary) -> void:
++	values["observed_stages_us"] = stages.duplicate(); stages.clear()
++	if label.begins_with("practice_enter") and is_instance_valid(app.game):
++		values["game_costs"] = app.game.preparation_costs
++		if is_instance_valid(app.game.world_render_preparation):
++			values["render_groups"] = app.game.world_render_preparation.frame_groups
++			values["render_max_draw_us"] = app.game.world_render_preparation.draw_us_max
++		values["covered_draw_ms"] = app.game.bridge_preparation_ms
++	super.record(label,values)
++func run() -> void:
++	root.size = Vector2i(1280,720)
++	node_added.connect(func(node: Node) -> void:
++		if node.get_script() != null and node.get_script().resource_path == "res://core/app.gd": node.race_profile_enabled = true)
++	var scalar: bool = "--script-streams" in OS.get_cmdline_user_args()
++	preload("res://editor/road_sections.gd").native_streams = not scalar
++	var suffix: String = ""
++	for arg: String in OS.get_cmdline_user_args():
++		if arg.begins_with("--run-label="): suffix = "-"+arg.trim_prefix("--run-label=")
++	out = ProjectSettings.globalize_path("res://../docs/evidence/track-editor-fixes-2026-10-28/performance/"+RenderingServer.get_current_rendering_method()+"-"+("script" if scalar else "native")+suffix)
++	DirAccess.make_dir_recursive_absolute(out)
++	await app_loop()
++	record("complete",{"checks":checks,"failures":failures,"static_bytes":OS.get_static_memory_usage()})
++	await create_timer(0.3).timeout
++	print("EDITOR_FIXED_PREPARATION: %d checks, %d failures" % [checks,failures])
++	quit(1 if failures else 0)
+diff --git a/game/tests/profile_editor_phases.gd b/game/tests/profile_editor_phases.gd
+new file mode 100644
+--- /dev/null
++++ b/game/tests/profile_editor_phases.gd
+@@ -0,0 +1,30 @@
++extends "res://tests/test_editor_t01_t04.gd"
++class TimedVisual extends NativeTrackVisual:
++	var phases: Dictionary = {}
++	func _prepare_road_piece(track: NativeTrack, index: int, ctx: Dictionary) -> Dictionary:
++		var began: int = Time.get_ticks_usec(); var result: Dictionary = await super._prepare_road_piece(track,index,ctx)
++		phases["piece_us"] = int(phases.get("piece_us",0))+Time.get_ticks_usec()-began
++		return result
++	func _build_kerbs(track: NativeTrack, arrays: Array = []) -> void:
++		var began: int = Time.get_ticks_usec(); await super._build_kerbs(track,arrays)
++		phases["kerbs_us"] = int(phases.get("kerbs_us",0))+Time.get_ticks_usec()-began
++	func _commit_creator_road(tool: SurfaceTool, color: Color, mask: Texture2D, road_mask: Texture2D, extent: Vector2, gravel: bool = false, grass: bool = false, kerb: bool = false, asphalt_surface: bool = false, edge_fringe: bool = false, road_marking: bool = false, arrays: Array = [], relief: String = "") -> void:
++		var began: int = Time.get_ticks_usec()
++		await super._commit_creator_road(tool,color,mask,road_mask,extent,gravel,grass,kerb,asphalt_surface,edge_fringe,road_marking,arrays,relief)
++		phases["commit_inclusive_us"] = int(phases.get("commit_inclusive_us",0))+Time.get_ticks_usec()-began
++func run() -> void:
++	var doc: Dictionary = circuit(96)
++	var track: NativeTrack = TrackCompiler.compile(doc)
++	var began: int = Time.get_ticks_usec()
++	var ground: Dictionary = preload("res://race/race_ground_preparation.gd").run(func() -> bool: return false,track)
++	print("EDITOR_PHASE ground_cpu_ms=",(Time.get_ticks_usec()-began)/1000.0)
++	var script := GDScript.new()
++	script.source_code = FileAccess.get_file_as_string("res://editor/road_preparation.gd").replace("var builder := NativeTrackVisual.new()","var builder := preload(\"res://tests/profile_editor_phases.gd\").TimedVisual.new()")
++	script.source_code = script.source_code.replace("var size: int = 0\n\tfor part: Dictionary in packet.parts:","print(\"EDITOR_PHASE road_stages \",JSON.stringify(builder.phases))\n\tvar size: int = 0\n\tfor part: Dictionary in packet.parts:")
++	check(script.reload() == OK,"timed CPU builder loads")
++	for planning: bool in [true,false]:
++		began = Time.get_ticks_usec()
++		var result: Dictionary = script.prepare(track,true,false,Callable(),planning)
++		print("EDITOR_PHASE planning=",planning," ms=",(Time.get_ticks_usec()-began)/1000.0," parts=",result.get("parts",[]).size())
++	print("EDITOR_PHASE_COMPLETE")
++	quit(1 if failures else 0)
+diff --git a/game/tests/review_editor_fixed_items.gd b/game/tests/review_editor_fixed_items.gd
+new file mode 100644
+--- /dev/null
++++ b/game/tests/review_editor_fixed_items.gd
+@@ -0,0 +1,37 @@
++extends "res://tests/review_track_editor_2026_10_28.gd"
++## Actual editor views using disposable storage, with the original capture path.
++func run() -> void:
++	if DisplayServer.get_name() == "headless": quit(2); return
++	folder = ProjectSettings.globalize_path("res://../docs/evidence/track-editor-fixes-2026-10-28/native/"+RenderingServer.get_current_rendering_method())
++	DirAccess.make_dir_recursive_absolute(folder)
++	source_before = source_hashes(); root.size = Vector2i(1280,720); root.content_scale_size = Vector2i(1280,720)
++	app = load("res://core/app.tscn").instantiate()
++	app.library = TrackLibrary.new(folder+"/disposable-storage")
++	app.records = LocalRecords.new(folder+"/disposable-storage/records.json")
++	app.cloud_root_override = folder+"/disposable-cloud"; root.add_child(app)
++	while not app.startup_complete: await process_frame
++	var doc: Dictionary = circuit()
++	await show(doc)
++	app.canvas.zoom = 0.5; app.canvas.selected_piece = 0; app._build_editor_tools()
++	await shot("01-separated-road-controls")
++	doc.theme = "night_city"; await show(doc)
++	await shot("02-night-authoring")
++	app.editor_map_panel.show()
++	await shot("03-night-lighting-toggle")
++	var toggle: Button = app.editor_map_panel.find_child("EditorRaceLighting",true,false)
++	if toggle == null: failures += 1
++	else: toggle.button_pressed = true; toggle.toggled.emit(true)
++	app.editor_map_panel.hide()
++	await shot("04-night-race-preview")
++	if toggle != null: toggle.button_pressed = false; toggle.toggled.emit(false)
++	app.canvas.choose_piece("straight"); app._share_dialog()
++	await shot("05-share-preview-resolution")
++	for dialog: Node in app.root_ui.find_children("*","AcceptDialog",true,false): dialog.hide(); dialog.queue_free()
++	app._discard_editor_previews(); app._editor_hint("Keep the whole road section inside the map.")
++	await shot("06-visible-rejection")
++	var after: Dictionary = source_hashes()
++	var file := FileAccess.open(folder+"/results.json",FileAccess.WRITE)
++	file.store_string(JSON.stringify({"failures":failures,"observations":observations,"source_before":source_before,"source_after":after,"source_stable":source_before == after},"\t")); file.close()
++	app.queue_free(); await frames(2)
++	print("EDITOR_FIXED_VIEWS: %d captures, %d failures" % [observations.size(),failures])
++	quit(1 if failures else 0)
+diff --git a/game/localization/de.po b/game/localization/de.po
+--- a/game/localization/de.po
++++ b/game/localization/de.po
+@@ -10914,3 +10914,9 @@
+ #: game/core/app.gd:3632
+ msgid "Next object"
+ msgstr "Nächstes Objekt"
++
++msgid "Race lighting"
++msgstr "Rennbeleuchtung"
++
++msgid "Confirm or discard the pending previews before sharing this circuit."
++msgstr "Bestätige oder verwerfe die ausstehenden Vorschauen, bevor du diese Strecke teilst."
+diff --git a/game/localization/es.po b/game/localization/es.po
+--- a/game/localization/es.po
++++ b/game/localization/es.po
+@@ -10914,3 +10914,9 @@
+ #: game/core/app.gd:3632
+ msgid "Next object"
+ msgstr "Objeto siguiente"
++
++msgid "Race lighting"
++msgstr "Iluminación de carrera"
++
++msgid "Confirm or discard the pending previews before sharing this circuit."
++msgstr "Confirma o descarta las vistas previas pendientes antes de compartir este circuito."
+diff --git a/game/localization/fi.po b/game/localization/fi.po
+--- a/game/localization/fi.po
++++ b/game/localization/fi.po
+@@ -10914,3 +10914,9 @@
+ #: game/core/app.gd:3632
+ msgid "Next object"
+ msgstr "Seuraava esine"
++
++msgid "Race lighting"
++msgstr "Kilpailuvalaistus"
++
++msgid "Confirm or discard the pending previews before sharing this circuit."
++msgstr "Vahvista tai hylkää odottavat esikatselut ennen tämän radan jakamista."
+diff --git a/game/localization/fr.po b/game/localization/fr.po
+--- a/game/localization/fr.po
++++ b/game/localization/fr.po
+@@ -10914,3 +10914,9 @@
+ #: game/core/app.gd:3632
+ msgid "Next object"
+ msgstr "Objet suivant"
++
++msgid "Race lighting"
++msgstr "Éclairage de course"
++
++msgid "Confirm or discard the pending previews before sharing this circuit."
++msgstr "Confirmez ou annulez les aperçus en attente avant de partager ce circuit."
+diff --git a/game/localization/it.po b/game/localization/it.po
+--- a/game/localization/it.po
++++ b/game/localization/it.po
+@@ -10914,3 +10914,9 @@
+ #: game/core/app.gd:3632
+ msgid "Next object"
+ msgstr "Oggetto successivo"
++
++msgid "Race lighting"
++msgstr "Illuminazione di gara"
++
++msgid "Confirm or discard the pending previews before sharing this circuit."
++msgstr "Conferma o scarta le anteprime in sospeso prima di condividere questo circuito."
+diff --git a/game/localization/ja.po b/game/localization/ja.po
+--- a/game/localization/ja.po
++++ b/game/localization/ja.po
+@@ -10883,3 +10883,9 @@
+ #: game/core/app.gd:3632
+ msgid "Next object"
+ msgstr "次のオブジェクト"
++
++msgid "Race lighting"
++msgstr "レース照明"
++
++msgid "Confirm or discard the pending previews before sharing this circuit."
++msgstr "このサーキットを共有する前に、保留中のプレビューを確定または破棄してください。"
+diff --git a/game/localization/ko.po b/game/localization/ko.po
+--- a/game/localization/ko.po
++++ b/game/localization/ko.po
+@@ -10883,3 +10883,9 @@
+ #: game/core/app.gd:3632
+ msgid "Next object"
+ msgstr "다음 오브젝트"
++
++msgid "Race lighting"
++msgstr "레이스 조명"
++
++msgid "Confirm or discard the pending previews before sharing this circuit."
++msgstr "이 서킷을 공유하기 전에 대기 중인 미리보기를 확정하거나 삭제하세요."
+diff --git a/game/localization/nb.po b/game/localization/nb.po
+--- a/game/localization/nb.po
++++ b/game/localization/nb.po
+@@ -10914,3 +10914,9 @@
+ #: game/core/app.gd:3632
+ msgid "Next object"
+ msgstr "Neste objekt"
++
++msgid "Race lighting"
++msgstr "Løpsbelysning"
++
++msgid "Confirm or discard the pending previews before sharing this circuit."
++msgstr "Bekreft eller forkast de ventende forhåndsvisningene før du deler denne banen."
+diff --git a/game/localization/nl.po b/game/localization/nl.po
+--- a/game/localization/nl.po
++++ b/game/localization/nl.po
+@@ -10914,3 +10914,9 @@
+ #: game/core/app.gd:3632
+ msgid "Next object"
+ msgstr "Volgend object"
++
++msgid "Race lighting"
++msgstr "Raceverlichting"
++
++msgid "Confirm or discard the pending previews before sharing this circuit."
++msgstr "Bevestig of verwijder de openstaande voorbeelden voordat je dit circuit deelt."
+diff --git a/game/localization/pt_BR.po b/game/localization/pt_BR.po
+--- a/game/localization/pt_BR.po
++++ b/game/localization/pt_BR.po
+@@ -10914,3 +10914,9 @@
+ #: game/core/app.gd:3632
+ msgid "Next object"
+ msgstr "Próximo objeto"
++
++msgid "Race lighting"
++msgstr "Iluminação de corrida"
++
++msgid "Confirm or discard the pending previews before sharing this circuit."
++msgstr "Confirme ou descarte as prévias pendentes antes de compartilhar este circuito."
+diff --git a/game/localization/sv.po b/game/localization/sv.po
+--- a/game/localization/sv.po
++++ b/game/localization/sv.po
+@@ -10914,3 +10914,9 @@
+ #: game/core/app.gd:3632
+ msgid "Next object"
+ msgstr "Nästa objekt"
++
++msgid "Race lighting"
++msgstr "Tävlingsbelysning"
++
++msgid "Confirm or discard the pending previews before sharing this circuit."
++msgstr "Bekräfta eller kasta de väntande förhandsvisningarna innan du delar den här banan."

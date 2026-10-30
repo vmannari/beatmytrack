@@ -1,0 +1,533 @@
+diff --git a/game/ui/weekly_rivalry_finale.gd b/game/ui/weekly_rivalry_finale.gd
+--- a/game/ui/weekly_rivalry_finale.gd
++++ b/game/ui/weekly_rivalry_finale.gd
+@@ -23,6 +23,8 @@
+ var track_buttons: Array[Button] = []
+ var columns: HBoxContainer
+ var actions: HBoxContainer
++var standings_scroll: ScrollContainer
++var player_row: Control
+ 
+ class RouteThumbnail extends Control:
+ 	var entry: Dictionary = {}
+@@ -60,16 +62,16 @@
+ 	columns.add_theme_constant_override("separation",14)
+ 	columns.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+ 	columns.size_flags_vertical = Control.SIZE_EXPAND_FILL
+-	# The content can scroll if its minimum height exceeds the available space;
+-	# the action row remains a visible sibling outside this clipping viewport.
+-	var body_slot := ScrollContainer.new()
++	# Only the driver list scrolls. Track results and highlights determine the
++	# body minimum, and the hero uses the remaining height above it.
++	var body_slot := MarginContainer.new()
+ 	body_slot.name = "RivalryFinaleBody"
+ 	body_slot.size_flags_vertical = Control.SIZE_EXPAND_FILL
+-	body_slot.horizontal_scroll_mode = ScrollContainer.SCROLL_MODE_DISABLED
+ 	add_child(body_slot)
+ 	body_slot.add_child(columns)
+ 	_build_tracks(columns)
+ 	var right := VBoxContainer.new()
++	right.name = "RivalryFinaleRightColumn"
+ 	right.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+ 	right.size_flags_stretch_ratio = 0.82
+ 	right.add_theme_constant_override("separation",8)
+@@ -77,11 +79,13 @@
+ 	if not model.world_circuit.is_empty() and is_instance_valid(ranking_client):
+ 		var ranking_box: VBoxContainer = _panel(right,"RivalryWorldRankingChange")
+ 		ranking_box.get_parent().size_flags_vertical = Control.SIZE_SHRINK_BEGIN
+-		_label(ranking_box,"WORLD RANKING",22)
++		_label(ranking_box,"WORLD RANKING",18)
+ 		var world: Control = preload("res://ui/world_ranking_week_summary.gd").new()
+ 		world.client = ranking_client
+ 		world.week_start = int(model.world_circuit.get("week_start",0))
++		world.compact = true
+ 		ranking_box.add_child(world)
++		world.label.add_theme_font_size_override("font_size",14)
+ 	_build_standings(right)
+ 	_build_highlights(right)
+ 	actions = HBoxContainer.new()
+@@ -104,7 +108,9 @@
+ 	next.disabled = busy
+ 	actions.add_child(next)
+ 	resized.connect(_layout_hero)
++	get_viewport().size_changed.connect(_layout_hero,CONNECT_DEFERRED)
+ 	columns.minimum_size_changed.connect(_layout_hero)
++	find_child("RivalryStatusMessage",true,false).visibility_changed.connect(_layout_hero,CONNECT_DEFERRED)
+ 	_layout_hero()
+ 
+ func _label(parent: Control, text: String, font_size: int, color: Color = MenuStyle.TEXT) -> Label:
+@@ -113,6 +119,7 @@
+ 	value.autowrap_mode = TextServer.AUTOWRAP_OFF
+ 	value.text_overrun_behavior = TextServer.OVERRUN_TRIM_ELLIPSIS
+ 	value.clip_text = true
++	if text in ["WORLD RANKING","FINAL STANDINGS","YOUR WEEK HIGHLIGHTS"]: value.add_theme_font_override("font",MenuStyle.DISPLAY)
+ 	parent.add_child(value)
+ 	return value
+ 
+@@ -121,7 +128,7 @@
+ 	panel.name = id
+ 	panel.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+ 	panel.size_flags_vertical = Control.SIZE_EXPAND_FILL
+-	var style: StyleBoxFlat = MenuStyle.card(8)
++	var style: StyleBoxFlat = MenuStyle.card(4 if not model.world_circuit.is_empty() else 8)
+ 	style.border_color = Color("526577")
+ 	style.shadow_size = 2
+ 	panel.add_theme_stylebox_override("panel",style)
+@@ -146,6 +153,7 @@
+ 	vehicle.livery = livery
+ 	vehicle.customisation = customisation
+ 	vehicle.condition = condition
++	vehicle.fit_to_frame = true
+ 	hero.add_child(vehicle)
+ 	hero_copy = VBoxContainer.new()
+ 	hero_copy.add_theme_constant_override("separation",3)
+@@ -160,14 +168,15 @@
+ 	title.add_theme_constant_override("shadow_offset_y",3)
+ 	var subtitle: String = "FIVE TRACKS. FIVE VICTORIES." if summary.perfect else "YOUR CHAMPIONSHIP, CELEBRATED." if summary.champion else "YOUR WEEK ON THE TRACK."
+ 	var subtitle_label: Label = _label(hero_copy,subtitle,17,MenuStyle.TEXT)
++	# Circuit results already have a ranking summary and progress header.
++	subtitle_label.visible = model.world_circuit.is_empty()
+ 	subtitle_label.add_theme_font_override("font",MenuStyle.DISPLAY)
+ 	subtitle_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+-	var context: String = GameText.message("%d points ahead of %s.") % [summary.margin,summary.rival] if summary.champion and summary.margin > 0 else GameText.message("%d of five tracks completed.") % summary.completed
+-	if not error.is_empty(): context = error
+-	var message: Label = _label(hero_copy,context,14,MenuStyle.MUTED)
++	var message: Label = _label(hero_copy,error,14,MenuStyle.MUTED)
+ 	message.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+ 	message.name = "RivalryStatusMessage"
+-	message.tooltip_text = context
++	message.tooltip_text = error
++	message.visible = not error.is_empty()
+ 	metrics = HBoxContainer.new()
+ 	metrics.name = "RivalryFinalSummary"
+ 	metrics.add_theme_constant_override("separation",8)
+@@ -191,28 +200,43 @@
+ func _layout_hero() -> void:
+ 	if not is_instance_valid(hero) or not is_instance_valid(actions): return
+ 	var width: float = size.x
++	# Containers can retain a larger child minimum after a tall-window resize.
++	# Budget against the actual clipping ancestors, so that minimum can shrink.
++	var page_height: float = size.y
++	var ancestor: Node = get_parent()
++	while ancestor != null:
++		if ancestor is Control and ancestor.clip_contents:
++			page_height = minf(page_height,ancestor.get_global_rect().end.y-global_position.y)
++		ancestor = ancestor.get_parent()
+ 	# Reserve the complete cards before assigning decorative hero space. Four
+ 	# highlight lines need more room than a Perfect Week badge or an empty week.
+-	var available: float = size.y-actions.get_combined_minimum_size().y-2*get_theme_constant("separation")-columns.get_combined_minimum_size().y
+-	var height: float = minf(clampf(size.y*0.23,100,180),maxf(100,available))
++	var available: float = page_height-actions.get_combined_minimum_size().y-2*get_theme_constant("separation")-columns.get_combined_minimum_size().y
++	var circuit: bool = not model.world_circuit.is_empty()
++	var copy_top: float = 40 if circuit else 44
++	var height: float = minf(152,maxf(100 if circuit else 112,available))
++	# Crown, lettering and any actionable error all contribute to the header.
++	var font_size: int = 36 if height < 132 else 42
++	if circuit or find_child("RivalryStatusMessage",true,false).visible: font_size = mini(font_size,30)
++	if summary.title.begins_with("JOINT"): font_size = mini(font_size,36)
++	var copy_width: float = width*0.53-110
++	while font_size > 24 and MenuStyle.DISPLAY.get_string_size(summary.title,HORIZONTAL_ALIGNMENT_LEFT,-1,font_size).x > copy_width: font_size -= 1
++	title.add_theme_font_size_override("font_size",font_size)
++	height = maxf(height,copy_top+hero_copy.get_combined_minimum_size().y)
+ 	hero.custom_minimum_size.y = height
+-	hero_copy.position = Vector2(56,6 if height < 112 else 14 if height < 140 else 22)
+-	hero_copy.size = Vector2(width*0.53-110,height-hero_copy.position.y)
+-	var font_size: int = (40 if height < 112 else 46 if height < 140 else 56) if not summary.title.begins_with("JOINT") else 40
+-	while font_size > 28 and MenuStyle.DISPLAY.get_string_size(summary.title,HORIZONTAL_ALIGNMENT_LEFT,-1,font_size).x > hero_copy.size.x: font_size -= 1
+-	title.add_theme_font_size_override("font_size",font_size)
++	hero_copy.position = Vector2(56,copy_top)
++	hero_copy.size = Vector2(copy_width,height-copy_top)
+ 	# Center the crown on the rendered words, and fit botanical branches around
+ 	# them rather than using the whole hero column as a decorative frame.
+ 	var text_width: float = MenuStyle.DISPLAY.get_string_size(summary.title,HORIZONTAL_ALIGNMENT_LEFT,-1,font_size).x
+ 	var ornament_width: float = minf(width*0.53-16,text_width+112)
+-	ornament.position = Vector2(hero_copy.position.x+hero_copy.size.x*0.5-ornament_width*0.5,8)
++	ornament.position = Vector2(hero_copy.position.x+hero_copy.size.x*0.5-ornament_width*0.5,copy_top)
+ 	ornament.size = Vector2(ornament_width,minf(height-36,MenuStyle.DISPLAY.get_height(font_size)+MenuStyle.DISPLAY.get_height(17)+6))
+ 	ornament.crown_center_y = hero_copy.position.y-ornament.position.y-26
+ 	ornament.queue_redraw()
+-	vehicle.position = Vector2(width*0.65,-58)
+-	vehicle.size = Vector2(width*0.33,height+20)
+ 	metrics.position = Vector2(width*0.55,height-68)
+ 	metrics.size = Vector2(width*0.45,68)
++	vehicle.position = Vector2(width*0.65,0)
++	vehicle.size = Vector2(width*0.33,height-72)
+ 
+ func _build_tracks(parent: Control) -> void:
+ 	var list: VBoxContainer = _panel(parent,"RivalryTracksPanel")
+@@ -225,6 +249,7 @@
+ 	scroll.name = "RivalryFinalTrackScroll"
+ 	scroll.size_flags_vertical = Control.SIZE_EXPAND_FILL
+ 	scroll.horizontal_scroll_mode = ScrollContainer.SCROLL_MODE_DISABLED
++	scroll.vertical_scroll_mode = ScrollContainer.SCROLL_MODE_DISABLED
+ 	list.add_child(scroll)
+ 	var rows := VBoxContainer.new()
+ 	rows.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+@@ -293,22 +318,21 @@
+ 	var box: VBoxContainer = _panel(parent,"RivalryDriversPanel")
+ 	var heading := HBoxContainer.new()
+ 	box.add_child(heading)
+-	_label(heading,"FINAL STANDINGS",25).size_flags_horizontal = Control.SIZE_EXPAND_FILL
++	_label(heading,"FINAL STANDINGS",18 if not model.world_circuit.is_empty() else 25).size_flags_horizontal = Control.SIZE_EXPAND_FILL
+ 	_label(heading,GameText.message("%d DRIVERS") % summary.drivers,13,MenuStyle.MUTED)
+ 	var standings: Array[Dictionary] = model.standing()
+-	var own_index: int = 0
+-	for index: int in range(standings.size()):
+-		if standings[index].id == WeeklyRivalry.SELF: own_index = index
+-	var indexes: Array[int] = [0]
+-	var start: int = clampi(own_index-2,0,maxi(0,standings.size()-5))
+-	for index: int in range(start,mini(standings.size(),start+5)):
+-		if not indexes.has(index): indexes.append(index)
+-	while indexes.size() > 5:
+-		var remove_at: int = 1 if absi(indexes[1]-own_index) > absi(indexes[-1]-own_index) else indexes.size()-1
+-		indexes.remove_at(remove_at)
+-	indexes.sort()
+-	for index: int in indexes:
+-		var driver: Dictionary = standings[index]
++	standings_scroll = ScrollContainer.new()
++	standings_scroll.name = "RivalryFinalStandingsScroll"
++	standings_scroll.size_flags_vertical = Control.SIZE_EXPAND_FILL
++	standings_scroll.custom_minimum_size.y = 30 if not model.world_circuit.is_empty() else 48
++	standings_scroll.horizontal_scroll_mode = ScrollContainer.SCROLL_MODE_DISABLED
++	standings_scroll.follow_focus = true
++	box.add_child(standings_scroll)
++	var rows := VBoxContainer.new()
++	rows.size_flags_horizontal = Control.SIZE_EXPAND_FILL
++	rows.add_theme_constant_override("separation",4)
++	standings_scroll.add_child(rows)
++	for driver: Dictionary in standings:
+ 		var panel := PanelContainer.new()
+ 		panel.name = "FinalDriver_"+str(driver.id)
+ 		var own: bool = driver.id == WeeklyRivalry.SELF
+@@ -316,7 +340,8 @@
+ 		style.border_color = MenuStyle.ACCENT if own else Color("314755")
+ 		style.set_border_width_all(1 if own else 0)
+ 		panel.add_theme_stylebox_override("panel",style)
+-		box.add_child(panel)
++		rows.add_child(panel)
++		if own: player_row = panel
+ 		var line := HBoxContainer.new()
+ 		line.add_theme_constant_override("separation",7)
+ 		panel.add_child(line)
+@@ -327,19 +352,23 @@
+ 		_label(line,str(int(driver.points)),17,color).custom_minimum_size.x = 36
+ 		var gap: int = int(driver.points)-summary.points
+ 		_label(line,"—" if own or driver.get("rank") == null else "%+d" % gap,16,color if own else MenuStyle.MUTED).custom_minimum_size.x = 35
++	_reveal_player.call_deferred()
++
++func _reveal_player() -> void:
++	if is_instance_valid(player_row): standings_scroll.ensure_control_visible(player_row)
+ 
+ func _build_highlights(parent: Control) -> void:
+ 	var box: VBoxContainer = _panel(parent,"RivalryWeeklyHighlights")
+ 	box.get_parent().size_flags_vertical = Control.SIZE_SHRINK_END
+-	_label(box,"YOUR WEEK HIGHLIGHTS",25)
++	_label(box,"YOUR WEEK HIGHLIGHTS",18 if not model.world_circuit.is_empty() else 25)
+ 	var line := HBoxContainer.new()
+ 	box.add_child(line)
+ 	var copy := VBoxContainer.new()
+ 	copy.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+-	copy.add_theme_constant_override("separation",2)
++	copy.add_theme_constant_override("separation",0 if not model.world_circuit.is_empty() else 2)
+ 	line.add_child(copy)
+ 	for text: String in summary.highlights:
+-		_label(copy,"✓  "+text,15,MenuStyle.POSITIVE)
++		_label(copy,"✓  "+text,13 if not model.world_circuit.is_empty() else 15,MenuStyle.POSITIVE)
+ 	if summary.perfect:
+ 		var badge := Control.new()
+ 		badge.name = "RivalryPerfectWeekBadge"
+@@ -357,3 +386,4 @@
+ 		label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+ 		MenuStyle.fill(label)
+ 		label.offset_top = 22
++		badge.custom_minimum_size.y = 22+label.get_combined_minimum_size().y
+diff --git a/game/ui/weekly_rivalry_page.gd b/game/ui/weekly_rivalry_page.gd
+--- a/game/ui/weekly_rivalry_page.gd
++++ b/game/ui/weekly_rivalry_page.gd
+@@ -186,9 +186,9 @@
+ 	var message: Label = find_child("RivalryStatusMessage",true,false) as Label
+ 	if message != null:
+ 		var normal: String = "Choose a track and beat your best time."
+-		if model.completed:
+-			var summary: Dictionary = model.finale_summary()
+-			normal = GameText.message("%d points ahead of %s.") % [summary.margin,summary.rival] if summary.champion and summary.margin > 0 else GameText.message("%d of five tracks completed.") % summary.completed
++		if model.completed and section == "overview":
++			normal = ""
++			message.visible = not error.is_empty()
+ 		message.text = error if not error.is_empty() else normal
+ 		message.tooltip_text = message.text
+ 	_update_track_header()
+diff --git a/game/ui/rivalry_victory_car.gd b/game/ui/rivalry_victory_car.gd
+--- a/game/ui/rivalry_victory_car.gd
++++ b/game/ui/rivalry_victory_car.gd
+@@ -94,9 +94,11 @@
+ 
+ func _fit_camera() -> void:
+ 	var camera: Camera3D = viewport.get_camera_3d()
+-	if camera == null or camera.projection != Camera3D.PROJECTION_PERSPECTIVE: return
++	if camera == null: return
+ 	var aspect: float = float(viewport.size.x)/maxi(1,viewport.size.y)
+ 	var extent: float = 0.0
++	var bounds_2d: Rect2
++	var has_bounds: bool = false
+ 	var view: Transform3D = camera.global_transform.affine_inverse()
+ 	for mesh: Node in car.find_children("*","MeshInstance3D",true,false):
+ 		if not mesh.is_visible_in_tree() or mesh.mesh == null: continue
+@@ -107,6 +109,14 @@
+ 					var point: Vector3 = view*mesh.to_global(Vector3(x,y,z))
+ 					var depth: float = maxf(0.01,-point.z)
+ 					extent = maxf(extent,maxf(absf(point.y)/depth,absf(point.x)/(depth*aspect)))
++					var projected := Vector2(point.x,point.y)
++					bounds_2d = bounds_2d.expand(projected) if has_bounds else Rect2(projected,Vector2.ZERO)
++					has_bounds = true
+ 	if extent > 0.0:
+ 		camera.keep_aspect = Camera3D.KEEP_HEIGHT
+-		camera.fov = clampf(rad_to_deg(2.0*atan(extent*1.08)),1.0,120.0)
++		if camera.projection == Camera3D.PROJECTION_PERSPECTIVE:
++			camera.fov = clampf(rad_to_deg(2.0*atan(extent*1.08)),1.0,120.0)
++		elif camera.projection == Camera3D.PROJECTION_ORTHOGONAL:
++			camera.size = maxf(bounds_2d.size.y,bounds_2d.size.x/aspect)*1.08
++			camera.h_offset = bounds_2d.get_center().x
++			camera.v_offset = bounds_2d.get_center().y
+diff --git a/game/ui/world_ranking_week_summary.gd b/game/ui/world_ranking_week_summary.gd
+--- a/game/ui/world_ranking_week_summary.gd
++++ b/game/ui/world_ranking_week_summary.gd
+@@ -3,6 +3,7 @@
+ const Adapter = preload("res://backend/world_ranking_client.gd")
+ var client: Node
+ var week_start: int = 0
++var compact: bool = false
+ var label: Label
+ var _adapter: Node
+ var _scope: String
+@@ -48,3 +49,4 @@
+ 	var response: Dictionary = await _adapter.profile()
+ 	if not is_inside_tree() or is_queued_for_deletion() or request != _request or _scope != _adapter.scope(): return
+ 	label.text = describe(response.data,week_start) if response.ok else "World Ranking unavailable. Check the Garage newspaper."
++	if compact: label.text = label.text.replace("\n"," · ")
+diff --git a/game/tests/test_rivalry_awards.gd b/game/tests/test_rivalry_awards.gd
+--- a/game/tests/test_rivalry_awards.gd
++++ b/game/tests/test_rivalry_awards.gd
+@@ -117,6 +117,7 @@
+ 			app._show_screen("rivalry")
+ 			await settle()
+ 			var ceremony: Control = app.content.find_child("WeeklyRivalryFinale",true,false)
++			if kind == "champion": print("FINALE_LAYOUT ",dimensions," root=",app.root_ui.size," page=",ceremony.size," min=",ceremony.get_combined_minimum_size()," hero=",ceremony.hero.size," columns=",ceremony.columns.size," columns_min=",ceremony.columns.get_combined_minimum_size())
+ 			check(ceremony != null,"completed overview mounts the awards ceremony")
+ 			check_card_bounds(ceremony,"%s %dx%d" % [kind,dimensions.x,dimensions.y])
+ 			var next: Button = ceremony.find_child("RivalryNextWeek",true,false)
+@@ -139,7 +140,7 @@
+ 			check((ceremony.find_child("RivalryPerfectWeekBadge",true,false) != null) == (kind == "perfect"),"Perfect Week badge matches the actual five-win condition")
+ 			if kind == "perfect": check_perfect_badge_alignment(ceremony)
+ 			check(ceremony.find_child("FinalDriver_you",true,false) != null,"compact final standings always include the highlighted player")
+-			check(ceremony.find_child("RivalryDriversPanel",true,false).find_children("FinalDriver_*","",true,false).size() <= 5,"compact standings contain at most five actual competitors")
++			check(ceremony.find_child("RivalryDriversPanel",true,false).find_children("FinalDriver_*","",true,false).size() == ceremony.summary.drivers,"final standings include every actual competitor")
+ 			var car: Control = ceremony.find_child("RivalryVictoryCar",true,false)
+ 			check(car.car.vehicle_id == app.rivalry.model.vehicle_id and car.viewport.transparent_bg,"scenic hero renders the actual pinned car with a transparent background")
+ 			await capture(kind,dimensions)
+@@ -188,16 +189,33 @@
+ 	await process_frame
+ 
+ func check_card_bounds(ceremony: Control, context: String) -> void:
+-	var body: ScrollContainer = ceremony.find_child("RivalryFinaleBody",true,false)
++	var body: Control = ceremony.find_child("RivalryFinaleBody",true,false)
+ 	var viewport: Rect2 = body.get_global_rect()
++	check(not body is ScrollContainer,context+" main body has no scrolling container")
+ 	for id: String in ["RivalryTracksPanel","RivalryDriversPanel","RivalryWeeklyHighlights"]:
+ 		var card: Control = ceremony.find_child(id,true,false)
+ 		var rect: Rect2 = card.get_global_rect()
+ 		check(rect.position.y >= viewport.position.y-0.5 and rect.end.y <= viewport.end.y+0.5,context+" complete "+id+" fits inside the visible body")
+ 		for label: Label in card.find_children("*","Label",true,false):
++			if card.name == "RivalryDriversPanel" and str(label.get_parent().get_parent().name).begins_with("FinalDriver_"): continue
+ 			var text_rect: Rect2 = label.get_global_rect()
+ 			check(text_rect.position.y >= viewport.position.y-0.5 and text_rect.end.y <= viewport.end.y+0.5,context+" "+id+" text remains fully visible: "+label.text)
+-	check(not body.get_v_scroll_bar().is_visible_in_tree(),context+" shows all finale cards without body scrolling")
++	var standings: ScrollContainer = ceremony.find_child("RivalryFinalStandingsScroll",true,false)
++	check(standings != null,context+" scrolling belongs to the standings list")
++	if standings != null:
++		check(standings.size.y >= 30,context+" standings retain a usable list viewport")
++		var final_row: Control = standings.get_child(0).get_child(standings.get_child(0).get_child_count()-1)
++		var original_scroll: int = standings.scroll_vertical
++		standings.ensure_control_visible(final_row)
++		check(standings.scroll_vertical > 0,context+" final competitor is reachable by scrolling")
++		standings.scroll_vertical = original_scroll
++	var hero_rect: Rect2 = ceremony.hero.get_global_rect()
++	check(hero_rect.encloses(ceremony.vehicle.get_global_rect()),context+" victory car stays inside its hero slot")
++	check(not ceremony.vehicle.get_global_rect().intersects(ceremony.metrics.get_global_rect()),context+" victory car and summary cards do not overlap")
++	var crown: Rect2 = ceremony.ornament.get_global_transform()*ceremony.ornament.crown_rect()
++	if ceremony.summary.tier >= 2: check(crown.position.y >= hero_rect.position.y,context+" crown clears the section navigation")
++	var message: Label = ceremony.find_child("RivalryStatusMessage",true,false)
++	check(message != null and message.visible == not ceremony.error.is_empty(),context+" redundant hero context is removed while errors stay visible")
+ 
+ func check_decoration_alignment(ceremony: Control, kind: String) -> void:
+ 	var heading: Label = ceremony.title
+diff --git a/game/tests/test_rivalry_finale_layout.gd b/game/tests/test_rivalry_finale_layout.gd
+--- /dev/null
++++ b/game/tests/test_rivalry_finale_layout.gd
+@@ -0,0 +1,83 @@
++extends "res://tests/test_rivalry_awards.gd"
++## Actual menu hierarchy: fixed page, complete track results, one scrolling list.
++const RankingFixture = preload("res://tests/test_ranking_newspaper.gd")
++
++func run() -> void:
++	OS.set_environment("BMT_API_URL","")
++	evidence = ProjectSettings.globalize_path("res://../docs/evidence/rivalry-finale-layout-2026-10-26/layout")
++	if RenderingServer.get_current_rendering_method() == "mobile": evidence += "/mobile"
++	DirAccess.make_dir_recursive_absolute(evidence)
++	var folder: String = "user://finale_layout_"+TrackLibrary.unique_id()
++	app = load("res://core/app.tscn").instantiate()
++	app.library = TrackLibrary.new(folder.path_join("tracks"))
++	app.records = LocalRecords.new(folder.path_join("records.json"))
++	app.cloud_root_override = folder.path_join("cloud")
++	root.add_child(app)
++	while not app.startup_complete: await process_frame
++	var dimensions_to_check: Array[Vector2i] = [Vector2i(1280,1024),Vector2i(1280,720),Vector2i(960,540),Vector2i(1600,720),Vector2i(1919,1017)]
++	if "--ranking-only" in OS.get_cmdline_user_args(): dimensions_to_check = []
++	for dimensions: Vector2i in dimensions_to_check:
++		root.size = dimensions
++		for kind: String in ["champion","perfect","unranked"]:
++			app.rivalry.model.apply_snapshot(awarded_snapshot(kind))
++			app.rivalry.snapshot_scope = app.rivalry.scope()
++			app.rivalry.busy = false
++			app.rivalry_section = "overview"
++			app._show_screen("rivalry")
++			await settle()
++			var ceremony: Control = app.content.find_child("WeeklyRivalryFinale",true,false)
++			var context: String = "%s %dx%d" % [kind,dimensions.x,dimensions.y]
++			check_card_bounds(ceremony,context)
++			print("FINALE_LAYOUT ",context," root=",app.root_ui.size," content=",app.content.size," page=",ceremony.size," min=",ceremony.get_combined_minimum_size()," hero=",ceremony.hero.size," columns=",ceremony.columns.size," columns_min=",ceremony.columns.get_combined_minimum_size())
++			check(app.root_ui.get_global_rect().encloses(ceremony.actions.get_global_rect()),context+" actions fit in the screen")
++			for row: Button in ceremony.track_buttons:
++				check(ceremony.columns.get_global_rect().encloses(row.get_global_rect()),context+" every track row fits without scrolling")
++			var visible_scrolls: int = 0
++			for scroll: ScrollContainer in ceremony.find_children("*","ScrollContainer",true,false):
++				if scroll.get_v_scroll_bar().is_visible_in_tree():
++					visible_scrolls += 1
++					check(scroll == ceremony.standings_scroll,context+" only standings can display a scrollbar")
++			check(visible_scrolls == 1,context+" the full driver field has one scrollable list")
++			if DisplayServer.get_name() != "headless": await capture(kind,dimensions)
++	# Exercise ranking text and translated headers in the same production shell.
++	var backend := RankingFixture.Backend.new()
++	root.add_child(backend)
++	for locale: String in ["en","de","fi","ja"]:
++		TranslationServer.set_locale(locale)
++		root.size = Vector2i(1280,720)
++		app.rivalry.model.apply_snapshot(awarded_snapshot("champion"))
++		app.rivalry_section = "overview"
++		app._show_screen("rivalry")
++		await settle()
++		var page: WeeklyRivalryPage = app.content.find_child("WeeklyRivalryPage",true,false)
++		page.model.world_circuit = {"week_start":backend.week}
++		page.safety_client = backend
++		page.refresh_presentation()
++		await settle()
++		var ceremony: Control = page.find_child("WeeklyRivalryFinale",true,false)
++		print("RANKING_LAYOUT ",locale," root=",app.root_ui.size," content=",app.content.size," page=",ceremony.size," hero=",ceremony.hero.size," columns=",ceremony.columns.size," columns_min=",ceremony.columns.get_combined_minimum_size()," right=",ceremony.find_child("RivalryFinaleRightColumn",true,false).get_combined_minimum_size())
++		check_card_bounds(ceremony,locale+" ranking finale")
++		check(app.root_ui.get_global_rect().encloses(ceremony.actions.get_global_rect()),locale+" ranking finale actions fit")
++		check(app.menu_body_slot.get_global_rect().encloses(ceremony.actions.get_global_rect()),locale+" ranking actions clear the clipping boundary")
++		var ranking: Control = ceremony.find_child("RivalryWorldRankingChange",true,false)
++		check(ceremony.columns.get_global_rect().encloses(ranking.get_global_rect()),locale+" ranking summary fits")
++		# An in-place status refresh must reveal an actionable error without
++		# restoring the redundant points-ahead/completion message afterwards.
++		page.error = "Could not continue. Try again."
++		page.refresh_presentation()
++		await settle()
++		ceremony = page.find_child("WeeklyRivalryFinale",true,false)
++		check(ceremony.find_child("RivalryStatusMessage",true,false).is_visible_in_tree(),locale+" refreshed error is visible")
++		check(app.root_ui.get_global_rect().encloses(ceremony.actions.get_global_rect()),locale+" error state actions fit")
++		check(app.menu_body_slot.get_global_rect().encloses(ceremony.actions.get_global_rect()),locale+" error actions clear the clipping boundary")
++		page.error = ""
++		page.refresh_presentation()
++		await settle()
++		check(not ceremony.find_child("RivalryStatusMessage",true,false).is_visible_in_tree(),locale+" clearing error removes the context label")
++		if DisplayServer.get_name() != "headless": await capture("ranking-"+locale,Vector2i(1280,720))
++	TranslationServer.set_locale("en")
++	backend.queue_free()
++	app.queue_free()
++	await process_frame
++	print("RIVALRY_FINALE_LAYOUT: %d checks, %d failures" % [checks,failures])
++	quit(1 if failures else 0)
+diff --git a/game/tests/probe_rivalry_finale_retained_baseline.gd b/game/tests/probe_rivalry_finale_retained_baseline.gd
+--- /dev/null
++++ b/game/tests/probe_rivalry_finale_retained_baseline.gd
+@@ -0,0 +1,8 @@
++extends "res://tests/test_ranking_newspaper.gd"
++## Reload task-start UI only in this disposable process; never change runtime files.
++func run() -> void:
++	for filename: String in ["world_ranking_week_summary.gd","rivalry_victory_car.gd","weekly_rivalry_finale.gd","weekly_rivalry_page.gd"]:
++		var script: GDScript = load("res://ui/"+filename)
++		script.source_code = FileAccess.get_file_as_string("res://../docs/evidence/rivalry-finale-layout-2026-10-26/before/"+filename)
++		check(script.reload() == OK,"isolated task-start reload: "+filename)
++	await super.run()
+diff --git a/docs/RIVALRY_FINALE_LAYOUT_2026_10_26.md b/docs/RIVALRY_FINALE_LAYOUT_2026_10_26.md
+--- /dev/null
++++ b/docs/RIVALRY_FINALE_LAYOUT_2026_10_26.md
+@@ -0,0 +1,40 @@
++# Rivalry final standings layout, 2026-10-26
++
++RFL01: The completed-week page fits its actual menu clipping boundary. A fixed body replaces the scroll container around both result columns. All five track results, highlights and bottom actions remain visible. Hero sizing uses the clipping ancestors so resizing from a tall window back to landscape releases the previous minimum height.
++
++RFL02: Only Final standings can scroll. It includes every actual competitor instead of a selected five-row sample, highlights the player and initially reveals their row. Native scrolling retains access to the full field. The five track-detail actions and authoritative standings, scoring and Continue/Share guards remain.
++
++RFL03: The car, crown, title and summary cards occupy separate bounds below the section navigation. The car preview fits the actual mesh bounds in its orthographic viewport, including the taller Forklift. The existing perspective preview fit retains its calculation. The Perfect Week badge includes the actual two-line font height in its minimum.
++
++RFL04: Remove the redundant points-ahead/completion hero context. Actual errors remain visible, including in-place status refreshes; clearing an error hides the label again. Circuit finales use compact ranking copy and card spacing, with the decorative subtitle omitted to fit their additional progress header.
++
++Runtime files:
++
++- `game/ui/weekly_rivalry_finale.gd`
++- `game/ui/weekly_rivalry_page.gd` (status refresh only; prior unrelated edits retained)
++- `game/ui/rivalry_victory_car.gd` (optional orthographic fitting)
++- `game/ui/world_ranking_week_summary.gd` (optional compact formatting; existing translations retained)
++
++R01: Updated `game/tests/test_rivalry_awards.gd` for the requested fixed body and complete scrolling standings. Added `game/tests/test_rivalry_finale_layout.gd` for the production menu hierarchy, five window sizes including a matched screenshot aspect, tall-to-short resizing, all track rows, list reachability, header bounds, ranking summaries, four locales and in-place errors. Existing card bounds, actions, decoration, car fitting, snapshot immutability and sharing checks remain. The old five-row sample requirement is superseded by the owner's request for list-local scrolling.
++
++Final layout checks pass 1477/1477 in Compatibility and 1477/1477 in desktop Mobile. Awards pass 5384/5384 in desktop Mobile; the preceding Compatibility awards run also passes 5384/5384. App passes 141/141 and the final parser passes all 1219 scripts.
++
++The retained broader ranking/newspaper suite reports 45 checks / one failure: its separate World Ranking page does not expose two rows at 960x540. `probe_rivalry_finale_retained_baseline.gd` reloads all four task-start UI scripts only into an isolated process, reproducing the identical failure (49 checks including four source reload assertions). No original runtime file is restored on disk, and no failing assertion is relaxed. This unrelated compact World Ranking page remains outside this final-standings task.
++
++The exact task-start finale/page/awards sources and native before views are retained in `docs/evidence/rivalry-finale-layout-2026-10-26/before/`. The expanded native regression against the original runtime reports 5312 checks / 277 failures. Initial layout and renderer attempts, resize/badge/preview failures and ranking-layout iterations are retained rather than overwritten. Sandbox attempts failed on user-log access and then Windows certificate-store access; approved native execution used disposable workspace save data.
++
++Actual commands and final outcomes are in [report.json](evidence/rivalry-finale-layout-2026-10-26/report.json). All commands use the pinned Godot 4.7.2 build through `scripts/dev.ps1`, with process-only execution-policy bypass and `APPDATA=build/rivalry-finale-layout/userdata`:
++
++```powershell
++powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1 -Action TestScript -ScriptPath res://tests/test_rivalry_finale_layout.gd -Graphical
++powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1 -Action TestScript -ScriptPath res://tests/test_rivalry_finale_layout.gd -Graphical -RenderingMethod mobile
++powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1 -Action TestScript -ScriptPath res://tests/test_rivalry_awards.gd -Graphical -RenderingMethod mobile
++powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1 -Action TestScript -ScriptPath res://tests/test_script_parse.gd
++powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1 -Action TestApp
++powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1 -Action TestScript -ScriptPath res://tests/test_ranking_newspaper.gd
++powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1 -Action TestScript -ScriptPath res://tests/probe_rivalry_finale_retained_baseline.gd
++```
++
++Q01: Matched native previews are under `layout/` and `after/ui/`, with desktop Mobile in their `mobile/` subdirectories. The report records final counts, source hashes and the task-only review patch. Existing concurrent model, handling, translation and Garage work is preserved. Native evidence was visually inspected for the champion, unranked/player-at-bottom and Circuit-ranking cases.
++
++Reload the client to use these source changes. Owner appearance and physical touch/device acceptance remain. No device attachment check or physical-device test, Android export/install, live mutation, deployment or owner-process restart was performed.
+diff --git a/AGENTS.md b/AGENTS.md
+--- a/AGENTS.md
++++ b/AGENTS.md
+@@ -2,6 +2,11 @@
+ ## Consistent electric keyboard/controller handling (2026-10-26)
+ ECH01-ECH03/R01/Q01: Owner still finds slow handling too agile and faster handling inconsistent; controls are keyboard/controller. Electric-12 replaces overlapping electric steering fades with2.0/s buildup,6.0/s unwind,0.26rad maximum angle and continuous9m+speed-squared/18 curvature envelope. Full lock builds in0.5s at every speed; power/lift shares the bound, with no40-60km/h restoration of tight lock. Actual200ms keyboard course response falls35.2% at5km/h,41.9% at10,87.5% at20 and89.1% at30. Held radius20/30/40/60kmh is10.72/12.86/15.86/24.44m and increases through190; usable parking lock retained. Initial overly wide proposal and late diagnostic aiming fail tight circuits; final finite-rate pure-pursuit planning yields three five-lap circuits with zero contacts. Six other diagnostic inputs remain exact. Primary525,190-speed59/radius64/launch111/low87/release38/car60/one-pedal63/power19/balance19/response86/turn61/laps6/handling88/rewind61/parser1217, actual Game keyboard/controller App67Compatibility+67desktopMobile and backend72pass/twoexisting exclusions pass. Actual task-start straight propulsion/release/hold is exact2400ticks in each direction;190cap/braking/small launch slip remain. Physics0.73/EVa5c04a5a pin change; six other config entries/arithmetic remain. Independent17354input/five-lap verifier accepts144613ms. Owner consistency correction supersedes prior faster/tighter high-speed, drift-minimum and fixed-fast-input expectations; complete sources/failures and stronger full-range monotonic/input tests are retained. Commands, failed proposals/fixtures, native views, hashes and scoped checkpoint: docs/ELECTRIC_CONSISTENT_HANDLING_2026_10_26.md and docs/evidence/electric-consistent-handling-2026-10-26/report.json. Reload/rebuild, matching verifier rollout and owner keyboard/controller feel acceptance remain. No physical-device attachment check/test, APK, purchase, live mutation, deployment, merge or owner-process restart; concurrent model/track/Garage work preserved.
+ <!-- /ELECTRIC-CONSISTENT-HANDLING-20261026 -->
++
++<!-- RIVALRY-FINALE-LAYOUT-20261026 -->
++## Rivalry final standings fit (2026-10-26)
++RFL01-RFL04/R01/Q01: Fixed completed-week body keeps all five track results, highlights and bottom actions visible; only the full driver standings scroll. Hero car/crown clear section navigation, orthographic previews fit actual mesh bounds, and the redundant points-ahead/completion label is hidden while in-place errors remain. Actual clipping ancestors release stale tall-window minima. Circuit ranking copy/spacing and Perfect Week badge height also fit. Final layout1477Compatibility/1477desktopMobile, awards5384desktopMobile, App141 and parser1219 pass. Retained ranking45/1fail reproduces identically with four exact task-start UI sources reloaded only in isolated memory (49/1); its separate compact World Ranking page remains outside scope. Original finale regression5312/277fail, native before/after, hashes, commands and task-only Git-checked patch: docs/RIVALRY_FINALE_LAYOUT_2026_10_26.md and docs/evidence/rivalry-finale-layout-2026-10-26/report.json. Reload and owner/device acceptance remain. No device attachment check/test, APK, live mutation, deployment or owner-process restart; concurrent work preserved.
++<!-- /RIVALRY-FINALE-LAYOUT-20261026 -->
+ 
+ <!-- ELECTRIC-HOOD-FAIRING-20261026 -->
+ ## Electric hood and wing fairing correction (2026-10-26)
+diff --git a/DEVELOPMENT_STATUS.md b/DEVELOPMENT_STATUS.md
+--- a/DEVELOPMENT_STATUS.md
++++ b/DEVELOPMENT_STATUS.md
+@@ -1,3 +1,8 @@
++<!-- RIVALRY-FINALE-LAYOUT-20261026 -->
++## Rivalry final standings fit (2026-10-26)
++RFL01-RFL04/R01/Q01: Fixed completed-week body keeps all five track results, highlights and bottom actions visible; only the full driver standings scroll. Hero car/crown clear section navigation, orthographic previews fit actual mesh bounds, and the redundant points-ahead/completion label is hidden while in-place errors remain. Actual clipping ancestors release stale tall-window minima. Circuit ranking copy/spacing and Perfect Week badge height also fit. Final layout1477Compatibility/1477desktopMobile, awards5384desktopMobile, App141 and parser1219 pass. Retained ranking45/1fail reproduces identically with four exact task-start UI sources reloaded only in isolated memory (49/1); its separate compact World Ranking page remains outside scope. Original finale regression5312/277fail, native before/after, hashes, commands and task-only Git-checked patch: docs/RIVALRY_FINALE_LAYOUT_2026_10_26.md and docs/evidence/rivalry-finale-layout-2026-10-26/report.json. Reload and owner/device acceptance remain. No device attachment check/test, APK, live mutation, deployment or owner-process restart; concurrent work preserved.
++<!-- /RIVALRY-FINALE-LAYOUT-20261026 -->
++
+ <!-- ELECTRIC-HOOD-FAIRING-20261026 -->
+ ## Electric hood and wing fairing correction (2026-10-26)
+ EHF01-EHF03/R01/G01/Q01: Owner rejects the retained pinched hood/wing strip. A broad shared upper-quarter profile, front-tangent-preserving fairing and transported rolled-edge normal remove the concentrated drop and outer highlight crease. Actual transverse angle falls43.28to4.26deg; outer normals agree within2.143/1.623deg over40/20 points, with0.279/0.859mm gaps. Exact original39checks/8fail retained; fairing39/39, quality60/60, model34/34, nose32/32, hood34/34, surface34, roundness8, App67/67, electric60/one-pedal63 and parser1217/import pass. V9 has622 resources with541 exact originals including all183 rear parts; full/simple169641/66333 retain170000 cap. Catalogue/news/all49 photos refreshed. Original test assertions, assembly/presentation/input/cameras and concurrent electric handling work remain. Prior exact-front retention is superseded only for the affected geometry. Commands, native before/after, hashes and scoped checkpoint: docs/ELECTRIC_HOOD_FAIRING_2026_10_26.md and docs/evidence/electric-hood-fairing-2026-10-26/report.json. Reload and owner/device appearance/motion/cost acceptance remain. No attachment/device test, APK, purchase, live mutation, deployment or owner-process restart; concurrent work preserved.

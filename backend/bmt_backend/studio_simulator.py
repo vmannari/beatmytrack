@@ -123,9 +123,9 @@ class Plan:
 
     def validate(self):
         if not re.fullmatch(r"[a-z][a-z0-9-]{2,39}", self.dataset):
-            raise ValueError("Dataset must be a stable 3â€“40 character operator identifier")
+            raise ValueError("Dataset must be a stable 3–40 character operator identifier")
         if not 10 <= self.players <= 2000 or not 8 <= self.days <= 90 or not 0 <= self.seed < 2**31:
-            raise ValueError("Use10â€“2000 players,8â€“90 days and a bounded seed")
+            raise ValueError("Use10–2000 players,8–90 days and a bounded seed")
         if self.players * self.days > 180000 or not DAY < self.anchor <= now():
             raise ValueError("History exceeds the bounded import budget or anchor is in the future")
         return self

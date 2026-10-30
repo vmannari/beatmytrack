@@ -39,6 +39,7 @@ DOMAIN_TABLES = frozenset(
         "track_of_day_state",
         "track_of_day_history",
         "track_of_days",
+        "track_of_day_bests",
         "discovery_boundaries",
         "discovery_changes",
         "discovery_collections",
@@ -244,6 +245,8 @@ def relation_policy(workload):
         raise ValueError("Unknown runtime workload")
     for table in ("track_of_days", "track_of_day_history", "track_of_day_state"):
         policy[table] = dict.fromkeys(("SELECT", "INSERT", "UPDATE") if workload == "worker" else ("SELECT",))
+    policy["track_of_day_bests"] = dict.fromkeys(
+        ("SELECT", "INSERT", "UPDATE") if workload == "worker" else ("SELECT",))
     return policy
 
 

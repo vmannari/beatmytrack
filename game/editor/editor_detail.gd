@@ -3,7 +3,7 @@ extends RefCounted
 ## are restored when the view settles close enough to inspect their details.
 const DENSE_COUNT: int = 24
 const OVERVIEW_SCALE: float = 8.0
-const EXACT_KINDS: Array[String] = ["oil","puddle","jump","speed_bump","dirt","water","tyre_stack","tyre_wall","gantry","chevron","braking_board","neon_arrow","banner","flag","light","lantern_post"]
+const EXACT_KINDS: Array[String] = ["oil","puddle","jump","speed_bump","dirt","water","tyre_stack","tyre_wall","gantry","chevron","braking_board","neon_arrow","banner","flag","light","lantern_post","burning_car","burning_barrel","snow_lantern","ice_lantern"]
 var reduced: bool = false
 var enabled: bool = true
 var proxies: Node3D
@@ -11,6 +11,7 @@ var _visual: NativeTrackVisual
 var _track: NativeTrack
 var _updates: int = -1
 var _selected: int = -2
+var _selection: Array[int] = []
 var _scale: float = -1.0
 var _until: int = 0
 var _proxy_groups: Array[Dictionary] = []
@@ -18,6 +19,8 @@ var _members: Dictionary = {}
 var _objects: Array = []
 var _dense: bool = false
 var _proxy_dirty: bool = true
+var _applied_enabled: bool = true
+var _cover_id: int = 0
 
 func update(visual: NativeTrackVisual, track: NativeTrack, canvas: EditorCanvas, light: DirectionalLight3D, moving: bool) -> bool:
 	if visual == null or track == null or visual.editor_objects == null: return false
@@ -36,13 +39,18 @@ func update(visual: NativeTrackVisual, track: NativeTrack, canvas: EditorCanvas,
 		_dense = visible_count >= DENSE_COUNT
 	if moving or canvas.active_pointer != -99: _until = Time.get_ticks_msec()+140
 	var next: bool = enabled and _dense and (canvas.scale_factor() < OVERVIEW_SCALE or Time.get_ticks_msec() < _until)
-	if not rebuilt and next == reduced and canvas.selected_object == _selected and (not reduced or is_equal_approx(_scale,canvas.scale_factor())): return false
+	var selection: Array[int] = canvas.object_indices()
+	var cover_id: int = visual.editor_cover.get_instance_id() if is_instance_valid(visual.editor_cover) else 0
+	if not rebuilt and next == reduced and selection == _selection and enabled == _applied_enabled and cover_id == _cover_id and (not reduced or is_equal_approx(_scale,canvas.scale_factor())): return false
 	if next and _proxy_dirty:
 		_rebuild(visual,track,batches)
 		_proxy_dirty = false
-	reduced = next; _selected = canvas.selected_object; _scale = canvas.scale_factor()
+	reduced = next; _selected = canvas.selected_object; _selection = selection; _scale = canvas.scale_factor()
+	_applied_enabled = enabled; _cover_id = cover_id
 	light.shadow_enabled = not reduced
-	if is_instance_valid(visual.editor_cover): visual.editor_cover.visible = not reduced
+	# Small decorative ground flecks compete with selection dots. The explicit
+	# Detailed scenery view restores this race decoration for appearance checks.
+	if is_instance_valid(visual.editor_cover): visual.editor_cover.visible = not enabled
 	# Generated trees are already one scenery batch. Keep their recognizable
 	# silhouettes; the expensive authored props are the overview replacement.
 	if is_instance_valid(visual.editor_scenery): visual.editor_scenery.visible = true
@@ -52,12 +60,12 @@ func update(visual: NativeTrackVisual, track: NativeTrack, canvas: EditorCanvas,
 		if reduced:
 			for index: int in _members.get(key,[]):
 				var size: Vector2 = CreatorObjects.size_of(_objects[index])
-				if index == _selected or str(_objects[index].kind) in EXACT_KINDS or minf(size.x,size.y)*_scale >= 24.0: selected = true
+				if index in selection or str(_objects[index].kind) in EXACT_KINDS or minf(size.x,size.y)*_scale >= 24.0: selected = true
 		for node: GeometryInstance3D in batches.groups[key].nodes: node.visible = not reduced or selected
 		if selected:
 			for index: int in _members.get(key,[]): retained[index] = true
 	for index: int in batches.individuals:
-		var keep: bool = index == _selected or str(_objects[index].kind) in EXACT_KINDS
+		var keep: bool = index in selection or str(_objects[index].kind) in EXACT_KINDS
 		batches.individuals[index].node.visible = not reduced or keep
 		if keep: retained[index] = true
 	if reduced:
@@ -102,12 +110,11 @@ func _rebuild(visual: NativeTrackVisual, track: NativeTrack, batches: RefCounted
 		var object: Dictionary = objects[index]
 		var kind: String = str(object.kind)
 		if kind in EXACT_KINDS: continue # Their exact gameplay cues stay visible.
-		var shape: String = "tree" if kind == "tree" else "round" if kind in ["broadleaf","bush","rock","boulder","snowman"] else "box"
-		var color: Color = Color(ContainerPaint.value(object)) if kind == "container" else Color("647b4a") if kind in ["tree","broadleaf","bush","grass_clump","flowers"] else Color("d1d9d6") if kind in PropWinterCraft.KINDS else Color("9b8d71")
-		var key: String = shape+color.to_html()
-		if not groups.has(key): groups[key] = {"shape":shape,"color":color,"poses":[],"indices":[]}
+		var color: Color = preload("res://editor/overview_prop_models.gd").color(kind,visual.theme_id,object)
+		var key: String = kind+"/"+color.to_html()
+		if not groups.has(key): groups[key] = {"kind":kind,"color":color,"poses":[],"indices":[]}
 		var size: Vector2 = CreatorObjects.size_of(object)
-		var height: float = (5.0 if shape == "tree" else 2.6 if kind == "container" else 2.0 if shape == "round" else 1.2)*float(object.get("scale",1.0))
+		var height: float = preload("res://editor/overview_prop_models.gd").height(kind)*float(object.get("scale",1.0))
 		var point := Vector2(object.position[0],object.position[1])
 		var elevation: float = visual.ground_support.ground(point) if visual.ground_support != null else 0.0
 		if visual.desert_relief != null: elevation += visual.desert_relief.height(point)
@@ -115,16 +122,11 @@ func _rebuild(visual: NativeTrackVisual, track: NativeTrack, batches: RefCounted
 		groups[key].poses.append(Transform3D(basis,VisualGeometry.world(point)+Vector3.UP*(elevation+height*0.5)))
 		groups[key].indices.append(index if index < _objects.size() else -1)
 	for group: Dictionary in groups.values():
-		var mesh: PrimitiveMesh
-		if group.shape == "tree":
-			var cone := CylinderMesh.new(); cone.top_radius = 0.0; cone.bottom_radius = 0.5; cone.height = 1.0; cone.radial_segments = 8; mesh = cone
-		elif group.shape == "round":
-			var sphere := SphereMesh.new(); sphere.radius = 0.5; sphere.height = 1.0; sphere.radial_segments = 8; sphere.rings = 4; mesh = sphere
-		else:
-			var box := BoxMesh.new(); box.size = Vector3.ONE; mesh = box
+		var mesh: ArrayMesh = preload("res://editor/overview_prop_models.gd").mesh(group.kind,group.color)
 		var node := MultiMeshInstance3D.new()
 		node.multimesh = MultiMesh.new(); node.multimesh.transform_format = MultiMesh.TRANSFORM_3D
 		node.multimesh.mesh = mesh; node.multimesh.instance_count = group.poses.size()
-		node.material_override = VisualGeometry.material(group.color)
+		node.material_override = VisualGeometry.material(Color.WHITE)
+		(node.material_override as StandardMaterial3D).vertex_color_use_as_albedo = true
 		node.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
 		proxies.add_child(node); group.node = node; _proxy_groups.append(group)

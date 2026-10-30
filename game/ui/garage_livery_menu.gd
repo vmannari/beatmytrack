@@ -22,7 +22,6 @@ var _contents: Dictionary = {}
 var _content: VBoxContainer
 var _editing_content: VBoxContainer
 var colour_pickers: Dictionary = {}
-var _sticker_category: String = "emblems"
 
 func _ready() -> void:
 	name = "GarageLiveryWorkbench"
@@ -65,7 +64,7 @@ func show_tab(tab: String) -> void:
 		_editing_content.queue_free()
 		_editing_content = null
 	var editing: bool = tab=="stickers" and page._sticker_editing
-	var key: String = tab+"/"+page._sticker_surface+"/"+_sticker_category if tab=="stickers" else tab
+	var key: String = tab+"/"+page._sticker_surface if tab=="stickers" else tab
 	if editing or not _contents.has(key):
 		_content = VBoxContainer.new()
 		_content.size_flags_vertical = Control.SIZE_EXPAND_FILL
@@ -256,14 +255,9 @@ func _stickers() -> void:
 	if page._sticker_editing:
 		page._build_sticker_tools(_content)
 		return
-	var scroll: ScrollContainer = _scroll()
-	var content := VBoxContainer.new()
-	content.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	content.add_theme_constant_override("separation",12)
-	scroll.add_child(content)
 	var panels := HBoxContainer.new()
 	panels.add_theme_constant_override("separation",8)
-	content.add_child(panels)
+	_content.add_child(panels)
 	for panel: String in VehicleLivery.SURFACES:
 		if panel == "roof" and not LiveryCatalog.has_roof(page.vehicle_id): continue
 		var button := MenuStyle.tab(LiveryCatalog.sticker_label(page.vehicle_id,panel),page._choose_sticker_surface.bind(panel),panel == page._sticker_surface)
@@ -271,25 +265,18 @@ func _stickers() -> void:
 		button.custom_minimum_size.y = 48
 		button.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 		panels.add_child(button)
-	var categories := HBoxContainer.new()
-	categories.add_theme_constant_override("separation",8)
-	content.add_child(categories)
-	for category: String in ["emblems","sponsors"]:
-		var button := MenuStyle.tab(category.capitalize(),_choose_sticker_category.bind(category),category == _sticker_category)
-		button.name = "StickerCategory_"+category
-		button.custom_minimum_size.y = 44
-		button.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-		categories.add_child(button)
+	# Only the artwork scrolls. Panel choices and placement actions stay in view.
+	var scroll: ScrollContainer = _scroll()
+	scroll.name = "StickerGalleryScroll"
 	var gallery := GridContainer.new()
 	gallery.name = "StickerGallery"
 	gallery.columns = 3
 	gallery.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	gallery.add_theme_constant_override("h_separation",6)
 	gallery.add_theme_constant_override("v_separation",6)
-	content.add_child(gallery)
+	scroll.add_child(gallery)
 	for index: int in range(LiveryCatalog.stickers.size()):
 		var sticker: Dictionary = LiveryCatalog.stickers[index]
-		if sticker.category != _sticker_category: continue
 		var tile: LiveryTile = LiveryTile.make(sticker.title,LiveryCatalog.texture(sticker.id+"_sticker"),page._choose_sticker.bind(index+1),true)
 		tile.name = "Sticker_"+sticker.id
 		tile.custom_minimum_size = Vector2(82,92)
@@ -298,8 +285,9 @@ func _stickers() -> void:
 		gallery.add_child(tile)
 		sticker_tiles[sticker.id] = tile
 	var footer := HBoxContainer.new()
+	footer.name = "StickerActions"
 	footer.add_theme_constant_override("separation",8)
-	content.add_child(footer)
+	_content.add_child(footer)
 	var place := MenuStyle.button("Place sticker",page._edit_sticker_position.bind(true),true)
 	place.name = "PlaceSticker"
 	place.custom_minimum_size.y = 48
@@ -313,12 +301,6 @@ func _stickers() -> void:
 	clear.tooltip_text = "Remove sticker"
 	clear.custom_minimum_size = Vector2(48,48)
 	footer.add_child(clear)
-
-func _choose_sticker_category(category: String) -> void:
-	if category not in ["emblems","sponsors"]: return
-	_sticker_category = category
-	page._sticker_editing = false
-	show_tab("stickers")
 
 func refresh() -> void:
 	var selected_index: int = equipped_index()

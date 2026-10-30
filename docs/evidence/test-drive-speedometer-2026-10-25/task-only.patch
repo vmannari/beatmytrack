@@ -1,0 +1,129 @@
+--- a/game/ui/playground_hud.gd
++++ b/game/ui/playground_hud.gd
+@@ -218,12 +218,6 @@
+ 	panel.offset_right = 114
+ 	panel.offset_top = -156
+ 	panel.offset_bottom = -42
+-	if free_drive_mode:
+-		panel.set_anchors_and_offsets_preset(Control.PRESET_TOP_LEFT)
+-		panel.offset_left = 24
+-		panel.offset_right = 188
+-		panel.offset_top = 62
+-		panel.offset_bottom = 164
+ 	panel.add_theme_stylebox_override("panel", _panel_style())
+ 	panel.mouse_filter = Control.MOUSE_FILTER_IGNORE
+ 	panel.visible = not editor_test or free_drive_mode
+@@ -233,7 +227,7 @@
+ 	info.add_theme_constant_override("separation", 0)
+ 	panel.add_child(info)
+ 	info.alignment = BoxContainer.ALIGNMENT_END
+-	speed_label = _label("0", 36 if free_drive_mode else 44)
++	speed_label = _label("0", 44)
+ 	speed_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+ 	info.add_child(speed_label)
+ 	var units := _label("km/h", 18)
+--- /dev/null
++++ b/game/tests/capture_test_drive_speedometer.gd
+@@ -0,0 +1,49 @@
++extends SceneTree
++## Native placement witness using the production race and parking-hall scenes.
++var output: String
++var samples: Array[Dictionary] = []
++
++func _initialize() -> void: run.call_deferred()
++
++func frames() -> void:
++	for index: int in range(6): await process_frame
++	if DisplayServer.get_name() != "headless": await RenderingServer.frame_post_draw
++
++func run() -> void:
++	for argument: String in OS.get_cmdline_user_args():
++		if argument.begins_with("--evidence-root="):
++			output = ProjectSettings.globalize_path(argument.trim_prefix("--evidence-root="))
++	if output.is_empty(): quit(1); return
++	DirAccess.make_dir_recursive_absolute(output)
++	for mode: String in ["race","test-drive"]:
++		var game: Node = load("res://garage/parking_hall_drive.tscn" if mode == "test-drive" else "res://core/game.tscn").instantiate()
++		game.production_mode = true
++		if mode == "race": game.initial_track = NativeTrack.read("res://resources/tracks/ellipse.json")
++		root.add_child(game)
++		while not game.preparation_complete: await process_frame
++		game.set_physics_process(false)
++		game.set_process(false)
++		game.countdown_ticks = 0
++		game.call("_process",0.0)
++		for dimensions: Vector2i in [Vector2i(960,540),Vector2i(1280,720),Vector2i(1280,914),Vector2i(1920,864)]:
++			root.size = dimensions
++			root.content_scale_size = dimensions
++			await frames()
++			var hud: PlaygroundHUD = game.hud
++			var speed: Control = hud.find_child("SpeedCard",true,false)
++			var bounds: Rect2 = speed.get_global_rect()
++			var overlap: bool = false
++			for zone: Rect2 in hud.touch.zones(): overlap = overlap or bounds.intersects(zone)
++			samples.append({"mode":mode,"viewport":[dimensions.x,dimensions.y],
++				"rect":[bounds.position.x,bounds.position.y,bounds.size.x,bounds.size.y],
++				"font_size":hud.speed_label.get_theme_font_size("font_size"),
++				"visible":speed.is_visible_in_tree(),"touch_overlap":overlap})
++			if DisplayServer.get_name() != "headless":
++				var path: String = output.path_join("%s-%dx%d.png" % [mode,dimensions.x,dimensions.y])
++				if root.get_texture().get_image().save_png(path) != OK: quit(1); return
++		game.queue_free()
++		await frames()
++	var file := FileAccess.open(output.path_join("layout.json"),FileAccess.WRITE)
++	file.store_string(JSON.stringify(samples,"\t"))
++	print("SPEEDOMETER_CAPTURE: %d native layout samples" % samples.size())
++	quit(0)
+--- /dev/null
++++ b/docs/TEST_DRIVE_SPEEDOMETER_2026_10_25.md
+@@ -0,0 +1,26 @@
++# Test-drive speedometer placement — 2026-10-25
++
++TDS01/R01/Q01: the Garage parking-hall test drive now uses the race speedometer's bottom-center anchors, offsets, 228 × 114 logical-unit panel and 44-unit number. The free-drive-only upper-left placement and smaller number are removed in `game/ui/playground_hud.gd`.
++
++The runtime change removes six layout-override lines and replaces one label-size expression. Existing race placement, speed calculation, controls, editor-practice visibility and driving behavior remain. `game/tests/capture_test_drive_speedometer.gd` is a diagnostic capture helper using the actual race and parking-hall scenes; it records native control rectangles and screenshots without changing runtime behavior. The evidence runner and task-only patch are under `docs/evidence/test-drive-speedometer-2026-10-25/`.
++
++The real scenes were captured at 960 × 540, 1280 × 720, 1280 × 914 and 1920 × 864 on Compatibility/OpenGL and desktop Mobile/Vulkan. Both modes have identical panel rectangles and font sizes at every size, remain visible and avoid all driving touch zones. Race measurements also match the task-start race measurements exactly. At 1280 × 720 the shared rectangle is `(526, 564, 228, 114)`; the old test-drive rectangle was `(24, 62, 164, 102)` with a 36-unit number.
++
++![Before: upper-left test-drive speedometer](evidence/test-drive-speedometer-2026-10-25/before/test-drive-1280x720.png)
++
++![After: shared bottom-center speedometer](evidence/test-drive-speedometer-2026-10-25/after-capture_test_drive_speedometer-gl_compatibility/test-drive-1280x720.png)
++
++Actual commands, run metadata, native measurements, source hashes and the scoped patch are recorded in [report.json](evidence/test-drive-speedometer-2026-10-25/report.json). The final commands use the pinned 4.7.2 engine through `scripts/dev.ps1` with isolated APPDATA:
++
++```powershell
++powershell -NoProfile -ExecutionPolicy Bypass -File docs/evidence/test-drive-speedometer-2026-10-25/run.ps1 -Script capture_test_drive_speedometer -Mode gl_compatibility
++powershell -NoProfile -ExecutionPolicy Bypass -File docs/evidence/test-drive-speedometer-2026-10-25/run.ps1 -Script capture_test_drive_speedometer -Mode mobile
++powershell -NoProfile -ExecutionPolicy Bypass -File docs/evidence/test-drive-speedometer-2026-10-25/run.ps1 -Script test_bridge_hud -Mode headless
++powershell -NoProfile -ExecutionPolicy Bypass -File docs/evidence/test-drive-speedometer-2026-10-25/run.ps1 -Script test_script_parse -Mode headless
++```
++
++Each final native capture run completed with eight layout samples and exit 0. Parser: 1,201 scripts, zero failures. The existing bridge/HUD suite completed 142 checks with two bridge-material failures, both before its HUD scene reviews; its layout and simulation-state checks passed. No assertions were changed. The task-start Garage suite stopped at `test_parking_hall.gd:145` because the current menu has no expected Test drive button in one section, before entering the driving scene. That suite is not reported as passing.
++
++The first runner invocation was blocked by PowerShell execution policy. A subsequent sandboxed engine startup could not read the Windows certificate store and was interrupted; its log is retained. Native runs succeeded with reviewed escalation. Native scene construction produced hitch diagnostics; these captures are placement evidence, not performance measurements.
++
++Reload and owner/device appearance acceptance remain. No device attachment check or device test was performed. No APK, deployment or owner-process restart was performed. Concurrent workspace changes are preserved; the checkpoint is a reviewable patch, with no staging or commit.
+--- /dev/null
++++ b/docs/evidence/test-drive-speedometer-2026-10-25/run.ps1
+@@ -0,0 +1,21 @@
++param(
++    [string]$Script = 'capture_test_drive_speedometer',
++    [ValidateSet('headless','gl_compatibility','mobile')][string]$Mode = 'gl_compatibility',
++    [string]$Stage = 'after'
++)
++$ErrorActionPreference = 'Stop'
++$speedRepo = (Resolve-Path (Join-Path $PSScriptRoot '../../..')).Path
++$speedOutput = Join-Path $PSScriptRoot "$Stage-$Script-$Mode"
++New-Item -ItemType Directory -Path $speedOutput -Force | Out-Null
++$env:APPDATA = Join-Path $speedRepo "build/test-drive-speedometer/$Stage-$Script-$Mode/user"
++New-Item -ItemType Directory -Path $env:APPDATA -Force | Out-Null
++$speedArgs = @('-NoProfile','-ExecutionPolicy','Bypass','-File',(Join-Path $speedRepo 'scripts/dev.ps1'),'-Action','TestScript','-ScriptPath',"res://tests/$Script.gd",'-CommandTimeoutSeconds','180','-TestArgument',"--evidence-root=$speedOutput")
++if ($Mode -ne 'headless') {
++    $speedArgs += @('-Graphical','-RenderingMethod',$Mode,'-RenderingDriver',$(if ($Mode -eq 'mobile') {'vulkan'} else {'opengl3'}))
++}
++$speedStarted = [DateTime]::UtcNow
++& powershell @speedArgs *> (Join-Path $speedOutput 'console.log')
++$speedCode = $LASTEXITCODE
++@{arguments=$speedArgs;exit_code=$speedCode;started_utc=$speedStarted.ToString('o');duration_seconds=([DateTime]::UtcNow-$speedStarted).TotalSeconds} | ConvertTo-Json -Depth 5 | Set-Content -Encoding UTF8 (Join-Path $speedOutput 'command.json')
++Get-Content (Join-Path $speedOutput 'console.log') -Tail 18
++exit $speedCode

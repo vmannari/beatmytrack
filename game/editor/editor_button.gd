@@ -17,6 +17,7 @@ const CYAN := Color("16c2cf")
 var glyph: String = ""
 var caption: String = ""
 var horizontal: bool = false
+var surface_tint := Color.TRANSPARENT
 
 static func make(label: String, icon: String, action: Callable, chosen: bool = false) -> EditorButton:
 	var button := EditorButton.new()
@@ -52,12 +53,38 @@ func _draw() -> void:
 	if button_pressed and get_parent() != null and get_parent().name=="EditorRail":
 		draw_circle(Vector2(6,size.y*0.5),2.5,EditorStyle.ACCENT)
 	var path := PackedVector2Array()
-	if ILLUSTRATIONS.has(glyph):
+	if glyph == "size":
+		draw_rect(Rect2(center-Vector2(11,8),Vector2(22,16)),ink,false,2)
+		draw_polyline(PackedVector2Array([center+Vector2(-17,0),center+Vector2(-17,-14),center+Vector2(0,-14)]),ink,2,true)
+		draw_polyline(PackedVector2Array([center+Vector2(0,14),center+Vector2(17,14),center+Vector2(17,0)]),ink,2,true)
+	elif glyph.begins_with("place_"):
+		if glyph == "place_single":
+			draw_rect(Rect2(center-Vector2(7,6),Vector2(14,12)),ink,false,2)
+		else:
+			var points := PackedVector2Array()
+			for index: int in range(5): points.append(center+Vector2(-22+index*11,8*sin(float(index)*PI/4) if glyph in ["place_curve","place_edge"] else 0.0))
+			if glyph == "place_edge":
+				draw_polyline(points,Color("596f78"),12,true)
+				for index: int in range(points.size()): points[index].y -= 12
+			draw_polyline(points,ink,2,true)
+			for point: Vector2 in points: draw_circle(point,3,ink)
+	elif ILLUSTRATIONS.has(glyph):
 		var illustration: Texture2D = ILLUSTRATIONS[glyph]
 		var bounds := Vector2(36,36) if horizontal else Vector2(size.x-8,48)
 		var image_size: Vector2 = illustration.get_size()
 		var fitted_size: Vector2 = image_size * minf(bounds.x/image_size.x,bounds.y/image_size.y)
 		draw_texture_rect(illustration,Rect2(center-fitted_size*0.5,fitted_size),false,Color(1,1,1,0.35 if disabled else 1.0))
+	elif glyph in ["copy","multi_select","cycle_objects"]:
+		if glyph == "cycle_objects":
+			for offset: Vector2 in [Vector2(-5,-5),Vector2(5,5)]: draw_rect(Rect2(center+offset-Vector2(10,8),Vector2(20,16)),ink,false,2)
+			draw_line(center+Vector2(-17,16),center+Vector2(17,16),ink,2,true)
+			draw_polyline(PackedVector2Array([center+Vector2(11,11),center+Vector2(17,16),center+Vector2(11,21)]),ink,2,true)
+		elif glyph == "copy":
+			draw_rect(Rect2(center+Vector2(-16,-13),Vector2(22,22)),ink,false,2)
+			draw_rect(Rect2(center+Vector2(-6,-3),Vector2(22,22)),EditorStyle.ACCENT,false,2)
+		else:
+			draw_rect(Rect2(center-Vector2(18,15),Vector2(36,30)),ink,false,1.5)
+			for offset: Vector2 in [Vector2(-9,-6),Vector2(8,5)]: draw_rect(Rect2(center+offset-Vector2(5,5),Vector2(10,10)),EditorStyle.ACCENT)
 	elif glyph == "spline":
 		var curve := PackedVector2Array()
 		for i: int in range(25):
@@ -84,10 +111,15 @@ func _draw() -> void:
 	elif glyph.begins_with("terrain_"):
 		var surface: String=glyph.trim_prefix("terrain_")
 		var tint: Color={"road":Color("667177"),"grass":Color("65864c"),"dirt":Color("bc985f"),"water":Color("4087a4"),"puddle":Color("619aa6"),"oil":Color("313039")}.get(surface,ink)
+		if surface_tint.a > 0: tint = surface_tint
 		draw_style_box(EditorStyle.box(),Rect2(center-Vector2(22,15),Vector2(44,30)))
 		draw_rect(Rect2(center-Vector2(19,12),Vector2(38,24)),tint)
 		if surface in ["water","puddle","oil"]:
 			for y: int in [-6,2,8]: draw_arc(center+Vector2(0,y),12,0.2,2.9,12,ink*Color(1,1,1,0.6),1.3,true)
+		elif surface=="snow":
+			for point: Vector2 in [Vector2(-11,-4),Vector2(8,-5),Vector2(0,7)]:
+				draw_line(center+point-Vector2(3,0),center+point+Vector2(3,0),Color.WHITE,1.4,true)
+				draw_line(center+point-Vector2(0,3),center+point+Vector2(0,3),Color.WHITE,1.4,true)
 		elif surface=="grass":
 			for x: int in [-12,0,12]: draw_polyline(PackedVector2Array([center+Vector2(x-3,2),center+Vector2(x,7),center+Vector2(x+2,-5)]),ink,1.3,true)
 		elif surface=="dirt":

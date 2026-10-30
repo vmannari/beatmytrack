@@ -629,6 +629,11 @@ func step_speed_bumps(state: VehicleState, previous: Vector2, heading: float, ve
 	var nearby: Array = work.query("bumps",state.position,previous,config.wheelbase+config.track_width)
 	SpeedBumps.advance(state,previous,heading,velocity,config,nearby,seconds,not work.groups.bumps.is_empty())
 
+## Broad phase for presentation samples around a car. Exact heights still use
+## SpeedBumps.height; the caller supplies a radius covering every sample point.
+func nearby_speed_bumps(point: Vector2, reach: float) -> Array:
+	return _creator_query().query("bumps",point,Vector2.INF,reach)
+
 ## A step has no callbacks or source mutations. Validate once, retain exact source
 ## order and global bump presence, and revalidate public edits at the next scope.
 func begin_creator_queries() -> void:

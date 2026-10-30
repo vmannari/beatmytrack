@@ -229,11 +229,9 @@ func _run() -> void:
 		await settle()
 		for surface: String in ["hood","roof"]:
 			page._choose_sticker_surface(surface)
-			for category: String in ["emblems","sponsors"]:
-				page.livery_menu._choose_sticker_category(category)
-				await settle()
-				var sticker_scroll: ScrollContainer = page.livery_menu._content.find_children("*","ScrollContainer",true,false)[0]
-				await scroll_checks(sticker_scroll,"stickers-"+surface+"-"+category,true)
+			await settle()
+			var panel_scroll: ScrollContainer = page.livery_menu._content.find_children("*","ScrollContainer",true,false)[0]
+			await scroll_checks(panel_scroll,"stickers-"+surface,true)
 		var sticker_scroll: ScrollContainer = page.livery_menu._content.find_children("*","ScrollContainer",true,false)[0]
 		var sticker: LiveryTile = page.livery_menu.sticker_tiles.values()[0]
 		sticker_scroll.ensure_control_visible(sticker)
@@ -244,7 +242,7 @@ func _run() -> void:
 		await settle()
 		check(page.draft.stickers.roof.id==str(sticker.name).trim_prefix("Sticker_"),"sticker tap selects after scrolling")
 		var place: BaseButton = page.livery_menu.active_control("PlaceSticker")
-		sticker_scroll.ensure_control_visible(place)
+		check(not sticker_scroll.is_ancestor_of(place) and page.tools_panel.get_global_rect().encloses(place.get_global_rect()),"Place sticker stays visible outside the scrolling artwork")
 		await settle()
 		point = place.get_global_rect().get_center()
 		touch(point,true)

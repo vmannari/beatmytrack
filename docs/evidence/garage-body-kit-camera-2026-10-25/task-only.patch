@@ -1,0 +1,338 @@
+diff --git a/game/ui/garage_page.gd b/game/ui/garage_page.gd
+--- a/game/ui/garage_page.gd
++++ b/game/ui/garage_page.gd
+@@ -1127,7 +1127,7 @@
+ 		var tab: Button = kit_categories[id]
+ 		_style_kit_category(tab,id==category)
+ 	_build_kit_cards()
+-	_customisation_camera.focus(showroom,category)
++	_customisation_camera.focus(showroom,"body_kit" if category=="body" else category)
+ 
+ func _build_kit_cards() -> void:
+ 	for child: Node in kit_cards.get_children():
+@@ -1185,7 +1185,7 @@
+ 		GameText.bind(_preview_hint,"PREVIEW · {part}",{"part":tr(str(VehicleCustomisation.LABELS[category]))})
+ 	_preview_hint.visible = not _cosmetic_preview.is_empty()
+ 	showroom.apply_customisation(value)
+-	_customisation_camera.focus(showroom,category)
++	_customisation_camera.focus(showroom,"body_kit" if category=="body" else category)
+ 	_condition_presented = showroom.weathering.snapshot()
+ 	_part_highlight.show_part(showroom.car,category)
+ 	showroom.invalidate_render()
+@@ -1583,6 +1583,7 @@
+ 		_workbench_focus_pending = false
+ 		if section in ["customise","tuning"] and not _customisation_locked:
+ 			var focus: String = kit_category if section=="tuning" and vehicle_id=="compact" else _sticker_surface if section=="customise" and _customise_tab=="stickers" else "body"
++			if section=="tuning" and vehicle_id=="compact" and focus=="body": focus = "body_kit"
+ 			_customisation_camera.focus(showroom,focus)
+ 			if section=="customise" and _customise_tab=="livery" and is_instance_valid(livery_menu): livery_menu._reveal_pattern()
+ 	var current: Dictionary = VehicleCondition.read(records, vehicle_id)
+diff --git a/game/ui/garage_customisation_camera.gd b/game/ui/garage_customisation_camera.gd
+--- a/game/ui/garage_customisation_camera.gd
++++ b/game/ui/garage_customisation_camera.gd
+@@ -46,20 +46,24 @@
+ 			local_target = Vector3(0,1.5,0.1)
+ 			direction = Vector3(0.5,4,-1.5)
+ 			distance = 3.3
++		"body_kit":
++			# Low front three-quarter view exposes the bumper, arches and sills.
++			direction = Vector3(3,0.95,-4)
+ 	if showroom.car.vehicle_id == "forklift" and category == "hood":
+ 		local_target = Vector3(0,1.02,1.56)
+ 		direction = Vector3(0.5,0.8,4)
+ 		distance = 2.6
+ 	# Narrow landscape panes still fit the selected region horizontally.
+ 	var aspect: float = showroom.size.x / maxf(1.0,showroom.size.y)
+-	if category != "body": distance *= maxf(1.0,0.95/maxf(0.4,aspect))
++	var whole_body: bool = category in ["body","body_kit"]
++	if not whole_body: distance *= maxf(1.0,0.95/maxf(0.4,aspect))
+ 	var frame: Transform3D = showroom.car.global_transform
+ 	_local_target = local_target*HandlingConfig.BODY_SCALE
+-	if category == "body": _local_target = _model_bounds(showroom.car).get_center()
++	if whole_body: _local_target = _model_bounds(showroom.car).get_center()
+ 	_direction = frame.basis.orthonormalized()*direction.normalized()
+ 	if category == "body": _direction = _home.basis.z.normalized()
+ 	target = frame*_local_target
+-	if category == "body": distance = _fit_body(showroom,_model_bounds(showroom.car),target,_direction)
++	if whole_body: distance = _fit_body(showroom,_model_bounds(showroom.car),target,_direction)
+ 	_distance = distance
+ 	_focus_zoom = showroom.zoom
+ 	_focus_elevation = showroom.elevation
+diff --git a/game/tests/test_customisation_carousel.gd b/game/tests/test_customisation_carousel.gd
+--- a/game/tests/test_customisation_carousel.gd
++++ b/game/tests/test_customisation_carousel.gd
+@@ -81,6 +81,7 @@
+ 	check(page._customisation_camera.focused_category=="hood","opening Parts focuses the main Garage before choosing an option")
+ 	for category: String in VehicleCustomisation.CATEGORIES:
+ 		print("PARTS_STAGE: category "+category)
++		var focus: String = "body_kit" if category=="body" else category
+ 		page._select_kit_category(category)
+ 		await settle()
+ 		for index: int in range(1,VehicleCustomisation.OPTIONS[category].size()):
+@@ -92,7 +93,7 @@
+ 			check(not page._part_highlight.meshes.is_empty(),"selected native part highlighted "+category)
+ 		await settle()
+ 		check(page.showroom.car == car and page.showroom.showroom_viewport == viewport,"preview retains actual car and viewport "+category)
+-		check(page._customisation_camera.focused_category == category and not page.showroom.camera.transform.is_equal_approx(home_camera),"main Garage camera focuses on "+category)
++		check(page._customisation_camera.focused_category == focus and not page.showroom.camera.transform.is_equal_approx(home_camera),"main Garage camera focuses on "+category)
+ 		var target_pixel: Vector2 = page.showroom.camera.unproject_position(page._customisation_camera.target)
+ 		check(target_pixel.distance_to(Vector2(page.showroom.showroom_viewport.size)*0.5) < 3.0,"selected part is centered in the Garage "+category)
+ 		await capture("focus-"+category)
+@@ -108,7 +109,7 @@
+ 		var cancel_view: Transform3D = page.showroom.camera.transform
+ 		page.kit_shelf.cancel.pressed.emit()
+ 		check(page.showroom.customisation == page.kit_draft and page._part_highlight.meshes.is_empty(),"cancel restores part and highlight "+category)
+-		check(page.showroom.camera.transform.is_equal_approx(cancel_view) and page._customisation_camera.focused_category==category,"cancel keeps the editing view on the equipped part "+category)
++		check(page.showroom.camera.transform.is_equal_approx(cancel_view) and page._customisation_camera.focused_category==focus,"cancel keeps the editing view on the equipped part "+category)
+ 	check(CompactKitThumbnail.images.size()<=16,"sixteen-photo cache remains bounded")
+ 	page._select_kit_category("hood")
+ 	page._preview_kit("hood","louvres")
+@@ -379,9 +380,65 @@
+ 		await settle()
+ 		check(page.livery_menu.pattern_scroll.get_global_rect().encloses(page.livery_menu.pattern_tiles[2].get_global_rect()),"selected design is visible in the right options list")
+ 		await capture("app-patterns-"+str(dimensions.x))
++	await body_kit_views()
+ 	await body_fit_states()
+ 	app.queue_free()
+ 	await process_frame
++
++func body_kit_views() -> void:
++	for dimensions: Vector2i in [Vector2i(960,540),Vector2i(1280,720),Vector2i(1720,900)]:
++		root.size = dimensions
++		root.content_scale_size = dimensions
++		page._show_section("cars")
++		await settle()
++		page.showroom.elevation = deg_to_rad(62.0)
++		page.showroom._orbit()
++		var home: Transform3D = page.showroom.camera.transform
++		var home_elevation: float = page.showroom.elevation
++		page.open_car(0)
++		page._show_section("tuning")
++		page._select_kit_category("hood")
++		await settle()
++		page._select_kit_category("body")
++		await settle()
++		var entry_angle: float = rad_to_deg(asin(page.showroom.camera.basis.z.y))
++		check(entry_angle>=8.0 and entry_angle<=18.0,"opening Body kits uses its low camera before selecting an option")
++		check(page._customisation_camera.focused_category=="body_kit","Body kits opens its own camera preset")
++		var saved: Dictionary = page.records.settings.duplicate(true)
++		var car: CarVisual = page.showroom.car
++		var viewport: SubViewport = page.showroom.showroom_viewport
++		for option: Array in VehicleCustomisation.OPTIONS.body:
++			page._preview_kit("body",str(option[0]))
++			await settle()
++			var view: CarShowroom = page.showroom
++			var direction: Vector3 = (view.camera.global_position-page._customisation_camera.target).normalized()
++			var angle: float = rad_to_deg(asin(direction.y))
++			var local_direction: Vector3 = view.car.global_basis.orthonormalized().inverse()*direction
++			var label: String = str(option[0])+" "+str(dimensions)
++			check(angle>=8.0 and angle<=18.0,"body kit uses a low viewing angle: "+label+" actual="+str(angle))
++			check(local_direction.x>0.35 and local_direction.z< -0.35,"body kit shows the front bumper and side: "+label)
++			check(page._customisation_camera.focused_category=="body_kit","body kit has separate framing from pattern previews: "+label)
++			var bounds: AABB = page._customisation_camera._model_bounds(view.car)
++			var pixels := Rect2(Vector2(4,64),Vector2(viewport.size)-Vector2(8,72))
++			var fits: bool = true
++			for x: float in [bounds.position.x,bounds.end.x]:
++				for y: float in [bounds.position.y,bounds.end.y]:
++					for z: float in [bounds.position.z,bounds.end.z]:
++						fits = fits and pixels.has_point(view.camera.unproject_position(view.car.global_transform*Vector3(x,y,z)))
++			check(fits,"whole fitted body kit stays visible: "+label)
++			check(view.car==car and view.showroom_viewport==viewport and page.records.settings==saved,"body kit framing preserves actual car, viewport and save: "+label)
++			if option[0]=="wide" or dimensions.x==1280 and option[0] in ["stock","street","rally"]:
++				await capture("body-kit-"+str(option[0])+"-"+str(dimensions.x))
++		root.size = dimensions+Vector2i(48,24)
++		root.content_scale_size = root.size
++		await settle()
++		var resized_angle: float = rad_to_deg(asin(page.showroom.camera.basis.z.y))
++		check(resized_angle>=8.0 and resized_angle<=18.0,"resizing keeps Body kits at its low camera angle")
++		check(page._customisation_camera.focused_category=="body_kit","resizing retains the Body kits preset")
++		page._show_section("cars")
++		await settle()
++		check(page.showroom.camera.transform.is_equal_approx(home) and page.showroom.elevation==home_elevation,"leaving body kits restores the preceding elevated Garage view")
++		page.showroom.reset_view()
+ 
+ func body_fit_states() -> void:
+ 	for dimensions: Vector2i in [Vector2i(960,540),Vector2i(1720,900)]:
+diff --git a/AGENTS.md b/AGENTS.md
+--- a/AGENTS.md
++++ b/AGENTS.md
+@@ -1,3 +1,8 @@
++<!-- GARAGE-BODY-KIT-CAMERA-20261025 -->
++## Garage low Body kits camera (2026-10-25)
++GBK01-GBK02/R01/Q01: Separate body_kit focus from the pattern/colour body view. Category entry, preview and resize use a low 10.76-degree front three-quarter camera fitted to actual kit bounds, exposing bumper, arches and side skirts. Original runtime reproduces an inherited 62-degree top view (634checks/92fail). Final646Compatibility/646desktopMobile and parser1204 pass, including all ten kits at three sizes, exact return camera and retained cosmetic/account/save guards. Runtime scope is two Garage UI files; geometry, racing camera and simulation remain. Native comparisons, commands, hashes and task-only checkpoint: docs/GARAGE_BODY_KIT_CAMERA_2026_10_25.md and docs/evidence/garage-body-kit-camera-2026-10-25/report.json. Reload and owner/device appearance/touch acceptance remain. No device attachment check/test, APK, real purchase, live mutation, deployment or owner-process restart; concurrent work preserved.
++<!-- /GARAGE-BODY-KIT-CAMERA-20261025 -->
++
+ <!-- ELECTRIC-LAUNCH-DRIFT-20261025 -->
+ ## Gentler electric turn-in and small launch drift (2026-10-25)
+ ELD01-ELD03/R01/Q01: Owner still rejects aggressive slow turns and requests a little powered launch drift. Electric-9 uses0.29 low-speed angle scale and0.12 buildup-rate scale through4m/s, fading to accepted response at8m/s; unwind/countersteer onset remains quick and sustained lock remains. First0.2s full-lock course response falls another74.94% at3.6km/h,74.19% at10.8 and41.57% at18 versus electric-8. Forward powered turns retain modest lateral momentum with0.02 launch-response scale, smoothly gated by pedal/actual steering and fully removed at8m/s; no yaw impulse or power gift. Six launch cases peak4.745deg and recover below0.1deg. Initial excessive angle/hold tune fails hiekka and is retained; revised buildup passes all three five-lap circuits with zero contacts. Launch111/low-speed87/release38/car60/one-pedal63/power19/balance22/response86/turning61/laps6/handling88/rewind61/parser1204, actual Garage-race60Compatibility+60desktopMobile and backend72pass/twoexisting exclusions pass. Independent13270input/five-lap verification accepts. Physics0.71/EVf82b2f9f pin change; six other car hashes/arithmetic, model/input/cameras remain. Owner-requested softer onset supersedes prior minimum-response floor; upper/exact/braking/replay bounds remain and launch bounds tighten. Commands, rejected tunes/fixture failures, native evidence and scoped checkpoint: docs/ELECTRIC_LAUNCH_DRIFT_2026_10_25.md and docs/evidence/electric-launch-drift-2026-10-25/report.json. Reload/rebuild, matching verifier rollout and owner/device feel remain. No physical-device test/attachment check, APK, live mutation, deployment, merge or owner-process restart; concurrent work preserved.
+diff --git a/DEVELOPMENT_STATUS.md b/DEVELOPMENT_STATUS.md
+--- a/DEVELOPMENT_STATUS.md
++++ b/DEVELOPMENT_STATUS.md
+@@ -1,3 +1,8 @@
++<!-- GARAGE-BODY-KIT-CAMERA-20261025 -->
++## Garage low Body kits camera (2026-10-25)
++GBK01-GBK02/R01/Q01: Separate body_kit focus from the pattern/colour body view. Category entry, preview and resize use a low 10.76-degree front three-quarter camera fitted to actual kit bounds, exposing bumper, arches and side skirts. Original runtime reproduces an inherited 62-degree top view (634checks/92fail). Final646Compatibility/646desktopMobile and parser1204 pass, including all ten kits at three sizes, exact return camera and retained cosmetic/account/save guards. Runtime scope is two Garage UI files; geometry, racing camera and simulation remain. Native comparisons, commands, hashes and task-only checkpoint: docs/GARAGE_BODY_KIT_CAMERA_2026_10_25.md and docs/evidence/garage-body-kit-camera-2026-10-25/report.json. Reload and owner/device appearance/touch acceptance remain. No device attachment check/test, APK, real purchase, live mutation, deployment or owner-process restart; concurrent work preserved.
++<!-- /GARAGE-BODY-KIT-CAMERA-20261025 -->
++
+ <!-- TRACK-SLOT-GIFTS-20261025 -->
+ ## Track-slot gifting (2026-10-25)
+ GTS01-GTS04/R01/Q01: Store gifts for 1/5/10 publishing slots use exact username lookup and explicit recipient/quantity/price confirmation. Purchase receipts retain buyer and immutable recipient; atomic server delivery, sorted account locks, pending approvals, durable retries and separate simulated/real capacity preserve existing free-slot/racing rules. Ad-free gifts and existing-slot transfers are excluded. Current client checkout remains debug simulation; verified Play backend accepts the recipient but shipping Billing integration remains outstanding. Eleven translations, audited admin recipient approval and explicit privacy buyer join are included. Final native64Compatibility/64desktopMobile, backend57pass/3skip and provider/privacy21 pass; focused post-lock-refresh admin validation is recorded in the evidence. Exact task-start Store131/6fail and purchase lifecycle failures reproduce in isolated memory. PostgreSQL test service is unreachable and import cannot copy an existing native DLL. Migration0069, client/API rollout and owner/device/payment acceptance remain. Actual commands, limitations, screenshots, hashes and task-only review patch: docs/TRACK_SLOT_GIFTS_2026_10_25.md and docs/evidence/track-slot-gifts-2026-10-25/report.json. No attachment/device test, APK, real purchase, live mutation, deployment or owner-process restart; concurrent work preserved.
+diff --git a/docs/GARAGE_BODY_KIT_CAMERA_2026_10_25.md b/docs/GARAGE_BODY_KIT_CAMERA_2026_10_25.md
+--- /dev/null
++++ b/docs/GARAGE_BODY_KIT_CAMERA_2026_10_25.md
+@@ -0,0 +1,23 @@
++# Garage Body kits camera — 2026-10-25
++
++GBK01–GBK02/R01/Q01 address the owner's report that Body kits inherits a top view which hides the fitted kit.
++
++Body kits used the same `body` focus as Patterns and Colours. That focus deliberately preserves the previous Garage viewing direction, including an elevated view. Body kits now has a separate `body_kit` preset: a low front three-quarter angle which shows the bumper, wheel arches and side skirts. The camera still fits the actual model bounds, including the selected kit, into the main Garage view. Category selection, option selection and a layout resize all use that preset.
++
++The change is confined to `game/ui/garage_customisation_camera.gd` and its three kit-focus call sites in `game/ui/garage_page.gd`. The shared body fit, pattern/colour framing, right-side option list, preview/equip behavior and exact return-camera state remain. Driving cameras, car geometry and canonical simulation are untouched.
++
++The expanded native customisation regression enters Parts from a 62-degree Garage view and visits Hood before Body kits. It checks all ten kits at 960 × 540, 1280 × 720 and 1720 × 900 for a low camera angle, a front/side viewing direction, fully visible model bounds, the retained car/viewport and unchanged saved cosmetics. Entry and resize checks verify that selecting an option is not required for the low preset. The existing tests still cover all seven vehicles, free previews, account/save/purchase guards, gestures and returning to the exact preceding view.
++
++The original runtime reproduces the top view at 62 degrees in every option, with 634 checks / 92 failures against the expanded regression. The corrected suite passes **646 Compatibility / 646 desktop Mobile**, with zero failures. The final full parser passes **1204 scripts**. The preset is approximately 10.76 degrees above level. Existing framing, preview and return-camera assertions remain; the Body kits focus identity changes from the shared `body` to `body_kit`.
++
++The exact task-start runtime sources and native rejection captures are retained under `docs/evidence/garage-body-kit-camera-2026-10-25/before/`. [Recorded commands, actual results, source hashes and the reverse-checked task-only patch](evidence/garage-body-kit-camera-2026-10-25/report.json) document the local checkpoint. The runner uses the pinned Godot via `scripts/dev.ps1`, isolated APPDATA and local fixture records:
++
++```powershell
++powershell -NoProfile -ExecutionPolicy Bypass -File docs/evidence/garage-body-kit-camera-2026-10-25/run.ps1 -Mode gl_compatibility
++powershell -NoProfile -ExecutionPolicy Bypass -File docs/evidence/garage-body-kit-camera-2026-10-25/run.ps1 -Mode mobile
++powershell -NoProfile -ExecutionPolicy Bypass -File docs/evidence/garage-body-kit-camera-2026-10-25/run.ps1 -Test test_script_parse -Mode headless
++```
++
++[Review the actual Body kits before/after](evidence/garage-body-kit-camera-2026-10-25/review.html).
++
++Reload and owner appearance/touch acceptance remain. Mobile here means Windows Vulkan. No device attachment check or physical-device test, APK, real purchase, live mutation, deployment or owner-process restart was performed. Concurrent work is preserved; no staging or commit is implied.
+diff --git a/docs/evidence/garage-body-kit-camera-2026-10-25/run.ps1 b/docs/evidence/garage-body-kit-camera-2026-10-25/run.ps1
+--- /dev/null
++++ b/docs/evidence/garage-body-kit-camera-2026-10-25/run.ps1
+@@ -0,0 +1,15 @@
++param([string]$Test='test_customisation_carousel',[ValidateSet('headless','gl_compatibility','mobile')][string]$Mode='headless',[switch]$Before)
++$ErrorActionPreference='Stop'
++$kitRepo=(Resolve-Path (Join-Path $PSScriptRoot '../../..')).Path
++$kitOutput=Join-Path $PSScriptRoot $(if ($Before) {'before/native'} else {"$Test-$Mode"})
++New-Item -ItemType Directory -Force -Path $kitOutput | Out-Null
++$env:APPDATA=Join-Path $kitRepo "build/garage-body-kit-camera-2026-10-25/$(if ($Before) {'before'} else {"$Test-$Mode"})/user"
++New-Item -ItemType Directory -Force -Path $env:APPDATA | Out-Null
++$kitArgs=@('-NoProfile','-ExecutionPolicy','Bypass','-File',(Join-Path $kitRepo 'scripts/dev.ps1'),'-Action','TestScript','-ScriptPath',"res://tests/$Test.gd",'-CommandTimeoutSeconds','240','-TestArgument',"--evidence-root=$kitOutput")
++if ($Mode -ne 'headless') {$kitArgs+=@('-Graphical','-RenderingMethod',$Mode,'-RenderingDriver',$(if ($Mode -eq 'mobile') {'vulkan'} else {'opengl3'}))}
++$kitStarted=[DateTime]::UtcNow
++& powershell @kitArgs *> (Join-Path $kitOutput 'console.log')
++$kitCode=$LASTEXITCODE
++@{arguments=$kitArgs;exit_code=$kitCode;started_utc=$kitStarted.ToString('o');duration_seconds=([DateTime]::UtcNow-$kitStarted).TotalSeconds}|ConvertTo-Json -Depth 5|Set-Content -Encoding UTF8 (Join-Path $kitOutput 'command.json')
++Get-Content (Join-Path $kitOutput 'console.log') -Tail 16
++exit $kitCode
+diff --git a/docs/evidence/garage-body-kit-camera-2026-10-25/record.py b/docs/evidence/garage-body-kit-camera-2026-10-25/record.py
+--- /dev/null
++++ b/docs/evidence/garage-body-kit-camera-2026-10-25/record.py
+@@ -0,0 +1,82 @@
++"""Record actual native outcomes and the task-only review checkpoint."""
++from pathlib import Path
++import difflib
++import hashlib
++import json
++import re
++import subprocess
++
++EVIDENCE = Path(__file__).resolve().parent
++ROOT = EVIDENCE.parents[2]
++EXISTING = [
++    "game/ui/garage_page.gd", "game/ui/garage_customisation_camera.gd",
++    "game/tests/test_customisation_carousel.gd", "AGENTS.md", "DEVELOPMENT_STATUS.md",
++]
++NEW = ["docs/GARAGE_BODY_KIT_CAMERA_2026_10_25.md"]
++NEW += ["docs/evidence/garage-body-kit-camera-2026-10-25/" + name
++        for name in ("run.ps1", "record.py", "review.html")]
++
++
++def sha(path):
++    return hashlib.sha256(path.read_bytes()).hexdigest()
++
++
++def log_text(path):
++    data = path.read_bytes()
++    return data.decode("utf-16" if data.startswith(b"\xff\xfe") else "utf-8-sig", errors="replace")
++
++
++patch, sources = [], []
++for name in EXISTING + NEW:
++    target = ROOT / name
++    before = EVIDENCE / "before" / name
++    original = before.read_text(encoding="utf-8") if before.exists() else ""
++    current = target.read_text(encoding="utf-8")
++    if current != original:
++        patch.append(f"diff --git a/{name} b/{name}\n")
++        patch.extend(difflib.unified_diff(original.splitlines(True), current.splitlines(True),
++                     fromfile=f"a/{name}" if before.exists() else "/dev/null", tofile=f"b/{name}"))
++    sources.append({"path": name, "sha256": sha(target),
++                    "before_sha256": sha(before) if before.exists() else None})
++checkpoint = EVIDENCE / "task-only.patch"
++checkpoint.write_text("".join(patch), encoding="utf-8", newline="\n")
++result = subprocess.run(["git", "apply", "--check", "--reverse", str(checkpoint)],
++                        cwd=ROOT, capture_output=True, text=True)
++runs = []
++for path in sorted(EVIDENCE.rglob("command.json")):
++    command = json.loads(path.read_text(encoding="utf-8-sig"))
++    log = path.with_name("console.log")
++    content = log_text(log)
++    summaries = re.findall(r"(?:CUSTOMISATION_CAROUSEL|GARAGE_SIDEBAR|GARAGE_VIEW_CONTROLS|"
++                           r"GARAGE_CUSTOMISATION_SPEED|APP_TESTS|SCRIPT_PARSE):[^\r\n]+", content)
++    runs.append({"directory": path.parent.relative_to(EVIDENCE).as_posix(), **command, "summary": summaries,
++                 "failures": re.findall(r"^FAIL:[^\r\n]+", content, re.M), "log_sha256": sha(log)})
++baseline = EVIDENCE / "before/native/console.log"
++report = {
++    "date": "2026-10-25", "requirements": ["GBK01", "GBK02", "R01", "Q01"],
++    "engine": (ROOT / "godot-version.txt").read_text().strip(),
++    "behavior": {
++        "body_kits": "Separate low front three-quarter preset, fitted to actual selected model bounds",
++        "entry": "Kit-category selection, option selection and layout resize use body_kit focus",
++        "unchanged": "Pattern/colour framing, options panel, exact return-camera and cosmetic rules",
++    },
++    "runs": runs, "sources": sources,
++    "baseline": {"log": "before/native/console.log", "sha256": sha(baseline),
++                 "summary": re.findall(r"CUSTOMISATION_CAROUSEL:[^\r\n]+", log_text(baseline)),
++                 "regression_source": "before/regression_test_customisation_carousel.gd.txt",
++                 "regression_sha256": sha(EVIDENCE / "before/regression_test_customisation_carousel.gd.txt"),
++                 "finding": "Original runtime inherits 62-degree Garage view for every body kit"},
++    "captures": [{"path": path.relative_to(EVIDENCE).as_posix(), "sha256": sha(path)}
++                 for path in sorted(EVIDENCE.rglob("*.png"))],
++    "checkpoint": {"path": "task-only.patch", "sha256": sha(checkpoint),
++                   "reverse_check_exit": result.returncode, "stderr": result.stderr},
++    "remaining_acceptance": ["client reload", "owner appearance and touch", "physical-device acceptance"],
++    "limits": ["Windows desktop renderers only", "no device attachment check or physical-device test",
++               "no APK", "no real purchase or live mutation", "no deployment or owner-process restart",
++               "concurrent work preserved; no staging or commit"],
++}
++(EVIDENCE / "report.json").write_text(json.dumps(report, indent=2)+"\n", encoding="utf-8")
++print(json.dumps({"runs": [{"name": run["directory"], "exit": run["exit_code"], "summary": run["summary"]}
++                           for run in runs], "checkpoint_reverse_exit": result.returncode,
++                  "checkpoint_error": result.stderr}, indent=2))
++raise SystemExit(result.returncode)
+diff --git a/docs/evidence/garage-body-kit-camera-2026-10-25/review.html b/docs/evidence/garage-body-kit-camera-2026-10-25/review.html
+--- /dev/null
++++ b/docs/evidence/garage-body-kit-camera-2026-10-25/review.html
+@@ -0,0 +1,23 @@
++<!doctype html>
++<html lang="en">
++<meta charset="utf-8">
++<meta name="viewport" content="width=device-width,initial-scale=1">
++<title>Garage Body kits camera</title>
++<style>
++body{margin:0;background:#0b141b;color:#ecf0f2;font:16px/1.5 system-ui,sans-serif}main{max-width:1500px;margin:auto;padding:24px}h1{line-height:1.2}p,figcaption{color:#b6c5ce}p{max-width:950px}a{color:#ffd541}img{display:block;width:100%;height:auto;border:1px solid #354750;border-radius:6px}figure{margin:20px 0}figcaption{margin:8px 0 16px}.pair{display:grid;grid-template-columns:1fr 1fr;gap:16px}@media(max-width:900px){.pair{grid-template-columns:1fr}}
++</style>
++<main>
++<h1>Garage Body kits: low three-quarter view</h1>
++<p>Actual native App captures. Body kits now has its own low camera angle, independent of an elevated Garage, Hood or Roof view. The full selected kit stays in the main Garage view, with options on the right. Patterns and Colours keep their previous framing.</p>
++<div class="pair">
++<figure><img src="before/native/body-kit-wide-1280.png" alt="Before: Body kits viewed from above after entering from an elevated Garage camera"><figcaption>Before: Wide arch inherits the elevated Garage angle.</figcaption></figure>
++<figure><img src="test_customisation_carousel-gl_compatibility/body-kit-wide-1280.png" alt="After: Wide arch at a low three-quarter angle showing the front bumper, wheel arches and side skirts"><figcaption>After: the same kit, low front and side view.</figcaption></figure>
++</div>
++<div class="pair">
++<figure><img src="test_customisation_carousel-gl_compatibility/body-kit-street-1280.png" alt="Street body kit in the main Garage"><figcaption>Street kit.</figcaption></figure>
++<figure><img src="test_customisation_carousel-gl_compatibility/body-kit-rally-1280.png" alt="Rally body kit in the main Garage"><figcaption>Rally kit.</figcaption></figure>
++</div>
++<figure><img src="test_customisation_carousel-mobile/body-kit-wide-960.png" alt="Wide arch kit in the desktop Mobile renderer at 960 by 540"><figcaption>Compact layout: 960 × 540, desktop Mobile.</figcaption></figure>
++<p>All ten options are checked at three window sizes for viewing angle, front/side direction, model bounds and retained preview/save state. <a href="report.json">Recorded commands and actual outcomes</a>. Desktop renderers only; no device attachment check or phone test, APK, real purchase, deployment or owner-process restart.</p>
++</main>
++</html>

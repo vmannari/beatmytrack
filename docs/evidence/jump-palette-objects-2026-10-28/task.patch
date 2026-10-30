@@ -1,0 +1,523 @@
+--- a/game/core/app.gd
++++ b/game/core/app.gd
+@@ -3273,7 +3273,7 @@
+ 	object_browser = ObjectBrowser.new()
+ 	object_browser.visible = false
+ 	for key: String in object_browser_state: object_browser.set(key,object_browser_state[key])
+-	object_browser.current = canvas.stamp_kind
++	object_browser.current = CreatorCatalog.jump_asset(canvas.stamp_jump_profile,str(document.theme)) if canvas.stamp_kind == "jump" else canvas.stamp_kind
+ 	object_browser.stamp_span = canvas.stamp_span
+ 	object_browser.stamp_container_color = canvas.stamp_container_color
+ 	object_browser.biome = str(document.get("biome",document.theme))
+@@ -3647,7 +3647,8 @@
+ 				canvas.selected_object = -1
+ 				_build_editor_tools())
+ 		else:
+-			editor_status.text = CreatorCatalog.label(canvas.stamp_kind)+" / "+("Drag a curve; release to place" if canvas.run_shape=="curve" else "Drag a line, or tap its two ends" if canvas.mode=="run" else "Tap empty ground to place / tap an object to edit")
++			var stamp_label: String = CreatorCatalog.label(CreatorCatalog.jump_asset(canvas.stamp_jump_profile,str(document.theme))) if canvas.stamp_kind == "jump" else CreatorCatalog.label(canvas.stamp_kind)
++			editor_status.text = stamp_label+" / "+("Drag a curve; release to place" if canvas.run_shape=="curve" else "Drag a line, or tap its two ends" if canvas.mode=="run" else "Tap empty ground to place / tap an object to edit")
+ 			if canvas.mode=="objects": editor_status.text="Tap an object to move, rotate or delete"
+ 	editor_guidance = editor_status.text
+ 	if editor_save_error == OK: editor_status.show()
+@@ -5864,13 +5865,16 @@
+ func _choose_object(kind: String) -> void:
+ 	var family: Array = CreatorCatalog.family(kind)
+ 	var same_family: bool = kind == canvas.stamp_kind or (not family.is_empty() and canvas.stamp_kind in family[3])
++	if CreatorCatalog.JUMP_ASSETS.has(kind): same_family = same_family and canvas.stamp_jump_profile == str(CreatorCatalog.JUMP_ASSETS[kind])
+ 	var placement: String = object_browser.placement if same_family else "single"
+ 	canvas.cancel_gesture()
++	var jump_profile: String = str(CreatorCatalog.JUMP_ASSETS.get(kind,""))
+ 	canvas.multi_select = false
+-	canvas.stamp_kind=kind
+-	if kind == "jump" and canvas.stamp_jump_profile not in JumpProfiles.IDS:
+-		canvas.stamp_jump_profile = JumpProfiles.default_for(str(document.theme))
+-	if is_instance_valid(editor_world): editor_world.warm_prop(kind,CreatorCatalog.default_scale(kind),canvas.stamp_container_color)
++	canvas.stamp_kind="jump" if not jump_profile.is_empty() else kind
++	if canvas.stamp_kind == "jump":
++		canvas.stamp_jump_profile = jump_profile if not jump_profile.is_empty() else JumpProfiles.default_for(str(document.theme))
++		object_browser.current = CreatorCatalog.jump_asset(canvas.stamp_jump_profile,str(document.theme))
++	if is_instance_valid(editor_world): editor_world.warm_prop(canvas.stamp_kind,CreatorCatalog.default_scale(kind),canvas.stamp_container_color)
+ 	if not same_family: canvas.stamp_scale=CreatorCatalog.default_scale(kind)
+ 	object_browser.stamp_scale=canvas.stamp_scale
+ 	canvas.selected_object=-1
+--- a/game/editor/creator_catalog.gd
++++ b/game/editor/creator_catalog.gd
+@@ -1,8 +1,12 @@
+ class_name CreatorCatalog
+ extends RefCounted
+-## One browser tile per asset family; variants are chosen after selection.
++## One browser tile per object; shared scenery families retain their variants.
++const JUMP_ASSETS: Dictionary = {
++ "jump_low_ramp":"low_ramp_v1", "jump_kicker":"kicker_v1", "jump_tabletop":"tabletop_v1",
++ "jump_rounded_bump":"roller_v1", "jump_sand_rise":"dune_v1"
++}
+ const BIOME_ASSETS: Dictionary = {
+- "desert":["pebbles","rock","slate","cliff","jump","chevron","braking_board","flag","gantry","egypt_pyramid","egypt_obelisk","egypt_column","egypt_wall"],
++ "desert":["pebbles","rock","slate","cliff","jump","jump_low_ramp","jump_kicker","jump_tabletop","jump_rounded_bump","jump_sand_rise","chevron","braking_board","flag","gantry","egypt_pyramid","egypt_obelisk","egypt_column","egypt_wall"],
+  "winter":["tree","pebbles","rock","slate","cliff","log","tyre_stack","barrier","guardrail","fence","cone","chevron","braking_board","flag","light","gantry","shed","hut","igloo","snow_castle","snowman","snow_lantern","ice_lantern","ice_compact"]
+ }
+ const OBJECT_BIOMES: Dictionary = {"abandoned_warehouse":["night_city"],"burning_car":["night_city"],"firefly_bush":["night_city"],"burning_barrel":["night_city"],"lantern_post":["night_city"],"neon_arrow":["night_city"],"speed_bump":["pine","storm","night_city"],"egypt_pyramid":["desert"],"egypt_obelisk":["desert"],"egypt_column":["desert"],"egypt_wall":["desert"],"igloo":["winter"],"snowman":["winter"],"snow_castle":["winter"],"snow_lantern":["winter"],"ice_lantern":["winter"],"ice_compact":["winter"]}
+@@ -40,7 +44,11 @@
+  ["flag","Flag","Trackside",["flag"]],
+  ["light","Light pole","Trackside",["light"]],
+  ["gantry","Start gantry","Trackside",["gantry"]],
+- ["jump","Jumps & bumps","Props",["jump"]],
++ ["jump_low_ramp","Low ramp","Props",["jump"]],
++ ["jump_kicker","Short kicker","Props",["jump"]],
++ ["jump_tabletop","Tabletop","Props",["jump"]],
++ ["jump_rounded_bump","Rounded bump","Props",["jump"]],
++ ["jump_sand_rise","Sand rise","Props",["jump"]],
+  ["speed_bump","Speed bump","Props",["speed_bump"]],
+  ["oil","Oil spill","Props",["oil"]],
+  ["hay_bale","Hay bale","Props",["hay_bale"]],
+@@ -70,14 +78,19 @@
+ const LINES: Array[String] = ["tyre_stack","tyre_wall","barrier","guardrail","fence","wire_fence","cone"]
+ 
+ static func family(kind: String) -> Array:
++	# Saved/canonical jump objects keep their original family and surface role.
++	# The palette exposes each authored profile separately, using the IDs above.
++	if kind == "jump": return ["jump","Jumps & bumps","Props",["jump"]]
+ 	for asset: Array in ASSETS:
+-		if kind in asset[3]: return asset
++		if kind == asset[0] or kind in asset[3]: return asset
+ 	return []
+ 
+ static func label(kind: String) -> String:
++	if JUMP_ASSETS.has(kind): return JumpProfiles.label(str(JUMP_ASSETS[kind]))
+ 	return {"ice_compact":"Ice Compact","egypt_pyramid":"Pyramid","egypt_obelisk":"Obelisk","egypt_column":"Lotus column","egypt_column_broken":"Broken column","egypt_wall":"Temple wall","oil":"Oil spill","tree":"Pine tree","tyre_stack":"One stack","tyre_wall":"Six stacks","boulder":"Boulder","slate":"Low ridge","cliff":"Cliff","parked_car":"Utility car","van":"Van"}.get(kind,kind.replace("_"," ").capitalize())
+ 
+ static func behavior(kind: String) -> String:
++	if JUMP_ASSETS.has(kind): return JumpProfiles.description(str(JUMP_ASSETS[kind]))
+ 	if kind=="burning_barrel": return "Movable / tips and rolls on impact"
+ 	if kind == "abandoned_warehouse": return "Drive through the open ends / solid side walls"
+ 	if kind == "snowman": return "Breaks into soft snow chunks and powder"
+@@ -87,7 +100,7 @@
+ 	if kind == "crate": return "Movable; heavy impacts break it into loose wood"
+ 	if kind == "speed_bump": return "Brake before it; accelerate as the nose rises"
+ 	if kind == "oil": return "Oil spill / slippery; coats tyres and reduces grip"
+-	if kind == "jump": return "Low ramps and rounded bumps / tap again to choose a style"
++	if kind == "jump": return "Original ramp / launches in its facing direction"
+ 	if kind in DECORATIVE: return "Decorative / no collision"
+ 	if kind in SOFT: return "Light / moves on impact; small speed loss"
+ 	if kind in ["tree","broadleaf"]: return "Solid / trunk collision"
+@@ -120,3 +133,7 @@
+ 	var result: Array[float] = []
+ 	result.assign([1.0,2.0,3.0] if kind == "cliff" else [0.75,1.0,1.5])
+ 	return result
++
++static func jump_asset(profile: String, biome: String = "pine") -> String:
++	var selected: String = profile if profile in JumpProfiles.IDS else JumpProfiles.default_for(biome)
++	return str(JUMP_ASSETS.find_key(selected))
+--- a/game/editor/object_browser.gd
++++ b/game/editor/object_browser.gd
+@@ -131,6 +131,7 @@
+ 	if not asset.is_empty():
+ 		recent.erase(asset[0]); recent.push_front(asset[0]); recent.resize(mini(12,recent.size()))
+ 	asset_chosen.emit(kind)
++	if CreatorCatalog.JUMP_ASSETS.has(kind) and is_instance_valid(options): options.hide()
+ 	refresh()
+ 
+ func _tiles() -> void:
+@@ -150,7 +151,7 @@
+ 		for tile: Node in tiles.get_children():
+ 			if not tile is Button: continue
+ 			var family: Array = CreatorCatalog.family(tile.name.trim_prefix("Asset_"))
+-			var chosen: bool = not family.is_empty() and current in family[3]
++			var chosen: bool = not family.is_empty() and (current == family[0] or current in family[3])
+ 			if tile.button_pressed == chosen: continue
+ 			tile.set_pressed_no_signal(chosen)
+ 			EditorStyle.card(tile,chosen)
+@@ -159,7 +160,7 @@
+ 	_clear(tiles)
+ 	for index: int in range(page*page_size,mini(entries.size(),(page+1)*page_size)):
+ 		var asset: Array = entries[index]
+-		var chosen: bool = current in asset[3]
++		var chosen: bool = current == asset[0] or current in asset[3]
+ 		var kind: String = current if chosen else str(asset[0])
+ 		var title: String = CreatorCatalog.label(current) if chosen and current != asset[0] else str(asset[1])
+ 		var tile: Button = ObjectThumbnail.make(kind,title,chosen,_activate_asset.bind(asset[0]),biome,stamp_container_color if asset[0] == "container" else "")
+@@ -220,6 +221,9 @@
+ 
+ func _activate_asset(kind: String) -> void:
+ 	if not CreatorCatalog.available(kind,biome): return
++	if CreatorCatalog.JUMP_ASSETS.has(kind):
++		choose(kind)
++		return
+ 	var family: Array = CreatorCatalog.family(kind)
+ 	if current == kind or (not family.is_empty() and current in family[3]):
+ 		open_properties()
+--- a/game/editor/object_thumbnail.gd
++++ b/game/editor/object_thumbnail.gd
+@@ -63,11 +63,12 @@
+ 	button.name = "Asset_"+kind
+ 	button.custom_minimum_size = Vector2(112,90)
+ 	button.tooltip_text = title+" — Select, then open Properties"
++	if CreatorCatalog.JUMP_ASSETS.has(kind): button.tooltip_text = title+" / Tap the track to place"
+ 	button.toggle_mode = true
+ 	button.button_pressed = chosen
+ 	button.pressed.connect(action)
+ 	EditorStyle.card(button,chosen)
+-	button._cache_key = kind+"/"+TrackTheme.normalized(biome)+"/"+NativeTrackVisual.VERSION+"/"+CreatorPropVisual.VERSION+"/"+PREVIEW_VERSION+"/"+(color if kind == "container" else "")+("/"+JumpProfiles.VERSION if kind == "jump" else "")
++	button._cache_key = kind+"/"+TrackTheme.normalized(biome)+"/"+NativeTrackVisual.VERSION+"/"+CreatorPropVisual.VERSION+"/"+PREVIEW_VERSION+"/"+(color if kind == "container" else "")+("/"+JumpProfiles.VERSION if kind == "jump" or CreatorCatalog.JUMP_ASSETS.has(kind) else "")
+ 	var cached: Texture2D = _images.get(button._cache_key)
+ 	if cached != null: _images.erase(button._cache_key); _images[button._cache_key] = cached
+ 	button._kind = kind; button._biome = biome; button._color = color
+@@ -107,6 +108,9 @@
+ 	viewport.add_child(kit)
+ 	var track := NativeTrack.new()
+ 	var object: Dictionary = {"kind":kind,"position":[0,0],"rotation":0}
++	if CreatorCatalog.JUMP_ASSETS.has(kind):
++		object.kind = "jump"
++		object["jump_profile"] = str(CreatorCatalog.JUMP_ASSETS[kind])
+ 	if kind == "jump": object["jump_profile"] = JumpProfiles.default_for(biome)
+ 	if kind == "container" and ContainerPaint.valid(color): object["color"] = color
+ 	track.metadata = {"creator_document":{"objects":[object]}}
+@@ -137,7 +141,7 @@
+ 	camera.projection = Camera3D.PROJECTION_ORTHOGONAL
+ 	# Tall poles stay readable with a lower studio angle; flat road hazards
+ 	# reveal their profile from a more elevated angle. These are menu cameras.
+-	var view := Vector3(7,5.5,-10) if kind in ["flag","light","gantry"] else Vector3(7,7.5,-10) if kind in ["oil","jump","speed_bump","pallet","pebbles"] else Vector3(7,6.3,-10)
++	var view := Vector3(7,5.5,-10) if kind in ["flag","light","gantry"] else Vector3(7,7.5,-10) if kind in ["oil","jump","speed_bump","pallet","pebbles"] or CreatorCatalog.JUMP_ASSETS.has(kind) else Vector3(7,6.3,-10)
+ 	camera.position = view
+ 	viewport.add_child(camera)
+ 	camera.look_at_from_position(camera.position,Vector3.ZERO)
+--- a/game/tests/test_editor_jump_styles.gd
++++ b/game/tests/test_editor_jump_styles.gd
+@@ -1,6 +1,6 @@
+ extends SceneTree
+ ## Real compiler/simulation/editor coverage; isolated files, no owner account.
+-const OUT: String = "res://../docs/evidence/editor-jump-styles-2026-10-27"
++const OUT: String = "res://../docs/evidence/jump-palette-objects-2026-10-28"
+ var checks: int = 0
+ var failures: int = 0
+ var captures: bool = false
+@@ -31,6 +31,18 @@
+ 	print("TEST_USER_DATA=",OS.get_user_data_dir())
+ 	captures = DisplayServer.get_name() != "headless"
+ 	DirAccess.make_dir_recursive_absolute(ProjectSettings.globalize_path(OUT))
++	var before_catalog := GDScript.new()
++	before_catalog.source_code=FileAccess.get_file_as_string("res://tests/fixtures/jump_palette_before/creator_catalog.gd.txt").replace("\r\n","\n").replace("class_name CreatorCatalog\n","")
++	check(before_catalog.reload() == OK,"task-start palette catalogue loads independently")
++	var no_recent: Array[String] = []
++	var prior: Array = before_catalog.filtered("Props","",no_recent,"desert")
++	check(prior.size() == 1 and prior[0][0] == "jump","reported navigation reproduces as one aggregate card on task-start sources")
++	for biome: String in ["desert","pine","storm","night_city"]:
++		var entries: Array = CreatorCatalog.filtered("Props","",[],biome)
++		var separate: int = 0
++		for entry: Array in entries:
++			if CreatorCatalog.JUMP_ASSETS.has(entry[0]): separate+=1
++		check(separate == 5 and not entries.any(func(entry: Array) -> bool: return entry[0] == "jump"),biome+" exposes all five jump objects without an aggregate card")
+ 	var legacy_doc: Dictionary = document()
+ 	legacy_doc.objects = [{"kind":"jump","position":[0,0],"rotation":0}]
+ 	var legacy_track: NativeTrack = TrackCompiler.compile(legacy_doc)
+@@ -163,80 +175,109 @@
+ 	var path: String = OUT+"/"+RenderingServer.get_current_rendering_method()+"-"+name_value+".png"
+ 	check(root.get_texture().get_image().save_png(path) == OK,"native screenshot "+name_value)
+ 
++func tap(button: Button) -> void:
++	var down := InputEventScreenTouch.new(); down.index=0; down.pressed=true; down.position=button.get_global_rect().get_center()
++	root.push_input(down,true); await process_frame
++	var up := InputEventScreenTouch.new(); up.index=0; up.pressed=false; up.position=down.position
++	root.push_input(up,true); await process_frame
++
++func open_palette(app: Node, category: String = "Props") -> void:
++	app._editor_category("objects")
++	app.object_browser.category=category; app.object_browser.page=0; app.object_browser.refresh()
++	await process_frame; await process_frame
++
++func ready_icons(browser: ObjectBrowser) -> void:
++	if not captures: return
++	var deadline: int = Time.get_ticks_msec()+15000
++	var ready: bool = false
++	while not ready and Time.get_ticks_msec()<deadline:
++		ready=true
++		for tile: Node in browser.tiles.get_children():
++			if tile is ObjectThumbnail: ready = ready and tile._image.texture != null and tile._viewport == null
++		await process_frame
++	check(ready,"all five object cards publish their native previews")
++
+ func editor_flow() -> void:
+-	root.size = Vector2i(1280,720)
+-	var folder: String = ProjectSettings.globalize_path("res://../tmp/jump_styles_"+TrackLibrary.unique_id())
++	root.size=Vector2i(1280,720); root.content_scale_size=root.size
++	var folder: String = ProjectSettings.globalize_path("res://../tmp/jump_palette_"+TrackLibrary.unique_id())
+ 	var app: Node = load("res://core/app.tscn").instantiate()
+-	app.library = TrackLibrary.new(folder)
+-	app.records = LocalRecords.new(folder+"/records.json")
+-	app.cloud_root_override = folder+"/cloud"
++	app.library=TrackLibrary.new(folder); app.records=LocalRecords.new(folder+"/records.json"); app.cloud_root_override=folder+"/cloud"
+ 	root.add_child(app)
+ 	var deadline: int = Time.get_ticks_msec()+15000
+ 	while not app.startup_complete and Time.get_ticks_msec()<deadline: await process_frame
+ 	check(app.startup_complete,"isolated actual app starts")
+ 	var doc: Dictionary = document("desert")
+ 	app.document=doc; app._show_screen("create")
+-	await process_frame; await wait_editor(app)
+-	app._choose_object("jump")
+-	check(app.canvas.stamp_jump_profile == "dune_v1","actual desert palette defaults to sand rise")
+-	app.object_browser._activate_asset("jump")
+-	await process_frame
+-	var picker: OptionButton = app.object_browser.details.find_child("JumpStyle",true,false)
+-	check(picker != null and picker.item_count == 5,"palette offers all five styles")
+-	picker.item_selected.emit(3)
+-	check(app.canvas.stamp_jump_profile == "roller_v1","real palette selector updates placement")
+-	app.object_browser.options.hide()
++	await process_frame; await wait_editor(app); await open_palette(app)
++	check(app.object_browser.tiles.get_child_count() == 5,"Desert Props shows five separate jump and bump objects together")
++	check(app.object_browser.tiles.find_child("Asset_jump",true,false) == null,"aggregate Jumps and bumps tile is removed")
++	check(app.object_browser.details.find_child("JumpStyle",true,false) == null,"palette has no jump-style dropdown")
++	await ready_icons(app.object_browser)
++	await capture("desert-palette-1280")
++	var keys: Dictionary = {}
++	var pictures: Dictionary = {}
+ 	for profile: String in JumpProfiles.IDS:
+-		app._jump_profile(profile)
+-		app.canvas.mode="place"
++		await open_palette(app)
++		var asset: String = CreatorCatalog.jump_asset(profile,"desert")
++		var tile: ObjectThumbnail = app.object_browser.tiles.get_node("Asset_"+asset)
++		check(tile != null and tile._kind == asset,profile+" has its own visible object card")
++		keys[tile._cache_key]=true
++		if captures:
++			await ready_icons(app.object_browser)
++			pictures[tile._image.texture.get_image().get_data().hex_encode().sha256_text()]=true
++		await tap(tile)
++		check(app.canvas.stamp_kind == "jump" and app.canvas.stamp_jump_profile == profile,"one native touch chooses "+profile)
++		check(app.editor_status.text.begins_with(JumpProfiles.label(profile)),"placement guidance names the selected object")
++		tile=app.object_browser.tiles.get_node("Asset_"+asset)
++		check(app.object_browser.current == asset and tile.button_pressed,"matching card remains selected")
++		var selected_count: int=0
++		for other: Button in app.object_browser.tiles.get_children():
++			if other.button_pressed: selected_count+=1
++		check(selected_count == 1,"only the exact jump card is highlighted")
++		await tap(tile)
++		check(not app.object_browser.options.visible and app.canvas.mode == "place","reselecting "+profile+" keeps direct placement without a popup")
+ 		app.canvas._place(app.canvas.to_screen(Vector2(-32+doc.objects.size()*16,0)))
+ 		await wait_editor(app)
+ 		check(JumpProfiles.id(doc.objects[-1]) == profile,"actual canvas places chosen "+profile)
++		check(app.editor_context.find_child("JumpStyle",true,false) == null,"placed jump has normal object controls without a style menu")
++	check(keys.size() == 5,"all five object previews have distinct cache identities")
++	if captures: check(pictures.size() == 5,"all five cards show different rendered object previews")
+ 	check(app.library.save_document(doc) == OK,"profiled document saves locally")
+-	var loaded: Dictionary = app.library.load_document(doc.id)
+-	check(loaded.objects == doc.objects,"all styles survive file reload exactly")
+-	app.canvas.mode="objects"; app.canvas.selected_object=0; app._build_editor_tools()
+-	var original: Dictionary = doc.objects[0].duplicate(true)
+-	var selected_picker: OptionButton = app.editor_context.find_child("JumpStyle",true,false)
+-	selected_picker.item_selected.emit(4)
+-	await wait_editor(app)
+-	check(JumpProfiles.id(doc.objects[0]) == "dune_v1","selected object style changes in place")
++	check(app.library.load_document(doc.id).objects == doc.objects,"all separate objects survive file reload exactly")
++	var before_copy: Array = doc.objects.duplicate(true)
++	app._duplicate_object(); await wait_editor(app)
++	check(JumpProfiles.id(app.document.objects[-1]) == "dune_v1","copy retains the exact selected object")
+ 	app._undo(); await wait_editor(app)
+-	doc=app.document
+-	check(doc.objects[0] == original,"undo restores the previous style and exact object")
+-	app.canvas.selected_object=4; app.canvas.mode="objects"; app._build_editor_tools()
+-	check(app.editor_context.find_child("JumpStyle",true,false) != null,"selected object has direct style control")
+-	var visible_meshes: Array = []
+-	for mesh_node: Node in app.editor_world.visual.find_children("*","MeshInstance3D",true,false):
+-		if mesh_node.name != "Hazard" or not mesh_node.is_visible_in_tree(): continue
+-		var arrays: Array = mesh_node.mesh.surface_get_arrays(0)
+-		var low := Vector3(INF,INF,INF); var high := -low
+-		for normal: Vector3 in arrays[Mesh.ARRAY_NORMAL]: low=low.min(normal); high=high.max(normal)
+-		visible_meshes.append({"path":str(mesh_node.get_path()),"aabb":str(mesh_node.mesh.get_aabb()),"normal_min":str(low),"normal_max":str(high),"surfaces":mesh_node.mesh.get_surface_count(),"position":str(mesh_node.global_position)})
+-	print("PROFILE_VISIBLE_MESHES=",JSON.stringify(visible_meshes))
+-	await capture("desert-editor")
+-	app._duplicate_object(); await wait_editor(app)
+-	doc=app.document
+-	check(JumpProfiles.id(doc.objects[-1]) == "dune_v1","copy preserves its bump style")
+-	app._undo(); await wait_editor(app)
+-	# Production picture path at the normal editor pitch, enlarged as a whole
+-	# view to reveal the actual road junctions and rounded transverse shoulders.
+-	app.canvas.zoom *= 2.5
+-	app.canvas.pan = Vector2(-32.0*app.canvas.scale_factor(),0)
+-	app.canvas.selected_object=4; app.canvas.mode="objects"; app._build_editor_tools()
+-	app.canvas.queue_redraw()
+-	await wait_editor(app)
+-	await capture("sand-rise-detail")
++	check(app.document.objects == before_copy,"undo restores exact objects after copying")
+ 	var original_legacy: Dictionary = {"kind":"jump","position":[0,22],"rotation":0}
+ 	app.document.objects.append(original_legacy.duplicate(true))
+ 	app.canvas.selected_object=app.document.objects.size()-1; app.canvas.mode="objects"; app._build_editor_tools()
+-	selected_picker=app.editor_context.find_child("JumpStyle",true,false)
+-	check(selected_picker.item_count == 6 and selected_picker.get_item_text(0) == "Original ramp","saved original ramps have an explicit conversion control")
+-	selected_picker.item_selected.emit(1)
+-	await wait_editor(app)
+-	check(JumpProfiles.id(app.document.objects[-1]) == "low_ramp_v1","saved original converts only through the style control")
+-	app._undo(); await wait_editor(app)
+-	check(app.document.objects[-1] == original_legacy,"undo restores the exact legacy contract without a profile field")
++	check(app.editor_context.find_child("JumpStyle",true,false) == null,"legacy objects do not restore the rejected style navigation")
++	await open_palette(app)
++	var low: Button = app.object_browser.tiles.get_node("Asset_jump_low_ramp")
++	await tap(low)
++	check(app.document.objects[-1] == original_legacy,"choosing another object never changes an existing saved ramp")
++	check(app.canvas.stamp_jump_profile == "low_ramp_v1","new selection changes only the placement object")
++	await open_palette(app,"Recent")
++	check(app.object_browser.tiles.get_child_count() == 5,"Recent keeps all five distinct object cards")
++	await tap(app.object_browser.tiles.get_node("Asset_jump_kicker"))
++	var saved_hash: String = TrackCompiler.document_hash(app.document,"")
++	app._show_screen("tracks"); await process_frame; await process_frame
++	app._show_screen("create"); await process_frame; await wait_editor(app)
++	check(app.canvas.stamp_jump_profile == "kicker_v1" and app.object_browser.current == "jump_kicker","reopening the editor restores the exact selected jump card")
++	check(TrackCompiler.document_hash(app.document,"") == saved_hash,"editor navigation does not alter saved object identities")
++	for width: int in [1280,960]:
++		root.size=Vector2i(width,720 if width==1280 else 540); root.content_scale_size=root.size
++		for tick: int in range(4): await process_frame
++		await open_palette(app)
++		check(app.object_browser.tiles.get_child_count() == 5,"all five Desert cards fit at width "+str(width))
++		await ready_icons(app.object_browser)
++		for profile: String in JumpProfiles.IDS:
++			var tile: Button = app.object_browser.tiles.get_node("Asset_"+CreatorCatalog.jump_asset(profile,"desert"))
++			check(root.get_visible_rect().encloses(tile.get_global_rect()),profile+" is visible without paging at "+str(width))
++		await tap(app.object_browser.tiles.get_node("Asset_jump_sand_rise"))
++		check(app.canvas.stamp_jump_profile == "dune_v1" and not app.object_browser.options.visible,"Sand rise is one tap at "+str(width))
++		await capture("desert-palette-"+str(width)+"-selected")
+ 	app.queue_free(); await process_frame; await process_frame
+ 
+ func gallery() -> void:
+--- a/game/tests/test_object_browser.gd
++++ b/game/tests/test_object_browser.gd
+@@ -113,13 +113,13 @@
+ 	var test_action: Button=app.get("test_button")
+ 	check(root.get_visible_rect().encloses(test_action.get_global_rect()),"Test action stays inside screen")
+ 	check(not CreatorCatalog.family("jump").is_empty(),"Jump is available in Objects")
+-	browser.choose("jump")
++	browser.choose("jump_low_ramp")
+ 	app.call("_build_editor_tools")
+ 	check(browser.visible and canvas.stamp_kind=="jump","Jump selection keeps Objects browser open")
+ 	check(not browser.options.visible,"object options do not reserve a permanent row")
+ 	check(browser.find_child("ObjectOptions",true,false)==null,"drawer has no settings button")
+-	browser._activate_asset("jump")
+-	check(browser.options.visible,"reselecting an asset opens its placement options")
++	browser._activate_asset("jump_low_ramp")
++	check(not browser.options.visible,"reselecting a jump keeps its direct object placement active")
+ 	browser.options.hide()
+ 	var target: Vector2=Vector2(doc.objects[0].position[0],doc.objects[0].position[1])
+ 	canvas.mode="place"; canvas._begin(canvas.to_screen(target),-1)
+--- /dev/null
++++ b/game/tests/fixtures/jump_palette_before/creator_catalog.gd.txt
+@@ -0,0 +1,122 @@
++class_name CreatorCatalog
++extends RefCounted
++## One browser tile per asset family; variants are chosen after selection.
++const BIOME_ASSETS: Dictionary = {
++ "desert":["pebbles","rock","slate","cliff","jump","chevron","braking_board","flag","gantry","egypt_pyramid","egypt_obelisk","egypt_column","egypt_wall"],
++ "winter":["tree","pebbles","rock","slate","cliff","log","tyre_stack","barrier","guardrail","fence","cone","chevron","braking_board","flag","light","gantry","shed","hut","igloo","snow_castle","snowman","snow_lantern","ice_lantern","ice_compact"]
++}
++const OBJECT_BIOMES: Dictionary = {"abandoned_warehouse":["night_city"],"burning_car":["night_city"],"firefly_bush":["night_city"],"burning_barrel":["night_city"],"lantern_post":["night_city"],"neon_arrow":["night_city"],"speed_bump":["pine","storm","night_city"],"egypt_pyramid":["desert"],"egypt_obelisk":["desert"],"egypt_column":["desert"],"egypt_wall":["desert"],"igloo":["winter"],"snowman":["winter"],"snow_castle":["winter"],"snow_lantern":["winter"],"ice_lantern":["winter"],"ice_compact":["winter"]}
++# Curated biome kits further restrict the shared equipment and nature families.
++const NATURE_BIOMES: Dictionary = {
++ "tree":["pine","winter","storm"], "broadleaf":["pine","night_city","storm"], "bush":["pine","night_city","storm"],
++ "grass_clump":["pine","night_city","storm"], "flowers":["pine","night_city","storm"], "log":["pine","winter","storm"]
++}
++const CATEGORIES: Array[String] = ["Nature","Barriers","Trackside","Props","Buildings"]
++const ASSETS: Array = [
++ ["tree","Pine tree","Nature",["tree"]],
++ ["broadleaf","Broadleaf","Nature",["broadleaf"]],
++ ["bush","Bush","Nature",["bush"]],
++ ["firefly_bush","Firefly bush","Nature",["firefly_bush"]],
++ ["burning_barrel","Burning barrel","Props",["burning_barrel"]],
++ ["burning_car","Burning car","Props",["burning_car"]],
++ ["lantern_post","Lantern post","Trackside",["lantern_post"]],
++ ["neon_arrow","Neon arrow","Trackside",["neon_arrow"]],
++ ["grass_clump","Grass clump","Nature",["grass_clump"]],
++ ["flowers","Flowers","Nature",["flowers"]],
++ ["pebbles","Pebbles","Nature",["pebbles"]],
++ ["rock","Rock","Nature",["rock","boulder"]],
++ ["slate","Outcrop","Nature",["slate"]],
++ ["cliff","Cliff","Nature",["cliff"]],
++ ["log","Fallen log","Nature",["log"]],
++ ["tyre_stack","Tyres","Barriers",["tyre_stack","tyre_wall"]],
++ ["barrier","Concrete","Barriers",["barrier"]],
++ ["guardrail","Guardrail","Barriers",["guardrail"]],
++ ["fence","Wood fence","Barriers",["fence"]],
++ ["wire_fence","Wire fence","Barriers",["wire_fence"]],
++ ["cone","Cone","Barriers",["cone"]],
++ ["chevron","Chevron","Trackside",["chevron"]],
++ ["braking_board","Brake board","Trackside",["braking_board"]],
++ ["banner","Banner board","Trackside",["banner"]],
++ ["flag","Flag","Trackside",["flag"]],
++ ["light","Light pole","Trackside",["light"]],
++ ["gantry","Start gantry","Trackside",["gantry"]],
++ ["jump","Jumps & bumps","Props",["jump"]],
++ ["speed_bump","Speed bump","Props",["speed_bump"]],
++ ["oil","Oil spill","Props",["oil"]],
++ ["hay_bale","Hay bale","Props",["hay_bale"]],
++ ["crate","Wooden crate","Props",["crate"]],
++ ["barrel","Barrel","Props",["barrel"]],
++ ["pallet","Pallet","Props",["pallet"]],
++ ["parked_car","Parked vehicle","Props",["parked_car","van"]],
++ ["car_wreck","Car wreck","Props",["car_wreck"]],
++ ["container","Container","Props",["container"]],
++ ["shed","Garage","Buildings",["shed"]],
++ ["abandoned_warehouse","Warehouse","Buildings",["abandoned_warehouse"]],
++ ["hut","Marshal hut","Buildings",["hut"]],
++ ["grandstand","Grandstand","Buildings",["grandstand"]],
++ ["egypt_pyramid","Pyramid","Buildings",["egypt_pyramid"]],
++ ["egypt_obelisk","Obelisk","Buildings",["egypt_obelisk"]],
++ ["egypt_column","Lotus column","Buildings",["egypt_column","egypt_column_broken"]],
++ ["egypt_wall","Temple wall","Buildings",["egypt_wall"]],
++ ["igloo","Igloo","Buildings",["igloo"]],
++ ["snow_castle","Snow castle","Buildings",["snow_castle"]],
++ ["snowman","Snowman","Props",["snowman"]],
++ ["snow_lantern","Snow lantern","Props",["snow_lantern"]],
++ ["ice_lantern","Ice lantern","Props",["ice_lantern"]],
++ ["ice_compact","Ice Compact","Props",["ice_compact"]]
++]
++const DECORATIVE: Array[String] = ["bush","grass_clump","flowers","pebbles","flag","pallet","firefly_bush"]
++const SOFT: Array[String] = ["cone","chevron","braking_board","crate","barrel","hay_bale","snowman","snow_lantern","ice_lantern","burning_barrel"]
++const LINES: Array[String] = ["tyre_stack","tyre_wall","barrier","guardrail","fence","wire_fence","cone"]
++
++static func family(kind: String) -> Array:
++	for asset: Array in ASSETS:
++		if kind in asset[3]: return asset
++	return []
++
++static func label(kind: String) -> String:
++	return {"ice_compact":"Ice Compact","egypt_pyramid":"Pyramid","egypt_obelisk":"Obelisk","egypt_column":"Lotus column","egypt_column_broken":"Broken column","egypt_wall":"Temple wall","oil":"Oil spill","tree":"Pine tree","tyre_stack":"One stack","tyre_wall":"Six stacks","boulder":"Boulder","slate":"Low ridge","cliff":"Cliff","parked_car":"Utility car","van":"Van"}.get(kind,kind.replace("_"," ").capitalize())
++
++static func behavior(kind: String) -> String:
++	if kind=="burning_barrel": return "Movable / tips and rolls on impact"
++	if kind == "abandoned_warehouse": return "Drive through the open ends / solid side walls"
++	if kind == "snowman": return "Breaks into soft snow chunks and powder"
++	if kind == "snow_lantern": return "Crumbles into snow; the candle goes out"
++	if kind == "ice_lantern": return "Shatters into ice; the candle goes out"
++	if kind == "hay_bale": return "Sheds harmless hay; becomes smaller and lighter"
++	if kind == "crate": return "Movable; heavy impacts break it into loose wood"
++	if kind == "speed_bump": return "Brake before it; accelerate as the nose rises"
++	if kind == "oil": return "Oil spill / slippery; coats tyres and reduces grip"
++	if kind == "jump": return "Low ramps and rounded bumps / tap again to choose a style"
++	if kind in DECORATIVE: return "Decorative / no collision"
++	if kind in SOFT: return "Light / moves on impact; small speed loss"
++	if kind in ["tree","broadleaf"]: return "Solid / trunk collision"
++	if kind in ["tyre_stack","tyre_wall"]: return "Movable / absorbs impact; piles resist pushing"
++	if kind == "gantry": return "Solid supports / clear passage underneath"
++	return "Solid / blocks the car"
++
++static func available(kind: String, biome: String) -> bool:
++	var asset: Array = family(kind)
++	if asset.is_empty(): return false
++	if biome not in TrackDocument.THEMES: return true
++	var id: String = asset[0]
++	return (not OBJECT_BIOMES.has(id) or biome in OBJECT_BIOMES[id]) and (not NATURE_BIOMES.has(id) or biome in NATURE_BIOMES[id]) and (not BIOME_ASSETS.has(biome) or id in BIOME_ASSETS[biome])
++
++static func filtered(category: String, query: String, recent: Array[String], biome: String = "", availability: Dictionary = BIOME_ASSETS) -> Array:
++	var result: Array = []
++	for asset: Array in ASSETS:
++		if not available(asset[0],biome): continue
++		if availability.has(biome) and asset[0] not in availability[biome]: continue
++		if category == "Recent" and asset[0] not in recent: continue
++		if category not in ["All","Recent"] and asset[2] != category: continue
++		if not query.strip_edges().is_empty() and not (str(asset[1])+" "+str(asset[3])).to_lower().contains(query.strip_edges().to_lower()): continue
++		result.append(asset)
++	return result
++
++static func default_scale(kind: String) -> float:
++	return 2.0 if kind == "cliff" else 1.0
++
++static func size_presets(kind: String) -> Array[float]:
++	var result: Array[float] = []
++	result.assign([1.0,2.0,3.0] if kind == "cliff" else [0.75,1.0,1.5])
++	return result

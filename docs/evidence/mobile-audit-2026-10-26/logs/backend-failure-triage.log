@@ -1,0 +1,188 @@
+.....F........................F......F                                   [100%]
+================================== FAILURES ===================================
+___ test_nested_router_prefixes_and_normal_requests_use_same_safe_template ____
+
+auth_app = <fastapi.applications.FastAPI object at 0x000001259DB3D390>
+
+    def test_nested_router_prefixes_and_normal_requests_use_same_safe_template(auth_app):
+        from fastapi import APIRouter, Depends
+        from fastapi.testclient import TestClient
+    
+        calls = []
+        def dependency():
+            calls.append("dependency")
+        child = APIRouter()
+        @child.get("/items/{item_id}", dependencies=[Depends(dependency)])
+        def item(item_id: str):
+            calls.append("endpoint")
+            return {"ok": True}
+        parent = APIRouter()
+        parent.include_router(child, prefix="/nested")
+        auth_app.include_router(parent, prefix="/diagnostics")
+        rows = []
+        class Capture(logging.Handler):
+            def emit(self, record):
+                if record.getMessage().startswith('{'):
+                    rows.append(json.loads(record.getMessage()))
+        logger = logging.getLogger("bmt.requests")
+        handler = Capture()
+        logger.addHandler(handler)
+        try:
+            with TestClient(auth_app) as client:
+                rejected = client.get("/diagnostics/nested/items/private-id", headers={"Content-Length": "40000"})
+                assert rejected.status_code == 413
+                assert calls == [], "Diagnostic route lookup called a dependency or endpoint"
+                assert client.get("/diagnostics/nested/items/private-id").status_code == 200
+        finally:
+            logger.removeHandler(handler)
+        assert calls == ["dependency", "endpoint"]
+>       assert [row["route"] for row in rows] == ["/diagnostics/nested/items/{item_id}"] * 2
+
+tests\test_request_trace.py:100: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+
+.0 = <list_iterator object at 0x000001259DF12050>
+
+>   assert [row["route"] for row in rows] == ["/diagnostics/nested/items/{item_id}"] * 2
+E   KeyError: 'route'
+
+tests\test_request_trace.py:100: KeyError
+---------------------------- Captured stderr call -----------------------------
+{"event":"http_request","request_id":"3fe8b268-bb9c-4426-a8c4-2ade6f54f67c","method":"GET","route":"/diagnostics/nested/items/{item_id}","status":413,"duration_ms":172.0,"request_wire_bytes":0,"request_decoded_bytes":0,"response_wire_bytes":82,"success_sample_per_mille":10,"level":"info"}
+{"event":"http_cost_summary","interval_seconds":1.078,"body_bytes_after_compression":true,"latency_limits_ms":[10,25,50,100,250,500,1000,5000],"rows":[{"route":"/diagnostics/nested/items/{item_id}","method":"GET","status":413,"requests":1,"request_wire_bytes":0,"response_wire_bytes":82,"duration_ms":172.0,"max_ms":172.0,"latency_buckets":[0,0,0,0,1,0,0,0,0]},{"route":"/diagnostics/nested/items/{item_id}","method":"GET","status":200,"requests":1,"request_wire_bytes":0,"response_wire_bytes":11,"duration_ms":0.0,"max_ms":0.0,"latency_buckets":[1,0,0,0,0,0,0,0,0]}],"level":"info"}
+------------------------------ Captured log call ------------------------------
+INFO     bmt.requests:http_costs.py:41 {"event":"http_request","request_id":"3fe8b268-bb9c-4426-a8c4-2ade6f54f67c","method":"GET","route":"/diagnostics/nested/items/{item_id}","status":413,"duration_ms":172.0,"request_wire_bytes":0,"request_decoded_bytes":0,"response_wire_bytes":82,"success_sample_per_mille":10}
+INFO     bmt.requests:http_costs.py:59 {"event":"http_cost_summary","interval_seconds":1.078,"body_bytes_after_compression":true,"latency_limits_ms":[10,25,50,100,250,500,1000,5000],"rows":[{"route":"/diagnostics/nested/items/{item_id}","method":"GET","status":413,"requests":1,"request_wire_bytes":0,"response_wire_bytes":82,"duration_ms":172.0,"max_ms":172.0,"latency_buckets":[0,0,0,0,1,0,0,0,0]},{"route":"/diagnostics/nested/items/{item_id}","method":"GET","status":200,"requests":1,"request_wire_bytes":0,"response_wire_bytes":11,"duration_ms":0.0,"max_ms":0.0,"latency_buckets":[1,0,0,0,0,0,0,0,0]}]}
+__ test_directory_and_link_types_are_excluded_from_name_only_manifest_pages ___
+
+tmp_path = WindowsPath('C:/Codes/Godot/Beat my track/build/mobile-audit-2026-10-26/pytest-tmp-triage/test_directory_and_link_types_0')
+monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x000001259E57A6E0>
+
+    def test_directory_and_link_types_are_excluded_from_name_only_manifest_pages(tmp_path, monkeypatch):
+        store = LocalBlobStore(str(tmp_path))
+        key = store.put_json({"regular": True})
+        directory_key, link_key = "0" * 64, "1" * 64
+        directory = store._path(directory_key)
+        directory.parent.mkdir(exist_ok=True)
+        directory.mkdir()
+        link = store._path(link_key)
+        link.parent.mkdir(exist_ok=True)
+        link.write_bytes(b"stand-in for a filesystem link")
+        original_stat = Path.stat
+    
+        def metadata(path, *args, **kwargs):
+            if path == link:
+                assert kwargs.get("follow_symlinks") is False
+                return SimpleNamespace(st_mode=stat.S_IFLNK)
+            return original_stat(path, *args, **kwargs)
+    
+        monkeypatch.setattr(Path, "stat", metadata)
+        assert [row["digest"] for row in collect(store, limit=1)] == [key]
+>       assert directory.is_dir() and link.exists()
+
+tests\test_local_object_listing.py:289: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+C:\Users\ville\AppData\Local\Programs\Python\Python310\lib\pathlib.py:1290: in exists
+    self.stat()
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+
+path = WindowsPath('C:/Codes/Godot/Beat my track/build/mobile-audit-2026-10-26/pytest-tmp-triage/test_directory_and_link_types_0/11/1111111111111111111111111111111111111111111111111111111111111111.json')
+args = (), kwargs = {}
+
+    def metadata(path, *args, **kwargs):
+        if path == link:
+>           assert kwargs.get("follow_symlinks") is False
+E           AssertionError: assert None is False
+E            +  where None = <built-in method get of dict object at 0x000001259E5894C0>('follow_symlinks')
+E            +    where <built-in method get of dict object at 0x000001259E5894C0> = {}.get
+
+tests\test_local_object_listing.py:283: AssertionError
+_____ test_operator_queue_counts_explicit_publication_work_and_oldest_age _____
+
+product = (<fastapi.applications.FastAPI object at 0x000001259E70C8B0>, <starlette.testclient.TestClient object at 0x000001259E6CD4E0>, {'Authorization': 'Bearer 8k3yz8sf3OBaGND9LHG1z1dC1fd_yMlWTWFLteYZTdc'}, 'd7a4cc34-c4ec-4dfd-9027-83dd24e8e828')
+monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x000001259E767FD0>
+
+    def test_operator_queue_counts_explicit_publication_work_and_oldest_age(product, monkeypatch):
+        app,client,_auth,player=product
+        monkeypatch.setattr('bmt_backend.operations.now',lambda:AT)
+        with app.state.session_factory() as session:
+            for offset,state in ((150,'queued'),(250,'verifying'),(300,'failed')):
+                session.add(PublicationIntent(player_id=player,operation_key='owned-queue-fixture-'+str(offset),
+                    request_hash='a'*64,authoring_id='local-fixture',name='Explicit publication fixture',
+                    content_hash='b'*64,replay_hash='c'*64,vehicle_id='compact',contract={},status=state,
+                    created_at=AT-offset))
+            session.commit()
+        headers={'Authorization':'Bearer '+'a'*40}
+        health=client.get('/v1/admin/competition-health',headers=headers).json()
+        assert health['queue_depth']==health['pending_publications']==2 and health['pending_races']==0
+        assert health['oldest_age_seconds']==250 and health['estimated_wait_seconds'] is None
+        overview=client.get('/v1/admin/overview',headers=headers).json()
+>       assert overview['publications']=={'pending':2,'failed':1,'failed_count_capped':False}
+E       KeyError: 'publications'
+
+tests\test_race_statistics.py:239: KeyError
+-------------------------- Captured stderr teardown ---------------------------
+{"event":"http_cost_summary","interval_seconds":1.062,"body_bytes_after_compression":true,"latency_limits_ms":[10,25,50,100,250,500,1000,5000],"rows":[{"route":"/v1/auth/google/challenge","method":"POST","status":201,"requests":1,"request_wire_bytes":0,"response_wire_bytes":148,"duration_ms":79.0,"max_ms":79.0,"latency_buckets":[0,0,0,1,0,0,0,0,0]},{"route":"/v1/auth/google","method":"POST","status":200,"requests":1,"request_wire_bytes":144,"response_wire_bytes":417,"duration_ms":15.0,"max_ms":15.0,"latency_buckets":[0,1,0,0,0,0,0,0,0]},{"route":"/v1/privacy/preferences","method":"POST","status":200,"requests":1,"request_wire_bytes":26,"response_wire_bytes":26,"duration_ms":31.0,"max_ms":31.0,"latency_buckets":[0,0,1,0,0,0,0,0,0]},{"route":"/v1/admin/competition-health","method":"GET","status":200,"requests":1,"request_wire_bytes":0,"response_wire_bytes":852,"duration_ms":32.0,"max_ms":32.0,"latency_buckets":[0,0,1,0,0,0,0,0,0]},{"route":"/v1/admin/overview","method":"GET","status":200,"requests":1,"request_wire_bytes":0,"response_wire_bytes":420,"duration_ms":0.0,"max_ms":0.0,"latency_buckets":[1,0,0,0,0,0,0,0,0]}],"level":"info"}
+---------------------------- Captured log teardown ----------------------------
+INFO     bmt.requests:http_costs.py:59 {"event":"http_cost_summary","interval_seconds":1.062,"body_bytes_after_compression":true,"latency_limits_ms":[10,25,50,100,250,500,1000,5000],"rows":[{"route":"/v1/auth/google/challenge","method":"POST","status":201,"requests":1,"request_wire_bytes":0,"response_wire_bytes":148,"duration_ms":79.0,"max_ms":79.0,"latency_buckets":[0,0,0,1,0,0,0,0,0]},{"route":"/v1/auth/google","method":"POST","status":200,"requests":1,"request_wire_bytes":144,"response_wire_bytes":417,"duration_ms":15.0,"max_ms":15.0,"latency_buckets":[0,1,0,0,0,0,0,0,0]},{"route":"/v1/privacy/preferences","method":"POST","status":200,"requests":1,"request_wire_bytes":26,"response_wire_bytes":26,"duration_ms":31.0,"max_ms":31.0,"latency_buckets":[0,0,1,0,0,0,0,0,0]},{"route":"/v1/admin/competition-health","method":"GET","status":200,"requests":1,"request_wire_bytes":0,"response_wire_bytes":852,"duration_ms":32.0,"max_ms":32.0,"latency_buckets":[0,0,1,0,0,0,0,0,0]},{"route":"/v1/admin/overview","method":"GET","status":200,"requests":1,"request_wire_bytes":0,"response_wire_bytes":420,"duration_ms":0.0,"max_ms":0.0,"latency_buckets":[1,0,0,0,0,0,0,0,0]}]}
+============================== warnings summary ===============================
+..\.tools\backend-venv\lib\site-packages\fastapi\testclient.py:1
+  C:\Codes\Godot\Beat my track\.tools\backend-venv\lib\site-packages\fastapi\testclient.py:1: StarletteDeprecationWarning: Using `httpx` with `starlette.testclient` is deprecated; install `httpx2` instead.
+    from starlette.testclient import TestClient as TestClient  # noqa
+
+tests/test_request_trace.py::test_rejection_log_matches_only_template_and_own_request_id[POST-/v1/auth/google/browser/complete?token=private-query-{"private-body":-headers0-400-/v1/auth/google/browser/complete]
+tests/test_request_trace.py::test_rejection_log_matches_only_template_and_own_request_id[POST-/v1/track-versions/private-identifier/document?secret=private-query-private-body-headers1-405-/v1/track-versions/{version_id}/document]
+tests/test_request_trace.py::test_rejection_log_matches_only_template_and_own_request_id[POST-/v1/publications?secret=private-query-{}-headers2-413-/v1/publications]
+tests/test_request_trace.py::test_rejection_log_matches_only_template_and_own_request_id[POST-/not-a-route/private-identifier?secret=private-query-{"private-body":-headers3-400-unmatched]
+tests/test_request_trace.py::test_rate_limit_before_routing_keeps_template
+tests/test_request_trace.py::test_nested_router_prefixes_and_normal_requests_use_same_safe_template
+tests/test_race_statistics.py::test_operator_queue_counts_explicit_publication_work_and_oldest_age
+  C:\Users\ville\AppData\Local\Programs\Python\Python310\lib\contextlib.py:142: SAWarning: Skipped unsupported reflection of expression-based index ix_studio_player_name
+    next(self.gen)
+
+tests/test_request_trace.py::test_rejection_log_matches_only_template_and_own_request_id[POST-/v1/auth/google/browser/complete?token=private-query-{"private-body":-headers0-400-/v1/auth/google/browser/complete]
+tests/test_request_trace.py::test_rejection_log_matches_only_template_and_own_request_id[POST-/v1/track-versions/private-identifier/document?secret=private-query-private-body-headers1-405-/v1/track-versions/{version_id}/document]
+tests/test_request_trace.py::test_rejection_log_matches_only_template_and_own_request_id[POST-/v1/publications?secret=private-query-{}-headers2-413-/v1/publications]
+tests/test_request_trace.py::test_rejection_log_matches_only_template_and_own_request_id[POST-/not-a-route/private-identifier?secret=private-query-{"private-body":-headers3-400-unmatched]
+tests/test_request_trace.py::test_rate_limit_before_routing_keeps_template
+tests/test_request_trace.py::test_nested_router_prefixes_and_normal_requests_use_same_safe_template
+tests/test_race_statistics.py::test_operator_queue_counts_explicit_publication_work_and_oldest_age
+  C:\Users\ville\AppData\Local\Programs\Python\Python310\lib\contextlib.py:142: SAWarning: Skipped unsupported reflection of expression-based index ix_studio_published_rating
+    next(self.gen)
+
+tests/test_request_trace.py::test_rejection_log_matches_only_template_and_own_request_id[POST-/v1/auth/google/browser/complete?token=private-query-{"private-body":-headers0-400-/v1/auth/google/browser/complete]
+tests/test_request_trace.py::test_rejection_log_matches_only_template_and_own_request_id[POST-/v1/track-versions/private-identifier/document?secret=private-query-private-body-headers1-405-/v1/track-versions/{version_id}/document]
+tests/test_request_trace.py::test_rejection_log_matches_only_template_and_own_request_id[POST-/v1/publications?secret=private-query-{}-headers2-413-/v1/publications]
+tests/test_request_trace.py::test_rejection_log_matches_only_template_and_own_request_id[POST-/not-a-route/private-identifier?secret=private-query-{"private-body":-headers3-400-unmatched]
+tests/test_request_trace.py::test_rate_limit_before_routing_keeps_template
+tests/test_request_trace.py::test_nested_router_prefixes_and_normal_requests_use_same_safe_template
+tests/test_race_statistics.py::test_operator_queue_counts_explicit_publication_work_and_oldest_age
+  C:\Users\ville\AppData\Local\Programs\Python\Python310\lib\contextlib.py:142: SAWarning: Skipped unsupported reflection of expression-based index ix_studio_published_name
+    next(self.gen)
+
+tests/test_request_trace.py::test_rejection_log_matches_only_template_and_own_request_id[POST-/v1/auth/google/browser/complete?token=private-query-{"private-body":-headers0-400-/v1/auth/google/browser/complete]
+tests/test_request_trace.py::test_rejection_log_matches_only_template_and_own_request_id[POST-/v1/track-versions/private-identifier/document?secret=private-query-private-body-headers1-405-/v1/track-versions/{version_id}/document]
+tests/test_request_trace.py::test_rejection_log_matches_only_template_and_own_request_id[POST-/v1/publications?secret=private-query-{}-headers2-413-/v1/publications]
+tests/test_request_trace.py::test_rejection_log_matches_only_template_and_own_request_id[POST-/not-a-route/private-identifier?secret=private-query-{"private-body":-headers3-400-unmatched]
+tests/test_request_trace.py::test_rate_limit_before_routing_keeps_template
+tests/test_request_trace.py::test_nested_router_prefixes_and_normal_requests_use_same_safe_template
+tests/test_race_statistics.py::test_operator_queue_counts_explicit_publication_work_and_oldest_age
+  C:\Users\ville\AppData\Local\Programs\Python\Python310\lib\contextlib.py:142: SAWarning: Skipped unsupported reflection of expression-based index ix_discovery_names
+    next(self.gen)
+
+tests/test_request_trace.py::test_rejection_log_matches_only_template_and_own_request_id[POST-/v1/auth/google/browser/complete?token=private-query-{"private-body":-headers0-400-/v1/auth/google/browser/complete]
+tests/test_request_trace.py::test_rejection_log_matches_only_template_and_own_request_id[POST-/v1/track-versions/private-identifier/document?secret=private-query-private-body-headers1-405-/v1/track-versions/{version_id}/document]
+tests/test_request_trace.py::test_rejection_log_matches_only_template_and_own_request_id[POST-/v1/publications?secret=private-query-{}-headers2-413-/v1/publications]
+tests/test_request_trace.py::test_rejection_log_matches_only_template_and_own_request_id[POST-/not-a-route/private-identifier?secret=private-query-{"private-body":-headers3-400-unmatched]
+tests/test_request_trace.py::test_rate_limit_before_routing_keeps_template
+tests/test_request_trace.py::test_nested_router_prefixes_and_normal_requests_use_same_safe_template
+tests/test_race_statistics.py::test_operator_queue_counts_explicit_publication_work_and_oldest_age
+  C:\Users\ville\AppData\Local\Programs\Python\Python310\lib\contextlib.py:142: SAWarning: Skipped unsupported reflection of expression-based index ix_compatible_versions
+    next(self.gen)
+
+-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
+=========================== short test summary info ===========================
+FAILED tests/test_request_trace.py::test_nested_router_prefixes_and_normal_requests_use_same_safe_template
+FAILED tests/test_local_object_listing.py::test_directory_and_link_types_are_excluded_from_name_only_manifest_pages
+FAILED tests/test_race_statistics.py::test_operator_queue_counts_explicit_publication_work_and_oldest_age
+3 failed, 35 passed, 36 warnings in 22.64s

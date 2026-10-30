@@ -25,7 +25,9 @@ router = APIRouter(route_class=ParsedJSONRoute, tags=["earned coins"])
 CATALOG = json.loads(Path(__file__).with_name("vehicle_appearance_catalog.json").read_text(encoding="utf-8"))
 PRICES = {**{"livery/" + item: 500 for item in CATALOG["patterns"] if item != "plain"},
           **{"kit/compact/" + category + "/" + item: 750
-             for category, items in CATALOG["parts"].items() for item in items if item != "stock"}}
+             for category, items in CATALOG["parts"].items() for item in items if item != "stock"},
+          **{"kit/kart/" + category + "/" + item: 750
+             for category, items in CATALOG["kart_parts"].items() for item in items if item != "stock"}}
 MAX_BALANCE = 2147483647
 CHALLENGE_DAILY_LIMIT = 3
 

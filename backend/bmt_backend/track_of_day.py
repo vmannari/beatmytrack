@@ -4,6 +4,7 @@ import secrets
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from sqlalchemy import exists, func, select
 
+from .daily_standings import router as standings_router
 from .db import get_session
 from .discovery_models import (
     DiscoveryBootstrap,
@@ -21,6 +22,7 @@ from .security import bearer, current_player
 from .track_models import Track, TrackVersion, now
 
 router = APIRouter(tags=["track of the day"])
+router.include_router(standings_router)
 DAY = 86400
 POOL = 50
 STARTUP_SUPPLY = 100

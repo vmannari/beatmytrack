@@ -1,0 +1,132 @@
+extends SceneTree
+## Measure the actual full/simple hood-to-fascia and hood-to-side joins.
+const M = preload("res://vehicle/electric_reference_mesh.gd")
+var checks := 0
+var failures := 0
+
+func _initialize() -> void: run.call_deferred()
+
+func check(ok: bool, label: String) -> void:
+	checks += 1
+	if not ok:
+		failures += 1
+		print("FAIL: "+label)
+
+func edge(node: MeshInstance3D, axis: int, value: float) -> Array[Dictionary]:
+	var result: Array[Dictionary] = []
+	var arrays: Array = node.mesh.surface_get_arrays(0)
+	var vertices: PackedVector3Array = arrays[Mesh.ARRAY_VERTEX]
+	var normals: PackedVector3Array = arrays[Mesh.ARRAY_NORMAL]
+	var uvs: PackedVector2Array = arrays[Mesh.ARRAY_TEX_UV]
+	for i: int in range(vertices.size()):
+		if absf(uvs[i][axis]-value) < 0.00001:
+			result.append({"t":uvs[i][1-axis],"p":node.transform*vertices[i],"n":node.transform.basis*normals[i]})
+	result.sort_custom(func(a: Dictionary,b: Dictionary) -> bool: return a.t<b.t)
+	return result
+
+func closest(edge_points: Array[Dictionary], point: Vector3) -> Dictionary:
+	var best := INF
+	var found: Dictionary = {}
+	for i: int in range(edge_points.size()-1):
+		var a: Vector3 = edge_points[i].p
+		var b: Vector3 = edge_points[i+1].p
+		var delta: Vector3 = b-a
+		if delta.length_squared() < 1e-12: continue
+		var t: float = clampf((point-a).dot(delta)/delta.length_squared(),0.0,1.0)
+		var distance: float = a.lerp(b,t).distance_to(point)
+		if distance < best:
+			best = distance
+			found = {"distance":distance,"normal":(edge_points[i].n as Vector3).lerp(edge_points[i+1].n,t).normalized()}
+	return found
+
+func measure(label: String, first: Array[Dictionary], second: Array[Dictionary], minimum_samples: int = 8) -> void:
+	var max_gap := 0.0
+	var max_angle := 0.0
+	var sum_angle := 0.0
+	var count := 0
+	for point: Dictionary in first:
+		# Endpoints meet several panels at once and have degenerate UV tangents.
+		if point.t < 0.04 or point.t > 0.96: continue
+		var match_point: Dictionary = closest(second,point.p)
+		if match_point.is_empty(): continue
+		var normal: Vector3 = (point.n as Vector3).normalized()
+		var other: Vector3 = match_point.normal
+		if normal.length_squared() < 0.5 or other.length_squared() < 0.5: continue
+		var angle: float = rad_to_deg(acos(clampf(normal.dot(other),-1.0,1.0)))
+		max_gap = maxf(max_gap,match_point.distance)
+		max_angle = maxf(max_angle,angle)
+		sum_angle += angle
+		count += 1
+	var mean: float = sum_angle/maxi(count,1)
+	print("SMOOTH_SEAM ",label," samples=",count," gap=",max_gap," mean_deg=",mean," max_deg=",max_angle)
+	check(count >= minimum_samples,"sufficient samples on "+label)
+	check(max_gap < 0.004,"continuous positions on "+label)
+	check(mean < 35.0 and max_angle < 55.0,"smooth shared normals on "+label)
+
+func check_face_orientation(node: MeshInstance3D, side: float, label: String) -> void:
+	# Godot's clockwise front faces have geometric cross products opposite to
+	# the outward shading normal. Check triangles adjacent to the side seam.
+	var arrays: Array = node.mesh.surface_get_arrays(0)
+	var points: PackedVector3Array = arrays[Mesh.ARRAY_VERTEX]
+	var normals: PackedVector3Array = arrays[Mesh.ARRAY_NORMAL]
+	var uvs: PackedVector2Array = arrays[Mesh.ARRAY_TEX_UV]
+	var indices: PackedInt32Array = arrays[Mesh.ARRAY_INDEX]
+	var tested := 0
+	var wrong := 0
+	for i: int in range(0,indices.size(),3):
+		var a: int = indices[i]
+		var b: int = indices[i+1]
+		var c: int = indices[i+2]
+		var u: float = (uvs[a].x+uvs[b].x+uvs[c].x)/3.0
+		if (side < 0.0 and u > 0.12) or (side > 0.0 and u < 0.88): continue
+		var face: Vector3 = (points[b]-points[a]).cross(points[c]-points[a]).normalized()
+		var normal: Vector3 = (normals[a]+normals[b]+normals[c]).normalized()
+		if face.length_squared() < 0.5 or normal.length_squared() < 0.5: continue
+		tested += 1
+		if face.dot(normal) > -0.1: wrong += 1
+	print("FRONT_FACE ",label," triangles=",tested," wrong=",wrong)
+	check(tested > 0 and wrong == 0,"clockwise faces agree with outward normals "+label)
+
+func check_front_roll(node: MeshInstance3D, label: String) -> void:
+	# Just below the leading edge, the bumper must roll toward the nose (-Z),
+	# rather than doubling back beneath the hood toward the windscreen (+Z).
+	var arrays: Array = node.mesh.surface_get_arrays(0)
+	var vertices: PackedVector3Array = arrays[Mesh.ARRAY_VERTEX]
+	var uvs: PackedVector2Array = arrays[Mesh.ARRAY_TEX_UV]
+	var previous_v := -INF
+	for uv: Vector2 in uvs:
+		if uv.y < 0.99999: previous_v = maxf(previous_v,uv.y)
+	var tops := edge(node,1,1.0)
+	var lower := edge(node,1,previous_v)
+	var max_inward := -INF
+	var count := 0
+	for i: int in range(mini(tops.size(),lower.size())):
+		if tops[i].t < 0.08 or tops[i].t > 0.92: continue
+		if absf(tops[i].t-lower[i].t) > 0.00001: continue
+		var top: Vector3 = tops[i].p
+		var below: Vector3 = lower[i].p
+		max_inward = maxf(max_inward,below.z-top.z)
+		count += 1
+	print("FRONT_ROLL ",label," samples=",count," max_inward=",max_inward)
+	check(count >= 8 and max_inward < 0.001,"upper bumper rolls outward without folding beneath hood "+label)
+
+func run() -> void:
+	M.use_baked=false
+	M.meshes.clear()
+	for simple: bool in [false,true]:
+		var car:=CarVisual.new()
+		car.vehicle_id="electric"
+		car.simple_model=simple
+		car.batch_parts=false
+		root.add_child(car)
+		while not car.model_ready: await process_frame
+		var deck:MeshInstance3D=car.body.get_node("ReferenceRearDeck")
+		var rear:MeshInstance3D=car.body.get_node("ReferenceRear")
+		var left:MeshInstance3D=car.body.get_node("ReferenceSide-1_0")
+		var right:MeshInstance3D=car.body.get_node("ReferenceSide1_0")
+		measure("deck/rear simple="+str(simple),edge(deck,1,1.0),edge(rear,1,1.0))
+		measure("rear/left simple="+str(simple),edge(rear,0,0.0),edge(left,0,1.0))
+		measure("rear/right simple="+str(simple),edge(rear,0,1.0),edge(right,0,1.0))
+		car.free()
+	print("VOLT_REAR_SEAMS: ",checks," checks, ",failures," failures")
+	quit(1 if failures else 0)

@@ -11,9 +11,20 @@ var derived_revision: int = -1
 var validated: Dictionary = {}
 var errors: Array[String] = []
 var workflow: Dictionary = {}
+var primed: Dictionary = {}
+
+func prime(document: Dictionary) -> void:
+	# Loaded large scenes prepare their first checkpoint during editor setup,
+	# before pointer input is enabled. Revalidate the complete value on use.
+	if not undo.is_empty() or not redo.is_empty(): return
+	var snapshots: Array = [HISTORY.capture(document)]
+	HISTORY.trim(snapshots,[])
+	primed = snapshots[0] if not snapshots.is_empty() else {}
 
 func remember(document: Dictionary) -> void:
-	undo.append(HISTORY.capture(document,undo.back() if not undo.is_empty() else {}))
+	var previous: Dictionary = undo.back() if not undo.is_empty() else redo.back() if not redo.is_empty() else primed
+	undo.append(primed if HISTORY.matches(primed,document) else HISTORY.capture(document,previous))
+	primed = {}
 	redo.clear()
 	HISTORY.trim(undo,redo)
 

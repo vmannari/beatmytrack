@@ -27,6 +27,7 @@ var materials_warmed: int = 0
 var preparation_metrics: Dictionary = {}
 var _initial_preparation_done: bool = false
 var _applied_theme: String = ""
+var race_lighting_preview: bool = false
 var _prop_job: RefCounted
 var _prop_request: Dictionary = {}
 var _prop_generation: int = 0
@@ -355,12 +356,22 @@ func _build_track() -> void:
 	_mark_presented()
 	viewport.render_target_update_mode = SubViewport.UPDATE_ONCE
 
-func _apply_theme(theme: String) -> void:
+func set_race_lighting_preview(enabled: bool) -> void:
+	race_lighting_preview = enabled
+	_apply_theme(theme_id,true)
+	viewport.render_target_update_mode = SubViewport.UPDATE_ONCE
+
+func _apply_theme(theme: String, force: bool = false) -> void:
 	var normalized: String = TrackTheme.normalized(theme)
-	if _applied_theme == normalized: return
+	if _applied_theme == normalized and not force: return
 	theme_id = normalized; _applied_theme = normalized
 	var palette: Array[Color] = TrackTheme.palette(theme_id)
 	TrackTheme.apply_lighting(theme_id,environment,sunlight)
+	if theme_id == "night_city" and not race_lighting_preview:
+		environment.ambient_light_color = Color("bac8ce")
+		environment.ambient_light_energy = 0.48
+		sunlight.light_color = Color("dce7ff")
+		sunlight.light_energy = 0.85
 	environment.background_color = palette[1]
 	ground_material.albedo_color = palette[1]
 

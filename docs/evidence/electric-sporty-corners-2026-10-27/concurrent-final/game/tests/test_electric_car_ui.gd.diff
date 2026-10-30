@@ -1,0 +1,18 @@
+--- task-start
++++ concurrent-current
+@@ -51,13 +51,13 @@
+ 		Input.action_press("accelerate")
+ 		Input.action_press("steer_right")
+ 		var peak: float=0.0
+-		for tick: int in range(36):
++		for tick: int in range(60):
+ 			game._physics_process(VehicleSimulation.STEP)
+ 			peak=maxf(peak,rad_to_deg(absf(game.sim.state.slip_angle())))
+ 		peaks.append(peak)
+ 	game.handling.power_lateral_response_scale=configured
+ 	check(game.frame.throttle==255 and game.frame.steer==127,"actual Game receives simultaneous full accelerator and steering")
+-	check(peaks[1]>peaks[0]*1.25 and peaks[1]<8.0,"actual Game acceleration produces a controlled slide over its planted off-power response")
++	check(peaks[1]>peaks[0]*1.8 and peaks[1]>15.0 and peaks[1]<24.0,"actual Game acceleration develops deliberate sliding over its planted response")
+ 	check(game.sim.state.velocity.length()>10.0 and game.sim.state.collision_count==0,"actual powered turn accelerates without a contact")
+ 	print("ELECTRIC_POWER_SLIDE_SAMPLE ",JSON.stringify({"without_power_aid":peaks[0],"with_power_aid":peaks[1]}))
+ 	await settle(2)

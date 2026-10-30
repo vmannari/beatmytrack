@@ -1,0 +1,74 @@
+extends RefCounted
+## Original fictional electric sportback, using the Compact's automotive finishes.
+const COACH = preload("res://vehicle/electric_coachwork.gd")
+static var glass_shader: ShaderMaterial
+
+static func build(car: CarVisual) -> void:
+	car.body.name = "ElectricSportback"
+	var paint := CompactFinish.paint(Color("638d86"))
+	var accent := CompactFinish.paint(Color("263c43"))
+	var alloy := CompactFinish.alloy(Color("9ba8ab"))
+	var bright := CompactFinish.alloy(Color("bac6c6"))
+	var trim := CompactFinish.rubber(Color("152025"))
+	car.paint_materials = {"body":paint,"accent":accent,"detail":alloy}
+	if glass_shader == null:
+		glass_shader = ShaderMaterial.new()
+		glass_shader.shader = preload("res://vehicle/window_reflection.gdshader")
+	COACH.body(car,paint,accent,trim)
+	COACH.cabin(car,paint,accent,trim,glass_shader)
+	COACH.front(car,paint,trim,bright)
+	COACH.rear(car,paint,accent,trim,bright)
+	for side: float in [-1.0,1.0]:
+		COACH.doors(car,side,trim,alloy)
+		COACH.mirror(car,side,accent,trim,glass_shader)
+		for axle: float in [-COACH.AXLE,COACH.AXLE]:
+			COACH.arch(car,side,axle,paint,trim)
+			_wheel(car,side,axle,trim,alloy,bright)
+	COACH.rounded(car.body,"BatteryTray",Vector3(1.55,0.09,3.53),Vector3(0,0.30,0),0.035,trim)
+
+static func _wheel(car: CarVisual, side: float, axle: float, trim: Material, alloy: Material, bright: Material) -> void:
+	var pivot := Node3D.new()
+	pivot.name = ("Front" if axle < 0 else "Rear")+("Left" if side < 0 else "Right")+"Wheel"
+	pivot.position = Vector3(side*COACH.HALF_TRACK,0.37,axle)
+	car.add_child(pivot)
+	CompactDetail.tire(pivot,trim,car.simple_model)
+	var inner := Node3D.new()
+	inner.name = "BrakeAssembly"
+	inner.position = pivot.position
+	car.body.add_child(inner)
+	var disc := CompactFinish.alloy(Color("59656a"))
+	disc.roughness = 0.55
+	var rotor := VisualGeometry.cylinder(inner,0.205,0.030,Vector3(side*0.055,0,0),disc,true)
+	rotor.rotation.z = PI*0.5
+	var caliper := CompactFinish.paint(Color("404d52"))
+	COACH.rounded(inner,"FixedCaliper",Vector3(0.050,0.19,0.082),Vector3(side*0.080,0.015,0.176),0.018,caliper)
+	# Open barrel: the disc and fixed caliper sit behind the rolling spokes.
+	CompactDetail._rim_bowl(pivot,side,alloy)
+	var ring := Node3D.new()
+	ring.position.x = side*0.146
+	ring.rotation.z = PI*0.5
+	pivot.add_child(ring)
+	VisualGeometry.ring(ring,Vector3.ZERO,0.247,0.017,bright)
+	for spoke: int in range(5):
+		var blade := Node3D.new()
+		blade.rotation.x = TAU*spoke/5.0
+		pivot.add_child(blade)
+		COACH.rounded(blade,"AeroSpoke",Vector3(0.045,0.072,0.182),Vector3(side*0.135,0.030,0.149),0.016,alloy)
+		COACH.rounded(blade,"SpokeInsert",Vector3(0.009,0.027,0.122),Vector3(side*0.163,0.031,0.150),0.008,trim)
+	var cap := VisualGeometry.cylinder(pivot,0.065,0.285,Vector3.ZERO,alloy,true)
+	cap.rotation.z = PI*0.5
+	for lug: int in range(5):
+		var angle: float = TAU*lug/5
+		var bolt := VisualGeometry.cylinder(pivot,0.010,0.294,Vector3(0,sin(angle)*0.043,cos(angle)*0.043),bright,true)
+		bolt.rotation.z = PI*0.5
+	if axle < 0: car.front_wheels.append(pivot)
+	car.register_rolling_wheel(pivot,0.37)
+	# Calipers steer with the upright and remain independent of the rolling rim.
+	inner.reparent(pivot,false)
+	inner.position = Vector3.ZERO
+
+static func night_lens(parent: Node3D, side: float, material: Material) -> void:
+	COACH.patch(parent,"ElectricNightLens"+str(side),20,6,func(u: float,v: float) -> Vector3:
+		var x: float = side*lerpf(0.315,0.715,u)
+		var y: float = lerpf(0.827,0.863,v)
+		return Vector3(x,y,COACH.front_z(x,y)-0.023),material,Vector3.FORWARD)

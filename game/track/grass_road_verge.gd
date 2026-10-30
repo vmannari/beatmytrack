@@ -50,6 +50,26 @@ func _vertex_uv(source: Dictionary, point: Vector2) -> Vector2:
 func _emit_vertex(tool: SurfaceTool, point: Vector2, uv: Vector2) -> void:
 	_points.append(point); _across.append(uv.y); _heights.append(uv.x)
 	if _points.size() < 3: return
+	_emit_triangle(tool)
+
+func emit_collected(tool: SurfaceTool, points: PackedVector2Array, uvs: PackedVector2Array, cancelled: Callable) -> int:
+	# The native collector returns complete triangles. Batch dispatch while
+	# retaining the same triangle and detail order as per-vertex emission.
+	# A cancelled earlier emission can leave a partial triangle. Preserve the
+	# ordinary vertex-by-vertex sequence when resuming from that state.
+	if not _points.is_empty():
+		for i: int in range(points.size()):
+			if i % 128 == 0 and cancelled.is_valid() and cancelled.call(): return 0
+			_emit_vertex(tool,points[i],uvs[i])
+		return points.size()/3
+	for first: int in range(0,points.size(),3):
+		for i: int in range(first,first+3):
+			if i % 128 == 0 and cancelled.is_valid() and cancelled.call(): return 0
+			_points.append(points[i]); _across.append(uvs[i].y); _heights.append(uvs[i].x)
+		_emit_triangle(tool)
+	return points.size()/3
+
+func _emit_triangle(tool: SurfaceTool) -> void:
 	var u: Vector2 = _points[1]-_points[0]
 	var v: Vector2 = _points[2]-_points[0]
 	# Boolean subtraction leaves repeated vertices or sub-10-micrometre

@@ -1,0 +1,793 @@
+--- a/game/core/app.gd
++++ b/game/core/app.gd
+@@ -3501,6 +3501,11 @@
+ 					_build_editor_tools())
+ 				_context_button("Rotate","rotate",_change_piece.bind("heading",15.0))
+ 			_context_button("Flip","flip",_change_piece.bind("flip",1.0))
++			if document.theme in ["pine","storm"]:
++				for surface: String in ["asphalt","gravel"]:
++					var material_button: Button = _context_button(surface.capitalize(),"terrain_road" if surface == "asphalt" else "terrain_dirt",_set_piece_material.bind(surface),RoadPieces.material(piece,document) == surface)
++					material_button.name = "RoadMaterial_"+surface
++					material_button.tooltip_text = "Road material for this section"
+ 			_context_button("Snap on" if canvas.snap_enabled else "Snap off","snap",func() -> void:
+ 				canvas.snap_enabled = not canvas.snap_enabled
+ 				canvas.snap_matched = false
+@@ -3558,6 +3563,22 @@
+ 	(editor_context.get_parent() as ScrollContainer).custom_minimum_size.x = clampf(context_width,320,maxf(320,canvas.size.x-260))
+ 	_update_editor_save_state()
+ 	canvas.refresh()
++
++func _set_piece_material(surface: String) -> void:
++	if not is_instance_valid(canvas) or document.theme not in ["pine","storm"] or surface not in ["asphalt","gravel"]: return
++	var is_ghost: bool = not canvas.ghost.is_empty()
++	if not is_ghost and (canvas.selected_piece < 0 or canvas.selected_piece >= document.pieces.size()): return
++	var piece: Dictionary = (canvas.ghost if is_ghost else document.pieces[canvas.selected_piece]).duplicate(true)
++	if RoadPieces.material(piece,document) == surface:
++		_build_editor_tools()
++		return
++	piece.surface = surface
++	if is_ghost: canvas.ghost = piece
++	else:
++		_remember()
++		document.pieces[canvas.selected_piece] = piece
++		_save_draft(true)
++	_build_editor_tools()
+ 
+ func _change_piece(key: String, delta: float) -> void:
+ 	var is_ghost: bool = not canvas.ghost.is_empty()
+--- a/game/editor/road_pieces.gd
++++ b/game/editor/road_pieces.gd
+@@ -11,6 +11,38 @@
+ const SNAP_DISTANCE: float = 8.0
+ const JOIN_DISTANCE: float = 0.15
+ const JOIN_ANGLE: float = 2.0
++
++
++static func material(piece: Dictionary, document: Dictionary) -> String:
++	var value: String = str(piece.get("surface",document.get("surface","asphalt"))) if str(document.get("theme","pine")) in ["pine","storm"] else str(document.get("surface","asphalt"))
++	return "gravel" if value in ["gravel","dirt"] else "asphalt"
++
++
++static func has_materials(document: Dictionary) -> bool:
++	return str(document.get("theme","pine")) in ["pine","storm"] and document.get("pieces",[]).any(func(piece: Dictionary) -> bool: return piece.has("surface"))
++
++
++static func stamp_materials(document: Dictionary, cells: PackedInt32Array, grid: Vector2i, extent: Vector2, cell_size: float, margin: float = 0.0, mask: PackedInt32Array = PackedInt32Array(), cancelled: Callable = Callable()) -> void:
++	# Use joined mouths rather than each sample's round raster cap. The same
++	# boundary selects the driving surface and the smooth cosmetic road edge.
++	var pieces: Array = document.pieces
++	var topology: Dictionary = prepare_endpoints(pieces)
++	for index: int in range(pieces.size()):
++		if cancelled.is_valid() and cancelled.call(): return
++		if pieces[index].kind == "bridge": continue
++		var kind: int = 2 if material(pieces[index],document) == "gravel" else 0
++		var contours: Array[PackedVector2Array] = RoadEdges.presentation_contours(pieces,index,margin,topology)
++		for polygon: PackedVector2Array in SplineBorders.surface(contours):
++			var bounds: Rect2i = SurfacePaint.cell_bounds(polygon,extent,cell_size,grid)
++			for y: int in range(bounds.position.y,bounds.end.y):
++				if cancelled.is_valid() and cancelled.call(): return
++				for x: int in range(bounds.position.x,bounds.end.x):
++					var at: int = y*grid.x+x
++					if cells[at] not in [0,2]: continue
++					var point := Vector2((x+0.5)*cell_size-extent.x,extent.y-(y+0.5)*cell_size)
++					if not Geometry2D.is_point_in_polygon(point,polygon): continue
++					cells[at] = kind
++					if not mask.is_empty(): mask[at] = kind
+ 
+ 
+ static func create(kind: String, position: Vector2, heading: float = 0.0, width: float = 10.0) -> Dictionary:
+@@ -29,8 +61,9 @@
+ 
+ 
+ static func validate(piece: Variant) -> Array[String]:
+-	if not piece is Dictionary or piece.size() != KEYS.size() + (1 if piece.has("angle") else 0) + (1 if piece.has("height") else 0) + (1 if piece.has("curvature") else 0) + (1 if piece.has("narrow_width") else 0) + (1 if piece.has("spline_points") else 0) + (1 if piece.has("point_widths") else 0) or not piece.has_all(KEYS):
++	if not piece is Dictionary or piece.size() != KEYS.size() + (1 if piece.has("angle") else 0) + (1 if piece.has("height") else 0) + (1 if piece.has("curvature") else 0) + (1 if piece.has("narrow_width") else 0) + (1 if piece.has("spline_points") else 0) + (1 if piece.has("point_widths") else 0) + (1 if piece.has("surface") else 0) or not piece.has_all(KEYS):
+ 		return ["Invalid road section."]
++	if piece.has("surface") and piece.surface not in ["asphalt","gravel"]: return ["Choose asphalt or gravel for the road section."]
+ 	if piece.kind == "spline":
+ 		var spline_errors: Array[String] = SplineRoad.validate(piece)
+ 		if not spline_errors.is_empty(): return spline_errors
+--- a/game/editor/track_compiler.gd
++++ b/game/editor/track_compiler.gd
+@@ -44,7 +44,7 @@
+ 	if not document.layout.is_empty(): road_samples = TrackDocument.route_data(document.layout)
+ 	var road_route: PackedVector2Array = road_samples.points
+ 	var road_widths: PackedFloat32Array = road_samples.widths
+-	var section_key: Array = [document.pieces]
++	var section_key: Array = [document.pieces,document.surface,document.theme]
+ 	var sections: Array[Dictionary] = []
+ 	var bridges: Array = []
+ 	if preview_cache.get("sections_key",[]) == section_key:
+@@ -56,8 +56,12 @@
+ 			if _cancelled(cancelled): return null
+ 			var piece: Dictionary = document.pieces[piece_index]
+ 			var geometry: Dictionary = RoadPieces.section_geometry(document.pieces,piece_index,topology)
+-			sections.append({"points":geometry.points,"widths":geometry.widths,"width":float(piece.width),"bridge":piece.kind == "bridge"})
+-			if piece.kind == "bridge": bridges.append(piece.duplicate(true))
++			sections.append({"points":geometry.points,"widths":geometry.widths,"width":float(piece.width),"bridge":piece.kind == "bridge","surface":RoadPieces.material(piece,document)})
++			if piece.kind == "bridge":
++				var span: Dictionary = piece.duplicate(true)
++				if RoadPieces.has_materials(document): span.surface = RoadPieces.material(piece,document)
++				else: span.erase("surface")
++				bridges.append(span)
+ 		if preview_cache.get("enabled",false):
+ 			preview_cache.sections_key = section_key.duplicate(true)
+ 			preview_cache.sections = sections.duplicate(true); preview_cache.bridges = bridges.duplicate(true)
+@@ -96,7 +100,8 @@
+ 		for section: Dictionary in sections:
+ 			if section.bridge: continue
+ 			var section_widths: PackedFloat32Array = section.widths
+-			_raster_road(section.points,section_widths,2 if document.surface == "dirt" else 0,cells,grid,extent,cell_size,false,road_mask,cancelled)
++			_raster_road(section.points,section_widths,2 if section.surface == "gravel" else 0,cells,grid,extent,cell_size,false,road_mask,cancelled)
++		if RoadPieces.has_materials(document): RoadPieces.stamp_materials(document,cells,grid,extent,cell_size,0.0,road_mask,cancelled)
+ 		paint_exclusion = _paint(document.paint,cells,grid,extent,cell_size,road_mask,cancelled)
+ 		if _cancelled(cancelled): return null
+ 		if preview_cache.get("enabled",false):
+--- a/game/editor/editor_canvas.gd
++++ b/game/editor/editor_canvas.gd
+@@ -1021,7 +1021,7 @@
+ 		right.append(to_screen(points[i]-normal))
+ 	# Individual triangles also handle a deliberately tight bend whose inner
+ 	# edge folds over itself; a single outline is not a simple polygon there.
+-	var tint: Color = Color(0.01,0.76,0.85,0.4 if is_ghost else 0.23) if controls else Color("61533e") if document.surface == "dirt" else Color("45494c")
++	var tint: Color = Color(0.01,0.76,0.85,0.4 if is_ghost else 0.23) if controls else Color("8b8070") if RoadPieces.material(piece,document) == "gravel" else Color("45494c")
+ 	if piece.kind == "spline":
+ 		var border: Dictionary = _spline_preview(piece)
+ 		for patch: PackedVector2Array in border.surface:
+--- a/game/editor/creator_preview_masks.gd
++++ b/game/editor/creator_preview_masks.gd
+@@ -24,6 +24,8 @@
+ 	return Image.create_from_data(track.grid_width,track.grid_height,false,Image.FORMAT_RGB8,pixels)
+ 
+ static func road(track: NativeTrack) -> Image:
++	var document: Dictionary = track.metadata.get("creator_document",{})
++	if RoadPieces.has_materials(document): return _materials(track,document)
+ 	var native: RefCounted = preload("res://track/geometry_acceleration.gd").raster()
+ 	if native != null:
+ 		var packed: PackedByteArray = native.call("raster_pixels",track.cells,PackedByteArray(),false)
+@@ -33,11 +35,25 @@
+ 	for index: int in range(track.cells.size()): pixels[index] = 255 if track.cells[index] == 0 else 0
+ 	return Image.create_from_data(track.grid_width,track.grid_height,false,Image.FORMAT_L8,pixels)
+ 
++static func _materials(track: NativeTrack, document: Dictionary) -> Image:
++	# Red retains the asphalt mask. Green extends each authored material over
++	# its smooth cosmetic edge, independently of painted terrain and bridges.
++	var material_cells := PackedInt32Array()
++	material_cells.resize(track.cells.size())
++	material_cells.fill(2 if document.surface == "dirt" else 0)
++	RoadPieces.stamp_materials(document,material_cells,Vector2i(track.grid_width,track.grid_height),track.half_extent,track.cell_size,0.65)
++	var pixels := PackedByteArray()
++	pixels.resize(track.cells.size()*3)
++	for index: int in range(track.cells.size()):
++		pixels[index*3] = 255 if track.cells[index] == 0 else 0
++		pixels[index*3+1] = 255 if material_cells[index] == 2 else 0
++	return Image.create_from_data(track.grid_width,track.grid_height,false,Image.FORMAT_RGB8,pixels)
++
+ static func prepare(track: NativeTrack, paint: Array, cache: Dictionary) -> void:
+ 	var overlay_key: Array = [track.half_extent,track.cell_size,track.grid_width,track.grid_height,track.kerbs.blocked,paint]
+ 	if cache.get("overlay_key",[]) != overlay_key:
+ 		cache.overlay_key = overlay_key.duplicate(true); cache.overlay_image = overlay(track,paint)
+-	var road_key: Array = [track.grid_width,track.grid_height,track.cells]
++	var road_key: Array = [track.grid_width,track.grid_height,track.cells,track.metadata.get("creator_document",{}).get("pieces",[]),track.metadata.get("creator_document",{}).get("surface","asphalt"),track.metadata.get("theme","pine")]
+ 	if cache.get("road_key",[]) != road_key:
+ 		cache.road_key = road_key.duplicate(true); cache.road_image = road(track)
+ 	track.editor_overlay_mask = cache.overlay_image.duplicate()
+--- a/game/editor/road_update.gd
++++ b/game/editor/road_update.gd
+@@ -9,6 +9,7 @@
+ 	# Sand wear phases, relief and bounded snow deposits can depend on a whole
+ 	# connected component or earlier pieces. Keep their exact full preparation.
+ 	if next.get("theme","pine") in ["desert","winter"] or old.is_empty() or next.is_empty(): return {}
++	if RoadPieces.has_materials(old) != RoadPieces.has_materials(next): return {}
+ 	if next.get("theme","pine") == "pine" and (not reduced_verge(before) or not reduced_verge(after)): return {}
+ 	for key: String in ["theme","surface","base_track","layout","paint","objects","hidden_scenery"]:
+ 		if old.get(key) != next.get(key): return {}
+--- a/game/track/native_track_visual.gd
++++ b/game/track/native_track_visual.gd
+@@ -2,7 +2,8 @@
+ extends Node3D
+ ## Original matte track kit derived solely from native surface geometry.
+ 
+-const VERSION: String = "track-kit-214-winter-road-edge-snow"
++const VERSION: String = "track-kit-215-road-piece-materials"
++var piece_road_materials: bool = false
+ var desert_relief: RefCounted
+ const GRASS_VERGE = preload("res://track/grass_road_verge.gd")
+ const ROAD_HEIGHT = preload("res://track/road_surface_height.gd")
+@@ -631,6 +632,7 @@
+ 
+ 
+ func _build_creator_roads(track: NativeTrack) -> void:
++	piece_road_materials = RoadPieces.has_materials(track.metadata.get("creator_document",{}))
+ 	if ground_support == null or ground_support.track != track: ground_support = ROAD_HEIGHT.new(track)
+ 	var document: Dictionary = track.metadata.get("creator_document",{})
+ 	var pieces: Array = document.get("pieces",[])
+@@ -786,7 +788,7 @@
+ 				if union_road: desert_road_union.add(polygon,points,axis_cache)
+ 				else: counts[1] += _road_polygon(asphalt,polygon,0.012,points,axis_cache)
+ 			if theme_id == "desert": axis_cache["desert_blend_sampler"] = desert_road_union
+-			var dirt: bool = document.get("surface","asphalt") == "dirt"
++			var dirt: bool = RoadPieces.material(piece,document) == "gravel"
+ 			var border_contours: Array[PackedVector2Array] = []
+ 			if piece.kind == "spline": border_contours = RoadEdges.presentation_contours(pieces,index,-0.20,topology)
+ 			else: border_contours = marking_join.contours
+@@ -850,8 +852,8 @@
+ 	await _build_kerbs(track)
+ 	if _menu_slices and not _build_is_current(): return
+ 	if counts[0]: await _commit_creator_road(shoulders,TrackTheme.DESERT_SHOULDER if theme_id == "desert" else colors[2].darkened(0.20),texture,road_texture,track.half_extent,true)
+-	if counts[1]: await _commit_creator_road(asphalt,colors[2] if document.get("surface","asphalt") == "dirt" else colors[0],texture,road_texture,track.half_extent,false,false,false,document.get("surface","asphalt") == "asphalt")
+-	if fringe_count and theme_id != "winter" and document.get("surface","asphalt") == "asphalt": await _commit_creator_road(asphalt_fringe,colors[0],texture,road_texture,track.half_extent,false,false,false,true,true)
++	if counts[1]: await _commit_creator_road(asphalt,colors[2] if document.get("surface","asphalt") == "dirt" and not piece_road_materials else colors[0],texture,road_texture,track.half_extent,false,false,false,document.get("surface","asphalt") == "asphalt" or piece_road_materials)
++	if fringe_count and theme_id != "winter" and (document.get("surface","asphalt") == "asphalt" or piece_road_materials): await _commit_creator_road(asphalt_fringe,colors[0],texture,road_texture,track.half_extent,false,false,false,true,true)
+ 	if counts[2] and theme_id not in ["desert","winter"]: await _commit_creator_road(markings,Color("c8ccc2"),texture,road_texture,track.half_extent,false,false,false,false,false,true)
+ 	if ground_count: await _commit_creator_road(ground_skirt,colors[1],texture,road_texture,track.half_extent,false,true)
+ 	if cache_road_meshes and (not _menu_slices or is_inside_tree()):
+@@ -970,7 +972,7 @@
+ 		if union_road: desert_road_union.add(polygon,points,axis_cache)
+ 		else: counts[1] += _road_polygon(asphalt,polygon,0.012,points,axis_cache)
+ 	if theme_id == "desert": axis_cache["desert_blend_sampler"] = desert_road_union
+-	var dirt: bool = document.get("surface","asphalt") == "dirt"
++	var dirt: bool = RoadPieces.material(piece,document) == "gravel"
+ 	var border_contours: Array[PackedVector2Array] = []
+ 	if piece.kind == "spline": border_contours = RoadEdges.presentation_contours(pieces,index,-0.20,topology)
+ 	else: border_contours = marking_join.contours
+@@ -1018,6 +1020,7 @@
+ 
+ 
+ func _install_prepared_roads(track: NativeTrack, packet: Dictionary) -> void:
++	piece_road_materials = RoadPieces.has_materials(track.metadata.get("creator_document",{}))
+ 	_share_road_materials = editor_preview
+ 	_road_materials.clear()
+ 	editor_dirty_tiles = packet.get("dirty_tiles",{})
+@@ -1590,6 +1593,7 @@
+ 	material.set_shader_parameter("overlay_mask",mask)
+ 	material.set_shader_parameter("verge_blend_mask",mask)
+ 	material.set_shader_parameter("road_mask",road_mask)
++	material.set_shader_parameter("piece_materials",piece_road_materials)
+ 	material.set_shader_parameter("road_mask_texel",Vector2(1.0/road_mask.get_width(),1.0/road_mask.get_height()))
+ 	material.set_shader_parameter("sand_color",TrackTheme.DESERT_SHOULDER if theme_id == "desert" else colors[2].darkened(0.20))
+ 	material.set_shader_parameter("map_extent",extent)
+--- a/game/track/creator_road.gdshaderinc
++++ b/game/track/creator_road.gdshaderinc
+@@ -55,6 +55,8 @@
+ 			|| texture(overlay_mask, map_uv).r < 0.5) { discard; }
+ 	// Keep-road protects the road mesh, not its grass skirt or gravel fringe.
+ 	vec3 mask = texture(overlay_mask,map_uv).rgb;
++	float loose_road = piece_materials && (asphalt_surface || road_marking) ? texture(road_mask,map_uv).g : 0.0;
++	if (road_marking && loose_road > 0.5) { discard; }
+ 	if ((grass || gravel) && mask.g < 0.5 && mask.b < 0.5) { discard; }
+ 	float sand = 0.0;
+ 	if (gravel || (grass && !winter_snow && !desert_dunes)) { sand = sand_coverage(map_uv); }
+@@ -139,6 +141,13 @@
+ 			if (UV.x < -0.5) { ALBEDO = desert_join.rgb; relief_weight = 0.0; }
+ 		}
+ 	}
++	if (loose_road > 0.0 && asphalt_surface) {
++		float coverage = edge_fringe ? 1.0-smoothstep(0.3,1.0,UV.y) : 1.0;
++		vec3 stone = road_gravel_color(sand_color.rgb,world_position.xz);
++		if (raised_road_edge && !edge_fringe) { stone *= desert_join.a; }
++		ALBEDO = mix(ALBEDO,stone,loose_road*coverage);
++		wet_coverage *= 1.0-loose_road;
++	}
+ 	ROUGHNESS = 1.0;
+  SPECULAR = 0.0;
+  if (icy_road && asphalt_surface && !edge_fringe) {
+@@ -163,6 +172,7 @@
+ 	bool verge_detail = grass_shoulder && UV.x < -0.5;
+ 	NORMAL = grass_relief(world_position.xz,NORMAL,VIEW_MATRIX,verge_detail ? 0.0 : relief_weight);
+ 	NORMAL = sand_relief(world_position.xz,NORMAL,VIEW_MATRIX,verge_detail ? 0.0 : (grass || gravel) ? (1.0-relief_weight)*(grass_shoulder ? 0.25 : 1.0) : 0.0);
++	if (loose_road > 0.0 && asphalt_surface) NORMAL = sand_relief(world_position.xz,NORMAL,VIEW_MATRIX,loose_road*0.6);
+ 	NORMAL = winter_snow_relief(world_position.xz,NORMAL,VIEW_MATRIX,(grass || gravel) ? 1.0 : 0.0);
+ 	// Cosmetic skirts/loose sand carry dunes; the firm timed road stays smooth.
+ 	NORMAL = dune_relief(world_position.xz,NORMAL,VIEW_MATRIX,grass ? 1.0 : (gravel ? smoothstep(0.6,1.0,UV.y)*(1.0-sand) : 0.0));
+--- a/game/track/road_surface_height.gd
++++ b/game/track/road_surface_height.gd
+@@ -35,7 +35,8 @@
+ 					floor_bins[cell].append(slot)
+ 
+ static func is_asphalt(data: NativeTrack) -> bool:
+-	return str(data.metadata.get("theme","pine")) not in ["desert","winter"] and data.metadata.get("creator_document",{}).get("surface","asphalt") == "asphalt"
++	var document: Dictionary = data.metadata.get("creator_document",{})
++	return str(data.metadata.get("theme","pine")) not in ["desert","winter"] and (document.get("surface","asphalt") == "asphalt" or RoadPieces.has_materials(document))
+ 
+ static func clip_bridge_mouths(polygon: PackedVector2Array, pieces: Array, index: int, topology: Dictionary) -> PackedVector2Array:
+ 	for cut: Dictionary in RoadEdges._join_cuts(pieces,index,topology):
+--- a/game/track/road_kerbs.gd
++++ b/game/track/road_kerbs.gd
+@@ -91,7 +91,7 @@
+ 
+ static func creator_segments(document: Dictionary, selected_kind: String = "", presentation: bool = false, cancelled: Callable = Callable()) -> Array[Dictionary]:
+ 	var result: Array[Dictionary] = []
+-	if document.get("surface","asphalt") == "dirt": return result
++	if document.get("surface","asphalt") == "dirt" and not RoadPieces.has_materials(document): return result
+ 	var pieces: Array = document.get("pieces",[])
+ 	var topology: Dictionary = RoadPieces.prepare_endpoints(pieces)
+ 	var outlines: Array[Dictionary] = []
+@@ -109,6 +109,7 @@
+ 			outlines.append({"index":index,"polygon":polygon,"bounds":bounds,"hole":pieces[index].kind == "spline" and Geometry2D.is_polygon_clockwise(polygon)})
+ 	for index: int in range(pieces.size()):
+ 		if pieces[index].kind == "bridge": continue
++		if RoadPieces.material(pieces[index],document) == "gravel": continue
+ 		if not selected_kind.is_empty() and pieces[index].kind != selected_kind: continue
+ 		if _cancelled(cancelled): return []
+ 		var points: PackedVector2Array = RoadPieces.samples(pieces[index])
+--- a/game/track/creator_bridges.gd
++++ b/game/track/creator_bridges.gd
+@@ -124,6 +124,7 @@
+ 
+ static func stamp(bridges: Array, ground: PackedInt32Array, deck: PackedInt32Array, grid: Vector2i, extent: Vector2, cell: float) -> void:
+ 	for bridge: Dictionary in bridges:
++		var road_kind: int = 2 if bridge.get("surface","") == "gravel" else 0
+ 		var start := Vector2(bridge.position[0],bridge.position[1])
+ 		var end: Vector2 = RoadPieces.end_pose(bridge).position
+ 		var reach: float = float(bridge.width)*0.5+RAIL+cell
+@@ -137,13 +138,13 @@
+ 				# Union the road interiors before rails: a later rail must never
+ 				# close an earlier span's road at an elevated intersection.
+ 				if absf(p.y) <= float(bridge.width)*0.5:
+-					deck[y*grid.x+x] = 0
+-				elif deck[y*grid.x+x] != 0:
++					deck[y*grid.x+x] = road_kind
++				elif deck[y*grid.x+x] not in [0,2]:
+ 					deck[y*grid.x+x] = 4
+ 				# Only ramp approaches alter the ground. Water/road beneath
+ 				# the middle of a span remains exactly as authored.
+ 				if (p.x < 2.0 or p.x > float(bridge.length)-2.0) and absf(p.y) <= float(bridge.width)*0.5:
+-					ground[y*grid.x+x] = 0
++					ground[y*grid.x+x] = road_kind
+ 				# Ground cars cannot enter the low underside from the tunnel or
+ 				# side. The upper ramp remains independently drivable. Preserve
+ 				# the open middle, where the deck has full vehicle clearance.
+--- a/game/track/creator_bridge_visual.gd
++++ b/game/track/creator_bridge_visual.gd
+@@ -20,6 +20,8 @@
+ 		deck.set_normal(Vector3.UP); deck.set_uv2(Vector2.RIGHT)
+ 	for span_index: int in range(bridges.size()):
+ 		var span: Dictionary = bridges[span_index]
++		var loose: bool = theme in ["pine","storm"] and span.get("surface","") == "gravel"
++		if theme in ["pine","storm"]: deck.set_uv2(Vector2(1.0,1.0 if loose else 0.0))
+ 		if theme == "desert":
+ 			DesertBridgeVisual.append(tool,deck,span,bridges,road_phases[span_index] if span_index < road_phases.size() else {})
+ 			continue
+@@ -44,7 +46,7 @@
+ 					var offset_b: float = preload("res://track/road_surface_height.gd").bridge_offset(b,float(span.length),0.025,road_lift)
+ 					var outward: Vector3 = VisualGeometry.world(Vector2(0.0,side).rotated(deg_to_rad(float(span.heading))))
+ 					ASPHALT_EDGE.append(lip,vertex(span,a,side*(half-radius),offset_a),vertex(span,b,side*(half-radius),offset_b),
+-						outward,outward,0.0,0.0,Vector2(a,side*(half-radius)),Vector2(b,side*(half-radius)),Vector2.RIGHT,false,Vector2(0.0,side),up)
++						outward,outward,0.0,0.0,Vector2(a,side*(half-radius)),Vector2(b,side*(half-radius)),Vector2(1.0,1.0 if loose else 0.0),false,Vector2(0.0,side),up)
+ 			for side: float in [-1.0,1.0]:
+ 				for run: Vector2 in CreatorBridges.clip_runs(rails[side],a,b):
+ 					var inner: float = half*side
+@@ -63,7 +65,7 @@
+ 					wall(tool,span,run.x,run.y,rail,0.65,0.85,RAIL_SIDE)
+ 					wall(tool,span,run.x,run.y,back,0.65,0.85,RAIL_SIDE)
+ 					strip(tool,span,run.x,run.y,rail,back,0.65,RAIL_SIDE)
+-					strip(tool,span,run.x,run.y,(half-0.30)*side,(half-0.18)*side,0.033,Color("d9d8cc"),{},road_lift)
++					if not loose: strip(tool,span,run.x,run.y,(half-0.30)*side,(half-0.18)*side,0.033,Color("d9d8cc"),{},road_lift)
+ 			strip(tool,span,a,b,-half-CreatorBridges.RAIL,half+CreatorBridges.RAIL,-0.42,Color("293e4a"))
+ 		# Sparse slim steel uprights, all within the existing solid rail strip.
+ 		var posts: int = maxi(1,ceili(float(span.length)/8.0))
+@@ -121,6 +123,8 @@
+ 	if theme == "desert": asphalt.shader = preload("res://track/desert_bridge_road.gdshader")
+ 	asphalt.set_shader_parameter("surface_factors", preload("res://assets/textures/surface_factors_v1.png"))
+ 	asphalt.set_shader_parameter("road_color",TrackTheme.palette(theme)[0])
++	asphalt.set_shader_parameter("sand_color",TrackTheme.palette(theme)[2].darkened(0.20))
++	asphalt.set_shader_parameter("piece_materials",theme in ["pine","storm"] and bridges.any(func(span: Dictionary) -> bool: return span.has("surface")))
+ 	asphalt.set_shader_parameter("industrial_asphalt",theme == "night_city")
+ 	if theme == "night_city": asphalt.set_shader_parameter("night_asphalt_wear",NativeTrackVisual.NIGHT_ASPHALT_WEAR)
+ 	asphalt.set_shader_parameter("icy_road",theme == "winter")
+--- a/game/track/bridge_road.gdshaderinc
++++ b/game/track/bridge_road.gdshaderinc
+@@ -8,15 +8,18 @@
+ varying float winter_half_width;
+ varying vec2 desert_apron_data;
+ varying float asphalt_edge_shade;
++varying float loose_bridge;
+ void vertex() {
+     world_position = (MODEL_MATRIX * vec4(VERTEX,1.0)).xyz;
+     winter_half_width = winter_bridge_width_data ? UV2.x : 5.0;
+     desert_apron_data = UV2;
+     asphalt_edge_shade = COLOR.a;
++    loose_bridge = piece_materials ? UV2.y : 0.0;
+     if (NORMAL.y < 0.0) { NORMAL = -NORMAL; }
+ }
+ void fragment() {
+-    if (packed_sand) { ALBEDO = compacted_road(road_color.rgb,UV); }
++    if (loose_bridge > 0.5) { ALBEDO = road_gravel_color(sand_color.rgb,world_position.xz); }
++    else if (packed_sand) { ALBEDO = compacted_road(road_color.rgb,UV); }
+     else if (icy_road) { ALBEDO = winter_wear_width(UV,world_position.xz,winter_half_width); }
+     else { ALBEDO = surface_detail(road_color.rgb,world_position.xz,true); }
+     if (raised_road_edge) ALBEDO *= asphalt_edge_shade;
+@@ -39,11 +42,12 @@
+   NORMAL = winter_road_ice_normal(finish.rg,NORMAL,VIEW_MATRIX,world_position.xz,road_uv);
+   RADIANCE = winter_seam_radiance(NORMAL,VIEW,INV_VIEW_MATRIX,winter_seam_weight(finish,frost));
+  }
+- if (wet_road) {
++ if (wet_road && loose_bridge < 0.5) {
+   ROUGHNESS = wet_road_roughness(world_position.xz);
+   SPECULAR = wet_road_specular(world_position.xz);
+  }
+- if (wet_road) NORMAL = wet_road_relief(world_position.xz,NORMAL,VIEW_MATRIX,1.0);
++ if (wet_road && loose_bridge < 0.5) NORMAL = wet_road_relief(world_position.xz,NORMAL,VIEW_MATRIX,1.0);
++	if (loose_bridge > 0.5) NORMAL = sand_relief(world_position.xz,NORMAL,VIEW_MATRIX,0.6);
+ 	if (icy_road) {
+ 		float powder = winter_ground_powder(world_position.xz,1.0);
+ 		ALBEDO = mix(ALBEDO,vec3(0.92,0.945,0.97),powder);
+--- a/game/track/surface_detail.gdshaderinc
++++ b/game/track/surface_detail.gdshaderinc
+@@ -26,6 +26,15 @@
+ }
+ uniform bool icy_road = false;
+ uniform bool wet_road = false;
++uniform bool piece_materials = false;
++
++vec3 road_gravel_color(vec3 base, vec2 p) {
++	vec3 grain = texture(surface_factors,p/0.42).rgb;
++	vec3 patches = texture(surface_factors,p/5.0).rgb;
++	float neutral = dot(base,vec3(0.2126,0.7152,0.0722));
++	vec3 stone = mix(base,vec3(neutral),0.58);
++	return stone*(0.72+grain.r*0.42+patches.g*0.18)*(wet_road ? 0.70 : 1.0);
++}
+ global uniform float storm_ripple_time;
+ global uniform bool storm_ripples_enabled;
+ uniform bool packed_sand = false;
+--- a/game/track/surface_shader_variants.gd
++++ b/game/track/surface_shader_variants.gd
+@@ -2,7 +2,7 @@
+ extends RefCounted
+ ## Fixed visual-material flags become constants; samples and lighting stay intact.
+ const FLAGS: Array[String] = ["hybrid_grass","desert_dunes","winter_snow","packed_sand","icy_road","wet_road","industrial_ground","industrial_asphalt"]
+-const MATERIAL_FLAGS: Array[String] = ["gravel","grass_shoulder","grass","kerb","asphalt_surface","edge_fringe","road_marking","winter_width_data","winter_bridge_width_data","desert_bridge_width_data","smooth_road_bank","terrain_high_present","terrain_packed","terrain_uniform_enabled","terrain_region_low","raised_road_edge"]
++const MATERIAL_FLAGS: Array[String] = ["gravel","grass_shoulder","grass","kerb","asphalt_surface","edge_fringe","road_marking","winter_width_data","winter_bridge_width_data","desert_bridge_width_data","smooth_road_bank","terrain_high_present","terrain_packed","terrain_uniform_enabled","terrain_region_low","raised_road_edge","piece_materials"]
+ const INCLUDES: Dictionary = {
+ 	"res://track/night_ground.gdshaderinc":preload("res://track/night_ground.gdshaderinc"),
+ 	"res://track/winter_ground_snow.gdshaderinc":preload("res://track/winter_ground_snow.gdshaderinc"),
+--- a/docs/CREATOR_FORMAT.md
++++ b/docs/CREATOR_FORMAT.md
+@@ -1,6 +1,6 @@
+ # Current creator format and admission limits
+ 
+-Reviewed 2026-10-24. External creator documents must use **creator-track-v5**.
++Reviewed 2026-10-27. External creator documents must use **creator-track-v5**.
+ The native loader accepts **surface-grid-v2**. Earlier creator/native versions and
+ Coast imports are unsupported; older-format conversion is not offered. Existing
+ player files are preserved rather than deleted when they cannot be imported.
+@@ -32,6 +32,23 @@
+ The route is derived from connected pieces for the current UI; manual waypoint
+ editing is retired. Authoring and playable-route validation are distinct so that
+ unfinished work can be recovered without claiming it is ready to race.
++
++Grass and Storm road pieces accept an optional `surface` of `"asphalt"` or
++`"gravel"`. An omitted value inherits the document's `surface`, with legacy
++`"dirt"` using the loose surface. The editor exposes these choices for the selected
++piece and unplaced preview. Other themes retain stored choices but use their
++existing biome material. Bridges apply their choice to the deck and ramp
++approaches independently of the ground below. Gravel uses existing native surface
++2 (0.8 grip, 2.0 resistance), a matte stone finish, and no asphalt edge markings or
++bend kerbs. Joined material boundaries use the authored road mouths.
++
++This is an optional v5 extension: documents without piece materials keep their
++existing canonical output and hashes. A changed piece material is included in the
++document content hash. Visual kit 215 retires older presentation caches. Hosting
++new material tracks requires the matching client and API/worker source rollout;
++this local implementation does not deploy those services. See
++[road-piece materials](ROAD_PIECE_MATERIALS_2026_10_27.md) for actual checks and
++screenshots.
+ 
+ Compiler identity is **creator-compiler-27**. Geometry is shared by editor preview,
+ practice, racing and canonical verification. Desert compilation normalizes the road
+--- a/docs/schemas/creator-track-v5.schema.json
++++ b/docs/schemas/creator-track-v5.schema.json
+@@ -518,6 +518,11 @@
+             "maximum": 20,
+             "description": "Taper-only width at the converging end. Flip chooses which road edge remains straight. Domain validation also requires this not to exceed width."
+           },
++          "surface": {
++            "type": "string",
++            "enum": ["asphalt", "gravel"],
++            "description": "Optional road-piece material in Grass (pine) and Storm. Omission inherits the document surface; legacy dirt maps to gravel. Other themes retain this choice but use their original biome material. Applies to the ground or bridge deck independently."
++          },
+           "flip": {
+             "type": "boolean"
+           },
+--- /dev/null
++++ b/game/tests/test_road_piece_materials.gd
+@@ -0,0 +1,188 @@
++extends SceneTree
++## Selected-piece material persistence, canonical surfaces and real editor UI.
++const OUTPUT: String = "res://../docs/evidence/road-piece-materials-2026-10-27"
++var checks: int = 0
++var failures: int = 0
++var app: Node
++var observations: Array = []
++
++func _initialize() -> void: run.call_deferred()
++
++func check(ok: bool, label: String) -> void:
++	checks += 1
++	if not ok: failures += 1; push_error(label)
++
++func circuit(theme: String) -> Dictionary:
++	var doc: Dictionary = TrackDocument.create_blank()
++	doc.theme = theme
++	doc["automatic_scenery"] = false
++	doc["start_line"] = {"position":[-20.0,-20.0],"heading":0.0}
++	doc.pieces = []
++	var position := Vector2(-30,-20)
++	var heading: float = 0.0
++	for i: int in range(8):
++		var piece: Dictionary = RoadPieces.create("straight" if i%2 == 0 else "curve",position,heading)
++		piece.length = 40.0 if i in [0,4] else 20.0 if i%2 == 0 else 0.0
++		piece.radius = 10.0
++		doc.pieces.append(piece)
++		var end: Dictionary = RoadPieces.end_pose(piece)
++		position = end.position; heading = end.heading
++	var generated: Dictionary = RoadPieces.route_from_pieces(doc)
++	check(generated.ok,theme+" closed road fixture: "+str(generated.errors))
++	return generated.document if generated.ok else doc
++
++func sample(image: Image, track: NativeTrack, point: Vector2) -> Color:
++	return image.get_pixel(floori((point.x+track.half_extent.x)/track.cell_size),floori((track.half_extent.y-point.y)/track.cell_size))
++
++func domain() -> void:
++	for theme: String in ["pine","storm"]:
++		var doc: Dictionary = circuit(theme)
++		var old: NativeTrack = TrackCompiler.compile(doc)
++		check(old != null and old.cell_at(Vector2(-10,-20)) == 0,theme+" original asphalt")
++		doc.pieces[0].surface = "gravel"
++		check(TrackDocument.validate(JSON.parse_string(JSON.stringify(doc))).is_empty(),theme+" material survives strict JSON import")
++		var cache: Dictionary = {"enabled":true}
++		var track: NativeTrack = TrackCompiler.compile(doc,cache)
++		check(track != null,theme+" mixed road compiles")
++		if track == null: continue
++		check(track.cell_at(Vector2(-10,-20)) == 2 and track.cell_at(Vector2(20,0)) == 0,theme+" only selected piece uses loose surface")
++		check(track.cell_at(Vector2(9,-20)) == 2 and track.cell_at(Vector2(11,-20)) == 0,theme+" driving materials meet at the joined mouth")
++		check(old.content_hash != track.content_hash,theme+" material changes content identity")
++		var request := FileAccess.open(OUTPUT+"/"+theme+"-request.json",FileAccess.WRITE)
++		request.store_string(JSON.stringify({"operation":"track","document":doc})); request.close()
++		observations.append({"theme":theme,"content_hash":track.content_hash})
++		var state := VehicleState.new(); state.position = Vector2(-10,-20)
++		check(track.surface_factors(state) == Vector2(0.8,2.0),theme+" gravel uses existing deterministic loose traction")
++		var image: Image = CreatorPreviewMasks.road(track)
++		check(sample(image,track,Vector2(-10,-20)).g > 0.9 and sample(image,track,Vector2(20,0)).g < 0.1,theme+" rendered material mask agrees with selected and unselected road")
++		check(sample(image,track,Vector2(9,-20)).g > 0.9 and sample(image,track,Vector2(11,-20)).g < 0.1,theme+" material seam follows joined mouth without round sample caps")
++		check(sample(image,track,Vector2(-10,-25.15)).g > 0.5,theme+" smooth gravel rim retains gravel")
++		check(preload("res://track/road_surface_height.gd").new(track).ground(Vector2(-10,-20)) == 0.05,theme+" gravel roadbed remains aligned")
++		doc.pieces[0].surface = "asphalt"
++		var reset: NativeTrack = TrackCompiler.compile(doc,cache)
++		check(reset.cell_at(Vector2(-10,-20)) == 0,theme+" cached compile returns selected piece to asphalt")
++		check(reset.cells == old.cells and reset.deck_cells == old.deck_cells,theme+" asphalt restoration preserves original grid")
++		doc.pieces[0].surface = "gravel"
++		doc.pieces[1].surface = "gravel"
++		check(not RoadKerbs.creator_segments(doc).any(func(segment: Dictionary) -> bool: return segment.piece == 1),theme+" gravel bend has no asphalt kerbs")
++		doc.surface = "dirt"; doc.pieces[0].surface = "asphalt"
++		var reverse: NativeTrack = TrackCompiler.compile(doc,cache)
++		check(reverse.cell_at(Vector2(-10,-20)) == 0 and reverse.cell_at(Vector2(20,0)) == 2,theme+" per-piece asphalt overrides a legacy dirt default")
++		for invalid: Variant in ["sand","water",2,null,{},[]]:
++			doc.pieces[0].surface = invalid
++			check(not TrackDocument.validate(doc).is_empty(),theme+" rejects unapproved material "+str(invalid))
++		for kind: String in RoadPieces.KINDS:
++			if kind == "bridge": continue
++			var single: Dictionary = TrackDocument.create_blank(); single.theme = theme; single["automatic_scenery"] = false
++			var piece: Dictionary = RoadPieces.create(kind,Vector2(-30,-10)); piece.surface = "gravel"
++			single.pieces = [piece]
++			var compiled: NativeTrack = TrackCompiler.compile(single)
++			var points: PackedVector2Array = RoadPieces.samples(piece)
++			var center: Vector2 = points[points.size()/2]
++			check(compiled != null and compiled.cell_at(center) == 2,theme+" gravel driving surface for "+kind)
++			check(compiled != null and sample(CreatorPreviewMasks.road(compiled),compiled,center).g > 0.9,theme+" gravel render mask for "+kind)
++	var doc: Dictionary = circuit("pine")
++	var a: Dictionary = RoadPieces.create("bridge",Vector2(-20,0)); a.length = 40; a.surface = "gravel"
++	var b: Dictionary = RoadPieces.create("straight",Vector2(0,-20),90); b.length = 40
++	doc.pieces = [a,b]
++	var bridge: NativeTrack = TrackCompiler.compile(doc)
++	check(bridge != null and bridge.cell_at(Vector2.ZERO,true) == 2 and bridge.cell_at(Vector2.ZERO,false) == 0,"gravel bridge preserves asphalt road below")
++	check(bridge.cell_at(Vector2(-19,0),false) == 2,"gravel ramp approach matches deck")
++	var world := Node3D.new(); root.add_child(world)
++	CreatorBridgeVisual.build(world,bridge.creator_bridges,"pine")
++	var mesh: MeshInstance3D = world.get_node("BridgeAsphalt")
++	check(mesh.material_override.get_meta("surface_dynamic_material",mesh.material_override).get_shader_parameter("piece_materials") == true,"bridge material enables selected surfaces")
++	var arrays: Array = mesh.mesh.surface_get_arrays(0)
++	check(arrays[Mesh.ARRAY_TEX_UV2][0].y > 0.9,"bridge top carries gravel material independently of ground mask")
++	world.free()
++
++func settle() -> void:
++	var deadline: int = Time.get_ticks_msec()+90000
++	while Time.get_ticks_msec() < deadline:
++		if app.editor_preview_thread == null and not app.editor_commits.unsettled() and not app.canvas.preparing and not app.editor_world._building: break
++		await process_frame
++	app._flush_editor_writes()
++	check(Time.get_ticks_msec() < deadline,"editor settles after material change")
++	await process_frame
++
++func shot(label: String) -> void:
++	if DisplayServer.get_name() == "headless": return
++	for i: int in range(5): await process_frame
++	await RenderingServer.frame_post_draw
++	check(root.get_texture().get_image().save_png(OUTPUT+"/"+RenderingServer.get_current_rendering_method()+"-"+label+".png") == OK,label+" screenshot")
++
++func editor() -> void:
++	var fixture: String = ProjectSettings.globalize_path("res://../build/road-piece-materials-2026-10-27/fixture-"+str(OS.get_process_id()))
++	app = preload("res://core/app.tscn").instantiate()
++	app.library = TrackLibrary.new(fixture+"/tracks"); app.library.owner_name = "Material test"
++	app.records = LocalRecords.new(fixture+"/records.json")
++	app.cloud_root_override = fixture+"/cloud"
++	root.add_child(app)
++	while not app.startup_complete: await process_frame
++	app.online.client.configure("")
++	for theme: String in ["pine","storm"]:
++		app.document = circuit(theme); app.editor_view = {}
++		app._show_screen("create")
++		await settle()
++		app._editor_category("road"); app.canvas.selected_piece = 0; app._build_editor_tools()
++		var button: Button = app.editor_context.get_node("RoadMaterial_gravel")
++		check(button != null and not button.button_pressed,theme+" selected road exposes Gravel")
++		var before: Dictionary = app.document.duplicate(true)
++		button.pressed.emit()
++		check(app.document.pieces[0].surface == "gravel" and app.document.pieces[1] == before.pieces[1],theme+" real button changes only selected piece")
++		await settle()
++		var saved: Dictionary = app.library.load_wip(app.document.id)
++		check(saved.get("pieces",[]).size() == 8 and saved.pieces[0].surface == "gravel",theme+" actual draft persists material")
++		check(app.editor_context.get_node("RoadMaterial_gravel").button_pressed,theme+" current material is selected")
++		var history_size: int = app.history.size()
++		app.editor_context.get_node("RoadMaterial_gravel").set_pressed_no_signal(false)
++		app.editor_context.get_node("RoadMaterial_gravel").pressed.emit()
++		check(app.history.size() == history_size and app.editor_context.get_node("RoadMaterial_gravel").button_pressed,theme+" choosing current material retains selection without an undo entry")
++		await shot(theme+"-gravel")
++		app._undo(); await settle()
++		check(not app.document.pieces[0].has("surface"),theme+" undo restores inherited asphalt")
++		app._redo(); await settle()
++		check(app.document.pieces[0].surface == "gravel",theme+" redo restores gravel")
++		app._editor_category("road"); app.canvas.selected_piece = 0; app._build_editor_tools()
++		app.editor_context.get_node("RoadMaterial_asphalt").pressed.emit()
++		await settle()
++		check(RoadPieces.material(app.document.pieces[0],app.document) == "asphalt",theme+" real Asphalt button restores road")
++		app.canvas.choose_piece("curve")
++		app.editor_context.get_node("RoadMaterial_gravel").pressed.emit()
++		check(app.canvas.ghost.surface == "gravel" and app.document.pieces.size() == 8,theme+" unplaced piece changes without changing saved road")
++		app.canvas.ghost.clear()
++		app.canvas.selected_piece = -1; app._build_editor_tools()
++		check(app.editor_context.find_child("RoadMaterial_gravel",false,false) == null,theme+" no material action without a piece")
++		app._editor_category("road"); app.canvas.selected_piece = 0; app._build_editor_tools()
++		app.editor_context.get_node("RoadMaterial_gravel").pressed.emit(); await settle()
++		app._flush_editor_writes()
++		observations.append({"theme":theme,"material":app.document.pieces[0].surface,"saved":app.library.load_wip(app.document.id).pieces[0].surface})
++		for width: int in [960,1280]:
++			root.size = Vector2i(width,720); await process_frame; app._build_editor_tools(); await process_frame
++			var choice: Control = app.editor_context.get_node("RoadMaterial_gravel")
++			check(choice.get_global_rect().size.y >= 44,"material button retains touch height at "+str(width))
++			await shot(theme+"-"+str(width))
++		app.test_button.pressed.emit()
++		var deadline: int = Time.get_ticks_msec()+90000
++		while Time.get_ticks_msec() < deadline and (not is_instance_valid(app.game) or not app.game.preparation_complete or is_instance_valid(app.race_loading)): await process_frame
++		check(is_instance_valid(app.game) and app.game.preparation_complete,theme+" actual Test drive opens")
++		if is_instance_valid(app.game):
++			app.game.paused = true
++			check(app.game.native_track.cell_at(Vector2(-10,-20)) == 2 and app.game.native_track.cell_at(Vector2(20,0)) == 0,theme+" Test drive keeps selected gravel and neighboring asphalt")
++			await shot(theme+"-test-drive")
++			app._leave_race(); await settle()
++	for theme: String in ["desert","winter","night_city"]:
++		app.document.theme = theme; app.canvas.selected_piece = 0; app._build_editor_tools()
++		check(app.editor_context.find_child("RoadMaterial_gravel",false,false) == null,theme+" material choices reserved for Grass and Storm")
++	app.queue_free(); await process_frame
++
++func run() -> void:
++	OS.set_environment("BMT_API_URL","")
++	root.size = Vector2i(1280,720)
++	DirAccess.make_dir_recursive_absolute(ProjectSettings.globalize_path(OUTPUT))
++	domain()
++	if "--domain-only" not in OS.get_cmdline_user_args(): await editor()
++	var file := FileAccess.open(OUTPUT+"/result-"+RenderingServer.get_current_rendering_method()+("-headless" if DisplayServer.get_name() == "headless" else "")+".json",FileAccess.WRITE)
++	file.store_string(JSON.stringify({"checks":checks,"failures":failures,"observations":observations},"\t")); file.close()
++	print("ROAD_PIECE_MATERIALS: %d checks, %d failures" % [checks,failures])
++	quit(1 if failures else 0)
+--- /dev/null
++++ b/game/tests/test_road_piece_materials.gd.uid
+@@ -0,0 +1 @@
++uid://dr34p6bduutq2
+--- /dev/null
++++ b/docs/ROAD_PIECE_MATERIALS_2026_10_27.md
+@@ -0,0 +1,103 @@
++# Road-piece materials — 2026-10-27
++
++RPM01: In Track, select a placed road piece or an unplaced preview, then choose
++**Asphalt** or **Gravel**. These controls are available in Grass and Storm. They
++change that piece only. Selecting the current material preserves the highlighted
++choice without adding a history entry.
++
++RPM02: The optional piece `surface` field accepts only `asphalt` and `gravel`.
++Omission inherits the document's existing material; legacy `dirt` maps to the loose
++surface. The normal WIP save, JSON exchange, undo/redo and Test drive paths retain
++the choice. Other themes retain the stored selection but use their existing biome
++material. The current v5 JSON schema documents this optional extension.
++
++RPM03: Gravel uses native surface 2, including the existing 0.8 grip and 2.0
++resistance. No car configuration, shared physics arithmetic or rules version is
++changed. Ground pieces use joined mouths for both material classification and
++presentation. Gravel bends omit asphalt kerbs and white edge markings. The stone
++finish is matte and darker in Storm. Mixed roads share a continuous five-centimetre
++roadbed so changing the finish does not create a height step.
++
++RPM04: Bridge material belongs to its deck and ramp approaches; the ground below
++remains independent. Shader material flags, preview masks, section-cache inputs
++and first-transition dirty-tile handling cover material edits. Visual kit 215
++invalidates older disposable road meshes. Existing creator documents without this
++field retain compiler-27 and their canonical output/content hashes; selected
++materials enter the ordinary document hash. The existing eight complete-track
++goldens and 377 road-piece checks pass without regenerated fixtures.
++
++The runtime scope is `game/core/app.gd`, the editor's `road_pieces.gd`,
++`track_compiler.gd`, `editor_canvas.gd`, `creator_preview_masks.gd`, `road_update.gd`,
++and the track's `native_track_visual.gd`, `creator_road.gdshaderinc`,
++`road_surface_height.gd`, `road_kerbs.gd`, `creator_bridges.gd`,
++`creator_bridge_visual.gd`, `bridge_road.gdshaderinc`, `surface_detail.gdshaderinc`
++and `surface_shader_variants.gd`. The focused test is
++`game/tests/test_road_piece_materials.gd`. Format documentation and the v5 JSON
++schema are updated. Concurrent jump-profile and guardrail changes are preserved
++and excluded from this task's source patch.
++
++Actual checks use the pinned Godot 4.7.2 build through `scripts/dev.ps1`. All App
++saves and caches use task-specific `APPDATA` directories under
++`build/road-piece-materials-2026-10-27`. The API URL is empty. Results, screenshots,
++safe synthetic requests and the source-only patch are in
++`docs/evidence/road-piece-materials-2026-10-27`; `report.json` records exact logs,
++source hashes and final results.
++
++- Focused headless: 120 checks, zero failures. Covers every ground piece kind,
++  independent bridge layers, strict invalid values, material seams, cached
++  recompilation, save/reload, actual controls, undo/redo and actual Test drive.
++- Compatibility desktop: 128 checks, zero failures, including every shape and
++  repeated material selection, with native screenshots and actual Test drive.
++- Mobile desktop: 102 checks, zero failures, with native screenshots and actual
++  Test drive in both themes. This renderer runs on the desktop GPU.
++- Existing road pieces: 377 checks, zero failures, including five-lap drives.
++- Existing compiler raster: eight original complete-track goldens, zero failures.
++- Existing editor workflow: 254 checks, zero failures.
++- Existing App: 141 checks, zero failures.
++- Full GDScript parser: 1,345 scripts, zero failures after concurrent class import.
++- A separately staged, presentation-free verifier with 89 canonical inputs
++  accepts both synthetic material documents. Both content hashes match the client
++  exactly. This is local canonical verification, not a live publication.
++- The schema's optional material enum matches the runtime enum. Full Python
++  `jsonschema` validation was unavailable because that package is not installed;
++  no dependency was added.
++
++Commands used (each engine test uses the task-specific APPDATA described above):
++
++```powershell
++powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1 -Action TestScript -ScriptPath res://tests/test_road_piece_materials.gd
++powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1 -Action TestScript -ScriptPath res://tests/test_road_piece_materials.gd -Graphical -RenderingMethod gl_compatibility
++powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1 -Action TestScript -ScriptPath res://tests/test_road_piece_materials.gd -Graphical -RenderingMethod mobile -EngineVerbose
++powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1 -Action TestScript -ScriptPath res://tests/test_road_pieces.gd
++powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1 -Action TestScript -ScriptPath res://tests/test_compiler_raster.gd
++powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1 -Action TestScript -ScriptPath res://tests/test_editor_workflow.gd
++powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1 -Action TestScript -ScriptPath res://tests/test_app.gd
++powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1 -Action TestScript -ScriptPath res://tests/test_script_parse.gd
++python backend/deploy/stage_verifier.py --destination build/road-piece-materials-2026-10-27/verifier/game
++```
++
++The staged project was imported using the same pinned engine, then its
++`res://backend/runner.gd` was run twice with `--input=<theme>-request.json` and
++`--output=<theme>-verifier.json`. Report receipts include both response files.
++
++Initial findings are retained: Windows script execution policy required the
++explicit per-process Bypass invocation; sandboxed engine startup could not read
++Windows certificates or default logs, so tests used isolated data and approved
++certificate access. Two fixture errors were corrected (a StringName top-level key
++and selecting a piece before switching editor categories). Visual review caught
++the round-sample cap material seam, which was replaced with joined-mouth
++classification and explicit assertions. Compatibility runs reported one ObjectDB
++instance at shutdown; the Mobile run did not repeat it. Mobile verbose
++logs contain driver overlay and texture-format conversion warnings. Concurrent
++JumpProfiles class registration temporarily interrupted App regression parsing;
++the retry passes. A separate import attempt hit a locked native geometry DLL; no
++owner process was stopped and no successful import is claimed for that attempt.
++
++Owner acceptance: reload the current client, select a straight, bend, spline or
++bridge in Grass/Storm, switch materials, undo/redo, reopen the draft and Test drive.
++Review the stone finish, joined transitions, touch selection and sustained frame
++times on the intended device. Publishing these new documents requires matching
++API/worker source rollout; no cloud deployment or live publication was performed.
++No physical-device attachment check or physical-device test was performed. No APK,
++real authentication/purchase, owner-save mutation, owner-process restart,
++main-index staging, commit or merge was performed.

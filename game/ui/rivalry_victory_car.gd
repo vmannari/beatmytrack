@@ -6,6 +6,7 @@ var podium_presentation: bool = false
 var fit_to_frame: bool = false
 var cooperative_build: bool = false
 var cache_rest_pose: bool = true
+var header_template: bool = false
 var build_budget_us: int = 4000
 var presentation_ready: bool = false
 var livery: Dictionary = {}
@@ -13,6 +14,22 @@ var customisation: Dictionary = {}
 var condition: Dictionary = {}
 var viewport: SubViewport
 var car: CarVisual
+
+class HeaderCarVisual extends CarVisual:
+	func _ready() -> void:
+		_model_slice_started = Time.get_ticks_usec() if cooperative_build else 0
+		scale = Vector3.ONE * HandlingConfig.BODY_SCALE
+		if not VehicleCustomisation.valid(customisation,vehicle_id): customisation = VehicleCustomisation.defaults()
+		if preload("res://ui/header_simple_cache.gd").restore(self):
+			if livery.is_empty(): livery = VehicleLivery.defaults(vehicle_id)
+			apply_livery(livery)
+			_update_rear_lights()
+			graphics.configure(self)
+			force_update_transform()
+			for node: Node3D in find_children("*","Node3D",true,false): node.force_update_transform()
+			model_ready = true
+			return
+		await super._ready()
 
 func _ready() -> void:
 	mouse_filter = Control.MOUSE_FILTER_IGNORE
@@ -24,7 +41,7 @@ func _ready() -> void:
 	add_child(viewport)
 	var world := Node3D.new()
 	viewport.add_child(world)
-	car = CarVisual.new()
+	car = HeaderCarVisual.new() if header_template else CarVisual.new()
 	car.vehicle_id = vehicle_id
 	car.simple_model = simple_model
 	car.livery = livery

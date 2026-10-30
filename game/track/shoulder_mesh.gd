@@ -52,6 +52,8 @@ func emit(tool: SurfaceTool, yield_budget: Callable = Callable(), cancelled: Cal
 			if collected.has("points"):
 				var points: PackedVector2Array = collected.points
 				var uvs: PackedVector2Array = collected.uv
+				if has_method("emit_collected") and points.size() % 3 == 0:
+					return call("emit_collected",tool,points,uvs,cancelled)
 				for index: int in range(points.size()):
 					if index % 128 == 0 and cancelled.is_valid() and cancelled.call(): return 0
 					_emit_vertex(tool,points[index],uvs[index])

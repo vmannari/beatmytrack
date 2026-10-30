@@ -6,6 +6,8 @@
 
 `road_engine_api.hpp` uses the official godot-cpp typed ptrcall convention and method hashes from the pinned checkout's `gdextension/extension_api.json`. These headers are original project integration code; no new library or SDK is introduced. Native road jobs have cancellation and a retained scalar fallback. Windows rebuilds use content-addressed DLL names so an already running editor can retain its loaded library while new processes use the new build.
 
+The 28 October 2026 editor review adds original `editor_streams.hpp`, ported from `editor/road_sections.gd`. Optional `editor_split` and `editor_append` keep whole-triangle order, packed attributes, centroid tiles, index remapping and the existing 12,288-vertex upload bound. Unsupported channels or unavailable methods retain the scalar implementation. Exposed-edge sampling also decodes immutable outline fields once per call, retaining the original probe/order/coverage tests. These CPU presentation changes leave compiler, simulation and content contracts unchanged. Exact stream and five-theme road comparisons, native pixel checks, build fingerprints and remaining cold-entry latency are recorded in [TRACK_EDITOR_FIXES_2026_10_28.md](../../docs/TRACK_EDITOR_FIXES_2026_10_28.md).
+
 
 `winter_geometry.hpp` ports the original snowbank row profiles, finite-difference normals, winding-preserving section emission and Winter marker selection from `native_track_visual.gd` and `winter_scenery.gd`. The pinned engine Noise API retains the original FastNoiseLite field. Existing snow deposits, materials and canonical snow contacts remain unchanged.
 

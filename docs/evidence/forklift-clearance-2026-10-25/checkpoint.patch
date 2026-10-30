@@ -1,0 +1,425 @@
+diff --git a/game/resources/cars/forklift.tres b/game/resources/cars/forklift.tres
+--- a/game/resources/cars/forklift.tres
++++ b/game/resources/cars/forklift.tres
+@@ -2,27 +2,28 @@
+ [ext_resource type="Script" path="res://vehicle/handling_config.gd" id="1"]
+ [resource]
+ script = ExtResource("1")
+-version = "forklift-1"
++version = "forklift-2"
+ vehicle_id = "forklift"
+ profile_name = "Forklift"
+ rear_steering = true
+ mass = 2800.0
+ engine_force = 20500.0
+ braking_force = 27500.0
+-maximum_speed = 12.0
++maximum_speed = 18.5
+ reverse_speed = 5.0
+ rotational_inertia = 2100.0
+ steering_rate = 5.0
+ countersteering_rate = 9.0
+-steering_angle = 0.88
+-high_speed_steering_reduction = 0.55
++steering_angle = 1.0
++high_speed_steering_reduction = 0.30
+ wheelbase = 1.72
+ track_width = 1.38
+-collision_radius = 1.85
+-lateral_grip = 27.0
++collision_radius = 1.4
++lateral_grip = 42.0
+ lateral_response = 16.0
++corner_energy_retention = 0.95
+ longitudinal_grip = 16.0
+-maximum_yaw_rate = 2.5
++maximum_yaw_rate = 3.2
+ loose_surface_grip = 1.15
+ soil_drag_multiplier = 0.60
+ dirty_tire_grip_loss = 0.20
+diff --git a/game/vehicle/forklift_model.gd b/game/vehicle/forklift_model.gd
+--- a/game/vehicle/forklift_model.gd
++++ b/game/vehicle/forklift_model.gd
+@@ -2,6 +2,7 @@
+ ## Original counterbalance forklift. Same finish, tire kit and material batching as Compact.
+ ## All dimensions are model metres. Wheels remain independent steering/rolling frames.
+ static var meshes: Dictionary = {}
++const TRANSPORT_LIFT: float = 0.60 # Raised carriage; model metres, before shared body scale.
+ 
+ static func build(car: CarVisual) -> void:
+ 	var paint := CompactFinish.paint(Color("d5a62d"))
+@@ -178,6 +179,10 @@
+ 
+ static func _mast(car: CarVisual, dark: Material, steel: Material, bright: Material, rubber: Material, detail: int) -> void:
+ 	var parent: Node3D = car.body
++	var carriage := Node3D.new()
++	carriage.name = "RaisedForkCarriage"
++	carriage.position.y = TRANSPORT_LIFT
++	parent.add_child(carriage)
+ 	for side: float in [-1.0,1.0]:
+ 		var x: float = side*0.52
+ 		# Open channel section and its polished sliding face.
+@@ -197,14 +202,14 @@
+ 			_box(parent,Vector3(0.055,0.030,0.025),Vector3(side*0.31,0.68+index*1.75/links,-1.36),0.007,steel,1,"LiftChainLink")
+ 		_box(parent,Vector3(0.29,0.18,0.20),Vector3(x,0.44,-1.23),0.035,dark,detail,"MastPivotHousing")
+ 		_bolt(parent,Vector3(x+side*0.17,0.44,-1.23),Vector3(side,0,0),0.055,steel)
+-		_fork(parent,side*0.43,steel,car.simple_model)
++		_fork(carriage,side*0.43,steel,car.simple_model)
+ 	_box(parent,Vector3(1.20,0.15,0.25),Vector3(0,2.72,-1.23),0.032,dark,detail,"MastCrosshead")
+ 	for y: float in [0.54,1.10]:
+-		_box(parent,Vector3(1.31,0.12,0.13),Vector3(0,y,-1.42),0.018,steel,detail,"CarriageCrossmember")
+-	for side: float in [-1.0,1.0]:
+-		_box(parent,Vector3(0.075,0.63,0.075),Vector3(side*0.62,0.83,-1.42),0.014,dark,detail,"BackrestFrame")
++		_box(carriage,Vector3(1.31,0.12,0.13),Vector3(0,y,-1.42),0.018,steel,detail,"CarriageCrossmember")
++	for side: float in [-1.0,1.0]:
++		_box(carriage,Vector3(0.075,0.63,0.075),Vector3(side*0.62,0.83,-1.42),0.014,dark,detail,"BackrestFrame")
+ 	for index: int in range(7):
+-		_box(parent,Vector3(0.029,0.50,0.043),Vector3(-0.53+index*0.177,0.83,-1.42),0.008,dark,detail,"LoadBackrest")
++		_box(carriage,Vector3(0.029,0.50,0.043),Vector3(-0.53+index*0.177,0.83,-1.42),0.008,dark,detail,"LoadBackrest")
+ 
+ static func _fork(parent: Node3D, x: float, steel: Material, simple: bool) -> void:
+ 	# Extruded L profile: forged heel, sloping top and a thin tapered toe.
+@@ -223,7 +228,7 @@
+ 		var b: Vector2 = profile[(index+1)%profile.size()]
+ 		var normal := Vector3(0,b.x-a.x,a.y-b.y).normalized()
+ 		_quad(tool,[Vector3(x-0.10,a.y,a.x),Vector3(x+0.10,a.y,a.x),Vector3(x+0.10,b.y,b.x),Vector3(x-0.10,b.y,b.x)],normal)
+-	_attach(parent,tool.commit(),steel,"ForgedFork")
++	_attach(parent,tool.commit(),steel,"ForgedForkLeft" if x<0.0 else "ForgedForkRight")
+ 	_box(parent,Vector3(0.11,0.08,0.16),Vector3(x,1.04,-1.43),0.016,steel,1 if simple else 3,"ForkLock")
+ 
+ static func wheel(car: CarVisual, center: Vector3, radius: float, width: float) -> void:
+diff --git a/game/tests/test_forklift.gd b/game/tests/test_forklift.gd
+--- a/game/tests/test_forklift.gd
++++ b/game/tests/test_forklift.gd
+@@ -26,12 +26,14 @@
+ 
+ func _run() -> void:
+ 	OS.set_environment("BMT_API_URL", "")
++	for argument: String in OS.get_cmdline_user_args():
++		if argument.begins_with("--evidence-dir="): evidence = argument.trim_prefix("--evidence-dir=")
+ 	graphical = DisplayServer.get_name() != "headless"
+ 	evidence = ProjectSettings.globalize_path(evidence).path_join(RenderingServer.get_current_rendering_method() if graphical else "headless")
+ 	DirAccess.make_dir_recursive_absolute(evidence)
+ 	var config: HandlingConfig = VehicleCatalog.config("forklift")
+ 	check(VehicleCatalog.valid_id("forklift") == "forklift","selectable cars include Forklift")
+-	check(config.vehicle_id == "forklift" and config.rear_steering and config.version == "forklift-1","dedicated versioned rear-steer handling")
++	check(config.vehicle_id == "forklift" and config.rear_steering and config.version == "forklift-2","dedicated versioned rear-steer handling")
+ 	check(config.snapshot().get("rear_steering",false),"rear steering participates in comparable rules")
+ 	var info: Dictionary = manifest()
+ 	for id: String in VehicleCatalog.IDS:
+diff --git a/backend/tests/fixtures/verified_oval.json b/backend/tests/fixtures/verified_oval.json
+--- a/backend/tests/fixtures/verified_oval.json
++++ b/backend/tests/fixtures/verified_oval.json
+@@ -64434,8 +64434,8 @@
+         "handling_version": "electric-2"
+       },
+       "forklift": {
+-        "config_hash": "ef8d56753becdf2d13c651eb6accca830e4219e2c982f232783fee99ee3b0d2a",
+-        "handling_version": "forklift-1"
++        "config_hash": "76ee645c53b2120bd32e65c0792c7deb8a884fcb42ddbe06420c687d8ce668ea",
++        "handling_version": "forklift-2"
+       },
+       "formula": {
+         "config_hash": "39cf24863079a9b63b7c53d9d95f2ee8c62ead30503f323dcdf8f9ece3155392",
+diff --git a/AGENTS.md b/AGENTS.md
+--- a/AGENTS.md
++++ b/AGENTS.md
+@@ -1,3 +1,8 @@
++<!-- FORKLIFT-CLEARANCE-20261025 -->
++## Forklift clearance and speed/turning correction override (2026-10-25)
++2026-10-25 FC01-FC04/R01/Q01: Raised the complete Forklift carriage by0.528 world metres; fork underside0.1584to0.6864m and sampled bridge-ramp clearance-0.327to+0.218m. Body collision radius1.85to1.40m clears narrow bridge entries while retaining rail collisions. Versioned forklift-2 raises maximum speed43.2to66.6km/h and tightens full-speed turning radius12.676to8.149m; rear steering and Compact-quality geometry/materials retained. Clearance/turning152, focused98headless/106Compatibility/106desktopMobile plus earlier107 art-bake, all-car143 five-lap/replay, existing bridge16 and real backend verifier2 pass; all49 native appearance photos and catalogue art refreshed/imported. Initial38 baseline failures, two mesh-name failures, corrected command-line evidence path and initial turning speed/fixture failures retained. Evidence and scoped checkpoint: docs/FORKLIFT_CLEARANCE_2026_10_25.md and docs/evidence/forklift-clearance-2026-10-25/report.json. Reload, matching online contracts and owner/device acceptance remain. No device attachment check/test, APK, purchase, live mutation, deployment or owner-process restart; concurrent work preserved.
++<!-- /FORKLIFT-CLEARANCE-20261025 -->
++
+ <!-- FORKLIFT-20261025 -->
+ ## Forklift rear steering and Compact-quality model override (2026-10-25)
+ 2026-10-25 FL01-FL04/R01/Q01: Forklift joins the selectable cars with rear-wheel steering, fixed front wheels and canonical tail swing in forward/reverse. Detailed original geometry uses Compact paint/alloy/rubber and its tire shader, with curved wheel openings, rounded counterweight, formed forks, hydraulic rams/hoses/chains, controls and fitted hardware. All49 native appearance photos refreshed. Focused98headless/106Compatibility/106desktopMobile, all-car143 five-lap/replay, appearance56/App141, backendSQLite71pass/1skip/42deselected and real manifest1 pass; scoped Ruff/diff and import pass. Headless audio pause failure reproduces with task-start audio; initial PostgreSQL setup errors and fixture corrections retained. Evidence, commands and shared-source review checkpoint: docs/FORKLIFT_2026_10_25.md and docs/evidence/forklift-2026-10-25/report.json. Owner visual/driving and phone frame-pacing acceptance remain; no device attachment check/test, APK, live mutation, deployment, purchase or owner-process restart. Parallel work preserved.
+diff --git a/DEVELOPMENT_STATUS.md b/DEVELOPMENT_STATUS.md
+--- a/DEVELOPMENT_STATUS.md
++++ b/DEVELOPMENT_STATUS.md
+@@ -1,3 +1,7 @@
++<!-- FORKLIFT-CLEARANCE-20261025 -->
++2026-10-25 FC01-FC04/R01/Q01: Raised the complete Forklift carriage by0.528 world metres; fork underside0.1584to0.6864m and sampled bridge-ramp clearance-0.327to+0.218m. Body collision radius1.85to1.40m clears narrow bridge entries while retaining rail collisions. Versioned forklift-2 raises maximum speed43.2to66.6km/h and tightens full-speed turning radius12.676to8.149m; rear steering and Compact-quality geometry/materials retained. Clearance/turning152, focused98headless/106Compatibility/106desktopMobile plus earlier107 art-bake, all-car143 five-lap/replay, existing bridge16 and real backend verifier2 pass; all49 native appearance photos and catalogue art refreshed/imported. Initial38 baseline failures, two mesh-name failures, corrected command-line evidence path and initial turning speed/fixture failures retained. Evidence and scoped checkpoint: docs/FORKLIFT_CLEARANCE_2026_10_25.md and docs/evidence/forklift-clearance-2026-10-25/report.json. Reload, matching online contracts and owner/device acceptance remain. No device attachment check/test, APK, purchase, live mutation, deployment or owner-process restart; concurrent work preserved.
++<!-- /FORKLIFT-CLEARANCE-20261025 -->
++
+ <!-- FORKLIFT-20261025 -->
+ 2026-10-25 FL01-FL04/R01/Q01: Forklift joins the selectable cars with rear-wheel steering, fixed front wheels and canonical tail swing in forward/reverse. Detailed original geometry uses Compact paint/alloy/rubber and its tire shader, with curved wheel openings, rounded counterweight, formed forks, hydraulic rams/hoses/chains, controls and fitted hardware. All49 native appearance photos refreshed. Focused98headless/106Compatibility/106desktopMobile, all-car143 five-lap/replay, appearance56/App141, backendSQLite71pass/1skip/42deselected and real manifest1 pass; scoped Ruff/diff and import pass. Headless audio pause failure reproduces with task-start audio; initial PostgreSQL setup errors and fixture corrections retained. Evidence, commands and shared-source review checkpoint: docs/FORKLIFT_2026_10_25.md and docs/evidence/forklift-2026-10-25/report.json. Owner visual/driving and phone frame-pacing acceptance remain; no device attachment check/test, APK, live mutation, deployment, purchase or owner-process restart. Parallel work preserved.
+ <!-- /FORKLIFT-20261025 -->
+diff --git a/docs/PHASE_0_PLAN.md b/docs/PHASE_0_PLAN.md
+--- a/docs/PHASE_0_PLAN.md
++++ b/docs/PHASE_0_PLAN.md
+@@ -1,3 +1,7 @@
++<!-- FORKLIFT-CLEARANCE-20261025 -->
++2026-10-25 FC01-FC04/R01/Q01: Raised the complete Forklift carriage by0.528 world metres; fork underside0.1584to0.6864m and sampled bridge-ramp clearance-0.327to+0.218m. Body collision radius1.85to1.40m clears narrow bridge entries while retaining rail collisions. Versioned forklift-2 raises maximum speed43.2to66.6km/h and tightens full-speed turning radius12.676to8.149m; rear steering and Compact-quality geometry/materials retained. Clearance/turning152, focused98headless/106Compatibility/106desktopMobile plus earlier107 art-bake, all-car143 five-lap/replay, existing bridge16 and real backend verifier2 pass; all49 native appearance photos and catalogue art refreshed/imported. Initial38 baseline failures, two mesh-name failures, corrected command-line evidence path and initial turning speed/fixture failures retained. Evidence and scoped checkpoint: docs/FORKLIFT_CLEARANCE_2026_10_25.md and docs/evidence/forklift-clearance-2026-10-25/report.json. Reload, matching online contracts and owner/device acceptance remain. No device attachment check/test, APK, purchase, live mutation, deployment or owner-process restart; concurrent work preserved.
++<!-- /FORKLIFT-CLEARANCE-20261025 -->
++
+ <!-- FORKLIFT-20261025 -->
+ 2026-10-25 FL01-FL04/R01/Q01: Forklift joins the selectable cars with rear-wheel steering, fixed front wheels and canonical tail swing in forward/reverse. Detailed original geometry uses Compact paint/alloy/rubber and its tire shader, with curved wheel openings, rounded counterweight, formed forks, hydraulic rams/hoses/chains, controls and fitted hardware. All49 native appearance photos refreshed. Focused98headless/106Compatibility/106desktopMobile, all-car143 five-lap/replay, appearance56/App141, backendSQLite71pass/1skip/42deselected and real manifest1 pass; scoped Ruff/diff and import pass. Headless audio pause failure reproduces with task-start audio; initial PostgreSQL setup errors and fixture corrections retained. Evidence, commands and shared-source review checkpoint: docs/FORKLIFT_2026_10_25.md and docs/evidence/forklift-2026-10-25/report.json. Owner visual/driving and phone frame-pacing acceptance remain; no device attachment check/test, APK, live mutation, deployment, purchase or owner-process restart. Parallel work preserved.
+ <!-- /FORKLIFT-20261025 -->
+diff --git a/docs/FORKLIFT_2026_10_25.md b/docs/FORKLIFT_2026_10_25.md
+--- a/docs/FORKLIFT_2026_10_25.md
++++ b/docs/FORKLIFT_2026_10_25.md
+@@ -1,4 +1,6 @@
+ # Forklift â€” 2026-10-25
++
++Current clearance/speed/turning correction: [Forklift raised forks and 66.6 km/h](FORKLIFT_CLEARANCE_2026_10_25.md). The historical `forklift-1` values below are superseded by `forklift-2`.
+ 
+ FL01â€“FL04/R01/Q01 implement the owner's new Forklift with turning rear wheels and the follow-up request to match the Compact's model quality. Native review: [gallery](evidence/forklift-2026-10-25/report.html), [model](evidence/forklift-2026-10-25/gl_compatibility/model-front.png), [Garage](evidence/forklift-2026-10-25/gl_compatibility/garage-1280.png).
+ 
+diff --git a/game/tests/test_forklift_clearance.gd b/game/tests/test_forklift_clearance.gd
+new file mode 100644
+--- /dev/null
++++ b/game/tests/test_forklift_clearance.gd
+@@ -0,0 +1,164 @@
++extends SceneTree
++## Actual narrow-bridge traversal, forged-fork ramp clearance and versioned speed tuning.
++var checks: int = 0
++var failures: int = 0
++var measures: Dictionary = {}
++var output: String = "res://../docs/evidence/forklift-clearance-2026-10-25"
++
++func _initialize() -> void:
++	_run.call_deferred()
++
++func check(ok: bool, label: String) -> void:
++	checks += 1
++	if not ok:
++		failures += 1
++		print("FAIL: ",label)
++
++func _track(angle: float) -> NativeTrack:
++	var document: Dictionary = TrackDocument.create_blank()
++	var start: Vector2 = Vector2(-16,0).rotated(deg_to_rad(angle))
++	document.pieces = [RoadPieces.create("bridge",start,angle,6.0)]
++	document.pieces[0].length = 32.0
++	document.paint = [{"surface":0,"width":40.0,"shape":"square","points":[[-35,0],[35,0]]}]
++	return TrackCompiler.compile(document)
++
++func _run() -> void:
++	var config: HandlingConfig = VehicleCatalog.config("forklift")
++	measures.handling_version = config.version
++	measures.config_hash = JSON.stringify(config.snapshot(),"",true).sha256_text()
++	var old: HandlingConfig = load("res://../docs/evidence/forklift-clearance-2026-10-25/before/game__resources__cars__forklift.tres")
++	check(config.version != old.version and config.snapshot() != old.snapshot(),"changed handling has a distinct version and comparable rules")
++	check(config.rear_steering and config.wheelbase == old.wheelbase and config.track_width == old.track_width,"rear steering and axle dimensions are preserved")
++	check(config.maximum_speed*3.6 >= 65.0,"Forklift top-speed setting reaches at least 65 km/h")
++	check(config.collision_radius < old.collision_radius,"raised forks do not require the old oversized ground footprint")
++	var straight := VehicleSimulation.new(config)
++	for tick: int in range(1200): straight.step(DriveFrame.sample(0,1,0))
++	measures.speed_kph = straight.state.velocity.length()*3.6
++	check(float(measures.speed_kph) >= 65.0 and straight.state.velocity.length() <= config.maximum_speed,"actual powered top speed reaches 65 km/h and stays bounded")
++	_check_turning(config,old)
++	var crossings: Array[Dictionary] = []
++	for angle: float in [0.0,37.0,90.0]:
++		var track: NativeTrack = _track(angle)
++		check(track != null,"real six-metre bridge compiles at "+str(angle))
++		if track == null: continue
++		for direction: float in [-1.0,1.0]:
++			for offset: float in [-1.25,0.0,1.25]:
++				for speed: float in [3.0,18.5]:
++					var result: Dictionary = _cross(track,config,angle,direction,offset,speed)
++					crossings.append(result)
++					check(result.finished and result.hits == 0,"clear bridge traverse angle=%s direction=%s offset=%s speed=%s" % [angle,direction,offset,speed])
++					check(result.replay_exact,"bridge replay exact at 120/30 Hz batches")
++		if angle == 0.0:
++			var baseline: Dictionary = _cross(track,old,angle,1.0,1.25,18.5)
++			measures.old_bridge = baseline
++			check(not baseline.finished and baseline.hits > 0,"task-start footprint reproduces catching a clear bridge entry")
++			var state := VehicleState.new()
++			state.track_elevated = true
++			state.position = Vector2(0,8)
++			state.velocity = Vector2(0,12)
++			track.resolve(state,Vector2.ZERO,config)
++			check(state.collision_count > 0 and state.position.y < 3.0,"actual bridge rails still block the body")
++			await _fork_clearance(track)
++	measures.crossings = crossings
++	var file := FileAccess.open(output.path_join("before.json" if "--before" in OS.get_cmdline_user_args() else "after.json"),FileAccess.WRITE)
++	file.store_string(JSON.stringify({"checks":checks,"failures":failures,"measurements":measures},"\t"))
++	file.close()
++	print("FORKLIFT_CLEARANCE_METRICS ",JSON.stringify(measures))
++	print("FORKLIFT_CLEARANCE_TESTS: %d checks, %d failures" % [checks,failures])
++	quit(1 if failures else 0)
++
++func _check_turning(config: HandlingConfig, old: HandlingConfig) -> void:
++	var turns: Array[Dictionary] = []
++	# Equal powered caps and corner-energy treatment isolate steering/grip.
++	# Otherwise the old truck's sustained speed loss makes its low-speed circle
++	# misleadingly smaller than the revised truck travelling at the requested speed.
++	var comparison := old.duplicate() as HandlingConfig
++	comparison.corner_energy_retention = config.corner_energy_retention
++	for speed: float in [3.0,8.0,14.0,18.5]:
++		for input: float in [-1.0,-0.45,0.45,1.0]:
++			var before: Dictionary = _circle(comparison,speed,input)
++			var after: Dictionary = _circle(config,speed,input)
++			check(after.radius < before.radius*0.85,"tighter actual turning path at %s m/s and %s input" % [speed,input])
++			check(before.speed >= speed*0.85,"comparison control also sustains the requested speed")
++			check(after.speed >= speed*0.85,"tightening is not caused by slowing to a crawl")
++			check(after.recovered,"high-grip rear steering settles when released")
++			turns.append({"speed_cap":speed,"input":input,"before_radius_m":before.radius,"before_actual_speed_mps":before.speed,"after_radius_m":after.radius,"actual_speed_mps":after.speed,"recovered":after.recovered})
++	measures.turning_comparison_corner_energy_retention = comparison.corner_energy_retention
++	measures.turns = turns
++
++func _circle(original: HandlingConfig, speed: float, input: float) -> Dictionary:
++	var config := original.duplicate() as HandlingConfig
++	config.maximum_speed = speed
++	var sim := VehicleSimulation.new(config)
++	sim.state.velocity = Vector2(0,speed)
++	var distance: float = 0.0
++	var angle: float = 0.0
++	var total_speed: float = 0.0
++	for tick: int in range(720):
++		var previous: Vector2 = sim.state.velocity
++		var position: Vector2 = sim.state.position
++		sim.step(DriveFrame.sample(input,1,0))
++		if tick >= 480:
++			distance += sim.state.position.distance_to(position)
++			angle += absf(previous.angle_to(sim.state.velocity))
++			total_speed += sim.state.velocity.length()
++	for tick: int in range(240): sim.step(DriveFrame.sample(0,1,0))
++	return {"radius":distance/maxf(angle,0.00001),"speed":total_speed/240.0,"recovered":absf(sim.state.yaw_rate)<0.01 and absf(sim.state.slip_angle())<0.03}
++
++func _cross(track: NativeTrack, original: HandlingConfig, angle: float, direction: float, offset: float, speed: float) -> Dictionary:
++	# Same controlled speed for old/new footprints, retaining real steering,
++	# collision, bridge layers and propulsion. Only the speed cap is constrained.
++	var config := original.duplicate() as HandlingConfig
++	config.maximum_speed = speed
++	var axis: Vector2 = Vector2.RIGHT.rotated(deg_to_rad(angle))
++	var normal: Vector2 = axis.orthogonal()
++	var sim := VehicleSimulation.new(config)
++	sim.reset(axis*(-22.0*direction)+normal*offset,atan2(axis.x*direction,axis.y*direction))
++	sim.state.velocity = axis*speed*direction
++	sim.state.route_index = track.nearest_route(sim.state.position)
++	var frame: DriveFrame = DriveFrame.sample(0,1,0)
++	var steps: int = 0
++	for tick: int in range(ceili(48.0/speed*120.0)+120):
++		sim.step(frame,track)
++		steps += 1
++		if sim.state.position.dot(axis)*direction > 21.0 or sim.state.collision_count > 0: break
++	var replay := VehicleSimulation.new(config)
++	replay.reset(axis*(-22.0*direction)+normal*offset,atan2(axis.x*direction,axis.y*direction))
++	replay.state.velocity = axis*speed*direction
++	replay.state.route_index = track.nearest_route(replay.state.position)
++	for batch: int in range(0,steps,4):
++		for tick: int in range(batch,mini(batch+4,steps)): replay.step(frame,track)
++	return {"angle":angle,"direction":direction,"offset":offset,"speed":speed,"finished":sim.state.position.dot(axis)*direction > 21.0,"hits":sim.state.collision_count,"replay_exact":sim.state.snapshot() == replay.state.snapshot()}
++
++func _fork_clearance(track: NativeTrack) -> void:
++	var bridge := BridgePresentation.new(track)
++	var config: HandlingConfig = VehicleCatalog.config("forklift")
++	for simple: bool in [false,true]:
++		var car := CarVisual.new()
++		car.vehicle_id = "forklift"; car.simple_model = simple; car.batch_parts = false
++		root.add_child(car)
++		var forks: Array[Node] = car.find_children("ForgedFork*","MeshInstance3D",true,false)
++		check(forks.size() == 2,"both forged forks exist in detailed/racing model")
++		var flat_min: float = INF
++		for fork: MeshInstance3D in forks:
++			for vertex: Vector3 in fork.mesh.get_faces(): flat_min = minf(flat_min,(fork.global_transform*vertex).y)
++		check(flat_min >= 0.6,"raised fork undersides clear ordinary low obstacles")
++		var clearance: float = INF
++		for direction: float in [-1.0,1.0]:
++			for u: float in [-2.0,-1.0,0.0,0.5,1.0,2.0,3.0,4.0,5.0]:
++				var point := Vector2((-16.0+u)*direction,0)
++				var heading: float = PI*0.5*direction
++				var axle := Vector2(direction,0)*config.wheelbase*0.5
++				var front: float = bridge.visual_height_at(point+axle,track.nearest_route(point+axle),1)
++				var rear: float = bridge.visual_height_at(point-axle,track.nearest_route(point-axle),1)
++				car.position = VisualGeometry.world(point)+Vector3.UP*(front+rear)*0.5
++				car.rotation = Vector3(atan2(front-rear,config.wheelbase),-heading,0)
++				for fork: MeshInstance3D in forks:
++					for vertex: Vector3 in fork.mesh.get_faces():
++						var world: Vector3 = fork.global_transform*vertex
++						var sample := Vector2(world.x,-world.z)
++						clearance = minf(clearance,world.y-bridge.visual_height_at(sample,track.nearest_route(sample),1))
++		check(clearance >= 0.05,"actual fork geometry stays above both ascending bridge ramps")
++		measures["racing" if simple else "detailed"] = {"underside_m":flat_min,"minimum_ramp_clearance_m":clearance}
++		car.queue_free()
++		await process_frame
+diff --git a/game/tests/test_forklift_clearance.gd.uid b/game/tests/test_forklift_clearance.gd.uid
+new file mode 100644
+--- /dev/null
++++ b/game/tests/test_forklift_clearance.gd.uid
+@@ -0,0 +1 @@
++uid://xjw23j7r8qxs
+diff --git a/docs/FORKLIFT_CLEARANCE_2026_10_25.md b/docs/FORKLIFT_CLEARANCE_2026_10_25.md
+new file mode 100644
+--- /dev/null
++++ b/docs/FORKLIFT_CLEARANCE_2026_10_25.md
+@@ -0,0 +1,39 @@
++# Forklift clearance, speed and turning - 2026-10-25
++
++FC01-FC04/R01/Q01 address the owner's report that the forks catch obstacles and bridge entries, the request for at least 65 km/h, and tighter turning including at higher speeds. The `forklift-2` profile reaches **66.6 km/h** (18.5 m/s). Rear-wheel steering, axle dimensions and the detailed Compact-material model remain intact.
++
++The fork carriage, forks, locks and load backrest rise together by 0.60 model metres, or 0.528 world metres with the existing body scale. The fork underside rises from 0.1584 to 0.6864 m. Detailed and racing geometry clear both sampled bridge approach ramps by at least 0.218 m; the task-start forks penetrated them by 0.327 m. The model retains 144,656 detailed / 48,800 racing triangles and now batches into 40 mesh instances.
++
++The game's planar collision circle is independent of the visible forks. Its old 1.85 m radius also caught bridge rails before the body reached them. The revised 1.40 m body footprint clears legitimate bridge entries while still colliding with rails. This Forklift task changes no shared simulation code or physics version; the handling version and its config hash change together. The backend's golden manifest pins the new Forklift hash. Matching online deployment and existing contract revalidation remain separate work.
++
++FC04 increases the maximum rear-wheel angle from 0.88 to 1.00 radians, reduces high-speed steering reduction from 0.55 to 0.30, raises lateral grip from 27 to 42 and the yaw limit from 2.5 to 3.2 rad/s. Corner-energy retention rises from the default 0.50 to 0.95 so the sharper turn does not scrub away most of the speed. These are Forklift-only configuration values; mass, acceleration and brakes retain their existing settings. Actual full-steering radius at 66.6 km/h drops from 12.676 to 8.149 m, with both profiles sustaining that speed.
++
++The turning regression compares 16 powered circles at 3/8/14/18.5 m/s, partial/full input, left/right. The steering control retains the task-start steering/grip values with equal speed caps and the same corner-energy retention; this isolates steering/grip while ensuring both vehicles sustain the requested speed. Every measured radius improves by at least 15%, both control and revised speeds exceed 85% of their cap, and all revised circles recover to negligible yaw/slip within two seconds after steering release. In fact, revised measured speeds reach their full caps in every case. The test retains the 15% radius criterion, adds a guard for the control's speed and records both actual speeds.
++
++Changed sources: `game/resources/cars/forklift.tres`, `game/vehicle/forklift_model.gd`, `game/tests/test_forklift.gd`, new `game/tests/test_forklift_clearance.gd`, and the Forklift entry in `backend/tests/fixtures/verified_oval.json`. All 49 native Forklift appearance photos and its native catalogue artwork are refreshed and imported. Status documents and the original Forklift guide link this correction.
++
++All engine checks use `scripts/dev.ps1` and pinned Godot `4.7.2.stable.official.ed1daf0bf`. Commands, raw logs, measurements, native screenshots, hashes and the scoped checkpoint are in [the evidence report](evidence/forklift-clearance-2026-10-25/report.json). The [native gallery](evidence/forklift-clearance-2026-10-25/report.html) includes the old and raised forks.
++
++| Actual command/check | Result |
++|---|---|
++| `TestScript -ScriptPath res://tests/test_forklift_clearance.gd` | Final 152 checks, zero failures; 16 powered turning cases, 36 clear traversals and exact replays |
++| `TestScript -ScriptPath res://tests/test_forklift.gd -TestArgument '--evidence-dir=res://../docs/evidence/forklift-clearance-2026-10-25'` | 98 checks, zero failures |
++| Focused test with `-Graphical -RenderingMethod gl_compatibility` and PowerShell array arguments for evidence directory plus `--bake-art` | 107 checks, zero failures before steering follow-up; updated catalogue artwork |
++| Final focused test with `-Graphical -RenderingMethod gl_compatibility` and evidence directory | 106 checks, zero failures; final steering profile |
++| Focused test with `-Graphical -RenderingMethod mobile` and evidence directory | 106 checks, zero failures; desktop renderer, not a phone test |
++| `TestCars -CommandTimeoutSeconds 600` | 143 checks, zero failures; all seven cars, three five-lap fixtures and replays |
++| `TestBridgeContacts` | 16 checks, zero failures |
++| `TestScript -ScriptPath res://tests/bake_livery_previews.gd -Graphical -RenderingMethod gl_compatibility -TestArgument '--vehicle=forklift'` | 49 native model captures complete |
++| `Import` | Pass; refreshed preview textures |
++| `TestScript -ScriptPath res://tests/test_script_parse.gd` | 1,136 scripts, zero failures |
++| Backend secure Python: `-m pytest tests/test_verifier.py -q -k 'real_engine_manifest_pins_every_competitive_config or real_five_lap_race_replays_identically' --tb=short` | 2 passed, 68 deselected; real pinned engine |
++
++The new clearance regression uses real six-metre bridges at three headings, both travel directions, three lateral offsets and two controlled speeds, with exact 120 Hz / 30 Hz presentation-batch replays. It also proves the old footprint catches a clear entry, actual rails still block the revised truck, and actual fork vertices clear both sampled ascending ramps in both detail levels. The full all-car suite covers three five-lap fixtures for every workspace car. Focused Garage/race checks retain original-car trace equality, steering articulation, save reload, appearance and framing assertions.
++
++The original run had 88 checks and 38 failures. The first revision had two remaining failures because the two fork meshes shared a name; stable left/right names fixed inspection of both forks. The corrected run passes all 88 checks. A first graphical invocation combined two command-line arguments, saving evidence to the wrong directory and omitting the art bake; its passing 106-check result is retained under `initial-cli-argument`. The corrected array invocation passes 107 checks including the bake. No assertion was weakened.
++
++The subsequent steering request added turning assertions. The first grip/steering tune failed ten speed-retention checks; increasing corner-energy retention fixed that loss. Two radius comparisons still failed because the unchanged control slowed to about half speed and thus traced a misleadingly small circle. Matching the energy treatment and adding an explicit control-speed assertion corrected this fixture without changing the radius or recovery limits. The 136/10 and 136/2 initial results and raw measurements remain in the evidence, followed by the final 152/0 run. The earlier clearance-only results are retained separately.
++
++The final 143-check full-car run and renderer runs used shared physics 0.67. Concurrent Electric work subsequently moved shared physics to 0.68 and updated its own manifest entry. The Forklift 152-check turning/bridge suite, 98-check integration/original-car trace suite and two real verifier tests were rerun on 0.68. The scoped checkpoint preserves those concurrent manifest values and changes only the Forklift entry. A strict patch whitespace check initially flagged existing CRLF endings; the corrected check explicitly recognizes CRLF and retains real whitespace checks.
++
++No phone/tablet attachment check or physical-device test, APK, purchase, live mutation, deployment or owner-process restart was performed. Reload the client to use the changed code and assets. Owner acceptance of driving feel, appearance and phone frame pacing remains.
+diff --git a/docs/evidence/forklift-clearance-2026-10-25/before/game__resources__cars__forklift.tres b/docs/evidence/forklift-clearance-2026-10-25/before/game__resources__cars__forklift.tres
+new file mode 100644
+--- /dev/null
++++ b/docs/evidence/forklift-clearance-2026-10-25/before/game__resources__cars__forklift.tres
+@@ -0,0 +1,34 @@
++[gd_resource type="Resource" script_class="HandlingConfig" load_steps=2 format=3]
++[ext_resource type="Script" path="res://vehicle/handling_config.gd" id="1"]
++[resource]
++script = ExtResource("1")
++version = "forklift-1"
++vehicle_id = "forklift"
++profile_name = "Forklift"
++rear_steering = true
++mass = 2800.0
++engine_force = 20500.0
++braking_force = 27500.0
++maximum_speed = 12.0
++reverse_speed = 5.0
++rotational_inertia = 2100.0
++steering_rate = 5.0
++countersteering_rate = 9.0
++steering_angle = 0.88
++high_speed_steering_reduction = 0.55
++wheelbase = 1.72
++track_width = 1.38
++collision_radius = 1.85
++lateral_grip = 27.0
++lateral_response = 16.0
++longitudinal_grip = 16.0
++maximum_yaw_rate = 2.5
++loose_surface_grip = 1.15
++soil_drag_multiplier = 0.60
++dirty_tire_grip_loss = 0.20
++sliding_grip = 0.88
++brake_rotation = 0.0
++brake_grip_loss = 0.05
++throttle_rotation = 0.0
++throttle_grip_loss = 0.0
++countersteer_assistance = 0.30

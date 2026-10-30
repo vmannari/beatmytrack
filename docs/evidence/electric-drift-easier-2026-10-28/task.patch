@@ -1,0 +1,202 @@
+--- a/game/resources/cars/electric.tres
++++ b/game/resources/cars/electric.tres
+@@ -2,7 +2,7 @@
+ [ext_resource type="Script" path="res://vehicle/handling_config.gd" id="1"]
+ [resource]
+ script = ExtResource("1")
+-version = "electric-21"
++version = "electric-22"
+ vehicle_id = "electric"
+ profile_name = "Volt"
+ rear_wheel_drive = true
+@@ -27,7 +27,7 @@
+ steering_angle = 0.78
+ high_speed_steering_reduction = 0.40
+ launch_lateral_response_scale = 0.18
+-power_lateral_response_scale = 0.265
++power_lateral_response_scale = 0.25
+ power_slide_full_pedal = 0.65
+ power_slide_high_speed_scale = 0.75
+ continuous_turn_radius = true
+--- a/backend/tests/fixtures/verified_oval.json
++++ b/backend/tests/fixtures/verified_oval.json
+@@ -64430,8 +64430,8 @@
+         "handling_version": "handling-0.15-original-slide"
+       },
+       "electric": {
+-        "config_hash": "75f0052f7eb3340bbe98b0c719d98b75402f66d2ecc6726accb83d9fb0ccfa0b",
+-        "handling_version": "electric-21"
++        "config_hash": "0d8db0dea914a4db8e37517b76c4989be2144bd8ba9c6b78d75d4b775aecbf9e",
++        "handling_version": "electric-22"
+       },
+       "forklift": {
+         "config_hash": "495947f7424e92c8b14f69c1de5b3a05bb2ab0ce85c4898c0f858e73b3d35003",
+--- a/game/tests/test_electric_brake_reverse.gd
++++ b/game/tests/test_electric_brake_reverse.gd
+@@ -2,11 +2,15 @@
+ const _NATIVE_TRACK = preload("res://track/native_track.gd")
+ 
+ const OUTPUT = "res://../docs/evidence/electric-brake-reverse-2026-10-28"
++var output: String = OUTPUT
+ var checks := 0
+ var failures := 0
+ var metrics := {}
+ 
+-func _initialize() -> void: run.call_deferred()
++func _initialize() -> void:
++	for argument: String in OS.get_cmdline_user_args():
++		if argument.begins_with("--evidence-root="): output = argument.trim_prefix("--evidence-root=")
++	run.call_deferred()
+ 
+ func check(ok: bool, label: String) -> void:
+ 	checks += 1
+@@ -16,14 +20,14 @@
+ 
+ func run() -> void:
+ 	OS.set_environment("BMT_API_URL", "")
+-	DirAccess.make_dir_recursive_absolute(ProjectSettings.globalize_path(OUTPUT))
++	DirAccess.make_dir_recursive_absolute(ProjectSettings.globalize_path(output))
+ 	var config: HandlingConfig = VehicleCatalog.config("electric")
+ 	var old: HandlingConfig = load(OUTPUT+"/before/game/resources/cars/electric.tres")
+-	check(config.version == "electric-21" and not config.single_pedal and not config.handbrake_enabled,"versioned brake/reverse pedals without handbrake")
++	check(config.version == "electric-22" and not config.single_pedal and not config.handbrake_enabled,"versioned brake/reverse pedals without handbrake")
+ 	var before := old.snapshot()
+ 	var after := config.snapshot()
+ 	for key: String in before:
+-		if key in ["version","single_pedal"]: continue
++		if key in ["version","single_pedal","power_lateral_response_scale"]: continue
+ 		check(before[key] == after[key],"retained tune: "+key)
+ 	var fixture: Dictionary = JSON.parse_string(FileAccess.get_file_as_string("res://../backend/tests/fixtures/verified_oval.json"))
+ 	for id: String in fixture.expected_manifest.vehicles:
+@@ -31,6 +35,8 @@
+ 		var other: HandlingConfig = VehicleCatalog.config(id) if id == "compact" else load("res://resources/cars/"+id+".tres")
+ 		check(JSON.stringify(other.snapshot(),"",true).sha256_text() == fixture.expected_manifest.vehicles[id].config_hash,"unchanged other car: "+id)
+ 	metrics.electric = {"handling_version":config.version,"config_hash":JSON.stringify(config.snapshot(),"",true).sha256_text()}
++	# Isolate the brake/reverse contract from the later powered-drift adjustment.
++	old.power_lateral_response_scale = config.power_lateral_response_scale
+ 	# Forward power and lift remain bit exact against the previous one-pedal tune.
+ 	for steer: float in [0.0,0.5,-1.0]:
+ 		var a := VehicleSimulation.new(old)
+@@ -95,10 +101,10 @@
+ 			hud.driver.clear()
+ 			if DisplayServer.get_name() != "headless":
+ 				await RenderingServer.frame_post_draw
+-				check(root.get_texture().get_image().save_png(OUTPUT+"/"+method+str(left)+".png") == OK,"native control capture")
++				check(root.get_texture().get_image().save_png(output+"/"+method+str(left)+".png") == OK,"native control capture")
+ 			hud.free()
+ 			await process_frame
+-	var report := FileAccess.open(OUTPUT+"/results-"+DisplayServer.get_name()+".json",FileAccess.WRITE)
++	var report := FileAccess.open(output+"/results-"+DisplayServer.get_name()+".json",FileAccess.WRITE)
+ 	report.store_string(JSON.stringify({"checks":checks,"failures":failures,"metrics":metrics},"\t"))
+ 	report.close()
+ 	print("ELECTRIC_BRAKE_REVERSE: %d checks, %d failures %s" % [checks,failures,JSON.stringify(metrics)])
+--- /dev/null
++++ b/game/tests/test_electric_drift_easier.gd
+@@ -0,0 +1,61 @@
++extends "res://tests/probe_electric_power_increment.gd"
++
++const EASE_OUTPUT = "res://../docs/evidence/electric-drift-easier-2026-10-28"
++
++func run() -> void:
++	output = EASE_OUTPUT
++	for argument: String in OS.get_cmdline_user_args():
++		if argument.begins_with("--evidence-root="): output = argument.trim_prefix("--evidence-root=")
++	DirAccess.make_dir_recursive_absolute(ProjectSettings.globalize_path(output))
++	var old: HandlingConfig = load(EASE_OUTPUT+"/before/game/resources/cars/electric.tres") as HandlingConfig
++	var current: HandlingConfig = VehicleCatalog.config("electric")
++	check(old.version=="electric-21" and current.version=="electric-22","incremental drift has its own Electric identity")
++	check(current.power_lateral_response_scale==0.25,"small power-on rear-response reduction")
++	for field: String in old.snapshot():
++		if field in ["version","power_lateral_response_scale"]: continue
++		check(current.get(field)==old.get(field),"all other settings stay exact: "+field)
++	metrics.turns = {}
++	for kph: float in [0.0,10.0,30.0,50.0,80.0,120.0,170.0]:
++		for steering: float in [0.35,0.65,1.0]:
++			for pedal: float in [0.55,0.65,0.8,1.0]:
++				var before: Dictionary = slide_sample(old,kph,steering,pedal)
++				var after: Dictionary = slide_sample(current,kph,steering,pedal)
++				var mirror: Dictionary = slide_sample(current,kph,-steering,pedal)
++				var label: String = str(kph)+"/"+str(steering)+"/"+str(pedal)
++				metrics.turns[label] = {"before":before,"after":after}
++				check(after.peak>=before.peak-0.01 and after.peak<24.0,"slightly more slide stays bounded: "+label)
++				check(after.end_kph>kph and after.end_kph>=before.end_kph*0.98,"power retains acceleration and at least 98% of prior speed: "+label)
++				check(after.recovery_ms>0 and after.recovery_ms<=300 and after.final_slip<0.1,"straightening recovers within 300ms: "+label)
++				check(after.replay_exact and is_equal_approx(after.peak,mirror.peak),"exact replay and mirrored slide: "+label)
++	var reference: Dictionary = metrics.turns["50.0/1.0/0.65"]
++	check(reference.after.peak>=reference.before.peak*1.04 and reference.after.peak<=reference.before.peak*1.10,"50km/h moderate pedal gives 4-10% more drift")
++	check(reference.after.onset_ms>0 and reference.after.onset_ms<reference.before.onset_ms,"moderate-pedal slide begins a little earlier")
++	for direction: int in [0,1]:
++		var before := VehicleSimulation.new(old)
++		var after := VehicleSimulation.new(current)
++		var exact: bool = true
++		for tick: int in range(2400):
++			var frame := DriveFrame.sample(0,1 if tick%480<300 else 0,direction)
++			before.step(frame)
++			after.step(frame)
++			exact = exact and before.state.snapshot()==after.state.snapshot()
++		check(exact,"straight acceleration/regen/hold stay tick-exact, D/R="+str(direction))
++	for kph: float in [5.0,30.0,80.0,170.0,-25.2]:
++		for pedal: float in [0.0,0.24,0.4]:
++			var before := VehicleSimulation.new(old)
++			var after := VehicleSimulation.new(current)
++			before.state.velocity = Vector2(0,kph/3.6)
++			after.state.velocity = before.state.velocity
++			var exact: bool = true
++			for tick: int in range(360):
++				var frame := DriveFrame.sample(0.65,pedal,1 if kph<0 else 0)
++				before.step(frame)
++				after.step(frame)
++				exact = exact and before.state.snapshot()==after.state.snapshot()
++			check(exact,"light pedal and released turns stay exact: "+str(kph)+"/"+str(pedal))
++	metrics.electric = {"handling_version":current.version,"config_hash":JSON.stringify(current.snapshot(),"",true).sha256_text()}
++	var file := FileAccess.open(output+"/power-increment.json",FileAccess.WRITE)
++	file.store_string(JSON.stringify({"checks":checks,"failures":failures,"metrics":metrics},"\t"))
++	file.close()
++	print("ELECTRIC_DRIFT_EASIER: %d checks, %d failures" % [checks,failures])
++	quit.call_deferred(1 if failures else 0)
+--- /dev/null
++++ b/docs/ELECTRIC_DRIFT_EASIER_2026_10_28.md
+@@ -0,0 +1,29 @@
++# Electric powered drift, second small increase — 2026-10-28
++
++EDE01 makes the rear slide a little easier while accelerating and turning. Electric22 changes only its version and `power_lateral_response_scale` from 0.265 to 0.25. EDE02 retains every other Electric21 configuration field, including brake/reverse, regeneration20, motor power, steering, launch response and the high-speed slide fade. Shared physics remains 0.75. R01 preserves unrelated work and other-car identities; Q01 checks onset, speed, recovery, deterministic replay and server verification locally.
++
++At 50 km/h, full steering and 65% accelerator, peak slip increases from 20.423 to 21.490 degrees (+5.23%). Onset moves from 291.7 to 283.3 ms; straightening recovery moves from 183.3 to 191.7 ms. After the sampled powered turn, speed is 71.69 versus 72.88 km/h. Across 84 speed/steering/pedal cases, maximum slip is 21.980 degrees, recovery is at most 200 ms, and at least 98.333% of the previous final speed is retained. All sampled powered turns still accelerate. The test retains its existing 24-degree, 300-ms and 98% bounds rather than relaxing them.
++
++Actual checks:
++
++- New comparison regression: 417 checks, zero failures, against the exact Electric21 resource saved before editing. Includes mirrored steering, exact replay, unchanged straight acceleration/braking/reverse/regen and unchanged light-pedal turns.
++- Retained brake/reverse regression: 105 checks, zero failures. Its reference explicitly adopts the later power-slide value to isolate the existing controls contract. Evidence output now accepts a separate directory instead of replacing the preceding task's captures.
++- Over and under: seven checks, zero failures; five ordered laps, 34,706 inputs, zero contacts and exact replay.
++- Independent verifier and project parser outcomes are in [report.json](evidence/electric-drift-easier-2026-10-28/report.json), with their original console logs.
++
++Runtime scope is one resource, `game/resources/cars/electric.tres`. Supporting changes add `test_electric_drift_easier.gd`, update the current identity/reference/output destination in `test_electric_brake_reverse.gd`, and replace only Electric's expected handling version/hash in the local backend fixture. Electric22's hash is `0d8db0dea914a4db8e37517b76c4989be2144bd8ba9c6b78d75d4b775aecbf9e`. The actual service brake still stops from 72 km/h in 1.2833 s. Historical and unrelated car resource hashes remain unchanged; the verifier reports Classic/Formula absent from the concurrently retired catalogue rather than attributing their removal to this task.
++
++Commands actually run through the pinned `scripts/dev.ps1` entry point, with task-owned APPDATA profiles and empty `BMT_API_URL`:
++
++```powershell
++powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1 -Action TestScript -ScriptPath res://tests/test_electric_drift_easier.gd
++powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1 -Action TestScript -ScriptPath res://tests/test_electric_brake_reverse.gd -TestArgument '--evidence-root=res://../docs/evidence/electric-drift-easier-2026-10-28/controls'
++powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1 -Action TestScript -ScriptPath res://tests/test_electric_over_under.gd -TestArgument '--evidence-root=res://../docs/evidence/electric-drift-easier-2026-10-28/driving'
++powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1 -Action TestScript -ScriptPath res://tests/test_script_parse.gd
++./.tools/backend-secure-venv/Scripts/python.exe docs/evidence/electric-drift-easier-2026-10-28/verify_canonical.py
++python docs/evidence/electric-drift-easier-2026-10-28/checkpoint.py
++```
++
++The initial sandbox engine start fails its root-certificate-store read; the isolated unsandboxed engine run passes. The original failed log remains. Dev-wrapper generated metadata is archived separately and excluded from the scoped checkpoint. Concurrent bodywork, garage, hovercraft, account/backend and other source edits are preserved. This resource-only feel adjustment adds no visible UI and performs no capture/world/art regeneration.
++
++Reload/rebuild and owner driving-feel acceptance remain. Matching backend/current Electric contracts are required before online use. No physical-device attachment query or device test, APK/AAB, real authentication/purchase, owner-save mutation, live submission/deployment, owner-process restart, main-index staging, commit or merge is performed. No phone or frame-rate claim is made.
+--- a/AGENTS.md
++++ b/AGENTS.md
+@@ -2,6 +2,11 @@
+ ## Faster hovercraft rotation and stronger thrust (2026-10-28)
+ HPT01-HPT03/R01/Q01: Hovercraft2 changes only version, thrust7400to10000N(+35.14%) and yaw cap1.35to1.9rad/s(+40.74%). Angular inertia780/lateral damping0.85/steering ramps/brakes/130kmh cap remain. At20m/s/60%steer/50%power, 0.5s hull angle12.5267to17.6302deg; one-second speed43.2526to56.7860kmh;0-60time1.4583to1.0667s. New127/0, retained50/0 including five other hashes/100state checkpoints, parser1379/0 and independent native normal/canonical five-lap verification18953ticks/157942ms/zero contacts pass. One runtime resource; optional test evidence/output destinations preserve old receipts. Reload, matching authorized online contract rollout and owner/device feel acceptance remain. No device query/test, APK, live write/deployment, owner-save/process change or main-index staging/commit/merge. Sources/commands/measurements/scoped patch: docs/HOVERCRAFT_POWER_TURN_2026_10_28.md and docs/evidence/hovercraft-power-turn-2026-10-28/report.json. Concurrent work preserved.
+ <!-- /HOVERCRAFT-POWER-TURN-20261028 -->
++
++<!-- ELECTRIC-DRIFT-EASIER-20261028 -->
++## Electric powered rear slide eased again (2026-10-28)
++EDE01-EDE02/R01/Q01: Owner requests a little easier drift when turning and accelerating. Electric22 changes only version and powered lateral response0.265to0.25. Brake/reverse, regen20, launch/power/steering/high-speed fade and shared physics0.75 remain. At50kmh/65%pedal slip20.423to21.490deg(+5.23%), onset291.7to283.3ms and recovery183.3to191.7ms.84cases retain>=98.333% prior speed, peak21.980deg/recovery<=200ms with positive acceleration. Comparison417/0, controls105/0, five-lap7/0 and parser1380/0 pass. Independent34706-input five-lap verification accepts289210ms/zero contacts. Initial sandbox certificate failure retained. One runtime resource, one new/two supporting test/fixture updates; scoped source checkpoint excludes concurrent work/generated metadata. Commands/hashes/limits: docs/ELECTRIC_DRIFT_EASIER_2026_10_28.md and docs/evidence/electric-drift-easier-2026-10-28/report.json. Reload/rebuild, matching backend/current Electric contracts and owner/device feel acceptance remain. No device query/test, APK, auth/purchase, owner-save/live mutation, deployment, owner-process restart or main-index staging/commit/merge.
++<!-- /ELECTRIC-DRIFT-EASIER-20261028 -->
+ 
+ <!-- ELECTRIC-REAR-REDESIGN-20261028 -->
+ ## Electric rear window and trunk redesigned (2026-10-28)

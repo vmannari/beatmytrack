@@ -1,0 +1,194 @@
+diff --git a/backend/tests/fixtures/verified_oval.json b/backend/tests/fixtures/verified_oval.json
+index 04e44d0..db9cf78 100644
+--- a/backend/tests/fixtures/verified_oval.json
++++ b/backend/tests/fixtures/verified_oval.json
+@@ -64430,8 +64430,8 @@
+         "handling_version": "handling-0.15-original-slide"
+       },
+       "electric": {
+-        "config_hash": "ae42d39b9481530f22ca8ce0a8e07f0c0c53f2bf169d3f13307cb16c5450bee2",
+-        "handling_version": "electric-25"
++        "config_hash": "c8615f8828cff99e2cc2e5d133fc9d63e44ba6112ff467a02708619dce687452",
++        "handling_version": "electric-26"
+       },
+       "forklift": {
+         "config_hash": "495947f7424e92c8b14f69c1de5b3a05bb2ab0ce85c4898c0f858e73b3d35003",
+diff --git a/game/resources/cars/electric.tres b/game/resources/cars/electric.tres
+index 160debc..2abe8ec 100644
+--- a/game/resources/cars/electric.tres
++++ b/game/resources/cars/electric.tres
+@@ -2,7 +2,7 @@
+ [ext_resource type="Script" path="res://vehicle/handling_config.gd" id="1"]
+ [resource]
+ script = ExtResource("1")
+-version = "electric-25"
++version = "electric-26"
+ vehicle_id = "electric"
+ profile_name = "Volt"
+ rear_wheel_drive = true
+@@ -51,5 +51,8 @@ lift_off_grip_loss = 0.03
+ slide_drive_loss = 0.20
+ corner_energy_retention = 0.60
+ countersteer_assistance = 0.70
+-soil_drag_multiplier = 1.45
+-loose_surface_grip = 0.90
++soil_drag_multiplier = 1.0
++loose_surface_grip = 1.0
++dirty_tire_grip_loss = 0.25
++tire_pickup_distance = 20.0
++tire_clean_distance = 80.0
+diff --git a/game/tests/test_electric_acceleration.gd b/game/tests/test_electric_acceleration.gd
+index 99be782..deaef61 100644
+--- a/game/tests/test_electric_acceleration.gd
++++ b/game/tests/test_electric_acceleration.gd
+@@ -18,9 +18,10 @@ func run() -> void:
+ 	var old: HandlingConfig = load(ACCEL_OUTPUT+"/before/game/resources/cars/electric.tres")
+ 	var current: HandlingConfig = VehicleCatalog.config("electric").duplicate()
+ 	current.power_lateral_response_scale = 0.25 # Isolate this historical increment from the later powered-drift tune.
++	for field: String in ["soil_drag_multiplier", "loose_surface_grip", "dirty_tire_grip_loss", "tire_pickup_distance", "tire_clean_distance"]: current.set(field, old.get(field)) # Isolate the later off-road tune.
+ 	old.low_speed_turn_radius = current.low_speed_turn_radius
+ 	old.low_speed_turn_acceleration = current.low_speed_turn_acceleration # Later radius tune is checked independently.
+-	check(old.version == "electric-22" and current.version == "electric-25","versioned small acceleration increase")
++	check(old.version == "electric-22" and current.version == "electric-26","versioned small acceleration increase")
+ 	check(current.engine_force == 41000.0,"motor force increases by 7.9 percent")
+ 	check(current.snapshot().size() == old.snapshot().size(),"no new handling capabilities")
+ 	for key: String in old.snapshot():
+diff --git a/game/tests/test_electric_brake_reverse.gd b/game/tests/test_electric_brake_reverse.gd
+index c8785f5..8e1c5a3 100644
+--- a/game/tests/test_electric_brake_reverse.gd
++++ b/game/tests/test_electric_brake_reverse.gd
+@@ -23,7 +23,8 @@ func run() -> void:
+ 	DirAccess.make_dir_recursive_absolute(ProjectSettings.globalize_path(output))
+ 	var config: HandlingConfig = VehicleCatalog.config("electric")
+ 	var old: HandlingConfig = load(OUTPUT+"/before/game/resources/cars/electric.tres")
+-	check(config.version == "electric-25" and not config.single_pedal and not config.handbrake_enabled,"versioned brake/reverse pedals without handbrake")
++	for field: String in ["soil_drag_multiplier", "loose_surface_grip", "dirty_tire_grip_loss", "tire_pickup_distance", "tire_clean_distance"]: old.set(field, config.get(field)) # Isolate the later off-road tune.
++	check(config.version == "electric-26" and not config.single_pedal and not config.handbrake_enabled,"versioned brake/reverse pedals without handbrake")
+ 	var before := old.snapshot()
+ 	var after := config.snapshot()
+ 	for key: String in before:
+diff --git a/game/tests/test_electric_drift_easier.gd b/game/tests/test_electric_drift_easier.gd
+index cd937af..71a0067 100644
+--- a/game/tests/test_electric_drift_easier.gd
++++ b/game/tests/test_electric_drift_easier.gd
+@@ -10,9 +10,10 @@ func run() -> void:
+ 	var old: HandlingConfig = load(EASE_OUTPUT+"/before/game/resources/cars/electric.tres") as HandlingConfig
+ 	var current: HandlingConfig = VehicleCatalog.config("electric").duplicate()
+ 	current.power_lateral_response_scale = 0.25 # Isolate this historical increment from the later powered-drift tune.
++	for field: String in ["soil_drag_multiplier", "loose_surface_grip", "dirty_tire_grip_loss", "tire_pickup_distance", "tire_clean_distance"]: current.set(field, old.get(field)) # Isolate the later off-road tune.
+ 	old.low_speed_turn_radius = current.low_speed_turn_radius
+ 	old.low_speed_turn_acceleration = current.low_speed_turn_acceleration # Later radius tune is checked independently.
+-	check(old.version=="electric-21" and current.version=="electric-25","incremental drift has its own Electric identity")
++	check(old.version=="electric-21" and current.version=="electric-26","incremental drift has its own Electric identity")
+ 	old.engine_force = current.engine_force # Isolate the drift change from the later acceleration tune.
+ 	check(current.power_lateral_response_scale==0.25,"small power-on rear-response reduction")
+ 	for field: String in old.snapshot():
+diff --git a/game/tests/test_electric_stronger_power_drift.gd b/game/tests/test_electric_stronger_power_drift.gd
+index 1483825..2fc167c 100644
+--- a/game/tests/test_electric_stronger_power_drift.gd
++++ b/game/tests/test_electric_stronger_power_drift.gd
+@@ -9,7 +9,8 @@ func run() -> void:
+ 	DirAccess.make_dir_recursive_absolute(ProjectSettings.globalize_path(output))
+ 	var old: HandlingConfig = load(EASE_OUTPUT+"/before/game/resources/cars/electric.tres") as HandlingConfig
+ 	var current: HandlingConfig = VehicleCatalog.config("electric")
+-	check(old.version=="electric-24" and current.version=="electric-25","stronger powered drift has its own identity")
++	for field: String in ["soil_drag_multiplier", "loose_surface_grip", "dirty_tire_grip_loss", "tire_pickup_distance", "tire_clean_distance"]: current.set(field, old.get(field)) # Isolate the later off-road tune.
++	check(old.version=="electric-24" and current.version=="electric-26","stronger powered drift has its own identity")
+ 	check(current.power_lateral_response_scale==0.235,"powered lateral response reduced six percent")
+ 	for field: String in old.snapshot():
+ 		if field in ["version","power_lateral_response_scale"]: continue
+diff --git a/game/tests/test_electric_turning_tighter.gd b/game/tests/test_electric_turning_tighter.gd
+index 8e9a27c..1418d7a 100644
+--- a/game/tests/test_electric_turning_tighter.gd
++++ b/game/tests/test_electric_turning_tighter.gd
+@@ -52,7 +52,8 @@ func run() -> void:
+ 	var old: HandlingConfig = load(TIGHT_OUTPUT+"/before/game/resources/cars/electric.tres")
+ 	var current: HandlingConfig = VehicleCatalog.config("electric").duplicate()
+ 	current.power_lateral_response_scale = 0.25 # Isolate this historical increment from the later powered-drift tune.
+-	check(old.version == "electric-23" and current.version == "electric-25","versioned tighter steering envelope")
++	for field: String in ["soil_drag_multiplier", "loose_surface_grip", "dirty_tire_grip_loss", "tire_pickup_distance", "tire_clean_distance"]: current.set(field, old.get(field)) # Isolate the later off-road tune.
++	check(old.version == "electric-23" and current.version == "electric-26","versioned tighter steering envelope")
+ 	check(current.low_speed_turn_radius == 2.3 and current.low_speed_turn_acceleration == 75.0,"modest radius and speed progression reduction")
+ 	check(old.snapshot().size() == current.snapshot().size(),"no new handling capabilities")
+ 	for field: String in old.snapshot():
+diff --git a/game/tests/test_volt_compact_offroad.gd b/game/tests/test_volt_compact_offroad.gd
+new file mode 100644
+index 0000000..a90d373
+--- /dev/null
++++ b/game/tests/test_volt_compact_offroad.gd
+@@ -0,0 +1,75 @@
++extends SceneTree
++
++const BEFORE = "res://../docs/evidence/volt-compact-offroad-2026-10-29/before/electric.tres"
++const FIELDS = ["loose_surface_grip", "soil_drag_multiplier", "dirty_tire_grip_loss", "tire_pickup_distance", "tire_clean_distance", "wheel_soil_drag"]
++var checks: int = 0
++var failures: int = 0
++
++func _initialize() -> void:
++	run.call_deferred()
++
++func check(ok: bool, message: String) -> void:
++	checks += 1
++	if not ok:
++		failures += 1
++		print("FAIL: ", message)
++
++func field(kind: int) -> NativeTrack:
++	var track := NativeTrack.new()
++	track.cell_size = 10.0
++	track.grid_width = 100
++	track.grid_height = 100
++	track.half_extent = Vector2(500, 500)
++	track.cells.resize(10000)
++	track.cells.fill(kind)
++	track.deck_cells.resize(10000)
++	track.deck_cells.fill(-1)
++	track.route = PackedVector2Array([Vector2(0, -400), Vector2(0, 400)])
++	return track
++
++func travel(config: HandlingConfig, ground: NativeTrack, start_dirt: float, distance: float) -> Dictionary:
++	var sim := VehicleSimulation.new(config)
++	var replay := VehicleSimulation.new(config)
++	sim.state.tire_dirt = start_dirt
++	replay.state.tire_dirt = start_dirt
++	var exact := true
++	while sim.state.position.y < distance:
++		sim.state.velocity = Vector2(0, 12)
++		replay.state.velocity = sim.state.velocity
++		var frame := DriveFrame.sample(0, 0.5, 0)
++		sim.step(frame, ground)
++		replay.step(frame, ground)
++		exact = exact and sim.state.snapshot() == replay.state.snapshot()
++	return {"distance": sim.state.position.y, "dirt": sim.state.tire_dirt, "exact": exact}
++
++func run() -> void:
++	var compact: HandlingConfig = VehicleCatalog.config("compact")
++	var volt: HandlingConfig = VehicleCatalog.config("electric")
++	var old: HandlingConfig = load(BEFORE) as HandlingConfig
++	check(old.version == "electric-25" and volt.version == "electric-26", "handling identity advances")
++	for name: String in FIELDS:
++		check(volt.get(name) == compact.get(name), "Compact setting matches: " + name)
++	for name: String in old.snapshot():
++		if name == "version" or name in FIELDS: continue
++		check(old.get(name) == volt.get(name), "unrelated Volt setting retained: " + name)
++	for kind: int in [1, 2]:
++		var soil := field(kind)
++		var sample := travel(volt, soil, 0.0, 10.0)
++		var earlier := travel(old, soil, 0.0, 10.0)
++		var rate: float = 0.5 if kind == 1 else 1.0
++		check(absf(sample.dirt - sample.distance * rate / 20.0) < 0.0001, "matching pickup distance on surface " + str(kind))
++		check(sample.dirt < earlier.dirt and sample.exact, "less contamination and exact replay on surface " + str(kind))
++	var road := field(0)
++	var cleaned := travel(volt, road, 1.0, 40.0)
++	check(absf(cleaned.dirt - (1.0 - cleaned.distance / 80.0)) < 0.0001 and cleaned.exact, "cleaning follows 80 m distance and replays")
++	check(is_equal_approx(VehicleSimulation.dirt_grip_loss(1.0, volt.dirty_tire_grip_loss), 0.5), "full coating removes half the road grip")
++	check(VehicleSimulation.dirt_grip_loss(0.5, volt.dirty_tire_grip_loss) < VehicleSimulation.dirt_grip_loss(0.5, old.dirty_tire_grip_loss), "partial coating has a smaller road penalty")
++	var clean_before := VehicleSimulation.new(old)
++	var clean_after := VehicleSimulation.new(volt)
++	for tick: int in range(600):
++		var frame := DriveFrame.sample(sin(tick * 0.03) * 0.5, 0.7, 0)
++		clean_before.step(frame, road)
++		clean_after.step(frame, road)
++		check(clean_before.state.snapshot() == clean_after.state.snapshot(), "clean road behavior stays exact at tick " + str(tick))
++	print("VOLT_COMPACT_OFFROAD: ", checks, " checks, ", failures, " failures; hash=", JSON.stringify(volt.snapshot(), "", true).sha256_text())
++	quit(1 if failures else 0)

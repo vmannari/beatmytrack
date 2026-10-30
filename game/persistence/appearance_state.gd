@@ -23,16 +23,16 @@ static func authored(settings: Dictionary, id: String) -> bool:
 	return settings.get("vehicle_liveries",{}).has(id) or settings.get("vehicle_customisation",{}).has(id)
 
 static func valid_car(value: Variant) -> bool:
-	if not value is Dictionary or value.size() != 3 or value.get("vehicle_id") not in VehicleCatalog.IDS: return false
+	if not value is Dictionary or value.size() != 3 or value.get("vehicle_id") not in VehicleCatalog.ALL_IDS: return false
 	if not VehicleLivery.valid(value.get("livery")) or value.livery.version != VehicleLivery.VERSION: return false
-	if not VehicleCustomisation.valid(value.get("customisation")): return false
-	if value.vehicle_id != "compact":
+	if not VehicleCustomisation.valid(value.get("customisation"),str(value.vehicle_id)): return false
+	if not VehicleCustomisation.supported(str(value.vehicle_id)):
 		for category: String in VehicleCustomisation.CATEGORIES:
 			if value.customisation[category] != "stock": return false
 	return true
 
 static func valid_collection(value: Variant) -> bool:
-	if not value is Dictionary or value.size() > VehicleCatalog.IDS.size(): return false
+	if not value is Dictionary or value.size() > VehicleCatalog.ALL_IDS.size(): return false
 	for id: Variant in value:
 		if not id is String or not valid_car(value[id]) or value[id].vehicle_id != id: return false
 	return true
@@ -52,7 +52,7 @@ static func apply(settings: Dictionary, value: Dictionary) -> void:
 	var liveries: Dictionary = settings.get("vehicle_liveries",{}).duplicate(true)
 	liveries[id] = value.livery.duplicate(true)
 	settings.vehicle_liveries = liveries
-	if id == "compact":
+	if VehicleCustomisation.supported(id):
 		var parts: Dictionary = settings.get("vehicle_customisation",{}).duplicate(true)
 		parts[id] = value.customisation.duplicate(true)
 		settings.vehicle_customisation = parts

@@ -1,0 +1,313 @@
+diff --git a/game/core/app.gd b/game/core/app.gd
+--- a/game/core/app.gd
++++ b/game/core/app.gd
+@@ -655,7 +655,9 @@
+ 	var nav := HBoxContainer.new()
+ 	nav.name = "MenuHeader"
+ 	layout.add_child(nav)
+-	nav.add_child(MenuBrand.new())
++	var menu_brand := MenuBrand.new()
++	menu_brand.logo_scale = 0.84
++	nav.add_child(menu_brand)
+ 	var tabs := HBoxContainer.new()
+ 	tabs.name = "MenuNavigation"
+ 	tabs.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+@@ -673,29 +675,27 @@
+ 	if online.client.signed_in(): GameText.user_text(account_button)
+ 	account_button.name = "MenuAccount"
+ 	account_button.tooltip_text = "Profile"
+-	account_button.icon = MenuIcon.texture("avatar")
+-	account_button.add_theme_constant_override("icon_max_width", 38)
+-	account_button.add_theme_constant_override("h_separation", 12)
+ 	account_button.alignment = HORIZONTAL_ALIGNMENT_LEFT
+-	account_button.custom_minimum_size = Vector2(190, 54)
++	account_button.custom_minimum_size = Vector2(240, 64)
+ 	var profile_style: StyleBoxFlat = MenuStyle.box(MenuStyle.PANEL)
+-	profile_style.content_margin_right = 38
++	profile_style.content_margin_left = 104
++	profile_style.content_margin_right = 16
+ 	if screen == "profile":
+ 		profile_style.bg_color = Color(1, 1, 1, 0.07)
+ 		account_button.add_theme_color_override("font_color", MenuStyle.ACCENT)
+ 	account_button.add_theme_stylebox_override("normal", profile_style)
+ 	for state: String in ["hover", "pressed", "disabled", "focus"]:
+ 		var state_style: StyleBoxFlat = root_ui.theme.get_stylebox(state, "Button").duplicate() as StyleBoxFlat
+-		state_style.content_margin_right = 38
++		state_style.content_margin_left = 104
++		state_style.content_margin_right = 16
+ 		account_button.add_theme_stylebox_override(state, state_style)
+-	var chevron := TextureRect.new()
+-	chevron.texture = MenuIcon.texture("chevron")
+-	chevron.mouse_filter = Control.MOUSE_FILTER_IGNORE
+-	chevron.set_anchors_and_offsets_preset(Control.PRESET_CENTER_RIGHT)
+-	chevron.position = Vector2(-30, -10)
+-	chevron.size = Vector2(20, 20)
+-	chevron.expand_mode = TextureRect.EXPAND_IGNORE_SIZE
+-	account_button.add_child(chevron)
++	var profile_car := preload("res://ui/profile_car.gd").new()
++	profile_car.name = "MenuProfileCar"
++	profile_car.records = records
++	profile_car.set_anchors_and_offsets_preset(Control.PRESET_CENTER_LEFT)
++	profile_car.position = Vector2(6,-28)
++	profile_car.size = Vector2(88,56)
++	account_button.add_child(profile_car)
+ 	account_button.size_flags_vertical = Control.SIZE_SHRINK_CENTER
+ 	# Let the name contribute to the minimum width; expanding tabs yield space.
+ 	account_button.clip_text = false
+@@ -2466,8 +2466,14 @@
+ 	_show_screen(destination)
+ 
+ func _garage_appearance_changed() -> void:
++	_refresh_account_car()
+ 	if is_instance_valid(_retained_garage) and _retained_garage.records == records:
+ 		_retained_garage.refresh_cosmetics()
++
++func _refresh_account_car() -> void:
++	if not is_instance_valid(account_button): return
++	var preview: Control = account_button.get_node_or_null("MenuProfileCar")
++	if preview != null: preview.refresh()
+ 
+ func _garage(parent: Control = null) -> void:
+ 	if parent == null: parent = content
+@@ -5711,6 +5717,7 @@
+ 	records.settings.selected_car = chosen
+ 	var saved: Error = records.save_records()
+ 	VehicleCatalog.selected = chosen
++	_refresh_account_car()
+ 	_prefetch_rivalry()
+ 	_prime_free_race_comparisons()
+ 	if saved != OK: _notice("Car selected for this session. Could not save preference: " + error_string(saved))
+diff --git a/game/ui/profile_car.gd b/game/ui/profile_car.gd
+new file mode 100644
+--- /dev/null
++++ b/game/ui/profile_car.gd
+@@ -0,0 +1,75 @@
++extends Control
++## The selected car in the Rivalry podium's static studio presentation.
++var records: LocalRecords
++var preview: Control
++var _appearance: Dictionary = {}
++
++class ProfilePreview extends "res://ui/rivalry_victory_car.gd":
++	func _fit_camera() -> void:
++		var camera: Camera3D = viewport.get_camera_3d()
++		if camera == null: return
++		# Center the visible model rather than the podium's fixed world target.
++		# Translate in the camera plane to retain the Rivalry viewing angle.
++		var points := PackedVector3Array()
++		var view: Transform3D = camera.global_transform.affine_inverse()
++		var depth_range := Vector2(INF,-INF)
++		for mesh: Node in car.find_children("*","MeshInstance3D",true,false):
++			if not mesh.is_visible_in_tree() or mesh.mesh == null: continue
++			var bounds: AABB = mesh.get_aabb()
++			for x: float in [bounds.position.x,bounds.end.x]:
++				for y: float in [bounds.position.y,bounds.end.y]:
++					for z: float in [bounds.position.z,bounds.end.z]:
++						var point: Vector3 = view*mesh.to_global(Vector3(x,y,z))
++						points.append(point)
++						depth_range.x = minf(depth_range.x,-point.z)
++						depth_range.y = maxf(depth_range.y,-point.z)
++		if points.is_empty(): return
++		var shift := Vector2.ZERO
++		for _pass: int in range(4):
++			var low := Vector2(INF,INF)
++			var high := Vector2(-INF,-INF)
++			for point: Vector3 in points:
++				var projected: Vector2 = (Vector2(point.x,point.y)-shift)/maxf(0.01,-point.z)
++				low = low.min(projected)
++				high = high.max(projected)
++			shift += (low+high)*0.5*(depth_range.x+depth_range.y)*0.5
++		camera.position += camera.basis*Vector3(shift.x,shift.y,0)
++		super._fit_camera()
++
++func _ready() -> void:
++	mouse_filter = Control.MOUSE_FILTER_IGNORE
++	if records != null: records.appearance_committed.connect(refresh)
++	refresh()
++
++func refresh() -> void:
++	if not is_inside_tree(): return
++	var vehicle: String = VehicleCatalog.selected
++	var settings: Dictionary = records.settings if records != null else {}
++	var appearance: Dictionary = {
++		"vehicle_id":vehicle,
++		"livery":VehicleLivery.for_car(settings,vehicle),
++		"customisation":VehicleCustomisation.for_car(settings,vehicle),
++	}
++	if appearance == _appearance: return
++	_appearance = appearance.duplicate(true)
++	if is_instance_valid(preview):
++		remove_child(preview)
++		preview.queue_free()
++	preview = ProfilePreview.new()
++	preview.name = "ProfileCarRender"
++	preview.vehicle_id = vehicle
++	preview.livery = appearance.livery
++	preview.customisation = appearance.customisation
++	preview.simple_model = true
++	preview.podium_presentation = true
++	preview.fit_to_frame = true
++	add_child(preview)
++	MenuStyle.fill(preview)
++	var environment: WorldEnvironment = preview.viewport.find_child("PodiumReflectionEnvironment",true,false)
++	environment.environment.ambient_light_energy = 0.7
++	var fill := DirectionalLight3D.new()
++	fill.name = "ProfileReadabilityFill"
++	fill.light_energy = 0.65
++	fill.rotation = preview.viewport.get_camera_3d().rotation
++	preview.car.get_parent().add_child(fill)
++	preview._refresh()
+diff --git a/game/ui/profile_car.gd.uid b/game/ui/profile_car.gd.uid
+new file mode 100644
+--- /dev/null
++++ b/game/ui/profile_car.gd.uid
+@@ -0,0 +1 @@
++uid://mxx77rqslsgx
+diff --git a/game/tests/capture_profile_car.gd b/game/tests/capture_profile_car.gd
+new file mode 100644
+--- /dev/null
++++ b/game/tests/capture_profile_car.gd
+@@ -0,0 +1,107 @@
++extends SceneTree
++## Native menu review with isolated local data and no service connection.
++var output: String
++var report: Dictionary = {}
++
++func _initialize() -> void: run.call_deferred()
++
++func settle() -> void:
++	for _frame: int in range(12): await process_frame
++	await RenderingServer.frame_post_draw
++
++func shot(label: String) -> void:
++	await settle()
++	root.get_texture().get_image().save_png(output.path_join(label+".png"))
++
++func run() -> void:
++	OS.set_environment("BMT_API_URL","")
++	var baseline: bool = OS.get_environment("BMT_PROFILE_CAR_BASELINE") == "1"
++	output = ProjectSettings.globalize_path("res://../docs/evidence/profile-active-car-2026-10-25/"+RenderingServer.get_current_rendering_method())
++	DirAccess.make_dir_recursive_absolute(output)
++	root.size = Vector2i(1280,720)
++	var source: GDScript = load("res://core/app.gd")
++	if baseline:
++		source = GDScript.new()
++		source.source_code = FileAccess.get_file_as_string("res://../docs/evidence/profile-active-car-2026-10-25/before/app.gd.txt")
++		if source.reload() != OK: quit(1); return
++	var app: Node = source.new()
++	var folder: String = "user://profile_car_"+TrackLibrary.unique_id()
++	DirAccess.make_dir_recursive_absolute(folder)
++	app.library = TrackLibrary.new(folder.path_join("tracks"))
++	app.records = LocalRecords.new(folder.path_join("records.json"))
++	app.cloud_root_override = folder.path_join("cloud")
++	root.add_child(app)
++	while not app.startup_complete: await process_frame
++	app.race_area_mode = "free"
++	app._show_screen("tracks")
++	await settle()
++	if baseline:
++		await shot("before-compact")
++	else:
++		for id: String in VehicleCatalog.IDS:
++			app._select_vehicle(VehicleCatalog.IDS.find(id))
++			await shot("active-"+id)
++			var icon: Control = app.account_button.get_node("MenuProfileCar")
++			var image: Image = icon.preview.viewport.get_texture().get_image()
++			var opaque: int = 0
++			var low: Vector2i = image.get_size()
++			var high := Vector2i(-1,-1)
++			for y: int in range(image.get_height()):
++				for x: int in range(image.get_width()):
++					if image.get_pixel(x,y).a > 0.5:
++						opaque += 1
++						low = low.min(Vector2i(x,y))
++						high = high.max(Vector2i(x,y))
++			var center_error: Vector2 = (Vector2(low+high+Vector2i.ONE)*0.5-Vector2(image.get_size())*0.5)*icon.size/Vector2(image.get_size())
++			report[id] = {"rendered_vehicle":icon.preview.car.vehicle_id,"preview_bounds":str(icon.get_global_rect()),"button_bounds":str(app.account_button.get_global_rect()),"render_size":str(image.get_size()),"opaque_pixels":opaque,"visible_center_error":str(center_error),"vertical_center_error":center_error.y}
++			if id == "forklift":
++				app.account_button.text = "Ville"
++				app.account_button.add_theme_color_override("font_color",MenuStyle.ACCENT)
++				await shot("named-forklift")
++				app.account_button.text = "Guest"
++				app.account_button.remove_theme_color_override("font_color")
++		app._select_vehicle(0)
++		var paint: Dictionary = VehicleLivery.defaults("compact")
++		paint.colors.body = "c82e37"
++		var parts: Dictionary = VehicleCustomisation.defaults()
++		parts.hood = "cowl"
++		parts.aero = "splitwing"
++		app.records.settings.vehicle_liveries = {"compact":paint}
++		app.records.settings.vehicle_customisation = {"compact":parts}
++		report.appearance_save = app.records.save_records()
++		await shot("customised-compact")
++		var icon: Control = app.account_button.get_node("MenuProfileCar")
++		report.appearance_updated = icon.preview.livery == paint and icon.preview.customisation == parts
++		var preview_id: int = icon.preview.get_instance_id()
++		icon.refresh()
++		report.unchanged_render_retained = icon.preview.get_instance_id() == preview_id
++		app.account_button.text = "Alexandria Longname"
++		await shot("long-name")
++		report.long_name_button_width = app.account_button.size.x
++		app.account_button.text = "Guest"
++		for dimensions: Vector2i in [Vector2i(960,540),Vector2i(1720,900)]:
++			root.size = dimensions
++			await shot("menu-%dx%d" % [dimensions.x,dimensions.y])
++			var settings: Control = app.root_ui.find_child("MenuSettings",true,false)
++			report[str(dimensions)] = {"profile_bounds":str(app.account_button.get_global_rect()),"settings_bounds":str(settings.get_global_rect()),"fits":root.get_visible_rect().encloses(settings.get_global_rect())}
++		root.size = Vector2i(1280,720)
++		await settle()
++		var touch := InputEventScreenTouch.new()
++		touch.index = 0
++		touch.position = icon.get_global_rect().get_center()
++		touch.pressed = true
++		root.push_input(touch)
++		await process_frame
++		touch = touch.duplicate()
++		touch.pressed = false
++		root.push_input(touch)
++		await shot("profile-opened-from-car")
++		report.profile_opened_from_car = app.screen == "profile"
++		var file := FileAccess.open(output.path_join("capture-report.json"),FileAccess.WRITE)
++		file.store_string(JSON.stringify(report,"\t"))
++		file.close()
++		print("PROFILE_CAR_REVIEW: ",JSON.stringify(report))
++	root.remove_child(app)
++	app.queue_free()
++	await process_frame
++	quit()
+diff --git a/game/tests/capture_profile_car.gd.uid b/game/tests/capture_profile_car.gd.uid
+new file mode 100644
+--- /dev/null
++++ b/game/tests/capture_profile_car.gd.uid
+@@ -0,0 +1 @@
++uid://c5b2dje6x8mst
+diff --git a/docs/PROFILE_ACTIVE_CAR_2026_10_25.md b/docs/PROFILE_ACTIVE_CAR_2026_10_25.md
+new file mode 100644
+--- /dev/null
++++ b/docs/PROFILE_ACTIVE_CAR_2026_10_25.md
+@@ -0,0 +1,25 @@
++# Active car in the profile button (2026-10-25)
++
++PCA01: Replace the top-menu person icon with the selected car in the Rivalry podium style. PCA02: Follow confirmed car selection and saved paint/parts while preserving profile navigation. PCA03: Correct the owner's reviewed alignment/readability, widen the button for names and remove the dropdown arrow. R01/Q01: Capture native views, run existing app checks and retain a task-only checkpoint.
++
++`game/ui/profile_car.gd` wraps the existing Rivalry car renderer with the same simple model, front-facing perspective, paint finish and transparent composite. The revised static preview is 88 by 56 logical units, rendering at twice the display size like the podium. Its camera translates in the viewing plane to center the actual projected model bounds while keeping the Rivalry viewing angle. Additional preview-only fill and ambient lighting make dark vehicles readable at this size. Saved appearance changes and car confirmation refresh it; unchanged appearance keeps the same render. The preview ignores pointer input so the entire profile button remains tappable.
++
++`game/core/app.gd` widens the button from 190 to 240 logical units, matches the navigation's 64-unit height, reserves consistent car/name spacing in every state and removes the chevron and its reserved space. Longer names still expand the button as required. Selection and Garage synchronization refresh the preview. The name, profile destination and selection behavior remain intact. Existing models, shared Rivalry rendering, vehicle configuration and physics are reused without edits. Concurrent changes in the working tree are preserved; the runner's generated build identity is excluded from this task's patch.
++
++Native Compatibility and desktop Mobile reviews rendered all seven selected cars with visible pixels, applied a saved red paint/hood/aero change, retained an unchanged render and opened Profile through an actual touch on the car. Screenshots cover 960×540, 1280×720 and 1720×900 windows, a named forklift and a longer name. Both renderer reports record successful appearance refresh, retained rendering and profile navigation. Existing `TestApp` passed **141 checks, zero failures**. The initial component check-only parse and project import passed; final scripts execute in the native reviews. Import retained the environment's nonfatal missing Android build-tools notice.
++
++Commands used the pinned Godot 4.7.2 runner. `APPDATA` and `LOCALAPPDATA` were redirected to `build/profile-car-appdata` for disposable local data. Native runs used reviewed Windows certificate-store access:
++
++```powershell
++powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1 -Action CheckScript -ScriptPath res://ui/profile_car.gd
++powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1 -Action TestApp -CommandTimeoutSeconds 180
++powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1 -Action TestScript -ScriptPath res://tests/capture_profile_car.gd -Graphical -RenderingMethod gl_compatibility -CommandTimeoutSeconds 180
++powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1 -Action TestScript -ScriptPath res://tests/capture_profile_car.gd -Graphical -RenderingMethod mobile -CommandTimeoutSeconds 180
++powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1 -Action Import -CommandTimeoutSeconds 180
++```
++
++The Compatibility command also ran once with `BMT_PROFILE_CAR_BASELINE=1`, loading the exact task-start App source only in that isolated process's memory. Initial attempts encountered PowerShell execution policy, a collision between two runner build-identity writes, sandbox log-directory restrictions and certificate-store access restrictions. Sequential runner execution, process-local execution-policy bypass, disposable data directories and reviewed native execution resolved these without changing assertions or production behavior.
++
++Review [before](evidence/profile-active-car-2026-10-25/first-review/gl_compatibility/before-compact.png), [after](evidence/profile-active-car-2026-10-25/gl_compatibility/active-compact.png), [customised car](evidence/profile-active-car-2026-10-25/gl_compatibility/customised-compact.png), [named forklift](evidence/profile-active-car-2026-10-25/gl_compatibility/named-forklift.png), [longer name](evidence/profile-active-car-2026-10-25/gl_compatibility/long-name.png) and [profile opened by tapping the car](evidence/profile-active-car-2026-10-25/gl_compatibility/profile-opened-from-car.png). The initial smaller, off-center treatment rejected by the owner remains under `first-review/`, with its exact sources and captures. Both final renderer directories contain all-car screenshots and measurement reports. `report.json` records source hashes and checks; `task-only.patch` is checked against the current files in reverse and against task-start files forward.
++
++Client reload and owner/device visual and frame-pacing acceptance remain. No device attachment check or physical-device test, APK, live mutation, purchase, deployment or owner-process restart was performed.

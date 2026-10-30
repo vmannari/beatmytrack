@@ -1,0 +1,154 @@
+extends SceneTree
+## Real pointer selection after orbit/zoom, including a genuinely washed car.
+const Fixture = preload("res://tests/test_customisation_carousel.gd")
+var checks: int = 0
+var failures: int = 0
+var output: String
+var page: GaragePage
+var rows: Array[Dictionary] = []
+
+func _initialize() -> void: run.call_deferred()
+
+func check(value: bool, label: String) -> void:
+	checks += 1
+	if not value:
+		failures += 1
+		print("FAIL: "+label)
+
+func settle() -> void:
+	while page._workbench_focus_pending or page._menu_motion!=null or page.showroom.camera_motion!=null and page.showroom.camera_motion.is_running(): await process_frame
+	for tick: int in range(8): await process_frame
+	if DisplayServer.get_name()!="headless": await RenderingServer.frame_post_draw
+
+func capture(name: String) -> void:
+	if DisplayServer.get_name()=="headless": return
+	await RenderingServer.frame_post_draw
+	check(root.get_texture().get_image().save_png(output.path_join(name+".png"))==OK,"capture "+name)
+
+func click(button: Button, touch: bool = false) -> void:
+	var at: Vector2 = button.get_global_rect().get_center()
+	for pressed: bool in [true,false]:
+		if touch:
+			var event := InputEventScreenTouch.new()
+			event.index = 7
+			event.position = at
+			event.pressed = pressed
+			root.push_input(event,true)
+		else:
+			var event := InputEventMouseButton.new()
+			event.button_index = MOUSE_BUTTON_LEFT
+			event.position = at
+			event.pressed = pressed
+			root.push_input(event,true)
+		await process_frame
+
+func choose(index: int, touch: bool = false) -> void:
+	var button: Button = page.kit_cards.get_child(index)
+	page.kit_scroll.ensure_control_visible(button)
+	for tick: int in range(3): await process_frame
+	await click(button,touch)
+
+func washed_fixture(precise: bool = false) -> void:
+	page._show_section("care")
+	await settle()
+	var dirty: Dictionary = VehicleWeathering.new().snapshot()
+	dirty.dirt = 0.85
+	dirty.slow_dirt = 1.0 if precise else 0.25
+	check(VehicleCondition.save(page.records,"compact",dirty)==OK,"seed isolated dirt")
+	page._process(0.0)
+	var effect: VehicleWeathering = page.showroom.weathering
+	var inspector := GarageCleanliness.new()
+	check(not inspector.is_clean(page.showroom),"fixture begins genuinely dirty")
+	if precise:
+		# A diagnostic mask cleans exactly the equipped exterior's trilinear cells.
+		var mask := PackedByteArray()
+		mask.resize(VehicleCondition.CELLS)
+		mask.fill(0)
+		for point: Vector3 in inspector.points:
+			var cell: Vector3 = ((point-effect.bounds.position)/effect.bounds.size).clamp(Vector3.ZERO,Vector3.ONE)*15.0
+			var low := Vector3i(cell.floor())
+			var high := Vector3i(cell.ceil())
+			for x: int in [low.x,high.x]:
+				for y: int in [low.y,high.y]:
+					for z: int in [low.z,high.z]: mask[y*256+z*16+x] = 255
+		dirty.wash = Marshalls.raw_to_base64(mask)
+		dirty.slow_wash = dirty.wash
+		effect.restore(dirty)
+	else:
+		effect.begin_wash_batch()
+		for point: Vector3 in inspector.points: effect.wash(point,8.0)
+		effect.end_wash_batch()
+	check(inspector.is_clean(page.showroom),"actual exterior strokes clean the equipped car")
+	page._save_condition()
+	check(effect.wash_image.get_data().count(0)>0,"washed fixture retains untouched interior cells")
+
+func run() -> void:
+	OS.set_environment("BMT_API_URL","")
+	GameSoundtrack.instance().music_enabled = false
+	output = "res://../docs/evidence/garage-preview-stability-2026-10-26/native"
+	for argument: String in OS.get_cmdline_user_args():
+		if argument.begins_with("--evidence-root="): output = argument.trim_prefix("--evidence-root=")
+	output = ProjectSettings.globalize_path(output)
+	DirAccess.make_dir_recursive_absolute(output)
+	root.size = Vector2i(1280,720)
+	root.content_scale_size = root.size
+	root.theme = MenuStyle.theme()
+	VehicleCatalog.selected = "compact"
+	var host := Control.new()
+	root.add_child(host)
+	MenuStyle.fill(host)
+	var shop: Node = Fixture.Shop.new()
+	host.add_child(shop)
+	page = GaragePage.new()
+	page.records = LocalRecords.new("user://preview_stability_"+TrackLibrary.unique_id()+".json")
+	page.economy = shop
+	host.add_child(page)
+	MenuStyle.fill(page)
+	page.offset_top = 110
+	page.open_car(0)
+	await settle()
+	for fixture: String in ["clean","washed","exterior-mask"]:
+		if fixture!="clean": await washed_fixture(fixture=="exterior-mask")
+		for category: String in ["aero","body"]:
+			page._show_section("tuning")
+			await settle()
+			page._select_kit_category(category)
+			await settle()
+			var home: Transform3D = page._customisation_camera._home
+			page.showroom.rotate_view(Vector2(35,9))
+			page.showroom.zoom_by(0.86)
+			var camera: Transform3D = page.showroom.camera.transform
+			var yaw: float = page.showroom.yaw
+			var elevation: float = page.showroom.elevation
+			var zoom: float = page.showroom.zoom
+			var saved: Dictionary = page.records.settings.duplicate(true)
+			await capture(fixture+"-"+category+"-before")
+			var options: Array = VehicleCustomisation.OPTIONS[category]
+			for index: int in range(1,options.size()):
+				var option: String = str(options[index][0])
+				var label: String = fixture+"/"+category+"/"+option
+				await choose(index,index%2==0)
+				for tick: int in range(5):
+					check(page.showroom.camera.transform.is_equal_approx(camera),"selection keeps camera steady "+label)
+					await process_frame
+				await settle()
+				check(page.showroom.customisation[category]==option and page._cosmetic_preview.get("option","")==option,"latest selected preview persists "+label)
+				check(page.kit_shelf.counter.text=="%02d / %02d" % [index+1,options.size()],"list selection persists "+label)
+				check(page.showroom.yaw==yaw and page.showroom.elevation==elevation and page.showroom.zoom==zoom,"selection retains user orbit values "+label)
+				check(page.records.settings==saved and shop.purchases==0,"browsing leaves equipped/save/purchases exact "+label)
+				rows.append({"fixture":fixture,"category":category,"option":option,"actual":page.showroom.customisation[category],"camera_origin":str(page.showroom.camera.position),"expected_origin":str(camera.origin),"preview":page._cosmetic_preview.duplicate(true)})
+			await capture(fixture+"-"+category+"-after")
+			await click(page.kit_categories[category])
+			await settle()
+			check(page.showroom.customisation[category]==str(options[-1][0]),"clicking active category retains preview "+fixture+"/"+category)
+			check(page.showroom.camera.transform.is_equal_approx(camera),"clicking active category retains view "+fixture+"/"+category)
+			page._show_section("cars")
+			await settle()
+			check(page.showroom.camera.transform.is_equal_approx(home),"leaving restores preceding Garage view")
+	var file: FileAccess = FileAccess.open(output.path_join("transitions.json"),FileAccess.WRITE)
+	file.store_string(JSON.stringify(rows,"\t"))
+	file.close()
+	host.queue_free()
+	await process_frame
+	print("GARAGE_PREVIEW_STABILITY: %d checks, %d failures" % [checks,failures])
+	quit(1 if failures else 0)

@@ -36,7 +36,7 @@ static func valid(value: Variant) -> bool:
 		metrics.append(family.metric)
 		for i: int in range(family.tiers.size()): keys.append(family.id+"/"+str(i+1))
 	for biome: String in BIOMES: metrics.append_array(["race_"+biome,"clean_"+biome])
-	for car: String in VehicleCatalog.IDS: metrics.append_array(["cars_"+car,"clean_car_"+car])
+	for car: String in VehicleCatalog.ALL_IDS: metrics.append_array(["cars_"+car,"clean_car_"+car])
 	for key: Variant in value.metrics:
 		if key not in metrics or not whole(value.metrics[key]): return false
 	for key: Variant in value.unlocked:
@@ -72,7 +72,7 @@ static func bump(metrics: Dictionary, key: String, amount: int = 1) -> void:
 
 static func bits(mask: int) -> int:
 	var result: int = 0
-	for i: int in range(5): result += (mask >> i) & 1
+	for i: int in range(VehicleCatalog.ALL_IDS.size()): result += (mask >> i) & 1
 	return result
 
 static func race(records: LocalRecords, track: NativeTrack, vehicle: String, laps: Array[float], facts: Dictionary) -> void:
@@ -88,7 +88,7 @@ static func race(records: LocalRecords, track: NativeTrack, vehicle: String, lap
 		m.tracks = data.tracks.size()
 	var theme: String = TrackTheme.normalized(str(track.metadata.get("theme","pine")))
 	bump(m,"race_"+theme)
-	var car: int = VehicleCatalog.IDS.find(vehicle)
+	var car: int = VehicleCatalog.ALL_IDS.find(vehicle)
 	if car >= 0: m.car_mask = int(m.get("car_mask",0)) | (1 << car)
 	m.cars = bits(int(m.get("car_mask",0)))
 	m.biomes = 0
@@ -119,7 +119,7 @@ static func race(records: LocalRecords, track: NativeTrack, vehicle: String, lap
 
 static func customise(records: LocalRecords, vehicle: String) -> void:
 	var data: Dictionary = read(records)
-	var index: int = VehicleCatalog.IDS.find(vehicle)
+	var index: int = VehicleCatalog.ALL_IDS.find(vehicle)
 	if index < 0: return
 	data.metrics.customised_mask = int(data.metrics.get("customised_mask",0)) | (1 << index)
 	data.metrics.customised = bits(int(data.metrics.customised_mask))

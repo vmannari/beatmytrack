@@ -1,0 +1,259 @@
+--- a/game/vehicle/handling_test_presets.gd
++++ b/game/vehicle/handling_test_presets.gd
+@@ -5,7 +5,7 @@
+ 
+ const LABELS: Array[String] = ["Stable", "Agile", "Flow", "Slide", "Loose"]
+ const KART_LABELS: Array[String] = ["Brake turn (reference)", "Brake turn 1", "Brake turn 2", "Brake turn 3", "Brake turn 4", "Brake turn 5"]
+-const HOVER_LABELS: Array[String] = ["Slide 1", "Slide 2", "Slide 3", "Slide 4", "Slide 5"]
++const HOVER_LABELS: Array[String] = ["Slide 5 (reference)", "Slide 5.1", "Slide 5.2", "Slide 5.3", "Slide 5.4", "Slide 5.5"]
+ const VEHICLES: Array[String] = ["pickup", "kart", "forklift", "hovercraft"]
+ 
+ # Steering, grip and recovery are tuned separately for each car. Engine, brakes,
+@@ -34,11 +34,12 @@
+ 		{"steering_rate": 8.0, "countersteering_rate": 16.0, "lateral_grip": 38.0, "lateral_response": 7.0, "brake_rotation": 0.4, "countersteer_assistance": 1.0},
+ 	],
+ 	"hovercraft": [
+-		{"steering_rate": 19.0, "maximum_yaw_rate": 2.7, "thrust_lateral_damping": 1.8, "lateral_response": 0.28},
+-		{"steering_rate": 19.0, "maximum_yaw_rate": 2.7, "thrust_lateral_damping": 1.6, "lateral_response": 0.28},
+-		{"steering_rate": 19.0, "maximum_yaw_rate": 2.7, "thrust_lateral_damping": 1.4, "lateral_response": 0.28},
+-		{"steering_rate": 19.0, "maximum_yaw_rate": 2.7, "thrust_lateral_damping": 1.2, "lateral_response": 0.28},
+ 		{"steering_rate": 19.0, "maximum_yaw_rate": 2.7, "thrust_lateral_damping": 1.0, "lateral_response": 0.28},
++		{"steering_rate": 19.0, "maximum_yaw_rate": 2.7, "thrust_lateral_damping": 0.9, "lateral_response": 0.28},
++		{"steering_rate": 19.0, "maximum_yaw_rate": 2.7, "thrust_lateral_damping": 0.8, "lateral_response": 0.28},
++		{"steering_rate": 19.0, "maximum_yaw_rate": 2.7, "thrust_lateral_damping": 0.7, "lateral_response": 0.28},
++		{"steering_rate": 19.0, "maximum_yaw_rate": 2.7, "thrust_lateral_damping": 0.6, "lateral_response": 0.28},
++		{"steering_rate": 19.0, "maximum_yaw_rate": 2.7, "thrust_lateral_damping": 0.5, "lateral_response": 0.28},
+ 	],
+ }
+ 
+@@ -56,9 +57,9 @@
+ 	for property: String in changes:
+ 		result.set(property, changes[property])
+ 	if vehicle_id == "hovercraft":
+-		# Slide 3 is the previous Slide with its original test identity.
+-		result.profile_name = "%s / %s" % [result.profile_name, "Slide" if preset_index == 2 else HOVER_LABELS[preset_index]]
+-		result.version += "-test-4" if preset_index == 2 else "-hover-slide-%d" % (preset_index + 1)
++		# Preserve the chosen Slide 5 snapshot and identity for comparison.
++		result.profile_name = "%s / %s" % [result.profile_name, "Slide 5" if preset_index == 0 else HOVER_LABELS[preset_index]]
++		result.version += "-hover-slide-5" if preset_index == 0 else "-hover-slide5-%d" % preset_index
+ 	elif vehicle_id == "kart":
+ 		# Preserve the chosen Brake turn's complete snapshot and identity.
+ 		result.profile_name = "%s / %s" % [result.profile_name, "Brake turn" if preset_index == 0 else KART_LABELS[preset_index]]
+--- a/game/tests/test_handling_test_selector.gd
++++ b/game/tests/test_handling_test_selector.gd
+@@ -26,7 +26,7 @@
+ 		if car_id in ["compact", "electric"]:
+ 			check(choice == null, car_id + " has no test selector")
+ 		else:
+-			var expected_count: int = 7 if car_id == "kart" else 6
++			var expected_count: int = 7 if car_id in ["kart", "hovercraft"] else 6
+ 			check(choice != null and choice.item_count == expected_count and choice.selected == 0, car_id + " has current handling and its test choices")
+ 			if choice != null:
+ 				if car_id == "kart":
+@@ -34,8 +34,9 @@
+ 					for index: int in range(1, 6):
+ 						check(choice.get_item_text(index + 1) == "Brake turn %d" % index, "Kart names brake turn %d" % index)
+ 				if car_id == "hovercraft":
++					check(choice.get_item_text(1) == "Slide 5 (reference)", "Hover retains the chosen reference")
+ 					for index: int in range(1, 6):
+-						check(choice.get_item_text(index) == "Slide %d" % index, "Hover names slide alternative %d" % index)
++						check(choice.get_item_text(index + 1) == "Slide 5.%d" % index, "Hover names slide alternative %d" % index)
+ 				choice.select(expected_count - 1)
+ 				choice.item_selected.emit(expected_count - 1)
+ 				check(selected == expected_count - 2, car_id + " emits the last preset")
+--- a/game/tests/test_handling_test_presets.gd
++++ b/game/tests/test_handling_test_presets.gd
+@@ -19,7 +19,7 @@
+ 	for vehicle: String in PRESETS.VEHICLES:
+ 		var baseline: HandlingConfig = VehicleCatalog.config(vehicle)
+ 		check(PRESETS.config(vehicle, -1).snapshot() == baseline.snapshot(), "%s baseline exact" % vehicle)
+-		var count: int = 6 if vehicle == "kart" else 5
++		var count: int = 6 if vehicle in ["kart", "hovercraft"] else 5
+ 		check(PRESETS.names(vehicle).size() == count, "%s expected choices" % vehicle)
+ 		var outcomes: Array[Vector2] = []
+ 		var cases: Array = []
+--- a/game/tests/test_hover_slide_variants.gd
++++ b/game/tests/test_hover_slide_variants.gd
+@@ -1,6 +1,25 @@
+ extends SceneTree
+ 
+-const PRESETS = preload("res://vehicle/handling_test_presets.gd")
++# Historical five-choice control, retained to exercise the original assertions
++# after the owner chose Slide 5 for the next iteration.
++class PriorHoverSlides:
++	static func names(vehicle_id: String) -> Array[String]:
++		var result: Array[String] = []
++		if vehicle_id == "hovercraft": result.assign(["Slide 1", "Slide 2", "Slide 3", "Slide 4", "Slide 5"])
++		return result
++
++	static func config(vehicle_id: String, index: int) -> HandlingConfig:
++		var result := VehicleCatalog.config(vehicle_id)
++		if vehicle_id != "hovercraft" or index < 0 or index >= 5: return result
++		result.steering_rate = 19.0
++		result.maximum_yaw_rate = 2.7
++		result.lateral_response = 0.28
++		result.thrust_lateral_damping = [1.8, 1.6, 1.4, 1.2, 1.0][index]
++		result.profile_name += " / " + ("Slide" if index == 2 else "Slide %d" % (index + 1))
++		result.version += "-test-4" if index == 2 else "-hover-slide-%d" % (index + 1)
++		return result
++
++const PRESETS = PriorHoverSlides
+ var checks: int = 0
+ var failures: int = 0
+ 
+--- /dev/null
++++ b/game/tests/test_hover_slide5_variants.gd
+@@ -0,0 +1,60 @@
++extends SceneTree
++
++const PRESETS = preload("res://vehicle/handling_test_presets.gd")
++var checks: int = 0
++var failures: int = 0
++
++func _initialize() -> void:
++	_run.call_deferred()
++
++func check(ok: bool, description: String) -> void:
++	checks += 1
++	if not ok:
++		failures += 1
++		push_error(description)
++
++func _run() -> void:
++	var baseline := VehicleCatalog.config("hovercraft")
++	var old_slide := baseline.duplicate() as HandlingConfig
++	old_slide.steering_rate = 19.0
++	old_slide.maximum_yaw_rate = 2.7
++	old_slide.thrust_lateral_damping = 1.0
++	old_slide.lateral_response = 0.28
++	old_slide.profile_name += " / Slide 5"
++	old_slide.version += "-hover-slide-5"
++	check(PRESETS.config("hovercraft", 0).snapshot() == old_slide.snapshot(), "Reference must preserve Slide 5 exactly")
++	check(PRESETS.config("hovercraft", -1).snapshot() == baseline.snapshot(), "Current handling must remain exact")
++	check(PRESETS.names("hovercraft") == ["Slide 5 (reference)", "Slide 5.1", "Slide 5.2", "Slide 5.3", "Slide 5.4", "Slide 5.5"], "Hovercraft must expose reference and five slide options")
++	var expected_damping: Array[float] = [1.0, 0.9, 0.8, 0.7, 0.6, 0.5]
++	for index: int in range(6):
++		var config: HandlingConfig = PRESETS.config("hovercraft", index)
++		var actual: Dictionary = config.snapshot()
++		var reference: Dictionary = old_slide.snapshot()
++		for field: String in ["version", "profile_name", "thrust_lateral_damping"]:
++			actual.erase(field)
++			reference.erase(field)
++		check(actual == reference and is_equal_approx(config.thrust_lateral_damping, expected_damping[index]), "Slide %d differs only in powered lateral damping" % (index + 1))
++	for speed: float in [10.0, 15.0, 22.0]:
++		var previous_peak: float = -1.0
++		for index: int in range(6):
++			var config: HandlingConfig = PRESETS.config("hovercraft", index)
++			var right := VehicleSimulation.new(config)
++			var left := VehicleSimulation.new(config)
++			var repeat := VehicleSimulation.new(config)
++			for sim: VehicleSimulation in [right, left, repeat]: sim.state.velocity = Vector2(0.0, speed)
++			var peak: float = 0.0
++			for tick: int in range(600):
++				var steer: float = 0.7 if tick < 120 else 0.0
++				right.step(DriveFrame.sample(steer, 0.65, 0.0))
++				left.step(DriveFrame.sample(-steer, 0.65, 0.0))
++				repeat.step(DriveFrame.sample(steer, 0.65, 0.0))
++				peak = maxf(peak, absf(right.state.slip_angle()))
++			check(right.state.snapshot() == repeat.state.snapshot(), "Slide %d replay at %.0f m/s" % [index + 1, speed])
++			check(is_finite(right.state.position.x) and is_finite(right.state.position.y) and is_finite(right.state.heading), "Slide %d finite at %.0f m/s" % [index + 1, speed])
++			check(absf(right.state.position.x + left.state.position.x) < 0.001 and absf(right.state.position.y - left.state.position.y) < 0.001, "Slide %d mirrored at %.0f m/s" % [index + 1, speed])
++			check(absf(right.state.slip_angle()) < deg_to_rad(5.0) and absf(right.state.yaw_rate) < 0.1, "Slide %d recovers at %.0f m/s" % [index + 1, speed])
++			check(peak > previous_peak + deg_to_rad(0.5), "Slide %d has progressively more slip at %.0f m/s" % [index + 1, speed])
++			previous_peak = peak
++			print("HOVER_SLIDE_METRIC speed=%.1f preset=%d peak_deg=%.3f recovery_deg=%.3f" % [speed, index + 1, rad_to_deg(peak), rad_to_deg(absf(right.state.slip_angle()))])
++	print("HOVER_SLIDE5_VARIANTS: %d checks, %d failures" % [checks, failures])
++	quit(1 if failures else 0)
+--- /dev/null
++++ b/game/tests/capture_hover_slide5_variants.gd
+@@ -0,0 +1,70 @@
++extends SceneTree
++
++var failures := 0
++
++func _initialize() -> void: call_deferred("run")
++
++func check(value: bool, message: String) -> void:
++	if not value:
++		failures += 1
++		print("FAIL: " + message)
++
++func mouse(viewport: Viewport, position: Vector2, down: bool) -> void:
++	var motion := InputEventMouseMotion.new()
++	motion.position = position
++	motion.global_position = position
++	viewport.push_input(motion)
++	var event := InputEventMouseButton.new()
++	event.button_index = MOUSE_BUTTON_LEFT
++	event.position = position
++	event.global_position = position
++	event.pressed = down
++	viewport.push_input(event)
++
++func run() -> void:
++	root.size = Vector2i(960,540)
++	root.content_scale_size = Vector2i(960,540)
++	var game: Node = load("res://core/game.tscn").instantiate()
++	game.initial_track = TrackCompiler.compile(TrackDocument.create_default())
++	game.production_mode = true
++	game.vehicle_id = "hovercraft"
++	root.add_child(game)
++	while not game.preparation_complete: await process_frame
++	game.set_physics_process(false)
++	await process_frame
++	check(not game.hud.handling_test_container.visible, "selector clears the countdown lights")
++	game.countdown_ticks = 0
++	game.race_cues.hide()
++	for dimensions: Vector2i in [Vector2i(960,540), Vector2i(1280,720)]:
++		root.size = dimensions
++		root.content_scale_size = dimensions
++		for i in range(5): await process_frame
++		check(game.hud.handling_test_container.visible, "selector returns after countdown")
++		var choice: OptionButton = game.hud.handling_test_choice
++		var center: Vector2 = choice.get_global_rect().get_center()
++		mouse(root,center,true)
++		mouse(root,center,false)
++		await process_frame
++		var popup: PopupMenu = choice.get_popup()
++		check(popup.visible, "mouse opens selector at " + str(dimensions))
++		var output := OS.get_environment("BMT_HANDLING_TEST_CAPTURE")
++		if not output.is_empty():
++			DirAccess.make_dir_recursive_absolute(output)
++			root.get_texture().get_image().save_png(output.path_join("race-open-%dx%d.png" % [dimensions.x,dimensions.y]))
++		var selected_index := 6 if dimensions.x == 960 else 2
++		# The popup is embedded in the root viewport. Its rows are 24 pixels
++		# high with the current item first; choose the next test on each pass.
++		var popup_point := Vector2(choice.get_global_rect().position.x + 60, choice.get_global_rect().end.y + 19 + 24 * selected_index)
++		mouse(root,popup_point,true)
++		mouse(root,popup_point,false)
++		await process_frame
++		check(game.handling_test_index == selected_index - 1 and game.attempt_practice, "mouse selects test and starts practice")
++		popup.hide()
++		game.countdown_ticks = 0
++		game.race_cues.hide()
++		for i in range(5): await process_frame
++		if not output.is_empty(): root.get_texture().get_image().save_png(output.path_join("race-%dx%d.png" % [dimensions.x,dimensions.y]))
++	game.queue_free()
++	await process_frame
++	print("HOVER_SLIDE5_RACE: %d failures" % failures)
++	quit(1 if failures else 0)
+--- /dev/null
++++ b/docs/HOVER_SLIDE5_VARIANTS_2026_10_30.md
+@@ -0,0 +1,17 @@
++# Hovercraft Slide 5 variations — 2026-10-30
++
++HS501: Develop five alternatives from the owner's selected Hovercraft Slide 5 and remove the earlier Slide 1–4 test options. HS502: Preserve the selected reference and the standard car, other cars and practice fences.
++
++The race-view selector offers **Slide 5 (reference)** and **Slide 5.1–5.5**, alongside Current handling. The reference is exactly the former Slide 5 snapshot and identity. The five new configurations progressively reduce powered lateral damping from 0.9 to 0.5; the reference uses 1.0. Steering, yaw, coasting damping, powertrain, dimensions and controls remain the same. Lower damping lets the slide persist longer while applying thrust. This replaces the Hovercraft selector choices in `HOVER_SLIDE_VARIANTS_2026_10_30.md`. Selecting a test restarts as practice and cannot contribute a personal best or online result.
++
++At 15 m/s initial speed, 0.7 steering and 65% throttle, the reference and 5.1–5.5 reach peak slip of 64.753°, 66.146°, 67.548°, 68.967°, 70.393° and 71.820° respectively. Four seconds after steering release, their remaining slip is 0.540°, 0.716°, 0.949°, 1.260°, 1.672° and 2.219°. These measurements describe one controlled test, not owner driving-feel acceptance or complete track coverage.
++
++Pinned Godot 4.7.2 stable `ed1daf0bf` with isolated APPDATA/LOCALAPPDATA:
++
++- `--headless --path game --script res://tests/test_hover_slide5_variants.gd`: 99 checks, zero failures: exact reference and current setup, differing damping, mirrored and deterministic 10/15/22 m/s maneuvers, progressive peak slip and recovery.
++- `--headless --path game --script res://tests/test_hover_slide_variants.gd`: 83 checks, zero failures. Its original numerical assertions are retained using a historical five-choice control.
++- `--headless --path game --script res://tests/test_handling_test_presets.gd`: zero failures across the current preset dynamics suite; `test_handling_test_selector.gd`: 33 checks, zero failures.
++- `--headless --path game --script res://tests/test_handling_test_app.gd`: four checks, zero failures for practice results and ticket safeguards.
++- `--path game --rendering-method gl_compatibility --script res://tests/capture_hover_slide5_variants.gd`: zero failures; actual Hovercraft race, mouse selection and practice restart at 960×540 and 1280×720. [Dropdown](evidence/hover-slide5-variants-2026-10-30/race-open-960x540.png), [selected variant](evidence/hover-slide5-variants-2026-10-30/race-960x540.png). `BMT_HANDLING_TEST_CAPTURE` points to the evidence directory.
++
++The sandbox reported a Windows certificate-store error. Dynamics tests reported six ObjectDB instances and three resources in use at exit. The native capture logged race hitches, including a 16.8-second initial hitch; it is not a performance test. Owner feel and physical-device/touch acceptance remain. No device test, APK, live/backend or owner-save mutation, deployment or owner-process restart was performed.

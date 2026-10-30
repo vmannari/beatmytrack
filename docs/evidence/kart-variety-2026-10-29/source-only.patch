@@ -1,0 +1,2482 @@
+diff --git a/backend/bmt_backend/vehicle_appearance_catalog.json b/backend/bmt_backend/vehicle_appearance_catalog.json
+index fa4cb5442..678615755 100644
+--- a/backend/bmt_backend/vehicle_appearance_catalog.json
++++ b/backend/bmt_backend/vehicle_appearance_catalog.json
+@@ -135,25 +135,41 @@
+       "stock",
+       "sprint",
+       "enduro",
+-      "wedge"
++      "wedge",
++      "arrow",
++      "split",
++      "shield",
++      "retro"
+     ],
+     "aero": [
+       "stock",
+       "loop",
+       "blade",
+-      "twin"
++      "twin",
++      "oval",
++      "cage",
++      "panel",
++      "chevron"
+     ],
+     "rims": [
+       "stock",
+       "three",
+       "six",
+-      "disc"
++      "disc",
++      "turbine",
++      "mesh",
++      "dish",
++      "star"
+     ],
+     "body": [
+       "stock",
+       "sprint",
+       "enduro",
+-      "wedge"
++      "wedge",
++      "blade",
++      "channel",
++      "rounded",
++      "box"
+     ]
+   }
+ }
+diff --git a/backend/tests/test_earned_coins.py b/backend/tests/test_earned_coins.py
+index 535c5976f..469947912 100644
+--- a/backend/tests/test_earned_coins.py
++++ b/backend/tests/test_earned_coins.py
+@@ -144,7 +144,7 @@ def test_catalog_matches_shipped_liveries_and_parts():
+     catalog = json.loads((root / "backend/bmt_backend/vehicle_appearance_catalog.json").read_text())
+     expected_kart = {f"kit/kart/{category}/{option}" for category, options in catalog["kart_parts"].items() for option in options if option != "stock"}
+     assert {item for item in PRICES if item.startswith("kit/kart/")} == expected_kart
+-    assert len(expected_kart) == 12
++    assert len(expected_kart) == 28
+     assert all(PRICES[item] == 750 for item in expected_kart)
+ 
+ 
+diff --git a/game/localization/de.po b/game/localization/de.po
+index 288889d5a..b68a1aac4 100644
+--- a/game/localization/de.po
++++ b/game/localization/de.po
+@@ -11072,3 +11072,136 @@ msgstr "Melde dich an, um eine verifizierte Zeit zu erzielen."
+ #: game/ui/daily_standings.gd
+ msgid "Today's track has changed. Reopen Track of the Day."
+ msgstr "Die heutige Strecke hat sich geändert. Öffne Strecke des Tages erneut."
++
++#: game/vehicle/vehicle_customisation.gd:28
++msgid "Arrow nose"
++msgstr "Pfeilnase"
++
++#: game/vehicle/vehicle_customisation.gd:28
++msgid "Channel nose"
++msgstr "Kanalnase"
++
++#: game/vehicle/vehicle_customisation.gd:28
++msgid "Shield nose"
++msgstr "Schildnase"
++
++#: game/vehicle/vehicle_customisation.gd:28
++msgid "Rounded nose"
++msgstr "Runde Nase"
++
++#: game/vehicle/vehicle_customisation.gd:30
++msgid "Oval bumper"
++msgstr "Ovaler Stoßfänger"
++
++#: game/vehicle/vehicle_customisation.gd:30
++msgid "Cross brace bumper"
++msgstr "Kreuzstreben-Stoßfänger"
++
++#: game/vehicle/vehicle_customisation.gd:30
++msgid "Slotted bumper"
++msgstr "Geschlitzter Stoßfänger"
++
++#: game/vehicle/vehicle_customisation.gd:30
++msgid "Chevron bumper"
++msgstr "V-förmiger Stoßfänger"
++
++#: game/vehicle/vehicle_customisation.gd:32
++msgid "Turbine wheel"
++msgstr "Turbinenrad"
++
++#: game/vehicle/vehicle_customisation.gd:32
++msgid "Cross mesh wheel"
++msgstr "Kreuzspeichenrad"
++
++#: game/vehicle/vehicle_customisation.gd:32
++msgid "Deep dish wheel"
++msgstr "Tiefbettfelge"
++
++#: game/vehicle/vehicle_customisation.gd:32
++msgid "Five point wheel"
++msgstr "Fünfsternrad"
++
++#: game/vehicle/vehicle_customisation.gd:34
++msgid "Blade pods"
++msgstr "Klingen-Seitenkästen"
++
++#: game/vehicle/vehicle_customisation.gd:34
++msgid "Channel pods"
++msgstr "Kanal-Seitenkästen"
++
++#: game/vehicle/vehicle_customisation.gd:34
++msgid "Rounded pods"
++msgstr "Runde Seitenkästen"
++
++#: game/vehicle/vehicle_customisation.gd:34
++msgid "Box pods"
++msgstr "Kasten-Seitenkästen"
++
++#: game/vehicle/vehicle_customisation.gd:37
++msgid "Pointed nose with a raised centre spine"
++msgstr "Spitze Nase mit erhöhtem Mittelsteg"
++
++#: game/vehicle/vehicle_customisation.gd:37
++msgid "Twin shoulders around a recessed channel"
++msgstr "Zwei Schultern um einen vertieften Kanal"
++
++#: game/vehicle/vehicle_customisation.gd:37
++msgid "Broad flat shield with squared shoulders"
++msgstr "Breiter flacher Schild mit kantigen Schultern"
++
++#: game/vehicle/vehicle_customisation.gd:37
++msgid "Rounded bumper with a slender fairing"
++msgstr "Runder Stoßfänger mit schlanker Verkleidung"
++
++#: game/vehicle/vehicle_customisation.gd:39
++msgid "Closed oval rail with a centre badge"
++msgstr "Geschlossener Ovalbügel mit Mittelschild"
++
++#: game/vehicle/vehicle_customisation.gd:39
++msgid "Tubular frame with diagonal cross braces"
++msgstr "Rohrrahmen mit diagonalen Kreuzstreben"
++
++#: game/vehicle/vehicle_customisation.gd:39
++msgid "Moulded shield with two open slots"
++msgstr "Geformter Schild mit zwei offenen Schlitzen"
++
++#: game/vehicle/vehicle_customisation.gd:39
++msgid "Angled bumper with a low centre"
++msgstr "Gewinkelter Stoßfänger mit tiefer Mitte"
++
++#: game/vehicle/vehicle_customisation.gd:41
++msgid "Nine swept solid turbine blades"
++msgstr "Neun geschwungene massive Turbinenschaufeln"
++
++#: game/vehicle/vehicle_customisation.gd:41
++msgid "Crossed bronze spokes with an open centre"
++msgstr "Gekreuzte Bronzespeichen mit offener Mitte"
++
++#: game/vehicle/vehicle_customisation.gd:41
++msgid "Deep bowl with a rolled outer lip"
++msgstr "Tiefe Schale mit gerolltem Außenrand"
++
++#: game/vehicle/vehicle_customisation.gd:41
++msgid "Five broad forged spokes"
++msgstr "Fünf breite geschmiedete Speichen"
++
++#: game/vehicle/vehicle_customisation.gd:43
++msgid "Low sharp shoulders and a thin trailing edge"
++msgstr "Flache scharfe Schultern und dünne Hinterkante"
++
++#: game/vehicle/vehicle_customisation.gd:43
++msgid "Deep channel between raised shoulders"
++msgstr "Tiefer Kanal zwischen erhöhten Schultern"
++
++#: game/vehicle/vehicle_customisation.gd:43
++msgid "Smooth rounded capsule side pods"
++msgstr "Glatte runde Seitenkästen in Kapselform"
++
++#: game/vehicle/vehicle_customisation.gd:43
++msgid "Squared side pods with broad flat sides"
++msgstr "Kantige Seitenkästen mit breiten flachen Seiten"
++
++
++#: game/core/app.gd
++msgid "Fit view"
++msgstr "Ansicht einpassen"
+diff --git a/game/localization/en.po b/game/localization/en.po
+index 7d1584ceb..38a9b412c 100644
+--- a/game/localization/en.po
++++ b/game/localization/en.po
+@@ -11186,3 +11186,136 @@ msgstr "Sign in to record a verified time."
+ #: game/ui/daily_standings.gd
+ msgid "Today's track has changed. Reopen Track of the Day."
+ msgstr "Today's track has changed. Reopen Track of the Day."
++
++#: game/vehicle/vehicle_customisation.gd:28
++msgid "Arrow nose"
++msgstr "Arrow nose"
++
++#: game/vehicle/vehicle_customisation.gd:28
++msgid "Channel nose"
++msgstr "Channel nose"
++
++#: game/vehicle/vehicle_customisation.gd:28
++msgid "Shield nose"
++msgstr "Shield nose"
++
++#: game/vehicle/vehicle_customisation.gd:28
++msgid "Rounded nose"
++msgstr "Rounded nose"
++
++#: game/vehicle/vehicle_customisation.gd:30
++msgid "Oval bumper"
++msgstr "Oval bumper"
++
++#: game/vehicle/vehicle_customisation.gd:30
++msgid "Cross brace bumper"
++msgstr "Cross brace bumper"
++
++#: game/vehicle/vehicle_customisation.gd:30
++msgid "Slotted bumper"
++msgstr "Slotted bumper"
++
++#: game/vehicle/vehicle_customisation.gd:30
++msgid "Chevron bumper"
++msgstr "Chevron bumper"
++
++#: game/vehicle/vehicle_customisation.gd:32
++msgid "Turbine wheel"
++msgstr "Turbine wheel"
++
++#: game/vehicle/vehicle_customisation.gd:32
++msgid "Cross mesh wheel"
++msgstr "Cross mesh wheel"
++
++#: game/vehicle/vehicle_customisation.gd:32
++msgid "Deep dish wheel"
++msgstr "Deep dish wheel"
++
++#: game/vehicle/vehicle_customisation.gd:32
++msgid "Five point wheel"
++msgstr "Five point wheel"
++
++#: game/vehicle/vehicle_customisation.gd:34
++msgid "Blade pods"
++msgstr "Blade pods"
++
++#: game/vehicle/vehicle_customisation.gd:34
++msgid "Channel pods"
++msgstr "Channel pods"
++
++#: game/vehicle/vehicle_customisation.gd:34
++msgid "Rounded pods"
++msgstr "Rounded pods"
++
++#: game/vehicle/vehicle_customisation.gd:34
++msgid "Box pods"
++msgstr "Box pods"
++
++#: game/vehicle/vehicle_customisation.gd:37
++msgid "Pointed nose with a raised centre spine"
++msgstr "Pointed nose with a raised centre spine"
++
++#: game/vehicle/vehicle_customisation.gd:37
++msgid "Twin shoulders around a recessed channel"
++msgstr "Twin shoulders around a recessed channel"
++
++#: game/vehicle/vehicle_customisation.gd:37
++msgid "Broad flat shield with squared shoulders"
++msgstr "Broad flat shield with squared shoulders"
++
++#: game/vehicle/vehicle_customisation.gd:37
++msgid "Rounded bumper with a slender fairing"
++msgstr "Rounded bumper with a slender fairing"
++
++#: game/vehicle/vehicle_customisation.gd:39
++msgid "Closed oval rail with a centre badge"
++msgstr "Closed oval rail with a centre badge"
++
++#: game/vehicle/vehicle_customisation.gd:39
++msgid "Tubular frame with diagonal cross braces"
++msgstr "Tubular frame with diagonal cross braces"
++
++#: game/vehicle/vehicle_customisation.gd:39
++msgid "Moulded shield with two open slots"
++msgstr "Moulded shield with two open slots"
++
++#: game/vehicle/vehicle_customisation.gd:39
++msgid "Angled bumper with a low centre"
++msgstr "Angled bumper with a low centre"
++
++#: game/vehicle/vehicle_customisation.gd:41
++msgid "Nine swept solid turbine blades"
++msgstr "Nine swept solid turbine blades"
++
++#: game/vehicle/vehicle_customisation.gd:41
++msgid "Crossed bronze spokes with an open centre"
++msgstr "Crossed bronze spokes with an open centre"
++
++#: game/vehicle/vehicle_customisation.gd:41
++msgid "Deep bowl with a rolled outer lip"
++msgstr "Deep bowl with a rolled outer lip"
++
++#: game/vehicle/vehicle_customisation.gd:41
++msgid "Five broad forged spokes"
++msgstr "Five broad forged spokes"
++
++#: game/vehicle/vehicle_customisation.gd:43
++msgid "Low sharp shoulders and a thin trailing edge"
++msgstr "Low sharp shoulders and a thin trailing edge"
++
++#: game/vehicle/vehicle_customisation.gd:43
++msgid "Deep channel between raised shoulders"
++msgstr "Deep channel between raised shoulders"
++
++#: game/vehicle/vehicle_customisation.gd:43
++msgid "Smooth rounded capsule side pods"
++msgstr "Smooth rounded capsule side pods"
++
++#: game/vehicle/vehicle_customisation.gd:43
++msgid "Squared side pods with broad flat sides"
++msgstr "Squared side pods with broad flat sides"
++
++
++#: game/core/app.gd
++msgid "Fit view"
++msgstr "Fit view"
+diff --git a/game/localization/es.po b/game/localization/es.po
+index bc4c1941d..98157abe8 100644
+--- a/game/localization/es.po
++++ b/game/localization/es.po
+@@ -11072,3 +11072,136 @@ msgstr "Inicia sesión para registrar un tiempo verificado."
+ #: game/ui/daily_standings.gd
+ msgid "Today's track has changed. Reopen Track of the Day."
+ msgstr "El circuito de hoy ha cambiado. Vuelve a abrir Circuito del día."
++
++#: game/vehicle/vehicle_customisation.gd:28
++msgid "Arrow nose"
++msgstr "Morro de flecha"
++
++#: game/vehicle/vehicle_customisation.gd:28
++msgid "Channel nose"
++msgstr "Morro acanalado"
++
++#: game/vehicle/vehicle_customisation.gd:28
++msgid "Shield nose"
++msgstr "Morro de escudo"
++
++#: game/vehicle/vehicle_customisation.gd:28
++msgid "Rounded nose"
++msgstr "Morro redondeado"
++
++#: game/vehicle/vehicle_customisation.gd:30
++msgid "Oval bumper"
++msgstr "Parachoques ovalado"
++
++#: game/vehicle/vehicle_customisation.gd:30
++msgid "Cross brace bumper"
++msgstr "Parachoques con crucetas"
++
++#: game/vehicle/vehicle_customisation.gd:30
++msgid "Slotted bumper"
++msgstr "Parachoques ranurado"
++
++#: game/vehicle/vehicle_customisation.gd:30
++msgid "Chevron bumper"
++msgstr "Parachoques en V"
++
++#: game/vehicle/vehicle_customisation.gd:32
++msgid "Turbine wheel"
++msgstr "Rueda turbina"
++
++#: game/vehicle/vehicle_customisation.gd:32
++msgid "Cross mesh wheel"
++msgstr "Rueda de radios cruzados"
++
++#: game/vehicle/vehicle_customisation.gd:32
++msgid "Deep dish wheel"
++msgstr "Rueda de garganta profunda"
++
++#: game/vehicle/vehicle_customisation.gd:32
++msgid "Five point wheel"
++msgstr "Rueda de cinco puntas"
++
++#: game/vehicle/vehicle_customisation.gd:34
++msgid "Blade pods"
++msgstr "Pontones afilados"
++
++#: game/vehicle/vehicle_customisation.gd:34
++msgid "Channel pods"
++msgstr "Pontones acanalados"
++
++#: game/vehicle/vehicle_customisation.gd:34
++msgid "Rounded pods"
++msgstr "Pontones redondeados"
++
++#: game/vehicle/vehicle_customisation.gd:34
++msgid "Box pods"
++msgstr "Pontones cuadrados"
++
++#: game/vehicle/vehicle_customisation.gd:37
++msgid "Pointed nose with a raised centre spine"
++msgstr "Morro puntiagudo con nervio central elevado"
++
++#: game/vehicle/vehicle_customisation.gd:37
++msgid "Twin shoulders around a recessed channel"
++msgstr "Dos hombros alrededor de un canal rebajado"
++
++#: game/vehicle/vehicle_customisation.gd:37
++msgid "Broad flat shield with squared shoulders"
++msgstr "Escudo ancho y plano con hombros cuadrados"
++
++#: game/vehicle/vehicle_customisation.gd:37
++msgid "Rounded bumper with a slender fairing"
++msgstr "Parachoques redondeado con carenado delgado"
++
++#: game/vehicle/vehicle_customisation.gd:39
++msgid "Closed oval rail with a centre badge"
++msgstr "Barra ovalada cerrada con placa central"
++
++#: game/vehicle/vehicle_customisation.gd:39
++msgid "Tubular frame with diagonal cross braces"
++msgstr "Marco tubular con refuerzos diagonales cruzados"
++
++#: game/vehicle/vehicle_customisation.gd:39
++msgid "Moulded shield with two open slots"
++msgstr "Escudo moldeado con dos ranuras abiertas"
++
++#: game/vehicle/vehicle_customisation.gd:39
++msgid "Angled bumper with a low centre"
++msgstr "Parachoques angular con centro bajo"
++
++#: game/vehicle/vehicle_customisation.gd:41
++msgid "Nine swept solid turbine blades"
++msgstr "Nueve palas de turbina sólidas y curvas"
++
++#: game/vehicle/vehicle_customisation.gd:41
++msgid "Crossed bronze spokes with an open centre"
++msgstr "Radios de bronce cruzados con centro abierto"
++
++#: game/vehicle/vehicle_customisation.gd:41
++msgid "Deep bowl with a rolled outer lip"
++msgstr "Cuenco profundo con borde exterior enrollado"
++
++#: game/vehicle/vehicle_customisation.gd:41
++msgid "Five broad forged spokes"
++msgstr "Cinco radios anchos forjados"
++
++#: game/vehicle/vehicle_customisation.gd:43
++msgid "Low sharp shoulders and a thin trailing edge"
++msgstr "Hombros bajos y afilados con borde trasero fino"
++
++#: game/vehicle/vehicle_customisation.gd:43
++msgid "Deep channel between raised shoulders"
++msgstr "Canal profundo entre hombros elevados"
++
++#: game/vehicle/vehicle_customisation.gd:43
++msgid "Smooth rounded capsule side pods"
++msgstr "Pontones suaves y redondeados en forma de cápsula"
++
++#: game/vehicle/vehicle_customisation.gd:43
++msgid "Squared side pods with broad flat sides"
++msgstr "Pontones cuadrados con lados anchos y planos"
++
++
++#: game/core/app.gd
++msgid "Fit view"
++msgstr "Ajustar vista"
+diff --git a/game/localization/fi.po b/game/localization/fi.po
+index e15b29cc4..f23bdd74c 100644
+--- a/game/localization/fi.po
++++ b/game/localization/fi.po
+@@ -11072,3 +11072,136 @@ msgstr "Kirjaudu sisään tallentaaksesi varmennetun ajan."
+ #: game/ui/daily_standings.gd
+ msgid "Today's track has changed. Reopen Track of the Day."
+ msgstr "Päivän rata on vaihtunut. Avaa Päivän rata uudelleen."
++
++#: game/vehicle/vehicle_customisation.gd:28
++msgid "Arrow nose"
++msgstr "Nuolikeula"
++
++#: game/vehicle/vehicle_customisation.gd:28
++msgid "Channel nose"
++msgstr "Urakeula"
++
++#: game/vehicle/vehicle_customisation.gd:28
++msgid "Shield nose"
++msgstr "Kilpikeula"
++
++#: game/vehicle/vehicle_customisation.gd:28
++msgid "Rounded nose"
++msgstr "Pyöreä keula"
++
++#: game/vehicle/vehicle_customisation.gd:30
++msgid "Oval bumper"
++msgstr "Soikea puskuri"
++
++#: game/vehicle/vehicle_customisation.gd:30
++msgid "Cross brace bumper"
++msgstr "Ristikkopuskuri"
++
++#: game/vehicle/vehicle_customisation.gd:30
++msgid "Slotted bumper"
++msgstr "Aukkopuskuri"
++
++#: game/vehicle/vehicle_customisation.gd:30
++msgid "Chevron bumper"
++msgstr "V-puskuri"
++
++#: game/vehicle/vehicle_customisation.gd:32
++msgid "Turbine wheel"
++msgstr "Turbiinivanne"
++
++#: game/vehicle/vehicle_customisation.gd:32
++msgid "Cross mesh wheel"
++msgstr "Ristikkovanne"
++
++#: game/vehicle/vehicle_customisation.gd:32
++msgid "Deep dish wheel"
++msgstr "Syvä vanne"
++
++#: game/vehicle/vehicle_customisation.gd:32
++msgid "Five point wheel"
++msgstr "Tähtivanne"
++
++#: game/vehicle/vehicle_customisation.gd:34
++msgid "Blade pods"
++msgstr "Teräsivukatteet"
++
++#: game/vehicle/vehicle_customisation.gd:34
++msgid "Channel pods"
++msgstr "Urasivukatteet"
++
++#: game/vehicle/vehicle_customisation.gd:34
++msgid "Rounded pods"
++msgstr "Pyöreät sivukatteet"
++
++#: game/vehicle/vehicle_customisation.gd:34
++msgid "Box pods"
++msgstr "Kulmikkaat sivukatteet"
++
++#: game/vehicle/vehicle_customisation.gd:37
++msgid "Pointed nose with a raised centre spine"
++msgstr "Terävä keula korotetulla keskiharjalla"
++
++#: game/vehicle/vehicle_customisation.gd:37
++msgid "Twin shoulders around a recessed channel"
++msgstr "Kaksi hartiaa upotetun uran ympärillä"
++
++#: game/vehicle/vehicle_customisation.gd:37
++msgid "Broad flat shield with squared shoulders"
++msgstr "Leveä ja litteä kilpi kulmikkailla hartioilla"
++
++#: game/vehicle/vehicle_customisation.gd:37
++msgid "Rounded bumper with a slender fairing"
++msgstr "Pyöreä puskuri ja kapea kate"
++
++#: game/vehicle/vehicle_customisation.gd:39
++msgid "Closed oval rail with a centre badge"
++msgstr "Suljettu soikea kehys keskikilvellä"
++
++#: game/vehicle/vehicle_customisation.gd:39
++msgid "Tubular frame with diagonal cross braces"
++msgstr "Putkirunko vinottaisilla ristituilla"
++
++#: game/vehicle/vehicle_customisation.gd:39
++msgid "Moulded shield with two open slots"
++msgstr "Muotoiltu kilpi kahdella avoimella aukolla"
++
++#: game/vehicle/vehicle_customisation.gd:39
++msgid "Angled bumper with a low centre"
++msgstr "Kulmikas puskuri matalalla keskiosalla"
++
++#: game/vehicle/vehicle_customisation.gd:41
++msgid "Nine swept solid turbine blades"
++msgstr "Yhdeksän kaarevaa yhtenäistä turbiinilapaa"
++
++#: game/vehicle/vehicle_customisation.gd:41
++msgid "Crossed bronze spokes with an open centre"
++msgstr "Ristikkäiset pronssipuolat ja avoin keskiosa"
++
++#: game/vehicle/vehicle_customisation.gd:41
++msgid "Deep bowl with a rolled outer lip"
++msgstr "Syvä kuppi pyöristetyllä ulkoreunalla"
++
++#: game/vehicle/vehicle_customisation.gd:41
++msgid "Five broad forged spokes"
++msgstr "Viisi leveää taottua puolaa"
++
++#: game/vehicle/vehicle_customisation.gd:43
++msgid "Low sharp shoulders and a thin trailing edge"
++msgstr "Matalat terävät hartiat ja ohut takareuna"
++
++#: game/vehicle/vehicle_customisation.gd:43
++msgid "Deep channel between raised shoulders"
++msgstr "Syvä ura korotettujen hartioiden välissä"
++
++#: game/vehicle/vehicle_customisation.gd:43
++msgid "Smooth rounded capsule side pods"
++msgstr "Sileät pyöreät kapselinmuotoiset sivukatteet"
++
++#: game/vehicle/vehicle_customisation.gd:43
++msgid "Squared side pods with broad flat sides"
++msgstr "Kulmikkaat sivukatteet leveillä tasaisilla kyljillä"
++
++
++#: game/core/app.gd
++msgid "Fit view"
++msgstr "Sovita näkymä"
+diff --git a/game/localization/fr.po b/game/localization/fr.po
+index 206d63ae1..02a4499fb 100644
+--- a/game/localization/fr.po
++++ b/game/localization/fr.po
+@@ -11072,3 +11072,136 @@ msgstr "Connectez-vous pour enregistrer un temps vérifié."
+ #: game/ui/daily_standings.gd
+ msgid "Today's track has changed. Reopen Track of the Day."
+ msgstr "Le circuit du jour a changé. Rouvrez Circuit du jour."
++
++#: game/vehicle/vehicle_customisation.gd:28
++msgid "Arrow nose"
++msgstr "Nez en flèche"
++
++#: game/vehicle/vehicle_customisation.gd:28
++msgid "Channel nose"
++msgstr "Nez rainuré"
++
++#: game/vehicle/vehicle_customisation.gd:28
++msgid "Shield nose"
++msgstr "Nez bouclier"
++
++#: game/vehicle/vehicle_customisation.gd:28
++msgid "Rounded nose"
++msgstr "Nez arrondi"
++
++#: game/vehicle/vehicle_customisation.gd:30
++msgid "Oval bumper"
++msgstr "Pare-chocs ovale"
++
++#: game/vehicle/vehicle_customisation.gd:30
++msgid "Cross brace bumper"
++msgstr "Pare-chocs à croisillons"
++
++#: game/vehicle/vehicle_customisation.gd:30
++msgid "Slotted bumper"
++msgstr "Pare-chocs ajouré"
++
++#: game/vehicle/vehicle_customisation.gd:30
++msgid "Chevron bumper"
++msgstr "Pare-chocs en chevron"
++
++#: game/vehicle/vehicle_customisation.gd:32
++msgid "Turbine wheel"
++msgstr "Roue turbine"
++
++#: game/vehicle/vehicle_customisation.gd:32
++msgid "Cross mesh wheel"
++msgstr "Roue à rayons croisés"
++
++#: game/vehicle/vehicle_customisation.gd:32
++msgid "Deep dish wheel"
++msgstr "Roue à déport profond"
++
++#: game/vehicle/vehicle_customisation.gd:32
++msgid "Five point wheel"
++msgstr "Roue à cinq branches"
++
++#: game/vehicle/vehicle_customisation.gd:34
++msgid "Blade pods"
++msgstr "Pontons profilés"
++
++#: game/vehicle/vehicle_customisation.gd:34
++msgid "Channel pods"
++msgstr "Pontons rainurés"
++
++#: game/vehicle/vehicle_customisation.gd:34
++msgid "Rounded pods"
++msgstr "Pontons arrondis"
++
++#: game/vehicle/vehicle_customisation.gd:34
++msgid "Box pods"
++msgstr "Pontons carrés"
++
++#: game/vehicle/vehicle_customisation.gd:37
++msgid "Pointed nose with a raised centre spine"
++msgstr "Nez pointu avec arête centrale surélevée"
++
++#: game/vehicle/vehicle_customisation.gd:37
++msgid "Twin shoulders around a recessed channel"
++msgstr "Deux épaules autour d'une rainure en retrait"
++
++#: game/vehicle/vehicle_customisation.gd:37
++msgid "Broad flat shield with squared shoulders"
++msgstr "Large bouclier plat aux épaules carrées"
++
++#: game/vehicle/vehicle_customisation.gd:37
++msgid "Rounded bumper with a slender fairing"
++msgstr "Pare-chocs arrondi avec carénage fin"
++
++#: game/vehicle/vehicle_customisation.gd:39
++msgid "Closed oval rail with a centre badge"
++msgstr "Barre ovale fermée avec plaque centrale"
++
++#: game/vehicle/vehicle_customisation.gd:39
++msgid "Tubular frame with diagonal cross braces"
++msgstr "Cadre tubulaire avec renforts diagonaux croisés"
++
++#: game/vehicle/vehicle_customisation.gd:39
++msgid "Moulded shield with two open slots"
++msgstr "Bouclier moulé à deux ouvertures"
++
++#: game/vehicle/vehicle_customisation.gd:39
++msgid "Angled bumper with a low centre"
++msgstr "Pare-chocs anguleux à centre bas"
++
++#: game/vehicle/vehicle_customisation.gd:41
++msgid "Nine swept solid turbine blades"
++msgstr "Neuf pales de turbine pleines et courbées"
++
++#: game/vehicle/vehicle_customisation.gd:41
++msgid "Crossed bronze spokes with an open centre"
++msgstr "Rayons en bronze croisés avec centre ouvert"
++
++#: game/vehicle/vehicle_customisation.gd:41
++msgid "Deep bowl with a rolled outer lip"
++msgstr "Creux profond avec bord extérieur roulé"
++
++#: game/vehicle/vehicle_customisation.gd:41
++msgid "Five broad forged spokes"
++msgstr "Cinq larges branches forgées"
++
++#: game/vehicle/vehicle_customisation.gd:43
++msgid "Low sharp shoulders and a thin trailing edge"
++msgstr "Épaules basses et vives avec bord arrière fin"
++
++#: game/vehicle/vehicle_customisation.gd:43
++msgid "Deep channel between raised shoulders"
++msgstr "Rainure profonde entre des épaules surélevées"
++
++#: game/vehicle/vehicle_customisation.gd:43
++msgid "Smooth rounded capsule side pods"
++msgstr "Pontons lisses en forme de capsule arrondie"
++
++#: game/vehicle/vehicle_customisation.gd:43
++msgid "Squared side pods with broad flat sides"
++msgstr "Pontons carrés aux larges flancs plats"
++
++
++#: game/core/app.gd
++msgid "Fit view"
++msgstr "Ajuster la vue"
+diff --git a/game/localization/it.po b/game/localization/it.po
+index 89285b865..ae21bf201 100644
+--- a/game/localization/it.po
++++ b/game/localization/it.po
+@@ -11072,3 +11072,136 @@ msgstr "Accedi per registrare un tempo verificato."
+ #: game/ui/daily_standings.gd
+ msgid "Today's track has changed. Reopen Track of the Day."
+ msgstr "Il circuito di oggi è cambiato. Riapri Circuito del giorno."
++
++#: game/vehicle/vehicle_customisation.gd:28
++msgid "Arrow nose"
++msgstr "Muso a freccia"
++
++#: game/vehicle/vehicle_customisation.gd:28
++msgid "Channel nose"
++msgstr "Muso scanalato"
++
++#: game/vehicle/vehicle_customisation.gd:28
++msgid "Shield nose"
++msgstr "Muso a scudo"
++
++#: game/vehicle/vehicle_customisation.gd:28
++msgid "Rounded nose"
++msgstr "Muso arrotondato"
++
++#: game/vehicle/vehicle_customisation.gd:30
++msgid "Oval bumper"
++msgstr "Paraurti ovale"
++
++#: game/vehicle/vehicle_customisation.gd:30
++msgid "Cross brace bumper"
++msgstr "Paraurti con rinforzi incrociati"
++
++#: game/vehicle/vehicle_customisation.gd:30
++msgid "Slotted bumper"
++msgstr "Paraurti con feritoie"
++
++#: game/vehicle/vehicle_customisation.gd:30
++msgid "Chevron bumper"
++msgstr "Paraurti a V"
++
++#: game/vehicle/vehicle_customisation.gd:32
++msgid "Turbine wheel"
++msgstr "Ruota a turbina"
++
++#: game/vehicle/vehicle_customisation.gd:32
++msgid "Cross mesh wheel"
++msgstr "Ruota a raggi incrociati"
++
++#: game/vehicle/vehicle_customisation.gd:32
++msgid "Deep dish wheel"
++msgstr "Ruota a canale profondo"
++
++#: game/vehicle/vehicle_customisation.gd:32
++msgid "Five point wheel"
++msgstr "Ruota a cinque punte"
++
++#: game/vehicle/vehicle_customisation.gd:34
++msgid "Blade pods"
++msgstr "Pance a lama"
++
++#: game/vehicle/vehicle_customisation.gd:34
++msgid "Channel pods"
++msgstr "Pance scanalate"
++
++#: game/vehicle/vehicle_customisation.gd:34
++msgid "Rounded pods"
++msgstr "Pance arrotondate"
++
++#: game/vehicle/vehicle_customisation.gd:34
++msgid "Box pods"
++msgstr "Pance squadrate"
++
++#: game/vehicle/vehicle_customisation.gd:37
++msgid "Pointed nose with a raised centre spine"
++msgstr "Muso appuntito con nervatura centrale rialzata"
++
++#: game/vehicle/vehicle_customisation.gd:37
++msgid "Twin shoulders around a recessed channel"
++msgstr "Due spalle attorno a un canale incassato"
++
++#: game/vehicle/vehicle_customisation.gd:37
++msgid "Broad flat shield with squared shoulders"
++msgstr "Scudo largo e piatto con spalle squadrate"
++
++#: game/vehicle/vehicle_customisation.gd:37
++msgid "Rounded bumper with a slender fairing"
++msgstr "Paraurti arrotondato con carenatura sottile"
++
++#: game/vehicle/vehicle_customisation.gd:39
++msgid "Closed oval rail with a centre badge"
++msgstr "Barra ovale chiusa con piastra centrale"
++
++#: game/vehicle/vehicle_customisation.gd:39
++msgid "Tubular frame with diagonal cross braces"
++msgstr "Telaio tubolare con rinforzi diagonali incrociati"
++
++#: game/vehicle/vehicle_customisation.gd:39
++msgid "Moulded shield with two open slots"
++msgstr "Scudo sagomato con due feritoie aperte"
++
++#: game/vehicle/vehicle_customisation.gd:39
++msgid "Angled bumper with a low centre"
++msgstr "Paraurti angolato con centro basso"
++
++#: game/vehicle/vehicle_customisation.gd:41
++msgid "Nine swept solid turbine blades"
++msgstr "Nove pale piene e ricurve a turbina"
++
++#: game/vehicle/vehicle_customisation.gd:41
++msgid "Crossed bronze spokes with an open centre"
++msgstr "Raggi incrociati in bronzo con centro aperto"
++
++#: game/vehicle/vehicle_customisation.gd:41
++msgid "Deep bowl with a rolled outer lip"
++msgstr "Incavo profondo con bordo esterno arrotondato"
++
++#: game/vehicle/vehicle_customisation.gd:41
++msgid "Five broad forged spokes"
++msgstr "Cinque larghe razze forgiate"
++
++#: game/vehicle/vehicle_customisation.gd:43
++msgid "Low sharp shoulders and a thin trailing edge"
++msgstr "Spalle basse e affilate con bordo posteriore sottile"
++
++#: game/vehicle/vehicle_customisation.gd:43
++msgid "Deep channel between raised shoulders"
++msgstr "Canale profondo tra spalle rialzate"
++
++#: game/vehicle/vehicle_customisation.gd:43
++msgid "Smooth rounded capsule side pods"
++msgstr "Pance lisce e arrotondate a capsula"
++
++#: game/vehicle/vehicle_customisation.gd:43
++msgid "Squared side pods with broad flat sides"
++msgstr "Pance squadrate con fianchi larghi e piatti"
++
++
++#: game/core/app.gd
++msgid "Fit view"
++msgstr "Adatta vista"
+diff --git a/game/localization/ja.po b/game/localization/ja.po
+index 7bdd77be0..df7f05542 100644
+--- a/game/localization/ja.po
++++ b/game/localization/ja.po
+@@ -11041,3 +11041,136 @@ msgstr "ログインして検証済みタイムを記録しましょう。"
+ #: game/ui/daily_standings.gd
+ msgid "Today's track has changed. Reopen Track of the Day."
+ msgstr "今日のコースが変わりました。「今日のコース」を開き直してください。"
++
++#: game/vehicle/vehicle_customisation.gd:28
++msgid "Arrow nose"
++msgstr "アローノーズ"
++
++#: game/vehicle/vehicle_customisation.gd:28
++msgid "Channel nose"
++msgstr "チャンネルノーズ"
++
++#: game/vehicle/vehicle_customisation.gd:28
++msgid "Shield nose"
++msgstr "シールドノーズ"
++
++#: game/vehicle/vehicle_customisation.gd:28
++msgid "Rounded nose"
++msgstr "ラウンドノーズ"
++
++#: game/vehicle/vehicle_customisation.gd:30
++msgid "Oval bumper"
++msgstr "オーバルバンパー"
++
++#: game/vehicle/vehicle_customisation.gd:30
++msgid "Cross brace bumper"
++msgstr "クロスブレースバンパー"
++
++#: game/vehicle/vehicle_customisation.gd:30
++msgid "Slotted bumper"
++msgstr "スロットバンパー"
++
++#: game/vehicle/vehicle_customisation.gd:30
++msgid "Chevron bumper"
++msgstr "V字バンパー"
++
++#: game/vehicle/vehicle_customisation.gd:32
++msgid "Turbine wheel"
++msgstr "タービンホイール"
++
++#: game/vehicle/vehicle_customisation.gd:32
++msgid "Cross mesh wheel"
++msgstr "クロスメッシュホイール"
++
++#: game/vehicle/vehicle_customisation.gd:32
++msgid "Deep dish wheel"
++msgstr "ディープディッシュホイール"
++
++#: game/vehicle/vehicle_customisation.gd:32
++msgid "Five point wheel"
++msgstr "5本スポークホイール"
++
++#: game/vehicle/vehicle_customisation.gd:34
++msgid "Blade pods"
++msgstr "ブレードポッド"
++
++#: game/vehicle/vehicle_customisation.gd:34
++msgid "Channel pods"
++msgstr "チャンネルポッド"
++
++#: game/vehicle/vehicle_customisation.gd:34
++msgid "Rounded pods"
++msgstr "ラウンドポッド"
++
++#: game/vehicle/vehicle_customisation.gd:34
++msgid "Box pods"
++msgstr "ボックスポッド"
++
++#: game/vehicle/vehicle_customisation.gd:37
++msgid "Pointed nose with a raised centre spine"
++msgstr "中央に高い稜線を持つ尖ったノーズ"
++
++#: game/vehicle/vehicle_customisation.gd:37
++msgid "Twin shoulders around a recessed channel"
++msgstr "くぼんだ溝の両側に立つ肩部"
++
++#: game/vehicle/vehicle_customisation.gd:37
++msgid "Broad flat shield with squared shoulders"
++msgstr "角張った肩部を持つ幅広の平面シールド"
++
++#: game/vehicle/vehicle_customisation.gd:37
++msgid "Rounded bumper with a slender fairing"
++msgstr "丸いバンパーと細身のフェアリング"
++
++#: game/vehicle/vehicle_customisation.gd:39
++msgid "Closed oval rail with a centre badge"
++msgstr "中央バッジ付きの閉じた楕円フレーム"
++
++#: game/vehicle/vehicle_customisation.gd:39
++msgid "Tubular frame with diagonal cross braces"
++msgstr "斜めのクロス補強を備えたパイプフレーム"
++
++#: game/vehicle/vehicle_customisation.gd:39
++msgid "Moulded shield with two open slots"
++msgstr "2つの開口部を持つ成形シールド"
++
++#: game/vehicle/vehicle_customisation.gd:39
++msgid "Angled bumper with a low centre"
++msgstr "中央が低いV字形バンパー"
++
++#: game/vehicle/vehicle_customisation.gd:41
++msgid "Nine swept solid turbine blades"
++msgstr "後方に流れる9枚のソリッドタービンブレード"
++
++#: game/vehicle/vehicle_customisation.gd:41
++msgid "Crossed bronze spokes with an open centre"
++msgstr "開いた中央部を持つ交差ブロンズスポーク"
++
++#: game/vehicle/vehicle_customisation.gd:41
++msgid "Deep bowl with a rolled outer lip"
++msgstr "丸めた外周リップを持つ深いボウル形状"
++
++#: game/vehicle/vehicle_customisation.gd:41
++msgid "Five broad forged spokes"
++msgstr "幅広の鍛造5本スポーク"
++
++#: game/vehicle/vehicle_customisation.gd:43
++msgid "Low sharp shoulders and a thin trailing edge"
++msgstr "低く鋭い肩部と薄い後縁"
++
++#: game/vehicle/vehicle_customisation.gd:43
++msgid "Deep channel between raised shoulders"
++msgstr "高い肩部の間にある深い溝"
++
++#: game/vehicle/vehicle_customisation.gd:43
++msgid "Smooth rounded capsule side pods"
++msgstr "滑らかな丸いカプセル型サイドポッド"
++
++#: game/vehicle/vehicle_customisation.gd:43
++msgid "Squared side pods with broad flat sides"
++msgstr "幅広の平らな側面を持つ角型サイドポッド"
++
++
++#: game/core/app.gd
++msgid "Fit view"
++msgstr "表示を合わせる"
+diff --git a/game/localization/ko.po b/game/localization/ko.po
+index 0b7edd2ab..26b131df3 100644
+--- a/game/localization/ko.po
++++ b/game/localization/ko.po
+@@ -11041,3 +11041,136 @@ msgstr "로그인하여 검증된 기록을 남기세요."
+ #: game/ui/daily_standings.gd
+ msgid "Today's track has changed. Reopen Track of the Day."
+ msgstr "오늘의 트랙이 변경되었습니다. 오늘의 트랙을 다시 여세요."
++
++#: game/vehicle/vehicle_customisation.gd:28
++msgid "Arrow nose"
++msgstr "화살형 노즈"
++
++#: game/vehicle/vehicle_customisation.gd:28
++msgid "Channel nose"
++msgstr "채널 노즈"
++
++#: game/vehicle/vehicle_customisation.gd:28
++msgid "Shield nose"
++msgstr "방패형 노즈"
++
++#: game/vehicle/vehicle_customisation.gd:28
++msgid "Rounded nose"
++msgstr "둥근 노즈"
++
++#: game/vehicle/vehicle_customisation.gd:30
++msgid "Oval bumper"
++msgstr "타원형 범퍼"
++
++#: game/vehicle/vehicle_customisation.gd:30
++msgid "Cross brace bumper"
++msgstr "교차 보강 범퍼"
++
++#: game/vehicle/vehicle_customisation.gd:30
++msgid "Slotted bumper"
++msgstr "슬롯형 범퍼"
++
++#: game/vehicle/vehicle_customisation.gd:30
++msgid "Chevron bumper"
++msgstr "V자형 범퍼"
++
++#: game/vehicle/vehicle_customisation.gd:32
++msgid "Turbine wheel"
++msgstr "터빈 휠"
++
++#: game/vehicle/vehicle_customisation.gd:32
++msgid "Cross mesh wheel"
++msgstr "교차 메시 휠"
++
++#: game/vehicle/vehicle_customisation.gd:32
++msgid "Deep dish wheel"
++msgstr "딥 디시 휠"
++
++#: game/vehicle/vehicle_customisation.gd:32
++msgid "Five point wheel"
++msgstr "5각 스포크 휠"
++
++#: game/vehicle/vehicle_customisation.gd:34
++msgid "Blade pods"
++msgstr "블레이드 포드"
++
++#: game/vehicle/vehicle_customisation.gd:34
++msgid "Channel pods"
++msgstr "채널 포드"
++
++#: game/vehicle/vehicle_customisation.gd:34
++msgid "Rounded pods"
++msgstr "둥근 포드"
++
++#: game/vehicle/vehicle_customisation.gd:34
++msgid "Box pods"
++msgstr "박스형 포드"
++
++#: game/vehicle/vehicle_customisation.gd:37
++msgid "Pointed nose with a raised centre spine"
++msgstr "중앙 능선이 솟은 뾰족한 노즈"
++
++#: game/vehicle/vehicle_customisation.gd:37
++msgid "Twin shoulders around a recessed channel"
++msgstr "오목한 채널 양옆의 높은 숄더"
++
++#: game/vehicle/vehicle_customisation.gd:37
++msgid "Broad flat shield with squared shoulders"
++msgstr "각진 숄더가 있는 넓고 평평한 실드"
++
++#: game/vehicle/vehicle_customisation.gd:37
++msgid "Rounded bumper with a slender fairing"
++msgstr "둥근 범퍼와 날씬한 페어링"
++
++#: game/vehicle/vehicle_customisation.gd:39
++msgid "Closed oval rail with a centre badge"
++msgstr "중앙 배지가 있는 닫힌 타원 프레임"
++
++#: game/vehicle/vehicle_customisation.gd:39
++msgid "Tubular frame with diagonal cross braces"
++msgstr "대각선 교차 보강이 있는 튜브 프레임"
++
++#: game/vehicle/vehicle_customisation.gd:39
++msgid "Moulded shield with two open slots"
++msgstr "두 개의 열린 슬롯이 있는 성형 실드"
++
++#: game/vehicle/vehicle_customisation.gd:39
++msgid "Angled bumper with a low centre"
++msgstr "중앙이 낮은 각진 범퍼"
++
++#: game/vehicle/vehicle_customisation.gd:41
++msgid "Nine swept solid turbine blades"
++msgstr "뒤로 휘어진 일체형 터빈 블레이드 9개"
++
++#: game/vehicle/vehicle_customisation.gd:41
++msgid "Crossed bronze spokes with an open centre"
++msgstr "중앙이 열린 교차 청동 스포크"
++
++#: game/vehicle/vehicle_customisation.gd:41
++msgid "Deep bowl with a rolled outer lip"
++msgstr "말린 바깥 립이 있는 깊은 접시형 구조"
++
++#: game/vehicle/vehicle_customisation.gd:41
++msgid "Five broad forged spokes"
++msgstr "넓은 단조 스포크 5개"
++
++#: game/vehicle/vehicle_customisation.gd:43
++msgid "Low sharp shoulders and a thin trailing edge"
++msgstr "낮고 날카로운 숄더와 얇은 뒷전"
++
++#: game/vehicle/vehicle_customisation.gd:43
++msgid "Deep channel between raised shoulders"
++msgstr "높은 숄더 사이의 깊은 채널"
++
++#: game/vehicle/vehicle_customisation.gd:43
++msgid "Smooth rounded capsule side pods"
++msgstr "매끄럽고 둥근 캡슐형 사이드 포드"
++
++#: game/vehicle/vehicle_customisation.gd:43
++msgid "Squared side pods with broad flat sides"
++msgstr "넓고 평평한 측면의 박스형 사이드 포드"
++
++
++#: game/core/app.gd
++msgid "Fit view"
++msgstr "화면 맞추기"
+diff --git a/game/localization/messages.pot b/game/localization/messages.pot
+index 7cd8403bf..a836f66e4 100644
+--- a/game/localization/messages.pot
++++ b/game/localization/messages.pot
+@@ -11186,3 +11186,136 @@ msgstr ""
+ #: game/ui/daily_standings.gd
+ msgid "Today's track has changed. Reopen Track of the Day."
+ msgstr ""
++
++#: game/vehicle/vehicle_customisation.gd:28
++msgid "Arrow nose"
++msgstr ""
++
++#: game/vehicle/vehicle_customisation.gd:28
++msgid "Channel nose"
++msgstr ""
++
++#: game/vehicle/vehicle_customisation.gd:28
++msgid "Shield nose"
++msgstr ""
++
++#: game/vehicle/vehicle_customisation.gd:28
++msgid "Rounded nose"
++msgstr ""
++
++#: game/vehicle/vehicle_customisation.gd:30
++msgid "Oval bumper"
++msgstr ""
++
++#: game/vehicle/vehicle_customisation.gd:30
++msgid "Cross brace bumper"
++msgstr ""
++
++#: game/vehicle/vehicle_customisation.gd:30
++msgid "Slotted bumper"
++msgstr ""
++
++#: game/vehicle/vehicle_customisation.gd:30
++msgid "Chevron bumper"
++msgstr ""
++
++#: game/vehicle/vehicle_customisation.gd:32
++msgid "Turbine wheel"
++msgstr ""
++
++#: game/vehicle/vehicle_customisation.gd:32
++msgid "Cross mesh wheel"
++msgstr ""
++
++#: game/vehicle/vehicle_customisation.gd:32
++msgid "Deep dish wheel"
++msgstr ""
++
++#: game/vehicle/vehicle_customisation.gd:32
++msgid "Five point wheel"
++msgstr ""
++
++#: game/vehicle/vehicle_customisation.gd:34
++msgid "Blade pods"
++msgstr ""
++
++#: game/vehicle/vehicle_customisation.gd:34
++msgid "Channel pods"
++msgstr ""
++
++#: game/vehicle/vehicle_customisation.gd:34
++msgid "Rounded pods"
++msgstr ""
++
++#: game/vehicle/vehicle_customisation.gd:34
++msgid "Box pods"
++msgstr ""
++
++#: game/vehicle/vehicle_customisation.gd:37
++msgid "Pointed nose with a raised centre spine"
++msgstr ""
++
++#: game/vehicle/vehicle_customisation.gd:37
++msgid "Twin shoulders around a recessed channel"
++msgstr ""
++
++#: game/vehicle/vehicle_customisation.gd:37
++msgid "Broad flat shield with squared shoulders"
++msgstr ""
++
++#: game/vehicle/vehicle_customisation.gd:37
++msgid "Rounded bumper with a slender fairing"
++msgstr ""
++
++#: game/vehicle/vehicle_customisation.gd:39
++msgid "Closed oval rail with a centre badge"
++msgstr ""
++
++#: game/vehicle/vehicle_customisation.gd:39
++msgid "Tubular frame with diagonal cross braces"
++msgstr ""
++
++#: game/vehicle/vehicle_customisation.gd:39
++msgid "Moulded shield with two open slots"
++msgstr ""
++
++#: game/vehicle/vehicle_customisation.gd:39
++msgid "Angled bumper with a low centre"
++msgstr ""
++
++#: game/vehicle/vehicle_customisation.gd:41
++msgid "Nine swept solid turbine blades"
++msgstr ""
++
++#: game/vehicle/vehicle_customisation.gd:41
++msgid "Crossed bronze spokes with an open centre"
++msgstr ""
++
++#: game/vehicle/vehicle_customisation.gd:41
++msgid "Deep bowl with a rolled outer lip"
++msgstr ""
++
++#: game/vehicle/vehicle_customisation.gd:41
++msgid "Five broad forged spokes"
++msgstr ""
++
++#: game/vehicle/vehicle_customisation.gd:43
++msgid "Low sharp shoulders and a thin trailing edge"
++msgstr ""
++
++#: game/vehicle/vehicle_customisation.gd:43
++msgid "Deep channel between raised shoulders"
++msgstr ""
++
++#: game/vehicle/vehicle_customisation.gd:43
++msgid "Smooth rounded capsule side pods"
++msgstr ""
++
++#: game/vehicle/vehicle_customisation.gd:43
++msgid "Squared side pods with broad flat sides"
++msgstr ""
++
++
++#: game/core/app.gd
++msgid "Fit view"
++msgstr ""
+diff --git a/game/localization/nb.po b/game/localization/nb.po
+index 63db17484..17e26d0c6 100644
+--- a/game/localization/nb.po
++++ b/game/localization/nb.po
+@@ -11072,3 +11072,136 @@ msgstr "Logg inn for å registrere en verifisert tid."
+ #: game/ui/daily_standings.gd
+ msgid "Today's track has changed. Reopen Track of the Day."
+ msgstr "Dagens bane har endret seg. Åpne Dagens bane på nytt."
++
++#: game/vehicle/vehicle_customisation.gd:28
++msgid "Arrow nose"
++msgstr "Pilnese"
++
++#: game/vehicle/vehicle_customisation.gd:28
++msgid "Channel nose"
++msgstr "Kanalnese"
++
++#: game/vehicle/vehicle_customisation.gd:28
++msgid "Shield nose"
++msgstr "Skjoldnese"
++
++#: game/vehicle/vehicle_customisation.gd:28
++msgid "Rounded nose"
++msgstr "Avrundet nese"
++
++#: game/vehicle/vehicle_customisation.gd:30
++msgid "Oval bumper"
++msgstr "Oval støtfanger"
++
++#: game/vehicle/vehicle_customisation.gd:30
++msgid "Cross brace bumper"
++msgstr "Kryssavstivet støtfanger"
++
++#: game/vehicle/vehicle_customisation.gd:30
++msgid "Slotted bumper"
++msgstr "Støtfanger med åpninger"
++
++#: game/vehicle/vehicle_customisation.gd:30
++msgid "Chevron bumper"
++msgstr "V-formet støtfanger"
++
++#: game/vehicle/vehicle_customisation.gd:32
++msgid "Turbine wheel"
++msgstr "Turbinhjul"
++
++#: game/vehicle/vehicle_customisation.gd:32
++msgid "Cross mesh wheel"
++msgstr "Krysseiket hjul"
++
++#: game/vehicle/vehicle_customisation.gd:32
++msgid "Deep dish wheel"
++msgstr "Dyp felg"
++
++#: game/vehicle/vehicle_customisation.gd:32
++msgid "Five point wheel"
++msgstr "Femstjernet hjul"
++
++#: game/vehicle/vehicle_customisation.gd:34
++msgid "Blade pods"
++msgstr "Bladpontonger"
++
++#: game/vehicle/vehicle_customisation.gd:34
++msgid "Channel pods"
++msgstr "Kanalpontonger"
++
++#: game/vehicle/vehicle_customisation.gd:34
++msgid "Rounded pods"
++msgstr "Avrundede sidepontonger"
++
++#: game/vehicle/vehicle_customisation.gd:34
++msgid "Box pods"
++msgstr "Firkantede sidepontonger"
++
++#: game/vehicle/vehicle_customisation.gd:37
++msgid "Pointed nose with a raised centre spine"
++msgstr "Spiss nese med hevet midtrygg"
++
++#: game/vehicle/vehicle_customisation.gd:37
++msgid "Twin shoulders around a recessed channel"
++msgstr "To skuldre rundt en nedsenket kanal"
++
++#: game/vehicle/vehicle_customisation.gd:37
++msgid "Broad flat shield with squared shoulders"
++msgstr "Bredt flatt skjold med kantede skuldre"
++
++#: game/vehicle/vehicle_customisation.gd:37
++msgid "Rounded bumper with a slender fairing"
++msgstr "Avrundet støtfanger med smal kåpe"
++
++#: game/vehicle/vehicle_customisation.gd:39
++msgid "Closed oval rail with a centre badge"
++msgstr "Lukket oval ramme med midtplate"
++
++#: game/vehicle/vehicle_customisation.gd:39
++msgid "Tubular frame with diagonal cross braces"
++msgstr "Rørramme med diagonale kryssstag"
++
++#: game/vehicle/vehicle_customisation.gd:39
++msgid "Moulded shield with two open slots"
++msgstr "Formet skjold med to åpne slisser"
++
++#: game/vehicle/vehicle_customisation.gd:39
++msgid "Angled bumper with a low centre"
++msgstr "Vinklet støtfanger med lavt midtparti"
++
++#: game/vehicle/vehicle_customisation.gd:41
++msgid "Nine swept solid turbine blades"
++msgstr "Ni buede massive turbinblader"
++
++#: game/vehicle/vehicle_customisation.gd:41
++msgid "Crossed bronze spokes with an open centre"
++msgstr "Kryssede bronseeiker med åpent midtparti"
++
++#: game/vehicle/vehicle_customisation.gd:41
++msgid "Deep bowl with a rolled outer lip"
++msgstr "Dyp skål med avrundet ytterkant"
++
++#: game/vehicle/vehicle_customisation.gd:41
++msgid "Five broad forged spokes"
++msgstr "Fem brede smidde eiker"
++
++#: game/vehicle/vehicle_customisation.gd:43
++msgid "Low sharp shoulders and a thin trailing edge"
++msgstr "Lave skarpe skuldre og tynn bakkant"
++
++#: game/vehicle/vehicle_customisation.gd:43
++msgid "Deep channel between raised shoulders"
++msgstr "Dyp kanal mellom hevede skuldre"
++
++#: game/vehicle/vehicle_customisation.gd:43
++msgid "Smooth rounded capsule side pods"
++msgstr "Glatte avrundede kapselformede sidepontonger"
++
++#: game/vehicle/vehicle_customisation.gd:43
++msgid "Squared side pods with broad flat sides"
++msgstr "Firkantede sidepontonger med brede flate sider"
++
++
++#: game/core/app.gd
++msgid "Fit view"
++msgstr "Tilpass visning"
+diff --git a/game/localization/nl.po b/game/localization/nl.po
+index 37795cff3..0f6e8682f 100644
+--- a/game/localization/nl.po
++++ b/game/localization/nl.po
+@@ -11072,3 +11072,136 @@ msgstr "Log in om een geverifieerde tijd te noteren."
+ #: game/ui/daily_standings.gd
+ msgid "Today's track has changed. Reopen Track of the Day."
+ msgstr "Het circuit van vandaag is gewijzigd. Open Circuit van de dag opnieuw."
++
++#: game/vehicle/vehicle_customisation.gd:28
++msgid "Arrow nose"
++msgstr "Pijlneus"
++
++#: game/vehicle/vehicle_customisation.gd:28
++msgid "Channel nose"
++msgstr "Kanaalneus"
++
++#: game/vehicle/vehicle_customisation.gd:28
++msgid "Shield nose"
++msgstr "Schildneus"
++
++#: game/vehicle/vehicle_customisation.gd:28
++msgid "Rounded nose"
++msgstr "Ronde neus"
++
++#: game/vehicle/vehicle_customisation.gd:30
++msgid "Oval bumper"
++msgstr "Ovale bumper"
++
++#: game/vehicle/vehicle_customisation.gd:30
++msgid "Cross brace bumper"
++msgstr "Bumper met kruisschoren"
++
++#: game/vehicle/vehicle_customisation.gd:30
++msgid "Slotted bumper"
++msgstr "Bumper met sleuven"
++
++#: game/vehicle/vehicle_customisation.gd:30
++msgid "Chevron bumper"
++msgstr "V-vormige bumper"
++
++#: game/vehicle/vehicle_customisation.gd:32
++msgid "Turbine wheel"
++msgstr "Turbinewiel"
++
++#: game/vehicle/vehicle_customisation.gd:32
++msgid "Cross mesh wheel"
++msgstr "Kruisspaakwiel"
++
++#: game/vehicle/vehicle_customisation.gd:32
++msgid "Deep dish wheel"
++msgstr "Diep schotelwiel"
++
++#: game/vehicle/vehicle_customisation.gd:32
++msgid "Five point wheel"
++msgstr "Vijfsterwiel"
++
++#: game/vehicle/vehicle_customisation.gd:34
++msgid "Blade pods"
++msgstr "Bladvormige zijpods"
++
++#: game/vehicle/vehicle_customisation.gd:34
++msgid "Channel pods"
++msgstr "Kanaalvormige zijpods"
++
++#: game/vehicle/vehicle_customisation.gd:34
++msgid "Rounded pods"
++msgstr "Ronde zijpods"
++
++#: game/vehicle/vehicle_customisation.gd:34
++msgid "Box pods"
++msgstr "Vierkante zijpods"
++
++#: game/vehicle/vehicle_customisation.gd:37
++msgid "Pointed nose with a raised centre spine"
++msgstr "Spitse neus met verhoogde middenrib"
++
++#: game/vehicle/vehicle_customisation.gd:37
++msgid "Twin shoulders around a recessed channel"
++msgstr "Twee schouders rond een verdiept kanaal"
++
++#: game/vehicle/vehicle_customisation.gd:37
++msgid "Broad flat shield with squared shoulders"
++msgstr "Breed vlak schild met vierkante schouders"
++
++#: game/vehicle/vehicle_customisation.gd:37
++msgid "Rounded bumper with a slender fairing"
++msgstr "Ronde bumper met slanke kuip"
++
++#: game/vehicle/vehicle_customisation.gd:39
++msgid "Closed oval rail with a centre badge"
++msgstr "Gesloten ovale buis met middenplaat"
++
++#: game/vehicle/vehicle_customisation.gd:39
++msgid "Tubular frame with diagonal cross braces"
++msgstr "Buizenframe met diagonale kruisschoren"
++
++#: game/vehicle/vehicle_customisation.gd:39
++msgid "Moulded shield with two open slots"
++msgstr "Gevormd schild met twee open sleuven"
++
++#: game/vehicle/vehicle_customisation.gd:39
++msgid "Angled bumper with a low centre"
++msgstr "Hoekige bumper met laag midden"
++
++#: game/vehicle/vehicle_customisation.gd:41
++msgid "Nine swept solid turbine blades"
++msgstr "Negen gebogen massieve turbinebladen"
++
++#: game/vehicle/vehicle_customisation.gd:41
++msgid "Crossed bronze spokes with an open centre"
++msgstr "Gekruiste bronzen spaken met open midden"
++
++#: game/vehicle/vehicle_customisation.gd:41
++msgid "Deep bowl with a rolled outer lip"
++msgstr "Diepe kom met gerolde buitenrand"
++
++#: game/vehicle/vehicle_customisation.gd:41
++msgid "Five broad forged spokes"
++msgstr "Vijf brede gesmede spaken"
++
++#: game/vehicle/vehicle_customisation.gd:43
++msgid "Low sharp shoulders and a thin trailing edge"
++msgstr "Lage scherpe schouders en dunne achterrand"
++
++#: game/vehicle/vehicle_customisation.gd:43
++msgid "Deep channel between raised shoulders"
++msgstr "Diep kanaal tussen verhoogde schouders"
++
++#: game/vehicle/vehicle_customisation.gd:43
++msgid "Smooth rounded capsule side pods"
++msgstr "Gladde ronde capsulevormige zijpods"
++
++#: game/vehicle/vehicle_customisation.gd:43
++msgid "Squared side pods with broad flat sides"
++msgstr "Vierkante zijpods met brede vlakke zijkanten"
++
++
++#: game/core/app.gd
++msgid "Fit view"
++msgstr "Weergave aanpassen"
+diff --git a/game/localization/pt_BR.po b/game/localization/pt_BR.po
+index 6ee8c826b..4c6ef2381 100644
+--- a/game/localization/pt_BR.po
++++ b/game/localization/pt_BR.po
+@@ -11072,3 +11072,136 @@ msgstr "Entre para registrar um tempo verificado."
+ #: game/ui/daily_standings.gd
+ msgid "Today's track has changed. Reopen Track of the Day."
+ msgstr "A pista de hoje mudou. Abra Pista do dia novamente."
++
++#: game/vehicle/vehicle_customisation.gd:28
++msgid "Arrow nose"
++msgstr "Bico em flecha"
++
++#: game/vehicle/vehicle_customisation.gd:28
++msgid "Channel nose"
++msgstr "Bico com canal"
++
++#: game/vehicle/vehicle_customisation.gd:28
++msgid "Shield nose"
++msgstr "Bico escudo"
++
++#: game/vehicle/vehicle_customisation.gd:28
++msgid "Rounded nose"
++msgstr "Bico arredondado"
++
++#: game/vehicle/vehicle_customisation.gd:30
++msgid "Oval bumper"
++msgstr "Para-choque oval"
++
++#: game/vehicle/vehicle_customisation.gd:30
++msgid "Cross brace bumper"
++msgstr "Para-choque com travessas"
++
++#: game/vehicle/vehicle_customisation.gd:30
++msgid "Slotted bumper"
++msgstr "Para-choque com aberturas"
++
++#: game/vehicle/vehicle_customisation.gd:30
++msgid "Chevron bumper"
++msgstr "Para-choque em V"
++
++#: game/vehicle/vehicle_customisation.gd:32
++msgid "Turbine wheel"
++msgstr "Roda turbina"
++
++#: game/vehicle/vehicle_customisation.gd:32
++msgid "Cross mesh wheel"
++msgstr "Roda de raios cruzados"
++
++#: game/vehicle/vehicle_customisation.gd:32
++msgid "Deep dish wheel"
++msgstr "Roda de borda profunda"
++
++#: game/vehicle/vehicle_customisation.gd:32
++msgid "Five point wheel"
++msgstr "Roda de cinco pontas"
++
++#: game/vehicle/vehicle_customisation.gd:34
++msgid "Blade pods"
++msgstr "Carenagens em lâmina"
++
++#: game/vehicle/vehicle_customisation.gd:34
++msgid "Channel pods"
++msgstr "Carenagens com canal"
++
++#: game/vehicle/vehicle_customisation.gd:34
++msgid "Rounded pods"
++msgstr "Carenagens arredondadas"
++
++#: game/vehicle/vehicle_customisation.gd:34
++msgid "Box pods"
++msgstr "Carenagens quadradas"
++
++#: game/vehicle/vehicle_customisation.gd:37
++msgid "Pointed nose with a raised centre spine"
++msgstr "Bico pontudo com nervura central elevada"
++
++#: game/vehicle/vehicle_customisation.gd:37
++msgid "Twin shoulders around a recessed channel"
++msgstr "Duas bordas elevadas ao redor de um canal rebaixado"
++
++#: game/vehicle/vehicle_customisation.gd:37
++msgid "Broad flat shield with squared shoulders"
++msgstr "Escudo largo e plano com bordas quadradas"
++
++#: game/vehicle/vehicle_customisation.gd:37
++msgid "Rounded bumper with a slender fairing"
++msgstr "Para-choque arredondado com carenagem fina"
++
++#: game/vehicle/vehicle_customisation.gd:39
++msgid "Closed oval rail with a centre badge"
++msgstr "Barra oval fechada com placa central"
++
++#: game/vehicle/vehicle_customisation.gd:39
++msgid "Tubular frame with diagonal cross braces"
++msgstr "Estrutura tubular com reforços diagonais cruzados"
++
++#: game/vehicle/vehicle_customisation.gd:39
++msgid "Moulded shield with two open slots"
++msgstr "Escudo moldado com duas aberturas"
++
++#: game/vehicle/vehicle_customisation.gd:39
++msgid "Angled bumper with a low centre"
++msgstr "Para-choque angular com centro baixo"
++
++#: game/vehicle/vehicle_customisation.gd:41
++msgid "Nine swept solid turbine blades"
++msgstr "Nove pás de turbina sólidas e curvas"
++
++#: game/vehicle/vehicle_customisation.gd:41
++msgid "Crossed bronze spokes with an open centre"
++msgstr "Raios de bronze cruzados com centro aberto"
++
++#: game/vehicle/vehicle_customisation.gd:41
++msgid "Deep bowl with a rolled outer lip"
++msgstr "Cavidade profunda com borda externa arredondada"
++
++#: game/vehicle/vehicle_customisation.gd:41
++msgid "Five broad forged spokes"
++msgstr "Cinco raios largos forjados"
++
++#: game/vehicle/vehicle_customisation.gd:43
++msgid "Low sharp shoulders and a thin trailing edge"
++msgstr "Bordas baixas e afiadas com extremidade traseira fina"
++
++#: game/vehicle/vehicle_customisation.gd:43
++msgid "Deep channel between raised shoulders"
++msgstr "Canal profundo entre bordas elevadas"
++
++#: game/vehicle/vehicle_customisation.gd:43
++msgid "Smooth rounded capsule side pods"
++msgstr "Carenagens suaves e arredondadas em cápsula"
++
++#: game/vehicle/vehicle_customisation.gd:43
++msgid "Squared side pods with broad flat sides"
++msgstr "Carenagens quadradas com laterais largas e planas"
++
++
++#: game/core/app.gd
++msgid "Fit view"
++msgstr "Ajustar visualização"
+diff --git a/game/localization/sv.po b/game/localization/sv.po
+index 3e1cd46a4..1e31fc8b2 100644
+--- a/game/localization/sv.po
++++ b/game/localization/sv.po
+@@ -11072,3 +11072,136 @@ msgstr "Logga in för att registrera en verifierad tid."
+ #: game/ui/daily_standings.gd
+ msgid "Today's track has changed. Reopen Track of the Day."
+ msgstr "Dagens bana har ändrats. Öppna Dagens bana igen."
++
++#: game/vehicle/vehicle_customisation.gd:28
++msgid "Arrow nose"
++msgstr "Pilnos"
++
++#: game/vehicle/vehicle_customisation.gd:28
++msgid "Channel nose"
++msgstr "Kanalnos"
++
++#: game/vehicle/vehicle_customisation.gd:28
++msgid "Shield nose"
++msgstr "Sköldnos"
++
++#: game/vehicle/vehicle_customisation.gd:28
++msgid "Rounded nose"
++msgstr "Rundad nos"
++
++#: game/vehicle/vehicle_customisation.gd:30
++msgid "Oval bumper"
++msgstr "Oval stötfångare"
++
++#: game/vehicle/vehicle_customisation.gd:30
++msgid "Cross brace bumper"
++msgstr "Krysstagad stötfångare"
++
++#: game/vehicle/vehicle_customisation.gd:30
++msgid "Slotted bumper"
++msgstr "Slitsad stötfångare"
++
++#: game/vehicle/vehicle_customisation.gd:30
++msgid "Chevron bumper"
++msgstr "V-formad stötfångare"
++
++#: game/vehicle/vehicle_customisation.gd:32
++msgid "Turbine wheel"
++msgstr "Turbinhjul"
++
++#: game/vehicle/vehicle_customisation.gd:32
++msgid "Cross mesh wheel"
++msgstr "Korsekrat hjul"
++
++#: game/vehicle/vehicle_customisation.gd:32
++msgid "Deep dish wheel"
++msgstr "Djup fälg"
++
++#: game/vehicle/vehicle_customisation.gd:32
++msgid "Five point wheel"
++msgstr "Femstjärnigt hjul"
++
++#: game/vehicle/vehicle_customisation.gd:34
++msgid "Blade pods"
++msgstr "Bladpontoner"
++
++#: game/vehicle/vehicle_customisation.gd:34
++msgid "Channel pods"
++msgstr "Kanalpontoner"
++
++#: game/vehicle/vehicle_customisation.gd:34
++msgid "Rounded pods"
++msgstr "Rundade sidopontoner"
++
++#: game/vehicle/vehicle_customisation.gd:34
++msgid "Box pods"
++msgstr "Fyrkantiga sidopontoner"
++
++#: game/vehicle/vehicle_customisation.gd:37
++msgid "Pointed nose with a raised centre spine"
++msgstr "Spetsig nos med upphöjd mittrygg"
++
++#: game/vehicle/vehicle_customisation.gd:37
++msgid "Twin shoulders around a recessed channel"
++msgstr "Två skuldror runt en nedsänkt kanal"
++
++#: game/vehicle/vehicle_customisation.gd:37
++msgid "Broad flat shield with squared shoulders"
++msgstr "Bred platt sköld med kantiga skuldror"
++
++#: game/vehicle/vehicle_customisation.gd:37
++msgid "Rounded bumper with a slender fairing"
++msgstr "Rundad stötfångare med smal kåpa"
++
++#: game/vehicle/vehicle_customisation.gd:39
++msgid "Closed oval rail with a centre badge"
++msgstr "Sluten oval ram med mittplatta"
++
++#: game/vehicle/vehicle_customisation.gd:39
++msgid "Tubular frame with diagonal cross braces"
++msgstr "Rörram med diagonala krysstag"
++
++#: game/vehicle/vehicle_customisation.gd:39
++msgid "Moulded shield with two open slots"
++msgstr "Formad sköld med två öppna slitsar"
++
++#: game/vehicle/vehicle_customisation.gd:39
++msgid "Angled bumper with a low centre"
++msgstr "Vinklad stötfångare med låg mitt"
++
++#: game/vehicle/vehicle_customisation.gd:41
++msgid "Nine swept solid turbine blades"
++msgstr "Nio svepta solida turbinblad"
++
++#: game/vehicle/vehicle_customisation.gd:41
++msgid "Crossed bronze spokes with an open centre"
++msgstr "Korsade bronsekrar med öppen mitt"
++
++#: game/vehicle/vehicle_customisation.gd:41
++msgid "Deep bowl with a rolled outer lip"
++msgstr "Djup skål med rundad ytterkant"
++
++#: game/vehicle/vehicle_customisation.gd:41
++msgid "Five broad forged spokes"
++msgstr "Fem breda smidda ekrar"
++
++#: game/vehicle/vehicle_customisation.gd:43
++msgid "Low sharp shoulders and a thin trailing edge"
++msgstr "Låga skarpa skuldror och tunn bakkant"
++
++#: game/vehicle/vehicle_customisation.gd:43
++msgid "Deep channel between raised shoulders"
++msgstr "Djup kanal mellan upphöjda skuldror"
++
++#: game/vehicle/vehicle_customisation.gd:43
++msgid "Smooth rounded capsule side pods"
++msgstr "Släta rundade kapselformade sidopontoner"
++
++#: game/vehicle/vehicle_customisation.gd:43
++msgid "Squared side pods with broad flat sides"
++msgstr "Fyrkantiga sidopontoner med breda plana sidor"
++
++
++#: game/core/app.gd
++msgid "Fit view"
++msgstr "Anpassa vy"
+diff --git a/game/tests/bake_kart_kits.gd b/game/tests/bake_kart_kits.gd
+index 90d5b44cd..77aaf7bba 100644
+--- a/game/tests/bake_kart_kits.gd
++++ b/game/tests/bake_kart_kits.gd
+@@ -28,7 +28,7 @@ func run() -> void:
+ 			added += 1
+ 		entries[key] = {"key":key,"file":filename,"triangles":G.meshes[key].get_faces().size()/3}
+ 	manifest.meshes = entries.values()
+-	for source: String in ["model","detail","kits"]:
++	for source: String in ["model","detail","kits","kit_shapes"]:
+ 		manifest[source+"_sha256"] = FileAccess.get_sha256("res://vehicle/kart_"+source+".gd")
+ 	FileAccess.open(path,FileAccess.WRITE).store_string(JSON.stringify(manifest,"\t"))
+ 	print("KART_KIT_BAKE: ",added," added meshes; ",entries.size()," total; stock resources retained")
+diff --git a/game/tests/test_kart_kits.gd b/game/tests/test_kart_kits.gd
+index d70bfec0b..3424323c1 100644
+--- a/game/tests/test_kart_kits.gd
++++ b/game/tests/test_kart_kits.gd
+@@ -4,7 +4,7 @@ const Shop = preload("res://persistence/cosmetic_catalog.gd")
+ const State = preload("res://persistence/appearance_state.gd")
+ var checks: int = 0
+ var failures: int = 0
+-var output: String = "res://../docs/evidence/kart-kits-2026-10-28/native"
++var output: String = "res://../docs/evidence/kart-variety-2026-10-29/native"
+ var metrics: Array[Dictionary] = []
+ var page: GaragePage
+ 
+@@ -80,7 +80,7 @@ func run() -> void:
+ 	DirAccess.make_dir_recursive_absolute(ProjectSettings.globalize_path(output))
+ 	var defaults: Dictionary = VehicleCustomisation.defaults()
+ 	for category: String in VehicleCustomisation.CATEGORIES:
+-		check(VehicleCustomisation.options(category,"kart").size()==4,"four kart choices "+category)
++		check(VehicleCustomisation.options(category,"kart").size()==8,"eight kart choices "+category)
+ 		for option: Array in VehicleCustomisation.options(category,"kart"):
+ 			var value: Dictionary = defaults.duplicate(true)
+ 			value[category] = option[0]
+@@ -88,7 +88,8 @@ func run() -> void:
+ 			check(not VehicleCustomisation.description(category,str(option[0]),"kart").is_empty(),"kart description")
+ 			var item: String = "kit/kart/"+category+"/"+str(option[0])
+ 			check(Shop.free_item(item) if option[0]=="stock" else Shop.items().get(item)==750,"kart ownership identity "+item)
+-			if option[0] not in ["stock","six"]: check(not VehicleCustomisation.valid(value,"compact"),"Compact rejects kart-only part")
++			var compact_ids: Array = VehicleCustomisation.options(category,"compact").map(func(item: Array) -> String: return str(item[0]))
++			if option[0] not in compact_ids: check(not VehicleCustomisation.valid(value,"compact"),"Compact rejects kart-only part")
+ 	check(VehicleCustomisation.valid_collection({"compact":defaults,"kart":defaults}),"independent compact/kart saves")
+ 	check(not VehicleCustomisation.valid_collection({"pickup":defaults}),"unsupported saved kits rejected")
+ 	for simple: bool in [false,true]:
+@@ -161,7 +162,7 @@ func garage() -> void:
+ 	root.size = Vector2i(1280,720)
+ 	root.content_scale_size = root.size
+ 	VehicleCatalog.selected = "kart"
+-	var folder: String = "res://../build/kart-kits/local/"+TrackLibrary.unique_id()
++	var folder: String = "res://../build/kart-variety/local/"+TrackLibrary.unique_id()
+ 	DirAccess.make_dir_recursive_absolute(ProjectSettings.globalize_path(folder))
+ 	var records := LocalRecords.new(folder.path_join("records.json"))
+ 	records.load_records()
+@@ -184,9 +185,9 @@ func garage() -> void:
+ 	var retained_viewport: SubViewport = page.showroom.showroom_viewport
+ 	for category: String in VehicleCustomisation.CATEGORIES:
+ 		await tap(page.kit_categories[category])
+-		check(page.kit_category==category and page.kit_cards.get_child_count()==4,"touch selects kart category "+category)
++		check(page.kit_category==category and page.kit_cards.get_child_count()==8,"touch selects kart category "+category)
+ 		check(page.kit_categories[category].text.nocasecmp_to(VehicleCustomisation.label(category,"kart"))==0,"kart category label")
+-		for index: int in range(1,4):
++		for index: int in range(1,8):
+ 			var before: Dictionary = page.kit_draft.duplicate(true)
+ 			page.kit_scroll.ensure_control_visible(page.kit_cards.get_child(index))
+ 			await settle()
+diff --git a/game/vehicle/kart_detail.gd b/game/vehicle/kart_detail.gd
+index e71c633eb..31014cc9b 100644
+--- a/game/vehicle/kart_detail.gd
++++ b/game/vehicle/kart_detail.gd
+@@ -105,13 +105,13 @@ static func collar(parent: Node3D, label: String, center: Vector3, width: float,
+ 
+ static func nose(car: CarVisual, metal: Material) -> void:
+ 	var simple: bool = car.simple_model
+-	var suffix: String = "" if car.customisation.hood=="stock" else "_"+str(car.customisation.hood)
++	var suffix: String = preload("res://vehicle/kart_kits.gd").suffix(str(car.customisation.hood))
+ 	_shell_fasteners(car.body.find_child("SculptedFrontFairing"+suffix,true,false),"NosePanelSockets"+suffix,[Vector2(-0.46,-1.29),Vector2(0.46,-1.29)],metal,simple)
+ 	_shell_fasteners(car.body.find_child("NassauFairing"+suffix,true,false),"FairingPanelSockets"+suffix,[Vector2(-0.125,-0.65),Vector2(0.125,-0.65)],metal,simple)
+ 
+ static func pods(car: CarVisual, trim: Material, metal: Material) -> void:
+ 	var simple: bool = car.simple_model
+-	var suffix: String = "" if car.customisation.body=="stock" else "_"+str(car.customisation.body)
++	var suffix: String = preload("res://vehicle/kart_kits.gd").suffix(str(car.customisation.body))
+ 	# Outboard rub strip follows the real pod; its inset ends avoid floating corners.
+ 	for shell: MeshInstance3D in car.body.find_children("FormedSidePod"+suffix,"MeshInstance3D",true,false):
+ 		var pod: Node3D = shell.get_parent()
+diff --git a/game/vehicle/kart_kits.gd b/game/vehicle/kart_kits.gd
+index 596915e2b..64ba2e48d 100644
+--- a/game/vehicle/kart_kits.gd
++++ b/game/vehicle/kart_kits.gd
+@@ -2,41 +2,69 @@ extends RefCounted
+ ## Original cosmetic fittings in kart model metres. Tyres, axles and engine stay fixed.
+ const G = preload("res://vehicle/kart_geometry.gd")
+ 
+-static func nose_profile(kind: String, original: Array[Vector4]) -> Array[Vector4]:
++const Shapes = preload("res://vehicle/kart_kit_shapes.gd")
++const NOSES: Dictionary = {
++	"sprint":[Vector4(-1.42,0.46,0.235,0.035),Vector4(-1.40,0.66,0.245,0.045),Vector4(-1.35,0.73,0.25,0.050),Vector4(-1.29,0.73,0.25,0.050),Vector4(-1.23,0.68,0.245,0.045),Vector4(-1.20,0.46,0.235,0.035)],
++	"enduro":[Vector4(-1.42,0.61,0.27,0.075),Vector4(-1.40,0.70,0.29,0.100),Vector4(-1.35,0.73,0.30,0.120),Vector4(-1.29,0.73,0.30,0.120),Vector4(-1.23,0.67,0.30,0.095),Vector4(-1.20,0.53,0.295,0.080)],
++	"wedge":[Vector4(-1.43,0.40,0.215,0.025),Vector4(-1.40,0.58,0.235,0.040),Vector4(-1.35,0.69,0.270,0.065),Vector4(-1.29,0.73,0.310,0.095),Vector4(-1.23,0.69,0.320,0.105),Vector4(-1.20,0.51,0.310,0.080)],
++	"arrow":[Vector4(-1.47,0.12,0.24,0.024),Vector4(-1.43,0.35,0.25,0.040),Vector4(-1.37,0.68,0.28,0.065),Vector4(-1.29,0.72,0.29,0.080),Vector4(-1.23,0.60,0.27,0.065),Vector4(-1.20,0.36,0.25,0.035)],
++	"split":[Vector4(-1.43,0.51,0.265,0.065),Vector4(-1.40,0.69,0.28,0.090),Vector4(-1.35,0.73,0.30,0.105),Vector4(-1.29,0.73,0.30,0.105),Vector4(-1.23,0.65,0.29,0.090),Vector4(-1.20,0.44,0.27,0.060)],
++	"shield":[Vector4(-1.42,0.66,0.26,0.060),Vector4(-1.40,0.72,0.28,0.085),Vector4(-1.35,0.73,0.29,0.090),Vector4(-1.29,0.69,0.29,0.090),Vector4(-1.23,0.57,0.28,0.070),Vector4(-1.20,0.40,0.26,0.045)],
++	"retro":[Vector4(-1.44,0.43,0.25,0.055),Vector4(-1.41,0.64,0.25,0.075),Vector4(-1.35,0.73,0.25,0.080),Vector4(-1.29,0.71,0.25,0.080),Vector4(-1.23,0.63,0.25,0.070),Vector4(-1.20,0.40,0.25,0.035)]}
++const FAIRINGS: Dictionary = {
++	"sprint":[Vector4(-1.23,0.11,0.34,0.025),Vector4(-0.87,0.13,0.41,0.030),Vector4(-0.64,0.17,0.46,0.035),Vector4(-0.41,0.14,0.50,0.025),Vector4(-0.35,0.115,0.49,0.020)],
++	"enduro":[Vector4(-1.23,0.14,0.37,0.035),Vector4(-0.87,0.18,0.44,0.045),Vector4(-0.64,0.22,0.54,0.060),Vector4(-0.41,0.19,0.58,0.050),Vector4(-0.35,0.15,0.56,0.030)],
++	"wedge":[Vector4(-1.23,0.08,0.35,0.020),Vector4(-0.87,0.13,0.42,0.035),Vector4(-0.64,0.18,0.50,0.055),Vector4(-0.41,0.19,0.57,0.045),Vector4(-0.35,0.16,0.56,0.025)],
++	"arrow":[Vector4(-1.23,0.075,0.36,0.030),Vector4(-0.87,0.12,0.44,0.060),Vector4(-0.64,0.175,0.515,0.075),Vector4(-0.41,0.14,0.55,0.050),Vector4(-0.35,0.10,0.53,0.025)],
++	"split":[Vector4(-1.23,0.13,0.36,0.030),Vector4(-0.87,0.18,0.44,0.045),Vector4(-0.64,0.22,0.53,0.065),Vector4(-0.41,0.19,0.57,0.050),Vector4(-0.35,0.14,0.55,0.030)],
++	"shield":[Vector4(-1.23,0.15,0.37,0.035),Vector4(-0.87,0.19,0.43,0.040),Vector4(-0.64,0.21,0.50,0.045),Vector4(-0.41,0.19,0.55,0.035),Vector4(-0.35,0.15,0.54,0.020)],
++	"retro":[Vector4(-1.23,0.11,0.35,0.030),Vector4(-0.87,0.14,0.43,0.035),Vector4(-0.64,0.175,0.50,0.045),Vector4(-0.41,0.145,0.54,0.035),Vector4(-0.35,0.115,0.53,0.025)]}
++const PODS: Dictionary = {
++	"sprint":[Vector4(-0.60,0.07,0.265,0.035),Vector4(-0.48,0.15,0.265,0.055),Vector4(-0.12,0.16,0.27,0.060),Vector4(0.34,0.14,0.26,0.055),Vector4(0.49,0.08,0.25,0.035)],
++	"enduro":[Vector4(-0.60,0.10,0.29,0.065),Vector4(-0.48,0.17,0.30,0.125),Vector4(-0.12,0.175,0.30,0.120),Vector4(0.34,0.155,0.27,0.075),Vector4(0.49,0.11,0.25,0.045)],
++	"wedge":[Vector4(-0.60,0.10,0.30,0.065),Vector4(-0.48,0.175,0.30,0.110),Vector4(-0.12,0.155,0.285,0.090),Vector4(0.34,0.115,0.26,0.050),Vector4(0.49,0.06,0.25,0.025)],
++	"blade":[Vector4(-0.60,0.07,0.26,0.030),Vector4(-0.48,0.18,0.255,0.045),Vector4(-0.12,0.19,0.255,0.050),Vector4(0.34,0.15,0.255,0.045),Vector4(0.49,0.055,0.245,0.022)],
++	"channel":[Vector4(-0.60,0.10,0.285,0.055),Vector4(-0.48,0.175,0.295,0.100),Vector4(-0.12,0.18,0.295,0.105),Vector4(0.34,0.155,0.27,0.080),Vector4(0.49,0.095,0.25,0.045)],
++	"rounded":[Vector4(-0.60,0.06,0.28,0.040),Vector4(-0.48,0.15,0.28,0.095),Vector4(-0.12,0.17,0.285,0.110),Vector4(0.34,0.145,0.27,0.085),Vector4(0.49,0.06,0.25,0.040)],
++	"box":[Vector4(-0.60,0.115,0.295,0.065),Vector4(-0.48,0.17,0.295,0.110),Vector4(-0.12,0.17,0.295,0.110),Vector4(0.34,0.16,0.27,0.075),Vector4(0.49,0.12,0.25,0.045)]}
++
++static func suffix(kind: String) -> String:
++	return "" if kind=="stock" else "_"+kind+"_v2"
++
++static func _profile(catalog: Dictionary, kind: String, original: Array[Vector4]) -> Array[Vector4]:
+ 	if kind=="stock": return original
+-	var result: Array[Vector4] = original.duplicate()
+-	for i: int in range(result.size()):
+-		var p: Vector4 = result[i]
+-		match kind:
+-			"sprint": p.w *= 0.65; p.z -= 0.012
+-			"enduro": p.w *= 1.24; p.z += 0.018; p.y *= 0.97
+-			"wedge": p.w *= lerpf(0.52,1.15,float(i)/(result.size()-1)); p.z += lerpf(-0.015,0.025,float(i)/(result.size()-1)); p.y *= lerpf(0.87,1.0,float(i)/(result.size()-1))
+-		result[i] = p
++	var result: Array[Vector4] = []
++	result.assign(catalog[kind])
+ 	return result
+ 
++static func nose_profile(kind: String, original: Array[Vector4]) -> Array[Vector4]:
++	return _profile(NOSES,kind,original)
++
+ static func fairing_profile(kind: String, original: Array[Vector4]) -> Array[Vector4]:
+-	if kind=="stock": return original
+-	var result: Array[Vector4] = original.duplicate()
+-	for i: int in range(result.size()):
+-		var p: Vector4 = result[i]
+-		match kind:
+-			"sprint": p.y *= 0.90; p.w *= 0.80
+-			"enduro": p.y *= 1.12; p.w *= 1.10
+-			"wedge": p.y *= lerpf(0.85,1.16,float(i)/(result.size()-1)); p.w *= 0.85
+-		result[i] = p
+-	return result
++	return _profile(FAIRINGS,kind,original)
+ 
+ static func pod_profile(kind: String, original: Array[Vector4]) -> Array[Vector4]:
+-	if kind=="stock": return original
+-	var result: Array[Vector4] = original.duplicate()
+-	for i: int in range(result.size()):
+-		var p: Vector4 = result[i]
+-		match kind:
+-			"sprint": p.w *= 0.72; p.y *= 0.95
+-			"enduro": p.w *= 1.18; p.y *= 1.03
+-			"wedge": p.w *= lerpf(1.12,0.66,float(i)/(result.size()-1)); p.y *= lerpf(1.02,0.82,float(i)/(result.size()-1))
+-		result[i] = p
+-	return result
++	return _profile(PODS,kind,original)
++
++static func panel(parent: Node3D, label: String, profile: Array[Vector4], material: Material, simple: bool, kind: String, pod: bool = false) -> MeshInstance3D:
++	if kind=="stock": return preload("res://vehicle/kart_bodywork.gd").formed(parent,label,profile,material,simple)
++	var contour: Array[Vector2] = [Vector2(0.70,1),Vector2(0.94,0.72),Vector2(1,-0.28),Vector2(0.80,-0.86),Vector2(-0.80,-0.86),Vector2(-1,-0.28),Vector2(-0.94,0.72),Vector2(-0.70,1)]
++	var rounding: float = 0.08
++	if kind in ["retro","rounded"]:
++		contour.clear()
++		for step: int in range(24):
++			var angle: float = TAU*step/24
++			contour.append(Vector2(cos(angle),sin(angle)))
++	elif kind in ["split","channel"]:
++		contour = [Vector2(0.35,1),Vector2(0.86,1),Vector2(1,0.60),Vector2(1,-0.45),Vector2(0.75,-0.85),Vector2(-0.75,-0.85),Vector2(-1,-0.45),Vector2(-1,0.60),Vector2(-0.86,1),Vector2(-0.35,1),Vector2(-0.22,0.12),Vector2(0.22,0.12)]
++		rounding = 0.06
++	elif kind in ["shield","box"]:
++		contour = [Vector2(0.92,1),Vector2(1,0.85),Vector2(1,-0.70),Vector2(0.92,-0.85),Vector2(-0.92,-0.85),Vector2(-1,-0.70),Vector2(-1,0.85),Vector2(-0.92,1)]
++		rounding = 0.04
++	elif kind=="arrow" or (kind=="blade" and pod):
++		contour = [Vector2(0,1.30),Vector2(0.90,0.25),Vector2(1,-0.45),Vector2(0.60,-0.85),Vector2(-0.60,-0.85),Vector2(-1,-0.45),Vector2(-0.90,0.25)]
++		rounding = 0.06
++	return Shapes.formed(parent,label,profile,contour,material,simple,rounding)
+ 
+ static func bumper(car: CarVisual, parent: Node3D, trim: Material, metal: Material) -> void:
+ 	var s: bool = car.simple_model
+@@ -52,22 +80,55 @@ static func bumper(car: CarVisual, parent: Node3D, trim: Material, metal: Materi
+ 	elif kind=="twin":
+ 		for y: float in [0.16,0.29]: G.rounded(parent,"TwinRearBumperRail",Vector3(0,y,1.285),Vector3(1.42,0.075,0.10),0.025,trim,s)
+ 		for x: float in [-0.66,-0.35,0.35,0.66]: G.rounded(parent,"TwinRearBumperBridge",Vector3(x,0.225,1.285),Vector3(0.055,0.16,0.085),0.015,trim,s)
++	elif kind=="oval":
++		var ring: Array[Vector3] = []
++		for step: int in range(65):
++			var a: float = TAU*step/64
++			ring.append(Vector3(sin(a)*0.70,0.235+cos(a)*0.105,1.30))
++		G.tube(parent,"OvalRearBumper",ring,0.029,trim,s,64)
++		G.rounded(parent,"OvalBumperBadge",Vector3(0,0.235,1.30),Vector3(0.28,0.17,0.065),0.025,car.paint_materials.accent,s)
++	elif kind=="cage":
++		G.tube(parent,"CrossBraceBumperFrame",[Vector3(-0.70,0.13,1.30),Vector3(-0.70,0.32,1.30),Vector3(0.70,0.32,1.30),Vector3(0.70,0.13,1.30),Vector3(-0.70,0.13,1.30)],0.026,trim,s,48)
++		for side: float in [-1.0,1.0]: G.tube(parent,"RearBumperDiagonal",[Vector3(side*0.65,0.15,1.30),Vector3(0,0.225,1.30),Vector3(-side*0.65,0.30,1.30)],0.016,metal,s,16)
++		G.rounded(parent,"CrossBraceBumperBadge",Vector3(0,0.225,1.329),Vector3(0.15,0.105,0.025),0.015,car.paint_materials.body,s)
++	elif kind=="panel":
++		for y: float in [0.145,0.315]: G.rounded(parent,"SlottedBumperRail",Vector3(0,y,1.285),Vector3(1.46,0.065,0.105),0.020,trim,s)
++		for x: float in [-0.69,-0.55,0.55,0.69]: G.rounded(parent,"SlottedBumperPost",Vector3(x,0.23,1.285),Vector3(0.070,0.19,0.105),0.018,trim,s)
++		G.rounded(parent,"SlottedBumperCenter",Vector3(0,0.23,1.285),Vector3(0.66,0.20,0.105),0.025,trim,s)
++		G.rounded(parent,"SlottedBumperPaint",Vector3(0,0.23,1.339),Vector3(0.47,0.105,0.015),0.006,car.paint_materials.body,s)
++	elif kind=="chevron":
++		G.tube(parent,"ChevronRearBumper",[Vector3(-0.71,0.29,1.285),Vector3(-0.62,0.27,1.30),Vector3(0,0.15,1.30),Vector3(0.62,0.27,1.30),Vector3(0.71,0.29,1.285)],0.048,trim,s,40)
++		for side: float in [-1.0,1.0]: G.ellipsoid(parent,"ChevronBumperCap",Vector3(side*0.71,0.29,1.285),Vector3.ONE*0.048,trim,s)
++		G.rounded(parent,"ChevronBumperCenter",Vector3(0,0.175,1.34),Vector3(0.18,0.11,0.035),0.018,car.paint_materials.accent,s)
+ 
+ static func rim(car: CarVisual, parent: Node3D, side: float, metal: Material, bright: Material, trim: Material) -> void:
+ 	var s: bool = car.simple_model
+ 	var kind: String = str(car.customisation.rims)
+-	var magnesium := CompactFinish.alloy(Color("807b68"))
++	var magnesium := CompactFinish.alloy(Color({"three":"91836b","six":"66767e","disc":"807b68","turbine":"b0b5b1","mesh":"9f855c","dish":"a0a8aa","star":"566369"}.get(kind,"807b68")))
+ 	magnesium.roughness = 0.43
+-	G.lathe(parent,"KitMagnesiumBarrel",[Vector2(-0.138,0.115),Vector2(-0.138,0.135),Vector2(-0.120,0.145),Vector2(-0.101,0.127),Vector2(0.101,0.127),Vector2(0.120,0.145),Vector2(0.138,0.135),Vector2(0.138,0.115),Vector2(0.103,0.111),Vector2(-0.103,0.111),Vector2(-0.138,0.115)],magnesium,s)
++	G.lathe(parent,"KitMagnesiumBarrel_v2_"+kind,[Vector2(-0.138,0.115),Vector2(-0.138,0.135),Vector2(-0.120,0.145),Vector2(-0.101,0.127),Vector2(0.101,0.127),Vector2(0.120,0.145),Vector2(0.138,0.135),Vector2(0.138,0.115),Vector2(0.103,0.111),Vector2(-0.103,0.111),Vector2(-0.138,0.115)],magnesium,s)
+ 	if kind=="disc":
+-		# Closed, recessed face ends inside the rolled rim bead.
+ 		G.lathe(parent,"RecessedDiscWheel",[Vector2(side*0.099,0),Vector2(side*0.099,0.123),Vector2(side*0.117,0.123),Vector2(side*0.117,0),Vector2(side*0.099,0)],magnesium,s)
++	elif kind=="dish":
++		G.lathe(parent,"DeepBowlWheel",[Vector2(side*0.032,0.025),Vector2(side*0.032,0.045),Vector2(side*0.042,0.068),Vector2(side*0.065,0.093),Vector2(side*0.105,0.115),Vector2(side*0.127,0.123),Vector2(side*0.132,0.129),Vector2(side*0.128,0.133),Vector2(side*0.119,0.126),Vector2(side*0.088,0.114),Vector2(side*0.050,0.091),Vector2(side*0.027,0.066),Vector2(side*0.020,0.045),Vector2(side*0.020,0.025),Vector2(side*0.032,0.025)],magnesium,s)
++	elif kind=="mesh":
++		for spoke: int in range(10):
++			var angle: float = TAU*spoke/10
++			for sweep: float in [-0.28,0.28]:
++				G.tube(parent,"CrossMeshWheel",[Vector3(side*0.092,sin(angle)*0.034,cos(angle)*0.034),Vector3(side*0.112,sin(angle+sweep*0.6)*0.085,cos(angle+sweep*0.6)*0.085),Vector3(side*0.125,sin(angle+sweep)*0.128,cos(angle+sweep)*0.128)],0.0045,magnesium,s,8)
+ 	else:
+-		var count: int = 3 if kind=="three" else 6
++		var count: int = {"three":3,"six":6,"turbine":9,"star":5}.get(kind,3)
+ 		for spoke: int in range(count):
+-			var a: float = TAU*spoke/count
+-			for split: float in ([0.0] if kind=="three" else [-0.11,0.11]):
+-				G.tube(parent,"KitSpoke_"+kind,[Vector3(side*0.09,sin(a)*0.035,cos(a)*0.035),Vector3(side*0.111,sin(a+split)*0.081,cos(a+split)*0.081),Vector3(side*0.125,sin(a+split)*0.128,cos(a+split)*0.128)],0.019 if kind=="three" else 0.008,magnesium,s,10)
++			var angle: float = TAU*spoke/count
++			var polygon: Array[Vector2] = [Vector2(0.028,-0.016),Vector2(0.080,-0.025),Vector2(0.130,-0.020),Vector2(0.130,0.020),Vector2(0.080,0.025),Vector2(0.028,0.016)]
++			if kind=="six":
++				for split: float in [-1.0,1.0]:
++					var fork: Array[Vector2] = [Vector2(0.028,split*0.003-0.005),Vector2(0.075,split*0.010-0.006),Vector2(0.131,split*0.025-0.005),Vector2(0.131,split*0.025+0.005),Vector2(0.075,split*0.010+0.006),Vector2(0.028,split*0.003+0.005)]
++					Shapes.spoke(parent,"SplitForgedWheel",fork,angle,side,magnesium)
++				continue
++			if kind=="turbine": polygon = [Vector2(0.030,-0.006),Vector2(0.075,-0.018),Vector2(0.125,-0.031),Vector2(0.132,-0.012),Vector2(0.085,0.008),Vector2(0.030,0.010)]
++			if kind=="star": polygon = [Vector2(0.027,-0.021),Vector2(0.068,-0.024),Vector2(0.131,-0.011),Vector2(0.131,0.011),Vector2(0.068,0.024),Vector2(0.027,0.021)]
++			Shapes.spoke(parent,"ForgedWheel_"+kind,polygon,angle,side,magnesium)
+ 	var cap := VisualGeometry.cylinder(parent,0.042,0.20,Vector3.ZERO,metal,true)
+ 	cap.rotation.z = PI*0.5
+ 	for bolt: int in range(3):
+diff --git a/game/vehicle/kart_model.gd b/game/vehicle/kart_model.gd
+index a3e069327..5ef9cd047 100644
+--- a/game/vehicle/kart_model.gd
++++ b/game/vehicle/kart_model.gd
+@@ -217,12 +217,12 @@ static func build_nose(car: CarVisual) -> void:
+ 	var accent: Material = car.paint_materials.accent
+ 	var trim: Material = CompactFinish.rubber(Color("171e22"))
+ 	var kind: String = str(car.customisation.hood)
+-	var suffix: String = "" if kind=="stock" else "_"+kind
++	var suffix: String = Kits.suffix(kind)
+ 	# Keep the entire broad nose ahead of the front tyres' full steering sweep.
+ 	Panels.formed(p,"NoseLowerReturn"+suffix,[Vector4(-1.40,0.50,0.185,0.018),Vector4(-1.375,0.68,0.185,0.025),Vector4(-1.25,0.735,0.19,0.028),Vector4(-1.195,0.60,0.19,0.020)],trim,s)
+ 	var nose_profile: Array[Vector4] = [Vector4(-1.40,0.49,0.255,0.045),Vector4(-1.385,0.63,0.265,0.070),Vector4(-1.345,0.70,0.280,0.085),Vector4(-1.245,0.72,0.285,0.095),Vector4(-1.212,0.65,0.275,0.080),Vector4(-1.20,0.59,0.260,0.055)]
+ 	nose_profile = Kits.nose_profile(kind,nose_profile)
+-	Panels.formed(p,"SculptedFrontFairing"+suffix,nose_profile,paint,s)
++	Kits.panel(p,"SculptedFrontFairing"+suffix,nose_profile,paint,s,kind)
+ 	var nose: MeshInstance3D = p.get_child(-1)
+ 	_fitted_inlay(p,"NoseInlayKeyline"+suffix,nose,nose_profile,0.075,0.18,0.96,trim,s,0.0007)
+ 	_fitted_inlay(p,"NoseCenterInlay"+suffix,nose,nose_profile,0.065,0.18,0.96,accent,s)
+@@ -230,7 +230,7 @@ static func build_nose(car: CarVisual) -> void:
+ 	p.add_child(fairing)
+ 	var fairing_profile: Array[Vector4] = [Vector4(-1.235,0.13,0.37,0.032),Vector4(-0.87,0.155,0.425,0.035),Vector4(-0.64,0.19,0.515,0.045),Vector4(-0.41,0.175,0.565,0.037),Vector4(-0.35,0.145,0.55,0.027)]
+ 	fairing_profile = Kits.fairing_profile(kind,fairing_profile)
+-	Panels.formed(fairing,"NassauFairing"+suffix,fairing_profile,paint,s)
++	Kits.panel(fairing,"NassauFairing"+suffix,fairing_profile,paint,s,kind)
+ 	_fitted_inlay(p,"FairingInlayKeyline"+suffix,fairing.get_child(-1),fairing_profile,0.072,0.06,0.94,trim,s,0.0007)
+ 	_fitted_inlay(p,"FairingCenterInlay"+suffix,fairing.get_child(-1),fairing_profile,0.064,0.06,0.94,accent,s)
+ 	Detail.nose(car,CompactFinish.alloy(Color("6e7778")))
+@@ -241,14 +241,14 @@ static func build_pods(car: CarVisual) -> void:
+ 	var paint: Material = car.paint_materials.body
+ 	var accent: Material = car.paint_materials.accent
+ 	var kind: String = str(car.customisation.body)
+-	var suffix: String = "" if kind=="stock" else "_"+kind
++	var suffix: String = Kits.suffix(kind)
+ 	for side: float in [-1.0,1.0]:
+ 		var pod := Node3D.new()
+ 		pod.position.x = side*0.535
+ 		p.add_child(pod)
+ 		var pod_profile: Array[Vector4] = [Vector4(-0.60,0.075,0.28,0.045),Vector4(-0.48,0.155,0.28,0.095),Vector4(-0.12,0.160,0.29,0.105),Vector4(0.34,0.147,0.275,0.09),Vector4(0.49,0.10,0.25,0.05)]
+ 		pod_profile = Kits.pod_profile(kind,pod_profile)
+-		Panels.formed(pod,"FormedSidePod"+suffix,pod_profile,paint,s)
++		Kits.panel(pod,"FormedSidePod"+suffix,pod_profile,paint,s,kind,true)
+ 		_fitted_inlay(pod,"PodInsetStripe"+suffix,pod.get_child(-1),pod_profile,0.047,0.17,0.84,accent,s)
+ 	Detail.pods(car,CompactFinish.rubber(Color("171e22")),CompactFinish.alloy(Color("6e7778")))
+ 
+diff --git a/game/vehicle/vehicle_customisation.gd b/game/vehicle/vehicle_customisation.gd
+index a283152ba..f991965d6 100644
+--- a/game/vehicle/vehicle_customisation.gd
++++ b/game/vehicle/vehicle_customisation.gd
+@@ -24,15 +24,23 @@ const DESCRIPTIONS: Dictionary = {
+ const KIT_CARS: Array[String] = ["compact","kart"]
+ const KART_LABELS: Dictionary = {"hood":"Nose","aero":"Rear bumper","rims":"Rims","body":"Side pods"}
+ const KART_OPTIONS: Dictionary = {
+-	"hood":[["stock","Original"],["sprint","Sprint nose"],["enduro","Endurance nose"],["wedge","Wedge nose"]],
+-	"aero":[["stock","Original"],["loop","Wraparound bumper"],["blade","Wide rear bumper"],["twin","Twin rear bumper"]],
+-	"rims":[["stock","Original"],["three","Three spoke"],["six","Split six"],["disc","Disc wheel"]],
+-	"body":[["stock","Original"],["sprint","Sprint pods"],["enduro","Endurance pods"],["wedge","Wedge pods"]]}
++	"hood":[["stock","Original"],["sprint","Sprint nose"],["enduro","Endurance nose"],["wedge","Wedge nose"],
++		["arrow","Arrow nose"],["split","Channel nose"],["shield","Shield nose"],["retro","Rounded nose"]],
++	"aero":[["stock","Original"],["loop","Wraparound bumper"],["blade","Wide rear bumper"],["twin","Twin rear bumper"],
++		["oval","Oval bumper"],["cage","Cross brace bumper"],["panel","Slotted bumper"],["chevron","Chevron bumper"]],
++	"rims":[["stock","Original"],["three","Three spoke"],["six","Split six"],["disc","Disc wheel"],
++		["turbine","Turbine wheel"],["mesh","Cross mesh wheel"],["dish","Deep dish wheel"],["star","Five point wheel"]],
++	"body":[["stock","Original"],["sprint","Sprint pods"],["enduro","Endurance pods"],["wedge","Wedge pods"],
++		["blade","Blade pods"],["channel","Channel pods"],["rounded","Rounded pods"],["box","Box pods"]]}
+ const KART_DESCRIPTIONS: Dictionary = {
+-	"hood":["Factory finish","Low broad nose with a narrow fairing","Raised nose with a broad fairing","Angular nose with a tapered fairing"],
+-	"aero":["Factory finish","Moulded bumper with swept ends","Broad low bumper on twin stays","Two bumper rails on twin stays"],
+-	"rims":["Factory finish","Three broad magnesium spokes","Six paired magnesium spokes","Recessed solid magnesium face"],
+-	"body":["Factory finish","Low side pods with short returns","Deep side pods with raised shoulders","Tapered side pods with angular shoulders"]}
++	"hood":["Factory finish","Low broad nose with a narrow fairing","Raised nose with a broad fairing","Angular nose with a tapered fairing",
++		"Pointed nose with a raised centre spine","Twin shoulders around a recessed channel","Broad flat shield with squared shoulders","Rounded bumper with a slender fairing"],
++	"aero":["Factory finish","Moulded bumper with swept ends","Broad low bumper on twin stays","Two bumper rails on twin stays",
++		"Closed oval rail with a centre badge","Tubular frame with diagonal cross braces","Moulded shield with two open slots","Angled bumper with a low centre"],
++	"rims":["Factory finish","Three broad magnesium spokes","Six paired magnesium spokes","Recessed solid magnesium face",
++		"Nine swept solid turbine blades","Crossed bronze spokes with an open centre","Deep bowl with a rolled outer lip","Five broad forged spokes"],
++	"body":["Factory finish","Low side pods with short returns","Deep side pods with raised shoulders","Tapered side pods with angular shoulders",
++		"Low sharp shoulders and a thin trailing edge","Deep channel between raised shoulders","Smooth rounded capsule side pods","Squared side pods with broad flat sides"]}
+ 
+ static func supported(id: String) -> bool:
+ 	return id in KIT_CARS
+diff --git a/game/vehicle/kart_kit_shapes.gd b/game/vehicle/kart_kit_shapes.gd
+new file mode 100644
+index 000000000..d73d89d0a
+--- /dev/null
++++ b/game/vehicle/kart_kit_shapes.gd
+@@ -0,0 +1,80 @@
++extends RefCounted
++## Closed, bevelled kit sections and forged spoke solids; immutable native meshes.
++const G = preload("res://vehicle/kart_geometry.gd")
++
++static func _triangle(tool: SurfaceTool, a: Vector3, b: Vector3, c: Vector3, normal: Vector3) -> void:
++	if (b-a).cross(c-a).length_squared()<1e-18: return
++	tool.set_normal(normal.normalized())
++	var points: Array[Vector3] = [a,b,c]
++	if (b-a).cross(c-a).dot(normal)>0: points.reverse()
++	for point: Vector3 in points:
++		tool.set_uv(Vector2(point.x,point.y))
++		tool.add_vertex(point)
++
++static func _point(station: Vector4, section: Vector2) -> Vector3:
++	return Vector3(section.x*station.y,station.z+section.y*station.w,station.x)
++
++static func formed(parent: Node3D, label: String, profile: Array[Vector4], contour: Array[Vector2], material: Material, simple: bool, fillet: float = 0.08) -> MeshInstance3D:
++	return G.attach(parent,label+"|kit-section-v1|"+str(profile)+"|"+str(contour)+"|"+str(fillet)+("|simple" if simple else "|full"),material,func() -> ArrayMesh:
++		var ring: Array[Vector2] = []
++		for index: int in range(contour.size()):
++			var corner: Vector2 = contour[index]
++			var a: Vector2 = corner.lerp(contour[posmod(index-1,contour.size())],fillet)
++			var b: Vector2 = corner.lerp(contour[(index+1)%contour.size()],fillet)
++			for step: int in range(2 if simple else 3):
++				var t: float = float(step)/(1 if simple else 2)
++				ring.append(a.lerp(corner,t).lerp(corner.lerp(b,t),t))
++		var clockwise: bool = Geometry2D.is_polygon_clockwise(PackedVector2Array(ring))
++		var tool := SurfaceTool.new()
++		tool.begin(Mesh.PRIMITIVE_TRIANGLES)
++		for side: int in range(ring.size()):
++			var a: Vector2 = ring[side]
++			var b: Vector2 = ring[(side+1)%ring.size()]
++			var delta: Vector2 = b-a
++			var outward: Vector2 = Vector2(-delta.y,delta.x) if clockwise else Vector2(delta.y,-delta.x)
++			var mesh: ArrayMesh = G.surface(1,profile.size()-1,func(u: float,v: float) -> Vector3:
++				return _point(preload("res://vehicle/kart_bodywork.gd")._station(profile,v),a.lerp(b,u)),func(_u: float,_v: float) -> Vector3:
++				return Vector3(outward.x,outward.y,0))
++			tool.append_from(mesh,0,Transform3D.IDENTITY)
++		var caps: PackedInt32Array = Geometry2D.triangulate_polygon(PackedVector2Array(ring))
++		assert(not caps.is_empty(),"Kart kit section must close without crossing itself")
++		for end: int in [0,1]:
++			var station: Vector4 = profile[0] if end==0 else profile[-1]
++			for face: int in range(caps.size()/3):
++				_triangle(tool,_point(station,ring[caps[face*3]]),_point(station,ring[caps[face*3+1]]),_point(station,ring[caps[face*3+2]]),Vector3(0,0,-1 if end==0 else 1))
++		tool.index()
++		tool.generate_tangents()
++		return tool.commit())
++
++static func spoke(parent: Node3D, label: String, polygon: Array[Vector2], angle: float, side: float, material: Material) -> void:
++	# Polygon coordinates are radial/tangential. A shallow bevel closes both faces.
++	G.attach(parent,label+"|forged-v1|"+str(polygon)+"|"+str(angle)+"|"+str(side),material,func() -> ArrayMesh:
++		var center := Vector2.ZERO
++		for point: Vector2 in polygon: center += point/polygon.size()
++		var point3 := func(point: Vector2, x: float) -> Vector3:
++			return Vector3(side*x,sin(angle)*point.x+cos(angle)*point.y,cos(angle)*point.x-sin(angle)*point.y)
++		var tool := SurfaceTool.new()
++		tool.begin(Mesh.PRIMITIVE_TRIANGLES)
++		var rings: Array[PackedVector3Array] = []
++		for layer: int in range(4):
++			var ring := PackedVector3Array()
++			for point: Vector2 in polygon:
++				var q: Vector2 = point.move_toward(center,0.0015) if layer in [0,3] else point
++				ring.append(point3.call(q,[0.092,0.094,0.118,0.120][layer]))
++			rings.append(ring)
++		var clockwise: bool = Geometry2D.is_polygon_clockwise(PackedVector2Array(polygon))
++		for layer: int in range(3):
++			for index: int in range(polygon.size()):
++				var next: int = (index+1)%polygon.size()
++				var d: Vector2 = polygon[next]-polygon[index]
++				var normal2: Vector2 = Vector2(-d.y,d.x) if clockwise else Vector2(d.y,-d.x)
++				var normal: Vector3 = point3.call(center+normal2,0)-point3.call(center,0)
++				_triangle(tool,rings[layer][index],rings[layer][next],rings[layer+1][next],normal)
++				_triangle(tool,rings[layer][index],rings[layer+1][next],rings[layer+1][index],normal)
++		var caps: PackedInt32Array = Geometry2D.triangulate_polygon(PackedVector2Array(polygon))
++		assert(not caps.is_empty())
++		for layer: int in [0,3]:
++			for face: int in range(caps.size()/3):
++				_triangle(tool,rings[layer][caps[face*3]],rings[layer][caps[face*3+1]],rings[layer][caps[face*3+2]],Vector3(side*(-1 if layer==0 else 1),0,0))
++		tool.index()
++		return tool.commit())
+diff --git a/game/vehicle/kart_kit_shapes.gd.uid b/game/vehicle/kart_kit_shapes.gd.uid
+new file mode 100644
+index 000000000..cf240cdd0
+--- /dev/null
++++ b/game/vehicle/kart_kit_shapes.gd.uid
+@@ -0,0 +1 @@
++uid://d3rmje17txosd
+diff --git a/game/tests/test_kart_kit_variety.gd b/game/tests/test_kart_kit_variety.gd
+new file mode 100644
+index 000000000..77f86582b
+--- /dev/null
++++ b/game/tests/test_kart_kit_variety.gd
+@@ -0,0 +1,108 @@
++extends SceneTree
++## Actual mesh depth samples quantify visible shape differences and tyre clearance.
++const G = preload("res://vehicle/kart_geometry.gd")
++var checks: int = 0
++var failures: int = 0
++var output: String = "res://../docs/evidence/kart-variety-2026-10-29/shape"
++var measurements: Array[Dictionary] = []
++func _initialize() -> void: run.call_deferred()
++func check(ok: bool, label: String) -> void:
++	checks += 1
++	if not ok:
++		failures += 1
++		print("FAIL: "+label)
++
++func part_meshes(car: CarVisual, category: String) -> Array[Dictionary]:
++	var result: Array[Dictionary] = []
++	for frame: Node3D in car.kit_frames[category]:
++		for mesh: MeshInstance3D in frame.find_children("*","MeshInstance3D",true,false):
++			result.append({"node":mesh,"rays":mesh.mesh.generate_triangle_mesh(),"to_mesh":mesh.global_transform.affine_inverse()})
++	return result
++
++func depth_map(car: CarVisual, category: String, meshes: Array[Dictionary]) -> PackedFloat32Array:
++	var samples := PackedFloat32Array()
++	for row: int in range(20):
++		for col: int in range(32):
++			var u: float = (col+0.5)/32
++			var v: float = (row+0.5)/20
++			var origin: Vector3
++			var direction: Vector3
++			match category:
++				"hood": origin = Vector3(lerpf(-0.78,0.78,u),2,lerpf(-1.50,-0.32,v)); direction = Vector3.DOWN
++				"body": origin = Vector3(lerpf(-0.75,0.75,u),2,lerpf(-0.62,0.52,v)); direction = Vector3.DOWN
++				"aero": origin = Vector3(lerpf(-0.80,0.80,u),lerpf(0.06,0.42,v),2); direction = Vector3.FORWARD
++				"rims": origin = Vector3(2,lerpf(0.05,0.39,v),lerpf(-1.06,-0.70,u)); direction = Vector3.LEFT
++			origin = car.global_transform*origin
++			direction = (car.global_basis*direction).normalized()
++			var nearest: float = INF
++			for mesh: Dictionary in meshes:
++				var hit: Dictionary = mesh.rays.intersect_ray(mesh.to_mesh*origin,mesh.to_mesh.basis*direction)
++				if not hit.is_empty(): nearest = minf(nearest,origin.distance_to(mesh.node.global_transform*hit.position))
++			samples.append(-1 if is_inf(nearest) else nearest/HandlingConfig.BODY_SCALE)
++	return samples
++
++func difference(a: PackedFloat32Array, b: PackedFloat32Array) -> float:
++	var union: int = 0
++	var different: int = 0
++	for index: int in range(a.size()):
++		if a[index]<0 and b[index]<0: continue
++		union += 1
++		if (a[index]<0)!=(b[index]<0) or absf(a[index]-b[index])>0.004: different += 1
++	return float(different)/maxi(1,union)
++
++func clearance(car: CarVisual, meshes: Array[Dictionary]) -> float:
++	var minimum: float = INF
++	var inverse: Transform3D = car.global_transform.affine_inverse()
++	for part: Dictionary in meshes:
++		var mesh: MeshInstance3D = part.node
++		var transform: Transform3D = inverse*mesh.global_transform
++		for surface: int in range(mesh.mesh.get_surface_count()):
++			for raw: Vector3 in mesh.mesh.surface_get_arrays(surface)[Mesh.ARRAY_VERTEX]:
++				var point: Vector3 = transform*raw
++				for center: Vector3 in car.wheel_rest_positions:
++					for steering: float in ([-0.60,-0.30,0.0,0.30,0.60] if center.z<0 else [0.0]):
++						var local: Vector3 = Basis(Vector3.UP,steering).transposed()*(point-center)
++						var outside: float = maxf(absf(local.x)-0.137,Vector2(local.y,local.z).length()-0.22)
++						minimum = minf(minimum,outside)
++	return minimum
++
++func run() -> void:
++	for arg: String in OS.get_cmdline_user_args():
++		if arg.begins_with("--evidence-root="): output = arg.trim_prefix("--evidence-root=")
++	DirAccess.make_dir_recursive_absolute(ProjectSettings.globalize_path(output))
++	for simple: bool in [false,true]:
++		var car := CarVisual.new()
++		car.vehicle_id = "kart"
++		car.simple_model = simple
++		car.editable_kits = true
++		car.batch_parts = false
++		root.add_child(car)
++		while not car.model_ready: await process_frame
++		for category: String in VehicleCustomisation.CATEGORIES:
++			var previous: Dictionary = {}
++			for option: Array in VehicleCustomisation.options(category,"kart"):
++				car.graphics.restore_originals()
++				var value: Dictionary = VehicleCustomisation.defaults()
++				value[category] = option[0]
++				car.change_kit_parts(value)
++				var meshes: Array[Dictionary] = part_meshes(car,category)
++				var current: PackedFloat32Array = depth_map(car,category,meshes)
++				var distances: Dictionary = {}
++				for old: String in previous:
++					var amount: float = difference(current,previous[old])
++					distances[old] = amount
++					check(amount>=0.08,"visible shape difference >=8% "+category+"/"+str(option[0])+" vs "+old+" simple="+str(simple))
++				previous[str(option[0])] = current
++				var gap: float = INF if category=="rims" else clearance(car,meshes)
++				if category!="rims": check(gap>=-0.001,"kit clears complete tyre steering sweep "+category+"/"+str(option[0]))
++				var valid: bool = true
++				for part: Dictionary in meshes:
++					for surface: int in range(part.node.mesh.get_surface_count()):
++						for normal: Vector3 in part.node.mesh.surface_get_arrays(surface)[Mesh.ARRAY_NORMAL]: valid = valid and normal.is_finite() and normal.length_squared()>0.5
++				check(valid,"finite usable kit normals")
++				measurements.append({"simple":simple,"category":category,"option":option[0],"depth_difference":distances,"tyre_gap":null if is_inf(gap) else gap})
++		car.free()
++		await process_frame
++	FileAccess.open(output.path_join("report.json"),FileAccess.WRITE).store_string(JSON.stringify({"checks":checks,"failures":failures,"measurements":measurements},"\t"))
++	print("KART_KIT_VARIETY: %d checks, %d failures" % [checks,failures])
++	quit(1 if failures else 0)
+diff --git a/game/tests/test_kart_kit_variety.gd.uid b/game/tests/test_kart_kit_variety.gd.uid
+new file mode 100644
+index 000000000..63abc9316
+--- /dev/null
++++ b/game/tests/test_kart_kit_variety.gd.uid
+@@ -0,0 +1 @@
++uid://dbu1vhd1v1blr
+diff --git a/scripts/translations/kart_variety.tsv b/scripts/translations/kart_variety.tsv
+new file mode 100644
+index 000000000..0f9805caa
+--- /dev/null
++++ b/scripts/translations/kart_variety.tsv
+@@ -0,0 +1,33 @@
++# English|fr|es|de|pt_BR|ja|ko|nl|it|fi|sv|nb
++Arrow nose|Nez en flèche|Morro de flecha|Pfeilnase|Bico em flecha|アローノーズ|화살형 노즈|Pijlneus|Muso a freccia|Nuolikeula|Pilnos|Pilnese
++Channel nose|Nez rainuré|Morro acanalado|Kanalnase|Bico com canal|チャンネルノーズ|채널 노즈|Kanaalneus|Muso scanalato|Urakeula|Kanalnos|Kanalnese
++Shield nose|Nez bouclier|Morro de escudo|Schildnase|Bico escudo|シールドノーズ|방패형 노즈|Schildneus|Muso a scudo|Kilpikeula|Sköldnos|Skjoldnese
++Rounded nose|Nez arrondi|Morro redondeado|Runde Nase|Bico arredondado|ラウンドノーズ|둥근 노즈|Ronde neus|Muso arrotondato|Pyöreä keula|Rundad nos|Avrundet nese
++Oval bumper|Pare-chocs ovale|Parachoques ovalado|Ovaler Stoßfänger|Para-choque oval|オーバルバンパー|타원형 범퍼|Ovale bumper|Paraurti ovale|Soikea puskuri|Oval stötfångare|Oval støtfanger
++Cross brace bumper|Pare-chocs à croisillons|Parachoques con crucetas|Kreuzstreben-Stoßfänger|Para-choque com travessas|クロスブレースバンパー|교차 보강 범퍼|Bumper met kruisschoren|Paraurti con rinforzi incrociati|Ristikkopuskuri|Krysstagad stötfångare|Kryssavstivet støtfanger
++Slotted bumper|Pare-chocs ajouré|Parachoques ranurado|Geschlitzter Stoßfänger|Para-choque com aberturas|スロットバンパー|슬롯형 범퍼|Bumper met sleuven|Paraurti con feritoie|Aukkopuskuri|Slitsad stötfångare|Støtfanger med åpninger
++Chevron bumper|Pare-chocs en chevron|Parachoques en V|V-förmiger Stoßfänger|Para-choque em V|V字バンパー|V자형 범퍼|V-vormige bumper|Paraurti a V|V-puskuri|V-formad stötfångare|V-formet støtfanger
++Turbine wheel|Roue turbine|Rueda turbina|Turbinenrad|Roda turbina|タービンホイール|터빈 휠|Turbinewiel|Ruota a turbina|Turbiinivanne|Turbinhjul|Turbinhjul
++Cross mesh wheel|Roue à rayons croisés|Rueda de radios cruzados|Kreuzspeichenrad|Roda de raios cruzados|クロスメッシュホイール|교차 메시 휠|Kruisspaakwiel|Ruota a raggi incrociati|Ristikkovanne|Korsekrat hjul|Krysseiket hjul
++Deep dish wheel|Roue à déport profond|Rueda de garganta profunda|Tiefbettfelge|Roda de borda profunda|ディープディッシュホイール|딥 디시 휠|Diep schotelwiel|Ruota a canale profondo|Syvä vanne|Djup fälg|Dyp felg
++Five point wheel|Roue à cinq branches|Rueda de cinco puntas|Fünfsternrad|Roda de cinco pontas|5本スポークホイール|5각 스포크 휠|Vijfsterwiel|Ruota a cinque punte|Tähtivanne|Femstjärnigt hjul|Femstjernet hjul
++Blade pods|Pontons profilés|Pontones afilados|Klingen-Seitenkästen|Carenagens em lâmina|ブレードポッド|블레이드 포드|Bladvormige zijpods|Pance a lama|Teräsivukatteet|Bladpontoner|Bladpontonger
++Channel pods|Pontons rainurés|Pontones acanalados|Kanal-Seitenkästen|Carenagens com canal|チャンネルポッド|채널 포드|Kanaalvormige zijpods|Pance scanalate|Urasivukatteet|Kanalpontoner|Kanalpontonger
++Rounded pods|Pontons arrondis|Pontones redondeados|Runde Seitenkästen|Carenagens arredondadas|ラウンドポッド|둥근 포드|Ronde zijpods|Pance arrotondate|Pyöreät sivukatteet|Rundade sidopontoner|Avrundede sidepontonger
++Box pods|Pontons carrés|Pontones cuadrados|Kasten-Seitenkästen|Carenagens quadradas|ボックスポッド|박스형 포드|Vierkante zijpods|Pance squadrate|Kulmikkaat sivukatteet|Fyrkantiga sidopontoner|Firkantede sidepontonger
++Pointed nose with a raised centre spine|Nez pointu avec arête centrale surélevée|Morro puntiagudo con nervio central elevado|Spitze Nase mit erhöhtem Mittelsteg|Bico pontudo com nervura central elevada|中央に高い稜線を持つ尖ったノーズ|중앙 능선이 솟은 뾰족한 노즈|Spitse neus met verhoogde middenrib|Muso appuntito con nervatura centrale rialzata|Terävä keula korotetulla keskiharjalla|Spetsig nos med upphöjd mittrygg|Spiss nese med hevet midtrygg
++Twin shoulders around a recessed channel|Deux épaules autour d'une rainure en retrait|Dos hombros alrededor de un canal rebajado|Zwei Schultern um einen vertieften Kanal|Duas bordas elevadas ao redor de um canal rebaixado|くぼんだ溝の両側に立つ肩部|오목한 채널 양옆의 높은 숄더|Twee schouders rond een verdiept kanaal|Due spalle attorno a un canale incassato|Kaksi hartiaa upotetun uran ympärillä|Två skuldror runt en nedsänkt kanal|To skuldre rundt en nedsenket kanal
++Broad flat shield with squared shoulders|Large bouclier plat aux épaules carrées|Escudo ancho y plano con hombros cuadrados|Breiter flacher Schild mit kantigen Schultern|Escudo largo e plano com bordas quadradas|角張った肩部を持つ幅広の平面シールド|각진 숄더가 있는 넓고 평평한 실드|Breed vlak schild met vierkante schouders|Scudo largo e piatto con spalle squadrate|Leveä ja litteä kilpi kulmikkailla hartioilla|Bred platt sköld med kantiga skuldror|Bredt flatt skjold med kantede skuldre
++Rounded bumper with a slender fairing|Pare-chocs arrondi avec carénage fin|Parachoques redondeado con carenado delgado|Runder Stoßfänger mit schlanker Verkleidung|Para-choque arredondado com carenagem fina|丸いバンパーと細身のフェアリング|둥근 범퍼와 날씬한 페어링|Ronde bumper met slanke kuip|Paraurti arrotondato con carenatura sottile|Pyöreä puskuri ja kapea kate|Rundad stötfångare med smal kåpa|Avrundet støtfanger med smal kåpe
++Closed oval rail with a centre badge|Barre ovale fermée avec plaque centrale|Barra ovalada cerrada con placa central|Geschlossener Ovalbügel mit Mittelschild|Barra oval fechada com placa central|中央バッジ付きの閉じた楕円フレーム|중앙 배지가 있는 닫힌 타원 프레임|Gesloten ovale buis met middenplaat|Barra ovale chiusa con piastra centrale|Suljettu soikea kehys keskikilvellä|Sluten oval ram med mittplatta|Lukket oval ramme med midtplate
++Tubular frame with diagonal cross braces|Cadre tubulaire avec renforts diagonaux croisés|Marco tubular con refuerzos diagonales cruzados|Rohrrahmen mit diagonalen Kreuzstreben|Estrutura tubular com reforços diagonais cruzados|斜めのクロス補強を備えたパイプフレーム|대각선 교차 보강이 있는 튜브 프레임|Buizenframe met diagonale kruisschoren|Telaio tubolare con rinforzi diagonali incrociati|Putkirunko vinottaisilla ristituilla|Rörram med diagonala krysstag|Rørramme med diagonale kryssstag
++Moulded shield with two open slots|Bouclier moulé à deux ouvertures|Escudo moldeado con dos ranuras abiertas|Geformter Schild mit zwei offenen Schlitzen|Escudo moldado com duas aberturas|2つの開口部を持つ成形シールド|두 개의 열린 슬롯이 있는 성형 실드|Gevormd schild met twee open sleuven|Scudo sagomato con due feritoie aperte|Muotoiltu kilpi kahdella avoimella aukolla|Formad sköld med två öppna slitsar|Formet skjold med to åpne slisser
++Angled bumper with a low centre|Pare-chocs anguleux à centre bas|Parachoques angular con centro bajo|Gewinkelter Stoßfänger mit tiefer Mitte|Para-choque angular com centro baixo|中央が低いV字形バンパー|중앙이 낮은 각진 범퍼|Hoekige bumper met laag midden|Paraurti angolato con centro basso|Kulmikas puskuri matalalla keskiosalla|Vinklad stötfångare med låg mitt|Vinklet støtfanger med lavt midtparti
++Nine swept solid turbine blades|Neuf pales de turbine pleines et courbées|Nueve palas de turbina sólidas y curvas|Neun geschwungene massive Turbinenschaufeln|Nove pás de turbina sólidas e curvas|後方に流れる9枚のソリッドタービンブレード|뒤로 휘어진 일체형 터빈 블레이드 9개|Negen gebogen massieve turbinebladen|Nove pale piene e ricurve a turbina|Yhdeksän kaarevaa yhtenäistä turbiinilapaa|Nio svepta solida turbinblad|Ni buede massive turbinblader
++Crossed bronze spokes with an open centre|Rayons en bronze croisés avec centre ouvert|Radios de bronce cruzados con centro abierto|Gekreuzte Bronzespeichen mit offener Mitte|Raios de bronze cruzados com centro aberto|開いた中央部を持つ交差ブロンズスポーク|중앙이 열린 교차 청동 스포크|Gekruiste bronzen spaken met open midden|Raggi incrociati in bronzo con centro aperto|Ristikkäiset pronssipuolat ja avoin keskiosa|Korsade bronsekrar med öppen mitt|Kryssede bronseeiker med åpent midtparti
++Deep bowl with a rolled outer lip|Creux profond avec bord extérieur roulé|Cuenco profundo con borde exterior enrollado|Tiefe Schale mit gerolltem Außenrand|Cavidade profunda com borda externa arredondada|丸めた外周リップを持つ深いボウル形状|말린 바깥 립이 있는 깊은 접시형 구조|Diepe kom met gerolde buitenrand|Incavo profondo con bordo esterno arrotondato|Syvä kuppi pyöristetyllä ulkoreunalla|Djup skål med rundad ytterkant|Dyp skål med avrundet ytterkant
++Five broad forged spokes|Cinq larges branches forgées|Cinco radios anchos forjados|Fünf breite geschmiedete Speichen|Cinco raios largos forjados|幅広の鍛造5本スポーク|넓은 단조 스포크 5개|Vijf brede gesmede spaken|Cinque larghe razze forgiate|Viisi leveää taottua puolaa|Fem breda smidda ekrar|Fem brede smidde eiker
++Low sharp shoulders and a thin trailing edge|Épaules basses et vives avec bord arrière fin|Hombros bajos y afilados con borde trasero fino|Flache scharfe Schultern und dünne Hinterkante|Bordas baixas e afiadas com extremidade traseira fina|低く鋭い肩部と薄い後縁|낮고 날카로운 숄더와 얇은 뒷전|Lage scherpe schouders en dunne achterrand|Spalle basse e affilate con bordo posteriore sottile|Matalat terävät hartiat ja ohut takareuna|Låga skarpa skuldror och tunn bakkant|Lave skarpe skuldre og tynn bakkant
++Deep channel between raised shoulders|Rainure profonde entre des épaules surélevées|Canal profundo entre hombros elevados|Tiefer Kanal zwischen erhöhten Schultern|Canal profundo entre bordas elevadas|高い肩部の間にある深い溝|높은 숄더 사이의 깊은 채널|Diep kanaal tussen verhoogde schouders|Canale profondo tra spalle rialzate|Syvä ura korotettujen hartioiden välissä|Djup kanal mellan upphöjda skuldror|Dyp kanal mellom hevede skuldre
++Smooth rounded capsule side pods|Pontons lisses en forme de capsule arrondie|Pontones suaves y redondeados en forma de cápsula|Glatte runde Seitenkästen in Kapselform|Carenagens suaves e arredondadas em cápsula|滑らかな丸いカプセル型サイドポッド|매끄럽고 둥근 캡슐형 사이드 포드|Gladde ronde capsulevormige zijpods|Pance lisce e arrotondate a capsula|Sileät pyöreät kapselinmuotoiset sivukatteet|Släta rundade kapselformade sidopontoner|Glatte avrundede kapselformede sidepontonger
++Squared side pods with broad flat sides|Pontons carrés aux larges flancs plats|Pontones cuadrados con lados anchos y planos|Kantige Seitenkästen mit breiten flachen Seiten|Carenagens quadradas com laterais largas e planas|幅広の平らな側面を持つ角型サイドポッド|넓고 평평한 측면의 박스형 사이드 포드|Vierkante zijpods met brede vlakke zijkanten|Pance squadrate con fianchi larghi e piatti|Kulmikkaat sivukatteet leveillä tasaisilla kyljillä|Fyrkantiga sidopontoner med breda plana sidor|Firkantede sidepontonger med brede flate sider

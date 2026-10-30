@@ -1,0 +1,607 @@
+--- a/game/ui/profile_car.gd
++++ b/game/ui/profile_car.gd
+@@ -54,7 +54,7 @@
+ 		preview.name = "ProfileCarPicture"
+ 		add_child(preview)
+ 		MenuStyle.fill(preview)
+-	if vehicle_id == vehicle: return
++	if vehicle_id == vehicle and preview.texture == preload("res://ui/header_car_icons.gd").texture(vehicle,records): return
+ 	vehicle_id = vehicle
+ 	if preview.texture == null or not is_visible_in_tree():
+ 		_settle()
+@@ -72,7 +72,7 @@
+ 	return picture
+ 
+ func _change_picture() -> void:
+-	var target: Texture2D = preload("res://ui/header_car_icons.gd").texture(vehicle_id)
++	var target: Texture2D = preload("res://ui/header_car_icons.gd").texture(vehicle_id,records)
+ 	if preview.texture == target: return
+ 	_outgoing = _picture()
+ 	_outgoing.name = "PreviousProfileCarPicture"
+@@ -112,7 +112,7 @@
+ 	# Reset every offset. Moving an anchored picture back to zero can preserve
+ 	# a size from its previous parent while this retained widget is reattached.
+ 	MenuStyle.fill(preview)
+-	if not vehicle_id.is_empty(): preview.texture = preload("res://ui/header_car_icons.gd").texture(vehicle_id)
++	if not vehicle_id.is_empty(): preview.texture = preload("res://ui/header_car_icons.gd").texture(vehicle_id,records)
+ 
+ func _visibility_changed() -> void:
+ 	if not is_visible_in_tree(): _settle()
+--- a/game/ui/header_car_icons.gd
++++ b/game/ui/header_car_icons.gd
+@@ -1,13 +1,28 @@
+ extends RefCounted
+-## Small imported PNGs, baked offline. The header never builds a car or viewport.
++## Header widgets only display textures. Equipped appearances are cached by App.
++const Build = preload("res://core/build_identity.gd")
++const VERSION: String = "header-equipped-1"
++const CUSTOM_LIMIT: int = 14
+ const SIZE := Vector2i(176,112)
+ const DIRECTORY: String = "res://assets/menu/header_cars_v1/"
+ static var images: Dictionary = {}
+ static var texture_loads: int = 0
++static var customized: Dictionary = {}
+ 
+-static func texture(vehicle: String) -> Texture2D:
++static func texture(vehicle: String, records: LocalRecords = null) -> Texture2D:
+ 	var id: String = VehicleCatalog.valid_id(vehicle)
++	if records != null:
++		var key: String = appearance_key(id,records)
++		if customized.has(key): return customized[key]
+ 	if not images.has(id):
+ 		images[id] = load(DIRECTORY+id+".png") as Texture2D
+ 		texture_loads += 1
+ 	return images[id]
++
++static func appearance_key(vehicle: String, records: LocalRecords) -> String:
++	return JSON.stringify([VERSION,Build.ID,RenderingServer.get_current_rendering_method(),records.path,vehicle,VehicleLivery.for_car(records.settings,vehicle),VehicleCustomisation.for_car(records.settings,vehicle)],"",true).sha256_text()
++
++static func publish(key: String, pixels: Image) -> void:
++	pixels.generate_mipmaps()
++	if customized.size() >= CUSTOM_LIMIT: customized.erase(customized.keys()[0])
++	customized[key] = ImageTexture.create_from_image(pixels)
+--- a/game/ui/header_car_picker.gd
++++ b/game/ui/header_car_picker.gd
+@@ -31,10 +31,16 @@
+ 	for index: int in range(VehicleCatalog.IDS.size()):
+ 		var id: String = VehicleCatalog.IDS[index]
+ 		if id == VehicleCatalog.selected: continue
+-		popup.add_icon_item(Icons.texture(id),VehicleCatalog.CLASSES[index],index)
++		popup.add_icon_item(Icons.texture(id,records),VehicleCatalog.CLASSES[index],index)
+ 		var row: int = popup.item_count-1
+ 		popup.set_item_icon_max_width(row,88)
+ 	popup.set_focused_item(0)
++
++func refresh_picture(vehicle: String) -> void:
++	var popup: PopupMenu = get_popup()
++	for row: int in range(popup.item_count):
++		if VehicleCatalog.IDS[popup.get_item_id(row)] == vehicle:
++			popup.set_item_icon(row,Icons.texture(vehicle,records))
+ 
+ func _choose(index: int) -> void:
+ 	if not is_inside_tree() or not is_visible_in_tree(): return
+--- a/game/tests/capture_profile_car.gd
++++ b/game/tests/capture_profile_car.gd
+@@ -19,7 +19,7 @@
+ 
+ func picture_ready(icon: Control) -> void:
+ 	var deadline: int = Time.get_ticks_msec()+10000
+-	while Time.get_ticks_msec() < deadline and (icon.preview.texture != Icons.texture(VehicleCatalog.selected) or icon.preview.modulate != Color.WHITE or icon.preview.position != Vector2.ZERO): await process_frame
++	while Time.get_ticks_msec() < deadline and (icon.preview.texture != Icons.texture(VehicleCatalog.selected,icon.records) or icon.preview.modulate != Color.WHITE or icon.preview.position != Vector2.ZERO): await process_frame
+ 
+ func key(code: Key) -> void:
+ 	var event := InputEventKey.new()
+@@ -165,13 +165,15 @@
+ 		var parts: Dictionary = VehicleCustomisation.defaults()
+ 		parts.hood = "cowl"
+ 		parts.aero = "splitwing"
+-		var standard_picture: Texture2D = app.account_button.get_node("MenuProfileCar").preview.texture
+ 		app.records.settings.vehicle_liveries = {"compact":paint}
+ 		app.records.settings.vehicle_customisation = {"compact":parts}
+ 		report.appearance_save = app.records.save_records()
++		var appearance_deadline: int = Time.get_ticks_msec()+60000
++		while not app.header_car_cache.idle() and Time.get_ticks_msec()<appearance_deadline: await process_frame
++		await picture_ready(app.account_button.get_node("MenuProfileCar"))
+ 		await shot("customised-compact")
+ 		var icon: Control = app.account_button.get_node("MenuProfileCar")
+-		report.standard_picture_kept = icon.preview.texture == standard_picture and app.records.settings.vehicle_liveries.compact == paint and app.records.settings.vehicle_customisation.compact == parts
++		report.equipped_picture_cached = icon.preview.texture == Icons.texture("compact",app.records) and Icons.customized.has(Icons.appearance_key("compact",app.records)) and app.records.settings.vehicle_liveries.compact == paint and app.records.settings.vehicle_customisation.compact == parts
+ 		var preview_id: int = icon.preview.get_instance_id()
+ 		icon.refresh()
+ 		report.unchanged_render_retained = icon.preview.get_instance_id() == preview_id
+--- a/game/core/app.gd
++++ b/game/core/app.gd
+@@ -31,2 +31,3 @@
+ var appearance_sync: Node
++var header_car_cache: Node
+ var achievements: Node
+@@ -372,2 +373,7 @@
+ 	appearance_sync.changed.connect(_garage_appearance_changed)
++	header_car_cache = preload("res://ui/header_car_appearance_cache.gd").new()
++	header_car_cache.allowed = _header_car_capture_allowed
++	header_car_cache.changed.connect(_header_car_picture_ready)
++	add_child(header_car_cache)
++	header_car_cache.bind_records(records)
+ 	achievements = preload("res://backend/achievements_client.gd").new()
+@@ -715,2 +721,3 @@
+ 	var car_picker := preload("res://ui/header_car_picker.gd").new()
++	if header_car_cache != null: header_car_cache.bind_records(records)
+ 	car_picker.records = records
+@@ -1334,2 +1341,3 @@
+ 		appearance_sync.refresh()
++	if header_car_cache != null: header_car_cache.bind_records(records)
+ 	if achievements != null:
+@@ -2640,2 +2648,12 @@
+ 		_retained_garage.refresh_cosmetics()
++
++func _header_car_capture_allowed() -> bool:
++	return startup_complete and not is_instance_valid(game) and _background_work_allowed() and screen not in ["account","restoring"]
++
++func _header_car_picture_ready(vehicle: String) -> void:
++	if not is_instance_valid(account_button): return
++	var header: Control = account_button.get_node_or_null("MenuProfileCar")
++	if header != null and header.records == header_car_cache.records and vehicle == VehicleCatalog.selected: header.refresh()
++	var picker: Control = account_button.get_node_or_null("MenuCarPicker")
++	if picker != null and picker.records == header_car_cache.records: picker.refresh_picture(vehicle)
+ 
+--- /dev/null
++++ b/game/ui/header_car_appearance_cache.gd
+@@ -0,0 +1,205 @@
++extends Node
++## One cooperative capture on an equipped-appearance miss; menu visits read PNGs.
++signal changed(vehicle: String)
++const Icons = preload("res://ui/header_car_icons.gd")
++const Work = preload("res://editor/work_job.gd")
++const SIZE := Vector2i(176,112)
++const FILE_LIMIT: int = 14
++var records: LocalRecords
++var allowed: Callable
++var directory: String
++var captures: int = 0
++var disk_hits: int = 0
++var peak_worlds: int = 0
++var active_worlds: int = 0
++var canvas: SubViewport
++var studio: Control
++var _epoch: int = 0
++var _jobs: Array[Dictionary] = []
++var _current: Dictionary = {}
++var _io: RefCounted
++var _io_job: Dictionary = {}
++var _io_kind: String = ""
++var _draws: int = 0
++var _stage: String = ""
++var _debounce: Timer
++
++func _ready() -> void:
++	_debounce = Timer.new()
++	_debounce.one_shot = true
++	_debounce.wait_time = 0.35
++	_debounce.timeout.connect(_scan)
++	add_child(_debounce)
++	set_process(false)
++
++func bind_records(value: LocalRecords) -> void:
++	if records == value: return
++	if records != null and records.appearance_committed.is_connected(_committed): records.appearance_committed.disconnect(_committed)
++	_epoch += 1
++	_debounce.stop()
++	_jobs.clear()
++	_current = {}
++	_release()
++	if _io != null: _io.cancel()
++	_io_job = {}
++	records = value
++	if records != null:
++		directory = records.path.get_base_dir().path_join("header_appearance_icons")
++		records.appearance_committed.connect(_committed)
++		_scan()
++
++func _committed() -> void:
++	_debounce.start()
++
++func _scan() -> void:
++	if records == null: return
++	for vehicle: String in VehicleCatalog.IDS:
++		var paint: Dictionary = VehicleLivery.for_car(records.settings,vehicle)
++		var parts: Dictionary = VehicleCustomisation.for_car(records.settings,vehicle)
++		var key: String = Icons.appearance_key(vehicle,records)
++		if paint == VehicleLivery.defaults(vehicle) and parts == VehicleCustomisation.defaults():
++			changed.emit(vehicle)
++			continue
++		if Icons.customized.has(key):
++			changed.emit(vehicle)
++			continue
++		if _current.get("key") == key or _io_job.get("key") == key: continue
++		var pending: bool = false
++		for job: Dictionary in _jobs:
++			if job.key == key: pending = true
++		if pending: continue
++		for index: int in range(_jobs.size()-1,-1,-1):
++			if _jobs[index].vehicle == vehicle: _jobs.remove_at(index)
++		_jobs.append({"vehicle":vehicle,"paint":paint,"parts":parts,"key":key,"epoch":_epoch,"read":true})
++	set_process(not _jobs.is_empty() or _io != null or canvas != null)
++
++func _valid(job: Dictionary) -> bool:
++	return not job.is_empty() and records != null and job.epoch == _epoch and job.key == Icons.appearance_key(job.vehicle,records)
++
++func idle() -> bool:
++	return _jobs.is_empty() and _io == null and canvas == null and _debounce.is_stopped()
++
++func _process(_delta: float) -> void:
++	if _io != null and _io.done:
++		var result: Dictionary = _io.result if _io.result is Dictionary else {}
++		_io = null
++		if _valid(_io_job):
++			if result.get("image") is Image:
++				if _io_kind == "read": disk_hits += 1
++				Icons.publish(_io_job.key,result.image)
++				changed.emit(_io_job.vehicle)
++			elif _io_kind == "read" and DisplayServer.get_name() != "headless":
++				_io_job.read = false
++				_jobs.push_front(_io_job)
++		_io_job = {}
++		_io_kind = ""
++	if not allowed.is_valid() or not bool(allowed.call()):
++		if canvas != null:
++			if _valid(_current): _jobs.push_front(_current)
++			_release()
++		return
++	if canvas != null and not _valid(_current): _release()
++	if _stage == "build" and studio.presentation_ready:
++		load("res://ui/profile_car.gd").apply_presentation(studio)
++		_stage = "draw"
++		_draws = 5
++		RenderingServer.frame_post_draw.connect(_after_draw)
++	if _stage == "draw":
++		canvas.render_target_update_mode = SubViewport.UPDATE_ONCE
++		studio.viewport.render_target_update_mode = SubViewport.UPDATE_ONCE
++	if canvas == null and _io == null:
++		while not _jobs.is_empty():
++			var job: Dictionary = _jobs.pop_front()
++			if not _valid(job): continue
++			if Icons.customized.has(job.key): changed.emit(job.vehicle); continue
++			if job.read:
++				_io_job = job
++				_io_kind = "read"
++				_io = Work.start(_read.bind(directory.path_join(job.key+".png")),get_tree())
++			else:
++				_current = job
++				canvas = SubViewport.new()
++				canvas.size = SIZE
++				canvas.disable_3d = true
++				canvas.transparent_bg = true
++				canvas.render_target_update_mode = SubViewport.UPDATE_DISABLED
++				add_child(canvas)
++				studio = load("res://ui/profile_car.gd").make_preview(job.vehicle,job.paint,job.parts)
++				studio.size = Vector2(SIZE)
++				studio.cooperative_build = true
++				studio.cache_rest_pose = false
++				_stage = "build"
++				canvas.add_child(studio)
++				active_worlds += 1
++				canvas.tree_exited.connect(func() -> void: active_worlds -= 1,CONNECT_ONE_SHOT)
++				peak_worlds = maxi(peak_worlds,active_worlds)
++			break
++	if idle(): set_process(false)
++
++func _after_draw() -> void:
++	if canvas == null or _stage != "draw": return
++	_draws -= 1
++	if _draws > 0: return
++	if _valid(_current):
++		var pixels: Image = canvas.get_texture().get_image()
++		captures += 1
++		_io_job = _current
++		_io_kind = "write"
++		_io = Work.start(_write.bind(directory,_current.key,pixels),get_tree())
++	_release()
++
++func _release() -> void:
++	if RenderingServer.frame_post_draw.is_connected(_after_draw): RenderingServer.frame_post_draw.disconnect(_after_draw)
++	if is_instance_valid(canvas):
++		remove_child(canvas)
++		canvas.queue_free()
++	canvas = null
++	studio = null
++	_current = {}
++	_stage = ""
++
++func _exit_tree() -> void:
++	if records != null and records.appearance_committed.is_connected(_committed): records.appearance_committed.disconnect(_committed)
++	if is_instance_valid(_debounce): _debounce.stop()
++	_release()
++	if _io != null: _io.cancel()
++	_io = null
++	_io_job.clear()
++	_jobs.clear()
++	records = null
++	allowed = Callable()
++
++static func _read(cancelled: Callable, path: String) -> Dictionary:
++	var file := FileAccess.open(path,FileAccess.READ)
++	if file == null or file.get_length() > 131072 or cancelled.call(): return {}
++	var bytes: PackedByteArray = file.get_buffer(file.get_length())
++	if bytes.size()<33 or bytes.slice(0,8)!=PackedByteArray([137,80,78,71,13,10,26,10]) or bytes.slice(16,24)!=PackedByteArray([0,0,0,176,0,0,0,112]): return {}
++	var pixels := Image.new()
++	if pixels.load_png_from_buffer(bytes)!=OK or pixels.get_size()!=SIZE: return {}
++	return {"image":pixels}
++
++static func _write(cancelled: Callable, path: String, key: String, pixels: Image) -> Dictionary:
++	pixels.convert(Image.FORMAT_RGBA8)
++	for y: int in range(SIZE.y):
++		if cancelled.call(): return {}
++		for x: int in range(SIZE.x):
++			var color: Color = pixels.get_pixel(x,y)
++			if color.a > 0 and color.a < 1:
++				pixels.set_pixel(x,y,Color(minf(1,color.r/color.a),minf(1,color.g/color.a),minf(1,color.b/color.a),color.a))
++	if DirAccess.make_dir_recursive_absolute(path)!=OK: return {"image":pixels}
++	var destination: String = path.path_join(key+".png")
++	var temporary: String = path.path_join(key+"-"+str(Time.get_ticks_usec())+".tmp.png")
++	if pixels.save_png(temporary)==OK:
++		if cancelled.call():
++			DirAccess.remove_absolute(temporary)
++			return {}
++		if FileAccess.file_exists(destination): DirAccess.remove_absolute(destination)
++		if DirAccess.rename_absolute(temporary,destination)!=OK: DirAccess.remove_absolute(temporary)
++	var folder := DirAccess.open(path)
++	if folder == null: return {} if cancelled.call() else {"image":pixels}
++	var files: Array[Dictionary] = []
++	for name: String in folder.get_files():
++		if name.ends_with(".png") and name.trim_suffix(".png").length()==64 and name.trim_suffix(".png").is_valid_hex_number(): files.append({"name":name,"time":FileAccess.get_modified_time(path.path_join(name))})
++	files.sort_custom(func(a: Dictionary,b: Dictionary) -> bool: return a.time<b.time)
++	while files.size()>FILE_LIMIT: DirAccess.remove_absolute(path.path_join(files.pop_front().name))
++	return {} if cancelled.call() else {"image":pixels}
+--- /dev/null
++++ b/game/ui/header_car_appearance_cache.gd.uid
+@@ -0,0 +1 @@
++uid://c6moau6jikqnl
+--- /dev/null
++++ b/game/tests/test_header_equipped_cache.gd
+@@ -0,0 +1,186 @@
++extends SceneTree
++## Equipped picture correctness, bounded cold work and warm/disk/account behavior.
++const Icons = preload("res://ui/header_car_icons.gd")
++const Profile = preload("res://ui/profile_car.gd")
++var checks: int = 0
++var failures: int = 0
++var app: Node
++var output: String
++
++func _initialize() -> void: run.call_deferred()
++func check(ok: bool, label: String) -> void:
++	checks += 1
++	if not ok: failures += 1; print("FAIL: ",label)
++
++func frames(count: int = 5) -> void:
++	for _frame: int in range(count): await process_frame
++
++func ready_cache() -> void:
++	var deadline: int = Time.get_ticks_msec()+60000
++	while not app.header_car_cache.idle() and Time.get_ticks_msec()<deadline: await process_frame
++	check(app.header_car_cache.idle(),"equipped picture work completes within deadline")
++	await create_timer(0.3).timeout
++	await frames()
++
++func picture() -> Texture2D:
++	return app.account_button.get_node("MenuProfileCar").preview.texture
++
++func save_look(paint: Dictionary, parts: Dictionary) -> void:
++	app.records.settings.vehicle_liveries = {"compact":paint.duplicate(true)}
++	app.records.settings.vehicle_customisation = {"compact":parts.duplicate(true)}
++	check(app.records.save_records()==OK,"save isolated equipped appearance")
++
++func shot(label: String) -> void:
++	await RenderingServer.frame_post_draw
++	check(root.get_texture().get_image().save_png(output.path_join(label+".png"))==OK,"native "+label)
++
++func compare_reference(paint: Dictionary, parts: Dictionary) -> void:
++	var canvas := SubViewport.new()
++	canvas.size = Icons.SIZE
++	canvas.disable_3d = true
++	canvas.transparent_bg = true
++	canvas.render_target_update_mode = SubViewport.UPDATE_ALWAYS
++	root.add_child(canvas)
++	var reference: Control = Profile.make_preview("compact",paint,parts)
++	reference.size = Vector2(Icons.SIZE)
++	canvas.add_child(reference)
++	Profile.apply_presentation(reference)
++	for _frame: int in range(7): await RenderingServer.frame_post_draw
++	var expected: Image = canvas.get_texture().get_image()
++	var actual: Image = picture().get_image()
++	var difference: float = 0
++	for y: int in range(0,Icons.SIZE.y,2):
++		for x: int in range(0,Icons.SIZE.x,2):
++			var a: Color = actual.get_pixel(x,y)
++			var b: Color = expected.get_pixel(x,y)
++			if b.a>0 and b.a<1: b = Color(minf(1,b.r/b.a),minf(1,b.g/b.a),minf(1,b.b/b.a),b.a)
++			difference += absf(a.r-b.r)+absf(a.g-b.g)+absf(a.b-b.b)+absf(a.a-b.a)
++	check(difference/float(Icons.SIZE.x*Icons.SIZE.y)<0.02,"cached image matches actual current paint AND fitted-kit reference: "+str(difference))
++	canvas.queue_free()
++	await frames()
++
++func run() -> void:
++	if DisplayServer.get_name()=="headless": quit(1); return
++	OS.set_environment("BMT_API_URL","")
++	root.size = Vector2i(1280,720)
++	root.gui_embed_subwindows = true
++	output = ProjectSettings.globalize_path("res://../docs/evidence/header-car-appearance-cache-2026-10-26/"+RenderingServer.get_current_rendering_method())
++	DirAccess.make_dir_recursive_absolute(output)
++	Icons.customized.clear()
++	var folder: String = "user://header-equipped-"+TrackLibrary.unique_id()
++	app = load("res://core/app.gd").new()
++	app.records = LocalRecords.new(folder.path_join("records.json"))
++	app.library = TrackLibrary.new(folder.path_join("tracks"))
++	app.cloud_root_override = folder.path_join("cloud")
++	root.add_child(app)
++	while not app.startup_complete: await process_frame
++	app.race_area_mode = "free"
++	app._show_screen("tracks")
++	app._select_header_vehicle(0)
++	await ready_cache()
++	var cache: Node = app.header_car_cache
++	check(cache.captures==0,"stock pictures require no runtime captures")
++	var paint: Dictionary = VehicleLivery.defaults("compact")
++	paint.colors.body = "c82e37"
++	paint.pattern = str(LiveryCatalog.patterns[3].id)
++	var parts: Dictionary = VehicleCustomisation.defaults()
++	parts.hood = "cowl"
++	parts.aero = "splitwing"
++	save_look(paint,parts)
++	await ready_cache()
++	var key: String = Icons.appearance_key("compact",app.records)
++	check(Icons.customized.has(key) and picture()==Icons.texture("compact",app.records),"header receives the exact equipped appearance")
++	check(picture()!=Icons.texture("compact"),"customized car does not use the stock picture")
++	check(cache.captures==1 and cache.peak_worlds==1 and cache.canvas==null,"one cold capture, with no retained renderer")
++	check(app.account_button.find_children("*","Node3D",true,false).is_empty() and app.account_button.find_children("*","SubViewport",true,false).is_empty(),"header and dropdown stay pure 2D")
++	await shot("equipped-header")
++	await compare_reference(paint,parts)
++	var first_texture: Texture2D = picture()
++	var captures: int = cache.captures
++	for _repeat: int in range(30):
++		app.account_button.get_node("MenuCarPicker")._populate()
++		app._refresh_account_car()
++	await ready_cache()
++	check(cache.captures==captures and picture()==first_texture,"menu refreshes reuse the exact cached image without rendering")
++	app._select_header_vehicle(6)
++	await create_timer(0.3).timeout
++	var picker: MenuButton = app.account_button.get_node("MenuCarPicker")
++	picker.show_popup()
++	await create_timer(0.3).timeout
++	var popup: PopupMenu = picker.get_popup()
++	var row: int = popup.get_item_index(0)
++	check(row>=0 and popup.get_item_icon(row)==first_texture,"dropdown uses the same equipped picture")
++	check(popup.item_count==6 and popup.get_item_index(6)==-1,"active car stays excluded")
++	await shot("equipped-dropdown")
++	popup.hide()
++	app._select_header_vehicle(0)
++	await create_timer(0.3).timeout
++	for screen: String in ["settings","tracks","profile","tracks"]:
++		app._show_screen(screen)
++		await frames()
++	await ready_cache()
++	check(cache.captures==captures and picture()==first_texture,"navigation retains the equipped cache")
++	# Rebind after clearing memory: the persisted PNG must avoid any model build.
++	Icons.customized.clear()
++	cache.bind_records(null)
++	cache.bind_records(app.records)
++	await ready_cache()
++	check(cache.disk_hits>0 and cache.captures==captures,"a fresh memory cache loads the saved PNG without rendering")
++	check(picture()==Icons.texture("compact",app.records),"disk hit updates the retained header")
++	# A corrupt private cache file is a miss, not a permanent wrong picture.
++	Icons.customized.clear()
++	var broken := FileAccess.open(cache.directory.path_join(key+".png"),FileAccess.WRITE)
++	broken.store_string("invalid cache")
++	broken.close()
++	cache.bind_records(null)
++	cache.bind_records(app.records)
++	await ready_cache()
++	check(cache.captures==captures+1 and Icons.customized.has(key),"invalid cache regenerates one correct picture")
++	captures = cache.captures
++	for color: String in ["224466","225577","226688","227799"]:
++		paint.colors.body = color
++		save_look(paint,parts)
++	await ready_cache()
++	check(cache.captures==captures+1,"rapid saved edits debounce to one final capture")
++	check(picture()==Icons.texture("compact",app.records),"latest saved paint wins")
++	await compare_reference(paint,parts)
++	var previous_kit_pixels: PackedByteArray = picture().get_image().get_data()
++	var before_kit: int = cache.captures
++	parts.body = str(VehicleCustomisation.OPTIONS.body[1][0])
++	save_look(paint,parts)
++	await ready_cache()
++	check(cache.captures==before_kit+1 and picture().get_image().get_data()!=previous_kit_pixels,"changing only the equipped kit refreshes the actual picture")
++	await compare_reference(paint,parts)
++	await shot("changed-kit")
++	var allow_menu_work: Callable = cache.allowed
++	cache.allowed = func() -> bool: return false
++	var before_pause: int = cache.captures
++	paint.colors.body = "779922"
++	save_look(paint,parts)
++	await create_timer(0.5).timeout
++	check(cache.canvas==null and cache.captures==before_pause,"blocked background work never creates a model")
++	cache.allowed = allow_menu_work
++	await ready_cache()
++	check(cache.captures==before_pause+1,"returning to allowed menus resolves one pending appearance")
++	# Replace the records owner while a different appearance is queued/in flight.
++	paint.colors.body = "ac3377"
++	save_look(paint,parts)
++	cache._scan()
++	await frames(2)
++	var stale_key: String = Icons.appearance_key("compact",app.records)
++	var other := LocalRecords.new(folder.path_join("other/records.json"))
++	cache.bind_records(other)
++	await ready_cache()
++	check(not Icons.customized.has(stale_key) and cache.records==other and cache.canvas==null,"old-owner work cannot publish after account replacement")
++	app.records = other
++	app._show_screen("settings")
++	await ready_cache()
++	check(picture()==Icons.texture("compact"),"new account never borrows the previous account's picture")
++	check(Icons.customized.size()<=Icons.CUSTOM_LIMIT,"custom texture memory stays bounded")
++	var report := FileAccess.open(output.path_join("report.json"),FileAccess.WRITE)
++	report.store_string(JSON.stringify({"checks":checks,"failures":failures,"captures":cache.captures,"disk_hits":cache.disk_hits,"peak_worlds":cache.peak_worlds,"header_3d_nodes":app.account_button.find_children("*","Node3D",true,false).size(),"header_subviewports":app.account_button.find_children("*","SubViewport",true,false).size()},"\t"))
++	report.close()
++	app.queue_free()
++	await frames()
++	print("HEADER_EQUIPPED_CACHE: %d checks, %d failures" % [checks,failures])
++	quit(1 if failures else 0)
+--- /dev/null
++++ b/game/tests/test_header_equipped_cache.gd.uid
+@@ -0,0 +1 @@
++uid://by5b5vivyr4y0
+--- /dev/null
++++ b/game/tests/probe_header_equipped_baseline.gd
+@@ -0,0 +1,16 @@
++extends "res://tests/test_app.gd"
++## Isolated comparison of App shutdown diagnostics without the new cache service.
++func _initialize() -> void:
++	var source: GDScript = load("res://core/app.gd")
++	source.source_code = FileAccess.get_file_as_string("res://../docs/evidence/header-car-appearance-cache-2026-10-26/before/app.gd.txt")
++	if OS.get_environment("BMT_HEADER_CACHE_CONTROL") == "1":
++		# Keep concurrent App changes; disable only this task's cache service.
++		source.source_code = FileAccess.get_file_as_string("res://core/app.gd")
++		var start: int = source.source_code.find("\theader_car_cache = preload(")
++		var end: int = source.source_code.find("\tachievements = preload(",start)
++		assert(start >= 0 and end > start)
++		source.source_code = source.source_code.substr(0,start)+source.source_code.substr(end)
++	# The concurrent sync implementation retired this assignment; adapt only its API.
++	source.source_code = source.source_code.replace("\tappearance_sync.clean_poll_allowed = func() -> bool: return not is_instance_valid(game)\n","")
++	if source.reload()!=OK: quit(1); return
++	super._initialize()
+--- /dev/null
++++ b/game/tests/probe_header_equipped_baseline.gd.uid
+@@ -0,0 +1 @@
++uid://becynow0glqro
+--- /dev/null
++++ b/docs/HEADER_CAR_APPEARANCE_CACHE_2026_10_26.md
+@@ -0,0 +1,30 @@
++# Equipped header car pictures (2026-10-26)
++
++HCA01: Header and dropdown pictures show the saved, equipped livery and body-kit parts. HCA02: Reuse lightweight pictures instead of retaining a model in each menu widget. HCA03: Keep account, navigation and latest-selection guards. R01/Q01: Record native verification, original failures and a task-only review checkpoint.
++
++The user's current-livery/kit correction supersedes the standard-appearance restriction in `HEADER_CAR_LIGHTWEIGHT_2026_10_26.md`. The header and six alternative dropdown rows still display shared 176×112 textures. The active car remains excluded, clicking the car opens the dropdown, and clicking the name opens Profile. Existing slot bounds, stationary crossfade and dropdown motion remain.
++
++An App-owned cache captures an uncached equipped appearance through the existing simple-model profile studio, including saved livery colours/pattern/stickers and fitted parts. It uses one temporary cooperative studio, releases it after capture, and performs PNG decoding, alpha correction and encoding through one owned worker. Saved changes debounce for 0.35 seconds. Ordinary menu visits reuse the same texture; a new process can load the saved PNG without rebuilding a car. Default stock appearances use the bundled pictures without capturing anything.
++
++The cache key includes normalized appearance, car, records owner path, build, renderer and cache version. Customized textures and private PNG files are each bounded to 14 entries; PNG reads validate format, dimensions and a 128 KiB encoded-size limit. Account replacement cancels queued work and rejects stale completions. Live races, loading/background-work fences and account/restoring pages defer model captures. Unbought Garage previews do not alter the saved header appearance. A missing picture temporarily uses the bundled stock image until its current equipped capture is ready.
++
++Runtime changes are `game/ui/header_car_appearance_cache.gd`, `header_car_icons.gd`, `header_car_picker.gd`, three texture lookups in `profile_car.gd`, and App service binding/refresh hooks. The profile studio, car geometry, camera and materials remain unchanged. Concurrent appearance-sync API retirement and progressive Garage entry in App are preserved and excluded from the task patch.
++
++`test_header_equipped_cache.gd` runs the actual App with isolated local records and no service connection. It compares the cached image with an independently constructed equipped reference, verifies livery-only and kit-only refresh, rapid-edit debounce, disk reuse, corrupt-cache recovery, deferred work, account replacement, navigation and bounded resource ownership. The header/dropdown have zero Node3D nodes and zero SubViewports; the cache's measured peak is one temporary studio, with none retained when settled. `capture_profile_car.gd` keeps its existing input/save/name/motion checks and now expects the equipped cached picture.
++
++Actual commands use pinned Godot 4.7.2 through `scripts/dev.ps1`, with `APPDATA` and `LOCALAPPDATA` redirected to `build/header-car-appearance-appdata`:
++
++```powershell
++powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1 TestScript -ScriptPath res://tests/test_header_equipped_cache.gd -Graphical -RenderingMethod gl_compatibility
++powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1 TestScript -ScriptPath res://tests/test_header_equipped_cache.gd -Graphical -RenderingMethod mobile
++powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1 TestApp -CommandTimeoutSeconds 180
++powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1 TestScript -ScriptPath res://tests/test_menu_responsiveness.gd
++powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1 TestScript -ScriptPath res://tests/probe_header_equipped_baseline.gd -CommandTimeoutSeconds 180
++powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1 TestScript -ScriptPath res://tests/test_script_parse.gd
++```
++
++The interaction run additionally sets `BMT_PROFILE_CAR_OUTPUT=res://../docs/evidence/header-car-appearance-cache-2026-10-26/interaction` and `BMT_HEADER_MOTION_REVIEW=1`, then runs `TestScript -ScriptPath res://tests/capture_profile_car.gd -Graphical -RenderingMethod gl_compatibility -CommandTimeoutSeconds 180`. The current-App/no-cache control sets `BMT_HEADER_CACHE_CONTROL=1` before running the probe. The isolated pinned-engine UID helper in `build/header-car-texture-import/create_equipped_cache_uids.gd` creates only the three new script UIDs.
++
++Both native renderer suites pass 45 checks, including five cold/changed captures, a disk hit, maximum one studio and zero header worlds/viewports. Native interaction review retains all seven stock-car pictures, equipped caching, six visible alternatives, keyboard/mouse selection and saves, name navigation, long names and motion cleanup at three window sizes. Existing menu responsiveness passes 35 checks. Detailed final commands, diagnostics, retained intermediate results, hashes and patch verification are recorded in [the evidence report](evidence/header-car-appearance-cache-2026-10-26/report.json). Initial App shutdown closure leaks were corrected by binding the capture permission to a named App method and explicitly clearing cache-owned callbacks/jobs on exit. The current App suite passes all 141 assertions, but its runner exits 1 on a headless Dummy GeometryInstance PagedAllocator shutdown error. A control using current App with only this cache service disabled reproduces that same error; the task-start App control passes 141 assertions without it. Those controls change source only in isolated process memory and retain the concurrent sync API adapter. This separate shutdown diagnostic remains open; test assertions are unchanged.
++
++Review the [equipped header](evidence/header-car-appearance-cache-2026-10-26/gl_compatibility/equipped-header.png), [equipped dropdown](evidence/header-car-appearance-cache-2026-10-26/gl_compatibility/equipped-dropdown.png) and [kit-only update](evidence/header-car-appearance-cache-2026-10-26/gl_compatibility/changed-kit.png). Reload is required. Cold capture latency and phone frame/memory/thermal performance still require owner/device acceptance. No device attachment check or device test, APK, real authentication/purchase, owner-save/live mutation, deployment, staging, commit, merge or owner-process restart was performed.

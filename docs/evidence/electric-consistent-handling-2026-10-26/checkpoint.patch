@@ -1,0 +1,724 @@
+--- a/AGENTS.md
++++ b/AGENTS.md
+@@ -1,3 +1,8 @@
++<!-- ELECTRIC-CONSISTENT-HANDLING-20261026 -->
++## Consistent electric keyboard/controller handling (2026-10-26)
++ECH01-ECH03/R01/Q01: Owner still finds slow handling too agile and faster handling inconsistent; controls are keyboard/controller. Electric-12 replaces overlapping electric steering fades with2.0/s buildup,6.0/s unwind,0.26rad maximum angle and continuous9m+speed-squared/18 curvature envelope. Full lock builds in0.5s at every speed; power/lift shares the bound, with no40-60km/h restoration of tight lock. Actual200ms keyboard course response falls35.2% at5km/h,41.9% at10,87.5% at20 and89.1% at30. Held radius20/30/40/60kmh is10.72/12.86/15.86/24.44m and increases through190; usable parking lock retained. Initial overly wide proposal and late diagnostic aiming fail tight circuits; final finite-rate pure-pursuit planning yields three five-lap circuits with zero contacts. Six other diagnostic inputs remain exact. Primary525,190-speed59/radius64/launch111/low87/release38/car60/one-pedal63/power19/balance19/response86/turn61/laps6/handling88/rewind61/parser1217, actual Game keyboard/controller App67Compatibility+67desktopMobile and backend72pass/twoexisting exclusions pass. Actual task-start straight propulsion/release/hold is exact2400ticks in each direction;190cap/braking/small launch slip remain. Physics0.73/EVa5c04a5a pin change; six other config entries/arithmetic remain. Independent17354input/five-lap verifier accepts144613ms. Owner consistency correction supersedes prior faster/tighter high-speed, drift-minimum and fixed-fast-input expectations; complete sources/failures and stronger full-range monotonic/input tests are retained. Commands, failed proposals/fixtures, native views, hashes and scoped checkpoint: docs/ELECTRIC_CONSISTENT_HANDLING_2026_10_26.md and docs/evidence/electric-consistent-handling-2026-10-26/report.json. Reload/rebuild, matching verifier rollout and owner keyboard/controller feel acceptance remain. No physical-device attachment check/test, APK, purchase, live mutation, deployment, merge or owner-process restart; concurrent model/track/Garage work preserved.
++<!-- /ELECTRIC-CONSISTENT-HANDLING-20261026 -->
++
+ <!-- RIVALRY-FINALE-LAYOUT-20261026 -->
+ ## Rivalry final standings fit (2026-10-26)
+ RFL01-RFL04/R01/Q01: Fixed completed-week body keeps all five track results, highlights and bottom actions visible; only the full driver standings scroll. Hero car/crown clear section navigation, orthographic previews fit actual mesh bounds, and the redundant points-ahead/completion label is hidden while in-place errors remain. Actual clipping ancestors release stale tall-window minima. Circuit ranking copy/spacing and Perfect Week badge height also fit. Final layout1477Compatibility/1477desktopMobile, awards5384desktopMobile, App141 and parser1219 pass. Retained ranking45/1fail reproduces identically with four exact task-start UI sources reloaded only in isolated memory (49/1); its separate compact World Ranking page remains outside scope. Original finale regression5312/277fail, native before/after, hashes, commands and task-only Git-checked patch: docs/RIVALRY_FINALE_LAYOUT_2026_10_26.md and docs/evidence/rivalry-finale-layout-2026-10-26/report.json. Reload and owner/device acceptance remain. No device attachment check/test, APK, live mutation, deployment or owner-process restart; concurrent work preserved.
+--- a/game/resources/cars/electric.tres
++++ b/game/resources/cars/electric.tres
+@@ -2,7 +2,7 @@
+ [ext_resource type="Script" path="res://vehicle/handling_config.gd" id="1"]
+ [resource]
+ script = ExtResource("1")
+-version = "electric-11"
++version = "electric-12"
+ vehicle_id = "electric"
+ profile_name = "Volt"
+ rear_wheel_drive = true
+@@ -20,15 +20,14 @@
+ wheelbase = 2.46
+ track_width = 1.48
+ collision_radius = 1.40
+-steering_rate = 28.0
+-countersteering_rate = 32.0
+-steering_angle = 0.82
++steering_rate = 2.0
++countersteering_rate = 6.0
++steering_angle = 0.26
+ high_speed_steering_reduction = 0.25
+-low_speed_steering_scale = 0.29
+-low_speed_steering_rate_scale = 0.12
+ launch_lateral_response_scale = 0.02
+-low_speed_turn_radius = 6.0
+-low_speed_turn_acceleration = 9.0
++continuous_turn_radius = true
++low_speed_turn_radius = 9.0
++low_speed_turn_acceleration = 18.0
+ maximum_yaw_rate = 3.4
+ lateral_grip = 75.0
+ longitudinal_grip = 32.0
+--- a/game/vehicle/vehicle_simulation.gd
++++ b/game/vehicle/vehicle_simulation.gd
+@@ -5,7 +5,7 @@
+ 
+ const RALLY_HANDBRAKE = preload("res://vehicle/rally_handbrake.gd")
+ const BRIDGE_FLIGHT = preload("res://vehicle/bridge_flight.gd")
+-const PHYSICS_VERSION: String = "arcade-planar-0.72"
++const PHYSICS_VERSION: String = "arcade-planar-0.73"
+ const LOW_SPEED_TURN_FADE_END: float = 16.66 # Below 60 km/h, avoiding float32 endpoint arithmetic.
+ const SOIL_TORQUE_GAIN: float = 1.35 # Loose verge bite beyond pure longitudinal drag.
+ const SOIL_ROUGH_YAW_ACCELERATION: float = 1.45 # rad/s^2 peak spatial tyre deflection.
+@@ -170,14 +170,14 @@
+ 	target_yaw += state.steering * throttle * config.throttle_rotation * speed_fraction * signf(longitudinal)
+ 	if longitudinal > 1.0 and not config.progressive_handling:
+ 		target_yaw += slip * config.countersteer_assistance
+-	if config.low_speed_turn_radius > 0.0 and speed < LOW_SPEED_TURN_FADE_END:
+-		# Bound sustained curvature as well as turn-in speed. Power/lift rotation
+-		# shares this limit, so holding the pedal cannot restore a tiny circle.
+-		# Retain yaw response/inertia; blend smoothly back to the accepted tune.
+-		var radius: float = maxf(config.low_speed_turn_radius,speed*speed/config.low_speed_turn_acceleration)
++	if config.low_speed_turn_radius > 0.0 and (config.continuous_turn_radius or speed < LOW_SPEED_TURN_FADE_END):
++		# Power/lift rotation shares the steering curvature envelope. The continuous
++		# profile never restores a tighter turn at higher speed. Legacy profiles
++		# retain their low-speed fade. Yaw response and inertia still apply.
++		var radius: float = config.low_speed_turn_radius+speed*speed/config.low_speed_turn_acceleration if config.continuous_turn_radius else maxf(config.low_speed_turn_radius,speed*speed/config.low_speed_turn_acceleration)
+ 		var curvature_yaw: float = absf(longitudinal)/radius*absf(state.steering)
+ 		var bounded_yaw: float = clampf(target_yaw,-curvature_yaw,curvature_yaw)
+-		var curvature_blend: float = smoothstep(40.0/3.6,LOW_SPEED_TURN_FADE_END,speed)
++		var curvature_blend: float = 0.0 if config.continuous_turn_radius else smoothstep(40.0/3.6,LOW_SPEED_TURN_FADE_END,speed)
+ 		if curvature_blend < 1.0 and bounded_yaw != target_yaw:
+ 			target_yaw = lerpf(bounded_yaw,target_yaw,curvature_blend)
+ 	# Rear lock changes tire forces, not the front steering angle or a target radius.
+--- a/game/vehicle/handling_config.gd
++++ b/game/vehicle/handling_config.gd
+@@ -33,8 +33,9 @@
+ @export_range(0.1, 1.0, 0.01) var low_speed_steering_scale: float = 1.0 # Full scale by 8 m/s; soften parking-speed lock only.
+ @export_range(0.1, 1.0, 0.01) var low_speed_steering_rate_scale: float = 1.0 # Slow steering buildup at parking speed; retain quick unwind/countersteer.
+ @export_range(0.02, 1.0, 0.01) var launch_lateral_response_scale: float = 1.0 # Retain some sideways momentum during a powered low-speed rear-drive turn.
+-@export_range(0.0, 20.0, 0.1) var low_speed_turn_radius: float = 0.0 # Sustained centreline radius floor through 40 km/h; fades out by 60.
+-@export_range(1.0, 20.0, 0.1) var low_speed_turn_acceleration: float = 9.0 # Additional speed-dependent cornering bound, m/s squared.
++@export var continuous_turn_radius: bool = false # Apply a smooth curvature envelope at every speed, without a low-speed fade.
++@export_range(0.0, 20.0, 0.1) var low_speed_turn_radius: float = 0.0 # Base radius for continuous steering; legacy low-speed radius floor.
++@export_range(1.0, 20.0, 0.1) var low_speed_turn_acceleration: float = 9.0 # Continuous radius adds speed squared / this value; legacy acceleration bound.
+ @export_range(1.0, 3.5, 0.05) var wheelbase: float = 2.55 * BODY_SCALE
+ @export_range(6.0, 80.0, 0.25) var lateral_grip: float = 58.0 # maximum lateral acceleration
+ @export_range(6.0, 55.0, 0.25) var longitudinal_grip: float = 19.0 # maximum longitudinal acceleration
+@@ -89,6 +90,7 @@
+ 	if low_speed_steering_scale == 1.0: result.erase("low_speed_steering_scale")
+ 	if low_speed_steering_rate_scale == 1.0: result.erase("low_speed_steering_rate_scale")
+ 	if launch_lateral_response_scale == 1.0: result.erase("launch_lateral_response_scale")
++	if not continuous_turn_radius: result.erase("continuous_turn_radius")
+ 	if low_speed_turn_radius == 0.0:
+ 		result.erase("low_speed_turn_radius")
+ 		result.erase("low_speed_turn_acceleration")
+--- a/game/input/route_driver.gd
++++ b/game/input/route_driver.gd
+@@ -6,16 +6,25 @@
+ 
+ func sample(state: VehicleState, track: NativeTrack, config: HandlingConfig) -> DriveFrame:
+ 	var index: int = track.nearest_route(state.position, state.route_index)
+-	var target: Vector2 = track.route[(index + 3) % track.route.size()]
++	var speed: float = state.velocity.length()
++	var lookahead: int = 3
++	if config.continuous_turn_radius:
++		# A finite steering ramp needs an earlier target, not the old instant-lock
++		# aim point. This affects diagnostic input planning, never car physics.
++		lookahead = clampi(ceili(6.0+speed/maxf(config.steering_rate,0.1)*1.5),6,16)
++	var target: Vector2 = track.route[(index + lookahead) % track.route.size()]
+ 	var offset: Vector2 = target - state.position
+ 	var avoidance: Vector2 = track.collision_normal(state.position + state.velocity * 0.35, config.collision_radius + 0.3, state.track_elevated)
+ 	if avoidance != Vector2.ZERO:
+ 		offset += avoidance * 3.0
+ 	var desired: float = atan2(offset.x, offset.y)
+ 	var error: float = wrapf(desired - state.heading, -PI, PI)
+-	var speed: float = state.velocity.length()
+ 	var steer: float = clampf(error * 2.3 - state.yaw_rate * 0.15, -1.0, 1.0)
+-	var future: Vector2 = track.route[(index + 12) % track.route.size()] - target
++	if config.continuous_turn_radius:
++		var wheel_angle: float = config.steering_angle*(1.0-config.high_speed_steering_reduction*clampf(speed/24.0,0.0,1.0))
++		var radius: float = maxf(config.low_speed_turn_radius+speed*speed/config.low_speed_turn_acceleration,config.wheelbase/tan(wheel_angle)*config.rear_grip/config.front_grip)
++		steer = clampf(2.0*radius*sin(error)/maxf(offset.length(),1.0)-state.yaw_rate*0.15,-1.0,1.0)
++	var future: Vector2 = track.route[(index + lookahead + 9) % track.route.size()] - target
+ 	var corner: float = absf(wrapf(atan2(future.x, future.y) - desired, -PI, PI))
+ 	var target_speed: float = clampf(12.0 - corner * 10.0 - absf(error) * 8.0, 3.0, 12.0)
+ 	target_speed *= clampf(speed_scale,1.0,3.0)
+--- /dev/null
++++ b/game/tests/test_electric_consistent_handling.gd
+@@ -0,0 +1,155 @@
++extends "res://tests/test_electric_turn_radius.gd"
++
++const CONSISTENT_OUTPUT: String = "res://../docs/evidence/electric-consistent-handling-2026-10-26"
++
++func run() -> void:
++	prior_simulation = GDScript.new()
++	prior_simulation.source_code = FileAccess.get_file_as_string(CONSISTENT_OUTPUT+"/before/game__vehicle__vehicle_simulation.gd").replace("class_name VehicleSimulation","").trim_prefix("\ufeff")
++	check(prior_simulation.reload()==OK,"actual task-start simulation compiles")
++	var old: HandlingConfig = load(CONSISTENT_OUTPUT+"/before/game__resources__cars__electric.tres") as HandlingConfig
++	var current: HandlingConfig = VehicleCatalog.config("electric")
++	check(old.version=="electric-11" and current.version=="electric-12" and VehicleSimulation.PHYSICS_VERSION=="arcade-planar-0.73","new steering contract has a versioned competitive identity")
++	for field: String in ["maximum_speed","reverse_speed","mass","engine_force","braking_force","regeneration","coast_pedal","longitudinal_grip","rear_wheel_drive","single_pedal"]:
++		check(old.get(field)==current.get(field),"accepted propulsion/braking field is retained: "+field)
++	for reverse: bool in [false,true]:
++		var before_straight: RefCounted=prior_simulation.new(old)
++		var after_straight := VehicleSimulation.new(current)
++		var exact_straight: bool=true
++		for tick: int in range(2400):
++			var frame := DriveFrame.sample(0,1.0 if tick<1200 else 0.0,1.0 if reverse else 0.0)
++			before_straight.step(frame)
++			after_straight.step(frame)
++			exact_straight=exact_straight and before_straight.state.snapshot()==after_straight.state.snapshot()
++		check(exact_straight,"actual task-start straight propulsion/release/hold remains tick-exact, reverse="+str(reverse))
++	metrics.circles={}
++	var last_radius: float = 0.0
++	for kph: float in [5.0,10.0,15.0,20.0,25.0,30.0,35.0,40.0,45.0,50.0,55.0,60.0,72.0,90.0,110.0,140.0,170.0,190.0]:
++		var before: Dictionary = held_circle(old,kph/3.6,1.0,true)
++		var after: Dictionary = held_circle(current,kph/3.6,1.0)
++		var mirror: Dictionary = held_circle(current,kph/3.6,-1.0)
++		metrics.circles[str(kph)]={"before":before,"after":after}
++		check(after.angle>=TAU,"actual held input completes a circle: "+str(kph))
++		check(after.minimum_speed>kph/3.6*0.98,"speed feedback holds requested travel speed: "+str(kph))
++		check(after.radius>=last_radius*0.995,"holding the same steering never tightens the turn as speed rises: "+str(kph))
++		if kph>=15 and kph<=30: check(after.radius>before.radius*1.15,"slow sustained turn is materially calmer: "+str(kph))
++		check(is_equal_approx(after.radius,mirror.radius),"held left/right circles are symmetric: "+str(kph))
++		check(after.replay_exact,"recorded held-circle inputs replay exactly: "+str(kph))
++		last_radius=after.radius
++	for kph: float in [10.0,30.0,60.0,110.0]:
++		var full: Dictionary = metrics.circles[str(kph)].after
++		for strength: float in [0.25,0.5,0.75]:
++			var partial: Dictionary = held_circle(current,kph/3.6,strength)
++			check(partial.angle>=partial.target_angle and partial.radius>full.radius*1.1,"controller partial input retains a wider turn: "+str(kph)+"/"+str(strength))
++	# At parking speed, judge keyboard agility by the actual key-press transient;
++	# an arbitrarily huge held circle would prevent navigating tight roads.
++	metrics.keyboard_onset={}
++	for kph: float in [5.0,10.0,20.0,30.0]:
++		var old_onset: RefCounted = prior_simulation.new(old)
++		var new_onset := VehicleSimulation.new(current)
++		old_onset.state.velocity=Vector2(0,kph/3.6)
++		new_onset.state.velocity=old_onset.state.velocity
++		var keys := DriverInput.new()
++		keys.single_pedal=true
++		Input.action_press(&"steer_right",1.0)
++		Input.action_press(&"accelerate",0.25)
++		for tick: int in range(24):
++			var frame: DriveFrame=keys.sample()
++			old_onset.step(frame)
++			new_onset.step(frame)
++		check(absf(atan2(new_onset.state.velocity.x,new_onset.state.velocity.y))<absf(atan2(old_onset.state.velocity.x,old_onset.state.velocity.y))*0.75,"actual slow keyboard onset is at least 25 percent calmer: "+str(kph))
++		metrics.keyboard_onset[str(kph)]={"before_degrees":rad_to_deg(absf(atan2(old_onset.state.velocity.x,old_onset.state.velocity.y))),"after_degrees":rad_to_deg(absf(atan2(new_onset.state.velocity.x,new_onset.state.velocity.y)))}
++		keys.clear()
++	# Real action sampling covers keyboard full-lock, controller strengths and release.
++	metrics.input={}
++	for kph: float in [5.0,20.0,40.0,60.0,110.0]:
++		var sim := VehicleSimulation.new(current)
++		sim.state.velocity=Vector2(0,kph/3.6)
++		var driver := DriverInput.new()
++		driver.single_pedal=true
++		Input.action_press(&"steer_right",1.0)
++		Input.action_press(&"accelerate",0.25)
++		var first_course: float = 0.0
++		for tick: int in range(24):
++			sim.step(driver.sample())
++			if tick==23: first_course=rad_to_deg(atan2(sim.state.velocity.x,sim.state.velocity.y))
++		metrics.input[str(kph)]={"steering_200ms":sim.state.steering,"course_200ms":first_course}
++		check(sim.state.steering<0.75,"keyboard press builds steering gradually at every speed: "+str(kph))
++		driver.clear()
++		for tick: int in range(24): sim.step(DriveFrame.sample(0,0.25,0))
++		check(sim.state.steering==0.0,"keyboard release recentres without sticking: "+str(kph))
++	# Quantized changes of one km/h must not expose the old 29/40/60 speed cliffs.
++	var previous_curvature: float = INF
++	var previous_steering: float = -1.0
++	for kph: int in range(1,191):
++		var sim := VehicleSimulation.new(current)
++		sim.state.velocity=Vector2(0,float(kph)/3.6)
++		sim.state.steering=1.0
++		sim.step(DriveFrame.sample(1,0.25,0))
++		var curvature: float = absf(sim.state.yaw_rate)/(float(kph)/3.6)
++		check(curvature<=previous_curvature*1.001,"one-km/h sweep never restores tighter curvature: "+str(kph))
++		previous_curvature=curvature
++		var onset := VehicleSimulation.new(current)
++		onset.state.velocity=Vector2(0,float(kph)/3.6)
++		onset.step(DriveFrame.sample(1,0.25,0))
++		if previous_steering>=0: check(is_equal_approx(onset.state.steering,previous_steering),"steering input response is consistent across speeds: "+str(kph))
++		previous_steering=onset.state.steering
++	# Parse the configured keyboard/controller events, including analog deadzone.
++	var physical_driver := DriverInput.new()
++	physical_driver.single_pedal=true
++	var key := InputEventKey.new()
++	key.device=16
++	key.physical_keycode=KEY_D
++	key.keycode=KEY_D
++	key.pressed=true
++	Input.parse_input_event(key)
++	await process_frame
++	await process_frame
++	print("KEYBOARD_PROBE ",InputMap.event_is_action(key,&"steer_right")," ",physical_driver.sample().packed())
++	check(physical_driver.sample().steer==127,"configured keyboard D produces full right steering")
++	var release_key: InputEventKey=key.duplicate() as InputEventKey
++	release_key.pressed=false
++	Input.parse_input_event(release_key)
++	await process_frame
++	physical_driver.clear()
++	var last_strength: int = 0
++	for strength: float in [0.25,0.5,0.75,1.0]:
++		var axis := InputEventJoypadMotion.new()
++		axis.device=0
++		axis.axis=JOY_AXIS_LEFT_X
++		axis.axis_value=strength
++		Input.parse_input_event(axis)
++		await process_frame
++		var sampled: int=physical_driver.sample().steer
++		check(sampled>last_strength and sampled<=127,"controller axis retains ordered partial steering after its deadzone: "+str(strength))
++		last_strength=sampled
++	var reset_axis := InputEventJoypadMotion.new()
++	reset_axis.device=0
++	reset_axis.axis=JOY_AXIS_LEFT_X
++	reset_axis.axis_value=0.0
++	Input.parse_input_event(reset_axis)
++	await process_frame
++	physical_driver.clear()
++	# The diagnostic planning correction is opt-in; all six other drivers retain exact input.
++	var prior_driver := GDScript.new()
++	prior_driver.source_code=FileAccess.get_file_as_string(CONSISTENT_OUTPUT+"/before/game__input__route_driver.gd").replace("class_name RouteDriver","")
++	check(prior_driver.reload()==OK,"task-start diagnostic driver compiles")
++	var track := NativeTrack.read("res://tests/fixtures/legacy_tracks/slicks_ovaali3_test.json")
++	for id: String in VehicleCatalog.IDS:
++		if id=="electric": continue
++		var config: HandlingConfig=VehicleCatalog.config(id)
++		var before_driver: RefCounted=prior_driver.new()
++		var after_driver := RouteDriver.new()
++		var sim := VehicleSimulation.new(config)
++		sim.reset(track.spawn,track.spawn_heading)
++		var exact_inputs: bool=true
++		for tick: int in range(600):
++			var before_frame: DriveFrame=before_driver.sample(sim.state,track,config)
++			var after_frame: DriveFrame=after_driver.sample(sim.state,track,config)
++			exact_inputs=exact_inputs and before_frame.packed()==after_frame.packed()
++			sim.step(before_frame,track)
++		check(exact_inputs,"other car retains exact diagnostic inputs: "+id)
++	var file := FileAccess.open(CONSISTENT_OUTPUT+"/continuous-handling.json",FileAccess.WRITE)
++	file.store_string(JSON.stringify({"checks":checks,"failures":failures,"metrics":metrics},"\t"))
++	file.close()
++	print("ELECTRIC_CONSISTENT_HANDLING: %d checks, %d failures" % [checks,failures])
++	quit(1 if failures else 0)
+--- /dev/null
++++ b/game/tests/test_electric_consistent_handling.gd.uid
+@@ -0,0 +1 @@
++uid://bx3uutdflh3ld
+--- a/game/tests/test_electric_190.gd
++++ b/game/tests/test_electric_190.gd
+@@ -1,14 +1,15 @@
+ extends "res://tests/test_electric_power.gd"
+ 
+-const SPEED_OUTPUT: String = "res://../docs/evidence/electric-190-2026-10-25"
++const SPEED_OUTPUT: String = "res://../docs/evidence/electric-consistent-handling-2026-10-26"
++const SPEED_BASELINE: String = "res://../docs/evidence/electric-190-2026-10-25"
+ 
+ func run() -> void:
+-	var old: HandlingConfig = load(SPEED_OUTPUT+"/before/game__resources__cars__electric.tres") as HandlingConfig
++	var old: HandlingConfig = load(SPEED_BASELINE+"/before/game__resources__cars__electric.tres") as HandlingConfig
+ 	var current: HandlingConfig = VehicleCatalog.config("electric")
+-	check(old.version == "electric-10" and current.version == "electric-11","top-speed correction has a new handling identity")
++	check(old.version == "electric-10" and current.version == "electric-12","top-speed correction has a new handling identity")
+ 	check(absf(current.maximum_speed*3.6-190.0)<0.001,"configured top speed is 190 km/h")
+ 	for property: String in old.snapshot():
+-		if property in ["version","maximum_speed"]: continue
++		if property in ["version","maximum_speed","steering_rate","countersteering_rate","steering_angle","low_speed_steering_scale","low_speed_steering_rate_scale","low_speed_turn_radius","low_speed_turn_acceleration"]: continue
+ 		check(old.get(property)==current.get(property),"accepted field retained exactly: "+property)
+ 	var sim := VehicleSimulation.new(current)
+ 	var replay := VehicleSimulation.new(current)
+--- a/game/tests/test_electric_turn_radius.gd
++++ b/game/tests/test_electric_turn_radius.gd
+@@ -1,6 +1,6 @@
+ extends "res://tests/test_electric_power.gd"
+ 
+-const RADIUS_OUTPUT: String = "res://../docs/evidence/electric-190-2026-10-25"
++const RADIUS_OUTPUT: String = "res://../docs/evidence/electric-consistent-handling-2026-10-26"
+ const RADIUS_BASELINE: String = "res://../docs/evidence/electric-turn-radius-2026-10-25"
+ var prior_simulation: GDScript
+ 
+@@ -88,8 +88,8 @@
+ 					after.state.velocity = before.state.velocity
+ 					before.step(DriveFrame.sample(steer,gas,0))
+ 					after.step(DriveFrame.sample(steer,gas,0))
+-					high_exact = high_exact and before.state.snapshot()==after.state.snapshot()
+-	check(high_exact,"135 states at or above 60 km/h retain accepted arithmetic exactly")
++					high_exact = high_exact and absf(after.state.yaw_rate)<=absf(before.state.yaw_rate)+0.0000001
++	check(high_exact,"135 high-speed states retain calmer bounded rotation than the superseded tune")
+ 	for boundary: float in [40.0/3.6,16.66]:
+ 		var below := VehicleSimulation.new(current)
+ 		var above := VehicleSimulation.new(current)
+--- a/game/tests/test_electric_launch_drift.gd
++++ b/game/tests/test_electric_launch_drift.gd
+@@ -1,6 +1,6 @@
+ extends "res://tests/test_electric_power.gd"
+ 
+-const LAUNCH_OUTPUT: String = "res://../docs/evidence/electric-190-2026-10-25"
++const LAUNCH_OUTPUT: String = "res://../docs/evidence/electric-consistent-handling-2026-10-26"
+ const LAUNCH_BASELINE: String = "res://../docs/evidence/electric-launch-drift-2026-10-25"
+ var preceding_simulation: GDScript
+ 
+@@ -33,7 +33,7 @@
+ 	var current: HandlingConfig = VehicleCatalog.config("electric")
+ 	var no_drift: HandlingConfig = current.duplicate() as HandlingConfig
+ 	no_drift.launch_lateral_response_scale = 1.0
+-	check(old.version == "electric-8" and current.version == "electric-11" and VehicleSimulation.PHYSICS_VERSION == "arcade-planar-0.72","new tune and shared physics are versioned")
++	check(old.version == "electric-8" and current.version == "electric-12" and VehicleSimulation.PHYSICS_VERSION == "arcade-planar-0.73","new tune and shared physics are versioned")
+ 	metrics.launches = {}
+ 	for steer: float in [0.35,0.65,1.0]:
+ 		for pedal: float in [0.65,1.0]:
+@@ -45,7 +45,7 @@
+ 			check(after.early_heading < before.early_heading*0.85,"launch nose rotation is calmer: "+str(steer)+"/"+str(pedal))
+ 			check(after.launch_slip > baseline.launch_slip*1.05,"powered launch retains more sideways momentum: "+str(steer)+"/"+str(pedal))
+ 			if steer >= 0.65:
+-				check(after.launch_slip > before.launch_slip*1.3,"more launch slip than rejected electric-8: "+str(steer)+"/"+str(pedal))
++				check(after.peak_slip < before.peak_slip,"calmer total slide than the superseded electric-8 tune: "+str(steer)+"/"+str(pedal))
+ 			check(after.launch_slip < 8.0 and after.peak_slip < 8.0,"small launch drift stays bounded: "+str(steer)+"/"+str(pedal))
+ 			check(after.recovered_slip < 0.1,"straightening restores grip: "+str(steer)+"/"+str(pedal))
+ 			check(is_equal_approx(after.launch_slip,mirror.launch_slip) and is_equal_approx(after.speed,mirror.speed),"launch slip is left/right symmetric")
+@@ -58,17 +58,17 @@
+ 			gentle.step(DriveFrame.sample(1,0.25,0))
+ 			prior.step(DriveFrame.sample(1,0.25,0))
+ 		check(gentle.state.steering < prior.state.steering*0.4,"slow steering builds gently in either direction")
+-		for tick: int in range(36): gentle.step(DriveFrame.sample(1,0.25,0))
++		for tick: int in range(60): gentle.step(DriveFrame.sample(1,0.25,0))
+ 		check(gentle.state.steering == 1.0,"holding input retains full sustained steering authority")
+ 		prior.state.steering = gentle.state.steering
+ 		gentle.step(DriveFrame.sample(0,0.25,0))
+ 		prior.step(DriveFrame.sample(0,0.25,0))
+-		check(gentle.state.steering == prior.state.steering,"unwind starts at the accepted quick rate")
++		check(gentle.state.steering<1.0 and gentle.state.steering>=0.0,"unwind immediately moves toward centre")
+ 		gentle.state.steering = 1.0
+ 		prior.state.steering = 1.0
+ 		gentle.step(DriveFrame.sample(-1,0.25,0))
+ 		prior.step(DriveFrame.sample(-1,0.25,0))
+-		check(gentle.state.steering == prior.state.steering,"countersteer starts at the accepted quick rate")
++		check(gentle.state.steering<1.0,"countersteer immediately begins unwinding")
+ 	# The launch aid is opt-in, forward-only, and absent at neutral pedal or above 8 m/s.
+ 	for speed: float in [-7.0,-3.0,0.0,3.0,7.0,8.0,12.0,24.0]:
+ 		for pedal: float in [0.0,0.25,1.0]:
+--- a/game/tests/test_electric_low_speed_steering.gd
++++ b/game/tests/test_electric_low_speed_steering.gd
+@@ -1,5 +1,5 @@
+ extends "res://tests/test_electric_power.gd"
+-const LOW_OUTPUT: String = "res://../docs/evidence/electric-190-2026-10-25"
++const LOW_OUTPUT: String = "res://../docs/evidence/electric-consistent-handling-2026-10-26"
+ const LOW_BASELINE: String = "res://../docs/evidence/electric-launch-drift-2026-10-25"
+ const BASELINE: String = "res://../docs/evidence/electric-low-speed-steering-2026-10-25"
+ var previous_simulation: GDScript
+@@ -24,7 +24,7 @@
+ 	var old: HandlingConfig = load(BASELINE+"/before/electric-6.tres") as HandlingConfig
+ 	var current: HandlingConfig = VehicleCatalog.config("electric")
+ 	old.maximum_speed = current.maximum_speed
+-	check(old.version == "electric-6" and current.version == "electric-11" and VehicleSimulation.PHYSICS_VERSION == "arcade-planar-0.72","low-speed correction has new competitive identity")
++	check(old.version == "electric-6" and current.version == "electric-12" and VehicleSimulation.PHYSICS_VERSION == "arcade-planar-0.73","low-speed correction has new competitive identity")
+ 	var preceding: HandlingConfig = load(LOW_BASELINE+"/before/game__resources__cars__electric.tres") as HandlingConfig
+ 	preceding.maximum_speed = current.maximum_speed
+ 	metrics.onset = {}
+@@ -37,7 +37,7 @@
+ 			check(after.course/prior.course < (0.70 if absf(speed)<=3 else 0.90 if absf(speed)<=5 else 0.99),"further reduction versus rejected electric-8: "+str(speed)+"/"+str(steering))
+ 			var ratio: float = after.course/before.course
+ 			metrics.onset[str(speed)+"/"+str(steering)] = {"before":before,"after":after,"course_ratio":ratio,"preceding":prior,"preceding_ratio":after.course/prior.course}
+-			check(ratio < (0.48 if absf(speed)<=3 else 0.80 if absf(speed)<=5 else 0.99) and ratio > 0.05,"actual touch steering is calmer but remains responsive: "+str(speed)+"/"+str(steering))
++			check(ratio < (0.48 if absf(speed)<=3 else 0.80 if absf(speed)<=5 else 0.99) and ratio > 0.02,"actual touch steering is calmer but remains responsive: "+str(speed)+"/"+str(steering))
+ 			check(is_equal_approx(mirrored.course,after.course) and is_equal_approx(mirrored.speed,after.speed),"low-speed left/right response is symmetric: "+str(speed)+"/"+str(steering))
+ 	# Exact high-speed comparisons include sideways states, not just straight travel.
+ 	var high_exact: bool = true
+@@ -53,22 +53,24 @@
+ 					var frame := DriveFrame.sample(steer,gas,0)
+ 					before.step(frame)
+ 					after.step(frame)
+-					high_exact = high_exact and before.state.snapshot() == after.state.snapshot()
++					high_exact = high_exact and absf(after.state.yaw_rate)<=absf(before.state.yaw_rate)+0.0000001
+ 					high_cases += 1
+-	check(high_exact,"all high-speed single ticks remain exact, including broadside and lift/brake")
+-	metrics.high_speed_exact_cases = high_cases
++	check(high_exact,"all high-speed single ticks have calmer rotation, including broadside and lift/brake")
++	metrics.high_speed_bounded_cases = high_cases
+ 	for speed: float in [20.0,24.0,36.0,44.0]:
+ 		var before: RefCounted = previous_simulation.new(old)
+ 		var after := VehicleSimulation.new(current)
+ 		before.state.velocity = Vector2(0,speed)
+ 		after.state.velocity = before.state.velocity
+-		var exact: bool = true
++		var prior_rotation: float = 0.0
++		var current_rotation: float = 0.0
+ 		for tick: int in range(120):
+ 			var frame := DriveFrame.sample(sin(tick*0.05)*0.65,0.65,0)
+ 			before.step(frame)
+ 			after.step(frame)
+-			exact = exact and before.state.snapshot() == after.state.snapshot()
+-		check(exact,"accepted high-speed cornering remains tick-exact for a full second: "+str(speed))
++			prior_rotation += absf(before.state.yaw_rate)*VehicleSimulation.STEP
++			current_rotation += absf(after.state.yaw_rate)*VehicleSimulation.STEP
++		check(current_rotation<prior_rotation*0.8,"sustained high-speed steering is calmer across a full second: "+str(speed))
+ 	# Straight launch and released-pedal stopping are unchanged through the fade.
+ 	for pedal: float in [0.0,1.0]:
+ 		var before: RefCounted = previous_simulation.new(old)
+--- a/game/tests/test_electric_brake_release.gd
++++ b/game/tests/test_electric_brake_release.gd
+@@ -39,7 +39,7 @@
+ 	var current: HandlingConfig = VehicleCatalog.config("electric")
+ 	# Isolate braking/steering from the owner-requested cap and its power falloff.
+ 	old.maximum_speed = current.maximum_speed
+-	check(old.version == "electric-5" and current.version == "electric-11" and VehicleSimulation.PHYSICS_VERSION == "arcade-planar-0.72","competitive braking behavior and current low-speed tune are versioned")
++	check(old.version == "electric-5" and current.version == "electric-12" and VehicleSimulation.PHYSICS_VERSION == "arcade-planar-0.73","competitive braking behavior and current low-speed tune are versioned")
+ 	metrics.stops = {}
+ 	for speed: float in [7.0,20.0,100.0/3.6,44.0,-7.0,-20.0]:
+ 		var before: Dictionary = released_stop(old,speed,true)
+--- a/game/tests/test_electric_car.gd
++++ b/game/tests/test_electric_car.gd
+@@ -87,7 +87,7 @@
+ 	var control: VehicleSimulation = moving(22,no_rotation)
+ 	advance(corner,45,1,0,0.65)
+ 	advance(control,45,1,0,0.65)
+-	check(corner.state.heading > control.state.heading,"rear torque adds bounded power rotation")
++	check(is_equal_approx(corner.state.heading,control.state.heading),"normal-speed power rotation cannot bypass the continuous steering envelope")
+ 	# Rewind restores every canonical field; render batching cannot alter the inputs.
+ 	var replay: VehicleSimulation = moving(0)
+ 	var sim: VehicleSimulation = moving(0)
+--- a/game/tests/test_electric_car_ui.gd
++++ b/game/tests/test_electric_car_ui.gd
+@@ -136,6 +136,53 @@
+ 	check(game.frame.throttle == 0 and (released_speed-game.sim.state.velocity.length())/VehicleSimulation.STEP >= 26,"actual Game applies braking strength on the first released-pedal tick")
+ 	for tick: int in range(95): game._physics_process(VehicleSimulation.STEP)
+ 	check(game.sim.state.velocity == Vector2.ZERO,"actual Game release stops fully in Drive")
++	# Actual App keyboard and controller paths use the same finite steering ramp.
++	game.sim.state.position=track.spawn
++	game.sim.state.heading=track.spawn_heading
++	game.sim.state.velocity=game.sim.state.forward()*(20.0/3.6)
++	game.sim.state.steering=0.0
++	game.sim.state.yaw_rate=0.0
++	var keyboard := InputEventKey.new()
++	keyboard.device=16
++	keyboard.physical_keycode=KEY_D
++	keyboard.keycode=KEY_D
++	keyboard.pressed=true
++	Input.parse_input_event(keyboard)
++	await settle(2)
++	Input.action_press("accelerate",0.25)
++	for tick: int in range(24): game._physics_process(VehicleSimulation.STEP)
++	check(game.frame.steer==127,"actual Game receives full keyboard input")
++	check(game.sim.state.steering>0.39 and game.sim.state.steering<0.41,"actual Game builds keyboard steering gradually")
++	check(absf(wrapf(game.sim.state.heading-track.spawn_heading,-PI,PI))<deg_to_rad(3.0),"actual Game keyboard onset stays calm at 20 km/h")
++	var keyboard_release: InputEventKey=keyboard.duplicate() as InputEventKey
++	keyboard_release.pressed=false
++	Input.parse_input_event(keyboard_release)
++	await settle(2)
++	Input.action_release("accelerate")
++	for tick: int in range(60): game._physics_process(VehicleSimulation.STEP)
++	check(game.frame.steer==0 and game.sim.state.steering==0.0,"actual Game keyboard release recentres")
++	game.sim.state.position=track.spawn
++	game.sim.state.heading=track.spawn_heading
++	game.sim.state.velocity=game.sim.state.forward()*(20.0/3.6)
++	game.sim.state.steering=0.0
++	game.sim.state.yaw_rate=0.0
++	var controller := InputEventJoypadMotion.new()
++	controller.device=0
++	controller.axis=JOY_AXIS_LEFT_X
++	controller.axis_value=0.5
++	Input.parse_input_event(controller)
++	await settle(2)
++	Input.action_press("accelerate",0.25)
++	for tick: int in range(24): game._physics_process(VehicleSimulation.STEP)
++	check(game.frame.steer>0 and game.frame.steer<127,"actual Game receives partial controller steering")
++	check(game.sim.state.steering>0.0 and game.sim.state.steering<0.5,"actual Game retains partial controller lock")
++	var controller_release: InputEventJoypadMotion=controller.duplicate() as InputEventJoypadMotion
++	controller_release.axis_value=0.0
++	Input.parse_input_event(controller_release)
++	await settle(2)
++	game.driver.clear()
++	for tick: int in range(60): game._physics_process(VehicleSimulation.STEP)
++	check(game.frame.steer==0 and game.sim.state.steering==0.0,"actual Game controller release recentres")
+ 	await capture("race")
+ 	for method: String in ControlLayout.METHODS:
+ 		for left: bool in [false,true]:
+--- a/game/tests/test_electric_power.gd
++++ b/game/tests/test_electric_power.gd
+@@ -45,7 +45,7 @@
+ 		if argument.begins_with("--evidence-root="): output = argument.trim_prefix("--evidence-root=")
+ 	var old: HandlingConfig = load(OUTPUT+"/before/electric.tres") as HandlingConfig
+ 	var current: HandlingConfig = VehicleCatalog.config("electric")
+-	check(old != null and old.version == "electric-2" and current.version == "electric-11","actual original and current balanced competitive tunes")
++	check(old != null and old.version == "electric-2" and current.version == "electric-12","actual original and current balanced competitive tunes")
+ 	metrics.old_launch = launch(old)
+ 	metrics.new_launch = launch(current)
+ 	metrics.old_corner = corner(old,1)
+@@ -60,8 +60,8 @@
+ 	check(float(metrics.new_launch[str(20.0)]) < 1.2,"balanced electric launch reaches 72 kph within 1.2 seconds")
+ 	# The owner's follow-up rejects the initial exaggerated drift. Keep a measured
+ 	# power slide, with an upper bound and settled light-pedal cornering.
+-	check(float(metrics.new_corner.peak_slip_degrees) > 12 and float(metrics.new_corner.peak_slip_degrees) < 24 and float(metrics.new_corner.peak_slip_degrees) > float(metrics.old_corner.peak_slip_degrees)*2,"hard rear-wheel power produces a moderate slide rather than a spin")
+-	check(float(metrics.gentle_corner.peak_slip_degrees) < 8 and float(metrics.new_corner.peak_slip_degrees) > float(metrics.gentle_corner.peak_slip_degrees)*2,"progressive throttle keeps the same turn controllable")
++	check(float(metrics.new_corner.peak_slip_degrees)>0.1 and float(metrics.new_corner.peak_slip_degrees)<8,"hard-power normal-speed turn remains responsive without the superseded large slide")
++	check(float(metrics.gentle_corner.peak_slip_degrees)<8 and float(metrics.new_corner.speed)>float(metrics.gentle_corner.speed),"progressive throttle retains power authority with both turns controlled")
+ 	check(float(metrics.new_corner.released_slip_degrees) < 2 and float(metrics.new_corner.recovery_slip_degrees) < 2 and float(metrics.new_corner.recovery_speed) > 10,"lifting and unwinding catch the slide before powering away")
+ 	var lift := VehicleSimulation.new(current)
+ 	lift.state.velocity = Vector2(0,20)
+--- a/game/tests/test_electric_power_balance.gd
++++ b/game/tests/test_electric_power_balance.gd
+@@ -20,7 +20,7 @@
+ 		if argument.begins_with("--evidence-root="): output = argument.trim_prefix("--evidence-root=")
+ 	var old: HandlingConfig = load(BALANCE_OUTPUT+"/before/electric-4.tres") as HandlingConfig
+ 	var current: HandlingConfig = VehicleCatalog.config("electric")
+-	check(old.version == "electric-4" and current.version == "electric-11","versioned preceding power tune and current brake balance")
++	check(old.version == "electric-4" and current.version == "electric-12","versioned preceding power tune and current brake balance")
+ 	metrics.before_launch = launch(old)
+ 	metrics.after_launch = launch(current)
+ 	for target: float in [20.0,100.0/3.6,40.0]:
+@@ -38,7 +38,7 @@
+ 	for tick: int in range(3600): sim.step(DriveFrame.sample(0,1,0))
+ 	metrics.top_speed = sim.state.velocity.length()
+ 	check(is_equal_approx(sim.state.velocity.length(),current.maximum_speed),"actual full-pedal speed reaches and obeys the 190 km/h cap")
+-	for field: String in ["rotational_inertia","steering_rate","countersteering_rate","steering_angle","high_speed_steering_reduction","maximum_yaw_rate","lateral_grip","lateral_response","corner_energy_retention","throttle_rotation"]:
++	for field: String in ["rotational_inertia","high_speed_steering_reduction","maximum_yaw_rate","lateral_grip","lateral_response","corner_energy_retention","throttle_rotation"]:
+ 		check(current.get(field) == old.get(field),"quicker steering and calm corner balance retained: "+field)
+ 	check(current.single_pedal and current.rear_wheel_drive and current.reverse_speed == old.reverse_speed,"one pedal, rear drive and reverse limit retained")
+ 	metrics.before_corner = corner(old,1)
+--- a/game/tests/test_electric_steering_response.gd
++++ b/game/tests/test_electric_steering_response.gd
+@@ -38,7 +38,7 @@
+ 		if argument.begins_with("--evidence-root="): output = argument.trim_prefix("--evidence-root=")
+ 	var old: HandlingConfig = load(RESPONSE_OUTPUT+"/before/electric-3.tres") as HandlingConfig
+ 	var current: HandlingConfig = VehicleCatalog.config("electric")
+-	check(old.version == "electric-3" and current.version == "electric-11","original slow steering versus current balanced electric tune")
++	check(old.version == "electric-3" and current.version == "electric-12","original slow steering versus current balanced electric tune")
+ 	old = steering_reference(old,current)
+ 	for speed: float in [20.0,24.0,36.0,current.maximum_speed]:
+ 		for gas: float in [0.45,0.65,1.0]:
+@@ -51,16 +51,16 @@
+ 			var matched_speed: float = speed_after(old,speed,gas,float(after.get("seconds",5)))
+ 			metrics[label] = {"before":before,"after":after,"early_before":early_before,"early_after":early_after,"old_speed_at_new_finish":matched_speed}
+ 			check(before.complete and after.complete,"both actual velocity paths complete a quarter turn: "+label)
+-			check(after.seconds <= before.seconds*0.88 and after.radius <= before.radius*0.88,"at least twelve percent faster and tighter than the preceding accepted tune: "+label)
+-			check(early_after.course_100ms > early_before.course_100ms*2,"actual travel direction responds more than twice as far in the first 100ms: "+label)
+-			check(early_after.steering_95_seconds <= early_before.steering_95_seconds*0.60,"saved touch actions reach steering lock at least forty percent sooner: "+label)
++			check(float(after.get("seconds",99)) >= float(before.get("seconds",99))*1.25 and after.radius >= before.radius*1.25,"calmer turn completes more gradually and on a wider path than the superseded tune: "+label)
++			check(early_after.course_100ms < early_before.course_100ms*0.6,"actual travel direction responds at least forty percent less abruptly in the first 100ms: "+label)
++			check(early_after.steering_95_seconds >= early_before.steering_95_seconds*1.5 and early_after.steering_95_seconds<=0.55,"steering builds more gradually while reaching held lock within half a second: "+label)
+ 			check(is_equal_approx(mirrored.course_100ms,early_after.course_100ms),"touch steering onset is symmetric: "+label)
+ 			check(after.speed >= matched_speed*0.95 and after.speed <= current.maximum_speed,"faster path retains speed at the same elapsed tick: "+label)
+ 			check(after.peak_slip < (20 if gas<0.5 else 45),"calm rear breakaway remains bounded: "+label)
+ 	var before_correction: Dictionary = correction(old)
+ 	var after_correction: Dictionary = correction(current)
+ 	metrics.correction = {"before":before_correction,"after":after_correction}
+-	check(after_correction.yaw_seconds < before_correction.yaw_seconds*0.8 and after_correction.course_seconds < before_correction.course_seconds*0.8,"opposite steering catches chassis and travel direction at least twenty percent sooner")
++	check(after_correction.yaw_seconds<0.35 and after_correction.course_seconds<0.35,"opposite steering catches chassis and travel direction within 350 ms")
+ 	print("ELECTRIC_RESPONSE_METRICS ",JSON.stringify(metrics))
+ 	var report := FileAccess.open(output+"/response.json",FileAccess.WRITE)
+ 	report.store_string(JSON.stringify({"checks":checks,"failures":failures,"metrics":metrics},"\t"))
+--- a/game/tests/test_electric_turning.gd
++++ b/game/tests/test_electric_turning.gd
+@@ -21,7 +21,7 @@
+ 	var heading: float = 0
+ 	var previous_angle: float = 0
+ 	var peak: float = 0
+-	for tick: int in range(600):
++	for tick: int in range(960):
+ 		var previous: Vector2 = sim.state.position
+ 		sim.step(DriveFrame.sample(direction,gas,0))
+ 		distance += sim.state.position.distance_to(previous)
+@@ -62,7 +62,7 @@
+ 			var before: Dictionary = metrics[key].old
+ 			var after: Dictionary = metrics[key].new
+ 			check(before.complete and after.complete,"actual velocity path completes a quarter turn: "+key)
+-			check(after.radius < before.radius*(0.90 if speed<24 else 0.80),"path radius tightens at least 10 percent at low speed and 20 percent at high speed: "+key)
++			check(after.radius > before.radius*1.25,"consistent steering takes a wider normal/high-speed path than the superseded tune: "+key)
+ 			# Earlier turn completion means less time accelerating. Compare speed
+ 			# at the same elapsed tick, retaining the established five-percent bound.
+ 			var matched_speed: float = speed_after(old,speed,gas,float(after.get("seconds",5.0)))
+--- a/backend/tests/fixtures/verified_oval.json
++++ b/backend/tests/fixtures/verified_oval.json
+@@ -64413,7 +64413,7 @@
+     "engine_version": "4.7.2.stable.official.ed1daf0bf",
+     "laps": 5,
+     "max_frames": 216000,
+-    "physics_version": "arcade-planar-0.72",
++    "physics_version": "arcade-planar-0.73",
+     "replay_schema": "bmt-replay-v1",
+     "route_length": 224.990611499175,
+     "rules_key": "standing-5-road-gates-v22",
+@@ -64430,8 +64430,8 @@
+         "handling_version": "handling-0.15-original-slide"
+       },
+       "electric": {
+-        "config_hash": "bc5abb23ae2aaa8b637b0517d3c48bd3cbeae2ea9cb9c29535f801431c79e0c3",
+-        "handling_version": "electric-11"
++        "config_hash": "a5c04a5a2037ed8005324fc42952d267b4ee90ff428444cdfdb3b4ebc67d6353",
++        "handling_version": "electric-12"
+       },
+       "forklift": {
+         "config_hash": "495947f7424e92c8b14f69c1de5b3a05bb2ab0ce85c4898c0f858e73b3d35003",
+--- a/backend/tests/test_verifier.py
++++ b/backend/tests/test_verifier.py
+@@ -84,7 +84,7 @@
+     fixtures = ROOT / "game/tests/fixtures"
+     document = json.loads((fixtures / "over_and_under.json").read_text())
+     replay = json.loads((fixtures / "over_and_under_rejected_inputs.json").read_text())
+-    assert real_verifier.manifest()["physics_version"] == "arcade-planar-0.72"
++    assert real_verifier.manifest()["physics_version"] == "arcade-planar-0.73"
+     with pytest.raises(VerificationError, match="required laps"):
+         real_verifier.verify_canonical_diagnostic(document, replay, "compact")
+ 
+--- /dev/null
++++ b/docs/ELECTRIC_CONSISTENT_HANDLING_2026_10_26.md
+@@ -0,0 +1,75 @@
++# Consistent electric keyboard/controller handling ? 2026-10-26
++
++ECH01: Owner still finds slow handling too agile. ECH02: Faster handling must progress consistently from slower handling. Owner specifies keyboard/controller. ECH03/R01/Q01: Retain 190 km/h, accepted straight propulsion/release braking, a small launch slide, exact replay and six other cars; validate actual input paths and circuit usability.
++
++The old profile stacked three transitions: steering angle restored by 28.8 km/h, input buildup restored over 14.4?28.8, and the radius envelope disappeared over 40?60. That last fade made turns tighten sharply as speed increased. Simply slowing turn-in did not fix it.
++
++Electric-12 removes both electric-only low-speed steering scale overrides, uses a fixed 2.0/s buildup and 6.0/s unwind/initial countersteer rate, and changes maximum wheel angle from 0.82 to 0.26 radians. Continuous radius mode applies at every speed: radius envelope = 9 m + speed squared / 18 m/s squared, scaled by actual steering input. The existing wheel/traction demand may require a wider radius. Power/lift yaw shares the envelope; actual yaw still follows inertia/response. There is no high-speed fade restoring tight lock. Other vehicles default to the unchanged legacy branch; the new false flag is omitted from their snapshots.
++
++Full input builds over 0.5 seconds at all speeds. Partial controller input reaches its smaller target proportionally. The existing controller deadzone and keyboard/controller bindings remain. Release and initial countersteer use the same faster unwind rate at every speed.
++
++## Actual input and circle measurements
++
++The 200 ms comparison uses DriverInput action sampling, the exact task-start electric-11 resource/simulation and the new one, with identical full keyboard input and near-neutral accelerator:
++
++| Speed | Old 200 ms course change | New | Reduction |
++| --- | --- | --- | --- |
++| 5 km/h | 0.299 deg | 0.194 deg | 35.2% |
++| 10 km/h | 0.652 deg | 0.379 deg | 41.9% |
++| 20 km/h | 5.535 deg | 0.692 deg | 87.5% |
++| 30 km/h | 7.893 deg | 0.864 deg | 89.1% |
++
++Held circles use ordinary quantized feedback pedal input, with no velocity reset during measurement, three seconds of settling and accumulated actual travel-direction angle. Both original and current simulations run, with input replay checked:
++
++| Requested speed | Old full-lock radius | New full-lock radius |
++| --- | --- | --- |
++| 5 km/h | 10.42 m | 9.53 m |
++| 20 km/h | 6.00 m | 10.72 m |
++| 30 km/h | 7.72 m | 12.86 m |
++| 40 km/h | 13.72 m | 15.86 m |
++| 50 km/h | 5.53 m | 19.72 m |
++| 60 km/h | 4.90 m | 24.44 m |
++
++Parking lock is deliberately usable: the 5 km/h held radius is slightly smaller, while the actual keyboard onset is 35% calmer. The rejected first proposal made parking lock over 12 m and could not navigate the tight regression circuits cleanly. The final curve instead combines slower input buildup with wider turns at normal low speeds. Radius increases continuously through 40?60 and onward; the new 90/190 km/h circles measure about 43.7/163.8 m while holding the requested speeds. The old profile could not sustain those nominal speeds in its full-lock circle, so its higher-speed radii are not presented as matched-speed comparisons.
++
++The primary 525-check suite covers eighteen full-circle speed pairs, partial controller strengths, symmetry/replay, one-km/h curvature and input-rate sweeps through 190, actual mapped keyboard and controller-axis events, ten unchanged power/braking fields and 2400 exact straight propulsion/release/hold ticks in each direction against task-start physics. Six other diagnostic drivers retain exact inputs across 600 ticks each. Physical keyboard/controller hardware was not tested; the events are synthetic native events.
++
++## Circuit and runtime integration
++
++The conservative diagnostic RouteDriver now plans earlier only for the continuous profile and inverts its effective curvature for a pure-pursuit steering request. It still emits ordinary quantized input. Keyboard/controller gameplay remains directly sampled by DriverInput. The old three-point aim assumed nearly instant steering; with a finite ramp it cut bends too late. Other cars retain their exact driver inputs.
++
++Final unmodified five-lap completion/replay assertions pass on all three legacy circuits, with zero contacts: arto4, hiekka and ovaali3. Initial wide-lock runs and the first planning attempt retain incomplete hiekka/contact failures. No roads, gates, lap budget or collision accounting are changed.
++
++Actual-App tests add mapped keyboard full input, calm 200 ms steering and release, plus partial controller-axis input/release through Game._physics_process. 67 checks pass in Compatibility and 67 in desktop Vulkan Mobile, alongside the retained Garage/race checks and production model captures. No camera/model/art source is changed.
++
++Straight propulsion/braking is tick-exact versus task start, including D/R. The retained 190 test reaches 190 in 3.2667 seconds, holds 30 seconds, and stops on release in 2.0083 seconds / 52.285 m. The accepted 72 km/h stop remains 0.7667 seconds / 7.5626 m. The launch-slip suite retains extra sideways momentum versus the same new tune with its launch aid disabled, bounded slide and recovery.
++
++Physics is arcade-planar-0.73, electric version 12, hash a5c04a5a2037ed8005324fc42952d267b4ee90ff428444cdfdb3b4ebc67d6353. Six other configuration entries are exact; their simulation/driver comparisons pass. The backend fixture changes only physics identity and electric entry. A shared physics identity changes competitive board identity even where arithmetic is unchanged; historical recordings/rules are not rewritten and matching rollout is still required.
++
++## Actual commands and results
++
++Pinned engine: C:/apps/Godot 4.7.2/Godot_v4.7.2-stable_win64_console.exe. OUT = res://../docs/evidence/electric-consistent-handling-2026-10-26. Headless suites use --headless --path game --log-file ABSOLUTE_TASK_LOG --script res://tests/SUITE.gd -- --evidence-root=OUT.
++
++| Final suite | Passing checks |
++| --- | --- |
++| test_electric_consistent_handling.gd | 525 |
++| test_electric_190.gd / test_electric_turn_radius.gd / test_electric_launch_drift.gd / test_electric_low_speed_steering.gd | 59 / 64 / 111 / 87 |
++| test_electric_brake_release.gd / test_electric_car.gd / test_electric_one_pedal.gd | 38 / 60 / 63 |
++| test_electric_power.gd / test_electric_power_balance.gd / test_electric_steering_response.gd / test_electric_turning.gd | 19 / 19 / 86 / 61 |
++| test_electric_power_laps.gd / test_handling.gd / test_rewind.gd / test_script_parse.gd | 6 / 88 / 61 / 1217 |
++
++All final suites have zero failures. Native App command: powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1 -Action TestScript -ScriptPath res://tests/test_electric_car_ui.gd -Graphical -RenderingMethod gl_compatibility -TestArgument --evidence-root=OUT/native. Second run uses -RenderingMethod mobile -RenderingDriver vulkan and OUT/mobile-native. Manual-step hitch diagnostics are not device performance measurements.
++
++Actual recording: pinned headless engine --script res://tests/export_electric_power_replay.gd -- --output=OUT/canonical-race.json. .tools/backend-secure-venv/Scripts/python.exe docs/evidence/electric-consistent-handling-2026-10-26/verify_canonical.py independently accepts 17354 inputs/five laps/144613 ms, lap ticks [3542,3453,3453,3453,3453], the new identity and six unchanged config entries. The calmer turn profile legitimately makes this diagnostic oval slower than the previous 115122 ms.
++
++Backend from backend/: ..\.tools\backend-secure-venv\Scripts\python.exe -m pytest tests/test_verifier.py tests/test_electric_car.py -q -k "not postgres and not retained_over_and_under_rejection" --tb=short --basetemp ../build/electric-consistent-handling-pytest. 72 passed, two existing explicit deselections (PostgreSQL and archived physics-050 ghost rejection), six existing warnings in 134.14 s. No new exclusion.
++
++## Superseded expectations and retained failures
++
++Task-start profile testing records 498 checks / 62 failures, including speed-dependent restoration of tight curvature and abrupt input changes. The first proposed wide-lock profile passes its initial sweep but fails legacy circuit usability; it is retained under rejected-wide-lock/. Its blanket parking-radius target was replaced by actual keyboard-onset bounds while retaining monotonic radius and wider 15?30 km/h turns. Final physical-key events need two settled frames; the first fixture sampled too early and reused a key object, both retained and corrected. A first incomplete run produced no completion report; subsequent direct runs provide the final results. The primary JSON was renamed continuous-handling.json after colliding with the existing car suite's handling.json in this new evidence folder; final outputs are separate.
++
++The owner's consistency correction supersedes the original faster/tighter high-speed targets, minimum drift against an older aggressive tune, fixed fast input timing and unchanged-steering-field expectations. Exact before sources and *-superseded.log retain speed 66/7 failures, radius64/1, launch111/8, low87/13, power19/2 and balance22/3. The superseded response fixture also hits its old five-second quarter-turn limit and accesses missing completion data; the interrupted log is retained. Its eight-second measurement window and safe dictionary access now accommodate the intentionally wider/slower high-speed turn without changing the lap budget.
++
++Current assertions require slower/wider turns and gentler onset, monotonic curvature across the entire range, half-second lock buildup, recovery and quick initial reversal. The old minimum low-speed response floor changes from0.05to0.02 for the further owner-requested softening; actual keyboard onset, held circles and controller-strength checks directly guard usable response. Power yaw must share the continuous envelope, replacing the old expectation that full throttle adds extra normal-speed heading. The power-balance suite retains exact comparisons for unchanged fields; three deliberately changed steering fields move to the new handling contract. Braking, speed cap, zero hold, power authority, replay/rewind, collisions and six-other-car bounds remain.
++
++Changed files/hashes and task-start sources are in report.json and before/. checkpoint.patch isolates this task, including diagnostic planning and test-contract replacements, while retaining concurrent vehicle quality, track, Garage and other work. No physical-device attachment check/test, APK, purchase, live mutation, deployment, merge or owner-process restart. Reload/rebuild, matching client/verifier rollout and owner keyboard/controller feel acceptance remain.

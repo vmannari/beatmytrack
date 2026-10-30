@@ -290,6 +290,8 @@ def finalize(app, run_id, token, pinned_manifest, result, failure, rejected, per
             accept_verified(session, run, acceptance=acceptance)
             from .challenges import accept_verified as accept_challenge
             accept_challenge(session, run, acceptance=acceptance)
+            from .daily_standings import accept_verified as accept_daily
+            accept_daily(session, run, acceptance.board)
             values = {
                 "board_id": run.board_id,
                 "player_id": run.player_id,

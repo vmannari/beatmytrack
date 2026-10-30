@@ -1,0 +1,340 @@
+diff --git a/game/core/app.gd b/game/core/app.gd
+--- a/game/core/app.gd
++++ b/game/core/app.gd
+@@ -2676,9 +2676,8 @@
+ 		return
+ 	var page := GaragePage.new()
+ 	_retained_garage = page
++	# Use the original interactive showroom with the saved appearance on entry.
+ 	page.cached_carousel = true
+-	page.progressive_entry = true
+-	page.opening_can_begin = func() -> bool: return menu_page_motion==null or not menu_page_motion.is_running()
+ 	page.achievements = achievements
+ 	page.news_client = online.client.news
+ 	page.account_requested.connect(_open_account)
+diff --git a/AGENTS.md b/AGENTS.md
+--- a/AGENTS.md
++++ b/AGENTS.md
+@@ -1,3 +1,8 @@
++<!-- GARAGE-LIVE-ENTRY-20261027 -->
++## Original live Garage restored from entry (2026-10-27)
++GLE01-GLE03/R01/Q01: Owner rejects wrong liveries and immovable first Garage after optimisation. Remove the production App's photo-first/progressive-entry selection; original CarShowroom now builds the actual saved car and connects drag immediately. Saved colours/pattern/sticker and all seven native previews, viewport-routed touch, actual changed pixels, retained returns and owner/save fences pass. Original lighting/glass/shadows/reflections/camera remain; no alternate finishes. Task-start5checks/4fail becomes46headless/50Compatibility/50desktopMobile; retained App141/reflections26/parser1321 pass. Cached-process first live2.68sCompatibility/1.63sdesktopMobile; fresh27.55/7.36s retains cold driver stalls, with no instant/phone claim. This supersedes the stock-cover/deferred-entry contract, preserving original quality. Runtime behavior scope is two App assignments; original showroom/cache/model sources remain exact, concurrent work and generated build metadata excluded from the scoped patch. Commands, native views, hashes and checkpoint: docs/GARAGE_LIVE_ENTRY_2026_10_27.md and docs/evidence/garage-live-entry-2026-10-27/report.json. Reload and owner/device appearance/input/latency acceptance remain. No attachment/device test, APK, auth/purchase, owner-save/live mutation, deployment, main-index staging/commit/merge or owner-process restart.
++<!-- /GARAGE-LIVE-ENTRY-20261027 -->
++
+ <!-- GARAGE-REFLECTIONS-RESTORED-20261027 -->
+ ## Original Garage reflections at first live reveal (2026-10-27)
+ GRR01-GRR03/R01/Q01: Owner rejects missing reflections/lower quality. Keep the immediate stock picture until original finishes, lighting, glass, shadows and both planar reflections finish preparing and settle. No temporary flat geometry is displayed; passive hover no longer postpones preparation. Two runtime helpers change; original resources/camera/models and concurrent work remain. This supersedes only the lower-quality early live view and early-tools timing of the prior opening. Native focused18Compatibility/18desktopMobile, actual App195headless/199Compatibility/199desktopMobile, tools15headless/16Compatibility, retained reflections26Compatibility, final App141 and parser1319 pass. Fresh App picture498/841ms, original live25.67/8.86s; cached standalone Compatibility2.63s. Cold compilation can stall input; no equally-early-live/phone claim. Five original visual/input failures and one transient dummy-RID App run remain recorded. Commands, native proof, hashes and scoped checkpoint: docs/GARAGE_REFLECTIONS_RESTORED_2026_10_27.md and docs/evidence/garage-reflections-restored-2026-10-27/report.json. Reload and owner/device appearance/latency acceptance remain. No device check/test, APK, live mutation, deployment, main-index staging/commit/merge or owner-process restart.
+diff --git a/DEVELOPMENT_STATUS.md b/DEVELOPMENT_STATUS.md
+--- a/DEVELOPMENT_STATUS.md
++++ b/DEVELOPMENT_STATUS.md
+@@ -1,3 +1,8 @@
++<!-- GARAGE-LIVE-ENTRY-20261027 -->
++## Original live Garage restored from entry (2026-10-27)
++GLE01-GLE03/R01/Q01: Owner rejects wrong liveries and immovable first Garage after optimisation. Remove the production App's photo-first/progressive-entry selection; original CarShowroom now builds the actual saved car and connects drag immediately. Saved colours/pattern/sticker and all seven native previews, viewport-routed touch, actual changed pixels, retained returns and owner/save fences pass. Original lighting/glass/shadows/reflections/camera remain; no alternate finishes. Task-start5checks/4fail becomes46headless/50Compatibility/50desktopMobile; retained App141/reflections26/parser1321 pass. Cached-process first live2.68sCompatibility/1.63sdesktopMobile; fresh27.55/7.36s retains cold driver stalls, with no instant/phone claim. This supersedes the stock-cover/deferred-entry contract, preserving original quality. Runtime behavior scope is two App assignments; original showroom/cache/model sources remain exact, concurrent work and generated build metadata excluded from the scoped patch. Commands, native views, hashes and checkpoint: docs/GARAGE_LIVE_ENTRY_2026_10_27.md and docs/evidence/garage-live-entry-2026-10-27/report.json. Reload and owner/device appearance/input/latency acceptance remain. No attachment/device test, APK, auth/purchase, owner-save/live mutation, deployment, main-index staging/commit/merge or owner-process restart.
++<!-- /GARAGE-LIVE-ENTRY-20261027 -->
++
+ <!-- GARAGE-REFLECTIONS-RESTORED-20261027 -->
+ ## Original Garage reflections restored (2026-10-27)
+ GRR01-GRR03/R01/Q01: First revealed live Garage now uses original finishes, glass, lighting, cast shadows and both reflections. The immediate stock picture covers preparation; no flat substitutes are displayed. Hover cannot postpone quality. Latest requests, hidden suspension, deferred tools, retained studio and ownership remain. Actual App195headless/199Compatibility/199desktopMobile, focused12/18/18, tools15headless/16Compatibility, retained reflection26, final App141 and parser1319 pass. Fresh picture498/841ms versus full original live25.67/8.86s; cached standalone Compatibility2.63s. Original failures and one transient dummy-RID run retained. This supersedes the prior lower-quality early-live/early-tools timing, with explicit longer covered cold preparation. Two runtime helpers only; concurrent work preserved. Commands, captures, hashes and task-only checkpoint: docs/GARAGE_REFLECTIONS_RESTORED_2026_10_27.md and docs/evidence/garage-reflections-restored-2026-10-27/report.json. Reload and owner/device appearance/latency acceptance remain. No device check/test, APK, live mutation, deployment, main-index staging/commit/merge or owner-process restart.
+diff --git a/game/tests/test_garage_live_entry.gd b/game/tests/test_garage_live_entry.gd
+new file mode 100644
+--- /dev/null
++++ b/game/tests/test_garage_live_entry.gd
+@@ -0,0 +1,133 @@
++extends SceneTree
++## Actual App regression: the first Garage is the saved, interactive native car.
++var checks: int=0
++var failures: int=0
++var output: String="res://../build/garage-live-entry"
++var timings: Dictionary={}
++func _initialize() -> void: run.call_deferred()
++func check(ok: bool,label: String) -> void:
++	checks+=1
++	if not ok: failures+=1;print("FAIL: ",label)
++func frames(count: int=4) -> void:
++	for _frame: int in range(count): await process_frame
++func capture(label: String) -> void:
++	if DisplayServer.get_name()=="headless": return
++	await RenderingServer.frame_post_draw
++	check(root.get_texture().get_image().save_png(output.path_join(label+".png"))==OK,"capture "+label)
++func drag(view: CarShowroom,relative: Vector2) -> void:
++	var motion:=InputEventMouseMotion.new()
++	motion.button_mask=MOUSE_BUTTON_MASK_LEFT
++	motion.relative=relative
++	view.gui_input.emit(motion)
++func viewport_drag(view: CarShowroom) -> void:
++	var point: Vector2=view.get_global_rect().get_center()
++	var down:=InputEventScreenTouch.new()
++	down.index=4;down.position=point;down.pressed=true
++	Input.parse_input_event(down)
++	await process_frame
++	var motion:=InputEventScreenDrag.new()
++	motion.index=4;motion.position=point+Vector2(50,0);motion.relative=Vector2(50,0)
++	Input.parse_input_event(motion)
++	await process_frame
++	var up:=InputEventScreenTouch.new()
++	up.index=4;up.position=motion.position
++	Input.parse_input_event(up)
++	await process_frame
++func changed(a: Image,b: Image) -> int:
++	var count: int=0
++	for y: int in range(a.get_height()):
++		for x: int in range(a.get_width()):
++			var p: Color=a.get_pixel(x,y);var q: Color=b.get_pixel(x,y)
++			if absf(p.r-q.r)+absf(p.g-q.g)+absf(p.b-q.b)>0.025: count+=1
++	return count
++func finish(app: Node) -> void:
++	app.queue_free()
++	await frames(16)
++	var result: Dictionary={"checks":checks,"failures":failures,"timings":timings}
++	FileAccess.open(output.path_join("report.json"),FileAccess.WRITE).store_string(JSON.stringify(result,"  "))
++	print("GARAGE_LIVE_ENTRY ",JSON.stringify(result))
++	quit(1 if failures else 0)
++func run() -> void:
++	for arg: String in OS.get_cmdline_user_args():
++		if arg.begins_with("--output="): output=arg.trim_prefix("--output=")
++	output=ProjectSettings.globalize_path(output)
++	DirAccess.make_dir_recursive_absolute(output)
++	root.size=Vector2i(1280,720)
++	var app: Node=load("res://core/app.tscn").instantiate()
++	var folder: String="user://garage-live-"+TrackLibrary.unique_id()
++	app.records=LocalRecords.new(folder.path_join("records.json"))
++	app.library=TrackLibrary.new(folder.path_join("tracks"))
++	app.cloud_root_override=folder.path_join("cloud")
++	root.add_child(app)
++	while not app.startup_complete: await process_frame
++	var music: GameSoundtrack=GameSoundtrack.instance()
++	music.music_enabled=false;music.menu_player.stop();music.menu_player.stream=null
++	check(not is_instance_valid(app._retained_garage),"guest startup stays independent of Garage")
++	var paints: Dictionary={}
++	for id: String in VehicleCatalog.IDS:
++		var paint: Dictionary=VehicleLivery.defaults(id)
++		paint.colors.body="c72d34"
++		paint.pattern=LiveryCatalog.patterns[0].id
++		paint.stickers.hood.id=LiveryCatalog.stickers[0].id
++		paints[id]=paint
++	app.records.settings.vehicle_liveries=paints.duplicate(true)
++	app.records.settings.selected_car="compact"
++	VehicleCatalog.selected="compact"
++	app._show_screen("tracks")
++	await frames(10)
++	var start: int=Time.get_ticks_usec()
++	app._show_screen("garage")
++	timings.entry_dispatch_ms=(Time.get_ticks_usec()-start)/1000.0
++	var page: GaragePage=app._retained_garage
++	var view: CarShowroom=page.showroom
++	check(not page.progressive_entry,"production Garage uses the original live showroom")
++	check(view.find_child("GarageOpeningPicture",true,false)==null,"first Garage has no stock picture cover")
++	check(is_instance_valid(view.car) and view.showroom_ready,"native saved car exists when Garage entry returns")
++	var yaw: float=view.yaw
++	drag(view,Vector2(20,0))
++	check(view.yaw!=yaw,"first drag moves the car through its connected input handler")
++	if not is_instance_valid(view.car):
++		await finish(app)
++		return
++	check(view.car.livery==paints.compact,"first native car has saved colours, pattern and sticker")
++	while app.menu_page_motion!=null and app.menu_page_motion.is_running(): await process_frame
++	await frames(4)
++	timings.first_live_page_ms=(Time.get_ticks_usec()-start)/1000.0
++	await capture("first-saved-live")
++	yaw=view.yaw
++	await viewport_drag(view)
++	check(view.yaw!=yaw,"viewport-dispatched touch drag reaches the native Garage")
++	if DisplayServer.get_name()!="headless":
++		var saved_image: Image=view.showroom_viewport.get_texture().get_image()
++		view.apply_livery(VehicleLivery.defaults("compact"))
++		await frames(4)
++		await RenderingServer.frame_post_draw
++		check(changed(saved_image,view.showroom_viewport.get_texture().get_image())>100,"saved finish visibly differs from the factory picture colours")
++		view.apply_livery(paints.compact)
++		await frames(4)
++		await RenderingServer.frame_post_draw
++		var before_drag: Image=view.showroom_viewport.get_texture().get_image()
++		drag(view,Vector2(40,0))
++		await frames(4)
++		await RenderingServer.frame_post_draw
++		check(changed(before_drag,view.showroom_viewport.get_texture().get_image())>100,"drag changes actual live pixels")
++		await capture("saved-live-rotated")
++	for id: String in VehicleCatalog.IDS:
++		page.preview_car(VehicleCatalog.IDS.find(id))
++		check(view.car.vehicle_id==id and view.car.model_ready,"preview uses the actual native "+id)
++		check(view.car.livery==paints[id],"saved livery on native "+id)
++		check(view.car.paint_materials.body.albedo_color==Color(paints[id].colors.body),"saved paint material on "+id)
++		view.finish_car_transition()
++		check(view.reflections.enabled and view.reflections.views.size()==2,"both original reflections on "+id)
++		check(view.find_child("GarageOpeningPicture",true,false)==null,"no photo replaces native "+id)
++		await frames(3)
++	check(VehicleCatalog.selected=="compact" and app.records.settings.vehicle_liveries==paints,"browsing does not equip a car or overwrite its saved paint")
++	app._show_screen("settings")
++	app._show_screen("garage")
++	check(app._retained_garage==page and page.showroom==view,"return retains the same live world")
++	yaw=view.yaw;drag(view,Vector2(12,0))
++	check(view.yaw!=yaw,"retained world remains movable")
++	app.records=LocalRecords.new(folder.path_join("other-records.json"))
++	app._show_screen("garage")
++	check(app._retained_garage!=page and app._retained_garage.showroom.car.livery==VehicleLivery.defaults("compact"),"owner replacement uses its own saved/default appearance")
++	await finish(app)
+diff --git a/docs/GARAGE_LIVE_ENTRY_2026_10_27.md b/docs/GARAGE_LIVE_ENTRY_2026_10_27.md
+new file mode 100644
+--- /dev/null
++++ b/docs/GARAGE_LIVE_ENTRY_2026_10_27.md
+@@ -0,0 +1,42 @@
++# Restore the original live Garage entry (2026-10-27)
++
++The owner reports that the first Garage has the wrong liveries and cannot move, and identifies the optimisation work as the regression. The photo-first opening was the cause: it loaded the catalogue's stock PNG instead of the saved appearance and blocked drag input until its preparation job finished.
++
++The production App now uses the original `CarShowroom` from entry. The actual car receives saved colours, pattern, stickers, fitted parts and condition through the existing Garage builder; its normal input handler is connected immediately. No stock cover, alternate material rendering or staged reveal is selected. Original lights, glass, shadows, floor/pedestal reflections and camera remain. Ready-world retention, catalogue-card caching, native model caches and account/save fences remain.
++
++This owner correction supersedes the photo-first entry, deferred-construction and deferred-tools contracts in the earlier opening/reflection tasks. It preserves their requirement for original rendering quality. The older optional covered-entry helpers remain unchanged for historical diagnostics; production no longer selects them.
++
++| Requirement | Result |
++| --- | --- |
++| GLE01 | Restore the original main live showroom; no `GarageOpeningPicture` on entry. |
++| GLE02 | Saved appearance is applied to the native car; first drag and viewport-routed touch drag rotate it. |
++| GLE03 | Preserve original quality, seven-car browsing, retained returns, ownership and saved data. |
++| R01 / Q01 | Reproduce the regression, verify native pixels/input/reflections, retain source hashes and a scoped patch. |
++
++The behavior change removes the two App assignments that enabled progressive entry and its preparation callback, with one explanatory comment. `garage_page.gd`, `car_showroom.gd`, the optional opening helper, native car cache, reflections and `car_visual.gd` remain byte-identical to this task's start. Concurrent simulation changes are preserved and excluded. No shaders, geometry, camera, economy, save format or backend code was edited by this task.
++
++## Verification
++
++All commands use pinned Godot `4.7.2.stable.official.ed1daf0bf`, disposable profiles and an empty API URL. [The report](evidence/garage-live-entry-2026-10-27/report.json) contains complete command/environment records, source hashes, raw failures, screenshots and the reverse-checked scoped patch. Reproduce with `python docs/evidence/garage-live-entry-2026-10-27/run_checks.py LABEL SCRIPT MODE`.
++
++- Task-start regression: five checks / four failures. The first native car is absent, a stock cover is present, progressive entry is selected and the first connected drag does nothing.
++- Corrected focused test: 46 headless / 50 Compatibility / 50 desktop Mobile checks pass. The test seeds nondefault saved paint, pattern and a sticker; checks all seven native cars/materials; routes touch through the actual viewport; verifies image changes after paint/orbit; and checks retained returns, owner replacement and unchanged saved appearance/equipped selection.
++- Retained actual App: 141 checks pass. Retained reflection test: 26 Compatibility checks pass, including actual deck/floor pixel differences, moving reflections and lifecycle/persistence checks. All 1,321 scripts parse.
++- Preferred `scripts/dev.ps1 -Action CheckScript` succeeds through a process-local execution-policy bypass. Its normal generated build identity/version output is recorded separately; the source rollback patch does not fold in generated metadata or unrelated concurrent changes.
++
++Native images show the saved red striped/stickered Compact in the original reflective studio and the changed camera view after rotation. Small carousel cards still use their existing catalogue fallback while exact saved thumbnails resolve; this task restores the main interactive preview.
++
++## Timing and acceptance limits
++
++The live renderer is restored, including its existing cold driver cost. These isolated desktop measurements include the normal menu transition and native target settling; they are not phone results:
++
++| Renderer/profile | Entry callback | First live page |
++| --- | ---: | ---: |
++| Compatibility, fresh shader profile | 196 ms | 27.55 s |
++| Compatibility, reused shader profile | 219 ms | 2.68 s |
++| Desktop Mobile, fresh shader profile | 1.39 s | 7.36 s |
++| Desktop Mobile, reused shader profile | 914 ms | 1.63 s |
++
++Correct saved 3D and working controls replace the misleading still image. This is not an instant-entry or cold-stall fix, and no earlier 250 ms callback guarantee is claimed for synchronous original construction. The sandbox certificate-store error is retained separately from test failures. No failing appearance, input or pixel assertion was relaxed.
++
++Reload/rebuild and owner acceptance of saved appearance, dragging, first-entry latency and device behavior remain. No device attachment check or physical-device test, APK/AAB, real authentication/purchase, owner-save/live backend mutation, deployment, Git staging/commit/merge or owner-process restart was performed.
+diff --git a/docs/evidence/garage-live-entry-2026-10-27/run_checks.py b/docs/evidence/garage-live-entry-2026-10-27/run_checks.py
+new file mode 100644
+--- /dev/null
++++ b/docs/evidence/garage-live-entry-2026-10-27/run_checks.py
+@@ -0,0 +1,39 @@
++import json
++import os
++from pathlib import Path
++import subprocess
++import sys
++import time
++
++ROOT = next(p for p in Path(__file__).resolve().parents if (p / 'godot-version.txt').exists())
++label, script, mode = sys.argv[1:4]
++out = Path(__file__).resolve().parent / label
++out.mkdir(parents=True, exist_ok=True)
++env = os.environ.copy()
++env['APPDATA'] = str(ROOT / 'build/garage-live-entry-user' / env.get('BMT_CACHE_PROFILE', label))
++env['BMT_API_URL'] = ''
++Path(env['APPDATA']).mkdir(parents=True, exist_ok=True)
++script_path = str(ROOT / script) if '/' in script and not script.startswith('res://') else script if script.startswith('res://') else 'res://tests/' + script
++cmd = [r'C:\apps\Godot 4.7.2\Godot_v4.7.2-stable_win64_console.exe', '--path', str(ROOT / 'game'),
++       '--audio-driver', 'Dummy', '--position', '10000,10000', '--script', script_path]
++cmd += ['--headless'] if mode == 'headless' else ['--rendering-method', mode]
++cmd += ['--', '--output=' + str(out), '--evidence-root=' + str(out)] + sys.argv[4:]
++started = time.monotonic()
++with (out / 'run.log').open('w', encoding='utf-8') as log:
++    try:
++        result = subprocess.run(cmd, env=env, stdout=log, stderr=subprocess.STDOUT, timeout=240)
++        code = result.returncode
++    except subprocess.TimeoutExpired:
++        code = 124
++raw = (out / 'run.log').read_text(encoding='utf-8', errors='replace')
++errors = [line for line in raw.splitlines()
++          if any(marker in line for marker in ('SCRIPT ERROR:', 'FAIL:', 'Parse Error:', 'ERROR:'))
++          and 'Failed to read the root certificate store' not in line]
++code = code or int(bool(errors))
++record = dict(command=cmd, exit_code=code, seconds=time.monotonic() - started,
++              environment={key: env[key] for key in ('APPDATA', 'BMT_API_URL')}, error_lines=errors,
++              certificate_store_environment_error='Failed to read the root certificate store' in raw)
++(out / 'command.json').write_text(json.dumps(record, indent=2), encoding='utf-8')
++print(json.dumps(record))
++print(raw[-6500:])
++sys.exit(code)
+diff --git a/docs/evidence/garage-live-entry-2026-10-27/compile_report.py b/docs/evidence/garage-live-entry-2026-10-27/compile_report.py
+new file mode 100644
+--- /dev/null
++++ b/docs/evidence/garage-live-entry-2026-10-27/compile_report.py
+@@ -0,0 +1,68 @@
++from pathlib import Path
++import difflib
++import hashlib
++import json
++import shutil
++import subprocess
++
++root = next(p for p in Path(__file__).resolve().parents if (p / 'godot-version.txt').exists())
++e = Path(__file__).resolve().parent
++read = lambda p: p.read_text(encoding='utf-8')
++sha = lambda p: hashlib.sha256(p.read_bytes()).hexdigest()
++marker = 'GARAGE-LIVE-ENTRY-20261027'
++summary = '''<!-- GARAGE-LIVE-ENTRY-20261027 -->
++## Original live Garage restored from entry (2026-10-27)
++GLE01-GLE03/R01/Q01: Owner rejects wrong liveries and immovable first Garage after optimisation. Remove the production App's photo-first/progressive-entry selection; original CarShowroom now builds the actual saved car and connects drag immediately. Saved colours/pattern/sticker and all seven native previews, viewport-routed touch, actual changed pixels, retained returns and owner/save fences pass. Original lighting/glass/shadows/reflections/camera remain; no alternate finishes. Task-start5checks/4fail becomes46headless/50Compatibility/50desktopMobile; retained App141/reflections26/parser1321 pass. Cached-process first live2.68sCompatibility/1.63sdesktopMobile; fresh27.55/7.36s retains cold driver stalls, with no instant/phone claim. This supersedes the stock-cover/deferred-entry contract, preserving original quality. Runtime behavior scope is two App assignments; original showroom/cache/model sources remain exact, concurrent work and generated build metadata excluded from the scoped patch. Commands, native views, hashes and checkpoint: docs/GARAGE_LIVE_ENTRY_2026_10_27.md and docs/evidence/garage-live-entry-2026-10-27/report.json. Reload and owner/device appearance/input/latency acceptance remain. No attachment/device test, APK, auth/purchase, owner-save/live mutation, deployment, main-index staging/commit/merge or owner-process restart.
++<!-- /GARAGE-LIVE-ENTRY-20261027 -->
++
++'''
++docs = ['AGENTS.md', 'DEVELOPMENT_STATUS.md']
++for f in docs:
++    p = root / f
++    content = p.read_bytes()
++    begin, end = ('<!-- ' + marker + ' -->').encode(), ('<!-- /' + marker + ' -->').encode()
++    if begin in content:
++        a = content.index(begin); b = content.index(end, a) + len(end)
++        if content[b:b+2] == b'\n\n': b += 2
++        content = content[:a] + content[b:]
++    p.write_bytes(summary.encode('utf-8') + content)
++
++new = ['game/tests/test_garage_live_entry.gd', 'docs/GARAGE_LIVE_ENTRY_2026_10_27.md', 'docs/evidence/garage-live-entry-2026-10-27/run_checks.py', 'docs/evidence/garage-live-entry-2026-10-27/compile_report.py']
++if (root / 'game/tests/test_garage_live_entry.gd.uid').exists(): new.append('game/tests/test_garage_live_entry.gd.uid')
++patch = []
++files = ['game/core/app.gd'] + docs + new
++for f in files:
++    after = read(root / f)
++    if f in new:
++        before = ''
++    elif f in docs:
++        a = after.index('<!-- ' + marker + ' -->'); b = after.index('<!-- /' + marker + ' -->', a) + len('<!-- /' + marker + ' -->')
++        if after[b:b+2] == '\n\n': b += 2
++        before = after[:a] + after[b:]
++    else:
++        before = after.replace('\t# Use the original interactive showroom with the saved appearance on entry.\n', '', 1)
++        anchor = '\tpage.cached_carousel = true\n'
++        assert before.count(anchor) == 1
++        before = before.replace(anchor, anchor + '\tpage.progressive_entry = true\n\tpage.opening_can_begin = func() -> bool: return menu_page_motion==null or not menu_page_motion.is_running()\n', 1)
++    dest = e / 'checkpoint-base' / f
++    dest.parent.mkdir(parents=True, exist_ok=True); dest.write_text(before, encoding='utf-8', newline='\n')
++    dest = e / 'task-final' / f
++    dest.parent.mkdir(parents=True, exist_ok=True); shutil.copyfile(root / f, dest)
++    patch.append(f'diff --git a/{f} b/{f}\n')
++    if f in new: patch.append('new file mode 100644\n')
++    patch.extend(difflib.unified_diff(before.splitlines(True), after.splitlines(True), fromfile='/dev/null' if f in new else 'a/' + f, tofile='b/' + f))
++(e / 'checkpoint.patch').write_text(''.join(patch), encoding='utf-8', newline='\n')
++check = subprocess.run(['git', 'apply', '--reverse', '--check', str(e / 'checkpoint.patch')], cwd=root, text=True, capture_output=True)
++(e / 'checkpoint-check.json').write_text(json.dumps({'exit_code': check.returncode, 'stdout': check.stdout, 'stderr': check.stderr}, indent=2), encoding='utf-8')
++assert check.returncode == 0, check.stderr
++commands = {p.parent.name: json.loads(read(p)) for p in sorted(e.glob('*/command.json'))}
++passing = ['routed-input-headless', 'routed-input-native', 'routed-input-mobile', 'retained-app', 'retained-reflections', 'parser', 'preferred-check']
++for label in passing: assert commands[label]['exit_code'] == 0, label
++preserved = [f for f in json.loads(read(e / 'before/hashes.json')) if f != 'game/core/app.gd']
++generated = ['game/core/build_identity.gd', 'game/project.godot']
++for f in generated:
++    p = e / 'generated-metadata' / f
++    p.parent.mkdir(parents=True, exist_ok=True); shutil.copyfile(root / f, p)
++report = {'requirements': ['GLE01', 'GLE02', 'GLE03', 'R01', 'Q01'], 'engine': read(root / 'godot-version.txt').strip(), 'date': '2026-10-27', 'behavior_scope': ['game/core/app.gd'], 'source_sha256': {f: sha(root / f) for f in files}, 'preserved_sources': {f: {'sha256': sha(root / f), 'matches_task_start': sha(root / f) == sha(e / 'before' / f)} for f in preserved}, 'generated_metadata': {f: sha(root / f) for f in generated}, 'generated_note': 'Preferred dev.ps1 CheckScript runs its deterministic identity/version generation. Resulting metadata and receipt are recorded separately from the source-only rollback. Concurrent simulation work is preserved and excluded.', 'commands': commands, 'passing_runs': passing, 'task_start_regression': {'checks': 5, 'failures': 4}, 'results': {'focused_headless': 46, 'focused_compatibility': 50, 'focused_desktop_mobile': 50, 'app': 141, 'reflections': 26, 'parser': 1321}, 'timings': {label: json.loads(read(e / label / 'report.json'))['timings'] for label in ['fixed-native', 'fixed-mobile', 'routed-input-native', 'routed-input-mobile']}, 'checkpoint': {'path': 'checkpoint.patch', 'sha256': sha(e / 'checkpoint.patch'), 'reverse_check_exit_code': check.returncode}, 'limitations': ['Cold original driver compilation remains: fresh first live page 27.55s Compatibility / 7.36s desktop Mobile in isolated tests; reused shader profiles 2.68s / 1.63s.', 'No instant-entry, 250ms synchronous callback or phone performance claim.', 'Earlier photo-first fixtures describe the optional historical helper; this task explicitly supersedes that production entry contract.', 'Small carousel cards retain catalogue fallbacks while exact saved thumbnails resolve; the main view is native from entry.', 'No native engine/shader workaround or renderer quality reduction is introduced.'], 'not_performed': ['physical-device attachment check/test', 'APK/AAB', 'real authentication/purchase', 'owner-save/live backend mutation', 'deployment', 'Git staging/commit/merge', 'owner-process restart']}
++(e / 'report.json').write_text(json.dumps(report, indent=2) + '\n', encoding='utf-8')
++print(json.dumps({'commands': len(commands), 'clean_passing_runs': len(passing), 'patch_check_exit': check.returncode, 'patch_bytes': (e / 'checkpoint.patch').stat().st_size}))

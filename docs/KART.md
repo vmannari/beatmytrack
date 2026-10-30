@@ -1,3 +1,8 @@
+<!-- KART-HIGH-SPEED-TURNING-20261028 -->
+## Shorter go-kart turns at higher speeds (2026-10-28)
+KHT01-KHT02/R01/Q01: Kart-6 changes only version and lateral grip72to80. Matched-speed full-steering radii are9.86-10.02% shorter at80-140km/h;100km/h10.707to9.634m. Low-speed10-30km/h circles stay within0.004%. Power/brakes/reverse/140kmh/shared physics0.75 remain;14,400 straight ticks are exact. Focused148/0 versus original148/10, retained kart42/cars113/handling88/rewind61 and preferred dependency parse pass. Three five-lap tracks have zero contacts/exact replay; independent12,787-input race accepts106554ms. Broader parser retains unrelated Garage-fixture missing method; selected backend1pass/1retired-car manifest failure. Initial sandbox certificate and helper missing-Hovercraft-fixture findings retained. One runtime resource; new regression/exact baseline/local fixture identity refresh and checked source-only patch. Commands, hashes, measurements and limits: docs/KART_HIGH_SPEED_TURNING_2026_10_28.md and docs/evidence/kart-high-speed-turning-2026-10-28/report.json. Reload/rebuild, matching online contract rollout and owner/device feel acceptance remain. No device query/test, APK, live mutation/deployment, owner-save/process change or main-index staging/commit/merge. Concurrent sources and generated metadata excluded from checkpoint.
+<!-- /KART-HIGH-SPEED-TURNING-20261028 -->
+
 <!-- KART-140-20261025 -->
 ## Current top speed - 2026-10-25
 Kart-5 raises the cap to **140 km/h** (38.88889 m/s). Existing engine-force, steering, grip and brake settings remain. The speed-based power curve slightly quickens acceleration. See [current tuning and verification](KART_140_2026_10_25.md); the sections below retain their historical measurements.

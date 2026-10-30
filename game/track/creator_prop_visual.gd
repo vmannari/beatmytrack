@@ -1,7 +1,7 @@
 class_name CreatorPropVisual
 extends RefCounted
 ## Original shared meshes for world placement and browser thumbnails.
-const VERSION: String = "authored-props-16-guardrail-ends"
+const VERSION: String = "authored-props-17-sculpted-wreck-cliff"
 const GUARDRAIL = preload("res://track/guardrail_visual.gd")
 const WINTER_FINISH = preload("res://track/winter_prop_finish.gd")
 const CACHE_LIMIT: int = 96
@@ -174,7 +174,11 @@ static func _cliff(tool: SurfaceTool, kit: Node, center: Vector3, size: Vector3,
 		var b: Array[Vector3] = []
 		for i: int in range(7):
 			var x: float = -0.5+float(i)/6.0
-			var h: float = [0.0,0.25,0.29,0.56,0.61,0.91][row]+(0.14*sin(i*1.9) if row==5 else 0.035*sin(i*1.9) if row>0 else 0.0)
+			var h: float = [0.0,0.16,0.34,0.53,0.73,0.91][row]+(0.11*sin(i*1.9) if row==5 else 0.045*sin(i*1.9+row*0.8) if row>0 else 0.0)
+			if row > 0:
+				var edge: float = pow(absf(x)*2.0,3.0)
+				h *= 1.0-edge*0.30*float(row)/5.0
+				x *= 1.0-0.12*float(row)/5.0
 			var z: float = 0.5 if row==0 else [0.5,0.46,0.36,0.43,0.29,0.34][row]+0.035*sin(i*2.4)
 			if i>0 and i<6 and row>0: x+=0.025*sin(i*3.2+row*0.8)
 			f.append(Vector3(x,h,-z)*size)
@@ -182,7 +186,7 @@ static func _cliff(tool: SurfaceTool, kit: Node, center: Vector3, size: Vector3,
 		front.append(f); back.append(b)
 	for row: int in range(5):
 		for i: int in range(6):
-			var shade: Color = color.darkened(0.27 if i%3==0 else 0.12)
+			var shade: Color = color.darkened(0.13+0.045*sin(i*2.1+row*0.9))
 			_leaf_face(tool,kit,center,1,turn,[front[row][i],front[row][i+1],front[row+1][i+1],front[row+1][i]],shade)
 			_leaf_face(tool,kit,center,1,turn,[back[row][i+1],back[row][i],back[row+1][i],back[row+1][i+1]],shade.darkened(0.10))
 		for i: int in [0,6]:

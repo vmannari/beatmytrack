@@ -49,7 +49,7 @@ func run() -> void:
 			model.advance(state,control,1.0/60)
 			var weights: Vector3 = model.weights()
 			check(absf(weights.length_squared()-1.0)<0.0001,"equal-power engine crossfade: "+id)
-		check(model.shifts==0 if id in ["kart","forklift","electric"] else model.shifts>=3,"authored transmission: "+id)
+		check(model.shifts==0 if id in ["kart","forklift","electric","hovercraft"] else model.shifts>=3,"authored transmission: "+id)
 		check(model.rpm>=model.idle_rpm and model.rpm<=model.redline_rpm,"bounded RPM: "+id)
 		state.velocity = Vector2.ZERO
 		var final_before: Array = state.snapshot()

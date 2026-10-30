@@ -1,0 +1,171 @@
+--- 
++++ 
+@@ -93,3 +93,12 @@
+ var selected: int = -1
+-var selected_object: int = -1
++var selected_objects: Array[int] = []
++var multi_select: bool = false
++var object_snap: float = 1.0
++var selected_object: int = -1:
++	set(value):
++		selected_object = value
++		if value < 0: selected_objects.clear()
++		elif not multi_select: selected_objects.assign([value])
++var _selection_toggle: int = -1
++var _object_pick_world := Vector2.INF
+ var stamp_kind: String = "tree"
+@@ -185,4 +194,30 @@
+ 
++func object_indices() -> Array[int]:
++	var result: Array[int] = []
++	for index: int in selected_objects:
++		if index >= 0 and index < document.objects.size() and index not in result: result.append(index)
++	if selected_object >= 0 and selected_object < document.objects.size() and selected_object not in result: result.append(selected_object)
++	result.sort()
++	return result
++
++func object_position(point: Vector2) -> Vector2:
++	return point.snapped(Vector2.ONE*object_snap).clamp(Vector2(-110,-110),Vector2(110,110)) if object_snap > 0.0 else point.clamp(Vector2(-110,-110),Vector2(110,110))
++
++func cycle_objects() -> void:
++	if selected_object < 0: return
++	var at: Vector2 = _object_pick_world if _object_pick_world != Vector2.INF else Vector2(document.objects[selected_object].position[0],document.objects[selected_object].position[1])
++	var hits: Array[int] = preload("res://editor/object_editing.gd").candidates(document.objects,to_screen(at),at,to_screen)
++	if hits.size() < 2: hint_changed.emit("Only one object is under this point."); return
++	multi_select = false
++	selected_object = hits[(hits.find(selected_object)+1)%hits.size()]
++	selection_changed.emit(); queue_redraw()
++
++func toggle_multi_select() -> void:
++	multi_select = not multi_select
++	if not multi_select: selected_objects.assign([selected_object] if selected_object >= 0 else [])
++	selection_changed.emit(); queue_redraw()
++
+ func cancel_gesture() -> void:
+ 	_rollback_navigation_edit()
++	_selection_toggle = -1
+ 	pending_paint_accept = false
+@@ -323,2 +358,3 @@
+ 	changed_in_gesture = false
++	_selection_toggle = -1
+ 	gesture.begin(ghost,preparing)
+@@ -329,3 +365,3 @@
+ 	bump_end_drag = -1
+-	if mode == "objects" and selected_object >= 0 and selected_object < document.objects.size() and document.objects[selected_object].kind == "speed_bump":
++	if mode == "objects" and selected_object >= 0 and object_indices().size() == 1 and selected_object < document.objects.size() and document.objects[selected_object].kind == "speed_bump":
+ 		var ends: PackedVector2Array = SpeedBumpEdit.endpoints(document.objects[selected_object])
+@@ -389,12 +425,13 @@
+ 	selected = -1
+-	selected_object = -1
+-	var nearest: float = 30.0
++	var hit: int = -1
+ 	if mode == "objects":
+-		for i: int in range(document.objects.size()-1,-1,-1):
+-			var object: Dictionary = document.objects[i]
+-			var center: Vector2 = to_screen(Vector2(object.position[0],object.position[1]))
+-			if center.distance_to(point) < nearest or CreatorObjects.contains(object,to_world(point)):
+-				selected_object = i
+-				break
+-		if selected_object < 0 and native_preview != null and document.objects.size() < preload("res://editor/creator_limits.gd").MAX_OBJECTS:
++		_object_pick_world = to_world(point)
++		var hits: Array[int] = preload("res://editor/object_editing.gd").candidates(document.objects,point,_object_pick_world,to_screen)
++		if not hits.is_empty(): hit = hits[0]
++		if not multi_select: selected_object = hit
++		elif hit >= 0:
++			if hit in selected_objects: _selection_toggle = hit
++			else: selected_objects.append(hit)
++			selected_object = hit
++		if hit < 0 and native_preview != null and document.objects.size() < preload("res://editor/creator_limits.gd").MAX_OBJECTS:
+ 			for object: Dictionary in native_preview.metadata.get("scenery_objects",[]):
+@@ -402,2 +439,7 @@
+ 					var admission: String = preload("res://editor/creator_limits.gd").addition_error(document.objects,[object],str(document.theme))
++					if not admission.is_empty(): hint_changed.emit(admission); break
++					var proposed: Dictionary = document.duplicate()
++					proposed.objects = document.objects+[object]
++					proposed.hidden_scenery = document.get("hidden_scenery",[])+[CreatorScenery.key(object)]
++					admission = preload("res://editor/authoring_admission.gd").error(proposed,"objects")
+ 					if not admission.is_empty(): hint_changed.emit(admission); break
+@@ -409,2 +451,4 @@
+ 					selected_object = document.objects.size()-1
++					hit = selected_object
++					if multi_select and hit not in selected_objects: selected_objects.append(hit)
+ 					document_changed.emit()
+@@ -412,3 +456,3 @@
+ 	selection_changed.emit()
+-	if selected_object >= 0:
++	if hit >= 0:
+ 		var value: Array = document.objects[selected_object].position
+@@ -489,3 +533,3 @@
+ 	if dragging:
+-		var position: Vector2 = (drag_origin+to_world(point)-pointer_origin).snapped(Vector2.ONE).clamp(Vector2(-110,-110),Vector2(110,110))
++		var position: Vector2 = object_position(drag_origin+to_world(point)-pointer_origin)
+ 		if position.distance_to(drag_origin) > 0.1 and not changed_in_gesture:
+@@ -493,4 +537,7 @@
+ 			changed_in_gesture = true
+-		if changed_in_gesture and selected_object >= 0 and document.objects[selected_object].position != [position.x,position.y]:
+-			document.objects[selected_object].position = [position.x,position.y]
++		if changed_in_gesture and selected_object >= 0:
++			var original: Array = gesture.before.get("objects",document.objects)
++			var moved: Array = preload("res://editor/object_editing.gd").moved(original,object_indices(),position-drag_origin)
++			if moved == document.objects: return
++			document.objects = moved
+ 			document_changed.emit()
+@@ -505,3 +552,3 @@
+ 		return
+-	var position: Vector2 = to_world(point).snapped(Vector2.ONE).clamp(Vector2(-110,-110),Vector2(110,110))
++	var position: Vector2 = object_position(to_world(point))
+ 	if mode == "start_line":
+@@ -592,3 +639,3 @@
+ 	if _navigation_only:
+-		gesture.clear(); panning = false; active_pointer = -99
++		gesture.clear(); dragging = false; panning = false; active_pointer = -99
+ 		return
+@@ -633,2 +680,8 @@
+ 	if pending_stamp: _place(press_position)
++	if _selection_toggle >= 0 and not changed_in_gesture:
++		selected_objects.erase(_selection_toggle)
++		selected_object = selected_objects.back() if not selected_objects.is_empty() else -1
++		if selected_objects.is_empty(): multi_select = false
++		_selection_toggle = -1
++		selection_changed.emit()
+ 	if dragging and changed_in_gesture:
+@@ -650,2 +703,3 @@
+ 	gesture.clear()
++	if mode == "paint" and paint_mode != "free": selection_changed.emit()
+ 	queue_redraw()
+@@ -673,4 +727,5 @@
+ 	for piece: Dictionary in pending_road_pieces(): _draw_piece(piece,false,false)
++	var selected_indices: Array[int] = object_indices()
+ 	for i: int in range(document.get("objects",[]).size()):
+-		if mode not in ["objects","place","run"] or i != selected_object: continue
++		if mode not in ["objects","place","run"] or i not in selected_indices: continue
+ 		var object: Dictionary = document.objects[i]
+@@ -679,3 +734,3 @@
+ 		outline.append(outline[0])
+-		draw_polyline(outline,Color("edf1f3") if selected_object == i else Color("26342f"),3,true)
++		draw_polyline(outline,Color("edf1f3") if selected_object == i else Color("70d9df"),3,true)
+ 		if i == selected_object and mode == "objects" and object.kind == "speed_bump":
+@@ -973,3 +1028,4 @@
+ 		trial = anchored_change(piece_before_drag,trial,geometry_drag)
+-		if not RoadPieces.validate(trial).is_empty(): return
++		var errors: Array[String] = RoadPieces.validate(trial)
++		if not errors.is_empty(): hint_changed.emit(errors[0]); return
+ 		if trial == piece or not _valid_bridge_edit(trial,selected_piece): return
+@@ -1086,3 +1142,2 @@
+ 		_draw_geometry_glyph(handle,"span" if key == "radius" and piece.kind == "s_bend" else key,axis,geometry_drag == key and dragging)
+-		if piece.kind != "bridge": continue
+ 		var caption: String = geometry_caption(piece,key)
+@@ -1174,3 +1229,3 @@
+ 	var value: float = RoadPieces.height(piece) if key == "height" else float(piece.get(key,0.0 if key == "curvature" else 90.0))
+-	return ("%s %.0f deg" if key in ["angle","heading"] else "%s %.1f m") % [title,value]
++	return GameText.message(title)+" "+(GameText.message("%.0f deg") if key in ["angle","heading"] else GameText.message("%.1f m")) % value
+ 
+@@ -1375,4 +1430,7 @@
+ 	if not document.has("start_line"): return
++	var pose: Dictionary = document.start_line.duplicate(true)
++	pose.heading = fposmod(float(pose.heading)+180.0,360.0)
++	if not admit("start_line",pose): return
+ 	_start_edit()
+-	document.start_line.heading = fposmod(float(document.start_line.heading)+180.0,360.0)
++	document.start_line = pose
+ 	document_changed.emit()

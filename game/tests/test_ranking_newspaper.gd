@@ -139,7 +139,19 @@ func run() -> void:
 	check(circuit_calls.size() == 1,"newspaper Circuit action uses the existing official entry signal")
 	for dimensions: Vector2i in [Vector2i(1280,720),Vector2i(960,540),Vector2i(1600,900)]:
 		root.size = dimensions
+		menu._tabs.news.pressed.emit()
 		await settle(35)
+		var masthead_rect: Rect2 = menu._masthead.get_global_rect()
+		var tagline_rect: Rect2 = menu._tagline.get_global_rect()
+		var eyebrow_rect: Rect2 = menu._eyebrow.get_global_rect()
+		var tabs_rect: Rect2 = menu._controls.get_global_rect()
+		var masthead_font: int = menu._masthead.get_theme_font_size("font_size")
+		menu._tabs.ranking.pressed.emit()
+		await settle(35)
+		ranking = menu._ranking
+		check(menu._masthead.get_global_rect().is_equal_approx(masthead_rect) and menu._masthead.get_theme_font_size("font_size") == masthead_font,"masthead stays in place on ranking "+str(dimensions))
+		check(menu._tagline.visible and menu._eyebrow.visible and menu._tagline.get_global_rect().is_equal_approx(tagline_rect) and menu._eyebrow.get_global_rect().is_equal_approx(eyebrow_rect),"header text stays visible and in place on ranking "+str(dimensions))
+		check(menu._controls.get_global_rect().is_equal_approx(tabs_rect),"navigation stays in place on ranking "+str(dimensions))
 		check(menu._paper.get_global_rect().size.x <= menu._paper_host.size.x+1,"newspaper width fits "+str(dimensions))
 		check(menu._paper.get_global_rect().size.y <= menu._paper_host.size.y+1,"newspaper height fits "+str(dimensions))
 		check(menu._tabs.ranking.get_global_rect().end.x <= menu._paper.get_global_rect().end.x,"ranking tab fits "+str(dimensions))

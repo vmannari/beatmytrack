@@ -1,0 +1,83 @@
+diff --git a/game/core/app.gd b/game/core/app.gd
+--- a/game/core/app.gd
++++ b/game/core/app.gd
+@@ -1502,19 +1502,12 @@
+ 	root_ui.add_child(background)
+ 	var margin := MarginContainer.new()
+ 	MenuStyle.fill(margin)
+-	for side: String in ["left", "right", "top", "bottom"]: margin.add_theme_constant_override("margin_" + side, 32)
++	for side: String in ["left", "right", "top", "bottom"]: margin.add_theme_constant_override("margin_" + side, 32 if side in ["left", "right"] else 16)
+ 	root_ui.add_child(margin)
+-	var row := HBoxContainer.new()
+-	margin.add_child(row)
+-	var scenery_space := Control.new()
+-	scenery_space.mouse_filter = Control.MOUSE_FILTER_IGNORE
+-	scenery_space.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+-	row.add_child(scenery_space)
+ 	var center := CenterContainer.new()
+ 	center.size_flags_vertical = Control.SIZE_EXPAND_FILL
+ 	center.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+-	center.size_flags_stretch_ratio = 0.01
+-	row.add_child(center)
++	margin.add_child(center)
+ 	var panel := preload("res://ui/account_panel.gd").new()
+ 	panel.account = online
+ 	# Finish the guest button's input dispatch before replacing its menu tree.
+@@ -1523,13 +1516,7 @@
+ 	center.add_child(panel)
+ 	var fit_card := func() -> void:
+ 		if not is_instance_valid(panel) or not panel.is_inside_tree(): return
+-		var wide: bool = root_ui.size.x / maxf(root_ui.size.y, 1.0) >= 1.4
+-		scenery_space.visible = wide
+-		center.size_flags_horizontal = Control.SIZE_FILL if wide else Control.SIZE_EXPAND_FILL
+ 		panel.fit_width()
+-		var inset: int = roundi(maxf(32, root_ui.size.x * 0.046)) if wide else 32
+-		margin.add_theme_constant_override("margin_left", inset)
+-		margin.add_theme_constant_override("margin_right", inset)
+ 	root_ui.resized.connect(fit_card)
+ 	fit_card.call_deferred()
+ 
+diff --git a/game/ui/account_panel.gd b/game/ui/account_panel.gd
+--- a/game/ui/account_panel.gd
++++ b/game/ui/account_panel.gd
+@@ -92,7 +92,7 @@
+ 	development_button = MenuStyle.button("Development · Beat My Track", account.sign_in_developer)
+ 	development_button.name = "DevelopmentSignIn"
+ 	development_button.custom_minimum_size = Vector2(0, 48)
+-	development_button.size_flags_horizontal = Control.SIZE_SHRINK_CENTER
++	development_button.size_flags_horizontal = Control.SIZE_FILL
+ 	development_button.add_theme_font_override("font", MenuStyle.BODY)
+ 	var dev_style := MenuStyle.box(Color(0.25, 0.30, 0.38, 0.68), 12)
+ 	dev_style.set_corner_radius_all(12)
+diff --git a/game/tests/capture_sign_in_fit.gd b/game/tests/capture_sign_in_fit.gd
+--- a/game/tests/capture_sign_in_fit.gd
++++ b/game/tests/capture_sign_in_fit.gd
+@@ -42,6 +42,17 @@
+ 			checks += 1
+ 			if not fits: failures += 1
+ 			print("FIT %dx%d %s viewport=%s card=%s min=%s fits=%s" % [dimensions.x,dimensions.y,state,bounds,panel.get_global_rect(),panel.get_combined_minimum_size(),fits])
++			checks += 1
++			if panel.get_global_rect().get_center().distance_to(bounds.get_center()) > 1.0:
++				failures += 1
++				print("FAIL: sign-in card is not centered ", dimensions, " ", state)
++			var developer: Control = app.root_ui.find_child("DevelopmentSignIn",true,false)
++			var google: Control = app.root_ui.find_child("GoogleSignIn",true,false)
++			if developer.is_visible_in_tree() and google.is_visible_in_tree():
++				checks += 1
++				if absf(developer.size.x-google.size.x) > 1.0 or absf(developer.get_global_rect().position.x-google.get_global_rect().position.x) > 1.0:
++					failures += 1
++					print("FAIL: provider button widths or left edges differ")
+ 			for child: Node in panel.find_children("*", "Control", true, false):
+ 				var control := child as Control
+ 				if not control.is_visible_in_tree() or control.get_window() != panel.get_window(): continue
+@@ -97,6 +108,10 @@
+ 				for _frame: int in range(10): await process_frame
+ 				var panel: Control = app.root_ui.find_child("AccountCard",true,false)
+ 				checks += 1
++				if panel.get_global_rect().get_center().distance_to(root.get_visible_rect().get_center()) > 1.0:
++					failures += 1
++					print("FAIL: localized card is not centered ",code," ",dimensions)
++				checks += 1
+ 				if not root.get_visible_rect().grow(-16).encloses(panel.get_global_rect()):
+ 					failures += 1
+ 					print("FAIL: localized card does not fit ",code," ",dimensions," ",panel.get_global_rect())

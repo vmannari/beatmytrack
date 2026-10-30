@@ -1,0 +1,76 @@
+extends RefCounted
+## Original cosmetic fittings in kart model metres. Tyres, axles and engine stay fixed.
+const G = preload("res://vehicle/kart_geometry.gd")
+
+static func nose_profile(kind: String, original: Array[Vector4]) -> Array[Vector4]:
+	if kind=="stock": return original
+	var result: Array[Vector4] = original.duplicate()
+	for i: int in range(result.size()):
+		var p: Vector4 = result[i]
+		match kind:
+			"sprint": p.w *= 0.65; p.z -= 0.012
+			"enduro": p.w *= 1.24; p.z += 0.018; p.y *= 0.97
+			"wedge": p.w *= lerpf(0.52,1.15,float(i)/(result.size()-1)); p.z += lerpf(-0.015,0.025,float(i)/(result.size()-1)); p.y *= lerpf(0.87,1.0,float(i)/(result.size()-1))
+		result[i] = p
+	return result
+
+static func fairing_profile(kind: String, original: Array[Vector4]) -> Array[Vector4]:
+	if kind=="stock": return original
+	var result: Array[Vector4] = original.duplicate()
+	for i: int in range(result.size()):
+		var p: Vector4 = result[i]
+		match kind:
+			"sprint": p.y *= 0.90; p.w *= 0.80
+			"enduro": p.y *= 1.12; p.w *= 1.10
+			"wedge": p.y *= lerpf(0.85,1.16,float(i)/(result.size()-1)); p.w *= 0.85
+		result[i] = p
+	return result
+
+static func pod_profile(kind: String, original: Array[Vector4]) -> Array[Vector4]:
+	if kind=="stock": return original
+	var result: Array[Vector4] = original.duplicate()
+	for i: int in range(result.size()):
+		var p: Vector4 = result[i]
+		match kind:
+			"sprint": p.w *= 0.72; p.y *= 0.95
+			"enduro": p.w *= 1.18; p.y *= 1.03
+			"wedge": p.w *= lerpf(1.12,0.66,float(i)/(result.size()-1)); p.y *= lerpf(1.02,0.82,float(i)/(result.size()-1))
+		result[i] = p
+	return result
+
+static func bumper(car: CarVisual, parent: Node3D, trim: Material, metal: Material) -> void:
+	var s: bool = car.simple_model
+	var kind: String = str(car.customisation.aero)
+	for side: float in [-1.0,1.0]:
+		G.tube(parent,"KitBumperStay_"+kind,[Vector3(side*0.30,0.17,1.04),Vector3(side*0.35,0.18,1.17),Vector3(side*0.35,0.22,1.29)],0.022,metal,s,16)
+	if kind=="loop":
+		G.tube(parent,"WraparoundRearBumper",[Vector3(-0.73,0.23,1.22),Vector3(-0.69,0.23,1.26),Vector3(-0.49,0.23,1.29),Vector3(0.49,0.23,1.29),Vector3(0.69,0.23,1.26),Vector3(0.73,0.23,1.22)],0.048,trim,s,40)
+		for side: float in [-1.0,1.0]: G.ellipsoid(parent,"WraparoundBumperCap",Vector3(side*0.73,0.23,1.22),Vector3.ONE*0.048,trim,s)
+	elif kind=="blade":
+		G.rounded(parent,"WideRearBumper",Vector3(0,0.22,1.285),Vector3(1.44,0.17,0.10),0.035,trim,s)
+		G.rounded(parent,"RearBumperPaintInset",Vector3(0,0.23,1.337),Vector3(0.52,0.06,0.012),0.005,car.paint_materials.accent,s)
+	elif kind=="twin":
+		for y: float in [0.16,0.29]: G.rounded(parent,"TwinRearBumperRail",Vector3(0,y,1.285),Vector3(1.42,0.075,0.10),0.025,trim,s)
+		for x: float in [-0.66,-0.35,0.35,0.66]: G.rounded(parent,"TwinRearBumperBridge",Vector3(x,0.225,1.285),Vector3(0.055,0.16,0.085),0.015,trim,s)
+
+static func rim(car: CarVisual, parent: Node3D, side: float, metal: Material, bright: Material, trim: Material) -> void:
+	var s: bool = car.simple_model
+	var kind: String = str(car.customisation.rims)
+	var magnesium := CompactFinish.alloy(Color("807b68"))
+	magnesium.roughness = 0.43
+	G.lathe(parent,"KitMagnesiumBarrel",[Vector2(-0.138,0.115),Vector2(-0.138,0.135),Vector2(-0.120,0.145),Vector2(-0.101,0.127),Vector2(0.101,0.127),Vector2(0.120,0.145),Vector2(0.138,0.135),Vector2(0.138,0.115),Vector2(0.103,0.111),Vector2(-0.103,0.111),Vector2(-0.138,0.115)],magnesium,s)
+	if kind=="disc":
+		# Closed, recessed face ends inside the rolled rim bead.
+		G.lathe(parent,"RecessedDiscWheel",[Vector2(side*0.099,0),Vector2(side*0.099,0.123),Vector2(side*0.117,0.123),Vector2(side*0.117,0),Vector2(side*0.099,0)],magnesium,s)
+	else:
+		var count: int = 3 if kind=="three" else 6
+		for spoke: int in range(count):
+			var a: float = TAU*spoke/count
+			for split: float in ([0.0] if kind=="three" else [-0.11,0.11]):
+				G.tube(parent,"KitSpoke_"+kind,[Vector3(side*0.09,sin(a)*0.035,cos(a)*0.035),Vector3(side*0.111,sin(a+split)*0.081,cos(a+split)*0.081),Vector3(side*0.125,sin(a+split)*0.128,cos(a+split)*0.128)],0.019 if kind=="three" else 0.008,magnesium,s,10)
+	var cap := VisualGeometry.cylinder(parent,0.042,0.20,Vector3.ZERO,metal,true)
+	cap.rotation.z = PI*0.5
+	for bolt: int in range(3):
+		var a: float = TAU*bolt/3
+		G.ellipsoid(parent,"KitWheelNut",Vector3(side*0.124,sin(a)*0.052,cos(a)*0.052),Vector3(0.009,0.008,0.008),bright,s)
+	G.tube(parent,"KitValveStem",[Vector3(side*0.13,0.095,-0.066),Vector3(side*0.15,0.10,-0.069)],0.004,trim,s,4)

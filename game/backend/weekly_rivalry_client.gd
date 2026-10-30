@@ -28,6 +28,7 @@ var cached_snapshot: bool = false
 var snapshot_cache = preload("res://backend/menu_snapshot_cache.gd").new()
 var _last_refresh_msec: int = -60000
 var _failed_fetch_scope: String = ""
+var _cache_bypass_scope: String = ""
 var _continue_group: String = ""
 var _continue_key: String = ""
 const REFRESH_INTERVAL_MSEC: int = 30000
@@ -171,6 +172,7 @@ func _sync_appearance() -> void:
 	if generation == _generation and original == scope() and response.get("ok",false): _synced_appearance = signature
 
 func refresh(force: bool = true) -> void:
+	var previous_scope: String = request_scope if busy else snapshot_scope
 	# Development rivalries use the server capability automatically. Release
 	# and ordinary services retain the real-player population.
 	if OS.is_debug_build() and client.has_method("test_drivers_available"):
@@ -179,6 +181,9 @@ func refresh(force: bool = true) -> void:
 			test_population = automatic
 			reset()
 	if busy and request_scope == scope(): return
+	# A changed car/account must publish its fresh board once. Keep startup
+	# cache restoration, but do not flash saved scores during a scope switch.
+	if not previous_scope.is_empty() and previous_scope != scope(): _cache_bypass_scope = scope()
 	if busy: reset()
 	if snapshot_scope != scope() and _failed_fetch_scope != scope(): reset()
 	if not client.signed_in():
@@ -188,13 +193,17 @@ func refresh(force: bool = true) -> void:
 	# Keep failures visible through menu activation/prefetch using the normal
 	# refresh interval. Refresh and Join still retry explicitly without waiting.
 	if not force and _failed_fetch_scope == scope() and Time.get_ticks_msec()-_last_refresh_msec < REFRESH_INTERVAL_MSEC: return
-	_restore_snapshot()
+	if _cache_bypass_scope != scope(): _restore_snapshot()
 	if not force and not cached_snapshot and has_snapshot() and Time.get_ticks_msec()-_last_refresh_msec < REFRESH_INTERVAL_MSEC: return
 	var original: String = scope()
 	var generation: int = _generation
 	busy = true
 	request_scope = original
-	await _sync_appearance()
+	# Clear the previous scope's visible board before either request can yield.
+	changed.emit()
+	# Appearance reconciliation may involve several network requests. Standings
+	# do not depend on it, and the page uses the local appearance for our car.
+	_sync_appearance()
 	if generation != _generation or original != scope(): return
 	await _fetch("/rivalry/current?vehicle_id="+vehicle().uri_encode()+("&test_population=true" if test_population else ""))
 
@@ -221,6 +230,12 @@ func _fetch(path: String, method: HTTPClient.Method = HTTPClient.METHOD_GET, pay
 	busy = false
 	request_scope = ""
 	if response.ok and valid_snapshot(response.data):
+		var needs_enrollment: bool = response.data.state == "not_joined" or (response.data.state == "active" and not bool(response.data.get("automatic_test_drivers",false)))
+		if test_population and needs_enrollment and path != "/rivalry/join":
+			# This is an intermediate response. Publish only the enrolled board;
+			# join's loading notification must not expose these temporary scores.
+			await join()
+			return
 		if model.group_id != str(response.data.get("group_id","")):
 			model = WeeklyRivalry.new()
 			result_ticket = ""
@@ -238,10 +253,6 @@ func _fetch(path: String, method: HTTPClient.Method = HTTPClient.METHOD_GET, pay
 		# idempotent acknowledgement and current-week enrollment as Continue.
 		if model.empty_completed_week() and path != "/rivalry/join":
 			await continue_week()
-			return
-		var needs_enrollment: bool = model.status == "not_joined" or (model.status == "active" and not bool(response.data.get("automatic_test_drivers",false)))
-		if test_population and needs_enrollment and path != "/rivalry/join":
-			await join()
 			return
 	else:
 		_failed_fetch_scope = original

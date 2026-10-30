@@ -1,0 +1,89 @@
+--- a/game/ui/garage_page.gd
++++ b/game/ui/garage_page.gd
+@@ -59,7 +59,7 @@
+ var section: String = "cars"
+ var _car_menu_open: bool = false
+ var _workshop_section: String = "customise"
+-var _workshop_tabs: HBoxContainer
++var _workshop_tabs: VBoxContainer
+ var gallery: ScrollContainer
+ var gallery_slot: Control
+ var gallery_content: Control
+@@ -127,10 +127,11 @@
+ 	_preview_column.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+ 	_preview_column.add_theme_constant_override("separation",8)
+ 	main.add_child(_preview_column)
+-	_workshop_tabs = HBoxContainer.new()
++	_workshop_tabs = VBoxContainer.new()
+ 	_workshop_tabs.name = "GarageWorkshopTabs"
+ 	_workshop_tabs.add_theme_constant_override("separation",8)
+-	_preview_column.add_child(_workshop_tabs)
++	_layout.add_child(_workshop_tabs)
++	_layout.move_child(_workshop_tabs,1)
+ 	_preview_slot = Control.new()
+ 	_preview_slot.size_flags_vertical = Control.SIZE_EXPAND_FILL
+ 	_preview_slot.custom_minimum_size.y = 250
+@@ -821,10 +822,12 @@
+ 	for child: Node in _workshop_tabs.get_children():
+ 		_workshop_tabs.remove_child(child)
+ 		child.queue_free()
++	_workshop_tabs.add_child(MenuStyle.label("WORKSHOP",18,true))
+ 	for entry: Array in [["customise","Appearance"],["tuning","Parts"],["care","Wash"]]:
+ 		var tab := MenuStyle.tab(str(entry[1]),_show_section.bind(str(entry[0])),next == entry[0])
+ 		tab.name = "Workshop"+str(entry[1])
+-		tab.custom_minimum_size.y = 48
++		tab.custom_minimum_size = Vector2(132,52)
++		tab.add_theme_font_size_override("font_size",18)
+ 		tab.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+ 		_workshop_tabs.add_child(tab)
+ 	_update_wash_status()
+--- a/game/tests/test_garage_sidebar.gd
++++ b/game/tests/test_garage_sidebar.gd
+@@ -70,7 +70,7 @@
+ 
+ func run() -> void:
+ 	OS.set_environment("BMT_API_URL","")
+-	var evidence_root: String = "res://../docs/evidence/garage-workshop-restored-2026-10-25/native"
++	var evidence_root: String = "res://../docs/evidence/garage-workshop-sidebar-2026-10-25/native"
+ 	for argument: String in OS.get_cmdline_user_args():
+ 		if argument.begins_with("--evidence-root="): evidence_root = argument.trim_prefix("--evidence-root=")
+ 	before = "--before" in OS.get_cmdline_user_args()
+@@ -103,11 +103,13 @@
+ 		rail_bounds("selected "+str(dimensions))
+ 		# Workshop owns the three car tasks; media keep their own rail entries.
+ 		check(page.rail.get_child_count() == 5,"five stable destinations including Workshop")
+-		check(page._workshop_tabs.visible,"Workshop tabs visible after selecting car")
++		check(page._workshop_tabs.visible,"Workshop side submenu visible after selecting car")
+ 		for tab: Control in page._workshop_tabs.get_children():
++			if not tab is Button: continue
+ 			check(root.get_visible_rect().encloses(tab.get_global_rect()),"Workshop tab fits window")
+-			check(tab.size.y >= 48,"Workshop tab touch target")
+-		check(page.rail.get_node_or_null("GarageCare") == null and page.rail.get_node_or_null("GarageCustomise") == null and page.rail.get_node_or_null("GarageTuning") == null,"car tasks are grouped outside the rail")
++			check(tab.size.y >= 48,"Workshop submenu touch target")
++			check(tab.get_global_rect().end.x <= page.preview.global_position.x,"Workshop action stays left of the car")
++		check(page.rail.get_node_or_null("GarageCare") == null and page.rail.get_node_or_null("GarageCustomise") == null and page.rail.get_node_or_null("GarageTuning") == null,"car tasks are grouped in the side submenu")
+ 		await capture("customise-"+str(dimensions.x))
+ 		var rects: Array = []
+ 		for button: Node in page.rail.get_children(): rects.append({"name":button.name,"rect":str(button.get_global_rect())})
+@@ -130,7 +132,7 @@
+ 		await click(page.rail.get_node("GarageWorkshop"))
+ 		await settle()
+ 		check(page.section == "tuning","Workshop remembers Parts after News")
+-		check(page._workshop_tabs.visible,"returning to Workshop restores task tabs")
++		check(page._workshop_tabs.visible,"returning to Workshop restores the side submenu")
+ 		check(not page.actions.visible and page.actions.get_child_count()==0,"customisation has no bottom button row "+str(dimensions))
+ 		check(page.get_global_rect().encloses(page.tools_panel.get_global_rect()),"workshop controls fit "+str(dimensions))
+ 		check(root.get_visible_rect().encloses(page.tools_panel.get_global_rect()),"workshop controls fit window "+str(dimensions))
+--- a/game/tests/test_customisation_carousel.gd
++++ b/game/tests/test_customisation_carousel.gd
+@@ -146,7 +146,9 @@
+ 		check(page.tools_panel.get_global_rect().encloses(page.kit_shelf.equip.get_global_rect()),"equip fits "+str(dimensions))
+ 		check(page.tools_panel.get_global_rect().encloses(page.kit_scroll.get_global_rect()),"carousel fits "+str(dimensions))
+ 		check(not page.actions.visible and page.actions.get_child_count() == 0,"customisation has no bottom buttons "+str(dimensions))
+-		check(page._workshop_tabs.visible,"Workshop tabs group the car tasks above the preview")
++		check(page._workshop_tabs.visible,"Workshop side submenu groups the car tasks")
++		check(page._workshop_tabs.get_global_rect().end.x <= page.preview.global_position.x,"Workshop submenu stays left of the car")
++		check(absf(page.preview.global_position.y-page.tools_panel.global_position.y)<1,"no navigation row above the car")
+ 		check(page.kit_shelf.photo.visible and page.kit_shelf.photo.size.y >= 64,"detail photo remains visible on short layouts")
+ 		check(page.kit_shelf.cancel.text == "Cancel preview" and page.kit_shelf.cancel.visible,"preview has a named cancellation action")
+ 		if dimensions.x == 1720:

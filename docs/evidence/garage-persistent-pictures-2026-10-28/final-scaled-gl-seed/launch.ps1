@@ -1,0 +1,2 @@
+$ErrorActionPreference = 'Stop'
+& 'C:\Codes\Godot\Beat my track\scripts\dev.ps1' -Action 'TestScript' -ScriptPath 'res://tests/test_garage_persistent_pictures.gd' -TestArgument @('--output=C:\Codes\Godot\Beat my track\docs\evidence\garage-persistent-pictures-2026-10-28\final-scaled-gl-seed','--phase=seed','--scale=1.5','--cache=C:\Codes\Godot\Beat my track\build\persistent-pictures-final-scaled-gl') -Graphical -RenderingMethod 'gl_compatibility'

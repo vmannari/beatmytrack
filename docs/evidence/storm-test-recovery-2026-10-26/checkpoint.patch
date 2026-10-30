@@ -1,0 +1,709 @@
+diff --git a/game/core/app.gd b/game/core/app.gd
+--- a/game/core/app.gd
++++ b/game/core/app.gd
+@@ -3926,6 +3926,9 @@
+ 		preload("res://ui/popup_style.gd").watch(node)
+ 
+ func _own_dialog(dialog: AcceptDialog) -> void:
++	# Practice suspends the retained editor. Its owned windows must still take
++	# input without enabling the editor underneath the active race.
++	dialog.process_mode = Node.PROCESS_MODE_ALWAYS
+ 	root_ui.add_child(dialog)
+ 	preload("res://ui/popup_style.gd").watch(dialog)
+ 	dialog.confirmed.connect(dialog.queue_free)
+@@ -3936,6 +3939,8 @@
+ var test_return_to_drafts: bool = false
+ var test_document_snapshot: Dictionary = {}
+ var _practice_editor_context: Dictionary = {}
++var _draft_test_save_context: Dictionary = {}
++var _draft_test_save_dialog: AcceptDialog
+ 
+ func _open_race_loading(track: NativeTrack = null, practice: bool = false) -> RaceLoading:
+ 	if product_telemetry != null: product_telemetry.set_transport_allowed(false)
+@@ -4343,6 +4348,10 @@
+ 	if is_instance_valid(game) and game.get("free_drive_mode") == true:
+ 		_leave_garage_free_drive()
+ 		return
++	if _draft_test_save_is_current(_draft_test_save_context):
++		_show_draft_test_save_recovery()
++		return
++	_clear_draft_test_save_recovery()
+ 	if race_ad_breaks != null and race_ad_breaks.blocking: return
+ 	if is_instance_valid(game) and game.preparation_complete and not cloud_ticket.is_empty() and bool(game.get("track_session").finished):
+ 		_results()
+@@ -5152,20 +5161,83 @@
+ 	if not is_instance_valid(game) or not game.preparation_complete or test_document_snapshot.is_empty(): return
+ 	var witness: TrackSession = game.get("practice_validation")
+ 	if not witness.finished or not bool(game.get("practice_validation_eligible")): return
+-	var storage: TrackLibrary = test_library_snapshot if test_library_snapshot != null else library
+-	var proof_document: Dictionary = test_document_snapshot.duplicate(true)
+-	var trajectory: Dictionary = game.race_proof.recording(witness)
+-	var staged: Dictionary = lifecycle.stage(proof_document,[],test_vehicle_snapshot,storage,test_scope_snapshot,trajectory)
+-	if trajectory.is_empty() or staged.is_empty() or storage.mark_tested(proof_document) != OK:
+-		var recovery := AcceptDialog.new()
+-		recovery.dialog_text = "The completed test could not be saved. Free storage, then retry saving this recording."
+-		recovery.ok_button_text = "Retry saving"
+-		_own_dialog(recovery)
+-		recovery.confirmed.connect(_complete_draft_test,CONNECT_DEFERRED)
+-		recovery.popup_centered()
+-		return # Keep the exact finished recording available until durable save succeeds.
++	if not _draft_test_save_is_current(_draft_test_save_context):
++		_clear_draft_test_save_recovery()
++		_draft_test_save_context = {"game":game.get_instance_id(),"witness":witness,
++			"storage":test_library_snapshot if test_library_snapshot != null else library,
++			"scope":test_scope_snapshot,"vehicle":test_vehicle_snapshot,
++			"document":test_document_snapshot.duplicate(true),"trajectory":game.race_proof.recording(witness),"was_paused":bool(game.get("paused"))}
++	_retry_draft_test_save(_draft_test_save_context)
++
++func _draft_test_save_is_current(context: Dictionary) -> bool:
++	return not context.is_empty() and context==_draft_test_save_context and is_instance_valid(game) and game.preparation_complete \
++		and game.get_instance_id()==int(context.game) and game.get("practice_validation")==context.witness \
++		and test_library_snapshot==context.storage and library==context.storage \
++		and lifecycle!=null and lifecycle.scope()==str(context.scope) \
++		and test_vehicle_snapshot==str(context.vehicle) and test_document_snapshot==context.document
++
++func _retry_draft_test_save(context: Dictionary) -> void:
++	if not _draft_test_save_is_current(context): return
++	if context.trajectory.is_empty():
++		context.error = "The test recording is incomplete. Restart the test drive to record a new lap."
++		_show_draft_test_save_recovery()
++		return
++	if not context.has("staged"):
++		var staged: Dictionary = lifecycle.stage(context.document.duplicate(true),[],str(context.vehicle),context.storage,str(context.scope),context.trajectory)
++		if staged.is_empty():
++			context.error = lifecycle.last_error if not lifecycle.last_error.is_empty() else "The completed test could not be saved. Free storage, then retry saving this recording."
++			_show_draft_test_save_recovery()
++			return
++		context.staged = staged
++	var storage: TrackLibrary = context.storage
++	var error: Error = storage.mark_tested(context.document.duplicate(true))
++	if error != OK:
++		var detail: String = storage.last_error if not storage.last_error.is_empty() else error_string(error)
++		context.error = "The test recording is saved, but the test could not be marked complete. "+detail
++		_show_draft_test_save_recovery()
++		return
++	if not bool(context.was_paused) and bool(game.get("paused")): game.toggle_pause(false)
++	_clear_draft_test_save_recovery()
+ 	pending_menu_notice = "Test lap saved on this device. Ready to publish."
+ 	if test_return_to_drafts: _leave_race()
++
++func _show_draft_test_save_recovery() -> void:
++	if not _draft_test_save_is_current(_draft_test_save_context): return
++	if not bool(game.get("paused")): game.toggle_pause(false)
++	if is_instance_valid(_draft_test_save_dialog) and not _draft_test_save_dialog.is_queued_for_deletion():
++		if not _draft_test_save_dialog.visible: _draft_test_save_dialog.call("popup_message")
++		return
++	var context: Dictionary = _draft_test_save_context
++	var recovery := preload("res://ui/practice_save_recovery.gd").new()
++	recovery.return_caption = "Return to drafts" if test_return_to_drafts else "Return to editor"
++	recovery.retry_caption = "Restart" if context.trajectory.is_empty() else "Retry saving"
++	recovery.dialog_text = str(context.get("error","The completed test could not be saved."))+"\nYour track remains saved on this device."
++	_draft_test_save_dialog = recovery
++	_own_dialog(recovery)
++	recovery.confirmed.connect(func() -> void:
++		if _draft_test_save_dialog==recovery: _draft_test_save_dialog = null
++		if not _draft_test_save_is_current(context): return
++		if context.trajectory.is_empty():
++			_clear_draft_test_save_recovery()
++			game.restart()
++		else: _retry_draft_test_save.call_deferred(context))
++	recovery.return_requested.connect(func() -> void:
++		_return_from_draft_test_save.call_deferred(context))
++	recovery.tree_exited.connect(func() -> void:
++		if _draft_test_save_dialog==recovery: _draft_test_save_dialog = null)
++	recovery.popup_message()
++
++func _return_from_draft_test_save(context: Dictionary) -> void:
++	if not _draft_test_save_is_current(context): return
++	_clear_draft_test_save_recovery()
++	_leave_race()
++
++func _clear_draft_test_save_recovery() -> void:
++	_draft_test_save_context = {}
++	if is_instance_valid(_draft_test_save_dialog):
++		_draft_test_save_dialog.hide()
++		_draft_test_save_dialog.queue_free()
++	_draft_test_save_dialog = null
+ 
+ func _publish_saved_draft(id: String) -> void:
+ 	if is_instance_valid(_publication_dialog): return
+diff --git a/game/core/game.gd b/game/core/game.gd
+--- a/game/core/game.gd
++++ b/game/core/game.gd
+@@ -740,7 +740,8 @@
+ 	if preference_records != null: GameSoundtrack.instance().apply_settings(preference_records.settings)
+ 	GameSoundtrack.instance().begin_race(self,str(native_track.metadata.get("theme","pine")) if native_track != null else "pine",sim.state)
+ 	practice_validation = TrackSession.new(120,1)
+-	practice_validation_eligible = true
++	var authored: Dictionary = native_track.metadata.get("creator_document",{}) if native_track!=null else {}
++	practice_validation_eligible = authored.has("start_line") and RoadPieces.route_from_pieces(authored).ok
+ 	checkpoint_marker.previous_gate = -2
+ 	checkpoint_marker.visible = false
+ 	hud.checkpoint_notice.clear()
+diff --git a/game/ui/garage_cached_thumbnail.gd b/game/ui/garage_cached_thumbnail.gd
+--- a/game/ui/garage_cached_thumbnail.gd
++++ b/game/ui/garage_cached_thumbnail.gd
+@@ -35,7 +35,7 @@
+ 		_image.texture = value
+ 		displayed_key = key
+ 
+-func apply_livery(value: Dictionary) -> void:
++func apply_livery(value: Dictionary, _animate_paint: bool = false) -> void:
+ 	livery = value.duplicate(true)
+ 	refresh_thumbnail()
+ 
+diff --git a/AGENTS.md b/AGENTS.md
+--- a/AGENTS.md
++++ b/AGENTS.md
+@@ -2,6 +2,11 @@
+ ## Storm roads redesigned for driving variety (2026-10-26)
+ STV01-STV03/R01/Q01: Owner rejects easy, monotonous roads while approving scenery. Five distinct corner programmes add a dock hairpin, faster woodland sweeps, a tightening quarry bowl and 12.7/9.2m offset chicanes. Normal Straight/Curve parts, explicit start lines and editor-generated routes remain; 6-44m radii and 7.4-10.2m widths replace the repeated broad rhythm. All120 fixed site objects, working aprons and start stations remain exact; roadside furniture follows the roads. Canonical40/geometry65/all-car180,175laps/zero contacts/five exact Compact replays, faster Compact15laps/zero contacts, actual App91Compatibility/91desktopMobile, owner-stage46/read36/catalogue33/parser1259 pass. Initial clearance, shallow chicane, near-stop and loading-cover fixture findings are retained and corrected. All five Ville PC drafts and existing autosaves are updated; a missing Switchyard original is restored, with creation dates and264 unrelated files preserved. Packs refreshed. Sources, commands, native views and task-only checkpoint: docs/STORM_DRIVING_VARIETY_2026_10_26.md and docs/evidence/storm-driving-variety-2026-10-26/report.json. Reload and owner driving/difficulty/appearance acceptance remain. No device test, APK, purchase, publication, backend mutation, deployment or owner-process restart; concurrent handling/Garage/rendering work preserved.
+ <!-- /STORM-DRIVING-VARIETY-20261026 -->
++
++<!-- STORM-TEST-RECOVERY-20261026 -->
++## Creator test-drive save recovery (2026-10-26)
++TSR01-TSR03/R01/Q01: Owned dialogs remain interactive while practice suspends the retained editor. Failed test saves offer Retry and Return to editor/drafts; incomplete proof offers Restart. Actual causes, exact staged proof/operation identity and account/document/attempt fences prevent misleading storage loops and stale callbacks. Incomplete road drafts remain untimed without fabricated receipts. Focused43headless/58Compatibility/58desktopMobile, full App roundtrip16, App141, notices95Compatibility/95desktopMobile, local publication31 and parser1259 pass. Original recovery30checks/6fail and exact original-Game Ellipse obstruction failure are retained; broader editor-practice remains failing identically. One concurrent Garage override signature mismatch is corrected without behavior changes. Sources, commands, native views, limitations and scoped checkpoint: docs/STORM_TEST_RECOVERY_2026_10_26.md and docs/evidence/storm-test-recovery-2026-10-26/report.json. Relaunch and owner/device/translation acceptance remain. No attachment/device test, APK, purchase, owner-save or live database mutation, deployment or owner-process restart; concurrent road-parts/Garage/physics work preserved. No staging or commit.
++<!-- /STORM-TEST-RECOVERY-20261026 -->
+ 
+ <!-- ELECTRIC-DESIGN-REVIEW-20261026 -->
+ ## Electric whole-model design review (2026-10-26)
+diff --git a/DEVELOPMENT_STATUS.md b/DEVELOPMENT_STATUS.md
+--- a/DEVELOPMENT_STATUS.md
++++ b/DEVELOPMENT_STATUS.md
+@@ -2,6 +2,11 @@
+ ## Storm roads redesigned for driving variety (2026-10-26)
+ STV01-STV03/R01/Q01: Owner rejects easy, monotonous roads while approving scenery. Five distinct corner programmes add a dock hairpin, faster woodland sweeps, a tightening quarry bowl and 12.7/9.2m offset chicanes. Normal Straight/Curve parts, explicit start lines and editor-generated routes remain; 6-44m radii and 7.4-10.2m widths replace the repeated broad rhythm. All120 fixed site objects, working aprons and start stations remain exact; roadside furniture follows the roads. Canonical40/geometry65/all-car180,175laps/zero contacts/five exact Compact replays, faster Compact15laps/zero contacts, actual App91Compatibility/91desktopMobile, owner-stage46/read36/catalogue33/parser1259 pass. Initial clearance, shallow chicane, near-stop and loading-cover fixture findings are retained and corrected. All five Ville PC drafts and existing autosaves are updated; a missing Switchyard original is restored, with creation dates and264 unrelated files preserved. Packs refreshed. Sources, commands, native views and task-only checkpoint: docs/STORM_DRIVING_VARIETY_2026_10_26.md and docs/evidence/storm-driving-variety-2026-10-26/report.json. Reload and owner driving/difficulty/appearance acceptance remain. No device test, APK, purchase, publication, backend mutation, deployment or owner-process restart; concurrent handling/Garage/rendering work preserved.
+ <!-- /STORM-DRIVING-VARIETY-20261026 -->
++
++<!-- STORM-TEST-RECOVERY-20261026 -->
++## Creator test-drive save recovery (2026-10-26)
++TSR01-TSR03/R01/Q01: Owned dialogs remain interactive while practice suspends the retained editor. Failed test saves offer Retry and Return to editor/drafts; incomplete proof offers Restart. Actual causes, exact staged proof/operation identity and account/document/attempt fences prevent misleading storage loops and stale callbacks. Incomplete road drafts remain untimed without fabricated receipts. Focused43headless/58Compatibility/58desktopMobile, full App roundtrip16, App141, notices95Compatibility/95desktopMobile, local publication31 and parser1259 pass. Original recovery30checks/6fail and exact original-Game Ellipse obstruction failure are retained; broader editor-practice remains failing identically. One concurrent Garage override signature mismatch is corrected without behavior changes. Sources, commands, native views, limitations and scoped checkpoint: docs/STORM_TEST_RECOVERY_2026_10_26.md and docs/evidence/storm-test-recovery-2026-10-26/report.json. Relaunch and owner/device/translation acceptance remain. No attachment/device test, APK, purchase, owner-save or live database mutation, deployment or owner-process restart; concurrent road-parts/Garage/physics work preserved. No staging or commit.
++<!-- /STORM-TEST-RECOVERY-20261026 -->
+ 
+ <!-- ELECTRIC-DESIGN-REVIEW-20261026 -->
+ ## Electric whole-model design review (2026-10-26)
+diff --git a/docs/PHASE_0_PLAN.md b/docs/PHASE_0_PLAN.md
+--- a/docs/PHASE_0_PLAN.md
++++ b/docs/PHASE_0_PLAN.md
+@@ -2,6 +2,11 @@
+ ## Storm roads redesigned for driving variety (2026-10-26)
+ STV01-STV03/R01/Q01: Owner rejects easy, monotonous roads while approving scenery. Five distinct corner programmes add a dock hairpin, faster woodland sweeps, a tightening quarry bowl and 12.7/9.2m offset chicanes. Normal Straight/Curve parts, explicit start lines and editor-generated routes remain; 6-44m radii and 7.4-10.2m widths replace the repeated broad rhythm. All120 fixed site objects, working aprons and start stations remain exact; roadside furniture follows the roads. Canonical40/geometry65/all-car180,175laps/zero contacts/five exact Compact replays, faster Compact15laps/zero contacts, actual App91Compatibility/91desktopMobile, owner-stage46/read36/catalogue33/parser1259 pass. Initial clearance, shallow chicane, near-stop and loading-cover fixture findings are retained and corrected. All five Ville PC drafts and existing autosaves are updated; a missing Switchyard original is restored, with creation dates and264 unrelated files preserved. Packs refreshed. Sources, commands, native views and task-only checkpoint: docs/STORM_DRIVING_VARIETY_2026_10_26.md and docs/evidence/storm-driving-variety-2026-10-26/report.json. Reload and owner driving/difficulty/appearance acceptance remain. No device test, APK, purchase, publication, backend mutation, deployment or owner-process restart; concurrent handling/Garage/rendering work preserved.
+ <!-- /STORM-DRIVING-VARIETY-20261026 -->
++
++<!-- STORM-TEST-RECOVERY-20261026 -->
++## Creator test-drive save recovery (2026-10-26)
++TSR01-TSR03/R01/Q01: Owned dialogs remain interactive while practice suspends the retained editor. Failed test saves offer Retry and Return to editor/drafts; incomplete proof offers Restart. Actual causes, exact staged proof/operation identity and account/document/attempt fences prevent misleading storage loops and stale callbacks. Incomplete road drafts remain untimed without fabricated receipts. Focused43headless/58Compatibility/58desktopMobile, full App roundtrip16, App141, notices95Compatibility/95desktopMobile, local publication31 and parser1259 pass. Original recovery30checks/6fail and exact original-Game Ellipse obstruction failure are retained; broader editor-practice remains failing identically. One concurrent Garage override signature mismatch is corrected without behavior changes. Sources, commands, native views, limitations and scoped checkpoint: docs/STORM_TEST_RECOVERY_2026_10_26.md and docs/evidence/storm-test-recovery-2026-10-26/report.json. Relaunch and owner/device/translation acceptance remain. No attachment/device test, APK, purchase, owner-save or live database mutation, deployment or owner-process restart; concurrent road-parts/Garage/physics work preserved. No staging or commit.
++<!-- /STORM-TEST-RECOVERY-20261026 -->
+ 
+ <!-- STORM-ROAD-PARTS-20261026 -->
+ ## Storm tracks corrected to normal editor road parts (2026-10-26)
+diff --git a/game/ui/practice_save_recovery.gd b/game/ui/practice_save_recovery.gd
+--- /dev/null
++++ b/game/ui/practice_save_recovery.gd
+@@ -0,0 +1,43 @@
++extends "res://ui/fault_dialog.gd"
++## Keep the finished lap available while offering an explicit way back.
++signal return_requested
++var return_caption: String = "Return to editor"
++var retry_caption: String = "Retry saving"
++var return_button: Button
++
++func _ready() -> void:
++	_publication_value = {"category":"","title":"Couldn't finish saving","message":dialog_text,"support_title":"","support":"","symbol":"warning"}
++	super()
++	name = "PracticeSaveRecovery"
++	confirm_button.text = GameText.message(retry_caption)
++	return_button = MenuStyle.button(return_caption,_return)
++	return_button.name = "PracticeSaveReturn"
++	surface.add_child(return_button)
++	_layout()
++
++func _return() -> void:
++	return_requested.emit()
++	hide()
++
++func _input(event: InputEvent) -> void:
++	if visible and event is InputEventKey and event.pressed and not event.echo \
++		and event.keycode in [KEY_ENTER,KEY_KP_ENTER] and is_instance_valid(return_button) and return_button.has_focus():
++		_return()
++		get_viewport().set_input_as_handled()
++	else: super(event)
++
++func _layout() -> void:
++	super()
++	if not is_instance_valid(return_button): return
++	if surface.size.x < 620:
++		for button: Button in [confirm_button,return_button]: button.size = Vector2(surface.size.x-48,52)
++		confirm_button.position = Vector2(24,surface.size.y-140)
++		return_button.position = Vector2(24,surface.size.y-80)
++		copy_scroll.size.y = maxf(60,confirm_button.position.y-copy_scroll.position.y-16)
++	else:
++		var width: float = minf(260,(surface.size.x-60)*.5)
++		var left: float = (surface.size.x-width*2-12)*.5
++		confirm_button.size = Vector2(width,56)
++		return_button.size = Vector2(width,56)
++		confirm_button.position = Vector2(left,surface.size.y-80)
++		return_button.position = Vector2(left+width+12,surface.size.y-80)
+diff --git a/game/tests/test_practice_save_recovery.gd b/game/tests/test_practice_save_recovery.gd
+--- /dev/null
++++ b/game/tests/test_practice_save_recovery.gd
+@@ -0,0 +1,271 @@
++extends SceneTree
++## Real Game input/lap capture and real local journals, with an injected receipt failure.
++const Client = preload("res://backend/backend_client.gd")
++const Cloud = preload("res://backend/cloud_tracks.gd")
++const OUTPUT: String = "res://../docs/evidence/storm-test-recovery-2026-10-26"
++var checks: int = 0
++var failures: int = 0
++var original: bool = false
++var app: Node
++var storage: ReceiptStorage
++var flow: TrackLifecycle
++var before_app: GDScript
++var before_game: GDScript
++var folder: String
++
++class Harness extends "res://core/app.gd":
++	func _ready() -> void: pass
++	func _show_screen(next: String) -> void:
++		screen = next
++		root_ui.process_mode = Node.PROCESS_MODE_INHERIT
++		root_ui.show()
++
++class ReceiptStorage extends TrackLibrary:
++	var fail_receipt: bool = true
++	var calls: int = 0
++	func mark_tested(document: Dictionary) -> Error:
++		calls += 1
++		if fail_receipt:
++			last_error = "Test receipt storage is unavailable."
++			return ERR_FILE_CANT_WRITE
++		return super(document)
++
++func _initialize() -> void: run.call_deferred()
++func check(ok: bool, label: String) -> void:
++	checks += 1
++	if not ok: failures += 1; print("FAIL: ",label)
++
++func settle() -> void:
++	for i: int in range(4): await process_frame
++	if DisplayServer.get_name()!="headless": await RenderingServer.frame_post_draw
++
++func current_dialog() -> AcceptDialog:
++	for child: Node in app.root_ui.get_children():
++		if child is AcceptDialog and child.visible and not child.is_queued_for_deletion(): return child
++	return null
++
++func dialogs() -> int:
++	var count: int = 0
++	for child: Node in app.root_ui.get_children():
++		if child is AcceptDialog and not child.is_queued_for_deletion(): count += 1
++	return count
++
++func click(dialog: AcceptDialog, button: Button, touch: bool = false) -> void:
++	var center: Vector2 = button.get_global_rect().get_center()
++	if touch:
++		var event := InputEventScreenTouch.new()
++		event.index = 0; event.position = center; event.pressed = true
++		dialog.push_input(event,true)
++		event = event.duplicate(); event.pressed = false
++		dialog.push_input(event,true)
++	else:
++		center += Vector2(dialog.position)
++		var motion := InputEventMouseMotion.new()
++		motion.position = center; motion.global_position = center
++		root.push_input(motion,true)
++		var event := InputEventMouseButton.new()
++		event.position = center; event.global_position = center; event.button_index = MOUSE_BUTTON_LEFT; event.pressed = true
++		event.button_mask = MOUSE_BUTTON_MASK_LEFT
++		root.push_input(event,true)
++		event = event.duplicate(); event.pressed = false
++		event.button_mask = 0
++		root.push_input(event,true)
++	await settle()
++
++func attempt(label: String, drafts: bool = false) -> void:
++	app = Harness.new()
++	if original: app.set_script(before_app)
++	# Replace only the bootstrap/navigation hooks in the task-start App when
++	# comparing it; the complete save/dialog/leave methods remain exact.
++	if original:
++		var source: String = FileAccess.get_file_as_string(OUTPUT+"/before/game/core/app.gd")
++		var start: int = source.find("func _ready() -> void:")
++		var stop: int = source.find("\nfunc ",start+1)
++		source = source.left(start)+"func _ready() -> void:\n\tpass\n"+source.substr(stop)
++		start = source.find("func _show_screen(")
++		stop = source.find("\nfunc ",start+1)
++		source = source.left(start)+"func _show_screen(next: String) -> void:\n\tscreen = next\n\troot_ui.process_mode = Node.PROCESS_MODE_INHERIT\n\troot_ui.show()\n"+source.substr(stop)
++		var harness_script := GDScript.new(); harness_script.source_code = source
++		check(harness_script.reload()==OK,"task-start App methods load in isolated process memory")
++		app.set_script(harness_script)
++	root.add_child(app)
++	app.root_ui = Control.new()
++	app.root_ui.size = Vector2(root.size)
++	app.add_child(app.root_ui)
++	var client := Client.new()
++	app.add_child(client)
++	client.configure("http://127.0.0.1:1")
++	var cloud := Cloud.new()
++	cloud.client = client
++	cloud.root_override = folder.path_join(label+"/cloud")
++	app.add_child(cloud)
++	storage = ReceiptStorage.new(folder.path_join(label+"/tracks"))
++	app.library = storage
++	app.records = LocalRecords.new(folder.path_join(label+"/records.json"))
++	app.cloud = cloud
++	flow = TrackLifecycle.new()
++	flow.cloud = cloud; flow.library = storage; flow.records = app.records
++	app.add_child(flow)
++	app.lifecycle = flow
++	var data: Dictionary = JSON.parse_string(FileAccess.get_file_as_string("res://../backend/tests/fixtures/verified_oval.json"))
++	var document: Dictionary = data.document.duplicate(true)
++	document.id = "recovery_"+label
++	document.creator = "Guest"
++	check(storage.save_document(document)==OK,"fixture draft saved before practice: "+label)
++	app.document = document
++	app.test_document_snapshot = document.duplicate(true)
++	app.test_library_snapshot = storage
++	app.test_scope_snapshot = flow.scope()
++	app.test_vehicle_snapshot = "compact"
++	app.test_return_to_drafts = drafts
++	app.returning_to_editor = true
++	app.screen = "drafts" if drafts else "create"
++	app._telemetry_race_finished = true
++	var track: NativeTrack = TrackCompiler.compile(document)
++	check(track!=null,"test fixture compiles: "+label)
++	var game: Node = preload("res://core/game.tscn").instantiate()
++	if original: game.set_script(before_game)
++	game.initial_track = track; game.editor_test = true; game.production_mode = true
++	app.game = game
++	app.add_child(game)
++	while not game.preparation_complete: await process_frame
++	game.set_process(false); game.set_physics_process(false)
++	app.root_ui.process_mode = Node.PROCESS_MODE_DISABLED
++	app.root_ui.hide()
++	game.practice_lap_completed.connect(app._complete_draft_test,CONNECT_DEFERRED)
++	var driver := RouteDriver.new()
++	for tick: int in range(24000):
++		var frame: DriveFrame = driver.sample(game.sim.state,track,game.handling)
++		game.driver.clear()
++		game.driver.set_touch(0,&"steer_right" if frame.steer>=0 else &"steer_left",absf(float(frame.steer))/127.0)
++		game.driver.set_touch(1,&"accelerate",float(frame.throttle)/255.0)
++		game.driver.set_touch(2,&"brake",float(frame.brake)/255.0)
++		game._physics_process(1.0/120)
++		if game.practice_validation.finished: break
++	check(game.practice_validation.finished and game.practice_validation_eligible,"real input completes one ordered publication-test lap: "+label)
++	await settle()
++	check(current_dialog()!=null,"failed receipt produces a recovery dialog: "+label)
++	check(app.root_ui.process_mode==Node.PROCESS_MODE_DISABLED,"underlying editor remains suspended: "+label)
++	check(not flow.status_for(document).is_empty(),"completed recording is durably staged before receipt failure: "+label)
++	game._process(0)
++
++func run() -> void:
++	root.size = Vector2i(1280,720)
++	original = "--original" in OS.get_cmdline_user_args()
++	folder = ProjectSettings.globalize_path("res://../build/storm-test-recovery-2026-10-26/"+str(OS.get_process_id()))
++	DirAccess.make_dir_recursive_absolute(folder)
++	if original:
++		before_app = GDScript.new(); before_app.source_code = FileAccess.get_file_as_string(OUTPUT+"/before/game/core/app.gd")
++		before_game = GDScript.new(); before_game.source_code = FileAccess.get_file_as_string(OUTPUT+"/before/game/core/game.gd")
++		check(before_app.reload()==OK and before_game.reload()==OK,"exact task-start App and Game load without replacing runtime files")
++	await attempt("retry")
++	var dialog: AcceptDialog = current_dialog()
++	if dialog!=null:
++		check(dialog.can_process(),"recovery input stays active under a disabled editor")
++		check(dialog.has_signal("return_requested"),"explicit return action is available")
++		var recorded: Dictionary = app.game.race_proof.recording(app.game.practice_validation)
++		var staged: Dictionary = flow.status_for(app.document)
++		var proof_path: String = storage.directory.path_join(".workflow").path_join(flow.scope().sha256_text()).path_join(str(staged.proof_file))
++		var proof_hash: String = FileAccess.get_sha256(proof_path)
++		var upload_key: String = str(staged.upload_key)
++		if not original:
++			app._complete_draft_test()
++			await settle()
++			check(dialogs()==1,"repeat completion cannot stack modal windows")
++		if not original and DisplayServer.get_name()!="headless":
++			check(app.game.paused,"save failure pauses the car behind its modal")
++			for size: Vector2i in [Vector2i(1280,720),Vector2i(960,540),Vector2i(600,800),Vector2i(390,844)]:
++				root.size = size
++				root.content_scale_size = size
++				app.root_ui.size = Vector2(size)
++				dialog.popup_message()
++				await settle()
++				var surface: Rect2 = dialog.surface.get_global_rect()
++				check(Vector2(dialog.size).x<=float(size.x) and Vector2(dialog.size).y<=float(size.y),"recovery window fits logical viewport "+str(size))
++				check(surface.encloses(dialog.confirm_button.get_global_rect()) and surface.encloses(dialog.return_button.get_global_rect()),"both actions fit at "+str(size))
++				check(dialog.copy_scroll.get_global_rect().end.y<=minf(dialog.confirm_button.get_global_rect().position.y,dialog.return_button.get_global_rect().position.y)-12,"message clears the action row at "+str(size))
++				if size.x==390:
++					var compact_path: String = OUTPUT+"/"+RenderingServer.get_current_rendering_method()
++					DirAccess.make_dir_recursive_absolute(ProjectSettings.globalize_path(compact_path))
++					check(root.get_texture().get_image().save_png(compact_path+"/recovery-390.png")==OK,"compact native recovery capture")
++			root.size = Vector2i(1280,720); root.content_scale_size = root.size
++			app.root_ui.size = Vector2(root.size); dialog.popup_message(); await settle()
++			if DisplayServer.get_name()!="headless":
++				var path: String = OUTPUT+"/"+RenderingServer.get_current_rendering_method()
++				DirAccess.make_dir_recursive_absolute(ProjectSettings.globalize_path(path))
++				check(root.get_texture().get_image().save_png(path+"/recovery.png")==OK,"native recovery capture")
++		storage.fail_receipt = false
++		var button: Button = dialog.confirm_button if dialog.has_signal("return_requested") else dialog.get_ok_button()
++		if DisplayServer.get_name()=="headless":
++			var event := InputEventKey.new(); event.keycode = KEY_ENTER; event.pressed = true
++			dialog.push_input(event,true)
++			await settle()
++		else: await click(dialog,button)
++		print("RECOVERY_RETRY calls=",storage.calls," dialogs=",dialogs()," tested=",storage.is_tested(app.document)," processing=",dialog.can_process() if is_instance_valid(dialog) else false)
++		check(storage.is_tested(app.document),"native Retry saves the same completed test after storage recovers")
++		check(FileAccess.get_sha256(proof_path)==proof_hash and str(flow.status_for(app.document).upload_key)==upload_key,"Retry preserves the exact recording and operation identity")
++		check(app.game.race_proof.recording(app.game.practice_validation)==recorded,"Retry never restarts or changes the completed lap")
++	app.free(); await settle()
++	await attempt("return",true)
++	dialog = current_dialog()
++	if dialog!=null:
++		check(dialog.can_process(),"draft-list recovery also remains interactive")
++		if dialog.has_signal("return_requested"):
++			await click(dialog,dialog.return_button,true)
++			check(app.game==null and app.screen=="drafts" and app.root_ui.visible,"native touch Return leaves practice and opens Load track")
++			check(not storage.load_document("recovery_return").is_empty() and not storage.is_tested(app.document),"return keeps the draft and does not mark a failed test complete")
++		else: check(false,"draft-list recovery provides an exit without successful saving")
++	app.free(); await settle()
++	await attempt("fences")
++	dialog = current_dialog()
++	if dialog!=null and not original:
++		var context: Dictionary = app._draft_test_save_context
++		var calls: int = storage.calls
++		var escape := InputEventKey.new(); escape.keycode = KEY_ESCAPE; escape.pressed = true
++		dialog.push_input(escape,true)
++		await settle()
++		check(current_dialog()==null and is_instance_valid(app.game) and app.root_ui.process_mode==Node.PROCESS_MODE_DISABLED,"Escape closes the modal and retains the paused attempt")
++		app._leave_race()
++		await settle()
++		check(current_dialog()!=null and dialogs()==1,"pause-menu exit offers the pending recording choices instead of trapping the player")
++		flow.cloud.client.player = {"id":"different-fixture-owner"}
++		app._retry_draft_test_save(context)
++		app._return_from_draft_test_save(context)
++		check(storage.calls==calls and is_instance_valid(app.game),"account change fences both delayed Retry and Return")
++		flow.cloud.client.player = {}
++		app.game.restart()
++		app._retry_draft_test_save(context)
++		check(storage.calls==calls,"restarted attempt cannot save a previous lap through a stale dialog")
++		var authored: Dictionary = app.game.native_track.metadata.creator_document.duplicate(true)
++		app.game.native_track.metadata.creator_document.erase("start_line")
++		app.game.restart()
++		check(not app.game.practice_validation_eligible,"practice without a placed start line never attempts a publication receipt")
++		app.game.native_track.metadata.creator_document = authored.duplicate(true)
++		app.game.native_track.metadata.creator_document.pieces.pop_back()
++		app.game.restart()
++		check(not app.game.practice_validation_eligible,"an open road chain remains untimed practice without a completion receipt")
++		app.game.native_track.metadata.creator_document = authored
++		app.game.restart()
++		check(app.game.practice_validation_eligible,"a complete connected track with a placed start line remains eligible")
++		app._leave_race()
++		check(app.game==null and dialogs()==0,"stale recovery closes while the new attempt can exit")
++	else: check(false,"recovery callbacks are fenced to their original account and attempt")
++	app.free(); await settle()
++	if not original:
++		await attempt("keyboard",true)
++		dialog = current_dialog()
++		if dialog!=null:
++			var tab := InputEventKey.new(); tab.keycode = KEY_TAB; tab.pressed = true
++			dialog.push_input(tab,true)
++			await settle()
++			check(dialog.return_button.has_focus(),"Tab focuses the explicit return action")
++			var enter := InputEventKey.new(); enter.keycode = KEY_ENTER; enter.pressed = true
++			dialog.push_input(enter,true)
++			await settle()
++			check(app.game==null and app.screen=="drafts","Enter activates the focused Return action instead of Retry")
++		app.free(); await settle()
++	print("PRACTICE_SAVE_RECOVERY: %d checks, %d failures; original=%s" % [checks,failures,original])
++	var suffix: String = "headless" if DisplayServer.get_name()=="headless" else RenderingServer.get_current_rendering_method()
++	var file := FileAccess.open(OUTPUT+("/original-result.json" if original else "/"+suffix+"-result.json"),FileAccess.WRITE)
++	file.store_string(JSON.stringify({"checks":checks,"failures":failures,"original":original},"\t")); file.close()
++	quit(1 if failures else 0)
+diff --git a/game/tests/test_practice_save_roundtrip.gd b/game/tests/test_practice_save_roundtrip.gd
+--- /dev/null
++++ b/game/tests/test_practice_save_roundtrip.gd
+@@ -0,0 +1,81 @@
++extends "res://tests/test_practice_save_recovery.gd"
++## Exercise failure/return through the full App, retained editor and production Game.
++
++func drive_lap() -> void:
++	var game: Node = app.game
++	game.set_process(false)
++	game.set_physics_process(false)
++	var driver := RouteDriver.new()
++	for tick: int in range(24000):
++		var frame: DriveFrame = driver.sample(game.sim.state,game.native_track,game.handling)
++		game.driver.clear()
++		game.driver.set_touch(0,&"steer_right" if frame.steer>=0 else &"steer_left",absf(float(frame.steer))/127.0)
++		game.driver.set_touch(1,&"accelerate",float(frame.throttle)/255.0)
++		game.driver.set_touch(2,&"brake",float(frame.brake)/255.0)
++		game._physics_process(1.0/120)
++		if game.practice_validation.finished: break
++	check(game.practice_validation.finished,"full App completes an actual ordered creator-test lap")
++
++func run() -> void:
++	create_timer(180).timeout.connect(func() -> void: print("FAIL: recovery round trip deadline"); quit(1))
++	root.size = Vector2i(1280,720)
++	OS.set_environment("BMT_API_URL","")
++	folder = ProjectSettings.globalize_path("res://../build/storm-test-recovery-2026-10-26/roundtrip-"+str(OS.get_process_id()))
++	storage = ReceiptStorage.new(folder.path_join("tracks"))
++	app = preload("res://core/app.tscn").instantiate()
++	app.library = storage
++	app.records = LocalRecords.new(folder.path_join("records.json"))
++	app.cloud_root_override = folder.path_join("cloud")
++	root.add_child(app)
++	while not app.startup_complete: await process_frame
++	check(app.library==storage and app.lifecycle.library==storage,"full App uses only isolated receipt storage")
++	var fixture: Dictionary = JSON.parse_string(FileAccess.get_file_as_string("res://../backend/tests/fixtures/verified_oval.json"))
++	app.document = fixture.document.duplicate(true)
++	app.document.id = "recovery_roundtrip"
++	app.document.creator = "Guest"
++	check(storage.save_document(app.document)==OK,"full App fixture is saved before testing")
++	app._show_screen("create")
++	while not is_instance_valid(app.canvas) or app.canvas.native_preview==null or app.test_button.disabled or app.editor_world._building:
++		await process_frame
++	var editor: Node = app.root_ui
++	var canvas: Node = app.canvas
++	var world: Node = app.editor_world
++	await app._test_document()
++	check(is_instance_valid(app.game) and app.game.preparation_complete,"ordinary Test action opens the production practice scene")
++	check(app.root_ui==editor and editor.process_mode==Node.PROCESS_MODE_DISABLED,"practice retains and suspends the actual editor")
++	var document: Dictionary = app.document.duplicate(true)
++	await drive_lap()
++	await settle()
++	var dialog: AcceptDialog = current_dialog()
++	check(dialog!=null and dialog.can_process(),"failed receipt opens a working modal on the actual retained editor")
++	if dialog!=null:
++		await click(dialog,dialog.return_button,true)
++		check(app.game==null and app.screen=="create" and editor.visible and editor.can_process(),"native touch Return restores the actual editor and releases practice")
++		check(app.root_ui==editor and app.canvas==canvas and app.editor_world==world,"return preserves the exact editor, canvas and world instances")
++		check(app.document==document and canvas.document==document,"return preserves the exact editable document")
++		check(not app.lifecycle.status_for(document).is_empty() and not storage.is_tested(document),"return keeps the staged recording without fabricating a test receipt")
++		check(app.records.records.is_empty(),"test and recovery never create a scored personal best")
++	# The invalid-recording boundary must offer a fresh lap rather than an endless retry.
++	await app._test_document()
++	await drive_lap()
++	app.game.race_proof.overflow = true
++	await settle()
++	dialog = current_dialog()
++	check(dialog!=null and dialog.confirm_button.text=="Restart","an incomplete recording offers Restart with an explicit return action")
++	if dialog!=null:
++		var old_witness: TrackSession = app.game.practice_validation
++		var enter := InputEventKey.new()
++		enter.keycode = KEY_ENTER; enter.pressed = true
++		dialog.push_input(enter,true)
++		await settle()
++		check(app.game.practice_validation!=old_witness and not app.game.practice_validation.finished and not app.game.paused,"native Restart begins a fresh untimed attempt")
++		check(app._draft_test_save_context.is_empty() and current_dialog()==null,"Restart clears the failed attempt and modal")
++		app._leave_race()
++		await settle()
++		check(app.game==null and app.root_ui==editor and editor.can_process(),"restarted test can leave through the ordinary return flow")
++	app.free()
++	await settle()
++	print("PRACTICE_SAVE_ROUNDTRIP: %d checks, %d failures" % [checks,failures])
++	var file := FileAccess.open(OUTPUT+"/roundtrip-"+("headless" if DisplayServer.get_name()=="headless" else RenderingServer.get_current_rendering_method())+"-result.json",FileAccess.WRITE)
++	file.store_string(JSON.stringify({"checks":checks,"failures":failures},"\t")); file.close()
++	quit(1 if failures else 0)
+diff --git a/game/tests/probe_practice_original_game.gd b/game/tests/probe_practice_original_game.gd
+--- /dev/null
++++ b/game/tests/probe_practice_original_game.gd
+@@ -0,0 +1,14 @@
++extends "res://tests/test_editor_practice.gd"
++## Exact pre-task Game loaded only in this diagnostic process.
++func _new_game(track: NativeTrack, practice: bool) -> Node:
++	var script := GDScript.new()
++	script.source_code = FileAccess.get_file_as_string("res://../docs/evidence/storm-test-recovery-2026-10-26/before/game/core/game.gd")
++	assert(script.reload()==OK)
++	var game: Node = (load("res://core/game.tscn") as PackedScene).instantiate()
++	game.set_script(script)
++	game.set("initial_track",track)
++	game.set("production_mode",true)
++	game.set("editor_test",practice)
++	root.add_child(game)
++	game.set_physics_process(false)
++	return game
+diff --git a/docs/STORM_TEST_RECOVERY_2026_10_26.md b/docs/STORM_TEST_RECOVERY_2026_10_26.md
+--- /dev/null
++++ b/docs/STORM_TEST_RECOVERY_2026_10_26.md
+@@ -0,0 +1,61 @@
++# Test-drive save recovery — 26 October 2026
++
++The reported test-drive modal could not accept input because it belonged to the retained, disabled editor. The original dialog also offered no explicit exit after a failed save. Owned dialogs now process input independently, and failed creator-test saves offer **Retry saving** and **Return to editor / Return to drafts**. An incomplete recording offers **Restart** instead of an endless save retry.
++
++Requirements: TSR01 working input and exit; TSR02 truthful failure causes and exact retry; TSR03 eligible-track and account/attempt fences; R01 retained behavior; Q01 native evidence and scoped checkpoint.
++
++## Findings and behavior
++
++The original Storm documents contained layout knots with no road parts or placed start line. They could be driven, but `TrackLibrary.mark_tested` correctly rejected a completion receipt. The recording had already been staged locally. The generic free-storage message hid that distinction. Separately corrected normal-road versions are documented in [STORM_ROAD_PARTS_2026_10_26.md](STORM_ROAD_PARTS_2026_10_26.md); those source/draft changes are excluded from this checkpoint.
++
++Practice eligibility now uses the same placed-start-line and valid-road-route requirements as the receipt writer. Incomplete drafts remain driveable as untimed practice. No receipt or publication status is fabricated. Save recovery reports the actual lifecycle/storage cause, pauses the car and preserves the captured document, car, scope, witness and trajectory. A receipt-only retry reuses the staged proof and operation identity. Return retains the draft and any already staged proof. Escape/X dismisses the modal; a later pause-menu exit reopens the pending choices. Repeated completion cannot stack windows. Tab and Enter activate the focused Return action; touch/mouse and Escape are also checked. Account changes, new attempts and replaced documents fence stale callbacks.
++
++The full App test confirms Return restores the same editor root, canvas, world and document. Normal race scoring, physics, controls, cameras, backend contracts and publication authority are unchanged by this work. New descriptive copy currently uses the English fallback.
++
++## Files
++
++- `game/core/app.gd`: active owned dialogs; pending-save context, exact retry, recovery and return.
++- `game/core/game.gd`: valid authored-track eligibility at restart.
++- `game/ui/practice_save_recovery.gd`: responsive two-action recovery dialog.
++- `game/tests/test_practice_save_recovery.gd`: real input/ordered laps, injected receipt failure, exact proof, mouse/touch/keyboard, layout and stale-callback checks.
++- `game/tests/test_practice_save_roundtrip.gd`: full App failure, retained-editor return and incomplete-proof restart.
++- `game/tests/probe_practice_original_game.gd`: original-Game diagnostic control; original files load only in isolated process memory.
++- `game/ui/garage_cached_thumbnail.gd`: one compatibility signature argument matching the concurrently changed parent; an unrelated parser error initially prevented loading App tests. No thumbnail behavior change.
++
++## Actual validation
++
++Pinned engine: `4.7.2.stable.official.ed1daf0bf`. All tests use isolated APPDATA, drafts, records and cloud paths beneath `build/storm-test-recovery-2026-10-26`; no owner save writes or service requests.
++
++| Check | Result |
++| --- | --- |
++| Recovery headless / Compatibility / desktop Mobile | 43 / 58 / 58 checks, zero failures |
++| Full App failure/return/restart, Compatibility | 16 checks, zero failures |
++| Existing App regression | 141 checks, zero failures |
++| Existing notice input/focus/layout, Compatibility / desktop Mobile | 95 / 95 checks, zero failures |
++| Existing local draft/publication journal | 31 checks, zero failures; 2,605 actual ticks, 436 proof samples |
++| Full project parser | 1,259 scripts, zero failures |
++| Original recovery control | 30 checks, six expected failures, including disabled input and absent exit |
++
++The broader existing `test_editor_practice.gd` remains failing: Ellipse completes zero laps in 28,800 ticks with 27,678 contacts, then four assertions fail and a missing finish state causes an error. Loading the exact original Game reproduces the same values and failures. This test is not reported as passing and its assertions are unchanged. The focused tests use the existing verified oval fixture and genuine ordered input laps.
++
++Initial failures are retained under the evidence `logs/` directory: incorrect headless layout/mouse event routing in the first test fixture; an original duplicate exclusive-window error; and the concurrent Garage override signature mismatch. Correcting the fixture routes mouse events through the embedded window's parent and supplies actual logical viewport dimensions. Native layout checks cover 1280×720, 960×540, 600×800 and 390×844 without reducing action-size or overlap assertions.
++
++Commands used, with `$env:APPDATA` set to the isolated folder:
++
++```powershell
++powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1 TestScript -ScriptPath res://tests/test_practice_save_recovery.gd -CommandTimeoutSeconds 600
++# Same test with -Graphical -RenderingMethod gl_compatibility, then mobile.
++# Original control: -TestArgument '--original'.
++powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1 TestScript -ScriptPath res://tests/test_practice_save_roundtrip.gd -Graphical -RenderingMethod gl_compatibility -CommandTimeoutSeconds 600
++powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1 TestScript -ScriptPath res://tests/test_app.gd -CommandTimeoutSeconds 600
++powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1 TestScript -ScriptPath res://tests/test_fault_dialog.gd -Graphical -RenderingMethod gl_compatibility -CommandTimeoutSeconds 600
++# Mobile notice run also uses -TestArgument '--evidence=res://../docs/evidence/storm-test-recovery-2026-10-26/mobile/notices'.
++powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1 TestScript -ScriptPath res://tests/test_local_draft_publication.gd -CommandTimeoutSeconds 600
++powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1 TestScript -ScriptPath res://tests/test_editor_practice.gd -CommandTimeoutSeconds 600
++powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1 TestScript -ScriptPath res://tests/probe_practice_original_game.gd -CommandTimeoutSeconds 600
++powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1 TestScript -ScriptPath res://tests/test_script_parse.gd -CommandTimeoutSeconds 600
++```
++
++Native [desktop](evidence/storm-test-recovery-2026-10-26/gl_compatibility/recovery.png) and [compact](evidence/storm-test-recovery-2026-10-26/mobile/recovery-390.png) captures show the actual paused Game and working recovery actions. [report.json](evidence/storm-test-recovery-2026-10-26/report.json) records evidence hashes and the scoped, reverse-checkable patch. Concurrent changes in shared App/Game files are excluded from the patch. No staging or commit.
++
++Relaunch/rebuild is required to load the code. Owner acceptance of the original workflow and translated copy remains. No physical-device attachment check or device test, APK, authentication, purchase, live database mutation, deployment, merge or owner-process restart was performed.
+diff --git a/game/ui/practice_save_recovery.gd.uid b/game/ui/practice_save_recovery.gd.uid
+--- /dev/null
++++ b/game/ui/practice_save_recovery.gd.uid
+@@ -0,0 +1 @@
++uid://dqe00tkiyijss
+diff --git a/game/tests/test_practice_save_recovery.gd.uid b/game/tests/test_practice_save_recovery.gd.uid
+--- /dev/null
++++ b/game/tests/test_practice_save_recovery.gd.uid
+@@ -0,0 +1 @@
++uid://dmebcwbacxn7h
+diff --git a/game/tests/test_practice_save_roundtrip.gd.uid b/game/tests/test_practice_save_roundtrip.gd.uid
+--- /dev/null
++++ b/game/tests/test_practice_save_roundtrip.gd.uid
+@@ -0,0 +1 @@
++uid://ba64rfli74toq
+diff --git a/game/tests/probe_practice_original_game.gd.uid b/game/tests/probe_practice_original_game.gd.uid
+--- /dev/null
++++ b/game/tests/probe_practice_original_game.gd.uid
+@@ -0,0 +1 @@
++uid://c02ltnpjfphcm

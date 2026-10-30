@@ -1,0 +1,65 @@
+.F                                                                       [100%]
+================================== FAILURES ===================================
+_________ test_standalone_verifier_contains_complete_handbrake_model __________
+
+real_verifier = <bmt_backend.verifier.GodotVerifier object at 0x0000020100B4E0D0>
+race_fixture = {'document': {'base_track': '', 'corners': ['sharp', 'sharp', 'sharp', 'sharp', 'sharp', 'sharp', ...], 'creator': 'Ba...166, 0], [0, 166, 0], [0, 166, 0], ...], 'schema': 'bmt-replay-v1'}, 'time_ticks': 12757, 'vehicle_id': 'compact', ...}
+tmp_path = WindowsPath('C:/Codes/Godot/Beat my track/build/tutorial-ellipse-2026-10-25/pytest/test_standalone_verifier_conta0')
+
+    @pytest.mark.godot
+    def test_standalone_verifier_contains_complete_handbrake_model(real_verifier, race_fixture, tmp_path):
+        project = tmp_path / "canonical"
+        subprocess.run([
+            sys.executable, str(ROOT / "backend/deploy/stage_verifier.py"),
+            "--repo", str(ROOT), "--destination", str(project),
+        ], check=True, capture_output=True, timeout=30)
+        imported = subprocess.run([
+            real_verifier.binary, "--headless", "--editor", "--path", str(project), "--import",
+        ], check=True, capture_output=True, timeout=90)
+        assert b"SCRIPT ERROR:" not in imported.stdout + imported.stderr
+        verifier = GodotVerifier(SimpleNamespace(
+            godot_bin=real_verifier.binary,
+            game_project=project,
+            verifier_timeout_seconds=90,
+        ))
+        from bmt_backend.contracts import current_manifest
+>       assert verifier.validate_track(race_fixture["document"]) == current_manifest(race_fixture["expected_manifest"])
+E       AssertionError: assert {'compiler_ve...: 216000, ...} == {'compiler_ve...: 216000, ...}
+E         
+E         Omitting 11 identical items, use -vv to show
+E         Differing items:
+E         {'physics_version': 'arcade-planar-0.67'} != {'physics_version': 'arcade-planar-0.66'}
+E         {'vehicles': {'classic': {'config_hash': 'da4f783ceaf1196945f346af8950ccc14b404cc630db343effb731ee4ffea124', 'handling...fig_hash': 'ef8d56753becdf2d13c651eb6accca830e4219e2c982f232783fee99ee3b0d2a', 'handling_version': 'forklift-1'}, ...}} != {'vehicles': {'classic': {'config_hash': 'da4f783ceaf1196945f346af8950ccc14b404cc630db343effb731ee4ffea124', 'handling...'config_hash': '58683e71e86505719ed27974e7a5055255960c1b327d47fd7...
+E         
+E         ...Full output truncated (2 lines hidden), use '-vv' to show
+
+backend\tests\test_verifier.py:536: AssertionError
+============================== warnings summary ===============================
+.tools\backend-secure-venv\Lib\site-packages\fastapi\testclient.py:1
+  C:\Codes\Godot\Beat my track\.tools\backend-secure-venv\Lib\site-packages\fastapi\testclient.py:1: StarletteDeprecationWarning: Using `httpx` with `starlette.testclient` is deprecated; install `httpx2` instead.
+    from starlette.testclient import TestClient as TestClient  # noqa
+
+tests/test_purchase_lab_catalog.py::test_seeding_rejects_other_backends_and_catalog_contains_public_documents_only
+  C:\Users\ville\AppData\Local\Google\Cloud SDK\google-cloud-sdk\platform\bundledpython\Lib\contextlib.py:148: SAWarning: Skipped unsupported reflection of expression-based index ix_studio_player_name
+    next(self.gen)
+
+tests/test_purchase_lab_catalog.py::test_seeding_rejects_other_backends_and_catalog_contains_public_documents_only
+  C:\Users\ville\AppData\Local\Google\Cloud SDK\google-cloud-sdk\platform\bundledpython\Lib\contextlib.py:148: SAWarning: Skipped unsupported reflection of expression-based index ix_studio_published_rating
+    next(self.gen)
+
+tests/test_purchase_lab_catalog.py::test_seeding_rejects_other_backends_and_catalog_contains_public_documents_only
+  C:\Users\ville\AppData\Local\Google\Cloud SDK\google-cloud-sdk\platform\bundledpython\Lib\contextlib.py:148: SAWarning: Skipped unsupported reflection of expression-based index ix_studio_published_name
+    next(self.gen)
+
+tests/test_purchase_lab_catalog.py::test_seeding_rejects_other_backends_and_catalog_contains_public_documents_only
+  C:\Users\ville\AppData\Local\Google\Cloud SDK\google-cloud-sdk\platform\bundledpython\Lib\contextlib.py:148: SAWarning: Skipped unsupported reflection of expression-based index ix_discovery_names
+    next(self.gen)
+
+tests/test_purchase_lab_catalog.py::test_seeding_rejects_other_backends_and_catalog_contains_public_documents_only
+  C:\Users\ville\AppData\Local\Google\Cloud SDK\google-cloud-sdk\platform\bundledpython\Lib\contextlib.py:148: SAWarning: Skipped unsupported reflection of expression-based index ix_compatible_versions
+    next(self.gen)
+
+-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
+=========================== short test summary info ===========================
+FAILED backend\tests\test_verifier.py::test_standalone_verifier_contains_complete_handbrake_model
+1 failed, 1 passed, 71 deselected, 6 warnings in 8.08s

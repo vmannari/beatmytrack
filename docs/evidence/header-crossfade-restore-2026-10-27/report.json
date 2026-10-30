@@ -1,0 +1,299 @@
+{
+  "date": "2026-10-27",
+  "request": "The car crossfade is gone.",
+  "requirements": {
+    "HCF01": "Keep a clearly visible crossfade even when a slow frame occurs after selection.",
+    "HCF02": "Preserve the actual equipped livery/kit PNG cache, stationary slot and 0.24-second normal duration.",
+    "HCF03": "Retain original selection/save, coalescing, navigation, account and lifetime invariants.",
+    "R01": "Native before/after slow-frame regression, retained lifecycle checks and full parse.",
+    "Q01": "Scoped source/doc patch with forward, reverse and exact source round-trip verification."
+  },
+  "scope": {
+    "runtime": [
+      "game/ui/profile_car.gd"
+    ],
+    "tests": [
+      "game/tests/test_header_car_icon_transition.gd"
+    ],
+    "documentation": [
+      "docs/HEADER_CROSSFADE_RESTORE_2026_10_27.md"
+    ],
+    "preserved": [
+      "App is byte-exact task-start",
+      "Profile studio factory is byte-exact task-start",
+      "Cached appearance lookup/capture service",
+      "Header/dropdown interaction and assets",
+      "Car geometry, cameras and physics"
+    ]
+  },
+  "change": {
+    "normal_seconds": 0.24,
+    "maximum_progress_per_UI_frame_seconds": 0.03333333333333333,
+    "implementation": "Pause the existing tween and custom_step it once per UI frame with bounded delta; stop processing on completion/settle.",
+    "stationary": true,
+    "maximum_picture_controls": 2,
+    "new_model_or_viewport_for_animation": false,
+    "slow_frame_behavior": "Animation can take longer in wall time while retaining visible intermediate frames."
+  },
+  "environment": {
+    "engine": "4.7.2.stable.official.ed1daf0bf",
+    "hardware": "NVIDIA GeForce RTX 3090",
+    "APPDATA_and_LOCALAPPDATA": "build/header-crossfade-restore-appdata",
+    "network": "BMT_API_URL cleared by test entrypoint; disposable local records/library/cloud override",
+    "BMT_HEADER_ICON_OUTPUT": "res://../docs/evidence/header-crossfade-restore-2026-10-27/{before-review,before-equipped-review,before-visible-review,final-review}"
+  },
+  "commands": [
+    "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1 TestScript -ScriptPath res://tests/test_header_car_icon_transition.gd -Graphical -RenderingMethod gl_compatibility -CommandTimeoutSeconds 180",
+    "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1 TestScript -ScriptPath res://tests/test_header_car_icon_transition.gd -Graphical -RenderingMethod mobile -CommandTimeoutSeconds 180",
+    "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1 TestScript -ScriptPath res://tests/test_header_car_icon_transition.gd -CommandTimeoutSeconds 180",
+    "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1 TestScript -ScriptPath res://tests/test_script_parse.gd -CommandTimeoutSeconds 180"
+  ],
+  "results": {
+    "original_stock_regression": {
+      "checks": 556,
+      "failures": 0,
+      "exit_code": 0,
+      "log": "logs/original-556.log",
+      "report": "before-review/gl_compatibility/report.json"
+    },
+    "original_strengthened_regression": {
+      "checks": 566,
+      "failures": 1,
+      "exit_code": 1,
+      "controlled_stall_ms": 350,
+      "clearly_visible_intermediate_frames": 0,
+      "first_incoming_alpha": 0.928010165691376,
+      "failure": "slow frame retains at least three clearly visible intermediate crossfade frames",
+      "log": "logs/original-visible-regression-566-1.log",
+      "report": "before-visible-review/gl_compatibility/report.json"
+    },
+    "final_compatibility": {
+      "checks": 566,
+      "failures": 0,
+      "exit_code": 0,
+      "clearly_visible_intermediate_frames": 7,
+      "first_incoming_alpha": 0.361475467681885,
+      "log": "logs/final-compatibility-recapture-566.log",
+      "report": "final-review/gl_compatibility/report.json"
+    },
+    "final_desktop_mobile": {
+      "checks": 566,
+      "failures": 0,
+      "exit_code": 0,
+      "clearly_visible_intermediate_frames": 7,
+      "first_incoming_alpha": 0.361475467681885,
+      "log": "logs/final-mobile-566.log",
+      "report": "final-review/mobile/report.json"
+    },
+    "headless": {
+      "checks": 543,
+      "failures": 0,
+      "exit_code": 0,
+      "log": "logs/headless-543.log",
+      "report": "headless/gl_compatibility/report.json",
+      "note": "New equipped-image capture case runs only with a renderer; all original headless assertions remain."
+    },
+    "parser": {
+      "scripts": 1319,
+      "failures": 0,
+      "exit_code": 0,
+      "log": "logs/parser-1319.log"
+    }
+  },
+  "regression_strengthening": {
+    "retained": "All original 556 native/543 headless checks, including zero-position bounds, current-selection/save, owner and teardown assertions.",
+    "added": "Actual saved livery/kit capture; warm cached car switch; controlled 350ms stall; at least three frames with incoming alpha 0.05..0.85 and outgoing >=0.15; exact equipped endpoint; no extra model capture.",
+    "initial_probe": "The weaker >0 and <1 alpha test passed 566 checks despite all seven post-stall samples being over 0.92 incoming opacity. Its report is retained under before-equipped-review."
+  },
+  "artifact_notes": [
+    "Headless reported its default renderer as gl_compatibility and reused the final report path. Its report was archived to headless/, then native Compatibility was rerun successfully to regenerate its own report. Both successful native Compatibility logs are retained; historical task evidence was untouched."
+  ],
+  "source_sha256": {
+    "game/ui/profile_car.gd": "bccfb46745bd9c19b4fe3b220a614e6bbfd19c0d58d9d078752f95a0b08fbcd9",
+    "game/tests/test_header_car_icon_transition.gd": "6619c5cc02c407942e7d996411ec1e56c2bba2f06dd9d1ff7755634cffa5f996",
+    "docs/HEADER_CROSSFADE_RESTORE_2026_10_27.md": "3b581b04f5f6269b44bd809c229c3e74200e335771f6f45ea6792bbee94c7240"
+  },
+  "unchanged_source_sha256": {
+    "game/core/app.gd": "9ae3b2e435b4bfb5ff659d212bce4cea16431b2a8a6bd4b6472cf267f5568a1b",
+    "game/ui/header_car_icons.gd": "fd3e14cd4d1f04025f4b02a8b81313d61551382f82ae5966c27230a8e441f180",
+    "game/ui/header_car_picker.gd": "24ff990587bd3525e27c794a8910e83bbe69ded45de66dfb60db098dc7663592",
+    "game/ui/header_car_appearance_cache.gd": "e468cd861f96b982a03bd9ab70220ddab89167d251f1787e1d58032887153d47"
+  },
+  "before_sha256": {
+    "app.gd.txt": "9ae3b2e435b4bfb5ff659d212bce4cea16431b2a8a6bd4b6472cf267f5568a1b",
+    "profile_car.gd.txt": "ac9a08b500685b88de35bff088d61722da147ac11aed98c7407bd021ca90f6ac",
+    "test_header_car_icon_transition.gd.txt": "dbd12e8f7bc941abe7d49817860df086c1032ba610f466ecdcff2d1a1c98587f"
+  },
+  "checkpoint": {
+    "results": [
+      {
+        "command": [
+          "git",
+          "apply",
+          "--check",
+          "--reverse",
+          "docs/evidence/header-crossfade-restore-2026-10-27/scoped.patch"
+        ],
+        "exit_code": 0,
+        "output": ""
+      },
+      {
+        "command": [
+          "git",
+          "apply",
+          "--check",
+          "--directory=build/header-crossfade-restore-checkpoint",
+          "docs/evidence/header-crossfade-restore-2026-10-27/scoped.patch"
+        ],
+        "exit_code": 0,
+        "output": ""
+      },
+      {
+        "command": [
+          "git",
+          "apply",
+          "--directory=build/header-crossfade-restore-checkpoint",
+          "docs/evidence/header-crossfade-restore-2026-10-27/scoped.patch"
+        ],
+        "exit_code": 0,
+        "output": ""
+      },
+      {
+        "command": [
+          "git",
+          "apply",
+          "--check",
+          "--reverse",
+          "--directory=build/header-crossfade-restore-checkpoint",
+          "docs/evidence/header-crossfade-restore-2026-10-27/scoped.patch"
+        ],
+        "exit_code": 0,
+        "output": ""
+      },
+      {
+        "command": [
+          "git",
+          "apply",
+          "--reverse",
+          "--directory=build/header-crossfade-restore-checkpoint",
+          "docs/evidence/header-crossfade-restore-2026-10-27/scoped.patch"
+        ],
+        "exit_code": 0,
+        "output": ""
+      }
+    ],
+    "exact_roundtrip": {
+      "game/ui/profile_car.gd": true,
+      "game/tests/test_header_car_icon_transition.gd": true
+    },
+    "profile_studio_factory_unchanged": true,
+    "app_unchanged_since_task_start": true,
+    "scoped_patch_sha256": "59bfdaf5d33d3df284eb2a620ade3ec2ac15c45ab86c18627d528bfc32a23633"
+  },
+  "evidence_sha256": {
+    "checkpoint.json": "09958ac42bf911e6fe30acca31c9da77ce35249d3918668f11a4eb0f43ec803f",
+    "scoped.patch": "59bfdaf5d33d3df284eb2a620ade3ec2ac15c45ab86c18627d528bfc32a23633",
+    "before/app.gd.txt": "9ae3b2e435b4bfb5ff659d212bce4cea16431b2a8a6bd4b6472cf267f5568a1b",
+    "before/profile_car.gd.txt": "ac9a08b500685b88de35bff088d61722da147ac11aed98c7407bd021ca90f6ac",
+    "before/test_header_car_icon_transition.gd.txt": "dbd12e8f7bc941abe7d49817860df086c1032ba610f466ecdcff2d1a1c98587f",
+    "before-equipped-review/gl_compatibility/change-1720-finished.png": "219e9f4498b4528ddb1020df0cff42358405479d45315bad316720c39ce51c3b",
+    "before-equipped-review/gl_compatibility/change-1720-middle.png": "6fe3d478fb61383eb88ded0fdf3df240827800991a01fb4c058fec044e795248",
+    "before-equipped-review/gl_compatibility/change-1720-start.png": "98c28b9fe792215519909bdb6978a20c3c30ccc5d116c0fb64258ba4bb151314",
+    "before-equipped-review/gl_compatibility/change-960-finished.png": "e3bfcc3ccbdcac2cc773665ecfad8266df4d8f613174918955b60f6a38e42855",
+    "before-equipped-review/gl_compatibility/change-960-middle.png": "4e6d00f3ffedf615898ff1d71435c4b221d4f47c937013b4cc5a0cfd7d9b4cd9",
+    "before-equipped-review/gl_compatibility/change-960-start.png": "a0cba210f587aac6634604dcd34fd34859dc7bceecd4f96eead681082172dd59",
+    "before-equipped-review/gl_compatibility/create-electric-1411.png": "d546770189e4b329db561674f68678326b9342cd856d24c1ed6f577fadb0e0b7",
+    "before-equipped-review/gl_compatibility/create-electric-1720.png": "2850383881d8923a7aee63993ceb07b07cf0a9a29bed725ecf33642849d11ddc",
+    "before-equipped-review/gl_compatibility/create-electric-960.png": "393698caa9f56ae8c4d72572c3d3dcc0415f21706048a751d83c5c1b9f963f11",
+    "before-equipped-review/gl_compatibility/dropdown-before-selection.png": "0514db5812d7d0ad60535723cabc40826b0795c28180f5fa5f50ffbf70bc9a64",
+    "before-equipped-review/gl_compatibility/equipped-fade-finished.png": "b96d2cb6eee3d2032b377f468cdd61e20250232b1e336f1815512626b862e97d",
+    "before-equipped-review/gl_compatibility/equipped-fade-middle.png": "65aff2956642c6e31725cebaff58e705dc1a34d1f4e0b90602d446a2e13bc1fd",
+    "before-equipped-review/gl_compatibility/equipped-fade-start.png": "3c69f6f2314bc949e52da65cd68b39ecf3bd4adf71130266a3b430c532092b75",
+    "before-equipped-review/gl_compatibility/keyboard-change-finished.png": "3befd48e52e2a09a77685dab45dd8f8402d7eeadaed85877158aba84d2a0d2de",
+    "before-equipped-review/gl_compatibility/keyboard-change-middle.png": "e654cb4c88d2db19d38faac51e2befbc574c0fd1e133dd24bea8e1ca758072b8",
+    "before-equipped-review/gl_compatibility/keyboard-change-start.png": "837f8e40a76fca4e95fc08b3caa9fb2a41d8f477feb80af8779126ae90871a8c",
+    "before-review/gl_compatibility/change-1720-finished.png": "219e9f4498b4528ddb1020df0cff42358405479d45315bad316720c39ce51c3b",
+    "before-review/gl_compatibility/change-1720-middle.png": "a22bd67b37bda1586c412a7dcbc81524caa7413d65c5b0be37e164c7d388f23c",
+    "before-review/gl_compatibility/change-1720-start.png": "98c28b9fe792215519909bdb6978a20c3c30ccc5d116c0fb64258ba4bb151314",
+    "before-review/gl_compatibility/change-960-finished.png": "e3bfcc3ccbdcac2cc773665ecfad8266df4d8f613174918955b60f6a38e42855",
+    "before-review/gl_compatibility/change-960-middle.png": "6627f7b3bb7abe9f9f2384984712252071e617f234a713087c7ffa075ff9afe0",
+    "before-review/gl_compatibility/change-960-start.png": "696fbde621f78f714973c17bf3319ae6b570e0162e39902738e343a75d2a3117",
+    "before-review/gl_compatibility/create-electric-1411.png": "d546770189e4b329db561674f68678326b9342cd856d24c1ed6f577fadb0e0b7",
+    "before-review/gl_compatibility/create-electric-1720.png": "2850383881d8923a7aee63993ceb07b07cf0a9a29bed725ecf33642849d11ddc",
+    "before-review/gl_compatibility/create-electric-960.png": "393698caa9f56ae8c4d72572c3d3dcc0415f21706048a751d83c5c1b9f963f11",
+    "before-review/gl_compatibility/dropdown-before-selection.png": "0514db5812d7d0ad60535723cabc40826b0795c28180f5fa5f50ffbf70bc9a64",
+    "before-review/gl_compatibility/keyboard-change-finished.png": "3befd48e52e2a09a77685dab45dd8f8402d7eeadaed85877158aba84d2a0d2de",
+    "before-review/gl_compatibility/keyboard-change-middle.png": "c152eeec09f7b9fc5da13e8beb01e55931fb08dad100f9db2eea9bb2ba0bf7d8",
+    "before-review/gl_compatibility/keyboard-change-start.png": "837f8e40a76fca4e95fc08b3caa9fb2a41d8f477feb80af8779126ae90871a8c",
+    "before-visible-review/gl_compatibility/change-1720-finished.png": "219e9f4498b4528ddb1020df0cff42358405479d45315bad316720c39ce51c3b",
+    "before-visible-review/gl_compatibility/change-1720-middle.png": "a22bd67b37bda1586c412a7dcbc81524caa7413d65c5b0be37e164c7d388f23c",
+    "before-visible-review/gl_compatibility/change-1720-start.png": "98c28b9fe792215519909bdb6978a20c3c30ccc5d116c0fb64258ba4bb151314",
+    "before-visible-review/gl_compatibility/change-960-finished.png": "e3bfcc3ccbdcac2cc773665ecfad8266df4d8f613174918955b60f6a38e42855",
+    "before-visible-review/gl_compatibility/change-960-middle.png": "6ebd726b0450c7865187fcce3245ad0a39e657c76ceb85357aca8c5b8922ab90",
+    "before-visible-review/gl_compatibility/change-960-start.png": "696fbde621f78f714973c17bf3319ae6b570e0162e39902738e343a75d2a3117",
+    "before-visible-review/gl_compatibility/create-electric-1411.png": "d546770189e4b329db561674f68678326b9342cd856d24c1ed6f577fadb0e0b7",
+    "before-visible-review/gl_compatibility/create-electric-1720.png": "2850383881d8923a7aee63993ceb07b07cf0a9a29bed725ecf33642849d11ddc",
+    "before-visible-review/gl_compatibility/create-electric-960.png": "393698caa9f56ae8c4d72572c3d3dcc0415f21706048a751d83c5c1b9f963f11",
+    "before-visible-review/gl_compatibility/dropdown-before-selection.png": "0514db5812d7d0ad60535723cabc40826b0795c28180f5fa5f50ffbf70bc9a64",
+    "before-visible-review/gl_compatibility/equipped-fade-finished.png": "b96d2cb6eee3d2032b377f468cdd61e20250232b1e336f1815512626b862e97d",
+    "before-visible-review/gl_compatibility/equipped-fade-middle.png": "7280e8b0ed27257b7fe245bfcd496f3e266711f3a2b195009c588bf4640d912f",
+    "before-visible-review/gl_compatibility/equipped-fade-start.png": "3c69f6f2314bc949e52da65cd68b39ecf3bd4adf71130266a3b430c532092b75",
+    "before-visible-review/gl_compatibility/keyboard-change-finished.png": "3befd48e52e2a09a77685dab45dd8f8402d7eeadaed85877158aba84d2a0d2de",
+    "before-visible-review/gl_compatibility/keyboard-change-middle.png": "3b7620ea1ab7bf9bc72fc6220c1fd56727932b2ac797b9152164a7647fea2a19",
+    "before-visible-review/gl_compatibility/keyboard-change-start.png": "837f8e40a76fca4e95fc08b3caa9fb2a41d8f477feb80af8779126ae90871a8c",
+    "final-review/gl_compatibility/change-1720-finished.png": "219e9f4498b4528ddb1020df0cff42358405479d45315bad316720c39ce51c3b",
+    "final-review/gl_compatibility/change-1720-middle.png": "daf0213dec9cf1af5479013773aadc208bdd9ea3b234f2a30fdd5cac004eb9ce",
+    "final-review/gl_compatibility/change-1720-start.png": "829fa0de94dae06f51f24accd50c47927eff2e74c49994307b21d19b4ef771b2",
+    "final-review/gl_compatibility/change-960-finished.png": "e3bfcc3ccbdcac2cc773665ecfad8266df4d8f613174918955b60f6a38e42855",
+    "final-review/gl_compatibility/change-960-middle.png": "b37e21bf5a772edbf6f2f218282b487619ac4a3d2d2ff0ea89cbacb2cf798594",
+    "final-review/gl_compatibility/change-960-start.png": "696fbde621f78f714973c17bf3319ae6b570e0162e39902738e343a75d2a3117",
+    "final-review/gl_compatibility/create-electric-1411.png": "d546770189e4b329db561674f68678326b9342cd856d24c1ed6f577fadb0e0b7",
+    "final-review/gl_compatibility/create-electric-1720.png": "2850383881d8923a7aee63993ceb07b07cf0a9a29bed725ecf33642849d11ddc",
+    "final-review/gl_compatibility/create-electric-960.png": "393698caa9f56ae8c4d72572c3d3dcc0415f21706048a751d83c5c1b9f963f11",
+    "final-review/gl_compatibility/dropdown-before-selection.png": "0514db5812d7d0ad60535723cabc40826b0795c28180f5fa5f50ffbf70bc9a64",
+    "final-review/gl_compatibility/equipped-fade-finished.png": "b96d2cb6eee3d2032b377f468cdd61e20250232b1e336f1815512626b862e97d",
+    "final-review/gl_compatibility/equipped-fade-middle.png": "4e1741f6de5aee0ef8f2c23fd7192283090e68fe7b9b94600b009dcb26db2365",
+    "final-review/gl_compatibility/equipped-fade-start.png": "3befd48e52e2a09a77685dab45dd8f8402d7eeadaed85877158aba84d2a0d2de",
+    "final-review/gl_compatibility/keyboard-change-finished.png": "3befd48e52e2a09a77685dab45dd8f8402d7eeadaed85877158aba84d2a0d2de",
+    "final-review/gl_compatibility/keyboard-change-middle.png": "55177251edacc8511cc02096fa5f78ccfea675924520b2e7409e1ba97658bfe4",
+    "final-review/gl_compatibility/keyboard-change-start.png": "ed79620c18b32552d937215fc5ff994a60ca5980eca199d298b20ff15e5e2129",
+    "final-review/mobile/change-1720-finished.png": "8eba4ccb744d4eafa61b5ee31bd3e29a90aafe979173261ad238539283d446c0",
+    "final-review/mobile/change-1720-middle.png": "c62528d11114735a7f95da5e4d7c89bee572a9cfa93c71468e798d06379d02f9",
+    "final-review/mobile/change-1720-start.png": "58106e53d911efda14f7c75eee29adaaa656c69a2b68a244a6b49258f2721fd7",
+    "final-review/mobile/change-960-finished.png": "088d6b7f8e01219a31e048a870717881ed9b3d62dee40a4fcfd515658d575e69",
+    "final-review/mobile/change-960-middle.png": "15ae6d06e0966fd5866482796029bcb90d2fb956768f56bf5978649133ea4cac",
+    "final-review/mobile/change-960-start.png": "fbb625f2b5c0910c80d49847a255eb3f02f99737931903b05c9fff162ed8bcab",
+    "final-review/mobile/create-electric-1411.png": "03c0cef14649a78310fd232f7579a31eed3875d94db708e38421357468336fd3",
+    "final-review/mobile/create-electric-1720.png": "4f9512a43aba8941a7a1b01feb1a4135b8a5505e2e163420770a53bfc45e1d82",
+    "final-review/mobile/create-electric-960.png": "e483c88e11656d8f0879d9ac206323e092a583c3eff7169b16b6939546a1ac04",
+    "final-review/mobile/dropdown-before-selection.png": "d87823657433b83a0283b6e1d99aa730a3c3639c85d003b95e46a3ecc1514f4b",
+    "final-review/mobile/equipped-fade-finished.png": "d019ae19831a7c4640d70881ce28826cf679464122247381ea4d2dbb20223d8f",
+    "final-review/mobile/equipped-fade-middle.png": "44401d2c5b6c0b8556132b6e0929c427efd1be08a7af0c15a88cbc859f3e2103",
+    "final-review/mobile/equipped-fade-start.png": "5586f532e1c4c62d7049351df867dfd9ded73bca0b63ce0a1143721e08a5fdaf",
+    "final-review/mobile/keyboard-change-finished.png": "5586f532e1c4c62d7049351df867dfd9ded73bca0b63ce0a1143721e08a5fdaf",
+    "final-review/mobile/keyboard-change-middle.png": "092d03c135453db5b5cec64bec3e8813262016be96218abe829c54561a7bcc9a",
+    "final-review/mobile/keyboard-change-start.png": "5b62149c8deeb45816f37025f2a49956394ec29efed4e2660a482560096109c0",
+    "logs/final-compatibility-566.log": "13693ed2e9e3d4c7b728e6bd6f9aba4c61527664897d23404a521c2baeb55430",
+    "logs/final-compatibility-recapture-566.log": "13693ed2e9e3d4c7b728e6bd6f9aba4c61527664897d23404a521c2baeb55430",
+    "logs/final-mobile-566.log": "bdbf7da16c7a0edc8d1b8240f7adaadb47e0a11ef4ad510d5388b0a3fffbbdec",
+    "logs/headless-543.log": "e84e57ff53a38651dcd0e9dbb6193ee3076e3ba92a17bf9c0d2d6c8848cee662",
+    "logs/original-556.log": "26ca275330e4c8ab9290c0eaddd7521893329725e09d89c01942c408c43e8ccc",
+    "logs/original-visible-regression-566-1.log": "d4d0f15795b9646ae96dfa63501c9db5f780dc263bb76bcb87fcc5cb1234b2d0",
+    "logs/parser-1319.log": "b861467d0437dd90c57df151811e9138f4904df82205af1a355f4d8c17368c1a"
+  },
+  "known_limits": [
+    "The 350ms stall is an injected reproduction, not a trace from the owner session.",
+    "Fade wall time intentionally extends when UI frames exceed 1/30 second.",
+    "Reload and owner/device visual/frame-time acceptance remain."
+  ],
+  "not_performed": [
+    "Physical-device attachment check",
+    "Physical-device test",
+    "APK/AAB export",
+    "Authentication/purchase",
+    "Owner-save/live mutation",
+    "Deployment",
+    "Git staging/commit/merge",
+    "Owner-process restart"
+  ]
+}

@@ -1,0 +1,872 @@
+--- a/game/vehicle/hovercraft_model.gd
++++ b/game/vehicle/hovercraft_model.gd
+@@ -1,108 +1,271 @@
+ extends RefCounted
+-## Original compact recreational hovercraft. Model metres; bow -Z, fan aft.
++## Original recreational sport hovercraft. Model metres; bow -Z, fan aft.
++const Surface = preload("res://vehicle/hovercraft_surface.gd")
++const FAN: Vector3 = Vector3(0,1.43,1.33)
++
+ static func build(car: CarVisual) -> void:
+-	var paint: StandardMaterial3D = VisualGeometry.material(Color("698d87"))
+-	var accent: StandardMaterial3D = VisualGeometry.material(Color("d9d0b7"))
+-	var rubber: StandardMaterial3D = VisualGeometry.material(Color("252d30"))
+-	var seam: StandardMaterial3D = VisualGeometry.material(Color("151e22"))
+-	var glass: StandardMaterial3D = VisualGeometry.material(Color("304957"))
+-	var metal: StandardMaterial3D = VisualGeometry.material(Color("83918f"))
+-	car.paint_materials = {"body":paint,"accent":accent,"detail":metal}
+-	var segments: int = 40 if car.simple_model else 64
+-	# A closed, rounded bag skirt with raised deck lip; no wheels hidden inside.
+-	_loft(car,segments,[Vector2(0.94,0.12),Vector2(1.0,0.24),Vector2(1.0,0.43),Vector2(0.92,0.59)],rubber)
+-	_loft(car,segments,[Vector2(0.925,0.57),Vector2(0.93,0.65),Vector2(0.83,0.78)],paint)
+-	for index: int in range(0,segments,2):
+-		var angle: float = TAU*index/segments
+-		car._seam(car.body,_outline(angle,1.002,0.26),_outline(angle,0.965,0.52),0.009,seam)
+-	# Broad solid foredeck and aft deck support the inset glazed cockpit.
+-	var deck: Array[Vector3] = []
+-	for index: int in range(segments): deck.append(_outline(TAU*index/segments,0.83,0.78))
+-	var top := SurfaceTool.new()
+-	top.begin(Mesh.PRIMITIVE_TRIANGLES)
+-	for index: int in range(segments):
+-		for point: Vector3 in [Vector3(0,0.78,0),deck[(index+1)%segments],deck[index]]:
+-			top.set_normal(Vector3.UP)
+-			top.add_vertex(point)
+-	var top_mesh := MeshInstance3D.new()
+-	top_mesh.mesh = top.commit()
+-	top_mesh.material_override = paint
+-	car.body.add_child(top_mesh)
+-	_loft(car,segments,[Vector2(0.83,0.785),Vector2(0.81,0.80)],accent)
+-	# Low forward cabin, sloping windshield and cream canopy perimeter.
+-	VehicleModels._cabin(car,0.62,0.78,1.37,-1.18,0.43,-0.63,0.16,paint,glass,seam)
+-	VisualGeometry.box(car.body,Vector3(1.05,0.055,0.75),Vector3(0,1.395,-0.23),accent)
+-	for side: float in [-1.0,1.0]:
+-		VisualGeometry.box(car.body,Vector3(0.11,0.035,0.58),Vector3(side*0.78,0.80,-0.48),metal)
+-		VisualGeometry.box(car.body,Vector3(0.27,0.06,0.10),Vector3(side*0.64,0.76,-1.62),accent)
+-		VisualGeometry.box(car.body,Vector3(0.19,0.075,0.06),Vector3(side*0.64,0.75,1.68),car.brake_material)
+-		car._seam(car.body,Vector3(side*0.59,0.78,0.80),Vector3(side*0.46,1.23,1.37),0.07,seam)
+-	# Open duct with visible inner wall and protective front/rear grilles.
+-	var center := Vector3(0,1.34,1.18)
+-	_duct(car,center,0.66,0.57,0.38,accent,segments)
+-	for z: float in [-0.205,0.205]:
+-		for bar: int in range(-3,4):
+-			var x: float = bar*0.15
+-			var extent: float = sqrt(0.56*0.56-x*x)
+-			car._seam(car.body,center+Vector3(x,-extent,z),center+Vector3(x,extent,z),0.012,metal)
++	var paint: StandardMaterial3D = CompactFinish.paint(Color("698d87"))
++	paint.roughness = 0.46
++	var accent: StandardMaterial3D = CompactFinish.paint(Color("d9d0b7"))
++	accent.roughness = 0.48
++	var detail: StandardMaterial3D = CompactFinish.alloy(Color("83918f"))
++	var rubber: StandardMaterial3D = CompactFinish.rubber(Color("242b2e"))
++	rubber.roughness = 0.93
++	var seam: StandardMaterial3D = CompactFinish.rubber(Color("10181d"))
++	var metal: StandardMaterial3D = CompactFinish.alloy(Color("68777b"))
++	var dark_metal: StandardMaterial3D = CompactFinish.alloy(Color("252f35"))
++	dark_metal.roughness = 0.52
++	var glass := ShaderMaterial.new()
++	glass.shader = preload("res://vehicle/electric_glass.gdshader")
++	glass.set_shader_parameter("glass_tint_srgb",Vector3(0.045,0.079,0.090))
++	car.paint_materials = {"body":paint,"accent":accent,"detail":detail}
++	car.body.set_meta("hovercraft_revision",2)
++	var simple: bool = car.simple_model
++	_skirt(car.body,rubber,seam,simple)
++	_hull(car.body,paint,seam,detail,simple)
++	_cabin(car.body,paint,accent,glass,seam,metal,simple)
++	_machinery(car.body,paint,accent,seam,metal,dark_metal,simple)
++	_lights(car.body,car.brake_material,seam,detail,simple)
++
++static func _outline(angle: float, scale: float = 1.0, height: float = 0.0) -> Vector3:
++	var z: float = signf(cos(angle))*pow(absf(cos(angle)),0.74)*2.13*scale
++	var taper: float = 0.95+0.05*tanh(z*1.6)
++	return Vector3(signf(sin(angle))*pow(absf(sin(angle)),0.74)*1.16*taper*scale,height,z)
++
++static func _outward(u: float, _v: float) -> Vector3:
++	return _outline(u*TAU).normalized()
++
++static func _deck_y(x: float,z: float) -> float:
++	var width: float = 1.16*0.92*(0.95+0.05*tanh(z*1.6))
++	var distance: float = pow(absf(x)/width,2.7027027)+pow(absf(z)/(2.13*0.92),2.7027027)
++	var recess: float = 0.11*exp(-pow(x/0.44,4.0)-pow((z-1.30)/0.49,4.0))*smoothstep(0.0,0.25,1.0-distance)
++	return 0.82+0.08*maxf(0.0,1.0-distance)-recess
++
++static func _skirt(parent: Node3D,rubber: Material,seam: Material,simple: bool) -> void:
++	var rings: Array[Vector2] = [Vector2(0.895,0.29),Vector2(0.975,0.33),Vector2(0.994,0.43),Vector2(0.970,0.54),Vector2(0.905,0.585)]
++	Surface.surface(parent,"InflatedUpperBag",64 if simple else 128,8 if simple else 16,
++		func(u: float,v: float) -> Vector3:
++			var p: Vector2 = Surface.monotone_profile(rings,v)
++			return _outline(u*TAU,p.x,p.y),_outward,rubber,simple)
++	for index: int in range(52):
++		var start: float = TAU*index/52.0
++		Surface.surface(parent,"SkirtFinger%02d"%index,3 if simple else 6,4 if simple else 6,
++			func(u: float,v: float) -> Vector3:
++				var angle: float = start+(0.035+u*0.93)*TAU/52.0
++				var bulge: float = pow(maxf(0.0,sin(PI*u)),0.55)
++				var radius: float = 0.937+0.052*bulge*sin(v*PI*0.85)+0.009*v
++				var y: float = lerpf(0.145-0.035*bulge,0.407,v)
++				return _outline(angle,radius,y),
++			func(u: float,_v: float) -> Vector3: return _outline(start+u*TAU/52.0).normalized(),rubber,simple)
++	Surface.surface(parent,"Underside",48 if simple else 96,3,
++		func(u: float,v: float) -> Vector3: return _outline(u*TAU,0.935*v,0.15+0.04*(1.0-v)),
++		func(_u: float,_v: float) -> Vector3: return Vector3.DOWN,seam,simple)
++	for height: float in [0.49,0.557]:
++		Surface.tube(parent,"SkirtBinding%d"%roundi(height*1000),func(u: float) -> Vector3: return _outline(u*TAU,0.978 if height < 0.5 else 0.938,height),0.004,64 if simple else 128,seam,simple)
++
++static func _hull(parent: Node3D,paint: Material,seam: Material,detail: Material,simple: bool) -> void:
++	var profile: Array[Vector2] = [Vector2(0.89,0.51),Vector2(0.965,0.57),Vector2(0.986,0.635),Vector2(0.984,0.70),Vector2(0.966,0.761),Vector2(0.932,0.8176),Vector2(0.92,0.82)]
++	Surface.surface(parent,"FormedCompositeHull",64 if simple else 128,10 if simple else 18,
++		func(u: float,v: float) -> Vector3:
++			var p: Vector2 = Surface.monotone_profile(profile,v)
++			return _outline(u*TAU,p.x,p.y),_outward,paint,simple)
++	Surface.surface(parent,"CrownedDeck",64 if simple else 128,6 if simple else 10,
++		func(u: float,v: float) -> Vector3:
++			var p: Vector3 = _outline(u*TAU,0.92*v)
++			p.y = _deck_y(p.x,p.z)
++			return p,
++		func(_u: float,_v: float) -> Vector3: return Vector3.UP,paint,simple)
++	Surface.tube(parent,"HullRubbingStrake",func(u: float) -> Vector3: return _outline(u*TAU,0.978,0.729),0.012,64 if simple else 128,seam,simple)
++	for layer: int in range(2):
++		var rx: float = 0.64 if layer == 0 else 0.626
++		var rz: float = 0.265 if layer == 0 else 0.251
++		Surface.surface(parent,"BowHatch%d"%layer,40 if simple else 80,4 if simple else 8,
++			func(u: float,v: float) -> Vector3:
++				var x: float = sin(u*TAU)*rx*v
++				var z: float = -1.54+cos(u*TAU)*rz*v
++				return Vector3(x,_deck_y(x,z)+0.002+layer*0.003,z),
++			func(_u: float,_v: float) -> Vector3: return Vector3.UP,seam if layer == 0 else paint,simple)
++	for side: float in [-1.0,1.0]:
++		Surface.rounded_box(parent,"HatchHinge%d"%int(side),Vector3(0.115,0.022,0.04),Vector3(side*0.38,_deck_y(side*0.38,-1.315)+0.014,-1.315),0.009,detail,simple)
++		var x: float = side*0.91
++		Surface.tube(parent,"DeckGrabRail%d"%int(side),func(u: float) -> Vector3:
++			var z: float = lerpf(-0.75,0.22,u)
++			return Vector3(x,_deck_y(x,z)+0.027+0.055*pow(maxf(0.0,sin(PI*u)),0.4),z),0.013,12 if simple else 24,detail,simple)
++		for z: float in [-0.75,0.22]:
++			Surface.rounded_box(parent,"RailFoot%d_%d"%[int(side),roundi(z*100)],Vector3(0.062,0.015,0.075),Vector3(x,_deck_y(x,z)+0.009,z),0.006,detail,simple)
++	Surface.tube(parent,"BowTowingEye",func(u: float) -> Vector3: return Vector3(sin(u*TAU)*0.065,0.648+cos(u*TAU)*0.035,-1.928),0.012,24 if simple else 40,detail,simple)
++
++static func _roof(s: float,t: float) -> Vector3:
++	var z: float = t*2.0-1.0
++	return Vector3(s*0.58,1.36+0.065*pow(maxf(0.0,1.0-pow(absf(s),5.0)-pow(absf(z),5.0)),2.0),lerpf(-0.68,0.30,t))
++
++static func _cabin_point(angle: float,v: float) -> Vector3:
++	var x: float = signf(sin(angle))*pow(absf(sin(angle)),0.4)
++	var z: float = -signf(cos(angle))*pow(absf(cos(angle)),0.4)
++	var width: float = lerpf(0.73,0.58,v)+0.018*sin(PI*v)
++	var front: float = lerpf(-1.22,-0.68,v)
++	var back: float = lerpf(0.55,0.30,v)
++	# Zero vertical derivative at the top turns the shell smoothly into the roof.
++	var base_x: float = x*0.73
++	var base_z: float = -0.335+z*0.885
++	var base_y: float = _deck_y(base_x,base_z)-0.008
++	var height: float = lerpf(base_y,1.36,v+sin(PI*v)/PI)
++	return Vector3(x*width,height,(front+back)*0.5+z*(back-front)*0.5)
++
++static func _windshield(s: float,v: float) -> Vector3:
++	return _cabin_point(s*PI*0.25,v)
++
++static func _side(side: float,t: float,v: float) -> Vector3:
++	return _cabin_point(side*(PI*0.25+t*PI*0.5),v)
++
++static func _rounded_uv(u: float,v: float,radius: float) -> Vector2:
++	var p := Vector2(u,v)
++	var inner: Vector2 = p.clamp(Vector2.ONE*radius,Vector2.ONE*(1.0-radius))
++	var delta: Vector2 = p-inner
++	return inner+delta.normalized()*minf(radius,delta.length())
++
++static func _cabin(parent: Node3D,paint: Material,accent: Material,glass: Material,seam: Material,metal: Material,simple: bool) -> void:
++	Surface.surface(parent,"CurvedWindshieldFrame",16 if simple else 32,8 if simple else 18,
++		func(u: float,v: float) -> Vector3: return _windshield(u*2.0-1.0,v),
++		func(_u: float,_v: float) -> Vector3: return Vector3(0,0.5,-1),paint,simple)
++	for layer: int in range(2):
++		Surface.surface(parent,"Windshield%d"%layer,16 if simple else 32,8 if simple else 18,
++			func(u: float,v: float) -> Vector3:
++				var uv: Vector2 = _rounded_uv(u,v,0.065)
++				return _windshield(lerpf(-0.933+layer*0.014,0.933-layer*0.014,uv.x),lerpf(0.085+layer*0.018,0.92-layer*0.018,uv.y))+Vector3(0,0.002+layer*0.001,-0.004-layer*0.001),
++			func(_u: float,_v: float) -> Vector3: return Vector3(0,0.5,-1),seam if layer == 0 else glass,simple)
++	Surface.surface(parent,"ArchedCanopy",64 if simple else 96,6 if simple else 12,
++		func(u: float,v: float) -> Vector3:
++			var p: Vector3 = _cabin_point(u*TAU,1.0)
++			return Vector3(p.x*v,1.36+0.065*pow(1.0-pow(v,5.0),2.0),-0.19+(p.z+0.19)*v),
++		func(_u: float,_v: float) -> Vector3: return Vector3.UP,accent,simple)
++	for side: float in [-1.0,1.0]:
++		Surface.surface(parent,"CabinSide%d"%int(side),16 if simple else 32,8 if simple else 16,
++			func(u: float,v: float) -> Vector3: return _side(side,u,v),
++			func(_u: float,_v: float) -> Vector3: return Vector3(side,0,0),paint,simple)
++		for pane: int in range(2):
++			for layer: int in range(2):
++				Surface.surface(parent,"SideWindow%d_%d_%d"%[int(side),pane,layer],10 if simple else 20,6 if simple else 12,
++					func(u: float,v: float) -> Vector3:
++						var uv: Vector2 = _rounded_uv(u,v,0.085)
++						var t: float = lerpf(0.075 if pane == 0 else 0.637,0.598 if pane == 0 else 0.934,lerpf(0.012*layer,1.0-0.012*layer,uv.x))
++						return _side(side,t,lerpf(0.295+layer*0.02,0.92-layer*0.02,uv.y))+Vector3(side*(0.003+0.001*layer),0,0),
++						func(_u: float,_v: float) -> Vector3: return Vector3(side,0.15,0),seam if layer == 0 else glass,simple)
++		Surface.tube(parent,"DoorCut%d"%int(side),func(u: float) -> Vector3:
++			var uv: Vector2 = _rounded_uv((sin(u*TAU)+1.0)*0.5,(cos(u*TAU)+1.0)*0.5,0.1)
++			var t: float = lerpf(0.055,0.62,uv.x)
++			var v: float = lerpf(0.07,0.965,uv.y)
++			return _side(side,t,v)+Vector3(side*0.002,0,0),0.0025,32 if simple else 64,seam,simple)
++		var handle: Vector3 = _side(side,0.51,0.22)+Vector3(side*0.007,0,0)
++		Surface.rounded_box(parent,"DoorLatchRecess%d"%int(side),Vector3(0.016,0.048,0.15),handle,0.007,seam,simple)
++		Surface.rounded_box(parent,"DoorLatch%d"%int(side),Vector3(0.022,0.015,0.098),handle+Vector3(side*0.008,0.004,0),0.006,metal,simple)
++	Surface.surface(parent,"CabinRear",16 if simple else 32,8 if simple else 16,
++		func(u: float,v: float) -> Vector3: return _cabin_point(PI*0.75+u*PI*0.5,v),
++		func(_u: float,_v: float) -> Vector3: return Vector3(0,0.3,1),paint,simple)
++	for layer: int in range(2):
++		Surface.surface(parent,"RoofHatch%d"%layer,12 if simple else 24,10 if simple else 20,
++			func(u: float,v: float) -> Vector3:
++				var uv: Vector2 = _rounded_uv(u,v,0.14)
++				return _roof(lerpf(-0.72+layer*0.015,0.72-layer*0.015,uv.x),lerpf(0.13+layer*0.012,0.84-layer*0.012,uv.y))+Vector3(0,0.002+layer*0.002,0),
++			func(_u: float,_v: float) -> Vector3: return Vector3.UP,seam if layer == 0 else accent,simple)
++	Surface.tube(parent,"WiperArm",func(u: float) -> Vector3: return _windshield(lerpf(0.45,-0.06,u),lerpf(0.12,0.60,u))+Vector3(0,0.007,-0.012),0.006,4 if simple else 8,metal,simple)
++	Surface.tube(parent,"WiperBlade",func(u: float) -> Vector3: return _windshield(lerpf(-0.39,0.28,u),0.60)+Vector3(0,0.009,-0.017),0.008,8 if simple else 16,seam,simple)
++
++static func _machinery(parent: Node3D,paint: Material,accent: Material,seam: Material,metal: Material,dark_metal: Material,simple: bool) -> void:
++	Surface.rounded_box(parent,"EngineCoverSeal",Vector3(0.85,0.22,0.61),Vector3(0,0.965,0.80),0.07,seam,simple)
++	Surface.rounded_box(parent,"EngineCover",Vector3(0.82,0.23,0.59),Vector3(0,0.98,0.79),0.075,paint,simple)
++	for side: float in [-1.0,1.0]:
++		for vent: int in range(5):
++			Surface.rounded_box(parent,"CoolingSlot%d_%d"%[int(side),vent],Vector3(0.015,0.068,0.018),Vector3(side*0.410,0.977,0.63+vent*0.07),0.006,seam,simple)
++		Surface.tube(parent,"FanSupport%d"%int(side),func(u: float) -> Vector3: return Vector3(side*lerpf(0.70,0.49,u),lerpf(0.84,1.16,u),lerpf(1.05,1.32,u)),0.033,3 if simple else 6,dark_metal,simple)
++		Surface.rounded_box(parent,"FanSupportFoot%d"%int(side),Vector3(0.14,0.025,0.19),Vector3(side*0.70,0.84,1.05),0.01,metal,simple)
++	var duct: Array[Vector2] = [Vector2(0.615,-0.21),Vector2(0.645,-0.12),Vector2(0.650,0.12),Vector2(0.615,0.21),Vector2(0.585,0.23),Vector2(0.558,0.18),Vector2(0.553,-0.18),Vector2(0.585,-0.23)]
++	Surface.surface(parent,"RolledFanDuct",64 if simple else 128,16 if simple else 32,
++		func(u: float,v: float) -> Vector3:
++			var p: Vector2 = Surface.profile(duct,v,true)
++			return FAN+Vector3(sin(u*TAU)*p.x,cos(u*TAU)*p.x,p.y),
++		func(u: float,v: float) -> Vector3:
++			var p: Vector2 = Surface.profile(duct,v,true)
++			return Vector3(sin(u*TAU)*(p.x-0.595),cos(u*TAU)*(p.x-0.595),p.y*0.3),accent,simple)
++	for end: float in [-1.0,1.0]:
++		Surface.ring(parent,"DuctLip%d"%int(end),FAN+Vector3(0,0,end*0.217),0.592,0.008,metal,simple)
++		for radius: float in [0.22,0.40,0.55]:
++			Surface.ring(parent,"GuardRing%d_%d"%[int(end),roundi(radius*100)],FAN+Vector3(0,0,end*0.239),radius,0.0045,dark_metal,simple)
++		for spoke: int in range(12):
++			var angle: float = spoke*TAU/12.0
++			Surface.tube(parent,"GuardSpoke%d_%d"%[int(end),spoke],func(u: float) -> Vector3: return FAN+Vector3(sin(angle),cos(angle),0)*lerpf(0.07,0.565,u)+Vector3(0,0,end*0.239),0.0045,1,dark_metal,simple)
+ 	var fan := Node3D.new()
+ 	fan.name = "FanRotor"
+-	fan.position = center
+-	car.body.add_child(fan)
+-	var hub := VisualGeometry.cylinder(fan,0.115,0.14,Vector3.ZERO,seam)
+-	hub.rotation.x = PI*0.5
+-	for blade: int in range(5):
+-		var piece := VisualGeometry.box(fan,Vector3(0.15,0.42,0.035),Vector3.ZERO,seam)
+-		var angle: float = blade*TAU/5.0
+-		piece.position = Vector3(-sin(angle),cos(angle),0)*0.31
+-		piece.rotation = Vector3(0.18,0,angle)
++	fan.position = FAN
++	parent.add_child(fan)
++	for blade: int in range(6):
++		var angle: float = blade*TAU/6.0
++		var blade_point: Callable = func(u: float,v: float,face: float) -> Vector3:
++			var radius: float = lerpf(0.09,0.521,u)
++			var width: float = 0.12*(0.64+0.36*sin(PI*u))*pow(maxf(0.0,1.0-u*u),0.22)
++			var sweep: float = 0.12*u*u
++			var chord: float = (v-0.5)*width
++			var twist: float = lerpf(0.82,0.23,u)
++			return Vector3(chord*cos(twist)+sweep,radius,chord*sin(twist)+face*0.009*sin(PI*v)*sqrt(maxf(0.0,1.0-u*u))).rotated(Vector3.BACK,angle)
++		for face: float in [-1.0,1.0]:
++			Surface.surface(fan,"Airfoil%d_%d"%[blade,int(face)],10 if simple else 20,4 if simple else 8,
++				func(u: float,v: float) -> Vector3: return blade_point.call(u,v,face),
++				func(_u: float,_v: float) -> Vector3: return Vector3(0,0,face),dark_metal,simple)
++	var spinner: Array[Vector2] = [Vector2(0.0,-0.155),Vector2(0.055,-0.145),Vector2(0.103,-0.095),Vector2(0.115,0.01),Vector2(0.10,0.08),Vector2(0.0,0.08)]
++	Surface.surface(fan,"PropellerSpinner",32 if simple else 64,12 if simple else 24,
++		func(u: float,v: float) -> Vector3:
++			var p: Vector2 = Surface.profile(spinner,v)
++			return Vector3(sin(u*TAU)*p.x,cos(u*TAU)*p.x,p.y),
++		func(u: float,v: float) -> Vector3:
++			var tangent: Vector2 = Surface.profile(spinner,v+0.0001)-Surface.profile(spinner,v-0.0001)
++			return Vector3(sin(u*TAU)*tangent.y,cos(u*TAU)*tangent.y,-tangent.x),metal,simple)
+ 	for side: float in [-1.0,1.0]:
+ 		var rudder := Node3D.new()
+ 		rudder.name = "RudderLeft" if side < 0.0 else "RudderRight"
+-		rudder.position = center+Vector3(side*0.29,0,0.28)
+-		car.body.add_child(rudder)
+-		VisualGeometry.box(rudder,Vector3(0.045,0.86,0.30),Vector3.ZERO,paint)
+-
+-static func _outline(angle: float, size: float, height: float) -> Vector3:
+-	var x: float = sin(angle)
+-	var z: float = cos(angle)
+-	return Vector3(signf(x)*pow(absf(x),0.63)*1.16*(0.90 if z < 0.0 else 1.0)*size,height,signf(z)*pow(absf(z),0.72)*2.13*size)
+-
+-static func _loft(car: CarVisual, segments: int, rings: Array[Vector2], material: Material) -> void:
+-	var tool := SurfaceTool.new()
+-	tool.begin(Mesh.PRIMITIVE_TRIANGLES)
+-	for ring: int in range(rings.size()-1):
+-		for index: int in range(segments):
+-			var a: float = TAU*index/segments
+-			var b: float = TAU*(index+1)/segments
+-			_quad(tool,[_outline(a,rings[ring].x,rings[ring].y),_outline(b,rings[ring].x,rings[ring].y),_outline(b,rings[ring+1].x,rings[ring+1].y),_outline(a,rings[ring+1].x,rings[ring+1].y)],Vector3(sin((a+b)*0.5),0.35,cos((a+b)*0.5)).normalized())
+-	_publish(car,tool,material)
+-
+-static func _duct(car: CarVisual, center: Vector3, outer: float, inner: float, depth: float, material: Material, segments: int) -> void:
+-	var tool := SurfaceTool.new()
+-	tool.begin(Mesh.PRIMITIVE_TRIANGLES)
+-	for index: int in range(segments):
+-		var a: float = TAU*index/segments
+-		var b: float = TAU*(index+1)/segments
+-		var p := Vector3(sin(a),cos(a),0)
+-		var q := Vector3(sin(b),cos(b),0)
+-		var front := Vector3(0,0,-depth*0.5)
+-		var back := -front
+-		_quad(tool,[center+p*outer+front,center+q*outer+front,center+q*outer+back,center+p*outer+back],(p+q).normalized())
+-		_quad(tool,[center+p*inner+front,center+q*inner+front,center+q*inner+back,center+p*inner+back],-(p+q).normalized())
+-		for end: Vector3 in [front,back]:
+-			_quad(tool,[center+p*inner+end,center+q*inner+end,center+q*outer+end,center+p*outer+end],end.normalized())
+-	_publish(car,tool,material)
+-
+-static func _quad(tool: SurfaceTool, points: Array[Vector3], normal: Vector3) -> void:
+-	var indices: Array[int] = [0,1,2,0,2,3]
+-	if (points[1]-points[0]).cross(points[2]-points[0]).dot(normal) > 0.0: indices = [0,2,1,0,3,2]
+-	for index: int in indices:
+-		tool.set_normal(normal)
+-		tool.add_vertex(points[index])
+-
+-static func _publish(car: CarVisual, tool: SurfaceTool, material: Material) -> void:
+-	var node := MeshInstance3D.new()
+-	node.mesh = tool.commit()
+-	node.material_override = material
+-	car.body.add_child(node)
++		rudder.position = FAN+Vector3(side*0.30,0,0.337)
++		parent.add_child(rudder)
++		Surface.surface(rudder,"SteeringFoil%d"%int(side),16 if simple else 32,8 if simple else 16,
++			func(u: float,v: float) -> Vector3:
++				var z: float = (0.5+0.5*cos(u*TAU))*0.29-0.075
++				var end: float = absf(v*2.0-1.0)
++				var cap: float = sqrt(maxf(0.0,1.0-pow(maxf(0.0,(end-0.875)/0.125),2.0)))
++				return Vector3(sin(u*TAU)*0.025*pow(maxf(0.001,1.0-(z+0.075)/0.29),0.35)*cap,lerpf(-0.46,0.46,v),(z-0.07)*cap+0.07),
++			func(u: float,v: float) -> Vector3: return Vector3(sin(u*TAU),(v*2.0-1.0)*0.3,cos(u*TAU)),paint,simple)
++		for y: float in [-0.44,0.44]:
++			Surface.rounded_box(rudder,"VaneHinge%d_%d"%[int(side),roundi(y*100)],Vector3(0.07,0.045,0.095),Vector3(0,y,-0.044),0.012,metal,simple)
++		Surface.tube(parent,"SteeringLink%d"%int(side),func(u: float) -> Vector3: return FAN+Vector3(side*lerpf(0.30,0.56,u),-0.34,0.315),0.008,1,dark_metal,simple)
++
++static func _lamp(parent: Node3D,side: float,material: Material,simple: bool,frame: bool) -> void:
++	var position := Vector3(side*0.59,0.79,_rim_z(0.59,0.95,true)+0.013)
++	var yaw: float = -side*0.47
++	var lens_offset: Vector3 = Vector3(0,0,-0.038).rotated(Vector3.UP,yaw)
++	var node: MeshInstance3D = Surface.rounded_box(parent,("HeadlampBezel" if frame else "HeadlampLens")+str(int(side)),Vector3(0.285,0.092,0.075) if frame else Vector3(0.226,0.042,0.016),position if frame else position+lens_offset,0.025 if frame else 0.007,material,simple)
++	node.rotation.y = yaw
++
++static func _rim_z(x: float,scale: float,front: bool) -> float:
++	var a: float = 0.0
++	var b: float = PI*0.5
++	for iteration: int in range(24):
++		var angle: float = (a+b)*0.5
++		var p: Vector3 = _outline(PI-angle if front else angle,scale)
++		if p.x < x: a = angle
++		else: b = angle
++	return _outline(PI-(a+b)*0.5 if front else (a+b)*0.5,scale).z
++
++static func _lights(parent: Node3D,brake: Material,seam: Material,detail: Material,simple: bool) -> void:
++	var white: StandardMaterial3D = CompactFinish.rubber(Color("d5dfd7"))
++	white.emission_enabled = true
++	white.emission = Color("a9c1bf")
++	white.emission_energy_multiplier = 0.2
++	for side: float in [-1.0,1.0]:
++		_lamp(parent,side,seam,simple,true)
++		_lamp(parent,side,white,simple,false)
++		var tail := Vector3(side*0.69,0.75,_rim_z(0.69,0.968,false)-0.010)
++		var bezel: MeshInstance3D = Surface.rounded_box(parent,"TailLampBezel%d"%int(side),Vector3(0.24,0.080,0.065),tail,0.022,seam,simple)
++		bezel.rotation.y = side*0.44
++		var lens: MeshInstance3D = Surface.rounded_box(parent,"TailLampLens%d"%int(side),Vector3(0.18,0.039,0.018),tail+Vector3(0,0,0.034).rotated(Vector3.UP,side*0.44),0.007,brake,simple)
++		lens.rotation.y = side*0.44
++		Surface.rounded_box(parent,"AftTieDown%d"%int(side),Vector3(0.09,0.023,0.075),Vector3(side*0.81,0.81,1.40),0.009,detail,simple)
++
++static func night_lens(parent: Node3D,material: Material) -> void:
++	for side: float in [-1.0,1.0]: _lamp(parent,side,material,false,false)
+--- /dev/null
++++ b/game/vehicle/hovercraft_surface.gd
+@@ -0,0 +1,168 @@
++extends RefCounted
++## Original model-space surfaces. Immutable meshes are shared; finishes stay private.
++const ASSET_ROOT: String = "res://assets/vehicles/hovercraft_body_v2"
++static var meshes: Dictionary = {}
++static var use_baked: bool = true
++static var source_signature: String = ""
++
++static func signature() -> String:
++	if source_signature.is_empty():
++		source_signature = FileAccess.get_sha256("res://vehicle/hovercraft_model.gd")+FileAccess.get_sha256("res://vehicle/hovercraft_surface.gd")
++	return source_signature
++
++static func _key(label: String, simple: bool) -> String:
++	return ("race_" if simple else "full_")+label
++
++static func _cached(key: String) -> ArrayMesh:
++	if meshes.has(key): return meshes[key]
++	var path: String = ASSET_ROOT.path_join(key+".res")
++	if use_baked and ResourceLoader.exists(path):
++		var saved: ArrayMesh = load(path)
++		if not OS.has_feature("editor") or saved.get_meta("hovercraft_sources","") == signature():
++			meshes[key] = saved
++			return saved
++	return null
++
++static func instance(parent: Node3D, mesh: ArrayMesh, material: Material, label: String) -> MeshInstance3D:
++	var node := MeshInstance3D.new()
++	node.name = label
++	node.mesh = mesh
++	node.material_override = material
++	parent.add_child(node)
++	return node
++
++static func surface(parent: Node3D, label: String, columns: int, rows: int, point: Callable, hint: Callable, material: Material, simple: bool) -> MeshInstance3D:
++	var key: String = _key(label,simple)
++	var mesh: ArrayMesh = _cached(key)
++	if mesh == null:
++		mesh = ArrayMesh.new()
++		mesh.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES,_arrays(columns,rows,point,hint))
++		meshes[key] = mesh
++	return instance(parent,mesh,material,label)
++
++static func _arrays(columns: int, rows: int, point: Callable, hint: Callable) -> Array:
++	var vertices := PackedVector3Array()
++	var normals := PackedVector3Array()
++	var uv := PackedVector2Array()
++	var indices := PackedInt32Array()
++	for row: int in range(rows+1):
++		for column: int in range(columns+1):
++			var u: float = float(column)/columns
++			var v: float = float(row)/rows
++			var p: Vector3 = point.call(u,v)
++			var du: Vector3 = point.call(u+0.0001,v)-point.call(u-0.0001,v)
++			var dv: Vector3 = point.call(u,v+0.0001)-point.call(u,v-0.0001)
++			var n: Vector3 = du.cross(dv).normalized()
++			var expected: Vector3 = hint.call(u,v)
++			if n.length_squared() < 0.5: n = expected.normalized()
++			if n.dot(expected) < 0.0: n = -n
++			vertices.append(p)
++			normals.append(n)
++			uv.append(Vector2(u,v))
++	for row: int in range(rows):
++		for column: int in range(columns):
++			var a: int = row*(columns+1)+column
++			for tri: Vector3i in [Vector3i(a,a+1,a+columns+2),Vector3i(a,a+columns+2,a+columns+1)]:
++				var cross: Vector3 = (vertices[tri.y]-vertices[tri.x]).cross(vertices[tri.z]-vertices[tri.x])
++				if cross.length_squared() < 1e-16: continue
++				indices.append(tri.x)
++				if cross.dot(normals[tri.x]+normals[tri.y]+normals[tri.z]) > 0.0:
++					indices.append(tri.z); indices.append(tri.y)
++				else:
++					indices.append(tri.y); indices.append(tri.z)
++	var arrays: Array = []
++	arrays.resize(Mesh.ARRAY_MAX)
++	arrays[Mesh.ARRAY_VERTEX] = vertices
++	arrays[Mesh.ARRAY_NORMAL] = normals
++	arrays[Mesh.ARRAY_TEX_UV] = uv
++	arrays[Mesh.ARRAY_INDEX] = indices
++	return arrays
++
++static func rounded_box(parent: Node3D, label: String, size: Vector3, center: Vector3, radius: float, material: Material, simple: bool) -> MeshInstance3D:
++	var key: String = _key(label,simple)
++	var mesh: ArrayMesh = _cached(key)
++	if mesh == null:
++		var steps: int = 1 if simple else 2
++		var columns: int = 2*steps+1
++		var vertices := PackedVector3Array()
++		var normals := PackedVector3Array()
++		var uv := PackedVector2Array()
++		var indices := PackedInt32Array()
++		var half: Vector3 = size*0.5
++		var inner: Vector3 = half-Vector3.ONE*radius
++		for face: Array in [[Vector3.RIGHT,Vector3.UP,Vector3.BACK],[Vector3.LEFT,Vector3.UP,Vector3.FORWARD],[Vector3.UP,Vector3.BACK,Vector3.RIGHT],[Vector3.DOWN,Vector3.FORWARD,Vector3.RIGHT],[Vector3.BACK,Vector3.RIGHT,Vector3.UP],[Vector3.FORWARD,Vector3.LEFT,Vector3.UP]]:
++			var n: Vector3 = face[0]
++			var a: Vector3 = face[1]
++			var b: Vector3 = face[2]
++			var point: Callable = func(u: float,v: float) -> Vector3:
++				var p: Vector3 = n*half+a*_bevel_coordinate(u,half.dot(a.abs()),radius,steps)+b*_bevel_coordinate(v,half.dot(b.abs()),radius,steps)
++				var q: Vector3 = p.clamp(-inner,inner)
++				return q+(p-q).normalized()*radius
++			var arrays: Array = _arrays(columns,columns,point,func(_u: float,_v: float) -> Vector3: return n)
++			var offset: int = vertices.size()
++			vertices.append_array(arrays[Mesh.ARRAY_VERTEX])
++			normals.append_array(arrays[Mesh.ARRAY_NORMAL])
++			uv.append_array(arrays[Mesh.ARRAY_TEX_UV])
++			for index: int in arrays[Mesh.ARRAY_INDEX]: indices.append(index+offset)
++		var joined: Array = []
++		joined.resize(Mesh.ARRAY_MAX)
++		joined[Mesh.ARRAY_VERTEX] = vertices
++		joined[Mesh.ARRAY_NORMAL] = normals
++		joined[Mesh.ARRAY_TEX_UV] = uv
++		joined[Mesh.ARRAY_INDEX] = indices
++		mesh = ArrayMesh.new()
++		mesh.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES,joined)
++		meshes[key] = mesh
++	var node: MeshInstance3D = instance(parent,mesh,material,label)
++	node.position = center
++	return node
++
++static func _bevel_coordinate(u: float, half: float, radius: float, steps: int) -> float:
++	var index: float = clampf(u,0.0,1.0)*(2*steps+1)
++	if index <= steps: return -half+radius-radius*cos(index/steps*PI*0.5)
++	if index >= steps+1: return half-radius+radius*sin((index-steps-1)/steps*PI*0.5)
++	return lerpf(-half+radius,half-radius,index-steps)
++
++static func tube(parent: Node3D, label: String, curve: Callable, radius: float, steps: int, material: Material, simple: bool) -> MeshInstance3D:
++	var point: Callable = func(u: float,v: float) -> Vector3:
++		var center: Vector3 = curve.call(u)
++		var tangent: Vector3 = (curve.call(u+0.0001)-curve.call(u-0.0001)).normalized()
++		var reference: Vector3 = Vector3.UP if absf(tangent.y) < 0.9 else Vector3.RIGHT
++		var a: Vector3 = tangent.cross(reference).normalized()
++		var b: Vector3 = tangent.cross(a).normalized()
++		return center+(a*cos(v*TAU)+b*sin(v*TAU))*radius
++	var hint: Callable = func(u: float,v: float) -> Vector3: return point.call(u,v)-curve.call(u)
++	return surface(parent,label,steps,6 if simple else 8,point,hint,material,simple)
++
++static func ring(parent: Node3D, label: String, center: Vector3, radius: float, thickness: float, material: Material, simple: bool) -> MeshInstance3D:
++	return tube(parent,label,func(u: float) -> Vector3: return center+Vector3(sin(u*TAU),cos(u*TAU),0)*radius,thickness,40 if simple else 56,material,simple)
++
++static func profile(points: Array[Vector2], t: float, closed: bool = false) -> Vector2:
++	var count: int = points.size()
++	var scaled: float = t*(count if closed else count-1)
++	var index: int = floori(scaled)
++	var f: float = scaled-index
++	var p: Array[Vector2] = []
++	for offset: int in [-1,0,1,2]:
++		p.append(points[posmod(index+offset,count) if closed else clampi(index+offset,0,count-1)])
++	return 0.5*((2.0*p[1])+(-p[0]+p[2])*f+(2.0*p[0]-5.0*p[1]+4.0*p[2]-p[3])*f*f+(-p[0]+3.0*p[1]-3.0*p[2]+p[3])*f*f*f)
++
++static func monotone_profile(points: Array[Vector2],t: float) -> Vector2:
++	# Shape-preserving Hermite interpolation prevents a rolled lip crossing its deck.
++	var last: int = points.size()-1
++	var scaled: float = t*last
++	if scaled < 0.0: return points[0]+(points[1]-points[0])*scaled
++	if scaled > last: return points[last]+(points[last]-points[last-1])*(scaled-last)
++	var index: int = mini(floori(scaled),last-1)
++	var f: float = scaled-index
++	var a: Vector2 = points[index]
++	var b: Vector2 = points[index+1]
++	var delta: Vector2 = b-a
++	var previous: Vector2 = a-points[maxi(0,index-1)] if index > 0 else delta
++	var following: Vector2 = points[mini(last,index+2)]-b if index+1 < last else delta
++	var da := Vector2(_slope(previous.x,delta.x),_slope(previous.y,delta.y))
++	var db := Vector2(_slope(delta.x,following.x),_slope(delta.y,following.y))
++	return (2*f*f*f-3*f*f+1)*a+(f*f*f-2*f*f+f)*da+(-2*f*f*f+3*f*f)*b+(f*f*f-f*f)*db
++
++static func _slope(a: float,b: float) -> float:
++	return 2.0*a*b/(a+b) if a*b > 0.0 else 0.0
+--- a/game/vehicle/car_visual.gd
++++ b/game/vehicle/car_visual.gd
+@@ -64,7 +64,7 @@
+ 	headlights.name = "NightHeadlights"
+ 	body.add_child(headlights)
+ 	# One bounded light for both lamps; no shadow maps, volumetrics or frame work.
+-	var mount: Vector3 = {"compact":Vector3(0.60,0.80,-2.14),"pickup":Vector3(0.66,1.12,-2.71),"classic":Vector3(0.68,0.75,-1.94),"formula":Vector3(0.32,0.31,-2.20),"electric":Vector3(0.51,0.84,-2.29),"kart":Vector3(0.33,0.25,-1.38),"forklift":Vector3(0.70,2.47,-0.89),"hovercraft":Vector3(0.64,0.76,-1.72)}.get(vehicle_id,Vector3(0.60,0.80,-2.14))
++	var mount: Vector3 = {"compact":Vector3(0.60,0.80,-2.14),"pickup":Vector3(0.66,1.12,-2.71),"classic":Vector3(0.68,0.75,-1.94),"formula":Vector3(0.32,0.31,-2.20),"electric":Vector3(0.51,0.84,-2.29),"kart":Vector3(0.33,0.25,-1.38),"forklift":Vector3(0.70,2.47,-0.89),"hovercraft":Vector3(0.59,0.80,-1.933)}.get(vehicle_id,Vector3(0.60,0.80,-2.14))
+ 	var beam := SpotLight3D.new()
+ 	beam.name = "SharedHeadlightBeam"
+ 	# Keep the entire hood behind the cone. A higher, wider short-range beam
+@@ -86,6 +86,9 @@
+ 	lens.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
+ 	lens.albedo_color = Color("fff0d2")
+ 	for side: float in [-1.0,1.0]:
++		if vehicle_id == "hovercraft":
++			if side < 0.0: preload("res://vehicle/hovercraft_model.gd").night_lens(headlights,lens)
++			continue
+ 		if vehicle_id == "electric":
+ 			if side < 0.0:
+ 				lens.albedo_color = Color("e8f7ff")
+--- a/game/vehicle/livery_catalog.gd
++++ b/game/vehicle/livery_catalog.gd
+@@ -33,7 +33,7 @@
+ 
+ static func projection(id: String) -> Dictionary:
+ 	return {
+-		"hovercraft": {"bounds":Vector3(2.32,2.0,4.26), "hood":Vector4(-0.60,-1.65,1.20,0.42), "roof":Vector4(-0.49,-0.58,0.98,0.68), "levels":Vector2(0.79,1.42)},
++		"hovercraft": {"bounds":Vector3(2.32,2.12,4.26), "hood":Vector4(-0.59,-1.94,1.18,0.62), "roof":Vector4(-0.43,-0.65,0.86,0.76), "levels":Vector2(0.88,1.43)},
+ 		"electric": {"bounds":Vector3(1.92,1.52,4.60), "hood":Vector4(-0.69,-2.04,1.38,1.03), "roof":Vector4(-0.61,-0.34,1.22,1.00), "levels":Vector2(0.94,1.48)},
+ 		"compact": {"bounds":Vector3(1.76,1.52,4.18), "hood":Vector4(-0.69,-1.96,1.38,0.88), "roof":Vector4(-0.56,-0.32,1.12,1.38), "levels":Vector2(0.90,1.43)},
+ 		"pickup": {"bounds":Vector3(2.04,1.95,5.40), "hood":Vector4(-0.85,-2.48,1.70,1.27), "roof":Vector4(-0.68,-0.65,1.36,0.83), "levels":Vector2(1.24,1.88)},
+--- /dev/null
++++ b/game/tests/bake_hovercraft_surfaces.gd
+@@ -0,0 +1,38 @@
++extends SceneTree
++## Bake exactly the original runtime surfaces, and verify every stored array.
++const Surface = preload("res://vehicle/hovercraft_surface.gd")
++func _initialize() -> void: run.call_deferred()
++func run() -> void:
++	preload("res://ui/garage_car_cache.gd").enabled = false
++	Surface.use_baked = false
++	Surface.meshes.clear()
++	for simple: bool in [false,true]:
++		var car := CarVisual.new()
++		car.vehicle_id = "hovercraft"
++		car.simple_model = simple
++		car.cache_rest_pose = false
++		root.add_child(car)
++		while not car.model_ready: await process_frame
++		car.free()
++	DirAccess.make_dir_recursive_absolute(Surface.ASSET_ROOT)
++	var expected: Dictionary = Surface.meshes.duplicate()
++	var rows: Array = []
++	for key: String in expected:
++		var mesh: ArrayMesh = expected[key]
++		mesh.set_meta("hovercraft_sources",Surface.signature())
++		var path: String = Surface.ASSET_ROOT.path_join(key+".res")
++		assert(ResourceSaver.save(mesh,path,ResourceSaver.FLAG_COMPRESS) == OK)
++		rows.append({"path":path,"sha256":FileAccess.get_sha256(path)})
++	Surface.meshes.clear()
++	Surface.use_baked = true
++	for key: String in expected:
++		var saved: ArrayMesh = Surface._cached(key)
++		assert(saved != null and saved.get_meta("hovercraft_sources") == Surface.signature())
++		assert(saved.get_surface_count() == 1 and saved.surface_get_material(0) == null)
++		assert(saved.surface_get_arrays(0) == expected[key].surface_get_arrays(0))
++	var output: String = "res://../docs/evidence/hovercraft-model-rebuild-2026-10-28/surfaces.json"
++	var file := FileAccess.open(output,FileAccess.WRITE)
++	file.store_string(JSON.stringify({"arrays_exact":rows.size(),"sources":Surface.signature(),"resources":rows},"\t"))
++	file.close()
++	print("HOVERCRAFT_SURFACES: ",rows.size()," saved resources with exact arrays and private material slots")
++	quit()
+--- /dev/null
++++ b/game/tests/review_hovercraft_model.gd
+@@ -0,0 +1,127 @@
++extends SceneTree
++## Matched native views and production geometry/material/identity checks.
++var checks: int = 0
++var failures: int = 0
++var output: String = "res://../docs/evidence/hovercraft-model-rebuild-2026-10-28/"
++func _initialize() -> void: run.call_deferred()
++func check(ok: bool, label: String) -> void:
++	checks += 1
++	if not ok: failures += 1; print("FAIL: ",label)
++func inspect(car: CarVisual) -> Dictionary:
++	var result: Dictionary = {"triangles":0,"meshes":0,"finite":true,"unit_normals":true,"degenerate":0,"bounds":AABB(),"has_bounds":false}
++	for node: MeshInstance3D in car.find_children("*","MeshInstance3D",true,false):
++		if node.cast_shadow == GeometryInstance3D.SHADOW_CASTING_SETTING_SHADOWS_ONLY: continue
++		result.meshes += 1
++		var box: AABB = car.global_transform.affine_inverse()*node.global_transform*node.mesh.get_aabb()
++		result.bounds = result.bounds.merge(box) if result.has_bounds else box
++		result.has_bounds = true
++		for surface: int in range(node.mesh.get_surface_count()):
++			var arrays: Array = node.mesh.surface_get_arrays(surface)
++			var vertices: PackedVector3Array = arrays[Mesh.ARRAY_VERTEX]
++			var normals: PackedVector3Array = arrays[Mesh.ARRAY_NORMAL]
++			var indices: PackedInt32Array = arrays[Mesh.ARRAY_INDEX] if arrays[Mesh.ARRAY_INDEX] != null else PackedInt32Array()
++			result.triangles += (indices.size() if not indices.is_empty() else vertices.size())/3
++			for p: Vector3 in vertices: result.finite = result.finite and p.is_finite()
++			for n: Vector3 in normals: result.unit_normals = result.unit_normals and n.is_finite() and absf(n.length()-1.0) < 0.01
++			if not indices.is_empty():
++				for index: int in range(0,indices.size(),3):
++					if (vertices[indices[index+1]]-vertices[indices[index]]).cross(vertices[indices[index+2]]-vertices[indices[index]]).length_squared() < 1e-16: result.degenerate += 1
++	return result
++func settle() -> void:
++	for frame: int in range(5): await process_frame
++	if DisplayServer.get_name() != "headless": await RenderingServer.frame_post_draw
++func run() -> void:
++	var baseline: bool = "--baseline" in OS.get_cmdline_user_args()
++	output = output.path_join(("before-" if baseline else "after-")+RenderingServer.get_current_rendering_method())
++	DirAccess.make_dir_recursive_absolute(ProjectSettings.globalize_path(output))
++	preload("res://ui/garage_car_cache.gd").enabled = false
++	root.size = Vector2i(1280,720)
++	var rows: Array = []
++	var world := Node3D.new()
++	root.add_child(world)
++	var car := CarVisual.new()
++	car.vehicle_id = "hovercraft"
++	car.cache_rest_pose = false
++	world.add_child(car)
++	while not car.model_ready: await process_frame
++	var detailed: Dictionary = inspect(car)
++	check(car.body.get_meta("hovercraft_revision",0) >= 2,"rebuilt production hull replaces the starter assembly")
++	check(detailed.triangles > 20000 and detailed.triangles <= 80000,"authored detail fits the 80000-triangle desktop/showroom budget")
++	check(detailed.finite and detailed.unit_normals and detailed.degenerate == 0,"valid smooth geometry without invalid or degenerate triangles")
++	check(car.paint_materials.body.roughness < 0.6 and car.paint_materials.body.clearcoat_enabled,"controlled automotive hull finish")
++	check(car.body.get_node_or_null("FanRotor") != null and car.body.get_node_or_null("RudderLeft") != null,"fan and steering vanes remain articulated")
++	check(car.rolling_wheels.is_empty(),"no cosmetic road wheels introduced")
++	var old_colour: Color = car.paint_materials.body.albedo_color
++	var other := CarVisual.new()
++	other.vehicle_id = "hovercraft"
++	other.simple_model = true
++	other.cache_rest_pose = false
++	world.add_child(other)
++	while not other.model_ready: await process_frame
++	var reduced: Dictionary = inspect(other)
++	check(reduced.triangles < detailed.triangles*0.7 and reduced.triangles <= 30000,"racing LOD retains silhouette at a lower geometry cost")
++	check(reduced.finite and reduced.unit_normals and reduced.degenerate == 0,"racing LOD has finite, normalized, nondegenerate surfaces")
++	var paint: Dictionary = VehicleLivery.defaults("hovercraft")
++	paint.colors.body = "844b42"
++	other.apply_livery(paint)
++	check(car.paint_materials.body.albedo_color == old_colour,"livery materials remain instance-local")
++	other.free()
++	var raw := CarVisual.new()
++	raw.vehicle_id = "hovercraft"
++	raw.batch_parts = false
++	raw.cache_rest_pose = false
++	world.add_child(raw)
++	while not raw.model_ready: await process_frame
++	check(raw.body.find_children("SkirtFinger*","MeshInstance3D",false,false).size() == 52,"individually shaped fabric fingers survive construction")
++	check(raw.body.find_children("GuardRing*","MeshInstance3D",false,false).size() == 6,"both fan faces have complete protective cages")
++	var maximum_blade_radius: float = 0.0
++	for blade: MeshInstance3D in raw.body.get_node("FanRotor").find_children("Airfoil*","MeshInstance3D",false,false):
++		for p: Vector3 in blade.mesh.surface_get_arrays(0)[Mesh.ARRAY_VERTEX]: maximum_blade_radius = maxf(maximum_blade_radius,Vector2(p.x,p.y).length())
++	check(maximum_blade_radius < 0.54,"swept propeller has at least 13mm clearance inside the 553mm duct")
++	var Model = preload("res://vehicle/hovercraft_model.gd")
++	var maximum_deck_gap: float = 0.0
++	for index: int in range(256):
++		var p: Vector3 = Model._outline(index*TAU/256.0,0.92,0.82)
++		maximum_deck_gap = maxf(maximum_deck_gap,absf(p.y-Model._deck_y(p.x,p.z)))
++	check(maximum_deck_gap < 0.00001,"crowned deck closes against the hull around the entire perimeter")
++	var maximum_cabin_gap: float = 0.0
++	for index: int in range(65):
++		var v: float = index/64.0
++		maximum_cabin_gap = maxf(maximum_cabin_gap,Model._windshield(1.0,v).distance_to(Model._side(1.0,0.0,v)))
++	check(maximum_cabin_gap < 0.000001,"front and side glazing frames share one continuous shell")
++	var maximum_lip_height: float = 0.0
++	for p: Vector3 in raw.body.get_node("FormedCompositeHull").mesh.surface_get_arrays(0)[Mesh.ARRAY_VERTEX]: maximum_lip_height = maxf(maximum_lip_height,p.y)
++	check(maximum_lip_height <= 0.820001,"rolled hull cannot overshoot and flicker through the deck")
++	var roof_join_up: bool = true
++	for label: String in ["CurvedWindshieldFrame","ArchedCanopy","CabinRear"]:
++		var arrays: Array = raw.body.get_node(label).mesh.surface_get_arrays(0)
++		for index: int in range(arrays[Mesh.ARRAY_VERTEX].size()):
++			if absf(arrays[Mesh.ARRAY_VERTEX][index].y-1.36) < 0.000001: roof_join_up = roof_join_up and arrays[Mesh.ARRAY_NORMAL][index].dot(Vector3.UP) > 0.99
++	check(roof_join_up,"actual shell and canopy normals meet smoothly at the roof")
++	var frame := VehicleState.new()
++	frame.tick = 123
++	frame.steering = 0.6
++	raw.present(Vector2.ZERO,0,frame,DriveFrame.sample(0.6,1,0))
++	check(not is_zero_approx(raw.body.get_node("FanRotor").rotation.z) and raw.body.get_node("RudderLeft").rotation.y < 0.0,"fan and steering foils animate after batching")
++	raw.set_night_headlights(true)
++	check(raw.headlights != null and raw.road_headlight != null and not raw.road_headlight.shadow_enabled,"fitted night lenses retain one bounded road light")
++	raw.free()
++	ShowroomStudio.build(world,car)
++	var camera := Camera3D.new()
++	camera.fov = 35.0
++	world.add_child(camera)
++	camera.current = true
++	if DisplayServer.get_name() != "headless":
++		for view: Array in [["front",Vector3(-4.5,3.1,-5.8),Vector3(0,1,0)],["rear",Vector3(4.4,3.0,5.6),Vector3(0,1,0)],["side",Vector3(-6.1,2.4,0),Vector3(0,1,0)],["overhead",Vector3(-3,6,-4.2),Vector3(0,0.8,0)],["bow-detail",Vector3(-1.8,1.5,-3.0),Vector3(0,0.9,-1.15)],["fan-detail",Vector3(1.9,2.2,3.4),Vector3(0,1.3,1.2)],["skirt-detail",Vector3(-2.2,0.8,-2.7),Vector3(-0.5,0.45,-1.1)]]:
++			camera.position = view[1]
++			camera.look_at(view[2])
++			await settle()
++			check(root.get_texture().get_image().save_png(output.path_join(view[0]+".png")) == OK,"saved "+view[0])
++	rows.append({"detailed":detailed,"simple":reduced})
++	var file := FileAccess.open(output.path_join("metrics.json"),FileAccess.WRITE)
++	file.store_string(JSON.stringify({"checks":checks,"failures":failures,"models":rows},"\t"))
++	file.close()
++	world.free()
++	await process_frame
++	print("HOVERCRAFT_MODEL_REVIEW: %d checks, %d failures; full=%d simple=%d" % [checks,failures,detailed.triangles,reduced.triangles])
++	quit(1 if failures else 0)
+--- /dev/null
++++ b/game/tests/review_hovercraft_app.gd
+@@ -0,0 +1,13 @@
++extends "res://tests/test_hovercraft.gd"
++## Reuse the original actual-App selection/race assertions without dated physics goldens.
++func _run() -> void:
++	OS.set_environment("BMT_API_URL","")
++	graphical = DisplayServer.get_name() != "headless"
++	output = "res://../docs/evidence/hovercraft-model-rebuild-2026-10-28/app-"+RenderingServer.get_current_rendering_method()
++	DirAccess.make_dir_recursive_absolute(ProjectSettings.globalize_path(output))
++	await _app(VehicleCatalog.config("hovercraft"))
++	var file := FileAccess.open(output.path_join("native.json"),FileAccess.WRITE)
++	file.store_string(JSON.stringify({"checks":checks,"failures":failures,"renderer":RenderingServer.get_current_rendering_method(),"garage_template_hits":preload("res://ui/garage_car_cache.gd").hits},"\t"))
++	file.close()
++	print("HOVERCRAFT_MODEL_APP: %d checks, %d failures"%[checks,failures])
++	quit(1 if failures else 0)
+--- /dev/null
++++ b/game/tests/review_hovercraft_prepared.gd
+@@ -0,0 +1,55 @@
++extends "res://tests/test_garage_prepared_cars.gd"
++## Preserve every original assertion; compare implicit uniforms to renderer defaults.
++## The original raw fixture compares null against serialized false/colour defaults.
++func run() -> void:
++	if not "--hovercraft-only" in OS.get_cmdline_user_args():
++		await super.run()
++		return
++	# Keep the same four per-car assertions, with the hovercraft bake and adoption
++	# in one native process. Unrelated Electric authors can change the broad guard.
++	Prepared.enabled = false
++	var reference: CarVisual = make("hovercraft",false)
++	while not reference.model_ready: await process_frame
++	assert(Prepared.bake(reference) == OK)
++	Prepared.enabled = true
++	Prepared.source_hashes.clear()
++	var original: Array = shape(reference)
++	var before: int = Prepared.hits
++	var restored: CarVisual = make("hovercraft",true)
++	check(Prepared.hits == before+1,"prepared native resource used hovercraft")
++	check(original == shape(restored),"all geometry, articulation and effective finish values match hovercraft")
++	var paint: Dictionary = VehicleLivery.defaults("hovercraft")
++	paint.colors.body = "c72d34"
++	restored.apply_livery(paint)
++	check(shape(reference) == original,"preview paint cannot mutate reference materials hovercraft")
++	var other: CarVisual = make("hovercraft",true)
++	check(shape(other) == original,"future instance retains native stock finish hovercraft")
++	reference.free(); restored.free(); other.free()
++	await process_frame
++	print("HOVERCRAFT_PREPARED_REVIEW ",checks," checks, ",failures," failures")
++	var suffix: String = "-wrong" if "--wrong-hover-glass" in OS.get_cmdline_user_args() else ""
++	var file := FileAccess.open("res://../docs/evidence/hovercraft-model-rebuild-2026-10-28/prepared"+suffix+".json",FileAccess.WRITE)
++	file.store_string(JSON.stringify({"checks":checks,"failures":failures,"renderer":RenderingServer.get_current_rendering_method()},"\t"))
++	file.close()
++	quit(1 if failures else 0)
++
++func finish(material: Material) -> Array:
++	if material is ShaderMaterial:
++		var effective: ShaderMaterial = material.duplicate()
++		for uniform: Dictionary in material.shader.get_shader_uniform_list():
++			if effective.get_shader_parameter(uniform.name) == null:
++				effective.set_shader_parameter(uniform.name,RenderingServer.shader_get_parameter_default(material.shader.get_rid(),uniform.name))
++		return super.finish(effective)
++	return super.finish(material)
++
++func make(id: String,prepared: bool) -> CarVisual:
++	var car: CarVisual = super.make(id,prepared)
++	if prepared and id == "hovercraft" and "--wrong-hover-glass" in OS.get_cmdline_user_args():
++		for node: MeshInstance3D in car.find_children("*","MeshInstance3D",true,false):
++			for surface: int in range(node.mesh.get_surface_count()):
++				var material: Material = node.get_active_material(surface)
++				if material is ShaderMaterial and material.shader.resource_path == "res://vehicle/electric_glass.gdshader":
++					var wrong: ShaderMaterial = material.duplicate()
++					wrong.set_shader_parameter("glass_tint_srgb",Vector3(0.8,0.0,0.0))
++					node.material_override = wrong
++	return car
+--- /dev/null
++++ b/game/tests/inspect_hovercraft_template_context.gd
+@@ -0,0 +1,35 @@
++extends SceneTree
++## Read-only provenance of template regeneration in a shared workspace.
++func _initialize() -> void: run.call_deferred()
++func geometry(holder: Node3D) -> String:
++	var rows: Array = []
++	for node: Node3D in holder.find_children("*","Node3D",true,false):
++		rows.append([holder.get_path_to(node),node.transform])
++		if node is MeshInstance3D:
++			rows.append([node.layers,node.cast_shadow])
++			for surface: int in range(node.mesh.get_surface_count()): rows.append(node.mesh.surface_get_arrays(surface))
++	return var_to_bytes(rows).hex_encode().sha256_text()
++func run() -> void:
++	var output: String = "res://../docs/evidence/hovercraft-model-rebuild-2026-10-28/template-context.json"
++	for argument: String in OS.get_cmdline_user_args():
++		if argument.begins_with("--output="): output = argument.trim_prefix("--output=")
++	var current_sources: Dictionary = preload("res://ui/garage_car_cache.gd").geometry_sources()
++	var rows: Array = []
++	for id: String in VehicleCatalog.IDS:
++		var path: String = "res://assets/garage/cars_v1/"+id+".scn"
++		var before_path: String = "res://../docs/evidence/hovercraft-model-rebuild-2026-10-28/before/game/assets/garage/cars_v1/"+id+".scn"
++		var current: Node3D = (load(path) as PackedScene).instantiate()
++		var before: Node3D = (load(before_path) as PackedScene).instantiate()
++		var saved_sources: Dictionary = current.get_meta("garage_rest").sources
++		var mismatches: Array = []
++		for key: String in current_sources:
++			if saved_sources.get(key,"") != current_sources[key]: mismatches.append(key)
++		var row: Dictionary = {"vehicle":id,"before_geometry":geometry(before),"current_geometry":geometry(current),"source_guard_mismatches":mismatches,"saved_sources":saved_sources}
++		row.geometry_unchanged = row.before_geometry == row.current_geometry
++		rows.append(row)
++		print("HOVERCRAFT_TEMPLATE_CONTEXT ",id," geometry_unchanged=",row.geometry_unchanged," source_mismatches=",mismatches)
++		current.free(); before.free()
++	var file := FileAccess.open(output,FileAccess.WRITE)
++	file.store_string(JSON.stringify({"current_sources":current_sources,"cars":rows},"\t"))
++	file.close()
++	quit()
+--- a/game/tests/capture_hovercraft_ufo_drive.gd
++++ b/game/tests/capture_hovercraft_ufo_drive.gd
+@@ -10,6 +10,8 @@
+ func run() -> void:
+ 	if DisplayServer.get_name() == "headless": quit(2); return
+ 	OS.set_environment("BMT_API_URL","")
++	for argument: String in OS.get_cmdline_user_args():
++		if argument.begins_with("--evidence-root="): output = argument.trim_prefix("--evidence-root=")
+ 	output = output.path_join(RenderingServer.get_current_rendering_method())
+ 	DirAccess.make_dir_recursive_absolute(ProjectSettings.globalize_path(output))
+ 	root.size = Vector2i(1280,720)

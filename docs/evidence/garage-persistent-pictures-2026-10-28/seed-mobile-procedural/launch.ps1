@@ -1,0 +1,2 @@
+$ErrorActionPreference = 'Stop'
+& 'C:\Codes\Godot\Beat my track\scripts\dev.ps1' -Action 'TestScript' -ScriptPath 'res://tests/test_garage_persistent_pictures.gd' -TestArgument @('--output=C:\Codes\Godot\Beat my track\docs\evidence\garage-persistent-pictures-2026-10-28\seed-mobile-procedural','--phase=seed','--procedural','--cache=C:/Codes/Godot/Beat my track/build/persistent-pictures-mobile-procedural') -Graphical -RenderingMethod 'mobile'

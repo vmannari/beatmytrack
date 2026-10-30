@@ -116,9 +116,12 @@ func _run() -> void:
 		check(after.meshes <= before.meshes,id+" detailed batching adds no submissions")
 		if id == "compact": check(after.meshes < before.meshes,"compact detailed batching reduces submissions")
 		check(reduced.triangles < after.triangles*0.8,id+" simpler model reduces triangles")
-		check(reduced.casters == 5,id+" body and four rolling shadow casters")
+		check(reduced.casters == (1 if id == "hovercraft" else 5),id+" shadow casters match the vehicle frames")
 		check(reduced.shadow_triangles < after.shadow_triangles*0.5,id+" shadow geometry reduced")
-		check(simple.rolling_wheels.size() == 4 and simple.front_wheels.size() == 2,id+" independent wheel frames")
+		if id == "hovercraft":
+			check(simple.rolling_wheels.is_empty() and simple.body.get_node_or_null("FanRotor") != null,id+" independent fan with no wheel frames")
+		else:
+			check(simple.rolling_wheels.size() == 4 and simple.front_wheels.size() == 2,id+" independent wheel frames")
 		var livery: Dictionary = VehicleLivery.defaults(id)
 		livery.colors.body = "804439"
 		simple.apply_livery(livery)

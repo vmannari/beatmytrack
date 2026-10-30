@@ -1,6 +1,7 @@
 extends Node
 ## One account-bound, optional studio. Asset reads precede idle-only native work.
 const Studio=preload("res://ui/garage_preloaded_studio.gd")
+const Pictures=preload("res://ui/garage_preview_cache.gd")
 const MAX_PENDING: int=4
 var app: Node
 var studio: CarShowroom
@@ -17,6 +18,10 @@ var _failed: Dictionary={}
 var _next_audit: int=0
 var _tree_ref: WeakRef
 var _menu_drawn: bool=false
+var picture_service: Node
+var picture_records: LocalRecords
+var _pictures_dirty: bool=true
+var _picture_waiters: int=0
 
 func _ready() -> void:
 	_tree_ref=weakref(get_tree())
@@ -34,14 +39,72 @@ func _spec() -> Dictionary:
 
 func invalidate() -> void:
 	_next_audit=0
+	_pictures_dirty=true
 	if not evicted: set_process(true)
+
+func _sync_pictures() -> void:
+	if not is_instance_valid(picture_service) or picture_records!=app.records:
+		if picture_records!=null and picture_records.appearance_committed.is_connected(invalidate): picture_records.appearance_committed.disconnect(invalidate)
+		if is_instance_valid(picture_service):
+			picture_service.ready_pictures.clear()
+			remove_child(picture_service)
+			picture_service.queue_free()
+		picture_records=app.records
+		picture_records.appearance_committed.connect(invalidate)
+		_pictures_dirty=true
+		picture_service=Pictures.new()
+		picture_service.can_render=_pictures_allowed
+		add_child(picture_service)
+	if _pictures_dirty:
+		picture_service.warm_records(picture_records)
+		_pictures_dirty=false
+
+func _pictures_allowed() -> bool:
+	if not is_instance_valid(app) or not app._publishing_slots_foreground or not app._background_work_allowed() or app.editor_memory.pressure_requested: return false
+	if app.menu_page_motion!=null and app.menu_page_motion.is_running(): return false
+	if not is_instance_valid(app._retained_garage) or not app._retained_garage.is_visible_in_tree(): return true
+	var page: GaragePage=app._retained_garage
+	return page.section!="cars" and is_instance_valid(page._preview_service) and page._preview_service.renderer==null and (page._menu_motion==null or not page._menu_motion.is_running())
+
+func pictures_ready() -> bool:
+	_pictures_dirty=true
+	_sync_pictures()
+	return is_instance_valid(picture_service) and picture_records==app.records and picture_service.pictures_ready()
+
+func picture_pool() -> Dictionary:
+	return picture_service.ready_pictures if is_instance_valid(picture_service) and picture_records==app.records else {}
+
+func prepare_pictures(still_current: Callable=Callable()) -> bool:
+	_pictures_dirty=true
+	_sync_pictures()
+	if DisplayServer.get_name()=="headless": return picture_service.pictures_ready()
+	var current_service: Node=picture_service
+	var current_records: LocalRecords=picture_records
+	_picture_waiters+=1
+	current_service.idle_ms=0
+	var deadline: int=Time.get_ticks_msec()+45000
+	while is_inside_tree() and is_instance_valid(current_service) and not current_service.pictures_ready():
+		if app.records!=current_records or (still_current.is_valid() and not still_current.call()): break
+		# Startup remains bounded. An explicit, cancellable navigation keeps its
+		# request until the exact picture is ready rather than losing the click.
+		if not still_current.is_valid() and Time.get_ticks_msec()>deadline: break
+		await get_tree().process_frame
+	_picture_waiters-=1
+	if is_instance_valid(picture_service) and _picture_waiters==0: picture_service.idle_ms=750
+	return is_instance_valid(current_service) and app.records==current_records and current_service.pictures_ready()
 
 func _process(_delta: float) -> void:
 	_poll_loads()
 	if evicted:
 		set_process(not _pending.is_empty())
 		return
+	if _pictures_dirty or picture_records!=app.records: _sync_pictures()
+	if is_instance_valid(picture_service):
+		var allowed: bool=app._background_work_allowed() and app._publishing_slots_foreground and not app.editor_memory.pressure_requested
+		if not allowed: picture_service.suspend_previews()
+		picture_service.set_process(allowed)
 	if not is_instance_valid(app) or not app.startup_complete: return
+	if DisplayServer.get_name()!="headless" and is_instance_valid(picture_service) and not picture_service.pictures_ready(): return
 	if is_instance_valid(app.game) or is_instance_valid(app.race_loading) or app.cloud_starting or is_instance_valid(app._retained_garage):
 		_reset()
 		# Consume outstanding threaded reads before sleeping. Menu/lifecycle
@@ -118,6 +181,12 @@ func take() -> CarShowroom:
 
 func evict() -> void:
 	evicted=true
+	if is_instance_valid(picture_service):
+		picture_service.ready_pictures.clear()
+		remove_child(picture_service)
+		picture_service.queue_free()
+		picture_service=null
+	_pictures_dirty=true
 	_reset()
 	set_process(not _pending.is_empty())
 
@@ -134,10 +203,18 @@ func _reset(retain_assets_for_entry: bool=false) -> void:
 	_failed.clear()
 
 func has_work() -> bool:
-	return studio!=null or not _resources.is_empty() or not _pending.is_empty()
+	return studio!=null or not _resources.is_empty() or not _pending.is_empty() or is_instance_valid(picture_service)
 
-func residency() -> Dictionary:
+func residency(seen: Dictionary={}) -> Dictionary:
 	var result: Dictionary={"preload_asset_bytes":32*1024*1024 if not _resources.is_empty() or not _pending.is_empty() else 0,"preload_scene_bytes":0,"preload_viewport_gpu_bytes":0}
+	if is_instance_valid(picture_service):
+		result.preload_picture_gpu_bytes=picture_service.picture_bytes(seen)
+		result.preload_picture_io_cpu_bytes=16*1024*1024 if picture_service.worker!=null or not picture_service.pending_writes.is_empty() else 0
+		if picture_service.renderer!=null:
+			result.preload_picture_scene_bytes=preload("res://track/prepared_world_cache.gd")._resource_bytes(picture_service.renderer,{})
+			var pixels: int=0
+			for viewport: SubViewport in picture_service.renderer.find_children("*","SubViewport",true,false): pixels+=viewport.size.x*viewport.size.y*16
+			result.preload_picture_viewport_gpu_bytes=pixels
 	if is_instance_valid(studio):
 		result.preload_asset_bytes=4*1024*1024
 		if studio.carousel_texture!=null: result.preload_asset_bytes+=2048*512*4

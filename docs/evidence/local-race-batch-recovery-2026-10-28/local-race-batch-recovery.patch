@@ -1,0 +1,2286 @@
+diff --git a/AGENTS.md b/AGENTS.md
+index c0558ab..49ecb29 100644
+--- a/AGENTS.md
++++ b/AGENTS.md
+@@ -1,3 +1,8 @@
++<!-- LOCAL-RACE-BATCH-RECOVERY-20261028 -->
++## Local artificial races recover old build batches (2026-10-28)
++LBR01-LBR04/R01/Q01: Reported BATCH_BUILD_CHANGED correctly fences a persisted Compact batch at physics0.53/rules20/old compiler against current0.75/rules23. Atomic prepare-local continues current published revisions with the same100 profiles, clear=false, retained old jobs/results and stale-lease fencing; host redirects to the returned state folder while old journals stay exact. Matching plans are no-ops; concurrent/failed preparations produce one replacement or full rollback. Exact-image51pass covers PostgreSQL, nonempty real history, auth, host redirection and native new-revision upload/independent verification; one broader legacy native harness deselected, first middleware-assertion/path findings retained. APIbmt-stg-e7a444ab-api-00125-ses/immutable11f7d3a83340 deployed; one runtime module changes while345 package/all174 canonical files stay exact. Worker/Studio/seven jobs/resources/IAM/schema/contracts remain. Actual100x30 continuation preserves original2800 job statuses and old journals; one bounded local command exits0 with ['submitted'], server verified count1. No fake score or forced completion. 16 evidence checks, full Ruff and scoped checkpoint pass; owned probes/fixtures/tag/lock removed. Sources, receipts and limitations: docs/LOCAL_RACE_BATCH_RECOVERY_2026_10_28.md and docs/evidence/local-race-batch-recovery-2026-10-28/report.json. No device query/test, APK, owner-save/purchase/process restart, canonical change or main-index staging/commit/merge; concurrent work preserved.
++<!-- /LOCAL-RACE-BATCH-RECOVERY-20261028 -->
++
+ <!-- GARAGE-CAROUSEL-DELIVERY-20261028 -->
+ ## Explicit loading for every Garage carousel car (2026-10-28)
+ GCD01-GCD02/R01: Owner reports Compact and other blank cards. Shared native emblem/localized loading message replaces the empty wait; only exact publication dismisses it and appearance invalidation restores it. No capture/cache/scheduling change. Task-start natural queue delivers all seven (69/0), so no permanently stuck renderer is reproduced. Expanded actual-App checks55/0 headless and85/0 each desktop renderer include all seven saved appearances, scrolling, stale completion and exact PNG recovery; preferred thumbnail parse passes. One runtime/one regression; no extra worlds or processing. Initial sandbox certificate-store and isolated patch-line-ending findings remain. Commands, views, hashes and task-only checked patch: docs/GARAGE_CAROUSEL_DELIVERY_2026_10_28.md and docs/evidence/garage-carousel-delivery-2026-10-28/report.json. Cold image wait remains; reload and owner/device acceptance remain. Concurrent work/advanced build metadata preserved. No device attachment query/test, APK, owner-save/live mutation, deployment, owner-process restart or main-index staging/commit/merge.
+diff --git a/DEVELOPMENT_STATUS.md b/DEVELOPMENT_STATUS.md
+index 5dfd805..0fe2eb0 100644
+--- a/DEVELOPMENT_STATUS.md
++++ b/DEVELOPMENT_STATUS.md
+@@ -1,3 +1,8 @@
++<!-- LOCAL-RACE-BATCH-RECOVERY-20261028 -->
++## Local artificial races recover old build batches (2026-10-28)
++LBR01-LBR04/R01/Q01: Reported BATCH_BUILD_CHANGED correctly fences a persisted Compact batch at physics0.53/rules20/old compiler against current0.75/rules23. Atomic prepare-local continues current published revisions with the same100 profiles, clear=false, retained old jobs/results and stale-lease fencing; host redirects to the returned state folder while old journals stay exact. Matching plans are no-ops; concurrent/failed preparations produce one replacement or full rollback. Exact-image51pass covers PostgreSQL, nonempty real history, auth, host redirection and native new-revision upload/independent verification; one broader legacy native harness deselected, first middleware-assertion/path findings retained. APIbmt-stg-e7a444ab-api-00125-ses/immutable11f7d3a83340 deployed; one runtime module changes while345 package/all174 canonical files stay exact. Worker/Studio/seven jobs/resources/IAM/schema/contracts remain. Actual100x30 continuation preserves original2800 job statuses and old journals; one bounded local command exits0 with ['submitted'], server verified count1. No fake score or forced completion. 16 evidence checks, full Ruff and scoped checkpoint pass; owned probes/fixtures/tag/lock removed. Sources, receipts and limitations: docs/LOCAL_RACE_BATCH_RECOVERY_2026_10_28.md and docs/evidence/local-race-batch-recovery-2026-10-28/report.json. No device query/test, APK, owner-save/purchase/process restart, canonical change or main-index staging/commit/merge; concurrent work preserved.
++<!-- /LOCAL-RACE-BATCH-RECOVERY-20261028 -->
++
+ <!-- GARAGE-CAROUSEL-DELIVERY-20261028 -->
+ ## Explicit loading for every Garage carousel car (2026-10-28)
+ GCD01-GCD02/R01: Owner reports Compact and other blank cards. Shared native emblem/localized loading message replaces the empty wait; only exact publication dismisses it and appearance invalidation restores it. No capture/cache/scheduling change. Task-start natural queue delivers all seven (69/0), so no permanently stuck renderer is reproduced. Expanded actual-App checks55/0 headless and85/0 each desktop renderer include all seven saved appearances, scrolling, stale completion and exact PNG recovery; preferred thumbnail parse passes. One runtime/one regression; no extra worlds or processing. Initial sandbox certificate-store and isolated patch-line-ending findings remain. Commands, views, hashes and task-only checked patch: docs/GARAGE_CAROUSEL_DELIVERY_2026_10_28.md and docs/evidence/garage-carousel-delivery-2026-10-28/report.json. Cold image wait remains; reload and owner/device acceptance remain. Concurrent work/advanced build metadata preserved. No device attachment query/test, APK, owner-save/live mutation, deployment, owner-process restart or main-index staging/commit/merge.
+diff --git a/backend/bmt_backend/test_population_batch.py b/backend/bmt_backend/test_population_batch.py
+index 34a2659..464167e 100644
+--- a/backend/bmt_backend/test_population_batch.py
++++ b/backend/bmt_backend/test_population_batch.py
+@@ -9,7 +9,7 @@ from types import SimpleNamespace
+ 
+ from fastapi import APIRouter, HTTPException, Request
+ from pydantic import BaseModel, ConfigDict, Field
+-from sqlalchemy import delete, select, update
++from sqlalchemy import delete, insert, select, update
+ from sqlalchemy.orm import aliased
+ 
+ from .background_work import BackgroundControl, BackgroundYielded
+@@ -270,6 +270,83 @@ def get_batch(batch_id: str, session: DB, _operator: Operator):
+     return batch_view(session, batch_id)
+ 
+ 
++@router.post("/dev/test-drivers/batches/{batch_id}/prepare-local")
++def prepare_local(batch_id: str, request: Request, session: DB, _operator: Operator):
++    """Continue an obsolete synthetic plan without changing any race history."""
++    guard = session.scalar(select(OperationState).where(OperationState.id == ACTIVE).with_for_update())
++    if guard is None:
++        raise HTTPException(409, "ARTIFICIAL_BATCH_NOT_ACTIVE")
++    row = session.scalar(select(OperationState).where(OperationState.id == "test-pop-batch:"+batch_id).with_for_update())
++    if row is None:
++        raise HTTPException(404, "Test population batch not found")
++    # Lost replies and explicit retries of an older ID follow only its recorded
++    # continuation chain, never an unrelated active fleet.
++    for _ in range(16):
++        if row.details["batch_id"] == guard.details.get("batch_id"):
++            break
++        replacement = row.details.get("continued_as")
++        if not replacement:
++            raise HTTPException(409, "ARTIFICIAL_BATCH_NOT_ACTIVE")
++        row = session.scalar(select(OperationState).where(OperationState.id == "test-pop-batch:"+replacement).with_for_update())
++        if row is None:
++            raise HTTPException(409, "ARTIFICIAL_BATCH_NOT_ACTIVE")
++    else:
++        raise HTTPException(409, "ARTIFICIAL_BATCH_CONTINUATION_LIMIT")
++    data = row.details
++    active = request.app.state.verifier.manifest()
++    if build_contract(data["manifest"]) == build_contract(active):
++        return {"batch": batch_view(session, data["batch_id"]), "continued": data["batch_id"] != batch_id}
++    if guard.details.get("status") != "running":
++        raise HTTPException(409, "ARTIFICIAL_BATCH_NOT_ACTIVE")
++    inventory = preview(request.app, session, data["vehicle_id"])
++    if not inventory["tracks"]:
++        raise HTTPException(409, "No compatible published tracks")
++    player_ids = data["player_ids"]
++    profiles = session.execute(select(TestDriverProfile, Player).join(Player).where(
++        TestDriverProfile.player_id.in_(player_ids), Player.is_test_driver.is_(True),
++        Player.disabled.is_(False), Player.deleted_at.is_(None))).all()
++    by_player = {profile.player_id: profile for profile, _ in profiles}
++    if len(player_ids) != data["count"] or len(by_player) != data["count"] or len(set(player_ids)) != len(player_ids):
++        raise HTTPException(409, "ARTIFICIAL_PROFILE_UNAVAILABLE")
++    generation = data["request"].get("generation", 0)+1
++    if generation > 1000:
++        raise HTTPException(409, "ARTIFICIAL_BATCH_GENERATION_LIMIT")
++    identity = digest({"from": data["batch_id"], "build": build_contract(active),
++        "versions": [track["version_id"] for track in inventory["tracks"]]})
++    replacement = str(uuid.uuid5(uuid.NAMESPACE_URL, "bmt-test-batch-continuation/"+identity))
++    if session.get(OperationState, "test-pop-batch:"+replacement) is not None:
++        raise HTTPException(409, "ARTIFICIAL_BATCH_CONTINUATION_CONFLICT")
++    at = now()
++    details = {**data, "batch_id": replacement, "continued_from": data["batch_id"],
++        "request": {**data["request"], "generation": generation, "clear_test_records": False,
++            "inventory_digest": inventory["inventory_digest"]}, "status": "running",
++        "controller_version": CONTROLLER_VERSION, "manifest": active, "tracks": inventory["tracks"],
++        "jobs": data["count"]*len(inventory["tracks"]), "cleared_test_records": 0,
++        "protected_real_records": inventory["protected_real_records"],
++        "protected_real_digest": inventory["protected_real_digest"], "created_at": at}
++    for key in ("continued_as", "superseded_at", "completed_at"):
++        details.pop(key, None)
++    session.add(OperationState(id="test-pop-batch:"+replacement, updated_at=at, details=details))
++    pending = []
++    for ordinal, player_id in enumerate(player_ids):
++        profile = by_player[player_id]
++        for slot, track in enumerate(inventory["tracks"]):
++            job_id = digest({"batch": replacement, "player": player_id, "version": track["version_id"]})
++            job = {"id": job_id, "batch_id": replacement, "player_id": player_id, "subject": profile.subject,
++                "slot": slot, "ordinal": ordinal, "version_id": track["version_id"], "content_hash": track["content_hash"],
++                "attempt": 0, "status": "waiting", "due": at, "lease_until": 0}
++            pending.append({"id": "test-pop-job:"+job_id, "updated_at": at, "details": job})
++            if len(pending) == 256:
++                session.execute(insert(OperationState), pending);pending.clear()
++    if pending:
++        session.execute(insert(OperationState), pending)
++    row.details = {**data, "status": "superseded", "continued_as": replacement, "superseded_at": at}
++    row.updated_at = at
++    guard.details = {"batch_id": replacement, "status": "running"};guard.updated_at = at
++    session.commit()
++    return {"batch": batch_view(session, replacement), "continued": True}
++
++
+ @router.post("/dev/test-drivers/batches/{batch_id}/claim")
+ def claim_local(batch_id: str, payload: LocalClaim, request: Request, session: DB, _operator: Operator):
+     """Lease one artificial job; this endpoint never starts an engine."""
+diff --git a/backend/deploy/local_artificial.py b/backend/deploy/local_artificial.py
+index 708ea17..be5e96b 100644
+--- a/backend/deploy/local_artificial.py
++++ b/backend/deploy/local_artificial.py
+@@ -78,6 +78,23 @@ def run(args):
+             print('No active unfinished batch. Create an explicit development batch before running local races.')
+             return
+         batch = str(uuid.UUID(value['batch_id']))
++    if batch is not None:
++        response = requests.post(origin+'/v1/dev/test-drivers/batches/'+batch+'/prepare-local',
++            headers={'X-Dev-Auth-Key':key},verify=str(ca) if ca.exists() else True,
++            timeout=(5,60),allow_redirects=False)
++        if response.status_code != 200:
++            raise RuntimeError('Unable to prepare the test batch on the current build (HTTP '+str(response.status_code)+
++                '). Keep its local journal; no recording was started.')
++        value = response.json()
++        batch = str(uuid.UUID(value['batch']['batch_id']))
++        if value.get('continued'):
++            print('Continued the old test batch on current published tracks; existing drivers and results are retained.',flush=True)
++        if value['batch'].get('complete'):
++            print('This test batch is already complete.');return
++        if args.prepare_only:
++            print(json.dumps({'status':'prepared','continued':bool(value.get('continued')),
++                'drivers':value['batch']['driver_count'],'tracks':value['batch']['track_count'],
++                'expected_jobs':value['batch']['expected_jobs'],'generation_started':False}));return
+     local_root = ROOT/'.tools/artificial-races'
+     folder = local_root/('rivalries' if rivalry else 'batches')/(rivalry or batch)
+     folder.mkdir(parents=True,exist_ok=True)
+@@ -135,7 +152,10 @@ def main():
+     parser.add_argument('--max-jobs',type=int,default=1)
+     parser.add_argument('--cpus',type=float,default=1)
+     parser.add_argument('--inspect',action='store_true',help='Inspect non-secret bindings without starting generation')
++    parser.add_argument('--prepare-only',action='store_true',help='Prepare a compatible batch without starting a race')
+     args=parser.parse_args()
++    if args.prepare_only and (args.rivalry or args.list_rivalries):
++        parser.error('Batch preparation does not apply to rivalry commands')
+     if not 1<=args.max_jobs<=20 or not .5<=args.cpus<=8:
+         parser.error('Use 1–20 attempts per pass and 0.5–8 local CPUs')
+     run(args)
+diff --git a/backend/tests/test_local_batch_recovery.py b/backend/tests/test_local_batch_recovery.py
+new file mode 100644
+index 0000000..421556d
+--- /dev/null
++++ b/backend/tests/test_local_batch_recovery.py
+@@ -0,0 +1,259 @@
++"""Stale batch continuation retains canonical fences and all prior history."""
++import copy
++import dataclasses
++import importlib.util
++import json
++import threading
++import uuid
++from concurrent.futures import ThreadPoolExecutor
++from pathlib import Path
++from types import SimpleNamespace
++
++import pytest
++from sqlalchemy import event, select
++from sqlalchemy.orm import Session
++from test_auth_postgres import postgres_auth as postgres_fixture
++from test_backend_resource_optimisation import HEADERS, KEY, claim
++from test_backend_resource_optimisation import batch as batch_fixture
++from test_domains import FakeVerifier
++from test_resource_native import native as native_fixture
++from test_rivalry import seed
++from test_test_drivers import auth
++from test_test_drivers import drivers as drivers_fixture
++
++from bmt_backend.identity_models import Identity, Player
++from bmt_backend.test_driver_models import TestDriverProfile as DriverProfile
++from bmt_backend.test_population_batch import ACTIVE
++from bmt_backend.track_models import Board, OperationState, PersonalBest, Run, RunTicket, TrackVersion
++from bmt_backend.worker import process_one
++
++drivers=drivers_fixture
++batch=batch_fixture
++postgres_auth=postgres_fixture
++native=native_fixture
++
++
++def prepare(d,batch_id):
++    return d.client.post('/v1/dev/test-drivers/batches/'+batch_id+'/prepare-local',headers=HEADERS)
++
++
++def obsolete(d,batch_id):
++    with d.factory() as db:
++        row=db.get(OperationState,'test-pop-batch:'+batch_id)
++        row.details={**row.details,'manifest':{**row.details['manifest'],'physics_version':'arcade-planar-0.53',
++            'rules_key':'standing-5-road-gates-v20','compiler_version':'old-compiler'}}
++        db.commit()
++
++
++def operations(d):
++    with d.factory() as db:
++        return {r.id:copy.deepcopy(r.details) for r in db.scalars(select(OperationState))}
++
++
++def history(d):
++    with d.factory() as db:
++        return {model.__tablename__:json.dumps([dict(row) for row in db.execute(select(model.__table__)).mappings()],
++            sort_keys=True,default=str) for model in (Player,Identity,DriverProfile,Board,RunTicket,Run,PersonalBest)}
++
++
++def test_matching_batch_preparation_is_a_noop(batch):
++    d,batch_id=batch;before=operations(d)
++    result=prepare(d,batch_id)
++    assert result.status_code==200,result.text
++    assert result.json()['batch']['batch_id']==batch_id and not result.json()['continued']
++    assert operations(d)==before
++
++
++def test_stale_plan_continues_without_clearing_results_players_or_old_jobs(batch):
++    d,batch_id=batch;first=claim(d,batch_id).json()['work']['job']
++    ticket=d.client.post('/v1/run-tickets',headers=auth(d.login),json={'version_id':first['version_id'],'vehicle_id':'compact'})
++    assert ticket.status_code==201,ticket.text
++    result=d.client.post('/v1/runs',headers=auth(d.login),json={'ticket_id':ticket.json()['ticket_id'],
++        'replay':{'schema':'bmt-replay-v1','frames':[[0,166,0]]*30}})
++    assert result.status_code==202 and process_one(d.app)
++    obsolete(d,batch_id);before=operations(d);protected=history(d)
++    assert claim(d,batch_id).status_code==409  # Keep the original build fence.
++    result=prepare(d,batch_id)
++    assert result.status_code==200,result.text
++    view=result.json()['batch'];replacement=view['batch_id']
++    assert replacement!=batch_id and result.json()['continued']
++    assert view['cleared_test_records']==0 and view['protected_real_records']==1
++    assert view['driver_count']==2 and view['jobs']=={'waiting':view['expected_jobs']}
++    assert history(d)==protected
++    after=operations(d)
++    for key,value in before.items():
++        if key.startswith('test-pop-job:'):assert after[key]==value
++    old=after['test-pop-batch:'+batch_id];new=after['test-pop-batch:'+replacement]
++    assert old['status']=='superseded' and old['continued_as']==replacement
++    assert new['continued_from']==batch_id and new['player_ids']==old['player_ids']
++    assert new['manifest']==d.app.state.verifier.manifest() and not new['request']['clear_test_records']
++    assert all(j['version_id'] in {t['version_id'] for t in new['tracks']} and j['player_id'] in old['player_ids']
++        for key,j in after.items() if key.startswith('test-pop-job:') and j['batch_id']==replacement)
++    route=f"/v1/dev/test-drivers/batches/{batch_id}/jobs/{first['id']}/complete"
++    assert d.client.post(route,headers=HEADERS,json={'lease_token':first['lease_token'],'failure':'timeout'}).status_code==409
++    assert prepare(d,batch_id).json()['batch']['batch_id']==replacement
++    assert operations(d)==after
++    assert claim(d,replacement).status_code==200
++
++
++def test_missing_current_catalog_preserves_old_plan(batch):
++    d,batch_id=batch;obsolete(d,batch_id)
++    with d.factory() as db:
++        for v in db.scalars(select(TrackVersion)):
++            v.manifest={**v.manifest,'physics_version':'arcade-planar-0.53'}
++        db.commit()
++    before=operations(d);protected=history(d)
++    assert prepare(d,batch_id).status_code==409
++    assert operations(d)==before and history(d)==protected
++
++
++def test_disabled_artificial_profile_never_reappears(batch):
++    d,batch_id=batch;obsolete(d,batch_id)
++    with d.factory() as db:
++        player_id=db.get(OperationState,'test-pop-batch:'+batch_id).details['player_ids'][0]
++        db.get(Player,player_id).disabled=True;db.commit()
++    before=operations(d)
++    assert prepare(d,batch_id).status_code==409 and operations(d)==before
++
++
++def test_prepare_keeps_operator_and_development_gates(batch):
++    d,batch_id=batch;obsolete(d,batch_id);before=operations(d)
++    route='/v1/dev/test-drivers/batches/'+batch_id+'/prepare-local'
++    assert d.client.post(route).status_code==401
++    d.app.state.settings=dataclasses.replace(d.app.state.settings,test_drivers_enabled=False)
++    assert d.client.post(route,headers=HEADERS).status_code==404 and operations(d)==before
++
++
++def test_old_id_does_not_redirect_to_an_unrelated_active_batch(batch):
++    d,batch_id=batch;obsolete(d,batch_id)
++    replacement=prepare(d,batch_id).json()['batch']['batch_id']
++    with d.factory() as db:
++        guard=db.get(OperationState,ACTIVE);guard.details={**guard.details,'batch_id':str(uuid.uuid4())};db.commit()
++    before=operations(d)
++    assert prepare(d,batch_id).status_code==409 and prepare(d,replacement).status_code==409
++    assert operations(d)==before
++
++
++def test_failed_continuation_commit_rolls_back_every_new_job_and_guard(batch):
++    d,batch_id=batch;obsolete(d,batch_id);before=operations(d)
++    def fail(session):
++        if any(isinstance(row,OperationState) and row.id==ACTIVE and row.details['batch_id']!=batch_id for row in session.dirty):
++            raise RuntimeError('Owned fixture commit interruption')
++    event.listen(Session,'before_commit',fail)
++    try:
++        assert prepare(d,batch_id).status_code==500
++    finally:event.remove(Session,'before_commit',fail)
++    assert operations(d)==before
++
++
++@pytest.mark.postgres
++def test_postgres_concurrent_continuations_commit_exactly_one_replacement(postgres_auth):
++    app,client=postgres_auth
++    app.state.settings=dataclasses.replace(app.state.settings,environment='development',dev_auth_enabled=True,
++        dev_auth_key=KEY,test_drivers_enabled=True,allow_sync_track_validation=True,write_limit_per_minute=1000)
++    app.state.verifier=FakeVerifier()
++    login=client.post('/v1/auth/developer',headers=HEADERS).json()
++    d=SimpleNamespace(app=app,client=client,factory=app.state.session_factory,players={'Creator':login['player']['id']},login=login)
++    seed(d)
++    preview=client.get('/v1/dev/test-drivers/batches/preview',headers=HEADERS).json()
++    result=client.post('/v1/dev/test-drivers/batches',headers=HEADERS,json={'seed':41,'count':2,'vehicle_id':'compact',
++        'clear_test_records':False,'inventory_digest':preview['inventory_digest']})
++    assert result.status_code==200,result.text
++    batch_id=result.json()['batch_id'];obsolete(d,batch_id);protected=history(d);barrier=threading.Barrier(2)
++    def run(_):
++        barrier.wait(timeout=10);response=prepare(d,batch_id)
++        assert response.status_code==200,response.text
++        return response.json()['batch']
++    with ThreadPoolExecutor(max_workers=2) as pool:views=list(pool.map(run,range(2)))
++    assert views[0]['batch_id']==views[1]['batch_id']!=batch_id
++    with d.factory() as db:
++        rows=db.scalars(select(OperationState).where(OperationState.id.startswith('test-pop-job:'),
++            OperationState.details['batch_id'].as_string()==views[0]['batch_id'])).all()
++        assert len(rows)==views[0]['expected_jobs']
++    assert history(d)==protected
++
++
++@pytest.mark.parametrize('prepare_only',[True,False])
++def test_local_launcher_uses_continued_id_and_preserves_old_journal(tmp_path,monkeypatch,prepare_only):
++    script=Path(__file__).resolve().parents[1]/'deploy/local_artificial.py'
++    spec=importlib.util.spec_from_file_location('batch_recovery_launcher',script)
++    launcher=importlib.util.module_from_spec(spec);spec.loader.exec_module(launcher)
++    monkeypatch.setattr(launcher,'ROOT',tmp_path)
++    config=tmp_path/'.tools/gcp-staging/config.json';config.parent.mkdir(parents=True)
++    config.write_text(json.dumps({'project':'beat-my-track','region':'europe-west1','owner':'abcd1234',
++        'gcloud':['fixture-gcloud'],'docker':['fixture-docker']}))
++    old,new=str(uuid.uuid4()),str(uuid.uuid4())
++    old_state=tmp_path/'.tools/artificial-races/batches'/old/'state.json';old_state.parent.mkdir(parents=True)
++    old_state.write_text('{"unresolved_receipt":"original"}');original=old_state.read_bytes()
++    origin='https://bmt-stg-abcd1234-api-fixture-ew.a.run.app'
++    image='europe-west1-docker.pkg.dev/beat-my-track/images/backend@sha256:'+'a'*64
++    commands=[]
++    def command(args,**kwargs):
++        commands.append(args)
++        if args[0]=='fixture-gcloud':
++            value={'status':{'url':origin},'spec':{'template':{'spec':{'containers':[{'env':[{'name':'BMT_DEV_AUTH_KEY','value':'test-only'}]}]}}}} if 'services' in args else {
++                'spec':{'template':{'spec':{'containers':[{'image':image}]}}}}
++            return SimpleNamespace(returncode=0,stdout=json.dumps(value),stderr='')
++        return SimpleNamespace(returncode=0,stdout='',stderr='')
++    monkeypatch.setattr(launcher.subprocess,'run',command)
++    monkeypatch.setattr(launcher.requests,'get',lambda *args,**kwargs:SimpleNamespace(status_code=200,
++        json=lambda:{'batch':{'batch_id':old,'complete':False}}))
++    def request(url,**kwargs):
++        assert url==origin+'/v1/dev/test-drivers/batches/'+old+'/prepare-local'
++        assert kwargs['headers']=={'X-Dev-Auth-Key':'test-only'}
++        return SimpleNamespace(status_code=200,json=lambda:{'continued':True,'batch':{'batch_id':new,'complete':False,
++            'driver_count':100,'track_count':30,'expected_jobs':3000}})
++    monkeypatch.setattr(launcher.requests,'post',request)
++    launcher.run(SimpleNamespace(batch=None,rivalry=None,list_rivalries=False,inspect=False,cpus=1,max_jobs=1,prepare_only=prepare_only))
++    assert old_state.read_bytes()==original
++    docker=[args for args in commands if args[0]=='fixture-docker' and 'run' in args]
++    if prepare_only:assert not docker
++    else:
++        args=docker[0]
++        assert args[args.index('--batch')+1]==new
++        assert args[args.index('--state')+1]=='/local/batches/'+new+'/state.json'
++        assert not list((tmp_path/'.tools/artificial-races').rglob('*.private.env'))
++
++
++@pytest.mark.godot
++def test_continued_native_batch_uploads_new_revision_and_verifies_independently(native,tmp_path):
++    from fastapi.testclient import TestClient
++    from test_backend_resource_optimisation import LocalAPI
++
++    from bmt_backend.app import create_app
++    from bmt_backend.config import Settings
++    from bmt_backend.local_artificial_races import run_pass
++    from bmt_backend.migrate import upgrade
++    from bmt_backend.official_tracks import seed_documents
++    engine,document=native
++    settings=Settings(environment='development',dev_auth_enabled=True,dev_auth_key=KEY,test_drivers_enabled=True,
++        database_url='sqlite:///'+(tmp_path/'native.sqlite').as_posix(),object_dir=str(tmp_path/'objects'),
++        godot_bin=engine.godot_bin,game_project=engine.game_project,persistent_verifier=True,
++        auth_limit_per_minute=1000,write_limit_per_minute=1000)
++    app=create_app(settings);upgrade(app.state.engine)
++    try:
++        with TestClient(app) as client:
++            client.post('/v1/auth/developer',headers=HEADERS).raise_for_status()
++            seed_documents(app.state.session_factory,app.state.blobs,app.state.verifier,[document])
++            d=SimpleNamespace(app=app,client=client,factory=app.state.session_factory)
++            preview=client.get('/v1/dev/test-drivers/batches/preview',headers=HEADERS).json()
++            batch_id=client.post('/v1/dev/test-drivers/batches',headers=HEADERS,json={'seed':41,'count':1,
++                'clear_test_records':False,'inventory_digest':preview['inventory_digest']}).json()['batch_id']
++            with d.factory() as db:
++                old=db.get(TrackVersion,preview['tracks'][0]['version_id'])
++                fresh=TrackVersion(track_id=old.track_id,number=old.number+1,name=old.name,content_hash=old.content_hash,
++                    manifest=copy.deepcopy(old.manifest),state='published',discovery=old.discovery)
++                db.add(fresh);db.flush();new_version=fresh.id
++                old.manifest={**old.manifest,'physics_version':'arcade-planar-0.53'};db.commit()
++            obsolete(d,batch_id)
++            replacement=prepare(d,batch_id).json()['batch']['batch_id']
++            assert replacement!=batch_id
++            result=run_pass(LocalAPI(d),settings,tmp_path/'local'/'state.json',replacement)
++            assert result['results']==['submitted'] and process_one(app)
++            view=client.get('/v1/dev/test-drivers/batches/'+replacement,headers=HEADERS).json()
++            assert view['complete'] and view['jobs']=={'verified':1} and view['tracks'][0]['version_id']==new_version
++            with d.factory() as db:
++                run=db.scalar(select(Run));assert db.get(Board,run.board_id).version_id==new_version
++            assert client.get('/v1/track-versions/'+new_version+'/leaderboard?vehicle_id=compact').json()['population']==0
++    finally:
++        app.state.verifier.close();app.state.engine.dispose()
+diff --git a/build/local-race-batch-recovery-2026-10-28/build.py b/build/local-race-batch-recovery-2026-10-28/build.py
+new file mode 100644
+index 0000000..1c97200
+--- /dev/null
++++ b/build/local-race-batch-recovery-2026-10-28/build.py
+@@ -0,0 +1,34 @@
++"""Overlay one API source on the approved image; preserve every other asset."""
++import hashlib
++import json
++import shutil
++import subprocess
++from pathlib import Path
++
++ROOT=Path(__file__).resolve().parents[2];WORK=Path(__file__).resolve().parent
++OUT=ROOT/'docs/evidence/local-race-batch-recovery-2026-10-28'
++cfg=json.loads((ROOT/'.tools/gcp-staging/config.json').read_text(encoding='utf-8-sig'));docker=cfg['docker']
++parent=json.loads((ROOT/'build/backend-resource-optimisation-2026-10-28/release.private.json').read_text())['image']
++name='test_population_batch.py'
++def call(args):
++    r=subprocess.run([*docker,*args],capture_output=True,text=True,check=False,timeout=180)
++    if r.returncode:
++        (WORK/'build.private.log').write_text(r.stdout+r.stderr);raise RuntimeError('Scoped image build failed')
++    return r.stdout
++code="""import hashlib,json;from pathlib import Path;p=Path('/app/bmt_backend');q=Path('/opt/bmt');print(json.dumps({'package':{f.relative_to(p).as_posix():hashlib.sha256(f.read_bytes()).hexdigest() for f in p.rglob('*') if f.is_file() and '__pycache__' not in f.parts},'canonical':{f.relative_to(q).as_posix():hashlib.sha256(f.read_bytes()).hexdigest() for f in q.rglob('*') if f.is_file()}}))"""
++before=json.loads(call(['run','--rm','--network=none','--entrypoint','python',parent,'-c',code]))
++assert before['package'][name]==hashlib.sha256((WORK/'before/backend/bmt_backend'/name).read_bytes()).hexdigest()
++context=WORK/'context';context.mkdir(exist_ok=True)
++shutil.copyfile(ROOT/'backend/bmt_backend'/name,context/name)
++(context/'Dockerfile').write_text('FROM '+parent+'\nCOPY '+name+' /app/bmt_backend/'+name+'\n',newline='\n')
++image='bmt-batch-recovery:'+hashlib.sha256((context/name).read_bytes()).hexdigest()[:16]
++unix='/mnt/'+context.drive[0].lower()+context.as_posix()[2:]
++call(['build','--network=none','--pull=false','-t',image,unix])
++after=json.loads(call(['run','--rm','--network=none','--entrypoint','python',image,'-c',code]))
++assert before['canonical']==after['canonical']
++assert set(before['package'])==set(after['package'])
++assert [n for n in before['package'] if before['package'][n]!=after['package'][n]]==[name]
++result={'parent':parent,'image':image,'changed':[name],'unchanged':len(before['package'])-1,
++    'canonical_files_unchanged':len(before['canonical']),'hashes':after['package'],'schema_changed':False}
++(WORK/'candidate.json').write_text(json.dumps(result,indent=2));(OUT/'package-proof.json').write_text(json.dumps(result,indent=2))
++print(json.dumps({k:result[k] for k in ('image','unchanged','canonical_files_unchanged','changed')}))
+diff --git a/build/local-race-batch-recovery-2026-10-28/checkpoint.py b/build/local-race-batch-recovery-2026-10-28/checkpoint.py
+new file mode 100644
+index 0000000..67bb5a3
+--- /dev/null
++++ b/build/local-race-batch-recovery-2026-10-28/checkpoint.py
+@@ -0,0 +1,62 @@
++"""Task-only forward/reverse checkpoint; never touches the main Git index."""
++import ast
++import hashlib
++import json
++import re
++import secrets
++import shutil
++import subprocess
++from pathlib import Path
++
++ROOT=Path(__file__).resolve().parents[2];WORK=Path(__file__).resolve().parent
++OUT=ROOT/'docs/evidence/local-race-batch-recovery-2026-10-28'
++candidate=json.loads((WORK/'candidate.json').read_text())
++SCOPE=WORK/('checkpoint-'+secrets.token_hex(4));BEFORE=SCOPE/'before';AFTER=SCOPE/'after'
++BEFORE.mkdir(parents=True);AFTER.mkdir()
++existing=['backend/bmt_backend/test_population_batch.py','backend/deploy/local_artificial.py','scripts/artificial-races.ps1']
++added=['backend/tests/test_local_batch_recovery.py','docs/LOCAL_RACE_BATCH_RECOVERY_2026_10_28.md']
++helpers=[p.relative_to(ROOT).as_posix() for p in WORK.glob('*.py')]
++shared=['AGENTS.md','DEVELOPMENT_STATUS.md','docs/PHASE_0_PLAN.md']
++for name in existing:
++    target=BEFORE/name;target.parent.mkdir(parents=True,exist_ok=True)
++    shutil.copyfile(WORK/'before'/name,target)
++for name in shared:
++    marker='LOCAL-RACE-BATCH-RECOVERY-20261028'
++    value=(ROOT/name).read_bytes()
++    pattern=(r'<!-- '+marker+r' -->.*?<!-- /'+marker+r' -->\r?\n(?:\r?\n)?').encode()
++    original,count=re.subn(pattern,b'',value,flags=re.S);assert count==1
++    target=BEFORE/name;target.parent.mkdir(parents=True,exist_ok=True);target.write_bytes(original)
++for name in existing+added+helpers:
++    if name.endswith('.py'):ast.parse((ROOT/name).read_text(encoding='utf-8-sig'))
++sources=existing+added+helpers+shared
++(OUT/'source-hashes.json').write_text(json.dumps({n:hashlib.sha256((ROOT/n).read_bytes()).hexdigest() for n in sources},indent=2))
++patch=OUT/'local-race-batch-recovery.patch'
++def hashes(folder):return {p.relative_to(folder).as_posix():hashlib.sha256(p.read_bytes()).hexdigest() for p in folder.rglob('*') if p.is_file()}
++def refresh():
++    evidence=[p.relative_to(ROOT).as_posix() for p in OUT.rglob('*') if p.is_file() and p!=patch]
++    for name in sources+evidence:
++        p=AFTER/name;p.parent.mkdir(parents=True,exist_ok=True);shutil.copyfile(ROOT/name,p)
++    r=subprocess.run(['git','-c','core.quotePath=false','diff','--no-index','--binary','--src-prefix=a/','--dst-prefix=b/','before','after'],
++        cwd=SCOPE,capture_output=True,check=False)
++    assert r.returncode==1,r.stderr
++    value=r.stdout
++    for side in (b'a/',b'b/'):
++        for folder in (b'before/',b'after/'):value=value.replace(side+folder,side)
++    patch.write_bytes(value)
++def verify(index):
++    target=SCOPE/('check-'+str(index));shutil.copytree(BEFORE,target)
++    for flags in (['--check'],[]):
++        r=subprocess.run(['git','apply',*flags,'--whitespace=nowarn','--directory='+target.relative_to(ROOT).as_posix(),str(patch)],
++            cwd=ROOT,capture_output=True,check=False)
++        assert r.returncode==0,r.stderr.decode('utf-8','replace')
++    assert hashes(target)==hashes(AFTER)
++    r=subprocess.run(['git','apply','--reverse','--check','--whitespace=nowarn',str(patch)],cwd=ROOT,capture_output=True,check=False)
++    assert r.returncode==0,r.stderr.decode('utf-8','replace')
++refresh();verify(1)
++report=json.loads((OUT/'report.json').read_text());report['checkpoint_verified']=True
++(OUT/'report.json').write_text(json.dumps(report,indent=2)+'\n',encoding='utf-8')
++(OUT/'checkpoint-checks.json').write_text(json.dumps({'forward_check':True,'exact_forward_application':True,'reverse_check_current_workspace':True,
++    'main_index_touched':False,'concurrent_shared_text_preserved':True,'runtime_existing_files':len(candidate['changed']),
++    'runtime_new_files':0,'canonical_game_files_in_patch':0,'scope':'Task runtime delta, local launchers/tests, safe evidence/diagnostics, report and task marker only'},indent=2))
++refresh();verify(2)
++print(json.dumps({'checkpoint_verified':True,'scoped_files':len(hashes(AFTER)),'patch_bytes':patch.stat().st_size,'main_index_touched':False}))
+diff --git a/build/local-race-batch-recovery-2026-10-28/diagnose.py b/build/local-race-batch-recovery-2026-10-28/diagnose.py
+new file mode 100644
+index 0000000..0de6dfb
+--- /dev/null
++++ b/build/local-race-batch-recovery-2026-10-28/diagnose.py
+@@ -0,0 +1,38 @@
++"""Owned read-only operator probe, with no private row/hash export."""
++import importlib.util
++import json
++import secrets
++import sys
++import time
++from pathlib import Path
++
++ROOT=Path(__file__).resolve().parents[2];WORK=Path(__file__).resolve().parent
++OUT=ROOT/'docs/evidence/local-race-batch-recovery-2026-10-28'
++spec=importlib.util.spec_from_file_location('batch_cloud',ROOT/'build/studio-usage-deploy-2026-10-27/deploy.py')
++d=importlib.util.module_from_spec(spec);spec.loader.exec_module(d);d.WORK=WORK
++studio=d.describe(d.BASE+'-studio');template=studio['template'];container=template['containers'][0]
++name=d.BASE+'-batch-contract-'+secrets.token_hex(3)
++task={'serviceAccount':template['serviceAccount'],'timeout':'120s','maxRetries':0,
++    'containers':[{'image':container['image'],'command':['python'],'args':['-c',(WORK/'live_contract_probe.py').read_text()],
++        'env':container.get('env',[]),'resources':{'limits':{'cpu':'1','memory':'768Mi'}},
++        **({'volumeMounts':container['volumeMounts']} if container.get('volumeMounts') else {})}],
++    **({'volumes':template['volumes']} if template.get('volumes') else {})}
++resource={'labels':{'bmt-task':'local-batch-contract'},'template':{'taskCount':1,'parallelism':1,'template':task}}
++d.wait_operation(d.api('POST',f'https://run.googleapis.com/v2/projects/{d.PROJECT}/locations/{d.REGION}/jobs',params={'jobId':name},body=resource))
++(WORK/'probe.private.json').write_text(json.dumps({'name':name}))
++try:
++    d.gc('run','jobs','execute',name,'--region='+d.REGION,'--wait','--format=json',label='read-only-probe',timeout=180)
++    for _ in range(10):
++        entries=d.api('POST','https://logging.googleapis.com/v2/entries:list',body={'resourceNames':['projects/'+d.PROJECT],
++            'filter':'resource.type="cloud_run_job" AND resource.labels.job_name="'+name+'" AND jsonPayload.event="local_batch_contract_probe"',
++            'orderBy':'timestamp desc','pageSize':5})
++        if entries.get('entries'):break
++        time.sleep(2)
++    assert entries.get('entries'),'Read-only aggregate log not visible yet'
++    value=entries['entries'][0]['jsonPayload'];assert value['read_only']
++    file='live-contract-after.json' if '--after' in sys.argv else 'live-contract-diagnosis.json'
++    (OUT/file).write_text(json.dumps(value,indent=2));print(json.dumps(value),flush=True)
++finally:
++    current=d.describe(name,'jobs');assert current['labels']['bmt-task']=='local-batch-contract'
++    d.gc('run','jobs','delete',name,'--region='+d.REGION,label='owned-probe-cleanup')
++    (OUT/'diagnostic-cleanup.json').write_text(json.dumps({'owned_probe_removed':True,'private_rows_or_hashes_exported':False}))
+diff --git a/build/local-race-batch-recovery-2026-10-28/exact_tests.py b/build/local-race-batch-recovery-2026-10-28/exact_tests.py
+new file mode 100644
+index 0000000..45ee4c6
+--- /dev/null
++++ b/build/local-race-batch-recovery-2026-10-28/exact_tests.py
+@@ -0,0 +1,52 @@
++"""Actual image, PostgreSQL, host-launcher protocol and native continuation proof."""
++import json
++import secrets
++import shutil
++import subprocess
++import time
++from pathlib import Path
++
++ROOT=Path(__file__).resolve().parents[2];WORK=Path(__file__).resolve().parent
++OUT=ROOT/'docs/evidence/local-race-batch-recovery-2026-10-28'
++cfg=json.loads((ROOT/'.tools/gcp-staging/config.json').read_text(encoding='utf-8-sig'));docker=cfg['docker']
++candidate=json.loads((WORK/'candidate.json').read_text());label=secrets.token_hex(12)
++network='bmt-batch-test-'+label[:8];pg=network+'-pg';password=secrets.token_hex(24)
++testroot=WORK/('exact-tests-'+label)/'backend';testroot.mkdir(parents=True)
++shutil.copytree(ROOT/'backend/tests',testroot/'tests',ignore=shutil.ignore_patterns('__pycache__'))
++shutil.copytree(ROOT/'backend/tools',testroot/'tools',ignore=shutil.ignore_patterns('__pycache__'))
++(testroot/'deploy').mkdir();shutil.copyfile(ROOT/'backend/deploy/local_artificial.py',testroot/'deploy/local_artificial.py')
++shutil.copyfile(ROOT/'backend/pyproject.toml',testroot/'pyproject.toml')
++def unix(p):return '/mnt/'+p.drive[0].lower()+p.as_posix()[2:]
++def call(args,timeout=60):
++    r=subprocess.run([*docker,*args],capture_output=True,text=True,encoding='utf-8',errors='replace',check=False,timeout=timeout)
++    if r.returncode:
++        (OUT/'exact-image-tests.log').write_text((r.stdout+r.stderr).replace(password,'[SYNTHETIC]'))
++        raise RuntimeError('Owned exact-image validation failed; inspect sanitized log')
++    return r.stdout
++env=WORK/'exact-tests.private.env';pgenv=WORK/'exact-pg.private.env'
++env.write_text('PYTHONPATH=/app:/test-work:/test-work/backend/tests\nBMT_TEST_DATABASE_URL=postgresql+psycopg://postgres:'+password+'@'+pg+':5432/recovery\nBMT_LIMITED_TEST_DATABASE_URL=postgresql+psycopg://postgres:'+password+'@'+pg+':5432/recovery\nBMT_GODOT_BIN=/usr/local/bin/godot\nBMT_GAME_PROJECT=/opt/bmt/game\n')
++pgenv.write_text('POSTGRES_PASSWORD='+password+'\nPOSTGRES_DB=recovery\n')
++call(['network','create','--internal','--label','bmt.batch-fix='+label,network]);created=False
++try:
++    call(['run','-d','--rm','--name',pg,'--network',network,'--label','bmt.batch-fix='+label,'--cpus=2','--memory=1536m',
++        '--env-file',unix(pgenv),'--tmpfs','/var/lib/postgresql/data:rw,size=768m','postgres:17-bookworm']);created=True
++    for _ in range(80):
++        if subprocess.run([*docker,'exec',pg,'pg_isready','-U','postgres'],capture_output=True,check=False).returncode==0:break
++        time.sleep(.25)
++    else:raise RuntimeError('Owned PostgreSQL readiness timeout')
++    output=call(['run','--rm','--network',network,'--cpus=2','--memory=1536m','--pids-limit=256','--env-file',unix(env),
++        '--mount','type=bind,src='+unix(testroot)+',dst=/test-work/backend,readonly',
++        '--mount','type=bind,src='+unix(OUT)+',dst=/results','--workdir','/test-work/backend','--entrypoint','python',candidate['image'],
++        '-m','pytest','tests/test_local_batch_recovery.py','tests/test_backend_resource_optimisation.py',
++        'tests/test_test_drivers.py','tests/test_population_batch.py',
++        '--deselect=tests/test_population_batch.py::test_batch_generates_real_five_lap_proofs_and_survives_app_restart',
++        '-q','--disable-warnings','--tb=short','--maxfail=2','-p','no:cacheprovider','--basetemp=/tmp/batch-tests',
++        '--junitxml=/results/exact-image-tests.xml'],timeout=360)
++    (OUT/'exact-image-tests.log').write_text(output.replace(password,'[SYNTHETIC]'))
++    (WORK/'tests-passed.json').write_text(json.dumps({'image':candidate['image'],'hashes':candidate['hashes'],'passed':True}))
++    print(output[-1500:],flush=True)
++finally:
++    if created:
++        actual=json.loads(call(['inspect',pg]))[0];assert actual['Config']['Labels']['bmt.batch-fix']==label;call(['stop',pg])
++    actual=json.loads(call(['network','inspect',network]))[0];assert actual['Labels']['bmt.batch-fix']==label;call(['network','rm',network])
++    (OUT/'exact-tests-cleanup.json').write_text(json.dumps({'owned_database_and_network_removed':True}))
+diff --git a/build/local-race-batch-recovery-2026-10-28/live_contract_probe.py b/build/local-race-batch-recovery-2026-10-28/live_contract_probe.py
+new file mode 100644
+index 0000000..7f9e749
+--- /dev/null
++++ b/build/local-race-batch-recovery-2026-10-28/live_contract_probe.py
+@@ -0,0 +1,53 @@
++"""Read only canonical build labels and synthetic-plan aggregates."""
++import json
++from collections import Counter
++
++from sqlalchemy import select, text
++
++from bmt_backend.app import create_admin_app
++from bmt_backend.contracts import build_contract
++from bmt_backend.track_models import OperationState, TrackVersion
++
++app=create_admin_app()
++try:
++    active=app.state.verifier.manifest()
++    with app.state.session_factory() as db:
++        db.execute(text('SET TRANSACTION READ ONLY'))
++        guard=db.get(OperationState,'test-population-active')
++        row=db.get(OperationState,'test-pop-batch:'+guard.details['batch_id']) if guard else None
++        result={'event':'local_batch_contract_probe','read_only':True,'batch_present':row is not None}
++        if row:
++            data=row.details;pinned=data['manifest'];vehicle=data['vehicle_id']
++            old,new=build_contract(pinned),build_contract(active)
++            versions=db.scalars(select(TrackVersion).where(TrackVersion.id.in_([t['version_id'] for t in data['tracks']]))).all()
++            jobs=db.scalars(select(OperationState.details).where(OperationState.id.startswith('test-pop-job:'),
++                OperationState.details['batch_id'].as_string()==data['batch_id'])).all()
++            selected=lambda manifest:{k:manifest.get('vehicles',{}).get(vehicle,{}).get(k) for k in ('handling_version','config_hash')}
++            result.update(vehicle_id=vehicle,batch_status=data.get('status'),batch_tracks=len(data['tracks']),
++                batch_drivers=data['count'],job_status_counts=dict(Counter(j['status'] for j in jobs)),
++                differing_build_fields=[k for k in new if old.get(k)!=new[k]],
++                changed_vehicles=[v for v in set(pinned.get('vehicles',{}))|set(active.get('vehicles',{}))
++                    if pinned.get('vehicles',{}).get(v)!=active.get('vehicles',{}).get(v)],
++                old_physics=pinned.get('physics_version'),active_physics=active.get('physics_version'),
++                old_rules=pinned.get('rules_key'),active_rules=active.get('rules_key'),
++                old_engine=pinned.get('engine_version'),active_engine=active.get('engine_version'),
++                old_selected_handling=selected(pinned)['handling_version'],active_selected_handling=selected(active)['handling_version'],
++                selected_vehicle_config_equal=selected(pinned)==selected(active),
++                track_builds_equal_batch=sum(build_contract(v.manifest)==old for v in versions),
++                track_builds_equal_active=sum(build_contract(v.manifest)==new for v in versions))
++            if data.get('continued_from'):
++                previous=db.get(OperationState,'test-pop-batch:'+data['continued_from'])
++                previous_jobs=db.scalars(select(OperationState.details).where(OperationState.id.startswith('test-pop-job:'),
++                    OperationState.details['batch_id'].as_string()==data['continued_from'])).all()
++                result.update(previous_batch_retained=previous is not None,
++                    previous_batch_status=previous.details['status'] if previous else None,
++                    same_driver_ids=previous is not None and previous.details['player_ids']==data['player_ids'],
++                    previous_job_status_counts=dict(Counter(j['status'] for j in previous_jobs)),
++                    cleared_test_records=data.get('cleared_test_records'))
++        db.rollback()
++    print(json.dumps(result),flush=True)
++except Exception as error:
++    print(json.dumps({'event':'local_batch_contract_probe_failed','error_class':type(error).__name__}),flush=True)
++    raise SystemExit(1) from None
++finally:
++    app.state.studio_reporting.close();app.state.verifier.close();app.state.engine.dispose()
+diff --git a/build/local-race-batch-recovery-2026-10-28/release.py b/build/local-race-batch-recovery-2026-10-28/release.py
+new file mode 100644
+index 0000000..f3acf66
+--- /dev/null
++++ b/build/local-race-batch-recovery-2026-10-28/release.py
+@@ -0,0 +1,97 @@
++"""One-file API repair; worker, Studio, jobs, game assets and schema stay exact."""
++import argparse
++import copy
++import hashlib
++import importlib.util
++import json
++import secrets
++import uuid
++from datetime import datetime, timezone
++from pathlib import Path
++
++import requests
++
++ROOT=Path(__file__).resolve().parents[2];WORK=Path(__file__).resolve().parent
++OUT=ROOT/'docs/evidence/local-race-batch-recovery-2026-10-28'
++spec=importlib.util.spec_from_file_location('batch_release',ROOT/'build/studio-usage-deploy-2026-10-27/deploy.py')
++d=importlib.util.module_from_spec(spec);spec.loader.exec_module(d)
++d.WORK=WORK;d.STATE=WORK/'release.private.json';d.OUT=OUT
++d.state=json.loads(d.STATE.read_text()) if d.STATE.exists() else {}
++candidate=json.loads((WORK/'candidate.json').read_text());TASK='local-race-batch-recovery-20261028'
++def compare(old,new):
++    a=copy.deepcopy(d.definition(old));b=copy.deepcopy(d.definition(new))
++    for value in (a,b):value.pop('traffic',None);value['template'].pop('revision',None)
++    b['template']['containers'][0]['image']=a['template']['containers'][0]['image'];assert a==b,'API settings changed beyond image'
++def guard():
++    assert not d.LOCK.exists() or json.loads(d.LOCK.read_text()).get('task')==TASK
++    current=d.describe(d.BASE+'-api');compare(d.state['before']['api'],current)
++    assert current['template']['containers'][0]['image'] in (candidate['parent'],d.state.get('image'))
++def prepare():
++    assert not d.state
++    before={k:d.describe(d.BASE+'-'+k,'workerPools' if k=='worker' else 'services') for k in ('api','studio','worker')}
++    assert before['api']['template']['containers'][0]['image']==candidate['parent']
++    jobs=d.api('GET',f'https://run.googleapis.com/v2/projects/{d.PROJECT}/locations/{d.REGION}/jobs')
++    jobs=[j for j in jobs.get('jobs',[]) if j['name'].rsplit('/',1)[-1].startswith(d.BASE+'-')];assert len(jobs)==7
++    policy=json.loads(d.gc('run','services','get-iam-policy',d.BASE+'-api','--region='+d.REGION,'--format=json',label='before-iam'))
++    d.state.update(before=before,jobs=jobs,policy=policy);d.save();print('API-only repair baseline captured.')
++def push():
++    guard();proof=json.loads((WORK/'tests-passed.json').read_text());assert proof['passed'] and proof['hashes']==candidate['hashes']
++    if not d.LOCK.exists():
++        with d.LOCK.open('x') as stream:json.dump({'task':TASK},stream)
++    registry=d.REGION+'-docker.pkg.dev';remote=registry+'/'+d.PROJECT+'/'+d.BASE+'-images/backend:batch-recovery-'+hashlib.sha256(json.dumps(candidate['hashes'],sort_keys=True).encode()).hexdigest()[:12]
++    auth=WORK/'registry.private';auth.mkdir(exist_ok=True)
++    try:
++        token=d.gc('auth','print-access-token',label='push-token')
++        d.command([*d.DOCKER,'--config',d.unix(auth),'login',registry,'--username=oauth2accesstoken','--password-stdin'],'registry-login',input_data=token)
++        d.command([*d.DOCKER,'tag',candidate['image'],remote],'tag')
++        d.command([*d.DOCKER,'--config',d.unix(auth),'push',remote],'push',timeout=300)
++        digests=json.loads(d.command([*d.DOCKER,'image','inspect',remote,'--format={{json .RepoDigests}}'],'digest'))
++        d.state['image']=next(v for v in digests if v.startswith(registry+'/'+d.PROJECT+'/'));d.save()
++    finally:
++        file=auth/'config.json'
++        if file.exists():file.unlink()
++    print(json.dumps({'image':d.state['image']}),flush=True)
++def checks(url):
++    result={}
++    for path,expected in [('/health',200),('/ready',200),('/v1/bootstrap',200),('/admin',404),
++        ('/v1/dev/test-drivers/batches/'+str(uuid.uuid4())+'/prepare-local',401)]:
++        response=requests.request('POST' if path.endswith('prepare-local') else 'GET',url+path,
++            verify=str(d.CA),timeout=(5,40),allow_redirects=False)
++        assert response.status_code==expected,(path,response.status_code)
++        result['prepare-local' if path.endswith('prepare-local') else path]=expected
++    return result
++def canary():
++    guard();tag='batch-fix-'+secrets.token_hex(3)
++    d.gc('run','services','update',d.BASE+'-api','--region='+d.REGION,'--image='+d.state['image'],
++        '--no-traffic','--tag='+tag,'--format=json',label='api-canary',timeout=300)
++    current=d.describe(d.BASE+'-api');compare(d.state['before']['api'],current)
++    route=next(r for r in current['trafficStatuses'] if r.get('tag')==tag)
++    result=checks(route['uri'])
++    old=d.state['before']['api']['latestReadyRevision'].rsplit('/',1)[-1]
++    assert any(r.get('percent')==100 and r['revision'].rsplit('/',1)[-1]==old for r in current['trafficStatuses'])
++    d.state.update(tag=tag,revision=route['revision'],url=route['uri'],canary_passed=True);d.save()
++    d.write(OUT/'canary-checks.json',result);print(json.dumps({'candidate':route['revision'],'checks':result}),flush=True)
++def promote():
++    guard();assert d.state.get('canary_passed');checks(d.state['url'])
++    d.gc('run','services','update-traffic',d.BASE+'-api','--region='+d.REGION,
++        '--to-revisions='+d.state['revision'].rsplit('/',1)[-1]+'=100','--format=json',label='api-promote',timeout=180)
++    d.state['promoted']=True;d.save();print('API repair promoted; all other workloads remain unchanged.')
++def finish():
++    assert d.state.get('promoted');guard()
++    d.gc('run','services','update-traffic',d.BASE+'-api','--region='+d.REGION,'--remove-tags='+d.state['tag'],
++        '--format=json',label='tag-cleanup')
++    api=d.describe(d.BASE+'-api');normal=checks(api['uri']);compare(d.state['before']['api'],api)
++    assert any(r.get('percent')==100 and r['revision'].rsplit('/',1)[-1]==d.state['revision'].rsplit('/',1)[-1] for r in api['trafficStatuses'])
++    for kind in ('studio','worker'):
++        assert d.definition(d.describe(d.BASE+'-'+kind,'workerPools' if kind=='worker' else 'services'))==d.definition(d.state['before'][kind])
++    for job in d.state['jobs']:assert d.definition(d.describe(job['name'].rsplit('/',1)[-1],'jobs'))==d.definition(job)
++    policy=json.loads(d.gc('run','services','get-iam-policy',d.BASE+'-api','--region='+d.REGION,'--format=json',label='final-iam'))
++    assert policy==d.state['policy']
++    assert json.loads(d.LOCK.read_text())['task']==TASK;d.LOCK.unlink()
++    d.state.update(complete=True,finished_at=datetime.now(timezone.utc).isoformat());d.save()
++    receipt={'image':d.state['image'],'revision':d.state['revision'],'normal_checks':normal,'worker_studio_seven_jobs_unchanged':True,
++        'resources_iam_schema_canonical_unchanged':True,'tag_and_lock_removed':True,'finished_at':d.state['finished_at']}
++    d.write(OUT/'deployment.json',receipt);print(json.dumps(receipt))
++if __name__=='__main__':
++    parser=argparse.ArgumentParser();parser.add_argument('stage',choices=('prepare','push','canary','promote','finish'))
++    globals()[parser.parse_args().stage]()
+diff --git a/build/local-race-batch-recovery-2026-10-28/report.py b/build/local-race-batch-recovery-2026-10-28/report.py
+new file mode 100644
+index 0000000..6486979
+--- /dev/null
++++ b/build/local-race-batch-recovery-2026-10-28/report.py
+@@ -0,0 +1,67 @@
++"""Record the actual legacy plan, deployed repair and bounded attempt outcome."""
++import json
++import re
++import xml.etree.ElementTree as ET
++from pathlib import Path
++
++ROOT=Path(__file__).resolve().parents[2];WORK=Path(__file__).resolve().parent
++OUT=ROOT/'docs/evidence/local-race-batch-recovery-2026-10-28'
++def read(name):return json.loads((OUT/name).read_text())
++before=read('live-contract-diagnosis.json');after=read('live-contract-after.json');prepare=read('live-preparation.json')
++attempt=read('one-local-attempt.json');completion=read('live-completion.json');deployment=read('deployment.json');package=read('package-proof.json')
++suite=ET.parse(OUT/'exact-image-tests.xml').getroot();cases=list(suite.iter('testcase'))
++assert len(cases)==51 and all(c.find('failure') is None and c.find('error') is None for c in cases)
++checks={'stale_actual_contract_identified':before['old_physics']=='arcade-planar-0.53' and before['old_rules']=='standing-5-road-gates-v20',
++    'actual_current_track_builds_match':after['track_builds_equal_active']==after['batch_tracks']==30,
++    'original_batch_and_cohort_retained':after['previous_batch_retained'] and after['same_driver_ids'],
++    'original_job_status_counts_preserved':before['job_status_counts']==after['previous_job_status_counts'],
++    'no_results_reset':after['cleared_test_records']==0 and prepare['generation_started'] is False,
++    'old_local_journals_preserved':prepare['old_local_journals_unchanged'],
++    'one_bounded_local_command_completed':attempt['attempted']==1 and attempt['exit_code']==0,
++    'api_only_deployment':deployment['worker_studio_seven_jobs_unchanged'],
++    'resources_iam_schema_game_preserved':deployment['resources_iam_schema_canonical_unchanged'],
++    'canary_and_lock_removed':deployment['tag_and_lock_removed'],
++    'one_runtime_module_changed':package['changed']==['test_population_batch.py'] and package['unchanged']==345,
++    'all_canonical_assets_exact':package['canonical_files_unchanged']==174,
++    'exact_image_tests_pass':len(cases)==51,'owned_test_database_removed':read('fixture-cleanup.json')['owned_postgresql_removed'],
++    'owned_exact_fixtures_removed':read('exact-tests-cleanup.json')['owned_database_and_network_removed'],
++    'owned_read_only_probe_removed':read('diagnostic-cleanup.json')['owned_probe_removed']}
++assert all(checks.values()),checks
++report={'requirements':['LBR01 actual persisted contract diagnosis','LBR02 non-destructive atomic continuation',
++    'LBR03 compatible local launch with retained journals','LBR04/R01/Q01 PostgreSQL/native verification and scoped rollout'],
++    'status':'deployed_and_actual_local_command_verified','diagnosis':before,'live_continuation':after,'local_preparation':prepare,
++    'bounded_local_attempt':attempt,'live_completion':completion,'deployment':deployment,'package':package,
++    'tests':{'exact_image_passed':51,'legacy_native_harness_deselected':1,'first_retained_run_passed':48,
++        'initial_findings':['The first rollback test expected a raised exception; existing middleware correctly returns sanitized HTTP500. Exact database rollback assertions remain.',
++            'The initial direct pytest command used the wrong relative interpreter path; the owned fixture helper corrects it.']},
++    'checks':checks,'checks_passed':len(checks),'checkpoint_verified':False,
++    'limitations':['One bounded live attempt is not a guarantee that every artificial profile finishes every circuit.',
++        'Old contracts/results are retained; no old score is reinterpreted under new physics.',
++        'Only the API metadata module and local launchers change; no controller, worker, Studio, job, schema or resource change.',
++        'No physical-device test, owner save edit, real purchase, owner-process restart or main-index staging/commit/merge.']}
++(OUT/'report.json').write_text(json.dumps(report,indent=2)+'\n',encoding='utf-8')
++outcome=('The bounded live attempt uploaded normally and the server independently verified '+str(completion['server_verified_runs'])+' new test run(s).' if completion['server_verified_runs'] else
++    'The bounded local attempt completed its normal recovery/upload protocol with result '+repr(attempt['results'])+'; no finishing time or successful race is invented.')
++block=f'''<!-- LBR-LIVE-RESULTS -->
++The API-only repair is deployed on `{deployment['revision']}` using immutable
++`{deployment['image'].split('@')[-1]}`. The actual batch continues with the same
++**100 drivers**, **30 current track revisions** and **3,000 jobs**. All original
++**2,800 jobs** remain with their prior status counts and old journals are exact;
++no results were reset. {outcome}
++The exact-image suite passes 51 checks, including the real native continuation
++and independent verification proof. All {len(checks)} aggregate/evidence checks
++and the scoped forward/reverse checkpoint pass.
++<!-- /LBR-LIVE-RESULTS -->'''
++doc=ROOT/'docs/LOCAL_RACE_BATCH_RECOVERY_2026_10_28.md';text=doc.read_text(encoding='utf-8')
++doc.write_text(re.sub(r'<!-- LBR-LIVE-RESULTS -->.*?<!-- /LBR-LIVE-RESULTS -->',block,text,flags=re.S),encoding='utf-8',newline='\n')
++marker='LOCAL-RACE-BATCH-RECOVERY-20261028'
++entry=f'''<!-- {marker} -->
++## Local artificial races recover old build batches (2026-10-28)
++LBR01-LBR04/R01/Q01: Reported BATCH_BUILD_CHANGED correctly fences a persisted Compact batch at physics0.53/rules20/old compiler against current0.75/rules23. Atomic prepare-local continues current published revisions with the same100 profiles, clear=false, retained old jobs/results and stale-lease fencing; host redirects to the returned state folder while old journals stay exact. Matching plans are no-ops; concurrent/failed preparations produce one replacement or full rollback. Exact-image51pass covers PostgreSQL, nonempty real history, auth, host redirection and native new-revision upload/independent verification; one broader legacy native harness deselected, first middleware-assertion/path findings retained. API{deployment['revision'].rsplit('/',1)[-1]}/immutable{deployment['image'].split('sha256:')[-1][:12]} deployed; one runtime module changes while345 package/all174 canonical files stay exact. Worker/Studio/seven jobs/resources/IAM/schema/contracts remain. Actual100x30 continuation preserves original2800 job statuses and old journals; one bounded local command exits0 with {attempt['results']}, server verified count{completion['server_verified_runs']}. No fake score or forced completion. {len(checks)} evidence checks, full Ruff and scoped checkpoint pass; owned probes/fixtures/tag/lock removed. Sources, receipts and limitations: docs/LOCAL_RACE_BATCH_RECOVERY_2026_10_28.md and docs/evidence/local-race-batch-recovery-2026-10-28/report.json. No device query/test, APK, owner-save/purchase/process restart, canonical change or main-index staging/commit/merge; concurrent work preserved.
++<!-- /{marker} -->
++
++'''.encode()
++for name in ('AGENTS.md','DEVELOPMENT_STATUS.md','docs/PHASE_0_PLAN.md'):
++    path=ROOT/name;value=path.read_bytes();pattern=(r'<!-- '+marker+r' -->.*?<!-- /'+marker+r' -->\r?\n(?:\r?\n)?').encode()
++    path.write_bytes(re.sub(pattern,lambda match:entry,value,flags=re.S) if ('<!-- '+marker+' -->').encode() in value else entry+value)
++print(json.dumps({'checks_passed':len(checks),'exact_tests_passed':51,'local_attempt':attempt['results'],'server_verified_runs':completion['server_verified_runs']}))
+diff --git a/build/local-race-batch-recovery-2026-10-28/tests.py b/build/local-race-batch-recovery-2026-10-28/tests.py
+new file mode 100644
+index 0000000..370cfd6
+--- /dev/null
++++ b/build/local-race-batch-recovery-2026-10-28/tests.py
+@@ -0,0 +1,66 @@
++"""Owned PostgreSQL fixture for actual optimisation/regression checks."""
++import argparse
++import json
++import os
++import secrets
++import subprocess
++import sys
++import time
++from pathlib import Path
++
++ROOT=Path(__file__).resolve().parents[2];WORK=Path(__file__).resolve().parent
++OUT=ROOT/'docs/evidence/local-race-batch-recovery-2026-10-28';OUT.mkdir(parents=True,exist_ok=True)
++cfg=json.loads((ROOT/'.tools/gcp-staging/config.json').read_text(encoding='utf-8-sig'));docker=cfg['docker']
++statefile=WORK/'test-database.private.json'
++
++
++def call(args):
++    r=subprocess.run([*docker,*args],capture_output=True,text=True,check=False,timeout=60)
++    if r.returncode:raise RuntimeError('Owned fixture command failed')
++    return r.stdout
++
++
++def start():
++    if statefile.exists():
++        state=json.loads(statefile.read_text());value=json.loads(call(['inspect',state['name']]))[0]
++        assert value['Config']['Labels'].get('bmt.optimisation')==state['label'] and value['State']['Running']
++        return state
++    label=secrets.token_hex(16);name='bmt-batch-recovery-'+label[:8];password=secrets.token_hex(24)
++    envfile=WORK/'postgres.private.env';envfile.write_text('POSTGRES_PASSWORD='+password+'\nPOSTGRES_DB=optimisation\n')
++    unix='/mnt/'+envfile.drive[0].lower()+envfile.as_posix()[2:]
++    call(['run','-d','--pull=never','--name',name,'--label','bmt.optimisation='+label,'--cpus=2','--memory=1536m',
++        '--pids-limit=128','--publish','127.0.0.1::5432','--tmpfs','/var/lib/postgresql/data:rw,size=1024m',
++        '--env-file',unix,'postgres:17-bookworm','postgres','-c','max_connections=64','-c','shared_buffers=64MB'])
++    details=json.loads(call(['inspect',name]))[0];port=details['NetworkSettings']['Ports']['5432/tcp'][0]
++    assert port['HostIp']=='127.0.0.1'
++    for _ in range(60):
++        r=subprocess.run([*docker,'exec',name,'pg_isready','-U','postgres'],capture_output=True,check=False,timeout=10)
++        if r.returncode==0:break
++        time.sleep(.25)
++    else:raise RuntimeError('Owned PostgreSQL readiness timeout')
++    state={'name':name,'label':label,'url':f"postgresql+psycopg://postgres:{password}@127.0.0.1:{port['HostPort']}/optimisation"}
++    statefile.write_text(json.dumps(state));return state
++
++
++def main():
++    parser=argparse.ArgumentParser();parser.add_argument('stage',choices=('start','test','stop'))
++    parser.add_argument('--label',default='tests');parser.add_argument('--baseline',action='store_true');args,selection=parser.parse_known_args()
++    if args.stage=='stop':
++        state=json.loads(statefile.read_text());value=json.loads(call(['inspect',state['name']]))[0]
++        assert value['Config']['Labels'].get('bmt.optimisation')==state['label']
++        call(['rm','--force',state['name']]);statefile.unlink()
++        (OUT/'fixture-cleanup.json').write_text(json.dumps({'owned_postgresql_removed':True,'live_database_used':False}))
++        print('Owned test database removed.');return
++    state=start()
++    if args.stage=='start':print('Owned PostgreSQL fixture ready.');return
++    env=os.environ.copy();env['BMT_TEST_DATABASE_URL']=state['url'];env['BMT_LIMITED_TEST_DATABASE_URL']=state['url']
++    test_root=WORK/'before/backend' if args.baseline else ROOT/'backend'
++    env['PYTHONPATH']=os.pathsep.join((str(test_root),str(ROOT)))
++    selection=[x for x in selection if x!='--']
++    result=subprocess.run([sys.executable,'-m','pytest',*selection,'--junitxml='+str(OUT/(args.label+'.xml'))],cwd=test_root,env=env,
++        capture_output=True,text=True,encoding='utf-8',errors='replace',check=False,timeout=600)
++    (OUT/(args.label+'.log')).write_text(result.stdout+result.stderr,encoding='utf-8')
++    print(result.stdout[-7000:]);raise SystemExit(result.returncode)
++
++
++if __name__=='__main__':main()
+diff --git a/build/local-race-batch-recovery-2026-10-28/verify_completion.py b/build/local-race-batch-recovery-2026-10-28/verify_completion.py
+new file mode 100644
+index 0000000..c34bc8e
+--- /dev/null
++++ b/build/local-race-batch-recovery-2026-10-28/verify_completion.py
+@@ -0,0 +1,31 @@
++"""Only aggregate batch progress is exported; no player/run/group IDs."""
++import importlib.util
++import json
++import time
++from pathlib import Path
++
++import requests
++
++ROOT=Path(__file__).resolve().parents[2];WORK=Path(__file__).resolve().parent
++OUT=ROOT/'docs/evidence/local-race-batch-recovery-2026-10-28'
++spec=importlib.util.spec_from_file_location('batch_completion_cloud',ROOT/'build/studio-usage-deploy-2026-10-27/deploy.py')
++d=importlib.util.module_from_spec(spec);spec.loader.exec_module(d);d.WORK=WORK
++value=json.loads(d.gc('run','services','describe',d.BASE+'-api','--region='+d.REGION,'--format=json',label='completion-api-settings'))
++binding=next(e for e in value['spec']['template']['spec']['containers'][0]['env'] if e['name']=='BMT_DEV_AUTH_KEY')
++if 'value' in binding:key=binding['value']
++else:
++    ref=binding['valueFrom']['secretKeyRef']
++    key=d.gc('secrets','versions','access',ref.get('key','latest'),'--secret='+ref['name'],label='completion-dev-token')
++attempt=json.loads((OUT/'one-local-attempt.json').read_text())
++for _ in range(30):
++    response=requests.get(value['status']['url']+'/v1/dev/test-drivers/batches/active',headers={'X-Dev-Auth-Key':key},
++        verify=str(d.CA),timeout=(5,30),allow_redirects=False)
++    assert response.status_code==200
++    batch=response.json()['batch']
++    if attempt['results']!=['submitted'] or not batch['jobs'].get('submitted',0):break
++    time.sleep(2)
++result={'jobs':batch['jobs'],'expected_jobs':batch['expected_jobs'],'driver_count':batch['driver_count'],
++    'track_count':batch['track_count'],'local_attempt_results':attempt['results'],
++    'server_verified_runs':batch['jobs'].get('verified',0),'real_or_test_results_cleared':batch['cleared_test_records'],
++    'private_identifiers_exported':False}
++(OUT/'live-completion.json').write_text(json.dumps(result,indent=2));print(json.dumps(result))
+diff --git a/docs/LOCAL_RACE_BATCH_RECOVERY_2026_10_28.md b/docs/LOCAL_RACE_BATCH_RECOVERY_2026_10_28.md
+new file mode 100644
+index 0000000..f8f6172
+--- /dev/null
++++ b/docs/LOCAL_RACE_BATCH_RECOVERY_2026_10_28.md
+@@ -0,0 +1,84 @@
++# Local artificial-race batch recovery — 28 October 2026
++
++The reported `HTTP 409: BATCH_BUILD_CHANGED` came from the active batch retaining
++physics `arcade-planar-0.53`, rules v20 and its older compiler, while the approved
++backend uses physics 0.75/rules v23. Its Compact configuration still matches,
++but shared physics/rules/compiler differences require new canonical drives.
++The original strict build fence remains in place.
++
++**LBR01** diagnose the actual persisted contract; **LBR02** continue safely without
++clearing results; **LBR03** redirect the local command while preserving journals;
++**LBR04/R01/Q01** prove rollback/concurrency/native verification and validate the
++minimal API rollout. See the [evidence report](evidence/local-race-batch-recovery-2026-10-28/report.json).
++
++The same command now prepares the batch before starting Docker:
++
++```powershell
++powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/artificial-races.ps1
++```
++
++`-PrepareOnly` performs that preparation without generating a race. `-MaxJobs`
++retains its existing 1–20 bounded-attempt semantics and defaults to one.
++
++## Recovery behaviour
++
++The development-only operator endpoint locks the active-batch guard, checks the
++recorded continuation chain and compares exact builds. A matching batch is a
++no-op. An obsolete batch gets a new current-build continuation using its existing
++artificial player IDs and profiles and the latest compatible published revisions.
++The original batch becomes retained, superseded history; original jobs, tickets,
++runs, boards and personal bests are preserved. No score or time is copied into a
++new contract, and `clear_test_records` is always false for continuation.
++
++Creation, job inserts, superseding metadata and the guard change commit in one
++transaction. Inserts use batches of 256 rows. Concurrent preparations produce
++one replacement. Lost replies and explicit older batch IDs follow the recorded
++continuation; they cannot jump to an unrelated active fleet. Disabled/deleted
++profiles, missing current tracks and excessive continuation chains fail closed.
++Stale completion tokens remain fenced.
++
++The host launcher uses the returned batch ID for its new state path and Docker
++arguments. Existing old journals/recordings remain in their original directory.
++The local generator continues using the deployed worker's immutable image, whose
++canonical assets match the API; no new runner image or controller change is
++required. Every new recording still goes through ordinary tickets/uploads and
++independent server verification.
++
++## Validation and rollout
++
++The exact repair image passes **51 tests**, including actual PostgreSQL concurrent
++continuation, commit-failure rollback, preservation of nonempty real-player
++history and original jobs, development/operator gates, journal redirection and a
++real native drive on a replacement revision followed by independent verification.
++One broader legacy native all-track/restart harness is not run; the focused
++native continuation proof runs with the exact frozen engine/project. Original
++test assertions remain intact. A first rollback-test expectation was corrected
++to assert the existing middleware's sanitized HTTP 500, while keeping its exact
++database rollback assertion.
++
++Only `test_population_batch.py` changes in the deployed API package. All **345
++other package files and 174 canonical assets** remain exact. The host Python and
++PowerShell launchers also change locally. Zero-traffic health/readiness/auth
++checks precede promotion. Worker, private Studio, seven job definitions,
++resources, scaling, IAM, secrets, schema and game contracts remain unchanged.
++The owned probe jobs, API tag and rollout lock are removed.
++
++<!-- LBR-LIVE-RESULTS -->
++The API-only repair is deployed on `bmt-stg-e7a444ab-api-00125-ses` using immutable
++`sha256:11f7d3a833403f1cf578b7690a2eb35ee96fc9842c6c8ac400e15d7be517b679`. The actual batch continues with the same
++**100 drivers**, **30 current track revisions** and **3,000 jobs**. All original
++**2,800 jobs** remain with their prior status counts and old journals are exact;
++no results were reset. The bounded live attempt uploaded normally and the server independently verified 1 new test run(s).
++The exact-image suite passes 51 checks, including the real native continuation
++and independent verification proof. All 16 aggregate/evidence checks
++and the scoped forward/reverse checkpoint pass.
++<!-- /LBR-LIVE-RESULTS -->
++
++The batch transition was missed in the original deployment validation. The
++read-only diagnosis now checks actual persisted batch contracts rather than only
++fresh fixtures and route gates. The repair retains old history and creates new
++work; it does not reinterpret an old run under new physics.
++
++No physical-device test, APK, real purchase, owner-save edit, owner-process
++restart, canonical tuning, main-index staging, commit or merge is performed.
++Concurrent game and backend work is preserved.
+diff --git a/docs/PHASE_0_PLAN.md b/docs/PHASE_0_PLAN.md
+index 79cf327..6072531 100644
+--- a/docs/PHASE_0_PLAN.md
++++ b/docs/PHASE_0_PLAN.md
+@@ -1,3 +1,8 @@
++<!-- LOCAL-RACE-BATCH-RECOVERY-20261028 -->
++## Local artificial races recover old build batches (2026-10-28)
++LBR01-LBR04/R01/Q01: Reported BATCH_BUILD_CHANGED correctly fences a persisted Compact batch at physics0.53/rules20/old compiler against current0.75/rules23. Atomic prepare-local continues current published revisions with the same100 profiles, clear=false, retained old jobs/results and stale-lease fencing; host redirects to the returned state folder while old journals stay exact. Matching plans are no-ops; concurrent/failed preparations produce one replacement or full rollback. Exact-image51pass covers PostgreSQL, nonempty real history, auth, host redirection and native new-revision upload/independent verification; one broader legacy native harness deselected, first middleware-assertion/path findings retained. APIbmt-stg-e7a444ab-api-00125-ses/immutable11f7d3a83340 deployed; one runtime module changes while345 package/all174 canonical files stay exact. Worker/Studio/seven jobs/resources/IAM/schema/contracts remain. Actual100x30 continuation preserves original2800 job statuses and old journals; one bounded local command exits0 with ['submitted'], server verified count1. No fake score or forced completion. 16 evidence checks, full Ruff and scoped checkpoint pass; owned probes/fixtures/tag/lock removed. Sources, receipts and limitations: docs/LOCAL_RACE_BATCH_RECOVERY_2026_10_28.md and docs/evidence/local-race-batch-recovery-2026-10-28/report.json. No device query/test, APK, owner-save/purchase/process restart, canonical change or main-index staging/commit/merge; concurrent work preserved.
++<!-- /LOCAL-RACE-BATCH-RECOVERY-20261028 -->
++
+ <!-- GARAGE-CAROUSEL-DELIVERY-20261028 -->
+ ## Explicit loading for every Garage carousel car (2026-10-28)
+ GCD01-GCD02/R01: Owner reports Compact and other blank cards. Shared native emblem/localized loading message replaces the empty wait; only exact publication dismisses it and appearance invalidation restores it. No capture/cache/scheduling change. Task-start natural queue delivers all seven (69/0), so no permanently stuck renderer is reproduced. Expanded actual-App checks55/0 headless and85/0 each desktop renderer include all seven saved appearances, scrolling, stale completion and exact PNG recovery; preferred thumbnail parse passes. One runtime/one regression; no extra worlds or processing. Initial sandbox certificate-store and isolated patch-line-ending findings remain. Commands, views, hashes and task-only checked patch: docs/GARAGE_CAROUSEL_DELIVERY_2026_10_28.md and docs/evidence/garage-carousel-delivery-2026-10-28/report.json. Cold image wait remains; reload and owner/device acceptance remain. Concurrent work/advanced build metadata preserved. No device attachment query/test, APK, owner-save/live mutation, deployment, owner-process restart or main-index staging/commit/merge.
+diff --git a/docs/evidence/local-race-batch-recovery-2026-10-28/canary-checks.json b/docs/evidence/local-race-batch-recovery-2026-10-28/canary-checks.json
+new file mode 100644
+index 0000000..b65f117
+--- /dev/null
++++ b/docs/evidence/local-race-batch-recovery-2026-10-28/canary-checks.json
+@@ -0,0 +1,7 @@
++{
++  "/health": 200,
++  "/ready": 200,
++  "/v1/bootstrap": 200,
++  "/admin": 404,
++  "prepare-local": 401
++}
+diff --git a/docs/evidence/local-race-batch-recovery-2026-10-28/checkpoint-checks.json b/docs/evidence/local-race-batch-recovery-2026-10-28/checkpoint-checks.json
+new file mode 100644
+index 0000000..7a505ad
+--- /dev/null
++++ b/docs/evidence/local-race-batch-recovery-2026-10-28/checkpoint-checks.json
+@@ -0,0 +1,11 @@
++{
++  "forward_check": true,
++  "exact_forward_application": true,
++  "reverse_check_current_workspace": true,
++  "main_index_touched": false,
++  "concurrent_shared_text_preserved": true,
++  "runtime_existing_files": 1,
++  "runtime_new_files": 0,
++  "canonical_game_files_in_patch": 0,
++  "scope": "Task runtime delta, local launchers/tests, safe evidence/diagnostics, report and task marker only"
++}
+\ No newline at end of file
+diff --git a/docs/evidence/local-race-batch-recovery-2026-10-28/deployment.json b/docs/evidence/local-race-batch-recovery-2026-10-28/deployment.json
+new file mode 100644
+index 0000000..271579e
+--- /dev/null
++++ b/docs/evidence/local-race-batch-recovery-2026-10-28/deployment.json
+@@ -0,0 +1,15 @@
++{
++  "image": "europe-west1-docker.pkg.dev/beat-my-track/bmt-stg-e7a444ab-images/backend@sha256:11f7d3a833403f1cf578b7690a2eb35ee96fc9842c6c8ac400e15d7be517b679",
++  "revision": "bmt-stg-e7a444ab-api-00125-ses",
++  "normal_checks": {
++    "/health": 200,
++    "/ready": 200,
++    "/v1/bootstrap": 200,
++    "/admin": 404,
++    "prepare-local": 401
++  },
++  "worker_studio_seven_jobs_unchanged": true,
++  "resources_iam_schema_canonical_unchanged": true,
++  "tag_and_lock_removed": true,
++  "finished_at": "2026-10-28T16:37:49.698231+00:00"
++}
+diff --git a/docs/evidence/local-race-batch-recovery-2026-10-28/diagnostic-cleanup.json b/docs/evidence/local-race-batch-recovery-2026-10-28/diagnostic-cleanup.json
+new file mode 100644
+index 0000000..94e838a
+--- /dev/null
++++ b/docs/evidence/local-race-batch-recovery-2026-10-28/diagnostic-cleanup.json
+@@ -0,0 +1 @@
++{"owned_probe_removed": true, "private_rows_or_hashes_exported": false}
+\ No newline at end of file
+diff --git a/docs/evidence/local-race-batch-recovery-2026-10-28/exact-image-tests.log b/docs/evidence/local-race-batch-recovery-2026-10-28/exact-image-tests.log
+new file mode 100644
+index 0000000..a22ed12
+--- /dev/null
++++ b/docs/evidence/local-race-batch-recovery-2026-10-28/exact-image-tests.log
+@@ -0,0 +1,2 @@
++...................................................                      [100%]
++51 passed, 1 deselected, 151 warnings in 108.02s (0:01:48)
+diff --git a/docs/evidence/local-race-batch-recovery-2026-10-28/exact-image-tests.xml b/docs/evidence/local-race-batch-recovery-2026-10-28/exact-image-tests.xml
+new file mode 100644
+index 0000000..8e05144
+--- /dev/null
++++ b/docs/evidence/local-race-batch-recovery-2026-10-28/exact-image-tests.xml
+@@ -0,0 +1 @@
++<?xml version="1.0" encoding="utf-8"?><testsuites name="pytest tests"><testsuite name="pytest" errors="0" failures="0" skipped="0" tests="51" time="108.015" timestamp="2026-10-28T16:32:31.593199+00:00" hostname="685b74f809d9"><testcase classname="tests.test_local_batch_recovery" name="test_matching_batch_preparation_is_a_noop" time="2.683" /><testcase classname="tests.test_local_batch_recovery" name="test_stale_plan_continues_without_clearing_results_players_or_old_jobs" time="2.166" /><testcase classname="tests.test_local_batch_recovery" name="test_missing_current_catalog_preserves_old_plan" time="1.768" /><testcase classname="tests.test_local_batch_recovery" name="test_disabled_artificial_profile_never_reappears" time="1.952" /><testcase classname="tests.test_local_batch_recovery" name="test_prepare_keeps_operator_and_development_gates" time="1.901" /><testcase classname="tests.test_local_batch_recovery" name="test_old_id_does_not_redirect_to_an_unrelated_active_batch" time="2.103" /><testcase classname="tests.test_local_batch_recovery" name="test_failed_continuation_commit_rolls_back_every_new_job_and_guard" time="1.807" /><testcase classname="tests.test_local_batch_recovery" name="test_postgres_concurrent_continuations_commit_exactly_one_replacement" time="1.784" /><testcase classname="tests.test_local_batch_recovery" name="test_local_launcher_uses_continued_id_and_preserves_old_journal[True]" time="0.018" /><testcase classname="tests.test_local_batch_recovery" name="test_local_launcher_uses_continued_id_and_preserves_old_journal[False]" time="0.018" /><testcase classname="tests.test_local_batch_recovery" name="test_continued_native_batch_uploads_new_revision_and_verifies_independently" time="27.620" /><testcase classname="tests.test_backend_resource_optimisation" name="test_idle_worker_never_launches_artificial_work_even_with_development_enabled" time="1.787" /><testcase classname="tests.test_backend_resource_optimisation" name="test_claim_is_private_resumable_and_exclusive" time="2.063" /><testcase classname="tests.test_backend_resource_optimisation" name="test_expired_lease_cannot_overwrite_new_owner_and_failure_retries_are_bounded" time="1.850" /><testcase classname="tests.test_backend_resource_optimisation" name="test_normal_upload_receipt_is_required_and_batch_progress_follows_verification" time="2.019" /><testcase classname="tests.test_backend_resource_optimisation" name="test_real_player_upload_cannot_be_attached_to_an_artificial_job" time="2.258" /><testcase classname="tests.test_backend_resource_optimisation" name="test_worker_factory_owns_resources_without_http_or_staff_clients" time="0.014" /><testcase classname="tests.test_backend_resource_optimisation" name="test_idle_retirement_preserves_contract_and_cannot_interrupt_a_busy_engine" time="0.001" /><testcase classname="tests.test_backend_resource_optimisation" name="test_complete_checkpoint_survives_later_failure_but_partial_output_does_not_poison_cache" time="0.003" /><testcase classname="tests.test_backend_resource_optimisation" name="test_http_workload_loads_no_unmounted_route_tree" time="2.765" /><testcase classname="tests.test_backend_resource_optimisation" name="test_idle_retirement_setting_is_bounded[-1]" time="0.001" /><testcase classname="tests.test_backend_resource_optimisation" name="test_idle_retirement_setting_is_bounded[301]" time="0.001" /><testcase classname="tests.test_backend_resource_optimisation" name="test_idle_retirement_setting_is_bounded[True]" time="0.001" /><testcase classname="tests.test_backend_resource_optimisation" name="test_idle_retirement_setting_is_bounded[1.5]" time="0.001" /><testcase classname="tests.test_backend_resource_optimisation" name="test_settings_validation_does_not_load_cloud_transports" time="0.316" /><testcase classname="tests.test_backend_resource_optimisation" name="test_idle_heartbeats_stay_fresh_without_per_second_writes" time="1.974" /><testcase classname="tests.test_backend_resource_optimisation" name="test_replaced_active_batch_fences_old_receipts" time="2.237" /><testcase classname="tests.test_backend_resource_optimisation" name="test_local_rivalry_plans_expose_only_existing_artificial_members" time="2.478" /><testcase classname="tests.test_backend_resource_optimisation" name="test_local_pass_recovers_lost_ack_and_keeps_a_bounded_journal" time="3.051" /><testcase classname="tests.test_backend_resource_optimisation" name="test_local_pass_recovers_upload_or_replaces_only_an_unsubmitted_expired_ticket[True]" time="2.192" /><testcase classname="tests.test_backend_resource_optimisation" name="test_local_pass_recovers_upload_or_replaces_only_an_unsubmitted_expired_ticket[False]" time="2.019" /><testcase classname="tests.test_backend_resource_optimisation" name="test_postgres_concurrent_claims_and_terminal_reconciliation_commit" time="1.761" /><testcase classname="tests.test_backend_resource_optimisation" name="test_original_studio_snapshot_assertions_under_explicit_admin" time="1.836" /><testcase classname="tests.test_test_drivers" name="test_explicit_gate_and_disabled_existing_sessions" time="2.304" /><testcase classname="tests.test_test_drivers" name="test_persistent_profiles_fleet_bounds_and_identity_reservation" time="2.498" /><testcase classname="tests.test_test_drivers" name="test_test_group_isolated_fill_and_normal_scope_rejected" time="2.148" /><testcase classname="tests.test_test_drivers" name="test_weekly_scores_require_verified_upload_and_public_board_stays_empty" time="2.489" /><testcase classname="tests.test_test_drivers" name="test_artificial_legacy_pbs_do_not_inflate_popularity_or_skill" time="3.149" /><testcase classname="tests.test_test_drivers" name="test_schedule_is_seeded_varied_bounded_and_immediate_first_attempt" time="0.009" /><testcase classname="tests.test_test_drivers" name="test_large_test_field_uses_verified_percentiles_for_matching" time="3.970" /><testcase classname="tests.test_test_drivers" name="test_scheduler_recovers_upload_after_crash_and_does_not_duplicate" time="0.003" /><testcase classname="tests.test_test_drivers" name="test_plan_lock_prevents_concurrent_writers_and_releases_on_close" time="0.002" /><testcase classname="tests.test_test_drivers" name="test_versioned_profile_golden_fixture" time="0.004" /><testcase classname="tests.test_test_drivers" name="test_all_track_history_has_200_distinct_drivers_per_track" time="0.832" /><testcase classname="tests.test_test_drivers" name="test_best_lap_histogram_includes_all_test_drivers_and_respects_record_reset" time="2.516" /><testcase classname="tests.test_test_drivers" name="test_test_histogram_uses_verified_test_counts_and_stays_private" time="2.019" /><testcase classname="tests.test_test_drivers" name="test_pace_calibration_drives_inputs_instead_of_rewriting_result" time="0.002" /><testcase classname="tests.test_test_drivers" name="test_failed_fast_drive_retries_real_slower_inputs" time="0.003" /><testcase classname="tests.test_population_batch" name="test_reset_is_test_only_idempotent_and_all_current_tracks_included" time="3.001" /><testcase classname="tests.test_population_batch" name="test_stale_inventory_and_disabled_gate_never_reset_data" time="2.207" /><testcase classname="tests.test_population_batch" name="test_new_generation_reuses_players_and_preserves_existing_best_rows" time="2.383" /></testsuite></testsuites>
+\ No newline at end of file
+diff --git a/docs/evidence/local-race-batch-recovery-2026-10-28/exact-tests-cleanup.json b/docs/evidence/local-race-batch-recovery-2026-10-28/exact-tests-cleanup.json
+new file mode 100644
+index 0000000..67911df
+--- /dev/null
++++ b/docs/evidence/local-race-batch-recovery-2026-10-28/exact-tests-cleanup.json
+@@ -0,0 +1 @@
++{"owned_database_and_network_removed": true}
+\ No newline at end of file
+diff --git a/docs/evidence/local-race-batch-recovery-2026-10-28/fixture-cleanup.json b/docs/evidence/local-race-batch-recovery-2026-10-28/fixture-cleanup.json
+new file mode 100644
+index 0000000..34f6b85
+--- /dev/null
++++ b/docs/evidence/local-race-batch-recovery-2026-10-28/fixture-cleanup.json
+@@ -0,0 +1 @@
++{"owned_postgresql_removed": true, "live_database_used": false}
+\ No newline at end of file
+diff --git a/docs/evidence/local-race-batch-recovery-2026-10-28/live-completion.json b/docs/evidence/local-race-batch-recovery-2026-10-28/live-completion.json
+new file mode 100644
+index 0000000..fdb3dd9
+--- /dev/null
++++ b/docs/evidence/local-race-batch-recovery-2026-10-28/live-completion.json
+@@ -0,0 +1,15 @@
++{
++  "jobs": {
++    "verified": 1,
++    "waiting": 2999
++  },
++  "expected_jobs": 3000,
++  "driver_count": 100,
++  "track_count": 30,
++  "local_attempt_results": [
++    "submitted"
++  ],
++  "server_verified_runs": 1,
++  "real_or_test_results_cleared": 0,
++  "private_identifiers_exported": false
++}
+\ No newline at end of file
+diff --git a/docs/evidence/local-race-batch-recovery-2026-10-28/live-contract-after.json b/docs/evidence/local-race-batch-recovery-2026-10-28/live-contract-after.json
+new file mode 100644
+index 0000000..2b4e5b1
+--- /dev/null
++++ b/docs/evidence/local-race-batch-recovery-2026-10-28/live-contract-after.json
+@@ -0,0 +1,34 @@
++{
++  "old_engine": "4.7.2.stable.official.ed1daf0bf",
++  "previous_batch_retained": true,
++  "batch_tracks": 30,
++  "batch_present": true,
++  "active_rules": "standing-5-road-gates-v23",
++  "active_physics": "arcade-planar-0.75",
++  "selected_vehicle_config_equal": true,
++  "previous_batch_status": "superseded",
++  "previous_job_status_counts": {
++    "waiting": 2797,
++    "generating": 3
++  },
++  "old_rules": "standing-5-road-gates-v23",
++  "active_selected_handling": "handling-0.15-original-slide",
++  "vehicle_id": "compact",
++  "active_engine": "4.7.2.stable.official.ed1daf0bf",
++  "changed_vehicles": [],
++  "same_driver_ids": true,
++  "read_only": true,
++  "track_builds_equal_batch": 30,
++  "batch_drivers": 100,
++  "event": "local_batch_contract_probe",
++  "old_physics": "arcade-planar-0.75",
++  "old_selected_handling": "handling-0.15-original-slide",
++  "cleared_test_records": 0,
++  "differing_build_fields": [],
++  "job_status_counts": {
++    "waiting": 2999,
++    "generating": 1
++  },
++  "batch_status": "running",
++  "track_builds_equal_active": 30
++}
+\ No newline at end of file
+diff --git a/docs/evidence/local-race-batch-recovery-2026-10-28/live-contract-diagnosis.json b/docs/evidence/local-race-batch-recovery-2026-10-28/live-contract-diagnosis.json
+new file mode 100644
+index 0000000..fc52c7b
+--- /dev/null
++++ b/docs/evidence/local-race-batch-recovery-2026-10-28/live-contract-diagnosis.json
+@@ -0,0 +1,35 @@
++{
++  "active_rules": "standing-5-road-gates-v23",
++  "active_engine": "4.7.2.stable.official.ed1daf0bf",
++  "track_builds_equal_active": 0,
++  "active_selected_handling": "handling-0.15-original-slide",
++  "selected_vehicle_config_equal": true,
++  "read_only": true,
++  "track_builds_equal_batch": 27,
++  "old_engine": "4.7.2.stable.official.ed1daf0bf",
++  "job_status_counts": {
++    "generating": 3,
++    "waiting": 2797
++  },
++  "old_selected_handling": "handling-0.15-original-slide",
++  "batch_tracks": 28,
++  "event": "local_batch_contract_probe",
++  "batch_present": true,
++  "active_physics": "arcade-planar-0.75",
++  "batch_drivers": 100,
++  "old_physics": "arcade-planar-0.53",
++  "differing_build_fields": [
++    "physics_version",
++    "rules_key",
++    "compiler_version",
++    "vehicles"
++  ],
++  "old_rules": "standing-5-road-gates-v20",
++  "vehicle_id": "compact",
++  "changed_vehicles": [
++    "electric",
++    "kart",
++    "forklift"
++  ],
++  "batch_status": "running"
++}
+\ No newline at end of file
+diff --git a/docs/evidence/local-race-batch-recovery-2026-10-28/live-preparation.json b/docs/evidence/local-race-batch-recovery-2026-10-28/live-preparation.json
+new file mode 100644
+index 0000000..81db49e
+--- /dev/null
++++ b/docs/evidence/local-race-batch-recovery-2026-10-28/live-preparation.json
+@@ -0,0 +1,9 @@
++{
++  "status": "prepared",
++  "continued": true,
++  "drivers": 100,
++  "tracks": 30,
++  "expected_jobs": 3000,
++  "generation_started": false,
++  "old_local_journals_unchanged": true
++}
+\ No newline at end of file
+diff --git a/docs/evidence/local-race-batch-recovery-2026-10-28/one-local-attempt.json b/docs/evidence/local-race-batch-recovery-2026-10-28/one-local-attempt.json
+new file mode 100644
+index 0000000..77498e3
+--- /dev/null
++++ b/docs/evidence/local-race-batch-recovery-2026-10-28/one-local-attempt.json
+@@ -0,0 +1,14 @@
++{
++  "attempted": 1,
++  "results": [
++    "submitted"
++  ],
++  "jobs": {
++    "submitted": 1,
++    "waiting": 2999
++  },
++  "complete": false,
++  "execution": "local_on_demand",
++  "exit_code": 0,
++  "command": "local_artificial.py --max-jobs 1"
++}
+\ No newline at end of file
+diff --git a/docs/evidence/local-race-batch-recovery-2026-10-28/package-proof.json b/docs/evidence/local-race-batch-recovery-2026-10-28/package-proof.json
+new file mode 100644
+index 0000000..9665128
+--- /dev/null
++++ b/docs/evidence/local-race-batch-recovery-2026-10-28/package-proof.json
+@@ -0,0 +1,358 @@
++{
++  "parent": "europe-west1-docker.pkg.dev/beat-my-track/bmt-stg-e7a444ab-images/backend@sha256:225feb3f4d79075c1ad37579de3e1568eb7500fbd5edbb0857d4ca037f4d82b2",
++  "image": "bmt-batch-recovery:3194043576c27496",
++  "changed": [
++    "test_population_batch.py"
++  ],
++  "unchanged": 345,
++  "canonical_files_unchanged": 174,
++  "hashes": {
++    "admin_models.py": "b113b24d32b55aa0ba48692a0a19850d6707aeb787abf869d62eec3aa717fc1f",
++    "tracks.py": "8ef885448271e3d6f0712522e321e5c4b4c2b42fcecb31132f381ebbd9612a99",
++    "test_drivers.py": "89e2e61bfbee7a29100fcad202ad583124e646ca3ed8f55424b2405345ae99aa",
++    "job_contracts.py": "09f4281db5d11abaa7a359fcfa84dfd9ca9e172b4219cf78973af26ef3651515",
++    "test_population.py": "7709622fb6348c277a237458c124b2097dbacfe23069be9aa0e17cca1e207d8f",
++    "__init__.py": "0282e9556e8a643eb4acf745db9df9f7b3064037c6d264dccbc1e8c71929ce88",
++    "queueing.py": "303337c38e0220c64bd30259f04834d3f2d189e2fb8c4daccf222eac5b64cbf8",
++    "resume_models.py": "57d5d4d17dbc4addc316adeb2bc0675bb8ed10491fb6c4221daf4d0e6893678c",
++    "contracts.py": "8fdea339d45c7970839974d40b196add4bfdbe804d7d7982ce09dca7895a471a",
++    "cloud_setup.py": "138b5112676b67f968843f58f5dea192f65ca2f0af6e1697d1917025a40b2d5a",
++    "usernames.py": "bb9de87ecf9065a1f783c4aae1b06ea739fad950ae163299596bb71cbac0051f",
++    "runs.py": "8c7594614a47a6ccf72ff50aa17488b1166141a1a428935efe04462c42a43c79",
++    "resumes.py": "4c2406e228f6446057a83479b424e224ec6b940ed44e0f85e79938dd8461410f",
++    "track_models.py": "8f785975089e42e978785662eee646d9bdd60eb3d1dbeaf3d6b5866104f7c0a0",
++    "migrate.py": "83ffc014257128f1feb5b4533fc430e4213e51c0de23f2ab1587bd873b0c209e",
++    "s3_storage.py": "13d4697fd1394630b3b9f9c18d4507e8ea55e5392e9bb6caac48a0149668550f",
++    "app.py": "a56edb4df4eb182f17751e4cc09c89c963adfb7970aa4882973be91afc4535cf",
++    "auth.py": "4fd62d48575b62d36c03019a0ac47250b714ebdaf9b77585181c9af86b20dd96",
++    "identity_models.py": "5fb3e37a019f7a67c1bcc249c3386f829a656804d07942228ba50c561812d4b3",
++    "board_cache.py": "39cadc2a16fcff17e9ea253e4d4230dd24a85f6027e479a8aa8f5ad5b95b7a7c",
++    "rivalry_models.py": "2e635f10e1495a5d114a21cced6b4aaa040c9c9586d4be695086e3cafb46d5b5",
++    "test_population_tool.py": "9ed610227a9796e8e2537e63e1b7c4f8c254e6065caa1cd56252129ca606c412",
++    "test_driver_models.py": "9605bb4d04d329f2435f269959342caf88c1fcadbe5a4f71252d4563642cddc0",
++    "cloud_smoke.py": "0196d423c6010a89fef1a35e538a034a9e464a11f9eb8f5bad0cb851e830ca18",
++    "countries.py": "5776088f0266067c43ef2b36252477942f261d2e5326b5df31120544d2dd5d3d",
++    "purchase_lab.py": "37d271a10b2d85de09e93035e5cae4a1048b38258b70cafd8082520c3f4b47fe",
++    "readiness.py": "45f70ed3ba78adf20143f9db2a3fec0c5aabb68dc35ebee4db1923378f2cea22",
++    "load_fixtures.py": "9ee8cbf5c542076997eb1e2b32a4233ea5ce6480020f50a290b13a4bfd438901",
++    "browser_auth.py": "23fb84293d9418243d3f0175b5ea108162f0370ceeec100a3b25b55bec4831f4",
++    "admin.py": "3c0817ca66f134ecc17b865a244f03e0f92a4f5a729053b5be2b3812a47ecb24",
++    "maintenance.py": "a0e0839b2e09463e4aac3c1bbc550f84784d2bdd04e314575fcac357fd5a0d4d",
++    "commerce.py": "5207976dfa59814b6ba1d13cb884d2db11e5ecd96dbf518e6113a6ff2f14ae3d",
++    "config.py": "f11ecce03ff9d1f7a4d83871dfb58b524180658455e7bc5add5a19ad6e83754b",
++    "db.py": "919e490f935fe371f2db726e87f442feb8ff328c91b84a95abc7227894ab4016",
++    "verifier.py": "62af25548c4d179ad74633d525ba3c82fabe34a0ee2afc5da60ff244baa5a24e",
++    "backup_guard.py": "ba5e9012be8f8c06a65982a0cf58e09b0e73a8c525787827f5c09a83999eba83",
++    "worker_lifecycle.py": "c1cc291b059b5041f24d61b687c5606943a83a72e04d58c42157ceff4f9e7965",
++    "loadtest.py": "df48e41b29e41c033c600a36c19aed04e42ab0490387ce8ad6788e2cefbacc2c",
++    "security.py": "e2807c74677badf6dd5b59e2dde89a9c49ddd7b657cc6c861c9aef5c1aab565c",
++    "object_models.py": "b620cc637d1af3795fc9807bb6a2a640746ef1deb5f5f72351c39ad2bfcf0cb0",
++    "operations.py": "c5b0d654114e17c9ba98fb1c1b4a7495d92d00a98daa6e1fac9e734fd8512414",
++    "lab_tracks.json": "e2380e6418d52c4a62faf8b49f40d61df608674bf5701662d2696fea4ed41be2",
++    "rivalry.py": "41dd3a739fff497ed6285915150cdab2ffaeec4dcd8904c63eecf9e032c62e0f",
++    "cursors.py": "b7c78bd6de6a962db78286abbce51608a59e59947c3f1fbc2c8a8c4b74aeb81a",
++    "countries.json": "dceb1c24749287fcde3ad5fd8a10e422019f5846b266125e3ccf09a135f2690b",
++    "discovery.py": "176e5ee64c2cc50f554d23d74bfad12b431dec5666c86ec9d5a52850e4bee824",
++    "storage.py": "71526951f4c41015471ecfc07aee6349a1a20286b593d17396628d3e836986fb",
++    "test_driver_generator.py": "3c0d0ba0d4b541d70b292676a5ecbae862573f7a0ecab783f1c88a1c24980088",
++    "official_tracks.py": "fc89d2d40a9be2c87ff80b9a015be5553551adcc9528346c78ffd69a6986627e",
++    "gcs_storage.py": "87cf3b470d176cfb20f6209fd83f174073c86f9a496672d8babcc0899947962b",
++    "purchase_lab_catalog.py": "eaf2be538a639bf45197d8aae8a2afd0a7b3e2d4fd12cad4b949dfb8f3711c0c",
++    "replay_wire.py": "948f427c2f59b208be360dbfc5e346449183816fe5757d774a5bc48484fbcc7d",
++    "commerce_loadtest.py": "269db3d8c2418f6dc32283868211424aeb4acbf459ca7683b9e6ea380a6764fa",
++    "worker.py": "ffc1438618af8c0820c0c05099cfb51f240e2257cb72affd60dfec7560c89a92",
++    "LICENSE-countries.txt": "8f1195d55a2fd315a07d812328470ca9ba2abb78c8d317ff19619d5125e00cea",
++    "commerce_models.py": "03b7ee961bc098e0eb1876c3eccc4a010095ba515fda52fb3167276ba63201ad",
++    "middleware.py": "949aff218ce6c43f3c6ef4a82cf327d91141c0aac076f03c7399fdf6f5b9048e",
++    "admin_commerce.py": "94072a42251909c343e28ffdc8bd296d157b485f261c24c287e094a9432bb331",
++    "automatic_test_drivers.py": "e8a9106eb9bbef5ad0376527d07488dde819f37594d04f734845a874e37eddc8",
++    "observability.py": "173a19ce0b73c6187950b8cbad5e65d2b5a465016435f06ec5dc7cffe1fdd754",
++    "test_population_batch.py": "3194043576c27496c5344b47f60e6fcb72e978191527894589dd78789b509313",
++    "local_artificial_races.py": "6ad7aa4e64bdf7dffd145a1502376bbccad8ba23fc3432f2a9001a51cee88066",
++    "publications.py": "a82b0e5149e46350b3c934d615a2cd5a5922ee30e259fd464d6859e2dfe18e08",
++    "studio_settings.py": "08c1458e26998bc7176fa1b3d17072878a7994a033255b35a090327bd769eebf",
++    "http_routes.py": "54f2afe87d846f686c92a71f14c8d74fe74e3c3f746b434c85cb8258a485d69a",
++    "publication_worker.py": "bad9910560b04b4f99588acc4ce0cadb0385ab330f7549b77fd6dcc8c023841b",
++    "studio_usage_cloud.py": "aa9e67f17df70821a21e4131a65437f65c0f6b8fb9f71719f725894337d60606",
++    "worker_app.py": "153a1ce16edd4380f29a3420eef014d884c91f095c96a1d491c1da77eab4cc9b",
++    "studio_usage_settings.py": "df8aa9314cca88efbf74424bab5e9c5113df6a86df793632618a865e63457105",
++    "studio_usage.py": "d2b174c1810a419808126dc2bc45ce9b77d2eb109c27766c13ad5cc17bd71b1e",
++    "studio_governance.py": "a4385cec84f4a1d6335bea5ad22437c1ee4b54f170e4fa66a2c06dcb3f20c2b4",
++    "histogram_http.py": "3f6199fd5c6d84a6f7849b171e62ee7968afe436edd7e4465b0c6031593b6547",
++    "catalog_builds.py": "ec4966dd144ee0990549611a97d4d015fe8ddab9915bb3f3b30827f302e6ab4e",
++    "admin_purchase_controls.py": "d8cf806108cbdec6e014e4d42443a9369b2d93ed29a3933f7ee621faca0aac53",
++    "telemetry_models.py": "6ac0a3f3a2e9664803bcb948b723741a84ba9aa094e495d2e61be253cfb86e9d",
++    "pack_io.py": "e0629c31bddc7a62f86fc1888bd952d6e962fde1dd4e8acf6e210f0336a17f29",
++    "game_config.py": "0191cd690179c87b9791950393d036dd57beb2d9b7a74c66ade35610e678bf3f",
++    "studio_case_models.py": "ddda3e81661d86910ab601b8a92264570442601b4b35b5c31fe98e97c2d4d0df",
++    "appearance_authorization.py": "29afc7a9a6ae447a9c8973d93b016e1d734a78c669287e42186e6cadda1118b1",
++    "lap_bests.py": "d75d660b26cd21680a03c6eb151e4fcb19101528fb1063a6fae1447a1a1f8350",
++    "race_statistics.py": "d43b0b2bc6b2a005bb945a307b9ccd7eff9f40a8d31c380de6ef03119aa6b516",
++    "world_ranking_rules.py": "bbe314a3f7a9c7c29e509733b7d98281f0c5463df109fe0fcea772327945a5b9",
++    "community_models.py": "d9a20222debcb1b52fb8baeef0dfe20e63b075740a5dd86b821605ba6031830a",
++    "studio_platform_models.py": "916df8e0f9dacd3c2f3509ef3f05a3a333631500ea96e7961f45b4481cf71abe",
++    "publication_models.py": "b5a75e6f22777132368bdf20765820b147795dce86a7d8be83d4762354027581",
++    "client_address.py": "2f5e1dfa8a2df492bdce4ae32a6e54647d8757b8984f4e4c6114f1ef38e8a475",
++    "achievement_models.py": "a8fc58f415af2035f4b19fe816523c5e3b7d8cf365f5395cdf030afee05871b9",
++    "public_pages.py": "a74af44e95e3839b231fa65f949182c5fb2cea90a658bc960267fe155b6da212",
++    "privacy_pages.py": "1fdef1baf320407539ea7de8875d0e6e076c27d05183859fec3e8669e1db51e8",
++    "erasure_journal.py": "4d13b4c5db05d0dce56b9d567dae70903ab72842ca6d9fd6cfb2234619a33bb1",
++    "appearance_routes.py": "56f7a313751b8df22f217c39d7e65724a23e24ac3bd9ee2fc70b1ec722d3fb79",
++    "studio_watchdog.py": "3c22d10fcb767f3b4859cb89da8f071d81a864b85754f2607a490ea25ab6411f",
++    "telemetry_processing.py": "b3451bbb130e69a87c4538574f12fa3eddc8f40cfb128552cedd834ca9154021",
++    "admin_support.py": "44df16a6791d5ce41ad9f19f1ae65b65d66a50d1eb22a6f8351044d688c02905",
++    "discovery_guard.py": "75840ca2918bddeab03c0135add2756d11059d9f5985c56e0c8726fb3091c7d4",
++    "reward_rank_cache.py": "2f46c75e981d0cff001732790c78168d84ef29026e115e2d631748adf4224fe9",
++    "http_server.py": "5d08a15426eef30b9427a2863fabe16ba73a2f665fda010a23231338b8ec9334",
++    "studio_simulator_tick.py": "2731cc24afd9fb83b67cb97547c206e99c30c761f543770f02494540aac8ed6d",
++    "challenges.py": "7d53f07b54c310411847dbccff11a9ebfec39c7f036d7ab06b4bf5fb0237af62",
++    "cost_archives.py": "5c4ef65949b2793326161e6fb327ad3e00604943eb48bced7ceae35d68838769",
++    "studio_jobs.py": "37461e2fc22681e88318be7ba694bf73df365925d52d857ffb152b1db7e99d2f",
++    "ghost_wire.py": "005f48fa4e3b3c059fa3b5b45f39c38954b9f0eb7ec9d9c5f632601ef7bb6cd8",
++    "ghost_http.py": "84beb3e516966ebd1253bcdbdcdf1ca7fea86f739a92baae2205096c7d5ffaec",
++    "news.py": "bebbd80ade2f07249c0d253f339c922a7a3fea49d8eb60cca77cfd0e1384f37b",
++    "leaderboard_ranks.py": "ed0918694174e5729d862130eb824d3b0c9514df2fd52f683b0248143b618011",
++    "telemetry_projection.py": "f0032a268477d847dc2ca0762308e25d38bb6d532275bee1e46af3006fab646b",
++    "studio_rivalry.py": "1d3717746ab513d9155fb527544bf9f8ef6624e7719d7113edd166f3cbf273e9",
++    "telemetry_queue.py": "b0e5eaf70d0461aee2a6c4c8b5f604525f9a34711da924da9ddaec180371dfbb",
++    "service_worker.py": "4e84e128b92280a54d8603a91d6c22c93e59914c7d96362ddebb1ba87d4770c1",
++    "name_moderation.py": "fe2263b4ef00fddf23389e672c9bbf0350453c03dacc11dce11ed6fd57bc1d23",
++    "studio_ranking.py": "d51538fa6fec350018eaf5fd48e8fe958060e8f05e4f5644a977d0be8a56a46b",
++    "studio_release_reports.py": "22e9bf65ae854c45ec71e05ad4bdaf324739ee517b4667d5f00438e00fa386c3",
++    "http_transport.py": "f52bcde603ddae3f2dfda85bc650c161b1e4597a207090dee92785fa02e033a3",
++    "discovery_daily.py": "0d269dab6e1afbd9203edd789120b4c109c3a3a84bc6a05d65808a3f521b464f",
++    "studio_alarms.py": "c5838f1bddc113039eb955302eaa6e596e50a0a410ec7d7aa4f5dead66716f8c",
++    "background_work.py": "44afdb6c3fbcd613f78683760e3980be088fc393a75ec80962f9eccc047cec73",
++    "game_config_observations.py": "e0e053db9aa95cb9185543e7ad3521446b2c9307c6a89a2b6ad3a615f0d4961b",
++    "studio_exports.py": "6cd146774c11ebd45671d2995194f4f8255e5563e60ce84300eb7de5439141c5",
++    "world_ranking_worker.py": "4b24790c95fae221ddc606d71de8fcceb89d538b56d5deb1d457fa3c0275887e",
++    "quality.py": "8ada194998f8a3ea03567568a8510a845681d4ec469136480dc715948fa206be",
++    "achievements.py": "a6201f1bfefcb90a0821ceb2c003fb90fcfa4aded9453297b7ad8797bcf7429b",
++    "studio_paging.py": "2edc44c49efa7964c1ab92869eca2dd37acd3bde7d0033447aed8347601d2fd2",
++    "discovery_v3.py": "7512fd1e8dad1e60da488077eee15ebe4eb913b175fe9eac139ad634a0353cca",
++    "studio_catalogue.py": "0b17ba39f0042101a4de4dfa57dfa885dcc8fe9be97dcf1294df3cb51c9f1302",
++    "admin_ranges.py": "aeed34115d7fb9fb2749b2832e112da458335c3aea4767206dd95b9bf4203b59",
++    "track_links.py": "ca25f94640951d529818e80bfb56afd4d9c0cd05c305f299c0773f7ef4d92d6b",
++    "http_costs.py": "5d4cb08ff6b61df79ba4c64838b0bd86f8fa06b727c9ce9a212dc0157e3fd8d9",
++    "discovery_erasure.py": "7d95ea0083003fcc45e17b714890a5f028519b5aa2643f4cb89a8c60e23663f4",
++    "world_ranking_build.py": "c798c75c12cb4b735d9c247a5ea4000a4b4fa4bf5ce6b073de870d5dc10c8c16",
++    "packed_storage.py": "6af056e8db52d8dfcf4b8e3bd593d8af7fe6bd10ab22d9857325192a9c0e2261",
++    "world_ranking.py": "5ed2d2179373e706c55677fae8260c909becb299d5ce9e15713f4dc61dd57fe3",
++    "run_signals.py": "debffd27a713e31d80762da827950427ea30a10441c2a083d8e44c7bd18fc681",
++    "economy.py": "ec099d643ae9459d6fce42361654c845f6494a43b65d666f7b84dabbec305626",
++    "discovery_models.py": "fd29e6a559d333e007c533694f191fb714ddb8e2facfcc756169914d1c39347e",
++    "studio_reporting_admin.py": "377f34a2fb9c7fe8d578cc854e1541ceed2b17eed407b914d07ee23447ef4eff",
++    "achievement_catalog.json": "ac23dad423156be2011615943e43d756af6ab170e4db03865dd26e0edc08e51b",
++    "studio_metrics.py": "d6a8c10c1e6cd595ff966fe94db2f7e3534820daeb5ed409bc5059f845e69232",
++    "telemetry.py": "ec2dc762944621abc4f2a2d3bcaaecc14b5bcab4b02817f151477e5cb1543da8",
++    "privacy_models.py": "099618b925b513959983c51da6a7225134fe8c4bc455d349335a03f277f45084",
++    "discovery_query.py": "88eb62ce2dfdd0fc3258e6e39473f9197bff2e20d1683a1bbf984e31bc4c7651",
++    "studio_identity.py": "27f74c4af5f1eff750343efbb3137b9a86f2c4e2223393820112d7de1646dbe2",
++    "vehicle_appearance_catalog.json": "ca54c034d158e8407fb71406116cfa461cb19297e7da8f478a8178de83393f35",
++    "world_ranking_models.py": "cf8003d25f02aa3f5b2f8a4a51b0ed3f5170da06595e00d55c0ca5e37ad046a5",
++    "trajectory_verifier.py": "916ea000a3b09afdf6e6a4a67ca03253820f1b1b44ebfab72f2af76c29a5a689",
++    "studio_analysis.py": "60af7e1a5e188205fe76147c66567b7204282419581c9ea0775131cd339822ca",
++    "reward_ranks.py": "d999286bbfed51a3ee39483834b421c30252b35cbea6cdcd53f25ec1f28c8011",
++    "product_worker.py": "7417a5ec1d33b0a6acff9e6aec077c8e90a67c0f1d604e4873eda13529ecbbb6",
++    "completion_reads.py": "d4b844e491485e8bbc3f961fa8ff35f51bf9bc6449400ecaa63c3777034ac19b",
++    "path_wire.py": "56ccb5267df71908367e17d421ca5dd16ccdb9e87bc09b3f627abf6ce64af7f7",
++    "game_config_policy.py": "99a02234855a00fb70ccc046080b4c034b321118befa0c1a42a9add67d53f9f5",
++    "histogram_population.py": "fa9890052ba8e604e86a526aa63a1a03450e4cbdd01ffdf3c549e8bd9c975b3d",
++    "studio_finance.py": "c6f06475538c6f59f78b1002bb9696f3013165988a950a5167019cbefab23516",
++    "product_analytics.py": "cdeb07c7d9b9988d0ecff23afefebbbf7c66a196020be0718763ad788661c073",
++    "discovery_activity.py": "92b09b696c0d3ade8ea9b408c1bb83133f407c8bcd221e2bace2a91fa6e5e013",
++    "json_data.py": "fc35011cfdd2a9df4aaac1db00add8889df0a7fd90c5533e2473c056d77b353f",
++    "studio_reporting.py": "a66d007fe6544fa4c41115d4f682ca7b8f804ccd96571b1e8fb3941d56971c2f",
++    "track_of_day.py": "deb6b3058fb3ed31b24f50b63eab9abf38fcbd174dc286bb00b40252aea57e05",
++    "discovery_projection.py": "f530173656871d8c7edd2f28117da395ecab105cfe638db74bb5097d762eb5d2",
++    "studio_queries.py": "605a7c825ebb52a629833d9941aa370e5feb4f3ef394346229bc4c36e55759b1",
++    "vehicle_appearance.py": "a811eec52d3be07229706782c958f1e74ad496f2e982b460d5e7a172b14d7f07",
++    "admin_player_grants.py": "5ea154ba24210b55392a3431f8bdd2adabcc5d0758af02491639c8eb4e4cdf41",
++    "world_circuit.py": "643e7cc2e7528a2b6ae10c4e57f4e643dc4295028c63c4d2d641bae88e37d07a",
++    "network_health.py": "0b60338224c91d15d6c78a9624c09a5a573c5136fad4d58f40ebfb4af4c6723f",
++    "network_models.py": "af35eb5a097ac3331e011d4a35d59ae3231353e91a5187315f0b2305daf91366",
++    "studio.py": "306ad4759ad1cef51441e6fbdcfc930a24854fe373cc24dec885cc4d793f7a21",
++    "studio_http_metrics.py": "a80bcaa9cd4f4af32ce233c3545bd4100c6d4462d95e80eb5f84db2a45f1d608",
++    "studio_access.py": "b4e5d3f5f1aefb0d24b6653a4295d7d12b49076cd5de2a6386c0984caa7021db",
++    "challenge_models.py": "c4be95058071630ad3b8dad614321909848af719561c9dbf338f02b7e94aca61",
++    "creator_achievements.py": "d84df0c69ca1f0eab92033844b99629d3265097a4d59216f0896b24807080fa4",
++    "news_models.py": "fa1dd5a1087a452677be69709859f3abd9a5db5f91b33502a6303aad0a81bb0a",
++    "privacy_deletion_preview.py": "e9c4492c46109276469b0b4fe53428ad0a9a43876a9f5eb6580ed5e846e4fca1",
++    "workloads.py": "2c8ec5cd644a67f29a59ecd89e01310ce0ff2b9b0a9c343bb47492a7177c4e68",
++    "race_acceptance.py": "117f756a0969f91abc63a5611d10f721fadc264a20b97dc7a7f393c824fa7621",
++    "database_privileges.py": "e8448169c3b71f87de59057435f1d2181c53842c48351301e69132eb8c4a4bff",
++    "local_object_listing.py": "da4d2ae5dddc74b2f608837f3ea0159a34c087ab1c343dc51dae9a4e2f0bb76a",
++    "rivalry_reads.py": "66f5c4c1d276059e2181c506d8c89e06991ceacaa38272544def1f16ae3b7ef2",
++    "privacy.py": "c25f6d50fa89ee817126cb46a6ff90f26a3bc333ee458b1df3669eaca527c653",
++    "discovery_worker.py": "f772c018e60fdb678592404c06c1dcf61474c574dbe84ba965c4c6e0101c136a",
++    "publication_storage.py": "2de86536132666d5c50c621339f5f815d181efa41f303a94e4edf272c68444f3",
++    "histogram_snapshots.py": "75d95e3bde62d61879f79fa73c347d728bf7d603cadd4bace656654edc4b9830",
++    "studio_simulator.py": "4f2c2fafeb17a7aa04a1a50eefb5cc63c750113cee5115533f89b7d5b06bfe59",
++    "driver_work.py": "57fa82ae7ec44e12d426f625e5d3a3bfdd536c65954d26fe5cf58acad2fb30ec",
++    "quality_models.py": "f11c8b165df00391e1a5afb609eda1a6128e9f26ca9b5c53794d5d290bcf75f1",
++    "challenge_series.py": "24fdde938e2d73d90c278b785d99877e58e6a560da24b13be99dd42c439fc929",
++    "game_config_models.py": "15e79109d11ce2fe134a0050cf18e870e6b81f9e75e9a9cf63c6c4725606e8de",
++    "rivalry_planning.py": "c060a0aae3769cf6cf35fd509609463826528bca47d46be412ce3d04dd44bde0",
++    "race_statistics_models.py": "07fdf880b34d6cf52933bcc2ff552bcb14b85be6687eb966db2c80dd96443928",
++    "preview_wire.py": "a53df5dc045c13a74f1e0bcfd274e9d22caa778c89fd76f5f595ed235984c312",
++    "studio_providers.py": "b48468d9eadacacdd43f8916fb0ae0d0ed237bfc0cf6c8c80c2f9a7196ff2d4b",
++    "object_garbage.py": "dff3c404e0116005ab49637ea991397d930044b123c2ef32c381d862537c1e3b",
++    "telemetry_erasure.py": "d59fe7cfbc786a60044af2ea2384d52742a6d7dc2ea60c6b0524043cc839f1d3",
++    "economy_models.py": "f28aedbea9ca8d919e854cdb7b5b2ec8dc82b0bc6230d4e3ad008df5c21400c4",
++    "studio_competitions.py": "38cfc6608539d29acc3bb080f1a12f39b54a5a50d0dd3fa262b87556dcb85bb4",
++    "studio_cases.py": "18a1e0b8b55b570e367204b2c7c9575f20bf94dd062ce37955126e0ca4a693dc",
++    "discovery_retention.py": "5ef8987f5fc268aa2efce962bb28a8067935f00c57f831f7b7803ad7451fe33c",
++    "immutable_payloads.py": "35d5e83755ba6832c4c8db3bdd9779f6a60af7334093daf5e8358287adc28f9d",
++    "cost_maintenance.py": "81ba2c079959e13161bdabaff447fc6a446c6f041e376d23183c8ccd071b92ec",
++    "studio_simulator_scenarios.py": "9eb8de0ffe24fc815473843e33a354357cdd66600a5dc46a879c729feddffb95",
++    "non_improving_runs.py": "34f08cb6fadefae2d9b7100438b69c48cf7e2f4e25437e8cc8bb8816ba32f617",
++    "telemetry_queue_models.py": "27825e64952bdc0281fbc8f1156ca708ccea80528eaad2b193c8dcd9b13baf10",
++    "provider_proofs.py": "52c3e5bc51bd5143b82067728f2b8b006b69b9342a344655353b6dcc1e092a4f",
++    "community.py": "6bb6c177bd25ded9ac7628b36332c7b1e5943638a191b12b2ee82a6c67f9b786",
++    "studio_experiments.py": "a8d1f69cb94c0bf0de155b5a045e7ca01eb49808e443c4f1a53a087ac3a0b644",
++    "studio_incidents.py": "1a57d32f44a1a1bb2889c0dc7a88aa0d16215263579ad8e883ef327c41abdd00",
++    "studio_erasure.py": "8661811a56645b97b6516ee35d8b9a09931ba2ca4f6ef7af9bcab553dd02243a",
++    "studio_delivery_service.py": "08e240f6ba172dd997e05bd0d50d8f417058958c8319821b8c85c4392ed2ef17",
++    "migrations/__init__.py": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
++    "migrations/script.py.mako": "d7558dcb7ce01d3e44830898336d3027de66e5ffdb1491c0cd27f6159b021902",
++    "migrations/env.py": "948c77c8ee43975da1b4a3689477635a9d7ec42130832794f105d4cf18463e72",
++    "admin_ui/style.css": "c8140e4086d082572e8f38465596ab8d06891aa5bd49f78aadd07b8e78b7700f",
++    "admin_ui/commerce.js": "ff6be33bd411e40fc1588c8a739f369a4e7fc55d452d3ce1b08b3db73eeeab93",
++    "admin_ui/index.html": "3a8984e06cc15f1edd549b31491536bb92c76285216b33e4d42ebbb5ce5fe4dc",
++    "admin_ui/app.js": "1f01161652c51631938aea4875937a6f2d95efaf299d4d3012f02e1056846e9f",
++    "admin_ui/usage.js": "c5ae717744fef99fa328935150e4197f99c29d72673318413d7b10607b40b848",
++    "admin_ui/usage.css": "838f1e0ff30fed2b2de2b06708c2c5ea09d2d15cdf9e5a0c745d1ebca139af19",
++    "admin_ui/product_analytics.js": "08034b668deddba9ccf35581c73ebff175f2907531ab2d11d6f2d090e0923cec",
++    "admin_ui/operations.js": "5ed392c21b70eeb0d0cb26a1f2ceb18f011a4b63e661d4fc51409d47393f37e4",
++    "admin_ui/monitor.css": "bb93dc068d5a28a72233d77cf2ef168c2ccef6e84417d90c9535ee4999501a2f",
++    "admin_ui/game_config.css": "2d61c55db7181d60b7aac3812733f06a88a5f67bbf6b195eb098178c8c60fea9",
++    "admin_ui/platform.css": "c9176bf2252ce29a38997a7f8e48cd1f46b94abc87d3a09ab3b9463255c8fda8",
++    "admin_ui/monitor_views.css": "864b7d4b0621b81dccea0fd5e494cf0ad8d61d638d4fa4512d8aed4af795a225",
++    "admin_ui/signin.js": "448ca998a78eced11a05ea8e7ffbea50acd7702552ccb675d5a16deb491ba561",
++    "admin_ui/insights.js": "299499c2c172d2b88f452e5d2f2c56404545c08124f100b5a74c3dbc441b266e",
++    "admin_ui/monitor_views.js": "ca80baf4c6d279a0d24d11abc89bf682b96516910b1b6e8ac91d81ac7000958f",
++    "admin_ui/monitor.js": "f6453351c02f3507fb7bbc32993be87556fde213c38a1011c5300cc6c34e0090",
++    "admin_ui/catalogue.css": "ca8bc8e0aef0f297c7f33e938cc81888cd2b4a90e5892526f240d87d24a45c45",
++    "admin_ui/ranking.js": "4f57c37077021622a7abcc8ba749fbfbcb5e5965c3676025bbb62f8e5c5a959e",
++    "admin_ui/studio.js": "72f7059ee376968e23897912c837f436607aa798d83e42e717b12d4f42d078bf",
++    "admin_ui/catalogue.js": "cca8f978d792fdc7e7ac8e00a7bc6b70749b8dbdf342cccb0b2871814e765a5f",
++    "admin_ui/game_config.js": "d977fa08aa3a1b03083161e310ae4a65a6650939c9a710d8a54c2999f7876b36",
++    "admin_ui/insights.css": "be72be53037ce1441b497363018557300411bcc91fbc9cf7583407e8a3d5a24e",
++    "admin_ui/platform.js": "062b8deaf3f3898da03c96696b94839c5e41729d372d616160339c50b2ede8dc",
++    "admin_ui/support.js": "8192cb0823d0886e9994791f5ebd5610855eb57b9873357a6721a5280bdaa7c5",
++    "admin_ui/network.js": "54c9c57b1f6750691a98dfb8ce828a0ce4d3092568f33e6eb3d637756bbb3cfc",
++    "public_ui/winter-race-v1.webp": "96037452919c7a7415fedee61091bf161a1e544dc8510b639ddf563b1a958729",
++    "public_ui/BarlowCondensed-SemiBold.ttf": "7b619d14bc2327509a9ef32b0890f709626f7ecc9ff61191c2a4314c5499d2d9",
++    "public_ui/forest-drive-v1.webp": "dbe23e8cfded5bc8d6b8eaec95f90d914b2390fe3f87607f9823ac2123bfbb71",
++    "public_ui/track-editor-v1.webp": "cd8d0d743e53ca6e424c3c068623755e5f35951da1bab392c2ba696600f120dc",
++    "public_ui/garage-v1.webp": "bd5ca7a96b7a6680c510d648b7776bf4b0cf7321b571f2837e77299a09dd71d6",
++    "public_ui/index.html": "994f312db218031dc2aac95754783fec8b6da7874500b1731a7123fd01d1584d",
++    "public_ui/mark-v1.svg": "b2550a2c6cc49feb70e241279f96afacf14844262009f1552ebc435ff8b18189",
++    "public_ui/Barlow-Regular.ttf": "95aa02c7c43096e0dd44d787ba6216864a67157e402adab59b35572e0c1577ea",
++    "public_ui/style-v1.css": "b5e95b574834cbf55afe1c1ae20375b0b744a1524b3c81fe6b186b46778fbdd3",
++    "public_ui/worlds-v1.webp": "80d1d1e3c1e80e2cabb0e42f8c1676da3b5b8f82913f0ba663828aebe6f8aad3",
++    "public_ui/font-license.txt": "186d750eb496a4c17a76385f82be6aea2ac1cf2de074a811d63786cf374ea73f",
++    "privacy_ui/style.css": "949d04d4ac00a940d2f5020bda9c9a49075986448c6e36986ebbf2efca5baa23",
++    "privacy_ui/deletion.js": "7e939426a4b18b621c68fcdb8f5eccb4e6547510647f355507b5b93412536719",
++    "name_filter_data/eo.txt": "0374d76be1dbc77c61362d6e51305e1e4c546b7f734eb96e0bdbad7fd2a6ace1",
++    "name_filter_data/fr.txt": "79763a705e08256b393952852bb63aa903f4485e0ef02f70735f5e50efff213c",
++    "name_filter_data/no.txt": "e55b46bcec1ea288256924523a997d8d99e124c9aa3e61cbbbfaeca294f745b4",
++    "name_filter_data/policy.json": "277491bf19ced7cac430ee8b32b26a801923d4d167efbad19f668c609a485542",
++    "name_filter_data/it.txt": "d413f41018d58aa79d2c4809d0161f29ffd5652c4dc34c5b7b9ade680ee5599a",
++    "name_filter_data/th.txt": "835036d87a3a67738e388cd6de92e3c995c186a1427b4e830fe7b85483c257e7",
++    "name_filter_data/pl.txt": "98cf824e3692255645c5a72d5913f26fd4f20930f725683b4c96bb312ca5d9b3",
++    "name_filter_data/fil.txt": "fb4b43691b1249fee2eca1e66795daedda8e7366d42abcde6553dce611d23d99",
++    "name_filter_data/ko.txt": "0dd4b74ffea6e3bb35d658e6d8262b53ee99281eaa48ecb515a2065bfcc7f69d",
++    "name_filter_data/LICENSE.txt": "55bfbc1759943f7d19acfc68e35644b7fbe10cd8d39ab3551ce5ecff5dda9979",
++    "name_filter_data/pt.txt": "05ef524b0bb7f83f87257f6ec4dabf70e16b8bb6930f769fb93deaf608ff196d",
++    "name_filter_data/fi.txt": "3e0b35b2533ba22fb526d882bea250ddfad907ee7548aacbe15db17e21034c62",
++    "name_filter_data/ja.txt": "f83c4d0843ea6474c17bf171edd72b616b3af403f8613f2cde1bd841faf6f316",
++    "name_filter_data/fa.txt": "85828629b90fd18a3f6f6efb1934c1294103c33d1c28c0653970adfa179169e9",
++    "name_filter_data/ru.txt": "2598adabd2b761733d72a68d8ee4fcc1d2c38f2f85b6ff489985c6ce1d93bf75",
++    "name_filter_data/en.txt": "af851ecef1d5f212caba17339b12ac39cc2fef7d78c74876f67237644fcee8bd",
++    "name_filter_data/hi.txt": "83636e9b7a5260451e09e9e471f81dad9f082d107a82da77047e57d7856ed0cc",
++    "name_filter_data/kab.txt": "df7be2ce4a0c80ee717cd7134c90645a8a0f0c0c458a61f927934dbd50eac96d",
++    "name_filter_data/es.txt": "073334261cc2e7c08339faefd2f19f9623e8240a0ac18fe2a26c368b897496ce",
++    "name_filter_data/sources.json": "5233e52b3162b3ab705d7777608914c4aff1f0a68da5264e1eb0683a7e857328",
++    "name_filter_data/zh.txt": "a1d9aa037c8b039ef3b40148b3364ce2ca62ce4a955b7082a16ad99f6cbd1bc0",
++    "name_filter_data/tr.txt": "6c7ae03baee0f3fdc22eed169030567669005dad9a1923e0b571c4bd4f2f2ab5",
++    "name_filter_data/sv.txt": "77f3f99a89bd3b2bde6a654741bacfcb3acca3f5c804af4d8d3fea11e09ea562",
++    "name_filter_data/nl.txt": "8298ba0cdc3ca9a1989c349b8ad0148e4504c2804f2f2fb6c2f52bfb39c5ae71",
++    "name_filter_data/hu.txt": "a6943a971496f16e9a9d59ba6fde146d229699600e9636828d8d34ed9160aff5",
++    "name_filter_data/ar.txt": "23dbd9c55257bf2a4965f46664dc7eac04b61ff4eb3571e41f7e964c7c3ed96b",
++    "name_filter_data/cs.txt": "90706df86709bade1ca39cf9f9d9836409c674fc3bffcb7525bdd20e59b596bc",
++    "name_filter_data/de.txt": "ebe44d7772897390e27f7bec412fdcdf0efc294e4db157f8487c4cd8d4fabd55",
++    "name_filter_data/README.md": "176fd1b529577d92f1f6afc617da536c059bf881636f48e594ecb9050832505e",
++    "name_filter_data/da.txt": "ddb46ab67e955d1a5f49c89c18497d23c3d8d6d2522f3740a5d7583f90e434c6",
++    "migrations/versions/0005_unique_username.py": "b0aaf4a49b9eceb488aba09e758f0ef2d429eae6b6c445e51bd16ce82d2aeded",
++    "migrations/versions/__init__.py": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
++    "migrations/versions/0011_weekly_rivalry.py": "6e79816c0a3df9a7f313841d02b225aaa8792c3072d8d92794fa2f1e0a7e6f3b",
++    "migrations/versions/0019_discovery_snapshots.py": "42a6012ce3caf59c88136ffafdac5ef2184cc287dedb81ce7ed344dd96c7c152",
++    "migrations/versions/0016_commerce.py": "787b6866f970ac058371f90dd9b995e649be2b400034d0cbf89768372259e245",
++    "migrations/versions/0001_backend_initial_identity_content_and_verified_.py": "c4bd0edbf682ec072790f65b94f26ead8f7948b8a8472c3ed999ecd0aea4b7a4",
++    "migrations/versions/0008_review_reliability.py": "6ec59300135cc9cd1ae86c31e53e4a8a54b8bc09bfad88fcf6f4c4c74b8f81e0",
++    "migrations/versions/0006_resumes.py": "91b1df870cbfc82e5e444db827994f9f383da2d511274484def9c633957c5226",
++    "migrations/versions/0015_exception_recovery.py": "088eafee9d175557439a58a2c936c283a2c0f4854142ae55ea99630a3b64a920",
++    "migrations/versions/0003_profile_name.py": "ce523ec67ac58121f9d82189ccd63ea051a8f623158b03b6381b6cb994ab9bfd",
++    "migrations/versions/0017_product_controls.py": "13ffdd14fbb63379ee16d05c5806689b887eaf289b8941d009b571c48a62d748",
++    "migrations/versions/0010_archive_drafts.py": "63c099d6b14c0710c97621b523689ab2d528431b8485a5bcf74106560ddcafee",
++    "migrations/versions/0013_scalability.py": "498296b6d0f859c5b28721a70fd6b097ec7e3e84ead0a95dd80caa4866aa8d4c",
++    "migrations/versions/0018_player_country.py": "3a5fad0a94e7e70bca5301e50a17e27d520b9d597b51c8244414fe002654b607",
++    "migrations/versions/0014_storage_lifecycle.py": "ad4908c2c601933d0a0a0f9e1156178f561078d7ce6610f4237d5d67a11129ec",
++    "migrations/versions/0012_test_drivers.py": "0722d514367a336d19e993efc2362b91cc6aad5ddbfc1d846522a1b20cfbc5e0",
++    "migrations/versions/0009_track_lifecycle.py": "4f15cfab4c83e2477d8266395ff74616b3917fc1a6a9487f77f4e0190112775b",
++    "migrations/versions/0002_browser_login.py": "25ab584c0a4d52bb6aaaab0566254a97023082d1a1fe31054fca44a966fa1937",
++    "migrations/versions/0004_developer_name.py": "d61981b5cc27c8bdeb34edfdba874ed233ea482f27da1783f43d37a7a0885dfd",
++    "migrations/versions/0007_admin_audit.py": "1520c217ae2e5fd79427d32b550778a64d9b0f58eec456c4fd02db1497e02a82",
++    "migrations/versions/0070_reward_cache_revisions.py": "1aae1136ceae1c8d88a77eb60a3a23e031e045c4d42f5aa29deb90d11b3e658f",
++    "migrations/versions/0025_product_telemetry.py": "b45e2a8436ab53d7a8ef3043b3c266b813703e7d0f7dfa9da908e277ff8ae22e",
++    "migrations/versions/0069_slot_gifts.py": "6f2f1615a77aaa235329e2330ddc52d20d73f08c32ed1a020643ca4523cf7735",
++    "migrations/versions/0029_race_statistics.py": "d2fc9dde98f365951e644fa2edca889001abd0731e187beab5f6ce420baf3319",
++    "migrations/versions/0039_friend_publications.py": "82eee4d304045095d8dc5f2d702204027c4dafdae7be8d66d78be0a7755051ed",
++    "migrations/versions/0028_publication_intents.py": "721f275ab2ba635bde0dd22865a78ed18550a28204e5a1bf2a9beaddd4cfe953",
++    "migrations/versions/0065_packed_objects.py": "93c99ba335d0fb68a230444f8972cc497e9de5bed3b7e1572049852bae47899d",
++    "migrations/versions/0045_reward_rank_index.py": "f9d357c6f8cfad2e67726781767248e0c087b1a9d268bf3c30831938af28a558",
++    "migrations/versions/0055_bounded_rank_reads.py": "5d4fd8133c7e3c4a18352269d483919435de0aaf2f56b5737b1fdc3a75098ad8",
++    "migrations/versions/0050_discovery_indexed.py": "20d4d2ed4446b80e6972385f5ae51cd36d3847383cabfc60198a63d7a284f129",
++    "migrations/versions/0022_histogram_cache.py": "c29005749fe2a4b1bff9753c0f276a27de795205c5c4a5468e47463ce2d59854",
++    "migrations/versions/0063_custom_challenge_tracks.py": "34831ac04cccf35cdc7e4601345272305a527c8fd9d603e0b1c9791b4ec224fd",
++    "migrations/versions/0040_studio_platform.py": "67a40dea226f405a6cd4c32afb1778313b5f591aa6957eecfa02d0832d102c7b",
++    "migrations/versions/0034_account_privacy.py": "faa6b1916f0a1eea2738cf4fdcd5b36c8fee3f685b36844f1e22cf07a9843b01",
++    "migrations/versions/0035_rivalry_car_appearance.py": "2f2089a2ad63aadb97ba27d6b49ff0c752789d002b17232a79e18bd5111e263f",
++    "migrations/versions/0038_garage_news.py": "e8a544d92c5c69223047f390499fb664a58e3303d44f8e6ac3f01f66f0e08ba8",
++    "migrations/versions/0053_discovery_short_search.py": "a2d1529f589e0f9d0bc2f135adcd20cbb6525849bc5730e29be9e208025163b4",
++    "migrations/versions/0027_client_quality.py": "6435c656f51e5175e36f58d3d08f4bb20f3588b006a074cf4278bc406ec62707",
++    "migrations/versions/0030_studio_catalogue.py": "5892438f5ea817ece87e19c43c1145a1703d0a1d51869bd6b09fc92f58672c3c",
++    "migrations/versions/0037_earned_coins.py": "37fbc18fd709076025fb974b38ae8efb2b4c05b1c680d7eac7962c2f68f55b8e",
++    "migrations/versions/0051_telemetry_parallel.py": "0aa2262867b7ff61c2c82fda1c58890eb81e1b0e30fce658c3bcd9418ca5203f",
++    "migrations/versions/0044_telemetry_counter_bigint.py": "27a5fc4956190c3c61e55d900be7634fef1a71d5a1e5848f0eefc6585924034d",
++    "migrations/versions/0041_challenge_discovery.py": "43b42e524ca998ab81f8886d58cddd2673d9ccaa258bebdeb30e1c6f81b9e82b",
++    "migrations/versions/0068_track_of_day.py": "67190290851dd20746b1325d4f8b6f2d21fb8bc09d25478f9537ec771dbcc7f5",
++    "migrations/versions/0059_world_ranking.py": "a0a8350d82bbbf337772a6211cd5662a46f3f0978f4061c0366736c1e4ad87f0",
++    "migrations/versions/0020_challenges.py": "c6dd516747c0e9d90ba29ec47f32e2f39a57f78fe00dc6e0966c231c0dfabc4c",
++    "migrations/versions/0032_network_health.py": "ef917d20179ee16203ca663fccebb605c3505ee152fd07fe894e33ff3f3247a0",
++    "migrations/versions/0061_security_authority.py": "1ad48ab6074a5638837a0a71b2547188b20ec02069e9ad05b9f4e5eaebb078fc",
++    "migrations/versions/0062_retire_discovery_cache.py": "5d395800df7fbf325dce4f5c8ad0bc295910f4b690cfb66336daf2463cc371c3",
++    "migrations/versions/0067_discovery_rank.py": "9b8f6c89d828a84cf2959905b0d238fcd7a1f72e9c9bb1402164202bf87b9149",
++    "migrations/versions/0064_daily_track_selection.py": "507399c427338855fff9cccde355f76d73db5b7b320ed6d3466470ee03360d9a",
++    "migrations/versions/0060_game_configuration.py": "27dfa0a415f1aa7e5208e52a1e549e9920e4c01e54d6018c51f7ad8603d5baba",
++    "migrations/versions/0031_race_render_context.py": "e562d20b7bff87b26abc15449c42acc61dbab7fb54d2069b70fe4ecd29e1f436",
++    "migrations/versions/0045_studio_report_reads.py": "20eb556bd67dd5f229be7c8e388d4fd850524f6223b4175dce649c5b5ef14b79",
++    "migrations/versions/0023_operational_read_indexes.py": "55b41350fde2aeaacbbeb5fc89a0f888010987c6b489892b101b7a24a77d5b0f",
++    "migrations/versions/0024_lap_personal_bests.py": "b6f60522e9625cca545146d5e6e02ff0b81c0b25d94c7ca0d91b3aa5a8d5b5cd",
++    "migrations/versions/0054_priority_scaling.py": "66eeb955aa563bd27968bb7362ab0ee5e6ee4e9ca4765aa9b0b56f9a474c0d76",
++    "migrations/versions/0066_cost_archives.py": "a0966a4c730ae2ee4a6e2e188fa61590d514fdd6ff1bcc14936657cabdf8d6e2",
++    "migrations/versions/0047_queue_capacity_slots.py": "b4ca2741ba1c253fd284660567e8f484a852d1a496d757e22cb61b2cf680affa",
++    "migrations/versions/0058_challenge_series.py": "5d830ea0e5a0e51159d8e50b7660091405758b195d2d9b8d5a8feb1902fdc1d1",
++    "migrations/versions/0033_attack_resource_bounds.py": "3e2b1f6ba3870e5f99fa7c5d4cef69d6819002d4bdfcc7a86bdee5ac6edbd016",
++    "migrations/versions/0042_achievements.py": "07a33725385a8625814779b83310376ff4c91b30729cb27975d077423c783fb1",
++    "migrations/versions/0043_rivalry_planning.py": "472f69649c05dbe031e0f826b7ffa4c45c822d91514b87c7586aa6b9ec5a92ca",
++    "migrations/versions/0036_community_safety.py": "bca5807ebdd762c5f22f5519a486e35e717e8354dec866a8194daa9f887c3c3d",
++    "migrations/versions/0057_discovery_resource_guards.py": "5ae80f870c3ba0a71906e788474ad703acb5127797862a084a9ab7e56caa2445",
++    "migrations/versions/0052_histogram_demand.py": "eab95149560f8fe6797ab0ec0dc63278054f191169372ff3ddc151c7b7ad74c3",
++    "migrations/versions/0026_studio_cases.py": "7318aa92fdede37ce0b6ccd30dfe372094c353f22b942323df04f0f4455f94bf",
++    "migrations/versions/0056_bounded_retention.py": "0924899271e90e0168c7fb153b92a415c5889be2d12a7ea69b1e98b9712613fd",
++    "migrations/versions/0021_challenge_attempts.py": "1fe0a3dcd645b204cc2285388eafe7597338916f533e50fb7f0c8da59ae3ce0c"
++  },
++  "schema_changed": false
++}
+\ No newline at end of file
+diff --git a/docs/evidence/local-race-batch-recovery-2026-10-28/report.json b/docs/evidence/local-race-batch-recovery-2026-10-28/report.json
+new file mode 100644
+index 0000000..d88d0f4
+--- /dev/null
++++ b/docs/evidence/local-race-batch-recovery-2026-10-28/report.json
+@@ -0,0 +1,524 @@
++{
++  "requirements": [
++    "LBR01 actual persisted contract diagnosis",
++    "LBR02 non-destructive atomic continuation",
++    "LBR03 compatible local launch with retained journals",
++    "LBR04/R01/Q01 PostgreSQL/native verification and scoped rollout"
++  ],
++  "status": "deployed_and_actual_local_command_verified",
++  "diagnosis": {
++    "active_rules": "standing-5-road-gates-v23",
++    "active_engine": "4.7.2.stable.official.ed1daf0bf",
++    "track_builds_equal_active": 0,
++    "active_selected_handling": "handling-0.15-original-slide",
++    "selected_vehicle_config_equal": true,
++    "read_only": true,
++    "track_builds_equal_batch": 27,
++    "old_engine": "4.7.2.stable.official.ed1daf0bf",
++    "job_status_counts": {
++      "generating": 3,
++      "waiting": 2797
++    },
++    "old_selected_handling": "handling-0.15-original-slide",
++    "batch_tracks": 28,
++    "event": "local_batch_contract_probe",
++    "batch_present": true,
++    "active_physics": "arcade-planar-0.75",
++    "batch_drivers": 100,
++    "old_physics": "arcade-planar-0.53",
++    "differing_build_fields": [
++      "physics_version",
++      "rules_key",
++      "compiler_version",
++      "vehicles"
++    ],
++    "old_rules": "standing-5-road-gates-v20",
++    "vehicle_id": "compact",
++    "changed_vehicles": [
++      "electric",
++      "kart",
++      "forklift"
++    ],
++    "batch_status": "running"
++  },
++  "live_continuation": {
++    "old_engine": "4.7.2.stable.official.ed1daf0bf",
++    "previous_batch_retained": true,
++    "batch_tracks": 30,
++    "batch_present": true,
++    "active_rules": "standing-5-road-gates-v23",
++    "active_physics": "arcade-planar-0.75",
++    "selected_vehicle_config_equal": true,
++    "previous_batch_status": "superseded",
++    "previous_job_status_counts": {
++      "waiting": 2797,
++      "generating": 3
++    },
++    "old_rules": "standing-5-road-gates-v23",
++    "active_selected_handling": "handling-0.15-original-slide",
++    "vehicle_id": "compact",
++    "active_engine": "4.7.2.stable.official.ed1daf0bf",
++    "changed_vehicles": [],
++    "same_driver_ids": true,
++    "read_only": true,
++    "track_builds_equal_batch": 30,
++    "batch_drivers": 100,
++    "event": "local_batch_contract_probe",
++    "old_physics": "arcade-planar-0.75",
++    "old_selected_handling": "handling-0.15-original-slide",
++    "cleared_test_records": 0,
++    "differing_build_fields": [],
++    "job_status_counts": {
++      "waiting": 2999,
++      "generating": 1
++    },
++    "batch_status": "running",
++    "track_builds_equal_active": 30
++  },
++  "local_preparation": {
++    "status": "prepared",
++    "continued": true,
++    "drivers": 100,
++    "tracks": 30,
++    "expected_jobs": 3000,
++    "generation_started": false,
++    "old_local_journals_unchanged": true
++  },
++  "bounded_local_attempt": {
++    "attempted": 1,
++    "results": [
++      "submitted"
++    ],
++    "jobs": {
++      "submitted": 1,
++      "waiting": 2999
++    },
++    "complete": false,
++    "execution": "local_on_demand",
++    "exit_code": 0,
++    "command": "local_artificial.py --max-jobs 1"
++  },
++  "live_completion": {
++    "jobs": {
++      "verified": 1,
++      "waiting": 2999
++    },
++    "expected_jobs": 3000,
++    "driver_count": 100,
++    "track_count": 30,
++    "local_attempt_results": [
++      "submitted"
++    ],
++    "server_verified_runs": 1,
++    "real_or_test_results_cleared": 0,
++    "private_identifiers_exported": false
++  },
++  "deployment": {
++    "image": "europe-west1-docker.pkg.dev/beat-my-track/bmt-stg-e7a444ab-images/backend@sha256:11f7d3a833403f1cf578b7690a2eb35ee96fc9842c6c8ac400e15d7be517b679",
++    "revision": "bmt-stg-e7a444ab-api-00125-ses",
++    "normal_checks": {
++      "/health": 200,
++      "/ready": 200,
++      "/v1/bootstrap": 200,
++      "/admin": 404,
++      "prepare-local": 401
++    },
++    "worker_studio_seven_jobs_unchanged": true,
++    "resources_iam_schema_canonical_unchanged": true,
++    "tag_and_lock_removed": true,
++    "finished_at": "2026-10-28T16:37:49.698231+00:00"
++  },
++  "package": {
++    "parent": "europe-west1-docker.pkg.dev/beat-my-track/bmt-stg-e7a444ab-images/backend@sha256:225feb3f4d79075c1ad37579de3e1568eb7500fbd5edbb0857d4ca037f4d82b2",
++    "image": "bmt-batch-recovery:3194043576c27496",
++    "changed": [
++      "test_population_batch.py"
++    ],
++    "unchanged": 345,
++    "canonical_files_unchanged": 174,
++    "hashes": {
++      "admin_models.py": "b113b24d32b55aa0ba48692a0a19850d6707aeb787abf869d62eec3aa717fc1f",
++      "tracks.py": "8ef885448271e3d6f0712522e321e5c4b4c2b42fcecb31132f381ebbd9612a99",
++      "test_drivers.py": "89e2e61bfbee7a29100fcad202ad583124e646ca3ed8f55424b2405345ae99aa",
++      "job_contracts.py": "09f4281db5d11abaa7a359fcfa84dfd9ca9e172b4219cf78973af26ef3651515",
++      "test_population.py": "7709622fb6348c277a237458c124b2097dbacfe23069be9aa0e17cca1e207d8f",
++      "__init__.py": "0282e9556e8a643eb4acf745db9df9f7b3064037c6d264dccbc1e8c71929ce88",
++      "queueing.py": "303337c38e0220c64bd30259f04834d3f2d189e2fb8c4daccf222eac5b64cbf8",
++      "resume_models.py": "57d5d4d17dbc4addc316adeb2bc0675bb8ed10491fb6c4221daf4d0e6893678c",
++      "contracts.py": "8fdea339d45c7970839974d40b196add4bfdbe804d7d7982ce09dca7895a471a",
++      "cloud_setup.py": "138b5112676b67f968843f58f5dea192f65ca2f0af6e1697d1917025a40b2d5a",
++      "usernames.py": "bb9de87ecf9065a1f783c4aae1b06ea739fad950ae163299596bb71cbac0051f",
++      "runs.py": "8c7594614a47a6ccf72ff50aa17488b1166141a1a428935efe04462c42a43c79",
++      "resumes.py": "4c2406e228f6446057a83479b424e224ec6b940ed44e0f85e79938dd8461410f",
++      "track_models.py": "8f785975089e42e978785662eee646d9bdd60eb3d1dbeaf3d6b5866104f7c0a0",
++      "migrate.py": "83ffc014257128f1feb5b4533fc430e4213e51c0de23f2ab1587bd873b0c209e",
++      "s3_storage.py": "13d4697fd1394630b3b9f9c18d4507e8ea55e5392e9bb6caac48a0149668550f",
++      "app.py": "a56edb4df4eb182f17751e4cc09c89c963adfb7970aa4882973be91afc4535cf",
++      "auth.py": "4fd62d48575b62d36c03019a0ac47250b714ebdaf9b77585181c9af86b20dd96",
++      "identity_models.py": "5fb3e37a019f7a67c1bcc249c3386f829a656804d07942228ba50c561812d4b3",
++      "board_cache.py": "39cadc2a16fcff17e9ea253e4d4230dd24a85f6027e479a8aa8f5ad5b95b7a7c",
++      "rivalry_models.py": "2e635f10e1495a5d114a21cced6b4aaa040c9c9586d4be695086e3cafb46d5b5",
++      "test_population_tool.py": "9ed610227a9796e8e2537e63e1b7c4f8c254e6065caa1cd56252129ca606c412",
++      "test_driver_models.py": "9605bb4d04d329f2435f269959342caf88c1fcadbe5a4f71252d4563642cddc0",
++      "cloud_smoke.py": "0196d423c6010a89fef1a35e538a034a9e464a11f9eb8f5bad0cb851e830ca18",
++      "countries.py": "5776088f0266067c43ef2b36252477942f261d2e5326b5df31120544d2dd5d3d",
++      "purchase_lab.py": "37d271a10b2d85de09e93035e5cae4a1048b38258b70cafd8082520c3f4b47fe",
++      "readiness.py": "45f70ed3ba78adf20143f9db2a3fec0c5aabb68dc35ebee4db1923378f2cea22",
++      "load_fixtures.py": "9ee8cbf5c542076997eb1e2b32a4233ea5ce6480020f50a290b13a4bfd438901",
++      "browser_auth.py": "23fb84293d9418243d3f0175b5ea108162f0370ceeec100a3b25b55bec4831f4",
++      "admin.py": "3c0817ca66f134ecc17b865a244f03e0f92a4f5a729053b5be2b3812a47ecb24",
++      "maintenance.py": "a0e0839b2e09463e4aac3c1bbc550f84784d2bdd04e314575fcac357fd5a0d4d",
++      "commerce.py": "5207976dfa59814b6ba1d13cb884d2db11e5ecd96dbf518e6113a6ff2f14ae3d",
++      "config.py": "f11ecce03ff9d1f7a4d83871dfb58b524180658455e7bc5add5a19ad6e83754b",
++      "db.py": "919e490f935fe371f2db726e87f442feb8ff328c91b84a95abc7227894ab4016",
++      "verifier.py": "62af25548c4d179ad74633d525ba3c82fabe34a0ee2afc5da60ff244baa5a24e",
++      "backup_guard.py": "ba5e9012be8f8c06a65982a0cf58e09b0e73a8c525787827f5c09a83999eba83",
++      "worker_lifecycle.py": "c1cc291b059b5041f24d61b687c5606943a83a72e04d58c42157ceff4f9e7965",
++      "loadtest.py": "df48e41b29e41c033c600a36c19aed04e42ab0490387ce8ad6788e2cefbacc2c",
++      "security.py": "e2807c74677badf6dd5b59e2dde89a9c49ddd7b657cc6c861c9aef5c1aab565c",
++      "object_models.py": "b620cc637d1af3795fc9807bb6a2a640746ef1deb5f5f72351c39ad2bfcf0cb0",
++      "operations.py": "c5b0d654114e17c9ba98fb1c1b4a7495d92d00a98daa6e1fac9e734fd8512414",
++      "lab_tracks.json": "e2380e6418d52c4a62faf8b49f40d61df608674bf5701662d2696fea4ed41be2",
++      "rivalry.py": "41dd3a739fff497ed6285915150cdab2ffaeec4dcd8904c63eecf9e032c62e0f",
++      "cursors.py": "b7c78bd6de6a962db78286abbce51608a59e59947c3f1fbc2c8a8c4b74aeb81a",
++      "countries.json": "dceb1c24749287fcde3ad5fd8a10e422019f5846b266125e3ccf09a135f2690b",
++      "discovery.py": "176e5ee64c2cc50f554d23d74bfad12b431dec5666c86ec9d5a52850e4bee824",
++      "storage.py": "71526951f4c41015471ecfc07aee6349a1a20286b593d17396628d3e836986fb",
++      "test_driver_generator.py": "3c0d0ba0d4b541d70b292676a5ecbae862573f7a0ecab783f1c88a1c24980088",
++      "official_tracks.py": "fc89d2d40a9be2c87ff80b9a015be5553551adcc9528346c78ffd69a6986627e",
++      "gcs_storage.py": "87cf3b470d176cfb20f6209fd83f174073c86f9a496672d8babcc0899947962b",
++      "purchase_lab_catalog.py": "eaf2be538a639bf45197d8aae8a2afd0a7b3e2d4fd12cad4b949dfb8f3711c0c",
++      "replay_wire.py": "948f427c2f59b208be360dbfc5e346449183816fe5757d774a5bc48484fbcc7d",
++      "commerce_loadtest.py": "269db3d8c2418f6dc32283868211424aeb4acbf459ca7683b9e6ea380a6764fa",
++      "worker.py": "ffc1438618af8c0820c0c05099cfb51f240e2257cb72affd60dfec7560c89a92",
++      "LICENSE-countries.txt": "8f1195d55a2fd315a07d812328470ca9ba2abb78c8d317ff19619d5125e00cea",
++      "commerce_models.py": "03b7ee961bc098e0eb1876c3eccc4a010095ba515fda52fb3167276ba63201ad",
++      "middleware.py": "949aff218ce6c43f3c6ef4a82cf327d91141c0aac076f03c7399fdf6f5b9048e",
++      "admin_commerce.py": "94072a42251909c343e28ffdc8bd296d157b485f261c24c287e094a9432bb331",
++      "automatic_test_drivers.py": "e8a9106eb9bbef5ad0376527d07488dde819f37594d04f734845a874e37eddc8",
++      "observability.py": "173a19ce0b73c6187950b8cbad5e65d2b5a465016435f06ec5dc7cffe1fdd754",
++      "test_population_batch.py": "3194043576c27496c5344b47f60e6fcb72e978191527894589dd78789b509313",
++      "local_artificial_races.py": "6ad7aa4e64bdf7dffd145a1502376bbccad8ba23fc3432f2a9001a51cee88066",
++      "publications.py": "a82b0e5149e46350b3c934d615a2cd5a5922ee30e259fd464d6859e2dfe18e08",
++      "studio_settings.py": "08c1458e26998bc7176fa1b3d17072878a7994a033255b35a090327bd769eebf",
++      "http_routes.py": "54f2afe87d846f686c92a71f14c8d74fe74e3c3f746b434c85cb8258a485d69a",
++      "publication_worker.py": "bad9910560b04b4f99588acc4ce0cadb0385ab330f7549b77fd6dcc8c023841b",
++      "studio_usage_cloud.py": "aa9e67f17df70821a21e4131a65437f65c0f6b8fb9f71719f725894337d60606",
++      "worker_app.py": "153a1ce16edd4380f29a3420eef014d884c91f095c96a1d491c1da77eab4cc9b",
++      "studio_usage_settings.py": "df8aa9314cca88efbf74424bab5e9c5113df6a86df793632618a865e63457105",
++      "studio_usage.py": "d2b174c1810a419808126dc2bc45ce9b77d2eb109c27766c13ad5cc17bd71b1e",
++      "studio_governance.py": "a4385cec84f4a1d6335bea5ad22437c1ee4b54f170e4fa66a2c06dcb3f20c2b4",
++      "histogram_http.py": "3f6199fd5c6d84a6f7849b171e62ee7968afe436edd7e4465b0c6031593b6547",
++      "catalog_builds.py": "ec4966dd144ee0990549611a97d4d015fe8ddab9915bb3f3b30827f302e6ab4e",
++      "admin_purchase_controls.py": "d8cf806108cbdec6e014e4d42443a9369b2d93ed29a3933f7ee621faca0aac53",
++      "telemetry_models.py": "6ac0a3f3a2e9664803bcb948b723741a84ba9aa094e495d2e61be253cfb86e9d",
++      "pack_io.py": "e0629c31bddc7a62f86fc1888bd952d6e962fde1dd4e8acf6e210f0336a17f29",
++      "game_config.py": "0191cd690179c87b9791950393d036dd57beb2d9b7a74c66ade35610e678bf3f",
++      "studio_case_models.py": "ddda3e81661d86910ab601b8a92264570442601b4b35b5c31fe98e97c2d4d0df",
++      "appearance_authorization.py": "29afc7a9a6ae447a9c8973d93b016e1d734a78c669287e42186e6cadda1118b1",
++      "lap_bests.py": "d75d660b26cd21680a03c6eb151e4fcb19101528fb1063a6fae1447a1a1f8350",
++      "race_statistics.py": "d43b0b2bc6b2a005bb945a307b9ccd7eff9f40a8d31c380de6ef03119aa6b516",
++      "world_ranking_rules.py": "bbe314a3f7a9c7c29e509733b7d98281f0c5463df109fe0fcea772327945a5b9",
++      "community_models.py": "d9a20222debcb1b52fb8baeef0dfe20e63b075740a5dd86b821605ba6031830a",
++      "studio_platform_models.py": "916df8e0f9dacd3c2f3509ef3f05a3a333631500ea96e7961f45b4481cf71abe",
++      "publication_models.py": "b5a75e6f22777132368bdf20765820b147795dce86a7d8be83d4762354027581",
++      "client_address.py": "2f5e1dfa8a2df492bdce4ae32a6e54647d8757b8984f4e4c6114f1ef38e8a475",
++      "achievement_models.py": "a8fc58f415af2035f4b19fe816523c5e3b7d8cf365f5395cdf030afee05871b9",
++      "public_pages.py": "a74af44e95e3839b231fa65f949182c5fb2cea90a658bc960267fe155b6da212",
++      "privacy_pages.py": "1fdef1baf320407539ea7de8875d0e6e076c27d05183859fec3e8669e1db51e8",
++      "erasure_journal.py": "4d13b4c5db05d0dce56b9d567dae70903ab72842ca6d9fd6cfb2234619a33bb1",
++      "appearance_routes.py": "56f7a313751b8df22f217c39d7e65724a23e24ac3bd9ee2fc70b1ec722d3fb79",
++      "studio_watchdog.py": "3c22d10fcb767f3b4859cb89da8f071d81a864b85754f2607a490ea25ab6411f",
++      "telemetry_processing.py": "b3451bbb130e69a87c4538574f12fa3eddc8f40cfb128552cedd834ca9154021",
++      "admin_support.py": "44df16a6791d5ce41ad9f19f1ae65b65d66a50d1eb22a6f8351044d688c02905",
++      "discovery_guard.py": "75840ca2918bddeab03c0135add2756d11059d9f5985c56e0c8726fb3091c7d4",
++      "reward_rank_cache.py": "2f46c75e981d0cff001732790c78168d84ef29026e115e2d631748adf4224fe9",
++      "http_server.py": "5d08a15426eef30b9427a2863fabe16ba73a2f665fda010a23231338b8ec9334",
++      "studio_simulator_tick.py": "2731cc24afd9fb83b67cb97547c206e99c30c761f543770f02494540aac8ed6d",
++      "challenges.py": "7d53f07b54c310411847dbccff11a9ebfec39c7f036d7ab06b4bf5fb0237af62",
++      "cost_archives.py": "5c4ef65949b2793326161e6fb327ad3e00604943eb48bced7ceae35d68838769",
++      "studio_jobs.py": "37461e2fc22681e88318be7ba694bf73df365925d52d857ffb152b1db7e99d2f",
++      "ghost_wire.py": "005f48fa4e3b3c059fa3b5b45f39c38954b9f0eb7ec9d9c5f632601ef7bb6cd8",
++      "ghost_http.py": "84beb3e516966ebd1253bcdbdcdf1ca7fea86f739a92baae2205096c7d5ffaec",
++      "news.py": "bebbd80ade2f07249c0d253f339c922a7a3fea49d8eb60cca77cfd0e1384f37b",
++      "leaderboard_ranks.py": "ed0918694174e5729d862130eb824d3b0c9514df2fd52f683b0248143b618011",
++      "telemetry_projection.py": "f0032a268477d847dc2ca0762308e25d38bb6d532275bee1e46af3006fab646b",
++      "studio_rivalry.py": "1d3717746ab513d9155fb527544bf9f8ef6624e7719d7113edd166f3cbf273e9",
++      "telemetry_queue.py": "b0e5eaf70d0461aee2a6c4c8b5f604525f9a34711da924da9ddaec180371dfbb",
++      "service_worker.py": "4e84e128b92280a54d8603a91d6c22c93e59914c7d96362ddebb1ba87d4770c1",
++      "name_moderation.py": "fe2263b4ef00fddf23389e672c9bbf0350453c03dacc11dce11ed6fd57bc1d23",
++      "studio_ranking.py": "d51538fa6fec350018eaf5fd48e8fe958060e8f05e4f5644a977d0be8a56a46b",
++      "studio_release_reports.py": "22e9bf65ae854c45ec71e05ad4bdaf324739ee517b4667d5f00438e00fa386c3",
++      "http_transport.py": "f52bcde603ddae3f2dfda85bc650c161b1e4597a207090dee92785fa02e033a3",
++      "discovery_daily.py": "0d269dab6e1afbd9203edd789120b4c109c3a3a84bc6a05d65808a3f521b464f",
++      "studio_alarms.py": "c5838f1bddc113039eb955302eaa6e596e50a0a410ec7d7aa4f5dead66716f8c",
++      "background_work.py": "44afdb6c3fbcd613f78683760e3980be088fc393a75ec80962f9eccc047cec73",
++      "game_config_observations.py": "e0e053db9aa95cb9185543e7ad3521446b2c9307c6a89a2b6ad3a615f0d4961b",
++      "studio_exports.py": "6cd146774c11ebd45671d2995194f4f8255e5563e60ce84300eb7de5439141c5",
++      "world_ranking_worker.py": "4b24790c95fae221ddc606d71de8fcceb89d538b56d5deb1d457fa3c0275887e",
++      "quality.py": "8ada194998f8a3ea03567568a8510a845681d4ec469136480dc715948fa206be",
++      "achievements.py": "a6201f1bfefcb90a0821ceb2c003fb90fcfa4aded9453297b7ad8797bcf7429b",
++      "studio_paging.py": "2edc44c49efa7964c1ab92869eca2dd37acd3bde7d0033447aed8347601d2fd2",
++      "discovery_v3.py": "7512fd1e8dad1e60da488077eee15ebe4eb913b175fe9eac139ad634a0353cca",
++      "studio_catalogue.py": "0b17ba39f0042101a4de4dfa57dfa885dcc8fe9be97dcf1294df3cb51c9f1302",
++      "admin_ranges.py": "aeed34115d7fb9fb2749b2832e112da458335c3aea4767206dd95b9bf4203b59",
++      "track_links.py": "ca25f94640951d529818e80bfb56afd4d9c0cd05c305f299c0773f7ef4d92d6b",
++      "http_costs.py": "5d4cb08ff6b61df79ba4c64838b0bd86f8fa06b727c9ce9a212dc0157e3fd8d9",
++      "discovery_erasure.py": "7d95ea0083003fcc45e17b714890a5f028519b5aa2643f4cb89a8c60e23663f4",
++      "world_ranking_build.py": "c798c75c12cb4b735d9c247a5ea4000a4b4fa4bf5ce6b073de870d5dc10c8c16",
++      "packed_storage.py": "6af056e8db52d8dfcf4b8e3bd593d8af7fe6bd10ab22d9857325192a9c0e2261",
++      "world_ranking.py": "5ed2d2179373e706c55677fae8260c909becb299d5ce9e15713f4dc61dd57fe3",
++      "run_signals.py": "debffd27a713e31d80762da827950427ea30a10441c2a083d8e44c7bd18fc681",
++      "economy.py": "ec099d643ae9459d6fce42361654c845f6494a43b65d666f7b84dabbec305626",
++      "discovery_models.py": "fd29e6a559d333e007c533694f191fb714ddb8e2facfcc756169914d1c39347e",
++      "studio_reporting_admin.py": "377f34a2fb9c7fe8d578cc854e1541ceed2b17eed407b914d07ee23447ef4eff",
++      "achievement_catalog.json": "ac23dad423156be2011615943e43d756af6ab170e4db03865dd26e0edc08e51b",
++      "studio_metrics.py": "d6a8c10c1e6cd595ff966fe94db2f7e3534820daeb5ed409bc5059f845e69232",
++      "telemetry.py": "ec2dc762944621abc4f2a2d3bcaaecc14b5bcab4b02817f151477e5cb1543da8",
++      "privacy_models.py": "099618b925b513959983c51da6a7225134fe8c4bc455d349335a03f277f45084",
++      "discovery_query.py": "88eb62ce2dfdd0fc3258e6e39473f9197bff2e20d1683a1bbf984e31bc4c7651",
++      "studio_identity.py": "27f74c4af5f1eff750343efbb3137b9a86f2c4e2223393820112d7de1646dbe2",
++      "vehicle_appearance_catalog.json": "ca54c034d158e8407fb71406116cfa461cb19297e7da8f478a8178de83393f35",
++      "world_ranking_models.py": "cf8003d25f02aa3f5b2f8a4a51b0ed3f5170da06595e00d55c0ca5e37ad046a5",
++      "trajectory_verifier.py": "916ea000a3b09afdf6e6a4a67ca03253820f1b1b44ebfab72f2af76c29a5a689",
++      "studio_analysis.py": "60af7e1a5e188205fe76147c66567b7204282419581c9ea0775131cd339822ca",
++      "reward_ranks.py": "d999286bbfed51a3ee39483834b421c30252b35cbea6cdcd53f25ec1f28c8011",
++      "product_worker.py": "7417a5ec1d33b0a6acff9e6aec077c8e90a67c0f1d604e4873eda13529ecbbb6",
++      "completion_reads.py": "d4b844e491485e8bbc3f961fa8ff35f51bf9bc6449400ecaa63c3777034ac19b",
++      "path_wire.py": "56ccb5267df71908367e17d421ca5dd16ccdb9e87bc09b3f627abf6ce64af7f7",
++      "game_config_policy.py": "99a02234855a00fb70ccc046080b4c034b321118befa0c1a42a9add67d53f9f5",
++      "histogram_population.py": "fa9890052ba8e604e86a526aa63a1a03450e4cbdd01ffdf3c549e8bd9c975b3d",
++      "studio_finance.py": "c6f06475538c6f59f78b1002bb9696f3013165988a950a5167019cbefab23516",
++      "product_analytics.py": "cdeb07c7d9b9988d0ecff23afefebbbf7c66a196020be0718763ad788661c073",
++      "discovery_activity.py": "92b09b696c0d3ade8ea9b408c1bb83133f407c8bcd221e2bace2a91fa6e5e013",
++      "json_data.py": "fc35011cfdd2a9df4aaac1db00add8889df0a7fd90c5533e2473c056d77b353f",
++      "studio_reporting.py": "a66d007fe6544fa4c41115d4f682ca7b8f804ccd96571b1e8fb3941d56971c2f",
++      "track_of_day.py": "deb6b3058fb3ed31b24f50b63eab9abf38fcbd174dc286bb00b40252aea57e05",
++      "discovery_projection.py": "f530173656871d8c7edd2f28117da395ecab105cfe638db74bb5097d762eb5d2",
++      "studio_queries.py": "605a7c825ebb52a629833d9941aa370e5feb4f3ef394346229bc4c36e55759b1",
++      "vehicle_appearance.py": "a811eec52d3be07229706782c958f1e74ad496f2e982b460d5e7a172b14d7f07",
++      "admin_player_grants.py": "5ea154ba24210b55392a3431f8bdd2adabcc5d0758af02491639c8eb4e4cdf41",
++      "world_circuit.py": "643e7cc2e7528a2b6ae10c4e57f4e643dc4295028c63c4d2d641bae88e37d07a",
++      "network_health.py": "0b60338224c91d15d6c78a9624c09a5a573c5136fad4d58f40ebfb4af4c6723f",
++      "network_models.py": "af35eb5a097ac3331e011d4a35d59ae3231353e91a5187315f0b2305daf91366",
++      "studio.py": "306ad4759ad1cef51441e6fbdcfc930a24854fe373cc24dec885cc4d793f7a21",
++      "studio_http_metrics.py": "a80bcaa9cd4f4af32ce233c3545bd4100c6d4462d95e80eb5f84db2a45f1d608",
++      "studio_access.py": "b4e5d3f5f1aefb0d24b6653a4295d7d12b49076cd5de2a6386c0984caa7021db",
++      "challenge_models.py": "c4be95058071630ad3b8dad614321909848af719561c9dbf338f02b7e94aca61",
++      "creator_achievements.py": "d84df0c69ca1f0eab92033844b99629d3265097a4d59216f0896b24807080fa4",
++      "news_models.py": "fa1dd5a1087a452677be69709859f3abd9a5db5f91b33502a6303aad0a81bb0a",
++      "privacy_deletion_preview.py": "e9c4492c46109276469b0b4fe53428ad0a9a43876a9f5eb6580ed5e846e4fca1",
++      "workloads.py": "2c8ec5cd644a67f29a59ecd89e01310ce0ff2b9b0a9c343bb47492a7177c4e68",
++      "race_acceptance.py": "117f756a0969f91abc63a5611d10f721fadc264a20b97dc7a7f393c824fa7621",
++      "database_privileges.py": "e8448169c3b71f87de59057435f1d2181c53842c48351301e69132eb8c4a4bff",
++      "local_object_listing.py": "da4d2ae5dddc74b2f608837f3ea0159a34c087ab1c343dc51dae9a4e2f0bb76a",
++      "rivalry_reads.py": "66f5c4c1d276059e2181c506d8c89e06991ceacaa38272544def1f16ae3b7ef2",
++      "privacy.py": "c25f6d50fa89ee817126cb46a6ff90f26a3bc333ee458b1df3669eaca527c653",
++      "discovery_worker.py": "f772c018e60fdb678592404c06c1dcf61474c574dbe84ba965c4c6e0101c136a",
++      "publication_storage.py": "2de86536132666d5c50c621339f5f815d181efa41f303a94e4edf272c68444f3",
++      "histogram_snapshots.py": "75d95e3bde62d61879f79fa73c347d728bf7d603cadd4bace656654edc4b9830",
++      "studio_simulator.py": "4f2c2fafeb17a7aa04a1a50eefb5cc63c750113cee5115533f89b7d5b06bfe59",
++      "driver_work.py": "57fa82ae7ec44e12d426f625e5d3a3bfdd536c65954d26fe5cf58acad2fb30ec",
++      "quality_models.py": "f11c8b165df00391e1a5afb609eda1a6128e9f26ca9b5c53794d5d290bcf75f1",
++      "challenge_series.py": "24fdde938e2d73d90c278b785d99877e58e6a560da24b13be99dd42c439fc929",
++      "game_config_models.py": "15e79109d11ce2fe134a0050cf18e870e6b81f9e75e9a9cf63c6c4725606e8de",
++      "rivalry_planning.py": "c060a0aae3769cf6cf35fd509609463826528bca47d46be412ce3d04dd44bde0",
++      "race_statistics_models.py": "07fdf880b34d6cf52933bcc2ff552bcb14b85be6687eb966db2c80dd96443928",
++      "preview_wire.py": "a53df5dc045c13a74f1e0bcfd274e9d22caa778c89fd76f5f595ed235984c312",
++      "studio_providers.py": "b48468d9eadacacdd43f8916fb0ae0d0ed237bfc0cf6c8c80c2f9a7196ff2d4b",
++      "object_garbage.py": "dff3c404e0116005ab49637ea991397d930044b123c2ef32c381d862537c1e3b",
++      "telemetry_erasure.py": "d59fe7cfbc786a60044af2ea2384d52742a6d7dc2ea60c6b0524043cc839f1d3",
++      "economy_models.py": "f28aedbea9ca8d919e854cdb7b5b2ec8dc82b0bc6230d4e3ad008df5c21400c4",
++      "studio_competitions.py": "38cfc6608539d29acc3bb080f1a12f39b54a5a50d0dd3fa262b87556dcb85bb4",
++      "studio_cases.py": "18a1e0b8b55b570e367204b2c7c9575f20bf94dd062ce37955126e0ca4a693dc",
++      "discovery_retention.py": "5ef8987f5fc268aa2efce962bb28a8067935f00c57f831f7b7803ad7451fe33c",
++      "immutable_payloads.py": "35d5e83755ba6832c4c8db3bdd9779f6a60af7334093daf5e8358287adc28f9d",
++      "cost_maintenance.py": "81ba2c079959e13161bdabaff447fc6a446c6f041e376d23183c8ccd071b92ec",
++      "studio_simulator_scenarios.py": "9eb8de0ffe24fc815473843e33a354357cdd66600a5dc46a879c729feddffb95",
++      "non_improving_runs.py": "34f08cb6fadefae2d9b7100438b69c48cf7e2f4e25437e8cc8bb8816ba32f617",
++      "telemetry_queue_models.py": "27825e64952bdc0281fbc8f1156ca708ccea80528eaad2b193c8dcd9b13baf10",
++      "provider_proofs.py": "52c3e5bc51bd5143b82067728f2b8b006b69b9342a344655353b6dcc1e092a4f",
++      "community.py": "6bb6c177bd25ded9ac7628b36332c7b1e5943638a191b12b2ee82a6c67f9b786",
++      "studio_experiments.py": "a8d1f69cb94c0bf0de155b5a045e7ca01eb49808e443c4f1a53a087ac3a0b644",
++      "studio_incidents.py": "1a57d32f44a1a1bb2889c0dc7a88aa0d16215263579ad8e883ef327c41abdd00",
++      "studio_erasure.py": "8661811a56645b97b6516ee35d8b9a09931ba2ca4f6ef7af9bcab553dd02243a",
++      "studio_delivery_service.py": "08e240f6ba172dd997e05bd0d50d8f417058958c8319821b8c85c4392ed2ef17",
++      "migrations/__init__.py": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
++      "migrations/script.py.mako": "d7558dcb7ce01d3e44830898336d3027de66e5ffdb1491c0cd27f6159b021902",
++      "migrations/env.py": "948c77c8ee43975da1b4a3689477635a9d7ec42130832794f105d4cf18463e72",
++      "admin_ui/style.css": "c8140e4086d082572e8f38465596ab8d06891aa5bd49f78aadd07b8e78b7700f",
++      "admin_ui/commerce.js": "ff6be33bd411e40fc1588c8a739f369a4e7fc55d452d3ce1b08b3db73eeeab93",
++      "admin_ui/index.html": "3a8984e06cc15f1edd549b31491536bb92c76285216b33e4d42ebbb5ce5fe4dc",
++      "admin_ui/app.js": "1f01161652c51631938aea4875937a6f2d95efaf299d4d3012f02e1056846e9f",
++      "admin_ui/usage.js": "c5ae717744fef99fa328935150e4197f99c29d72673318413d7b10607b40b848",
++      "admin_ui/usage.css": "838f1e0ff30fed2b2de2b06708c2c5ea09d2d15cdf9e5a0c745d1ebca139af19",
++      "admin_ui/product_analytics.js": "08034b668deddba9ccf35581c73ebff175f2907531ab2d11d6f2d090e0923cec",
++      "admin_ui/operations.js": "5ed392c21b70eeb0d0cb26a1f2ceb18f011a4b63e661d4fc51409d47393f37e4",
++      "admin_ui/monitor.css": "bb93dc068d5a28a72233d77cf2ef168c2ccef6e84417d90c9535ee4999501a2f",
++      "admin_ui/game_config.css": "2d61c55db7181d60b7aac3812733f06a88a5f67bbf6b195eb098178c8c60fea9",
++      "admin_ui/platform.css": "c9176bf2252ce29a38997a7f8e48cd1f46b94abc87d3a09ab3b9463255c8fda8",
++      "admin_ui/monitor_views.css": "864b7d4b0621b81dccea0fd5e494cf0ad8d61d638d4fa4512d8aed4af795a225",
++      "admin_ui/signin.js": "448ca998a78eced11a05ea8e7ffbea50acd7702552ccb675d5a16deb491ba561",
++      "admin_ui/insights.js": "299499c2c172d2b88f452e5d2f2c56404545c08124f100b5a74c3dbc441b266e",
++      "admin_ui/monitor_views.js": "ca80baf4c6d279a0d24d11abc89bf682b96516910b1b6e8ac91d81ac7000958f",
++      "admin_ui/monitor.js": "f6453351c02f3507fb7bbc32993be87556fde213c38a1011c5300cc6c34e0090",
++      "admin_ui/catalogue.css": "ca8bc8e0aef0f297c7f33e938cc81888cd2b4a90e5892526f240d87d24a45c45",
++      "admin_ui/ranking.js": "4f57c37077021622a7abcc8ba749fbfbcb5e5965c3676025bbb62f8e5c5a959e",
++      "admin_ui/studio.js": "72f7059ee376968e23897912c837f436607aa798d83e42e717b12d4f42d078bf",
++      "admin_ui/catalogue.js": "cca8f978d792fdc7e7ac8e00a7bc6b70749b8dbdf342cccb0b2871814e765a5f",
++      "admin_ui/game_config.js": "d977fa08aa3a1b03083161e310ae4a65a6650939c9a710d8a54c2999f7876b36",
++      "admin_ui/insights.css": "be72be53037ce1441b497363018557300411bcc91fbc9cf7583407e8a3d5a24e",
++      "admin_ui/platform.js": "062b8deaf3f3898da03c96696b94839c5e41729d372d616160339c50b2ede8dc",
++      "admin_ui/support.js": "8192cb0823d0886e9994791f5ebd5610855eb57b9873357a6721a5280bdaa7c5",
++      "admin_ui/network.js": "54c9c57b1f6750691a98dfb8ce828a0ce4d3092568f33e6eb3d637756bbb3cfc",
++      "public_ui/winter-race-v1.webp": "96037452919c7a7415fedee61091bf161a1e544dc8510b639ddf563b1a958729",
++      "public_ui/BarlowCondensed-SemiBold.ttf": "7b619d14bc2327509a9ef32b0890f709626f7ecc9ff61191c2a4314c5499d2d9",
++      "public_ui/forest-drive-v1.webp": "dbe23e8cfded5bc8d6b8eaec95f90d914b2390fe3f87607f9823ac2123bfbb71",
++      "public_ui/track-editor-v1.webp": "cd8d0d743e53ca6e424c3c068623755e5f35951da1bab392c2ba696600f120dc",
++      "public_ui/garage-v1.webp": "bd5ca7a96b7a6680c510d648b7776bf4b0cf7321b571f2837e77299a09dd71d6",
++      "public_ui/index.html": "994f312db218031dc2aac95754783fec8b6da7874500b1731a7123fd01d1584d",
++      "public_ui/mark-v1.svg": "b2550a2c6cc49feb70e241279f96afacf14844262009f1552ebc435ff8b18189",
++      "public_ui/Barlow-Regular.ttf": "95aa02c7c43096e0dd44d787ba6216864a67157e402adab59b35572e0c1577ea",
++      "public_ui/style-v1.css": "b5e95b574834cbf55afe1c1ae20375b0b744a1524b3c81fe6b186b46778fbdd3",
++      "public_ui/worlds-v1.webp": "80d1d1e3c1e80e2cabb0e42f8c1676da3b5b8f82913f0ba663828aebe6f8aad3",
++      "public_ui/font-license.txt": "186d750eb496a4c17a76385f82be6aea2ac1cf2de074a811d63786cf374ea73f",
++      "privacy_ui/style.css": "949d04d4ac00a940d2f5020bda9c9a49075986448c6e36986ebbf2efca5baa23",
++      "privacy_ui/deletion.js": "7e939426a4b18b621c68fcdb8f5eccb4e6547510647f355507b5b93412536719",
++      "name_filter_data/eo.txt": "0374d76be1dbc77c61362d6e51305e1e4c546b7f734eb96e0bdbad7fd2a6ace1",
++      "name_filter_data/fr.txt": "79763a705e08256b393952852bb63aa903f4485e0ef02f70735f5e50efff213c",
++      "name_filter_data/no.txt": "e55b46bcec1ea288256924523a997d8d99e124c9aa3e61cbbbfaeca294f745b4",
++      "name_filter_data/policy.json": "277491bf19ced7cac430ee8b32b26a801923d4d167efbad19f668c609a485542",
++      "name_filter_data/it.txt": "d413f41018d58aa79d2c4809d0161f29ffd5652c4dc34c5b7b9ade680ee5599a",
++      "name_filter_data/th.txt": "835036d87a3a67738e388cd6de92e3c995c186a1427b4e830fe7b85483c257e7",
++      "name_filter_data/pl.txt": "98cf824e3692255645c5a72d5913f26fd4f20930f725683b4c96bb312ca5d9b3",
++      "name_filter_data/fil.txt": "fb4b43691b1249fee2eca1e66795daedda8e7366d42abcde6553dce611d23d99",
++      "name_filter_data/ko.txt": "0dd4b74ffea6e3bb35d658e6d8262b53ee99281eaa48ecb515a2065bfcc7f69d",
++      "name_filter_data/LICENSE.txt": "55bfbc1759943f7d19acfc68e35644b7fbe10cd8d39ab3551ce5ecff5dda9979",
++      "name_filter_data/pt.txt": "05ef524b0bb7f83f87257f6ec4dabf70e16b8bb6930f769fb93deaf608ff196d",
++      "name_filter_data/fi.txt": "3e0b35b2533ba22fb526d882bea250ddfad907ee7548aacbe15db17e21034c62",
++      "name_filter_data/ja.txt": "f83c4d0843ea6474c17bf171edd72b616b3af403f8613f2cde1bd841faf6f316",
++      "name_filter_data/fa.txt": "85828629b90fd18a3f6f6efb1934c1294103c33d1c28c0653970adfa179169e9",
++      "name_filter_data/ru.txt": "2598adabd2b761733d72a68d8ee4fcc1d2c38f2f85b6ff489985c6ce1d93bf75",
++      "name_filter_data/en.txt": "af851ecef1d5f212caba17339b12ac39cc2fef7d78c74876f67237644fcee8bd",
++      "name_filter_data/hi.txt": "83636e9b7a5260451e09e9e471f81dad9f082d107a82da77047e57d7856ed0cc",
++      "name_filter_data/kab.txt": "df7be2ce4a0c80ee717cd7134c90645a8a0f0c0c458a61f927934dbd50eac96d",
++      "name_filter_data/es.txt": "073334261cc2e7c08339faefd2f19f9623e8240a0ac18fe2a26c368b897496ce",
++      "name_filter_data/sources.json": "5233e52b3162b3ab705d7777608914c4aff1f0a68da5264e1eb0683a7e857328",
++      "name_filter_data/zh.txt": "a1d9aa037c8b039ef3b40148b3364ce2ca62ce4a955b7082a16ad99f6cbd1bc0",
++      "name_filter_data/tr.txt": "6c7ae03baee0f3fdc22eed169030567669005dad9a1923e0b571c4bd4f2f2ab5",
++      "name_filter_data/sv.txt": "77f3f99a89bd3b2bde6a654741bacfcb3acca3f5c804af4d8d3fea11e09ea562",
++      "name_filter_data/nl.txt": "8298ba0cdc3ca9a1989c349b8ad0148e4504c2804f2f2fb6c2f52bfb39c5ae71",
++      "name_filter_data/hu.txt": "a6943a971496f16e9a9d59ba6fde146d229699600e9636828d8d34ed9160aff5",
++      "name_filter_data/ar.txt": "23dbd9c55257bf2a4965f46664dc7eac04b61ff4eb3571e41f7e964c7c3ed96b",
++      "name_filter_data/cs.txt": "90706df86709bade1ca39cf9f9d9836409c674fc3bffcb7525bdd20e59b596bc",
++      "name_filter_data/de.txt": "ebe44d7772897390e27f7bec412fdcdf0efc294e4db157f8487c4cd8d4fabd55",
++      "name_filter_data/README.md": "176fd1b529577d92f1f6afc617da536c059bf881636f48e594ecb9050832505e",
++      "name_filter_data/da.txt": "ddb46ab67e955d1a5f49c89c18497d23c3d8d6d2522f3740a5d7583f90e434c6",
++      "migrations/versions/0005_unique_username.py": "b0aaf4a49b9eceb488aba09e758f0ef2d429eae6b6c445e51bd16ce82d2aeded",
++      "migrations/versions/__init__.py": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
++      "migrations/versions/0011_weekly_rivalry.py": "6e79816c0a3df9a7f313841d02b225aaa8792c3072d8d92794fa2f1e0a7e6f3b",
++      "migrations/versions/0019_discovery_snapshots.py": "42a6012ce3caf59c88136ffafdac5ef2184cc287dedb81ce7ed344dd96c7c152",
++      "migrations/versions/0016_commerce.py": "787b6866f970ac058371f90dd9b995e649be2b400034d0cbf89768372259e245",
++      "migrations/versions/0001_backend_initial_identity_content_and_verified_.py": "c4bd0edbf682ec072790f65b94f26ead8f7948b8a8472c3ed999ecd0aea4b7a4",
++      "migrations/versions/0008_review_reliability.py": "6ec59300135cc9cd1ae86c31e53e4a8a54b8bc09bfad88fcf6f4c4c74b8f81e0",
++      "migrations/versions/0006_resumes.py": "91b1df870cbfc82e5e444db827994f9f383da2d511274484def9c633957c5226",
++      "migrations/versions/0015_exception_recovery.py": "088eafee9d175557439a58a2c936c283a2c0f4854142ae55ea99630a3b64a920",
++      "migrations/versions/0003_profile_name.py": "ce523ec67ac58121f9d82189ccd63ea051a8f623158b03b6381b6cb994ab9bfd",
++      "migrations/versions/0017_product_controls.py": "13ffdd14fbb63379ee16d05c5806689b887eaf289b8941d009b571c48a62d748",
++      "migrations/versions/0010_archive_drafts.py": "63c099d6b14c0710c97621b523689ab2d528431b8485a5bcf74106560ddcafee",
++      "migrations/versions/0013_scalability.py": "498296b6d0f859c5b28721a70fd6b097ec7e3e84ead0a95dd80caa4866aa8d4c",
++      "migrations/versions/0018_player_country.py": "3a5fad0a94e7e70bca5301e50a17e27d520b9d597b51c8244414fe002654b607",
++      "migrations/versions/0014_storage_lifecycle.py": "ad4908c2c601933d0a0a0f9e1156178f561078d7ce6610f4237d5d67a11129ec",
++      "migrations/versions/0012_test_drivers.py": "0722d514367a336d19e993efc2362b91cc6aad5ddbfc1d846522a1b20cfbc5e0",
++      "migrations/versions/0009_track_lifecycle.py": "4f15cfab4c83e2477d8266395ff74616b3917fc1a6a9487f77f4e0190112775b",
++      "migrations/versions/0002_browser_login.py": "25ab584c0a4d52bb6aaaab0566254a97023082d1a1fe31054fca44a966fa1937",
++      "migrations/versions/0004_developer_name.py": "d61981b5cc27c8bdeb34edfdba874ed233ea482f27da1783f43d37a7a0885dfd",
++      "migrations/versions/0007_admin_audit.py": "1520c217ae2e5fd79427d32b550778a64d9b0f58eec456c4fd02db1497e02a82",
++      "migrations/versions/0070_reward_cache_revisions.py": "1aae1136ceae1c8d88a77eb60a3a23e031e045c4d42f5aa29deb90d11b3e658f",
++      "migrations/versions/0025_product_telemetry.py": "b45e2a8436ab53d7a8ef3043b3c266b813703e7d0f7dfa9da908e277ff8ae22e",
++      "migrations/versions/0069_slot_gifts.py": "6f2f1615a77aaa235329e2330ddc52d20d73f08c32ed1a020643ca4523cf7735",
++      "migrations/versions/0029_race_statistics.py": "d2fc9dde98f365951e644fa2edca889001abd0731e187beab5f6ce420baf3319",
++      "migrations/versions/0039_friend_publications.py": "82eee4d304045095d8dc5f2d702204027c4dafdae7be8d66d78be0a7755051ed",
++      "migrations/versions/0028_publication_intents.py": "721f275ab2ba635bde0dd22865a78ed18550a28204e5a1bf2a9beaddd4cfe953",
++      "migrations/versions/0065_packed_objects.py": "93c99ba335d0fb68a230444f8972cc497e9de5bed3b7e1572049852bae47899d",
++      "migrations/versions/0045_reward_rank_index.py": "f9d357c6f8cfad2e67726781767248e0c087b1a9d268bf3c30831938af28a558",
++      "migrations/versions/0055_bounded_rank_reads.py": "5d4fd8133c7e3c4a18352269d483919435de0aaf2f56b5737b1fdc3a75098ad8",
++      "migrations/versions/0050_discovery_indexed.py": "20d4d2ed4446b80e6972385f5ae51cd36d3847383cabfc60198a63d7a284f129",
++      "migrations/versions/0022_histogram_cache.py": "c29005749fe2a4b1bff9753c0f276a27de795205c5c4a5468e47463ce2d59854",
++      "migrations/versions/0063_custom_challenge_tracks.py": "34831ac04cccf35cdc7e4601345272305a527c8fd9d603e0b1c9791b4ec224fd",
++      "migrations/versions/0040_studio_platform.py": "67a40dea226f405a6cd4c32afb1778313b5f591aa6957eecfa02d0832d102c7b",
++      "migrations/versions/0034_account_privacy.py": "faa6b1916f0a1eea2738cf4fdcd5b36c8fee3f685b36844f1e22cf07a9843b01",
++      "migrations/versions/0035_rivalry_car_appearance.py": "2f2089a2ad63aadb97ba27d6b49ff0c752789d002b17232a79e18bd5111e263f",
++      "migrations/versions/0038_garage_news.py": "e8a544d92c5c69223047f390499fb664a58e3303d44f8e6ac3f01f66f0e08ba8",
++      "migrations/versions/0053_discovery_short_search.py": "a2d1529f589e0f9d0bc2f135adcd20cbb6525849bc5730e29be9e208025163b4",
++      "migrations/versions/0027_client_quality.py": "6435c656f51e5175e36f58d3d08f4bb20f3588b006a074cf4278bc406ec62707",
++      "migrations/versions/0030_studio_catalogue.py": "5892438f5ea817ece87e19c43c1145a1703d0a1d51869bd6b09fc92f58672c3c",
++      "migrations/versions/0037_earned_coins.py": "37fbc18fd709076025fb974b38ae8efb2b4c05b1c680d7eac7962c2f68f55b8e",
++      "migrations/versions/0051_telemetry_parallel.py": "0aa2262867b7ff61c2c82fda1c58890eb81e1b0e30fce658c3bcd9418ca5203f",
++      "migrations/versions/0044_telemetry_counter_bigint.py": "27a5fc4956190c3c61e55d900be7634fef1a71d5a1e5848f0eefc6585924034d",
++      "migrations/versions/0041_challenge_discovery.py": "43b42e524ca998ab81f8886d58cddd2673d9ccaa258bebdeb30e1c6f81b9e82b",
++      "migrations/versions/0068_track_of_day.py": "67190290851dd20746b1325d4f8b6f2d21fb8bc09d25478f9537ec771dbcc7f5",
++      "migrations/versions/0059_world_ranking.py": "a0a8350d82bbbf337772a6211cd5662a46f3f0978f4061c0366736c1e4ad87f0",
++      "migrations/versions/0020_challenges.py": "c6dd516747c0e9d90ba29ec47f32e2f39a57f78fe00dc6e0966c231c0dfabc4c",
++      "migrations/versions/0032_network_health.py": "ef917d20179ee16203ca663fccebb605c3505ee152fd07fe894e33ff3f3247a0",
++      "migrations/versions/0061_security_authority.py": "1ad48ab6074a5638837a0a71b2547188b20ec02069e9ad05b9f4e5eaebb078fc",
++      "migrations/versions/0062_retire_discovery_cache.py": "5d395800df7fbf325dce4f5c8ad0bc295910f4b690cfb66336daf2463cc371c3",
++      "migrations/versions/0067_discovery_rank.py": "9b8f6c89d828a84cf2959905b0d238fcd7a1f72e9c9bb1402164202bf87b9149",
++      "migrations/versions/0064_daily_track_selection.py": "507399c427338855fff9cccde355f76d73db5b7b320ed6d3466470ee03360d9a",
++      "migrations/versions/0060_game_configuration.py": "27dfa0a415f1aa7e5208e52a1e549e9920e4c01e54d6018c51f7ad8603d5baba",
++      "migrations/versions/0031_race_render_context.py": "e562d20b7bff87b26abc15449c42acc61dbab7fb54d2069b70fe4ecd29e1f436",
++      "migrations/versions/0045_studio_report_reads.py": "20eb556bd67dd5f229be7c8e388d4fd850524f6223b4175dce649c5b5ef14b79",
++      "migrations/versions/0023_operational_read_indexes.py": "55b41350fde2aeaacbbeb5fc89a0f888010987c6b489892b101b7a24a77d5b0f",
++      "migrations/versions/0024_lap_personal_bests.py": "b6f60522e9625cca545146d5e6e02ff0b81c0b25d94c7ca0d91b3aa5a8d5b5cd",
++      "migrations/versions/0054_priority_scaling.py": "66eeb955aa563bd27968bb7362ab0ee5e6ee4e9ca4765aa9b0b56f9a474c0d76",
++      "migrations/versions/0066_cost_archives.py": "a0966a4c730ae2ee4a6e2e188fa61590d514fdd6ff1bcc14936657cabdf8d6e2",
++      "migrations/versions/0047_queue_capacity_slots.py": "b4ca2741ba1c253fd284660567e8f484a852d1a496d757e22cb61b2cf680affa",
++      "migrations/versions/0058_challenge_series.py": "5d830ea0e5a0e51159d8e50b7660091405758b195d2d9b8d5a8feb1902fdc1d1",
++      "migrations/versions/0033_attack_resource_bounds.py": "3e2b1f6ba3870e5f99fa7c5d4cef69d6819002d4bdfcc7a86bdee5ac6edbd016",
++      "migrations/versions/0042_achievements.py": "07a33725385a8625814779b83310376ff4c91b30729cb27975d077423c783fb1",
++      "migrations/versions/0043_rivalry_planning.py": "472f69649c05dbe031e0f826b7ffa4c45c822d91514b87c7586aa6b9ec5a92ca",
++      "migrations/versions/0036_community_safety.py": "bca5807ebdd762c5f22f5519a486e35e717e8354dec866a8194daa9f887c3c3d",
++      "migrations/versions/0057_discovery_resource_guards.py": "5ae80f870c3ba0a71906e788474ad703acb5127797862a084a9ab7e56caa2445",
++      "migrations/versions/0052_histogram_demand.py": "eab95149560f8fe6797ab0ec0dc63278054f191169372ff3ddc151c7b7ad74c3",
++      "migrations/versions/0026_studio_cases.py": "7318aa92fdede37ce0b6ccd30dfe372094c353f22b942323df04f0f4455f94bf",
++      "migrations/versions/0056_bounded_retention.py": "0924899271e90e0168c7fb153b92a415c5889be2d12a7ea69b1e98b9712613fd",
++      "migrations/versions/0021_challenge_attempts.py": "1fe0a3dcd645b204cc2285388eafe7597338916f533e50fb7f0c8da59ae3ce0c"
++    },
++    "schema_changed": false
++  },
++  "tests": {
++    "exact_image_passed": 51,
++    "legacy_native_harness_deselected": 1,
++    "first_retained_run_passed": 48,
++    "initial_findings": [
++      "The first rollback test expected a raised exception; existing middleware correctly returns sanitized HTTP500. Exact database rollback assertions remain.",
++      "The initial direct pytest command used the wrong relative interpreter path; the owned fixture helper corrects it."
++    ]
++  },
++  "checks": {
++    "stale_actual_contract_identified": true,
++    "actual_current_track_builds_match": true,
++    "original_batch_and_cohort_retained": true,
++    "original_job_status_counts_preserved": true,
++    "no_results_reset": true,
++    "old_local_journals_preserved": true,
++    "one_bounded_local_command_completed": true,
++    "api_only_deployment": true,
++    "resources_iam_schema_game_preserved": true,
++    "canary_and_lock_removed": true,
++    "one_runtime_module_changed": true,
++    "all_canonical_assets_exact": true,
++    "exact_image_tests_pass": true,
++    "owned_test_database_removed": true,
++    "owned_exact_fixtures_removed": true,
++    "owned_read_only_probe_removed": true
++  },
++  "checks_passed": 16,
++  "checkpoint_verified": true,
++  "limitations": [
++    "One bounded live attempt is not a guarantee that every artificial profile finishes every circuit.",
++    "Old contracts/results are retained; no old score is reinterpreted under new physics.",
++    "Only the API metadata module and local launchers change; no controller, worker, Studio, job, schema or resource change.",
++    "No physical-device test, owner save edit, real purchase, owner-process restart or main-index staging/commit/merge."
++  ]
++}
+diff --git a/docs/evidence/local-race-batch-recovery-2026-10-28/retained-and-recovery.log b/docs/evidence/local-race-batch-recovery-2026-10-28/retained-and-recovery.log
+new file mode 100644
+index 0000000..6c22400
+--- /dev/null
++++ b/docs/evidence/local-race-batch-recovery-2026-10-28/retained-and-recovery.log
+@@ -0,0 +1,2 @@
++................................................                         [100%]
++48 passed, 1 deselected, 146 warnings in 93.59s (0:01:33)
+diff --git a/docs/evidence/local-race-batch-recovery-2026-10-28/retained-and-recovery.xml b/docs/evidence/local-race-batch-recovery-2026-10-28/retained-and-recovery.xml
+new file mode 100644
+index 0000000..31f7303
+--- /dev/null
++++ b/docs/evidence/local-race-batch-recovery-2026-10-28/retained-and-recovery.xml
+@@ -0,0 +1 @@
++<?xml version="1.0" encoding="utf-8"?><testsuites name="pytest tests"><testsuite name="pytest" errors="0" failures="0" skipped="0" tests="48" time="93.488" timestamp="2026-10-28T18:28:20.639817+02:00" hostname="DESKTOP-96E8L9N"><testcase classname="tests.test_local_batch_recovery" name="test_matching_batch_preparation_is_a_noop" time="3.646" /><testcase classname="tests.test_local_batch_recovery" name="test_stale_plan_continues_without_clearing_results_players_or_old_jobs" time="2.761" /><testcase classname="tests.test_local_batch_recovery" name="test_missing_current_catalog_preserves_old_plan" time="2.354" /><testcase classname="tests.test_local_batch_recovery" name="test_disabled_artificial_profile_never_reappears" time="3.168" /><testcase classname="tests.test_local_batch_recovery" name="test_prepare_keeps_operator_and_development_gates" time="2.791" /><testcase classname="tests.test_local_batch_recovery" name="test_old_id_does_not_redirect_to_an_unrelated_active_batch" time="3.279" /><testcase classname="tests.test_local_batch_recovery" name="test_failed_continuation_commit_rolls_back_every_new_job_and_guard" time="2.997" /><testcase classname="tests.test_local_batch_recovery" name="test_postgres_concurrent_continuations_commit_exactly_one_replacement" time="4.045" /><testcase classname="tests.test_backend_resource_optimisation" name="test_idle_worker_never_launches_artificial_work_even_with_development_enabled" time="2.448" /><testcase classname="tests.test_backend_resource_optimisation" name="test_claim_is_private_resumable_and_exclusive" time="2.189" /><testcase classname="tests.test_backend_resource_optimisation" name="test_expired_lease_cannot_overwrite_new_owner_and_failure_retries_are_bounded" time="2.143" /><testcase classname="tests.test_backend_resource_optimisation" name="test_normal_upload_receipt_is_required_and_batch_progress_follows_verification" time="2.899" /><testcase classname="tests.test_backend_resource_optimisation" name="test_real_player_upload_cannot_be_attached_to_an_artificial_job" time="2.447" /><testcase classname="tests.test_backend_resource_optimisation" name="test_worker_factory_owns_resources_without_http_or_staff_clients" time="0.074" /><testcase classname="tests.test_backend_resource_optimisation" name="test_idle_retirement_preserves_contract_and_cannot_interrupt_a_busy_engine" time="0.002" /><testcase classname="tests.test_backend_resource_optimisation" name="test_complete_checkpoint_survives_later_failure_but_partial_output_does_not_poison_cache" time="0.011" /><testcase classname="tests.test_backend_resource_optimisation" name="test_http_workload_loads_no_unmounted_route_tree" time="4.292" /><testcase classname="tests.test_backend_resource_optimisation" name="test_idle_retirement_setting_is_bounded[-1]" time="0.001" /><testcase classname="tests.test_backend_resource_optimisation" name="test_idle_retirement_setting_is_bounded[301]" time="0.001" /><testcase classname="tests.test_backend_resource_optimisation" name="test_idle_retirement_setting_is_bounded[True]" time="0.001" /><testcase classname="tests.test_backend_resource_optimisation" name="test_idle_retirement_setting_is_bounded[1.5]" time="0.001" /><testcase classname="tests.test_backend_resource_optimisation" name="test_settings_validation_does_not_load_cloud_transports" time="0.189" /><testcase classname="tests.test_backend_resource_optimisation" name="test_idle_heartbeats_stay_fresh_without_per_second_writes" time="2.067" /><testcase classname="tests.test_backend_resource_optimisation" name="test_replaced_active_batch_fences_old_receipts" time="2.539" /><testcase classname="tests.test_backend_resource_optimisation" name="test_local_rivalry_plans_expose_only_existing_artificial_members" time="2.302" /><testcase classname="tests.test_backend_resource_optimisation" name="test_local_pass_recovers_lost_ack_and_keeps_a_bounded_journal" time="3.107" /><testcase classname="tests.test_backend_resource_optimisation" name="test_local_pass_recovers_upload_or_replaces_only_an_unsubmitted_expired_ticket[True]" time="3.107" /><testcase classname="tests.test_backend_resource_optimisation" name="test_local_pass_recovers_upload_or_replaces_only_an_unsubmitted_expired_ticket[False]" time="2.131" /><testcase classname="tests.test_backend_resource_optimisation" name="test_postgres_concurrent_claims_and_terminal_reconciliation_commit" time="3.684" /><testcase classname="tests.test_backend_resource_optimisation" name="test_original_studio_snapshot_assertions_under_explicit_admin" time="2.294" /><testcase classname="tests.test_test_drivers" name="test_explicit_gate_and_disabled_existing_sessions" time="1.770" /><testcase classname="tests.test_test_drivers" name="test_persistent_profiles_fleet_bounds_and_identity_reservation" time="2.275" /><testcase classname="tests.test_test_drivers" name="test_test_group_isolated_fill_and_normal_scope_rejected" time="1.535" /><testcase classname="tests.test_test_drivers" name="test_weekly_scores_require_verified_upload_and_public_board_stays_empty" time="1.753" /><testcase classname="tests.test_test_drivers" name="test_artificial_legacy_pbs_do_not_inflate_popularity_or_skill" time="3.451" /><testcase classname="tests.test_test_drivers" name="test_schedule_is_seeded_varied_bounded_and_immediate_first_attempt" time="0.012" /><testcase classname="tests.test_test_drivers" name="test_large_test_field_uses_verified_percentiles_for_matching" time="4.643" /><testcase classname="tests.test_test_drivers" name="test_scheduler_recovers_upload_after_crash_and_does_not_duplicate" time="0.019" /><testcase classname="tests.test_test_drivers" name="test_plan_lock_prevents_concurrent_writers_and_releases_on_close" time="0.017" /><testcase classname="tests.test_test_drivers" name="test_versioned_profile_golden_fixture" time="0.002" /><testcase classname="tests.test_test_drivers" name="test_all_track_history_has_200_distinct_drivers_per_track" time="1.567" /><testcase classname="tests.test_test_drivers" name="test_best_lap_histogram_includes_all_test_drivers_and_respects_record_reset" time="3.331" /><testcase classname="tests.test_test_drivers" name="test_test_histogram_uses_verified_test_counts_and_stays_private" time="2.013" /><testcase classname="tests.test_test_drivers" name="test_pace_calibration_drives_inputs_instead_of_rewriting_result" time="0.007" /><testcase classname="tests.test_test_drivers" name="test_failed_fast_drive_retries_real_slower_inputs" time="0.005" /><testcase classname="tests.test_population_batch" name="test_reset_is_test_only_idempotent_and_all_current_tracks_included" time="2.660" /><testcase classname="tests.test_population_batch" name="test_stale_inventory_and_disabled_gate_never_reset_data" time="1.768" /><testcase classname="tests.test_population_batch" name="test_new_generation_reuses_players_and_preserves_existing_best_rows" time="2.490" /></testsuite></testsuites>
+\ No newline at end of file
+diff --git a/docs/evidence/local-race-batch-recovery-2026-10-28/source-hashes.json b/docs/evidence/local-race-batch-recovery-2026-10-28/source-hashes.json
+new file mode 100644
+index 0000000..c61a1ca
+--- /dev/null
++++ b/docs/evidence/local-race-batch-recovery-2026-10-28/source-hashes.json
+@@ -0,0 +1,19 @@
++{
++  "backend/bmt_backend/test_population_batch.py": "3194043576c27496c5344b47f60e6fcb72e978191527894589dd78789b509313",
++  "backend/deploy/local_artificial.py": "d6847cb7bd79d55a80dee8a4d2cc4fc1920b980905a5019d7e6326b1ad23702d",
++  "scripts/artificial-races.ps1": "02ae04d28f5ee9979679ac5b7ad23625daeff30d0e1277b60a24ef90b36372b5",
++  "backend/tests/test_local_batch_recovery.py": "b9135e96f26eadcca1007dbd581c89b12f70dd001f45b1d89aa6df1d3ee635e2",
++  "docs/LOCAL_RACE_BATCH_RECOVERY_2026_10_28.md": "10f92fedb97d3acbd0bc4ca83ea1684c01a8328f8a2a2004cd9cc44bcfadd14b",
++  "build/local-race-batch-recovery-2026-10-28/build.py": "d80f4e08ee462fdd12a3ab5ab4326cf8f4c81d43269f5913040ebfc24effd900",
++  "build/local-race-batch-recovery-2026-10-28/checkpoint.py": "b60c52107e6b83eed64808e5c18a7c0a57faaa2603557400b8638e12f61eb27a",
++  "build/local-race-batch-recovery-2026-10-28/diagnose.py": "83e8e2f3cd4dda391a0972f2e55f4388f3ac041fa3f86090c60a494679e514bd",
++  "build/local-race-batch-recovery-2026-10-28/exact_tests.py": "55a88e69a624c85f01bed8124d3e94b3ce8bb8323112f543e89764eee5037f7b",
++  "build/local-race-batch-recovery-2026-10-28/live_contract_probe.py": "03e901ae3d79041075c2423ba5a1482cd64f1da78f3864703a7494470aaae194",
++  "build/local-race-batch-recovery-2026-10-28/release.py": "b2d50d7d688aa7beb40a61714987e2ec15efdfc0b8125e59b20eeff1383c6bd6",
++  "build/local-race-batch-recovery-2026-10-28/report.py": "9df159f49ff599d15cb214696ad2585c0439e8a533cd3ea8a1c1b7ed0bdcdcf2",
++  "build/local-race-batch-recovery-2026-10-28/tests.py": "c4643698bb690174a6984c5e235f9a7bd51329ce3c913eae3528733160887f6b",
++  "build/local-race-batch-recovery-2026-10-28/verify_completion.py": "d76cec78587cc75c0e9dc1e8aca06a424ea546949febda6f893522bdb256fbb7",
++  "AGENTS.md": "416e762faa82db230d60d04aa3f6b43f793fd9d5e99364aedffd7536761eb5ab",
++  "DEVELOPMENT_STATUS.md": "c45fb7d4a22d310587c14680e396976143f6e28349ed5e74e033b23edb03637e",
++  "docs/PHASE_0_PLAN.md": "1b7272a4f785931c1fb487b0ad29194912cba60b2cd1101aebf39eb7b13682ef"
++}
+\ No newline at end of file
+diff --git a/docs/evidence/local-race-batch-recovery-2026-10-28/sqlite-tests.xml b/docs/evidence/local-race-batch-recovery-2026-10-28/sqlite-tests.xml
+new file mode 100644
+index 0000000..1b39409
+--- /dev/null
++++ b/docs/evidence/local-race-batch-recovery-2026-10-28/sqlite-tests.xml
+@@ -0,0 +1,3 @@
++<?xml version="1.0" encoding="utf-8"?><testsuites name="pytest tests"><testsuite name="pytest" errors="0" failures="1" skipped="0" tests="7" time="24.453" timestamp="2026-10-28T18:26:57.739942+02:00" hostname="DESKTOP-96E8L9N"><testcase classname="tests.test_local_batch_recovery" name="test_matching_batch_preparation_is_a_noop" time="3.708" /><testcase classname="tests.test_local_batch_recovery" name="test_stale_plan_continues_without_clearing_results_players_or_old_jobs" time="2.499" /><testcase classname="tests.test_local_batch_recovery" name="test_missing_current_catalog_preserves_old_plan" time="2.471" /><testcase classname="tests.test_local_batch_recovery" name="test_disabled_artificial_profile_never_reappears" time="4.017" /><testcase classname="tests.test_local_batch_recovery" name="test_prepare_keeps_operator_and_development_gates" time="3.422" /><testcase classname="tests.test_local_batch_recovery" name="test_old_id_does_not_redirect_to_an_unrelated_active_batch" time="4.171" /><testcase classname="tests.test_local_batch_recovery" name="test_failed_continuation_commit_rolls_back_every_new_job_and_guard" time="2.688"><failure message="Failed: DID NOT RAISE RuntimeError">tests\test_local_batch_recovery.py:140: in test_failed_continuation_commit_rolls_back_every_new_job_and_guard
++    with pytest.raises(RuntimeError,match='commit interruption'):prepare(d,batch_id)
++E   Failed: DID NOT RAISE RuntimeError</failure></testcase></testsuite></testsuites>
+\ No newline at end of file
+diff --git a/scripts/artificial-races.ps1 b/scripts/artificial-races.ps1
+index 58111b4..7f5dec7 100644
+--- a/scripts/artificial-races.ps1
++++ b/scripts/artificial-races.ps1
+@@ -4,7 +4,8 @@ param(
+     [switch]$ListRivalries,
+     [ValidateRange(1,20)][int]$MaxJobs = 1,
+     [ValidateRange(0.5,8)][double]$Cpus = 1,
+-    [switch]$Inspect
++    [switch]$Inspect,
++    [switch]$PrepareOnly
+ )
+ $ErrorActionPreference = "Stop"
+ $workspaceRoot = Split-Path -Parent $PSScriptRoot
+@@ -15,5 +16,6 @@ if ($BatchId) { $arguments += @("--batch", $BatchId) }
+ if ($RivalryId) { $arguments += @("--rivalry", $RivalryId) }
+ if ($ListRivalries) { $arguments += "--list-rivalries" }
+ if ($Inspect) { $arguments += "--inspect" }
++if ($PrepareOnly) { $arguments += "--prepare-only" }
+ & $interpreter @arguments
+ if ($LASTEXITCODE -ne 0) { throw "Local artificial-race command failed. Its journal is preserved for retry." }

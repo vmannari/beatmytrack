@@ -1,0 +1,559 @@
+--- a/game/ui/car_showroom.gd
++++ b/game/ui/car_showroom.gd
+@@ -4,6 +4,7 @@
+ signal condition_changed
+ signal trophy_tapped(position: Vector2)
+ const PaintTransition = preload("res://ui/garage_paint_transition.gd")
++const KitTransition = preload("res://ui/garage_kit_transition.gd")
+ var _wall_press := Vector2.INF
+ var _wall_pointer: int = -2
+ var condition: Dictionary = {}
+@@ -19,6 +20,8 @@
+ var pick_meshes: Array[Dictionary] = []
+ var vehicle_id: String = "compact"
+ var read_only: bool = false
++var cooperative_build: bool = false
++var showroom_ready: bool = false
+ var garage_mode: bool = false
+ var turntable: Node3D
+ var roof: Node3D
+@@ -38,6 +41,8 @@
+ var outgoing_reveal: GarageCarReveal
+ var paint_motion: Tween
+ var paint_transition: PaintTransition
++var kit_motion: Tween
++var kit_transition: KitTransition
+ var interaction_inset_top: float = 0.0
+ var interaction_inset_bottom: float = 0.0
+ var framing_scale: float = 1.0
+@@ -99,7 +104,12 @@
+ 	car.editable_kits = garage_mode and vehicle_id=="compact"
+ 	car.livery = livery
+ 	car.customisation = customisation
++	car.cooperative_build = cooperative_build
++	if cooperative_build: viewport.render_target_update_mode = SubViewport.UPDATE_DISABLED
+ 	world.add_child(car)
++	while not car.model_ready:
++		await get_tree().process_frame
++		if not is_inside_tree() or is_queued_for_deletion(): return
+ 	if garage_mode: turntable = GarageEnvironment.build(world, car, read_only)
+ 	else: ShowroomStudio.build(world,car)
+ 	if garage_mode: roof = world.find_child("GarageRoof",true,false)
+@@ -128,6 +138,7 @@
+ 	refresh_thumbnail()
+ 	camera.keep_aspect = Camera3D.KEEP_HEIGHT
+ 	if not read_only: _cache_pick_meshes(car)
++	showroom_ready = true
+ 
+ func refresh_thumbnail() -> void:
+ 	if not is_instance_valid(showroom_viewport): return
+@@ -139,6 +150,7 @@
+ 	invalidate_render()
+ 
+ func replace_car(id: String, paint: Dictionary, wear: Dictionary, parts: Dictionary = {}) -> void:
++	finish_kit_transition()
+ 	finish_paint_transition()
+ 	finish_car_transition()
+ 	_clear_gesture()
+@@ -181,12 +193,19 @@
+ 	car_motion.tween_callback(finish_car_transition)
+ 	if read_only: set_process(true)
+ 
+-func apply_customisation(value: Dictionary) -> void:
++func apply_customisation(value: Dictionary, animate_kit: bool = false) -> void:
+ 	if vehicle_id != "compact" or not VehicleCustomisation.valid(value): return
+-	if customisation==value: return
++	if customisation==value:
++		if not animate_kit: finish_kit_transition()
++		return
++	finish_kit_transition()
+ 	finish_paint_transition()
+ 	finish_car_transition()
+ 	set_wash_mode(false)
++	var sweep: KitTransition
++	if animate_kit and garage_mode and not read_only and is_visible_in_tree() and car.editable_kits:
++		sweep = KitTransition.new()
++		sweep.capture(car,value)
+ 	customisation = value.duplicate(true)
+ 	condition = weathering.snapshot()
+ 	if car.editable_kits:
+@@ -199,6 +218,12 @@
+ 		weathering.restore(condition)
+ 		pick_meshes.clear()
+ 		if not read_only: _cache_pick_meshes(car)
++		if sweep!=null:
++			kit_transition = sweep
++			sweep.install(car)
++			kit_motion = create_tween()
++			kit_motion.tween_method(sweep.set_progress,0.0,1.0,KitTransition.SECONDS).set_trans(Tween.TRANS_SINE).set_ease(Tween.EASE_IN_OUT)
++			kit_motion.tween_callback(finish_kit_transition)
+ 		refresh_thumbnail()
+ 		return
+ 	var previous: CarVisual = car
+@@ -219,6 +244,13 @@
+ 	if not read_only: _cache_pick_meshes(car)
+ 	refresh_thumbnail()
+ 
++func finish_kit_transition() -> void:
++	if kit_motion!=null: kit_motion.kill()
++	kit_motion = null
++	if kit_transition!=null: kit_transition.restore()
++	kit_transition = null
++	invalidate_render()
++
+ func _prepare_car_reveal(reveal: GarageCarReveal, model: CarVisual, deck: Node3D) -> void:
+ 	reveal.prepare(model)
+ 	for child: Node in deck.get_children():
+@@ -272,6 +304,7 @@
+ 	if is_instance_valid(roof): roof.visible = camera.position.y < GarageEnvironment.ROOF_CUTAWAY_HEIGHT
+ 
+ func _reflection_visibility() -> void:
++	if not is_visible_in_tree(): finish_kit_transition()
+ 	if not is_visible_in_tree(): finish_paint_transition()
+ 	if read_only and not is_visible_in_tree(): finish_car_transition()
+ 	if reflections != null: reflections.set_visible(is_visible_in_tree())
+@@ -437,6 +470,7 @@
+ 	queue_redraw()
+ 
+ func apply_livery(value: Dictionary, animate_paint: bool = false) -> void:
++	finish_kit_transition()
+ 	if livery == value:
+ 		if not animate_paint: finish_paint_transition()
+ 		return
+@@ -466,6 +500,7 @@
+ 	invalidate_render()
+ 
+ func set_wash_mode(enabled: bool) -> void:
++	if enabled: finish_kit_transition()
+ 	if enabled: finish_paint_transition()
+ 	if enabled: finish_car_transition()
+ 	if enabled and wash_effect == null:
+@@ -583,7 +618,7 @@
+ 	if not is_visible_in_tree():
+ 		washing = false
+ 		return
+-	var animated: bool = (camera_motion != null and camera_motion.is_running()) or (car_motion != null and car_motion.is_running()) or (paint_motion != null and paint_motion.is_running())
++	var animated: bool = (camera_motion != null and camera_motion.is_running()) or (car_motion != null and car_motion.is_running()) or (paint_motion != null and paint_motion.is_running()) or (kit_motion != null and kit_motion.is_running())
+ 	var reflection_animation: bool = animated
+ 	var room_animation: bool = false
+ 	if read_only:
+@@ -678,6 +713,7 @@
+ 	return true
+ 
+ func _exit_tree() -> void:
++	finish_kit_transition()
+ 	finish_paint_transition()
+ 	# Garage layout moves leave/re-enter the tree within the same call.
+ 	# Keep captures through that transfer; release real detachments/destruction.
+--- a/game/ui/garage_page.gd
++++ b/game/ui/garage_page.gd
+@@ -1203,13 +1203,13 @@
+ 	var value: Dictionary = kit_draft.duplicate(true)
+ 	value[category] = option
+ 	if not VehicleCustomisation.valid(value): return
+-	_cancel_cosmetic_preview(false)
+ 	if not _require_clean_car(): return
++	_cancel_cosmetic_preview(false,false)
+ 	if value != kit_draft:
+ 		_cosmetic_preview = {"kind":"kit","category":category,"option":option,"scope":"" if economy == null else economy.scope}
+ 		GameText.bind(_preview_hint,"PREVIEW · {part}",{"part":tr(str(VehicleCustomisation.LABELS[category]))})
+ 	_preview_hint.visible = not _cosmetic_preview.is_empty()
+-	showroom.apply_customisation(value)
++	showroom.apply_customisation(value,true)
+ 	_customisation_camera.focus(showroom,"body_kit" if category=="body" else category)
+ 	_condition_presented = showroom.weathering.snapshot()
+ 	# The callout marks the modification without tinting its paint or materials.
+@@ -1305,21 +1305,20 @@
+ 		title = livery_menu.pattern_shelf.selected_title
+ 	var commit := func() -> void:
+ 		if serial != _preview_serial or _cosmetic_preview != value: return
+-		_cancel_cosmetic_preview(false,value.kind != "livery")
+ 		if value.kind == "kit": _select_kit(str(value.category),str(value.option))
+ 		else: _select_livery(int(value.index))
+ 	if _require_owned(id,title,commit): commit.call()
+ 
+ func _save_kits(value: Dictionary) -> void:
+ 	if not _require_clean_car(): return
+-	_cancel_cosmetic_preview(false)
++	_cancel_cosmetic_preview(false,false)
+ 	var collection: Dictionary = records.settings.get("vehicle_customisation",{}).duplicate(true)
+ 	collection[vehicle_id] = value.duplicate(true)
+ 	records.settings.vehicle_customisation = collection
+ 	if value != kit_draft and value != VehicleCustomisation.defaults(): AchievementProgress.customise(records,vehicle_id)
+ 	var result: Error = records.save_records()
+ 	kit_draft = VehicleCustomisation.for_car(records.settings,vehicle_id)
+-	showroom.apply_customisation(kit_draft)
++	showroom.apply_customisation(kit_draft,result==OK)
+ 	_condition_presented = showroom.weathering.snapshot()
+ 	for index: int in range(kit_cards.get_child_count()):
+ 		(kit_cards.get_child(index) as Button).set_selected(kit_draft[kit_category]==VehicleCustomisation.OPTIONS[kit_category][index][0])
+--- /dev/null
++++ b/game/ui/garage_kit_transition.gd
+@@ -0,0 +1,144 @@
++extends RefCounted
++## A local assembly sweep over changed fittings, in the existing Garage world.
++const SECONDS: float = 0.58
++const STANDARD: String = """shader_type spatial;
++render_mode diffuse_burley, specular_schlick_ggx;
++uniform vec4 kit_albedo : source_color = vec4(1.0);
++uniform float kit_roughness = 0.8;
++uniform float kit_metallic = 0.0;
++uniform float kit_specular = 0.5;
++uniform float kit_clearcoat = 0.0;
++uniform float kit_clearcoat_roughness = 0.0;
++uniform vec3 kit_emission : source_color;
++uniform bool kit_vertex_color = false;
++void fragment() {
++	ALBEDO = kit_albedo.rgb * (kit_vertex_color ? COLOR.rgb : vec3(1.0));
++	ROUGHNESS = kit_roughness;
++	METALLIC = kit_metallic;
++	SPECULAR = kit_specular;
++	CLEARCOAT = kit_clearcoat;
++	CLEARCOAT_ROUGHNESS = kit_clearcoat_roughness;
++	EMISSION = kit_emission;
++}
++"""
++static var shaders: Dictionary = {}
++var categories: Array[String] = []
++var outgoing_root: Node3D
++var bindings: Array[Dictionary] = []
++var materials: Array[ShaderMaterial] = []
++var progress: float = 0.0
++var height_range := Vector2(INF,-INF)
++var _copies: Dictionary = {}
++
++func capture(car: CarVisual, value: Dictionary) -> void:
++	outgoing_root = Node3D.new()
++	outgoing_root.name = "OutgoingGarageFittings"
++	var inverse: Transform3D = car.global_transform.affine_inverse()
++	for category: String in VehicleCustomisation.CATEGORIES:
++		if car.customisation[category]==value[category]: continue
++		categories.append(category)
++		for frame: Node3D in car.kit_frames.get(category,[]):
++			var copy: Node3D = frame.duplicate(0) as Node3D
++			outgoing_root.add_child(copy)
++			copy.transform = inverse*frame.global_transform
++
++func install(car: CarVisual) -> void:
++	car.get_parent().add_child(outgoing_root)
++	outgoing_root.transform = car.transform
++	_collect(outgoing_root,true)
++	for category: String in categories:
++		for frame: Node3D in car.kit_frames.get(category,[]): _collect(frame,false)
++	set_progress(0.0)
++
++func _collect(node: Node3D, outgoing: bool) -> void:
++	if node is MeshInstance3D and node.mesh!=null:
++		var box: AABB = node.global_transform*node.get_aabb()
++		height_range.x = minf(height_range.x,box.position.y)
++		height_range.y = maxf(height_range.y,box.end.y)
++		var original: Material = node.material_override
++		for index: int in range(1 if original!=null else node.mesh.get_surface_count()):
++			var source: Material = node.get_active_material(index)
++			if source==null: continue
++			bindings.append({"node":node,"index":index,"override":original,"surface":node.get_surface_override_material(index)})
++			var material: ShaderMaterial = _copy(source,outgoing)
++			if original!=null: node.material_override = material
++			else: node.set_surface_override_material(index,material)
++	for child: Node in node.get_children():
++		if child is Node3D: _collect(child,outgoing)
++
++func _copy(source: Material, outgoing: bool) -> ShaderMaterial:
++	var identity: String = str(source.get_instance_id())+str(outgoing)
++	if _copies.has(identity): return _copies[identity]
++	var code: String = source.shader.code if source is ShaderMaterial else STANDARD
++	if source is BaseMaterial3D:
++		if source.shading_mode==BaseMaterial3D.SHADING_MODE_UNSHADED:
++			code = code.replace("diffuse_burley, specular_schlick_ggx","unshaded")
++		else:
++			if source.diffuse_mode==BaseMaterial3D.DIFFUSE_TOON: code = code.replace("diffuse_burley","diffuse_toon")
++			if source.specular_mode==BaseMaterial3D.SPECULAR_DISABLED: code = code.replace("specular_schlick_ggx","specular_disabled")
++		if source.cull_mode==BaseMaterial3D.CULL_DISABLED: code = code.replace("render_mode ","render_mode cull_disabled, ")
++		elif source.cull_mode==BaseMaterial3D.CULL_FRONT: code = code.replace("render_mode ","render_mode cull_front, ")
++	if not shaders.has(code):
++		var shader := Shader.new()
++		var modified: String = code
++		var fragment: int = modified.find("void fragment()")
++		var start: int = modified.find("{",fragment)
++		var finish: int = _function_end(modified,start)
++		modified = modified.insert(finish,"\nEMISSION += vec3(1.0,0.70,0.30)*kit_edge*0.65;\n")
++		modified = modified.insert(start+1,"""
++float kit_cut = mix(kit_height_range.x-0.035,kit_height_range.y+0.035,kit_progress);
++if (kit_outgoing ? kit_height < kit_cut : kit_height > kit_cut) { discard; }
++float kit_band = clamp((kit_height_range.y-kit_height_range.x)*0.055,0.0025,0.012);
++float kit_edge = (1.0-smoothstep(0.0,kit_band,abs(kit_height-kit_cut)))*step(0.001,kit_progress)*step(kit_progress,0.999);
++""")
++		var vertex: int = modified.find("void vertex()")
++		var height: String = "\nkit_height = (MODEL_MATRIX*vec4(VERTEX,1.0)).y;\n"
++		if vertex<0: modified += "\nvoid vertex() {"+height+"}\n"
++		else: modified = modified.insert(_function_end(modified,modified.find("{",vertex)),height)
++		modified = modified.insert(modified.find(";")+1,"\nuniform float kit_progress = 0.0;\nuniform bool kit_outgoing = false;\nuniform vec2 kit_height_range;\nvarying float kit_height;\n")
++		shader.code = modified
++		shaders[code] = shader
++	var material: ShaderMaterial = source.duplicate() as ShaderMaterial if source is ShaderMaterial else ShaderMaterial.new()
++	material.shader = shaders[code]
++	material.render_priority = source.render_priority
++	material.set_shader_parameter("kit_outgoing",outgoing)
++	if source is BaseMaterial3D:
++		material.set_shader_parameter("kit_albedo",source.albedo_color)
++		material.set_shader_parameter("kit_roughness",source.roughness)
++		material.set_shader_parameter("kit_metallic",source.metallic)
++		material.set_shader_parameter("kit_specular",0.0 if source.specular_mode==BaseMaterial3D.SPECULAR_DISABLED else source.metallic_specular)
++		material.set_shader_parameter("kit_clearcoat",source.clearcoat if source.clearcoat_enabled else 0.0)
++		material.set_shader_parameter("kit_clearcoat_roughness",source.clearcoat_roughness)
++		material.set_shader_parameter("kit_emission",source.emission*source.emission_energy_multiplier if source.emission_enabled else Color.BLACK)
++		material.set_shader_parameter("kit_vertex_color",source.vertex_color_use_as_albedo)
++	_copies[identity] = material
++	materials.append(material)
++	if source.next_pass!=null: material.next_pass = _copy(source.next_pass,outgoing)
++	return material
++
++static func _function_end(code: String, start: int) -> int:
++	assert(start>=0,"Kit finishes require a fragment function")
++	var depth: int = 1
++	for index: int in range(start+1,code.length()):
++		if code[index]=="{": depth += 1
++		elif code[index]=="}": depth -= 1
++		if depth==0: return index
++	assert(false,"Kit finishes require complete shader functions")
++	return code.length()
++
++func set_progress(value: float) -> void:
++	progress = value
++	for material: ShaderMaterial in materials:
++		material.set_shader_parameter("kit_progress",value)
++		material.set_shader_parameter("kit_height_range",height_range)
++
++func restore() -> void:
++	for binding: Dictionary in bindings:
++		if not is_instance_valid(binding.node): continue
++		binding.node.material_override = binding.override
++		binding.node.set_surface_override_material(binding.index,binding.surface)
++	bindings.clear()
++	materials.clear()
++	_copies.clear()
++	if is_instance_valid(outgoing_root): outgoing_root.free()
++	outgoing_root = null
+--- a/game/ui/garage_cached_thumbnail.gd
++++ b/game/ui/garage_cached_thumbnail.gd
+@@ -39,7 +39,7 @@
+ 	livery = value.duplicate(true)
+ 	refresh_thumbnail()
+ 
+-func apply_customisation(value: Dictionary) -> void:
++func apply_customisation(value: Dictionary, _animate_kit: bool = false) -> void:
+ 	customisation = value.duplicate(true)
+ 	refresh_thumbnail()
+ 
+--- /dev/null
++++ b/game/ui/garage_kit_transition.gd.uid
+@@ -0,0 +1 @@
++uid://8snkkq88dtno
+--- /dev/null
++++ b/game/tests/test_garage_kit_transition.gd
+@@ -0,0 +1,201 @@
++extends SceneTree
++const Fixture = preload("res://tests/test_customisation_carousel.gd")
++var page: GaragePage
++var checks: int = 0
++var failures: int = 0
++var output: String
++var metrics: Array[Dictionary] = []
++
++func _initialize() -> void: run.call_deferred()
++func check(ok: bool, label: String) -> void:
++	checks += 1
++	if not ok:
++		failures += 1
++		print("FAIL: "+label)
++func settle() -> void:
++	while page._workbench_focus_pending or page._menu_motion!=null or page.showroom.camera_motion!=null and page.showroom.camera_motion.is_running(): await process_frame
++	for tick: int in range(8): await process_frame
++func draw() -> void:
++	page.showroom.invalidate_render()
++	for tick: int in range(5): await process_frame
++	if DisplayServer.get_name()!="headless": await RenderingServer.frame_post_draw
++func capture(label: String) -> void:
++	if DisplayServer.get_name()=="headless": return
++	await draw()
++	check(root.get_texture().get_image().save_png(output.path_join(label+".png"))==OK,"capture "+label)
++func freeze() -> void:
++	check(page.showroom.kit_transition!=null,"local kit sweep is active")
++	if page.showroom.kit_motion!=null: page.showroom.kit_motion.pause()
++func image_at(progress: float) -> Image:
++	page.showroom.kit_transition.set_progress(progress)
++	await draw()
++	return page.showroom.showroom_viewport.get_texture().get_image()
++func differences(a: Image, b: Image) -> int:
++	var count: int = 0
++	for y: int in range(0,a.get_height(),2):
++		for x: int in range(0,a.get_width(),2):
++			var c: Color = a.get_pixel(x,y)-b.get_pixel(x,y)
++			if Vector3(c.r,c.g,c.b).length()>0.04: count += 1
++	return count
++func unchanged_nodes(category: String) -> Dictionary:
++	var affected: Array = page.showroom.car.kit_frames.get(category,[])
++	var nodes: Dictionary = {}
++	for mesh: MeshInstance3D in page.showroom.car.find_children("*","MeshInstance3D",true,false):
++		var changed: bool = false
++		for frame: Node3D in affected:
++			if frame==mesh or frame.is_ancestor_of(mesh): changed = true
++		if not changed: nodes[mesh.get_instance_id()] = [mesh.transform,mesh.mesh]
++	return nodes
++
++func run() -> void:
++	OS.set_environment("BMT_API_URL","")
++	GameSoundtrack.instance().music_enabled = false
++	output = ProjectSettings.globalize_path("res://../docs/evidence/garage-kit-transition-2026-10-26/native")
++	for argument: String in OS.get_cmdline_user_args():
++		if argument.begins_with("--evidence-root="): output = argument.trim_prefix("--evidence-root=")
++	DirAccess.make_dir_recursive_absolute(output)
++	root.size = Vector2i(1280,720)
++	root.content_scale_size = root.size
++	root.theme = MenuStyle.theme()
++	VehicleCatalog.selected = "compact"
++	var shop: Node = Fixture.Shop.new()
++	root.add_child(shop)
++	page = GaragePage.new()
++	page.cached_carousel = true
++	page.records = LocalRecords.new("user://kit_sweep_"+TrackLibrary.unique_id()+".json")
++	page.economy = shop
++	root.add_child(page)
++	MenuStyle.fill(page)
++	page.offset_top = 110
++	page.open_car(0)
++	page._show_section("tuning")
++	await settle()
++	var saved: Dictionary = page.records.settings.duplicate(true)
++	var car: CarVisual = page.showroom.car
++	var view: SubViewport = page.showroom.showroom_viewport
++	for category: String in VehicleCustomisation.CATEGORIES:
++		print("KIT_STAGE: "+category)
++		page._select_kit_category(category)
++		await settle()
++		var camera: Transform3D = page.showroom.camera.transform
++		for index: int in range(1,VehicleCustomisation.OPTIONS[category].size()):
++			var option: String = VehicleCustomisation.OPTIONS[category][index][0]
++			var retained: Dictionary = unchanged_nodes(category)
++			var condition: Dictionary = page.showroom.weathering.snapshot()
++			var before: Image
++			if DisplayServer.get_name()!="headless" and index==1:
++				await draw()
++				before = view.get_texture().get_image()
++			page._preview_kit(category,option)
++			freeze()
++			check(page.showroom.customisation[category]==option and page.kit_draft[category]=="stock","preview target and equipped kit stay separate: "+category+"/"+option)
++			check(page.records.settings==saved and shop.purchases==0,"preview has no save/purchase: "+option)
++			check(page.showroom.car==car and page.showroom.showroom_viewport==view,"preview retains car and viewport")
++			check(page.showroom.kit_transition.categories==[category],"only changed category is animated")
++			check(page.showroom.weathering.snapshot()==condition,"condition stays exact")
++			check(page.showroom.camera.transform==camera,"part selection retains camera")
++			for identity: int in retained:
++				var mesh: MeshInstance3D = instance_from_id(identity) as MeshInstance3D
++				check(is_instance_valid(mesh) and mesh.transform==retained[identity][0] and mesh.mesh==retained[identity][1],"unchanged geometry stays exact")
++			check(page.showroom.kit_transition.outgoing_root.get_parent()==car.get_parent(),"one local snapshot shares existing world")
++			if DisplayServer.get_name()!="headless" and index==1:
++				var start: Image = await image_at(0.0)
++				var start_difference: int = differences(before,start)
++				check(start_difference<=12,"initial sweep matches previous kit: "+category+" pixels="+str(start_difference))
++				var middle: Image = await image_at(0.5)
++				await capture(category+"-halfway")
++				var end: Image = await image_at(1.0)
++				page.showroom.finish_kit_transition()
++				await draw()
++				var exact: Image = view.get_texture().get_image()
++				var end_difference: int = differences(end,exact)
++				check(end_difference<=12,"completed sweep matches exact kit: "+category+" pixels="+str(end_difference))
++				check(differences(start,middle)>12 and differences(middle,end)>12,"mid-sweep visibly differs from both endpoints: "+category)
++				metrics.append({"category":category,"start_difference":start_difference,"end_difference":end_difference})
++			else: page.showroom.finish_kit_transition()
++		# Include removal back to the stock fitting; stock aero/body can be empty.
++		page._preview_kit(category,"stock")
++		freeze()
++		page.showroom.finish_kit_transition()
++	# A tolerated film uses the weathering shader, with its existing wash data.
++	var original_wear: Dictionary = page.showroom.weathering.snapshot()
++	var film: Dictionary = original_wear.duplicate(true)
++	film.dirt = 0.12
++	film.slow_dirt = 0.05
++	film.wetness = 0.20
++	page.showroom.weathering.restore(film)
++	var retained_film: Dictionary = page.showroom.weathering.snapshot()
++	page._select_kit_category("hood")
++	await settle()
++	page._preview_kit("hood","scoop")
++	freeze()
++	var weathered_end: Image
++	if DisplayServer.get_name()!="headless": weathered_end = await image_at(1.0)
++	page.showroom.finish_kit_transition()
++	check(page.showroom.weathering.snapshot()==retained_film,"kit sweep preserves tolerated dirt, wetness and wash masks")
++	if DisplayServer.get_name()!="headless":
++		await draw()
++		check(differences(weathered_end,view.get_texture().get_image())<=12,"weathered finish matches exact completed kit")
++	page.showroom.weathering.restore(original_wear)
++	page._cancel_cosmetic_preview(false)
++	page._select_kit_category("aero")
++	await settle()
++	page._preview_kit("aero","wing")
++	freeze()
++	var draws: int = page.showroom.render_requests
++	var reflections: int = page.showroom.reflections.draw_requests[1]
++	page.showroom.kit_motion.play()
++	await create_timer(0.85).timeout
++	check(page.showroom.kit_transition==null and page.showroom.kit_motion==null,"natural completion releases snapshot and shaders")
++	check(page.showroom.render_requests>draws+6 and page.showroom.reflections.draw_requests[1]>reflections+6,"kit sweep refreshes main car and reflection")
++	await draw()
++	for tick: int in range(8): await process_frame
++	draws = page.showroom.render_requests
++	for tick: int in range(8): await process_frame
++	check(page.showroom.render_requests==draws,"settled effect returns to retained rendering")
++	page._preview_kit("aero","swan")
++	freeze()
++	page._set_part_compare(true)
++	check(page.showroom.customisation==page.kit_draft and page.showroom.kit_transition==null,"compare shows exact equipped geometry immediately")
++	page._set_part_compare(false)
++	check(page.showroom.customisation.aero=="swan" and page.showroom.kit_transition==null,"compare restores preview immediately")
++	page._preview_kit("aero","wing")
++	freeze()
++	page._preview_kit("aero","ducktail")
++	freeze()
++	check(page.showroom.customisation.aero=="ducktail" and car.get_parent().find_children("OutgoingGarageFittings","Node3D",false,false).size()==1,"latest selection owns one outgoing fitting snapshot")
++	shop.scope = "fixture/bob"
++	shop.changed.emit()
++	check(page.showroom.kit_transition==null and page._cosmetic_preview.is_empty() and page.showroom.customisation==page.kit_draft,"account fence clears active transition")
++	shop.scope = "fixture/alice"
++	shop.changed.emit()
++	page._preview_kit("aero","wing")
++	freeze()
++	page._show_section("customise")
++	check(page.showroom.kit_transition==null and page.showroom.customisation==page.kit_draft,"navigation restores authoritative kit")
++	await create_timer(0.65).timeout
++	check(page.showroom.customisation==page.kit_draft,"cancelled tween cannot restore stale preview")
++	page._show_section("tuning")
++	page._select_kit_category("aero")
++	await settle()
++	page._preview_kit("aero","wing")
++	freeze()
++	if DisplayServer.get_name()!="headless":
++		for frame: int in range(19):
++			page.showroom.kit_transition.set_progress(float(frame)/18.0)
++			await capture("motion-%02d" % frame)
++	page.hide()
++	check(page.showroom.kit_transition==null,"hide frees transient resources")
++	page.show()
++	page._preview_kit("aero","swan")
++	freeze()
++	var outgoing: WeakRef = weakref(page.showroom.kit_transition.outgoing_root)
++	page.queue_free()
++	await process_frame
++	await process_frame
++	check(outgoing.get_ref()==null,"free during transition releases outgoing geometry")
++	shop.queue_free()
++	await process_frame
++	FileAccess.open(output.path_join("report.json"),FileAccess.WRITE).store_string(JSON.stringify({"checks":checks,"failures":failures,"metrics":metrics,"renderer":RenderingServer.get_current_rendering_method()},"\t"))
++	print("GARAGE_KIT_TRANSITION: "+str(checks)+" checks, "+str(failures)+" failures")
++	quit(1 if failures else 0)
+--- /dev/null
++++ b/game/tests/test_garage_kit_transition.gd.uid
+@@ -0,0 +1 @@
++uid://m5ebkpaywfxn

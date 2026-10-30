@@ -50,7 +50,7 @@ func run() -> void:
 	var path: String = "res://assets/garage/previews_v1/provenance.json"
 	var provenance: Dictionary = JSON.parse_string(FileAccess.get_file_as_string(path))
 	provenance.hashes.electric = FileAccess.get_sha256("res://assets/garage/previews_v1/electric.png")
-	for file: String in ["electric_car_model.gd","electric_coachwork.gd","electric_glass.gdshader"]:
+	for file: String in ["electric_car_model.gd","electric_reference_mesh.gd","electric_reference_body.gd","electric_reference_cabin.gd","electric_reference_details.gd","electric_glass.gdshader"]:
 		provenance.sources["game/vehicle/"+file] = FileAccess.get_sha256("res://vehicle/"+file)
 	FileAccess.open(path,FileAccess.WRITE).store_string(JSON.stringify(provenance,"\t")+"\n")
 	showroom.queue_free()

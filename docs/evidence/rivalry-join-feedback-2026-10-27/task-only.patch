@@ -1,0 +1,273 @@
+diff --git a/game/backend/weekly_rivalry_client.gd b/game/backend/weekly_rivalry_client.gd
+--- a/game/backend/weekly_rivalry_client.gd
++++ b/game/backend/weekly_rivalry_client.gd
+@@ -27,6 +27,7 @@
+ var cached_snapshot: bool = false
+ var snapshot_cache = preload("res://backend/menu_snapshot_cache.gd").new()
+ var _last_refresh_msec: int = -60000
++var _failed_fetch_scope: String = ""
+ var _continue_group: String = ""
+ var _continue_key: String = ""
+ const REFRESH_INTERVAL_MSEC: int = 30000
+@@ -110,6 +111,7 @@
+ 	_ghost_pending.clear()
+ 	cached_snapshot = false
+ 	_last_refresh_msec = -60000
++	_failed_fetch_scope = ""
+ 	_continue_group = ""
+ 	_continue_key = ""
+ 
+@@ -178,11 +180,14 @@
+ 			reset()
+ 	if busy and request_scope == scope(): return
+ 	if busy: reset()
+-	if snapshot_scope != scope(): reset()
++	if snapshot_scope != scope() and _failed_fetch_scope != scope(): reset()
+ 	if not client.signed_in():
+ 		error = "Sign in to join Weekly Rivalry."
+ 		changed.emit()
+ 		return
++	# Keep failures visible through menu activation/prefetch using the normal
++	# refresh interval. Refresh and Join still retry explicitly without waiting.
++	if not force and _failed_fetch_scope == scope() and Time.get_ticks_msec()-_last_refresh_msec < REFRESH_INTERVAL_MSEC: return
+ 	_restore_snapshot()
+ 	if not force and not cached_snapshot and has_snapshot() and Time.get_ticks_msec()-_last_refresh_msec < REFRESH_INTERVAL_MSEC: return
+ 	var original: String = scope()
+@@ -206,6 +211,7 @@
+ func _fetch(path: String, method: HTTPClient.Method = HTTPClient.METHOD_GET, payload: Dictionary = {}) -> void:
+ 	busy = true
+ 	error = ""
++	_failed_fetch_scope = ""
+ 	var original: String = scope()
+ 	var generation: int = _generation
+ 	request_scope = original
+@@ -233,6 +239,8 @@
+ 			await join()
+ 			return
+ 	else:
++		_failed_fetch_scope = original
++		_last_refresh_msec = Time.get_ticks_msec()
+ 		error = "Five eligible tracks are needed before a rivalry can open." if str(response.get("error","")) == "NOT_ENOUGH_ELIGIBLE_TRACKS" else "Rivalry unavailable. Check your connection and try again."
+ 	changed.emit()
+ 
+diff --git a/DEVELOPMENT_STATUS.md b/DEVELOPMENT_STATUS.md
+--- a/DEVELOPMENT_STATUS.md
++++ b/DEVELOPMENT_STATUS.md
+@@ -2,6 +2,11 @@
+ ## Original live Garage restored from entry (2026-10-27)
+ GLE01-GLE03/R01/Q01: Owner rejects wrong liveries and immovable first Garage after optimisation. Remove the production App's photo-first/progressive-entry selection; original CarShowroom now builds the actual saved car and connects drag immediately. Saved colours/pattern/sticker and all seven native previews, viewport-routed touch, actual changed pixels, retained returns and owner/save fences pass. Original lighting/glass/shadows/reflections/camera remain; no alternate finishes. Task-start5checks/4fail becomes46headless/50Compatibility/50desktopMobile; retained App141/reflections26/parser1321 pass. Cached-process first live2.68sCompatibility/1.63sdesktopMobile; fresh27.55/7.36s retains cold driver stalls, with no instant/phone claim. This supersedes the stock-cover/deferred-entry contract, preserving original quality. Runtime behavior scope is two App assignments; original showroom/cache/model sources remain exact, concurrent work and generated build metadata excluded from the scoped patch. Commands, native views, hashes and checkpoint: docs/GARAGE_LIVE_ENTRY_2026_10_27.md and docs/evidence/garage-live-entry-2026-10-27/report.json. Reload and owner/device appearance/input/latency acceptance remain. No attachment/device test, APK, auth/purchase, owner-save/live mutation, deployment, main-index staging/commit/merge or owner-process restart.
+ <!-- /GARAGE-LIVE-ENTRY-20261027 -->
++
++<!-- RIVALRY-JOIN-FEEDBACK-20261027 -->
++## Weekly Rivalry join failure feedback (2026-10-27)
++RJF01-RJF03: Preserve failed first-entry/enrollment errors through destination activation and prefetch with the existing 30-second passive refresh interval. Explicit Join/Refresh retry immediately; success and changed identity clear the old failure. One runtime adapter changes; page/copy and concurrent work remain. Original focused19/4fail reproduces disappearing errors at both sizes; final focused38headless/44Compatibility, entry66, automatic7, rollover38 and parser1326 pass. Six native screenshots, initial sandbox/fixture findings, hashes and task-only checkpoint: docs/RIVALRY_JOIN_FEEDBACK_2026_10_27.md and docs/evidence/rivalry-join-feedback-2026-10-27/report.json. Reload and owner/device acceptance remain; actual backend rejection is not diagnosed. No device attachment check/test, real authentication, live mutation, APK, deployment, owner-process restart, staging, commit or merge.
++<!-- /RIVALRY-JOIN-FEEDBACK-20261027 -->
+ 
+ <!-- GARAGE-REFLECTIONS-RESTORED-20261027 -->
+ ## Original Garage reflections restored (2026-10-27)
+diff --git a/game/tests/test_rivalry_join_failure.gd b/game/tests/test_rivalry_join_failure.gd
+--- /dev/null
++++ b/game/tests/test_rivalry_join_failure.gd
+@@ -0,0 +1,113 @@
++extends "res://tests/test_rivalry_entry.gd"
++## Real menu activation must retain failed enrollment and allow an explicit retry.
++
++func error_visible(message: String) -> bool:
++	for label: Node in app.content.find_children("*","Label",true,false):
++		if label.text == message and label.is_visible_in_tree() and root.get_visible_rect().encloses(label.get_global_rect()): return true
++	return false
++
++func run() -> void:
++	var profile: String = ProjectSettings.globalize_path("user://").replace("\\","/").simplify_path()
++	var isolated_root: String = ProjectSettings.globalize_path("res://../build/rivalry-join-feedback/").replace("\\","/").simplify_path().trim_suffix("/")+"/"
++	if not profile.begins_with(isolated_root):
++		check(false,"set APPDATA under build/rivalry-join-feedback before running this fixture")
++		quit(1)
++		return
++	OS.set_environment("BMT_API_URL","")
++	var offline := ConfigFile.new()
++	offline.set_value("backend","url","")
++	check(offline.save("user://backend.cfg") == OK,"isolated profile disables real service access")
++	evidence = OS.get_environment("BMT_RIVALRY_ENTRY_CAPTURE_DIR")
++	if not evidence.is_empty(): DirAccess.make_dir_recursive_absolute(evidence)
++	var directory: String = "user://rivalry_join_failure_"+TrackLibrary.unique_id()
++	DirAccess.make_dir_recursive_absolute(directory)
++	app = load("res://core/app.tscn").instantiate()
++	app.records = LocalRecords.new(directory.path_join("records.json"))
++	app.library = TrackLibrary.new(directory.path_join("tracks"))
++	app.cloud_root_override = directory.path_join("cloud")
++	root.add_child(app)
++	while not app.startup_complete: await process_frame
++	check(not app.online.configured and app.online.client.base_url().is_empty(),"fixture starts with no real backend")
++	service = Service.new()
++	app.add_child(service)
++	app.rivalry.client = service
++	app.rivalry.cache_directory = ""
++	app.online.client.player = service.player
++	app.online.client._access_token = "fixture"
++	for dimensions: Vector2i in [Vector2i(1280,720),Vector2i(960,540)]:
++		root.size = dimensions
++		service.development = false
++		app.rivalry.reset()
++		app._show_screen("tracks")
++		await settle()
++		app._open_rivalry()
++		service.respond({"ok":false,"error":"CONNECTION_FAILED","data":{}})
++		await settle()
++		app._finish_menu_page_slide()
++		await settle()
++		check(not app.rivalry.busy and not app.rivalry.error.is_empty(),"failed entry survives destination activation")
++		check(error_visible(app.rivalry.error) and not app.rivalry.error.is_empty(),"failed entry displays a complete visible error")
++		var failed_calls: int = service.calls
++		app._prefetch_rivalry()
++		app._activate_menu_page(app._navigation_generation)
++		check(service.calls == failed_calls,"passive preparation preserves the failure without sending another request")
++		await capture("entry-failed",dimensions)
++		# Resolve any unwanted baseline auto-refresh, then use the actual retry.
++		if not service.pending_path.is_empty(): service.respond({"ok":false,"error":"CONNECTION_FAILED","data":{}})
++		var retry: Button = app.content.find_child("RivalryRefresh",true,false)
++		check(retry != null and not retry.disabled,"failed entry keeps Refresh available")
++		if retry != null: retry.pressed.emit()
++		check(app.rivalry.busy and service.pending_path.begins_with("/rivalry/current"),"explicit Refresh retries immediately")
++		service.respond({"ok":true,"data":{"state":"not_joined","week":41,"ends_at":604800,"server_now":0}})
++		await settle()
++		var join_button: Button = app.content.find_child("RivalryJoin",true,false)
++		check(join_button != null and not join_button.disabled,"confirmed nonmember can join")
++		if join_button != null: join_button.pressed.emit()
++		check(service.pending_path == "/rivalry/join","actual Join button requests enrollment")
++		var joining_calls: int = service.calls
++		app.rivalry.join()
++		check(service.calls == joining_calls,"repeated Join does not overlap enrollment")
++		service.respond({"ok":false,"error":"NOT_ENOUGH_ELIGIBLE_TRACKS","data":{}})
++		await settle()
++		check(not app.rivalry.busy and error_visible(app.rivalry.error),"failed manual enrollment displays its reason")
++		check(app.rivalry.error == "Five eligible tracks are needed before a rivalry can open.","known enrollment rejection retains its actionable explanation")
++		await capture("join-failed",dimensions)
++		join_button = app.content.find_child("RivalryJoin",true,false)
++		check(join_button != null and not join_button.disabled,"failed enrollment enables another Join")
++		if join_button != null: join_button.pressed.emit()
++		service.respond({"ok":true,"data":snapshot()})
++		await settle()
++		check(app.rivalry.error.is_empty() and app.content.find_child("RivalryTracksPanel",true,false) != null,"successful Join clears the error and opens all tracks")
++		# Development enrollment follows the same failure/retry presentation.
++		service.development = true
++		app.rivalry.reset()
++		app._open_rivalry()
++		service.respond({"ok":true,"data":{"state":"not_joined","week":41,"ends_at":604800,"server_now":0,"test_population":true}})
++		check(service.pending_path == "/rivalry/join","development entry automatically requests enrollment")
++		service.respond({"ok":false,"error":"UNAVAILABLE","data":{}})
++		await settle()
++		app._finish_menu_page_slide()
++		await settle()
++		check(not app.rivalry.error.is_empty() and error_visible(app.rivalry.error),"automatic enrollment failure stays visible")
++		await capture("automatic-join-failed",dimensions)
++		failed_calls = service.calls
++		app._prefetch_rivalry()
++		check(service.calls == failed_calls and not app.rivalry.busy,"prefetch cannot erase automatic enrollment failure")
++		# Advance only the presentation refresh age, without a thirty-second wait.
++		app.rivalry._last_refresh_msec -= app.rivalry.REFRESH_INTERVAL_MSEC
++		app.rivalry.refresh(false)
++		check(app.rivalry.busy and service.pending_path.begins_with("/rivalry/current"),"passive refresh can recover once the normal interval expires")
++		service.respond({"ok":true,"data":{"state":"active"}})
++		await settle()
++		check(not app.rivalry.error.is_empty() and error_visible(app.rivalry.error),"malformed successful response also produces visible failure feedback")
++		# A different account starts fresh, even after the previous failure.
++		service.player.id = "another-player"
++		app.rivalry.refresh(false)
++		check(app.rivalry.busy and app.rivalry.error.is_empty(),"failed old identity does not block the new account's initial request")
++		service.respond({"ok":true,"data":snapshot()})
++		service.player.id = "you"
++	app.queue_free()
++	await process_frame
++	await create_timer(0.1).timeout
++	print("RIVALRY_JOIN_FAILURE: %d checks, %d failures" % [checks,failures])
++	quit(1 if failures else 0)
+diff --git a/game/tests/test_rivalry_join_failure.gd.uid b/game/tests/test_rivalry_join_failure.gd.uid
+--- /dev/null
++++ b/game/tests/test_rivalry_join_failure.gd.uid
+@@ -0,0 +1 @@
++uid://60m8x2eigxs1
+diff --git a/docs/RIVALRY_JOIN_FEEDBACK_2026_10_27.md b/docs/RIVALRY_JOIN_FEEDBACK_2026_10_27.md
+--- /dev/null
++++ b/docs/RIVALRY_JOIN_FEEDBACK_2026_10_27.md
+@@ -0,0 +1,80 @@
++# Weekly Rivalry join failure feedback — 2026-10-27
++
++Failed first-entry requests now leave the existing error message visible when
++the Rivalry page opens. Previously, destination activation immediately called
++`refresh(false)` again. Without a successful snapshot, that call reset the
++adapter, cleared the error and replaced it with loading placeholders.
++
++Requirements:
++
++- RJF01: preserve actionable entry/enrollment failure feedback through page
++  activation and prefetch.
++- RJF02: keep Join and Refresh available for immediate retries; successful
++  enrollment clears the error and opens the real five-track field.
++- RJF03: preserve account/car/origin/population isolation, overlapping-request
++  guards and eventual passive recovery.
++
++Only `game/backend/weekly_rivalry_client.gd` changes at runtime. A failed fetch
++remembers its scope and receipt time. Passive reads respect the existing
++30-second refresh interval even when no snapshot was received. Explicit Join
++and Refresh bypass that interval. Reset/scope changes clear the failure fence;
++new fetches and successful enrollment clear the old failure normally.
++
++The page and its copy are unchanged: connection failures display “Rivalry
++unavailable. Check your connection and try again.” The known insufficient-track
++rejection retains “Five eligible tracks are needed before a rivalry can open.”
++
++`game/tests/test_rivalry_join_failure.gd` exercises the real App and delayed
++in-memory service at 1280×720 and 960×540. It checks first-entry failures,
++manual/automatic enrollment failures, complete on-screen message bounds,
++immediate retries, duplicate Join suppression, successful enrollment, expiry of
++the passive retry interval, malformed replies and account changes. Its profile
++guard requires APPDATA below `build/rivalry-join-feedback/`; it writes an explicit
++offline backend configuration before creating the App.
++
++Actual verification used pinned Godot `4.7.2.stable.official.ed1daf0bf` through
++`scripts/dev.ps1`:
++
++| Check | Result |
++| --- | --- |
++| Original runtime, initial focused harness | 19 checks, **4 failures** reproducing the erased first-entry error at both sizes |
++| Final focused headless | 38 checks, 0 failures |
++| Final focused graphical Compatibility/OpenGL | 44 checks, 0 failures, six screenshots |
++| Existing delayed Rivalry entry | 66 checks, 0 failures |
++| Existing automatic Rivalry flow | 7 checks, 0 failures |
++| Existing week completion/rollover | 38 checks, 0 failures |
++| All-script parser | 1,326 scripts, 0 failures |
++
++Commands (PowerShell, from the repository root):
++
++```powershell
++$env:APPDATA = Join-Path (Get-Location) 'build/rivalry-join-feedback/final-profile'
++New-Item -ItemType Directory -Path $env:APPDATA -Force | Out-Null
++foreach ($testName in @('test_rivalry_join_failure','test_rivalry_entry','test_automatic_rivalry_flow','test_rivalry_week_completion','test_script_parse')) {
++    powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1 -Action TestScript -ScriptPath "res://tests/$testName.gd" -CommandTimeoutSeconds 120
++}
++$env:APPDATA = Join-Path (Get-Location) 'build/rivalry-join-feedback/native-profile'
++$env:BMT_RIVALRY_ENTRY_CAPTURE_DIR = Join-Path (Get-Location) 'docs/evidence/rivalry-join-feedback-2026-10-27/compatibility'
++powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1 -Action TestScript -ScriptPath res://tests/test_rivalry_join_failure.gd -Graphical -RenderingMethod gl_compatibility -RenderingDriver opengl3 -CommandTimeoutSeconds 120
++```
++
++Evidence is in [the task directory](evidence/rivalry-join-feedback-2026-10-27/):
++raw baseline/final logs, the original source, six native screenshots,
++`report.json` hashes and `task-only.patch`. The patch is checked in reverse
++against the final workspace without staging, committing or modifying files.
++The page source remains byte-identical to the task-start copy. Concurrent edits
++already present in the adapter and elsewhere are excluded from this patch.
++
++Initial execution-policy and sandbox log/certificate-store access failures did
++not run the regression. The isolated test was rerun with process-local script
++execution and approved Windows certificate-store access. An initial fixture
++path guard rejected an unnormalized `game/../build` path; normalization corrected
++the fixture, with the rejected-run log retained. The earlier successful
++19-check headless and 40-check native runs are also retained.
++
++Reload/rebuild the client to use the fix. The service responses here are
++synthetic; the cause of the owner's actual server rejection and live recovery
++were not diagnosed. No device attachment check or physical-device test was
++performed. Owner/device feedback acceptance remains. No real authentication,
++live account mutation, APK, deployment, owner-process restart, staging, commit
++or merge was performed.

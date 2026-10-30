@@ -2,6 +2,7 @@ extends RefCounted
 ## Immutable CPU work shares the road LRU and its existing byte budget.
 const VERSION: String = "editor-road-sections-1"
 const UPLOAD_VERTICES: int = 12288
+static var native_streams: bool = true
 var hits: int = 0
 var misses: int = 0
 var reused: Dictionary = {}
@@ -34,6 +35,8 @@ func reject(key: String) -> void:
 
 static func append_arrays(tool: SurfaceTool, arrays: Array) -> void:
 	if arrays.is_empty() or arrays[Mesh.ARRAY_VERTEX] == null: return
+	var native: RefCounted = preload("res://track/geometry_acceleration.gd").roads() if native_streams else null
+	if native != null and native.has_method("editor_append") and native.call("editor_append",tool,arrays): return
 	var vertices: PackedVector3Array = arrays[Mesh.ARRAY_VERTEX]
 	var indices: PackedInt32Array = arrays[Mesh.ARRAY_INDEX] if arrays[Mesh.ARRAY_INDEX] != null else PackedInt32Array()
 	for cursor: int in range(indices.size() if not indices.is_empty() else vertices.size()):
@@ -48,6 +51,10 @@ static func split(arrays: Array, tile_size: float = 32.0) -> Array:
 	# Whole triangles, original attributes and order. Indexed surfaces retain
 	# shared vertices within each upload; no clipping, welding or new normals.
 	if arrays.is_empty() or arrays[Mesh.ARRAY_VERTEX] == null or arrays[Mesh.ARRAY_VERTEX].is_empty(): return []
+	var native: RefCounted = preload("res://track/geometry_acceleration.gd").roads() if native_streams else null
+	if native != null and native.has_method("editor_split"):
+		var prepared: Array = native.call("editor_split",arrays,tile_size)
+		if not prepared.is_empty(): return prepared
 	var vertices: PackedVector3Array = arrays[Mesh.ARRAY_VERTEX]
 	var indices: PackedInt32Array = arrays[Mesh.ARRAY_INDEX] if arrays[Mesh.ARRAY_INDEX] != null else PackedInt32Array()
 	var count: int = indices.size() if not indices.is_empty() else vertices.size()

@@ -1,0 +1,2130 @@
+diff --git a/game/core/app.gd b/game/core/app.gd
+--- a/game/core/app.gd
++++ b/game/core/app.gd
+@@ -3278,6 +3278,7 @@
+ 	object_browser.span_chosen.connect(func(value: float) -> void: canvas.stamp_span=value)
+ 	object_browser.container_color_chosen.connect(_container_colour)
+ 	object_browser.rotation_requested.connect(_object_rotation_dialog)
++	object_browser.rotation_chosen.connect(_set_object_rotation)
+ 	object_browser.snap_step = canvas.object_snap
+ 	object_browser.snap_chosen.connect(func(step: float) -> void: canvas.object_snap = step)
+ 	object_browser.select_requested.connect(func() -> void:
+@@ -3618,24 +3619,9 @@
+ 		if canvas.selected_object >= 0 and canvas.mode == "objects":
+ 			editor_status.text=CreatorObjects.description(document.objects[canvas.selected_object].kind)
+ 			if canvas.object_indices().size() == 1:
+-				_context_button("Rotate","rotate",_rotate_object).tooltip_text = "Rotate by 22.5°"
+-				var rotation_choice: Button = _context_button(preload("res://editor/object_rotation.gd").angle_text(_object_rotation()),"rotate",_object_rotation_dialog)
+-				rotation_choice.name = "ObjectRotation"
+-				rotation_choice.tooltip_text = "16 orientations or Free rotation"
+-				if document.objects[canvas.selected_object].kind == "speed_bump":
+-					_context_button("Width -","minus",func() -> void: _resize_speed_bump(-0.5))
+-					_context_button("Width +","plus",func() -> void: _resize_speed_bump(0.5))
+-					_context_button("Fit road","snap",_fit_speed_bump)
+-					editor_status.text = GameText.message("%.2f m / Drag end dots to set width") % CreatorObjects.size_of(document.objects[canvas.selected_object]).y
+-				elif document.objects[canvas.selected_object].kind not in ["tyre_wall","tyre_stack"]:
+-					_context_button("Size -","minus",func() -> void: _scale_object(-0.25))
+-					_context_button("Size +","plus",func() -> void: _scale_object(0.25))
+-					editor_status.text = GameText.message("%s / %.2fx") % [CreatorObjects.description(document.objects[canvas.selected_object].kind),float(document.objects[canvas.selected_object].get("scale",1.0))]
+-				if document.objects[canvas.selected_object].kind == "container":
+-					editor_context.add_child(ContainerColorButton.make(ContainerPaint.value(document.objects[canvas.selected_object]),_container_colour))
+-				if document.objects[canvas.selected_object].kind == "jump":
+-					var profile: String = JumpProfiles.id(document.objects[canvas.selected_object])
+-					editor_status.text = JumpProfiles.description(profile)
++				var properties: Button = _context_button("Properties","options",_selected_object_properties)
++				properties.name = "SelectedObjectProperties"
++				properties.tooltip_text = "Size, orientation and object settings"
+ 			else:
+ 				editor_status.text = GameText.message("%d objects selected · drag one to move the group") % canvas.object_indices().size()
+ 				_context_button("Rotate","rotate",_rotate_object)
+@@ -3817,6 +3803,46 @@
+ 
+ func _rotate_object() -> void:
+ 	_set_object_rotation(preload("res://editor/object_rotation.gd").next_angle(_object_rotation()))
++
++func _selected_object_properties() -> void:
++	if canvas.selected_object < 0 or canvas.selected_object >= document.objects.size(): return
++	if root_ui.find_child("SelectedObjectPropertiesPopup",true,false) != null: return
++	canvas.cancel_gesture()
++	var owner_canvas: EditorCanvas = canvas
++	var source: Dictionary = document
++	var selection: int = canvas.selected_object
++	var inspected: Array[Dictionary] = [document.objects[selection]]
++	var popup := preload("res://editor/object_properties.gd").new()
++	popup.selected = true
++	popup.state = inspected[0].duplicate(true)
++	popup.state["span"] = CreatorObjects.size_of(inspected[0]).y
++	popup.state["jump_profile"] = JumpProfiles.id(inspected[0]) if inspected[0].kind == "jump" else ""
++	if inspected[0].kind == "jump": popup.state["display_kind"] = CreatorCatalog.jump_asset(popup.state.jump_profile,str(document.theme))
++	var current: Callable = func() -> bool:
++		return is_instance_valid(owner_canvas) and canvas == owner_canvas and screen == "create" and is_same(document,source) and canvas.mode == "objects" and canvas.selected_object == selection and selection < document.objects.size() and is_same(document.objects[selection],inspected[0])
++	var synchronize: Callable = func() -> void:
++		inspected[0] = document.objects[selection]
++		popup.state.merge(inspected[0],true)
++		popup.state["span"] = CreatorObjects.size_of(inspected[0]).y
++		popup._sync()
++	popup.edited.connect(func(property: String, value: Variant) -> void:
++		if not current.call(): popup.hide(); return
++		match property:
++			"rotation": _set_object_rotation(float(value))
++			"scale":
++				var delta: float = float(value)-float(inspected[0].get("scale",1.0))
++				if not is_zero_approx(delta): _scale_object(delta)
++			"span": _resize_speed_bump(float(value)-CreatorObjects.size_of(inspected[0]).y)
++			"color": _container_colour(str(value))
++		synchronize.call())
++	popup.fit_requested.connect(func() -> void:
++		if not current.call(): popup.hide(); return
++		_fit_speed_bump()
++		synchronize.call())
++	root_ui.add_child(popup)
++	popup.name = "SelectedObjectPropertiesPopup"
++	popup.popup_hide.connect(popup.queue_free)
++	popup.open(Rect2(root_ui.get_viewport_rect().size-Vector2(32,16),Vector2.ZERO))
+ 
+ func _object_rotation() -> float:
+ 	return float(document.objects[canvas.selected_object].rotation) if canvas.selected_object >= 0 else canvas.stamp_rotation
+@@ -5827,6 +5853,10 @@
+ 	if settings_error != OK: _notice("Track deleted, but favorite settings could not be saved.")
+ 
+ func _choose_object(kind: String) -> void:
++	var family: Array = CreatorCatalog.family(kind)
++	var same_family: bool = kind == canvas.stamp_kind or (not family.is_empty() and canvas.stamp_kind in family[3])
++	if CreatorCatalog.JUMP_ASSETS.has(kind): same_family = same_family and canvas.stamp_jump_profile == str(CreatorCatalog.JUMP_ASSETS[kind])
++	var placement: String = object_browser.placement if same_family else "single"
+ 	canvas.cancel_gesture()
+ 	var jump_profile: String = str(CreatorCatalog.JUMP_ASSETS.get(kind,""))
+ 	canvas.multi_select = false
+@@ -5835,10 +5865,10 @@
+ 		canvas.stamp_jump_profile = jump_profile if not jump_profile.is_empty() else JumpProfiles.default_for(str(document.theme))
+ 		object_browser.current = CreatorCatalog.jump_asset(canvas.stamp_jump_profile,str(document.theme))
+ 	if is_instance_valid(editor_world): editor_world.warm_prop(canvas.stamp_kind,CreatorCatalog.default_scale(kind),canvas.stamp_container_color)
+-	canvas.stamp_scale=CreatorCatalog.default_scale(kind)
++	if not same_family: canvas.stamp_scale=CreatorCatalog.default_scale(kind)
+ 	object_browser.stamp_scale=canvas.stamp_scale
+ 	canvas.selected_object=-1
+-	_object_placement("single")
++	_object_placement(placement)
+ 
+ func _container_colour(color: String) -> void:
+ 	if not ContainerPaint.valid(color) or not is_instance_valid(canvas): return
+diff --git a/game/editor/object_browser.gd b/game/editor/object_browser.gd
+--- a/game/editor/object_browser.gd
++++ b/game/editor/object_browser.gd
+@@ -1,5 +1,6 @@
+ class_name ObjectBrowser
+ extends PanelContainer
++const Properties = preload("res://editor/object_properties.gd")
+ signal asset_chosen(kind: String)
+ signal mode_chosen(mode: String)
+ signal size_chosen(scale: float)
+@@ -8,6 +9,7 @@
+ signal select_requested
+ signal populate_requested
+ signal rotation_requested
++signal rotation_chosen(angle: float)
+ signal snap_chosen(step: float)
+ var category: String = "All"
+ var biome: String = "pine"
+@@ -19,7 +21,7 @@
+ var recent: Array[String] = []
+ var tiles: HBoxContainer
+ var details: VBoxContainer
+-var options: PopupPanel
++var options: Properties
+ var categories: HBoxContainer
+ var page: int = 0
+ var previous: Button
+@@ -30,6 +32,7 @@
+ var _styled_category: String = ""
+ var rotation_button: Button
+ var stamp_rotation: float = 0.0
++var properties_button: Button
+ var snap_step: float = 1.0:
+ 	set(value):
+ 		snap_step = value
+@@ -54,6 +57,10 @@
+ 	rotation_button.name = "ObjectRotation"
+ 	rotation_button.tooltip_text = "16 orientations or Free rotation"
+ 	rotation_button.custom_minimum_size = Vector2(76,44)
++	properties_button = _button("Properties",open_properties)
++	properties_button.name = "ObjectProperties"
++	properties_button.custom_minimum_size = Vector2(112,44)
++	top.add_child(properties_button)
+ 	top.add_child(rotation_button)
+ 	set_stamp_rotation(stamp_rotation)
+ 	var snapping := OptionButton.new()
+@@ -92,14 +99,7 @@
+ 				var allowed: Array = CreatorCatalog.filtered("All","",[],biome)
+ 				if not allowed.is_empty(): choose(allowed[0][0])
+ 			_tiles())
+-	options=PopupPanel.new()
+-	options.name="ObjectOptionsPopup"
+-	options.add_theme_stylebox_override("panel",EditorStyle.panel())
+-	add_child(options)
+-	preload("res://ui/popup_style.gd").watch(options)
+-	details=VBoxContainer.new()
+-	details.add_theme_constant_override("separation",8)
+-	options.add_child(details)
++	_make_options()
+ 	refresh()
+ 
+ func _scroll_row(parent: Node) -> HBoxContainer:
+@@ -168,67 +168,64 @@
+ 	if entries.is_empty(): tiles.add_child(MenuStyle.label("No matching objects" if category!="Recent" else "Choose an object to add it here",16))
+ 
+ func refresh() -> void:
+-	if details == null: return
++	if not is_instance_valid(tiles): return
+ 	_tiles()
+-	var key: Array = [current,placement,stamp_scale,stamp_span,biome,stamp_container_color]
+-	if key == _detail_key: return
+-	_detail_key = key
+-	_clear(details)
+-	var behavior: Label = MenuStyle.label(CreatorCatalog.behavior(current),14)
+-	behavior.name = "ObjectBehavior"
+-	details.add_child(behavior)
+-	var family: Array = CreatorCatalog.family(current)
+-	if not family.is_empty() and family[3].size()>1:
+-		var variants := OptionButton.new()
+-		variants.name = "ObjectVariant"
+-		EditorStyle.apply(variants)
+-		variants.custom_minimum_size = Vector2(125,40)
+-		for kind: String in family[3]: variants.add_item(CreatorCatalog.label(kind))
+-		variants.select(family[3].find(current))
+-		variants.item_selected.connect(func(index: int) -> void: choose(family[3][index]))
+-		details.add_child(variants)
+-	if current == "speed_bump":
+-		var width: Label = MenuStyle.label("Width: %.2f m" % stamp_span,16)
+-		details.add_child(width)
+-		var slider := HSlider.new()
+-		slider.name = "SpeedBumpWidth"
+-		slider.min_value = SpeedBumpEdit.MIN_SPAN
+-		slider.max_value = SpeedBumpEdit.MAX_SPAN
+-		slider.step = 0.25
+-		slider.value = stamp_span
+-		slider.custom_minimum_size = Vector2(280,48)
+-		slider.value_changed.connect(func(value: float) -> void:
+-			stamp_span = value
+-			width.text = "Width: %.2f m" % value
+-			span_chosen.emit(value))
+-		details.add_child(slider)
+-	elif current not in CreatorCatalog.LINES:
+-		var sizes := OptionButton.new()
+-		sizes.name = "ObjectSize"
+-		EditorStyle.apply(sizes)
+-		sizes.custom_minimum_size = Vector2(95,40)
+-		var presets: Array[float] = CreatorCatalog.size_presets(current)
+-		for title: String in (["8 m","16 m","24 m"] if current=="cliff" else ["Small","Medium","Large"]): sizes.add_item(title)
+-		sizes.select(0 if stamp_scale<presets[1] else 2 if stamp_scale>presets[1] else 1)
+-		sizes.item_selected.connect(func(index: int) -> void:
+-			stamp_scale = presets[index]; size_chosen.emit(stamp_scale))
+-		details.add_child(sizes)
+-	if current == "container":
+-		details.add_child(ContainerColorButton.make(stamp_container_color,func(color: String) -> void:
+-			stamp_container_color = color
+-			container_color_chosen.emit(color)
+-			refresh()))
+-	if current in CreatorCatalog.LINES:
+-		for mode: String in ["single","line","curve","road edge"]:
+-			var button: Button = _button(mode.capitalize(),func() -> void:
+-				placement=mode; mode_chosen.emit(mode); refresh())
+-			button.name="Placement_"+mode.replace(" ","_")
+-			EditorStyle.apply(button,placement==mode)
+-			details.add_child(button)
++	if is_instance_valid(properties_button):
++		properties_button.text = "Properties"
++		properties_button.tooltip_text = CreatorCatalog.label(current)+" / "+GameText.message("Size, orientation and placement settings")
++
++func _properties_state() -> Dictionary:
++	var profile: String = str(CreatorCatalog.JUMP_ASSETS.get(current,""))
++	return {"kind":"jump" if not profile.is_empty() else current,"display_kind":current,"rotation":stamp_rotation,"scale":stamp_scale,
++		"span":stamp_span,"placement":placement,"jump_profile":profile if not profile.is_empty() else JumpProfiles.default_for(biome),"color":stamp_container_color}
++
++func _make_options() -> void:
++	if is_instance_valid(options):
++		remove_child(options)
++		options.queue_free()
++	options = Properties.new()
++	options.state = _properties_state()
++	options.edited.connect(_property_edited)
++	add_child(options)
++	details = options.body
++
++func open_properties() -> void:
++	_make_options()
++	options.open(get_global_rect())
++
++func _property_edited(property: String, value: Variant) -> void:
++	match property:
++		"kind":
++			var retained_scale: float = stamp_scale
++			var retained_placement: String = placement
++			choose(str(value))
++			stamp_scale = retained_scale; placement = retained_placement
++			size_chosen.emit(stamp_scale); mode_chosen.emit(placement)
++			open_properties.call_deferred()
++		"scale":
++			stamp_scale = float(value)
++			size_chosen.emit(stamp_scale)
++		"span":
++			stamp_span = float(value)
++			span_chosen.emit(stamp_span)
++		"rotation":
++			set_stamp_rotation(float(value))
++			rotation_chosen.emit(stamp_rotation)
++		"placement":
++			placement = str(value)
++			mode_chosen.emit(placement)
++		"color":
++			stamp_container_color = str(value)
++			container_color_chosen.emit(stamp_container_color)
++	refresh()
+ 
+ func _activate_asset(kind: String) -> void:
+ 	if not CreatorCatalog.available(kind,biome): return
+-	var already_selected: bool=current==kind
+-	choose(kind)
+-	if already_selected and not CreatorCatalog.JUMP_ASSETS.has(kind):
+-		options.popup(Rect2i(Vector2i(get_global_rect().end-Vector2(330,360)),Vector2i(320,250)))
++	if CreatorCatalog.JUMP_ASSETS.has(kind):
++		choose(kind)
++		return
++	var family: Array = CreatorCatalog.family(kind)
++	if current == kind or (not family.is_empty() and current in family[3]):
++		open_properties()
++	else:
++		choose(kind)
+diff --git a/game/editor/object_thumbnail.gd b/game/editor/object_thumbnail.gd
+--- a/game/editor/object_thumbnail.gd
++++ b/game/editor/object_thumbnail.gd
+@@ -62,7 +62,7 @@
+ 	var button := ObjectThumbnail.new()
+ 	button.name = "Asset_"+kind
+ 	button.custom_minimum_size = Vector2(112,90)
+-	button.tooltip_text = title+" — Tap selected asset for variants and placement"
++	button.tooltip_text = title+" — Select, then open Properties"
+ 	if CreatorCatalog.JUMP_ASSETS.has(kind): button.tooltip_text = title+" / Tap the track to place"
+ 	button.toggle_mode = true
+ 	button.button_pressed = chosen
+diff --git a/game/editor/object_properties.gd b/game/editor/object_properties.gd
+new file mode 100644
+--- /dev/null
++++ b/game/editor/object_properties.gd
+@@ -0,0 +1,343 @@
++extends PopupPanel
++## Shared, contextual inspector for placement defaults and placed objects.
++## Each edit is a discrete action; opening or closing never resets defaults.
++signal edited(property: String, value: Variant)
++signal fit_requested
++
++const MUTED := Color("a8bdc4")
++const MODES: Array[String] = ["single","line","curve","road edge"]
++const MODE_LABELS: Array[String] = ["Single","Straight line","Curve","Road edge"]
++const MODE_HELP: Array[String] = ["Tap empty ground to place one object.","Drag a straight run, or tap its two ends.","Draw a curve. Release to place the whole run.","Drag beside a road to follow its edge. A road is required."]
++var state: Dictionary = {}
++var selected: bool = false
++var body: VBoxContainer
++var scroll: ScrollContainer
++var heading: Label
++var size_readout: Label
++var placement_hint: Label
++var angle_field: SpinBox
++var size_field: SpinBox
++var width_field: SpinBox
++var diagram: OrientationDiagram
++var size_buttons: Array[Button] = []
++var mode_buttons: Array[Button] = []
++var orientation_controls: VBoxContainer
++var orientation_help: Label
++var orientation_section: VBoxContainer
++var _syncing: bool = false
++
++class OrientationDiagram extends Control:
++	var angle: float = 0.0
++	func _draw() -> void:
++		var center: Vector2 = size*0.5
++		draw_circle(center,34,Color("12242d"))
++		draw_circle(center,34,Color("47606b"),false,1,true)
++		for index: int in range(16):
++			var axis := Vector2(cos(index*TAU/16),-sin(index*TAU/16))
++			draw_line(center+axis*29,center+axis*34,Color("6c8792"),2 if index%4 == 0 else 1,true)
++		var forward := Vector2(cos(deg_to_rad(angle)),-sin(deg_to_rad(angle)))
++		var normal := Vector2(-forward.y,forward.x)
++		draw_line(center-forward*19,center+forward*19,EditorStyle.ACCENT,4,true)
++		draw_colored_polygon(PackedVector2Array([center+forward*25,center+forward*10+normal*8,center+forward*10-normal*8]),EditorStyle.INK)
++		draw_circle(center,4,EditorStyle.INK)
++
++class PlacementDiagram extends Control:
++	var mode: String
++	func _draw() -> void:
++		var center: Vector2 = size*0.5
++		var ink: Color = EditorStyle.ACCENT
++		if mode == "single":
++			draw_rect(Rect2(center-Vector2(7,6),Vector2(14,12)),ink,false,2)
++			return
++		var points := PackedVector2Array()
++		for index: int in range(7):
++			var x: float = -32+index*10.6667
++			points.append(center+Vector2(x,8*sin(float(index)/6*PI) if mode in ["curve","road edge"] else 0.0))
++		if mode == "road edge":
++			draw_polyline(points,Color("4a626c"),13,true)
++			for index: int in range(points.size()): points[index].y -= 12
++		draw_polyline(points,ink,2,true)
++		for point: Vector2 in points: draw_circle(point,3,EditorStyle.INK)
++
++func _ready() -> void:
++	name = "ObjectOptionsPopup"
++	# Keep the editor's restrained surfaces instead of the general scenic dialog.
++	set_meta("menu_popup_custom",true)
++	var surface: StyleBoxFlat = EditorStyle.panel()
++	surface.bg_color = Color("101e27")
++	surface.set_content_margin_all(16)
++	surface.border_color = Color("425b67")
++	add_theme_stylebox_override("panel",surface)
++	var column := VBoxContainer.new()
++	column.add_theme_constant_override("separation",12)
++	add_child(column)
++	var top := HBoxContainer.new()
++	column.add_child(top)
++	var overline: Label = _label("Selected object" if selected else "Placement properties",15,true)
++	overline.size_flags_horizontal = Control.SIZE_EXPAND_FILL
++	top.add_child(overline)
++	var close: Button = _button("×",_finish)
++	close.name = "CloseProperties"
++	close.tooltip_text = "Close properties"
++	close.custom_minimum_size = Vector2(44,44)
++	close.size_flags_horizontal = Control.SIZE_SHRINK_END
++	close.add_theme_font_size_override("font_size",24)
++	top.add_child(close)
++	var display_kind: String = str(state.get("display_kind",state.kind))
++	var family: Array = CreatorCatalog.family(display_kind)
++	var object_title: String = str(family[1]) if not family.is_empty() and family[3].size() == 1 else CreatorCatalog.label(display_kind)
++	heading = _label(object_title,26)
++	heading.name = "ObjectPropertiesTitle"
++	heading.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
++	column.add_child(heading)
++	var behavior: Label = _label(CreatorCatalog.behavior(str(state.kind)),15,true)
++	behavior.name = "ObjectBehavior"
++	if state.kind == "jump": behavior.text = JumpProfiles.description(str(state.jump_profile))
++	behavior.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
++	column.add_child(behavior)
++	scroll = ScrollContainer.new()
++	scroll.name = "PropertyScroll"
++	scroll.horizontal_scroll_mode = ScrollContainer.SCROLL_MODE_DISABLED
++	scroll.size_flags_vertical = Control.SIZE_EXPAND_FILL
++	column.add_child(scroll)
++	body = VBoxContainer.new()
++	body.size_flags_horizontal = Control.SIZE_EXPAND_FILL
++	body.add_theme_constant_override("separation",12)
++	scroll.add_child(body)
++	_build_fields()
++	var done: Button = _button("Done",_finish)
++	done.name = "DoneProperties"
++	EditorStyle.apply(done,true)
++	column.add_child(done)
++	popup_hide.connect(_commit_fields)
++	get_parent().get_viewport().size_changed.connect(_layout)
++
++func _label(caption: String, font_size: int, muted: bool = false) -> Label:
++	var label := Label.new()
++	label.text = caption
++	label.add_theme_font_override("font",EditorStyle.FONT)
++	label.add_theme_font_size_override("font_size",font_size)
++	label.add_theme_color_override("font_color",MUTED if muted else EditorStyle.INK)
++	return label
++
++func _button(caption: String, action: Callable) -> Button:
++	var button: Button = EditorStyle.button(caption,action)
++	button.custom_minimum_size.y = 48
++	button.size_flags_horizontal = Control.SIZE_EXPAND_FILL
++	return button
++
++func _section(caption: String) -> VBoxContainer:
++	var panel := PanelContainer.new()
++	var style: StyleBoxFlat = EditorStyle.box()
++	style.bg_color = Color("192d37")
++	style.shadow_size = 0
++	style.set_content_margin_all(12)
++	panel.add_theme_stylebox_override("panel",style)
++	body.add_child(panel)
++	var content := VBoxContainer.new()
++	content.add_theme_constant_override("separation",10)
++	panel.add_child(content)
++	content.add_child(_label(caption,18))
++	return content
++
++func _number(parent: Node, value: float, minimum: float, maximum: float, step: float, suffix: String, node_name: String) -> SpinBox:
++	var field := SpinBox.new()
++	field.name = node_name
++	field.min_value = minimum
++	field.max_value = maximum
++	field.step = step
++	field.suffix = suffix
++	field.value = value
++	field.custom_minimum_size = Vector2(110,48)
++	field.size_flags_horizontal = Control.SIZE_EXPAND_FILL
++	field.add_theme_font_override("font",EditorStyle.FONT)
++	field.add_theme_font_size_override("font_size",18)
++	EditorStyle.apply(field.get_line_edit())
++	parent.add_child(field)
++	return field
++
++func _build_fields() -> void:
++	var kind: String = str(state.kind)
++	var family: Array = CreatorCatalog.family(kind)
++	if not selected and not family.is_empty() and family[3].size()>1:
++		var variant_section: VBoxContainer = _section("Variant")
++		var variants := OptionButton.new()
++		variants.name = "ObjectVariant"
++		variants.custom_minimum_size.y = 48
++		EditorStyle.apply(variants)
++		for variant: String in family[3]: variants.add_item(CreatorCatalog.label(variant))
++		variants.select(family[3].find(kind))
++		variants.item_selected.connect(func(index: int) -> void: edited.emit("kind",family[3][index]))
++		variant_section.add_child(variants)
++	if not selected and kind in CreatorCatalog.LINES:
++		var placement: VBoxContainer = _section("Placement mode")
++		var grid := GridContainer.new()
++		grid.columns = 2
++		grid.add_theme_constant_override("h_separation",8)
++		grid.add_theme_constant_override("v_separation",8)
++		placement.add_child(grid)
++		for index: int in range(MODES.size()):
++			var button: Button = _button("",func() -> void: _change_mode(MODES[index]))
++			button.name = "Placement_"+MODES[index].replace(" ","_")
++			button.tooltip_text = MODE_HELP[index]
++			button.toggle_mode = true
++			button.custom_minimum_size = Vector2(0,84)
++			var illustration := PlacementDiagram.new()
++			illustration.mode = MODES[index]
++			illustration.mouse_filter = Control.MOUSE_FILTER_IGNORE
++			illustration.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
++			illustration.offset_bottom = -28
++			button.add_child(illustration)
++			var caption: Label = _label(MODE_LABELS[index],16)
++			caption.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
++			caption.mouse_filter = Control.MOUSE_FILTER_IGNORE
++			button.add_child(caption)
++			caption.set_anchors_and_offsets_preset(Control.PRESET_BOTTOM_WIDE)
++			caption.offset_top = -29
++			caption.offset_bottom = -5
++			grid.add_child(button)
++			mode_buttons.append(button)
++		placement_hint = _label("",15,true)
++		placement_hint.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
++		placement.add_child(placement_hint)
++	if kind == "speed_bump":
++		var width: VBoxContainer = _section("Width")
++		width_field = _number(width,float(state.get("span",8.0)),SpeedBumpEdit.MIN_SPAN,SpeedBumpEdit.MAX_SPAN,0.25,"m","SpeedBumpWidth")
++		width_field.value_changed.connect(func(value: float) -> void: _edit("span",value))
++		if selected:
++			var fit: Button = _button("Fit road width",func() -> void: fit_requested.emit())
++			fit.name = "FitRoadWidth"
++			width.add_child(fit)
++	elif (selected and kind not in ["tyre_wall","tyre_stack"]) or (not selected and kind not in CreatorCatalog.LINES):
++		var sizing: VBoxContainer = _section("Size")
++		var sizes := HBoxContainer.new()
++		sizes.add_theme_constant_override("separation",6)
++		sizing.add_child(sizes)
++		var presets: Array[float] = CreatorCatalog.size_presets(kind)
++		for index: int in range(3):
++			var button: Button = _button(["Small","Medium","Large"][index],func() -> void: _edit("scale",presets[index]))
++			button.name = "ObjectSize_"+str(index)
++			button.toggle_mode = true
++			sizes.add_child(button)
++			size_buttons.append(button)
++		if selected:
++			size_field = _number(sizing,float(state.get("scale",1.0)),0.5,1.5 if kind in CreatorCatalog.DECORATIVE else 3.0,0.25,"×","ObjectSize")
++			size_field.value_changed.connect(func(value: float) -> void: _edit("scale",value))
++		size_readout = _label("",15,true)
++		size_readout.name = "ObjectDimensions"
++		sizing.add_child(size_readout)
++	var orientation: VBoxContainer = _section("Orientation")
++	orientation_section = orientation
++	orientation_controls = VBoxContainer.new()
++	orientation_controls.add_theme_constant_override("separation",10)
++	orientation.add_child(orientation_controls)
++	var orientation_row := HBoxContainer.new()
++	orientation_row.add_theme_constant_override("separation",8)
++	orientation_controls.add_child(orientation_row)
++	diagram = OrientationDiagram.new()
++	diagram.name = "OrientationPreview"
++	diagram.custom_minimum_size = Vector2(76,76)
++	diagram.tooltip_text = "Top view: 0° points right; 90° points up."
++	orientation_row.add_child(diagram)
++	var left: Button = _button("−",func() -> void: _edit("rotation",fposmod(float(state.rotation)-22.5,360.0)))
++	left.name = "TurnLeft"
++	left.tooltip_text = "Turn by −22.5°"
++	left.custom_minimum_size.x = 44
++	left.size_flags_horizontal = Control.SIZE_SHRINK_CENTER
++	left.size_flags_vertical = Control.SIZE_SHRINK_CENTER
++	orientation_row.add_child(left)
++	angle_field = _number(orientation_row,float(state.rotation),0,360,0.01,"°","RotationAngle")
++	angle_field.size_flags_vertical = Control.SIZE_SHRINK_CENTER
++	angle_field.value_changed.connect(func(value: float) -> void: _edit("rotation",fposmod(value,360.0)))
++	var right: Button = _button("+",func() -> void: _edit("rotation",fposmod(float(state.rotation)+22.5,360.0)))
++	right.name = "TurnRight"
++	right.tooltip_text = "Turn by +22.5°"
++	right.custom_minimum_size.x = 44
++	right.size_flags_horizontal = Control.SIZE_SHRINK_CENTER
++	right.size_flags_vertical = Control.SIZE_SHRINK_CENTER
++	orientation_row.add_child(right)
++	var cardinals := HBoxContainer.new()
++	cardinals.add_theme_constant_override("separation",6)
++	orientation_controls.add_child(cardinals)
++	for value: int in [0,90,180,270]:
++		var cardinal: Button = _button(str(value)+"°",func() -> void: _edit("rotation",float(value)))
++		cardinal.name = "Face_"+str(value)
++		cardinals.add_child(cardinal)
++	orientation_help = _label("Use − / + for 22.5° steps, or type any angle.",15,true)
++	orientation_help.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
++	orientation.add_child(orientation_help)
++	if kind == "container":
++		var paint: VBoxContainer = _section("Paint colour")
++		paint.add_child(ContainerColorButton.make(str(state.get("color",ContainerPaint.DEFAULT)),func(value: String) -> void: _edit("color",value)))
++	_sync()
++
++func _change_mode(mode: String) -> void:
++	_edit("placement",mode)
++
++func _edit(property: String, value: Variant) -> void:
++	if _syncing or state.get(property) == value: return
++	state[property] = value
++	_sync()
++	edited.emit(property,value)
++
++func _sync() -> void:
++	_syncing = true
++	if is_instance_valid(size_readout):
++		var dimensions: Vector2 = CreatorObjects.size_of(state)
++		size_readout.text = GameText.message("%.2f× · %.1f × %.1f m") % [float(state.get("scale",1.0)),dimensions.x,dimensions.y]
++	var presets: Array[float] = CreatorCatalog.size_presets(str(state.kind))
++	for index: int in range(size_buttons.size()):
++		var chosen: bool = is_equal_approx(float(state.get("scale",1.0)),presets[index])
++		size_buttons[index].set_pressed_no_signal(chosen)
++		EditorStyle.apply(size_buttons[index],chosen)
++	for index: int in range(mode_buttons.size()):
++		var chosen: bool = state.get("placement","single") == MODES[index]
++		mode_buttons[index].set_pressed_no_signal(chosen)
++		EditorStyle.apply(mode_buttons[index],chosen)
++	if is_instance_valid(placement_hint): placement_hint.text = GameText.message(MODE_HELP[maxi(0,MODES.find(str(state.get("placement","single"))))])
++	if is_instance_valid(angle_field):
++		angle_field.set_value_no_signal(float(state.rotation))
++		diagram.angle = float(state.rotation)
++		diagram.queue_redraw()
++		var along_run: bool = not selected and state.kind in CreatorCatalog.LINES and state.get("placement","single") != "single"
++		angle_field.editable = not along_run
++		orientation_controls.visible = not along_run
++		orientation_section.get_parent().visible = not along_run
++		orientation_help.text = "Orientation follows the run automatically." if along_run else "Use − / + for 22.5° steps, or type any angle."
++		for node_name: String in ["TurnLeft","TurnRight","Face_0","Face_90","Face_180","Face_270"]:
++			(find_child(node_name,true,false) as Button).disabled = along_run
++		if along_run and is_instance_valid(placement_hint): placement_hint.text += "\n"+GameText.message("Orientation follows the run automatically.")
++	if is_instance_valid(size_field): size_field.set_value_no_signal(float(state.get("scale",1.0)))
++	if is_instance_valid(width_field): width_field.set_value_no_signal(float(state.get("span",8.0)))
++	_syncing = false
++	_layout.call_deferred()
++
++func _commit_fields() -> void:
++	for field: SpinBox in [angle_field,size_field,width_field]:
++		if is_instance_valid(field) and field.editable: field.apply()
++
++func _finish() -> void:
++	_commit_fields()
++	hide()
++
++func open(anchor: Rect2) -> void:
++	set_meta("anchor",anchor)
++	_layout()
++	popup()
++	_layout.call_deferred()
++	(find_child("CloseProperties",true,false) as Button).grab_focus.call_deferred()
++
++func _layout() -> void:
++	if not is_inside_tree(): return
++	var extent: Vector2 = get_parent().get_viewport().get_visible_rect().size
++	var width: float = minf(420,extent.x-24)
++	var column: Control = scroll.get_parent() as Control
++	# PopupPanel adds its own theme margins around the content. Measure them;
++	# counting only our style padding clips the last row on compact inspectors.
++	var frame: Vector2 = Vector2(get_contents_minimum_size())-column.get_combined_minimum_size()
++	scroll.custom_minimum_size = Vector2(maxf(0,width-frame.x),0)
++	var height: float = minf(minf(650,extent.y-40),get_contents_minimum_size().y+body.get_combined_minimum_size().y)
++	# Fixed chrome, flexible body: short landscape screens scroll only the fields.
++	size = Vector2i(int(width),int(height))
++	var anchor: Rect2 = get_meta("anchor",Rect2(extent,Vector2.ZERO))
++	position = Vector2i(int(clampf(anchor.end.x-size.x,12,maxf(12,extent.x-size.x-12))),int(clampf(anchor.position.y-size.y-10,20,maxf(20,extent.y-size.y-20))))
+diff --git a/game/tests/test_object_properties.gd b/game/tests/test_object_properties.gd
+new file mode 100644
+--- /dev/null
++++ b/game/tests/test_object_properties.gd
+@@ -0,0 +1,262 @@
++extends SceneTree
++## Actual-App inspector interactions, isolated saves and native layout captures.
++var app: Node
++var checks: int = 0
++var failures: int = 0
++var folder: String
++var captures: Array[String] = []
++
++func _initialize() -> void: run.call_deferred()
++
++func check(ok: bool, label: String) -> void:
++	checks += 1
++	if not ok:
++		failures += 1
++		print("FAIL: ",label)
++
++func frames(count: int = 3) -> void:
++	for index: int in range(count): await process_frame
++
++func settle() -> void:
++	var deadline: int = Time.get_ticks_msec()+30000
++	while (app.canvas.preparing or app.editor_commits.unsettled() or app.editor_preview_thread != null or app.editor_world._building) and Time.get_ticks_msec()<deadline: await process_frame
++	check(not app.canvas.preparing and not app.editor_commits.unsettled(),"edit settles before another gesture")
++	await frames()
++
++func press(window: Window, node_name: String) -> void:
++	var button: BaseButton = window.find_child(node_name,true,false)
++	check(button != null,"control exists: "+node_name)
++	if button == null: return
++	# Deliver actual pointer events through the embedded inspector viewport.
++	var point: Vector2 = Vector2(window.position)+button.get_global_rect().get_center()
++	var motion := InputEventMouseMotion.new()
++	motion.position = point
++	motion.global_position = point
++	root.push_input(motion,true)
++	await process_frame
++	for down: bool in [true,false]:
++		var event := InputEventMouseButton.new()
++		event.button_index = MOUSE_BUTTON_LEFT
++		event.pressed = down
++		event.position = point
++		event.global_position = point
++		root.push_input(event,true)
++		await process_frame
++
++func shot(label: String, popup: Window = null) -> void:
++	await frames(5)
++	if popup != null:
++		var rect := Rect2(Vector2(popup.position),Vector2(popup.size))
++		check(root.get_visible_rect().encloses(rect),"inspector is inside viewport: "+label)
++		var done: Control = popup.find_child("DoneProperties",true,false)
++		check(Rect2(Vector2.ZERO,Vector2(popup.size)).encloses(done.get_global_rect()),"Done stays reachable: "+label)
++	if DisplayServer.get_name() == "headless": return
++	await RenderingServer.frame_post_draw
++	var path: String = folder.path_join(label+".png")
++	check(root.get_texture().get_image().save_png(path) == OK,"capture: "+label)
++	captures.append(path)
++
++func open(kind: String) -> Window:
++	app.object_browser.choose(kind)
++	app.object_browser.open_properties()
++	await frames()
++	return app.object_browser.options
++
++func run() -> void:
++	create_timer(150).timeout.connect(func() -> void: print("OBJECT_PROPERTIES_TIMEOUT"); quit(2))
++	OS.set_environment("BMT_API_URL","")
++	folder = ProjectSettings.globalize_path("res://../docs/evidence/object-properties-2026-10-28/")+DisplayServer.get_name()+"-"+RenderingServer.get_current_rendering_method()
++	DirAccess.make_dir_recursive_absolute(folder)
++	root.size = Vector2i(1280,720)
++	root.content_scale_size = root.size
++	app = load("res://core/app.tscn").instantiate()
++	app.library = TrackLibrary.new(folder.path_join("disposable-storage"))
++	app.records = LocalRecords.new(folder.path_join("disposable-storage/records.json"))
++	app.cloud_root_override = folder.path_join("disposable-storage/cloud")
++	root.add_child(app)
++	while not app.startup_complete: await process_frame
++	var doc: Dictionary = TrackDocument.create_default()
++	doc.id = "object_properties_review"
++	doc["automatic_scenery"] = false
++	doc.objects = [{"kind":"tree","position":[-18.0,10.0],"rotation":0.0,"scale":1.0},
++		{"kind":"speed_bump","position":[18.0,12.0],"rotation":0.0,"span":8.0},
++		{"kind":"container","position":[-18.0,-12.0],"rotation":45.0,"color":ContainerPaint.DEFAULT}]
++	app.document = doc
++	app._show_screen("create")
++	var deadline: int = Time.get_ticks_msec()+30000
++	while (app.editor_preview_thread != null or app.editor_world._building) and Time.get_ticks_msec()<deadline: await process_frame
++	check(app.editor_preview_thread == null and not app.editor_world._building,"editor preparation settles")
++	app._editor_category("objects")
++	await frames()
++	check(app.object_browser.properties_button.is_visible_in_tree(),"Properties has an explicit visible entry")
++	await shot("01-palette")
++	var popup: Window = await open("tree")
++	var before: Dictionary = app.document.duplicate(true)
++	var history_size: int = app.history.size()
++	await press(popup,"ObjectSize_2")
++	check(is_equal_approx(app.canvas.stamp_scale,1.5),"pointer selection changes placement size")
++	check((popup.find_child("ObjectDimensions",true,false) as Label).text.contains("4.5"),"size readout describes actual footprint")
++	await press(popup,"TurnRight")
++	check(app.canvas.stamp_rotation == 22.5,"orientation button changes placement angle")
++	var field: SpinBox = popup.find_child("RotationAngle",true,false)
++	field.get_line_edit().text = "13.37"
++	await press(popup,"DoneProperties")
++	check(is_equal_approx(app.canvas.stamp_rotation,13.37),"Done accepts typed angle without Enter")
++	app.object_browser._activate_asset("tree")
++	await frames()
++	popup = app.object_browser.options
++	check(app.canvas.stamp_scale == 1.5 and is_equal_approx(app.canvas.stamp_rotation,13.37),"reopening preserves size and orientation")
++	check(app.document == before and app.history.size() == history_size,"placement defaults never alter placed objects or undo history")
++	await shot("02-size-orientation",popup)
++	popup.hide()
++	await settle()
++	var object_count: int = app.document.objects.size()
++	var point: Vector2 = app.canvas.to_screen(Vector2(32,-20))
++	app.canvas._begin(point,11)
++	app.canvas._end(11)
++	check(app.document.objects.size() == object_count+1,"actual placement creates one object")
++	check(app.document.objects[-1].kind == "tree" and app.document.objects[-1].scale == 1.5 and is_equal_approx(app.document.objects[-1].rotation,13.37),"actual placement uses inspector size and angle")
++	app._undo()
++	check(app.document.objects.size() == object_count,"placement undoes as one action")
++	await settle()
++	popup = await open("guardrail")
++	await press(popup,"Placement_curve")
++	check(app.canvas.mode == "run" and app.canvas.run_shape == "curve","Curve card selects the actual curve tool")
++	check(not (popup.find_child("RotationAngle",true,false) as SpinBox).editable,"automatic run orientation cannot be edited")
++	popup.hide()
++	app.object_browser._activate_asset("guardrail")
++	await frames()
++	popup = app.object_browser.options
++	check(app.object_browser.placement == "curve" and app.canvas.mode == "run","reopening preserves fence placement")
++	await shot("03-fence-curve",popup)
++	var help: Control = popup.get("placement_hint")
++	check((popup.get("scroll") as Control).get_global_rect().encloses(help.get_global_rect()),"run instructions fit without scrolling at desktop size")
++	popup.hide()
++	await settle()
++	object_count = app.document.objects.size()
++	app.canvas._begin(app.canvas.to_screen(Vector2(24,-18)),12)
++	app.canvas._move(app.canvas.to_screen(Vector2(32,-18)))
++	app.canvas._move(app.canvas.to_screen(Vector2(40,-10)))
++	app.canvas._end(12)
++	check(app.document.objects.size() > object_count,"actual curve gesture creates a fence run")
++	app._undo()
++	check(app.document.objects.size() == object_count,"the whole fence run undoes as one action")
++	await settle()
++	app.object_browser.open_properties()
++	await frames()
++	popup = app.object_browser.options
++	await press(popup,"Placement_road_edge")
++	check(not app.canvas.free_run,"Road edge uses production road alignment")
++	await shot("04-fence-road-edge",popup)
++	await press(popup,"Placement_single")
++	check(app.canvas.mode == "place" and (popup.find_child("RotationAngle",true,false) as SpinBox).editable,"Single restores manual orientation")
++	popup.hide()
++	popup = await open("rock")
++	var variants: OptionButton = popup.find_child("ObjectVariant",true,false)
++	variants.select(1)
++	variants.item_selected.emit(1)
++	await frames(5)
++	check(app.canvas.stamp_kind == "boulder","variant selects Boulder")
++	app.object_browser.options.hide()
++	app.object_browser._activate_asset("rock")
++	await frames()
++	check(app.canvas.stamp_kind == "boulder" and app.object_browser.options.visible,"family reselect preserves variant and opens properties")
++	await shot("05-boulder",app.object_browser.options)
++	app.object_browser.options.hide()
++	popup = await open("cliff")
++	check(app.canvas.stamp_scale == 2.0,"cliff defaults to its established 16 metre size")
++	await press(popup,"ObjectSize_2")
++	check(app.canvas.stamp_scale == 3.0 and (popup.find_child("ObjectDimensions",true,false) as Label).text.contains("24.0"),"large cliff preset retains the 24 metre footprint")
++	popup.hide()
++	popup = await open("speed_bump")
++	var width: SpinBox = popup.find_child("SpeedBumpWidth",true,false)
++	width.value = 12.25
++	check(app.canvas.stamp_span == 12.25 and popup.find_child("ObjectSize_0",true,false) == null,"speed bump changes width independently")
++	await shot("06-speed-bump",popup)
++	popup.hide()
++	popup = await open("container")
++	check(popup.find_child("ContainerColour",true,false) != null,"container exposes contextual paint")
++	await shot("07-container",popup)
++	popup.hide()
++	# Selected object uses the same inspector, with real undo/redo transactions.
++	app.canvas.mode = "objects"
++	app.canvas.selected_object = 0
++	app._build_editor_tools()
++	app._selected_object_properties()
++	await frames()
++	popup = app.root_ui.find_child("SelectedObjectPropertiesPopup",true,false)
++	history_size = app.history.size()
++	await press(popup,"ObjectSize_2")
++	check(app.document.objects[0].scale == 1.5 and app.history.size() == history_size+1,"selected size edit adds one undo step")
++	await press(popup,"TurnRight")
++	check(app.document.objects[0].rotation == 22.5 and app.history.size() == history_size+2,"selected rotation adds one undo step")
++	await shot("08-selected-object",popup)
++	popup.hide()
++	await frames()
++	app.canvas.selected_object = 1
++	app.canvas.mode = "objects"
++	app._selected_object_properties()
++	await frames()
++	popup = app.root_ui.find_child("SelectedObjectPropertiesPopup",true,false)
++	history_size = app.history.size()
++	width = popup.find_child("SpeedBumpWidth",true,false)
++	width.value = 10.5
++	check(CreatorObjects.size_of(app.document.objects[1]).y == 10.5 and app.history.size() == history_size+1,"selected width adds one undo step")
++	await shot("08b-selected-speed-bump",popup)
++	popup.hide()
++	await frames()
++	app._undo()
++	check(CreatorObjects.size_of(app.document.objects[1]).y == 8.0,"speed bump width undo is exact")
++	app.canvas.selected_object = 0
++	app.canvas.mode = "objects"
++	# Restore the two preceding property edits, then test their ordinary history.
++	app._undo()
++	check(app.document.objects[0].scale == 1.5 and app.document.objects[0].rotation == 0.0,"undo restores only orientation")
++	app._undo()
++	check(app.document.objects[0].scale == 1.0,"undo restores size")
++	app._redo()
++	app._redo()
++	check(app.document.objects[0].scale == 1.5 and app.document.objects[0].rotation == 22.5,"redo restores both properties")
++	app.canvas.selected_object = 0
++	app.canvas.mode = "objects"
++	app._selected_object_properties()
++	await frames()
++	popup = app.root_ui.find_child("SelectedObjectPropertiesPopup",true,false)
++	app.canvas.selected_object = 2
++	var other: Dictionary = app.document.objects[2].duplicate(true)
++	(popup.find_child("TurnRight",true,false) as Button).pressed.emit()
++	check(app.document.objects[2] == other,"stale inspector cannot modify a replacement selection")
++	await frames()
++	app.canvas.selected_object = -1
++	app._editor_category("objects")
++	# Landscape phone, tablet and portrait viewport bounds; native captures retain actual scale.
++	for extent: Vector2i in [Vector2i(960,540),Vector2i(1920,1080),Vector2i(720,1000)]:
++		root.size = extent
++		root.content_scale_size = extent
++		await frames(5)
++		popup = await open("fence")
++		await shot("09-fence-%dx%d" % [extent.x,extent.y],popup)
++		check((popup.find_child("Placement_single",true,false) as Control).size.y >= 44,"placement cards retain touch target height")
++		popup.hide()
++	root.size = Vector2i(1280,720)
++	root.content_scale_size = root.size
++	for locale: String in ["fi","de"]:
++		TranslationServer.set_locale(locale)
++		await frames()
++		popup = await open("fence")
++		check(TranslationServer.translate("Placement properties") != "Placement properties","properties copy is translated: "+locale)
++		await shot("10-localized-"+locale,popup)
++		popup.hide()
++	TranslationServer.set_locale("en")
++	check(TrackDocument.validate(app.document).is_empty(),"edited document remains valid")
++	check(app.library.save_document(app.document) == OK,"edited document saves")
++	check(app.library.load_document(app.document.id).objects == JSON.parse_string(JSON.stringify(app.document.objects)),"all edits round trip through local storage")
++	app.queue_free()
++	await frames(5)
++	GameSoundtrack.instance().queue_free()
++	await create_timer(0.3).timeout
++	var report := FileAccess.open(folder.path_join("result.json"),FileAccess.WRITE)
++	report.store_string(JSON.stringify({"checks":checks,"failures":failures,"captures":captures},"\t"))
++	report.close()
++	print("OBJECT_PROPERTIES: %d checks, %d failures" % [checks,failures])
++	quit(1 if failures else 0)
+diff --git a/scripts/translations/object_properties.tsv b/scripts/translations/object_properties.tsv
+new file mode 100644
+--- /dev/null
++++ b/scripts/translations/object_properties.tsv
+@@ -0,0 +1,23 @@
++Single|Un seul|Individual|Einzeln|Único|単体|단일|Enkel|Singolo|Yksittäinen|Enstaka|Enkelt
++Straight line|Ligne droite|Línea recta|Gerade Linie|Linha reta|直線|직선|Rechte lijn|Linea retta|Suora rivi|Rak linje|Rett linje
++Road edge|Bord de route|Borde de la pista|Straßenrand|Borda da pista|道路の端|도로 가장자리|Wegrand|Bordo strada|Tien reuna|Vägkant|Veikant
++Selected object|Objet sélectionné|Objeto seleccionado|Ausgewähltes Objekt|Objeto selecionado|選択中のオブジェクト|선택한 오브젝트|Geselecteerd object|Oggetto selezionato|Valittu esine|Valt objekt|Valgt objekt
++Placement properties|Propriétés de placement|Propiedades de colocación|Platzierungseigenschaften|Propriedades de posicionamento|配置のプロパティ|배치 속성|Plaatsingseigenschappen|Proprietà di posizionamento|Sijoitusasetukset|Placeringsinställningar|Plasseringsinnstillinger
++Close properties|Fermer les propriétés|Cerrar propiedades|Eigenschaften schließen|Fechar propriedades|プロパティを閉じる|속성 닫기|Eigenschappen sluiten|Chiudi proprietà|Sulje ominaisuudet|Stäng egenskaper|Lukk egenskaper
++Variant|Variante|Variante|Variante|Variante|種類|종류|Variant|Variante|Muunnelma|Variant|Variant
++Placement mode|Mode de placement|Modo de colocación|Platzierungsmodus|Modo de posicionamento|配置モード|배치 모드|Plaatsingsmodus|Modalità di posizionamento|Sijoitustapa|Placeringsläge|Plasseringsmodus
++Orientation|Orientation|Orientación|Ausrichtung|Orientação|向き|방향|Oriëntatie|Orientamento|Suunta|Riktning|Retning
++Paint colour|Couleur de peinture|Color de pintura|Lackfarbe|Cor da pintura|塗装色|도색 색상|Lakkleur|Colore vernice|Maalin väri|Lackfärg|Lakkfarge
++Fit road width|Adapter à la largeur de la route|Ajustar al ancho de la pista|An Straßenbreite anpassen|Ajustar à largura da pista|道幅に合わせる|도로 너비에 맞추기|Aan wegbreedte aanpassen|Adatta alla larghezza della strada|Sovita tien leveyteen|Anpassa till vägbredd|Tilpass til veibredde
++Tap empty ground to place one object.|Touchez le sol libre pour placer un objet.|Toca un espacio vacío para colocar un objeto.|Tippe auf freien Boden, um ein Objekt zu platzieren.|Toque no chão vazio para colocar um objeto.|空いている地面をタップして1つ配置します。|빈 땅을 탭하여 오브젝트 하나를 배치하세요.|Tik op lege grond om één object te plaatsen.|Tocca il terreno libero per posizionare un oggetto.|Sijoita yksi esine napauttamalla tyhjää maata.|Tryck på tom mark för att placera ett objekt.|Trykk på tom bakke for å plassere ett objekt.
++Drag a straight run, or tap its two ends.|Tracez une ligne droite ou touchez ses deux extrémités.|Arrastra una línea recta o toca sus dos extremos.|Ziehe eine gerade Reihe oder tippe auf ihre beiden Enden.|Arraste uma linha reta ou toque nas duas pontas.|直線をドラッグするか、両端をタップします。|직선을 드래그하거나 양 끝을 탭하세요.|Sleep een rechte rij of tik op de twee uiteinden.|Trascina una fila dritta o tocca le due estremità.|Vedä suora rivi tai napauta sen kahta päätepistettä.|Dra en rak rad eller tryck på dess två ändar.|Dra en rett rekke eller trykk på de to endene.
++Draw a curve. Release to place the whole run.|Dessinez une courbe. Relâchez pour placer toute la rangée.|Dibuja una curva. Suelta para colocar toda la fila.|Zeichne eine Kurve. Loslassen platziert die ganze Reihe.|Desenhe uma curva. Solte para colocar toda a fileira.|曲線を描き、指を離すと全体が配置されます。|곡선을 그리세요. 손을 떼면 전체가 배치됩니다.|Teken een bocht. Laat los om de hele rij te plaatsen.|Disegna una curva. Rilascia per posizionare tutta la fila.|Piirrä kaari. Vapauta sijoittaaksesi koko rivin.|Rita en kurva. Släpp för att placera hela raden.|Tegn en kurve. Slipp for å plassere hele rekken.
++Drag beside a road to follow its edge. A road is required.|Glissez près d’une route pour suivre son bord. Une route est nécessaire.|Arrastra junto a una pista para seguir su borde. Se necesita una pista.|Ziehe neben einer Straße, um ihrem Rand zu folgen. Eine Straße ist erforderlich.|Arraste ao lado de uma pista para seguir a borda. É necessário haver uma pista.|道路の横をドラッグして端に沿わせます。道路が必要です。|도로 옆을 드래그하면 가장자리를 따라갑니다. 도로가 필요합니다.|Sleep naast een weg om de rand te volgen. Er is een weg nodig.|Trascina accanto a una strada per seguirne il bordo. È necessaria una strada.|Vedä tien vieressä seurataksesi sen reunaa. Tie tarvitaan.|Dra bredvid en väg för att följa kanten. En väg krävs.|Dra ved siden av en vei for å følge kanten. En vei kreves.
++Orientation follows the run automatically.|L’orientation suit automatiquement la rangée.|La orientación sigue la fila automáticamente.|Die Ausrichtung folgt automatisch der Reihe.|A orientação segue a fileira automaticamente.|向きは配置する列に自動で合わせます。|방향은 배치 경로를 자동으로 따릅니다.|De richting volgt automatisch de rij.|L’orientamento segue automaticamente la fila.|Suunta seuraa riviä automaattisesti.|Riktningen följer raden automatiskt.|Retningen følger rekken automatisk.
++Top view: 0° points right; 90° points up.|Vue de dessus : 0° vers la droite ; 90° vers le haut.|Vista superior: 0° apunta a la derecha; 90°, hacia arriba.|Draufsicht: 0° zeigt nach rechts; 90° nach oben.|Vista superior: 0° aponta à direita; 90° para cima.|上面図：0°は右、90°は上です。|위에서 본 모습: 0°는 오른쪽, 90°는 위쪽입니다.|Bovenaanzicht: 0° wijst naar rechts; 90° naar boven.|Vista dall’alto: 0° verso destra; 90° verso l’alto.|Ylhäältä: 0° osoittaa oikealle ja 90° ylös.|Ovanifrån: 0° pekar åt höger, 90° uppåt.|Ovenfra: 0° peker mot høyre, 90° oppover.
++Turn by −22.5°|Tourner de −22.5°|Girar −22.5°|Um −22.5° drehen|Girar −22.5°|−22.5°回転|−22.5° 회전|−22.5° draaien|Ruota di −22.5°|Käännä −22.5°|Vrid −22.5°|Roter −22.5°
++Turn by +22.5°|Tourner de +22.5°|Girar +22.5°|Um +22.5° drehen|Girar +22.5°|+22.5°回転|+22.5° 회전|+22.5° draaien|Ruota di +22.5°|Käännä +22.5°|Vrid +22.5°|Roter +22.5°
++Use − / + for 22.5° steps, or type any angle.|Utilisez − / + par pas de 22.5°, ou saisissez un angle.|Usa − / + para pasos de 22.5° o escribe cualquier ángulo.|Mit − / + in 22.5°-Schritten drehen oder einen Winkel eingeben.|Use − / + para passos de 22.5° ou digite qualquer ângulo.|− / +で22.5°ずつ回転、または角度を入力します。|− / +로 22.5°씩 회전하거나 원하는 각도를 입력하세요.|Gebruik − / + voor stappen van 22.5° of typ een hoek.|Usa − / + per passi di 22.5° o digita un angolo.|Käännä − / + -painikkeilla 22.5° kerrallaan tai syötä kulma.|Använd − / + för steg på 22.5° eller skriv valfri vinkel.|Bruk − / + for trinn på 22.5° eller skriv inn en vinkel.
++Size, orientation and placement settings|Taille, orientation et placement|Tamaño, orientación y colocación|Größe, Ausrichtung und Platzierung|Tamanho, orientação e posicionamento|サイズ、向き、配置の設定|크기, 방향 및 배치 설정|Grootte, richting en plaatsing|Dimensioni, orientamento e posizionamento|Koon, suunnan ja sijoittelun asetukset|Storlek, riktning och placering|Størrelse, retning og plassering
++Size, orientation and object settings|Taille, orientation et propriétés de l’objet|Tamaño, orientación y propiedades del objeto|Größe, Ausrichtung und Objekteinstellungen|Tamanho, orientação e propriedades do objeto|サイズ、向き、オブジェクトの設定|크기, 방향 및 오브젝트 설정|Grootte, richting en objectinstellingen|Dimensioni, orientamento e proprietà|Koon, suunnan ja esineen asetukset|Storlek, riktning och objektinställningar|Størrelse, retning og objektegenskaper
++%.2f× · %.1f × %.1f m|%.2f× · %.1f × %.1f m|%.2f× · %.1f × %.1f m|%.2f× · %.1f × %.1f m|%.2f× · %.1f × %.1f m|%.2f× · %.1f × %.1f m|%.2f× · %.1f × %.1f m|%.2f× · %.1f × %.1f m|%.2f× · %.1f × %.1f m|%.2f× · %.1f × %.1f m|%.2f× · %.1f × %.1f m|%.2f× · %.1f × %.1f m
+diff --git a/docs/OBJECT_PROPERTIES_2026_10_28.md b/docs/OBJECT_PROPERTIES_2026_10_28.md
+new file mode 100644
+--- /dev/null
++++ b/docs/OBJECT_PROPERTIES_2026_10_28.md
+@@ -0,0 +1,69 @@
++# Object properties redesign — 28 October 2026
++
++The editor now exposes a visible **Properties** action. A shared inspector replaces the sparse placement popup and the selected object's scattered size/rotation controls. It names the object, explains its behavior, and groups the relevant settings on consistent dark surfaces with cyan selection and keyboard focus states.
++
++| Requirement | Delivered behavior |
++| --- | --- |
++| OP01 — Discovery and hierarchy | Visible Properties entry in the object palette and on a selected object; named heading, labeled sections, Close and Done. |
++| OP02 — Size | Three visible presets with current multiplier and actual footprint dimensions; selected objects also accept numeric scale. Speed bumps retain independent width and Fit road width. |
++| OP03 — Orientation | Top-view direction preview, exact degree entry, ±22.5° steps and four cardinal shortcuts. Typed angles commit with Done, including without Enter. |
++| OP04 — Fence placement | Illustrated Single, Straight line, Curve and Road edge cards, selected state and specific instructions. Runs explain automatic orientation and hide irrelevant manual controls. |
++| OP05 — State and history | Opening/reopening preserves size, variant, angle and placement. Selected-object edits use ordinary undo/redo; one whole fence run remains one action. Stale inspectors cannot edit another selection. |
++| OP06 — Responsive/localized presentation | Theme margins are measured; only the fields scroll on short screens, with Done outside the scroll area. Twenty-three authored messages cover eleven additional languages. |
++| Q01 — Evidence | Actual-App pointer interactions, native screenshots, saved-document round trips, retained suites, exact commands and source hashes. |
++
++Native previews: [size and orientation](evidence/object-properties-2026-10-28/Windows-mobile/02-size-orientation.png), [fence curve](evidence/object-properties-2026-10-28/Windows-mobile/03-fence-curve.png), [road edge](evidence/object-properties-2026-10-28/Windows-mobile/04-fence-road-edge.png), [selected object](evidence/object-properties-2026-10-28/Windows-mobile/08-selected-object.png), [short landscape](evidence/object-properties-2026-10-28/Windows-mobile/09-fence-960x540.png), [German](evidence/object-properties-2026-10-28/Windows-mobile/10-localized-de.png).
++
++## Files and boundaries
++
++- `game/editor/object_properties.gd`: new shared native inspector and original vector placement/orientation illustrations. It has no processing loop, generated imagery or extra 3D preview world.
++- `game/editor/object_browser.gd`: explicit entry, shared inspector wiring and preservation of choices.
++- `game/core/app.gd`: selected-object integration, rotation signal and preservation of defaults within an asset family.
++- `game/editor/object_thumbnail.gd`: tooltip points to Properties.
++- `scripts/translations/object_properties.tsv` and localized catalogues: 23 directly authored messages, exact interpolation placeholders, current source/English inventory.
++- `game/tests/test_object_properties.gd`: new regression and native capture helper. Existing tests were not edited by this task.
++
++Concurrent editor selection/snapping/guidance, separate jump assets, catalogue/art, Garage, vehicle, backend and generated build-identity work is retained. The initial source copies predate some of those changes and are evidence, not a replacement tree. The source checkpoint reconstructs only this task's prior behavior on the final surrounding code; it does not claim a clean original-worktree baseline. Generated source/English catalogues and evidence images remain separate derivatives.
++
++## Actual verification
++
++The exact pinned engine is `4.7.2.stable.official.ed1daf0bf`.
++
++| Check | Result |
++| --- | --- |
++| Actual-App inspector, Compatibility | **94 checks, 0 failures**, 14 native captures |
++| Actual-App inspector, desktop Vulkan Mobile | **94 checks, 0 failures**, 14 native captures |
++| Earlier headless actual-App run | 79 checks, 0 failures; subsequently strengthened with the final visible-instructions check |
++| Existing object rotation suite | **60 checks, 0 failures** |
++| Existing editor workflow suite | **254 checks, 0 failures** |
++| Authored localization scope | **253 nonempty translation/placeholder checks**, zero failures |
++| Scoped whitespace and source checkpoint | See `checkpoint.json` and `report.json` |
++
++The final UI checks cover real pointer delivery through embedded windows, size/angle placement, reopening, actual fence construction and whole-run undo, the 16/24 m cliff contract, width-only speed bumps, contextual paint, selected-object undo/redo, stale selection fencing and save/reload. Views include 1280×720, 960×540, 1920×1080 and 720×1000, plus Finnish and German. Both native runs retain source-before/source-after hashes; the accepted final sources are stable within each run.
++
++Reproduce the final UI checks from the repository root:
++
++```powershell
++python docs/evidence/object-properties-2026-10-28/run_check.py res://tests/test_object_properties.gd gl_compatibility verified-compatibility
++python docs/evidence/object-properties-2026-10-28/run_check.py res://tests/test_object_properties.gd mobile verified-mobile
++python docs/evidence/object-properties-2026-10-28/run_check.py res://tests/test_object_rotation.gd headless retained-rotation
++python docs/evidence/object-properties-2026-10-28/run_check.py res://tests/test_editor_workflow.gd headless retained-workflow
++```
++
++The runner creates disposable offline profiles and evidence-local track/record/cloud directories. Its execution JSON contains the exact engine command, exit, elapsed time and source hashes. It does not use owner storage.
++
++## Retained failures and corrections
++
++The preferred `scripts/dev.ps1 -Action CheckScript -ScriptPath res://editor/object_properties.gd` completed. Its later `TestScript` invocation was stopped by the wrapper on this sandbox's root-certificate-store diagnostic. Direct pinned-engine runs retain that diagnostic while completing their actual assertions. This is not a certificate/configuration fix.
++
++Initial input injections targeted the child Window instead of routing through the root viewport. They failed 13 interaction assertions in both headless and native runs; those receipts remain. Actual root-routed pointer events pass. The initial close-button expansion and an undercount of PopupPanel theme margins were corrected after native inspection. A focused geometry probe confirmed the margin discrepancy; final native assertions ensure the entire run instruction is visible.
++
++The original broad object-browser fixture reports five placement/direct-selection failures, then dereferences its removed `ObjectSize` OptionButton and times out. It uses two-frame preparation waits and the former menu structure. It remains unchanged; the new fixture waits for actual preparation and independently exercises placement, run construction, cliff dimensions and persistence. No claim is made that the old fixture passes.
++
++The full parser checked 1,403 scripts and reported one failure in the untouched historical `tests/fixtures/parking_hall_before/garage_page.gd`, which calls missing `_build_wash_requirement()`, plus its dependent fixture App error. Production inspector/App loading and the native tests succeed. The broad localization gate reports 1,254 missing/untranslated/obsolete inventory entries across the current workspace. This task's 23 authored messages pass all 253 scoped checks; no full-project localization-pass claim is made.
++
++## Remaining acceptance
++
++Reload the client to use the redesign. Owner review of the final look and interaction remains, particularly finger reach, physical text size, keyboard behavior and scrolling on Android. No physical-device test or device attachment query was performed. Desktop Vulkan Mobile uses an RTX 3090 and is not an Android performance result. AAA remains the quality target, not a certification established by automated checks.
++
++No APK, real authentication/purchase, owner-save mutation, deployment, owner-process restart or main-index staging/commit/merge was performed.
+diff --git a/AGENTS.md b/AGENTS.md
+--- a/AGENTS.md
++++ b/AGENTS.md
+@@ -2,6 +2,11 @@
+ ## Shorter go-kart turns at higher speeds (2026-10-28)
+ KHT01-KHT02/R01/Q01: Kart-6 changes only version and lateral grip72to80. Matched-speed full-steering radii are9.86-10.02% shorter at80-140km/h;100km/h10.707to9.634m. Low-speed10-30km/h circles stay within0.004%. Power/brakes/reverse/140kmh/shared physics0.75 remain;14,400 straight ticks are exact. Focused148/0 versus original148/10, retained kart42/cars113/handling88/rewind61 and preferred dependency parse pass. Three five-lap tracks have zero contacts/exact replay; independent12,787-input race accepts106554ms. Broader parser retains unrelated Garage-fixture missing method; selected backend1pass/1retired-car manifest failure. Initial sandbox certificate and helper missing-Hovercraft-fixture findings retained. One runtime resource; new regression/exact baseline/local fixture identity refresh and checked source-only patch. Commands, hashes, measurements and limits: docs/KART_HIGH_SPEED_TURNING_2026_10_28.md and docs/evidence/kart-high-speed-turning-2026-10-28/report.json. Reload/rebuild, matching online contract rollout and owner/device feel acceptance remain. No device query/test, APK, live mutation/deployment, owner-save/process change or main-index staging/commit/merge. Concurrent sources and generated metadata excluded from checkpoint.
+ <!-- /KART-HIGH-SPEED-TURNING-20261028 -->
++
++<!-- OBJECT-PROPERTIES-20261028 -->
++## Object properties redesigned (2026-10-28)
++OP01-OP06/Q01: Visible Properties opens a shared named inspector for placement and selected objects. Size presets/dimensions, exact visual orientation and illustrated fence modes preserve choices; contextual width/paint, undo and stale-selection fences remain. Final native94/0 each Compatibility/desktop Mobile, retained rotation60/0/workflow254/0 and scoped253 translations pass. Fourteen captures each include four viewports and Finnish/German. Original menu fixture failures/obsolete dropdown crash, historical Garage parser failure and broad localization gaps remain recorded. Initial input-routing and theme-margin corrections retained. Four runtime files plus one new regression/23 translation rows; concurrent editor/jump/catalogue/vehicle/backend work and metadata preserved. Checked source-only patch uses a reconstructed task inverse. Reload and owner/Android quality/input acceptance remain; no device query/test, APK, deployment, owner-save/process mutation or main-index staging/commit/merge. See docs/OBJECT_PROPERTIES_2026_10_28.md and docs/evidence/object-properties-2026-10-28/report.json.
++<!-- /OBJECT-PROPERTIES-20261028 -->
+ 
+ <!-- JUMP-PALETTE-OBJECTS-20261028 -->
+ ## Each jump is a separate palette object (2026-10-28)
+diff --git a/game/localization/fr.po b/game/localization/fr.po
+--- a/game/localization/fr.po
++++ b/game/localization/fr.po
+@@ -10738,3 +10738,95 @@
+ #: game/vehicle/vehicle_catalog.gd
+ msgid "Fan-powered air cushion with long, flowing slides. Steer early and brake to settle the drift. Hold the brake while stopped to reverse. No handbrake."
+ msgstr "Coussin d'air propulsé par une hélice, pour de longues glissades fluides. Anticipez les virages et freinez pour stabiliser la glisse. Maintenez le frein à l'arrêt pour reculer. Sans frein à main."
++
++#: game/editor/object_properties.gd
++msgid "Single"
++msgstr "Un seul"
++
++#: game/editor/object_properties.gd
++msgid "Straight line"
++msgstr "Ligne droite"
++
++#: game/editor/object_properties.gd
++msgid "Road edge"
++msgstr "Bord de route"
++
++#: game/editor/object_properties.gd
++msgid "Selected object"
++msgstr "Objet sélectionné"
++
++#: game/editor/object_properties.gd
++msgid "Placement properties"
++msgstr "Propriétés de placement"
++
++#: game/editor/object_properties.gd
++msgid "Close properties"
++msgstr "Fermer les propriétés"
++
++#: game/editor/object_properties.gd
++msgid "Variant"
++msgstr "Variante"
++
++#: game/editor/object_properties.gd
++msgid "Placement mode"
++msgstr "Mode de placement"
++
++#: game/editor/object_properties.gd
++msgid "Orientation"
++msgstr "Orientation"
++
++#: game/editor/object_properties.gd
++msgid "Paint colour"
++msgstr "Couleur de peinture"
++
++#: game/editor/object_properties.gd
++msgid "Fit road width"
++msgstr "Adapter à la largeur de la route"
++
++#: game/editor/object_properties.gd
++msgid "Tap empty ground to place one object."
++msgstr "Touchez le sol libre pour placer un objet."
++
++#: game/editor/object_properties.gd
++msgid "Drag a straight run, or tap its two ends."
++msgstr "Tracez une ligne droite ou touchez ses deux extrémités."
++
++#: game/editor/object_properties.gd
++msgid "Draw a curve. Release to place the whole run."
++msgstr "Dessinez une courbe. Relâchez pour placer toute la rangée."
++
++#: game/editor/object_properties.gd
++msgid "Drag beside a road to follow its edge. A road is required."
++msgstr "Glissez près d’une route pour suivre son bord. Une route est nécessaire."
++
++#: game/editor/object_properties.gd
++msgid "Orientation follows the run automatically."
++msgstr "L’orientation suit automatiquement la rangée."
++
++#: game/editor/object_properties.gd
++msgid "Top view: 0° points right; 90° points up."
++msgstr "Vue de dessus : 0° vers la droite ; 90° vers le haut."
++
++#: game/editor/object_properties.gd
++msgid "Turn by −22.5°"
++msgstr "Tourner de −22.5°"
++
++#: game/editor/object_properties.gd
++msgid "Turn by +22.5°"
++msgstr "Tourner de +22.5°"
++
++#: game/editor/object_properties.gd
++msgid "Use − / + for 22.5° steps, or type any angle."
++msgstr "Utilisez − / + par pas de 22.5°, ou saisissez un angle."
++
++#: game/editor/object_properties.gd
++msgid "Size, orientation and placement settings"
++msgstr "Taille, orientation et placement"
++
++#: game/editor/object_properties.gd
++msgid "Size, orientation and object settings"
++msgstr "Taille, orientation et propriétés de l’objet"
++
++#: game/editor/object_properties.gd
++msgid "%.2f× · %.1f × %.1f m"
++msgstr "%.2f× · %.1f × %.1f m"
+diff --git a/game/localization/es.po b/game/localization/es.po
+--- a/game/localization/es.po
++++ b/game/localization/es.po
+@@ -10738,3 +10738,95 @@
+ #: game/vehicle/vehicle_catalog.gd
+ msgid "Fan-powered air cushion with long, flowing slides. Steer early and brake to settle the drift. Hold the brake while stopped to reverse. No handbrake."
+ msgstr "Colchón de aire propulsado por hélice con derrapes largos y fluidos. Gira con antelación y frena para estabilizar el derrape. Mantén el freno al detenerte para dar marcha atrás. Sin freno de mano."
++
++#: game/editor/object_properties.gd
++msgid "Single"
++msgstr "Individual"
++
++#: game/editor/object_properties.gd
++msgid "Straight line"
++msgstr "Línea recta"
++
++#: game/editor/object_properties.gd
++msgid "Road edge"
++msgstr "Borde de la pista"
++
++#: game/editor/object_properties.gd
++msgid "Selected object"
++msgstr "Objeto seleccionado"
++
++#: game/editor/object_properties.gd
++msgid "Placement properties"
++msgstr "Propiedades de colocación"
++
++#: game/editor/object_properties.gd
++msgid "Close properties"
++msgstr "Cerrar propiedades"
++
++#: game/editor/object_properties.gd
++msgid "Variant"
++msgstr "Variante"
++
++#: game/editor/object_properties.gd
++msgid "Placement mode"
++msgstr "Modo de colocación"
++
++#: game/editor/object_properties.gd
++msgid "Orientation"
++msgstr "Orientación"
++
++#: game/editor/object_properties.gd
++msgid "Paint colour"
++msgstr "Color de pintura"
++
++#: game/editor/object_properties.gd
++msgid "Fit road width"
++msgstr "Ajustar al ancho de la pista"
++
++#: game/editor/object_properties.gd
++msgid "Tap empty ground to place one object."
++msgstr "Toca un espacio vacío para colocar un objeto."
++
++#: game/editor/object_properties.gd
++msgid "Drag a straight run, or tap its two ends."
++msgstr "Arrastra una línea recta o toca sus dos extremos."
++
++#: game/editor/object_properties.gd
++msgid "Draw a curve. Release to place the whole run."
++msgstr "Dibuja una curva. Suelta para colocar toda la fila."
++
++#: game/editor/object_properties.gd
++msgid "Drag beside a road to follow its edge. A road is required."
++msgstr "Arrastra junto a una pista para seguir su borde. Se necesita una pista."
++
++#: game/editor/object_properties.gd
++msgid "Orientation follows the run automatically."
++msgstr "La orientación sigue la fila automáticamente."
++
++#: game/editor/object_properties.gd
++msgid "Top view: 0° points right; 90° points up."
++msgstr "Vista superior: 0° apunta a la derecha; 90°, hacia arriba."
++
++#: game/editor/object_properties.gd
++msgid "Turn by −22.5°"
++msgstr "Girar −22.5°"
++
++#: game/editor/object_properties.gd
++msgid "Turn by +22.5°"
++msgstr "Girar +22.5°"
++
++#: game/editor/object_properties.gd
++msgid "Use − / + for 22.5° steps, or type any angle."
++msgstr "Usa − / + para pasos de 22.5° o escribe cualquier ángulo."
++
++#: game/editor/object_properties.gd
++msgid "Size, orientation and placement settings"
++msgstr "Tamaño, orientación y colocación"
++
++#: game/editor/object_properties.gd
++msgid "Size, orientation and object settings"
++msgstr "Tamaño, orientación y propiedades del objeto"
++
++#: game/editor/object_properties.gd
++msgid "%.2f× · %.1f × %.1f m"
++msgstr "%.2f× · %.1f × %.1f m"
+diff --git a/game/localization/de.po b/game/localization/de.po
+--- a/game/localization/de.po
++++ b/game/localization/de.po
+@@ -10738,3 +10738,95 @@
+ #: game/vehicle/vehicle_catalog.gd
+ msgid "Fan-powered air cushion with long, flowing slides. Steer early and brake to settle the drift. Hold the brake while stopped to reverse. No handbrake."
+ msgstr "Luftkissen mit Propellerantrieb für lange, fließende Drifts. Lenke früh und bremse, um den Drift abzufangen. Halte im Stand die Bremse, um rückwärtszufahren. Keine Handbremse."
++
++#: game/editor/object_properties.gd
++msgid "Single"
++msgstr "Einzeln"
++
++#: game/editor/object_properties.gd
++msgid "Straight line"
++msgstr "Gerade Linie"
++
++#: game/editor/object_properties.gd
++msgid "Road edge"
++msgstr "Straßenrand"
++
++#: game/editor/object_properties.gd
++msgid "Selected object"
++msgstr "Ausgewähltes Objekt"
++
++#: game/editor/object_properties.gd
++msgid "Placement properties"
++msgstr "Platzierungseigenschaften"
++
++#: game/editor/object_properties.gd
++msgid "Close properties"
++msgstr "Eigenschaften schließen"
++
++#: game/editor/object_properties.gd
++msgid "Variant"
++msgstr "Variante"
++
++#: game/editor/object_properties.gd
++msgid "Placement mode"
++msgstr "Platzierungsmodus"
++
++#: game/editor/object_properties.gd
++msgid "Orientation"
++msgstr "Ausrichtung"
++
++#: game/editor/object_properties.gd
++msgid "Paint colour"
++msgstr "Lackfarbe"
++
++#: game/editor/object_properties.gd
++msgid "Fit road width"
++msgstr "An Straßenbreite anpassen"
++
++#: game/editor/object_properties.gd
++msgid "Tap empty ground to place one object."
++msgstr "Tippe auf freien Boden, um ein Objekt zu platzieren."
++
++#: game/editor/object_properties.gd
++msgid "Drag a straight run, or tap its two ends."
++msgstr "Ziehe eine gerade Reihe oder tippe auf ihre beiden Enden."
++
++#: game/editor/object_properties.gd
++msgid "Draw a curve. Release to place the whole run."
++msgstr "Zeichne eine Kurve. Loslassen platziert die ganze Reihe."
++
++#: game/editor/object_properties.gd
++msgid "Drag beside a road to follow its edge. A road is required."
++msgstr "Ziehe neben einer Straße, um ihrem Rand zu folgen. Eine Straße ist erforderlich."
++
++#: game/editor/object_properties.gd
++msgid "Orientation follows the run automatically."
++msgstr "Die Ausrichtung folgt automatisch der Reihe."
++
++#: game/editor/object_properties.gd
++msgid "Top view: 0° points right; 90° points up."
++msgstr "Draufsicht: 0° zeigt nach rechts; 90° nach oben."
++
++#: game/editor/object_properties.gd
++msgid "Turn by −22.5°"
++msgstr "Um −22.5° drehen"
++
++#: game/editor/object_properties.gd
++msgid "Turn by +22.5°"
++msgstr "Um +22.5° drehen"
++
++#: game/editor/object_properties.gd
++msgid "Use − / + for 22.5° steps, or type any angle."
++msgstr "Mit − / + in 22.5°-Schritten drehen oder einen Winkel eingeben."
++
++#: game/editor/object_properties.gd
++msgid "Size, orientation and placement settings"
++msgstr "Größe, Ausrichtung und Platzierung"
++
++#: game/editor/object_properties.gd
++msgid "Size, orientation and object settings"
++msgstr "Größe, Ausrichtung und Objekteinstellungen"
++
++#: game/editor/object_properties.gd
++msgid "%.2f× · %.1f × %.1f m"
++msgstr "%.2f× · %.1f × %.1f m"
+diff --git a/game/localization/pt_BR.po b/game/localization/pt_BR.po
+--- a/game/localization/pt_BR.po
++++ b/game/localization/pt_BR.po
+@@ -10738,3 +10738,95 @@
+ #: game/vehicle/vehicle_catalog.gd
+ msgid "Fan-powered air cushion with long, flowing slides. Steer early and brake to settle the drift. Hold the brake while stopped to reverse. No handbrake."
+ msgstr "Colchão de ar com propulsão por hélice e derrapagens longas e suaves. Antecipe as curvas e freie para estabilizar a derrapagem. Mantenha o freio pressionado quando parado para dar ré. Sem freio de mão."
++
++#: game/editor/object_properties.gd
++msgid "Single"
++msgstr "Único"
++
++#: game/editor/object_properties.gd
++msgid "Straight line"
++msgstr "Linha reta"
++
++#: game/editor/object_properties.gd
++msgid "Road edge"
++msgstr "Borda da pista"
++
++#: game/editor/object_properties.gd
++msgid "Selected object"
++msgstr "Objeto selecionado"
++
++#: game/editor/object_properties.gd
++msgid "Placement properties"
++msgstr "Propriedades de posicionamento"
++
++#: game/editor/object_properties.gd
++msgid "Close properties"
++msgstr "Fechar propriedades"
++
++#: game/editor/object_properties.gd
++msgid "Variant"
++msgstr "Variante"
++
++#: game/editor/object_properties.gd
++msgid "Placement mode"
++msgstr "Modo de posicionamento"
++
++#: game/editor/object_properties.gd
++msgid "Orientation"
++msgstr "Orientação"
++
++#: game/editor/object_properties.gd
++msgid "Paint colour"
++msgstr "Cor da pintura"
++
++#: game/editor/object_properties.gd
++msgid "Fit road width"
++msgstr "Ajustar à largura da pista"
++
++#: game/editor/object_properties.gd
++msgid "Tap empty ground to place one object."
++msgstr "Toque no chão vazio para colocar um objeto."
++
++#: game/editor/object_properties.gd
++msgid "Drag a straight run, or tap its two ends."
++msgstr "Arraste uma linha reta ou toque nas duas pontas."
++
++#: game/editor/object_properties.gd
++msgid "Draw a curve. Release to place the whole run."
++msgstr "Desenhe uma curva. Solte para colocar toda a fileira."
++
++#: game/editor/object_properties.gd
++msgid "Drag beside a road to follow its edge. A road is required."
++msgstr "Arraste ao lado de uma pista para seguir a borda. É necessário haver uma pista."
++
++#: game/editor/object_properties.gd
++msgid "Orientation follows the run automatically."
++msgstr "A orientação segue a fileira automaticamente."
++
++#: game/editor/object_properties.gd
++msgid "Top view: 0° points right; 90° points up."
++msgstr "Vista superior: 0° aponta à direita; 90° para cima."
++
++#: game/editor/object_properties.gd
++msgid "Turn by −22.5°"
++msgstr "Girar −22.5°"
++
++#: game/editor/object_properties.gd
++msgid "Turn by +22.5°"
++msgstr "Girar +22.5°"
++
++#: game/editor/object_properties.gd
++msgid "Use − / + for 22.5° steps, or type any angle."
++msgstr "Use − / + para passos de 22.5° ou digite qualquer ângulo."
++
++#: game/editor/object_properties.gd
++msgid "Size, orientation and placement settings"
++msgstr "Tamanho, orientação e posicionamento"
++
++#: game/editor/object_properties.gd
++msgid "Size, orientation and object settings"
++msgstr "Tamanho, orientação e propriedades do objeto"
++
++#: game/editor/object_properties.gd
++msgid "%.2f× · %.1f × %.1f m"
++msgstr "%.2f× · %.1f × %.1f m"
+diff --git a/game/localization/ja.po b/game/localization/ja.po
+--- a/game/localization/ja.po
++++ b/game/localization/ja.po
+@@ -10707,3 +10707,95 @@
+ #: game/vehicle/vehicle_catalog.gd
+ msgid "Fan-powered air cushion with long, flowing slides. Steer early and brake to settle the drift. Hold the brake while stopped to reverse. No handbrake."
+ msgstr "ファンで進むエアクッション艇。長く滑らかなドリフトが特徴。早めに操舵し、ブレーキで滑りを抑えよう。停止中にブレーキを押し続けると後退。ハンドブレーキなし。"
++
++#: game/editor/object_properties.gd
++msgid "Single"
++msgstr "単体"
++
++#: game/editor/object_properties.gd
++msgid "Straight line"
++msgstr "直線"
++
++#: game/editor/object_properties.gd
++msgid "Road edge"
++msgstr "道路の端"
++
++#: game/editor/object_properties.gd
++msgid "Selected object"
++msgstr "選択中のオブジェクト"
++
++#: game/editor/object_properties.gd
++msgid "Placement properties"
++msgstr "配置のプロパティ"
++
++#: game/editor/object_properties.gd
++msgid "Close properties"
++msgstr "プロパティを閉じる"
++
++#: game/editor/object_properties.gd
++msgid "Variant"
++msgstr "種類"
++
++#: game/editor/object_properties.gd
++msgid "Placement mode"
++msgstr "配置モード"
++
++#: game/editor/object_properties.gd
++msgid "Orientation"
++msgstr "向き"
++
++#: game/editor/object_properties.gd
++msgid "Paint colour"
++msgstr "塗装色"
++
++#: game/editor/object_properties.gd
++msgid "Fit road width"
++msgstr "道幅に合わせる"
++
++#: game/editor/object_properties.gd
++msgid "Tap empty ground to place one object."
++msgstr "空いている地面をタップして1つ配置します。"
++
++#: game/editor/object_properties.gd
++msgid "Drag a straight run, or tap its two ends."
++msgstr "直線をドラッグするか、両端をタップします。"
++
++#: game/editor/object_properties.gd
++msgid "Draw a curve. Release to place the whole run."
++msgstr "曲線を描き、指を離すと全体が配置されます。"
++
++#: game/editor/object_properties.gd
++msgid "Drag beside a road to follow its edge. A road is required."
++msgstr "道路の横をドラッグして端に沿わせます。道路が必要です。"
++
++#: game/editor/object_properties.gd
++msgid "Orientation follows the run automatically."
++msgstr "向きは配置する列に自動で合わせます。"
++
++#: game/editor/object_properties.gd
++msgid "Top view: 0° points right; 90° points up."
++msgstr "上面図：0°は右、90°は上です。"
++
++#: game/editor/object_properties.gd
++msgid "Turn by −22.5°"
++msgstr "−22.5°回転"
++
++#: game/editor/object_properties.gd
++msgid "Turn by +22.5°"
++msgstr "+22.5°回転"
++
++#: game/editor/object_properties.gd
++msgid "Use − / + for 22.5° steps, or type any angle."
++msgstr "− / +で22.5°ずつ回転、または角度を入力します。"
++
++#: game/editor/object_properties.gd
++msgid "Size, orientation and placement settings"
++msgstr "サイズ、向き、配置の設定"
++
++#: game/editor/object_properties.gd
++msgid "Size, orientation and object settings"
++msgstr "サイズ、向き、オブジェクトの設定"
++
++#: game/editor/object_properties.gd
++msgid "%.2f× · %.1f × %.1f m"
++msgstr "%.2f× · %.1f × %.1f m"
+diff --git a/game/localization/ko.po b/game/localization/ko.po
+--- a/game/localization/ko.po
++++ b/game/localization/ko.po
+@@ -10707,3 +10707,95 @@
+ #: game/vehicle/vehicle_catalog.gd
+ msgid "Fan-powered air cushion with long, flowing slides. Steer early and brake to settle the drift. Hold the brake while stopped to reverse. No handbrake."
+ msgstr "팬으로 추진하는 공기부양정으로 길고 부드러운 드리프트가 특징입니다. 미리 조향하고 브레이크로 미끄러짐을 잡으세요. 정지 상태에서 브레이크를 계속 누르면 후진합니다. 핸드브레이크는 없습니다."
++
++#: game/editor/object_properties.gd
++msgid "Single"
++msgstr "단일"
++
++#: game/editor/object_properties.gd
++msgid "Straight line"
++msgstr "직선"
++
++#: game/editor/object_properties.gd
++msgid "Road edge"
++msgstr "도로 가장자리"
++
++#: game/editor/object_properties.gd
++msgid "Selected object"
++msgstr "선택한 오브젝트"
++
++#: game/editor/object_properties.gd
++msgid "Placement properties"
++msgstr "배치 속성"
++
++#: game/editor/object_properties.gd
++msgid "Close properties"
++msgstr "속성 닫기"
++
++#: game/editor/object_properties.gd
++msgid "Variant"
++msgstr "종류"
++
++#: game/editor/object_properties.gd
++msgid "Placement mode"
++msgstr "배치 모드"
++
++#: game/editor/object_properties.gd
++msgid "Orientation"
++msgstr "방향"
++
++#: game/editor/object_properties.gd
++msgid "Paint colour"
++msgstr "도색 색상"
++
++#: game/editor/object_properties.gd
++msgid "Fit road width"
++msgstr "도로 너비에 맞추기"
++
++#: game/editor/object_properties.gd
++msgid "Tap empty ground to place one object."
++msgstr "빈 땅을 탭하여 오브젝트 하나를 배치하세요."
++
++#: game/editor/object_properties.gd
++msgid "Drag a straight run, or tap its two ends."
++msgstr "직선을 드래그하거나 양 끝을 탭하세요."
++
++#: game/editor/object_properties.gd
++msgid "Draw a curve. Release to place the whole run."
++msgstr "곡선을 그리세요. 손을 떼면 전체가 배치됩니다."
++
++#: game/editor/object_properties.gd
++msgid "Drag beside a road to follow its edge. A road is required."
++msgstr "도로 옆을 드래그하면 가장자리를 따라갑니다. 도로가 필요합니다."
++
++#: game/editor/object_properties.gd
++msgid "Orientation follows the run automatically."
++msgstr "방향은 배치 경로를 자동으로 따릅니다."
++
++#: game/editor/object_properties.gd
++msgid "Top view: 0° points right; 90° points up."
++msgstr "위에서 본 모습: 0°는 오른쪽, 90°는 위쪽입니다."
++
++#: game/editor/object_properties.gd
++msgid "Turn by −22.5°"
++msgstr "−22.5° 회전"
++
++#: game/editor/object_properties.gd
++msgid "Turn by +22.5°"
++msgstr "+22.5° 회전"
++
++#: game/editor/object_properties.gd
++msgid "Use − / + for 22.5° steps, or type any angle."
++msgstr "− / +로 22.5°씩 회전하거나 원하는 각도를 입력하세요."
++
++#: game/editor/object_properties.gd
++msgid "Size, orientation and placement settings"
++msgstr "크기, 방향 및 배치 설정"
++
++#: game/editor/object_properties.gd
++msgid "Size, orientation and object settings"
++msgstr "크기, 방향 및 오브젝트 설정"
++
++#: game/editor/object_properties.gd
++msgid "%.2f× · %.1f × %.1f m"
++msgstr "%.2f× · %.1f × %.1f m"
+diff --git a/game/localization/nl.po b/game/localization/nl.po
+--- a/game/localization/nl.po
++++ b/game/localization/nl.po
+@@ -10738,3 +10738,95 @@
+ #: game/vehicle/vehicle_catalog.gd
+ msgid "Fan-powered air cushion with long, flowing slides. Steer early and brake to settle the drift. Hold the brake while stopped to reverse. No handbrake."
+ msgstr "Luchtkussen met propelleraandrijving en lange, vloeiende drifts. Stuur vroeg en rem om de drift op te vangen. Houd de rem ingedrukt als je stilstaat om achteruit te gaan. Geen handrem."
++
++#: game/editor/object_properties.gd
++msgid "Single"
++msgstr "Enkel"
++
++#: game/editor/object_properties.gd
++msgid "Straight line"
++msgstr "Rechte lijn"
++
++#: game/editor/object_properties.gd
++msgid "Road edge"
++msgstr "Wegrand"
++
++#: game/editor/object_properties.gd
++msgid "Selected object"
++msgstr "Geselecteerd object"
++
++#: game/editor/object_properties.gd
++msgid "Placement properties"
++msgstr "Plaatsingseigenschappen"
++
++#: game/editor/object_properties.gd
++msgid "Close properties"
++msgstr "Eigenschappen sluiten"
++
++#: game/editor/object_properties.gd
++msgid "Variant"
++msgstr "Variant"
++
++#: game/editor/object_properties.gd
++msgid "Placement mode"
++msgstr "Plaatsingsmodus"
++
++#: game/editor/object_properties.gd
++msgid "Orientation"
++msgstr "Oriëntatie"
++
++#: game/editor/object_properties.gd
++msgid "Paint colour"
++msgstr "Lakkleur"
++
++#: game/editor/object_properties.gd
++msgid "Fit road width"
++msgstr "Aan wegbreedte aanpassen"
++
++#: game/editor/object_properties.gd
++msgid "Tap empty ground to place one object."
++msgstr "Tik op lege grond om één object te plaatsen."
++
++#: game/editor/object_properties.gd
++msgid "Drag a straight run, or tap its two ends."
++msgstr "Sleep een rechte rij of tik op de twee uiteinden."
++
++#: game/editor/object_properties.gd
++msgid "Draw a curve. Release to place the whole run."
++msgstr "Teken een bocht. Laat los om de hele rij te plaatsen."
++
++#: game/editor/object_properties.gd
++msgid "Drag beside a road to follow its edge. A road is required."
++msgstr "Sleep naast een weg om de rand te volgen. Er is een weg nodig."
++
++#: game/editor/object_properties.gd
++msgid "Orientation follows the run automatically."
++msgstr "De richting volgt automatisch de rij."
++
++#: game/editor/object_properties.gd
++msgid "Top view: 0° points right; 90° points up."
++msgstr "Bovenaanzicht: 0° wijst naar rechts; 90° naar boven."
++
++#: game/editor/object_properties.gd
++msgid "Turn by −22.5°"
++msgstr "−22.5° draaien"
++
++#: game/editor/object_properties.gd
++msgid "Turn by +22.5°"
++msgstr "+22.5° draaien"
++
++#: game/editor/object_properties.gd
++msgid "Use − / + for 22.5° steps, or type any angle."
++msgstr "Gebruik − / + voor stappen van 22.5° of typ een hoek."
++
++#: game/editor/object_properties.gd
++msgid "Size, orientation and placement settings"
++msgstr "Grootte, richting en plaatsing"
++
++#: game/editor/object_properties.gd
++msgid "Size, orientation and object settings"
++msgstr "Grootte, richting en objectinstellingen"
++
++#: game/editor/object_properties.gd
++msgid "%.2f× · %.1f × %.1f m"
++msgstr "%.2f× · %.1f × %.1f m"
+diff --git a/game/localization/it.po b/game/localization/it.po
+--- a/game/localization/it.po
++++ b/game/localization/it.po
+@@ -10738,3 +10738,95 @@
+ #: game/vehicle/vehicle_catalog.gd
+ msgid "Fan-powered air cushion with long, flowing slides. Steer early and brake to settle the drift. Hold the brake while stopped to reverse. No handbrake."
+ msgstr "Cuscino d'aria con propulsione a elica e derapate lunghe e fluide. Sterza in anticipo e frena per controllare la derapata. Tieni premuto il freno da fermo per andare in retromarcia. Senza freno a mano."
++
++#: game/editor/object_properties.gd
++msgid "Single"
++msgstr "Singolo"
++
++#: game/editor/object_properties.gd
++msgid "Straight line"
++msgstr "Linea retta"
++
++#: game/editor/object_properties.gd
++msgid "Road edge"
++msgstr "Bordo strada"
++
++#: game/editor/object_properties.gd
++msgid "Selected object"
++msgstr "Oggetto selezionato"
++
++#: game/editor/object_properties.gd
++msgid "Placement properties"
++msgstr "Proprietà di posizionamento"
++
++#: game/editor/object_properties.gd
++msgid "Close properties"
++msgstr "Chiudi proprietà"
++
++#: game/editor/object_properties.gd
++msgid "Variant"
++msgstr "Variante"
++
++#: game/editor/object_properties.gd
++msgid "Placement mode"
++msgstr "Modalità di posizionamento"
++
++#: game/editor/object_properties.gd
++msgid "Orientation"
++msgstr "Orientamento"
++
++#: game/editor/object_properties.gd
++msgid "Paint colour"
++msgstr "Colore vernice"
++
++#: game/editor/object_properties.gd
++msgid "Fit road width"
++msgstr "Adatta alla larghezza della strada"
++
++#: game/editor/object_properties.gd
++msgid "Tap empty ground to place one object."
++msgstr "Tocca il terreno libero per posizionare un oggetto."
++
++#: game/editor/object_properties.gd
++msgid "Drag a straight run, or tap its two ends."
++msgstr "Trascina una fila dritta o tocca le due estremità."
++
++#: game/editor/object_properties.gd
++msgid "Draw a curve. Release to place the whole run."
++msgstr "Disegna una curva. Rilascia per posizionare tutta la fila."
++
++#: game/editor/object_properties.gd
++msgid "Drag beside a road to follow its edge. A road is required."
++msgstr "Trascina accanto a una strada per seguirne il bordo. È necessaria una strada."
++
++#: game/editor/object_properties.gd
++msgid "Orientation follows the run automatically."
++msgstr "L’orientamento segue automaticamente la fila."
++
++#: game/editor/object_properties.gd
++msgid "Top view: 0° points right; 90° points up."
++msgstr "Vista dall’alto: 0° verso destra; 90° verso l’alto."
++
++#: game/editor/object_properties.gd
++msgid "Turn by −22.5°"
++msgstr "Ruota di −22.5°"
++
++#: game/editor/object_properties.gd
++msgid "Turn by +22.5°"
++msgstr "Ruota di +22.5°"
++
++#: game/editor/object_properties.gd
++msgid "Use − / + for 22.5° steps, or type any angle."
++msgstr "Usa − / + per passi di 22.5° o digita un angolo."
++
++#: game/editor/object_properties.gd
++msgid "Size, orientation and placement settings"
++msgstr "Dimensioni, orientamento e posizionamento"
++
++#: game/editor/object_properties.gd
++msgid "Size, orientation and object settings"
++msgstr "Dimensioni, orientamento e proprietà"
++
++#: game/editor/object_properties.gd
++msgid "%.2f× · %.1f × %.1f m"
++msgstr "%.2f× · %.1f × %.1f m"
+diff --git a/game/localization/fi.po b/game/localization/fi.po
+--- a/game/localization/fi.po
++++ b/game/localization/fi.po
+@@ -10738,3 +10738,95 @@
+ #: game/vehicle/vehicle_catalog.gd
+ msgid "Fan-powered air cushion with long, flowing slides. Steer early and brake to settle the drift. Hold the brake while stopped to reverse. No handbrake."
+ msgstr "Potkurivetoinen ilmatyynyalus pitkiin, sulaviin luistoihin. Ohjaa ajoissa ja rauhoita luisto jarrulla. Pidä jarru pohjassa pysähdyksissä peruuttaaksesi. Ei käsijarrua."
++
++#: game/editor/object_properties.gd
++msgid "Single"
++msgstr "Yksittäinen"
++
++#: game/editor/object_properties.gd
++msgid "Straight line"
++msgstr "Suora rivi"
++
++#: game/editor/object_properties.gd
++msgid "Road edge"
++msgstr "Tien reuna"
++
++#: game/editor/object_properties.gd
++msgid "Selected object"
++msgstr "Valittu esine"
++
++#: game/editor/object_properties.gd
++msgid "Placement properties"
++msgstr "Sijoitusasetukset"
++
++#: game/editor/object_properties.gd
++msgid "Close properties"
++msgstr "Sulje ominaisuudet"
++
++#: game/editor/object_properties.gd
++msgid "Variant"
++msgstr "Muunnelma"
++
++#: game/editor/object_properties.gd
++msgid "Placement mode"
++msgstr "Sijoitustapa"
++
++#: game/editor/object_properties.gd
++msgid "Orientation"
++msgstr "Suunta"
++
++#: game/editor/object_properties.gd
++msgid "Paint colour"
++msgstr "Maalin väri"
++
++#: game/editor/object_properties.gd
++msgid "Fit road width"
++msgstr "Sovita tien leveyteen"
++
++#: game/editor/object_properties.gd
++msgid "Tap empty ground to place one object."
++msgstr "Sijoita yksi esine napauttamalla tyhjää maata."
++
++#: game/editor/object_properties.gd
++msgid "Drag a straight run, or tap its two ends."
++msgstr "Vedä suora rivi tai napauta sen kahta päätepistettä."
++
++#: game/editor/object_properties.gd
++msgid "Draw a curve. Release to place the whole run."
++msgstr "Piirrä kaari. Vapauta sijoittaaksesi koko rivin."
++
++#: game/editor/object_properties.gd
++msgid "Drag beside a road to follow its edge. A road is required."
++msgstr "Vedä tien vieressä seurataksesi sen reunaa. Tie tarvitaan."
++
++#: game/editor/object_properties.gd
++msgid "Orientation follows the run automatically."
++msgstr "Suunta seuraa riviä automaattisesti."
++
++#: game/editor/object_properties.gd
++msgid "Top view: 0° points right; 90° points up."
++msgstr "Ylhäältä: 0° osoittaa oikealle ja 90° ylös."
++
++#: game/editor/object_properties.gd
++msgid "Turn by −22.5°"
++msgstr "Käännä −22.5°"
++
++#: game/editor/object_properties.gd
++msgid "Turn by +22.5°"
++msgstr "Käännä +22.5°"
++
++#: game/editor/object_properties.gd
++msgid "Use − / + for 22.5° steps, or type any angle."
++msgstr "Käännä − / + -painikkeilla 22.5° kerrallaan tai syötä kulma."
++
++#: game/editor/object_properties.gd
++msgid "Size, orientation and placement settings"
++msgstr "Koon, suunnan ja sijoittelun asetukset"
++
++#: game/editor/object_properties.gd
++msgid "Size, orientation and object settings"
++msgstr "Koon, suunnan ja esineen asetukset"
++
++#: game/editor/object_properties.gd
++msgid "%.2f× · %.1f × %.1f m"
++msgstr "%.2f× · %.1f × %.1f m"
+diff --git a/game/localization/sv.po b/game/localization/sv.po
+--- a/game/localization/sv.po
++++ b/game/localization/sv.po
+@@ -10738,3 +10738,95 @@
+ #: game/vehicle/vehicle_catalog.gd
+ msgid "Fan-powered air cushion with long, flowing slides. Steer early and brake to settle the drift. Hold the brake while stopped to reverse. No handbrake."
+ msgstr "Propellerdriven svävare med långa, mjuka sladdar. Styr tidigt och bromsa för att häva sladden. Håll bromsen intryckt när du står stilla för att backa. Ingen handbroms."
++
++#: game/editor/object_properties.gd
++msgid "Single"
++msgstr "Enstaka"
++
++#: game/editor/object_properties.gd
++msgid "Straight line"
++msgstr "Rak linje"
++
++#: game/editor/object_properties.gd
++msgid "Road edge"
++msgstr "Vägkant"
++
++#: game/editor/object_properties.gd
++msgid "Selected object"
++msgstr "Valt objekt"
++
++#: game/editor/object_properties.gd
++msgid "Placement properties"
++msgstr "Placeringsinställningar"
++
++#: game/editor/object_properties.gd
++msgid "Close properties"
++msgstr "Stäng egenskaper"
++
++#: game/editor/object_properties.gd
++msgid "Variant"
++msgstr "Variant"
++
++#: game/editor/object_properties.gd
++msgid "Placement mode"
++msgstr "Placeringsläge"
++
++#: game/editor/object_properties.gd
++msgid "Orientation"
++msgstr "Riktning"
++
++#: game/editor/object_properties.gd
++msgid "Paint colour"
++msgstr "Lackfärg"
++
++#: game/editor/object_properties.gd
++msgid "Fit road width"
++msgstr "Anpassa till vägbredd"
++
++#: game/editor/object_properties.gd
++msgid "Tap empty ground to place one object."
++msgstr "Tryck på tom mark för att placera ett objekt."
++
++#: game/editor/object_properties.gd
++msgid "Drag a straight run, or tap its two ends."
++msgstr "Dra en rak rad eller tryck på dess två ändar."
++
++#: game/editor/object_properties.gd
++msgid "Draw a curve. Release to place the whole run."
++msgstr "Rita en kurva. Släpp för att placera hela raden."
++
++#: game/editor/object_properties.gd
++msgid "Drag beside a road to follow its edge. A road is required."
++msgstr "Dra bredvid en väg för att följa kanten. En väg krävs."
++
++#: game/editor/object_properties.gd
++msgid "Orientation follows the run automatically."
++msgstr "Riktningen följer raden automatiskt."
++
++#: game/editor/object_properties.gd
++msgid "Top view: 0° points right; 90° points up."
++msgstr "Ovanifrån: 0° pekar åt höger, 90° uppåt."
++
++#: game/editor/object_properties.gd
++msgid "Turn by −22.5°"
++msgstr "Vrid −22.5°"
++
++#: game/editor/object_properties.gd
++msgid "Turn by +22.5°"
++msgstr "Vrid +22.5°"
++
++#: game/editor/object_properties.gd
++msgid "Use − / + for 22.5° steps, or type any angle."
++msgstr "Använd − / + för steg på 22.5° eller skriv valfri vinkel."
++
++#: game/editor/object_properties.gd
++msgid "Size, orientation and placement settings"
++msgstr "Storlek, riktning och placering"
++
++#: game/editor/object_properties.gd
++msgid "Size, orientation and object settings"
++msgstr "Storlek, riktning och objektinställningar"
++
++#: game/editor/object_properties.gd
++msgid "%.2f× · %.1f × %.1f m"
++msgstr "%.2f× · %.1f × %.1f m"
+diff --git a/game/localization/nb.po b/game/localization/nb.po
+--- a/game/localization/nb.po
++++ b/game/localization/nb.po
+@@ -10738,3 +10738,95 @@
+ #: game/vehicle/vehicle_catalog.gd
+ msgid "Fan-powered air cushion with long, flowing slides. Steer early and brake to settle the drift. Hold the brake while stopped to reverse. No handbrake."
+ msgstr "Propelldrevet luftputebåt med lange, myke sladder. Styr tidlig og brems for å roe sladden. Hold bremsen inne når du står stille for å rygge. Ingen håndbrekk."
++
++#: game/editor/object_properties.gd
++msgid "Single"
++msgstr "Enkelt"
++
++#: game/editor/object_properties.gd
++msgid "Straight line"
++msgstr "Rett linje"
++
++#: game/editor/object_properties.gd
++msgid "Road edge"
++msgstr "Veikant"
++
++#: game/editor/object_properties.gd
++msgid "Selected object"
++msgstr "Valgt objekt"
++
++#: game/editor/object_properties.gd
++msgid "Placement properties"
++msgstr "Plasseringsinnstillinger"
++
++#: game/editor/object_properties.gd
++msgid "Close properties"
++msgstr "Lukk egenskaper"
++
++#: game/editor/object_properties.gd
++msgid "Variant"
++msgstr "Variant"
++
++#: game/editor/object_properties.gd
++msgid "Placement mode"
++msgstr "Plasseringsmodus"
++
++#: game/editor/object_properties.gd
++msgid "Orientation"
++msgstr "Retning"
++
++#: game/editor/object_properties.gd
++msgid "Paint colour"
++msgstr "Lakkfarge"
++
++#: game/editor/object_properties.gd
++msgid "Fit road width"
++msgstr "Tilpass til veibredde"
++
++#: game/editor/object_properties.gd
++msgid "Tap empty ground to place one object."
++msgstr "Trykk på tom bakke for å plassere ett objekt."
++
++#: game/editor/object_properties.gd
++msgid "Drag a straight run, or tap its two ends."
++msgstr "Dra en rett rekke eller trykk på de to endene."
++
++#: game/editor/object_properties.gd
++msgid "Draw a curve. Release to place the whole run."
++msgstr "Tegn en kurve. Slipp for å plassere hele rekken."
++
++#: game/editor/object_properties.gd
++msgid "Drag beside a road to follow its edge. A road is required."
++msgstr "Dra ved siden av en vei for å følge kanten. En vei kreves."
++
++#: game/editor/object_properties.gd
++msgid "Orientation follows the run automatically."
++msgstr "Retningen følger rekken automatisk."
++
++#: game/editor/object_properties.gd
++msgid "Top view: 0° points right; 90° points up."
++msgstr "Ovenfra: 0° peker mot høyre, 90° oppover."
++
++#: game/editor/object_properties.gd
++msgid "Turn by −22.5°"
++msgstr "Roter −22.5°"
++
++#: game/editor/object_properties.gd
++msgid "Turn by +22.5°"
++msgstr "Roter +22.5°"
++
++#: game/editor/object_properties.gd
++msgid "Use − / + for 22.5° steps, or type any angle."
++msgstr "Bruk − / + for trinn på 22.5° eller skriv inn en vinkel."
++
++#: game/editor/object_properties.gd
++msgid "Size, orientation and placement settings"
++msgstr "Størrelse, retning og plassering"
++
++#: game/editor/object_properties.gd
++msgid "Size, orientation and object settings"
++msgstr "Størrelse, retning og objektegenskaper"
++
++#: game/editor/object_properties.gd
++msgid "%.2f× · %.1f × %.1f m"
++msgstr "%.2f× · %.1f × %.1f m"

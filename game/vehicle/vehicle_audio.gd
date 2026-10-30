@@ -272,6 +272,7 @@ func _emit_collision_trace(trace: Dictionary) -> void:
 	print("COLLISION_AUDIO_TRACE: ",JSON.stringify(trace))
 
 func _observe_surfaces(state: VehicleState, track: NativeTrack, incoming: Vector2, previous: Vector2, heading: float) -> void:
+	if model.vehicle_id == "hovercraft": return
 	kerb_cooldown = maxf(0.0,kerb_cooldown-VehicleSimulation.STEP)
 	var old_grass: float = surface_model.grass
 	var grounded: bool = state.jump_height<=0.0 and state.roll_ticks==0
@@ -499,7 +500,7 @@ func present(state: VehicleState, frame: DriveFrame, track: NativeTrack, delta: 
 		engine_load[i].volume_db = linear_to_db(maxf(0.0001,weights[i]*load_gains.x*engine_envelope))
 		engine_coast[i].volume_db = linear_to_db(maxf(0.0001,weights[i]*load_gains.y*engine_envelope))
 	var speed: float = state.velocity.length()
-	var grounded: bool = state.jump_height<=0.0 and state.roll_ticks==0 and not countdown
+	var grounded: bool = state.jump_height<=0.0 and state.roll_ticks==0 and not countdown and model.vehicle_id != "hovercraft"
 	if pending_scrape>0.0:
 		held_scrape = pending_scrape
 		held_scrape_speed = pending_scrape_speed

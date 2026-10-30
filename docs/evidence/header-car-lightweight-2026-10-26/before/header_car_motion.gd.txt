@@ -1,0 +1,102 @@
+extends Node
+## Animate the native menu; its last rendered frame handles the brief exit.
+const OPEN_SECONDS: float = 0.22
+const CLOSE_SECONDS: float = 0.15
+var popup: PopupMenu
+var tint: CanvasModulate
+var tween: Tween
+var exit_layer: CanvasLayer
+var exit_image: TextureRect
+var has_frame: bool = false
+var progress: float = 1.0
+
+func _ready() -> void:
+	name = "HeaderCarMotion"
+	tint = CanvasModulate.new()
+	popup.add_child(tint)
+	popup.about_to_popup.connect(_opening)
+	popup.popup_hide.connect(_closing)
+	get_parent().visibility_changed.connect(_owner_visibility_changed)
+	get_viewport().size_changed.connect(_reset)
+
+func _opening() -> void:
+	_reset()
+	_apply_open(0.0)
+	RenderingServer.frame_post_draw.connect(_frame_drawn,CONNECT_ONE_SHOT)
+	tween = create_tween()
+	tween.set_trans(Tween.TRANS_CUBIC).set_ease(Tween.EASE_OUT)
+	tween.tween_method(_apply_open,0.0,1.0,OPEN_SECONDS)
+	tween.finished.connect(_open_finished)
+
+func _apply_open(value: float) -> void:
+	progress = value
+	var scale := Vector2(lerpf(0.985,1.0,value),lerpf(0.96,1.0,value))
+	popup.canvas_transform = Transform2D(Vector2(scale.x,0),Vector2(0,scale.y),Vector2(popup.size.x*(1.0-scale.x)*0.5,-10.0*(1.0-value)))
+	tint.color = Color(1,1,1,value)
+
+func _open_finished() -> void:
+	tween = null
+	_apply_open(1.0)
+
+func _frame_drawn() -> void:
+	has_frame = popup.visible
+
+func _closing() -> void:
+	_stop_tween()
+	if not get_parent().is_visible_in_tree() or not has_frame or not popup.is_embedded() or DisplayServer.get_name() == "headless":
+		_reset()
+		return
+	# Window releases its own target on hide. The containing viewport still has
+	# the last completed menu frame; retain only that small crop for this exit.
+	var frame: Image = get_viewport().get_texture().get_image()
+	var viewport_transform: Transform2D = get_viewport().get_final_transform()
+	var pixel_bounds: Rect2 = viewport_transform*Rect2(Vector2(popup.position),Vector2(popup.size))
+	var bounds := Rect2i(pixel_bounds.position.floor(),pixel_bounds.end.ceil()-pixel_bounds.position.floor()).intersection(Rect2i(Vector2i.ZERO,frame.get_size()))
+	if not bounds.has_area():
+		_reset()
+		return
+	exit_layer = CanvasLayer.new()
+	exit_layer.name = "HeaderCarExit"
+	exit_layer.layer = 100
+	add_child(exit_layer)
+	exit_image = TextureRect.new()
+	exit_image.texture = ImageTexture.create_from_image(frame.get_region(bounds))
+	exit_image.expand_mode = TextureRect.EXPAND_IGNORE_SIZE
+	exit_image.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	var canvas_bounds: Rect2 = viewport_transform.affine_inverse()*Rect2(bounds)
+	exit_image.position = canvas_bounds.position
+	exit_image.size = canvas_bounds.size
+	exit_image.pivot_offset = Vector2(exit_image.size.x*0.5,0)
+	exit_layer.add_child(exit_image)
+	tween = create_tween().set_parallel(true)
+	tween.set_trans(Tween.TRANS_QUAD).set_ease(Tween.EASE_IN)
+	tween.tween_property(exit_image,"modulate:a",0.0,CLOSE_SECONDS)
+	tween.tween_property(exit_image,"position:y",exit_image.position.y-8.0,CLOSE_SECONDS)
+	tween.tween_property(exit_image,"scale",Vector2(0.985,0.96),CLOSE_SECONDS)
+	tween.finished.connect(_reset)
+
+func _stop_tween() -> void:
+	if tween != null: tween.kill()
+	tween = null
+
+func _reset() -> void:
+	_stop_tween()
+	if RenderingServer.frame_post_draw.is_connected(_frame_drawn): RenderingServer.frame_post_draw.disconnect(_frame_drawn)
+	if is_instance_valid(exit_layer):
+		remove_child(exit_layer)
+		exit_layer.queue_free()
+	exit_layer = null
+	exit_image = null
+	has_frame = false
+	if is_instance_valid(popup): popup.canvas_transform = Transform2D.IDENTITY
+	if is_instance_valid(tint): tint.color = Color.WHITE
+	progress = 1.0
+
+func _owner_visibility_changed() -> void:
+	if get_parent().is_visible_in_tree(): return
+	_reset()
+	popup.hide()
+
+func _exit_tree() -> void:
+	_reset()
+	if is_instance_valid(tint): tint.queue_free()

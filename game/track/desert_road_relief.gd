@@ -146,7 +146,9 @@ func _apply_node(node: Node, inverse: Transform3D, sliced: bool) -> void:
 				if _reusable_meshes.has(key):
 					node.mesh = _reusable_meshes[key]
 					_refresh_spatial_ranges(node)
-					for child: Node in node.get_children(): await _apply_node(child,inverse,sliced)
+					for child: Node in node.get_children():
+						if not is_instance_valid(node) or not _current_node(node): return
+						if is_instance_valid(child): await _apply_node(child,inverse,sliced)
 					return
 				var worker = get_script().new()
 				worker.track = track; worker.field = field; worker.bounds = bounds
@@ -164,8 +166,10 @@ func _apply_node(node: Node, inverse: Transform3D, sliced: bool) -> void:
 				var prepared: Array = job.result
 				var mesh := ArrayMesh.new()
 				for upload: Dictionary in prepared:
-					if not _current_node(node): return
+					if not is_instance_valid(node) or not _current_node(node): return
 					if installer != null and not await installer._budget_install(upload.arrays[Mesh.ARRAY_VERTEX].size()): return
+					# The scene may have been retired while the upload budget yielded.
+					if not is_instance_valid(node) or not _current_node(node): return
 					mesh.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES,upload.arrays)
 					mesh.surface_set_material(mesh.get_surface_count()-1,materials[int(upload.surface)])
 				mesh.set_meta("desert_road_relief",VERSION)
@@ -175,7 +179,11 @@ func _apply_node(node: Node, inverse: Transform3D, sliced: bool) -> void:
 		if sliced and node.is_inside_tree():
 			if race_install: await installer._yield_build()
 			else: await node.get_tree().process_frame
-	for child: Node in node.get_children(): await _apply_node(child,inverse,sliced)
+	# Child coroutines can also yield while this parent or its siblings retire.
+	if sliced and (not is_instance_valid(node) or not _current_node(node)): return
+	for child: Node in node.get_children():
+		if sliced and (not is_instance_valid(node) or not _current_node(node)): return
+		if is_instance_valid(child): await _apply_node(child,inverse,sliced)
 
 func _refresh_spatial_ranges(node: MeshInstance3D) -> void:
 	if not node.has_meta("spatial_object_ends"): return

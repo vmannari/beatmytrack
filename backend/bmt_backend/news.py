@@ -2,7 +2,7 @@
 from uuid import UUID
 
 from fastapi import APIRouter, HTTPException, Query
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, ValidationError
 from sqlalchemy import case, delete, exists, func, literal, or_, select, tuple_, union_all, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
@@ -37,6 +37,7 @@ from .track_models import (
 )
 from .tracks import DB, Auth
 from .usernames import username_key
+from .vehicle_appearance import Appearance
 
 router = APIRouter(route_class=ParsedJSONRoute, tags=["garage news"])
 BANDS = (1, 5, 10, 20, 30, 40, 50, 75, 100)
@@ -236,7 +237,7 @@ def feed(session: DB, player: Auth, cursor: str = Query("", max_length=400)):
     actor = aliased(Player)
     query = (select(NewsItem, TrackVersion.name, Board.vehicle_id,
                     Board.manifest["tick_rate"].as_integer(), actor.display_name, Track.owner_id,
-                    TrackVersion.discovery)
+                    TrackVersion.discovery, actor.vehicle_appearances, actor.disabled, actor.deleted_at)
         .join(TrackVersion, TrackVersion.id == NewsItem.version_id).join(Track, Track.id == TrackVersion.track_id)
         .outerjoin(Board, Board.id == NewsItem.board_id).outerjoin(actor, actor.id == NewsItem.actor_id)
         .where(NewsItem.player_id == player.id, NewsItem.created_at >= now() - RETENTION_DAYS * 86400,
@@ -251,13 +252,24 @@ def feed(session: DB, player: Auth, cursor: str = Query("", max_length=400)):
             raise HTTPException(422, "INVALID_CURSOR")
         query = query.where(tuple_(NewsItem.created_at, NewsItem.id) < (position["at"], position["id"]))
     rows = session.execute(query.order_by(NewsItem.created_at.desc(), NewsItem.id.desc()).limit(31)).all()
-    items = [{"id": row.id, "kind": row.kind, "created_at": row.created_at, "version_id": row.version_id,
-              "board_id": row.board_id, "track_name": title, "vehicle_id": vehicle,
-              "actor_id": row.actor_id, "creator_id": creator_id,
-              "tick_rate": tick_rate or 120,
-              "actor_name": name or "Removed account", **row.details}
-             for row, title, vehicle, tick_rate, name, creator_id, _discovery in rows]
-    discoveries = {row[0].version_id: row[-1] for row in rows}
+    items = []
+    discoveries = {}
+    for row, title, vehicle, tick_rate, name, creator_id, discovery, appearances, disabled, deleted_at in rows:
+        item = {"id": row.id, "kind": row.kind, "created_at": row.created_at, "version_id": row.version_id,
+                "board_id": row.board_id, "track_name": title, "vehicle_id": vehicle,
+                "actor_id": row.actor_id, "creator_id": creator_id,
+                "tick_rate": tick_rate or 120, "actor_name": name or "Removed account", **row.details}
+        item.pop("appearance", None)
+        # Published current appearance, never another vehicle or a deleted actor.
+        if row.actor_id and not disabled and deleted_at is None and isinstance(appearances, dict):
+            appearance = appearances.get(vehicle)
+            if isinstance(appearance, dict) and appearance.get("vehicle_id") == vehicle:
+                try:
+                    item["appearance"] = Appearance.model_validate(appearance).model_dump(mode="json")
+                except ValidationError:
+                    pass  # An old or malformed saved appearance is not a photograph.
+        items.append(item)
+        discoveries[row.version_id] = discovery
     for publication, title, name, discovery in publication_page(session, player.id, position, now()):
         items.append({"id": publication.version_id, "kind": "friend_track", "created_at": publication.published_at,
             "version_id": publication.version_id, "board_id": None, "track_name": title, "vehicle_id": None,

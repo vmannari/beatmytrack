@@ -1,0 +1,83 @@
+EDITOR USABILITY REVIEW — 2026-10-28
+
+Result: Created Dust Bowl Usability through editor inputs, saved it, opened
+untimed practice, briefly used throttle and brake, returned to the editor,
+and reopened the exact saved document. No gameplay fixes applied.
+
+The track has two straights, four curves, an explicit start line, three
+scenery objects, one rounded bump and an infield pond. The exact saved JSON
+is dust_bowl_usability.json. Storage is local to this evidence folder.
+
+Method and scope
+Godot 4.7.2, desktop Compatibility, RTX 3090. Inspected native screenshots
+at 1280x720 and 960x540. Authoring used visible controls and viewport mouse
+and keyboard events, rather than inserting road/object arrays into the
+document. Source-aware setup isolated records/cloud/tracks and disabled
+backend configuration. This is an instrumented expert review, not an
+unassisted first-user study or a physical touch-device evaluation.
+
+What worked
+- Visible road palette and snapping made a simple closed loop straightforward.
+- Confirmation returned to the road palette for the next piece.
+- Start-line placement communicated direction with a visible reverse action.
+- Width changed from 10m to 14.5m; one undo restored the exact prior document.
+- Five separate named jump cards made the bump easy to find.
+- Freehand water painting produced the intended pond.
+- Saved-on-device feedback and the Load track card were clear.
+- The final saved document reopened exactly, including objects and paint.
+
+Findings, in recommended order
+
+EU-U01 — High: Narrow header blocks essential actions.
+At 960x540 Map covers Undo; Save covers most of Redo. Clicking Undo's
+location opened Map and did not undo. Use a compact or two-row header.
+Evidence: single-instance/020-compact-object-properties.png and
+single-instance/021-compact-undo-click-opens-map.png.
+
+EU-U02 — Medium: Highlighted object and active placement disagree.
+Rock was already highlighted on entering Objects. Clicking it opened its
+controls but left selection mode active. Three ground clicks placed zero
+objects. Choosing Pebbles first, then Rock, enabled placement. A palette
+card should reliably enable placement; separate controls can edit settings.
+Evidence: single-instance/014, 015 and 017 captures/state files.
+
+EU-U03 — Medium: Overlays reduce the usable drawing area.
+At 960x540 the size strip and palette cover much of the fitted circuit.
+At 1280x720 the large confirmation button crowds curve dimension labels.
+Fit against unobscured canvas bounds and separate overlapping annotations.
+This is an observed visual/interaction concern, not a data-loss finding.
+Evidence: single-instance/020 and 007 screenshots.
+
+EU-P01 — Medium: Edit/test preparation is disruptive.
+The settled Edit here return took 14.577s end to end in this run, including
+1s explicit wait, 0.6s capture settling and input frames. This is not pure
+UI latency or a device benchmark. The log also contains race frame hitches.
+First-practice timing is excluded because my first readiness helper failed.
+
+EU-R01 — Investigate: Scenery error during object placement.
+The clean log reports one get_children call on a freed node in
+desert_road_relief.gd:178. Editing continued. Root cause and an independent
+reproduction have not been established. See single-instance/engine.log.
+
+Evidence quality and limits
+The initial launch remained alive after a log-access error; two instances
+temporarily shared the first test folder. Those root-level captures and the
+two duplicate test tracks are excluded. The accepted single-instance run
+has PID 19092, one authored identity, one saved track and 35 native captures.
+
+Its first practice-readiness helper incorrectly used a Control method on a
+CanvasLayer. Retained commands 25–29 therefore do not establish successful
+return/reopen or useful load timing. The later settled commands 30–33 do:
+the car moved 8.655m, Edit here returned, the browser showed one track,
+and reopening preserved the exact saved document. No lap was completed.
+
+The final helper fixes that predicate and embedded-window coordinates, and
+defaults to a unique PID-specific folder. It passes the pinned syntax check.
+The exact helper used for the recorded run is retained separately as
+single-instance/executed-bridge.gd.txt. See report.json for actual commands,
+checks, hashes and limitations; analyze.py rechecks the recorded evidence.
+
+No physical-device test, publishing, real authentication, backend operation,
+owner-save change, deployment, staging, commit or merge was performed.
+The active shared workspace was not frozen. Concurrent source/generated
+identity work is preserved. Owner touch-device evaluation remains.

@@ -1,0 +1,299 @@
+--- a/game/core/app.gd
++++ b/game/core/app.gd
+@@ -2674,6 +2674,15 @@
+ 			_discard_preparing_game(prepared_game)
+ 			return
+ 	if not is_instance_valid(prepared_game) or game != prepared_game: return
++	if is_instance_valid(prepared_game.world_render_preparation):
++		loading.stage("Preparing graphics...")
++		var stage_current: Callable = _race_installation_current.bind(loading_id,original_scope,navigation,"garage",vehicle,selection)
++		if not await prepared_game.world_render_preparation.prepare(_present_race_loading,stage_current):
++			if is_queued_for_deletion(): return
++			_race_preparation_changed(loading_id,original_scope,navigation,"garage",vehicle,selection)
++			if is_instance_valid(prepared_game): _discard_preparing_game(prepared_game)
++			_close_race_loading(loading_id)
++			return
+ 	var touch: TouchControls = game.hud.touch
+ 	touch.control_scale = ui_touch_scale
+ 	touch.left_handed = ui_left_handed
+--- /dev/null
++++ b/game/tests/test_garage_test_drive.gd
+@@ -0,0 +1,148 @@
++extends SceneTree
++## Actual Garage entry, electric-first free drive and retained-menu return.
++var checks: int = 0
++var failures: int = 0
++var app: Node
++var output: String = "res://../docs/evidence/garage-test-drive-fix-2026-10-26"
++
++func _initialize() -> void: run.call_deferred()
++
++func check(value: bool, label: String) -> void:
++	checks += 1
++	if not value:
++		failures += 1
++		print("FAIL: ",label)
++
++func frames(count: int = 4) -> void:
++	for _index: int in range(count): await process_frame
++
++func settle(page: GaragePage) -> void:
++	await frames()
++	while page._menu_motion != null: await process_frame
++	await frames()
++
++func click(button: Button, touch: bool) -> void:
++	var point: Vector2 = button.get_global_rect().get_center()
++	for pressed: bool in [true,false]:
++		if touch:
++			var event := InputEventScreenTouch.new()
++			event.index = 3
++			event.position = point
++			event.pressed = pressed
++			root.push_input(event,true)
++		else:
++			var event := InputEventMouseButton.new()
++			event.button_index = MOUSE_BUTTON_LEFT
++			event.position = point
++			event.pressed = pressed
++			root.push_input(event,true)
++		await process_frame
++
++func capture(label: String) -> void:
++	if DisplayServer.get_name() == "headless": return
++	await RenderingServer.frame_post_draw
++	check(root.get_texture().get_image().save_png(output.path_join(RenderingServer.get_current_rendering_method()+"-"+label+".png")) == OK,"capture "+label)
++
++func run() -> void:
++	create_timer(140).timeout.connect(func() -> void: print("FAIL: test-drive deadline"); quit(1))
++	OS.set_environment("BMT_API_URL","")
++	for argument: String in OS.get_cmdline_user_args():
++		if argument.begins_with("--evidence-root="): output = argument.trim_prefix("--evidence-root=")
++	DirAccess.make_dir_recursive_absolute(ProjectSettings.globalize_path(output))
++	root.size = Vector2i(1280,720)
++	root.content_scale_size = root.size
++	var folder: String = "user://garage-test-drive-"+TrackLibrary.unique_id()
++	app = load("res://core/app.tscn").instantiate()
++	app.records = LocalRecords.new(folder.path_join("records.json"))
++	app.library = TrackLibrary.new(folder.path_join("tracks"))
++	app.cloud_root_override = folder.path_join("cloud")
++	root.add_child(app)
++	while not app.startup_complete: await process_frame
++	app.records.settings.music_enabled = false
++	app._show_screen("garage")
++	var page: GaragePage = app._retained_garage
++	await settle(page)
++	var original_ui: Control = app.root_ui
++	var original_track: NativeTrack = app.selected_track
++	var original_records: Dictionary = app.records.records.duplicate(true)
++	var original_condition: Dictionary = app.records.settings.get("vehicle_conditions",{}).duplicate(true)
++	for id: String in ["electric","compact","pickup","classic","formula","kart","forklift"]:
++		if "--electric-only" in OS.get_cmdline_user_args() and id != "electric": continue
++		page.preview_car(VehicleCatalog.IDS.find(id))
++		await settle(page)
++		await capture("garage-"+id)
++		var button: Button = page.find_child("GarageTestDrive",true,false)
++		check(button != null and button.is_visible_in_tree(),"test-drive action visible: "+id)
++		if button == null: quit(1); return
++		print("GARAGE_TEST_DRIVE_START: ",id)
++		await click(button,VehicleCatalog.IDS.find(id)%2 == 0)
++		var deadline: int = Time.get_ticks_msec()+45000
++		while (not is_instance_valid(app.game) or not app.game.preparation_complete or is_instance_valid(app.race_loading)) and Time.get_ticks_msec()<deadline:
++			await process_frame
++		var ready: bool = is_instance_valid(app.game) and app.game.preparation_complete and not is_instance_valid(app.race_loading)
++		check(ready,"prepared hall becomes visible: "+id)
++		if not ready:
++			print("GARAGE_TEST_DRIVE_STATE: game=",is_instance_valid(app.game)," loading=",is_instance_valid(app.race_loading)," root_visible=",app.root_ui.visible)
++			if is_instance_valid(app.game): print("GAME_STATE: car=",is_instance_valid(app.game.car)," hud=",is_instance_valid(app.game.hud)," preparation=",app.game.preparation_complete)
++			await capture("failed-"+id)
++			quit(1)
++			return
++		var game: Node = app.game
++		# Offscreen native windows can lose focus while graphics are prepared.
++		# Resume before testing controls, retaining the real background-pause guard.
++		game._notification(Node.NOTIFICATION_APPLICATION_FOCUS_IN)
++		if game.paused: game.toggle_pause(false)
++		game.process_mode = Node.PROCESS_MODE_DISABLED
++		check(game.vehicle_id == id and game.car.vehicle_id == id,"chosen car enters hall: "+id)
++		check(game.free_drive_mode and game.native_track == null and game.countdown_ticks == 0,"untimed hall: "+id)
++		check(game.track_ground.visible and game.car.visible and game.car.model_ready,"hall and finished car visible: "+id)
++		check(not is_instance_valid(game.world_render_preparation) or game.world_render_preparation.pending.is_empty(),"all held geometry revealed before opening: "+id)
++		var visible_car_meshes: int = 0
++		for mesh: GeometryInstance3D in game.car.find_children("*","GeometryInstance3D",true,false):
++			if mesh.is_visible_in_tree(): visible_car_meshes += 1
++		check(visible_car_meshes>0,"actual car meshes visible: "+id)
++		var visible_hall_meshes: int = 0
++		for mesh: GeometryInstance3D in game.track_ground.find_children("*","GeometryInstance3D",true,false):
++			if mesh.is_visible_in_tree(): visible_hall_meshes += 1
++		check(visible_hall_meshes>0,"actual hall meshes visible: "+id)
++		check(game.car.livery == VehicleLivery.for_car(app.records.settings,id),"saved paint: "+id)
++		check(game.car.customisation == VehicleCustomisation.for_car(app.records.settings,id),"saved parts: "+id)
++		check(app.cloud_ticket.is_empty() and game.ghost_store == null,"no online ticket or ghost store: "+id)
++		if id == "electric":
++			game.call("_process",0.0)
++			await capture("ready-electric")
++		var start: Vector2 = game.sim.state.position
++		game.driver.set_touch(25,&"accelerate")
++		for _tick: int in range(240): game._advance_physics(VehicleSimulation.STEP)
++		game.driver.clear()
++		check(game.sim.state.position.distance_to(start)>5,"controls move car: "+id)
++		check(game.online_frames.is_empty() and game.race_proof.samples.is_empty(),"no race proof: "+id)
++		check(game.track_session.elapsed_ticks == 0 and not game.track_session.finished,"no timed result: "+id)
++		# The fixture advances two seconds in one frame; snap its capture camera
++		# to the driven pose just as the retained hall's pose fixtures do.
++		game.camera.follow(game.sim.state.position,game.sim.state.velocity,game.sim.state.heading,0.0,true)
++		game.call("_process",0.0)
++		check(root.get_visible_rect().has_point(game.camera.unproject_position(game.car.global_position)),"driven car projects inside viewport: "+id)
++		await frames()
++		await capture("driving-"+id)
++		game.toggle_pause(false)
++		var paused_tick: int = game.sim.state.tick
++		game._advance_physics(VehicleSimulation.STEP)
++		check(game.sim.state.tick == paused_tick and not game.hud.touch.enabled,"pause stops driving and touch: "+id)
++		game.hud.pause_menu.column.get_node("Restart").pressed.emit()
++		check(not game.paused and game.sim.state.position == game.yard.spawn,"reset returns to hall entrance: "+id)
++		game.driver.set_touch(25,&"accelerate")
++		game._notification(Node.NOTIFICATION_APPLICATION_FOCUS_OUT)
++		check(game.paused and game.driver.touches.is_empty(),"background pauses and releases inputs: "+id)
++		game._notification(Node.NOTIFICATION_APPLICATION_FOCUS_IN)
++		game.toggle_pause(false)
++		game.hud.find_child("ReturnToGarage",true,false).pressed.emit()
++		await settle(page)
++		check(not is_instance_valid(app.game) and app.root_ui == original_ui and original_ui.visible,"return restores Garage: "+id)
++		check(app._retained_garage == page and page.vehicle_id == id,"same Garage and car: "+id)
++		check(app.selected_track == original_track and app.records.records == original_records,"track and records preserved: "+id)
++		check(app.records.settings.get("vehicle_conditions",{}) == original_condition,"condition preserved: "+id)
++	app.queue_free()
++	await frames(20)
++	print("GARAGE_TEST_DRIVE: %d checks, %d failures" % [checks,failures])
++	quit(1 if failures else 0)
+--- /dev/null
++++ b/game/tests/test_garage_test_drive.gd.uid
+@@ -0,0 +1 @@
++uid://cy1y5giru1onr
+--- /dev/null
++++ b/game/tests/test_garage_test_drive_cancellation.gd
+@@ -0,0 +1,35 @@
++extends "res://tests/test_runtime_render_lifecycle.gd"
++## Interrupt the real Garage graphics stage using the retained lifecycle checks.
++func run() -> void:
++	create_timer(100).timeout.connect(func() -> void: print("FAIL: Garage graphics cancellation deadline"); quit(1))
++	if DisplayServer.get_name() == "headless": quit(1); return
++	var folder: String = "user://garage-render-lifecycle-"+TrackLibrary.unique_id()
++	app = load("res://core/app.tscn").instantiate()
++	app.records = LocalRecords.new(folder.path_join("records.json"))
++	app.library = TrackLibrary.new(folder.path_join("tracks"))
++	app.cloud_root_override = folder.path_join("cloud")
++	root.add_child(app)
++	while not app.startup_complete: await process_frame
++	app.records.settings.music_enabled = false
++	process_frame.connect(observe)
++	for action: String in ["navigation","car","selection","scope","teardown"]:
++		mode = action
++		interrupted = false
++		Staging.warmed.clear()
++		VehicleCatalog.selected = "electric"
++		app.online.client.configure("")
++		app._show_screen("garage")
++		app._start_garage_free_drive()
++		while is_instance_valid(app) and (not interrupted or is_instance_valid(app.game) or is_instance_valid(app.race_loading)):
++			await process_frame
++		for _frame: int in range(8): await process_frame
++		check(interrupted,action+" interrupts actual Garage staged drawing")
++		if action == "teardown":
++			check(not is_instance_valid(app),"App teardown retires Garage graphics")
++		else:
++			check(app.game == null and not is_instance_valid(app.race_loading) and not app.cloud_starting,action+" cannot activate abandoned Garage graphics")
++			check(app.root_ui.visible,action+" restores visible menu")
++			check(app.find_children("ParkingHallDrive","Node",true,false).is_empty(),action+" leaves no abandoned hall")
++	process_frame.disconnect(observe)
++	print("GARAGE_TEST_DRIVE_CANCELLATION: %d checks, %d failures" % [checks,failures])
++	quit(1 if failures else 0)
+--- /dev/null
++++ b/game/tests/test_garage_test_drive_cancellation.gd.uid
+@@ -0,0 +1 @@
++uid://c356m1eu7ovbh
+--- /dev/null
++++ b/docs/GARAGE_TEST_DRIVE_FIX_2026_10_26.md
+@@ -0,0 +1,39 @@
++# Garage test-drive blank screen — 2026-10-26
++
++The owner reported that Garage Test drive showed a nearly empty screen, at least with the electric car. The native reproduction showed only the HUD: the car and parking hall had been built but their geometry remained hidden. The same defect reproduced with all seven cars.
++
++Requirements: **GTF01** reveal the real car and hall before removing the loading cover; **GTF02** cancel safely on navigation, account/car/track changes or teardown; **GTF03/R01/Q01** retain ordinary driving, pause/reset/background behavior, exact saved cosmetics, Garage return and unscored isolation.
++
++## Cause and change
++
++`Game._ready()` uses `world_render_preparation.hold(world)` during cooperative native loading. This deliberately hides newly encountered geometry until staged first draws complete. Ordinary race startup calls `prepare()`; `_start_garage_free_drive()` omitted that call and removed its loading cover with the geometry still hidden. Headless rendering skips this stage, so headless success alone could not detect the defect.
++
++The production change is nine added lines in `game/core/app.gd`: run the existing graphics preparation beneath the Garage loading cover, using the same current-installation callback and cleanup behavior as ordinary racing. No new rendering path or scene is introduced. The geometry, handling, camera, input, hall sources and canonical simulation were not edited.
++
++The new `game/tests/test_garage_test_drive.gd` exercises electric-first entry, actual mouse/touch activation, visible descendant meshes, completed held-geometry preparation, saved cosmetics, driving, pause/reset/background release, retained Garage return and unchanged records/condition. The new `game/tests/test_garage_test_drive_cancellation.gd` reuses the existing native lifecycle observer to interrupt Garage graphics preparation on navigation, vehicle/selection/scope changes and App teardown.
++
++## Evidence and actual validation
++
++The pinned engine is `4.7.2.stable.official.ed1daf0bf`; native checks use the Windows RTX 3090. Mobile here means the desktop Mobile/Vulkan renderer. Each runner invocation uses its own workspace APPDATA/LOCALAPPDATA, local fixture saves, disabled API URL and Dummy audio. Exact commands, durations, exit codes, source hashes and retained intermediate failures are in [report.json](evidence/garage-test-drive-fix-2026-10-26/report.json), individual command JSON files and logs beside it.
++
++- Before the fix: **140 native checks, 21 failures**. Every car failed pending-geometry, actual car-mesh visibility and actual hall-mesh visibility assertions.
++- Final Compatibility: **169 checks, 0 failures**, covering all seven cars and an additional electric entry capture plus viewport projection checks.
++- Mobile/Vulkan: **161 checks, 0 failures**, covering all seven cars; the final electric-only capture run adds **25 checks, 0 failures**, including projection with the fixture camera matched to its manually advanced driving pose.
++- Native Garage cancellation: **18 checks, 0 failures**, across the five interruption cases.
++- Existing App regression: **141 checks, 0 failures** after import refresh.
++- All-script parser: **1,279 scripts, 0 failures**. The final native runs additionally compile the final focused fixtures.
++- Pinned `scripts/dev.ps1 Import`: exit **0**; refreshed seven concurrently added header images. The absent Android build-tools warning does not represent an Android build or device test.
++
++The original [blank electric view](evidence/garage-test-drive-fix-2026-10-26/blank-electric.png), final [Compatibility entry](evidence/garage-test-drive-fix-2026-10-26/verified-compatibility/gl_compatibility-ready-electric.png), [Compatibility driving](evidence/garage-test-drive-fix-2026-10-26/verified-compatibility/gl_compatibility-driving-electric.png) and [Mobile entry](evidence/garage-test-drive-fix-2026-10-26/electric-mobile/mobile-ready-electric.png) are actual native captures. The entry pictures keep the production camera; the driving fixture snaps the existing camera after advancing two seconds of simulation within one display frame so its capture shows the driven car.
++
++## Retained initial findings and limits
++
++The older `test_parking_hall.gd` stops before driving on an outdated `GarageBack` lookup in the current customisation layout. Its original failure is retained in `original-parking-suite.log`; that suite and its assertions were not edited. The first added smoke test checked parent visibility and passed despite the blank native capture; descendant/pending checks were added and reproduced all 21 failures before the production edit.
++
++Two initial sandbox attempts stalled while opening default user logs or reading the root certificate store. Subsequent checks used isolated workspace profiles outside that restriction. Only those two verified orphaned test-helper trees were stopped at cleanup; the owner's game/editor was not restarted.
++
++The first fixed run retained one electric movement failure because the offscreen window had correctly paused on focus loss. The fixture now resumes through the existing pause method before driving, then explicitly verifies background pausing separately. Initial concurrent native runs also retained unimported header-image errors and a 15-second fixture timeout before the electric HUD was built. Importing those new assets removed their errors; the focused fixture now uses the existing Garage suite's 45-second per-entry allowance, matching the App loading watchdog. No visibility or driving assertion was weakened.
++
++The runtime checkpoint contains only the nine Garage lines. Concurrent Free Race comparison and header work remains outside this change. Original and current source snapshots/hashes and a reverse-checkable task patch are retained beside the report; no staging or commit was performed.
++
++Reload/rebuild is required for an already running or exported game. Owner driving acceptance and physical-device appearance/touch/loading performance remain. No physical-device attachment check or test, APK, real authentication/purchase, backend mutation, deployment, merge or owner-process restart was performed.
+--- a/AGENTS.md
++++ b/AGENTS.md
+@@ -12,6 +12,11 @@
+ ## Selected header car picture transition (2026-10-26)
+ HIT01-HIT03/R01/Q01: Selected header car picture crossfades/slides over0.24s, reusing cached PNGs and the existing Control with one temporary outgoing picture. Rapid requests coalesce to the latest car; first attachment is immediate, same-car refresh is stable, and hide/resize/detach/free settles and clears. Actual keyboard/mouse selection/save, navigation/account ownership and no-new-viewport guards pass:51headless/61Compatibility/61desktopMobile, parser1282. Native frames cover960/1280/1720. Runtime scope is profile_car.gd; original offline studio/camera factory text, dropdown motion, static assets, App and concurrent work remain. Commands, captures, hashes and scoped checkpoint: docs/HEADER_CAR_ICON_TRANSITION_2026_10_26.md and docs/evidence/header-car-icon-transition-2026-10-26/report.json. Reload and owner/device motion/touch/frame-pacing acceptance remain. No attachment/device test, APK, purchase, live mutation, deployment, staging, commit, merge or owner-process restart.
+ <!-- /HEADER-CAR-ICON-TRANSITION-20261026 -->
++
++<!-- GARAGE-TEST-DRIVE-FIX-20261026 -->
++## Garage test-drive blank screen fixed (2026-10-26)
++GTF01-GTF03/R01/Q01: Owner reports a nearly empty electric test drive. All seven cars reproduce hidden native geometry: baseline140checks/21fail. Garage now completes the existing staged first draws under its cover, with the ordinary account/navigation/car/selection fences and teardown cleanup. Runtime scope is nine App lines. Final169Compatibility/all-seven161desktopMobile/electric25desktopMobile/cancellation18/App141/parser1279/import pass. Actual electric entry/driving views, original outdated-suite failure, offscreen pause and pre-import/deadline findings are retained. No physics/input/camera/geometry changes by this task; concurrent header/comparison work remains. Commands, hashes and scoped checkpoint: docs/GARAGE_TEST_DRIVE_FIX_2026_10_26.md and docs/evidence/garage-test-drive-fix-2026-10-26/report.json. Reload/rebuild and owner/device acceptance remain. No attachment/device test, APK, real authentication/purchase, live mutation, deployment, merge, staging, commit or owner-process restart.
++<!-- /GARAGE-TEST-DRIVE-FIX-20261026 -->
+ 
+ <!-- MENU-RESPONSIVENESS-20261026 -->
+ ## Reduce repeat menu navigation/capture stalls (2026-10-26)
+--- a/DEVELOPMENT_STATUS.md
++++ b/DEVELOPMENT_STATUS.md
+@@ -7,6 +7,11 @@
+ ## Selected header car picture transition (2026-10-26)
+ HIT01-HIT03/R01/Q01: Selected header car picture crossfades/slides over0.24s, reusing cached PNGs and the existing Control with one temporary outgoing picture. Rapid requests coalesce to the latest car; first attachment is immediate, same-car refresh is stable, and hide/resize/detach/free settles and clears. Actual keyboard/mouse selection/save, navigation/account ownership and no-new-viewport guards pass:51headless/61Compatibility/61desktopMobile, parser1282. Native frames cover960/1280/1720. Runtime scope is profile_car.gd; original offline studio/camera factory text, dropdown motion, static assets, App and concurrent work remain. Commands, captures, hashes and scoped checkpoint: docs/HEADER_CAR_ICON_TRANSITION_2026_10_26.md and docs/evidence/header-car-icon-transition-2026-10-26/report.json. Reload and owner/device motion/touch/frame-pacing acceptance remain. No attachment/device test, APK, purchase, live mutation, deployment, staging, commit, merge or owner-process restart.
+ <!-- /HEADER-CAR-ICON-TRANSITION-20261026 -->
++
++<!-- GARAGE-TEST-DRIVE-FIX-20261026 -->
++## Garage test-drive blank screen fixed (2026-10-26)
++GTF01-GTF03/R01/Q01: Owner reports a nearly empty electric test drive. All seven cars reproduce hidden native geometry: baseline140checks/21fail. Garage now completes the existing staged first draws under its cover, with the ordinary account/navigation/car/selection fences and teardown cleanup. Runtime scope is nine App lines. Final169Compatibility/all-seven161desktopMobile/electric25desktopMobile/cancellation18/App141/parser1279/import pass. Actual electric entry/driving views, original outdated-suite failure, offscreen pause and pre-import/deadline findings are retained. No physics/input/camera/geometry changes by this task; concurrent header/comparison work remains. Commands, hashes and scoped checkpoint: docs/GARAGE_TEST_DRIVE_FIX_2026_10_26.md and docs/evidence/garage-test-drive-fix-2026-10-26/report.json. Reload/rebuild and owner/device acceptance remain. No attachment/device test, APK, real authentication/purchase, live mutation, deployment, merge, staging, commit or owner-process restart.
++<!-- /GARAGE-TEST-DRIVE-FIX-20261026 -->
+ 
+ <!-- MENU-RESPONSIVENESS-20261026 -->
+ ## Reduce repeat menu navigation/capture stalls (2026-10-26)
+--- a/docs/PHASE_0_PLAN.md
++++ b/docs/PHASE_0_PLAN.md
+@@ -2,6 +2,11 @@
+ ## Selected header car picture transition (2026-10-26)
+ HIT01-HIT03/R01/Q01: Selected header car picture crossfades/slides over0.24s, reusing cached PNGs and the existing Control with one temporary outgoing picture. Rapid requests coalesce to the latest car; first attachment is immediate, same-car refresh is stable, and hide/resize/detach/free settles and clears. Actual keyboard/mouse selection/save, navigation/account ownership and no-new-viewport guards pass:51headless/61Compatibility/61desktopMobile, parser1282. Native frames cover960/1280/1720. Runtime scope is profile_car.gd; original offline studio/camera factory text, dropdown motion, static assets, App and concurrent work remain. Commands, captures, hashes and scoped checkpoint: docs/HEADER_CAR_ICON_TRANSITION_2026_10_26.md and docs/evidence/header-car-icon-transition-2026-10-26/report.json. Reload and owner/device motion/touch/frame-pacing acceptance remain. No attachment/device test, APK, purchase, live mutation, deployment, staging, commit, merge or owner-process restart.
+ <!-- /HEADER-CAR-ICON-TRANSITION-20261026 -->
++
++<!-- GARAGE-TEST-DRIVE-FIX-20261026 -->
++## Garage test-drive blank screen fixed (2026-10-26)
++GTF01-GTF03/R01/Q01: Reveal the held native hall/car geometry through existing covered staged draws in Garage startup. All-seven baseline140/21fail; final169Compatibility/161desktopMobile, electric25Mobile, cancellation18, App141, parser1279 and import pass. Runtime is nine App lines with original cancellation fences. Native views, actual commands, retained initial failures, hashes, scoped checkpoint and reload/owner/device acceptance: [GARAGE_TEST_DRIVE_FIX_2026_10_26.md](GARAGE_TEST_DRIVE_FIX_2026_10_26.md). No physical-device attachment check/test, APK, deployment or owner-process restart; concurrent work preserved and no staging/commit/merge.
++<!-- /GARAGE-TEST-DRIVE-FIX-20261026 -->
+ 
+ <!-- HEADER-CAR-MOTION-20261026 -->
+ ## Header car dropdown animations (2026-10-26)

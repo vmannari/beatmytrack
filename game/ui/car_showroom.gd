@@ -104,7 +104,7 @@ func _ready() -> void:
 	car = CarVisual.new()
 	car.vehicle_id = vehicle_id
 	car.garage_template = garage_mode
-	car.editable_kits = garage_mode and vehicle_id=="compact"
+	car.editable_kits = garage_mode and VehicleCustomisation.supported(vehicle_id)
 	car.livery = livery
 	car.customisation = customisation
 	car.cooperative_build = cooperative_build
@@ -164,11 +164,11 @@ func replace_car(id: String, paint: Dictionary, wear: Dictionary, parts: Diction
 	vehicle_id = id
 	livery = paint.duplicate(true)
 	condition = wear.duplicate(true)
-	customisation = parts.duplicate(true) if VehicleCustomisation.valid(parts) else VehicleCustomisation.defaults()
+	customisation = parts.duplicate(true) if VehicleCustomisation.valid(parts,id) else VehicleCustomisation.defaults()
 	car = CarVisual.new()
 	car.vehicle_id = id
 	car.garage_template = garage_mode
-	car.editable_kits = garage_mode and id=="compact"
+	car.editable_kits = garage_mode and VehicleCustomisation.supported(id)
 	car.livery = livery
 	car.customisation = customisation
 	world.add_child(car)
@@ -178,7 +178,9 @@ func replace_car(id: String, paint: Dictionary, wear: Dictionary, parts: Diction
 	weathering.configure(car,"pine",VehicleCatalog.config(id))
 	weathering.restore(condition)
 	pick_meshes.clear()
-	if not read_only: _cache_pick_meshes(car)
+	# Garage browsing does not need wash collision triangles. Build them on the
+	# first pick, just as the initial Garage showroom does.
+	if not read_only and not garage_mode: _cache_pick_meshes(car)
 	_orbit()
 	if not is_visible_in_tree():
 		previous_deck.queue_free()
@@ -198,7 +200,7 @@ func replace_car(id: String, paint: Dictionary, wear: Dictionary, parts: Diction
 	if read_only: set_process(true)
 
 func apply_customisation(value: Dictionary, animate_kit: bool = false) -> void:
-	if vehicle_id != "compact" or not VehicleCustomisation.valid(value): return
+	if not VehicleCustomisation.supported(vehicle_id) or not VehicleCustomisation.valid(value,vehicle_id): return
 	if customisation==value:
 		if not animate_kit: finish_kit_transition()
 		return
@@ -221,7 +223,7 @@ func apply_customisation(value: Dictionary, animate_kit: bool = false) -> void:
 		weathering.configure(car,"pine",VehicleCatalog.config(vehicle_id))
 		weathering.restore(condition)
 		pick_meshes.clear()
-		if not read_only: _cache_pick_meshes(car)
+		if not read_only and not garage_mode: _cache_pick_meshes(car)
 		if sweep!=null:
 			kit_transition = sweep
 			sweep.install(car)
@@ -245,7 +247,7 @@ func apply_customisation(value: Dictionary, animate_kit: bool = false) -> void:
 	weathering.configure(car,"pine",VehicleCatalog.config(vehicle_id))
 	weathering.restore(condition)
 	pick_meshes.clear()
-	if not read_only: _cache_pick_meshes(car)
+	if not read_only and not garage_mode: _cache_pick_meshes(car)
 	refresh_thumbnail()
 
 func finish_kit_transition() -> void:
@@ -475,7 +477,9 @@ func _clear_gesture() -> void:
 
 func apply_livery(value: Dictionary, animate_paint: bool = false) -> void:
 	finish_kit_transition()
-	if livery == value:
+	# The initial showroom value can share the draft being edited. Also verify
+	# the car's owned copy before skipping a live sticker/colour update.
+	if livery == value and (not is_instance_valid(car) or car.livery == value):
 		if not animate_paint: finish_paint_transition()
 		return
 	finish_paint_transition()

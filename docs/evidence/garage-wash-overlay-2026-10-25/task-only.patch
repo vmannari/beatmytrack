@@ -1,0 +1,867 @@
+diff --git a/game/ui/garage_page.gd b/game/ui/garage_page.gd
+--- a/game/ui/garage_page.gd
++++ b/game/ui/garage_page.gd
+@@ -106,6 +106,7 @@
+ var record_browse_index: int = 0
+ var _cleanliness := GarageCleanliness.new()
+ var _customisation_locked: bool = false
++var _wash_requirement: PanelContainer
+ 
+ func _ready() -> void:
+ 	name = "GaragePage"
+@@ -183,9 +184,9 @@
+ 	preview.add_child(_preview_hint)
+ 	_preview_hint.set_anchors_and_offsets_preset(Control.PRESET_BOTTOM_LEFT)
+ 	_preview_hint.offset_left = 24
+-	_preview_hint.offset_top = -88
++	_preview_hint.offset_top = -62
+ 	_preview_hint.offset_right = 240
+-	_preview_hint.offset_bottom = -64
++	_preview_hint.offset_bottom = -38
+ 	_build_view_controls()
+ 	_workshop_tabs = HBoxContainer.new()
+ 	_workshop_tabs.name = "GarageWorkshopTabs"
+@@ -455,6 +456,9 @@
+ 		_sync_menu_minimums()
+ 	if preview.visible: _place_menu_panel(preview,_slot_rect(_preview_slot),"")
+ 	_layout_workshop_overlay()
++	if is_instance_valid(_wash_requirement) and _wash_requirement.visible:
++		_wash_requirement.size = _wash_requirement.get_combined_minimum_size()
++		_wash_requirement.position = Vector2(24,72)
+ 	if is_instance_valid(view_hint): view_hint.visible = section not in ["customise","tuning"] or preview.size.x >= 420
+ 	_place_menu_panel(rail,_slot_rect(_rail_slot),"left")
+ 	if tools_panel.visible: _place_menu_panel(tools_panel,_slot_rect(_tools_slot),"right")
+@@ -578,7 +582,7 @@
+ 	showroom.vehicle_id = vehicle_id
+ 	showroom.garage_mode = true
+ 	showroom.interaction_inset_top = 68
+-	showroom.interaction_inset_bottom = 58
++	showroom.interaction_inset_bottom = 0
+ 	showroom.framing_scale = 0.84
+ 	showroom.livery = draft
+ 	kit_draft = VehicleCustomisation.for_car(records.settings,vehicle_id)
+@@ -632,27 +636,17 @@
+ 	status_row.add_child(_wash_status)
+ 	var row := HBoxContainer.new()
+ 	row.name = "GarageViewControls"
++	row.mouse_filter = Control.MOUSE_FILTER_IGNORE
+ 	preview.add_child(row)
+ 	row.set_anchors_and_offsets_preset(Control.PRESET_BOTTOM_WIDE)
+ 	row.offset_left = 24
+ 	row.offset_right = -16
+-	row.offset_top = -60
++	row.offset_top = -36
+ 	row.offset_bottom = -12
+ 	view_hint = MenuStyle.label("Drag to turn", 16, true)
+ 	view_hint.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+ 	view_hint.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+ 	row.add_child(view_hint)
+-	for entry: Array in [["GarageTopView", "Top view", "View the hood and roof"], ["GarageZoomOut", "-", "Zoom out"], ["GarageZoomIn", "+", "Zoom in"], ["GarageResetView", "", "Reset view"]]:
+-		var button := MenuStyle.button(str(entry[1]), _view_action.bind(str(entry[0])))
+-		button.name = str(entry[0])
+-		button.name = str(entry[0])
+-		button.tooltip_text = str(entry[2])
+-		button.custom_minimum_size = Vector2(52,52)
+-		StudioStyle.tile(button,false,8)
+-		if entry[0] == "GarageTopView": button.add_theme_font_size_override("font_size",18)
+-		button.action_mode = BaseButton.ACTION_MODE_BUTTON_PRESS
+-		if entry[0] == "GarageResetView": button.icon = MenuIcon.texture("restart")
+-		row.add_child(button)
+ 
+ func _layout_wash_tools() -> void:
+ 	var dock: HBoxContainer = preview.get_node("GarageWashTools")
+@@ -677,17 +671,6 @@
+ 	_wash_status.add_theme_color_override("font_color",colour)
+ 	_wash_status_icon.texture = MenuIcon.texture("check" if clean else "care")
+ 	_wash_status_icon.modulate = colour
+-
+-func _view_action(action: String) -> void:
+-	match action:
+-		"GarageTopView":
+-			showroom.elevation = 0.93
+-			showroom._orbit()
+-		"GarageZoomOut": showroom.zoom_by(1.15)
+-		"GarageZoomIn": showroom.zoom_by(1.0 / 1.15)
+-		"GarageResetView":
+-			_customisation_camera.clear()
+-			showroom.reset_view()
+ 
+ func _build_carousel() -> void:
+ 	gallery_slot = Control.new()
+@@ -866,11 +849,12 @@
+ 	if next not in ["cars", "customise", "care", "tuning", "trophies", "records", "news", "achievements"]: return
+ 	_finish_tools()
+ 	_customisation_locked = next in ["customise","tuning"] and not _clean_for_customisation()
++	if is_instance_valid(_wash_requirement): _wash_requirement.visible = _customisation_locked
+ 	if not _customisation_locked and next=="customise" and section=="customise" and is_instance_valid(livery_menu) and _retained_livery_vehicle==vehicle_id:
+ 		livery_menu.show_tab(_customise_tab)
+ 		return
+ 	_prepare_menu_move()
+-	_set_customise_layout(next in ["customise","tuning","records"])
++	_set_customise_layout(next == "records" or (next in ["customise","tuning"] and not _customisation_locked))
+ 	section = next
+ 	if next in ["customise","tuning","care"]: _workshop_section = next
+ 	_workshop_tabs.visible = next in ["customise","tuning","care"]
+@@ -902,7 +886,6 @@
+ 	showroom.set_record_view(next == "records")
+ 	heading.text = "RECORD PLAYER" if next == "records" else "TROPHY WALL" if next == "trophies" else VehicleCatalog.title(vehicle_id)
+ 	preview.get_node("GarageViewControls").visible = next not in ["trophies","records"]
+-	preview.get_node("GarageViewControls/GarageTopView").visible = next in ["customise","tuning","care"]
+ 	pickers.clear()
+ 	wash_button = null
+ 	_presets = null
+@@ -914,7 +897,7 @@
+ 	select_button = null
+ 	records_menu = null
+ 	gallery_slot.visible = section == "cars"
+-	tools_panel.visible = section not in ["cars", "care", "trophies"]
++	tools_panel.visible = section not in ["cars", "care", "trophies"] and not _customisation_locked
+ 	_build_rail()
+ 	if section == "cars":
+ 		_refresh_thumbnails()
+@@ -1007,17 +990,32 @@
+ 	free_drive_requested.emit()
+ 
+ func _build_wash_requirement() -> void:
+-	var title: Label = MenuStyle.label("WASH REQUIRED",26)
++	if is_instance_valid(_wash_requirement):
++		_wash_requirement.show()
++		return
++	_wash_requirement = PanelContainer.new()
++	_wash_requirement.name = "GarageWashRequirementOverlay"
++	_wash_requirement.tooltip_text = "This car is dirty. Wash it before changing liveries, colours, stickers or kits."
++	var frame: StyleBoxFlat = MenuStyle.box(Color("0d1a23f2"),8)
++	frame.set_corner_radius_all(7)
++	frame.border_color = StudioStyle.EDGE
++	frame.set_border_width_all(1)
++	_wash_requirement.add_theme_stylebox_override("panel",frame)
++	preview.add_child(_wash_requirement)
++	var content := HBoxContainer.new()
++	content.add_theme_constant_override("separation",12)
++	_wash_requirement.add_child(content)
++	var title: Label = MenuStyle.label("WASH REQUIRED",18)
+ 	title.name = "GarageWashRequired"
++	title.add_theme_font_override("font",MenuStyle.DISPLAY)
++	title.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
+ 	title.add_theme_color_override("font_color",MenuStyle.ACCENT)
+-	tools.add_child(title)
+-	var message: Label = MenuStyle.label("This car is dirty. Wash it before changing liveries, colours, stickers or kits.",20)
+-	message.name = "GarageWashRequirementMessage"
+-	message.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+-	tools.add_child(message)
++	content.add_child(title)
+ 	var wash: Button = MenuStyle.button("Wash car",_wash_for_customisation,true)
+ 	wash.name = "GarageWashForCustomisation"
+-	tools.add_child(wash)
++	wash.custom_minimum_size = Vector2(100,48)
++	wash.add_theme_font_size_override("font_size",18)
++	content.add_child(wash)
+ 
+ func _wash_for_customisation() -> void:
+ 	_show_section("care")
+diff --git a/AGENTS.md b/AGENTS.md
+--- a/AGENTS.md
++++ b/AGENTS.md
+@@ -1,3 +1,8 @@
++<!-- GARAGE-WASH-OVERLAY-20261025 -->
++## Compact Garage wash requirement and removed view buttons override (2026-10-25)
++2026-10-25 GWO04-GWO06/R01/Q01: Dirty Appearance/Parts use the full showroom with a compact Wash required/Wash car overlay, replacing the remaining full-height sidebar. Top view/zoom out/zoom in/reset buttons and their callback are removed; drag, wheel, trackpad, pinch and the former bottom-button gesture area remain. Actual dirty-Forklift/touch-shortcut App checks549Compatibility/549desktopMobile and gestures65/65, customisation320/App141/parser1178 pass. Broader cleanliness342headless/367Compatibility each retain one Forklift heavy-slow-film failure; exact task-start runtime/tests reloaded only in isolated memory reproduce327/351 with the same sole failure. No threshold/assertion weakened. Initial evidence-path fixture failure is retained and normalized. Native before/after, commands, hashes and scoped checkpoint: docs/GARAGE_WASH_OVERLAY_2026_10_25.md and docs/evidence/garage-wash-overlay-2026-10-25/report.json. Reload and owner/device appearance/touch acceptance remain. No attachment/device test, APK, real purchase, live mutation, deployment or owner-process restart; concurrent work preserved.
++<!-- /GARAGE-WASH-OVERLAY-20261025 -->
++
+ <!-- KART-DRIVER-FIT-20261025 -->
+ ## Kart compact chin, driver and open seat correction (2026-10-25)
+ KDF01-KDF03/V02-V05/R01/G01/Q01: Shorten/retract the rejected chin and lift its lower edge; shape continuous hips/waist/chest/shoulders, elbow sleeves and a connected balaclava neck. A thin watertight open bucket replaces the seat's closed solid volume, with pan/back padding and rolled returns. Actual cloth/seat crossings fall to zero in both detail levels; torso/backrest gap is0.0197model metres. Native model86Compatibility/86desktopMobile, fit28/28, retained172, actual Garage/race15/15, kart42 and parser1179 pass. Full/simple94296/28894triangles remain within the unchanged95000limit. Catalogue/news/all49photos refreshed; exact kart config, canonical simulation, production cameras, chassis/engine/wheels/steering retained. Initial geometry/fixture/runner failures and original-source regression remain recorded. Evidence, commands, hashes and scoped checkpoint: docs/KART_DRIVER_FIT_2026_10_25.md and docs/evidence/kart-driver-fit-2026-10-25/report.json. Client reload and owner/device appearance/motion/cost acceptance remain. No device attachment check/test, APK, purchase, live mutation, deployment or owner-process restart; concurrent work preserved.
+diff --git a/DEVELOPMENT_STATUS.md b/DEVELOPMENT_STATUS.md
+--- a/DEVELOPMENT_STATUS.md
++++ b/DEVELOPMENT_STATUS.md
+@@ -1,3 +1,7 @@
++<!-- GARAGE-WASH-OVERLAY-20261025 -->
++2026-10-25 GWO04-GWO06/R01/Q01: Dirty Appearance/Parts use the full showroom with a compact Wash required/Wash car overlay, replacing the remaining full-height sidebar. Top view/zoom out/zoom in/reset buttons and their callback are removed; drag, wheel, trackpad, pinch and the former bottom-button gesture area remain. Actual dirty-Forklift/touch-shortcut App checks549Compatibility/549desktopMobile and gestures65/65, customisation320/App141/parser1178 pass. Broader cleanliness342headless/367Compatibility each retain one Forklift heavy-slow-film failure; exact task-start runtime/tests reloaded only in isolated memory reproduce327/351 with the same sole failure. No threshold/assertion weakened. Initial evidence-path fixture failure is retained and normalized. Native before/after, commands, hashes and scoped checkpoint: docs/GARAGE_WASH_OVERLAY_2026_10_25.md and docs/evidence/garage-wash-overlay-2026-10-25/report.json. Reload and owner/device appearance/touch acceptance remain. No attachment/device test, APK, real purchase, live mutation, deployment or owner-process restart; concurrent work preserved.
++<!-- /GARAGE-WASH-OVERLAY-20261025 -->
++
+ <!-- KART-DRIVER-FIT-20261025 -->
+ ## Kart compact chin, driver and open seat correction (2026-10-25)
+ KDF01-KDF03/V02-V05/R01/G01/Q01: Shorten/retract the rejected chin and lift its lower edge; shape continuous hips/waist/chest/shoulders, elbow sleeves and a connected balaclava neck. A thin watertight open bucket replaces the seat's closed solid volume, with pan/back padding and rolled returns. Actual cloth/seat crossings fall to zero in both detail levels; torso/backrest gap is0.0197model metres. Native model86Compatibility/86desktopMobile, fit28/28, retained172, actual Garage/race15/15, kart42 and parser1179 pass. Full/simple94296/28894triangles remain within the unchanged95000limit. Catalogue/news/all49photos refreshed; exact kart config, canonical simulation, production cameras, chassis/engine/wheels/steering retained. Initial geometry/fixture/runner failures and original-source regression remain recorded. Evidence, commands, hashes and scoped checkpoint: docs/KART_DRIVER_FIT_2026_10_25.md and docs/evidence/kart-driver-fit-2026-10-25/report.json. Client reload and owner/device appearance/motion/cost acceptance remain. No device attachment check/test, APK, purchase, live mutation, deployment or owner-process restart; concurrent work preserved.
+diff --git a/game/tests/test_garage_clean_customisation.gd b/game/tests/test_garage_clean_customisation.gd
+--- a/game/tests/test_garage_clean_customisation.gd
++++ b/game/tests/test_garage_clean_customisation.gd
+@@ -20,6 +20,21 @@
+ func capture(label: String) -> void:
+ 	if DisplayServer.get_name() == "headless": return
+ 	check(root.get_texture().get_image().save_png(output.path_join(label+".png")) == OK,"capture "+label)
++
++func click(button: Button) -> void:
++	var point: Vector2 = button.get_global_rect().get_center()
++	var move := InputEventMouseMotion.new()
++	move.position = point
++	root.push_input(move,true)
++	await process_frame
++	for pressed: bool in [true,false]:
++		var event := InputEventMouseButton.new()
++		event.position = point
++		event.button_index = MOUSE_BUTTON_LEFT
++		event.pressed = pressed
++		root.push_input(event,true)
++		await process_frame
++	await settle()
+ 
+ func wash_exterior(page: GaragePage, save: bool = true) -> void:
+ 	var effect: VehicleWeathering = page.showroom.weathering
+@@ -39,6 +54,7 @@
+ 	output = ProjectSettings.globalize_path("res://../docs/evidence/garage-wash-forgiving-2026-10-18/"+renderer)
+ 	for argument: String in OS.get_cmdline_user_args():
+ 		if argument.begins_with("--evidence-root="): output = argument.trim_prefix("--evidence-root=")
++	output = ProjectSettings.globalize_path(output)
+ 	DirAccess.make_dir_recursive_absolute(output)
+ 	var folder: String = "user://clean_customisation_"+TrackLibrary.unique_id()
+ 	DirAccess.make_dir_recursive_absolute(folder)
+@@ -64,15 +80,19 @@
+ 	var kits: Dictionary = page.kit_draft.duplicate(true)
+ 	var saved: Dictionary = records.settings.duplicate(true)
+ 	check(page._customisation_locked and page.livery_menu == null,"dirty Customise shows requirement instead of editing controls")
+-	check(page.tools.find_child("GarageWashRequirementMessage",true,false).text.contains("dirty"),"plain explanation visible")
++	check(page._wash_requirement.visible and page._wash_requirement.tooltip_text.contains("dirty"),"compact wash notice explains the cleanliness requirement")
++	check(not page.tools_panel.visible and page.customise_layout==null,"dirty car does not open or reserve a workbench sidebar")
++	for name: String in ["GarageTopView","GarageZoomIn","GarageZoomOut","GarageResetView"]:
++		check(page.find_child(name,true,false)==null,"view button removed: "+name)
+ 	for action: Callable in [page._select_livery.bind(2),page._preview_color.bind(Color.RED,"body"),page._choose_sticker.bind(1),page._move_sticker.bind(Vector2(0.2,0.2)),page._sticker_property.bind(0.8,"size"),page._centre_sticker,page._reset]:
+ 		action.call()
+ 		check(page.draft == paint and records.settings == saved,"dirty livery/colour/sticker/reset callback cannot change or save appearance")
+ 	for dimensions: Vector2i in [Vector2i(960,540),Vector2i(1280,720),Vector2i(1600,720)]:
+ 		root.size = dimensions
+ 		await settle()
+-		var button: Control = page.tools.find_child("GarageWashForCustomisation",true,false)
+-		check(root.get_visible_rect().encloses(page.tools_panel.get_global_rect()) and root.get_visible_rect().encloses(button.get_global_rect()),"wash requirement fits "+str(dimensions))
++		var button: Control = page.preview.find_child("GarageWashForCustomisation",true,false)
++		check(page.preview.get_global_rect().encloses(page._wash_requirement.get_global_rect()) and root.get_visible_rect().encloses(button.get_global_rect()),"wash overlay fits "+str(dimensions))
++		check(page._wash_requirement.size.y<=80 and not page.tools_panel.visible,"wash notice stays compact without a sidebar")
+ 		await capture("wash-required-livery-"+str(dimensions.x))
+ 	page._show_section("tuning")
+ 	await settle()
+@@ -81,8 +101,9 @@
+ 	page._reset_kits()
+ 	check(page.kit_draft == kits and records.settings == saved,"kit selection and reset cannot change dirty car")
+ 	await capture("wash-required-kits")
+-	page.tools.find_child("GarageWashForCustomisation",true,false).pressed.emit()
++	await click(page.preview.find_child("GarageWashForCustomisation",true,false))
+ 	check(page.section == "care" and page.showroom.wash_mode,"Wash car opens actual manual washing")
++	check(not page.tools_panel.visible and not page._wash_requirement.visible,"washing hides the requirement without a sidebar")
+ 	check(page._wash_status_panel.visible and page._wash_status_panel.tooltip_text == "Wash the exterior before customising","wash view explains when more washing is needed")
+ 	check(page._wash_status_panel.mouse_filter == Control.MOUSE_FILTER_IGNORE and page._wash_status.mouse_filter == Control.MOUSE_FILTER_IGNORE and page._wash_status_icon.mouse_filter == Control.MOUSE_FILTER_IGNORE,"status does not intercept wash gestures")
+ 	for dimensions: Vector2i in [Vector2i(960,540),Vector2i(1280,720),Vector2i(1720,720)]:
+@@ -145,6 +166,10 @@
+ 		page._process(0.0)
+ 		page._show_section("customise")
+ 		check(page._customisation_locked,id+" dirty livery blocked")
++		check(not page.tools_panel.visible and page._wash_requirement.visible,id+" uses the compact wash overlay")
++		if id=="forklift":
++			await settle()
++			await capture("forklift-wash-required-overlay")
+ 		wash_exterior(page)
+ 		page._show_section("customise")
+ 		check(not page._customisation_locked,id+" actual exterior wash unlocks")
+diff --git a/game/tests/test_garage_sidebar.gd b/game/tests/test_garage_sidebar.gd
+--- a/game/tests/test_garage_sidebar.gd
++++ b/game/tests/test_garage_sidebar.gd
+@@ -115,7 +115,7 @@
+ 			if not before:
+ 				check(page.preview.get_global_rect().encloses(tab.get_global_rect()),"overlay button fits inside car view")
+ 				check(not tab.get_global_rect().intersects(page.heading.get_global_rect()),"overlay clears the car name")
+-				check(not tab.get_global_rect().intersects(page.preview.get_node("GarageViewControls").get_global_rect()),"overlay clears the view controls")
++				check(page.preview.get_node("GarageViewControls").find_children("*","Button",true,false).is_empty(),"view control buttons are absent")
+ 				check(tab.icon!=null and not tab.tooltip_text.is_empty() and not tab.accessibility_name.is_empty(),"overlay has a named mode icon")
+ 		check(page.rail.get_node_or_null("GarageCare") == null and page.rail.get_node_or_null("GarageCustomise") == null and page.rail.get_node_or_null("GarageTuning") == null,"car tasks are grouped in the side submenu")
+ 		await capture("customise-"+str(dimensions.x))
+@@ -157,6 +157,22 @@
+ 	page._show_section("cars")
+ 	await settle()
+ 	check(app.records.settings.get("vehicle_conditions",{}).is_empty(),"navigation does not write car condition")
++	var dirty: Dictionary = VehicleWeathering.new().snapshot()
++	dirty.dirt = 0.85
++	dirty.slow_dirt = 0.25
++	check(VehicleCondition.save(app.records,"forklift",dirty)==OK,"seed isolated dirty Forklift")
++	page.open_car(VehicleCatalog.IDS.find("forklift"))
++	await settle()
++	check(page._customisation_locked and not page.tools_panel.visible and page.customise_layout==null,"actual App dirty Forklift has no wash-required sidebar")
++	check(page.preview.get_global_rect().encloses(page._wash_requirement.get_global_rect()),"actual App compact wash notice fits the showroom")
++	for name: String in ["GarageTopView","GarageZoomIn","GarageZoomOut","GarageResetView"]:
++		check(page.find_child(name,true,false)==null,"actual App removes "+name)
++	await capture("app-dirty-forklift-overlay")
++	await click(page.preview.find_child("GarageWashForCustomisation",true,false),true)
++	await settle()
++	check(page.section=="care" and page.showroom.wash_mode and not page.tools_panel.visible,"actual touch Wash car enters washing without a sidebar")
++	check(not page._wash_requirement.visible,"actual washing hides the compact requirement")
++	await capture("app-wash-after-shortcut")
+ 	var report := FileAccess.open(output.path_join("layout.json"),FileAccess.WRITE)
+ 	report.store_string(JSON.stringify({"checks":checks,"failures":failures,"before":before,"renderer":RenderingServer.get_current_rendering_method(),"layouts":rail_report},"\t"))
+ 	report.close()
+diff --git a/game/tests/test_garage_view_controls.gd b/game/tests/test_garage_view_controls.gd
+--- a/game/tests/test_garage_view_controls.gd
++++ b/game/tests/test_garage_view_controls.gd
+@@ -1,5 +1,5 @@
+ extends SceneTree
+-## Dispatch through the real menu: orbit, pinch transitions, bounds and buttons.
++## Dispatch through the real menu: retained orbit/pinch/wheel and removed view buttons.
+ var checks: int = 0
+ var failures: int = 0
+ var output: String = "res://../docs/evidence/garage-view-controls-2026-10-10"
+@@ -37,6 +37,8 @@
+ 
+ func _run() -> void:
+ 	OS.set_environment("BMT_API_URL", "")
++	for argument: String in OS.get_cmdline_user_args():
++		if argument.begins_with("--evidence-root="): output = argument.trim_prefix("--evidence-root=")
+ 	output = ProjectSettings.globalize_path(output)
+ 	DirAccess.make_dir_recursive_absolute(output)
+ 	var directory: String = "user://garage_view_" + TrackLibrary.unique_id()
+@@ -128,36 +130,14 @@
+ 	drag(0,left+Vector2(100,0),Vector2(100,0))
+ 	check(view.zoom == stable_zoom and view.yaw == old_yaw, "late drag after cancellation is ignored")
+ 	touch(0,left,false)
+-	for name: String in ["GarageZoomIn","GarageZoomOut","GarageResetView"]:
+-		var button: Button = app.root_ui.find_child(name,true,false)
+-		if name == "GarageResetView":
+-			view.rotate_view(Vector2(40,30))
+-			view.set_zoom(0.6)
+-		check(button.custom_minimum_size.x >= 48 and button.custom_minimum_size.y >= 48, name + " touch size")
+-		check(app.root_ui.get_node("MenuPageSwipe")._owns_gesture(app.root_ui,button.get_global_rect().get_center()), name + " gesture ownership")
+-		var click := InputEventMouseButton.new()
+-		click.position = button.get_global_rect().get_center()
+-		click.global_position = click.position
+-		click.button_index = MOUSE_BUTTON_LEFT
+-		click.pressed = true
+-		var hover := InputEventMouseMotion.new()
+-		hover.position = click.position
+-		hover.global_position = click.position
+-		root.push_input(hover,true)
+-		await process_frame
+-		root.push_input(click,true)
+-		await process_frame
+-		click = click.duplicate() as InputEventMouseButton
+-		click.pressed = false
+-		root.push_input(click,true)
+-		await process_frame
+-		if name == "GarageZoomIn": check(view.zoom < 1.0,"actual zoom-in button")
+-		elif name == "GarageZoomOut": check(is_equal_approx(view.zoom,1.0),"actual zoom-out button")
+-		else: check(view.yaw == old_yaw and view.elevation == old_elevation and view.zoom == 1.0,"actual reset button")
+-	var zoom_button: Control = app.root_ui.find_child("GarageZoomIn",true,false)
+-	touch(0,zoom_button.get_global_rect().get_center(),true)
+-	touch(0,zoom_button.get_global_rect().get_center(),false)
+-	check(view.zoom < 1.0 and app.screen == "garage","touch zoom button without menu navigation")
++	for name: String in ["GarageTopView","GarageZoomIn","GarageZoomOut","GarageResetView"]:
++		check(app.root_ui.find_child(name,true,false)==null,"view control button removed: "+name)
++	check(view.interaction_inset_bottom==0,"former view-button area has no dead gesture strip")
++	var bottom: Vector2 = view.get_global_rect().end-Vector2(40,20)
++	touch(0,bottom,true)
++	drag(0,bottom-Vector2(40,0),Vector2(-40,0))
++	touch(0,bottom-Vector2(40,0),false)
++	check(view.yaw!=old_yaw and app.screen=="garage","bottom of showroom still turns the car without navigating")
+ 	view.reset_view()
+ 	touch(0,left,true)
+ 	view.hide()
+@@ -193,8 +173,8 @@
+ 		view.rotate_view(Vector2(-80,-20))
+ 		view.set_zoom(1.4)
+ 		await screenshot("low-wide-" + str(dimensions.x))
+-		for name: String in ["GarageZoomIn","GarageZoomOut","GarageResetView"]:
+-			check(app.root_ui.get_global_rect().encloses(app.root_ui.find_child(name,true,false).get_global_rect()),name + " within " + str(dimensions))
++		for name: String in ["GarageTopView","GarageZoomIn","GarageZoomOut","GarageResetView"]:
++			check(app.root_ui.find_child(name,true,false)==null,name + " absent at " + str(dimensions))
+ 	app.queue_free()
+ 	await process_frame
+ 	print("GARAGE_VIEW_CONTROLS: %d checks, %d failures" % [checks,failures])
+diff --git a/game/tests/test_garage_tuning_layout.gd b/game/tests/test_garage_tuning_layout.gd
+--- a/game/tests/test_garage_tuning_layout.gd
++++ b/game/tests/test_garage_tuning_layout.gd
+@@ -64,7 +64,7 @@
+ 		check(page.tools_panel.position.x>=page.preview.get_rect().end.x,"workbench remains beside live car")
+ 		check(page.get_global_rect().encloses(page.tools_panel.get_global_rect()) and page.get_global_rect().encloses(page.actions.get_global_rect()),"workbench and footer fit")
+ 		check(page.kit_cards.columns==2 and page.kit_scroll.horizontal_scroll_mode==ScrollContainer.SCROLL_MODE_DISABLED,"two columns with no horizontal clipping")
+-		check(page.tools_panel.find_child("GarageResetKits",true,false)!=null and page.preview.get_node("GarageViewControls/GarageTopView").visible,"header reset and matching view tools available")
++		check(page.tools_panel.find_child("GarageResetKits",true,false)!=null and page.preview.find_child("GarageTopView",true,false)==null,"kit reset remains without a showroom view button")
+ 		for category: String in VehicleCustomisation.CATEGORIES:
+ 			page._select_kit_category(category)
+ 			await settle()
+diff --git a/game/tests/test_livery_patterns.gd b/game/tests/test_livery_patterns.gd
+--- a/game/tests/test_livery_patterns.gd
++++ b/game/tests/test_livery_patterns.gd
+@@ -189,7 +189,8 @@
+ 	await settle()
+ 	check(page.draft.pattern == "apex_twin" and tile.selected,"actual model card click previews and selects pattern")
+ 	check(VehicleLivery.for_car(records.settings,"compact").pattern == "apex_twin","card click commits selected design")
+-	page.find_child("GarageTopView",true,false).pressed.emit()
++	page.showroom.elevation = 0.93
++	page.showroom._orbit()
+ 	await settle()
+ 	check(page.showroom.elevation == 0.93 and page.showroom.zoom == retained_zoom and page.showroom.yaw == retained_yaw,"Top view inspects painted panels without resetting zoom or turntable")
+ 	await capture("top-view")
+@@ -308,7 +309,8 @@
+ 	check(VehicleLivery.for_car(records.settings,"compact").stickers.hood.id == "zelvora" and VehicleLivery.for_car(records.settings,"compact").stickers.roof.id == "rhexori","both sponsor panels save locally")
+ 	check(page.showroom == retained_view and page.showroom.car == retained_car,"sponsor browsing retains actual car and viewport")
+ 	page._select_livery(GaragePage.LIVERY_NAMES.size()+tribal_index)
+-	page.find_child("GarageTopView",true,false).pressed.emit()
++	page.showroom.elevation = 0.93
++	page.showroom._orbit()
+ 	for dimensions: Vector2i in [Vector2i(1280,720),Vector2i(960,540),Vector2i(1600,720)]:
+ 		root.size = dimensions
+ 		await settle()
+diff --git a/docs/GARAGE_WASH_OVERLAY_2026_10_25.md b/docs/GARAGE_WASH_OVERLAY_2026_10_25.md
+--- /dev/null
++++ b/docs/GARAGE_WASH_OVERLAY_2026_10_25.md
+@@ -0,0 +1,28 @@
++# Garage wash prompt and view-button cleanup — 2026-10-25
++
++GWO04–GWO06/R01/Q01 address the remaining full-height Wash required sidebar and remove Top view / zoom out / zoom in / reset from the Garage 3D view.
++
++Dirty Appearance/Parts now use the full showroom width with a compact Wash required / Wash car notice below the car name. The detailed explanation remains in its tooltip. The blocked workbench is hidden and reserves no sidebar. Wash car still enters actual manual washing; the requirement hides there, and clean cars reopen the existing editing workbench. Cleanliness, purchase and save guards are unchanged.
++
++The four view buttons and their callback are removed. The bottom row contains only the non-interactive gesture hint. Mouse drag, touch orbit, wheel, trackpad and pinch remain; the former bottom-button strip now also accepts car gestures. Existing automatic part/sticker camera behavior is retained. Test-only overhead livery captures now set their fixture camera directly instead of pressing a removed shipping button.
++
++Runtime changes are confined to `game/ui/garage_page.gd`. Updated tests are the cleanliness, sidebar, view-controls, tuning-layout and livery-pattern suites. The full cleanliness suite and all prior dirty mutation assertions are retained. A test fixture under `game/tests/fixtures/garage_wash_overlay_before/` is export-excluded with `.gdignore` and reloads the exact task-start Garage source only into its isolated process's memory; workspace runtime files and owner processes are not restored or restarted.
++
++Actual App navigation/dirty-Forklift/touch-shortcut checks pass 549 on Compatibility and 549 on desktop Mobile. Actual view gestures/button absence pass 65 on each renderer. Customisation checks pass 320; App 141 and full parser 1178 pass.
++
++The broader cleanliness suite retains **one existing failure**, `forklift heavy slow film still blocks`: current 342 headless / 367 Compatibility checks each have one failure. Exact task-start runtime and test sources reproduce the same assertion, with 327 headless / 351 Compatibility checks each having one failure (including the source-reload check). No cleanliness threshold or assertion was weakened. The initial baseline capture also exposed an evidence-path fixture issue; it is retained in `before/console.log`, and resource paths are now normalized after argument parsing.
++
++Expanded commands, exact outcomes, source/capture hashes and the reverse-checked task-only patch are in [report.json](evidence/garage-wash-overlay-2026-10-25/report.json). The runner uses isolated APPDATA and local records with the pinned Godot engine through `scripts/dev.ps1`:
++
++```powershell
++powershell -NoProfile -ExecutionPolicy Bypass -File docs/evidence/garage-wash-overlay-2026-10-25/run.ps1 -Test test_garage_sidebar -Mode gl_compatibility
++powershell -NoProfile -ExecutionPolicy Bypass -File docs/evidence/garage-wash-overlay-2026-10-25/run.ps1 -Test test_garage_sidebar -Mode mobile
++powershell -NoProfile -ExecutionPolicy Bypass -File docs/evidence/garage-wash-overlay-2026-10-25/run.ps1 -Test test_garage_view_controls -Mode gl_compatibility
++powershell -NoProfile -ExecutionPolicy Bypass -File docs/evidence/garage-wash-overlay-2026-10-25/run.ps1 -Test test_garage_view_controls -Mode mobile
++```
++
++[View the actual Forklift, Wash shortcut and original/current dirty-car comparison](evidence/garage-wash-overlay-2026-10-25/review.html).
++
++![Actual App: compact Forklift notice and no view buttons](evidence/garage-wash-overlay-2026-10-25/test_garage_sidebar-gl_compatibility/app-dirty-forklift-overlay.png)
++
++Reload and owner visual/touch acceptance remain. Mobile here is Windows Vulkan, not a physical-device measurement. No attachment check/device test, APK, real purchase, live mutation, deployment or owner-process restart was performed. Concurrent work is preserved; no staging or commit is implied.
+diff --git a/game/tests/fixtures/garage_wash_overlay_before/test_clean_before.gd b/game/tests/fixtures/garage_wash_overlay_before/test_clean_before.gd
+--- /dev/null
++++ b/game/tests/fixtures/garage_wash_overlay_before/test_clean_before.gd
+@@ -0,0 +1,299 @@
++extends SceneTree
++## Actual local Garage: dirty mutation guards, exterior washing and saved unlock.
++var checks: int = 0
++var failures: int = 0
++var output: String
++
++func _initialize() -> void: _run.call_deferred()
++
++func check(ok: bool, label: String) -> void:
++	checks += 1
++	if not ok:
++		failures += 1
++		print("FAIL: "+label)
++
++func settle() -> void:
++	await create_timer(0.4).timeout
++	for index: int in range(4): await process_frame
++	if DisplayServer.get_name() != "headless": await RenderingServer.frame_post_draw
++
++func capture(label: String) -> void:
++	if DisplayServer.get_name() == "headless": return
++	check(root.get_texture().get_image().save_png(output.path_join(label+".png")) == OK,"capture "+label)
++
++func wash_exterior(page: GaragePage, save: bool = true) -> void:
++	var effect: VehicleWeathering = page.showroom.weathering
++	# A real stroke makes the lazy exterior inspection necessary.
++	effect.wash(Vector3(-0.9,0.5,0.1),0.1)
++	page._cleanliness.is_clean(page.showroom)
++	check(not page._cleanliness.points.is_empty(),"actual native exterior samples prepared")
++	effect.begin_wash_batch()
++	for point: Vector3 in page._cleanliness.points: effect.wash(point,8.0)
++	effect.end_wash_batch()
++	if save: page._save_condition()
++
++func _run() -> void:
++	# Exact task-start runtime, reloaded only inside this disposable test process.
++	var original: GDScript = load("res://ui/garage_page.gd")
++	original.source_code = FileAccess.get_file_as_string(ProjectSettings.globalize_path("res://../docs/evidence/garage-wash-overlay-2026-10-25/before/game/ui/garage_page.gd"))
++	check(original.reload()==OK,"task-start Garage runtime reloaded only in isolated process memory")
++	OS.set_environment("BMT_API_URL","")
++	var renderer: String = RenderingServer.get_current_rendering_method()
++	if DisplayServer.get_name() == "headless": renderer = "headless"
++	output = ProjectSettings.globalize_path("res://../docs/evidence/garage-wash-forgiving-2026-10-18/"+renderer)
++	for argument: String in OS.get_cmdline_user_args():
++		if argument.begins_with("--evidence-root="): output = argument.trim_prefix("--evidence-root=")
++	DirAccess.make_dir_recursive_absolute(output)
++	var folder: String = "user://clean_customisation_"+TrackLibrary.unique_id()
++	DirAccess.make_dir_recursive_absolute(folder)
++	var records := LocalRecords.new(folder.path_join("records.json"))
++	records.load_records()
++	var dirty: Dictionary = VehicleWeathering.new().snapshot()
++	dirty.dirt = 0.85
++	dirty.slow_dirt = 0.25
++	check(VehicleCondition.save(records,"compact",dirty) == OK,"seed isolated dirt")
++	VehicleCatalog.selected = "compact"
++	root.size = Vector2i(1280,720)
++	root.content_scale_size = Vector2i(1280,720)
++	root.theme = MenuStyle.theme()
++	var page := GaragePage.new()
++	page.records = records
++	root.add_child(page)
++	MenuStyle.fill(page)
++	page.open_car(0)
++	await settle()
++	var car: CarVisual = page.showroom.car
++	var camera: Transform3D = page.showroom.camera.transform
++	var paint: Dictionary = page.draft.duplicate(true)
++	var kits: Dictionary = page.kit_draft.duplicate(true)
++	var saved: Dictionary = records.settings.duplicate(true)
++	check(page._customisation_locked and page.livery_menu == null,"dirty Customise shows requirement instead of editing controls")
++	check(page.tools.find_child("GarageWashRequirementMessage",true,false).text.contains("dirty"),"plain explanation visible")
++	for action: Callable in [page._select_livery.bind(2),page._preview_color.bind(Color.RED,"body"),page._choose_sticker.bind(1),page._move_sticker.bind(Vector2(0.2,0.2)),page._sticker_property.bind(0.8,"size"),page._centre_sticker,page._reset]:
++		action.call()
++		check(page.draft == paint and records.settings == saved,"dirty livery/colour/sticker/reset callback cannot change or save appearance")
++	for dimensions: Vector2i in [Vector2i(960,540),Vector2i(1280,720),Vector2i(1600,720)]:
++		root.size = dimensions
++		await settle()
++		var button: Control = page.tools.find_child("GarageWashForCustomisation",true,false)
++		check(root.get_visible_rect().encloses(page.tools_panel.get_global_rect()) and root.get_visible_rect().encloses(button.get_global_rect()),"wash requirement fits "+str(dimensions))
++		await capture("wash-required-livery-"+str(dimensions.x))
++	page._show_section("tuning")
++	await settle()
++	check(page._customisation_locked and page.tools.find_child("GarageResetKits",true,false) == null,"dirty kits cannot be edited")
++	page._select_kit("hood","scoop")
++	page._reset_kits()
++	check(page.kit_draft == kits and records.settings == saved,"kit selection and reset cannot change dirty car")
++	await capture("wash-required-kits")
++	page.tools.find_child("GarageWashForCustomisation",true,false).pressed.emit()
++	check(page.section == "care" and page.showroom.wash_mode,"Wash car opens actual manual washing")
++	check(page._wash_status_panel.visible and page._wash_status_panel.tooltip_text == "Wash the exterior before customising","wash view explains when more washing is needed")
++	check(page._wash_status_panel.mouse_filter == Control.MOUSE_FILTER_IGNORE and page._wash_status.mouse_filter == Control.MOUSE_FILTER_IGNORE and page._wash_status_icon.mouse_filter == Control.MOUSE_FILTER_IGNORE,"status does not intercept wash gestures")
++	for dimensions: Vector2i in [Vector2i(960,540),Vector2i(1280,720),Vector2i(1720,720)]:
++		root.size = dimensions
++		await settle()
++		check(page.preview.get_global_rect().encloses(page._wash_status_panel.get_global_rect()),"wash status fits preview "+str(dimensions))
++		check(not page._wash_status_panel.get_global_rect().intersects(page.preview.get_node("GarageViewControls").get_global_rect()),"wash status clears view controls "+str(dimensions))
++		await capture("needs-washing-"+str(dimensions.x))
++	page.showroom.weathering.wash(Vector3(-0.9,0.5,0.1),0.5)
++	page._show_section("customise")
++	check(page._customisation_locked,"one clean patch does not unlock dirty car")
++	check(page.showroom.car == car and page.showroom.camera.transform == camera,"blocked changes retain actual car and camera")
++	page._show_section("care")
++	page._toggle_wash()
++	var before_live_wash: Dictionary = VehicleCondition.read(records,"compact")
++	wash_exterior(page,false)
++	page._process(0.0)
++	check(page._cleanliness.is_clean(page.showroom),"scrubbing native exterior unlocks car")
++	check(page.showroom.wash_mode and page._wash_status.text == "Shiny. For now.","shiny indication updates during washing without pressing Done")
++	check(page._wash_status_icon.texture == MenuIcon.texture("check") and page._wash_status.get_theme_color("font_color") == MenuStyle.POSITIVE,"ready state uses a checkmark and positive colour")
++	check(VehicleCondition.read(records,"compact") == before_live_wash,"live indication does not save or clear dirt")
++	for dimensions: Vector2i in [Vector2i(960,540),Vector2i(1280,720),Vector2i(1720,720)]:
++		root.size = dimensions
++		await settle()
++		check(page.preview.get_global_rect().encloses(page._wash_status_panel.get_global_rect()),"ready status fits preview "+str(dimensions))
++		check(not page._wash_status.text.contains("%") and not page._wash_status.text.contains("0"),"ready indication is nonnumeric")
++		await capture("clean-enough-"+str(dimensions.x))
++	check(page.showroom.weathering.wash_image.get_data().count(0) > 0,"inaccessible interior voxels do not require washing")
++	page._show_section("customise")
++	check(not page._wash_status_panel.visible,"wash status stays in the care view")
++	check(not page._customisation_locked and page.livery_menu != null,"clean car exposes original livery workbench")
++	page._select_livery(2)
++	page._preview_color(Color("417585"),"body")
++	page._choose_sticker(1)
++	page._move_sticker(Vector2(0.35,0.55))
++	page._save()
++	check(page.draft != paint and VehicleLivery.for_car(records.settings,"compact") == page.draft,"washed car can change and save livery colours and stickers")
++	page._show_section("tuning")
++	page._select_kit("hood",str(VehicleCustomisation.OPTIONS.hood[1][0]))
++	check(page.kit_draft != kits,"washed car can fit kits")
++	await settle()
++	await capture("clean-kits-unlocked")
++	var reopened := LocalRecords.new(records.path)
++	reopened.load_records()
++	var restored_paint: Dictionary = VehicleLivery.for_car(reopened.settings,"compact")
++	check(restored_paint.colors == page.draft.colors and restored_paint.pattern == page.draft.pattern and restored_paint.stickers.hood.id == page.draft.stickers.hood.id and is_equal_approx(restored_paint.stickers.hood.x,page.draft.stickers.hood.x) and VehicleCustomisation.for_car(reopened.settings,"compact") == page.kit_draft,"appearance persists on restart")
++	var restored_condition: Dictionary = VehicleCondition.read(reopened,"compact")
++	var washed_condition: Dictionary = page.showroom.weathering.snapshot()
++	check(restored_condition.wash == washed_condition.wash and restored_condition.slow_wash == washed_condition.slow_wash and is_equal_approx(restored_condition.dirt,washed_condition.dirt) and is_equal_approx(restored_condition.slow_dirt,washed_condition.slow_dirt),"washing remains separate and local")
++	# New race wear must fence a retained workbench before the next frame.
++	page._show_section("customise")
++	var washed_paint: Dictionary = page.draft.duplicate(true)
++	check(VehicleCondition.save(records,"compact",dirty) == OK,"new race deposits persisted")
++	page._select_livery(3)
++	check(page._customisation_locked and page.draft == washed_paint,"retained dirty workbench locks after race")
++	for id: String in VehicleCatalog.IDS:
++		page._show_section("cars")
++		page.open_car(VehicleCatalog.IDS.find(id))
++		check(VehicleCondition.save(records,id,dirty) == OK,"seed "+id)
++		page._process(0.0)
++		page._show_section("customise")
++		check(page._customisation_locked,id+" dirty livery blocked")
++		wash_exterior(page)
++		page._show_section("customise")
++		check(not page._customisation_locked,id+" actual exterior wash unlocks")
++		var snow: Dictionary = dirty.duplicate(true)
++		snow.dirt = 0.0
++		snow.slow_dirt = 0.0
++		snow.snow = 0.8
++		check(VehicleCondition.save(records,id,snow) == OK,"seed snow "+id)
++		page._process(0.0)
++		check(page._customisation_locked,id+" snowy car requires cleaning")
++		var trace: Dictionary = VehicleWeathering.new().snapshot()
++		trace.dirt = 0.005
++		check(VehicleCondition.save(records,id,trace) == OK,"seed trace dirt "+id)
++		page._process(0.0)
++		check(not page._customisation_locked,id+" trace dirt does not require spot hunting")
++		trace.dirt = 0.04
++		check(VehicleCondition.save(records,id,trace) == OK,"seed faint film "+id)
++		page._process(0.0)
++		check(not page._customisation_locked,id+" faint remaining film is acceptable")
++		trace.dirt = 0.08
++		trace.slow_dirt = 0.08
++		check(VehicleCondition.save(records,id,trace) == OK,"seed overlapping faint layers "+id)
++		page._process(0.0)
++		check(not page._customisation_locked,id+" faint layers no longer add up to a false lock")
++		page._show_section("care")
++		check(page._wash_status.text == "Clean for most people.",id+" care indication agrees with faint-film customisation")
++		var faint_condition: Dictionary = page.showroom.weathering.snapshot()
++		page._show_section("customise")
++		page._preview_color(Color("49798a"),"body")
++		page._save()
++		check(VehicleLivery.for_car(records.settings,id).colors.body == "49798a" and page.showroom.weathering.snapshot() == faint_condition,id+" faint-film painting saves without removing dirt")
++		trace.dirt = 0.0
++		trace.slow_dirt = 0.15
++		check(VehicleCondition.save(records,id,trace) == OK,"seed faint slow film "+id)
++		page._process(0.0)
++		check(not page._customisation_locked,id+" slow film uses its softer rendered strength")
++		trace.slow_dirt = 0.4
++		check(VehicleCondition.save(records,id,trace) == OK,"seed heavy slow film "+id)
++		page._process(0.0)
++		check(page._customisation_locked,id+" heavy slow film still blocks")
++		trace.slow_dirt = 0.0
++		trace.dirt = 0.15
++		check(VehicleCondition.save(records,id,trace) == OK,"seed noticeable film "+id)
++		page._process(0.0)
++		check(not page._customisation_locked,id+" light unwashed film no longer requires spot hunting")
++		var leftover: Dictionary = dirty.duplicate(true)
++		var faint_mask := PackedByteArray()
++		faint_mask.resize(VehicleCondition.CELLS)
++		faint_mask.fill(232)
++		leftover.wash = Marshalls.raw_to_base64(faint_mask)
++		leftover.slow_wash = leftover.wash
++		check(VehicleCondition.save(records,id,leftover) == OK,"seed washed car with faint interpolation residue "+id)
++		page._process(0.0)
++		check(not page._customisation_locked,id+" broad faint wash residue no longer needs further scrubbing")
++		page._show_section("care")
++		check(page._wash_status_panel.tooltip_text == "Ready to customise",id+" washed-film indicator agrees with gate")
++		if id == "compact":
++			await settle()
++			await capture("faint-residue-clean-enough")
++		check(VehicleCondition.save(records,id,dirty) == OK,"seed new race wear during care "+id)
++		page._process(0.0)
++		check(page._wash_status_panel.tooltip_text == "Wash the exterior before customising",id+" new race wear revokes ready indication")
++		page._show_section("customise")
++		# Leave a real dirty interpolation cell on an otherwise washed exterior.
++		var bounds: AABB = page.showroom.weathering.bounds
++		var sample: Vector3 = page._cleanliness.points[0]
++		var cell := Vector3i(((sample - bounds.position) / bounds.size * 15.0).floor().clamp(Vector3.ZERO,Vector3.ONE * 14.0))
++		var mask := PackedByteArray()
++		mask.resize(VehicleCondition.CELLS)
++		mask.fill(255)
++		for z: int in range(2):
++			for y: int in range(2):
++				for x: int in range(2): mask[(cell.y+y)*256+(cell.z+z)*16+cell.x+x] = 0
++		var speck: Dictionary = dirty.duplicate(true)
++		speck.wash = Marshalls.raw_to_base64(mask)
++		speck.slow_wash = speck.wash
++		check(VehicleCondition.save(records,id,speck) == OK,"seed small missed exterior patch "+id)
++		page._process(0.0)
++		check(not page._customisation_locked,id+" small missed dirty patch is accepted")
++		var tolerated_condition: Dictionary = page.showroom.weathering.snapshot()
++		page._preview_color(Color("417585"),"body")
++		page._save()
++		check(page.draft.colors.body == "417585" and page.showroom.weathering.snapshot() == tolerated_condition,id+" tolerated dirt permits edits without removing dirt")
++		if id == "compact":
++			page._select_livery(3)
++			check(VehicleLivery.for_car(records.settings,id).pattern == page._preset_value(3).pattern,"small missed patch permits saved livery selection")
++			await settle()
++			await capture("small-missed-patch-customisation-allowed")
++			page._show_section("tuning")
++			page._select_kit("aero","lip")
++			check(VehicleCustomisation.for_car(records.settings,id).aero == "lip","small missed patch permits saved kit selection")
++			check(page.showroom.weathering.snapshot().wash == tolerated_condition.wash,"fitting kit retains tolerated dirt")
++			await settle()
++			await capture("small-missed-patch-kits-allowed")
++			page._show_section("customise")
++		# A broad unwiped half of the car must still be rejected.
++		mask.fill(255)
++		for z: int in range(16):
++			for y: int in range(16):
++				for x: int in range(8): mask[y*256+z*16+x] = 0
++		speck.wash = Marshalls.raw_to_base64(mask)
++		speck.slow_wash = speck.wash
++		check(VehicleCondition.save(records,id,speck) == OK,"seed broadly missed dirt "+id)
++		page._process(0.0)
++		check(page._customisation_locked,id+" a broadly dirty car still blocks edits")
++		var wet: Dictionary = VehicleWeathering.new().snapshot()
++		wet.wetness = 1.0
++		check(VehicleCondition.save(records,id,wet) == OK,"seed clean wet "+id)
++		page._process(0.0)
++		check(not page._customisation_locked,id+" clean wet car may customise")
++	# Follow one actual washing session through every nonnumeric label.
++	page._show_section("cars")
++	page.open_car(0)
++	page._show_section("care")
++	page.showroom.finish_car_transition()
++	if not page.showroom.wash_mode: page._toggle_wash()
++	var labels: Array[String] = []
++	var coat: Dictionary = VehicleWeathering.new().snapshot()
++	coat.dirt = 1.0
++	coat.snow = 1.0
++	coat.slow_dirt = 1.0
++	coat.slow_snow = 1.0
++	var progressive := PackedByteArray()
++	progressive.resize(VehicleCondition.CELLS)
++	for strength: int in range(0,256,8):
++		progressive.fill(strength)
++		coat.wash = Marshalls.raw_to_base64(progressive)
++		coat.slow_wash = coat.wash
++		VehicleCondition.save(records,"compact",coat)
++		page._process(0.0)
++		var label: String = page._wash_status.text
++		check(page._wash_status_icon.texture == MenuIcon.texture("check" if page._cleanliness.is_clean(page.showroom) else "care"),"label and editing gate agree during progressive washing")
++		if label in labels: continue
++		labels.append(label)
++		for dimensions: Vector2i in [Vector2i(960,540),Vector2i(1280,720)]:
++			root.size = dimensions
++			await settle()
++			check(page.preview.get_global_rect().encloses(page._wash_status_panel.get_global_rect()),"graded status fits preview "+str(dimensions))
++			check(page._wash_status.size.x >= page._wash_status.get_minimum_size().x,"graded label is not clipped")
++			await capture(label.to_snake_case().replace(".","")+"-"+str(dimensions.x))
++	check(labels == ["There is a car under there. Maybe.","I can tell the color now","OK in the dark","Clean for most people.","Shiny. For now."],"all five humorous grades appear in washing order")
++	page.queue_free()
++	await process_frame
++	var report: Dictionary = {"checks":checks,"failures":failures,"renderer":renderer,"phone_test":false}
++	var file := FileAccess.open(output.path_join("report.json"),FileAccess.WRITE)
++	file.store_string(JSON.stringify(report,"\t")+"\n")
++	print("Garage clean customisation: %d checks, %d failures" % [checks,failures])
++	quit(1 if failures > 0 else 0)
+diff --git a/game/tests/fixtures/garage_wash_overlay_before/.gdignore b/game/tests/fixtures/garage_wash_overlay_before/.gdignore
+new file mode 100644
+index 0000000..e69de29
+diff --git a/docs/evidence/garage-wash-overlay-2026-10-25/run.ps1 b/docs/evidence/garage-wash-overlay-2026-10-25/run.ps1
+--- /dev/null
++++ b/docs/evidence/garage-wash-overlay-2026-10-25/run.ps1
+@@ -0,0 +1,19 @@
++﻿param([string]$Test='test_garage_clean_customisation',[ValidateSet('headless','gl_compatibility','mobile')][string]$Mode='headless')
++$ErrorActionPreference='Stop'
++$customRepo=(Resolve-Path (Join-Path $PSScriptRoot '../../..')).Path
++$customOutput=Join-Path $PSScriptRoot "$Test-$Mode"
++New-Item -ItemType Directory -Force -Path $customOutput | Out-Null
++$env:APPDATA=Join-Path $customRepo "build/garage-wash-overlay-2026-10-25/$Test-$Mode/user"
++New-Item -ItemType Directory -Force -Path $env:APPDATA | Out-Null
++$customArgs=@('-NoProfile','-ExecutionPolicy','Bypass','-File',(Join-Path $customRepo 'scripts/dev.ps1'),'-Action','TestScript','-ScriptPath',"res://tests/$Test.gd",'-CommandTimeoutSeconds','240','-TestArgument',"--evidence-root=$customOutput")
++if ($Mode -ne 'headless') {$customArgs+=@('-Graphical','-RenderingMethod',$Mode,'-RenderingDriver',$(if ($Mode -eq 'mobile') {'vulkan'} else {'opengl3'}))}
++$customStarted=[DateTime]::UtcNow
++& powershell @customArgs *> (Join-Path $customOutput 'console.log')
++$customCode=$LASTEXITCODE
++@{arguments=$customArgs;exit_code=$customCode;started_utc=$customStarted.ToString('o');duration_seconds=([DateTime]::UtcNow-$customStarted).TotalSeconds}|ConvertTo-Json -Depth 5|Set-Content -Encoding UTF8 (Join-Path $customOutput 'command.json')
++Get-Content (Join-Path $customOutput 'console.log') -Tail 28
++exit $customCode
++
++
++
++
+diff --git a/docs/evidence/garage-wash-overlay-2026-10-25/record.py b/docs/evidence/garage-wash-overlay-2026-10-25/record.py
+--- /dev/null
++++ b/docs/evidence/garage-wash-overlay-2026-10-25/record.py
+@@ -0,0 +1,81 @@
++"""Record UI checks, the unchanged baseline failure and a scoped task patch."""
++from pathlib import Path
++import difflib
++import hashlib
++import json
++import re
++import subprocess
++
++EVIDENCE = Path(__file__).resolve().parent
++ROOT = EVIDENCE.parents[2]
++EXISTING = ["game/ui/garage_page.gd", "AGENTS.md", "DEVELOPMENT_STATUS.md"]
++EXISTING += ["game/tests/"+name+".gd" for name in (
++    "test_garage_clean_customisation", "test_garage_sidebar", "test_garage_view_controls",
++    "test_garage_tuning_layout", "test_livery_patterns")]
++NEW = ["docs/GARAGE_WASH_OVERLAY_2026_10_25.md",
++       "game/tests/fixtures/garage_wash_overlay_before/test_clean_before.gd",
++       "game/tests/fixtures/garage_wash_overlay_before/.gdignore"]
++NEW += ["docs/evidence/garage-wash-overlay-2026-10-25/"+name
++        for name in ("run.ps1", "record.py", "review.html")]
++
++def sha(path):
++    return hashlib.sha256(path.read_bytes()).hexdigest()
++
++def log_text(path):
++    data = path.read_bytes()
++    return data.decode("utf-16" if data.startswith(b"\xff\xfe") else "utf-8-sig", errors="replace")
++
++patch, sources = [], []
++for name in EXISTING + NEW:
++    target = ROOT / name
++    before = EVIDENCE / "before" / name
++    original = before.read_text(encoding="utf-8") if before.exists() else ""
++    current = target.read_text(encoding="utf-8")
++    patch.append(f"diff --git a/{name} b/{name}\n")
++    if not before.exists() and not current:
++        patch.append("new file mode 100644\nindex 0000000..e69de29\n")
++    else:
++        patch.extend(difflib.unified_diff(original.splitlines(True), current.splitlines(True),
++            fromfile=f"a/{name}" if before.exists() else "/dev/null", tofile=f"b/{name}"))
++    sources.append({"path": name, "sha256": sha(target), "before_sha256": sha(before) if before.exists() else None})
++checkpoint = EVIDENCE / "task-only.patch"
++checkpoint.write_text("".join(patch), encoding="utf-8", newline="\n")
++result = subprocess.run(["git", "apply", "--check", "--reverse", str(checkpoint)],
++                        cwd=ROOT, capture_output=True, text=True)
++runs = []
++for path in sorted(EVIDENCE.rglob("command.json")):
++    command = json.loads(path.read_text(encoding="utf-8-sig"))
++    log = path.with_name("console.log")
++    content = log_text(log)
++    summaries = re.findall(r"(?:CUSTOMISATION_CAROUSEL|GARAGE_SIDEBAR|GARAGE_VIEW_CONTROLS|Garage clean customisation|APP_TESTS|SCRIPT_PARSE):[^\r\n]+",content)
++    failures = re.findall(r"^FAIL: ([^\r\n]+)",content,re.M)
++    known = command["exit_code"] != 0 and failures == ["forklift heavy slow film still blocks"]
++    runs.append({"directory": str(path.parent.relative_to(EVIDENCE)).replace("\\", "/"), **command,
++                 "summary": summaries, "failures": failures, "known_preexisting_failure": known,
++                 "log_sha256": sha(log)})
++report = {
++    "date": "2026-10-25", "requirements": ["GWO04", "GWO05", "GWO06", "R01", "Q01"],
++    "engine": (ROOT / "godot-version.txt").read_text().strip(), "runs": runs, "sources": sources,
++    "baseline": {"runtime": "before/game/ui/garage_page.gd",
++                 "test": "before/game/tests/test_garage_clean_customisation.gd",
++                 "isolation": "Exact source reloaded only into the disposable process memory; no runtime file restoration",
++                 "failure": "forklift heavy slow film still blocks"},
++    "initial_fixture_issue": {"log": "before/console.log", "issue": "res:// evidence-root argument was not normalized after parsing; fixture corrected"},
++    "captures": [{"path": str(path.relative_to(EVIDENCE)).replace("\\", "/"), "sha256": sha(path)}
++                 for path in sorted(EVIDENCE.rglob("*.png"))],
++    "checkpoint": {"path": "task-only.patch", "sha256": sha(checkpoint),
++                   "reverse_check_exit": result.returncode, "stderr": result.stderr},
++    "not_run": ["Full legacy livery-pattern and tuning-layout suites; their removed-button fixture references were updated, and full parser checks pass"],
++    "remaining_acceptance": ["client reload", "owner appearance and touch", "physical-device acceptance",
++                             "separate pre-existing Forklift heavy-slow-film cleanliness assertion"],
++    "limits": ["Windows desktop renderers only", "no phone/tablet attachment check or physical-device test",
++               "no APK", "no real purchase or live mutation", "no deployment or owner-process restart",
++               "no cleanliness threshold changed", "concurrent work preserved"],
++}
++(EVIDENCE / "report.json").write_text(json.dumps(report, indent=2)+"\n", encoding="utf-8")
++unexpected = [run["directory"] for run in runs if not run["summary"] or (run["exit_code"] and not run["known_preexisting_failure"])]
++print(json.dumps({"runs": [{"name": run["directory"], "exit": run["exit_code"], "summary": run["summary"],
++                            "known_failure": run["known_preexisting_failure"]} for run in runs],
++                  "unexpected_failures": unexpected, "checkpoint_reverse_exit": result.returncode,
++                  "checkpoint_error": result.stderr}, indent=2))
++raise SystemExit(result.returncode or bool(unexpected))
+diff --git a/docs/evidence/garage-wash-overlay-2026-10-25/review.html b/docs/evidence/garage-wash-overlay-2026-10-25/review.html
+--- /dev/null
++++ b/docs/evidence/garage-wash-overlay-2026-10-25/review.html
+@@ -0,0 +1,10 @@
++<!doctype html><html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Garage wash overlay and view-button cleanup</title>
++<style>body{max-width:1500px;margin:28px auto;padding:0 20px;background:#080f16;color:#f1f4f3;font:17px system-ui}h1,h2{font-weight:600}p,figcaption{color:#a4bac7}a,summary{color:#ffd348}img{display:block;width:100%;border-radius:7px}figure{margin:24px 0}figcaption{padding:10px 0}summary{cursor:pointer}.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(360px,1fr));gap:20px}</style>
++<h1>Wash required stays over the showroom</h1><p>Actual native App captures using isolated dirty-Forklift records. The compact prompt replaces the full sidebar, and the four camera buttons are removed.</p>
++<figure><img src="test_garage_sidebar-gl_compatibility/app-dirty-forklift-overlay.png" alt="Dirty Forklift with compact wash overlay and no view buttons"><figcaption>Actual App · dirty Forklift · full showroom width.</figcaption></figure>
++<figure><img src="test_garage_sidebar-gl_compatibility/app-wash-after-shortcut.png" alt="Actual washing after the touch shortcut"><figcaption>Touch Wash car opens manual washing without a sidebar.</figcaption></figure>
++<details><summary>Original task-start layout</summary><figure><img src="fixtures/garage_wash_overlay_before/test_clean_before-gl_compatibility/wash-required-kits.png" alt="Original wash-required sidebar and view buttons"><figcaption>Exact task-start sources reloaded only inside the isolated baseline process.</figcaption></figure></details>
++<div class="grid"><figure><img src="test_garage_clean_customisation-gl_compatibility/wash-required-livery-960.png" alt="Compact wash requirement at 960"><figcaption>Small window: prompt and action fit.</figcaption></figure><figure><img src="test_garage_clean_customisation-gl_compatibility/clean-kits-unlocked.png" alt="Clean car with editing unlocked"><figcaption>Actual washing still unlocks the existing workbench.</figcaption></figure></div>
++<details><summary>Desktop Mobile / Vulkan</summary><figure><img src="test_garage_sidebar-mobile/app-dirty-forklift-overlay.png" alt="Forklift overlay on Vulkan"></figure></details>
++<p>UI/shortcut checks: 549 per desktop renderer. Gesture checks: 65 per renderer. The broader cleanliness suite retains one Forklift film assertion, also reproduced on the original runtime; its assertions and thresholds are unchanged.</p>
++<p><a href="report.json">Actual commands, results and hashes</a> · <a href="task-only.patch">Scoped checkpoint</a></p><p>Client reload and owner visual/touch acceptance remain. No physical-device test was performed.</p></html>

@@ -5,7 +5,7 @@ extends RefCounted
 
 const RALLY_HANDBRAKE = preload("res://vehicle/rally_handbrake.gd")
 const BRIDGE_FLIGHT = preload("res://vehicle/bridge_flight.gd")
-const PHYSICS_VERSION: String = "arcade-planar-0.75"
+const PHYSICS_VERSION: String = "arcade-planar-0.76"
 const LOW_SPEED_TURN_FADE_END: float = 16.66 # Below 60 km/h, avoiding float32 endpoint arithmetic.
 const SOIL_TORQUE_GAIN: float = 1.35 # Loose verge bite beyond pure longitudinal drag.
 const SOIL_ROUGH_YAW_ACCELERATION: float = 1.45 # rad/s^2 peak spatial tyre deflection.
@@ -53,7 +53,7 @@ func _step(frame: DriveFrame, ground: PlaygroundData = null) -> void:
 	LaunchStart.advance(state, frame)
 	# Brake pressure is only input driven; no automatic drift latch.
 	var requested_handbrake: float = frame.handbrake / 255.0
-	if config.single_pedal:
+	if config.single_pedal or not config.handbrake_enabled:
 		requested_handbrake = 0.0
 		state.handbrake_pressure = 0.0
 	state.handbrake_pressure = move_toward(state.handbrake_pressure, requested_handbrake,
@@ -104,6 +104,11 @@ func _step(frame: DriveFrame, ground: PlaygroundData = null) -> void:
 		state.tick += 1
 		return
 	var surface: Vector2 = ground.surface_factors(state) if ground != null else Vector2(1.0, 0.0)
+	if config.winter_road_grip != 1.0 and ground is NativeTrack and str(ground.metadata.get("theme", "pine")) == "winter" and ground.cell_at(state.position, state.track_elevated) == 0:
+		surface.x *= config.winter_road_grip
+	if config.air_cushion:
+		_step_hovercraft(frame,ground,old_position,old_heading,old_velocity,old_route,old_layer,surface)
+		return
 	var pickup: float = ground.tire_pickup(state) if ground != null else 0.0
 	if pickup > 0.0:
 		surface.x = minf(1.0, surface.x * config.loose_surface_grip)
@@ -218,6 +223,8 @@ func _step(frame: DriveFrame, ground: PlaygroundData = null) -> void:
 	state.grip = move_toward(state.grip, target_grip, config.grip_recovery * STEP)
 	var grip_limit: float = config.lateral_grip * state.grip * (config.front_grip + config.rear_grip) * 0.5
 	grip_limit *= surface.x * tire_grip
+	if config.winter_lateral_grip != 1.0 and ground is NativeTrack and str(ground.metadata.get("theme", "pine")) == "winter" and ground.cell_at(state.position, state.track_elevated) == 0:
+		grip_limit *= config.winter_lateral_grip
 	grip_limit *= 1.0 - lift * absf(state.steering) * config.lift_off_grip_loss
 	grip_limit *= 1.0 - throttle * absf(state.steering) * config.throttle_grip_loss
 	if config.progressive_handling:
@@ -281,7 +288,7 @@ func _step(frame: DriveFrame, ground: PlaygroundData = null) -> void:
 		# it uses the combined traction budget above, not the motor's rear limit.
 		# Ordinary rear-only regen still loses rear load under braking.
 		var regenerating: bool = config.regeneration > 0.0 and brake == 0.0 and throttle < config.coast_pedal
-		if not (config.single_pedal and regenerating) and (brake == 0.0 or brake > 0.0 and longitudinal < -0.15):
+		if not ((config.single_pedal or config.blended_regeneration) and regenerating) and (brake == 0.0 or brake > 0.0 and longitudinal < -0.15):
 			var rear_load: float = 0.48 if regenerating else 0.60
 			var rear_soil: float = (wheel_soil.z + wheel_soil.w) * 0.5
 			var rear_traction: float = config.longitudinal_grip * rear_load * surface.x * drive_tire_grip
@@ -336,6 +343,13 @@ func _step(frame: DriveFrame, ground: PlaygroundData = null) -> void:
 	next_longitudinal = clampf(next_longitudinal, -maxf(config.reverse_speed, -longitudinal), config.maximum_speed)
 	state.velocity = forward * next_longitudinal + right * next_lateral
 	state.velocity = state.velocity.limit_length(config.maximum_speed)
+	if config.turn_speed_reduction > 0.0 and longitudinal > 0.0:
+		# A sustained fast turn lowers the attainable speed, but never cuts
+		# existing momentum instantly when steering is applied.
+		var turn_strength: float = absf(state.steering) * smoothstep(0.65, 0.85, speed / config.maximum_speed)
+		var turn_limit: float = config.maximum_speed * (1.0 - config.turn_speed_reduction * turn_strength)
+		var gradual_limit: float = maxf(turn_limit, speed - 1.7 * STEP)
+		state.velocity = state.velocity.limit_length(gradual_limit)
 	if handbrake > 0.0 and throttle == 0.0: state.velocity = state.velocity.limit_length(speed)
 	var previous_position: Vector2 = state.position
 	state.position += state.velocity * STEP
@@ -366,6 +380,108 @@ static func dirt_grip_loss(dirt: float, sensitivity: float, loose_contact: bool 
 	# balance and at least 30% road traction even at a full coating.
 	if loose_contact: return dirt * sensitivity
 	return clampf(sensitivity * 2.0, 0.45, 0.70) * sqrt(clampf(dirt, 0.0, 1.0)) if sensitivity > 0.0 else 0.0
+
+
+func _step_hovercraft(frame: DriveFrame, ground: PlaygroundData, old_position: Vector2, old_heading: float, old_velocity: Vector2, old_route: int, old_layer: bool, surface: Vector2) -> void:
+	if config.vector_thrust:
+		_step_vector_hovercraft(frame,ground,old_position,old_heading,old_velocity,old_route,old_layer)
+		return
+	# World momentum survives rotation. The fan supplies thrust along the hull;
+	# cushion drag dissipates sideways motion without redirecting it into speed.
+	var throttle: float = frame.throttle/255.0
+	var brake: float = frame.brake/255.0
+	var steering: float = frame.steer/127.0
+	state.steering = move_toward(state.steering,steering,(config.countersteering_rate if steering*state.steering < 0.0 else config.steering_rate)*STEP)
+	var speed: float = state.velocity.length()
+	var longitudinal: float = state.velocity.dot(state.forward())
+	var rudder: float = smoothstep(0.0,3.0,speed)+throttle*(1.0-smoothstep(0.0,3.0,speed))
+	var reverse: float = -1.0 if longitudinal < -0.15 else 1.0
+	var target: float = state.steering*config.maximum_yaw_rate*rudder*reverse
+	state.yaw_rate = lerpf(state.yaw_rate,target,1.0-exp(-config.mass/config.rotational_inertia*7.0*STEP))
+	state.heading = wrapf(state.heading+state.yaw_rate*STEP,-PI,PI)
+	var forward: Vector2 = state.forward()
+	var right: Vector2 = state.right()
+	longitudinal = state.velocity.dot(forward)
+	var acceleration: float = _pedal_acceleration(longitudinal,throttle,brake)
+	if acceleration > 0.0 and throttle > 0.0:
+		if state.tick < state.launch_delay_until: acceleration = 0.0
+		elif state.tick < state.launch_end_tick: acceleration *= 1.0+state.launch_gain
+	if longitudinal < -config.reverse_speed: acceleration = maxf(0.0,acceleration)
+	var next: float = longitudinal+acceleration*STEP
+	if brake > 0.0 and longitudinal > 0.0 and next < 0.0: next = 0.0
+	if throttle > 0.0 and longitudinal < 0.0 and next > 0.0: next = 0.0
+	var lateral: float = state.velocity.dot(right)*exp(-(config.lateral_response+brake*3.5)*STEP)
+	var drag: float = (config.rolling_resistance+config.drag*speed*speed)/config.mass+maxf(surface.y,0.0)*config.soil_drag_multiplier
+	next = move_toward(next,0.0,drag*STEP)
+	next = clampf(next,-maxf(config.reverse_speed,-longitudinal),config.maximum_speed)
+	state.velocity = (forward*next+right*lateral).limit_length(config.maximum_speed)
+	# Braking dissipates all world momentum, including a broadside slide.
+	if brake > 0.0 and absf(longitudinal) > 0.15:
+		state.velocity = state.velocity.move_toward(Vector2.ZERO,brake*2.0*STEP)
+	state.position += state.velocity*STEP
+	if ground != null:
+		ground.resolve(state,old_position,config)
+		ground.step_props(state,old_position,config,STEP)
+		ground.slow_in_snow(state,old_position,config,STEP)
+		ground.launch_jump(state,old_position)
+		ground.step_speed_bumps(state,old_position,old_heading,old_velocity,config,STEP)
+	if bridge_elevation != null:
+		BRIDGE_FLIGHT.release(state,old_position,old_heading,old_velocity,old_route,old_layer,bridge_elevation,config.wheelbase,STEP)
+	state.tick += 1
+
+
+func _step_vector_hovercraft(frame: DriveFrame, ground: PlaygroundData, old_position: Vector2, old_heading: float, old_velocity: Vector2, old_route: int, old_layer: bool) -> void:
+	# Point the hull independently of drift. Steering never changes sign with
+	# backwards travel, and the fan always adds thrust in the pointed direction.
+	var throttle: float = frame.throttle/255.0
+	var brake: float = frame.brake/255.0
+	var steering: float = frame.steer/127.0
+	state.steering = move_toward(state.steering,steering,(config.countersteering_rate if steering*state.steering < 0.0 else config.steering_rate)*STEP)
+	var target: float = state.steering*config.maximum_yaw_rate
+	state.yaw_rate = lerpf(state.yaw_rate,target,1.0-exp(-config.mass/config.rotational_inertia*7.0*STEP))
+	state.heading = wrapf(state.heading+state.yaw_rate*STEP,-PI,PI)
+	var forward: Vector2 = state.forward()
+	var speed: float = state.velocity.length()
+	# Isotropic cushion drag: turning the hull cannot scrub sideways momentum
+	# or redirect it into forward speed. Ground materials do not become tires.
+	state.velocity *= exp(-config.lateral_response*STEP)
+	var drag: float = (config.rolling_resistance+config.drag*speed*speed)/config.mass
+	state.velocity = state.velocity.move_toward(Vector2.ZERO,drag*STEP)
+	if brake == 0.0 and throttle > 0.0 and config.thrust_lateral_damping > 0.0:
+		# Fan power gently catches the slide. Remove lateral energy over time;
+		# never snap travel onto the hull or convert the removed drift into speed.
+		var right: Vector2 = state.right()
+		var side_speed: float = state.velocity.dot(right)
+		state.velocity -= right*side_speed*(1.0-exp(-config.thrust_lateral_damping*throttle*STEP))
+	if brake > 0.0:
+		if state.reverse_wait >= config.reverse_delay and throttle == 0.0:
+			var backwards: float = -state.velocity.dot(forward)
+			var reverse_push: float = minf(config.engine_force/config.mass*0.55*brake,maxf(0.0,config.reverse_speed-backwards)/STEP)
+			state.velocity -= forward*reverse_push*STEP
+		else:
+			# Brake opposes the whole travel vector, including a broadside slide.
+			state.velocity = state.velocity.move_toward(Vector2.ZERO,config.braking_force/config.mass*brake*STEP)
+			if state.velocity.length() < 0.15 and throttle == 0.0:
+				state.velocity = Vector2.ZERO
+				state.reverse_wait += STEP
+			else: state.reverse_wait = 0.0
+	else:
+		state.reverse_wait = 0.0
+		var push: float = config.engine_force/config.mass*throttle
+		if state.tick < state.launch_delay_until: push = 0.0
+		elif state.tick < state.launch_end_tick: push *= 1.0+state.launch_gain
+		state.velocity += forward*push*STEP
+	state.velocity = state.velocity.limit_length(config.maximum_speed)
+	state.position += state.velocity*STEP
+	if ground != null:
+		ground.resolve(state,old_position,config)
+		ground.step_props(state,old_position,config,STEP)
+		ground.slow_in_snow(state,old_position,config,STEP)
+		ground.launch_jump(state,old_position)
+		ground.step_speed_bumps(state,old_position,old_heading,old_velocity,config,STEP)
+	if bridge_elevation != null:
+		BRIDGE_FLIGHT.release(state,old_position,old_heading,old_velocity,old_route,old_layer,bridge_elevation,config.wheelbase,STEP)
+	state.tick += 1
 
 
 func _pedal_acceleration(speed: float, throttle: float, brake: float) -> float:

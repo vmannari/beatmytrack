@@ -20,7 +20,7 @@ func appearance(index: int, id: String = "compact") -> Dictionary:
 	var livery: Dictionary = VehicleLivery.defaults(id)
 	livery.colors.body = ["c43c28","247995","819c55"][index]
 	livery.pattern = str(LiveryCatalog.patterns[[33,40,12][index]].id)
-	livery.stickers.hood.id = str(LiveryCatalog.stickers[12+index].id)
+	livery.stickers.hood.id = str(LiveryCatalog.stickers[3+index].id)
 	livery.stickers.hood.rotation = -90.0
 	var parts: Dictionary = VehicleCustomisation.defaults()
 	if id == "compact":

@@ -1,0 +1,674 @@
+--- a/AGENTS.md
++++ b/AGENTS.md
+@@ -1,2 +1,7 @@
++<!-- ELECTRIC-SLIDE-ACCESS-20261027 -->
++## Easier electric power slides and stronger braking (2026-10-27)
++ESA01-ESA03/R01/Q01: Owner requests much easier acceleration-plus-steering slides and slightly stronger braking. Electric18/physics0.75 uses launch0.18, powered0.28, slide drive loss0.20, regen15 and optional full-effect pedal0.65/high-speed strength0.75. At50kmh/65%pedal actual sliding starts300ms/19.45deg; expanded matrix peaks19.93deg and retains>=79.29% final speed with positive acceleration and <=300ms unwind. Smooth fade above100.8kmh preserves original fast-turn checks; all18 ordinary radii and2400-tick straight D/R remain exact, with190cap. Release72 stops1.325s/13.112m versus1.65s/16.368m;190 stops3.433s/89.497m. Focused518, existing electric/handling/rewind/parser1326, native77Compatibility+77desktopMobile and backend72/two historical exclusions pass. Over and under five ordered laps/zero contacts independently accepts34805inputs/290035ms. Six other hashes/default arithmetic and244 prior evidence artifacts remain exact. Larger-slide/stopping targets explicitly supersede old small-drift/12-regen expectations; original lane/alignment/fast-turn/zero/replay protections remain. Trial angle/traction, speed-fade and transient concurrent backend-import failures retained. Commands, sources, native captures and task-only checkpoint: docs/ELECTRIC_SLIDE_ACCESS_2026_10_27.md and docs/evidence/electric-slide-access-2026-10-27/report.json. Client reload/rebuild, matching verifier rollout and owner feel acceptance remain. No physical-device attachment check/test, APK, purchase, live mutation, deployment, staging/commit/merge or owner-process restart; concurrent work preserved.
++<!-- /ELECTRIC-SLIDE-ACCESS-20261027 -->
++
+ <!-- GARAGE-LIVE-ENTRY-20261027 -->
+ ## Original live Garage restored from entry (2026-10-27)
+--- a/DEVELOPMENT_STATUS.md
++++ b/DEVELOPMENT_STATUS.md
+@@ -1,2 +1,7 @@
++<!-- ELECTRIC-SLIDE-ACCESS-20261027 -->
++## Easier electric power slides and stronger braking (2026-10-27)
++ESA01-ESA03/R01/Q01: Owner requests much easier acceleration-plus-steering slides and slightly stronger braking. Electric18/physics0.75 uses launch0.18, powered0.28, slide drive loss0.20, regen15 and optional full-effect pedal0.65/high-speed strength0.75. At50kmh/65%pedal actual sliding starts300ms/19.45deg; expanded matrix peaks19.93deg and retains>=79.29% final speed with positive acceleration and <=300ms unwind. Smooth fade above100.8kmh preserves original fast-turn checks; all18 ordinary radii and2400-tick straight D/R remain exact, with190cap. Release72 stops1.325s/13.112m versus1.65s/16.368m;190 stops3.433s/89.497m. Focused518, existing electric/handling/rewind/parser1326, native77Compatibility+77desktopMobile and backend72/two historical exclusions pass. Over and under five ordered laps/zero contacts independently accepts34805inputs/290035ms. Six other hashes/default arithmetic and244 prior evidence artifacts remain exact. Larger-slide/stopping targets explicitly supersede old small-drift/12-regen expectations; original lane/alignment/fast-turn/zero/replay protections remain. Trial angle/traction, speed-fade and transient concurrent backend-import failures retained. Commands, sources, native captures and task-only checkpoint: docs/ELECTRIC_SLIDE_ACCESS_2026_10_27.md and docs/evidence/electric-slide-access-2026-10-27/report.json. Client reload/rebuild, matching verifier rollout and owner feel acceptance remain. No physical-device attachment check/test, APK, purchase, live mutation, deployment, staging/commit/merge or owner-process restart; concurrent work preserved.
++<!-- /ELECTRIC-SLIDE-ACCESS-20261027 -->
++
+ <!-- GARAGE-LIVE-ENTRY-20261027 -->
+ ## Original live Garage restored from entry (2026-10-27)
+--- a/backend/tests/fixtures/verified_oval.json
++++ b/backend/tests/fixtures/verified_oval.json
+@@ -64414,5 +64414,5 @@
+     "laps": 5,
+     "max_frames": 216000,
+-    "physics_version": "arcade-planar-0.74",
++    "physics_version": "arcade-planar-0.75",
+     "replay_schema": "bmt-replay-v1",
+     "route_length": 224.990611499175,
+@@ -64431,6 +64431,6 @@
+       },
+       "electric": {
+-        "config_hash": "4ce920bc320196a5556c6e11407b299aac6c2078fecd8ac221e5a4a612750359",
+-        "handling_version": "electric-17"
++        "config_hash": "6b260c269efbdf3fe6de32f618125255998a0cd706cfe02fd47d13c3b028e424",
++        "handling_version": "electric-18"
+       },
+       "forklift": {
+--- a/backend/tests/test_verifier.py
++++ b/backend/tests/test_verifier.py
+@@ -85,5 +85,5 @@
+     document = json.loads((fixtures / "over_and_under.json").read_text())
+     replay = json.loads((fixtures / "over_and_under_rejected_inputs.json").read_text())
+-    assert real_verifier.manifest()["physics_version"] == "arcade-planar-0.74"
++    assert real_verifier.manifest()["physics_version"] == "arcade-planar-0.75"
+     with pytest.raises(VerificationError, match="required laps"):
+         real_verifier.verify_canonical_diagnostic(document, replay, "compact")
+--- /dev/null
++++ b/docs/ELECTRIC_SLIDE_ACCESS_2026_10_27.md
+@@ -0,0 +1,74 @@
++# Easier electric power slides and firmer braking — 2026-10-27
++
++The owner finds electric-17 difficult to slide and expects acceleration plus steering to start a slide much more easily. They also request slightly stronger braking. The accepted direction remains planted and punchy with controllable power slides, distinct from Compact. These requests supersede the previous small-power-slide ceiling and the 12 m/s² stopping windows.
++
++## Requirements and implementation
++
++- ESA01: Accelerating and turning must produce a deliberate slide with keyboard and moderate controller pedal input, including a standing launch.
++- ESA02: Lifting and straightening must recover predictably. Keep planted light-pedal handling, existing steering geometry, ordinary right-angle corner clearance and smooth high-speed behavior.
++- ESA03: Increase one-pedal braking moderately while retaining progressive release, exact stopping, stopped hold and D/R behavior.
++- R01: Version canonical behavior and fixtures, preserve the six other car identities/arithmetic and independently verify a five-lap recording.
++- Q01: Retain actual commands, failed trials, native evidence and a task-scoped review patch. Preserve concurrent changes.
++
++Electric-18 changes regeneration 12→15 m/s², launch lateral-response scale 0.30→0.18, powered lateral-response scale 0.70→0.28 and slide drive loss 0.25→0.20. The last change keeps useful motor pull while the car travels sideways. Mass, motor force, steering rate/angle/inertia, neutral lateral response/grip, curvature envelope and 190 km/h cap stay exact.
++
++Two optional configuration fields control the existing power-slide response. `power_slide_full_pedal=0.65` reaches full effect at 65% pedal instead of 85%; the smooth onset still starts above 46%. Light pedal, lift, straight steering and reverse retain the existing inactive gates. `power_slide_high_speed_scale=0.75` smoothly reduces this effect from 100.8 km/h toward maximum speed. This preserves the original high-speed turning checks without reducing ordinary-speed slide access. Neither field adds yaw or drive force. Defaults retain exact prior arithmetic and disappear from legacy configuration snapshots.
++
++The canonical physics identity is `arcade-planar-0.75`; electric hash is `6b260c269efbdf3fe6de32f618125255998a0cd706cfe02fd47d13c3b028e424`. The local backend fixture changes only global physics and the electric entry. Six other vehicle configuration identities are exact.
++
++## Actual results
++
++The 518-check focused matrix covers seven starting speeds (0–170 km/h), three steering inputs, four pedal positions, mirrored turns, replay, pedal progression, recovery, neutral geometry and braking. At 50 km/h, full steering and 65% pedal now produce 19.45° peak slip, with sliding beginning at 300 ms. The same new grip settings with the old pedal gate reach only 8.53° and never cross the unchanged 14.9° sliding threshold. The full matrix peaks at 19.93°; normal-speed deliberate inputs sustain actual sliding and grip response. Every sampled powered turn still accelerates, retaining at least 79.29% of the old tune's final speed over the same 1.5 seconds. Straightening settles slip below 1° and yaw below 0.1 rad/s within 300 ms.
++
++The standing full-power/full-steer launch reaches the sliding threshold at 616.7 ms. Native Game keyboard input produces 17.885° versus 5.270° with the powered response disabled. Both desktop renderers pass 77 input/selection/control/recovery checks. These are synthetic inputs through real Game code, not a physical-controller or owner driving-feel test.
++
++| Release from | Electric-17 time / distance | Electric-18 time / distance |
++| --- | --- | --- |
++| 72 km/h | 1.650 s / 16.368 m | 1.325 s / 13.112 m |
++| 190 km/h | 4.267 s / 111.000 m | 3.433 s / 89.497 m |
++
++First-tick deceleration at 72 km/h is 15.219 m/s² including resistance. Stopping distance is about 20% shorter. Zero crossing, stationary hold, reverse release and progressive pedal behavior pass. Actual 0–100 remains 1.4917 s and 190 km/h is reached in 3.2667 s. Full-power straight D/R trajectories remain exact for 2,400 ticks each. All 18 ordinary held-circle radius results are exactly equal to electric-17; original lane, prompt-turn, alignment and speed-consistency checks pass unchanged.
++
++Over and under completes five ordered laps, both bridge layers and zero contacts. The 34,805-input recording independently verifies at 290,035 ms with lap ticks `[7020,6947,6946,6946,6946]`. Five Storm circuits complete their existing one-lap diagnostics; three legacy regression circuits each complete five laps with zero contacts and exact replay. Artificial driving is a regression check rather than owner feel acceptance.
++
++## Commands and checks
++
++All Godot calls use `C:/apps/Godot 4.7.2/Godot_v4.7.2-stable_win64_console.exe`; direct headless calls use an absolute `--log-file` under this task's evidence directory. The actual suite list and checked results are in [report.json](evidence/electric-slide-access-2026-10-27/report.json).
++
++```powershell
++# Each suite in report.json, including the focused slide, existing electric,
++# handling, rewind and parser checks:
++& 'C:/apps/Godot 4.7.2/Godot_v4.7.2-stable_win64_console.exe' --headless --path game --log-file 'C:/Codes/Godot/Beat my track/docs/evidence/electric-slide-access-2026-10-27/test_electric_slide_access-final.log' --script res://tests/test_electric_slide_access.gd -- --evidence-root=res://../docs/evidence/electric-slide-access-2026-10-27
++
++powershell -NoProfile -ExecutionPolicy Bypass -File ./scripts/dev.ps1 -Action Import
++powershell -NoProfile -ExecutionPolicy Bypass -Command "& './scripts/dev.ps1' -Action TestScript -ScriptPath res://tests/test_electric_car_ui.gd -Graphical -RenderingMethod gl_compatibility -TestArgument @('--evidence-root=res://../docs/evidence/electric-slide-access-2026-10-27/native-compatibility','--over-and-under','--powered-drift')"
++# Repeated sequentially with -RenderingMethod mobile -RenderingDriver vulkan
++# and a separate native-mobile evidence directory.
++
++# From backend/:
++../.tools/backend-secure-venv/Scripts/python.exe -m pytest tests/test_verifier.py tests/test_electric_car.py -q -k 'not postgres and not retained_over_and_under_rejection' --tb=short --basetemp ../build/electric-slide-access-pytest-final
++
++# From the repository root:
++./.tools/backend-secure-venv/Scripts/python.exe docs/evidence/electric-slide-access-2026-10-27/verify_canonical.py
++./.tools/backend-secure-venv/Scripts/python.exe docs/evidence/electric-slide-access-2026-10-27/finalize_evidence.py
++```
++
++Final results: focused518, powered269, launch111, release38, speed53, character74, held53, power19, balance16, car60, one-pedal63, low-speed87, response86, turning61, radius64, direct corners32, consistency529, normal tracks20, Over and under7, legacy laps6, handling88, rewind61 and parser1326 all pass. Native Compatibility77 and desktop Mobile77 pass. Backend72 pass with the same two historical exclusions and six warnings. Import and independent canonical verification pass. Counts fall where intentionally changed fields are removed from historical equality checks; the new focused test explicitly checks the final balance.
++
++Native review images include [powered slide](evidence/electric-slide-access-2026-10-27/native-compatibility/power-slide.png), [race](evidence/electric-slide-access-2026-10-27/native-compatibility/race.png) and matching [desktop Mobile slide](evidence/electric-slide-access-2026-10-27/native-mobile/power-slide.png). Hitches remain visible in diagnostic logs; no frame-time or phone-performance claim is made.
++
++## Retained trials and contract updates
++
++Initial scale 0.20 caused excessive angle or lost too much acceleration in several moderate-pedal tight turns. Scale0.25 still missed the explicit acceleration floor. Scale0.28 plus reduced slide drive loss passes. New test drafts initially overconstrained standstill onset/dwell and tiny grip activation; final checks require a real threshold crossing, at least half a second of sliding and lower grip than the non-sliding old tune. Angle, speed, symmetry, recovery and exact-replay guards remain explicit.
++
++The unfaded powered tune failed two original top-speed radius checks in each of turning and response; the implementation's continuous high-speed fade fixes them. Those checks retain their original 10% tighter radius and completion bounds. A character-test draft required an arbitrary 8° minimum even during the new fast-speed fade; its replacement requires at least 1.5× the actual preceding tune's slip at every tested speed. Original logs/metrics are retained under the evidence root and `before-speed-fade/`.
++
++Historical 8° power-slide ceilings and 95% same-time power-turn speed floors deliberately change to bounded deliberate slides (<24° in retained suites, <26° across the expanded matrix) with >=78% retained speed and positive acceleration. Light-pedal <8°, initial launch <8°/5° heading, original steering/corner alignment, exact replay, zero-speed/D/R, other-car defaults and identity protections remain. New explicit stopping windows are 1.25–1.4 s / 12–14 m from72 and 3.3–3.6 s / 85–95 m from190. The owner requested both behavior changes; no unrelated failed invariant is removed.
++
++The first backend run had 71 passes and one setup import error while a concurrently edited `studio_usage` module was unavailable. The module subsequently appeared without changes by this task; the final identical selection passes72. All244 artifacts in the two previous electric evidence directories retain their original hashes. Every new output has its own destination; historical baseline reads remain immutable.
++
++## Scope and remaining acceptance
++
++Runtime scope is the electric resource, two optional HandlingConfig fields/snapshot omissions and the powered lateral-response gate/fade. Supporting scope is tests, local canonical fixture, documentation and the review checkpoint. Compact resource/catalogue/input sources remain exact. Concurrent Garage, rendering, vehicle geometry, backend and documentation changes remain preserved and excluded from the checkpoint.
++
++Reload/rebuild the client and roll out a matching verifier before online use of physics0.75. Owner keyboard/controller driving-feel acceptance remains, including power-slide initiation and braking on normal90° tracks. No physical-device attachment check or device test was performed. No APK, real purchase/authentication, owner-save mutation, deployment, root-index staging, commit, merge or owner-process restart was performed.
+--- a/docs/PHASE_0_PLAN.md
++++ b/docs/PHASE_0_PLAN.md
+@@ -1,2 +1,7 @@
++<!-- ELECTRIC-SLIDE-ACCESS-20261027 -->
++## Easier electric power slides and stronger braking (2026-10-27)
++ESA01-ESA03/R01/Q01: Owner requests much easier acceleration-plus-steering slides and slightly stronger braking. Electric18/physics0.75 uses launch0.18, powered0.28, slide drive loss0.20, regen15 and optional full-effect pedal0.65/high-speed strength0.75. At50kmh/65%pedal actual sliding starts300ms/19.45deg; expanded matrix peaks19.93deg and retains>=79.29% final speed with positive acceleration and <=300ms unwind. Smooth fade above100.8kmh preserves original fast-turn checks; all18 ordinary radii and2400-tick straight D/R remain exact, with190cap. Release72 stops1.325s/13.112m versus1.65s/16.368m;190 stops3.433s/89.497m. Focused518, existing electric/handling/rewind/parser1326, native77Compatibility+77desktopMobile and backend72/two historical exclusions pass. Over and under five ordered laps/zero contacts independently accepts34805inputs/290035ms. Six other hashes/default arithmetic and244 prior evidence artifacts remain exact. Larger-slide/stopping targets explicitly supersede old small-drift/12-regen expectations; original lane/alignment/fast-turn/zero/replay protections remain. Trial angle/traction, speed-fade and transient concurrent backend-import failures retained. Commands, sources, native captures and task-only checkpoint: docs/ELECTRIC_SLIDE_ACCESS_2026_10_27.md and docs/evidence/electric-slide-access-2026-10-27/report.json. Client reload/rebuild, matching verifier rollout and owner feel acceptance remain. No physical-device attachment check/test, APK, purchase, live mutation, deployment, staging/commit/merge or owner-process restart; concurrent work preserved.
++<!-- /ELECTRIC-SLIDE-ACCESS-20261027 -->
++
+ <!-- KART-SHAPED-BODYWORK-20261026 -->
+ ## Kart bumper, tank and bodywork shape correction (2026-10-26)
+--- a/game/resources/cars/electric.tres
++++ b/game/resources/cars/electric.tres
+@@ -3,10 +3,10 @@
+ [resource]
+ script = ExtResource("1")
+-version = "electric-17"
++version = "electric-18"
+ vehicle_id = "electric"
+ profile_name = "Volt"
+ rear_wheel_drive = true
+ single_pedal = true
+-regeneration = 12.0
++regeneration = 15.0
+ coast_pedal = 0.24
+ mass = 1680.0
+@@ -25,6 +25,8 @@
+ steering_angle = 0.78
+ high_speed_steering_reduction = 0.40
+-launch_lateral_response_scale = 0.30
+-power_lateral_response_scale = 0.70
++launch_lateral_response_scale = 0.18
++power_lateral_response_scale = 0.28
++power_slide_full_pedal = 0.65
++power_slide_high_speed_scale = 0.75
+ continuous_turn_radius = true
+ low_speed_turn_radius = 2.5
+@@ -45,5 +47,5 @@
+ lift_off_rotation = 0.12
+ lift_off_grip_loss = 0.03
+-slide_drive_loss = 0.25
++slide_drive_loss = 0.20
+ corner_energy_retention = 0.60
+ countersteer_assistance = 0.70
+--- /dev/null
++++ b/game/tests/probe_electric_slide_access.gd
+@@ -0,0 +1,65 @@
++extends "res://tests/probe_electric_character.gd"
++
++const SLIDE_OUTPUT: String = "res://../docs/evidence/electric-slide-access-2026-10-27"
++
++func slide_sample(config: HandlingConfig, kph: float, steer: float, pedal: float, duration: int = 180) -> Dictionary:
++	var sim := VehicleSimulation.new(config)
++	sim.state.velocity=Vector2(0,kph/3.6)
++	var peak: float=0.0
++	var onset: int=0
++	var sliding_ticks: int=0
++	var minimum_grip: float=1.0
++	var frames: Array[DriveFrame]=[]
++	for tick: int in range(duration):
++		var frame := DriveFrame.sample(steer,pedal,0)
++		frames.append(frame)
++		sim.step(frame)
++		var slip: float=absf(sim.state.slip_angle())
++		peak=maxf(peak,rad_to_deg(slip))
++		minimum_grip=minf(minimum_grip,sim.state.grip)
++		if slip>config.slip_threshold and sim.state.velocity.length()>3.0:
++			sliding_ticks+=1
++			if onset==0: onset=tick+1
++	var result: Dictionary={"peak":peak,"onset_ms":onset/120.0*1000.0,"sliding_ticks":sliding_ticks,"minimum_grip":minimum_grip,"end_kph":sim.state.velocity.length()*3.6}
++	var recover: int=0
++	for tick: int in range(240):
++		var frame := DriveFrame.sample(0,config.coast_pedal,0)
++		frames.append(frame)
++		sim.step(frame)
++		if recover==0 and absf(sim.state.slip_angle())<deg_to_rad(1.0) and absf(sim.state.yaw_rate)<0.1: recover=tick+1
++	result.recovery_ms=recover/120.0*1000.0
++	result.final_slip=rad_to_deg(absf(sim.state.slip_angle()))
++	var replay := VehicleSimulation.new(config)
++	replay.state.velocity=Vector2(0,kph/3.6)
++	for frame: DriveFrame in frames: replay.step(frame)
++	result.replay_exact=replay.state.snapshot()==sim.state.snapshot()
++	return result
++
++func stop_sample(config: HandlingConfig, kph: float) -> Dictionary:
++	var sim := VehicleSimulation.new(config)
++	sim.state.velocity=Vector2(0,kph/3.6)
++	var first: float=0.0
++	for tick: int in range(1200):
++		sim.step(DriveFrame.sample(0,0,0))
++		if tick==0: first=(kph/3.6-sim.state.velocity.y)*120.0
++		if sim.state.velocity==Vector2.ZERO: return {"seconds":(tick+1)/120.0,"metres":sim.state.position.y,"first_deceleration":first}
++	return {"seconds":10.0,"metres":sim.state.position.y,"first_deceleration":first}
++
++func run() -> void:
++	var old: HandlingConfig=load(SLIDE_OUTPUT+"/before/game__resources__cars__electric.tres") as HandlingConfig
++	for scale: float in [0.70,0.45,0.35,0.30,0.25,0.20]:
++		var config: HandlingConfig=old.duplicate() as HandlingConfig
++		if scale!=0.70:
++			config.regeneration=15.0
++			config.power_lateral_response_scale=scale
++			config.launch_lateral_response_scale=minf(0.18,scale)
++		var cases: Dictionary={}
++		for speed: float in [0.0,10.0,30.0,50.0,80.0,120.0,170.0]:
++			for steering: float in [0.35,0.65,1.0]:
++				cases[str(speed)+"/"+str(steering)]=slide_sample(config,speed,steering,1.0)
++		metrics[str(scale)]={"cases":cases,"pulse":keyboard_pulse(config),"stop72":stop_sample(config,72.0),"stop190":stop_sample(config,190.0)}
++	var file := FileAccess.open(SLIDE_OUTPUT+"/candidates.json",FileAccess.WRITE)
++	file.store_string(JSON.stringify(metrics,"\t"))
++	file.close()
++	print("SLIDE_ACCESS_PROBE: ",metrics.size()," candidates")
++	quit()
+--- /dev/null
++++ b/game/tests/probe_electric_slide_access.gd.uid
+@@ -0,0 +1 @@
++uid://o7p5eo35arlx
+--- a/game/tests/test_electric_190.gd
++++ b/game/tests/test_electric_190.gd
+@@ -7,8 +7,8 @@
+ 	var old: HandlingConfig = load(SPEED_BASELINE+"/before/game__resources__cars__electric.tres") as HandlingConfig
+ 	var current: HandlingConfig = VehicleCatalog.config("electric")
+-	check(old.version == "electric-10" and current.version == "electric-17","top-speed correction has a new handling identity")
++	check(old.version == "electric-10" and current.version == "electric-18","top-speed correction has a new handling identity")
+ 	check(absf(current.maximum_speed*3.6-190.0)<0.001,"configured top speed is 190 km/h")
+ 	for property: String in old.snapshot():
+-		if property in ["version","maximum_speed","steering_rate","countersteering_rate","steering_angle","high_speed_steering_reduction","low_speed_steering_scale","low_speed_steering_rate_scale","launch_lateral_response_scale","regeneration","rotational_inertia","lateral_response","low_speed_turn_radius","low_speed_turn_acceleration"]: continue
++		if property in ["version","maximum_speed","steering_rate","countersteering_rate","steering_angle","high_speed_steering_reduction","low_speed_steering_scale","low_speed_steering_rate_scale","launch_lateral_response_scale","regeneration","rotational_inertia","lateral_response","low_speed_turn_radius","low_speed_turn_acceleration","slide_drive_loss"]: continue
+ 		check(old.get(property)==current.get(property),"accepted field retained exactly: "+property)
+ 	var sim := VehicleSimulation.new(current)
+@@ -53,5 +53,5 @@
+ 		stopping_ticks+=1
+ 	check(monotonic and sim.state.velocity==Vector2.ZERO,"release brakes monotonically from 190 without reversing")
+-	check(stopping_ticks/120.0>4.0 and stopping_ticks/120.0<4.5 and sim.state.position.distance_to(stop_start)>100.0 and sim.state.position.distance_to(stop_start)<120.0,"balanced regeneration stops from 190 within the explicit character bounds")
++	check(stopping_ticks/120.0>3.3 and stopping_ticks/120.0<3.6 and sim.state.position.distance_to(stop_start)>85.0 and sim.state.position.distance_to(stop_start)<95.0,"balanced regeneration stops from 190 within the explicit character bounds")
+ 	for tick: int in range(600):
+ 		var frame := DriveFrame.sample(1,0,0)
+@@ -62,5 +62,5 @@
+ 	check(exact,"launch, sustained cap, stop and hold replay tick-exactly")
+ 	metrics={"old_100_seconds":old_100/120.0,"new_100_seconds":new_100/120.0,"reaches_190_seconds":reached/120.0,"hold_minimum_kph":minimum_speed*3.6,"hold_maximum_kph":maximum_speed*3.6,"stop_190_seconds":stopping_ticks/120.0,"stop_190_metres":sim.state.position.distance_to(stop_start)}
+-	var file := FileAccess.open(SPEED_OUTPUT+"/speed.json",FileAccess.WRITE)
++	var file := FileAccess.open(output+"/speed.json",FileAccess.WRITE)
+ 	file.store_string(JSON.stringify({"checks":checks,"failures":failures,"metrics":metrics},"\t"))
+ 	file.close()
+--- a/game/tests/test_electric_brake_release.gd
++++ b/game/tests/test_electric_brake_release.gd
+@@ -40,5 +40,5 @@
+ 	# Isolate braking/steering from the owner-requested cap and its power falloff.
+ 	old.maximum_speed = current.maximum_speed
+-	check(old.version == "electric-5" and current.version == "electric-17" and VehicleSimulation.PHYSICS_VERSION == "arcade-planar-0.74","competitive braking behavior and current low-speed tune are versioned")
++	check(old.version == "electric-5" and current.version == "electric-18" and VehicleSimulation.PHYSICS_VERSION == "arcade-planar-0.75","competitive braking behavior and current low-speed tune are versioned")
+ 	metrics.stops = {}
+ 	for speed: float in [7.0,20.0,100.0/3.6,44.0,-7.0,-20.0]:
+@@ -46,9 +46,9 @@
+ 		var after: Dictionary = released_stop(current,speed)
+ 		metrics.stops[str(speed)] = {"before":before,"after":after}
+-		check(after.first_deceleration >= 12 and after.first_deceleration < 13,"released touch immediately applies controlled regeneration: "+str(speed))
+-		check(after.seconds > before.seconds and after.seconds < before.seconds*1.3,"gentler release retains a predictable stopping interval: "+str(speed))
++		check(after.first_deceleration >= 15 and after.first_deceleration < 16,"released touch immediately applies controlled regeneration: "+str(speed))
++		check(after.seconds < before.seconds and after.seconds > before.seconds*0.8,"stronger release retains a predictable stopping interval: "+str(speed))
+ 		check(after.monotonic and after.stopped and after.holds,"release stops exactly without reversing or creep: "+str(speed))
+ 		check(after.released_frame[1] == 0 and (after.released_frame.size() == 3 or after.released_frame[3] == 0),"actual touch release needs neither brake nor handbrake: "+str(speed))
+-	check(float(metrics.stops["20.0"].after.seconds)>1.5 and float(metrics.stops["20.0"].after.seconds)<1.75 and float(metrics.stops["20.0"].after.metres)>15.0 and float(metrics.stops["20.0"].after.metres)<18.0,"72 km/h release stop follows the less abrupt character bounds")
++	check(float(metrics.stops["20.0"].after.seconds)>1.25 and float(metrics.stops["20.0"].after.seconds)<1.4 and float(metrics.stops["20.0"].after.metres)>12.0 and float(metrics.stops["20.0"].after.metres)<14.0,"72 km/h release stop follows the stronger braking bounds")
+ 	var full := VehicleSimulation.new(current)
+ 	var partial := VehicleSimulation.new(current)
+--- a/game/tests/test_electric_car.gd
++++ b/game/tests/test_electric_car.gd
+@@ -33,5 +33,5 @@
+ 	check(config.vehicle_id == "electric" and config.rear_wheel_drive and config.regeneration > 0.0,"authored electric rear-drive identity")
+ 	check(VehicleCatalog.IDS.size() == VehicleCatalog.NAMES.size() and VehicleCatalog.IDS.size() == VehicleCatalog.CLASSES.size() and VehicleCatalog.IDS.size() == VehicleCatalog.DESCRIPTIONS.size(),"catalogue arrays agree")
+-	check(config.snapshot().regeneration == 12.0 and config.snapshot().rear_wheel_drive and config.single_pedal,"character tune pins controlled one-pedal capabilities")
++	check(config.snapshot().regeneration == 15.0 and config.snapshot().rear_wheel_drive and config.single_pedal,"character tune pins controlled one-pedal capabilities")
+ 	for speed: float in [0.01,0.14,1.0,10.0,20.0,48.0,-0.01,-0.14,-1.0,-7.0]:
+ 		var lift: VehicleSimulation = moving(speed)
+--- a/game/tests/test_electric_car_ui.gd
++++ b/game/tests/test_electric_car_ui.gd
+@@ -52,5 +52,5 @@
+ 		Input.action_press("steer_right")
+ 		var peak: float=0.0
+-		for tick: int in range(36):
++		for tick: int in range(60):
+ 			game._physics_process(VehicleSimulation.STEP)
+ 			peak=maxf(peak,rad_to_deg(absf(game.sim.state.slip_angle())))
+@@ -58,5 +58,5 @@
+ 	game.handling.power_lateral_response_scale=configured
+ 	check(game.frame.throttle==255 and game.frame.steer==127,"actual Game receives simultaneous full accelerator and steering")
+-	check(peaks[1]>peaks[0]*1.25 and peaks[1]<8.0,"actual Game acceleration produces a controlled slide over its planted off-power response")
++	check(peaks[1]>peaks[0]*1.8 and peaks[1]>15.0 and peaks[1]<24.0,"actual Game acceleration develops deliberate sliding over its planted response")
+ 	check(game.sim.state.velocity.length()>10.0 and game.sim.state.collision_count==0,"actual powered turn accelerates without a contact")
+ 	print("ELECTRIC_POWER_SLIDE_SAMPLE ",JSON.stringify({"without_power_aid":peaks[0],"with_power_aid":peaks[1]}))
+--- a/game/tests/test_electric_character.gd
++++ b/game/tests/test_electric_character.gd
+@@ -5,6 +5,6 @@
+ 	var current: HandlingConfig=VehicleCatalog.config("electric")
+ 	var compact: HandlingConfig=VehicleCatalog.config("compact")
+-	check(old.version=="electric-16" and current.version=="electric-17","distinct electric balance has a new identity")
+-	var changed: Array[String]=["version","regeneration","steering_rate","rotational_inertia","lateral_response","launch_lateral_response_scale","power_lateral_response_scale"]
++	check(old.version=="electric-16" and current.version=="electric-18","distinct electric balance has a new identity")
++	var changed: Array[String]=["version","regeneration","steering_rate","rotational_inertia","lateral_response","launch_lateral_response_scale","power_lateral_response_scale","slide_drive_loss"]
+ 	for field: String in old.snapshot():
+ 		if field in changed: continue
+@@ -25,7 +25,7 @@
+ 	var compact_loss: float=metrics.pulse.compact.samples[1].speed_kph-metrics.pulse.compact.samples[4].speed_kph
+ 	metrics.release_loss_kph={"before":before_loss,"after":after_loss,"compact":compact_loss}
+-	check(after_loss<before_loss*0.6,"a short keyboard lift no longer removes the old amount of corner speed")
++	check(after_loss<before_loss*0.7 and after_loss>before_loss*0.55,"stronger braking still removes less corner speed than electric-16")
+ 	check(after_loss>compact_loss*2.0,"lift retains clear electric regeneration rather than compact coasting")
+-	check(metrics.pulse.after.peak_slip<8.0 and metrics.pulse.after.peak_slip>3.0,"keyboard corner keeps a planted controllable power slide")
++	check(metrics.pulse.after.peak_slip<24.0 and metrics.pulse.after.peak_slip>15.0,"keyboard power develops a deliberate controllable slide")
+ 	for reverse: bool in [false,true]:
+ 		var before := VehicleSimulation.new(old)
+@@ -45,7 +45,9 @@
+ 		var result: Dictionary=powered_turn(current,speed,0.65,1.0)
+ 		metrics.power[str(speed)]=result
+-		check(result.peak_slip>2.0 and result.peak_slip<8.0,"rear power slide stays controllable: "+str(speed))
++		var prior: Dictionary=powered_turn(old,speed,0.65,1.0,true)
++		result.previous_slip=prior.peak_slip
++		check(result.peak_slip>prior.peak_slip*1.5 and result.peak_slip<24.0,"power slide is easier while the high-speed fade stays controllable: "+str(speed))
+ 		check(result.recovered_slip<0.1 and result.replay_exact,"slide recovers and replays exactly: "+str(speed))
+-	var file := FileAccess.open(CHARACTER_OUTPUT+"/character.json",FileAccess.WRITE)
++	var file := FileAccess.open(output+"/character.json",FileAccess.WRITE)
+ 	file.store_string(JSON.stringify({"checks":checks,"failures":failures,"metrics":metrics},"\t"))
+ 	file.close()
+--- a/game/tests/test_electric_consistent_handling.gd
++++ b/game/tests/test_electric_consistent_handling.gd
+@@ -11,5 +11,5 @@
+ 	var old: HandlingConfig = load(CONSISTENT_OUTPUT+"/before/game__resources__cars__electric.tres") as HandlingConfig
+ 	var current: HandlingConfig = VehicleCatalog.config("electric")
+-	check(old.version=="electric-14" and current.version=="electric-17" and VehicleSimulation.PHYSICS_VERSION=="arcade-planar-0.74","new steering contract has a versioned competitive identity")
++	check(old.version=="electric-14" and current.version=="electric-18" and VehicleSimulation.PHYSICS_VERSION=="arcade-planar-0.75","new steering contract has a versioned competitive identity")
+ 	for field: String in ["maximum_speed","reverse_speed","mass","engine_force","braking_force","coast_pedal","longitudinal_grip","rear_wheel_drive","single_pedal"]:
+ 		check(old.get(field)==current.get(field),"accepted propulsion/braking field is retained: "+field)
+--- a/game/tests/test_electric_corner_authority.gd
++++ b/game/tests/test_electric_corner_authority.gd
+@@ -66,5 +66,5 @@
+ 			check(result.exit_x>=12 and absf(result.exit_degrees-90.0)<7.0,"tight keyboard corner exits aligned and moving: "+str(kph)+"/"+str(direction))
+ 			check(result.replay_exact,"tight corner replays exactly")
+-	var file := FileAccess.open(AUTHORITY_OUTPUT+"/keyboard-corners.json",FileAccess.WRITE)
++	var file := FileAccess.open(output+"/keyboard-corners.json",FileAccess.WRITE)
+ 	file.store_string(JSON.stringify({"checks":checks,"failures":failures,"metrics":metrics},"\t"))
+ 	file.close()
+--- a/game/tests/test_electric_held_authority.gd
++++ b/game/tests/test_electric_held_authority.gd
+@@ -16,5 +16,5 @@
+ 	var old: HandlingConfig=load(HELD_OUTPUT+"/before/game__resources__cars__electric.tres") as HandlingConfig
+ 	var current: HandlingConfig=VehicleCatalog.config("electric")
+-	check(old.version=="electric-14" and current.version=="electric-17","held steering has a new configuration identity")
++	check(old.version=="electric-14" and current.version=="electric-18","held steering has a new configuration identity")
+ 	check(current.steering_rate>old.steering_rate and current.countersteering_rate>=old.countersteering_rate,"connected buildup retains immediate unwind and useful held lock")
+ 	metrics.circles={}
+@@ -36,5 +36,5 @@
+ 			var launch: Dictionary=powered_launch(current,steer,pedal)
+ 			metrics.launches[str(steer)+"/"+str(pedal)]=launch
+-			check(launch.peak_slip_degrees<8.0,"launch slide remains small with the stronger steering: "+str(steer)+"/"+str(pedal))
++			check(launch.peak_slip_degrees<24.0,"deliberate launch slide stays bounded with the stronger steering: "+str(steer)+"/"+str(pedal))
+ 	var file := FileAccess.open(output+"/held-authority.json",FileAccess.WRITE)
+ 	file.store_string(JSON.stringify({"checks":checks,"failures":failures,"metrics":metrics},"\t"))
+--- a/game/tests/test_electric_launch_drift.gd
++++ b/game/tests/test_electric_launch_drift.gd
+@@ -34,5 +34,5 @@
+ 	var no_drift: HandlingConfig = current.duplicate() as HandlingConfig
+ 	no_drift.launch_lateral_response_scale = 1.0
+-	check(old.version == "electric-8" and current.version == "electric-17" and VehicleSimulation.PHYSICS_VERSION == "arcade-planar-0.74","new tune and shared physics are versioned")
++	check(old.version == "electric-8" and current.version == "electric-18" and VehicleSimulation.PHYSICS_VERSION == "arcade-planar-0.75","new tune and shared physics are versioned")
+ 	metrics.launches = {}
+ 	for steer: float in [0.35,0.65,1.0]:
+@@ -47,5 +47,5 @@
+ 			if steer >= 0.65:
+ 				check(after.speed >= baseline.speed*0.95,"small launch slide retains useful forward traction: "+str(steer)+"/"+str(pedal))
+-			check(after.launch_slip < 8.0 and after.peak_slip < 8.0,"small launch drift stays bounded: "+str(steer)+"/"+str(pedal))
++			check(after.launch_slip < 8.0 and after.peak_slip < 24.0,"initial launch slip and developed power slide stay bounded: "+str(steer)+"/"+str(pedal))
+ 			check(after.recovered_slip < 0.1,"straightening restores grip: "+str(steer)+"/"+str(pedal))
+ 			check(is_equal_approx(after.launch_slip,mirror.launch_slip) and is_equal_approx(after.speed,mirror.speed),"launch slip is left/right symmetric")
+@@ -98,5 +98,5 @@
+ 		exact = exact and first.state.snapshot() == replay.state.snapshot()
+ 	check(exact,"launch drift and recovery replay exactly")
+-	var file := FileAccess.open(LAUNCH_OUTPUT+"/launch-drift.json",FileAccess.WRITE)
++	var file := FileAccess.open(output+"/launch-drift.json",FileAccess.WRITE)
+ 	file.store_string(JSON.stringify({"checks":checks,"failures":failures,"metrics":metrics},"\t"))
+ 	file.close()
+--- a/game/tests/test_electric_low_speed_steering.gd
++++ b/game/tests/test_electric_low_speed_steering.gd
+@@ -27,5 +27,5 @@
+ 	var current: HandlingConfig = VehicleCatalog.config("electric")
+ 	old.maximum_speed = current.maximum_speed
+-	check(old.version == "electric-6" and current.version == "electric-17" and VehicleSimulation.PHYSICS_VERSION == "arcade-planar-0.74","low-speed correction has new competitive identity")
++	check(old.version == "electric-6" and current.version == "electric-18" and VehicleSimulation.PHYSICS_VERSION == "arcade-planar-0.75","low-speed correction has new competitive identity")
+ 	var preceding: HandlingConfig = load(LOW_OUTPUT+"/before/game__resources__cars__electric.tres") as HandlingConfig
+ 	preceding.maximum_speed = current.maximum_speed
+--- a/game/tests/test_electric_normal_tracks.gd
++++ b/game/tests/test_electric_normal_tracks.gd
+@@ -33,5 +33,5 @@
+ 		metrics.tracks[id]={"name":document.name,"laps":session.completed_laps,"contacts":sim.state.collision_count,"ticks":frames.size(),"lap_times":session.lap_times}
+ 		print("NORMAL_TRACK ",id," ",JSON.stringify(metrics.tracks[id]))
+-	var file := FileAccess.open(NORMAL_OUTPUT+"/normal-tracks.json",FileAccess.WRITE)
++	var file := FileAccess.open(output+"/normal-tracks.json",FileAccess.WRITE)
+ 	file.store_string(JSON.stringify({"checks":checks,"failures":failures,"metrics":metrics},"\t"))
+ 	file.close()
+--- a/game/tests/test_electric_one_pedal.gd
++++ b/game/tests/test_electric_one_pedal.gd
+@@ -22,5 +22,5 @@
+ 	lift.step(DriveFrame.new())
+ 	metrics.first_tick_deceleration = (20-lift.state.velocity.y)*120
+-	check(float(metrics.first_tick_deceleration) >= 12.0 and float(metrics.first_tick_deceleration) < 13.0,"controlled regeneration acts on first 120 Hz lift tick")
++	check(float(metrics.first_tick_deceleration) >= 15.0 and float(metrics.first_tick_deceleration) < 16.0,"controlled regeneration acts on first 120 Hz lift tick")
+ 	var tick: int = 1
+ 	while lift.state.velocity.length() > 0 and tick < 1200:
+@@ -29,5 +29,5 @@
+ 	metrics.stop_72_kph_seconds = tick/120.0
+ 	metrics.stop_72_kph_metres = lift.state.position.y
+-	check(tick >= 180 and tick <= 210 and lift.state.velocity == Vector2.ZERO,"release stops from 72 kph within the balanced 1.5 to 1.75 second range")
++	check(tick >= 150 and tick <= 168 and lift.state.velocity == Vector2.ZERO,"release stops from 72 kph within the stronger 1.25 to 1.4 second range")
+ 	for idle: int in range(600): lift.step(DriveFrame.new())
+ 	check(lift.state.velocity == Vector2.ZERO and lift.state.reverse_wait == 0,"release holds without reverse or creep")
+--- a/game/tests/test_electric_over_under.gd
++++ b/game/tests/test_electric_over_under.gd
+@@ -48,9 +48,9 @@
+ 	check(replay.state.snapshot()==sim.state.snapshot(),"Over and under recorded input replays exactly")
+ 	metrics={"laps":session.completed_laps,"lap_times":session.lap_times,"contacts":sim.state.collision_count,"upper_ticks":upper,"lower_ticks":lower,"inputs":frames.size(),"time_ticks":session.elapsed_ticks,"source":SOURCE}
+-	var file := FileAccess.open(OVER_OUTPUT+"/over-under.json",FileAccess.WRITE)
++	var file := FileAccess.open(output+"/over-under.json",FileAccess.WRITE)
+ 	file.store_string(JSON.stringify({"checks":checks,"failures":failures,"metrics":metrics},"\t"))
+ 	file.close()
+ 	if session.finished:
+-		var recording := FileAccess.open(OVER_OUTPUT+"/over-under-race.json",FileAccess.WRITE)
++		var recording := FileAccess.open(output+"/over-under-race.json",FileAccess.WRITE)
+ 		recording.store_string(JSON.stringify({"ok":true,"result":{"document":document,"vehicle_id":"electric","time_ticks":session.elapsed_ticks,"replay":{"schema":"bmt-replay-v1","frames":frames}}}))
+ 		recording.close()
+--- a/game/tests/test_electric_power.gd
++++ b/game/tests/test_electric_power.gd
+@@ -7,5 +7,8 @@
+ var metrics: Dictionary = {}
+ 
+-func _initialize() -> void: run.call_deferred()
++func _initialize() -> void:
++	for argument: String in OS.get_cmdline_user_args():
++		if argument.begins_with("--evidence-root="): output=argument.trim_prefix("--evidence-root=")
++	run.call_deferred()
+ 
+ func check(ok: bool, label: String) -> void:
+@@ -46,5 +49,5 @@
+ 	var old: HandlingConfig = load(OUTPUT+"/before/electric.tres") as HandlingConfig
+ 	var current: HandlingConfig = VehicleCatalog.config("electric")
+-	check(old != null and old.version == "electric-2" and current.version == "electric-17","actual original and current balanced competitive tunes")
++	check(old != null and old.version == "electric-2" and current.version == "electric-18","actual original and current balanced competitive tunes")
+ 	metrics.old_launch = launch(old)
+ 	metrics.new_launch = launch(current)
+@@ -59,7 +62,7 @@
+ 	check(new_100 <= old_100*0.85 and new_100 > old_100*0.75,"softer 0-100 launch retains a moderate improvement over the original electric tune")
+ 	check(float(metrics.new_launch[str(20.0)]) < 1.2,"balanced electric launch reaches 72 kph within 1.2 seconds")
+-	# The owner's follow-up rejects the initial exaggerated drift. Keep a measured
+-	# power slide, with an upper bound and settled light-pedal cornering.
+-	check(float(metrics.new_corner.peak_slip_degrees)>0.1 and float(metrics.new_corner.peak_slip_degrees)<8,"hard-power normal-speed turn remains responsive without the superseded large slide")
++	# The owner now requests easier deliberate power slides; retain the planted
++	# light-pedal response and bounded recovery while allowing a larger power angle.
++	check(float(metrics.new_corner.peak_slip_degrees)>8.0 and float(metrics.new_corner.peak_slip_degrees)<24.0,"hard-power normal-speed turn develops the requested bounded slide")
+ 	check(float(metrics.gentle_corner.peak_slip_degrees)<8 and float(metrics.new_corner.speed)>float(metrics.gentle_corner.speed),"progressive throttle retains power authority with both turns controlled")
+ 	check(float(metrics.new_corner.released_slip_degrees) < 2 and float(metrics.new_corner.recovery_slip_degrees) < 2 and float(metrics.new_corner.recovery_speed) > 10,"lifting and unwinding catch the slide before powering away")
+--- a/game/tests/test_electric_power_balance.gd
++++ b/game/tests/test_electric_power_balance.gd
+@@ -21,5 +21,5 @@
+ 	var old: HandlingConfig = load(BALANCE_OUTPUT+"/before/electric-4.tres") as HandlingConfig
+ 	var current: HandlingConfig = VehicleCatalog.config("electric")
+-	check(old.version == "electric-4" and current.version == "electric-17","versioned preceding power tune and current brake balance")
++	check(old.version == "electric-4" and current.version == "electric-18","versioned preceding power tune and current brake balance")
+ 	metrics.before_launch = launch(old)
+ 	metrics.after_launch = launch(current)
+@@ -31,6 +31,6 @@
+ 	metrics.before_stop = stop(old,20)
+ 	metrics.after_stop = stop(current,20)
+-	check(metrics.after_stop.initial_deceleration >= 12 and metrics.after_stop.initial_deceleration < 13,"release immediately produces controlled regeneration")
+-	check(metrics.after_stop.seconds < 1.75 and metrics.after_stop.metres < 18.0,"firm one-pedal stop remains within the new balance bounds")
++	check(metrics.after_stop.initial_deceleration >= 15 and metrics.after_stop.initial_deceleration < 16,"release immediately produces controlled regeneration")
++	check(metrics.after_stop.seconds > 1.25 and metrics.after_stop.seconds < 1.4 and metrics.after_stop.metres > 12.0 and metrics.after_stop.metres < 14.0,"firm one-pedal stop remains within the new balance bounds")
+ 	check(metrics.after_stop.stopped and metrics.after_stop.holds,"release reaches exact zero and holds without creep")
+ 	check(absf(current.maximum_speed*3.6-190.0)<0.001,"top speed follows the owner-requested 190 km/h cap")
+--- a/game/tests/test_electric_powered_drift.gd
++++ b/game/tests/test_electric_powered_drift.gd
+@@ -38,7 +38,7 @@
+ 	var old: HandlingConfig=load(DRIFT_OUTPUT+"/before/game__resources__cars__electric.tres") as HandlingConfig
+ 	var current: HandlingConfig=VehicleCatalog.config("electric")
+-	check(current.version=="electric-17" and VehicleSimulation.PHYSICS_VERSION=="arcade-planar-0.74","power drift has versioned handling and physics")
++	check(current.version=="electric-18" and VehicleSimulation.PHYSICS_VERSION=="arcade-planar-0.75","power drift has versioned handling and physics")
+ 	for field: String in old.snapshot():
+-		if field in ["version","regeneration","steering_rate","rotational_inertia","lateral_response","launch_lateral_response_scale","power_lateral_response_scale"]: continue
++		if field in ["version","regeneration","steering_rate","rotational_inertia","lateral_response","launch_lateral_response_scale","power_lateral_response_scale","slide_drive_loss"]: continue
+ 		check(current.get(field)==old.get(field),"task-start configuration field remains exact: "+field)
+ 	metrics.corners={}
+@@ -52,6 +52,6 @@
+ 				metrics.corners[label]={"before":before,"after":after}
+ 				if speed>=10.0: check(after.peak_slip>=before.peak_slip*0.8 and after.peak_slip>1.0,"planted character retains useful power drift beyond launch speed: "+label)
+-				check(after.peak_slip<8.0,"powered slide retains the existing small-drift ceiling: "+label)
+-				check(after.speed>=before.speed*0.95,"powered slide retains forward traction: "+label)
++				check(after.peak_slip<24.0,"deliberate powered slide retains a bounded angle: "+label)
++				check(after.speed>=before.speed*0.78,"deliberate powered slide retains useful forward traction: "+label)
+ 				check(after.lifted_slip<after.peak_slip and after.recovered_slip<0.1,"lift and straightening settle the slide: "+label)
+ 				check(is_equal_approx(after.peak_slip,mirror.peak_slip) and after.replay_exact,"left/right power drift is symmetric and replays exactly: "+label)
+@@ -86,5 +86,5 @@
+ 			exact=exact and before.state.snapshot()==after.state.snapshot()
+ 		check(exact,"other car keeps task-start arithmetic and default snapshot identity: "+id)
+-	var file := FileAccess.open(DRIFT_OUTPUT+"/powered-drift.json",FileAccess.WRITE)
++	var file := FileAccess.open(output+"/powered-drift.json",FileAccess.WRITE)
+ 	file.store_string(JSON.stringify({"checks":checks,"failures":failures,"metrics":metrics},"\t"))
+ 	file.close()
+--- /dev/null
++++ b/game/tests/test_electric_slide_access.gd
+@@ -0,0 +1,93 @@
++extends "res://tests/probe_electric_slide_access.gd"
++
++func run() -> void:
++	var old: HandlingConfig=load(SLIDE_OUTPUT+"/before/game__resources__cars__electric.tres") as HandlingConfig
++	var current: HandlingConfig=VehicleCatalog.config("electric")
++	check(old.version=="electric-17" and current.version=="electric-18" and VehicleSimulation.PHYSICS_VERSION=="arcade-planar-0.75","slide onset and braking have a new canonical identity")
++	var changed: Array[String]=["version","regeneration","launch_lateral_response_scale","power_lateral_response_scale","power_slide_full_pedal","slide_drive_loss"]
++	for field: String in old.snapshot():
++		if field in changed: continue
++		check(current.get(field)==old.get(field),"retained electric field: "+field)
++	metrics.turns={}
++	for speed: float in [0.0,10.0,30.0,50.0,80.0,120.0,170.0]:
++		for steer: float in [0.35,0.65,1.0]:
++			for pedal: float in [0.55,0.65,0.8,1.0]:
++				var before: Dictionary=slide_sample(old,speed,steer,pedal)
++				var after: Dictionary=slide_sample(current,speed,steer,pedal)
++				var mirror: Dictionary=slide_sample(current,speed,-steer,pedal)
++				var label: String=str(speed)+"/"+str(steer)+"/"+str(pedal)
++				metrics.turns[label]={"before":before,"after":after}
++				check(after.peak>before.peak*1.2 and after.peak<26.0,"power develops a noticeable bounded slide: "+label)
++				check(after.end_kph>speed and after.end_kph>=before.end_kph*0.78,"power slide retains useful acceleration: "+label)
++				check(after.recovery_ms>0 and after.recovery_ms<=300 and after.final_slip<0.1,"straightening catches the slide within 300ms: "+label)
++				check(after.replay_exact and is_equal_approx(after.peak,mirror.peak),"slide replays exactly and mirrors left/right: "+label)
++				if steer==1.0 and pedal>=0.65 and speed<=80.0:
++					check(before.sliding_ticks==0 and after.sliding_ticks>=60 and after.minimum_grip<before.minimum_grip,"moderate pedal and full lock sustain at least half a second of actual sliding: "+label)
++					check(after.onset_ms>0 and after.onset_ms<=(850 if speed==0.0 else 600),"sliding starts promptly, including standstill launch: "+label)
++	# The new pedal gate must build progressively, with no discontinuous kick.
++	metrics.pedal_ramp=[]
++	var last_peak: float=0.0
++	for packed: int in range(115,167):
++		var sample: Dictionary=slide_sample(current,50.0,0.65,float(packed)/255.0)
++		check(sample.peak>=last_peak-0.01 and (last_peak==0.0 or absf(sample.peak-last_peak)<0.75),"quantized controller pedal develops the slide smoothly: "+str(packed))
++		last_peak=sample.peak
++		metrics.pedal_ramp.append(sample.peak)
++	# Same tune with the old gate isolates the controller change from slide strength.
++	var old_gate: HandlingConfig=current.duplicate() as HandlingConfig
++	old_gate.power_slide_full_pedal=0.85
++	metrics.controller={"old_gate":slide_sample(old_gate,50,1,0.65),"new_gate":slide_sample(current,50,1,0.65)}
++	check(metrics.controller.new_gate.peak>metrics.controller.old_gate.peak*2.0,"moderate controller accelerator reaches the power slide substantially sooner")
++	# Default field preserves old arithmetic and identities for all seven old profiles.
++	var legacy := GDScript.new()
++	legacy.source_code=FileAccess.get_file_as_string(SLIDE_OUTPUT+"/before/game__vehicle__vehicle_simulation.gd").replace("class_name VehicleSimulation","").trim_prefix("\ufeff")
++	check(legacy.reload()==OK,"task-start canonical integrator compiles")
++	for id: String in VehicleCatalog.IDS:
++		var config: HandlingConfig=old if id=="electric" else VehicleCatalog.config(id)
++		check(not config.snapshot().has("power_slide_full_pedal") and not config.snapshot().has("power_slide_high_speed_scale"),"default slide controls preserve old snapshot: "+id)
++		var before: RefCounted=legacy.new(config)
++		var after := VehicleSimulation.new(config)
++		var exact: bool=true
++		for tick: int in range(1200):
++			var frame := DriveFrame.sample(sin(tick*0.02),1 if tick%240<150 else 0,0.7 if tick%240>200 else 0,1 if tick%120<10 else 0)
++			before.step(frame)
++			after.step(frame)
++			exact=exact and before.state.snapshot()==after.state.snapshot()
++		check(exact,"default gate retains all task-start canonical ticks: "+id)
++	# Off-power and held-neutral geometry remain exact with regeneration matched.
++	var neutral: HandlingConfig=old.duplicate() as HandlingConfig
++	neutral.regeneration=current.regeneration
++	for speed: float in [5.0,10.0,20.0,30.0,40.0,100.0,190.0]:
++		for steer: float in [0.35,0.65,1.0]:
++			var before := VehicleSimulation.new(neutral)
++			var after := VehicleSimulation.new(current)
++			before.state.velocity=Vector2(0,speed/3.6)
++			after.state.velocity=before.state.velocity
++			var exact: bool=true
++			for tick: int in range(360):
++				var frame := DriveFrame.sample(steer,current.coast_pedal,0)
++				before.step(frame)
++				after.step(frame)
++				exact=exact and before.state.snapshot()==after.state.snapshot()
++			check(exact,"neutral pedal keeps existing steering geometry and grip: "+str(speed)+"/"+str(steer))
++	for reverse: bool in [false,true]:
++		var before := VehicleSimulation.new(old)
++		var after := VehicleSimulation.new(current)
++		var exact: bool=true
++		for tick: int in range(2400):
++			var frame := DriveFrame.sample(0,1,1 if reverse else 0)
++			before.step(frame)
++			after.step(frame)
++			exact=exact and before.state.snapshot()==after.state.snapshot()
++		check(exact,"straight launch and powered cap remain tick exact, reverse="+str(reverse))
++	metrics.braking={}
++	for speed: float in [20.0,72.0,100.0,190.0,-25.2]:
++		var before: Dictionary=stop_sample(old,speed)
++		var after: Dictionary=stop_sample(current,speed)
++		metrics.braking[str(speed)]={"before":before,"after":after}
++		check(after.seconds<before.seconds*0.83 and absf(after.metres)<absf(before.metres)*0.83 and after.seconds>before.seconds*0.7,"braking is moderately stronger in both directions: "+str(speed))
++	check(current.maximum_speed*3.6>189.999 and current.maximum_speed*3.6<190.001,"190km/h cap retained")
++	var file := FileAccess.open(SLIDE_OUTPUT+"/slide-access.json",FileAccess.WRITE)
++	file.store_string(JSON.stringify({"checks":checks,"failures":failures,"metrics":metrics},"\t"))
++	file.close()
++	print("ELECTRIC_SLIDE_ACCESS: %d checks, %d failures" % [checks,failures])
++	quit(1 if failures else 0)
+--- /dev/null
++++ b/game/tests/test_electric_slide_access.gd.uid
+@@ -0,0 +1 @@
++uid://c8la08ut5k1x1
+--- a/game/tests/test_electric_steering_response.gd
++++ b/game/tests/test_electric_steering_response.gd
+@@ -40,5 +40,5 @@
+ 	var current: HandlingConfig = VehicleCatalog.config("electric")
+ 	var task_start: HandlingConfig = load("res://../docs/evidence/electric-tighter-held-steering-2026-10-26/before/game__resources__cars__electric.tres") as HandlingConfig
+-	check(old.version == "electric-3" and current.version == "electric-17","original slow steering versus current balanced electric tune")
++	check(old.version == "electric-3" and current.version == "electric-18","original slow steering versus current balanced electric tune")
+ 	old = steering_reference(old,current)
+ 	for speed: float in [20.0,24.0,36.0,current.maximum_speed]:
+--- a/game/vehicle/handling_config.gd
++++ b/game/vehicle/handling_config.gd
+@@ -35,4 +35,6 @@
+ @export_range(0.02, 1.0, 0.01) var launch_lateral_response_scale: float = 1.0 # Retain some sideways momentum during a powered low-speed rear-drive turn.
+ @export_range(0.1, 1.0, 0.01) var power_lateral_response_scale: float = 1.0 # Optional rear-drive power slide; lift and straight steering restore normal response.
++@export_range(0.5, 1.0, 0.01) var power_slide_full_pedal: float = 0.85 # Pedal position that fully develops the optional rear-drive slide.
++@export_range(0.0, 1.0, 0.01) var power_slide_high_speed_scale: float = 1.0 # Power-slide strength near maximum speed; full strength below 28 m/s.
+ @export var continuous_turn_radius: bool = false # Apply a smooth curvature envelope at every speed, without a low-speed fade.
+ @export_range(0.0, 20.0, 0.1) var low_speed_turn_radius: float = 0.0 # Base radius for continuous steering; legacy low-speed radius floor.
+@@ -93,4 +95,6 @@
+ 	if launch_lateral_response_scale == 1.0: result.erase("launch_lateral_response_scale")
+ 	if power_lateral_response_scale == 1.0: result.erase("power_lateral_response_scale")
++	if power_slide_full_pedal == 0.85: result.erase("power_slide_full_pedal")
++	if power_slide_high_speed_scale == 1.0: result.erase("power_slide_high_speed_scale")
+ 	if not continuous_turn_radius: result.erase("continuous_turn_radius")
+ 	if low_speed_turn_radius == 0.0:
+--- a/game/vehicle/vehicle_simulation.gd
++++ b/game/vehicle/vehicle_simulation.gd
+@@ -6,5 +6,5 @@
+ const RALLY_HANDBRAKE = preload("res://vehicle/rally_handbrake.gd")
+ const BRIDGE_FLIGHT = preload("res://vehicle/bridge_flight.gd")
+-const PHYSICS_VERSION: String = "arcade-planar-0.74"
++const PHYSICS_VERSION: String = "arcade-planar-0.75"
+ const LOW_SPEED_TURN_FADE_END: float = 16.66 # Below 60 km/h, avoiding float32 endpoint arithmetic.
+ const SOIL_TORQUE_GAIN: float = 1.35 # Loose verge bite beyond pure longitudinal drag.
+@@ -238,5 +238,11 @@
+ 		# Share the existing launch response rather than stacking both reductions.
+ 		# Steering/yaw and available motor/braking forces keep their original bounds.
+-		var power_slide: float = smoothstep(maxf(0.46,config.coast_pedal+0.20),0.85,throttle) * smoothstep(0.1,0.45,absf(state.steering))
++		var power_start: float = maxf(0.46,config.coast_pedal+0.20)
++		var power_end: float = maxf(power_start+0.01,config.power_slide_full_pedal)
++		var power_slide: float = smoothstep(power_start,power_end,throttle) * smoothstep(0.1,0.45,absf(state.steering))
++		if config.power_slide_high_speed_scale < 1.0:
++			# Retain a planted fast sweep while making ordinary powered corners looser.
++			# The optional fade is continuous and cannot add steering or motor force.
++			power_slide *= lerpf(1.0,config.power_slide_high_speed_scale,smoothstep(28.0,maxf(28.01,config.maximum_speed),speed))
+ 		var power_response: float = config.lateral_response * lerpf(1.0,config.power_lateral_response_scale,power_slide)
+ 		lateral_response = minf(lateral_response,power_response)

@@ -1,0 +1,498 @@
+diff --git a/game/ui/garage_customisation_camera.gd b/game/ui/garage_customisation_camera.gd
+--- a/game/ui/garage_customisation_camera.gd
++++ b/game/ui/garage_customisation_camera.gd
+@@ -14,6 +14,7 @@
+ var _home_zoom: float
+ var _body_key: Array = []
+ var _body_bounds: AABB
++var _body_corners := PackedVector3Array()
+ var _viewport_size := Vector2i.ZERO
+ 
+ func focus(showroom: CarShowroom, category: String) -> void:
+@@ -65,7 +66,12 @@
+ 	_local_target = local_target*HandlingConfig.BODY_SCALE
+ 	if whole_body: _local_target = _model_bounds(showroom.car).get_center()
+ 	_direction = frame.basis.orthonormalized()*direction.normalized()
+-	if category == "body": _direction = _home.basis.z.normalized()
++	if category == "body":
++		# Paint needs a raised view: the low Garage angle wastes vertical space.
++		var home_direction: Vector3 = _home.basis.z.normalized()
++		var elevation: float = maxf(asin(home_direction.y),deg_to_rad(30.0))
++		var horizontal := Vector3(home_direction.x,0,home_direction.z).normalized()
++		_direction = horizontal*cos(elevation)+Vector3.UP*sin(elevation)
+ 	target = frame*_local_target
+ 	if whole_body: distance = _fit_body(showroom,_model_bounds(showroom.car),target,_direction)
+ 	_distance = distance
+@@ -109,26 +115,39 @@
+ 	var key: Array = [car.get_instance_id(),car.customisation]
+ 	if key == _body_key: return _body_bounds
+ 	_body_key = [car.get_instance_id(),car.customisation.duplicate(true)]
++	_body_corners.clear()
+ 	var first: bool = true
+ 	var inverse: Transform3D = car.global_transform.affine_inverse()
+ 	for node: MeshInstance3D in car.find_children("*","MeshInstance3D",true,false):
+ 		if node.mesh == null or not node.is_visible_in_tree(): continue
+-		var box: AABB = inverse*node.global_transform*node.mesh.get_aabb()
++		var mesh_to_car: Transform3D = inverse*node.global_transform
++		var mesh_box: AABB = node.mesh.get_aabb()
++		var box: AABB = mesh_to_car*mesh_box
+ 		_body_bounds = box if first else _body_bounds.merge(box)
+ 		first = false
++		for x: float in [mesh_box.position.x,mesh_box.end.x]:
++			for y: float in [mesh_box.position.y,mesh_box.end.y]:
++				for z: float in [mesh_box.position.z,mesh_box.end.z]:
++					_body_corners.append(mesh_to_car*Vector3(x,y,z))
+ 	return _body_bounds
+ 
+ func _fit_body(showroom: CarShowroom, bounds: AABB, center: Vector3, direction: Vector3) -> float:
+ 	var basis: Basis = Transform3D(Basis.IDENTITY,center+direction).looking_at(center).basis
+ 	var tangent: float = tan(deg_to_rad(showroom.camera.fov)*0.5)
+ 	var aspect: float = showroom.size.x/maxf(1.0,showroom.size.y)
+-	var vertical: float = clampf(1.0-144.0/maxf(1.0,showroom.size.y),0.52,0.82)
++	var reserved_height: float = 128.0 if focused_category=="body" else 144.0
++	var vertical: float = clampf(1.0-reserved_height/maxf(1.0,showroom.size.y),0.52,0.82)
+ 	var distance: float = 2.0
+-	for x: float in [bounds.position.x,bounds.end.x]:
+-		for y: float in [bounds.position.y,bounds.end.y]:
+-			for z: float in [bounds.position.z,bounds.end.z]:
+-				var point: Vector3 = basis.transposed()*(showroom.car.global_transform*Vector3(x,y,z)-center)
+-				distance = maxf(distance,point.z+maxf(absf(point.x)/(tangent*aspect*0.88),absf(point.y)/(tangent*vertical))+0.1)
++	var corners: PackedVector3Array = _body_corners if focused_category=="body" else PackedVector3Array()
++	# Whole-box corners include empty air above the nose and beyond the roof.
++	# Paint fits each visible mesh; the low Body kits framing stays unchanged.
++	if corners.is_empty():
++		for x: float in [bounds.position.x,bounds.end.x]:
++			for y: float in [bounds.position.y,bounds.end.y]:
++				for z: float in [bounds.position.z,bounds.end.z]: corners.append(Vector3(x,y,z))
++	for corner: Vector3 in corners:
++		var point: Vector3 = basis.transposed()*(showroom.car.global_transform*corner-center)
++		distance = maxf(distance,point.z+maxf(absf(point.x)/(tangent*aspect*0.88),absf(point.y)/(tangent*vertical))+0.1)
+ 	return distance
+ 
+ func _blend(weight: float, showroom: CarShowroom, start: Transform3D, destination: Transform3D) -> void:
+diff --git a/game/tests/test_customisation_carousel.gd b/game/tests/test_customisation_carousel.gd
+--- a/game/tests/test_customisation_carousel.gd
++++ b/game/tests/test_customisation_carousel.gd
+@@ -519,23 +519,26 @@
+ 			page._set_customise_tab("livery")
+ 			await settle()
+ 			var view: CarShowroom = page.showroom
+-			var bounds: AABB = page._customisation_camera._model_bounds(view.car)
+ 			var pixels := Rect2(Vector2(4,64),Vector2(view.showroom_viewport.size)-Vector2(8,72))
+ 			var projected: Rect2
+ 			var first: bool = true
+ 			var fits: bool = true
+-			for x: float in [bounds.position.x,bounds.end.x]:
+-				for y: float in [bounds.position.y,bounds.end.y]:
+-					for z: float in [bounds.position.z,bounds.end.z]:
+-						var at: Vector2 = view.camera.unproject_position(view.car.global_transform*Vector3(x,y,z))
+-						fits = fits and pixels.has_point(at)
+-						projected = Rect2(at,Vector2.ZERO) if first else projected.expand(at)
+-						first = false
++			for mesh: MeshInstance3D in view.car.find_children("*","MeshInstance3D",true,false):
++				if mesh.mesh==null or not mesh.is_visible_in_tree(): continue
++				var bounds: AABB = mesh.mesh.get_aabb()
++				for x: float in [bounds.position.x,bounds.end.x]:
++					for y: float in [bounds.position.y,bounds.end.y]:
++						for z: float in [bounds.position.z,bounds.end.z]:
++							var at: Vector2 = view.camera.unproject_position(mesh.global_transform*Vector3(x,y,z))
++							fits = fits and pixels.has_point(at)
++							projected = Rect2(at,Vector2.ZERO) if first else projected.expand(at)
++							first = false
+ 			var id: String = VehicleCatalog.IDS[index]
+ 			check(fits,"whole "+id+" fits the main editing view "+str(dimensions))
+ 			check(projected.size.x/view.showroom_viewport.size.x>=0.48 or projected.size.y/view.showroom_viewport.size.y>=0.48,"editing zoom uses the available space for "+id)
+ 			check(page._customisation_camera.focused_category=="body" and page.livery_menu.pattern_shelf.find_child("CosmeticDetailPhoto",true,false)==null,"main Garage is the only "+id+" design preview")
+-			check(view.camera.basis.z.dot(home.basis.z)>0.9999,"design editing preserves the viewing direction for "+id)
++			var horizontal := Vector2(view.camera.basis.z.x,view.camera.basis.z.z).normalized()
++			check(horizontal.dot(Vector2(home.basis.z.x,home.basis.z.z).normalized())>0.9999 and rad_to_deg(asin(view.camera.basis.z.y))>=29.9,"design editing raises the view while preserving horizontal direction for "+id)
+ 			if dimensions.x==1720 or index==0: await capture("body-"+id+"-"+str(dimensions.x))
+ 			page._show_section("cars")
+ 			await settle()
+diff --git a/AGENTS.md b/AGENTS.md
+--- a/AGENTS.md
++++ b/AGENTS.md
+@@ -7,6 +7,11 @@
+ ## Garage normal entry and complete carousel pictures (2026-10-26)
+ GEC01-GEC03/R01/Q01: Owner rejects the first-entry loading screen and reports missing carousel pictures. Garage now uses normal menu navigation; every card immediately shows its native catalogue photo while exact saved paint/parts/condition resolves. Displayed identity retains stale-result guards, one temporary renderer and the 14-file bound; the main world and account fences remain. Focused37headless/46Compatibility/46desktopMobile, retained253headless/263Compatibility, App141 and parser1259 pass in recorded runs. Staged task-start30headless/33Compatibility reproduces nine failures, with only the concurrent parent-method argument adapted. All seven rebaked PNGs remain exact; source provenance records current presentation separately. Cold synchronous construction/shader hitches remain; no instant-entry or phone performance claim. Runtime scope is App and two cached-preview scripts; concurrent paint animation, Rivalry, track, model, handling and race rendering work remains. Commands, initial failures, native views, hashes and scoped review patch: docs/GARAGE_ENTRY_CAROUSEL_2026_10_26.md and docs/evidence/garage-entry-carousel-2026-10-26/report.json. Reload and owner/device navigation, picture and first-entry latency acceptance remain. No device attachment check/test, APK, purchase, live mutation, deployment, Git staging/commit or owner-process restart.
+ <!-- /GARAGE-ENTRY-CAROUSEL-20261026 -->
++
++<!-- GARAGE-PAINT-FRAMING-20261026 -->
++## Larger main Garage paint view (2026-10-26)
++GPF01-GPF03/R01/Q01: Owner rejects the small car/unused height. Paint opens at minimum30deg while retaining horizontal direction and higher existing angles; cached visible-mesh corners replace empty whole-box corners. Actual64-unit top/bottom clearance preserves headings/controls. Compact projected mesh-bound height grows43.00to58.08% at960,44.44to64.78% at1280 and44.16to67.36% at1720; these are bounds, not segmented pixels. Patterns/Colours share the fit; browsing, user rotation/zoom, resize and exact return view remain stable. Low Body kits angle/fit/padding and all original kit guards remain. Original151headless/42fail and171Compatibility/48fail, angle-only and one-Kart padding failures are retained. Final151headless/171Compatibility/171desktopMobile, retained configurator647/647, stability646, parser1260 and pinned import pass. Runtime scope is one camera helper; only superseded paint-entry pitch/empty-box assertions are adapted, with original visibility rectangle/space-use/return guards and independent all-mesh tests retained. Commands, native App pairs/all-car views, hashes and scoped checkpoint: docs/GARAGE_PAINT_FRAMING_2026_10_26.md and docs/evidence/garage-paint-framing-2026-10-26/report.json. Owner height correction supersedes inherited paint pitch only. Reload and owner/device appearance/input/performance acceptance remain. No attachment/device test, APK, real authentication/purchase, live mutation, deployment, merge, staging, commit or owner-process restart; concurrent paint-animation/list/startup and other work preserved.
++<!-- /GARAGE-PAINT-FRAMING-20261026 -->
+ 
+ <!-- GARAGE-PAINT-TRANSITION-20261026 -->
+ ## Garage rear-to-front paint transition (2026-10-26)
+diff --git a/DEVELOPMENT_STATUS.md b/DEVELOPMENT_STATUS.md
+--- a/DEVELOPMENT_STATUS.md
++++ b/DEVELOPMENT_STATUS.md
+@@ -2,6 +2,11 @@
+ ## Garage normal entry and complete carousel pictures (2026-10-26)
+ GEC01-GEC03/R01/Q01: Owner rejects the first-entry loading screen and reports missing carousel pictures. Garage now uses normal menu navigation; every card immediately shows its native catalogue photo while exact saved paint/parts/condition resolves. Displayed identity retains stale-result guards, one temporary renderer and the 14-file bound; the main world and account fences remain. Focused37headless/46Compatibility/46desktopMobile, retained253headless/263Compatibility, App141 and parser1259 pass in recorded runs. Staged task-start30headless/33Compatibility reproduces nine failures, with only the concurrent parent-method argument adapted. All seven rebaked PNGs remain exact; source provenance records current presentation separately. Cold synchronous construction/shader hitches remain; no instant-entry or phone performance claim. Runtime scope is App and two cached-preview scripts; concurrent paint animation, Rivalry, track, model, handling and race rendering work remains. Commands, initial failures, native views, hashes and scoped review patch: docs/GARAGE_ENTRY_CAROUSEL_2026_10_26.md and docs/evidence/garage-entry-carousel-2026-10-26/report.json. Reload and owner/device navigation, picture and first-entry latency acceptance remain. No device attachment check/test, APK, purchase, live mutation, deployment, Git staging/commit or owner-process restart.
+ <!-- /GARAGE-ENTRY-CAROUSEL-20261026 -->
++
++<!-- GARAGE-PAINT-FRAMING-20261026 -->
++## Larger main Garage paint view (2026-10-26)
++GPF01-GPF03/R01/Q01: Owner rejects the small car/unused height. Paint opens at minimum30deg while retaining horizontal direction and higher existing angles; cached visible-mesh corners replace empty whole-box corners. Actual64-unit top/bottom clearance preserves headings/controls. Compact projected mesh-bound height grows43.00to58.08% at960,44.44to64.78% at1280 and44.16to67.36% at1720; these are bounds, not segmented pixels. Patterns/Colours share the fit; browsing, user rotation/zoom, resize and exact return view remain stable. Low Body kits angle/fit/padding and all original kit guards remain. Original151headless/42fail and171Compatibility/48fail, angle-only and one-Kart padding failures are retained. Final151headless/171Compatibility/171desktopMobile, retained configurator647/647, stability646, parser1260 and pinned import pass. Runtime scope is one camera helper; only superseded paint-entry pitch/empty-box assertions are adapted, with original visibility rectangle/space-use/return guards and independent all-mesh tests retained. Commands, native App pairs/all-car views, hashes and scoped checkpoint: docs/GARAGE_PAINT_FRAMING_2026_10_26.md and docs/evidence/garage-paint-framing-2026-10-26/report.json. Owner height correction supersedes inherited paint pitch only. Reload and owner/device appearance/input/performance acceptance remain. No attachment/device test, APK, real authentication/purchase, live mutation, deployment, merge, staging, commit or owner-process restart; concurrent paint-animation/list/startup and other work preserved.
++<!-- /GARAGE-PAINT-FRAMING-20261026 -->
+ 
+ <!-- GARAGE-PAINT-TRANSITION-20261026 -->
+ ## Garage rear-to-front paint transition (2026-10-26)
+diff --git a/game/tests/test_garage_paint_framing.gd b/game/tests/test_garage_paint_framing.gd
+--- /dev/null
++++ b/game/tests/test_garage_paint_framing.gd
+@@ -0,0 +1,168 @@
++extends SceneTree
++## Actual projected mesh coverage, retained viewing controls and saved return view.
++const Fixture = preload("res://tests/test_customisation_carousel.gd")
++var page: GaragePage
++var checks: int = 0
++var failures: int = 0
++var output: String
++var samples: Array[Dictionary] = []
++
++func _initialize() -> void: run.call_deferred()
++
++func check(value: bool, label: String) -> void:
++	checks += 1
++	if not value:
++		failures += 1
++		print("FAIL: "+label)
++
++func settle() -> void:
++	while page._workbench_focus_pending or page._menu_motion!=null or page.showroom.camera_motion!=null and page.showroom.camera_motion.is_running(): await process_frame
++	for tick: int in range(10): await process_frame
++	if DisplayServer.get_name()!="headless": await RenderingServer.frame_post_draw
++
++func capture(label: String) -> void:
++	if DisplayServer.get_name()=="headless": return
++	var deadline: int = Time.get_ticks_msec()+20000
++	while page.livery_menu.pattern_icons.busy and Time.get_ticks_msec()<deadline: await process_frame
++	await RenderingServer.frame_post_draw
++	check(root.get_texture().get_image().save_png(output.path_join(label+".png"))==OK,"capture "+label)
++
++func mesh_projection() -> Rect2:
++	var box: Rect2
++	var first: bool = true
++	for mesh: MeshInstance3D in page.showroom.car.find_children("*","MeshInstance3D",true,false):
++		if mesh.mesh==null or not mesh.is_visible_in_tree(): continue
++		var bounds: AABB = mesh.mesh.get_aabb()
++		for x: float in [bounds.position.x,bounds.end.x]:
++			for y: float in [bounds.position.y,bounds.end.y]:
++				for z: float in [bounds.position.z,bounds.end.z]:
++					var at: Vector2 = page.showroom.camera.unproject_position(mesh.global_transform*Vector3(x,y,z))
++					box = Rect2(at,Vector2.ZERO) if first else box.expand(at)
++					first = false
++	return box
++
++func measure(label: String) -> void:
++	var view: CarShowroom = page.showroom
++	var box: Rect2 = mesh_projection()
++	var pixels: Vector2 = Vector2(view.showroom_viewport.size)
++	var angle: float = rad_to_deg(asin(view.camera.basis.z.y))
++	var fraction: float = box.size.y/pixels.y
++	samples.append({"label":label,"vehicle":page.vehicle_id,"window":str(root.size),"viewport":str(pixels),"height_fraction":fraction,"width_fraction":box.size.x/pixels.x,"elevation_degrees":angle,"bounds":str(box)})
++	check(Rect2(Vector2(4,64),pixels-Vector2(8,72)).encloses(box),"whole car clears the heading and viewport edges "+label)
++	check(fraction>=0.50,"car uses at least half the available height "+label)
++	if page.vehicle_id=="compact" and root.size.x>=1280: check(fraction>=0.60,"Compact uses the main paint view height "+label)
++	check(angle>=29.9 and angle<=42.0,"paint entry has a raised three-quarter angle "+label)
++
++func run() -> void:
++	OS.set_environment("BMT_API_URL","")
++	GameSoundtrack.instance().music_enabled = false
++	output = "res://../docs/evidence/garage-paint-framing-2026-10-26/native"
++	for argument: String in OS.get_cmdline_user_args():
++		if argument.begins_with("--evidence-root="): output = argument.trim_prefix("--evidence-root=")
++	output = ProjectSettings.globalize_path(output)
++	DirAccess.make_dir_recursive_absolute(output)
++	root.theme = MenuStyle.theme()
++	root.size = Vector2i(1280,720)
++	root.content_scale_size = root.size
++	VehicleCatalog.selected = "compact"
++	var host := Control.new()
++	root.add_child(host)
++	MenuStyle.fill(host)
++	var shop := Fixture.Shop.new()
++	host.add_child(shop)
++	page = GaragePage.new()
++	page.records = LocalRecords.new("user://paint_framing_"+TrackLibrary.unique_id()+".json")
++	var paint: Dictionary = VehicleLivery.defaults("compact")
++	paint.pattern = "apex_twin"
++	paint.colors.body = "a44844"
++	paint.colors.accent = "ebe3d0"
++	page.records.settings.vehicle_liveries = {"compact":paint}
++	page.economy = shop
++	host.add_child(page)
++	MenuStyle.fill(page)
++	page.offset_left = 20
++	page.offset_right = -20
++	page.offset_top = 112
++	page.offset_bottom = -20
++	for dimensions: Vector2i in [Vector2i(960,540),Vector2i(1280,720),Vector2i(1720,960)]:
++		root.size = dimensions
++		root.content_scale_size = dimensions
++		for index: int in range(VehicleCatalog.IDS.size()):
++			page._show_section("cars")
++			await settle()
++			var home: Transform3D = page.showroom.camera.transform
++			var orbit: Vector3 = Vector3(page.showroom.yaw,page.showroom.elevation,page.showroom.zoom)
++			page.open_car(index)
++			page._set_customise_tab("livery")
++			await settle()
++			var label: String = page.vehicle_id+"/"+str(dimensions.x)
++			measure(label)
++			var from_home := Vector2(home.basis.z.x,home.basis.z.z).normalized()
++			var direction: Vector3 = page.showroom.camera.basis.z
++			check(from_home.dot(Vector2(direction.x,direction.z).normalized())>0.9999,"paint entry retains horizontal viewing direction "+label)
++			if dimensions.x==1720 or index==0: await capture("paint-"+page.vehicle_id+"-"+str(dimensions.x))
++			var transform: Transform3D = page.showroom.camera.transform
++			page._preview_livery(2)
++			page._preview_livery(3)
++			check(page.showroom.camera.transform.is_equal_approx(transform),"browsing paints keeps the fitted camera "+label)
++			page._set_customise_tab("colours")
++			await settle()
++			check(page.showroom.camera.transform.is_equal_approx(transform),"Colours keeps the same fitted view "+label)
++			page._show_section("cars")
++			await settle()
++			check(page.showroom.camera.transform.is_equal_approx(home) and Vector3(page.showroom.yaw,page.showroom.elevation,page.showroom.zoom)==orbit,"leaving restores exact Garage view "+label)
++	page.open_car(0)
++	await settle()
++	page.showroom.rotate_view(Vector2(30,8))
++	page.showroom.zoom_by(0.9)
++	var rotated: Vector3 = page.showroom.camera.basis.z
++	var zoom: float = page.showroom.zoom
++	root.size = Vector2i(1280,720)
++	root.content_scale_size = root.size
++	await settle()
++	check(page.showroom.camera.basis.z.dot(rotated)>0.99999 and page.showroom.zoom==zoom,"resize retains player angle and zoom")
++	page._preview_livery(4)
++	check(page.showroom.camera.basis.z.dot(rotated)>0.99999,"later choice retains rotated view")
++	host.queue_free()
++	for tick: int in range(8): await process_frame
++	if DisplayServer.get_name()!="headless": await app_capture()
++	var file := FileAccess.open(output.path_join("coverage.json"),FileAccess.WRITE)
++	file.store_string(JSON.stringify(samples,"\t"))
++	print("GARAGE_PAINT_FRAMING: %d checks, %d failures" % [checks,failures])
++	quit(1 if failures else 0)
++
++func app_capture() -> void:
++	var directory: String = "user://paint_framing_app_"+TrackLibrary.unique_id()
++	DirAccess.make_dir_recursive_absolute(directory)
++	var app: Node = load("res://core/app.tscn").instantiate()
++	app.records = LocalRecords.new(directory.path_join("records.json"))
++	var paint: Dictionary = VehicleLivery.defaults("compact")
++	paint.pattern = "apex_twin"
++	paint.colors.body = "a44844"
++	paint.colors.accent = "ebe3d0"
++	app.records.settings.vehicle_liveries = {"compact":paint}
++	app.library = TrackLibrary.new(directory)
++	app.cloud_root_override = directory.path_join("cloud")
++	root.add_child(app)
++	while not app.startup_complete: await process_frame
++	VehicleCatalog.selected = "compact"
++	app._show_screen("garage")
++	var deadline: int = Time.get_ticks_msec()+30000
++	page = null
++	while Time.get_ticks_msec()<deadline:
++		if is_instance_valid(app.root_ui): page = app.root_ui.find_child("GaragePage",true,false)
++		if app.screen=="garage" and is_instance_valid(page) and page.is_visible_in_tree(): break
++		await process_frame
++	var ready: bool = app.screen=="garage" and is_instance_valid(page) and page.is_visible_in_tree()
++	check(ready,"actual App prepares Garage")
++	if ready:
++		page.open_car(0)
++		await settle()
++		for dimensions: Vector2i in [Vector2i(1280,720),Vector2i(1720,960)]:
++			root.size = dimensions
++			root.content_scale_size = dimensions
++			await settle()
++			measure("actual-app/"+str(dimensions.x))
++			await capture("paint-app-"+str(dimensions.x))
++	app.queue_free()
++	await process_frame
+diff --git a/game/tests/test_garage_paint_framing.gd.uid b/game/tests/test_garage_paint_framing.gd.uid
+--- /dev/null
++++ b/game/tests/test_garage_paint_framing.gd.uid
+@@ -0,0 +1 @@
++uid://1tkp26ia4lr0
+diff --git a/docs/GARAGE_PAINT_FRAMING_2026_10_26.md b/docs/GARAGE_PAINT_FRAMING_2026_10_26.md
+--- /dev/null
++++ b/docs/GARAGE_PAINT_FRAMING_2026_10_26.md
+@@ -0,0 +1,35 @@
++# Larger Garage paint view — 2026-10-26
++
++GPF01–GPF03/R01/Q01 address the owner's screenshot: the main paint-view car is too small and leaves much of the available height unused.
++
++The paint camera inherited the ordinary Garage's 9.09° elevation. Its fit also reserved the eight corners of a single whole-car box, including empty space above the nose and around the roof. Paint now opens at a minimum 30° elevation, retaining the horizontal viewing direction and any already higher angle. It fits the corners of each visible mesh instead of that empty whole-box space. Cached local points are rebuilt only for a different car or fitted-part set. The paint fit reserves 64 logical units above and below the projected car, with the existing maximum 82% vertical envelope and 88% horizontal envelope. The camera changes; the vehicle geometry and viewport sizes do not.
++
++For the Compact in the standalone fixture, projected visible-mesh bounds occupy **43.00% → 58.08%** of viewport height at 960×540, **44.44% → 64.78%** at 1280×720, and **44.16% → 67.36%** at 1720×960. These are projected mesh-bound measurements, not pixel segmentation. Matched actual-App screenshots and measurements are retained separately.
++
++Patterns and Colours share this larger view. Repeated paint choices preserve the fitted camera and player orbit/zoom; resizing preserves viewing direction and zoom. Leaving editing restores the exact preceding Garage transform and orbit values. The low Body kits preset keeps its prior angle, eight-corner fit and padding; Hood, aero, rims and sticker close-ups retain their presets. The user's height correction supersedes only the old requirement to inherit the paint entry's vertical angle. Horizontal direction, same-category stability, genuine-dirt locks, account/purchase/save fences and exact return-camera guards remain.
++
++Runtime scope is `game/ui/garage_customisation_camera.gd`. The retained `test_customisation_carousel.gd` paint-framing assertion now checks the raised angle and unchanged horizontal direction; its visibility check projects every visible mesh's bounds rather than corners in empty whole-car box space. The original safe rectangle, 48% minimum space-use guard, exact return values and all Body kits assertions remain. The new `test_garage_paint_framing.gd` independently projects all visible mesh bounds, checks all seven vehicles at three sizes, adds explicit height bounds, verifies paint/Colours selection stability and player resize behavior, and captures the actual App after asserting Garage readiness.
++
++The unchanged original runtime reproduces **151 headless checks / 42 failures** and **171 Compatibility checks / 48 failures**. Raising the angle alone leaves seven headless/eight native failures. Per-mesh fitting with the old padding leaves one Kart short-window failure; the final 64-unit control clearance resolves it without relaxing the height or clipping assertions. Those original proposals, sources, commands, captures and measurements remain under `initial/`. Two early attempts also encountered a concurrent paint-animation method-signature update; the logs are retained, the matching override subsequently arrived, and this task did not modify the animation, thumbnail or shared showroom sources.
++
++Actual isolated commands use pinned Godot 4.7.2 through `scripts/dev.ps1`:
++
++```powershell
++powershell -NoProfile -ExecutionPolicy Bypass -File docs/evidence/garage-paint-framing-2026-10-26/run.ps1 -Before -Mode headless
++powershell -NoProfile -ExecutionPolicy Bypass -File docs/evidence/garage-paint-framing-2026-10-26/run.ps1 -Before -Mode gl_compatibility
++powershell -NoProfile -ExecutionPolicy Bypass -File docs/evidence/garage-paint-framing-2026-10-26/run.ps1 -Mode headless
++powershell -NoProfile -ExecutionPolicy Bypass -File docs/evidence/garage-paint-framing-2026-10-26/run.ps1 -Mode gl_compatibility
++powershell -NoProfile -ExecutionPolicy Bypass -File docs/evidence/garage-paint-framing-2026-10-26/run.ps1 -Mode mobile
++powershell -NoProfile -ExecutionPolicy Bypass -File docs/evidence/garage-paint-framing-2026-10-26/run.ps1 -Test test_customisation_carousel -Mode gl_compatibility
++powershell -NoProfile -ExecutionPolicy Bypass -File docs/evidence/garage-paint-framing-2026-10-26/run.ps1 -Test test_customisation_carousel -Mode mobile
++powershell -NoProfile -ExecutionPolicy Bypass -File docs/evidence/garage-paint-framing-2026-10-26/run.ps1 -Test test_garage_preview_stability -Mode headless
++powershell -NoProfile -ExecutionPolicy Bypass -File docs/evidence/garage-paint-framing-2026-10-26/run.ps1 -Test test_script_parse -Mode headless
++powershell -NoProfile -ExecutionPolicy Bypass -File docs/evidence/garage-paint-framing-2026-10-26/run.ps1 -Import
++python docs/evidence/garage-paint-framing-2026-10-26/record.py
++```
++
++Final focused **151 headless / 171 Compatibility / 171 desktop Mobile** and retained configurator **647 per desktop renderer** pass. Retained stability **646**, parser **1260** and pinned import pass. Exact outcomes are recorded in [report.json](evidence/garage-paint-framing-2026-10-26/report.json). Tests use isolated records and an offline transaction fixture; actual App images use the ordinary guest flow. No live account or wallet is involved.
++
++[Native before/after review](evidence/garage-paint-framing-2026-10-26/review.html) includes both desktop renderers, three landscape sizes and all seven cars. `record.py` records exact commands, exits, coverage comparisons and source hashes, and generates `task-only.patch` against captured task-start sources. Tracker review bases retain subsequent concurrent entries while excluding this task's one status block; the original captured trackers remain under `before/`. `git apply --check --reverse` validates this reviewable checkpoint; nothing is staged or committed. Concurrent paint animation, paint-list, startup, Rivalry, vehicle, handling and track work are preserved and excluded.
++
++Reload and owner appearance/rotation acceptance remain, along with physical-device touch and performance review. No physical-device attachment check or device test was performed. No APK, real authentication/purchase, live mutation, deployment, merge or owner-process restart was performed.
+diff --git a/docs/evidence/garage-paint-framing-2026-10-26/run.ps1 b/docs/evidence/garage-paint-framing-2026-10-26/run.ps1
+--- /dev/null
++++ b/docs/evidence/garage-paint-framing-2026-10-26/run.ps1
+@@ -0,0 +1,17 @@
++param([string]$Test='test_garage_paint_framing',[ValidateSet('headless','gl_compatibility','mobile')][string]$Mode='headless',[switch]$Before,[switch]$Import)
++$ErrorActionPreference='Stop'
++if ($Import) {$Test='import';$Mode='headless'}
++$kitRepo=(Resolve-Path (Join-Path $PSScriptRoot '../../..')).Path
++$kitOutput=Join-Path $PSScriptRoot $(if ($Before) {"before/$Mode"} else {"$Test-$Mode"})
++New-Item -ItemType Directory -Force -Path $kitOutput | Out-Null
++$env:APPDATA=Join-Path $kitRepo "build/garage-paint-framing-2026-10-26/$(if ($Before) {'before'} else {"$Test-$Mode"})/user"
++New-Item -ItemType Directory -Force -Path $env:APPDATA | Out-Null
++$kitArgs=@('-NoProfile','-ExecutionPolicy','Bypass','-File',(Join-Path $kitRepo 'scripts/dev.ps1'),'-Action','TestScript','-ScriptPath',"res://tests/$Test.gd",'-CommandTimeoutSeconds','240','-TestArgument',"--evidence-root=$kitOutput")
++if ($Import) {$kitArgs=@('-NoProfile','-ExecutionPolicy','Bypass','-File',(Join-Path $kitRepo 'scripts/dev.ps1'),'-Action','Import','-CommandTimeoutSeconds','180')}
++if ($Mode -ne 'headless') {$kitArgs+=@('-Graphical','-RenderingMethod',$Mode,'-RenderingDriver',$(if ($Mode -eq 'mobile') {'vulkan'} else {'opengl3'}))}
++$kitStarted=[DateTime]::UtcNow
++& powershell @kitArgs *> (Join-Path $kitOutput 'console.log')
++$kitCode=$LASTEXITCODE
++@{arguments=$kitArgs;exit_code=$kitCode;started_utc=$kitStarted.ToString('o');duration_seconds=([DateTime]::UtcNow-$kitStarted).TotalSeconds}|ConvertTo-Json -Depth 5|Set-Content -Encoding UTF8 (Join-Path $kitOutput 'command.json')
++Get-Content (Join-Path $kitOutput 'console.log') -Tail 16
++exit $kitCode
+diff --git a/docs/evidence/garage-paint-framing-2026-10-26/record.py b/docs/evidence/garage-paint-framing-2026-10-26/record.py
+--- /dev/null
++++ b/docs/evidence/garage-paint-framing-2026-10-26/record.py
+@@ -0,0 +1,100 @@
++"""Record measured paint framing and a reverse-checkable task-only patch."""
++from pathlib import Path
++import difflib
++import hashlib
++import json
++import re
++import subprocess
++
++EVIDENCE = Path(__file__).resolve().parent
++ROOT = EVIDENCE.parents[2]
++EXISTING = ["game/ui/garage_customisation_camera.gd", "game/tests/test_customisation_carousel.gd",
++            "AGENTS.md", "DEVELOPMENT_STATUS.md"]
++NEW = ["game/tests/test_garage_paint_framing.gd", "game/tests/test_garage_paint_framing.gd.uid",
++       "docs/GARAGE_PAINT_FRAMING_2026_10_26.md"]
++NEW += ["docs/evidence/garage-paint-framing-2026-10-26/"+name
++        for name in ("run.ps1", "record.py", "review.html")]
++
++
++def sha(path):
++    return hashlib.sha256(path.read_bytes()).hexdigest()
++
++
++def log_text(path):
++    data = path.read_bytes()
++    return data.decode("utf-16" if data.startswith(b"\xff\xfe") else "utf-8-sig", errors="replace")
++
++
++patch, sources = [], []
++for name in EXISTING + NEW:
++    target, before = ROOT/name, EVIDENCE/"before"/name
++    original = before.read_text(encoding="utf-8") if before.exists() else ""
++    current = target.read_text(encoding="utf-8")
++    checkpoint_base = None
++    if name in ["AGENTS.md","DEVELOPMENT_STATUS.md"]:
++        # Preserve later concurrent tracker additions in the review base.
++        original, removed = re.subn(r"<!-- GARAGE-PAINT-FRAMING-20261026 -->[\s\S]*?<!-- /GARAGE-PAINT-FRAMING-20261026 -->\n\n","",current,count=1)
++        assert removed==1
++        checkpoint_base = EVIDENCE/"checkpoint-base"/name
++        checkpoint_base.parent.mkdir(parents=True,exist_ok=True)
++        checkpoint_base.write_text(original,encoding="utf-8",newline="\n")
++    if original != current:
++        patch.append(f"diff --git a/{name} b/{name}\n")
++        patch.extend(difflib.unified_diff(original.splitlines(True), current.splitlines(True),
++                     fromfile=f"a/{name}" if before.exists() else "/dev/null", tofile=f"b/{name}"))
++    sources.append({"path":name,"sha256":sha(target),"before_sha256":sha(before) if before.exists() else None,
++                    "checkpoint_base_sha256":sha(checkpoint_base) if checkpoint_base else None})
++checkpoint = EVIDENCE/"task-only.patch"
++checkpoint.write_text("".join(patch),encoding="utf-8",newline="\n")
++reverse = subprocess.run(["git","apply","--check","--reverse",str(checkpoint)],cwd=ROOT,capture_output=True,text=True)
++runs = []
++for path in sorted(EVIDENCE.rglob("command.json")):
++    log = path.with_name("console.log")
++    content = log_text(log)
++    runs.append({"directory":path.parent.relative_to(EVIDENCE).as_posix(),
++                 **json.loads(path.read_text(encoding="utf-8-sig")),
++                 "summary":re.findall(r"(?:GARAGE_PAINT_FRAMING|CUSTOMISATION_CAROUSEL|GARAGE_PREVIEW_STABILITY|SCRIPT_PARSE):[^\r\n]+",content),
++                 "failures":re.findall(r"^FAIL:[^\r\n]+",content,re.M),"log_sha256":sha(log)})
++coverage = []
++for path in sorted(EVIDENCE.rglob("coverage.json")):
++    rows = json.loads(path.read_text(encoding="utf-8"))
++    coverage.append({"path":path.relative_to(EVIDENCE).as_posix(),"sha256":sha(path),"samples":rows,
++                     "minimum_height_fraction":min(row["height_fraction"] for row in rows)})
++baseline = {row["label"]:row for row in json.loads((EVIDENCE/"before/gl_compatibility/coverage.json").read_text())}
++comparison = []
++for mode in ["gl_compatibility","mobile"]:
++    rows = json.loads((EVIDENCE/f"test_garage_paint_framing-{mode}/coverage.json").read_text())
++    for row in rows:
++        old = baseline[row["label"]]
++        comparison.append({"renderer":mode,"label":row["label"],"before_height_fraction":old["height_fraction"],
++                           "after_height_fraction":row["height_fraction"],
++                           "relative_height_gain":row["height_fraction"]/old["height_fraction"]-1})
++initial_logs = [{"path":p.relative_to(EVIDENCE).as_posix(),"sha256":sha(p)} for p in sorted((EVIDENCE/"initial").rglob("*.log"))]
++expected = {"test_garage_paint_framing-"+mode for mode in ["headless","gl_compatibility","mobile"]}
++expected |= {"test_customisation_carousel-"+mode for mode in ["gl_compatibility","mobile"]}
++expected |= {"test_garage_preview_stability-headless","test_script_parse-headless","import-headless"}
++missing = sorted(expected-{run["directory"] for run in runs})
++report = {
++    "date":"2026-10-26","requirements":["GPF01","GPF02","GPF03","R01","Q01"],
++    "engine":(ROOT/"godot-version.txt").read_text().strip(),"sources":sources,"runs":runs,"missing_final_runs":missing,
++    "coverage":coverage,"comparison":comparison,"initial_logs":initial_logs,
++    "initial_proposal_sources":[{"path":p.relative_to(EVIDENCE).as_posix(),"sha256":sha(p)}
++                                for p in sorted((EVIDENCE/"initial").rglob("*.gd"))],
++    "policy":{"paint_entry_minimum_elevation_degrees":30,"horizontal_direction":"retained",
++              "fit":"cached corners of each visible mesh","paint_reserved_height":128,
++              "Body_kits":"original low angle, whole bounds, padding and checks retained",
++              "same_category":"selection keeps current camera/orbit/zoom", "leave":"exact preceding Garage transform and orbit restored"},
++    "captures":[{"path":p.relative_to(EVIDENCE).as_posix(),"sha256":sha(p)} for p in sorted(EVIDENCE.rglob("*.png"))],
++    "concurrent_dependency_hashes":[{"path":name,"sha256":sha(ROOT/name)} for name in
++        ["game/ui/car_showroom.gd","game/ui/garage_page.gd","game/ui/garage_cached_thumbnail.gd","game/ui/garage_paint_transition.gd"]],
++    "checkpoint":{"path":"task-only.patch","sha256":sha(checkpoint),"reverse_check_exit":reverse.returncode,"stderr":reverse.stderr},
++    "remaining_acceptance":["client reload","owner visual/rotation review","physical-device touch/performance"],
++    "limits":["Windows Compatibility and Vulkan Mobile", "projected mesh bounds, not segmented image pixels",
++              "no physical-device attachment check or device test","no APK","no real authentication/purchase or live mutation",
++              "no deployment, merge, staging, commit or owner-process restart","concurrent work preserved and excluded"]}
++(EVIDENCE/"report.json").write_text(json.dumps(report,indent=2)+"\n",encoding="utf-8")
++print(json.dumps({"runs":[{"name":run["directory"],"exit":run["exit_code"],"summary":run["summary"]} for run in runs],
++                  "compact":[row for row in comparison if row["renderer"]=="gl_compatibility" and (row["label"].startswith("compact/") or row["label"].startswith("actual-app/"))],
++                  "missing_final_runs":missing,"checkpoint_reverse_exit":reverse.returncode,"checkpoint_error":reverse.stderr},indent=2))
++failed = any(run["exit_code"]!=0 for run in runs if not run["directory"].startswith(("before/","initial/")))
++raise SystemExit(reverse.returncode or int(failed or bool(missing)))
+diff --git a/docs/evidence/garage-paint-framing-2026-10-26/review.html b/docs/evidence/garage-paint-framing-2026-10-26/review.html
+--- /dev/null
++++ b/docs/evidence/garage-paint-framing-2026-10-26/review.html
+@@ -0,0 +1,12 @@
++<!doctype html>
++<html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Garage paint camera — native comparison</title>
++<style>body{margin:24px;background:#0b141b;color:#edf1f2;font:16px system-ui}main{max-width:1720px;margin:auto}a{color:#ffda45}p{line-height:1.5;max-width:1100px}img{width:100%;height:auto;display:block;border:1px solid #344750}select{padding:10px;background:#12212a;color:white;border:1px solid #526773}.pair{display:grid;grid-template-columns:1fr 1fr;gap:16px}figure{margin:16px 0}figcaption{margin:8px 0}@media(max-width:900px){.pair{grid-template-columns:1fr}}</style>
++<main><h1>Garage paint camera</h1><p>The paint view uses a raised three-quarter camera to fill more of the available height. The whole vehicle remains visible. Repeated paint selection keeps the camera, and leaving editing restores the preceding Garage view.</p>
++<p><a href="../../GARAGE_PAINT_FRAMING_2026_10_26.md">Change and validation</a> · <a href="report.json">Measurements and commands</a> · <a href="task-only.patch">Scoped checkpoint</a></p>
++<label>Final desktop renderer <select id="renderer"><option value="gl_compatibility">Compatibility</option><option value="mobile">Vulkan Mobile</option></select></label>
++<h2>Actual App — 1720 × 960</h2><div class="pair"><figure><figcaption>Before — Compatibility</figcaption><img src="before/gl_compatibility/paint-app-1720.png" alt="Original low paint angle leaves a large empty space above the car"></figure><figure><figcaption>After</figcaption><img data-file="paint-app-1720.png" alt="Raised paint camera uses more panel height"></figure></div>
++<h2>Actual App — 1280 × 720</h2><div class="pair"><figure><figcaption>Before — Compatibility</figcaption><img src="before/gl_compatibility/paint-app-1280.png" alt="Original paint framing at 1280 by 720"></figure><figure><figcaption>After</figcaption><img data-file="paint-app-1280.png" alt="Revised paint framing at 1280 by 720"></figure></div>
++<h2>Short landscape — 960 × 540</h2><img data-file="paint-compact-960.png" alt="Whole car in a short landscape paint view">
++<h2>All seven vehicles</h2><select id="vehicle"><option>compact</option><option>pickup</option><option>classic</option><option>formula</option><option>kart</option><option>forklift</option><option>electric</option></select><img id="vehicle-image" alt="Fitted paint view for the selected vehicle">
++<p>Isolated Windows native tests with synthetic mouse/touch. No physical-device test, purchase or owner-process restart.</p></main>
++<script>function show(){const mode=document.querySelector('#renderer').value;for(const picture of document.querySelectorAll('[data-file]'))picture.src='test_garage_paint_framing-'+mode+'/'+picture.dataset.file;document.querySelector('#vehicle-image').src='test_garage_paint_framing-'+mode+'/paint-'+document.querySelector('#vehicle').value+'-1720.png'}document.querySelector('#renderer').onchange=show;document.querySelector('#vehicle').onchange=show;show()</script></html>

@@ -1,0 +1,314 @@
+diff --git a/game/tests/review_forklift_model.gd b/game/tests/review_forklift_model.gd
+new file mode 100644
+--- /dev/null
++++ b/game/tests/review_forklift_model.gd
+@@ -0,0 +1,122 @@
++extends SceneTree
++## Read-only native modelling review: current geometry, close-ups and topology.
++var output: String
++var graphical: bool
++var metrics: Dictionary = {}
++var camera: Camera3D
++
++func _initialize() -> void: run.call_deferred()
++
++func topology(part: MeshInstance3D) -> Dictionary:
++	var faces: PackedVector3Array = part.mesh.get_faces()
++	var edges: Dictionary = {}
++	var directions: Dictionary = {}
++	var volume: float = 0.0
++	var normal_disagreements: int = 0
++	for surface: int in range(part.mesh.get_surface_count()):
++		var arrays: Array = part.mesh.surface_get_arrays(surface)
++		var vertices: PackedVector3Array = arrays[Mesh.ARRAY_VERTEX]
++		var normals: PackedVector3Array = arrays[Mesh.ARRAY_NORMAL]
++		var indices: PackedInt32Array = arrays[Mesh.ARRAY_INDEX] if arrays[Mesh.ARRAY_INDEX] != null else PackedInt32Array()
++		var count: int = indices.size() if not indices.is_empty() else vertices.size()
++		for offset: int in range(0,count,3):
++			var ids: Array[int] = []
++			for k: int in range(3): ids.append(indices[offset+k] if not indices.is_empty() else offset+k)
++			var cross: Vector3 = (vertices[ids[1]]-vertices[ids[0]]).cross(vertices[ids[2]]-vertices[ids[0]])
++			if not normals.is_empty() and cross.dot(normals[ids[0]])>0.00000001: normal_disagreements += 1
++	for index: int in range(0,faces.size(),3):
++		volume += faces[index].dot(faces[index+1].cross(faces[index+2]))/6.0
++		for edge: int in range(3):
++			var a: String = str(faces[index+edge].snapped(Vector3.ONE*0.000001))
++			var b: String = str(faces[index+(edge+1)%3].snapped(Vector3.ONE*0.000001))
++			var key: String = a+"/"+b if a<b else b+"/"+a
++			edges[key] = int(edges.get(key,0))+1
++			directions[key] = int(directions.get(key,0))+(1 if a<b else -1)
++	var boundary: int = 0
++	var inconsistent: int = 0
++	for key: String in edges:
++		if edges[key] != 2: boundary += 1
++		if directions[key] != 0: inconsistent += 1
++	return {"triangles":faces.size()/3,"boundary_edges":boundary,"inconsistent_edges":inconsistent,"normal_disagreements":normal_disagreements,"signed_volume":volume}
++
++func capture(label: String, position_model: Vector3, target_model: Vector3) -> void:
++	if not graphical: return
++	camera.look_at_from_position(position_model*HandlingConfig.BODY_SCALE,target_model*HandlingConfig.BODY_SCALE)
++	for tick: int in range(8): await process_frame
++	await RenderingServer.frame_post_draw
++	var pixels: Image = root.get_texture().get_image()
++	var result: Error = pixels.save_png(output.path_join(label+".png"))
++	if result != OK: push_error("Capture failed: "+label)
++
++func run() -> void:
++	OS.set_environment("BMT_API_URL","")
++	graphical = DisplayServer.get_name() != "headless"
++	output = ProjectSettings.globalize_path("res://../docs/evidence/forklift-review-2026-10-25").path_join(RenderingServer.get_current_rendering_method() if graphical else "headless")
++	DirAccess.make_dir_recursive_absolute(output)
++	root.size = Vector2i(1280,960)
++	var world := Node3D.new()
++	root.add_child(world)
++	var car := CarVisual.new()
++	car.vehicle_id = "forklift"
++	car.batch_parts = false
++	world.add_child(car)
++	var value: Dictionary = VehicleLivery.defaults("forklift")
++	value.stickers.hood.id = "crest"
++	value.stickers.hood.size = 0.95
++	car.apply_livery(value)
++	for simple: bool in [false,true]:
++		var probe: CarVisual = car
++		if simple:
++			probe = CarVisual.new()
++			probe.vehicle_id = "forklift"; probe.batch_parts = false; probe.simple_model = true
++			world.add_child(probe)
++		var parts: Dictionary = {}
++		for pattern: String in ["ForgedFork*","FormedSideSkin*","RolledWheelArch*"]:
++			for part: MeshInstance3D in probe.find_children(pattern,"MeshInstance3D",true,false): parts[part.name] = topology(part)
++		metrics["simple_parts" if simple else "detailed_parts"] = parts
++		if simple: probe.free()
++	# Find the actual steering assembly by its configured mount and inspect its ring.
++	for node: Node in car.body.get_children():
++		if node is Node3D and node.position.is_equal_approx(Vector3(-0.16,1.61,-0.40)):
++			for mesh: MeshInstance3D in node.find_children("*","MeshInstance3D",true,false):
++				if mesh.mesh is ImmediateMesh:
++					metrics.steering_ring = {"geometry":topology(mesh),"local_bounds":str(mesh.mesh.get_aabb()),"material_cull_mode":(mesh.get_active_material(0) as BaseMaterial3D).cull_mode}
++	# Locate the terminal segment of the actual upper exhaust.
++	var exhaust_end := Vector3(0.59,2.12,1.02)
++	var exhaust_start := Vector3(0.62,2.03,0.98)
++	for node: Node in car.body.get_children():
++		if node is MeshInstance3D and node.position.is_equal_approx((exhaust_start+exhaust_end)*0.5):
++			var cylinder: CylinderMesh = node.mesh
++			metrics.exhaust_outlet = {"cap_top":cylinder.cap_top,"cap_bottom":cylinder.cap_bottom,"radius_model_m":cylinder.top_radius}
++	metrics.chain_link_gap_detailed_model_m = 1.75/26.0-0.030
++	metrics.chain_link_gap_simple_model_m = 1.75/10.0-0.030
++	if graphical:
++		ShowroomStudio.build(world,car)
++		camera = Camera3D.new()
++		world.add_child(camera)
++		camera.current = true
++		camera.fov = 35
++		await capture("front-overview",Vector3(-5.4,3.6,-6.4),Vector3(0,1.25,-0.38))
++		await capture("rear-overview",Vector3(-4.7,3.2,5.2),Vector3(0,1.22,0.15))
++		await capture("mast-front",Vector3(-1.7,1.95,-4.2),Vector3(0,1.65,-1.35))
++		await capture("cockpit-top",Vector3(-1.6,3.4,1.5),Vector3(-0.05,1.45,-0.23))
++		await capture("cockpit-low",Vector3(-1.9,1.33,-0.05),Vector3(-0.16,1.61,-0.40))
++		await capture("exhaust-outlet",Vector3(1.25,2.74,1.85),Vector3(0.61,1.99,1.0))
++		await capture("fork-underside",Vector3(-1.6,0.38,-3.4),Vector3(0,0.89,-2.05))
++		await capture("fork-side",Vector3(-2.8,1.0,-2.1),Vector3(-0.43,0.98,-1.95))
++		var state := VehicleState.new()
++		state.steering = 1.0
++		car.present(Vector2.ZERO,0.0,state,DriveFrame.new())
++		await capture("rear-full-steering",Vector3(-3.8,1.5,4.0),Vector3(0,0.71,0.8))
++		# The production merger preserves these surfaces; retain actual batched views.
++		VisualGeometry.batch_static_parts(car)
++		await capture("batched-fork-side",Vector3(-2.8,1.0,-2.1),Vector3(-0.43,0.98,-1.95))
++		await capture("batched-cockpit-low",Vector3(-1.9,1.33,-0.05),Vector3(-0.16,1.61,-0.40))
++		await capture("batched-mast-front",Vector3(-1.7,1.95,-4.2),Vector3(0,1.65,-1.35))
++		await capture("batched-exhaust-outlet",Vector3(1.25,2.74,1.85),Vector3(0.61,1.99,1.0))
++	var report := FileAccess.open(output.path_join("metrics.json"),FileAccess.WRITE)
++	report.store_string(JSON.stringify(metrics,"\t"))
++	report.close()
++	print("FORKLIFT_MODEL_REVIEW ",JSON.stringify(metrics))
++	world.free()
++	quit()
+diff --git a/docs/FORKLIFT_MODEL_REVIEW_2026_10_25.md b/docs/FORKLIFT_MODEL_REVIEW_2026_10_25.md
+new file mode 100644
+--- /dev/null
++++ b/docs/FORKLIFT_MODEL_REVIEW_2026_10_25.md
+@@ -0,0 +1,34 @@
++# Forklift model review — 2026-10-25
++
++Request: review the current Forklift after the raised carriage, solid body panels, single rear sticker, lower fitting removal and 80 km/h changes. This is a findings-only review; no production model, handling, camera, livery or saved data was changed.
++
++[Native screenshot gallery](evidence/forklift-review-2026-10-25/report.html) · [Machine-readable report](evidence/forklift-review-2026-10-25/report.json)
++
++## Findings
++
++1. **P2 / FR01 — Both fork side faces have reversed winding.** In `game/vehicle/forklift_model.gd:239`, the two profile caps use the opposite triangle order to their supplied outward normals and the connecting faces. Each fork has 14 of 32 triangles disagreeing with its normal and 18 inconsistent shared edges, in both detailed and racing geometry. They have no open boundary, so a closure-only test misses this problem. Back-face culling removes the exterior side and exposes the opposite inner side, making the fork appear thin or incorrectly shaded. Reverse the two side-face orders and retain the current profile, thickness and transport height. Evidence: `gl_compatibility/fork-side.png`, `fork-underside.png` and `mobile/batched-fork-side.png` in the review folder.
++
++2. **P2 / FR02 — The steering-wheel rim disappears from below.** `game/vehicle/forklift_model.gd:154` uses `VisualGeometry.ring`, which constructs a single flat annulus in `game/vehicle/visual_geometry.gd:209`. It has zero geometric thickness/volume and back-face culling. The lower cockpit view retains the hub and spokes but loses the complete rim; the production merger retains this defect. Use a round-section, closed rim. The wheel's current tilt is not classified as a defect by this review. Evidence: `gl_compatibility/cockpit-top.png`, `cockpit-low.png` and `mobile/batched-cockpit-low.png`.
++
++3. **P3 / FR03 — Lift chains read as disconnected floating blocks.** `game/vehicle/forklift_model.gd:217` places 30 mm-high blocks with 37.3 mm gaps in the detailed model and 145 mm gaps in the racing model. The geometry has no continuous connecting run, wrap over the pulley or return/anchor to the raised carriage. This is conspicuous in the Garage close-up. A connected chain silhouette with a pulley wrap and visible termination would finish the mechanism without requiring an animated lift system. Evidence: `gl_compatibility/mast-front.png` and `mobile/batched-mast-front.png`.
++
++4. **P3 / FR04 — The upper exhaust ends in a solid cap.** The exhaust at `game/vehicle/forklift_model.gd:57` is built by `_pipe` at line 299 from default capped cylinders. Its terminal segment reports `cap_top = true` and the outlet presents a flat disk rather than a bore. Add a hollow dark opening and wall thickness; retain the upper stack and the already removed lower fitting. Evidence: `gl_compatibility/exhaust-outlet.png` and `mobile/batched-exhaust-outlet.png`.
++
++## What reviewed well
++
++Both formed side skins and all four rolled wheel arches have zero boundary edges, zero inconsistent shared edges and zero normal/winding disagreements in detailed and racing geometry. The rear crest is visible between the lamps, the lower fitting is absent, and the side panels, seat, guard and counterweight form a coherent vehicle. The remaining issues are localized; the raised fork position and handling do not need changing to address them.
++
++## Native inspection and scope
++
++Pinned engine: `4.7.2.stable.official.ed1daf0bf`. Desktop NVIDIA RTX 3090. The diagnostic builds the actual current `CarVisual`, audits both detail variants, applies the normal rear crest, and captures the shared showroom lighting with diagnostic cameras. Mobile also captures the production static merger. These camera poses exist only in the review script.
++
++Commands actually run:
++
++```powershell
++powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1 TestScript -ScriptPath res://tests/review_forklift_model.gd -Graphical -RenderingMethod gl_compatibility -CommandTimeoutSeconds 180
++powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1 TestScript -ScriptPath res://tests/review_forklift_model.gd -Graphical -RenderingMethod mobile -CommandTimeoutSeconds 180
++```
++
++The first Compatibility diagnostic failed because its reader assigned a null index array to `PackedInt32Array`; the reader was corrected to accept unindexed meshes. That initial log is retained in `logs/initial-diagnostic.log`. Subsequent Compatibility and desktop Mobile runs exited 0, produced 9 and 13 native screenshots respectively, and reported the same mesh defects. Exit 0 indicates the inspection completed, not that the model passed all quality checks. No failing production invariant was removed or weakened.
++
++Changed files: the new review script, this guide, and `docs/evidence/forklift-review-2026-10-25/` only. Source hashes, exact command logs and a text-only review checkpoint are retained there. No model fix or game behavior change was made. No device attachment check, physical-device test, APK, purchase, live mutation, deployment or owner-process restart was performed. Device performance, actual saved appearance and owner visual acceptance are outside this review. Earlier handling/bridge/80 km/h results were not rerun or newly certified.
+diff --git a/docs/evidence/forklift-review-2026-10-25/report.html b/docs/evidence/forklift-review-2026-10-25/report.html
+new file mode 100644
+--- /dev/null
++++ b/docs/evidence/forklift-review-2026-10-25/report.html
+@@ -0,0 +1,44 @@
++<!doctype html>
++<html lang="en">
++<meta charset="utf-8">
++<meta name="viewport" content="width=device-width, initial-scale=1">
++<title>Forklift model review — 25 October 2026</title>
++<style>
++body{margin:0 auto;max-width:1400px;padding:32px;background:#172129;color:#edf1f3;font:17px/1.5 system-ui,sans-serif}h1{font-size:30px}h2{font-size:23px;margin-top:40px}p{max-width:1000px}a{color:#e7c36a}.views{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,440px),1fr));gap:20px}figure{margin:0}img{width:100%;height:auto;display:block;background:#111922}figcaption{padding:10px 0;color:#c2cbd1}code{font-size:14px}
++</style>
++<h1>Forklift model review</h1>
++<p>Four findings remain. Production model unchanged. Native Godot 4.7.2 screenshots, captured on desktop in Compatibility and Mobile; these are diagnostic camera views. <a href="../../FORKLIFT_MODEL_REVIEW_2026_10_25.md">Full findings, source locations and limitations</a> · <a href="report.json">Report</a></p>
++<h2>P2 — Reverse fork side-face winding</h2>
++<p>Each fork has 14 side triangles facing opposite their outward normals and 18 inconsistent shared edges. Exterior sides are culled, exposing the opposite inner side. Both detail variants are affected.</p>
++<div class="views">
++<figure><a href="gl_compatibility/fork-side.png"><img src="gl_compatibility/fork-side.png" alt="Fork side profile in Compatibility"></a><figcaption>Compatibility, fork side.</figcaption></figure>
++<figure><a href="gl_compatibility/fork-underside.png"><img src="gl_compatibility/fork-underside.png" alt="Low view beneath the fork blades"></a><figcaption>Compatibility, low underside view.</figcaption></figure>
++<figure><a href="mobile/batched-fork-side.png"><img src="mobile/batched-fork-side.png" alt="Fork side profile after production batching in Mobile"></a><figcaption>Desktop Mobile, production static merger.</figcaption></figure>
++</div>
++<h2>P2 — Flat steering rim disappears from below</h2>
++<p>The hub and spokes remain visible while the single-sided rim vanishes. Replace the flat annulus with a closed round-section rim.</p>
++<div class="views">
++<figure><a href="gl_compatibility/cockpit-top.png"><img src="gl_compatibility/cockpit-top.png" alt="Steering wheel visible from above"></a><figcaption>Compatibility, rim visible from above.</figcaption></figure>
++<figure><a href="gl_compatibility/cockpit-low.png"><img src="gl_compatibility/cockpit-low.png" alt="Steering hub and spokes with the rim missing from below"></a><figcaption>Compatibility, rim missing from below.</figcaption></figure>
++<figure><a href="mobile/batched-cockpit-low.png"><img src="mobile/batched-cockpit-low.png" alt="Missing steering rim in Mobile after production batching"></a><figcaption>Desktop Mobile, same defect after batching.</figcaption></figure>
++</div>
++<h2>P3 — Disconnected chain detail</h2>
++<p>Widely separated blocks do not form a continuous chain, wrap over the pulleys or terminate at the raised carriage.</p>
++<div class="views">
++<figure><a href="gl_compatibility/mast-front.png"><img src="gl_compatibility/mast-front.png" alt="Mast with disconnected chain blocks"></a><figcaption>Compatibility, detailed mast.</figcaption></figure>
++<figure><a href="mobile/batched-mast-front.png"><img src="mobile/batched-mast-front.png" alt="Mast after production batching in Mobile"></a><figcaption>Desktop Mobile, production static merger.</figcaption></figure>
++</div>
++<h2>P3 — Solid exhaust outlet</h2>
++<div class="views">
++<figure><a href="gl_compatibility/exhaust-outlet.png"><img src="gl_compatibility/exhaust-outlet.png" alt="Solid disk at the exhaust tip"></a><figcaption>Compatibility, capped upper stack.</figcaption></figure>
++<figure><a href="mobile/batched-exhaust-outlet.png"><img src="mobile/batched-exhaust-outlet.png" alt="Capped exhaust after production batching in Mobile"></a><figcaption>Desktop Mobile, production static merger.</figcaption></figure>
++</div>
++<h2>Body and rear placement</h2>
++<p>The side skins and arches pass closure, edge orientation and normal checks. The rear crest is clear; the lower fitting is absent.</p>
++<div class="views">
++<figure><a href="gl_compatibility/front-overview.png"><img src="gl_compatibility/front-overview.png" alt="Current Forklift front overview"></a><figcaption>Current model, front.</figcaption></figure>
++<figure><a href="gl_compatibility/rear-overview.png"><img src="gl_compatibility/rear-overview.png" alt="Current Forklift rear with visible crest and no lower fitting"></a><figcaption>Current model, rear.</figcaption></figure>
++<figure><a href="gl_compatibility/rear-full-steering.png"><img src="gl_compatibility/rear-full-steering.png" alt="Forklift rear wheel steering"></a><figcaption>Current model, full rear steering.</figcaption></figure>
++</div>
++<p>No physical-device test or performance certification was performed. Initial diagnostic failure and successful capture logs are retained in <code>logs/</code>.</p>
++</html>
+diff --git a/docs/evidence/forklift-review-2026-10-25/report.json b/docs/evidence/forklift-review-2026-10-25/report.json
+new file mode 100644
+--- /dev/null
++++ b/docs/evidence/forklift-review-2026-10-25/report.json
+@@ -0,0 +1,94 @@
++{
++    "date":  "2026-10-25",
++    "request":  "Review the current Forklift model",
++    "production_changes":  false,
++    "engine":  "4.7.2.stable.official.ed1daf0bf",
++    "hardware":  "Desktop NVIDIA GeForce RTX 3090",
++    "requirements":  [
++                         "FR01 fork winding and shell integrity",
++                         "FR02 cockpit rim solidity",
++                         "FR03 mast mechanical detail",
++                         "FR04 exhaust outlet finish"
++                     ],
++    "findings":  [
++                     {
++                         "id":  "FR01",
++                         "priority":  "P2",
++                         "title":  "Reversed fork side-face winding",
++                         "source":  "game/vehicle/forklift_model.gd:239",
++                         "affected":  "Both forks, detailed and racing",
++                         "triangles_per_fork":  32,
++                         "normal_disagreements_per_fork":  14,
++                         "inconsistent_edges_per_fork":  18,
++                         "open_edges_per_fork":  0
++                     },
++                     {
++                         "id":  "FR02",
++                         "priority":  "P2",
++                         "title":  "Single-sided steering rim disappears from below",
++                         "source":  "game/vehicle/forklift_model.gd:154",
++            "helper":  "game/vehicle/visual_geometry.gd:209",
++                         "geometric_volume":  0,
++                         "boundary_edges":  192,
++                         "back_face_culling":  true
++                     },
++                     {
++                         "id":  "FR03",
++                         "priority":  "P3",
++                         "title":  "Disconnected lift-chain detail",
++                         "source":  "game/vehicle/forklift_model.gd:217",
++                         "detailed_gap_model_m":  0.0373076923076923,
++                         "racing_gap_model_m":  0.145
++                     },
++                     {
++                         "id":  "FR04",
++                         "priority":  "P3",
++                         "title":  "Solid exhaust outlet cap",
++                         "source":  "game/vehicle/forklift_model.gd:57",
++                         "helper":  "game/vehicle/forklift_model.gd:299",
++                         "terminal_cap_top":  true
++                     }
++                 ],
++    "retained":  [
++                     "Closed and consistently wound side skins and wheel arches in both detail variants",
++                     "Rear crest visible",
++                     "Lower fitting absent"
++                 ],
++    "inspections":  [
++                        {
++                            "renderer":  "gl_compatibility",
++                            "exit_code":  0,
++                            "native_images":  9,
++                            "metrics":  "gl_compatibility/metrics.json",
++                            "log":  "logs/compatibility.log"
++                        },
++                        {
++                            "renderer":  "mobile",
++                            "exit_code":  0,
++                            "native_images":  13,
++                            "includes_production_static_merger":  true,
++                            "metrics":  "mobile/metrics.json",
++                            "log":  "logs/mobile.log"
++                        }
++                    ],
++    "commands":  [
++                     "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1 TestScript -ScriptPath res://tests/review_forklift_model.gd -Graphical -RenderingMethod gl_compatibility -CommandTimeoutSeconds 180",
++                     "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1 TestScript -ScriptPath res://tests/review_forklift_model.gd -Graphical -RenderingMethod mobile -CommandTimeoutSeconds 180"
++                 ],
++    "initial_failure":  "Compatibility diagnostic reader failed on a null index array. Reader corrected for unindexed meshes; initial log retained. Production unchanged.",
++    "limitations":  [
++                        "Inspection completion does not mean the model has no defects",
++                        "No physical-device test or attachment check",
++                        "No APK or performance certification",
++                        "No renewed handling, bridge, online or 80 km/h certification",
++                        "No model fix, live mutation, purchase, deployment or owner-process restart"
++                    ],
++    "sources_sha256":  {
++                           "game/vehicle/forklift_model.gd":  "b8e1ffa2a54807da2ff44d58846d51abe447a15c877c43d0b94fabf4f50aacb3",
++                           "game/vehicle/visual_geometry.gd":  "94b15daa2a2eb848aef9004ba5f75044af424512f02191e54f116a8d93b2a978",
++                           "game/vehicle/compact_finish.gd":  "46c89a36d8969ac0583ef7112ceac28f3a38342d2ae263602f6a2e823330fc5c",
++                           "game/vehicle/car_visual.gd":  "c2205a6c6e78341071a1b58033e79cb1785e827f521713d2f428cba642d113ab",
++                           "game/resources/cars/forklift.tres":  "39e48f40bea9915fd14702dca41c25b346cc1204435c176890cb942925feb89f",
++                           "game/tests/review_forklift_model.gd":  "370db944e9a6e25ae00bb29d33a44522cd7f63de9906a4dd85b6feef3dc01fe7"
++                       }
++}

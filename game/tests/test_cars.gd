@@ -41,7 +41,8 @@ func _run() -> void:
 	var track: NativeTrack = NativeTrack.read("res://tests/fixtures/legacy_tracks/slicks_arto4_test.json")
 	var keys: Array[String] = []
 	var records := LocalRecords.new("user://car_tests_" + TrackLibrary.unique_id() + ".json")
-	for id: String in VehicleCatalog.IDS:
+	# Historical chassis retain their diagnostic regression coverage after retirement.
+	for id: String in VehicleCatalog.ALL_IDS:
 		var config: HandlingConfig = VehicleCatalog.config(id)
 		var key: String = records.key_for(track,config)
 		check(key not in keys, id + " PB rules are distinct")
@@ -85,6 +86,12 @@ func _run() -> void:
 		# Batching intentionally reduces child count without removing geometry.
 		visual.batch_parts = false
 		root.add_child(visual)
+		if config.air_cushion:
+			check(visual.rolling_wheels.is_empty() and visual.front_wheels.is_empty(),id+" uses an air cushion without wheel frames")
+			check(visual.body.get_node_or_null("FanRotor") != null,id+" has a separate fan frame")
+			visual.queue_free()
+			await process_frame
+			continue
 		var steering_wheels: Array[Node3D] = visual.rear_wheels if config.rear_steering else visual.front_wheels
 		check(steering_wheels.size() == 2 and visual.body.get_child_count() > 10,id + " detailed model has steering wheels and body")
 		var batched := CarVisual.new()

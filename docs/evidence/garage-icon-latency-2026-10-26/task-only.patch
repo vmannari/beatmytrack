@@ -1,0 +1,637 @@
+diff --git a/game/ui/garage_paint_icons.gd b/game/ui/garage_paint_icons.gd
+--- a/game/ui/garage_paint_icons.gd
++++ b/game/ui/garage_paint_icons.gd
+@@ -7,6 +7,7 @@
+ const CACHE_LIMIT: int = 24
+ const FILE_LIMIT: int = 196
+ const FILE_BYTES: int = 262144
++const BATCH_SIZE: int = 8
+ const VERSION: String = "profile-paint-3"
+ static var images: Dictionary = {}
+ var cache_directory: String = ProjectSettings.globalize_path("user://cache/garage_paint_icons_v3")
+@@ -32,6 +33,14 @@
+ var _studio_identity: Array = []
+ var _io: RefCounted
+ var _fit_pending: bool = false
++var _draw_jobs: Array[Dictionary] = []
++var _read_jobs: Array[Dictionary] = []
++var _write_jobs: Array[Dictionary] = []
++var _io_kind: String = ""
++var read_batches: int = 0
++var write_batches: int = 0
++var peak_write_queue: int = 0
++var _build_started: int = 0
+ 
+ func _ready() -> void:
+ 	set_process(false)
+@@ -71,38 +80,62 @@
+ 	return job.generation==generation and _visible(row) and row.icon_key==job.key
+ 
+ func _process(_delta: float) -> void:
+-	if _io!=null:
+-		if not _io.done: return
++	if _io!=null and _io.done:
+ 		var result: Dictionary = _io.result if _io.result is Dictionary else {}
+ 		io_us += int(result.get("us",0))
+ 		_io = null
+-		if _stage=="read" and _valid(_current):
+-			if result.get("image") is Image:
+-				disk_hits += 1
+-				_publish(result.image)
+-			else:
+-				_render_current()
+-				return
+-		else:
+-			_current = {}
+-			_stage = ""
+-	if _stage=="draw": return
+-	while not _jobs.is_empty():
+-		var job: Dictionary = _jobs.pop_front()
+-		if not _valid(job): continue
+-		_current = job
+-		if images.has(job.key):
+-			job.row.get_ref().car_icon.texture = images[job.key]
+-			memory_hits += 1
+-			_current = {}
+-			continue
+-		if cache_directory.is_empty():
++		if _io_kind=="read":
++			var decoded: Dictionary = result.get("images",{})
++			for job: Dictionary in _read_jobs:
++				if not _valid(job): continue
++				if decoded.get(job.key) is Image:
++					disk_hits += 1
++					_publish(job,decoded[job.key])
++				else: _draw_jobs.append(job)
++			_read_jobs.clear()
++		_io_kind = ""
++	if _stage=="build" and is_instance_valid(studio) and studio.presentation_ready:
++		Profile.apply_presentation(studio)
++		build_us += Time.get_ticks_usec()-_build_started
++		_fit_pending = true
++		_draws = 5
++		_stage = "draw"
++	if _stage.is_empty() and _write_jobs.size()<BATCH_SIZE:
++		while not _draw_jobs.is_empty():
++			var job: Dictionary = _draw_jobs.pop_front()
++			if not _valid(job): continue
++			if images.has(job.key):
++				job.row.get_ref().car_icon.texture = images[job.key]
++				memory_hits += 1
++				continue
++			_current = job
+ 			_render_current()
+-		else:
+-			_stage = "read"
+-			_io = Work.start(_read.bind(cache_directory.path_join(job.key+".png")),get_tree())
+-		return
+-	_stop()
++			break
++	if _io==null:
++		if _draw_jobs.is_empty() and not _jobs.is_empty():
++			var keys: Array[String] = []
++			while not _jobs.is_empty() and _read_jobs.size()<BATCH_SIZE:
++				var job: Dictionary = _jobs.pop_front()
++				if not _valid(job): continue
++				if images.has(job.key):
++					job.row.get_ref().car_icon.texture = images[job.key]
++					memory_hits += 1
++					continue
++				if cache_directory.is_empty(): _draw_jobs.append(job)
++				else:
++					_read_jobs.append(job)
++					keys.append(job.key)
++			if not keys.is_empty():
++				_io_kind = "read"
++				read_batches += 1
++				_io = Work.start(_read_batch.bind(cache_directory,keys),get_tree())
++		if _io==null and not _write_jobs.is_empty() and ((_draw_jobs.is_empty() and _stage.is_empty()) or _write_jobs.size()>=BATCH_SIZE):
++			var batch: Array[Dictionary] = _write_jobs.duplicate()
++			_write_jobs.clear()
++			_io_kind = "write"
++			write_batches += 1
++			_io = Work.start(_write_batch.bind(cache_directory,batch),get_tree())
++	if _stage.is_empty() and _io==null and _jobs.is_empty() and _draw_jobs.is_empty() and _write_jobs.is_empty(): _stop()
+ 
+ func _render_current() -> void:
+ 	if not _valid(_current):
+@@ -117,15 +150,17 @@
+ 		studio = Profile.make_preview(_current.vehicle,_current.paint,_current.parts)
+ 		studio.position = Vector2(-10000,-10000)
+ 		studio.size = Vector2(SIZE)*0.5
++		studio.cooperative_build = true
++		studio.cache_rest_pose = false
++		studio.build_budget_us = 16000
++		_build_started = at
+ 		add_child(studio)
+ 		active_worlds += 1
+ 		studio.tree_exited.connect(func() -> void: active_worlds -= 1,CONNECT_ONE_SHOT)
+-		Profile.apply_presentation(studio)
+ 		peak_worlds = maxi(peak_worlds,active_worlds)
+ 		model_builds += 1
+-		build_us += Time.get_ticks_usec()-at
+-		_fit_pending = true
+-		_draws = 5
++		_stage = "build"
++		return
+ 	else:
+ 		Profile.repaint_preview(studio,_current.paint)
+ 		repaints += 1
+@@ -152,22 +187,22 @@
+ 			if pixels!=null and not pixels.is_empty():
+ 				var key: String = _current.key
+ 				rendered += 1
+-				_publish(pixels)
++				_publish(_current,pixels)
++				_current = {}
++				_stage = ""
+ 				if not cache_directory.is_empty():
+-					_stage = "write"
+-					_io = Work.start(_write.bind(cache_directory,key,pixels),get_tree())
++					_write_jobs.append({"key":key,"image":pixels})
++					peak_write_queue = maxi(peak_write_queue,_write_jobs.size())
+ 				return
+ 		_current = {}
+ 		_stage = ""
+ 
+-func _publish(pixels: Image) -> void:
++func _publish(job: Dictionary, pixels: Image) -> void:
+ 	pixels.generate_mipmaps()
+ 	var texture := ImageTexture.create_from_image(pixels)
+ 	if images.size()>=CACHE_LIMIT: images.erase(images.keys()[0])
+-	images[_current.key] = texture
+-	if _valid(_current): _current.row.get_ref().car_icon.texture = texture
+-	_current = {}
+-	_stage = ""
++	images[job.key] = texture
++	if _valid(job): job.row.get_ref().car_icon.texture = texture
+ 
+ func _release_studio() -> void:
+ 	if is_instance_valid(studio):
+@@ -186,6 +221,10 @@
+ func _cancel() -> void:
+ 	generation += 1
+ 	_jobs.clear()
++	_draw_jobs.clear()
++	_read_jobs.clear()
++	_write_jobs.clear()
++	_io_kind = ""
+ 	_current = {}
+ 	_stage = ""
+ 	if _io!=null: _io.cancel()
+@@ -207,7 +246,7 @@
+ 			if candidate.load_png_from_buffer(bytes)==OK and candidate.get_size()==SIZE: image = candidate
+ 	return {"image":image,"us":Time.get_ticks_usec()-at}
+ 
+-static func _write(cancelled: Callable, directory: String, key: String, image: Image) -> Dictionary:
++static func _write(cancelled: Callable, directory: String, key: String, image: Image, trim_cache: bool = true) -> Dictionary:
+ 	var at: int = Time.get_ticks_usec()
+ 	if not cancelled.call() and DirAccess.make_dir_recursive_absolute(directory)==OK:
+ 		var destination: String = directory.path_join(key+".png")
+@@ -221,7 +260,7 @@
+ 				if FileAccess.file_exists(destination): DirAccess.remove_absolute(destination)
+ 				DirAccess.rename_absolute(temporary,destination)
+ 			else: DirAccess.remove_absolute(temporary)
+-		_trim(directory)
++		if trim_cache: _trim(directory)
+ 	return {"us":Time.get_ticks_usec()-at}
+ 
+ static func _trim(directory: String) -> void:
+@@ -233,3 +272,20 @@
+ 		files.append({"name":name,"at":FileAccess.get_modified_time(directory.path_join(name))})
+ 	files.sort_custom(func(a: Dictionary,b: Dictionary) -> bool: return a.at<b.at)
+ 	while files.size()>FILE_LIMIT: DirAccess.remove_absolute(directory.path_join(files.pop_front().name))
++
++static func _read_batch(cancelled: Callable, directory: String, keys: Array[String]) -> Dictionary:
++	var at: int = Time.get_ticks_usec()
++	var decoded: Dictionary = {}
++	for key: String in keys:
++		if cancelled.call(): break
++		var result: Dictionary = _read(cancelled,directory.path_join(key+".png"))
++		if result.image is Image: decoded[key] = result.image
++	return {"images":decoded,"us":Time.get_ticks_usec()-at}
++
++static func _write_batch(cancelled: Callable, directory: String, jobs: Array[Dictionary]) -> Dictionary:
++	var at: int = Time.get_ticks_usec()
++	for job: Dictionary in jobs:
++		if cancelled.call(): break
++		_write(cancelled,directory,job.key,job.image,false)
++	_trim(directory)
++	return {"us":Time.get_ticks_usec()-at}
+diff --git a/game/ui/rivalry_victory_car.gd b/game/ui/rivalry_victory_car.gd
+--- a/game/ui/rivalry_victory_car.gd
++++ b/game/ui/rivalry_victory_car.gd
+@@ -4,6 +4,10 @@
+ var simple_model: bool = false
+ var podium_presentation: bool = false
+ var fit_to_frame: bool = false
++var cooperative_build: bool = false
++var cache_rest_pose: bool = true
++var build_budget_us: int = 4000
++var presentation_ready: bool = false
+ var livery: Dictionary = {}
+ var customisation: Dictionary = {}
+ var condition: Dictionary = {}
+@@ -25,8 +29,15 @@
+ 	car.simple_model = simple_model
+ 	car.livery = livery
+ 	car.customisation = customisation
++	car.cooperative_build = cooperative_build
++	car.cache_rest_pose = cache_rest_pose
++	car.build_budget_us = build_budget_us
++	if cooperative_build: viewport.render_target_update_mode = SubViewport.UPDATE_DISABLED
+ 	if podium_presentation: car.rotation.y = PI
+ 	world.add_child(car)
++	while not car.model_ready:
++		await get_tree().process_frame
++		if not is_inside_tree() or is_queued_for_deletion(): return
+ 	var weathering := VehicleWeathering.new()
+ 	weathering.configure(car,"pine",VehicleCatalog.config(vehicle_id))
+ 	weathering.restore(condition)
+@@ -61,6 +72,7 @@
+ 	visibility_changed.connect(_refresh)
+ 	if podium_presentation: get_viewport().size_changed.connect(_refresh)
+ 	_refresh()
++	presentation_ready = true
+ 	if podium_presentation and DisplayServer.get_name() != "headless": preload("res://ui/rivalry_podium_studio.gd").prepare(weakref(self))
+ 
+ func _legacy_lighting(world: Node3D) -> void:
+diff --git a/game/vehicle/car_visual.gd b/game/vehicle/car_visual.gd
+--- a/game/vehicle/car_visual.gd
++++ b/game/vehicle/car_visual.gd
+@@ -14,6 +14,8 @@
+ var kit_frames: Dictionary = {}
+ var graphics := LiveryGraphics.new()
+ var cooperative_build: bool = false
++var cache_rest_pose: bool = true
++var build_budget_us: int = 4000
+ var garage_template: bool = false
+ var model_ready: bool = false
+ var _model_slice_started: int = 0
+@@ -27,7 +29,7 @@
+ 	var elapsed: int = Time.get_ticks_usec()-_model_slice_started
+ 	if elapsed > model_max_slice_us:
+ 		model_max_slice_us = elapsed; model_slice_at = _model_stage
+-	if Time.get_ticks_usec()-_model_slice_started >= 4000:
++	if Time.get_ticks_usec()-_model_slice_started >= build_budget_us:
+ 		model_yields += 1
+ 		await get_tree().process_frame
+ 		_model_slice_started = Time.get_ticks_usec()
+@@ -310,7 +312,7 @@
+ 		if not await _model_checkpoint(): return
+ 	_model_stage = "snapshot"
+ 	if livery.is_empty(): livery = VehicleLivery.defaults(vehicle_id)
+-	preload("res://vehicle/prepared_car_cache.gd").remember(self)
++	if cache_rest_pose: preload("res://vehicle/prepared_car_cache.gd").remember(self)
+ 	graphics.configure(self)
+ 	if not await _model_checkpoint(): return
+ 
+diff --git a/game/tests/test_garage_paint_icon_performance.gd b/game/tests/test_garage_paint_icon_performance.gd
+--- a/game/tests/test_garage_paint_icon_performance.gd
++++ b/game/tests/test_garage_paint_icon_performance.gd
+@@ -13,6 +13,7 @@
+ var frame_us: Array[int] = []
+ var metrics: Dictionary = {}
+ var cache_directory: String
++var renderer_script: GDScript = Icons
+ 
+ func _initialize() -> void: run.call_deferred()
+ 
+@@ -32,7 +33,7 @@
+ 	await process_frame
+ 
+ func make_worker() -> void:
+-	icons = Icons.new()
++	icons = renderer_script.new()
+ 	if icons.has_method("identity"): icons.cache_directory = cache_directory
+ 	icons.scroll = scroll
+ 	icons.child_entered_tree.connect(func(node: Node) -> void:
+@@ -56,12 +57,18 @@
+ 
+ func run() -> void:
+ 	OS.set_environment("BMT_API_URL","")
++	if OS.get_environment("BMT_ICON_DIAG_SKIP_REST_CACHE")=="1":
++		preload("res://vehicle/prepared_car_cache.gd").enabled = false
+ 	GameSoundtrack.instance().music_enabled = false
+ 	output = "res://../docs/evidence/garage-paint-icon-performance-2026-10-26/native"
+ 	for argument: String in OS.get_cmdline_user_args():
+ 		if argument.begins_with("--evidence-root="): output = argument.trim_prefix("--evidence-root=")
+ 	output = ProjectSettings.globalize_path(output)
+ 	DirAccess.make_dir_recursive_absolute(output)
++	if OS.get_environment("BMT_ICON_DIAG_OLD_WORKER")=="1":
++		renderer_script = GDScript.new()
++		renderer_script.source_code = FileAccess.get_file_as_string("res://../docs/evidence/garage-icon-latency-2026-10-26/before/game/ui/garage_paint_icons.gd")
++		check(renderer_script.reload()==OK,"task-start worker reloads for the isolated geometry control")
+ 	cache_directory = ProjectSettings.globalize_path("user://icon_perf_"+TrackLibrary.unique_id())
+ 	if DisplayServer.get_name()=="headless":
+ 		print("GARAGE_PAINT_ICON_PERFORMANCE: native rendering required")
+@@ -90,13 +97,22 @@
+ 	Icons.images.clear()
+ 	var cold_at: int = Time.get_ticks_usec()
+ 	await catalogue()
+-	metrics.cold = {"model_builds":models,"elapsed_us":Time.get_ticks_usec()-cold_at,"frame_max_us":frame_us.max(),"frames":frame_us.size()}
++	metrics.cold = {"model_builds":models,"elapsed_us":Time.get_ticks_usec()-cold_at,"frame_max_us":frame_us.max(),"frames":frame_us.size(),"build_us":icons.build_us,"repaint_us":icons.repaint_us,"io_us":icons.io_us,"readback_us":icons.readback_us}
++	if icons.get("read_batches")!=null:
++		metrics.cold.read_batches = icons.read_batches
++		metrics.cold.write_batches = icons.write_batches
++		metrics.cold.model_slice_us = icons.studio.car.model_max_slice_us
++		check(icons.read_batches<=13 and icons.write_batches<=13,"catalogue I/O is batched by visible group")
++		check(not icons.studio.car.cache_rest_pose and icons.studio.cooperative_build,"icon construction skips unused snapshots and yields between build slices")
++	flush_metrics()
+ 	check(models==1,"all 49 cold icons reuse one model")
+ 	check(Icons.images.size()<=Icons.CACHE_LIMIT,"GPU image cache remains bounded")
+ 	if icons.has_method("identity"):
+ 		await warm_disk()
++		await cache_guards()
++		shelf.show()
++		icons.cache_directory = cache_directory
+ 		await changed_appearances()
+-		await cache_guards()
+ 	else: check(false,"persistent exact-appearance icon cache exists")
+ 	var file := FileAccess.open(output.path_join("metrics.json"),FileAccess.WRITE)
+ 	file.store_string(JSON.stringify(metrics,"\t"))
+@@ -120,6 +136,10 @@
+ 	var at: int = Time.get_ticks_usec()
+ 	await catalogue()
+ 	metrics.warm = {"model_builds":models,"elapsed_us":Time.get_ticks_usec()-at,"disk_hits":icons.disk_hits,"renders":icons.rendered,"frame_max_us":frame_us.max(),"frames":frame_us.size()}
++	if icons.get("read_batches")!=null:
++		metrics.warm.read_batches = icons.read_batches
++		check(icons.read_batches<=13,"warm reads share a worker for each visible group")
++	flush_metrics()
+ 	check(models==0 and icons.disk_hits==49 and icons.rendered==0,"warm cache supplies the full catalogue without loading a model")
+ 	check(icons.studio==null,"disk-only menu needs no studio")
+ 	check(Icons.images.size()<=Icons.CACHE_LIMIT,"warm GPU cache remains bounded")
+@@ -227,4 +247,19 @@
+ 	icons.request(cards[0],"compact",changed,parts)
+ 	await idle()
+ 	check(cards[0].get_meta("icon_livery")==changed and cards[0].car_icon.texture!=null,"replacement worker publishes only its latest appearance")
+-
++	if icons.get("read_batches")!=null:
++		icons.cache_directory = ""
++		changed.colors.detail = "123abc"
++		icons.request(cards[0],"compact",changed,fitted)
++		var deadline: int = Time.get_ticks_msec()+5000
++		while icons._stage!="build" and Time.get_ticks_msec()<deadline: await process_frame
++		check(icons._stage=="build" and icons.busy and not icons.studio.presentation_ready,"cold construction is exercised before presentation is ready")
++		if icons._stage=="build":
++			shelf.hide()
++			for tick: int in range(8): await process_frame
++			check(not icons.busy and icons.studio==null,"hiding during sliced construction clears the pending studio")
++
++func flush_metrics() -> void:
++	var file := FileAccess.open(output.path_join("metrics.json"),FileAccess.WRITE)
++	file.store_string(JSON.stringify(metrics,"\t"))
++
+diff --git a/game/tests/test_garage_paint_list.gd b/game/tests/test_garage_paint_list.gd
+--- a/game/tests/test_garage_paint_list.gd
++++ b/game/tests/test_garage_paint_list.gd
+@@ -16,7 +16,7 @@
+ 		print("FAIL: "+message)
+ 
+ func settle() -> void:
+-	while page._workbench_focus_pending or page._menu_motion!=null or page.showroom.camera_motion!=null and page.showroom.camera_motion.is_running(): await process_frame
++	while page.showroom.get("preparing")==true or page._workbench_focus_pending or page._menu_motion!=null or page.showroom.camera_motion!=null and page.showroom.camera_motion.is_running(): await process_frame
+ 	for tick: int in range(12): await process_frame
+ 	if DisplayServer.get_name()!="headless": await RenderingServer.frame_post_draw
+ 
+diff --git a/AGENTS.md b/AGENTS.md
+--- a/AGENTS.md
++++ b/AGENTS.md
+@@ -1,3 +1,8 @@
++<!-- GARAGE-ICON-LATENCY-20261026 -->
++## Further Garage paint-icon latency improvements (2026-10-26)
++GIL01-GIL04/R01/Q01: Batch visible PNG reads/writes/eviction, pipeline CPU I/O independently of rendering, skip unused simplified rest snapshots only for icons, and stage icon construction before presentation readiness. Icon soft interval16ms; all other model defaults4ms/snapshot/synchronous behavior remain. GPU24/disk196/read8/write8-queued+8-in-flight bounds and exact customisation/generation/hidden cleanup remain. Current-asset task-start worker3.183s cold/822ms longest/0.625s cached becomes2.200s/132ms/0.325s Compatibility; desktop Mobile3.733s/143ms/0.325s. One cold model/zero cached models remain. Earlier4ms Vulkan15.384s proposal and concurrent source/fixture failures are retained. Focused94Compatibility/94desktopMobile,21 unchanged-threshold profile matches each, retained paint151headless/192Compatibility/192desktopMobile, parser1308/import pass. Broader model101/4fail reproduces102/4 with exact task-start constructor only in isolated memory; original assertions retained. Readiness fixture awaits concurrent progressive Garage preparation. Runtime scope is worker plus optional studio/model fields; geometry, factory, main camera, economy/saves and canonical simulation remain. Commands, native views, controls, metrics, hashes and scoped patch: docs/GARAGE_ICON_LATENCY_2026_10_26.md and docs/evidence/garage-icon-latency-2026-10-26/report.json. Individual operations/driver work can exceed the soft interval; no phone/FPS guarantee. Reload and owner/device frame-time/memory acceptance remain. No attachment/device test, APK, real authentication/purchase, owner-save/live mutation, deployment, merge, staging, commit or owner-process restart; concurrent template/header/geometry and other work preserved/excluded.
++<!-- /GARAGE-ICON-LATENCY-20261026 -->
++
+ <!-- KART-SHAPED-BODYWORK-20261026 -->
+ ## Kart bumper, tank and bodywork shape correction (2026-10-26)
+ KSB01-KSB03/V02-V05/R01/G01/Q01: Owner rejects overly smooth forms. Formed planes, narrow edge rolls, clipped bumper corners/lower lip and defined pod/Nassau shoulders replace inflated cross-sections. Actual fuel tank narrows through shaped shoulders into a bevelled filler cap; airbox has defined walls/lid. Inlays, pod strips, sockets and airbox seal fit the actual new triangles. Independent16 checks pass; exact previous sources fail10/16. Full94870to87136/simple31506to30292 retain95000 cap;292 meshes include250 exact originals, four wheel shadows exact. Model88/88, tank-cutaway18/18, actual Garage-race16/16, retained160/shape38/construction32/fit32/proportions24/handling42/parser1307 and import pass. Catalogue/news/Garage/header/all49 photos and only the kart Garage template refreshed. First native check exposes old template references; filtered bake and direct-versus-Garage geometry guard correct it. Runtime scope is kart model/detail/new bodywork helper; driver/helmet/config/simulation/camera stay exact. Sources, commands, native views, hashes and scoped patch: docs/KART_SHAPED_BODYWORK_2026_10_26.md and docs/evidence/kart-shaped-bodywork-2026-10-26/report.json. This supersedes the earlier smooth shell shapes only. Reload and owner/device shape/motion/cost acceptance remain. No device attachment check/test, APK, auth/purchase, live mutation, deployment, main-index staging/commit/merge or owner-process restart; concurrent work preserved.
+diff --git a/DEVELOPMENT_STATUS.md b/DEVELOPMENT_STATUS.md
+--- a/DEVELOPMENT_STATUS.md
++++ b/DEVELOPMENT_STATUS.md
+@@ -1,3 +1,8 @@
++<!-- GARAGE-ICON-LATENCY-20261026 -->
++## Further Garage paint-icon latency improvements (2026-10-26)
++GIL01-GIL04/R01/Q01: Batch visible PNG reads/writes/eviction, pipeline CPU I/O independently of rendering, skip unused simplified rest snapshots only for icons, and stage icon construction before presentation readiness. Icon soft interval16ms; all other model defaults4ms/snapshot/synchronous behavior remain. GPU24/disk196/read8/write8-queued+8-in-flight bounds and exact customisation/generation/hidden cleanup remain. Current-asset task-start worker3.183s cold/822ms longest/0.625s cached becomes2.200s/132ms/0.325s Compatibility; desktop Mobile3.733s/143ms/0.325s. One cold model/zero cached models remain. Earlier4ms Vulkan15.384s proposal and concurrent source/fixture failures are retained. Focused94Compatibility/94desktopMobile,21 unchanged-threshold profile matches each, retained paint151headless/192Compatibility/192desktopMobile, parser1308/import pass. Broader model101/4fail reproduces102/4 with exact task-start constructor only in isolated memory; original assertions retained. Readiness fixture awaits concurrent progressive Garage preparation. Runtime scope is worker plus optional studio/model fields; geometry, factory, main camera, economy/saves and canonical simulation remain. Commands, native views, controls, metrics, hashes and scoped patch: docs/GARAGE_ICON_LATENCY_2026_10_26.md and docs/evidence/garage-icon-latency-2026-10-26/report.json. Individual operations/driver work can exceed the soft interval; no phone/FPS guarantee. Reload and owner/device frame-time/memory acceptance remain. No attachment/device test, APK, real authentication/purchase, owner-save/live mutation, deployment, merge, staging, commit or owner-process restart; concurrent template/header/geometry and other work preserved/excluded.
++<!-- /GARAGE-ICON-LATENCY-20261026 -->
++
+ <!-- KART-SHAPED-BODYWORK-20261026 -->
+ ## Kart bumper, tank and bodywork shape correction (2026-10-26)
+ KSB01-KSB03/V02-V05/R01/G01/Q01: Owner rejects overly smooth forms. Formed planes, narrow edge rolls, clipped bumper corners/lower lip and defined pod/Nassau shoulders replace inflated cross-sections. Actual fuel tank narrows through shaped shoulders into a bevelled filler cap; airbox has defined walls/lid. Inlays, pod strips, sockets and airbox seal fit the actual new triangles. Independent16 checks pass; exact previous sources fail10/16. Full94870to87136/simple31506to30292 retain95000 cap;292 meshes include250 exact originals, four wheel shadows exact. Model88/88, tank-cutaway18/18, actual Garage-race16/16, retained160/shape38/construction32/fit32/proportions24/handling42/parser1307 and import pass. Catalogue/news/Garage/header/all49 photos and only the kart Garage template refreshed. First native check exposes old template references; filtered bake and direct-versus-Garage geometry guard correct it. Runtime scope is kart model/detail/new bodywork helper; driver/helmet/config/simulation/camera stay exact. Sources, commands, native views, hashes and scoped patch: docs/KART_SHAPED_BODYWORK_2026_10_26.md and docs/evidence/kart-shaped-bodywork-2026-10-26/report.json. This supersedes the earlier smooth shell shapes only. Reload and owner/device shape/motion/cost acceptance remain. No device attachment check/test, APK, auth/purchase, live mutation, deployment, main-index staging/commit/merge or owner-process restart; concurrent work preserved.
+diff --git a/game/tests/test_icon_latency_model_control.gd b/game/tests/test_icon_latency_model_control.gd
+--- /dev/null
++++ b/game/tests/test_icon_latency_model_control.gd
+@@ -0,0 +1,8 @@
++extends "res://tests/test_racing_car_models.gd"
++## Counterfactual only: keep current assets with the exact task-start constructor.
++func _run() -> void:
++	var original: String = FileAccess.get_file_as_string("res://../docs/evidence/garage-icon-latency-2026-10-26/before/game/vehicle/car_visual.gd")
++	var model: GDScript = load("res://vehicle/car_visual.gd")
++	model.source_code = original
++	check(not original.is_empty() and model.reload()==OK,"task-start car constructor reloads only in isolated memory")
++	await super._run()
+diff --git a/game/tests/test_icon_latency_model_control.gd.uid b/game/tests/test_icon_latency_model_control.gd.uid
+--- /dev/null
++++ b/game/tests/test_icon_latency_model_control.gd.uid
+@@ -0,0 +1 @@
++uid://cuylx4buf3abo
+diff --git a/docs/GARAGE_ICON_LATENCY_2026_10_26.md b/docs/GARAGE_ICON_LATENCY_2026_10_26.md
+--- /dev/null
++++ b/docs/GARAGE_ICON_LATENCY_2026_10_26.md
+@@ -0,0 +1,48 @@
++# Further Garage icon latency improvements — 2026-10-26
++
++GIL01–GIL04/R01/Q01 improve the already shared/cached paint icons further, preserving their accepted look and exact customisation identities.
++
++Three remaining costs are addressed. Visible cache reads now share one background job, with at most eight keys per batch. Completed PNGs are encoded/written in batches, trimming the disk cache once per batch, while the renderer can progress independently of that I/O. The stopped-when-idle single renderer, 24 GPU images, 196 owned disk files, 256 KiB input bound, key/generation fencing and hidden cleanup remain. The write queue is capped at eight images before construction/drawing waits for a flush; an in-flight batch can retain another eight. Scene/GPU publication remains on the main thread.
++
++Icons also stop creating unused `PreparedCarCache` snapshots: that cache explicitly does not restore simplified models. A `cache_rest_pose` opt-out is passed only by the icon studio. All other callers default to the preceding snapshot behavior. The initial isolated no-snapshot diagnostic reduced Compact construction from 445 ms to 383 ms while retaining all original appearance checks.
++
++Finally, icon construction uses the model's existing cooperative checkpoints, with a soft 16 ms work interval and explicit presentation readiness. The preview does not render partial geometry; lighting/framing and the first image begin after the car is ready. Other model callers retain their original 4 ms interval and synchronous/default flags. Individual unsliced operations and shader/driver work can exceed these intervals, so this is not a 16 ms frame-time guarantee. The first icon may take additional elapsed time while construction yields, in exchange for avoiding one large UI stall.
++
++The initial 4 ms icon proposal preserved appearance but took 15.384 s for the Vulkan cold catalogue under concurrent load. It is retained under `initial/four-ms-slices/`; the final icon-only 16 ms interval avoids that excessive yielding overhead. The final recorded Windows diagnostics are:
++
++| Compatibility, 49 icons | Cold pass | Longest sampled cold interval | Disk-cached pass |
++| --- | ---: | ---: | ---: |
++| Task-start worker reloaded with current assets | 3.183 s | 822 ms | 0.625 s |
++| Final worker | 2.200 s | 132 ms | 0.325 s |
++
++The first unmodified task-start baseline was 2.983 s / 665 ms / 0.624 s; both baselines are retained. Final desktop Vulkan is 3.733 s cold, 143 ms longest sampled interval and 0.325 s cached. Cold construction still builds one model; the cached pass has 49 disk hits, zero models and zero icon renders. The four-row diagnostic now needs 13 read batches and 13 write batches instead of one job per icon. Timings vary with shader/driver state and other running processes; these are Compact catalogue diagnostics, not physical-device or whole-Garage-startup measurements. Some non-Compact construction functions still contain unsliced work.
++
++Focused tests pass **94 Compatibility / 94 desktop Mobile**, including all 21 fresh-reference customisation comparisons in each renderer, unchanged 0.02 pixel tolerance, cache identities/corruption/eviction, old-work cancellation, and hiding during an actual unfinished cooperative build. An isolated task-start-worker control passes **90 checks** with current assets. The control's one additional check validates its in-memory script reload. The previous fixture initially attempted to exercise an asynchronous phase in the synchronous old worker; that failure is preserved and the new-only phase guard is now conditional on the new worker API. No production invariant is relaxed.
++
++Retained paint-menu checks pass **151 headless / 192 Compatibility / 192 desktop Mobile**; parser **1308** and pinned import pass. Actual exits/counts are recorded in [report.json](evidence/garage-icon-latency-2026-10-26/report.json). The retained fixture now waits for the concurrent progressive Garage's `preparing` state before accessing its livery tools; all input/save/account/compare assertions remain. Initial concurrent Electric reveal assertions, a header texture signature mismatch and the early progressive-readiness fixture error are retained under `initial/`; the geometry/header source work is excluded from this task.
++
++The broader racing-model suite has **101 checks / four failures** concerning Forklift shadow/wheel frames and Electric shadow/brake fixtures. Reloading the exact task-start `CarVisual` only in isolated memory reproduces the same four messages and identical model counts (**102 / four**, including its reload assertion). These are not reported as passes or fixed by this task. The original assertions remain.
++
++Runtime scope is `garage_paint_icons.gd`, the optional studio-construction/readiness fields in `rivalry_victory_car.gd`, and default-preserving snapshot/budget fields in `car_visual.gd`. The profile studio factory, car geometry, shaders, main Garage camera, prices, saves/accounts and canonical simulation are unchanged by this task. Concurrent Garage model-template integration in `CarVisual` is retained and excluded through a task-only review base.
++
++Actual isolated commands use pinned Godot 4.7.2:
++
++```powershell
++powershell -NoProfile -ExecutionPolicy Bypass -File docs/evidence/garage-icon-latency-2026-10-26/run.ps1 -Before -Mode gl_compatibility
++powershell -NoProfile -ExecutionPolicy Bypass -File docs/evidence/garage-icon-latency-2026-10-26/run.ps1 -Before -Mode gl_compatibility -NoRestCache
++powershell -NoProfile -ExecutionPolicy Bypass -File docs/evidence/garage-icon-latency-2026-10-26/run.ps1 -Before -Mode gl_compatibility -LegacyWorker
++powershell -NoProfile -ExecutionPolicy Bypass -File docs/evidence/garage-icon-latency-2026-10-26/run.ps1 -Mode gl_compatibility
++powershell -NoProfile -ExecutionPolicy Bypass -File docs/evidence/garage-icon-latency-2026-10-26/run.ps1 -Mode mobile
++powershell -NoProfile -ExecutionPolicy Bypass -File docs/evidence/garage-icon-latency-2026-10-26/run.ps1 -Test test_garage_paint_list -Mode headless
++powershell -NoProfile -ExecutionPolicy Bypass -File docs/evidence/garage-icon-latency-2026-10-26/run.ps1 -Test test_garage_paint_list -Mode gl_compatibility
++powershell -NoProfile -ExecutionPolicy Bypass -File docs/evidence/garage-icon-latency-2026-10-26/run.ps1 -Test test_garage_paint_list -Mode mobile
++powershell -NoProfile -ExecutionPolicy Bypass -File docs/evidence/garage-icon-latency-2026-10-26/run.ps1 -Test test_racing_car_models -Mode headless
++powershell -NoProfile -ExecutionPolicy Bypass -File docs/evidence/garage-icon-latency-2026-10-26/run.ps1 -Test test_icon_latency_model_control -Mode headless
++powershell -NoProfile -ExecutionPolicy Bypass -File docs/evidence/garage-icon-latency-2026-10-26/run.ps1 -Test test_script_parse -Mode headless
++powershell -NoProfile -ExecutionPolicy Bypass -File docs/evidence/garage-icon-latency-2026-10-26/run.ps1 -Import
++python docs/evidence/garage-icon-latency-2026-10-26/record.py
++```
++
++The runs use isolated APPDATA, unique cold directories and offline fixtures. [Native views and timing review](evidence/garage-icon-latency-2026-10-26/review.html), raw metrics, original failures, source hashes and the reverse-checked scoped patch form the checkpoint. Original task-start sources remain under `before/`; tracker and shared-constructor review bases include later concurrent changes. No staging or commit is performed.
++
++Reload and owner appearance/scrolling acceptance remain. Physical-device cold/warm frame-time and memory acceptance remain. No attachment check or device test, APK, real authentication/purchase, owner-save/live mutation, deployment, merge or owner-process restart was performed. Concurrent geometry, Garage entry/model caching, header, Rivalry, handling and track work are preserved.
+diff --git a/docs/evidence/garage-icon-latency-2026-10-26/run.ps1 b/docs/evidence/garage-icon-latency-2026-10-26/run.ps1
+--- /dev/null
++++ b/docs/evidence/garage-icon-latency-2026-10-26/run.ps1
+@@ -0,0 +1,19 @@
++param([string]$Test='test_garage_paint_icon_performance',[ValidateSet('headless','gl_compatibility','mobile')][string]$Mode='headless',[switch]$Before,[switch]$Import,[switch]$NoRestCache,[switch]$LegacyWorker)
++$ErrorActionPreference='Stop'
++if ($NoRestCache) {$env:BMT_ICON_DIAG_SKIP_REST_CACHE='1'} else {$env:BMT_ICON_DIAG_SKIP_REST_CACHE=''}
++if ($LegacyWorker) {$env:BMT_ICON_DIAG_OLD_WORKER='1'} else {$env:BMT_ICON_DIAG_OLD_WORKER=''}
++if ($Import) {$Test='import';$Mode='headless'}
++$kitRepo=(Resolve-Path (Join-Path $PSScriptRoot '../../..')).Path
++$kitOutput=Join-Path $PSScriptRoot $(if ($Before) {"before/$(if ($NoRestCache) {'no-rest-cache-'})$(if ($LegacyWorker) {'legacy-worker-'})$Mode"} else {"$Test-$Mode"})
++New-Item -ItemType Directory -Force -Path $kitOutput | Out-Null
++$env:APPDATA=Join-Path $kitRepo "build/garage-icon-latency-2026-10-26/$(if ($Before) {'before'} else {"$Test-$Mode"})/user"
++New-Item -ItemType Directory -Force -Path $env:APPDATA | Out-Null
++$kitArgs=@('-NoProfile','-ExecutionPolicy','Bypass','-File',(Join-Path $kitRepo 'scripts/dev.ps1'),'-Action','TestScript','-ScriptPath',"res://tests/$Test.gd",'-CommandTimeoutSeconds','240','-TestArgument',"--evidence-root=$kitOutput")
++if ($Import) {$kitArgs=@('-NoProfile','-ExecutionPolicy','Bypass','-File',(Join-Path $kitRepo 'scripts/dev.ps1'),'-Action','Import','-CommandTimeoutSeconds','180')}
++if ($Mode -ne 'headless') {$kitArgs+=@('-Graphical','-RenderingMethod',$Mode,'-RenderingDriver',$(if ($Mode -eq 'mobile') {'vulkan'} else {'opengl3'}))}
++$kitStarted=[DateTime]::UtcNow
++& powershell @kitArgs *> (Join-Path $kitOutput 'console.log')
++$kitCode=$LASTEXITCODE
++@{arguments=$kitArgs;exit_code=$kitCode;started_utc=$kitStarted.ToString('o');duration_seconds=([DateTime]::UtcNow-$kitStarted).TotalSeconds}|ConvertTo-Json -Depth 5|Set-Content -Encoding UTF8 (Join-Path $kitOutput 'command.json')
++Get-Content (Join-Path $kitOutput 'console.log') -Tail 16
++exit $kitCode
+diff --git a/docs/evidence/garage-icon-latency-2026-10-26/record.py b/docs/evidence/garage-icon-latency-2026-10-26/record.py
+--- /dev/null
++++ b/docs/evidence/garage-icon-latency-2026-10-26/record.py
+@@ -0,0 +1,107 @@
++"""Record further icon latency changes, controls, and a scoped review patch."""
++from pathlib import Path
++import difflib
++import hashlib
++import json
++import re
++import subprocess
++
++EVIDENCE = Path(__file__).resolve().parent
++ROOT = EVIDENCE.parents[2]
++EXISTING = ["game/ui/garage_paint_icons.gd","game/ui/rivalry_victory_car.gd","game/vehicle/car_visual.gd",
++            "game/tests/test_garage_paint_icon_performance.gd","game/tests/test_garage_paint_list.gd",
++            "AGENTS.md","DEVELOPMENT_STATUS.md"]
++NEW = ["game/tests/test_icon_latency_model_control.gd","game/tests/test_icon_latency_model_control.gd.uid",
++       "docs/GARAGE_ICON_LATENCY_2026_10_26.md"]
++NEW += ["docs/evidence/garage-icon-latency-2026-10-26/"+name for name in ("run.ps1","record.py","review.html")]
++
++
++def sha(path):
++    return hashlib.sha256(path.read_bytes()).hexdigest()
++
++
++def log_text(path):
++    raw = path.read_bytes()
++    return raw.decode("utf-16" if raw.startswith(b"\xff\xfe") else "utf-8-sig",errors="replace")
++
++
++patch, sources = [], []
++for name in EXISTING+NEW:
++    target, before = ROOT/name,EVIDENCE/"before"/name
++    original = before.read_text(encoding="utf-8") if before.exists() else ""
++    current = target.read_text(encoding="utf-8")
++    checkpoint_base = None
++    if name in ["AGENTS.md","DEVELOPMENT_STATUS.md"]:
++        original, removed = re.subn(r"<!-- GARAGE-ICON-LATENCY-20261026 -->[\s\S]*?<!-- /GARAGE-ICON-LATENCY-20261026 -->\n\n","",current,count=1)
++        assert removed==1
++        checkpoint_base = EVIDENCE/"checkpoint-base"/name
++    elif name=="game/vehicle/car_visual.gd":
++        # Preserve concurrent Garage template integration in the review base.
++        original = current
++        for added, prior in [
++            ("var cache_rest_pose: bool = true\n",""),
++            ("var build_budget_us: int = 4000\n",""),
++            (">= build_budget_us:",">= 4000:"),
++            ('if cache_rest_pose: preload("res://vehicle/prepared_car_cache.gd").remember(self)',
++             'preload("res://vehicle/prepared_car_cache.gd").remember(self)')]:
++            assert original.count(added)==1
++            original = original.replace(added,prior,1)
++        checkpoint_base = EVIDENCE/"checkpoint-base"/name
++    if checkpoint_base:
++        checkpoint_base.parent.mkdir(parents=True,exist_ok=True)
++        checkpoint_base.write_text(original,encoding="utf-8",newline="\n")
++    if original!=current:
++        patch.append(f"diff --git a/{name} b/{name}\n")
++        patch.extend(difflib.unified_diff(original.splitlines(True),current.splitlines(True),
++                     fromfile=f"a/{name}" if before.exists() else "/dev/null",tofile=f"b/{name}"))
++    sources.append({"path":name,"sha256":sha(target),"before_sha256":sha(before) if before.exists() else None,
++                    "checkpoint_base_sha256":sha(checkpoint_base) if checkpoint_base else None})
++checkpoint = EVIDENCE/"task-only.patch"
++checkpoint.write_text("".join(patch),encoding="utf-8",newline="\n")
++reverse = subprocess.run(["git","apply","--check","--reverse",str(checkpoint)],cwd=ROOT,capture_output=True,text=True)
++runs = []
++for path in sorted(EVIDENCE.rglob("command.json")):
++    log = path.with_name("console.log")
++    content = log_text(log)
++    runs.append({"directory":path.parent.relative_to(EVIDENCE).as_posix(),
++                 **json.loads(path.read_text(encoding="utf-8-sig")),
++                 "summary":re.findall(r"(?:GARAGE_PAINT_ICON_PERFORMANCE|GARAGE_PAINT_LIST|SCRIPT_PARSE|RACING_MODEL_TESTS)[: ]+[^\r\n]+",content),
++                 "failures":re.findall(r"^FAIL:[^\r\n]+",content,re.M),
++                 "script_errors":re.findall(r"^SCRIPT ERROR:[^\r\n]+",content,re.M),"log_sha256":sha(log)})
++by_name = {run["directory"]:run for run in runs}
++expected = {"test_garage_paint_icon_performance-"+mode for mode in ["gl_compatibility","mobile"]}
++expected |= {"test_garage_paint_list-"+mode for mode in ["headless","gl_compatibility","mobile"]}
++expected |= {"test_script_parse-headless","import-headless","test_racing_car_models-headless","test_icon_latency_model_control-headless"}
++missing = sorted(expected-by_name.keys())
++known_models = ["test_racing_car_models-headless","test_icon_latency_model_control-headless"]
++model_control = {"same_failures":False}
++if all(name in by_name for name in known_models):
++    actual, control = [by_name[name] for name in known_models]
++    model_control = {"same_failures":sorted(actual["failures"])==sorted(control["failures"]) and len(actual["failures"])==4,
++                     "messages":actual["failures"]}
++metrics = [{"path":p.relative_to(EVIDENCE).as_posix(),"sha256":sha(p),"data":json.loads(p.read_text())}
++           for p in sorted(EVIDENCE.rglob("metrics.json"))]
++report = {
++    "date":"2026-10-26","requirements":["GIL01","GIL02","GIL03","GIL04","R01","Q01"],
++    "engine":(ROOT/"godot-version.txt").read_text().strip(),"sources":sources,"runs":runs,"missing_final_runs":missing,
++    "metrics":metrics,"broader_model_control":model_control,
++    "architecture":{"read_batch":8,"queued_write_limit":8,"write_batch":8,"gpu_images":24,"disk_images":196,
++                    "icon_build_soft_interval_us":16000,"other_model_interval_default_us":4000,
++                    "snapshot":"only icon studio opts out of the unused simplified rest-pose snapshot",
++                    "readiness":"partial icon geometry remains unrendered until model completion",
++                    "preserved":"exact customisation cache identity, accepted appearance, economy/save/account and main-camera behavior"},
++    "captures":[{"path":p.relative_to(EVIDENCE).as_posix(),"sha256":sha(p)} for p in sorted(EVIDENCE.rglob("*.png"))],
++    "checkpoint":{"path":"task-only.patch","sha256":sha(checkpoint),"reverse_check_exit":reverse.returncode,"stderr":reverse.stderr},
++    "remaining_acceptance":["reload","owner scrolling/appearance review","physical-device cold/warm frame-time and memory review"],
++    "limits":["Windows Compatibility/Vulkan Mobile; shader state and concurrent processes affect timings",
++              "soft construction interval is not a frame-time guarantee; initial driver/unsliced work remains",
++              "first icon can take extra elapsed time while construction yields",
++              "four broader model fixture failures reproduce with task-start constructor and remain",
++              "no physical-device attachment check/test, APK, real authentication/purchase or owner-save/live mutation",
++              "no deployment, merge, staging, commit or owner-process restart; concurrent work preserved"]}
++(EVIDENCE/"report.json").write_text(json.dumps(report,indent=2)+"\n",encoding="utf-8")
++print(json.dumps({"runs":[{"name":run["directory"],"exit":run["exit_code"],"summary":run["summary"]} for run in runs],
++                  "missing_final_runs":missing,"broader_model_control":model_control,
++                  "checkpoint_reverse_exit":reverse.returncode,"checkpoint_error":reverse.stderr},indent=2))
++failed = any(run["exit_code"]!=0 for run in runs if not run["directory"].startswith(("before/","initial/")) and run["directory"] not in known_models)
++raise SystemExit(reverse.returncode or int(bool(missing) or failed or not model_control["same_failures"]))
+diff --git a/docs/evidence/garage-icon-latency-2026-10-26/review.html b/docs/evidence/garage-icon-latency-2026-10-26/review.html
+--- /dev/null
++++ b/docs/evidence/garage-icon-latency-2026-10-26/review.html
+@@ -0,0 +1,10 @@
++<!doctype html><html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Garage icon latency</title>
++<style>body{margin:24px;background:#0b141b;color:#edf1f2;font:16px system-ui}main{max-width:1720px;margin:auto}a{color:#ffda45}p{line-height:1.5;max-width:1100px}img{display:block;max-width:100%;height:auto;border:1px solid #344750}select{padding:10px;background:#12212a;color:white;border:1px solid #526773}table{border-collapse:collapse;margin:20px 0}td,th{padding:12px;border-bottom:1px solid #344750;text-align:left;font-variant-numeric:tabular-nums}.chart{max-width:850px}.bar{height:24px;margin:6px 0 18px;background:#ffda45;min-width:4px}.old{background:#788e9b}.warm{background:#66c78b}</style>
++<main><h1>Further Garage icon latency improvements</h1><p>Visible cache I/O is batched, unused pose snapshots are skipped only for icons, and construction yields before the complete image is displayed. Customisation identities and accepted pictures remain.</p>
++<p><a href="../../GARAGE_ICON_LATENCY_2026_10_26.md">Implementation and validation</a> · <a href="report.json">Raw metrics, commands and hashes</a> · <a href="task-only.patch">Scoped checkpoint</a></p>
++<h2>Compatibility diagnostic — 49 icons</h2><table><tr><th></th><th>Previous worker, current assets</th><th>Final</th></tr><tr><td>Cold catalogue</td><td>3.183 s</td><td>2.200 s</td></tr><tr><td>Longest sampled cold interval</td><td>822 ms</td><td>132 ms</td></tr><tr><td>Disk-cached catalogue</td><td>0.625 s</td><td>0.325 s</td></tr></table>
++<div class="chart">Previous longest cold interval<div class="bar old" style="width:100%"></div>Final longest cold interval<div class="bar" style="width:16.1%"></div></div>
++<p>The first independent task-start baseline had a 665 ms longest interval; driver state and concurrent work affect timings. The untuned 4 ms Vulkan proposal's poor cold latency is retained in evidence. First-use hitches remain; no phone or 60 FPS claim.</p>
++<label>Native menu renderer <select id="renderer"><option value="gl_compatibility">Compatibility</option><option value="mobile">Vulkan Mobile</option></select></label><h2>Accepted paint menu</h2><img id="capture" alt="Unchanged paint-menu appearance with the batched cache and staged icon builder">
++<p>Targeted appearance/cache/lifetime tests cover all seven cars. Four separate racing-model fixture failures reproduce with the task-start constructor and remain outside this pass. No device test, APK, real purchase, live mutation, deployment or owner-process restart.</p></main>
++<script>function show(){document.querySelector('#capture').src='test_garage_paint_list-'+document.querySelector('#renderer').value+'/paint-app-1720.png'}document.querySelector('#renderer').onchange=show;show()</script></html>

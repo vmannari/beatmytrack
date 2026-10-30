@@ -364,6 +364,15 @@ inline Dictionary edge_samples(const Array &contours,const Array &input_cuts,con
     for (int64_t i=0;i<input_cuts.size();++i) {
         Dictionary cut=input_cuts[i];cuts.push_back({cut["point"],cut["normal"],double(cut["span"])});
     }
+    // Decode immutable outline fields once, rather than crossing the Variant
+    // dictionary boundary for every 20 cm roadside probe on every section.
+    struct EdgeOutline { Polygon polygon; Rect2 bounds; int index; bool hole; };
+    std::vector<EdgeOutline> edge_outlines;
+    edge_outlines.reserve(outlines.size());
+    for (int64_t i=0;i<outlines.size();++i) {
+        Dictionary outline=outlines[i];
+        edge_outlines.push_back({outline["polygon"],outline["bounds"],int(int64_t(outline["index"])),bool(outline.get("hole",false))});
+    }
     PackedVector2Array result;
     for (int64_t loop=0;loop<contours.size();++loop) {
         Polygon polygon=contours[loop];if (polygon.size()<3) continue;
@@ -383,15 +392,15 @@ inline Dictionary edge_samples(const Array &contours,const Array &input_cuts,con
                 if (bool(contains(geometry,midpoint+outward,polygon))!=hole) outward=-outward;
                 Vector2 probe=midpoint+outward;
                 std::map<int,int> coverage;
-                for (int64_t i=0;i<outlines.size();++i) {
-                    Dictionary outline=outlines[i];int other=int64_t(outline["index"]);Rect2 bounds=outline["bounds"];
-                    if (other==index || !bounds.has_point(probe)) continue;
+                for (const EdgeOutline &outline:edge_outlines) {
+                    int other=outline.index;
+                    if (other==index || !outline.bounds.has_point(probe)) continue;
                     bool neighbor=false;
                     for (int64_t j=0;j<joined.size();++j) {
                         Dictionary join=joined[j];
                         if (int64_t(join["index"])==other && probe.distance_to(Vector2(join["position"]))<double(join["width"])) {neighbor=true;break;}
                     }
-                    if (!neighbor && bool(contains(geometry,probe,outline["polygon"]))) coverage[other]+=bool(outline.get("hole",false))?-1:1;
+                    if (!neighbor && bool(contains(geometry,probe,outline.polygon))) coverage[other]+=outline.hole?-1:1;
                 }
                 bool exposed=true;
                 for (auto value:coverage) if (value.second>0) {exposed=false;break;}

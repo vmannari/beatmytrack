@@ -1,0 +1,34 @@
+--- task-start
++++ concurrent-current
+@@ -5,7 +5,7 @@
+ 	var current: HandlingConfig=VehicleCatalog.config("electric")
+ 	var compact: HandlingConfig=VehicleCatalog.config("compact")
+ 	check(old.version=="electric-16" and current.version=="electric-18","distinct electric balance has a new identity")
+-	var changed: Array[String]=["version","regeneration","steering_rate","rotational_inertia","lateral_response","launch_lateral_response_scale","power_lateral_response_scale"]
++	var changed: Array[String]=["version","regeneration","steering_rate","rotational_inertia","lateral_response","launch_lateral_response_scale","power_lateral_response_scale","slide_drive_loss"]
+ 	for field: String in old.snapshot():
+ 		if field in changed: continue
+ 		check(current.get(field)==old.get(field),"retained electric field: "+field)
+@@ -24,9 +24,9 @@
+ 	var after_loss: float=metrics.pulse.after.samples[1].speed_kph-metrics.pulse.after.samples[4].speed_kph
+ 	var compact_loss: float=metrics.pulse.compact.samples[1].speed_kph-metrics.pulse.compact.samples[4].speed_kph
+ 	metrics.release_loss_kph={"before":before_loss,"after":after_loss,"compact":compact_loss}
+-	check(after_loss<before_loss*0.6,"a short keyboard lift no longer removes the old amount of corner speed")
++	check(after_loss<before_loss*0.7 and after_loss>before_loss*0.55,"stronger braking still removes less corner speed than electric-16")
+ 	check(after_loss>compact_loss*2.0,"lift retains clear electric regeneration rather than compact coasting")
+-	check(metrics.pulse.after.peak_slip<8.0 and metrics.pulse.after.peak_slip>3.0,"keyboard corner keeps a planted controllable power slide")
++	check(metrics.pulse.after.peak_slip<24.0 and metrics.pulse.after.peak_slip>15.0,"keyboard power develops a deliberate controllable slide")
+ 	for reverse: bool in [false,true]:
+ 		var before := VehicleSimulation.new(old)
+ 		var after := VehicleSimulation.new(current)
+@@ -44,7 +44,9 @@
+ 	for speed: float in [0.0,10.0,20.0,30.0]:
+ 		var result: Dictionary=powered_turn(current,speed,0.65,1.0)
+ 		metrics.power[str(speed)]=result
+-		check(result.peak_slip>2.0 and result.peak_slip<8.0,"rear power slide stays controllable: "+str(speed))
++		var prior: Dictionary=powered_turn(old,speed,0.65,1.0,true)
++		result.previous_slip=prior.peak_slip
++		check(result.peak_slip>prior.peak_slip*1.5 and result.peak_slip<24.0,"power slide is easier while the high-speed fade stays controllable: "+str(speed))
+ 		check(result.recovered_slip<0.1 and result.replay_exact,"slide recovers and replays exactly: "+str(speed))
+ 	var file := FileAccess.open(output+"/character.json",FileAccess.WRITE)
+ 	file.store_string(JSON.stringify({"checks":checks,"failures":failures,"metrics":metrics},"\t"))

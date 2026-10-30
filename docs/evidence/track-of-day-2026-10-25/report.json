@@ -1,0 +1,162 @@
+{
+  "date": "2026-10-25",
+  "requirements": [
+    "TOD01",
+    "TOD02",
+    "TOD03",
+    "TOD04",
+    "R01",
+    "Q01"
+  ],
+  "status": "Implemented locally; rollout and owner/device acceptance outstanding",
+  "policy": {
+    "version": "track-of-day-v1",
+    "day": "UTC",
+    "top_pool": 50,
+    "trending_pool": 50,
+    "candidate_probability": "uniform over deduplicated union",
+    "history": "permanent logical track IDs; no revision reset",
+    "startup_exception": "only if no unused eligible tracks exist; least-recent reuse",
+    "startup_exception_permanently_ends_at_eligible_supply": 100,
+    "mature_exhaustion": "unavailable; no repeats"
+  },
+  "tests": {
+    "backend_final": {
+      "passed": 10,
+      "postgres_deselected": 10,
+      "log": "backend-final.log"
+    },
+    "backend_regression": {
+      "passed": 45,
+      "postgres_deselected": 74,
+      "log": "backend-regression.log",
+      "note": "Includes original eight focused cases before two extra cases; not 55 distinct tests"
+    },
+    "native_headless": {
+      "checks": 26,
+      "failures": 0,
+      "log": "native-headless.log",
+      "note": "Final test additionally presses daily destination buttons from Free Race, Challenges and Rivalry"
+    },
+    "native_compatibility": {
+      "checks": 26,
+      "failures": 0,
+      "log": "native-gl_compatibility.log"
+    },
+    "native_desktop_mobile": {
+      "checks": 26,
+      "failures": 0,
+      "log": "native-mobile.log"
+    },
+    "parser": {
+      "scripts": 1195,
+      "failures": 0,
+      "log": "test_script_parse.log"
+    },
+    "app": {
+      "checks": 141,
+      "failures": 0,
+      "log": "test_app.log"
+    },
+    "race_mode_input": {
+      "checks": 57,
+      "failures": 0,
+      "log": "test_race_mode_input.log"
+    },
+    "race_mode_carousel": {
+      "checks": 42,
+      "failures": 0,
+      "log": "test_race_mode_carousel.log"
+    },
+    "localization_tooling": {
+      "passed": 19,
+      "subtests": 24925,
+      "log": "localization-tests.log",
+      "note": "At translation checkpoint before concurrent Store gifting sources changed"
+    },
+    "new_translations_final": {
+      "checks": 77,
+      "failures": 0,
+      "log": "translation-focused.log"
+    },
+    "global_catalogue_completeness": {
+      "passed": false,
+      "diagnostics": 504,
+      "log": "localization-completeness.log",
+      "note": "36 prior uncovered sources at translation checkpoint, followed by concurrent Store gifting source changes; not repaired by this task"
+    },
+    "ruff": {
+      "passed": true,
+      "log": "lint.log"
+    },
+    "import": {
+      "passed": true,
+      "log": "import.log"
+    }
+  },
+  "commands": [
+    "$env:PYTHONPATH='backend'; .tools/backend-secure-venv/Scripts/python.exe -m pytest backend/tests/test_track_of_day.py -q --tb=short",
+    "$env:APPDATA='<workspace>/build/track-of-day-user'; powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1 -Action CheckScript -ScriptPath res://core/app.gd",
+    "$env:PYTHONPATH='backend'; .tools/backend-secure-venv/Scripts/python.exe -m pytest backend/tests/test_track_of_day_native.py -q -k 'not postgres' --tb=short (BMT_TOTD_RENDERER=headless, gl_compatibility, mobile in separate invocations)",
+    "$env:PYTHONPATH='backend'; .tools/backend-secure-venv/Scripts/python.exe -m pytest backend/tests/test_track_of_day.py backend/tests/test_discovery_daily.py backend/tests/test_discovery_continuation.py backend/tests/test_discovery_v3.py backend/tests/test_runtime_privileges.py -q -m 'not postgres' --tb=short",
+    ".tools/backend-venv/Scripts/python.exe scripts/localization.py extract",
+    ".tools/backend-venv/Scripts/python.exe scripts/translate_catalogues.py --allow-incomplete",
+    ".tools/backend-venv/Scripts/python.exe -m pytest scripts/test_localization.py scripts/test_translation_authoring.py -q --tb=short",
+    ".tools/backend-venv/Scripts/python.exe scripts/localization.py check",
+    "$env:APPDATA='<workspace>/build/track-of-day-user'; powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1 -Action Import",
+    "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1 -Action TestScript -ScriptPath res://tests/test_script_parse.gd (then test_app.gd, test_race_mode_input.gd, test_race_mode_carousel.gd, sequentially with isolated APPDATA)",
+    "$env:PYTHONPATH='backend'; .tools/backend-secure-venv/Scripts/python.exe -m pytest backend/tests/test_track_of_day.py -q -m 'not postgres' --tb=short",
+    ".tools/backend-secure-venv/Scripts/python.exe -m ruff check backend/bmt_backend/track_of_day.py backend/bmt_backend/migrations/versions/0068_track_of_day.py backend/tests/test_track_of_day.py backend/tests/test_track_of_day_native.py",
+    "Inline Python: parse all eleven PO catalogues; verify the seven new source rows have nonempty translations and matching placeholders (translation-focused.log)",
+    ".tools/backend-venv/Scripts/python.exe docs/evidence/track-of-day-2026-10-25/build_checkpoint.py",
+    "git diff --check -- backend/bmt_backend/app.py backend/bmt_backend/discovery_models.py backend/bmt_backend/discovery_worker.py backend/bmt_backend/database_privileges.py game/core/app.gd game/ui/race_mode_rail.gd game/ui/race_mode_icons.gd game/ui/track_browser.gd game/ui/weekly_rivalry_page.gd"
+  ],
+  "retained_initial_failures": [
+    {
+      "log": "native-headless-sandbox-failure.log",
+      "reason": "Godot Windows root certificate-store access denied inside sandbox; authorized isolated execution resolved"
+    },
+    {
+      "log": "native-headless-initial-fit.log",
+      "reason": "Two fixture comparisons used physical window pixels against logical canvas coordinates; changed to visible canvas with same bound"
+    },
+    {
+      "reason": "Initial localization tooling: 18 pass / 1 catalogue-current failure before extract and compilation; later 19 passed. Separate final full completeness gate remains failing from older gaps and concurrent copy."
+    },
+    {
+      "reason": "One import-order lint failure after test fixture import added; fixed and final Ruff passes"
+    }
+  ],
+  "evidence": {
+    "screenshots": [
+      "gl_compatibility-daily-1280x720.png",
+      "gl_compatibility-daily-844x390.png",
+      "gl_compatibility-daily-960x540.png",
+      "mobile-daily-1280x720.png",
+      "mobile-daily-844x390.png",
+      "mobile-daily-960x540.png"
+    ],
+    "review_patch": "task-only.patch",
+    "hashes": "source-hashes.json",
+    "patch_check": "checkpoint-check.log",
+    "baseline_note": "Shared-file baseline reconstructed only by reversing known task edits; not an archived exact task-start snapshot. Generated unrelated catalogue reference-line changes are excluded. No staging or commit mutation."
+  },
+  "remaining": [
+    "Owner policy acceptance for pool sizes and startup threshold",
+    "Matching API/client/discovery-worker/migration/grant rollout",
+    "PostgreSQL migration/query/locking verification",
+    "Physical-device visual/input/motion/cost acceptance",
+    "Project-wide translation completion; concurrent sources preserved"
+  ],
+  "not_performed": [
+    "Device attachment check",
+    "Physical-device test",
+    "APK/export",
+    "Real purchase",
+    "Real-account authentication",
+    "Live database mutation",
+    "Production deployment",
+    "Owner-process restart"
+  ],
+  "concurrent_work": "Preserved; migration0069_slot_gifts depends on this task migration0068, and concurrent Store/translation sources are excluded from task-only code changes."
+}

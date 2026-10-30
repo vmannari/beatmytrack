@@ -1,0 +1,64 @@
+<?xml version="1.0" encoding="utf-8"?><testsuites name="pytest tests"><testsuite name="pytest" errors="0" failures="1" skipped="0" tests="1" time="5.930" timestamp="2026-10-27T07:49:38.309745+02:00" hostname="DESKTOP-96E8L9N"><testcase classname="tests.test_cost_http" name="test_native_cost_downloads_against_http" time="5.211"><failure message="bmt_backend.verifier.VerifierUnavailable: Canonical verifier reported an engine error">tmp_path = WindowsPath('C:/Users/ville/AppData/Local/Temp/pytest-of-ville/pytest-1475/test_native_cost_downloads_aga0')
+
+    @pytest.mark.godot
+    def test_native_cost_downloads_against_http(tmp_path):
+&gt;       run_client(tmp_path, "res://tests/test_cost_downloads_http.gd", prepare=prepare,
+            settings_overrides={"object_packing_enabled": True},
+            extra_env={"BMT_GHOST_WIRE_FIXTURE": str(FIXTURE), "BMT_NATIVE_COST_CACHE": str(tmp_path / "recording-cache")})
+
+backend\tests\test_cost_http.py:74: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+backend\tests\test_cloud_client.py:63: in run_client
+    prepare(app)
+backend\tests\test_cost_http.py:21: in prepare
+    seed(app)
+backend\tests\test_cost_http.py:41: in seed
+    manifest=app.state.verifier.validate_track(document), discovery={"theme": "pine", "points": document.get("points", [])}, published_at=now())
+build\studio-usage-costs-2026-10-27\native-baseline\backend\bmt_backend\verifier.py:350: in validate_track
+    return self._invoke({"operation": "track", "document": document})
+build\studio-usage-costs-2026-10-27\native-baseline\backend\bmt_backend\verifier.py:283: in _invoke
+    return self._invoke_locked(payload)
+build\studio-usage-costs-2026-10-27\native-baseline\backend\bmt_backend\verifier.py:289: in _invoke_locked
+    return self._invoke_service(payload)
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+
+self = &lt;bmt_backend.verifier.GodotVerifier object at 0x0000021785289390&gt;
+payload = {'operation': 'track', 'document': {'base_track': '', 'corners': ['sharp', 'sharp', 'sharp', 'sharp', 'sharp', 'sharp', ...], 'creator': 'Backend tests', 'id': 'backend_oval', ...}}
+
+    def _invoke_service(self, payload):
+        self._check_stopping()
+        request = _json_bytes(payload, MAX_REQUEST_BYTES)
+        self._check_engine()
+        try:
+            if self._service is None or self._service.poll() is not None or self._jobs &gt;= self.recycle_jobs:
+                self.close()
+                self._directory = tempfile.TemporaryDirectory(prefix="bmt-verifier-service-")
+                folder = Path(self._directory.name)
+                self._log = (folder / "engine.log").open("wb")
+                self._service = subprocess.Popen([self.binary, "--headless", "--path", str(self.project),
+                    "--script", "res://backend/runner.gd", "--", f"--service={folder}"],
+                    stdin=subprocess.DEVNULL, stdout=self._log, stderr=subprocess.STDOUT)
+                self._jobs = 0
+            folder = Path(self._directory.name)
+            output = folder / "output.json"
+            output.unlink(missing_ok=True)
+            token = uuid.uuid4().hex
+            (folder / "input.json").write_bytes(request)
+            pending = folder / "ready.pending"
+            pending.write_text(token, encoding="ascii")
+            pending.replace(folder / "ready")
+            deadline = time.monotonic() + self.timeout
+            while not output.is_file():
+                self._check_stopping()
+                if self._service.poll() is not None or time.monotonic() &gt;= deadline:
+                    raise VerifierUnavailable("Persistent verifier exited or timed out")
+                if (folder / "engine.log").stat().st_size &gt; 65536:
+                    raise VerifierUnavailable("Verifier exceeded diagnostic output limit")
+                time.sleep(0.01)
+            self._jobs += 1
+            diagnostics = (folder / "engine.log").read_text(encoding="utf8", errors="replace")
+            if re.search(r"SCRIPT ERROR:|(?:^|\s)ERROR:|Parse Error:", diagnostics, re.IGNORECASE):
+&gt;               raise VerifierUnavailable("Canonical verifier reported an engine error")
+E               bmt_backend.verifier.VerifierUnavailable: Canonical verifier reported an engine error
+
+build\studio-usage-costs-2026-10-27\native-baseline\backend\bmt_backend\verifier.py:241: VerifierUnavailable</failure></testcase></testsuite></testsuites>

@@ -1,0 +1,44 @@
+"""Small structured logger with an explicit field allowlist and no request bodies."""
+
+import json
+import logging
+import re
+
+
+def dependency_failure(logger, error, request_id, dependency):
+    fields = {"request_id": request_id, "exception_type": type(error).__name__}
+    sqlstate = getattr(getattr(error, "orig", None), "sqlstate", None)
+    if isinstance(sqlstate, str) and re.fullmatch(r"[A-Z0-9]{5}", sqlstate):
+        fields["sqlstate"] = sqlstate
+    logger.error(dependency + "_unavailable", extra=fields)
+
+
+class JsonFormatter(logging.Formatter):
+    def format(self, record):
+        message = record.getMessage()
+        try:
+            value = json.loads(message)
+        except ValueError:
+            value = {"event": message}
+        if not isinstance(value, dict):
+            value = {"event": message}
+        value["level"] = record.levelname.lower()
+        for field in ("run_id", "time_ticks", "failure_code", "worker_id", "request_id", "exception_type", "sqlstate",
+                      "verification_seconds", "verification_compute_ms", "verification_method", "queue_wait_seconds", "shutdown_seconds", "stop_signal",
+                      "generation_id", "generation_seconds"):
+            if hasattr(record, field):
+                value[field] = getattr(record, field)
+        # Record only exception type: arbitrary exception text can include submitted data.
+        if record.exc_info:
+            value["exception_type"] = record.exc_info[0].__name__
+        return json.dumps(value, separators=(",", ":"))
+
+
+def configure_logging():
+    logger = logging.getLogger("bmt")
+    if not logger.handlers:
+        handler = logging.StreamHandler()
+        handler.setFormatter(JsonFormatter())
+        logger.addHandler(handler)
+    logger.setLevel(logging.INFO)
+    logger.propagate = False

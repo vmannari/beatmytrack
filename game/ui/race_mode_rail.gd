@@ -7,7 +7,7 @@ var selected: String = "free"
 func _ready() -> void:
 	name = "RaceModes"
 	add_theme_constant_override("separation",12)
-	for item: Array in [["trophy","Weekly Rivalry","rivalry"],["flag","Free race","free"],["sun","Track of the day","daily"],["target","Challenges","challenges"]]:
+	for item: Array in [["trophy","Weekly Rivalry","rivalry"],["sun","Track of the day","daily"],["flag","Free race","free"],["target","Challenges","challenges"]]:
 		var active: bool = item[2] == selected
 		var available: bool = item[2] in ["rivalry","free","daily","challenges"]
 		var button := MenuStyle.button("",func() -> void: mode_requested.emit(item[2]),active)

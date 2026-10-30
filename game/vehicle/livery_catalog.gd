@@ -26,13 +26,14 @@ static func texture(file: String) -> Texture2D:
 	return textures[file]
 
 static func has_roof(id: String) -> bool:
-	return id in ["compact", "pickup", "classic", "electric"]
+	return id in ["compact", "pickup", "classic", "electric", "hovercraft"]
 
 static func sticker_label(id: String, panel: String) -> String:
 	return "Rear" if id == "forklift" and panel == "hood" else panel.capitalize()
 
 static func projection(id: String) -> Dictionary:
 	return {
+		"hovercraft": {"bounds":Vector3(2.32,1.42,4.26), "hood":Vector4(-0.36,-1.78,0.72,0.60), "roof":Vector4(-0.17,-0.25,0.34,0.68), "levels":Vector2(0.75,1.03)},
 		"electric": {"bounds":Vector3(1.92,1.52,4.60), "hood":Vector4(-0.69,-2.04,1.38,1.03), "roof":Vector4(-0.61,-0.34,1.22,1.00), "levels":Vector2(0.94,1.48)},
 		"compact": {"bounds":Vector3(1.76,1.52,4.18), "hood":Vector4(-0.69,-1.96,1.38,0.88), "roof":Vector4(-0.56,-0.32,1.12,1.38), "levels":Vector2(0.90,1.43)},
 		"pickup": {"bounds":Vector3(2.04,1.95,5.40), "hood":Vector4(-0.85,-2.48,1.70,1.27), "roof":Vector4(-0.68,-0.65,1.36,0.83), "levels":Vector2(1.24,1.88)},

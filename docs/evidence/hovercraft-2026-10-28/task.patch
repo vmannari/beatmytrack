@@ -1,0 +1,2164 @@
+--- a/game/vehicle/vehicle_catalog.gd
++++ b/game/vehicle/vehicle_catalog.gd
+@@ -1,17 +1,18 @@
+ class_name VehicleCatalog
+ extends RefCounted
+ ## Authored local cars; no unlocks or purchases. IDs pin handling and artwork.
+-const IDS: Array[String] = ["compact", "pickup", "classic", "formula", "kart", "forklift", "electric"]
+-const NAMES: Array[String] = ["COMPACT / 01", "HAULER / 02", "REARSPORT / 03", "FORMULA / 04", "KART / 05", "FORKLIFT / 06", "VOLT / 07"]
+-const CLASSES: Array[String] = ["Compact", "Pick-up", "Classic Sports", "Formula", "Go-kart", "Forklift", "Electric"]
++const IDS: Array[String] = ["compact", "pickup", "kart", "forklift", "electric", "hovercraft"]
++# Append only: persistence and achievement bits keep their historical identities.
++const ALL_IDS: Array[String] = ["compact", "pickup", "classic", "formula", "kart", "forklift", "electric", "hovercraft"]
++const NAMES: Array[String] = ["COMPACT / 01", "HAULER / 02", "KART / 05", "FORKLIFT / 06", "VOLT / 07", "HOVER / 08"]
++const CLASSES: Array[String] = ["Compact", "Pick-up", "Go-kart", "Forklift", "Electric", "Hovercraft"]
+ const DESCRIPTIONS: Array[String] = [
+ 	"Agile and forgiving. A versatile choice for mixed circuits.",
+ 	"Heavy power and loose-surface traction. Plan ahead: rotation and braking take longer.",
+-	"Rear-heavy traction for fast exits. Lift in a corner to rotate; catch the rear early.",
+-	"Precise asphalt grip. Low top speed, abrupt slides and harsh off-road penalties.",
+ 	"Quick off the line. Tight turns and strong grip; low speed on long straights.",
+ 	"Rear-wheel steering swings the tail wide. Tight turns and heavy traction; a low top speed.",
+-	"Instant rear-wheel power with responsive steering. Feed in the accelerator for a controlled slide; release for regeneration. Use the brake pedal to slow down, then hold it while stopped to reverse. No handbrake."]
++	"Instant rear-wheel power with responsive steering. Feed in the accelerator for a controlled slide; release for regeneration. Use the brake pedal to slow down, then hold it while stopped to reverse. No handbrake.",
++	"Fan-powered air cushion with long, flowing slides. Steer early and brake to settle the drift. Hold the brake while stopped to reverse. No handbrake."]
+ static var selected: String = "compact"
+ 
+ static func valid_id(id: String) -> String:
+@@ -24,10 +25,12 @@
+ 	return DESCRIPTIONS[IDS.find(valid_id(selected if id.is_empty() else id))]
+ 
+ static func config(id: String, compact_profile: int = 4) -> HandlingConfig:
+-	if valid_id(id) == "compact":
++	if id not in ALL_IDS: id = "compact"
++	if id == "compact":
+ 		return (load(HandlingSelection.PROFILE_PATHS[clampi(compact_profile,0,HandlingSelection.PROFILE_PATHS.size()-1)]) as HandlingConfig).duplicate() as HandlingConfig
+ 	return (load("res://resources/cars/" + id + ".tres") as HandlingConfig).duplicate() as HandlingConfig
+ 
+ static func artwork(id: String) -> Texture2D:
++	id = valid_id(id)
+ 	var file: String = "compact_illustration_v1" if valid_id(id) == "compact" else id + "_illustration_v1"
+ 	return load("res://assets/menu/" + file + ".png") as Texture2D
+--- a/game/vehicle/handling_config.gd
++++ b/game/vehicle/handling_config.gd
+@@ -4,6 +4,7 @@
+ 
+ const BODY_SCALE: float = 0.88 # Owner-requested smaller physical car, shared with visuals/trails.
+ @export var vehicle_id: String = "compact"
++@export var air_cushion: bool = false # Fan thrust and rudder steering; no wheel traction.
+ @export var rear_wheel_drive: bool = false # Optional driven rear-axle traction budget.
+ @export var single_pedal: bool = false # Accelerator plus stopped D/R selection; no brake/handbrake pedals.
+ @export var handbrake_enabled: bool = true
+@@ -89,6 +90,7 @@
+ 		if int(property.usage) & PROPERTY_USAGE_SCRIPT_VARIABLE and int(property.usage) & PROPERTY_USAGE_EDITOR:
+ 			result[property.name] = get(property.name)
+ 	# Additive vehicle capability: retain exact established front-steer config hashes.
++	if not air_cushion: result.erase("air_cushion")
+ 	if not rear_steering: result.erase("rear_steering")
+ 	if not rear_wheel_drive: result.erase("rear_wheel_drive")
+ 	if not single_pedal: result.erase("single_pedal")
+--- a/game/vehicle/vehicle_simulation.gd
++++ b/game/vehicle/vehicle_simulation.gd
+@@ -104,6 +104,9 @@
+ 		state.tick += 1
+ 		return
+ 	var surface: Vector2 = ground.surface_factors(state) if ground != null else Vector2(1.0, 0.0)
++	if config.air_cushion:
++		_step_hovercraft(frame,ground,old_position,old_heading,old_velocity,old_route,old_layer,surface)
++		return
+ 	var pickup: float = ground.tire_pickup(state) if ground != null else 0.0
+ 	if pickup > 0.0:
+ 		surface.x = minf(1.0, surface.x * config.loose_surface_grip)
+@@ -368,6 +371,51 @@
+ 	return clampf(sensitivity * 2.0, 0.45, 0.70) * sqrt(clampf(dirt, 0.0, 1.0)) if sensitivity > 0.0 else 0.0
+ 
+ 
++func _step_hovercraft(frame: DriveFrame, ground: PlaygroundData, old_position: Vector2, old_heading: float, old_velocity: Vector2, old_route: int, old_layer: bool, surface: Vector2) -> void:
++	# World momentum survives rotation. The fan supplies thrust along the hull;
++	# cushion drag dissipates sideways motion without redirecting it into speed.
++	var throttle: float = frame.throttle/255.0
++	var brake: float = frame.brake/255.0
++	var steering: float = frame.steer/127.0
++	state.steering = move_toward(state.steering,steering,(config.countersteering_rate if steering*state.steering < 0.0 else config.steering_rate)*STEP)
++	var speed: float = state.velocity.length()
++	var longitudinal: float = state.velocity.dot(state.forward())
++	var rudder: float = smoothstep(0.0,3.0,speed)+throttle*(1.0-smoothstep(0.0,3.0,speed))
++	var reverse: float = -1.0 if longitudinal < -0.15 else 1.0
++	var target: float = state.steering*config.maximum_yaw_rate*rudder*reverse
++	state.yaw_rate = lerpf(state.yaw_rate,target,1.0-exp(-config.mass/config.rotational_inertia*7.0*STEP))
++	state.heading = wrapf(state.heading+state.yaw_rate*STEP,-PI,PI)
++	var forward: Vector2 = state.forward()
++	var right: Vector2 = state.right()
++	longitudinal = state.velocity.dot(forward)
++	var acceleration: float = _pedal_acceleration(longitudinal,throttle,brake)
++	if acceleration > 0.0 and throttle > 0.0:
++		if state.tick < state.launch_delay_until: acceleration = 0.0
++		elif state.tick < state.launch_end_tick: acceleration *= 1.0+state.launch_gain
++	if longitudinal < -config.reverse_speed: acceleration = maxf(0.0,acceleration)
++	var next: float = longitudinal+acceleration*STEP
++	if brake > 0.0 and longitudinal > 0.0 and next < 0.0: next = 0.0
++	if throttle > 0.0 and longitudinal < 0.0 and next > 0.0: next = 0.0
++	var lateral: float = state.velocity.dot(right)*exp(-(config.lateral_response+brake*3.5)*STEP)
++	var drag: float = (config.rolling_resistance+config.drag*speed*speed)/config.mass+maxf(surface.y,0.0)*config.soil_drag_multiplier
++	next = move_toward(next,0.0,drag*STEP)
++	next = clampf(next,-maxf(config.reverse_speed,-longitudinal),config.maximum_speed)
++	state.velocity = (forward*next+right*lateral).limit_length(config.maximum_speed)
++	# Braking dissipates all world momentum, including a broadside slide.
++	if brake > 0.0 and absf(longitudinal) > 0.15:
++		state.velocity = state.velocity.move_toward(Vector2.ZERO,brake*2.0*STEP)
++	state.position += state.velocity*STEP
++	if ground != null:
++		ground.resolve(state,old_position,config)
++		ground.step_props(state,old_position,config,STEP)
++		ground.slow_in_snow(state,old_position,config,STEP)
++		ground.launch_jump(state,old_position)
++		ground.step_speed_bumps(state,old_position,old_heading,old_velocity,config,STEP)
++	if bridge_elevation != null:
++		BRIDGE_FLIGHT.release(state,old_position,old_heading,old_velocity,old_route,old_layer,bridge_elevation,config.wheelbase,STEP)
++	state.tick += 1
++
++
+ func _pedal_acceleration(speed: float, throttle: float, brake: float) -> float:
+ 	if config.single_pedal:
+ 		# In this car only, the third replay channel is the D/R selector. It is
+--- a/game/vehicle/vehicle_models.gd
++++ b/game/vehicle/vehicle_models.gd
+@@ -17,6 +17,9 @@
+ 	var trim: StandardMaterial3D = VisualGeometry.material(Color("182126"))
+ 	var glass: StandardMaterial3D = VisualGeometry.material(Color("304957"))
+ 	match id:
++		"hovercraft":
++			preload("res://vehicle/hovercraft_model.gd").build(car)
++			return
+ 		"electric":
+ 			preload("res://vehicle/electric_car_model.gd").build(car)
+ 			return
+--- /dev/null
++++ b/game/vehicle/hovercraft_model.gd
+@@ -0,0 +1,108 @@
++extends RefCounted
++## Original compact recreational hovercraft. Model metres; bow -Z, fan aft.
++static func build(car: CarVisual) -> void:
++	var paint: StandardMaterial3D = VisualGeometry.material(Color("698d87"))
++	var accent: StandardMaterial3D = VisualGeometry.material(Color("d9d0b7"))
++	var rubber: StandardMaterial3D = VisualGeometry.material(Color("252d30"))
++	var seam: StandardMaterial3D = VisualGeometry.material(Color("151e22"))
++	var glass: StandardMaterial3D = VisualGeometry.material(Color("304957"))
++	var metal: StandardMaterial3D = VisualGeometry.material(Color("83918f"))
++	car.paint_materials = {"body":paint,"accent":accent,"detail":metal}
++	var segments: int = 40 if car.simple_model else 64
++	# A closed, rounded bag skirt with raised deck lip; no wheels hidden inside.
++	_loft(car,segments,[Vector2(0.94,0.12),Vector2(1.0,0.24),Vector2(1.0,0.43),Vector2(0.92,0.59)],rubber)
++	_loft(car,segments,[Vector2(0.925,0.57),Vector2(0.93,0.65),Vector2(0.83,0.78)],paint)
++	for index: int in range(0,segments,2):
++		var angle: float = TAU*index/segments
++		car._seam(car.body,_outline(angle,1.002,0.26),_outline(angle,0.965,0.52),0.009,seam)
++	# Broad solid foredeck and aft deck support the inset glazed cockpit.
++	var deck: Array[Vector3] = []
++	for index: int in range(segments): deck.append(_outline(TAU*index/segments,0.83,0.78))
++	var top := SurfaceTool.new()
++	top.begin(Mesh.PRIMITIVE_TRIANGLES)
++	for index: int in range(segments):
++		for point: Vector3 in [Vector3(0,0.78,0),deck[(index+1)%segments],deck[index]]:
++			top.set_normal(Vector3.UP)
++			top.add_vertex(point)
++	var top_mesh := MeshInstance3D.new()
++	top_mesh.mesh = top.commit()
++	top_mesh.material_override = paint
++	car.body.add_child(top_mesh)
++	_loft(car,segments,[Vector2(0.83,0.785),Vector2(0.81,0.80)],accent)
++	# Low forward cabin, sloping windshield and cream canopy perimeter.
++	VehicleModels._cabin(car,0.62,0.78,1.37,-1.18,0.43,-0.63,0.16,paint,glass,seam)
++	VisualGeometry.box(car.body,Vector3(1.05,0.055,0.75),Vector3(0,1.395,-0.23),accent)
++	for side: float in [-1.0,1.0]:
++		VisualGeometry.box(car.body,Vector3(0.11,0.035,0.58),Vector3(side*0.78,0.80,-0.48),metal)
++		VisualGeometry.box(car.body,Vector3(0.27,0.06,0.10),Vector3(side*0.64,0.76,-1.62),accent)
++		VisualGeometry.box(car.body,Vector3(0.19,0.075,0.06),Vector3(side*0.64,0.75,1.68),car.brake_material)
++		car._seam(car.body,Vector3(side*0.59,0.78,0.80),Vector3(side*0.46,1.23,1.37),0.07,seam)
++	# Open duct with visible inner wall and protective front/rear grilles.
++	var center := Vector3(0,1.34,1.18)
++	_duct(car,center,0.66,0.57,0.38,accent,segments)
++	for z: float in [-0.205,0.205]:
++		for bar: int in range(-3,4):
++			var x: float = bar*0.15
++			var extent: float = sqrt(0.56*0.56-x*x)
++			car._seam(car.body,center+Vector3(x,-extent,z),center+Vector3(x,extent,z),0.012,metal)
++	var fan := Node3D.new()
++	fan.name = "FanRotor"
++	fan.position = center
++	car.body.add_child(fan)
++	var hub := VisualGeometry.cylinder(fan,0.115,0.14,Vector3.ZERO,seam)
++	hub.rotation.x = PI*0.5
++	for blade: int in range(5):
++		var piece := VisualGeometry.box(fan,Vector3(0.15,0.42,0.035),Vector3.ZERO,seam)
++		var angle: float = blade*TAU/5.0
++		piece.position = Vector3(-sin(angle),cos(angle),0)*0.31
++		piece.rotation = Vector3(0.18,0,angle)
++	for side: float in [-1.0,1.0]:
++		var rudder := Node3D.new()
++		rudder.name = "RudderLeft" if side < 0.0 else "RudderRight"
++		rudder.position = center+Vector3(side*0.29,0,0.28)
++		car.body.add_child(rudder)
++		VisualGeometry.box(rudder,Vector3(0.045,0.86,0.30),Vector3.ZERO,paint)
++
++static func _outline(angle: float, size: float, height: float) -> Vector3:
++	var x: float = sin(angle)
++	var z: float = cos(angle)
++	return Vector3(signf(x)*pow(absf(x),0.63)*1.16*(0.90 if z < 0.0 else 1.0)*size,height,signf(z)*pow(absf(z),0.72)*2.13*size)
++
++static func _loft(car: CarVisual, segments: int, rings: Array[Vector2], material: Material) -> void:
++	var tool := SurfaceTool.new()
++	tool.begin(Mesh.PRIMITIVE_TRIANGLES)
++	for ring: int in range(rings.size()-1):
++		for index: int in range(segments):
++			var a: float = TAU*index/segments
++			var b: float = TAU*(index+1)/segments
++			_quad(tool,[_outline(a,rings[ring].x,rings[ring].y),_outline(b,rings[ring].x,rings[ring].y),_outline(b,rings[ring+1].x,rings[ring+1].y),_outline(a,rings[ring+1].x,rings[ring+1].y)],Vector3(sin((a+b)*0.5),0.35,cos((a+b)*0.5)).normalized())
++	_publish(car,tool,material)
++
++static func _duct(car: CarVisual, center: Vector3, outer: float, inner: float, depth: float, material: Material, segments: int) -> void:
++	var tool := SurfaceTool.new()
++	tool.begin(Mesh.PRIMITIVE_TRIANGLES)
++	for index: int in range(segments):
++		var a: float = TAU*index/segments
++		var b: float = TAU*(index+1)/segments
++		var p := Vector3(sin(a),cos(a),0)
++		var q := Vector3(sin(b),cos(b),0)
++		var front := Vector3(0,0,-depth*0.5)
++		var back := -front
++		_quad(tool,[center+p*outer+front,center+q*outer+front,center+q*outer+back,center+p*outer+back],(p+q).normalized())
++		_quad(tool,[center+p*inner+front,center+q*inner+front,center+q*inner+back,center+p*inner+back],-(p+q).normalized())
++		for end: Vector3 in [front,back]:
++			_quad(tool,[center+p*inner+end,center+q*inner+end,center+q*outer+end,center+p*outer+end],end.normalized())
++	_publish(car,tool,material)
++
++static func _quad(tool: SurfaceTool, points: Array[Vector3], normal: Vector3) -> void:
++	var indices: Array[int] = [0,1,2,0,2,3]
++	if (points[1]-points[0]).cross(points[2]-points[0]).dot(normal) > 0.0: indices = [0,2,1,0,3,2]
++	for index: int in indices:
++		tool.set_normal(normal)
++		tool.add_vertex(points[index])
++
++static func _publish(car: CarVisual, tool: SurfaceTool, material: Material) -> void:
++	var node := MeshInstance3D.new()
++	node.mesh = tool.commit()
++	node.material_override = material
++	car.body.add_child(node)
+--- a/game/vehicle/car_visual.gd
++++ b/game/vehicle/car_visual.gd
+@@ -64,7 +64,7 @@
+ 	headlights.name = "NightHeadlights"
+ 	body.add_child(headlights)
+ 	# One bounded light for both lamps; no shadow maps, volumetrics or frame work.
+-	var mount: Vector3 = {"compact":Vector3(0.60,0.80,-2.14),"pickup":Vector3(0.66,1.12,-2.71),"classic":Vector3(0.68,0.75,-1.94),"formula":Vector3(0.32,0.31,-2.20),"electric":Vector3(0.51,0.84,-2.29),"kart":Vector3(0.33,0.25,-1.38),"forklift":Vector3(0.70,2.47,-0.89)}.get(vehicle_id,Vector3(0.60,0.80,-2.14))
++	var mount: Vector3 = {"compact":Vector3(0.60,0.80,-2.14),"pickup":Vector3(0.66,1.12,-2.71),"classic":Vector3(0.68,0.75,-1.94),"formula":Vector3(0.32,0.31,-2.20),"electric":Vector3(0.51,0.84,-2.29),"kart":Vector3(0.33,0.25,-1.38),"forklift":Vector3(0.70,2.47,-0.89),"hovercraft":Vector3(0.64,0.76,-1.72)}.get(vehicle_id,Vector3(0.60,0.80,-2.14))
+ 	var beam := SpotLight3D.new()
+ 	beam.name = "SharedHeadlightBeam"
+ 	# Keep the entire hood behind the cone. A higher, wider short-range beam
+@@ -381,6 +381,12 @@
+ 	wheel_last_tick = state.tick
+ 	position = VisualGeometry.world(point)
+ 	rotation.y = -angle
++	if vehicle_id == "hovercraft":
++		var fan: Node3D = body.get_node_or_null("FanRotor")
++		if fan != null: fan.rotation.z = wrapf(state.tick*0.29,-PI,PI)
++		for part: String in ["RudderLeft","RudderRight"]:
++			var rudder: Node3D = body.get_node_or_null(NodePath(part))
++			if rudder != null: rudder.rotation.y = -state.steering*0.42
+ 	for wheel: Node3D in front_wheels:
+ 		wheel.rotation.y = -state.steering * (0.60 if vehicle_id == "kart" else 0.4)
+ 	if vehicle_id == "forklift":
+--- a/game/vehicle/vehicle_audio.gd
++++ b/game/vehicle/vehicle_audio.gd
+@@ -272,6 +272,7 @@
+ 	print("COLLISION_AUDIO_TRACE: ",JSON.stringify(trace))
+ 
+ func _observe_surfaces(state: VehicleState, track: NativeTrack, incoming: Vector2, previous: Vector2, heading: float) -> void:
++	if model.vehicle_id == "hovercraft": return
+ 	kerb_cooldown = maxf(0.0,kerb_cooldown-VehicleSimulation.STEP)
+ 	var old_grass: float = surface_model.grass
+ 	var grounded: bool = state.jump_height<=0.0 and state.roll_ticks==0
+@@ -499,7 +500,7 @@
+ 		engine_load[i].volume_db = linear_to_db(maxf(0.0001,weights[i]*load_gains.x*engine_envelope))
+ 		engine_coast[i].volume_db = linear_to_db(maxf(0.0001,weights[i]*load_gains.y*engine_envelope))
+ 	var speed: float = state.velocity.length()
+-	var grounded: bool = state.jump_height<=0.0 and state.roll_ticks==0 and not countdown
++	var grounded: bool = state.jump_height<=0.0 and state.roll_ticks==0 and not countdown and model.vehicle_id != "hovercraft"
+ 	if pending_scrape>0.0:
+ 		held_scrape = pending_scrape
+ 		held_scrape_speed = pending_scrape_speed
+--- a/game/vehicle/vehicle_audio_model.gd
++++ b/game/vehicle/vehicle_audio_model.gd
+@@ -19,6 +19,8 @@
+ 	vehicle_id = VehicleCatalog.valid_id(id)
+ 	maximum_speed = maxf(10.0,speed)
+ 	match vehicle_id:
++		"hovercraft":
++			idle_rpm = 1100.0; redline_rpm = 6400.0; anchors = Vector3(1200,3000,6000)
+ 		"electric":
+ 			idle_rpm = 600.0; redline_rpm = 12000.0; anchors = Vector3(1200,4800,9600)
+ 		"pickup", "forklift":
+@@ -50,6 +52,11 @@
+ 	var pedal: float = float(frame.brake if reverse else frame.throttle)/255.0
+ 	if vehicle_id == "electric": pedal = frame.throttle / 255.0
+ 	load_amount = lerpf(load_amount,pedal,1.0-exp(-dt*(14.0 if pedal>load_amount else 7.0)))
++	if vehicle_id == "hovercraft":
++		# Fan speed follows power, including when the hull has no ground speed.
++		gear = -1 if reverse else 1
++		rpm = lerpf(rpm,lerpf(idle_rpm,redline_rpm,maxf(load_amount,speed/maximum_speed*0.35)),1.0-exp(-dt*5.0))
++		return false
+ 	if vehicle_id == "electric":
+ 		gear = -1 if reverse else 1
+ 		rpm = lerpf(idle_rpm,redline_rpm,clampf(speed / maximum_speed,0.0,1.0))
+--- a/game/vehicle/vehicle_livery.gd
++++ b/game/vehicle/vehicle_livery.gd
+@@ -10,7 +10,7 @@
+ 
+ static func defaults(id: String) -> Dictionary:
+ 	return {"version":VERSION, "colors":{
+-		"body":str({"compact":"30627d", "pickup":"944638", "classic":"739181", "formula":"c8ad58", "kart":"b96d43", "forklift":"d5a62d", "electric":"638d86"}.get(id,"30627d")),
++		"body":str({"compact":"30627d", "pickup":"944638", "classic":"739181", "formula":"c8ad58", "kart":"b96d43", "forklift":"d5a62d", "electric":"638d86", "hovercraft":"698d87"}.get(id,"30627d")),
+ 		"accent":"e0d5b5" if id == "compact" else "263c43" if id == "electric" else "d9d0b7", "detail":"9ba8ab" if id == "electric" else "c78e4c"},
+ 		"pattern":"plain", "stickers":{"hood":empty_sticker(), "roof":empty_sticker()}}
+ 
+@@ -53,9 +53,9 @@
+ 	return normalize(value, id) if value is Dictionary else defaults(id)
+ 
+ static func valid_collection(value: Variant) -> bool:
+-	if not value is Dictionary or value.size() > VehicleCatalog.IDS.size(): return false
++	if not value is Dictionary or value.size() > VehicleCatalog.ALL_IDS.size(): return false
+ 	for id: Variant in value:
+-		if not id is String or id not in VehicleCatalog.IDS or not valid(value[id]): return false
++		if not id is String or id not in VehicleCatalog.ALL_IDS or not valid(value[id]): return false
+ 	return true
+ 
+ static func decorated(value: Dictionary, id: String) -> bool:
+--- a/game/vehicle/vehicle_condition.gd
++++ b/game/vehicle/vehicle_condition.gd
+@@ -18,9 +18,9 @@
+ 	return records.save_vehicle_conditions(collection,background)
+ 
+ static func valid_collection(value: Variant) -> bool:
+-	if not value is Dictionary or value.size() > VehicleCatalog.IDS.size(): return false
++	if not value is Dictionary or value.size() > VehicleCatalog.ALL_IDS.size(): return false
+ 	for id: Variant in value:
+-		if id not in VehicleCatalog.IDS or not value[id] is Dictionary: return false
++		if id not in VehicleCatalog.ALL_IDS or not value[id] is Dictionary: return false
+ 		var entry: Dictionary = value[id]
+ 		if entry.size() not in [8, 11, 12, 14] or entry.get("version") != 1: return false
+ 		var fields: Array[String] = ["dirt", "snow", "wetness", "mud", "smudge"]
+--- a/game/vehicle/livery_catalog.gd
++++ b/game/vehicle/livery_catalog.gd
+@@ -26,13 +26,14 @@
+ 	return textures[file]
+ 
+ static func has_roof(id: String) -> bool:
+-	return id in ["compact", "pickup", "classic", "electric"]
++	return id in ["compact", "pickup", "classic", "electric", "hovercraft"]
+ 
+ static func sticker_label(id: String, panel: String) -> String:
+ 	return "Rear" if id == "forklift" and panel == "hood" else panel.capitalize()
+ 
+ static func projection(id: String) -> Dictionary:
+ 	return {
++		"hovercraft": {"bounds":Vector3(2.32,2.0,4.26), "hood":Vector4(-0.60,-1.65,1.20,0.42), "roof":Vector4(-0.49,-0.58,0.98,0.68), "levels":Vector2(0.79,1.42)},
+ 		"electric": {"bounds":Vector3(1.92,1.52,4.60), "hood":Vector4(-0.69,-2.04,1.38,1.03), "roof":Vector4(-0.61,-0.34,1.22,1.00), "levels":Vector2(0.94,1.48)},
+ 		"compact": {"bounds":Vector3(1.76,1.52,4.18), "hood":Vector4(-0.69,-1.96,1.38,0.88), "roof":Vector4(-0.56,-0.32,1.12,1.38), "levels":Vector2(0.90,1.43)},
+ 		"pickup": {"bounds":Vector3(2.04,1.95,5.40), "hood":Vector4(-0.85,-2.48,1.70,1.27), "roof":Vector4(-0.68,-0.65,1.36,0.83), "levels":Vector2(1.24,1.88)},
+--- a/game/vehicle/vehicle_weathering.gd
++++ b/game/vehicle/vehicle_weathering.gd
+@@ -3,7 +3,7 @@
+ ## Cosmetic exposure and local wash volume. Never writes canonical simulation or livery.
+ const FINISH: Shader = preload("res://vehicle/vehicle_weathering.gdshader")
+ const COLORS: Dictionary = {"desert": Color("c7ae7c"), "winter": Color("dce8ed"), "pine": Color("463225"), "night_city": Color("735a43"), "storm": Color("625340")}
+-const HEIGHTS: Dictionary = {"compact": 1.5, "pickup": 1.95, "classic": 1.18, "formula": 0.65, "kart": 0.48, "forklift": 2.89, "electric": 1.52}
++const HEIGHTS: Dictionary = {"compact": 1.5, "pickup": 1.95, "classic": 1.18, "formula": 0.65, "kart": 0.48, "forklift": 2.89, "electric": 1.52, "hovercraft": 2.0}
+ const SLOW_RATE: float = 1.0 / 20.0
+ const SCRUB_RATE: float = 1.15
+ const SCRUB_RADIUS: float = 0.60
+--- a/game/persistence/local_records.gd
++++ b/game/persistence/local_records.gd
+@@ -202,7 +202,7 @@
+ 			for character: String in preferences[field]:
+ 				if character not in "abcdefghijklmnopqrstuvwxyz0123456789_-": return {}
+ 		elif field == "selected_car":
+-			if not preferences[field] is String or preferences[field] not in VehicleCatalog.IDS: return {}
++			if not preferences[field] is String or preferences[field] not in VehicleCatalog.ALL_IDS: return {}
+ 		elif field == "achievements":
+ 			if not AchievementProgress.valid(preferences[field]): return {}
+ 		elif field == "guest_coins":
+--- a/game/persistence/achievement_progress.gd
++++ b/game/persistence/achievement_progress.gd
+@@ -36,7 +36,7 @@
+ 		metrics.append(family.metric)
+ 		for i: int in range(family.tiers.size()): keys.append(family.id+"/"+str(i+1))
+ 	for biome: String in BIOMES: metrics.append_array(["race_"+biome,"clean_"+biome])
+-	for car: String in VehicleCatalog.IDS: metrics.append_array(["cars_"+car,"clean_car_"+car])
++	for car: String in VehicleCatalog.ALL_IDS: metrics.append_array(["cars_"+car,"clean_car_"+car])
+ 	for key: Variant in value.metrics:
+ 		if key not in metrics or not whole(value.metrics[key]): return false
+ 	for key: Variant in value.unlocked:
+@@ -72,7 +72,7 @@
+ 
+ static func bits(mask: int) -> int:
+ 	var result: int = 0
+-	for i: int in range(5): result += (mask >> i) & 1
++	for i: int in range(VehicleCatalog.ALL_IDS.size()): result += (mask >> i) & 1
+ 	return result
+ 
+ static func race(records: LocalRecords, track: NativeTrack, vehicle: String, laps: Array[float], facts: Dictionary) -> void:
+@@ -88,7 +88,7 @@
+ 		m.tracks = data.tracks.size()
+ 	var theme: String = TrackTheme.normalized(str(track.metadata.get("theme","pine")))
+ 	bump(m,"race_"+theme)
+-	var car: int = VehicleCatalog.IDS.find(vehicle)
++	var car: int = VehicleCatalog.ALL_IDS.find(vehicle)
+ 	if car >= 0: m.car_mask = int(m.get("car_mask",0)) | (1 << car)
+ 	m.cars = bits(int(m.get("car_mask",0)))
+ 	m.biomes = 0
+@@ -119,7 +119,7 @@
+ 
+ static func customise(records: LocalRecords, vehicle: String) -> void:
+ 	var data: Dictionary = read(records)
+-	var index: int = VehicleCatalog.IDS.find(vehicle)
++	var index: int = VehicleCatalog.ALL_IDS.find(vehicle)
+ 	if index < 0: return
+ 	data.metrics.customised_mask = int(data.metrics.get("customised_mask",0)) | (1 << index)
+ 	data.metrics.customised = bits(int(data.metrics.customised_mask))
+--- a/game/persistence/appearance_state.gd
++++ b/game/persistence/appearance_state.gd
+@@ -23,7 +23,7 @@
+ 	return settings.get("vehicle_liveries",{}).has(id) or settings.get("vehicle_customisation",{}).has(id)
+ 
+ static func valid_car(value: Variant) -> bool:
+-	if not value is Dictionary or value.size() != 3 or value.get("vehicle_id") not in VehicleCatalog.IDS: return false
++	if not value is Dictionary or value.size() != 3 or value.get("vehicle_id") not in VehicleCatalog.ALL_IDS: return false
+ 	if not VehicleLivery.valid(value.get("livery")) or value.livery.version != VehicleLivery.VERSION: return false
+ 	if not VehicleCustomisation.valid(value.get("customisation")): return false
+ 	if value.vehicle_id != "compact":
+@@ -32,7 +32,7 @@
+ 	return true
+ 
+ static func valid_collection(value: Variant) -> bool:
+-	if not value is Dictionary or value.size() > VehicleCatalog.IDS.size(): return false
++	if not value is Dictionary or value.size() > VehicleCatalog.ALL_IDS.size(): return false
+ 	for id: Variant in value:
+ 		if not id is String or not valid_car(value[id]) or value[id].vehicle_id != id: return false
+ 	return true
+--- a/game/persistence/save_upgrades.gd
++++ b/game/persistence/save_upgrades.gd
+@@ -47,7 +47,7 @@
+ 	return result
+ 
+ static func upgrade_livery(value: Dictionary, car: String) -> Dictionary:
+-	if car not in VehicleCatalog.IDS or value.size() != 2 or value.get("version") != 1: return {}
++	if car not in VehicleCatalog.ALL_IDS or value.size() != 2 or value.get("version") != 1: return {}
+ 	var colors: Variant = value.get("colors")
+ 	if not colors is Dictionary or colors.size() != 2: return {}
+ 	for key: String in ["body","accent"]:
+--- a/game/ui/garage_car_cache.gd
++++ b/game/ui/garage_car_cache.gd
+@@ -15,7 +15,7 @@
+ 	var result: Dictionary={}
+ 	for file: String in DirAccess.get_files_at("res://vehicle"):
+ 		if not file.ends_with(".gd"): continue
+-		if file in ["car_visual.gd","vehicle_models.gd","visual_geometry.gd"] or file.begins_with("compact_") or file.begins_with("electric_") or file.begins_with("kart_") or file.begins_with("forklift_"):
++		if file in ["car_visual.gd","vehicle_models.gd","visual_geometry.gd"] or file.begins_with("compact_") or file.begins_with("electric_") or file.begins_with("kart_") or file.begins_with("forklift_") or file.begins_with("hovercraft_"):
+ 			result[file]=FileAccess.get_sha256("res://vehicle/"+file)
+ 	return result
+ 
+--- a/game/core/game.gd
++++ b/game/core/game.gd
+@@ -271,10 +271,12 @@
+ 	if not await _preparation_checkpoint(): return
+ 	preparation_mark = Time.get_ticks_usec() if profile_enabled else 0
+ 	trails = SkidTrails.new()
++	trails.visible = not handling.air_cushion
+ 	trails.wheelbase = handling.wheelbase
+ 	trails.track_width = handling.track_width
+ 	world.add_child(trails)
+ 	sand_dust = SandDustEffect.new()
++	sand_dust.visible = not handling.air_cushion
+ 	sand_dust.wheelbase = handling.wheelbase
+ 	sand_dust.track_width = handling.track_width
+ 	sand_dust.collision_radius = handling.collision_radius
+@@ -529,8 +531,8 @@
+ 	var steering: float = finish_sim.state.steering * 0.97
+ 	frame = DriveFrame.sample(steering, 0.0, 0.22)
+ 	finish_sim.step(frame, yard)
+-	trails.sample(finish_sim.state, _tire_effect_frame(frame), bridge_presentation, native_track)
+-	sand_dust.sample(finish_sim.state, _tire_effect_frame(frame), native_track, bridge_presentation)
++	if trails.visible: trails.sample(finish_sim.state, _tire_effect_frame(frame), bridge_presentation, native_track)
++	if sand_dust.visible: sand_dust.sample(finish_sim.state, _tire_effect_frame(frame), native_track, bridge_presentation)
+ 	finish_ticks += 1
+ 	race_cues.show_finish(minf(float(finish_ticks) / FINISH_TICKS,0.75) if finish_rating_pending else float(finish_ticks) / FINISH_TICKS)
+ 	if finish_rating_pending and finish_ticks >= 90: race_cues.show_rating()
+--- a/game/garage/parking_hall_data.gd
++++ b/game/garage/parking_hall_data.gd
+@@ -11,7 +11,7 @@
+ const PARKED_CARS: Array[Dictionary] = [
+ 	{"position":Vector2(-31.5,-31),"vehicle":"compact","colour":"85877b","half_length":2.0},
+ 	{"position":Vector2(22.5,31),"vehicle":"pickup","colour":"485a60","half_length":2.5},
+-	{"position":Vector2(37.5,-31),"vehicle":"classic","colour":"805849","half_length":2.0}]
++	{"position":Vector2(37.5,-31),"vehicle":"hovercraft","colour":"698d87","half_length":2.0}]
+ var columns: Array[Vector3] = []
+ 
+ func _init() -> void:
+--- /dev/null
++++ b/game/resources/cars/hovercraft.tres
+@@ -0,0 +1,28 @@
++[gd_resource type="Resource" script_class="HandlingConfig" load_steps=2 format=3]
++[ext_resource type="Script" path="res://vehicle/handling_config.gd" id="1"]
++[resource]
++script = ExtResource("1")
++version = "hovercraft-1"
++vehicle_id = "hovercraft"
++profile_name = "Hovercraft"
++air_cushion = true
++handbrake_enabled = false
++mass = 560.0
++engine_force = 7400.0
++braking_force = 6500.0
++rolling_resistance = 45.0
++drag = 1.2
++maximum_speed = 36.111111
++reverse_speed = 6.0
++rotational_inertia = 780.0
++steering_rate = 5.0
++countersteering_rate = 7.0
++maximum_yaw_rate = 1.35
++wheelbase = 2.45
++track_width = 1.78
++collision_radius = 1.55
++lateral_response = 0.85
++corner_energy_retention = 0.0
++collision_energy_loss = 0.40
++soil_drag_multiplier = 0.15
++dirty_tire_grip_loss = 0.0
+--- a/backend/bmt_backend/vehicle_appearance.py
++++ b/backend/bmt_backend/vehicle_appearance.py
+@@ -75,7 +75,7 @@
+ 
+ 
+ class Appearance(Cosmetic):
+-    vehicle_id: Literal["compact", "pickup", "classic", "formula", "kart", "electric", "forklift"]
++    vehicle_id: Literal["compact", "pickup", "classic", "formula", "kart", "electric", "forklift", "hovercraft"]
+     livery: Livery
+     customisation: Parts
+ 
+--- a/backend/bmt_backend/telemetry.py
++++ b/backend/bmt_backend/telemetry.py
+@@ -24,7 +24,7 @@
+ SCHEMA = "bmt-product-events-v1"
+ MAX_EVENTS, MAX_BYTES = 50, 65536
+ MAX_AGE, FUTURE_ALLOWANCE = 7 * 86400, 300
+-CARS = {"compact", "pickup", "classic", "formula", "kart", "electric", "forklift"}
++CARS = {"compact", "pickup", "classic", "formula", "kart", "electric", "forklift", "hovercraft"}
+ BIOMES = {"pine", "desert", "night_city", "winter", "storm"}
+ PRODUCTS = {"creator_slot_1", "creator_slots_5", "creator_slots_10", "ad_free_month", "ad_free_forever"}
+ SERVER_NAMES = {"race_accepted", "creator_validated", "track_published", "challenge_created", "challenge_joined"}
+--- a/backend/bmt_backend/achievements.py
++++ b/backend/bmt_backend/achievements.py
+@@ -27,7 +27,7 @@
+ FAMILIES = CATALOG["families"]
+ IDS = {f["id"] for f in FAMILIES if f["scope"] != "local"}
+ BIOMES = ("pine", "desert", "winter", "storm", "night_city")
+-CARS = ("compact", "pickup", "classic", "formula", "kart", "electric", "forklift")
++CARS = ("compact", "pickup", "classic", "formula", "kart", "electric", "forklift", "hovercraft")
+ MAX_VALUE = 2**53 - 1
+ 
+ 
+--- a/game/tests/test_cars.gd
++++ b/game/tests/test_cars.gd
+@@ -41,7 +41,8 @@
+ 	var track: NativeTrack = NativeTrack.read("res://tests/fixtures/legacy_tracks/slicks_arto4_test.json")
+ 	var keys: Array[String] = []
+ 	var records := LocalRecords.new("user://car_tests_" + TrackLibrary.unique_id() + ".json")
+-	for id: String in VehicleCatalog.IDS:
++	# Historical chassis retain their diagnostic regression coverage after retirement.
++	for id: String in VehicleCatalog.ALL_IDS:
+ 		var config: HandlingConfig = VehicleCatalog.config(id)
+ 		var key: String = records.key_for(track,config)
+ 		check(key not in keys, id + " PB rules are distinct")
+@@ -85,6 +86,12 @@
+ 		# Batching intentionally reduces child count without removing geometry.
+ 		visual.batch_parts = false
+ 		root.add_child(visual)
++		if config.air_cushion:
++			check(visual.rolling_wheels.is_empty() and visual.front_wheels.is_empty(),id+" uses an air cushion without wheel frames")
++			check(visual.body.get_node_or_null("FanRotor") != null,id+" has a separate fan frame")
++			visual.queue_free()
++			await process_frame
++			continue
+ 		var steering_wheels: Array[Node3D] = visual.rear_wheels if config.rear_steering else visual.front_wheels
+ 		check(steering_wheels.size() == 2 and visual.body.get_child_count() > 10,id + " detailed model has steering wheels and body")
+ 		var batched := CarVisual.new()
+--- a/game/tests/test_car_balance.gd
++++ b/game/tests/test_car_balance.gd
+@@ -6,7 +6,8 @@
+ 
+ func _run() -> void:
+ 	var best: Dictionary = {}
+-	for id: String in VehicleCatalog.IDS:
++	# This is the retained wheel-car comparison; the hovercraft has separate drift tests.
++	for id: String in ["compact","pickup","classic","formula","kart","forklift","electric"]:
+ 		var config: HandlingConfig = VehicleCatalog.config(id)
+ 		var fastest: float = INF
+ 		var chosen_speed: int = 0
+--- a/game/tests/test_vehicle_audio.gd
++++ b/game/tests/test_vehicle_audio.gd
+@@ -49,7 +49,7 @@
+ 			model.advance(state,control,1.0/60)
+ 			var weights: Vector3 = model.weights()
+ 			check(absf(weights.length_squared()-1.0)<0.0001,"equal-power engine crossfade: "+id)
+-		check(model.shifts==0 if id in ["kart","forklift","electric"] else model.shifts>=3,"authored transmission: "+id)
++		check(model.shifts==0 if id in ["kart","forklift","electric","hovercraft"] else model.shifts>=3,"authored transmission: "+id)
+ 		check(model.rpm>=model.idle_rpm and model.rpm<=model.redline_rpm,"bounded RPM: "+id)
+ 		state.velocity = Vector2.ZERO
+ 		var final_before: Array = state.snapshot()
+--- a/game/tests/test_racing_car_models.gd
++++ b/game/tests/test_racing_car_models.gd
+@@ -116,9 +116,12 @@
+ 		check(after.meshes <= before.meshes,id+" detailed batching adds no submissions")
+ 		if id == "compact": check(after.meshes < before.meshes,"compact detailed batching reduces submissions")
+ 		check(reduced.triangles < after.triangles*0.8,id+" simpler model reduces triangles")
+-		check(reduced.casters == 5,id+" body and four rolling shadow casters")
++		check(reduced.casters == (1 if id == "hovercraft" else 5),id+" shadow casters match the vehicle frames")
+ 		check(reduced.shadow_triangles < after.shadow_triangles*0.5,id+" shadow geometry reduced")
+-		check(simple.rolling_wheels.size() == 4 and simple.front_wheels.size() == 2,id+" independent wheel frames")
++		if id == "hovercraft":
++			check(simple.rolling_wheels.is_empty() and simple.body.get_node_or_null("FanRotor") != null,id+" independent fan with no wheel frames")
++		else:
++			check(simple.rolling_wheels.size() == 4 and simple.front_wheels.size() == 2,id+" independent wheel frames")
+ 		var livery: Dictionary = VehicleLivery.defaults(id)
+ 		livery.colors.body = "804439"
+ 		simple.apply_livery(livery)
+--- /dev/null
++++ b/game/tests/test_hovercraft.gd
+@@ -0,0 +1,237 @@
++extends "res://backend/runner.gd"
++## Roster, deterministic air-cushion handling, persistence and native presentation.
++const EVIDENCE: String = "res://../docs/evidence/hovercraft-2026-10-28/"
++const RETAINED: Array[String] = ["compact","pickup","kart","forklift","electric"]
++var checks: int = 0
++var failures: int = 0
++var metrics: Dictionary = {}
++var graphical: bool = false
++var output: String = EVIDENCE
++
++func _initialize() -> void: _run.call_deferred()
++
++func check(ok: bool, label: String) -> void:
++	checks += 1
++	if not ok:
++		failures += 1
++		print("FAIL: ",label)
++
++func traces() -> Dictionary:
++	var result: Dictionary = {}
++	for id: String in RETAINED:
++		var config: HandlingConfig = VehicleCatalog.config(id)
++		var sim := VehicleSimulation.new(config)
++		var states: Array[String] = []
++		for tick: int in range(2400):
++			sim.step(DriveFrame.sample(sin(tick*0.017)*0.7,1.0 if tick%600<400 else 0.0,0.8 if tick%600>460 else 0.0,0.5 if tick%700>650 else 0.0))
++			if tick%120 == 0: states.append(var_to_bytes(sim.state.snapshot()).hex_encode().sha256_text())
++		result[id] = {"config_hash":JSON.stringify(config.snapshot(),"",true).sha256_text(),"states":states}
++	return result
++
++func _run() -> void:
++	DirAccess.make_dir_recursive_absolute(ProjectSettings.globalize_path(EVIDENCE))
++	if "--baseline" in OS.get_cmdline_user_args():
++		var file := FileAccess.open(EVIDENCE+"retained-before.json",FileAccess.WRITE)
++		file.store_string(JSON.stringify(traces(),"\t"))
++		file.close()
++		print("HOVERCRAFT_BASELINE: five config hashes and 100 exact state checkpoints")
++		quit()
++		return
++	check(traces() == JSON.parse_string(FileAccess.get_file_as_string(EVIDENCE+"retained-before.json")),"five retained config hashes and 100 state checkpoints stay exact")
++	OS.set_environment("BMT_API_URL","")
++	graphical = DisplayServer.get_name() != "headless"
++	output = EVIDENCE.path_join(RenderingServer.get_current_rendering_method() if graphical else "headless")
++	DirAccess.make_dir_recursive_absolute(ProjectSettings.globalize_path(output))
++	check(VehicleCatalog.IDS == ["compact","pickup","kart","forklift","electric","hovercraft"],"new six-vehicle lineup removes Sports Car and Formula")
++	check(VehicleCatalog.NAMES.size() == VehicleCatalog.IDS.size() and VehicleCatalog.CLASSES.size() == VehicleCatalog.IDS.size() and VehicleCatalog.DESCRIPTIONS.size() == VehicleCatalog.IDS.size(),"catalogue fields align")
++	check(VehicleCatalog.valid_id("formula") == "compact" and VehicleCatalog.valid_id("classic") == "compact","retired selections fall back safely")
++	check(VehicleCatalog.config("missing").vehicle_id == "compact","unknown configs use Compact")
++	var config: HandlingConfig = VehicleCatalog.config("hovercraft")
++	check(config.air_cushion and not config.handbrake_enabled and config.snapshot().air_cushion,"versioned air-cushion capability is in replay identity")
++	check(manifest().vehicles.has("hovercraft") and not manifest().vehicles.has("formula") and not manifest().vehicles.has("classic"),"worker advertises the playable roster")
++	check(TrackLifecycle._contract(TrackDocument.create_default(),"hovercraft").config_hash == manifest().vehicles.hovercraft.config_hash,"publication and verifier agree on hovercraft identity")
++	_handling(config)
++	_persistence()
++	await _model(config)
++	if graphical and "--integration" in OS.get_cmdline_user_args(): await _app(config)
++	var report := FileAccess.open(output.path_join("metrics.json"),FileAccess.WRITE)
++	report.store_string(JSON.stringify({"checks":checks,"failures":failures,"metrics":metrics},"\t"))
++	report.close()
++	print("HOVERCRAFT_TESTS: %d checks, %d failures" % [checks,failures])
++	quit(1 if failures else 0)
++
++func _handling(config: HandlingConfig) -> void:
++	var sim := VehicleSimulation.new(config)
++	for tick: int in range(2400): sim.step(DriveFrame.sample(0,1,0))
++	check(sim.state.velocity.length() > 35.0 and sim.state.velocity.length() <= config.maximum_speed,"hovercraft approaches its bounded 130 km/h top speed")
++	metrics.top_kph = sim.state.velocity.length()*3.6
++	var turn := VehicleSimulation.new(config)
++	turn.state.velocity = Vector2(0,20)
++	for tick: int in range(90): turn.step(DriveFrame.sample(0.6,0.5,0))
++	check(turn.state.heading > 0.2 and absf(turn.state.slip_angle()) > 0.15,"rudder turns hull while world momentum produces a sustained slide")
++	metrics.slide_degrees = rad_to_deg(absf(turn.state.slip_angle()))
++	var brake := VehicleSimulation.new(config)
++	brake.state.velocity = Vector2(10,25)
++	var stop_ticks: int = 0
++	for tick: int in range(900):
++		brake.step(DriveFrame.sample(0,0,1))
++		stop_ticks += 1
++		if brake.state.velocity.length() < 0.15: break
++	check(brake.state.velocity.length() < 0.15 and brake.state.velocity.y >= 0.0,"brake settles forward and sideways travel before reverse")
++	metrics.stop_seconds = stop_ticks/120.0
++	var reverse := VehicleSimulation.new(config)
++	for tick: int in range(30): reverse.step(DriveFrame.sample(0,0,1))
++	check(reverse.state.velocity == Vector2.ZERO,"short brake tap at rest cannot select reverse")
++	for tick: int in range(360): reverse.step(DriveFrame.sample(0,0,1))
++	check(reverse.state.velocity.y < -4.0 and reverse.state.velocity.length() <= config.reverse_speed,"held brake reverses with a separate speed cap")
++	var coast := VehicleSimulation.new(config)
++	coast.state.velocity = Vector2(8,25)
++	var dissipative: bool = true
++	for tick: int in range(2000):
++		var speed: float = coast.state.velocity.length()
++		coast.step(DriveFrame.sample(sin(tick*0.02),0,0))
++		dissipative = dissipative and coast.state.velocity.length() <= speed+0.00001
++	check(dissipative,"unpowered steering never manufactures speed")
++	var dry := VehicleSimulation.new(config)
++	var oily := VehicleSimulation.new(config)
++	oily.state.tire_oil = 1.0
++	oily.state.tire_water = 1.0
++	oily.state.tire_dirt = 1.0
++	for tick: int in range(240):
++		var frame := DriveFrame.sample(0.4,0.8,0)
++		dry.step(frame)
++		oily.step(frame)
++	check(dry.state.velocity == oily.state.velocity and dry.state.heading == oily.state.heading,"air cushion ignores tire dirt, oil and water grip penalties")
++	var yard := PlaygroundData.new()
++	var collision := VehicleSimulation.new(config)
++	collision.state.position = Vector2(0,55)
++	collision.state.velocity = Vector2(0,30)
++	for tick: int in range(60): collision.step(DriveFrame.sample(0,1,0),yard)
++	check(collision.state.collision_count > 0 and collision.state.position.y <= yard.half_extent.y-config.collision_radius,"hovering retains solid boundary collisions")
++	var original := VehicleSimulation.new(config)
++	var replay := VehicleSimulation.new(config)
++	var saved: Dictionary = {}
++	var frames: Array[Array] = []
++	for tick: int in range(3600):
++		var frame := DriveFrame.sample(sin(tick*0.015)*0.75,1.0 if tick%600<400 else 0.0,1.0 if tick%600>450 else 0.0,1.0)
++		frames.append(frame.packed())
++		original.step(frame,yard)
++		if tick == 1799: saved = RewindHistory.pack_state(original.state)
++	for packed: Array in JSON.parse_string(JSON.stringify(frames)): replay.step(unpack(packed),yard)
++	check(replay.state.snapshot() == original.state.snapshot(),"serialized 3600-input replay with collisions is exact")
++	RewindHistory.restore(replay.state,saved)
++	for tick: int in range(1800,3600): replay.step(unpack(frames[tick]),yard)
++	check(replay.state.snapshot() == original.state.snapshot(),"rewind continuation stays exact")
++	check(replay.state.handbrake_pressure == 0.0,"hovercraft has no wheel handbrake")
++
++func unpack(packed: Array) -> DriveFrame:
++	return DriveFrame.sample(float(packed[0])/127.0,float(packed[1])/255.0,float(packed[2])/255.0,float(packed[3])/255.0 if packed.size() > 3 else 0.0)
++
++func _persistence() -> void:
++	var records := LocalRecords.new("user://hovercraft-tests/records.json")
++	DirAccess.make_dir_recursive_absolute("user://hovercraft-tests")
++	records.settings.selected_car = "formula"
++	var liveries: Dictionary = {}
++	for id: String in VehicleCatalog.ALL_IDS: liveries[id] = VehicleLivery.defaults(id)
++	records.settings.vehicle_liveries = liveries
++	var achievements: Dictionary = AchievementProgress.empty()
++	achievements.metrics = {"car_mask":(1 << 4),"cars_classic":7,"cars_formula":9}
++	records.settings.achievements = achievements
++	check(records.save_records() == OK,"legacy roster save remains writable")
++	var reopened := LocalRecords.new(records.path)
++	reopened.load_records()
++	check(reopened.settings.get("selected_car") == "formula" and reopened.settings.get("vehicle_liveries",{}).size() == 8,"retired selection and all eight livery identities survive reload")
++	for id: String in VehicleCatalog.ALL_IDS:
++		check(VehicleLivery.for_car(reopened.settings,id) == liveries[id],"normalized saved livery remains exact: "+id)
++	check(reopened.settings.get("achievements",{}) == achievements,"legacy achievements survive roster change")
++	check(VehicleCatalog.ALL_IDS.find("kart") == 4 and VehicleCatalog.ALL_IDS.find("hovercraft") == 7,"achievement bit positions remain stable")
++	AchievementProgress.customise(reopened,"hovercraft")
++	check(int(reopened.settings.achievements.metrics.customised_mask) == 128 and int(reopened.settings.achievements.metrics.customised) == 1,"new vehicle has its own counted achievement bit")
++	reopened.settings.selected_car = "hovercraft"
++	check(reopened.save_records() == OK,"hovercraft selection saves atomically")
++	var final_save := LocalRecords.new(records.path)
++	final_save.load_records()
++	check(final_save.settings.selected_car == "hovercraft","hovercraft selection survives reload")
++
++func _model(config: HandlingConfig) -> void:
++	for simple: bool in [false,true]:
++		var car := CarVisual.new()
++		car.vehicle_id = "hovercraft"
++		car.simple_model = simple
++		root.add_child(car)
++		while not car.model_ready: await process_frame
++		check(car.rolling_wheels.is_empty() and car.front_wheels.is_empty(),"hovercraft has no road wheels: "+str(simple))
++		check(car.body.get_node_or_null("FanRotor") != null and car.body.get_node_or_null("RudderLeft") != null,"fan and rudders survive batching: "+str(simple))
++		var state := VehicleState.new()
++		state.tick = 120
++		state.steering = 0.5
++		car.present(Vector2.ZERO,0,state,DriveFrame.sample(0.5,1,0))
++		check(not is_zero_approx(car.body.get_node("FanRotor").rotation.z) and car.body.get_node("RudderLeft").rotation.y < 0,"presentation animates fan and steering vanes")
++		var decorated: Dictionary = VehicleLivery.defaults("hovercraft")
++		decorated.pattern = LiveryCatalog.patterns[0].id
++		car.apply_livery(decorated)
++		check(not car.graphics.bindings.is_empty(),"livery binds to hovercraft surfaces")
++		var weathering := VehicleWeathering.new()
++		weathering.configure(car,"pine",config)
++		check(not weathering.materials.is_empty(),"hovercraft supports garage weathering")
++		car.set_night_headlights(true)
++		check(car.road_headlight != null,"hovercraft supports night races")
++		var audio := VehicleAudio.new()
++		root.add_child(audio)
++		audio.configure("hovercraft",config,car)
++		for tick: int in range(120): audio.model.advance(state,DriveFrame.sample(0,1,0),VehicleSimulation.STEP)
++		check(audio.engine_load[0].stream != null and audio.model.shifts == 0 and audio.model.rpm > 5000,"fan audio responds to power without gear shifts")
++		audio.present(state,DriveFrame.sample(0,1,0),null,0.1,false)
++		check(float(audio.levels.tire) == 0.0 and float(audio.levels.road) == 0.0,"hovercraft emits no tire squeal or rolling noise")
++		audio.free()
++		car.free()
++		await process_frame
++
++func settle() -> void:
++	for tick: int in range(8): await process_frame
++	if graphical: await RenderingServer.frame_post_draw
++
++func capture(label: String) -> void:
++	await settle()
++	check(root.get_texture().get_image().save_png(output.path_join(label+".png")) == OK,"saved "+label)
++
++func _app(config: HandlingConfig) -> void:
++	root.size = Vector2i(1280,720)
++	var directory: String = "user://hovercraft-app-"+TrackLibrary.unique_id()
++	DirAccess.make_dir_recursive_absolute(directory)
++	var app: Node = load("res://core/app.tscn").instantiate()
++	app.records = LocalRecords.new(directory.path_join("records.json"))
++	app.records.settings.selected_car = "classic"
++	app.records.save_records()
++	app.library = TrackLibrary.new(directory)
++	app.cloud_root_override = directory.path_join("cloud")
++	root.add_child(app)
++	while not app.startup_complete: await process_frame
++	check(VehicleCatalog.selected == "compact","actual startup safely replaces a retired active selection")
++	app._show_screen("garage")
++	await settle()
++	var page: GaragePage = app.root_ui.find_child("GaragePage",true,false)
++	check(page.cards.get_child_count() == 6 and page.find_child("GarageCar_hovercraft",true,false) != null,"Garage lists the new six-car lineup")
++	check(page.find_child("GarageCar_classic",true,false) == null and page.find_child("GarageCar_formula",true,false) == null,"retired cars are absent from Garage")
++	await capture("garage-lineup")
++	page.preview_car(VehicleCatalog.IDS.find("hovercraft"))
++	page._confirm_car()
++	await create_timer(0.8).timeout
++	await settle()
++	check(VehicleCatalog.selected == "hovercraft" and page.showroom.car.vehicle_id == "hovercraft","Garage commits actual hovercraft selection")
++	for dimensions: Vector2i in [Vector2i(1280,720),Vector2i(960,540)]:
++		root.size = dimensions
++		await capture("garage-"+str(dimensions.x))
++	root.size = Vector2i(1280,720)
++	app._show_screen("tracks")
++	app.selected_track.metadata.cloud_version = "isolated-hovercraft-fixture"
++	await app._start_race(app.selected_track,false,true)
++	await settle()
++	check(app.game != null and app.game.handling.snapshot() == config.snapshot() and app.game.car.vehicle_id == "hovercraft","ordinary race installs the selected hovercraft tune and model")
++	if app.game != null:
++		app.game.set_physics_process(false)
++		app.game.countdown_label.hide()
++		check(not app.game.trails.visible and not app.game.sand_dust.visible,"race disables wheel marks and wheel particles")
++		await capture("gameplay")
++	app.queue_free()
++	await process_frame
+--- /dev/null
++++ b/game/tests/generate_hovercraft_replay.gd
+@@ -0,0 +1,43 @@
++extends "res://backend/runner.gd"
++## Offline five-lap canonical fixture, verified independently by the worker.
++func run() -> void:
++	output_path = "res://../docs/evidence/hovercraft-2026-10-28/five-lap-replay.json"
++	var doc: Dictionary = TrackDocument.create_blank()
++	doc.id = "hovercraft_oval"
++	doc.name = "Hovercraft test oval"
++	doc["creator"] = "Local tests"
++	var position := Vector2(-28,-18)
++	var heading: float = 0.0
++	for kind: String in ["straight","hairpin","straight","hairpin"]:
++		var piece: Dictionary = RoadPieces.create(kind,position,heading)
++		piece.length = 56.0 if kind == "straight" else 0.0
++		piece.radius = 18.0
++		doc.pieces.append(piece)
++		var pose: Dictionary = RoadPieces.end_pose(piece)
++		position = pose.position
++		heading = pose.heading
++	var automatic: Dictionary = RoadPieces.route_from_pieces(doc)
++	if not automatic.ok: respond({},str(automatic.errors)); return
++	doc = automatic.document
++	doc["start_line"] = {"position":[0,-18],"heading":0}
++	var compiled: Dictionary = compile_track(doc)
++	if compiled.has("error"): respond({},compiled.error); return
++	var track: NativeTrack = compiled.track
++	var sim: VehicleSimulation = initial_simulation(track,"hovercraft")
++	var driver := RouteDriver.new()
++	var session := TrackSession.new(VehicleSimulation.TICK_RATE,RaceRules.LAPS)
++	var proof := preload("res://backend/race_proof.gd").new()
++	proof.capture(sim.state,session,true)
++	var frames: Array = []
++	for tick: int in range(72000):
++		var frame: DriveFrame = driver.sample(sim.state,track,sim.config)
++		frames.append(frame.packed())
++		var before: Vector2 = sim.state.position
++		var previous_layer: int = int(sim.state.track_elevated)
++		sim.step(frame,track)
++		session.advance(track,before,sim.state.position,sim.state.route_index,sim.state.track_elevated,previous_layer)
++		proof.capture(sim.state,session)
++		if session.finished: break
++	print("HOVERCRAFT_LAPS: ",session.completed_laps," ticks=",session.elapsed_ticks," contacts=",sim.state.collision_count)
++	if not session.finished: respond({},"Hovercraft fixture did not finish"); return
++	respond({"document":doc,"replay":{"schema":REPLAY_SCHEMA,"frames":frames,"race_proof":proof.recording(session)},"vehicle_id":"hovercraft","time_ticks":session.elapsed_ticks,"contacts":sim.state.collision_count})
+--- /dev/null
++++ b/game/tests/bake_hovercraft_art.gd
+@@ -0,0 +1,68 @@
++extends SceneTree
++## Native photographs of the authored runtime asset, plus its one shadow proxy.
++func _initialize() -> void: run.call_deferred()
++
++func settle() -> void:
++	for frame: int in range(8): await process_frame
++	await RenderingServer.frame_post_draw
++
++func run() -> void:
++	assert(DisplayServer.get_name() != "headless")
++	var canvas := SubViewport.new()
++	canvas.size = Vector2i(640,400)
++	canvas.transparent_bg = true
++	canvas.render_target_update_mode = SubViewport.UPDATE_ALWAYS
++	root.add_child(canvas)
++	var preview: Control = preload("res://ui/profile_car.gd").make_preview("hovercraft",VehicleLivery.defaults("hovercraft"),VehicleCustomisation.defaults())
++	preview.size = Vector2(640,400)
++	canvas.add_child(preview)
++	preload("res://ui/profile_car.gd").apply_presentation(preview)
++	await settle()
++	var pixels: Image = canvas.get_texture().get_image()
++	pixels.convert(Image.FORMAT_RGBA8)
++	for y: int in range(pixels.get_height()):
++		for x: int in range(pixels.get_width()):
++			var color: Color = pixels.get_pixel(x,y)
++			if color.a > 0.0 and color.a < 1.0: pixels.set_pixel(x,y,Color(minf(1,color.r/color.a),minf(1,color.g/color.a),minf(1,color.b/color.a),color.a))
++	assert(pixels.save_png("res://assets/menu/hovercraft_illustration_v1.png") == OK)
++	pixels.resize(176,112,Image.INTERPOLATE_LANCZOS)
++	assert(pixels.save_png("res://assets/menu/header_cars_v1/hovercraft.png") == OK)
++	preview.free()
++	canvas.free()
++	var view := CarShowroom.new()
++	view.vehicle_id = "hovercraft"
++	view.read_only = true
++	view.size = Vector2(640,400)
++	view.livery = VehicleLivery.defaults("hovercraft")
++	root.add_child(view)
++	await settle()
++	view.invalidate_render()
++	await settle()
++	pixels = view.showroom_viewport.get_texture().get_image()
++	pixels.convert(Image.FORMAT_RGB8)
++	assert(pixels.save_png("res://assets/garage/previews_v1/hovercraft.png") == OK)
++	view.free()
++	# The simple body has one moving frame and no wheel frames.
++	var car := CarVisual.new()
++	car.vehicle_id = "hovercraft"
++	car.simple_model = true
++	root.add_child(car)
++	while not car.model_ready: await process_frame
++	var source: ArrayMesh = RacingCarModels.shadow_source(car.body)
++	var arrays: Array = source.surface_get_arrays(0)
++	var importer := ImporterMesh.new()
++	importer.add_surface(Mesh.PRIMITIVE_TRIANGLES,arrays)
++	importer.generate_lods(60.0,0.0,[])
++	var chosen: PackedInt32Array = arrays[Mesh.ARRAY_INDEX]
++	for lod: int in range(importer.get_surface_lod_count(0)):
++		if chosen.size()/3 <= 1200: break
++		var candidate: PackedInt32Array = importer.get_surface_lod_indices(0,lod)
++		if candidate.size() < chosen.size(): chosen = candidate
++	arrays[Mesh.ARRAY_INDEX] = chosen
++	var shadow := ArrayMesh.new()
++	shadow.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES,arrays)
++	assert(ResourceSaver.save(shadow,RacingCarModels.ASSET_ROOT.path_join("hovercraft_shadow_0.res"),ResourceSaver.FLAG_COMPRESS) == OK)
++	print("HOVERCRAFT_ART: illustration, header, Garage; shadow triangles=",chosen.size()/3)
++	car.free()
++	await process_frame
++	quit()
+--- /dev/null
++++ b/backend/tests/test_hovercraft.py
+@@ -0,0 +1,60 @@
++"""The new selectable hull crosses cosmetics, telemetry and native packaging."""
++import copy
++import importlib.util
++import json
++from pathlib import Path
++
++import pytest
++from pydantic import ValidationError
++from test_domains import domain as _domain_fixture
++from test_domains import headers
++from test_rivalry_appearance import appearance
++
++from bmt_backend.achievements import CARS
++from bmt_backend.telemetry import properties
++from bmt_backend.vehicle_appearance import Appearance
++
++domain = _domain_fixture
++ROOT = Path(__file__).resolve().parents[2]
++
++
++def test_hovercraft_private_appearance_survives_recovery(domain):
++    value = appearance("hovercraft")
++    route, auth = "/v1/me/appearances", headers(domain, "Alice")
++    response = domain.client.put(route, headers=auth, json={"appearance": value, "previous": None})
++    assert response.status_code == 200, response.text
++    assert domain.client.get(route, headers=auth).json()["appearances"]["hovercraft"] == value
++    assert domain.client.get(route, headers=headers(domain, "Bob")).json() == {"appearances": {}}
++    changed = copy.deepcopy(value)
++    changed["livery"]["colors"]["body"] = "698d87"
++    update = {"appearance": changed, "previous": value}
++    assert domain.client.put(route, headers=auth, json=update).status_code == 200
++    assert domain.client.put(route, headers=auth, json=update).status_code == 200
++    assert domain.client.put(route, headers=auth, json={"appearance": value, "previous": value}).status_code == 409
++
++
++def test_hovercraft_rejects_car_only_parts():
++    value = appearance("hovercraft")
++    assert Appearance.model_validate(value).vehicle_id == "hovercraft"
++    value["customisation"]["hood"] = "scoop"
++    with pytest.raises(ValidationError, match="Compact only"):
++        Appearance.model_validate(value)
++
++
++def test_roster_addition_keeps_historical_cosmetics_and_achievement_positions():
++    assert properties("car_selected", {"car_id": "hovercraft", "position": 5})["car_id"] == "hovercraft"
++    assert CARS.index("classic") == 2 and CARS.index("formula") == 3 and CARS.index("hovercraft") == 7
++    for vehicle in ("classic", "formula"):
++        assert Appearance.model_validate(appearance(vehicle)).vehicle_id == vehicle
++    schema = json.loads((ROOT / "backend/schemas/vehicle-appearance-sync-v1.schema.json").read_text())
++    assert "hovercraft" in schema["$defs"]["Appearance"]["properties"]["vehicle_id"]["enum"]
++
++
++def test_staged_verifier_includes_hovercraft_handling(tmp_path):
++    spec = importlib.util.spec_from_file_location("stage_hovercraft", ROOT / "backend/deploy/stage_verifier.py")
++    module = importlib.util.module_from_spec(spec)
++    spec.loader.exec_module(module)
++    destination = tmp_path / "game"
++    module.stage(ROOT, destination)
++    assert (destination / "resources/cars/hovercraft.tres").read_bytes() == (ROOT / "game/resources/cars/hovercraft.tres").read_bytes()
++    assert (destination / "vehicle/vehicle_simulation.gd").read_bytes() == (ROOT / "game/vehicle/vehicle_simulation.gd").read_bytes()
+--- /dev/null
++++ b/scripts/build_hovercraft_audio.py
+@@ -0,0 +1,47 @@
++"""Build original periodic fan/motor loops; no external recordings or services."""
++import math
++import random
++import re
++import struct
++import wave
++from pathlib import Path
++
++
++def build(destination: Path) -> None:
++    destination.mkdir(parents=True, exist_ok=True)
++    rate, count = 44100, 88200
++    for band, frequency in enumerate((42, 88, 140)):
++        for mode in ("coast", "load"):
++            rng = random.Random(8100 + band)
++            noise = [rng.uniform(-1, 1) for _ in range(count)]
++            filtered, memory = [], 0.0
++            # Warm one complete noise period so the filter has a periodic boundary.
++            for iteration in range(2):
++                for value in noise:
++                    memory += (value - memory) * 0.22
++                    if iteration:
++                        filtered.append(memory)
++            samples = []
++            for index in range(count):
++                t = index / rate
++                motor = sum(math.sin(math.tau * frequency * harmonic * t + harmonic * 0.37) / harmonic
++                            for harmonic in range(1, 7))
++                blade = math.sin(math.tau * frequency * 5 * t) * 0.14
++                samples.append(motor * (0.19 if mode == "load" else 0.13)
++                               + blade + filtered[index] * (0.65 if mode == "load" else 0.50))
++            scale = 0.78 / max(abs(value) for value in samples)
++            data = b"".join(struct.pack("<h", round(value * scale * 32767)) for value in samples)
++            target = destination / f"hovercraft_{band}_{mode}.wav"
++            with wave.open(str(target), "wb") as output:
++                output.setparams((1, 2, rate, count, "NONE", "not compressed"))
++                output.writeframes(data)
++            settings = target.with_suffix(".wav.import")
++            if settings.exists():
++                settings.write_text(re.sub(r"compress/mode=\d+", "compress/mode=0", settings.read_text()), encoding="utf-8")
++            else:
++                settings.write_text('[remap]\nimporter="wav"\ntype="AudioStreamWAV"\n\n[params]\ncompress/mode=0\n', encoding="utf-8")
++            print(target.name, len(data), "PCM bytes")
++
++
++if __name__ == "__main__":
++    build(Path(__file__).resolve().parents[1] / "game/assets/audio/vehicles")
+--- /dev/null
++++ b/scripts/translations/hovercraft.tsv
+@@ -0,0 +1,3 @@
++Hovercraft|Aéroglisseur|Aerodeslizador|Luftkissenboot|Hovercraft|ホバークラフト|호버크래프트|Hovercraft|Hovercraft|Ilmatyynyalus|Svävare|Luftputebåt
++HOVER / 08|HOVER / 08|HOVER / 08|HOVER / 08|HOVER / 08|HOVER / 08|HOVER / 08|HOVER / 08|HOVER / 08|HOVER / 08|HOVER / 08|HOVER / 08
++Fan-powered air cushion with long, flowing slides. Steer early and brake to settle the drift. Hold the brake while stopped to reverse. No handbrake.|Coussin d'air propulsé par une hélice, pour de longues glissades fluides. Anticipez les virages et freinez pour stabiliser la glisse. Maintenez le frein à l'arrêt pour reculer. Sans frein à main.|Colchón de aire propulsado por hélice con derrapes largos y fluidos. Gira con antelación y frena para estabilizar el derrape. Mantén el freno al detenerte para dar marcha atrás. Sin freno de mano.|Luftkissen mit Propellerantrieb für lange, fließende Drifts. Lenke früh und bremse, um den Drift abzufangen. Halte im Stand die Bremse, um rückwärtszufahren. Keine Handbremse.|Colchão de ar com propulsão por hélice e derrapagens longas e suaves. Antecipe as curvas e freie para estabilizar a derrapagem. Mantenha o freio pressionado quando parado para dar ré. Sem freio de mão.|ファンで進むエアクッション艇。長く滑らかなドリフトが特徴。早めに操舵し、ブレーキで滑りを抑えよう。停止中にブレーキを押し続けると後退。ハンドブレーキなし。|팬으로 추진하는 공기부양정으로 길고 부드러운 드리프트가 특징입니다. 미리 조향하고 브레이크로 미끄러짐을 잡으세요. 정지 상태에서 브레이크를 계속 누르면 후진합니다. 핸드브레이크는 없습니다.|Luchtkussen met propelleraandrijving en lange, vloeiende drifts. Stuur vroeg en rem om de drift op te vangen. Houd de rem ingedrukt als je stilstaat om achteruit te gaan. Geen handrem.|Cuscino d'aria con propulsione a elica e derapate lunghe e fluide. Sterza in anticipo e frena per controllare la derapata. Tieni premuto il freno da fermo per andare in retromarcia. Senza freno a mano.|Potkurivetoinen ilmatyynyalus pitkiin, sulaviin luistoihin. Ohjaa ajoissa ja rauhoita luisto jarrulla. Pidä jarru pohjassa pysähdyksissä peruuttaaksesi. Ei käsijarrua.|Propellerdriven svävare med långa, mjuka sladdar. Styr tidigt och bromsa för att häva sladden. Håll bromsen intryckt när du står stilla för att backa. Ingen handbroms.|Propelldrevet luftputebåt med lange, myke sladder. Styr tidlig og brems for å roe sladden. Hold bremsen inne når du står stille for å rygge. Ingen håndbrekk.
+--- a/backend/schemas/vehicle-appearance-sync-v1.schema.json
++++ b/backend/schemas/vehicle-appearance-sync-v1.schema.json
+@@ -11,7 +11,8 @@
+             "formula",
+             "kart",
+             "forklift",
+-            "electric"
++            "electric",
++            "hovercraft"
+           ],
+           "title": "Vehicle Id",
+           "type": "string"
+--- a/docs/schemas/vehicle-appearance-v1.schema.json
++++ b/docs/schemas/vehicle-appearance-v1.schema.json
+@@ -299,7 +299,10 @@
+         "pickup",
+         "classic",
+         "formula",
+-        "kart"
++        "kart",
++        "forklift",
++        "electric",
++        "hovercraft"
+       ],
+       "title": "Vehicle Id",
+       "type": "string"
+--- /dev/null
++++ b/docs/HOVERCRAFT_2026_10_28.md
+@@ -0,0 +1,62 @@
++# Hovercraft and revised vehicle lineup
++
++Owner request, 2026-10-28: add a hovercraft and remove the sports car and Formula.
++
++## Requirements and implementation
++
++- HOV01: the selectable roster is Compact, Hauler, Kart, Forklift, Volt and Hover. Rearsport (`classic`) and Formula are retired from selection. The parking hall's former sports car is replaced by the hovercraft.
++- HOV02: `hovercraft-1` handling uses fan thrust, rudder yaw and retained world momentum. The air cushion ignores tire contamination and has low loose-ground resistance. Braking settles sideways motion; holding the brake at rest selects bounded reverse. No handbrake. Barriers, props, snow banks, jumps and bridge release remain canonical contacts. Shared physics stays `arcade-planar-0.75`; the new capability is omitted from other cars' snapshots.
++- HOV03: original matte model with a segmented skirt, formed deck, glazed cabin, ducted rear fan, grilles, animated rotor and steering vanes. No wheels. Detailed geometry is 2,418 triangles; racing geometry is 1,626, with one 754-triangle shadow proxy. Livery, stickers, weathering, washing, night lights, native thumbnails and six original PCM fan loops use the existing presentation systems. Wheel marks, wheel particles and rolling/squeal audio are disabled for the hovercraft.
++- HOV04: an append-only historical ID list preserves old livery/condition/appearance saves, version-one livery upgrades and achievement bits. Old selected cars fall back to Compact at startup. Historical records/resources are retained. Backend cosmetics, observations and achievement recognition include the new ID; the staged native verifier advertises the six playable vehicles.
++- HOV05: three vehicle messages have authored copy in all twelve languages. Only the six retired catalogue messages were removed from translated catalogues. Source/English inventory was refreshed concurrently and preserved.
++
++The model and sounds are authored locally; no external image, model, recording or generation service is used. Provenance is recorded in `licenses/ASSETS.md`, the vehicle-audio notice and `audio-provenance.json`.
++
++## Changed files
++
++Runtime sources: `game/vehicle/{vehicle_catalog,handling_config,vehicle_simulation,vehicle_models,hovercraft_model,car_visual,vehicle_audio,vehicle_audio_model,vehicle_livery,vehicle_condition,livery_catalog,vehicle_weathering}.gd`; `game/persistence/{local_records,achievement_progress,appearance_state,save_upgrades}.gd`; `game/ui/garage_car_cache.gd`; `game/core/game.gd`; `game/garage/parking_hall_data.gd`; and backend `vehicle_appearance.py`, `telemetry.py`, `achievements.py`. New handling resource: `game/resources/cars/hovercraft.tres`.
++
++Both appearance schemas, four retained vehicle test fixtures, new hovercraft tests/replay/art helpers, `backend/tests/test_hovercraft.py`, `scripts/build_hovercraft_audio.py`, `scripts/translations/hovercraft.tsv`, twelve PO catalogues, native assets and provenance/status documents accompany the change. The evidence manifest enumerates files and hashes.
++
++## Actual validation
++
++All Godot commands use `powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1`, the pinned `4.7.2.stable.official.ed1daf0bf`, disposable workspace APPDATA and an empty `BMT_API_URL`.
++
++| Command / check | Actual outcome |
++| --- | --- |
++| `-Action TestScript -ScriptPath res://tests/test_hovercraft.gd` | 50 checks, zero failures before the final geometry consolidation; native final runs include all these checks |
++| Same script, `-Graphical -RenderingMethod gl_compatibility -TestArgument --integration` | 60 checks, zero failures; Garage lineup, selection, save and ordinary race integration; captures in `gl_compatibility/` |
++| Same script, `-Graphical -RenderingMethod mobile -TestArgument --integration` | 60 checks, zero failures on desktop Mobile/Vulkan; captures in `mobile/` |
++| `res://tests/test_cars.gd` | 143 checks, zero failures; all six selectable vehicles complete five laps on each of three retained circuits and replay exactly |
++| `res://tests/test_driving.gd` | 72 checks, zero failures |
++| `res://tests/test_app.gd` | 141 checks, zero failures |
++| `res://tests/test_records.gd` | 54 checks, zero failures |
++| `res://tests/test_script_parse.gd` | 1,378 scripts, zero failures in the final run |
++| Retained config/replay comparison | Five config hashes and 100 exact same-engine state checkpoints match task-start |
++| `res://tests/generate_hovercraft_replay.gd` and independent staged native worker | Five laps, 20,403 elapsed ticks / 170,025 ms, zero contacts; normal trajectory acceptance and independent canonical simulation agree |
++| `python -m pytest backend/tests/test_hovercraft.py backend/tests/test_electric_car.py backend/tests/test_rivalry_appearance.py -q -k 'not postgres' --tb=short` | 28 passed, 22 PostgreSQL cases deselected |
++| Focused translations | All 36 values and placeholder checks pass |
++| PCM audit | Six original mono 44.1 kHz/16-bit loops, two seconds each; peaks below -2 dBFS |
++| Ruff on changed Python sources | Pass |
++
++Measured straight-line cap is 129.999998 km/h. A 20 m/s, 60% steering, 50% power example has 17.8536 degrees of slide after 0.75 seconds. Braking from `(10,25)` m/s reaches the stopped band in 1.7667 seconds. These are fixture results, not owner feel acceptance or real-world hovercraft specifications.
++
++Native baking commands: `res://tests/bake_garage_cars.gd`, `bake_hovercraft_art.gd`, `bake_livery_previews.gd --vehicle=hovercraft`, and `bake_news_car_photos.gd` with `--vehicle=hovercraft` and an evidence-root argument. Six prepared Garage scenes refresh their source guards against the current shared tree; the Electric scene includes concurrent owner work. There are 49 hovercraft livery photographs. Native Garage, lineup, gameplay and header pictures were inspected.
++
++## Retained failures and initial findings
++
++The broad rendering fixture reports two Forklift failures (five shadow casters / two front steering frames). The unchanged original fixture reproduces both with Forklift alone, 22 checks/two failures. The hovercraft alone passes all 22 model checks with its own fan/frame assertions.
++
++The broad audio fixture reports 1,701 checks/two failures: the retained Electric reverse-pedal expectation and headless paused-loop playback. The original fixture with the prior roster reproduces both, with 1,948 checks/two failures. No production audio behavior or assertion is weakened to hide these failures. The graphical-only vehicle-batch capture was mistakenly invoked headlessly twice and reached its 300-second wrapper deadline while waiting for `frame_post_draw`; the wrappers retire only their owned processes.
++
++An unfiltered initial backend run passes the same 28 tests but has 22 PostgreSQL setup timeouts at the configured local endpoint. No PostgreSQL execution is claimed. Full localization checking initially reports 770 issues; after adding the new copy/removing task-obsolete messages it reports 671 unrelated missing/untranslated/obsolete messages. No complete-catalogue pass is claimed.
++
++Initial sandbox log/certificate-store errors, a concurrent generated-build constant mismatch, triangle-versus-quad deck construction, stale batched brake-light references, default compressed WAV import, a StringName fixture key, a missing staged class-cache import and a comma-joined bake argument were corrected and retained in the command logs. The final model authors the skirt and duct as combined surfaces to reduce cold construction work. No phone-performance or zero-hitch claim is made.
++
++## Checkpoint and remaining acceptance
++
++`docs/evidence/hovercraft-2026-10-28/report.json` records final outcomes, limitations, assets and hashes. `task.patch` is a source-only review checkpoint; regenerated binary assets are listed separately. Concurrent Garage/cache, Electric coachwork/brake, login, editor, backend and generated build-identity work is preserved and excluded from task ownership. One concurrent `maximum_deceleration()` edit is explicitly excluded from the patch.
++
++Reload/rebuild the client for the new lineup. A matching authorized API/worker deployment and current track-contract publication are required for live online hovercraft racing. That rollout was not performed. Old production tickets/history were not rewritten.
++
++Physical-device attachment was not queried; no device test, Android export/install, purchase/authentication, owner-save change, live backend write/deployment, owner-process restart, Git staging/commit/merge or destructive reset was performed. Owner appearance, sound/handling feel and mobile cost acceptance remain.
+--- a/licenses/ASSETS.md
++++ b/licenses/ASSETS.md
+@@ -382,3 +382,7 @@
+ ## Customisation purchase winter turnout
+ 2026-10-26: `game/assets/menu/customisation_winter_turnout_v1.png` is an original built-in OpenAI imagegen edit of the project's existing original `rivalry_winter_v1.png`, adding an empty asphalt turnout for a separately rendered native car. No vehicle, UI text, logo or third-party model is baked into the image. Exact prompt, source and tool provenance: `game/assets/menu/customisation_winter_turnout_v1.json`. The owner's reference guides the purchase composition; its pictured car is not a shipping asset. The displayed car, paint, selected parts and rotation use the existing fictional native game model.
+ <!-- /CUSTOMISATION-PURCHASE-REFERENCE-20261026 -->
++
++## Hovercraft vehicle (2026-10-28)
++
++`game/vehicle/hovercraft_model.gd` is original authored procedural geometry for a fictional recreational hovercraft. Its native Garage, menu, header and livery photographs and shadow proxy derive only from this runtime model. `scripts/build_hovercraft_audio.py` synthesizes the six original `game/assets/audio/vehicles/hovercraft_*.wav` fan loops from periodic harmonics and deterministic filtered noise. No external recording, image, model, trademark or generation service is used. Source and verification: `docs/HOVERCRAFT_2026_10_28.md`.
+--- a/game/assets/audio/vehicles/NOTICE.txt
++++ b/game/assets/audio/vehicles/NOTICE.txt
+@@ -347,3 +347,9 @@
+ stay exact. No new source, synthesized tone/noise or reference audio.
+ Hashes/mastering: snow_manifest.json and scripts/build_snow_audio.py.
+ Actual before/after, verification and limits: docs/SNOW_BASS_THUMP_2026_10_23.md.
++
++Hovercraft fan loops, 2026-10-28
++hovercraft_{0,1,2}_{coast,load}.wav are original synthesized fan/motor sounds.
++Rebuild with scripts/build_hovercraft_audio.py. Periodic harmonics and seeded
++filtered noise; 44.1 kHz mono 16-bit PCM, two seconds per loop. No external
++recording or sample source. Provenance: docs/HOVERCRAFT_2026_10_28.md.
+--- a/game/localization/fr.po
++++ b/game/localization/fr.po
+@@ -2301,10 +2301,6 @@
+ msgid "City"
+ msgstr "Ville"
+ 
+-#: game/vehicle/vehicle_catalog.gd:6
+-msgid "Classic Sports"
+-msgstr "Sportive classique"
+-
+ #: game/persistence/achievement_catalog.json:clean/title
+ msgid "Clean Driver"
+ msgstr "Pilote propre"
+@@ -3617,10 +3613,6 @@
+ msgid "FORKLIFT / 06"
+ msgstr "FORKLIFT / 06"
+ 
+-#: game/vehicle/vehicle_catalog.gd:5
+-msgid "FORMULA / 04"
+-msgstr "FORMULA / 04"
+-
+ #: game/ui/weekly_rivalry_page.gd:475
+ msgid "FREE RACE"
+ msgstr "COURSE LIBRE"
+@@ -3875,10 +3867,6 @@
+ msgid "Forklift"
+ msgstr "Chariot élévateur"
+ 
+-#: game/vehicle/vehicle_catalog.gd:6
+-msgid "Formula"
+-msgstr "Formule"
+-
+ #: game/backend/cosmetic_economy.gd:98 game/core/app.gd:6096
+ msgid "Free"
+ msgstr "Gratuit"
+@@ -6373,10 +6361,6 @@
+ msgid "Practise more"
+ msgstr "S’entraîner encore"
+ 
+-#: game/vehicle/vehicle_catalog.gd:11
+-msgid "Precise asphalt grip. Low top speed, abrupt slides and harsh off-road penalties."
+-msgstr "Adhérence précise sur l’asphalte. Vitesse de pointe faible, décrochages brusques et fortes pénalités hors piste."
+-
+ #: game/core/app.gd:2729 game/core/app.gd:4321
+ msgid "Preparing graphics..."
+ msgstr "Préparation : Graphismes..."
+@@ -6747,10 +6731,6 @@
+ msgid "RD"
+ msgstr "RD"
+ 
+-#: game/vehicle/vehicle_catalog.gd:5
+-msgid "REARSPORT / 03"
+-msgstr "REARSPORT / 03"
+-
+ #: game/ui/race_complete.gd:500
+ msgid "RECOMMENDED"
+ msgstr "RECOMMANDÉ"
+@@ -7086,10 +7066,6 @@
+ #: game/vehicle/vehicle_customisation.gd:19
+ msgid "Rear-facing intake"
+ msgstr "Prise d’air orientée vers l’arrière"
+-
+-#: game/vehicle/vehicle_catalog.gd:10
+-msgid "Rear-heavy traction for fast exits. Lift in a corner to rotate; catch the rear early."
+-msgstr "Motricité arrière pour sortir vite des virages. Relâchez l’accélérateur pour pivoter ; rattrapez l’arrière tôt."
+ 
+ #: game/vehicle/vehicle_catalog.gd:13
+ msgid "Rear-wheel steering swings the tail wide. Tight turns and heavy traction; a low top speed."
+@@ -10750,3 +10726,15 @@
+ #: game/ui/account_panel.gd
+ msgid "Please accept the Terms of Service to continue."
+ msgstr "Veuillez accepter les conditions d’utilisation pour continuer."
++
++#: game/vehicle/vehicle_catalog.gd
++msgid "Hovercraft"
++msgstr "Aéroglisseur"
++
++#: game/vehicle/vehicle_catalog.gd
++msgid "HOVER / 08"
++msgstr "HOVER / 08"
++
++#: game/vehicle/vehicle_catalog.gd
++msgid "Fan-powered air cushion with long, flowing slides. Steer early and brake to settle the drift. Hold the brake while stopped to reverse. No handbrake."
++msgstr "Coussin d'air propulsé par une hélice, pour de longues glissades fluides. Anticipez les virages et freinez pour stabiliser la glisse. Maintenez le frein à l'arrêt pour reculer. Sans frein à main."
+--- a/game/localization/es.po
++++ b/game/localization/es.po
+@@ -2301,10 +2301,6 @@
+ msgid "City"
+ msgstr "Ciudad"
+ 
+-#: game/vehicle/vehicle_catalog.gd:6
+-msgid "Classic Sports"
+-msgstr "Deportivo clásico"
+-
+ #: game/persistence/achievement_catalog.json:clean/title
+ msgid "Clean Driver"
+ msgstr "Piloto limpio"
+@@ -3617,10 +3613,6 @@
+ msgid "FORKLIFT / 06"
+ msgstr "FORKLIFT / 06"
+ 
+-#: game/vehicle/vehicle_catalog.gd:5
+-msgid "FORMULA / 04"
+-msgstr "FORMULA / 04"
+-
+ #: game/ui/weekly_rivalry_page.gd:475
+ msgid "FREE RACE"
+ msgstr "CARRERA LIBRE"
+@@ -3875,10 +3867,6 @@
+ msgid "Forklift"
+ msgstr "Carretilla elevadora"
+ 
+-#: game/vehicle/vehicle_catalog.gd:6
+-msgid "Formula"
+-msgstr "Fórmula"
+-
+ #: game/backend/cosmetic_economy.gd:98 game/core/app.gd:6096
+ msgid "Free"
+ msgstr "Gratis"
+@@ -6373,10 +6361,6 @@
+ msgid "Practise more"
+ msgstr "Practicar más"
+ 
+-#: game/vehicle/vehicle_catalog.gd:11
+-msgid "Precise asphalt grip. Low top speed, abrupt slides and harsh off-road penalties."
+-msgstr "Agarre preciso en asfalto. Poca velocidad punta, derrapes bruscos y grandes pérdidas fuera de pista."
+-
+ #: game/core/app.gd:2729 game/core/app.gd:4321
+ msgid "Preparing graphics..."
+ msgstr "Preparando: Gráficos..."
+@@ -6747,10 +6731,6 @@
+ msgid "RD"
+ msgstr "RD"
+ 
+-#: game/vehicle/vehicle_catalog.gd:5
+-msgid "REARSPORT / 03"
+-msgstr "REARSPORT / 03"
+-
+ #: game/ui/race_complete.gd:500
+ msgid "RECOMMENDED"
+ msgstr "RECOMENDADO"
+@@ -7086,10 +7066,6 @@
+ #: game/vehicle/vehicle_customisation.gd:19
+ msgid "Rear-facing intake"
+ msgstr "Toma de aire orientada hacia atrás"
+-
+-#: game/vehicle/vehicle_catalog.gd:10
+-msgid "Rear-heavy traction for fast exits. Lift in a corner to rotate; catch the rear early."
+-msgstr "Tracción con peso atrás para salir rápido. Suelta el acelerador en curva para girar y controla pronto la trasera."
+ 
+ #: game/vehicle/vehicle_catalog.gd:13
+ msgid "Rear-wheel steering swings the tail wide. Tight turns and heavy traction; a low top speed."
+@@ -10750,3 +10726,15 @@
+ #: game/ui/account_panel.gd
+ msgid "Please accept the Terms of Service to continue."
+ msgstr "Acepta los términos de servicio para continuar."
++
++#: game/vehicle/vehicle_catalog.gd
++msgid "Hovercraft"
++msgstr "Aerodeslizador"
++
++#: game/vehicle/vehicle_catalog.gd
++msgid "HOVER / 08"
++msgstr "HOVER / 08"
++
++#: game/vehicle/vehicle_catalog.gd
++msgid "Fan-powered air cushion with long, flowing slides. Steer early and brake to settle the drift. Hold the brake while stopped to reverse. No handbrake."
++msgstr "Colchón de aire propulsado por hélice con derrapes largos y fluidos. Gira con antelación y frena para estabilizar el derrape. Mantén el freno al detenerte para dar marcha atrás. Sin freno de mano."
+--- a/game/localization/de.po
++++ b/game/localization/de.po
+@@ -2301,10 +2301,6 @@
+ msgid "City"
+ msgstr "Stadt"
+ 
+-#: game/vehicle/vehicle_catalog.gd:6
+-msgid "Classic Sports"
+-msgstr "Klassischer Sportwagen"
+-
+ #: game/persistence/achievement_catalog.json:clean/title
+ msgid "Clean Driver"
+ msgstr "Sauberer Fahrer"
+@@ -3617,10 +3613,6 @@
+ msgid "FORKLIFT / 06"
+ msgstr "FORKLIFT / 06"
+ 
+-#: game/vehicle/vehicle_catalog.gd:5
+-msgid "FORMULA / 04"
+-msgstr "FORMULA / 04"
+-
+ #: game/ui/weekly_rivalry_page.gd:475
+ msgid "FREE RACE"
+ msgstr "FREIES RENNEN"
+@@ -3875,10 +3867,6 @@
+ msgid "Forklift"
+ msgstr "Gabelstapler"
+ 
+-#: game/vehicle/vehicle_catalog.gd:6
+-msgid "Formula"
+-msgstr "Formel"
+-
+ #: game/backend/cosmetic_economy.gd:98 game/core/app.gd:6096
+ msgid "Free"
+ msgstr "Kostenlos"
+@@ -6373,10 +6361,6 @@
+ msgid "Practise more"
+ msgstr "Weiter üben"
+ 
+-#: game/vehicle/vehicle_catalog.gd:11
+-msgid "Precise asphalt grip. Low top speed, abrupt slides and harsh off-road penalties."
+-msgstr "Präziser Asphaltgrip. Niedrige Höchstgeschwindigkeit, abrupte Rutscher und starke Nachteile abseits der Strecke."
+-
+ #: game/core/app.gd:2729 game/core/app.gd:4321
+ msgid "Preparing graphics..."
+ msgstr "Wird vorbereitet: Grafik..."
+@@ -6747,10 +6731,6 @@
+ msgid "RD"
+ msgstr "RD"
+ 
+-#: game/vehicle/vehicle_catalog.gd:5
+-msgid "REARSPORT / 03"
+-msgstr "REARSPORT / 03"
+-
+ #: game/ui/race_complete.gd:500
+ msgid "RECOMMENDED"
+ msgstr "EMPFOHLEN"
+@@ -7086,10 +7066,6 @@
+ #: game/vehicle/vehicle_customisation.gd:19
+ msgid "Rear-facing intake"
+ msgstr "Nach hinten gerichteter Einlass"
+-
+-#: game/vehicle/vehicle_catalog.gd:10
+-msgid "Rear-heavy traction for fast exits. Lift in a corner to rotate; catch the rear early."
+-msgstr "Heckbetonte Traktion für schnelle Kurvenausgänge. Zum Eindrehen Gas wegnehmen und das Heck früh abfangen."
+ 
+ #: game/vehicle/vehicle_catalog.gd:13
+ msgid "Rear-wheel steering swings the tail wide. Tight turns and heavy traction; a low top speed."
+@@ -10750,3 +10726,15 @@
+ #: game/ui/account_panel.gd
+ msgid "Please accept the Terms of Service to continue."
+ msgstr "Bitte akzeptiere die Nutzungsbedingungen, um fortzufahren."
++
++#: game/vehicle/vehicle_catalog.gd
++msgid "Hovercraft"
++msgstr "Luftkissenboot"
++
++#: game/vehicle/vehicle_catalog.gd
++msgid "HOVER / 08"
++msgstr "HOVER / 08"
++
++#: game/vehicle/vehicle_catalog.gd
++msgid "Fan-powered air cushion with long, flowing slides. Steer early and brake to settle the drift. Hold the brake while stopped to reverse. No handbrake."
++msgstr "Luftkissen mit Propellerantrieb für lange, fließende Drifts. Lenke früh und bremse, um den Drift abzufangen. Halte im Stand die Bremse, um rückwärtszufahren. Keine Handbremse."
+--- a/game/localization/pt_BR.po
++++ b/game/localization/pt_BR.po
+@@ -2301,10 +2301,6 @@
+ msgid "City"
+ msgstr "Cidade"
+ 
+-#: game/vehicle/vehicle_catalog.gd:6
+-msgid "Classic Sports"
+-msgstr "Esportivo clássico"
+-
+ #: game/persistence/achievement_catalog.json:clean/title
+ msgid "Clean Driver"
+ msgstr "Piloto limpo"
+@@ -3617,10 +3613,6 @@
+ msgid "FORKLIFT / 06"
+ msgstr "FORKLIFT / 06"
+ 
+-#: game/vehicle/vehicle_catalog.gd:5
+-msgid "FORMULA / 04"
+-msgstr "FORMULA / 04"
+-
+ #: game/ui/weekly_rivalry_page.gd:475
+ msgid "FREE RACE"
+ msgstr "CORRIDA LIVRE"
+@@ -3875,10 +3867,6 @@
+ msgid "Forklift"
+ msgstr "Empilhadeira"
+ 
+-#: game/vehicle/vehicle_catalog.gd:6
+-msgid "Formula"
+-msgstr "Fórmula"
+-
+ #: game/backend/cosmetic_economy.gd:98 game/core/app.gd:6096
+ msgid "Free"
+ msgstr "Grátis"
+@@ -6373,10 +6361,6 @@
+ msgid "Practise more"
+ msgstr "Treinar mais"
+ 
+-#: game/vehicle/vehicle_catalog.gd:11
+-msgid "Precise asphalt grip. Low top speed, abrupt slides and harsh off-road penalties."
+-msgstr "Aderência precisa no asfalto. Baixa velocidade máxima, derrapagens bruscas e grandes perdas fora da pista."
+-
+ #: game/core/app.gd:2729 game/core/app.gd:4321
+ msgid "Preparing graphics..."
+ msgstr "Preparando: Gráficos..."
+@@ -6747,10 +6731,6 @@
+ msgid "RD"
+ msgstr "RD"
+ 
+-#: game/vehicle/vehicle_catalog.gd:5
+-msgid "REARSPORT / 03"
+-msgstr "REARSPORT / 03"
+-
+ #: game/ui/race_complete.gd:500
+ msgid "RECOMMENDED"
+ msgstr "RECOMENDADO"
+@@ -7086,10 +7066,6 @@
+ #: game/vehicle/vehicle_customisation.gd:19
+ msgid "Rear-facing intake"
+ msgstr "Entrada de ar voltada para trás"
+-
+-#: game/vehicle/vehicle_catalog.gd:10
+-msgid "Rear-heavy traction for fast exits. Lift in a corner to rotate; catch the rear early."
+-msgstr "Tração traseira para saídas rápidas. Alivie o acelerador na curva para girar e corrija a traseira cedo."
+ 
+ #: game/vehicle/vehicle_catalog.gd:13
+ msgid "Rear-wheel steering swings the tail wide. Tight turns and heavy traction; a low top speed."
+@@ -10750,3 +10726,15 @@
+ #: game/ui/account_panel.gd
+ msgid "Please accept the Terms of Service to continue."
+ msgstr "Aceite os Termos de Serviço para continuar."
++
++#: game/vehicle/vehicle_catalog.gd
++msgid "Hovercraft"
++msgstr "Hovercraft"
++
++#: game/vehicle/vehicle_catalog.gd
++msgid "HOVER / 08"
++msgstr "HOVER / 08"
++
++#: game/vehicle/vehicle_catalog.gd
++msgid "Fan-powered air cushion with long, flowing slides. Steer early and brake to settle the drift. Hold the brake while stopped to reverse. No handbrake."
++msgstr "Colchão de ar com propulsão por hélice e derrapagens longas e suaves. Antecipe as curvas e freie para estabilizar a derrapagem. Mantenha o freio pressionado quando parado para dar ré. Sem freio de mão."
+--- a/game/localization/ja.po
++++ b/game/localization/ja.po
+@@ -2299,10 +2299,6 @@
+ msgid "City"
+ msgstr "街"
+ 
+-#: game/vehicle/vehicle_catalog.gd:6
+-msgid "Classic Sports"
+-msgstr "クラシックスポーツ"
+-
+ #: game/persistence/achievement_catalog.json:clean/title
+ msgid "Clean Driver"
+ msgstr "クリーンドライバー"
+@@ -3609,10 +3605,6 @@
+ msgid "FORKLIFT / 06"
+ msgstr "FORKLIFT / 06"
+ 
+-#: game/vehicle/vehicle_catalog.gd:5
+-msgid "FORMULA / 04"
+-msgstr "FORMULA / 04"
+-
+ #: game/ui/weekly_rivalry_page.gd:475
+ msgid "FREE RACE"
+ msgstr "フリーレース"
+@@ -3864,10 +3856,6 @@
+ msgid "Forklift"
+ msgstr "フォークリフト"
+ 
+-#: game/vehicle/vehicle_catalog.gd:6
+-msgid "Formula"
+-msgstr "フォーミュラ"
+-
+ #: game/backend/cosmetic_economy.gd:98 game/core/app.gd:6096
+ msgid "Free"
+ msgstr "無料"
+@@ -6361,10 +6349,6 @@
+ msgid "Practise more"
+ msgstr "もっと練習する"
+ 
+-#: game/vehicle/vehicle_catalog.gd:11
+-msgid "Precise asphalt grip. Low top speed, abrupt slides and harsh off-road penalties."
+-msgstr "アスファルトで正確なグリップ。最高速は低め。急なスライドと大きなコース外でのロスに注意。"
+-
+ #: game/core/app.gd:2729 game/core/app.gd:4321
+ msgid "Preparing graphics..."
+ msgstr "グラフィックを準備中..."
+@@ -6734,10 +6718,6 @@
+ msgid "RD"
+ msgstr "RD"
+ 
+-#: game/vehicle/vehicle_catalog.gd:5
+-msgid "REARSPORT / 03"
+-msgstr "REARSPORT / 03"
+-
+ #: game/ui/race_complete.gd:500
+ msgid "RECOMMENDED"
+ msgstr "おすすめ"
+@@ -7073,10 +7053,6 @@
+ #: game/vehicle/vehicle_customisation.gd:19
+ msgid "Rear-facing intake"
+ msgstr "後ろ向きの吸気口"
+-
+-#: game/vehicle/vehicle_catalog.gd:10
+-msgid "Rear-heavy traction for fast exits. Lift in a corner to rotate; catch the rear early."
+-msgstr "リア荷重のトラクションで素早く立ち上がる。コーナーでアクセルを抜いて向きを変え、リアの滑りは早めに抑えよう。"
+ 
+ #: game/vehicle/vehicle_catalog.gd:13
+ msgid "Rear-wheel steering swings the tail wide. Tight turns and heavy traction; a low top speed."
+@@ -10719,3 +10695,15 @@
+ #: game/ui/account_panel.gd
+ msgid "Please accept the Terms of Service to continue."
+ msgstr "続行するには利用規約に同意してください。"
++
++#: game/vehicle/vehicle_catalog.gd
++msgid "Hovercraft"
++msgstr "ホバークラフト"
++
++#: game/vehicle/vehicle_catalog.gd
++msgid "HOVER / 08"
++msgstr "HOVER / 08"
++
++#: game/vehicle/vehicle_catalog.gd
++msgid "Fan-powered air cushion with long, flowing slides. Steer early and brake to settle the drift. Hold the brake while stopped to reverse. No handbrake."
++msgstr "ファンで進むエアクッション艇。長く滑らかなドリフトが特徴。早めに操舵し、ブレーキで滑りを抑えよう。停止中にブレーキを押し続けると後退。ハンドブレーキなし。"
+--- a/game/localization/ko.po
++++ b/game/localization/ko.po
+@@ -2299,10 +2299,6 @@
+ msgid "City"
+ msgstr "도시"
+ 
+-#: game/vehicle/vehicle_catalog.gd:6
+-msgid "Classic Sports"
+-msgstr "클래식 스포츠"
+-
+ #: game/persistence/achievement_catalog.json:clean/title
+ msgid "Clean Driver"
+ msgstr "클린 드라이버"
+@@ -3609,10 +3605,6 @@
+ msgid "FORKLIFT / 06"
+ msgstr "FORKLIFT / 06"
+ 
+-#: game/vehicle/vehicle_catalog.gd:5
+-msgid "FORMULA / 04"
+-msgstr "FORMULA / 04"
+-
+ #: game/ui/weekly_rivalry_page.gd:475
+ msgid "FREE RACE"
+ msgstr "자유 레이스"
+@@ -3864,10 +3856,6 @@
+ msgid "Forklift"
+ msgstr "지게차"
+ 
+-#: game/vehicle/vehicle_catalog.gd:6
+-msgid "Formula"
+-msgstr "포뮬러"
+-
+ #: game/backend/cosmetic_economy.gd:98 game/core/app.gd:6096
+ msgid "Free"
+ msgstr "무료"
+@@ -6361,10 +6349,6 @@
+ msgid "Practise more"
+ msgstr "더 연습하기"
+ 
+-#: game/vehicle/vehicle_catalog.gd:11
+-msgid "Precise asphalt grip. Low top speed, abrupt slides and harsh off-road penalties."
+-msgstr "아스팔트에서 정밀한 접지력을 발휘합니다. 최고 속도가 낮고 급격히 미끄러지며, 코스 이탈 시 손실이 큽니다."
+-
+ #: game/core/app.gd:2729 game/core/app.gd:4321
+ msgid "Preparing graphics..."
+ msgstr "그래픽 준비 중..."
+@@ -6734,10 +6718,6 @@
+ msgid "RD"
+ msgstr "RD"
+ 
+-#: game/vehicle/vehicle_catalog.gd:5
+-msgid "REARSPORT / 03"
+-msgstr "REARSPORT / 03"
+-
+ #: game/ui/race_complete.gd:500
+ msgid "RECOMMENDED"
+ msgstr "추천"
+@@ -7073,10 +7053,6 @@
+ #: game/vehicle/vehicle_customisation.gd:19
+ msgid "Rear-facing intake"
+ msgstr "후방 흡기구"
+-
+-#: game/vehicle/vehicle_catalog.gd:10
+-msgid "Rear-heavy traction for fast exits. Lift in a corner to rotate; catch the rear early."
+-msgstr "뒤쪽 무게로 코너 탈출이 빠릅니다. 코너에서 가속을 풀어 차를 돌리고, 뒤가 흐르기 전에 잡아주세요."
+ 
+ #: game/vehicle/vehicle_catalog.gd:13
+ msgid "Rear-wheel steering swings the tail wide. Tight turns and heavy traction; a low top speed."
+@@ -10719,3 +10695,15 @@
+ #: game/ui/account_panel.gd
+ msgid "Please accept the Terms of Service to continue."
+ msgstr "계속하려면 서비스 약관에 동의해 주세요."
++
++#: game/vehicle/vehicle_catalog.gd
++msgid "Hovercraft"
++msgstr "호버크래프트"
++
++#: game/vehicle/vehicle_catalog.gd
++msgid "HOVER / 08"
++msgstr "HOVER / 08"
++
++#: game/vehicle/vehicle_catalog.gd
++msgid "Fan-powered air cushion with long, flowing slides. Steer early and brake to settle the drift. Hold the brake while stopped to reverse. No handbrake."
++msgstr "팬으로 추진하는 공기부양정으로 길고 부드러운 드리프트가 특징입니다. 미리 조향하고 브레이크로 미끄러짐을 잡으세요. 정지 상태에서 브레이크를 계속 누르면 후진합니다. 핸드브레이크는 없습니다."
+--- a/game/localization/nl.po
++++ b/game/localization/nl.po
+@@ -2301,10 +2301,6 @@
+ msgid "City"
+ msgstr "Stad"
+ 
+-#: game/vehicle/vehicle_catalog.gd:6
+-msgid "Classic Sports"
+-msgstr "Klassieke sportwagen"
+-
+ #: game/persistence/achievement_catalog.json:clean/title
+ msgid "Clean Driver"
+ msgstr "Nette coureur"
+@@ -3617,10 +3613,6 @@
+ msgid "FORKLIFT / 06"
+ msgstr "FORKLIFT / 06"
+ 
+-#: game/vehicle/vehicle_catalog.gd:5
+-msgid "FORMULA / 04"
+-msgstr "FORMULA / 04"
+-
+ #: game/ui/weekly_rivalry_page.gd:475
+ msgid "FREE RACE"
+ msgstr "VRIJ RACEN"
+@@ -3875,10 +3867,6 @@
+ msgid "Forklift"
+ msgstr "Heftruck"
+ 
+-#: game/vehicle/vehicle_catalog.gd:6
+-msgid "Formula"
+-msgstr "Formule"
+-
+ #: game/backend/cosmetic_economy.gd:98 game/core/app.gd:6096
+ msgid "Free"
+ msgstr "Gratis"
+@@ -6373,10 +6361,6 @@
+ msgid "Practise more"
+ msgstr "Meer oefenen"
+ 
+-#: game/vehicle/vehicle_catalog.gd:11
+-msgid "Precise asphalt grip. Low top speed, abrupt slides and harsh off-road penalties."
+-msgstr "Precieze grip op asfalt. Lage topsnelheid, plotselinge glijpartijen en zware nadelen buiten de baan."
+-
+ #: game/core/app.gd:2729 game/core/app.gd:4321
+ msgid "Preparing graphics..."
+ msgstr "Voorbereiden: Grafische instellingen..."
+@@ -6747,10 +6731,6 @@
+ msgid "RD"
+ msgstr "RD"
+ 
+-#: game/vehicle/vehicle_catalog.gd:5
+-msgid "REARSPORT / 03"
+-msgstr "REARSPORT / 03"
+-
+ #: game/ui/race_complete.gd:500
+ msgid "RECOMMENDED"
+ msgstr "AANBEVOLEN"
+@@ -7086,10 +7066,6 @@
+ #: game/vehicle/vehicle_customisation.gd:19
+ msgid "Rear-facing intake"
+ msgstr "Naar achter gerichte luchtinlaat"
+-
+-#: game/vehicle/vehicle_catalog.gd:10
+-msgid "Rear-heavy traction for fast exits. Lift in a corner to rotate; catch the rear early."
+-msgstr "Achterwaartse tractie voor snelle bochtuitgangen. Laat gas los om in te draaien en vang de achterkant vroeg op."
+ 
+ #: game/vehicle/vehicle_catalog.gd:13
+ msgid "Rear-wheel steering swings the tail wide. Tight turns and heavy traction; a low top speed."
+@@ -10750,3 +10726,15 @@
+ #: game/ui/account_panel.gd
+ msgid "Please accept the Terms of Service to continue."
+ msgstr "Accepteer de servicevoorwaarden om door te gaan."
++
++#: game/vehicle/vehicle_catalog.gd
++msgid "Hovercraft"
++msgstr "Hovercraft"
++
++#: game/vehicle/vehicle_catalog.gd
++msgid "HOVER / 08"
++msgstr "HOVER / 08"
++
++#: game/vehicle/vehicle_catalog.gd
++msgid "Fan-powered air cushion with long, flowing slides. Steer early and brake to settle the drift. Hold the brake while stopped to reverse. No handbrake."
++msgstr "Luchtkussen met propelleraandrijving en lange, vloeiende drifts. Stuur vroeg en rem om de drift op te vangen. Houd de rem ingedrukt als je stilstaat om achteruit te gaan. Geen handrem."
+--- a/game/localization/it.po
++++ b/game/localization/it.po
+@@ -2301,10 +2301,6 @@
+ msgid "City"
+ msgstr "Città"
+ 
+-#: game/vehicle/vehicle_catalog.gd:6
+-msgid "Classic Sports"
+-msgstr "Sportiva classica"
+-
+ #: game/persistence/achievement_catalog.json:clean/title
+ msgid "Clean Driver"
+ msgstr "Pilota pulito"
+@@ -3617,10 +3613,6 @@
+ msgid "FORKLIFT / 06"
+ msgstr "FORKLIFT / 06"
+ 
+-#: game/vehicle/vehicle_catalog.gd:5
+-msgid "FORMULA / 04"
+-msgstr "FORMULA / 04"
+-
+ #: game/ui/weekly_rivalry_page.gd:475
+ msgid "FREE RACE"
+ msgstr "GARA LIBERA"
+@@ -3875,10 +3867,6 @@
+ msgid "Forklift"
+ msgstr "Carrello elevatore"
+ 
+-#: game/vehicle/vehicle_catalog.gd:6
+-msgid "Formula"
+-msgstr "Formula"
+-
+ #: game/backend/cosmetic_economy.gd:98 game/core/app.gd:6096
+ msgid "Free"
+ msgstr "Gratis"
+@@ -6373,10 +6361,6 @@
+ msgid "Practise more"
+ msgstr "Fai altra pratica"
+ 
+-#: game/vehicle/vehicle_catalog.gd:11
+-msgid "Precise asphalt grip. Low top speed, abrupt slides and harsh off-road penalties."
+-msgstr "Aderenza precisa sull’asfalto. Velocità massima bassa, scivolate brusche e forti penalità fuori pista."
+-
+ #: game/core/app.gd:2729 game/core/app.gd:4321
+ msgid "Preparing graphics..."
+ msgstr "Preparazione: Grafica..."
+@@ -6747,10 +6731,6 @@
+ msgid "RD"
+ msgstr "RD"
+ 
+-#: game/vehicle/vehicle_catalog.gd:5
+-msgid "REARSPORT / 03"
+-msgstr "REARSPORT / 03"
+-
+ #: game/ui/race_complete.gd:500
+ msgid "RECOMMENDED"
+ msgstr "CONSIGLIATO"
+@@ -7086,10 +7066,6 @@
+ #: game/vehicle/vehicle_customisation.gd:19
+ msgid "Rear-facing intake"
+ msgstr "Presa d’aria rivolta indietro"
+-
+-#: game/vehicle/vehicle_catalog.gd:10
+-msgid "Rear-heavy traction for fast exits. Lift in a corner to rotate; catch the rear early."
+-msgstr "Trazione con peso al posteriore per uscite rapide. Rilascia in curva per ruotare e correggi presto il retrotreno."
+ 
+ #: game/vehicle/vehicle_catalog.gd:13
+ msgid "Rear-wheel steering swings the tail wide. Tight turns and heavy traction; a low top speed."
+@@ -10750,3 +10726,15 @@
+ #: game/ui/account_panel.gd
+ msgid "Please accept the Terms of Service to continue."
+ msgstr "Accetta i Termini di servizio per continuare."
++
++#: game/vehicle/vehicle_catalog.gd
++msgid "Hovercraft"
++msgstr "Hovercraft"
++
++#: game/vehicle/vehicle_catalog.gd
++msgid "HOVER / 08"
++msgstr "HOVER / 08"
++
++#: game/vehicle/vehicle_catalog.gd
++msgid "Fan-powered air cushion with long, flowing slides. Steer early and brake to settle the drift. Hold the brake while stopped to reverse. No handbrake."
++msgstr "Cuscino d'aria con propulsione a elica e derapate lunghe e fluide. Sterza in anticipo e frena per controllare la derapata. Tieni premuto il freno da fermo per andare in retromarcia. Senza freno a mano."
+--- a/game/localization/fi.po
++++ b/game/localization/fi.po
+@@ -2301,10 +2301,6 @@
+ msgid "City"
+ msgstr "Kaupunki"
+ 
+-#: game/vehicle/vehicle_catalog.gd:6
+-msgid "Classic Sports"
+-msgstr "Klassinen urheiluauto"
+-
+ #: game/persistence/achievement_catalog.json:clean/title
+ msgid "Clean Driver"
+ msgstr "Siisti kuljettaja"
+@@ -3617,10 +3613,6 @@
+ msgid "FORKLIFT / 06"
+ msgstr "FORKLIFT / 06"
+ 
+-#: game/vehicle/vehicle_catalog.gd:5
+-msgid "FORMULA / 04"
+-msgstr "FORMULA / 04"
+-
+ #: game/ui/weekly_rivalry_page.gd:475
+ msgid "FREE RACE"
+ msgstr "VAPAA KILPAILU"
+@@ -3875,10 +3867,6 @@
+ msgid "Forklift"
+ msgstr "Trukki"
+ 
+-#: game/vehicle/vehicle_catalog.gd:6
+-msgid "Formula"
+-msgstr "Formula"
+-
+ #: game/backend/cosmetic_economy.gd:98 game/core/app.gd:6096
+ msgid "Free"
+ msgstr "Ilmainen"
+@@ -6373,10 +6361,6 @@
+ msgid "Practise more"
+ msgstr "Harjoittele lisää"
+ 
+-#: game/vehicle/vehicle_catalog.gd:11
+-msgid "Precise asphalt grip. Low top speed, abrupt slides and harsh off-road penalties."
+-msgstr "Tarkka pito asfaltilla. Matala huippunopeus, äkkinäiset luistot ja suuret menetykset radan ulkopuolella."
+-
+ #: game/core/app.gd:2729 game/core/app.gd:4321
+ msgid "Preparing graphics..."
+ msgstr "Valmistellaan: Grafiikka..."
+@@ -6747,10 +6731,6 @@
+ msgid "RD"
+ msgstr "RD"
+ 
+-#: game/vehicle/vehicle_catalog.gd:5
+-msgid "REARSPORT / 03"
+-msgstr "REARSPORT / 03"
+-
+ #: game/ui/race_complete.gd:500
+ msgid "RECOMMENDED"
+ msgstr "SUOSITELTU"
+@@ -7086,10 +7066,6 @@
+ #: game/vehicle/vehicle_customisation.gd:19
+ msgid "Rear-facing intake"
+ msgstr "Taaksepäin suunnattu ilmanottoaukko"
+-
+-#: game/vehicle/vehicle_catalog.gd:10
+-msgid "Rear-heavy traction for fast exits. Lift in a corner to rotate; catch the rear early."
+-msgstr "Takapainoinen pito nopeisiin mutkista ulostuloihin. Nosta kaasua mutkassa kääntääksesi autoa ja ota perä ajoissa kiinni."
+ 
+ #: game/vehicle/vehicle_catalog.gd:13
+ msgid "Rear-wheel steering swings the tail wide. Tight turns and heavy traction; a low top speed."
+@@ -10750,3 +10726,15 @@
+ #: game/ui/account_panel.gd
+ msgid "Please accept the Terms of Service to continue."
+ msgstr "Hyväksy käyttöehdot jatkaaksesi."
++
++#: game/vehicle/vehicle_catalog.gd
++msgid "Hovercraft"
++msgstr "Ilmatyynyalus"
++
++#: game/vehicle/vehicle_catalog.gd
++msgid "HOVER / 08"
++msgstr "HOVER / 08"
++
++#: game/vehicle/vehicle_catalog.gd
++msgid "Fan-powered air cushion with long, flowing slides. Steer early and brake to settle the drift. Hold the brake while stopped to reverse. No handbrake."
++msgstr "Potkurivetoinen ilmatyynyalus pitkiin, sulaviin luistoihin. Ohjaa ajoissa ja rauhoita luisto jarrulla. Pidä jarru pohjassa pysähdyksissä peruuttaaksesi. Ei käsijarrua."
+--- a/game/localization/sv.po
++++ b/game/localization/sv.po
+@@ -2301,10 +2301,6 @@
+ msgid "City"
+ msgstr "Stad"
+ 
+-#: game/vehicle/vehicle_catalog.gd:6
+-msgid "Classic Sports"
+-msgstr "Klassisk sportbil"
+-
+ #: game/persistence/achievement_catalog.json:clean/title
+ msgid "Clean Driver"
+ msgstr "Ren förare"
+@@ -3617,10 +3613,6 @@
+ msgid "FORKLIFT / 06"
+ msgstr "FORKLIFT / 06"
+ 
+-#: game/vehicle/vehicle_catalog.gd:5
+-msgid "FORMULA / 04"
+-msgstr "FORMULA / 04"
+-
+ #: game/ui/weekly_rivalry_page.gd:475
+ msgid "FREE RACE"
+ msgstr "FRITT LOPP"
+@@ -3875,10 +3867,6 @@
+ msgid "Forklift"
+ msgstr "Gaffeltruck"
+ 
+-#: game/vehicle/vehicle_catalog.gd:6
+-msgid "Formula"
+-msgstr "Formel"
+-
+ #: game/backend/cosmetic_economy.gd:98 game/core/app.gd:6096
+ msgid "Free"
+ msgstr "Gratis"
+@@ -6373,10 +6361,6 @@
+ msgid "Practise more"
+ msgstr "Öva mer"
+ 
+-#: game/vehicle/vehicle_catalog.gd:11
+-msgid "Precise asphalt grip. Low top speed, abrupt slides and harsh off-road penalties."
+-msgstr "Precist asfaltgrepp. Låg toppfart, plötsliga sladdar och stora förluster utanför banan."
+-
+ #: game/core/app.gd:2729 game/core/app.gd:4321
+ msgid "Preparing graphics..."
+ msgstr "Förbereder: Grafik..."
+@@ -6747,10 +6731,6 @@
+ msgid "RD"
+ msgstr "RD"
+ 
+-#: game/vehicle/vehicle_catalog.gd:5
+-msgid "REARSPORT / 03"
+-msgstr "REARSPORT / 03"
+-
+ #: game/ui/race_complete.gd:500
+ msgid "RECOMMENDED"
+ msgstr "REKOMMENDERAD"
+@@ -7086,10 +7066,6 @@
+ #: game/vehicle/vehicle_customisation.gd:19
+ msgid "Rear-facing intake"
+ msgstr "Bakåtriktat luftintag"
+-
+-#: game/vehicle/vehicle_catalog.gd:10
+-msgid "Rear-heavy traction for fast exits. Lift in a corner to rotate; catch the rear early."
+-msgstr "Baktungt grepp för snabba kurvutgångar. Släpp gasen i kurvan för att rotera och fånga bakänden tidigt."
+ 
+ #: game/vehicle/vehicle_catalog.gd:13
+ msgid "Rear-wheel steering swings the tail wide. Tight turns and heavy traction; a low top speed."
+@@ -10750,3 +10726,15 @@
+ #: game/ui/account_panel.gd
+ msgid "Please accept the Terms of Service to continue."
+ msgstr "Godkänn användarvillkoren för att fortsätta."
++
++#: game/vehicle/vehicle_catalog.gd
++msgid "Hovercraft"
++msgstr "Svävare"
++
++#: game/vehicle/vehicle_catalog.gd
++msgid "HOVER / 08"
++msgstr "HOVER / 08"
++
++#: game/vehicle/vehicle_catalog.gd
++msgid "Fan-powered air cushion with long, flowing slides. Steer early and brake to settle the drift. Hold the brake while stopped to reverse. No handbrake."
++msgstr "Propellerdriven svävare med långa, mjuka sladdar. Styr tidigt och bromsa för att häva sladden. Håll bromsen intryckt när du står stilla för att backa. Ingen handbroms."
+--- a/game/localization/nb.po
++++ b/game/localization/nb.po
+@@ -2301,10 +2301,6 @@
+ msgid "City"
+ msgstr "By"
+ 
+-#: game/vehicle/vehicle_catalog.gd:6
+-msgid "Classic Sports"
+-msgstr "Klassisk sportsbil"
+-
+ #: game/persistence/achievement_catalog.json:clean/title
+ msgid "Clean Driver"
+ msgstr "Ren fører"
+@@ -3617,10 +3613,6 @@
+ msgid "FORKLIFT / 06"
+ msgstr "FORKLIFT / 06"
+ 
+-#: game/vehicle/vehicle_catalog.gd:5
+-msgid "FORMULA / 04"
+-msgstr "FORMULA / 04"
+-
+ #: game/ui/weekly_rivalry_page.gd:475
+ msgid "FREE RACE"
+ msgstr "FRITT LØP"
+@@ -3875,10 +3867,6 @@
+ msgid "Forklift"
+ msgstr "Gaffeltruck"
+ 
+-#: game/vehicle/vehicle_catalog.gd:6
+-msgid "Formula"
+-msgstr "Formel"
+-
+ #: game/backend/cosmetic_economy.gd:98 game/core/app.gd:6096
+ msgid "Free"
+ msgstr "Gratis"
+@@ -6373,10 +6361,6 @@
+ msgid "Practise more"
+ msgstr "Øv mer"
+ 
+-#: game/vehicle/vehicle_catalog.gd:11
+-msgid "Precise asphalt grip. Low top speed, abrupt slides and harsh off-road penalties."
+-msgstr "Presist asfaltgrep. Lav toppfart, brå sladder og store tap utenfor banen."
+-
+ #: game/core/app.gd:2729 game/core/app.gd:4321
+ msgid "Preparing graphics..."
+ msgstr "Forbereder: Grafikk..."
+@@ -6747,10 +6731,6 @@
+ msgid "RD"
+ msgstr "RD"
+ 
+-#: game/vehicle/vehicle_catalog.gd:5
+-msgid "REARSPORT / 03"
+-msgstr "REARSPORT / 03"
+-
+ #: game/ui/race_complete.gd:500
+ msgid "RECOMMENDED"
+ msgstr "ANBEFALT"
+@@ -7086,10 +7066,6 @@
+ #: game/vehicle/vehicle_customisation.gd:19
+ msgid "Rear-facing intake"
+ msgstr "Bakovervendt luftinntak"
+-
+-#: game/vehicle/vehicle_catalog.gd:10
+-msgid "Rear-heavy traction for fast exits. Lift in a corner to rotate; catch the rear early."
+-msgstr "Baktungt grep for raske svingutganger. Slipp gassen i svingen for å rotere og fang opp bakenden tidlig."
+ 
+ #: game/vehicle/vehicle_catalog.gd:13
+ msgid "Rear-wheel steering swings the tail wide. Tight turns and heavy traction; a low top speed."
+@@ -10750,3 +10726,15 @@
+ #: game/ui/account_panel.gd
+ msgid "Please accept the Terms of Service to continue."
+ msgstr "Godta bruksvilkårene for å fortsette."
++
++#: game/vehicle/vehicle_catalog.gd
++msgid "Hovercraft"
++msgstr "Luftputebåt"
++
++#: game/vehicle/vehicle_catalog.gd
++msgid "HOVER / 08"
++msgstr "HOVER / 08"
++
++#: game/vehicle/vehicle_catalog.gd
++msgid "Fan-powered air cushion with long, flowing slides. Steer early and brake to settle the drift. Hold the brake while stopped to reverse. No handbrake."
++msgstr "Propelldrevet luftputebåt med lange, myke sladder. Styr tidlig og brems for å roe sladden. Hold bremsen inne når du står stille for å rygge. Ingen håndbrekk."
+--- /dev/null
++++ b/game/vehicle/hovercraft_model.gd.uid
+@@ -0,0 +1 @@
++uid://cmtjm0u3xlrs0
+--- /dev/null
++++ b/game/tests/test_hovercraft.gd.uid
+@@ -0,0 +1 @@
++uid://4vwyaw71umjs
+--- /dev/null
++++ b/game/tests/generate_hovercraft_replay.gd.uid
+@@ -0,0 +1 @@
++uid://b1a0eo711q8at
+--- /dev/null
++++ b/game/tests/bake_hovercraft_art.gd.uid
+@@ -0,0 +1 @@
++uid://36x3sbgy0jrh

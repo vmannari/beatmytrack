@@ -202,7 +202,7 @@ static func _normalize(data: Variant) -> Dictionary:
 			for character: String in preferences[field]:
 				if character not in "abcdefghijklmnopqrstuvwxyz0123456789_-": return {}
 		elif field == "selected_car":
-			if not preferences[field] is String or preferences[field] not in VehicleCatalog.IDS: return {}
+			if not preferences[field] is String or preferences[field] not in VehicleCatalog.ALL_IDS: return {}
 		elif field == "achievements":
 			if not AchievementProgress.valid(preferences[field]): return {}
 		elif field == "guest_coins":

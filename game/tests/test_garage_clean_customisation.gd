@@ -47,6 +47,11 @@ func wash_exterior(page: GaragePage, save: bool = true) -> void:
 	effect.end_wash_batch()
 	if save: page._save_condition()
 
+func workshop_access(page: GaragePage, required: bool) -> void:
+	check(page._workshop_tabs.get_node("WorkshopAppearance").disabled == required,"Appearance availability follows actual cleanliness")
+	check(page._workshop_tabs.get_node("WorkshopParts").disabled == required,"Parts availability follows actual cleanliness")
+	check(not page._workshop_tabs.get_node("WorkshopWash").disabled,"Wash remains available")
+
 func _run() -> void:
 	OS.set_environment("BMT_API_URL","")
 	var renderer: String = RenderingServer.get_current_rendering_method()
@@ -72,6 +77,9 @@ func _run() -> void:
 	page.records = records
 	root.add_child(page)
 	MenuStyle.fill(page)
+	await settle()
+	# Garage picking is lazy; prepare the real wash hit before inspecting it.
+	page.showroom.pick_body_surface(page.showroom.size*0.5)
 	page.open_car(0)
 	await settle()
 	var car: CarVisual = page.showroom.car
@@ -80,7 +88,8 @@ func _run() -> void:
 	var kits: Dictionary = page.kit_draft.duplicate(true)
 	var saved: Dictionary = records.settings.duplicate(true)
 	check(page._customisation_locked and page.livery_menu == null,"dirty Customise shows requirement instead of editing controls")
-	check(page._wash_requirement.visible and page._wash_requirement.tooltip_text.contains("dirty"),"compact wash notice explains the cleanliness requirement")
+	check(page.preview.find_child("GarageWashRequirementOverlay",true,false) == null and page.preview.find_child("GarageWashForCustomisation",true,false) == null,"duplicate left wash panel and action are removed")
+	workshop_access(page,true)
 	check(not page.tools_panel.visible and page.customise_layout==null,"dirty car does not open or reserve a workbench sidebar")
 	for name: String in ["GarageTopView","GarageZoomIn","GarageZoomOut","GarageResetView"]:
 		check(page.find_child(name,true,false)==null,"view button removed: "+name)
@@ -90,20 +99,31 @@ func _run() -> void:
 	for dimensions: Vector2i in [Vector2i(960,540),Vector2i(1280,720),Vector2i(1600,720)]:
 		root.size = dimensions
 		await settle()
-		var button: Control = page.preview.find_child("GarageWashForCustomisation",true,false)
-		check(page.preview.get_global_rect().encloses(page._wash_requirement.get_global_rect()) and root.get_visible_rect().encloses(button.get_global_rect()),"wash overlay fits "+str(dimensions))
-		check(page._wash_requirement.size.y<=80 and not page.tools_panel.visible,"wash notice stays compact without a sidebar")
+		check(page.preview.get_global_rect().encloses(page._workshop_tabs.get_global_rect()) and root.get_visible_rect().encloses(page._workshop_tabs.get_global_rect()),"right workshop stack fits "+str(dimensions))
+		var previous: Rect2
+		for button: Button in page._workshop_tabs.get_children():
+			var bounds: Rect2 = button.get_global_rect()
+			check(previous == Rect2() or (is_equal_approx(previous.position.x,bounds.position.x) and is_equal_approx(previous.size.x,bounds.size.x) and previous.end.y < bounds.position.y),"workshop actions form an equal-width vertical stack")
+			check(not bounds.intersects(page.heading.get_global_rect()) and button.size.y >= 48 and not button.text.is_empty(),"named workshop touch target clears heading")
+			previous = bounds
+		check(not page.tools_panel.visible,"dirty car reserves no workbench sidebar")
 		await capture("wash-required-livery-"+str(dimensions.x))
+	root.size = Vector2i(1280,720)
+	await settle()
+	await click(page._workshop_tabs.get_node("WorkshopParts"))
+	check(page.section == "customise" and page.kit_draft == kits and records.settings == saved,"disabled Parts rejects actual pointer input")
 	page._show_section("tuning")
 	await settle()
 	check(page._customisation_locked and page.tools.find_child("GarageResetKits",true,false) == null,"dirty kits cannot be edited")
 	page._select_kit("hood","scoop")
 	page._reset_kits()
 	check(page.kit_draft == kits and records.settings == saved,"kit selection and reset cannot change dirty car")
+	await settle()
 	await capture("wash-required-kits")
-	await click(page.preview.find_child("GarageWashForCustomisation",true,false))
+	await click(page._workshop_tabs.get_node("WorkshopWash"))
 	check(page.section == "care" and page.showroom.wash_mode,"Wash car opens actual manual washing")
-	check(not page.tools_panel.visible and not page._wash_requirement.visible,"washing hides the requirement without a sidebar")
+	check(not page.tools_panel.visible and page.preview.find_child("GarageWashRequirementOverlay",true,false) == null,"washing keeps the duplicate wash panel absent")
+	workshop_access(page,true)
 	check(page._wash_status_panel.visible and page._wash_status_panel.tooltip_text == "Wash the exterior before customising","wash view explains when more washing is needed")
 	check(page._wash_status_panel.mouse_filter == Control.MOUSE_FILTER_IGNORE and page._wash_status.mouse_filter == Control.MOUSE_FILTER_IGNORE and page._wash_status_icon.mouse_filter == Control.MOUSE_FILTER_IGNORE,"status does not intercept wash gestures")
 	for dimensions: Vector2i in [Vector2i(960,540),Vector2i(1280,720),Vector2i(1720,720)]:
@@ -123,6 +143,7 @@ func _run() -> void:
 	page._process(0.0)
 	check(page._cleanliness.is_clean(page.showroom),"scrubbing native exterior unlocks car")
 	check(page.showroom.wash_mode and page._wash_status.text == "Shiny. For now.","shiny indication updates during washing without pressing Done")
+	workshop_access(page,false)
 	check(page._wash_status_icon.texture == MenuIcon.texture("check") and page._wash_status.get_theme_color("font_color") == MenuStyle.POSITIVE,"ready state uses a checkmark and positive colour")
 	check(VehicleCondition.read(records,"compact") == before_live_wash,"live indication does not save or clear dirt")
 	for dimensions: Vector2i in [Vector2i(960,540),Vector2i(1280,720),Vector2i(1720,720)]:
@@ -166,13 +187,15 @@ func _run() -> void:
 		page._process(0.0)
 		page._show_section("customise")
 		check(page._customisation_locked,id+" dirty livery blocked")
-		check(not page.tools_panel.visible and page._wash_requirement.visible,id+" uses the compact wash overlay")
+		check(not page.tools_panel.visible and page.preview.find_child("GarageWashRequirementOverlay",true,false) == null,id+" uses only the right workshop stack")
+		workshop_access(page,true)
 		if id=="forklift":
 			await settle()
 			await capture("forklift-wash-required-overlay")
 		wash_exterior(page)
 		page._show_section("customise")
 		check(not page._customisation_locked,id+" actual exterior wash unlocks")
+		workshop_access(page,false)
 		var snow: Dictionary = dirty.duplicate(true)
 		snow.dirt = 0.0
 		snow.slow_dirt = 0.0
@@ -232,6 +255,7 @@ func _run() -> void:
 		check(VehicleCondition.save(records,id,dirty) == OK,"seed new race wear during care "+id)
 		page._process(0.0)
 		check(page._wash_status_panel.tooltip_text == "Wash the exterior before customising",id+" new race wear revokes ready indication")
+		workshop_access(page,true)
 		page._show_section("customise")
 		# Leave a real dirty interpolation cell on an otherwise washed exterior.
 		var bounds: AABB = page.showroom.weathering.bounds

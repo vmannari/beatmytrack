@@ -1,0 +1,373 @@
+diff --git a/game/ui/menu_brand.gd b/game/ui/menu_brand.gd
+--- a/game/ui/menu_brand.gd
++++ b/game/ui/menu_brand.gd
+@@ -1,16 +1,17 @@
+ class_name MenuBrand
+ extends TextureRect
+-## Owner-supplied transparent logo; trim only empty outer pixels for menu sizing.
++## Clean vector brand, filtered for the small header and larger loading panels.
+ 
+-const LOGO = preload("res://assets/menu/logo.png")
++const LOGO = preload("res://assets/menu/logo.svg")
+ var logo_scale: float = 1.0
+ 
+ func _ready() -> void:
+ 	custom_minimum_size = Vector2(196,64)
+ 	mouse_filter = Control.MOUSE_FILTER_IGNORE
++	texture_filter = CanvasItem.TEXTURE_FILTER_LINEAR_WITH_MIPMAPS
+ 	var atlas := AtlasTexture.new()
+ 	atlas.atlas = LOGO
+-	atlas.region = Rect2(41, 125, 1857, 576)
++	atlas.region = Rect2(Vector2.ZERO, LOGO.get_size())
+ 	var padding: Vector2 = atlas.region.size * (1.0 / logo_scale - 1.0)
+ 	atlas.margin = Rect2(padding * 0.5, padding)
+ 	texture = atlas
+diff --git a/game/assets/menu/logo.svg b/game/assets/menu/logo.svg
+new file mode 100644
+--- /dev/null
++++ b/game/assets/menu/logo.svg
+@@ -0,0 +1,45 @@
++<svg xmlns="http://www.w3.org/2000/svg" width="1800" height="536" viewBox="0 0 1800 536">
++  <title>Beat My Track</title>
++  <desc>Clean vector reconstruction of the owner-supplied racing logo. The B mark and the two-line wordmark both span y=8 to y=528.</desc>
++  <defs>
++    <linearGradient id="gold" x1="0" y1="0" x2="0.8" y2="1">
++      <stop stop-color="#ffdc43"/>
++      <stop offset="1" stop-color="#ffcc24"/>
++    </linearGradient>
++    <path id="letter-b" fill-rule="evenodd" d="M0 0H98Q142 0 142 45V61Q142 85 125 98Q148 111 148 145V153Q148 200 98 200H0ZM58 45V79H80Q90 79 90 66V59Q90 45 80 45ZM58 120V155H82Q94 155 94 140V135Q94 120 82 120Z"/>
++    <path id="letter-e" d="M0 0H130V46H58V78H115V121H58V154H130V200H0Z"/>
++    <path id="letter-a" fill-rule="evenodd" d="M0 200 50 0H110L160 200H104L96 164H54L46 200ZM64 120H86L75 64Z"/>
++    <path id="letter-t" d="M0 0H150V46H104V200H46V46H0Z"/>
++    <path id="letter-m" d="M0 200V0H55L90 80 125 0H180V200H126V100L106 154H74L54 100V200Z"/>
++    <path id="letter-y" d="M0 0H57L82 70 107 0H164L111 124V200H53V124Z"/>
++    <path id="letter-r" fill-rule="evenodd" d="M0 200V0H102Q150 0 150 52V78Q150 114 119 130L157 200H94L58 124V200ZM58 45V88H83Q94 88 94 75V58Q94 45 83 45Z"/>
++    <path id="letter-c" d="M150 80H93V55Q93 45 83 45H65Q55 45 55 55V145Q55 155 65 155H83Q93 155 93 145V120H150V157Q150 200 105 200H45Q0 200 0 155V45Q0 0 45 0H105Q150 0 150 43Z"/>
++    <path id="letter-k" d="M0 0H58V75L104 0H168L105 100 174 200H109L58 124V200H0Z"/>
++  </defs>
++  <!-- Three continuous ribbons retain the original swept B silhouette. -->
++  <g id="b-mark" fill="url(#gold)" transform="translate(8 8) scale(1 1.04)">
++    <path d="M80 0H485C532 0 557 16 589 49L635 98C676 141 673 194 631 232C691 271 704 333 676 397C649 459 590 500 515 500H376L481 384C547 312 565 256 538 192C514 136 466 85 408 77H139Z"/>
++    <path d="M355 110C438 124 508 163 515 222C521 280 488 320 440 368L278 500H157L366 310C435 244 465 209 432 163C414 142 387 122 355 110Z"/>
++    <path d="M149 95H310C375 95 416 125 422 166C432 201 418 230 389 255L122 500H0L258 242H351C374 242 387 230 387 214C387 198 373 185 351 185H208Z"/>
++  </g>
++  <!-- Outlined lettering: no font installation or embedded bitmap is needed. -->
++  <g id="wordmark" transform="translate(758 8) skewX(-4)" fill="#f5f3eb">
++    <g transform="scale(1.034 1.2)">
++      <use href="#letter-b"/>
++      <use href="#letter-e" x="164"/>
++      <use href="#letter-a" x="304"/>
++      <use href="#letter-t" x="464"/>
++      <g fill="url(#gold)">
++        <use href="#letter-m" x="650"/>
++        <use href="#letter-y" x="836"/>
++      </g>
++    </g>
++    <g transform="translate(0 260) scale(1.24 1.3)">
++      <use href="#letter-t"/>
++      <use href="#letter-r" x="160"/>
++      <use href="#letter-a" x="325"/>
++      <use href="#letter-c" x="495"/>
++      <use href="#letter-k" x="660"/>
++    </g>
++  </g>
++</svg>
+diff --git a/game/assets/menu/logo.svg.import b/game/assets/menu/logo.svg.import
+new file mode 100644
+--- /dev/null
++++ b/game/assets/menu/logo.svg.import
+@@ -0,0 +1,43 @@
++[remap]
++
++importer="texture"
++type="CompressedTexture2D"
++uid="uid://bqfh82f3m38ko"
++path="res://.godot/imported/logo.svg-f6d586f269aade67f956076564cf4334.ctex"
++metadata={
++"vram_texture": false
++}
++
++[deps]
++
++source_file="res://assets/menu/logo.svg"
++dest_files=["res://.godot/imported/logo.svg-f6d586f269aade67f956076564cf4334.ctex"]
++
++[params]
++
++compress/mode=0
++compress/high_quality=false
++compress/lossy_quality=0.7
++compress/uastc_level=0
++compress/rdo_quality_loss=0.0
++compress/hdr_compression=1
++compress/normal_map=0
++compress/channel_pack=0
++mipmaps/generate=true
++mipmaps/limit=-1
++roughness/mode=0
++roughness/src_normal=""
++process/channel_remap/red=0
++process/channel_remap/green=1
++process/channel_remap/blue=2
++process/channel_remap/alpha=3
++process/fix_alpha_border=true
++process/premult_alpha=false
++process/normal_map_invert_y=false
++process/hdr_as_srgb=false
++process/hdr_clamp_exposure=false
++process/size_limit=0
++detect_3d/compress_to=1
++svg/scale=1.0
++editor/scale_with_editor_scale=false
++editor/convert_colors_with_editor_theme=false
+diff --git a/game/tests/capture_menu_logo_svg.gd b/game/tests/capture_menu_logo_svg.gd
+new file mode 100644
+--- /dev/null
++++ b/game/tests/capture_menu_logo_svg.gd
+@@ -0,0 +1,52 @@
++extends SceneTree
++## Offline visual review of the shared menu brand with disposable app records.
++
++var output: String
++
++func _initialize() -> void:
++	run.call_deferred()
++
++func capture(id: String) -> void:
++	for frame: int in range(12): await process_frame
++	await RenderingServer.frame_post_draw
++	assert(root.get_texture().get_image().save_png(output.path_join(id + ".png")) == OK)
++
++func run() -> void:
++	OS.set_environment("BMT_API_URL", "")
++	output = OS.get_environment("BMT_MENU_LOGO_OUTPUT")
++	assert(not output.is_empty())
++	DirAccess.make_dir_recursive_absolute(output)
++	var folder: String = "user://menu_logo_svg_" + TrackLibrary.unique_id()
++	var app: Node = load("res://core/app.tscn").instantiate()
++	app.library = TrackLibrary.new(folder.path_join("tracks"))
++	app.records = LocalRecords.new(folder.path_join("records.json"))
++	app.cloud_root_override = folder.path_join("cloud")
++	root.add_child(app)
++	while not app.startup_complete: await process_frame
++	for dimensions: Vector2i in [Vector2i(1280,720), Vector2i(960,540), Vector2i(1920,1080)]:
++		root.size = dimensions
++		app._show_screen("tracks")
++		await capture("menu-%dx%d" % [dimensions.x, dimensions.y])
++		var loading: Node = load("res://ui/race_loading.gd").new()
++		root.add_child(loading)
++		loading.configure("Practice circuit", "pine", PackedVector2Array([Vector2(-30,-20),Vector2(30,-20),Vector2(30,20),Vector2(-30,20)]))
++		await capture("loading-%dx%d" % [dimensions.x, dimensions.y])
++		loading.queue_free()
++		await process_frame
++		app._show_screen("account")
++		await capture("account-%dx%d" % [dimensions.x, dimensions.y])
++	app.queue_free()
++	await process_frame
++	# A large native render makes the new curves and outlined letters reviewable.
++	root.size = Vector2i(1800,600)
++	var backdrop := ColorRect.new()
++	backdrop.color = Color("101a26")
++	backdrop.size = root.get_visible_rect().size
++	root.add_child(backdrop)
++	var brand := MenuBrand.new()
++	root.add_child(brand)
++	brand.position = Vector2(30,30)
++	brand.size = root.get_visible_rect().size - Vector2(60,60)
++	await capture("logo-detail")
++	print("MENU_LOGO_CAPTURE: 10 native views saved")
++	quit()
+diff --git a/game/tests/capture_menu_logo_svg.gd.uid b/game/tests/capture_menu_logo_svg.gd.uid
+new file mode 100644
+--- /dev/null
++++ b/game/tests/capture_menu_logo_svg.gd.uid
+@@ -0,0 +1 @@
++uid://b4y80kenkp0vv
+diff --git a/licenses/ASSETS.md b/licenses/ASSETS.md
+--- a/licenses/ASSETS.md
++++ b/licenses/ASSETS.md
+@@ -390,3 +390,6 @@
+ Hovercraft model rebuild (2026-10-28, HMR01-HMR05): original formed hull, continuous curved cabin, bag/finger skirt, swept fan and fitted mechanical/lamp surfaces in `hovercraft_model.gd` and `hovercraft_surface.gd`. All 350 prepared meshes in `game/assets/vehicles/hovercraft_body_v2` derive from those sources; mutable finishes reuse the existing cleared CompactFinish and opaque analytic glass shader. Refreshed menu/Garage/livery/news pictures are native Godot captures. Manufacturer photography is construction reference only; no source image, third-party model, branding or new dependency ships. See that folder's `PROVENANCE.md` and `docs/HOVERCRAFT_MODEL_REBUILD_2026_10_28.md` for evidence and acceptance limits.
+ 
+ Sport hovercraft redesign (2026-10-29, HSR01-HSR05): original tapered racing hull, canopy, skirt, fitted twin ducted fans and lighting in `hovercraft_model.gd` and the `hovercraft_sport_*` sources. The `hovercraft_sport_v3` meshes, refreshed menu/Garage/livery/news pictures and racing shadow derive from the native project model. Project CompactFinish and opaque analytic glass are reused; no photographic, branded, third-party or generated media is shipped. See `hovercraft_sport_v3/PROVENANCE.md` and `docs/HOVERCRAFT_SPORT_REDESIGN_2026_10_29.md`.
++
++
++Menu logo vector reconstruction (2026-10-29, ML01-ML02): `game/assets/menu/logo.svg` is an original code-authored vector reconstruction of the existing owner-supplied `logo.png`. The gold swept B and stacked Beat My Track lettering are paths, without embedded raster artwork, font files or external dependencies. The B is aligned to the complete text height. This records derivation from the owner's source, not independent clearance of that source. Godot imports a lossless mipmapped runtime texture. See `docs/MENU_LOGO_SVG_2026_10_29.md` for native review images, measured alignment, hashes and remaining owner/device acceptance.
+diff --git a/AGENTS.md b/AGENTS.md
+--- a/AGENTS.md
++++ b/AGENTS.md
+@@ -1,3 +1,8 @@
++<!-- MENU-LOGO-SVG-20261029 -->
++## Smooth SVG menu logo (2026-10-29)
++ML01-ML02/R01/Q01: Clean outlined SVG replaces the rough PNG in shared MenuBrand; lossless mipmapped import and linear mipmap sampling smooth the small header. Swept B and two-line wordmark share measured y8..528/520px height. Ten final native views each desktop renderer at three sizes; existing menu41/0 and sign-in fit867/0 pass. One runtime script/new SVG+import/capture utility; original PNG/boot splash preserved. Main import retains a locked native-DLL copy error; focused pinned SVG-only import passes. Initial certificate, ribbon/clipping and audit-namespace findings retained. Checked task-only source patch, commands, images and hashes: docs/MENU_LOGO_SVG_2026_10_29.md and docs/evidence/menu-logo-svg-2026-10-29/report.json. Reload and owner/device appearance acceptance remain. No device query/test, APK, live/backend/owner-save write, deployment, owner-process restart or main-index staging/commit/merge; concurrent work preserved.
++<!-- /MENU-LOGO-SVG-20261029 -->
++
+ <!-- HOVERCRAFT-SPORT-REDESIGN-20261029 -->
+ ## Hovercraft redesigned as a low sport racer (2026-10-29)
+ HSR01-HSR05/R01/Q01: Owner rejects prior model. Tapered low hull/canopy, continuous skirt, fitted twin counter-rotating ducted fans and slim lamps replace it; red factory paint preserves valid saved liveries. Detailed78216to59708/simple24968to18500, one906 shadow and254 exact prepared meshes; 351 prior v2 files exact. Model21/livery19/App10/Game14 each desktop renderer, actual fit71, six-car prepared24, saved recovery83, retained integration31/racing22 and targeted app/model checks pass. Full parser retains historical Garage fixture error; first CheckScript omitted its target and failed before corrected explicit checks. Six templates/53 pictures refresh; four other car geometries exact, Electric template refreshes existing stale concurrent source context. Three handling sources exact; new visible footprint is narrower and edge-contact/device acceptance remains. Thirty-entry forward/reverse-content-checked source checkpoint; commands, captures, hashes and limits: docs/HOVERCRAFT_SPORT_REDESIGN_2026_10_29.md and docs/evidence/hovercraft-sport-redesign-2026-10-29/report.json. Reload and owner appearance/motion acceptance remain; no AAA/phone FPS claim. No device query/test, APK, auth/purchase, owner-save/live mutation, deployment, owner-process restart or main-index staging/commit/merge; concurrent work preserved.
+diff --git a/DEVELOPMENT_STATUS.md b/DEVELOPMENT_STATUS.md
+--- a/DEVELOPMENT_STATUS.md
++++ b/DEVELOPMENT_STATUS.md
+@@ -1,3 +1,8 @@
++<!-- MENU-LOGO-SVG-20261029 -->
++## Smooth SVG menu logo (2026-10-29)
++ML01-ML02/R01/Q01: Clean outlined SVG replaces the rough PNG in shared MenuBrand; lossless mipmapped import and linear mipmap sampling smooth the small header. Swept B and two-line wordmark share measured y8..528/520px height. Ten final native views each desktop renderer at three sizes; existing menu41/0 and sign-in fit867/0 pass. One runtime script/new SVG+import/capture utility; original PNG/boot splash preserved. Main import retains a locked native-DLL copy error; focused pinned SVG-only import passes. Initial certificate, ribbon/clipping and audit-namespace findings retained. Checked task-only source patch, commands, images and hashes: docs/MENU_LOGO_SVG_2026_10_29.md and docs/evidence/menu-logo-svg-2026-10-29/report.json. Reload and owner/device appearance acceptance remain. No device query/test, APK, live/backend/owner-save write, deployment, owner-process restart or main-index staging/commit/merge; concurrent work preserved.
++<!-- /MENU-LOGO-SVG-20261029 -->
++
+ <!-- HOVERCRAFT-SPORT-REDESIGN-20261029 -->
+ ## Hovercraft redesigned as a low sport racer (2026-10-29)
+ HSR01-HSR05/R01/Q01: Owner rejects prior model. Tapered low hull/canopy, continuous skirt, fitted twin counter-rotating ducted fans and slim lamps replace it; red factory paint preserves valid saved liveries. Detailed78216to59708/simple24968to18500, one906 shadow and254 exact prepared meshes; 351 prior v2 files exact. Model21/livery19/App10/Game14 each desktop renderer, actual fit71, six-car prepared24, saved recovery83, retained integration31/racing22 and targeted app/model checks pass. Full parser retains historical Garage fixture error; first CheckScript omitted its target and failed before corrected explicit checks. Six templates/53 pictures refresh; four other car geometries exact, Electric template refreshes existing stale concurrent source context. Three handling sources exact; new visible footprint is narrower and edge-contact/device acceptance remains. Thirty-entry forward/reverse-content-checked source checkpoint; commands, captures, hashes and limits: docs/HOVERCRAFT_SPORT_REDESIGN_2026_10_29.md and docs/evidence/hovercraft-sport-redesign-2026-10-29/report.json. Reload and owner appearance/motion acceptance remain; no AAA/phone FPS claim. No device query/test, APK, auth/purchase, owner-save/live mutation, deployment, owner-process restart or main-index staging/commit/merge; concurrent work preserved.
+diff --git a/docs/PHASE_0_PLAN.md b/docs/PHASE_0_PLAN.md
+--- a/docs/PHASE_0_PLAN.md
++++ b/docs/PHASE_0_PLAN.md
+@@ -1,3 +1,8 @@
++<!-- MENU-LOGO-SVG-20261029 -->
++## Smooth SVG menu logo (2026-10-29)
++ML01-ML02/R01/Q01: Clean outlined SVG replaces the rough PNG in shared MenuBrand; lossless mipmapped import and linear mipmap sampling smooth the small header. Swept B and two-line wordmark share measured y8..528/520px height. Ten final native views each desktop renderer at three sizes; existing menu41/0 and sign-in fit867/0 pass. One runtime script/new SVG+import/capture utility; original PNG/boot splash preserved. Main import retains a locked native-DLL copy error; focused pinned SVG-only import passes. Initial certificate, ribbon/clipping and audit-namespace findings retained. Checked task-only source patch, commands, images and hashes: MENU_LOGO_SVG_2026_10_29.md and docs/evidence/menu-logo-svg-2026-10-29/report.json. Reload and owner/device appearance acceptance remain. No device query/test, APK, live/backend/owner-save write, deployment, owner-process restart or main-index staging/commit/merge; concurrent work preserved.
++<!-- /MENU-LOGO-SVG-20261029 -->
++
+ <!-- HOVERCRAFT-SPORT-REDESIGN-20261029 -->
+ ## Hovercraft redesigned as a low sport racer (2026-10-29)
+ HSR01-HSR05/R01/Q01: Owner rejects prior model. Tapered low hull/canopy, continuous skirt, fitted twin counter-rotating ducted fans and slim lamps replace it; red factory paint preserves valid saved liveries. Detailed78216to59708/simple24968to18500, one906 shadow and254 exact prepared meshes; 351 prior v2 files exact. Model21/livery19/App10/Game14 each desktop renderer, actual fit71, six-car prepared24, saved recovery83, retained integration31/racing22 and targeted app/model checks pass. Full parser retains historical Garage fixture error; first CheckScript omitted its target and failed before corrected explicit checks. Six templates/53 pictures refresh; four other car geometries exact, Electric template refreshes existing stale concurrent source context. Three handling sources exact; new visible footprint is narrower and edge-contact/device acceptance remains. Thirty-entry forward/reverse-content-checked source checkpoint; commands, captures, hashes and limits: docs/HOVERCRAFT_SPORT_REDESIGN_2026_10_29.md and docs/evidence/hovercraft-sport-redesign-2026-10-29/report.json. Reload and owner appearance/motion acceptance remain; no AAA/phone FPS claim. No device query/test, APK, auth/purchase, owner-save/live mutation, deployment, owner-process restart or main-index staging/commit/merge; concurrent work preserved.
+diff --git a/docs/MENU_LOGO_SVG_2026_10_29.md b/docs/MENU_LOGO_SVG_2026_10_29.md
+new file mode 100644
+--- /dev/null
++++ b/docs/MENU_LOGO_SVG_2026_10_29.md
+@@ -0,0 +1,39 @@
++# Smooth vector menu logo (2026-10-29)
++
++ML01: The shared menu logo now uses [logo.svg](../game/assets/menu/logo.svg), reconstructed as clean paths from the owner's existing PNG. The swept gold B, stacked italic lettering and gold MY are retained. Lettering is outlined; the SVG has no embedded image, external font or linked asset. Lossless import, mipmaps and explicit linear mipmap filtering keep the small header smooth. Godot rasterizes the SVG at import; this is a vector source with a filtered runtime texture, as described in the [Godot image import documentation](https://docs.godotengine.org/en/latest/tutorials/assets_pipeline/importing_images.html).
++
++ML02: "Same length" is implemented as matching the full height of the adjacent two-line text. Both visible layers start at y=8 and end at y=528, a measured 520-pixel span. The B keeps its own horizontal proportions. Independent native SVG layer measurements are in [alignment.json](evidence/menu-logo-svg-2026-10-29/alignment.json).
++
++Changed runtime files: `game/ui/menu_brand.gd`, `game/assets/menu/logo.svg` and its `.import` settings. The brand takes its region from the SVG dimensions and retains the existing layout minimum, aspect ratio behavior, input transparency and caller-controlled padding. The shared component also updates sign-in, restoration and race-loading branding. The original PNG and boot splash remain available; the historical capture helper still uses the PNG.
++
++R01: Actual App captures passed at 1280x720, 960x540 and 1920x1080 on desktop Compatibility and Mobile renderers. Each renderer saved ten views: menu, sign-in and race loading at three sizes, plus an enlarged detail. [Menu](evidence/menu-logo-svg-2026-10-29/after/gl_compatibility/menu-1280x720.png), [detail](evidence/menu-logo-svg-2026-10-29/after/gl_compatibility/logo-detail.png), [small Mobile-renderer view](evidence/menu-logo-svg-2026-10-29/after/mobile/menu-960x540.png), [sign-in](evidence/menu-logo-svg-2026-10-29/after/gl_compatibility/account-960x540.png). These use disposable records and an empty API override. The empty track list is the offline fixture.
++
++Existing `test_menu_presentation.gd` passed **41 checks, zero failures**, headless. Existing `capture_sign_in_fit.gd` passed **867 checks, zero failures**, native Compatibility, covering four window sizes and nine account states. No regression invariant was changed and no new automated test was added for this artwork change. The new `capture_menu_logo_svg.gd` is a capture utility.
++
++Commands actually run from the repository root:
++
++```powershell
++powershell -NoProfile -ExecutionPolicy Bypass -File docs/evidence/menu-logo-svg-2026-10-29/run.ps1 -Phase before -Renderer gl_compatibility
++powershell -NoProfile -ExecutionPolicy Bypass -File docs/evidence/menu-logo-svg-2026-10-29/run.ps1 -Action Import -Headless
++powershell -NoProfile -ExecutionPolicy Bypass -File docs/evidence/menu-logo-svg-2026-10-29/run.ps1 -Phase after -Renderer gl_compatibility
++powershell -NoProfile -ExecutionPolicy Bypass -File docs/evidence/menu-logo-svg-2026-10-29/run.ps1 -Phase after -Renderer mobile
++powershell -NoProfile -ExecutionPolicy Bypass -File docs/evidence/menu-logo-svg-2026-10-29/run.ps1 -ScriptPath res://tests/test_menu_presentation.gd -Headless
++powershell -NoProfile -ExecutionPolicy Bypass -File docs/evidence/menu-logo-svg-2026-10-29/run.ps1 -ScriptPath res://tests/capture_sign_in_fit.gd -Renderer gl_compatibility
++```
++
++The runner uses the pinned `scripts/dev.ps1`, isolated APPDATA/LOCALAPPDATA, disposable records and an empty API URL. It restores generated build metadata only while those values still belong to its run. Sandboxed startup/import attempts failed Windows certificate-store access; the same native checks passed with normal local access. One outer shell emitted a profile execution-policy warning, without changing system policy.
++
++The main-project editor import failed opening the temporary copy of the existing native geometry DLL. The SVG was therefore imported with the exact pinned Godot 4.7.2 executable in `build/menu-logo-svg-review/import`, a minimal project containing only the SVG and its settings. Its generated `.ctex`/`.md5` were copied to the matching main-project cache, and the actual App subsequently rendered the asset on both renderers. The successful isolated import used task-specific editor profiles. An initial isolated sandbox attempt also reported denied editor-settings writes; no owner settings were changed. This is not a full-project import/parser pass.
++
++```powershell
++$env:APPDATA = Join-Path (Get-Location) 'build/menu-logo-svg-review/import-profile'
++$env:LOCALAPPDATA = Join-Path (Get-Location) 'build/menu-logo-svg-review/import-local-profile'
++& 'C:\apps\Godot 4.7.2\Godot_v4.7.2-stable_win64_console.exe' --headless --path build/menu-logo-svg-review/import --editor --import
++& 'C:\apps\Godot 4.7.2\Godot_v4.7.2-stable_win64_console.exe' --headless --path build/menu-logo-svg-review/import --script res://audit.gd
++```
++
++The first enlarged view exposed an inner-ribbon overlap and slight right-edge clipping; the final paths correct both. The first layer-measurement helper serialized namespace prefixes that ThorVG rejected; its corrected SVG serialization passes, and the owned failed process was stopped. Initial images, helper and logs remain in the evidence folder.
++
++Q01: [source.patch](evidence/menu-logo-svg-2026-10-29/source.patch) is a task-baseline checkpoint; it includes only the vector/component/capture utility, runner, provenance and task notes. It is verified forward and reverse in isolated folders and reverse-checked against the working tree. [report.json](evidence/menu-logo-svg-2026-10-29/report.json) records outcomes and hashes. Existing concurrent changes are preserved, with no main-index staging, commit or merge.
++
++Reload/rebuild and owner appearance acceptance remain. No physical-device test or attachment query, APK, real authentication/purchase, live/backend write, deployment, owner-save mutation or owner-process restart was performed. Desktop Mobile means the desktop Vulkan renderer, not an Android-device run.
+diff --git a/docs/evidence/menu-logo-svg-2026-10-29/run.ps1 b/docs/evidence/menu-logo-svg-2026-10-29/run.ps1
+new file mode 100644
+--- /dev/null
++++ b/docs/evidence/menu-logo-svg-2026-10-29/run.ps1
+@@ -0,0 +1,50 @@
++param(
++    [string]$ScriptPath = 'res://tests/capture_menu_logo_svg.gd',
++    [string]$Phase = 'after',
++    [string]$Renderer = 'gl_compatibility',
++    [ValidateSet('TestScript','Import')][string]$Action = 'TestScript',
++    [switch]$Headless
++)
++$ErrorActionPreference = 'Stop'
++$repo = (Resolve-Path (Join-Path $PSScriptRoot '../../..')).Path
++$identityPath = Join-Path $repo 'game/core/build_identity.gd'
++$projectPath = Join-Path $repo 'game/project.godot'
++$identityBytes = [IO.File]::ReadAllBytes($identityPath)
++$projectBefore = [IO.File]::ReadAllText($projectPath)
++$previousVersion = [regex]::Match($projectBefore, '(?m)^config/version="[^"]*"').Value
++$taskRoot = Join-Path $repo 'build/menu-logo-svg-review'
++New-Item -ItemType Directory -Path $taskRoot -Force | Out-Null
++$env:APPDATA = Join-Path $taskRoot 'profile'
++$env:LOCALAPPDATA = Join-Path $taskRoot 'local-profile'
++$env:BMT_API_URL = ''
++$env:BMT_MENU_LOGO_OUTPUT = Join-Path $PSScriptRoot "$Phase/$Renderer"
++$receiptPath = Join-Path $repo "build/logs/$Action-$PID/client-build-identity.json"
++try {
++    & (Join-Path $repo 'scripts/dev.ps1') -Action $Action -ScriptPath $ScriptPath -Graphical:(-not $Headless) -RenderingMethod $Renderer -CommandTimeoutSeconds 180
++    if ($LASTEXITCODE) { throw "Review command failed: $LASTEXITCODE" }
++} finally {
++    $logName = if ($Action -eq 'Import') { 'import.log' } else { 'test-script.log' }
++    $logPath = Join-Path $repo "build/logs/$Action-$PID/$logName"
++    if (Test-Path -LiteralPath $logPath) {
++        $logDirectory = Join-Path $PSScriptRoot 'logs'
++        New-Item -ItemType Directory -Path $logDirectory -Force | Out-Null
++        Copy-Item -LiteralPath $logPath -Destination (Join-Path $logDirectory "run-$PID.log")
++    }
++    # Restore only this run's generated metadata; preserve concurrent source edits.
++    if (Test-Path -LiteralPath $receiptPath) {
++        $receipt = Get-Content -LiteralPath $receiptPath -Raw | ConvertFrom-Json
++        Copy-Item -LiteralPath $receiptPath -Destination (Join-Path $PSScriptRoot "logs/run-$PID-identity.json")
++        $identityNow = [IO.File]::ReadAllText($identityPath)
++        if ($identityNow.Contains('const ID: String = "' + $receipt.build_id + '"')) {
++            [IO.File]::WriteAllBytes($identityPath, $identityBytes)
++        }
++        $projectNow = [IO.File]::ReadAllText($projectPath)
++        $generatedVersion = 'config/version="' + $receipt.build_id + '"'
++        if ([regex]::Match($projectNow, '(?m)^config/version="[^"]*"').Value -ceq $generatedVersion) {
++            $restored = [regex]::Replace($projectNow, '(?m)^config/version="[^"]*"', $previousVersion)
++            if ($restored -cne $projectNow) {
++                [IO.File]::WriteAllText($projectPath, $restored, (New-Object Text.UTF8Encoding($false)))
++            }
++        }
++    }
++}
+diff --git a/docs/evidence/menu-logo-svg-2026-10-29/prepare_import.py b/docs/evidence/menu-logo-svg-2026-10-29/prepare_import.py
+new file mode 100644
+--- /dev/null
++++ b/docs/evidence/menu-logo-svg-2026-10-29/prepare_import.py
+@@ -0,0 +1,38 @@
++"""Prepare a minimal project for the pinned engine's SVG import and inspection."""
++from pathlib import Path
++import shutil
++import xml.etree.ElementTree as ET
++
++REPO = Path(__file__).resolve().parents[3]
++PROJECT = REPO / "build/menu-logo-svg-review/import"
++ET.register_namespace("", "http://www.w3.org/2000/svg")
++(PROJECT / "assets/menu").mkdir(parents=True, exist_ok=True)
++(PROJECT / "project.godot").write_text(
++    'config_version=5\n[application]\nconfig/name="Menu SVG import"\n'
++    '[rendering]\nrenderer/rendering_method="gl_compatibility"\n'
++)
++for suffix in ("svg", "svg.import"):
++    shutil.copy2(REPO / f"game/assets/menu/logo.{suffix}", PROJECT / f"assets/menu/logo.{suffix}")
++for kind, keep in (("mark", "b-mark"), ("text", "wordmark")):
++    layer = ET.parse(REPO / "game/assets/menu/logo.svg").getroot()
++    for item in list(layer):
++        if item.tag.endswith("g") and item.attrib.get("id") != keep:
++            layer.remove(item)
++    (PROJECT / f"{kind}.svg").write_text(ET.tostring(layer, encoding="unicode"))
++(PROJECT / "audit.gd").write_text('''extends SceneTree
++func _initialize() -> void:
++    var result: Dictionary = {}
++    for kind: String in ["mark", "text"]:
++        var picture := Image.new()
++        var error := picture.load_svg_from_string(FileAccess.get_file_as_string("res://" + kind + ".svg"))
++        if error != OK:
++            quit(1)
++            return
++        var bounds := picture.get_used_rect()
++        result[kind] = {"x":bounds.position.x,"y":bounds.position.y,"width":bounds.size.x,"height":bounds.size.y,"bottom":bounds.end.y}
++    print("LOGO_ALIGNMENT: " + JSON.stringify(result))
++    var file := FileAccess.open("res://../../../docs/evidence/menu-logo-svg-2026-10-29/alignment.json",FileAccess.WRITE)
++    file.store_string(JSON.stringify(result,"  "))
++    quit(0 if result.mark.y == result.text.y and result.mark.bottom == result.text.bottom else 1)
++''')
++print(f"Prepared SVG-only project at {PROJECT}")

@@ -77,7 +77,7 @@ func _run() -> void:
 
 func _check_top_speed(kart: HandlingConfig) -> void:
 	check(absf(kart.maximum_speed*3.6-140.0) < 0.001,"kart has the owner-requested 140 km/h cap")
-	check(kart.version == "kart-5","higher speed has a separate handling identity")
+	check(kart.version == "kart-11","current cornering tune retains a separate handling identity")
 	var previous: HandlingConfig = kart.duplicate() as HandlingConfig
 	previous.version = "kart-4"
 	previous.maximum_speed = 30.0

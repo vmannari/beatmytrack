@@ -1,0 +1,641 @@
+--- a/game/backend/backend_client.gd
++++ b/game/backend/backend_client.gd
+@@ -1069,6 +1069,37 @@
+ 	if int(_capabilities.get("non_improving_runs_version",0)) == 1: result.result = 1
+ 	return result
+ 
++static func _lap_tick_summary(seconds: Array[float], elapsed_ticks: int, tick_rate: int = 120) -> Array:
++	# RaceProof captures each lap at its ending simulation tick. Difference the
++	# absolute crossing ticks; rounding five fractional lap durations loses ticks.
++	if seconds.size() != 5 or elapsed_ticks < 1 or elapsed_ticks > 216000 or tick_rate < 1: return []
++	var laps: Array = []
++	var total_seconds: float = 0.0
++	var previous: int = 0
++	for duration: float in seconds:
++		if not is_finite(duration) or duration <= 0.0: return []
++		total_seconds += duration
++		if total_seconds*tick_rate > elapsed_ticks: return []
++		var boundary: int = ceili(total_seconds*tick_rate)
++		if boundary <= previous or boundary > elapsed_ticks: return []
++		laps.append(boundary-previous)
++		previous = boundary
++	return laps if previous == elapsed_ticks else []
++
++static func _rounded_lap_mismatch(count: int, rewinds: Array, claims: Array) -> bool:
++	# Only the old five-lap rounding error is recoverable here. Its invalid hint
++	# never produced a wire body; omit it and submit the unchanged path normally.
++	if not _whole(count,1,216000) or claims.size() != 5 or rewinds.size() > 3: return false
++	var total: int = 0
++	for value: Variant in claims:
++		if not _whole(value,1,216000): return false
++		total += int(value)
++	var elapsed: int = count
++	for event: Variant in rewinds:
++		if not event is Dictionary or not _whole(event.get("from_tick"),0,216000) or not _whole(event.get("to_tick"),0,216000): return false
++		elapsed -= int(event.from_tick)-int(event.to_tick)
++	return elapsed > 0 and elapsed-total in [-2,-1,1,2,3]
++
+ static func _pack_trajectory(count: int, proof: Dictionary, rewinds: Array, ghost: Dictionary = {}, include_incidents: bool = false, packed_path: bool = false, claimed_lap_ticks: Array = []) -> Dictionary:
+ 	# Normalize the small movement record without encoding/scanning control frames.
+ 	if not _whole(count,1,216000): return {}
+--- a/game/backend/cloud_tracks.gd
++++ b/game/backend/cloud_tracks.gd
+@@ -97,13 +97,24 @@
+ 	return result
+ 
+ static func _input_failure_repair(directory: String, filename: String, job: Dictionary) -> Dictionary:
+-	# Repair only the local encoder rejection introduced by the trajectory cutover.
++	# Repair only known local encoder failures, never a server rejection.
+ 	# This scan already runs on an owned I/O worker; keep large JSON off the UI.
+-	if job.get("failure") != "INVALID_REPLAY" or job.has("run_id") or job.has("done") or job.get("dismissed",false): return {}
++	if job.get("failure") not in ["INVALID_REPLAY","REPLAY_RECOVERY_REQUIRED"] or job.has("run_id") or job.has("done") or job.get("dismissed",false): return {}
+ 	if job.get("submission_schema") != "bmt-trajectory-v1" or not job.get("ticket") is String or not job.get("key") is String: return {}
+ 	var name: String = str(job.ticket).sha256_text()
+ 	if filename != name+".job.json" or job.get("replay") != name+".replay.json": return {}
+-	var packet: Dictionary = INPUT_RECOVERY.replay(_load_replay(directory.path_join(str(job.replay)),str(job.get("replay_hash",""))))
++	var recording: Dictionary = _load_replay(directory.path_join(str(job.replay)),str(job.get("replay_hash","")))
++	var packet: Dictionary
++	if job.get("failure") == "REPLAY_RECOVERY_REQUIRED":
++		var options: Variant = job.get("wire_options")
++		if recording.get("schema") != "bmt-local-trajectory-v1" or not options is Dictionary or options.size() != 3 or not Client._whole(options.get("result"),1,1) or not Client._whole(options.get("path"),0,1) or not options.get("incidents") is bool: return {}
++		var count: int = preload("res://race/input_record.gd").count(recording)
++		if not recording.get("claimed_lap_ticks") is Array or not recording.get("rewinds",[]) is Array: return {}
++		if not recording.get("race_proof") is Dictionary or not recording.get("ghost",{}) is Dictionary: return {}
++		if not Client._rounded_lap_mismatch(count,recording.get("rewinds",[]),recording.claimed_lap_ticks): return {}
++		packet = Client._pack_trajectory(count,recording.get("race_proof",{}),recording.get("rewinds",[]),recording.get("ghost",{}),options.incidents,int(options.path) == 1)
++	else:
++		packet = INPUT_RECOVERY.replay(recording)
+ 	if packet.is_empty(): return {}
+ 	var restored: Dictionary = job.duplicate(true)
+ 	for key: String in ["failure","rejection_status","retryable","retry_at","retry_server_at","retry_streak"]: restored.erase(key)
+@@ -971,6 +982,7 @@
+ 		if int(options.get("result",0)) == 1 and int(client._capabilities.get("non_improving_runs_version",0)) != 1:
+ 			return {"ok":false,"status":503,"error":"SUBMISSION_SERVER_UPDATE_REQUIRED","data":{}}
+ 		var claims: Array = loaded.get("claimed_lap_ticks",[]) if int(options.get("result",0)) == 1 else []
++		if Client._rounded_lap_mismatch(input_count,loaded.get("rewinds",[]),claims): claims = []
+ 		var encoded: Variant = await client._background(Client._pack_trajectory.bind(input_count,loaded.race_proof,loaded.get("rewinds",[]),loaded.get("ghost",{}),options.incidents,int(options.path) == 1,claims))
+ 		if origin != client.base_url() or owner != str(client.player.get("id","")): return {"ok":false,"status":0,"error":"ACCOUNT_CHANGED","data":{}}
+ 		if not _background_allowed(): return _deferred_background()
+--- a/game/core/app.gd
++++ b/game/core/app.gd
+@@ -4767,7 +4767,7 @@
+ 			if not incidents.is_empty(): proof.incidents = incidents
+ 			ticket_data["_race_proof"] = proof
+ 			ticket_data["_race_ghost_source"] = completed_game.ghost_run.snapshot_for_save()
+-			ticket_data["_claimed_lap_ticks"] = completed_game.track_session.lap_times.map(func(seconds: float) -> int: return roundi(seconds*120.0))
++			ticket_data["_claimed_lap_ticks"] = preload("res://backend/backend_client.gd")._lap_tick_summary(completed_game.track_session.lap_times,completed_game.track_session.elapsed_ticks,completed_game.track_session.tick_rate)
+ 	if not cloud.enqueue_completed(ticket_data,frames,publish_version,rewinds):
+ 		_notice("This recorded result could not enter the save queue. Keep this race open and free storage.")
+ 		return
+--- a/AGENTS.md
++++ b/AGENTS.md
+@@ -1,3 +1,8 @@
++<!-- RACE-RESULT-TICK-ROUNDING-20261027 -->
++## Restore uploads blocked by lap-summary rounding (2026-10-27)
++RTR01-RTR03/Q01: Reported Compact/Blind spot recording is intact: 11373 ticks versus independently rounded lap hint11371 blocks encoding locally, before server verification. Cumulative ceiling boundaries correct new summaries; exact saved paths with only the old bounded rounding mismatch omit the optional hint and follow normal verification. Startup restores those specific local failures while preserving bytes/tickets/keys, strict packing, corrupt/dismissed/server-submitted fences and expiry. Original47checks/3fail becomes93/0; retained recovery44/protocol25/App141 assertions and clean parser1335 pass. Original path independently accepts five laps in1.741ms; no live resubmission. Native sandbox certificate and initial fixture/CLI/import findings remain recorded. Runtime scope is Client/Cloud plus one App assignment; concurrent compatibility/render preparation remains excluded from the scoped checkpoint. Reload for normal saved-upload retry; live acceptance/device latency remain. No device attachment query/test, APK, cloud mutation/deployment, auth/purchase, owner-save mutation, owner-process restart or main-index staging/commit/merge. Commands, source hashes and task-only patch: docs/RACE_RESULT_TICK_ROUNDING_2026_10_27.md and docs/evidence/race-result-tick-rounding-2026-10-27/report.json.
++<!-- /RACE-RESULT-TICK-ROUNDING-20261027 -->
++
+ <!-- GARAGE-PRELOAD-20261027 -->
+ ## Preload the original live Garage before entry (2026-10-27)
+ GP01-GP04/R01/Q01: Owner requests preloading. After startup, selected-car/workshop/livery assets load with four-request bound; one original studio warms offscreen after2s idle in groups of at most8 matching geometry objects. Deliberate input/held touches/text focus/transitions/backgrounding pause between batches; race/loading and pressure retire optional work. Matching records/profile/car/paint/parts/wear transfer the same live world; unfinished/stale cases use normal live entry with decoded assets retained through construction. All held visibility/culling restores before handoff. No stock cover, substitute finishes, preload saves or canonical changes. Focused381headless/382Compatibility/382desktopMobile, App141/live-entry46/preloaded-reflections28/parser1330 pass; task-start2/1 expected failure. Fresh prepared entry callback68/78ms, live page610/481ms, startup167/153ms; cold warm-draw intervals2.64/3.72s remain, including other App rendering. Ready footprint estimated49.8MiB within existing96MiB budget; no phone/zero-stall claim. Initial fixture/parse/dummy-RID failures remain; headless assets serialize for its non-thread-safe allocator, native reads stay threaded. Four runtime sources; original renderer/material/model/physics and concurrent work preserved. Commands, native views, hashes and scoped patch: docs/GARAGE_PRELOAD_2026_10_27.md and docs/evidence/garage-preload-2026-10-27/report.json. Reload and owner/device latency/input/memory/appearance acceptance remain. No attachment/device test, APK, auth/purchase, owner-save/live mutation, deployment, main-index staging/commit/merge or owner-process restart.
+--- a/DEVELOPMENT_STATUS.md
++++ b/DEVELOPMENT_STATUS.md
+@@ -1,3 +1,8 @@
++<!-- RACE-RESULT-TICK-ROUNDING-20261027 -->
++## Race upload blocked by fractional-lap rounding (2026-10-27)
++RTR01-RTR03/Q01: Compact/Blind spot original proof passes five-lap verification offline; 11373 captured ticks versus11371 rounded hint ticks prevented any upload. New cumulative tick summaries and bounded recovery of the exact saved path restore normal verification without changing bytes/keys/tickets or validation/expiry. Focused93/0, retained recovery44/protocol25/App141 assertions and clean parser1335 pass; original path1.741ms. Reload and live/device acceptance remain. No live submission, owner-save mutation, deployment, device test, owner-process restart or main-index staging/commit/merge. Concurrent compatibility/render preparation preserved/excluded. Actual commands, failures and scoped checkpoint: docs/RACE_RESULT_TICK_ROUNDING_2026_10_27.md and docs/evidence/race-result-tick-rounding-2026-10-27/report.json.
++<!-- /RACE-RESULT-TICK-ROUNDING-20261027 -->
++
+ <!-- GARAGE-PRELOAD-20261027 -->
+ ## Preload the original live Garage before entry (2026-10-27)
+ GP01-GP04/R01/Q01: Owner requests preloading. After startup, selected-car/workshop/livery assets load with four-request bound; one original studio warms offscreen after2s idle in groups of at most8 matching geometry objects. Deliberate input/held touches/text focus/transitions/backgrounding pause between batches; race/loading and pressure retire optional work. Matching records/profile/car/paint/parts/wear transfer the same live world; unfinished/stale cases use normal live entry with decoded assets retained through construction. All held visibility/culling restores before handoff. No stock cover, substitute finishes, preload saves or canonical changes. Focused381headless/382Compatibility/382desktopMobile, App141/live-entry46/preloaded-reflections28/parser1330 pass; task-start2/1 expected failure. Fresh prepared entry callback68/78ms, live page610/481ms, startup167/153ms; cold warm-draw intervals2.64/3.72s remain, including other App rendering. Ready footprint estimated49.8MiB within existing96MiB budget; no phone/zero-stall claim. Initial fixture/parse/dummy-RID failures remain; headless assets serialize for its non-thread-safe allocator, native reads stay threaded. Four runtime sources; original renderer/material/model/physics and concurrent work preserved. Commands, native views, hashes and scoped patch: docs/GARAGE_PRELOAD_2026_10_27.md and docs/evidence/garage-preload-2026-10-27/report.json. Reload and owner/device latency/input/memory/appearance acceptance remain. No attachment/device test, APK, auth/purchase, owner-save/live mutation, deployment, main-index staging/commit/merge or owner-process restart.
+--- a/docs/PHASE_0_PLAN.md
++++ b/docs/PHASE_0_PLAN.md
+@@ -1,3 +1,8 @@
++<!-- RACE-RESULT-TICK-ROUNDING-20261027 -->
++## Race result tick rounding (2026-10-27)
++RTR01-RTR03/Q01: Correct cumulative lap-summary tick boundaries and recover exact saved recordings blocked by the old bounded rounding error. Normal server verification, ticket expiry, evidence bytes and retry identities remain. Focused93/0 and independent original Compact/Blind spot five-lap acceptance pass; reload/live/device acceptance remains. No live submission, deployment, owner-save mutation, device test, owner-process restart or main-index staging/commit/merge. Concurrent work remains. See docs/RACE_RESULT_TICK_ROUNDING_2026_10_27.md and its evidence report for actual commands/outcomes and the task-only checkpoint.
++<!-- /RACE-RESULT-TICK-ROUNDING-20261027 -->
++
+ <!-- STUDIO-USAGE-COSTS-20261027 -->
+ ## Studio Usage & costs and resource headroom (2026-10-27)
+ UC01-UC05: Implement the owner-requested private Usage & costs workspace. Ville alone is eligible for the partial API cost-per-active-player estimate; original global populations remain. Actual limits/current usage/hourly peaks or conservative bounds cover configured cloud CPU/memory/scaling/concurrency/SQL disk, connection pools/slots, verification/telemetry reservations and matching quota series. Initial75/90% warnings, stale/missing unknown states, bounded aggregate endpoint logs and optional100MB-capped detailed billing queries remain explicit. PostgreSQL88pass/one legacy fixture deselection with unchanged assertions rerun under explicit admin, focused31pass, saved-location2pass and real Edge9 checks pass. Live read-only operator preflight succeeds; no detailed billing export table is present in this project. Initial source/fixture/numeric/selector findings and a baseline-reproduced native verifier failure remain recorded. Rollout, workload IAM/actual Ville/billing connection and owner acceptance remain; no schema/game change, device attachment check/test, APK, cloud mutation/deployment, owner-process restart or main-index staging/commit/merge. Concurrent work preserved. Commands, screenshots, limits and task-only checkpoint: docs/STUDIO_USAGE_COSTS_2026_10_27.md and docs/evidence/studio-usage-costs-2026-10-27/report.json.
+--- a/docs/README.md
++++ b/docs/README.md
+@@ -1,4 +1,6 @@
+ # Documentation index
++
++- [Race result tick rounding (2026-10-27)](RACE_RESULT_TICK_ROUNDING_2026_10_27.md): correct the local lap-summary mismatch and recover intact saved uploads through normal verification.
+ 
+ - [Electric clean bonnet outline (2026-10-26)](ELECTRIC_CLEAN_BONNET_2026_10_26.md): independent physical taper, removed nose hooks and matched native comparisons.
+ - [Electric hood and wing correction (2026-10-26)](ELECTRIC_HOOD_FAIRING_2026_10_26.md): fair outer shoulder and matched shading; real-mesh regression and Garage comparison.
+--- /dev/null
++++ b/game/tests/test_result_tick_rounding.gd
+@@ -0,0 +1,105 @@
++extends "res://tests/test_pending_input_recovery.gd"
++## Completed-race summaries must use recorded tick boundaries after disk reload.
++
++func _cloud(service: Node) -> Node:
++	var cloud := Cloud.new()
++	cloud.client = service
++	cloud.root_override = ProjectSettings.globalize_path("res://../build/result-tick-rounding-2026-10-27/fixtures/"+TrackLibrary.unique_id())
++	root.add_child(cloud)
++	return cloud
++
++func run() -> void:
++	create_timer(40.0).timeout.connect(func() -> void: push_error("Result rounding test timed out"); quit(1))
++	var service := Service.new()
++	root.add_child(service)
++	service.configure("http://127.0.0.1:1")
++	service.player = {"id":"fixture-owner"}
++	service._capabilities = {"trajectory_verification":true,"submission_recovery_version":1,"non_improving_runs_version":1,"race_path_wire_version":1}
++	var cloud: Node = _cloud(service)
++	var proof: Dictionary = {"schema":"bmt-race-proof-v1","samples":[[0,0,0,0,0,0,0,0],[11373,1,2,0,0,0,0,0]]}
++	# The reported race had these exact integer totals, with intact local bytes.
++	var recording: Dictionary = {"schema":"bmt-local-trajectory-v1","input_count":11373,"race_proof":proof,"rewinds":[],"claimed_lap_ticks":[2331,2146,2514,2195,2185]}
++	var original: Dictionary = _saved(cloud,"rounding",recording)
++	original.submission_schema = "bmt-trajectory-v1"
++	original.wire_options = {"path":1,"incidents":false,"result":1}
++	var path: String = str(cloud.upload_job("rounding")._path)
++	var replay_path: String = path.get_base_dir().path_join(str(original.replay))
++	var before: int = service.writes.size()
++	var submitted: Dictionary = await cloud._submit_saved(original,path)
++	check(submitted.ok,"an intact race with the observed two-tick rounding gap uploads")
++	if service.writes.size() > before:
++		var packet: Dictionary = service.writes.back().body.replay
++		check(packet.input_count == 11373 and not packet.has("claimed_lap_ticks"),"old rounded hints are omitted without inventing lap times")
++		var disk: Dictionary = Cloud._load_replay(replay_path,str(original.replay_hash))
++		check(packet.race_proof == Client._pack_trajectory(11373,disk.race_proof,[],{},false,true).race_proof,"the original recorded path reaches normal verification unchanged")
++	check(FileAccess.get_sha256(replay_path) == original.replay_hash,"upload recovery preserves every replay byte")
++	# A clean restart discovers the local failure even after its marker was retired.
++	cloud.queue_free(); await process_frame
++	cloud = _cloud(service)
++	original = _saved(cloud,"restart-rounding",recording)
++	original.merge({"submission_schema":"bmt-trajectory-v1","wire_options":{"path":1,"incidents":false,"result":1},"failure":"REPLAY_RECOVERY_REQUIRED","rejection_status":422})
++	path = str(cloud.upload_job("restart-rounding")._path)
++	check(Cloud._write_file(path,original),"stranded rounding journal is durable")
++	await cloud.flush_outbox()
++	var repaired: Dictionary = cloud.upload_job("restart-rounding")
++	check(repaired.has("run_id") and not repaired.has("failure"),"restart automatically queues a locally blocked rounding failure")
++	check(repaired.key == original.key and repaired.replay_hash == original.replay_hash,"recovery retains the ticket, idempotency key and evidence hash")
++	# Retry uncertainty retains exactly the first submitted body and key.
++	var lost: Dictionary = _saved(cloud,"rounded-lost-reply",recording)
++	lost.merge({"submission_schema":"bmt-trajectory-v1","wire_options":{"path":1,"incidents":false,"result":1}})
++	path = str(cloud.upload_job("rounded-lost-reply")._path)
++	service.lose_reply = true
++	submitted = await cloud._submit_saved(lost,path)
++	check(not submitted.ok and submitted.error == "NETWORK_ERROR","lost reply retains upload uncertainty")
++	var first_write: Dictionary = service.writes.back().duplicate(true)
++	service.conflict = true
++	var disk_job: Dictionary = cloud.upload_job("rounded-lost-reply")
++	submitted = await cloud._submit_saved(disk_job,path)
++	check(submitted.ok and submitted.data.ticket_id == "rounded-lost-reply","an accepted retry resolves through the same ticket")
++	check(service.writes.back() == first_write,"disk reload preserves the exact recovered body and original key")
++	check(FileAccess.get_sha256(path.get_base_dir().path_join(str(lost.replay))) == lost.replay_hash,"lost replies preserve the original evidence")
++	var rounded_rewind: Array = [{"receipt_id":"11111111-1111-4111-8111-111111111111","input_offset":500,"from_tick":500,"to_tick":380}]
++	check(service.call("_rounded_lap_mismatch",11493,rounded_rewind,recording.claimed_lap_ticks),"recovered rounding uses the authorized rewind timeline's net duration")
++	# Negative controls: no broad repair of corrupt evidence or server decisions.
++	for kind: String in ["large-gap","fractional","boolean","missing-lap","hash","server-rejection","dismissed","already-submitted","bad-proof"]:
++		var bad_recording: Dictionary = recording.duplicate(true)
++		if kind == "large-gap": bad_recording.claimed_lap_ticks[0] = 1
++		if kind == "fractional": bad_recording.claimed_lap_ticks[0] = 2331.5
++		if kind == "boolean": bad_recording.claimed_lap_ticks[0] = true
++		if kind == "missing-lap": bad_recording.claimed_lap_ticks.pop_back()
++		if kind == "bad-proof": bad_recording.race_proof.samples[0] = [0]
++		var job: Dictionary = _saved(cloud,kind,bad_recording)
++		job.merge({"submission_schema":"bmt-trajectory-v1","wire_options":{"path":1,"incidents":false,"result":1},"failure":"REPLAY_RECOVERY_REQUIRED","rejection_status":422})
++		if kind == "hash": job.replay_hash = "a".repeat(64)
++		if kind == "server-rejection": job.failure = "invalid_replay"
++		if kind == "dismissed": job.dismissed = true
++		if kind == "already-submitted": job.run_id = "server-run"
++		path = str(cloud.upload_job(kind)._path)
++		check(Cloud._write_file(path,job),"negative fixture saves: "+kind)
++		var plans: Array[Dictionary] = Cloud._discover_pending(path.get_base_dir())
++		check(not plans.any(func(plan: Dictionary) -> bool: return plan.filename == path.get_file() and plan.has("repair")),"recovery preserves failure: "+kind)
++	# New summaries use absolute integer boundaries, not independent rounding.
++	check(service.has_method("_lap_tick_summary"),"completed races expose a tick-boundary summary")
++	if service.has_method("_lap_tick_summary"):
++		var seconds: Array[float] = [20.4/120.0,20.4/120.0,20.4/120.0,20.4/120.0,20.4/120.0]
++		var laps: Array = service.call("_lap_tick_summary",seconds,102,120)
++		check(laps == [21,20,21,20,20],"cumulative crossing ticks retain ticks lost by independent rounding")
++		check(not Client._pack_trajectory(102,proof,[],{},false,false,laps).is_empty(),"new summary satisfies the strict wire envelope")
++		check(service.call("_lap_tick_summary",seconds,103,120).is_empty(),"inconsistent capture duration omits the optional hint")
++		seconds[0] = NAN
++		check(service.call("_lap_tick_summary",seconds,102,120).is_empty(),"non-finite local timing cannot become a summary")
++		seconds = [0.01,0.01,0.01,0.01]
++		check(service.call("_lap_tick_summary",seconds,5,120).is_empty(),"incomplete laps produce no hint")
++		for variant: int in range(32):
++			var cumulative: Array[float] = [2331.01+variant*0.03,4477.99-variant*0.03,6991.1,9187.4,11372.068]
++			seconds.clear()
++			var previous: float = 0.0
++			for boundary: float in cumulative:
++				seconds.append((boundary-previous)/120.0)
++				previous = boundary
++			check(service.call("_lap_tick_summary",seconds,11373,120) == [2332,2146,2514,2196,2185],"fractional crossing boundaries remain exact: %d" % variant)
++	check(Client._pack_trajectory(11373,proof,[],{},false,false,recording.claimed_lap_ticks).is_empty(),"strict wire packing still rejects inconsistent hints")
++	cloud.queue_free(); service.queue_free()
++	await process_frame
++	print("RESULT_TICK_ROUNDING: %d checks, %d failures" % [checks,failures])
++	quit(1 if failures else 0)
+--- /dev/null
++++ b/docs/RACE_RESULT_TICK_ROUNDING_2026_10_27.md
+@@ -0,0 +1,112 @@
++# Race result tick rounding — 27 October 2026
++
++The reported Compact / Blind spot Weekly Rivalry recording is intact and passes
++the normal trajectory verifier offline, including all five ordered laps. Its
++upload was blocked locally before a Run entered the verification queue.
++
++**RTR01** diagnose the reported delay and failure; **RTR02** correct newly
++captured summaries; **RTR03** recover existing recordings without changing their
++evidence, ticket or idempotency identity; **Q01** retain strict validation and
++check the original recording offline.
++
++## Cause and correction
++
++The recording contains 11,373 input ticks. Independently rounding the five
++interpolated lap durations produced hints totalling 11,371 ticks. The strict
++client encoder therefore returned an empty packet and saved
++`REPLAY_RECOVERY_REQUIRED` / 422 without making a submission request. Rivalry
++continued polling the unsubmitted ticket while showing its pending state. The
++exact final live result response was not read; no server-side replay rejection
++is inferred from that label.
++
++New hints take differences between the ceilings of cumulative lap crossing
++times, matching the integer boundary samples recorded by RaceProof. An
++inconsistent or incomplete local timing summary is omitted. Displayed fractional
++lap times and canonical simulation remain unchanged.
++
++Old five-integer summaries with only the possible independent-rounding gap
++(-2 to +3 ticks relative to elapsed duration, excluding zero) are submitted
++without this optional negative-only hint. This restores the existing full path
++verification route; it never supplies invented lap times or a score. The strict
++wire encoder still rejects inconsistent summaries when explicitly supplied.
++
++Startup discovery also restores jobs stranded with this particular local encoder
++failure. It requires matching replay bytes, the original filename/ticket, the
++local recording schema and explicit negotiated options. Corrupt or malformed
++recordings, larger discrepancies, dismissed jobs and existing server submissions
++or rejections are preserved. Recording bytes, keys, rewind events and retry
++packet identity are retained. Server ticket expiry and acceptance rules remain.
++
++Runtime scope is `game/backend/backend_client.gd`, `game/backend/cloud_tracks.gd`
++and one assignment in `game/core/app.gd`. Concurrent race compatibility and race
++render preparation changes remain in place and are excluded from the task
++checkpoint.
++
++## Actual verification
++
++- Task-start regression: **47 checks / 3 failures**, reproducing upload failure,
++  absent automatic recovery and the missing cumulative-summary helper.
++- Final isolated native regression: **93 checks / 0 failures**, including exact
++  disk reload, original keys/hashes, lost reply and conflict recovery, rewind net
++  duration, 32 fractional-boundary cases and nine corruption/lifecycle controls.
++- Retained pending input recovery: **44 checks / 0 assertion failures**;
++  non-improving protocol: **25 / 0**; actual App composition: **141 / 0**.
++- Final clean pinned script parser: **1,335 scripts / 0 failures**. Concurrent
++  additions explain the earlier 1,333-script count.
++- Separate verification preparation tests: **27 passed**; trajectory integrity:
++  **31 passed**. The combined backend run has **53 passed / 25 setup errors**:
++  the existing disposable PostgreSQL listener is unavailable. A normal-access
++  socket check also receives connection refused. No backend assertion fails;
++  PostgreSQL coverage remains outstanding and is not counted as passing.
++- Read-only original recording check: its original summary fails the envelope;
++  omitting that summary accepts the original path in **1.741 ms**, at **11,373
++  ticks**, with verified lap ticks `[2332, 2146, 2514, 2196, 2185]`.
++- Ten nearby cloud verification completions take **0.2931–3.0185 seconds**, with
++  **0–1 seconds** of queue wait. No verification failure event was returned by
++  the bounded worker failure query. These are observations of nearby races,
++  not an end-to-end latency guarantee.
++
++The first local cloud CLI call failed because PowerShell execution policy chose
++the `.ps1` entrypoint; subsequent calls use `gcloud.cmd`. Initial normal-sandbox
++cloud calls could not write the SDK's authentication database, and the first
++normal-access call lacked the configured corporate trust bundle. Read-only
++queries succeeded with the project's existing trusted certificate bundle.
++No certificate validation was disabled. An initial pytest call lacked
++`PYTHONPATH`; it was rerun with the repository backend path.
++
++Early native invocations report the sandbox's root certificate store error even
++when all assertions pass. The final focused regression, parser and original
++recording check complete with clean process exits using normal OS access and
++isolated test data. An initial expected-path fixture compared JSON integer
++metadata before disk normalization, and shared upload pacing postponed a second
++fixture; the test now compares the actual disk representation and isolates that
++restart. Original failed logs are retained.
++
++## Commands and acceptance
++
++Use the pinned `C:/apps/Godot 4.7.2/Godot_v4.7.2-stable_win64_console.exe`, offline
++`BMT_API_URL`, isolated test data and absolute `--log-file` paths. Actual test
++scripts are `res://tests/test_result_tick_rounding.gd`,
++`res://tests/test_pending_input_recovery.gd`,
++`res://tests/test_non_improving_runs.gd`, `res://tests/test_app.gd` and
++`res://tests/test_script_parse.gd`, each with `--headless --path game --script`.
++The final focused run produces `build/result-tick-rounding-2026-10-27/final.log`.
++
++Backend commands use `.tools/backend-secure-venv/Scripts/python.exe -m pytest`
++with `PYTHONPATH` set to the absolute `backend` directory. Tests use explicitly
++isolated `--basetemp` directories under `build/result-tick-rounding-2026-10-27`.
++The read-only original recording check is
++`build/result-tick-rounding-2026-10-27/verify_owner_readonly.py`; it reads the
++original bytes, compiles the existing public Blind spot source and checks the
++path without authenticating or submitting anything. No private recording or
++recording fingerprint is included in the evidence artifacts.
++
++Reload the client to apply the fix and let its normal outbox retry eligible saved
++uploads. This task does not prove that the live race has subsequently been
++accepted. Owner/device end-to-end latency and acceptance remain. No physical
++device attachment query/test, APK, cloud deployment or mutation, owner-save
++mutation, authentication, purchase, owner-process restart, main-index staging,
++commit or merge was performed.
++
++Sources, outcomes and the task-only review checkpoint are in
++[the evidence report](evidence/race-result-tick-rounding-2026-10-27/report.json).
+--- /dev/null
++++ b/docs/evidence/race-result-tick-rounding-2026-10-27/app.log
+@@ -0,0 +1,17 @@
++Godot Engine v4.7.2.stable.official.ed1daf0bf - https://godotengine.org
++
++Godot_v4.7.2-stable_win64_console.exe : ERROR: Failed to read the root certificate store.
++At line:2 char:277
+++ ... ngine.log"; & "C:/apps/Godot 4.7.2/Godot_v4.7.2-stable_win64_console. ...
+++                 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
++    + CategoryInfo          : NotSpecified: (ERROR: Failed t...tificate store.:String) [], RemoteException
++    + FullyQualifiedErrorId : NativeCommandError
++ 
++   at: get_system_ca_certificates (platform/windows/os_windows.cpp:2582)
++APP_READY
++PLAYGROUND_READY
++PLAYGROUND_READY
++PLAYGROUND_READY
++APP_READY
++APP_RECORD_SAVE error=OK entries=1
++APP_TESTS: 141 checks, 0 failures
+--- /dev/null
++++ b/docs/evidence/race-result-tick-rounding-2026-10-27/baseline.log
+@@ -0,0 +1,41 @@
++Godot_v4.7.2-stable_win64_console.exe : WARNING: The path :user://.. is a reserved Windows system pipe, so it can't be 
++used for creating directories.
++At line:2 char:24
+++ ... I_URL = ""; & "C:/apps/Godot 4.7.2/Godot_v4.7.2-stable_win64_console. ...
+++                 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
++    + CategoryInfo          : NotSpecified: (WARNING: The pa...ng directories.:String) [], RemoteException
++    + FullyQualifiedErrorId : NativeCommandError
++ 
++   at: make_dir (drivers/windows/dir_access_windows.cpp:230)
++ERROR: Could not create directory: 'user://..'.
++   at: make_dir_recursive (core/io/dir_access.cpp:179)
++Godot Engine v4.7.2.stable.official.ed1daf0bf - https://godotengine.org
++
++ERROR: Failed to read the root certificate store.
++   at: get_system_ca_certificates (platform/windows/os_windows.cpp:2582)
++ERROR: an intact race with the observed two-tick rounding gap uploads
++   at: push_error (core/variant/variant_utility.cpp:1023)
++   GDScript backtrace (most recent call first):
++       [0] check (res://tests/test_pending_input_recovery.gd:40)
++       [1] run (res://tests/test_result_tick_rounding.gd:29)
++       [2] _submit_saved (res://backend/cloud_tracks.gd:977)
++       [3] _background (res://backend/backend_client.gd:684)
++ERROR: restart automatically queues a locally blocked rounding failure
++   at: push_error (core/variant/variant_utility.cpp:1023)
++   GDScript backtrace (most recent call first):
++       [0] check (res://tests/test_pending_input_recovery.gd:40)
++       [1] run (res://tests/test_result_tick_rounding.gd:43)
++       [2] flush_outbox (res://backend/cloud_tracks.gd:1045)
++       [3] _flush_jobs (res://backend/cloud_tracks.gd:1196)
++       [4] _submit_saved (res://backend/cloud_tracks.gd:977)
++       [5] _background (res://backend/backend_client.gd:684)
++ERROR: completed races expose a tick-boundary summary
++   at: push_error (core/variant/variant_utility.cpp:1023)
++   GDScript backtrace (most recent call first):
++       [0] check (res://tests/test_pending_input_recovery.gd:40)
++       [1] run (res://tests/test_result_tick_rounding.gd:64)
++       [2] flush_outbox (res://backend/cloud_tracks.gd:1045)
++       [3] _flush_jobs (res://backend/cloud_tracks.gd:1196)
++       [4] _submit_saved (res://backend/cloud_tracks.gd:977)
++       [5] _background (res://backend/backend_client.gd:684)
++RESULT_TICK_ROUNDING: 47 checks, 3 failures
+--- /dev/null
++++ b/docs/evidence/race-result-tick-rounding-2026-10-27/final-parser.log
+@@ -0,0 +1,3 @@
++Godot Engine v4.7.2.stable.official.ed1daf0bf - https://godotengine.org
++
++SCRIPT_PARSE: 1335 scripts, 0 failures
+--- /dev/null
++++ b/docs/evidence/race-result-tick-rounding-2026-10-27/final.log
+@@ -0,0 +1,3 @@
++Godot Engine v4.7.2.stable.official.ed1daf0bf - https://godotengine.org
++
++RESULT_TICK_ROUNDING: 93 checks, 0 failures
+--- /dev/null
++++ b/docs/evidence/race-result-tick-rounding-2026-10-27/fixed.log
+@@ -0,0 +1,11 @@
++Godot Engine v4.7.2.stable.official.ed1daf0bf - https://godotengine.org
++
++Godot_v4.7.2-stable_win64_console.exe : ERROR: Failed to read the root certificate store.
++At line:2 char:122
+++ ... ngine.log"; & "C:/apps/Godot 4.7.2/Godot_v4.7.2-stable_win64_console. ...
+++                 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
++    + CategoryInfo          : NotSpecified: (ERROR: Failed t...tificate store.:String) [], RemoteException
++    + FullyQualifiedErrorId : NativeCommandError
++ 
++   at: get_system_ca_certificates (platform/windows/os_windows.cpp:2582)
++RESULT_TICK_ROUNDING: 54 checks, 0 failures
+--- /dev/null
++++ b/docs/evidence/race-result-tick-rounding-2026-10-27/input-recovery.log
+@@ -0,0 +1,11 @@
++Godot Engine v4.7.2.stable.official.ed1daf0bf - https://godotengine.org
++
++Godot_v4.7.2-stable_win64_console.exe : ERROR: Failed to read the root certificate store.
++At line:2 char:296
+++ ... ngine.log"; & "C:/apps/Godot 4.7.2/Godot_v4.7.2-stable_win64_console. ...
+++                 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
++    + CategoryInfo          : NotSpecified: (ERROR: Failed t...tificate store.:String) [], RemoteException
++    + FullyQualifiedErrorId : NativeCommandError
++ 
++   at: get_system_ca_certificates (platform/windows/os_windows.cpp:2582)
++PENDING_INPUT_RECOVERY: 44 checks, 0 failures
+--- /dev/null
++++ b/docs/evidence/race-result-tick-rounding-2026-10-27/non-improving.log
+@@ -0,0 +1,11 @@
++Godot Engine v4.7.2.stable.official.ed1daf0bf - https://godotengine.org
++
++Godot_v4.7.2-stable_win64_console.exe : ERROR: Failed to read the root certificate store.
++At line:2 char:236
+++ ... ngine.log"; & "C:/apps/Godot 4.7.2/Godot_v4.7.2-stable_win64_console. ...
+++                 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
++    + CategoryInfo          : NotSpecified: (ERROR: Failed t...tificate store.:String) [], RemoteException
++    + FullyQualifiedErrorId : NativeCommandError
++ 
++   at: get_system_ca_certificates (platform/windows/os_windows.cpp:2582)
++NON_IMPROVING_RUNS: 25 checks, 0 failures
+--- /dev/null
++++ b/docs/evidence/race-result-tick-rounding-2026-10-27/report.json
+@@ -0,0 +1,166 @@
++{
++  "date": "2026-10-27",
++  "requirements": [
++    "RTR01",
++    "RTR02",
++    "RTR03",
++    "Q01"
++  ],
++  "result": "Client rounding fix implemented; original path accepted offline; reload/live acceptance outstanding",
++  "root_cause": {
++    "recording_integrity": true,
++    "input_ticks": 11373,
++    "rounded_hint_sum": 11371,
++    "local_failure": "REPLAY_RECOVERY_REQUIRED",
++    "submitted_run": false
++  },
++  "tests": {
++    "task_start": {
++      "checks": 47,
++      "failures": 3
++    },
++    "first_implementation": {
++      "checks": 54,
++      "failures": 2,
++      "cause": "Disk numeric metadata and shared fixture pacing; corrected fixture"
++    },
++    "final_focused": {
++      "checks": 93,
++      "failures": 0,
++      "clean_process_exit": 0
++    },
++    "pending_input_recovery": {
++      "checks": 44,
++      "assertion_failures": 0,
++      "sandbox_certificate_store_error": true
++    },
++    "non_improving_protocol": {
++      "checks": 25,
++      "assertion_failures": 0,
++      "sandbox_certificate_store_error": true
++    },
++    "actual_app": {
++      "checks": 141,
++      "assertion_failures": 0,
++      "sandbox_certificate_store_error": true
++    },
++    "final_parser": {
++      "scripts": 1335,
++      "failures": 0,
++      "clean_process_exit": 0
++    },
++    "backend_combined": {
++      "passed": 53,
++      "setup_errors": 25,
++      "warnings": 211,
++      "seconds": 323.85,
++      "cause": "Configured disposable PostgreSQL listener unavailable; normal-access probe also connection-refused"
++    },
++    "verification_preparation": {
++      "passed": 27,
++      "warnings": 86,
++      "seconds": 19.98
++    },
++    "trajectory_integrity": {
++      "passed": 31,
++      "warnings": 1,
++      "seconds": 0.14
++    }
++  },
++  "original_recording_readonly": {
++    "original_hint_rejected": true,
++    "unchanged_path_accepted": true,
++    "ordered_laps": 5,
++    "time_ticks": 11373,
++    "lap_ticks": [
++      2332,
++      2146,
++      2514,
++      2196,
++      2185
++    ],
++    "compute_ms": 1.741,
++    "owner_files_unchanged": true,
++    "authentication_or_submission": false,
++    "private_evidence_exported": false
++  },
++  "nearby_live_verification_observations": {
++    "completions": 10,
++    "verification_seconds_min": 0.2931,
++    "verification_seconds_max": 3.0185,
++    "queue_wait_seconds_max": 1,
++    "failure_query_matches": 0,
++    "not_an_end_to_end_guarantee": true
++  },
++  "runtime_files": [
++    "game/backend/backend_client.gd",
++    "game/backend/cloud_tracks.gd",
++    "game/core/app.gd"
++  ],
++  "source_sha256": {
++    "game/backend/backend_client.gd": {
++      "task_start": "69e053765a9bc797046c9ab8beff4da3ff28db26ddd494d4050637f341369df6",
++      "task_only_final": "41903710adc2ff24e12c06c59f322bb088e1a2033b8f20885a75332adab83eb1",
++      "working_copy_at_receipt": "d5b9d6f3195b6cf95b2326512ab5282b6cc808659e7595f1eb2af283d8f4297a"
++    },
++    "game/backend/cloud_tracks.gd": {
++      "task_start": "61293a9fbb1328c639fe60c0c6804b1932897bd6ff1ecbb6e3a8c37f2fb1d27b",
++      "task_only_final": "c478b8ae4eeccc0f2d15eb1992f44f41e78914730f19587ddf36202945fbba60",
++      "working_copy_at_receipt": "f768034c621c65e3214ae240eb9994fccfc97a1098af03a8dda5fde585dca877"
++    },
++    "game/core/app.gd": {
++      "task_start": "833bc157c0d39505f5cf42caca69ee4462ac961a7510763fcf9921d7f509b4d9",
++      "task_only_final": "ce08ba161a79e67a51a55da7a8a54069009b151f01a02a3524ab1d6a972f7ffd",
++      "working_copy_at_receipt": "c31e85f558650081672b33744751043b9c818c944385d4ca1d18f75d32d14c6e"
++    }
++  },
++  "concurrent_changes_preserved_and_excluded": [
++    "race compatibility helper/contract selection",
++    "race effect rendering preparation/cache pressure"
++  ],
++  "commands": [
++    "Pinned Godot --headless --path game --log-file <absolute task log> --script res://tests/test_result_tick_rounding.gd",
++    "Pinned Godot --headless --path game --log-file <absolute task log> --script res://tests/test_pending_input_recovery.gd",
++    "Pinned Godot --headless --path game --log-file <absolute task log> --script res://tests/test_non_improving_runs.gd",
++    "Pinned Godot --headless --path game --log-file <absolute task log> --script res://tests/test_app.gd",
++    "Pinned Godot --headless --path game --log-file <absolute task log> --script res://tests/test_script_parse.gd",
++    "python -m pytest backend/tests/test_non_improving_runs.py backend/tests/test_verification_preparation.py -q --basetemp build/result-tick-rounding-2026-10-27/pytest",
++    "python -u -m pytest backend/tests/test_verification_preparation.py -q -s --basetemp build/result-tick-rounding-2026-10-27/preparation-pytest",
++    "python -u -m pytest backend/tests/test_trajectory_integrity.py -q --tb=short --basetemp build/result-tick-rounding-2026-10-27/integrity-pytest",
++    "python build/result-tick-rounding-2026-10-27/verify_owner_readonly.py",
++    "gcloud.cmd logging read jsonPayload.event:verification --project=beat-my-track --freshness=3h --limit=50 --format=json(timestamp,resource,jsonPayload)",
++    "gcloud.cmd logging read <bounded worker failure filter> --project=beat-my-track --freshness=8h --limit=35"
++  ],
++  "environment": {
++    "engine": "4.7.2.stable.official.ed1daf0bf",
++    "python": ".tools/backend-secure-venv/Scripts/python.exe",
++    "pytest_pythonpath": "backend",
++    "test_data": "isolated task directories",
++    "tls_validation_disabled": false
++  },
++  "initial_environment_findings": [
++    "PowerShell gcloud.ps1 execution policy",
++    "SDK authentication DB sandbox write restriction",
++    "initial missing corporate CA bundle",
++    "initial pytest missing PYTHONPATH",
++    "native sandbox certificate-store error"
++  ],
++  "acceptance_remaining": [
++    "Reload/rebuild current client",
++    "Normal saved-upload retry within original ticket expiry",
++    "Live acceptance",
++    "Owner/device end-to-end latency",
++    "Unavailable local PostgreSQL cases"
++  ],
++  "not_performed": [
++    "Physical-device attachment query/test",
++    "APK",
++    "Live submission",
++    "Owner-save mutation",
++    "Cloud mutation/deployment",
++    "Authentication/purchase",
++    "Owner-process restart",
++    "Main-index staging/commit/merge"
++  ],
++  "checkpoint": "checkpoint.patch"
++}

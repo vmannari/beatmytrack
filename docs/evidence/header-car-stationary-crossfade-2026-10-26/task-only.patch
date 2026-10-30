@@ -1,0 +1,97 @@
+--- a/AGENTS.md
++++ b/AGENTS.md
+@@ -0,0 +1,5 @@
++<!-- HEADER-CAR-STATIONARY-CROSSFADE-20261026 -->
++## Stationary header car selection (2026-10-26)
++HSC01-HSC02/R01/Q01: Owner removes all selected-header-car movement. Keep the0.24s crossfade but remove incoming offset and both position tweens; both pictures share one fixed rectangle. Strengthened zero-position checks replace the superseded sliding envelope, retaining actual fitting, all seven cars, three sizes, navigation/account/save and lifetime guards. Native Compatibility556 passes with13 captures. Runtime scope is profile_car.gd; App/dropdown motion/images/studio factory and concurrent work remain. Commands, native view, original sources, hashes and scoped checkpoint: docs/HEADER_CAR_STATIONARY_CROSSFADE_2026_10_26.md and docs/evidence/header-car-stationary-crossfade-2026-10-26/report.json. Reload and owner/device acceptance remain. No attachment/device test, APK, purchase, live mutation, deployment, staging/commit/merge or owner-process restart.
++<!-- /HEADER-CAR-STATIONARY-CROSSFADE-20261026 -->
++
+--- a/DEVELOPMENT_STATUS.md
++++ b/DEVELOPMENT_STATUS.md
+@@ -0,0 +1,5 @@
++<!-- HEADER-CAR-STATIONARY-CROSSFADE-20261026 -->
++## Stationary header car selection (2026-10-26)
++HSC01-HSC02/R01/Q01: Owner removes all selected-header-car movement. Keep the0.24s crossfade but remove incoming offset and both position tweens; both pictures share one fixed rectangle. Strengthened zero-position checks replace the superseded sliding envelope, retaining actual fitting, all seven cars, three sizes, navigation/account/save and lifetime guards. Native Compatibility556 passes with13 captures. Runtime scope is profile_car.gd; App/dropdown motion/images/studio factory and concurrent work remain. Commands, native view, original sources, hashes and scoped checkpoint: docs/HEADER_CAR_STATIONARY_CROSSFADE_2026_10_26.md and docs/evidence/header-car-stationary-crossfade-2026-10-26/report.json. Reload and owner/device acceptance remain. No attachment/device test, APK, purchase, live mutation, deployment, staging/commit/merge or owner-process restart.
++<!-- /HEADER-CAR-STATIONARY-CROSSFADE-20261026 -->
++
+--- a/docs/PHASE_0_PLAN.md
++++ b/docs/PHASE_0_PLAN.md
+@@ -0,0 +1,5 @@
++<!-- HEADER-CAR-STATIONARY-CROSSFADE-20261026 -->
++## Stationary header car selection (2026-10-26)
++HSC01-HSC02/R01/Q01: Owner removes all selected-header-car movement. Keep the0.24s crossfade but remove incoming offset and both position tweens; both pictures share one fixed rectangle. Strengthened zero-position checks replace the superseded sliding envelope, retaining actual fitting, all seven cars, three sizes, navigation/account/save and lifetime guards. Native Compatibility556 passes with13 captures. Runtime scope is profile_car.gd; App/dropdown motion/images/studio factory and concurrent work remain. Commands, native view, original sources, hashes and scoped checkpoint: docs/HEADER_CAR_STATIONARY_CROSSFADE_2026_10_26.md and docs/evidence/header-car-stationary-crossfade-2026-10-26/report.json. Reload and owner/device acceptance remain. No attachment/device test, APK, purchase, live mutation, deployment, staging/commit/merge or owner-process restart.
++<!-- /HEADER-CAR-STATIONARY-CROSSFADE-20261026 -->
++
+--- a/game/ui/profile_car.gd
++++ b/game/ui/profile_car.gd
+@@ -61,7 +61,7 @@
+ 	elif _change == null:
+ 		_change_picture()
+ 	# Coalesce rapid selections until the current blend completes. Only the
+-	# latest requested car follows it, keeping two pictures and continuous motion.
++	# latest requested car follows it, keeping two pictures in the same fixed slot.
+ 
+ func _picture() -> TextureRect:
+ 	var picture := TextureRect.new()
+@@ -82,13 +82,11 @@
+ 	MenuStyle.fill(_outgoing)
+ 	preview.texture = target
+ 	preview.modulate.a = 0.0
+-	preview.position.x = 8.0
++	MenuStyle.fill(preview)
+ 	_change = create_tween().set_parallel(true)
+ 	_change.set_trans(Tween.TRANS_CUBIC).set_ease(Tween.EASE_OUT)
+ 	_change.tween_property(_outgoing,"modulate:a",0.0,CHANGE_SECONDS)
+-	_change.tween_property(_outgoing,"position:x",-6.0,CHANGE_SECONDS)
+ 	_change.tween_property(preview,"modulate:a",1.0,CHANGE_SECONDS)
+-	_change.tween_property(preview,"position:x",0.0,CHANGE_SECONDS)
+ 	_change.finished.connect(_change_finished)
+ 
+ func _clear_outgoing() -> void:
+--- a/game/tests/test_header_car_icon_transition.gd
++++ b/game/tests/test_header_car_icon_transition.gd
+@@ -31,8 +31,8 @@
+ 		if not child is TextureRect: continue
+ 		# Observe the image rectangles, independently of the outer retained slot.
+ 		valid = valid and child.size.is_equal_approx(icon.size)
+-		valid = valid and is_zero_approx(child.position.y) and child.position.x >= -6.01 and child.position.x <= 8.01
+-	check(valid,"picture dimensions remain inside the animation envelope: "+label)
++		valid = valid and child.position.is_equal_approx(Vector2.ZERO)
++	check(valid,"both pictures stay in the same fixed rectangle: "+label)
+ 	if icon._change == null:
+ 		check(icon.preview.get_rect().is_equal_approx(Rect2(Vector2.ZERO,icon.size)),"settled picture fills its exact slot: "+label)
+ 
+@@ -98,7 +98,7 @@
+ 		icon.refresh()
+ 		check(icon._change == current,"unchanged refresh does not restart: "+vehicle)
+ 		await create_timer(0.07).timeout
+-		check(preview.modulate.a > 0.0 and preview.modulate.a < 1.0 and preview.position.x > 0.0,"visible intermediate blend: "+vehicle)
++		check(preview.modulate.a > 0.0 and preview.modulate.a < 1.0 and preview.position == Vector2.ZERO,"visible stationary intermediate blend: "+vehicle)
+ 		picture_bounds(icon,"mid-change "+vehicle)
+ 		await create_timer(0.25).timeout
+ 		check(settled(icon,vehicle) and icon.get_child_count() == 1,"exact endpoint and cleanup: "+vehicle)
+--- /dev/null
++++ b/docs/HEADER_CAR_STATIONARY_CROSSFADE_2026_10_26.md
+@@ -0,0 +1,22 @@
++# Stationary selected-car crossfade (2026-10-26)
++
++HSC01: Keep the header car stationary when selecting another car. HSC02/R01/Q01: Retain the smooth fade, exact fitting, selection/save and lifetime guards, with native evidence and a scoped checkpoint.
++
++The owner rejects the sideways movement after selection. `game/ui/profile_car.gd` now changes opacity only: both outgoing and incoming pictures fill the same fixed icon rectangle throughout the existing 0.24-second crossfade. The eight-unit incoming offset and both horizontal position tweens are removed. Initial display, rapid-selection coalescing, clipping, anchor reset, cached pictures, native dropdown behavior and cleanup remain.
++
++The retained transition test now requires zero position for both pictures during the blend and through repeated navigation. This strengthens the previous -6 to +8 movement envelope; the old positive incoming-position assertion is superseded by the owner's explicit no-movement request. Alpha progression, actual picture sizes, all seven cars, three window sizes, reattachment, navigation, account replacement, saving and teardown assertions remain.
++
++Actual command used pinned Godot 4.7.2, reviewed Windows certificate-store access, unique isolated records and a disabled API connection:
++
++```powershell
++$env:APPDATA = Join-Path (Get-Location) 'build/header-car-stationary-crossfade-appdata'
++$env:LOCALAPPDATA = $env:APPDATA
++$env:BMT_HEADER_ICON_OUTPUT = 'res://../docs/evidence/header-car-stationary-crossfade-2026-10-26/native'
++powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1 -Action TestScript -ScriptPath res://tests/test_header_car_icon_transition.gd -Graphical -RenderingMethod gl_compatibility -CommandTimeoutSeconds 240
++```
++
++All **556 native Compatibility checks pass**, including thirteen capture writes. The mid-selection frame was visually inspected. Runtime scope is the selected-picture transition in `profile_car.gd`; the static studio/camera factory text, App, dropdown opening/closing motion, images and concurrent work remain untouched. The focused native run compiles the changed scripts; no broader parser or regression pass is claimed for this small revision.
++
++Review the [stationary crossfade](evidence/header-car-stationary-crossfade-2026-10-26/native/gl_compatibility/keyboard-change-middle.png) and [Create view](evidence/header-car-stationary-crossfade-2026-10-26/native/gl_compatibility/create-electric-1411.png). Original sources, actual log, raw report, hashes and the task-only patch are under `docs/evidence/header-car-stationary-crossfade-2026-10-26/`. The patch is checked in reverse against current files and forward against exact task-start copies.
++
++Reload and owner appearance/touch acceptance remain. No physical-device attachment check or test, APK, real authentication/purchase, live account/backend mutation, deployment, staging, commit, merge or owner-process restart was performed.

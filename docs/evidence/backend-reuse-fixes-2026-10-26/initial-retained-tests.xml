@@ -1,0 +1,240 @@
+<?xml version="1.0" encoding="utf-8"?><testsuites name="pytest tests"><testsuite name="pytest" errors="0" failures="7" skipped="0" tests="48" time="76.084" timestamp="2026-10-26T20:47:27.689385+02:00" hostname="DESKTOP-96E8L9N"><testcase classname="tests.test_rivalry" name="test_exact_eligibility_and_official_provenance[sqlite]" time="2.704" /><testcase classname="tests.test_rivalry" name="test_insufficient_tracks_no_fabricated_field[sqlite]" time="1.566" /><testcase classname="tests.test_rivalry" name="test_blocks_and_quarantine_hide_pinned_content_without_changing_membership[sqlite]" time="1.757" /><testcase classname="tests.test_rivalry" name="test_random_pinned_unique_selection_idempotent_membership_and_private_views[sqlite]" time="1.698" /><testcase classname="tests.test_rivalry" name="test_verified_weekly_bests_points_ties_and_no_attempt_farming[sqlite]" time="2.292" /><testcase classname="tests.test_rivalry" name="test_skill_uses_verified_comparable_percentiles_and_separates_placement[sqlite]" time="1.467" /><testcase classname="tests.test_rivalry" name="test_deadline_settlement_and_continue_no_claimed_rewards[sqlite]" time="1.627"><failure message="AssertionError: assert 'active' == 'settling'&#10;  &#10;  - settling&#10;  + active">rivalry_domain = namespace(app=&lt;fastapi.applications.FastAPI object at 0x000001504F525510&gt;, client=&lt;starlette.testclient.TestClient obj...731d', 'Bob': '0ab6d2b1-6c89-4f8b-b29d-b673afa2b22d', 'Carol': '41c85de6-cfa8-4e8a-8187-167c020680fe'}, postgres=False)
+monkeypatch = &lt;_pytest.monkeypatch.MonkeyPatch object at 0x000001504FB63BB0&gt;
+
+    def test_deadline_settlement_and_continue_no_claimed_rewards(rivalry_domain, monkeypatch):
+        seed(rivalry_domain)
+        original = join(rivalry_domain)
+        issued = rivalry_ticket(rivalry_domain, original["group_id"])
+        abandoned = rivalry_ticket(rivalry_domain, original["group_id"])
+        submit(rivalry_domain, issued, "Alice", frames=20)
+        monkeypatch.setattr("bmt_backend.rivalry.now", lambda: original["ends_at"])
+        at_end = rivalry_domain.client.get(f"/v1/rivalry/{original['group_id']}", headers=headers(rivalry_domain,"Alice")).json()
+&gt;       assert at_end["state"] == "settling"
+E       AssertionError: assert 'active' == 'settling'
+E         
+E         - settling
+E         + active
+
+backend\tests\test_rivalry.py:225: AssertionError</failure></testcase><testcase classname="tests.test_rivalry" name="test_group_capacity_and_repeat_joins[sqlite]" time="2.024" /><testcase classname="tests.test_rivalry" name="test_five_track_championship_golden_points[sqlite]" time="2.711" /><testcase classname="tests.test_rivalry" name="test_official_flag_cannot_be_claimed_by_player_or_display_name[sqlite]" time="1.324" /><testcase classname="tests.test_rivalry" name="test_monday_utc_window" time="0.001" /><testcase classname="tests.test_rivalry_awards" name="test_finale_personal_bests_verified_distinct_and_player_scoped[sqlite]" time="2.106"><failure message="AssertionError: assert ('active' == 'complete'&#10;  &#10;  - complete&#10;  + active)">rivalry_domain = namespace(app=&lt;fastapi.applications.FastAPI object at 0x0000015050327BB0&gt;, client=&lt;starlette.testclient.TestClient obj...3691', 'Bob': '2cf8577c-9c4c-4cd4-9c8d-0fc184c053df', 'Carol': '9b5f00f5-ab99-413d-ac70-d25df8020c39'}, postgres=False)
+monkeypatch = &lt;_pytest.monkeypatch.MonkeyPatch object at 0x000001505146B220&gt;
+
+    def test_finale_personal_bests_verified_distinct_and_player_scoped(rivalry_domain, monkeypatch):
+        seed(rivalry_domain)
+        original = join(rivalry_domain)
+        group = original["group_id"]
+        join(rivalry_domain, "Bob")
+        for frames, expected in [(20, True), (20, False), (25, False), (19, True)]:
+            issued = rivalry_ticket(rivalry_domain, group)
+            submit(rivalry_domain, issued, "Alice", frames=frames)
+            queued = rivalry_domain.client.get(f"/v1/rivalry/{group}", headers=headers(rivalry_domain, "Alice")).json()
+            assert queued["personal_best_slots"] == []
+            assert process_one(rivalry_domain.app)
+            outcome = rivalry_domain.client.get(f"/v1/rivalry/tickets/{issued['ticket_id']}/result", headers=headers(rivalry_domain, "Alice")).json()["outcome"]
+            assert outcome["personal_best"] is expected
+        issued = rivalry_ticket(rivalry_domain, group, "Bob", slot=1)
+        submit(rivalry_domain, issued, "Bob", frames=15)
+        assert process_one(rivalry_domain.app)
+        monkeypatch.setattr("bmt_backend.rivalry.now", lambda: original["ends_at"])
+        alice = rivalry_domain.client.get(f"/v1/rivalry/{group}", headers=headers(rivalry_domain, "Alice")).json()
+        bob = rivalry_domain.client.get(f"/v1/rivalry/{group}", headers=headers(rivalry_domain, "Bob")).json()
+&gt;       assert alice["state"] == "complete" and alice["personal_best_slots"] == [0]
+E       AssertionError: assert ('active' == 'complete'
+E         
+E         - complete
+E         + active)
+
+backend\tests\test_rivalry_awards.py:32: AssertionError</failure></testcase><testcase classname="tests.test_rivalry_awards" name="test_historical_missing_pb_evidence_is_not_invented[sqlite]" time="1.671"><failure message="AssertionError: assert ('active' == 'complete'&#10;  &#10;  - complete&#10;  + active)">rivalry_domain = namespace(app=&lt;fastapi.applications.FastAPI object at 0x00000150514A7880&gt;, client=&lt;starlette.testclient.TestClient obj...601e', 'Bob': '7fedd745-1f36-48ea-b914-bdc6393e196e', 'Carol': 'c3996be0-c520-4efa-9deb-f6a6debff467'}, postgres=False)
+monkeypatch = &lt;_pytest.monkeypatch.MonkeyPatch object at 0x0000015051C7F760&gt;
+
+    def test_historical_missing_pb_evidence_is_not_invented(rivalry_domain, monkeypatch):
+        seed(rivalry_domain)
+        original = join(rivalry_domain)
+        group = original["group_id"]
+        issued = rivalry_ticket(rivalry_domain, group)
+        submit(rivalry_domain, issued, "Alice", frames=20)
+        assert process_one(rivalry_domain.app)
+        with rivalry_domain.factory() as session:
+            ticket = session.get(RivalryTicket, issued["ticket_id"])
+            ticket.outcome = {key: value for key, value in ticket.outcome.items() if key != "personal_best"}
+            session.commit()
+            before = session.scalars(select(RivalryTicket.outcome).where(RivalryTicket.group_id == group)).all()
+        monkeypatch.setattr("bmt_backend.rivalry.now", lambda: original["ends_at"])
+        value = rivalry_domain.client.get(f"/v1/rivalry/{group}", headers=headers(rivalry_domain, "Alice")).json()
+&gt;       assert value["state"] == "complete" and value["personal_best_slots"] == []
+E       AssertionError: assert ('active' == 'complete'
+E         
+E         - complete
+E         + active)
+
+backend\tests\test_rivalry_awards.py:53: AssertionError</failure></testcase><testcase classname="tests.test_rivalry_appearance" name="test_catalog_matches_native_assets" time="0.002" /><testcase classname="tests.test_rivalry_appearance" name="test_players_share_their_own_parts_and_livery_without_changing_scores[sqlite]" time="1.384" /><testcase classname="tests.test_rivalry_appearance" name="test_untrusted_appearance_is_rejected[sqlite-path0-../compact]" time="1.146" /><testcase classname="tests.test_rivalry_appearance" name="test_untrusted_appearance_is_rejected[sqlite-path1-another-player]" time="1.194" /><testcase classname="tests.test_rivalry_appearance" name="test_untrusted_appearance_is_rejected[sqlite-path2-value2]" time="1.728" /><testcase classname="tests.test_rivalry_appearance" name="test_untrusted_appearance_is_rejected[sqlite-path3-unknown]" time="1.269" /><testcase classname="tests.test_rivalry_appearance" name="test_untrusted_appearance_is_rejected[sqlite-path4-ff0000ff]" time="1.230" /><testcase classname="tests.test_rivalry_appearance" name="test_untrusted_appearance_is_rejected[sqlite-path5-30627]" time="1.161" /><testcase classname="tests.test_rivalry_appearance" name="test_untrusted_appearance_is_rejected[sqlite-path6-https://example.com/a.png]" time="1.562" /><testcase classname="tests.test_rivalry_appearance" name="test_untrusted_appearance_is_rejected[sqlite-path7--0.001]" time="1.767" /><testcase classname="tests.test_rivalry_appearance" name="test_untrusted_appearance_is_rejected[sqlite-path8-0.951]" time="1.058" /><testcase classname="tests.test_rivalry_appearance" name="test_untrusted_appearance_is_rejected[sqlite-path9-181]" time="1.172" /><testcase classname="tests.test_rivalry_appearance" name="test_untrusted_appearance_is_rejected[sqlite-path10-0.5]" time="1.228" /><testcase classname="tests.test_rivalry_appearance" name="test_untrusted_appearance_is_rejected[sqlite-path11-arbitrary_mesh]" time="1.253" /><testcase classname="tests.test_rivalry_appearance" name="test_untrusted_appearance_is_rejected[sqlite-path12-2]" time="1.357" /><testcase classname="tests.test_rivalry_appearance" name="test_untrusted_appearance_is_rejected[sqlite-path13-1]" time="2.192" /><testcase classname="tests.test_rivalry_appearance" name="test_untrusted_appearance_is_rejected[sqlite-path14-xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx]" time="1.437" /><testcase classname="tests.test_rivalry_appearance" name="test_untrusted_appearance_is_rejected[sqlite-path15-True]" time="1.222" /><testcase classname="tests.test_rivalry_appearance" name="test_untrusted_appearance_is_rejected[sqlite-path16-2.0]" time="1.196" /><testcase classname="tests.test_rivalry_appearance" name="test_all_allowed_assets_and_vehicle_bounds[sqlite]" time="3.246" /><testcase classname="tests.test_rivalry_appearance" name="test_authentication_and_deletion_clear_online_appearance[sqlite]" time="1.403" /><testcase classname="tests.test_rivalry_week_completion" name="test_finale_uses_latest_membership_when_builds_changed_in_the_same_week[sqlite-False]" time="1.527"><failure message="AssertionError: assert 'active' == 'complete'&#10;  &#10;  - complete&#10;  + active">rivalry_domain = namespace(app=&lt;fastapi.applications.FastAPI object at 0x000001505B369A80&gt;, client=&lt;starlette.testclient.TestClient obj...41dc', 'Bob': '0f782564-cab9-49c1-8c94-2b446228cf13', 'Carol': '62982a31-a3ba-4cae-88b4-9c5d3d013934'}, postgres=False)
+monkeypatch = &lt;_pytest.monkeypatch.MonkeyPatch object at 0x000001505B8E6320&gt;
+older_group_created_later = False
+
+    @pytest.mark.parametrize("older_group_created_later", [False, True])
+    def test_finale_uses_latest_membership_when_builds_changed_in_the_same_week(
+            rivalry_domain, monkeypatch, older_group_created_later):
+        seed(rivalry_domain)
+        timestamp = now()
+        monkeypatch.setattr("bmt_backend.rivalry.now", lambda: timestamp)
+        latest = join(rivalry_domain)
+        empty = {"group_id": "00000000-0000-4000-8000-000000000001"}
+        alice = rivalry_domain.players["Alice"]
+        # Preserve an earlier build's empty membership. Its contract sorts
+        # first in the week index, reproducing the cloud's obsolete finale choice.
+        with rivalry_domain.factory() as session:
+            source = session.get(RivalryGroup, latest["group_id"])
+            group = RivalryGroup(id=empty["group_id"], week_start=source.week_start,
+                ends_at=source.ends_at, vehicle_id=source.vehicle_id, contract_key="f" * 64,
+                skill_band=source.skill_band, tracks=source.tracks, member_count=1,
+                created_at=timestamp + (200 if older_group_created_later else 0))
+            session.add(group)
+            session.flush()
+            session.add(RivalryMember(group_id=group.id, player_id=alice,
+                week_start=group.week_start, contract_key=group.contract_key, joined_at=timestamp))
+            source.created_at = timestamp + 100
+            session.get(RivalryMember, (source.id, alice)).joined_at = timestamp + 100
+            session.commit()
+        timestamp += 100
+        assert latest["group_id"] != empty["group_id"]
+        join(rivalry_domain, "Bob")
+        issued = rivalry_ticket(rivalry_domain, latest["group_id"], "Bob")
+        submit(rivalry_domain, issued, "Bob", frames=20)
+        assert process_one(rivalry_domain.app)
+        verified = current(rivalry_domain)
+        assert verified["group_id"] == latest["group_id"]
+        assert next(row for row in verified["standings"] if row["name"] == "Bob")["points"] == 30
+    
+        timestamp = latest["ends_at"]
+        finale = current(rivalry_domain)
+        assert finale["group_id"] == latest["group_id"]
+&gt;       assert finale["state"] == "complete"
+E       AssertionError: assert 'active' == 'complete'
+E         
+E         - complete
+E         + active
+
+backend\tests\test_rivalry_week_completion.py:59: AssertionError</failure></testcase><testcase classname="tests.test_rivalry_week_completion" name="test_finale_uses_latest_membership_when_builds_changed_in_the_same_week[sqlite-True]" time="2.280"><failure message="AssertionError: assert 'active' == 'complete'&#10;  &#10;  - complete&#10;  + active">rivalry_domain = namespace(app=&lt;fastapi.applications.FastAPI object at 0x000001505B927160&gt;, client=&lt;starlette.testclient.TestClient obj...2f17', 'Bob': 'fd06ee2d-4844-470e-b8f0-83f95f4491c2', 'Carol': 'ca589106-ae59-492e-ad33-6d10a44b2599'}, postgres=False)
+monkeypatch = &lt;_pytest.monkeypatch.MonkeyPatch object at 0x000001505C0C0B20&gt;
+older_group_created_later = True
+
+    @pytest.mark.parametrize("older_group_created_later", [False, True])
+    def test_finale_uses_latest_membership_when_builds_changed_in_the_same_week(
+            rivalry_domain, monkeypatch, older_group_created_later):
+        seed(rivalry_domain)
+        timestamp = now()
+        monkeypatch.setattr("bmt_backend.rivalry.now", lambda: timestamp)
+        latest = join(rivalry_domain)
+        empty = {"group_id": "00000000-0000-4000-8000-000000000001"}
+        alice = rivalry_domain.players["Alice"]
+        # Preserve an earlier build's empty membership. Its contract sorts
+        # first in the week index, reproducing the cloud's obsolete finale choice.
+        with rivalry_domain.factory() as session:
+            source = session.get(RivalryGroup, latest["group_id"])
+            group = RivalryGroup(id=empty["group_id"], week_start=source.week_start,
+                ends_at=source.ends_at, vehicle_id=source.vehicle_id, contract_key="f" * 64,
+                skill_band=source.skill_band, tracks=source.tracks, member_count=1,
+                created_at=timestamp + (200 if older_group_created_later else 0))
+            session.add(group)
+            session.flush()
+            session.add(RivalryMember(group_id=group.id, player_id=alice,
+                week_start=group.week_start, contract_key=group.contract_key, joined_at=timestamp))
+            source.created_at = timestamp + 100
+            session.get(RivalryMember, (source.id, alice)).joined_at = timestamp + 100
+            session.commit()
+        timestamp += 100
+        assert latest["group_id"] != empty["group_id"]
+        join(rivalry_domain, "Bob")
+        issued = rivalry_ticket(rivalry_domain, latest["group_id"], "Bob")
+        submit(rivalry_domain, issued, "Bob", frames=20)
+        assert process_one(rivalry_domain.app)
+        verified = current(rivalry_domain)
+        assert verified["group_id"] == latest["group_id"]
+        assert next(row for row in verified["standings"] if row["name"] == "Bob")["points"] == 30
+    
+        timestamp = latest["ends_at"]
+        finale = current(rivalry_domain)
+        assert finale["group_id"] == latest["group_id"]
+&gt;       assert finale["state"] == "complete"
+E       AssertionError: assert 'active' == 'complete'
+E         
+E         - complete
+E         + active
+
+backend\tests\test_rivalry_week_completion.py:59: AssertionError</failure></testcase><testcase classname="tests.test_rivalry_week_completion" name="test_continue_skips_all_older_finales_with_scoped_idempotency[sqlite]" time="1.670"><failure message="AssertionError: assert (200 == 200 and 'active' == 'complete'&#10; +  where 200 = &lt;Response [200 OK]&gt;.status_code&#10;  &#10;  - complete&#10;  + active)">rivalry_domain = namespace(app=&lt;fastapi.applications.FastAPI object at 0x000001505C160850&gt;, client=&lt;starlette.testclient.TestClient obj...8751', 'Bob': 'fe218b60-d2fc-4489-8e31-ce3528739afa', 'Carol': '2b228d45-7879-4bde-b395-cd3588392c5b'}, postgres=False)
+monkeypatch = &lt;_pytest.monkeypatch.MonkeyPatch object at 0x000001505C4EE830&gt;
+
+    def test_continue_skips_all_older_finales_with_scoped_idempotency(rivalry_domain, monkeypatch):
+        seed(rivalry_domain)
+        timestamp = week_window(1791763200)[0] + 3600
+        monkeypatch.setattr("bmt_backend.rivalry.now", lambda: timestamp)
+        histories = []
+        for _ in range(3):
+            histories.append(join(rivalry_domain))
+            join(rivalry_domain, "Bob")
+            timestamp += 7 * 86400
+        latest = histories[-1]
+        assert current(rivalry_domain)["group_id"] == latest["group_id"]
+        url = f"/v1/rivalry/{latest['group_id']}/continue"
+        request_headers = headers(rivalry_domain, "Alice", "continue-missed-weeks")
+        denied = rivalry_domain.client.post(url, json={}, headers=headers(rivalry_domain, "Carol"))
+        assert denied.status_code == 404
+        first = rivalry_domain.client.post(url, json={}, headers=request_headers)
+        retry = rivalry_domain.client.post(url, json={}, headers=request_headers)
+        assert first.status_code == retry.status_code == 200
+        assert first.json() == retry.json() == {"acknowledged": True}
+        assert current(rivalry_domain)["state"] == "not_joined"
+        assert current(rivalry_domain, "Bob")["group_id"] == latest["group_id"]
+        with rivalry_domain.factory() as session:
+            members = session.scalars(select(RivalryMember).where(RivalryMember.player_id == rivalry_domain.players["Alice"])).all()
+            assert len(members) == 3 and all(member.acknowledged for member in members)
+            # Another car and population remain independent even for this player.
+            source = session.get(RivalryGroup, latest["group_id"])
+            for car, test in [("kart", False), ("compact", True)]:
+                group = RivalryGroup(week_start=source.week_start, ends_at=source.ends_at,
+                    vehicle_id=car, test_population=test, contract_key=f"scope-{car}-{test}",
+                    skill_band=-1, tracks=source.tracks, member_count=1)
+                session.add(group)
+                session.flush()
+                session.add(RivalryMember(group_id=group.id, player_id=rivalry_domain.players["Alice"],
+                    week_start=group.week_start, contract_key=group.contract_key))
+            session.commit()
+        # A new key remains safe, and never acknowledges the new week's membership.
+        active = join(rivalry_domain)
+        assert active["state"] == "active" and active["group_id"] not in [item["group_id"] for item in histories]
+        assert rivalry_domain.client.post(url, json={}, headers=headers(rivalry_domain, "Alice")).status_code == 200
+        assert current(rivalry_domain)["group_id"] == active["group_id"]
+        with rivalry_domain.factory() as session:
+            unacknowledged = session.scalars(select(RivalryMember).where(
+                RivalryMember.player_id == rivalry_domain.players["Alice"], RivalryMember.acknowledged.is_(False))).all()
+            assert len(unacknowledged) == 3  # Current, other car, other population.
+        for history in histories:
+            retained = rivalry_domain.client.get(f"/v1/rivalry/{history['group_id']}", headers=headers(rivalry_domain, "Alice"))
+&gt;           assert retained.status_code == 200 and retained.json()["state"] == "complete"
+E           AssertionError: assert (200 == 200 and 'active' == 'complete'
+E            +  where 200 = &lt;Response [200 OK]&gt;.status_code
+E             
+E             - complete
+E             + active)
+
+backend\tests\test_rivalry_week_completion.py:124: AssertionError</failure></testcase><testcase classname="tests.test_rivalry_week_completion" name="test_week_boundary_waits_for_verification_then_continues_once[sqlite]" time="1.389"><failure message="AssertionError: assert 'active' == 'settling'&#10;  &#10;  - settling&#10;  + active">rivalry_domain = namespace(app=&lt;fastapi.applications.FastAPI object at 0x000001505C578070&gt;, client=&lt;starlette.testclient.TestClient obj...e4c5', 'Bob': '1fb5f3ad-cfd3-4986-95e9-c919e67745c5', 'Carol': 'f6daa6fc-c98a-4730-abbd-8a0f5739dd6d'}, postgres=False)
+monkeypatch = &lt;_pytest.monkeypatch.MonkeyPatch object at 0x000001505CB5BD30&gt;
+
+    def test_week_boundary_waits_for_verification_then_continues_once(rivalry_domain, monkeypatch):
+        seed(rivalry_domain)
+        original = join(rivalry_domain)
+        url = f"/v1/rivalry/{original['group_id']}/continue"
+        request_headers = headers(rivalry_domain, "Alice", "continue-at-boundary")
+        issued = rivalry_ticket(rivalry_domain, original["group_id"])
+        submit(rivalry_domain, issued, "Alice", frames=20)
+        timestamp = original["ends_at"] - 1
+        monkeypatch.setattr("bmt_backend.rivalry.now", lambda: timestamp)
+        assert current(rivalry_domain)["state"] == "active"
+        assert rivalry_domain.client.post(url, json={}, headers=request_headers).status_code == 409
+        timestamp += 1
+&gt;       assert current(rivalry_domain)["state"] == "settling"
+E       AssertionError: assert 'active' == 'settling'
+E         
+E         - settling
+E         + active
+
+backend\tests\test_rivalry_week_completion.py:139: AssertionError</failure></testcase><testcase classname="tests.test_rivalry_planning" name="test_worker_fills_four_future_weeks_idempotently_and_reads_do_not_write[sqlite]" time="1.532" /><testcase classname="tests.test_rivalry_planning" name="test_future_override_survives_planner_and_becomes_raced_lineup_at_rollover[sqlite]" time="1.842" /><testcase classname="tests.test_rivalry_planning" name="test_permissions_preview_validation_stale_changes_and_atomic_rollback[sqlite]" time="1.839" /><testcase classname="tests.test_rivalry_planning" name="test_ineligible_future_tracks_repaired_without_overwriting_other_choices[sqlite]" time="1.444" /><testcase classname="tests.test_rivalry_planning" name="test_exact_eligibility_search_and_shortfalls_stay_visible[sqlite]" time="2.165" /><testcase classname="tests.test_rivalry_planning" name="test_week_boundary_closes_preview_and_write_race[sqlite]" time="1.407" /><testcase classname="tests.test_rivalry_planning" name="test_build_change_fences_old_preview_and_keeps_old_plans[sqlite]" time="1.457" /><testcase classname="tests.test_rivalry_planning" name="test_worker_global_interval_and_error_do_not_block_races[sqlite]" time="1.446" /><testcase classname="tests.test_rivalry_planning" name="test_draw_uses_metrics_variety_and_seed_without_repetition" time="0.089" /><testcase classname="tests.test_rivalry_planning" name="test_concurrent_planners_and_commands_have_one_winner" time="2.494" /></testsuite></testsuites>

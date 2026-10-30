@@ -1,0 +1,22 @@
+--- task-start
++++ concurrent-current
+@@ -39,7 +39,7 @@
+ 	var current: HandlingConfig=VehicleCatalog.config("electric")
+ 	check(current.version=="electric-18" and VehicleSimulation.PHYSICS_VERSION=="arcade-planar-0.75","power drift has versioned handling and physics")
+ 	for field: String in old.snapshot():
+-		if field in ["version","regeneration","steering_rate","rotational_inertia","lateral_response","launch_lateral_response_scale","power_lateral_response_scale"]: continue
++		if field in ["version","regeneration","steering_rate","rotational_inertia","lateral_response","launch_lateral_response_scale","power_lateral_response_scale","slide_drive_loss"]: continue
+ 		check(current.get(field)==old.get(field),"task-start configuration field remains exact: "+field)
+ 	metrics.corners={}
+ 	for speed: float in [0.0,5.0,10.0,20.0,30.0,40.0]:
+@@ -51,8 +51,8 @@
+ 				var label: String=str(speed)+"/"+str(steer)+"/"+str(pedal)
+ 				metrics.corners[label]={"before":before,"after":after}
+ 				if speed>=10.0: check(after.peak_slip>=before.peak_slip*0.8 and after.peak_slip>1.0,"planted character retains useful power drift beyond launch speed: "+label)
+-				check(after.peak_slip<8.0,"powered slide retains the existing small-drift ceiling: "+label)
+-				check(after.speed>=before.speed*0.95,"powered slide retains forward traction: "+label)
++				check(after.peak_slip<24.0,"deliberate powered slide retains a bounded angle: "+label)
++				check(after.speed>=before.speed*0.78,"deliberate powered slide retains useful forward traction: "+label)
+ 				check(after.lifted_slip<after.peak_slip and after.recovered_slip<0.1,"lift and straightening settle the slide: "+label)
+ 				check(is_equal_approx(after.peak_slip,mirror.peak_slip) and after.replay_exact,"left/right power drift is symmetric and replays exactly: "+label)
+ 	# No new response in reverse, at light/neutral pedal or with straight wheels.

@@ -1,0 +1,182 @@
+--- a/game/ui/garage_page.gd
++++ b/game/ui/garage_page.gd
+@@ -323,10 +323,11 @@
+ 	return false
+ 
+ func _new_menu_panels() -> void:
+-	rail = VBoxContainer.new()
+-	rail.name = "GarageModes"
+-	rail.add_theme_constant_override("separation",12)
+-	_live_menus.add_child(rail)
++	if not is_instance_valid(rail):
++		rail = VBoxContainer.new()
++		rail.name = "GarageModes"
++		rail.add_theme_constant_override("separation",12)
++		_live_menus.add_child(rail)
+ 	tools_panel = PanelContainer.new()
+ 	tools_panel.name = "GarageTools"
+ 	tools_panel.add_theme_stylebox_override("panel",MenuStyle.card(12))
+@@ -338,7 +339,8 @@
+ 	actions.name = "GarageActions"
+ 	_live_menus.add_child(actions)
+ 	for panel: Control in [rail,tools_panel,actions]:
+-		panel.minimum_size_changed.connect(_sync_menu_minimums)
++		if not panel.minimum_size_changed.is_connected(_sync_menu_minimums):
++			panel.minimum_size_changed.connect(_sync_menu_minimums)
+ 
+ func _studio_header(workbench: Control, reset: Button) -> void:
+ 	StudioStyle.header(workbench,"CUSTOMISE",reset)
+@@ -397,12 +399,12 @@
+ 	_clear_departures()
+ 	_menu_starts = {preview:preview.get_rect()}
+ 	if gallery.visible: _menu_starts[gallery] = gallery.get_rect()
+-	for panel: Control in [rail,tools_panel,actions]:
++	# Navigation stays attached and interactive while only the content departs.
++	for panel: Control in [tools_panel,actions]:
+ 		if panel.visible and _layout_presented and is_visible_in_tree():
+ 			var start: Rect2 = panel.get_rect()
+ 			var finish: Rect2 = start
+-			if panel == rail: finish.position.x = -start.size.x-16
+-			elif panel == tools_panel: finish.position.x = size.x+16
++			if panel == tools_panel: finish.position.x = size.x+16
+ 			else: finish.position.y = size.y+16
+ 			panel.reparent(_departing_menus)
+ 			_set_panel_input(panel,false)
+@@ -484,7 +486,9 @@
+ 		_wash_requirement.size = _wash_requirement.get_combined_minimum_size()
+ 		_wash_requirement.position = Vector2(24,72)
+ 	if is_instance_valid(view_hint): view_hint.visible = section not in ["customise","tuning"] or preview.size.x >= 420
+-	_place_menu_panel(rail,_slot_rect(_rail_slot),"left")
++	var rail_rect: Rect2 = _slot_rect(_rail_slot)
++	rail.position = rail_rect.position
++	rail.size = rail_rect.size
+ 	if tools_panel.visible: _place_menu_panel(tools_panel,_slot_rect(_tools_slot),"right")
+ 	_place_menu_panel(actions,_slot_rect(_actions_slot),"bottom")
+ 	if section == "cars":
+@@ -550,17 +554,19 @@
+ 	return button
+ 
+ func _build_rail() -> void:
+-	for child: Node in rail.get_children():
+-		rail.remove_child(child)
+-		child.queue_free()
+ 	var destinations: Array = [["cars", "Select car"], ["workshop", "Workshop"], ["records", "Record player"], ["trophies", "Trophy wall"]]
+ 	destinations.append(["news","News"])
+ 	rail.add_theme_constant_override("separation",8 if destinations.size() > 5 else 12)
+ 	for entry: Array in destinations:
+ 		var destination: String = entry[0]
+ 		var active: bool = destination == section or (destination == "workshop" and section in ["customise","tuning","care"])
+-		var button := MenuStyle.button("", _navigate_section.bind(destination), active)
+-		button.name = "Garage" + ("Browse" if destination == "cars" else destination.capitalize())
++		var button_name: String = "Garage" + ("Browse" if destination == "cars" else destination.capitalize())
++		var button: Button = rail.get_node_or_null(NodePath(button_name))
++		if button == null:
++			button = MenuStyle.button("", _navigate_section.bind(destination))
++			button.name = button_name
++			rail.add_child(button)
++		button.set_meta("audio_cue","confirm" if active else "select")
+ 		button.icon = RailIcons.texture(destination)
+ 		button.texture_filter = CanvasItem.TEXTURE_FILTER_LINEAR_WITH_MIPMAPS
+ 		button.expand_icon = true
+@@ -596,7 +602,6 @@
+ 			button.add_theme_stylebox_override(state,style)
+ 		button.custom_minimum_size = Vector2(60,52 if destinations.size() > 5 else 60)
+ 		button.tooltip_text = entry[1]
+-		rail.add_child(button)
+ 
+ func _create_showroom() -> void:
+ 	draft = VehicleLivery.for_car(records.settings, vehicle_id)
+--- a/game/tests/test_garage_sidebar.gd
++++ b/game/tests/test_garage_sidebar.gd
+@@ -22,6 +22,37 @@
+ 	for tick: int in range(8): await frame()
+ 	while page._menu_motion != null: await frame()
+ 	for tick: int in range(4): await frame()
++
++func rail_snapshot() -> Array[Dictionary]:
++	var result: Array[Dictionary] = []
++	for button: Button in page.rail.get_children():
++		result.append({"id":button.get_instance_id(),"rect":button.get_global_rect(),"name":button.name})
++	return result
++
++func check_rail_snapshot(expected: Array[Dictionary], label: String) -> void:
++	check(page.rail.get_child_count()==expected.size(),"all rail buttons remain present "+label)
++	for item: Dictionary in expected:
++		var button: Button = page.rail.get_node_or_null(NodePath(item.name))
++		check(is_instance_valid(button) and button.get_instance_id()==item.id,"same rail button throughout motion "+label+" "+str(item.name))
++		if not is_instance_valid(button): continue
++		check(button.is_visible_in_tree() and button.get_global_rect().is_equal_approx(item.rect),"rail button stays visible in its exact slot "+label+" "+str(item.name))
++		check(button.mouse_filter!=Control.MOUSE_FILTER_IGNORE and button.focus_mode!=Control.FOCUS_NONE,"rail button remains interactive "+label+" "+str(item.name))
++
++func settle_with_fixed_rail(expected: Array[Dictionary], label: String) -> void:
++	var tween: Tween = page._menu_motion
++	check(tween!=null,"content transition starts "+label)
++	if tween==null: return
++	tween.pause()
++	for sample: int in range(9):
++		if sample>0: tween.custom_step(GaragePage.MENU_MOVE_SECONDS/8.0)
++		page._present_menu_layout()
++		await frame()
++		check_rail_snapshot(expected,label+" frame "+str(sample))
++		if sample in [0,3,5] and root.size.x==1280:
++			await capture("motion-"+label+"-"+str(sample))
++	tween.custom_step(0.001)
++	await settle()
++	check_rail_snapshot(expected,label+" settled")
+ 
+ func capture(label: String) -> void:
+ 	if DisplayServer.get_name() == "headless": return
+@@ -98,8 +129,9 @@
+ 		await settle()
+ 		rail_bounds("cars "+str(dimensions))
+ 		await capture("cars-"+str(dimensions.x))
++		var fixed_rail: Array[Dictionary] = rail_snapshot()
+ 		page._confirm_car()
+-		await settle()
++		await settle_with_fixed_rail(fixed_rail,"select-"+str(dimensions.x))
+ 		rail_bounds("selected "+str(dimensions))
+ 		# Workshop owns the three car tasks; media keep their own rail entries.
+ 		check(page.rail.get_child_count() == 5,"five stable destinations including Workshop")
+@@ -128,8 +160,9 @@
+ 			var target: Button = page._workshop_tabs.get_node("WorkshopWash" if destination == "care" else "WorkshopParts") if destination in ["care","tuning"] else page.rail.get_node("Garage"+destination.capitalize())
+ 			var yaw: float = page.showroom.yaw
+ 			var zoom: float = page.showroom.zoom
++			fixed_rail = rail_snapshot()
+ 			await click(target,destination in ["care","records","news"])
+-			await settle()
++			await settle_with_fixed_rail(fixed_rail,destination+"-"+str(dimensions.x))
+ 			check(page.section == destination,"pointer opens "+destination+" "+str(dimensions))
+ 			if destination in ["care","tuning"]:
+ 				check(page.showroom.yaw==yaw and page.showroom.zoom==zoom,"overlay click does not orbit or zoom the car")
+@@ -145,14 +178,30 @@
+ 			check(page.showroom.showroom_viewport == viewport and page.showroom.car == car,"retained car/viewport "+destination)
+ 			if dimensions.x == 1280: await capture(destination+"-1280")
+ 		check(not page._workshop_tabs.visible,"tabs hidden outside workshop")
++		fixed_rail = rail_snapshot()
+ 		await click(page.rail.get_node("GarageWorkshop"))
+-		await settle()
++		await settle_with_fixed_rail(fixed_rail,"workshop-return-"+str(dimensions.x))
+ 		check(page.section == "tuning","Workshop remembers Parts after News")
+ 		check(page._workshop_tabs.visible,"returning to Workshop restores overlay controls")
+ 		check(not page.actions.visible and page.actions.get_child_count()==0,"customisation has no bottom button row "+str(dimensions))
+ 		check(page.get_global_rect().encloses(page.tools_panel.get_global_rect()),"workshop controls fit "+str(dimensions))
+ 		check(root.get_visible_rect().encloses(page.tools_panel.get_global_rect()),"workshop controls fit window "+str(dimensions))
+ 		if dimensions.x == 1280: await capture("workshop-return-1280")
++		# A second rail click must work while the first content panel is moving.
++		fixed_rail = rail_snapshot()
++		var news_button: Button = page.rail.get_node("GarageNews")
++		news_button.grab_focus()
++		page._show_section("records")
++		page._menu_motion.pause()
++		page._menu_motion.custom_step(GaragePage.MENU_MOVE_SECONDS*0.4)
++		page._present_menu_layout()
++		await frame()
++		check_rail_snapshot(fixed_rail,"interrupted-"+str(dimensions.x))
++		check(is_instance_valid(news_button) and news_button.has_focus(),"submenu change preserves keyboard focus")
++		await click(page.rail.get_node("GarageNews"),true)
++		check(page.section=="news","touch can change destination during content motion")
++		await settle_with_fixed_rail(fixed_rail,"interrupted-news-"+str(dimensions.x))
++		check(page._departing_menus.get_child_count()==0,"interrupted content panels are cleaned up")
+ 		page._car_menu_open = false
+ 	page._show_section("cars")
+ 	await settle()

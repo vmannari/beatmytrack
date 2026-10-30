@@ -177,69 +177,16 @@ for p in patterns:
     catalog.append({k:v for k,v in p.items() if k!='art'})
 (ROOT/'catalog.json').write_text(json.dumps(catalog,indent=2)+'\n',encoding='utf-8')
 
-# All emblems are hand-authored paths; no text rendering/font dependency.
-N,C,A,W='#172c3b','#eeddbb','#d1a25b','#f6f1e6'
-shield=path('M128 18L214 48V124Q208 187 128 235Q48 187 42 124V48Z',W)+path('M128 31L202 57V123Q194 181 128 219Q61 177 54 123V57Z',N)
-star=lambda x,y,r: path('M'+'L'.join(f'{x+(r if i%2==0 else r*.44)*math.sin(i*math.pi/5):.2f} {y-(r if i%2==0 else r*.44)*math.cos(i*math.pi/5):.2f}' for i in range(10))+'Z',A)
-stickers=[
-('crest','BMT Crest',shield+path('M75 83H113V106H95V122H117V145H75Z M125 83H143L159 107L175 83H192V145H173V117L159 138L143 117V145H125Z',C)+path('M77 159H178L164 177H92Z',A)+star(128,192,12)),
-('roundel','Race 07',circle(128,128,108,W)+circle(128,128,96,N)+circle(128,128,86,C)+path('M62 82H108V170H62Z M75 99V153H95V99Z',N)+path('M119 82H192V102L153 170H131L168 102H119Z',N)+path('M68 191H185',A,7)),
-('compass','Compass',circle(128,128,109,W)+circle(128,128,98,N)+circle(128,128,82,C,3)+path('M128 32L148 108L224 128L148 148L128 224L108 148L32 128L108 108Z',C)+path('M128 32L128 128L148 108Z M128 128L32 128L108 148Z',A)+circle(128,128,12,N)),
-('summit','Summit',path('M128 20L240 224H16Z',W)+path('M128 42L221 212H35Z',N)+path('M53 193L108 88L133 131L158 100L203 193Z',C)+path('M108 88L92 121L110 115L123 121Z',A)+path('M158 100L139 137L162 128L176 136Z',A)+path('M62 201H196',A,5)),
-('bolt','High Voltage',shield+path('M141 50L79 139H122L107 202L179 109H137Z',A)+path('M141 50L79 139H122',C,4)),
-('phoenix','Phoenix',path('M128 228Q57 171 20 41L97 95L81 28L128 78L175 28L159 95L236 41Q199 171 128 228Z',W)+path('M128 213L44 70L109 114L101 58L128 94L155 58L147 114L212 70Z',N)+path('M128 176L78 101L118 131L128 104L138 131L178 101Z',A)+path('M117 88H139L128 112Z',C)),
-('skull','Ghost Rider',path('M62 202L194 55M62 55L194 202',W,22)+path('M47 184L66 203M47 70L66 51M190 203L210 183M190 51L210 71',W,15)+path('M128 32C40 32 41 129 69 151L88 169V208H168V169L187 151C215 129 216 32 128 32Z',W)+path('M70 112Q87 81 112 111L107 140H84Z M144 111Q169 81 186 112L172 140H149Z M128 130L117 155H139Z',N)+path('M105 176V200M128 174V203M151 176V200',N,8)),
-('orbital','Orbital',circle(128,128,96,W)+circle(128,128,86,N)+circle(128,128,52,A)+f'<ellipse cx="128" cy="128" rx="116" ry="34" transform="rotate(-28 128 128)" fill="none" stroke="{W}" stroke-width="12"/>'+star(183,66,16)+circle(109,110,13,C)),
-('laurel','Laurel',circle(128,128,75,N)+star(128,118,41)+path('M103 179H153',C,7)+''.join(f'<ellipse cx="{128+s*(72-0.15*(y-126))}" cy="{y}" rx="11" ry="23" transform="rotate({s*38} {128+s*(72-0.15*(y-126))} {y})" fill="{C}" stroke="{N}" stroke-width="4"/>' for s in [-1,1] for y in [57,88,119,150,181])+path('M116 224Q48 191 54 63M140 224Q208 191 202 63',A,6)),
-('piston','Piston Club',circle(128,128,110,W)+circle(128,128,99,N)+path('M86 44H170V114H86Z',C)+path('M80 64H176M80 83H176M80 102H176',N,7)+path('M114 115H142V174H114Z',A)+circle(128,187,31,C)+circle(128,187,16,N)+path('M96 52H160',A,5)),
-('checker','Checkered Flag',path('M40 218L73 32',W,14)+path('M78 40Q132 16 175 42Q205 61 232 47L215 153Q185 167 159 149Q110 126 61 151Z',W)+''.join(rect(78+i*29,48+j*29,28,28,N) for i in range(5) for j in range(3) if (i+j)%2==0)+path('M78 40Q132 16 175 42Q205 61 232 47L215 153Q185 167 159 149Q110 126 61 151Z',A,5)),
-('sun','Desert Sun',circle(128,128,99,N)+''.join(path(f'M{128+78*math.sin(i*math.pi/8):.1f} {128-78*math.cos(i*math.pi/8):.1f}L{128+109*math.sin(i*math.pi/8):.1f} {128-109*math.cos(i*math.pi/8):.1f}',C,9) for i in range(16))+circle(128,128,61,A)+path('M69 148Q128 97 188 148M79 170Q128 139 178 170',N,8)),
-]
-# Original geometric lettering paths: no installed-font or third-party logo dependency.
-LETTERS = {
-    'A':'M0 10L3 0L6 10M1 6H5','B':'M0 10V0H4L6 2V3L4 5H0M4 5L6 7V8L4 10H0',
-    'C':'M6 1L5 0H1L0 1V9L1 10H5L6 9','D':'M0 10V0H3L6 3V7L3 10Z',
-    'E':'M6 0H0V10H6M0 5H5','F':'M6 0H0V10M0 5H5','G':'M6 2V1L5 0H1L0 1V9L1 10H5L6 9V5H3',
-    'H':'M0 0V10M6 0V10M0 5H6','I':'M0 0H6M3 0V10M0 10H6','J':'M0 8V9L1 10H5L6 9V0',
-    'K':'M0 0V10M6 0L0 5L6 10','L':'M0 0V10H6','M':'M0 10V0L3 5L6 0V10',
-    'N':'M0 10V0L6 10V0','O':'M1 0H5L6 1V9L5 10H1L0 9V1Z','P':'M0 10V0H5L6 1V4L5 5H0',
-    'Q':'M1 0H5L6 1V8L4 10H1L0 9V1ZM3 7L7 11','R':'M0 10V0H5L6 1V4L5 5H0M3 5L6 10',
-    'S':'M6 1L5 0H1L0 1V4L1 5H5L6 6V9L5 10H1L0 9','T':'M0 0H6M3 0V10',
-    'U':'M0 0V9L1 10H5L6 9V0','V':'M0 0L3 10L6 0','W':'M0 0L1 10L3 5L5 10L6 0',
-    'X':'M0 0L6 10M6 0L0 10','Y':'M0 0L3 5L6 0M3 5V10','Z':'M0 0H6L0 10H6',
-}
-def wordmark(word,y,width=210,colour=W):
-    scale=width/(len(word)*8-2)
-    return f'<g transform="translate({(256-width)/2:.2f} {y}) scale({scale:.3f})">'+''.join(
-        f'<g transform="translate({i*8} 0)">{path(LETTERS[c],colour,.95)}</g>' for i,c in enumerate(word))+'</g>'
+# Bespoke illustrated stickers live separately from the unchanged livery masks.
+from livery_sticker_art import STICKERS
 
-# Invented BMT-universe sponsors, each with its own symbol, colour and industry.
-SPONSORS = [
-    ('zelvora','Zelvora Dynamics','DYNAMICS','#598f9e',path('M72 32H184L133 80H182L85 128H126L173 83H122Z',W)),
-    ('vorqen','Vorqen Fuels','FUELS','#c57a43',path('M128 28C112 59 86 76 86 97A42 42 0 0 0 170 97C170 76 145 56 128 28Z',W)+path('M129 63L109 95H132L120 117L149 85H128Z',N)),
-    ('talvexa','Talvexa Tyres','TYRES','#a24643',circle(128,78,46,W)+circle(128,78,27,N)+path('M97 42L112 61M139 95L157 115M85 75L104 82M153 75L172 82M143 40L138 59M116 98L111 117',N,6)),
-    ('orynth','Orynth Labs','LABS','#668b73',path('M100 32H156M111 32V63L77 111Q74 124 89 124H167Q182 124 179 111L145 63V32',W,7)+path('M91 98H165L176 116H80Z',W)+circle(128,79,6,W)),
-    ('keldrift','Keldrift Tools','TOOLS','#b59752',path('M92 30H121V59L103 77L121 95V124H92V97L74 77L92 57Z M151 30H180V57L198 77L180 97V124H151V95L169 77L151 59Z',W)),
-    ('velqor','Velqor Audio','AUDIO','#7a718e',path('M57 94V61H80L111 38V117L80 94Z',W)+path('M133 54Q163 78 133 101M155 35Q203 78 155 119',W,7)),
-    ('myrvanta','Myrvanta Oil','OIL','#ad6948',path('M128 27L181 57V104L128 132L75 104V57Z',W)+path('M93 100V60L111 78L128 51L145 78L163 60V100H147V87L128 111L109 87V100Z',N)),
-    ('quorven','Quorven Racing','RACING','#517d99',circle(128,77,45,W,10)+path('M132 79L183 124M139 79L192 112',W,10)+path('M80 49H145L113 88H158',W,6)),
-    ('draxelle','Draxelle Parts','PARTS','#8d565c',path('M80 30H132L183 77L132 124H80L124 77Z',W)+path('M94 45H127L161 77L127 109H94L124 77Z',N)),
-    ('selyth','Selyth Aero','AERO','#688c86',path('M32 50L113 64L128 25L143 64L224 50L155 90L146 120L128 107L110 120L101 90Z',W)+path('M128 50V92',N,6)),
-    ('auvrion','Auvrion Energy','ENERGY','#b49a50',circle(128,77,46,W,6)+path('M139 29L96 85H123L116 126L160 69H132Z',W)),
-    ('rhexori','Rhexori Works','WORKS','#6d7f92',path('M78 41L128 22L178 41V111L128 132L78 111Z',W)+path('M98 107V49H139L155 63V78L140 89L158 108H133L117 86V107Z',N)+path('M117 62H135V74H117Z',W)),
-]
-for key,title,industry,colour,symbol in SPONSORS:
-    plate=f'<rect x="11" y="15" width="234" height="226" rx="16" fill="{N}" stroke="{W}" stroke-width="5"/>'
-    plate+=f'<rect x="17" y="21" width="222" height="113" rx="11" fill="{colour}"/>'+symbol
-    plate+=wordmark(key.upper(),151,208)+wordmark(industry,202,104,colour)
-    stickers.append((key,title,plate))
-
-atlas=''
+stickers = STICKERS
+atlas = ''
 for i,(key,title,art) in enumerate(stickers):
-    # 16px gutters avoid neighbouring emblems bleeding through mip levels.
-    atlas+=f'<g transform="translate({i%4*256+16} {i//4*256+16}) scale(.875)">{art}</g>'
-    (ROOT/(key+'_sticker.svg')).write_text(svg(art,128,128,'0 0 256 256'),encoding='utf-8')
-height=math.ceil(len(stickers)/4)*256
+    # Keep the existing 256px cells / 16px gutters and shared mipmapped shader.
+    atlas += f'<g transform="translate({i%4*256+16} {i//4*256+16}) scale(.875)">{art}</g>'
+    (ROOT/(key+'_sticker.svg')).write_text(svg(art,256,256,'0 0 256 256'),encoding='utf-8')
+height = math.ceil(len(stickers)/4)*256
 (ROOT/'stickers.svg').write_text(svg(atlas,1024,height,f'0 0 1024 {height}'),encoding='utf-8')
-(ROOT/'stickers.json').write_text(json.dumps([{'id':k,'title':t,'category':'sponsors' if i>=12 else 'emblems'} for i,(k,t,_) in enumerate(stickers)],indent=2)+'\n',encoding='utf-8')
-print(f'Authored {len(patterns)} livery masks/previews and {len(stickers)} fictional stickers.')
+(ROOT/'stickers.json').write_text(json.dumps([{'id':k,'title':t} for k,t,_ in stickers],indent=2)+'\n',encoding='utf-8')
+print(f'Authored {len(patterns)} livery masks/previews and {len(stickers)} original stickers.')

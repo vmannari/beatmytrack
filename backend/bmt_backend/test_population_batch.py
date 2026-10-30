@@ -9,7 +9,7 @@ from types import SimpleNamespace
 
 from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel, ConfigDict, Field
-from sqlalchemy import delete, select, update
+from sqlalchemy import delete, insert, select, update
 from sqlalchemy.orm import aliased
 
 from .background_work import BackgroundControl, BackgroundYielded
@@ -268,6 +268,83 @@ def active_batch(session: DB, _operator: Operator):
 @router.get("/dev/test-drivers/batches/{batch_id}")
 def get_batch(batch_id: str, session: DB, _operator: Operator):
     return batch_view(session, batch_id)
+
+
+@router.post("/dev/test-drivers/batches/{batch_id}/prepare-local")
+def prepare_local(batch_id: str, request: Request, session: DB, _operator: Operator):
+    """Continue an obsolete synthetic plan without changing any race history."""
+    guard = session.scalar(select(OperationState).where(OperationState.id == ACTIVE).with_for_update())
+    if guard is None:
+        raise HTTPException(409, "ARTIFICIAL_BATCH_NOT_ACTIVE")
+    row = session.scalar(select(OperationState).where(OperationState.id == "test-pop-batch:"+batch_id).with_for_update())
+    if row is None:
+        raise HTTPException(404, "Test population batch not found")
+    # Lost replies and explicit retries of an older ID follow only its recorded
+    # continuation chain, never an unrelated active fleet.
+    for _ in range(16):
+        if row.details["batch_id"] == guard.details.get("batch_id"):
+            break
+        replacement = row.details.get("continued_as")
+        if not replacement:
+            raise HTTPException(409, "ARTIFICIAL_BATCH_NOT_ACTIVE")
+        row = session.scalar(select(OperationState).where(OperationState.id == "test-pop-batch:"+replacement).with_for_update())
+        if row is None:
+            raise HTTPException(409, "ARTIFICIAL_BATCH_NOT_ACTIVE")
+    else:
+        raise HTTPException(409, "ARTIFICIAL_BATCH_CONTINUATION_LIMIT")
+    data = row.details
+    active = request.app.state.verifier.manifest()
+    if build_contract(data["manifest"]) == build_contract(active):
+        return {"batch": batch_view(session, data["batch_id"]), "continued": data["batch_id"] != batch_id}
+    if guard.details.get("status") != "running":
+        raise HTTPException(409, "ARTIFICIAL_BATCH_NOT_ACTIVE")
+    inventory = preview(request.app, session, data["vehicle_id"])
+    if not inventory["tracks"]:
+        raise HTTPException(409, "No compatible published tracks")
+    player_ids = data["player_ids"]
+    profiles = session.execute(select(TestDriverProfile, Player).join(Player).where(
+        TestDriverProfile.player_id.in_(player_ids), Player.is_test_driver.is_(True),
+        Player.disabled.is_(False), Player.deleted_at.is_(None))).all()
+    by_player = {profile.player_id: profile for profile, _ in profiles}
+    if len(player_ids) != data["count"] or len(by_player) != data["count"] or len(set(player_ids)) != len(player_ids):
+        raise HTTPException(409, "ARTIFICIAL_PROFILE_UNAVAILABLE")
+    generation = data["request"].get("generation", 0)+1
+    if generation > 1000:
+        raise HTTPException(409, "ARTIFICIAL_BATCH_GENERATION_LIMIT")
+    identity = digest({"from": data["batch_id"], "build": build_contract(active),
+        "versions": [track["version_id"] for track in inventory["tracks"]]})
+    replacement = str(uuid.uuid5(uuid.NAMESPACE_URL, "bmt-test-batch-continuation/"+identity))
+    if session.get(OperationState, "test-pop-batch:"+replacement) is not None:
+        raise HTTPException(409, "ARTIFICIAL_BATCH_CONTINUATION_CONFLICT")
+    at = now()
+    details = {**data, "batch_id": replacement, "continued_from": data["batch_id"],
+        "request": {**data["request"], "generation": generation, "clear_test_records": False,
+            "inventory_digest": inventory["inventory_digest"]}, "status": "running",
+        "controller_version": CONTROLLER_VERSION, "manifest": active, "tracks": inventory["tracks"],
+        "jobs": data["count"]*len(inventory["tracks"]), "cleared_test_records": 0,
+        "protected_real_records": inventory["protected_real_records"],
+        "protected_real_digest": inventory["protected_real_digest"], "created_at": at}
+    for key in ("continued_as", "superseded_at", "completed_at"):
+        details.pop(key, None)
+    session.add(OperationState(id="test-pop-batch:"+replacement, updated_at=at, details=details))
+    pending = []
+    for ordinal, player_id in enumerate(player_ids):
+        profile = by_player[player_id]
+        for slot, track in enumerate(inventory["tracks"]):
+            job_id = digest({"batch": replacement, "player": player_id, "version": track["version_id"]})
+            job = {"id": job_id, "batch_id": replacement, "player_id": player_id, "subject": profile.subject,
+                "slot": slot, "ordinal": ordinal, "version_id": track["version_id"], "content_hash": track["content_hash"],
+                "attempt": 0, "status": "waiting", "due": at, "lease_until": 0}
+            pending.append({"id": "test-pop-job:"+job_id, "updated_at": at, "details": job})
+            if len(pending) == 256:
+                session.execute(insert(OperationState), pending);pending.clear()
+    if pending:
+        session.execute(insert(OperationState), pending)
+    row.details = {**data, "status": "superseded", "continued_as": replacement, "superseded_at": at}
+    row.updated_at = at
+    guard.details = {"batch_id": replacement, "status": "running"};guard.updated_at = at
+    session.commit()
+    return {"batch": batch_view(session, replacement), "continued": True}
 
 
 @router.post("/dev/test-drivers/batches/{batch_id}/claim")

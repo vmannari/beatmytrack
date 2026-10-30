@@ -1,0 +1,29 @@
+F....................................................................... [ 81%]
+................                                                         [100%]
+================================== FAILURES ===================================
+________ test_postgres_ville_aggregation_and_database_connection_limit ________
+
+private_postgres = (<fastapi.applications.FastAPI object at 0x00000222E4D76DD0>, <starlette.testclient.TestClient object at 0x00000222E4D40730>)
+
+    @pytest.mark.postgres
+    def test_postgres_ville_aggregation_and_database_connection_limit(private_postgres):
+        app, client = private_postgres
+        seed_usage(app, client)
+        d = client.get("/v1/admin/usage-costs", headers=OWNER).json()
+>       assert d["activity"]["requests"] == 20 and d["activity"]["active_players"] == 1
+E       KeyError: 'activity'
+
+tests\test_studio_usage.py:80: KeyError
+---------------------------- Captured stderr call -----------------------------
+{"event":"request_failed","level":"error","request_id":"4591cf1e-486d-42fb-8050-7b302878d382","exception_type":"TypeError","failure_site":"bmt_backend.studio_usage:cost_summary:226"}
+{"event":"http_request","request_id":"4591cf1e-486d-42fb-8050-7b302878d382","method":"GET","route":"/v1/admin/usage-costs","status":500,"duration_ms":94.0,"request_wire_bytes":0,"request_decoded_bytes":0,"response_wire_bytes":79,"success_sample_per_mille":10,"level":"info"}
+------------------------------ Captured log call ------------------------------
+ERROR    bmt.requests:middleware.py:611 request_failed
+INFO     bmt.requests:http_costs.py:41 {"event":"http_request","request_id":"4591cf1e-486d-42fb-8050-7b302878d382","method":"GET","route":"/v1/admin/usage-costs","status":500,"duration_ms":94.0,"request_wire_bytes":0,"request_decoded_bytes":0,"response_wire_bytes":79,"success_sample_per_mille":10}
+-------------------------- Captured stderr teardown ---------------------------
+{"event":"http_cost_summary","interval_seconds":0.594,"body_bytes_after_compression":true,"latency_limits_ms":[10,25,50,100,250,500,1000,5000],"rows":[{"route":"/v1/admin/usage-costs","method":"GET","status":500,"requests":1,"request_wire_bytes":0,"response_wire_bytes":79,"duration_ms":94.0,"max_ms":94.0,"latency_buckets":[0,0,0,1,0,0,0,0,0]}],"level":"info"}
+---------------------------- Captured log teardown ----------------------------
+INFO     bmt.requests:http_costs.py:59 {"event":"http_cost_summary","interval_seconds":0.594,"body_bytes_after_compression":true,"latency_limits_ms":[10,25,50,100,250,500,1000,5000],"rows":[{"route":"/v1/admin/usage-costs","method":"GET","status":500,"requests":1,"request_wire_bytes":0,"response_wire_bytes":79,"duration_ms":94.0,"max_ms":94.0,"latency_buckets":[0,0,0,1,0,0,0,0,0]}]}
+=========================== short test summary info ===========================
+FAILED tests/test_studio_usage.py::test_postgres_ville_aggregation_and_database_connection_limit
+1 failed, 87 passed, 1 deselected, 271 warnings in 81.61s (0:01:21)

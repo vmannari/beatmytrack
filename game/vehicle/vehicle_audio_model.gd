@@ -19,6 +19,8 @@ func configure(id: String, speed: float) -> void:
 	vehicle_id = VehicleCatalog.valid_id(id)
 	maximum_speed = maxf(10.0,speed)
 	match vehicle_id:
+		"hovercraft":
+			idle_rpm = 1100.0; redline_rpm = 6400.0; anchors = Vector3(1200,3000,6000)
 		"electric":
 			idle_rpm = 600.0; redline_rpm = 12000.0; anchors = Vector3(1200,4800,9600)
 		"pickup", "forklift":
@@ -50,6 +52,11 @@ func advance(state: VehicleState, frame: DriveFrame, delta: float) -> bool:
 	var pedal: float = float(frame.brake if reverse else frame.throttle)/255.0
 	if vehicle_id == "electric": pedal = frame.throttle / 255.0
 	load_amount = lerpf(load_amount,pedal,1.0-exp(-dt*(14.0 if pedal>load_amount else 7.0)))
+	if vehicle_id == "hovercraft":
+		# Fan speed follows power, including when the hull has no ground speed.
+		gear = -1 if reverse else 1
+		rpm = lerpf(rpm,lerpf(idle_rpm,redline_rpm,maxf(load_amount,speed/maximum_speed*0.35)),1.0-exp(-dt*5.0))
+		return false
 	if vehicle_id == "electric":
 		gear = -1 if reverse else 1
 		rpm = lerpf(idle_rpm,redline_rpm,clampf(speed / maximum_speed,0.0,1.0))

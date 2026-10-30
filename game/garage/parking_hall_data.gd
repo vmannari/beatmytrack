@@ -11,7 +11,7 @@ const CROSSING := Rect2(-52.3,22.0,2.6,13.5)
 const PARKED_CARS: Array[Dictionary] = [
 	{"position":Vector2(-31.5,-31),"vehicle":"compact","colour":"85877b","half_length":2.0},
 	{"position":Vector2(22.5,31),"vehicle":"pickup","colour":"485a60","half_length":2.5},
-	{"position":Vector2(37.5,-31),"vehicle":"classic","colour":"805849","half_length":2.0}]
+	{"position":Vector2(37.5,-31),"vehicle":"hovercraft","colour":"698d87","half_length":2.0}]
 var columns: Array[Vector3] = []
 
 func _init() -> void:

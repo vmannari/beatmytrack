@@ -1,0 +1,101 @@
+extends SceneTree
+## Read-only production model review; diagnostic files only.
+const OUTPUT: String = "res://../docs/evidence/kart-model-review-2026-10-25"
+var report: Dictionary = {"sources":{},"poses":{},"budgets":{}}
+
+func _initialize() -> void: run.call_deferred()
+
+func outer_radius(x: float) -> float:
+	if x <= 0.076: return 0.22
+	if x <= 0.105: return lerpf(0.22,0.217,(x-0.076)/0.029)
+	if x <= 0.129: return lerpf(0.217,0.202,(x-0.105)/0.024)
+	return lerpf(0.202,0.175,(x-0.129)/0.008)
+
+func inspect(car: CarVisual, angle: float) -> Dictionary:
+	for pivot: Node3D in car.front_wheels: pivot.rotation.y = angle
+	var collisions: Dictionary = {}
+	for part: MeshInstance3D in car.body.find_children("*","MeshInstance3D",true,false):
+		for wheel: int in range(car.rolling_wheels.size()):
+			var pivot: Node3D = car.rolling_wheels[wheel].get_parent()
+			var transform: Transform3D = pivot.global_transform.affine_inverse()*part.global_transform
+			for point: Vector3 in part.mesh.surface_get_arrays(0)[Mesh.ARRAY_VERTEX]:
+				var local: Vector3 = transform*point
+				var x: float = absf(local.x)
+				if x >= 0.137: continue
+				var radius: float = Vector2(local.y,local.z).length()
+				var inner: float = 0.12 if x <= 0.135 else lerpf(0.12,0.175,(x-0.135)/0.002)
+				var depth: float = minf(0.137-x,minf(outer_radius(x)-radius,radius-inner))
+				if depth <= 0.002: continue
+				var key: String = str(part.name)+"/wheel"+str(wheel)
+				if not collisions.has(key): collisions[key] = {"part":str(part.name),"wheel":wheel,"vertices":0,"penetration_model_m":0.0}
+				collisions[key].vertices += 1
+				if depth > float(collisions[key].penetration_model_m):
+					collisions[key].penetration_model_m = depth
+					collisions[key].point_in_wheel = [local.x,local.y,local.z]
+	return collisions
+
+func budget(node: Node) -> Dictionary:
+	var result: Dictionary = {"triangles":0,"mesh_instances":0,"surfaces":0}
+	if node is MeshInstance3D:
+		result.mesh_instances = 1
+		result.surfaces = node.mesh.get_surface_count()
+		result.triangles = node.mesh.get_faces().size()/3
+	for child: Node in node.get_children():
+		var counts: Dictionary = budget(child)
+		for key: String in result: result[key] += int(counts[key])
+	return result
+
+func settle() -> void:
+	for frame: int in range(8): await process_frame
+	if DisplayServer.get_name() != "headless": await RenderingServer.frame_post_draw
+
+func run() -> void:
+	DirAccess.make_dir_recursive_absolute(ProjectSettings.globalize_path(OUTPUT))
+	for path: String in ["res://vehicle/kart_model.gd","res://vehicle/kart_geometry.gd","res://vehicle/kart_helmet.gd"]: report.sources[path] = FileAccess.get_sha256(path)
+	var manifest: Dictionary = JSON.parse_string(FileAccess.get_file_as_string("res://assets/vehicles/kart_refined_v1/manifest.json"))
+	report.prepared_sources_match = manifest.model_sha256 == report.sources["res://vehicle/kart_model.gd"] and manifest.geometry_sha256 == report.sources["res://vehicle/kart_geometry.gd"] and manifest.helmet_sha256 == report.sources["res://vehicle/kart_helmet.gd"]
+	for simple: bool in [false,true]:
+		var batched := CarVisual.new()
+		batched.vehicle_id = "kart"
+		batched.simple_model = simple
+		root.add_child(batched)
+		report.budgets["simple" if simple else "full"] = budget(batched)
+		batched.free()
+	var viewport := SubViewport.new()
+	viewport.size = Vector2i(1280,720)
+	viewport.own_world_3d = true
+	viewport.msaa_3d = Viewport.MSAA_4X
+	viewport.render_target_update_mode = SubViewport.UPDATE_ALWAYS
+	root.add_child(viewport)
+	var world := Node3D.new()
+	viewport.add_child(world)
+	var car := CarVisual.new()
+	car.vehicle_id = "kart"
+	car.batch_parts = false
+	world.add_child(car)
+	ShowroomStudio.build(world,car)
+	var camera := Camera3D.new()
+	camera.fov = 32
+	world.add_child(camera)
+	camera.current = true
+	for angle: float in [-0.6,0.0,0.6]:
+		report.poses[str(angle)] = inspect(car,angle)
+		if DisplayServer.get_name() != "headless":
+			camera.position = Vector3(-1.8,1.0,-2.5)
+			camera.look_at(Vector3(0,0.26,-0.65))
+			await settle()
+			viewport.get_texture().get_image().save_png(OUTPUT+"/steering-"+str(angle)+".png")
+	if DisplayServer.get_name() != "headless":
+		for pivot: Node3D in car.front_wheels: pivot.rotation.y = 0
+		camera.position = Vector3(-3,0.8,0)
+		camera.look_at(Vector3(0,0.38,0))
+		await settle()
+		viewport.get_texture().get_image().save_png(OUTPUT+"/side-profile.png")
+		camera.position = Vector3(-1.4,0.85,-0.55)
+		camera.look_at(Vector3(0,0.48,-0.22))
+		await settle()
+		viewport.get_texture().get_image().save_png(OUTPUT+"/driver-controls.png")
+	FileAccess.open(OUTPUT+"/report.json",FileAccess.WRITE).store_string(JSON.stringify(report,"\t"))
+	print("KART_REVIEW: ",JSON.stringify(report))
+	viewport.free()
+	quit()

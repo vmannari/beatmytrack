@@ -7,19 +7,12 @@ const vec3 PAPER = vec3(0.93333, 0.90588, 0.83137);
 const vec3 INK = vec3(0.16078, 0.18039, 0.16078);
 
 void fragment() {
-	vec4 photo = texture(TEXTURE, UV);
+	vec4 photo = texture(TEXTURE, (UV - vec2(0.5)) / 1.25 + vec2(0.5));
 	float luminance = dot(photo.rgb, vec3(0.2126, 0.7152, 0.0722));
-	float density = clamp((1.0 - pow(luminance, 0.92)) * 1.10 - 0.05, 0.04, 0.94);
-	vec2 screen = vec2(FRAGCOORD.x + FRAGCOORD.y, FRAGCOORD.y - FRAGCOORD.x) * 0.707107;
-	vec2 cell = fract(screen / 2.2) - 0.5;
-	float radius = sqrt(density * 0.31831);
-	float edge = max(fwidth(length(cell)) * 0.65, 0.06);
-	float dots = 1.0 - smoothstep(radius - edge, radius + edge, length(cell));
-	float grain = fract(sin(dot(floor(FRAGCOORD.xy), vec2(12.9898, 78.233))) * 43758.5453);
-	float coverage = clamp(mix(density, dots, 0.18) + (grain - 0.5) * 0.018, 0.0, 1.0);
-	vec2 from_edge = min(UV, vec2(1.0) - UV) / TEXTURE_PIXEL_SIZE;
-	float rule = 1.0 - smoothstep(0.35, 1.1, min(from_edge.x, from_edge.y));
-	coverage = max(coverage, rule * 0.92);
+	// Keep the photograph legible as a rich monochrome image. Avoid a
+	// screen-space dot grid, which makes the dark studio backdrop look checked.
+	float density = clamp((1.0 - pow(luminance, 0.82)) * 0.82, 0.02, 0.82);
+	float coverage = density;
 	// Fragment COLOR already includes the texture alpha and inherited opacity.
 	COLOR = vec4(mix(PAPER, INK, coverage), COLOR.a);
 }

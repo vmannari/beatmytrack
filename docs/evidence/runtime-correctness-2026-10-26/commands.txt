@@ -1,0 +1,80 @@
+Working directory: C:\Codes\Godot\Beat my track
+Pinned engine: C:\apps\Godot 4.7.2\Godot_v4.7.2-stable_win64_console.exe
+Version: 4.7.2.stable.official.ed1daf0bf
+
+PowerShell session environment used for isolated tests:
+$env:APPDATA="$PWD\build\runtime-correctness-2026-10-26\profile"
+$env:LOCALAPPDATA=$env:APPDATA
+$env:BMT_API_URL=''
+$env:BMT_DEV_AUTH_KEY=''
+$exe='C:\apps\Godot 4.7.2\Godot_v4.7.2-stable_win64_console.exe'
+
+Actual test invocations used (each named script was invoked separately):
+& $exe --headless --path game --audio-driver Dummy --script res://tests/test_runtime_result_safety.gd
+& $exe --headless --path game --audio-driver Dummy --script res://tests/test_pending_input_recovery.gd
+& $exe --headless --path game --audio-driver Dummy --script res://tests/test_challenge_race_flows.gd
+& $exe --headless --path game --audio-driver Dummy --script res://tests/test_challenge_result_action.gd
+& $exe --headless --path game --audio-driver Dummy --script res://tests/test_rivalry_start_failure.gd
+& $exe --headless --path game --audio-driver Dummy --script res://tests/test_free_race_restart.gd
+& $exe --headless --path game --audio-driver Dummy --script res://tests/test_app.gd
+& $exe --headless --path game --audio-driver Dummy --script res://tests/test_cooperative_car_model.gd
+& $exe --headless --path game --audio-driver Dummy --script res://tests/test_cooperative_race_install.gd
+& $exe --headless --path game --audio-driver Dummy --script res://tests/test_rewind.gd
+& $exe --headless --path game --audio-driver Dummy --script res://tests/test_launch_start.gd
+& $exe --headless --path game --audio-driver Dummy --script res://tests/test_checkpoint_bridge_layers.gd
+& $exe --headless --path game --audio-driver Dummy --script res://tests/test_star_spline_laps.gd
+& $exe --headless --path game --audio-driver Dummy --script res://tests/test_winter_road_edge_snow.gd
+& $exe --headless --path game --audio-driver Dummy --script res://tests/test_script_parse.gd
+
+Native actual App and lifetime checks:
+$env:BMT_RACE_LOAD_PROFILE='1'
+& $exe --path game --audio-driver Dummy --rendering-method gl_compatibility --script res://tests/profile_runtime_correctness.gd
+& $exe --path game --audio-driver Dummy --rendering-method gl_compatibility --verbose --script res://tests/test_runtime_render_lifecycle.gd
+& $exe --path game --audio-driver Dummy --rendering-method gl_compatibility --script res://tests/test_result_recording_limit.gd
+& $exe --path game --audio-driver Dummy --rendering-method gl_compatibility --script res://tests/test_mobile_audit_fixes.gd -- --output=res://../docs/evidence/runtime-correctness-2026-10-26/audit-last
+& $exe --path game --audio-driver Dummy --rendering-method gl_compatibility --script res://tests/test_storm_editor_workflow.gd -- --output=res://../docs/evidence/runtime-correctness-2026-10-26/storm-final
+
+Lifecycle phases (actual App results use explicit fixture completion, not driven laps):
+& $exe --headless --path game --audio-driver Dummy --script res://tests/soak_runtime_correctness.gd -- --cycles=50
+& $exe --path game --audio-driver Dummy --rendering-method mobile --script res://tests/soak_runtime_correctness.gd -- --cycles=50
+& $exe --path game --audio-driver Dummy --rendering-method mobile --script res://tests/soak_runtime_correctness.gd -- --cycles=10
+& $exe --path game --audio-driver Dummy --rendering-method mobile --script res://tests/soak_runtime_correctness.gd -- --cycles=200
+$env:APPDATA="$PWD\build\runtime-correctness-2026-10-26\profile-soak200-headless"
+$env:LOCALAPPDATA=$env:APPDATA
+& $exe --headless --path game --audio-driver Dummy --script res://tests/soak_runtime_correctness.gd -- --cycles=200
+
+Process-death exercise: test_result_crash_process.gd, phases manifest/payload/marker/job.
+For each phase, launch only this fixture with Start-Process -WindowStyle Hidden,
+arguments --headless --path game --audio-driver Dummy --script
+res://tests/test_result_crash_process.gd -- --phase=<phase> --mode=write --batch=trial2.
+Wait for its build/runtime-correctness-2026-10-26/crash-trial2-<phase>.ready.
+Stop-Process only the PID returned by that Start-Process. Then run a fresh process:
+& $exe --headless --path game --audio-driver Dummy --script res://tests/test_result_crash_process.gd -- --phase=<phase> --mode=recover --batch=trial2
+Do not reuse a populated batch name when reproducing a fresh interruption.
+
+Established native vehicle-photo baker, fresh import and content inventory:
+& $exe --path game --rendering-method gl_compatibility --script res://tests/bake_news_car_photos.gd -- --vehicle=forklift --evidence-root=res://../docs/evidence/runtime-correctness-2026-10-26/forklift
+& $exe --headless --path game --editor --import
+& $exe --headless --path game --export-pack 'Android Debug' '../build/runtime-correctness-2026-10-26/content.zip'
+Python zipfile verifies every seven vehicle PNG import and its exact compiled .ctex path.
+This export is a content ZIP, not an APK/AAB or final release-script validation.
+
+Retained broader failures (actual runs, not accepted as green):
+& $exe --headless --path game --audio-driver Dummy --script res://tests/test_gameplay_f13_f16_f19_f24.gd
+& $exe --headless --path game --audio-driver Dummy --script res://tests/test_backend_exception_recovery.gd
+Historical isolated baseline logs are copied alongside these runs.
+
+Task-only review/evidence; isolated Git repositories inside build, root index untouched:
+python build/runtime-correctness-2026-10-26/build_review.py
+python build/runtime-correctness-2026-10-26/finalize_evidence.py
+The review builder checks git diff --check, reverse/apply and exact byte equality.
+Evidence probes contain copies; run from repository root. The retained before/ files
+can supply the builder if build/runtime-correctness-2026-10-26/before is absent.
+
+Additional isolated diagnostics; source resources instrumented only in that process:
+& $exe --path game --audio-driver Dummy --rendering-method gl_compatibility --script res://../build/runtime-correctness-2026-10-26/profile_cover_probe.gd -- --only-star
+& $exe --headless --path game --audio-driver Dummy --script res://../build/runtime-correctness-2026-10-26/soak_objects_probe.gd -- --cycles=12
+& $exe --headless --path game --audio-driver Dummy --script res://../build/runtime-correctness-2026-10-26/soak_bounded_sample_probe.gd -- --cycles=8
+These run concurrently with the long headless soak; their timings are not paired
+performance comparisons. The optional native 200 extension was stopped after33
+cycles using only its own tool session; no completed200-pass claim is made for it.

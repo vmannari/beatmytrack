@@ -1,0 +1,48 @@
+--- task-only-preloader
+
++++ observed-preloader
+
+@@ -17,4 +17,5 @@
+
+ var _next_audit: int=0
+ var _tree_ref: WeakRef
++var _menu_drawn: bool=false
+ 
+ func _ready() -> void:
+@@ -22,4 +23,9 @@
+
+ 	last_input=Time.get_ticks_msec()
+ 	foreground=app._publishing_slots_foreground
++	if DisplayServer.get_name()=="headless": _menu_drawn=true
++	else: RenderingServer.frame_post_draw.connect(_menu_presented,CONNECT_ONE_SHOT)
++
++func _menu_presented() -> void:
++	_menu_drawn=true
+ 
+ func _spec() -> Dictionary:
+@@ -61,5 +67,5 @@
+
+ 		if DisplayServer.get_name()=="headless": _resources[path]=load(path)
+ 		elif ResourceLoader.load_threaded_request(path)==OK: _pending.append(path)
+-	if not _allowed(): return
++	if not _allowed(false): return
+ 	if studio==null:
+ 		for path: String in _wanted:
+@@ -82,5 +88,5 @@
+
+ 	if studio.showroom_ready and not studio.warming and not studio.prepared: studio.warm()
+ 
+-func _allowed() -> bool:
++func _allowed(for_render: bool=true) -> bool:
+ 	if evicted or not foreground or not is_inside_tree() or is_queued_for_deletion() or _pin.is_empty(): return false
+ 	if not is_instance_valid(app) or not app.startup_complete or not app._background_work_allowed(): return false
+@@ -92,5 +98,7 @@
+
+ 	var focus: Control=get_viewport().gui_get_focus_owner()
+ 	if focus is LineEdit or focus is TextEdit: return false
+-	return Time.get_ticks_msec()-last_input>=idle_ms
++	# Decode/build ahead of an early Garage click; expensive first draws still
++	# wait for the full deliberate-input idle window after the menu is visible.
++	return _menu_drawn and Time.get_ticks_msec()-last_input>=(idle_ms if for_render else mini(idle_ms,150))
+ 
+ func take() -> CarShowroom:

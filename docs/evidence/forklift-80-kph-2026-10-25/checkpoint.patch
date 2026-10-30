@@ -1,0 +1,230 @@
+diff --git a/game/resources/cars/forklift.tres b/game/resources/cars/forklift.tres
+--- a/game/resources/cars/forklift.tres
++++ b/game/resources/cars/forklift.tres
+@@ -2,14 +2,14 @@
+ [ext_resource type="Script" path="res://vehicle/handling_config.gd" id="1"]
+ [resource]
+ script = ExtResource("1")
+-version = "forklift-2"
++version = "forklift-3"
+ vehicle_id = "forklift"
+ profile_name = "Forklift"
+ rear_steering = true
+ mass = 2800.0
+ engine_force = 20500.0
+ braking_force = 27500.0
+-maximum_speed = 18.5
++maximum_speed = 22.22222222222222
+ reverse_speed = 5.0
+ rotational_inertia = 2100.0
+ steering_rate = 5.0
+diff --git a/game/vehicle/forklift_model.gd b/game/vehicle/forklift_model.gd
+--- a/game/vehicle/forklift_model.gd
++++ b/game/vehicle/forklift_model.gd
+@@ -45,7 +45,7 @@
+ 	_operator(car,seat,rubber,dark,steel,bright,detail)
+ 	_guard(car,dark,steel,bright,rubber,accent,amber,detail)
+ 	_mast(car,dark,steel,bright,rubber,detail)
+-	# Recessed rear light assemblies, perimeter bumper, tow eye and safety bars.
++	# Recessed rear light assemblies, perimeter bumper and safety bars.
+ 	_box(body,Vector3(1.52,0.19,0.15),Vector3(0,0.57,1.59),0.055,rubber,detail,"RearBumper")
+ 	for side: float in [-1.0,1.0]:
+ 		_box(body,Vector3(0.27,0.17,0.06),Vector3(side*0.55,1.10,1.548),0.032,rubber,detail,"TailLampRecess")
+@@ -53,9 +53,6 @@
+ 		for line: int in range(4):
+ 			_box(body,Vector3(0.18,0.005,0.005),Vector3(side*0.55,1.064+line*0.023,1.61),0.002,car.brake_material,1,"TailLensFlute")
+ 		_box(body,Vector3(0.14,0.025,0.32),Vector3(side*0.53,0.677,1.54),0.009,amber,detail,"WarningMark")
+-	var tow := VisualGeometry.cylinder(body,0.065,0.09,Vector3(0,0.55,1.71),steel,true)
+-	tow.rotation.x = PI*0.5
+-	_bolt(body,Vector3(0,0.55,1.77),Vector3.BACK,0.025,dark)
+ 	# Curved exhaust stack and its heat shield behind the operator, below the guard.
+ 	_pipe(body,[Vector3(0.58,1.24,0.94),Vector3(0.62,1.50,0.98),Vector3(0.62,2.03,0.98),Vector3(0.59,2.12,1.02)],0.032,dark)
+ 	_box(body,Vector3(0.12,0.43,0.11),Vector3(0.62,1.71,0.99),0.035,steel,detail,"ExhaustShield")
+diff --git a/game/tests/test_forklift.gd b/game/tests/test_forklift.gd
+--- a/game/tests/test_forklift.gd
++++ b/game/tests/test_forklift.gd
+@@ -33,7 +33,7 @@
+ 	DirAccess.make_dir_recursive_absolute(evidence)
+ 	var config: HandlingConfig = VehicleCatalog.config("forklift")
+ 	check(VehicleCatalog.valid_id("forklift") == "forklift","selectable cars include Forklift")
+-	check(config.vehicle_id == "forklift" and config.rear_steering and config.version == "forklift-2","dedicated versioned rear-steer handling")
++	check(config.vehicle_id == "forklift" and config.rear_steering and config.version == "forklift-3","dedicated versioned rear-steer handling")
+ 	check(config.snapshot().get("rear_steering",false),"rear steering participates in comparable rules")
+ 	var info: Dictionary = manifest()
+ 	for id: String in VehicleCatalog.IDS:
+@@ -71,7 +71,7 @@
+ 	check(stopped.state.position == Vector2.ZERO and stopped.state.heading == 0.0,"steering alone cannot move a parked Forklift")
+ 	var driven := VehicleSimulation.new(config)
+ 	for tick: int in range(1200): driven.step(DriveFrame.sample(0,1,0))
+-	check(driven.state.velocity.length() > config.maximum_speed*0.95 and driven.state.velocity.length() <= config.maximum_speed,"low top speed is attainable and bounded")
++	check(absf(driven.state.velocity.length()*3.6-80.0)<0.01 and driven.state.velocity.length() <= config.maximum_speed,"80 km/h top speed is attainable and bounded")
+ 	metrics.maximum_speed_kph = driven.state.velocity.length()*3.6
+ 	for tick: int in range(600):
+ 		driven.step(DriveFrame.sample(0,0,1))
+@@ -130,6 +130,17 @@
+ 		var reference_triangles: int = 0
+ 		for part: Node in reference.find_children("*","MeshInstance3D",true,false): reference_triangles += (part as MeshInstance3D).mesh.get_faces().size()/3
+ 		check(triangles == reference_triangles,"production batching preserves every detailed/racing Forklift triangle")
++		var lower_fitting: bool = false
++		var upper_stack: bool = false
++		var inverse: Transform3D = reference.body.global_transform.affine_inverse()
++		for part: MeshInstance3D in reference.body.find_children("*","MeshInstance3D",true,false):
++			var transform: Transform3D = inverse*part.global_transform
++			for vertex: Vector3 in part.mesh.get_faces():
++				var point: Vector3 = transform*vertex
++				if absf(point.x)<0.12 and point.y>0.42 and point.y<0.67 and point.z>1.68: lower_fitting = true
++				if point.x>0.55 and point.x<0.70 and point.y>2.0 and point.y<2.17 and point.z>0.90 and point.z<1.10: upper_stack = true
++		check(not lower_fitting,"lower rear pipe-like fitting is absent")
++		check(upper_stack,"upper exhaust stack is retained")
+ 		reference.queue_free()
+ 		check(car.front_wheels.is_empty() and car.rear_wheels.size() == 2 and car.rolling_wheels.size() == 4,"only rear wheels articulate in detailed/racing mesh")
+ 		for pivot: Node3D in car.rear_wheels:
+diff --git a/game/tests/test_forklift_clearance.gd b/game/tests/test_forklift_clearance.gd
+--- a/game/tests/test_forklift_clearance.gd
++++ b/game/tests/test_forklift_clearance.gd
+@@ -23,18 +23,21 @@
+ 	return TrackCompiler.compile(document)
+ 
+ func _run() -> void:
++	for argument: String in OS.get_cmdline_user_args():
++		if argument.begins_with("--evidence-dir="): output = argument.trim_prefix("--evidence-dir=")
++	DirAccess.make_dir_recursive_absolute(ProjectSettings.globalize_path(output))
+ 	var config: HandlingConfig = VehicleCatalog.config("forklift")
+ 	measures.handling_version = config.version
+ 	measures.config_hash = JSON.stringify(config.snapshot(),"",true).sha256_text()
+ 	var old: HandlingConfig = load("res://../docs/evidence/forklift-clearance-2026-10-25/before/game__resources__cars__forklift.tres")
+ 	check(config.version != old.version and config.snapshot() != old.snapshot(),"changed handling has a distinct version and comparable rules")
+ 	check(config.rear_steering and config.wheelbase == old.wheelbase and config.track_width == old.track_width,"rear steering and axle dimensions are preserved")
+-	check(config.maximum_speed*3.6 >= 65.0,"Forklift top-speed setting reaches at least 65 km/h")
++	check(absf(config.maximum_speed*3.6-80.0)<0.01,"Forklift top-speed setting is 80 km/h")
+ 	check(config.collision_radius < old.collision_radius,"raised forks do not require the old oversized ground footprint")
+ 	var straight := VehicleSimulation.new(config)
+ 	for tick: int in range(1200): straight.step(DriveFrame.sample(0,1,0))
+ 	measures.speed_kph = straight.state.velocity.length()*3.6
+-	check(float(measures.speed_kph) >= 65.0 and straight.state.velocity.length() <= config.maximum_speed,"actual powered top speed reaches 65 km/h and stays bounded")
++	check(absf(float(measures.speed_kph)-80.0)<0.01 and straight.state.velocity.length() <= config.maximum_speed,"actual powered top speed reaches 80 km/h and stays bounded")
+ 	_check_turning(config,old)
+ 	var crossings: Array[Dictionary] = []
+ 	for angle: float in [0.0,37.0,90.0]:
+@@ -43,7 +46,7 @@
+ 		if track == null: continue
+ 		for direction: float in [-1.0,1.0]:
+ 			for offset: float in [-1.25,0.0,1.25]:
+-				for speed: float in [3.0,18.5]:
++				for speed: float in [3.0,18.5,config.maximum_speed]:
+ 					var result: Dictionary = _cross(track,config,angle,direction,offset,speed)
+ 					crossings.append(result)
+ 					check(result.finished and result.hits == 0,"clear bridge traverse angle=%s direction=%s offset=%s speed=%s" % [angle,direction,offset,speed])
+@@ -74,7 +77,7 @@
+ 	# misleadingly smaller than the revised truck travelling at the requested speed.
+ 	var comparison := old.duplicate() as HandlingConfig
+ 	comparison.corner_energy_retention = config.corner_energy_retention
+-	for speed: float in [3.0,8.0,14.0,18.5]:
++	for speed: float in [3.0,8.0,14.0,18.5,config.maximum_speed]:
+ 		for input: float in [-1.0,-0.45,0.45,1.0]:
+ 			var before: Dictionary = _circle(comparison,speed,input)
+ 			var after: Dictionary = _circle(config,speed,input)
+diff --git a/backend/tests/fixtures/verified_oval.json b/backend/tests/fixtures/verified_oval.json
+--- a/backend/tests/fixtures/verified_oval.json
++++ b/backend/tests/fixtures/verified_oval.json
+@@ -64434,8 +64434,8 @@
+         "handling_version": "electric-3"
+       },
+       "forklift": {
+-        "config_hash": "76ee645c53b2120bd32e65c0792c7deb8a884fcb42ddbe06420c687d8ce668ea",
+-        "handling_version": "forklift-2"
++        "config_hash": "b8efe40fee6eafba448a1b6d3af917f3cc5bc05481ef3d6379835235f0d66cd6",
++        "handling_version": "forklift-3"
+       },
+       "formula": {
+         "config_hash": "39cf24863079a9b63b7c53d9d95f2ee8c62ead30503f323dcdf8f9ece3155392",
+diff --git a/game/localization/game_fonts.gd b/game/localization/game_fonts.gd
+--- a/game/localization/game_fonts.gd
++++ b/game/localization/game_fonts.gd
+@@ -25,6 +25,7 @@
+ 		var weight: int = 600 if index == 1 else 400
+ 		var japanese: Font = face(JAPANESE,weight)
+ 		var korean: Font = face(KOREAN,weight)
+-		var fallback: Array[Font] = [korean,japanese] if script == "ko" else [japanese,korean]
++		var fallback: Array[Font] = []
++		fallback.assign([korean,japanese] if script == "ko" else [japanese,korean])
+ 		LATIN[index].fallbacks = fallback
+ 
+diff --git a/AGENTS.md b/AGENTS.md
+--- a/AGENTS.md
++++ b/AGENTS.md
+@@ -1,3 +1,8 @@
++<!-- FORKLIFT-80-KPH-20261025 -->
++## Forklift single upper exhaust and 80 km/h override (2026-10-25)
++2026-10-25 F80-01/F80-02/R01/Q01: Remove the lower rear pipe-like cylinder/end bolt, retaining the upper exhaust, solid panels and rear sticker. Versioned forklift-3 raises the cap to80km/h with the existing rear steering/clearance tune. Native204 clearance/turning,102headless/111Compatibility-with-bake/110desktopMobile, all-car143 five-lap/replay and real verifier2/parser1156 pass; all49 photos/art refreshed and imported. Initial missing-font-class/type failures and Compatibility timeout retained; a minimal typed font-fallback assignment restores Garage startup. Concurrent font/localization assets and Electric/manifest work preserved. Commands, native views, hashes and scoped checkpoint: docs/FORKLIFT_80_KPH_2026_10_25.md and docs/evidence/forklift-80-kph-2026-10-25/report.json. Reload, matching online contracts and owner/device acceptance remain. No device attachment check/test, APK, purchase, live mutation, deployment or owner-process restart.
++<!-- /FORKLIFT-80-KPH-20261025 -->
++
+ <!-- ELECTRIC-POWER-20261025 -->
+ ## Electric launch, tighter turning and calmer grip override (2026-10-25)
+ 2026-10-25 EP01-EP04/R01/Q01: Electric-3 retains the stronger rear-wheel launch (0-100 1.892s to 1.017s), tightens actual high-speed path radii at least20% and calms rejected exaggerated breakaway (same-corner full-pedal slip44.23 to17.58deg; gentle5.35deg). One pedal/no handbrake, saved brake-position D/R, 11m/s2 regeneration and exact72km/h stop1.8s/17.842m remain. Native power19/turn61/retained60/one-pedal63/laps6/Compatibility59/desktopMobile59, backend72pass/2explicit deselections, real five-lap reader13115inputs and parser1153/import pass. Initial gentle-corner, concurrent-font/import/backend and manifest-isolation failures remain recorded; the owner's calmer-slide correction supersedes the initial >25deg proposal. Simulation arithmetic/physics0.68 and other car integrator states remain; concurrent forklift-3 is preserved. Commands, native evidence, hashes and task-only Git-checked checkpoint: docs/ELECTRIC_POWER_2026_10_25.md and docs/evidence/electric-power-2026-10-25/report.json. Client reload, matching online configuration/verifier rollout and owner/device feel acceptance remain. No device attachment check/test, APK, live mutation, purchase, deployment or owner-process restart; concurrent work preserved.
+diff --git a/DEVELOPMENT_STATUS.md b/DEVELOPMENT_STATUS.md
+--- a/DEVELOPMENT_STATUS.md
++++ b/DEVELOPMENT_STATUS.md
+@@ -1,3 +1,7 @@
++<!-- FORKLIFT-80-KPH-20261025 -->
++2026-10-25 F80-01/F80-02/R01/Q01: Remove the lower rear pipe-like cylinder/end bolt, retaining the upper exhaust, solid panels and rear sticker. Versioned forklift-3 raises the cap to80km/h with the existing rear steering/clearance tune. Native204 clearance/turning,102headless/111Compatibility-with-bake/110desktopMobile, all-car143 five-lap/replay and real verifier2/parser1156 pass; all49 photos/art refreshed and imported. Initial missing-font-class/type failures and Compatibility timeout retained; a minimal typed font-fallback assignment restores Garage startup. Concurrent font/localization assets and Electric/manifest work preserved. Commands, native views, hashes and scoped checkpoint: docs/FORKLIFT_80_KPH_2026_10_25.md and docs/evidence/forklift-80-kph-2026-10-25/report.json. Reload, matching online contracts and owner/device acceptance remain. No device attachment check/test, APK, purchase, live mutation, deployment or owner-process restart.
++<!-- /FORKLIFT-80-KPH-20261025 -->
++
+ <!-- ELECTRIC-POWER-20261025 -->
+ ## Electric launch, tighter turning and calmer grip override (2026-10-25)
+ 2026-10-25 EP01-EP04/R01/Q01: Electric-3 retains the stronger rear-wheel launch (0-100 1.892s to 1.017s), tightens actual high-speed path radii at least20% and calms rejected exaggerated breakaway (same-corner full-pedal slip44.23 to17.58deg; gentle5.35deg). One pedal/no handbrake, saved brake-position D/R, 11m/s2 regeneration and exact72km/h stop1.8s/17.842m remain. Native power19/turn61/retained60/one-pedal63/laps6/Compatibility59/desktopMobile59, backend72pass/2explicit deselections, real five-lap reader13115inputs and parser1153/import pass. Initial gentle-corner, concurrent-font/import/backend and manifest-isolation failures remain recorded; the owner's calmer-slide correction supersedes the initial >25deg proposal. Simulation arithmetic/physics0.68 and other car integrator states remain; concurrent forklift-3 is preserved. Commands, native evidence, hashes and task-only Git-checked checkpoint: docs/ELECTRIC_POWER_2026_10_25.md and docs/evidence/electric-power-2026-10-25/report.json. Client reload, matching online configuration/verifier rollout and owner/device feel acceptance remain. No device attachment check/test, APK, live mutation, purchase, deployment or owner-process restart; concurrent work preserved.
+diff --git a/docs/PHASE_0_PLAN.md b/docs/PHASE_0_PLAN.md
+--- a/docs/PHASE_0_PLAN.md
++++ b/docs/PHASE_0_PLAN.md
+@@ -1,3 +1,7 @@
++<!-- FORKLIFT-80-KPH-20261025 -->
++2026-10-25 F80-01/F80-02/R01/Q01: Remove the lower rear pipe-like cylinder/end bolt, retaining the upper exhaust, solid panels and rear sticker. Versioned forklift-3 raises the cap to80km/h with the existing rear steering/clearance tune. Native204 clearance/turning,102headless/111Compatibility-with-bake/110desktopMobile, all-car143 five-lap/replay and real verifier2/parser1156 pass; all49 photos/art refreshed and imported. Initial missing-font-class/type failures and Compatibility timeout retained; a minimal typed font-fallback assignment restores Garage startup. Concurrent font/localization assets and Electric/manifest work preserved. Commands, native views, hashes and scoped checkpoint: docs/FORKLIFT_80_KPH_2026_10_25.md and docs/evidence/forklift-80-kph-2026-10-25/report.json. Reload, matching online contracts and owner/device acceptance remain. No device attachment check/test, APK, purchase, live mutation, deployment or owner-process restart.
++<!-- /FORKLIFT-80-KPH-20261025 -->
++
+ <!-- ELECTRIC-POWER-20261025 -->
+ ## Electric launch, tighter turning and calmer grip override (2026-10-25)
+ 2026-10-25 EP01-EP04/R01/Q01: Electric-3 retains the stronger rear-wheel launch (0-100 1.892s to 1.017s), tightens actual high-speed path radii at least20% and calms rejected exaggerated breakaway (same-corner full-pedal slip44.23 to17.58deg; gentle5.35deg). One pedal/no handbrake, saved brake-position D/R, 11m/s2 regeneration and exact72km/h stop1.8s/17.842m remain. Native power19/turn61/retained60/one-pedal63/laps6/Compatibility59/desktopMobile59, backend72pass/2explicit deselections, real five-lap reader13115inputs and parser1153/import pass. Initial gentle-corner, concurrent-font/import/backend and manifest-isolation failures remain recorded; the owner's calmer-slide correction supersedes the initial >25deg proposal. Simulation arithmetic/physics0.68 and other car integrator states remain; concurrent forklift-3 is preserved. Commands, native evidence, hashes and task-only Git-checked checkpoint: docs/ELECTRIC_POWER_2026_10_25.md and docs/evidence/electric-power-2026-10-25/report.json. Client reload, matching online configuration/verifier rollout and owner/device feel acceptance remain. No device attachment check/test, APK, live mutation, purchase, deployment or owner-process restart; concurrent work preserved.
+diff --git a/docs/FORKLIFT_2026_10_25.md b/docs/FORKLIFT_2026_10_25.md
+--- a/docs/FORKLIFT_2026_10_25.md
++++ b/docs/FORKLIFT_2026_10_25.md
+@@ -1,4 +1,6 @@
+ # Forklift â€” 2026-10-25
++
++Latest speed/exhaust update: [80 km/h and one upper exhaust](FORKLIFT_80_KPH_2026_10_25.md). The current handling profile is `forklift-3`.
+ 
+ Current body/sticker correction: [solid side panels and one rear sticker](FORKLIFT_BODY_STICKER_2026_10_25.md).
+ 
+diff --git a/docs/FORKLIFT_80_KPH_2026_10_25.md b/docs/FORKLIFT_80_KPH_2026_10_25.md
+new file mode 100644
+--- /dev/null
++++ b/docs/FORKLIFT_80_KPH_2026_10_25.md
+@@ -0,0 +1,29 @@
++# Forklift lower fitting removal and 80 km/h - 2026-10-25
++
++F80-01/F80-02/R01/Q01 implement the owner's request to remove the bottom exhaust-like fitting and increase top speed to 80 km/h. The lower rear cylinder and its end bolt are removed; the upper exhaust stack and heat shield remain. Solid side panels, the single rear sticker, raised forks and the tighter rear steering remain as previously corrected.
++
++The versioned `forklift-3` profile changes only the handling version and maximum speed, from 18.5 to 22.22222222222222 m/s. Actual powered speed measures 79.9999969482422 km/h, within floating-point tolerance of 80 km/h. The native config hash is `b8efe40fee6eafba448a1b6d3af917f3cc5bc05481ef3d6379835235f0d66cd6`; the verifier fixture pins this hash/version. No shared physics implementation change is made. Matching online contract rollout/revalidation remains separate work.
++
++The detailed/racing models now contain 146,432/49,472 triangles and retain 40 prepared mesh instances. Native geometry checks inspect both detail levels for the absence of the low central rear protrusion and the presence of the upper stack. All 49 native Forklift appearance photos and its catalogue illustration are refreshed and imported.
++
++All engine commands use `scripts/dev.ps1` and pinned Godot `4.7.2.stable.official.ed1daf0bf`. Native views, raw logs, commands, measurements, source hashes and the scoped checkpoint are in [the report](evidence/forklift-80-kph-2026-10-25/report.json) and [before/after gallery](evidence/forklift-80-kph-2026-10-25/report.html).
++
++| Actual command/check | Result |
++|---|---|
++| `TestScript -ScriptPath res://tests/test_forklift_clearance.gd -TestArgument '--evidence-dir=res://../docs/evidence/forklift-80-kph-2026-10-25'` | 204 checks, zero failures; 54 bridge traversals at 3/18.5/22.22222222222222 m/s, 20 turning cases, recovery and exact replay |
++| `TestScript -ScriptPath res://tests/test_forklift.gd` with the same evidence directory | 102 checks, zero failures; includes actual 80 km/h and low-fitting/upper-stack geometry checks |
++| Same with `-Graphical -RenderingMethod gl_compatibility` and array arguments for evidence directory plus `--bake-art` | 111 checks, zero failures |
++| Same with `-Graphical -RenderingMethod mobile` and evidence directory | 110 checks, zero failures; desktop Mobile renderer |
++| `TestCars -CommandTimeoutSeconds 600` | 143 checks, zero failures; all seven cars, three five-lap fixtures and exact replay |
++| Backend secure Python: `-m pytest tests/test_verifier.py -q -k 'real_engine_manifest_pins_every_competitive_config or real_five_lap_race_replays_identically' --tb=short` | 2 passed, 68 deselected; repeated after concurrent Electric fixture update with the same passing result |
++| `TestScript -ScriptPath res://tests/bake_livery_previews.gd -Graphical -RenderingMethod gl_compatibility -TestArgument '--vehicle=forklift'` | 49 native captures complete |
++| `Import` | Pass; final catalogue artwork and photos imported |
++| `TestScript -ScriptPath res://tests/test_script_parse.gd` | Final 1,156 scripts, zero failures |
++
++The clearance suite retains the earlier 66.6 km/h cases and adds the new maximum speed; its radius, speed-retention, rail-collision and ramp-clearance assertions remain. The all-car suite and original-car trace comparisons retain their assertions.
++
++Initial rendering attempts encountered a newly added concurrent font class before its import registration, followed by a font fallback runtime type error. The first Compatibility run timed out before App startup; both subsequent renderers reported the typed-array error. The minimal correction creates `Array[Font]` and assigns the intended fallback sequence explicitly, preserving the Japanese/Korean order. Both complete Garage/race suites then pass. Initial logs are retained. Concurrent localization/font assets, Electric handling and its manifest hash are preserved; only the two Forklift manifest fields belong to this change.
++
++Changed sources: `game/resources/cars/forklift.tres`, `game/vehicle/forklift_model.gd`, `game/tests/test_forklift.gd`, `game/tests/test_forklift_clearance.gd`, the Forklift entry in `backend/tests/fixtures/verified_oval.json`, and the small startup type correction in `game/localization/game_fonts.gd`. Native assets, status entries and the original Forklift guide accompany them.
++
++No phone/tablet attachment check or physical-device test, APK, purchase, live backend mutation, deployment or owner-process restart was performed. Reload the game to use the new model, artwork and handling. Owner/device driving feel, appearance and frame-pacing acceptance remain.

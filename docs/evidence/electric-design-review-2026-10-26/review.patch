@@ -1,0 +1,774 @@
+diff --git a/AGENTS.md b/AGENTS.md
+--- a/AGENTS.md
++++ b/AGENTS.md
+@@ -1,3 +1,8 @@
++<!-- ELECTRIC-DESIGN-REVIEW-20261026 -->
++## Electric whole-model design review (2026-10-26)
++EDR01-EDR03/R01/Q01: Review-only comparison of the current v10 model with official Lucid Air, Porsche Taycan and facelifted Hyundai IONIQ 6 references. Angular cabin/roof against rounded body is the highest-priority quality gap; bonnet/wing integration, glazing, rear composition, wheel construction and seam/termination quality follow. Fresh neutral native full/simple views total44 captures across Compatibility and desktop Mobile, with zero save failures; these are evidence captures, not visual-quality passes. Measured full/simple169821/69761 triangles and38.44% full allocation to wheel assemblies argue for reallocation. This review does not modify production sources/configuration/resources; concurrent electric-14 handling changes are excluded. Findings remain unfixed; no AAA certification, device attachment check/test, APK, deployment or owner-process restart. Report, official sources, comparison board, source hashes and scoped review patch: docs/ELECTRIC_DESIGN_REVIEW_2026_10_26.md and docs/evidence/electric-design-review-2026-10-26/report.json. Concurrent work preserved; no staging or commit.
++<!-- /ELECTRIC-DESIGN-REVIEW-20261026 -->
++
+ <!-- GARAGE-PAINT-LIST-20261026 -->
+ ## Garage paint list with tiny profile cars (2026-10-26)
+ GPL01-GPL04/R01/Q01: Appearance Patterns shares the numbered full-width Parts list, all49 choices, descriptions, actual prices, equipped check, Previewing/count and explicit Buy & Equip. Tiny transparent cars reuse the exact profile simple-model/camera/light/compositor and include candidate paint, saved stickers and fitted parts. Equipped icon/selection retains actual saved colours; main Garage previews with stable angle/zoom and momentary equipped comparison. Selection/account/navigation fences remain. Visible-only176x112 renders,24-image bound and one temporary studio keep rows free of viewports; hide/free-in-flight cleanup passes. Initial five world-lifetime failures and compact row-clipping capture are retained/corrected without weaker assertions. Focused151headless/192Compatibility/192desktopMobile, retained configurator647/647, economy56, lifecycle1446 and parser1241/import pass. Runtime scope is six Garage/profile UI scripts; Parts sizing, Colours/Stickers, geometry, economy and race behavior remain. Commands, native App views at three sizes, hashes and scoped review patch: docs/GARAGE_PAINT_LIST_2026_10_26.md and docs/evidence/garage-paint-list-2026-10-26/report.json. Reload, translated descriptive copy and owner/device appearance/touch/performance acceptance remain. No attachment/device test, APK, real authentication/purchase, live mutation, deployment, merge, staging, commit or owner-process restart; concurrent changes preserved.
+diff --git a/DEVELOPMENT_STATUS.md b/DEVELOPMENT_STATUS.md
+--- a/DEVELOPMENT_STATUS.md
++++ b/DEVELOPMENT_STATUS.md
+@@ -1,3 +1,8 @@
++<!-- ELECTRIC-DESIGN-REVIEW-20261026 -->
++## Electric whole-model design review (2026-10-26)
++EDR01-EDR03/R01/Q01: Review-only comparison of the current v10 model with official Lucid Air, Porsche Taycan and facelifted Hyundai IONIQ 6 references. Angular cabin/roof against rounded body is the highest-priority quality gap; bonnet/wing integration, glazing, rear composition, wheel construction and seam/termination quality follow. Fresh neutral native full/simple views total44 captures across Compatibility and desktop Mobile, with zero save failures; these are evidence captures, not visual-quality passes. Measured full/simple169821/69761 triangles and38.44% full allocation to wheel assemblies argue for reallocation. This review does not modify production sources/configuration/resources; concurrent electric-14 handling changes are excluded. Findings remain unfixed; no AAA certification, device attachment check/test, APK, deployment or owner-process restart. Report, official sources, comparison board, source hashes and scoped review patch: docs/ELECTRIC_DESIGN_REVIEW_2026_10_26.md and docs/evidence/electric-design-review-2026-10-26/report.json. Concurrent work preserved; no staging or commit.
++<!-- /ELECTRIC-DESIGN-REVIEW-20261026 -->
++
+ <!-- GARAGE-PAINT-LIST-20261026 -->
+ ## Garage paint list with tiny profile cars (2026-10-26)
+ GPL01-GPL04/R01/Q01: Appearance Patterns shares the numbered full-width Parts list, all49 choices, descriptions, actual prices, equipped check, Previewing/count and explicit Buy & Equip. Tiny transparent cars reuse the exact profile simple-model/camera/light/compositor and include candidate paint, saved stickers and fitted parts. Equipped icon/selection retains actual saved colours; main Garage previews with stable angle/zoom and momentary equipped comparison. Selection/account/navigation fences remain. Visible-only176x112 renders,24-image bound and one temporary studio keep rows free of viewports; hide/free-in-flight cleanup passes. Initial five world-lifetime failures and compact row-clipping capture are retained/corrected without weaker assertions. Focused151headless/192Compatibility/192desktopMobile, retained configurator647/647, economy56, lifecycle1446 and parser1241/import pass. Runtime scope is six Garage/profile UI scripts; Parts sizing, Colours/Stickers, geometry, economy and race behavior remain. Commands, native App views at three sizes, hashes and scoped review patch: docs/GARAGE_PAINT_LIST_2026_10_26.md and docs/evidence/garage-paint-list-2026-10-26/report.json. Reload, translated descriptive copy and owner/device appearance/touch/performance acceptance remain. No attachment/device test, APK, real authentication/purchase, live mutation, deployment, merge, staging, commit or owner-process restart; concurrent changes preserved.
+diff --git a/game/tests/review_electric_design.gd b/game/tests/review_electric_design.gd
+new file mode 100644
+--- /dev/null
++++ b/game/tests/review_electric_design.gd
+@@ -0,0 +1,111 @@
++extends SceneTree
++## Review-only native views. No saves, model edits, or visual acceptance assertions.
++const COACH = preload("res://vehicle/electric_coachwork.gd")
++var output: String = "res://../docs/evidence/electric-design-review-2026-10-26/native"
++var report: Dictionary = {"captures":[],"geometry":{}}
++var failures: int = 0
++
++func _initialize() -> void:
++	run.call_deferred()
++
++func settle() -> void:
++	for frame: int in range(6): await process_frame
++	await RenderingServer.frame_post_draw
++
++func capture(viewport: SubViewport, label: String) -> void:
++	await settle()
++	var result: Error = viewport.get_texture().get_image().save_png(output.path_join(label+".png"))
++	if result != OK: failures += 1
++	report.captures.append({"name":label,"save_error":result})
++
++func measure(car: CarVisual) -> Dictionary:
++	var bounds := AABB()
++	var first: bool = true
++	var count: int = 0
++	var meshes: int = 0
++	var groups: Dictionary = {}
++	for mesh: MeshInstance3D in car.find_children("*","MeshInstance3D",true,false):
++		if not mesh.is_visible_in_tree() or mesh.cast_shadow == GeometryInstance3D.SHADOW_CASTING_SETTING_SHADOWS_ONLY: continue
++		meshes += 1
++		var faces: PackedVector3Array = mesh.mesh.get_faces()
++		var triangles: int = faces.size()/3
++		count += triangles
++		var group: String = "wheels" if not car.body.is_ancestor_of(mesh) else "body_and_cabin"
++		groups[group] = int(groups.get(group,0))+triangles
++		for point: Vector3 in faces:
++			var world_point: Vector3 = mesh.global_transform*point
++			if first:
++				bounds = AABB(world_point,Vector3.ZERO)
++				first = false
++			else: bounds = bounds.expand(world_point)
++	var wheels: Array = []
++	for wheel: Vector3 in car.wheel_rest_positions: wheels.append([wheel.x*HandlingConfig.BODY_SCALE,wheel.y*HandlingConfig.BODY_SCALE,wheel.z*HandlingConfig.BODY_SCALE])
++	return {"triangles":count,"mesh_instances_unbatched":meshes,"groups":groups,
++		"world_aabb_min":[bounds.position.x,bounds.position.y,bounds.position.z],
++		"world_aabb_size":[bounds.size.x,bounds.size.y,bounds.size.z],
++		"wheel_centres_world":wheels,"wheelbase_metres":COACH.AXLE*2*HandlingConfig.BODY_SCALE,
++		"wheel_diameter_metres":0.74*HandlingConfig.BODY_SCALE}
++
++func run() -> void:
++	for argument: String in OS.get_cmdline_user_args():
++		if argument.begins_with("--evidence-root="): output = argument.trim_prefix("--evidence-root=")
++	DirAccess.make_dir_recursive_absolute(ProjectSettings.globalize_path(output))
++	root.size = Vector2i(1440,900)
++	var viewport := SubViewport.new()
++	viewport.size = root.size
++	viewport.own_world_3d = true
++	viewport.msaa_3d = Viewport.MSAA_4X
++	viewport.render_target_update_mode = SubViewport.UPDATE_ALWAYS
++	root.add_child(viewport)
++	report["renderer"] = RenderingServer.get_current_rendering_method()
++	report["source_sha256"] = FileAccess.get_sha256("res://vehicle/electric_coachwork.gd")
++	report["model_sha256"] = FileAccess.get_sha256("res://vehicle/electric_car_model.gd")
++	for simple: bool in [false,true]:
++		var label: String = "simple" if simple else "full"
++		var world := Node3D.new()
++		viewport.add_child(world)
++		var car := CarVisual.new()
++		car.vehicle_id = "electric"
++		car.simple_model = simple
++		car.batch_parts = false
++		car.livery = VehicleLivery.defaults("electric")
++		car.livery.colors.body = "777f86"
++		car.livery.colors.accent = "777f86"
++		world.add_child(car)
++		report.geometry[label] = measure(car)
++		ShowroomStudio.build(world,car)
++		var camera := Camera3D.new()
++		camera.fov = 32
++		camera.current = true
++		world.add_child(camera)
++		var shots: Array = [
++			["front-quarter",Vector3(-4.2,2.5,-5.9),Vector3(0,0.65,0),0.0],
++			["rear-quarter",Vector3(4.2,2.4,5.9),Vector3(0,0.65,0),0.0],
++			["side",Vector3(-8,0.7,0),Vector3(0,0.7,0),3.35],
++			["front",Vector3(0,0.85,-8),Vector3(0,0.85,0),2.55],
++			["rear",Vector3(0,0.85,8),Vector3(0,0.85,0),2.55],
++			["top",Vector3(0,8,0.001),Vector3(0,0,0),5.0],
++			["bonnet",Vector3(-1.8,2.8,-3.8),Vector3(0,0.78,-1.3),0.0],
++			["roof",Vector3(-2.8,3.2,3.4),Vector3(0,0.9,0.2),0.0],
++			["wheel",Vector3(-2.3,0.65,-1.9),Vector3(-0.74,0.35,-1.23),0.0],
++			["tail-detail",Vector3(1.8,1.25,4.0),Vector3(0,0.55,1.85),0.0]]
++		for shot: Array in shots:
++			camera.projection = Camera3D.PROJECTION_ORTHOGONAL if float(shot[3])>0 else Camera3D.PROJECTION_PERSPECTIVE
++			if float(shot[3])>0: camera.size = float(shot[3])
++			camera.position = shot[1]
++			camera.look_at(shot[2])
++			await capture(viewport,label+"-"+str(shot[0]))
++		camera.current = false
++		var follow := FollowCamera.new()
++		world.add_child(follow)
++		follow.follow(Vector2.ZERO,Vector2.ZERO,0,0,true)
++		follow.current = true
++		await capture(viewport,label+"-production-camera-studio")
++		world.free()
++	viewport.free()
++	report["failures"] = failures
++	var file := FileAccess.open(output.path_join("capture-report.json"),FileAccess.WRITE)
++	file.store_string(JSON.stringify(report,"\t"))
++	file.close()
++	print("ELECTRIC_DESIGN_REVIEW: %d captures, %d save failures; geometry %s" % [report.captures.size(),failures,JSON.stringify(report.geometry)])
++	quit(1 if failures else 0)
+diff --git a/docs/ELECTRIC_DESIGN_REVIEW_2026_10_26.md b/docs/ELECTRIC_DESIGN_REVIEW_2026_10_26.md
+new file mode 100644
+--- /dev/null
++++ b/docs/ELECTRIC_DESIGN_REVIEW_2026_10_26.md
+@@ -0,0 +1,123 @@
++# Electric model design review — 2026-10-26
++
++The current model is recognisably an electric sedan, but it is still below the requested premium game-asset standard. The largest gap is the relationship between the rounded lower body and the angular cabin. Repeated local bonnet corrections have improved its outline without resolving that broader design problem. The next substantial improvement should start with the silhouette and cabin, then the body surfaces, then the smaller assemblies.
++
++This is a review, not a model revision. Findings below are visual assessments, with measurements identified separately. Passing existing continuity and construction tests does not constitute visual acceptance or an AAA certification.
++
++[Open the comparison board](evidence/electric-design-review-2026-10-26/comparison.html). It switches between both model detail levels, Compatibility and desktop Mobile, and the reference photographs.
++
++## Scope and requirements
++
++| ID | Requirement | Result |
++|---|---|---|
++| EDR01 | Review the entire current electric model | Silhouette, hood/front, rear, doors, glazing, mirrors, wheels, materials and edge quality reviewed in fresh native views |
++| EDR02 | Compare against Lucid and other relevant EVs | Official Lucid Air, Porsche Taycan and facelifted Hyundai IONIQ 6 references examined |
++| EDR03 | Identify useful next changes | Priorities and a proposed design sequence below; no corrective work performed |
++| R01 | Preserve the production model and unrelated work | Review does not modify runtime sources/configuration; task adds a capture script and review evidence only |
++| Q01 | Record reproducible evidence and limitations | 44 native captures, measured mesh bounds/budgets, source hashes, commands and scoped review patch |
++
++The comparison concerns proportion, curvature, assembly design and visual consistency. Manufacturer photography has different lighting, lenses, materials and interiors; matching its photorealism is not a fair acceptance target for this game's established mature cel-shaded style. The fictional identity and high overhead racing camera remain appropriate constraints.
++
++## Reference comparisons
++
++| Reference | Relevant lesson | Difference visible in our model |
++|---|---|---|
++| [Lucid Air](https://lucidmotors.com/air) — primary reference | A softly integrated canopy and restrained nose make the broad body surfaces feel deliberate. The narrow lamps have visible housing/optical depth. | Our cabin has straight screen edges and abrupt roof corners; the bonnet looks like an inset lid within a uniformly thick rim. The white light strip supplies identity but little sense of an optical assembly. |
++| [Porsche Taycan exterior design](https://newsroom.porsche.com/en_US/products/taycan/exterior-design-18551.html) — secondary form reference | A descending roof, narrowed rear cabin and stronger rear shoulders create a coherent sporting silhouette. | Our nearly level beltline, rectangular roof plan and straight rear-screen descent make the upper and lower forms feel separate. More sharply sculpted wheels would also suit the existing body better. The linked design article describes the original Taycan, not a claim about current model specifications. |
++| [Hyundai IONIQ 6 facelift](https://www.hyundai.com/worldwide/en/newsroom/detail/hyundai-motor-unveils-the-new-ioniq-6-and-ioniq-6-n-line-under-%E2%80%98pure-flow%2C-refined%E2%80%99-concept-0000000928) — secondary rear/continuity reference | The curved cabin, tail and ducktail form one gesture; repeated horizontal elements link front and rear. | Our rear has more detail than the earlier version, but the rear window, deck lip, lamp slot and bumper still read as stacked separate pieces. The useful lesson is consistency, not adopting Hyundai's pixel lights or a second competing identity. |
++
++These comparisons are my visual interpretation of the cited official images/design descriptions. Lucid should remain the main direction; collecting distinctive parts from all three would make the design less coherent.
++
++## Findings, in recommended order
++
++### DR01 — High priority: cabin and whole-car silhouette
++
++The exact side view shows distinct corners where the windscreen meets the roof and where the roof turns into the rear screen. From above, the roof is a near rectangle, and the side windows form a series of planar-looking trapezoids. The thick, straight painted borders reinforce the appearance of a separate cabin placed on the body. This dominates the model's perceived quality in both detail levels and renderers.
++
++Develop the windscreen crown, roof arc, side-window outline and rear-pillar return together. Give the roof edges a controlled rounded transition and draw the rear cabin into the shoulders. Judge that silhouette before adding trim. This does not require changing wheel centres, collision dimensions or the racing camera.
++
++Evidence: [side](evidence/electric-design-review-2026-10-26/native/full-side.png), [roof](evidence/electric-design-review-2026-10-26/native/full-roof.png), [top](evidence/electric-design-review-2026-10-26/native/full-top.png). Source: `electric_coachwork.gd`, `cabin_point`, `screen_point`, `roof_point` and `cabin`.
++
++### DR02 — High priority: bonnet, shoulders and front mass
++
++The present seam is cleaner and tapers inward in the top view. That specific improvement should be retained. It has not made the whole front Lucid-like: the bonnet remains a rounded rectangular insert, the surrounding wing/edge is visually heavy, and the frontal view produces a trough-like impression between the raised outer shoulders. Concentrated highlights on the wings make this more conspicuous.
++
++Reshape the bonnet crown, wing tops and nose as one broad controlled surface, using a slimmer, less uniform perimeter treatment. Retain the clean taper while choosing the seam as part of the whole surface design. A new outline alone will not resolve the front's inflated appearance. The visual impression is not proof of a new mesh intersection or normal failure.
++
++Evidence: [bonnet](evidence/electric-design-review-2026-10-26/native/full-bonnet.png), [front](evidence/electric-design-review-2026-10-26/native/full-front.png). The clean-bonnet regression from the preceding task remains unchanged.
++
++### DR03 — High priority: glazing and material response
++
++The screens have little apparent depth. In Compatibility they usually read almost black; in desktop Mobile the same views are much greyer. Along with the straight borders, this makes them look like filled panels. The shared paint can produce a small bright highlight without clearly explaining the wider surface curvature.
++
++First correct the glass curvature and pillar transitions. Then tune bounded reflections, edge darkening/seals and material separation within the established art style. A very simple dark interior silhouette could help close Garage views if its cost is justified; a complete interior is not necessary for overhead racing. Increasing global gloss would accentuate the existing shape problems. The glass shader is intentionally opaque and uses an analytic environment, so the lack of cabin depth is a presentation limitation rather than missing transparency accidentally hidden by a setting.
++
++Evidence: the same `full-side`, `full-bonnet` and `full-roof` views in [Compatibility](evidence/electric-design-review-2026-10-26/native/) and [desktop Mobile](evidence/electric-design-review-2026-10-26/desktop-mobile/). Source: `electric_glass.gdshader` and `compact_finish.gd`.
++
++### DR04 — Medium priority: rear composition
++
++The formed lip, recessed lamp strip and quieter lower valance improve on the earlier flat rear. Nevertheless, the broad bumper face, simple plate recess and abrupt glass-to-deck break still look generic. The tail lamp does not strongly explain the turn into the rear quarters.
++
++Resolve the rear window/deck/quarter surfaces together; make the lamp housing and bumper shoulder follow the same curvature. Keep the lip restrained and integrate the plate recess into the bumper's form. More fins, strips or badges would contribute less than that work.
++
++Evidence: [rear quarter](evidence/electric-design-review-2026-10-26/native/full-rear-quarter.png), [tail detail](evidence/electric-design-review-2026-10-26/native/full-tail-detail.png).
++
++### DR05 — Medium priority: wheels and stance
++
++The wheel spokes have a soft, twisted paddle appearance. The broad dark brake disc, small generic hub and polished outer ring provide weak separation between forged wheel, brake and tyre. The arch pocket is prominent, and the large body panels make the wheels feel smaller than their physical diameter alone suggests.
++
++Use a cleaner spoke cross-section, consistent machining edges, a legible barrel and distinct rotor/caliper finishes. Review arch clearance and wheel-to-body proportions in the real camera, preserving steering clearance and existing physical wheel locations. Enlarging tyres or moving axles is not an automatic consequence of this finding.
++
++Evidence: [wheel](evidence/electric-design-review-2026-10-26/native/full-wheel.png), [side](evidence/electric-design-review-2026-10-26/native/full-side.png). Wheels consume 65,280 of 169,821 full-detail triangles (38.44%), despite these remaining visual weaknesses. This count includes four wheel assemblies outside the body hierarchy; it is not a draw-call measurement.
++
++### DR06 — Medium priority: panel and small-assembly design
++
++The door outlines are basic quadrilaterals, the charge flap is a simple rectangle, the rocker resembles an attached rounded rail, and the mirror housings look like oval pods. The narrow lamps read more strongly as emissive lines than as lenses set into manufactured housings. Their shared simplification compounds across the car.
++
++Use consistent panel-gap depth and radii, relate door cuts to the pillar/quarter design, integrate the sill, and give mirrors a distinct mount, shell, underside and glass aperture. Keep light signatures legible while adding restrained lens/housing depth. These details should follow the new primary forms.
++
++### DR07 — Medium priority: seam and termination cleanup
++
++The close rear view contains broken dark slivers along the deck edge; the exact side view has stepped/open-looking terminations at the lower bumper corners. These are visible quality findings in both renderers, not a confirmed diagnosis of holes. Existing construction tests do not establish that these particular visible joins are finished.
++
++Inspect the affected mesh joins, winding, local depth separation and triangulation before prescribing a fix. Recheck them in moving close views with both detail levels; a favourable three-quarter still should not be the only acceptance view.
++
++## Measured proportions and cost
++
++| Measurement | Current model in world metres | Lucid Air, official dimensions converted from inches |
++|---|---:|---:|
++| Length | 4.2273 | 4.9759 |
++| Height | 1.3288 | 1.4072 |
++| Wheelbase | 2.4600 | 2.9591 |
++| Wheelbase / length | 58.19% | 59.47% |
++| Height / length | 31.43% | 28.28% |
++
++Model dimensions are visible-mesh bounds at rest. The Air is a larger vehicle; these ratios are context, not a specification to copy or a reason to resize gameplay geometry. The modest wheelbase/length difference does not explain the entire appearance problem. Cabin contours, body mass distribution and local transitions remain the stronger visual issues. Width is deliberately omitted because mirrored/body-only width conventions differ. [Lucid dimension source](https://lucidmotors.com/air).
++
++Full/simple geometry is **169,821 / 69,761 triangles**, with identical measured outer bounds. The existing full-detail ceiling is 170,000, leaving only 179 triangles. Reallocate geometry before adding assemblies; a larger triangle budget alone will not improve the silhouette. The capture rig uses unbatched parts to inspect construction, so its 1,020 mesh instances are not the production draw-call count. No device performance or FPS conclusion follows from this review.
++
++At the unchanged default overhead camera, fine wheel and lamp details become small. The roof, glass arrangement, overall outline and large highlight shapes remain visible. Prioritising those forms helps both Garage and racing. The production-camera capture uses the normal camera profile over a diagnostic studio, not an actual race scene.
++
++## Proposed design sequence and acceptance
++
++1. Approve one cohesive Lucid-inspired silhouette in neutral grey: exact side, front, rear, top and the existing Garage view. Keep the fictional identity and physical constraints.
++2. Refine continuous cabin/body/front/rear surfaces. Review broad highlights from several angles before reinstating detail.
++3. Fit glazing, panels, lamps, mirrors and wheels to the approved surfaces, reallocating geometry within the existing budget.
++4. Check both detail levels and both renderers at Garage and unchanged gameplay framing; then assess movement and device cost separately.
++
++The narrow lighting, restrained trim, cleaner inward bonnet taper and improved rear lip are useful elements to keep. A whole-car form pass is the recommended next step; another isolated bonnet-seam adjustment is unlikely to deliver the requested quality.
++
++## Commands, evidence and limits
++
++```powershell
++powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1 -Action TestScript -ScriptPath res://tests/review_electric_design.gd -Graphical -RenderingMethod gl_compatibility -TestArgument '--evidence-root=res://../docs/evidence/electric-design-review-2026-10-26/native' -CommandTimeoutSeconds 150
++powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1 -Action TestScript -ScriptPath res://tests/review_electric_design.gd -Graphical -RenderingMethod mobile -TestArgument '--evidence-root=res://../docs/evidence/electric-design-review-2026-10-26/desktop-mobile' -CommandTimeoutSeconds 150
++```
++
++Both commands completed successfully on pinned Godot 4.7.2: 22 captures per renderer, zero PNG save failures and matching geometry. These are evidence-generation results, not 44 passed design-quality assertions. Initial direct invocation was blocked by the shell's execution policy; the standard process-scoped invocation above completed without changing system policy. Logs are retained under this evidence directory.
++
++The capture script parsed and ran in both native processes. No production geometry, materials, handling, input, camera configuration, photos or prepared resources were edited. No broad replay/backend suite was necessary for this review. No physical-device test or attachment check, APK build, live mutation, deployment or owner-process restart was performed. The existing owner/device appearance and motion acceptance remains open, and the findings here remain unfixed by design.
++
++The initial source audit detected concurrent `electric.tres` handling changes from electric-13 to electric-14. The diff was inspected and preserved, not reverted or included in the review checkpoint. All eight other monitored sources, including model authoring/assembly, finish/glass, presentation, studio, camera and simulation, remain byte-exact. The audit's initial stop is retained in the evidence; the final retention check explicitly excludes only that concurrent configuration change.
++
++The local manufacturer images are review references only, kept outside `game/`; they are not production assets or redistribution licences. Exact download URLs and hashes are recorded in [report.json](evidence/electric-design-review-2026-10-26/report.json). A scoped text patch records the review script, this report, comparison board and documentation entries without staging or committing concurrent work.
+diff --git a/docs/evidence/electric-design-review-2026-10-26/comparison.html b/docs/evidence/electric-design-review-2026-10-26/comparison.html
+new file mode 100644
+--- /dev/null
++++ b/docs/evidence/electric-design-review-2026-10-26/comparison.html
+@@ -0,0 +1,58 @@
++<!doctype html>
++<html lang="en">
++<meta charset="utf-8">
++<meta name="viewport" content="width=device-width,initial-scale=1">
++<title>Electric model — design review</title>
++<style>
++:root{color-scheme:dark;font:16px/1.5 system-ui,sans-serif;background:#131c24;color:#eaf0f3}body{max-width:1500px;margin:auto;padding:24px}h1{font-size:28px;margin:0 0 8px}a{color:#a9d8ef}p{max-width:95ch}.controls{display:flex;flex-wrap:wrap;gap:20px;margin:24px 0}label{display:grid;gap:6px}select{font:inherit;background:#26333e;color:inherit;padding:8px;border:1px solid #627482;border-radius:4px}.grid{display:grid;grid-template-columns:1fr 1fr;gap:20px}figure{margin:0;background:#202a32;border:1px solid #3b4a56;border-radius:8px;overflow:hidden}figure img{display:block;width:100%;height:420px;object-fit:contain;background:#202a32}figcaption{padding:14px}#note{min-height:3em}small{color:#b4c2cb}.detail{margin-top:24px}.detail img{height:auto;max-height:700px}.metrics{display:flex;gap:30px;flex-wrap:wrap;padding:16px;background:#202a32;border-radius:6px}@media(max-width:850px){.grid{grid-template-columns:1fr}figure img{height:auto;max-height:500px}body{padding:15px}}
++</style>
++<h1>Electric model: whole-car design review</h1>
++<p>The main gap is a rounded body paired with an angular cabin. The next pass should resolve silhouette and broad surfaces before adding assemblies. <a href="../../ELECTRIC_DESIGN_REVIEW_2026_10_26.md">Read the findings and proposed sequence</a>.</p>
++<div class="controls">
++<label>Native renderer<select id="renderer"><option value="native">Compatibility / OpenGL</option><option value="desktop-mobile">Mobile / desktop Vulkan</option></select></label>
++<label>Model detail<select id="detail"><option value="full">Full</option><option value="simple">Simple</option></select></label>
++<label>Current model view<select id="view"><option value="front-quarter">Front three-quarter</option><option value="side">Exact side</option><option value="front">Exact front</option><option value="rear-quarter">Rear three-quarter</option><option value="rear">Exact rear</option><option value="top">Top</option><option value="bonnet">Bonnet / wing</option><option value="roof">Roof / glazing</option><option value="wheel">Wheel</option><option value="tail-detail">Rear detail</option><option value="production-camera-studio">Default racing camera over studio</option></select></label>
++<label>Reference<select id="reference"><option value="lucid-air-front.webp">Lucid Air — front three-quarter</option><option value="lucid-air-street.webp">Lucid Air — road view</option><option value="lucid-air-dimensions.svg">Lucid Air — dimension drawings</option><option value="taycan-side.webp">Porsche Taycan — side</option><option value="ioniq6-1.jpg">Hyundai IONIQ 6 — front</option><option value="ioniq6-3.jpg">Hyundai IONIQ 6 — rear</option></select></label>
++</div>
++<p id="note" aria-live="polite"></p>
++<div class="grid">
++<figure><a id="model-link" href="native/full-front-quarter.png"><img id="model" src="native/full-front-quarter.png" alt="Current electric car, native neutral-grey front three-quarter view"></a><figcaption id="model-caption">Current model — full detail, Compatibility</figcaption></figure>
++<figure><a id="reference-link" href="references/lucid-air-front.webp"><img id="reference-image" src="references/lucid-air-front.webp" alt="Official Lucid Air front three-quarter reference"></a><figcaption><span id="reference-caption">Lucid Air — front three-quarter</span><br><small id="credit"></small></figcaption></figure>
++</div>
++<p><small>Click an image for its original file. Photographs use different cameras and lighting; these are design comparisons, not registered overlays. Neutral grey changes only paint colours in the capture process. Production geometry and materials are retained. Manufacturer references are for this local review and are outside the game export.</small></p>
++<div class="metrics"><span><strong>169,821</strong> full triangles</span><span><strong>69,761</strong> simple triangles</span><span><strong>38.44%</strong> full geometry in wheel assemblies</span><span><strong>44</strong> fresh native captures</span></div>
++<figure class="detail"><a href="native/full-side.png"><img src="native/full-side.png" alt="Unmodified full model in exact side projection"></a><figcaption>The side silhouette is the strongest diagnostic: roof corners, straight screen transitions and separate sill remain clear without coloured paint.</figcaption></figure>
++<p><a href="report.json">Evidence, hashes and source URLs</a> · <a href="native/capture-report.json">Compatibility measurements</a> · <a href="desktop-mobile/capture-report.json">Desktop Mobile measurements</a></p>
++<script>
++const $=id=>document.getElementById(id);
++const lucid='https://lucidmotors.com/air';
++const porsche='https://newsroom.porsche.com/en_US/products/taycan/exterior-design-18551.html';
++const hyundai='https://www.hyundai.com/worldwide/en/newsroom/detail/hyundai-motor-unveils-the-new-ioniq-6-and-ioniq-6-n-line-under-%E2%80%98pure-flow%2C-refined%E2%80%99-concept-0000000928';
++const notes={
++'front-quarter':'DR01 / DR02: compare the cabin-to-body relationship, the thick bonnet surround and the depth of the lighting assembly.',
++'side':'DR01 / DR05 / DR07: inspect the roof corners, rear-screen descent, wheel/body relationship and lower bumper terminations.',
++'front':'DR02 / DR06: inspect the raised outer shoulders, bonnet-to-wing balance and emissive stripe in its dark housing.',
++'rear-quarter':'DR01 / DR04: compare the rear window, deck, shoulder and lamp as a connected form.',
++'rear':'DR04: inspect the broad bumper face, plate recess and lamp placement.',
++'top':'DR01 / DR02: the bonnet now tapers cleanly; the cabin still has a rectangular roof plan and abrupt corner transitions.',
++'bonnet':'DR02: the seam is cleaner, but the inset-lid appearance and heavy surrounding wing remain.',
++'roof':'DR01 / DR03: inspect the hard roof-to-pillar transitions, straight glass borders and material response.',
++'wheel':'DR05: inspect the soft twisted spokes, flat-looking brake disc and rim/barrel separation.',
++'tail-detail':'DR04 / DR07: inspect tail assembly integration and the broken dark slivers along the deck edge.',
++'production-camera-studio':'Normal default overhead profile, stationary, over the diagnostic studio. This is not a race-scene capture. Large forms remain more useful than tiny assembly detail.'};
++function update(){
++const path=$('renderer').value+'/'+$('detail').value+'-'+$('view').value+'.png';
++$('model').src=path;$('model-link').href=path;
++const title=$('view').selectedOptions[0].text;
++$('model').alt='Current electric model — '+title;
++$('model-caption').textContent='Current model — '+$('detail').selectedOptions[0].text+' / '+$('renderer').selectedOptions[0].text+' / '+title;
++$('note').textContent=notes[$('view').value];
++const ref=$('reference').value;const name=$('reference').selectedOptions[0].text;
++$('reference-image').src='references/'+ref;$('reference-image').alt='Official reference: '+name;$('reference-link').href='references/'+ref;$('reference-caption').textContent=name;
++const source=ref.startsWith('lucid')?lucid:ref.startsWith('taycan')?porsche:hyundai;
++$('credit').replaceChildren(document.createTextNode('Manufacturer reference · '));const link=document.createElement('a');link.href=source;link.textContent='Official source';$('credit').append(link);
++}
++for(const id of ['renderer','detail','view','reference'])$(id).addEventListener('change',update);
++update();
++</script>
++</html>
+diff --git a/docs/evidence/electric-design-review-2026-10-26/report.json b/docs/evidence/electric-design-review-2026-10-26/report.json
+new file mode 100644
+--- /dev/null
++++ b/docs/evidence/electric-design-review-2026-10-26/report.json
+@@ -0,0 +1,275 @@
++{
++  "requirements": "EDR01-EDR03/R01/Q01",
++  "date": "2026-10-26",
++  "scope": "Review only; findings remain unfixed",
++  "engine": "4.7.2.stable.official.ed1daf0bf",
++  "production_sources": {
++    "game/resources/camera.tres": {
++      "before_sha256": "ef756166a938e4cc20b581141f893f424ca9c6bd0b3e43abf88068171d887821",
++      "after_sha256": "ef756166a938e4cc20b581141f893f424ca9c6bd0b3e43abf88068171d887821",
++      "unchanged": true
++    },
++    "game/vehicle/compact_finish.gd": {
++      "before_sha256": "46c89a36d8969ac0583ef7112ceac28f3a38342d2ae263602f6a2e823330fc5c",
++      "after_sha256": "46c89a36d8969ac0583ef7112ceac28f3a38342d2ae263602f6a2e823330fc5c",
++      "unchanged": true
++    },
++    "game/vehicle/electric_car_model.gd": {
++      "before_sha256": "f42990468fcdc17a578986230aee78add8de64a4a0941dead1db13a86b216472",
++      "after_sha256": "f42990468fcdc17a578986230aee78add8de64a4a0941dead1db13a86b216472",
++      "unchanged": true
++    },
++    "game/vehicle/electric_coachwork.gd": {
++      "before_sha256": "2d8b25395e37957b04834ec1eb12a8bfb411e3501669fa5cd7fa6861c1554811",
++      "after_sha256": "2d8b25395e37957b04834ec1eb12a8bfb411e3501669fa5cd7fa6861c1554811",
++      "unchanged": true
++    },
++    "game/vehicle/vehicle_simulation.gd": {
++      "before_sha256": "508935eae9dd167d3ad3d29deb999c12ca245b6ac9672276745634ed8347de6f",
++      "after_sha256": "508935eae9dd167d3ad3d29deb999c12ca245b6ac9672276745634ed8347de6f",
++      "unchanged": true
++    },
++    "game/ui/showroom_studio.gd": {
++      "before_sha256": "075991fd8ac9c9773a5848afb3f00a2bf6e240305362efb4c330bc2d237fa699",
++      "after_sha256": "075991fd8ac9c9773a5848afb3f00a2bf6e240305362efb4c330bc2d237fa699",
++      "unchanged": true
++    },
++    "game/vehicle/electric_glass.gdshader": {
++      "before_sha256": "9f53ebf54fe5894c5b2b6d211c6f149c2e5414e6f8420bccf698938c59a057ca",
++      "after_sha256": "9f53ebf54fe5894c5b2b6d211c6f149c2e5414e6f8420bccf698938c59a057ca",
++      "unchanged": true
++    },
++    "game/resources/cars/electric.tres": {
++      "before_sha256": "8dfc97c31ffd7e23155ea18a4ba31f287bc100015f55b947898123c93106fe0b",
++      "after_sha256": "7e4870a1c8d4b7af83c83cd9671af7b1281adc55887ccc0e950d962ef92a1cc5",
++      "unchanged": false
++    },
++    "game/vehicle/car_visual.gd": {
++      "before_sha256": "c2205a6c6e78341071a1b58033e79cb1785e827f521713d2f428cba642d113ab",
++      "after_sha256": "c2205a6c6e78341071a1b58033e79cb1785e827f521713d2f428cba642d113ab",
++      "unchanged": true
++    }
++  },
++  "unchanged_source_count": 8,
++  "concurrent_configuration_excluded": "game/resources/cars/electric.tres",
++  "prepared_asset_manifest": {
++    "path": "game/assets/vehicles/electric_coachwork_v10/manifest.json",
++    "sha256": "d9d85094a7a63ef2d420dbd7e96c12c95500e914de7e060090d8672747d2a2a0",
++    "author_and_assembly_match": true
++  },
++  "geometry": {
++    "full": {
++      "groups": {
++        "body_and_cabin": 104541,
++        "wheels": 65280
++      },
++      "mesh_instances_unbatched": 1020,
++      "triangles": 169821,
++      "wheel_centres_world": [
++        [
++          -0.739999976158142,
++          0.325600004196167,
++          -1.22999998092651
++        ],
++        [
++          -0.739999976158142,
++          0.325600004196167,
++          1.22999998092651
++        ],
++        [
++          0.739999976158142,
++          0.325600004196167,
++          -1.22999998092651
++        ],
++        [
++          0.739999976158142,
++          0.325600004196167,
++          1.22999998092651
++        ]
++      ],
++      "wheel_diameter_metres": 0.6512,
++      "wheelbase_metres": 2.46,
++      "world_aabb_min": [
++        -0.982871949672699,
++        0.0,
++        -2.14869594573975
++      ],
++      "world_aabb_size": [
++        1.9657438993454,
++        1.32879996299744,
++        4.22725582122803
++      ]
++    },
++    "simple": {
++      "groups": {
++        "body_and_cabin": 48705,
++        "wheels": 21056
++      },
++      "mesh_instances_unbatched": 1020,
++      "triangles": 69761,
++      "wheel_centres_world": [
++        [
++          -0.739999976158142,
++          0.325600004196167,
++          -1.22999998092651
++        ],
++        [
++          -0.739999976158142,
++          0.325600004196167,
++          1.22999998092651
++        ],
++        [
++          0.739999976158142,
++          0.325600004196167,
++          -1.22999998092651
++        ],
++        [
++          0.739999976158142,
++          0.325600004196167,
++          1.22999998092651
++        ]
++      ],
++      "wheel_diameter_metres": 0.6512,
++      "wheelbase_metres": 2.46,
++      "world_aabb_min": [
++        -0.982871949672699,
++        0.0,
++        -2.14869594573975
++      ],
++      "world_aabb_size": [
++        1.9657438993454,
++        1.32879996299744,
++        4.22725582122803
++      ]
++    }
++  },
++  "full_triangle_cap": 170000,
++  "full_wheel_triangle_percentage": 38.44047555955977,
++  "findings": [
++    {
++      "id": "DR01",
++      "priority": "high",
++      "finding": "Angular cabin and roof against rounded body"
++    },
++    {
++      "id": "DR02",
++      "priority": "high",
++      "finding": "Bonnet/wing/nose need a shared broad form; retain clean taper"
++    },
++    {
++      "id": "DR03",
++      "priority": "high",
++      "finding": "Flat-looking glazing and strong renderer-dependent material response"
++    },
++    {
++      "id": "DR04",
++      "priority": "medium",
++      "finding": "Rear window/deck/lamp/bumper remain visually separate"
++    },
++    {
++      "id": "DR05",
++      "priority": "medium",
++      "finding": "Soft twisted spokes and weak wheel/brake material hierarchy"
++    },
++    {
++      "id": "DR06",
++      "priority": "medium",
++      "finding": "Generic panel cuts, attached-looking sill, oval mirrors and stripe-like lamps"
++    },
++    {
++      "id": "DR07",
++      "priority": "medium",
++      "finding": "Deck-edge slivers and stepped/open-looking bumper ends; mesh cause unconfirmed"
++    }
++  ],
++  "captures": 44,
++  "save_failures": 0,
++  "visual_quality_acceptance_assertions": 0,
++  "commands": [
++    {
++      "command": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1 -Action TestScript -ScriptPath res://tests/review_electric_design.gd -Graphical -RenderingMethod gl_compatibility -TestArgument '--evidence-root=res://../docs/evidence/electric-design-review-2026-10-26/native' -CommandTimeoutSeconds 150",
++      "exit_code": 0,
++      "captures": 22,
++      "log": "logs/compatibility.log",
++      "source_log": "build/logs/TestScript-9744/test-script.log"
++    },
++    {
++      "command": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1 -Action TestScript -ScriptPath res://tests/review_electric_design.gd -Graphical -RenderingMethod mobile -TestArgument '--evidence-root=res://../docs/evidence/electric-design-review-2026-10-26/desktop-mobile' -CommandTimeoutSeconds 150",
++      "exit_code": 0,
++      "captures": 22,
++      "log": "logs/desktop-mobile.log",
++      "source_log": "build/logs/TestScript-34204/test-script.log"
++    }
++  ],
++  "initial_attempts": [
++    "Direct dev.ps1 invocation blocked by shell execution policy; standard process-scoped retry completed without changing system policy",
++    "Initial retention audit detected concurrent electric-13 to electric-14 configuration; diff inspected, retained and excluded without reverting it"
++  ],
++  "source_pages": [
++    "https://lucidmotors.com/air",
++    "https://newsroom.porsche.com/en_US/products/taycan/exterior-design-18551.html",
++    "https://www.hyundai.com/worldwide/en/newsroom/detail/hyundai-motor-unveils-the-new-ioniq-6-and-ioniq-6-n-line-under-%E2%80%98pure-flow%2C-refined%E2%80%99-concept-0000000928"
++  ],
++  "references": [
++    {
++      "file": "references/lucid-air-front.webp",
++      "url": "https://images.ctfassets.net/5ky6szwjj7ya/gdK5kHYZJAXzxJnqnqaff/572c41c9051d5be4b6a209728f7d5c89/lucid-motors-lucid-air-desktop-04.webp?q=50",
++      "sha256": "8984d127fd34065af0d46a67bc060919d8037829b252881ab54674792314a832",
++      "bytes": 94246
++    },
++    {
++      "file": "references/lucid-air-side.webp",
++      "url": "https://images.ctfassets.net/5ky6szwjj7ya/2mRWuxvehv2XOmeE8ApMYN/08ed593a5b562d95f1309e2ac01ed483/lucid-air-desktop-13_2x.webp?q=50",
++      "sha256": "9d35c43e6c7d242e093e693ee5fe2e3f252e79878146aa431ee9bad4fedcafaf",
++      "bytes": 155270
++    },
++    {
++      "file": "references/lucid-air-street.webp",
++      "url": "https://images.ctfassets.net/5ky6szwjj7ya/6rLyJ8NGZ19o55kjrmqWR7/96b77f19d9163b01aedf4e17699885e0/lucid-motors-lucid-air-desktop-02.webp?q=50",
++      "sha256": "7d443ef8f626b4569f3dddef7b144dc47008efe327a20a25f2c50c47ba939cfb",
++      "bytes": 240652
++    },
++    {
++      "file": "references/lucid-air-dimensions.svg",
++      "url": "https://images.ctfassets.net/5ky6szwjj7ya/air-tech-specs-desktop.svg/971bc86f0fe70260fdd83131be446352/air-tech-specs-desktop.svg?q=50",
++      "sha256": "c7855bdb9550016299e6f9f7246ee69243b3c717948f45371664c9f4b7cd1cb2",
++      "bytes": 35785
++    },
++    {
++      "file": "references/taycan-side.webp",
++      "url": "https://compare.porsche.com/assets/taycan.webp",
++      "sha256": "b3475d269f07c0e0760e171a700516730b41b0f313bdcb5b55d05447912eec7b",
++      "bytes": 42232
++    },
++    {
++      "file": "references/ioniq6-1.jpg",
++      "url": "https://www.hyundai.com/content/dam/hyundai/ww/en/images/newsroom/news-image/2025/04/0403-2/media-kit/mk-thumbnail-0403-1.jpg",
++      "sha256": "e670db0855103a6e6838791e180fcd17e0241e0531f9de3d941fa16948fc3492",
++      "bytes": 156957
++    },
++    {
++      "file": "references/ioniq6-3.jpg",
++      "url": "https://www.hyundai.com/content/dam/hyundai/ww/en/images/newsroom/news-image/2025/04/0403-2/media-kit/mk-thumbnail-0403-3.jpg",
++      "sha256": "22bd341867d84b38d16922fdbb2641f4ccc810a58024eca2ba4e4850322004f4",
++      "bytes": 134837
++    },
++    {
++      "file": "references/ioniq6-5.jpg",
++      "url": "https://www.hyundai.com/content/dam/hyundai/ww/en/images/newsroom/news-image/2025/04/0403-2/media-kit/mk-thumbnail-0403-5.jpg",
++      "sha256": "d79a40106d4f037f5a28df2054debb4345efbfdeb588f68b6c295733df8969a5",
++      "bytes": 186647
++    }
++  ],
++  "reference_filename_notes": {
++    "lucid-air-side.webp": "Front/three-quarter charging photo, despite download filename",
++    "ioniq6-5.jpg": "Interior image retained, not used to judge our external design"
++  },
++  "limitations": [
++    "Manufacturer photos have different cameras and lighting; not registered overlays",
++    "Design judgments; capture-save successes are not quality acceptance passes",
++    "RTX 3090 desktop; Mobile renderer is not a physical-device test",
++    "Default production camera over diagnostic studio, not an actual race scene",
++    "No model/material/config/resource/photo edits by this review",
++    "No physical-device attachment check/test, APK, live mutation, deployment, staging, commit or owner-process restart"
++  ]
++}
+diff --git a/docs/evidence/electric-design-review-2026-10-26/audit_review.py b/docs/evidence/electric-design-review-2026-10-26/audit_review.py
+new file mode 100644
+--- /dev/null
++++ b/docs/evidence/electric-design-review-2026-10-26/audit_review.py
+@@ -0,0 +1,158 @@
++"""Audit this review's captured evidence; never edit runtime or shared Git state."""
++from pathlib import Path
++from html.parser import HTMLParser
++import difflib
++import hashlib
++import json
++import subprocess
++import tempfile
++
++EVIDENCE = Path(__file__).resolve().parent
++ROOT = EVIDENCE.parents[2]
++
++
++def sha(path):
++    return hashlib.sha256(Path(path).read_bytes()).hexdigest()
++
++
++before = json.loads((EVIDENCE / "before-hashes.json").read_text(encoding="utf-8-sig"))
++sources = {rel: {"before_sha256": value, "after_sha256": sha(ROOT / rel),
++                 "unchanged": value == sha(ROOT / rel)} for rel, value in before.items()}
++concurrent = "game/resources/cars/electric.tres"
++assert all(s["unchanged"] for rel, s in sources.items() if rel != concurrent)
++if not sources[concurrent]["unchanged"]:
++    diff = difflib.unified_diff((EVIDENCE / "before" / concurrent).read_text().splitlines(True),
++                                (ROOT / concurrent).read_text().splitlines(True),
++                                fromfile=concurrent + " [review start]", tofile=concurrent + " [concurrent current]")
++    (EVIDENCE / "concurrent-handling.diff").write_text("".join(diff))
++
++manifest_path = ROOT / "game/assets/vehicles/electric_coachwork_v10/manifest.json"
++manifest = json.loads(manifest_path.read_text())
++assert manifest["source_sha256"] == sources["game/vehicle/electric_coachwork.gd"]["after_sha256"]
++assert manifest["model_sha256"] == sources["game/vehicle/electric_car_model.gd"]["after_sha256"]
++renderers = {name: json.loads((EVIDENCE / name / "capture-report.json").read_text())
++             for name in ["native", "desktop-mobile"]}
++for name, data in renderers.items():
++    assert data["failures"] == 0 and len(data["captures"]) == 22
++    assert data["source_sha256"] == manifest["source_sha256"]
++    assert data["model_sha256"] == manifest["model_sha256"]
++    for capture in data["captures"]:
++        image = EVIDENCE / name / (capture["name"] + ".png")
++        assert capture["save_error"] == 0 and image.read_bytes()[:8] == b"\x89PNG\r\n\x1a\n"
++    log = "compatibility.log" if name == "native" else "desktop-mobile.log"
++    assert "ELECTRIC_DESIGN_REVIEW: 22 captures, 0 save failures" in (EVIDENCE / "logs" / log).read_text()
++assert renderers["native"]["geometry"] == renderers["desktop-mobile"]["geometry"]
++geometry = renderers["native"]["geometry"]
++
++refs = {
++    "lucid-air-front.webp": "https://images.ctfassets.net/5ky6szwjj7ya/gdK5kHYZJAXzxJnqnqaff/572c41c9051d5be4b6a209728f7d5c89/lucid-motors-lucid-air-desktop-04.webp?q=50",
++    "lucid-air-side.webp": "https://images.ctfassets.net/5ky6szwjj7ya/2mRWuxvehv2XOmeE8ApMYN/08ed593a5b562d95f1309e2ac01ed483/lucid-air-desktop-13_2x.webp?q=50",
++    "lucid-air-street.webp": "https://images.ctfassets.net/5ky6szwjj7ya/6rLyJ8NGZ19o55kjrmqWR7/96b77f19d9163b01aedf4e17699885e0/lucid-motors-lucid-air-desktop-02.webp?q=50",
++    "lucid-air-dimensions.svg": "https://images.ctfassets.net/5ky6szwjj7ya/air-tech-specs-desktop.svg/971bc86f0fe70260fdd83131be446352/air-tech-specs-desktop.svg?q=50",
++    "taycan-side.webp": "https://compare.porsche.com/assets/taycan.webp",
++    **{f"ioniq6-{n}.jpg": f"https://www.hyundai.com/content/dam/hyundai/ww/en/images/newsroom/news-image/2025/04/0403-2/media-kit/mk-thumbnail-0403-{n}.jpg" for n in [1, 3, 5]},
++}
++pages = ["https://lucidmotors.com/air",
++         "https://newsroom.porsche.com/en_US/products/taycan/exterior-design-18551.html",
++         "https://www.hyundai.com/worldwide/en/newsroom/detail/hyundai-motor-unveils-the-new-ioniq-6-and-ioniq-6-n-line-under-%E2%80%98pure-flow%2C-refined%E2%80%99-concept-0000000928"]
++findings = [
++    ("DR01", "high", "Angular cabin and roof against rounded body"),
++    ("DR02", "high", "Bonnet/wing/nose need a shared broad form; retain clean taper"),
++    ("DR03", "high", "Flat-looking glazing and strong renderer-dependent material response"),
++    ("DR04", "medium", "Rear window/deck/lamp/bumper remain visually separate"),
++    ("DR05", "medium", "Soft twisted spokes and weak wheel/brake material hierarchy"),
++    ("DR06", "medium", "Generic panel cuts, attached-looking sill, oval mirrors and stripe-like lamps"),
++    ("DR07", "medium", "Deck-edge slivers and stepped/open-looking bumper ends; mesh cause unconfirmed"),
++]
++report = {
++    "requirements": "EDR01-EDR03/R01/Q01", "date": "2026-10-26",
++    "scope": "Review only; findings remain unfixed", "engine": "4.7.2.stable.official.ed1daf0bf",
++    "production_sources": sources, "unchanged_source_count": sum(s["unchanged"] for s in sources.values()),
++    "concurrent_configuration_excluded": concurrent,
++    "prepared_asset_manifest": {"path": manifest_path.relative_to(ROOT).as_posix(),
++                                "sha256": sha(manifest_path), "author_and_assembly_match": True},
++    "geometry": geometry, "full_triangle_cap": 170000,
++    "full_wheel_triangle_percentage": geometry["full"]["groups"]["wheels"] / geometry["full"]["triangles"] * 100,
++    "findings": [{"id": i, "priority": p, "finding": f} for i, p, f in findings],
++    "captures": 44, "save_failures": 0, "visual_quality_acceptance_assertions": 0,
++    "commands": [
++        {"command": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1 -Action TestScript -ScriptPath res://tests/review_electric_design.gd -Graphical -RenderingMethod " + method + " -TestArgument '--evidence-root=res://../docs/evidence/electric-design-review-2026-10-26/" + folder + "' -CommandTimeoutSeconds 150",
++         "exit_code": 0, "captures": 22, "log": "logs/" + log, "source_log": source}
++        for method, folder, log, source in [
++            ("gl_compatibility", "native", "compatibility.log", "build/logs/TestScript-9744/test-script.log"),
++            ("mobile", "desktop-mobile", "desktop-mobile.log", "build/logs/TestScript-34204/test-script.log")]],
++    "initial_attempts": ["Direct dev.ps1 invocation blocked by shell execution policy; standard process-scoped retry completed without changing system policy",
++                         "Initial retention audit detected concurrent electric-13 to electric-14 configuration; diff inspected, retained and excluded without reverting it"],
++    "source_pages": pages,
++    "references": [{"file": "references/" + name, "url": url, "sha256": sha(EVIDENCE / "references" / name),
++                    "bytes": (EVIDENCE / "references" / name).stat().st_size} for name, url in refs.items()],
++    "reference_filename_notes": {"lucid-air-side.webp": "Front/three-quarter charging photo, despite download filename", "ioniq6-5.jpg": "Interior image retained, not used to judge our external design"},
++    "limitations": ["Manufacturer photos have different cameras and lighting; not registered overlays",
++                    "Design judgments; capture-save successes are not quality acceptance passes",
++                    "RTX 3090 desktop; Mobile renderer is not a physical-device test",
++                    "Default production camera over diagnostic studio, not an actual race scene",
++                    "No model/material/config/resource/photo edits by this review",
++                    "No physical-device attachment check/test, APK, live mutation, deployment, staging, commit or owner-process restart"],
++}
++(EVIDENCE / "report.json").write_text(json.dumps(report, indent=2) + "\n")
++
++
++class LocalLinks(HTMLParser):
++    def __init__(self):
++        super().__init__()
++        self.targets = []
++
++    def handle_starttag(self, tag, attrs):
++        values = dict(attrs)
++        for key in ["src", "href"]:
++            value = values.get(key, "")
++            if value and not value.startswith(("http:", "https:", "#")):
++                self.targets.append(value)
++
++
++parser = LocalLinks()
++parser.feed((EVIDENCE / "comparison.html").read_text())
++for target in parser.targets:
++    assert (EVIDENCE / target).exists(), target
++views = ["front-quarter", "side", "front", "rear-quarter", "rear", "top", "bonnet", "roof", "wheel", "tail-detail", "production-camera-studio"]
++for renderer in renderers:
++    for detail in ["full", "simple"]:
++        for view in views:
++            assert (EVIDENCE / renderer / (detail + "-" + view + ".png")).is_file()
++
++prefix = EVIDENCE.relative_to(ROOT).as_posix() + "/"
++new_files = ["game/tests/review_electric_design.gd", "docs/ELECTRIC_DESIGN_REVIEW_2026_10_26.md"] + [prefix + name for name in ["comparison.html", "report.json", "audit_review.py"]]
++docs = ["AGENTS.md", "DEVELOPMENT_STATUS.md"]
++patch = []
++for rel in docs + new_files:
++    old = (EVIDENCE / "before-docs" / rel).read_text(encoding="utf-8-sig").splitlines(True) if rel in docs else []
++    final_path = EVIDENCE / "after-docs" / rel if rel in docs else ROOT / rel
++    new = final_path.read_text(encoding="utf-8-sig").splitlines(True)
++    patch.append("diff --git a/" + rel + " b/" + rel + "\n")
++    if not old:
++        patch.append("new file mode 100644\n")
++    patch.extend(difflib.unified_diff(old, new, fromfile="a/" + rel if old else "/dev/null", tofile="b/" + rel, n=3))
++patch_path = EVIDENCE / "review.patch"
++patch_path.write_text("".join(patch), encoding="utf-8", newline="\n")
++with tempfile.TemporaryDirectory(prefix="bmt-electric-review-") as temp_dir:
++    temp = Path(temp_dir)
++    for rel in docs:
++        (temp / rel).write_text((EVIDENCE / "before-docs" / rel).read_text(encoding="utf-8-sig"), encoding="utf-8", newline="\n")
++    for args in [["--check"], []]:
++        result = subprocess.run(["git", "apply", "--no-index"] + args + [str(patch_path)], cwd=temp, capture_output=True, text=True)
++        assert result.returncode == 0, result.stdout + result.stderr
++    for rel in docs + new_files:
++        expected = EVIDENCE / "after-docs" / rel if rel in docs else ROOT / rel
++        assert (temp / rel).read_text(encoding="utf-8") == expected.read_text(encoding="utf-8-sig"), rel
++inventory = {p.relative_to(EVIDENCE).as_posix(): {"sha256": sha(p), "bytes": p.stat().st_size}
++             for p in EVIDENCE.rglob("*") if p.is_file() and p.name not in ["file-hashes.json", "checkpoint.json"]}
++(EVIDENCE / "file-hashes.json").write_text(json.dumps(inventory, indent=2) + "\n")
++checkpoint = {"text_patch": "review.patch", "patch_sha256": sha(patch_path),
++              "isolated_git_apply_check": True, "isolated_apply_content_match": True,
++              "changed_text_paths": docs + new_files, "shared_git_index_modified": False,
++              "local_links_validated": len(parser.targets), "dynamic_capture_paths_validated": 44,
++              "unchanged_source_count": sum(s["unchanged"] for s in sources.values()),
++              "excluded_concurrent_config": concurrent, "evidence_file_count": len(inventory),
++              "evidence_bytes": sum(v["bytes"] for v in inventory.values())}
++(EVIDENCE / "checkpoint.json").write_text(json.dumps(checkpoint, indent=2) + "\n")
++print(json.dumps(checkpoint, indent=2))

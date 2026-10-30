@@ -4,12 +4,14 @@ extends Node
 const SandDustEffect = preload("res://vehicle/sand_dust.gd")
 const ImpactCracksEffect = preload("res://camera/impact_cracks.gd")
 const GraphicsPreferences = preload("res://presentation/graphics_preferences.gd")
+const HandlingTestPresets = preload("res://vehicle/handling_test_presets.gd")
 
 signal exit_requested
 signal race_completed
 signal retry_requested
 signal edit_here_requested(position: Vector2)
 signal practice_lap_completed
+signal handling_test_started
 
 var practice_validation: TrackSession
 var practice_validation_eligible: bool = true
@@ -32,6 +34,8 @@ var production_mode: bool = false
 var editor_test: bool = false
 var free_drive_mode: bool = false
 var attempt_practice: bool = false
+var handling_test_enabled: bool = true
+var handling_test_index: int = -1
 var countdown_ticks: int = 0
 var cooperative_preparation: bool = false
 var preparation_complete: bool = false
@@ -271,10 +275,12 @@ func _ready() -> void:
 	if not await _preparation_checkpoint(): return
 	preparation_mark = Time.get_ticks_usec() if profile_enabled else 0
 	trails = SkidTrails.new()
+	trails.visible = not handling.air_cushion
 	trails.wheelbase = handling.wheelbase
 	trails.track_width = handling.track_width
 	world.add_child(trails)
 	sand_dust = SandDustEffect.new()
+	sand_dust.visible = not handling.air_cushion
 	sand_dust.wheelbase = handling.wheelbase
 	sand_dust.track_width = handling.track_width
 	sand_dust.collision_radius = handling.collision_radius
@@ -307,6 +313,8 @@ func _ready() -> void:
 	hud.production_mode = production_mode
 	hud.editor_test = editor_test
 	hud.free_drive_mode = free_drive_mode
+	hud.handling_test_enabled = handling_test_enabled
+	hud.handling_test_index = handling_test_index
 	hud.community_client = resume_client
 	hud.config = handling
 	hud.driver = driver
@@ -326,6 +334,7 @@ func _ready() -> void:
 	hud.handling_menu_opened.connect(_open_handling_menu)
 	hud.handling_menu_closed.connect(_close_handling_menu)
 	hud.handling_edited.connect(restart)
+	hud.handling_test_requested.connect(select_handling_test)
 	hud.record_requested.connect(toggle_recording)
 	hud.track_requested.connect(cycle_track)
 	hud.exit_requested.connect(func() -> void: exit_requested.emit())
@@ -448,7 +457,8 @@ func _advance_physics(_delta: float) -> void:
 		var resolved_impact: Vector2 = sim.state.collision_impulse
 		camera.add_collision_impact(resolved_impact)
 		car.add_collision_impact(sim.state,resolved_impact)
-		impact_cracks.show_impact(resolved_impact)
+		if vehicle_id not in ["kart", "forklift"]:
+			impact_cracks.show_impact(resolved_impact)
 		GameSoundtrack.instance().notify_collision(self,resolved_impact.length())
 	if sim.state.scrape_strength > 0.0:
 		car.add_scrape(sim.state)
@@ -529,8 +539,8 @@ func _advance_finish() -> void:
 	var steering: float = finish_sim.state.steering * 0.97
 	frame = DriveFrame.sample(steering, 0.0, 0.22)
 	finish_sim.step(frame, yard)
-	trails.sample(finish_sim.state, _tire_effect_frame(frame), bridge_presentation, native_track)
-	sand_dust.sample(finish_sim.state, _tire_effect_frame(frame), native_track, bridge_presentation)
+	if trails.visible: trails.sample(finish_sim.state, _tire_effect_frame(frame), bridge_presentation, native_track)
+	if sand_dust.visible: sand_dust.sample(finish_sim.state, _tire_effect_frame(frame), native_track, bridge_presentation)
 	finish_ticks += 1
 	race_cues.show_finish(minf(float(finish_ticks) / FINISH_TICKS,0.75) if finish_rating_pending else float(finish_ticks) / FINISH_TICKS)
 	if finish_rating_pending and finish_ticks >= 90: race_cues.show_rating()
@@ -572,6 +582,7 @@ func _present_frame(delta: float) -> void:
 func _present_frame_scoped(delta: float) -> void:
 	if not preparation_complete or sim == null:
 		return
+	if hud != null: hud.set_handling_test_countdown(countdown_ticks > 0)
 	_present_drift_haptics(delta)
 	var presented: VehicleSimulation = finish_sim if finish_sim != null else sim
 	var profile_start: int = Time.get_ticks_usec() if profile_enabled else 0
@@ -651,7 +662,13 @@ func _present_frame_scoped(delta: float) -> void:
 		body_rumble = native_track.off_road_rumble(presented.state) * smoothstep(3.0,22.0,presented.state.velocity.length())
 	var kerb_contacts: Vector4 = native_track.kerb_heights(presented.state,handling) if native_track != null else Vector4.ZERO
 	var bump_track: bool = native_track != null and not native_track.speed_bump_objects.is_empty()
-	var bump_contacts: Vector4 = SpeedBumps.contacts(point,heading,handling,native_track.speed_bump_objects) if bump_track and not presented.state.track_elevated and presented.state.jump_height == 0.0 and presented.state.roll_ticks == 0 else Vector4.ZERO
+	var bump_candidates: Array = []
+	if bump_track and not presented.state.track_elevated and (contact_lighting_enabled or (presented.state.jump_height == 0.0 and presented.state.roll_ticks == 0)):
+		# Include all wheel and shadow sample points, while leaving the exact
+		# rotated-footprint and overlapping-height tests to SpeedBumps.
+		var reach: float = maxf(handling.wheelbase+handling.track_width,ContactShading.car_support_reach(car))
+		bump_candidates = native_track.nearby_speed_bumps(point,reach)
+	var bump_contacts: Vector4 = SpeedBumps.contacts(point,heading,handling,bump_candidates) if bump_track and not presented.state.track_elevated and presented.state.jump_height == 0.0 and presented.state.roll_ticks == 0 else Vector4.ZERO
 	var bump_pose := Vector3((bump_contacts.x+bump_contacts.y+bump_contacts.z+bump_contacts.w)*0.25,
 		atan2((bump_contacts.x+bump_contacts.y-bump_contacts.z-bump_contacts.w)*0.5,handling.wheelbase),
 		atan2((bump_contacts.y+bump_contacts.w-bump_contacts.x-bump_contacts.z)*0.5,handling.track_width))
@@ -664,8 +681,9 @@ func _present_frame_scoped(delta: float) -> void:
 		car.rotation.x += presented.state.kerb_offset.y
 		car.rotation.z += presented.state.kerb_offset.z
 	car.present_roll(presented.state, weight)
-	ContactShading.present_car(contact_shadow,car,presented.state,point,heading,native_track,bridge_presentation)
-	if not contact_lighting_enabled: contact_shadow.hide()
+	if contact_lighting_enabled:
+		ContactShading.present_car(contact_shadow,car,presented.state,point,heading,native_track,bridge_presentation,bump_candidates)
+	else: contact_shadow.hide()
 	if profile_enabled:
 		profile_car_us += Time.get_ticks_usec() - section_start
 		section_start = Time.get_ticks_usec()
@@ -722,7 +740,7 @@ func restart() -> void:
 	online_rewinds.clear()
 	rewind_return.reset()
 	rewind_history = RewindHistory.new()
-	if resume_credits != null: resume_credits.begin(resume_ticket_id)
+	if resume_credits != null: resume_credits.begin("" if handling_test_index >= 0 else resume_ticket_id)
 	recorder.active = false
 	driver.clear()
 	driver.reverse_selected = false
@@ -732,8 +750,9 @@ func restart() -> void:
 	frame = DriveFrame.new()
 	paused = false
 	if hud != null and hud.pause_menu != null: hud.pause_menu.hide()
-	attempt_practice = editor_test
+	attempt_practice = editor_test or handling_test_index >= 0
 	countdown_ticks = 360 if production_mode and not editor_test else 0
+	if hud != null: hud.set_handling_test_countdown(countdown_ticks > 0)
 	countdown_label.text = ""
 	finish_sim = null
 	finish_ticks = 0
@@ -760,7 +779,7 @@ func restart() -> void:
 	GameSoundtrack.instance().begin_race(self,str(native_track.metadata.get("theme","pine")) if native_track != null else "pine",sim.state)
 	practice_validation = TrackSession.new(120,1)
 	var authored: Dictionary = native_track.metadata.get("creator_document",{}) if native_track!=null else {}
-	practice_validation_eligible = authored.has("start_line") and RoadPieces.route_from_pieces(authored).ok
+	practice_validation_eligible = handling_test_index < 0 and authored.has("start_line") and RoadPieces.route_from_pieces(authored).ok
 	checkpoint_marker.previous_gate = -2
 	checkpoint_marker.visible = false
 	hud.checkpoint_notice.clear()
@@ -818,6 +837,25 @@ func select_profile(index: int) -> void:
 	handling = VehicleCatalog.config(vehicle_id, profile_index)
 	sim.config = handling
 	hud.show_config(handling)
+	restart()
+
+
+func select_handling_test(index: int) -> void:
+	var names: Array = HandlingTestPresets.names(vehicle_id)
+	if not handling_test_enabled or not preparation_complete or is_instance_valid(rewind_panel) or index < -1 or index >= names.size() or names.is_empty():
+		if hud != null and hud.handling_test_choice != null: hud.handling_test_choice.select(handling_test_index + 1)
+		return
+	if index == handling_test_index: return
+	handling_test_index = index
+	if index >= 0:
+		# The ticket was issued for canonical physics before the race started.
+		# Retire it before restarting so this attempt cannot submit against it.
+		handling_test_started.emit()
+	handling = VehicleCatalog.config(vehicle_id, profile_index) if index < 0 else HandlingTestPresets.config(vehicle_id, index)
+	sim.config = handling
+	hud.handling_test_index = index
+	hud.show_config(handling)
+	if hud.rewind_button != null: hud.rewind_button.visible = index < 0 and not bool(get_meta("tutorial_lesson",false))
 	restart()
 
 
@@ -1224,6 +1262,7 @@ func set_contact_lighting_enabled(enabled: bool) -> void:
 
 
 func open_rewind() -> void:
+	if handling_test_index >= 0: return
 	if bool(get_meta("tutorial_lesson",false)): return
 	if hud != null and hud.pause_menu.visible: return
 	if not production_mode or editor_test or is_instance_valid(rewind_panel) or countdown_ticks > 0 or finish_sim != null or track_session.finished or online_rewinds.size() >= 3 or rewind_return.remaining > 0: return

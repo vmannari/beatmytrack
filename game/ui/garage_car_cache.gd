@@ -15,7 +15,7 @@ static func geometry_sources() -> Dictionary:
 	var result: Dictionary={}
 	for file: String in DirAccess.get_files_at("res://vehicle"):
 		if not file.ends_with(".gd"): continue
-		if file in ["car_visual.gd","vehicle_models.gd","visual_geometry.gd"] or file.begins_with("compact_") or file.begins_with("electric_") or file.begins_with("kart_") or file.begins_with("forklift_"):
+		if file in ["car_visual.gd","vehicle_models.gd","visual_geometry.gd"] or file.begins_with("compact_") or file.begins_with("electric_") or file.begins_with("kart_") or file.begins_with("forklift_") or file.begins_with("hovercraft_"):
 			result[file]=FileAccess.get_sha256("res://vehicle/"+file)
 	return result
 

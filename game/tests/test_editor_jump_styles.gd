@@ -1,6 +1,6 @@
 extends SceneTree
 ## Real compiler/simulation/editor coverage; isolated files, no owner account.
-const OUT: String = "res://../docs/evidence/editor-jump-styles-2026-10-27"
+const OUT: String = "res://../docs/evidence/jump-palette-objects-2026-10-28"
 var checks: int = 0
 var failures: int = 0
 var captures: bool = false
@@ -31,6 +31,18 @@ func run() -> void:
 	print("TEST_USER_DATA=",OS.get_user_data_dir())
 	captures = DisplayServer.get_name() != "headless"
 	DirAccess.make_dir_recursive_absolute(ProjectSettings.globalize_path(OUT))
+	var before_catalog := GDScript.new()
+	before_catalog.source_code=FileAccess.get_file_as_string("res://tests/fixtures/jump_palette_before/creator_catalog.gd.txt").replace("\r\n","\n").replace("class_name CreatorCatalog\n","")
+	check(before_catalog.reload() == OK,"task-start palette catalogue loads independently")
+	var no_recent: Array[String] = []
+	var prior: Array = before_catalog.filtered("Props","",no_recent,"desert")
+	check(prior.size() == 1 and prior[0][0] == "jump","reported navigation reproduces as one aggregate card on task-start sources")
+	for biome: String in ["desert","pine","storm","night_city"]:
+		var entries: Array = CreatorCatalog.filtered("Props","",[],biome)
+		var separate: int = 0
+		for entry: Array in entries:
+			if CreatorCatalog.JUMP_ASSETS.has(entry[0]): separate+=1
+		check(separate == 5 and not entries.any(func(entry: Array) -> bool: return entry[0] == "jump"),biome+" exposes all five jump objects without an aggregate card")
 	var legacy_doc: Dictionary = document()
 	legacy_doc.objects = [{"kind":"jump","position":[0,0],"rotation":0}]
 	var legacy_track: NativeTrack = TrackCompiler.compile(legacy_doc)
@@ -163,80 +175,109 @@ func capture(name_value: String) -> void:
 	var path: String = OUT+"/"+RenderingServer.get_current_rendering_method()+"-"+name_value+".png"
 	check(root.get_texture().get_image().save_png(path) == OK,"native screenshot "+name_value)
 
+func tap(button: Button) -> void:
+	var down := InputEventScreenTouch.new(); down.index=0; down.pressed=true; down.position=button.get_global_rect().get_center()
+	root.push_input(down,true); await process_frame
+	var up := InputEventScreenTouch.new(); up.index=0; up.pressed=false; up.position=down.position
+	root.push_input(up,true); await process_frame
+
+func open_palette(app: Node, category: String = "Props") -> void:
+	app._editor_category("objects")
+	app.object_browser.category=category; app.object_browser.page=0; app.object_browser.refresh()
+	await process_frame; await process_frame
+
+func ready_icons(browser: ObjectBrowser) -> void:
+	if not captures: return
+	var deadline: int = Time.get_ticks_msec()+15000
+	var ready: bool = false
+	while not ready and Time.get_ticks_msec()<deadline:
+		ready=true
+		for tile: Node in browser.tiles.get_children():
+			if tile is ObjectThumbnail: ready = ready and tile._image.texture != null and tile._viewport == null
+		await process_frame
+	check(ready,"all five object cards publish their native previews")
+
 func editor_flow() -> void:
-	root.size = Vector2i(1280,720)
-	var folder: String = ProjectSettings.globalize_path("res://../tmp/jump_styles_"+TrackLibrary.unique_id())
+	root.size=Vector2i(1280,720); root.content_scale_size=root.size
+	var folder: String = ProjectSettings.globalize_path("res://../tmp/jump_palette_"+TrackLibrary.unique_id())
 	var app: Node = load("res://core/app.tscn").instantiate()
-	app.library = TrackLibrary.new(folder)
-	app.records = LocalRecords.new(folder+"/records.json")
-	app.cloud_root_override = folder+"/cloud"
+	app.library=TrackLibrary.new(folder); app.records=LocalRecords.new(folder+"/records.json"); app.cloud_root_override=folder+"/cloud"
 	root.add_child(app)
 	var deadline: int = Time.get_ticks_msec()+15000
 	while not app.startup_complete and Time.get_ticks_msec()<deadline: await process_frame
 	check(app.startup_complete,"isolated actual app starts")
 	var doc: Dictionary = document("desert")
 	app.document=doc; app._show_screen("create")
-	await process_frame; await wait_editor(app)
-	app._choose_object("jump")
-	check(app.canvas.stamp_jump_profile == "dune_v1","actual desert palette defaults to sand rise")
-	app.object_browser._activate_asset("jump")
-	await process_frame
-	var picker: OptionButton = app.object_browser.details.find_child("JumpStyle",true,false)
-	check(picker != null and picker.item_count == 5,"palette offers all five styles")
-	picker.item_selected.emit(3)
-	check(app.canvas.stamp_jump_profile == "roller_v1","real palette selector updates placement")
-	app.object_browser.options.hide()
+	await process_frame; await wait_editor(app); await open_palette(app)
+	check(app.object_browser.tiles.get_child_count() == 5,"Desert Props shows five separate jump and bump objects together")
+	check(app.object_browser.tiles.find_child("Asset_jump",true,false) == null,"aggregate Jumps and bumps tile is removed")
+	check(app.object_browser.details.find_child("JumpStyle",true,false) == null,"palette has no jump-style dropdown")
+	await ready_icons(app.object_browser)
+	await capture("desert-palette-1280")
+	var keys: Dictionary = {}
+	var pictures: Dictionary = {}
 	for profile: String in JumpProfiles.IDS:
-		app._jump_profile(profile)
-		app.canvas.mode="place"
+		await open_palette(app)
+		var asset: String = CreatorCatalog.jump_asset(profile,"desert")
+		var tile: ObjectThumbnail = app.object_browser.tiles.get_node("Asset_"+asset)
+		check(tile != null and tile._kind == asset,profile+" has its own visible object card")
+		keys[tile._cache_key]=true
+		if captures:
+			await ready_icons(app.object_browser)
+			pictures[tile._image.texture.get_image().get_data().hex_encode().sha256_text()]=true
+		await tap(tile)
+		check(app.canvas.stamp_kind == "jump" and app.canvas.stamp_jump_profile == profile,"one native touch chooses "+profile)
+		check(app.editor_status.text.begins_with(JumpProfiles.label(profile)),"placement guidance names the selected object")
+		tile=app.object_browser.tiles.get_node("Asset_"+asset)
+		check(app.object_browser.current == asset and tile.button_pressed,"matching card remains selected")
+		var selected_count: int=0
+		for other: Button in app.object_browser.tiles.get_children():
+			if other.button_pressed: selected_count+=1
+		check(selected_count == 1,"only the exact jump card is highlighted")
+		await tap(tile)
+		check(not app.object_browser.options.visible and app.canvas.mode == "place","reselecting "+profile+" keeps direct placement without a popup")
 		app.canvas._place(app.canvas.to_screen(Vector2(-32+doc.objects.size()*16,0)))
 		await wait_editor(app)
 		check(JumpProfiles.id(doc.objects[-1]) == profile,"actual canvas places chosen "+profile)
+		check(app.editor_context.find_child("JumpStyle",true,false) == null,"placed jump has normal object controls without a style menu")
+	check(keys.size() == 5,"all five object previews have distinct cache identities")
+	if captures: check(pictures.size() == 5,"all five cards show different rendered object previews")
 	check(app.library.save_document(doc) == OK,"profiled document saves locally")
-	var loaded: Dictionary = app.library.load_document(doc.id)
-	check(loaded.objects == doc.objects,"all styles survive file reload exactly")
-	app.canvas.mode="objects"; app.canvas.selected_object=0; app._build_editor_tools()
-	var original: Dictionary = doc.objects[0].duplicate(true)
-	var selected_picker: OptionButton = app.editor_context.find_child("JumpStyle",true,false)
-	selected_picker.item_selected.emit(4)
-	await wait_editor(app)
-	check(JumpProfiles.id(doc.objects[0]) == "dune_v1","selected object style changes in place")
-	app._undo(); await wait_editor(app)
-	doc=app.document
-	check(doc.objects[0] == original,"undo restores the previous style and exact object")
-	app.canvas.selected_object=4; app.canvas.mode="objects"; app._build_editor_tools()
-	check(app.editor_context.find_child("JumpStyle",true,false) != null,"selected object has direct style control")
-	var visible_meshes: Array = []
-	for mesh_node: Node in app.editor_world.visual.find_children("*","MeshInstance3D",true,false):
-		if mesh_node.name != "Hazard" or not mesh_node.is_visible_in_tree(): continue
-		var arrays: Array = mesh_node.mesh.surface_get_arrays(0)
-		var low := Vector3(INF,INF,INF); var high := -low
-		for normal: Vector3 in arrays[Mesh.ARRAY_NORMAL]: low=low.min(normal); high=high.max(normal)
-		visible_meshes.append({"path":str(mesh_node.get_path()),"aabb":str(mesh_node.mesh.get_aabb()),"normal_min":str(low),"normal_max":str(high),"surfaces":mesh_node.mesh.get_surface_count(),"position":str(mesh_node.global_position)})
-	print("PROFILE_VISIBLE_MESHES=",JSON.stringify(visible_meshes))
-	await capture("desert-editor")
+	check(app.library.load_document(doc.id).objects == doc.objects,"all separate objects survive file reload exactly")
+	var before_copy: Array = doc.objects.duplicate(true)
 	app._duplicate_object(); await wait_editor(app)
-	doc=app.document
-	check(JumpProfiles.id(doc.objects[-1]) == "dune_v1","copy preserves its bump style")
+	check(JumpProfiles.id(app.document.objects[-1]) == "dune_v1","copy retains the exact selected object")
 	app._undo(); await wait_editor(app)
-	# Production picture path at the normal editor pitch, enlarged as a whole
-	# view to reveal the actual road junctions and rounded transverse shoulders.
-	app.canvas.zoom *= 2.5
-	app.canvas.pan = Vector2(-32.0*app.canvas.scale_factor(),0)
-	app.canvas.selected_object=4; app.canvas.mode="objects"; app._build_editor_tools()
-	app.canvas.queue_redraw()
-	await wait_editor(app)
-	await capture("sand-rise-detail")
+	check(app.document.objects == before_copy,"undo restores exact objects after copying")
 	var original_legacy: Dictionary = {"kind":"jump","position":[0,22],"rotation":0}
 	app.document.objects.append(original_legacy.duplicate(true))
 	app.canvas.selected_object=app.document.objects.size()-1; app.canvas.mode="objects"; app._build_editor_tools()
-	selected_picker=app.editor_context.find_child("JumpStyle",true,false)
-	check(selected_picker.item_count == 6 and selected_picker.get_item_text(0) == "Original ramp","saved original ramps have an explicit conversion control")
-	selected_picker.item_selected.emit(1)
-	await wait_editor(app)
-	check(JumpProfiles.id(app.document.objects[-1]) == "low_ramp_v1","saved original converts only through the style control")
-	app._undo(); await wait_editor(app)
-	check(app.document.objects[-1] == original_legacy,"undo restores the exact legacy contract without a profile field")
+	check(app.editor_context.find_child("JumpStyle",true,false) == null,"legacy objects do not restore the rejected style navigation")
+	await open_palette(app)
+	var low: Button = app.object_browser.tiles.get_node("Asset_jump_low_ramp")
+	await tap(low)
+	check(app.document.objects[-1] == original_legacy,"choosing another object never changes an existing saved ramp")
+	check(app.canvas.stamp_jump_profile == "low_ramp_v1","new selection changes only the placement object")
+	await open_palette(app,"Recent")
+	check(app.object_browser.tiles.get_child_count() == 5,"Recent keeps all five distinct object cards")
+	await tap(app.object_browser.tiles.get_node("Asset_jump_kicker"))
+	var saved_hash: String = TrackCompiler.document_hash(app.document,"")
+	app._show_screen("tracks"); await process_frame; await process_frame
+	app._show_screen("create"); await process_frame; await wait_editor(app)
+	check(app.canvas.stamp_jump_profile == "kicker_v1" and app.object_browser.current == "jump_kicker","reopening the editor restores the exact selected jump card")
+	check(TrackCompiler.document_hash(app.document,"") == saved_hash,"editor navigation does not alter saved object identities")
+	for width: int in [1280,960]:
+		root.size=Vector2i(width,720 if width==1280 else 540); root.content_scale_size=root.size
+		for tick: int in range(4): await process_frame
+		await open_palette(app)
+		check(app.object_browser.tiles.get_child_count() == 5,"all five Desert cards fit at width "+str(width))
+		await ready_icons(app.object_browser)
+		for profile: String in JumpProfiles.IDS:
+			var tile: Button = app.object_browser.tiles.get_node("Asset_"+CreatorCatalog.jump_asset(profile,"desert"))
+			check(root.get_visible_rect().encloses(tile.get_global_rect()),profile+" is visible without paging at "+str(width))
+		await tap(app.object_browser.tiles.get_node("Asset_jump_sand_rise"))
+		check(app.canvas.stamp_jump_profile == "dune_v1" and not app.object_browser.options.visible,"Sand rise is one tap at "+str(width))
+		await capture("desert-palette-"+str(width)+"-selected")
 	app.queue_free(); await process_frame; await process_frame
 
 func gallery() -> void:

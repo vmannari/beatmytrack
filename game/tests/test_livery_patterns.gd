@@ -38,11 +38,11 @@ func _run() -> void:
 	check(GaragePage.LIVERY_NAMES == ["Midnight"],"Midnight is the sole plain-paint preset")
 	check(LiveryCatalog.patterns.size() == 48,"forty-eight original patterns")
 	check(LiveryCatalog.patterns.filter(func(item: Dictionary) -> bool: return str(item.id).begins_with("tribal_")).size() == 6,"six distinct tribal designs")
-	check(LiveryCatalog.stickers.size() == 24,"twelve emblems plus twelve fictional sponsors")
-	check(LiveryCatalog.stickers.filter(func(item: Dictionary) -> bool: return item.category == "sponsors").size() == 12,"dedicated fictional sponsor collection")
+	check(LiveryCatalog.stickers.size() == 12,"one twelve-emblem collection")
+	check(LiveryCatalog.sticker_index("zelvora") == -1,"sponsors are no longer selectable")
 	var atlas: Texture2D = LiveryCatalog.texture("stickers")
-	check(atlas.get_size() == Vector2(1024,1536) and atlas.get_image().has_mipmaps(),"expanded filtered atlas has six rows")
-	check(LiveryCatalog.sticker_index("crest") == 0 and LiveryCatalog.sticker_index("sun") == 11 and LiveryCatalog.sticker_index("rhexori") == 23,"old decal indices retained and final sponsor addressable")
+	check(atlas.get_size() == Vector2(1024,768) and atlas.get_image().has_mipmaps(),"filtered atlas has three rows")
+	check(LiveryCatalog.sticker_index("crest") == 0 and LiveryCatalog.sticker_index("sun") == 11 and LiveryCatalog.sticker_index("rhexori") == -1,"emblem indices retained and sponsors retired")
 	var hashes: Dictionary = {}
 	for item: Dictionary in LiveryCatalog.patterns:
 		var image: Image = LiveryCatalog.texture(item.id).get_image()
@@ -105,10 +105,10 @@ func _run() -> void:
 		car.apply_livery(plain)
 		check(car.graphics.bindings[0].node.get_active_material(car.graphics.bindings[0].index) is StandardMaterial3D,id+" factory fast path restored")
 		var saved: Dictionary = art_value(id,32+VehicleCatalog.IDS.find(id)*3)
-		saved.stickers.hood.id = "zelvora"
+		saved.stickers.hood.id = "crest"
 		saved.stickers.hood.x = 0.37
 		saved.stickers.hood.rotation = -19.0
-		saved.stickers.roof.id = "rhexori"
+		saved.stickers.roof.id = "sun"
 		expected[id] = saved
 		car.queue_free()
 		await process_frame
@@ -116,7 +116,7 @@ func _run() -> void:
 	check(records.save_records() == OK,"atomic local graphic save")
 	var loaded := LocalRecords.new(records_path)
 	loaded.load_records()
-	check(loaded.settings.get("vehicle_liveries",{}).size() == 5,"local graphic reload")
+	check(loaded.settings.get("vehicle_liveries",{}).size() == VehicleCatalog.IDS.size(),"local graphic reload")
 	for id: String in VehicleCatalog.IDS:
 		check(VehicleLivery.for_car(loaded.settings,id) == expected[id],id+" independent graphic/placement reload")
 	if DisplayServer.get_name() != "headless": await _graphical(loaded)
@@ -287,60 +287,23 @@ func _graphical(records: LocalRecords) -> void:
 	page._choose_sticker(0)
 	check(page.draft.stickers.roof.id == "none" and page.draft.stickers.hood.id == "crest","removal leaves other panel untouched")
 	check(page.livery_menu.active_control("PlaceSticker").disabled,"placement is unavailable after sticker removal")
-	# Native category buttons, live-car render and independent sponsor persistence.
-	page.livery_menu.active_control("StickerCategory_sponsors").pressed.emit()
-	await settle()
-	check(page.livery_menu.sticker_tiles.size() == 12 and page.livery_menu.sticker_tiles.has("zelvora") and not page.livery_menu.sticker_tiles.has("crest"),"Sponsors shows only the twelve invented brands")
-	var sponsor_menu: Control = page.livery_menu._content
-	page.livery_menu.sticker_tiles.rhexori.pressed.emit()
-	check(page.draft.stickers.roof.id == "rhexori" and page.draft.stickers.hood.id == "crest","native sponsor card changes only selected panel")
-	check(page.draft.stickers.roof.rotation == 180.0,"new sponsor wordmark faces the front of the car")
+	# One gallery per physical panel, with independent selections and no categories.
+	check(page.livery_menu.find_children("StickerCategory_*","",true,false).is_empty(),"single collection needs no category buttons")
+	page.livery_menu.sticker_tiles.laurel.pressed.emit()
+	check(page.draft.stickers.roof.id == "laurel" and page.draft.stickers.hood.id == "crest","native card changes only selected panel")
+	var roof_menu: Control = page.livery_menu._content
 	page._choose_sticker_surface("hood")
 	await settle()
-	page.livery_menu.sticker_tiles.zelvora.pressed.emit()
+	page.livery_menu.sticker_tiles.sun.pressed.emit()
 	page._sticker_property(0.9,"size")
-	check(page.draft.stickers.hood.rotation == -12.0,"replacing an existing emblem retains custom rotation")
-	page._sticker_property(180,"rotation")
+	check(page.draft.stickers.hood.rotation == -12.0,"replacing an emblem retains custom rotation")
 	page._save()
 	page._choose_sticker_surface("roof")
 	await settle()
-	check(page.livery_menu._content == sponsor_menu and page.livery_menu.sticker_tiles.rhexori.selected,"cached sponsor gallery returns to its own panel and selection")
-	check(page.livery_menu._contents.size() == 6,"two paint tools and four panel/category galleries stay bounded")
-	check(VehicleLivery.for_car(records.settings,"compact").stickers.hood.id == "zelvora" and VehicleLivery.for_car(records.settings,"compact").stickers.roof.id == "rhexori","both sponsor panels save locally")
-	check(page.showroom == retained_view and page.showroom.car == retained_car,"sponsor browsing retains actual car and viewport")
-	page._select_livery(GaragePage.LIVERY_NAMES.size()+tribal_index)
-	page.showroom.elevation = 0.93
-	page.showroom._orbit()
-	for dimensions: Vector2i in [Vector2i(1280,720),Vector2i(960,540),Vector2i(1600,720)]:
-		root.size = dimensions
-		await settle()
-		check(app.root_ui.get_global_rect().encloses(page.tools_panel.get_global_rect()),"sponsor browser fits "+str(dimensions))
-		await capture("sponsors-ui-"+str(dimensions.x))
-	root.size = Vector2i(1280,720)
-	page._choose_sticker_surface("hood")
-	page._choose_sticker(0)
-	page._choose_sticker_surface("roof")
-	page._sticker_property(0.95,"size")
-	page._sticker_property(180,"rotation")
-	page._move_sticker(Vector2(0.5,0.5))
-	var sponsor_contact: Image = Image.create(1600,768,false,Image.FORMAT_RGB8)
-	for index: int in range(12,24):
-		page._choose_sticker(index+1)
-		await settle()
-		var image: Image = page.showroom.showroom_viewport.get_texture().get_image()
-		check(image.save_png(output.path_join("sponsor-"+LiveryCatalog.stickers[index].id+".png")) == OK,"actual sponsor capture "+str(index))
-		image.resize(400,256)
-		image.convert(Image.FORMAT_RGB8)
-		sponsor_contact.blit_rect(image,Rect2i(0,0,400,256),Vector2i((index-12)%4*400,(index-12)/4*256))
-	check(sponsor_contact.save_png(output.path_join("all-sponsors.png")) == OK,"all sponsor native-car contact sheet")
-	page._choose_sticker_surface("hood")
-	page._choose_sticker(LiveryCatalog.sticker_index("zelvora")+1)
-	page._edit_sticker_position(true)
-	await capture("sponsor-placement")
-	page._edit_sticker_position(false)
-	page.livery_menu.active_control("StickerCategory_emblems").pressed.emit()
-	await settle()
-	check(page.livery_menu.sticker_tiles.has("crest") and page.draft.stickers.hood.id == "zelvora","category switch retains placed sponsor")
+	check(page.livery_menu._content == roof_menu and page.livery_menu.sticker_tiles.laurel.selected,"cached gallery returns to its own panel and selection")
+	check(page.livery_menu._contents.size() == 4,"two paint tools and two panel galleries stay bounded")
+	check(VehicleLivery.for_car(records.settings,"compact").stickers.hood.id == "sun" and VehicleLivery.for_car(records.settings,"compact").stickers.roof.id == "laurel","both emblem panels save locally")
+	check(page.showroom == retained_view and page.showroom.car == retained_car,"sticker browsing retains actual car and viewport")
 	for id: String in VehicleCatalog.IDS:
 		page.open_car(VehicleCatalog.IDS.find(id))
 		page.showroom.finish_car_transition()

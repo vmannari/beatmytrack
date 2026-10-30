@@ -1,0 +1,712 @@
+FFFFFF.FFFFFF......F......FFFF                                           [100%]
+================================== FAILURES ===================================
+_ test_car_update_preserves_original_ticket_board_pb_and_worker_execution[sqlite-False-compact] _
+
+domain = namespace(app=<fastapi.applications.FastAPI object at 0x000001F14C91C440>, client=<starlette.testclient.TestClient obj...46ca', 'Bob': '7d45f6cb-b9f7-408c-a763-009f2de68ba3', 'Carol': '5c755d52-7121-45aa-9439-e23bafc68364'}, postgres=False)
+vehicle = 'compact', rollback = False
+
+    @pytest.mark.parametrize("vehicle",["compact","pickup","classic","formula","kart","forklift","electric"])
+    @pytest.mark.parametrize("rollback",[False,True])
+    def test_car_update_preserves_original_ticket_board_pb_and_worker_execution(domain, vehicle, rollback):
+        old, current = builds()
+        if rollback:
+            old, current = current, old
+        domain.app.state.verifier = VersionedVerifier(old)
+        version = seed(domain,1)[0]
+        first = issue(domain,version,vehicle)
+        assert first.status_code == 201, first.text
+        first = first.json()
+        queued = submit(domain,first,"Alice")
+        domain.app.state.verifier.build = current
+        reply = issue(domain,version,vehicle)
+        if vehicle == "electric":
+            assert reply.status_code == 409
+            assert not process_one(domain.app)
+            with domain.factory() as db:
+                run = db.get(Run,queued["run_id"])
+                assert run.status == "queued" and run.attempts == 0
+            # The actual old cohort can still finish its own recording.
+            domain.app.state.verifier.build = old
+            assert process_one(domain.app)
+            return
+>       assert reply.status_code == 201, reply.text
+E       AssertionError: {"detail":"This version requires a different verifier build; upload and test a new version"}
+E       assert 409 == 201
+E        +  where 409 = <Response [409 Conflict]>.status_code
+
+backend\tests\test_car_compatibility.py:75: AssertionError
+---------------------------- Captured stderr call -----------------------------
+{"event":"http_request","request_id":"d588442c-c7f9-485c-b0f6-ee65d5466788","method":"POST","route":"/v1/run-tickets","status":409,"duration_ms":9.1,"request_wire_bytes":76,"request_decoded_bytes":76,"response_wire_bytes":92,"success_sample_per_mille":10,"level":"info"}
+------------------------------ Captured log call ------------------------------
+INFO     bmt.requests:http_costs.py:41 {"event":"http_request","request_id":"d588442c-c7f9-485c-b0f6-ee65d5466788","method":"POST","route":"/v1/run-tickets","status":409,"duration_ms":9.1,"request_wire_bytes":76,"request_decoded_bytes":76,"response_wire_bytes":92,"success_sample_per_mille":10}
+-------------------------- Captured stderr teardown ---------------------------
+{"event":"http_cost_summary","interval_seconds":1.234,"body_bytes_after_compression":true,"latency_limits_ms":[10,25,50,100,250,500,1000,5000],"rows":[{"route":"/v1/run-tickets","method":"POST","status":201,"requests":1,"request_wire_bytes":76,"response_wire_bytes":705,"duration_ms":164.46,"max_ms":164.46,"latency_buckets":[0,0,0,0,1,0,0,0,0]},{"route":"/v1/runs","method":"POST","status":202,"requests":1,"request_wire_bytes":299,"response_wire_bytes":333,"duration_ms":30.91,"max_ms":30.91,"latency_buckets":[0,0,1,0,0,0,0,0,0]},{"route":"/v1/run-tickets","method":"POST","status":409,"requests":1,"request_wire_bytes":76,"response_wire_bytes":92,"duration_ms":9.1,"max_ms":9.1,"latency_buckets":[1,0,0,0,0,0,0,0,0]}],"level":"info"}
+---------------------------- Captured log teardown ----------------------------
+INFO     bmt.requests:http_costs.py:59 {"event":"http_cost_summary","interval_seconds":1.234,"body_bytes_after_compression":true,"latency_limits_ms":[10,25,50,100,250,500,1000,5000],"rows":[{"route":"/v1/run-tickets","method":"POST","status":201,"requests":1,"request_wire_bytes":76,"response_wire_bytes":705,"duration_ms":164.46,"max_ms":164.46,"latency_buckets":[0,0,0,0,1,0,0,0,0]},{"route":"/v1/runs","method":"POST","status":202,"requests":1,"request_wire_bytes":299,"response_wire_bytes":333,"duration_ms":30.91,"max_ms":30.91,"latency_buckets":[0,0,1,0,0,0,0,0,0]},{"route":"/v1/run-tickets","method":"POST","status":409,"requests":1,"request_wire_bytes":76,"response_wire_bytes":92,"duration_ms":9.1,"max_ms":9.1,"latency_buckets":[1,0,0,0,0,0,0,0,0]}]}
+_ test_car_update_preserves_original_ticket_board_pb_and_worker_execution[sqlite-False-pickup] _
+
+domain = namespace(app=<fastapi.applications.FastAPI object at 0x000001F14C9C5400>, client=<starlette.testclient.TestClient obj...c807', 'Bob': '0f065bca-85fc-4614-a8cf-a537c3ce9c05', 'Carol': '66c24531-ce6e-4fd8-96eb-f67b94e1d663'}, postgres=False)
+vehicle = 'pickup', rollback = False
+
+    @pytest.mark.parametrize("vehicle",["compact","pickup","classic","formula","kart","forklift","electric"])
+    @pytest.mark.parametrize("rollback",[False,True])
+    def test_car_update_preserves_original_ticket_board_pb_and_worker_execution(domain, vehicle, rollback):
+        old, current = builds()
+        if rollback:
+            old, current = current, old
+        domain.app.state.verifier = VersionedVerifier(old)
+        version = seed(domain,1)[0]
+        first = issue(domain,version,vehicle)
+        assert first.status_code == 201, first.text
+        first = first.json()
+        queued = submit(domain,first,"Alice")
+        domain.app.state.verifier.build = current
+        reply = issue(domain,version,vehicle)
+        if vehicle == "electric":
+            assert reply.status_code == 409
+            assert not process_one(domain.app)
+            with domain.factory() as db:
+                run = db.get(Run,queued["run_id"])
+                assert run.status == "queued" and run.attempts == 0
+            # The actual old cohort can still finish its own recording.
+            domain.app.state.verifier.build = old
+            assert process_one(domain.app)
+            return
+>       assert reply.status_code == 201, reply.text
+E       AssertionError: {"detail":"This version requires a different verifier build; upload and test a new version"}
+E       assert 409 == 201
+E        +  where 409 = <Response [409 Conflict]>.status_code
+
+backend\tests\test_car_compatibility.py:75: AssertionError
+---------------------------- Captured stderr call -----------------------------
+{"event":"http_request","request_id":"1d71dd6f-e626-44d9-9f66-8893cee463c8","method":"POST","route":"/v1/run-tickets","status":409,"duration_ms":7.38,"request_wire_bytes":75,"request_decoded_bytes":75,"response_wire_bytes":92,"success_sample_per_mille":10,"level":"info"}
+------------------------------ Captured log call ------------------------------
+INFO     bmt.requests:http_costs.py:41 {"event":"http_request","request_id":"1d71dd6f-e626-44d9-9f66-8893cee463c8","method":"POST","route":"/v1/run-tickets","status":409,"duration_ms":7.38,"request_wire_bytes":75,"request_decoded_bytes":75,"response_wire_bytes":92,"success_sample_per_mille":10}
+-------------------------- Captured stderr teardown ---------------------------
+{"event":"http_cost_summary","interval_seconds":0.904,"body_bytes_after_compression":true,"latency_limits_ms":[10,25,50,100,250,500,1000,5000],"rows":[{"route":"/v1/run-tickets","method":"POST","status":201,"requests":1,"request_wire_bytes":75,"response_wire_bytes":682,"duration_ms":132.03,"max_ms":132.03,"latency_buckets":[0,0,0,0,1,0,0,0,0]},{"route":"/v1/runs","method":"POST","status":202,"requests":1,"request_wire_bytes":299,"response_wire_bytes":333,"duration_ms":27.16,"max_ms":27.16,"latency_buckets":[0,0,1,0,0,0,0,0,0]},{"route":"/v1/run-tickets","method":"POST","status":409,"requests":1,"request_wire_bytes":75,"response_wire_bytes":92,"duration_ms":7.38,"max_ms":7.38,"latency_buckets":[1,0,0,0,0,0,0,0,0]}],"level":"info"}
+---------------------------- Captured log teardown ----------------------------
+INFO     bmt.requests:http_costs.py:59 {"event":"http_cost_summary","interval_seconds":0.904,"body_bytes_after_compression":true,"latency_limits_ms":[10,25,50,100,250,500,1000,5000],"rows":[{"route":"/v1/run-tickets","method":"POST","status":201,"requests":1,"request_wire_bytes":75,"response_wire_bytes":682,"duration_ms":132.03,"max_ms":132.03,"latency_buckets":[0,0,0,0,1,0,0,0,0]},{"route":"/v1/runs","method":"POST","status":202,"requests":1,"request_wire_bytes":299,"response_wire_bytes":333,"duration_ms":27.16,"max_ms":27.16,"latency_buckets":[0,0,1,0,0,0,0,0,0]},{"route":"/v1/run-tickets","method":"POST","status":409,"requests":1,"request_wire_bytes":75,"response_wire_bytes":92,"duration_ms":7.38,"max_ms":7.38,"latency_buckets":[1,0,0,0,0,0,0,0,0]}]}
+_ test_car_update_preserves_original_ticket_board_pb_and_worker_execution[sqlite-False-classic] _
+
+domain = namespace(app=<fastapi.applications.FastAPI object at 0x000001F14D3B0AD0>, client=<starlette.testclient.TestClient obj...c8a6', 'Bob': '087adb09-e2d7-47ec-9bee-36cd4d308599', 'Carol': '7c09c4c0-3bd5-4249-a678-669e7a3207d0'}, postgres=False)
+vehicle = 'classic', rollback = False
+
+    @pytest.mark.parametrize("vehicle",["compact","pickup","classic","formula","kart","forklift","electric"])
+    @pytest.mark.parametrize("rollback",[False,True])
+    def test_car_update_preserves_original_ticket_board_pb_and_worker_execution(domain, vehicle, rollback):
+        old, current = builds()
+        if rollback:
+            old, current = current, old
+        domain.app.state.verifier = VersionedVerifier(old)
+        version = seed(domain,1)[0]
+        first = issue(domain,version,vehicle)
+        assert first.status_code == 201, first.text
+        first = first.json()
+        queued = submit(domain,first,"Alice")
+        domain.app.state.verifier.build = current
+        reply = issue(domain,version,vehicle)
+        if vehicle == "electric":
+            assert reply.status_code == 409
+            assert not process_one(domain.app)
+            with domain.factory() as db:
+                run = db.get(Run,queued["run_id"])
+                assert run.status == "queued" and run.attempts == 0
+            # The actual old cohort can still finish its own recording.
+            domain.app.state.verifier.build = old
+            assert process_one(domain.app)
+            return
+>       assert reply.status_code == 201, reply.text
+E       AssertionError: {"detail":"This version requires a different verifier build; upload and test a new version"}
+E       assert 409 == 201
+E        +  where 409 = <Response [409 Conflict]>.status_code
+
+backend\tests\test_car_compatibility.py:75: AssertionError
+---------------------------- Captured stderr call -----------------------------
+{"event":"http_request","request_id":"f7f6c692-d166-4204-ac38-fdb192be0187","method":"POST","route":"/v1/run-tickets","status":409,"duration_ms":10.53,"request_wire_bytes":76,"request_decoded_bytes":76,"response_wire_bytes":92,"success_sample_per_mille":10,"level":"info"}
+------------------------------ Captured log call ------------------------------
+INFO     bmt.requests:http_costs.py:41 {"event":"http_request","request_id":"f7f6c692-d166-4204-ac38-fdb192be0187","method":"POST","route":"/v1/run-tickets","status":409,"duration_ms":10.53,"request_wire_bytes":76,"request_decoded_bytes":76,"response_wire_bytes":92,"success_sample_per_mille":10}
+-------------------------- Captured stderr teardown ---------------------------
+{"event":"http_cost_summary","interval_seconds":0.851,"body_bytes_after_compression":true,"latency_limits_ms":[10,25,50,100,250,500,1000,5000],"rows":[{"route":"/v1/run-tickets","method":"POST","status":201,"requests":1,"request_wire_bytes":76,"response_wire_bytes":683,"duration_ms":148.08,"max_ms":148.08,"latency_buckets":[0,0,0,0,1,0,0,0,0]},{"route":"/v1/runs","method":"POST","status":202,"requests":1,"request_wire_bytes":299,"response_wire_bytes":333,"duration_ms":30.42,"max_ms":30.42,"latency_buckets":[0,0,1,0,0,0,0,0,0]},{"route":"/v1/run-tickets","method":"POST","status":409,"requests":1,"request_wire_bytes":76,"response_wire_bytes":92,"duration_ms":10.53,"max_ms":10.53,"latency_buckets":[0,1,0,0,0,0,0,0,0]}],"level":"info"}
+---------------------------- Captured log teardown ----------------------------
+INFO     bmt.requests:http_costs.py:59 {"event":"http_cost_summary","interval_seconds":0.851,"body_bytes_after_compression":true,"latency_limits_ms":[10,25,50,100,250,500,1000,5000],"rows":[{"route":"/v1/run-tickets","method":"POST","status":201,"requests":1,"request_wire_bytes":76,"response_wire_bytes":683,"duration_ms":148.08,"max_ms":148.08,"latency_buckets":[0,0,0,0,1,0,0,0,0]},{"route":"/v1/runs","method":"POST","status":202,"requests":1,"request_wire_bytes":299,"response_wire_bytes":333,"duration_ms":30.42,"max_ms":30.42,"latency_buckets":[0,0,1,0,0,0,0,0,0]},{"route":"/v1/run-tickets","method":"POST","status":409,"requests":1,"request_wire_bytes":76,"response_wire_bytes":92,"duration_ms":10.53,"max_ms":10.53,"latency_buckets":[0,1,0,0,0,0,0,0,0]}]}
+_ test_car_update_preserves_original_ticket_board_pb_and_worker_execution[sqlite-False-formula] _
+
+domain = namespace(app=<fastapi.applications.FastAPI object at 0x000001F14E86CEC0>, client=<starlette.testclient.TestClient obj...2477', 'Bob': '5ef0b3bf-83a2-40b8-a734-1a4183d07c5e', 'Carol': '5a66a388-f111-4153-bea5-73c72c2e6f3c'}, postgres=False)
+vehicle = 'formula', rollback = False
+
+    @pytest.mark.parametrize("vehicle",["compact","pickup","classic","formula","kart","forklift","electric"])
+    @pytest.mark.parametrize("rollback",[False,True])
+    def test_car_update_preserves_original_ticket_board_pb_and_worker_execution(domain, vehicle, rollback):
+        old, current = builds()
+        if rollback:
+            old, current = current, old
+        domain.app.state.verifier = VersionedVerifier(old)
+        version = seed(domain,1)[0]
+        first = issue(domain,version,vehicle)
+        assert first.status_code == 201, first.text
+        first = first.json()
+        queued = submit(domain,first,"Alice")
+        domain.app.state.verifier.build = current
+        reply = issue(domain,version,vehicle)
+        if vehicle == "electric":
+            assert reply.status_code == 409
+            assert not process_one(domain.app)
+            with domain.factory() as db:
+                run = db.get(Run,queued["run_id"])
+                assert run.status == "queued" and run.attempts == 0
+            # The actual old cohort can still finish its own recording.
+            domain.app.state.verifier.build = old
+            assert process_one(domain.app)
+            return
+>       assert reply.status_code == 201, reply.text
+E       AssertionError: {"detail":"This version requires a different verifier build; upload and test a new version"}
+E       assert 409 == 201
+E        +  where 409 = <Response [409 Conflict]>.status_code
+
+backend\tests\test_car_compatibility.py:75: AssertionError
+---------------------------- Captured stderr call -----------------------------
+{"event":"http_request","request_id":"195ea82e-1709-4b2b-9219-1af452bb6474","method":"POST","route":"/v1/run-tickets","status":409,"duration_ms":8.5,"request_wire_bytes":76,"request_decoded_bytes":76,"response_wire_bytes":92,"success_sample_per_mille":10,"level":"info"}
+------------------------------ Captured log call ------------------------------
+INFO     bmt.requests:http_costs.py:41 {"event":"http_request","request_id":"195ea82e-1709-4b2b-9219-1af452bb6474","method":"POST","route":"/v1/run-tickets","status":409,"duration_ms":8.5,"request_wire_bytes":76,"request_decoded_bytes":76,"response_wire_bytes":92,"success_sample_per_mille":10}
+-------------------------- Captured stderr teardown ---------------------------
+{"event":"http_cost_summary","interval_seconds":0.841,"body_bytes_after_compression":true,"latency_limits_ms":[10,25,50,100,250,500,1000,5000],"rows":[{"route":"/v1/run-tickets","method":"POST","status":201,"requests":1,"request_wire_bytes":76,"response_wire_bytes":683,"duration_ms":140.33,"max_ms":140.33,"latency_buckets":[0,0,0,0,1,0,0,0,0]},{"route":"/v1/runs","method":"POST","status":202,"requests":1,"request_wire_bytes":299,"response_wire_bytes":333,"duration_ms":26.33,"max_ms":26.33,"latency_buckets":[0,0,1,0,0,0,0,0,0]},{"route":"/v1/run-tickets","method":"POST","status":409,"requests":1,"request_wire_bytes":76,"response_wire_bytes":92,"duration_ms":8.5,"max_ms":8.5,"latency_buckets":[1,0,0,0,0,0,0,0,0]}],"level":"info"}
+---------------------------- Captured log teardown ----------------------------
+INFO     bmt.requests:http_costs.py:59 {"event":"http_cost_summary","interval_seconds":0.841,"body_bytes_after_compression":true,"latency_limits_ms":[10,25,50,100,250,500,1000,5000],"rows":[{"route":"/v1/run-tickets","method":"POST","status":201,"requests":1,"request_wire_bytes":76,"response_wire_bytes":683,"duration_ms":140.33,"max_ms":140.33,"latency_buckets":[0,0,0,0,1,0,0,0,0]},{"route":"/v1/runs","method":"POST","status":202,"requests":1,"request_wire_bytes":299,"response_wire_bytes":333,"duration_ms":26.33,"max_ms":26.33,"latency_buckets":[0,0,1,0,0,0,0,0,0]},{"route":"/v1/run-tickets","method":"POST","status":409,"requests":1,"request_wire_bytes":76,"response_wire_bytes":92,"duration_ms":8.5,"max_ms":8.5,"latency_buckets":[1,0,0,0,0,0,0,0,0]}]}
+_ test_car_update_preserves_original_ticket_board_pb_and_worker_execution[sqlite-False-kart] _
+
+domain = namespace(app=<fastapi.applications.FastAPI object at 0x000001F14ED6D400>, client=<starlette.testclient.TestClient obj...98db', 'Bob': '74e139aa-c329-40c2-be02-9995b35b0238', 'Carol': 'c98bf688-aad5-41f0-9a6e-45bf0051be6c'}, postgres=False)
+vehicle = 'kart', rollback = False
+
+    @pytest.mark.parametrize("vehicle",["compact","pickup","classic","formula","kart","forklift","electric"])
+    @pytest.mark.parametrize("rollback",[False,True])
+    def test_car_update_preserves_original_ticket_board_pb_and_worker_execution(domain, vehicle, rollback):
+        old, current = builds()
+        if rollback:
+            old, current = current, old
+        domain.app.state.verifier = VersionedVerifier(old)
+        version = seed(domain,1)[0]
+        first = issue(domain,version,vehicle)
+        assert first.status_code == 201, first.text
+        first = first.json()
+        queued = submit(domain,first,"Alice")
+        domain.app.state.verifier.build = current
+        reply = issue(domain,version,vehicle)
+        if vehicle == "electric":
+            assert reply.status_code == 409
+            assert not process_one(domain.app)
+            with domain.factory() as db:
+                run = db.get(Run,queued["run_id"])
+                assert run.status == "queued" and run.attempts == 0
+            # The actual old cohort can still finish its own recording.
+            domain.app.state.verifier.build = old
+            assert process_one(domain.app)
+            return
+>       assert reply.status_code == 201, reply.text
+E       AssertionError: {"detail":"This version requires a different verifier build; upload and test a new version"}
+E       assert 409 == 201
+E        +  where 409 = <Response [409 Conflict]>.status_code
+
+backend\tests\test_car_compatibility.py:75: AssertionError
+---------------------------- Captured stderr call -----------------------------
+{"event":"http_request","request_id":"f047338a-ba6f-4670-82e5-cb547089de8d","method":"POST","route":"/v1/run-tickets","status":409,"duration_ms":10.84,"request_wire_bytes":73,"request_decoded_bytes":73,"response_wire_bytes":92,"success_sample_per_mille":10,"level":"info"}
+------------------------------ Captured log call ------------------------------
+INFO     bmt.requests:http_costs.py:41 {"event":"http_request","request_id":"f047338a-ba6f-4670-82e5-cb547089de8d","method":"POST","route":"/v1/run-tickets","status":409,"duration_ms":10.84,"request_wire_bytes":73,"request_decoded_bytes":73,"response_wire_bytes":92,"success_sample_per_mille":10}
+-------------------------- Captured stderr teardown ---------------------------
+{"event":"http_cost_summary","interval_seconds":1.053,"body_bytes_after_compression":true,"latency_limits_ms":[10,25,50,100,250,500,1000,5000],"rows":[{"route":"/v1/run-tickets","method":"POST","status":201,"requests":1,"request_wire_bytes":73,"response_wire_bytes":680,"duration_ms":153.42,"max_ms":153.42,"latency_buckets":[0,0,0,0,1,0,0,0,0]},{"route":"/v1/runs","method":"POST","status":202,"requests":1,"request_wire_bytes":299,"response_wire_bytes":333,"duration_ms":28.83,"max_ms":28.83,"latency_buckets":[0,0,1,0,0,0,0,0,0]},{"route":"/v1/run-tickets","method":"POST","status":409,"requests":1,"request_wire_bytes":73,"response_wire_bytes":92,"duration_ms":10.84,"max_ms":10.84,"latency_buckets":[0,1,0,0,0,0,0,0,0]}],"level":"info"}
+---------------------------- Captured log teardown ----------------------------
+INFO     bmt.requests:http_costs.py:59 {"event":"http_cost_summary","interval_seconds":1.053,"body_bytes_after_compression":true,"latency_limits_ms":[10,25,50,100,250,500,1000,5000],"rows":[{"route":"/v1/run-tickets","method":"POST","status":201,"requests":1,"request_wire_bytes":73,"response_wire_bytes":680,"duration_ms":153.42,"max_ms":153.42,"latency_buckets":[0,0,0,0,1,0,0,0,0]},{"route":"/v1/runs","method":"POST","status":202,"requests":1,"request_wire_bytes":299,"response_wire_bytes":333,"duration_ms":28.83,"max_ms":28.83,"latency_buckets":[0,0,1,0,0,0,0,0,0]},{"route":"/v1/run-tickets","method":"POST","status":409,"requests":1,"request_wire_bytes":73,"response_wire_bytes":92,"duration_ms":10.84,"max_ms":10.84,"latency_buckets":[0,1,0,0,0,0,0,0,0]}]}
+_ test_car_update_preserves_original_ticket_board_pb_and_worker_execution[sqlite-False-forklift] _
+
+domain = namespace(app=<fastapi.applications.FastAPI object at 0x000001F14D76B620>, client=<starlette.testclient.TestClient obj...7cd3', 'Bob': 'faf0c7bb-5a58-4cd8-b35c-f2eb8d2aaea3', 'Carol': '93c1a9a7-0672-412f-8a32-575729309de6'}, postgres=False)
+vehicle = 'forklift', rollback = False
+
+    @pytest.mark.parametrize("vehicle",["compact","pickup","classic","formula","kart","forklift","electric"])
+    @pytest.mark.parametrize("rollback",[False,True])
+    def test_car_update_preserves_original_ticket_board_pb_and_worker_execution(domain, vehicle, rollback):
+        old, current = builds()
+        if rollback:
+            old, current = current, old
+        domain.app.state.verifier = VersionedVerifier(old)
+        version = seed(domain,1)[0]
+        first = issue(domain,version,vehicle)
+        assert first.status_code == 201, first.text
+        first = first.json()
+        queued = submit(domain,first,"Alice")
+        domain.app.state.verifier.build = current
+        reply = issue(domain,version,vehicle)
+        if vehicle == "electric":
+            assert reply.status_code == 409
+            assert not process_one(domain.app)
+            with domain.factory() as db:
+                run = db.get(Run,queued["run_id"])
+                assert run.status == "queued" and run.attempts == 0
+            # The actual old cohort can still finish its own recording.
+            domain.app.state.verifier.build = old
+            assert process_one(domain.app)
+            return
+>       assert reply.status_code == 201, reply.text
+E       AssertionError: {"detail":"This version requires a different verifier build; upload and test a new version"}
+E       assert 409 == 201
+E        +  where 409 = <Response [409 Conflict]>.status_code
+
+backend\tests\test_car_compatibility.py:75: AssertionError
+---------------------------- Captured stderr call -----------------------------
+{"event":"http_request","request_id":"0a84c57a-2f76-48fe-8444-73eb064e1876","method":"POST","route":"/v1/run-tickets","status":409,"duration_ms":8.77,"request_wire_bytes":77,"request_decoded_bytes":77,"response_wire_bytes":92,"success_sample_per_mille":10,"level":"info"}
+------------------------------ Captured log call ------------------------------
+INFO     bmt.requests:http_costs.py:41 {"event":"http_request","request_id":"0a84c57a-2f76-48fe-8444-73eb064e1876","method":"POST","route":"/v1/run-tickets","status":409,"duration_ms":8.77,"request_wire_bytes":77,"request_decoded_bytes":77,"response_wire_bytes":92,"success_sample_per_mille":10}
+-------------------------- Captured stderr teardown ---------------------------
+{"event":"http_cost_summary","interval_seconds":0.948,"body_bytes_after_compression":true,"latency_limits_ms":[10,25,50,100,250,500,1000,5000],"rows":[{"route":"/v1/run-tickets","method":"POST","status":201,"requests":1,"request_wire_bytes":77,"response_wire_bytes":688,"duration_ms":130.76,"max_ms":130.76,"latency_buckets":[0,0,0,0,1,0,0,0,0]},{"route":"/v1/runs","method":"POST","status":202,"requests":1,"request_wire_bytes":299,"response_wire_bytes":333,"duration_ms":26.96,"max_ms":26.96,"latency_buckets":[0,0,1,0,0,0,0,0,0]},{"route":"/v1/run-tickets","method":"POST","status":409,"requests":1,"request_wire_bytes":77,"response_wire_bytes":92,"duration_ms":8.77,"max_ms":8.77,"latency_buckets":[1,0,0,0,0,0,0,0,0]}],"level":"info"}
+---------------------------- Captured log teardown ----------------------------
+INFO     bmt.requests:http_costs.py:59 {"event":"http_cost_summary","interval_seconds":0.948,"body_bytes_after_compression":true,"latency_limits_ms":[10,25,50,100,250,500,1000,5000],"rows":[{"route":"/v1/run-tickets","method":"POST","status":201,"requests":1,"request_wire_bytes":77,"response_wire_bytes":688,"duration_ms":130.76,"max_ms":130.76,"latency_buckets":[0,0,0,0,1,0,0,0,0]},{"route":"/v1/runs","method":"POST","status":202,"requests":1,"request_wire_bytes":299,"response_wire_bytes":333,"duration_ms":26.96,"max_ms":26.96,"latency_buckets":[0,0,1,0,0,0,0,0,0]},{"route":"/v1/run-tickets","method":"POST","status":409,"requests":1,"request_wire_bytes":77,"response_wire_bytes":92,"duration_ms":8.77,"max_ms":8.77,"latency_buckets":[1,0,0,0,0,0,0,0,0]}]}
+_ test_car_update_preserves_original_ticket_board_pb_and_worker_execution[sqlite-True-compact] _
+
+domain = namespace(app=<fastapi.applications.FastAPI object at 0x000001F15020FE00>, client=<starlette.testclient.TestClient obj...396f', 'Bob': '5185f7b9-6d63-48c6-ac45-cfa855d0d1dc', 'Carol': '3d482800-68d8-4d78-aed0-0310b030d8c1'}, postgres=False)
+vehicle = 'compact', rollback = True
+
+    @pytest.mark.parametrize("vehicle",["compact","pickup","classic","formula","kart","forklift","electric"])
+    @pytest.mark.parametrize("rollback",[False,True])
+    def test_car_update_preserves_original_ticket_board_pb_and_worker_execution(domain, vehicle, rollback):
+        old, current = builds()
+        if rollback:
+            old, current = current, old
+        domain.app.state.verifier = VersionedVerifier(old)
+        version = seed(domain,1)[0]
+        first = issue(domain,version,vehicle)
+        assert first.status_code == 201, first.text
+        first = first.json()
+        queued = submit(domain,first,"Alice")
+        domain.app.state.verifier.build = current
+        reply = issue(domain,version,vehicle)
+        if vehicle == "electric":
+            assert reply.status_code == 409
+            assert not process_one(domain.app)
+            with domain.factory() as db:
+                run = db.get(Run,queued["run_id"])
+                assert run.status == "queued" and run.attempts == 0
+            # The actual old cohort can still finish its own recording.
+            domain.app.state.verifier.build = old
+            assert process_one(domain.app)
+            return
+>       assert reply.status_code == 201, reply.text
+E       AssertionError: {"detail":"This version requires a different verifier build; upload and test a new version"}
+E       assert 409 == 201
+E        +  where 409 = <Response [409 Conflict]>.status_code
+
+backend\tests\test_car_compatibility.py:75: AssertionError
+---------------------------- Captured stderr call -----------------------------
+{"event":"http_request","request_id":"6ae9497c-53dc-4ea3-9a16-993f6a32727a","method":"POST","route":"/v1/run-tickets","status":201,"duration_ms":158.75,"request_wire_bytes":76,"request_decoded_bytes":76,"response_wire_bytes":705,"success_sample_per_mille":10,"level":"info"}
+{"event":"http_request","request_id":"b6c6cecf-d7c3-4e0a-a92b-a8b191017a74","method":"POST","route":"/v1/run-tickets","status":409,"duration_ms":7.63,"request_wire_bytes":76,"request_decoded_bytes":76,"response_wire_bytes":92,"success_sample_per_mille":10,"level":"info"}
+------------------------------ Captured log call ------------------------------
+INFO     bmt.requests:http_costs.py:41 {"event":"http_request","request_id":"6ae9497c-53dc-4ea3-9a16-993f6a32727a","method":"POST","route":"/v1/run-tickets","status":201,"duration_ms":158.75,"request_wire_bytes":76,"request_decoded_bytes":76,"response_wire_bytes":705,"success_sample_per_mille":10}
+INFO     bmt.requests:http_costs.py:41 {"event":"http_request","request_id":"b6c6cecf-d7c3-4e0a-a92b-a8b191017a74","method":"POST","route":"/v1/run-tickets","status":409,"duration_ms":7.63,"request_wire_bytes":76,"request_decoded_bytes":76,"response_wire_bytes":92,"success_sample_per_mille":10}
+-------------------------- Captured stderr teardown ---------------------------
+{"event":"http_cost_summary","interval_seconds":1.137,"body_bytes_after_compression":true,"latency_limits_ms":[10,25,50,100,250,500,1000,5000],"rows":[{"route":"/v1/run-tickets","method":"POST","status":201,"requests":1,"request_wire_bytes":76,"response_wire_bytes":705,"duration_ms":158.75,"max_ms":158.75,"latency_buckets":[0,0,0,0,1,0,0,0,0]},{"route":"/v1/runs","method":"POST","status":202,"requests":1,"request_wire_bytes":299,"response_wire_bytes":333,"duration_ms":25.21,"max_ms":25.21,"latency_buckets":[0,0,1,0,0,0,0,0,0]},{"route":"/v1/run-tickets","method":"POST","status":409,"requests":1,"request_wire_bytes":76,"response_wire_bytes":92,"duration_ms":7.63,"max_ms":7.63,"latency_buckets":[1,0,0,0,0,0,0,0,0]}],"level":"info"}
+---------------------------- Captured log teardown ----------------------------
+INFO     bmt.requests:http_costs.py:59 {"event":"http_cost_summary","interval_seconds":1.137,"body_bytes_after_compression":true,"latency_limits_ms":[10,25,50,100,250,500,1000,5000],"rows":[{"route":"/v1/run-tickets","method":"POST","status":201,"requests":1,"request_wire_bytes":76,"response_wire_bytes":705,"duration_ms":158.75,"max_ms":158.75,"latency_buckets":[0,0,0,0,1,0,0,0,0]},{"route":"/v1/runs","method":"POST","status":202,"requests":1,"request_wire_bytes":299,"response_wire_bytes":333,"duration_ms":25.21,"max_ms":25.21,"latency_buckets":[0,0,1,0,0,0,0,0,0]},{"route":"/v1/run-tickets","method":"POST","status":409,"requests":1,"request_wire_bytes":76,"response_wire_bytes":92,"duration_ms":7.63,"max_ms":7.63,"latency_buckets":[1,0,0,0,0,0,0,0,0]}]}
+_ test_car_update_preserves_original_ticket_board_pb_and_worker_execution[sqlite-True-pickup] _
+
+domain = namespace(app=<fastapi.applications.FastAPI object at 0x000001F1502C2CF0>, client=<starlette.testclient.TestClient obj...bd53', 'Bob': 'a73f2ef0-ec94-4eed-808b-0994db644f91', 'Carol': 'b57b72fe-2620-4dd1-a191-d4ee5d031c3f'}, postgres=False)
+vehicle = 'pickup', rollback = True
+
+    @pytest.mark.parametrize("vehicle",["compact","pickup","classic","formula","kart","forklift","electric"])
+    @pytest.mark.parametrize("rollback",[False,True])
+    def test_car_update_preserves_original_ticket_board_pb_and_worker_execution(domain, vehicle, rollback):
+        old, current = builds()
+        if rollback:
+            old, current = current, old
+        domain.app.state.verifier = VersionedVerifier(old)
+        version = seed(domain,1)[0]
+        first = issue(domain,version,vehicle)
+        assert first.status_code == 201, first.text
+        first = first.json()
+        queued = submit(domain,first,"Alice")
+        domain.app.state.verifier.build = current
+        reply = issue(domain,version,vehicle)
+        if vehicle == "electric":
+            assert reply.status_code == 409
+            assert not process_one(domain.app)
+            with domain.factory() as db:
+                run = db.get(Run,queued["run_id"])
+                assert run.status == "queued" and run.attempts == 0
+            # The actual old cohort can still finish its own recording.
+            domain.app.state.verifier.build = old
+            assert process_one(domain.app)
+            return
+>       assert reply.status_code == 201, reply.text
+E       AssertionError: {"detail":"This version requires a different verifier build; upload and test a new version"}
+E       assert 409 == 201
+E        +  where 409 = <Response [409 Conflict]>.status_code
+
+backend\tests\test_car_compatibility.py:75: AssertionError
+---------------------------- Captured stderr call -----------------------------
+{"event":"http_request","request_id":"d67b9e86-3231-47fb-8952-1fd4a813982a","method":"POST","route":"/v1/run-tickets","status":409,"duration_ms":7.61,"request_wire_bytes":75,"request_decoded_bytes":75,"response_wire_bytes":92,"success_sample_per_mille":10,"level":"info"}
+------------------------------ Captured log call ------------------------------
+INFO     bmt.requests:http_costs.py:41 {"event":"http_request","request_id":"d67b9e86-3231-47fb-8952-1fd4a813982a","method":"POST","route":"/v1/run-tickets","status":409,"duration_ms":7.61,"request_wire_bytes":75,"request_decoded_bytes":75,"response_wire_bytes":92,"success_sample_per_mille":10}
+-------------------------- Captured stderr teardown ---------------------------
+{"event":"http_cost_summary","interval_seconds":0.983,"body_bytes_after_compression":true,"latency_limits_ms":[10,25,50,100,250,500,1000,5000],"rows":[{"route":"/v1/run-tickets","method":"POST","status":201,"requests":1,"request_wire_bytes":75,"response_wire_bytes":682,"duration_ms":166.79,"max_ms":166.79,"latency_buckets":[0,0,0,0,1,0,0,0,0]},{"route":"/v1/runs","method":"POST","status":202,"requests":1,"request_wire_bytes":299,"response_wire_bytes":333,"duration_ms":25.76,"max_ms":25.76,"latency_buckets":[0,0,1,0,0,0,0,0,0]},{"route":"/v1/run-tickets","method":"POST","status":409,"requests":1,"request_wire_bytes":75,"response_wire_bytes":92,"duration_ms":7.61,"max_ms":7.61,"latency_buckets":[1,0,0,0,0,0,0,0,0]}],"level":"info"}
+---------------------------- Captured log teardown ----------------------------
+INFO     bmt.requests:http_costs.py:59 {"event":"http_cost_summary","interval_seconds":0.983,"body_bytes_after_compression":true,"latency_limits_ms":[10,25,50,100,250,500,1000,5000],"rows":[{"route":"/v1/run-tickets","method":"POST","status":201,"requests":1,"request_wire_bytes":75,"response_wire_bytes":682,"duration_ms":166.79,"max_ms":166.79,"latency_buckets":[0,0,0,0,1,0,0,0,0]},{"route":"/v1/runs","method":"POST","status":202,"requests":1,"request_wire_bytes":299,"response_wire_bytes":333,"duration_ms":25.76,"max_ms":25.76,"latency_buckets":[0,0,1,0,0,0,0,0,0]},{"route":"/v1/run-tickets","method":"POST","status":409,"requests":1,"request_wire_bytes":75,"response_wire_bytes":92,"duration_ms":7.61,"max_ms":7.61,"latency_buckets":[1,0,0,0,0,0,0,0,0]}]}
+_ test_car_update_preserves_original_ticket_board_pb_and_worker_execution[sqlite-True-classic] _
+
+domain = namespace(app=<fastapi.applications.FastAPI object at 0x000001F150947230>, client=<starlette.testclient.TestClient obj...e814', 'Bob': '266d470b-2f8c-402d-a925-6466442c4cc0', 'Carol': '87f3b924-5019-4d00-a121-86b9ba41b50c'}, postgres=False)
+vehicle = 'classic', rollback = True
+
+    @pytest.mark.parametrize("vehicle",["compact","pickup","classic","formula","kart","forklift","electric"])
+    @pytest.mark.parametrize("rollback",[False,True])
+    def test_car_update_preserves_original_ticket_board_pb_and_worker_execution(domain, vehicle, rollback):
+        old, current = builds()
+        if rollback:
+            old, current = current, old
+        domain.app.state.verifier = VersionedVerifier(old)
+        version = seed(domain,1)[0]
+        first = issue(domain,version,vehicle)
+        assert first.status_code == 201, first.text
+        first = first.json()
+        queued = submit(domain,first,"Alice")
+        domain.app.state.verifier.build = current
+        reply = issue(domain,version,vehicle)
+        if vehicle == "electric":
+            assert reply.status_code == 409
+            assert not process_one(domain.app)
+            with domain.factory() as db:
+                run = db.get(Run,queued["run_id"])
+                assert run.status == "queued" and run.attempts == 0
+            # The actual old cohort can still finish its own recording.
+            domain.app.state.verifier.build = old
+            assert process_one(domain.app)
+            return
+>       assert reply.status_code == 201, reply.text
+E       AssertionError: {"detail":"This version requires a different verifier build; upload and test a new version"}
+E       assert 409 == 201
+E        +  where 409 = <Response [409 Conflict]>.status_code
+
+backend\tests\test_car_compatibility.py:75: AssertionError
+---------------------------- Captured stderr call -----------------------------
+{"event":"http_request","request_id":"82df4d4c-0905-4f44-b06d-64fd0e5b3b28","method":"POST","route":"/v1/run-tickets","status":409,"duration_ms":6.98,"request_wire_bytes":76,"request_decoded_bytes":76,"response_wire_bytes":92,"success_sample_per_mille":10,"level":"info"}
+------------------------------ Captured log call ------------------------------
+INFO     bmt.requests:http_costs.py:41 {"event":"http_request","request_id":"82df4d4c-0905-4f44-b06d-64fd0e5b3b28","method":"POST","route":"/v1/run-tickets","status":409,"duration_ms":6.98,"request_wire_bytes":76,"request_decoded_bytes":76,"response_wire_bytes":92,"success_sample_per_mille":10}
+-------------------------- Captured stderr teardown ---------------------------
+{"event":"http_cost_summary","interval_seconds":0.859,"body_bytes_after_compression":true,"latency_limits_ms":[10,25,50,100,250,500,1000,5000],"rows":[{"route":"/v1/run-tickets","method":"POST","status":201,"requests":1,"request_wire_bytes":76,"response_wire_bytes":683,"duration_ms":141.9,"max_ms":141.9,"latency_buckets":[0,0,0,0,1,0,0,0,0]},{"route":"/v1/runs","method":"POST","status":202,"requests":1,"request_wire_bytes":299,"response_wire_bytes":333,"duration_ms":23.75,"max_ms":23.75,"latency_buckets":[0,1,0,0,0,0,0,0,0]},{"route":"/v1/run-tickets","method":"POST","status":409,"requests":1,"request_wire_bytes":76,"response_wire_bytes":92,"duration_ms":6.98,"max_ms":6.98,"latency_buckets":[1,0,0,0,0,0,0,0,0]}],"level":"info"}
+---------------------------- Captured log teardown ----------------------------
+INFO     bmt.requests:http_costs.py:59 {"event":"http_cost_summary","interval_seconds":0.859,"body_bytes_after_compression":true,"latency_limits_ms":[10,25,50,100,250,500,1000,5000],"rows":[{"route":"/v1/run-tickets","method":"POST","status":201,"requests":1,"request_wire_bytes":76,"response_wire_bytes":683,"duration_ms":141.9,"max_ms":141.9,"latency_buckets":[0,0,0,0,1,0,0,0,0]},{"route":"/v1/runs","method":"POST","status":202,"requests":1,"request_wire_bytes":299,"response_wire_bytes":333,"duration_ms":23.75,"max_ms":23.75,"latency_buckets":[0,1,0,0,0,0,0,0,0]},{"route":"/v1/run-tickets","method":"POST","status":409,"requests":1,"request_wire_bytes":76,"response_wire_bytes":92,"duration_ms":6.98,"max_ms":6.98,"latency_buckets":[1,0,0,0,0,0,0,0,0]}]}
+_ test_car_update_preserves_original_ticket_board_pb_and_worker_execution[sqlite-True-formula] _
+
+domain = namespace(app=<fastapi.applications.FastAPI object at 0x000001F150DCB8C0>, client=<starlette.testclient.TestClient obj...aadb', 'Bob': '59b08fda-49c1-40c7-87a0-05bd75663a22', 'Carol': 'adb58c40-ae24-401c-a50a-f7385faabb48'}, postgres=False)
+vehicle = 'formula', rollback = True
+
+    @pytest.mark.parametrize("vehicle",["compact","pickup","classic","formula","kart","forklift","electric"])
+    @pytest.mark.parametrize("rollback",[False,True])
+    def test_car_update_preserves_original_ticket_board_pb_and_worker_execution(domain, vehicle, rollback):
+        old, current = builds()
+        if rollback:
+            old, current = current, old
+        domain.app.state.verifier = VersionedVerifier(old)
+        version = seed(domain,1)[0]
+        first = issue(domain,version,vehicle)
+        assert first.status_code == 201, first.text
+        first = first.json()
+        queued = submit(domain,first,"Alice")
+        domain.app.state.verifier.build = current
+        reply = issue(domain,version,vehicle)
+        if vehicle == "electric":
+            assert reply.status_code == 409
+            assert not process_one(domain.app)
+            with domain.factory() as db:
+                run = db.get(Run,queued["run_id"])
+                assert run.status == "queued" and run.attempts == 0
+            # The actual old cohort can still finish its own recording.
+            domain.app.state.verifier.build = old
+            assert process_one(domain.app)
+            return
+>       assert reply.status_code == 201, reply.text
+E       AssertionError: {"detail":"This version requires a different verifier build; upload and test a new version"}
+E       assert 409 == 201
+E        +  where 409 = <Response [409 Conflict]>.status_code
+
+backend\tests\test_car_compatibility.py:75: AssertionError
+---------------------------- Captured stderr call -----------------------------
+{"event":"http_request","request_id":"566bbd2b-1ad8-467e-9a70-af6ce4e9815f","method":"POST","route":"/v1/run-tickets","status":409,"duration_ms":8.83,"request_wire_bytes":76,"request_decoded_bytes":76,"response_wire_bytes":92,"success_sample_per_mille":10,"level":"info"}
+------------------------------ Captured log call ------------------------------
+INFO     bmt.requests:http_costs.py:41 {"event":"http_request","request_id":"566bbd2b-1ad8-467e-9a70-af6ce4e9815f","method":"POST","route":"/v1/run-tickets","status":409,"duration_ms":8.83,"request_wire_bytes":76,"request_decoded_bytes":76,"response_wire_bytes":92,"success_sample_per_mille":10}
+-------------------------- Captured stderr teardown ---------------------------
+{"event":"http_cost_summary","interval_seconds":0.823,"body_bytes_after_compression":true,"latency_limits_ms":[10,25,50,100,250,500,1000,5000],"rows":[{"route":"/v1/run-tickets","method":"POST","status":201,"requests":1,"request_wire_bytes":76,"response_wire_bytes":683,"duration_ms":124.73,"max_ms":124.73,"latency_buckets":[0,0,0,0,1,0,0,0,0]},{"route":"/v1/runs","method":"POST","status":202,"requests":1,"request_wire_bytes":299,"response_wire_bytes":333,"duration_ms":24.63,"max_ms":24.63,"latency_buckets":[0,1,0,0,0,0,0,0,0]},{"route":"/v1/run-tickets","method":"POST","status":409,"requests":1,"request_wire_bytes":76,"response_wire_bytes":92,"duration_ms":8.83,"max_ms":8.83,"latency_buckets":[1,0,0,0,0,0,0,0,0]}],"level":"info"}
+---------------------------- Captured log teardown ----------------------------
+INFO     bmt.requests:http_costs.py:59 {"event":"http_cost_summary","interval_seconds":0.823,"body_bytes_after_compression":true,"latency_limits_ms":[10,25,50,100,250,500,1000,5000],"rows":[{"route":"/v1/run-tickets","method":"POST","status":201,"requests":1,"request_wire_bytes":76,"response_wire_bytes":683,"duration_ms":124.73,"max_ms":124.73,"latency_buckets":[0,0,0,0,1,0,0,0,0]},{"route":"/v1/runs","method":"POST","status":202,"requests":1,"request_wire_bytes":299,"response_wire_bytes":333,"duration_ms":24.63,"max_ms":24.63,"latency_buckets":[0,1,0,0,0,0,0,0,0]},{"route":"/v1/run-tickets","method":"POST","status":409,"requests":1,"request_wire_bytes":76,"response_wire_bytes":92,"duration_ms":8.83,"max_ms":8.83,"latency_buckets":[1,0,0,0,0,0,0,0,0]}]}
+_ test_car_update_preserves_original_ticket_board_pb_and_worker_execution[sqlite-True-kart] _
+
+domain = namespace(app=<fastapi.applications.FastAPI object at 0x000001F1527F4AD0>, client=<starlette.testclient.TestClient obj...7b72', 'Bob': 'c27a2271-bb22-4abc-827a-5043287ef7ea', 'Carol': 'fbfe461e-f54a-417c-abcc-87cbb1f762f0'}, postgres=False)
+vehicle = 'kart', rollback = True
+
+    @pytest.mark.parametrize("vehicle",["compact","pickup","classic","formula","kart","forklift","electric"])
+    @pytest.mark.parametrize("rollback",[False,True])
+    def test_car_update_preserves_original_ticket_board_pb_and_worker_execution(domain, vehicle, rollback):
+        old, current = builds()
+        if rollback:
+            old, current = current, old
+        domain.app.state.verifier = VersionedVerifier(old)
+        version = seed(domain,1)[0]
+        first = issue(domain,version,vehicle)
+        assert first.status_code == 201, first.text
+        first = first.json()
+        queued = submit(domain,first,"Alice")
+        domain.app.state.verifier.build = current
+        reply = issue(domain,version,vehicle)
+        if vehicle == "electric":
+            assert reply.status_code == 409
+            assert not process_one(domain.app)
+            with domain.factory() as db:
+                run = db.get(Run,queued["run_id"])
+                assert run.status == "queued" and run.attempts == 0
+            # The actual old cohort can still finish its own recording.
+            domain.app.state.verifier.build = old
+            assert process_one(domain.app)
+            return
+>       assert reply.status_code == 201, reply.text
+E       AssertionError: {"detail":"This version requires a different verifier build; upload and test a new version"}
+E       assert 409 == 201
+E        +  where 409 = <Response [409 Conflict]>.status_code
+
+backend\tests\test_car_compatibility.py:75: AssertionError
+---------------------------- Captured stderr call -----------------------------
+{"event":"http_request","request_id":"090905a8-bb2b-4257-b76d-53951e5db5d5","method":"POST","route":"/v1/run-tickets","status":409,"duration_ms":8.45,"request_wire_bytes":73,"request_decoded_bytes":73,"response_wire_bytes":92,"success_sample_per_mille":10,"level":"info"}
+------------------------------ Captured log call ------------------------------
+INFO     bmt.requests:http_costs.py:41 {"event":"http_request","request_id":"090905a8-bb2b-4257-b76d-53951e5db5d5","method":"POST","route":"/v1/run-tickets","status":409,"duration_ms":8.45,"request_wire_bytes":73,"request_decoded_bytes":73,"response_wire_bytes":92,"success_sample_per_mille":10}
+-------------------------- Captured stderr teardown ---------------------------
+{"event":"http_cost_summary","interval_seconds":1.035,"body_bytes_after_compression":true,"latency_limits_ms":[10,25,50,100,250,500,1000,5000],"rows":[{"route":"/v1/run-tickets","method":"POST","status":201,"requests":1,"request_wire_bytes":73,"response_wire_bytes":680,"duration_ms":150.79,"max_ms":150.79,"latency_buckets":[0,0,0,0,1,0,0,0,0]},{"route":"/v1/runs","method":"POST","status":202,"requests":1,"request_wire_bytes":299,"response_wire_bytes":333,"duration_ms":24.38,"max_ms":24.38,"latency_buckets":[0,1,0,0,0,0,0,0,0]},{"route":"/v1/run-tickets","method":"POST","status":409,"requests":1,"request_wire_bytes":73,"response_wire_bytes":92,"duration_ms":8.45,"max_ms":8.45,"latency_buckets":[1,0,0,0,0,0,0,0,0]}],"level":"info"}
+---------------------------- Captured log teardown ----------------------------
+INFO     bmt.requests:http_costs.py:59 {"event":"http_cost_summary","interval_seconds":1.035,"body_bytes_after_compression":true,"latency_limits_ms":[10,25,50,100,250,500,1000,5000],"rows":[{"route":"/v1/run-tickets","method":"POST","status":201,"requests":1,"request_wire_bytes":73,"response_wire_bytes":680,"duration_ms":150.79,"max_ms":150.79,"latency_buckets":[0,0,0,0,1,0,0,0,0]},{"route":"/v1/runs","method":"POST","status":202,"requests":1,"request_wire_bytes":299,"response_wire_bytes":333,"duration_ms":24.38,"max_ms":24.38,"latency_buckets":[0,1,0,0,0,0,0,0,0]},{"route":"/v1/run-tickets","method":"POST","status":409,"requests":1,"request_wire_bytes":73,"response_wire_bytes":92,"duration_ms":8.45,"max_ms":8.45,"latency_buckets":[1,0,0,0,0,0,0,0,0]}]}
+_ test_car_update_preserves_original_ticket_board_pb_and_worker_execution[sqlite-True-forklift] _
+
+domain = namespace(app=<fastapi.applications.FastAPI object at 0x000001F152ADC6E0>, client=<starlette.testclient.TestClient obj...d4da', 'Bob': '4fc17066-13a6-41fc-9fd3-7f44abfc476f', 'Carol': '5e86644a-c6b6-48fc-ad7b-169728b55022'}, postgres=False)
+vehicle = 'forklift', rollback = True
+
+    @pytest.mark.parametrize("vehicle",["compact","pickup","classic","formula","kart","forklift","electric"])
+    @pytest.mark.parametrize("rollback",[False,True])
+    def test_car_update_preserves_original_ticket_board_pb_and_worker_execution(domain, vehicle, rollback):
+        old, current = builds()
+        if rollback:
+            old, current = current, old
+        domain.app.state.verifier = VersionedVerifier(old)
+        version = seed(domain,1)[0]
+        first = issue(domain,version,vehicle)
+        assert first.status_code == 201, first.text
+        first = first.json()
+        queued = submit(domain,first,"Alice")
+        domain.app.state.verifier.build = current
+        reply = issue(domain,version,vehicle)
+        if vehicle == "electric":
+            assert reply.status_code == 409
+            assert not process_one(domain.app)
+            with domain.factory() as db:
+                run = db.get(Run,queued["run_id"])
+                assert run.status == "queued" and run.attempts == 0
+            # The actual old cohort can still finish its own recording.
+            domain.app.state.verifier.build = old
+            assert process_one(domain.app)
+            return
+>       assert reply.status_code == 201, reply.text
+E       AssertionError: {"detail":"This version requires a different verifier build; upload and test a new version"}
+E       assert 409 == 201
+E        +  where 409 = <Response [409 Conflict]>.status_code
+
+backend\tests\test_car_compatibility.py:75: AssertionError
+---------------------------- Captured stderr call -----------------------------
+{"event":"http_request","request_id":"7a2bf99d-464a-4018-a096-9da1281370cf","method":"POST","route":"/v1/run-tickets","status":409,"duration_ms":8.07,"request_wire_bytes":77,"request_decoded_bytes":77,"response_wire_bytes":92,"success_sample_per_mille":10,"level":"info"}
+------------------------------ Captured log call ------------------------------
+INFO     bmt.requests:http_costs.py:41 {"event":"http_request","request_id":"7a2bf99d-464a-4018-a096-9da1281370cf","method":"POST","route":"/v1/run-tickets","status":409,"duration_ms":8.07,"request_wire_bytes":77,"request_decoded_bytes":77,"response_wire_bytes":92,"success_sample_per_mille":10}
+-------------------------- Captured stderr teardown ---------------------------
+{"event":"http_cost_summary","interval_seconds":0.819,"body_bytes_after_compression":true,"latency_limits_ms":[10,25,50,100,250,500,1000,5000],"rows":[{"route":"/v1/run-tickets","method":"POST","status":201,"requests":1,"request_wire_bytes":77,"response_wire_bytes":688,"duration_ms":131.15,"max_ms":131.15,"latency_buckets":[0,0,0,0,1,0,0,0,0]},{"route":"/v1/runs","method":"POST","status":202,"requests":1,"request_wire_bytes":299,"response_wire_bytes":333,"duration_ms":24.64,"max_ms":24.64,"latency_buckets":[0,1,0,0,0,0,0,0,0]},{"route":"/v1/run-tickets","method":"POST","status":409,"requests":1,"request_wire_bytes":77,"response_wire_bytes":92,"duration_ms":8.07,"max_ms":8.07,"latency_buckets":[1,0,0,0,0,0,0,0,0]}],"level":"info"}
+---------------------------- Captured log teardown ----------------------------
+INFO     bmt.requests:http_costs.py:59 {"event":"http_cost_summary","interval_seconds":0.819,"body_bytes_after_compression":true,"latency_limits_ms":[10,25,50,100,250,500,1000,5000],"rows":[{"route":"/v1/run-tickets","method":"POST","status":201,"requests":1,"request_wire_bytes":77,"response_wire_bytes":688,"duration_ms":131.15,"max_ms":131.15,"latency_buckets":[0,0,0,0,1,0,0,0,0]},{"route":"/v1/runs","method":"POST","status":202,"requests":1,"request_wire_bytes":299,"response_wire_bytes":333,"duration_ms":24.64,"max_ms":24.64,"latency_buckets":[0,1,0,0,0,0,0,0,0]},{"route":"/v1/run-tickets","method":"POST","status":409,"requests":1,"request_wire_bytes":77,"response_wire_bytes":92,"duration_ms":8.07,"max_ms":8.07,"latency_buckets":[1,0,0,0,0,0,0,0,0]}]}
+_ test_optional_and_unrelated_car_metadata_does_not_change_compact_contract[sqlite] _
+
+domain = namespace(app=<fastapi.applications.FastAPI object at 0x000001F154F76E40>, client=<starlette.testclient.TestClient obj...cd5e', 'Bob': 'b137f7d7-791a-4e2a-a846-1cc7ba5c81dd', 'Carol': '87975db0-9bf0-4a9b-86c1-24ca2587571a'}, postgres=False)
+
+    def test_optional_and_unrelated_car_metadata_does_not_change_compact_contract(domain):
+        old, current = builds()
+        domain.app.state.verifier = VersionedVerifier(current)
+        version = seed(domain,1)[0]
+        first = issue(domain,version).json()
+        metadata = deepcopy(current)
+        metadata["vehicles"]["compact"]["future_optional_metadata"] = "ignored"
+        metadata["vehicles"]["new-car"] = {"handling_version":"new-1","config_hash":"new"}
+        metadata["vehicles"]["electric"] = old["vehicles"]["electric"]
+        domain.app.state.verifier.build = metadata
+>       assert plan_contract(current,"compact") == plan_contract(metadata,"compact")
+E       AssertionError: assert '11e73772d904...3117395c2440a' == '8cddbc870ad5...26b6a92109791'
+E         
+E         - 8cddbc870ad550ea80b32135b951f5540d68885f709f6a11adb26b6a92109791
+E         + 11e73772d90483c74e3d0e36586f91c5f73943f157b3abde6d53117395c2440a
+
+backend\tests\test_car_compatibility.py:110: AssertionError
+-------------------------- Captured stderr teardown ---------------------------
+{"event":"http_cost_summary","interval_seconds":0.813,"body_bytes_after_compression":true,"latency_limits_ms":[10,25,50,100,250,500,1000,5000],"rows":[{"route":"/v1/run-tickets","method":"POST","status":201,"requests":1,"request_wire_bytes":76,"response_wire_bytes":705,"duration_ms":119.73,"max_ms":119.73,"latency_buckets":[0,0,0,0,1,0,0,0,0]}],"level":"info"}
+---------------------------- Captured log teardown ----------------------------
+INFO     bmt.requests:http_costs.py:59 {"event":"http_cost_summary","interval_seconds":0.813,"body_bytes_after_compression":true,"latency_limits_ms":[10,25,50,100,250,500,1000,5000],"rows":[{"route":"/v1/run-tickets","method":"POST","status":201,"requests":1,"request_wire_bytes":76,"response_wire_bytes":705,"duration_ms":119.73,"max_ms":119.73,"latency_buckets":[0,0,0,0,1,0,0,0,0]}]}
+_ test_existing_public_challenge_remains_discoverable_joinable_and_verifiable[sqlite] _
+
+domain = namespace(app=<fastapi.applications.FastAPI object at 0x000001F158A52660>, client=<starlette.testclient.TestClient obj...838f', 'Bob': 'e590b858-8c3c-4e13-8092-e0573a5219cf', 'Carol': '68acd925-a185-4499-883c-544d91ce7a4e'}, postgres=False)
+
+    def test_existing_public_challenge_remains_discoverable_joinable_and_verifiable(domain):
+        old, current = builds()
+        domain.app.state.verifier = VersionedVerifier(old)
+        version = seed(domain,1)[0]
+        first = issue(domain,version).json()
+        source = submit(domain,first,"Alice")
+        assert process_one(domain.app)
+        created = domain.client.post("/v1/challenges",json={"version_id":version,"vehicle_id":"compact",
+            "mode":"group","visibility":"public","source_run_id":source["run_id"]},headers=headers(domain,"Alice"))
+        assert created.status_code == 201, created.text
+        challenge = created.json()
+        domain.app.state.verifier.build = current
+        discovered = domain.client.get("/v1/challenges?folder=discover",headers=headers(domain,"Bob"))
+        assert discovered.status_code == 200, discovered.text
+>       assert [row["id"] for row in discovered.json()["items"]] == [challenge["id"]]
+E       AssertionError: assert [] == ['9048abb5-18...4f8a36f76bdc']
+E         
+E         Right contains one more item: '9048abb5-18b7-405f-8d76-4f8a36f76bdc'
+E         Use -v to get more diff
+
+backend\tests\test_car_compatibility.py:152: AssertionError
+---------------------------- Captured stderr call -----------------------------
+{"event":"verification_complete","level":"info","run_id":"850ddb73-5084-4757-b57a-c791cef68eeb","time_ticks":100,"worker_id":"6be53c53-2e24-4773-a328-222a069c7262","verification_seconds":0.052,"verification_compute_ms":null,"verification_method":"canonical-replay","queue_wait_seconds":0}
+------------------------------ Captured log call ------------------------------
+INFO     bmt.worker:worker.py:352 verification_complete
+-------------------------- Captured stderr teardown ---------------------------
+{"event":"http_cost_summary","interval_seconds":1.305,"body_bytes_after_compression":true,"latency_limits_ms":[10,25,50,100,250,500,1000,5000],"rows":[{"route":"/v1/run-tickets","method":"POST","status":201,"requests":1,"request_wire_bytes":76,"response_wire_bytes":705,"duration_ms":166.3,"max_ms":166.3,"latency_buckets":[0,0,0,0,1,0,0,0,0]},{"route":"/v1/runs","method":"POST","status":202,"requests":1,"request_wire_bytes":299,"response_wire_bytes":333,"duration_ms":42.33,"max_ms":42.33,"latency_buckets":[0,0,1,0,0,0,0,0,0]},{"route":"/v1/challenges","method":"POST","status":201,"requests":1,"request_wire_bytes":168,"response_wire_bytes":1414,"duration_ms":65.69,"max_ms":65.69,"latency_buckets":[0,0,0,1,0,0,0,0,0]},{"route":"/v1/challenges","method":"GET","status":200,"requests":1,"request_wire_bytes":0,"response_wire_bytes":31,"duration_ms":18.36,"max_ms":18.36,"latency_buckets":[0,1,0,0,0,0,0,0,0]}],"level":"info"}
+---------------------------- Captured log teardown ----------------------------
+INFO     bmt.requests:http_costs.py:59 {"event":"http_cost_summary","interval_seconds":1.305,"body_bytes_after_compression":true,"latency_limits_ms":[10,25,50,100,250,500,1000,5000],"rows":[{"route":"/v1/run-tickets","method":"POST","status":201,"requests":1,"request_wire_bytes":76,"response_wire_bytes":705,"duration_ms":166.3,"max_ms":166.3,"latency_buckets":[0,0,0,0,1,0,0,0,0]},{"route":"/v1/runs","method":"POST","status":202,"requests":1,"request_wire_bytes":299,"response_wire_bytes":333,"duration_ms":42.33,"max_ms":42.33,"latency_buckets":[0,0,1,0,0,0,0,0,0]},{"route":"/v1/challenges","method":"POST","status":201,"requests":1,"request_wire_bytes":168,"response_wire_bytes":1414,"duration_ms":65.69,"max_ms":65.69,"latency_buckets":[0,0,0,1,0,0,0,0,0]},{"route":"/v1/challenges","method":"GET","status":200,"requests":1,"request_wire_bytes":0,"response_wire_bytes":31,"duration_ms":18.36,"max_ms":18.36,"latency_buckets":[0,1,0,0,0,0,0,0,0]}]}
+_ test_weekly_membership_lineup_and_peer_group_survive_electric_only_release[sqlite-False] _
+
+domain = namespace(app=<fastapi.applications.FastAPI object at 0x000001F15900EF90>, client=<starlette.testclient.TestClient obj...4cf3', 'Bob': '55574948-22a5-4701-9671-ffd018004453', 'Carol': 'ac5bf4a3-f762-4601-b716-2a14f68e2df8'}, postgres=False)
+world_circuit = False
+
+    @pytest.mark.parametrize("world_circuit",[False,True])
+    def test_weekly_membership_lineup_and_peer_group_survive_electric_only_release(domain, world_circuit):
+        old, current = builds()
+        domain.app.state.verifier = VersionedVerifier(old)
+        if world_circuit:
+            domain.app.state.settings = replace(domain.app.state.settings,world_ranking_launch_week=week_window(now())[0])
+        seed(domain,5)
+        maintain(domain.app)
+        first = join(domain,"Alice")
+        group_id = first["group_id"]
+        with domain.factory() as db:
+            group = db.get(RivalryGroup,group_id)
+            original_tracks, original_key = deepcopy(group.tracks), group.contract_key
+            assert bool(group.world_circuit_id) == world_circuit
+        domain.app.state.verifier.build = current
+        shown = domain.client.get("/v1/rivalry/current?vehicle_id=compact",headers=headers(domain,"Alice"))
+>       assert shown.status_code == 200 and shown.json()["group_id"] == group_id, shown.text
+                                            ^^^^^^^^^^^^^^^^^^^^^^^^
+E       KeyError: 'group_id'
+
+backend\tests\test_car_compatibility.py:180: KeyError
+-------------------------- Captured stderr teardown ---------------------------
+{"event":"http_cost_summary","interval_seconds":1.077,"body_bytes_after_compression":true,"latency_limits_ms":[10,25,50,100,250,500,1000,5000],"rows":[{"route":"/v1/rivalry/join","method":"POST","status":200,"requests":1,"request_wire_bytes":24,"response_wire_bytes":1402,"duration_ms":232.76,"max_ms":232.76,"latency_buckets":[0,0,0,0,1,0,0,0,0]},{"route":"/v1/rivalry/current","method":"GET","status":200,"requests":1,"request_wire_bytes":0,"response_wire_bytes":198,"duration_ms":19.61,"max_ms":19.61,"latency_buckets":[0,1,0,0,0,0,0,0,0]}],"level":"info"}
+---------------------------- Captured log teardown ----------------------------
+INFO     bmt.requests:http_costs.py:59 {"event":"http_cost_summary","interval_seconds":1.077,"body_bytes_after_compression":true,"latency_limits_ms":[10,25,50,100,250,500,1000,5000],"rows":[{"route":"/v1/rivalry/join","method":"POST","status":200,"requests":1,"request_wire_bytes":24,"response_wire_bytes":1402,"duration_ms":232.76,"max_ms":232.76,"latency_buckets":[0,0,0,0,1,0,0,0,0]},{"route":"/v1/rivalry/current","method":"GET","status":200,"requests":1,"request_wire_bytes":0,"response_wire_bytes":198,"duration_ms":19.61,"max_ms":19.61,"latency_buckets":[0,1,0,0,0,0,0,0,0]}]}
+_ test_weekly_membership_lineup_and_peer_group_survive_electric_only_release[sqlite-True] _
+
+domain = namespace(app=<fastapi.applications.FastAPI object at 0x000001F159CA0AD0>, client=<starlette.testclient.TestClient obj...a7b7', 'Bob': 'f8e59bdd-9c1a-49b0-8b85-95f1a63c50c9', 'Carol': 'fbf2b751-d1a9-4694-bb34-9aa33fe98210'}, postgres=False)
+world_circuit = True
+
+    @pytest.mark.parametrize("world_circuit",[False,True])
+    def test_weekly_membership_lineup_and_peer_group_survive_electric_only_release(domain, world_circuit):
+        old, current = builds()
+        domain.app.state.verifier = VersionedVerifier(old)
+        if world_circuit:
+            domain.app.state.settings = replace(domain.app.state.settings,world_ranking_launch_week=week_window(now())[0])
+        seed(domain,5)
+        maintain(domain.app)
+        first = join(domain,"Alice")
+        group_id = first["group_id"]
+        with domain.factory() as db:
+            group = db.get(RivalryGroup,group_id)
+            original_tracks, original_key = deepcopy(group.tracks), group.contract_key
+            assert bool(group.world_circuit_id) == world_circuit
+        domain.app.state.verifier.build = current
+        shown = domain.client.get("/v1/rivalry/current?vehicle_id=compact",headers=headers(domain,"Alice"))
+>       assert shown.status_code == 200 and shown.json()["group_id"] == group_id, shown.text
+                                            ^^^^^^^^^^^^^^^^^^^^^^^^
+E       KeyError: 'group_id'
+
+backend\tests\test_car_compatibility.py:180: KeyError
+-------------------------- Captured stderr teardown ---------------------------
+{"event":"http_cost_summary","interval_seconds":1.578,"body_bytes_after_compression":true,"latency_limits_ms":[10,25,50,100,250,500,1000,5000],"rows":[{"route":"/v1/rivalry/join","method":"POST","status":200,"requests":1,"request_wire_bytes":24,"response_wire_bytes":1451,"duration_ms":221.87,"max_ms":221.87,"latency_buckets":[0,0,0,0,1,0,0,0,0]},{"route":"/v1/rivalry/current","method":"GET","status":200,"requests":1,"request_wire_bytes":0,"response_wire_bytes":198,"duration_ms":16.77,"max_ms":16.77,"latency_buckets":[0,1,0,0,0,0,0,0,0]}],"level":"info"}
+---------------------------- Captured log teardown ----------------------------
+INFO     bmt.requests:http_costs.py:59 {"event":"http_cost_summary","interval_seconds":1.578,"body_bytes_after_compression":true,"latency_limits_ms":[10,25,50,100,250,500,1000,5000],"rows":[{"route":"/v1/rivalry/join","method":"POST","status":200,"requests":1,"request_wire_bytes":24,"response_wire_bytes":1451,"duration_ms":221.87,"max_ms":221.87,"latency_buckets":[0,0,0,0,1,0,0,0,0]},{"route":"/v1/rivalry/current","method":"GET","status":200,"requests":1,"request_wire_bytes":0,"response_wire_bytes":198,"duration_ms":16.77,"max_ms":16.77,"latency_buckets":[0,1,0,0,0,0,0,0,0]}]}
+___ test_saved_creator_lap_uses_selected_car_equivalence_without_relabeling ___
+
+    def test_saved_creator_lap_uses_selected_car_equivalence_without_relabeling():
+        old, current = builds()
+        old["track_content_hash"] = current["track_content_hash"] = "same-track"
+        for car in current["vehicles"]:
+            contract = {**old,"config_hash":old["vehicles"][car]["config_hash"]}
+            if car == "electric":
+                with pytest.raises(PublicationFailure):
+                    _check_contract(contract,current,car)
+            else:
+>               _check_contract(contract,current,car)
+
+backend\tests\test_car_compatibility.py:203: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+
+contract = {'compiler_version': 'creator-compiler-27', 'engine_version': '4.7.2.stable.official.ed1daf0bf', 'laps': 5, 'max_frames': 216000, ...}
+manifest = {'compiler_version': 'creator-compiler-27', 'engine_version': '4.7.2.stable.official.ed1daf0bf', 'laps': 5, 'max_frames': 216000, ...}
+vehicle = 'classic'
+
+    def _check_contract(contract, manifest, vehicle):
+        expected = {**manifest, "config_hash": manifest.get("vehicles", {}).get(vehicle, {}).get("config_hash")}
+        if (manifest.get("laps") != 5 or manifest.get("tick_rate") != 120
+                or vehicle not in manifest.get("vehicles", {})
+                or any(contract.get(field) != expected.get(field) for field in CONTRACT_FIELDS)):
+>           raise PublicationFailure("build_mismatch", "The saved creator lap requires its original track and game build. Its local recording is preserved.")
+E           bmt_backend.publications.PublicationFailure: The saved creator lap requires its original track and game build. Its local recording is preserved.
+
+build\compatibility-audit\task-start-v1\bmt_backend\publications.py:260: PublicationFailure
+============================== warnings summary ===============================
+.tools\backend-secure-venv\Lib\site-packages\fastapi\testclient.py:1
+  C:\Codes\Godot\Beat my track\.tools\backend-secure-venv\Lib\site-packages\fastapi\testclient.py:1: StarletteDeprecationWarning: Using `httpx` with `starlette.testclient` is deprecated; install `httpx2` instead.
+    from starlette.testclient import TestClient as TestClient  # noqa
+
+tests/test_car_compatibility.py: 29 warnings
+  C:\Users\ville\AppData\Local\Google\Cloud SDK\google-cloud-sdk\platform\bundledpython\Lib\contextlib.py:148: SAWarning: Skipped unsupported reflection of expression-based index ix_studio_player_name
+    next(self.gen)
+
+tests/test_car_compatibility.py: 29 warnings
+  C:\Users\ville\AppData\Local\Google\Cloud SDK\google-cloud-sdk\platform\bundledpython\Lib\contextlib.py:148: SAWarning: Skipped unsupported reflection of expression-based index ix_studio_published_rating
+    next(self.gen)
+
+tests/test_car_compatibility.py: 29 warnings
+  C:\Users\ville\AppData\Local\Google\Cloud SDK\google-cloud-sdk\platform\bundledpython\Lib\contextlib.py:148: SAWarning: Skipped unsupported reflection of expression-based index ix_studio_published_name
+    next(self.gen)
+
+tests/test_car_compatibility.py: 29 warnings
+  C:\Users\ville\AppData\Local\Google\Cloud SDK\google-cloud-sdk\platform\bundledpython\Lib\contextlib.py:148: SAWarning: Skipped unsupported reflection of expression-based index ix_discovery_names
+    next(self.gen)
+
+tests/test_car_compatibility.py: 29 warnings
+  C:\Users\ville\AppData\Local\Google\Cloud SDK\google-cloud-sdk\platform\bundledpython\Lib\contextlib.py:148: SAWarning: Skipped unsupported reflection of expression-based index ix_compatible_versions
+    next(self.gen)
+
+-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
+=========================== short test summary info ===========================
+FAILED backend\tests\test_car_compatibility.py::test_car_update_preserves_original_ticket_board_pb_and_worker_execution[sqlite-False-compact]
+FAILED backend\tests\test_car_compatibility.py::test_car_update_preserves_original_ticket_board_pb_and_worker_execution[sqlite-False-pickup]
+FAILED backend\tests\test_car_compatibility.py::test_car_update_preserves_original_ticket_board_pb_and_worker_execution[sqlite-False-classic]
+FAILED backend\tests\test_car_compatibility.py::test_car_update_preserves_original_ticket_board_pb_and_worker_execution[sqlite-False-formula]
+FAILED backend\tests\test_car_compatibility.py::test_car_update_preserves_original_ticket_board_pb_and_worker_execution[sqlite-False-kart]
+FAILED backend\tests\test_car_compatibility.py::test_car_update_preserves_original_ticket_board_pb_and_worker_execution[sqlite-False-forklift]
+FAILED backend\tests\test_car_compatibility.py::test_car_update_preserves_original_ticket_board_pb_and_worker_execution[sqlite-True-compact]
+FAILED backend\tests\test_car_compatibility.py::test_car_update_preserves_original_ticket_board_pb_and_worker_execution[sqlite-True-pickup]
+FAILED backend\tests\test_car_compatibility.py::test_car_update_preserves_original_ticket_board_pb_and_worker_execution[sqlite-True-classic]
+FAILED backend\tests\test_car_compatibility.py::test_car_update_preserves_original_ticket_board_pb_and_worker_execution[sqlite-True-formula]
+FAILED backend\tests\test_car_compatibility.py::test_car_update_preserves_original_ticket_board_pb_and_worker_execution[sqlite-True-kart]
+FAILED backend\tests\test_car_compatibility.py::test_car_update_preserves_original_ticket_board_pb_and_worker_execution[sqlite-True-forklift]
+FAILED backend\tests\test_car_compatibility.py::test_optional_and_unrelated_car_metadata_does_not_change_compact_contract[sqlite]
+FAILED backend\tests\test_car_compatibility.py::test_existing_public_challenge_remains_discoverable_joinable_and_verifiable[sqlite]
+FAILED backend\tests\test_car_compatibility.py::test_weekly_membership_lineup_and_peer_group_survive_electric_only_release[sqlite-False]
+FAILED backend\tests\test_car_compatibility.py::test_weekly_membership_lineup_and_peer_group_survive_electric_only_release[sqlite-True]
+FAILED backend\tests\test_car_compatibility.py::test_saved_creator_lap_uses_selected_car_equivalence_without_relabeling
+17 failed, 13 passed, 29 deselected, 146 warnings in 32.05s

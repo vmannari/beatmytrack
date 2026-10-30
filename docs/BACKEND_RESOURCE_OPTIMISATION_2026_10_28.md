@@ -1,7 +1,7 @@
 # Local artificial races and backend resource optimisation — 28 October 2026
 
 <!-- BRO-DELIVERY-STATUS -->
-**Status: implemented, tested and staged. Live promotion requires explicit approval after automatic approval review rejected the rollout. Normal traffic, the worker and seven job images remain on their previous versions.**
+Deployed to API, private Studio, the worker and seven jobs on immutable `sha256:225feb3f4d79075c1ad37579de3e1568eb7500fbd5edbb0857d4ca037f4d82b2`.
 <!-- /BRO-DELIVERY-STATUS -->
 
 Artificial races run in explicit, bounded local passes. The cloud worker verifies
@@ -159,3 +159,37 @@ separate unassigned SQL investigation. This task does not claim to fix them.
 No owner game/local backend process restart, physical-device query/test, APK,
 real sign-in/purchase, owner-save edit, main-index staging, commit or merge.
 Owner workflow acceptance and sustained live load/cost calibration remain.
+
+<!-- BRO-LIVE-RESULTS -->
+## Approved live rollout
+
+The owner's explicit approval follows the initial automatic promotion rejection.
+The approved immutable image is `225feb3f4d79`; normal traffic uses API
+`bmt-stg-e7a444ab-api-00122-vom` and private Studio
+`bmt-stg-e7a444ab-studio-00021-dol`. Worker
+`bmt-stg-e7a444ab-worker-00043-ttz` has one matching active instance; all seven original jobs use the
+same image. Resources, scaling, schedules, IAM, secrets, schema and canonical
+contracts pass the image-only comparison. Both owned read-only probe jobs,
+canary tags and the local rollout lock are removed. Normal HTTP/private gates
+and the local 8182 proxy pass; no owner staff HTTP/MFA session is used.
+
+The early new-revision CPU samples after the initial two minutes range from
+18.99–20.78% nominal allocation
+(4 samples). The latest CPU sample is **20.78%** at
+28 October 2026 17:55:00 EET. Memory is **319.93 / 768 MiB**, leaving
+**448.07 MiB**, at 28 October 2026 17:54:00 EET.
+The read-only health probe finds **8 / 40
+SQL connections**, zero queued work and all **16 discovery partitions ready**.
+The complete bounded new-revision log scan observes zero artificial-generation
+starts. These are dated early observations, not a sustained-load or resized-bill
+claim. CPU/memory peak alerts in Studio deliberately retain the earlier high
+one-hour history even though current utilization has recovered.
+
+The actual local launcher confirms the deployed pinned image and lists the
+existing artificial rivalry fields through the authenticated read-only route;
+no live race is started. One initial health-probe collection encountered normal
+Cloud Logging ingestion delay; collecting the already successful execution with
+a bounded retry resolved it without rerunning the probe. The initial checkpoint
+also reconciles the new PowerShell file's declared CRLF attribute before its
+exact forward/reverse byte checks.
+<!-- /BRO-LIVE-RESULTS -->

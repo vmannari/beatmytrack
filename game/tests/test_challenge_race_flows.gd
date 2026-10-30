@@ -151,6 +151,21 @@ func run() -> void:
 	snapshot.entry = snapshot.stages[0].entry
 	adapter.selected = snapshot.duplicate(true)
 	app._open_challenges(true)
+	# Hold the shared worker so a stage change can occur while compilation waits.
+	app.online.client._background_busy = true
+	var blocked_start: Dictionary = {"finished":false}
+	start_late(blocked_start)
+	while transport.tickets.is_empty(): await process_frame
+	await settle()
+	check(app.cloud_starting and not blocked_start.finished and app.game == null,"challenge preparation yields while the background worker is occupied")
+	adapter.selected_stage = 1
+	app.online.client._background_busy = false
+	while not blocked_start.finished: await process_frame
+	check(app.game == null and not app.cloud_starting and transport.ghosts.is_empty(),"changing stage during background preparation discards the stale race")
+	adapter.selected = snapshot.duplicate(true)
+	adapter.selected_stage = 0
+	transport.budgets = [3,3,3]
+	transport.tickets.clear()
 	await app._start_challenge_race()
 	freeze()
 	check(app.game != null and app.challenge_racing and app.game.native_track.content_hash == tracks[0].content_hash,"first 3x3 start uses track one and a challenge ticket")

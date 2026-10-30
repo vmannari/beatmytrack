@@ -1,0 +1,203 @@
+--- a/game/ui/garage_page.gd
++++ b/game/ui/garage_page.gd
+@@ -673,9 +673,10 @@
+ 		var choice: Button = WashTool.make(tool,_select_wash_tool.bind(tool))
+ 		choice.button_group = wash_group
+ 		choice.sync_selection(showroom.wash_tool == tool)
+-		choice.custom_minimum_size = Vector2(144,176)
+ 		wash_tools.add_child(choice)
++	wash_tools.add_child(WashTool.make("super",_super_wash))
+ 	preview.resized.connect(_layout_wash_tools)
++	_wash_status_panel.resized.connect(_layout_wash_tools)
+ 	_wash_status_panel.position = Vector2(24,72)
+ 	_wash_status_panel.size = Vector2(320,44)
+ 	var status_row := HBoxContainer.new()
+@@ -703,14 +704,16 @@
+ 	view_hint.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+ 	view_hint.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+ 	row.add_child(view_hint)
++	_layout_wash_tools()
+ 
+ func _layout_wash_tools() -> void:
+ 	var dock: HBoxContainer = preview.get_node("GarageWashTools")
+ 	var compact: bool = preview.size.y < 410 or preview.size.x < 900
+ 	for choice: Button in dock.get_children():
+-		choice.custom_minimum_size = Vector2(112,136) if compact else Vector2(144,176)
+-	dock.size = dock.get_combined_minimum_size()
+-	dock.position = Vector2(24,124)
++		choice.custom_minimum_size = Vector2(0,136 if compact else 176)
++		choice.size_flags_horizontal = Control.SIZE_EXPAND_FILL
++	dock.size = Vector2(_wash_status_panel.size.x,dock.get_combined_minimum_size().y)
++	dock.position = Vector2(_wash_status_panel.position.x,_wash_status_panel.position.y+_wash_status_panel.size.y+8)
+ 
+ func _update_wash_status() -> void:
+ 	_wash_status_panel.visible = section == "care"
+@@ -1051,10 +1054,6 @@
+ 	if section == "customise" and not _customisation_locked:
+ 		_build_customise()
+ 	elif section == "care":
+-		var super_wash := MenuStyle.button("Super Wash", _super_wash)
+-		super_wash.name = "GarageSuperWash"
+-		super_wash.custom_minimum_size = Vector2(160,60)
+-		actions.add_child(super_wash)
+ 		wash_button = MenuStyle.button("Wash", _toggle_wash, true)
+ 		wash_button.name = "GarageWash"
+ 		wash_button.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+@@ -1701,7 +1700,7 @@
+ 	if section != "care": return
+ 	showroom.set_wash_tool(tool)
+ 	for choice: Button in preview.get_node("GarageWashTools").get_children():
+-		choice.sync_selection(choice.name == ("GarageWashHose" if tool == "hose" else "GarageWashMitt"))
++		if choice.toggle_mode: choice.sync_selection(choice.name == ("GarageWashHose" if tool == "hose" else "GarageWashMitt"))
+ 	if not showroom.wash_mode: _toggle_wash()
+ 	_update_wash_hint()
+ 
+--- a/game/ui/garage_wash_tool.gd
++++ b/game/ui/garage_wash_tool.gd
+@@ -9,16 +9,17 @@
+ 
+ static func make(tool: String, action: Callable) -> Button:
+ 	var tile := preload("res://ui/garage_wash_tool.gd").new()
+-	tile.name = "GarageWashHose" if tool == "hose" else "GarageWashMitt"
+-	tile.tooltip_text = "Hose · Rinse fine dust; wash heavy dirt slowly" if tool == "hose" else "Wash mitt · Scrub stubborn dirt"
+-	tile.accessibility_name = "Hose" if tool == "hose" else "Wash mitt"
+-	tile.toggle_mode = true
++	tile.name = "GarageSuperWash" if tool == "super" else "GarageWashHose" if tool == "hose" else "GarageWashMitt"
++	tile.tooltip_text = "Super Wash" if tool == "super" else "Hose · Rinse fine dust; wash heavy dirt slowly" if tool == "hose" else "Wash mitt · Scrub stubborn dirt"
++	tile.accessibility_name = "Super Wash" if tool == "super" else "Hose" if tool == "hose" else "Wash mitt"
++	tile.toggle_mode = tool != "super"
+ 	tile.mouse_default_cursor_shape = Control.CURSOR_POINTING_HAND
+ 	tile.set_meta("audio_cue","select")
+ 	tile.pressed.connect(action)
+ 	tile.photo = TextureRect.new()
+ 	tile.photo.name = "ToolPicture"
+-	tile.photo.texture = load("res://assets/menu/garage/"+tool+"-v1.png")
++	tile.photo.texture = preload("res://ui/garage_mode_icons.gd").texture("care") if tool == "super" else load("res://assets/menu/garage/"+tool+"-v1.png")
++	if tool == "super": tile.photo.modulate = MenuStyle.ACCENT
+ 	tile.photo.texture_filter = CanvasItem.TEXTURE_FILTER_LINEAR_WITH_MIPMAPS
+ 	tile.photo.expand_mode = TextureRect.EXPAND_IGNORE_SIZE
+ 	tile.photo.stretch_mode = TextureRect.STRETCH_KEEP_ASPECT_CENTERED
+@@ -29,14 +30,15 @@
+ 	tile.photo.offset_right = -14
+ 	tile.photo.offset_top = 10
+ 	tile.photo.offset_bottom = -52
+-	tile.title = MenuStyle.label("Hose" if tool == "hose" else "Wash mitt",22)
++	tile.title = MenuStyle.label("Super Wash" if tool == "super" else "Hose" if tool == "hose" else "Wash mitt",22)
+ 	tile.title.add_theme_font_override("font",MenuStyle.DISPLAY)
+ 	tile.add_child(tile.title)
+ 	tile.title.set_anchors_and_offsets_preset(Control.PRESET_BOTTOM_WIDE)
+ 	tile.title.offset_left = 12
++	tile.title.offset_right = -12
+ 	tile.title.offset_top = -51
+ 	tile.title.offset_bottom = -26
+-	tile.detail = MenuStyle.label("RINSE" if tool == "hose" else "DEEP CLEAN",11,true)
++	tile.detail = MenuStyle.label("" if tool == "super" else "RINSE" if tool == "hose" else "DEEP CLEAN",11,true)
+ 	tile.detail.add_theme_constant_override("outline_size",0)
+ 	tile.add_child(tile.detail)
+ 	tile.detail.set_anchors_and_offsets_preset(Control.PRESET_BOTTOM_WIDE)
+@@ -72,6 +74,12 @@
+ 
+ func _resize_photo() -> void:
+ 	photo.pivot_offset = photo.size*0.5
++	var available: float = maxf(1.0,size.x-title.offset_left+title.offset_right)
++	var font: Font = title.get_theme_font("font")
++	var font_size: int = 22
++	while font_size > 14 and font.get_string_size(GameText.message(title.text),HORIZONTAL_ALIGNMENT_LEFT,-1,font_size).x > available:
++		font_size -= 1
++	title.add_theme_font_size_override("font_size",font_size)
+ 
+ func _hover(active: bool) -> void:
+ 	if _motion != null: _motion.kill()
+--- a/game/tests/test_super_wash.gd
++++ b/game/tests/test_super_wash.gd
+@@ -32,8 +32,27 @@
+ 	await RenderingServer.frame_post_draw
+ 	check(root.get_texture().get_image().save_png(output.path_join(label+".png")) == OK,"capture "+label)
+ 
++func check_wash_layout(page: GaragePage) -> void:
++	var dock: HBoxContainer = page.preview.get_node("GarageWashTools")
++	var status: Rect2 = page._wash_status_panel.get_global_rect()
++	var row: Rect2 = dock.get_global_rect()
++	check(dock.get_child_count() == 3,"three adjacent wash options")
++	check(absf(row.position.x-status.position.x) <= 1.0 and absf(row.end.x-status.end.x) <= 1.0,"wash row shares both cleanliness-label edges")
++	check(row.position.y >= status.end.y,"wash options stay below cleanliness label")
++	check(page.preview.get_global_rect().encloses(row),"wash row fits showroom")
++	check(not page.actions.has_node("GarageSuperWash"),"Super Wash has moved out of bottom actions")
++	var expected: Array[String] = ["GarageWashMitt","GarageWashHose","GarageSuperWash"]
++	for index: int in range(expected.size()):
++		var choice: Button = dock.get_child(index)
++		check(choice.name == expected[index],"wash option order "+str(index))
++		check(absf(choice.size.x-(dock.size.x-20.0)/3.0) <= 1.0,"equal wash option widths")
++		var title: Label = choice.title
++		check(title.get_theme_font("font").get_string_size(GameText.message(title.text),HORIZONTAL_ALIGNMENT_LEFT,-1,title.get_theme_font_size("font_size")).x <= title.size.x+1.0,"wash caption fits "+str(choice.name))
++	check(not dock.get_node("GarageSuperWash").toggle_mode,"instant action is separate from manual-tool selection")
++
+ func run() -> void:
+ 	OS.set_environment("BMT_API_URL","")
++	output = OS.get_environment("BMT_SUPER_WASH_OUTPUT") if OS.has_environment("BMT_SUPER_WASH_OUTPUT") else output
+ 	output = output.path_join(DisplayServer.get_name()+"-"+RenderingServer.get_current_rendering_method())
+ 	DirAccess.make_dir_recursive_absolute(ProjectSettings.globalize_path(output))
+ 	var directory: String = "user://super_wash_"+TrackLibrary.unique_id()
+@@ -62,8 +81,9 @@
+ 		page.open_car(index)
+ 		page._show_section("care")
+ 		await settle()
+-		var button: Button = page.actions.get_node("GarageSuperWash")
+-		check(button.text == "Super Wash" and button.is_visible_in_tree(),id+" exposes Super Wash in Wash")
++		var button: Button = page.preview.get_node("GarageWashTools/GarageSuperWash")
++		check(button.accessibility_name == "Super Wash" and button.is_visible_in_tree(),id+" exposes Super Wash in Wash")
++		check_wash_layout(page)
+ 		check(root.get_visible_rect().encloses(button.get_global_rect()),id+" action fits")
+ 		var paint: Dictionary = page.showroom.livery.duplicate(true)
+ 		var parts: Dictionary = page.showroom.customisation.duplicate(true)
+@@ -87,6 +107,7 @@
+ 		check(page.wash_button.text == "Wash",id+" manual wash can restart")
+ 		check(page._wash_status.text == "Shiny. For now.",id+" immediately displays top cleanliness grade")
+ 		check(not page._workshop_wash_required,id+" immediately permits customisation")
++		check(not button.button_pressed,id+" instant action does not remain selected")
+ 		check(page.showroom.livery == paint and page.showroom.customisation == parts,id+" retains paint and parts")
+ 		check(VehicleCondition.read(records,id) == clean,id+" persists full clean state")
+ 		var after_others: Dictionary = records.settings.vehicle_conditions.duplicate(true)
+@@ -107,6 +128,7 @@
+ 	for dimensions: Vector2i in [Vector2i(960,540),Vector2i(1600,720)]:
+ 		root.size = dimensions
+ 		await settle()
++		check_wash_layout(page)
+ 		for action: Control in page.actions.get_children():
+ 			check(root.get_visible_rect().encloses(action.get_global_rect()),"all wash actions fit "+str(dimensions))
+ 		await capture("clean-"+str(dimensions.x))
+--- /dev/null
++++ b/docs/SUPER_WASH_LAYOUT_2026_10_29.md
+@@ -0,0 +1,32 @@
++# Super Wash beside the manual tools — 2026-10-29
++
++**SWL01:** Super Wash is now the third tile beside Wash mitt and Hose, with the shared Garage droplet/sparkle emblem. It is an immediate action and does not join the manual tools' selection group. Its previous bottom-row button is removed.
++
++**SWL02:** The three tiles have equal widths, share the cleanliness panel's left and right edges, and follow that panel when its width changes. The row sits eight logical pixels below the panel. Captions fit the narrower tiles by reducing their font size when needed. Existing compact/large tile heights remain.
++
++**R01/Q01:** Cleaning, local saving, paint/parts, per-car isolation, future ad status, manual washing and unrelated concurrent work are preserved. The retained Super Wash regression now finds the relocated control and checks exact row alignment, equal widths, caption fit, option order and independent action/selection behaviour alongside its existing cleaning and persistence assertions.
++
++Changed runtime sources: `game/ui/garage_page.gd` and `game/ui/garage_wash_tool.gd`. Updated regression: `game/tests/test_super_wash.gd`. No new message identifiers, images, dependencies or gameplay contracts are introduced. Before sources, logs, captures, hashes and the task-only source checkpoint are in `docs/evidence/super-wash-layout-2026-10-29/`.
++
++Actual results:
++
++| Check | Result |
++| --- | --- |
++| Updated Super Wash, headless | 286 checks, 0 failures |
++| Updated Super Wash, native Compatibility | 300 checks, 0 failures; 14 captures |
++| Updated Super Wash, native desktop Mobile | 300 checks, 0 failures; 14 captures |
++| Existing hose regression, headless | 91 checks, 0 failures |
++
++Native captures cover all six cars and 960×540, 1280×720 and 1600×720 viewports. The Compact capture and narrow layout were visually inspected. The scripts run with isolated workspace-only application-data directories and an empty backend URL. Runtime logs retain the sandbox's Windows certificate-store error; there are no script errors or failing assertions in these runs. The prior task's typed-array problem is absent from the current runs.
++
++Commands from the repository root:
++
++```powershell
++python docs/evidence/super-wash-layout-2026-10-29/run_validation.py
++python docs/evidence/super-wash-layout-2026-10-29/run_validation.py --mode gl_compatibility
++python docs/evidence/super-wash-layout-2026-10-29/run_validation.py --mode mobile
++python docs/evidence/super-wash-layout-2026-10-29/run_validation.py --test test_garage_hose
++git diff --check -- game/ui/garage_page.gd game/ui/garage_wash_tool.gd
++```
++
++Reload/rebuild and owner/device appearance/input acceptance remain. Desktop Mobile is a desktop renderer test, not Android evidence. No device attachment query/test, APK, auth/purchase, live/backend/owner-save mutation, deployment, owner-process restart or main-index staging/commit/merge was performed.

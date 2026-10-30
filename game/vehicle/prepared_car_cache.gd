@@ -17,7 +17,7 @@ static func rest_scene(car: CarVisual) -> Node3D:
 
 static func key_for(car: CarVisual) -> Array:
 	var key: Array = ["prepared-car-2",car.vehicle_id,car.simple_model,car.batch_parts,car.editable_kits,VisualGeometry.optimize_model_geometry]
-	if car.vehicle_id == "compact":
+	if VehicleCustomisation.supported(car.vehicle_id):
 		for category: String in VehicleCustomisation.CATEGORIES: key.append(car.customisation[category])
 	return key
 

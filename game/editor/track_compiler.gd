@@ -81,10 +81,7 @@ static func compile(document: Dictionary, preview_cache: Dictionary = {}, cancel
 	if base != null: extent = base.half_extent
 	var grid := Vector2i(roundi(extent.x * 2.0 / cell_size), roundi(extent.y * 2.0 / cell_size))
 	var cells := PackedInt32Array()
-	cells.resize(grid.x * grid.y)
-	cells.fill(1)
 	var paint_exclusion := PackedByteArray()
-	if base != null: cells = base.cells.duplicate()
 	var terrain_objects: Array = []
 	for object: Dictionary in document.objects:
 		if object.kind in ["dirt","water"]: terrain_objects.append(object)
@@ -93,6 +90,12 @@ static func compile(document: Dictionary, preview_cache: Dictionary = {}, cancel
 		cells = preview_cache.cells.duplicate()
 		paint_exclusion = preview_cache.get("paint_exclusion",PackedByteArray()).duplicate()
 	else:
+		# A raster hit already has complete cells, and a base track supplies its
+		# own grid. Allocate a fresh filled grid only for an uncached blank map.
+		if base != null: cells = base.cells.duplicate()
+		else:
+			cells.resize(grid.x * grid.y)
+			cells.fill(1)
 		var road_mask: PackedInt32Array = cells.duplicate()
 		_stamp_objects(document,cells,grid,extent,cell_size,true)
 		var road_kind: int = 2 if document.layout.get("surface",document.surface) == "dirt" else 0
@@ -111,19 +114,17 @@ static func compile(document: Dictionary, preview_cache: Dictionary = {}, cancel
 	var scenery_cells: PackedInt32Array = cells.duplicate()
 	_stamp_objects(document,cells,grid,extent,cell_size,false)
 	var deck := PackedInt32Array()
-	deck.resize(cells.size())
-	deck.fill(-1)
 	if base != null: deck = base.deck_cells.duplicate()
+	else:
+		deck.resize(cells.size())
+		deck.fill(-1)
 	CreatorBridges.stamp(bridges,cells,deck,grid,extent,cell_size)
 	if _cancelled(cancelled): return null
 	var scenery: Array = CreatorScenery.generate(document,scenery_cells,deck,grid,extent,cell_size)
 	_stamp_objects({"objects":scenery},cells,grid,extent,cell_size,false)
 	# A distant perimeter makes the finite authoring area explicit and keeps
 	# accidental off-course driving recoverable with the ordinary restart.
-	for y: int in range(grid.y):
-		for x: int in range(grid.x):
-			if base == null and (x < 2 or y < 2 or x >= grid.x-2 or y >= grid.y-2):
-				cells[y*grid.x+x] = 4
+	if base == null: _stamp_perimeter(cells,grid)
 	var surfaces: Array = []
 	for y: int in range(grid.y):
 		var start: int = 0
@@ -177,6 +178,22 @@ static func compile(document: Dictionary, preview_cache: Dictionary = {}, cancel
 
 static func document_hash(document: Dictionary, base_hash: String) -> String:
 	return (VERSION+"\n"+base_hash+"\n"+JSON.stringify(JSON.parse_string(JSON.stringify(document)),"",true)).sha256_text()
+
+
+static func _stamp_perimeter(cells: PackedInt32Array, grid: Vector2i) -> void:
+	# Only the two border cells on each side are changed. Avoid walking the
+	# entire grid on every preview compile, including cached raster hits.
+	var top: int = mini(2,grid.y)
+	var bottom: int = maxi(top,grid.y-2)
+	for y: int in range(top):
+		for x: int in range(grid.x): cells[y*grid.x+x] = 4
+	for y: int in range(bottom,grid.y):
+		for x: int in range(grid.x): cells[y*grid.x+x] = 4
+	var left: int = mini(2,grid.x)
+	var right: int = maxi(left,grid.x-2)
+	for y: int in range(top,bottom):
+		for x: int in range(left): cells[y*grid.x+x] = 4
+		for x: int in range(right,grid.x): cells[y*grid.x+x] = 4
 
 
 static func _stamp_objects(document: Dictionary, cells: PackedInt32Array, grid: Vector2i, extent: Vector2, cell_size: float, terrain: bool) -> void:

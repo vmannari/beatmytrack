@@ -1,0 +1,1179 @@
+diff --git a/game/ui/garage_page.gd b/game/ui/garage_page.gd
+--- a/game/ui/garage_page.gd
++++ b/game/ui/garage_page.gd
+@@ -88,6 +88,9 @@
+ var _cosmetic_preview: Dictionary = {}
+ var _preview_serial: int = 0
+ var _preview_hint: Label
++var _compare_parts: Dictionary = {}
++var _compare_button: Button
++var _part_indicator: Control
+ var _part_highlight := preload("res://ui/garage_part_highlight.gd").new()
+ var _customisation_camera := preload("res://ui/garage_customisation_camera.gd").new()
+ var _customise_tab: String = "livery"
+@@ -160,20 +163,13 @@
+ 	_create_showroom()
+ 	preview.resized.connect(func() -> void:
+ 		if section in ["customise","tuning"] and not _customisation_locked: _workbench_focus_pending = true)
+-	var shade := TextureRect.new()
++	var shade := ColorRect.new()
+ 	shade.name = "ShowroomHeaderShade"
++	shade.color = Color(0.025,0.055,0.075,0.30)
+ 	shade.mouse_filter = Control.MOUSE_FILTER_IGNORE
+-	var gradient := Gradient.new()
+-	gradient.colors = PackedColorArray([Color(0.025,0.055,0.075,0.45), Color(0.025,0.055,0.075,0)])
+-	var shading := GradientTexture2D.new()
+-	shading.gradient = gradient
+-	shading.fill_from = Vector2(0,0)
+-	shading.fill_to = Vector2(0,1)
+-	shade.texture = shading
+-	shade.expand_mode = TextureRect.EXPAND_IGNORE_SIZE
+ 	preview.add_child(shade)
+ 	shade.set_anchors_and_offsets_preset(Control.PRESET_TOP_WIDE)
+-	shade.offset_bottom = 80
++	shade.offset_bottom = 72
+ 	heading = MenuStyle.label(VehicleCatalog.title(vehicle_id), 36)
+ 	heading.name = "GarageCarTitle"
+ 	heading.text_overrun_behavior = TextServer.OVERRUN_TRIM_ELLIPSIS
+@@ -191,6 +187,19 @@
+ 	_preview_hint.offset_right = 240
+ 	_preview_hint.offset_bottom = -38
+ 	_build_view_controls()
++	_compare_button = preload("res://ui/garage_compare_button.gd").new()
++	preview.add_child(_compare_button)
++	_compare_button.set_anchors_and_offsets_preset(Control.PRESET_BOTTOM_LEFT)
++	_compare_button.offset_left = 158
++	_compare_button.offset_right = 350
++	_compare_button.offset_top = -58
++	_compare_button.offset_bottom = -10
++	_compare_button.hide()
++	_compare_button.comparing_changed.connect(_set_part_compare)
++	_part_indicator = preload("res://ui/garage_part_indicator.gd").new()
++	preview.add_child(_part_indicator)
++	MenuStyle.fill(_part_indicator)
++	_part_indicator.showroom = showroom
+ 	_workshop_tabs = HBoxContainer.new()
+ 	_workshop_tabs.name = "GarageWorkshopTabs"
+ 	_workshop_tabs.mouse_filter = Control.MOUSE_FILTER_IGNORE
+@@ -238,9 +247,6 @@
+ 	if is_instance_valid(_purchase_dialog) and _purchase_dialog.get_meta("scope","") != economy.scope: _purchase_dialog.hide()
+ 	if is_instance_valid(_retained_livery): _retained_livery.refresh()
+ 	if is_instance_valid(kit_cards) and section == "tuning":
+-		for card: Node in kit_cards.get_children():
+-			var id: String = "kit/compact/"+kit_category+"/"+str(card.name).trim_prefix("KitOption_")
+-			_shop_badge(card,id)
+ 		_refresh_kit_preview()
+ 	if not _cosmetic_preview.is_empty() and str(_cosmetic_preview.scope) != str(economy.scope): _cancel_cosmetic_preview()
+ 
+@@ -843,7 +849,7 @@
+ 		showroom.apply_customisation(parts)
+ 		if is_instance_valid(kit_cards):
+ 			for index: int in range(kit_cards.get_child_count()):
+-				(kit_cards.get_child(index) as CompactKitThumbnail).set_selected(kit_draft[kit_category] == VehicleCustomisation.OPTIONS[kit_category][index][0])
++				(kit_cards.get_child(index) as Button).set_selected(kit_draft[kit_category] == VehicleCustomisation.OPTIONS[kit_category][index][0])
+ 	if photo_changed and section=="tuning": _refresh_kit_preview()
+ 
+ func _show_section(next: String) -> void:
+@@ -851,6 +857,7 @@
+ 	if next == "car": next = "customise"
+ 	if next not in ["cars", "customise", "care", "tuning", "trophies", "records", "news", "achievements"]: return
+ 	_finish_tools(next != section or section != "customise")
++	if is_instance_valid(_compare_button): _compare_button.hide()
+ 	_customisation_locked = next in ["customise","tuning"] and not _clean_for_customisation()
+ 	if _customisation_locked: _customisation_camera.clear()
+ 	if is_instance_valid(_wash_requirement): _wash_requirement.visible = _customisation_locked
+@@ -1078,21 +1085,16 @@
+ 		unavailable.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+ 		workbench.add_child(unavailable)
+ 		return
+-	var reset := MenuStyle.button("",_reset_kits)
+-	reset.name = "GarageResetKits"
+-	reset.icon = MenuIcon.texture("restart")
+-	reset.expand_icon = true
+-	reset.add_theme_constant_override("icon_max_width",21)
+-	reset.custom_minimum_size = Vector2(52,52)
+-	reset.tooltip_text = "Reset kits"
+-	_studio_header(workbench,reset)
++	kit_shelf = preload("res://ui/garage_parts_list.gd").new()
++	workbench.add_child(kit_shelf)
++	kit_shelf.balance.text = GameText.message("%d coins") % economy.balance() if economy!=null and economy.authenticated() else GameText.message("Guest")
+ 	kit_draft = VehicleCustomisation.for_car(records.settings,vehicle_id)
+ 	var categories := GridContainer.new()
+ 	categories.name = "CompactKitCategories"
+ 	categories.columns = 4
+ 	categories.add_theme_constant_override("h_separation",0)
+ 	categories.add_theme_constant_override("v_separation",4)
+-	workbench.add_child(categories)
++	kit_shelf.category_slot.add_child(categories)
+ 	for category: String in VehicleCustomisation.CATEGORIES:
+ 		var tab := MenuStyle.tab(str(VehicleCustomisation.LABELS[category]),_select_kit_category.bind(category),category==kit_category)
+ 		tab.name = "KitCategory_"+category
+@@ -1102,17 +1104,15 @@
+ 		_style_kit_category(tab,category==kit_category)
+ 		categories.add_child(tab)
+ 		kit_categories[category] = tab
+-	kit_shelf = preload("res://ui/garage_cosmetic_shelf.gd").new(true)
+-	workbench.add_child(kit_shelf)
+-	kit_photos = preload("res://ui/garage_part_photos.gd").new()
+-	kit_shelf.add_child(kit_photos)
++	kit_photos = null
+ 	kit_shelf.equip.pressed.connect(_equip_cosmetic_preview)
+-	kit_shelf.cancel.pressed.connect(_cancel_cosmetic_preview)
+ 	kit_scroll = kit_shelf.scroll
+ 	kit_scroll.name = "CompactKitScroll"
+ 	kit_scroll.resized.connect(_reveal_kit_after_resize,CONNECT_DEFERRED)
++	kit_scroll.get_v_scroll_bar().changed.connect(_reveal_kit_after_resize,CONNECT_DEFERRED)
+ 	kit_cards = kit_shelf.cards
+ 	kit_cards.name = "CompactKitCards"
++	kit_cards.resized.connect(_reveal_kit_after_resize,CONNECT_DEFERRED)
+ 	_build_kit_cards()
+ 	_workbench_focus_pending = true
+ 
+@@ -1133,12 +1133,12 @@
+ 	for child: Node in kit_cards.get_children():
+ 		kit_cards.remove_child(child)
+ 		child.queue_free()
+-	for option: Array in VehicleCustomisation.OPTIONS[kit_category]:
+-		var card := CompactKitThumbnail.make(kit_category,option,kit_draft[kit_category]==option[0],_preview_kit.bind(kit_category,str(option[0])),true)
++	for index: int in range(VehicleCustomisation.OPTIONS[kit_category].size()):
++		var option: Array = VehicleCustomisation.OPTIONS[kit_category][index]
++		var card := preload("res://ui/garage_part_option.gd").new()
++		card.setup(index,option,VehicleCustomisation.description(kit_category,str(option[0])),_preview_kit.bind(kit_category,str(option[0])))
+ 		card.focus_entered.connect(_reveal_focused_kit.bind(card.get_instance_id()),CONNECT_DEFERRED)
+ 		kit_cards.add_child(card)
+-		kit_photos.request(card,kit_category,str(option[0]),draft,kit_draft)
+-		_shop_badge(card,"kit/compact/"+kit_category+"/"+str(option[0]))
+ 	_refresh_kit_preview()
+ 	kit_shelf._layout_cards.call_deferred()
+ 	_reveal_selected_kit.call_deferred()
+@@ -1156,7 +1156,7 @@
+ 
+ func _reveal_selected_kit() -> void:
+ 	if section!="tuning" or not is_instance_valid(kit_scroll): return
+-	for card: CompactKitThumbnail in kit_cards.get_children():
++	for card: Control in kit_cards.get_children():
+ 		if card.name=="KitOption_"+str(_cosmetic_preview.get("option",kit_draft[kit_category])):
+ 			kit_scroll.ensure_control_visible(card)
+ 			return
+@@ -1187,7 +1187,7 @@
+ 	showroom.apply_customisation(value)
+ 	_customisation_camera.focus(showroom,"body_kit" if category=="body" else category)
+ 	_condition_presented = showroom.weathering.snapshot()
+-	_part_highlight.show_part(showroom.car,category)
++	# The callout marks the modification without tinting its paint or materials.
+ 	showroom.invalidate_render()
+ 	_refresh_kit_preview()
+ 	_reveal_selected_kit.call_deferred()
+@@ -1196,23 +1196,49 @@
+ 	if section != "tuning" or vehicle_id != "compact" or not is_instance_valid(kit_shelf): return
+ 	var selected: String = str(_cosmetic_preview.get("option",kit_draft[kit_category]))
+ 	for index: int in range(kit_cards.get_child_count()):
+-		var card := kit_cards.get_child(index) as CompactKitThumbnail
++		var card: Button = kit_cards.get_child(index)
+ 		var option: Array = VehicleCustomisation.OPTIONS[kit_category][index]
+-		var pictured: Dictionary = kit_draft.duplicate(true)
+-		pictured[kit_category] = option[0]
+-		if card.get_meta("photo_livery",{})!=draft or card.get_meta("photo_parts",{})!=pictured:
+-			kit_photos.request(card,kit_category,str(option[0]),draft,kit_draft)
+-		card.set_selected(str(option[0]) == selected)
+ 		var item: String = "kit/compact/"+kit_category+"/"+str(option[0])
+-		var equipped: bool = str(option[0]) == str(kit_draft[kit_category])
+-		_shop_badge(card,item)
+-		if is_instance_valid(card.get_node_or_null("CoinPrice")) and equipped: card.get_node("CoinPrice").text = "Equipped"
+-		if str(option[0]) == selected:
+-			var cost: String = "" if economy == null or equipped else "Owned" if economy.owns(item) else GameText.message("%d coins") % economy.price(item)
+-			kit_shelf.show_choice(card.image.texture,str(option[1]),"Equipped" if equipped else "Previewing · "+str(VehicleCustomisation.LABELS[kit_category]),cost,index,kit_cards.get_child_count())
+-	kit_shelf.present_part(showroom,kit_category)
++		var equipped: bool = str(option[0])==str(kit_draft[kit_category])
++		var owned: bool = equipped or economy==null or economy.owns(item)
++		var cost: int = 0 if economy==null else economy.price(item)
++		card.present(str(option[0])==selected,equipped,owned,cost)
++		if str(option[0])==selected: kit_shelf.show_choice(str(option[1]),equipped,owned,cost,index,kit_cards.get_child_count(),kit_category)
++	_compare_button.disabled = _cosmetic_preview.get("kind","")!="kit"
++	_compare_button.visible = true
++	_part_indicator.category = kit_category
++	_part_indicator.queue_redraw()
++	_part_indicator.visible = not _compare_button.disabled and _compare_parts.is_empty()
++	_preview_hint.hide()
++
++func _set_part_compare(active: bool) -> void:
++	if not active:
++		_end_part_compare()
++		return
++	if section!="tuning" or _customisation_locked or _cosmetic_preview.get("kind","")!="kit" or not _compare_parts.is_empty(): return
++	_compare_parts = showroom.customisation.duplicate(true)
++	showroom.apply_customisation(kit_draft)
++	_condition_presented = showroom.weathering.snapshot()
++	_part_highlight.clear()
++	_part_indicator.hide()
++	GameText.bind(_compare_button,"Showing equipped")
++	showroom.invalidate_render()
++
++func _end_part_compare(restore: bool = true) -> void:
++	var previous: Dictionary = _compare_parts
++	_compare_parts = {}
++	if is_instance_valid(_compare_button):
++		_compare_button.stop()
++		GameText.bind(_compare_button,"Hold to compare")
++	if previous.is_empty() or not restore or not is_instance_valid(showroom) or not showroom.is_inside_tree(): return
++	showroom.apply_customisation(previous)
++	_condition_presented = showroom.weathering.snapshot()
++	if is_instance_valid(_part_indicator): _part_indicator.visible = section=="tuning" and _cosmetic_preview.get("kind","")=="kit"
++	showroom.invalidate_render()
+ 
+ func _cancel_cosmetic_preview(refresh: bool = true) -> void:
++	_end_part_compare(false)
++	if is_instance_valid(_part_indicator): _part_indicator.hide()
+ 	_preview_serial += 1
+ 	if is_instance_valid(_preview_hint): _preview_hint.hide()
+ 	_part_highlight.clear()
+@@ -1230,6 +1256,7 @@
+ 		if is_instance_valid(livery_menu): livery_menu.refresh()
+ 
+ func _equip_cosmetic_preview() -> void:
++	_end_part_compare()
+ 	if _cosmetic_preview.is_empty() or not is_visible_in_tree(): return
+ 	if not _require_clean_car(): return
+ 	var value: Dictionary = _cosmetic_preview.duplicate(true)
+@@ -1238,7 +1265,7 @@
+ 	var title: String
+ 	if value.kind == "kit":
+ 		id = "kit/compact/"+str(value.category)+"/"+str(value.option)
+-		title = kit_shelf.title.text
++		title = kit_shelf.selected_title
+ 	else:
+ 		id = "livery/"+str(_preset_value(int(value.index)).pattern)
+ 		title = livery_menu.pattern_shelf.title.text
+@@ -1261,7 +1288,7 @@
+ 	showroom.apply_customisation(kit_draft)
+ 	_condition_presented = showroom.weathering.snapshot()
+ 	for index: int in range(kit_cards.get_child_count()):
+-		(kit_cards.get_child(index) as CompactKitThumbnail).set_selected(kit_draft[kit_category]==VehicleCustomisation.OPTIONS[kit_category][index][0])
++		(kit_cards.get_child(index) as Button).set_selected(kit_draft[kit_category]==VehicleCustomisation.OPTIONS[kit_category][index][0])
+ 	_reveal_selected_kit.call_deferred()
+ 	_refresh_kit_preview()
+ 	if result != OK: save_failed.emit()
+@@ -1457,6 +1484,7 @@
+ func _finish_tools(restore_camera: bool = true) -> void:
+ 	if showroom == null: return
+ 	_cancel_cosmetic_preview(false)
++	if is_instance_valid(_compare_button): _compare_button.hide()
+ 	if restore_camera: _customisation_camera.clear()
+ 	_workbench_focus_pending = false
+ 	if is_instance_valid(records_menu): records_menu.finish()
+@@ -1576,6 +1604,9 @@
+ 		_condition_presented = value.duplicate(true)
+ 		if completed_wash: _wash_achievement_pending = false
+ 
++func _notification(what: int) -> void:
++	if what==NOTIFICATION_APPLICATION_FOCUS_OUT: _end_part_compare()
++
+ func _process(_delta: float) -> void:
+ 	if showroom == null or not is_visible_in_tree(): return
+ 	_present_menu_layout()
+@@ -1585,6 +1616,7 @@
+ 			var focus: String = kit_category if section=="tuning" and vehicle_id=="compact" else _sticker_surface if section=="customise" and _customise_tab=="stickers" else "body"
+ 			if section=="tuning" and vehicle_id=="compact" and focus=="body": focus = "body_kit"
+ 			_customisation_camera.focus(showroom,focus)
++			if section=="tuning" and vehicle_id=="compact": _reveal_kit_after_resize()
+ 			if section=="customise" and _customise_tab=="livery" and is_instance_valid(livery_menu): livery_menu._reveal_pattern()
+ 	var current: Dictionary = VehicleCondition.read(records, vehicle_id)
+ 	if current != _condition_saved:
+diff --git a/game/ui/garage_customisation_camera.gd b/game/ui/garage_customisation_camera.gd
+--- a/game/ui/garage_customisation_camera.gd
++++ b/game/ui/garage_customisation_camera.gd
+@@ -32,8 +32,8 @@
+ 	match category:
+ 		"hood":
+ 			local_target = Vector3(0,1.0,-1.35)
+-			direction = Vector3(1.8,2.5,-3.5)
+-			distance = 3.1
++			direction = Vector3(2.4,3.0,-4)
++			distance = 3.6
+ 		"aero":
+ 			local_target = Vector3(0,1.25,1.7)
+ 			direction = Vector3(3,1.5,3)
+diff --git a/game/ui/garage_environment.gd b/game/ui/garage_environment.gd
+--- a/game/ui/garage_environment.gd
++++ b/game/ui/garage_environment.gd
+@@ -135,7 +135,7 @@
+ 	environment.environment.background_color = Color.TRANSPARENT if transparent else Color("101923")
+ 	environment.environment.ambient_light_source = Environment.AMBIENT_SOURCE_COLOR
+ 	environment.environment.ambient_light_color = Color("b6c5d0")
+-	environment.environment.ambient_light_energy = 0.34
++	environment.environment.ambient_light_energy = 0.36
+ 	if ShowroomStudio.cached_sky == null:
+ 		ShowroomStudio.cached_sky = Sky.new()
+ 		ShowroomStudio.cached_sky.radiance_size = Sky.RADIANCE_SIZE_128
+@@ -147,9 +147,9 @@
+ 	world.add_child(environment)
+ 	var key := DirectionalLight3D.new()
+ 	key.name = "GarageKey"
+-	key.rotation_degrees = Vector3(-65, -38, 0)
++	key.rotation_degrees = Vector3(-58, -38, 0)
+ 	key.light_color = Color("f7e8cf")
+-	key.light_energy = 0.78
++	key.light_energy = 0.90
+ 	key.shadow_enabled = not thumbnail
+ 	key.directional_shadow_mode = DirectionalLight3D.SHADOW_ORTHOGONAL
+ 	key.directional_shadow_max_distance = 12.0
+@@ -158,7 +158,7 @@
+ 	fill.name = "GarageFill"
+ 	fill.rotation_degrees = Vector3(-30, 135, 0)
+ 	fill.light_color = Color("96b3ce")
+-	fill.light_energy = 0.18
++	fill.light_energy = 0.26
+ 	world.add_child(fill)
+ 	var rim := SpotLight3D.new()
+ 	rim.name = "GarageRim"
+diff --git a/game/vehicle/vehicle_customisation.gd b/game/vehicle/vehicle_customisation.gd
+--- a/game/vehicle/vehicle_customisation.gd
++++ b/game/vehicle/vehicle_customisation.gd
+@@ -14,6 +14,17 @@
+ 		["mesh","Cross mesh"],["dish","Deep dish"],["rallydisc","Rally disc"],["six","Sport six"],["ten","Slim ten"],["tri","Tri spoke"]],
+ 	"body":[["stock","Original"],["street","Street"],["rally","Rally"],["club","Club sport"],
+ 		["heritage","Heritage"],["touring","Touring"],["wide","Wide arch"],["endurance","Endurance"],["gravel","Gravel"],["urban","Urban sport"]]}
++
++const DESCRIPTIONS: Dictionary = {
++	"hood":["Factory finish","Twin-bank vented hood","Raised intake","Sculpted centre bulge","Recessed heat extractor","Raised rear cowl","Paired intake openings","Rear-facing intake","Pressed reinforcement ribs","Vented centre bulge"],
++	"aero":["Factory finish","Subtle roof-edge extension","Raised trailing edge","Tall twin-mounted wing","Swept hatch extension","Low deck-mounted wing","Top-mounted wing supports","Two rear aero blades","Raised rally hoop","Long rear aero profile","Broad sculpted tail","Extended rear deck","Split rear wing"] ,
++	"rims":["Factory finish","Five broad spokes","Six split spokes","Swept turbine blades","Cross-spoke lattice","Deep recessed centre","Closed rally face","Six sculpted spokes","Ten narrow spokes","Three broad spokes"],
++	"body":["Factory finish","Low front lip and side skirts","Rally arches and mud flaps","Front splitter and sill extensions","Subtle classic arch trim","Touring lip and sill package","Extended wheel arches","Deep splitter and rear diffuser","Raised gravel trim and mud flaps","Sculpted street trim"]}
++
++static func description(category: String, option: String) -> String:
++	for index: int in range(OPTIONS[category].size()):
++		if OPTIONS[category][index][0]==option: return DESCRIPTIONS[category][index]
++	return ""
+ 
+ static func defaults() -> Dictionary:
+ 	return {"version":VERSION,"hood":"stock","aero":"stock","rims":"stock","body":"stock"}
+diff --git a/game/tests/test_customisation_carousel.gd b/game/tests/test_customisation_carousel.gd
+--- a/game/tests/test_customisation_carousel.gd
++++ b/game/tests/test_customisation_carousel.gd
+@@ -90,12 +90,14 @@
+ 			check(page.showroom.customisation[category] == option[0],"unowned preview visible "+category+"/"+str(option[0]))
+ 			check(page.kit_draft[category] == "stock" and page.records.settings == original,"preview leaves equipped/save exact "+category+str(index))
+ 			check(shop.purchases == 0 and page._purchase_dialog == null,"browse never purchases or opens confirmation")
+-			check(not page._part_highlight.meshes.is_empty(),"selected native part highlighted "+category)
++			check(page._part_indicator.visible and page._part_highlight.meshes.is_empty(),"selected native part marked without altering its finish "+category)
+ 		await settle()
+ 		check(page.showroom.car == car and page.showroom.showroom_viewport == viewport,"preview retains actual car and viewport "+category)
+ 		check(page._customisation_camera.focused_category == focus and not page.showroom.camera.transform.is_equal_approx(home_camera),"main Garage camera focuses on "+category)
+ 		var target_pixel: Vector2 = page.showroom.camera.unproject_position(page._customisation_camera.target)
+ 		check(target_pixel.distance_to(Vector2(page.showroom.showroom_viewport.size)*0.5) < 3.0,"selected part is centered in the Garage "+category)
++		var selected_row: Control = page.kit_cards.get_child(page.kit_cards.get_child_count()-1)
++		check(page.kit_scroll.get_global_rect().encloses(selected_row.get_global_rect()),"selected part row remains fully visible: "+category+" list="+str(page.kit_scroll.get_global_rect())+" row="+str(selected_row.get_global_rect())+" scroll="+str(page.kit_scroll.scroll_vertical))
+ 		await capture("focus-"+category)
+ 		var focus_distance: float = page.showroom.camera.global_position.distance_to(page._customisation_camera.target)
+ 		page.showroom.rotate_view(Vector2(12,4))
+@@ -107,7 +109,7 @@
+ 		await settle()
+ 		check(page.showroom.customisation[category] == "stock" and page.records.settings == original,"original option previews without saving "+category)
+ 		var cancel_view: Transform3D = page.showroom.camera.transform
+-		page.kit_shelf.cancel.pressed.emit()
++		page._cancel_cosmetic_preview()
+ 		check(page.showroom.customisation == page.kit_draft and page._part_highlight.meshes.is_empty(),"cancel restores part and highlight "+category)
+ 		check(page.showroom.camera.transform.is_equal_approx(cancel_view) and page._customisation_camera.focused_category==focus,"cancel keeps the editing view on the equipped part "+category)
+ 	check(CompactKitThumbnail.images.size()<=16,"sixteen-photo cache remains bounded")
+@@ -174,11 +176,11 @@
+ 		check(page._workshop_tabs.visible,"Workshop overlay groups the car tasks")
+ 		check(page._workshop_tabs.get_parent()==page.preview and page.preview.get_global_rect().encloses(page._workshop_tabs.get_global_rect()),"Workshop buttons overlay the car within its bounds")
+ 		check(absf(page.preview.global_position.y-page.tools_panel.global_position.y)<1,"no navigation row above the car")
+-		check(not page.kit_shelf.photo.visible and page.kit_shelf.detail_viewport == null,"Garage view replaces the separate detail photo")
++		check(page.kit_shelf.find_child("CosmeticDetailPhoto",true,false)==null and page.kit_shelf.find_children("*","SubViewport",true,false).is_empty() and page.kit_photos==null,"Garage view replaces the separate detail photo")
+ 		check(page.kit_scroll.size.y > page.kit_shelf.size.y*0.45,"parts use most of the Customise card")
+-		check(page.kit_cards.columns == 2 and page.kit_cards.get_child(0).size.y >= 156,"large parts cards fill two columns")
+-		check(page.kit_shelf.cancel.text == "Cancel preview" and page.kit_shelf.cancel.visible,"preview has a named cancellation action")
+-		check(page.kit_shelf.cancel.size.x>=52,"cancel retains its touch target")
++		check(page.kit_cards.columns == 1 and page.kit_cards.get_child(0).size.y >= 82,"full-width options have generous touch targets")
++		check(page._compare_button.visible and not page._compare_button.disabled,"preview has a hold comparison action")
++		check(page._compare_button.size.x>=172 and page._compare_button.size.y>=48,"comparison retains its touch target")
+ 		await capture("kits-"+str(dimensions.x))
+ 		await gesture(page.kit_scroll,shop)
+ 		var last: Control = page.kit_cards.get_child(page.kit_cards.get_child_count()-1)
+@@ -246,47 +248,31 @@
+ 	var actual_car: CarVisual = page.showroom.car
+ 	var actual_camera: Transform3D = page.showroom.camera.transform
+ 	var saved: Dictionary = page.records.settings.duplicate(true)
+-	await photos_settled()
+-	check(not page.kit_shelf.equip.visible and not page.kit_shelf.cancel.visible and not page.kit_shelf.state.visible,"equipped item has no disabled action or repeated status")
+-	check(page.showroom.car==actual_car and page.showroom.camera.transform==actual_camera and page.records.settings==saved,"option photography preserves actual car/camera/save")
++	check(not page.kit_shelf.equip.visible,"equipped item has no disabled purchase action")
++	check(page.showroom.car==actual_car and page.showroom.camera.transform==actual_camera and page.records.settings==saved,"parts list preserves actual car/camera/save")
++	check(page.kit_photos==null and page.kit_shelf.find_children("*","SubViewport",true,false).is_empty(),"parts list creates no photo renderer or detail world")
+ 	for index: int in range(page.kit_cards.get_child_count()):
+-		var card: CompactKitThumbnail = page.kit_cards.get_child(index)
+-		check(card.get_meta("photo_livery")==paint,"thumbnail uses the car's exact paint "+str(index))
+-		check(card.get_meta("photo_parts").hood==VehicleCustomisation.OPTIONS.hood[index][0],"thumbnail uses the correct candidate part "+str(index))
+-		check(card.viewport==null,"photography does not create a world per option")
+-		if DisplayServer.get_name() != "headless":
+-			var pixels: Image = card.image.texture.get_image()
+-			var red: int = 0
+-			for y: int in range(0,pixels.get_height(),4):
+-				for x: int in range(0,pixels.get_width(),4):
+-					var colour: Color = pixels.get_pixel(x,y)
+-					if colour.r>0.15 and colour.r>colour.g*1.15 and colour.r>colour.b*1.15: red += 1
+-			check(red>pixels.get_width()*pixels.get_height()/16*0.05,"rendered red-paint pixels replace blue stock photo "+str(index))
+-	var renderer: Node = page.kit_photos
+-	check(renderer.peak_worlds<=1 and renderer.active_worlds==0 and renderer.viewport==null,"one temporary photo studio releases after preparation")
+-	var prepared: int = renderer.rendered
+-	page._build_kit_cards()
+-	await photos_settled()
+-	check(renderer.rendered==prepared,"identical appearance reuses cached photos without rendering")
+-	check(CompactKitThumbnail.images.size()<=16,"painted photos share the sixteen-image bound")
+-	var first_key: String = page.kit_cards.get_child(1).cache_key
++		var row: Button = page.kit_cards.get_child(index)
++		check(row.number.text=="%02d" % (index+1) and not row.description.text.is_empty(),"numbered option has a meaningful description")
++		check(row.find_children("*","TextureRect",true,false).size()==1 and row.checkmark.texture!=null,"only the equipped-check icon remains in each text row")
++	check(page.kit_cards.get_child(0).checkmark.visible,"equipped option has its green check")
++	page._preview_kit("hood","louvres")
++	await settle()
++	check(page.showroom.livery==paint and page.showroom.customisation.hood=="louvres","live car combines exact current paint and previewed part")
++	check(page.kit_cards.get_child(0).checkmark.visible and not page.kit_cards.get_child(1).checkmark.visible,"equipped mark stays on saved option during preview")
++	check(page.kit_cards.get_child(1).status.text=="PREVIEWING" and page.kit_shelf.counter.text=="02 / 10","selected preview and actual catalogue position are explicit")
++	check(page.kit_shelf.heading.text=="HOOD" and page._part_indicator.visible,"heading and modified-part indicator identify the category")
++	await compare_cases(shop)
++	page._cancel_cosmetic_preview()
+ 	var green: Dictionary = paint.duplicate(true)
+ 	green.colors.body = "397654"
+ 	page.records.settings.vehicle_liveries.compact = green
+ 	page.refresh_cosmetics()
+-	await photos_settled()
+-	check(page.kit_cards.get_child(1).cache_key!=first_key and page.kit_cards.get_child(1).get_meta("photo_livery")==green,"paint refresh invalidates the old photo key")
+-	if DisplayServer.get_name()!="headless":
+-		var pixels: Image = page.kit_cards.get_child(1).image.texture.get_image()
+-		var green_pixels: int = 0
+-		for y: int in range(0,pixels.get_height(),4):
+-			for x: int in range(0,pixels.get_width(),4):
+-				var colour: Color = pixels.get_pixel(x,y)
+-				if colour.g>0.15 and colour.g>colour.r*1.15 and colour.g>colour.b*1.15: green_pixels += 1
+-		check(green_pixels>pixels.get_width()*pixels.get_height()/16*0.05,"paint refresh changes the actual rendered thumbnail pixels")
++	await settle()
++	check(page.showroom.livery==green and page.kit_photos==null,"paint refresh updates the actual car without preparing thumbnails")
+ 	page.records.settings.vehicle_liveries.compact = paint
+ 	page.refresh_cosmetics()
+-	await photos_settled()
++	await settle()
+ 	for dimensions: Vector2i in [Vector2i(960,540),Vector2i(1280,720),Vector2i(1720,900)]:
+ 		root.size = dimensions
+ 		root.content_scale_size = dimensions
+@@ -297,7 +283,7 @@
+ 		page._preview_kit("hood","louvres")
+ 		await settle()
+ 		check(page.kit_shelf.equip.visible and page.kit_shelf.equip.text.contains("750"),"unowned preview retains explicit priced equip")
+-		check(page.tools_panel.get_global_rect().encloses(page.kit_shelf.cancel.get_global_rect()),"cancel remains inside short/tall workbench")
++		check(page.preview.get_global_rect().encloses(page._compare_button.get_global_rect()),"comparison remains inside the Garage view")
+ 		await capture_panel("panel-unowned-"+str(dimensions.x))
+ 		page._preview_kit("hood","scoop")
+ 		await settle()
+@@ -306,12 +292,75 @@
+ 	scene.queue_free()
+ 	await process_frame
+ 
+-func photos_settled() -> void:
+-	for tick: int in range(180):
+-		if not page.kit_photos.busy: break
++func compare_input(touch: bool, pressed: bool, point: Vector2, canceled: bool = false) -> void:
++	if touch:
++		var event := InputEventScreenTouch.new()
++		event.index = 12
++		event.position = point
++		event.pressed = pressed
++		event.canceled = canceled
++		root.push_input(event,true)
++	else:
++		var event := InputEventMouseButton.new()
++		event.button_index = MOUSE_BUTTON_LEFT
++		event.position = point
++		event.pressed = pressed
++		root.push_input(event,true)
++	await process_frame
++
++func compare_cases(shop: Shop) -> void:
++	var saved: Dictionary = page.records.settings.duplicate(true)
++	var preview: Dictionary = page._cosmetic_preview.duplicate(true)
++	var camera: Transform3D = page.showroom.camera.transform
++	var purchases: int = shop.purchases
++	var point: Vector2 = page._compare_button.get_global_rect().get_center()
++	for touch: bool in [false,true]:
++		await compare_input(touch,true,point)
++		check(page.showroom.customisation==page.kit_draft and not page._compare_parts.is_empty(),"holding compares equipped part through real pointer input")
++		check(page._cosmetic_preview==preview and page.records.settings==saved and shop.purchases==purchases,"comparison does not select, save or buy")
++		check(page.showroom.camera.transform==camera and not page._part_indicator.visible,"comparison keeps the camera and hides the preview callout")
++		await capture("hold-compare-"+str(touch))
++		await compare_input(touch,false,Vector2(3,3))
++		check(page.showroom.customisation.hood=="louvres" and page._compare_parts.is_empty() and page._part_indicator.visible,"release outside returns to the exact selected preview")
++	page._compare_button.grab_focus()
++	for pressed: bool in [true,false]:
++		var key := InputEventKey.new()
++		key.keycode = KEY_SPACE
++		key.physical_keycode = KEY_SPACE
++		key.pressed = pressed
++		root.push_input(key,true)
+ 		await process_frame
+-	check(not page.kit_photos.busy,"bounded photo work settles")
+-	await settle()
++		check(page.showroom.customisation==page.kit_draft if pressed else page.showroom.customisation.hood=="louvres","keyboard compare is momentary")
++	await compare_input(true,true,point)
++	await compare_input(true,false,point,true)
++	check(page.showroom.customisation.hood=="louvres" and page._compare_parts.is_empty(),"canceled touch restores preview")
++	await compare_input(false,true,point)
++	page._compare_button.notification(NOTIFICATION_APPLICATION_FOCUS_OUT)
++	check(page.showroom.customisation.hood=="louvres" and page._compare_parts.is_empty(),"application focus loss releases comparison")
++	await compare_input(false,false,point)
++	await compare_input(true,true,point)
++	page._preview_kit("hood","dome")
++	await compare_input(true,false,point)
++	check(page.showroom.customisation.hood=="dome" and page._compare_parts.is_empty(),"new selection during hold cannot restore stale preview")
++	await settle()
++	await compare_input(true,true,point)
++	page._show_section("care")
++	await compare_input(true,false,point)
++	check(page.showroom.customisation==page.kit_draft and page._cosmetic_preview.is_empty() and not page._compare_button.visible,"navigation ends comparison without restoring a preview")
++	page._show_section("tuning")
++	page._preview_kit("hood","louvres")
++	await settle()
++	point = page._compare_button.get_global_rect().get_center()
++	await compare_input(true,true,point)
++	shop.scope = "fixture/bob"
++	shop.changed.emit()
++	await compare_input(true,false,point)
++	check(page.showroom.customisation==page.kit_draft and page._cosmetic_preview.is_empty(),"account switch during compare cannot restore or equip old account preview")
++	shop.scope = "fixture/alice"
++	shop.changed.emit()
++	page._preview_kit("hood","louvres")
++	await settle()
++	check(page.records.settings==saved and shop.purchases==purchases,"all compare transitions retain saved state and purchase count")
+ 
+ func capture_panel(label: String) -> void:
+ 	if DisplayServer.get_name()=="headless": return
+@@ -347,6 +396,10 @@
+ 	app.records = LocalRecords.new(directory.path_join("records.json"))
+ 	app.library = TrackLibrary.new(directory)
+ 	app.cloud_root_override = directory.path_join("cloud")
++	var reference_paint: Dictionary = VehicleLivery.defaults("compact")
++	reference_paint.pattern = "apex_twin"
++	reference_paint.colors = {"body":"a44844","accent":"efe5cf","detail":"c78e4c"}
++	app.records.settings.vehicle_liveries = {"compact":reference_paint}
+ 	root.add_child(app)
+ 	while not app.startup_complete: await process_frame
+ 	app._show_screen("garage")
+diff --git a/AGENTS.md b/AGENTS.md
+--- a/AGENTS.md
++++ b/AGENTS.md
+@@ -1,3 +1,8 @@
++<!-- GARAGE-LIVE-CONFIGURATOR-20261026 -->
++## Garage live Parts configurator (2026-10-26)
++GLF01-GLF05/R01/Q01: Replace Parts thumbnails with full-width numbered rows, descriptions, aligned prices, equipped check, preview state, category heading/count and explicit Buy & Equip. All43 options and authoritative economy/save/account fences remain. Main Garage is the only parts preview, with a projected callout, untinted finish, revised Hood framing and balanced key/fill. Momentary mouse/touch/Space compare restores on outside release/cancel/focus loss; selection/account/navigation cannot restore stale previews. Focused599headless/646Compatibility/646desktopMobile, retained1446/sidebar549/gestures65/review18each/parser1219 and pinned import pass. Obsolete Parts-photo/grid/cancel assertions are superseded; original transaction, visibility and camera guards remain. Initial check-icon assertion, detached callback and row clipping findings are retained and corrected. New descriptive copy uses English fallback. Native App review uses isolated paint/wallet fixtures. Sources, commands, hashes and scoped checkpoint: docs/GARAGE_LIVE_CONFIGURATOR_2026_10_26.md and docs/evidence/garage-live-configurator-2026-10-26/report.json. Reload, translated copy and owner/device appearance/touch acceptance remain. No attachment/device test, APK, real authentication/purchase, live mutation, deployment or owner-process restart; concurrent work preserved.
++<!-- /GARAGE-LIVE-CONFIGURATOR-20261026 -->
++
+ <!-- ELECTRIC-CONSISTENT-HANDLING-20261026 -->
+ ## Consistent electric keyboard/controller handling (2026-10-26)
+ ECH01-ECH03/R01/Q01: Owner still finds slow handling too agile and faster handling inconsistent; controls are keyboard/controller. Electric-12 replaces overlapping electric steering fades with2.0/s buildup,6.0/s unwind,0.26rad maximum angle and continuous9m+speed-squared/18 curvature envelope. Full lock builds in0.5s at every speed; power/lift shares the bound, with no40-60km/h restoration of tight lock. Actual200ms keyboard course response falls35.2% at5km/h,41.9% at10,87.5% at20 and89.1% at30. Held radius20/30/40/60kmh is10.72/12.86/15.86/24.44m and increases through190; usable parking lock retained. Initial overly wide proposal and late diagnostic aiming fail tight circuits; final finite-rate pure-pursuit planning yields three five-lap circuits with zero contacts. Six other diagnostic inputs remain exact. Primary525,190-speed59/radius64/launch111/low87/release38/car60/one-pedal63/power19/balance19/response86/turn61/laps6/handling88/rewind61/parser1217, actual Game keyboard/controller App67Compatibility+67desktopMobile and backend72pass/twoexisting exclusions pass. Actual task-start straight propulsion/release/hold is exact2400ticks in each direction;190cap/braking/small launch slip remain. Physics0.73/EVa5c04a5a pin change; six other config entries/arithmetic remain. Independent17354input/five-lap verifier accepts144613ms. Owner consistency correction supersedes prior faster/tighter high-speed, drift-minimum and fixed-fast-input expectations; complete sources/failures and stronger full-range monotonic/input tests are retained. Commands, failed proposals/fixtures, native views, hashes and scoped checkpoint: docs/ELECTRIC_CONSISTENT_HANDLING_2026_10_26.md and docs/evidence/electric-consistent-handling-2026-10-26/report.json. Reload/rebuild, matching verifier rollout and owner keyboard/controller feel acceptance remain. No physical-device attachment check/test, APK, purchase, live mutation, deployment, merge or owner-process restart; concurrent model/track/Garage work preserved.
+diff --git a/DEVELOPMENT_STATUS.md b/DEVELOPMENT_STATUS.md
+--- a/DEVELOPMENT_STATUS.md
++++ b/DEVELOPMENT_STATUS.md
+@@ -1,3 +1,8 @@
++<!-- GARAGE-LIVE-CONFIGURATOR-20261026 -->
++## Garage live Parts configurator (2026-10-26)
++GLF01-GLF05/R01/Q01: Replace Parts thumbnails with full-width numbered rows, descriptions, aligned prices, equipped check, preview state, category heading/count and explicit Buy & Equip. All43 options and authoritative economy/save/account fences remain. Main Garage is the only parts preview, with a projected callout, untinted finish, revised Hood framing and balanced key/fill. Momentary mouse/touch/Space compare restores on outside release/cancel/focus loss; selection/account/navigation cannot restore stale previews. Focused599headless/646Compatibility/646desktopMobile, retained1446/sidebar549/gestures65/review18each/parser1219 and pinned import pass. Obsolete Parts-photo/grid/cancel assertions are superseded; original transaction, visibility and camera guards remain. Initial check-icon assertion, detached callback and row clipping findings are retained and corrected. New descriptive copy uses English fallback. Native App review uses isolated paint/wallet fixtures. Sources, commands, hashes and scoped checkpoint: docs/GARAGE_LIVE_CONFIGURATOR_2026_10_26.md and docs/evidence/garage-live-configurator-2026-10-26/report.json. Reload, translated copy and owner/device appearance/touch acceptance remain. No attachment/device test, APK, real authentication/purchase, live mutation, deployment or owner-process restart; concurrent work preserved.
++<!-- /GARAGE-LIVE-CONFIGURATOR-20261026 -->
++
+ <!-- RIVALRY-FINALE-LAYOUT-20261026 -->
+ ## Rivalry final standings fit (2026-10-26)
+ RFL01-RFL04/R01/Q01: Fixed completed-week body keeps all five track results, highlights and bottom actions visible; only the full driver standings scroll. Hero car/crown clear section navigation, orthographic previews fit actual mesh bounds, and the redundant points-ahead/completion label is hidden while in-place errors remain. Actual clipping ancestors release stale tall-window minima. Circuit ranking copy/spacing and Perfect Week badge height also fit. Final layout1477Compatibility/1477desktopMobile, awards5384desktopMobile, App141 and parser1219 pass. Retained ranking45/1fail reproduces identically with four exact task-start UI sources reloaded only in isolated memory (49/1); its separate compact World Ranking page remains outside scope. Original finale regression5312/277fail, native before/after, hashes, commands and task-only Git-checked patch: docs/RIVALRY_FINALE_LAYOUT_2026_10_26.md and docs/evidence/rivalry-finale-layout-2026-10-26/report.json. Reload and owner/device acceptance remain. No device attachment check/test, APK, live mutation, deployment or owner-process restart; concurrent work preserved.
+diff --git a/game/ui/garage_parts_list.gd b/game/ui/garage_parts_list.gd
+--- /dev/null
++++ b/game/ui/garage_parts_list.gd
+@@ -0,0 +1,75 @@
++extends VBoxContainer
++## Compact, numbered configurator. It never creates photos or another world.
++var heading: Label
++var counter: Label
++var balance: Label
++var category_slot: VBoxContainer
++var scroll: ScrollContainer
++var cards: GridContainer
++var equip: Button
++var selected_title: String = ""
++
++func _init() -> void:
++	size_flags_vertical = Control.SIZE_EXPAND_FILL
++	add_theme_constant_override("separation",12)
++	var top := HBoxContainer.new()
++	add_child(top)
++	var caption: Label = MenuStyle.label("CUSTOMISE / EXTERIOR",16,true)
++	caption.size_flags_horizontal = Control.SIZE_EXPAND_FILL
++	caption.add_theme_font_override("font",MenuStyle.DISPLAY)
++	top.add_child(caption)
++	balance = MenuStyle.label("",19)
++	balance.name = "CustomisationBalance"
++	balance.add_theme_font_override("font",MenuStyle.DISPLAY)
++	balance.add_theme_color_override("font_color",MenuStyle.ACCENT)
++	top.add_child(balance)
++	var row := HBoxContainer.new()
++	row.add_theme_constant_override("separation",12)
++	add_child(row)
++	heading = MenuStyle.label("",46)
++	heading.name = "KitCategoryHeading"
++	heading.add_theme_font_override("font",MenuStyle.DISPLAY)
++	heading.size_flags_horizontal = Control.SIZE_EXPAND_FILL
++	row.add_child(heading)
++	counter = MenuStyle.label("",28,true)
++	counter.name = "KitSelectionCounter"
++	counter.add_theme_font_override("font",MenuStyle.DISPLAY)
++	counter.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
++	row.add_child(counter)
++	category_slot = VBoxContainer.new()
++	add_child(category_slot)
++	scroll = preload("res://ui/vertical_swipe_scroll.gd").new()
++	scroll.horizontal_scroll_mode = ScrollContainer.SCROLL_MODE_DISABLED
++	scroll.vertical_scroll_mode = ScrollContainer.SCROLL_MODE_AUTO
++	scroll.size_flags_vertical = Control.SIZE_EXPAND_FILL
++	scroll.follow_focus = true
++	add_child(scroll)
++	cards = GridContainer.new()
++	cards.columns = 1
++	cards.size_flags_horizontal = Control.SIZE_EXPAND_FILL
++	cards.add_theme_constant_override("v_separation",8)
++	scroll.add_child(cards)
++	equip = MenuStyle.button("Buy & Equip",func() -> void: pass,true)
++	equip.name = "CosmeticEquip"
++	equip.custom_minimum_size.y = 60
++	equip.add_theme_font_size_override("font_size",25)
++	add_child(equip)
++	resized.connect(_layout_cards)
++
++func show_choice(label: String, equipped: bool, owned: bool, cost: int, index: int, total: int, category: String) -> void:
++	selected_title = GameText.message(label)
++	GameText.bind_upper(heading,str(VehicleCustomisation.LABELS[category]))
++	counter.text = "%02d / %02d" % [index+1,total]
++	equip.visible = not equipped
++	equip.disabled = equipped
++	GameText.bind(equip,"Equip" if owned else "Buy & Equip · {cost}",{"cost":GameText.message("%d coins") % cost})
++	_layout_cards.call_deferred()
++
++func _layout_cards() -> void:
++	if not is_inside_tree(): return
++	var compact: bool = get_viewport_rect().size.y<650
++	add_theme_constant_override("separation",6 if compact else 12)
++	heading.add_theme_font_size_override("font_size",34 if compact else 46)
++	counter.add_theme_font_size_override("font_size",24 if compact else 30)
++	equip.custom_minimum_size.y = 50 if compact else 60
++	for row: Control in cards.get_children(): row._layout()
+diff --git a/game/ui/garage_parts_list.gd.uid b/game/ui/garage_parts_list.gd.uid
+--- /dev/null
++++ b/game/ui/garage_parts_list.gd.uid
+@@ -0,0 +1 @@
++uid://bn5ue6gbey5k5
+diff --git a/game/ui/garage_part_option.gd b/game/ui/garage_part_option.gd
+--- /dev/null
++++ b/game/ui/garage_part_option.gd
+@@ -0,0 +1,112 @@
++extends Button
++## Text-only option; the retained Garage car is the visual preview.
++var number: Label
++var title: Label
++var description: Label
++var price: Label
++var status: Label
++var checkmark: TextureRect
++
++func _init() -> void:
++	size_flags_horizontal = Control.SIZE_EXPAND_FILL
++	custom_minimum_size.y = 82
++	mouse_default_cursor_shape = Control.CURSOR_POINTING_HAND
++	var padding := MarginContainer.new()
++	padding.mouse_filter = Control.MOUSE_FILTER_IGNORE
++	for edge: String in ["left","right"]: padding.add_theme_constant_override("margin_"+edge,12)
++	for edge: String in ["top","bottom"]: padding.add_theme_constant_override("margin_"+edge,12)
++	add_child(padding)
++	MenuStyle.fill(padding)
++	var row := HBoxContainer.new()
++	row.mouse_filter = Control.MOUSE_FILTER_IGNORE
++	row.add_theme_constant_override("separation",12)
++	padding.add_child(row)
++	number = _label("",28,true)
++	number.custom_minimum_size.x = 30
++	number.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
++	row.add_child(number)
++	var separator := VSeparator.new()
++	separator.mouse_filter = Control.MOUSE_FILTER_IGNORE
++	row.add_child(separator)
++	var copy := VBoxContainer.new()
++	copy.mouse_filter = Control.MOUSE_FILTER_IGNORE
++	copy.size_flags_horizontal = Control.SIZE_EXPAND_FILL
++	copy.size_flags_vertical = Control.SIZE_SHRINK_CENTER
++	copy.add_theme_constant_override("separation",3)
++	row.add_child(copy)
++	title = _label("",23)
++	title.name = "KitOptionTitle"
++	title.text_overrun_behavior = TextServer.OVERRUN_TRIM_ELLIPSIS
++	copy.add_child(title)
++	description = _label("",14,true,false)
++	description.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
++	copy.add_child(description)
++	var value := VBoxContainer.new()
++	value.mouse_filter = Control.MOUSE_FILTER_IGNORE
++	value.custom_minimum_size.x = 82
++	value.size_flags_vertical = Control.SIZE_SHRINK_CENTER
++	value.add_theme_constant_override("separation",4)
++	row.add_child(value)
++	var cost := HBoxContainer.new()
++	cost.mouse_filter = Control.MOUSE_FILTER_IGNORE
++	cost.alignment = BoxContainer.ALIGNMENT_END
++	value.add_child(cost)
++	checkmark = TextureRect.new()
++	checkmark.name = "EquippedCheck"
++	checkmark.mouse_filter = Control.MOUSE_FILTER_IGNORE
++	checkmark.texture = MenuIcon.texture("check")
++	checkmark.modulate = Color("66c78b")
++	checkmark.expand_mode = TextureRect.EXPAND_IGNORE_SIZE
++	checkmark.custom_minimum_size = Vector2(20,20)
++	checkmark.stretch_mode = TextureRect.STRETCH_KEEP_ASPECT_CENTERED
++	cost.add_child(checkmark)
++	price = _label("",23)
++	price.add_theme_color_override("font_color",MenuStyle.ACCENT)
++	cost.add_child(price)
++	status = _label("",13)
++	status.horizontal_alignment = HORIZONTAL_ALIGNMENT_RIGHT
++	value.add_child(status)
++	resized.connect(_layout)
++
++func _label(copy: String, size: int, muted: bool = false, display: bool = true) -> Label:
++	var label: Label = MenuStyle.label(copy,size,muted)
++	if display: label.add_theme_font_override("font",MenuStyle.DISPLAY)
++	label.mouse_filter = Control.MOUSE_FILTER_IGNORE
++	return label
++
++func setup(index: int, option: Array, detail: String, action: Callable) -> void:
++	name = "KitOption_"+str(option[0])
++	number.text = "%02d" % (index+1)
++	GameText.bind_upper(title,str(option[1]))
++	GameText.bind(description,detail)
++	accessibility_name = GameText.message(str(option[1]))+". "+GameText.message(detail)
++	tooltip_text = accessibility_name
++	pressed.connect(action)
++
++func present(selected: bool, equipped: bool, owned: bool, cost: int) -> void:
++	set_selected(selected)
++	checkmark.visible = equipped
++	price.visible = not equipped and not owned
++	price.text = "%s" % cost
++	status.visible = equipped or owned or selected
++	GameText.bind_upper(status,"Equipped" if equipped else "Previewing" if selected else "Owned")
++	status.add_theme_color_override("font_color",Color("66c78b") if equipped else MenuStyle.ACCENT if selected else MenuStyle.MUTED)
++	accessibility_description = status.text+" "+(GameText.message("%d coins") % cost if price.visible else "")
++
++func set_selected(selected: bool) -> void:
++	for state: String in ["normal","hover","pressed","hover_pressed","disabled","focus"]:
++		var style: StyleBoxFlat = MenuStyle.box(Color("12212a") if state in ["hover","pressed","hover_pressed"] else Color.TRANSPARENT,0)
++		style.set_corner_radius_all(5)
++		style.border_color = MenuStyle.ACCENT if selected or state=="focus" else Color("344750")
++		if selected or state=="focus": style.set_border_width_all(1)
++		else: style.border_width_bottom = 1
++		add_theme_stylebox_override(state,style)
++
++func _layout() -> void:
++	if not is_inside_tree(): return
++	var compact: bool = get_viewport_rect().size.y<650 or size.x<410
++	custom_minimum_size.y = 82 if compact else 100
++	title.add_theme_font_size_override("font_size",20 if compact else 25)
++	description.add_theme_font_size_override("font_size",13 if compact else 15)
++	number.add_theme_font_size_override("font_size",25 if compact else 31)
++	price.add_theme_font_size_override("font_size",21 if compact else 27)
+diff --git a/game/ui/garage_part_option.gd.uid b/game/ui/garage_part_option.gd.uid
+--- /dev/null
++++ b/game/ui/garage_part_option.gd.uid
+@@ -0,0 +1 @@
++uid://b514gunfbx8uk
+diff --git a/game/ui/garage_compare_button.gd b/game/ui/garage_compare_button.gd
+--- /dev/null
++++ b/game/ui/garage_compare_button.gd
+@@ -0,0 +1,58 @@
++extends Button
++## A momentary hold, with release/cancel ownership even outside the button.
++signal comparing_changed(active: bool)
++var pointer: int = -2
++
++func _init() -> void:
++	name = "GarageHoldToCompare"
++	GameText.bind(self,"Hold to compare")
++	custom_minimum_size = Vector2(172,48)
++	add_theme_font_size_override("font_size",17)
++	add_theme_font_override("font",MenuStyle.DISPLAY)
++	for state: String in ["normal","hover","pressed","disabled","focus"]:
++		var style: StyleBoxFlat = MenuStyle.box(Color("10212be6"),8)
++		style.set_corner_radius_all(5)
++		style.border_width_bottom = 1
++		style.border_color = MenuStyle.ACCENT if state=="focus" else Color("425762")
++		add_theme_stylebox_override(state,style)
++
++func _input(event: InputEvent) -> void:
++	if not is_visible_in_tree() or disabled:
++		stop()
++		return
++	var at := Vector2.ZERO
++	var id: int = -1
++	var down: bool = false
++	var up: bool = false
++	if event is InputEventMouse and event.device==InputEvent.DEVICE_ID_EMULATION: return
++	if event is InputEventScreenTouch:
++		at = event.position
++		id = event.index
++		down = event.pressed and not event.canceled
++		up = not event.pressed or event.canceled
++	elif event is InputEventMouseButton and event.button_index==MOUSE_BUTTON_LEFT:
++		at = event.position
++		down = event.pressed
++		up = not event.pressed
++	elif event is InputEventKey and (has_focus() or pointer== -3) and event.is_action("ui_accept"):
++		id = -3
++		at = get_global_rect().get_center()
++		down = event.pressed and not event.echo
++		up = not event.pressed
++	else: return
++	if down and pointer== -2 and get_global_rect().has_point(at):
++		pointer = id
++		grab_focus()
++		comparing_changed.emit(true)
++		get_viewport().set_input_as_handled()
++	elif up and pointer==id:
++		stop()
++		get_viewport().set_input_as_handled()
++
++func stop() -> void:
++	if pointer== -2: return
++	pointer = -2
++	comparing_changed.emit(false)
++
++func _notification(what: int) -> void:
++	if what in [NOTIFICATION_APPLICATION_FOCUS_OUT,NOTIFICATION_FOCUS_EXIT,NOTIFICATION_EXIT_TREE] or what==NOTIFICATION_VISIBILITY_CHANGED and not is_visible_in_tree(): stop()
+diff --git a/game/ui/garage_compare_button.gd.uid b/game/ui/garage_compare_button.gd.uid
+--- /dev/null
++++ b/game/ui/garage_compare_button.gd.uid
+@@ -0,0 +1 @@
++uid://bb8sexjie6wkk
+diff --git a/game/ui/garage_part_indicator.gd b/game/ui/garage_part_indicator.gd
+--- /dev/null
++++ b/game/ui/garage_part_indicator.gd
+@@ -0,0 +1,37 @@
++extends Control
++## Project a restrained, non-interactive callout onto the modified part.
++var showroom: CarShowroom
++var category: String = ""
++var _at := Vector2.INF
++
++func _init() -> void:
++	name = "GaragePartIndicator"
++	mouse_filter = Control.MOUSE_FILTER_IGNORE
++	hide()
++
++func _process(_delta: float) -> void:
++	if not visible or not is_instance_valid(showroom): return
++	var point: Vector3 = {"hood":Vector3(0.45,1.0,-1.35),"aero":Vector3(0,1.4,1.84),"rims":Vector3(0.83,0.4,-1.28),"body":Vector3(0.9,0.35,-0.3)}.get(category,Vector3.ZERO)
++	point = showroom.car.global_transform*(point*HandlingConfig.BODY_SCALE)
++	var projected := Vector2.INF
++	if not showroom.camera.is_position_behind(point): projected = showroom.camera.unproject_position(point)*size/Vector2(showroom.showroom_viewport.size)
++	if projected!=_at:
++		_at = projected
++		queue_redraw()
++
++func _draw() -> void:
++	if not Rect2(Vector2(12,88),size-Vector2(24,152)).has_point(_at): return
++	var caption: String = GameText.message("Previewing").to_upper()+" · "+GameText.message(str(VehicleCustomisation.LABELS.get(category,""))).to_upper()
++	var font: Font = MenuStyle.DISPLAY
++	var font_size: int = 15
++	var width: float = font.get_string_size(caption,HORIZONTAL_ALIGNMENT_LEFT,-1,font_size).x
++	var right: bool = _at.x+width+68<size.x-16
++	var elbow: Vector2 = _at+Vector2(46 if right else -46,-60)
++	elbow.y = maxf(102,elbow.y)
++	var end: Vector2 = elbow+Vector2(12 if right else -12,0)
++	draw_line(_at,elbow,MenuStyle.ACCENT,1.5,true)
++	draw_line(elbow,end,MenuStyle.ACCENT,1.5,true)
++	draw_circle(_at,4,MenuStyle.ACCENT,true,-1,true)
++	var label_at: Vector2 = end+Vector2(4 if right else -width-4,5)
++	draw_rect(Rect2(label_at+Vector2(-4,-font_size),Vector2(width+8,font_size+6)),Color("0c1921e6"))
++	draw_string(font,label_at,caption,HORIZONTAL_ALIGNMENT_LEFT,-1,font_size,MenuStyle.ACCENT)
+diff --git a/game/ui/garage_part_indicator.gd.uid b/game/ui/garage_part_indicator.gd.uid
+--- /dev/null
++++ b/game/ui/garage_part_indicator.gd.uid
+@@ -0,0 +1 @@
++uid://d0qvowewf4a54
+diff --git a/game/tests/capture_garage_configurator.gd b/game/tests/capture_garage_configurator.gd
+--- /dev/null
++++ b/game/tests/capture_garage_configurator.gd
+@@ -0,0 +1,96 @@
++extends SceneTree
++## Actual App review with isolated paint and wallet fixtures; no live account.
++const Fixture = preload("res://tests/test_customisation_carousel.gd")
++var page: GaragePage
++var output: String
++var checks: int = 0
++var failures: int = 0
++
++func _initialize() -> void: run.call_deferred()
++
++func check(value: bool, caption: String) -> void:
++	checks += 1
++	if not value:
++		failures += 1
++		print("FAIL: "+caption)
++
++func settle() -> void:
++	while page._workbench_focus_pending or page._menu_motion!=null or page.showroom.camera_motion!=null and page.showroom.camera_motion.is_running(): await process_frame
++	for tick: int in range(12): await process_frame
++	await RenderingServer.frame_post_draw
++
++func capture(name: String) -> void:
++	await settle()
++	check(root.get_texture().get_image().save_png(output.path_join(name+".png"))==OK,"capture "+name)
++
++func run() -> void:
++	OS.set_environment("BMT_API_URL","")
++	GameSoundtrack.instance().music_enabled = false
++	output = "res://../docs/evidence/garage-live-configurator-2026-10-26/review-native"
++	for argument: String in OS.get_cmdline_user_args():
++		if argument.begins_with("--evidence-root="): output = argument.trim_prefix("--evidence-root=")
++	output = ProjectSettings.globalize_path(output)
++	DirAccess.make_dir_recursive_absolute(output)
++	var directory: String = "user://garage_configurator_"+TrackLibrary.unique_id()
++	DirAccess.make_dir_recursive_absolute(directory)
++	var app: Node = load("res://core/app.tscn").instantiate()
++	app.records = LocalRecords.new(directory.path_join("records.json"))
++	app.library = TrackLibrary.new(directory)
++	app.cloud_root_override = directory.path_join("cloud")
++	var paint: Dictionary = VehicleLivery.defaults("compact")
++	paint.pattern = "apex_twin"
++	paint.colors = {"body":"a44844","accent":"efe5cf","detail":"c78e4c"}
++	app.records.settings.vehicle_liveries = {"compact":paint}
++	check(app.records.save_records()==OK,"isolated paint fixture saved")
++	root.size = Vector2i(1720,900)
++	root.content_scale_size = root.size
++	root.add_child(app)
++	while not app.startup_complete: await process_frame
++	VehicleCatalog.selected = "compact"
++	app._show_screen("garage")
++	page = app.root_ui.find_child("GaragePage",true,false)
++	var wallet: Node = Fixture.Shop.new()
++	wallet.owned.append("kit/compact/hood/scoop")
++	page.add_child(wallet)
++	page.economy = wallet
++	wallet.changed.connect(page._shop_changed)
++	page.open_car(0)
++	page._show_section("tuning")
++	page._shop_changed()
++	check(page.showroom.livery==paint,"actual App retains reference paint")
++	var saved: Dictionary = page.records.settings.duplicate(true)
++	for dimensions: Vector2i in [Vector2i(960,540),Vector2i(1280,720),Vector2i(1720,900)]:
++		root.size = dimensions
++		root.content_scale_size = dimensions
++		page._select_kit_category("hood")
++		page._preview_kit("hood","louvres")
++		await settle()
++		page.kit_scroll.scroll_vertical = 0
++		await capture("hood-preview-"+str(dimensions.x))
++		check(page.tools_panel.get_global_rect().encloses(page.kit_shelf.equip.get_global_rect()),"purchase action fits")
++		check(page.kit_scroll.get_global_rect().encloses(page.kit_cards.get_child(1).get_global_rect()),"selected row fits")
++		if dimensions.x==1720:
++			var at: Vector2 = page._compare_button.get_global_rect().get_center()
++			var event := InputEventScreenTouch.new()
++			event.index = 24
++			event.position = at
++			event.pressed = true
++			root.push_input(event,true)
++			check(page.showroom.customisation==page.kit_draft,"touch hold shows equipped hood")
++			await capture("hood-compare-equipped")
++			event = event.duplicate() as InputEventScreenTouch
++			event.pressed = false
++			event.position = Vector2(3,3)
++			root.push_input(event,true)
++			check(page.showroom.customisation.hood=="louvres","release restores selected hood")
++			await capture("hood-preview-after-release")
++			page._preview_kit("hood","scoop")
++			await capture("hood-owned")
++			page._select_kit_category("body")
++			page._preview_kit("body","wide")
++			await capture("body-kit-preview")
++	check(page.records.settings==saved and wallet.purchases==0,"review never saves a preview or purchases")
++	app.queue_free()
++	await process_frame
++	print("GARAGE_CONFIGURATOR_CAPTURE: %d checks, %d failures" % [checks,failures])
++	quit(1 if failures else 0)
+diff --git a/game/tests/capture_garage_configurator.gd.uid b/game/tests/capture_garage_configurator.gd.uid
+--- /dev/null
++++ b/game/tests/capture_garage_configurator.gd.uid
+@@ -0,0 +1 @@
++uid://bphtmmr8eqlbr
+diff --git a/docs/GARAGE_LIVE_CONFIGURATOR_2026_10_26.md b/docs/GARAGE_LIVE_CONFIGURATOR_2026_10_26.md
+--- /dev/null
++++ b/docs/GARAGE_LIVE_CONFIGURATOR_2026_10_26.md
+@@ -0,0 +1,26 @@
++# Garage live Parts configurator — 2026-10-26
++
++GLF01–GLF05/R01/Q01 implement the owner's numbered-list reference and live 3D comparison workflow.
++
++Parts now uses a full-width vertical list, with numbered rows, a title and description, aligned prices, a thin yellow selection outline and a green equipped check. A large category heading and actual selection count sit above the retained Hood / Rear aero / Rims / Body kits tabs. All 43 existing options remain; counts use the actual category length, such as `02 / 10`. Prices, balances and ownership still come from the existing economy. Owned previews use Equip without another purchase.
++
++The selected-part summary, separate detail image, repeated option photos and Cancel preview action are removed from Parts. The main Garage car is its only visual preview. The fixed yellow Buy & Equip action includes the current price and retains the existing explicit confirmation, authentication, affordability, receipt, delayed-response, account and save fences. Browsing remains free and never equips or saves by itself. Selecting the equipped row or leaving the workbench restores equipped cosmetics.
++
++Hold to compare is a momentary control in the Garage view. It shows the saved equipped part while held, then restores the selected preview on release, including release outside the button. Mouse, touch and Space are supported. Touch cancellation, focus loss, a new selection, account changes and navigation clear the held state; old releases cannot restore stale previews. Comparing preserves the camera, list selection, purchase count and saved cosmetics. Drag, wheel, trackpad and pinch remain; the former Top view/zoom/reset controls remain absent.
++
++The main preview uses a small projected callout, with no tint over the actual part finish. Hood framing pulls back enough to show more of the car, and Garage key/fill lighting is balanced for readable vents and lower bodywork while retaining native shadows. The accepted low Body kits camera remains. Flat native controls replace the old header gradient; no reference bitmap or new car art ships.
++
++Runtime changes are `garage_page.gd`, `garage_customisation_camera.gd`, `garage_environment.gd` and descriptive metadata in `vehicle_customisation.gd`, plus four focused UI scripts: `garage_parts_list.gd`, `garage_part_option.gd`, `garage_compare_button.gd` and `garage_part_indicator.gd`. Geometry, canonical physics, saved cosmetic IDs and economy rules are unchanged. Patterns/Colours/Stickers retain their existing tools. New strings use GameText with English fallback; translated descriptive-copy review remains.
++
++The expanded existing customisation suite retains purchase, guest, ownership, account, save, gesture, all-seven-model fit and exact return-camera assertions. Obsolete shipping Parts-photo/carousel/cancel assertions are replaced with text-row, no-photo-world, actual-car paint and momentary-compare checks. Final focused checks pass **599 headless / 646 Compatibility / 646 desktop Mobile**; the retained prepared-photo/geometry/cache regression passes **1446**, Workshop/Wash navigation **549**, view gestures **65**, review fixture **18 per renderer**, and the final parser **1219 scripts**. The pinned import passes and creates all five script UIDs. Initial logs retain a checkmark mistaken for a thumbnail in the new no-photo assertion, a detached-row layout callback error, and clipped selected rows. The final implementation guards detached layout and reveals rows after scroll bounds update, without relaxing visibility or transaction assertions.
++
++[Review the finished native UI and comparison states](evidence/garage-live-configurator-2026-10-26/review.html). The red paint and 3000-coin review wallet are isolated local fixtures inside the actual App; no live account or balance is used. Review captures include 960 × 540, 1280 × 720 and 1720 × 900, mouse/touch comparison, owned/unowned choices and Body kits. Exact commands, outcomes, source/capture hashes and the reverse-checked task-only patch are in [report.json](evidence/garage-live-configurator-2026-10-26/report.json).
++
++```powershell
++powershell -NoProfile -ExecutionPolicy Bypass -File docs/evidence/garage-live-configurator-2026-10-26/run.ps1 -Mode gl_compatibility
++powershell -NoProfile -ExecutionPolicy Bypass -File docs/evidence/garage-live-configurator-2026-10-26/run.ps1 -Mode mobile
++powershell -NoProfile -ExecutionPolicy Bypass -File docs/evidence/garage-live-configurator-2026-10-26/run.ps1 -Test capture_garage_configurator -Mode gl_compatibility
++powershell -NoProfile -ExecutionPolicy Bypass -File docs/evidence/garage-live-configurator-2026-10-26/run.ps1 -Import
++```
++
++Reload, owner appearance/touch acceptance, descriptive-copy localisation and physical-device review remain. Mobile here is Windows Vulkan. No device attachment check or phone/tablet test, APK, real authentication/purchase, live mutation, deployment or owner-process restart was performed. Concurrent work is preserved; no staging or commit is implied.
+diff --git a/docs/evidence/garage-live-configurator-2026-10-26/run.ps1 b/docs/evidence/garage-live-configurator-2026-10-26/run.ps1
+--- /dev/null
++++ b/docs/evidence/garage-live-configurator-2026-10-26/run.ps1
+@@ -0,0 +1,17 @@
++param([string]$Test='test_customisation_carousel',[ValidateSet('headless','gl_compatibility','mobile')][string]$Mode='headless',[switch]$Before,[switch]$Import)
++$ErrorActionPreference='Stop'
++if ($Import) {$Test='import';$Mode='headless'}
++$kitRepo=(Resolve-Path (Join-Path $PSScriptRoot '../../..')).Path
++$kitOutput=Join-Path $PSScriptRoot $(if ($Before) {'before/native'} else {"$Test-$Mode"})
++New-Item -ItemType Directory -Force -Path $kitOutput | Out-Null
++$env:APPDATA=Join-Path $kitRepo "build/garage-live-configurator-2026-10-26/$(if ($Before) {'before'} else {"$Test-$Mode"})/user"
++New-Item -ItemType Directory -Force -Path $env:APPDATA | Out-Null
++$kitArgs=@('-NoProfile','-ExecutionPolicy','Bypass','-File',(Join-Path $kitRepo 'scripts/dev.ps1'),'-Action','TestScript','-ScriptPath',"res://tests/$Test.gd",'-CommandTimeoutSeconds','240','-TestArgument',"--evidence-root=$kitOutput")
++if ($Import) {$kitArgs=@('-NoProfile','-ExecutionPolicy','Bypass','-File',(Join-Path $kitRepo 'scripts/dev.ps1'),'-Action','Import','-CommandTimeoutSeconds','180')}
++if ($Mode -ne 'headless') {$kitArgs+=@('-Graphical','-RenderingMethod',$Mode,'-RenderingDriver',$(if ($Mode -eq 'mobile') {'vulkan'} else {'opengl3'}))}
++$kitStarted=[DateTime]::UtcNow
++& powershell @kitArgs *> (Join-Path $kitOutput 'console.log')
++$kitCode=$LASTEXITCODE
++@{arguments=$kitArgs;exit_code=$kitCode;started_utc=$kitStarted.ToString('o');duration_seconds=([DateTime]::UtcNow-$kitStarted).TotalSeconds}|ConvertTo-Json -Depth 5|Set-Content -Encoding UTF8 (Join-Path $kitOutput 'command.json')
++Get-Content (Join-Path $kitOutput 'console.log') -Tail 16
++exit $kitCode
+diff --git a/docs/evidence/garage-live-configurator-2026-10-26/record.py b/docs/evidence/garage-live-configurator-2026-10-26/record.py
+--- /dev/null
++++ b/docs/evidence/garage-live-configurator-2026-10-26/record.py
+@@ -0,0 +1,87 @@
++"""Record native outcomes and an exact, task-scoped review checkpoint."""
++from pathlib import Path
++import difflib
++import hashlib
++import json
++import re
++import subprocess
++
++EVIDENCE = Path(__file__).resolve().parent
++ROOT = EVIDENCE.parents[2]
++EXISTING = ["game/ui/garage_page.gd", "game/ui/garage_customisation_camera.gd",
++            "game/ui/garage_environment.gd", "game/vehicle/vehicle_customisation.gd",
++            "game/tests/test_customisation_carousel.gd", "AGENTS.md", "DEVELOPMENT_STATUS.md"]
++NEW = ["game/ui/"+name+suffix
++       for name in ("garage_parts_list", "garage_part_option", "garage_compare_button", "garage_part_indicator")
++       for suffix in (".gd", ".gd.uid")]
++NEW += ["game/tests/capture_garage_configurator.gd", "game/tests/capture_garage_configurator.gd.uid",
++        "docs/GARAGE_LIVE_CONFIGURATOR_2026_10_26.md"]
++NEW += ["docs/evidence/garage-live-configurator-2026-10-26/"+name
++        for name in ("run.ps1", "record.py", "review.html")]
++
++
++def sha(path):
++    return hashlib.sha256(path.read_bytes()).hexdigest()
++
++
++def log_text(path):
++    data = path.read_bytes()
++    return data.decode("utf-16" if data.startswith(b"\xff\xfe") else "utf-8-sig", errors="replace")
++
++
++patch, sources = [], []
++for name in EXISTING + NEW:
++    target, before = ROOT / name, EVIDENCE / "before" / name
++    original = before.read_text(encoding="utf-8") if before.exists() else ""
++    current = target.read_text(encoding="utf-8")
++    if original != current:
++        patch.append(f"diff --git a/{name} b/{name}\n")
++        patch.extend(difflib.unified_diff(original.splitlines(True), current.splitlines(True),
++                     fromfile=f"a/{name}" if before.exists() else "/dev/null", tofile=f"b/{name}"))
++    sources.append({"path": name, "sha256": sha(target),
++                    "before_sha256": sha(before) if before.exists() else None})
++checkpoint = EVIDENCE / "task-only.patch"
++checkpoint.write_text("".join(patch), encoding="utf-8", newline="\n")
++result = subprocess.run(["git", "apply", "--check", "--reverse", str(checkpoint)],
++                        cwd=ROOT, capture_output=True, text=True)
++runs = []
++for path in sorted(EVIDENCE.glob("*/command.json")):
++    if path.parent.name == "initial": continue
++    command = json.loads(path.read_text(encoding="utf-8-sig"))
++    log = path.with_name("console.log")
++    content = log_text(log)
++    runs.append({"directory": path.parent.name, **command,
++                 "summary": re.findall(r"(?:CUSTOMISATION_CAROUSEL|GARAGE_SIDEBAR|GARAGE_VIEW_CONTROLS|"
++                                       r"GARAGE_CUSTOMISATION_SPEED|GARAGE_CONFIGURATOR_CAPTURE|SCRIPT_PARSE):[^\r\n]+", content),
++                 "failures": re.findall(r"^FAIL:[^\r\n]+", content, re.M), "log_sha256": sha(log)})
++report = {
++    "date": "2026-10-26", "requirements": ["GLF01", "GLF02", "GLF03", "GLF04", "GLF05", "R01", "Q01"],
++    "engine": (ROOT / "godot-version.txt").read_text().strip(),
++    "behavior": {"parts": "Full-width numbered text rows, descriptions, aligned prices and actual category counts",
++                 "states": "Thin selected outline, green equipped check and independent preview state",
++                 "preview": "Actual Garage car only; no Parts photos, detail world or redundant selected summary/cancel action",
++                 "purchase": "Existing explicit confirmation, ownership, account, serial, save and affordability guards",
++                 "compare": "Momentary mouse/touch/keyboard hold; outside release, cancel, focus, selection/account/navigation cleanup",
++                 "presentation": "Flat UI, projected callout, actual untinted finish, revised Hood framing and Garage key/fill"},
++    "sources": sources, "runs": runs,
++    "retained_assets_test_sha256": sha(ROOT / "game/tests/test_garage_customisation_speed.gd"),
++    "initial_findings": ["No-photo assertion initially included the required equipped-check icon",
++                         "Native resize callback needed a detached-tree guard",
++                         "Selected row could be clipped until scrollbar bounds settled; original enclosure assertion retained"],
++    "initial_logs": [{"path": path.relative_to(EVIDENCE).as_posix(), "sha256": sha(path)}
++                     for path in sorted((EVIDENCE / "initial").glob("*.log"))],
++    "captures": [{"path": path.relative_to(EVIDENCE).as_posix(), "sha256": sha(path)}
++                 for path in sorted(EVIDENCE.rglob("*.png"))],
++    "checkpoint": {"path": "task-only.patch", "sha256": sha(checkpoint),
++                   "reverse_check_exit": result.returncode, "stderr": result.stderr},
++    "review_fixture": "Actual App with isolated red paint and 3000-coin local Shop fixture; no live account, balance or purchase",
++    "remaining_acceptance": ["client reload", "owner appearance/touch", "translated descriptive copy", "physical-device review"],
++    "limits": ["Windows desktop renderers and injected touch only", "no device attachment check or physical-device test",
++               "no APK", "no real authentication/purchase or live mutation", "no deployment or owner-process restart",
++               "concurrent work preserved; no staging or commit"],
++}
++(EVIDENCE / "report.json").write_text(json.dumps(report, indent=2)+"\n", encoding="utf-8")
++print(json.dumps({"runs": [{"name": run["directory"], "exit": run["exit_code"], "summary": run["summary"]}
++                           for run in runs], "checkpoint_reverse_exit": result.returncode,
++                  "checkpoint_error": result.stderr}, indent=2))
++raise SystemExit(result.returncode)
+diff --git a/docs/evidence/garage-live-configurator-2026-10-26/review.html b/docs/evidence/garage-live-configurator-2026-10-26/review.html
+--- /dev/null
++++ b/docs/evidence/garage-live-configurator-2026-10-26/review.html
+@@ -0,0 +1,26 @@
++<!doctype html>
++<html lang="en">
++<meta charset="utf-8">
++<meta name="viewport" content="width=device-width,initial-scale=1">
++<title>Garage live Parts configurator — native review</title>
++<style>
++body{margin:0;background:#0b141b;color:#edf1f3;font:16px/1.5 system-ui,sans-serif}main{max-width:1720px;margin:auto;padding:24px}h1,h2{line-height:1.2}p{max-width:1000px;color:#b6c5ce}a{color:#ffd541}figure{margin:24px 0}img{display:block;width:100%;height:auto;border:1px solid #354750;border-radius:5px}figcaption{color:#b6c5ce;margin:8px 0 16px}.pair{display:grid;grid-template-columns:1fr 1fr;gap:16px}@media(max-width:900px){.pair{grid-template-columns:1fr}}
++</style>
++<main>
++<h1>Garage live Parts configurator</h1>
++<p>Actual native App, 26 October 2026. The right panel uses numbered text rows; the main Garage is the only parts preview. Selecting a row previews immediately. The yellow action retains explicit purchase confirmation. All 43 existing options and their economy rules remain.</p>
++<figure><img src="capture_garage_configurator-gl_compatibility/hood-preview-1720.png" alt="Red Compact with hood louvres, projected part callout, numbered options, equipped check, preview state and Buy and Equip"><figcaption>Finished layout: native Compatibility, 1720 × 900. Local reference-paint and 3000-coin wallet fixtures; no live account.</figcaption></figure>
++<h2>Hold to compare</h2>
++<div class="pair">
++<figure><img src="capture_garage_configurator-gl_compatibility/hood-compare-equipped.png" alt="Holding compare shows the equipped plain hood while retaining the selected list row"><figcaption>Held: equipped hood, unchanged camera and selection.</figcaption></figure>
++<figure><img src="capture_garage_configurator-gl_compatibility/hood-preview-after-release.png" alt="Releasing compare returns the hood louvres and preview callout"><figcaption>Released outside: the selected louvres return.</figcaption></figure>
++</div>
++<div class="pair">
++<figure><img src="capture_garage_configurator-mobile/hood-preview-960.png" alt="Compact full-width options list at 960 by 540"><figcaption>960 × 540, desktop Mobile renderer.</figcaption></figure>
++<figure><img src="capture_garage_configurator-gl_compatibility/hood-owned.png" alt="An owned scoop preview uses Equip without another purchase"><figcaption>Owned: Equip without another charge.</figcaption></figure>
++</div>
++<figure><img src="capture_garage_configurator-gl_compatibility/body-kit-preview.png" alt="Body kits uses a low three-quarter view and the same text list"><figcaption>Body kits retains its low front/side camera.</figcaption></figure>
++<details><summary>Previous Parts layout</summary><figure><img src="before/previous-parts.png" alt="The previous two-column thumbnail catalogue"><figcaption>Previous UI, captured before this change.</figcaption></figure></details>
++<p>Verification covers pointer and keyboard holds, release outside, cancellation, focus loss, selection/account/navigation changes, saved state, purchase fences, all seven body fits and the retained Workshop/Wash/gesture flows. <a href="report.json">Actual commands and outcomes</a>. Desktop renderers only; phone and translated-copy acceptance remain. No device attachment check/test, APK, real purchase, deployment or owner-process restart.</p>
++</main>
++</html>

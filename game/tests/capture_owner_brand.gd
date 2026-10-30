@@ -6,10 +6,11 @@ func _initialize() -> void: run.call_deferred()
 func run() -> void:
 	OS.set_environment("BMT_API_URL", "")
 	var output: String = "res://../docs/evidence/menu-logo-2026-10-25"
+	if not OS.get_environment("BMT_MENU_LOGO_OUTPUT").is_empty():
+		output = OS.get_environment("BMT_MENU_LOGO_OUTPUT")
 	DirAccess.make_dir_recursive_absolute(ProjectSettings.globalize_path(output))
-	# Bound the engine splash to a landscape window without changing the artwork.
-	var splash := Image.load_from_file("res://assets/menu/logo.png")
-	splash.resize(640, 225, Image.INTERPOLATE_LANCZOS)
+	# Keep historical captures from restoring the retired PNG artwork.
+	var splash: Image = preload("res://tests/bake_boot_logo.gd").render()
 	assert(splash.save_png("res://assets/menu/boot_logo.png") == OK)
 	var folder: String = "user://owner_brand_" + TrackLibrary.unique_id()
 	DirAccess.make_dir_recursive_absolute(folder)

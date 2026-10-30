@@ -8,8 +8,10 @@ static var shadow_material: ShaderMaterial
 
 static func prepare(car: CarVisual) -> void:
 	_reduce_primitives(car)
+	# Editable assemblies retain their own casters through later part replacements.
+	if car.vehicle_id=="kart" and car.editable_kits: return
 	# Baked stock shadows cannot describe fitted aero/hood/rim silhouettes.
-	if car.vehicle_id == "compact" and car.customisation != VehicleCustomisation.defaults(): return
+	if VehicleCustomisation.supported(car.vehicle_id) and car.customisation != VehicleCustomisation.defaults(): return
 	var frames: Array[Node3D] = [car.body]
 	frames.append_array(car.rolling_wheels)
 	var meshes: Array[ArrayMesh] = []
@@ -26,7 +28,7 @@ static func prepare(car: CarVisual) -> void:
 	for index: int in range(frames.size()):
 		# Fitted parts can change the actual silhouette. Their already reduced
 		# geometry keeps its own casters instead of using a stock-only proxy.
-		if car.vehicle_id == "compact":
+		if VehicleCustomisation.supported(car.vehicle_id):
 			var fitted: bool = false
 			for category: String in (["hood","aero","body"] if index == 0 else ["rims"]):
 				if str(car.customisation.get(category,"stock")) != "stock": fitted = true

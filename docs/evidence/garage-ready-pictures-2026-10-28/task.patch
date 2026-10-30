@@ -1,0 +1,677 @@
+--- a/game/core/app.gd
++++ b/game/core/app.gd
+@@ -24,6 +24,7 @@
+ var _garage_parking: Control
+ var _retained_garage: GaragePage
+ var _garage_preloader: Node
++var _garage_picture_navigation: int=0
+ var _retained_profile_car: Control
+ var race_profile_enabled: bool = false
+ var _rivalry_parking: Control
+@@ -526,16 +527,14 @@
+ 	# Account/Race become usable without constructing an unrelated native Garage.
+ 	# First Garage entry prepares one live showroom; carousel photos are cached.
+ 	_show_screen("restoring")
+-	if not capture_path.is_empty():
+-		_show_screen(capture_screen)
+-	else:
+-		await online.start_session()
+-		_show_screen("rivalry" if online.profile_ready() else "account")
+-	startup_complete = true
++	if capture_path.is_empty(): await online.start_session()
+ 	preload("res://ui/garage_preview_cache.gd").prefetch_catalogue(get_tree())
+ 	_garage_preloader=preload("res://ui/garage_preloader.gd").new()
+ 	_garage_preloader.app=self
+ 	add_child(_garage_preloader)
++	await _garage_preloader.prepare_pictures()
++	_show_screen(capture_screen if not capture_path.is_empty() else "rivalry" if online.profile_ready() else "account")
++	startup_complete = true
+ 	tutorial = preload("res://tutorial/tutorial_controller.gd").new()
+ 	tutorial.app = self
+ 	add_child(tutorial)
+@@ -556,6 +555,11 @@
+ func _show_screen(next: String) -> void:
+ 	if next == "rivalry" and rivalry_section == "overview" and not is_instance_valid(game) and _rivalry_needs_entry_data():
+ 		_open_rivalry()
++		return
++	_garage_picture_navigation+=1
++	if next=="garage" and DisplayServer.get_name()!="headless" and is_instance_valid(_garage_preloader) and not _garage_preloader.pictures_ready():
++		if screen=="garage" and is_instance_valid(_retained_garage) and _retained_garage.records!=records: _show_screen("restoring")
++		_open_garage_with_pictures(_garage_picture_navigation,records)
+ 		return
+ 	_wake_optional_work.call_deferred()
+ 	if next != "tracks" and discovery_provider != null: discovery_provider.comparisons.cancel_speculation()
+@@ -1088,6 +1092,11 @@
+ 	_set_menu_preview_input(menu_body, true)
+ 	var direction: int = 1 if distance < 0.0 else -1
+ 	menu_neighbor_direction = direction
++	if menu_neighbors.has(direction) and menu_neighbors[direction].screen=="garage" and not _garage_pictures_ready():
++		for neighbor: Dictionary in menu_neighbors.values(): neighbor.body.hide()
++		menu_body.position.x=signf(distance)*64.0*(1.0-exp(-absf(distance)/160.0))
++		menu_drag_offset=0.0
++		return
+ 	# A neighbor is also an entry route. Do not expose its unresolved cards under
+ 	# the finger while the initial membership request is still in flight.
+ 	if menu_neighbors.has(direction) and menu_neighbors[direction].screen == "rivalry" and _rivalry_needs_entry_data():
+@@ -1242,6 +1251,10 @@
+ 		control.remove_meta("page_mouse_filter")
+ 
+ func _commit_menu_neighbor(direction: int) -> void:
++	if menu_neighbors[direction].screen=="garage" and DisplayServer.get_name()!="headless" and not _garage_preloader.pictures_ready():
++		_stop_menu_edge_motion()
++		_show_screen("garage")
++		return
+ 	if menu_neighbors[direction].screen == "rivalry" and _rivalry_needs_entry_data():
+ 		_stop_menu_edge_motion()
+ 		_open_rivalry()
+@@ -1330,6 +1343,10 @@
+ 		_update_creation_biome(column,str(document.get("theme",TrackDocument.THEMES[0])))
+ 
+ func _navigate_menu_page(next: String) -> void:
++	_garage_picture_navigation+=1
++	if next=="garage" and not _garage_pictures_ready():
++		_show_screen(next)
++		return
+ 	# Explicit refreshes still use _show_screen. User navigation promotes the same
+ 	# already warmed controls as swipes, avoiding shell/layout rebuilding on taps.
+ 	if next == "rivalry":
+@@ -2657,9 +2674,9 @@
+ 
+ func _garage_residency() -> Dictionary:
+ 	var result: Dictionary = {"image_gpu_bytes":0,"viewport_gpu_bytes":0,"scene_bytes":0,"preview_io_cpu_bytes":0}
+-	if is_instance_valid(_garage_preloader): result.merge(_garage_preloader.residency())
++	var seen: Dictionary = {}
++	if is_instance_valid(_garage_preloader): result.merge(_garage_preloader.residency(seen))
+ 	if not is_instance_valid(_retained_garage): return result
+-	var seen: Dictionary = {}
+ 	for card: CarShowroom in _retained_garage.thumbnails.values():
+ 		var image: TextureRect = card.get("_image")
+ 		if image == null or image.texture == null or seen.has(image.texture.get_instance_id()): continue
+@@ -2674,10 +2691,17 @@
+ func _trim_hidden_garage() -> void:
+ 	if is_instance_valid(_garage_preloader): _garage_preloader.evict()
+ 	if not is_instance_valid(_retained_garage) or _retained_garage.is_visible_in_tree(): return
++	_discard_suspended_menu()
+ 	var retired: GaragePage = _retained_garage
+ 	_retained_garage = null
+ 	retired.get_parent().remove_child(retired)
+ 	retired.queue_free()
++	for direction: int in menu_neighbors.keys():
++		if menu_neighbors[direction].screen!="garage": continue
++		var body: Control=menu_neighbors[direction].body
++		menu_neighbors.erase(direction)
++		body.get_parent().remove_child(body)
++		body.queue_free()
+ 
+ func _rebuild_profile_menu(destination: String) -> void:
+ 	# Garage owns its account fence in _garage, like the other menu pages.
+@@ -2699,6 +2723,22 @@
+ 	_refresh_account_car()
+ 	if is_instance_valid(_retained_garage) and _retained_garage.records == records:
+ 		_retained_garage.refresh_cosmetics()
++
++func _open_garage_with_pictures(request: int,owner_records: LocalRecords) -> void:
++	var generation: int=_navigation_generation
++	var current: Callable=func() -> bool: return is_inside_tree() and request==_garage_picture_navigation and generation==_navigation_generation and records==owner_records
++	if await _garage_preloader.prepare_pictures(current):
++		if current.call(): _show_screen("garage")
++
++func _garage_pictures_ready() -> bool:
++	if DisplayServer.get_name()=="headless": return true
++	return is_instance_valid(_garage_preloader) and _garage_preloader.pictures_ready()
++
++func _prepare_garage_pictures() -> bool:
++	var generation: int=_navigation_generation
++	var owner_records: LocalRecords=records
++	var current: Callable=func() -> bool: return is_inside_tree() and generation==_navigation_generation and records==owner_records
++	return await _garage_preloader.prepare_pictures(current)
+ 
+ func _header_car_capture_allowed() -> bool:
+ 	return startup_complete and not is_instance_valid(game) and _background_work_allowed() and screen not in ["account","restoring"]
+@@ -2731,6 +2771,9 @@
+ 	_retained_garage = page
+ 	# Use the original interactive showroom with the saved appearance on entry.
+ 	page.cached_carousel = true
++	page.prepared_pictures=_garage_preloader.picture_pool() if is_instance_valid(_garage_preloader) else {}
++	page.car_pictures_ready=_garage_pictures_ready
++	page.prepare_car_pictures=_prepare_garage_pictures
+ 	page.preview_can_render=func() -> bool: return _publishing_slots_foreground and _background_work_allowed() and (menu_page_motion==null or not menu_page_motion.is_running())
+ 	if is_instance_valid(_garage_preloader): page.preloaded_showroom=_garage_preloader.take()
+ 	page.achievements = achievements
+--- a/game/ui/garage_page.gd
++++ b/game/ui/garage_page.gd
+@@ -81,6 +81,10 @@
+ var thumbnails: Dictionary = {}
+ var cached_carousel: bool = false
+ var _preview_service: Node
++var prepared_pictures: Dictionary={}
++var car_pictures_ready: Callable
++var prepare_car_pictures: Callable
++var _picture_section_request: int=0
+ var tile_stride: int = 240
+ var _condition_saved: Dictionary = {}
+ var _condition_presented: Dictionary = {}
+@@ -731,6 +735,9 @@
+ func _build_carousel() -> void:
+ 	if cached_carousel:
+ 		_preview_service = preload("res://ui/garage_preview_cache.gd").new()
++		_preview_service.ready_pictures=prepared_pictures
++		_preview_service.remember_pictures=true
++		_preview_service.immediate_reads=true
+ 		_preview_service.can_render=func() -> bool: return (not progressive_entry or not showroom.preparing) and (_menu_motion==null or not _menu_motion.is_running()) and (not preview_can_render.is_valid() or bool(preview_can_render.call()))
+ 		if showroom.has_method("take_carousel_picture"): _preview_service.prepared_picture=showroom.take_carousel_picture()
+ 		_preview_service.directory = records.path+".garage-previews"
+@@ -881,6 +888,7 @@
+ 			model.condition = condition
+ 			model.weathering.restore(condition)
+ 			model.refresh_thumbnail()
++		if cached_carousel: model.refresh_thumbnail()
+ 
+ func refresh_selection() -> void:
+ 	# A warmed page may have been built before another page selected a car.
+@@ -932,7 +940,15 @@
+ 		_opening_section=""
+ 		_show_section(destination)
+ 
++func _show_ready_cars(request: int) -> void:
++	if prepare_car_pictures.is_valid() and await prepare_car_pictures.call():
++		if is_inside_tree() and is_visible_in_tree() and request==_picture_section_request: _show_section("cars")
++
+ func _show_section(next: String) -> void:
++	_picture_section_request+=1
++	if next=="cars" and car_pictures_ready.is_valid() and not car_pictures_ready.call():
++		_show_ready_cars(_picture_section_request)
++		return
+ 	if progressive_entry and is_instance_valid(showroom) and showroom.preparing and not showroom.interaction_ready and next not in ["cars","news","achievements"]:
+ 		_opening_section=next
+ 		return
+--- a/game/ui/garage_preview_cache.gd
++++ b/game/ui/garage_preview_cache.gd
+@@ -20,6 +20,10 @@
+ var can_render: Callable
+ var prepared_picture: Dictionary={}
+ var pending_writes: Array[Dictionary]=[]
++var ready_pictures: Dictionary={}
++var remember_pictures: bool=false
++var immediate_reads: bool=false
++var warm_views: Dictionary={}
+ var _last_input: int=0
+ var _touches: Dictionary={}
+ var idle_ms: int=750
+@@ -95,11 +99,65 @@
+ 		if float(value.get(field,0.0)) != 0.0: return value
+ 	return {}
+ 
++func warm_records(records: LocalRecords) -> void:
++	remember_pictures=true
++	immediate_reads=true
++	directory=records.path+".garage-previews"
++	for id: String in VehicleCatalog.IDS:
++		var view: CarShowroom=warm_views.get(id)
++		var fresh: bool=view==null
++		if fresh:
++			view=preload("res://ui/garage_cached_thumbnail.gd").new()
++			view.vehicle_id=id
++			view.preview_service=self
++			view.hide()
++			warm_views[id]=view
++		view.livery=VehicleLivery.for_car(records.settings,id)
++		view.condition=VehicleCondition.read(records,id)
++		view.customisation=VehicleCustomisation.for_car(records.settings,id)
++		if fresh: add_child(view)
++		else: view.refresh_thumbnail()
++		if view.displayed_key==view.preview_key and view._image.texture!=null: _publish(view,view.preview_key,view._image.texture)
++
++func pictures_ready() -> bool:
++	if warm_views.size()!=VehicleCatalog.IDS.size(): return false
++	for view: CarShowroom in warm_views.values():
++		if _remembered(view.vehicle_id,view.preview_key)==null: return false
++	return true
++
++func _remembered(vehicle: String,key: String) -> Texture2D:
++	if not remember_pictures or directory.is_empty(): return null
++	var picture: Dictionary=ready_pictures.get(vehicle,{})
++	return picture.get("texture") if picture.get("key")==key else null
++
++func _publish(view: CarShowroom,key: String,texture: Texture2D) -> void:
++	if view.preview_key!=key or texture==null: return
++	if remember_pictures and not directory.is_empty(): ready_pictures[view.vehicle_id]={"key":key,"texture":texture}
++	view.publish_preview(key,texture)
++
++func picture_bytes(seen: Dictionary) -> int:
++	var bytes: int=0
++	var textures: Array=[]
++	for picture: Dictionary in ready_pictures.values(): textures.append(picture.texture)
++	for view: CarShowroom in warm_views.values():
++		if view._image!=null: textures.append(view._image.texture)
++	for texture: Texture2D in textures:
++		if texture==null or seen.has(texture.get_instance_id()): continue
++		seen[texture.get_instance_id()]=true
++		bytes+=texture.get_width()*texture.get_height()*4
++	return bytes
++
+ func request(view: CarShowroom) -> void:
+ 	var key: String = identity(view)
++	var remembered: Texture2D=_remembered(view.vehicle_id,key)
++	if remembered!=null:
++		cache_hits+=1
++		if prepared_picture.get("vehicle")==view.vehicle_id: prepared_picture={}
++		view.publish_preview(key,remembered)
++		return
+ 	if prepared_picture.get("vehicle")==view.vehicle_id and prepared_picture.get("paint")==view.livery and prepared_picture.get("condition")==view.condition and prepared_picture.get("parts")==view.customisation:
+ 		cache_hits+=1
+-		view.publish_preview(key,prepared_picture.texture)
++		_publish(view,key,prepared_picture.texture)
+ 		if not directory.is_empty() and prepared_picture.get("persisted_key","")!=key:
+ 			pending_writes.append({"key":key,"texture":prepared_picture.texture})
+ 			prepared_picture.persisted_key=key
+@@ -108,20 +166,27 @@
+ 		var texture: Texture2D = catalogue_texture(view.vehicle_id)
+ 		if texture != null:
+ 			cache_hits += 1
+-			view.publish_preview(key,texture)
++			_publish(view,key,texture)
++			return
++	if immediate_reads and not directory.is_empty():
++		var result: Dictionary=_read(func() -> bool: return false,directory.path_join(key+".png"))
++		file_io_us+=int(result.us)
++		if result.image is Image:
++			cache_hits+=1
++			_publish(view,key,ImageTexture.create_from_image(result.image))
+ 			return
+ 	for index: int in range(queued.size()-1,-1,-1):
+ 		if queued[index].view.get_ref() == view or not _current(queued[index]): queued.remove_at(index)
+ 	if active.get("key") == key and active.view.get_ref() == view: return
+ 	if io.get("key") == key and _view(io) == view: return
+-	queued.append({"view":weakref(view),"key":key,"vehicle":view.vehicle_id,"paint":view.livery.duplicate(true),"condition":view.condition.duplicate(true),"parts":view.customisation.duplicate(true),"read":true})
++	queued.append({"view":weakref(view),"key":key,"vehicle":view.vehicle_id,"paint":view.livery.duplicate(true),"condition":view.condition.duplicate(true),"parts":view.customisation.duplicate(true),"read":not immediate_reads})
+ 
+ func _default(view: CarShowroom) -> bool:
+ 	return view.livery == VehicleLivery.for_car({},view.vehicle_id) and _visible_condition(view.condition).is_empty() and view.customisation == VehicleCustomisation.defaults()
+ 
+ func _current(job: Dictionary, visible: bool = false) -> bool:
+ 	var view: Object = _view(job)
+-	return is_instance_valid(view) and view.preview_key == job.key and (not visible or _on_screen(view))
++	return is_instance_valid(view) and view.preview_key == job.key and (not visible or warm_views.get(view.vehicle_id)==view or _on_screen(view))
+ 
+ func _on_screen(view: Control) -> bool:
+ 	if not view.is_visible_in_tree(): return false
+@@ -146,12 +211,17 @@
+ 		if io.get("read",false) and _current(io):
+ 			if result.get("image") is Image and _current(io,true):
+ 				cache_hits += 1
+-				io.view.get_ref().publish_preview(io.key,ImageTexture.create_from_image(result.image))
++				_publish(io.view.get_ref(),io.key,ImageTexture.create_from_image(result.image))
+ 			else:
+ 				io.read = result.get("image") is Image
+ 				queued.append(io)
+ 		io = {}
+ 	if not active.is_empty():
++		var remembered: Texture2D=_remembered(active.vehicle,active.key)
++		if _current(active) and remembered!=null:
++			_publish(active.view.get_ref(),active.key,remembered)
++			_finish()
++			return
+ 		if not _current(active,true):
+ 			if _current(active): queued.push_front(active)
+ 			_finish()
+@@ -185,6 +255,10 @@
+ 	for _index: int in range(queued.size()):
+ 		var next: Dictionary = queued.pop_front()
+ 		if not _current(next): continue
++		var remembered: Texture2D=_remembered(next.vehicle,next.key)
++		if remembered!=null:
++			_publish(next.view.get_ref(),next.key,remembered)
++			continue
+ 		if not _current(next,true): queued.append(next); continue
+ 		if DisplayServer.get_name() == "headless": continue
+ 		if not _render_allowed():
+@@ -211,7 +285,7 @@
+ 		var started: int = Time.get_ticks_usec()
+ 		var image: Image = renderer.showroom_viewport.get_texture().get_image()
+ 		readback_us += Time.get_ticks_usec()-started
+-		active.view.get_ref().publish_preview(active.key,ImageTexture.create_from_image(image))
++		_publish(active.view.get_ref(),active.key,ImageTexture.create_from_image(image))
+ 		if not directory.is_empty():
+ 			io = {"key":active.key,"read":false}
+ 			worker = Work.start(_write.bind(directory,active.key,image),get_tree())
+--- a/game/ui/garage_preloader.gd
++++ b/game/ui/garage_preloader.gd
+@@ -1,6 +1,7 @@
+ extends Node
+ ## One account-bound, optional studio. Asset reads precede idle-only native work.
+ const Studio=preload("res://ui/garage_preloaded_studio.gd")
++const Pictures=preload("res://ui/garage_preview_cache.gd")
+ const MAX_PENDING: int=4
+ var app: Node
+ var studio: CarShowroom
+@@ -17,6 +18,10 @@
+ var _next_audit: int=0
+ var _tree_ref: WeakRef
+ var _menu_drawn: bool=false
++var picture_service: Node
++var picture_records: LocalRecords
++var _pictures_dirty: bool=true
++var _picture_waiters: int=0
+ 
+ func _ready() -> void:
+ 	_tree_ref=weakref(get_tree())
+@@ -34,14 +39,72 @@
+ 
+ func invalidate() -> void:
+ 	_next_audit=0
++	_pictures_dirty=true
+ 	if not evicted: set_process(true)
++
++func _sync_pictures() -> void:
++	if not is_instance_valid(picture_service) or picture_records!=app.records:
++		if picture_records!=null and picture_records.appearance_committed.is_connected(invalidate): picture_records.appearance_committed.disconnect(invalidate)
++		if is_instance_valid(picture_service):
++			picture_service.ready_pictures.clear()
++			remove_child(picture_service)
++			picture_service.queue_free()
++		picture_records=app.records
++		picture_records.appearance_committed.connect(invalidate)
++		_pictures_dirty=true
++		picture_service=Pictures.new()
++		picture_service.can_render=_pictures_allowed
++		add_child(picture_service)
++	if _pictures_dirty:
++		picture_service.warm_records(picture_records)
++		_pictures_dirty=false
++
++func _pictures_allowed() -> bool:
++	if not is_instance_valid(app) or not app._publishing_slots_foreground or not app._background_work_allowed() or app.editor_memory.pressure_requested: return false
++	if app.menu_page_motion!=null and app.menu_page_motion.is_running(): return false
++	if not is_instance_valid(app._retained_garage) or not app._retained_garage.is_visible_in_tree(): return true
++	var page: GaragePage=app._retained_garage
++	return page.section!="cars" and is_instance_valid(page._preview_service) and page._preview_service.renderer==null and (page._menu_motion==null or not page._menu_motion.is_running())
++
++func pictures_ready() -> bool:
++	_pictures_dirty=true
++	_sync_pictures()
++	return is_instance_valid(picture_service) and picture_records==app.records and picture_service.pictures_ready()
++
++func picture_pool() -> Dictionary:
++	return picture_service.ready_pictures if is_instance_valid(picture_service) and picture_records==app.records else {}
++
++func prepare_pictures(still_current: Callable=Callable()) -> bool:
++	_pictures_dirty=true
++	_sync_pictures()
++	if DisplayServer.get_name()=="headless": return picture_service.pictures_ready()
++	var current_service: Node=picture_service
++	var current_records: LocalRecords=picture_records
++	_picture_waiters+=1
++	current_service.idle_ms=0
++	var deadline: int=Time.get_ticks_msec()+45000
++	while is_inside_tree() and is_instance_valid(current_service) and not current_service.pictures_ready():
++		if app.records!=current_records or (still_current.is_valid() and not still_current.call()): break
++		# Startup remains bounded. An explicit, cancellable navigation keeps its
++		# request until the exact picture is ready rather than losing the click.
++		if not still_current.is_valid() and Time.get_ticks_msec()>deadline: break
++		await get_tree().process_frame
++	_picture_waiters-=1
++	if is_instance_valid(picture_service) and _picture_waiters==0: picture_service.idle_ms=750
++	return is_instance_valid(current_service) and app.records==current_records and current_service.pictures_ready()
+ 
+ func _process(_delta: float) -> void:
+ 	_poll_loads()
+ 	if evicted:
+ 		set_process(not _pending.is_empty())
+ 		return
++	if _pictures_dirty or picture_records!=app.records: _sync_pictures()
++	if is_instance_valid(picture_service):
++		var allowed: bool=app._background_work_allowed() and app._publishing_slots_foreground and not app.editor_memory.pressure_requested
++		if not allowed: picture_service.suspend_previews()
++		picture_service.set_process(allowed)
+ 	if not is_instance_valid(app) or not app.startup_complete: return
++	if DisplayServer.get_name()!="headless" and is_instance_valid(picture_service) and not picture_service.pictures_ready(): return
+ 	if is_instance_valid(app.game) or is_instance_valid(app.race_loading) or app.cloud_starting or is_instance_valid(app._retained_garage):
+ 		_reset()
+ 		# Consume outstanding threaded reads before sleeping. Menu/lifecycle
+@@ -118,6 +181,12 @@
+ 
+ func evict() -> void:
+ 	evicted=true
++	if is_instance_valid(picture_service):
++		picture_service.ready_pictures.clear()
++		remove_child(picture_service)
++		picture_service.queue_free()
++		picture_service=null
++	_pictures_dirty=true
+ 	_reset()
+ 	set_process(not _pending.is_empty())
+ 
+@@ -134,10 +203,18 @@
+ 	_failed.clear()
+ 
+ func has_work() -> bool:
+-	return studio!=null or not _resources.is_empty() or not _pending.is_empty()
+-
+-func residency() -> Dictionary:
++	return studio!=null or not _resources.is_empty() or not _pending.is_empty() or is_instance_valid(picture_service)
++
++func residency(seen: Dictionary={}) -> Dictionary:
+ 	var result: Dictionary={"preload_asset_bytes":32*1024*1024 if not _resources.is_empty() or not _pending.is_empty() else 0,"preload_scene_bytes":0,"preload_viewport_gpu_bytes":0}
++	if is_instance_valid(picture_service):
++		result.preload_picture_gpu_bytes=picture_service.picture_bytes(seen)
++		result.preload_picture_io_cpu_bytes=16*1024*1024 if picture_service.worker!=null else 0
++		if picture_service.renderer!=null:
++			result.preload_picture_scene_bytes=preload("res://track/prepared_world_cache.gd")._resource_bytes(picture_service.renderer,{})
++			var pixels: int=0
++			for viewport: SubViewport in picture_service.renderer.find_children("*","SubViewport",true,false): pixels+=viewport.size.x*viewport.size.y*16
++			result.preload_picture_viewport_gpu_bytes=pixels
+ 	if is_instance_valid(studio):
+ 		result.preload_asset_bytes=4*1024*1024
+ 		if studio.carousel_texture!=null: result.preload_asset_bytes+=2048*512*4
+--- a/game/ui/garage_cached_thumbnail.gd
++++ b/game/ui/garage_cached_thumbnail.gd
+@@ -43,7 +43,11 @@
+ func refresh_thumbnail() -> void:
+ 	if _image == null or preview_service == null: return
+ 	var key: String = preview_service.identity(self)
+-	if key == preview_key: return
++	if key == preview_key:
++		if displayed_key!=key and preview_service.has_method("_remembered"):
++			var ready: Texture2D=preview_service._remembered(vehicle_id,key)
++			if ready!=null: publish_preview(key,ready)
++		return
+ 	preview_key = key
+ 	# A picture of a different finish must never stand in for the saved car.
+ 	# Exact stock, prepared and cached pictures publish through the same guard.
+--- /dev/null
++++ b/game/tests/test_garage_ready_pictures.gd
+@@ -0,0 +1,189 @@
++extends SceneTree
++## Actual-App first-frame images, separate-process restart, cancellation and scope.
++var output: String
++var profile: String
++var phase: String="seed"
++var checks: int=0
++var failures: int=0
++var app: Node
++var metrics: Dictionary={}
++
++func _initialize() -> void: run.call_deferred()
++func check(ok: bool,label: String) -> void:
++	checks+=1
++	if not ok: failures+=1;print("FAIL: ",label)
++func frames(count: int=4) -> void:
++	for _frame: int in range(count): await process_frame
++func settle() -> void:
++	await create_timer(0.4).timeout
++	await frames()
++func checksum(texture: Texture2D) -> String:
++	var hash:=HashingContext.new()
++	hash.start(HashingContext.HASH_SHA256)
++	hash.update(texture.get_image().get_data())
++	return hash.finish().hex_encode()
++func capture(label: String) -> void:
++	if DisplayServer.get_name()=="headless": return
++	await RenderingServer.frame_post_draw
++	check(root.get_texture().get_image().save_png(output.path_join(label+".png"))==OK,"capture "+label)
++func first_frame(label: String,prior_io: int=0) -> void:
++	var page: GaragePage=app._retained_garage
++	check(app.screen=="garage" and page!=null,"ready pictures allow immediate Garage navigation "+label)
++	if page==null: return
++	for id: String in VehicleCatalog.IDS:
++		var view: CarShowroom=page.thumbnails[id]
++		check(view._image.texture!=null,"picture exists before the first draw "+id+" "+label)
++		check(not view._placeholder.visible,"no visible loading state "+id+" "+label)
++		check(view.displayed_key==view.preview_key,"picture has the current exact identity "+id+" "+label)
++		check(view.car==null and view.showroom_viewport==null,"picture owns no native world "+id)
++	check(page._preview_service.renders==0,"entry creates no picture renderer "+label)
++	check(page._preview_service.worker==null and page._preview_service.file_io_us==prior_io,"entry starts no PNG reads "+label)
++func wait_for_writes() -> void:
++	var deadline: int=Time.get_ticks_msec()+10000
++	var service: Node=app._garage_preloader.picture_service
++	while service.worker!=null and Time.get_ticks_msec()<deadline: await process_frame
++	check(service.worker==null,"prewarmed PNG writes complete")
++func run() -> void:
++	for arg: String in OS.get_cmdline_user_args():
++		if arg.begins_with("--output="): output=arg.trim_prefix("--output=")
++		if arg.begins_with("--profile="): profile=arg.trim_prefix("--profile=")
++		if arg.begins_with("--phase="): phase=arg.trim_prefix("--phase=")
++	create_timer(160).timeout.connect(func() -> void: print("FAIL: ready-picture deadline");quit(1))
++	root.size=Vector2i(1280,720)
++	check(DirAccess.make_dir_recursive_absolute(profile)==OK,"create the isolated profile folder")
++	var records:=LocalRecords.new(profile.path_join("records.json"))
++	if phase=="seed":
++		var paints: Dictionary={}
++		var conditions: Dictionary={}
++		for id: String in VehicleCatalog.IDS:
++			var paint: Dictionary=VehicleLivery.for_car({},id)
++			paint.colors.body="c72d34"
++			paints[id]=paint
++			var condition: Dictionary=VehicleWeathering.new().snapshot()
++			condition.dirt=0.2
++			conditions[id]=condition
++		records.settings.vehicle_liveries=paints
++		records.settings.music_enabled=false
++		check(records.save_records()==OK,"seed isolated saved liveries")
++		check(records.save_vehicle_conditions(conditions)==OK,"seed isolated saved wear")
++	app=load("res://core/app.tscn").instantiate()
++	app.records=records
++	app.library=TrackLibrary.new(profile.path_join("tracks"))
++	app.cloud_root_override=profile.path_join("cloud")
++	var began: int=Time.get_ticks_usec()
++	root.add_child(app)
++	while not app.startup_complete:
++		app._publishing_slots_foreground=true # Represent a foreground app in the native test window.
++		await process_frame
++	metrics.startup_ms=(Time.get_ticks_usec()-began)/1000.0
++	metrics.preview_revision=preload("res://core/build_identity.gd").GARAGE_PREVIEW_SHA256
++	var loader: Node=app._garage_preloader
++	loader.idle_ms=100000 # Isolate picture preparation from the optional live-studio warmup.
++	loader.foreground=true
++	GameSoundtrack.instance().music_enabled=false
++	GameSoundtrack.instance().menu_player.stop()
++	check(loader.pictures_ready(),"all exact pictures are prepared before the startup menu")
++	if not loader.pictures_ready():
++		metrics.ready_vehicles=loader.picture_pool().keys()
++		metrics.active_vehicle=loader.picture_service.active.get("vehicle","")
++		metrics.picture_captures=loader.picture_service.renders
++		metrics.checks=checks;metrics.failures=failures;metrics.phase=phase
++		FileAccess.open(output.path_join(phase+".json"),FileAccess.WRITE).store_string(JSON.stringify(metrics,"  "))
++		print("READY_PICTURES: ",JSON.stringify(metrics))
++		quit(1)
++		return
++	check(app._retained_garage==null,"picture preparation constructs no Garage page")
++	check(loader.picture_service.renderer==null,"startup releases the temporary picture world")
++	metrics.picture_captures=loader.picture_service.renders
++	var expected: Dictionary={}
++	if phase!="seed": expected=JSON.parse_string(FileAccess.get_file_as_string(profile.path_join("picture-pixels.json")))
++	metrics.same_visual_revision=phase!="seed" and expected.get("revision")==metrics.preview_revision
++	if phase=="seed" or metrics.same_visual_revision:
++		check(loader.picture_service.renders==(VehicleCatalog.IDS.size() if phase=="seed" else 0),"only an uncached visual revision generates pictures")
++	app._show_screen("tracks")
++	await settle()
++	began=Time.get_ticks_usec()
++	app._navigate_menu_page("garage")
++	metrics.entry_dispatch_ms=(Time.get_ticks_usec()-began)/1000.0
++	first_frame("entry")
++	var hashes: Dictionary={}
++	for id: String in VehicleCatalog.IDS: hashes[id]=checksum(app._retained_garage.thumbnails[id]._image.texture)
++	if phase=="seed":
++		var file:=FileAccess.open(profile.path_join("picture-pixels.json"),FileAccess.WRITE)
++		file.store_string(JSON.stringify({"revision":metrics.preview_revision,"pixels":hashes}));file.close()
++	else:
++		if metrics.same_visual_revision: check(hashes==expected.pixels,"the new process displays the exact saved PNG pixels")
++	metrics.pixel_hashes=hashes
++	await capture("first-draw")
++	await settle()
++	await capture("ready-carousel")
++	var memory: Dictionary=app._garage_residency()
++	metrics.memory=memory
++	check(int(memory.get("preload_picture_gpu_bytes",0))<=VehicleCatalog.IDS.size()*2048*512*4,"ready-picture memory stays bounded to the catalogue")
++	check(memory.image_gpu_bytes==0,"shared pictures are not counted twice in Garage residency")
++	await wait_for_writes()
++	app._show_screen("biome")
++	await settle()
++	await frames(8)
++	check(app.menu_neighbors.has(1) and app.menu_neighbors[1].screen=="garage","retained Garage is a real swipe neighbor")
++	app._drag_menu_edge(-120.0)
++	check(app.menu_neighbors[1].body.visible,"ready Garage can be revealed under the swipe")
++	app._swipe_menu_page(1)
++	first_frame("swipe")
++	await settle()
++	if phase=="reuse": await changes_and_scope()
++	app.queue_free()
++	await frames(8)
++	metrics.checks=checks;metrics.failures=failures;metrics.phase=phase
++	FileAccess.open(output.path_join(phase+".json"),FileAccess.WRITE).store_string(JSON.stringify(metrics,"  "))
++	print("READY_PICTURES: ",JSON.stringify(metrics))
++	quit(1 if failures else 0)
++
++func changes_and_scope() -> void:
++	app._show_screen("settings")
++	await settle()
++	var paint: Dictionary=VehicleLivery.for_car(app.records.settings,"compact")
++	paint.colors.body="3d7acf"
++	app.records.settings.vehicle_liveries.compact=paint
++	check(app.records.save_records()==OK,"save a changed appearance only in the fixture")
++	app._garage_appearance_changed()
++	app._navigate_menu_page("garage")
++	check(app.screen=="settings","an uncaptured new appearance does not reveal a loading carousel")
++	app._show_screen("tracks")
++	var loader: Node=app._garage_preloader
++	var deadline: int=Time.get_ticks_msec()+45000
++	while not loader.pictures_ready() and Time.get_ticks_msec()<deadline: await process_frame
++	check(loader.pictures_ready() and app.screen=="tracks","another tab cancels the pending Garage navigation")
++	await settle()
++	var prior_io: int=app._retained_garage._preview_service.file_io_us
++	app._navigate_menu_page("garage")
++	first_frame("changed",prior_io)
++	check(app._retained_garage.thumbnails.compact.livery.colors.body=="3d7acf","first changed picture matches the saved blue finish")
++	await settle()
++	await wait_for_writes()
++	app._show_screen("settings")
++	await settle()
++	var old_pool: Dictionary=loader.picture_pool()
++	var before_pressure: String=JSON.stringify(VehicleCondition.read(app.records,"compact")).sha256_text()
++	app._trim_hidden_garage()
++	check(loader.picture_service==null and old_pool.is_empty(),"memory pressure releases optional decoded pictures")
++	await frames()
++	app._navigate_menu_page("garage")
++	if app.screen!="garage":
++		var missing: Dictionary={}
++		for id: String in loader.picture_service.warm_views:
++			var view: CarShowroom=loader.picture_service.warm_views[id]
++			missing[id]={"key":view.preview_key,"displayed":view.displayed_key,"exists":FileAccess.file_exists(loader.picture_service.directory.path_join(view.preview_key+".png")),"condition_hash":JSON.stringify(view.condition).sha256_text()}
++		missing.before_pressure=before_pressure
++		print("PRESSURE_PICTURES: ",JSON.stringify(missing))
++	first_frame("disk-after-pressure")
++	app._show_screen("settings")
++	await settle()
++	var other:=LocalRecords.new(profile.path_join("other/records.json"))
++	app.records=other
++	app._navigate_menu_page("garage")
++	first_frame("other-owner")
++	check(app._retained_garage.records==other and loader.picture_records==other,"ready pictures are fenced by the current storage owner")
++	check(app._retained_garage.thumbnails.compact.livery==VehicleLivery.for_car(other.settings,"compact"),"new owner's first picture does not reuse the old blue finish")
++	await settle()
++	await capture("other-owner")
+--- /dev/null
++++ b/game/tests/test_garage_ready_pictures.gd.uid
+@@ -0,0 +1 @@
++uid://bv62ukkom2h5j

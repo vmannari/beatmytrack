@@ -1,0 +1,7 @@
+# Forklift clearance checkpoint
+
+`checkpoint.patch` contains only this follow-up's source changes, its documentation/status entries, and the old Forklift resource needed by the new regression. It is based on the exact saved files in `before/`; shared prior/concurrent features remain baseline context. It does not replace the full shared workspace or claim authorship of that context.
+
+The patch is checked against `build/forklift-clearance/checkpoint-base` using `git -c core.safecrlf=false -c core.whitespace=trailing-space,space-before-tab,cr-at-eol apply --check --whitespace=error-all --directory=build/forklift-clearance/checkpoint-base docs/evidence/forklift-clearance-2026-10-25/checkpoint.patch`. The backend fixture baseline uses `before/checkpoint_backend_fixture.json`, reconstructing the current concurrent Electric/physics context with only this task's Forklift entry reversed. The original task-start fixture remains separately saved. Only the two Forklift fields enter the patch.
+
+`checkpoint-assets.zip` contains the 50 refreshed native PNG files (49 liveries and the catalogue image) and their import metadata, with repository-relative paths. After applying the patch to the corresponding source baseline and extracting assets at the repository root, run the pinned Import command. Hash inventories cover final sources, native screenshots and assets. No index, branch, HEAD, live backend or owner save was changed by this checkpoint.

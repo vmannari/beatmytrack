@@ -5,6 +5,7 @@ extends RefCounted
 var touches: Dictionary = {}
 var touch_strengths: Dictionary = {}
 var single_pedal: bool = false
+var handbrake_enabled: bool = true
 var reverse_selected: bool = false
 
 
@@ -30,7 +31,7 @@ func sample() -> DriveFrame:
 		return DriveFrame.sample(_strength(&"steer_right") - _strength(&"steer_left"),
 			_strength(&"accelerate"), 1.0 if reverse_selected else 0.0, 0.0)
 	return DriveFrame.sample(_strength(&"steer_right") - _strength(&"steer_left"),
-		_strength(&"accelerate"), _strength(&"brake"), _strength(&"handbrake"))
+		_strength(&"accelerate"), _strength(&"brake"), _strength(&"handbrake") if handbrake_enabled else 0.0)
 
 
 func _strength(action: StringName) -> float:

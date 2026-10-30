@@ -1,0 +1,37 @@
+extends "res://tests/review_track_editor_2026_10_28.gd"
+## Actual editor views using disposable storage, with the original capture path.
+func run() -> void:
+	if DisplayServer.get_name() == "headless": quit(2); return
+	folder = ProjectSettings.globalize_path("res://../docs/evidence/track-editor-fixes-2026-10-28/native/"+RenderingServer.get_current_rendering_method())
+	DirAccess.make_dir_recursive_absolute(folder)
+	source_before = source_hashes(); root.size = Vector2i(1280,720); root.content_scale_size = Vector2i(1280,720)
+	app = load("res://core/app.tscn").instantiate()
+	app.library = TrackLibrary.new(folder+"/disposable-storage")
+	app.records = LocalRecords.new(folder+"/disposable-storage/records.json")
+	app.cloud_root_override = folder+"/disposable-cloud"; root.add_child(app)
+	while not app.startup_complete: await process_frame
+	var doc: Dictionary = circuit()
+	await show(doc)
+	app.canvas.zoom = 0.5; app.canvas.selected_piece = 0; app._build_editor_tools()
+	await shot("01-separated-road-controls")
+	doc.theme = "night_city"; await show(doc)
+	await shot("02-night-authoring")
+	app.editor_map_panel.show()
+	await shot("03-night-lighting-toggle")
+	var toggle: Button = app.editor_map_panel.find_child("EditorRaceLighting",true,false)
+	if toggle == null: failures += 1
+	else: toggle.button_pressed = true; toggle.toggled.emit(true)
+	app.editor_map_panel.hide()
+	await shot("04-night-race-preview")
+	if toggle != null: toggle.button_pressed = false; toggle.toggled.emit(false)
+	app.canvas.choose_piece("straight"); app._share_dialog()
+	await shot("05-share-preview-resolution")
+	for dialog: Node in app.root_ui.find_children("*","AcceptDialog",true,false): dialog.hide(); dialog.queue_free()
+	app._discard_editor_previews(); app._editor_hint("Keep the whole road section inside the map.")
+	await shot("06-visible-rejection")
+	var after: Dictionary = source_hashes()
+	var file := FileAccess.open(folder+"/results.json",FileAccess.WRITE)
+	file.store_string(JSON.stringify({"failures":failures,"observations":observations,"source_before":source_before,"source_after":after,"source_stable":source_before == after},"\t")); file.close()
+	app.queue_free(); await frames(2)
+	print("EDITOR_FIXED_VIEWS: %d captures, %d failures" % [observations.size(),failures])
+	quit(1 if failures else 0)

@@ -12,6 +12,8 @@ func _init() -> void:
 func _process(_delta: float) -> void:
 	if not visible or not is_instance_valid(showroom): return
 	var point: Vector3 = {"hood":Vector3(0.45,1.0,-1.35),"aero":Vector3(0,1.4,1.84),"rims":Vector3(0.83,0.4,-1.28),"body":Vector3(0.9,0.35,-0.3)}.get(category,Vector3.ZERO)
+	if showroom.car.vehicle_id=="kart":
+		point = {"hood":Vector3(0,0.38,-1.2),"aero":Vector3(0,0.23,1.3),"rims":Vector3(0.61,0.22,-0.88),"body":Vector3(0.65,0.3,-0.1)}.get(category,Vector3.ZERO)
 	point = showroom.car.global_transform*(point*HandlingConfig.BODY_SCALE)
 	var projected := Vector2.INF
 	if not showroom.camera.is_position_behind(point): projected = showroom.camera.unproject_position(point)*size/Vector2(showroom.showroom_viewport.size)
@@ -21,7 +23,7 @@ func _process(_delta: float) -> void:
 
 func _draw() -> void:
 	if not Rect2(Vector2(12,88),size-Vector2(24,152)).has_point(_at): return
-	var caption: String = GameText.message("Previewing").to_upper()+" · "+GameText.message(str(VehicleCustomisation.LABELS.get(category,""))).to_upper()
+	var caption: String = GameText.message("Previewing").to_upper()+" · "+GameText.message(VehicleCustomisation.label(category,showroom.car.vehicle_id)).to_upper()
 	var font: Font = MenuStyle.DISPLAY
 	var font_size: int = 15
 	var width: float = font.get_string_size(caption,HORIZONTAL_ALIGNMENT_LEFT,-1,font_size).x

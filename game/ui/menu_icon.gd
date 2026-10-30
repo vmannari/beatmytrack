@@ -1,7 +1,7 @@
 class_name MenuIcon
 extends RefCounted
 ## Original, consistent vector navigation glyphs, rasterized once by Godot.
-const CHALLENGES_ART: String = "<path d='M21 12a9 9 0 1 1-9-9m5 9a5 5 0 1 1-5-5m0 5 9-9m-5 0h5v5'/><circle cx='12' cy='12' r='1'/>"
+const CHALLENGES_ART: String = "<path d='M18 22 7 3 1 6l4 7 6-3M6 22 17 3l6 3-4 7-6-3'/><path d='M7 3 4 4.5 6 8 9 6.5ZM6 8 3 9.5 5 13 8 11.5ZM17 3l3 1.5L18 8l-3-1.5ZM18 8l3 1.5-2 3.5-3-1.5Z' fill='white' stroke='none'/>"
 
 static var cache: Dictionary = {}
 

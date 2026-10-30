@@ -1,10 +1,12 @@
 extends Node
 ## Local navigation and editor composition. Racing simulation stays in Game.
 
+const ObjectControls = preload("res://editor/object_properties.gd")
 const GAME_SCENE: PackedScene = preload("res://core/game.tscn")
 const AccountController = preload("res://backend/account_controller.gd")
 const ProductTelemetry = preload("res://backend/product_telemetry.gd")
 const RaceLoading = preload("res://ui/race_loading.gd")
+const LoadingFacts = preload("res://ui/loading_facts.gd")
 const PublicationPrompt = preload("res://ui/publication_dialog.gd")
 const RACE_LOAD_DEADLINE_SECONDS: float = 45.0
 const RACE_LOAD_DRAW_WAIT_MSEC: int = 2000
@@ -23,6 +25,7 @@ var menu_neighbors: Dictionary = {}
 var _garage_parking: Control
 var _retained_garage: GaragePage
 var _garage_preloader: Node
+var _garage_picture_navigation: int=0
 var _retained_profile_car: Control
 var race_profile_enabled: bool = false
 var _rivalry_parking: Control
@@ -45,8 +48,9 @@ var menu_neighbor_direction: int = 0
 var returning_menu_neighbor: Dictionary = {}
 const MENU_PAGE_GAP: float = 64.0
 var menu_page_motion: Tween
+var _preparing_rivalry_motion: Tween
 var race_mode_transition_rail: RaceModeRail
-const RACE_MODE_PAGES: Array[String] = ["rivalry", "tracks", "daily", "challenges"]
+const RACE_MODE_PAGES: Array[String] = ["rivalry", "daily", "tracks", "challenges"]
 var _race_mode_request: int = 0
 var _rivalry_entry_pending: bool = false
 var rivalry_standings_view: Dictionary = {}
@@ -68,6 +72,7 @@ var redo_history: Array[Dictionary]:
 	set(value): editor_session.redo = value
 var canvas: EditorCanvas
 var editor_status: Label
+var editor_guidance: String = ""
 var test_button: Button
 var publish_button: Button
 var share_button: Button
@@ -96,6 +101,10 @@ var surface_actions: HBoxContainer
 var editor_issue_button: Button
 var editor_issues: Array[Dictionary] = []
 var editor_geometry: String = ""
+var object_controls_panel: PanelContainer
+var object_controls: ObjectControls
+var editor_object_property: String = ""
+var _object_controls_target: String = ""
 var editor_inspector: VBoxContainer
 var browser_state: Dictionary = {}
 var discovery_provider := TrackDiscoveryProvider.new()
@@ -145,6 +154,7 @@ var editor_gesture_redo: Array[Dictionary]:
 	set(value): editor_session.gesture_redo = value
 var editor_issue_cursor: int = -1
 var editor_hint_generation: int = 0
+var editor_hint_active: bool = false
 var editor_wip_saved: String = ""
 var editor_wip_snapshot: Dictionary = {}
 var editor_wip_store: TrackLibrary
@@ -519,16 +529,15 @@ func _ready() -> void:
 	# Account/Race become usable without constructing an unrelated native Garage.
 	# First Garage entry prepares one live showroom; carousel photos are cached.
 	_show_screen("restoring")
-	if not capture_path.is_empty():
-		_show_screen(capture_screen)
-	else:
-		await online.start_session()
-		_show_screen("rivalry" if online.profile_ready() else "account")
-	startup_complete = true
+	if capture_path.is_empty(): await online.start_session()
 	preload("res://ui/garage_preview_cache.gd").prefetch_catalogue(get_tree())
 	_garage_preloader=preload("res://ui/garage_preloader.gd").new()
 	_garage_preloader.app=self
 	add_child(_garage_preloader)
+	await header_car_cache.prepare_selected()
+	await _garage_preloader.prepare_pictures()
+	_show_screen(capture_screen if not capture_path.is_empty() else "rivalry" if online.profile_ready() else "account")
+	startup_complete = true
 	tutorial = preload("res://tutorial/tutorial_controller.gd").new()
 	tutorial.app = self
 	add_child(tutorial)
@@ -547,6 +556,14 @@ func _ready() -> void:
 	if not capture_path.is_empty(): _capture()
 
 func _show_screen(next: String) -> void:
+	if next == "rivalry" and rivalry_section == "overview" and not is_instance_valid(game) and _rivalry_needs_entry_data():
+		_open_rivalry()
+		return
+	_garage_picture_navigation+=1
+	if next=="garage" and DisplayServer.get_name()!="headless" and is_instance_valid(_garage_preloader) and not _garage_preloader.pictures_ready():
+		if screen=="garage" and is_instance_valid(_retained_garage) and _retained_garage.records!=records: _show_screen("restoring")
+		_open_garage_with_pictures(_garage_picture_navigation,records)
+		return
 	_wake_optional_work.call_deferred()
 	if next != "tracks" and discovery_provider != null: discovery_provider.comparisons.cancel_speculation()
 	if appearance_sync != null and (next == "garage" or appearance_sync._needs_recovery()): appearance_sync.refresh_if_stale()
@@ -610,10 +627,10 @@ func _show_screen(next: String) -> void:
 	# A departing page does not need its preview. The single worker retires in
 	# _process; a newly opened document supersedes its output without joining.
 	if is_instance_valid(object_browser):
-		object_browser_state={"category":object_browser.category,"recent":object_browser.recent.duplicate(),"current":object_browser.current,"placement":object_browser.placement,"stamp_scale":object_browser.stamp_scale,"stamp_span":object_browser.stamp_span,"stamp_jump_profile":object_browser.stamp_jump_profile}
+		object_browser_state={"category":object_browser.category,"recent":object_browser.recent.duplicate(),"current":object_browser.current,"placement":object_browser.placement,"stamp_scale":object_browser.stamp_scale,"stamp_span":object_browser.stamp_span}
 	if is_instance_valid(canvas):
 		if canvas.document.get("id","") == document.get("id",""): _stash_pending_tool()
-		editor_view = {"zoom":canvas.zoom,"pan":canvas.pan,"mode":canvas.mode,"selected":canvas.selected,"selected_object":canvas.selected_object,"stamp_kind":canvas.stamp_kind,"stamp_scale":canvas.stamp_scale,"stamp_span":canvas.stamp_span,"stamp_jump_profile":canvas.stamp_jump_profile,"stamp_container_color":canvas.stamp_container_color,"run_shape":canvas.run_shape,"free_run":canvas.free_run,"brush_surface":canvas.brush_surface,"brush_width":canvas.brush_width,"paint_mode":canvas.paint_mode,"brush_shape":canvas.brush_shape,"selected_piece":canvas.selected_piece}
+		editor_view = {"zoom":canvas.zoom,"pan":canvas.pan,"mode":canvas.mode,"selected":canvas.selected,"selected_object":canvas.selected_object,"stamp_kind":canvas.stamp_kind,"stamp_scale":canvas.stamp_scale,"stamp_span":canvas.stamp_span,"stamp_jump_profile":canvas.stamp_jump_profile,"stamp_container_color":canvas.stamp_container_color,"run_shape":canvas.run_shape,"free_run":canvas.free_run,"brush_surface":canvas.brush_surface,"brush_width":canvas.brush_width,"paint_mode":canvas.paint_mode,"brush_shape":canvas.brush_shape,"selected_piece":canvas.selected_piece,"selected_objects":canvas.object_indices(),"multi_select":canvas.multi_select,"object_snap":canvas.object_snap,"detailed_scenery":not editor_world._detail.enabled if is_instance_valid(editor_world) else false}
 	screen = next
 	if screen == "store": _telemetry_observe("store_opened",{},str(_navigation_generation))
 	canvas = null
@@ -669,9 +686,17 @@ func _show_screen(next: String) -> void:
 		column.add_theme_constant_override("separation", 24)
 		center.add_child(column)
 		column.add_child(MenuBrand.new())
-		var loading := MenuStyle.label("Loading...", 20, true)
-		loading.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-		column.add_child(loading)
+		var fact := MenuStyle.label("", 22)
+		fact.name = "LoadingFact"
+		fact.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+		fact.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+		column.add_child(fact)
+		GameText.bind(fact, LoadingFacts.random_fact())
+		var loading_root: Control = root_ui
+		var resize_fact := func() -> void:
+			column.custom_minimum_size.x = minf(600.0, maxf(1.0, loading_root.size.x - 64.0))
+		loading_root.resized.connect(resize_fact)
+		resize_fact.call()
 		return
 	if screen == "account":
 		account_button = null
@@ -811,23 +836,9 @@ func _show_screen(next: String) -> void:
 			_connect_store_telemetry(store)
 			content.add_child(store)
 		"profile":
-			content.add_child(MenuStyle.label("PROFILE",36))
-			var manage := MenuStyle.button("Manage account" if online.client.signed_in() else "Sign in",_open_account)
-			manage.name = "ManageAccount"
-			content.add_child(manage)
-			if online.client.signed_in(): content.add_child(MenuStyle.button("Race uploads",cloud.show_uploads.bind(root_ui)))
-			if online.client.signed_in() and preload("res://backend/world_ranking_client.gd").supported(online.client):
-				content.add_child(MenuStyle.button("World Ranking",func() -> void: preload("res://ui/world_ranking.gd").open(root_ui,online.client)))
-			var featured_text: String = ""
-			for f: Dictionary in AchievementProgress.catalog().families:
-				if achievements != null and f.id in achievements.featured(): featured_text += ("  Â·  " if not featured_text.is_empty() else "")+str(f.title)
-			var badges: Label = MenuStyle.label(featured_text if not featured_text.is_empty() else "Choose featured achievements in your Trophy Room",22,true)
-			badges.name = "ProfileAchievements"
-			badges.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
-			content.add_child(badges)
-			content.add_child(MenuStyle.button("Trophy Room",func() -> void:
-				_show_screen("garage")
-				if is_instance_valid(_retained_garage): _retained_garage._show_section("trophies")))
+			var profile := preload("res://ui/own_profile_page.gd").new()
+			profile.app = self
+			content.add_child(profile)
 		"account": _account()
 		_: _tracks()
 	var page_swipe: Node = root_ui.get_node_or_null("MenuPageSwipe")
@@ -837,6 +848,26 @@ func _show_screen(next: String) -> void:
 	if vertical_slide: _slide_race_mode_page(slide_direction,rail_rect,race_slide_height)
 	elif slide: _slide_menu_page(slide_direction, drag_offset)
 	else: _prepare_menu_neighbors.call_deferred(_navigation_generation)
+
+func _open_profile_achievements(family: String = "") -> void:
+	var owner: LocalRecords = records
+	if not _garage_pictures_ready():
+		if not await _prepare_garage_pictures(): return
+	if not is_inside_tree() or screen != "profile" or records != owner: return
+	_show_screen("garage")
+	if not is_instance_valid(_retained_garage) or screen != "garage": return
+	_retained_garage._show_section("achievements")
+	if not family.is_empty():
+		var album: Node = _retained_garage.find_child("AchievementsMenu",true,false)
+		if album != null: album._show_achievement(family)
+
+func _open_profile_tracks() -> void:
+	browser_state.clear()
+	browser_state.search = online.player_name()
+	browser_state.search_kind = 2
+	browser_state.page = 0
+	race_area_mode = "free"
+	_show_screen("tracks")
 
 func _attach_profile_car(parent: Control) -> void:
 	var view: Control = _retained_profile_car
@@ -931,6 +962,7 @@ func _hide_outgoing_layers(node: Node) -> void:
 	for child: Node in node.get_children(): _hide_outgoing_layers(child)
 
 func _stop_menu_page_motion() -> void:
+	_preparing_rivalry_motion = null
 	_stop_menu_edge_motion()
 	if menu_page_motion != null:
 		menu_page_motion.kill()
@@ -976,6 +1008,7 @@ func _slide_menu_page(direction: int, drag_offset: float = 0.0) -> void:
 	menu_page_motion.tween_property(menu_body, "position:x", 0.0, duration)
 	menu_page_motion.tween_property(outgoing_menu_page, "position:x", -distance, duration)
 	menu_page_motion.chain().tween_callback(_finish_menu_page_slide)
+	_prepare_rivalry_page_motion()
 
 func _slide_race_mode_page(direction: int, rail_rect: Rect2, height: float) -> void:
 	# The rail stays anchored while the two real page bodies roll vertically.
@@ -998,19 +1031,29 @@ func _slide_race_mode_page(direction: int, rail_rect: Rect2, height: float) -> v
 	menu_page_motion.tween_property(menu_body,"position:y",0.0,0.32)
 	menu_page_motion.tween_property(outgoing_menu_page,"position:y",-distance,0.32)
 	menu_page_motion.chain().tween_callback(_finish_menu_page_slide)
-	var page: WeeklyRivalryPage = content.find_child("WeeklyRivalryPage",true,false)
-	if page != null and not page.standings_ready:
-		menu_page_motion.pause()
-		_start_prepared_race_mode.call_deferred(_navigation_generation,menu_page_motion)
+	_prepare_rivalry_page_motion()
+
+func _prepare_rivalry_page_motion() -> void:
+	if screen != "rivalry": return
+	menu_page_motion.pause()
+	_preparing_rivalry_motion = menu_page_motion
+	_start_prepared_race_mode.call_deferred(_navigation_generation,menu_page_motion)
 
 func _start_prepared_race_mode(generation: int, motion: Tween) -> void:
-	# Set the initial table scroll while the incoming page is still offscreen.
+	# Layout, car viewports and Garage radiance settle offscreen before arrival.
+	var prepared_draws: int = 0
 	while generation == _navigation_generation and motion == menu_page_motion:
 		var page: WeeklyRivalryPage = content.find_child("WeeklyRivalryPage",true,false)
-		if page == null or page.standings_ready:
+		if page == null: return
+		if page.ready_for_display():
+			prepared_draws += 1
+		else: prepared_draws = 0
+		if prepared_draws >= (1 if DisplayServer.get_name() == "headless" else 4):
+			_preparing_rivalry_motion = null
 			motion.play()
 			return
-		await get_tree().process_frame
+		if DisplayServer.get_name() == "headless": await get_tree().process_frame
+		else: await RenderingServer.frame_post_draw
 
 func _request_race_mode(mode: String) -> void:
 	if mode == "rivalry": _open_rivalry()
@@ -1066,6 +1109,19 @@ func _drag_menu_edge(distance: float) -> void:
 	_set_menu_preview_input(menu_body, true)
 	var direction: int = 1 if distance < 0.0 else -1
 	menu_neighbor_direction = direction
+	if menu_neighbors.has(direction) and menu_neighbors[direction].screen=="garage" and not _garage_pictures_ready():
+		for neighbor: Dictionary in menu_neighbors.values(): neighbor.body.hide()
+		menu_body.position.x=signf(distance)*64.0*(1.0-exp(-absf(distance)/160.0))
+		menu_drag_offset=0.0
+		return
+	# A neighbor is also an entry route. Do not expose its unresolved cards under
+	# the finger while the initial membership request is still in flight.
+	if menu_neighbors.has(direction) and menu_neighbors[direction].screen == "rivalry" and _rivalry_needs_entry_data():
+		_prefetch_rivalry()
+		for neighbor: Dictionary in menu_neighbors.values(): neighbor.body.hide()
+		menu_body.position.x = signf(distance)*64.0*(1.0-exp(-absf(distance)/160.0))
+		menu_drag_offset = 0.0
+		return
 	for neighbor_direction: int in menu_neighbors:
 		menu_neighbors[neighbor_direction].body.visible = neighbor_direction == direction
 	if (screen in ["tracks", "rivalry", "challenges", "daily"] and distance > 0.0) or (screen == "store" and distance < 0.0):
@@ -1212,6 +1268,14 @@ func _set_menu_preview_input(node: Node, disabled: bool) -> void:
 		control.remove_meta("page_mouse_filter")
 
 func _commit_menu_neighbor(direction: int) -> void:
+	if menu_neighbors[direction].screen=="garage" and DisplayServer.get_name()!="headless" and not _garage_preloader.pictures_ready():
+		_stop_menu_edge_motion()
+		_show_screen("garage")
+		return
+	if menu_neighbors[direction].screen == "rivalry" and _rivalry_needs_entry_data():
+		_stop_menu_edge_motion()
+		_open_rivalry()
+		return
 	if screen == "rivalry": _remember_rivalry_standings(content)
 	var neighbor: Dictionary = menu_neighbors[direction]
 	if neighbor.screen == "rivalry": _reset_rivalry_entry_view()
@@ -1239,6 +1303,7 @@ func _commit_menu_neighbor(direction: int) -> void:
 		remaining[old_direction - direction] = menu_neighbors[old_direction]
 	menu_neighbors = remaining
 	_navigation_generation += 1
+	_cancel_rivalry_entry()
 	if rivalry_racing and rivalry_section in ["race_results", "result"] and neighbor.screen != "rivalry" and is_instance_valid(game):
 		remove_child(game)
 		game.queue_free()
@@ -1295,9 +1360,17 @@ func _refresh_cached_menu_page(destination: String, column: VBoxContainer) -> vo
 		_update_creation_biome(column,str(document.get("theme",TrackDocument.THEMES[0])))
 
 func _navigate_menu_page(next: String) -> void:
+	_garage_picture_navigation+=1
+	if next=="garage" and not _garage_pictures_ready():
+		_show_screen(next)
+		return
 	# Explicit refreshes still use _show_screen. User navigation promotes the same
 	# already warmed controls as swipes, avoiding shell/layout rebuilding on taps.
-	if next == "rivalry": _reset_rivalry_entry_view()
+	if next == "rivalry":
+		if _rivalry_needs_entry_data():
+			_open_rivalry()
+			return
+		_reset_rivalry_entry_view()
 	if menu_page_motion != null: _finish_menu_page_slide()
 	if not is_instance_valid(menu_body) or not menu_body.is_inside_tree() or not root_ui.is_ancestor_of(menu_body):
 		_show_screen(next)
@@ -1318,7 +1391,7 @@ func _finish_menu_page_slide() -> void:
 	_prepare_menu_neighbors.call_deferred(_navigation_generation)
 
 func _settle_menu_before_touch() -> void:
-	if menu_page_motion != null: _finish_menu_page_slide()
+	if menu_page_motion != null and _preparing_rivalry_motion == null: _finish_menu_page_slide()
 	if menu_edge_motion != null: _stop_menu_edge_motion()
 
 func _activate_menu_page(generation: int) -> void:
@@ -1905,13 +1978,13 @@ func _share_challenge(invitation: Dictionary = {}) -> void:
 	if value.is_empty(): return
 	_telemetry_observe("share_clicked",{"challenge_id":str(value.get("id","")),"reason":"share"})
 	var time: String = GameText.message("%.3f s") % (float(value.target_ms)/1000.0) if value.get("target_ms") != null else "Join my group challenge"
-	var text: String = GameText.message("%s Â· %s Â· 5 laps Â· %s\n%s\nCode: %s") % [str(value.entry.name),time,VehicleCatalog.title(str(value.vehicle_id)),str(value.share_url),str(value.code)]
+	var text: String = GameText.message("%s · %s · 5 laps · %s\n%s\nCode: %s") % [str(value.entry.name),time,VehicleCatalog.title(str(value.vehicle_id)),str(value.share_url),str(value.code)]
 	if ChallengesClient.is_series(value):
 		var names: PackedStringArray = []
 		for stage: Dictionary in value.get("stages",[]): names.append(str(stage.entry.name))
 		var limit: Variant = value.stages[0].attempt_limit
 		var tries: String = "Unlimited tries" if limit == null else str(int(limit))+" tries each"
-		text = ("3Ã—3" if value.get("mode") == "3x3" else "Custom challenge")+" Â· "+str(value.stages.size())+" tracks Â· "+tries+" Â· Lowest total time wins\n"+" / ".join(names)+"\n"+str(value.share_url)+"\nCode: "+str(value.code)
+		text = ("3×3" if value.get("mode") == "3x3" else "Custom challenge")+" · "+str(value.stages.size())+" tracks · "+tries+" · Lowest total time wins\n"+" / ".join(names)+"\n"+str(value.share_url)+"\nCode: "+str(value.code)
 	if challenge_links.share(text): return
 	var dialog := AcceptDialog.new()
 	dialog.title = "Challenge invitation copied"
@@ -2035,11 +2108,13 @@ func _race_for_challenge(metadata: Dictionary, vehicle: String, duration_seconds
 	var original: String = challenges.scope()
 	var navigation: int = _navigation_generation
 	var entry: Dictionary = cloud.entry_from_metadata(metadata)
-	if not await cloud.download(entry):
+	var downloaded: Dictionary = await cloud.download_document(entry)
+	if downloaded.is_empty():
 		_notice(cloud.last_error)
 		return
 	if navigation != _navigation_generation or original != challenges.scope(): return
-	var track: NativeTrack = cloud.compile_entry(entry)
+	var track: NativeTrack = await online.client._background(cloud.compile_document.bind(entry,downloaded))
+	if navigation != _navigation_generation or original != challenges.scope(): return
 	if track == null:
 		_notice("Track could not be prepared. Try again.")
 		return
@@ -2075,7 +2150,7 @@ func _start_challenge_race() -> void:
 	var points := PackedVector2Array()
 	for point: Array in stage.entry.points: points.append(Vector2(point[0],point[1]))
 	loading.configure(str(stage.entry.name),str(stage.entry.get("theme","pine")),points)
-	loading.stage("Connecting raceâ€¦")
+	loading.stage("Connecting race…")
 	await _present_race_loading()
 	if not _race_loading_matches(loading_id): return
 	if not _challenge_selection_current(original,navigation,str(selected.code),stage_index):
@@ -2087,9 +2162,13 @@ func _start_challenge_race() -> void:
 		_abort_challenge_start(loading_id)
 		return
 	var entry: Dictionary = cloud.entry_from_metadata(stage.entry)
-	var downloaded: bool = await cloud.download(entry) if guest or not issued.is_empty() else false
+	var downloaded: Dictionary = await cloud.download_document(entry) if guest or not issued.is_empty() else {}
 	if not _race_loading_matches(loading_id): return
-	var track: NativeTrack = cloud.compile_entry(entry) if downloaded else null
+	if not _challenge_selection_current(original,navigation,str(selected.code),stage_index):
+		_abort_challenge_start(loading_id)
+		return
+	var track: NativeTrack = await online.client._background(cloud.compile_document.bind(entry,downloaded)) if not downloaded.is_empty() else null
+	if not _race_loading_matches(loading_id): return
 	if not _challenge_selection_current(original,navigation,str(selected.code),stage_index):
 		_abort_challenge_start(loading_id)
 		return
@@ -2162,6 +2241,9 @@ func _prefetch_rivalry() -> void:
 	if rivalry == null or rivalry.model.sample or not online.client.signed_in() or is_instance_valid(game): return
 	if rivalry.has_snapshot(): return
 	rivalry.refresh(false)
+
+func _rivalry_needs_entry_data() -> bool:
+	return rivalry != null and not rivalry.model.sample and online.client.signed_in() and not rivalry.has_snapshot() and (rivalry.busy or rivalry.error.is_empty())
 
 func _cancel_rivalry_entry() -> void:
 	_race_mode_request += 1
@@ -2393,7 +2475,7 @@ func _rivalry_card_valid(dialog: AcceptDialog, context: Dictionary) -> bool:
 func _share_rivalry_card(dialog_ref: WeakRef, context: Dictionary) -> void:
 	var dialog: AcceptDialog = dialog_ref.get_ref() as AcceptDialog
 	if not _rivalry_card_valid(dialog,context) or dialog.sharing: return
-	dialog.set_sharing(true,"Preparing imageâ€¦")
+	dialog.set_sharing(true,"Preparing image…")
 	dialog.request_id = ""
 	var png: PackedByteArray = await _prepare_rivalry_card(dialog_ref,context)
 	dialog = dialog_ref.get_ref() as AcceptDialog
@@ -2430,7 +2512,7 @@ func _rivalry_share_failed(request_id: String, message: String) -> void:
 func _save_rivalry_card(dialog_ref: WeakRef, context: Dictionary) -> void:
 	var dialog: AcceptDialog = dialog_ref.get_ref() as AcceptDialog
 	if not _rivalry_card_valid(dialog,context) or dialog.sharing: return
-	dialog.set_sharing(true,"Preparing imageâ€¦")
+	dialog.set_sharing(true,"Preparing image…")
 	var png: PackedByteArray = await _prepare_rivalry_card(dialog_ref,context)
 	dialog = dialog_ref.get_ref() as AcceptDialog
 	if not _rivalry_card_valid(dialog,context):
@@ -2504,7 +2586,7 @@ func _start_rivalry_race(index: int, choice: int) -> void:
 	var points := PackedVector2Array()
 	for point: Array in metadata.get("points", []): points.append(Vector2(point[0], point[1]))
 	loading.configure(str(metadata.get("name", "Weekly Rivalry")), str(metadata.get("theme", "pine")), points)
-	loading.stage("Connecting raceâ€¦")
+	loading.stage("Connecting race…")
 	await _present_race_loading()
 	if not _race_loading_matches(loading_id): return
 	if navigation != _navigation_generation or original_scope != rivalry.scope():
@@ -2542,7 +2624,7 @@ func _start_rivalry_race(index: int, choice: int) -> void:
 		_notice(rivalry.error)
 		return
 	var entry: Dictionary = cloud.entry_from_metadata(rivalry.model.tracks[index].entry)
-	loading.stage("Downloading trackâ€¦")
+	loading.stage("Downloading track…")
 	var downloaded: Dictionary = await cloud.download_document(entry)
 	if not _race_loading_matches(loading_id): return
 	if navigation != _navigation_generation or original_scope != rivalry.scope():
@@ -2556,7 +2638,7 @@ func _start_rivalry_race(index: int, choice: int) -> void:
 		_rivalry()
 		_notice(rivalry.error)
 		return
-	loading.stage("Preparing trackâ€¦")
+	loading.stage("Preparing track…")
 	await _present_race_loading()
 	if not _race_loading_matches(loading_id): return
 	if navigation != _navigation_generation or original_scope != rivalry.scope():
@@ -2576,7 +2658,7 @@ func _start_rivalry_race(index: int, choice: int) -> void:
 		_rivalry()
 		_notice(rivalry.error)
 		return
-	loading.stage("Loading ghostâ€¦")
+	loading.stage("Loading ghost…")
 	var recording: Dictionary = await _rivalry_ghost(index,choice,true)
 	if not _race_loading_matches(loading_id): return
 	cloud_starting = false
@@ -2615,9 +2697,9 @@ func _park_garage() -> void:
 
 func _garage_residency() -> Dictionary:
 	var result: Dictionary = {"image_gpu_bytes":0,"viewport_gpu_bytes":0,"scene_bytes":0,"preview_io_cpu_bytes":0}
-	if is_instance_valid(_garage_preloader): result.merge(_garage_preloader.residency())
-	if not is_instance_valid(_retained_garage): return result
 	var seen: Dictionary = {}
+	if is_instance_valid(_garage_preloader): result.merge(_garage_preloader.residency(seen))
+	if not is_instance_valid(_retained_garage): return result
 	for card: CarShowroom in _retained_garage.thumbnails.values():
 		var image: TextureRect = card.get("_image")
 		if image == null or image.texture == null or seen.has(image.texture.get_instance_id()): continue
@@ -2626,16 +2708,23 @@ func _garage_residency() -> Dictionary:
 	for viewport: SubViewport in _retained_garage.find_children("*","SubViewport",true,false):
 		result.viewport_gpu_bytes += viewport.size.x*viewport.size.y*8
 	result.scene_bytes = preload("res://track/prepared_world_cache.gd")._resource_bytes(_retained_garage,{})
-	if is_instance_valid(_retained_garage.get("_preview_service")) and _retained_garage._preview_service.worker != null: result.preview_io_cpu_bytes = 16*1024*1024
+	if is_instance_valid(_retained_garage.get("_preview_service")) and (_retained_garage._preview_service.worker != null or not _retained_garage._preview_service.pending_writes.is_empty()): result.preview_io_cpu_bytes = 16*1024*1024
 	return result
 
 func _trim_hidden_garage() -> void:
 	if is_instance_valid(_garage_preloader): _garage_preloader.evict()
 	if not is_instance_valid(_retained_garage) or _retained_garage.is_visible_in_tree(): return
+	_discard_suspended_menu()
 	var retired: GaragePage = _retained_garage
 	_retained_garage = null
 	retired.get_parent().remove_child(retired)
 	retired.queue_free()
+	for direction: int in menu_neighbors.keys():
+		if menu_neighbors[direction].screen!="garage": continue
+		var body: Control=menu_neighbors[direction].body
+		menu_neighbors.erase(direction)
+		body.get_parent().remove_child(body)
+		body.queue_free()
 
 func _rebuild_profile_menu(destination: String) -> void:
 	# Garage owns its account fence in _garage, like the other menu pages.
@@ -2658,8 +2747,24 @@ func _garage_appearance_changed() -> void:
 	if is_instance_valid(_retained_garage) and _retained_garage.records == records:
 		_retained_garage.refresh_cosmetics()
 
+func _open_garage_with_pictures(request: int,owner_records: LocalRecords) -> void:
+	var generation: int=_navigation_generation
+	var current: Callable=func() -> bool: return is_inside_tree() and request==_garage_picture_navigation and generation==_navigation_generation and records==owner_records
+	if await _garage_preloader.prepare_pictures(current):
+		if current.call(): _show_screen("garage")
+
+func _garage_pictures_ready() -> bool:
+	if DisplayServer.get_name()=="headless": return true
+	return is_instance_valid(_garage_preloader) and _garage_preloader.pictures_ready()
+
+func _prepare_garage_pictures() -> bool:
+	var generation: int=_navigation_generation
+	var owner_records: LocalRecords=records
+	var current: Callable=func() -> bool: return is_inside_tree() and generation==_navigation_generation and records==owner_records
+	return await _garage_preloader.prepare_pictures(current)
+
 func _header_car_capture_allowed() -> bool:
-	return startup_complete and not is_instance_valid(game) and _background_work_allowed() and screen not in ["account","restoring"]
+	return (startup_complete or header_car_cache.preparing_selected) and not is_instance_valid(game) and _background_work_allowed() and (screen != "restoring" or header_car_cache.preparing_selected)
 
 func _header_car_picture_ready(vehicle: String) -> void:
 	if not is_instance_valid(account_button): return
@@ -2667,11 +2772,17 @@ func _header_car_picture_ready(vehicle: String) -> void:
 	if header != null and header.records == header_car_cache.records and vehicle == VehicleCatalog.selected: header.refresh()
 	var picker: Control = account_button.get_node_or_null("MenuCarPicker")
 	if picker != null and picker.records == header_car_cache.records: picker.refresh_picture(vehicle)
+	if vehicle == VehicleCatalog.selected and records == header_car_cache.records and is_instance_valid(content):
+		var profile: Node = content.find_child("OwnProfilePage",true,false)
+		if profile != null: profile.refresh_car()
 
 func _refresh_account_car() -> void:
 	if not is_instance_valid(account_button): return
 	var preview: Control = account_button.get_node_or_null("MenuProfileCar")
 	if preview != null: preview.refresh()
+	if is_instance_valid(content):
+		var profile: Node = content.find_child("OwnProfilePage",true,false)
+		if profile != null: profile.refresh_car()
 
 func _garage(parent: Control = null) -> void:
 	if parent == null: parent = content
@@ -2689,10 +2800,11 @@ func _garage(parent: Control = null) -> void:
 	_retained_garage = page
 	# Use the original interactive showroom with the saved appearance on entry.
 	page.cached_carousel = true
+	page.prepared_pictures=_garage_preloader.picture_pool() if is_instance_valid(_garage_preloader) else {}
+	page.car_pictures_ready=_garage_pictures_ready
+	page.prepare_car_pictures=_prepare_garage_pictures
 	page.preview_can_render=func() -> bool: return _publishing_slots_foreground and _background_work_allowed() and (menu_page_motion==null or not menu_page_motion.is_running())
 	if is_instance_valid(_garage_preloader): page.preloaded_showroom=_garage_preloader.take()
-	page.progressive_entry = not is_instance_valid(page.preloaded_showroom)
-	page.opening_can_begin = func() -> bool: return _background_work_allowed() and (menu_page_motion==null or not menu_page_motion.is_running())
 	page.achievements = achievements
 	page.news_client = online.client.news
 	page.account_requested.connect(_open_account)
@@ -2718,8 +2830,8 @@ func _start_garage_free_drive() -> void:
 	var loading: RaceLoading = _open_race_loading()
 	var loading_id: int = loading.get_instance_id()
 	loading.configure("Parking hall","night_city",PackedVector2Array(),true)
-	loading.facts_label.text = "P1 parking hall Â· Free drive Â· 120 Ã— 72 m"
-	loading.stage("Opening parking hallâ€¦")
+	loading.facts_label.text = "P1 parking hall · Free drive · 120 × 72 m"
+	loading.stage("Opening parking hall…")
 	cloud_starting = true
 	await _present_race_loading()
 	if _race_preparation_changed(loading_id,original_scope,navigation,"garage",vehicle,selection): return
@@ -2801,7 +2913,7 @@ func _race_news_story(story: Dictionary) -> void:
 	var loading_id: int = loading.get_instance_id()
 	# The article has no biome metadata; show only known facts until it arrives.
 	loading.scenery.texture = null
-	loading.facts_label.text = "5 laps  Â·  "+VehicleCatalog.title()
+	loading.facts_label.text = "5 laps  ·  "+VehicleCatalog.title()
 	loading.stage("Opening track...")
 	cloud_starting = true
 	await _present_race_loading()
@@ -2956,6 +3068,8 @@ func _editor() -> void:
 		editor_wip_disk_hash = ""
 		editor_issue_cursor = -1
 	editor_world = EditorWorld.new()
+	editor_world._detail.enabled = not bool(editor_view.get("detailed_scenery",false))
+	editor_session.prime(document)
 	editor_world.theme_id = str(document.theme)
 	root_ui.add_child(editor_world)
 	MenuStyle.fill(editor_world)
@@ -2969,6 +3083,9 @@ func _editor() -> void:
 		canvas.selected = mini(int(editor_view.get("selected",-1)),document.points.size()-1)
 		canvas.selected_object = mini(int(editor_view.get("selected_object",-1)),document.objects.size()-1)
 		canvas.selected_piece = mini(int(editor_view.get("selected_piece",-1)),document.pieces.size()-1)
+		canvas.multi_select = bool(editor_view.get("multi_select",false))
+		canvas.selected_objects.assign(editor_view.get("selected_objects",[]))
+		canvas.object_snap = float(editor_view.get("object_snap",1.0))
 		canvas.stamp_kind = str(editor_view.get("stamp_kind","tree"))
 		canvas.stamp_scale = float(editor_view.get("stamp_scale",1.0))
 		canvas.stamp_span = float(editor_view.get("stamp_span",8.0))
@@ -3031,7 +3148,7 @@ func _editor() -> void:
 	var track_name := Label.new()
 	track_name.name="TrackName"
 	track_name.text=str(document.name)
-	track_name.custom_minimum_size=Vector2(220,52)
+	track_name.custom_minimum_size=Vector2(160,52)
 	track_name.clip_text=true
 	track_name.text_overrun_behavior=TextServer.OVERRUN_TRIM_ELLIPSIS
 	track_name.vertical_alignment=VERTICAL_ALIGNMENT_CENTER
@@ -3039,12 +3156,6 @@ func _editor() -> void:
 	track_name.add_theme_font_size_override("font_size",20)
 	track_name.add_theme_color_override("font_color",EditorStyle.INK)
 	title.add_child(track_name)
-	var creator_label := MenuStyle.label("by " + library.owner_name, 16, true)
-	creator_label.name = "TrackCreator"
-	creator_label.custom_minimum_size.x = 160
-	creator_label.clip_text = true
-	creator_label.text_overrun_behavior = TextServer.OVERRUN_TRIM_ELLIPSIS
-	title.add_child(creator_label)
 	var pencil: Button=EditorButton.make("","pencil",_rename_track)
 	EditorStyle.transparent_button(pencil)
 	pencil.name="RenameTrack"
@@ -3053,7 +3164,7 @@ func _editor() -> void:
 	var history_panel := PanelContainer.new()
 	history_panel.name="EditorHistory"
 	history_panel.add_theme_stylebox_override("panel",title_style.duplicate())
-	header_left.add_child(history_panel)
+	overlay.add_child(history_panel)
 	var history := HBoxContainer.new()
 	history.add_theme_constant_override("separation",4)
 	history_panel.add_child(history)
@@ -3068,10 +3179,14 @@ func _editor() -> void:
 	editor_redo.tooltip_text="Redo"
 	history.add_child(editor_redo)
 	var top := HBoxContainer.new()
+	top.name = "EditorHeaderActions"
 	top.alignment = BoxContainer.ALIGNMENT_END
+	# The right-aligned container is wider than its visible buttons. Empty
+	# space must not intercept the history controls when Issues is hidden.
+	top.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	overlay.add_child(top)
 	top.set_anchors_and_offsets_preset(Control.PRESET_TOP_RIGHT)
-	top.offset_left = -516; top.offset_right = -80; top.offset_top = 16
+	top.offset_left = -600; top.offset_right = -80; top.offset_top = 16
 	top.grow_horizontal = Control.GROW_DIRECTION_BEGIN
 	top.add_theme_constant_override("separation",8)
 	editor_issue_button = EditorStyle.button("",_focus_issue)
@@ -3084,6 +3199,10 @@ func _editor() -> void:
 	settings.text = "Map"
 	settings.tooltip_text = "Map settings"
 	top.add_child(settings)
+	var save_action: Button = EditorStyle.button("Save",_save_track_explicit)
+	save_action.name = "EditorSaveAction"
+	save_action.custom_minimum_size = Vector2(76,52)
+	top.add_child(save_action)
 	test_button = EditorButton.action("Test","play",_test_document)
 	test_button.custom_minimum_size=Vector2(104,52)
 	top.add_child(test_button)
@@ -3104,6 +3223,12 @@ func _editor() -> void:
 	publish_button.tooltip_text = "Complete a test drive before publishing this version."
 	publish_button.custom_minimum_size=Vector2(132,52)
 	top.add_child(publish_button)
+	# Center history while keeping clear of the title and right-hand actions.
+	var fit_header: Callable = _fit_editor_header.bind(overlay,header_left,track_name,history_panel,top)
+	overlay.resized.connect(fit_header)
+	top.minimum_size_changed.connect(fit_header)
+	editor_issue_button.visibility_changed.connect(fit_header)
+	fit_header.call_deferred()
 	var rail := VBoxContainer.new()
 	rail.name = "EditorRail"
 	var rail_panel := PanelContainer.new()
@@ -3145,27 +3270,27 @@ func _editor() -> void:
 	scroll.add_child(editor_context)
 	surface_toolbar = PanelContainer.new()
 	surface_toolbar.name = "SurfacePlacementToolbar"
-	surface_toolbar.add_theme_stylebox_override("panel",StyleBoxEmpty.new())
+	surface_toolbar.add_theme_stylebox_override("panel",EditorStyle.panel())
 	overlay.add_child(surface_toolbar)
 	surface_toolbar.set_anchors_and_offsets_preset(Control.PRESET_CENTER_TOP)
 	surface_toolbar.offset_left = -270
 	surface_toolbar.offset_right = 270
 	surface_toolbar.offset_top = 78
 	surface_toolbar.offset_bottom = 180
-	surface_toolbar.resized.connect(func() -> void:
-		surface_toolbar.offset_left = -surface_toolbar.size.x*0.5
-		surface_toolbar.offset_right = surface_toolbar.size.x*0.5)
+	surface_toolbar.resized.connect(_layout_editor_surface_toolbar)
 	surface_actions = HBoxContainer.new()
 	surface_actions.add_theme_constant_override("separation",8)
 	surface_toolbar.add_child(surface_actions)
+	editor_hint_active = false
 	editor_status = MenuStyle.label("",17)
 	editor_status.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	overlay.add_child(editor_status)
 	editor_status.name = "EditorFeedback"
 	editor_status.position = Vector2(16,128)
-	editor_status.size = Vector2(280,64)
+	editor_status.size = Vector2(320,80)
 	editor_status.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
-	# Retain status text for internal feedback consumers, without a canvas-wide hint bar.
+	editor_status.add_theme_font_size_override("font_size",15)
+	editor_status.add_theme_stylebox_override("normal",EditorStyle.panel())
 	editor_status.hide()
 	editor_save_button = EditorStyle.button("Draft",_retry_editor_save)
 	editor_save_button.name = "EditorSaveState"
@@ -3181,30 +3306,52 @@ func _editor() -> void:
 	editor_loading.set_anchors_and_offsets_preset(Control.PRESET_CENTER_TOP)
 	editor_loading.offset_left = -110; editor_loading.offset_right = 110
 	editor_loading.offset_top = 198; editor_loading.offset_bottom = 240
-	var preparing: Label = MenuStyle.label("Preparing trackâ€¦",17)
+	var preparing: Label = MenuStyle.label("Preparing track…",17)
 	preparing.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	preparing.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	editor_loading.add_child(preparing)
 	object_browser = ObjectBrowser.new()
 	object_browser.visible = false
 	for key: String in object_browser_state: object_browser.set(key,object_browser_state[key])
-	object_browser.current = canvas.stamp_kind
+	object_browser.current = CreatorCatalog.jump_asset(canvas.stamp_jump_profile,str(document.theme)) if canvas.stamp_kind == "jump" else canvas.stamp_kind
 	object_browser.stamp_span = canvas.stamp_span
-	object_browser.stamp_jump_profile = canvas.stamp_jump_profile
 	object_browser.stamp_container_color = canvas.stamp_container_color
 	object_browser.biome = str(document.get("biome",document.theme))
 	overlay.add_child(object_browser)
 	object_browser.set_anchors_and_offsets_preset(Control.PRESET_BOTTOM_WIDE)
 	object_browser.offset_left = 108; object_browser.offset_right = -112
-	object_browser.offset_top = -160; object_browser.offset_bottom = -16
+	object_browser.offset_top = -174; object_browser.offset_bottom = -16
 	object_browser.hide()
 	object_browser.asset_chosen.connect(_choose_object)
 	object_browser.mode_chosen.connect(_object_placement)
 	object_browser.size_chosen.connect(func(value: float) -> void: canvas.stamp_scale=value)
 	object_browser.span_chosen.connect(func(value: float) -> void: canvas.stamp_span=value)
-	object_browser.jump_profile_chosen.connect(_jump_profile)
 	object_browser.container_color_chosen.connect(_container_colour)
 	object_browser.rotation_requested.connect(_object_rotation_dialog)
+	object_browser.rotation_chosen.connect(_set_object_rotation)
+	object_browser.controls_requested.connect(func() -> void: _object_property_editing(""))
+	object_controls_panel = PanelContainer.new()
+	object_controls_panel.name = "ObjectControlStrip"
+	object_controls_panel.add_theme_stylebox_override("panel",EditorStyle.panel())
+	overlay.add_child(object_controls_panel)
+	object_controls_panel.set_anchors_and_offsets_preset(Control.PRESET_BOTTOM_WIDE)
+	object_controls_panel.offset_left = 108
+	object_controls_panel.offset_right = -112
+	var property_scroll := ScrollContainer.new()
+	property_scroll.name = "ObjectControlScroll"
+	# Keep the strip's height stable when its controls exceed the available
+	# width; the row still supports horizontal dragging just like the palette.
+	property_scroll.horizontal_scroll_mode = ScrollContainer.SCROLL_MODE_SHOW_NEVER
+	property_scroll.vertical_scroll_mode = ScrollContainer.SCROLL_MODE_DISABLED
+	object_controls_panel.add_child(property_scroll)
+	object_controls = object_browser.options
+	object_controls.reparent(property_scroll)
+	object_controls.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	object_controls.edited.connect(_edit_object_control)
+	object_controls.editing_changed.connect(_object_property_editing)
+	object_controls.fit_requested.connect(func() -> void: _fit_speed_bump())
+	object_browser.snap_step = canvas.object_snap
+	object_browser.snap_chosen.connect(func(step: float) -> void: canvas.object_snap = step)
 	object_browser.select_requested.connect(func() -> void:
 		canvas.cancel_gesture(); canvas.mode="objects"; _build_editor_tools())
 	object_browser.populate_requested.connect(_open_object_population)
@@ -3221,10 +3368,31 @@ func _editor() -> void:
 		var command: Button=EditorStyle.button(entry[0],entry[1])
 		command.name=entry[0]+"Track"
 		metadata.add_child(command)
+	var fit_view: Button = EditorStyle.button("Fit view",func() -> void:
+		editor_map_panel.hide()
+		canvas.fit())
+	fit_view.name = "EditorFitView"
+	metadata.add_child(fit_view)
 	share_button=EditorStyle.button("Share",_share_dialog)
 	metadata.add_child(share_button)
 	metadata.add_child(EditorStyle.button("Help",_editor_help))
+	var detail: CheckButton = CheckButton.new()
+	detail.name = "EditorDetailedScenery"
+	detail.text = "Detailed scenery"
+	detail.button_pressed = not editor_world._detail.enabled
+	detail.custom_minimum_size.y = 48
+	detail.toggled.connect(func(enabled: bool) -> void:
+		editor_world._detail.enabled = not enabled)
+	metadata.add_child(detail)
+	if str(document.theme) == "night_city":
+		var lighting: Button = EditorStyle.button("Race lighting",func() -> void: pass)
+		lighting.name = "EditorRaceLighting"
+		lighting.toggle_mode = true
+		lighting.toggled.connect(editor_world.set_race_lighting_preview)
+		metadata.add_child(lighting)
 	canvas.selection_changed.connect(_build_editor_tools)
+	canvas.fit_area = _editor_fit_area
+	surface_toolbar.resized.connect(_layout_editor_feedback)
 	_restore_pending_tool(_editor_tool())
 	_build_editor_tools()
 	_refresh_editor()
@@ -3241,9 +3409,69 @@ func _editor() -> void:
 	if editor_view.is_empty(): canvas.call_deferred("fit")
 	_apply_editor_safe_area(overlay)
 	root_ui.resized.connect(_apply_editor_safe_area.bind(overlay))
+	root_ui.resized.connect(_layout_editor_feedback)
+	root_ui.resized.connect(_layout_editor_surface_toolbar)
+
+func _fit_editor_header(overlay: Control, header: HBoxContainer, track_title: Label, history_panel: PanelContainer, actions: HBoxContainer) -> void:
+	if not is_instance_valid(overlay) or not is_instance_valid(header) or not is_instance_valid(history_panel) or not is_instance_valid(actions): return
+	var history_width: float = history_panel.get_combined_minimum_size().x
+	var actions_left: float = overlay.size.x-80.0-actions.get_combined_minimum_size().x
+	var available_title: float = actions_left-header.position.x-history_width-16.0
+	var title_extra: float = header.get_combined_minimum_size().x-track_title.custom_minimum_size.x
+	track_title.custom_minimum_size.x = clampf(available_title-title_extra,40.0,160.0)
+	header.size = header.get_combined_minimum_size()
+	history_panel.size = history_panel.get_combined_minimum_size()
+	var minimum_x: float = header.position.x+header.size.x+8.0
+	var maximum_x: float = maxf(minimum_x,actions_left-history_width-8.0)
+	history_panel.position = Vector2(clampf((overlay.size.x-history_width)*0.5,minimum_x,maximum_x),16.0)
+
 
 func _editor_box() -> StyleBoxFlat:
 	return EditorStyle.panel()
+
+
+func _layout_editor_surface_toolbar() -> void:
+	if not is_instance_valid(surface_toolbar): return
+	var overlay: Control = surface_toolbar.get_parent() as Control
+	var width: float = surface_toolbar.size.x
+	var left: float = (overlay.size.x-width)*0.5
+	if is_instance_valid(editor_save_button) and editor_save_button.is_visible_in_tree():
+		left = maxf(left,editor_save_button.get_global_rect().end.x-overlay.global_position.x+8)
+	left = minf(left,overlay.size.x-width-16)
+	surface_toolbar.offset_left = left-overlay.size.x*0.5
+	surface_toolbar.offset_right = surface_toolbar.offset_left+width
+
+
+func _layout_editor_feedback() -> void:
+	if not is_instance_valid(editor_status) or not is_instance_valid(canvas): return
+	if root_ui.size.y < 672:
+		var rail: Control = root_ui.find_child("EditorRailPanel",true,false) as Control
+		var origin: Vector2 = (editor_status.get_parent() as Control).global_position
+		var left: float = rail.get_global_rect().end.x+8-origin.x if is_instance_valid(rail) else 124.0
+		var top: float = surface_toolbar.get_global_rect().end.y+8-origin.y if is_instance_valid(surface_toolbar) and surface_toolbar.is_visible_in_tree() else 128.0
+		editor_status.position = Vector2(left,top)
+		editor_status.size = Vector2(270,80)
+	else:
+		editor_status.position = Vector2(16,128)
+		editor_status.size = Vector2(320,80)
+
+
+## Keep a fitted circuit clear of the persistent rail, feedback and the
+## currently open authoring panels. Manual pan and zoom remain unrestricted.
+func _editor_fit_area() -> Rect2:
+	var view: Rect2 = canvas.get_global_rect()
+	var left: float = view.position.x+16
+	var top: float = view.position.y+84
+	var right: float = view.end.x-16
+	var bottom: float = view.end.y-16
+	var rail: Control = root_ui.find_child("EditorRailPanel",true,false) as Control
+	if is_instance_valid(rail) and rail.is_visible_in_tree(): left = maxf(left,rail.get_global_rect().end.x+8)
+	if is_instance_valid(editor_status) and editor_status.is_visible_in_tree(): left = maxf(left,editor_status.get_global_rect().end.x+8)
+	if is_instance_valid(surface_toolbar) and surface_toolbar.is_visible_in_tree(): top = maxf(top,surface_toolbar.get_global_rect().end.y+8)
+	for panel: Control in [editor_palette,object_browser,object_controls_panel]:
+		if is_instance_valid(panel) and panel.is_visible_in_tree(): bottom = minf(bottom,panel.get_global_rect().position.y-8)
+	left = minf(left,view.position.x+view.size.x*0.5)
+	return Rect2(Vector2(left,top)-view.position,Vector2(maxf(0,right-left),maxf(0,bottom-top)))
 
 
 func _editor_panel(parent: Control, node_name: String) -> PanelContainer:
@@ -3271,16 +3499,20 @@ func _editor_hint(message: String) -> void:
 	if not is_instance_valid(editor_status): return
 	editor_status.text = message
 	editor_status.show()
+	editor_hint_active = true
 	editor_hint_generation += 1
 	var generation: int = editor_hint_generation
 	var label_id: int = editor_status.get_instance_id()
 	get_tree().create_timer(4.0).timeout.connect(func() -> void:
-		if generation == editor_hint_generation and is_instance_valid(editor_status) and editor_status.get_instance_id() == label_id and editor_save_error == OK: editor_status.hide())
+		if generation == editor_hint_generation and is_instance_valid(editor_status) and editor_status.get_instance_id() == label_id:
+			editor_hint_active = false
+			if editor_save_error == OK: editor_status.hide())
 
 func _update_editor_save_state() -> void:
 	if not is_instance_valid(editor_save_button): return
+	editor_save_button.visible = editor_save_error != OK
 	if editor_save_error != OK:
-		editor_save_button.text = "Save failed Â· Retry"
+		editor_save_button.text = "Save failed · Retry"
 		editor_save_button.disabled = false
 		editor_save_button.tooltip_text = editor_save_message
 		editor_save_button.add_theme_color_override("font_color",Color("ffbc8b"))
@@ -3300,9 +3532,9 @@ func _update_editor_save_state() -> void:
 		editor_save_button.disabled = true
 		editor_save_button.tooltip_text = "The saved original matches this document."
 	else:
-		editor_save_button.text = "WIP recovery saved" if (editor_wip_store == library and document == editor_wip_snapshot) else "Unsaved draft"
+		editor_save_button.text = "Autosaved draft" if (editor_wip_store == library and document == editor_wip_snapshot) else "Unsaved draft"
 		editor_save_button.disabled = true
-		editor_save_button.tooltip_text = "Recovery is separate from the saved original. Use Map â†’ Save or Ctrl+S to keep it."
+		editor_save_button.tooltip_text = "Your draft is kept separately. Save updates the named track."
 
 func _retry_editor_save() -> void:
 	if editor_retry_original: _save_track_now()
@@ -3366,8 +3598,10 @@ func _commit_editor_previews() -> bool:
 		elif canvas.run_preview.is_empty():
 			_editor_hint("Finish the object run, or cancel it before saving.")
 		else:
+			var additions: Array = preload("res://editor/creator_limits.gd").take(document.objects,canvas.run_preview,str(document.theme))
+			if not canvas.admit("objects",document.objects+additions): return false
 			_remember()
-			document.objects.append_array(preload("res://editor/creator_limits.gd").take(document.objects,canvas.run_preview,str(document.theme)))
+			document.objects.append_array(additions)
 			canvas.run_preview.clear(); canvas.run_draw.clear(); canvas.run_start = Vector2.INF
 			_save_draft(true)
 		_stash_pending_tool()
@@ -3379,12 +3613,12 @@ func _commit_editor_previews() -> bool:
 	_build_editor_tools()
 	return true
 
-func _resolve_editor_previews(after: Callable) -> void:
+func _resolve_editor_previews(after: Callable, message: String = "Confirm or discard the pending previews before selecting an issue.") -> void:
 	if root_ui.find_child("PendingPreviewDialog",true,false) != null: return
 	var dialog := ConfirmationDialog.new()
 	dialog.name = "PendingPreviewDialog"
 	dialog.title = "Pending previews"
-	dialog.dialog_text = "Confirm or discard the pending previews before selecting an issue."
+	dialog.dialog_text = message
 	dialog.ok_button_text = "Confirm previews"
 	dialog.add_button("Discard previews",true,"discard")
 	dialog.confirmed.connect(func() -> void:
@@ -3393,6 +3627,7 @@ func _resolve_editor_previews(after: Callable) -> void:
 		dialog.queue_free())
 	dialog.custom_action.connect(func(action: StringName) -> void:
 		if action == &"discard":
+			dialog.hide()
 			_discard_editor_previews()
 			dialog.queue_free()
 			after.call())
@@ -3420,6 +3655,7 @@ func _context_button(label: String, glyph: String, action: Callable, chosen: boo
 	return button
 
 func _build_editor_tools() -> void:
+	var active_hint: String = editor_status.text if editor_hint_active and is_instance_valid(editor_status) else ""
 	if not is_instance_valid(editor_context) or not is_instance_valid(canvas): return
 	_update_test_access()
 	_update_editor_save_state()
@@ -3439,22 +3675,20 @@ func _build_editor_tools() -> void:
 	var browsing: bool = category=="objects" and not (canvas.selected_object>=0 and canvas.mode=="objects")
 	object_browser.visible = browsing
 	object_browser.set_stamp_rotation(canvas.stamp_rotation)
-	object_browser.rotation_button.disabled = canvas.mode == "run"
 	editor_palette.visible = not browsing
 	for key: String in editor_mode_buttons: (editor_mode_buttons[key] as Button).set_pressed_no_signal(key == category)
 	surface_toolbar.visible = category == "paint"
-	var track_title: Label = root_ui.find_child("TrackName",true,false)
-	if track_title != null: track_title.custom_minimum_size.x = 220
 	if category == "paint":
 		if canvas.brush_surface == 0: canvas.brush_surface = 2
 		_build_surface_toolbar()
 	if category == "road":
 		var piece: Dictionary = canvas.ghost if not canvas.ghost.is_empty() else document.pieces[canvas.selected_piece] if canvas.selected_piece >= 0 else {}
 		if piece.is_empty():
-			_context_button("Start line","race",canvas.choose_start_line)
+			var start_action: Button = _context_button("Start line","race",canvas.choose_start_line)
+			start_action.disabled = document.pieces.is_empty() and document.layout.is_empty() and document.base_track == "" and document.paint.is_empty()
 			for kind: String in RoadPieces.KINDS:
 				_context_button(preload("res://editor/road_piece_catalog.gd").title(kind),kind,canvas.choose_piece.bind(kind))
-			editor_status.text = "Choose a section Â· drag empty ground to pan Â· pinch to zoom"
+			editor_status.text = "Choose Straight or Curve to begin. Two fingers move the view." if document.pieces.is_empty() else "Choose another section, or place the start line."
 		elif editor_geometry != "" and piece.kind == "bridge":
 			_context_button("Back","back",func() -> void:
 				editor_geometry = ""
@@ -3478,7 +3712,7 @@ func _build_editor_tools() -> void:
 				_context_button(GameText.message("Point %d/5") % (canvas.spline_point+1),"spline",func() -> void:
 					canvas.spline_point = (canvas.spline_point+1)%5
 					_build_editor_tools())
-				_context_button("Width âˆ’","minus",_change_piece.bind("point_width",-0.5))
+				_context_button("Width −","minus",_change_piece.bind("point_width",-0.5))
 				_context_button(GameText.message("%.1f m") % float(piece.point_widths[canvas.spline_point]),"width",func() -> void: pass)
 				_context_button("Width +","plus",_change_piece.bind("point_width",0.5))
 			if piece.kind == "bridge":
@@ -3506,49 +3740,44 @@ func _build_editor_tools() -> void:
 			if canvas.ghost.is_empty():
 				_context_button("Connect","snap",canvas.connect_nearby)
 				_context_button("Layer","surface",canvas.cycle_piece)
-			editor_status.text = "Drag inside to move Â· end dots resize and turn Â· âœ“ to place" if not canvas.ghost.is_empty() else "Drag inside to move Â· drag end dots to reshape Â· Layer selects overlapping roads"
-			if piece.kind == "bridge": editor_status.text = "Bridge: ramps at both ends Â· ground road passes beneath the middle"
-			if piece.kind == "spline": editor_status.text = "Drag the five numbered points Â· select a point to set its width Â· âœ“ to place"
+			editor_status.text = "Drag inside to move · end dots resize and turn · ✓ to place" if not canvas.ghost.is_empty() else "Drag inside to move · drag end dots to reshape · Layer selects overlapping roads"
+			if piece.kind == "bridge": editor_status.text = "Bridge: ramps at both ends · ground road passes beneath the middle"
+			if piece.kind == "spline": editor_status.text = "Drag the five numbered points · select a point to set its width · ✓ to place"
 	elif category == "paint":
 		for pair: Array in [[1,"Grass"],[2,"Sand"],[3,"Water"]]:
-			_context_button(pair[1],"terrain_dirt" if pair[0] == 2 else "terrain_"+pair[1].to_lower(),func() -> void:
+			var surface_button: Button = _context_button(preload("res://editor/surface_labels.gd").title(pair[0],biome),preload("res://editor/surface_labels.gd").glyph(pair[0],biome),func() -> void:
 				canvas.brush_surface = pair[0]
 				canvas.mode = "paint"
 				_build_editor_tools(),canvas.mode == "paint" and canvas.brush_surface == pair[0])
+			(surface_button as EditorButton).surface_tint = TrackTheme.palette(biome)[pair[0]]
 		_context_button("Puddle","terrain_puddle",_choose_hazard.bind("puddle"))
 		_build_paint_tools()
 		editor_status.text = "Drag to paint freely" if canvas.paint_mode == "free" else "Tap to add points / drag dots to reshape / confirm to place"
 	elif category == "objects":
 		if canvas.selected_object >= 0 and canvas.mode == "objects":
 			editor_status.text=CreatorObjects.description(document.objects[canvas.selected_object].kind)
-			_context_button("Rotate","rotate",_rotate_object).tooltip_text = "Rotate by 22.5Â°"
-			var rotation_choice: Button = _context_button(preload("res://editor/object_rotation.gd").angle_text(_object_rotation()),"rotate",_object_rotation_dialog)
-			rotation_choice.name = "ObjectRotation"
-			rotation_choice.tooltip_text = "16 orientations or Free rotation"
-			_context_button("Copy","objects",_duplicate_object)
-			if document.objects[canvas.selected_object].kind == "speed_bump":
-				_context_button("Width -","minus",func() -> void: _resize_speed_bump(-0.5))
-				_context_button("Width +","plus",func() -> void: _resize_speed_bump(0.5))
-				_context_button("Fit road","snap",_fit_speed_bump)
-				editor_status.text = GameText.message("%.2f m / Drag end dots to set width") % CreatorObjects.size_of(document.objects[canvas.selected_object]).y
-			elif document.objects[canvas.selected_object].kind not in ["tyre_wall","tyre_stack"]:
-				_context_button("Size -","minus",func() -> void: _scale_object(-0.25))
-				_context_button("Size +","plus",func() -> void: _scale_object(0.25))
-				editor_status.text = GameText.message("%s / %.2fx") % [CreatorObjects.description(document.objects[canvas.selected_object].kind),float(document.objects[canvas.selected_object].get("scale",1.0))]
+			if canvas.object_indices().size() > 1:
+				editor_status.text = GameText.message("%d objects selected ? drag one to move the group") % canvas.object_indices().size()
+			if canvas.multi_select and canvas.object_indices().size() == 1: editor_status.text = "Multi-select: tap to add or remove; drag to move."
+			_context_button("Copy","copy",_duplicate_object)
+			var multiple: Button = _context_button("Multi-select","multi_select",canvas.toggle_multi_select,canvas.multi_select)
+			multiple.name = "MultiSelectObjects"
+			_context_button("Next object","cycle_objects",canvas.cycle_objects)
 			_context_button("Delete","delete",_delete_selection)
-			if document.objects[canvas.selected_object].kind == "container":
-				editor_context.add_child(ContainerColorButton.make(ContainerPaint.value(document.objects[canvas.selected_object]),_container_colour))
-			if document.objects[canvas.selected_object].kind == "jump":
-				var profile: String = JumpProfiles.id(document.objects[canvas.selected_object])
-				editor_context.add_child(preload("res://editor/jump_style_picker.gd").make(profile,_jump_profile,profile == "legacy"))
-				editor_status.text = JumpProfiles.description(profile)
 			if canvas.issue_marker != Vector2.INF: _context_button("Move start","race",canvas.choose_start_line)
 			_context_button("Palette","more",func() -> void:
+				canvas.multi_select = false
 				canvas.selected_object = -1
 				_build_editor_tools())
 		else:
-			editor_status.text = CreatorCatalog.label(canvas.stamp_kind)+" / "+("Drag a curve; release to place" if canvas.run_shape=="curve" else "Drag a line, or tap its two ends" if canvas.mode=="run" else "Tap empty ground to place / tap an object to edit")
+			var stamp_label: String = CreatorCatalog.label(CreatorCatalog.jump_asset(canvas.stamp_jump_profile,str(document.theme))) if canvas.stamp_kind == "jump" else CreatorCatalog.label(canvas.stamp_kind)
+			editor_status.text = stamp_label+" / "+("Drag a curve; release to place" if canvas.run_shape=="curve" else "Drag a line, or tap its two ends" if canvas.mode=="run" else "Tap empty ground to place / tap an object to edit")
 			if canvas.mode=="objects": editor_status.text="Tap an object to move, rotate or delete"
+	_build_object_controls(category == "objects",browsing)
+	editor_guidance = editor_status.text
+	if editor_hint_active: editor_status.text = active_hint
+	if editor_save_error == OK and not editor_hint_active: editor_status.hide()
+	_layout_editor_feedback()
 
 	var context_width: float = 0
 	for child: Control in editor_context.get_children(): context_width += child.get_combined_minimum_size().x+6
@@ -3588,13 +3817,16 @@ func _change_piece(key: String, delta: float) -> void:
 	piece = canvas.anchored_change(before,piece,key)
 	var errors: Array[String] = RoadPieces.validate(piece)
 	if not errors.is_empty():
-		editor_status.text = errors[0]
+		_editor_hint(errors[0])
 		return
 	if not canvas._valid_bridge_edit(piece,canvas.selected_piece): return
 	if is_ghost:
 		canvas.ghost = piece
 		canvas.snap_matched = false
 	else:
+		var proposed: Array = document.pieces.duplicate()
+		proposed[canvas.selected_piece] = piece
+		if not canvas.admit("pieces",proposed): return
 		_remember()
 		document.pieces[canvas.selected_piece] = piece
 		_save_draft(true)
@@ -3678,10 +3910,17 @@ func _focus_issue() -> void:
 	elif int(issue.object) == -1: canvas.selected_piece = issue.index
 	_build_editor_tools()
 	editor_issue_button.text = GameText.message("Issue %d/%d") % [editor_issue_cursor+1,editor_issues.size()]
-	_editor_hint(issue.message+" Â· paint Road over the obstacle, or place a Start line." if int(issue.object) == -2 else issue.message+" Â· drag to repair, or delete the selection.")
+	_editor_hint(issue.message+" · paint Road over the obstacle, or place a Start line." if int(issue.object) == -2 else issue.message+" · drag to repair, or delete the selection.")
 	canvas.refresh()
 
 func _commit_selection() -> void:
+	var error: String = preload("res://editor/authoring_admission.gd").error(document)
+	if not error.is_empty():
+		if not history.is_empty():
+			document = preload("res://editor/editor_history.gd").restore(history.pop_back())
+			_restore_editor_history()
+		_editor_hint(error)
+		return
 	if canvas.mode in ["move","add"]: document.route_override = true
 	canvas.refresh()
 	_save_draft(true)
@@ -3691,13 +3930,67 @@ func _delete_selection() -> void:
 	if canvas.mode in ["objects","place","run"]:
 		if canvas.selected_object < 0: return
 		_remember()
-		document.objects.remove_at(canvas.selected_object)
+		var indices: Array[int] = canvas.object_indices()
+		indices.reverse()
+		for index: int in indices: document.objects.remove_at(index)
 		canvas.selected_object = -1
 	else: return
 	_commit_selection()
 
 func _rotate_object() -> void:
 	_set_object_rotation(preload("res://editor/object_rotation.gd").next_angle(_object_rotation()))
+
+func _selected_object_properties() -> void:
+	_object_property_editing("")
+
+func _object_property_editing(property: String) -> void:
+	editor_object_property = property
+	_build_editor_tools()
+
+func _build_object_controls(active: bool, browsing: bool) -> void:
+	if not is_instance_valid(object_controls): return
+	object_controls_panel.visible = active
+	object_controls.visible = active
+	if not active: return
+	var selected: bool = canvas.mode == "objects" and canvas.selected_object >= 0 and canvas.selected_object < document.objects.size()
+	var state: Dictionary = document.objects[canvas.selected_object].duplicate(true) if selected else {"kind":canvas.stamp_kind,"scale":canvas.stamp_scale,"rotation":canvas.stamp_rotation,"span":canvas.stamp_span,"placement":object_browser.placement,"color":canvas.stamp_container_color}
+	state["multiple"] = selected and canvas.object_indices().size() > 1
+	if selected: state["span"] = CreatorObjects.size_of(state).y
+	if state.kind == "jump": state["jump_profile"] = JumpProfiles.id(state) if selected else canvas.stamp_jump_profile
+	var target: String = str(document.id)+"/"+str(canvas.selected_object if selected else -1)+"/"+str(state.kind)+"/"+str(state.multiple)
+	if target != _object_controls_target:
+		editor_object_property = ""
+		_object_controls_target = target
+	object_controls_panel.offset_bottom = object_browser.offset_top-8 if browsing else -104
+	object_controls_panel.offset_top = object_controls_panel.offset_bottom-84
+	object_controls.show_state(state,selected,editor_object_property)
+	var controls_width: float = minf(maxf(196,object_controls.get_combined_minimum_size().x+16),maxf(196,canvas.size.x-220))
+	object_controls_panel.anchor_left = 0.5
+	object_controls_panel.anchor_right = 0.5
+	object_controls_panel.offset_left = -controls_width*0.5
+	object_controls_panel.offset_right = controls_width*0.5
+	object_browser.rotation_button = object_controls.find_child("ObjectOrientation",true,false) as Button
+	if editor_object_property == "scale": editor_status.text = GameText.message("Size")+" / "+object_controls._dimensions()
+	elif editor_object_property == "rotation": editor_status.text = "Use - / + or type an angle. Back returns to object controls."
+	elif editor_object_property == "span": editor_status.text = "Set the width here, or drag the speed bump end dots."
+
+func _edit_object_control(property: String, value: Variant) -> void:
+	if not is_instance_valid(canvas) or screen != "create" or canvas.mode not in ["objects","place","run"]: return
+	var selected: bool = canvas.mode == "objects" and canvas.selected_object >= 0
+	match property:
+		"kind": object_browser.choose(str(value)); return
+		"placement": _object_placement(str(value)); return
+		"rotation": _set_object_rotation(float(value)); return
+		"scale":
+			if selected: _scale_object(float(value)-float(document.objects[canvas.selected_object].get("scale",1.0))); return
+			canvas.stamp_scale = float(value)
+			object_browser.stamp_scale = float(value)
+		"span":
+			if selected: _resize_speed_bump(float(value)-CreatorObjects.size_of(document.objects[canvas.selected_object]).y); return
+			canvas.stamp_span = float(value)
+			object_browser.stamp_span = float(value)
+		"color": _container_colour(str(value)); return
+	_build_editor_tools()
 
 func _object_rotation() -> float:
 	return float(document.objects[canvas.selected_object].rotation) if canvas.selected_object >= 0 else canvas.stamp_rotation
@@ -3707,8 +4000,11 @@ func _set_object_rotation(value: float) -> void:
 	var angle: float = fposmod(value,360.0)
 	canvas.stamp_rotation = angle
 	if canvas.selected_object >= 0 and not is_equal_approx(float(document.objects[canvas.selected_object].rotation),angle):
+		var proposed: Array = preload("res://editor/object_editing.gd").rotated(document.objects,canvas.object_indices(),angle-float(document.objects[canvas.selected_object].rotation))
+		if proposed.is_empty(): _editor_hint("Keep the whole selection inside the map."); return
+		if not canvas.admit("objects",proposed): return
 		_remember()
-		document.objects[canvas.selected_object].rotation = angle
+		document.objects = proposed
 		_commit_selection()
 	else: _build_editor_tools()
 	object_browser.set_stamp_rotation(angle)
@@ -3769,13 +4065,22 @@ func _fit_speed_bump() -> void:
 
 
 func _duplicate_object() -> void:
-	if canvas.selected_object < 0 or document.objects.size() >= preload("res://editor/creator_limits.gd").MAX_OBJECTS: return
-	var object: Dictionary = document.objects[canvas.selected_object].duplicate(true)
-	object.position = [clampf(float(object.position[0])+4,-110,110),clampf(float(object.position[1])+4,-110,110)]
-	var admission: String = preload("res://editor/creator_limits.gd").addition_error(document.objects,[object],str(document.theme))
+	if canvas.selected_object < 0: return
+	if document.objects.size() >= preload("res://editor/creator_limits.gd").MAX_OBJECTS:
+		_editor_hint("Remove an object before adding more."); return
+	var indices: Array[int] = canvas.object_indices()
+	var moved: Array = preload("res://editor/object_editing.gd").moved(document.objects,indices,Vector2(4,4))
+	var additions: Array = []
+	for index: int in indices: additions.append(moved[index])
+	var admission: String = preload("res://editor/creator_limits.gd").addition_error(document.objects,additions,str(document.theme))
 	if not admission.is_empty(): _editor_hint(admission); return
+	if not canvas.admit("objects",document.objects+additions): return
 	_remember()
-	document.objects.append(object)
+	var first: int = document.objects.size()
+	document.objects.append_array(additions)
+	canvas.multi_select = additions.size() > 1 or canvas.multi_select
+	canvas.selected_objects.clear()
+	for index: int in range(first,document.objects.size()): canvas.selected_objects.append(index)
 	canvas.selected_object = document.objects.size()-1
 	canvas.mode = "objects"
 	_commit_selection()
@@ -3785,6 +4090,7 @@ func _remember() -> void:
 
 func _set_document_value(key: String, value: Variant) -> void:
 	if key in ["theme", "biome", "creator"]: return
+	if not canvas.admit(key,value): return
 	_remember()
 	document[key] = value
 	_save_draft(true)
@@ -3819,7 +4125,7 @@ func _restore_editor_history() -> void:
 func _refresh_editor() -> void:
 	if not is_instance_valid(editor_status): return
 	var errors: Array[String] = TrackDocument.validate(document)
-	editor_status.text = "Waypoints are generated from connected roads. Changes save automatically." if errors.is_empty() else errors[0]
+	editor_status.text = editor_guidance if errors.is_empty() else errors[0]
 	test_button.disabled = not errors.is_empty()
 	publish_button.disabled = not errors.is_empty() or lifecycle == null or not lifecycle.ready_to_publish(document)
 	share_button.disabled = not errors.is_empty()
@@ -3847,7 +4153,7 @@ func _apply_editor_writes() -> void:
 		if receipt.error == OK:
 			editor_wip_snapshot = receipt.document.duplicate(true); editor_wip_store = storage; editor_wip_disk_hash = receipt.digest
 			editor_wip_saved = TrackLibrary.draft_fingerprint(receipt.document)
-			if is_instance_valid(editor_status) and editor_status.text == "Saving...": editor_status.text = "WIP autosaved. Saved original unchanged."
+			if is_instance_valid(editor_status) and editor_status.text == "Saving...": editor_status.text = editor_guidance
 		elif not _editor_exiting and is_inside_tree(): _editor_hint(editor_save_message)
 		if not _editor_exiting and is_inside_tree(): _update_editor_save_state()
 	editor_writes.completed.clear()
@@ -3986,8 +4292,8 @@ func _publish_current_document() -> void:
 	await _publish_saved_draft("wip:"+str(document.id))
 
 func _share_dialog() -> void:
-	if not canvas.paint_points.is_empty():
-		_notice("Confirm or cancel the surface preview first.")
+	if _has_pending_editor_work():
+		_resolve_editor_previews(_share_dialog,"Confirm or discard the pending previews before sharing this circuit.")
 		return
 	if _save_draft() != OK:
 		_notice("Could not save: "+library.last_error)
@@ -4210,7 +4516,7 @@ func _prepare_metadata_race(track: NativeTrack, from_editor: bool, offline_only:
 		_close_race_loading(overlay_id)
 		_notice(cloud.last_error if not cloud.last_error.is_empty() else "Track download failed. Check your connection and try again.")
 		return
-	overlay.stage("Preparing trackâ€¦")
+	overlay.stage("Preparing track…")
 	var ready: Variant = await online.client._background(cloud.compile_document.bind(entry,downloaded))
 	if _race_preparation_changed(overlay_id,scope,navigation,starting_screen,vehicle,selection): return
 	if not ready is NativeTrack:
@@ -4225,6 +4531,9 @@ func _prepare_metadata_race(track: NativeTrack, from_editor: bool, offline_only:
 	track_catalog.remember_track(entry,track)
 	cloud_starting = false
 	await _start_race(track,from_editor,offline_only,issued,overlay)
+
+func _start_race_road_job(track: NativeTrack) -> RefCounted:
+	return preload("res://editor/road_preparation_job.gd").start(track,get_tree())
 
 func _start_race(track: NativeTrack, from_editor: bool, offline_only: bool = false, rivalry_issued: Dictionary = {}, prepared_loading: RaceLoading = null) -> void:
 	if cloud_starting or (is_instance_valid(race_loading) and race_loading != prepared_loading): return
@@ -4255,8 +4564,15 @@ func _start_race(track: NativeTrack, from_editor: bool, offline_only: bool = fal
 	if _race_preparation_changed(loading_id,original_scope,navigation_generation,starting_screen,selected_vehicle,starting_selection): return
 	if not await _await_selected_preparation(track,loading_id,original_scope,navigation_generation,starting_screen,selected_vehicle,starting_selection): return
 	cloud_ticket = {}
+	var road_overlap: RefCounted
 	if not offline_only and not from_editor and track.metadata.has("cloud_version") and online.client.signed_in():
-		loading.stage("Connecting raceâ€¦")
+		loading.stage("Connecting race…")
+		# Once the exact track is compiled, its presentation arrays can be built
+		# while an ordinary ticket request is in flight. Keep ticket issuance at
+		# the same point, and do not compete with an editor/save road builder.
+		if rivalry_issued.is_empty() and preload("res://track/road_cache_bakes.gd").job == null and preload("res://track/road_cache_bakes.gd").pending_track == null and SELECTED_PREPARATION.ready_for_job() and NativeTrackVisual.race_roads_need_preparation(track):
+			road_overlap = preload("res://race/road_ticket_overlap.gd").new()
+			road_overlap.attach(_start_race_road_job(track),get_tree(),loading)
 		var issued: Dictionary = await cloud.ticket(track,false,attempt_vehicle,null,rivalry_issued) if not rivalry_issued.is_empty() else await cloud.ticket(track)
 		if not _race_loading_matches(loading_id): return
 		if _race_preparation_changed(loading_id,original_scope,navigation_generation,starting_screen,selected_vehicle,starting_selection): return
@@ -4289,13 +4605,21 @@ func _start_race(track: NativeTrack, from_editor: bool, offline_only: bool = fal
 					_start_race(track,from_editor,true))
 			offline_dialog.popup_centered()
 			return
-	loading.stage("Loading trackâ€¦")
+	loading.stage("Loading track…")
 	await _present_race_loading()
 	if not _race_loading_matches(loading_id): return
 	if _race_preparation_changed(loading_id,original_scope,navigation_generation,starting_screen,selected_vehicle,starting_selection): return
 	var prepared_roads: Dictionary = {}
-	if NativeTrackVisual.race_roads_need_preparation(track):
-		var road_job = preload("res://editor/road_preparation_job.gd").start(track,get_tree())
+	var road_job: RefCounted = road_overlap.take() if road_overlap != null else null
+	if road_job == null and NativeTrackVisual.race_roads_need_preparation(track):
+		# Reap cancelled work, and share a save-time bake only when it has the
+		# exact same disk identity. Unrelated saved tracks must not delay a race.
+		var road_disk_key: Array = preload("res://editor/road_preparation.gd").disk_key_for(track)
+		while not SELECTED_PREPARATION.ready_for_job() or preload("res://track/road_cache_bakes.gd").baking_key(road_disk_key):
+			await get_tree().process_frame
+			if _race_preparation_changed(loading_id,original_scope,navigation_generation,starting_screen,selected_vehicle,starting_selection): return
+		road_job = _start_race_road_job(track)
+	if road_job != null:
 		while not road_job.done:
 			await get_tree().process_frame
 			if _race_preparation_changed(loading_id,original_scope,navigation_generation,starting_screen,selected_vehicle,starting_selection):
@@ -4322,7 +4646,7 @@ func _start_race(track: NativeTrack, from_editor: bool, offline_only: bool = fal
 			pending_menu_notice = "This circuit could not be remembered for next time. Check available storage."
 	if is_instance_valid(canvas):
 		canvas.cancel_gesture()
-		editor_view = {"zoom":canvas.zoom,"pan":canvas.pan,"mode":canvas.mode,"selected":canvas.selected,"selected_object":canvas.selected_object,"stamp_kind":canvas.stamp_kind,"stamp_scale":canvas.stamp_scale,"stamp_span":canvas.stamp_span,"stamp_jump_profile":canvas.stamp_jump_profile,"stamp_container_color":canvas.stamp_container_color,"run_shape":canvas.run_shape,"free_run":canvas.free_run,"brush_surface":canvas.brush_surface,"brush_width":canvas.brush_width,"paint_mode":canvas.paint_mode,"brush_shape":canvas.brush_shape,"selected_piece":canvas.selected_piece}
+		editor_view = {"zoom":canvas.zoom,"pan":canvas.pan,"mode":canvas.mode,"selected":canvas.selected,"selected_object":canvas.selected_object,"stamp_kind":canvas.stamp_kind,"stamp_scale":canvas.stamp_scale,"stamp_span":canvas.stamp_span,"stamp_jump_profile":canvas.stamp_jump_profile,"stamp_container_color":canvas.stamp_container_color,"run_shape":canvas.run_shape,"free_run":canvas.free_run,"brush_surface":canvas.brush_surface,"brush_width":canvas.brush_width,"paint_mode":canvas.paint_mode,"brush_shape":canvas.brush_shape,"selected_piece":canvas.selected_piece,"selected_objects":canvas.object_indices(),"multi_select":canvas.multi_select,"object_snap":canvas.object_snap,"detailed_scenery":not editor_world._detail.enabled if is_instance_valid(editor_world) else false}
 	_stop_menu_page_motion()
 	_practice_editor_context = {}
 	if from_editor and screen == "create" and is_instance_valid(canvas) and canvas.document == document:
@@ -4347,12 +4671,23 @@ func _start_race(track: NativeTrack, from_editor: bool, offline_only: bool = fal
 	game.set("rating_records", null if tutorial_lesson or track.metadata.has("cloud_version") else records)
 	game.set("preference_records", records)
 	game.set("editor_test", from_editor)
+	# Competitive tickets can consume limited attempts; keep those races on the
+	# handling contract they were issued for. Tutorial driving also stays fixed.
+	game.set("handling_test_enabled", not (rivalry_racing or challenge_racing or tutorial_lesson))
 	_prepare_race_rating(track)
 	game.connect("exit_requested", _leave_race)
 	game.connect("edit_here_requested", _edit_here)
 	game.connect("race_completed", _results)
 	game.connect("practice_lap_completed", _complete_draft_test,CONNECT_DEFERRED)
 	game.connect("retry_requested", _retry_race)
+	game.connect("handling_test_started", func() -> void:
+		if not is_instance_valid(game): return
+		cloud_ticket = {}
+		game.set("resume_ticket_id", "")
+		game.set_meta("race_offline_only", true)
+		var vote: Variant = game.get("cloud_rating")
+		if is_instance_valid(vote): vote.abandon()
+		game.set("cloud_rating", null))
 	add_child(game)
 	var prepared_game: Node = game
 	while is_instance_valid(prepared_game) and game == prepared_game and not prepared_game.preparation_complete:
@@ -4386,7 +4721,7 @@ func _start_race(track: NativeTrack, from_editor: bool, offline_only: bool = fal
 	hud.touch.show_labels = bool(records.settings.get("control_labels", true))
 	# Render the prepared world once with the countdown/input still frozen.
 	game.call("_process", 0.0)
-	loading.stage("Preparing startâ€¦")
+	loading.stage("Preparing start…")
 	var prepared_finish: VehicleWeathering = game.get("car_weathering")
 	var finish_warmed: bool = prepared_finish.begin_render_warmup()
 	var prepared_personal_ghost: PersonalGhost = game.get("personal_ghost")
@@ -5053,7 +5388,9 @@ func _build_paint_tools() -> void:
 			canvas.queue_redraw()))
 	var materials := OptionButton.new()
 	materials.custom_minimum_size.y = 54
-	for label: String in ["Grass / erase","Sand","Water","Barrier","Kerb","Rough ground","Low obstacles"]: materials.add_item(label)
+	for surface: int in range(1,8):
+		var label: String = preload("res://editor/surface_labels.gd").title(surface,str(document.theme))
+		materials.add_item(GameText.message(label)+(" / "+GameText.message("Erase") if surface == 1 else ""))
 	materials.selected = canvas.brush_surface-1
 	materials.item_selected.connect(func(index: int) -> void:
 		canvas.brush_surface = index+1
@@ -5067,13 +5404,14 @@ func _build_paint_tools() -> void:
 		actions.add_child(MenuStyle.button(entry[1],func() -> void:
 			canvas.mode = value
 			_build_editor_tools(),canvas.mode == value))
-	var shapes := OptionButton.new()
-	shapes.custom_minimum_size.y = 54
-	shapes.add_item("Round brush")
-	shapes.add_item("Square brush")
-	shapes.selected = 1 if canvas.brush_shape == "square" else 0
-	shapes.item_selected.connect(func(index: int) -> void: canvas.brush_shape = "square" if index else "round")
-	editor_inspector.add_child(shapes)
+	if canvas.paint_mode != "area":
+		var shapes := OptionButton.new()
+		shapes.custom_minimum_size.y = 54
+		shapes.add_item("Round brush")
+		shapes.add_item("Square brush")
+		shapes.selected = 1 if canvas.brush_shape == "square" else 0
+		shapes.item_selected.connect(func(index: int) -> void: canvas.brush_shape = "square" if index else "round")
+		editor_inspector.add_child(shapes)
 	var help := MenuStyle.label("Tap to add points; drag dots to reshape. Confirm to place. Free painting commits on release.",16,true)
 	if document.base_track != "": help.text += " Remix paints ground only."
 	help.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
@@ -5092,7 +5430,7 @@ func _build_paint_tools() -> void:
 	editor_inspector.add_child(help)
 
 func _editor_help() -> void:
-	_notice("Changes autosave to a separate WIP. Load reopens the latest saved draft or autosave. Save (Ctrl+S) updates the saved original.\n\nDrag inside a road section to move it. Drag an end dot to resize and turn it; the other end stays fixed.\n\nPC: wheel zooms at the pointer. Middle/right drag or Space + left drag pans. F fits the map. Ctrl+Z / Ctrl+Shift+Z undo/redo. Enter confirms; Esc cancels. Delete removes the selection. 1â€“4 switch tools. Q/E rotate. Tab cycles overlapping roads.\n\nPhone: two fingers pan/zoom. Layer selects the other road at an overpass. Bridge spans include ramps at both ends; paint edits the ground underneath.")
+	_notice("Changes autosave to a separate WIP. Load reopens the latest saved draft or autosave. Save (Ctrl+S) updates the saved original.\n\nDrag inside a road section to move it. Drag an end dot to resize and turn it; the other end stays fixed.\n\nPC: wheel zooms at the pointer. Middle/right drag or Space + left drag pans. F fits the map. Ctrl+Z / Ctrl+Shift+Z undo/redo. Enter confirms; Esc cancels. Delete removes the selection. 1–4 switch tools. Q/E rotate. Tab cycles overlapping roads.\n\nPhone: two fingers pan/zoom. Layer selects the other road at an overpass. Bridge spans include ramps at both ends; paint edits the ground underneath.")
 
 func _input(event: InputEvent) -> void:
 	# Tab is a GUI navigation key and never reaches unhandled_key_input.
@@ -5143,9 +5481,15 @@ func _unhandled_key_input(event: InputEvent) -> void:
 			KEY_2: _editor_category("paint")
 			KEY_3: _editor_category("objects")
 			KEY_4: canvas.choose_start_line()
-			KEY_Q: _change_piece("heading",-15.0)
-			KEY_E: _change_piece("heading",15.0)
-			KEY_TAB: canvas.cycle_piece()
+			KEY_Q:
+				if canvas.mode in ["objects","place"]: _set_object_rotation(_object_rotation()-22.5)
+				else: _change_piece("heading",-15.0)
+			KEY_E:
+				if canvas.mode in ["objects","place"]: _set_object_rotation(_object_rotation()+22.5)
+				else: _change_piece("heading",15.0)
+			KEY_TAB:
+				if canvas.mode == "objects": canvas.cycle_objects()
+				else: canvas.cycle_piece()
 			_: handled = false
 	if handled: get_viewport().set_input_as_handled()
 
@@ -5686,30 +6030,22 @@ func _delete_user_track(id: String) -> void:
 	if settings_error != OK: _notice("Track deleted, but favorite settings could not be saved.")
 
 func _choose_object(kind: String) -> void:
-	if is_instance_valid(editor_world): editor_world.warm_prop(kind,CreatorCatalog.default_scale(kind),canvas.stamp_container_color)
+	var family: Array = CreatorCatalog.family(kind)
+	var same_family: bool = kind == canvas.stamp_kind or (not family.is_empty() and canvas.stamp_kind in family[3])
+	if CreatorCatalog.JUMP_ASSETS.has(kind): same_family = same_family and canvas.stamp_jump_profile == str(CreatorCatalog.JUMP_ASSETS[kind])
+	var placement: String = object_browser.placement if same_family else "single"
 	canvas.cancel_gesture()
-	canvas.stamp_kind=kind
-	if kind == "jump" and canvas.stamp_jump_profile not in JumpProfiles.IDS:
-		canvas.stamp_jump_profile = JumpProfiles.default_for(str(document.theme))
-	object_browser.stamp_jump_profile = canvas.stamp_jump_profile
-	canvas.stamp_scale=CreatorCatalog.default_scale(kind)
+	var jump_profile: String = str(CreatorCatalog.JUMP_ASSETS.get(kind,""))
+	canvas.multi_select = false
+	canvas.stamp_kind="jump" if not jump_profile.is_empty() else kind
+	if canvas.stamp_kind == "jump":
+		canvas.stamp_jump_profile = jump_profile if not jump_profile.is_empty() else JumpProfiles.default_for(str(document.theme))
+		object_browser.current = CreatorCatalog.jump_asset(canvas.stamp_jump_profile,str(document.theme))
+	if is_instance_valid(editor_world): editor_world.warm_prop(canvas.stamp_kind,CreatorCatalog.default_scale(kind),canvas.stamp_container_color)
+	if not same_family: canvas.stamp_scale=CreatorCatalog.default_scale(kind)
 	object_browser.stamp_scale=canvas.stamp_scale
 	canvas.selected_object=-1
-	_object_placement("single")
-
-func _jump_profile(profile: String) -> void:
-	if profile not in JumpProfiles.IDS or not is_instance_valid(canvas): return
-	canvas.cancel_gesture()
-	canvas.stamp_jump_profile = profile
-	if is_instance_valid(object_browser):
-		object_browser.stamp_jump_profile = profile
-		object_browser.refresh()
-	if canvas.selected_object < 0 or canvas.mode != "objects": return
-	var object: Dictionary = document.objects[canvas.selected_object]
-	if object.kind != "jump" or JumpProfiles.id(object) == profile: return
-	_remember()
-	object["jump_profile"] = profile
-	_commit_selection()
+	_object_placement(placement)
 
 func _container_colour(color: String) -> void:
 	if not ContainerPaint.valid(color) or not is_instance_valid(canvas): return
@@ -5760,6 +6096,7 @@ func _open_object_population() -> void:
 		if objects.is_empty() or document.objects.size()+objects.size() > ObjectPopulation.MAX_OBJECTS: return
 		var admission: String = preload("res://editor/creator_limits.gd").addition_error(document.objects,objects,str(document.theme))
 		if not admission.is_empty(): _editor_hint(admission); return
+		if not canvas.admit("objects",document.objects+objects): return
 		_remember()
 		document.objects.append_array(objects)
 		document["automatic_scenery"] = false
@@ -5801,11 +6138,11 @@ func _choose_hazard(kind: String) -> void:
 
 
 const CREATION_BIOME_DESCRIPTIONS: Dictionary = {
-	"pine":"Lush forests, open fields and classic racing character. A balanced environment with clear visibility and a broad variety of scenery.",
-	"desert":"Sunset canyons, compacted sand roads and dense lingering dust. Build fast, flowing routes through warm open terrain.",
-	"night_city":"A moonlit waterfront city with warm street lamps and deep shadows. Shape technical routes that come alive after dark.",
-	"winter":"Snow-covered forests, frozen scenery and low-grip ice. Create bright alpine circuits where smooth driving matters.",
-	"storm":"Dark forest valleys, heavy rain and lightning over wet asphalt. Design dramatic routes with reduced grip and changing visibility."
+	"pine":"Sunlit grass and asphalt make a versatile setting for your track. Add trees, buildings and other objects to make it your own.",
+	"desert":"Build across sunlit sand with compacted sand roads and drifting grains. Add rocks or ancient stone structures to shape the scene.",
+	"night_city":"Dark asphalt and concrete set the scene after dusk. Light your track with street lamps and add industrial objects to make it your own.",
+	"winter":"Snowy ground and icy roads make for slippery racing. Add snow-covered trees and winter objects to build your frozen circuit.",
+	"storm":"Rain falls over wet roads under a dark sky. Reduced road grip makes every corner more demanding."
 }
 
 func _choose_biome(parent: VBoxContainer = null, preview: bool = false) -> void:
@@ -6180,6 +6517,9 @@ func _build_surface_toolbar() -> void:
 			if chosen: style.bg_color = Color("087b8d")
 			button.add_theme_stylebox_override(state,style)
 		segments.add_child(button)
+	if canvas.paint_mode == "area":
+		_surface_point_controls()
+		return
 	var brush := VBoxContainer.new()
 	brush.custom_minimum_size.x = 178
 	surface_actions.add_child(brush)
@@ -6228,3 +6568,21 @@ func _build_surface_toolbar() -> void:
 	options.tooltip_text = "Brush shape, navigation and road protection"
 	options.size_flags_vertical = Control.SIZE_SHRINK_END
 	surface_actions.add_child(options)
+
+func _surface_point_controls() -> void:
+	var area := VBoxContainer.new()
+	surface_actions.add_child(area)
+	area.add_child(MenuStyle.label(GameText.message("Area · %d points") % canvas.paint_points.size(),18))
+	var row := HBoxContainer.new(); row.add_theme_constant_override("separation",6); area.add_child(row)
+	var remove: Button = EditorStyle.button("Undo point",func() -> void:
+		if not canvas.paint_points.is_empty(): canvas.paint_points.pop_back()
+		_build_editor_tools())
+	remove.name = "AreaRemovePoint"; remove.custom_minimum_size = Vector2(90,54)
+	remove.disabled = canvas.paint_points.is_empty(); row.add_child(remove)
+	var cancel: Button = EditorStyle.button("Cancel",func() -> void: canvas.cancel_gesture(); _build_editor_tools())
+	cancel.name = "AreaCancel"; cancel.custom_minimum_size = Vector2(72,54); row.add_child(cancel)
+	var confirm: Button = EditorStyle.button("Place",func() -> void: canvas.confirm_paint(); _build_editor_tools())
+	confirm.name = "AreaConfirm"; confirm.custom_minimum_size = Vector2(72,54)
+	confirm.disabled = canvas.paint_points.size() < 3; row.add_child(confirm)
+	var options: Button = EditorButton.make("","options",func() -> void: editor_tools_panel.visible = not editor_tools_panel.visible)
+	options.name = "SurfaceOptions"; options.size_flags_vertical = Control.SIZE_SHRINK_END; surface_actions.add_child(options)

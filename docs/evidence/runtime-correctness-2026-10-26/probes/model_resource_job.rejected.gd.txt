@@ -1,0 +1,48 @@
+extends RefCounted
+## Engine loader requests outlive a canceled model; reap every accepted request.
+static var pending: Array = []
+static var tree: SceneTree
+var paths: Array[String] = []
+var resources: Array[Resource] = []
+var done: bool = false
+var cancelled: bool = false
+
+static func start(batch: Array[String], owner_tree: SceneTree) -> RefCounted:
+	var job: RefCounted = load("res://vehicle/model_resource_job.gd").new()
+	for path: String in batch:
+		if ResourceLoader.load_threaded_request(path)==OK: job.paths.append(path)
+	pending.append(job)
+	if tree == null:
+		tree = owner_tree
+		tree.process_frame.connect(reap)
+		tree.root.tree_exiting.connect(finish)
+	return job
+
+func cancel() -> void:
+	cancelled = true
+	resources.clear()
+
+static func reap() -> void:
+	for index: int in range(pending.size()-1,-1,-1):
+		var job: RefCounted = pending[index]
+		var loading: bool = false
+		for path: String in job.paths:
+			if ResourceLoader.load_threaded_get_status(path)==ResourceLoader.THREAD_LOAD_IN_PROGRESS: loading = true
+		if loading: continue
+		_collect(job)
+		pending.remove_at(index)
+
+static func _collect(job: RefCounted) -> void:
+	for path: String in job.paths:
+		if ResourceLoader.load_threaded_get_status(path)==ResourceLoader.THREAD_LOAD_LOADED:
+			var resource: Resource = ResourceLoader.load_threaded_get(path)
+			if not job.cancelled: job.resources.append(resource)
+	job.done = true
+
+static func finish() -> void:
+	for job: RefCounted in pending:
+		job.cancel()
+		for path: String in job.paths:
+			if ResourceLoader.load_threaded_get_status(path) in [ResourceLoader.THREAD_LOAD_LOADED,ResourceLoader.THREAD_LOAD_IN_PROGRESS]: ResourceLoader.load_threaded_get(path)
+		job.done = true
+	pending.clear(); tree = null

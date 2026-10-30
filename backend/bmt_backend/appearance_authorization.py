@@ -12,11 +12,11 @@ def required_items(appearance):
     pattern = value["livery"]["pattern"]
     if pattern != "plain":
         items.add("livery/" + pattern)
-    if value["vehicle_id"] == "compact":
+    if value["vehicle_id"] in ("compact", "kart"):
         for category in ("hood", "aero", "rims", "body"):
             option = value["customisation"][category]
             if option != "stock":
-                items.add("kit/compact/" + category + "/" + option)
+                items.add("kit/" + value["vehicle_id"] + "/" + category + "/" + option)
     return items
 
 

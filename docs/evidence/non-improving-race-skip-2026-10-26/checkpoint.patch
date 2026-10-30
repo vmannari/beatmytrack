@@ -1,0 +1,1533 @@
+diff --git a/backend/bmt_backend/admin.py b/backend/bmt_backend/admin.py
+--- a/backend/bmt_backend/admin.py
++++ b/backend/bmt_backend/admin.py
+@@ -108,7 +108,7 @@
+     stamp = now()
+     with request.app.state.session_factory() as db:
+         states = dict(db.execute(select(Run.status, func.count()).where(
+-            Run.status.in_(("verified", "failed", "rejected")),
++            Run.status.in_(("verified", "skipped", "failed", "rejected")),
+             Run.finished_at >= stamp - 300, Run.finished_at <= stamp).group_by(Run.status)).all())
+         queue = db.get(QueueCapacity, 1)
+         return {"role": role, "environment": request.app.state.settings.environment,
+diff --git a/backend/bmt_backend/app.py b/backend/bmt_backend/app.py
+--- a/backend/bmt_backend/app.py
++++ b/backend/bmt_backend/app.py
+@@ -282,6 +282,7 @@
+             "verification": "trajectory-v1",
+             "trajectory_verification": True,
+             "race_path_wire_version": 1,
++            "non_improving_runs_version": 1,
+             "submission_recovery_version": 1,
+             "run_completion_version": 1,
+             "challenge_pending_version": 1,
+diff --git a/backend/bmt_backend/challenge_series.py b/backend/bmt_backend/challenge_series.py
+--- a/backend/bmt_backend/challenge_series.py
++++ b/backend/bmt_backend/challenge_series.py
+@@ -102,13 +102,13 @@
+         binding.outcome = {"counted": False}
+         return
+     prior = own.time_ticks
+-    improved = prior is None or run.time_ticks < prior
++    improved = run.status != "skipped" and (prior is None or run.time_ticks < prior)
+     if improved:
+         own.time_ticks, own.run_id = run.time_ticks, run.id
+     session.flush()
+     bests = session.scalars(select(ChallengeStageMember).where(
+         ChallengeStageMember.challenge_id == challenge.id, ChallengeStageMember.player_id == run.player_id)).all()
+-    if all(row.time_ticks is not None for row in bests) and len(bests) == challenge.track_count:
++    if run.status != "skipped" and all(row.time_ticks is not None for row in bests) and len(bests) == challenge.track_count:
+         member.time_ticks = sum(row.time_ticks for row in bests)
+         member.run_id = run.id
+     session.flush()
+diff --git a/backend/bmt_backend/challenges.py b/backend/bmt_backend/challenges.py
+--- a/backend/bmt_backend/challenges.py
++++ b/backend/bmt_backend/challenges.py
+@@ -274,7 +274,9 @@
+                                           Run.board_id == board.id)) if ticket_id else session.get(Run, best.run_id) if best else None
+     session.commit()
+     return {"run_id": run.id if run else None, "status": run.status if run else "not_set",
+-            "ms": round(run.time_ticks*1000/board.manifest["tick_rate"]) if run and run.time_ticks else None}
++            "ms": round(run.time_ticks*1000/board.manifest["tick_rate"]) if run and run.time_ticks else None,
++            **({"retryable":True} if run and run.status == "failed" and run.failure_code in
++               ("verifier_unavailable","build_mismatch","build_unavailable") else {})}
+ 
+ 
+ def create_record(session, request, player, payload, key, scope, body):
+@@ -559,7 +561,7 @@
+         accept(session, challenge, binding, run, member)
+         return
+     prior = member.time_ticks
+-    improved = prior is None or run.time_ticks < prior
++    improved = run.status != "skipped" and (prior is None or run.time_ticks < prior)
+     if improved:
+         member.run_id, member.time_ticks = run.id, run.time_ticks
+         session.flush()
+diff --git a/backend/bmt_backend/completion_reads.py b/backend/bmt_backend/completion_reads.py
+--- a/backend/bmt_backend/completion_reads.py
++++ b/backend/bmt_backend/completion_reads.py
+@@ -9,7 +9,7 @@
+ from .economy_models import CoinReward, CoinWallet, CosmeticUnlock
+ 
+ logger = logging.getLogger("bmt.completion")
+-TERMINAL = ("verified", "rejected", "failed")
++TERMINAL = ("verified", "skipped", "rejected", "failed")
+ 
+ 
+ def enrich(session, runs, player_id, *, request=None):
+diff --git a/backend/bmt_backend/economy.py b/backend/bmt_backend/economy.py
+--- a/backend/bmt_backend/economy.py
++++ b/backend/bmt_backend/economy.py
+@@ -146,7 +146,7 @@
+             raise OSError("Archived reward is missing")
+         value = decrypt(secret, run_id, stored)
+         return {"status": "credited", "amount": value["amount"], "rows": value["rows"]}
+-    status = "credited" if receipt else "unavailable" if run and run.status in ("verified", "rejected", "failed") else "pending"
++    status = "credited" if receipt else "unavailable" if run and run.status in ("verified", "skipped", "rejected", "failed") else "pending"
+     return {"status": status, "amount": receipt.amount if receipt else 0, "rows": receipt.rows if receipt else []}
+ 
+ 
+@@ -161,9 +161,12 @@
+     """Caller holds Player and commits the award in the verification transaction."""
+     board = acceptance.board if acceptance else session.get(Board, run.board_id)
+     player = session.get(Player, run.player_id)
+-    if (run.status != "verified" or run.reward_archive_hash or board.manifest.get("purpose") == "creator_test"
++    if (run.status not in ("verified", "skipped") or run.reward_archive_hash or board.manifest.get("purpose") == "creator_test"
+             or player.is_test_driver or (acceptance.reward if acceptance else session.get(CoinReward, run.id)) is not None):
+         return
++    if run.status == "skipped" and (not all(previous) or run.time_ticks < previous[0]
++                                   or min(run.lap_ticks[1:]) < previous[1]):
++        raise ValueError("Unverified completion cannot award a personal best")
+     if acceptance:
+         # The worker already owns Player's write lock before loading Acceptance.
+         # Keep that lock through commit; do not issue a second locking SELECT.
+diff --git a/backend/bmt_backend/maintenance.py b/backend/bmt_backend/maintenance.py
+--- a/backend/bmt_backend/maintenance.py
++++ b/backend/bmt_backend/maintenance.py
+@@ -61,7 +61,7 @@
+             retire_evidence(retired_intents, retired_uploads)
+             session.flush()
+         candidates = session.scalars(select(Run).where(
+-            Run.status.in_(("verified", "failed", "rejected")), Run.finished_at < cutoff,
++            Run.status.in_(("verified", "skipped", "failed", "rejected")), Run.finished_at < cutoff,
+             ~Run.id.in_(select(PersonalBest.run_id)),
+             ~Run.id.in_(select(LapPersonalBest.run_id)),
+             ~Run.id.in_(select(RivalryBest.run_id)),
+@@ -160,6 +160,7 @@
+                         .on_conflict_do_nothing(index_elements=[ObjectGarbageCandidate.digest]))
+             session.execute(delete(ResumeReceipt).where(ResumeReceipt.race_id.in_(races)))
+             session.execute(delete(ResumeRace).where(ResumeRace.id.in_(races)))
++            session.execute(delete(OperationState).where(OperationState.id.in_(["verify:"+run_id for run_id in run_ids])))
+             session.execute(delete(Run).where(Run.id.in_(run_ids)))
+             session.execute(delete(RunTicket).where(RunTicket.id.in_(tickets)))
+             retired_reference = or_(
+diff --git a/backend/bmt_backend/rivalry.py b/backend/bmt_backend/rivalry.py
+--- a/backend/bmt_backend/rivalry.py
++++ b/backend/bmt_backend/rivalry.py
+@@ -515,9 +515,9 @@
+     if previous is None:
+         personal_best = session.get(PersonalBest, (run.board_id, run.player_id))
+         previous = personal_best.time_ticks if personal_best else 0
+-    new_personal_best = not previous or run.time_ticks < previous
++    new_personal_best = run.status != "skipped" and (not previous or run.time_ticks < previous)
+     best = session.get(RivalryBest, (group.id, run.player_id, binding.slot))
+-    improved = best is None or run.time_ticks < best.time_ticks
++    improved = run.status != "skipped" and (best is None or run.time_ticks < best.time_ticks)
+     if improved:
+         if best is None:
+             best = RivalryBest(group_id=group.id, player_id=run.player_id, slot=binding.slot)
+diff --git a/backend/bmt_backend/run_signals.py b/backend/bmt_backend/run_signals.py
+--- a/backend/bmt_backend/run_signals.py
++++ b/backend/bmt_backend/run_signals.py
+@@ -18,7 +18,7 @@
+ from .track_models import Run
+ 
+ logger = logging.getLogger("bmt.run_signals")
+-TERMINAL = ("verified", "rejected", "failed")
++TERMINAL = ("verified", "skipped", "rejected", "failed")
+ MAX_PENDING = 64
+ 
+ 
+diff --git a/backend/bmt_backend/runs.py b/backend/bmt_backend/runs.py
+--- a/backend/bmt_backend/runs.py
++++ b/backend/bmt_backend/runs.py
+@@ -127,6 +127,7 @@
+         "failure_code": run.failure_code,
+         "retryable": run.status == "failed" and run.failure_code in ("verifier_unavailable", "build_mismatch", "build_unavailable"),
+         "poll_after_ms": pending_poll_ms(run),
++        **({"skip_reason": "no_improvement"} if run.status == "skipped" else {}),
+     }
+ 
+ 
+@@ -246,7 +247,10 @@
+     # immutable submission after a lost response or prolonged network outage.
+     if ticket.expires_at <= now():
+         raise HTTPException(410, "Run ticket expired")
+-    check_capacity(session, player.id, request.app.state.settings.max_queued_runs)
++    from .non_improving_runs import candidate, complete, no_improvement
++    proposed = candidate(payload.replay)
++    if proposed is None:
++        check_capacity(session, player.id, request.app.state.settings.max_queued_runs)
+     from .resumes import validate_receipts
+     validate_receipts(session, ticket.id, payload.replay)
+     owner_id = player.id
+@@ -254,7 +258,10 @@
+     replay_hash = request.app.state.blobs.put_json(payload.replay)
+     if replay_hash != body["replay_hash"]:
+         raise HTTPException(503, "Replay storage hash mismatch")
+-    session.scalar(select(Player).where(Player.id == owner_id).with_for_update())
++    owner = session.scalar(select(Player).where(Player.id == owner_id).with_for_update()
++        .execution_options(populate_existing=True))
++    if owner is None or owner.disabled or owner.deleted_at is not None:
++        raise HTTPException(401, "INVALID_SESSION")
+     ticket = session.scalar(
+         select(RunTicket)
+         .where(RunTicket.id == payload.ticket_id, RunTicket.player_id == player.id)
+@@ -270,7 +277,7 @@
+     if ticket.expires_at <= now():
+         raise HTTPException(410, "Run ticket expired")
+     board = session.get(Board, ticket.board_id)
+-    check_scope(request, bool(board.manifest.get("test_population")), player)
++    check_scope(request, bool(board.manifest.get("test_population")), owner)
+     require_published_admission(request, session, board)
+     if board.manifest.get("purpose") == "creator_test":
+         repeated = session.scalar(select(Run).where(Run.player_id == player.id,
+@@ -278,6 +285,10 @@
+             .order_by(Run.created_at, Run.id).limit(1))
+         if repeated is not None:
+             return commit_response(session, player.id, "submit_run", key, body, run_payload(repeated))
++    if no_improvement(session, ticket, board, proposed):
++        validate_receipts(session, ticket.id, payload.replay, settle=True)
++        run = complete(session, ticket, board, replay_hash, payload.replay, proposed)
++        return commit_response(session, player.id, "submit_run", key, body, run_payload(run))
+     check_capacity(session, player.id, request.app.state.settings.max_queued_runs)
+     validate_receipts(session, ticket.id, payload.replay)
+     admit(session, player.id, request.app.state.settings.max_queued_runs)
+@@ -406,7 +417,8 @@
+     if run is None:
+         raise HTTPException(404, "Run not found")
+     check_scope(request, bool(session.get(Board, run.board_id).manifest.get("test_population")), player)
+-    if run.status == "failed" and run.failure_code in ("verifier_unavailable", "build_mismatch", "build_unavailable"):
++    requested = run.status == "skipped"
++    if requested or (run.status == "failed" and run.failure_code in ("verifier_unavailable", "build_mismatch", "build_unavailable")):
+         board = session.get(Board, run.board_id)
+         require_published_admission(request, session, board)
+         try:
+@@ -422,6 +434,10 @@
+         admit(session, player.id, request.app.state.settings.max_queued_runs)
+         run.status, run.attempts, run.lease_until, run.lease_token = "queued", 0, 0, None
+         run.failure_code, run.finished_at = None, None
++        if requested:
++            from .track_models import OperationState
++            session.merge(OperationState(id="verify:"+run.id, updated_at=now(), details={"reason":"competitive_reuse"}))
++            run.time_ticks, run.lap_ticks = None, None
+     elif run.status == "rejected":
+         raise HTTPException(409, "INVALID_REPLAY: complete a new valid attempt")
+     return commit_response(session, player.id, scope, key, {}, run_payload(run))
+diff --git a/backend/bmt_backend/studio.py b/backend/bmt_backend/studio.py
+--- a/backend/bmt_backend/studio.py
++++ b/backend/bmt_backend/studio.py
+@@ -126,7 +126,7 @@
+             "description": "Server issued a race contract; this does not prove a client race started."})
+     lifecycle.append({"event": "submission_received", "at": run.created_at,
+         "description": "Server persisted the submitted race evidence."})
+-    if run.finished_at is not None and run.status in ("verified", "rejected", "failed"):
++    if run.finished_at is not None and run.status in ("verified", "skipped", "rejected", "failed"):
+         lifecycle.append({"event": "verification_" + run.status, "at": run.finished_at,
+             "description": "Terminal server verification outcome; this timestamp is not the driving finish time."})
+     lifecycle.sort(key=lambda event: event["at"])
+diff --git a/backend/bmt_backend/trajectory_verifier.py b/backend/bmt_backend/trajectory_verifier.py
+--- a/backend/bmt_backend/trajectory_verifier.py
++++ b/backend/bmt_backend/trajectory_verifier.py
+@@ -75,7 +75,7 @@
+ 
+ def validate_envelope(replay):
+     if (type(replay) is not dict or replay.get("schema") != SCHEMA
+-            or set(replay)-{"schema", "input_count", "race_proof", "rewinds", "ghost"}
++            or set(replay)-{"schema", "input_count", "race_proof", "rewinds", "ghost", "claimed_lap_ticks"}
+             or type(replay.get("input_count")) is not int or not 1 <= replay["input_count"] <= MAX_FRAMES
+             or type(replay.get("race_proof")) is not dict):
+         raise VerificationError("Malformed trajectory envelope")
+@@ -98,6 +98,12 @@
+         offset, tick = event["input_offset"], event["to_tick"]
+     if not 0 < duration(replay) <= MAX_FRAMES:
+         raise VerificationError("Invalid trajectory duration")
++    if "claimed_lap_ticks" in replay:
++        laps = replay["claimed_lap_ticks"]
++        if (type(laps) is not list or len(laps) != 5
++                or any(type(value) is not int or not 0 < value <= MAX_FRAMES for value in laps)
++                or sum(laps) != duration(replay)):
++            raise VerificationError("Invalid claimed lap timing")
+ 
+ 
+ def check(geometry, proof, ticks, vehicle, *, creator_test=False):
+diff --git a/backend/bmt_backend/worker.py b/backend/bmt_backend/worker.py
+--- a/backend/bmt_backend/worker.py
++++ b/backend/bmt_backend/worker.py
+@@ -151,6 +151,13 @@
+             raise BuildMismatch
+         from .verifier import GodotVerifier
+         options = {"creator_test": True} if creator_test else {}
++        replay = app.state.blobs.get_json(replay_hash)
++        if not creator_test:
++            from .non_improving_runs import skip_claimed
++            if skip_claimed(app, run_id, token, replay):
++                logger.info("verification_skipped", extra={"run_id":run_id, "reason":"no_improvement"})
++                heartbeat(app, worker_id, phase="idle", coalesce=True)
++                return True
+         if isinstance(app.state.verifier, GodotVerifier):
+             options["capture_ghost"] = needs_ghost
+             from .trajectory_verifier import prepared_geometry
+@@ -158,7 +165,6 @@
+             document = None  # The complete pinned descriptor supplies acceptance geometry.
+         else:
+             document = app.state.blobs.get_json(document_hash)
+-        replay = app.state.blobs.get_json(replay_hash)
+         result = app.state.verifier.verify_run(document, replay, vehicle_id, **options)
+         ticks, lap_ticks = result.get("time_ticks"), result.get("lap_ticks")
+         if redacted_track_hash and result.get("manifest", {}).get("track_content_hash") == redacted_track_hash:
+@@ -281,6 +287,7 @@
+         from .race_acceptance import Acceptance
+         acceptance = Acceptance.load(session, run) if not creator_test else None
+         coin_previous = acceptance.previous if acceptance else (0, 0)
++        reused_completion = acceptance is not None and (acceptance.reward is not None or bool(run.reward_archive_hash))
+         run.status, run.time_ticks, run.lap_ticks = "verified", result["time_ticks"], result["lap_ticks"]
+         run.finished_at, run.failure_code, run.lease_token, run.lease_until = now(), None, None, 0
+         session.flush()
+@@ -338,6 +345,9 @@
+             append_server_event(session, "creator_validated" if creator_test else "race_accepted",
+                                 run.id, run.player_id, dimensions, occurred_at=run.finished_at,
+                                 is_test_driver=player.is_test_driver)
++        required = session.get(OperationState, "verify:"+run_id) if reused_completion else None
++        if required is not None:
++            session.delete(required)
+         session.commit()
+         logger.info("verification_complete", extra={"run_id": run_id, "time_ticks": result["time_ticks"],
+             "worker_id": worker_id, "queue_wait_seconds": queue_wait,
+diff --git a/backend/schemas/trajectory-v1.schema.json b/backend/schemas/trajectory-v1.schema.json
+--- a/backend/schemas/trajectory-v1.schema.json
++++ b/backend/schemas/trajectory-v1.schema.json
+@@ -97,6 +97,13 @@
+         }
+       ]
+     },
++    "claimed_lap_ticks": {
++      "type": "array",
++      "minItems": 5,
++      "maxItems": 5,
++      "items": {"type": "integer", "minimum": 1, "maximum": 216000},
++      "$comment": "Optional negotiated non_improving_runs_version=1 hint. Must sum to input_count minus discarded rewind ticks. Used only to skip verification when authoritative race/lap and competition bests cannot improve; never used to publish a PB or standing. Missing hints retain verification. Skipped completions have status skipped and retain normal completion rewards."
++    },
+     "rewinds": {
+       "$ref": "replay-v2.schema.json#/properties/rewinds"
+     },
+diff --git a/game/backend/backend_client.gd b/game/backend/backend_client.gd
+--- a/game/backend/backend_client.gd
++++ b/game/backend/backend_client.gd
+@@ -601,7 +601,7 @@
+ 
+ func recent_completion(ticket_id: String) -> Dictionary:
+ 	var recent: Dictionary = recent_run(ticket_id)
+-	if recent.get("status") not in ["verified","rejected","failed"]: return {}
++	if recent.get("status") not in ["verified","skipped","rejected","failed"]: return {}
+ 	var value: Variant = recent.get("completion")
+ 	return value if value is Dictionary and value.get("version") == 1 else {}
+ 
+@@ -663,7 +663,7 @@
+ 	pending.response = response
+ 	pending.done = true
+ 	_run_waits.erase(identity)
+-	if response.ok and response.data.status in ["verified","rejected","failed"]: run_completed.emit()
++	if response.ok and response.data.status in ["verified","skipped","rejected","failed"]: run_completed.emit()
+ 	return response
+ 
+ func _background(work: Callable) -> Variant:
+@@ -1055,10 +1055,12 @@
+ 	return result
+ 
+ func race_submission_options() -> Dictionary:
+-	return {"path":1 if int(_capabilities.get("race_path_wire_version",0)) >= 1 else 0,
++	var result: Dictionary = {"path":1 if int(_capabilities.get("race_path_wire_version",0)) >= 1 else 0,
+ 		"incidents":int(_capabilities.get("race_incident_rewards_version",0)) == 1}
+-
+-static func _pack_trajectory(count: int, proof: Dictionary, rewinds: Array, ghost: Dictionary = {}, include_incidents: bool = false, packed_path: bool = false) -> Dictionary:
++	if int(_capabilities.get("non_improving_runs_version",0)) == 1: result.result = 1
++	return result
++
++static func _pack_trajectory(count: int, proof: Dictionary, rewinds: Array, ghost: Dictionary = {}, include_incidents: bool = false, packed_path: bool = false, claimed_lap_ticks: Array = []) -> Dictionary:
+ 	# Normalize the small movement record without encoding/scanning control frames.
+ 	if not _whole(count,1,216000): return {}
+ 	var normalized: Dictionary = _normalize_proof(proof,include_incidents)
+@@ -1073,6 +1075,18 @@
+ 	var path: Array = []
+ 	for row: Array in normalized.samples: path.append([row[0],row[1],row[2],row[6]])
+ 	var result: Dictionary = {"schema":"bmt-trajectory-v1","input_count":count,"race_proof":{"schema":"bmt-race-path-v1","samples":path},"rewinds":events}
++	if not claimed_lap_ticks.is_empty():
++		if claimed_lap_ticks.size() != 5: return {}
++		var laps: Array = []
++		var total: int = 0
++		for value: Variant in claimed_lap_ticks:
++			if not _whole(value,1,216000): return {}
++			laps.append(int(value))
++			total += int(value)
++		var elapsed: int = count
++		for event: Dictionary in events: elapsed -= int(event.from_tick)-int(event.to_tick)
++		if total != elapsed: return {}
++		result.claimed_lap_ticks = laps
+ 	if packed_path: result.race_proof = preload("res://backend/path_wire.gd").encode(result.race_proof)
+ 	if normalized.has("incidents"): result.race_proof.incidents = normalized.incidents
+ 	if not ghost.is_empty(): result.ghost = ghost
+@@ -1098,7 +1112,7 @@
+ 	return value is String and not value.is_empty() and value.length() <= 256
+ 
+ static func valid_run(data: Variant) -> bool:
+-	return data is Dictionary and _text(data.get("run_id")) and data.get("status") in ["queued","verifying","verified","rejected","failed"] and (data.status not in ["failed","rejected"] or _text(data.get("failure_code"))) and (not data.get("outcome") is Dictionary or _whole(data.get("slot"),0,4))
++	return data is Dictionary and _text(data.get("run_id")) and data.get("status") in ["queued","verifying","verified","skipped","rejected","failed"] and (data.status not in ["failed","rejected"] or _text(data.get("failure_code"))) and (data.status != "skipped" or data.get("skip_reason") == "no_improvement") and (not data.get("outcome") is Dictionary or _whole(data.get("slot"),0,4))
+ 
+ static func valid_wallet(data: Variant) -> bool:
+ 	if not data is Dictionary: return false
+@@ -1178,7 +1192,7 @@
+ 		for item: Variant in data.items:
+ 			if not item is Dictionary or not _text(item.get("version_id")) or not _text(item.get("content_hash")): return false
+ 	if endpoint.begins_with("/rivalry/tickets/") and endpoint.ends_with("/result"):
+-		return data.get("status") in ["upload_pending","queued","verifying","verified","rejected","failed","expired"] and (not data.get("outcome") is Dictionary or _whole(data.get("slot"),0,4))
++		return data.get("status") in ["upload_pending","queued","verifying","verified","skipped","rejected","failed","expired"] and (not data.get("outcome") is Dictionary or _whole(data.get("slot"),0,4))
+ 	return true
+ 
+ func _checked(response: Dictionary, path: String, method: HTTPClient.Method) -> Dictionary:
+diff --git a/game/backend/challenges_client.gd b/game/backend/challenges_client.gd
+--- a/game/backend/challenges_client.gd
++++ b/game/backend/challenges_client.gd
+@@ -376,6 +376,12 @@
+ 
+ func source(version: String, vehicle: String, ticket_id: String = "") -> Dictionary:
+ 	var response: Dictionary = await _request("/challenges/sources?version_id="+version.uri_encode()+"&vehicle_id="+vehicle.uri_encode()+("&ticket_id="+ticket_id.uri_encode() if not ticket_id.is_empty() else ""))
++	if response.get("ok",false) and not ticket_id.is_empty() and (response.data.get("status") == "skipped" or (response.data.get("status") == "failed" and response.data.get("retryable",false))):
++		# Choosing this completed run as a new competitive target needs its path
++		# checked. Ordinary non-improving completions never make this request.
++		var requested: Dictionary = await _request("/runs/"+str(response.data.run_id)+"/retry",HTTPClient.METHOD_POST,{})
++		if requested.get("ok",false): return {"run_id":requested.data.run_id,"status":requested.data.status,"ms":null}
++		return {"status":"unavailable","error":friendly(str(requested.get("error","")))}
+ 	return response.data if response.get("ok",false) else {"status":"unavailable","error":friendly(str(response.get("error","")))}
+ 
+ func ticket(stage_override: int = -1) -> Dictionary:
+@@ -451,9 +457,9 @@
+ 	return merged if valid_snapshot(merged) else {}
+ 
+ func poll_result() -> void:
+-	if _polling or result_ticket.is_empty() or result_state in ["verified","rejected","expired"]: return
++	if _polling or result_ticket.is_empty() or result_state in ["verified","skipped","rejected","expired"]: return
+ 	var recent: Dictionary = client.recent_run(result_ticket) if client.has_method("recent_run") else {}
+-	var confirmed: bool = recent.get("status") == "verified" and _failures == 0
++	var confirmed: bool = recent.get("status") in ["verified","skipped"] and _failures == 0
+ 	if Time.get_ticks_msec() < _next_poll and not confirmed: return
+ 	var expected: String = result_ticket
+ 	var original: String = scope()
+@@ -472,7 +478,7 @@
+ 	var data: Dictionary = response.get("data",{}) if response.get("data") is Dictionary else {}
+ 	var pending_only: bool = data.get("schema") == "bmt-challenge-pending-v1"
+ 	if pending_only: data.challenge = _merge_pending(data)
+-	var valid: bool = response.get("ok",false) and valid_snapshot(data.get("challenge")) and data.get("status") in ["upload_pending","queued","verifying","verified","rejected","failed","expired"]
++	var valid: bool = response.get("ok",false) and valid_snapshot(data.get("challenge")) and data.get("status") in ["upload_pending","queued","verifying","verified","skipped","rejected","failed","expired"]
+ 	var jitter: int = int(Crypto.new().generate_random_bytes(1)[0])*10
+ 	_next_poll = Time.get_ticks_msec()+maxi(1000,int(data.get("poll_after_ms",2500)))+jitter
+ 	if not valid:
+diff --git a/game/backend/cloud_tracks.gd b/game/backend/cloud_tracks.gd
+--- a/game/backend/cloud_tracks.gd
++++ b/game/backend/cloud_tracks.gd
+@@ -663,6 +663,8 @@
+ 		recording = {"frames":inputs,"rewinds":rewinds}
+ 	if not proof.is_empty(): recording.race_proof = proof
+ 	if not ghost.is_empty(): recording.ghost = ghost
++	if int(ticket_data.get("_wire_options",{}).get("result",0)) == 1 and ticket_data.get("_claimed_lap_ticks") is Array:
++		recording.claimed_lap_ticks = ticket_data._claimed_lap_ticks
+ 	var replay_hash: String = JSON.stringify(recording).sha256_text()
+ 	if existing.has("_read_error"):
+ 		return false
+@@ -941,7 +943,7 @@
+ 	var packet: Dictionary = {}
+ 	if loaded.has("race_proof"):
+ 		var options: Variant = job.get("wire_options",client.race_submission_options())
+-		if not options is Dictionary or options.size() != 2 or not Client._whole(options.get("path"),0,1) or not options.get("incidents") is bool:
++		if not options is Dictionary or options.size() not in [2,3] or not Client._whole(options.get("path"),0,1) or not options.get("incidents") is bool or (options.size() == 3 and not options.has("result")) or (options.has("result") and not Client._whole(options.result,1,1)):
+ 			return {"ok":false,"status":422,"error":"REPLAY_RECOVERY_REQUIRED","data":{}}
+ 		if not job.has("wire_options"): job.wire_options = options.duplicate(true)
+ 		if not bool(client._capabilities.get("trajectory_verification",false)) or (int(options.path) == 1 and int(client._capabilities.get("race_path_wire_version",0)) < 1):
+@@ -949,7 +951,10 @@
+ 			if origin != client.base_url() or owner != str(client.player.get("id","")): return {"ok":false,"status":0,"error":"ACCOUNT_CHANGED","data":{}}
+ 			if not bool(client._capabilities.get("trajectory_verification",false)) or (int(options.path) == 1 and int(client._capabilities.get("race_path_wire_version",0)) < 1):
+ 				return {"ok":false,"status":503,"error":"SUBMISSION_SERVER_UPDATE_REQUIRED","data":{}}
+-		var encoded: Variant = await client._background(Client._pack_trajectory.bind(input_count,loaded.race_proof,loaded.get("rewinds",[]),loaded.get("ghost",{}),options.incidents,int(options.path) == 1))
++		if int(options.get("result",0)) == 1 and int(client._capabilities.get("non_improving_runs_version",0)) != 1:
++			return {"ok":false,"status":503,"error":"SUBMISSION_SERVER_UPDATE_REQUIRED","data":{}}
++		var claims: Array = loaded.get("claimed_lap_ticks",[]) if int(options.get("result",0)) == 1 else []
++		var encoded: Variant = await client._background(Client._pack_trajectory.bind(input_count,loaded.race_proof,loaded.get("rewinds",[]),loaded.get("ghost",{}),options.incidents,int(options.path) == 1,claims))
+ 		if origin != client.base_url() or owner != str(client.player.get("id","")): return {"ok":false,"status":0,"error":"ACCOUNT_CHANGED","data":{}}
+ 		if not encoded is Dictionary or encoded.is_empty(): return {"ok":false,"status":422,"error":"REPLAY_RECOVERY_REQUIRED","data":{}}
+ 		packet = encoded
+@@ -1001,7 +1006,7 @@
+ 	if str(client.player.get("id","")) != owner or client.base_url() != origin: return
+ 	var response: Dictionary = await client.wait_for_run(run_id,ticket_id)
+ 	if not is_inside_tree() or str(client.player.get("id","")) != owner or client.base_url() != origin: return
+-	if response.ok and response.data.status in ["verified","rejected","failed"]:
++	if response.ok and response.data.status in ["verified","skipped","rejected","failed"]:
+ 		_retry_deadlines[ticket_id] = 0
+ 		await flush_outbox()
+ 
+@@ -1019,7 +1024,7 @@
+ 	for job: Dictionary in jobs:
+ 		if not job.has("run_id") or job.has("failure") or not _job_ready(job): continue
+ 		var recent: Dictionary = client.recent_run(str(job.ticket)) if client.has_method("recent_run") else {}
+-		if Client.valid_run(recent) and str(recent.run_id) == str(job.run_id) and recent.status in ["verified","rejected","failed"]:
++		if Client.valid_run(recent) and str(recent.run_id) == str(job.run_id) and recent.status in ["verified","skipped","rejected","failed"]:
+ 			polled[str(job.run_id)] = recent
+ 		else: ids.append("ids="+str(job.run_id).uri_encode())
+ 	var batch: Dictionary = {}
+@@ -1118,13 +1123,13 @@
+ 				_pause_flush(request_scope,response)
+ 				return
+ 			continue
+-		if response.data.status == "verified":
++		if response.data.status in ["verified","skipped"]:
+ 			if not str(job.get("publish","")).is_empty():
+ 				# Preserve the recorded race and obsolete metadata; accepted race
+ 				# retries cannot create a publication as an implicit side effect.
+ 				job.publication_requires_explicit_request = true
+ 			job.done = true
+-			status = "Race verified"
++			status = "Race completed" if response.data.status == "skipped" else "Race verified"
+ 		elif response.data.status in ["rejected","failed"]:
+ 			job.failure = str(response.data.get("failure_code","verification_failed"))
+ 			job.retryable = bool(response.data.get("retryable",false))
+diff --git a/game/backend/finish_rating.gd b/game/backend/finish_rating.gd
+--- a/game/backend/finish_rating.gd
++++ b/game/backend/finish_rating.gd
+@@ -65,7 +65,7 @@
+ 	if not _same_account(): queue_free()
+ 
+ func _sync_changed() -> void:
+-	if selected_score == 0 or sending or not str(sync.status).begins_with("Race verified"): return
++	if selected_score == 0 or sending or not (str(sync.status).begins_with("Race verified") or str(sync.status).begins_with("Race completed")): return
+ 	if loading: reload_pending = true
+ 	else: _load()
+ 
+diff --git a/game/backend/weekly_rivalry_client.gd b/game/backend/weekly_rivalry_client.gd
+--- a/game/backend/weekly_rivalry_client.gd
++++ b/game/backend/weekly_rivalry_client.gd
+@@ -341,7 +341,7 @@
+ 	# Durable-upload status reads can already hold the verified receipt. Consume
+ 	# it immediately without another HTTP poll or waiting for this poll's timer.
+ 	var recent: Dictionary = client.recent_run(result_ticket)
+-	var confirmed: bool = recent.get("status") == "verified" and recent.get("outcome") is Dictionary and valid_outcome(recent.outcome)
++	var confirmed: bool = recent.get("status") in ["verified","skipped"] and recent.get("outcome") is Dictionary and valid_outcome(recent.outcome)
+ 	if current_msec < _next_poll_msec and not confirmed: return
+ 	var original: String = scope()
+ 	var ticket_id: String = result_ticket
+@@ -370,7 +370,7 @@
+ 		_next_poll_msec = Time.get_ticks_msec()+15000+int(Crypto.new().generate_random_bytes(1)[0])*10
+ 		changed.emit()
+ 		return
+-	if result_state == "verified" and response.data.get("outcome") is Dictionary and valid_outcome(response.data.outcome):
++	if result_state in ["verified","skipped"] and response.data.get("outcome") is Dictionary and valid_outcome(response.data.outcome):
+ 		var outcome: Dictionary = response.data.outcome
+ 		var index: int = int(response.data.slot)
+ 		# Confirm feedback as soon as its proof arrives. Refresh the full board
+@@ -379,7 +379,7 @@
+ 		changed.emit()
+ 		await _fetch("/rivalry/"+model.group_id)
+ 		if original != scope() or generation != _generation: return
+-	elif result_state == "verified":
++	elif result_state in ["verified","skipped"]:
+ 		model.last_result = {"ms":model.last_result.get("ms",0)}
+ 		error = "Result details unavailable. Refresh Rivalry to check your standings."
+ 		changed.emit()
+diff --git a/game/core/app.gd b/game/core/app.gd
+--- a/game/core/app.gd
++++ b/game/core/app.gd
+@@ -2105,7 +2105,7 @@
+ 		if finale != _achievement_finale:
+ 			_achievement_finale = finale
+ 			achievements.refresh_after_activity()
+-	if rivalry.result_ticket.is_empty() or rivalry.result_state in ["verified","failed","rejected","expired"]: rivalry_result_pending = false
++	if rivalry.result_ticket.is_empty() or rivalry.result_state in ["verified","skipped","failed","rejected","expired"]: rivalry_result_pending = false
+ 	if screen == "rivalry" and is_instance_valid(content) and (not is_instance_valid(game) or rivalry_section == "result"):
+ 		_rivalry()
+ 	# Swipe previews must follow the same membership state as the visible page.
+@@ -4620,6 +4620,7 @@
+ 			if not incidents.is_empty(): proof.incidents = incidents
+ 			ticket_data["_race_proof"] = proof
+ 			ticket_data["_race_ghost_source"] = completed_game.ghost_run.snapshot_for_save()
++			ticket_data["_claimed_lap_ticks"] = completed_game.track_session.lap_times.map(func(seconds: float) -> int: return roundi(seconds*120.0))
+ 	if not cloud.enqueue_completed(ticket_data,frames,publish_version,rewinds):
+ 		_notice("This recorded result could not enter the save queue. Keep this race open and free storage.")
+ 		return
+diff --git a/game/ui/challenge_result_view.gd b/game/ui/challenge_result_view.gd
+--- a/game/ui/challenge_result_view.gd
++++ b/game/ui/challenge_result_view.gd
+@@ -152,8 +152,8 @@
+ 
+ func _personal_result() -> void:
+ 	var own: Dictionary = _own()
+-	var verified: bool = result_state == "verified" and bool(outcome.get("counted",false))
+-	var rejected: bool = result_state in ["verified","rejected","expired"] and not verified
++	var verified: bool = result_state in ["verified","skipped"] and bool(outcome.get("counted",false))
++	var rejected: bool = result_state in ["verified","skipped","rejected","expired"] and not verified
+ 	var panel := _panel(_summary,"ChallengePersonalResult",18)
+ 	panel.size_flags_vertical = Control.SIZE_EXPAND_FILL
+ 	var status := HBoxContainer.new()
+@@ -165,7 +165,7 @@
+ 	icon.stretch_mode = TextureRect.STRETCH_KEEP_ASPECT_CENTERED
+ 	icon.modulate = MenuStyle.POSITIVE if verified else MenuStyle.MUTED
+ 	status.add_child(icon)
+-	var feedback: String = "Target beaten" if verified and outcome.get("beaten",false) and snapshot.mode == "beat" else "Time verified" if verified else "Not counted" if rejected else "Verifying"
++	var feedback: String = "Race completed" if result_state == "skipped" and verified else "Target beaten" if verified and outcome.get("beaten",false) and snapshot.mode == "beat" else "Time verified" if verified else "Not counted" if rejected else "Verifying"
+ 	if verified and outcome.get("gap_ms") != null: feedback += GameText.message("  %+.3f s") % (float(outcome.gap_ms)/1000.0)
+ 	var status_label := _label(status,feedback,17,MenuStyle.POSITIVE if verified else MenuStyle.MUTED)
+ 	status_label.name = "ChallengeResultFeedback"
+diff --git a/backend/bmt_backend/non_improving_runs.py b/backend/bmt_backend/non_improving_runs.py
+new file mode 100644
+--- /dev/null
++++ b/backend/bmt_backend/non_improving_runs.py
+@@ -0,0 +1,126 @@
++"""Negative-only result hints: unverified completions never publish a best."""
++from sqlalchemy import select
++
++from .challenge_models import (
++    Challenge,
++    ChallengeMember,
++    ChallengeStageMember,
++    ChallengeStageTicket,
++    ChallengeTicket,
++)
++from .rivalry_models import RivalryBest, RivalryGroup, RivalryTicket
++from .track_models import LapPersonalBest, PersonalBest, Run, now
++from .trajectory_verifier import clean_race_report, duration
++
++
++def candidate(replay):
++    """A small client hint may discard its own score, never authorize one.
++
++    Old recordings without lap summaries retain normal verification. Validate
++    endpoints in constant time; intentionally do not walk the recorded path.
++    """
++    if replay.get("schema") != "bmt-trajectory-v1" or "claimed_lap_ticks" not in replay:
++        return None
++    proof = replay["race_proof"]
++    schema = proof.get("schema")
++    width = 4 if schema == "bmt-race-path-v1" else 8 if schema == "bmt-race-proof-v1" else 0
++    samples = proof.get("samples")
++    ticks = duration(replay)
++    if (set(proof) not in ({"schema","samples"}, {"schema","samples","incidents"})
++            or not width or type(samples) is not list or not 2 <= len(samples) <= 216000//6+12
++            or any(type(row) is not list or len(row) != width or type(row[0]) is not int
++                   for row in (samples[0], samples[-1]))
++            or samples[0][0] != 0 or samples[-1][0] != ticks):
++        return None
++    return ticks, replay["claimed_lap_ticks"]
++
++
++def no_improvement(session, ticket, board, result):
++    """Caller holds Player. Lock existing bests against concurrent resets.
++
++    Daily Free Race and Track of the Day use the ordinary pinned board. Weekly
++    and Challenge bests are separate: a global PB cannot stand in for them.
++    Missing/uncertain facts always leave the race on the verification path.
++    """
++    if result is None or board.manifest.get("purpose") == "creator_test":
++        return False
++    ticks, laps = result
++    bests = session.execute(select(PersonalBest.time_ticks, LapPersonalBest.time_ticks)
++        .join(LapPersonalBest, (LapPersonalBest.board_id == PersonalBest.board_id)
++              & (LapPersonalBest.player_id == PersonalBest.player_id))
++        .where(PersonalBest.board_id == board.id, PersonalBest.player_id == ticket.player_id)
++        .with_for_update(read=True, of=(PersonalBest, LapPersonalBest))).first()
++    if bests is None or ticks < bests[0] or min(laps[1:]) < bests[1]:
++        return False
++    rivalry = session.get(RivalryTicket, ticket.id)
++    if rivalry is not None:
++        group = session.scalar(select(RivalryGroup).where(RivalryGroup.id == rivalry.group_id).with_for_update())
++        best = session.get(RivalryBest, (rivalry.group_id, ticket.player_id, rivalry.slot))
++        if group is None or best is None or ticks < best.time_ticks:
++            return False
++    binding = session.get(ChallengeTicket, ticket.id)
++    if binding is not None:
++        challenge = session.scalar(select(Challenge).where(Challenge.id == binding.challenge_id).with_for_update())
++        if challenge is None:
++            return False
++        if challenge.is_series:
++            stage = session.get(ChallengeStageTicket, ticket.id)
++            best = session.get(ChallengeStageMember, (challenge.id, stage.ordinal, ticket.player_id)) if stage else None
++        else:
++            best = session.get(ChallengeMember, (challenge.id, ticket.player_id))
++        if best is None or best.time_ticks is None or ticks < best.time_ticks:
++            return False
++    return True
++
++
++def complete(session, ticket, board, replay_hash, replay, result, *, run=None):
++    """No queue reservation, geometry, trajectory check, ghost or PB write."""
++    from .challenges import accept_verified as challenge_outcome
++    from .economy import accept_verified as award_completion
++    from .race_acceptance import Acceptance
++    from .rivalry import accept_verified as rivalry_outcome
++
++    ticks, laps = result
++    if run is None:
++        run = Run(ticket_id=ticket.id, player_id=ticket.player_id, board_id=board.id,
++                  replay_hash=replay_hash, attempts=0)
++        session.add(run)
++    else:
++        run.attempts = max(0, run.attempts-1)  # This claim did not invoke verification.
++    run.status, run.time_ticks, run.lap_ticks = "skipped", ticks, laps
++    run.finished_at, run.failure_code, run.lease_token, run.lease_until = now(), None, None, 0
++    session.flush()  # Verified-only SQL projections do not consume this status.
++    acceptance = Acceptance.load(session, run)
++    rivalry_outcome(session, run, acceptance=acceptance)
++    challenge_outcome(session, run, acceptance=acceptance)
++    award_completion(session, run, acceptance.previous, acceptance=acceptance,
++                     incident_free=clean_race_report(replay["race_proof"], ticks))
++    return run
++
++
++def skip_claimed(app, run_id, token, replay):
++    """A queued improvement may become redundant before its worker runs."""
++    from .identity_models import Player
++    from .track_models import Board, OperationState, RunTicket
++
++    result = candidate(replay)
++    if result is None:
++        return False
++    with app.state.session_factory() as session:
++        player_id = session.scalar(select(Run.player_id).where(Run.id == run_id))
++        player = session.scalar(select(Player).where(Player.id == player_id).with_for_update())
++        run = session.scalar(select(Run).where(Run.id == run_id).with_for_update())
++        if (player is None or player.disabled or player.deleted_at is not None or run is None
++                or run.status != "verifying" or run.lease_token != token or run.lease_until <= now()):
++            return False
++        board = session.get(Board, run.board_id)
++        if (player.is_test_driver or board.manifest.get("test_population")) and not app.state.settings.test_drivers_enabled:
++            return False
++        ticket = session.get(RunTicket, run.ticket_id)
++        if not no_improvement(session, ticket, board, result):
++            return False
++        if session.get(OperationState, "verify:"+run.id) is not None:
++            return False  # Explicit competitive reuse must check the original path.
++        complete(session, ticket, board, run.replay_hash, replay, result, run=run)
++        session.commit()
++        return True
+diff --git a/backend/tests/test_non_improving_runs.py b/backend/tests/test_non_improving_runs.py
+new file mode 100644
+--- /dev/null
++++ b/backend/tests/test_non_improving_runs.py
+@@ -0,0 +1,396 @@
++"""NIS01-NIS06: discard only non-improving scores, retaining completion rewards."""
++# ruff: noqa: F811 - imported parametrized fixture is intentionally injected by pytest.
++import json
++import uuid
++from pathlib import Path
++
++import pytest
++from sqlalchemy import func, select
++from test_domains import domain, headers, public_course, race, ticket  # noqa: F401
++from test_rivalry import join, rivalry_ticket, seed
++
++from bmt_backend.economy_models import CoinReward, CoinWallet
++from bmt_backend.non_improving_runs import candidate
++from bmt_backend.rivalry_models import RivalryBest
++from bmt_backend.track_models import LapPersonalBest, PersonalBest, QueuePlayer, QueueReservation, Run
++from bmt_backend.worker import process_one
++
++GOLDEN = json.loads((Path(__file__).resolve().parents[2] / "game/tests/fixtures/non_improving_run_v1.json").read_text())
++
++
++def replay(laps=(20, 20, 20, 20, 20), **extra):
++    ticks = sum(laps)
++    return {"schema":"bmt-trajectory-v1", "input_count":ticks,
++            "claimed_lap_ticks":list(laps), "race_proof":{"schema":"bmt-race-path-v1",
++                "samples":[[0,0,0,0],[ticks,0,0,0]]}, **extra}
++
++
++def submit_hint(d, issued, recording=None, player="Alice", key=None):
++    return d.client.post("/v1/runs", json={"ticket_id":issued["ticket_id"], "replay":recording or replay()},
++                         headers=headers(d, player, key))
++
++
++def prepared(d):
++    version, _board = public_course(d)
++    first = race(d, version, "Alice", frames=20)
++    return version, first
++
++
++def forbid_verification(d, monkeypatch):
++    def forbidden(*_args, **_kwargs):
++        raise AssertionError("Non-improving completion invoked verification")
++    monkeypatch.setattr(d.app.state.verifier, "verify_run", forbidden)
++
++
++@pytest.mark.parametrize("laps", [(20,20,20,20,20), (24,24,24,24,24)])
++def test_tied_and_slower_runs_skip_before_queue_and_credit_once(domain, monkeypatch, laps):
++    d = domain
++    version, first = prepared(d)
++    with d.factory() as session:
++        opening = session.get(CoinWallet, d.players["Alice"]).balance
++    forbid_verification(d, monkeypatch)
++    issued, key = ticket(d, version, "Alice"), str(uuid.uuid4())
++    response = submit_hint(d, issued, replay(laps), key=key)
++    assert response.status_code == 202, response.text
++    result = response.json()
++    assert {key:result[key] for key in GOLDEN["terminal_fields"]} == GOLDEN["terminal_fields"]
++    assert result["status"] == "skipped" and result["skip_reason"] == "no_improvement"
++    assert result["poll_after_ms"] == 0 and result["failure_code"] is None and not result["retryable"]
++    assert submit_hint(d, issued, replay(laps), key=key).json() == result
++    assert submit_hint(d, issued, replay(laps)).json()["run_id"] == result["run_id"]
++    paths = ["/v1/runs/"+result["run_id"]+"?completion=true",
++             "/v1/runs/"+result["run_id"]+"/wait?timeout_ms=0&completion=true"]
++    for path in paths:
++        value = d.client.get(path, headers=headers(d,"Alice")).json()
++        assert value["status"] == "skipped" and value["completion"]["reward"]["amount"] == 50
++    with d.factory() as session:
++        run = session.get(Run, result["run_id"])
++        assert run.attempts == 0 and run.ghost_hash is None and run.lease_token is None
++        assert session.get(PersonalBest, (first["board_id"],d.players["Alice"])).run_id == first["run_id"]
++        assert session.get(LapPersonalBest, (first["board_id"],d.players["Alice"])).run_id == first["run_id"]
++        assert session.get(CoinWallet, d.players["Alice"]).balance == opening+50
++        assert session.scalar(select(func.count()).select_from(CoinReward).where(CoinReward.run_id == run.id)) == 1
++        assert session.scalar(select(func.count()).select_from(QueueReservation)) == 0
++
++
++@pytest.mark.parametrize("laps", [(19,19,19,19,19), (30,19,20,20,21)])
++def test_race_or_flying_lap_pb_always_queues_for_verification(domain, laps):
++    d = domain
++    version, _ = prepared(d)
++    result = submit_hint(d, ticket(d, version, "Alice"), replay(laps)).json()
++    assert result["status"] == "queued", result
++    assert process_one(d.app)
++    assert d.client.get("/v1/runs/"+result["run_id"],headers=headers(d,"Alice")).json()["status"] == "verified"
++
++
++def test_first_result_missing_lap_best_and_old_recordings_still_verify(domain):
++    d = domain
++    version, first = prepared(d)
++    bob = submit_hint(d, ticket(d, version, "Bob"), player="Bob")
++    assert bob.status_code == 202 and bob.json()["status"] == "queued"
++    with d.factory() as session:
++        session.delete(session.get(LapPersonalBest,(first["board_id"],d.players["Alice"])))
++        session.commit()
++    assert submit_hint(d,ticket(d,version,"Alice")).json()["status"] == "queued"
++    old = replay()
++    old.pop("claimed_lap_ticks")
++    assert submit_hint(d,ticket(d,version,"Alice"),old).json()["status"] == "queued"
++
++
++@pytest.mark.parametrize("laps", [[], [20]*4, [True,20,20,20,39], [0,20,20,20,40], [20,20,20,20,21]])
++def test_malformed_summaries_cannot_skip_or_earn_rewards(domain, laps):
++    d = domain
++    version, _ = prepared(d)
++    body = replay()
++    body["claimed_lap_ticks"] = laps
++    response = submit_hint(d,ticket(d,version,"Alice"),body)
++    assert response.status_code == 422, response.text
++
++
++def test_missing_trajectory_endpoints_cannot_use_the_skip(domain):
++    d = domain
++    version, _ = prepared(d)
++    body = replay()
++    body["race_proof"]["samples"][-1][0] -= 1
++    assert candidate(body) is None
++    assert submit_hint(d,ticket(d,version,"Alice"),body).json()["status"] == "queued"
++
++
++def test_full_queue_does_not_block_non_improving_completion(domain, monkeypatch):
++    from test_domains import submit
++    d = domain
++    version, _ = prepared(d)
++    for _ in range(8):
++        submit(d,ticket(d,version,"Alice"),"Alice")
++    forbid_verification(d,monkeypatch)
++    response = submit_hint(d,ticket(d,version,"Alice"))
++    assert response.status_code == 202 and response.json()["status"] == "skipped", response.text
++    with d.factory() as session:
++        assert session.get(QueuePlayer,d.players["Alice"]).pending == 8
++        assert session.scalar(select(func.count()).select_from(QueueReservation)) == 8
++
++
++def test_clean_completion_reward_uses_the_existing_incident_report_policy(domain,monkeypatch):
++    d = domain
++    version, _ = prepared(d)
++    forbid_verification(d,monkeypatch)
++    body = replay()
++    body["race_proof"]["incidents"] = {"schema":"bmt-race-incidents-v1", "ticks":100,
++                                         "collision_count":0, "off_track":False}
++    issued = ticket(d,version,"Alice")
++    assert submit_hint(d,issued,body).json()["status"] == "skipped"
++    receipt = d.client.get("/v1/economy/rewards/"+issued["ticket_id"],headers=headers(d,"Alice")).json()
++    assert receipt["amount"] == 250
++    assert {row["title"] for row in receipt["rows"]} == {"Race completed","Clean race"}
++
++
++def test_worker_rechecks_queued_results_before_reading_geometry(domain,monkeypatch):
++    d = domain
++    version, first = prepared(d)
++    pending = submit_hint(d,ticket(d,version,"Alice"),replay((19,19,19,19,19))).json()
++    assert pending["status"] == "queued"
++    # A different accepted race beats this queued candidate on both metrics.
++    with d.factory() as session:
++        session.get(PersonalBest,(first["board_id"],d.players["Alice"])).time_ticks = 90
++        session.get(LapPersonalBest,(first["board_id"],d.players["Alice"])).time_ticks = 18
++        session.commit()
++    forbid_verification(d,monkeypatch)
++    assert process_one(d.app)
++    with d.factory() as session:
++        run = session.get(Run,pending["run_id"])
++        assert run.status == "skipped" and run.attempts == 0
++        assert session.scalar(select(func.count()).select_from(QueueReservation)) == 0
++
++
++def test_weekly_best_is_independent_of_a_faster_global_pb(domain,monkeypatch):
++    d = domain
++    seed(d)
++    group = join(d)["group_id"]
++    issued = rivalry_ticket(d,group)
++    race(d,{"version_id":issued["version_id"]},"Alice",frames=10)
++    # First weekly finish must be verified even though the global PB is faster.
++    first = submit_hint(d,issued).json()
++    assert first["status"] == "queued"
++    assert process_one(d.app)
++    faster = submit_hint(d,rivalry_ticket(d,group),replay((19,19,19,19,19))).json()
++    assert faster["status"] == "queued"
++    assert process_one(d.app)
++    with d.factory() as session:
++        best = session.get(RivalryBest,(group,d.players["Alice"],0))
++        source = best.run_id
++    forbid_verification(d,monkeypatch)
++    issued = rivalry_ticket(d,group)
++    skipped = submit_hint(d,issued).json()
++    assert skipped["status"] == "skipped"
++    result = d.client.get("/v1/rivalry/tickets/"+issued["ticket_id"]+"/result",headers=headers(d,"Alice")).json()
++    assert result["status"] == "skipped" and result["outcome"]["improved"] is False
++    assert result["outcome"]["points_delta"] == 0
++    with d.factory() as session:
++        assert session.get(RivalryBest,(group,d.players["Alice"],0)).run_id == source
++
++
++def test_candidate_reads_only_endpoints():
++    class EndpointsOnly(list):
++        def __iter__(self):
++            raise AssertionError("Skip scanned the trajectory")
++    body = replay()
++    body["race_proof"]["samples"] = EndpointsOnly(body["race_proof"]["samples"])
++    # Exact built-in containers are required; an unknown container is uncertain.
++    assert candidate(body) is None
++    ordinary = replay()
++    ordinary["race_proof"]["samples"].insert(1, object())
++    assert candidate(ordinary) == (100,[20]*5)
++
++
++def test_challenge_best_is_independent_and_attempt_budget_is_retained(domain,monkeypatch):
++    from test_challenges import create, normal_run, setup
++    from test_challenges import join as join_challenge
++
++    from bmt_backend.challenge_models import ChallengeMember
++    d = domain
++    version = setup(d)
++    normal_run(d,version,"Alice",frames=30)
++    challenge = create(d,version,mode="group",attempt_limit=3)
++    code = challenge["code"]
++    join_challenge(d,code)
++    normal_run(d,version,"Bob",frames=10)
++
++    def issued():
++        response = d.client.post(f"/v1/challenges/{code}/tickets",headers=headers(d,"Bob"))
++        assert response.status_code == 201, response.text
++        return response.json()
++
++    opening = submit_hint(d,issued(),player="Bob").json()
++    assert opening["status"] == "queued"
++    assert process_one(d.app)
++    faster = submit_hint(d,issued(),replay((19,19,19,19,19)),player="Bob").json()
++    assert faster["status"] == "queued"
++    assert process_one(d.app)
++    forbid_verification(d,monkeypatch)
++    third = issued()
++    value = submit_hint(d,third,player="Bob").json()
++    assert value["status"] == "skipped"
++    result = d.client.get("/v1/challenge-results/"+third["ticket_id"]+"?compact=true",headers=headers(d,"Bob")).json()
++    assert result["status"] == "skipped" and result["outcome"]["improved"] is False
++    with d.factory() as session:
++        member = session.get(ChallengeMember,(challenge["id"],d.players["Bob"]))
++        assert member.attempts_used == 3 and member.run_id == faster["run_id"] and member.time_ticks == 95
++    assert d.client.post(f"/v1/challenges/{code}/tickets",headers=headers(d,"Bob")).status_code == 409
++
++
++def test_series_skip_cannot_replace_stage_or_combined_best_sources(domain,monkeypatch):
++    from test_challenge_series import create
++    from test_challenges import join as join_challenge
++    from test_challenges import normal_run
++
++    from bmt_backend.challenge_models import ChallengeMember, ChallengeStageMember
++    d = domain
++    versions = seed(d,3)
++    response = create(d,versions)
++    assert response.status_code == 201, response.text
++    challenge = response.json()
++    join_challenge(d,challenge["code"])
++    for index, version in enumerate(versions):
++        normal_run(d,version,"Bob",frames=10)
++        issued = d.client.post(f"/v1/challenges/{challenge['code']}/tickets?stage={index}",headers=headers(d,"Bob")).json()
++        assert submit_hint(d,issued,player="Bob").json()["status"] == "queued"
++        assert process_one(d.app)
++    with d.factory() as session:
++        prior = session.get(ChallengeMember,(challenge["id"],d.players["Bob"]))
++        source = prior.run_id
++        stage_source = session.get(ChallengeStageMember,(challenge["id"],0,d.players["Bob"])).run_id
++        assert prior.time_ticks == 300
++    forbid_verification(d,monkeypatch)
++    issued = d.client.post(f"/v1/challenges/{challenge['code']}/tickets?stage=0",headers=headers(d,"Bob")).json()
++    assert submit_hint(d,issued,player="Bob").json()["status"] == "skipped"
++    with d.factory() as session:
++        own = session.get(ChallengeMember,(challenge["id"],d.players["Bob"]))
++        stage = session.get(ChallengeStageMember,(challenge["id"],0,d.players["Bob"]))
++        assert (own.time_ticks,own.run_id) == (300,source)
++        assert stage.time_ticks == 100 and stage.run_id == stage_source and stage.attempts_used == 2
++
++
++def test_expired_foreign_and_unauthorized_rewind_hints_cannot_skip(domain):
++    from bmt_backend.track_models import RunTicket, now
++    d = domain
++    version, _ = prepared(d)
++    issued = ticket(d,version,"Alice")
++    assert submit_hint(d,issued,player="Bob").status_code == 404
++    with d.factory() as session:
++        session.get(RunTicket,issued["ticket_id"]).expires_at = now()-1
++        session.commit()
++    assert submit_hint(d,issued).status_code == 410
++    issued = ticket(d,version,"Alice")
++    body = replay(input_count=110,rewinds=[{"receipt_id":str(uuid.uuid4()),"input_offset":50,"from_tick":50,"to_tick":40}])
++    assert submit_hint(d,issued,body).status_code == 422
++
++
++def test_skipped_rewind_settles_the_existing_authorized_receipt_once(domain,monkeypatch):
++    from test_resumes import begin, spend
++
++    from bmt_backend.resume_models import ResumeReceipt
++    d = domain
++    version, _ = public_course(d)
++    issued = ticket(d,version,"Creator")
++    race_id = begin(d,issued["ticket_id"])
++    receipt = spend(d,race_id,offset=50,source=50,target=40)
++    assert receipt.status_code == 200, receipt.text
++    event = {"receipt_id":receipt.json()["receipt_id"],"input_offset":50,"from_tick":50,"to_tick":40}
++    body = replay((60,60,60,60,60),input_count=310,rewinds=[event])
++    forbid_verification(d,monkeypatch)
++    response = submit_hint(d,issued,body,player="Creator")
++    assert response.status_code == 202 and response.json()["status"] == "skipped", response.text
++    assert response.json()["time_ticks"] == 300
++    with d.factory() as session:
++        assert session.get(ResumeReceipt,event["receipt_id"]).settled
++
++
++@pytest.mark.parametrize("restriction,expected", [("disabled",401),("is_test_driver",403)])
++def test_account_changes_during_storage_cannot_enter_the_skip(domain,monkeypatch,restriction,expected):
++    from bmt_backend.identity_models import Player
++    d = domain
++    version, _ = prepared(d)
++    issued = ticket(d,version,"Alice")
++    original = d.app.state.blobs.put_json
++
++    def store_then_restrict(body):
++        value = original(body)
++        with d.factory() as session:
++            setattr(session.get(Player,d.players["Alice"]),restriction,True)
++            session.commit()
++        return value
++
++    monkeypatch.setattr(d.app.state.blobs,"put_json",store_then_restrict)
++    assert submit_hint(d,issued).status_code == expected
++    with d.factory() as session:
++        assert session.scalar(select(Run.id).where(Run.ticket_id == issued["ticket_id"])) is None
++
++
++def test_skipped_history_remains_eligible_for_bounded_retention(domain):
++    from bmt_backend.maintenance import retain
++    from bmt_backend.track_models import now
++    d = domain
++    version, _ = prepared(d)
++    value = submit_hint(d,ticket(d,version,"Alice")).json()
++    assert value["status"] == "skipped"
++    with d.factory() as session:
++        session.get(Run,value["run_id"]).finished_at = now()-2*86400
++        session.commit()
++    result = retain(d.factory,d.app.state.blobs,days=1,scan_objects=False)
++    assert result["runs"] == 1
++
++
++@pytest.mark.parametrize("failure_mode", ["none","retry","failed"])
++def test_explicit_challenge_reuse_verifies_the_original_and_never_credits_twice(domain,monkeypatch,failure_mode):
++    from bmt_backend.track_models import OperationState
++    d = domain
++    version, first = prepared(d)
++    issued = ticket(d,version,"Alice")
++    skipped = submit_hint(d,issued).json()
++    assert skipped["status"] == "skipped"
++    with d.factory() as session:
++        opening = session.get(CoinWallet,d.players["Alice"]).balance
++    key = str(uuid.uuid4())
++    path = "/v1/runs/"+skipped["run_id"]+"/retry"
++    requested = d.client.post(path,json={},headers=headers(d,"Alice",key))
++    assert requested.status_code == 200 and requested.json()["status"] == "queued", requested.text
++    assert d.client.post(path,json={},headers=headers(d,"Alice",key)).json() == requested.json()
++    if failure_mode == "failed":
++        with d.factory() as session:
++            session.get(Run,skipped["run_id"]).attempts = d.app.state.settings.max_job_attempts-1
++            session.commit()
++    original = d.app.state.verifier.verify_run
++    calls = []
++
++    def observed(*args,**kwargs):
++        calls.append(True)
++        if failure_mode != "none" and len(calls) == 1:
++            raise RuntimeError("Temporary verification fixture failure")
++        return original(*args,**kwargs)
++
++    monkeypatch.setattr(d.app.state.verifier,"verify_run",observed)
++    assert process_one(d.app)
++    if failure_mode != "none":
++        with d.factory() as session:
++            run = session.get(Run,skipped["run_id"])
++            assert run.status == ("failed" if failure_mode == "failed" else "queued")
++            assert session.get(OperationState,"verify:"+run.id) is not None
++            run.lease_until = 0
++            session.commit()
++        if failure_mode == "failed":
++            source = d.client.get(f"/v1/challenges/sources?version_id={version['version_id']}&vehicle_id=compact&ticket_id={issued['ticket_id']}",headers=headers(d,"Alice")).json()
++            assert source["retryable"] is True
++            assert d.client.post(path,json={},headers=headers(d,"Alice")).json()["status"] == "queued"
++        assert process_one(d.app)
++    assert len(calls) == (1 if failure_mode == "none" else 2)
++    with d.factory() as session:
++        run = session.get(Run,skipped["run_id"])
++        assert run.status == "verified" and session.get(OperationState,"verify:"+run.id) is None
++        assert session.get(CoinWallet,d.players["Alice"]).balance == opening
++        assert session.get(PersonalBest,(first["board_id"],d.players["Alice"])).run_id == first["run_id"]
++    challenge = d.client.post("/v1/challenges",json={"version_id":version["version_id"],"vehicle_id":"compact",
++        "mode":"beat","source_ticket_id":issued["ticket_id"]},headers=headers(d,"Alice"))
++    assert challenge.status_code == 201, challenge.text
++    from bmt_backend.challenge_models import Challenge
++    with d.factory() as session:
++        assert session.get(Challenge,challenge.json()["id"]).target_run_id == skipped["run_id"]
+diff --git a/backend/tests/test_non_improving_http.py b/backend/tests/test_non_improving_http.py
+new file mode 100644
+--- /dev/null
++++ b/backend/tests/test_non_improving_http.py
+@@ -0,0 +1,63 @@
++"""Real Godot upload/recovery/reward flow over an owned disposable HTTP API."""
++import json
++from pathlib import Path
++
++import pytest
++from test_cloud_client import run_client
++
++from bmt_backend.track_models import Board, PersonalBest, Run, RunTicket, Track, TrackVersion, digest, now
++from bmt_backend.tracks import DB, Auth
++
++
++@pytest.mark.godot
++def test_native_non_improving_upload_against_http(tmp_path):
++    calls = []
++
++    def prepare(app):
++        fixture = json.loads((Path(__file__).parent / "fixtures/verified_oval.json").read_text())
++        manifest = app.state.verifier.validate_track(fixture["document"])
++        content = app.state.blobs.put_json(fixture["document"])
++        replay_hash = app.state.blobs.put_json(fixture["replay"])
++        original = app.state.verifier.verify_run
++
++        def observed(*args, **kwargs):
++            calls.append(True)
++            return original(*args, **kwargs)
++
++        app.state.verifier.verify_run = observed
++
++        @app.get("/v1/skip-fixture/count")
++        def verification_count():
++            return {"calls":len(calls)}
++
++        @app.post("/v1/skip-fixture")
++        def seed(session: DB, player: Auth):
++            from bmt_backend.runs import board_manifest
++            track = Track(owner_id=player.id, official=True)
++            session.add(track)
++            session.flush()
++            version = TrackVersion(track_id=track.id, number=1, name="Skip verification fixture",
++                state="published", published_at=now(), content_hash=content, manifest=manifest,
++                discovery={"theme":"grass", "points":[[0,0],[10,0],[10,10]]})
++            session.add(version)
++            session.flush()
++            pinned = board_manifest(version,"compact")
++            board = Board(id=digest({"version_id":version.id, **pinned}), version_id=version.id,
++                          vehicle_id="compact", manifest=pinned)
++            session.add(board)
++            session.flush()
++            ticket = RunTicket(player_id=player.id,board_id=board.id,expires_at=now()+7200)
++            session.add(ticket)
++            session.flush()
++            run = Run(ticket_id=ticket.id,player_id=player.id,board_id=board.id,replay_hash=replay_hash,
++                      status="verified",time_ticks=12757,lap_ticks=[2634,2532,2531,2530,2530],finished_at=now())
++            session.add(run)
++            session.flush()
++            session.add(PersonalBest(board_id=board.id,player_id=player.id,run_id=run.id,time_ticks=12757))
++            session.commit()
++            return {"version_id":version.id, "board_id":board.id, "source_run_id":run.id,
++                    "lap_ticks":[2634,2532,2531,2530,2530]}
++
++    run_client(tmp_path,"res://tests/test_non_improving_http.gd",prepare=prepare,
++               extra_env={"BMT_SKIP_NATIVE_ROOT":str(tmp_path/"native")})
++    assert len(calls) == 1, "Only the explicitly requested competitive reuse should invoke verification"
+diff --git a/game/tests/test_non_improving_runs.gd b/game/tests/test_non_improving_runs.gd
+new file mode 100644
+--- /dev/null
++++ b/game/tests/test_non_improving_runs.gd
+@@ -0,0 +1,141 @@
++extends SceneTree
++const Client = preload("res://backend/backend_client.gd")
++const Cloud = preload("res://backend/cloud_tracks.gd")
++const ResultView = preload("res://ui/challenge_result_view.gd")
++var checks: int = 0
++var failures: int = 0
++
++class OfflineClient extends "res://backend/backend_client.gd":
++	var unexpected_requests: int = 0
++	func request_api(_path: String, _method: HTTPClient.Method = HTTPClient.METHOD_GET, _payload: Dictionary = {}, _key: String = "", _authorized: bool = false) -> Dictionary:
++		unexpected_requests += 1
++		return _failure("UNEXPECTED_TEST_REQUEST")
++
++class SourceChoice extends "res://backend/challenges_client.gd":
++	var requests: Array[Dictionary] = []
++	var source_state: String = "skipped"
++	var retryable: bool = false
++	func _request(path: String, method: HTTPClient.Method = HTTPClient.METHOD_GET, _payload: Dictionary = {}, _authorized: bool = true) -> Dictionary:
++		requests.append({"path":path,"method":method})
++		return {"ok":true,"data":{"run_id":"run","status":"queued" if method == HTTPClient.METHOD_POST else source_state,"retryable":retryable}}
++
++func _initialize() -> void: run.call_deferred()
++
++func check(ok: bool, message: String) -> void:
++	checks += 1
++	if not ok:
++		failures += 1
++		push_error(message)
++
++func run() -> void:
++	create_timer(30.0).timeout.connect(func() -> void: push_error("Native skip test timed out"); quit(1))
++	var client := OfflineClient.new()
++	root.add_child(client)
++	check(client.configure("http://127.0.0.1:1") == OK,"isolated local origin")
++	client._capabilities = {"trajectory_verification":true,"race_path_wire_version":1,"race_incident_rewards_version":1}
++	check(not client.race_submission_options().has("result"),"old servers retain the exact old wire options")
++	client._capabilities.non_improving_runs_version = 1
++	var options: Dictionary = client.race_submission_options()
++	check(options.result == 1 and options.path == 1 and options.incidents,"new protocol is negotiated")
++	var proof: Dictionary = {"schema":"bmt-race-proof-v1","samples":[[0,0,0,0,0,0,0,0],[100,0,0,0,0,0,0,0]]}
++	var golden: Dictionary = JSON.parse_string(FileAccess.get_file_as_string("res://tests/fixtures/non_improving_run_v1.json"))
++	var laps: Array = golden.claimed_lap_ticks.map(func(value: Variant) -> int: return int(value))
++	var old: Dictionary = Client._pack_trajectory(100,proof,[])
++	check(not old.has("claimed_lap_ticks"),"old recordings do not change their retry body")
++	var packed: Dictionary = Client._pack_trajectory(100,proof,[],{},true,true,laps)
++	check(packed.claimed_lap_ticks == laps and packed.race_proof.schema == "bmt-packed-path-v1","packed path retains the negative-only timing hint")
++	check(Client._pack_trajectory(100,proof,[],{},false,false,[20,20,20,20,21]).is_empty(),"inconsistent summary rejected")
++	check(Client._pack_trajectory(100,proof,[],{},false,false,[true,20,20,20,39]).is_empty(),"boolean lap tick rejected")
++	var rewind: Array = [{"receipt_id":"00000000-0000-0000-0000-000000000001","input_offset":50,"from_tick":50,"to_tick":40}]
++	check(Client._pack_trajectory(110,proof,rewind,{},false,false,laps).get("claimed_lap_ticks") == laps,"rewind summary uses net elapsed time")
++	var folder: String = OS.get_environment("BMT_SKIP_NATIVE_ROOT").path_join(TrackLibrary.unique_id())
++	check(not OS.get_environment("BMT_SKIP_NATIVE_ROOT").is_empty(),"test storage is explicitly isolated")
++	DirAccess.make_dir_recursive_absolute(folder)
++	var metadata: Dictionary = {"ticket_id":"00000000-0000-0000-0000-000000000002","_race_proof":proof,"_claimed_lap_ticks":laps,"_wire_options":options}
++	var frames: Array = []
++	for index: int in range(100): frames.append([0,255,0])
++	check(Cloud._queue_run_io(metadata,frames,"",[],folder,"owner"),"summary is saved with the durable recording")
++	var name: String = str(metadata.ticket_id).sha256_text()
++	var directory: String = folder.path_join("players").path_join("owner".sha256_text()).path_join("runs")
++	var job: Dictionary = JSON.parse_string(FileAccess.get_file_as_string(directory.path_join(name+".job.json")))
++	var recording: Dictionary = Cloud._load_replay(directory.path_join(str(job.replay)),str(job.replay_hash))
++	var resumed: Dictionary = Client._pack_trajectory(100,recording.get("race_proof",{}),[],{},true,true,recording.get("claimed_lap_ticks",[]))
++	check(resumed.get("claimed_lap_ticks") == laps and job.wire_options.result == 1,"restart retains timing and negotiated options")
++	check(Cloud._queue_run_io(metadata,frames,"",[],folder,"owner"),"identical durable retry remains idempotent")
++	metadata.ticket_id = "00000000-0000-0000-0000-000000000003"
++	metadata._wire_options = {"path":1,"incidents":true}
++	check(Cloud._queue_run_io(metadata,frames,"",[],folder,"owner"),"legacy negotiated recording can still be saved")
++	name = str(metadata.ticket_id).sha256_text()
++	job = JSON.parse_string(FileAccess.get_file_as_string(directory.path_join(name+".job.json")))
++	recording = Cloud._load_replay(directory.path_join(str(job.replay)),str(job.replay_hash))
++	check(not recording.has("claimed_lap_ticks") and not job.wire_options.has("result"),"old-server recording keeps the old body through restart")
++	var cloud := Cloud.new()
++	cloud.client = client
++	root.add_child(cloud)
++	var bad_job: Dictionary = job.duplicate(true)
++	bad_job.wire_options.unknown = 1
++	var invalid: Dictionary = await cloud._submit_saved(bad_job,directory.path_join(name+".job.json"))
++	check(invalid.get("status") == 422,"unknown third wire option is rejected before transport")
++	bad_job.wire_options.erase("unknown")
++	bad_job.wire_options.result = true
++	invalid = await cloud._submit_saved(bad_job,directory.path_join(name+".job.json"))
++	check(invalid.get("status") == 422,"boolean protocol version is rejected before transport")
++	var terminal: Dictionary = {"run_id":"run","ticket_id":"ticket","status":"skipped","skip_reason":"no_improvement","poll_after_ms":0,"completion":{"version":1,"reward":{"status":"credited","amount":50,"rows":[]}}}
++	check(Client.valid_run(terminal) and terminal.status == golden.terminal_fields.status,"skipped is an explicit successful terminal status")
++	var malformed: Dictionary = terminal.duplicate(true)
++	malformed.skip_reason = "unknown"
++	check(not Client.valid_run(malformed),"unknown skip reason is rejected")
++	client.remember_run(terminal)
++	check(client.recent_completion("ticket").get("reward",{}).get("amount") == 50,"completion cache serves skipped rewards")
++	var snapshot: Dictionary = JSON.parse_string(FileAccess.get_file_as_string("res://tests/fixtures/challenge_series_v1.json"))
++	var own: Dictionary = {}
++	for row: Dictionary in snapshot.standings:
++		if row.id == snapshot.self_id: own = row
++	var outcome: Dictionary = {"counted":true,"improved":false,"before_ticks":100,"after":own,"stage_index":0,"completed_tracks":3,"ms":1000,"gap_ms":null,"beaten":false}
++	client.player = {"id":snapshot.self_id}
++	terminal.completion.challenge_result = {"status":"skipped","outcome":outcome,"challenge":snapshot,"poll_after_ms":0}
++	client.remember_run(terminal)
++	var adapter := ChallengesClient.new()
++	adapter.client = client
++	adapter.selected = snapshot
++	root.add_child(adapter)
++	adapter.begin_result("ticket")
++	await adapter.poll_result()
++	check(adapter.result_state == "skipped" and not adapter.outcome.get("improved",true),"challenge consumer completes without waiting for verification")
++	check(client.unexpected_requests == 0,"cached completion needs no additional request")
++	var choice := SourceChoice.new()
++	var source: Dictionary = await choice.source("version","compact","ticket")
++	check(source.status == "queued" and choice.requests.size() == 2 and choice.requests[1].method == HTTPClient.METHOD_POST and choice.requests[1].path == "/runs/run/retry","choosing a skipped competitive target explicitly requests verification")
++	choice.requests.clear()
++	choice.source_state = "verified"
++	source = await choice.source("version","compact","ticket")
++	check(source.status == "verified" and choice.requests.size() == 1,"already verified challenge sources remain read-only")
++	choice.requests.clear()
++	choice.source_state = "failed"
++	choice.retryable = true
++	source = await choice.source("version","compact","ticket")
++	check(source.status == "queued" and choice.requests.size() == 2,"temporary verification failure retains the explicit competitive request")
++	choice.free()
++	root.size = Vector2i(1280,720)
++	var view := ResultView.new()
++	view.snapshot = snapshot
++	view.outcome = outcome
++	view.result_state = "skipped"
++	view.signed_in = true
++	root.add_child(view)
++	view.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
++	await process_frame
++	await process_frame
++	var feedback := view.find_child("ChallengeResultFeedback",true,false) as Label
++	check(feedback != null and feedback.text == "Race completed","skipped result shows completion instead of a verification spinner")
++	var capture: String = OS.get_environment("BMT_SKIP_NATIVE_CAPTURE")
++	if not capture.is_empty() and DisplayServer.get_name() != "headless":
++		await RenderingServer.frame_post_draw
++		check(root.get_texture().get_image().save_png(capture) == OK,"native result screenshot")
++	view.queue_free()
++	cloud.queue_free()
++	adapter.queue_free()
++	client.queue_free()
++	await process_frame
++	print("NON_IMPROVING_RUNS: %d checks, %d failures" % [checks,failures])
++	quit(1 if failures else 0)
+diff --git a/game/tests/test_non_improving_runs.gd.uid b/game/tests/test_non_improving_runs.gd.uid
+new file mode 100644
+--- /dev/null
++++ b/game/tests/test_non_improving_runs.gd.uid
+@@ -0,0 +1 @@
++uid://bsviapp77b51j
+diff --git a/game/tests/test_non_improving_http.gd b/game/tests/test_non_improving_http.gd
+new file mode 100644
+--- /dev/null
++++ b/game/tests/test_non_improving_http.gd
+@@ -0,0 +1,83 @@
++extends SceneTree
++const Client = preload("res://backend/backend_client.gd")
++const Cloud = preload("res://backend/cloud_tracks.gd")
++var checks: int = 0
++var failures: int = 0
++
++class RetainedCloud extends "res://backend/cloud_tracks.gd":
++	func _retire_replay(_job: Dictionary) -> void:
++		pass # Keep this test's committed recording to exercise an exact retry body.
++
++func _initialize() -> void: run.call_deferred()
++
++func check(ok: bool, message: String) -> void:
++	checks += 1
++	if not ok:
++		failures += 1
++		print("FAIL: "+message)
++
++func run() -> void:
++	create_timer(90.0).timeout.connect(func() -> void: print("FAIL: skip HTTP deadline"); quit(1))
++	var fixture: Dictionary = JSON.parse_string(FileAccess.get_file_as_string(OS.get_environment("BMT_CLOUD_FIXTURE")))
++	var client := Client.new()
++	root.add_child(client)
++	check(client.configure(OS.get_environment("BMT_API_URL")) == OK,"configure owned loopback API")
++	var boot: Dictionary = await client.request_api("/bootstrap")
++	check(boot.ok and client._capabilities.get("non_improving_runs_version") == 1,"negotiate skip protocol")
++	var login: Dictionary = await client.developer_login(OS.get_environment("BMT_DEV_AUTH_KEY"))
++	check(login.ok,"authenticate the disposable fixture")
++	var source: Dictionary = await client.request_api("/skip-fixture",HTTPClient.METHOD_POST,{},client.new_operation_key(),true)
++	check(source.ok,"seed an authoritative race and flying-lap PB")
++	if not source.ok: print(source); quit(1); return
++	var issued: Dictionary = await client.race_ticket(str(source.data.version_id),"compact",client.new_operation_key())
++	check(issued.ok,"obtain ordinary pinned race ticket")
++	var cloud := RetainedCloud.new()
++	cloud.client = client
++	cloud.root_override = OS.get_environment("BMT_SKIP_NATIVE_ROOT")
++	root.add_child(cloud)
++	issued.data._race_proof = fixture.race_proof
++	issued.data._race_ghost = fixture.ghost
++	issued.data._claimed_lap_ticks = source.data.lap_ticks
++	check(cloud.enqueue_completed(issued.data,fixture.replay.frames),"normal durable save queue accepts completed evidence")
++	var directory: String = cloud.outbox_path().get_base_dir().path_join("runs")
++	var path: String = directory.path_join(str(issued.data.ticket_id).sha256_text()+".job.json")
++	var job: Dictionary = {}
++	for attempt: int in range(80):
++		await cloud.flush_outbox()
++		job = Cloud._read_file(path)
++		if job.get("done",false) or job.has("failure"): break
++		await create_timer(0.1).timeout
++	check(job.get("done",false) and not job.has("failure"),"skipped upload completes its outbox job")
++	check(cloud.status == "Race completed","completion does not remain in verification pending")
++	var recovered: Dictionary = await client.request_api(client.run_read_path("/run-tickets/"+str(issued.data.ticket_id)+"/submission"),HTTPClient.METHOD_GET,{},"",true)
++	check(recovered.ok and recovered.data.run.status == "skipped" and recovered.data.run.skip_reason == "no_improvement","recover exact terminal skipped receipt")
++	check(recovered.data.run.completion.reward.amount == 50,"normal completion reward is credited")
++	var recording: Dictionary = Cloud._load_replay(directory.path_join(str(job.replay)),str(job.replay_hash))
++	var body: Dictionary = Client._pack_trajectory(fixture.replay.frames.size(),recording.race_proof,recording.get("rewinds",[]),recording.get("ghost",{}),job.wire_options.incidents,int(job.wire_options.path) == 1,recording.claimed_lap_ticks)
++	var retry: Dictionary = await client.request_api("/runs",HTTPClient.METHOD_POST,{"ticket_id":issued.data.ticket_id,"replay":body},str(job.key),true)
++	check(retry.ok and retry.data.run_id == recovered.data.run.run_id and retry.data.status == "skipped","duplicate HTTP upload reuses the exact skipped run")
++	var receipt: Dictionary = await client.request_api("/economy/rewards/"+str(issued.data.ticket_id),HTTPClient.METHOD_GET,{},"",true)
++	check(receipt.ok and receipt.data.amount == 50,"durable reward receipt is unchanged after retry")
++	var count: Dictionary = await client.request_api("/skip-fixture/count")
++	check(count.ok and int(count.data.calls) == 0,"ordinary skipped completion invokes zero race verifications")
++	var adapter := ChallengesClient.new()
++	adapter.client = client
++	adapter.cloud = cloud
++	root.add_child(adapter)
++	var chosen: Dictionary = await adapter.source(str(source.data.version_id),"compact",str(issued.data.ticket_id))
++	check(chosen.get("status") in ["queued","verifying"],"choosing this run as a new Challenge target requests verification")
++	for attempt: int in range(80):
++		chosen = await adapter.source(str(source.data.version_id),"compact",str(issued.data.ticket_id))
++		if chosen.get("status") == "verified": break
++		await create_timer(0.1).timeout
++	check(chosen.get("status") == "verified","the original real trajectory is verified for competitive reuse")
++	count = await client.request_api("/skip-fixture/count")
++	check(count.ok and int(count.data.calls) == 1,"explicit reuse invokes the verifier exactly once")
++	receipt = await client.request_api("/economy/rewards/"+str(issued.data.ticket_id),HTTPClient.METHOD_GET,{},"",true)
++	check(receipt.ok and receipt.data.amount == 50,"competitive reuse cannot credit a second reward")
++	adapter.queue_free()
++	cloud.queue_free()
++	client.queue_free()
++	await process_frame
++	print("NON_IMPROVING_HTTP: %d checks, %d failures" % [checks,failures])
++	quit(1 if failures else 0)
+diff --git a/game/tests/test_non_improving_http.gd.uid b/game/tests/test_non_improving_http.gd.uid
+new file mode 100644
+--- /dev/null
++++ b/game/tests/test_non_improving_http.gd.uid
+@@ -0,0 +1 @@
++uid://d0xklnbqqkgen
+diff --git a/game/tests/fixtures/non_improving_run_v1.json b/game/tests/fixtures/non_improving_run_v1.json
+new file mode 100644
+--- /dev/null
++++ b/game/tests/fixtures/non_improving_run_v1.json
+@@ -0,0 +1,13 @@
++{
++  "capability": {"non_improving_runs_version": 1},
++  "claimed_lap_ticks": [20, 20, 20, 20, 20],
++  "terminal_fields": {
++    "status": "skipped",
++    "skip_reason": "no_improvement",
++    "poll_after_ms": 0,
++    "failure_code": null,
++    "retryable": false
++  },
++  "base_reward": {"title": "Race completed", "amount": 50},
++  "comment": "A skipped completion cannot replace any race, flying-lap or competition best. This is a result-protocol fixture, not a claim of independently verified driving."
++}
+diff --git a/docs/NON_IMPROVING_RACE_SKIP_2026_10_26.md b/docs/NON_IMPROVING_RACE_SKIP_2026_10_26.md
+new file mode 100644
+--- /dev/null
++++ b/docs/NON_IMPROVING_RACE_SKIP_2026_10_26.md
+@@ -0,0 +1,78 @@
++# Skip non-improving race verification — 2026-10-26
++
++The owner requests no race verification when a result improves neither personal bests nor Daily/Weekly Rivalry/Challenge standings. The owner explicitly confirms that normal completion rewards remain. Task requirements: **NIS01** authoritative benefit comparison; **NIS02** no verifier/geometry work for skipped results; **NIS03** rewards and immutable retries; **NIS04** client completion/restart compatibility; **NIS05** preserve explicit competitive reuse; **NIS06/R01/Q01** focused tests, retained regressions and a task-only review patch.
++
++## Behaviour
++
++The updated client sends an optional, negotiated five-lap timing summary. The server uses this unverified hint only to discard a score. It can never authorize a new record. Inside the player's locked submission transaction, the server compares:
++
++- Total time against the verified race PB for the exact board, car and rules.
++- The fastest flying lap, excluding the standing-start lap, against the verified lap PB.
++- The independently earned Weekly Rivalry track best, when this ticket belongs to a week.
++- The independently earned Challenge best, or that specific track's best in a multi-track Challenge.
++
++Daily Free Race and Track of the Day use ordinary pinned boards; there is no separate daily best table in the current implementation. A missing PB, missing competition finish, uncertain/malformed evidence, creator validation or any potentially faster result stays on the existing verification path. Ties can skip. A faster competition time still verifies even when the player's global PB is faster, and even when the improvement would not immediately change rank.
++
++A qualifying result completes directly at submission with `status: skipped`, `skip_reason: no_improvement`, zero verification attempts and zero polling delay. It makes no queue reservation, prepares no geometry, checks no trajectory and saves no new ghost. It cannot update race/lap PBs, Rivalry/Challenge bests, their source runs, standings or verified-only SQL projections. A worker also rechecks queued candidates before loading geometry: a result overtaken while waiting can complete without verification.
++
++Completion coins remain server-priced and idempotent. The ordinary 50-coin completion reward remains, as does the existing clean-race bonus under the existing self-reported incident policy. PB bonuses remain impossible for a skipped result. Skipped runs are excluded from verification-dependent achievement/news capture. Reward receipts, current wallets, batch/wait/recovery reads, resume-receipt settlement, account restrictions, artificial/public isolation and bounded history retention remain fenced. The server intentionally does not establish driving authenticity for these non-scoring completions; this is the owner's requested relaxation, not a stronger anti-cheat claim.
++
++Choosing **this completed run** as a new Challenge target is a new competitive use. The client explicitly requests verification through the existing retry endpoint. A durable `verify:<run-id>` marker prevents the worker skipping that request again, including after temporary failure or restart. The original stored trajectory is checked before a target can be created. Its existing reward cannot be credited twice. A normal verified source remains read-only. Successful real-player reuse removes its marker in the result transaction; bounded history cleanup removes obsolete markers with their runs.
++
++## Client and protocol
++
++`non_improving_runs_version: 1` advertises the feature. `claimed_lap_ticks` is optional, must contain exactly five positive integer durations and must sum to the input count minus authorized discarded rewind ticks. Cheap endpoint checks precede any skip; absent or uncertain hints preserve verification. The full verifier continues to derive authoritative timing from the path whenever verification is required.
++
++Lap hints and negotiated options survive the existing durable save queue and local recording journal. Old recordings/options preserve their existing wire bodies and hashes. The packed-path transport retains the summary outside the path payload. Unknown saved options and invalid protocol versions remain rejected. New recordings without a hint, including historical/background recordings not produced through the updated App save flow, conservatively retain verification.
++
++`skipped` is an explicit terminal completion, with ordinary result feedback and no verification spinner. Rivalry/Challenge consumers, reward caching, wake-up hints, upload recovery and the result-based Challenge action understand it. Existing backend status storage already supports this value, so no schema migration or grant change is needed. A matching client/backend rollout is required; neither has been deployed by this task.
++
++The wire schema is updated in `backend/schemas/trajectory-v1.schema.json`. The shared protocol fixture is `game/tests/fixtures/non_improving_run_v1.json`.
++
++## Scope
++
++`backend/bmt_backend/non_improving_runs.py` owns the small classifier and completion path. Existing admission/worker/retry, reward, competition and terminal-status modules integrate it. `game/core/app.gd` captures the five lap times; the backend client and cloud journal negotiate/store/send them. Existing Rivalry/Challenge consumers, finish-rating refresh and the Challenge result view complete skipped results correctly.
++
++No physics, input mapping, car handling, track geometry, ranking arithmetic, prices or purchase implementation changes belong to this task. Concurrent App/input-recording/save-performance work and the earlier trajectory-check improvements are preserved. The review patch isolates this task from pre-existing edits in shared files; test entry-point build-version updates are excluded.
++
++## Actual validation
++
++Full commands and logs are retained in `docs/evidence/non-improving-race-skip-2026-10-26/` and its `report.json`.
++
++| Check | Actual outcome |
++|---|---|
++| Focused backend skip, competition, account, reward, rewind, retention and explicit-reuse tests | **26 passed / 25 PostgreSQL deselections** in `all-focused-final.log`, including ordinary and terminal-failure recovery for explicit competitive reuse. Earlier focused versions passed 15, 19, 23 and 25 cases as coverage expanded. |
++| Real Godot client against disposable authenticated loopback backend | **1 passed / 17 native checks**. Ordinary upload made **zero** race-verifier calls; outbox completion, reward and exact persisted-body retry worked. Explicitly choosing that result as a new Challenge target invoked the verifier **once**, with no second reward. `native-reuse-http.log`. |
++| Focused native protocol/restart/completion tests | Headless passed; final Compatibility and desktop Mobile each **26 checks / 0 failures**. No physical-device inference is made. |
++| App and dependency parser | Passed with pinned Godot `4.7.2.stable.official.ed1daf0bf`; `parser.log`. |
++| Broader backend race/competition/reward/completion/geometry suite | **165 passed, 3 skipped, 114 deselected, 2 failures**. Both failures reproduce with exact task-start modules loaded only in memory. |
++| Queue/archive/maintenance slice with expanded skip tests | **37 passed, 7 skipped, 35 deselected, 1 failure**. The failure also reproduces with exact task-start modules. |
++| PostgreSQL | Local configured service at port 55439 timed out. No PostgreSQL concurrency pass is claimed. |
++| Ruff and task patch checks | Recorded in the final report. The pre-existing import-order finding in `app.py` is outside the changed capability line. |
++
++The unchanged failures are the recorded-practice native setup returning validator-unavailable inside the sandbox, the guarded downgrade past pending creator-achievement events in migration 0054, and the intentionally refused telemetry rollback in migration 0051. Original and final failures are retained in `original-regressions.log`, `original-queue.log`, `backend-regression.log` and `related-final.log`. No invariant or migration guard was relaxed.
++
++An initial native assertion compared JSON-decoded floating-point lap arrays directly with integer arrays; the corrected assertion exercises the actual wire normalization after restart. An initial HTTP retry reconstructed the body from the pre-journal fixture and correctly received 409 because it differed from the persisted recording. The final test retries the exact committed recording and preserves the immutable-body assertion. These failures and corrected runs remain recorded.
++
++Representative actual commands, from the repository root unless noted:
++
++```text
++# backend working directory
++../.tools/backend-secure-venv/Scripts/python.exe -m pytest tests/test_non_improving_runs.py -q -k 'not postgres' --basetemp=../build/non-improving-all-final
++../.tools/backend-secure-venv/Scripts/python.exe -m pytest tests/test_non_improving_http.py -q -s --basetemp=../build/non-improving-reuse-http
++../.tools/backend-secure-venv/Scripts/python.exe -m pytest tests/test_non_improving_runs.py tests/test_domains.py tests/test_rivalry.py tests/test_challenges.py tests/test_challenge_series.py tests/test_earned_coins.py tests/test_outcome_reads.py tests/test_verification_preparation.py tests/test_trajectory_integrity.py tests/test_hairpin_gate_contract.py -q -k 'not postgres' -m 'not godot' --basetemp=../build/non-improving-race-regression
++../.tools/backend-secure-venv/Scripts/python.exe -m pytest tests/test_non_improving_runs.py tests/test_queue_capacity_slots.py tests/test_cost_archives.py tests/test_maintenance.py -q -k 'not postgres' --basetemp=../build/non-improving-final-related
++../.tools/backend-secure-venv/Scripts/python.exe -m pytest tests/test_non_improving_runs.py -q -k postgres -x --basetemp=../build/non-improving-race-postgres
++
++# repository root; BMT_SKIP_NATIVE_ROOT points to isolated task storage
++powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1 TestScript -ScriptPath res://tests/test_non_improving_runs.gd
++powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1 TestScript -ScriptPath res://tests/test_non_improving_runs.gd -Graphical -RenderingMethod gl_compatibility -RenderingDriver opengl3
++powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1 TestScript -ScriptPath res://tests/test_non_improving_runs.gd -Graphical -RenderingMethod mobile -RenderingDriver vulkan
++powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1 CheckScript -ScriptPath res://core/app.gd
++```
++
++Native tests used approved access to the Windows certificate store/native test logs. Runtime data stayed in task-specific workspace folders and disposable databases; no live backend was contacted. Screenshots: [Compatibility](evidence/non-improving-race-skip-2026-10-26/challenge-completed-compatibility.png), [desktop Mobile](evidence/non-improving-race-skip-2026-10-26/challenge-completed-mobile.png).
++
++## Delivery
++
++`checkpoint.patch` is a reviewable task-only patch; no Git commit or merge was made. Remaining acceptance: matching client/backend rollout, owner workflow acceptance and PostgreSQL concurrency/capacity testing when the local service is reachable. Old recordings without timing hints still verify. No device attachment check, physical-device test, APK build, real purchase/authentication, live mutation, deployment or owner-process restart was performed.

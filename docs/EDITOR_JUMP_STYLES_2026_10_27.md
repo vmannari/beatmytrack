@@ -1,5 +1,7 @@
 # Restrained editor jumps and natural bumps — 27 October 2026
 
+Navigation update, 28 October: each jump/bump now has its own palette object. The grouped-card and style-dropdown workflow recorded below is superseded by [Separate jump objects](JUMP_PALETTE_OBJECTS_2026_10_28.md).
+
 EJS01–EJS04/Q01 implement the owner's request to reduce exaggerated jumps and offer different shapes, especially low Desert bumps.
 
 New placements use **Low ramp** outside Desert and **Sand rise** in Desert. Under Objects, choose **Jumps & bumps**, then tap the selected tile again to choose a style. A selected placed jump has a direct style selector. Copy, size/rotation, undo/redo, pending tool state, test-drive return and local JSON keep the profile with the object.

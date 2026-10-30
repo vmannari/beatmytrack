@@ -22,7 +22,10 @@ static func car_shadow(parent: Node3D) -> MeshInstance3D:
 	parent.add_child(result)
 	return result
 
-static func present_car(shadow: MeshInstance3D, car: CarVisual, state: VehicleState, point: Vector2, heading: float, track: NativeTrack, bridge: BridgePresentation) -> void:
+static func car_support_reach(car: CarVisual) -> float:
+	return CAR_DIMENSIONS.get(car.vehicle_id,CAR_DIMENSIONS.compact).y*HandlingConfig.BODY_SCALE*0.35
+
+static func present_car(shadow: MeshInstance3D, car: CarVisual, state: VehicleState, point: Vector2, heading: float, track: NativeTrack, bridge: BridgePresentation, bump_candidates: Variant = null) -> void:
 	var dimensions: Vector2 = CAR_DIMENSIONS.get(car.vehicle_id,CAR_DIMENSIONS.compact)
 	dimensions *= HandlingConfig.BODY_SCALE
 	var support: float = 0.0
@@ -35,8 +38,9 @@ static func present_car(shadow: MeshInstance3D, car: CarVisual, state: VehicleSt
 		if not state.track_elevated:
 			front += track.ramp_height(point+axle)
 			rear += track.ramp_height(point-axle)
-			front += SpeedBumps.height(point+axle,track.speed_bump_objects)
-			rear += SpeedBumps.height(point-axle,track.speed_bump_objects)
+			var bumps: Array = track.speed_bump_objects if bump_candidates == null else bump_candidates
+			front += SpeedBumps.height(point+axle,bumps)
+			rear += SpeedBumps.height(point-axle,bumps)
 		support = (front+rear)*0.5
 		slope = atan2(front-rear,axle.length()*2.0)
 	var at: Vector3 = VisualGeometry.world(point)+Vector3.UP*(support+0.03)
@@ -45,12 +49,16 @@ static func present_car(shadow: MeshInstance3D, car: CarVisual, state: VehicleSt
 	if shadow.rotation != turn: shadow.rotation = turn
 	var air: float = maxf(state.jump_height,car.ramp_lift)
 	var spread: float = 1.0+minf(air,2.0)*0.10
+	# The small kart otherwise covers almost all of its soft contact shadow
+	# in the normal race camera. Keep the support sampling above unchanged.
+	if car.vehicle_id == "kart": spread *= 1.3
 	var extent := Vector3(dimensions.x*spread,0.55,dimensions.y*spread)
 	if shadow.scale != extent: shadow.scale = extent
 	var shown: bool = track == null or track.water_depth(point) <= 0.0
 	if shadow.visible != shown: shadow.visible = shown
 	var winter: bool = track != null and track.metadata.get("theme","pine") == "winter"
-	var strength: float = (0.43 if winter else 0.34)/(1.0+air*1.8)
+	var ground_strength: float = (0.64 if winter else 0.55) if car.vehicle_id == "kart" else (0.43 if winter else 0.34)
+	var strength: float = ground_strength/(1.0+air*1.8)
 	var surface: ShaderMaterial = shadow.material_override as ShaderMaterial
 	if surface.get_shader_parameter("strength") != strength: surface.set_shader_parameter("strength",strength)
 

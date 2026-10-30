@@ -1,0 +1,173 @@
+{
+  "date": "2026-10-25",
+  "task": "Public game introduction and account-deletion entry",
+  "status": "implemented_and_verified_locally_not_deployed",
+  "requirements": {
+    "GW01": "Public homepage with accurate game presentation and in-development status",
+    "GW02": "Racing/creator/Garage feature tour with labelled artwork and native screens",
+    "GW03": "Direct existing verified deletion, privacy and community-rules navigation",
+    "GW04": "Responsive, keyboard and no-JavaScript access without external tracking/assets",
+    "GW05": "Same-backend packaging and private-admin isolation",
+    "R01": "Retain existing authentication, remaining-benefits acknowledgement and erasure/retry authority",
+    "Q01": "Actual backend/browser/package/HTTP verification and task-only checkpoint"
+  },
+  "changed_files": [
+    "backend/bmt_backend/app.py",
+    "backend/pyproject.toml",
+    "backend/bmt_backend/privacy_pages.py",
+    "backend/bmt_backend/privacy_ui/style.css",
+    "backend/README.md",
+    "licenses/ASSETS.md",
+    "AGENTS.md",
+    "DEVELOPMENT_STATUS.md",
+    "docs/PHASE_0_PLAN.md",
+    "backend/bmt_backend/public_pages.py",
+    "backend/tests/test_public_website.py",
+    "scripts/prepare_public_website_assets.py",
+    "scripts/review_public_website.py",
+    "scripts/preview_public_website.py",
+    "docs/GAME_WEBSITE_2026_10_25.md",
+    "backend/bmt_backend/public_ui/Barlow-Regular.ttf",
+    "backend/bmt_backend/public_ui/BarlowCondensed-SemiBold.ttf",
+    "backend/bmt_backend/public_ui/font-license.txt",
+    "backend/bmt_backend/public_ui/forest-drive-v1.webp",
+    "backend/bmt_backend/public_ui/garage-v1.webp",
+    "backend/bmt_backend/public_ui/index.html",
+    "backend/bmt_backend/public_ui/mark-v1.svg",
+    "backend/bmt_backend/public_ui/style-v1.css",
+    "backend/bmt_backend/public_ui/track-editor-v1.webp",
+    "backend/bmt_backend/public_ui/winter-race-v1.webp",
+    "backend/bmt_backend/public_ui/worlds-v1.webp"
+  ],
+  "validation": [
+    {
+      "command": ".tools/backend-venv/Scripts/python.exe -m pytest backend/tests/test_public_website.py -q --disable-warnings",
+      "result": "4 passed",
+      "log": "backend-focused.log"
+    },
+    {
+      "command": ".tools/backend-venv/Scripts/python.exe -m pytest backend/tests/test_privacy.py backend/tests/test_deletion_preview.py -q --disable-warnings",
+      "result": "23 passed",
+      "log": "privacy-regressions.log"
+    },
+    {
+      "command": "PYTHONPATH=.tools/review/Lib/site-packages .tools/backend-venv/Scripts/python.exe scripts/review_public_website.py",
+      "result": "135 checks, 0 failures",
+      "log": "browser.log",
+      "details": "browser-results.json",
+      "viewports": [
+        [
+          1440,
+          1000
+        ],
+        [
+          1280,
+          720
+        ],
+        [
+          1024,
+          768
+        ],
+        [
+          768,
+          1024
+        ],
+        [
+          600,
+          800
+        ],
+        [
+          390,
+          844
+        ],
+        [
+          360,
+          740
+        ],
+        [
+          320,
+          568
+        ]
+      ]
+    },
+    {
+      "command": "scripts/review_deletion_warning_browser.py with existing local Playwright, current HTML/JS and intercepted identity/API responses",
+      "result": "23 checks, 0 failures",
+      "log": "deletion-browser.log",
+      "details": "deletion-browser-results.json"
+    },
+    {
+      "command": "backend-secure-venv Python: setuptools.build_meta.build_wheel from backend/ (setuptools 84.0.0, no network/dependency downloads)",
+      "result": "wheel built; 12 module/asset files byte-exact",
+      "log": "package-final.log",
+      "details": "package-results.json"
+    },
+    {
+      "command": ".tools/backend-venv/Scripts/python.exe scripts/preview_public_website.py --port 18086; urllib GETs on loopback",
+      "result": "5 HTTP 200 responses; task-owned preview stopped",
+      "details": "preview-http.json"
+    },
+    {
+      "command": "python -m compileall -q on new Python module, tests and helpers; scoped git diff --check",
+      "result": "passed"
+    },
+    {
+      "command": ".tools/backend-venv/Scripts/python.exe docs/evidence/game-website-2026-10-25/checkpoint.py",
+      "result": "26-file binary-capable task patch; Git forward and reverse --check pass",
+      "details": "checkpoint.json"
+    }
+  ],
+  "assets": {
+    "details": "assets.json",
+    "output_bytes": 1052999,
+    "new_runtime_dependencies": false,
+    "new_generated_art": false,
+    "fonts_license": "SIL Open Font License 1.1"
+  },
+  "initial_failures_and_corrections": [
+    "Backend-venv has no Pillow; used the existing review-venv Pillow 12.3.0.",
+    "First combined backend run: 2 failed, 25 passed. Duplicate global/route nosniff header fixed by relying on the existing global header. Route isolation fixture migrated to installed FastAPI iter_route_contexts; assertion preserved.",
+    "First browser run passed 135 checks, but final post-navigation screenshots had unloaded lazy images below the fold. Capture now scrolls and waits before screenshot. Initial captures retained in initial-capture/.",
+    "python -m build resolved local build namespace; legacy pip wheel environment lacked bdist_wheel. Existing setuptools 84.0.0 built successfully offline. package-initial.log and package.log retained.",
+    "Existing deletion-browser helper initially wrote its normal prior-task outputs. Current-page results copied to this task; prior screenshot reproduced with captured pre-task page/CSS to retain original navigation. prior-evidence-preservation.log records the check.",
+    "Scoped diff check caught task-added trailing blank lines; fixed before final checkpoint.",
+    "Windows CIM command-line inspection of the preview process was denied. Stopped only the task-owned Python PID 34788 recorded at its server startup; no owner process stopped."
+  ],
+  "screenshots": [
+    "delete-1440.png",
+    "home-1440.png",
+    "home-768.png",
+    "delete-390.png",
+    "home-390.png",
+    "home-320.png",
+    "deletion-web-deletion-960.png"
+  ],
+  "checkpoint": {
+    "path": "task-only.patch",
+    "sha256": "a8c41634ee81c7ca953748cebefa782996b8759d84ca221ccd754795c6c3815b",
+    "bytes": 1288599,
+    "shared_index_modified": false
+  },
+  "remaining_acceptance": [
+    "Owner review of homepage copy and appearance; physical-phone browser appearance.",
+    "Explicit approval and compatible API release for public Google Cloud publication.",
+    "Verify actual public origin, Google web verification configuration and privacy identity/contact on intended service.",
+    "Real-owner Google/account-deletion acceptance and Google Play URL submission.",
+    "Independent backend migrations/credential cutovers are not implicitly authorized by the website change."
+  ],
+  "boundaries": {
+    "device_attachment_checked": false,
+    "physical_device_test": false,
+    "apk_built": false,
+    "real_google_signin": false,
+    "real_account_deletion": false,
+    "purchase": false,
+    "cloud_mutation": false,
+    "deployment": false,
+    "migration": false,
+    "owner_process_restart": false,
+    "task_preview_stopped": true,
+    "sites_tools_available": false
+  },
+  "concurrent_work": "Task-start dirty files preserved; scoped patch is relative to captured task-start bytes. No shared Git index change."
+}

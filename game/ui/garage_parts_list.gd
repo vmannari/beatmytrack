@@ -58,9 +58,9 @@ func _init() -> void:
 	add_child(equip)
 	resized.connect(_layout_cards)
 
-func show_choice(label: String, equipped: bool, owned: bool, cost: int, index: int, total: int, category: String) -> void:
+func show_choice(label: String, equipped: bool, owned: bool, cost: int, index: int, total: int, category: String, vehicle: String = "compact") -> void:
 	selected_title = GameText.message(label)
-	GameText.bind_upper(heading,str(VehicleCustomisation.LABELS.get(category,category)))
+	GameText.bind_upper(heading,VehicleCustomisation.label(category,vehicle))
 	counter.text = "%02d / %02d" % [index+1,total]
 	equip.visible = not equipped
 	equip.disabled = equipped

@@ -1,0 +1,60 @@
+extends "res://tests/test_electric_power.gd"
+
+func turn(config: HandlingConfig, speed: float, gas: float) -> Dictionary:
+	var sim := VehicleSimulation.new(config)
+	sim.state.velocity = Vector2(0,speed)
+	var distance: float = 0
+	var heading: float = 0
+	var previous_angle: float = 0
+	var peak: float = 0
+	var early: float = 0
+	for tick: int in range(600):
+		var previous: Vector2 = sim.state.position
+		sim.step(DriveFrame.sample(1,gas,0))
+		distance += sim.state.position.distance_to(previous)
+		var angle: float = atan2(sim.state.velocity.x,sim.state.velocity.y)
+		heading += wrapf(angle-previous_angle,-PI,PI)
+		previous_angle = angle
+		peak = maxf(peak,absf(rad_to_deg(sim.state.slip_angle())))
+		if tick == 11: early = rad_to_deg(heading)
+		if heading >= PI*0.5: return {"radius":distance/heading,"seconds":(tick+1)/120.0,"speed":sim.state.velocity.length(),"peak_slip":peak,"course_100ms":early}
+	return {"radius":9999}
+
+func run() -> void:
+	var base: HandlingConfig = VehicleCatalog.config("electric")
+	var proposals: Array = [
+		[450,28,30,0.82,0.25,75,3.2,0.42,0.60],
+		[450,28,30,0.82,0.25,75,3.2,0.42,0.70],
+		[450,28,30,0.82,0.25,75,3.4,0.35,0.60],
+		[450,28,30,0.82,0.25,75,3.4,0.35,0.70],
+	]
+	for values: Array in proposals:
+		var c: HandlingConfig = base.duplicate() as HandlingConfig
+		c.rotational_inertia = values[0]
+		c.steering_rate = values[1]
+		c.countersteering_rate = 32
+		c.lateral_response = values[2]
+		c.steering_angle = values[3]
+		c.high_speed_steering_reduction = values[4]
+		c.lateral_grip = values[5]
+		c.maximum_yaw_rate = values[6]
+		c.throttle_rotation = values[7]
+		c.corner_energy_retention = values[8]
+		var full24: Dictionary = turn(c,24,1)
+		var historical24: HandlingConfig = load(OUTPUT+"/before/turning-before.tres") as HandlingConfig
+		var old24 := VehicleSimulation.new(historical24)
+		old24.state.velocity = Vector2(0,24)
+		for tick: int in range(roundi(full24.seconds*120)): old24.step(DriveFrame.sample(1,1,0))
+		print(JSON.stringify({"values":values,"full":corner(c,1).peak_slip_degrees,"gentle":corner(c,0.45).peak_slip_degrees,"turn12":turn(c,12,0.45),"turn24":turn(c,24,0.45),"turn36":turn(c,36,0.45),"turn48":turn(c,48,0.45),"full24":full24,"full24_old_equal_time":old24.state.velocity.length()}))
+	var historical: HandlingConfig = load(OUTPUT+"/before/turning-before.tres") as HandlingConfig
+	var actual_old: HandlingConfig = load("res://../docs/evidence/electric-steering-response-2026-10-25/before/electric-3.tres") as HandlingConfig
+	for gas: float in [0.45,0.65,1.0]:
+		var after: Dictionary = turn(base,12,gas)
+		var equal_time: Array = []
+		for old: HandlingConfig in [historical,actual_old]:
+			var sim := VehicleSimulation.new(old)
+			sim.state.velocity = Vector2(0,12)
+			for tick: int in range(roundi(after.seconds*120)): sim.step(DriveFrame.sample(1,gas,0))
+			equal_time.append(sim.state.velocity.length())
+		print("MATCHED_TIME ",JSON.stringify({"gas":gas,"after":after,"before_speeds":equal_time}))
+	quit()

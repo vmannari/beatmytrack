@@ -39,6 +39,11 @@ func invalidate_render() -> void:
 	if adopted: super.invalidate_render()
 	else: _render_dirty=true
 
+func refresh_thumbnail() -> void:
+	super.refresh_thumbnail()
+	if not _thumbnail_state.is_empty() and is_instance_valid(showroom_viewport):
+		showroom_viewport.size=Vector2i(2048,512)
+
 func _process(delta: float) -> void:
 	if adopted: super._process(delta)
 

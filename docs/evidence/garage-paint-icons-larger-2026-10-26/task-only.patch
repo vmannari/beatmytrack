@@ -1,0 +1,291 @@
+diff --git a/game/ui/garage_part_option.gd b/game/ui/garage_part_option.gd
+--- a/game/ui/garage_part_option.gd
++++ b/game/ui/garage_part_option.gd
+@@ -1,5 +1,5 @@
+ extends Button
+-## Numbered option with an optional tiny profile-style car icon.
++## Numbered Parts option, or a paint option led by a profile-style car.
+ var number: Label
+ var title: Label
+ var description: Label
+@@ -108,7 +108,7 @@
+ 	car_icon.mouse_filter = Control.MOUSE_FILTER_IGNORE
+ 	car_icon.expand_mode = TextureRect.EXPAND_IGNORE_SIZE
+ 	car_icon.stretch_mode = TextureRect.STRETCH_KEEP_ASPECT_CENTERED
+-	car_icon.custom_minimum_size = Vector2(64,40)
++	car_icon.custom_minimum_size = Vector2(112,76)
+ 	car_icon.size_flags_vertical = Control.SIZE_SHRINK_CENTER
+ 	car_icon.texture_filter = CanvasItem.TEXTURE_FILTER_LINEAR_WITH_MIPMAPS
+ 	var composite := ShaderMaterial.new()
+@@ -119,8 +119,8 @@
+ 	_row.move_child(car_icon,1)
+ 	_row.add_theme_constant_override("separation",8)
+ 	_separator.hide()
++	number.hide()
+ 	_value.custom_minimum_size.x = 64
+-	number.custom_minimum_size.x = 22
+ 
+ func set_selected(chosen: bool) -> void:
+ 	selected = chosen
+@@ -141,6 +141,5 @@
+ 	number.add_theme_font_size_override("font_size",25 if compact else 31)
+ 	price.add_theme_font_size_override("font_size",21 if compact else 27)
+ 	if car_icon!=null:
+-		custom_minimum_size.y = 100 # Allow the description to wrap beside the small car.
+-		number.add_theme_font_size_override("font_size",20 if compact else 25)
+-		car_icon.custom_minimum_size = Vector2(56,36) if compact else Vector2(64,40)
++		custom_minimum_size.y = 100
++		car_icon.custom_minimum_size = Vector2(96,72) if compact else Vector2(112,76)
+diff --git a/game/ui/garage_paint_icons.gd b/game/ui/garage_paint_icons.gd
+--- a/game/ui/garage_paint_icons.gd
++++ b/game/ui/garage_paint_icons.gd
+@@ -1,7 +1,7 @@
+ extends Node
+ ## Profile-style icons: visible rows only, one temporary world, a bounded cache.
+ const Profile = preload("res://ui/profile_car.gd")
+-const SIZE := Vector2i(176,112)
++const SIZE := Vector2i(224,152)
+ const CACHE_LIMIT: int = 24
+ static var images: Dictionary = {}
+ var scroll: ScrollContainer
+@@ -25,7 +25,7 @@
+ 			_stop())
+ 
+ func request(row: Button, vehicle: String, paint: Dictionary, parts: Dictionary) -> void:
+-	var key: String = "profile-paint-1/"+RenderingServer.get_current_rendering_method()+"/"+JSON.stringify([vehicle,paint,parts]).sha256_text()
++	var key: String = "profile-paint-2/"+RenderingServer.get_current_rendering_method()+"/"+JSON.stringify([vehicle,paint,parts]).sha256_text()
+ 	if row.icon_key==key and (row.car_icon.texture!=null or row.get_meta("icon_generation",-1)==generation): return
+ 	row.icon_key = key
+ 	row.set_meta("icon_generation",generation)
+@@ -59,7 +59,7 @@
+ 		_current = job
+ 		studio = Profile.make_preview(job.vehicle,job.paint,job.parts)
+ 		studio.position = Vector2(-10000,-10000)
+-		studio.size = Vector2(88,56)
++		studio.size = Vector2(SIZE)*0.5
+ 		add_child(studio)
+ 		active_worlds += 1
+ 		studio.tree_exited.connect(func() -> void: active_worlds -= 1,CONNECT_ONE_SHOT)
+diff --git a/game/tests/test_garage_paint_list.gd b/game/tests/test_garage_paint_list.gd
+--- a/game/tests/test_garage_paint_list.gd
++++ b/game/tests/test_garage_paint_list.gd
+@@ -82,7 +82,7 @@
+ 	check(menu.pattern_shelf.find_child("CosmeticDetailPhoto",true,false)==null and menu.pattern_shelf.find_child("CosmeticCancelPreview",true,false)==null,"no large photo or redundant selected/cancel section")
+ 	for index: int in menu.pattern_tiles:
+ 		var row: Button = menu.pattern_tiles[index]
+-		check(row.number.text=="%02d" % (index+1),"paint option numbering")
++		check(not row.number.visible,"paint row replaces its number with the car")
+ 		check(row.car_icon!=null and row.find_children("*","SubViewport",true,false).is_empty(),"tiny static icon has no per-row 3D world")
+ 	var saved: Dictionary = page.records.settings.duplicate(true)
+ 	page.showroom.rotate_view(Vector2(26,6))
+@@ -142,7 +142,8 @@
+ 		check(root.get_visible_rect().encloses(page.tools_panel.get_global_rect()),"paint panel fits "+str(dimensions))
+ 		check(menu.pattern_scroll.get_global_rect().encloses(menu.pattern_tiles[2].get_global_rect()),"selected paint row stays visible")
+ 		check(menu.pattern_tiles[2].get_global_rect().encloses(menu.pattern_tiles[2].description.get_global_rect()),"paint description stays inside the row")
+-		check(menu.pattern_tiles[2].car_icon.size.x<=64 and menu.pattern_tiles[2].car_icon.size.y<=40,"car icon stays tiny")
++		var icon_size: Vector2 = menu.pattern_tiles[2].car_icon.size
++		check(icon_size.x>=96 and icon_size.y>=72 and icon_size.x<=112 and icon_size.y<=76,"paint car fills the reclaimed number space and row height")
+ 		await capture("paint-list-"+str(dimensions.x))
+ 	check(page.records.settings==saved and shop.purchases==0,"layout and compare leave persistence/purchases unchanged")
+ 	await tap_icon(0,true)
+@@ -188,7 +189,7 @@
+ 	check(row.car_icon.texture!=null,"visible paint row has its profile-style icon")
+ 	var reference: Control = Profile.make_preview(page.vehicle_id,row.get_meta("icon_livery"),page.kit_draft)
+ 	reference.position = Vector2(-10000,-10000)
+-	reference.size = Vector2(88,56)
++	reference.size = Vector2(Icons.SIZE)*0.5
+ 	root.add_child(reference)
+ 	Profile.apply_presentation(reference)
+ 	for tick: int in range(4): await RenderingServer.frame_post_draw
+diff --git a/game/tests/test_customisation_carousel.gd b/game/tests/test_customisation_carousel.gd
+--- a/game/tests/test_customisation_carousel.gd
++++ b/game/tests/test_customisation_carousel.gd
+@@ -253,7 +253,7 @@
+ 	check(page.kit_photos==null and page.kit_shelf.find_children("*","SubViewport",true,false).is_empty(),"parts list creates no photo renderer or detail world")
+ 	for index: int in range(page.kit_cards.get_child_count()):
+ 		var row: Button = page.kit_cards.get_child(index)
+-		check(row.number.text=="%02d" % (index+1) and not row.description.text.is_empty(),"numbered option has a meaningful description")
++		check(row.number.is_visible_in_tree() and row.number.text=="%02d" % (index+1) and not row.description.text.is_empty(),"Parts keeps visible numbers and meaningful descriptions")
+ 		check(row.find_children("*","TextureRect",true,false).size()==1 and row.checkmark.texture!=null,"only the equipped-check icon remains in each text row")
+ 	check(page.kit_cards.get_child(0).checkmark.visible,"equipped option has its green check")
+ 	page._preview_kit("hood","louvres")
+diff --git a/AGENTS.md b/AGENTS.md
+--- a/AGENTS.md
++++ b/AGENTS.md
+@@ -1,3 +1,8 @@
++<!-- GARAGE-PAINT-ICONS-LARGER-20261026 -->
++## Larger cars replace paint row numbers (2026-10-26)
++GPI01-GPI03/R01/Q01: Owner clarifies the small pictures are in the paint list. Hide only paint row numbers/separators and reuse their width for112x76 car slots,96x72 compact, with224x152 profile-style renders/cache identity2. Row height100, all49 paints/seven cars, names/descriptions/prices/states/count and Buy & Equip remain. Parts numbers stay visible with a stronger retained assertion. One temporary renderer/24-image cache and teardown guards remain. Paint151headless/192Compatibility/192desktopMobile, retained configurator600headless and parser1266 pass. Initial concurrent shared-kit signature failures are retained; the matching override arrived independently. Runtime scope is two row/icon UI scripts; main camera, geometry, profile button, economy and save/account fences remain. Commands, native views, previous-capture provenance, hashes and scoped checkpoint: docs/GARAGE_PAINT_ICONS_LARGER_2026_10_26.md and docs/evidence/garage-paint-icons-larger-2026-10-26/report.json. This supersedes numbered/tiny-icon paint rows only. Reload and owner/device appearance/touch/performance acceptance remain. No attachment/device test, APK, real authentication/purchase, live mutation, deployment, merge, staging, commit or owner-process restart; concurrent work preserved.
++<!-- /GARAGE-PAINT-ICONS-LARGER-20261026 -->
++
+ <!-- RIVALRY-SUMMARY-POPUP-20261026 -->
+ ## Weekly Rivalry summary popup (2026-10-26)
+ RSP01-RSP04/R01/Q01: Authoritative completed weeks open a read-only decorated summary with final position, points, contested victories and existing highlights. Back to results/close/Escape/Enter returns to the exact existing weekly page; Continue remains there. Earned laurels/crown/confetti and actual Perfect Week fit four sizes and live resizing. Session-only account/group/week/car/mode review markers do not acknowledge, enroll, save, share or advance. Cached/sample/stale/navigation guards, snapshot replacement, modal deferral and focus/input blocking pass. Popup954Compatibility/954desktopMobile, unchanged weekly layout3012, rollover38, awards64 and parser1260 pass. Broader hub1190/3fail reproduces with exact task-start App/page in isolated memory1192/3fail; active podium203 exceeds retained194 assertion. Original automatic-popup3/1fail, initial timing/signature failures, native views, commands, hashes and scoped checkpoint: docs/RIVALRY_SUMMARY_POPUP_2026_10_26.md and docs/evidence/rivalry-summary-popup-2026-10-26/report.json. Weekly page/share dialog/art are byte-exact task-start sources; concurrent App work is excluded from the patch. Reload, owner/device appearance/touch acceptance and existing English-fallback summary copy translation remain. No attachment/device test, APK, purchase, owner-save/live mutation, deployment or owner-process restart; no staging or commit. Concurrent work preserved.
+diff --git a/DEVELOPMENT_STATUS.md b/DEVELOPMENT_STATUS.md
+--- a/DEVELOPMENT_STATUS.md
++++ b/DEVELOPMENT_STATUS.md
+@@ -1,3 +1,8 @@
++<!-- GARAGE-PAINT-ICONS-LARGER-20261026 -->
++## Larger cars replace paint row numbers (2026-10-26)
++GPI01-GPI03/R01/Q01: Owner clarifies the small pictures are in the paint list. Hide only paint row numbers/separators and reuse their width for112x76 car slots,96x72 compact, with224x152 profile-style renders/cache identity2. Row height100, all49 paints/seven cars, names/descriptions/prices/states/count and Buy & Equip remain. Parts numbers stay visible with a stronger retained assertion. One temporary renderer/24-image cache and teardown guards remain. Paint151headless/192Compatibility/192desktopMobile, retained configurator600headless and parser1266 pass. Initial concurrent shared-kit signature failures are retained; the matching override arrived independently. Runtime scope is two row/icon UI scripts; main camera, geometry, profile button, economy and save/account fences remain. Commands, native views, previous-capture provenance, hashes and scoped checkpoint: docs/GARAGE_PAINT_ICONS_LARGER_2026_10_26.md and docs/evidence/garage-paint-icons-larger-2026-10-26/report.json. This supersedes numbered/tiny-icon paint rows only. Reload and owner/device appearance/touch/performance acceptance remain. No attachment/device test, APK, real authentication/purchase, live mutation, deployment, merge, staging, commit or owner-process restart; concurrent work preserved.
++<!-- /GARAGE-PAINT-ICONS-LARGER-20261026 -->
++
+ <!-- RIVALRY-SUMMARY-POPUP-20261026 -->
+ ## Weekly Rivalry summary popup (2026-10-26)
+ RSP01-RSP04/R01/Q01: Authoritative completed weeks open a read-only decorated summary with final position, points, contested victories and existing highlights. Back to results/close/Escape/Enter returns to the exact existing weekly page; Continue remains there. Earned laurels/crown/confetti and actual Perfect Week fit four sizes and live resizing. Session-only account/group/week/car/mode review markers do not acknowledge, enroll, save, share or advance. Cached/sample/stale/navigation guards, snapshot replacement, modal deferral and focus/input blocking pass. Popup954Compatibility/954desktopMobile, unchanged weekly layout3012, rollover38, awards64 and parser1260 pass. Broader hub1190/3fail reproduces with exact task-start App/page in isolated memory1192/3fail; active podium203 exceeds retained194 assertion. Original automatic-popup3/1fail, initial timing/signature failures, native views, commands, hashes and scoped checkpoint: docs/RIVALRY_SUMMARY_POPUP_2026_10_26.md and docs/evidence/rivalry-summary-popup-2026-10-26/report.json. Weekly page/share dialog/art are byte-exact task-start sources; concurrent App work is excluded from the patch. Reload, owner/device appearance/touch acceptance and existing English-fallback summary copy translation remain. No attachment/device test, APK, purchase, owner-save/live mutation, deployment or owner-process restart; no staging or commit. Concurrent work preserved.
+diff --git a/docs/GARAGE_PAINT_ICONS_LARGER_2026_10_26.md b/docs/GARAGE_PAINT_ICONS_LARGER_2026_10_26.md
+--- /dev/null
++++ b/docs/GARAGE_PAINT_ICONS_LARGER_2026_10_26.md
+@@ -0,0 +1,28 @@
++# Larger cars in paint rows — 2026-10-26
++
++GPI01–GPI03/R01/Q01 implement the owner's clarification: remove the **paint option row number** and use its space for the car image. The preceding main-camera adjustment addressed a different area of the screen.
++
++Paint rows now start with the car. The display slot grows from 64×40 to **112×76** in the larger layout and from 56×36 to **96×72** in compact layouts. Row height stays 100. The hidden number and separator consume no layout width. Names, descriptions, authoritative prices, equipped/owned/preview states, category count, selection outline and Buy & Equip remain. Parts retain their visible row numbers. All 49 paints and seven vehicles remain available.
++
++The profile-style render grows from 176×112 to **224×152**, with a matching half-size studio layout and a new cache identity so an older bitmap is not reused. The shared profile camera, lighting and composite stay in use. Visible-row rendering, a 24-image cache, one temporary studio, offscreen release and hide/free-in-flight cleanup remain. The maximum 24 mipmapped RGBA8 textures are approximately 4.2 MiB before driver overhead; this is a size calculation, not a device measurement. The runtime scope is `garage_part_option.gd` and `garage_paint_icons.gd`.
++
++Only the superseded paint-number/small-size assertions and matching profile-reference size are updated in `test_garage_paint_list.gd`. Existing text-containment, real mouse/touch, preview, compare, account, save, purchase confirmation, all-car, cache and teardown guards remain. The existing Parts assertion in `test_customisation_carousel.gd` additionally requires the number to be visible. No new test script is added for this layout change. Geometry, main Garage camera, prices, saved cosmetics, profile-button UI and simulation are unchanged by this task.
++
++Actual isolated commands use pinned Godot 4.7.2 through `scripts/dev.ps1`:
++
++```powershell
++powershell -NoProfile -ExecutionPolicy Bypass -File docs/evidence/garage-paint-icons-larger-2026-10-26/run.ps1 -Mode headless
++powershell -NoProfile -ExecutionPolicy Bypass -File docs/evidence/garage-paint-icons-larger-2026-10-26/run.ps1 -Mode gl_compatibility
++powershell -NoProfile -ExecutionPolicy Bypass -File docs/evidence/garage-paint-icons-larger-2026-10-26/run.ps1 -Mode mobile
++powershell -NoProfile -ExecutionPolicy Bypass -File docs/evidence/garage-paint-icons-larger-2026-10-26/run.ps1 -Test test_customisation_carousel -Mode headless
++powershell -NoProfile -ExecutionPolicy Bypass -File docs/evidence/garage-paint-icons-larger-2026-10-26/run.ps1 -Test test_script_parse -Mode headless
++python docs/evidence/garage-paint-icons-larger-2026-10-26/record.py
++```
++
++Paint checks pass **151 headless / 192 Compatibility / 192 desktop Mobile**, including actual App views at 960×540, 1280×720 and 1720×900. The larger raster still matches an independent instance of the profile presentation within the unchanged 0.02 sampled RGBA mean difference limit. Parser **1266** passes. The retained configurator passes **600 headless** checks. All command exits are in [report.json](evidence/garage-paint-icons-larger-2026-10-26/report.json). Test data and transaction fixtures are isolated; actual App captures use guest records.
++
++The first three attempts encountered an in-progress concurrent shared `apply_customisation` method-signature change. Their failed commands/logs are retained in `initial/`. The matching thumbnail override subsequently arrived; this task did not edit the shared showroom or thumbnail scripts.
++
++[Native review](evidence/garage-paint-icons-larger-2026-10-26/review.html) shows the paint rows and full App. The before picture is a copied **previous native capture** from `garage-paint-framing-2026-10-26/test_garage_paint_framing-gl_compatibility/paint-app-1720.png`; it documents the preceding numbered row design, not a new baseline run. Its original source path and hash are recorded. The after images are from this task's runs. `record.py` builds `task-only.patch` from task-start source snapshots. Tracker review bases retain later concurrent entries, while the original tracker snapshots remain under `before/`. The reverse Git check validates the patch; no staging or commit is performed.
++
++Reload and owner visual/touch acceptance remain. No physical-device attachment check or device test was performed. No APK, real authentication/purchase, live mutation, deployment, merge or owner-process restart was performed. Concurrent kit/paint-animation, entry, camera, Rivalry, vehicle, track and handling work is retained and excluded from the patch.
+diff --git a/docs/evidence/garage-paint-icons-larger-2026-10-26/run.ps1 b/docs/evidence/garage-paint-icons-larger-2026-10-26/run.ps1
+--- /dev/null
++++ b/docs/evidence/garage-paint-icons-larger-2026-10-26/run.ps1
+@@ -0,0 +1,17 @@
++param([string]$Test='test_garage_paint_list',[ValidateSet('headless','gl_compatibility','mobile')][string]$Mode='headless',[switch]$Before,[switch]$Import)
++$ErrorActionPreference='Stop'
++if ($Import) {$Test='import';$Mode='headless'}
++$kitRepo=(Resolve-Path (Join-Path $PSScriptRoot '../../..')).Path
++$kitOutput=Join-Path $PSScriptRoot $(if ($Before) {"before/$Mode"} else {"$Test-$Mode"})
++New-Item -ItemType Directory -Force -Path $kitOutput | Out-Null
++$env:APPDATA=Join-Path $kitRepo "build/garage-paint-icons-larger-2026-10-26/$(if ($Before) {'before'} else {"$Test-$Mode"})/user"
++New-Item -ItemType Directory -Force -Path $env:APPDATA | Out-Null
++$kitArgs=@('-NoProfile','-ExecutionPolicy','Bypass','-File',(Join-Path $kitRepo 'scripts/dev.ps1'),'-Action','TestScript','-ScriptPath',"res://tests/$Test.gd",'-CommandTimeoutSeconds','240','-TestArgument',"--evidence-root=$kitOutput")
++if ($Import) {$kitArgs=@('-NoProfile','-ExecutionPolicy','Bypass','-File',(Join-Path $kitRepo 'scripts/dev.ps1'),'-Action','Import','-CommandTimeoutSeconds','180')}
++if ($Mode -ne 'headless') {$kitArgs+=@('-Graphical','-RenderingMethod',$Mode,'-RenderingDriver',$(if ($Mode -eq 'mobile') {'vulkan'} else {'opengl3'}))}
++$kitStarted=[DateTime]::UtcNow
++& powershell @kitArgs *> (Join-Path $kitOutput 'console.log')
++$kitCode=$LASTEXITCODE
++@{arguments=$kitArgs;exit_code=$kitCode;started_utc=$kitStarted.ToString('o');duration_seconds=([DateTime]::UtcNow-$kitStarted).TotalSeconds}|ConvertTo-Json -Depth 5|Set-Content -Encoding UTF8 (Join-Path $kitOutput 'command.json')
++Get-Content (Join-Path $kitOutput 'console.log') -Tail 16
++exit $kitCode
+diff --git a/docs/evidence/garage-paint-icons-larger-2026-10-26/record.py b/docs/evidence/garage-paint-icons-larger-2026-10-26/record.py
+--- /dev/null
++++ b/docs/evidence/garage-paint-icons-larger-2026-10-26/record.py
+@@ -0,0 +1,84 @@
++"""Record the paint-row icon correction and a scoped reverse-checked patch."""
++from pathlib import Path
++import difflib
++import hashlib
++import json
++import re
++import subprocess
++
++EVIDENCE = Path(__file__).resolve().parent
++ROOT = EVIDENCE.parents[2]
++EXISTING = ["game/ui/garage_part_option.gd", "game/ui/garage_paint_icons.gd",
++            "game/tests/test_garage_paint_list.gd", "game/tests/test_customisation_carousel.gd",
++            "AGENTS.md", "DEVELOPMENT_STATUS.md"]
++NEW = ["docs/GARAGE_PAINT_ICONS_LARGER_2026_10_26.md"]
++NEW += ["docs/evidence/garage-paint-icons-larger-2026-10-26/"+name for name in ("run.ps1","record.py","review.html")]
++
++
++def sha(path):
++    return hashlib.sha256(path.read_bytes()).hexdigest()
++
++
++def log_text(path):
++    raw = path.read_bytes()
++    return raw.decode("utf-16" if raw.startswith(b"\xff\xfe") else "utf-8-sig",errors="replace")
++
++
++patch, sources = [], []
++for name in EXISTING+NEW:
++    target, before = ROOT/name, EVIDENCE/"before"/name
++    original = before.read_text(encoding="utf-8") if before.exists() else ""
++    current = target.read_text(encoding="utf-8")
++    checkpoint_base = None
++    if name in ["AGENTS.md","DEVELOPMENT_STATUS.md"]:
++        original, removed = re.subn(r"<!-- GARAGE-PAINT-ICONS-LARGER-20261026 -->[\s\S]*?<!-- /GARAGE-PAINT-ICONS-LARGER-20261026 -->\n\n","",current,count=1)
++        assert removed==1
++        checkpoint_base = EVIDENCE/"checkpoint-base"/name
++        checkpoint_base.parent.mkdir(parents=True,exist_ok=True)
++        checkpoint_base.write_text(original,encoding="utf-8",newline="\n")
++    if original != current:
++        patch.append(f"diff --git a/{name} b/{name}\n")
++        patch.extend(difflib.unified_diff(original.splitlines(True),current.splitlines(True),
++                     fromfile=f"a/{name}" if before.exists() else "/dev/null",tofile=f"b/{name}"))
++    sources.append({"path":name,"sha256":sha(target),"before_sha256":sha(before) if before.exists() else None,
++                    "checkpoint_base_sha256":sha(checkpoint_base) if checkpoint_base else None})
++checkpoint = EVIDENCE/"task-only.patch"
++checkpoint.write_text("".join(patch),encoding="utf-8",newline="\n")
++reverse = subprocess.run(["git","apply","--check","--reverse",str(checkpoint)],cwd=ROOT,capture_output=True,text=True)
++runs = []
++for path in sorted(EVIDENCE.glob("*/command.json")):
++    log = path.with_name("console.log")
++    content = log_text(log)
++    runs.append({"directory":path.parent.relative_to(EVIDENCE).as_posix(),
++                 **json.loads(path.read_text(encoding="utf-8-sig")),
++                 "summary":re.findall(r"(?:GARAGE_PAINT_LIST|CUSTOMISATION_CAROUSEL|SCRIPT_PARSE):[^\r\n]+",content),
++                 "failures":re.findall(r"^FAIL:[^\r\n]+",content,re.M),"log_sha256":sha(log)})
++expected = {"test_garage_paint_list-"+mode for mode in ["headless","gl_compatibility","mobile"]}
++expected |= {"test_customisation_carousel-headless","test_script_parse-headless"}
++missing = sorted(expected-{run["directory"] for run in runs})
++before_source = "docs/evidence/garage-paint-framing-2026-10-26/test_garage_paint_framing-gl_compatibility/paint-app-1720.png"
++report = {
++    "date":"2026-10-26","requirements":["GPI01","GPI02","GPI03","R01","Q01"],
++    "engine":(ROOT/"godot-version.txt").read_text().strip(),"sources":sources,"runs":runs,"missing_runs":missing,
++    "behavior":{"paint_row_numbers":"hidden without layout space", "Parts_row_numbers":"visible and covered by retained assertion",
++                "display_sizes_before":[[64,40],[56,36]],"display_sizes_after":[[112,76],[96,72]],
++                "render_pixels_before":[176,112],"render_pixels_after":[224,152],"cache_version":2,
++                "row_height":100,"cache_bound":24,"active_studio_bound":1,
++                "preserved":"profile presentation, all49 paints/seven cars, labels/prices/states/count/purchases, save/account/compare and main camera"},
++    "before_capture":{"source":before_source,"source_sha256":sha(ROOT/before_source),
++                      "copy":"before/previous-native-paint-rows.png","copy_sha256":sha(EVIDENCE/"before/previous-native-paint-rows.png"),
++                      "provenance":"previous native capture of the preceding numbered row UI; not a new baseline run"},
++    "initial_attempts":[{"command":json.loads(p.read_text(encoding="utf-8-sig")),
++                         "path":p.relative_to(EVIDENCE).as_posix(),
++                         "log_sha256":sha(p.with_name(p.name.replace("command.json","console.log")))}
++                        for p in sorted((EVIDENCE/"initial").glob("*-command.json"))],
++    "captures":[{"path":p.relative_to(EVIDENCE).as_posix(),"sha256":sha(p)} for p in sorted(EVIDENCE.rglob("*.png"))],
++    "checkpoint":{"path":"task-only.patch","sha256":sha(checkpoint),"reverse_check_exit":reverse.returncode,"stderr":reverse.stderr},
++    "remaining_acceptance":["reload","owner visual/touch review","physical-device appearance/performance"],
++    "limits":["Windows Compatibility and Vulkan Mobile with synthetic mouse/touch",
++              "no physical-device attachment check or device test","no APK","no real authentication/purchase or live mutation",
++              "no deployment, merge, staging, commit or owner-process restart","concurrent changes preserved and excluded"]}
++(EVIDENCE/"report.json").write_text(json.dumps(report,indent=2)+"\n",encoding="utf-8")
++print(json.dumps({"runs":[{"name":run["directory"],"exit":run["exit_code"],"summary":run["summary"]} for run in runs],
++                  "missing_runs":missing,"checkpoint_reverse_exit":reverse.returncode,"checkpoint_error":reverse.stderr},indent=2))
++raise SystemExit(reverse.returncode or int(bool(missing) or any(run["exit_code"]!=0 for run in runs)))
+diff --git a/docs/evidence/garage-paint-icons-larger-2026-10-26/review.html b/docs/evidence/garage-paint-icons-larger-2026-10-26/review.html
+--- /dev/null
++++ b/docs/evidence/garage-paint-icons-larger-2026-10-26/review.html
+@@ -0,0 +1,11 @@
++<!doctype html>
++<html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Larger paint-list cars</title>
++<style>body{margin:24px;background:#0b141b;color:#edf1f2;font:16px system-ui}main{max-width:1720px;margin:auto}a{color:#ffda45}p{line-height:1.5;max-width:1100px}img{max-width:100%;height:auto;display:block}select{padding:10px;background:#12212a;color:white;border:1px solid #526773}.pair{display:grid;grid-template-columns:1fr 1fr;gap:20px;max-width:1200px}.crop{position:relative;overflow:hidden;width:100%;aspect-ratio:588/440;border:1px solid #344750}.crop img{position:absolute;max-width:none;width:292.517%;left:-189.116%;top:-75%}@media(max-width:800px){.pair{grid-template-columns:1fr}}</style>
++<main><h1>Larger paint-list cars</h1><p>Paint row numbers are removed. Their space now belongs to the car: 112×76 in the larger layout and 96×72 in compact layouts, with sharper 224×152 renders. Names, prices, equipped/preview states and Buy &amp; Equip remain.</p>
++<p><a href="../../GARAGE_PAINT_ICONS_LARGER_2026_10_26.md">Change and validation</a> · <a href="report.json">Commands and hashes</a> · <a href="task-only.patch">Scoped checkpoint</a></p>
++<label>After renderer <select id="renderer"><option value="gl_compatibility">Compatibility</option><option value="mobile">Vulkan Mobile</option></select></label>
++<h2>Paint rows</h2><p>The previous native capture shows the original numbered rows. These are cropped views of unchanged evidence images; selection/paint state differs between captures.</p><div class="pair"><section><h3>Before</h3><div class="crop"><img src="before/previous-native-paint-rows.png" alt="Previous numbered paint rows with small cars"></div></section><section><h3>After</h3><div class="crop"><img data-file="paint-app-1720.png" alt="Larger paint cars using the removed number column"></div></section></div>
++<h2>Actual App — 1720 × 900</h2><img data-file="paint-app-1720.png" alt="Native App with the larger paint car images">
++<h2>Compact landscape — 960 × 540</h2><img data-file="paint-app-960.png" alt="Compact paint list with a larger car and contained description">
++<p>Isolated Windows native tests with synthetic mouse/touch. No physical-device test or real purchase.</p></main>
++<script>function show(){const mode=document.querySelector('#renderer').value;for(const picture of document.querySelectorAll('[data-file]'))picture.src='test_garage_paint_list-'+mode+'/'+picture.dataset.file}document.querySelector('#renderer').onchange=show;show()</script></html>

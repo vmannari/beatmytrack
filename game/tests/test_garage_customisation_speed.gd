@@ -81,7 +81,7 @@ func _run() -> void:
 	page._set_customise_tab("colours")
 	await settle()
 	check(page._sticker_board==null and page._sticker_sliders.is_empty(),"leaving placement clears stale controls")
-	page.open_car(4)
+	page.open_car(VehicleCatalog.IDS.find("kart"))
 	page._set_customise_tab("stickers")
 	check(page.livery_menu!=menu and page.livery_menu.find_child("StickerRoof",true,false)==null,"car switch invalidates physical-panel tools")
 	page.open_car(0)

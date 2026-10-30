@@ -1,0 +1,155 @@
+--- a/game/resources/cars/electric.tres
++++ b/game/resources/cars/electric.tres
+@@ -2,7 +2,7 @@
+ [ext_resource type="Script" path="res://vehicle/handling_config.gd" id="1"]
+ [resource]
+ script = ExtResource("1")
+-version = "electric-7"
++version = "electric-8"
+ vehicle_id = "electric"
+ profile_name = "Volt"
+ rear_wheel_drive = true
+@@ -24,7 +24,7 @@
+ countersteering_rate = 32.0
+ steering_angle = 0.82
+ high_speed_steering_reduction = 0.25
+-low_speed_steering_scale = 0.60
++low_speed_steering_scale = 0.35
+ maximum_yaw_rate = 3.4
+ lateral_grip = 75.0
+ longitudinal_grip = 32.0
+--- a/game/tests/test_electric_low_speed_steering.gd
++++ b/game/tests/test_electric_low_speed_steering.gd
+@@ -1,5 +1,6 @@
+ extends "res://tests/test_electric_power.gd"
+-const LOW_OUTPUT: String = "res://../docs/evidence/electric-low-speed-steering-2026-10-25"
++const LOW_OUTPUT: String = "res://../docs/evidence/electric-calmer-steering-2026-10-25"
++const BASELINE: String = "res://../docs/evidence/electric-low-speed-steering-2026-10-25"
+ var previous_simulation: GDScript
+ 
+ func onset(config: HandlingConfig, speed: float, steering: float, previous: bool = false) -> Dictionary:
+@@ -17,20 +18,23 @@
+ 
+ func run() -> void:
+ 	previous_simulation = GDScript.new()
+-	previous_simulation.source_code = FileAccess.get_file_as_string(LOW_OUTPUT+"/before/game__vehicle__vehicle_simulation.gd.txt").replace("class_name VehicleSimulation","").trim_prefix("\ufeff")
++	previous_simulation.source_code = FileAccess.get_file_as_string(BASELINE+"/before/game__vehicle__vehicle_simulation.gd.txt").replace("class_name VehicleSimulation","").trim_prefix("\ufeff")
+ 	check(previous_simulation.reload() == OK,"actual accepted physics0.69 compiles for before/after")
+-	var old: HandlingConfig = load(LOW_OUTPUT+"/before/electric-6.tres") as HandlingConfig
++	var old: HandlingConfig = load(BASELINE+"/before/electric-6.tres") as HandlingConfig
+ 	var current: HandlingConfig = VehicleCatalog.config("electric")
+-	check(old.version == "electric-6" and current.version == "electric-7" and VehicleSimulation.PHYSICS_VERSION == "arcade-planar-0.70","low-speed correction has new competitive identity")
++	check(old.version == "electric-6" and current.version == "electric-8" and VehicleSimulation.PHYSICS_VERSION == "arcade-planar-0.70","low-speed correction has new competitive identity")
++	var preceding: HandlingConfig = load(LOW_OUTPUT+"/before/game__resources__cars__electric.tres") as HandlingConfig
+ 	metrics.onset = {}
+ 	for speed: float in [1.0,3.0,5.0,7.0,-1.0,-3.0,-5.0,-7.0]:
+ 		for steering: float in [0.35,0.65,1.0]:
+ 			var before: Dictionary = onset(old,speed,steering,true)
+ 			var after: Dictionary = onset(current,speed,steering)
+ 			var mirrored: Dictionary = onset(current,speed,-steering)
++			var prior: Dictionary = onset(preceding,speed,steering)
++			check(after.course/prior.course < (0.70 if absf(speed)<=3 else 0.90 if absf(speed)<=5 else 0.99),"further reduction versus rejected electric-7: "+str(speed)+"/"+str(steering))
+ 			var ratio: float = after.course/before.course
+-			metrics.onset[str(speed)+"/"+str(steering)] = {"before":before,"after":after,"course_ratio":ratio}
+-			check(ratio < (0.72 if absf(speed)<=3 else 0.88 if absf(speed)<=5 else 0.995) and ratio > 0.4,"actual touch steering is calmer but remains responsive: "+str(speed)+"/"+str(steering))
++			metrics.onset[str(speed)+"/"+str(steering)] = {"before":before,"after":after,"course_ratio":ratio,"preceding":prior,"preceding_ratio":after.course/prior.course}
++			check(ratio < (0.48 if absf(speed)<=3 else 0.80 if absf(speed)<=5 else 0.99) and ratio > 0.2,"actual touch steering is calmer but remains responsive: "+str(speed)+"/"+str(steering))
+ 			check(is_equal_approx(mirrored.course,after.course) and is_equal_approx(mirrored.speed,after.speed),"low-speed left/right response is symmetric: "+str(speed)+"/"+str(steering))
+ 	# Exact high-speed comparisons include sideways states, not just straight travel.
+ 	var high_exact: bool = true
+--- a/game/tests/test_electric_brake_release.gd
++++ b/game/tests/test_electric_brake_release.gd
+@@ -37,7 +37,7 @@
+ 	check(previous_simulation.reload() == OK,"actual preceding physics compiles for comparison")
+ 	var old: HandlingConfig = load(RELEASE_OUTPUT+"/before/electric-5.tres") as HandlingConfig
+ 	var current: HandlingConfig = VehicleCatalog.config("electric")
+-	check(old.version == "electric-5" and current.version == "electric-7" and VehicleSimulation.PHYSICS_VERSION == "arcade-planar-0.70","competitive braking behavior and current low-speed tune are versioned")
++	check(old.version == "electric-5" and current.version == "electric-8" and VehicleSimulation.PHYSICS_VERSION == "arcade-planar-0.70","competitive braking behavior and current low-speed tune are versioned")
+ 	metrics.stops = {}
+ 	for speed: float in [7.0,20.0,100.0/3.6,44.0,-7.0,-20.0]:
+ 		var before: Dictionary = released_stop(old,speed,true)
+--- a/game/tests/test_electric_power.gd
++++ b/game/tests/test_electric_power.gd
+@@ -45,7 +45,7 @@
+ 		if argument.begins_with("--evidence-root="): output = argument.trim_prefix("--evidence-root=")
+ 	var old: HandlingConfig = load(OUTPUT+"/before/electric.tres") as HandlingConfig
+ 	var current: HandlingConfig = VehicleCatalog.config("electric")
+-	check(old != null and old.version == "electric-2" and current.version == "electric-7","actual original and current balanced competitive tunes")
++	check(old != null and old.version == "electric-2" and current.version == "electric-8","actual original and current balanced competitive tunes")
+ 	metrics.old_launch = launch(old)
+ 	metrics.new_launch = launch(current)
+ 	metrics.old_corner = corner(old,1)
+--- a/game/tests/test_electric_power_balance.gd
++++ b/game/tests/test_electric_power_balance.gd
+@@ -20,7 +20,7 @@
+ 		if argument.begins_with("--evidence-root="): output = argument.trim_prefix("--evidence-root=")
+ 	var old: HandlingConfig = load(BALANCE_OUTPUT+"/before/electric-4.tres") as HandlingConfig
+ 	var current: HandlingConfig = VehicleCatalog.config("electric")
+-	check(old.version == "electric-4" and current.version == "electric-7","versioned preceding power tune and current brake balance")
++	check(old.version == "electric-4" and current.version == "electric-8","versioned preceding power tune and current brake balance")
+ 	metrics.before_launch = launch(old)
+ 	metrics.after_launch = launch(current)
+ 	for target: float in [20.0,100.0/3.6,40.0]:
+--- a/game/tests/test_electric_steering_response.gd
++++ b/game/tests/test_electric_steering_response.gd
+@@ -38,7 +38,7 @@
+ 		if argument.begins_with("--evidence-root="): output = argument.trim_prefix("--evidence-root=")
+ 	var old: HandlingConfig = load(RESPONSE_OUTPUT+"/before/electric-3.tres") as HandlingConfig
+ 	var current: HandlingConfig = VehicleCatalog.config("electric")
+-	check(old.version == "electric-3" and current.version == "electric-7","original slow steering versus current balanced electric tune")
++	check(old.version == "electric-3" and current.version == "electric-8","original slow steering versus current balanced electric tune")
+ 	old = steering_reference(old,current)
+ 	for speed: float in [12.0,24.0,36.0,current.maximum_speed]:
+ 		for gas: float in [0.45,0.65,1.0]:
+--- a/backend/tests/fixtures/verified_oval.json
++++ b/backend/tests/fixtures/verified_oval.json
+@@ -64430,8 +64430,8 @@
+         "handling_version": "handling-0.15-original-slide"
+       },
+       "electric": {
+-        "config_hash": "7d10eaf9039220940f398ae9145dc141c08cd79b5086a00db3281afc4045cc38",
+-        "handling_version": "electric-7"
++        "config_hash": "c3f99add6732b13dfe168bcb1a9e281bf64fa4f9f43c8452c622cb7d2bc93a13",
++        "handling_version": "electric-8"
+       },
+       "forklift": {
+         "config_hash": "495947f7424e92c8b14f69c1de5b3a05bb2ab0ce85c4898c0f858e73b3d35003",
+--- a/AGENTS.md
++++ b/AGENTS.md
+@@ -1,3 +1,8 @@
++<!-- ELECTRIC-CALMER-STEERING-20261025 -->
++## Further electric low-speed steering reduction (2026-10-25)
++ECS01-ECS02/R01/Q01: Owner still finds slow turns too quick. Electric-8 reduces low_speed_steering_scale0.60to0.35 with the existing2to8m/s fade. Actual0.2s full-lock direction response falls another43.86% at3.6km/h,39.07% at10.8,18.57% at18 and2.66% at25.2 versus electric-7. Low-speed87, release38, car60, one-pedal63, power19, balance22, response86, turning61, laps6, Garage/race60Compatibility/60desktopMobile and parser1194 pass. Backend72pass/twoexisting exclusions and independent13270input/five-lap verifier accept. Shared physics0.70/model/input/six other cars remain; only electric fixture identity changes. Original response-floor expectation is superseded by this further owner correction; stronger upper bounds and direct prior-tune comparisons apply. Commands, startup limitations, evidence and task-only checkpoint: docs/ELECTRIC_CALMER_STEERING_2026_10_25.md and docs/evidence/electric-calmer-steering-2026-10-25/report.json. Reload, matching verifier rollout and owner/device feel remain. No device test/attachment check, APK, live mutation, deployment or owner-process restart; concurrent work preserved.
++<!-- /ELECTRIC-CALMER-STEERING-20261025 -->
++
+ <!-- ELECTRIC-SMOOTH-NOSE-20261025 -->
+ ## Electric smooth hood/nose profile override (2026-10-25)
+ Owner identifies an S bend in the side view. ENP01-ENP02/V01/R01/G01/Q01: Monotonic cubic hood, convex shoulder and light-brow-leading bumper replace the dip/low bulge. Fixed-X tangents and shared lid/surround/nose stations close the transition. Actual 20mm mesh arcs at three X sections measure worst reverse turn0.264deg full/0.262deg simple versus6.384/7.154 before; exact rejected model24checks/8fail is retained. The owner correction supersedes the old raised-shoulder and low-bumper-protrusion expectations; new curvature bounds replace them while seam/depth/symmetry/normal/budget/physics limits remain. V7 has537 meshes,362 exact originals;169186/70070 triangles retain170000 cap. Initial strip/tangent/facet and fixture failures are corrected and retained. Catalogue/news/all49 photos refresh with final validation. Exact model assembly/presentation/physics/config and original model/body tests remain. Commands, native comparisons, actual final outcomes and scoped Git checkpoint: docs/ELECTRIC_SMOOTH_NOSE_2026_10_25.md and docs/evidence/electric-smooth-nose-2026-10-25/report.json. Reload and owner/device appearance/motion/cost remain. No attachment/device test, APK, purchase, live mutation, deployment or owner-process restart; concurrent work preserved.
+--- /dev/null
++++ b/docs/ELECTRIC_CALMER_STEERING_2026_10_25.md
+@@ -0,0 +1,25 @@
++# Further electric low-speed steering reduction ? 2026-10-25
++
++ECS01: The owner reports that the current electric car still turns too quickly at slow speeds. ECS02: Preserve accepted high-speed handling, propulsion, release braking and the six other cars. R01: deterministic replay and versioned competitive identity. Q01: validation and owner/device feel acceptance.
++
++Electric-8 changes only its version and low_speed_steering_scale from 0.60 to 0.35. The existing smooth fade from 2 to 8 m/s remains. Shared simulation, input, model, cameras and other car resources are untouched; physics remains arcade-planar-0.70. Electric configuration hash is c3f99add6732b13dfe168bcb1a9e281bf64fa4f9f43c8452c622cb7d2bc93a13. The backend fixture changes only its electric manifest entry; historical recordings remain.
++
++Actual 0.2-second full-lock touch direction response falls another 43.86% at 3.6 km/h, 39.07% at 10.8, 18.57% at 18 and 2.66% at 25.2 compared with electric-7. Forward/reverse and left/right are checked. At or above 28.8 km/h the steering calculation remains exact. The new 87-check low-speed suite adds 24 direct comparisons against the rejected electric-7 resource. Owner correction supersedes the former minimum response ratio against electric-6; stronger upper response bounds prove the requested further reduction. The original test and source are retained under before/. No braking, high-speed or other-car bound is relaxed.
++
++Changed files: game/resources/cars/electric.tres; game/tests/test_electric_low_speed_steering.gd; version expectations in test_electric_brake_release.gd, test_electric_power.gd, test_electric_power_balance.gd and test_electric_steering_response.gd; backend/tests/fixtures/verified_oval.json; this document; AGENTS.md; task evidence. All modifications are relative to actual task-start sources, preserving concurrent changes.
++
++Commands and results:
++
++- Pinned Godot 4.7.2: --headless --path game --log-file ABSOLUTE_TASK_LOG --script res://tests/SUITE.gd -- --evidence-root=res://../docs/evidence/electric-calmer-steering-2026-10-25. Low-speed 87, release 38, car 60, one-pedal 63, power 19, balance 22, response 86, turning 61 and laps 6 pass. The low-speed suite includes 135 exact high-speed single ticks, four full-second high-speed runs, exact straight acceleration/braking and 2400 exact ticks for each other car. Laps cover three circuits, five laps each, zero contacts and exact replay.
++- Same invocation for test_script_parse.gd: 1194 scripts, zero failures.
++- scripts/dev.ps1 -Action TestScript -ScriptPath res://tests/test_electric_car_ui.gd -Graphical -RenderingMethod gl_compatibility -TestArgument --evidence-root=TASK/native: 60 actual Garage/race checks pass.
++- Same actual-App UI test with -RenderingMethod mobile -RenderingDriver vulkan and TASK/mobile-native: 60 checks pass on desktop Vulkan Mobile.
++- Direct pinned Godot invocation of res://tests/export_electric_power_replay.gd -- --output=TASK/canonical-race.json records the current race. .tools/backend-secure-venv/Scripts/python.exe docs/evidence/electric-calmer-steering-2026-10-25/verify_canonical.py independently accepts 13270 inputs/five laps/110579 ms; distinct board identity is checked.
++
++Backend command from backend/: ..\.tools\backend-secure-venv\Scripts\python.exe -m pytest tests/test_verifier.py tests/test_electric_car.py -q -k "not postgres and not retained_over_and_under_rejection" --tb=short --basetemp ../build/electric-calmer-pytest. Result: 72 passed, two existing explicit deselections (PostgreSQL and archived physics-050 ghost rejection), six existing warnings. No new exclusion.
++
++Checkpoint verification: git -c core.autocrlf=false apply --reverse --check --ignore-space-change docs/evidence/electric-calmer-steering-2026-10-25/checkpoint.patch passes. The first ordinary reverse-check failed on Windows line-ending differences; no source discrepancy was present.
++
++Initial scripts/dev.ps1 sandbox execution could not open its user log. Absolute workspace logs allowed native headless suites; Windows certificate-store diagnostics remain in those logs. The independent verifier initially rejected engine startup under sandbox restrictions; approved local execution then passed. PowerShell can report a nonzero pipeline status for these stderr diagnostics despite zero native test failures. Native UI manual-step hitch messages are retained and are not device performance measurements.
++
++No physical-device test or attachment check, APK, deployment, live mutation, purchase or owner-process restart. Client reload, matching online verifier/config rollout and owner/device steering-feel acceptance remain. Task-only checkpoint.patch preserves a reviewable delta without staging concurrent work.

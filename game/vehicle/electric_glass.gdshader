@@ -5,6 +5,7 @@ render_mode unshaded;
 // capture or screen read. Shared-car glazing and production lights are intact.
 uniform bool studio_mode = false;
 uniform bool mirror_surface = false;
+uniform bool show_frit = true;
 uniform vec3 glass_tint_srgb = vec3(0.045, 0.074, 0.090);
 
 vec3 linear_from_display(vec3 value) {
@@ -30,7 +31,7 @@ void fragment() {
 	vec3 colour = mix(glass_tint_srgb*0.55,environment,0.38+0.42*fresnel);
 	// One analytic reflection response in both renderers, with a fitted frit.
 	// No extra scene capture, transparency sorting, or screen-reading pass.
-	if (!mirror_surface) {
+	if (!mirror_surface && show_frit) {
 		float edge = min(min(UV.x,1.0-UV.x),min(UV.y,1.0-UV.y));
 		colour = mix(vec3(0.012,0.020,0.025),colour,smoothstep(0.006,0.027,edge));
 	}

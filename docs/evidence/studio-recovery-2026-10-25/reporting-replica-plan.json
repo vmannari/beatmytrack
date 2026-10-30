@@ -1,0 +1,49 @@
+{
+  "status": "not_selected_owner_approved_and_deployed_shared_limited_reporting",
+  "checked_on": "2026-10-25",
+  "problem": "Studio analytical pages return STUDIO_ANALYSIS_REPLICA_NOT_CONFIGURED; the only live Cloud SQL instance is the primary.",
+  "project": "beat-my-track",
+  "primary": "bmt-stg-e7a444ab-db",
+  "proposed_replica": "bmt-stg-e7a444ab-analysis",
+  "consumer": "bmt-stg-e7a444ab-studio only",
+  "configuration": {
+    "region": "europe-west1",
+    "replication": "managed physical PostgreSQL 17 read replica of the existing primary",
+    "edition": "ENTERPRISE",
+    "tier": "db-custom-1-3840",
+    "availability": "ZONAL",
+    "ssd_gib": 10,
+    "deletion_protection": true,
+    "public_authorized_networks": [],
+    "report_pool_connections": 1,
+    "sql_budget_ms": 5000,
+    "credential": "separate read-only reporting role and version-pinned Secret Manager binding",
+    "studio_setting": "BMT_STUDIO_ANALYSIS_DATABASE_URL",
+    "preserve": ["game API and worker revisions", "existing data", "database schema", "Studio owner/MFA policy", "primary-fallback prohibition", "request-start WAL privacy fence"]
+  },
+  "existing_primary_prerequisites_checked": {
+    "state": "RUNNABLE",
+    "edition": "ENTERPRISE",
+    "tier": "db-custom-1-3840",
+    "ssd_gib": 10,
+    "backups_enabled": true,
+    "point_in_time_recovery_enabled": false
+  },
+  "estimated_additional_usd_per_month_before_tax_and_credits": [50, 70],
+  "estimate_provenance": "Existing reviewed 2026-10-23 reporting-replica plan; current pricing documentation confirms replicas are billed as additional instances. Recheck the precise regional SKU quote before creation; this range is a planning estimate, not a hard billing cap.",
+  "steps_after_approval": [
+    "Confirm current regional compute/storage price and primary replication prerequisites without changing the primary's settings unnecessarily.",
+    "Create only the named, owned, same-region read replica with explicit Enterprise sizing and no authorized networks.",
+    "Provision the bounded read-only reporting credential and required metadata/analysis-table grants on the primary; allow physical replication to carry them to the standby.",
+    "Attach the replica socket and dedicated secret only to the private Studio service.",
+    "Verify standby/read-only identity, matching cluster/database/schema, WAL replay fence, and real affected report endpoints and browser pages."
+  ],
+  "alternative_without_new_resource": "Keep broad analytical reports unavailable; core Studio operations continue. Do not point the analysis setting at the game primary.",
+  "sources": [
+    "docs/evidence/full-backend-deploy-2026-10-23/reporting-replica-plan.json",
+    "backend/deploy/README.md",
+    "https://cloud.google.com/sql/pricing",
+    "https://docs.cloud.google.com/sql/docs/postgres/replication/create-replica"
+  ],
+  "changes_applied_by_this_investigation": false
+}

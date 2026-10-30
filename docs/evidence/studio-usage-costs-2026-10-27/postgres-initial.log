@@ -1,0 +1,97 @@
+F.............................................F......................... [ 81%]
+................                                                         [100%]
+================================== FAILURES ===================================
+________ test_postgres_ville_aggregation_and_database_connection_limit ________
+
+postgres_auth = (<fastapi.applications.FastAPI object at 0x000001DD84E4A350>, <starlette.testclient.TestClient object at 0x000001DD84E9A500>)
+
+    @pytest.mark.postgres
+    def test_postgres_ville_aggregation_and_database_connection_limit(postgres_auth):
+        app, client = postgres_auth
+        seed_usage(app, client)
+        d = client.get("/v1/admin/usage-costs", headers=OWNER).json()
+>       assert d["activity"]["requests"] == 20 and d["activity"]["active_players"] == 1
+E       KeyError: 'activity'
+
+tests\test_studio_usage.py:79: KeyError
+---------------------------- Captured stderr call -----------------------------
+{"event":"http_request","request_id":"b002bf9f-3ddb-4b5c-b44d-8c0f4cbf9ce3","method":"GET","route":"unmatched","status":404,"duration_ms":109.0,"request_wire_bytes":0,"request_decoded_bytes":0,"response_wire_bytes":74,"success_sample_per_mille":10,"level":"info"}
+------------------------------ Captured log call ------------------------------
+INFO     bmt.requests:http_costs.py:41 {"event":"http_request","request_id":"b002bf9f-3ddb-4b5c-b44d-8c0f4cbf9ce3","method":"GET","route":"unmatched","status":404,"duration_ms":109.0,"request_wire_bytes":0,"request_decoded_bytes":0,"response_wire_bytes":74,"success_sample_per_mille":10}
+-------------------------- Captured stderr teardown ---------------------------
+{"event":"http_cost_summary","interval_seconds":2.093,"body_bytes_after_compression":true,"latency_limits_ms":[10,25,50,100,250,500,1000,5000],"rows":[{"route":"unmatched","method":"GET","status":404,"requests":1,"request_wire_bytes":0,"response_wire_bytes":74,"duration_ms":109.0,"max_ms":109.0,"latency_buckets":[0,0,0,0,1,0,0,0,0]}],"level":"info"}
+---------------------------- Captured log teardown ----------------------------
+INFO     bmt.requests:http_costs.py:59 {"event":"http_cost_summary","interval_seconds":2.093,"body_bytes_after_compression":true,"latency_limits_ms":[10,25,50,100,250,500,1000,5000],"rows":[{"route":"unmatched","method":"GET","status":404,"requests":1,"request_wire_bytes":0,"response_wire_bytes":74,"duration_ms":109.0,"max_ms":109.0,"latency_buckets":[0,0,0,0,1,0,0,0,0]}]}
+___ test_postgres_snapshot_is_read_only_and_does_not_mix_worker_completion ____
+
+postgres_auth = (<fastapi.applications.FastAPI object at 0x000001DD90C4E350>, <starlette.testclient.TestClient object at 0x000001DD914CE4A0>)
+monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x000001DD91704970>
+
+    @pytest.mark.postgres
+    def test_postgres_snapshot_is_read_only_and_does_not_mix_worker_completion(postgres_auth, monkeypatch):  # noqa: F811
+        from bmt_backend import studio
+    
+        app, client = postgres_auth
+        app.state.settings = replace(app.state.settings, admin_analyst_key="a" * 40)
+        monkeypatch.setattr(studio, "now", lambda: 2000000000)
+        with app.state.session_factory() as session:
+            player = Player(display_name="Snapshot racer")
+            session.add(player)
+            session.flush()
+            track = Track(owner_id=player.id)
+            session.add(track)
+            session.flush()
+            version = TrackVersion(track_id=track.id, number=1, name="Snapshot track", content_hash="a" * 64,
+                manifest={"tick_rate": 240}, state="published")
+            session.add(version)
+            session.flush()
+            board = Board(id="c" * 64, version_id=version.id, vehicle_id="compact", manifest={"tick_rate": 240, "laps": 5})
+            session.add(board)
+            session.flush()
+            ticket = RunTicket(player_id=player.id, board_id=board.id, created_at=100, expires_at=1000)
+            session.add(ticket)
+            session.flush()
+            run = Run(ticket_id=ticket.id, player_id=player.id, board_id=board.id, replay_hash="e" * 64,
+                status="queued", created_at=200)
+            session.add(run)
+            session.commit()
+            run_id, player_id = run.id, player.id
+    
+        original = studio.race_evidence
+        observed = []
+    
+        def finish_between_reads(session, identity):
+            assert session.scalar(text("SHOW transaction_read_only")) == "on"
+            assert session.scalar(text("SHOW transaction_isolation")) == "repeatable read"
+            captured = session.get(Run, identity)
+            observed.append(captured.status)
+            if len(observed) == 1:
+                with app.state.session_factory() as worker:
+                    completed = worker.get(Run, identity)
+                    completed.status, completed.finished_at = "verified", 300
+                    completed.time_ticks, completed.lap_ticks = 24000, [4800] * 5
+                    worker.add(PersonalBest(board_id=completed.board_id, player_id=player_id,
+                        run_id=identity, time_ticks=24000))
+                    worker.commit()
+            return original(session, identity)
+    
+        monkeypatch.setattr(studio, "race_evidence", finish_between_reads)
+        response = client.get("/v1/admin/studio/races/" + run_id, headers=headers())
+>       assert response.status_code == 200, response.text
+E       AssertionError: {"detail":"NOT_FOUND","request_id":"6da29c8b-99c5-4c0f-8f17-b0e2aed17f53"}
+E       assert 404 == 200
+E        +  where 404 = <Response [404 Not Found]>.status_code
+
+tests\test_studio.py:246: AssertionError
+---------------------------- Captured stderr call -----------------------------
+{"event":"http_request","request_id":"6da29c8b-99c5-4c0f-8f17-b0e2aed17f53","method":"GET","route":"unmatched","status":404,"duration_ms":109.0,"request_wire_bytes":0,"request_decoded_bytes":0,"response_wire_bytes":74,"success_sample_per_mille":10,"level":"info"}
+------------------------------ Captured log call ------------------------------
+INFO     bmt.requests:http_costs.py:41 {"event":"http_request","request_id":"6da29c8b-99c5-4c0f-8f17-b0e2aed17f53","method":"GET","route":"unmatched","status":404,"duration_ms":109.0,"request_wire_bytes":0,"request_decoded_bytes":0,"response_wire_bytes":74,"success_sample_per_mille":10}
+-------------------------- Captured stderr teardown ---------------------------
+{"event":"http_cost_summary","interval_seconds":1.719,"body_bytes_after_compression":true,"latency_limits_ms":[10,25,50,100,250,500,1000,5000],"rows":[{"route":"unmatched","method":"GET","status":404,"requests":1,"request_wire_bytes":0,"response_wire_bytes":74,"duration_ms":109.0,"max_ms":109.0,"latency_buckets":[0,0,0,0,1,0,0,0,0]}],"level":"info"}
+---------------------------- Captured log teardown ----------------------------
+INFO     bmt.requests:http_costs.py:59 {"event":"http_cost_summary","interval_seconds":1.719,"body_bytes_after_compression":true,"latency_limits_ms":[10,25,50,100,250,500,1000,5000],"rows":[{"route":"unmatched","method":"GET","status":404,"requests":1,"request_wire_bytes":0,"response_wire_bytes":74,"duration_ms":109.0,"max_ms":109.0,"latency_buckets":[0,0,0,0,1,0,0,0,0]}]}
+=========================== short test summary info ===========================
+FAILED tests/test_studio_usage.py::test_postgres_ville_aggregation_and_database_connection_limit
+FAILED tests/test_studio.py::test_postgres_snapshot_is_read_only_and_does_not_mix_worker_completion
+2 failed, 86 passed, 271 warnings in 76.84s (0:01:16)

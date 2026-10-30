@@ -55,7 +55,7 @@ func run() -> void:
 		check(app._navigation_generation == generation and app.menu_neighbors == neighbors,"tap preserves warmed swipe pages: "+biome)
 		check(root.gui_get_focus_owner() == choice,"tap preserves keyboard focus: "+biome)
 		check(app.content.get_meta("biome_theme") == biome,"cached page records latest biome: "+biome)
-		check(app.content.find_child("BiomeDescription",true,false).text.contains({"pine":"Lush forests","desert":"Sunset canyons","night_city":"moonlit","winter":"Snow-covered","storm":"heavy rain"}[biome]),"summary describes selected biome: "+biome)
+		check(app.content.find_child("BiomeDescription",true,false).text.contains({"pine":"Sunlit grass","desert":"sunlit sand","night_city":"Dark asphalt","winter":"Snowy ground","storm":"Rain falls"}[biome]),"summary describes selected biome: "+biome)
 		for other: String in TrackDocument.THEMES:
 			var card: Node = app.content.find_child("Biome_"+other,true,false)
 			var band: StyleBoxFlat = card.find_child("BiomeLabelOverlay",true,false).get_theme_stylebox("panel")

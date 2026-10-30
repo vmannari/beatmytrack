@@ -1,0 +1,764 @@
+{
+  "date": "2026-10-25",
+  "requirements": {
+    "FC01": "Raise complete fork/carriage assembly and retain detailed Compact material system",
+    "FC02": "Clear legitimate narrow bridge entries while retaining body/rail collision",
+    "FC03": "Actual powered maximum speed at least 65 km/h",
+    "R01": "Version rules, update golden manifest and preserve exact replays/original cars",
+    "Q01": "Native detailed/racing visual and Garage evidence; preserve concurrent work",
+    "FC04": "Tighter turning from low speed to 66.6 km/h with powered speed retention and recovery"
+  },
+  "engine": "4.7.2.stable.official.ed1daf0bf",
+  "physics_version": "arcade-planar-0.68 (concurrent Electric update; this Forklift task changes no shared simulation code)",
+  "handling_version": "forklift-2",
+  "config_hash": "76ee645c53b2120bd32e65c0792c7deb8a884fcb42ddbe06420c687d8ce668ea",
+  "changes": {
+    "maximum_speed_mps": [
+      12.0,
+      18.5
+    ],
+    "maximum_speed_kph": [
+      43.2,
+      66.6
+    ],
+    "collision_radius_m": [
+      1.85,
+      1.4
+    ],
+    "carriage_lift_world_m": 0.528,
+    "fork_underside_m": [
+      0.158399999141693,
+      0.68639999628067
+    ],
+    "sampled_minimum_bridge_ramp_clearance_m": [
+      -0.327377115193641,
+      0.218040550016075
+    ],
+    "triangles_detailed": 144656,
+    "triangles_racing": 48800,
+    "prepared_meshes": 40,
+    "native_livery_photos": 49,
+    "steering_angle_rad": [
+      0.88,
+      1.0
+    ],
+    "high_speed_steering_reduction": [
+      0.55,
+      0.3
+    ],
+    "lateral_grip": [
+      27.0,
+      42.0
+    ],
+    "maximum_yaw_rate_rad_s": [
+      2.5,
+      3.2
+    ],
+    "corner_energy_retention": [
+      0.5,
+      0.95
+    ],
+    "full_steering_turn_radius_at_66_6_kph_m": [
+      12.6763776918053,
+      8.14897067449496
+    ]
+  },
+  "results": [
+    {
+      "command": "TestScript -ScriptPath res://tests/test_forklift_clearance.gd -TestArgument --before (task-start sources)",
+      "checks": 88,
+      "failures": 38,
+      "log": "logs/before.log",
+      "data": "before.json"
+    },
+    {
+      "command": "Same clearance test, initial revision",
+      "checks": 88,
+      "failures": 2,
+      "log": "logs/initial-after.log",
+      "data": "initial-after.json",
+      "explanation": "Both fork meshes had the same name; stable left/right names fixed inspection of both forks."
+    },
+    {
+      "command": "TestScript -ScriptPath res://tests/test_forklift_clearance.gd",
+      "checks": 88,
+      "failures": 0,
+      "log": "logs/after.log",
+      "data": "after-clearance-before-steering.json",
+      "phase": "clearance before steering follow-up",
+      "config_hash": "91e25e426db6e5a00f37f8ecd973b7ebccd55bea7a808bbe964e646d095c06a2"
+    },
+    {
+      "command": "TestScript -ScriptPath res://tests/test_forklift.gd -TestArgument --evidence-dir=res://../docs/evidence/forklift-clearance-2026-10-25",
+      "checks": 98,
+      "failures": 0,
+      "log": "logs/forklift-headless.log",
+      "phase": "before steering follow-up; final results follow"
+    },
+    {
+      "command": "TestScript -ScriptPath res://tests/test_forklift.gd -Graphical -RenderingMethod gl_compatibility -TestArgument @('--evidence-dir=res://../docs/evidence/forklift-clearance-2026-10-25','--bake-art') (PowerShell -Command)",
+      "checks": 107,
+      "failures": 0,
+      "log": "logs/forklift-compatibility-bake.log",
+      "phase": "before steering follow-up; final results follow"
+    },
+    {
+      "command": "Same graphical command initially via -File with comma-separated arguments",
+      "checks": 106,
+      "failures": 0,
+      "log": "logs/forklift-compatibility.log",
+      "data": "initial-cli-argument/gl_compatibility/metrics.json",
+      "explanation": "CLI combined arguments; art was not baked and evidence directory included the second argument. Corrected array invocation above."
+    },
+    {
+      "command": "TestScript -ScriptPath res://tests/test_forklift.gd -Graphical -RenderingMethod mobile -TestArgument --evidence-dir=res://../docs/evidence/forklift-clearance-2026-10-25",
+      "checks": 106,
+      "failures": 0,
+      "log": "logs/forklift-mobile.log",
+      "phase": "before steering follow-up; final results follow"
+    },
+    {
+      "command": "TestCars -CommandTimeoutSeconds 600",
+      "checks": 143,
+      "failures": 0,
+      "log": "logs/cars.log",
+      "coverage": "Seven cars; three five-lap fixtures; exact replay. Forklift zero contacts.",
+      "phase": "before steering follow-up; final results follow"
+    },
+    {
+      "command": "TestBridgeContacts",
+      "checks": 16,
+      "failures": 0,
+      "log": "logs/bridge-contacts.log"
+    },
+    {
+      "command": "TestScript -ScriptPath res://tests/bake_livery_previews.gd -Graphical -RenderingMethod gl_compatibility -TestArgument --vehicle=forklift",
+      "captures": 49,
+      "log": "logs/photos.log"
+    },
+    {
+      "command": "Import",
+      "exit_code": 0,
+      "log": "logs/import.log"
+    },
+    {
+      "command": "TestScript -ScriptPath res://tests/test_script_parse.gd",
+      "scripts": 1133,
+      "failures": 0,
+      "log": "logs/parser.log",
+      "phase": "before steering follow-up"
+    },
+    {
+      "command": "../.tools/backend-secure-venv/Scripts/python.exe -m pytest tests/test_verifier.py -q -k 'real_engine_manifest_pins_every_competitive_config or real_five_lap_race_replays_identically' --tb=short (cwd backend)",
+      "passed": 2,
+      "deselected": 68,
+      "log": "logs/backend-verifier.log",
+      "phase": "before steering follow-up; final results follow"
+    },
+    {
+      "command": "TestScript -ScriptPath res://tests/test_forklift_clearance.gd",
+      "checks": 152,
+      "failures": 0,
+      "log": "logs/turning.log",
+      "data": "after.json",
+      "phase": "final steering profile",
+      "physics_version": "arcade-planar-0.68"
+    },
+    {
+      "command": "TestScript -ScriptPath res://tests/test_forklift.gd -TestArgument --evidence-dir=res://../docs/evidence/forklift-clearance-2026-10-25",
+      "checks": 98,
+      "failures": 0,
+      "log": "logs/forklift-headless-turning.log",
+      "data": "headless/metrics.json",
+      "phase": "final steering profile",
+      "physics_version": "arcade-planar-0.68"
+    },
+    {
+      "command": "Same focused test -Graphical -RenderingMethod gl_compatibility with evidence directory",
+      "checks": 106,
+      "failures": 0,
+      "log": "logs/forklift-compatibility-turning.log",
+      "data": "gl_compatibility/metrics.json",
+      "phase": "final steering profile",
+      "physics_version": "arcade-planar-0.67"
+    },
+    {
+      "command": "Same focused test -Graphical -RenderingMethod mobile with evidence directory",
+      "checks": 106,
+      "failures": 0,
+      "log": "logs/forklift-mobile-turning.log",
+      "data": "mobile/metrics.json",
+      "phase": "final steering profile",
+      "physics_version": "arcade-planar-0.67"
+    },
+    {
+      "command": "TestCars -CommandTimeoutSeconds 600",
+      "checks": 143,
+      "failures": 0,
+      "log": "logs/cars-turning.log",
+      "phase": "final steering profile",
+      "physics_version": "arcade-planar-0.67"
+    },
+    {
+      "command": "TestScript -ScriptPath res://tests/test_script_parse.gd",
+      "scripts": 1136,
+      "failures": 0,
+      "log": "logs/parser-final.log",
+      "phase": "final steering profile",
+      "physics_version": "arcade-planar-0.68"
+    },
+    {
+      "command": "../.tools/backend-secure-venv/Scripts/python.exe -m pytest tests/test_verifier.py -q -k 'real_engine_manifest_pins_every_competitive_config or real_five_lap_race_replays_identically' --tb=short (cwd backend)",
+      "passed": 2,
+      "deselected": 68,
+      "log": "logs/backend-verifier-turning.log",
+      "phase": "final steering profile",
+      "physics_version": "arcade-planar-0.68"
+    }
+  ],
+  "command_prefix": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1 (except graphical array invocation uses -Command)",
+  "coverage_limits": "Bridge matrix: 6 m width, 32 m length; headings 0/37/90; forward/back along track, offsets -1.25/0/+1.25 m; controlled caps 3/18.5 m/s for both old and new configs. Geometry clearance samples both ascending approaches with actual detailed/racing fork vertices; not every possible custom ramp or obstacle. Rendering is desktop RTX 3090, not a physical phone. Turning control: task-start steering/grip with matched 0.95 corner-energy retention and equal speed caps. Sixteen actual circles; path distance divided by accumulated velocity heading change after settling. Both controls must sustain at least 85% cap; revised runs actually sustain full cap. This separates steering/grip from the original low-speed corner-energy loss. All 16 recover after steering release.",
+  "preserved": "Rear-steer kinematics, front fixed wheels, mass, drive/brake forces, axle dimensions, materials, canonical simulation, other car configs, saves, online authority and concurrent workspace work.",
+  "checkpoint": {
+    "patch": "checkpoint.patch",
+    "assets": "checkpoint-assets.zip",
+    "baseline": "before/",
+    "validation": "pass: Git apply --check --whitespace=error-all with CRLF recognized, against saved scoped baseline; no index/HEAD changes",
+    "log": "logs/checkpoint-check.log",
+    "initial_crlf_check": "logs/checkpoint-check-crlf.log",
+    "patch_sha256": "637e72121f14c079cc3bf87b0d9c234df4408ef6b5f403f5e70eabf9cccf33f8",
+    "assets_sha256": "e9b731e00b321b14753d51c860a378f965fb65991d3623165bc608954acd251a",
+    "source_patch_lines": 425
+  },
+  "hashes": {
+    "sources": "source-hashes.json",
+    "assets": "asset-hashes.json",
+    "native_images": "image-hashes.json"
+  },
+  "remaining": "Client reload; matching online contract rollout/revalidation; owner driving/visual acceptance and phone frame pacing.",
+  "not_performed": [
+    "phone/tablet attachment check",
+    "physical-device test",
+    "APK build",
+    "purchase",
+    "live backend mutation",
+    "deployment",
+    "owner-process restart"
+  ],
+  "initial_turning_runs": [
+    {
+      "checks": 136,
+      "failures": 10,
+      "data": "initial-turning.json",
+      "log": "logs/initial-turning.log",
+      "reason": "Excessive speed loss while cornering; fixed with 0.95 corner-energy retention."
+    },
+    {
+      "checks": 136,
+      "failures": 2,
+      "data": "turning-energy-correction.json",
+      "log": "logs/turning-energy-correction.log",
+      "reason": "Old control slowed to half-speed, yielding an unfair radius comparison. Matched control corner-energy treatment and added control speed guard. Radius/recovery/speed thresholds retained."
+    }
+  ],
+  "measurements": {
+    "checks": 152,
+    "failures": 0,
+    "measurements": {
+      "config_hash": "76ee645c53b2120bd32e65c0792c7deb8a884fcb42ddbe06420c687d8ce668ea",
+      "crossings": [
+        {
+          "angle": 0.0,
+          "direction": -1.0,
+          "finished": true,
+          "hits": 0,
+          "offset": -1.25,
+          "replay_exact": true,
+          "speed": 3.0
+        },
+        {
+          "angle": 0.0,
+          "direction": -1.0,
+          "finished": true,
+          "hits": 0,
+          "offset": -1.25,
+          "replay_exact": true,
+          "speed": 18.5
+        },
+        {
+          "angle": 0.0,
+          "direction": -1.0,
+          "finished": true,
+          "hits": 0,
+          "offset": 0.0,
+          "replay_exact": true,
+          "speed": 3.0
+        },
+        {
+          "angle": 0.0,
+          "direction": -1.0,
+          "finished": true,
+          "hits": 0,
+          "offset": 0.0,
+          "replay_exact": true,
+          "speed": 18.5
+        },
+        {
+          "angle": 0.0,
+          "direction": -1.0,
+          "finished": true,
+          "hits": 0,
+          "offset": 1.25,
+          "replay_exact": true,
+          "speed": 3.0
+        },
+        {
+          "angle": 0.0,
+          "direction": -1.0,
+          "finished": true,
+          "hits": 0,
+          "offset": 1.25,
+          "replay_exact": true,
+          "speed": 18.5
+        },
+        {
+          "angle": 0.0,
+          "direction": 1.0,
+          "finished": true,
+          "hits": 0,
+          "offset": -1.25,
+          "replay_exact": true,
+          "speed": 3.0
+        },
+        {
+          "angle": 0.0,
+          "direction": 1.0,
+          "finished": true,
+          "hits": 0,
+          "offset": -1.25,
+          "replay_exact": true,
+          "speed": 18.5
+        },
+        {
+          "angle": 0.0,
+          "direction": 1.0,
+          "finished": true,
+          "hits": 0,
+          "offset": 0.0,
+          "replay_exact": true,
+          "speed": 3.0
+        },
+        {
+          "angle": 0.0,
+          "direction": 1.0,
+          "finished": true,
+          "hits": 0,
+          "offset": 0.0,
+          "replay_exact": true,
+          "speed": 18.5
+        },
+        {
+          "angle": 0.0,
+          "direction": 1.0,
+          "finished": true,
+          "hits": 0,
+          "offset": 1.25,
+          "replay_exact": true,
+          "speed": 3.0
+        },
+        {
+          "angle": 0.0,
+          "direction": 1.0,
+          "finished": true,
+          "hits": 0,
+          "offset": 1.25,
+          "replay_exact": true,
+          "speed": 18.5
+        },
+        {
+          "angle": 37.0,
+          "direction": -1.0,
+          "finished": true,
+          "hits": 0,
+          "offset": -1.25,
+          "replay_exact": true,
+          "speed": 3.0
+        },
+        {
+          "angle": 37.0,
+          "direction": -1.0,
+          "finished": true,
+          "hits": 0,
+          "offset": -1.25,
+          "replay_exact": true,
+          "speed": 18.5
+        },
+        {
+          "angle": 37.0,
+          "direction": -1.0,
+          "finished": true,
+          "hits": 0,
+          "offset": 0.0,
+          "replay_exact": true,
+          "speed": 3.0
+        },
+        {
+          "angle": 37.0,
+          "direction": -1.0,
+          "finished": true,
+          "hits": 0,
+          "offset": 0.0,
+          "replay_exact": true,
+          "speed": 18.5
+        },
+        {
+          "angle": 37.0,
+          "direction": -1.0,
+          "finished": true,
+          "hits": 0,
+          "offset": 1.25,
+          "replay_exact": true,
+          "speed": 3.0
+        },
+        {
+          "angle": 37.0,
+          "direction": -1.0,
+          "finished": true,
+          "hits": 0,
+          "offset": 1.25,
+          "replay_exact": true,
+          "speed": 18.5
+        },
+        {
+          "angle": 37.0,
+          "direction": 1.0,
+          "finished": true,
+          "hits": 0,
+          "offset": -1.25,
+          "replay_exact": true,
+          "speed": 3.0
+        },
+        {
+          "angle": 37.0,
+          "direction": 1.0,
+          "finished": true,
+          "hits": 0,
+          "offset": -1.25,
+          "replay_exact": true,
+          "speed": 18.5
+        },
+        {
+          "angle": 37.0,
+          "direction": 1.0,
+          "finished": true,
+          "hits": 0,
+          "offset": 0.0,
+          "replay_exact": true,
+          "speed": 3.0
+        },
+        {
+          "angle": 37.0,
+          "direction": 1.0,
+          "finished": true,
+          "hits": 0,
+          "offset": 0.0,
+          "replay_exact": true,
+          "speed": 18.5
+        },
+        {
+          "angle": 37.0,
+          "direction": 1.0,
+          "finished": true,
+          "hits": 0,
+          "offset": 1.25,
+          "replay_exact": true,
+          "speed": 3.0
+        },
+        {
+          "angle": 37.0,
+          "direction": 1.0,
+          "finished": true,
+          "hits": 0,
+          "offset": 1.25,
+          "replay_exact": true,
+          "speed": 18.5
+        },
+        {
+          "angle": 90.0,
+          "direction": -1.0,
+          "finished": true,
+          "hits": 0,
+          "offset": -1.25,
+          "replay_exact": true,
+          "speed": 3.0
+        },
+        {
+          "angle": 90.0,
+          "direction": -1.0,
+          "finished": true,
+          "hits": 0,
+          "offset": -1.25,
+          "replay_exact": true,
+          "speed": 18.5
+        },
+        {
+          "angle": 90.0,
+          "direction": -1.0,
+          "finished": true,
+          "hits": 0,
+          "offset": 0.0,
+          "replay_exact": true,
+          "speed": 3.0
+        },
+        {
+          "angle": 90.0,
+          "direction": -1.0,
+          "finished": true,
+          "hits": 0,
+          "offset": 0.0,
+          "replay_exact": true,
+          "speed": 18.5
+        },
+        {
+          "angle": 90.0,
+          "direction": -1.0,
+          "finished": true,
+          "hits": 0,
+          "offset": 1.25,
+          "replay_exact": true,
+          "speed": 3.0
+        },
+        {
+          "angle": 90.0,
+          "direction": -1.0,
+          "finished": true,
+          "hits": 0,
+          "offset": 1.25,
+          "replay_exact": true,
+          "speed": 18.5
+        },
+        {
+          "angle": 90.0,
+          "direction": 1.0,
+          "finished": true,
+          "hits": 0,
+          "offset": -1.25,
+          "replay_exact": true,
+          "speed": 3.0
+        },
+        {
+          "angle": 90.0,
+          "direction": 1.0,
+          "finished": true,
+          "hits": 0,
+          "offset": -1.25,
+          "replay_exact": true,
+          "speed": 18.5
+        },
+        {
+          "angle": 90.0,
+          "direction": 1.0,
+          "finished": true,
+          "hits": 0,
+          "offset": 0.0,
+          "replay_exact": true,
+          "speed": 3.0
+        },
+        {
+          "angle": 90.0,
+          "direction": 1.0,
+          "finished": true,
+          "hits": 0,
+          "offset": 0.0,
+          "replay_exact": true,
+          "speed": 18.5
+        },
+        {
+          "angle": 90.0,
+          "direction": 1.0,
+          "finished": true,
+          "hits": 0,
+          "offset": 1.25,
+          "replay_exact": true,
+          "speed": 3.0
+        },
+        {
+          "angle": 90.0,
+          "direction": 1.0,
+          "finished": true,
+          "hits": 0,
+          "offset": 1.25,
+          "replay_exact": true,
+          "speed": 18.5
+        }
+      ],
+      "detailed": {
+        "minimum_ramp_clearance_m": 0.218040550016075,
+        "underside_m": 0.68639999628067
+      },
+      "handling_version": "forklift-2",
+      "old_bridge": {
+        "angle": 0.0,
+        "direction": 1.0,
+        "finished": false,
+        "hits": 1,
+        "offset": 1.25,
+        "replay_exact": true,
+        "speed": 18.5
+      },
+      "racing": {
+        "minimum_ramp_clearance_m": 0.218040550016075,
+        "underside_m": 0.68639999628067
+      },
+      "speed_kph": 66.6,
+      "turning_comparison_corner_energy_retention": 0.95,
+      "turns": [
+        {
+          "actual_speed_mps": 3.00000002384186,
+          "after_radius_m": 1.51142427059319,
+          "before_actual_speed_mps": 2.99999997119109,
+          "before_radius_m": 1.84680474944997,
+          "input": -1.0,
+          "recovered": true,
+          "speed_cap": 3.0
+        },
+        {
+          "actual_speed_mps": 2.99999996423721,
+          "after_radius_m": 3.8446435364955,
+          "before_actual_speed_mps": 2.99999999602636,
+          "before_radius_m": 4.55512819384987,
+          "input": -0.45,
+          "recovered": true,
+          "speed_cap": 3.0
+        },
+        {
+          "actual_speed_mps": 2.99999996423721,
+          "after_radius_m": 3.8446435364955,
+          "before_actual_speed_mps": 2.99999999602636,
+          "before_radius_m": 4.55512819384987,
+          "input": 0.45,
+          "recovered": true,
+          "speed_cap": 3.0
+        },
+        {
+          "actual_speed_mps": 3.00000002384186,
+          "after_radius_m": 1.51142427059319,
+          "before_actual_speed_mps": 2.99999997119109,
+          "before_radius_m": 1.84680474944997,
+          "input": 1.0,
+          "recovered": true,
+          "speed_cap": 3.0
+        },
+        {
+          "actual_speed_mps": 7.99999980926514,
+          "after_radius_m": 2.50000004685717,
+          "before_actual_speed_mps": 7.99999988277753,
+          "before_radius_m": 3.20000056713817,
+          "input": -1.0,
+          "recovered": true,
+          "speed_cap": 8.0
+        },
+        {
+          "actual_speed_mps": 7.99999998807907,
+          "after_radius_m": 4.19194504311068,
+          "before_actual_speed_mps": 7.99999991059303,
+          "before_radius_m": 5.26814207665274,
+          "input": -0.45,
+          "recovered": true,
+          "speed_cap": 8.0
+        },
+        {
+          "actual_speed_mps": 7.99999998807907,
+          "after_radius_m": 4.19194504311068,
+          "before_actual_speed_mps": 7.99999991059303,
+          "before_radius_m": 5.26814207665274,
+          "input": 0.45,
+          "recovered": true,
+          "speed_cap": 8.0
+        },
+        {
+          "actual_speed_mps": 7.99999980926514,
+          "after_radius_m": 2.50000004685717,
+          "before_actual_speed_mps": 7.99999988277753,
+          "before_radius_m": 3.20000056713817,
+          "input": 1.0,
+          "recovered": true,
+          "speed_cap": 8.0
+        },
+        {
+          "actual_speed_mps": 14.0000000079473,
+          "after_radius_m": 4.66819488942141,
+          "before_actual_speed_mps": 13.9999999761581,
+          "before_radius_m": 7.2615375126609,
+          "input": -1.0,
+          "recovered": true,
+          "speed_cap": 14.0
+        },
+        {
+          "actual_speed_mps": 14.0000000516574,
+          "after_radius_m": 5.19936505617547,
+          "before_actual_speed_mps": 13.9999999006589,
+          "before_radius_m": 7.71238910175892,
+          "input": -0.45,
+          "recovered": true,
+          "speed_cap": 14.0
+        },
+        {
+          "actual_speed_mps": 14.0000000516574,
+          "after_radius_m": 5.19936505617547,
+          "before_actual_speed_mps": 13.9999999006589,
+          "before_radius_m": 7.71238910175892,
+          "input": 0.45,
+          "recovered": true,
+          "speed_cap": 14.0
+        },
+        {
+          "actual_speed_mps": 14.0000000079473,
+          "after_radius_m": 4.66819488942141,
+          "before_actual_speed_mps": 13.9999999761581,
+          "before_radius_m": 7.2615375126609,
+          "input": 1.0,
+          "recovered": true,
+          "speed_cap": 14.0
+        },
+        {
+          "actual_speed_mps": 18.5,
+          "after_radius_m": 8.14897067449496,
+          "before_actual_speed_mps": 18.5000000238419,
+          "before_radius_m": 12.6763776918053,
+          "input": -1.0,
+          "recovered": true,
+          "speed_cap": 18.5
+        },
+        {
+          "actual_speed_mps": 18.5000000794729,
+          "after_radius_m": 8.20939406339858,
+          "before_actual_speed_mps": 18.4999999761581,
+          "before_radius_m": 12.761403066796,
+          "input": -0.45,
+          "recovered": true,
+          "speed_cap": 18.5
+        },
+        {
+          "actual_speed_mps": 18.5000000794729,
+          "after_radius_m": 8.20939406339858,
+          "before_actual_speed_mps": 18.4999999761581,
+          "before_radius_m": 12.761403066796,
+          "input": 0.45,
+          "recovered": true,
+          "speed_cap": 18.5
+        },
+        {
+          "actual_speed_mps": 18.5,
+          "after_radius_m": 8.14897067449496,
+          "before_actual_speed_mps": 18.5000000238419,
+          "before_radius_m": 12.6763776918053,
+          "input": 1.0,
+          "recovered": true,
+          "speed_cap": 18.5
+        }
+      ]
+    }
+  },
+  "concurrent_update": "The 143-check full-car run and both final renderer runs used shared physics 0.67. Concurrent Electric work then updated shared physics to 0.68 and its own manifest entry. The Forklift 152-check turning/bridge suite, 98-check integration/original-car trace suite and real backend verifier were rerun successfully on 0.68. The checkpoint preserves the new Electric/physics manifest context and changes only the Forklift entry."
+}

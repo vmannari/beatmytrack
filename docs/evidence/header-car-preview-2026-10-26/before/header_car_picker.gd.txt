@@ -1,0 +1,35 @@
+extends MenuButton
+## The car half of the header; the adjacent player name opens Profile.
+signal vehicle_selected(index: int)
+
+func _ready() -> void:
+	name = "MenuCarPicker"
+	tooltip_text = "Choose car"
+	focus_mode = Control.FOCUS_ALL
+	mouse_filter = Control.MOUSE_FILTER_STOP
+	mouse_default_cursor_shape = Control.CURSOR_POINTING_HAND
+	set_meta("audio_cue","select")
+	add_theme_stylebox_override("normal",StyleBoxEmpty.new())
+	add_theme_stylebox_override("hover",MenuStyle.box(Color(1,1,1,0.07),0))
+	add_theme_stylebox_override("pressed",MenuStyle.box(Color(MenuStyle.ACCENT,0.12),0))
+	var popup: PopupMenu = get_popup()
+	popup.name = "HeaderCarDropdown"
+	preload("res://ui/popup_style.gd").watch(popup)
+	popup.add_theme_constant_override("v_separation",26)
+	popup.about_to_popup.connect(_populate)
+	popup.id_pressed.connect(_choose)
+	_populate()
+
+func _populate() -> void:
+	var popup: PopupMenu = get_popup()
+	popup.clear()
+	for index: int in range(VehicleCatalog.IDS.size()):
+		var id: String = VehicleCatalog.IDS[index]
+		popup.add_radio_check_item(VehicleCatalog.CLASSES[index],index)
+		popup.set_item_checked(index,id == VehicleCatalog.selected)
+	popup.set_focused_item(VehicleCatalog.IDS.find(VehicleCatalog.selected))
+
+func _choose(index: int) -> void:
+	if not is_inside_tree() or not is_visible_in_tree(): return
+	if index < 0 or index >= VehicleCatalog.IDS.size(): return
+	vehicle_selected.emit(index)

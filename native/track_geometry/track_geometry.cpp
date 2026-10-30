@@ -123,6 +123,7 @@ struct Relief {
 }
 
 #include "road_geometry.hpp"
+#include "editor_streams.hpp"
 #include "raster_geometry.hpp"
 #include "winter_geometry.hpp"
 
@@ -146,6 +147,8 @@ protected:
         ClassDB::bind_method(D_METHOD("road_emit","triangles","paths","settings","blend","theme","mode","height","geometry","tool","cancelled"),&BmtTrackGeometry::road_emit);
         ClassDB::bind_method(D_METHOD("road_finish","arrays","flags","cancelled"),&BmtTrackGeometry::road_finish);
         ClassDB::bind_method(D_METHOD("road_unpack","arrays","normals"),&BmtTrackGeometry::road_unpack);
+        ClassDB::bind_method(D_METHOD("editor_split","arrays","tile_size"),&BmtTrackGeometry::editor_split);
+        ClassDB::bind_method(D_METHOD("editor_append","tool","arrays"),&BmtTrackGeometry::editor_append);
         ClassDB::bind_method(D_METHOD("road_edges","contours","cuts","outlines","joined","index","swept","winter","geometry","cancelled"),&BmtTrackGeometry::road_edges);
         ClassDB::bind_method(D_METHOD("road_polygon","polygon","points","settings","blend","theme","height","geometry","tool","cancelled"),&BmtTrackGeometry::road_polygon);
     }
@@ -179,6 +182,8 @@ public:
     }
     Array road_finish(const Array &arrays,const Dictionary &flags,const Callable &cancelled) const { return road_geometry::finish(arrays,flags,cancelled); }
     Array road_unpack(const Array &arrays,bool normals) const { return road_geometry::unpack(arrays,normals); }
+    Array editor_split(const Array &arrays,double tile_size) const {return editor_streams::split(arrays,tile_size);}
+    bool editor_append(Object *tool,const Array &arrays) const {return editor_streams::append(tool,arrays);}
     Dictionary road_edges(const Array &contours,const Array &cuts,const Array &outlines,const Array &joined,int64_t index,bool swept,bool winter,Object *geometry,const Callable &cancelled) const {
         return road_geometry::edge_samples(contours,cuts,outlines,joined,int(index),swept,winter,geometry,cancelled);
     }

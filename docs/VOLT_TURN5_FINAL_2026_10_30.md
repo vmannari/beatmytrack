@@ -1,0 +1,19 @@
+# Volt Turn 5 finalized — 2026-10-30
+
+VTF01: The owner selects Turn 5 as Volt's final handling. VTF02: Remove Volt's experiment selector and preserve the other cars' choices. VTF03: Give the resulting standard car a new handling identity and retain historical comparison evidence.
+
+`game/resources/cars/electric.tres` now contains the exact physical values of the selected Turn 5 and uses version `electric-27` and standard name `Volt`. Its changes from Electric 26 are steering rate 9→10, powered lateral response 0.235→0.22, turn acceleration envelope 75→120, lateral grip 75→85, lateral response 22→19, grip recovery 5.5→6.5 and countersteer assistance 0.7→0.9. Power, brakes, regeneration, dimensions and the remaining fields retain their previous values. `HandlingTestPresets` no longer exposes Volt choices; other vehicles' ongoing tuning is preserved. Historical Volt 26 and its original test presets are frozen under `game/tests/fixtures/volt_turn_reference` so the previous 331-check candidate comparison remains meaningful. Six older Electric increment regressions use the same frozen historical config; their numerical checks are unchanged.
+
+The canonical local Volt config hash is `f2fde16585b1f7c542a0722ab7d4d98d34a9760e5b7a6c63c1e7dc9db372913a`; the Electric entry in the local synthetic backend fixture matches the engine runner's manifest. This changes the online handling contract. A coordinated backend contract rollout and application reload/rebuild are still required; no backend deployment was performed.
+
+Pinned Godot 4.7.2 stable `ed1daf0bf`, isolated APPDATA/LOCALAPPDATA:
+
+- `--headless --path game --script res://tests/test_volt_final_handling.gd`: 9 checks, zero failures. All physical config fields match the frozen Turn 5 and 1,800 mixed-input ticks match exactly at each of five starting speeds. Volt rejects experimental selection.
+- `--headless --path game --script res://tests/test_electric_power_laps.gd`: 6 checks, zero failures. Five laps on each of three historical circuits completed with exact replay; each printed zero contacts.
+- `--headless --path game --script res://tests/test_volt_turn_variants.gd`: 331 checks, zero failures using the frozen historical configs.
+- `test_handling_test_selector.gd`: 32 checks, zero failures; `test_handling_test_integration.gd`: 18 checks, zero failures; `test_handling_test_app.gd`: four checks, zero failures. The general preset suite also reported zero failures. An earlier run of the general suite recorded 11 Kart failures while concurrent Kart preset revisions were in progress; the rerun after those changes passed.
+- Historical Electric acceleration, brake/reverse, easier drift, stronger drift, tighter turning and off-road tests passed respectively 417, 102, 417, 417, 430 and 669 checks, using the frozen previous config and isolated output directories.
+- `--path game --rendering-method gl_compatibility --script res://tests/capture_volt_final_handling.gd`: passed, confirming a normal Volt race has no experiment selector. [960×540 race view](evidence/volt-turn5-final-2026-10-30/volt-final-race.png). This desktop run logged an 18.35-second initial frame and a 251 ms hitch.
+- The direct `game/backend/runner.gd` manifest reports the new Volt version and hash, matching the local fixture. The Python verifier wrapper's two selected integration tests failed because the sandboxed engine reported a Windows root certificate-store error, which the wrapper rejects as an engine error. An initial pytest invocation also lacked `PYTHONPATH`; both issues are retained as limitations, not reported as passes.
+
+Offline Godot runs reported the certificate-store warning; the exact-comparison and historical dynamics tests also reported resources in use at exit. No physical-device test, APK, owner-save/live write, backend deployment, owner-process restart or main-index staging was performed.

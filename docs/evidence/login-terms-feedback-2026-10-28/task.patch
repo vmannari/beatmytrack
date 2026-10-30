@@ -1,0 +1,372 @@
+diff --git a/game/ui/account_panel.gd b/game/ui/account_panel.gd
+--- a/game/ui/account_panel.gd
++++ b/game/ui/account_panel.gd
+@@ -28,6 +28,10 @@
+ var terms_check: CheckBox
+ var terms_copy: RichTextLabel
+ var terms_divider: HSeparator
++var terms_attention: bool = false
++var terms_idle_style: StyleBoxEmpty
++var terms_warning_style: StyleBoxFlat
++const TERMS_REQUIRED: String = "Please accept the Terms of Service to continue."
+ 
+ func centered_label(text: String, font_size: int, muted: bool = false) -> Label:
+ 	var label: Label = MenuStyle.label(text, font_size, muted)
+@@ -83,13 +87,13 @@
+ 	column.add_child(accent_space)
+ 	google_button = preload("res://ui/google_sign_in_button.gd").new()
+ 	google_button.prominent = true
+-	google_button.pressed.connect(account.sign_in_google)
++	google_button.pressed.connect(_sign_in.bind(account.sign_in_google))
+ 	google_button.name = "GoogleSignIn"
+ 	column.add_child(google_button)
+ 	google_button.custom_minimum_size.y = 68
+ 	google_status = centered_label("Google sign-in is awaiting setup.", 16, true)
+ 	column.add_child(google_status)
+-	development_button = MenuStyle.button("Development · Beat My Track", account.sign_in_developer)
++	development_button = MenuStyle.button("Development · Beat My Track", _sign_in.bind(account.sign_in_developer))
+ 	development_button.name = "DevelopmentSignIn"
+ 	development_button.custom_minimum_size = Vector2(0, 48)
+ 	development_button.size_flags_horizontal = Control.SIZE_FILL
+@@ -128,7 +132,8 @@
+ 	column.add_child(refresh_button)
+ 	guest_button = LinkButton.new()
+ 	guest_button.text = "Play as guest"
+-	guest_button.pressed.connect(func() -> void: continue_requested.emit())
++	guest_button.pressed.connect(func() -> void:
++		if _require_terms(): continue_requested.emit())
+ 	guest_button.name = "ContinueWithoutSignIn"
+ 	guest_button.custom_minimum_size.y = 48
+ 	guest_button.size_flags_horizontal = Control.SIZE_SHRINK_CENTER
+@@ -162,6 +167,10 @@
+ 	terms_check.add_theme_icon_override("checked", preload("res://assets/menu/sign_in_checkbox_checked.svg"))
+ 	var check_style := StyleBoxEmpty.new()
+ 	check_style.set_content_margin_all(8)
++	terms_idle_style = check_style
++	terms_warning_style = MenuStyle.box(Color(0.5, 0.12, 0.08, 0.2), 8)
++	terms_warning_style.border_color = Color("ff9a86")
++	terms_warning_style.set_border_width_all(2)
+ 	for state: String in ["normal", "hover", "pressed", "disabled"]:
+ 		terms_check.add_theme_stylebox_override(state, check_style)
+ 	terms_check.add_theme_stylebox_override("focus", MenuStyle.theme().get_stylebox("focus", "Button"))
+@@ -211,7 +220,22 @@
+ 
+ func _update_terms_copy() -> void:
+ 	terms_check.accessibility_name = tr("I agree to the draft Terms of Service")
++	terms_check.accessibility_description = tr(TERMS_REQUIRED) if terms_attention else ""
+ 	terms_copy.text = "[center]" + GameText.message("I agree to the {terms}", {"terms":"[url=terms][color=#ffbf16]" + tr("Terms of Service (draft)") + "[/color][/url]"}) + "[/center]"
++	footer.text = TERMS_REQUIRED if terms_attention else "Local progress stays on this device. Events require sign-in."
++	footer.add_theme_color_override("font_color", Color("ff9a86") if terms_attention else MenuStyle.MUTED)
++
++func _require_terms() -> bool:
++	if terms_row.visible and not terms_check.button_pressed:
++		terms_attention = true
++		_update()
++		terms_check.grab_focus()
++		return false
++	return true
++
++func _sign_in(provider: Callable) -> void:
++	if account.busy or account.waiting_for_google: return
++	if _require_terms() and account.configured: provider.call()
+ 
+ func _open_terms() -> void:
+ 	if has_node("DraftTermsDialog"): return
+@@ -266,6 +290,8 @@
+ 	terms_row.visible = not signed_in and not waiting and OS.is_debug_build()
+ 	terms_divider.visible = terms_row.visible
+ 	var agreed: bool = not terms_row.visible or terms_check.button_pressed
++	if agreed: terms_attention = false
++	terms_check.add_theme_stylebox_override("normal", terms_warning_style if terms_attention else terms_idle_style)
+ 	_update_terms_copy()
+ 	title.text = "Ready to race?" if not signed_in else "Choose your name" if onboarding else "Choose your country" if account.needs_country() else "Your account"
+ 	subtitle.text = "This is the name other racers will see." if onboarding else (account.player_name() if signed_in else "Sign in to save results online, join events and race friends.")
+@@ -285,10 +311,10 @@
+ 	country_save.visible = signed_in and not onboarding
+ 	_country_changed()
+ 	google_button.visible = not signed_in and not waiting
+-	google_button.disabled = account.busy or not account.configured or not agreed
++	google_button.disabled = account.busy or (not account.configured and agreed)
+ 	google_status.visible = not signed_in and not waiting and not account.capabilities.is_empty() and not account.google_available()
+ 	development_button.visible = not signed_in and not waiting and account.show_development()
+-	development_button.disabled = account.busy or not account.configured or not agreed
++	development_button.disabled = account.busy or (not account.configured and agreed)
+ 	logout_button.visible = signed_in
+ 	logout_button.disabled = account.busy
+ 	delete_button.visible = signed_in
+@@ -300,7 +326,7 @@
+ 	status_label.visible = not account.message.is_empty() and account.message not in ["Choose how to sign in.", "Signed in as " + account.player_name() + ".", "Choose the name other racers will see."]
+ 	divider.visible = not signed_in
+ 	guest_button.visible = not onboarding
+-	guest_button.disabled = waiting or not agreed
++	guest_button.disabled = waiting
+ 	guest_button.text = "Continue racing  ›" if signed_in else "Play as guest"
+ 	footer.visible = not signed_in and not waiting
+ 	privacy_note.visible = signed_in
+diff --git a/game/tests/test_login_draft_terms.gd b/game/tests/test_login_draft_terms.gd
+--- a/game/tests/test_login_draft_terms.gd
++++ b/game/tests/test_login_draft_terms.gd
+@@ -7,11 +7,13 @@
+ 
+ class FixtureAccount extends "res://backend/account_controller.gd":
+ 	var google_requests: int = 0
++	var developer_requests: int = 0
+ 	func _ready() -> void:
+ 		add_child(client)
+ 		configured = true
+-		capabilities = {"development_auth":false, "google_browser_configured":true}
++		capabilities = {"development_auth":true, "google_browser_configured":true}
+ 	func sign_in_google() -> void: google_requests += 1
++	func sign_in_developer() -> void: developer_requests += 1
+ 
+ func _initialize() -> void: run.call_deferred()
+ 
+@@ -46,6 +48,9 @@
+ 	root.size = Vector2i(1280,720)
+ 	var account := FixtureAccount.new()
+ 	root.add_child(account)
++	var scenery := preload("res://ui/account_backdrop.gd").new()
++	MenuStyle.fill(scenery)
++	root.add_child(scenery)
+ 	var center := CenterContainer.new()
+ 	center.theme = MenuStyle.theme()
+ 	MenuStyle.fill(center)
+@@ -56,10 +61,24 @@
+ 	center.add_child(panel)
+ 	await settle()
+ 	check(not panel.terms_check.button_pressed,"draft agreement starts unchecked")
+-	check(panel.google_button.disabled and panel.guest_button.disabled,"Google and guest wait for explicit agreement")
++	check(not panel.google_button.disabled and not panel.guest_button.disabled,"unchecked actions accept input to explain the agreement requirement")
+ 	await click(panel.google_button)
++	check(panel.terms_attention and panel.footer.text == panel.TERMS_REQUIRED and panel.footer.is_visible_in_tree(),"Google press explains the missing agreement")
++	check(panel.terms_check.has_focus(),"missing agreement focuses the highlighted checkbox")
++	if not output.is_empty() and DisplayServer.get_name() != "headless":
++		DirAccess.make_dir_recursive_absolute(output)
++		await RenderingServer.frame_post_draw
++		root.get_texture().get_image().save_png(output.path_join("terms-required.png"))
++	await click(panel.development_button)
+ 	await click(panel.guest_button)
+-	check(account.google_requests == 0 and continued == 0,"unchecked actions do not dispatch")
++	check(account.google_requests == 0 and account.developer_requests == 0 and continued == 0,"unchecked Google, developer and guest actions never dispatch")
++	check(panel.terms_attention,"repeated presses retain the agreement warning")
++	check(language.choose("fi") == OK,"language can change while the agreement warning is active")
++	await settle()
++	check(panel.terms_attention and panel.footer.get_theme_color("font_color") == Color("ff9a86"),"language change preserves warning and highlight")
++	check(TranslationServer.translate(panel.TERMS_REQUIRED) == "Hyväksy käyttöehdot jatkaaksesi.","active warning has the correct Finnish instruction")
++	language.choose("en")
++	await settle()
+ 	panel.terms_copy.meta_clicked.emit("terms")
+ 	await settle()
+ 	var dialog: AcceptDialog = panel.get_node("DraftTermsDialog")
+@@ -88,12 +107,16 @@
+ 	check(not panel.has_node("DraftTermsDialog"),"closing reader removes its modal")
+ 	await click(panel.terms_check)
+ 	check(panel.terms_check.button_pressed and not panel.google_button.disabled and not panel.guest_button.disabled,"real checkbox input enables both routes")
++	check(not panel.terms_attention and panel.footer.text != panel.TERMS_REQUIRED,"accepting clears the warning and restores the usual footer")
+ 	await click(panel.google_button)
+ 	check(account.google_requests == 1,"agreed Google action reaches the existing controller once")
++	await click(panel.development_button)
++	check(account.developer_requests == 1,"agreed developer action reaches the existing controller once")
+ 	await click(panel.guest_button)
+ 	check(continued == 1,"agreed guest action dispatches once")
+ 	await click(panel.terms_check)
+-	check(panel.google_button.disabled and panel.guest_button.disabled,"unchecking restores the gate")
++	await click(panel.google_button)
++	check(panel.terms_attention and account.google_requests == 1,"unchecking restores the gate and explains another attempted sign-in")
+ 	panel.terms_check.grab_focus()
+ 	for down: bool in [true,false]:
+ 		var key := InputEventKey.new()
+@@ -104,6 +127,19 @@
+ 		await process_frame
+ 	check(panel.terms_check.button_pressed,"keyboard Space toggles the focused checkbox")
+ 	check(not panel.google_button.disabled and not panel.guest_button.disabled,"keyboard agreement enables both routes")
++	check(not panel.terms_attention,"keyboard agreement clears the warning")
++	account.busy = true
++	account.changed.emit()
++	check(panel.google_button.disabled and panel.development_button.disabled,"busy provider actions remain disabled")
++	account.busy = false
++	account.configured = false
++	panel.terms_check.button_pressed = false
++	account.changed.emit()
++	await click(panel.google_button)
++	check(panel.terms_attention and account.google_requests == 1,"unconfigured sign-in can explain missing terms without starting a provider request")
++	panel.terms_check.button_pressed = true
++	check(panel.google_button.disabled and panel.development_button.disabled,"accepted terms do not bypass unavailable provider configuration")
++	account.configured = true
+ 	account.waiting_for_google = true
+ 	account.changed.emit()
+ 	check(panel.cancel_button.visible and panel.guest_button.disabled,"provider wait retains cancellation and blocks guest navigation")
+@@ -113,6 +149,7 @@
+ 	account.changed.emit()
+ 	check(not panel.terms_row.visible and not panel.guest_button.disabled,"existing signed-in account management stays available")
+ 	center.queue_free()
++	scenery.queue_free()
+ 	account.queue_free()
+ 	await process_frame
+ 	print("LOGIN_DRAFT_TERMS: %d checks, %d failures" % [checks,failures])
+diff --git a/game/tests/capture_sign_in_fit.gd b/game/tests/capture_sign_in_fit.gd
+--- a/game/tests/capture_sign_in_fit.gd
++++ b/game/tests/capture_sign_in_fit.gd
+@@ -125,6 +125,19 @@
+ 				if not output.is_empty() and DisplayServer.get_name() != "headless":
+ 					await RenderingServer.frame_post_draw
+ 					root.get_texture().get_image().save_png(output.path_join("locale-%s-%dx%d.png" % [code,dimensions.x,dimensions.y]))
++				panel._require_terms()
++				for _frame: int in range(10): await process_frame
++				checks += 1
++				if not panel.terms_attention or not panel.footer.is_visible_in_tree():
++					failures += 1
++					print("FAIL: localized terms warning is missing ",code)
++				checks += 1
++				if not root.get_visible_rect().grow(-16).encloses(panel.get_global_rect()) or panel.get_global_rect().get_center().distance_to(root.get_visible_rect().get_center()) > 1.0:
++					failures += 1
++					print("FAIL: localized terms warning does not fit centered ",code," ",dimensions)
++				if not output.is_empty() and DisplayServer.get_name() != "headless":
++					await RenderingServer.frame_post_draw
++					root.get_texture().get_image().save_png(output.path_join("locale-terms-%s-%dx%d.png" % [code,dimensions.x,dimensions.y]))
+ 	app.queue_free()
+ 	await process_frame
+ 	print("SIGN_IN_FIT: %d checks, %d failures" % [checks,failures])
+diff --git a/game/localization/de.po b/game/localization/de.po
+--- a/game/localization/de.po
++++ b/game/localization/de.po
+@@ -10746,3 +10746,7 @@
+ #: game/ui/account_panel.gd
+ msgid "Could not save the terms. Please try again."
+ msgstr "Die Bedingungen konnten nicht gespeichert werden. Bitte versuche es erneut."
++
++#: game/ui/account_panel.gd
++msgid "Please accept the Terms of Service to continue."
++msgstr "Bitte akzeptiere die Nutzungsbedingungen, um fortzufahren."
+diff --git a/game/localization/en.po b/game/localization/en.po
+--- a/game/localization/en.po
++++ b/game/localization/en.po
+@@ -10891,3 +10891,7 @@
+ msgid "★ %.1f  ·  %d ratings"
+ msgstr "★ %.1f  ·  %d ratings"
+ 
++
++#: game/ui/account_panel.gd
++msgid "Please accept the Terms of Service to continue."
++msgstr "Please accept the Terms of Service to continue."
+diff --git a/game/localization/es.po b/game/localization/es.po
+--- a/game/localization/es.po
++++ b/game/localization/es.po
+@@ -10746,3 +10746,7 @@
+ #: game/ui/account_panel.gd
+ msgid "Could not save the terms. Please try again."
+ msgstr "No se pudieron guardar los términos. Inténtalo de nuevo."
++
++#: game/ui/account_panel.gd
++msgid "Please accept the Terms of Service to continue."
++msgstr "Acepta los términos de servicio para continuar."
+diff --git a/game/localization/fi.po b/game/localization/fi.po
+--- a/game/localization/fi.po
++++ b/game/localization/fi.po
+@@ -10746,3 +10746,7 @@
+ #: game/ui/account_panel.gd
+ msgid "Could not save the terms. Please try again."
+ msgstr "Ehtoja ei voitu tallentaa. Yritä uudelleen."
++
++#: game/ui/account_panel.gd
++msgid "Please accept the Terms of Service to continue."
++msgstr "Hyväksy käyttöehdot jatkaaksesi."
+diff --git a/game/localization/fr.po b/game/localization/fr.po
+--- a/game/localization/fr.po
++++ b/game/localization/fr.po
+@@ -10746,3 +10746,7 @@
+ #: game/ui/account_panel.gd
+ msgid "Could not save the terms. Please try again."
+ msgstr "Impossible d'enregistrer les conditions. Réessayez."
++
++#: game/ui/account_panel.gd
++msgid "Please accept the Terms of Service to continue."
++msgstr "Veuillez accepter les conditions d’utilisation pour continuer."
+diff --git a/game/localization/it.po b/game/localization/it.po
+--- a/game/localization/it.po
++++ b/game/localization/it.po
+@@ -10746,3 +10746,7 @@
+ #: game/ui/account_panel.gd
+ msgid "Could not save the terms. Please try again."
+ msgstr "Impossibile salvare i termini. Riprova."
++
++#: game/ui/account_panel.gd
++msgid "Please accept the Terms of Service to continue."
++msgstr "Accetta i Termini di servizio per continuare."
+diff --git a/game/localization/ja.po b/game/localization/ja.po
+--- a/game/localization/ja.po
++++ b/game/localization/ja.po
+@@ -10715,3 +10715,7 @@
+ #: game/ui/account_panel.gd
+ msgid "Could not save the terms. Please try again."
+ msgstr "規約を保存できませんでした。もう一度お試しください。"
++
++#: game/ui/account_panel.gd
++msgid "Please accept the Terms of Service to continue."
++msgstr "続行するには利用規約に同意してください。"
+diff --git a/game/localization/ko.po b/game/localization/ko.po
+--- a/game/localization/ko.po
++++ b/game/localization/ko.po
+@@ -10715,3 +10715,7 @@
+ #: game/ui/account_panel.gd
+ msgid "Could not save the terms. Please try again."
+ msgstr "약관을 저장할 수 없습니다. 다시 시도해 주세요."
++
++#: game/ui/account_panel.gd
++msgid "Please accept the Terms of Service to continue."
++msgstr "계속하려면 서비스 약관에 동의해 주세요."
+diff --git a/game/localization/nb.po b/game/localization/nb.po
+--- a/game/localization/nb.po
++++ b/game/localization/nb.po
+@@ -10746,3 +10746,7 @@
+ #: game/ui/account_panel.gd
+ msgid "Could not save the terms. Please try again."
+ msgstr "Kunne ikke lagre vilkårene. Prøv igjen."
++
++#: game/ui/account_panel.gd
++msgid "Please accept the Terms of Service to continue."
++msgstr "Godta bruksvilkårene for å fortsette."
+diff --git a/game/localization/nl.po b/game/localization/nl.po
+--- a/game/localization/nl.po
++++ b/game/localization/nl.po
+@@ -10746,3 +10746,7 @@
+ #: game/ui/account_panel.gd
+ msgid "Could not save the terms. Please try again."
+ msgstr "De voorwaarden konden niet worden opgeslagen. Probeer het opnieuw."
++
++#: game/ui/account_panel.gd
++msgid "Please accept the Terms of Service to continue."
++msgstr "Accepteer de servicevoorwaarden om door te gaan."
+diff --git a/game/localization/pt_BR.po b/game/localization/pt_BR.po
+--- a/game/localization/pt_BR.po
++++ b/game/localization/pt_BR.po
+@@ -10746,3 +10746,7 @@
+ #: game/ui/account_panel.gd
+ msgid "Could not save the terms. Please try again."
+ msgstr "Não foi possível salvar os termos. Tente novamente."
++
++#: game/ui/account_panel.gd
++msgid "Please accept the Terms of Service to continue."
++msgstr "Aceite os Termos de Serviço para continuar."
+diff --git a/game/localization/sv.po b/game/localization/sv.po
+--- a/game/localization/sv.po
++++ b/game/localization/sv.po
+@@ -10746,3 +10746,7 @@
+ #: game/ui/account_panel.gd
+ msgid "Could not save the terms. Please try again."
+ msgstr "Det gick inte att spara villkoren. Försök igen."
++
++#: game/ui/account_panel.gd
++msgid "Please accept the Terms of Service to continue."
++msgstr "Godkänn användarvillkoren för att fortsätta."
+diff --git a/game/localization/messages.pot b/game/localization/messages.pot
+--- a/game/localization/messages.pot
++++ b/game/localization/messages.pot
+@@ -10891,3 +10891,7 @@
+ msgid "★ %.1f  ·  %d ratings"
+ msgstr ""
+ 
++
++#: game/ui/account_panel.gd
++msgid "Please accept the Terms of Service to continue."
++msgstr ""

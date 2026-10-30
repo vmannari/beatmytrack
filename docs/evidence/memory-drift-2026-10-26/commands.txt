@@ -1,0 +1,66 @@
+All Godot processes are newly launched task fixtures. Each command runs in a fresh PowerShell process from the repository root. No owner process is restarted. APPDATA and LOCALAPPDATA point under build/memory-drift-2026-10-26. The final soak itself rejects a profile outside build/.
+
+Pinned engine:
+C:/apps/Godot 4.7.2/Godot_v4.7.2-stable_win64_console.exe
+Actual engine SHA256:
+ab1824f85bfd8e0e4128182c000c4003a3e042245b2967848d089b2a04b22424
+
+Common fixture setup (replace profile suffix per test, as recorded in logs):
+$env:APPDATA=Join-Path $PWD 'build/memory-drift-2026-10-26/profile-<fixture>'
+$env:LOCALAPPDATA=$env:APPDATA
+Remove-Item Env:BMT_API_URL -ErrorAction SilentlyContinue
+
+Memory regression against original library, standalone project without autoloads:
+Godot --headless --audio-driver Dummy --path build/memory-drift-2026-10-26/baseline-project --script ../../../game/tests/test_native_blend_memory.gd -- --native-extension=../geometry-original.gdextension
+Expected retained result: 10 checks, 3 memory failures; 128 bytes per blend piece per call.
+
+Identical isolated control with fixed library:
+Godot --headless --audio-driver Dummy --path build/memory-drift-2026-10-26/baseline-project --script ../../../game/tests/test_native_blend_memory.gd -- --native-extension=../geometry-fixed.gdextension
+Result: 10 checks, 0 failures.
+
+Shipping-project regression:
+Godot --headless --audio-driver Dummy --path game --script tests/test_native_blend_memory.gd
+Result: 9 checks, 0 failures.
+
+The baseline-project/project.godot contains only config_version=5, application name BmtMemoryLab, and gl_compatibility renderer. Each geometry-*.gdextension uses entry_symbol bmt_track_geometry_init and an absolute Windows library path. Original SHA256: 41dbd9ca28a19778176d0b908e956fb3bcc95eb4f9d5c29f69b036bd397811d6. Fixed SHA256: 3ac2a06f796a88488112f80bcc7d224a5602f0ba7b6e418bcca8166c28ac3ef8.
+
+Owned diagnostic helper build (source retained in probes/heap_probe.cpp; use the corresponding v3/v4 descriptor expected by each probe):
+C:/msys64/mingw64/bin/g++.exe -std=c++17 -O2 -shared -DGDEXTENSION -DNDEBUG -I.tools/godot-cpp-music/include -I.tools/godot-cpp-music/gen/include -I.tools/godot-cpp-music/gdextension build/memory-drift-2026-10-26/heap_probe.cpp -static -DWINDOWS_ENABLED .tools/godot-cpp-music/bin/libgodot-cpp.windows.template_release.x86_64.a -o build/memory-drift-2026-10-26/heap_probe_v4.dll
+Descriptor: entry_symbol=bmt_heap_probe_init, compatibility_minimum=4.5, windows.x86_64=res://../build/memory-drift-2026-10-26/heap_probe_v4.dll.
+The final retained helper source includes the assignment reproduction added after v3. Its allocator core is the v3 backward-shift-deletion implementation. Raw v3 traces precede that extra bound diagnostic method. Layout inspection is only for the pinned engine binary; these probes are not shipping code.
+
+Godot --headless --audio-driver Dummy --path game --script ../build/memory-drift-2026-10-26/dictionary_assignment_probe.gd
+Godot --headless --audio-driver Dummy --path game --script ../build/memory-drift-2026-10-26/heap_selftest.gd
+Godot --headless --audio-driver Dummy --path game --script ../build/memory-drift-2026-10-26/minimal_editor_v3_probe.gd -- --cycles=24
+(The original library was selected when this process started.)
+Godot --headless --audio-driver Dummy --path game --script ../build/memory-drift-2026-10-26/minimal_editor_fixed_probe.gd -- --cycles=20
+Godot --audio-driver Dummy --rendering-method gl_compatibility --path game --script ../build/memory-drift-2026-10-26/minimal_editor_fixed_probe.gd -- --cycles=20 --tag=editor-fixed-window
+
+Godot --headless --audio-driver Dummy --path game --script ../build/memory-drift-2026-10-26/accessibility_probe.gd -- --mode=accessibility --count=10000
+Godot --audio-driver Dummy --rendering-method gl_compatibility --path game --script ../build/memory-drift-2026-10-26/accessibility_probe.gd -- --mode=accessibility --count=10000
+Godot --headless --audio-driver Dummy --path game --script ../build/memory-drift-2026-10-26/accessibility_probe.gd -- --mode=node --count=10000
+Godot --headless --audio-driver Dummy --path game --script ../build/memory-drift-2026-10-26/sample_retention_probe.gd
+
+Native Windows build:
+C:/msys64/mingw64/bin/g++.exe -std=c++17 -O2 -g -ffp-contract=off -shared -DGDEXTENSION -DNDEBUG -I.tools/godot-cpp-music/include -I.tools/godot-cpp-music/gen/include -I.tools/godot-cpp-music/gdextension native/track_geometry/track_geometry.cpp -static -Wl,--no-insert-timestamp -DWINDOWS_ENABLED .tools/godot-cpp-music/bin/libgodot-cpp.windows.template_release.x86_64.a -o build/memory-drift-2026-10-26/native/bmt_track_geometry.windows.x86_64.memory.dll
+objcopy --only-keep-debug <owned-build-DLL> <owned-build-DLL>.debug
+strip --strip-unneeded <owned-build-DLL>
+Copy under its SHA256-derived name and change only the descriptor's Windows library line. The original loaded DLL remains available.
+
+Native Android builds (both succeeded; no device execution):
+.tools/android-ndk-r28b/toolchains/llvm/prebuilt/windows-x86_64/bin/clang++.exe -std=c++17 -O2 -g -ffp-contract=off -shared -DGDEXTENSION -DNDEBUG -I.tools/godot-cpp-music/include -I.tools/godot-cpp-music/gen/include -I.tools/godot-cpp-music/gdextension native/track_geometry/track_geometry.cpp --target=aarch64-linux-android24 --sysroot=<NDK>/sysroot -fPIC -DANDROID_ENABLED -DUNIX_ENABLED -Wl,--build-id=sha1 -Wl,-z,max-page-size=16384 -static-libstdc++ .tools/godot-cpp-music/bin/libgodot-cpp.android.template_release.arm64.a -llog -ldl -o build/memory-drift-2026-10-26/native/libbmt_track_geometry.android.arm64.so
+Equivalent x86_64 command substitutes --target=x86_64-linux-android24 and libgodot-cpp.android.template_release.x86_64.a.
+llvm-objcopy --only-keep-debug <owned-build-SO> <owned-build-SO>.debug
+llvm-strip --strip-unneeded <owned-build-SO>
+Copy both new SOs into game/platform/track_geometry; originals retained in the task baseline. Store symbols plus mapping.json under build/symbols/<binary SHA256>/.
+
+Retained parity suites, run from copies changing only report destinations into this task folder:
+Godot --headless --audio-driver Dummy --path game --script ../build/memory-drift-2026-10-26/test_native_road_geometry_isolated.gd
+Godot --headless --audio-driver Dummy --path game --script ../build/memory-drift-2026-10-26/test_native_winter_raster_isolated.gd
+Godot --headless --audio-driver Dummy --path game --script tests/soak_runtime_correctness.gd -- --cycles=3 --report-dir=res://../build/memory-drift-2026-10-26/stream-soak
+Godot --headless --audio-driver Dummy --path game --script tests/test_script_parse.gd
+Godot --headless --editor --path game --import
+
+Initial failed instrumentation is retained in superseded-probes/. Other low-level hypothesis controls remain in build/memory-drift-2026-10-26. The first attempt to invoke retain_native_symbols.ps1 was rejected by PowerShell execution policy; symbols were then extracted with the listed direct compiler utilities. An attempted baseline-project symlink was rejected for missing Windows symlink privilege; the baseline control instead uses a tiny standalone project and explicit extension descriptors.
+
+Patch verification uses git -c core.autocrlf=false diff --no-index --binary between explicit task baseline/final trees, then git -c core.autocrlf=false apply --check, apply, SHA256 comparison, reverse --check, reverse and baseline comparison in an owned directory. GIT_CEILING_DIRECTORIES is set to the owned review directory to prevent parent-repository discovery and subdirectory filtering. Each attempt uses a fresh verification directory. No repository index, staging, commit or owner process is involved.

@@ -1,0 +1,225 @@
+--- a/game/vehicle/handling_test_presets.gd
++++ b/game/vehicle/handling_test_presets.gd
+@@ -4,7 +4,7 @@
+ ## never change the catalog resources or the canonical handling contracts.
+ 
+ const LABELS: Array[String] = ["Stable", "Agile", "Flow", "Slide", "Loose"]
+-const KART_LABELS: Array[String] = ["Brake turn (reference)", "Brake turn 1", "Brake turn 2", "Brake turn 3", "Brake turn 4", "Brake turn 5"]
++const KART_LABELS: Array[String] = ["Brake turn 5 (reference)", "Brake turn 5.1", "Brake turn 5.2", "Brake turn 5.3", "Brake turn 5.4", "Brake turn 5.5"]
+ const HOVER_LABELS: Array[String] = ["Slide 5 (reference)", "Slide 5.1", "Slide 5.2", "Slide 5.3", "Slide 5.4", "Slide 5.5"]
+ const VEHICLES: Array[String] = ["pickup", "kart", "hovercraft"]
+ 
+@@ -19,12 +19,12 @@
+ 		{"steering_rate": 9.0, "steering_angle": 0.73, "lateral_grip": 39.0, "lateral_response": 6.5, "brake_rotation": 0.55, "countersteer_assistance": 1.0, "grip_recovery": 6.0},
+ 	],
+ 	"kart": [
+-		{"steering_rate": 16.0, "steering_angle": 0.94, "brake_rotation": 0.24, "brake_grip_loss": 0.08, "countersteer_assistance": 0.50},
+-		{"steering_rate": 16.0, "steering_angle": 0.94, "brake_rotation": 0.40, "brake_grip_loss": 0.08, "countersteer_assistance": 0.55},
+-		{"steering_rate": 16.0, "steering_angle": 0.94, "brake_rotation": 0.60, "brake_grip_loss": 0.10, "countersteer_assistance": 0.60},
+-		{"steering_rate": 16.0, "steering_angle": 0.94, "brake_rotation": 0.80, "brake_grip_loss": 0.10, "countersteer_assistance": 0.65},
+-		{"steering_rate": 16.0, "steering_angle": 0.94, "brake_rotation": 1.00, "brake_grip_loss": 0.12, "countersteer_assistance": 0.70},
+ 		{"steering_rate": 16.0, "steering_angle": 0.94, "brake_rotation": 1.25, "brake_grip_loss": 0.14, "countersteer_assistance": 0.75},
++		{"steering_rate": 16.0, "steering_angle": 0.94, "brake_rotation": 1.25, "brake_grip_loss": 0.14, "countersteer_assistance": 0.75, "lateral_grip": 84.0, "high_speed_steering_reduction": 0.56},
++		{"steering_rate": 16.0, "steering_angle": 0.94, "brake_rotation": 1.25, "brake_grip_loss": 0.14, "countersteer_assistance": 0.75, "lateral_grip": 88.0, "high_speed_steering_reduction": 0.54},
++		{"steering_rate": 16.0, "steering_angle": 0.94, "brake_rotation": 1.25, "brake_grip_loss": 0.14, "countersteer_assistance": 0.75, "lateral_grip": 92.0, "high_speed_steering_reduction": 0.52},
++		{"steering_rate": 16.0, "steering_angle": 0.94, "brake_rotation": 1.25, "brake_grip_loss": 0.14, "countersteer_assistance": 0.75, "lateral_grip": 96.0, "high_speed_steering_reduction": 0.50},
++		{"steering_rate": 16.0, "steering_angle": 0.94, "brake_rotation": 1.25, "brake_grip_loss": 0.14, "countersteer_assistance": 0.75, "lateral_grip": 100.0, "high_speed_steering_reduction": 0.48},
+ 	],
+ 	"forklift": [
+ 		{"steering_rate": 5.5, "lateral_grip": 54.0, "lateral_response": 20.0, "grip_recovery": 7.0},
+@@ -61,9 +61,9 @@
+ 		result.profile_name = "%s / %s" % [result.profile_name, "Slide 5" if preset_index == 0 else HOVER_LABELS[preset_index]]
+ 		result.version += "-hover-slide-5" if preset_index == 0 else "-hover-slide5-%d" % preset_index
+ 	elif vehicle_id == "kart":
+-		# Preserve the chosen Brake turn's complete snapshot and identity.
+-		result.profile_name = "%s / %s" % [result.profile_name, "Brake turn" if preset_index == 0 else KART_LABELS[preset_index]]
+-		result.version += "-kart-refine-4" if preset_index == 0 else "-kart-brake-%d" % preset_index
++		# Preserve Brake turn 5's complete snapshot and identity.
++		result.profile_name = "%s / %s" % [result.profile_name, "Brake turn 5" if preset_index == 0 else KART_LABELS[preset_index]]
++		result.version += "-kart-brake-5" if preset_index == 0 else "-kart-brake5-turn-%d" % preset_index
+ 	else:
+ 		result.profile_name = "%s / %s" % [result.profile_name, LABELS[preset_index]]
+ 		result.version += "-test-%d" % (preset_index + 1)
+--- a/game/tests/test_kart_brake_turn_evolution.gd
++++ b/game/tests/test_kart_brake_turn_evolution.gd
+@@ -1,6 +1,6 @@
+ extends SceneTree
+ 
+-const PRESETS = preload("res://vehicle/handling_test_presets.gd")
++const PRESETS = preload("res://tests/fixtures/kart_brake_turn5_reference/presets.gd")
+ const PREVIOUS = preload("res://tests/fixtures/volt_turn_reference/presets.gd")
+ var checks: int = 0
+ var failures: int = 0
+--- a/game/tests/test_handling_test_selector.gd
++++ b/game/tests/test_handling_test_selector.gd
+@@ -30,9 +30,9 @@
+ 			check(choice != null and choice.item_count == expected_count and choice.selected == 0, car_id + " has current handling and its test choices")
+ 			if choice != null:
+ 				if car_id == "kart":
+-					check(choice.get_item_text(1) == "Brake turn (reference)", "Kart retains the chosen reference")
++					check(choice.get_item_text(1) == "Brake turn 5 (reference)", "Kart retains the chosen reference")
+ 					for index: int in range(1, 6):
+-						check(choice.get_item_text(index + 1) == "Brake turn %d" % index, "Kart names brake turn %d" % index)
++						check(choice.get_item_text(index + 1) == "Brake turn 5.%d" % index, "Kart names brake turn %d" % index)
+ 				if car_id == "hovercraft":
+ 					check(choice.get_item_text(1) == "Slide 5 (reference)", "Hover retains the chosen reference")
+ 					for index: int in range(1, 6):
+--- /dev/null
++++ b/game/tests/fixtures/kart_brake_turn5_reference/presets.gd
+@@ -0,0 +1,69 @@
++extends RefCounted
++## Temporary driving experiments. Values are deliberately local to a race and
++## never change the catalog resources or the canonical handling contracts.
++
++const LABELS: Array[String] = ["Stable", "Agile", "Flow", "Slide", "Loose"]
++const KART_LABELS: Array[String] = ["Brake turn (reference)", "Brake turn 1", "Brake turn 2", "Brake turn 3", "Brake turn 4", "Brake turn 5"]
++const HOVER_LABELS: Array[String] = ["Slide 5 (reference)", "Slide 5.1", "Slide 5.2", "Slide 5.3", "Slide 5.4", "Slide 5.5"]
++const VEHICLES: Array[String] = ["pickup", "kart", "hovercraft"]
++
++# Steering, grip and recovery are tuned separately for each car. Engine, brakes,
++# top speed, collision dimensions and vehicle-specific pedal layouts stay intact.
++const TUNING: Dictionary = {
++	"pickup": [
++		{"steering_rate": 7.0, "lateral_grip": 54.0, "lateral_response": 14.0, "grip_recovery": 7.0, "countersteer_assistance": 0.7},
++		{"steering_rate": 10.0, "steering_angle": 0.72, "lateral_grip": 50.0, "lateral_response": 13.0, "maximum_yaw_rate": 2.5},
++		{"steering_rate": 8.0, "steering_angle": 0.68, "lateral_grip": 48.0, "lateral_response": 11.0, "corner_energy_retention": 0.7, "grip_recovery": 6.0},
++		{"steering_rate": 8.0, "steering_angle": 0.70, "lateral_grip": 43.0, "lateral_response": 8.0, "brake_rotation": 0.4, "countersteer_assistance": 0.9, "grip_recovery": 6.0},
++		{"steering_rate": 9.0, "steering_angle": 0.73, "lateral_grip": 39.0, "lateral_response": 6.5, "brake_rotation": 0.55, "countersteer_assistance": 1.0, "grip_recovery": 6.0},
++	],
++	"kart": [
++		{"steering_rate": 16.0, "steering_angle": 0.94, "brake_rotation": 0.24, "brake_grip_loss": 0.08, "countersteer_assistance": 0.50},
++		{"steering_rate": 16.0, "steering_angle": 0.94, "brake_rotation": 0.40, "brake_grip_loss": 0.08, "countersteer_assistance": 0.55},
++		{"steering_rate": 16.0, "steering_angle": 0.94, "brake_rotation": 0.60, "brake_grip_loss": 0.10, "countersteer_assistance": 0.60},
++		{"steering_rate": 16.0, "steering_angle": 0.94, "brake_rotation": 0.80, "brake_grip_loss": 0.10, "countersteer_assistance": 0.65},
++		{"steering_rate": 16.0, "steering_angle": 0.94, "brake_rotation": 1.00, "brake_grip_loss": 0.12, "countersteer_assistance": 0.70},
++		{"steering_rate": 16.0, "steering_angle": 0.94, "brake_rotation": 1.25, "brake_grip_loss": 0.14, "countersteer_assistance": 0.75},
++	],
++	"forklift": [
++		{"steering_rate": 5.5, "lateral_grip": 54.0, "lateral_response": 20.0, "grip_recovery": 7.0},
++		{"steering_rate": 8.0, "countersteering_rate": 15.0, "high_speed_steering_reduction": 0.20, "lateral_grip": 50.0, "lateral_response": 18.0},
++		{"steering_rate": 7.0, "countersteering_rate": 14.0, "lateral_grip": 46.0, "lateral_response": 13.0, "countersteer_assistance": 0.6},
++		{"steering_rate": 7.0, "countersteering_rate": 15.0, "lateral_grip": 42.0, "lateral_response": 10.0, "brake_rotation": 0.25, "countersteer_assistance": 0.8},
++		{"steering_rate": 8.0, "countersteering_rate": 16.0, "lateral_grip": 38.0, "lateral_response": 7.0, "brake_rotation": 0.4, "countersteer_assistance": 1.0},
++	],
++	"hovercraft": [
++		{"steering_rate": 19.0, "maximum_yaw_rate": 2.7, "thrust_lateral_damping": 1.0, "lateral_response": 0.28},
++		{"steering_rate": 19.0, "maximum_yaw_rate": 2.7, "thrust_lateral_damping": 0.9, "lateral_response": 0.28},
++		{"steering_rate": 19.0, "maximum_yaw_rate": 2.7, "thrust_lateral_damping": 0.8, "lateral_response": 0.28},
++		{"steering_rate": 19.0, "maximum_yaw_rate": 2.7, "thrust_lateral_damping": 0.7, "lateral_response": 0.28},
++		{"steering_rate": 19.0, "maximum_yaw_rate": 2.7, "thrust_lateral_damping": 0.6, "lateral_response": 0.28},
++		{"steering_rate": 19.0, "maximum_yaw_rate": 2.7, "thrust_lateral_damping": 0.5, "lateral_response": 0.28},
++	],
++}
++
++static func names(vehicle_id: String) -> Array[String]:
++	var result: Array[String] = []
++	if vehicle_id in VEHICLES:
++		result.assign(HOVER_LABELS if vehicle_id == "hovercraft" else KART_LABELS if vehicle_id == "kart" else LABELS)
++	return result
++
++static func config(vehicle_id: String, preset_index: int) -> HandlingConfig:
++	var result: HandlingConfig = VehicleCatalog.config(vehicle_id)
++	if vehicle_id not in VEHICLES or preset_index < 0 or preset_index >= names(vehicle_id).size():
++		return result
++	var changes: Dictionary = TUNING[vehicle_id][preset_index]
++	for property: String in changes:
++		result.set(property, changes[property])
++	if vehicle_id == "hovercraft":
++		# Preserve the chosen Slide 5 snapshot and identity for comparison.
++		result.profile_name = "%s / %s" % [result.profile_name, "Slide 5" if preset_index == 0 else HOVER_LABELS[preset_index]]
++		result.version += "-hover-slide-5" if preset_index == 0 else "-hover-slide5-%d" % preset_index
++	elif vehicle_id == "kart":
++		# Preserve the chosen Brake turn's complete snapshot and identity.
++		result.profile_name = "%s / %s" % [result.profile_name, "Brake turn" if preset_index == 0 else KART_LABELS[preset_index]]
++		result.version += "-kart-refine-4" if preset_index == 0 else "-kart-brake-%d" % preset_index
++	else:
++		result.profile_name = "%s / %s" % [result.profile_name, LABELS[preset_index]]
++		result.version += "-test-%d" % (preset_index + 1)
++	return result
+--- /dev/null
++++ b/game/tests/test_kart_brake_turn5_turning.gd
+@@ -0,0 +1,66 @@
++extends SceneTree
++
++const PRESETS = preload("res://vehicle/handling_test_presets.gd")
++const BEFORE = preload("res://tests/fixtures/kart_brake_turn5_reference/presets.gd")
++var checks := 0
++var failures := 0
++
++func _initialize() -> void:
++	run.call_deferred()
++
++func check(ok: bool, message: String) -> void:
++	checks += 1
++	if not ok:
++		failures += 1
++		print("FAIL: ", message)
++
++func measure(config: HandlingConfig, speed: float, steering: float, brake: float) -> Dictionary:
++	var sim := VehicleSimulation.new(config)
++	var replay := VehicleSimulation.new(config)
++	sim.state.velocity = Vector2(0.0, speed)
++	replay.state.velocity = sim.state.velocity
++	var peak_slip := 0.0
++	for tick: int in range(360):
++		var frame := DriveFrame.sample(steering if tick < 60 else 0.0, 0.6 if tick >= 60 or brake == 0.0 else 0.0, brake if tick < 60 else 0.0)
++		sim.step(frame)
++		replay.step(frame)
++		peak_slip = maxf(peak_slip, absf(sim.state.slip_angle()))
++		if tick == 59:
++			sim.set_meta("direction", atan2(sim.state.velocity.x, sim.state.velocity.y))
++			sim.set_meta("position", sim.state.position)
++			sim.set_meta("speed", sim.state.velocity.length())
++	return {"direction": float(sim.get_meta("direction")), "position": sim.get_meta("position"), "turn_speed": float(sim.get_meta("speed")), "peak_slip": rad_to_deg(peak_slip), "end_slip": rad_to_deg(absf(sim.state.slip_angle())), "end_yaw": absf(sim.state.yaw_rate), "replay": sim.state.snapshot() == replay.state.snapshot()}
++
++func run() -> void:
++	check(PRESETS.names("kart") == ["Brake turn 5 (reference)", "Brake turn 5.1", "Brake turn 5.2", "Brake turn 5.3", "Brake turn 5.4", "Brake turn 5.5"], "reference and five options")
++	var reference: HandlingConfig = PRESETS.config("kart", 0)
++	check(reference.snapshot() == BEFORE.config("kart", 5).snapshot(), "preferred reference exactly preserved")
++	var all_metrics: Array = []
++	var reference_speed: float = 0.0
++	var prior_powered: float = -INF
++	var prior_braking: float = -INF
++	for index: int in range(6):
++		var config: HandlingConfig = PRESETS.config("kart", index)
++		check(config.engine_force == reference.engine_force and config.braking_force == reference.braking_force and config.maximum_speed == reference.maximum_speed and config.brake_rotation == reference.brake_rotation and config.brake_grip_loss == reference.brake_grip_loss, "power and brake-turn character retained %d" % index)
++		var powered: Dictionary = measure(config, 25.0, 0.7, 0.0)
++		var braking: Dictionary = measure(config, 25.0, 0.7, 0.35)
++		var mirror: Dictionary = measure(config, 25.0, -0.7, 0.35)
++		if index == 0: reference_speed = powered.turn_speed
++		else:
++			check(powered.direction > prior_powered + 0.04, "powered travel turns more %d" % index)
++			check(braking.direction > prior_braking + 0.002, "braking travel turns more %d" % index)
++			check(powered.turn_speed >= reference_speed * 0.95, "powered corner retains at least 95 percent of reference speed %d" % index)
++		prior_powered = powered.direction
++		prior_braking = braking.direction
++		check(powered.replay and braking.replay and mirror.replay, "exact replay %d" % index)
++		check(absf(braking.direction + mirror.direction) < 0.0001, "left-right symmetry %d" % index)
++		for sample: Dictionary in [powered, braking, mirror]:
++			check(is_finite(sample.direction) and sample.peak_slip < 25.0 and sample.end_slip < 5.0 and sample.end_yaw < 0.1, "bounded and recovers %d" % index)
++		for speed: float in [12.0, 20.0, 30.0]:
++			for brake: float in [0.0, 0.35, 0.8]:
++				var sample: Dictionary = measure(config, speed, 0.7, brake)
++				check(sample.replay and is_finite(sample.direction) and sample.peak_slip < 25.0 and sample.end_slip < 5.0 and sample.end_yaw < 0.1, "bounded, recoverable replay at %.0f m/s brake %.2f mode %d" % [speed, brake, index])
++		all_metrics.append({"powered_direction": powered.direction, "braking_direction": braking.direction, "powered_speed": powered.turn_speed, "braking_speed": braking.turn_speed, "peak_slip": maxf(powered.peak_slip, braking.peak_slip)})
++	print("KART_TURN5_METRICS ", JSON.stringify(all_metrics))
++	print("KART_TURN5: %d checks, %d failures" % [checks, failures])
++	quit(1 if failures else 0)
+--- /dev/null
++++ b/docs/KART_BRAKE_TURN5_TIGHTER_2026_10_30.md
+@@ -0,0 +1,15 @@
++# Kart Brake turn 5: less understeer — 2026-10-30
++
++KBT501: The owner likes Brake turn 5 but reports some understeer. Its exact configuration and `kart-7-kart-brake-5` identity remain available as **Brake turn 5 (reference)**. Five alternatives, **Brake turn 5.1–5.5**, progressively raise lateral grip and reduce the steering reduction at speed. All derive from the chosen tune and retain its brake rotation, brake grip loss, countersteer assistance, engine, braking force, speed limit and dimensions. The original canonical car remains available as Current handling. Other cars are unchanged. Test choices remain practice-only.
++
++The grip values extend above the handling resource's editor slider maximum; the simulation uses the values directly. They are local experiments, not changes to the kart resource or canonical contract. Higher grip and lock may trade speed and feel for turning, and require owner assessment.
++
++Pinned Godot 4.7.2 `ed1daf0bf`, offline with isolated profiles:
++
++- `--headless --path game --script res://tests/test_kart_brake_turn5_turning.gd`: 107 checks, zero failures. Reference snapshot matches the task-start fixture. Each candidate turns the **velocity direction** more than the preceding choice in powered and braking samples, preserves brake parameters and is symmetric in the mirrored braking sample. At 25 m/s initial speed, 70% steering and half a second, powered direction gain versus reference is 3.87–19.45° across the five; braking at 35% gains 1.95–3.72°. In that powered sample, end speed ranges 27.19–26.30 m/s versus reference 27.38 m/s. Recovery and exact replay pass at 12, 20 and 30 m/s and 0%, 35% and 80% brake. Samples do not prove lap performance or subjective feel.
++- `--headless --path game --script res://tests/test_handling_test_presets.gd`: zero failures, including finite state, recovery, replay and distinct turning trajectories for available test cars.
++- `--headless --path game --script res://tests/test_handling_test_selector.gd`: 31 checks, zero failures. `res://tests/test_handling_test_integration.gd`: 20 checks, zero failures.
++- `--headless --path game --script res://tests/test_kart_brake_turn_evolution.gd`: 73 checks, zero failures; the earlier regression uses a task-start copy of the former test definitions so its historical assertions remain intact.
++- `--path game --rendering-method gl_compatibility --script res://tests/capture_kart_brake_turn_evolution.gd`: zero failures, mouse selection in the actual kart race at 960×540 and 1280×720. [Open dropdown](evidence/kart-brake-turn5-2026-10-30/race-open-960x540.png). The capture used `BMT_HANDLING_TEST_CAPTURE` and isolated APPDATA/LOCALAPPDATA.
++
++Windows logged a certificate-store warning, the headless simulation reported resources still in use at exit, and graphical capture logged hitches including a 20.0-second cold frame. No physical-device test, owner-save mutation, APK, deployment or owner-process restart was performed. Owner driving-feel acceptance remains open.

@@ -12,7 +12,7 @@ func run() -> void:
 		var car:=CarVisual.new()
 		car.vehicle_id=id
 		car.livery=VehicleLivery.defaults(id)
-		car.editable_kits=id=="compact"
+		car.editable_kits=VehicleCustomisation.supported(id)
 		root.add_child(car)
 		while not car.model_ready: await process_frame
 		var error: Error=cache.bake(car)

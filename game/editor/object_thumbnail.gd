@@ -3,7 +3,7 @@ extends Button
 ## Small one-shot renders use exactly the placed-object mesh builder.
 const CACHE_LIMIT: int = 48
 const PREVIEW_SIZE := Vector2i(384,232)
-const PREVIEW_VERSION: String = "prop-studio-2"
+const PREVIEW_VERSION: String = "prop-studio-3-readable-variants"
 static var _images: Dictionary = {}
 var _viewport: SubViewport
 var _image: TextureRect
@@ -61,13 +61,14 @@ func _bake_preview() -> void:
 static func make(kind: String, title: String, chosen: bool, action: Callable, biome: String = "pine", color: String = "") -> Button:
 	var button := ObjectThumbnail.new()
 	button.name = "Asset_"+kind
-	button.custom_minimum_size = Vector2(104,82)
-	button.tooltip_text = title+" — Tap selected asset for variants and placement"
+	button.custom_minimum_size = Vector2(112,90)
+	button.tooltip_text = title+" / Select to place; adjust with the object controls"
+	if CreatorCatalog.JUMP_ASSETS.has(kind): button.tooltip_text = title+" / Tap the track to place"
 	button.toggle_mode = true
 	button.button_pressed = chosen
 	button.pressed.connect(action)
 	EditorStyle.card(button,chosen)
-	button._cache_key = kind+"/"+TrackTheme.normalized(biome)+"/"+NativeTrackVisual.VERSION+"/"+CreatorPropVisual.VERSION+"/"+PREVIEW_VERSION+"/"+(color if kind == "container" else "")+("/"+JumpProfiles.VERSION if kind == "jump" else "")
+	button._cache_key = kind+"/"+TrackTheme.normalized(biome)+"/"+NativeTrackVisual.VERSION+"/"+CreatorPropVisual.VERSION+"/"+PREVIEW_VERSION+"/"+(color if kind == "container" else "")+("/"+JumpProfiles.VERSION if kind == "jump" or CreatorCatalog.JUMP_ASSETS.has(kind) else "")
 	var cached: Texture2D = _images.get(button._cache_key)
 	if cached != null: _images.erase(button._cache_key); _images[button._cache_key] = cached
 	button._kind = kind; button._biome = biome; button._color = color
@@ -75,7 +76,7 @@ static func make(kind: String, title: String, chosen: bool, action: Callable, bi
 	image.texture = cached
 	image.expand_mode=TextureRect.EXPAND_IGNORE_SIZE
 	image.position = Vector2(4,1)
-	image.size = Vector2(96,58)
+	image.size = Vector2(104,62)
 	image.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	image.texture_filter = CanvasItem.TEXTURE_FILTER_LINEAR_WITH_MIPMAPS
 	button.add_child(image)
@@ -83,10 +84,12 @@ static func make(kind: String, title: String, chosen: bool, action: Callable, bi
 	var label := Label.new()
 	label.text = title
 	label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-	label.add_theme_font_size_override("font_size",14)
+	label.add_theme_font_size_override("font_size",15)
 	label.add_theme_font_override("font",EditorStyle.FONT)
-	label.position = Vector2(0,59)
-	label.size = Vector2(104,20)
+	label.position = Vector2(4,64)
+	label.size = Vector2(104,22)
+	label.clip_text = true
+	label.text_overrun_behavior = TextServer.OVERRUN_TRIM_ELLIPSIS
 	label.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	button.add_child(label)
 	return button
@@ -105,6 +108,9 @@ static func _render_preview(button: Button, kind: String, biome: String, color: 
 	viewport.add_child(kit)
 	var track := NativeTrack.new()
 	var object: Dictionary = {"kind":kind,"position":[0,0],"rotation":0}
+	if CreatorCatalog.JUMP_ASSETS.has(kind):
+		object.kind = "jump"
+		object["jump_profile"] = str(CreatorCatalog.JUMP_ASSETS[kind])
 	if kind == "jump": object["jump_profile"] = JumpProfiles.default_for(biome)
 	if kind == "container" and ContainerPaint.valid(color): object["color"] = color
 	track.metadata = {"creator_document":{"objects":[object]}}
@@ -135,7 +141,7 @@ static func _render_preview(button: Button, kind: String, biome: String, color: 
 	camera.projection = Camera3D.PROJECTION_ORTHOGONAL
 	# Tall poles stay readable with a lower studio angle; flat road hazards
 	# reveal their profile from a more elevated angle. These are menu cameras.
-	var view := Vector3(7,5.5,-10) if kind in ["flag","light","gantry"] else Vector3(7,7.5,-10) if kind in ["oil","jump","speed_bump","pallet","pebbles"] else Vector3(7,6.3,-10)
+	var view := Vector3(7,5.5,-10) if kind in ["flag","light","gantry"] else Vector3(7,7.5,-10) if kind in ["oil","jump","speed_bump","pallet","pebbles"] or CreatorCatalog.JUMP_ASSETS.has(kind) else Vector3(7,6.3,-10)
 	camera.position = view
 	viewport.add_child(camera)
 	camera.look_at_from_position(camera.position,Vector3.ZERO)

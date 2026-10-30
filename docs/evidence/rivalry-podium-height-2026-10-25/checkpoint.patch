@@ -1,0 +1,99 @@
+--- a/game/ui/weekly_rivalry_page.gd
++++ b/game/ui/weekly_rivalry_page.gd
+@@ -744,7 +744,7 @@
+ 		var card: VBoxContainer = _card(podium,"",0)
+ 		var panel: PanelContainer = card.get_parent()
+ 		panel.name = "RivalryPodium_"+str(position+1)
+-		panel.custom_minimum_size.y = 194
++		panel.custom_minimum_size.y = 194-position
+ 		panel.size_flags_vertical = Control.SIZE_SHRINK_END
+ 		panel.size_flags_stretch_ratio = 1.0
+ 		var style: StyleBoxFlat = MenuStyle.card(1)
+@@ -770,8 +770,9 @@
+ 		icon.modulate = color
+ 		rank.add_child(icon)
+ 		_copy(rank,rank_text(driver),30,color).name = "RivalryPodiumRank_"+str(position+1)
+-		# Keep all three car and identity rows on shared baselines.
++		# Absorb the subtle rank steps above the shared car and footer baselines.
+ 		var header_space := Control.new()
++		header_space.custom_minimum_size.y = 2-position
+ 		header_space.size_flags_vertical = Control.SIZE_EXPAND_FILL
+ 		header_space.mouse_filter = Control.MOUSE_FILTER_IGNORE
+ 		card.add_child(header_space)
+--- a/game/tests/test_rivalry_view_polish.gd
++++ b/game/tests/test_rivalry_view_polish.gd
+@@ -101,7 +101,7 @@
+ func inspect_page(page: Control) -> void:
+ 	var winner: Control = page.find_child("RivalryPodium_1",true,false)
+ 	var runner: Control = page.find_child("RivalryPodium_2",true,false)
+-	check(is_equal_approx(runner.size.y,winner.size.y) and is_equal_approx(runner.global_position.y,winner.global_position.y),"podium cards share their height and top edge")
++	check(is_equal_approx(runner.global_position.y-winner.global_position.y,1.0),"second place starts a subtle one unit below first")
+ 	check(winner.size.y <= 194,"compact podium preserves standings space")
+ 	var reference: Rect2 = page.find_child("RivalryPodiumFooter_1",true,false).get_global_rect()
+ 	for position: int in range(1,4):
+@@ -120,7 +120,8 @@
+ 		check(car.size.y >= 88 and car.fit_to_frame,"larger car previews fit the available frame")
+ 		check(car.viewport.size.x <= 1536 and car.viewport.size.y <= 768,"render targets retain existing bounds")
+ 		var card: PanelContainer = page.find_child("RivalryPodium_"+str(position),true,false)
+-		check(is_equal_approx(card.size.y,winner.size.y) and is_equal_approx(card.global_position.y,winner.global_position.y),"every card shares the same top and bottom edges")
++		check(is_equal_approx(card.size.y,194.0-(position-1)) and is_equal_approx(card.global_position.y-winner.global_position.y,float(position-1)),"podium heights descend by one unit per position")
++		check(is_equal_approx(card.get_global_rect().end.y,winner.get_global_rect().end.y),"stepped podium cards retain a shared bottom edge")
+ 		var footer_style: StyleBoxFlat = footer.get_theme_stylebox("panel")
+ 		check(footer_style.corner_radius_top_left == 0 and footer_style.corner_radius_top_right == 0 and footer_style.border_width_top == 1,"footer joins the card as a full-width divided band")
+ 		check(card.get_global_rect().grow(-0.9).encloses(footer.get_global_rect()),"the metallic card outline continues around the entire name section")
+--- a/game/tests/test_rivalry_custom_cars.gd
++++ b/game/tests/test_rivalry_custom_cars.gd
+@@ -136,8 +136,10 @@
+ 				check(is_equal_approx(bounds.position.y,reference[row].position.y) and is_equal_approx(bounds.size.y,reference[row].size.y),
+ 					"podium car, identity, flag, name and points rows align across all three cards")
+ 		if place != 1:
+-			check(is_equal_approx(winner.size.y,panel.size.y) and is_equal_approx(winner.global_position.y,panel.global_position.y),
+-				"all three podium cards have equal heights and aligned top edges")
++			check(is_equal_approx(winner.size.y-panel.size.y,float(place-1)) and is_equal_approx(panel.global_position.y-winner.global_position.y,float(place-1)),
++				"podium cards descend in subtle one-unit steps")
++			check(is_equal_approx(winner.get_global_rect().end.y,panel.get_global_rect().end.y),
++				"ranked heights retain aligned card bottoms")
+ 	print("PODIUM_ROW_BOUNDS: size=%s rows=%s" % [root.size,reference])
+ 
+ func all_vehicle_views() -> void:
+--- a/game/tests/test_weekly_rivalry.gd
++++ b/game/tests/test_weekly_rivalry.gd
+@@ -100,7 +100,7 @@
+ 		inspect(app.root_ui,Rect2(Vector2.ZERO,root.get_visible_rect().size))
+ 		var winner: Control = app.root_ui.find_child("RivalryPodium_1",true,false)
+ 		var runner: Control = app.root_ui.find_child("RivalryPodium_2",true,false)
+-		check(is_equal_approx(winner.size.y,runner.size.y) and is_equal_approx(runner.global_position.y,winner.global_position.y),"podium cards have equal heights and aligned top edges")
++		check(is_equal_approx(winner.size.y-runner.size.y,1.0) and is_equal_approx(runner.global_position.y-winner.global_position.y,1.0),"podium gives first place a subtle one-unit height advantage")
+ 		check(winner.size.y <= 194,"the car podium remains compact enough to prioritize standings")
+ 		check(app.root_ui.find_child("RivalryPodiumCar_1",true,false) != null,"podium shows the winner's native car")
+ 		var left_panel: Control = app.root_ui.find_child("RivalryDriversPanel",true,false)
+--- a/AGENTS.md
++++ b/AGENTS.md
+@@ -7,6 +7,11 @@
+ ## Forklift modest high-speed turning override (2026-10-25)
+ FHT01-FHT02/R01/Q01: Forklift-4 changes only cornering grip42to45 and version; actual80km/h radius11.772to10.994m (6.61% tighter), entry quarter-turn1.042to0.992s, low-speed circles within1% and straight acceleration/cap/braking tick-exact. Retained input, rear articulation,80km/h, model and exact task-start shared physics0.70/six other car sources. Turning112/clearance204/all-car143five-lap-replay/handling88/rewind61/Garage-race111Compatibility+111desktopMobile/parser1175/import pass. Backend69pass/1existing exclusion and independent12578input five-lap server replay pass; only Forklift fixture entry changes. Old-tune112checks/13expected failures and probes retained; no invariant weakened. Commands, native evidence, hashes and scoped checkpoint: docs/FORKLIFT_HIGH_SPEED_TURNING_2026_10_25.md and docs/evidence/forklift-high-speed-turning-2026-10-25/report.json. Client reload, matching online verifier/config rollout and owner/device feel remain. No attachment/device test, APK, purchase, live mutation, deployment or owner-process restart; concurrent work preserved.
+ <!-- /FORKLIFT-HIGH-SPEED-TURNING-20261025 -->
++
++<!-- RIVALRY-PODIUM-HEIGHT-20261025 -->
++## Very subtle Rivalry podium heights override (2026-10-25)
++RPH01/R01/Q01: Owner replaces equal-height podiums with one logical unit per position: first highest, second one lower, third two lower. Minimum194/193/192 and intrinsic-header spacing preserve shared car/footer/bottom baselines; actual-App fallback fonts produce203/202/201, adding only2 to the original201 row. Final focused381Compatibility/381desktopMobile, cars141headless and parser1176 pass. Actual-App1085 has3 unchanged compact-height failures, reproduced with exact task-start source (1086/3); height-order and standings-space checks pass without weakening the old limit. Backdrop/shader hashes and concurrent translations remain. Commands, native views and task-only checkpoint: docs/RIVALRY_PODIUM_HEIGHT_2026_10_25.md and docs/evidence/rivalry-podium-height-2026-10-25/report.json. Reload and owner/device appearance acceptance remain; no attachment/device test, APK, live mutation, deployment or owner-process restart.
++<!-- /RIVALRY-PODIUM-HEIGHT-20261025 -->
+ 
+ <!-- ELECTRIC-LOW-SPEED-STEERING-20261025 -->
+ ## Calmer electric steering at very low speed override (2026-10-25)
+--- /dev/null
++++ b/docs/RIVALRY_PODIUM_HEIGHT_2026_10_25.md
+@@ -0,0 +1,13 @@
++# Subtle Rivalry podium heights, 2026-10-25
++
++RPH01: First place has the highest top edge, second starts one logical unit lower, and third starts two units lower. Common card bottoms, car previews and name/score baselines remain aligned. This owner request supersedes the previous equal-height requirement.
++
++The minimum card heights are 194/193/192. Rank-dependent minimum space above the cars also preserves the one-unit steps when the app's bundled font fallbacks require more height. In the actual app these cards measure 203/202/201; the podium grows two units versus the original 201-unit row, and standings retain 203 units. Card artwork, fonts, footer styling, native cars and interactions are retained. The backdrop script and shader match the task-start hashes exactly.
++
++R01: Updated existing height assertions in `test_rivalry_view_polish.gd`, `test_rivalry_custom_cars.gd` and `test_weekly_rivalry.gd`. Final focused tests pass 381 checks in Compatibility and 381 in desktop Mobile across 960x540, 1280x720 and 1600x720. Car layout passes 141 headless checks. The parser passes 1176 scripts, including the temporary baseline diagnostic.
++
++The actual-App suite has 1085 checks and three failures: its unchanged 194-unit compact-height limit already fails with the exact original page, which produces 201-unit cards. An isolated original-source run has 1086 checks and the same three failures. The new height-order assertion and standings-space assertion pass. No failing limit was weakened. The initial three-unit trial, superseded renders and sandbox certificate-store failure are retained in evidence; final one-unit steps limit added height to two units.
++
++Q01: Native previews, actual-App before/after views, command records, task-start sources, hashes and a task-only Git-checked patch are in [the evidence folder](evidence/rivalry-podium-height-2026-10-25/). The runtime changes are confined to `weekly_rivalry_page.gd`; existing translations and concurrent track-thumbnail profiles in that file are preserved. Concurrent Garage and Forklift documentation is excluded from the task checkpoint.
++
++Reload and owner appearance acceptance remain. No device attachment check or physical-device test, APK, live mutation, deployment or owner-process restart was performed.

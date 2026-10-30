@@ -9,9 +9,11 @@ from __future__ import annotations
 import argparse
 import ast
 import json
-from pathlib import Path
 import re
 import string
+from pathlib import Path
+
+import text_encoding
 
 ROOT = Path(__file__).resolve().parents[1]
 DESTINATION = ROOT / "game/localization"
@@ -260,6 +262,9 @@ def validate(entries: dict, messages: dict, language: str) -> list[str]:
     for key, entry in entries.items():
         if not key[1]:
             continue
+        for field, value in entry.items():
+            if isinstance(value, str) and text_encoding.find_issues(value):
+                errors.append(f"{language}: damaged text encoding in {field} for {key!r}")
         if key not in messages:
             errors.append(f"{language}: obsolete message {key!r}")
             continue
@@ -289,6 +294,8 @@ def main() -> None:
         print(f"Extracted {len(messages)} messages; refreshed English catalogue")
         return
     errors = []
+    for issue in text_encoding.scan(ROOT)['issues']:
+        errors.append(f"{issue['file']}:{issue.get('line', '?')}: {issue['reason']}")
     if not source_catalogue_matches((DESTINATION / "messages.pot").read_text(encoding="utf-8"), messages):
         errors.append("Source catalogue is stale; run python scripts/localization.py extract")
     manifest = json.loads((DESTINATION / "languages.json").read_text(encoding="utf-8"))["languages"]

@@ -1,0 +1,496 @@
+{
+  "schema": "bmt-memory-drift-investigation-v1",
+  "date": "2026-10-26",
+  "generated_utc": "2026-10-26T21:34:21.094754+00:00",
+  "request": "Investigate the memory drift",
+  "engine": {
+    "version": "4.7.2.stable.official.ed1daf0bf",
+    "exe_sha256": "ab1824f85bfd8e0e4128182c000c4003a3e042245b2967848d089b2a04b22424",
+    "sdk_revision": "e83fd0904c13356ed1d4c3d09f8bb9132bdc6b77"
+  },
+  "requirements": {
+    "MD01": "Attribute and fix repeat native blend allocation growth",
+    "MD02": "Separate headless engine queue growth from game ownership leaks",
+    "MD03": "Remove retained measurement history and make offline isolation explicit",
+    "MD04": "Preserve failing controls, validate native output and document remaining acceptance"
+  },
+  "findings": {
+    "native_leak": {
+      "status": "fixed in source and rebuilt Windows/Android libraries",
+      "mechanism": "Pinned godot-cpp Dictionary move assignment placement-constructs over its destination without destruction. BlendPiece.settings loses its initial empty Dictionary. Local const lvalue selects releasing copy assignment. SDK and engine remain unmodified.",
+      "bytes_per_piece": 128,
+      "pieces_per_editor_entry": 33,
+      "bytes_per_editor_entry": 4224,
+      "sdk_micro_copy_1000_calls_bytes": 0,
+      "sdk_micro_move_1000_calls_bytes": 128000,
+      "old_200_calls_bytes": {
+        "0_pieces": 0,
+        "1_piece": 25600,
+        "7_pieces": 179200,
+        "33_pieces": 844800
+      },
+      "fixed_200_calls_bytes": {
+        "0_pieces": 0,
+        "1_piece": 0,
+        "7_pieces": 0,
+        "33_pieces": 0
+      }
+    },
+    "headless_engine_queue": {
+      "status": "attributed; engine remains unmodified",
+      "mechanism": "Node.queue_accessibility_update enqueues without support check, while Node exit removes only when accessibility is supported. Headless lacks support, so freed IDs remain. Four HashSet buffers grow; matched allocation delta 246080 bytes.",
+      "dead_ids_per_minimal_editor_visit": 290,
+      "native_window_dead_ids": 0,
+      "proposed_patch": "engine-accessibility-proposed.patch",
+      "patch_status": "review proposal only; not compiled, installed or applied to the pinned engine"
+    },
+    "measurement_history": {
+      "status": "soak changed to streamed JSONL, no retained sample Array",
+      "frozen_original_row_recreation_cycle_15_198_growth": 651824,
+      "transient_last_row_and_encoding_bytes": 2488,
+      "warning": "Recreation is a mechanism control, not exact reconciliation of every original allocation."
+    },
+    "offline_isolation": {
+      "status": "corrected",
+      "old_assumption": "An empty Windows BMT_API_URL disables networking",
+      "actual_behavior": "An empty value can remove the variable; AccountController then uses its debug localhost default. Public discovery reads appeared.",
+      "new_guard": "Soak requires a user-data directory under build/, removes the environment override, writes empty backend URL in that owned profile, and asserts empty origin/unconfigured state before cycling."
+    }
+  },
+  "lifecycle": {
+    "editor-traced-v3-headless": {
+      "completed_cycles": 24,
+      "warm_cycles": [
+        4,
+        19
+      ],
+      "warm_samples": 16,
+      "static_bytes_min": 401413080,
+      "static_bytes_max": 401660660,
+      "static_bytes_range": 247580,
+      "queue_adjusted_bytes_min": 401351436,
+      "queue_adjusted_bytes_max": 401414816,
+      "object_counts": [
+        3128
+      ],
+      "node_counts": [
+        270
+      ],
+      "resource_counts": [
+        662
+      ],
+      "backend": "Explicit empty isolated backend.cfg; empty origin asserted before loop",
+      "counts_meaning": "Lifecycle observations; not counted as independent functional assertions"
+    },
+    "editor-fixed-headless": {
+      "completed_cycles": 20,
+      "warm_cycles": [
+        4,
+        19
+      ],
+      "warm_samples": 16,
+      "static_bytes_min": 401397694,
+      "static_bytes_max": 401581914,
+      "static_bytes_range": 184220,
+      "queue_adjusted_bytes_min": 401336050,
+      "queue_adjusted_bytes_max": 401336070,
+      "object_counts": [
+        3128
+      ],
+      "node_counts": [
+        270
+      ],
+      "resource_counts": [
+        662
+      ],
+      "backend": "Explicit empty isolated backend.cfg; empty origin asserted before loop",
+      "counts_meaning": "Lifecycle observations; not counted as independent functional assertions"
+    },
+    "editor-fixed-window": {
+      "completed_cycles": 20,
+      "warm_cycles": [
+        4,
+        19
+      ],
+      "warm_samples": 16,
+      "static_bytes_min": 253420331,
+      "static_bytes_max": 253420463,
+      "static_bytes_range": 132,
+      "queue_adjusted_bytes_min": 253404887,
+      "queue_adjusted_bytes_max": 253405019,
+      "object_counts": [
+        3029
+      ],
+      "node_counts": [
+        270
+      ],
+      "resource_counts": [
+        662
+      ],
+      "backend": "Explicit empty isolated backend.cfg; empty origin asserted before loop",
+      "counts_meaning": "Lifecycle observations; not counted as independent functional assertions"
+    }
+  },
+  "native_trace_dictionary_counts": {
+    "editor-traced-v3-headless": {
+      "8": {
+        "outstanding_default_dictionary_allocations": 199,
+        "requested_bytes_each": 128,
+        "crt_allocation_bytes_each": 144,
+        "header": "# 8 base=7ff7d11f0000 dropped=0 threshold=64"
+      },
+      "18": {
+        "outstanding_default_dictionary_allocations": 529,
+        "requested_bytes_each": 128,
+        "crt_allocation_bytes_each": 144,
+        "header": "# 18 base=7ff7d11f0000 dropped=0 threshold=64"
+      }
+    },
+    "editor-fixed-headless": {
+      "8": {
+        "outstanding_default_dictionary_allocations": 1,
+        "requested_bytes_each": 128,
+        "crt_allocation_bytes_each": 144,
+        "header": "# 8 base=7ff7d11f0000 dropped=0 threshold=64"
+      },
+      "18": {
+        "outstanding_default_dictionary_allocations": 1,
+        "requested_bytes_each": 128,
+        "crt_allocation_bytes_each": 144,
+        "header": "# 18 base=7ff7d11f0000 dropped=0 threshold=64"
+      }
+    },
+    "editor-fixed-window": {
+      "8": {
+        "outstanding_default_dictionary_allocations": 1,
+        "requested_bytes_each": 128,
+        "crt_allocation_bytes_each": 144,
+        "header": "# 8 base=7ff7d11f0000 dropped=0 threshold=64"
+      },
+      "18": {
+        "outstanding_default_dictionary_allocations": 1,
+        "requested_bytes_each": 128,
+        "crt_allocation_bytes_each": 144,
+        "header": "# 18 base=7ff7d11f0000 dropped=0 threshold=64"
+      }
+    }
+  },
+  "validation": [
+    {
+      "test": "isolated old native blend regression",
+      "checks": 10,
+      "failures": 3,
+      "expected_failing_control": true
+    },
+    {
+      "test": "isolated fixed native blend regression",
+      "checks": 10,
+      "failures": 0
+    },
+    {
+      "test": "project native blend regression",
+      "checks": 9,
+      "failures": 0
+    },
+    {
+      "test": "native road scalar parity, all five themes and bridge fixture",
+      "checks": 115,
+      "failures": 0
+    },
+    {
+      "test": "native winter/raster/compiler parity",
+      "checks": 482,
+      "failures": 0
+    },
+    {
+      "test": "streamed full lifecycle harness",
+      "cycles": 3,
+      "checks": 14,
+      "failures": 0
+    },
+    {
+      "test": "whole project parser",
+      "scripts": 1318,
+      "failures": 0
+    },
+    {
+      "test": "pinned editor import",
+      "exit_code": 0
+    },
+    {
+      "test": "profiler allocator selftest",
+      "churn_allocations": 200000,
+      "milliseconds": 529,
+      "known_4096_byte_payload": "present while held; absent after clear; no dropped records"
+    }
+  ],
+  "limitations": [
+    "Godot static allocation counters, not process private bytes, Android PSS, graphics residency or thermal behavior.",
+    "The original 200-cycle delta of 9,125,820 bytes remains a historical mixed measurement; no exact full reconciliation or fresh 200-cycle acceptance is claimed.",
+    "No physical-device attachment check/test, APK, real authentication/purchase, live mutation, deployment or owner-process restart.",
+    "Android libraries compile and preserve symbols; Android runtime and device acceptance remain.",
+    "Profiler-v2 lookup slowdown caused a diagnostic deadline and interruption; those logs are retained as superseded probes, not product acceptance failures.",
+    "Sandbox root-certificate-store errors occur in Godot logs. Successful final runs have no script errors or leaked-object shutdown findings.",
+    "Concurrent App, profile, car models, backend and other owner work were preserved.",
+    "The isolated editor import reports its Android build-tools directory is unavailable; Android NDK compilation succeeded, and no APK/export claim is made."
+  ],
+  "source_hashes": {
+    "native/track_geometry/road_geometry.hpp": {
+      "sha256": "884f76a171f3b51cdb3c6e69fa06635005ba87d8627aab1cb92574a3cc7d41e6",
+      "bytes": 27648
+    },
+    "native/track_geometry/track_geometry.cpp": {
+      "sha256": "f97d4f8ec8bf5649087dbe0267bf70cfa51c27718365bb4ba8dcae4a4be74960",
+      "bytes": 16499
+    },
+    "game/tests/soak_runtime_correctness.gd": {
+      "sha256": "abc64ff297a57eb6afb44709214ff11703bedf219d8f58aef1511d8f725a5251",
+      "bytes": 6800
+    },
+    "game/tests/test_native_blend_memory.gd": {
+      "sha256": "47fa1830f3efc30b65f61342b1451fbd93ca3bcb7ab2554ea6c294425aad121c",
+      "bytes": 1967
+    },
+    "game/tests/test_native_blend_memory.gd.uid": {
+      "sha256": "a6192b9700ad7359a71db99ffc582a75f1164f2f5ffa075954a15678672fd6a4",
+      "bytes": 20
+    },
+    "game/platform/track_geometry/track_geometry.gdextension": {
+      "sha256": "e1e98928d8e2bcf31baf3b399b0ac74682b27eb378be1313c50fb11c52a38b48",
+      "bytes": 403
+    },
+    "game/platform/track_geometry/bmt_track_geometry.windows.x86_64.3ac2a06f796a.dll": {
+      "sha256": "3ac2a06f796a88488112f80bcc7d224a5602f0ba7b6e418bcca8166c28ac3ef8",
+      "bytes": 838208
+    },
+    "game/platform/track_geometry/libbmt_track_geometry.android.arm64.so": {
+      "sha256": "17b38c02d28719b3f67d9497e3aa886af2485ef88c20ebf64aafb6fc8873d8bb",
+      "bytes": 1122272
+    },
+    "game/platform/track_geometry/libbmt_track_geometry.android.x86_64.so": {
+      "sha256": "e0a532217dc5ebeec54cbbb9034bd46d01621d560235427a3c3a7a64154898e3",
+      "bytes": 1113880
+    },
+    ".tools/godot-cpp-music/gen/src/variant/dictionary.cpp": {
+      "sha256": "c33d7b831df647d75a2798b23263246bee6547f3ad43dedf0bc7b6c01861af15",
+      "bytes": 23039
+    },
+    ".tools/godot-cpp-music/bin/libgodot-cpp.windows.template_release.x86_64.a": {
+      "sha256": "068dc5708b870495148825e726d00b8c89936ee2f204287a4550a90209c6d47c",
+      "bytes": 2517878
+    }
+  },
+  "artifact_hashes": {
+    "accessibility-headless.log": {
+      "sha256": "f0c473854f2dea99ec1caaffcdc7c043ae222f46be933b0727024945dfabd0bc",
+      "bytes": 9566
+    },
+    "accessibility-no-update-control.log": {
+      "sha256": "eabb0fa220329a6e9adee9778340f2b5b6d590642ea14b703b9543f8f1ad0958",
+      "bytes": 7728
+    },
+    "accessibility-window.log": {
+      "sha256": "732cc0324f5455f8edcdf96170f909cba3d0b978cd3511dd6f419c6f76491805",
+      "bytes": 9550
+    },
+    "binding-assignment-excerpt.cpp.txt": {
+      "sha256": "263b47287d20fa733db0d7d555ae772f382681d22510568e63fed0cfe6d16fa8",
+      "bytes": 385
+    },
+    "blend-fixed-control.log": {
+      "sha256": "601432f4f3951a7d56ca5d032577e0424bff34bb4877df9668ca4127f27ac777",
+      "bytes": 1656
+    },
+    "blend-fixed.log": {
+      "sha256": "3dd005f3c7cbd8d881c8f71658aa9aa09f67cb6b945f27d1b87e99571c55f9a1",
+      "bytes": 1654
+    },
+    "blend-original.log": {
+      "sha256": "5d2fcf1f68b1b91a351d485efd66b9dfd8dab6d9642aa2c311722cc81de92eee",
+      "bytes": 2120
+    },
+    "commands.txt": {
+      "sha256": "cc9ee9e9b6ad800cea479b5803da987169ea999b6be2c438ec567bb17fa5087f",
+      "bytes": 7762
+    },
+    "dictionary-assignment.log": {
+      "sha256": "9094651cab6ace0d71a44830e770d705c75c50e0b5d66ca84feb1b6781b7612c",
+      "bytes": 1616
+    },
+    "editor-fixed-headless.jsonl": {
+      "sha256": "cd2ceb71d354797e85993b6de427b0bacd75e2e0339018da0d1fbee57eeeb7ba",
+      "bytes": 3389
+    },
+    "editor-fixed-headless.log": {
+      "sha256": "2fe23c063628b4f2f20249c14bacacbd17829a247f06a6ccc501ff806a73520a",
+      "bytes": 8544
+    },
+    "editor-fixed-window.jsonl": {
+      "sha256": "b23f87e5f9674abe2de4ab7dd905eae73d690f7f6810851368deb3c3f6c4c782",
+      "bytes": 3281
+    },
+    "editor-fixed-window.log": {
+      "sha256": "56f6604fdad2712f780c148856e4b3c86700c9eb9ce40ae54bf1a0558b3abcc6",
+      "bytes": 8518
+    },
+    "editor-traced-v3-headless.jsonl": {
+      "sha256": "8cfdd7799e8034ec481e7eb94d47462d55f5f072d9ced0dccf5ca65fae42cc34",
+      "bytes": 4041
+    },
+    "editor-traced-v3-headless.log": {
+      "sha256": "a76c6d9fa7a6785837de20c5f908c4f8eda1c0e29b31fa9ed20dd5497ba3faa5",
+      "bytes": 9920
+    },
+    "engine-accessibility-proposed.patch": {
+      "sha256": "5a8cd3ff3c7c033a513986eff4e872652949f242e6a1885e166c7e3cd2fb7fc2",
+      "bytes": 478
+    },
+    "heap-selftest-freed.tsv": {
+      "sha256": "1b306bfae0762da9d3085a3e92078b2be53e04f62692490034bfa4f78d900e7b",
+      "bytes": 1557
+    },
+    "heap-selftest-held.tsv": {
+      "sha256": "3507dd44e9467c24be3135aa03244c54161c2afde4d02b175fb65815cc39674f",
+      "bytes": 1533
+    },
+    "heap-selftest.log": {
+      "sha256": "1142419bf8a24cbdbaade73546cf4885f403e03edc2de6762ea13554c2960dbb",
+      "bytes": 1330
+    },
+    "import.log": {
+      "sha256": "11c981d6b755f3935a6b0cbe8e84e253d70736c0ee59f6fa7d6d19b80f8f0d1e",
+      "bytes": 5058
+    },
+    "original-sample.json": {
+      "sha256": "dd5c6275957d0eaca4cae40a475092385e837f2f59d721fac640c60769efd0a4",
+      "bytes": 684
+    },
+    "parser-final.log": {
+      "sha256": "bea918f1cde677f630529c50fb312858a57867f6a370c24fa3cf19b5624087a4",
+      "bytes": 1240
+    },
+    "road-parity.log": {
+      "sha256": "b0559b31fd6e389287da1846a8f03d93703498a4f770f9beb8fe5e4fc6ff439d",
+      "bytes": 2634
+    },
+    "sample-retention.log": {
+      "sha256": "1ec96f7e7ce889fe405ec759382eae6b75880941c42d29a0b9ee9e45c5f6a520",
+      "bytes": 1294
+    },
+    "stream-soak.log": {
+      "sha256": "49edf7ca5dadc63e044a50e33cc4d5c5f241e3937332258eb565d2a1de8c611c",
+      "bytes": 5418
+    },
+    "winter-parity.log": {
+      "sha256": "c4379d429d9568671dcc052d2949c5eac20414ed7ec8cf1dc5f77db86813a005",
+      "bytes": 5164
+    },
+    "native-road-check/kernel-report.json": {
+      "sha256": "64b95c5825cf10db3c67e9c7d4e5354ba9b432ba2809ffb2ae0081e0271253d2",
+      "bytes": 778
+    },
+    "native-traces/editor-fixed-headless-18.tsv.gz": {
+      "sha256": "a425f874b4c9647cd9d933e1753a982aed50e727ad0fe4231a7cf35dd9748975",
+      "bytes": 712967
+    },
+    "native-traces/editor-fixed-headless-8.tsv.gz": {
+      "sha256": "3618a8b7613f27f1205fbd35bc7196d107ced31c13098c995eac08208f77bf4c",
+      "bytes": 712555
+    },
+    "native-traces/editor-fixed-window-18.tsv.gz": {
+      "sha256": "bb9593bb55507610d25c13a0628ea5c63dcbc32e8da9176400dee7b322e7506a",
+      "bytes": 746696
+    },
+    "native-traces/editor-fixed-window-8.tsv.gz": {
+      "sha256": "1650f8832f9bfe39e866819c5645296e896c69713efc4dceccc636571d588bb2",
+      "bytes": 734758
+    },
+    "native-traces/editor-traced-v3-headless-18.tsv.gz": {
+      "sha256": "7650b3f691caafb3fb1a848345cf0ba078774cbfb717e3e9761cdeb2b02fc0d3",
+      "bytes": 766367
+    },
+    "native-traces/editor-traced-v3-headless-8.tsv.gz": {
+      "sha256": "7372b62b1ffc6386e9403e752c21e29ef898cfc22d001215acd65e60729589e9",
+      "bytes": 762831
+    },
+    "native-winter-check/kernel-report.json": {
+      "sha256": "b3918a8d5b76995af461722e038fa72f47286898de3bfa24226405b9510807b2",
+      "bytes": 2015
+    },
+    "probes/accessibility_probe.gd": {
+      "sha256": "577ee4184c3d05fa73aecd96bb774acf719b2eff2a309a5c58dd575d94dcb546",
+      "bytes": 4751
+    },
+    "probes/dictionary_assignment_probe.gd": {
+      "sha256": "e1a84ca1d8d92f24563d2826519dd8323d4e3cc7c8f9b14013565dbae9924d75",
+      "bytes": 822
+    },
+    "probes/heap_probe.cpp": {
+      "sha256": "e6203f73587e5876152b3bbe5859b6ffceea4a26bb56da0981b1d1c8ca893446",
+      "bytes": 8512
+    },
+    "probes/heap_selftest.gd": {
+      "sha256": "214ca36322dd74853feee427b073776080c1d6e5a9fd920d026efa8073eb67d4",
+      "bytes": 874
+    },
+    "probes/minimal_editor_fixed_probe.gd": {
+      "sha256": "7fefe4f5034286001dd8aa9d3f13e6a0949eb6fa54347062cbbfa258597b2e8f",
+      "bytes": 3359
+    },
+    "probes/minimal_editor_v3_probe.gd": {
+      "sha256": "d5d5cb74939a50874d1187c27aa8a3ab0e88a7164882d7c0ebd5624cee4d0489",
+      "bytes": 3363
+    },
+    "probes/sample_retention_probe.gd": {
+      "sha256": "96fd6ed10a00dfe4ebcc7cf07a2c6f50260bce5e53e5b381883f0eea2a960d85",
+      "bytes": 831
+    },
+    "probes/verify_checkpoint.py": {
+      "sha256": "cc0bad62fabf6685248d542f07af49734bd78e0711fcc4e4205f93f36423e7e8",
+      "bytes": 5287
+    },
+    "stream-soak/soak-3-gl_compatibility-headless.json": {
+      "sha256": "50087e4314642da8d21a92b855b7cf75687632ac350305892659d2ee2abd75b4",
+      "bytes": 432
+    },
+    "stream-soak/soak-3-gl_compatibility-headless.jsonl": {
+      "sha256": "ead35c3836b1ff05f0d8d9938ff8d2bbb8a44f3a8043189472319ecaaeadb1a5",
+      "bytes": 1864
+    },
+    "superseded-probes/editor-minimal-headless.log": {
+      "sha256": "b906aef8282d8ca529de4ba9aa2221bf958b4f791604f62458de44595a22ee50",
+      "bytes": 6564
+    },
+    "superseded-probes/editor-minimal-window.log": {
+      "sha256": "f79d2fb347bd59526992c73648f206a01ee603d8ec5adf990c0be0fadb1c11d3",
+      "bytes": 7462
+    },
+    "superseded-probes/instrumentation-failure-force-draw.log": {
+      "sha256": "0950d13a2d4eac6c2dffe40fed6f1064d343291fbd84d9c18cad9393273a99af",
+      "bytes": 1594
+    },
+    "superseded-probes/instrumentation-failure-full.log": {
+      "sha256": "28779e0fc4ec7bdc9bc1df2ddc2c2be24f3bbfdd8fc855b7212998004a3ffd93",
+      "bytes": 10710
+    },
+    "superseded-probes/instrumentation-failure-menus.log": {
+      "sha256": "def88c438e382779b0a8f400ada79b7448679c8effe0a475a099d4dda180e426",
+      "bytes": 4484
+    }
+  },
+  "proposed_engine_patch_context_check": "passes against the pinned function excerpt; engine not rebuilt",
+  "parity_suite_copies": "verified identical except report destinations",
+  "additional_retained_setup_failures": [
+    "PowerShell script execution policy rejected retain_native_symbols.ps1; direct objcopy/strip completed the same owned-build operations.",
+    "Windows symlink creation lacked privilege; a minimal independent baseline project avoided symlinks.",
+    "Checkpoint verification initially exposed parent-repository patch filtering and global autocrlf conversion; final verification sets a Git ceiling, disables autocrlf and compares exact forward/reverse file bytes."
+  ],
+  "checkpoint": {
+    "path": "docs/evidence/memory-drift-2026-10-26/checkpoint.patch",
+    "scope": "Explicit task baseline/final trees; shared status files include only the appended investigation marker. Concurrent prepends and all unrelated runtime work excluded.",
+    "verification": "git apply --check, forward application, exact SHA256 tree comparison, reverse --check, reverse application and exact baseline comparison",
+    "main_git_index_changed": false,
+    "staging_or_commit": false,
+    "soak_baseline": "Reconstructed from the retained previous runtime-correctness checkpoint; normalized to its LF patch text. Other changed runtime/native files use direct task-baseline copies."
+  }
+}

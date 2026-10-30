@@ -103,18 +103,21 @@ static func collar(parent: Node3D, label: String, center: Vector3, width: float,
 			return Vector3(-d.y,d.x*sin(u*TAU),d.x*cos(u*TAU))))
 	node.position = center
 
-static func body(car: CarVisual, trim: Material, metal: Material) -> void:
+static func nose(car: CarVisual, metal: Material) -> void:
 	var simple: bool = car.simple_model
-	_shell_fasteners(car.body.find_child("SculptedFrontFairing",true,false),"NosePanelSockets",[Vector2(-0.46,-1.29),Vector2(0.46,-1.29)],metal,simple)
-	_shell_fasteners(car.body.find_child("NassauFairing",true,false),"FairingPanelSockets",[Vector2(-0.125,-0.65),Vector2(0.125,-0.65)],metal,simple)
+	var suffix: String = preload("res://vehicle/kart_kits.gd").suffix(str(car.customisation.hood))
+	_shell_fasteners(car.body.find_child("SculptedFrontFairing"+suffix,true,false),"NosePanelSockets"+suffix,[Vector2(-0.46,-1.29),Vector2(0.46,-1.29)],metal,simple)
+	_shell_fasteners(car.body.find_child("NassauFairing"+suffix,true,false),"FairingPanelSockets"+suffix,[Vector2(-0.125,-0.65),Vector2(0.125,-0.65)],metal,simple)
+
+static func pods(car: CarVisual, trim: Material, metal: Material) -> void:
+	var simple: bool = car.simple_model
+	var suffix: String = preload("res://vehicle/kart_kits.gd").suffix(str(car.customisation.body))
 	# Outboard rub strip follows the real pod; its inset ends avoid floating corners.
-	for pod: Node in car.body.get_children():
-		if pod is not Node3D or absf(pod.position.x)<0.5: continue
-		var shell: MeshInstance3D = pod.find_child("FormedSidePod",true,false)
-		if shell==null: continue
-		_shell_fasteners(shell,"PodPanelSockets",[Vector2(0,-0.43),Vector2(0,0.29)],metal,simple)
+	for shell: MeshInstance3D in car.body.find_children("FormedSidePod"+suffix,"MeshInstance3D",true,false):
+		var pod: Node3D = shell.get_parent()
+		_shell_fasteners(shell,"PodPanelSockets"+suffix,[Vector2(0,-0.43),Vector2(0,0.29)],metal,simple)
 		var side: float = signf(pod.position.x)
-		G.attach(pod,"PodRubStrip|formed-fitted-v2|"+str(side)+("|simple" if simple else "|full"),trim,func() -> ArrayMesh:
+		G.attach(pod,"PodRubStrip"+suffix+("|formed-fitted-v2|" if suffix.is_empty() else "|formed-fitted-v3|")+str(side)+("|simple" if simple else "|full"),trim,func() -> ArrayMesh:
 			var triangles: TriangleMesh = shell.mesh.generate_triangle_mesh()
 			var strip: Array[Vector3] = []
 			for step: int in range(21):
@@ -123,10 +126,14 @@ static func body(car: CarVisual, trim: Material, metal: Material) -> void:
 				assert(not hit.is_empty())
 				strip.append(hit.position+hit.normal*0.001)
 			var carrier := Node3D.new()
-			G.tube(carrier,"PodRubStripTube",strip,0.008,trim,simple,24)
+			if suffix.is_empty(): G.tube(carrier,"PodRubStripTube",strip,0.008,trim,simple,24)
+			else: preload("res://vehicle/kart_kit_shapes.gd").tube(carrier,"PodRubStripTube",strip,0.008,trim,simple,24)
 			var mesh: ArrayMesh = carrier.get_child(0).mesh
 			carrier.free()
 			return mesh)
+
+static func brackets(car: CarVisual, metal: Material) -> void:
+	var simple: bool = car.simple_model
 	# Folded fairing brackets join the chassis instead of leaving a floating cover.
 	for side: float in [-1.0,1.0]:
 		G.tube(car.body,"FairingChassisBracket",[Vector3(side*0.18,0.17,-0.88),Vector3(side*0.13,0.34,-0.77),Vector3(side*0.10,0.465,-0.74)],0.009,metal,simple,8)

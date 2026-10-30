@@ -1,7 +1,7 @@
 extends RefCounted
 ## Explicit per-car equivalence; every other race-contract field stays exact.
-## .75 changes only Electric slide controls. Six unchanged cars retain .74 math.
-const ELECTRIC_ONLY_PHYSICS: Array[String] = ["arcade-planar-0.74","arcade-planar-0.75"]
+## .75 and .76 change only Electric handling. Six unchanged cars retain .74 math.
+const ELECTRIC_ONLY_PHYSICS: Array[String] = ["arcade-planar-0.74","arcade-planar-0.75","arcade-planar-0.76"]
 const UNCHANGED_VEHICLES: Array[String] = ["compact","pickup","classic","formula","kart","forklift"]
 
 static func physics_matches(version: String, vehicle_id: String) -> bool:

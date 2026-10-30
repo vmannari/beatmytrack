@@ -1,0 +1,483 @@
+diff --git a/game/vehicle/kart_kit_shapes.gd b/game/vehicle/kart_kit_shapes.gd
+index d73d89d0a..528ed2548 100644
+--- a/game/vehicle/kart_kit_shapes.gd
++++ b/game/vehicle/kart_kit_shapes.gd
+@@ -15,7 +15,7 @@ static func _point(station: Vector4, section: Vector2) -> Vector3:
+ 	return Vector3(section.x*station.y,station.z+section.y*station.w,station.x)
+ 
+ static func formed(parent: Node3D, label: String, profile: Array[Vector4], contour: Array[Vector2], material: Material, simple: bool, fillet: float = 0.08) -> MeshInstance3D:
+-	return G.attach(parent,label+"|kit-section-v1|"+str(profile)+"|"+str(contour)+"|"+str(fillet)+("|simple" if simple else "|full"),material,func() -> ArrayMesh:
++	return G.attach(parent,label+"|kit-section-v2|"+str(profile)+"|"+str(contour)+"|"+str(fillet)+("|simple" if simple else "|full"),material,func() -> ArrayMesh:
+ 		var ring: Array[Vector2] = []
+ 		for index: int in range(contour.size()):
+ 			var corner: Vector2 = contour[index]
+@@ -33,19 +33,105 @@ static func formed(parent: Node3D, label: String, profile: Array[Vector4], conto
+ 			var delta: Vector2 = b-a
+ 			var outward: Vector2 = Vector2(-delta.y,delta.x) if clockwise else Vector2(delta.y,-delta.x)
+ 			var mesh: ArrayMesh = G.surface(1,profile.size()-1,func(u: float,v: float) -> Vector3:
+-				return _point(preload("res://vehicle/kart_bodywork.gd")._station(profile,v),a.lerp(b,u)),func(_u: float,_v: float) -> Vector3:
++				# Adjacent sides and caps must use identical endpoint coordinates.
++				var section: Vector2 = a if u==0.0 else b if u==1.0 else a.lerp(b,u)
++				return _point(preload("res://vehicle/kart_bodywork.gd")._station(profile,v),section),func(_u: float,_v: float) -> Vector3:
+ 				return Vector3(outward.x,outward.y,0))
+ 			tool.append_from(mesh,0,Transform3D.IDENTITY)
+ 		var caps: PackedInt32Array = Geometry2D.triangulate_polygon(PackedVector2Array(ring))
+ 		assert(not caps.is_empty(),"Kart kit section must close without crossing itself")
+ 		for end: int in [0,1]:
+-			var station: Vector4 = profile[0] if end==0 else profile[-1]
++			# Match the sampled side endpoint exactly, including float interpolation.
++			var station: Vector4 = preload("res://vehicle/kart_bodywork.gd")._station(profile,float(end))
++			# The side streams already have indices. Appending bare cap vertices
++			# leaves them unreferenced; append another indexed surface instead.
++			var cap := SurfaceTool.new()
++			cap.begin(Mesh.PRIMITIVE_TRIANGLES)
+ 			for face: int in range(caps.size()/3):
+-				_triangle(tool,_point(station,ring[caps[face*3]]),_point(station,ring[caps[face*3+1]]),_point(station,ring[caps[face*3+2]]),Vector3(0,0,-1 if end==0 else 1))
++				_triangle(cap,_point(station,ring[caps[face*3]]),_point(station,ring[caps[face*3+1]]),_point(station,ring[caps[face*3+2]]),Vector3(0,0,-1 if end==0 else 1))
++			cap.index()
++			tool.append_from(cap.commit(),0,Transform3D.IDENTITY)
+ 		tool.index()
+ 		tool.generate_tangents()
+ 		return tool.commit())
+ 
++static func lathe(parent: Node3D, label: String, profile: Array[Vector2], material: Material, simple: bool) -> MeshInstance3D:
++	var exterior: Array[Vector2] = profile.duplicate()
++	# Mirroring axial coordinates reverses the profile and every surface normal.
++	if not Geometry2D.is_polygon_clockwise(PackedVector2Array(exterior)): exterior.reverse()
++	return G.lathe(parent,label+"_exterior_v2",exterior,material,simple)
++
++static func _path(points: Array[Vector3], t: float, closed: bool) -> Vector3:
++	if not closed: return G.curve(points,t)
++	var count: int = points.size()-1
++	var at: float = fposmod(t,1.0)*count
++	var row: int = int(at)
++	return points[row].cubic_interpolate(points[(row+1)%count],points[posmod(row-1,count)],points[(row+2)%count],at-row)
++
++static func tube(parent: Node3D, label: String, points: Array[Vector3], radius: float, material: Material, simple: bool, segments: int = 32) -> void:
++	G.attach(parent,label+"|closed-tube-v1|"+str(points)+"|"+str(radius)+"|"+str(segments)+("|simple" if simple else "|full"),material,func() -> ArrayMesh:
++		var closed: bool = points[0].distance_squared_to(points[-1])<1e-12
++		var columns: int = 8 if radius<0.018 else 12
++		var rows: int = segments
++		if simple:
++			columns = maxi(4,columns/2)
++			rows = maxi(2,rows/2)
++		var centers: Array[Vector3] = []
++		var tangents: Array[Vector3] = []
++		var axes: Array[Vector3] = []
++		for row: int in range(rows+1):
++			var t: float = float(row)/rows
++			centers.append(_path(points,t,closed))
++			var before: float = t-0.0001 if closed else maxf(0,t-0.0001)
++			var after: float = t+0.0001 if closed else minf(1,t+0.0001)
++			var tangent: Vector3 = (_path(points,after,closed)-_path(points,before,closed)).normalized()
++			tangents.append(tangent)
++			if row==0:
++				axes.append(tangent.cross(Vector3.UP if absf(tangent.y)<0.8 else Vector3.RIGHT).normalized())
++			else:
++				axes.append((Quaternion(tangents[row-1],tangent)*axes[row-1]).slide(tangent).normalized())
++		if closed:
++			var correction: float = axes[-1].signed_angle_to(axes[0],tangents[0])
++			for row: int in range(rows+1): axes[row] = Basis(tangents[row],correction*row/rows)*axes[row]
++			centers[-1] = centers[0]; tangents[-1] = tangents[0]; axes[-1] = axes[0]
++		var vertices := PackedVector3Array()
++		var normals := PackedVector3Array()
++		var uv := PackedVector2Array()
++		var indices := PackedInt32Array()
++		for row: int in range(rows+1):
++			for column: int in range(columns+1):
++				var angle: float = TAU*(column%columns)/columns
++				var normal: Vector3 = axes[row]*cos(angle)+tangents[row].cross(axes[row])*sin(angle)
++				vertices.append(centers[row]+normal*radius)
++				normals.append(normal)
++				uv.append(Vector2(float(column)/columns,float(row)/rows))
++		for row: int in range(rows):
++			for column: int in range(columns):
++				var a: int = row*(columns+1)+column
++				indices.append_array(PackedInt32Array([a,a+columns+2,a+1,a,a+columns+1,a+columns+2]))
++		if not closed:
++			for row: int in [0,rows]:
++				var normal: Vector3 = tangents[row]*(-1 if row==0 else 1)
++				var center_index: int = vertices.size()
++				vertices.append(centers[row]); normals.append(normal); uv.append(Vector2(0.5,0.5))
++				var rim: int = vertices.size()
++				for column: int in range(columns):
++					vertices.append(vertices[row*(columns+1)+column]); normals.append(normal)
++					uv.append(Vector2(cos(TAU*column/columns),sin(TAU*column/columns))*0.5+Vector2.ONE*0.5)
++				for column: int in range(columns):
++					var b: int = rim+column
++					var c: int = rim+(column+1)%columns
++					if (vertices[b]-centers[row]).cross(vertices[c]-centers[row]).dot(normal)>0:
++						indices.append_array(PackedInt32Array([center_index,c,b]))
++					else: indices.append_array(PackedInt32Array([center_index,b,c]))
++		var arrays: Array = []
++		arrays.resize(Mesh.ARRAY_MAX)
++		arrays[Mesh.ARRAY_VERTEX] = vertices; arrays[Mesh.ARRAY_NORMAL] = normals
++		arrays[Mesh.ARRAY_TEX_UV] = uv; arrays[Mesh.ARRAY_INDEX] = indices
++		var mesh := ArrayMesh.new()
++		mesh.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES,arrays)
++		return mesh)
++
+ static func spoke(parent: Node3D, label: String, polygon: Array[Vector2], angle: float, side: float, material: Material) -> void:
+ 	# Polygon coordinates are radial/tangential. A shallow bevel closes both faces.
+ 	G.attach(parent,label+"|forged-v1|"+str(polygon)+"|"+str(angle)+"|"+str(side),material,func() -> ArrayMesh:
+diff --git a/game/vehicle/kart_kits.gd b/game/vehicle/kart_kits.gd
+index 64ba2e48d..ecb372be9 100644
+--- a/game/vehicle/kart_kits.gd
++++ b/game/vehicle/kart_kits.gd
+@@ -70,9 +70,9 @@ static func bumper(car: CarVisual, parent: Node3D, trim: Material, metal: Materi
+ 	var s: bool = car.simple_model
+ 	var kind: String = str(car.customisation.aero)
+ 	for side: float in [-1.0,1.0]:
+-		G.tube(parent,"KitBumperStay_"+kind,[Vector3(side*0.30,0.17,1.04),Vector3(side*0.35,0.18,1.17),Vector3(side*0.35,0.22,1.29)],0.022,metal,s,16)
++		Shapes.tube(parent,"KitBumperStay_"+kind,[Vector3(side*0.30,0.17,1.04),Vector3(side*0.35,0.18,1.17),Vector3(side*0.35,0.22,1.29)],0.022,metal,s,16)
+ 	if kind=="loop":
+-		G.tube(parent,"WraparoundRearBumper",[Vector3(-0.73,0.23,1.22),Vector3(-0.69,0.23,1.26),Vector3(-0.49,0.23,1.29),Vector3(0.49,0.23,1.29),Vector3(0.69,0.23,1.26),Vector3(0.73,0.23,1.22)],0.048,trim,s,40)
++		Shapes.tube(parent,"WraparoundRearBumper",[Vector3(-0.73,0.23,1.22),Vector3(-0.69,0.23,1.26),Vector3(-0.49,0.23,1.29),Vector3(0.49,0.23,1.29),Vector3(0.69,0.23,1.26),Vector3(0.73,0.23,1.22)],0.048,trim,s,40)
+ 		for side: float in [-1.0,1.0]: G.ellipsoid(parent,"WraparoundBumperCap",Vector3(side*0.73,0.23,1.22),Vector3.ONE*0.048,trim,s)
+ 	elif kind=="blade":
+ 		G.rounded(parent,"WideRearBumper",Vector3(0,0.22,1.285),Vector3(1.44,0.17,0.10),0.035,trim,s)
+@@ -85,11 +85,11 @@ static func bumper(car: CarVisual, parent: Node3D, trim: Material, metal: Materi
+ 		for step: int in range(65):
+ 			var a: float = TAU*step/64
+ 			ring.append(Vector3(sin(a)*0.70,0.235+cos(a)*0.105,1.30))
+-		G.tube(parent,"OvalRearBumper",ring,0.029,trim,s,64)
++		Shapes.tube(parent,"OvalRearBumper",ring,0.029,trim,s,64)
+ 		G.rounded(parent,"OvalBumperBadge",Vector3(0,0.235,1.30),Vector3(0.28,0.17,0.065),0.025,car.paint_materials.accent,s)
+ 	elif kind=="cage":
+-		G.tube(parent,"CrossBraceBumperFrame",[Vector3(-0.70,0.13,1.30),Vector3(-0.70,0.32,1.30),Vector3(0.70,0.32,1.30),Vector3(0.70,0.13,1.30),Vector3(-0.70,0.13,1.30)],0.026,trim,s,48)
+-		for side: float in [-1.0,1.0]: G.tube(parent,"RearBumperDiagonal",[Vector3(side*0.65,0.15,1.30),Vector3(0,0.225,1.30),Vector3(-side*0.65,0.30,1.30)],0.016,metal,s,16)
++		Shapes.tube(parent,"CrossBraceBumperFrame",[Vector3(0,0.13,1.30),Vector3(-0.60,0.13,1.30),Vector3(-0.68,0.15,1.30),Vector3(-0.70,0.225,1.30),Vector3(-0.68,0.30,1.30),Vector3(-0.60,0.32,1.30),Vector3(0.60,0.32,1.30),Vector3(0.68,0.30,1.30),Vector3(0.70,0.225,1.30),Vector3(0.68,0.15,1.30),Vector3(0.60,0.13,1.30),Vector3(0,0.13,1.30)],0.026,trim,s,48)
++		for side: float in [-1.0,1.0]: Shapes.tube(parent,"RearBumperDiagonal",[Vector3(side*0.65,0.15,1.30),Vector3(0,0.225,1.30),Vector3(-side*0.65,0.30,1.30)],0.016,metal,s,16)
+ 		G.rounded(parent,"CrossBraceBumperBadge",Vector3(0,0.225,1.329),Vector3(0.15,0.105,0.025),0.015,car.paint_materials.body,s)
+ 	elif kind=="panel":
+ 		for y: float in [0.145,0.315]: G.rounded(parent,"SlottedBumperRail",Vector3(0,y,1.285),Vector3(1.46,0.065,0.105),0.020,trim,s)
+@@ -97,7 +97,7 @@ static func bumper(car: CarVisual, parent: Node3D, trim: Material, metal: Materi
+ 		G.rounded(parent,"SlottedBumperCenter",Vector3(0,0.23,1.285),Vector3(0.66,0.20,0.105),0.025,trim,s)
+ 		G.rounded(parent,"SlottedBumperPaint",Vector3(0,0.23,1.339),Vector3(0.47,0.105,0.015),0.006,car.paint_materials.body,s)
+ 	elif kind=="chevron":
+-		G.tube(parent,"ChevronRearBumper",[Vector3(-0.71,0.29,1.285),Vector3(-0.62,0.27,1.30),Vector3(0,0.15,1.30),Vector3(0.62,0.27,1.30),Vector3(0.71,0.29,1.285)],0.048,trim,s,40)
++		Shapes.tube(parent,"ChevronRearBumper",[Vector3(-0.71,0.29,1.285),Vector3(-0.62,0.27,1.30),Vector3(0,0.15,1.30),Vector3(0.62,0.27,1.30),Vector3(0.71,0.29,1.285)],0.048,trim,s,40)
+ 		for side: float in [-1.0,1.0]: G.ellipsoid(parent,"ChevronBumperCap",Vector3(side*0.71,0.29,1.285),Vector3.ONE*0.048,trim,s)
+ 		G.rounded(parent,"ChevronBumperCenter",Vector3(0,0.175,1.34),Vector3(0.18,0.11,0.035),0.018,car.paint_materials.accent,s)
+ 
+@@ -108,14 +108,14 @@ static func rim(car: CarVisual, parent: Node3D, side: float, metal: Material, br
+ 	magnesium.roughness = 0.43
+ 	G.lathe(parent,"KitMagnesiumBarrel_v2_"+kind,[Vector2(-0.138,0.115),Vector2(-0.138,0.135),Vector2(-0.120,0.145),Vector2(-0.101,0.127),Vector2(0.101,0.127),Vector2(0.120,0.145),Vector2(0.138,0.135),Vector2(0.138,0.115),Vector2(0.103,0.111),Vector2(-0.103,0.111),Vector2(-0.138,0.115)],magnesium,s)
+ 	if kind=="disc":
+-		G.lathe(parent,"RecessedDiscWheel",[Vector2(side*0.099,0),Vector2(side*0.099,0.123),Vector2(side*0.117,0.123),Vector2(side*0.117,0),Vector2(side*0.099,0)],magnesium,s)
++		Shapes.lathe(parent,"RecessedDiscWheel",[Vector2(side*0.099,0),Vector2(side*0.099,0.123),Vector2(side*0.117,0.123),Vector2(side*0.117,0),Vector2(side*0.099,0)],magnesium,s)
+ 	elif kind=="dish":
+-		G.lathe(parent,"DeepBowlWheel",[Vector2(side*0.032,0.025),Vector2(side*0.032,0.045),Vector2(side*0.042,0.068),Vector2(side*0.065,0.093),Vector2(side*0.105,0.115),Vector2(side*0.127,0.123),Vector2(side*0.132,0.129),Vector2(side*0.128,0.133),Vector2(side*0.119,0.126),Vector2(side*0.088,0.114),Vector2(side*0.050,0.091),Vector2(side*0.027,0.066),Vector2(side*0.020,0.045),Vector2(side*0.020,0.025),Vector2(side*0.032,0.025)],magnesium,s)
++		Shapes.lathe(parent,"DeepBowlWheel",[Vector2(side*0.032,0.025),Vector2(side*0.032,0.045),Vector2(side*0.042,0.068),Vector2(side*0.065,0.093),Vector2(side*0.105,0.115),Vector2(side*0.127,0.123),Vector2(side*0.132,0.129),Vector2(side*0.128,0.133),Vector2(side*0.119,0.126),Vector2(side*0.088,0.114),Vector2(side*0.050,0.091),Vector2(side*0.027,0.066),Vector2(side*0.020,0.045),Vector2(side*0.020,0.025),Vector2(side*0.032,0.025)],magnesium,s)
+ 	elif kind=="mesh":
+ 		for spoke: int in range(10):
+ 			var angle: float = TAU*spoke/10
+ 			for sweep: float in [-0.28,0.28]:
+-				G.tube(parent,"CrossMeshWheel",[Vector3(side*0.092,sin(angle)*0.034,cos(angle)*0.034),Vector3(side*0.112,sin(angle+sweep*0.6)*0.085,cos(angle+sweep*0.6)*0.085),Vector3(side*0.125,sin(angle+sweep)*0.128,cos(angle+sweep)*0.128)],0.0045,magnesium,s,8)
++				Shapes.tube(parent,"CrossMeshWheel",[Vector3(side*0.092,sin(angle)*0.034,cos(angle)*0.034),Vector3(side*0.112,sin(angle+sweep*0.6)*0.085,cos(angle+sweep*0.6)*0.085),Vector3(side*0.125,sin(angle+sweep)*0.128,cos(angle+sweep)*0.128)],0.0045,magnesium,s,8)
+ 	else:
+ 		var count: int = {"three":3,"six":6,"turbine":9,"star":5}.get(kind,3)
+ 		for spoke: int in range(count):
+@@ -134,4 +134,4 @@ static func rim(car: CarVisual, parent: Node3D, side: float, metal: Material, br
+ 	for bolt: int in range(3):
+ 		var a: float = TAU*bolt/3
+ 		G.ellipsoid(parent,"KitWheelNut",Vector3(side*0.124,sin(a)*0.052,cos(a)*0.052),Vector3(0.009,0.008,0.008),bright,s)
+-	G.tube(parent,"KitValveStem",[Vector3(side*0.13,0.095,-0.066),Vector3(side*0.15,0.10,-0.069)],0.004,trim,s,4)
++	Shapes.tube(parent,"KitValveStem",[Vector3(side*0.13,0.095,-0.066),Vector3(side*0.15,0.10,-0.069)],0.004,trim,s,4)
+diff --git a/game/vehicle/kart_detail.gd b/game/vehicle/kart_detail.gd
+index 31014cc9b..a394df6dc 100644
+--- a/game/vehicle/kart_detail.gd
++++ b/game/vehicle/kart_detail.gd
+@@ -117,7 +117,7 @@ static func pods(car: CarVisual, trim: Material, metal: Material) -> void:
+ 		var pod: Node3D = shell.get_parent()
+ 		_shell_fasteners(shell,"PodPanelSockets"+suffix,[Vector2(0,-0.43),Vector2(0,0.29)],metal,simple)
+ 		var side: float = signf(pod.position.x)
+-		G.attach(pod,"PodRubStrip"+suffix+"|formed-fitted-v2|"+str(side)+("|simple" if simple else "|full"),trim,func() -> ArrayMesh:
++		G.attach(pod,"PodRubStrip"+suffix+("|formed-fitted-v2|" if suffix.is_empty() else "|formed-fitted-v3|")+str(side)+("|simple" if simple else "|full"),trim,func() -> ArrayMesh:
+ 			var triangles: TriangleMesh = shell.mesh.generate_triangle_mesh()
+ 			var strip: Array[Vector3] = []
+ 			for step: int in range(21):
+@@ -126,7 +126,8 @@ static func pods(car: CarVisual, trim: Material, metal: Material) -> void:
+ 				assert(not hit.is_empty())
+ 				strip.append(hit.position+hit.normal*0.001)
+ 			var carrier := Node3D.new()
+-			G.tube(carrier,"PodRubStripTube",strip,0.008,trim,simple,24)
++			if suffix.is_empty(): G.tube(carrier,"PodRubStripTube",strip,0.008,trim,simple,24)
++			else: preload("res://vehicle/kart_kit_shapes.gd").tube(carrier,"PodRubStripTube",strip,0.008,trim,simple,24)
+ 			var mesh: ArrayMesh = carrier.get_child(0).mesh
+ 			carrier.free()
+ 			return mesh)
+diff --git a/game/vehicle/kart_model.gd b/game/vehicle/kart_model.gd
+index 5ef9cd047..6c402cdd6 100644
+--- a/game/vehicle/kart_model.gd
++++ b/game/vehicle/kart_model.gd
+@@ -48,10 +48,6 @@ static func _body(car: CarVisual, trim: Material, chassis: Material, metal: Mate
+ 	preload("res://vehicle/kart_driver.gd").seat_stays(p,metal,s)
+ 	G.tube(p,"FrontCrossmember",[Vector3(-0.49,0.19,-0.88),Vector3(0,0.19,-0.88),Vector3(0.49,0.19,-0.88)],0.026,chassis,s,12)
+ 	G.tube(p,"LiveRearAxle",[Vector3(-0.72,0.22,0.88),Vector3(0.72,0.22,0.88)],0.026,metal,s,8)
+-	# Fitted little light housings retain the established night/brake presentation.
+-	for side: float in [-1.0,1.0]:
+-		G.rounded(p,"FrontLampRecess",Vector3(side*0.33,0.25,-1.398),Vector3(0.12,0.048,0.025),0.012,trim,s)
+-		G.rounded(p,"FrontLampGlass",Vector3(side*0.33,0.25,-1.412),Vector3(0.092,0.024,0.010),0.004,CompactFinish.alloy(Color("a5b5af")),s)
+ 
+ static func _clip_inlay(polygon: Array[Dictionary], normal: Vector3, offset: float) -> Array[Dictionary]:
+ 	var result: Array[Dictionary] = []
+@@ -234,6 +230,21 @@ static func build_nose(car: CarVisual) -> void:
+ 	_fitted_inlay(p,"FairingInlayKeyline"+suffix,fairing.get_child(-1),fairing_profile,0.072,0.06,0.94,trim,s,0.0007)
+ 	_fitted_inlay(p,"FairingCenterInlay"+suffix,fairing.get_child(-1),fairing_profile,0.064,0.06,0.94,accent,s)
+ 	Detail.nose(car,CompactFinish.alloy(Color("6e7778")))
++	for side: float in [-1.0,1.0]:
++		if kind=="stock":
++			G.rounded(p,"FrontLampRecess",Vector3(side*0.33,0.25,-1.398),Vector3(0.12,0.048,0.025),0.012,trim,s)
++			G.rounded(p,"FrontLampGlass",Vector3(side*0.33,0.25,-1.412),Vector3(0.092,0.024,0.010),0.004,CompactFinish.alloy(Color("a5b5af")),s)
++		else:
++			# The original fixed lamps were hidden inside several sealed kit noses.
++			var hit: Dictionary = nose.mesh.generate_triangle_mesh().intersect_ray(Vector3(side*0.33,nose_profile[0].z,-2),Vector3.BACK)
++			assert(not hit.is_empty(),"Kart lamp requires actual nose backing")
++			var mount := Node3D.new()
++			mount.name = "KitFrontLampMount_"+("left" if side<0 else "right")
++			mount.position = hit.position+hit.normal*0.004
++			mount.quaternion = Quaternion(Vector3.FORWARD,hit.normal)
++			p.add_child(mount)
++			G.rounded(mount,"FrontLampRecess",Vector3.ZERO,Vector3(0.12,0.048,0.025),0.012,trim,s)
++			G.rounded(mount,"FrontLampGlass",Vector3(0,0,-0.014),Vector3(0.092,0.024,0.010),0.004,CompactFinish.alloy(Color("a5b5af")),s)
+ 
+ static func build_pods(car: CarVisual) -> void:
+ 	var p: Node3D = car.new_kit_frame("body",car.body) if car.editable_kits else car.body
+diff --git a/game/tests/test_kart_kit_surfaces.gd b/game/tests/test_kart_kit_surfaces.gd
+new file mode 100644
+index 000000000..264ff0339
+--- /dev/null
++++ b/game/tests/test_kart_kit_surfaces.gd
+@@ -0,0 +1,161 @@
++extends SceneTree
++## Inspect actual opaque kit solids: welded closure, consistent edges and exterior winding.
++var checks: int = 0
++var failures: int = 0
++var output: String = "res://../docs/evidence/kart-kit-surface-fix-2026-10-29/final"
++var measurements: Array[Dictionary] = []
++
++func _initialize() -> void: run.call_deferred()
++func check(ok: bool, label: String) -> void:
++	checks += 1
++	if not ok:
++		failures += 1
++		print("FAIL: "+label)
++
++func surface(mesh: Mesh) -> Dictionary:
++	var edges: Dictionary = {}
++	var volume: float = 0.0
++	# Audit the actual native arrays; the triangle-mesh convenience path rounds
++	# fine bevel coordinates and can make its otherwise valid cap edges collinear.
++	var faces := PackedVector3Array()
++	for surface_index: int in range(mesh.get_surface_count()):
++		var arrays: Array = mesh.surface_get_arrays(surface_index)
++		var vertices: PackedVector3Array = arrays[Mesh.ARRAY_VERTEX]
++		var indices: PackedInt32Array = arrays[Mesh.ARRAY_INDEX] if arrays[Mesh.ARRAY_INDEX]!=null else PackedInt32Array()
++		if indices.is_empty(): faces.append_array(vertices)
++		else:
++			for index: int in indices: faces.append(vertices[index])
++	for face: int in range(faces.size()/3):
++		var points: Array[Vector3] = [faces[face*3],faces[face*3+1],faces[face*3+2]]
++		if (points[1]-points[0]).cross(points[2]-points[0]).length_squared()<1e-22: continue
++		volume += points[0].dot(points[1].cross(points[2]))/6.0
++		for corner: int in range(3):
++			# Vector3's display string rounds away tiny bevels. Integer grid keys
++			# retain the full one-micrometre weld precision without such collisions.
++			var a: Vector3i = Vector3i((points[corner]*1000000).round())
++			var b: Vector3i = Vector3i((points[(corner+1)%3]*1000000).round())
++			if a==b: continue
++			var forward: bool = a<b
++			var key: String = str(a)+":"+str(b) if forward else str(b)+":"+str(a)
++			var entry: Vector2i = edges.get(key,Vector2i.ZERO)
++			entry.x += 1
++			entry.y += 1 if forward else -1
++			edges[key] = entry
++	var boundary: int = 0
++	var inconsistent: int = 0
++	var examples: Array[String] = []
++	for key: String in edges:
++		var entry: Vector2i = edges[key]
++		if entry.x!=2: boundary += 1
++		elif entry.y!=0: inconsistent += 1
++		if entry.x!=2 and examples.size()<12: examples.append(key)
++	return {"boundary_edges":boundary,"inconsistent_edges":inconsistent,"boundary_examples":examples,"signed_volume":volume,"triangles":faces.size()/3}
++
++func overlay(name: String) -> bool:
++	for prefix: String in ["NoseInlayKeyline","NoseCenterInlay","FairingInlayKeyline","FairingCenterInlay","PodInsetStripe"]:
++		if name.begins_with(prefix): return true
++	return false
++
++func triangles(car: CarVisual) -> int:
++	var total: int = 0
++	for part: MeshInstance3D in car.find_children("*","MeshInstance3D",true,false):
++		if part.cast_shadow!=GeometryInstance3D.SHADOW_CASTING_SETTING_SHADOWS_ONLY: total += part.mesh.get_faces().size()/3
++	return total
++
++func lamps_exposed(car: CarVisual) -> bool:
++	var parts: Array[MeshInstance3D] = []
++	for frame: Node3D in car.kit_frames.hood:
++		for part: MeshInstance3D in frame.find_children("*","MeshInstance3D",true,false):
++			if not overlay(str(part.name)): parts.append(part)
++	var found: int = 0
++	for lamp: MeshInstance3D in parts:
++		if lamp.name!="FrontLampGlass": continue
++		found += 1
++		var direction: Vector3 = lamp.global_basis.z.normalized()
++		var origin: Vector3 = lamp.global_position-direction*0.25
++		var nearest: MeshInstance3D
++		var distance: float = INF
++		for part: MeshInstance3D in parts:
++			var inverse: Transform3D = part.global_transform.affine_inverse()
++			var hit: Dictionary = part.mesh.generate_triangle_mesh().intersect_ray(inverse*origin,inverse.basis*direction)
++			if hit.is_empty(): continue
++			var depth: float = origin.distance_to(part.global_transform*hit.position)
++			if depth<distance: nearest = part; distance = depth
++		if nearest!=lamp: return false
++	return found==2
++
++func run() -> void:
++	for arg: String in OS.get_cmdline_user_args():
++		if arg.begins_with("--evidence-root="): output = arg.trim_prefix("--evidence-root=")
++	DirAccess.make_dir_recursive_absolute(ProjectSettings.globalize_path(output))
++	if "--historical" in OS.get_cmdline_user_args():
++		historical()
++		return
++	for simple: bool in [false,true]:
++		var car := CarVisual.new()
++		car.vehicle_id = "kart"
++		car.simple_model = simple
++		car.editable_kits = true
++		car.batch_parts = false
++		root.add_child(car)
++		while not car.model_ready: await process_frame
++		for category: String in VehicleCustomisation.CATEGORIES:
++			for option: Array in VehicleCustomisation.options(category,"kart"):
++				if option[0]=="stock": continue
++				car.graphics.restore_originals()
++				var value: Dictionary = VehicleCustomisation.defaults()
++				value[category] = option[0]
++				car.change_kit_parts(value)
++				var seen: Array[Mesh] = []
++				var problems: Array[Dictionary] = []
++				var count: int = 0
++				for frame: Node3D in car.kit_frames[category]:
++					for part: MeshInstance3D in frame.find_children("*","MeshInstance3D",true,false):
++						if overlay(str(part.name)) or part.mesh in seen: continue
++						seen.append(part.mesh)
++						count += 1
++						var info: Dictionary = surface(part.mesh)
++						if info.boundary_edges>0 or info.inconsistent_edges>0 or info.signed_volume>=-1e-12:
++							info["part"] = str(part.name)
++							problems.append(info)
++				check(problems.is_empty(),"closed exterior solids "+category+"/"+str(option[0])+" simple="+str(simple)+" defects="+str(problems.size()))
++				if category=="hood": check(lamps_exposed(car),"both lamps remain outside the sealed nose "+str(option[0]))
++				var assembled := CarVisual.new()
++				assembled.vehicle_id = "kart"
++				assembled.simple_model = simple
++				assembled.editable_kits = true
++				assembled.customisation = value
++				root.add_child(assembled)
++				while not assembled.model_ready: await process_frame
++				check(triangles(assembled)==triangles(car),"production batches retain all solid/cap triangles "+category+"/"+str(option[0]))
++				assembled.free()
++				measurements.append({"category":category,"option":option[0],"simple":simple,"unique_solids":count,"defects":problems})
++		car.free()
++		await process_frame
++	FileAccess.open(output.path_join("report.json"),FileAccess.WRITE).store_string(JSON.stringify({"checks":checks,"failures":failures,"measurements":measurements},"\t"))
++	print("KART_KIT_SURFACES: %d checks, %d failures" % [checks,failures])
++	quit(1 if failures else 0)
++
++func historical() -> void:
++	# These immutable resources predate the fix. Inspect their raw arrays with
++	# exactly the final audit, without replacing another process's live sources.
++	var manifest: Dictionary = JSON.parse_string(FileAccess.get_file_as_string("res://../build/kart-kit-surface-fix/before/game/assets/vehicles/kart_refined_v1/manifest.json"))
++	var panels: int = 0
++	var open_panels: int = 0
++	var inward_wheels: int = 0
++	for entry: Dictionary in manifest.meshes:
++		var panel: bool = "|kit-section-v1|" in str(entry.key)
++		var wheel: bool = str(entry.key).begins_with("RecessedDiscWheel|") or str(entry.key).begins_with("DeepBowlWheel|")
++		if not panel and not wheel: continue
++		var info: Dictionary = surface(load("res://assets/vehicles/kart_refined_v1/"+str(entry.file)))
++		info["key"] = entry.key
++		measurements.append(info)
++		if panel:
++			panels += 1
++			if info.boundary_edges>0: open_panels += 1
++		if wheel and info.signed_volume>0: inward_wheels += 1
++	check(panels==42 and open_panels==42,"final audit rejects all 42 historical uncapped panels")
++	check(inward_wheels==4,"final audit rejects both mirrored wheel designs at both detail levels")
++	FileAccess.open(output.path_join("report.json"),FileAccess.WRITE).store_string(JSON.stringify({"checks":checks,"failures":failures,"historical_open_panels":open_panels,"historical_inward_wheels":inward_wheels,"measurements":measurements},"\t"))
++	print("KART_KIT_SURFACE_CONTROL: %d checks, %d failures; %d open panels, %d inward wheels" % [checks,failures,open_panels,inward_wheels])
++	quit(1 if failures else 0)
+diff --git a/game/tests/test_kart_kit_surfaces.gd.uid b/game/tests/test_kart_kit_surfaces.gd.uid
+new file mode 100644
+index 000000000..409d3e9c7
+--- /dev/null
++++ b/game/tests/test_kart_kit_surfaces.gd.uid
+@@ -0,0 +1 @@
++uid://gy4xvnoqy2rh
+diff --git a/game/tests/capture_kart_kit_surface_orbit.gd b/game/tests/capture_kart_kit_surface_orbit.gd
+new file mode 100644
+index 000000000..78cf4d2f1
+--- /dev/null
++++ b/game/tests/capture_kart_kit_surface_orbit.gd
+@@ -0,0 +1,50 @@
++extends SceneTree
++## Two opposite close views of every actual kit in the retained Garage world.
++var output: String = "res://../docs/evidence/kart-kit-surface-fix-2026-10-29/native"
++var captures: int = 0
++func _initialize() -> void: run.call_deferred()
++func settle() -> void:
++	for frame: int in range(8): await process_frame
++	await RenderingServer.frame_post_draw
++
++func run() -> void:
++	for arg: String in OS.get_cmdline_user_args():
++		if arg.begins_with("--evidence-root="): output = arg.trim_prefix("--evidence-root=")
++	DirAccess.make_dir_recursive_absolute(ProjectSettings.globalize_path(output))
++	root.size = Vector2i(1280,720)
++	var view := CarShowroom.new()
++	view.vehicle_id = "kart"
++	view.garage_mode = true
++	view.livery = VehicleLivery.defaults("kart")
++	root.add_child(view)
++	MenuStyle.fill(view)
++	while not view.showroom_ready: await process_frame
++	await settle()
++	for category: String in VehicleCustomisation.CATEGORIES:
++		for option: Array in VehicleCustomisation.options(category,"kart"):
++			if option[0]=="stock": continue
++			var parts: Dictionary = VehicleCustomisation.defaults()
++			parts[category] = option[0]
++			view.apply_customisation(parts)
++			view.yaw = 0
++			view._orbit()
++			for side: int in [-1,1]:
++				var target: Vector3
++				var direction: Vector3
++				match category:
++					"hood": target = Vector3(0,0.34,-1.06); direction = Vector3(side*1.35,0.95,-1.9)
++					"body": target = Vector3(side*0.54,0.28,-0.08); direction = Vector3(side*1.6,0.50,-0.9)
++					"rims": target = Vector3(side*0.65,0.22,-0.88); direction = Vector3(side*1.0,0.10,-0.18)
++					"aero": target = Vector3(0,0.24,1.28); direction = Vector3(side*1.25,0.20,1.6)
++				var at: Vector3 = view.car.body.global_transform*target
++				view.camera.look_at_from_position(at+direction,at)
++				view.invalidate_render()
++				if view.reflections!=null: view.reflections.sync()
++				await settle()
++				var label: String = category+"-"+str(option[0])+("-left" if side<0 else "-right")
++				assert(view.showroom_viewport.get_texture().get_image().save_png(output.path_join(label+".png"))==OK)
++				captures += 1
++	view.free()
++	await process_frame
++	print("KART_KIT_SURFACE_VIEWS: ",captures," native views")
++	quit()
+diff --git a/game/tests/capture_kart_kit_surface_orbit.gd.uid b/game/tests/capture_kart_kit_surface_orbit.gd.uid
+new file mode 100644
+index 000000000..a1cd15d7f
+--- /dev/null
++++ b/game/tests/capture_kart_kit_surface_orbit.gd.uid
+@@ -0,0 +1 @@
++uid://3dxwf2nvvkpq

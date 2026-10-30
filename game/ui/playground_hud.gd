@@ -5,6 +5,7 @@ signal restart_requested
 signal rewind_requested
 signal pause_requested
 signal profile_requested(index: int)
+signal handling_test_requested(index: int)
 signal handling_menu_opened
 signal handling_menu_closed
 signal handling_edited
@@ -17,6 +18,9 @@ signal direction_requested
 var production_mode: bool = false
 var editor_test: bool = false
 var free_drive_mode: bool = false
+## Experimental handling is deliberately omitted from competitive attempts.
+var handling_test_enabled: bool = true
+var handling_test_index: int = -1
 var map_ready: bool = false
 var community_client: Node
 var map_track: NativeTrack
@@ -34,6 +38,8 @@ var shortcut_notice_label: Label
 var checkpoint_notice: CheckpointNotice
 var rewind_button: RewindHUDButton
 var handling_button: MenuButton
+var handling_test_choice: OptionButton
+var handling_test_container: VBoxContainer
 
 var config: HandlingConfig
 var driver: DriverInput
@@ -52,6 +58,10 @@ var _display_laps := Vector2i(-1,-1)
 var _race_centiseconds: int = -1
 var _lap_centiseconds: int = -1
 
+func set_handling_test_countdown(active: bool) -> void:
+	if handling_test_container != null:
+		handling_test_container.visible = not active
+
 
 func _ready() -> void:
 	var root := Control.new()
@@ -60,6 +70,7 @@ func _ready() -> void:
 	add_child(root)
 	touch = TouchControls.new()
 	driver.single_pedal = config.single_pedal
+	driver.handbrake_enabled = config.handbrake_enabled
 	touch.driver = driver
 	touch.vehicle_id = config.vehicle_id
 	root.add_child(touch)
@@ -204,6 +215,24 @@ func _ready() -> void:
 	icon.kind = "menu"
 	menu_button.add_child(icon)
 	menu_button.pressed.connect(func() -> void: pause_requested.emit())
+	var test_names: Array = preload("res://vehicle/handling_test_presets.gd").names(config.vehicle_id)
+	if handling_test_enabled and not test_names.is_empty():
+		handling_test_container = VBoxContainer.new()
+		actions.add_child(handling_test_container)
+		var test_caption := _label("TEST PRESETS RESTART AS PRACTICE", 14)
+		test_caption.name = "HandlingTestCaption"
+		test_caption.horizontal_alignment = HORIZONTAL_ALIGNMENT_RIGHT
+		handling_test_container.add_child(test_caption)
+		handling_test_choice = OptionButton.new()
+		handling_test_choice.name = "HandlingTestChoice"
+		handling_test_choice.tooltip_text = "Selecting a test preset restarts as practice. Current handling restores the standard car."
+		handling_test_choice.custom_minimum_size.y = 48
+		handling_test_choice.add_item("Current handling")
+		for test_name: String in test_names: handling_test_choice.add_item(test_name)
+		handling_test_choice.select(clampi(handling_test_index + 1, 0, test_names.size()))
+		handling_test_choice.item_selected.connect(func(index: int) -> void:
+			handling_test_requested.emit(index - 1))
+		handling_test_container.add_child(handling_test_choice)
 	if OS.is_debug_build() and not production_mode:
 		var tools := HBoxContainer.new()
 		tools.position = Vector2(24, 104)

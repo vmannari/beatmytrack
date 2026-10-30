@@ -1,0 +1,200 @@
+--- a/game/vehicle/handling_test_presets.gd
++++ b/game/vehicle/handling_test_presets.gd
+@@ -4,6 +4,7 @@
+ ## never change the catalog resources or the canonical handling contracts.
+ 
+ const LABELS: Array[String] = ["Stable", "Agile", "Flow", "Slide", "Loose"]
++const KART_LABELS: Array[String] = ["Quick", "Tight", "Flow", "Brake turn", "Playful"]
+ const VOLT_LABELS: Array[String] = ["Slide (reference)", "Turn 1", "Turn 2", "Turn 3", "Turn 4", "Turn 5"]
+ const HOVER_LABELS: Array[String] = ["Slide 1", "Slide 2", "Slide 3", "Slide 4", "Slide 5"]
+ const VEHICLES: Array[String] = ["pickup", "kart", "forklift", "electric", "hovercraft"]
+@@ -19,11 +20,11 @@
+ 		{"steering_rate": 9.0, "steering_angle": 0.73, "lateral_grip": 39.0, "lateral_response": 6.5, "brake_rotation": 0.55, "countersteer_assistance": 1.0, "grip_recovery": 6.0},
+ 	],
+ 	"kart": [
+-		{"steering_rate": 12.0, "steering_angle": 0.82, "lateral_grip": 80.0, "lateral_response": 30.0, "grip_recovery": 10.0},
+-		{"steering_rate": 18.0, "steering_angle": 1.0, "high_speed_steering_reduction": 0.50, "lateral_grip": 80.0, "lateral_response": 28.0},
+-		{"steering_rate": 16.0, "steering_angle": 0.96, "lateral_grip": 72.0, "lateral_response": 21.0, "corner_energy_retention": 0.55, "grip_recovery": 8.0},
+-		{"steering_rate": 16.0, "lateral_grip": 65.0, "lateral_response": 16.0, "brake_rotation": 0.35, "countersteer_assistance": 0.8, "grip_recovery": 7.0},
+-		{"steering_rate": 17.0, "steering_angle": 0.96, "lateral_grip": 58.0, "lateral_response": 12.0, "brake_rotation": 0.5, "countersteer_assistance": 1.0, "grip_recovery": 7.0},
++		{"steering_rate": 19.0},
++		{"steering_angle": 0.98, "high_speed_steering_reduction": 0.48},
++		{"steering_rate": 16.0, "steering_angle": 0.94, "lateral_response": 26.0, "corner_energy_retention": 0.42},
++		{"steering_rate": 16.0, "steering_angle": 0.94, "brake_rotation": 0.24, "brake_grip_loss": 0.08, "countersteer_assistance": 0.50},
++		{"steering_rate": 17.0, "steering_angle": 0.95, "lateral_grip": 75.0, "lateral_response": 23.0, "brake_rotation": 0.16, "countersteer_assistance": 0.60},
+ 	],
+ 	"forklift": [
+ 		{"steering_rate": 5.5, "lateral_grip": 54.0, "lateral_response": 20.0, "grip_recovery": 7.0},
+@@ -52,7 +53,7 @@
+ static func names(vehicle_id: String) -> Array[String]:
+ 	var result: Array[String] = []
+ 	if vehicle_id in VEHICLES:
+-		result.assign(VOLT_LABELS if vehicle_id == "electric" else HOVER_LABELS if vehicle_id == "hovercraft" else LABELS)
++		result.assign(VOLT_LABELS if vehicle_id == "electric" else HOVER_LABELS if vehicle_id == "hovercraft" else KART_LABELS if vehicle_id == "kart" else LABELS)
+ 	return result
+ 
+ static func config(vehicle_id: String, preset_index: int) -> HandlingConfig:
+@@ -70,6 +71,9 @@
+ 		# Slide 3 is the previous Slide with its original test identity.
+ 		result.profile_name = "%s / %s" % [result.profile_name, "Slide" if preset_index == 2 else HOVER_LABELS[preset_index]]
+ 		result.version += "-test-4" if preset_index == 2 else "-hover-slide-%d" % (preset_index + 1)
++	elif vehicle_id == "kart":
++		result.profile_name = "%s / %s" % [result.profile_name, KART_LABELS[preset_index]]
++		result.version += "-kart-refine-%d" % (preset_index + 1)
+ 	else:
+ 		result.profile_name = "%s / %s" % [result.profile_name, LABELS[preset_index]]
+ 		result.version += "-test-%d" % (preset_index + 1)
+--- a/game/tests/test_handling_test_selector.gd
++++ b/game/tests/test_handling_test_selector.gd
+@@ -29,6 +29,9 @@
+ 			var expected_count: int = 7 if car_id == "electric" else 6
+ 			check(choice != null and choice.item_count == expected_count and choice.selected == 0, car_id + " has current handling and its test choices")
+ 			if choice != null:
++				if car_id == "kart":
++					for index: int in range(5):
++						check(choice.get_item_text(index + 1) == ["Quick", "Tight", "Flow", "Brake turn", "Playful"][index], "Kart names refinement %d" % (index + 1))
+ 				if car_id == "electric":
+ 					check(choice.get_item_text(1) == "Slide (reference)", "Volt retains the reference Slide")
+ 					for index: int in range(1, 6):
+--- /dev/null
++++ b/game/tests/test_kart_handling_refinements.gd
+@@ -0,0 +1,47 @@
++extends SceneTree
++
++const PRESETS = preload("res://vehicle/handling_test_presets.gd")
++var checks: int = 0
++var failures: int = 0
++
++func _initialize() -> void:
++	run.call_deferred()
++
++func check(ok: bool, description: String) -> void:
++	checks += 1
++	if not ok:
++		failures += 1
++		print("FAIL: ", description)
++
++func maneuver(config: HandlingConfig, speed: float, steering: float, gas: float, brake: float, ticks: int) -> Dictionary:
++	var sim := VehicleSimulation.new(config)
++	sim.state.velocity = Vector2(0, speed)
++	var peak_slip: float = 0.0
++	for tick: int in range(ticks):
++		sim.step(DriveFrame.sample(steering, gas, brake))
++		peak_slip = maxf(peak_slip, absf(sim.state.slip_angle()))
++	return {"heading": sim.state.heading, "speed": sim.state.velocity.length(), "slip": rad_to_deg(peak_slip), "steering": sim.state.steering}
++
++func run() -> void:
++	var baseline: HandlingConfig = VehicleCatalog.config("kart")
++	var names: Array[String] = PRESETS.names("kart")
++	check(names == ["Quick", "Tight", "Flow", "Brake turn", "Playful"], "only five new kart options")
++	check(PRESETS.config("kart", -1).snapshot() == baseline.snapshot(), "current handling remains the exact reference")
++	var configs: Array[HandlingConfig] = [baseline]
++	for index: int in range(5):
++		var config: HandlingConfig = PRESETS.config("kart", index)
++		configs.append(config)
++		check(config.version != baseline.version and config.vehicle_id == "kart", "test has separate kart identity")
++		check(config.engine_force == baseline.engine_force and config.braking_force == baseline.braking_force and config.maximum_speed == baseline.maximum_speed, "power, braking and speed limit retained")
++		check(maneuver(config, 0.0, 0.0, 1.0, 0.0, 240) == maneuver(baseline, 0.0, 0.0, 1.0, 0.0, 240), "straight acceleration matches reference")
++	var measurements: Array = []
++	for config: HandlingConfig in configs:
++		measurements.append({"response": maneuver(config, 15.0, 1.0, 0.5, 0.0, 3), "fast_turn": maneuver(config, 30.0, 0.7, 0.5, 0.0, 90), "turn": maneuver(config, 15.0, 0.7, 0.65, 0.0, 120), "braking": maneuver(config, 25.0, 0.7, 0.0, 0.35, 60)})
++	check(measurements[1].response.steering > measurements[0].response.steering * 1.20, "Quick builds steering faster")
++	check(angle_difference(measurements[0].turn.heading, measurements[2].turn.heading) > 0.06, "Tight rotates further in a powered bend")
++	check(measurements[3].turn.speed > measurements[0].turn.speed + 0.05, "Flow retains more speed in the sampled bend")
++	check(measurements[4].braking.heading > measurements[0].braking.heading + 0.025, "Brake turn adds rotation while braking")
++	check(measurements[5].turn.slip > measurements[0].turn.slip + 1.0 and measurements[5].turn.slip < 12.0, "Playful adds a bounded amount of slide")
++	print("KART_REFINEMENT_METRICS ", JSON.stringify(measurements))
++	print("KART_REFINEMENT: %d checks, %d failures" % [checks, failures])
++	quit(1 if failures else 0)
+--- /dev/null
++++ b/game/tests/capture_kart_handling_refinements.gd
+@@ -0,0 +1,70 @@
++extends SceneTree
++
++var failures := 0
++
++func _initialize() -> void: call_deferred("run")
++
++func check(value: bool, message: String) -> void:
++	if not value:
++		failures += 1
++		print("FAIL: " + message)
++
++func mouse(viewport: Viewport, position: Vector2, down: bool) -> void:
++	var motion := InputEventMouseMotion.new()
++	motion.position = position
++	motion.global_position = position
++	viewport.push_input(motion)
++	var event := InputEventMouseButton.new()
++	event.button_index = MOUSE_BUTTON_LEFT
++	event.position = position
++	event.global_position = position
++	event.pressed = down
++	viewport.push_input(event)
++
++func run() -> void:
++	root.size = Vector2i(960,540)
++	root.content_scale_size = Vector2i(960,540)
++	var game: Node = load("res://core/game.tscn").instantiate()
++	game.initial_track = TrackCompiler.compile(TrackDocument.create_default())
++	game.production_mode = true
++	game.vehicle_id = "kart"
++	root.add_child(game)
++	while not game.preparation_complete: await process_frame
++	game.set_physics_process(false)
++	await process_frame
++	check(not game.hud.handling_test_container.visible, "selector clears the countdown lights")
++	game.countdown_ticks = 0
++	game.race_cues.hide()
++	for dimensions: Vector2i in [Vector2i(960,540), Vector2i(1280,720)]:
++		root.size = dimensions
++		root.content_scale_size = dimensions
++		for i in range(5): await process_frame
++		check(game.hud.handling_test_container.visible, "selector returns after countdown")
++		var choice: OptionButton = game.hud.handling_test_choice
++		var center: Vector2 = choice.get_global_rect().get_center()
++		mouse(root,center,true)
++		mouse(root,center,false)
++		await process_frame
++		var popup: PopupMenu = choice.get_popup()
++		check(popup.visible, "mouse opens selector at " + str(dimensions))
++		var output := OS.get_environment("BMT_HANDLING_TEST_CAPTURE")
++		if not output.is_empty():
++			DirAccess.make_dir_recursive_absolute(output)
++			root.get_texture().get_image().save_png(output.path_join("race-open-%dx%d.png" % [dimensions.x,dimensions.y]))
++		var selected_index := 5 if dimensions.x == 960 else 2
++		# The popup is embedded in the root viewport. Its rows are 24 pixels
++		# high with the current item first; choose the next test on each pass.
++		var popup_point := Vector2(choice.get_global_rect().position.x + 60, choice.get_global_rect().end.y + 19 + 24 * selected_index)
++		mouse(root,popup_point,true)
++		mouse(root,popup_point,false)
++		await process_frame
++		check(game.handling_test_index == selected_index - 1 and game.attempt_practice, "mouse selects test and starts practice")
++		popup.hide()
++		game.countdown_ticks = 0
++		game.race_cues.hide()
++		for i in range(5): await process_frame
++		if not output.is_empty(): root.get_texture().get_image().save_png(output.path_join("race-%dx%d.png" % [dimensions.x,dimensions.y]))
++	game.queue_free()
++	await process_frame
++	print("KART_REFINEMENT_RACE: %d failures" % failures)
++	quit(1 if failures else 0)
+--- /dev/null
++++ b/docs/KART_HANDLING_REFINEMENTS_2026_10_30.md
+@@ -0,0 +1,16 @@
++# Kart handling refinements — 2026-10-30
++
++KR01: The owner prefers the current kart handling to the earlier test alternatives. Keep the `kart-7` resource as the reference and replace the five kart experiments with five refinements. KR02: Keep the race-view selector and practice/result safeguards, and preserve other cars' options.
++
++The five choices start from an independent duplicate of the current kart config. **Quick** increases steering buildup; **Tight** adds steering lock and reduces high-speed steering reduction; **Flow** retains a little more speed through a bend; **Brake turn** adds controlled braking rotation; **Playful** permits a little more slip. The five earlier kart experiments are removed. Current handling remains in the dropdown for a direct comparison. The engine, brakes, speed limit, dimensions and kart-specific controls are unchanged. Test setups receive new identities and remain practice-only; they do not change canonical records or online contracts. Other cars' presets are untouched.
++
++With the pinned Godot 4.7.2 build and isolated local profiles:
++
++- `--headless --path game --script res://tests/test_kart_handling_refinements.gd`: 22 checks, zero failures. Compared with current handling in specific sampled maneuvers, Quick builds steering 35.7% faster at three ticks; Tight adds 4.64° heading after a one-second powered turn; Flow retains 0.086 m/s more in that turn; Brake turn adds 1.97° heading in a half-second braking turn; Playful's peak slip rises from 5.64° to 7.89°. All five retain the same measured straight acceleration and specified power, braking and speed limit. These are sample measurements, not a claim about human feel or lap performance.
++- `--headless --path game --script res://tests/test_handling_test_presets.gd`: zero failures; sampled turning distinguishes the choices, remains finite, replays identically and recovers after steering release. The retained test also exercises other cars and Compact.
++- `--headless --path game --script res://tests/test_handling_test_selector.gd`: 39 checks, zero failures, including the new names and all other car selectors.
++- `--headless --path game --script res://tests/test_handling_test_integration.gd`: 16 checks, zero failures, including restart and practice fences. `res://tests/test_handling_test_app.gd`: four checks, zero failures, including ticket retirement and no personal-best or upload for a test run.
++- `--headless --path game --script res://tests/test_kart.gd`: 42 checks, zero failures, on the unchanged current kart.
++- `--path game --rendering-method gl_compatibility --script res://tests/capture_kart_handling_refinements.gd`: zero failures. Actual kart race, mouse-opened menu and selection at 960×540 and 1280×720; [open menu](evidence/kart-handling-refinements-2026-10-30/race-open-960x540.png). Captures use an isolated profile and `BMT_HANDLING_TEST_CAPTURE` output directory.
++
++The offline runs emitted a Windows certificate-store warning. The simulation tests also reported resources still in use at exit, and the graphical capture logged hitches. The modes still need owner driving-feel assessment; touch and physical-device testing were not performed. No APK, owner-save write, backend deployment, or owner-process restart was performed.

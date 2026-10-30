@@ -23,6 +23,7 @@ var _io_kind: String = ""
 var _draws: int = 0
 var _stage: String = ""
 var _debounce: Timer
+var preparing_selected: bool = false
 
 func _ready() -> void:
 	_debounce = Timer.new()
@@ -79,6 +80,26 @@ func _valid(job: Dictionary) -> bool:
 func idle() -> bool:
 	return _jobs.is_empty() and _io == null and canvas == null and _debounce.is_stopped()
 
+func prepare_selected() -> bool:
+	if DisplayServer.get_name() == "headless": return Icons.ready(VehicleCatalog.selected,records)
+	preparing_selected = true
+	var target: String = ""
+	var deadline: int = Time.get_ticks_msec()+45000
+	while is_inside_tree() and records != null and not Icons.ready(VehicleCatalog.selected,records):
+		if Time.get_ticks_msec() >= deadline: break
+		var key: String = Icons.appearance_key(VehicleCatalog.selected,records)
+		if key != target:
+			target = key
+			_scan()
+			# The visible selection comes before other cars in the dropdown.
+			for index: int in range(_jobs.size()):
+				if _jobs[index].key == key:
+					_jobs.push_front(_jobs.pop_at(index))
+					break
+		await get_tree().process_frame
+	preparing_selected = false
+	return Icons.ready(VehicleCatalog.selected,records)
+
 func _process(_delta: float) -> void:
 	var permitted: bool = allowed.is_valid() and bool(allowed.call())
 	# Keep at most the existing completed job until its consumer is eligible.
@@ -131,6 +152,7 @@ func _process(_delta: float) -> void:
 				studio.size = Vector2(SIZE)
 				studio.cooperative_build = true
 				studio.cache_rest_pose = false
+				studio.header_template = true
 				_stage = "build"
 				canvas.add_child(studio)
 				active_worlds += 1
@@ -166,6 +188,7 @@ func _release() -> void:
 	_stage = ""
 
 func _exit_tree() -> void:
+	preparing_selected = false
 	if records != null and records.appearance_committed.is_connected(_committed): records.appearance_committed.disconnect(_committed)
 	if is_instance_valid(_debounce): _debounce.stop()
 	_release()

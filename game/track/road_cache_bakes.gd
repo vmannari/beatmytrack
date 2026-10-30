@@ -3,18 +3,24 @@ extends RefCounted
 const ROADS = preload("res://editor/road_preparation.gd")
 const DISK = preload("res://track/road_mesh_disk_cache.gd")
 static var job: RefCounted
+static var active_key: Array = []
 static var pending_track: NativeTrack
 static var tree: SceneTree
+
+static func baking_key(key: Array) -> bool:
+	return job != null and not active_key.is_empty() and active_key == key
 
 static func start(track: NativeTrack, owner_tree: SceneTree) -> void:
 	if track == null or DISK.directory.is_empty(): return
 	if tree == null:
 		# Register WorkJob's join before our final receipt cleanup.
+		active_key = ROADS.disk_key_for(track)
 		job = preload("res://editor/work_job.gd").start(run.bind(track),owner_tree)
 		tree = owner_tree
 		tree.process_frame.connect(poll)
 		tree.root.tree_exiting.connect(finish)
 	elif job == null:
+		active_key = ROADS.disk_key_for(track)
 		job = preload("res://editor/work_job.gd").start(run.bind(track),owner_tree)
 	else: pending_track = track
 
@@ -28,7 +34,7 @@ static func poll() -> void:
 	if job == null or not job.done: return
 	if job.aborted: DISK.discard_arrays(job.result if job.result is Dictionary else {})
 	else: DISK.publish_arrays(job.result if job.result is Dictionary else {})
-	job.result = null; job = null
+	job.result = null; job = null; active_key = []
 	if pending_track != null:
 		var track: NativeTrack = pending_track
 		pending_track = null
@@ -37,4 +43,4 @@ static func poll() -> void:
 static func finish() -> void:
 	# WorkJob has joined all threads. Cache writes are optional at shutdown.
 	if job != null and job.result is Dictionary: DISK.discard_arrays(job.result)
-	job = null; pending_track = null; tree = null
+	job = null; active_key = []; pending_track = null; tree = null

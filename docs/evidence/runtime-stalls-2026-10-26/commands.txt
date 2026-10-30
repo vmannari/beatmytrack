@@ -1,0 +1,56 @@
+Working directory: C:\Codes\Godot\Beat my track
+Pinned executable/version:
+C:\apps\Godot 4.7.2\Godot_v4.7.2-stable_win64_console.exe
+4.7.2.stable.official.ed1daf0bf
+
+Session environment:
+$env:APPDATA="$PWD\build\runtime-stall-investigation-2026-10-26\profile"
+$env:LOCALAPPDATA=$env:APPDATA
+$env:BMT_API_URL=''
+$env:BMT_DEV_AUTH_KEY=''
+$env:BMT_RACE_LOAD_PROFILE='1'
+$exe='C:\apps\Godot 4.7.2\Godot_v4.7.2-stable_win64_console.exe'
+
+Actual native run template (each argument combination below ran separately):
+& $exe --path game --audio-driver Dummy --rendering-method gl_compatibility --script res://../build/runtime-stall-investigation-2026-10-26/trace_stalls.gd -- <arguments>
+1. no additional arguments: race-timers.log
+2. --no-timers: race-no-timers.log
+3. --no-timers --detailed: detailed-control.log
+4. --no-timers --detailed --skip-effects: skip-effects.log
+5. --no-timers --detailed --sequence: sequence.log (also --verbose)
+6. --no-timers --detailed --particle-sequence: particle-sequence.log
+7. --no-timers --detailed --solution-sequence: solution-sequence.log
+8. --no-timers --detailed --cpu-details: cpu-details.log
+9. --no-timers --detailed --cpu-details --memo-grid: cpu-memo.log
+10. --no-timers --detailed --solution-sequence --verify-state: verified-sequence.log
+The other renderer run uses --rendering-method mobile with
+--no-timers --detailed --solution-sequence: solution-sequence-mobile.log
+
+The helper grew incrementally. Earlier traces retain their original raw schema;
+the final helper supports all cases. The detailed App constructor is copied from
+the retained source snapshot, with exact-call timing and diagnostic branches.
+
+Prototype source generation, from repository root:
+python build/runtime-stall-investigation-2026-10-26/generate_detailed.py
+python build/runtime-stall-investigation-2026-10-26/generate_cpu_probe.py
+
+Actual geometry equality check:
+& $exe --headless --path game --audio-driver Dummy --script res://../build/runtime-stall-investigation-2026-10-26/check_cpu_parity.gd -- --memo-grid
+Two modes pass exact signatures: full and simple. This checks mesh arrays,
+transforms, shader source and StandardMaterial storage properties, not every
+possible customization or future live shader uniform state.
+
+Evidence generation:
+python build/runtime-stall-investigation-2026-10-26/summarize.py
+python build/runtime-stall-investigation-2026-10-26/build_checkpoint.py
+The source probes and snapshots are retained in probes/ and before/. To rerun,
+copy them into build/runtime-stall-investigation-2026-10-26/ with the same layout.
+Current production dependencies must be compared to the recorded source hashes.
+
+Environment inspection:
+Get-Process -Name '*Godot*' (multiple processes present; no process stopped)
+Get-CimInstance Win32_Process was denied by the sandbox; Get-Process supplied
+the process-count observation. No escalation or WPR/xperf recording was used.
+
+Official API/source references are recorded in report.json. No network gameplay
+service, owner account, real device or owner process was used for these runs.

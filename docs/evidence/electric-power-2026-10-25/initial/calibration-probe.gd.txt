@@ -1,0 +1,45 @@
+extends "res://tests/test_electric_power.gd"
+
+func quarter(config: HandlingConfig, speed: float) -> Dictionary:
+	var sim := VehicleSimulation.new(config)
+	sim.state.velocity = Vector2(0,speed)
+	var distance: float = 0
+	var heading: float = 0
+	var previous_angle: float = 0
+	for tick: int in range(600):
+		var previous: Vector2 = sim.state.position
+		sim.step(DriveFrame.sample(1,0.45,0))
+		distance += sim.state.position.distance_to(previous)
+		var angle: float = atan2(sim.state.velocity.x,sim.state.velocity.y)
+		heading += wrapf(angle-previous_angle,-PI,PI)
+		previous_angle = angle
+		if heading >= PI*0.5:
+			return {"radius":distance/heading,"speed":sim.state.velocity.length()}
+	return {"radius":9999}
+
+func run() -> void:
+	var base: HandlingConfig = VehicleCatalog.config("electric")
+	var proposals: Array = [
+		[0.70,0.40,65.0,22.0,0.50,0.12,0.84,1.05],
+		[0.70,0.40,65.0,22.0,0.55,0.14,0.82,1.05],
+		[0.70,0.40,65.0,22.0,0.60,0.16,0.82,1.05],
+		[0.70,0.40,60.0,22.0,0.50,0.12,0.84,1.05],
+		[0.70,0.40,70.0,22.0,0.55,0.14,0.82,1.05],
+		[0.70,0.40,65.0,22.0,0.42,0.12,0.84,1.05],
+	]
+	for values: Array in proposals:
+		var c: HandlingConfig = base.duplicate() as HandlingConfig
+		c.steering_angle = values[0]
+		c.high_speed_steering_reduction = values[1]
+		c.lateral_grip = values[2]
+		c.lateral_response = values[3]
+		c.throttle_rotation = values[4]
+		c.throttle_grip_loss = values[5]
+		c.sliding_grip = values[6]
+		c.rear_grip = values[7]
+		c.slip_threshold = 0.26
+		c.maximum_yaw_rate = 3.2
+		var full: Dictionary = corner(c,1)
+		var gentle: Dictionary = corner(c,0.45)
+		print(JSON.stringify({"values":values,"full":full.peak_slip_degrees,"gentle":gentle.peak_slip_degrees,"turn24":quarter(c,24),"turn36":quarter(c,36),"turn48":quarter(c,48)}))
+	quit()

@@ -9,6 +9,7 @@ from bmt_backend import (  # noqa: F401
     challenge_models,
     commerce_models,
     community_models,
+    daily_standings_models,
     discovery,
     discovery_models,
     economy_models,

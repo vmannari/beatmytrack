@@ -58,9 +58,10 @@ static func apply_lighting(theme: String, environment: Environment, light: Direc
 	light.shadow_opacity = 1.0
 	var night: bool = normalized(theme) == "night_city"
 	environment.ambient_light_color = Color("7288b0") if night else Color("bac8ce")
-	environment.ambient_light_energy = 0.045 if night else 0.35
+	# Lift unlit roads slightly for phone/tablet readability; lamps still dominate.
+	environment.ambient_light_energy = 0.055 if night else 0.35
 	light.light_color = Color("8299cc") if night else Color("e7f2ff") if theme == "winter" else Color("fff1d8")
-	light.light_energy = 0.025 if night else 0.50 if theme == "storm" else 1.0
+	light.light_energy = 0.030 if night else 0.50 if theme == "storm" else 1.0
 	if theme == "winter":
 		light.rotation_degrees = Vector3(-34,-55,0)
 		light.shadow_opacity = 0.68

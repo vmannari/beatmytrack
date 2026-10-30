@@ -120,6 +120,14 @@ func _restore_focus(target: WeakRef) -> void:
 	var control: Control = target.get_ref() as Control
 	if control != null and control.is_visible_in_tree() and control.can_process(): control.grab_focus()
 
+func ready_for_display() -> bool:
+	if not standings_ready: return false
+	if signed_in and error.is_empty() and model.tracks.is_empty() and (busy or model.received_msec == 0): return false
+	for car: Node in find_children("*","",true,false):
+		if car.get_script() != preload("res://ui/rivalry_victory_car.gd"): continue
+		if not car.presentation_ready or car.viewport.size.x <= 1 or car.viewport.size.y <= 1: return false
+	return true
+
 func _score_topology() -> PackedByteArray:
 	if section!="overview" or model.completed or model.tracks.is_empty(): return PackedByteArray()
 	var tracks: Array = _track_projection(false)

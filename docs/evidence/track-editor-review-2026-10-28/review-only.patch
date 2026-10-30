@@ -1,0 +1,789 @@
+diff --git a/docs/TRACK_EDITOR_REVIEW_2026_10_28.md b/docs/TRACK_EDITOR_REVIEW_2026_10_28.md
+new file mode 100644
+--- /dev/null
++++ b/docs/TRACK_EDITOR_REVIEW_2026_10_28.md
+@@ -0,0 +1,94 @@
++# Track editor review — 28 October 2026
++
++The editor has a strong technical foundation, but its current interaction and save boundaries still need work before a polished mobile release. The most consequential problems are edits that cannot be recovered after crossing global limits, cancellation that commits instead of rolling back, and overlapping controls that can reverse the race direction. Night authoring and preparation latency also materially reduce usability.
++
++Review only: no intentional production-source fixes, deployment, device query/test, APK, owner-save change, or main-index staging/commit. TER01 covers usability, TER02 performance, TER03 correctness, TER04 overall quality, and TER-Q01 reproducible evidence. The working tree contains concurrent vehicle, input, localization, Garage and backend work; this is a review of observed local states, not a frozen release certification.
++
++## Findings, in priority order
++
++### TER-C01 / P1 — Global limits are enforced after the edit has been accepted
++
++[`EditorCanvas.confirm_paint`](../game/editor/editor_canvas.gd:1385) checks the stroke count but not the total paint-point allowance. [`confirm_piece`](../game/editor/editor_canvas.gd:741) checks the individual section and section count but not aggregate road length. Both commit the mutation and clear the pending preview before the document validator and writer reject it.
++
++The new probes start with valid, successfully saved documents. Adding a two-point stroke to 16,384 existing points produces 33 committed strokes, clears the preview, and fails WIP saving with error 30. The recovery copy still contains 32 strokes. Adding one valid 120 m section to 3,960 m similarly commits 4,080 m, clears the ghost, fails saving, and leaves only 33 sections in recovery while 34 are visible. Undo can recover a valid state, but continued work can remain newer than the recoverable file.
++
++Validate aggregate admission before committing or preserve the pending preview on rejection. Apply the same policy to global point/length/byte limits and property edits that increase resource requirements. Do not increase the limits simply to hide the failure. Evidence: [`audit-headless.json`](evidence/track-editor-review-2026-10-28/audit-headless.json), `paint_global_limit` and `road_global_limit`.
++
++### TER-C02 / P2 — Cancelled drags are committed and autosaved
++
++[`cancel_gesture`](../game/editor/editor_canvas.gd:186) emits `edit_finished` after a changed drag. A platform-cancelled touch also reaches the committing branch of [`_end`](../game/editor/editor_canvas.gd:578). [`Esc`](../game/core/app.gd:5101) calls the same cancellation method, although Help describes Esc as cancelling.
++
++Moving a container from `[0,0]` to `[10,0]` and cancelling emits one finish and zero cancellation signals. Through the actual App, pressing Esc retains `[10,0]` and writes that position to WIP. The transaction/history mechanisms already provide rollback for a second finger, so the underlying capability exists. Distinguish explicit cancellation from an intentional policy to finish on focus loss, restore the captured domains, and maintain one coherent undo transaction. Evidence: `cancelled_object_touch`, `cancel_gesture_after_drag`, and `escape_during_object_drag` in the audit JSON.
++
++### TER-C03 / P2 — Road acceptance overlaps the start-direction control
++
++The start-arrow hit test in [`_gui_input` / `_begin`](../game/editor/editor_canvas.gd:310) precedes the road acceptance hit test. [`piece_accept_rect`](../game/editor/editor_canvas.gd:1133) and [`start_controls`](../game/editor/editor_canvas.gd:1355) position their controls independently.
++
++The ordinary first-section selection visibly overlaps the yellow checkmark and arrow in both renderers. A controlled 4 px/m view produces a 47.25 × 56 logical-unit intersection. A tap inside both changes the start heading from 0° to 180° and leaves the section selected. This changes the track while the user is trying to finish a section selection. Layout the interactive handles together and prevent overlapping hit targets; changing event precedence alone would just make the other control unreliable. Evidence: [`selected road`](evidence/track-editor-review-2026-10-28/native/gl_compatibility/03-selected-road-1280.png), paired native observations, and `road_accept_start_flip_overlap` in the audit JSON. The first probe used a different zoom and did not overlap; that initial result is retained separately.
++
++### TER-U01 / P2 — Night tracks are too dark to author reliably
++
++[`EditorWorld._apply_theme`](../game/editor/editor_world.gd:358) applies the racing lighting directly. [`TrackTheme.apply_lighting`](../game/track/track_theme.gd:52) uses ambient energy 0.045 and directional energy 0.025 for Night. The result is a readable toolbar above a nearly black road and scenery. Authored lights improve only small areas.
++
++This is visible in both Compatibility and desktop Vulkan Mobile captures, after preparation has finished. Add an authoring-light or exposure mode while retaining an explicit race-lighting preview. Evidence: [`Night`](evidence/track-editor-review-2026-10-28/native/gl_compatibility/20-theme-night_city.png), [`Night with lights`](evidence/track-editor-review-2026-10-28/native/gl_compatibility/22-night-with-authored-lights.png), and the paired Mobile images.
++
++### TER-P01 / P2 — Final preparation and first practice entry remain slow
++
++The current App profile uses the original retained-editor assertions from `test_editor_t01_t04.gd`, without running its frozen geometry comparisons. On this RTX 3090 Windows desktop, one width edit on a 96-section track took **4,332.945 ms** to settle, retaining 85 of 104 road nodes. First practice entry took **26,865.449 ms**, the repeat took **2,057.647 ms**, and returning took **13.736 / 13.739 ms**.
++
++The distinction matters: the planning drag itself was responsive, with a 0.538 ms mean handler and 0.841 ms p95 over 120 synthetic events. These measurements do not show a 4-second blocked input handler. They show a long wait for completed detail and practice readiness. The relevant paths are [`_test_document`](../game/core/app.gd:3955), its preparation/start helpers, and [`road_update.gd`](../game/editor/road_update.gd:8). Desert/Winter, paint changes, bridge/spline cases deliberately retain broader preparation for correctness.
++
++Prioritize the remaining preparation phases and cold practice construction/shader work, while preserving cancellation, exact geometry, and the successful retained return. Evidence: [`profile results`](evidence/track-editor-review-2026-10-28/performance/gl_compatibility/results-gl_compatibility.json). These are one-session desktop observations, not phone latency, sustained FPS, or a percentile guarantee across tracks.
++
++### TER-P02 / P2 — Large-document history consumes a substantial input budget
++
++[`EditorSession.remember`](../game/editor/editor_session.gd:15) synchronously calls [`EditorHistory.capture`](../game/editor/editor_history.gd:8) and trimming. Unchanged object chunks share memory, but every capture still serializes every object and scans retained state.
++
++An isolated 40-edit profile of the actual session method measured a **0.440 ms median** for 32 objects, **1.606 ms** for 512, and **11.647 ms median / 18.249 ms p95 / 20.451 ms maximum** for the supported 4,096 objects. That cost occurs before the rest of an edit's input work. All forty checkpoints remain, using 2,457,496 estimated bytes in the large case. Use mutation-aware chunk updates and incremental accounting while preserving immutable history and the shared byte bound. Evidence: [`history-profile.json`](evidence/track-editor-review-2026-10-28/history-profile.json). The earlier capacity-suite timing ran alongside other review work and is not used as the isolated latency result.
++
++### TER-U02 / P2 — Some rejected edits provide invisible feedback
++
++[`_change_piece`](../game/core/app.gd:3573) assigns validation errors to `editor_status.text`, while the editor hides that label by default. It bypasses the existing [`_editor_hint`](../game/core/app.gd:3268) display path.
++
++A valid straight near the map edge remains unchanged after an invalid length increase; the label contains “Keep the whole road section inside the map.” but `is_visible_in_tree()` is false. The user sees a nonresponsive control. Route rejected edits through visible, consistent feedback. Evidence: `invalid_parameter_feedback` in the audit JSON.
++
++### TER-C04 / P2 — Share silently excludes pending road work
++
++[`_share_dialog`](../game/core/app.gd:3986) checks active surface points but does not use `_has_pending_editor_work()`. Save resolves previews and Test/Publish guard pending work, while Share opens with a road ghost still visible.
++
++The actual App probe opens “Share your circuit” with `pending_work=true` and a straight ghost; the serialized document still has only its one committed section. Copy/export therefore excludes the visible proposed addition without a resolution step. Apply the existing confirm/discard/cancel policy consistently, including hidden tool previews. The probe only opens the local dialog; no clipboard change, external share or message was performed. Evidence: `share_pending_road` in the audit JSON.
++
++## What is working well
++
++The editor maintains a useful separation between document/session state, controls, CPU jobs and presentation. Revision fencing, bounded shared undo history, coalesced analysis/writes, atomic recovery, retained geometry, exact practice copies and cancellation-aware workers are substantive safeguards. Current autosave ordering, stale-analysis fencing and save-retry regressions pass.
++
++The three-category rail, direct road handles, real model thumbnails, selected-object tools, explicit Test/Publish workflow and retained camera on practice return give the editor a coherent structure. The native review covered blank/selected tracks, splines, surface modes/options, object options, population, issues, Map/Help, five themes, and scaled/wide layouts. Dense overview detail reduced this fixture from 368 to 200 draws while preserving the tested selection/detail restoration behavior; that is a work-count observation, not a measured mobile FPS gain.
++
++A 960×540 physical window with the normal 1280×720 logical scale is usable in the captures. Forcing only 960×540 logical space overlaps the fixed identity/history header with top actions, and the save label overlaps a surface caption. This is a layout hardening observation, not a claim that production 16:9 phone scaling uses that forced logical configuration. Small scenery thumbnails also merit a contrast/readability pass.
++
++## Checks and limits
++
++| Check | Actual result |
++| --- | --- |
++| Original workflow | 254 checks, 0 failures |
++| T05–T11 editor behavior/history/memory | 321 checks, 0 failures |
++| T11–T15 session/gesture/import/ownership | 305 checks, 0 failures |
++| Existing review/recovery fixes | 69 checks, 0 failures |
++| Creator capacity | 2,970 checks, 0 failures; seven-car state corpus as loaded during that run |
++| Actual retained-App profile | 60 original assertions, 0 failures |
++| Original practice suite | **39 checks, 4 failures**, followed by a nil-access diagnostic after the expected finish was absent |
++| Current creator-document practice control | 53 inherited checks, 0 failures; six laps, 15,259 ticks, zero contacts |
++| Full script parse | 1,371 scripts, 0 failures |
++| Native review | 27 saved captures in each renderer; 0 capture/deadline failures |
++
++The original practice suite's `ellipse.json` AI witness completed zero laps with 27,678 contacts in 28,800 ticks, and its ordinary-race witness did not finish. The separate control compiles the current `verified_oval.json` creator document and retains the original test methods/assertions. Its success supports the creator practice path but **does not make the original suite green or establish the cause of that failure**. No production physics, track or assertion was changed to obtain it.
++
++The preferred `scripts/dev.ps1` runs were attempted first. The initial shell execution-policy issue, default-profile log denial, and the wrapper's fatal treatment of this sandbox's root-certificate-store error are retained. Direct controls use the same pinned `4.7.2.stable.official.ed1daf0bf` engine, an offline workspace profile and Dummy audio; the certificate diagnostic remains in those logs. Test outcomes above refer to actual assertions/exit receipts, not the failed wrapper attempts. A CIM process-inspection attempt was also denied; it is not an editor defect.
++
++The five new scripts under `game/tests` and two Python evidence runners are review helpers only. `run_probe.py` records the exact engine command, exit code, duration and script hash. The visual helper only redirects the existing review capture destination. Review probes record observed defects rather than asserting that broken behavior is desirable. Initial incomplete probes remain in the numbered initial/second/third audit files.
++
++Runtime/editor source hashes are retained, and each native capture run reported stable source hashes within that run. App, vehicle, input, localization, fixture and backend files changed concurrently across the review; there is no whole-tree stability claim. The capacity test's incidental tracked historical result was archived here and restored to its clean task-start bytes. Our wrapper-generated build metadata was superseded by concurrent work and was preserved, with before/current copies recorded instead of rolling back the owner's newer identity.
++
++No physical-device query or test, APK, production performance certification, real authentication/purchase, backend write/deployment, owner-process restart, owner-save mutation, or root-index staging/commit/merge was performed. Mobile captures mean the desktop Vulkan Mobile renderer. Remaining acceptance includes physical touch/gesture behavior, Night visibility, cold/thermal/large-track latency and long-session memory on the target Android device, plus the unresolved original practice regression.
++
++Evidence and machine-readable findings: [`report.json`](evidence/track-editor-review-2026-10-28/report.json). The immediate correction order is global admission and gesture rollback, overlapping controls, Night authoring visibility, then preparation/history cost and consistent feedback/share handling.
+diff --git a/game/tests/audit_track_editor_2026_10_28.gd b/game/tests/audit_track_editor_2026_10_28.gd
+new file mode 100644
+--- /dev/null
++++ b/game/tests/audit_track_editor_2026_10_28.gd
+@@ -0,0 +1,151 @@
++extends SceneTree
++## Review probes only. All persistence belongs to this review's workspace folder.
++var out: String = ProjectSettings.globalize_path("res://../docs/evidence/track-editor-review-2026-10-28")
++var observations: Dictionary = {}
++var app: Node
++
++func _initialize() -> void: run.call_deferred()
++
++func observe(key: String, value: Variant) -> void:
++	observations[key] = value
++	print("TRACK_EDITOR_AUDIT ",key," ",JSON.stringify(value))
++
++func paint_admission() -> void:
++	var doc: Dictionary = TrackDocument.create_default()
++	doc.id = "paint_admission"
++	for stroke: int in range(32):
++		var points: Array = []
++		for index: int in range(512): points.append([-100.0+index*0.39,-100.0+stroke*6.0])
++		doc.paint.append({"surface":2,"width":2.0,"shape":"round","points":points})
++	var library := TrackLibrary.new(out+"/probe-storage/paint")
++	var baseline_errors: Array[String] = TrackDocument.validate(doc,false)
++	var baseline_save: Error = library.save_wip(doc)
++	var canvas := EditorCanvas.new()
++	canvas.document = doc; canvas.mode = "paint"; canvas.paint_mode = "free"
++	canvas.paint_points = [[0.0,0.0],[1.0,0.0]]
++	canvas.confirm_paint()
++	var current_errors: Array[String] = TrackDocument.validate(doc,false)
++	var current_save: Error = library.save_wip(doc)
++	var recovery: Dictionary = library.load_wip(doc.id)
++	observe("paint_global_limit",{"before_points":16384,"baseline_errors":baseline_errors,"baseline_save":baseline_save,
++		"after_strokes":doc.paint.size(),"errors":current_errors,"save_error":current_save,
++		"pending_points_after_confirm":canvas.paint_points.size(),"recovery_strokes":recovery.paint.size()})
++	canvas.free()
++
++func road_admission() -> void:
++	var doc: Dictionary = TrackDocument.create_blank(); doc.id = "road_admission"
++	for index: int in range(33):
++		var piece: Dictionary = RoadPieces.create("straight",Vector2(-60,-96+index*6),0,6)
++		piece.length = 120.0; doc.pieces.append(piece)
++	var library := TrackLibrary.new(out+"/probe-storage/roads")
++	var baseline_errors: Array[String] = TrackDocument.validate(doc,false)
++	var baseline_save: Error = library.save_wip(doc)
++	var canvas := EditorCanvas.new(); canvas.document = doc
++	canvas.ghost = RoadPieces.create("straight",Vector2(-60,108),0,6); canvas.ghost.length = 120.0
++	canvas.confirm_piece()
++	var current_errors: Array[String] = TrackDocument.validate(doc,false)
++	var current_save: Error = library.save_wip(doc)
++	observe("road_global_limit",{"before_metres":3960,"after_metres":4080,"baseline_errors":baseline_errors,
++		"baseline_save":baseline_save,"after_pieces":doc.pieces.size(),"ghost_retained":not canvas.ghost.is_empty(),
++		"errors":current_errors,"save_error":current_save,"recovery_pieces":library.load_wip(doc.id).pieces.size()})
++	canvas.free()
++
++func touch(canvas: EditorCanvas, point: Vector2, pressed: bool, cancelled: bool = false) -> void:
++	var event := InputEventScreenTouch.new(); event.index = 7; event.position = point
++	event.pressed = pressed; event.canceled = cancelled; canvas._gui_input(event)
++
++func interrupted_drag() -> void:
++	var canvas := EditorCanvas.new(); canvas.document = TrackDocument.create_blank()
++	canvas.document.objects = [{"kind":"container","position":[0.0,0.0],"rotation":0.0}]
++	canvas.mode = "objects"; canvas.size = Vector2(1280,720); root.add_child(canvas)
++	var counts: Dictionary = {"started":0,"finished":0,"cancelled":0}
++	canvas.edit_started.connect(func() -> void: counts.started += 1)
++	canvas.edit_finished.connect(func() -> void: counts.finished += 1)
++	canvas.edit_cancelled.connect(func() -> void: counts.cancelled += 1)
++	var first: Vector2 = canvas.to_screen(Vector2.ZERO)
++	touch(canvas,first,true)
++	var drag := InputEventScreenDrag.new(); drag.index = 7; drag.position = canvas.to_screen(Vector2(10,0))
++	canvas._gui_input(drag); touch(canvas,drag.position,false,true)
++	observe("cancelled_object_touch",{"position":canvas.document.objects[0].position,"signals":counts.duplicate()})
++	canvas.document.objects[0].position = [0.0,0.0]; counts.started = 0; counts.finished = 0; counts.cancelled = 0
++	touch(canvas,first,true); canvas._gui_input(drag); canvas.cancel_gesture()
++	observe("cancel_gesture_after_drag",{"position":canvas.document.objects[0].position,"signals":counts.duplicate()})
++	canvas.queue_free(); await process_frame
++
++func settle(label: String) -> void:
++	var began: int = Time.get_ticks_usec(); var deadline: int = Time.get_ticks_msec()+45000
++	var intervals: Array[float] = []
++	while (app.editor_commits.unsettled() or app.editor_preview_thread != null or app.editor_world._building) and Time.get_ticks_msec()<deadline:
++		var frame: int = Time.get_ticks_usec(); await process_frame
++		intervals.append((Time.get_ticks_usec()-frame)/1000.0)
++	intervals.sort()
++	observe(label,{"elapsed_ms":(Time.get_ticks_usec()-began)/1000.0,"frames":intervals.size(),
++		"max_interval_ms":intervals[-1] if not intervals.is_empty() else 0.0,"settled":app.editor_preview_thread == null and not app.editor_world._building})
++
++func editor_feedback() -> void:
++	app = load("res://core/app.tscn").instantiate()
++	app.library = TrackLibrary.new(out+"/probe-storage/app")
++	app.records = LocalRecords.new(out+"/probe-storage/records.json")
++	app.cloud_root_override = out+"/probe-storage/cloud"
++	root.add_child(app)
++	while not app.startup_complete: await process_frame
++	app.document = TrackDocument.create_blank(); app.document.id = "feedback_probe"
++	app._show_screen("create"); await settle("blank_entry")
++	app.canvas.ghost = RoadPieces.create("straight",Vector2(-105,0),180,6)
++	app.canvas.ghost.length = 4.0
++	app._build_editor_tools(); app.editor_status.hide()
++	var before: Dictionary = app.canvas.ghost.duplicate(true)
++	app._change_piece("length",120.0)
++	observe("invalid_parameter_feedback",{"before_errors":RoadPieces.validate(before),"unchanged":before == app.canvas.ghost,
++		"status_visible":app.editor_status.is_visible_in_tree(),"text":app.editor_status.text})
++	app.canvas.ghost.clear(); app._build_editor_tools()
++	var piece: Dictionary = RoadPieces.create("straight",Vector2(-40,0),0,6); piece.length = 80.0
++	app.document.pieces = [piece]
++	app._save_draft(true); await settle("single_road_prepare")
++	app.document.objects = [{"kind":"container","position":[0.0,0.0],"rotation":0.0}]
++	app._save_draft(true); await settle("object_prepare")
++	app._editor_category("objects"); app.canvas.mode = "objects"; app.canvas.selected_object = 0
++	app._build_editor_tools()
++	var first: Vector2 = app.canvas.to_screen(Vector2.ZERO)
++	touch(app.canvas,first,true)
++	var drag := InputEventScreenDrag.new(); drag.index = 7; drag.position = app.canvas.to_screen(Vector2(10,0))
++	app.canvas._gui_input(drag)
++	var before_escape: Array = app.document.objects[0].position.duplicate()
++	var escape := InputEventKey.new(); escape.keycode = KEY_ESCAPE; escape.pressed = true
++	app._unhandled_key_input(escape)
++	app._flush_editor_writes()
++	observe("escape_during_object_drag",{"original_position":[0.0,0.0],"before_escape":before_escape,
++		"after_escape":app.document.objects[0].position,"wip_position":app.library.load_wip(app.document.id).objects[0].position,
++		"undo_entries":app.history.size()})
++	app._editor_category("road"); app.canvas.choose_piece("straight")
++	app._share_dialog()
++	var share_open: bool = false
++	for dialog: Node in app.root_ui.find_children("*","AcceptDialog",true,false):
++		if dialog.title == "Share your circuit":
++			share_open = dialog.visible; dialog.hide(); dialog.queue_free()
++	observe("share_pending_road",{"pending_work":app._has_pending_editor_work(),"dialog_open":share_open,
++		"ghost_kind":app.canvas.ghost.get("kind",""),"shared_document_pieces":app.document.pieces.size()})
++	app.canvas.ghost.clear(); app.canvas.selected_piece = 0
++	app.document["start_line"] = {"position":[-40.0,0.0],"heading":0.0}
++	app.canvas.zoom = 4.0 / maxf(0.01,minf(app.canvas.size.x/110.0,app.canvas.size.y/90.0))
++	app._build_editor_tools()
++	var accept: Rect2 = app.canvas.piece_accept_rect(app.document.pieces[0])
++	var flip: Vector2 = app.canvas.start_controls().flip
++	var overlap: Rect2 = accept.intersection(Rect2(flip-Vector2(28,28),Vector2(56,56)))
++	var point: Vector2 = overlap.get_center()
++	var heading_before: float = app.document.start_line.heading
++	touch(app.canvas,point,true); touch(app.canvas,point,false)
++	observe("road_accept_start_flip_overlap",{"accept_rect":[accept.position.x,accept.position.y,accept.size.x,accept.size.y],
++		"overlap_size":[overlap.size.x,overlap.size.y],"inside_flip_circle":point.distance_to(flip)<=28,
++		"heading_before":heading_before,"heading_after":app.document.start_line.heading,"selected_piece_after":app.canvas.selected_piece})
++	app.queue_free(); await process_frame
++
++func run() -> void:
++	DirAccess.make_dir_recursive_absolute(out)
++	root.size = Vector2i(1280,720)
++	paint_admission(); road_admission(); await interrupted_drag(); await editor_feedback()
++	var file := FileAccess.open(out+"/audit-"+DisplayServer.get_name()+".json",FileAccess.WRITE)
++	file.store_string(JSON.stringify(observations,"\t")); file.close()
++	await create_timer(0.3).timeout
++	print("TRACK_EDITOR_AUDIT_COMPLETE")
++	quit()
+diff --git a/game/tests/profile_track_editor_2026_10_28.gd b/game/tests/profile_track_editor_2026_10_28.gd
+new file mode 100644
+--- /dev/null
++++ b/game/tests/profile_track_editor_2026_10_28.gd
+@@ -0,0 +1,11 @@
++extends "res://tests/test_editor_t01_t04.gd"
++## Current production App path and original assertions; no frozen comparison build.
++func run() -> void:
++	root.size = Vector2i(1280,720)
++	out = ProjectSettings.globalize_path("res://../docs/evidence/track-editor-review-2026-10-28/performance/"+RenderingServer.get_current_rendering_method())
++	DirAccess.make_dir_recursive_absolute(out)
++	await app_loop()
++	record("complete",{"checks":checks,"failures":failures,"static_bytes":OS.get_static_memory_usage()})
++	await create_timer(0.3).timeout
++	print("TRACK_EDITOR_PROFILE_TESTS: %d checks, %d failures" % [checks,failures])
++	quit(1 if failures else 0)
+diff --git a/game/tests/profile_track_editor_history_2026_10_28.gd b/game/tests/profile_track_editor_history_2026_10_28.gd
+new file mode 100644
+--- /dev/null
++++ b/game/tests/profile_track_editor_history_2026_10_28.gd
+@@ -0,0 +1,20 @@
++extends SceneTree
++const SESSION = preload("res://editor/editor_session.gd")
++const HISTORY = preload("res://editor/editor_history.gd")
++func _initialize() -> void: run.call_deferred()
++func run() -> void:
++	var rows: Array = []
++	for count: int in [32,512,4096]:
++		var session = SESSION.new(); var doc: Dictionary = TrackDocument.create_blank()
++		for index: int in range(count): doc.objects.append({"kind":"grass_clump","position":[float(index%64)-32,float(index/64)-32],"rotation":0.0})
++		var samples: Array[float] = []
++		for revision: int in range(40):
++			doc.objects[10].rotation = float(revision)
++			var began: int = Time.get_ticks_usec(); session.remember(doc)
++			samples.append((Time.get_ticks_usec()-began)/1000.0)
++		var sorted: Array[float] = samples.duplicate(); sorted.sort()
++		var row: Dictionary = {"objects":count,"history_size":session.undo.size(),"history_bytes":HISTORY.bytes_used([session.undo,session.redo]),
++			"samples_ms":samples,"median_ms":sorted[20],"p95_ms":sorted[38],"max_ms":sorted[-1]}
++		rows.append(row); print("TRACK_EDITOR_HISTORY ",JSON.stringify(row))
++	var file := FileAccess.open("res://../docs/evidence/track-editor-review-2026-10-28/history-profile.json",FileAccess.WRITE)
++	file.store_string(JSON.stringify(rows,"\t")); file.close(); quit()
+diff --git a/game/tests/review_editor_practice_control_2026_10_28.gd b/game/tests/review_editor_practice_control_2026_10_28.gd
+new file mode 100644
+--- /dev/null
++++ b/game/tests/review_editor_practice_control_2026_10_28.gd
+@@ -0,0 +1,13 @@
++extends "res://tests/test_editor_practice.gd"
++## Current creator-document control. Original assertions remain inherited unchanged.
++func run() -> void:
++	root.size = Vector2i(1280,720)
++	var fixture: Dictionary = JSON.parse_string(FileAccess.get_file_as_string("res://../backend/tests/fixtures/verified_oval.json"))
++	var track: NativeTrack = TrackCompiler.compile(fixture.document)
++	track.spawn = Vector2(fixture.document.start_line.position[0],fixture.document.start_line.position[1])
++	track.spawn_heading = PI*0.5-deg_to_rad(float(fixture.document.start_line.heading))
++	print("PRACTICE_CONTROL current compiled creator document; original ellipse test remains failed")
++	await _check_practice(track)
++	await _check_creator_proof()
++	await _check_normal_race(track)
++	_finish()
+diff --git a/game/tests/review_track_editor_2026_10_28.gd b/game/tests/review_track_editor_2026_10_28.gd
+new file mode 100644
+--- /dev/null
++++ b/game/tests/review_track_editor_2026_10_28.gd
+@@ -0,0 +1,241 @@
++extends SceneTree
++## Review-only native captures; all draft/record writes use disposable evidence storage.
++
++var app: Node
++var folder: String
++var observations: Array[Dictionary] = []
++var failures: int = 0
++var source_before: Dictionary = {}
++
++func source_hashes() -> Dictionary:
++	var result: Dictionary = {}
++	for path: String in ["core/app.gd","editor/editor_canvas.gd","editor/editor_world.gd","editor/editor_style.gd","editor/editor_button.gd","editor/object_browser.gd","editor/object_thumbnail.gd","editor/creator_catalog.gd","editor/object_population.gd","track/native_track_visual.gd","track/creator_prop_visual.gd"]:
++		result[path] = FileAccess.get_sha256("res://"+path)
++	return result
++
++func _initialize() -> void:
++	call_deferred("run")
++
++func frames(count: int = 4) -> void:
++	for index: int in range(count): await process_frame
++	await RenderingServer.frame_post_draw
++
++func settle() -> void:
++	var deadline: int = Time.get_ticks_msec()+60000
++	while (app.editor_preview_thread != null or app.editor_world._building) and Time.get_ticks_msec()<deadline:
++		await process_frame
++	if app.editor_preview_thread != null or app.editor_world._building:
++		failures += 1
++		print("VISUAL_REVIEW: preview deadline exceeded")
++	await frames(6)
++
++func show(doc: Dictionary) -> void:
++	app.canvas = null
++	app.editor_pending_tools.clear()
++	app.editor_view.clear()
++	app.history.clear()
++	app.redo_history.clear()
++	app.document = doc.duplicate(true)
++	app.call("_show_screen","create")
++	await frames(2)
++	await settle()
++
++func rectangle(control: Control) -> Dictionary:
++	var rect: Rect2 = control.get_global_rect()
++	return {"x":rect.position.x,"y":rect.position.y,"w":rect.size.x,"h":rect.size.y}
++
++func shot(label: String) -> void:
++	# Thumbnails render serially. Wait for the actual visible set, so a capture
++	# never mistakes pending artwork for a missing asset.
++	var deadline: int = Time.get_ticks_msec()+15000
++	var pending: bool = true
++	while pending and Time.get_ticks_msec()<deadline:
++		pending = app.editor_world._building
++		for item: Node in app.root_ui.find_children("Asset_*","Button",true,false):
++			if item is ObjectThumbnail and item._visible() and (item._image.texture == null or item._viewport != null): pending = true
++		if pending: await process_frame
++	await frames(5)
++	var controls: Array[Dictionary] = []
++	for item: Node in app.root_ui.find_children("*","Control",true,false):
++		if not item.is_visible_in_tree(): continue
++		if item is BaseButton or item is Slider:
++			var data: Dictionary = {"name":str(item.name),"rect":rectangle(item),"class":item.get_class()}
++			if item is BaseButton:
++				data["text"] = item.text
++				data["disabled"] = item.disabled
++				data["tooltip"] = item.tooltip_text
++			controls.append(data)
++	var state: Dictionary = {"capture":label,"window":[root.size.x,root.size.y],"logical":[root.get_visible_rect().size.x,root.get_visible_rect().size.y],"mode":app.canvas.mode,"controls":controls,"status_text":app.editor_status.text,"status_visible":app.editor_status.is_visible_in_tree(),"save_text":app.editor_save_button.text}
++	if app.canvas.selected_piece >= 0 and not app.document.pieces.is_empty() and app.document.has("start_line"):
++		var accept: Rect2 = app.canvas.piece_accept_rect(app.document.pieces[app.canvas.selected_piece])
++		var flip: Vector2 = app.canvas.start_controls().flip
++		var flip_bounds := Rect2(flip-Vector2(28,28),Vector2(56,56))
++		state["confirm_bounds"] = [accept.position.x,accept.position.y,accept.size.x,accept.size.y]
++		state["start_flip_bounds"] = [flip_bounds.position.x,flip_bounds.position.y,56,56]
++		state["confirm_start_flip_bounds_overlap"] = accept.intersects(flip_bounds)
++		var probe: Vector2 = accept.intersection(flip_bounds).get_center()
++		state["overlap_center_in_start_flip_hit_circle"] = probe.distance_to(flip) <= 28
++	for item_name: String in ["EditorIdentityAndHistory","SurfacePlacementToolbar","EditorTools","EditorMap","EditorRailPanel","ObjectBrowser"]:
++		var item: Control = app.root_ui.find_child(item_name,true,false)
++		if item != null and item.is_visible_in_tree(): state[item_name] = rectangle(item)
++	observations.append(state)
++	var error: Error = root.get_texture().get_image().save_png(folder.path_join(label+".png"))
++	if error != OK: failures += 1
++	print("VISUAL_REVIEW_CAPTURE: ",label)
++
++func circuit() -> Dictionary:
++	var doc: Dictionary = TrackDocument.create_blank()
++	doc.id = "visual_review_fixture"
++	doc.name = "Lakeside Circuit"
++	var position := Vector2(-28,-18)
++	var heading: float = 0.0
++	for kind: String in ["straight","hairpin","straight","hairpin"]:
++		var piece: Dictionary = RoadPieces.create(kind,position,heading)
++		piece.length = 56.0 if kind == "straight" else 0.0
++		piece.radius = 18.0
++		doc.pieces.append(piece)
++		var pose: Dictionary = RoadPieces.end_pose(piece)
++		position = pose.position
++		heading = pose.heading
++	doc = RoadPieces.route_from_pieces(doc).document
++	doc["start_line"] = {"position":[-28.0,-18.0],"heading":0.0}
++	doc["automatic_scenery"] = false
++	doc.objects = [
++		{"kind":"tree","position":[-29.0,-6.0],"rotation":0.0},
++		{"kind":"broadleaf","position":[-20.0,7.0],"rotation":15.0},
++		{"kind":"shed","position":[23.0,-4.0],"rotation":0.0},
++		{"kind":"grandstand","position":[0.0,3.0],"rotation":0.0},
++		{"kind":"barrier","position":[15.0,4.0],"rotation":0.0}
++	]
++	return doc
++
++func run() -> void:
++	if DisplayServer.get_name() == "headless": quit(2); return
++	OS.set_environment("BMT_API_URL","")
++	source_before = source_hashes()
++	folder = ProjectSettings.globalize_path("res://../docs/evidence/track-editor-review-2026-10-28/native").simplify_path().path_join(RenderingServer.get_current_rendering_method())
++	DirAccess.make_dir_recursive_absolute(folder)
++	root.size = Vector2i(1280,720)
++	root.content_scale_size = Vector2i(1280,720)
++	app = load("res://core/app.tscn").instantiate()
++	app.library = TrackLibrary.new(folder.path_join("disposable-storage"))
++	app.library.owner_name = "Review driver"
++	app.records = LocalRecords.new(folder.path_join("disposable-storage/records.json"))
++	app.cloud_root_override = folder.path_join("disposable-storage/cloud")
++	root.add_child(app)
++	var startup_deadline: int = Time.get_ticks_msec()+60000
++	while not app.startup_complete and Time.get_ticks_msec()<startup_deadline: await process_frame
++	if not app.startup_complete:
++		print("VISUAL_REVIEW: startup did not finish")
++		quit(2)
++		return
++	await frames()
++	app.library.owner_name = "Review driver"
++	var blank: Dictionary = TrackDocument.create_blank()
++	blank.id = "review_blank"
++	await show(blank)
++	await shot("01-blank-1280")
++	var doc: Dictionary = circuit()
++	await show(doc)
++	await shot("02-track-1280")
++	app.canvas.selected_piece = 0
++	app.call("_build_editor_tools")
++	await shot("03-selected-road-1280")
++	app.canvas.selected_piece = -1
++	app.canvas.choose_piece("spline")
++	app.call("_build_editor_tools")
++	await shot("04-spline-preview-1280")
++	app.canvas.ghost.clear()
++	app.call("_editor_category","paint")
++	await shot("05-surfaces-1280")
++	app.editor_tools_panel.show()
++	await shot("06-surface-options-1280")
++	app.editor_tools_panel.hide()
++	app.canvas.paint_mode = "area"
++	app.canvas.paint_points = [[-13.0,-9.0],[7.0,-10.0],[12.0,3.0],[-8.0,7.0]]
++	app.call("_build_editor_tools")
++	await shot("07-area-preview-1280")
++	app.canvas.paint_points.clear()
++	app.call("_editor_category","objects")
++	app.object_browser.category = "Nature"
++	app.object_browser.refresh()
++	await shot("08-objects-1280")
++	app.object_browser.call("_activate_asset","tree")
++	await frames()
++	app.object_browser.call("_activate_asset","tree")
++	await shot("09-object-options-1280")
++	app.object_browser.options.hide()
++	app.canvas.selected_object = 2
++	app.canvas.mode = "objects"
++	app.call("_build_editor_tools")
++	await shot("10-selected-object-1280")
++	app.canvas.selected_object = -1
++	app.call("_build_editor_tools")
++	app.call("_open_object_population")
++	var deadline: int = Time.get_ticks_msec()+45000
++	while is_instance_valid(app.object_population_panel) and not app.object_population_panel.ready_to_apply and Time.get_ticks_msec()<deadline: await process_frame
++	await shot("11-populate-1280")
++	app.call("_close_object_population",false)
++	await settle()
++	app.call("_editor_category","road")
++	app.canvas.selected_piece = -1
++	app.document.pieces[0].position[0] += 8.0
++	app.call("_save_draft",true)
++	await settle()
++	app.call("_update_editor_issues")
++	app.call("_focus_issue")
++	await shot("12a-issues-1280")
++	await show(doc)
++	app.editor_map_panel.show()
++	await shot("12-map-1280")
++	app.editor_map_panel.hide()
++	app.call("_editor_help")
++	await shot("13-help-1280")
++	for item: Node in app.root_ui.get_children():
++		if item is AcceptDialog: item.hide()
++	# Match production 1280x720 logical stretching at a smaller physical window.
++	root.size = Vector2i(960,540)
++	root.content_scale_size = Vector2i(1280,720)
++	await show(doc)
++	await shot("14-track-960-scaled")
++	app.call("_editor_category","paint")
++	await shot("15-surfaces-960-scaled")
++	# Also inspect an editor with only 960x540 logical layout space.
++	root.content_scale_size = Vector2i(960,540)
++	await show(doc)
++	app.call("_editor_category","paint")
++	await shot("16-surfaces-960-native")
++	app.call("_editor_category","objects")
++	await shot("17-objects-960-native")
++	root.size = Vector2i(1600,720)
++	root.content_scale_size = Vector2i(1280,720)
++	await show(doc)
++	await shot("18-track-wide")
++	root.size = Vector2i(1280,720)
++	root.content_scale_size = Vector2i(1280,720)
++	doc.name = "The extraordinarily long lakeside championship circuit"
++	await show(doc)
++	await shot("19-long-name")
++	for theme: String in ["desert","winter","night_city","storm"]:
++		var themed: Dictionary = circuit()
++		themed.theme = theme
++		themed.name = "Review "+theme
++		await show(themed)
++		await shot("20-theme-"+theme)
++		if theme in ["desert","winter"]:
++			app.call("_editor_category","paint")
++			await shot("21-surfaces-"+theme)
++	# Find out whether the Night view remains dark after explicit light placement.
++	var lit: Dictionary = circuit()
++	lit.theme = "night_city"
++	for position: Array in [[-28.0,-12.0],[0.0,12.0],[28.0,-12.0]]:
++		lit.objects.append({"kind":"light","position":position,"rotation":0.0})
++	await show(lit)
++	await shot("22-night-with-authored-lights")
++	var file := FileAccess.open(folder.path_join("observations.json"),FileAccess.WRITE)
++	file.store_string(JSON.stringify({"scope":"Current native editor visual and usability review; no owner drafts or records used","renderer":RenderingServer.get_current_rendering_method(),"failures":failures,"source_before":source_before,"source_after":source_hashes(),"observations":observations},"\t"))
++	file.close()
++	app.queue_free()
++	await frames()
++	print("VISUAL_REVIEW_COMPLETE: ",observations.size()," captures, ",failures," capture/deadline failures")
++	quit(1 if failures else 0)
+diff --git a/game/tests/audit_track_editor_2026_10_28.gd.uid b/game/tests/audit_track_editor_2026_10_28.gd.uid
+new file mode 100644
+--- /dev/null
++++ b/game/tests/audit_track_editor_2026_10_28.gd.uid
+@@ -0,0 +1 @@
++uid://bd1d0qt2rlb5s
+diff --git a/game/tests/profile_track_editor_2026_10_28.gd.uid b/game/tests/profile_track_editor_2026_10_28.gd.uid
+new file mode 100644
+--- /dev/null
++++ b/game/tests/profile_track_editor_2026_10_28.gd.uid
+@@ -0,0 +1 @@
++uid://duwprqlqgi7yw
+diff --git a/game/tests/profile_track_editor_history_2026_10_28.gd.uid b/game/tests/profile_track_editor_history_2026_10_28.gd.uid
+new file mode 100644
+--- /dev/null
++++ b/game/tests/profile_track_editor_history_2026_10_28.gd.uid
+@@ -0,0 +1 @@
++uid://b7mx8jonr84kv
+diff --git a/game/tests/review_editor_practice_control_2026_10_28.gd.uid b/game/tests/review_editor_practice_control_2026_10_28.gd.uid
+new file mode 100644
+--- /dev/null
++++ b/game/tests/review_editor_practice_control_2026_10_28.gd.uid
+@@ -0,0 +1 @@
++uid://xujgfq6wspse
+diff --git a/game/tests/review_track_editor_2026_10_28.gd.uid b/game/tests/review_track_editor_2026_10_28.gd.uid
+new file mode 100644
+--- /dev/null
++++ b/game/tests/review_track_editor_2026_10_28.gd.uid
+@@ -0,0 +1 @@
++uid://blaasr7ujyrfn
+diff --git a/docs/evidence/track-editor-review-2026-10-28/run_checks.py b/docs/evidence/track-editor-review-2026-10-28/run_checks.py
+new file mode 100644
+--- /dev/null
++++ b/docs/evidence/track-editor-review-2026-10-28/run_checks.py
+@@ -0,0 +1,42 @@
++"""Review-only runner: pinned entry point, disposable profile, raw retained logs."""
++from pathlib import Path
++import hashlib
++import json
++import os
++import subprocess
++import time
++
++ROOT = Path.cwd()
++OUT = ROOT / 'docs/evidence/track-editor-review-2026-10-28'
++profile = ROOT / 'build/track-editor-review-2026-10-28/profile'
++(profile / 'Circuit01Lab').mkdir(parents=True, exist_ok=True)
++(profile / 'Circuit01Lab/backend.cfg').write_text('[backend]\nurl=""\n', encoding='utf-8')
++env = {k: v for k, v in os.environ.items() if not k.startswith('BMT_')}
++env.update(APPDATA=str(profile), LOCALAPPDATA=str(profile))
++results = []
++for name in ['test_editor_workflow', 'test_editor_t01_t04', 'test_editor_t05_t11',
++             'test_editor_t11_t15', 'test_editor_review_fixes', 'test_editor_preparation',
++             'test_creator_capacity', 'test_draft_recovery', 'test_editor_practice']:
++    script = ROOT / 'game/tests' / (name + '.gd')
++    if not script.exists():
++        results.append(dict(test=name, exit='missing'))
++        continue
++    command = ['powershell', '-NoProfile', '-ExecutionPolicy', 'Bypass', '-File',
++               str(ROOT / 'scripts/dev.ps1'), '-Action', 'TestScript', '-ScriptPath',
++               'res://tests/' + name + '.gd', '-CommandTimeoutSeconds', '180']
++    start = time.monotonic()
++    with (OUT / (name + '-headless.log')).open('wb') as log:
++        child = subprocess.Popen(command, env=env, stdout=log, stderr=subprocess.STDOUT)
++        try:
++            code = child.wait(timeout=205)
++        except subprocess.TimeoutExpired:
++            child.kill()
++            child.wait()
++            code = 'wrapper-timeout'
++    result = dict(test=name, command=command, exit=code, seconds=round(time.monotonic()-start, 3),
++                  source_sha256=hashlib.sha256(script.read_bytes()).hexdigest())
++    results.append(result)
++    (OUT / 'checks.json').write_text(json.dumps(results, indent=2), encoding='utf-8')
++    print(json.dumps(result), flush=True)
++    lines = (OUT / (name + '-headless.log')).read_text(encoding='utf-8', errors='replace').splitlines()
++    print('\n'.join(line for line in lines if any(x in line for x in ['FAIL:', 'SCRIPT ERROR:', 'checks,', 'assertions', 'passed', 'FAILURES', 'EDITOR_']))[-2200:], flush=True)
+diff --git a/docs/evidence/track-editor-review-2026-10-28/run_probe.py b/docs/evidence/track-editor-review-2026-10-28/run_probe.py
+new file mode 100644
+--- /dev/null
++++ b/docs/evidence/track-editor-review-2026-10-28/run_probe.py
+@@ -0,0 +1,37 @@
++"""Direct pinned-engine control; every child has an isolated offline profile."""
++from pathlib import Path
++import hashlib
++import json
++import os
++import subprocess
++import sys
++import time
++
++ROOT = Path.cwd()
++OUT = ROOT / 'docs/evidence/track-editor-review-2026-10-28'
++script, mode = sys.argv[1:3]
++label = Path(script).stem + '-' + mode
++profile = ROOT / 'build/track-editor-review-2026-10-28' / label
++(profile / 'Circuit01Lab').mkdir(parents=True, exist_ok=True)
++(profile / 'Circuit01Lab/backend.cfg').write_text('[backend]\nurl=""\n', encoding='utf-8')
++env = {k: v for k, v in os.environ.items() if not k.startswith('BMT_')}
++env.update(APPDATA=str(profile), LOCALAPPDATA=str(profile))
++command = ['C:/apps/Godot 4.7.2/Godot_v4.7.2-stable_win64.exe',
++           '--audio-driver', 'Dummy', '--path', str(ROOT / 'game'), '--script', script]
++command += ['--headless'] if mode == 'headless' else ['--rendering-method', mode]
++command += ['--'] + sys.argv[3:]
++start = time.monotonic()
++with (OUT / ('direct-' + label + '.log')).open('wb') as log:
++    child = subprocess.Popen(command, env=env, stdout=log, stderr=subprocess.STDOUT)
++    (OUT / ('direct-' + label + '-pid.json')).write_text(json.dumps(dict(pid=child.pid, command=command)))
++    try:
++        code = child.wait(timeout=240)
++    except subprocess.TimeoutExpired:
++        child.kill()
++        child.wait()
++        code = 'timeout'
++result = dict(command=command, exit=code, seconds=round(time.monotonic()-start, 3),
++              source_sha256=hashlib.sha256((ROOT / 'game' / script.removeprefix('res://')).read_bytes()).hexdigest())
++(OUT / ('direct-' + label + '.json')).write_text(json.dumps(result, indent=2), encoding='utf-8')
++print(json.dumps(result), flush=True)
++print((OUT / ('direct-' + label + '.log')).read_text(encoding='utf-8', errors='replace')[-4000:], flush=True)
+diff --git a/docs/evidence/track-editor-review-2026-10-28/assemble_report.py b/docs/evidence/track-editor-review-2026-10-28/assemble_report.py
+new file mode 100644
+--- /dev/null
++++ b/docs/evidence/track-editor-review-2026-10-28/assemble_report.py
+@@ -0,0 +1,105 @@
++from pathlib import Path
++import difflib
++import hashlib
++import json
++import shutil
++
++ROOT = Path.cwd()
++OUT = ROOT / 'docs/evidence/track-editor-review-2026-10-28'
++helpers = [
++    'game/tests/audit_track_editor_2026_10_28.gd',
++    'game/tests/profile_track_editor_2026_10_28.gd',
++    'game/tests/profile_track_editor_history_2026_10_28.gd',
++    'game/tests/review_editor_practice_control_2026_10_28.gd',
++    'game/tests/review_track_editor_2026_10_28.gd',
++]
++reviewed = [
++    'game/core/app.gd', 'game/editor/editor_canvas.gd', 'game/editor/editor_world.gd',
++    'game/editor/editor_session.gd', 'game/editor/editor_history.gd',
++    'game/editor/track_document.gd', 'game/editor/creator_limits.gd',
++    'game/editor/road_update.gd', 'game/track/track_theme.gd',
++]
++sources = {}
++for name in reviewed:
++    source = ROOT / name
++    target = OUT / 'reviewed-sources' / name
++    target.parent.mkdir(parents=True, exist_ok=True)
++    shutil.copyfile(source, target)
++    sources[name] = hashlib.sha256(source.read_bytes()).hexdigest()
++
++finding_rows = [
++    ('TER-C01', 'P1', 'correctness', 'Accepted edits can exceed global limits and fail WIP recovery',
++     ['game/editor/editor_canvas.gd:741', 'game/editor/editor_canvas.gd:1385'],
++     ['paint_global_limit', 'road_global_limit']),
++    ('TER-C02', 'P2', 'correctness', 'Cancelled drags are committed and autosaved',
++     ['game/editor/editor_canvas.gd:186', 'game/editor/editor_canvas.gd:578', 'game/core/app.gd:5101'],
++     ['cancelled_object_touch', 'cancel_gesture_after_drag', 'escape_during_object_drag']),
++    ('TER-C03', 'P2', 'usability/correctness', 'Road acceptance can reverse the start direction',
++     ['game/editor/editor_canvas.gd:310', 'game/editor/editor_canvas.gd:1133', 'game/editor/editor_canvas.gd:1355'],
++     ['road_accept_start_flip_overlap', 'native/*/03-selected-road-1280.png']),
++    ('TER-U01', 'P2', 'usability', 'Night authoring has insufficient visibility',
++     ['game/editor/editor_world.gd:358', 'game/track/track_theme.gd:52'],
++     ['native/*/20-theme-night_city.png', 'native/*/22-night-with-authored-lights.png']),
++    ('TER-P01', 'P2', 'performance', 'Final geometry and cold practice preparation remain slow',
++     ['game/core/app.gd:3955', 'game/editor/road_update.gd:8'],
++     ['performance/gl_compatibility/results-gl_compatibility.json']),
++    ('TER-P02', 'P2', 'performance', 'Synchronous history consumes a substantial large-track input budget',
++     ['game/editor/editor_session.gd:15', 'game/editor/editor_history.gd:8'],
++     ['history-profile.json']),
++    ('TER-U02', 'P2', 'usability', 'Some rejected edits only update an invisible label',
++     ['game/core/app.gd:3573', 'game/core/app.gd:3268'], ['invalid_parameter_feedback']),
++    ('TER-C04', 'P2', 'correctness/usability', 'Sharing bypasses pending-road resolution',
++     ['game/core/app.gd:3986'], ['share_pending_road']),
++]
++findings = [dict(id=i, priority=p, category=c, title=t, source=s, evidence=e)
++            for i, p, c, t, s, e in finding_rows]
++executions = {}
++for path in OUT.glob('direct-*.json'):
++    if path.stem.endswith('-pid'):
++        continue
++    executions[path.name] = json.loads(path.read_text(encoding='utf-8'))
++native = {}
++for path in (OUT / 'native').glob('*/observations.json'):
++    data = json.loads(path.read_text(encoding='utf-8'))
++    native[path.parent.name] = dict(captures=len(data['observations']), failures=data['failures'],
++                                   sources_stable_within_run=data['source_before'] == data['source_after'])
++report = dict(
++    date='2026-10-28', timezone='Europe/Helsinki', scope='review only',
++    requirements={'TER01': 'usability', 'TER02': 'performance', 'TER03': 'correctness',
++                  'TER04': 'overall quality', 'TER-Q01': 'reproducible evidence'},
++    engine='4.7.2.stable.official.ed1daf0bf',
++    findings=findings, audit=json.loads((OUT / 'audit-headless.json').read_text()),
++    history=json.loads((OUT / 'history-profile.json').read_text()), native=native,
++    executions=executions,
++    original_practice=dict(checks=39, failures=4, laps=0, ticks=28800, contacts=27678,
++                           following_diagnostic='nil access after absent normal finish', resolved=False),
++    current_creator_practice_control=dict(checks=53, failures=0, laps=6, ticks=15259, contacts=0,
++                                         note='Different current creator fixture; does not replace original failure'),
++    wrapper_attempts='checks.json; all attempted tests hit sandbox diagnostics; no wrapper pass claim',
++    limitations=[
++        'Desktop RTX 3090; no device query/test or phone FPS/latency claim',
++        'No whole-tree freeze: concurrent App, vehicle, input, localization, fixture and backend changes',
++        'Certificate-store errors retained even in successful direct controls',
++        'Forced 960x540 logical layout differs from production 1280x720 scaling',
++        'No production source fix, deployment, external share, authentication, purchase, or owner-save change',
++        'Initial policy/profile/wrapper/process-inspection failures and incomplete probes retained',
++        'Tracked capacity-test result archived and restored; newer concurrent build identity preserved',
++    ],
++    reviewed_source_hashes=sources, helper_files=helpers,
++    production_edits_by_review=[],
++)
++(OUT / 'report.json').write_text(json.dumps(report, indent=2) + '\n', encoding='utf-8')
++
++patch_names = ['docs/TRACK_EDITOR_REVIEW_2026_10_28.md'] + helpers
++patch_names += [n + '.uid' for n in helpers if (ROOT / (n + '.uid')).exists()]
++patch_names += ['docs/evidence/track-editor-review-2026-10-28/' + name
++                for name in ['run_checks.py', 'run_probe.py', 'assemble_report.py']]
++chunks = []
++for name in patch_names:
++    content = (ROOT / name).read_text(encoding='utf-8')
++    chunks.append('diff --git a/' + name + ' b/' + name + '\nnew file mode 100644\n')
++    chunks.extend(difflib.unified_diff([], content.splitlines(keepends=True),
++                                     fromfile='/dev/null', tofile='b/' + name))
++(OUT / 'review-only.patch').write_text(''.join(chunks), encoding='utf-8')
++print(json.dumps(dict(findings=len(findings), executions=len(executions), native=native,
++                      review_helpers=len(helpers), patch_files=len(patch_names))))

@@ -1,0 +1,126 @@
+F.....ss.............................s..........s....................... [ 75%]
+.................F.....                                                  [100%]
+================================== FAILURES ===================================
+_ test_repeat_acceptance_reuses_bounded_facts_without_history_or_ledger_reads[sqlite] _
+
+domain = namespace(app=<fastapi.applications.FastAPI object at 0x000001DEF166D6A0>, client=<starlette.testclient.TestClient obj...34e6', 'Bob': '7e158bdf-ae80-4f97-877f-438cd64ea13f', 'Carol': 'bc182e5d-eafa-40ae-b0e0-dbbe5d5d473e'}, postgres=False)
+
+    def test_repeat_acceptance_reuses_bounded_facts_without_history_or_ledger_reads(domain):
+        version, _board = public_course(domain)
+        race(domain, version, frames=30)
+        submitted = submit(domain, ticket(domain, version), frames=40)
+        queries = []
+    
+        def record(_conn, _cursor, sql, *_args):
+            queries.append(sql)
+    
+        event.listen(domain.app.state.engine, 'before_cursor_execute', record)
+        try:
+            assert process_one(domain.app)
+        finally:
+            event.remove(domain.app.state.engine, 'before_cursor_execute', record)
+        assert len(queries) <= 30, queries
+>       assert sum('FROM coin_milestones' in sql for sql in queries) == 1
+E       assert 0 == 1
+E        +  where 0 = sum(<generator object test_repeat_acceptance_reuses_bounded_facts_without_history_or_ledger_reads.<locals>.<genexpr> at 0x000001DEF1F33C60>)
+
+tests\test_race_acceptance_sql.py:36: AssertionError
+---------------------------- Captured stderr call -----------------------------
+{"event":"verification_complete","level":"info","run_id":"8da0c945-43a0-4f18-b575-e7c074df0ae5","time_ticks":300,"worker_id":"bdfaf860-2dfd-4e1d-9e59-51e18624dee0","verification_seconds":0.0528,"verification_compute_ms":null,"verification_method":"canonical-replay","queue_wait_seconds":0}
+{"event":"verification_complete","level":"info","run_id":"7720bc0d-c5e1-46b5-9949-8d433776dd7e","time_ticks":150,"worker_id":"bdfaf860-2dfd-4e1d-9e59-51e18624dee0","verification_seconds":0.0497,"verification_compute_ms":null,"verification_method":"canonical-replay","queue_wait_seconds":0}
+{"event":"verification_complete","level":"info","run_id":"fa8e2569-4bb3-470f-8fe7-1ac3f5437f7b","time_ticks":200,"worker_id":"bdfaf860-2dfd-4e1d-9e59-51e18624dee0","verification_seconds":0.0163,"verification_compute_ms":null,"verification_method":"canonical-replay","queue_wait_seconds":0}
+------------------------------ Captured log call ------------------------------
+INFO     bmt.worker:worker.py:352 verification_complete
+INFO     bmt.worker:worker.py:352 verification_complete
+INFO     bmt.worker:worker.py:352 verification_complete
+-------------------------- Captured stderr teardown ---------------------------
+{"event":"http_cost_summary","interval_seconds":2.384,"body_bytes_after_compression":true,"latency_limits_ms":[10,25,50,100,250,500,1000,5000],"rows":[{"route":"/v1/tracks","method":"POST","status":201,"requests":1,"request_wire_bytes":43,"response_wire_bytes":992,"duration_ms":64.49,"max_ms":64.49,"latency_buckets":[0,0,0,1,0,0,0,0,0]},{"route":"/v1/run-tickets","method":"POST","status":201,"requests":3,"request_wire_bytes":228,"response_wire_bytes":1743,"duration_ms":296.39,"max_ms":271.02,"latency_buckets":[0,2,0,0,0,1,0,0,0]},{"route":"/v1/runs","method":"POST","status":202,"requests":3,"request_wire_bytes":1597,"response_wire_bytes":999,"duration_ms":109.15,"max_ms":48.71,"latency_buckets":[0,0,3,0,0,0,0,0,0]},{"route":"/v1/runs/{run_id}","method":"GET","status":200,"requests":2,"request_wire_bytes":0,"response_wire_bytes":752,"duration_ms":20.96,"max_ms":14.41,"latency_buckets":[1,1,0,0,0,0,0,0,0]},{"route":"/v1/track-versions/{version_id}/publish","method":"POST","status":200,"requests":1,"request_wire_bytes":0,"response_wire_bytes":1002,"duration_ms":40.72,"max_ms":40.72,"latency_buckets":[0,0,1,0,0,0,0,0,0]}],"level":"info"}
+---------------------------- Captured log teardown ----------------------------
+INFO     bmt.requests:http_costs.py:59 {"event":"http_cost_summary","interval_seconds":2.384,"body_bytes_after_compression":true,"latency_limits_ms":[10,25,50,100,250,500,1000,5000],"rows":[{"route":"/v1/tracks","method":"POST","status":201,"requests":1,"request_wire_bytes":43,"response_wire_bytes":992,"duration_ms":64.49,"max_ms":64.49,"latency_buckets":[0,0,0,1,0,0,0,0,0]},{"route":"/v1/run-tickets","method":"POST","status":201,"requests":3,"request_wire_bytes":228,"response_wire_bytes":1743,"duration_ms":296.39,"max_ms":271.02,"latency_buckets":[0,2,0,0,0,1,0,0,0]},{"route":"/v1/runs","method":"POST","status":202,"requests":3,"request_wire_bytes":1597,"response_wire_bytes":999,"duration_ms":109.15,"max_ms":48.71,"latency_buckets":[0,0,3,0,0,0,0,0,0]},{"route":"/v1/runs/{run_id}","method":"GET","status":200,"requests":2,"request_wire_bytes":0,"response_wire_bytes":752,"duration_ms":20.96,"max_ms":14.41,"latency_buckets":[1,1,0,0,0,0,0,0,0]},{"route":"/v1/track-versions/{version_id}/publish","method":"POST","status":200,"requests":1,"request_wire_bytes":0,"response_wire_bytes":1002,"duration_ms":40.72,"max_ms":40.72,"latency_buckets":[0,0,1,0,0,0,0,0,0]}]}
+__________ test_fresh_queries_coalesce_across_cache_restart[sqlite] ___________
+
+catalogue = namespace(app=<fastapi.applications.FastAPI object at 0x000001DE98199400>, client=<starlette.testclient.TestClient obj...2c5c', 'Bob': '68d982ab-27c0-4ec5-bf40-3c8c573eeb76', 'Carol': 'd4bc4e49-7887-42a7-aa51-7eb1c661b538'}, postgres=False)
+
+    def test_fresh_queries_coalesce_across_cache_restart(catalogue):
+        domain = catalogue
+        pages = []
+        for _ in range(3):
+            response = query(domain, fresh=True)
+            assert response.status_code == 200 and len(response.json()["items"]) == 12
+            assert response.json()["total"] is None
+            pages.append(response.json()["page_cursor"])
+            domain.app.state.discovery_memory.clear()
+>       assert len(set(pages)) == 1
+E       AssertionError: assert 2 == 1
+E        +  where 2 = len({'WyI1NzQwY2U1My0zMzI3LTUxOGUtYjFmYi04NDBjN2U5OGFlODYiLCI1NTY5OWEyMWFjNTA3MGZlNzRlZjVmNjNkYzAyNmU4MWE5MGU4MmI2YmYzMDdh...TRmYTNhOWMzYWZhM2ZjZWE1ZjBlNTY1OGNkZTBmNDdmMmQyYTBmNGQ4NmQ5OTU5ZmEyIiwiOTY2YTljNDdjMGQ1M2I2MjUxNTlmZWY3OTljMTEzZTYiXQ'})
+E        +    where {'WyI1NzQwY2U1My0zMzI3LTUxOGUtYjFmYi04NDBjN2U5OGFlODYiLCI1NTY5OWEyMWFjNTA3MGZlNzRlZjVmNjNkYzAyNmU4MWE5MGU4MmI2YmYzMDdh...TRmYTNhOWMzYWZhM2ZjZWE1ZjBlNTY1OGNkZTBmNDdmMmQyYTBmNGQ4NmQ5OTU5ZmEyIiwiOTY2YTljNDdjMGQ1M2I2MjUxNTlmZWY3OTljMTEzZTYiXQ'} = set(['WyI1NzQwY2U1My0zMzI3LTUxOGUtYjFmYi04NDBjN2U5OGFlODYiLCI1NTY5OWEyMWFjNTA3MGZlNzRlZjVmNjNkYzAyNmU4MWE5MGU4MmI2YmYzMDdh...TRmYTNhOWMzYWZhM2ZjZWE1ZjBlNTY1OGNkZTBmNDdmMmQyYTBmNGQ4NmQ5OTU5ZmEyIiwiOTY2YTljNDdjMGQ1M2I2MjUxNTlmZWY3OTljMTEzZTYiXQ'])
+
+tests\test_attack_resistance.py:327: AssertionError
+-------------------------- Captured stderr teardown ---------------------------
+{"event":"http_cost_summary","interval_seconds":1.494,"body_bytes_after_compression":true,"latency_limits_ms":[10,25,50,100,250,500,1000,5000],"rows":[{"route":"/v1/discovery/v3/tracks","method":"POST","status":200,"requests":3,"request_wire_bytes":36,"response_wire_bytes":3895,"duration_ms":250.71999999999997,"max_ms":180.66,"latency_buckets":[0,0,2,0,1,0,0,0,0]}],"level":"info"}
+---------------------------- Captured log teardown ----------------------------
+INFO     bmt.requests:http_costs.py:59 {"event":"http_cost_summary","interval_seconds":1.494,"body_bytes_after_compression":true,"latency_limits_ms":[10,25,50,100,250,500,1000,5000],"rows":[{"route":"/v1/discovery/v3/tracks","method":"POST","status":200,"requests":3,"request_wire_bytes":36,"response_wire_bytes":3895,"duration_ms":250.71999999999997,"max_ms":180.66,"latency_buckets":[0,0,2,0,1,0,0,0,0]}]}
+============================== warnings summary ===============================
+..\.tools\backend-secure-venv\Lib\site-packages\fastapi\testclient.py:1
+  C:\Codes\Godot\Beat my track\.tools\backend-secure-venv\Lib\site-packages\fastapi\testclient.py:1: StarletteDeprecationWarning: Using `httpx` with `starlette.testclient` is deprecated; install `httpx2` instead.
+    from starlette.testclient import TestClient as TestClient  # noqa
+
+tests/test_race_acceptance_sql.py: 8 warnings
+tests/test_rivalry.py: 10 warnings
+tests/test_rivalry_awards.py: 2 warnings
+tests/test_challenges.py: 29 warnings
+tests/test_challenge_series.py: 5 warnings
+tests/test_scalability_admission.py: 4 warnings
+tests/test_attack_resistance.py: 26 warnings
+  C:\Users\ville\AppData\Local\Google\Cloud SDK\google-cloud-sdk\platform\bundledpython\Lib\contextlib.py:148: SAWarning: Skipped unsupported reflection of expression-based index ix_studio_player_name
+    next(self.gen)
+
+tests/test_race_acceptance_sql.py: 8 warnings
+tests/test_rivalry.py: 10 warnings
+tests/test_rivalry_awards.py: 2 warnings
+tests/test_challenges.py: 29 warnings
+tests/test_challenge_series.py: 5 warnings
+tests/test_scalability_admission.py: 4 warnings
+tests/test_attack_resistance.py: 26 warnings
+  C:\Users\ville\AppData\Local\Google\Cloud SDK\google-cloud-sdk\platform\bundledpython\Lib\contextlib.py:148: SAWarning: Skipped unsupported reflection of expression-based index ix_studio_published_rating
+    next(self.gen)
+
+tests/test_race_acceptance_sql.py: 8 warnings
+tests/test_rivalry.py: 10 warnings
+tests/test_rivalry_awards.py: 2 warnings
+tests/test_challenges.py: 29 warnings
+tests/test_challenge_series.py: 5 warnings
+tests/test_scalability_admission.py: 4 warnings
+tests/test_attack_resistance.py: 26 warnings
+  C:\Users\ville\AppData\Local\Google\Cloud SDK\google-cloud-sdk\platform\bundledpython\Lib\contextlib.py:148: SAWarning: Skipped unsupported reflection of expression-based index ix_studio_published_name
+    next(self.gen)
+
+tests/test_race_acceptance_sql.py: 8 warnings
+tests/test_rivalry.py: 10 warnings
+tests/test_rivalry_awards.py: 2 warnings
+tests/test_challenges.py: 29 warnings
+tests/test_challenge_series.py: 5 warnings
+tests/test_scalability_admission.py: 4 warnings
+tests/test_attack_resistance.py: 26 warnings
+  C:\Users\ville\AppData\Local\Google\Cloud SDK\google-cloud-sdk\platform\bundledpython\Lib\contextlib.py:148: SAWarning: Skipped unsupported reflection of expression-based index ix_discovery_names
+    next(self.gen)
+
+tests/test_race_acceptance_sql.py: 8 warnings
+tests/test_rivalry.py: 10 warnings
+tests/test_rivalry_awards.py: 2 warnings
+tests/test_challenges.py: 29 warnings
+tests/test_challenge_series.py: 5 warnings
+tests/test_scalability_admission.py: 4 warnings
+tests/test_attack_resistance.py: 26 warnings
+  C:\Users\ville\AppData\Local\Google\Cloud SDK\google-cloud-sdk\platform\bundledpython\Lib\contextlib.py:148: SAWarning: Skipped unsupported reflection of expression-based index ix_compatible_versions
+    next(self.gen)
+
+tests/test_attack_resistance.py::test_resource_migration_preserves_and_charges_legacy_rows[sqlite]
+  C:\Codes\Godot\Beat my track\backend\tests\test_attack_resistance.py:260: SAWarning: Skipped unsupported reflection of expression-based index ix_studio_player_name
+    legacy_players = table("players", metadata(), autoload_with=engine)
+
+-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
+=========================== short test summary info ===========================
+FAILED tests/test_race_acceptance_sql.py::test_repeat_acceptance_reuses_bounded_facts_without_history_or_ledger_reads[sqlite]
+FAILED tests/test_attack_resistance.py::test_fresh_queries_coalesce_across_cache_restart[sqlite]
+2 failed, 89 passed, 4 skipped, 81 deselected, 422 warnings in 119.01s (0:01:59)

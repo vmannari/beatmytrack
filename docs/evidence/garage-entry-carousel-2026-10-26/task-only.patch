@@ -1,0 +1,576 @@
+--- a/game/core/app.gd
++++ b/game/core/app.gd
+@@ -518,11 +518,6 @@
+ 				if browser.get_parent() is ScrollContainer: editor_return_draft_view.scroll = browser.get_parent().scroll_vertical
+ 	if not _suspended_menu.is_empty() and _suspended_menu.records != records: _discard_suspended_menu()
+ 	if next not in ["settings","profile","account","restoring","tracks","rivalry","challenges","daily","biome","garage","store"]: _discard_suspended_menu()
+-	# Identity can also change while a race owns the screen. Prepare that new
+-	# profile before returning to an interactive menu, never in a warm callback.
+-	if next == "garage" and (not is_instance_valid(_retained_garage) or _retained_garage.records != records):
+-		_rebuild_profile_menu(next)
+-		return
+ 	if screen == "create" and next != "create": _flush_editor_writes()
+ 	if next != "challenge_create" and is_instance_valid(_challenge_return_ui):
+ 		_challenge_return_ui.queue_free()
+@@ -1062,8 +1057,9 @@
+ 	var current: String = "biome" if screen == "drafts" else "tracks" if screen in ["rivalry","challenges","daily"] else screen
+ 	var index: int = pages.find(current)
+ 	if index < 0: return
+-	# Publish at most one real swipe neighbor per frame. Only an already visited
+-	# Garage may be prepared here; cold Garage entry owns its loading cover.
++	# Publish at most one real swipe neighbor per frame. Only retained Garage
++	# pages participate; entering a cold Garage uses the
++	# normal menu transition, without a separate restoring/loading screen.
+ 	for destination: int in range(pages.size()):
+ 		var direction: int = destination - index
+ 		if direction == 0: continue
+@@ -2537,36 +2533,11 @@
+ 	retired.get_parent().remove_child(retired)
+ 	retired.queue_free()
+ 
+-func _prepare_garage_covered() -> void:
+-	if is_instance_valid(_retained_garage) and _retained_garage.records == records: return
+-	if screen != "restoring": _show_screen("restoring")
+-	# First Garage entry draws its cover before constructing the single live room.
+-	# Carousel photographs are cached native renders; they own no workshop worlds.
+-	var generation: int = _navigation_generation
+-	var owner_records: LocalRecords = records
+-	await get_tree().process_frame
+-	if DisplayServer.get_name() != "headless": await RenderingServer.frame_post_draw
+-	if not is_inside_tree() or generation != _navigation_generation or owner_records != records: return
+-	if is_instance_valid(_retained_garage) and _retained_garage.records != records:
+-		_retained_garage.get_parent().remove_child(_retained_garage)
+-		_retained_garage.queue_free()
+-		_retained_garage = null
+-	_ensure_garage_parking()
+-	_garage(_garage_parking)
+-	# Submit the original views under the opaque cover too, so first menu use
+-	# does not inherit their first shader draw. The parking slot cannot take input.
+-	_garage_parking.show()
+-	for _frame: int in range(4):
+-		await get_tree().process_frame
+-		if not is_inside_tree() or generation != _navigation_generation or owner_records != records: return
+-		# The parking branch is inactive. Present its container-managed rectangles
+-		# explicitly so the covered draws use real view sizes, rather than 1x1s.
+-		_retained_garage._present_menu_layout()
+-		if DisplayServer.get_name() != "headless": await RenderingServer.frame_post_draw
+-		if not is_inside_tree() or generation != _navigation_generation or owner_records != records: return
+-	_garage_parking.hide()
+-
+ func _rebuild_profile_menu(destination: String) -> void:
++	# Garage owns its account fence in _garage, like the other menu pages.
++	if destination == "garage":
++		_show_screen(destination)
++		return
+ 	_show_screen("restoring")
+ 	var generation: int = _navigation_generation
+ 	var owner_records: LocalRecords = records
+@@ -2574,7 +2545,6 @@
+ 		_retained_garage.get_parent().remove_child(_retained_garage)
+ 		_retained_garage.queue_free()
+ 		_retained_garage = null
+-	if destination == "garage": await _prepare_garage_covered()
+ 	if not is_inside_tree() or generation != _navigation_generation or owner_records != records or is_instance_valid(game): return
+ 	_show_screen(destination)
+ 
+--- a/game/ui/garage_cached_thumbnail.gd
++++ b/game/ui/garage_cached_thumbnail.gd
+@@ -2,6 +2,7 @@
+ ## A photograph of this exact native preview; the interactive Garage stays live.
+ var preview_service: Node
+ var preview_key: String = ""
++var displayed_key: String = ""
+ var _image: TextureRect
+ 
+ func _ready() -> void:
+@@ -23,13 +24,18 @@
+ 	var key: String = preview_service.identity(self)
+ 	if key == preview_key: return
+ 	preview_key = key
+-	_image.texture = null # Never present another paint/kit/condition as current.
++	# The catalogue picture identifies the car immediately, including cache
++	# misses after racing or a paint change. Only an exact capture gets this key.
++	displayed_key = ""
++	_image.texture = preview_service.catalogue_texture(vehicle_id)
+ 	preview_service.request(self)
+ 
+ func publish_preview(key: String, value: Texture2D) -> void:
+-	if key == preview_key and _image != null: _image.texture = value
++	if key == preview_key and _image != null and value != null:
++		_image.texture = value
++		displayed_key = key
+ 
+-func apply_livery(value: Dictionary) -> void:
++func apply_livery(value: Dictionary, _animate_paint: bool = false) -> void:
+ 	livery = value.duplicate(true)
+ 	refresh_thumbnail()
+ 
+--- a/game/ui/garage_preview_cache.gd
++++ b/game/ui/garage_preview_cache.gd
+@@ -15,6 +15,13 @@
+ var cache_hits: int = 0
+ var readback_us: int = 0
+ var file_io_us: int = 0
++var catalogue: Dictionary = {}
++
++func catalogue_texture(vehicle: String) -> Texture2D:
++	if not catalogue.has(vehicle):
++		var path: String = "res://assets/garage/previews_v1/"+vehicle+".png"
++		if ResourceLoader.exists(path): catalogue[vehicle] = load(path)
++	return catalogue.get(vehicle)
+ 
+ func identity(view: CarShowroom) -> String:
+ 	return JSON.stringify([VERSION,Build.ID,view.vehicle_id,view.livery,view.condition,view.customisation]).sha256_text()
+@@ -22,10 +29,10 @@
+ func request(view: CarShowroom) -> void:
+ 	var key: String = identity(view)
+ 	if _default(view):
+-		var path: String = "res://assets/garage/previews_v1/"+view.vehicle_id+".png"
+-		if ResourceLoader.exists(path):
++		var texture: Texture2D = catalogue_texture(view.vehicle_id)
++		if texture != null:
+ 			cache_hits += 1
+-			view.publish_preview(key,load(path))
++			view.publish_preview(key,texture)
+ 			return
+ 	for index: int in range(queued.size()-1,-1,-1):
+ 		if queued[index].view.get_ref() == view or not _current(queued[index]): queued.remove_at(index)
+--- a/game/tests/test_mobile_audit_fixes.gd
++++ b/game/tests/test_mobile_audit_fixes.gd
+@@ -157,8 +157,8 @@
+ 		paint.colors.body = "d23735"
+ 		card.apply_livery(paint) # Supersede the queued first finish before it renders.
+ 		var deadline: int = Time.get_ticks_msec()+30000
+-		while card._image.texture==null and Time.get_ticks_msec()<deadline: await frames(1)
+-		check(card._image.texture!=null and page._preview_service.renders==1,"custom appearance is rendered once by one temporary showroom")
++		while card.displayed_key!=card.preview_key and Time.get_ticks_msec()<deadline: await frames(1)
++		check(card.displayed_key==card.preview_key and page._preview_service.renders==1,"custom appearance is rendered once by one temporary showroom")
+ 		var custom_image: Image = card._image.texture.get_image()
+ 		var colours: Dictionary = {}
+ 		for y: int in range(8):
+@@ -173,6 +173,23 @@
+ 		check(page._preview_service.cache_hits==hits+1,"exact custom appearance reuses owned disk cache")
+ 		metrics.preview_readback_us = page._preview_service.readback_us
+ 		metrics.preview_file_io_us = page._preview_service.file_io_us
++		# Corrupt files fall back; hiding during render retires the temporary world.
++		paint.colors.body = "c93037"
++		card.livery = paint.duplicate(true)
++		var corrupt_key: String = page._preview_service.identity(card)
++		var corrupt := FileAccess.open(page._preview_service.directory.path_join(corrupt_key+".png"),FileAccess.WRITE)
++		corrupt.store_string("invalid PNG fixture"); corrupt.close()
++		card.refresh_thumbnail()
++		deadline = Time.get_ticks_msec()+30000
++		while page._preview_service.renderer==null and Time.get_ticks_msec()<deadline: await frames(1)
++		check(page._preview_service.renderer!=null,"corrupt customized cache falls back to native rendering")
++		app._show_screen("settings")
++		await frames(4)
++		check(page._preview_service.renderer==null,"hidden Garage retires unfinished native preview")
++		app._show_screen("garage")
++		deadline = Time.get_ticks_msec()+30000
++		while card._image.texture==null and Time.get_ticks_msec()<deadline: await frames(1)
++		check(card._image.texture!=null and card.preview_key==corrupt_key,"returning Garage completes only its current customized preview")
+ 	var retained: CarShowroom = view
+ 	app._show_screen("settings")
+ 	check(view.reflections.views.all(func(capture: SubViewport) -> bool: return capture.render_target_update_mode==SubViewport.UPDATE_DISABLED),"hidden retained Garage stops both reflection captures")
+@@ -201,7 +218,7 @@
+ 	app._show_screen("garage")
+ 	app._show_screen("tracks")
+ 	await frames(8)
+-	check(app.screen=="tracks" and not is_instance_valid(app._retained_garage),"navigation cancels an obsolete first-entry preparation before construction")
++	check(app.screen=="tracks" and is_instance_valid(app._retained_garage),"immediate navigation leaves the directly opened Garage retained")
+ 	app.queue_free()
+ 	await frames(3)
+ 	metrics.checks = checks; metrics.failures = failures
+--- /dev/null
++++ b/game/tests/test_garage_entry_carousel.gd
+@@ -0,0 +1,123 @@
++extends SceneTree
++## Real menu navigation with saved paint/condition and an empty image cache.
++var checks: int = 0
++var failures: int = 0
++var output: String = "res://../docs/evidence/garage-entry-carousel-2026-10-26"
++var baseline: bool = false
++var metrics: Dictionary = {}
++
++func _initialize() -> void: run.call_deferred()
++func check(value: bool, label: String) -> void:
++	checks += 1
++	if not value:
++		failures += 1
++		print("FAIL: ",label)
++func frames(count: int = 4) -> void:
++	for _index: int in range(count): await process_frame
++func capture(label: String) -> void:
++	if DisplayServer.get_name() == "headless": return
++	await RenderingServer.frame_post_draw
++	check(root.get_texture().get_image().save_png(output.path_join(RenderingServer.get_current_rendering_method()+"-"+label+".png")) == OK,"capture "+label)
++func run() -> void:
++	create_timer(145).timeout.connect(func() -> void: print("FAIL: Garage entry deadline"); quit(1))
++	baseline = "--staged-baseline" in OS.get_cmdline_user_args()
++	root.size = Vector2i(1280,720)
++	var app: Node = load("res://core/app.tscn").instantiate()
++	var folder: String = "user://garage-entry-"+TrackLibrary.unique_id()
++	app.records = LocalRecords.new(folder.path_join("records.json"))
++	app.records.settings.music_enabled = false
++	var conditions: Dictionary = {}
++	var paints: Dictionary = {}
++	for id: String in VehicleCatalog.IDS:
++		var wear := VehicleWeathering.new()
++		var condition: Dictionary = wear.snapshot()
++		condition.dirt = 0.35
++		condition.slow_dirt = 0.2
++		conditions[id] = condition
++		var paint: Dictionary = VehicleLivery.for_car({},id)
++		paint.colors.body = "c72d34"
++		paints[id] = paint
++	app.library = TrackLibrary.new(folder.path_join("tracks"))
++	app.cloud_root_override = folder.path_join("cloud")
++	var began: int = Time.get_ticks_usec()
++	root.add_child(app)
++	while not app.startup_complete: await process_frame
++	metrics.startup_ms = (Time.get_ticks_usec()-began)/1000.0
++	check(app.screen=="account" and not is_instance_valid(app._retained_garage),"guest startup remains independent of Garage")
++	# Startup loads the profile. Seed its local cosmetics after that load.
++	check(app.records.save_vehicle_conditions(conditions)==OK,"seed real local saved conditions for all seven cars")
++	app.records.settings.vehicle_liveries = paints
++	app._show_screen("tracks")
++	await frames()
++	began = Time.get_ticks_usec()
++	app._show_screen("garage")
++	metrics.entry_dispatch_ms = (Time.get_ticks_usec()-began)/1000.0
++	check(app.screen=="garage","cold Garage entry opens the normal menu without a loading screen")
++	# In the baseline the screen remains restoring until covered preparation ends.
++	while app.screen != "garage": await process_frame
++	var page: GaragePage = app._retained_garage
++	check(page!=null and page.cached_carousel and page.thumbnails.size()==7,"actual Garage contains all seven catalogue cars")
++	for id: String in VehicleCatalog.IDS:
++		var card: CarShowroom = page.thumbnails[id]
++		check(card.condition==conditions[id],"saved condition retained "+id)
++		check(card._image.texture!=null,"cold cache has an immediate car picture "+id)
++		check(card.car==null and card.showroom_viewport==null,"carousel picture owns no world "+id)
++		if not baseline:
++			check(card.displayed_key=="","catalogue fallback is distinct from exact saved appearance "+id)
++	check(page.find_children("*","SubViewport",true,false).size()==3,"one live Garage retains exactly three viewports")
++	await frames(2)
++	metrics.first_garage_draw_ms = (Time.get_ticks_usec()-began)/1000.0
++	print("GARAGE_FIRST_DRAW: ",JSON.stringify(metrics))
++	await capture("baseline-saved-cars" if baseline else "saved-cars-immediate")
++	await create_timer(0.4).timeout
++	await frames()
++	await capture("baseline-saved-cars-settled" if baseline else "saved-cars-settled")
++	if not baseline and DisplayServer.get_name() != "headless":
++		# Keep the service focused on one miss while exercising both stale-job
++		# protection and exact publication after a nonblank catalogue fallback.
++		page._preview_service.queued.clear()
++		var prior_renders: int = page._preview_service.renders
++		for id: String in page.thumbnails:
++			if id!="compact": page.thumbnails[id].hide()
++		var card: CarShowroom = page.thumbnails.compact
++		var paint: Dictionary = card.livery.duplicate(true)
++		paint.colors.body = "d23735"
++		card.apply_livery(paint)
++		var superseded: String = card.preview_key
++		paint.colors.body = "3d7acf"
++		card.apply_livery(paint)
++		check(card._image.texture!=null,"changing a saved finish never blanks the car picture")
++		card.publish_preview(superseded,GradientTexture2D.new())
++		check(card.displayed_key!=superseded,"superseded capture cannot replace the current car picture")
++		var deadline: int = Time.get_ticks_msec()+45000
++		while card.displayed_key!=card.preview_key and Time.get_ticks_msec()<deadline: await process_frame
++		check(card.displayed_key==card.preview_key,"exact saved paint and condition replace the catalogue fallback")
++		check(page._preview_service.renders-prior_renders<=1,"superseded queued finish does not build an extra showroom")
++		await frames(3)
++		check(page._preview_service.renderer==null,"temporary capture showroom is released")
++		for id: String in page.thumbnails: page.thumbnails[id].show()
++		await capture("saved-appearance-resolved")
++	var retained: CarShowroom = page.showroom
++	app._show_screen("settings")
++	app._show_screen("garage")
++	check(app.screen=="garage" and app._retained_garage==page and page.showroom==retained,"warm navigation retains the exact interactive showroom")
++	app._show_screen("tracks")
++	await create_timer(0.4).timeout
++	await frames()
++	check(app.screen=="tracks" and not page.is_visible_in_tree(),"leaving Garage parks the old page after the normal slide")
++	app.records = LocalRecords.new(folder.path_join("other-records.json"))
++	app._show_screen("garage")
++	check(app.screen=="garage","new owner also enters Garage without a loading screen")
++	while app.screen != "garage": await process_frame
++	check(app._retained_garage!=page and app._retained_garage.records==app.records,"owner change releases the prior page and appearance cache")
++	await frames(6)
++	await capture("clean-cars")
++	app.queue_free()
++	await frames(4)
++	metrics.checks = checks
++	metrics.failures = failures
++	var mode: String = "baseline" if baseline else "fixed"
++	var file := FileAccess.open(output.path_join(mode+"-"+RenderingServer.get_current_rendering_method()+".json"),FileAccess.WRITE)
++	file.store_string(JSON.stringify(metrics,"  "))
++	print("GARAGE_ENTRY_CAROUSEL: ",JSON.stringify(metrics))
++	quit(1 if failures else 0)
+--- /dev/null
++++ b/game/tests/profile_garage_entry.gd
+@@ -0,0 +1,30 @@
++extends SceneTree
++## Isolated cold construction attribution; no owner data or network.
++func _initialize() -> void: run.call_deferred()
++func run() -> void:
++	root.size = Vector2i(1280,720)
++	var world := Node3D.new()
++	root.add_child(world)
++	var began: int = Time.get_ticks_usec()
++	var car := CarVisual.new()
++	car.editable_kits = true
++	world.add_child(car)
++	print("PROFILE_CAR_MS ", (Time.get_ticks_usec()-began)/1000.0)
++	began = Time.get_ticks_usec()
++	GarageEnvironment.build(world,car,false)
++	print("PROFILE_ROOM_MS ", (Time.get_ticks_usec()-began)/1000.0)
++	world.free()
++	began = Time.get_ticks_usec()
++	var page := GaragePage.new()
++	page.records = LocalRecords.new("user://garage-entry-profile-"+TrackLibrary.unique_id()+"/records.json")
++	page.cached_carousel = true
++	page.size = Vector2(1180,570)
++	root.add_child(page)
++	print("PROFILE_PAGE_MS ",(Time.get_ticks_usec()-began)/1000.0)
++	for _frame: int in range(8): await process_frame
++	if DisplayServer.get_name() != "headless":
++		await RenderingServer.frame_post_draw
++		root.get_texture().get_image().save_png("res://../docs/evidence/garage-entry-carousel-2026-10-26/before.png")
++	print("PROFILE_TOTAL_WITH_DRAW_MS ",(Time.get_ticks_usec()-began)/1000.0)
++	page.free()
++	quit()
+--- /dev/null
++++ b/scripts/run_garage_entry_check.py
+@@ -0,0 +1,66 @@
++"""Run isolated Garage checks with the pinned engine; keep commands and logs."""
++import json
++import os
++from pathlib import Path
++import subprocess
++import shutil
++import sys
++import time
++
++ROOT = Path(__file__).resolve().parents[1]
++OUT = ROOT / 'docs/evidence/garage-entry-carousel-2026-10-26'
++name, script, *options = sys.argv[1:]
++project = ROOT/'game'
++if '--stage-baseline' in options:
++    options.remove('--stage-baseline')
++    stage = ROOT/'tmp/garage-entry-baseline'
++    stage.mkdir(parents=True, exist_ok=True)
++    project = stage/'game'
++    project.mkdir(exist_ok=True)
++    def junction(source, target):
++        if not target.exists():
++            link_env = os.environ.copy()
++            link_env.update(BMT_STAGE_LINK=str(target), BMT_STAGE_TARGET=str(source))
++            subprocess.run(['powershell', '-NoProfile', '-Command',
++                            'New-Item -ItemType Junction -Path $env:BMT_STAGE_LINK -Target $env:BMT_STAGE_TARGET | Out-Null'],
++                           env=link_env, check=True)
++    for child in (ROOT/'game').iterdir():
++        target = project/child.name
++        if child.name in ('ui', 'core'):
++            shutil.copytree(child, target, dirs_exist_ok=True)
++        elif child.name == '.godot':
++            target.mkdir(exist_ok=True)
++            for entry in ('global_script_class_cache.cfg', 'extension_list.cfg'):
++                if (child/entry).exists(): shutil.copy2(child/entry, target/entry)
++            junction(child/'imported', target/'imported')
++        elif child.is_dir():
++            junction(child, target)
++        elif not target.exists():
++            shutil.copy2(child, target)
++    junction(ROOT/'docs', stage/'docs')
++    for path in ('core/app.gd', 'ui/garage_preview_cache.gd', 'ui/garage_cached_thumbnail.gd'):
++        shutil.copy2(OUT/'before/game'/path, project/path)
++    # A concurrent paint-animation task added an optional parent argument.
++    # Match that signature without changing any task-start thumbnail behavior.
++    thumbnail = project/'ui/garage_cached_thumbnail.gd'
++    thumbnail.write_text(thumbnail.read_text(encoding='utf-8').replace(
++        'func apply_livery(value: Dictionary) -> void:',
++        'func apply_livery(value: Dictionary, _animate_paint: bool = false) -> void:'), encoding='utf-8')
++env = os.environ.copy()
++env.update(APPDATA=str(OUT/'profiles'/name), LOCALAPPDATA=str(OUT/'profiles'/name/'local'),
++           BMT_API_URL='', BMT_DEV_AUTH_KEY='')
++Path(env['APPDATA']).mkdir(parents=True, exist_ok=True)
++args = [r'C:\apps\Godot 4.7.2\Godot_v4.7.2-stable_win64_console.exe',
++        '--path', str(project), '--audio-driver', 'Dummy', '--position', '10000,10000',
++        '--script', script, *options]
++start = time.monotonic()
++with (OUT/f'{name}.log').open('w', encoding='utf-8') as log:
++    try:
++        code = subprocess.run(args, env=env, cwd=ROOT, stdout=log, stderr=subprocess.STDOUT, timeout=180).returncode
++    except subprocess.TimeoutExpired:
++        code = 'timeout'
++result = dict(command=args, exit_code=code, seconds=round(time.monotonic()-start, 3))
++(OUT/f'{name}.json').write_text(json.dumps(result, indent=2), encoding='utf-8')
++print(json.dumps(result), flush=True)
++print('\n'.join((OUT/f'{name}.log').read_text(encoding='utf-8').splitlines()[-12:]))
++sys.exit(0 if code == 0 else 1)
+--- a/game/assets/garage/previews_v1/provenance.json
++++ b/game/assets/garage/previews_v1/provenance.json
+@@ -17,14 +17,14 @@
+ 	"source": "Full original CarShowroom, default paint/kits, clean condition, original workshop and reflection settings",
+ 	"sources": {
+ 		"game/resources/cars/classic.tres": "865485dbde345c30d2756a111c829a5f571e01cac47e56ad7b67a70104599027",
+-		"game/resources/cars/electric.tres": "8dfc97c31ffd7e23155ea18a4ba31f287bc100015f55b947898123c93106fe0b",
++		"game/resources/cars/electric.tres": "7e4870a1c8d4b7af83c83cd9671af7b1281adc55887ccc0e950d962ef92a1cc5",
+ 		"game/resources/cars/forklift.tres": "b53964d5b17d3c6366ca42e0d75f29ece93f4018275abd6ca6e56e416a398cb3",
+ 		"game/resources/cars/formula.tres": "929b70d744355fd08eb5d28635f4b036632294f5f842736e63c5ce768f58b8d2",
+ 		"game/resources/cars/kart.tres": "51ead7c88f77123cbbfbea6908cce1cef230dd3711ae216fe29672ee38bc25bc",
+ 		"game/resources/cars/pickup.tres": "4b3c363228e9c80d9094a76ad2b6684659cb8537df2307638698b7c27f44d3cf",
+ 		"game/resources/original_slide.tres": "2fa4096fc70fa0bf8584d7ab77c8ec25a17731cba70cb5be8f468ee6ae1ea857",
+ 		"game/soundtrack/record_library.gd": "993be1fc833ab12b4c078d4e5dfd379c98f0cfe1f71912870828b8977e8bc98b",
+-		"game/ui/car_showroom.gd": "0a5dc86eafd6bc2967ee9869d1f0415c9e2939c9fe5bec98fff0303910963e75",
++		"game/ui/car_showroom.gd": "3370f1a2fed9b5913e55db44b76d8d8b79f461206f37c32412bc3b95106c01c1",
+ 		"game/ui/garage_audio_lid.gdshader": "40a0707029035bd2c9fb145f7affe371a01a75af712c79e598a66811c51865a8",
+ 		"game/ui/garage_audio_wood.gdshader": "8b4f47d21e1eac1538817ba999d9c37c52a8bf04fae1aacfb75857c814dd2d4d",
+ 		"game/ui/garage_car_reveal.gd": "9d0d938614884c6ab5a0a4d5648db90f424f81f68a814987d26967b4712fcdba",
+--- a/AGENTS.md
++++ b/AGENTS.md
+@@ -2,6 +2,11 @@
+ ## Electric turning authority for normal tracks (2026-10-26)
+ ENS01-ENS03/R01/Q01: Owner still rejects electric-13's long turning radius. Electric-14 uses0.60rad lock,20/s unwind,0.50 progressive high-speed reduction and continuous3.5m+speed-squared/60 envelope;6/s buildup remains. Actual20/30/40kmh circles tighten7.36/8.43/9.93to4.34/4.70/5.56m, with monotonic progression through190. Original tight90-degree regression32checks/8fail becomes32/0 on unchanged8m-wide roads; keyboard steering is binary, diagnostic speed feedback analog. Actual Over and under completes five ordered laps/zero contacts; independent35408-input server reader accepts295062ms. Five production Storm diagnostic laps20/0 and three retained five-lap circuits6/0 have zero contacts/exact replay. Primary530, speed58/radius64/launch111/low87/release38/car60/one-pedal63/power19/balance18/response86/turn61/handling88/rewind61/parser1259/import, actual App70Compatibility+70desktopMobile and backend72pass/twoexisting deselections pass. Physics0.73/simulation/HandlingConfig/RouteDriver/UI input test are byte-exact; only EV manifestd1821d97 changes.190cap/braking and small launch slip remain. Latest owner correction supersedes earlier wide-circle/slow-turn minimums; raw64/1,86/4,61/12 failures remain with stronger task-start gain/new-envelope/input bounds. Sources, actual commands, hashes and task-only patch: docs/ELECTRIC_NORMAL_TRACK_STEERING_2026_10_26.md and docs/evidence/electric-normal-track-steering-2026-10-26/report.json. Reload/rebuild, matching verifier rollout and owner keyboard/controller feel acceptance remain. No attachment/device test, APK, purchase, live mutation, deployment, merge, staging, commit or owner-process restart; concurrent work preserved.
+ <!-- /ELECTRIC-NORMAL-TRACK-STEERING-20261026 -->
++
++<!-- GARAGE-ENTRY-CAROUSEL-20261026 -->
++## Garage normal entry and complete carousel pictures (2026-10-26)
++GEC01-GEC03/R01/Q01: Owner rejects the first-entry loading screen and reports missing carousel pictures. Garage now uses normal menu navigation; every card immediately shows its native catalogue photo while exact saved paint/parts/condition resolves. Displayed identity retains stale-result guards, one temporary renderer and the 14-file bound; the main world and account fences remain. Focused37headless/46Compatibility/46desktopMobile, retained253headless/263Compatibility, App141 and parser1260 pass in recorded runs. Staged task-start30headless/33Compatibility reproduces nine failures, with only the concurrent parent-method argument adapted. All seven rebaked PNGs remain exact; source provenance records current presentation separately. Cold synchronous construction/shader hitches remain; no instant-entry or phone performance claim. Runtime scope is App and two cached-preview scripts; concurrent paint animation, Rivalry, track, model, handling and race rendering work remains. Commands, initial failures, native views, hashes and scoped review patch: docs/GARAGE_ENTRY_CAROUSEL_2026_10_26.md and docs/evidence/garage-entry-carousel-2026-10-26/report.json. Reload and owner/device navigation, picture and first-entry latency acceptance remain. No device attachment check/test, APK, purchase, live mutation, deployment, Git staging/commit or owner-process restart.
++<!-- /GARAGE-ENTRY-CAROUSEL-20261026 -->
+ 
+ <!-- GARAGE-PAINT-FRAMING-20261026 -->
+ ## Larger main Garage paint view (2026-10-26)
+--- a/DEVELOPMENT_STATUS.md
++++ b/DEVELOPMENT_STATUS.md
+@@ -1,3 +1,8 @@
++<!-- GARAGE-ENTRY-CAROUSEL-20261026 -->
++## Garage normal entry and complete carousel pictures (2026-10-26)
++GEC01-GEC03/R01/Q01: Owner rejects the first-entry loading screen and reports missing carousel pictures. Garage now uses normal menu navigation; every card immediately shows its native catalogue photo while exact saved paint/parts/condition resolves. Displayed identity retains stale-result guards, one temporary renderer and the 14-file bound; the main world and account fences remain. Focused37headless/46Compatibility/46desktopMobile, retained253headless/263Compatibility, App141 and parser1260 pass in recorded runs. Staged task-start30headless/33Compatibility reproduces nine failures, with only the concurrent parent-method argument adapted. All seven rebaked PNGs remain exact; source provenance records current presentation separately. Cold synchronous construction/shader hitches remain; no instant-entry or phone performance claim. Runtime scope is App and two cached-preview scripts; concurrent paint animation, Rivalry, track, model, handling and race rendering work remains. Commands, initial failures, native views, hashes and scoped review patch: docs/GARAGE_ENTRY_CAROUSEL_2026_10_26.md and docs/evidence/garage-entry-carousel-2026-10-26/report.json. Reload and owner/device navigation, picture and first-entry latency acceptance remain. No device attachment check/test, APK, purchase, live mutation, deployment, Git staging/commit or owner-process restart.
++<!-- /GARAGE-ENTRY-CAROUSEL-20261026 -->
++
+ <!-- GARAGE-PAINT-FRAMING-20261026 -->
+ ## Larger main Garage paint view (2026-10-26)
+ GPF01-GPF03/R01/Q01: Owner rejects the small car/unused height. Paint opens at minimum30deg while retaining horizontal direction and higher existing angles; cached visible-mesh corners replace empty whole-box corners. Actual64-unit top/bottom clearance preserves headings/controls. Compact projected mesh-bound height grows43.00to58.08% at960,44.44to64.78% at1280 and44.16to67.36% at1720; these are bounds, not segmented pixels. Patterns/Colours share the fit; browsing, user rotation/zoom, resize and exact return view remain stable. Low Body kits angle/fit/padding and all original kit guards remain. Original151headless/42fail and171Compatibility/48fail, angle-only and one-Kart padding failures are retained. Final151headless/171Compatibility/171desktopMobile, retained configurator647/647, stability646, parser1260 and pinned import pass. Runtime scope is one camera helper; only superseded paint-entry pitch/empty-box assertions are adapted, with original visibility rectangle/space-use/return guards and independent all-mesh tests retained. Commands, native App pairs/all-car views, hashes and scoped checkpoint: docs/GARAGE_PAINT_FRAMING_2026_10_26.md and docs/evidence/garage-paint-framing-2026-10-26/report.json. Owner height correction supersedes inherited paint pitch only. Reload and owner/device appearance/input/performance acceptance remain. No attachment/device test, APK, real authentication/purchase, live mutation, deployment, merge, staging, commit or owner-process restart; concurrent paint-animation/list/startup and other work preserved.
+--- /dev/null
++++ b/docs/GARAGE_ENTRY_CAROUSEL_2026_10_26.md
+@@ -0,0 +1,25 @@
++# Garage entry and carousel correction — 2026-10-26
++
++GEC01–GEC03/R01/Q01 address the owner's reports that selecting Garage introduces a loading screen and that many carousel cars have no picture.
++
++Garage now uses the normal menu transition on both first entry and an account change. The forced `restoring` detour and four covered preparation frames are removed. Startup still reaches Account/Race without constructing Garage, and subsequent visits retain the original interactive showroom. Account changes continue to replace the old page and its appearance cache.
++
++Every carousel card immediately uses the packaged native photograph of its own car. Saved paint, fitted parts and condition still request an exact capture; a separate displayed identity marks when that capture replaces the catalogue picture. A cache miss or changed finish therefore cannot blank a card, and a superseded capture cannot publish. Catalogue pictures can temporarily show the factory finish while the exact saved appearance is being prepared. The main showroom remains authoritative and interactive. The seven cards still own no worlds; the main Garage retains three viewports, one temporary capture renderer and the original 14-file cache bound.
++
++The cached thumbnail also accepts the optional paint-animation argument added concurrently to its parent. The animation implementation, other Garage work, Rivalry changes, track changes and race preparation work are preserved and excluded from this task's runtime patch.
++
++The normal transition still constructs the live room synchronously and performs its first shader draws. **This change removes the loading screen; it does not make cold Garage preparation asynchronous or guarantee instant first entry.** Fresh-profile desktop draw times varied substantially during concurrent native work. Raw timings remain in the report and are not comparable performance benchmarks or phone measurements.
++
++Verification uses Godot `4.7.2.stable.official.ed1daf0bf`, isolated local profiles, a dummy audio driver and no configured live API:
++
++- Focused real-App regression: 37 headless, 46 Compatibility and 46 desktop Mobile checks pass. These cover saved condition on all seven cars, immediate pictures with an empty cache, stale capture protection, exact appearance replacement, renderer cleanup, retained navigation and account replacement.
++- Staged task-start behavior: 30 headless / 33 Compatibility checks reproduce nine failures: two loading-screen cases and seven empty pictures. Only the old thumbnail's optional method argument is adapted for the concurrent parent signature; its behavior is unchanged. Original bytes are retained in `before/`.
++- Retained mobile audit: 253 headless / 263 Compatibility checks pass, including exact custom image content, disk reuse, three retained viewports, reflection guards, hidden-page cleanup and account fences. Its exact-image wait now checks the displayed identity, because a catalogue fallback is already nonblank. The obsolete cancellation-before-construction expectation is replaced by direct-entry retention.
++- Existing App: 141 checks pass. Parser: 1,260 scripts pass in the recorded run. Final source parsing and packaged-photo provenance results are recorded in the report.
++- Seven native photographs were rebuilt. All seven PNG hashes remain byte-identical to task start; only provenance needs the current source identities. Concurrent presentation edits can invalidate that manifest again until their final bake.
++
++Initial fixture mistakes and failed integration attempts are retained, including seeding settings before profile load, bypassing the condition store, counting earlier capture jobs as new paint jobs, and the concurrent method-signature mismatch. No original image-content, lifetime or account assertion is weakened. The sandbox certificate-store error is recorded separately from test failures.
++
++[report.json](evidence/garage-entry-carousel-2026-10-26/report.json) records commands, outcomes, source hashes, initial failures, captures and the task-only review patch. Screenshots include the original blank-card case and fixed dirty/clean profiles. Desktop Mobile is Vulkan on this workstation.
++
++Reload/rebuild the client to use the changes. Owner acceptance of navigation, pictures, touch and first-entry latency remains. No device attachment check or physical-device test, APK/AAB, authentication/purchase, live mutation, deployment, staging, commit or owner-process restart was performed.
+--- /dev/null
++++ b/docs/evidence/garage-entry-carousel-2026-10-26/record.py
+@@ -0,0 +1,90 @@
++"""Record this task's commands and a review patch without concurrent edits."""
++from pathlib import Path
++import difflib
++import hashlib
++import json
++import re
++import subprocess
++
++OUT = Path(__file__).resolve().parent
++ROOT = OUT.parents[2]
++BEFORE = OUT/'before'
++SCOPE = OUT/'scope-base'
++
++def sha(path):
++    return hashlib.sha256(path.read_bytes()).hexdigest()
++
++app_path = 'game/core/app.gd'
++original = (BEFORE/app_path).read_text(encoding='utf-8')
++current = (ROOT/app_path).read_text(encoding='utf-8')
++base = current
++guard = original[original.index('\t# Identity can also change'):original.index('\tif screen == "create" and next != "create": _flush_editor_writes()')]
++base = base.replace('\tif screen == "create" and next != "create": _flush_editor_writes()', guard+'\tif screen == "create" and next != "create": _flush_editor_writes()', 1)
++base = base.replace('\t# Publish at most one real swipe neighbor per frame. Only retained Garage\n\t# pages participate; entering a cold Garage uses the\n\t# normal menu transition, without a separate restoring/loading screen.', '\t# Publish at most one real swipe neighbor per frame. Only an already visited\n\t# Garage may be prepared here; cold Garage entry owns its loading cover.')
++covered = original[original.index('func _prepare_garage_covered()'):original.index('func _rebuild_profile_menu(')]
++branch = 'func _rebuild_profile_menu(destination: String) -> void:\n\t# Garage owns its account fence in _garage, like the other menu pages.\n\tif destination == "garage":\n\t\t_show_screen(destination)\n\t\treturn\n'
++assert branch in base
++base = base.replace(branch, covered+'func _rebuild_profile_menu(destination: String) -> void:\n', 1)
++start, end = base.index('func _rebuild_profile_menu('), base.index('func _garage_appearance_changed(')
++section = base[start:end]
++section = section.replace('\tif not is_inside_tree()', '\tif destination == "garage": await _prepare_garage_covered()\n\tif not is_inside_tree()', 1)
++base = base[:start]+section+base[end:]
++(SCOPE/app_path).parent.mkdir(parents=True, exist_ok=True)
++(SCOPE/app_path).write_bytes(base.encode('utf-8'))
++for path in ('AGENTS.md', 'DEVELOPMENT_STATUS.md'):
++    content = (ROOT/path).read_bytes().decode('utf-8')
++    without_note, count = re.subn(r'<!-- GARAGE-ENTRY-CAROUSEL-20261026 -->\r?\n.*?<!-- /GARAGE-ENTRY-CAROUSEL-20261026 -->\r?\n\r?\n', '', content, count=1, flags=re.S)
++    assert count == 1
++    (SCOPE/path).write_bytes(without_note.encode('utf-8'))
++
++paths = [app_path, 'game/ui/garage_cached_thumbnail.gd', 'game/ui/garage_preview_cache.gd',
++         'game/tests/test_mobile_audit_fixes.gd', 'game/tests/test_garage_entry_carousel.gd',
++         'game/tests/profile_garage_entry.gd', 'scripts/run_garage_entry_check.py',
++         'game/assets/garage/previews_v1/provenance.json', 'AGENTS.md', 'DEVELOPMENT_STATUS.md',
++         'docs/GARAGE_ENTRY_CAROUSEL_2026_10_26.md',
++         'docs/evidence/garage-entry-carousel-2026-10-26/record.py']
++patch = []
++for path in paths:
++    old = SCOPE/path if (SCOPE/path).exists() else BEFORE/path
++    old_text = old.read_bytes().decode('utf-8') if old.exists() else ''
++    new_text = (ROOT/path).read_bytes().decode('utf-8')
++    patch.extend(difflib.unified_diff(old_text.splitlines(True), new_text.splitlines(True),
++                                    fromfile='a/'+path if old.exists() else '/dev/null', tofile='b/'+path))
++(OUT/'task-only.patch').write_bytes(''.join(patch).encode('utf-8'))
++review = subprocess.run(['git', 'apply', '--reverse', '--check', str(OUT/'task-only.patch')],
++                        cwd=ROOT, text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
++commands = []
++for path in sorted(OUT.glob('*.json')):
++    try: row = json.loads(path.read_text(encoding='utf-8'))
++    except (ValueError, OSError): continue
++    if not isinstance(row, dict) or 'command' not in row: continue
++    log = path.with_suffix('.log')
++    text = log.read_text(encoding='utf-8') if log.exists() else ''
++    row['name'] = path.stem
++    row['log'] = log.name
++    row['results'] = [line for line in text.splitlines() if line.startswith(('GARAGE_ENTRY_CAROUSEL:', 'MOBILE_AUDIT_FIXES:', 'APP_TESTS:', 'SCRIPT_PARSE:', 'GARAGE_FIRST_DRAW:'))]
++    row['failure_lines'] = [line for line in text.splitlines() if line.startswith('FAIL:') or 'SCRIPT ERROR:' in line][:40]
++    row['certificate_store_environment_error'] = 'root certificate store' in text
++    commands.append(row)
++images = {}
++for path in (ROOT/'game/assets/garage/previews_v1').glob('*.png'):
++    images[path.name] = {'sha256': sha(path), 'task_start_identical': sha(path)==sha(BEFORE/'game/assets/garage/previews_v1'/path.name)}
++provenance = subprocess.run(['python', 'scripts/check_garage_previews.py'], cwd=ROOT,
++                            text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
++report = {
++    'requirements': ['GEC01', 'GEC02', 'GEC03', 'R01', 'Q01'],
++    'date': '2026-10-26',
++    'commands': commands,
++    'changed_files': [{'path': path, 'sha256': sha(ROOT/path)} for path in paths],
++    'native_photographs': images,
++    'preview_provenance_check': {'exit_code': provenance.returncode, 'output': provenance.stdout},
++    'checkpoint': {'path': 'task-only.patch', 'sha256': sha(OUT/'task-only.patch'), 'reverse_check_exit_code': review.returncode, 'output': review.stdout},
++    'concurrent_work': 'Rivalry summary and race render-preparation App edits are retained in scope-base and excluded. Paint animation, model/handling, tracks and other Garage edits remain untouched. Thumbnail signature matches the concurrent parent.',
++    'baseline': 'Staged task-start App/cache/thumbnail behavior. The old thumbnail only receives the concurrent optional method parameter; original bytes are retained. Baseline does not write to production sources.',
++    'limits': ['Loading-screen removal is not an asynchronous/cold-latency optimization. Fresh profile shader draws still hitch; timings include concurrent workstation activity.', 'Catalogue pictures may temporarily use factory paint until the exact saved appearance arrives.', 'No device attachment check/test, APK/AAB, real authentication/purchase, live mutation, deployment, staging, commit or owner-process restart.'],
++    'initial_failures': ['PowerShell execution policy prevented the first wrapper invocation; the isolated pinned-engine runner was used afterward.', 'Fixture initially seeded settings before startup load, then directly assigned conditions instead of staging the condition store.', 'Concurrent parent signature changed during the task; cached-thumbnail signature now matches.', 'Absolute render count included existing dirty-car jobs; the corrected fixture preserves the one-new-render bound relative to its starting count.', 'In-memory baseline reload failed after concurrent class changes; the staged baseline retains old behavior with only the documented signature adapter.'],
++    'captures': [p.name for p in sorted(OUT.glob('*.png'))],
++}
++(OUT/'report.json').write_text(json.dumps(report, indent=2), encoding='utf-8')
++print(json.dumps({'commands':len(commands), 'patch_reverse_check':review.returncode, 'provenance_check':provenance.returncode, 'unchanged_photos':sum(row['task_start_identical'] for row in images.values())}))
++if review.returncode: print(review.stdout)

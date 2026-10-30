@@ -1,0 +1,164 @@
+--- a/game/core/app.gd
++++ b/game/core/app.gd
+@@ -2693,7 +2693,7 @@
+ 	for viewport: SubViewport in _retained_garage.find_children("*","SubViewport",true,false):
+ 		result.viewport_gpu_bytes += viewport.size.x*viewport.size.y*8
+ 	result.scene_bytes = preload("res://track/prepared_world_cache.gd")._resource_bytes(_retained_garage,{})
+-	if is_instance_valid(_retained_garage.get("_preview_service")) and _retained_garage._preview_service.worker != null: result.preview_io_cpu_bytes = 16*1024*1024
++	if is_instance_valid(_retained_garage.get("_preview_service")) and (_retained_garage._preview_service.worker != null or not _retained_garage._preview_service.pending_writes.is_empty()): result.preview_io_cpu_bytes = 16*1024*1024
+ 	return result
+ 
+ func _trim_hidden_garage() -> void:
+--- a/game/ui/garage_preloader.gd
++++ b/game/ui/garage_preloader.gd
+@@ -209,7 +209,7 @@
+ 	var result: Dictionary={"preload_asset_bytes":32*1024*1024 if not _resources.is_empty() or not _pending.is_empty() else 0,"preload_scene_bytes":0,"preload_viewport_gpu_bytes":0}
+ 	if is_instance_valid(picture_service):
+ 		result.preload_picture_gpu_bytes=picture_service.picture_bytes(seen)
+-		result.preload_picture_io_cpu_bytes=16*1024*1024 if picture_service.worker!=null else 0
++		result.preload_picture_io_cpu_bytes=16*1024*1024 if picture_service.worker!=null or not picture_service.pending_writes.is_empty() else 0
+ 		if picture_service.renderer!=null:
+ 			result.preload_picture_scene_bytes=preload("res://track/prepared_world_cache.gd")._resource_bytes(picture_service.renderer,{})
+ 			var pixels: int=0
+--- a/game/ui/garage_preview_cache.gd
++++ b/game/ui/garage_preview_cache.gd
+@@ -203,8 +203,7 @@
+ 	return reference.get_ref() if reference != null else null
+ 
+ func _process(_delta: float) -> void:
+-	if worker != null:
+-		if not worker.done: return
++	if worker != null and worker.done:
+ 		var result: Dictionary = worker.result if worker.result is Dictionary else {}
+ 		file_io_us += int(result.get("us",0))
+ 		worker = null
+@@ -216,6 +215,10 @@
+ 				io.read = result.get("image") is Image
+ 				queued.append(io)
+ 		io = {}
++	# A read can satisfy a queued view, so finish it before starting another
++	# capture. A write owns only an Image and may run alongside the next world.
++	if worker != null and io.get("read",false): return
++	if worker == null and not active.is_empty() and not pending_writes.is_empty(): _start_write()
+ 	if not active.is_empty():
+ 		var remembered: Texture2D=_remembered(active.vehicle,active.key)
+ 		if _current(active) and remembered!=null:
+@@ -234,11 +237,11 @@
+ 		frames -= 1
+ 		if frames >= 0:
+ 			renderer._submit_render()
+-		elif not RenderingServer.frame_post_draw.is_connected(_capture): RenderingServer.frame_post_draw.connect(_capture,CONNECT_ONE_SHOT)
++		elif (worker == null or pending_writes.is_empty()) and not RenderingServer.frame_post_draw.is_connected(_capture): RenderingServer.frame_post_draw.connect(_capture,CONNECT_ONE_SHOT)
+ 		return
+ 	# Read every visible saved PNG before starting a missing car's native world.
+ 	# A cold miss must not hold already stored pictures behind its construction.
+-	if not directory.is_empty():
++	if worker == null and not directory.is_empty():
+ 		for index: int in range(queued.size()):
+ 			var next: Dictionary=queued[index]
+ 			if next.read and _current(next,true):
+@@ -246,15 +249,16 @@
+ 				io=next
+ 				worker=Work.start(_read.bind(directory.path_join(next.key+".png")),get_tree())
+ 				return
+-	if not pending_writes.is_empty():
+-		var picture: Dictionary=pending_writes.pop_front()
+-		if not directory.is_empty():
+-			io={"key":picture.key,"read":false}
+-			worker=Work.start(_write.bind(directory,picture.key,picture.texture.get_image()),get_tree())
+-			return
++	elif worker != null and not directory.is_empty():
++		for next: Dictionary in queued:
++			if next.read and _current(next,true): return
++	if worker == null and not pending_writes.is_empty(): _start_write()
+ 	for _index: int in range(queued.size()):
+ 		var next: Dictionary = queued.pop_front()
+ 		if not _current(next): continue
++		if next.read and not directory.is_empty():
++			queued.append(next)
++			continue
+ 		var remembered: Texture2D=_remembered(next.vehicle,next.key)
+ 		if remembered!=null:
+ 			_publish(next.view.get_ref(),next.key,remembered)
+@@ -287,9 +291,16 @@
+ 		readback_us += Time.get_ticks_usec()-started
+ 		_publish(active.view.get_ref(),active.key,ImageTexture.create_from_image(image))
+ 		if not directory.is_empty():
+-			io = {"key":active.key,"read":false}
+-			worker = Work.start(_write.bind(directory,active.key,image),get_tree())
++			pending_writes.append({"key":active.key,"image":image})
+ 	_finish()
++
++func _start_write() -> void:
++	var picture: Dictionary=pending_writes.pop_front()
++	if directory.is_empty(): return
++	var image: Image=picture.get("image")
++	if image==null: image=picture.texture.get_image()
++	io={"key":picture.key,"read":false}
++	worker=Work.start(_write.bind(directory,picture.key,image),get_tree())
+ 
+ func _finish() -> void:
+ 	if RenderingServer.frame_post_draw.is_connected(_capture): RenderingServer.frame_post_draw.disconnect(_capture)
+--- a/game/tests/test_garage_ready_pictures.gd
++++ b/game/tests/test_garage_ready_pictures.gd
+@@ -41,8 +41,8 @@
+ func wait_for_writes() -> void:
+ 	var deadline: int=Time.get_ticks_msec()+10000
+ 	var service: Node=app._garage_preloader.picture_service
+-	while service.worker!=null and Time.get_ticks_msec()<deadline: await process_frame
+-	check(service.worker==null,"prewarmed PNG writes complete")
++	while (service.worker!=null or not service.pending_writes.is_empty()) and Time.get_ticks_msec()<deadline: await process_frame
++	check(service.worker==null and service.pending_writes.is_empty(),"prewarmed PNG writes complete")
+ func run() -> void:
+ 	for arg: String in OS.get_cmdline_user_args():
+ 		if arg.begins_with("--output="): output=arg.trim_prefix("--output=")
+--- /dev/null
++++ b/game/tests/test_garage_preview_pipeline.gd
+@@ -0,0 +1,47 @@
++extends SceneTree
++
++class HeldWorker extends RefCounted:
++	var done: bool=false
++	var result: Dictionary={}
++	func cancel() -> void: pass
++
++var failures: int=0
++
++func _initialize() -> void:
++	run.call_deferred()
++
++func check(value: bool, label: String) -> void:
++	if not value:
++		failures+=1
++		print("FAIL: ",label)
++
++func run() -> void:
++	var cache: Node=preload("res://ui/garage_preview_cache.gd").new()
++	root.add_child(cache)
++	cache.set_process(false)
++	cache.idle_ms=0
++	cache.directory="user://garage-pipeline-test"
++	cache.immediate_reads=true
++	var view: CarShowroom=preload("res://ui/garage_cached_thumbnail.gd").new()
++	view.vehicle_id="compact"
++	view.livery=VehicleLivery.for_car({},"compact")
++	view.livery.colors.body="c72d34"
++	view.customisation=VehicleCustomisation.defaults()
++	view.preview_service=cache
++	cache.warm_views[view.vehicle_id]=view
++	cache.add_child(view)
++	var held:=HeldWorker.new()
++	cache.worker=held
++	cache.io={"read":true}
++	cache._process(0.0)
++	check(cache.renderer==null,"a pending read retains priority")
++	cache.io={"read":false}
++	cache._process(0.0)
++	check(cache.renderer!=null and cache.worker==held,"a pending write overlaps the next capture")
++	check(cache.renders==1,"only one native capture starts")
++	cache._finish()
++	cache.worker=null
++	cache.queue_free()
++	await process_frame
++	print("GARAGE_PREVIEW_PIPELINE: ",3-failures,"/3 passed")
++	quit(1 if failures else 0)

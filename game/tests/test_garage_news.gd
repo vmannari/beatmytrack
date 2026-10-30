@@ -98,6 +98,12 @@ func run() -> void:
 	menu._choose(1)
 	await frames(4)
 	check(menu.find_child("NewsCarPhoto",true,false) != null and menu._index() == 1,"selected record has its relevant native vehicle photograph")
+	var photo: Control = menu.find_child("NewsCarPhoto",true,false)
+	check(photo.get_parent().name == "NewsPhotoFrame", "record photograph uses its editorial frame")
+	var selected: Dictionary = menu._stories()[menu._index()]
+	var expected_metric: String = "LAP" if selected.get("metric","") == "lap" else "TRACK"
+	check(menu._paper.find_child("NewsRecordTime",true,false).text == menu._time(int(selected.time_ticks),int(selected.tick_rate)) and menu._paper.find_child("NewsRecordMetric",true,false).text == expected_metric, "record panel prints the selected time and metric")
+	check(menu.find_child("NewsCircuitLabel",true,false).text == "OUTLINE UNAVAILABLE", "missing circuit geometry is identified")
 	check(backend.calls.size() == before_browse,"reading another cached story makes no request")
 	check(menu._story_motion != null and menu._outgoing_story != null,"changing story starts a bounded print transition")
 	var masthead_position: Vector2 = menu._masthead.global_position
@@ -124,6 +130,7 @@ func run() -> void:
 	menu._choose(4)
 	await frames(4)
 	check(menu.find_child("NewsCircuit",true,false).points.size() == 3 and menu.find_child("NewsCarPhoto",true,false) == null,"friend publication uses the published circuit outline")
+	check(menu.find_child("NewsCircuitLabel",true,false).text == "CIRCUIT OUTLINE", "published circuit is identified without inventing a vehicle")
 	check(menu._category(news.items[4]) == "NEW CIRCUIT" and menu._headline(news.items[4]).contains("Bob"),"friend publication gets a named newspaper headline")
 	check(backend.calls.size() == before_browse,"reading a friend's publication creates no request")
 	var requested: Array = []
@@ -233,7 +240,32 @@ func run() -> void:
 	news.items.clear()
 	news.changed.emit()
 	check(menu._using_examples() and backend.calls.size() == count,"empty actual feed falls back locally without new work")
-	backend.safety.queue_free()
+	# Tab navigation prints the same whole-page turn as browsing stories, even
+	# for the Friends and Ranking render paths that return early.
+	menu._finish_story_turn()
+	backend.signed = false
+	var safety: Node = backend.safety
+	backend.safety = null
+	menu._tabs.friends.pressed.emit()
+	var tab_motion: Tween = menu._story_motion
+	check(tab_motion != null and menu._tab_turn and printed_sheets(menu) == 2,"Headlines to Friends starts one whole-paper turn")
+	check(menu._turn_material != null and menu._turn_material.get_shader_parameter("turn_direction") == 1.0,"forward tab turn uses forward page direction")
+	news.changed.emit()
+	check(menu._story_motion == tab_motion and printed_sheets(menu) == 2,"feed updates preserve an in-progress tab turn")
+	menu._tabs.friends.pressed.emit()
+	check(menu._story_motion == tab_motion and printed_sheets(menu) == 2,"selecting the current tab does not restart its turn")
+	menu._tabs.ranking.pressed.emit()
+	check(menu._story_motion != null and menu._story_motion != tab_motion and printed_sheets(menu) == 2,"rapid tab switches replace the old turn without extra sheets")
+	check(menu._ranking != null and menu._turn_material.get_shader_parameter("turn_direction") == 1.0,"Friends to Ranking turns forward and renders ranking")
+	while menu._story_motion != null: await process_frame
+	check(printed_sheets(menu) == 1 and not menu._tab_turn,"tab turn completes and frees the outgoing sheet")
+	menu._tabs.ranking.pressed.emit()
+	check(menu._story_motion == null and printed_sheets(menu) == 1,"selecting the current settled tab does not start a turn")
+	menu._tabs.news.pressed.emit()
+	check(menu._story_motion != null and menu._turn_material.get_shader_parameter("turn_direction") == -1.0,"Ranking to Headlines turns backward")
+	pane.hide()
+	check(menu._story_motion == null and printed_sheets(menu) == 1,"leaving during a tab turn removes the outgoing sheet")
+	safety.queue_free()
 	pane.queue_free()
 	news.queue_free()
 	backend.queue_free()

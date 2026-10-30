@@ -1,0 +1,349 @@
+--- a/game/ui/garage_page.gd
++++ b/game/ui/garage_page.gd
+@@ -1051,6 +1051,10 @@
+ 	if section == "customise" and not _customisation_locked:
+ 		_build_customise()
+ 	elif section == "care":
++		var super_wash := MenuStyle.button("Super Wash", _super_wash)
++		super_wash.name = "GarageSuperWash"
++		super_wash.custom_minimum_size = Vector2(160,60)
++		actions.add_child(super_wash)
+ 		wash_button = MenuStyle.button("Wash", _toggle_wash, true)
+ 		wash_button.name = "GarageWash"
+ 		wash_button.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+@@ -1676,6 +1680,23 @@
+ 	_update_wash_hint()
+ 	if not showroom.wash_mode: _save_condition()
+ 
++func _super_wash() -> void:
++	if section != "care" or not is_visible_in_tree() or _menu_motion != null: return
++	# Free for now. A future rewarded-ad completion should enter here only
++	# after confirming the same Garage owner and selected car are still active.
++	_save_condition()
++	_wash_achievement_pending = _wash_achievement_pending or not _cleanliness.is_clean(showroom)
++	showroom.set_wash_mode(false)
++	wash_button.text = "Wash"
++	_update_wash_hint()
++	# Reset both deposit layers, aged grime and every wash voxel, including
++	# the underside and wheels, then recreate the clean weathering textures.
++	showroom.weathering.reset()
++	showroom.weathering.restore({})
++	showroom.invalidate_render()
++	_save_condition()
++	_update_wash_status()
++
+ func _select_wash_tool(tool: String) -> void:
+ 	if section != "care": return
+ 	showroom.set_wash_tool(tool)
+--- /dev/null
++++ b/game/tests/test_super_wash.gd
+@@ -0,0 +1,126 @@
++extends SceneTree
++## Real Garage controls and models; only isolated local cosmetic saves.
++var checks: int = 0
++var failures: int = 0
++var output: String = "res://../docs/evidence/super-wash-2026-10-28"
++
++func _initialize() -> void: run.call_deferred()
++
++func check(ok: bool, label: String) -> void:
++	checks += 1
++	if not ok:
++		failures += 1
++		print("FAIL: ",label)
++
++func settle() -> void:
++	await create_timer(GaragePage.MENU_MOVE_SECONDS+0.1).timeout
++	for index: int in range(5): await process_frame
++	if DisplayServer.get_name() != "headless": await RenderingServer.frame_post_draw
++
++func click(button: Button) -> void:
++	var point: Vector2 = button.get_global_rect().get_center()
++	for pressed: bool in [true,false]:
++		var event := InputEventMouseButton.new()
++		event.position = point
++		event.button_index = MOUSE_BUTTON_LEFT
++		event.pressed = pressed
++		root.push_input(event,true)
++		await process_frame
++
++func capture(label: String) -> void:
++	if DisplayServer.get_name() == "headless": return
++	await RenderingServer.frame_post_draw
++	check(root.get_texture().get_image().save_png(output.path_join(label+".png")) == OK,"capture "+label)
++
++func run() -> void:
++	OS.set_environment("BMT_API_URL","")
++	output = output.path_join(DisplayServer.get_name()+"-"+RenderingServer.get_current_rendering_method())
++	DirAccess.make_dir_recursive_absolute(ProjectSettings.globalize_path(output))
++	var directory: String = "user://super_wash_"+TrackLibrary.unique_id()
++	DirAccess.make_dir_recursive_absolute(directory)
++	var records := LocalRecords.new(directory.path_join("records.json"))
++	var seed := VehicleWeathering.new()
++	var dirty: Dictionary = seed.snapshot()
++	for field: String in ["dirt","snow","slow_dirt","slow_snow","mud","smudge","wetness"]: dirty[field] = 0.95
++	var ages := PackedByteArray()
++	ages.resize(VehicleCondition.CELLS)
++	ages.fill(255)
++	dirty.grime_age = Marshalls.raw_to_base64(ages)
++	dirty.grime_elapsed = 2.0
++	dirty.slow_recoat = 0.01
++	for id: String in VehicleCatalog.IDS:
++		check(VehicleCondition.save(records,id,dirty) == OK,id+" seed dirty local state")
++	root.size = Vector2i(1280,720)
++	VehicleCatalog.selected = "compact"
++	var page := GaragePage.new()
++	page.records = records
++	page.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
++	root.add_child(page)
++	await settle()
++	for index: int in range(VehicleCatalog.IDS.size()):
++		var id: String = VehicleCatalog.IDS[index]
++		page.open_car(index)
++		page._show_section("care")
++		await settle()
++		var button: Button = page.actions.get_node("GarageSuperWash")
++		check(button.text == "Super Wash" and button.is_visible_in_tree(),id+" exposes Super Wash in Wash")
++		check(root.get_visible_rect().encloses(button.get_global_rect()),id+" action fits")
++		var paint: Dictionary = page.showroom.livery.duplicate(true)
++		var parts: Dictionary = page.showroom.customisation.duplicate(true)
++		var others: Dictionary = records.settings.vehicle_conditions.duplicate(true)
++		others.erase(id)
++		page._toggle_wash()
++		page.showroom.washing = true
++		page.showroom.wash_pointer_valid = true
++		page.showroom.touches[0] = Vector2(20,20)
++		await capture(id+"-dirty")
++		await click(button)
++		await settle()
++		var clean: Dictionary = page.showroom.weathering.snapshot()
++		for field: String in ["dirt","snow","slow_dirt","slow_snow","mud","smudge","wetness","slow_recoat","grime_elapsed"]:
++			check(float(clean[field]) == 0.0,id+" clears "+field)
++		for field: String in ["wash","slow_wash","grime_age"]:
++			var bytes: PackedByteArray = Marshalls.base64_to_raw(clean[field])
++			check(bytes.size() == VehicleCondition.CELLS and bytes.count(0) == bytes.size(),id+" resets every "+field+" voxel")
++		check(not page.showroom.weathering.installed,id+" restores clean original materials")
++		check(not page.showroom.wash_mode and not page.showroom.washing and not page.showroom.wash_pointer_valid and page.showroom.touches.is_empty(),id+" ends active wash gestures")
++		check(page.wash_button.text == "Wash",id+" manual wash can restart")
++		check(page._wash_status.text == "Shiny. For now.",id+" immediately displays top cleanliness grade")
++		check(not page._workshop_wash_required,id+" immediately permits customisation")
++		check(page.showroom.livery == paint and page.showroom.customisation == parts,id+" retains paint and parts")
++		check(VehicleCondition.read(records,id) == clean,id+" persists full clean state")
++		var after_others: Dictionary = records.settings.vehicle_conditions.duplicate(true)
++		after_others.erase(id)
++		check(after_others == others,id+" leaves all other cars exact")
++		await capture(id+"-clean")
++		var revision: int = AchievementProgress.read(records).revision
++		await click(button)
++		check(VehicleCondition.read(records,id) == clean and AchievementProgress.read(records).revision == revision,id+" repeated clean action is a no-op")
++		var reopened := LocalRecords.new(records.path)
++		reopened.load_records()
++		check(VehicleCondition.read(reopened,id) == clean,id+" stays clean after local reload")
++	# A newer local race condition must be cleaned intentionally, rather than
++	# being restored by the stale-page protection after the button is pressed.
++	check(VehicleCondition.save(records,page.vehicle_id,dirty) == OK,"newer race wear saved")
++	page._super_wash()
++	check(VehicleCondition.read(records,page.vehicle_id).dirt == 0.0,"Super Wash includes newer local wear")
++	for dimensions: Vector2i in [Vector2i(960,540),Vector2i(1600,720)]:
++		root.size = dimensions
++		await settle()
++		for action: Control in page.actions.get_children():
++			check(root.get_visible_rect().encloses(action.get_global_rect()),"all wash actions fit "+str(dimensions))
++		await capture("clean-"+str(dimensions.x))
++	page._show_section("cars")
++	await settle()
++	var saved: Dictionary = records.settings.vehicle_conditions.duplicate(true)
++	page._super_wash()
++	check(records.settings.vehicle_conditions == saved,"stale action outside Wash is ignored")
++	page._show_section("care")
++	await settle()
++	page.hide()
++	page._super_wash()
++	check(records.settings.vehicle_conditions == saved,"hidden Garage action is ignored")
++	page.queue_free()
++	await process_frame
++	print("SUPER_WASH: %d checks, %d failures" % [checks,failures])
++	quit(1 if failures else 0)
+--- /dev/null
++++ b/game/tests/test_super_wash.gd.uid
+@@ -0,0 +1 @@
++uid://c4q2w7s6v8h3j
+--- /dev/null
++++ b/scripts/translations/super_wash.tsv
+@@ -0,0 +1,2 @@
++# en|fr|es|de|pt_BR|ja|ko|nl|it|fi|sv|nb
++Super Wash|Super lavage|Superlavado|Superwäsche|Superlavagem|スーパー洗車|슈퍼 세차|Superwasbeurt|Superlavaggio|Superpesu|Supertvätt|Supervask
+--- /dev/null
++++ b/docs/SUPER_WASH_2026_10_28.md
+@@ -0,0 +1,41 @@
++# Super Wash — 2026-10-28
++
++Garage → Wash now offers **Super Wash** beside Test drive and the existing manual Wash action. One press immediately clears all cosmetic deposits on the selected car and saves the result locally. The action is free pending the owner's later ad integration.
++
++| Requirement | Delivered behaviour |
++| --- | --- |
++| SW01 | Clear primary dirt/snow, slow dirt/snow, mud, smudges, wetness, aged grime, wash masks and recoat history across the whole car, including wheels and underside. Restore original clean materials and the top **Shiny. For now.** grade immediately. |
++| SW02 | Stop manual-wash gestures, preserve paint/parts and other cars, save through the existing condition path, retain customisation access and existing wash-achievement handling. Newer local race wear is synchronised before cleaning; hidden/outgoing controls cannot run it. |
++| SW03 | No ad, simulated ad, account reward, SDK, backend or economy change. The dedicated callback documents the future rewarded-completion boundary and the need to recheck owner/car identity at that time. |
++| Q01 | Actual mouse clicks, all six cars, exact condition fields/voxels, repeat action, local reload, late race wear, visibility/section guards, three viewport sizes and native before/after views. |
++
++Changed files: `game/ui/garage_page.gd`; new `game/tests/test_super_wash.gd` and UID; one authored row in `scripts/translations/super_wash.tsv`; the matching single message appended to `messages.pot` and all twelve PO catalogues. Existing tests and concurrent sources are preserved. Evidence includes an independently forward/reverse-checked source-only patch without staging or committing the main index.
++
++| Actual validation | Result |
++| --- | --- |
++| Super Wash, headless | 162 checks, 0 failures |
++| Super Wash, native Compatibility | 176 checks, 0 failures; 14 captures |
++| Super Wash, native desktop Mobile | 176 checks, 0 failures; 14 captures |
++| Existing easier manual washing | 48 checks, 0 failures |
++| Existing gradual scrubbing/ageing | 428 checks, 0 failures |
++| Owned localization rule check | All 12 catalogues pass |
++| Garage script check-only | Exit 0 |
++
++Native captures were inspected, including the dirty/clean Compact and the 960×540 Mobile layout. All four bottom actions fit at 960×540, 1280×720 and 1600×720. Native Mobile here uses the desktop Vulkan renderer; this is not Android/device evidence.
++
++The Super Wash runs also log a concurrent `VehicleCustomisation.valid` error at line 60: an untyped conditional array is assigned to `Array[String]`. The original headless run and both native runs retain those errors despite all owned assertions passing. This work does not modify the concurrent kart-customisation source, and does not claim an error-free whole application. The sandbox reports an inaccessible Windows certificate store in runtime tests; no network is used. The first localization command mistakenly passed whole catalogues to a one-message scope and reported unrelated entries as obsolete; the retained checker scopes both inputs and passes all twelve languages. No assertion was weakened.
++
++Commands run from the repository root:
++
++```powershell
++python docs/evidence/super-wash-2026-10-28/update_catalogues.py
++python docs/evidence/super-wash-2026-10-28/run_validation.py --mode gl_compatibility
++python docs/evidence/super-wash-2026-10-28/run_validation.py --mode mobile
++python docs/evidence/super-wash-2026-10-28/run_validation.py --test test_garage_wash_easier
++python docs/evidence/super-wash-2026-10-28/run_validation.py --test test_gentle_scrubbing
++python docs/evidence/super-wash-2026-10-28/check_localization.py
++```
++
++The first headless run used the pinned console executable directly with `--headless --path game --script res://tests/test_super_wash.gd`, with workspace-only APPDATA and an empty BMT_API_URL; its log is `headless.log`. The same executable ran `--headless --path game --check-only --script res://ui/garage_page.gd`; log `parse.log`. The reusable runner isolates APPDATA/LOCALAPPDATA and bounds each test to 240 seconds without rebuilding generated identities.
++
++Reload/rebuild and owner appearance/input acceptance remain. No device attachment query or physical-device test, APK, real auth/purchase, deployment, owner-save mutation, owner-process restart, main-index staging, commit or merge was performed. Ad integration remains future work as requested.
+--- a/game/localization/de.po
++++ b/game/localization/de.po
+@@ -10928,3 +10928,7 @@
+ #: game/core/app.gd:5226
+ msgid "Erase"
+ msgstr "Löschen"
++
++#: game/ui/garage_page.gd
++msgid "Super Wash"
++msgstr "Superwäsche"
+--- a/game/localization/en.po
++++ b/game/localization/en.po
+@@ -11042,3 +11042,7 @@
+ #: game/ui/player_profile.gd:314
+ msgid "★ %.1f  ·  %d ratings"
+ msgstr "★ %.1f  ·  %d ratings"
++
++#: game/ui/garage_page.gd
++msgid "Super Wash"
++msgstr "Super Wash"
+--- a/game/localization/es.po
++++ b/game/localization/es.po
+@@ -10928,3 +10928,7 @@
+ #: game/core/app.gd:5226
+ msgid "Erase"
+ msgstr "Borrar"
++
++#: game/ui/garage_page.gd
++msgid "Super Wash"
++msgstr "Superlavado"
+--- a/game/localization/fi.po
++++ b/game/localization/fi.po
+@@ -10928,3 +10928,7 @@
+ #: game/core/app.gd:5226
+ msgid "Erase"
+ msgstr "Poista"
++
++#: game/ui/garage_page.gd
++msgid "Super Wash"
++msgstr "Superpesu"
+--- a/game/localization/fr.po
++++ b/game/localization/fr.po
+@@ -10928,3 +10928,7 @@
+ #: game/core/app.gd:5226
+ msgid "Erase"
+ msgstr "Effacer"
++
++#: game/ui/garage_page.gd
++msgid "Super Wash"
++msgstr "Super lavage"
+--- a/game/localization/it.po
++++ b/game/localization/it.po
+@@ -10928,3 +10928,7 @@
+ #: game/core/app.gd:5226
+ msgid "Erase"
+ msgstr "Cancella"
++
++#: game/ui/garage_page.gd
++msgid "Super Wash"
++msgstr "Superlavaggio"
+--- a/game/localization/ja.po
++++ b/game/localization/ja.po
+@@ -10897,3 +10897,7 @@
+ #: game/core/app.gd:5226
+ msgid "Erase"
+ msgstr "消去"
++
++#: game/ui/garage_page.gd
++msgid "Super Wash"
++msgstr "スーパー洗車"
+--- a/game/localization/ko.po
++++ b/game/localization/ko.po
+@@ -10897,3 +10897,7 @@
+ #: game/core/app.gd:5226
+ msgid "Erase"
+ msgstr "지우기"
++
++#: game/ui/garage_page.gd
++msgid "Super Wash"
++msgstr "슈퍼 세차"
+--- a/game/localization/nb.po
++++ b/game/localization/nb.po
+@@ -10928,3 +10928,7 @@
+ #: game/core/app.gd:5226
+ msgid "Erase"
+ msgstr "Slett"
++
++#: game/ui/garage_page.gd
++msgid "Super Wash"
++msgstr "Supervask"
+--- a/game/localization/nl.po
++++ b/game/localization/nl.po
+@@ -10928,3 +10928,7 @@
+ #: game/core/app.gd:5226
+ msgid "Erase"
+ msgstr "Wissen"
++
++#: game/ui/garage_page.gd
++msgid "Super Wash"
++msgstr "Superwasbeurt"
+--- a/game/localization/pt_BR.po
++++ b/game/localization/pt_BR.po
+@@ -10928,3 +10928,7 @@
+ #: game/core/app.gd:5226
+ msgid "Erase"
+ msgstr "Apagar"
++
++#: game/ui/garage_page.gd
++msgid "Super Wash"
++msgstr "Superlavagem"
+--- a/game/localization/sv.po
++++ b/game/localization/sv.po
+@@ -10928,3 +10928,7 @@
+ #: game/core/app.gd:5226
+ msgid "Erase"
+ msgstr "Radera"
++
++#: game/ui/garage_page.gd
++msgid "Super Wash"
++msgstr "Supertvätt"
+--- a/game/localization/messages.pot
++++ b/game/localization/messages.pot
+@@ -11042,3 +11042,7 @@
+ #: game/ui/player_profile.gd:314
+ msgid "★ %.1f  ·  %d ratings"
+ msgstr ""
++
++#: game/ui/garage_page.gd
++msgid "Super Wash"
++msgstr ""

@@ -1,0 +1,188 @@
+--- a/AGENTS.md
++++ b/AGENTS.md
+@@ -0,0 +1,5 @@
++<!-- HEADER-CAR-ICON-FIT-20261026 -->
++## Header car picture stays inside its slot (2026-10-26)
++HIF01-HIF03/R01/Q01: Owner reports oversized/broken selected car on Create. Reset all child picture anchors/offsets on transition completion/cancel and clip the existing icon slot. Original source543/2 fails new inner-picture reattachment bounds; final543headless/556Compatibility/556desktopMobile and parser1286 pass. All seven cars repeatedly visit Create/Profile/Settings at960/1411/1720, with actual 88x56 slot/child bounds and native screenshot-sized Create views. Crossfade, native input/save and cleanup remain; studio/camera factory text is exact. Runtime scope is profile_car.gd. Concurrent App attachment guards arrived independently and remain excluded. Commands, original failures, captures, hashes and scoped checkpoint: docs/HEADER_CAR_ICON_FIT_2026_10_26.md and docs/evidence/header-car-icon-fit-2026-10-26/report.json. Reload and owner/device acceptance remain. No attachment/device test, APK, purchase, live mutation, deployment, staging/commit/merge or owner-process restart.
++<!-- /HEADER-CAR-ICON-FIT-20261026 -->
++
+--- a/DEVELOPMENT_STATUS.md
++++ b/DEVELOPMENT_STATUS.md
+@@ -0,0 +1,5 @@
++<!-- HEADER-CAR-ICON-FIT-20261026 -->
++## Header car picture stays inside its slot (2026-10-26)
++HIF01-HIF03/R01/Q01: Owner reports oversized/broken selected car on Create. Reset all child picture anchors/offsets on transition completion/cancel and clip the existing icon slot. Original source543/2 fails new inner-picture reattachment bounds; final543headless/556Compatibility/556desktopMobile and parser1286 pass. All seven cars repeatedly visit Create/Profile/Settings at960/1411/1720, with actual 88x56 slot/child bounds and native screenshot-sized Create views. Crossfade, native input/save and cleanup remain; studio/camera factory text is exact. Runtime scope is profile_car.gd. Concurrent App attachment guards arrived independently and remain excluded. Commands, original failures, captures, hashes and scoped checkpoint: docs/HEADER_CAR_ICON_FIT_2026_10_26.md and docs/evidence/header-car-icon-fit-2026-10-26/report.json. Reload and owner/device acceptance remain. No attachment/device test, APK, purchase, live mutation, deployment, staging/commit/merge or owner-process restart.
++<!-- /HEADER-CAR-ICON-FIT-20261026 -->
++
+--- a/docs/PHASE_0_PLAN.md
++++ b/docs/PHASE_0_PLAN.md
+@@ -0,0 +1,5 @@
++<!-- HEADER-CAR-ICON-FIT-20261026 -->
++## Header car picture stays inside its slot (2026-10-26)
++HIF01-HIF03/R01/Q01: Owner reports oversized/broken selected car on Create. Reset all child picture anchors/offsets on transition completion/cancel and clip the existing icon slot. Original source543/2 fails new inner-picture reattachment bounds; final543headless/556Compatibility/556desktopMobile and parser1286 pass. All seven cars repeatedly visit Create/Profile/Settings at960/1411/1720, with actual 88x56 slot/child bounds and native screenshot-sized Create views. Crossfade, native input/save and cleanup remain; studio/camera factory text is exact. Runtime scope is profile_car.gd. Concurrent App attachment guards arrived independently and remain excluded. Commands, original failures, captures, hashes and scoped checkpoint: docs/HEADER_CAR_ICON_FIT_2026_10_26.md and docs/evidence/header-car-icon-fit-2026-10-26/report.json. Reload and owner/device acceptance remain. No attachment/device test, APK, purchase, live mutation, deployment, staging/commit/merge or owner-process restart.
++<!-- /HEADER-CAR-ICON-FIT-20261026 -->
++
+--- a/game/ui/profile_car.gd
++++ b/game/ui/profile_car.gd
+@@ -41,6 +41,7 @@
+ 
+ func _ready() -> void:
+ 	mouse_filter = Control.MOUSE_FILTER_IGNORE
++	clip_contents = true
+ 	visibility_changed.connect(_visibility_changed)
+ 	resized.connect(_settle)
+ 	refresh()
+@@ -100,7 +101,7 @@
+ 	_change = null
+ 	_clear_outgoing()
+ 	preview.modulate = Color.WHITE
+-	preview.position = Vector2.ZERO
++	MenuStyle.fill(preview)
+ 	if is_visible_in_tree(): _change_picture()
+ 	else: _settle()
+ 
+@@ -110,7 +111,9 @@
+ 	_clear_outgoing()
+ 	if not is_instance_valid(preview): return
+ 	preview.modulate = Color.WHITE
+-	preview.position = Vector2.ZERO
++	# Reset every offset. Moving an anchored picture back to zero can preserve
++	# a size from its previous parent while this retained widget is reattached.
++	MenuStyle.fill(preview)
+ 	if not vehicle_id.is_empty(): preview.texture = preload("res://ui/header_car_icons.gd").texture(vehicle_id)
+ 
+ func _visibility_changed() -> void:
+--- a/game/tests/test_header_car_icon_transition.gd
++++ b/game/tests/test_header_car_icon_transition.gd
+@@ -25,6 +25,17 @@
+ func settled(icon: Control, vehicle: String) -> bool:
+ 	return icon.preview.texture == Icons.texture(vehicle) and icon._change == null and icon._outgoing == null and icon.preview.modulate == Color.WHITE and icon.preview.position == Vector2.ZERO
+ 
++func picture_bounds(icon: Control, label: String) -> void:
++	var valid: bool = true
++	for child: Node in icon.get_children():
++		if not child is TextureRect: continue
++		# Observe the image rectangles, independently of the outer retained slot.
++		valid = valid and child.size.is_equal_approx(icon.size)
++		valid = valid and is_zero_approx(child.position.y) and child.position.x >= -6.01 and child.position.x <= 8.01
++	check(valid,"picture dimensions remain inside the animation envelope: "+label)
++	if icon._change == null:
++		check(icon.preview.get_rect().is_equal_approx(Rect2(Vector2.ZERO,icon.size)),"settled picture fills its exact slot: "+label)
++
+ func capture(label: String) -> void:
+ 	if DisplayServer.get_name() == "headless": return
+ 	await RenderingServer.frame_post_draw
+@@ -61,7 +72,9 @@
+ 	OS.set_environment("BMT_API_URL","")
+ 	root.size = Vector2i(1280,720)
+ 	root.gui_embed_subwindows = true
+-	output = ProjectSettings.globalize_path("res://../docs/evidence/header-car-icon-transition-2026-10-26/"+RenderingServer.get_current_rendering_method())
++	var destination: String = OS.get_environment("BMT_HEADER_ICON_OUTPUT")
++	if destination.is_empty(): destination = "res://../docs/evidence/header-car-icon-transition-2026-10-26"
++	output = ProjectSettings.globalize_path(destination.path_join(RenderingServer.get_current_rendering_method()))
+ 	DirAccess.make_dir_recursive_absolute(output)
+ 	VehicleCatalog.selected = "compact"
+ 	var icon: Control = Profile.new()
+@@ -70,6 +83,11 @@
+ 	await frames()
+ 	check(settled(icon,"compact"),"first attachment immediately shows the selected picture")
+ 	var preview: TextureRect = icon.preview
++	# Reproduce the viewport-sized intermediate rectangle used while reparenting.
++	for extent: Vector2 in [Vector2(1280,720),Vector2(88,56),Vector2(240,64),Vector2(88,56)]:
++		icon.size = extent
++		await frames(2)
++		picture_bounds(icon,"parent resize "+str(extent))
+ 	for vehicle: String in VehicleCatalog.IDS:
+ 		if vehicle == "compact": continue
+ 		var previous: Texture2D = preview.texture
+@@ -81,8 +99,10 @@
+ 		check(icon._change == current,"unchanged refresh does not restart: "+vehicle)
+ 		await create_timer(0.07).timeout
+ 		check(preview.modulate.a > 0.0 and preview.modulate.a < 1.0 and preview.position.x > 0.0,"visible intermediate blend: "+vehicle)
++		picture_bounds(icon,"mid-change "+vehicle)
+ 		await create_timer(0.25).timeout
+ 		check(settled(icon,vehicle) and icon.get_child_count() == 1,"exact endpoint and cleanup: "+vehicle)
++		picture_bounds(icon,"settled "+vehicle)
+ 	check(icon.preview == preview,"all changes retain the original picture control")
+ 	choose(icon,"compact")
+ 	await create_timer(0.04).timeout
+@@ -102,12 +122,14 @@
+ 	choose(icon,"formula")
+ 	icon.size = Vector2(96,64)
+ 	check(settled(icon,"formula"),"resize clears offsets and temporary pictures")
++	picture_bounds(icon,"resize during motion")
+ 	choose(icon,"pickup")
+ 	root.remove_child(icon)
+ 	check(settled(icon,"pickup"),"detaching stops the transition")
+ 	root.add_child(icon)
+ 	await frames()
+ 	check(settled(icon,"pickup"),"reattachment preserves the selected endpoint")
++	picture_bounds(icon,"reattachment")
+ 	choose(icon,"electric")
+ 	var removed: WeakRef = weakref(icon)
+ 	icon.queue_free()
+@@ -183,6 +205,7 @@
+ 	app._show_screen("settings")
+ 	await frames(12)
+ 	check(app._retained_profile_car == icon and settled(icon,"electric"),"navigation retains the widget and resolves interrupted motion")
++	await navigation_fit_review(app,icon)
+ 	var old: WeakRef = weakref(icon)
+ 	app.records = LocalRecords.new(folder.path_join("other-records.json"))
+ 	app._show_screen("tracks")
+@@ -190,3 +213,21 @@
+ 	check(old.get_ref() == null and app._retained_profile_car.records == app.records,"another records owner releases the previous icon")
+ 	app.queue_free()
+ 	await frames(8)
++
++func navigation_fit_review(app: Node, icon: Control) -> void:
++	for extent: Vector2i in [Vector2i(960,540),Vector2i(1411,877),Vector2i(1720,900)]:
++		root.size = extent
++		await frames(8)
++		for vehicle: String in VehicleCatalog.IDS:
++			app._select_header_vehicle(VehicleCatalog.IDS.find(vehicle))
++			# Resizing and navigation may interrupt any stage of the crossfade.
++			await frames(2)
++			for destination: String in ["biome","profile","biome","settings","biome"]:
++				app._show_screen(destination)
++				await frames(2)
++				check(app._retained_profile_car == icon,"retained identity: %s/%s/%d" % [vehicle,destination,extent.x])
++				check(icon.size.is_equal_approx(Vector2(88,56)) and app.account_button.get_global_rect().encloses(icon.get_global_rect()),"outer slot fits the account button: %s/%s/%d" % [vehicle,destination,extent.x])
++				picture_bounds(icon,"%s/%s/%d" % [vehicle,destination,extent.x])
++			await create_timer(0.26).timeout
++			picture_bounds(icon,"settled Create %s/%d" % [vehicle,extent.x])
++			if vehicle == "electric": await capture("create-electric-%d" % extent.x)
+--- /dev/null
++++ b/docs/HEADER_CAR_ICON_FIT_2026_10_26.md
+@@ -0,0 +1,32 @@
++# Header car picture sizing correction (2026-10-26)
++
++HIF01: Keep the selected car inside its header slot. HIF02: Preserve smooth changes through navigation, resizing and reattachment. HIF03/R01/Q01: Strengthen picture-bound checks and retain actual native views, failures and a scoped checkpoint.
++
++The owner's Create screenshot shows the Electric picture escaping the account button and overlapping the name and page. The transition reset assigned `position = Vector2.ZERO` to a full-rectangle anchored TextureRect. That can preserve a size and anchor offsets from its previous attachment. Earlier transition checks verified the outer icon rectangle and selection but did not independently verify the child picture rectangle after reattachment.
++
++`game/ui/profile_car.gd` now restores all anchors and offsets through `MenuStyle.fill(preview)` on completion and cancellation, and clips the icon's contents to its slot. The picture fits the existing 88×56 header rectangle, preserving aspect ratio. The 0.24-second crossfade, small slide, cached PNGs, rapid-selection coalescing, native input/save behavior and resource cleanup remain. No art, model, studio/camera factory or game behavior changes are included.
++
++The strengthened `game/tests/test_header_car_icon_transition.gd` checks actual picture sizes and offsets independently of the outer slot. It exercises intermediate parent sizes, reattachment, ongoing and settled blends, all seven cars and repeated Create/Profile/Settings/Create visits at 960×540, the supplied screenshot's 1411×877 size, and 1720×900. Existing keyboard/mouse selection, preference reload, identity, account replacement, cleanup and viewport assertions remain. A destination environment variable keeps this task's captures separate from the preceding task's evidence.
++
++The exact original profile source fails **two of 543 headless checks**, both new picture-rectangle assertions after reattachment. The correction passes **543 headless / 556 Compatibility / 556 desktop Mobile checks**, with **1,286 scripts** compiling. Native totals include thirteen capture writes each. Create-screen Electric captures at all three sizes show the fitted header picture; the 1411×877 captures were visually inspected in both renderers.
++
++Concurrent App attachment guards arrived independently during this task: the current `_attach_profile_car` also clips the retained view and resets the child picture after attachment. Those edits are preserved and excluded from this patch. The standalone widget regression reproduces and verifies the picture's own reset defect separately from App. Task-start and integrated App source hashes are recorded as separate evidence. No task changes were made to App.
++
++Actual commands used pinned Godot 4.7.2 with reviewed Windows certificate-store access, isolated local records, no configured API, and process-local `APPDATA`/`LOCALAPPDATA` at `build/header-car-icon-fit-appdata`:
++
++```powershell
++$env:APPDATA = Join-Path (Get-Location) 'build/header-car-icon-fit-appdata'
++$env:LOCALAPPDATA = $env:APPDATA
++$env:BMT_HEADER_ICON_OUTPUT = 'res://../docs/evidence/header-car-icon-fit-2026-10-26/baseline'
++powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1 -Action TestScript -ScriptPath res://tests/test_header_car_icon_transition.gd -CommandTimeoutSeconds 240
++$env:BMT_HEADER_ICON_OUTPUT = 'res://../docs/evidence/header-car-icon-fit-2026-10-26/headless'
++powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1 -Action TestScript -ScriptPath res://tests/test_header_car_icon_transition.gd -CommandTimeoutSeconds 240
++$env:BMT_HEADER_ICON_OUTPUT = 'res://../docs/evidence/header-car-icon-fit-2026-10-26/native'
++powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1 -Action TestScript -ScriptPath res://tests/test_header_car_icon_transition.gd -Graphical -RenderingMethod gl_compatibility -CommandTimeoutSeconds 240
++powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1 -Action TestScript -ScriptPath res://tests/test_header_car_icon_transition.gd -Graphical -RenderingMethod mobile -CommandTimeoutSeconds 240
++powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1 -Action TestScript -ScriptPath res://tests/test_script_parse.gd -CommandTimeoutSeconds 180
++```
++
++Review the corrected [Create view](evidence/header-car-icon-fit-2026-10-26/native/gl_compatibility/create-electric-1411.png) and [desktop Mobile view](evidence/header-car-icon-fit-2026-10-26/native/mobile/create-electric-1411.png). Raw reports, original failures, logs, source hashes and the task-only patch are in `docs/evidence/header-car-icon-fit-2026-10-26/`. The patch is checked in reverse against current sources and forward against exact task-start copies.
++
++Reload and owner appearance/motion/touch acceptance remain. No device attachment check or physical-device test, APK, real authentication/purchase, live account/backend mutation, deployment, staging, commit, merge or owner-process restart was performed. Concurrent work is preserved.

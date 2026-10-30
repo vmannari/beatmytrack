@@ -1,0 +1,143 @@
+diff --git a/game/core/app.gd b/game/core/app.gd
+index ab3cb5d87..a27b4685d 100644
+--- a/game/core/app.gd
++++ b/game/core/app.gd
+@@ -2691,8 +2691,6 @@ func _garage(parent: Control = null) -> void:
+ 	page.cached_carousel = true
+ 	page.preview_can_render=func() -> bool: return _publishing_slots_foreground and _background_work_allowed() and (menu_page_motion==null or not menu_page_motion.is_running())
+ 	if is_instance_valid(_garage_preloader): page.preloaded_showroom=_garage_preloader.take()
+-	page.progressive_entry = not is_instance_valid(page.preloaded_showroom)
+-	page.opening_can_begin = func() -> bool: return _background_work_allowed() and (menu_page_motion==null or not menu_page_motion.is_running())
+ 	page.achievements = achievements
+ 	page.news_client = online.client.news
+ 	page.account_requested.connect(_open_account)
+diff --git a/game/tests/test_garage_entry_carousel.gd b/game/tests/test_garage_entry_carousel.gd
+index 6f41076fc..107a10733 100644
+--- a/game/tests/test_garage_entry_carousel.gd
++++ b/game/tests/test_garage_entry_carousel.gd
+@@ -53,6 +53,7 @@ func run() -> void:
+ 	# Startup loads the profile. Seed its local cosmetics after that load.
+ 	check(app.records.save_vehicle_conditions(conditions)==OK,"seed real local saved conditions for all seven cars")
+ 	app.records.settings.vehicle_liveries = paints
++	app._garage_preloader.evict() # Exercise entry before any native preload exists.
+ 	app._show_screen("tracks")
+ 	await frames()
+ 	began = Time.get_ticks_usec()
+@@ -63,13 +64,16 @@ func run() -> void:
+ 	while app.screen != "garage": await process_frame
+ 	var page: GaragePage = app._retained_garage
+ 	check(page!=null and page.cached_carousel and page.thumbnails.size()==7,"actual Garage contains all seven catalogue cars")
++	check(not page.progressive_entry,"cold entry uses the saved live car immediately")
++	check(page.showroom.find_child("GarageOpeningPicture",true,false)==null,"cold main view never shows a stock-photo cover")
++	check(page.showroom.car!=null and page.showroom.car.livery==paints.compact,"cold native car starts with its saved livery")
+ 	for id: String in VehicleCatalog.IDS:
+ 		var card: CarShowroom = page.thumbnails[id]
+ 		check(card.condition==conditions[id],"saved condition retained "+id)
+-		check(card._image.texture!=null,"cold cache has an immediate car picture "+id)
++		check(card._image.texture==null,"cold custom preview never displays a stock livery "+id)
+ 		check(card.car==null and card.showroom_viewport==null,"carousel picture owns no world "+id)
+ 		if not baseline:
+-			check(card.displayed_key=="","catalogue fallback is distinct from exact saved appearance "+id)
++			check(card.displayed_key=="","pending custom preview has no published appearance "+id)
+ 	await frames(2)
+ 	metrics.first_garage_draw_ms = (Time.get_ticks_usec()-began)/1000.0
+ 	print("GARAGE_FIRST_DRAW: ",JSON.stringify(metrics))
+@@ -85,7 +89,7 @@ func run() -> void:
+ 	await capture("baseline-saved-cars-settled" if baseline else "saved-cars-settled")
+ 	if not baseline and DisplayServer.get_name() != "headless":
+ 		# Keep the service focused on one miss while exercising both stale-job
+-		# protection and exact publication after a nonblank catalogue fallback.
++		# protection and exact publication without a different livery appearing.
+ 		page._preview_service.queued.clear()
+ 		var prior_renders: int = page._preview_service.renders
+ 		for id: String in page.thumbnails:
+@@ -97,18 +101,69 @@ func run() -> void:
+ 		var superseded: String = card.preview_key
+ 		paint.colors.body = "3d7acf"
+ 		card.apply_livery(paint)
+-		check(card._image.texture!=null,"changing a saved finish never blanks the car picture")
++		check(card._image.texture==null,"changing a saved finish clears a different appearance immediately")
+ 		card.publish_preview(superseded,GradientTexture2D.new())
+ 		check(card.displayed_key!=superseded,"superseded capture cannot replace the current car picture")
+ 		var deadline: int = Time.get_ticks_msec()+45000
+ 		while card.displayed_key!=card.preview_key and Time.get_ticks_msec()<deadline: await process_frame
+-		check(card.displayed_key==card.preview_key,"exact saved paint and condition replace the catalogue fallback")
++		check(card.displayed_key==card.preview_key,"first published picture has the exact saved paint and condition")
+ 		check(page._preview_service.renders-prior_renders<=1,"superseded queued finish does not build an extra showroom")
+ 		await frames(3)
+ 		check(page._preview_service.renderer==null,"temporary capture showroom is released")
+ 		check(page.find_children("*","SubViewport",true,false).size()==3,"one live Garage retains exactly three viewports")
++		var exact_image: Image=card._image.texture.get_image()
++		while page._preview_service.worker!=null and Time.get_ticks_msec()<deadline: await process_frame
++		var repeat: CarShowroom=preload("res://ui/garage_cached_thumbnail.gd").new()
++		repeat.preview_service=page._preview_service
++		repeat.vehicle_id=card.vehicle_id
++		repeat.livery=card.livery.duplicate(true)
++		repeat.condition=card.condition.duplicate(true)
++		repeat.customisation=card.customisation.duplicate(true)
++		repeat.size=Vector2(250,104)
++		root.add_child(repeat)
++		check(repeat._image.texture==null,"cached custom picture waits for its own decoded image")
++		var repeats_before: int=page._preview_service.renders
++		while repeat.displayed_key!=repeat.preview_key and Time.get_ticks_msec()<deadline: await process_frame
++		check(repeat.displayed_key==repeat.preview_key,"exact saved picture is recovered from disk")
++		if repeat._image.texture!=null:
++			check(repeat._image.texture.get_image().get_data()==exact_image.get_data(),"recovered preview preserves the actual saved-livery pixels")
++		check(page._preview_service.renders==repeats_before,"cached reentry needs no new capture world")
++		repeat.queue_free()
++		await process_frame
+ 		for id: String in page.thumbnails: page.thumbnails[id].show()
+ 		await capture("saved-appearance-resolved")
++	# Stock pictures are valid only for the exact stock appearance. Exercise
++	# repaint, worn and fitted-car misses even when no GPU capture is available.
++	var test_card: CarShowroom=page.thumbnails.compact
++	var service: Node=page._preview_service
++	var default_paint: Dictionary=VehicleLivery.for_car({},"compact")
++	test_card.condition={}
++	test_card.customisation=VehicleCustomisation.defaults()
++	test_card.apply_livery(default_paint)
++	check(test_card._image.texture==service.catalogue_texture("compact") and test_card.displayed_key==test_card.preview_key,"exact default car immediately shows its matching stock photo")
++	var old_key: String=test_card.preview_key
++	var old_texture: Texture2D=test_card._image.texture
++	test_card.apply_livery(paints.compact)
++	check(test_card._image.texture==null and test_card.displayed_key=="","repaint never retains the earlier stock picture")
++	test_card.publish_preview(old_key,old_texture)
++	check(test_card._image.texture==null and test_card.displayed_key=="","late stock completion cannot fill a customized car slot")
++	test_card.publish_preview(test_card.preview_key,old_texture)
++	# Publication itself is tested above with a real native capture. Here a
++	# sentinel texture lets the headless run cover retained-key invalidation.
++	test_card.refresh_thumbnail()
++	check(test_card._image.texture==old_texture,"unchanged appearance retains its completed picture")
++	test_card.condition=conditions.compact
++	test_card.refresh_thumbnail()
++	check(test_card._image.texture==null,"condition change clears the previous appearance")
++	test_card.condition={}
++	test_card.apply_livery(default_paint)
++	var parts: Dictionary=VehicleCustomisation.defaults()
++	parts.rims="five"
++	test_card.apply_customisation(parts)
++	check(test_card._image.texture==null,"fitted parts never borrow a stock-car photograph")
++	test_card.customisation=VehicleCustomisation.defaults()
++	test_card.condition=conditions.compact
++	test_card.apply_livery(paints.compact)
+ 	var retained: CarShowroom = page.showroom
+ 	app._show_screen("settings")
+ 	app._show_screen("garage")
+diff --git a/game/ui/garage_cached_thumbnail.gd b/game/ui/garage_cached_thumbnail.gd
+index 40ebcd7f2..4db637752 100644
+--- a/game/ui/garage_cached_thumbnail.gd
++++ b/game/ui/garage_cached_thumbnail.gd
+@@ -24,10 +24,10 @@ func refresh_thumbnail() -> void:
+ 	var key: String = preview_service.identity(self)
+ 	if key == preview_key: return
+ 	preview_key = key
+-	# The catalogue picture identifies the car immediately, including cache
+-	# misses after racing or a paint change. Only an exact capture gets this key.
++	# A picture of a different finish must never stand in for the saved car.
++	# Exact stock, prepared and cached pictures publish through the same guard.
+ 	displayed_key = ""
+-	_image.texture = preview_service.catalogue_texture(vehicle_id)
++	_image.texture = null
+ 	preview_service.request(self)
+ 
+ func publish_preview(key: String, value: Texture2D) -> void:

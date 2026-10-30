@@ -78,6 +78,23 @@ def run(args):
             print('No active unfinished batch. Create an explicit development batch before running local races.')
             return
         batch = str(uuid.UUID(value['batch_id']))
+    if batch is not None:
+        response = requests.post(origin+'/v1/dev/test-drivers/batches/'+batch+'/prepare-local',
+            headers={'X-Dev-Auth-Key':key},verify=str(ca) if ca.exists() else True,
+            timeout=(5,60),allow_redirects=False)
+        if response.status_code != 200:
+            raise RuntimeError('Unable to prepare the test batch on the current build (HTTP '+str(response.status_code)+
+                '). Keep its local journal; no recording was started.')
+        value = response.json()
+        batch = str(uuid.UUID(value['batch']['batch_id']))
+        if value.get('continued'):
+            print('Continued the old test batch on current published tracks; existing drivers and results are retained.',flush=True)
+        if value['batch'].get('complete'):
+            print('This test batch is already complete.');return
+        if args.prepare_only:
+            print(json.dumps({'status':'prepared','continued':bool(value.get('continued')),
+                'drivers':value['batch']['driver_count'],'tracks':value['batch']['track_count'],
+                'expected_jobs':value['batch']['expected_jobs'],'generation_started':False}));return
     local_root = ROOT/'.tools/artificial-races'
     folder = local_root/('rivalries' if rivalry else 'batches')/(rivalry or batch)
     folder.mkdir(parents=True,exist_ok=True)
@@ -135,7 +152,10 @@ def main():
     parser.add_argument('--max-jobs',type=int,default=1)
     parser.add_argument('--cpus',type=float,default=1)
     parser.add_argument('--inspect',action='store_true',help='Inspect non-secret bindings without starting generation')
+    parser.add_argument('--prepare-only',action='store_true',help='Prepare a compatible batch without starting a race')
     args=parser.parse_args()
+    if args.prepare_only and (args.rivalry or args.list_rivalries):
+        parser.error('Batch preparation does not apply to rivalry commands')
     if not 1<=args.max_jobs<=20 or not .5<=args.cpus<=8:
         parser.error('Use 1–20 attempts per pass and 0.5–8 local CPUs')
     run(args)

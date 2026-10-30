@@ -1,0 +1,91 @@
+--- a/game/ui/garage_page.gd
++++ b/game/ui/garage_page.gd
+@@ -472,7 +472,7 @@
+ 	for child: Node in rail.get_children():
+ 		rail.remove_child(child)
+ 		child.queue_free()
+-	var destinations: Array = [["cars", "Select car"], ["customise", "Appearance"], ["care", "Wash"], ["tuning", "Parts"], ["records", "Record player"], ["trophies", "Trophy wall"]]
++	var destinations: Array = [["cars", "Select car"], ["workshop", "Workshop"], ["records", "Record player"], ["trophies", "Trophy wall"]]
+ 	destinations.append(["news","News"])
+ 	rail.add_theme_constant_override("separation",8 if destinations.size() > 5 else 12)
+ 	for entry: Array in destinations:
+@@ -815,7 +815,7 @@
+ 	_set_customise_layout(next in ["customise","tuning","records"])
+ 	section = next
+ 	if next in ["customise","tuning","care"]: _workshop_section = next
+-	_workshop_tabs.hide()
++	_workshop_tabs.visible = next in ["customise","tuning","care"]
+ 	for child: Node in _workshop_tabs.get_children():
+ 		_workshop_tabs.remove_child(child)
+ 		child.queue_free()
+--- a/game/tests/test_garage_sidebar.gd
++++ b/game/tests/test_garage_sidebar.gd
+@@ -70,7 +70,7 @@
+ 
+ func run() -> void:
+ 	OS.set_environment("BMT_API_URL","")
+-	var evidence_root: String = "res://../docs/evidence/garage-workshop-navigation-2026-10-24/native"
++	var evidence_root: String = "res://../docs/evidence/garage-workshop-restored-2026-10-25/native"
+ 	for argument: String in OS.get_cmdline_user_args():
+ 		if argument.begins_with("--evidence-root="): evidence_root = argument.trim_prefix("--evidence-root=")
+ 	before = "--before" in OS.get_cmdline_user_args()
+@@ -101,9 +101,13 @@
+ 		page._confirm_car()
+ 		await settle()
+ 		rail_bounds("selected "+str(dimensions))
+-		# The owner's new reference promotes Appearance/Wash/Parts into the rail.
+-		check(page.rail.get_child_count() == 7,"seven stable destinations including car selection")
+-		check(not page._workshop_tabs.visible,"reference navigation leaves the car header unobstructed")
++		# Workshop owns the three car tasks; media keep their own rail entries.
++		check(page.rail.get_child_count() == 5,"five stable destinations including Workshop")
++		check(page._workshop_tabs.visible,"Workshop tabs visible after selecting car")
++		for tab: Control in page._workshop_tabs.get_children():
++			check(root.get_visible_rect().encloses(tab.get_global_rect()),"Workshop tab fits window")
++			check(tab.size.y >= 48,"Workshop tab touch target")
++		check(page.rail.get_node_or_null("GarageCare") == null and page.rail.get_node_or_null("GarageCustomise") == null and page.rail.get_node_or_null("GarageTuning") == null,"car tasks are grouped outside the rail")
+ 		await capture("customise-"+str(dimensions.x))
+ 		var rects: Array = []
+ 		for button: Node in page.rail.get_children(): rects.append({"name":button.name,"rect":str(button.get_global_rect())})
+@@ -111,7 +115,7 @@
+ 		var positions: Array[Rect2] = []
+ 		for button: Node in page.rail.get_children(): positions.append(button.get_global_rect())
+ 		for destination: String in ["care","tuning","records","trophies","news"]:
+-			var target: Button = page.rail.get_node("Garage"+destination.capitalize())
++			var target: Button = page._workshop_tabs.get_node("WorkshopWash" if destination == "care" else "WorkshopParts") if destination in ["care","tuning"] else page.rail.get_node("Garage"+destination.capitalize())
+ 			await click(target,destination in ["records","news"])
+ 			await settle()
+ 			check(page.section == destination,"pointer opens "+destination+" "+str(dimensions))
+@@ -123,10 +127,10 @@
+ 			check(page.showroom.showroom_viewport == viewport and page.showroom.car == car,"retained car/viewport "+destination)
+ 			if dimensions.x == 1280: await capture(destination+"-1280")
+ 		check(not page._workshop_tabs.visible,"tabs hidden outside workshop")
+-		await click(page.rail.get_node("GarageTuning"))
++		await click(page.rail.get_node("GarageWorkshop"))
+ 		await settle()
+-		check(page.section == "tuning","Parts opens directly after News")
+-		check(not page._workshop_tabs.visible,"Parts uses the single navigation rail")
++		check(page.section == "tuning","Workshop remembers Parts after News")
++		check(page._workshop_tabs.visible,"returning to Workshop restores task tabs")
+ 		check(not page.actions.visible and page.actions.get_child_count()==0,"customisation has no bottom button row "+str(dimensions))
+ 		check(page.get_global_rect().encloses(page.tools_panel.get_global_rect()),"workshop controls fit "+str(dimensions))
+ 		check(root.get_visible_rect().encloses(page.tools_panel.get_global_rect()),"workshop controls fit window "+str(dimensions))
+--- a/game/tests/test_customisation_carousel.gd
++++ b/game/tests/test_customisation_carousel.gd
+@@ -146,7 +146,7 @@
+ 		check(page.tools_panel.get_global_rect().encloses(page.kit_shelf.equip.get_global_rect()),"equip fits "+str(dimensions))
+ 		check(page.tools_panel.get_global_rect().encloses(page.kit_scroll.get_global_rect()),"carousel fits "+str(dimensions))
+ 		check(not page.actions.visible and page.actions.get_child_count() == 0,"customisation has no bottom buttons "+str(dimensions))
+-		check(not page._workshop_tabs.visible,"single navigation rail replaces the top workshop row")
++		check(page._workshop_tabs.visible,"Workshop tabs group the car tasks above the preview")
+ 		check(page.kit_shelf.photo.visible and page.kit_shelf.photo.size.y >= 64,"detail photo remains visible on short layouts")
+ 		check(page.kit_shelf.cancel.text == "Cancel preview" and page.kit_shelf.cancel.visible,"preview has a named cancellation action")
+ 		if dimensions.x == 1720:
+@@ -236,7 +236,7 @@
+ 		check(page.showroom.customisation.hood == "louvres" and page.kit_draft.hood == "stock","actual guest App freely previews unowned part")
+ 		check(not page.actions.visible and page.actions.get_child_count() == 0,"actual App removes both bottom customisation buttons")
+ 		check(root.get_visible_rect().encloses(page.tools_panel.get_global_rect()),"actual App workbench fits "+str(dimensions))
+-		check(absf(page.preview.position.y-page.tools_panel.position.y)<1,"actual App car and workbench align at the top")
++		check(absf(page._preview_column.global_position.y-page.tools_panel.global_position.y)<1,"actual App Workshop column and workbench align at the top")
+ 		await capture("app-kits-"+str(dimensions.x))
+ 		if dimensions.x == 1280:
+ 			await record_motion()

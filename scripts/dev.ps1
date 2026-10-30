@@ -90,7 +90,27 @@ function Invoke-Checked([string]$Executable, [string[]]$Arguments, [string]$LogN
     $clock = [System.Diagnostics.Stopwatch]::StartNew()
     $interactive = $Action -in @('Run', 'Editor', 'MusicLab', 'BackendRun', 'BackendWorker')
     try {
-        if (-not $process.Start()) { throw 'Child command could not start.' }
+        $suppressCrashDialog = -not $interactive -and [System.IO.Path]::GetFileName($Executable).StartsWith('Godot', [System.StringComparison]::OrdinalIgnoreCase)
+        if ($suppressCrashDialog) {
+            # Child processes inherit this mode. Scope it to the launch so a
+            # crashed automated test fails normally without a blocking dialog.
+            if (-not ('BmtTestErrorMode' -as [type])) {
+                Add-Type -TypeDefinition @'
+using System.Runtime.InteropServices;
+public static class BmtTestErrorMode {
+    [DllImport("kernel32.dll")] public static extern uint GetErrorMode();
+    [DllImport("kernel32.dll")] public static extern uint SetErrorMode(uint mode);
+}
+'@
+            }
+            $previousErrorMode = [BmtTestErrorMode]::GetErrorMode()
+            [void][BmtTestErrorMode]::SetErrorMode($previousErrorMode -bor 0x0002) # SEM_NOGPFAULTERRORBOX
+            try { $started = $process.Start() }
+            finally { [void][BmtTestErrorMode]::SetErrorMode($previousErrorMode) }
+        } else {
+            $started = $process.Start()
+        }
+        if (-not $started) { throw 'Child command could not start.' }
         $reads = @($process.StandardOutput.ReadLineAsync(), $process.StandardError.ReadLineAsync())
         $streams = @($process.StandardOutput, $process.StandardError)
         while ($null -ne $reads[0] -or $null -ne $reads[1]) {

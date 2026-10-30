@@ -1,0 +1,228 @@
+diff --git a/game/ui/race_pause_menu.gd b/game/ui/race_pause_menu.gd
+--- a/game/ui/race_pause_menu.gd
++++ b/game/ui/race_pause_menu.gd
+@@ -106,13 +106,23 @@
+ 		style.border_color = accent if title in ["Resume","Quit"] or state == "hover" else Color("203746")
+ 		button.add_theme_stylebox_override(state,style)
+ 	column.add_child(button)
++	# Button children do not contribute to its minimum size. Let the padded
++	# content determine the row height after fonts or wrapped text change.
++	var content := MarginContainer.new()
++	content.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
++	content.add_theme_constant_override("margin_left",18)
++	content.add_theme_constant_override("margin_right",18)
++	content.add_theme_constant_override("margin_top",10)
++	content.add_theme_constant_override("margin_bottom",10)
++	content.mouse_filter = Control.MOUSE_FILTER_IGNORE
++	button.add_child(content)
++	var fit: Callable = func() -> void:
++		button.custom_minimum_size.y = maxf(70,content.get_combined_minimum_size().y)
++	content.minimum_size_changed.connect(fit)
+ 	var row := HBoxContainer.new()
+-	row.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+-	row.offset_left = 18
+-	row.offset_right = -18
+ 	row.add_theme_constant_override("separation",18)
+ 	row.mouse_filter = Control.MOUSE_FILTER_IGNORE
+-	button.add_child(row)
++	content.add_child(row)
+ 	var glyph := TextureRect.new()
+ 	glyph.texture = preload("res://ui/icons/rewind.svg") if icon == "restart" else MenuIcon.texture(icon)
+ 	# Mirror the return arrow for a clockwise restart, distinct from rewind.
+@@ -126,9 +136,11 @@
+ 	var words := VBoxContainer.new()
+ 	words.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+ 	words.alignment = BoxContainer.ALIGNMENT_CENTER
++	words.add_theme_constant_override("separation",2)
+ 	words.mouse_filter = Control.MOUSE_FILTER_IGNORE
+ 	row.add_child(words)
+ 	var heading := MenuStyle.label(title,24)
++	heading.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+ 	if title == "Resume": heading.add_theme_color_override("font_color",MenuStyle.INK)
+ 	heading.add_theme_font_override("font",MenuStyle.DISPLAY)
+ 	words.add_child(heading)
+@@ -141,6 +153,7 @@
+ 	arrow.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
+ 	row.add_child(arrow)
+ 	for label: Control in [heading,description,arrow]: label.mouse_filter = Control.MOUSE_FILTER_IGNORE
++	fit.call_deferred()
+ 	return button
+ 
+ func _help() -> void:
+diff --git a/game/tests/test_race_menu_label_fit.gd b/game/tests/test_race_menu_label_fit.gd
+--- /dev/null
++++ b/game/tests/test_race_menu_label_fit.gd
+@@ -0,0 +1,82 @@
++extends SceneTree
++## Check native label rectangles against their actual pause-menu button bounds.
++var checks: int = 0
++var failures: int = 0
++var samples: Array[Dictionary] = []
++var output: String
++var resumes: int = 0
++
++func _initialize() -> void: run.call_deferred()
++
++func check(ok: bool, message: String) -> void:
++	checks += 1
++	if not ok:
++		failures += 1
++		print("FAIL: "+message)
++
++func frames() -> void:
++	for index: int in range(12): await process_frame
++
++func run() -> void:
++	output = OS.get_environment("BMT_RACE_MENU_LABEL_OUTPUT")
++	if not output.is_empty(): DirAccess.make_dir_recursive_absolute(output)
++	var hud := PlaygroundHUD.new()
++	hud.pause_requested.connect(func() -> void: resumes += 1)
++	var menu: Control = load("res://ui/race_pause_menu.gd").new()
++	menu.hud = hud
++	root.add_child(menu)
++	for locale: String in ["en","fi","de","ja","ko"]:
++		GameFonts.configure(locale)
++		TranslationServer.set_locale(locale)
++		for dimensions: Vector2i in [Vector2i(1280,914),Vector2i(1024,768),Vector2i(1280,720),Vector2i(960,540)]:
++			root.size = dimensions
++			menu.show_main()
++			await frames()
++			for button: Node in menu.column.get_children():
++				if not button is Button: continue
++				var bounds: Rect2 = button.get_global_rect()
++				var labels: Array[Dictionary] = []
++				for label: Node in button.find_children("*","Label",true,false):
++					var rect: Rect2 = label.get_global_rect()
++					check(bounds.grow(0.5).encloses(rect),"%s %s %s label %s inside button" % [locale,dimensions,button.name,label.text])
++					check(rect.position.y >= bounds.position.y+8 and rect.end.y <= bounds.end.y-8,"%s %s %s label retains vertical padding" % [locale,dimensions,button.name])
++					labels.append({"text":label.text,"rect":str(rect)})
++				samples.append({"locale":locale,"size":str(dimensions),"button":button.name,"bounds":str(bounds),"labels":labels})
++			if not output.is_empty() and DisplayServer.get_name() != "headless" and dimensions == Vector2i(1280,914):
++				await RenderingServer.frame_post_draw
++				check(root.get_texture().get_image().save_png(output.path_join("pause-"+locale+"-1280x914.png")) == OK,"capture "+locale)
++		# The same race menu serves the parking hall, whose real subtitle wraps.
++		hud.free_drive_mode = true
++		menu.show_main()
++		await frames()
++		var restart: Button = menu.find_child("Restart",true,false)
++		for label: Node in restart.find_children("*","Label",true,false):
++			check(restart.get_global_rect().grow(0.5).encloses(label.get_global_rect()),"%s wrapped parking-hall subtitle inside Restart" % locale)
++		hud.free_drive_mode = false
++	# Taps on the text must still reach the native Button through its content.
++	TranslationServer.set_locale("en")
++	menu.show_main()
++	await frames()
++	var resume: Button = menu.find_child("Resume",true,false)
++	var caption: Label = resume.find_children("*","Label",true,false)[0]
++	for down: bool in [true,false]:
++		var event := InputEventScreenTouch.new()
++		event.index = 0
++		event.position = caption.get_global_rect().get_center()
++		event.pressed = down
++		root.push_input(event,true)
++		await process_frame
++	check(resumes == 1,"touching Resume text activates the button once")
++	menu._help()
++	await frames()
++	var back: Button = menu.find_child("Back",true,false)
++	for label: Node in back.find_children("*","Label",true,false):
++		check(back.get_global_rect().grow(0.5).encloses(label.get_global_rect()),"Help Back label inside button")
++	menu.queue_free()
++	hud.free()
++	await process_frame
++	if not output.is_empty():
++		var file := FileAccess.open(output.path_join("report.json"),FileAccess.WRITE)
++		file.store_string(JSON.stringify({"checks":checks,"failures":failures,"samples":samples},"\t"))
++	print("RACE_MENU_LABEL_FIT: %d checks, %d failures" % [checks,failures])
++	quit(1 if failures else 0)
+diff --git a/game/tests/test_race_menu_label_fit.gd.uid b/game/tests/test_race_menu_label_fit.gd.uid
+--- /dev/null
++++ b/game/tests/test_race_menu_label_fit.gd.uid
+@@ -0,0 +1 @@
++uid://tq0ffwfbdc14
+diff --git a/docs/RACE_PAUSE_LABEL_FIT_2026_10_25.md b/docs/RACE_PAUSE_LABEL_FIT_2026_10_25.md
+--- /dev/null
++++ b/docs/RACE_PAUSE_LABEL_FIT_2026_10_25.md
+@@ -0,0 +1,37 @@
++# Race pause-menu label fit — 2026-10-25
++
++RPL01–RPL02 / R01 / Q01: The owner confirms that Resume, Restart and Settings in the in-race pause menu overflow on the tablet. `game/ui/race_pause_menu.gd` now sizes each button from its padded native content. Titles can wrap; the title/subtitle gap is two logical units, with ten units of vertical padding. Font fallback and wrapped subtitles update the button's minimum height. The existing scroll drawer accommodates taller rows, and all content containers pass pointer events through to the native button.
++
++The old fixed 70-unit rows did not account for their child containers. With the actual bundled font fallbacks, even single-line English rows used 69 units for text and its inherited gap, leaving almost no padding. The parking-hall Restart subtitle wraps and exposes actual overflow. The revised single-line rows are 79 units tall with the current fonts. No gameplay, pausing, action, camera, icon or shared theme behavior changes.
++
++Changed runtime: `game/ui/race_pause_menu.gd`. Added regression: `game/tests/test_race_menu_label_fit.gd` and its UID. Documentation: this file and the task records prepended to `AGENTS.md`, `DEVELOPMENT_STATUS.md` and `docs/PHASE_0_PLAN.md`.
++
++Verification uses pinned Godot `4.7.2.stable.official.ed1daf0bf`, isolated workspace-owned user data, logical sizes 1280×914 (tablet 7:5), 1024×768, 1280×720 and 960×540, and English, Finnish, German, Japanese and Korean font/translation configuration:
++
++- Final native layout, padding, wrapped parking-hall subtitle, Help Back and actual Resume text tap: **624 checks, zero failures** in Compatibility and **624 checks, zero failures** in desktop Mobile/Vulkan. Both runners exit 0.
++- Existing actual-Game pause integration: **17 checks, zero failures**, including frozen race presentation, Settings, Resume and compact layout. Runner exits 0. Its isolated startup records a desktop first-frame hitch; this task makes no performance claim.
++- Whole-project parser: **1184 scripts, zero failures**, runner exits 0.
++- Task diff whitespace and reverse-application checkpoint checks pass.
++
++The initial containment-only probe passed 305 checks and was insufficient to establish padding. The expanded original-source regression retains **620 checks with 203 failures**, covering missing padding and the genuinely wrapped subtitle. Those assertions remain in the final test; four action/Help checks were then added. Original runtime is retained at [source-before/race_pause_menu.gd.txt](evidence/race-menu-label-fit-2026-10-25/source-before/race_pause_menu.gd.txt). Initial sandbox runners also exited 1 because Godot could not read the Windows root certificate store, despite writing complete layout reports. Final runs with certificate-store access exit cleanly; the first such invocation also printed the host PowerShell profile execution-policy diagnostic, corrected by subsequent `login:false` execution.
++
++Actual commands, from the repository root (PowerShell):
++
++```powershell
++$env:APPDATA = Join-Path (Get-Location) 'build/race-menu-label-fit/user'
++# Initial probes used before, regression-before and after-compatibility output folders.
++$env:BMT_RACE_MENU_LABEL_OUTPUT = Join-Path (Get-Location) 'docs/evidence/race-menu-label-fit-2026-10-25/final-compatibility'
++powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1 -Action TestScript -ScriptPath res://tests/test_race_menu_label_fit.gd -Graphical -RenderingMethod gl_compatibility -CommandTimeoutSeconds 120
++
++powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1 -Action TestScript -ScriptPath res://tests/test_pause_menu.gd -Graphical -RenderingMethod gl_compatibility -TestArgument evidence=res://../docs/evidence/race-menu-label-fit-2026-10-25/integration -CommandTimeoutSeconds 120
++
++$env:BMT_RACE_MENU_LABEL_OUTPUT = Join-Path (Get-Location) 'docs/evidence/race-menu-label-fit-2026-10-25/final-mobile'
++powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1 -Action TestScript -ScriptPath res://tests/test_race_menu_label_fit.gd -Graphical -RenderingMethod mobile -CommandTimeoutSeconds 120
++powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1 -Action TestScript -ScriptPath res://tests/test_script_parse.gd -CommandTimeoutSeconds 120
++git diff --check -- game/ui/race_pause_menu.gd game/tests/test_race_menu_label_fit.gd
++git apply --check --reverse docs/evidence/race-menu-label-fit-2026-10-25/checkpoint.patch
++```
++
++Evidence: [report](evidence/race-menu-label-fit-2026-10-25/report.json), [before](evidence/race-menu-label-fit-2026-10-25/before/pause-en-1280x914.png), [after](evidence/race-menu-label-fit-2026-10-25/final-compatibility/pause-en-1280x914.png), [actual paused race](evidence/race-menu-label-fit-2026-10-25/integration/1280x720.png), and [task-only checkpoint](evidence/race-menu-label-fit-2026-10-25/checkpoint.patch). Other language and renderer captures accompany the reports. The development entry point regenerates the existing generated client identity; that is outside the task checkpoint. Concurrent work is preserved.
++
++Client reload and owner acceptance on the physical tablet remain. No device attachment check, device test, APK export/install, deployment or owner-process restart was performed.
+diff --git a/AGENTS.md b/AGENTS.md
+--- a/AGENTS.md
++++ b/AGENTS.md
+@@ -2,6 +2,11 @@
+ ## Kart shorter neck and lower helmet (2026-10-25)
+ KSN01-KSN02/V02-V05/R01/G01/Q01: Owner rejects the long neck. Lower the complete unchanged helmet by 0.065 model metres and shorten the balaclava neck; actual rear collar/helmet exposure falls 0.084 to 0.019 (77.38%). Helmet/collar/torso/shoulder mesh crossings remain zero, with connected collar/lining. Corrected torso/legs/seat, hands/boots, helmet shape and canonical car/config/camera sources remain. Fit 32, proportions 24, model 86 Compatibility/86 desktop Mobile, retained 172, Garage/race 15/15, kart 42 and parser 1184 pass. Original 32-check/two-failure neck regression retained. Prepared resources 230, with all 228 other binaries including every helmet mesh identical; full/simple triangles fall to 93520/28706. Body shadow and catalogue/news/all 49 photos refreshed. Evidence/commands/scoped checkpoint: docs/KART_SHORT_NECK_2026_10_25.md and docs/evidence/kart-short-neck-2026-10-25/report.json. Reload and owner/device visual/motion/cost acceptance remain. No device attachment check/test, APK, purchase, live mutation, deployment or owner-process restart; concurrent work preserved.
+ <!-- /KART-SHORT-NECK-20261025 -->
++
++<!-- RACE-PAUSE-LABEL-FIT-20261025 -->
++## Tablet race pause-menu label fit (2026-10-25)
++RPL01-RPL02/R01/Q01: Owner confirms in-race Resume/Restart/Settings overflow. Padded content now determines button height, with a two-unit caption gap, wrapped headings and retained native tap handling/scrolling. Original-source expanded regression620/203fail retained; final624Compatibility/624desktopMobile, actual-Game pause17 and parser1184 pass. Before/after, commands, initial sandbox certificate-store failures and scoped checkpoint: docs/RACE_PAUSE_LABEL_FIT_2026_10_25.md and docs/evidence/race-menu-label-fit-2026-10-25/report.json. Reload and owner/tablet acceptance remain. No attachment/device test, APK, deployment or owner-process restart; concurrent work preserved.
++<!-- /RACE-PAUSE-LABEL-FIT-20261025 -->
+ 
+ <!-- KART-DRIVER-PROPORTIONS-20261025 -->
+ ## Kart seated leg/torso proportion correction (2026-10-25)
+diff --git a/DEVELOPMENT_STATUS.md b/DEVELOPMENT_STATUS.md
+--- a/DEVELOPMENT_STATUS.md
++++ b/DEVELOPMENT_STATUS.md
+@@ -2,6 +2,11 @@
+ ## Kart shorter neck and lower helmet (2026-10-25)
+ KSN01-KSN02/V02-V05/R01/G01/Q01: Owner rejects the long neck. Lower the complete unchanged helmet by 0.065 model metres and shorten the balaclava neck; actual rear collar/helmet exposure falls 0.084 to 0.019 (77.38%). Helmet/collar/torso/shoulder mesh crossings remain zero, with connected collar/lining. Corrected torso/legs/seat, hands/boots, helmet shape and canonical car/config/camera sources remain. Fit 32, proportions 24, model 86 Compatibility/86 desktop Mobile, retained 172, Garage/race 15/15, kart 42 and parser 1184 pass. Original 32-check/two-failure neck regression retained. Prepared resources 230, with all 228 other binaries including every helmet mesh identical; full/simple triangles fall to 93520/28706. Body shadow and catalogue/news/all 49 photos refreshed. Evidence/commands/scoped checkpoint: docs/KART_SHORT_NECK_2026_10_25.md and docs/evidence/kart-short-neck-2026-10-25/report.json. Reload and owner/device visual/motion/cost acceptance remain. No device attachment check/test, APK, purchase, live mutation, deployment or owner-process restart; concurrent work preserved.
+ <!-- /KART-SHORT-NECK-20261025 -->
++
++<!-- RACE-PAUSE-LABEL-FIT-20261025 -->
++## Tablet race pause-menu label fit (2026-10-25)
++RPL01-RPL02/R01/Q01: Pause buttons size from padded, wrapping content instead of a fixed70-unit row; title/subtitle gap2, vertical padding10 and actual Resume text taps retained. Original regression620/203fail; final624Compatibility/624desktopMobile, Game pause17 and parser1184 pass. Evidence, actual commands, before/after and task-only checkpoint: docs/RACE_PAUSE_LABEL_FIT_2026_10_25.md. Reload/physical-tablet acceptance remain; no attachment/device test, APK, deployment or owner-process restart. Concurrent work preserved.
++<!-- /RACE-PAUSE-LABEL-FIT-20261025 -->
+ 
+ <!-- KART-DRIVER-PROPORTIONS-20261025 -->
+ ## Kart seated leg/torso proportion correction (2026-10-25)
+diff --git a/docs/PHASE_0_PLAN.md b/docs/PHASE_0_PLAN.md
+--- a/docs/PHASE_0_PLAN.md
++++ b/docs/PHASE_0_PLAN.md
+@@ -2,6 +2,11 @@
+ ## Kart shorter neck and lower helmet (2026-10-25)
+ KSN01-KSN02/V02-V05/R01/G01/Q01: Owner rejects the long neck. Lower the complete unchanged helmet by 0.065 model metres and shorten the balaclava neck; actual rear collar/helmet exposure falls 0.084 to 0.019 (77.38%). Helmet/collar/torso/shoulder mesh crossings remain zero, with connected collar/lining. Corrected torso/legs/seat, hands/boots, helmet shape and canonical car/config/camera sources remain. Fit 32, proportions 24, model 86 Compatibility/86 desktop Mobile, retained 172, Garage/race 15/15, kart 42 and parser 1184 pass. Original 32-check/two-failure neck regression retained. Prepared resources 230, with all 228 other binaries including every helmet mesh identical; full/simple triangles fall to 93520/28706. Body shadow and catalogue/news/all 49 photos refreshed. Evidence/commands/scoped checkpoint: docs/KART_SHORT_NECK_2026_10_25.md and docs/evidence/kart-short-neck-2026-10-25/report.json. Reload and owner/device visual/motion/cost acceptance remain. No device attachment check/test, APK, purchase, live mutation, deployment or owner-process restart; concurrent work preserved.
+ <!-- /KART-SHORT-NECK-20261025 -->
++
++<!-- RACE-PAUSE-LABEL-FIT-20261025 -->
++## Tablet race pause-menu label fit (2026-10-25)
++RPL01-RPL02/R01/Q01: Native padded pause-button content controls minimum height, with wrapped headings, compact caption spacing and native touch preserved. Final624Compatibility/624desktopMobile, actual-Game pause17 and parser1184 pass; original620/203fail retained. Commands, captures and scoped checkpoint: docs/RACE_PAUSE_LABEL_FIT_2026_10_25.md. Reload and owner/tablet acceptance remain; no attachment/device test, APK, deployment or owner-process restart. Concurrent work preserved.
++<!-- /RACE-PAUSE-LABEL-FIT-20261025 -->
+ 
+ <!-- KART-DRIVER-PROPORTIONS-20261025 -->
+ ## Kart seated leg/torso proportion correction (2026-10-25)

@@ -5,15 +5,17 @@ const MAX_COINS: int = 2147483647
 static func items() -> Dictionary:
 	var result: Dictionary = {}
 	for pattern: Dictionary in LiveryCatalog.patterns: result["livery/"+str(pattern.id)] = 500
-	for category: String in VehicleCustomisation.CATEGORIES:
-		for option: Array in VehicleCustomisation.OPTIONS[category]:
-			if option[0] != "stock": result["kit/compact/"+category+"/"+str(option[0])] = 750
+	for car: String in VehicleCustomisation.KIT_CARS:
+		for category: String in VehicleCustomisation.CATEGORIES:
+			for option: Array in VehicleCustomisation.options(category,car):
+				if option[0] != "stock": result["kit/"+car+"/"+category+"/"+str(option[0])] = 750
 	return result
 
 static func free_item(id: String) -> bool:
 	if id == "livery/plain": return true
-	for category: String in VehicleCustomisation.CATEGORIES:
-		if id == "kit/compact/"+category+"/stock": return true
+	for car: String in VehicleCustomisation.KIT_CARS:
+		for category: String in VehicleCustomisation.CATEGORIES:
+			if id == "kit/"+car+"/"+category+"/stock": return true
 	return false
 
 static func valid_owned(value: Variant) -> bool:
@@ -44,7 +46,8 @@ static func legacy(settings: Dictionary) -> Array:
 	for car: String in VehicleCatalog.IDS:
 		var pattern: String = str(VehicleLivery.for_car(settings,car).pattern)
 		if pattern != "plain" and "livery/"+pattern not in result: result.append("livery/"+pattern)
-	var kits: Dictionary = VehicleCustomisation.for_car(settings,"compact")
-	for category: String in VehicleCustomisation.CATEGORIES:
-		if kits[category] != "stock": result.append("kit/compact/"+category+"/"+str(kits[category]))
+	for car: String in VehicleCustomisation.KIT_CARS:
+		var kits: Dictionary = VehicleCustomisation.for_car(settings,car)
+		for category: String in VehicleCustomisation.CATEGORIES:
+			if kits[category] != "stock": result.append("kit/"+car+"/"+category+"/"+str(kits[category]))
 	return result

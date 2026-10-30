@@ -1,0 +1,29 @@
+--- task-start
++++ concurrent-current
+@@ -4,7 +4,7 @@
+ 	var old: HandlingConfig=load(SLIDE_OUTPUT+"/before/game__resources__cars__electric.tres") as HandlingConfig
+ 	var current: HandlingConfig=VehicleCatalog.config("electric")
+ 	check(old.version=="electric-17" and current.version=="electric-18" and VehicleSimulation.PHYSICS_VERSION=="arcade-planar-0.75","slide onset and braking have a new canonical identity")
+-	var changed: Array[String]=["version","regeneration","launch_lateral_response_scale","power_lateral_response_scale","power_slide_full_pedal"]
++	var changed: Array[String]=["version","regeneration","launch_lateral_response_scale","power_lateral_response_scale","power_slide_full_pedal","slide_drive_loss"]
+ 	for field: String in old.snapshot():
+ 		if field in changed: continue
+ 		check(current.get(field)==old.get(field),"retained electric field: "+field)
+@@ -22,7 +22,7 @@
+ 				check(after.recovery_ms>0 and after.recovery_ms<=300 and after.final_slip<0.1,"straightening catches the slide within 300ms: "+label)
+ 				check(after.replay_exact and is_equal_approx(after.peak,mirror.peak),"slide replays exactly and mirrors left/right: "+label)
+ 				if steer==1.0 and pedal>=0.65 and speed<=80.0:
+-					check(before.sliding_ticks==0 and after.sliding_ticks>=100 and after.minimum_grip<0.999,"moderate pedal and full lock enter actual sliding: "+label)
++					check(before.sliding_ticks==0 and after.sliding_ticks>=60 and after.minimum_grip<before.minimum_grip,"moderate pedal and full lock sustain at least half a second of actual sliding: "+label)
+ 					check(after.onset_ms>0 and after.onset_ms<=(850 if speed==0.0 else 600),"sliding starts promptly, including standstill launch: "+label)
+ 	# The new pedal gate must build progressively, with no discontinuous kick.
+ 	metrics.pedal_ramp=[]
+@@ -43,7 +43,7 @@
+ 	check(legacy.reload()==OK,"task-start canonical integrator compiles")
+ 	for id: String in VehicleCatalog.IDS:
+ 		var config: HandlingConfig=old if id=="electric" else VehicleCatalog.config(id)
+-		check(not config.snapshot().has("power_slide_full_pedal"),"default pedal gate preserves old snapshot: "+id)
++		check(not config.snapshot().has("power_slide_full_pedal") and not config.snapshot().has("power_slide_high_speed_scale"),"default slide controls preserve old snapshot: "+id)
+ 		var before: RefCounted=legacy.new(config)
+ 		var after := VehicleSimulation.new(config)
+ 		var exact: bool=true

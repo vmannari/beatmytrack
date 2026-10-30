@@ -1,3 +1,7 @@
+<!-- HOVERCRAFT-20261028 -->
+Current selectable lineup (2026-10-28): Compact, Hauler, Kart, Forklift, Volt and Hover. Rearsport/classic and Formula are retired; their historical data is retained. See [Hovercraft](HOVERCRAFT_2026_10_28.md) for current implementation and validation.
+<!-- /HOVERCRAFT-20261028 -->
+
 # Four-car local garage — 2026-09-15
 
 ## Requirements and scope

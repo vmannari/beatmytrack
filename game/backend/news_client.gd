@@ -14,9 +14,44 @@ var _epoch: int = 0
 var _fetched_at: int = -60001
 var _friends_at: int = -60001
 var _publications: Array[Dictionary] = []
+## Read markers are local to this device and isolated by account/server.
+var read_state_path: String = "user://news_read_state.cfg"
+var _read_scope: String = ""
+var _read_ids: Array[String] = []
+const READ_LIMIT: int = 1000
 
 func scope() -> String:
 	return client.base_url()+"/"+str(client.player.get("id",""))
+
+func _load_read_scope(examples: bool) -> void:
+	var current: String = "examples" if examples else scope()
+	if current == _read_scope: return
+	_read_scope = current
+	_read_ids.clear()
+	var state := ConfigFile.new()
+	if state.load(read_state_path) != OK: return
+	var saved: Variant = state.get_value("read",current.sha256_text(),[])
+	if saved is Array or saved is PackedStringArray:
+		for id: Variant in saved:
+			if id is String and not id.is_empty() and id.length() <= 256 and not _read_ids.has(id):
+				_read_ids.append(id)
+				if _read_ids.size() >= READ_LIMIT: break
+
+func story_read(id: String, examples: bool = false) -> bool:
+	_load_read_scope(examples)
+	return _read_ids.has(id)
+
+func mark_story_read(id: String, examples: bool = false) -> void:
+	if id.is_empty() or id.length() > 256: return
+	_load_read_scope(examples)
+	if _read_ids.has(id): return
+	_read_ids.append(id)
+	if _read_ids.size() > READ_LIMIT: _read_ids.pop_front()
+	var state := ConfigFile.new()
+	state.load(read_state_path)
+	state.set_value("read",_read_scope.sha256_text(),_read_ids)
+	var error_code: Error = state.save(read_state_path)
+	if error_code != OK: push_warning("Could not save newspaper read status: "+str(error_code))
 
 func identity_changed() -> void:
 	if _scope == scope(): return

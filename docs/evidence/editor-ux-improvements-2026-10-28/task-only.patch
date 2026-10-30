@@ -1,0 +1,1626 @@
+diff --git a/game/core/app.gd b/game/core/app.gd
+--- a/game/core/app.gd
++++ b/game/core/app.gd
+@@ -70,6 +70,7 @@
+ 	set(value): editor_session.redo = value
+ var canvas: EditorCanvas
+ var editor_status: Label
++var editor_guidance: String = ""
+ var test_button: Button
+ var publish_button: Button
+ var share_button: Button
+@@ -621,7 +622,7 @@
+ 		object_browser_state={"category":object_browser.category,"recent":object_browser.recent.duplicate(),"current":object_browser.current,"placement":object_browser.placement,"stamp_scale":object_browser.stamp_scale,"stamp_span":object_browser.stamp_span}
+ 	if is_instance_valid(canvas):
+ 		if canvas.document.get("id","") == document.get("id",""): _stash_pending_tool()
+-		editor_view = {"zoom":canvas.zoom,"pan":canvas.pan,"mode":canvas.mode,"selected":canvas.selected,"selected_object":canvas.selected_object,"stamp_kind":canvas.stamp_kind,"stamp_scale":canvas.stamp_scale,"stamp_span":canvas.stamp_span,"stamp_jump_profile":canvas.stamp_jump_profile,"stamp_container_color":canvas.stamp_container_color,"run_shape":canvas.run_shape,"free_run":canvas.free_run,"brush_surface":canvas.brush_surface,"brush_width":canvas.brush_width,"paint_mode":canvas.paint_mode,"brush_shape":canvas.brush_shape,"selected_piece":canvas.selected_piece}
++		editor_view = {"zoom":canvas.zoom,"pan":canvas.pan,"mode":canvas.mode,"selected":canvas.selected,"selected_object":canvas.selected_object,"stamp_kind":canvas.stamp_kind,"stamp_scale":canvas.stamp_scale,"stamp_span":canvas.stamp_span,"stamp_jump_profile":canvas.stamp_jump_profile,"stamp_container_color":canvas.stamp_container_color,"run_shape":canvas.run_shape,"free_run":canvas.free_run,"brush_surface":canvas.brush_surface,"brush_width":canvas.brush_width,"paint_mode":canvas.paint_mode,"brush_shape":canvas.brush_shape,"selected_piece":canvas.selected_piece,"selected_objects":canvas.object_indices(),"multi_select":canvas.multi_select,"object_snap":canvas.object_snap,"detailed_scenery":not editor_world._detail.enabled if is_instance_valid(editor_world) else false}
+ 	screen = next
+ 	if screen == "store": _telemetry_observe("store_opened",{},str(_navigation_generation))
+ 	canvas = null
+@@ -3030,6 +3031,7 @@
+ 		editor_wip_disk_hash = ""
+ 		editor_issue_cursor = -1
+ 	editor_world = EditorWorld.new()
++	editor_world._detail.enabled = not bool(editor_view.get("detailed_scenery",false))
+ 	editor_session.prime(document)
+ 	editor_world.theme_id = str(document.theme)
+ 	root_ui.add_child(editor_world)
+@@ -3044,6 +3046,9 @@
+ 		canvas.selected = mini(int(editor_view.get("selected",-1)),document.points.size()-1)
+ 		canvas.selected_object = mini(int(editor_view.get("selected_object",-1)),document.objects.size()-1)
+ 		canvas.selected_piece = mini(int(editor_view.get("selected_piece",-1)),document.pieces.size()-1)
++		canvas.multi_select = bool(editor_view.get("multi_select",false))
++		canvas.selected_objects.assign(editor_view.get("selected_objects",[]))
++		canvas.object_snap = float(editor_view.get("object_snap",1.0))
+ 		canvas.stamp_kind = str(editor_view.get("stamp_kind","tree"))
+ 		canvas.stamp_scale = float(editor_view.get("stamp_scale",1.0))
+ 		canvas.stamp_span = float(editor_view.get("stamp_span",8.0))
+@@ -3146,7 +3151,7 @@
+ 	top.alignment = BoxContainer.ALIGNMENT_END
+ 	overlay.add_child(top)
+ 	top.set_anchors_and_offsets_preset(Control.PRESET_TOP_RIGHT)
+-	top.offset_left = -516; top.offset_right = -80; top.offset_top = 16
++	top.offset_left = -600; top.offset_right = -80; top.offset_top = 16
+ 	top.grow_horizontal = Control.GROW_DIRECTION_BEGIN
+ 	top.add_theme_constant_override("separation",8)
+ 	editor_issue_button = EditorStyle.button("",_focus_issue)
+@@ -3159,6 +3164,10 @@
+ 	settings.text = "Map"
+ 	settings.tooltip_text = "Map settings"
+ 	top.add_child(settings)
++	var save_action: Button = EditorStyle.button("Save",_save_track_explicit)
++	save_action.name = "EditorSaveAction"
++	save_action.custom_minimum_size = Vector2(76,52)
++	top.add_child(save_action)
+ 	test_button = EditorButton.action("Test","play",_test_document)
+ 	test_button.custom_minimum_size=Vector2(104,52)
+ 	top.add_child(test_button)
+@@ -3220,7 +3229,7 @@
+ 	scroll.add_child(editor_context)
+ 	surface_toolbar = PanelContainer.new()
+ 	surface_toolbar.name = "SurfacePlacementToolbar"
+-	surface_toolbar.add_theme_stylebox_override("panel",StyleBoxEmpty.new())
++	surface_toolbar.add_theme_stylebox_override("panel",EditorStyle.panel())
+ 	overlay.add_child(surface_toolbar)
+ 	surface_toolbar.set_anchors_and_offsets_preset(Control.PRESET_CENTER_TOP)
+ 	surface_toolbar.offset_left = -270
+@@ -3238,10 +3247,11 @@
+ 	overlay.add_child(editor_status)
+ 	editor_status.name = "EditorFeedback"
+ 	editor_status.position = Vector2(16,128)
+-	editor_status.size = Vector2(280,64)
++	editor_status.size = Vector2(320,80)
+ 	editor_status.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+-	# Retain status text for internal feedback consumers, without a canvas-wide hint bar.
+-	editor_status.hide()
++	editor_status.add_theme_font_size_override("font_size",15)
++	editor_status.add_theme_stylebox_override("normal",EditorStyle.panel())
++	editor_status.show()
+ 	editor_save_button = EditorStyle.button("Draft",_retry_editor_save)
+ 	editor_save_button.name = "EditorSaveState"
+ 	editor_save_button.position = Vector2(16,78)
+@@ -3270,7 +3280,7 @@
+ 	overlay.add_child(object_browser)
+ 	object_browser.set_anchors_and_offsets_preset(Control.PRESET_BOTTOM_WIDE)
+ 	object_browser.offset_left = 108; object_browser.offset_right = -112
+-	object_browser.offset_top = -160; object_browser.offset_bottom = -16
++	object_browser.offset_top = -174; object_browser.offset_bottom = -16
+ 	object_browser.hide()
+ 	object_browser.asset_chosen.connect(_choose_object)
+ 	object_browser.mode_chosen.connect(_object_placement)
+@@ -3279,6 +3289,8 @@
+ 	object_browser.container_color_chosen.connect(_container_colour)
+ 	object_browser.rotation_requested.connect(_object_rotation_dialog)
+ 	object_browser.rotation_chosen.connect(_set_object_rotation)
++	object_browser.snap_step = canvas.object_snap
++	object_browser.snap_chosen.connect(func(step: float) -> void: canvas.object_snap = step)
+ 	object_browser.select_requested.connect(func() -> void:
+ 		canvas.cancel_gesture(); canvas.mode="objects"; _build_editor_tools())
+ 	object_browser.populate_requested.connect(_open_object_population)
+@@ -3298,6 +3310,14 @@
+ 	share_button=EditorStyle.button("Share",_share_dialog)
+ 	metadata.add_child(share_button)
+ 	metadata.add_child(EditorStyle.button("Help",_editor_help))
++	var detail: CheckButton = CheckButton.new()
++	detail.name = "EditorDetailedScenery"
++	detail.text = "Detailed scenery"
++	detail.button_pressed = not editor_world._detail.enabled
++	detail.custom_minimum_size.y = 48
++	detail.toggled.connect(func(enabled: bool) -> void:
++		editor_world._detail.enabled = not enabled)
++	metadata.add_child(detail)
+ 	if str(document.theme) == "night_city":
+ 		var lighting: Button = EditorStyle.button("Race lighting",func() -> void: pass)
+ 		lighting.name = "EditorRaceLighting"
+@@ -3355,7 +3375,9 @@
+ 	var generation: int = editor_hint_generation
+ 	var label_id: int = editor_status.get_instance_id()
+ 	get_tree().create_timer(4.0).timeout.connect(func() -> void:
+-		if generation == editor_hint_generation and is_instance_valid(editor_status) and editor_status.get_instance_id() == label_id and editor_save_error == OK: editor_status.hide())
++		if generation == editor_hint_generation and is_instance_valid(editor_status) and editor_status.get_instance_id() == label_id and editor_save_error == OK:
++			editor_status.text = editor_guidance
++			editor_status.show())
+ 
+ func _update_editor_save_state() -> void:
+ 	if not is_instance_valid(editor_save_button): return
+@@ -3380,9 +3402,9 @@
+ 		editor_save_button.disabled = true
+ 		editor_save_button.tooltip_text = "The saved original matches this document."
+ 	else:
+-		editor_save_button.text = "WIP recovery saved" if (editor_wip_store == library and document == editor_wip_snapshot) else "Unsaved draft"
++		editor_save_button.text = "Autosaved draft" if (editor_wip_store == library and document == editor_wip_snapshot) else "Unsaved draft"
+ 		editor_save_button.disabled = true
+-		editor_save_button.tooltip_text = "Recovery is separate from the saved original. Use Map → Save or Ctrl+S to keep it."
++		editor_save_button.tooltip_text = "Your draft is kept separately. Save updates the named track."
+ 
+ func _retry_editor_save() -> void:
+ 	if editor_retry_original: _save_track_now()
+@@ -3534,10 +3556,11 @@
+ 	if category == "road":
+ 		var piece: Dictionary = canvas.ghost if not canvas.ghost.is_empty() else document.pieces[canvas.selected_piece] if canvas.selected_piece >= 0 else {}
+ 		if piece.is_empty():
+-			_context_button("Start line","race",canvas.choose_start_line)
++			var start_action: Button = _context_button("Start line","race",canvas.choose_start_line)
++			start_action.disabled = document.pieces.is_empty() and document.layout.is_empty() and document.base_track == "" and document.paint.is_empty()
+ 			for kind: String in RoadPieces.KINDS:
+ 				_context_button(preload("res://editor/road_piece_catalog.gd").title(kind),kind,canvas.choose_piece.bind(kind))
+-			editor_status.text = "Choose a section · drag empty ground to pan · pinch to zoom"
++			editor_status.text = "Choose Straight or Curve to begin. Two fingers move the view." if document.pieces.is_empty() else "Choose another section, or place the start line."
+ 		elif editor_geometry != "" and piece.kind == "bridge":
+ 			_context_button("Back","back",func() -> void:
+ 				editor_geometry = ""
+@@ -3594,29 +3617,41 @@
+ 			if piece.kind == "spline": editor_status.text = "Drag the five numbered points · select a point to set its width · ✓ to place"
+ 	elif category == "paint":
+ 		for pair: Array in [[1,"Grass"],[2,"Sand"],[3,"Water"]]:
+-			_context_button(pair[1],"terrain_dirt" if pair[0] == 2 else "terrain_"+pair[1].to_lower(),func() -> void:
++			var surface_button: Button = _context_button(preload("res://editor/surface_labels.gd").title(pair[0],biome),preload("res://editor/surface_labels.gd").glyph(pair[0],biome),func() -> void:
+ 				canvas.brush_surface = pair[0]
+ 				canvas.mode = "paint"
+ 				_build_editor_tools(),canvas.mode == "paint" and canvas.brush_surface == pair[0])
++			(surface_button as EditorButton).surface_tint = TrackTheme.palette(biome)[pair[0]]
+ 		_context_button("Puddle","terrain_puddle",_choose_hazard.bind("puddle"))
+ 		_build_paint_tools()
+ 		editor_status.text = "Drag to paint freely" if canvas.paint_mode == "free" else "Tap to add points / drag dots to reshape / confirm to place"
+ 	elif category == "objects":
+ 		if canvas.selected_object >= 0 and canvas.mode == "objects":
+ 			editor_status.text=CreatorObjects.description(document.objects[canvas.selected_object].kind)
+-			var properties: Button = _context_button("Properties","options",_selected_object_properties)
+-			properties.name = "SelectedObjectProperties"
+-			properties.tooltip_text = "Size, orientation and object settings"
+-			_context_button("Copy","objects",_duplicate_object)
++			if canvas.object_indices().size() == 1:
++				var properties: Button = _context_button("Properties","options",_selected_object_properties)
++				properties.name = "SelectedObjectProperties"
++				properties.tooltip_text = "Size, orientation and object settings"
++			else:
++				editor_status.text = GameText.message("%d objects selected · drag one to move the group") % canvas.object_indices().size()
++				_context_button("Rotate","rotate",_rotate_object)
++			if canvas.multi_select and canvas.object_indices().size() == 1: editor_status.text = "Multi-select: tap to add or remove; drag to move."
++			_context_button("Copy","copy",_duplicate_object)
++			var multiple: Button = _context_button("Multi-select","multi_select",canvas.toggle_multi_select,canvas.multi_select)
++			multiple.name = "MultiSelectObjects"
++			_context_button("Next object","cycle_objects",canvas.cycle_objects)
+ 			_context_button("Delete","delete",_delete_selection)
+ 			if canvas.issue_marker != Vector2.INF: _context_button("Move start","race",canvas.choose_start_line)
+ 			_context_button("Palette","more",func() -> void:
++				canvas.multi_select = false
+ 				canvas.selected_object = -1
+ 				_build_editor_tools())
+ 		else:
+ 			var stamp_label: String = CreatorCatalog.label(CreatorCatalog.jump_asset(canvas.stamp_jump_profile,str(document.theme))) if canvas.stamp_kind == "jump" else CreatorCatalog.label(canvas.stamp_kind)
+ 			editor_status.text = stamp_label+" / "+("Drag a curve; release to place" if canvas.run_shape=="curve" else "Drag a line, or tap its two ends" if canvas.mode=="run" else "Tap empty ground to place / tap an object to edit")
+ 			if canvas.mode=="objects": editor_status.text="Tap an object to move, rotate or delete"
++	editor_guidance = editor_status.text
++	if editor_save_error == OK: editor_status.show()
+ 
+ 	var context_width: float = 0
+ 	for child: Control in editor_context.get_children(): context_width += child.get_combined_minimum_size().x+6
+@@ -3769,7 +3804,9 @@
+ 	if canvas.mode in ["objects","place","run"]:
+ 		if canvas.selected_object < 0: return
+ 		_remember()
+-		document.objects.remove_at(canvas.selected_object)
++		var indices: Array[int] = canvas.object_indices()
++		indices.reverse()
++		for index: int in indices: document.objects.remove_at(index)
+ 		canvas.selected_object = -1
+ 	else: return
+ 	_commit_selection()
+@@ -3825,8 +3862,11 @@
+ 	var angle: float = fposmod(value,360.0)
+ 	canvas.stamp_rotation = angle
+ 	if canvas.selected_object >= 0 and not is_equal_approx(float(document.objects[canvas.selected_object].rotation),angle):
++		var proposed: Array = preload("res://editor/object_editing.gd").rotated(document.objects,canvas.object_indices(),angle-float(document.objects[canvas.selected_object].rotation))
++		if proposed.is_empty(): _editor_hint("Keep the whole selection inside the map."); return
++		if not canvas.admit("objects",proposed): return
+ 		_remember()
+-		document.objects[canvas.selected_object].rotation = angle
++		document.objects = proposed
+ 		_commit_selection()
+ 	else: _build_editor_tools()
+ 	object_browser.set_stamp_rotation(angle)
+@@ -3887,13 +3927,22 @@
+ 
+ 
+ func _duplicate_object() -> void:
+-	if canvas.selected_object < 0 or document.objects.size() >= preload("res://editor/creator_limits.gd").MAX_OBJECTS: return
+-	var object: Dictionary = document.objects[canvas.selected_object].duplicate(true)
+-	object.position = [clampf(float(object.position[0])+4,-110,110),clampf(float(object.position[1])+4,-110,110)]
+-	var admission: String = preload("res://editor/creator_limits.gd").addition_error(document.objects,[object],str(document.theme))
++	if canvas.selected_object < 0: return
++	if document.objects.size() >= preload("res://editor/creator_limits.gd").MAX_OBJECTS:
++		_editor_hint("Remove an object before adding more."); return
++	var indices: Array[int] = canvas.object_indices()
++	var moved: Array = preload("res://editor/object_editing.gd").moved(document.objects,indices,Vector2(4,4))
++	var additions: Array = []
++	for index: int in indices: additions.append(moved[index])
++	var admission: String = preload("res://editor/creator_limits.gd").addition_error(document.objects,additions,str(document.theme))
+ 	if not admission.is_empty(): _editor_hint(admission); return
++	if not canvas.admit("objects",document.objects+additions): return
+ 	_remember()
+-	document.objects.append(object)
++	var first: int = document.objects.size()
++	document.objects.append_array(additions)
++	canvas.multi_select = additions.size() > 1 or canvas.multi_select
++	canvas.selected_objects.clear()
++	for index: int in range(first,document.objects.size()): canvas.selected_objects.append(index)
+ 	canvas.selected_object = document.objects.size()-1
+ 	canvas.mode = "objects"
+ 	_commit_selection()
+@@ -3938,7 +3987,7 @@
+ func _refresh_editor() -> void:
+ 	if not is_instance_valid(editor_status): return
+ 	var errors: Array[String] = TrackDocument.validate(document)
+-	editor_status.text = "Waypoints are generated from connected roads. Changes save automatically." if errors.is_empty() else errors[0]
++	editor_status.text = editor_guidance if errors.is_empty() else errors[0]
+ 	test_button.disabled = not errors.is_empty()
+ 	publish_button.disabled = not errors.is_empty() or lifecycle == null or not lifecycle.ready_to_publish(document)
+ 	share_button.disabled = not errors.is_empty()
+@@ -3966,7 +4015,7 @@
+ 		if receipt.error == OK:
+ 			editor_wip_snapshot = receipt.document.duplicate(true); editor_wip_store = storage; editor_wip_disk_hash = receipt.digest
+ 			editor_wip_saved = TrackLibrary.draft_fingerprint(receipt.document)
+-			if is_instance_valid(editor_status) and editor_status.text == "Saving...": editor_status.text = "WIP autosaved. Saved original unchanged."
++			if is_instance_valid(editor_status) and editor_status.text == "Saving...": editor_status.text = editor_guidance
+ 		elif not _editor_exiting and is_inside_tree(): _editor_hint(editor_save_message)
+ 		if not _editor_exiting and is_inside_tree(): _update_editor_save_state()
+ 	editor_writes.completed.clear()
+@@ -4441,7 +4490,7 @@
+ 			pending_menu_notice = "This circuit could not be remembered for next time. Check available storage."
+ 	if is_instance_valid(canvas):
+ 		canvas.cancel_gesture()
+-		editor_view = {"zoom":canvas.zoom,"pan":canvas.pan,"mode":canvas.mode,"selected":canvas.selected,"selected_object":canvas.selected_object,"stamp_kind":canvas.stamp_kind,"stamp_scale":canvas.stamp_scale,"stamp_span":canvas.stamp_span,"stamp_jump_profile":canvas.stamp_jump_profile,"stamp_container_color":canvas.stamp_container_color,"run_shape":canvas.run_shape,"free_run":canvas.free_run,"brush_surface":canvas.brush_surface,"brush_width":canvas.brush_width,"paint_mode":canvas.paint_mode,"brush_shape":canvas.brush_shape,"selected_piece":canvas.selected_piece}
++		editor_view = {"zoom":canvas.zoom,"pan":canvas.pan,"mode":canvas.mode,"selected":canvas.selected,"selected_object":canvas.selected_object,"stamp_kind":canvas.stamp_kind,"stamp_scale":canvas.stamp_scale,"stamp_span":canvas.stamp_span,"stamp_jump_profile":canvas.stamp_jump_profile,"stamp_container_color":canvas.stamp_container_color,"run_shape":canvas.run_shape,"free_run":canvas.free_run,"brush_surface":canvas.brush_surface,"brush_width":canvas.brush_width,"paint_mode":canvas.paint_mode,"brush_shape":canvas.brush_shape,"selected_piece":canvas.selected_piece,"selected_objects":canvas.object_indices(),"multi_select":canvas.multi_select,"object_snap":canvas.object_snap,"detailed_scenery":not editor_world._detail.enabled if is_instance_valid(editor_world) else false}
+ 	_stop_menu_page_motion()
+ 	_practice_editor_context = {}
+ 	if from_editor and screen == "create" and is_instance_valid(canvas) and canvas.document == document:
+@@ -5172,7 +5221,9 @@
+ 			canvas.queue_redraw()))
+ 	var materials := OptionButton.new()
+ 	materials.custom_minimum_size.y = 54
+-	for label: String in ["Grass / erase","Sand","Water","Barrier","Kerb","Rough ground","Low obstacles"]: materials.add_item(label)
++	for surface: int in range(1,8):
++		var label: String = preload("res://editor/surface_labels.gd").title(surface,str(document.theme))
++		materials.add_item(GameText.message(label)+(" / "+GameText.message("Erase") if surface == 1 else ""))
+ 	materials.selected = canvas.brush_surface-1
+ 	materials.item_selected.connect(func(index: int) -> void:
+ 		canvas.brush_surface = index+1
+@@ -5186,13 +5237,14 @@
+ 		actions.add_child(MenuStyle.button(entry[1],func() -> void:
+ 			canvas.mode = value
+ 			_build_editor_tools(),canvas.mode == value))
+-	var shapes := OptionButton.new()
+-	shapes.custom_minimum_size.y = 54
+-	shapes.add_item("Round brush")
+-	shapes.add_item("Square brush")
+-	shapes.selected = 1 if canvas.brush_shape == "square" else 0
+-	shapes.item_selected.connect(func(index: int) -> void: canvas.brush_shape = "square" if index else "round")
+-	editor_inspector.add_child(shapes)
++	if canvas.paint_mode != "area":
++		var shapes := OptionButton.new()
++		shapes.custom_minimum_size.y = 54
++		shapes.add_item("Round brush")
++		shapes.add_item("Square brush")
++		shapes.selected = 1 if canvas.brush_shape == "square" else 0
++		shapes.item_selected.connect(func(index: int) -> void: canvas.brush_shape = "square" if index else "round")
++		editor_inspector.add_child(shapes)
+ 	var help := MenuStyle.label("Tap to add points; drag dots to reshape. Confirm to place. Free painting commits on release.",16,true)
+ 	if document.base_track != "": help.text += " Remix paints ground only."
+ 	help.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+@@ -5262,9 +5314,15 @@
+ 			KEY_2: _editor_category("paint")
+ 			KEY_3: _editor_category("objects")
+ 			KEY_4: canvas.choose_start_line()
+-			KEY_Q: _change_piece("heading",-15.0)
+-			KEY_E: _change_piece("heading",15.0)
+-			KEY_TAB: canvas.cycle_piece()
++			KEY_Q:
++				if canvas.mode in ["objects","place"]: _set_object_rotation(_object_rotation()-22.5)
++				else: _change_piece("heading",-15.0)
++			KEY_E:
++				if canvas.mode in ["objects","place"]: _set_object_rotation(_object_rotation()+22.5)
++				else: _change_piece("heading",15.0)
++			KEY_TAB:
++				if canvas.mode == "objects": canvas.cycle_objects()
++				else: canvas.cycle_piece()
+ 			_: handled = false
+ 	if handled: get_viewport().set_input_as_handled()
+ 
+@@ -5811,6 +5869,7 @@
+ 	var placement: String = object_browser.placement if same_family else "single"
+ 	canvas.cancel_gesture()
+ 	var jump_profile: String = str(CreatorCatalog.JUMP_ASSETS.get(kind,""))
++	canvas.multi_select = false
+ 	canvas.stamp_kind="jump" if not jump_profile.is_empty() else kind
+ 	if canvas.stamp_kind == "jump":
+ 		canvas.stamp_jump_profile = jump_profile if not jump_profile.is_empty() else JumpProfiles.default_for(str(document.theme))
+@@ -6291,6 +6350,9 @@
+ 			if chosen: style.bg_color = Color("087b8d")
+ 			button.add_theme_stylebox_override(state,style)
+ 		segments.add_child(button)
++	if canvas.paint_mode == "area":
++		_surface_point_controls()
++		return
+ 	var brush := VBoxContainer.new()
+ 	brush.custom_minimum_size.x = 178
+ 	surface_actions.add_child(brush)
+@@ -6339,3 +6401,21 @@
+ 	options.tooltip_text = "Brush shape, navigation and road protection"
+ 	options.size_flags_vertical = Control.SIZE_SHRINK_END
+ 	surface_actions.add_child(options)
++
++func _surface_point_controls() -> void:
++	var area := VBoxContainer.new()
++	surface_actions.add_child(area)
++	area.add_child(MenuStyle.label(GameText.message("Area · %d points") % canvas.paint_points.size(),18))
++	var row := HBoxContainer.new(); row.add_theme_constant_override("separation",6); area.add_child(row)
++	var remove: Button = EditorStyle.button("Undo point",func() -> void:
++		if not canvas.paint_points.is_empty(): canvas.paint_points.pop_back()
++		_build_editor_tools())
++	remove.name = "AreaRemovePoint"; remove.custom_minimum_size = Vector2(90,54)
++	remove.disabled = canvas.paint_points.is_empty(); row.add_child(remove)
++	var cancel: Button = EditorStyle.button("Cancel",func() -> void: canvas.cancel_gesture(); _build_editor_tools())
++	cancel.name = "AreaCancel"; cancel.custom_minimum_size = Vector2(72,54); row.add_child(cancel)
++	var confirm: Button = EditorStyle.button("Place",func() -> void: canvas.confirm_paint(); _build_editor_tools())
++	confirm.name = "AreaConfirm"; confirm.custom_minimum_size = Vector2(72,54)
++	confirm.disabled = canvas.paint_points.size() < 3; row.add_child(confirm)
++	var options: Button = EditorButton.make("","options",func() -> void: editor_tools_panel.visible = not editor_tools_panel.visible)
++	options.name = "SurfaceOptions"; options.size_flags_vertical = Control.SIZE_SHRINK_END; surface_actions.add_child(options)
+diff --git a/game/editor/editor_canvas.gd b/game/editor/editor_canvas.gd
+--- a/game/editor/editor_canvas.gd
++++ b/game/editor/editor_canvas.gd
+@@ -91,7 +91,16 @@
+ var zoom: float = 1.0
+ var pan := Vector2.ZERO
+ var selected: int = -1
+-var selected_object: int = -1
++var selected_objects: Array[int] = []
++var multi_select: bool = false
++var object_snap: float = 1.0
++var selected_object: int = -1:
++	set(value):
++		selected_object = value
++		if value < 0: selected_objects.clear()
++		elif not multi_select: selected_objects.assign([value])
++var _selection_toggle: int = -1
++var _object_pick_world := Vector2.INF
+ var stamp_kind: String = "tree"
+ var stamp_rotation: float = 0.0
+ var pending_stamp: bool = false
+@@ -183,8 +192,34 @@
+ 	native_changed.emit(track)
+ 	queue_redraw()
+ 
++func object_indices() -> Array[int]:
++	var result: Array[int] = []
++	for index: int in selected_objects:
++		if index >= 0 and index < document.objects.size() and index not in result: result.append(index)
++	if selected_object >= 0 and selected_object < document.objects.size() and selected_object not in result: result.append(selected_object)
++	result.sort()
++	return result
++
++func object_position(point: Vector2) -> Vector2:
++	return point.snapped(Vector2.ONE*object_snap).clamp(Vector2(-110,-110),Vector2(110,110)) if object_snap > 0.0 else point.clamp(Vector2(-110,-110),Vector2(110,110))
++
++func cycle_objects() -> void:
++	if selected_object < 0: return
++	var at: Vector2 = _object_pick_world if _object_pick_world != Vector2.INF else Vector2(document.objects[selected_object].position[0],document.objects[selected_object].position[1])
++	var hits: Array[int] = preload("res://editor/object_editing.gd").candidates(document.objects,to_screen(at),at,to_screen)
++	if hits.size() < 2: hint_changed.emit("Only one object is under this point."); return
++	multi_select = false
++	selected_object = hits[(hits.find(selected_object)+1)%hits.size()]
++	selection_changed.emit(); queue_redraw()
++
++func toggle_multi_select() -> void:
++	multi_select = not multi_select
++	if not multi_select: selected_objects.assign([selected_object] if selected_object >= 0 else [])
++	selection_changed.emit(); queue_redraw()
++
+ func cancel_gesture() -> void:
+ 	_rollback_navigation_edit()
++	_selection_toggle = -1
+ 	pending_paint_accept = false
+ 	run_draw.clear()
+ 	drawing_run=false
+@@ -321,13 +356,14 @@
+ 	press_position = point
+ 	pointer_origin = to_world(point)
+ 	changed_in_gesture = false
++	_selection_toggle = -1
+ 	gesture.begin(ghost,preparing)
+ 	if _navigation_only:
+ 		panning = true; dragging = false
+ 		return
+ 	_run_edge_hint = false
+ 	bump_end_drag = -1
+-	if mode == "objects" and selected_object >= 0 and selected_object < document.objects.size() and document.objects[selected_object].kind == "speed_bump":
++	if mode == "objects" and selected_object >= 0 and object_indices().size() == 1 and selected_object < document.objects.size() and document.objects[selected_object].kind == "speed_bump":
+ 		var ends: PackedVector2Array = SpeedBumpEdit.endpoints(document.objects[selected_object])
+ 		var nearest: float = 24.0
+ 		for end: int in range(2):
+@@ -387,16 +423,17 @@
+ 	pending_stamp = mode == "place"
+ 	if pending_stamp: return
+ 	selected = -1
+-	selected_object = -1
+-	var nearest: float = 30.0
++	var hit: int = -1
+ 	if mode == "objects":
+-		for i: int in range(document.objects.size()-1,-1,-1):
+-			var object: Dictionary = document.objects[i]
+-			var center: Vector2 = to_screen(Vector2(object.position[0],object.position[1]))
+-			if center.distance_to(point) < nearest or CreatorObjects.contains(object,to_world(point)):
+-				selected_object = i
+-				break
+-		if selected_object < 0 and native_preview != null and document.objects.size() < preload("res://editor/creator_limits.gd").MAX_OBJECTS:
++		_object_pick_world = to_world(point)
++		var hits: Array[int] = preload("res://editor/object_editing.gd").candidates(document.objects,point,_object_pick_world,to_screen)
++		if not hits.is_empty(): hit = hits[0]
++		if not multi_select: selected_object = hit
++		elif hit >= 0:
++			if hit in selected_objects: _selection_toggle = hit
++			else: selected_objects.append(hit)
++			selected_object = hit
++		if hit < 0 and native_preview != null and document.objects.size() < preload("res://editor/creator_limits.gd").MAX_OBJECTS:
+ 			for object: Dictionary in native_preview.metadata.get("scenery_objects",[]):
+ 				if CreatorObjects.contains(object,to_world(point)) or to_screen(Vector2(object.position[0],object.position[1])).distance_to(point) < 24:
+ 					var admission: String = preload("res://editor/creator_limits.gd").addition_error(document.objects,[object],str(document.theme))
+@@ -412,10 +449,12 @@
+ 					document.objects.append(object.duplicate(true))
+ 					changed_in_gesture = true
+ 					selected_object = document.objects.size()-1
++					hit = selected_object
++					if multi_select and hit not in selected_objects: selected_objects.append(hit)
+ 					document_changed.emit()
+ 					break
+ 	selection_changed.emit()
+-	if selected_object >= 0:
++	if hit >= 0:
+ 		var value: Array = document.objects[selected_object].position
+ 		drag_origin = Vector2(value[0],value[1])
+ 		dragging = true
+@@ -492,12 +531,15 @@
+ 			pending_stamp = false
+ 			panning = true
+ 	if dragging:
+-		var position: Vector2 = (drag_origin+to_world(point)-pointer_origin).snapped(Vector2.ONE).clamp(Vector2(-110,-110),Vector2(110,110))
++		var position: Vector2 = object_position(drag_origin+to_world(point)-pointer_origin)
+ 		if position.distance_to(drag_origin) > 0.1 and not changed_in_gesture:
+ 			_start_edit()
+ 			changed_in_gesture = true
+-		if changed_in_gesture and selected_object >= 0 and document.objects[selected_object].position != [position.x,position.y]:
+-			document.objects[selected_object].position = [position.x,position.y]
++		if changed_in_gesture and selected_object >= 0:
++			var original: Array = gesture.before.get("objects",document.objects)
++			var moved: Array = preload("res://editor/object_editing.gd").moved(original,object_indices(),position-drag_origin)
++			if moved == document.objects: return
++			document.objects = moved
+ 			document_changed.emit()
+ 	elif panning: pan += point-previous_pointer
+ 	previous_pointer = point
+@@ -508,7 +550,7 @@
+ 	if mode in ["place","run"] and not _stamp_available():
+ 		hint_changed.emit("Choose an object from this biome's object collection.")
+ 		return
+-	var position: Vector2 = to_world(point).snapped(Vector2.ONE).clamp(Vector2(-110,-110),Vector2(110,110))
++	var position: Vector2 = object_position(to_world(point))
+ 	if mode == "start_line":
+ 		var pose: Dictionary = CreatorStartLine.place(document,to_world(point),native_preview)
+ 		if pose.is_empty():
+@@ -595,7 +637,7 @@
+ func _end(pointer: int) -> void:
+ 	if pointer != active_pointer: return
+ 	if _navigation_only:
+-		gesture.clear(); panning = false; active_pointer = -99
++		gesture.clear(); dragging = false; panning = false; active_pointer = -99
+ 		return
+ 	if pending_paint_accept:
+ 		pending_paint_accept = false
+@@ -636,6 +678,12 @@
+ 	if paint_mode == "free": confirm_paint()
+ 	paint_handle = -1
+ 	if pending_stamp: _place(press_position)
++	if _selection_toggle >= 0 and not changed_in_gesture:
++		selected_objects.erase(_selection_toggle)
++		selected_object = selected_objects.back() if not selected_objects.is_empty() else -1
++		if selected_objects.is_empty(): multi_select = false
++		_selection_toggle = -1
++		selection_changed.emit()
+ 	if dragging and changed_in_gesture:
+ 		var error: String = preload("res://editor/authoring_admission.gd").error(document,"pieces" if mode == "road" else "objects" if mode == "objects" else mode)
+ 		if not error.is_empty():
+@@ -653,6 +701,7 @@
+ 		previous_pointer = touches[active_pointer]
+ 		panning = true
+ 	gesture.clear()
++	if mode == "paint" and paint_mode != "free": selection_changed.emit()
+ 	queue_redraw()
+ 
+ func _notification(what: int) -> void:
+@@ -676,13 +725,14 @@
+ 			var yy: float = fposmod(origin.y, spacing) + y * spacing
+ 			draw_line(Vector2(0,yy),Vector2(size.x,yy),Color(1,1,1,0.035))
+ 	for piece: Dictionary in pending_road_pieces(): _draw_piece(piece,false,false)
++	var selected_indices: Array[int] = object_indices()
+ 	for i: int in range(document.get("objects",[]).size()):
+-		if mode not in ["objects","place","run"] or i != selected_object: continue
++		if mode not in ["objects","place","run"] or i not in selected_indices: continue
+ 		var object: Dictionary = document.objects[i]
+ 		var outline := PackedVector2Array()
+ 		for point: Vector2 in CreatorObjects.outline(object): outline.append(to_screen(point))
+ 		outline.append(outline[0])
+-		draw_polyline(outline,Color("edf1f3") if selected_object == i else Color("26342f"),3,true)
++		draw_polyline(outline,Color("edf1f3") if selected_object == i else Color("70d9df"),3,true)
+ 		if i == selected_object and mode == "objects" and object.kind == "speed_bump":
+ 			for end: Vector2 in SpeedBumpEdit.endpoints(object):
+ 				var at: Vector2 = to_screen(end)
+@@ -1090,7 +1140,6 @@
+ 		if piece.kind == "bridge": draw_line(to_screen(handle_geometry[key].anchor),handle,Color("b9faff"),1.5,true)
+ 		var axis: Vector2 = (to_screen(handle_geometry[key].increased)-to_screen(handle_geometry[key].anchor)).normalized()
+ 		_draw_geometry_glyph(handle,"span" if key == "radius" and piece.kind == "s_bend" else key,axis,geometry_drag == key and dragging)
+-		if piece.kind != "bridge": continue
+ 		var caption: String = geometry_caption(piece,key)
+ 		var label_size := Vector2(ThemeDB.fallback_font.get_string_size(caption,HORIZONTAL_ALIGNMENT_LEFT,-1,14).x+12,24)
+ 		var label_pos: Vector2 = handle+Vector2(-label_size.x*0.5,24)
+@@ -1178,7 +1227,7 @@
+ func geometry_caption(piece: Dictionary, key: String) -> String:
+ 	var title: String = "Rotate" if key == "heading" else "Narrow width" if key == "narrow_width" else "Straight" if key == "length" and piece.kind not in ["straight","taper","bridge"] else key.capitalize()
+ 	var value: float = RoadPieces.height(piece) if key == "height" else float(piece.get(key,0.0 if key == "curvature" else 90.0))
+-	return ("%s %.0f deg" if key in ["angle","heading"] else "%s %.1f m") % [title,value]
++	return GameText.message(title)+" "+(GameText.message("%.0f deg") if key in ["angle","heading"] else GameText.message("%.1f m")) % value
+ 
+ func _geometry_handle(piece: Dictionary, key: String) -> Vector2:
+ 	return to_world(geometry_controls(piece)[key])
+diff --git a/game/editor/object_browser.gd b/game/editor/object_browser.gd
+--- a/game/editor/object_browser.gd
++++ b/game/editor/object_browser.gd
+@@ -10,6 +10,7 @@
+ signal populate_requested
+ signal rotation_requested
+ signal rotation_chosen(angle: float)
++signal snap_chosen(step: float)
+ var category: String = "All"
+ var biome: String = "pine"
+ var current: String = "tree"
+@@ -32,6 +33,11 @@
+ var rotation_button: Button
+ var stamp_rotation: float = 0.0
+ var properties_button: Button
++var snap_step: float = 1.0:
++	set(value):
++		snap_step = value
++		var control: OptionButton = find_child("ObjectSnap",true,false) as OptionButton
++		if control != null: control.select(0 if value == 1.0 else 1 if value > 0 else 2)
+ 
+ func _ready() -> void:
+ 	name = "ObjectBrowser"
+@@ -57,6 +63,14 @@
+ 	top.add_child(properties_button)
+ 	top.add_child(rotation_button)
+ 	set_stamp_rotation(stamp_rotation)
++	var snapping := OptionButton.new()
++	snapping.name = "ObjectSnap"
++	EditorStyle.apply(snapping); snapping.custom_minimum_size = Vector2(112,44)
++	for label: String in ["Snap: 1 m","Snap: 0.25 m","Snap: off"]: snapping.add_item(label)
++	snapping.select(0 if snap_step == 1.0 else 1 if snap_step > 0 else 2)
++	snapping.item_selected.connect(func(index: int) -> void:
++		snap_step = [1.0,0.25,0.0][index]; snap_chosen.emit(snap_step))
++	top.add_child(snapping)
+ 	var populate: Button = _button("Populate",func() -> void: populate_requested.emit())
+ 	populate.name = "PopulateObjects"
+ 	populate.custom_minimum_size = Vector2(100,44)
+@@ -77,7 +91,7 @@
+ 	next.custom_minimum_size=Vector2(44,82)
+ 	paging.add_child(next)
+ 	resized.connect(func() -> void:
+-		var count: int=maxi(1,int((size.x-120)/110))
++		var count: int=maxi(1,int((size.x-120)/118))
+ 		if count!=page_size: page_size=count; page=0; _tiles())
+ 	visibility_changed.connect(func() -> void:
+ 		if is_visible_in_tree():
+@@ -131,7 +145,7 @@
+ 	page = clampi(page,0,maxi(0,(entries.size()-1)/page_size))
+ 	previous.visible=page>0
+ 	next.visible=(page+1)*page_size<entries.size()
+-	var key: Array = [biome,category if entries.is_empty() else "",stamp_container_color]
++	var key: Array = [biome,category if entries.is_empty() else "",stamp_container_color,current]
+ 	for index: int in range(page*page_size,mini(entries.size(),(page+1)*page_size)): key.append(entries[index][0])
+ 	if key == _tile_key:
+ 		for tile: Node in tiles.get_children():
+@@ -146,7 +160,11 @@
+ 	_clear(tiles)
+ 	for index: int in range(page*page_size,mini(entries.size(),(page+1)*page_size)):
+ 		var asset: Array = entries[index]
+-		tiles.add_child(ObjectThumbnail.make(asset[0],asset[1],current == asset[0] or current in asset[3],_activate_asset.bind(asset[0]),biome,stamp_container_color if asset[0] == "container" else ""))
++		var chosen: bool = current == asset[0] or current in asset[3]
++		var kind: String = current if chosen else str(asset[0])
++		var title: String = CreatorCatalog.label(current) if chosen and current != asset[0] else str(asset[1])
++		var tile: Button = ObjectThumbnail.make(kind,title,chosen,_activate_asset.bind(asset[0]),biome,stamp_container_color if asset[0] == "container" else "")
++		tile.name = "Asset_"+str(asset[0]); tiles.add_child(tile)
+ 	if entries.is_empty(): tiles.add_child(MenuStyle.label("No matching objects" if category!="Recent" else "Choose an object to add it here",16))
+ 
+ func refresh() -> void:
+@@ -178,7 +196,11 @@
+ func _property_edited(property: String, value: Variant) -> void:
+ 	match property:
+ 		"kind":
++			var retained_scale: float = stamp_scale
++			var retained_placement: String = placement
+ 			choose(str(value))
++			stamp_scale = retained_scale; placement = retained_placement
++			size_chosen.emit(stamp_scale); mode_chosen.emit(placement)
+ 			open_properties.call_deferred()
+ 		"scale":
+ 			stamp_scale = float(value)
+diff --git a/game/editor/object_thumbnail.gd b/game/editor/object_thumbnail.gd
+--- a/game/editor/object_thumbnail.gd
++++ b/game/editor/object_thumbnail.gd
+@@ -3,7 +3,7 @@
+ ## Small one-shot renders use exactly the placed-object mesh builder.
+ const CACHE_LIMIT: int = 48
+ const PREVIEW_SIZE := Vector2i(384,232)
+-const PREVIEW_VERSION: String = "prop-studio-2"
++const PREVIEW_VERSION: String = "prop-studio-3-readable-variants"
+ static var _images: Dictionary = {}
+ var _viewport: SubViewport
+ var _image: TextureRect
+@@ -61,7 +61,7 @@
+ static func make(kind: String, title: String, chosen: bool, action: Callable, biome: String = "pine", color: String = "") -> Button:
+ 	var button := ObjectThumbnail.new()
+ 	button.name = "Asset_"+kind
+-	button.custom_minimum_size = Vector2(104,82)
++	button.custom_minimum_size = Vector2(112,90)
+ 	button.tooltip_text = title+" — Select, then open Properties"
+ 	if CreatorCatalog.JUMP_ASSETS.has(kind): button.tooltip_text = title+" / Tap the track to place"
+ 	button.toggle_mode = true
+@@ -76,7 +76,7 @@
+ 	image.texture = cached
+ 	image.expand_mode=TextureRect.EXPAND_IGNORE_SIZE
+ 	image.position = Vector2(4,1)
+-	image.size = Vector2(96,58)
++	image.size = Vector2(104,62)
+ 	image.mouse_filter = Control.MOUSE_FILTER_IGNORE
+ 	image.texture_filter = CanvasItem.TEXTURE_FILTER_LINEAR_WITH_MIPMAPS
+ 	button.add_child(image)
+@@ -84,10 +84,12 @@
+ 	var label := Label.new()
+ 	label.text = title
+ 	label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+-	label.add_theme_font_size_override("font_size",14)
++	label.add_theme_font_size_override("font_size",15)
+ 	label.add_theme_font_override("font",EditorStyle.FONT)
+-	label.position = Vector2(0,59)
+-	label.size = Vector2(104,20)
++	label.position = Vector2(4,64)
++	label.size = Vector2(104,22)
++	label.clip_text = true
++	label.text_overrun_behavior = TextServer.OVERRUN_TRIM_ELLIPSIS
+ 	label.mouse_filter = Control.MOUSE_FILTER_IGNORE
+ 	button.add_child(label)
+ 	return button
+diff --git a/game/editor/editor_detail.gd b/game/editor/editor_detail.gd
+--- a/game/editor/editor_detail.gd
++++ b/game/editor/editor_detail.gd
+@@ -3,7 +3,7 @@
+ ## are restored when the view settles close enough to inspect their details.
+ const DENSE_COUNT: int = 24
+ const OVERVIEW_SCALE: float = 8.0
+-const EXACT_KINDS: Array[String] = ["oil","puddle","jump","speed_bump","dirt","water","tyre_stack","tyre_wall","gantry","chevron","braking_board","neon_arrow","banner","flag","light","lantern_post"]
++const EXACT_KINDS: Array[String] = ["oil","puddle","jump","speed_bump","dirt","water","tyre_stack","tyre_wall","gantry","chevron","braking_board","neon_arrow","banner","flag","light","lantern_post","burning_car","burning_barrel","snow_lantern","ice_lantern"]
+ var reduced: bool = false
+ var enabled: bool = true
+ var proxies: Node3D
+@@ -11,6 +11,7 @@
+ var _track: NativeTrack
+ var _updates: int = -1
+ var _selected: int = -2
++var _selection: Array[int] = []
+ var _scale: float = -1.0
+ var _until: int = 0
+ var _proxy_groups: Array[Dictionary] = []
+@@ -18,6 +19,8 @@
+ var _objects: Array = []
+ var _dense: bool = false
+ var _proxy_dirty: bool = true
++var _applied_enabled: bool = true
++var _cover_id: int = 0
+ 
+ func update(visual: NativeTrackVisual, track: NativeTrack, canvas: EditorCanvas, light: DirectionalLight3D, moving: bool) -> bool:
+ 	if visual == null or track == null or visual.editor_objects == null: return false
+@@ -36,13 +39,18 @@
+ 		_dense = visible_count >= DENSE_COUNT
+ 	if moving or canvas.active_pointer != -99: _until = Time.get_ticks_msec()+140
+ 	var next: bool = enabled and _dense and (canvas.scale_factor() < OVERVIEW_SCALE or Time.get_ticks_msec() < _until)
+-	if not rebuilt and next == reduced and canvas.selected_object == _selected and (not reduced or is_equal_approx(_scale,canvas.scale_factor())): return false
++	var selection: Array[int] = canvas.object_indices()
++	var cover_id: int = visual.editor_cover.get_instance_id() if is_instance_valid(visual.editor_cover) else 0
++	if not rebuilt and next == reduced and selection == _selection and enabled == _applied_enabled and cover_id == _cover_id and (not reduced or is_equal_approx(_scale,canvas.scale_factor())): return false
+ 	if next and _proxy_dirty:
+ 		_rebuild(visual,track,batches)
+ 		_proxy_dirty = false
+-	reduced = next; _selected = canvas.selected_object; _scale = canvas.scale_factor()
++	reduced = next; _selected = canvas.selected_object; _selection = selection; _scale = canvas.scale_factor()
++	_applied_enabled = enabled; _cover_id = cover_id
+ 	light.shadow_enabled = not reduced
+-	if is_instance_valid(visual.editor_cover): visual.editor_cover.visible = not reduced
++	# Small decorative ground flecks compete with selection dots. The explicit
++	# Detailed scenery view restores this race decoration for appearance checks.
++	if is_instance_valid(visual.editor_cover): visual.editor_cover.visible = not enabled
+ 	# Generated trees are already one scenery batch. Keep their recognizable
+ 	# silhouettes; the expensive authored props are the overview replacement.
+ 	if is_instance_valid(visual.editor_scenery): visual.editor_scenery.visible = true
+@@ -52,12 +60,12 @@
+ 		if reduced:
+ 			for index: int in _members.get(key,[]):
+ 				var size: Vector2 = CreatorObjects.size_of(_objects[index])
+-				if index == _selected or str(_objects[index].kind) in EXACT_KINDS or minf(size.x,size.y)*_scale >= 24.0: selected = true
++				if index in selection or str(_objects[index].kind) in EXACT_KINDS or minf(size.x,size.y)*_scale >= 24.0: selected = true
+ 		for node: GeometryInstance3D in batches.groups[key].nodes: node.visible = not reduced or selected
+ 		if selected:
+ 			for index: int in _members.get(key,[]): retained[index] = true
+ 	for index: int in batches.individuals:
+-		var keep: bool = index == _selected or str(_objects[index].kind) in EXACT_KINDS
++		var keep: bool = index in selection or str(_objects[index].kind) in EXACT_KINDS
+ 		batches.individuals[index].node.visible = not reduced or keep
+ 		if keep: retained[index] = true
+ 	if reduced:
+@@ -102,12 +110,11 @@
+ 		var object: Dictionary = objects[index]
+ 		var kind: String = str(object.kind)
+ 		if kind in EXACT_KINDS: continue # Their exact gameplay cues stay visible.
+-		var shape: String = "tree" if kind == "tree" else "round" if kind in ["broadleaf","bush","rock","boulder","snowman"] else "box"
+-		var color: Color = Color(ContainerPaint.value(object)) if kind == "container" else Color("647b4a") if kind in ["tree","broadleaf","bush","grass_clump","flowers"] else Color("d1d9d6") if kind in PropWinterCraft.KINDS else Color("9b8d71")
+-		var key: String = shape+color.to_html()
+-		if not groups.has(key): groups[key] = {"shape":shape,"color":color,"poses":[],"indices":[]}
++		var color: Color = preload("res://editor/overview_prop_models.gd").color(kind,visual.theme_id,object)
++		var key: String = kind+"/"+color.to_html()
++		if not groups.has(key): groups[key] = {"kind":kind,"color":color,"poses":[],"indices":[]}
+ 		var size: Vector2 = CreatorObjects.size_of(object)
+-		var height: float = (5.0 if shape == "tree" else 2.6 if kind == "container" else 2.0 if shape == "round" else 1.2)*float(object.get("scale",1.0))
++		var height: float = preload("res://editor/overview_prop_models.gd").height(kind)*float(object.get("scale",1.0))
+ 		var point := Vector2(object.position[0],object.position[1])
+ 		var elevation: float = visual.ground_support.ground(point) if visual.ground_support != null else 0.0
+ 		if visual.desert_relief != null: elevation += visual.desert_relief.height(point)
+@@ -115,16 +122,11 @@
+ 		groups[key].poses.append(Transform3D(basis,VisualGeometry.world(point)+Vector3.UP*(elevation+height*0.5)))
+ 		groups[key].indices.append(index if index < _objects.size() else -1)
+ 	for group: Dictionary in groups.values():
+-		var mesh: PrimitiveMesh
+-		if group.shape == "tree":
+-			var cone := CylinderMesh.new(); cone.top_radius = 0.0; cone.bottom_radius = 0.5; cone.height = 1.0; cone.radial_segments = 8; mesh = cone
+-		elif group.shape == "round":
+-			var sphere := SphereMesh.new(); sphere.radius = 0.5; sphere.height = 1.0; sphere.radial_segments = 8; sphere.rings = 4; mesh = sphere
+-		else:
+-			var box := BoxMesh.new(); box.size = Vector3.ONE; mesh = box
++		var mesh: ArrayMesh = preload("res://editor/overview_prop_models.gd").mesh(group.kind,group.color)
+ 		var node := MultiMeshInstance3D.new()
+ 		node.multimesh = MultiMesh.new(); node.multimesh.transform_format = MultiMesh.TRANSFORM_3D
+ 		node.multimesh.mesh = mesh; node.multimesh.instance_count = group.poses.size()
+-		node.material_override = VisualGeometry.material(group.color)
++		node.material_override = VisualGeometry.material(Color.WHITE)
++		(node.material_override as StandardMaterial3D).vertex_color_use_as_albedo = true
+ 		node.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+ 		proxies.add_child(node); group.node = node; _proxy_groups.append(group)
+diff --git a/game/editor/editor_button.gd b/game/editor/editor_button.gd
+--- a/game/editor/editor_button.gd
++++ b/game/editor/editor_button.gd
+@@ -17,6 +17,7 @@
+ var glyph: String = ""
+ var caption: String = ""
+ var horizontal: bool = false
++var surface_tint := Color.TRANSPARENT
+ 
+ static func make(label: String, icon: String, action: Callable, chosen: bool = false) -> EditorButton:
+ 	var button := EditorButton.new()
+@@ -58,6 +59,17 @@
+ 		var image_size: Vector2 = illustration.get_size()
+ 		var fitted_size: Vector2 = image_size * minf(bounds.x/image_size.x,bounds.y/image_size.y)
+ 		draw_texture_rect(illustration,Rect2(center-fitted_size*0.5,fitted_size),false,Color(1,1,1,0.35 if disabled else 1.0))
++	elif glyph in ["copy","multi_select","cycle_objects"]:
++		if glyph == "cycle_objects":
++			for offset: Vector2 in [Vector2(-5,-5),Vector2(5,5)]: draw_rect(Rect2(center+offset-Vector2(10,8),Vector2(20,16)),ink,false,2)
++			draw_line(center+Vector2(-17,16),center+Vector2(17,16),ink,2,true)
++			draw_polyline(PackedVector2Array([center+Vector2(11,11),center+Vector2(17,16),center+Vector2(11,21)]),ink,2,true)
++		elif glyph == "copy":
++			draw_rect(Rect2(center+Vector2(-16,-13),Vector2(22,22)),ink,false,2)
++			draw_rect(Rect2(center+Vector2(-6,-3),Vector2(22,22)),EditorStyle.ACCENT,false,2)
++		else:
++			draw_rect(Rect2(center-Vector2(18,15),Vector2(36,30)),ink,false,1.5)
++			for offset: Vector2 in [Vector2(-9,-6),Vector2(8,5)]: draw_rect(Rect2(center+offset-Vector2(5,5),Vector2(10,10)),EditorStyle.ACCENT)
+ 	elif glyph == "spline":
+ 		var curve := PackedVector2Array()
+ 		for i: int in range(25):
+@@ -84,10 +96,15 @@
+ 	elif glyph.begins_with("terrain_"):
+ 		var surface: String=glyph.trim_prefix("terrain_")
+ 		var tint: Color={"road":Color("667177"),"grass":Color("65864c"),"dirt":Color("bc985f"),"water":Color("4087a4"),"puddle":Color("619aa6"),"oil":Color("313039")}.get(surface,ink)
++		if surface_tint.a > 0: tint = surface_tint
+ 		draw_style_box(EditorStyle.box(),Rect2(center-Vector2(22,15),Vector2(44,30)))
+ 		draw_rect(Rect2(center-Vector2(19,12),Vector2(38,24)),tint)
+ 		if surface in ["water","puddle","oil"]:
+ 			for y: int in [-6,2,8]: draw_arc(center+Vector2(0,y),12,0.2,2.9,12,ink*Color(1,1,1,0.6),1.3,true)
++		elif surface=="snow":
++			for point: Vector2 in [Vector2(-11,-4),Vector2(8,-5),Vector2(0,7)]:
++				draw_line(center+point-Vector2(3,0),center+point+Vector2(3,0),Color.WHITE,1.4,true)
++				draw_line(center+point-Vector2(0,3),center+point+Vector2(0,3),Color.WHITE,1.4,true)
+ 		elif surface=="grass":
+ 			for x: int in [-12,0,12]: draw_polyline(PackedVector2Array([center+Vector2(x-3,2),center+Vector2(x,7),center+Vector2(x+2,-5)]),ink,1.3,true)
+ 		elif surface=="dirt":
+diff --git a/game/editor/object_properties.gd b/game/editor/object_properties.gd
+--- a/game/editor/object_properties.gd
++++ b/game/editor/object_properties.gd
+@@ -299,14 +299,14 @@
+ 		angle_field.set_value_no_signal(float(state.rotation))
+ 		diagram.angle = float(state.rotation)
+ 		diagram.queue_redraw()
+-		var along_run: bool = not selected and state.get("placement","single") != "single"
++		var along_run: bool = not selected and state.kind in CreatorCatalog.LINES and state.get("placement","single") != "single"
+ 		angle_field.editable = not along_run
+ 		orientation_controls.visible = not along_run
+ 		orientation_section.get_parent().visible = not along_run
+ 		orientation_help.text = "Orientation follows the run automatically." if along_run else "Use − / + for 22.5° steps, or type any angle."
+ 		for node_name: String in ["TurnLeft","TurnRight","Face_0","Face_90","Face_180","Face_270"]:
+ 			(find_child(node_name,true,false) as Button).disabled = along_run
+-		if along_run: placement_hint.text += "\n"+GameText.message("Orientation follows the run automatically.")
++		if along_run and is_instance_valid(placement_hint): placement_hint.text += "\n"+GameText.message("Orientation follows the run automatically.")
+ 	if is_instance_valid(size_field): size_field.set_value_no_signal(float(state.get("scale",1.0)))
+ 	if is_instance_valid(width_field): width_field.set_value_no_signal(float(state.get("span",8.0)))
+ 	_syncing = false
+diff --git a/game/editor/creator_prop_costs.gd b/game/editor/creator_prop_costs.gd
+--- a/game/editor/creator_prop_costs.gd
++++ b/game/editor/creator_prop_costs.gd
+@@ -10,11 +10,11 @@
+ 	"desert/braking_board": 208672,
+ 	"desert/broadleaf": 640288,
+ 	"desert/burning_barrel": 550624,
+-	"desert/burning_car": 1316896,
++	"desert/burning_car": 1362112,
+ 	"desert/bush": 369952,
+-	"desert/car_wreck": 1100096,
++	"desert/car_wreck": 1143776,
+ 	"desert/chevron": 118944,
+-	"desert/cliff": 491812,
++	"desert/cliff": 514852,
+ 	"desert/cone": 143520,
+ 	"desert/container": 2790704,
+ 	"desert/crate": 1622344,
+@@ -44,7 +44,7 @@
+ 	"desert/neon_arrow": 244240,
+ 	"desert/oil": 29248,
+ 	"desert/pallet": 555856,
+-	"desert/parked_car": 1159064,
++	"desert/parked_car": 1163120,
+ 	"desert/pebbles": 433708,
+ 	"desert/puddle": 29248,
+ 	"desert/rock": 124648,
+@@ -57,7 +57,7 @@
+ 	"desert/tree": 563480,
+ 	"desert/tyre_stack": 334432,
+ 	"desert/tyre_wall": 334912,
+-	"desert/van": 1221008,
++	"desert/van": 1225064,
+ 	"desert/water": 1280,
+ 	"desert/wire_fence": 1598080,
+ 	"night_city/abandoned_warehouse": 4019512,
+@@ -68,11 +68,11 @@
+ 	"night_city/braking_board": 208672,
+ 	"night_city/broadleaf": 640288,
+ 	"night_city/burning_barrel": 550624,
+-	"night_city/burning_car": 1316896,
++	"night_city/burning_car": 1362112,
+ 	"night_city/bush": 369952,
+-	"night_city/car_wreck": 1100096,
++	"night_city/car_wreck": 1143776,
+ 	"night_city/chevron": 118944,
+-	"night_city/cliff": 491812,
++	"night_city/cliff": 514468,
+ 	"night_city/cone": 143520,
+ 	"night_city/container": 2790704,
+ 	"night_city/crate": 1622344,
+@@ -102,7 +102,7 @@
+ 	"night_city/neon_arrow": 244240,
+ 	"night_city/oil": 29248,
+ 	"night_city/pallet": 555856,
+-	"night_city/parked_car": 1159064,
++	"night_city/parked_car": 1163120,
+ 	"night_city/pebbles": 433708,
+ 	"night_city/puddle": 29248,
+ 	"night_city/rock": 122344,
+@@ -115,7 +115,7 @@
+ 	"night_city/tree": 563480,
+ 	"night_city/tyre_stack": 334432,
+ 	"night_city/tyre_wall": 334912,
+-	"night_city/van": 1221008,
++	"night_city/van": 1225064,
+ 	"night_city/water": 1280,
+ 	"night_city/wire_fence": 1598080,
+ 	"pine/abandoned_warehouse": 4019512,
+@@ -126,11 +126,11 @@
+ 	"pine/braking_board": 208672,
+ 	"pine/broadleaf": 640288,
+ 	"pine/burning_barrel": 550624,
+-	"pine/burning_car": 1316896,
++	"pine/burning_car": 1362112,
+ 	"pine/bush": 369952,
+-	"pine/car_wreck": 1100096,
++	"pine/car_wreck": 1143776,
+ 	"pine/chevron": 118944,
+-	"pine/cliff": 491812,
++	"pine/cliff": 512932,
+ 	"pine/cone": 143520,
+ 	"pine/container": 2790704,
+ 	"pine/crate": 1622344,
+@@ -160,7 +160,7 @@
+ 	"pine/neon_arrow": 244240,
+ 	"pine/oil": 29248,
+ 	"pine/pallet": 555856,
+-	"pine/parked_car": 1159064,
++	"pine/parked_car": 1163120,
+ 	"pine/pebbles": 433708,
+ 	"pine/puddle": 29248,
+ 	"pine/rock": 124648,
+@@ -173,7 +173,7 @@
+ 	"pine/tree": 563480,
+ 	"pine/tyre_stack": 334432,
+ 	"pine/tyre_wall": 334912,
+-	"pine/van": 1221008,
++	"pine/van": 1225064,
+ 	"pine/water": 1280,
+ 	"pine/wire_fence": 1598080,
+ 	"storm/abandoned_warehouse": 4019512,
+@@ -184,11 +184,11 @@
+ 	"storm/braking_board": 208672,
+ 	"storm/broadleaf": 640288,
+ 	"storm/burning_barrel": 550624,
+-	"storm/burning_car": 1316896,
++	"storm/burning_car": 1362112,
+ 	"storm/bush": 369952,
+-	"storm/car_wreck": 1100096,
++	"storm/car_wreck": 1143776,
+ 	"storm/chevron": 118944,
+-	"storm/cliff": 491812,
++	"storm/cliff": 512932,
+ 	"storm/cone": 143520,
+ 	"storm/container": 2790704,
+ 	"storm/crate": 1622344,
+@@ -218,7 +218,7 @@
+ 	"storm/neon_arrow": 244240,
+ 	"storm/oil": 29248,
+ 	"storm/pallet": 555856,
+-	"storm/parked_car": 1159064,
++	"storm/parked_car": 1163120,
+ 	"storm/pebbles": 433708,
+ 	"storm/puddle": 29248,
+ 	"storm/rock": 124648,
+@@ -231,7 +231,7 @@
+ 	"storm/tree": 563480,
+ 	"storm/tyre_stack": 334432,
+ 	"storm/tyre_wall": 334912,
+-	"storm/van": 1221008,
++	"storm/van": 1225064,
+ 	"storm/water": 1280,
+ 	"storm/wire_fence": 1598080,
+ 	"winter/abandoned_warehouse": 4019512,
+@@ -242,11 +242,11 @@
+ 	"winter/braking_board": 227616,
+ 	"winter/broadleaf": 469216,
+ 	"winter/burning_barrel": 550624,
+-	"winter/burning_car": 1316896,
++	"winter/burning_car": 1362112,
+ 	"winter/bush": 254176,
+-	"winter/car_wreck": 1100096,
++	"winter/car_wreck": 1143776,
+ 	"winter/chevron": 137888,
+-	"winter/cliff": 524524,
++	"winter/cliff": 532804,
+ 	"winter/cone": 165920,
+ 	"winter/container": 2790704,
+ 	"winter/crate": 1622344,
+@@ -276,7 +276,7 @@
+ 	"winter/neon_arrow": 244240,
+ 	"winter/oil": 29248,
+ 	"winter/pallet": 555856,
+-	"winter/parked_car": 1159064,
++	"winter/parked_car": 1163120,
+ 	"winter/pebbles": 774100,
+ 	"winter/puddle": 29248,
+ 	"winter/rock": 95200,
+@@ -289,7 +289,7 @@
+ 	"winter/tree": 615904,
+ 	"winter/tyre_stack": 560736,
+ 	"winter/tyre_wall": 561216,
+-	"winter/van": 1221008,
++	"winter/van": 1225064,
+ 	"winter/water": 1280,
+ 	"winter/wire_fence": 1598080
+ }
+diff --git a/game/track/creator_prop_visual.gd b/game/track/creator_prop_visual.gd
+--- a/game/track/creator_prop_visual.gd
++++ b/game/track/creator_prop_visual.gd
+@@ -1,7 +1,7 @@
+ class_name CreatorPropVisual
+ extends RefCounted
+ ## Original shared meshes for world placement and browser thumbnails.
+-const VERSION: String = "authored-props-16-guardrail-ends"
++const VERSION: String = "authored-props-17-sculpted-wreck-cliff"
+ const GUARDRAIL = preload("res://track/guardrail_visual.gd")
+ const WINTER_FINISH = preload("res://track/winter_prop_finish.gd")
+ const CACHE_LIMIT: int = 96
+@@ -174,7 +174,11 @@
+ 		var b: Array[Vector3] = []
+ 		for i: int in range(7):
+ 			var x: float = -0.5+float(i)/6.0
+-			var h: float = [0.0,0.25,0.29,0.56,0.61,0.91][row]+(0.14*sin(i*1.9) if row==5 else 0.035*sin(i*1.9) if row>0 else 0.0)
++			var h: float = [0.0,0.16,0.34,0.53,0.73,0.91][row]+(0.11*sin(i*1.9) if row==5 else 0.045*sin(i*1.9+row*0.8) if row>0 else 0.0)
++			if row > 0:
++				var edge: float = pow(absf(x)*2.0,3.0)
++				h *= 1.0-edge*0.30*float(row)/5.0
++				x *= 1.0-0.12*float(row)/5.0
+ 			var z: float = 0.5 if row==0 else [0.5,0.46,0.36,0.43,0.29,0.34][row]+0.035*sin(i*2.4)
+ 			if i>0 and i<6 and row>0: x+=0.025*sin(i*3.2+row*0.8)
+ 			f.append(Vector3(x,h,-z)*size)
+@@ -182,7 +186,7 @@
+ 		front.append(f); back.append(b)
+ 	for row: int in range(5):
+ 		for i: int in range(6):
+-			var shade: Color = color.darkened(0.27 if i%3==0 else 0.12)
++			var shade: Color = color.darkened(0.13+0.045*sin(i*2.1+row*0.9))
+ 			_leaf_face(tool,kit,center,1,turn,[front[row][i],front[row][i+1],front[row+1][i+1],front[row+1][i]],shade)
+ 			_leaf_face(tool,kit,center,1,turn,[back[row][i+1],back[row][i],back[row+1][i],back[row+1][i+1]],shade.darkened(0.10))
+ 		for i: int in [0,6]:
+diff --git a/game/track/prop_structures.gd b/game/track/prop_structures.gd
+--- a/game/track/prop_structures.gd
++++ b/game/track/prop_structures.gd
+@@ -58,16 +58,28 @@
+ 	if wreck: roof = 1.15; roof_front = 0.10
+ 	var glass := Color("324e59")
+ 	if wreck: glass = Color("273231")
+-	PropGeometry.face(tool,[Vector3(front,belt,-0.79),Vector3(half,belt-0.08,-0.73),Vector3(half,belt-0.08,0.73),Vector3(front,belt,0.79)],paint.lightened(0.08))
++	if not wreck:
++		PropGeometry.face(tool,[Vector3(front,belt,-0.79),Vector3(half,belt-0.08,-0.73),Vector3(half,belt-0.08,0.73),Vector3(front,belt,0.79)],paint.lightened(0.08))
++	else:
++		# An actual opening exposes the engine, with a folded bonnet at one side.
++		PropGeometry.face(tool,[Vector3(front,belt,-0.79),Vector3(half,belt-0.08,-0.73),Vector3(half,belt-0.08,-0.50),Vector3(front,belt,-0.52)],paint)
++		PropGeometry.face(tool,[Vector3(front,belt,0.52),Vector3(half,belt-0.08,0.50),Vector3(half,belt-0.08,0.73),Vector3(front,belt,0.79)],paint.darkened(0.15))
++		PropGeometry.box(tool,Vector3(1.52,0.69,0),Vector3(0.83,0.08,1.02),DARK.darkened(0.24),0.02)
+ 	PropGeometry.face(tool,[Vector3(-half,belt-0.08,-0.73),Vector3(rear,belt,-0.79),Vector3(rear,belt,0.79),Vector3(-half,belt-0.08,0.73)],paint.lightened(0.06))
+-	PropGeometry.face(tool,[Vector3(roof_rear,roof,-0.68),Vector3(roof_front,roof,-0.68),Vector3(roof_front,roof,0.68),Vector3(roof_rear,roof,0.68)],paint.lightened(0.16))
++	var middle: float = (roof_rear+roof_front)*0.5
++	var crown: float = 0.035 if not wreck else -0.17
++	var skew: float = 0.0 if not wreck else -0.13
++	PropGeometry.face(tool,[Vector3(roof_rear,roof,-0.68),Vector3(middle,roof+crown,-0.68),Vector3(middle,roof+crown+skew,0.68),Vector3(roof_rear,roof,0.68)],paint.lightened(0.12))
++	PropGeometry.face(tool,[Vector3(middle,roof+crown,-0.68),Vector3(roof_front,roof,-0.68),Vector3(roof_front,roof,0.68),Vector3(middle,roof+crown+skew,0.68)],paint.lightened(0.08))
+ 	PropGeometry.face(tool,[Vector3(front,belt,-0.79),Vector3(front,belt,0.79),Vector3(roof_front,roof,0.68),Vector3(roof_front,roof,-0.68)],paint)
+ 	PropGeometry.face(tool,[Vector3(front-0.065,belt+0.07,-0.71),Vector3(front-0.065,belt+0.07,0.71),Vector3(roof_front+0.045,roof-0.09,0.62),Vector3(roof_front+0.045,roof-0.09,-0.62)],glass)
+ 	PropGeometry.face(tool,[Vector3(rear,belt,0.79),Vector3(rear,belt,-0.79),Vector3(roof_rear,roof,-0.68),Vector3(roof_rear,roof,0.68)],paint)
+ 	if not van:
+ 		PropGeometry.face(tool,[Vector3(rear+0.06,belt+0.06,0.72),Vector3(rear+0.06,belt+0.06,-0.72),Vector3(roof_rear-0.03,roof-0.10,-0.61),Vector3(roof_rear-0.03,roof-0.10,0.61)],glass)
+ 	for side: float in [-1.0,1.0]:
+-		PropGeometry.face(tool,[Vector3(rear,belt,side*0.79),Vector3(front,belt,side*0.79),Vector3(roof_front,roof,side*0.68),Vector3(roof_rear,roof,side*0.68)],paint)
++		var roof_middle := Vector3(middle,roof+crown+(skew if side > 0 else 0.0),side*0.68)
++		PropGeometry.face(tool,[Vector3(rear,belt,side*0.79),Vector3(middle,belt,side*0.79),roof_middle,Vector3(roof_rear,roof,side*0.68)],paint)
++		PropGeometry.face(tool,[Vector3(middle,belt,side*0.79),Vector3(front,belt,side*0.79),Vector3(roof_front,roof,side*0.68),roof_middle],paint)
+ 		var window_rear: float = -0.20 if van else rear+0.14
+ 		var upper_rear: float = -0.20 if van else roof_rear+0.06
+ 		PropGeometry.face(tool,[Vector3(window_rear,belt+0.09,side*0.799),Vector3(front-0.15,belt+0.09,side*0.799),Vector3(roof_front-0.03,roof-0.10,side*0.701),Vector3(upper_rear,roof-0.10,side*0.701)],glass)
+@@ -97,6 +109,10 @@
+ 		for side: float in [-1.0,1.0]:
+ 			PropGeometry.face(tool,[Vector3(-0.73,0.58,side*0.848),Vector3(-0.26,0.52,side*0.849),Vector3(-0.05,0.74,side*0.849),Vector3(-0.61,0.79,side*0.849)],Color("a16e45"))
+ 		PropGeometry.beam(tool,Vector3(-0.9,1.15,-0.68),Vector3(0.1,1.15,-0.68),0.045,0.045,Color("aa8970"))
++		# Sparse pale fractures make the missing/damaged glazing read from above.
++		for side: float in [-1.0,1.0]:
++			PropGeometry.beam(tool,Vector3(front-0.07,belt+0.09,side*0.52),Vector3(roof_front+0.05,roof-0.10,side*0.16),0.014,0.012,Color("8b9c99"))
++		PropGeometry.beam(tool,Vector3(-0.60,roof-0.01,0.67),Vector3(-0.18,roof-0.23,0.66),0.06,0.04,DARK)
+ 
+ static func _arch(x: float, axle: float) -> float:
+ 	var d: float = minf(absf(x-axle),absf(x+axle))
+diff --git a/game/editor/object_editing.gd b/game/editor/object_editing.gd
+new file mode 100644
+--- /dev/null
++++ b/game/editor/object_editing.gd
+@@ -0,0 +1,46 @@
++extends RefCounted
++## Editor-only picking and group transforms. Authored objects retain their schema.
++static func candidates(objects: Array, point: Vector2, world_point: Vector2, project: Callable) -> Array[int]:
++	var hits: Array[Dictionary] = []
++	for index: int in range(objects.size()):
++		var object: Dictionary = objects[index]
++		var distance: float = Vector2(project.call(Vector2(object.position[0],object.position[1]))).distance_to(point)
++		var inside: bool = CreatorObjects.contains(object,world_point)
++		if inside or distance <= 30.0: hits.append({"index":index,"distance":distance,"inside":inside})
++	hits.sort_custom(func(a: Dictionary, b: Dictionary) -> bool:
++		if a.inside != b.inside: return a.inside
++		if not is_equal_approx(a.distance,b.distance): return a.distance < b.distance
++		return a.index > b.index)
++	var result: Array[int] = []
++	for hit: Dictionary in hits: result.append(hit.index)
++	return result
++
++static func bounded_delta(objects: Array, indices: Array[int], delta: Vector2) -> Vector2:
++	var low := Vector2(-INF,-INF); var high := Vector2(INF,INF)
++	for index: int in indices:
++		var p := Vector2(objects[index].position[0],objects[index].position[1])
++		low = low.max(Vector2(-110,-110)-p); high = high.min(Vector2(110,110)-p)
++	return delta.clamp(low,high)
++
++static func moved(objects: Array, indices: Array[int], delta: Vector2) -> Array:
++	var result: Array = objects.duplicate()
++	delta = bounded_delta(objects,indices,delta)
++	for index: int in indices:
++		var object: Dictionary = objects[index].duplicate(true)
++		object.position = [float(object.position[0])+delta.x,float(object.position[1])+delta.y]
++		result[index] = object
++	return result
++
++static func rotated(objects: Array, indices: Array[int], degrees: float) -> Array:
++	var result: Array = objects.duplicate()
++	var center := Vector2.ZERO
++	for index: int in indices: center += Vector2(objects[index].position[0],objects[index].position[1])
++	center /= maxi(1,indices.size())
++	for index: int in indices:
++		var object: Dictionary = objects[index].duplicate(true)
++		var position: Vector2 = center+(Vector2(object.position[0],object.position[1])-center).rotated(deg_to_rad(degrees))
++		if position.abs().x > 110.0 or position.abs().y > 110.0: return []
++		object.position = [position.x,position.y]
++		object.rotation = fposmod(float(object.rotation)+degrees,360.0)
++		result[index] = object
++	return result
+diff --git a/game/editor/overview_prop_models.gd b/game/editor/overview_prop_models.gd
+new file mode 100644
+--- /dev/null
++++ b/game/editor/overview_prop_models.gd
+@@ -0,0 +1,49 @@
++extends RefCounted
++## Cheap, recognizable planning meshes. Coordinates fit a unit box centred at zero.
++static func color(kind: String, biome: String, object: Dictionary) -> Color:
++	if kind == "container": return Color(ContainerPaint.value(object))
++	if kind in ["tree","broadleaf","bush","grass_clump","flowers","firefly_bush"]: return TrackTheme.foliage(biome).lightened(0.10)
++	return Color("d8e3e7") if biome == "winter" else Color("d28b31") if kind == "cone" else Color("899b90") if kind == "parked_car" else Color("b4b5a1") if kind == "van" else Color("815842") if kind == "car_wreck" else Color("6e807d") if kind in ["barrel","burning_barrel"] else Color("997b56") if kind in ["crate","pallet","hut","shed"] else Color("aaa18c")
++
++static func height(kind: String) -> float:
++	return 5.0 if kind == "tree" else 4.0 if kind == "broadleaf" else 3.0 if kind in ["shed","hut"] else 2.6 if kind == "container" else 2.12 if kind == "van" else 1.55 if kind == "parked_car" else 1.15 if kind == "car_wreck" else 0.85 if kind == "cone" else 0.5 if kind in ["grass_clump","flowers","pallet"] else 1.2
++
++static func mesh(kind: String, tint: Color) -> ArrayMesh:
++	var tool: SurfaceTool = PropGeometry.model()
++	var dark: Color = tint.darkened(0.48)
++	if kind in ["parked_car","van","car_wreck"]:
++		PropGeometry.box(tool,Vector3(0,-0.13,0),Vector3(0.98,0.38,0.9),tint,0.07)
++		var cabin: Vector3 = Vector3(0,0.18,0) if kind != "car_wreck" else Vector3(-0.12,0.06,0.05)
++		var size := Vector3(0.54,0.52,0.77) if kind != "van" else Vector3(0.81,0.65,0.79)
++		PropGeometry.box(tool,cabin,size,tint.lightened(0.12),0.05)
++		for side: float in [-1.0,1.0]:
++			PropGeometry.box(tool,cabin+Vector3(0,0.03,side*0.394),Vector3(size.x*0.65,size.y*0.45,0.018),Color("294854"),0)
++			for x: float in [-0.31,0.31]: PropGeometry.box(tool,Vector3(x,-0.30,side*0.46),Vector3(0.16,0.30,0.10),Color("2b3333"),0.025)
++		PropGeometry.box(tool,Vector3(0.497,-0.10,0),Vector3(0.015,0.08,0.56),Color("d5d2ad"),0)
++		if kind == "car_wreck": PropGeometry.box(tool,Vector3(0.30,0.13,-0.08),Vector3(0.34,0.12,0.48),dark,0.02)
++	elif kind in ["barrel","burning_barrel","snow_lantern","ice_lantern"]:
++		PropGeometry.tube(tool,Vector3(0,-0.48,0),Vector3(0,0.48,0),0.45,0.45,tint,10)
++		for y: float in [-0.25,0.25]: PropGeometry.tube(tool,Vector3(0,y-0.025,0),Vector3(0,y+0.025,0),0.47,0.47,tint.lightened(0.22),10)
++	elif kind == "cone":
++		PropGeometry.box(tool,Vector3(0,-0.45,0),Vector3(0.95,0.10,0.95),Color("39413e"),0.03)
++		PropGeometry.tube(tool,Vector3(0,-0.40,0),Vector3(0,0.50,0),0.40,0.06,Color("dc8429"),10)
++		PropGeometry.tube(tool,Vector3(0,-0.05,0),Vector3(0,0.13,0),0.27,0.20,Color("eee6ce"),10)
++	elif kind in ["hut","shed"]:
++		PropGeometry.box(tool,Vector3(0,-0.12,0),Vector3(0.95,0.74,0.95),tint,0.02)
++		for side: float in [-1.0,1.0]:
++			PropGeometry.face(tool,[Vector3(-0.5,0.23,side*0.5),Vector3(0.5,0.23,side*0.5),Vector3(0.5,0.5,0),Vector3(-0.5,0.5,0)],Color("665b50"))
++		PropGeometry.box(tool,Vector3(0,-0.13,-0.48),Vector3(0.30,0.54,0.025),dark,0)
++	elif kind == "tree":
++		PropGeometry.tube(tool,Vector3(0,-0.5,0),Vector3(0,0.15,0),0.07,0.05,Color("71644d"),6)
++		for tier: int in range(3): PropGeometry.tube(tool,Vector3(0,-0.30+tier*0.22,0),Vector3(0,0.12+tier*0.19,0),0.48-tier*0.09,0.02,tint.lightened(tier*0.035),7)
++	elif kind in ["broadleaf","bush","rock","boulder","slate","snowman","firefly_bush"]:
++		PropGeometry.tube(tool,Vector3(0,-0.5,0),Vector3(0,-0.10,0),0.12,0.08,dark,6)
++		PropGeometry.tube(tool,Vector3(0,-0.22,0),Vector3(0,0.16,0),0.48,0.37,tint,7)
++		PropGeometry.tube(tool,Vector3(0,0.16,0),Vector3(0,0.46,0),0.37,0.12,tint.lightened(0.12),7)
++	else:
++		PropGeometry.box(tool,Vector3.ZERO,Vector3(0.97,0.96,0.97),tint,0.035)
++		if kind in ["crate","pallet"]:
++			for x: float in [-0.35,0.0,0.35]: PropGeometry.box(tool,Vector3(x,0.49,0),Vector3(0.055,0.018,0.94),tint.lightened(0.25),0)
++		if kind == "container":
++			for x: float in [-0.35,-0.17,0.0,0.17,0.35]: PropGeometry.box(tool,Vector3(x,0.49,0),Vector3(0.035,0.018,0.92),tint.lightened(0.18),0)
++	return PropGeometry.finish(tool)
+diff --git a/game/editor/surface_labels.gd b/game/editor/surface_labels.gd
+new file mode 100644
+--- /dev/null
++++ b/game/editor/surface_labels.gd
+@@ -0,0 +1,11 @@
++extends RefCounted
++## Display names and pigments for the existing, unchanged surface IDs.
++static func title(surface: int, biome: String) -> String:
++	if biome == "winter": return ["Ice","Snow","Packed snow","Water","Barrier","Kerb","Slush","Low obstacles"][clampi(surface,0,7)]
++	if biome == "desert" and surface in [1,2]: return "Sand" if surface == 1 else "Loose sand"
++	if biome == "night_city" and surface in [1,2]: return "Ground" if surface == 1 else "Gravel"
++	return ["Road","Grass","Sand","Water","Barrier","Kerb","Rough ground","Low obstacles"][clampi(surface,0,7)]
++
++static func glyph(surface: int, biome: String) -> String:
++	if biome == "winter" and surface in [1,2]: return "terrain_snow"
++	return "terrain_grass" if surface == 1 and biome not in ["desert","night_city"] else "terrain_dirt" if surface in [1,2] else "terrain_water" if surface == 3 else "terrain_road"
+diff --git a/game/tests/test_editor_ux_improvements.gd b/game/tests/test_editor_ux_improvements.gd
+new file mode 100644
+--- /dev/null
++++ b/game/tests/test_editor_ux_improvements.gd
+@@ -0,0 +1,273 @@
++extends "res://tests/review_track_editor_2026_10_28.gd"
++## Actual-App regressions and native evidence for the editor usability pass.
++const EDIT = preload("res://editor/object_editing.gd")
++const OVERVIEW = preload("res://editor/overview_prop_models.gd")
++const SURFACES = preload("res://editor/surface_labels.gd")
++var checks: int = 0
++var measurements: Dictionary = {}
++
++func check(condition: bool, message: String) -> void:
++	checks += 1
++	if not condition: failures += 1; print("FAIL: ",message)
++
++func frames(count: int = 4) -> void:
++	for index: int in range(count): await process_frame
++	if DisplayServer.get_name() != "headless": await RenderingServer.frame_post_draw
++
++func shot(label: String) -> void:
++	if DisplayServer.get_name() != "headless": await super.shot(label)
++
++func settle() -> void:
++	var deadline: int = Time.get_ticks_msec()+60000
++	while Time.get_ticks_msec()<deadline:
++		if app.editor_preview_thread == null and not app.editor_world._building and not app.editor_commits.unsettled() and not app.editor_writes.unsettled(app.library,str(app.document.id)):
++			await frames(4)
++			if app.editor_preview_thread == null and not app.editor_world._building and not app.editor_commits.unsettled(): return
++		await process_frame
++	check(false,"editor preparation and recovery writes settle")
++
++func touch(canvas: EditorCanvas, position: Vector2, pressed: bool, cancelled: bool = false) -> void:
++	var event := InputEventScreenTouch.new()
++	event.index = 9; event.position = position; event.pressed = pressed; event.canceled = cancelled
++	canvas._gui_input(event)
++
++func drag(canvas: EditorCanvas, position: Vector2) -> void:
++	var event := InputEventScreenDrag.new(); event.index = 9; event.position = position
++	canvas._gui_input(event)
++
++func named(value: String) -> Node:
++	return app.root_ui.find_child(value,true,false)
++
++func object(kind: String, x: float, y: float) -> Dictionary:
++	return {"kind":kind,"position":[x,y],"rotation":0.0}
++
++func picking() -> void:
++	var canvas := EditorCanvas.new(); canvas.document = TrackDocument.create_blank(); canvas.mode = "objects"
++	canvas.document.objects = [object("cone",0,0),object("cone",4,0)]
++	root.add_child(canvas); canvas.size = Vector2(1280,720)
++	canvas.zoom = 6.0/minf(canvas.size.x/110.0,canvas.size.y/90.0)
++	var point: Vector2 = canvas.to_screen(Vector2.ZERO)
++	touch(canvas,point,true); touch(canvas,point,false)
++	check(canvas.selected_object == 0,"exact object wins over a later-added neighbour 24 pixels away")
++	canvas.document.objects.append(object("cone",0,0))
++	touch(canvas,point,true); touch(canvas,point,false)
++	check(canvas.selected_object == 2,"coincident ties select the topmost object")
++	canvas.cycle_objects(); check(canvas.selected_object == 0,"Next object reaches the other coincident object")
++	canvas.object_snap = 0.25
++	check(canvas.object_position(Vector2(1.36,2.62)).is_equal_approx(Vector2(1.25,2.5)),"quarter-metre snapping")
++	canvas.object_snap = 0
++	check(canvas.object_position(Vector2(1.36,2.62)).is_equal_approx(Vector2(1.36,2.62)),"free placement retains precision")
++	canvas.object_snap = 1
++	check(canvas.object_position(Vector2(1.36,2.62)).is_equal_approx(Vector2(1,3)),"default metre snapping retained")
++	var original: Array = [object("crate",106,108),object("cone",108,106)]
++	var indices: Array[int] = [0,1]
++	var moved: Array = EDIT.moved(original,indices,Vector2(10,10))
++	check(moved[0].position == [108.0,110.0] and moved[1].position == [110.0,108.0],"bounded group translation preserves spacing")
++	check(original[0].position == [106.0,108.0],"group transforms never mutate their source snapshot")
++	var rotated: Array = EDIT.rotated([object("crate",-3,0),object("cone",3,0)],indices,90)
++	check(Vector2(rotated[0].position[0],rotated[0].position[1]).is_equal_approx(Vector2(0,-3)),"group rotates around its shared centre")
++	check(EDIT.rotated([object("crate",110,110),object("cone",100,110)],indices,45).is_empty(),"out-of-map group rotation is rejected atomically")
++	canvas.mode = "place"; canvas.stamp_kind = "crate"; canvas.object_snap = 0.25
++	point = canvas.to_screen(Vector2(15.36,12.62))
++	touch(canvas,point,true); touch(canvas,point,false)
++	check(canvas.document.objects.back().position == [15.25,12.5],"touch placement uses the selected quarter-metre grid")
++	canvas.object_snap = 0; point = canvas.to_screen(Vector2(25.36,22.62))
++	touch(canvas,point,true); touch(canvas,point,false)
++	var free: Array = canvas.document.objects.back().position
++	check(Vector2(free[0],free[1]).distance_to(Vector2(25.36,22.62)) < 0.0001,"touch placement supports free precision")
++	var dense: Array = []
++	point = canvas.to_screen(Vector2.ZERO)
++	for index: int in range(1000): dense.append(object("cone",-100+(index%40)*5,-60+(index/40)*5))
++	var samples: Array[float] = []
++	for index: int in range(60):
++		var started: int = Time.get_ticks_usec()
++		EDIT.candidates(dense,point,Vector2.ZERO,canvas.to_screen)
++		samples.append(float(Time.get_ticks_usec()-started)/1000.0)
++	samples.sort()
++	measurements.picking_1000_objects_ms = {"median":samples[30],"p95":samples[57],"maximum":samples.back()}
++	canvas.queue_free(); await frames(2)
++
++func browser() -> void:
++	var browser: ObjectBrowser = app.object_browser
++	app._editor_category("objects")
++	browser.choose("boulder"); browser.stamp_scale = 1.5; browser.placement = "curve"
++	browser._activate_asset("rock")
++	check(browser.current == "boulder" and browser.stamp_scale == 1.5 and browser.placement == "curve","opening family Properties preserves variant, size and placement")
++	check(browser.options.visible and browser.options.state.kind == "boulder","Properties inspects the chosen variant")
++	await frames(3); await shot("03-preserved-boulder-properties")
++	browser.options.hide()
++	browser._property_edited("kind","rock"); await frames(2)
++	check(browser.current == "rock" and browser.stamp_scale == 1.5 and browser.placement == "curve","changing a variant retains size and placement")
++	browser._property_edited("kind","boulder"); await frames(2)
++	browser.options.hide()
++	browser.snap_step = 0.25
++	check((named("ObjectSnap") as OptionButton).selected == 1,"restored snap setting matches its visible control")
++	(named("ObjectSnap") as OptionButton).item_selected.emit(2)
++	check(app.canvas.object_snap == 0,"snap control changes actual placement precision")
++	browser.category = "Recent"; browser.refresh(); await frames(2)
++	var tile: ObjectThumbnail = browser.tiles.find_child("Asset_rock",true,false) as ObjectThumbnail
++	check(tile != null and tile._kind == "boulder","family card previews the selected variant")
++	if tile != null: check(tile.custom_minimum_size == Vector2(112,90),"object cards give captions and artwork more room")
++	app.canvas.cancel_gesture()
++
++func groups() -> void:
++	var doc: Dictionary = circuit(); doc.objects = [object("crate",-12,0),object("cone",0,0),object("barrel",12,0)]
++	await show(doc); app._editor_category("objects")
++	var canvas: EditorCanvas = app.canvas
++	canvas.zoom = 8.0/minf(canvas.size.x/110.0,canvas.size.y/90.0)
++	touch(canvas,canvas.to_screen(Vector2(-12,0)),true); touch(canvas,canvas.to_screen(Vector2(-12,0)),false)
++	canvas.toggle_multi_select()
++	touch(canvas,canvas.to_screen(Vector2.ZERO),true); touch(canvas,canvas.to_screen(Vector2.ZERO),false)
++	check(canvas.object_indices() == [0,1],"tap adds an object to a multi-selection")
++	var before: Array = app.document.objects.duplicate(true); var count: int = app.history.size()
++	var start: Vector2 = canvas.to_screen(Vector2.ZERO)
++	touch(canvas,start,true); drag(canvas,canvas.to_screen(Vector2(2,3))); touch(canvas,canvas.to_screen(Vector2(2,3)),false)
++	check(app.document.objects[0].position == [-10.0,3.0] and app.document.objects[1].position == [2.0,3.0],"dragging one member moves the selected group")
++	check(app.document.objects[2] == before[2] and app.history.size() == count+1,"group drag changes only the group and creates one undo step")
++	await settle(); await shot("04-group-selection")
++	var moved: Array = app.document.objects.duplicate(true)
++	touch(canvas,canvas.to_screen(Vector2(2,3)),true); drag(canvas,canvas.to_screen(Vector2(5,7)))
++	touch(canvas,canvas.to_screen(Vector2(5,7)),false,true)
++	check(app.document.objects == moved and app.history.size() == count+1 and not canvas.dragging and canvas.active_pointer == -99,"cancelled group drag rolls back and releases capture without a new undo step")
++	app._undo(); check(app.document.objects == before,"one Undo restores the complete group")
++	app._redo(); check(app.document.objects == moved,"one Redo restores the complete group")
++	canvas.multi_select = true; canvas.selected_objects.assign([0,1]); canvas.selected_object = 1
++	count = app.history.size(); app._duplicate_object()
++	check(app.document.objects.size() == 5 and canvas.object_indices() == [3,4],"Copy duplicates and selects the whole group")
++	check(app.history.size() == count+1,"group Copy is one undo step")
++	app._delete_selection(); check(app.document.objects == moved,"Delete removes the selected copies together")
++	app._undo(); check(app.document.objects.size() == 5,"Undo restores all deleted group members")
++	app._redo(); check(app.document.objects == moved,"Redo removes precisely the copied group")
++	canvas.multi_select = true; canvas.selected_objects.assign([0,1]); canvas.selected_object = 1
++	var separation: float = Vector2(-12,0).length()
++	app._set_object_rotation(90)
++	var a := Vector2(app.document.objects[0].position[0],app.document.objects[0].position[1])
++	var b := Vector2(app.document.objects[1].position[0],app.document.objects[1].position[1])
++	check(is_equal_approx(a.distance_to(b),separation) and app.document.objects[0].rotation == 90.0,"group rotation preserves spacing and rotates all members")
++	await settle()
++	var deadline: int = Time.get_ticks_msec()+20000
++	while Time.get_ticks_msec()<deadline:
++		var saved: Dictionary = app.library.load_wip(app.document.id)
++		if JSON.stringify(saved.get("objects",[])) == JSON.stringify(app.document.objects) and not app.editor_commits.unsettled() and not app.editor_writes.unsettled(app.library,str(app.document.id)): break
++		await process_frame
++	var recovered: Array = app.library.load_wip(app.document.id).get("objects",[])
++	measurements.group_recovery = {"saved":recovered,"live":app.document.objects.duplicate(true)}
++	print("GROUP_RECOVERY: ",JSON.stringify(measurements.group_recovery))
++	check(JSON.stringify(recovered) == JSON.stringify(app.document.objects),"draft recovery stores the complete transformed group at serialization precision")
++	app._undo(); canvas.multi_select = true; canvas.selected_objects.assign([0,1]); canvas.selected_object = 1
++	touch(canvas,canvas.to_screen(Vector2(2,3)),true); touch(canvas,canvas.to_screen(Vector2(2,3)),false)
++	check(canvas.object_indices() == [0],"tapping an existing member removes it from the selection")
++	var prior: Dictionary = app.document
++	var limited: Dictionary = TrackDocument.create_blank(); limited.id = "limited_group"
++	for index: int in range(4095): limited.objects.append(object("tyre_stack",-80+(index%80)*2,-80+(index/80)*2))
++	app.document = limited; canvas.document = limited; canvas.multi_select = true; canvas.selected_objects.assign([0,1]); canvas.selected_object = 1
++	count = app.history.size(); app._duplicate_object()
++	check(app.document.objects.size() == 4095 and app.history.size() == count,"a group exceeding the remaining capacity is rejected without partial copies or history")
++	app.document = prior; canvas.document = prior; canvas.multi_select = false; canvas.selected_object = -1
++
++func surface_controls() -> void:
++	var doc: Dictionary = circuit(); doc.theme = "winter"
++	await show(doc); app._editor_category("paint")
++	app.canvas.paint_mode = "area"; app._build_editor_tools(); await frames(3)
++	check(named("BrushSizeSlider") == null,"Area omits the irrelevant brush-size control")
++	check(named("AreaRemovePoint") != null and (named("AreaRemovePoint") as Button).disabled,"Area exposes disabled Undo point before the first point")
++	check((named("AreaConfirm") as Button).disabled,"Area cannot place fewer than three points")
++	app.canvas.paint_points = [[-8.0,8.0],[8.0,8.0],[8.0,-8.0]]; app._build_editor_tools(); await frames(3)
++	check(not (named("AreaConfirm") as Button).disabled,"three points enable visible Place")
++	await shot("05-winter-area-controls")
++	(named("AreaRemovePoint") as Button).pressed.emit()
++	check(app.canvas.paint_points.size() == 2 and (named("AreaConfirm") as Button).disabled,"Undo point removes one draft vertex and refreshes availability")
++	(named("AreaCancel") as Button).pressed.emit()
++	check(app.canvas.paint_points.is_empty() and app.document.paint.is_empty(),"Cancel clears only the uncommitted area")
++	check(SURFACES.title(1,"winter") == "Snow" and SURFACES.title(2,"winter") == "Packed snow","Winter material labels match the terrain")
++	check(SURFACES.glyph(1,"winter") == "terrain_snow" and SURFACES.title(2,"desert") == "Loose sand","biome-specific material symbols and labels")
++
++func overview() -> void:
++	var mesh_counts: Dictionary = {}
++	for kind: String in ["parked_car","van","car_wreck","barrel","cone","crate","pallet","hut","shed","tree","broadleaf","container"]:
++		var mesh: ArrayMesh = OVERVIEW.mesh(kind,OVERVIEW.color(kind,"pine",{"kind":kind}))
++		var arrays: Array = mesh.surface_get_arrays(0)
++		var vertices: PackedVector3Array = arrays[Mesh.ARRAY_VERTEX]
++		var normals: PackedVector3Array = arrays[Mesh.ARRAY_NORMAL]
++		var valid: bool = not vertices.is_empty() and normals.size() == vertices.size()
++		for normal: Vector3 in normals:
++			if not normal.is_finite() or normal.length() < 0.9: valid = false
++		check(valid,"overview "+kind+" has finite lit geometry")
++		check(vertices.size() < 3000,"overview "+kind+" remains a bounded simple mesh")
++		mesh_counts[kind] = vertices.size()/3
++	check(OVERVIEW.color("parked_car","pine",{}) != OVERVIEW.color("crate","pine",{}),"overview objects retain distinct material colours")
++	measurements.overview_triangles = mesh_counts
++	var doc: Dictionary = circuit(); doc.objects.clear()
++	var kinds: Array[String] = ["parked_car","van","car_wreck","barrel","cone","crate","pallet","hut"]
++	for index: int in range(32): doc.objects.append(object(kinds[index%8],-35.0+(index%8)*10.0,20.0-(index/8)*13.0))
++	await show(doc); app._editor_category("objects")
++	app.canvas.zoom = 6.5/minf(app.canvas.size.x/110.0,app.canvas.size.y/90.0); app.canvas.pan = Vector2.ZERO
++	await frames(20)
++	check(app.editor_world._detail.reduced,"dense distant scene uses the readable overview")
++	await shot("06-dense-overview")
++	app.canvas.multi_select = true; app.canvas.selected_objects.assign([0,3]); app.canvas.selected_object = 3
++	await frames(8)
++	check(app.editor_world._detail._selection == [0,3],"overview tracks every selected member for full detail")
++	app.canvas.multi_select = false; app.canvas.selected_object = -1
++	app.editor_map_panel.show(); await frames(3)
++	var toggle: CheckButton = named("EditorDetailedScenery") as CheckButton
++	check(toggle != null,"Map exposes Detailed scenery")
++	if toggle != null: toggle.button_pressed = true
++	app.editor_map_panel.hide(); await frames(20)
++	check(not app.editor_world._detail.reduced,"Detailed scenery explicitly restores full models")
++	await shot("07-dense-full-detail")
++	root.size = Vector2i(960,540); root.content_scale_size = Vector2i(1280,720); await frames(5)
++	await shot("08-small-window-objects")
++	root.size = Vector2i(1280,720); root.content_scale_size = root.size
++
++func model_study() -> void:
++	if DisplayServer.get_name() == "headless": return
++	app.root_ui.hide()
++	var background := ColorRect.new(); background.color = Color("15262e"); background.size = Vector2(1280,720); root.add_child(background)
++	var title := MenuStyle.label("Shared object meshes · production thumbnail renderer",24); title.position = Vector2(24,12); background.add_child(title)
++	var tiles: Array[ObjectThumbnail] = []
++	var kinds: Array[String] = ["parked_car","van","car_wreck","cliff","barrel","hut"]
++	for index: int in range(kinds.size()):
++		var tile: ObjectThumbnail = ObjectThumbnail.make(kinds[index],CreatorCatalog.label(kinds[index]),false,func() -> void: pass,"pine") as ObjectThumbnail
++		tile.position = Vector2(50+(index%3)*400,64+(index/3)*315); tile.scale = Vector2(3.2,3.2); background.add_child(tile); tiles.append(tile)
++	var deadline: int = Time.get_ticks_msec()+45000
++	while Time.get_ticks_msec()<deadline:
++		var pending: bool = false
++		for tile: ObjectThumbnail in tiles:
++			if tile._image.texture == null or tile._viewport != null: pending = true
++		if not pending: break
++		await process_frame
++	for tile: ObjectThumbnail in tiles: check(tile._image.texture != null and tile._viewport == null,"native model study renders "+tile._kind)
++	await frames(5)
++	check(root.get_texture().get_image().save_png(folder+"/09-model-study.png") == OK,"native model study saved")
++	background.queue_free(); app.root_ui.show(); await frames(3)
++
++func run() -> void:
++	OS.set_environment("BMT_API_URL","")
++	folder = ProjectSettings.globalize_path("res://../docs/evidence/editor-ux-improvements-2026-10-28").simplify_path().path_join("headless" if DisplayServer.get_name() == "headless" else RenderingServer.get_current_rendering_method())
++	DirAccess.make_dir_recursive_absolute(folder)
++	root.size = Vector2i(1280,720); root.content_scale_size = root.size
++	await picking()
++	app = load("res://core/app.tscn").instantiate()
++	app.library = TrackLibrary.new(folder+"/disposable-storage"); app.records = LocalRecords.new(folder+"/disposable-storage/records.json")
++	app.cloud_root_override = folder+"/disposable-storage/cloud"; root.add_child(app)
++	while not app.startup_complete: await process_frame
++	app.library.owner_name = "Editor checks"
++	await show(TrackDocument.create_blank())
++	check(app.editor_status.visible and not app.editor_guidance.is_empty(),"first-use tool guidance is visible")
++	check(named("EditorSaveAction") != null,"Save is directly available in the main toolbar")
++	check(not is_instance_valid(app.editor_world.visual.editor_cover) or not app.editor_world.visual.editor_cover.visible,"planning view suppresses decorative ground flecks")
++	await shot("01-first-use")
++	await show(circuit()); app.canvas.selected_piece = 0; app._build_editor_tools()
++	await shot("02-road-handles")
++	await browser()
++	await groups()
++	await surface_controls()
++	await overview()
++	await model_study()
++	measurements["checks"] = checks; measurements["failures"] = failures; measurements["observations"] = observations
++	var report := FileAccess.open(folder+"/report.json",FileAccess.WRITE); report.store_string(JSON.stringify(measurements,"\t")); report.close()
++	app.queue_free(); GameSoundtrack.instance().queue_free(); await frames(5)
++	await create_timer(0.25).timeout
++	print("EDITOR_UX_IMPROVEMENTS: ",checks," checks, ",failures," failures")
++	quit(0 if failures == 0 else 1)
+diff --git a/game/tests/test_editor_prop_quality_2026_10_28.gd b/game/tests/test_editor_prop_quality_2026_10_28.gd
+new file mode 100644
+--- /dev/null
++++ b/game/tests/test_editor_prop_quality_2026_10_28.gd
+@@ -0,0 +1,77 @@
++extends SceneTree
++const BATCHES = preload("res://editor/placed_object_batches.gd")
++const BYTES = preload("res://editor/cache_bytes.gd")
++const COSTS = preload("res://editor/creator_prop_costs.gd")
++var checks: int = 0
++var failures: int = 0
++var measurements: Dictionary = {}
++
++func _initialize() -> void: run.call_deferred()
++func check(condition: bool, message: String) -> void:
++	checks += 1
++	if not condition: failures += 1; print("FAIL: ",message)
++
++func baseline(file: String, global_name: String) -> GDScript:
++	var path: String = "res://../docs/evidence/editor-ux-improvements-2026-10-28/before/game/track/"+file
++	var script := GDScript.new()
++	script.source_code = FileAccess.get_file_as_string(path).replace("\r\n","\n").replace("class_name "+global_name+"\n","")
++	check(script.reload() == OK,"exact task-start "+file+" compiles independently")
++	return script
++
++func geometry(kind: String, previous: bool, structures: GDScript, visual: GDScript, kit: NativeTrackVisual) -> ArrayMesh:
++	var tool: SurfaceTool = PropGeometry.model()
++	if kind == "cliff":
++		if previous: visual._cliff(tool,kit,Vector3.ZERO,Vector3(8,4,3),0.0,Color("98937e"))
++		else: CreatorPropVisual._cliff(tool,kit,Vector3.ZERO,Vector3(8,4,3),0.0,Color("98937e"))
++	elif previous: structures.append(tool,kit,kind,Vector3.ZERO,1.0,0.0,true)
++	else: PropStructures.append(tool,kit,kind,Vector3.ZERO,1.0,0.0,true)
++	return PropGeometry.finish(tool)
++
++func run() -> void:
++	var structures: GDScript = baseline("prop_structures.gd","PropStructures")
++	var visual: GDScript = baseline("creator_prop_visual.gd","CreatorPropVisual")
++	var kit := NativeTrackVisual.new(); kit.theme_id = "pine"; kit.colors = TrackTheme.palette("pine"); kit.editor_preview = true
++	root.add_child(kit)
++	for kind: String in ["parked_car","van","car_wreck","cliff","hut","shed","grandstand"]:
++		var old: ArrayMesh = geometry(kind,true,structures,visual,kit)
++		var current: ArrayMesh = geometry(kind,false,structures,visual,kit)
++		var before: AABB = old.get_aabb(); var after: AABB = current.get_aabb()
++		check(after.position.x >= before.position.x-0.001 and after.end.x <= before.end.x+0.001 and after.position.z >= before.position.z-0.001 and after.end.z <= before.end.z+0.001,kind+" retains its original horizontal envelope")
++		check(after.position.y >= before.position.y-0.001 and after.end.y <= before.end.y+0.04,kind+" retains its ground contact and bounded height")
++		var arrays: Array = current.surface_get_arrays(0); var valid: bool = true
++		for vertex: Vector3 in arrays[Mesh.ARRAY_VERTEX]:
++			if not vertex.is_finite(): valid = false
++		for normal: Vector3 in arrays[Mesh.ARRAY_NORMAL]:
++			if not normal.is_finite(): valid = false
++		check(valid,kind+" has finite actual geometry and normals")
++		var changed: bool = var_to_bytes(old.surface_get_arrays(0)) != var_to_bytes(arrays)
++		check(changed == (kind in ["parked_car","van","car_wreck","cliff"]),kind+" matches the intended sculpt-only scope")
++		measurements[kind] = {"old_triangles":old.surface_get_array_len(0)/3,"new_triangles":current.surface_get_array_len(0)/3,"old_size":str(before.size),"new_size":str(after.size)}
++	kit.free()
++	var revised_costs: Dictionary = {}
++	for biome: String in TrackTheme.IDS:
++		for kind: String in ["parked_car","van","car_wreck","cliff","burning_car"]:
++			kit = NativeTrackVisual.new(); kit.theme_id = biome; kit.colors = TrackTheme.palette(biome); kit.editor_preview = true; kit._suppress_night_fx = true
++			root.add_child(kit)
++			var object: Dictionary = {"kind":kind,"position":[0.0,0.0],"rotation":0.0}
++			var track := NativeTrack.new(); track.metadata = {"creator_document":{"objects":[object]},"scenery_objects":[]}
++			await kit._build_placed_objects(track)
++			var cost: int = BYTES.scene(kit)+1024
++			var planner = BATCHES.new(); var model: Dictionary = planner._model(kit,object,kind)
++			var retained: int = 1024
++			for part: Dictionary in model.parts:
++				if part.baked:
++					retained += part.arrays[Mesh.ARRAY_VERTEX].size()*192+part.hidden.size()*16
++					if part.arrays[Mesh.ARRAY_INDEX] != null: retained += part.arrays[Mesh.ARRAY_INDEX].size()*12
++				else: retained += BYTES.mesh(part.mesh)
++			cost = maxi(cost,retained)
++			var key: String = biome+"/"+kind
++			revised_costs[key] = cost
++			check(cost <= int(COSTS.BYTES[key]),key+" remains inside the authoring memory estimate")
++			kit.free()
++		await process_frame
++	measurements.costs = revised_costs; measurements.checks = checks; measurements.failures = failures
++	var report := FileAccess.open("res://../docs/evidence/editor-ux-improvements-2026-10-28/prop-quality.json",FileAccess.WRITE)
++	report.store_string(JSON.stringify(measurements,"\t")); report.close()
++	print("EDITOR_PROP_QUALITY: ",checks," checks, ",failures," failures")
++	quit(0 if failures == 0 else 1)
+diff --git a/scripts/translations/editor_ux_2026_10_28.tsv b/scripts/translations/editor_ux_2026_10_28.tsv
+new file mode 100644
+--- /dev/null
++++ b/scripts/translations/editor_ux_2026_10_28.tsv
+@@ -0,0 +1,22 @@
++Multi-select|Sélection multiple|Selección múltiple|Mehrfachauswahl|Seleção múltipla|複数選択|다중 선택|Meerdere selecteren|Selezione multipla|Monivalinta|Markera flera|Velg flere
++Erase|Effacer|Borrar|Löschen|Apagar|消去|지우기|Wissen|Cancella|Poista|Radera|Slett
++Next object|Objet suivant|Objeto siguiente|Nächstes Objekt|Próximo objeto|次のオブジェクト|다음 오브젝트|Volgend object|Oggetto successivo|Seuraava esine|Nästa objekt|Neste objekt
++Detailed scenery|Décor détaillé|Escenario detallado|Detaillierte Umgebung|Cenário detalhado|詳細な風景|상세 배경|Gedetailleerde omgeving|Scenario dettagliato|Tarkka ympäristö|Detaljerad miljö|Detaljert miljø
++Autosaved draft|Brouillon enregistré automatiquement|Borrador guardado automáticamente|Entwurf automatisch gespeichert|Rascunho salvo automaticamente|下書きを自動保存済み|초안 자동 저장됨|Concept automatisch opgeslagen|Bozza salvata automaticamente|Luonnos tallennettu automaattisesti|Utkast autosparat|Utkast automatisk lagret
++Undo point|Retirer le point|Deshacer punto|Punkt zurücknehmen|Desfazer ponto|点を取り消す|점 실행 취소|Punt ongedaan maken|Annulla punto|Kumoa piste|Ångra punkt|Angre punkt
++Area · %d points|Zone · %d points|Área · %d puntos|Fläche · %d Punkte|Área · %d pontos|エリア · %d点|영역 · 점 %d개|Gebied · %d punten|Area · %d punti|Alue · %d pistettä|Område · %d punkter|Område · %d punkter
++%d objects selected · drag one to move the group|%d objets sélectionnés · faites-en glisser un pour déplacer le groupe|%d objetos seleccionados · arrastra uno para mover el grupo|%d Objekte ausgewählt · eines ziehen, um die Gruppe zu bewegen|%d objetos selecionados · arraste um para mover o grupo|%d個を選択中 · 1つドラッグしてグループを移動|오브젝트 %d개 선택됨 · 하나를 끌어 그룹 이동|%d objecten geselecteerd · sleep er één om de groep te verplaatsen|%d oggetti selezionati · trascinane uno per spostare il gruppo|%d esinettä valittu · siirrä ryhmää vetämällä yhtä|%d objekt markerade · dra ett för att flytta gruppen|%d objekter valgt · dra ett for å flytte gruppen
++Multi-select: tap to add or remove; drag to move.|Sélection multiple : touchez pour ajouter ou retirer, faites glisser pour déplacer.|Selección múltiple: toca para añadir o quitar; arrastra para mover.|Mehrfachauswahl: Antippen wählt aus oder ab; Ziehen verschiebt.|Seleção múltipla: toque para adicionar ou remover; arraste para mover.|複数選択：タップで追加・解除、ドラッグで移動。|다중 선택: 탭하여 추가 또는 해제하고 끌어서 이동하세요.|Meervoudige selectie: tik om toe te voegen of te verwijderen; sleep om te verplaatsen.|Selezione multipla: tocca per aggiungere o rimuovere; trascina per spostare.|Monivalinta: lisää tai poista napauttamalla, siirrä vetämällä.|Markera flera: tryck för att lägga till eller ta bort, dra för att flytta.|Velg flere: trykk for å legge til eller fjerne, dra for å flytte.
++Keep the whole selection inside the map.|Gardez toute la sélection dans la carte.|Mantén toda la selección dentro del mapa.|Die gesamte Auswahl muss innerhalb der Karte bleiben.|Mantenha toda a seleção dentro do mapa.|選択したすべてのオブジェクトをマップ内に収めてください。|선택한 모든 오브젝트를 맵 안에 두세요.|Houd de volledige selectie binnen de kaart.|Mantieni l'intera selezione all'interno della mappa.|Pidä koko valinta kartan sisällä.|Håll hela markeringen inom kartan.|Hold hele utvalget innenfor kartet.
++Only one object is under this point.|Il n'y a qu'un objet à cet endroit.|Solo hay un objeto en este punto.|An dieser Stelle befindet sich nur ein Objekt.|Há apenas um objeto neste ponto.|この位置にはオブジェクトが1つだけあります。|이 지점에는 오브젝트가 하나뿐입니다.|Op dit punt staat maar één object.|In questo punto c'è un solo oggetto.|Tässä kohdassa on vain yksi esine.|Det finns bara ett objekt vid den här punkten.|Det er bare ett objekt på dette punktet.
++Snap: 1 m|Grille : 1 m|Ajuste: 1 m|Raster: 1 m|Encaixe: 1 m|スナップ：1 m|스냅: 1 m|Raster: 1 m|Aggancio: 1 m|Kohdistus: 1 m|Fäst: 1 m|Fest: 1 m
++Snap: 0.25 m|Grille : 0,25 m|Ajuste: 0,25 m|Raster: 0,25 m|Encaixe: 0,25 m|スナップ：0.25 m|스냅: 0.25 m|Raster: 0,25 m|Aggancio: 0,25 m|Kohdistus: 0,25 m|Fäst: 0,25 m|Fest: 0,25 m
++Snap: off|Grille : désactivée|Ajuste: desactivado|Raster: aus|Encaixe: desligado|スナップ：オフ|스냅: 끄기|Raster: uit|Aggancio: disattivato|Kohdistus: pois|Fäst: av|Fest: av
++Choose Straight or Curve to begin. Two fingers move the view.|Choisissez Ligne droite ou Courbe pour commencer. Déplacez la vue avec deux doigts.|Elige Recta o Curva para empezar. Mueve la vista con dos dedos.|Wähle zum Start Gerade oder Kurve. Mit zwei Fingern verschiebst du die Ansicht.|Escolha Reta ou Curva para começar. Mova a vista com dois dedos.|直線かカーブを選んで開始します。2本指で表示を移動できます。|직선이나 커브를 선택해 시작하세요. 두 손가락으로 화면을 이동하세요.|Kies Recht of Bocht om te beginnen. Verplaats de weergave met twee vingers.|Scegli Rettilineo o Curva per iniziare. Sposta la vista con due dita.|Aloita valitsemalla Suora tai Mutka. Siirrä näkymää kahdella sormella.|Välj Raksträcka eller Kurva för att börja. Flytta vyn med två fingrar.|Velg Rettstrekning eller Sving for å begynne. Flytt visningen med to fingre.
++Choose another section, or place the start line.|Choisissez une autre section ou placez la ligne de départ.|Elige otra sección o coloca la línea de salida.|Wähle einen weiteren Abschnitt oder platziere die Startlinie.|Escolha outra seção ou posicione a linha de largada.|次の区間を選ぶか、スタートラインを配置してください。|다른 구간을 선택하거나 출발선을 배치하세요.|Kies een volgend stuk of plaats de startlijn.|Scegli un'altra sezione o posiziona la linea di partenza.|Valitse seuraava osuus tai sijoita lähtöviiva.|Välj en till sektion eller placera startlinjen.|Velg en ny seksjon eller plasser startlinjen.
++Your draft is kept separately. Save updates the named track.|Votre brouillon est conservé séparément. Enregistrer met à jour la piste nommée.|El borrador se conserva por separado. Guardar actualiza la pista con nombre.|Dein Entwurf wird separat aufbewahrt. Speichern aktualisiert die benannte Strecke.|Seu rascunho é mantido separadamente. Salvar atualiza a pista nomeada.|下書きは別に保存されます。「保存」で名前付きコースを更新します。|초안은 별도로 보관됩니다. 저장하면 이름이 있는 트랙이 갱신됩니다.|Je concept wordt apart bewaard. Opslaan werkt de benoemde baan bij.|La bozza viene conservata separatamente. Salva aggiorna la pista con nome.|Luonnos säilytetään erikseen. Tallenna päivittää nimetyn radan.|Utkastet sparas separat. Spara uppdaterar den namngivna banan.|Utkastet beholdes separat. Lagre oppdaterer banen med navn.
++Ice|Glace|Hielo|Eis|Gelo|氷|얼음|IJs|Ghiaccio|Jää|Is|Is
++Packed snow|Neige tassée|Nieve compacta|Festgefahrener Schnee|Neve compactada|圧雪|다져진 눈|Aangestampte sneeuw|Neve compatta|Pakkautunut lumi|Packad snö|Pakket snø
++Loose sand|Sable meuble|Arena suelta|Loser Sand|Areia solta|柔らかい砂|고운 모래|Los zand|Sabbia soffice|Pehmeä hiekka|Lös sand|Løs sand
++Ground|Sol|Suelo|Boden|Solo|地面|지면|Grond|Terreno|Maapohja|Mark|Bakke
++Slush|Neige fondue|Nieve derretida|Schneematsch|Neve derretida|シャーベット状の雪|진눈깨비|Sneeuwbrij|Neve bagnata|Sohjo|Snöslask|Slaps

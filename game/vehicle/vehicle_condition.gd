@@ -18,9 +18,9 @@ static func save(records: LocalRecords, id: String, value: Dictionary, backgroun
 	return records.save_vehicle_conditions(collection,background)
 
 static func valid_collection(value: Variant) -> bool:
-	if not value is Dictionary or value.size() > VehicleCatalog.IDS.size(): return false
+	if not value is Dictionary or value.size() > VehicleCatalog.ALL_IDS.size(): return false
 	for id: Variant in value:
-		if id not in VehicleCatalog.IDS or not value[id] is Dictionary: return false
+		if id not in VehicleCatalog.ALL_IDS or not value[id] is Dictionary: return false
 		var entry: Dictionary = value[id]
 		if entry.size() not in [8, 11, 12, 14] or entry.get("version") != 1: return false
 		var fields: Array[String] = ["dirt", "snow", "wetness", "mud", "smudge"]

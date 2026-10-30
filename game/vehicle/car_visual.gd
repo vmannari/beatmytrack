@@ -64,7 +64,7 @@ func set_night_headlights(enabled: bool) -> void:
 	headlights.name = "NightHeadlights"
 	body.add_child(headlights)
 	# One bounded light for both lamps; no shadow maps, volumetrics or frame work.
-	var mount: Vector3 = {"compact":Vector3(0.60,0.80,-2.14),"pickup":Vector3(0.66,1.12,-2.71),"classic":Vector3(0.68,0.75,-1.94),"formula":Vector3(0.32,0.31,-2.20),"electric":Vector3(0.51,0.84,-2.29),"kart":Vector3(0.33,0.25,-1.38),"forklift":Vector3(0.70,2.47,-0.89)}.get(vehicle_id,Vector3(0.60,0.80,-2.14))
+	var mount: Vector3 = {"compact":Vector3(0.60,0.80,-2.14),"pickup":Vector3(0.66,1.12,-2.71),"classic":Vector3(0.68,0.75,-1.94),"formula":Vector3(0.32,0.31,-2.20),"electric":Vector3(0.51,0.84,-2.29),"kart":Vector3(0.33,0.25,-1.38),"forklift":Vector3(0.70,2.47,-0.89),"hovercraft":Vector3(0.59,0.80,-1.933)}.get(vehicle_id,Vector3(0.60,0.80,-2.14))
 	var beam := SpotLight3D.new()
 	beam.name = "SharedHeadlightBeam"
 	# Keep the entire hood behind the cone. A higher, wider short-range beam
@@ -86,6 +86,9 @@ func set_night_headlights(enabled: bool) -> void:
 	lens.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
 	lens.albedo_color = Color("fff0d2")
 	for side: float in [-1.0,1.0]:
+		if vehicle_id == "hovercraft":
+			if side < 0.0: preload("res://vehicle/hovercraft_model.gd").night_lens(headlights,lens)
+			continue
 		if vehicle_id == "electric":
 			if side < 0.0:
 				lens.albedo_color = Color("e8f7ff")
@@ -227,7 +230,7 @@ func _ready() -> void:
 	_model_slice_started = Time.get_ticks_usec() if cooperative_build else 0
 	scale = Vector3.ONE * HandlingConfig.BODY_SCALE
 	if vehicle_id == "forklift": rear_steering_config = VehicleCatalog.config(vehicle_id)
-	if not VehicleCustomisation.valid(customisation): customisation = VehicleCustomisation.defaults()
+	if not VehicleCustomisation.valid(customisation,vehicle_id): customisation = VehicleCustomisation.defaults()
 	if garage_template and preload("res://ui/garage_car_cache.gd").restore(self):
 		if livery.is_empty(): livery = VehicleLivery.defaults(vehicle_id)
 		apply_livery(livery)
@@ -343,6 +346,19 @@ func change_kit_parts(value: Dictionary) -> void:
 			frame.get_parent().remove_child(frame)
 			frame.queue_free()
 		kit_frames[category] = []
+		if vehicle_id=="kart":
+			var kart = preload("res://vehicle/kart_model.gd")
+			match category:
+				"hood": kart.build_nose(self)
+				"aero": kart.build_bumper(self)
+				"body": kart.build_pods(self)
+				"rims":
+					for rotor: Node3D in rolling_wheels: kart.build_rims(self,rotor,signf((rotor.get_parent() as Node3D).position.x))
+			if simple_model:
+				for frame: Node3D in kit_frames[category]: RacingCarModels._reduce_primitives(frame)
+			if batch_parts:
+				for frame: Node3D in kit_frames[category]: VisualGeometry.batch_static_parts(frame)
+			continue
 		match category:
 			"hood": CompactCoachwork.build_hood(self,paint_materials.body,paint_materials.accent)
 			"aero": CompactKits.build_aero(self)
@@ -381,6 +397,19 @@ func present(point: Vector2, angle: float, state: VehicleState, frame: DriveFram
 	wheel_last_tick = state.tick
 	position = VisualGeometry.world(point)
 	rotation.y = -angle
+	if vehicle_id == "hovercraft":
+		var fan: Node3D = body.get_node_or_null("FanRotor")
+		if fan != null:
+			var left: Node3D = fan.get_node_or_null("FanRotorLeft")
+			var right: Node3D = fan.get_node_or_null("FanRotorRight")
+			var spin: float = wrapf(state.tick*0.29,-PI,PI)
+			if left != null and right != null:
+				left.rotation.z = spin
+				right.rotation.z = -spin
+			else: fan.rotation.z = spin
+		for part: String in ["RudderLeft","RudderRight"]:
+			var rudder: Node3D = body.get_node_or_null(NodePath(part))
+			if rudder != null: rudder.rotation.y = -state.steering*0.42
 	for wheel: Node3D in front_wheels:
 		wheel.rotation.y = -state.steering * (0.60 if vehicle_id == "kart" else 0.4)
 	if vehicle_id == "forklift":

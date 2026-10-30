@@ -84,7 +84,7 @@ def test_new_contacts_do_not_relabel_historical_inputs(real_verifier):
     fixtures = ROOT / "game/tests/fixtures"
     document = json.loads((fixtures / "over_and_under.json").read_text())
     replay = json.loads((fixtures / "over_and_under_rejected_inputs.json").read_text())
-    assert real_verifier.manifest()["physics_version"] == "arcade-planar-0.75"
+    assert real_verifier.manifest()["physics_version"] == "arcade-planar-0.76"
     with pytest.raises(VerificationError, match="required laps"):
         real_verifier.verify_canonical_diagnostic(document, replay, "compact")
 

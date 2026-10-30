@@ -6,7 +6,8 @@ func _initialize() -> void:
 
 func _run() -> void:
 	var best: Dictionary = {}
-	for id: String in VehicleCatalog.IDS:
+	# This is the retained wheel-car comparison; the hovercraft has separate drift tests.
+	for id: String in ["compact","pickup","classic","formula","kart","forklift","electric"]:
 		var config: HandlingConfig = VehicleCatalog.config(id)
 		var fastest: float = INF
 		var chosen_speed: int = 0

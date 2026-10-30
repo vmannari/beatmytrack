@@ -1,0 +1,806 @@
+--- a/game/core/app.gd
++++ b/game/core/app.gd
+@@ -820,7 +820,7 @@
+ 				content.add_child(MenuStyle.button("World Ranking",func() -> void: preload("res://ui/world_ranking.gd").open(root_ui,online.client)))
+ 			var featured_text: String = ""
+ 			for f: Dictionary in AchievementProgress.catalog().families:
+-				if achievements != null and f.id in achievements.featured(): featured_text += ("  Â·  " if not featured_text.is_empty() else "")+str(f.title)
++				if achievements != null and f.id in achievements.featured(): featured_text += ("  ·  " if not featured_text.is_empty() else "")+str(f.title)
+ 			var badges: Label = MenuStyle.label(featured_text if not featured_text.is_empty() else "Choose featured achievements in your Trophy Room",22,true)
+ 			badges.name = "ProfileAchievements"
+ 			badges.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+@@ -1905,13 +1905,13 @@
+ 	if value.is_empty(): return
+ 	_telemetry_observe("share_clicked",{"challenge_id":str(value.get("id","")),"reason":"share"})
+ 	var time: String = GameText.message("%.3f s") % (float(value.target_ms)/1000.0) if value.get("target_ms") != null else "Join my group challenge"
+-	var text: String = GameText.message("%s Â· %s Â· 5 laps Â· %s\n%s\nCode: %s") % [str(value.entry.name),time,VehicleCatalog.title(str(value.vehicle_id)),str(value.share_url),str(value.code)]
++	var text: String = GameText.message("%s · %s · 5 laps · %s\n%s\nCode: %s") % [str(value.entry.name),time,VehicleCatalog.title(str(value.vehicle_id)),str(value.share_url),str(value.code)]
+ 	if ChallengesClient.is_series(value):
+ 		var names: PackedStringArray = []
+ 		for stage: Dictionary in value.get("stages",[]): names.append(str(stage.entry.name))
+ 		var limit: Variant = value.stages[0].attempt_limit
+ 		var tries: String = "Unlimited tries" if limit == null else str(int(limit))+" tries each"
+-		text = ("3Ã—3" if value.get("mode") == "3x3" else "Custom challenge")+" Â· "+str(value.stages.size())+" tracks Â· "+tries+" Â· Lowest total time wins\n"+" / ".join(names)+"\n"+str(value.share_url)+"\nCode: "+str(value.code)
++		text = ("3×3" if value.get("mode") == "3x3" else "Custom challenge")+" · "+str(value.stages.size())+" tracks · "+tries+" · Lowest total time wins\n"+" / ".join(names)+"\n"+str(value.share_url)+"\nCode: "+str(value.code)
+ 	if challenge_links.share(text): return
+ 	var dialog := AcceptDialog.new()
+ 	dialog.title = "Challenge invitation copied"
+@@ -2393,7 +2393,7 @@
+ func _share_rivalry_card(dialog_ref: WeakRef, context: Dictionary) -> void:
+ 	var dialog: AcceptDialog = dialog_ref.get_ref() as AcceptDialog
+ 	if not _rivalry_card_valid(dialog,context) or dialog.sharing: return
+-	dialog.set_sharing(true,"Preparing imageâ€¦")
++	dialog.set_sharing(true,"Preparing image…")
+ 	dialog.request_id = ""
+ 	var png: PackedByteArray = await _prepare_rivalry_card(dialog_ref,context)
+ 	dialog = dialog_ref.get_ref() as AcceptDialog
+@@ -2430,7 +2430,7 @@
+ func _save_rivalry_card(dialog_ref: WeakRef, context: Dictionary) -> void:
+ 	var dialog: AcceptDialog = dialog_ref.get_ref() as AcceptDialog
+ 	if not _rivalry_card_valid(dialog,context) or dialog.sharing: return
+-	dialog.set_sharing(true,"Preparing imageâ€¦")
++	dialog.set_sharing(true,"Preparing image…")
+ 	var png: PackedByteArray = await _prepare_rivalry_card(dialog_ref,context)
+ 	dialog = dialog_ref.get_ref() as AcceptDialog
+ 	if not _rivalry_card_valid(dialog,context):
+@@ -3278,7 +3278,7 @@
+ func _update_editor_save_state() -> void:
+ 	if not is_instance_valid(editor_save_button): return
+ 	if editor_save_error != OK:
+-		editor_save_button.text = "Save failed Â· Retry"
++		editor_save_button.text = "Save failed · Retry"
+ 		editor_save_button.disabled = false
+ 		editor_save_button.tooltip_text = editor_save_message
+ 		editor_save_button.add_theme_color_override("font_color",Color("ffbc8b"))
+@@ -3300,7 +3300,7 @@
+ 	else:
+ 		editor_save_button.text = "WIP recovery saved" if (editor_wip_store == library and document == editor_wip_snapshot) else "Unsaved draft"
+ 		editor_save_button.disabled = true
+-		editor_save_button.tooltip_text = "Recovery is separate from the saved original. Use Map â†’ Save or Ctrl+S to keep it."
++		editor_save_button.tooltip_text = "Recovery is separate from the saved original. Use Map → Save or Ctrl+S to keep it."
+ 
+ func _retry_editor_save() -> void:
+ 	if editor_retry_original: _save_track_now()
+@@ -3452,7 +3452,7 @@
+ 			_context_button("Start line","race",canvas.choose_start_line)
+ 			for kind: String in RoadPieces.KINDS:
+ 				_context_button(preload("res://editor/road_piece_catalog.gd").title(kind),kind,canvas.choose_piece.bind(kind))
+-			editor_status.text = "Choose a section Â· drag empty ground to pan Â· pinch to zoom"
++			editor_status.text = "Choose a section · drag empty ground to pan · pinch to zoom"
+ 		elif editor_geometry != "" and piece.kind == "bridge":
+ 			_context_button("Back","back",func() -> void:
+ 				editor_geometry = ""
+@@ -3476,7 +3476,7 @@
+ 				_context_button(GameText.message("Point %d/5") % (canvas.spline_point+1),"spline",func() -> void:
+ 					canvas.spline_point = (canvas.spline_point+1)%5
+ 					_build_editor_tools())
+-				_context_button("Width âˆ’","minus",_change_piece.bind("point_width",-0.5))
++				_context_button("Width −","minus",_change_piece.bind("point_width",-0.5))
+ 				_context_button(GameText.message("%.1f m") % float(piece.point_widths[canvas.spline_point]),"width",func() -> void: pass)
+ 				_context_button("Width +","plus",_change_piece.bind("point_width",0.5))
+ 			if piece.kind == "bridge":
+@@ -3504,9 +3504,9 @@
+ 			if canvas.ghost.is_empty():
+ 				_context_button("Connect","snap",canvas.connect_nearby)
+ 				_context_button("Layer","surface",canvas.cycle_piece)
+-			editor_status.text = "Drag inside to move Â· end dots resize and turn Â· âœ“ to place" if not canvas.ghost.is_empty() else "Drag inside to move Â· drag end dots to reshape Â· Layer selects overlapping roads"
+-			if piece.kind == "bridge": editor_status.text = "Bridge: ramps at both ends Â· ground road passes beneath the middle"
+-			if piece.kind == "spline": editor_status.text = "Drag the five numbered points Â· select a point to set its width Â· âœ“ to place"
++			editor_status.text = "Drag inside to move · end dots resize and turn · ✓ to place" if not canvas.ghost.is_empty() else "Drag inside to move · drag end dots to reshape · Layer selects overlapping roads"
++			if piece.kind == "bridge": editor_status.text = "Bridge: ramps at both ends · ground road passes beneath the middle"
++			if piece.kind == "spline": editor_status.text = "Drag the five numbered points · select a point to set its width · ✓ to place"
+ 	elif category == "paint":
+ 		for pair: Array in [[1,"Grass"],[2,"Sand"],[3,"Water"]]:
+ 			_context_button(pair[1],"terrain_dirt" if pair[0] == 2 else "terrain_"+pair[1].to_lower(),func() -> void:
+@@ -3519,7 +3519,7 @@
+ 	elif category == "objects":
+ 		if canvas.selected_object >= 0 and canvas.mode == "objects":
+ 			editor_status.text=CreatorObjects.description(document.objects[canvas.selected_object].kind)
+-			_context_button("Rotate","rotate",_rotate_object).tooltip_text = "Rotate by 22.5Â°"
++			_context_button("Rotate","rotate",_rotate_object).tooltip_text = "Rotate by 22.5°"
+ 			var rotation_choice: Button = _context_button(preload("res://editor/object_rotation.gd").angle_text(_object_rotation()),"rotate",_object_rotation_dialog)
+ 			rotation_choice.name = "ObjectRotation"
+ 			rotation_choice.tooltip_text = "16 orientations or Free rotation"
+@@ -3676,7 +3676,7 @@
+ 	elif int(issue.object) == -1: canvas.selected_piece = issue.index
+ 	_build_editor_tools()
+ 	editor_issue_button.text = GameText.message("Issue %d/%d") % [editor_issue_cursor+1,editor_issues.size()]
+-	_editor_hint(issue.message+" Â· paint Road over the obstacle, or place a Start line." if int(issue.object) == -2 else issue.message+" Â· drag to repair, or delete the selection.")
++	_editor_hint(issue.message+" · paint Road over the obstacle, or place a Start line." if int(issue.object) == -2 else issue.message+" · drag to repair, or delete the selection.")
+ 	canvas.refresh()
+ 
+ func _commit_selection() -> void:
+@@ -5090,7 +5090,7 @@
+ 	editor_inspector.add_child(help)
+ 
+ func _editor_help() -> void:
+-	_notice("Changes autosave to a separate WIP. Load reopens the latest saved draft or autosave. Save (Ctrl+S) updates the saved original.\n\nDrag inside a road section to move it. Drag an end dot to resize and turn it; the other end stays fixed.\n\nPC: wheel zooms at the pointer. Middle/right drag or Space + left drag pans. F fits the map. Ctrl+Z / Ctrl+Shift+Z undo/redo. Enter confirms; Esc cancels. Delete removes the selection. 1â€“4 switch tools. Q/E rotate. Tab cycles overlapping roads.\n\nPhone: two fingers pan/zoom. Layer selects the other road at an overpass. Bridge spans include ramps at both ends; paint edits the ground underneath.")
++	_notice("Changes autosave to a separate WIP. Load reopens the latest saved draft or autosave. Save (Ctrl+S) updates the saved original.\n\nDrag inside a road section to move it. Drag an end dot to resize and turn it; the other end stays fixed.\n\nPC: wheel zooms at the pointer. Middle/right drag or Space + left drag pans. F fits the map. Ctrl+Z / Ctrl+Shift+Z undo/redo. Enter confirms; Esc cancels. Delete removes the selection. 1–4 switch tools. Q/E rotate. Tab cycles overlapping roads.\n\nPhone: two fingers pan/zoom. Layer selects the other road at an overpass. Bridge spans include ramps at both ends; paint edits the ground underneath.")
+ 
+ func _input(event: InputEvent) -> void:
+ 	# Tab is a GUI navigation key and never reaches unhandled_key_input.
+--- a/backend/bmt_backend/studio_simulator.py
++++ b/backend/bmt_backend/studio_simulator.py
+@@ -123,9 +123,9 @@
+ 
+     def validate(self):
+         if not re.fullmatch(r"[a-z][a-z0-9-]{2,39}", self.dataset):
+-            raise ValueError("Dataset must be a stable 3â€“40 character operator identifier")
++            raise ValueError("Dataset must be a stable 3–40 character operator identifier")
+         if not 10 <= self.players <= 2000 or not 8 <= self.days <= 90 or not 0 <= self.seed < 2**31:
+-            raise ValueError("Use10â€“2000 players,8â€“90 days and a bounded seed")
++            raise ValueError("Use10–2000 players,8–90 days and a bounded seed")
+         if self.players * self.days > 180000 or not DAY < self.anchor <= now():
+             raise ValueError("History exceeds the bounded import budget or anchor is in the future")
+         return self
+--- a/game/legal/GOOGLEID-NOTICES.txt
++++ b/game/legal/GOOGLEID-NOTICES.txt
+@@ -12573,7 +12573,7 @@
+ 
+ 
+     Alternatively, the contents of this file may be used under the
+-    terms of the _____ license (the �[___] License�), in which case
++    terms of the _____ license (the "[___] License"), in which case
+     the provisions of [______] License are applicable instead of those
+     above.  If you wish to allow use of your version of this file only
+     under the terms of the [____] License and not to allow others to
+@@ -13052,7 +13052,7 @@
+ 13. MULTIPLE-LICENSED CODE.
+ 
+     Initial Developer may designate portions of the Covered Code as
+-    �Multiple-Licensed�.  �Multiple-Licensed� means that the Initial
++    "Multiple-Licensed".  "Multiple-Licensed" means that the Initial
+     Developer permits you to utilize portions of the Covered Code
+     under Your choice of the NPL or the alternative licenses, if any,
+     specified by the Initial Developer in the file described in
+@@ -13081,7 +13081,7 @@
+     Contributor(s): ______________________________________.
+ 
+     Alternatively, the contents of this file may be used under the
+-    terms of the _____ license (the �[___] License�), in which case
++    terms of the _____ license (the "[___] License"), in which case
+     the provisions of [______] License are applicable instead of those
+     above.  If you wish to allow use of your version of this file only
+     under the terms of the [____] License and not to allow others to
+--- a/game/assets/menu/challenges/three-by-three-tracks-tickets-v7.json
++++ b/game/assets/menu/challenges/three-by-three-tracks-tickets-v7.json
+@@ -3,7 +3,7 @@
+   "requirements": [
+     "TT01: exactly three readable distinct tracks",
+     "TT02: exactly three readable physical tickets",
+-    "TT03: integrate into the existing 3\u00c3\u20143 poster slot with bounded mipmapped import"
++    "TT03: integrate into the existing 3\u00d73 poster slot with bounded mipmapped import"
+   ],
+   "provider": "built-in image_gen",
+   "intent": "Replace repeated car-at-start scenes with three complete circuits and three race tickets.",
+@@ -13,7 +13,7 @@
+   "references": [
+     "game/assets/menu/challenges/three-by-three-v6.png"
+   ],
+-  "prompt": "Use case: stylized-concept / precise-object-edit.\nAsset type: replacement square illustrated menu poster for Beat my track's 3\u00c3\u20143 racing challenge.\nEdit target and style reference: the supplied project poster. Redesign its composition to communicate exactly THREE TRACKS and exactly THREE TICKETS at a glance. Preserve its mature, crisp cel-shaded illustration language, restrained natural colours, navy outlines, believable asphalt, compacted desert sand and snow, fictional unbranded racing world. This is final in-game artwork, not a UI mockup.\n\nComposition: a beautifully composed square 1:1 illustration. In the upper roughly 75% show exactly THREE clearly separate miniature CLOSED-LOOP RACE CIRCUITS, each a complete readable loop with its own distinctive shape. Arrange them as three offset horizontal landscape dioramas, with enough separation to count all three instantly: top lush pine forest circuit on green ground, middle warm rocky DESERT circuit with a compacted tan SAND racing surface, bottom snowy alpine circuit on white ground with dark asphalt. Elevated high-oblique overhead view of the tracks, generous visible track surface, subtle landscape depth and clean graphic silhouettes; each loop has its own little black/white checkerboard start band. Natural scenery stays subordinate to the three distinct track shapes. No road joins one circuit to another, no extra loops, no split roads or crossing confusing tracks. Remove the large foreground cars and three-lamp starter boards from the source; the TRACKS are the subjects now.\n\nIn the lower foreground show exactly THREE large physical RACE ENTRY TICKETS, each separately countable, arranged side-by-side in a shallow slightly staggered fan across most of the image width, with minimal overlap. All three ticket outlines must be clearly visible: warm ivory paper, dark navy fine border, characteristic notched short edges, one dashed perforated tear-off stub, simple black/white checkered racing emblem, restrained amber highlights, subtle paper texture and cast shadows. Each ticket is a single rectangular paper object, no extra detached stubs. Make the tickets large enough to recognize at a small menu-card size. No hand holding them, no money, coins, credit cards, trophy, or extra objects.\n\nKeep every circuit and ticket fully inside the square frame with a modest safe margin. Strong readable hierarchy and cohesive polished game key art; no thin comic panel borders, no unnecessary decoration or large empty areas. Background is a dark muted navy atmosphere that unifies the three landscape islands and gives the ivory tickets contrast. Exactly THREE independent track loops + exactly THREE tickets, with all SIX subjects readable in the central 90% of the artwork. No lettering, titles, numbers, logos, manufacturer branding, watermark, interface or caption; game UI adds its own 3\u00c3\u20143 caption separately. Opaque background.",
++  "prompt": "Use case: stylized-concept / precise-object-edit.\nAsset type: replacement square illustrated menu poster for Beat my track's 3\u00d73 racing challenge.\nEdit target and style reference: the supplied project poster. Redesign its composition to communicate exactly THREE TRACKS and exactly THREE TICKETS at a glance. Preserve its mature, crisp cel-shaded illustration language, restrained natural colours, navy outlines, believable asphalt, compacted desert sand and snow, fictional unbranded racing world. This is final in-game artwork, not a UI mockup.\n\nComposition: a beautifully composed square 1:1 illustration. In the upper roughly 75% show exactly THREE clearly separate miniature CLOSED-LOOP RACE CIRCUITS, each a complete readable loop with its own distinctive shape. Arrange them as three offset horizontal landscape dioramas, with enough separation to count all three instantly: top lush pine forest circuit on green ground, middle warm rocky DESERT circuit with a compacted tan SAND racing surface, bottom snowy alpine circuit on white ground with dark asphalt. Elevated high-oblique overhead view of the tracks, generous visible track surface, subtle landscape depth and clean graphic silhouettes; each loop has its own little black/white checkerboard start band. Natural scenery stays subordinate to the three distinct track shapes. No road joins one circuit to another, no extra loops, no split roads or crossing confusing tracks. Remove the large foreground cars and three-lamp starter boards from the source; the TRACKS are the subjects now.\n\nIn the lower foreground show exactly THREE large physical RACE ENTRY TICKETS, each separately countable, arranged side-by-side in a shallow slightly staggered fan across most of the image width, with minimal overlap. All three ticket outlines must be clearly visible: warm ivory paper, dark navy fine border, characteristic notched short edges, one dashed perforated tear-off stub, simple black/white checkered racing emblem, restrained amber highlights, subtle paper texture and cast shadows. Each ticket is a single rectangular paper object, no extra detached stubs. Make the tickets large enough to recognize at a small menu-card size. No hand holding them, no money, coins, credit cards, trophy, or extra objects.\n\nKeep every circuit and ticket fully inside the square frame with a modest safe margin. Strong readable hierarchy and cohesive polished game key art; no thin comic panel borders, no unnecessary decoration or large empty areas. Background is a dark muted navy atmosphere that unifies the three landscape islands and gives the ivory tickets contrast. Exactly THREE independent track loops + exactly THREE tickets, with all SIX subjects readable in the central 90% of the artwork. No lettering, titles, numbers, logos, manufacturer branding, watermark, interface or caption; game UI adds its own 3\u00d73 caption separately. Opaque background.",
+   "source_sha256": "69f9c44329ece89b1d3a0ea46ab6401be6d500894ab10da7dc863517698419f3",
+   "source_bytes": 3033470,
+   "runtime_import": {
+@@ -24,7 +24,7 @@
+   "visual_review": [
+     "Exactly three independent closed-loop circuits: pine forest, compacted-sand desert and alpine winter.",
+     "Exactly three ivory perforated racing tickets, each with visible outline and checkered emblem.",
+-    "No lettering or branding is baked into the illustration; the existing UI supplies the 3\u00c3\u20143 title.",
++    "No lettering or branding is baked into the illustration; the existing UI supplies the 3\u00d73 title.",
+     "Artwork is illustrative and does not promise these exact circuits for the user's selected challenge."
+   ],
+   "reference_policy": "Only original project-generated artwork is referenced. No third-party images or runtime generation.",
+--- a/game/localization/messages.pot
++++ b/game/localization/messages.pot
+@@ -174,7 +174,7 @@
+ msgstr ""
+ 
+ #: game/core/app.gd:1914
+-msgid " tracks Â· "
++msgid " tracks · "
+ msgstr ""
+ 
+ #: game/ui/challenge_ready_dialog.gd:68
+@@ -229,6 +229,10 @@
+ msgid " · Different scenery"
+ msgstr ""
+ 
++#: game/core/app.gd:1914
++msgid " · Lowest total time wins\n"
++msgstr ""
++
+ #: game/ui/world_ranking.gd:184
+ msgid " · No ranked drivers in this view yet."
+ msgstr ""
+@@ -241,6 +245,10 @@
+ msgid " · TIED FOR LEAD"
+ msgstr ""
+ 
++#: game/core/app.gd:3679
++msgid " · drag to repair, or delete the selection."
++msgstr ""
++
+ #: game/ui/track_browser.gd:656
+ msgid " · indexing…"
+ msgstr ""
+@@ -249,22 +257,14 @@
+ msgid " · modified"
+ msgstr ""
+ 
++#: game/core/app.gd:3679
++msgid " · paint Road over the obstacle, or place a Start line."
++msgstr ""
++
+ #: game/ui/race_complete.gd:543
+ msgid " · verified racers"
+ msgstr ""
+ 
+-#: game/core/app.gd:1914
+-msgid " Â· Lowest total time wins\n"
+-msgstr ""
+-
+-#: game/core/app.gd:3679
+-msgid " Â· drag to repair, or delete the selection."
+-msgstr ""
+-
+-#: game/core/app.gd:3679
+-msgid " Â· paint Road over the obstacle, or place a Start line."
+-msgstr ""
+-
+ #: game/editor/object_thumbnail.gd:65
+ msgid " — Tap selected asset for variants and placement"
+ msgstr ""
+@@ -514,7 +514,7 @@
+ msgstr ""
+ 
+ #: game/core/app.gd:1908
+-msgid "%s Â· %s Â· 5 laps Â· %s\n%s\nCode: %s"
++msgid "%s · %s · 5 laps · %s\n%s\nCode: %s"
+ msgstr ""
+ 
+ #: game/ui/garage_news_menu.gd:611
+@@ -1598,7 +1598,7 @@
+ msgstr ""
+ 
+ #: game/core/app.gd:3508
+-msgid "Bridge: ramps at both ends Â· ground road passes beneath the middle"
++msgid "Bridge: ramps at both ends · ground road passes beneath the middle"
+ msgstr ""
+ 
+ #: game/vehicle/vehicle_customisation.gd:20
+@@ -2058,7 +2058,7 @@
+ msgstr ""
+ 
+ #: game/core/app.gd:5093
+-msgid "Changes autosave to a separate WIP. Load reopens the latest saved draft or autosave. Save (Ctrl+S) updates the saved original.\n\nDrag inside a road section to move it. Drag an end dot to resize and turn it; the other end stays fixed.\n\nPC: wheel zooms at the pointer. Middle/right drag or Space + left drag pans. F fits the map. Ctrl+Z / Ctrl+Shift+Z undo/redo. Enter confirms; Esc cancels. Delete removes the selection. 1â€“4 switch tools. Q/E rotate. Tab cycles overlapping roads.\n\nPhone: two fingers pan/zoom. Layer selects the other road at an overpass. Bridge spans include ramps at both ends; paint edits the ground underneath."
++msgid "Changes autosave to a separate WIP. Load reopens the latest saved draft or autosave. Save (Ctrl+S) updates the saved original.\n\nDrag inside a road section to move it. Drag an end dot to resize and turn it; the other end stays fixed.\n\nPC: wheel zooms at the pointer. Middle/right drag or Space + left drag pans. F fits the map. Ctrl+Z / Ctrl+Shift+Z undo/redo. Enter confirms; Esc cancels. Delete removes the selection. 1–4 switch tools. Q/E rotate. Tab cycles overlapping roads.\n\nPhone: two fingers pan/zoom. Layer selects the other road at an overpass. Bridge spans include ramps at both ends; paint edits the ground underneath."
+ msgstr ""
+ 
+ #: game/persistence/achievement_catalog.json:biomes/title
+@@ -2150,7 +2150,7 @@
+ msgstr ""
+ 
+ #: game/core/app.gd:3455
+-msgid "Choose a section Â· drag empty ground to pan Â· pinch to zoom"
++msgid "Choose a section · drag empty ground to pan · pinch to zoom"
+ msgstr ""
+ 
+ #: game/editor/track_document.gd:118
+@@ -3338,15 +3338,15 @@
+ msgstr ""
+ 
+ #: game/core/app.gd:3507
+-msgid "Drag inside to move Â· drag end dots to reshape Â· Layer selects overlapping roads"
++msgid "Drag inside to move · drag end dots to reshape · Layer selects overlapping roads"
+ msgstr ""
+ 
+ #: game/core/app.gd:3507
+-msgid "Drag inside to move Â· end dots resize and turn Â· âœ“ to place"
++msgid "Drag inside to move · end dots resize and turn · ✓ to place"
+ msgstr ""
+ 
+ #: game/core/app.gd:3509
+-msgid "Drag the five numbered points Â· select a point to set its width Â· âœ“ to place"
++msgid "Drag the five numbered points · select a point to set its width · ✓ to place"
+ msgstr ""
+ 
+ #: game/core/app.gd:3518
+@@ -6498,7 +6498,7 @@
+ msgstr ""
+ 
+ #: game/core/app.gd:2396 game/core/app.gd:2433
+-msgid "Preparing imageâ€¦"
++msgid "Preparing image…"
+ msgstr ""
+ 
+ #: game/ui/race_loading.gd:89
+@@ -7240,7 +7240,7 @@
+ msgstr ""
+ 
+ #: game/core/app.gd:3303
+-msgid "Recovery is separate from the saved original. Use Map â†’ Save or Ctrl+S to keep it."
++msgid "Recovery is separate from the saved original. Use Map → Save or Ctrl+S to keep it."
+ msgstr ""
+ 
+ #: game/core/app.gd:3064 game/core/app.gd:3066
+@@ -7760,7 +7760,7 @@
+ msgstr ""
+ 
+ #: game/core/app.gd:3522
+-msgid "Rotate by 22.5Â°"
++msgid "Rotate by 22.5°"
+ msgstr ""
+ 
+ #: game/core/app.gd:5054
+@@ -7922,7 +7922,7 @@
+ msgstr ""
+ 
+ #: game/core/app.gd:3281
+-msgid "Save failed Â· Retry"
++msgid "Save failed · Retry"
+ msgstr ""
+ 
+ #: game/ui/track_browser.gd:1656 game/ui/track_tile.gd:50 game/ui/track_tile.gd:68
+@@ -10250,7 +10250,7 @@
+ msgstr ""
+ 
+ #: game/core/app.gd:3479
+-msgid "Width âˆ’"
++msgid "Width −"
+ msgstr ""
+ 
+ #: game/editor/object_browser.gd:181 game/editor/object_browser.gd:192
+--- a/game/localization/en.po
++++ b/game/localization/en.po
+@@ -174,8 +174,8 @@
+ msgstr " tracks"
+ 
+ #: game/core/app.gd:1914
+-msgid " tracks Â· "
+-msgstr " tracks Â· "
++msgid " tracks · "
++msgstr " tracks · "
+ 
+ #: game/ui/challenge_ready_dialog.gd:68
+ msgid " tries"
+@@ -229,6 +229,10 @@
+ msgid " · Different scenery"
+ msgstr " · Different scenery"
+ 
++#: game/core/app.gd:1914
++msgid " · Lowest total time wins\n"
++msgstr " · Lowest total time wins\n"
++
+ #: game/ui/world_ranking.gd:184
+ msgid " · No ranked drivers in this view yet."
+ msgstr " · No ranked drivers in this view yet."
+@@ -241,6 +245,10 @@
+ msgid " · TIED FOR LEAD"
+ msgstr " · TIED FOR LEAD"
+ 
++#: game/core/app.gd:3679
++msgid " · drag to repair, or delete the selection."
++msgstr " · drag to repair, or delete the selection."
++
+ #: game/ui/track_browser.gd:656
+ msgid " · indexing…"
+ msgstr " · indexing…"
+@@ -249,22 +257,14 @@
+ msgid " · modified"
+ msgstr " · modified"
+ 
++#: game/core/app.gd:3679
++msgid " · paint Road over the obstacle, or place a Start line."
++msgstr " · paint Road over the obstacle, or place a Start line."
++
+ #: game/ui/race_complete.gd:543
+ msgid " · verified racers"
+ msgstr " · verified racers"
+ 
+-#: game/core/app.gd:1914
+-msgid " Â· Lowest total time wins\n"
+-msgstr " Â· Lowest total time wins\n"
+-
+-#: game/core/app.gd:3679
+-msgid " Â· drag to repair, or delete the selection."
+-msgstr " Â· drag to repair, or delete the selection."
+-
+-#: game/core/app.gd:3679
+-msgid " Â· paint Road over the obstacle, or place a Start line."
+-msgstr " Â· paint Road over the obstacle, or place a Start line."
+-
+ #: game/editor/object_thumbnail.gd:65
+ msgid " — Tap selected asset for variants and placement"
+ msgstr " — Tap selected asset for variants and placement"
+@@ -514,8 +514,8 @@
+ msgstr "%s · #%d · %d points · %s"
+ 
+ #: game/core/app.gd:1908
+-msgid "%s Â· %s Â· 5 laps Â· %s\n%s\nCode: %s"
+-msgstr "%s Â· %s Â· 5 laps Â· %s\n%s\nCode: %s"
++msgid "%s · %s · 5 laps · %s\n%s\nCode: %s"
++msgstr "%s · %s · 5 laps · %s\n%s\nCode: %s"
+ 
+ #: game/ui/garage_news_menu.gd:611
+ msgid "%s's latest creation."
+@@ -1598,8 +1598,8 @@
+ msgstr "Bridge"
+ 
+ #: game/core/app.gd:3508
+-msgid "Bridge: ramps at both ends Â· ground road passes beneath the middle"
+-msgstr "Bridge: ramps at both ends Â· ground road passes beneath the middle"
++msgid "Bridge: ramps at both ends · ground road passes beneath the middle"
++msgstr "Bridge: ramps at both ends · ground road passes beneath the middle"
+ 
+ #: game/vehicle/vehicle_customisation.gd:20
+ msgid "Broad sculpted tail"
+@@ -2058,8 +2058,8 @@
+ msgstr "Changes are saved when you apply them."
+ 
+ #: game/core/app.gd:5093
+-msgid "Changes autosave to a separate WIP. Load reopens the latest saved draft or autosave. Save (Ctrl+S) updates the saved original.\n\nDrag inside a road section to move it. Drag an end dot to resize and turn it; the other end stays fixed.\n\nPC: wheel zooms at the pointer. Middle/right drag or Space + left drag pans. F fits the map. Ctrl+Z / Ctrl+Shift+Z undo/redo. Enter confirms; Esc cancels. Delete removes the selection. 1â€“4 switch tools. Q/E rotate. Tab cycles overlapping roads.\n\nPhone: two fingers pan/zoom. Layer selects the other road at an overpass. Bridge spans include ramps at both ends; paint edits the ground underneath."
+-msgstr "Changes autosave to a separate WIP. Load reopens the latest saved draft or autosave. Save (Ctrl+S) updates the saved original.\n\nDrag inside a road section to move it. Drag an end dot to resize and turn it; the other end stays fixed.\n\nPC: wheel zooms at the pointer. Middle/right drag or Space + left drag pans. F fits the map. Ctrl+Z / Ctrl+Shift+Z undo/redo. Enter confirms; Esc cancels. Delete removes the selection. 1â€“4 switch tools. Q/E rotate. Tab cycles overlapping roads.\n\nPhone: two fingers pan/zoom. Layer selects the other road at an overpass. Bridge spans include ramps at both ends; paint edits the ground underneath."
++msgid "Changes autosave to a separate WIP. Load reopens the latest saved draft or autosave. Save (Ctrl+S) updates the saved original.\n\nDrag inside a road section to move it. Drag an end dot to resize and turn it; the other end stays fixed.\n\nPC: wheel zooms at the pointer. Middle/right drag or Space + left drag pans. F fits the map. Ctrl+Z / Ctrl+Shift+Z undo/redo. Enter confirms; Esc cancels. Delete removes the selection. 1–4 switch tools. Q/E rotate. Tab cycles overlapping roads.\n\nPhone: two fingers pan/zoom. Layer selects the other road at an overpass. Bridge spans include ramps at both ends; paint edits the ground underneath."
++msgstr "Changes autosave to a separate WIP. Load reopens the latest saved draft or autosave. Save (Ctrl+S) updates the saved original.\n\nDrag inside a road section to move it. Drag an end dot to resize and turn it; the other end stays fixed.\n\nPC: wheel zooms at the pointer. Middle/right drag or Space + left drag pans. F fits the map. Ctrl+Z / Ctrl+Shift+Z undo/redo. Enter confirms; Esc cancels. Delete removes the selection. 1–4 switch tools. Q/E rotate. Tab cycles overlapping roads.\n\nPhone: two fingers pan/zoom. Layer selects the other road at an overpass. Bridge spans include ramps at both ends; paint edits the ground underneath."
+ 
+ #: game/persistence/achievement_catalog.json:biomes/title
+ msgid "Changing Scenery"
+@@ -2150,8 +2150,8 @@
+ msgstr "Choose a published backend track from Race."
+ 
+ #: game/core/app.gd:3455
+-msgid "Choose a section Â· drag empty ground to pan Â· pinch to zoom"
+-msgstr "Choose a section Â· drag empty ground to pan Â· pinch to zoom"
++msgid "Choose a section · drag empty ground to pan · pinch to zoom"
++msgstr "Choose a section · drag empty ground to pan · pinch to zoom"
+ 
+ #: game/editor/track_document.gd:118
+ msgid "Choose a smooth or sharp corner."
+@@ -3338,16 +3338,16 @@
+ msgstr "Drag deck"
+ 
+ #: game/core/app.gd:3507
+-msgid "Drag inside to move Â· drag end dots to reshape Â· Layer selects overlapping roads"
+-msgstr "Drag inside to move Â· drag end dots to reshape Â· Layer selects overlapping roads"
++msgid "Drag inside to move · drag end dots to reshape · Layer selects overlapping roads"
++msgstr "Drag inside to move · drag end dots to reshape · Layer selects overlapping roads"
+ 
+ #: game/core/app.gd:3507
+-msgid "Drag inside to move Â· end dots resize and turn Â· âœ“ to place"
+-msgstr "Drag inside to move Â· end dots resize and turn Â· âœ“ to place"
++msgid "Drag inside to move · end dots resize and turn · ✓ to place"
++msgstr "Drag inside to move · end dots resize and turn · ✓ to place"
+ 
+ #: game/core/app.gd:3509
+-msgid "Drag the five numbered points Â· select a point to set its width Â· âœ“ to place"
+-msgstr "Drag the five numbered points Â· select a point to set its width Â· âœ“ to place"
++msgid "Drag the five numbered points · select a point to set its width · ✓ to place"
++msgstr "Drag the five numbered points · select a point to set its width · ✓ to place"
+ 
+ #: game/core/app.gd:3518
+ msgid "Drag to paint freely"
+@@ -6498,8 +6498,8 @@
+ msgstr "Preparing graphics..."
+ 
+ #: game/core/app.gd:2396 game/core/app.gd:2433
+-msgid "Preparing imageâ€¦"
+-msgstr "Preparing imageâ€¦"
++msgid "Preparing image…"
++msgstr "Preparing image…"
+ 
+ #: game/ui/race_loading.gd:89
+ msgid "Preparing race…"
+@@ -7240,8 +7240,8 @@
+ msgstr "Recording limit reached. This race cannot enter online standings."
+ 
+ #: game/core/app.gd:3303
+-msgid "Recovery is separate from the saved original. Use Map â†’ Save or Ctrl+S to keep it."
+-msgstr "Recovery is separate from the saved original. Use Map â†’ Save or Ctrl+S to keep it."
++msgid "Recovery is separate from the saved original. Use Map → Save or Ctrl+S to keep it."
++msgstr "Recovery is separate from the saved original. Use Map → Save or Ctrl+S to keep it."
+ 
+ #: game/core/app.gd:3064 game/core/app.gd:3066
+ msgid "Redo"
+@@ -7760,8 +7760,8 @@
+ msgstr "Rotate"
+ 
+ #: game/core/app.gd:3522
+-msgid "Rotate by 22.5Â°"
+-msgstr "Rotate by 22.5Â°"
++msgid "Rotate by 22.5°"
++msgstr "Rotate by 22.5°"
+ 
+ #: game/core/app.gd:5054
+ msgid "Rough ground"
+@@ -7922,8 +7922,8 @@
+ msgstr "Save country"
+ 
+ #: game/core/app.gd:3281
+-msgid "Save failed Â· Retry"
+-msgstr "Save failed Â· Retry"
++msgid "Save failed · Retry"
++msgstr "Save failed · Retry"
+ 
+ #: game/ui/track_browser.gd:1656 game/ui/track_tile.gd:50 game/ui/track_tile.gd:68
+ msgid "Save favorite"
+@@ -10250,8 +10250,8 @@
+ msgstr "Width -"
+ 
+ #: game/core/app.gd:3479
+-msgid "Width âˆ’"
+-msgstr "Width âˆ’"
++msgid "Width −"
++msgstr "Width −"
+ 
+ #: game/editor/object_browser.gd:181 game/editor/object_browser.gd:192
+ msgid "Width: %.2f m"
+--- a/scripts/localization.py
++++ b/scripts/localization.py
+@@ -9,9 +9,11 @@
+ import argparse
+ import ast
+ import json
+-from pathlib import Path
+ import re
+ import string
++from pathlib import Path
++
++import text_encoding
+ 
+ ROOT = Path(__file__).resolve().parents[1]
+ DESTINATION = ROOT / "game/localization"
+@@ -260,6 +262,9 @@
+     for key, entry in entries.items():
+         if not key[1]:
+             continue
++        for field, value in entry.items():
++            if isinstance(value, str) and text_encoding.find_issues(value):
++                errors.append(f"{language}: damaged text encoding in {field} for {key!r}")
+         if key not in messages:
+             errors.append(f"{language}: obsolete message {key!r}")
+             continue
+@@ -289,6 +294,8 @@
+         print(f"Extracted {len(messages)} messages; refreshed English catalogue")
+         return
+     errors = []
++    for issue in text_encoding.scan(ROOT)['issues']:
++        errors.append(f"{issue['file']}:{issue.get('line', '?')}: {issue['reason']}")
+     if not source_catalogue_matches((DESTINATION / "messages.pot").read_text(encoding="utf-8"), messages):
+         errors.append("Source catalogue is stale; run python scripts/localization.py extract")
+     manifest = json.loads((DESTINATION / "languages.json").read_text(encoding="utf-8"))["languages"]
+--- a/scripts/test_localization.py
++++ b/scripts/test_localization.py
+@@ -1,6 +1,6 @@
+ """Regression tests for extraction and translator mistakes, using only the stdlib."""
++import json
+ import unittest
+-import json
+ 
+ import localization as catalog
+ 
+@@ -32,6 +32,18 @@
+         self.assertEqual(catalog.placeholders("Within 1% of average; 10% faster"), ([], []))
+         self.assertEqual(catalog.placeholders("%6.2f m/s · %s · %d"), ([], ["f", "s", "d"]))
+         self.assertEqual(catalog.placeholders("{name}, {count} laps"), catalog.placeholders("{count} tours, {name}"))
++
++    def test_damaged_source_and_translation_characters_are_rejected(self):
++        messages = {("", "Loading…"): {"plural": "", "references": set()}}
++        entries = catalog.parse_po(catalog.render(messages, True))
++        entries[("", "Loading…")]["msgstr"] = "Loading" + '…'.encode().decode('cp1252')
++        self.assertTrue(any('damaged text encoding in msgstr' in error
++                            for error in catalog.validate(entries, messages, 'en')))
++        source = 'Bad \ufffd text'
++        messages = {("", source): {"plural": "", "references": set()}}
++        entries = catalog.parse_po(catalog.render(messages, True))
++        self.assertTrue(any('damaged text encoding in msgid' in error
++                            for error in catalog.validate(entries, messages, 'en')))
+ 
+     def test_context_and_plural_extraction_respects_code_boundaries(self):
+         text = '''# tr("Comment", "unused")
+--- /dev/null
++++ b/scripts/text_encoding.py
+@@ -0,0 +1,130 @@
++"""Check shipped text and translation inputs for damaged Unicode; never rewrite it.
++
++Run `python scripts/text_encoding.py` before shipping. Legitimate accented letters,
++CJK text, punctuation, emoji and combining marks are retained without normalization.
++"""
++from __future__ import annotations
++
++import argparse
++import json
++import os
++import re
++from dataclasses import asdict, dataclass
++from pathlib import Path
++
++ROOT = Path(__file__).resolve().parents[1]
++CONTINUATIONS = ''.join(bytes([value]).decode('cp1252', errors='ignore')
++                        for value in range(0x80, 0xc0)) + ''.join(map(chr, range(0x80, 0xc0)))
++MOJIBAKE = re.compile('[\u00c2-\u00f4][' + re.escape(CONTINUATIONS) + ']{1,3}')
++INVALID = re.compile('[\ufffd\ud800-\udfff\x00-\x08\x0b\x0e-\x1f\x7f-\x9f]')
++EXTENSIONS = {'.gd', '.tscn', '.tres', '.json', '.po', '.pot', '.txt', '.csv', '.tsv',
++              '.svg', '.html', '.css', '.js', '.py', '.xml', '.java', '.kt', '.cfg',
++              '.gradle', '.kts', '.fnt', '.gdshader', '.cpp', '.h', '.hpp', '.c'}
++
++
++@dataclass(frozen=True)
++class Issue:
++    offset: int
++    text: str
++    reason: str
++    replacement: str = ''
++
++
++def find_issues(text: str) -> list[Issue]:
++    """Recognize only reversible UTF-8/legacy-byte damage and invalid controls."""
++    result = []
++    covered = set()
++    for match in MOJIBAKE.finditer(text):
++        for encoding in ('cp1252', 'latin1'):
++            lead = ord(match[0][0])
++            count = 2 if lead < 0xe0 else 3 if lead < 0xf0 else 4
++            original = match[0][:count]
++            if len(original) != count:
++                continue
++            try:
++                replacement = original.encode(encoding).decode('utf-8')
++            except (UnicodeEncodeError, UnicodeDecodeError):
++                continue
++            result.append(Issue(match.start(), original, 'misdecoded UTF-8', replacement))
++            covered.update(range(match.start(), match.start() + count))
++            break
++    for match in INVALID.finditer(text):
++        if match.start() not in covered:
++            reason = ('replacement character' if match[0] == '\ufffd' else
++                      'unpaired surrogate' if 0xd800 <= ord(match[0]) <= 0xdfff else
++                      'unexpected control character')
++            result.append(Issue(match.start(), match[0], reason))
++    return sorted(result, key=lambda issue: issue.offset)
++
++
++def source_files(root: Path = ROOT):
++    """Include game resources/notices, all catalogues and authored translations.
++
++    Also check the first-party backend/UI and Android sign-in adapter. Historical
++    test fixtures, generated caches, builds and external vendor trees are excluded.
++    """
++    for relative in ('game', 'scripts/translations', 'scripts/localization_overrides.json',
++                     'backend/bmt_backend', 'native'):
++        base = root / relative
++        if base.is_file():
++            yield base
++        elif base.is_dir():
++            for directory, folders, names in os.walk(base):
++                folders[:] = sorted(folder for folder in folders if folder not in {
++                    '.godot', '.git', 'tests', '__pycache__', 'build', '.gradle',
++                    'godot-cpp', 'vendor', 'third_party', 'android'})
++                for name in sorted(names):
++                    path = Path(directory) / name
++                    if path.suffix in EXTENSIONS:
++                        yield path
++
++
++def scan(root: Path = ROOT) -> dict:
++    files = list(source_files(root))
++    issues = []
++    for path in files:
++        try:
++            text = path.read_text(encoding='utf-8-sig')
++        except UnicodeDecodeError as error:
++            issues.append({'file': path.relative_to(root).as_posix(), 'reason': 'invalid UTF-8',
++                           'byte_offset': error.start})
++            continue
++        for issue in find_issues(text):
++            issues.append({'file': path.relative_to(root).as_posix(),
++                           'line': text.count('\n', 0, issue.offset) + 1, **asdict(issue)})
++        # JSON can hide damaged display text behind syntactically valid escapes.
++        if path.suffix == '.json' and re.search(r'\\u[0-9a-fA-F]{4}', text):
++            try:
++                document = json.loads(text)
++            except ValueError:
++                continue  # Syntax validation belongs to the resource's own gate.
++            pending = [document]
++            while pending:
++                value = pending.pop()
++                if isinstance(value, dict):
++                    pending.extend(value.keys())
++                    pending.extend(value.values())
++                elif isinstance(value, list):
++                    pending.extend(value)
++                elif isinstance(value, str):
++                    for issue in find_issues(value):
++                        issues.append({'file': path.relative_to(root).as_posix(),
++                                       'location': 'decoded JSON string', **asdict(issue)})
++    return {'files_checked': len(files), 'issues': issues}
++
++
++def main() -> None:
++    parser = argparse.ArgumentParser(description=__doc__)
++    parser.add_argument('--json', type=Path, help='Write the complete check result')
++    args = parser.parse_args()
++    result = scan()
++    if args.json:
++        args.json.write_text(json.dumps(result, ensure_ascii=True, indent=2) + '\n', encoding='utf-8')
++    for issue in result['issues'][:40]:
++        print(f"{issue['file']}:{issue.get('line', '?')}: {issue['reason']} {issue.get('text', '')!a}")
++    print(f"TEXT_ENCODING: {result['files_checked']} files, {len(result['issues'])} issues")
++    raise SystemExit(bool(result['issues']))
++
++
++if __name__ == '__main__':
++    main()
+--- /dev/null
++++ b/scripts/test_text_encoding.py
+@@ -0,0 +1,70 @@
++"""Exercise byte-encoding damage separately from legitimate multilingual text."""
++import json
++import tempfile
++import unittest
++from pathlib import Path
++
++import text_encoding as encoding
++
++
++class TextEncodingTests(unittest.TestCase):
++    def test_utf8_misdecoded_as_windows1252_is_detected(self):
++        for expected in ('…', '·', '×', '→', '−', '✓', '°', '–', '“', 'é', 'å', '😀'):
++            with self.subTest(expected=expected):
++                damaged = expected.encode().decode('cp1252')
++                issues = encoding.find_issues('Text ' + damaged + ' end')
++                self.assertEqual(len(issues), 1)
++                self.assertEqual(issues[0].replacement, expected)
++                self.assertEqual(issues[0].offset, 5)
++
++    def test_latin1_damage_and_lost_bytes_are_detected(self):
++        damaged = '✓'.encode().decode('latin1')
++        self.assertEqual(encoding.find_issues(damaged)[0].replacement, '✓')
++        for value in ('\ufffd', '\x00', '\x85', '\x9f'):
++            self.assertTrue(encoding.find_issues(value))
++
++    def test_valid_multilingual_text_is_accepted_without_normalizing(self):
++        for value in ('Loading… 3×3 · 22.5° → ✓ −', 'Ångström, Ää, Öö, déjà vu, Português',
++                      'Âge, âme, Ã, â, ð, Þ', '読み込み中… 日本語', '불러오는 중… 한국어',
++                      '😀 🏎️ 🏁', 'e\u0301', 'Line one\nLine two\tValue\fPage two', '«Été»'):
++            with self.subTest(value=value):
++                self.assertEqual(encoding.find_issues(value), [])
++
++    def test_adjacent_damage_and_valid_punctuation_are_separate(self):
++        damaged = '·'.encode().decode('cp1252')
++        issues = encoding.find_issues(damaged + damaged + '…')
++        self.assertEqual([issue.replacement for issue in issues], ['·', '·'])
++
++    def test_scanner_includes_notices_and_rejects_invalid_utf8(self):
++        with tempfile.TemporaryDirectory() as directory:
++            root = Path(directory)
++            (root / 'game/legal').mkdir(parents=True)
++            (root / 'game/tests').mkdir()
++            (root / 'game/.godot').mkdir()
++            (root / 'game/legal/notice.txt').write_text('Lost \ufffd quote', encoding='utf-8')
++            (root / 'game/invalid.gd').write_bytes(b'"invalid \xff"')
++            for name in ('game/tests/before.gd', 'game/.godot/generated.gd'):
++                (root / name).write_text('\ufffd', encoding='utf-8')
++            report = encoding.scan(root)
++            self.assertEqual(report['files_checked'], 2)
++            self.assertEqual({issue['reason'] for issue in report['issues']},
++                             {'invalid UTF-8', 'replacement character'})
++
++    def test_current_shipped_text_is_clean(self):
++        self.assertEqual(encoding.scan()['issues'], [])
++
++    def test_json_escapes_are_checked_after_decoding(self):
++        with tempfile.TemporaryDirectory() as directory:
++            root = Path(directory)
++            (root / 'game').mkdir()
++            path = root / 'game/captions.json'
++            damaged = '…'.encode().decode('cp1252')
++            path.write_text(json.dumps({'caption': damaged, 'nested': ['\ud800']}), encoding='utf-8')
++            issues = encoding.scan(root)['issues']
++            self.assertEqual({issue['reason'] for issue in issues}, {'misdecoded UTF-8', 'unpaired surrogate'})
++            path.write_text(json.dumps({'caption': '読み込み中…', 'emoji': '😀'}), encoding='utf-8')
++            self.assertEqual(encoding.scan(root)['issues'], [])
++
++
++if __name__ == '__main__':
++    unittest.main()

@@ -1,0 +1,327 @@
+{
+  "date": "2026-10-26",
+  "request": "The icon should show the current liveries and kits while preserving lightweight header/dropdown display.",
+  "requirements": {
+    "HCA01": "Saved equipped livery and fitted kits feed the exact header/dropdown texture key and capture.",
+    "HCA02": "PNG persistence, bounded memory/disk and one released temporary capture studio; no per-widget 3D.",
+    "HCA03": "Latest-appearance/epoch/owner validation, cancellation, background fences and existing input/save/profile behavior.",
+    "R01": "Focused native and existing navigation/parser checks with original diagnostics retained.",
+    "Q01": "Task-only patch forward/reverse checks and byte-exact baseline round trip; no Git staging/commit."
+  },
+  "environment": {
+    "engine": "4.7.2.stable.official.ed1daf0bf",
+    "entry_point": "scripts/dev.ps1",
+    "renderer_hardware": "NVIDIA GeForce RTX 3090; Compatibility OpenGL and desktop Mobile Vulkan",
+    "APPDATA_and_LOCALAPPDATA": "build/header-car-appearance-appdata",
+    "service_connections": "Disabled by test entrypoints; isolated records/library/cloud folders",
+    "device_attachment_checked": false,
+    "physical_device_test_performed": false
+  },
+  "implementation": {
+    "image_dimensions": [
+      176,
+      112
+    ],
+    "custom_texture_limit": 14,
+    "private_png_limit": 14,
+    "encoded_png_read_limit_bytes": 131072,
+    "save_debounce_seconds": 0.35,
+    "key_fields": [
+      "cache version",
+      "build ID",
+      "renderer",
+      "records path",
+      "vehicle",
+      "normalized saved livery",
+      "normalized saved kits"
+    ],
+    "cold_path": "One cooperative simple-model capture, then off-thread PNG alpha correction and encode; studio released.",
+    "warm_path": "Shared ImageTexture or worker-decoded persistent PNG; no model construction.",
+    "stock_path": "Bundled offline-baked texture; no capture.",
+    "fallback": "Stock picture until a missing equipped capture is available."
+  },
+  "commands": [
+    "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1 TestScript -ScriptPath res://tests/test_header_equipped_cache.gd -Graphical -RenderingMethod gl_compatibility",
+    "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1 TestScript -ScriptPath res://tests/test_header_equipped_cache.gd -Graphical -RenderingMethod mobile -CommandTimeoutSeconds 180",
+    "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1 TestScript -ScriptPath res://tests/capture_profile_car.gd -Graphical -RenderingMethod gl_compatibility -CommandTimeoutSeconds 180",
+    "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1 TestApp -CommandTimeoutSeconds 180",
+    "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1 TestScript -ScriptPath res://tests/test_menu_responsiveness.gd",
+    "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1 TestScript -ScriptPath res://tests/probe_header_equipped_baseline.gd -CommandTimeoutSeconds 180",
+    "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1 TestScript -ScriptPath res://tests/test_script_parse.gd -CommandTimeoutSeconds 180",
+    "& 'C:/apps/Godot 4.7.2/Godot_v4.7.2-stable_win64_console.exe' --headless --path build/header-car-texture-import --script create_equipped_cache_uids.gd --log-file 'C:/Codes/Godot/Beat my track/docs/evidence/header-car-appearance-cache-2026-10-26/uids.log'"
+  ],
+  "additional_environment": {
+    "native_interaction": {
+      "BMT_PROFILE_CAR_OUTPUT": "res://../docs/evidence/header-car-appearance-cache-2026-10-26/interaction",
+      "BMT_HEADER_MOTION_REVIEW": "1"
+    },
+    "current_app_without_cache_control": {
+      "BMT_HEADER_CACHE_CONTROL": "1"
+    }
+  },
+  "results": {
+    "native_compatibility": {
+      "captures": 5,
+      "checks": 45,
+      "disk_hits": 1,
+      "failures": 0,
+      "header_3d_nodes": 0,
+      "header_subviewports": 0,
+      "peak_worlds": 1,
+      "process_exit_code": 0,
+      "log": "logs/gl-final-45.log"
+    },
+    "native_desktop_mobile": {
+      "captures": 5,
+      "checks": 45,
+      "disk_hits": 1,
+      "failures": 0,
+      "header_3d_nodes": 0,
+      "header_subviewports": 0,
+      "peak_worlds": 1,
+      "process_exit_code": 0,
+      "log": "logs/mobile-final-45.log"
+    },
+    "native_interaction": {
+      "process_exit_code": 0,
+      "false_boolean_checks": [],
+      "all_seven_car_images_visible": true,
+      "equipped_picture_cached": true,
+      "keyboard_selects_and_saves": true,
+      "mouse_selects_and_saves": true,
+      "name_opens_profile": true,
+      "header_nodes_3d": 0,
+      "header_subviewports": 0,
+      "populate_100_ms": 20.291,
+      "report": "interaction/gl_compatibility/capture-report.json",
+      "log": "logs/native-interaction.log"
+    },
+    "menu_responsiveness": {
+      "checks": 35,
+      "failures": 0,
+      "process_exit_code": 0,
+      "log": "logs/menu-responsiveness-35.log"
+    },
+    "parser": {
+      "scripts": 1311,
+      "failures": 0,
+      "process_exit_code": 0,
+      "log": "logs/parser-final-1311.log"
+    },
+    "current_app": {
+      "checks": 141,
+      "failures": 0,
+      "process_exit_code": 1,
+      "shutdown_error": "Headless Dummy GeometryInstance PagedAllocator pages in use at exit, followed by dependency warnings.",
+      "ObjectDB_leak_warning": false,
+      "log": "logs/current-app-141-shutdown-error.log"
+    },
+    "current_app_without_cache_control": {
+      "checks": 141,
+      "failures": 0,
+      "process_exit_code": 1,
+      "same_headless_shutdown_error": true,
+      "method": "Current App source loaded in isolated process memory, removing only the new cache construction/binding block. All concurrent App changes retained.",
+      "log": "logs/current-app-cache-disabled-control.log"
+    },
+    "task_start_app_control": {
+      "checks": 141,
+      "failures": 0,
+      "process_exit_code": 0,
+      "method": "Exact before/app.gd.txt source in isolated process memory, adapting only the retired concurrent appearance_sync.clean_poll_allowed assignment.",
+      "log": "logs/task-start-app-control-141.log"
+    }
+  },
+  "original_diagnostics": [
+    {
+      "log": "logs/initial-app-refcount-leaks.log",
+      "outcome": "All 141 assertions passed, but two RefCounted closure contexts leaked on shutdown. Replaced inline permission lambda with a named App method and cleared owned jobs/callbacks at exit. Final runs have no ObjectDB leak warning."
+    },
+    {
+      "log": "logs/initial-baseline-api-failure.log",
+      "outcome": "Exact original App could not assign retired clean_poll_allowed property in the concurrently updated appearance-sync API. One API-only string adapter was added to the isolated comparison probe."
+    },
+    {
+      "logs": [
+        "logs/initial-focused-36.log",
+        "logs/initial-gl-45.log",
+        "logs/initial-mobile-45.log"
+      ],
+      "outcome": "Earlier focused runs retained; no failing invariants or pixel tolerances were relaxed."
+    }
+  ],
+  "concurrent_work_preserved_and_excluded": [
+    "App appearance_sync.clean_poll_allowed retirement",
+    "App progressive Garage entry",
+    "All other changes beyond the task-start snapshots; stationary profile animation and shared studio factory preserved."
+  ],
+  "source_sha256": {
+    "game/ui/header_car_appearance_cache.gd": "e468cd861f96b982a03bd9ab70220ddab89167d251f1787e1d58032887153d47",
+    "game/ui/header_car_appearance_cache.gd.uid": "1722f5e204592d7068cfecdf152fb394916c19c0468bacb6b8d746cb34a09faf",
+    "game/ui/header_car_icons.gd": "fd3e14cd4d1f04025f4b02a8b81313d61551382f82ae5966c27230a8e441f180",
+    "game/ui/header_car_picker.gd": "24ff990587bd3525e27c794a8910e83bbe69ded45de66dfb60db098dc7663592",
+    "game/ui/profile_car.gd": "ac9a08b500685b88de35bff088d61722da147ac11aed98c7407bd021ca90f6ac",
+    "game/core/app.gd": "4d7e84d41bcd359756e886efd10dafe3e245a50617fd6427d711e82a8174ab93",
+    "game/tests/test_header_equipped_cache.gd": "54f6f227ef0e55f834fe186e91643cef2e95d7b79852d684eefab89d59cc3c5e",
+    "game/tests/test_header_equipped_cache.gd.uid": "7a715d7fa23af82c233b9746e76217cddb65fc915f348dfcf1ba717ea71a6e7d",
+    "game/tests/capture_profile_car.gd": "fb2bb5fc09ac3af1eb8eed7173579c6f76d5663ce43fc2374185323b5d2bbbbe",
+    "game/tests/probe_header_equipped_baseline.gd": "9a39ef1719c2d71a953d99cc6eaab839237a70df09f4bf407bf3be49c254f390",
+    "game/tests/probe_header_equipped_baseline.gd.uid": "b5aae45983c81b383cb2ad381705d511ce0c2b8f8818d3cb14faa86f29bb418b",
+    "docs/HEADER_CAR_APPEARANCE_CACHE_2026_10_26.md": "bb1aad9f5758d419290039abf85ad0154c5e31d5894db41e170d9bbbd9a417ac"
+  },
+  "before_sha256": {
+    "app.gd.txt": "7a19e084167fdb1c1bfc1017b1fadfa0fe0ac2ab48fa970d07ae583f6f3b9aef",
+    "capture_profile_car.gd.txt": "a35e03780f8dc105a02a507c37a648fb5e15fd30536eaa3f1ce6af7019a2297c",
+    "header_car_icons.gd.txt": "8c5b3834cdcbfaa64349fd890ba2761daf46aa679991a583719878ef7db7dd39",
+    "header_car_picker.gd.txt": "b31216d1ae1f9d921750dde5ba0fc3a4c078fd3bfa7ff9590dad434d91745f15",
+    "profile_car.gd.txt": "1c4607fa6841e0ee7ab7b586ed1fad3655a7dc7ae0550b247e49e072c3c54e1b"
+  },
+  "checkpoint": {
+    "results": [
+      {
+        "command": [
+          "git",
+          "apply",
+          "--check",
+          "--reverse",
+          "docs/evidence/header-car-appearance-cache-2026-10-26/scoped.patch"
+        ],
+        "exit_code": 0,
+        "output": ""
+      },
+      {
+        "command": [
+          "git",
+          "apply",
+          "--check",
+          "--directory=build/header-car-appearance-checkpoint-v1",
+          "docs/evidence/header-car-appearance-cache-2026-10-26/scoped.patch"
+        ],
+        "exit_code": 0,
+        "output": ""
+      },
+      {
+        "command": [
+          "git",
+          "apply",
+          "--directory=build/header-car-appearance-checkpoint-v1",
+          "docs/evidence/header-car-appearance-cache-2026-10-26/scoped.patch"
+        ],
+        "exit_code": 0,
+        "output": ""
+      },
+      {
+        "command": [
+          "git",
+          "apply",
+          "--check",
+          "--reverse",
+          "--directory=build/header-car-appearance-checkpoint-v1",
+          "docs/evidence/header-car-appearance-cache-2026-10-26/scoped.patch"
+        ],
+        "exit_code": 0,
+        "output": ""
+      },
+      {
+        "command": [
+          "git",
+          "apply",
+          "--reverse",
+          "--directory=build/header-car-appearance-checkpoint-v1",
+          "docs/evidence/header-car-appearance-cache-2026-10-26/scoped.patch"
+        ],
+        "exit_code": 0,
+        "output": ""
+      }
+    ],
+    "exact_original_roundtrip": {
+      "game/ui/profile_car.gd": true,
+      "game/ui/header_car_icons.gd": true,
+      "game/ui/header_car_picker.gd": true,
+      "game/tests/capture_profile_car.gd": true,
+      "game/core/app.gd": true
+    },
+    "task_only_app_sha256": "38376d14ab1c205f2b55e7f28af45d9638fd407388c81e7acd7909b7f610c160",
+    "scoped_patch_sha256": "3f135aecce1ca57e86244ed223ac3c70fbfeca2d69d1af70d2aeba2cfb999707"
+  },
+  "evidence_sha256": {
+    "checkpoint.json": "8581696fc62f4d170be384682189e8e040332131c29384fd9567b2535327e07b",
+    "scoped.patch": "3f135aecce1ca57e86244ed223ac3c70fbfeca2d69d1af70d2aeba2cfb999707",
+    "uids.log": "6d1c065383a27c36804949b6ffa4b09714470b112e5dacc0bd5aeb7b9c147c4e",
+    "before/app.gd.txt": "7a19e084167fdb1c1bfc1017b1fadfa0fe0ac2ab48fa970d07ae583f6f3b9aef",
+    "before/capture_profile_car.gd.txt": "a35e03780f8dc105a02a507c37a648fb5e15fd30536eaa3f1ce6af7019a2297c",
+    "before/header_car_icons.gd.txt": "8c5b3834cdcbfaa64349fd890ba2761daf46aa679991a583719878ef7db7dd39",
+    "before/header_car_picker.gd.txt": "b31216d1ae1f9d921750dde5ba0fc3a4c078fd3bfa7ff9590dad434d91745f15",
+    "before/profile_car.gd.txt": "1c4607fa6841e0ee7ab7b586ed1fad3655a7dc7ae0550b247e49e072c3c54e1b",
+    "gl_compatibility/changed-kit.png": "52369eda1dc489dcb61c878328e080577e512ba8d1f1c1f46d8d1aa4cea4625c",
+    "gl_compatibility/equipped-dropdown.png": "b08315697a59b922fbdd26504022d950f8c40059e306361ad48df600cee1af71",
+    "gl_compatibility/equipped-header.png": "b96d2cb6eee3d2032b377f468cdd61e20250232b1e336f1815512626b862e97d",
+    "interaction/gl_compatibility/active-classic.png": "3ff8b073847aa026f30f0b19a40931d5f6eedf19002136bb082d4c836f398be6",
+    "interaction/gl_compatibility/active-compact.png": "10a939a0481e76def58845a20d1948b102e647d87000c560aed311b0ce5d9431",
+    "interaction/gl_compatibility/active-electric.png": "d4e8e56d780479e90439627b153269e70402cca842eb978645a6bc94aa6e46b9",
+    "interaction/gl_compatibility/active-forklift.png": "7a0a6eb7d8dfe22460e2a7ba5ce0e0ac4a9cb5bdf232d787f6f2af105680d8ac",
+    "interaction/gl_compatibility/active-formula.png": "7235944241746b241423c1d856261c43a183423f27eb003ec16565d375339c1a",
+    "interaction/gl_compatibility/active-kart.png": "b024b8a15e867fb8fc18596874889297bb1fd5671299b389c0e6ff90f6e72301",
+    "interaction/gl_compatibility/active-pickup.png": "2dd2bb96ca4810c095e22353b7fd9fd34952347e526dcd722fcc8fb71748bc2a",
+    "interaction/gl_compatibility/capture-report.json": "10d04bdf1aea12b326e0a87e4a58adcb0164f5317cf9a1bf833fa1fa624c2453",
+    "interaction/gl_compatibility/car-dropdown.png": "c74193f88b24b3e76a0877db04ac580467f7d75aae5ba8465ae83d791f5d5128",
+    "interaction/gl_compatibility/customised-compact.png": "a9c16bdb70a18d8bfe34b552953cf81827d7b853c559eb12ec680a88e709be23",
+    "interaction/gl_compatibility/dropdown-selected-electric.png": "d4e8e56d780479e90439627b153269e70402cca842eb978645a6bc94aa6e46b9",
+    "interaction/gl_compatibility/dropdown-selected-forklift.png": "7a0a6eb7d8dfe22460e2a7ba5ce0e0ac4a9cb5bdf232d787f6f2af105680d8ac",
+    "interaction/gl_compatibility/long-name.png": "4b198892a6076cc4edf7f51da44d77d0c75cf54ddd0f9faf929b28458dde8ca8",
+    "interaction/gl_compatibility/menu-1720x900.png": "72ee3748c64029e5d52eb803201034a2ac0290e6051f3c69166d13f7d6097678",
+    "interaction/gl_compatibility/menu-960x540.png": "99bcf24a20a8e1cb6b69a407cef073db885e15b06e7a3120e74ab6dcf6be3aee",
+    "interaction/gl_compatibility/motion-1280x720-close-mid.png": "aba2c627f18d3c27d6dba2127f561791a77ecfefa3910aa22d62c6890c66e5f7",
+    "interaction/gl_compatibility/motion-1280x720-close-start.png": "827ca401f7556877208a2c6f0ec65eefcd71fb793a150457ebe7e977f10de81c",
+    "interaction/gl_compatibility/motion-1280x720-closed.png": "a9c16bdb70a18d8bfe34b552953cf81827d7b853c559eb12ec680a88e709be23",
+    "interaction/gl_compatibility/motion-1280x720-open-mid.png": "15d0513d7b9a903b9e13556a572b6275398a5e5224bed6ebe321686d7b90dc85",
+    "interaction/gl_compatibility/motion-1280x720-open-start.png": "734c9ab643b4455bde3d72188f815353be9248a5c9858a830f3c6d663b2e8bb4",
+    "interaction/gl_compatibility/motion-1280x720-open.png": "c74193f88b24b3e76a0877db04ac580467f7d75aae5ba8465ae83d791f5d5128",
+    "interaction/gl_compatibility/motion-1720x900-close-mid.png": "f813627fa730269e8c7fdf4f38b4acd32f6a7a0f4cf5f1a06bc403c5f4e768b2",
+    "interaction/gl_compatibility/motion-1720x900-close-start.png": "d2a74dfbf8efe941088d75c3449865630aac342499bef3607f83f6ff3da3c358",
+    "interaction/gl_compatibility/motion-1720x900-closed.png": "72ee3748c64029e5d52eb803201034a2ac0290e6051f3c69166d13f7d6097678",
+    "interaction/gl_compatibility/motion-1720x900-open-mid.png": "d2abff4ceb5204191fdd735e1fa0198e557a7d07dd02fa57ab4e7ae60119a490",
+    "interaction/gl_compatibility/motion-1720x900-open-start.png": "397dd75c2a22117b9ddd99e41051a453b06eeea5ec035d0d299463e31cf9c528",
+    "interaction/gl_compatibility/motion-1720x900-open.png": "bfc828e9e6b163fec9371806ae2ce54c2b551f914576e0ca0cbbb4d75131a55a",
+    "interaction/gl_compatibility/motion-960x540-close-mid.png": "b5fbf3529140eb9a4b57715b7fb39e8b39279d99d861973bae554b7e77d3a627",
+    "interaction/gl_compatibility/motion-960x540-close-start.png": "c7f744319931f6d14dcf257005e3c3eaf7c224297275d0d27067fdf2bc458109",
+    "interaction/gl_compatibility/motion-960x540-closed.png": "99bcf24a20a8e1cb6b69a407cef073db885e15b06e7a3120e74ab6dcf6be3aee",
+    "interaction/gl_compatibility/motion-960x540-open-mid.png": "600a6dc5060b4e0caae39e758ba3f19391ab0027d4861a452bb12130bd9ef309",
+    "interaction/gl_compatibility/motion-960x540-open-start.png": "36b92134ede6141ba4dc3ec02a653ddef4a370198d94192c456860c60b9d6863",
+    "interaction/gl_compatibility/motion-960x540-open.png": "47ed39f023e7b9c8b52b892b0b8f3f916c421690e79d9312e9f73b92daf0d6f1",
+    "interaction/gl_compatibility/named-forklift.png": "c9fcf0fb3ab690742550cbc706c034fddb11a2244a6a7d4c3dea6427c10dd523",
+    "interaction/gl_compatibility/profile-opened-from-name.png": "d202bb6163e01b1ac6eabe4ba3b31ca0c6c86cae5cd7ca43b1deadc40c3c8c32",
+    "logs/current-app-141-shutdown-error.log": "e2d2d889dfc8cbd734225398b80debe3ffbce4f3e7a832fd197e3733ca3b12c4",
+    "logs/current-app-cache-disabled-control.log": "e7eb216c39502cf536e2f43dc54830baaaf9903e500fd4c5d175c8d7e123bd39",
+    "logs/gl-final-45.log": "f3588c12fa7985698473462c75480bda00cb27fd81efe4b9b7e8959ce04f04e7",
+    "logs/initial-app-refcount-leaks.log": "4586528112f6bd7a6d78cf2d24b4d5681a0e873154bea7dd875fa4ef7045ebab",
+    "logs/initial-baseline-api-failure.log": "d1dbc4e55850c47c2dcb1c6a21e0a00365bfec5c058ca78f25493fb47aa28837",
+    "logs/initial-focused-36.log": "4cc956fc3de89202fa0500c10fdcdb0b81608017caed67aabe3e2d2014f7f072",
+    "logs/initial-gl-45.log": "f3588c12fa7985698473462c75480bda00cb27fd81efe4b9b7e8959ce04f04e7",
+    "logs/initial-mobile-45.log": "dc1c6d87a4e5227a90571e006e72a45e2da80e5a8fd4c2ed90c7e94dd4dd806d",
+    "logs/menu-responsiveness-35.log": "a26c3ef0df9b54d6543f3a565fb95d33a3d106910e44461649c63a17925e9233",
+    "logs/mobile-final-45.log": "dc1c6d87a4e5227a90571e006e72a45e2da80e5a8fd4c2ed90c7e94dd4dd806d",
+    "logs/native-interaction.log": "d21d6150f314ab541d03964151320fbde5279defe4e5762285b92e97fb419a3b",
+    "logs/parser-final-1311.log": "ffdbe15916139a1b493405ea80ec8f2a80059b56c44d8e1b07f06dc1e54e3892",
+    "logs/task-start-app-control-141.log": "214331a97c4b2c7e5c287d84796d9fa90ede497aad01ce9062b6b176f79c91e6",
+    "mobile/changed-kit.png": "39cf30e0f2b235947a8b9c131fc1d896dad47ef5f3b53c248a77e0cd73a5833b",
+    "mobile/equipped-dropdown.png": "aaab4eb616ac700979db653aa7a1bf33a7beedba99ac61a1883955691294e84e",
+    "mobile/equipped-header.png": "d019ae19831a7c4640d70881ce28826cf679464122247381ea4d2dbb20223d8f"
+  },
+  "known_limits": [
+    "New uncached appearances briefly show stock fallback while a single temporary capture completes.",
+    "Cold capture responsiveness and Android memory/frame/thermal behavior need owner/device acceptance.",
+    "Current broad headless App runner still exits on the same renderer shutdown diagnostic with this cache service disabled.",
+    "Reload required to see code changes."
+  ],
+  "not_performed": [
+    "Device attachment check",
+    "Physical-device test",
+    "APK/AAB export",
+    "Real authentication or purchase",
+    "Owner-save or live database mutation",
+    "Deployment",
+    "Git staging/commit/merge",
+    "Owner-process restart"
+  ]
+}

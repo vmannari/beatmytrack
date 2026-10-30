@@ -35,11 +35,11 @@ def candidate(replay):
     return ticks, replay["claimed_lap_ticks"]
 
 
-def no_improvement(session, ticket, board, result):
+def no_improvement(session, ticket, board, result, *, submitted_at=None):
     """Caller holds Player. Lock existing bests against concurrent resets.
 
-    Daily Free Race and Track of the Day use the ordinary pinned board. Weekly
-    and Challenge bests are separate: a global PB cannot stand in for them.
+    Daily, Weekly and Challenge bests are separate: a global PB cannot stand in
+    for the player's first or improved verified result in those competitions.
     Missing/uncertain facts always leave the race on the verification path.
     """
     if result is None or board.manifest.get("purpose") == "creator_test":
@@ -51,6 +51,9 @@ def no_improvement(session, ticket, board, result):
         .where(PersonalBest.board_id == board.id, PersonalBest.player_id == ticket.player_id)
         .with_for_update(read=True, of=(PersonalBest, LapPersonalBest))).first()
     if bests is None or ticks < bests[0] or min(laps[1:]) < bests[1]:
+        return False
+    from .daily_standings import needs_verification
+    if needs_verification(session, ticket, board, ticks, now() if submitted_at is None else submitted_at):
         return False
     rivalry = session.get(RivalryTicket, ticket.id)
     if rivalry is not None:
@@ -117,7 +120,7 @@ def skip_claimed(app, run_id, token, replay):
         if (player.is_test_driver or board.manifest.get("test_population")) and not app.state.settings.test_drivers_enabled:
             return False
         ticket = session.get(RunTicket, run.ticket_id)
-        if not no_improvement(session, ticket, board, result):
+        if not no_improvement(session, ticket, board, result, submitted_at=run.created_at):
             return False
         if session.get(OperationState, "verify:"+run.id) is not None:
             return False  # Explicit competitive reuse must check the original path.

@@ -1,0 +1,154 @@
+{
+  "date": "2026-10-27",
+  "requirements": {
+    "RJF01": "Visible failure survives initial menu activation and prefetch",
+    "RJF02": "Explicit Join/Refresh retry immediately and success clears feedback",
+    "RJF03": "Scope fences, duplicate suppression and passive recovery remain"
+  },
+  "root_cause": "First-entry failure had no successful snapshot; passive destination activation reset the adapter and immediately erased its error.",
+  "runtime_changed": [
+    "game/backend/weekly_rivalry_client.gd"
+  ],
+  "added_tests": [
+    "game/tests/test_rivalry_join_failure.gd",
+    "game/tests/test_rivalry_join_failure.gd.uid"
+  ],
+  "docs_changed": [
+    "DEVELOPMENT_STATUS.md",
+    "docs/RIVALRY_JOIN_FEEDBACK_2026_10_27.md"
+  ],
+  "unchanged_ui_source": "game/ui/weekly_rivalry_page.gd",
+  "behavior": "Scope and time of failed snapshot fetches survive passive activation; the existing 30000ms refresh interval applies to failures, with immediate explicit retries.",
+  "engine": "4.7.2.stable.official.ed1daf0bf",
+  "renderer": "Desktop Compatibility/OpenGL, NVIDIA GeForce RTX 3090",
+  "sizes": [
+    [
+      1280,
+      720
+    ],
+    [
+      960,
+      540
+    ]
+  ],
+  "tests": [
+    {
+      "log": "baseline-19checks-4failures.log",
+      "checks": 19,
+      "failures": 4,
+      "result": "expected baseline failure"
+    },
+    {
+      "log": "test_rivalry_join_failure-headless.log",
+      "checks": 38,
+      "failures": 0,
+      "result": "pass"
+    },
+    {
+      "log": "join-feedback-compatibility.log",
+      "checks": 44,
+      "failures": 0,
+      "result": "pass"
+    },
+    {
+      "log": "test_rivalry_entry-headless.log",
+      "checks": 66,
+      "failures": 0,
+      "result": "pass"
+    },
+    {
+      "log": "test_automatic_rivalry_flow-headless.log",
+      "checks": 7,
+      "failures": 0,
+      "result": "pass"
+    },
+    {
+      "log": "test_rivalry_week_completion-headless.log",
+      "checks": 38,
+      "failures": 0,
+      "result": "pass"
+    },
+    {
+      "log": "test_script_parse-headless.log",
+      "scripts": 1326,
+      "failures": 0,
+      "result": "pass"
+    }
+  ],
+  "screenshots": [
+    "compatibility/automatic-join-failed-1280x720.png",
+    "compatibility/automatic-join-failed-960x540.png",
+    "compatibility/entry-failed-1280x720.png",
+    "compatibility/entry-failed-960x540.png",
+    "compatibility/join-failed-1280x720.png",
+    "compatibility/join-failed-960x540.png"
+  ],
+  "screenshot_review": [
+    "entry-failed-960x540.png",
+    "join-failed-1280x720.png"
+  ],
+  "commands": {
+    "entrypoint": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1",
+    "headless_arguments": "-Action TestScript -ScriptPath res://tests/<name>.gd -CommandTimeoutSeconds 120",
+    "headless_tests": [
+      "test_rivalry_join_failure",
+      "test_rivalry_entry",
+      "test_automatic_rivalry_flow",
+      "test_rivalry_week_completion",
+      "test_script_parse"
+    ],
+    "native_arguments": "-Action TestScript -ScriptPath res://tests/test_rivalry_join_failure.gd -Graphical -RenderingMethod gl_compatibility -RenderingDriver opengl3 -CommandTimeoutSeconds 120",
+    "profile": "APPDATA below build/rivalry-join-feedback; explicit offline backend.cfg written before App initialization",
+    "checkpoint_check": "git apply --reverse --check docs/evidence/rivalry-join-feedback-2026-10-27/task-only.patch",
+    "whitespace_check": "git diff --check -- game/backend/weekly_rivalry_client.gd game/tests/test_rivalry_join_failure.gd docs/RIVALRY_JOIN_FEEDBACK_2026_10_27.md DEVELOPMENT_STATUS.md"
+  },
+  "checkpoint": {
+    "path": "task-only.patch",
+    "reverse_check_exit": 0,
+    "whitespace_check_exit": 0,
+    "main_index_touched": false
+  },
+  "retained_initial_findings": [
+    "Direct scripts/dev.ps1 invocation blocked by Windows execution policy; rerun with process-local policy.",
+    "Sandbox could not open default user log; rerun with isolated APPDATA.",
+    "Sandbox denied Windows root certificate-store access; approved escalation used only for isolated offline engine tests.",
+    "Original-runtime harness failed 4/19 checks, two at each size.",
+    "Initial profile guard rejected a path containing game/../build; simplify_path corrected the guard. Failure log retained.",
+    "Earlier fixed runs: 19 headless checks and 40 native checks; later fixture expanded to 38/44."
+  ],
+  "limitations": [
+    "No device attachment check or physical-device test.",
+    "Injected in-memory service failures; actual owner backend rejection was not diagnosed.",
+    "Client reload/rebuild and owner/device feedback acceptance remain.",
+    "No real authentication, live mutations, APK, deployment, owner-process restart, staging, commit or merge.",
+    "Concurrent pre-existing work preserved and excluded from task-only checkpoint."
+  ],
+  "sha256": {
+    "DEVELOPMENT_STATUS.md": "507a0855a3eaab6ce0d17e225cc8ac1d95d3b800c224c21dc35c4faeb7704109",
+    "docs/evidence/rivalry-join-feedback-2026-10-27/baseline-19checks-4failures.log": "2b485f464ac7ce25979fa790317e04bdfff4773168f023cd1c228d56c12b441f",
+    "docs/evidence/rivalry-join-feedback-2026-10-27/before/DEVELOPMENT_STATUS.md": "0401531335f5ab79ddda8e71fb730df1b313be1db27c3e3cfa4a8ea4de778b67",
+    "docs/evidence/rivalry-join-feedback-2026-10-27/before/game/backend/weekly_rivalry_client.gd": "61fe414c2c9b40673b929b0c208bc207714fde5098c8c2cfa458942ed0eb2012",
+    "docs/evidence/rivalry-join-feedback-2026-10-27/before/game/ui/weekly_rivalry_page.gd": "fc4f8f22670e9cbc7ce9699d2bbe02fc4753226e76cbb4bb46654e2ae47e6360",
+    "docs/evidence/rivalry-join-feedback-2026-10-27/compatibility/automatic-join-failed-1280x720.png": "7c7b206719eabd60d02ab623a61e2d18949dbbf9c2101de8c8529e56da062e24",
+    "docs/evidence/rivalry-join-feedback-2026-10-27/compatibility/automatic-join-failed-960x540.png": "ad13c10a438b5e900dac5e7a08282019686eb9f480dd034a3099730245882d1d",
+    "docs/evidence/rivalry-join-feedback-2026-10-27/compatibility/entry-failed-1280x720.png": "d2fca5304051bd7887a3d024599309a613752bf0cf63fa4ce07b82a1126df78f",
+    "docs/evidence/rivalry-join-feedback-2026-10-27/compatibility/entry-failed-960x540.png": "cd3760e008cbe23330ad836d5464dcb75fc9ec9cc2398074f870c26acc6fbeb0",
+    "docs/evidence/rivalry-join-feedback-2026-10-27/compatibility/join-failed-1280x720.png": "ca7fef549d3533ace1f3d05447df9fe7210829b5bcf51cb76e45ee5bfb5276c4",
+    "docs/evidence/rivalry-join-feedback-2026-10-27/compatibility/join-failed-960x540.png": "7b106433ee5e40c6523d4c06300b073c8826cb5e14d415c90e76713d95be7923",
+    "docs/evidence/rivalry-join-feedback-2026-10-27/initial-fixed-compatibility.log": "39bb73921f2d87b44aa5ffd7c8e6a4f32de647ed21e2ff6a5fa5c2ffbaadbdbb",
+    "docs/evidence/rivalry-join-feedback-2026-10-27/initial-fixed-headless.log": "bb7d423a41c6db861dbe4077732965f50ca517d9351a8c86ea144b44a45b2fc3",
+    "docs/evidence/rivalry-join-feedback-2026-10-27/initial-profile-guard.log": "a9ce49c4f233a3c6934b996151ca7601e09a40af025e1ef3b81f795b9a072e10",
+    "docs/evidence/rivalry-join-feedback-2026-10-27/join-feedback-compatibility.log": "b7094e3037dcdd319ea25cb4f11874417f61bbe842e05cb0f7f4b844e7bb4246",
+    "docs/evidence/rivalry-join-feedback-2026-10-27/task-only.patch": "e93d0d7e7bd1577523223aa739541db2315b1a8cadfd4494f6d5a3372ed02a8a",
+    "docs/evidence/rivalry-join-feedback-2026-10-27/test_automatic_rivalry_flow-headless.log": "c51942e7bab62d9e2f5be6f09922a7b7dfb3828bed06cb19afc33f56c7552ae9",
+    "docs/evidence/rivalry-join-feedback-2026-10-27/test_rivalry_entry-headless.log": "aafd9a37ed1644fb74e351bc768b88f0d7085782de406d1d33ddd6185015a127",
+    "docs/evidence/rivalry-join-feedback-2026-10-27/test_rivalry_join_failure-headless.log": "cc27a9960a7fd3b8f9f508f4eb8bb7683f94f304bd786a5d6ac1fa15aac34d29",
+    "docs/evidence/rivalry-join-feedback-2026-10-27/test_rivalry_week_completion-headless.log": "2e4e07359ea1c16c0deb90f6bffda5eeaa19969a013c64cb85a2bede566ce190",
+    "docs/evidence/rivalry-join-feedback-2026-10-27/test_script_parse-headless.log": "5b724f42f704d58373e7660eb0235b799e94b4518e11e54f060c2fd2e210d3eb",
+    "docs/RIVALRY_JOIN_FEEDBACK_2026_10_27.md": "88004a8aaaa36e4b1a41770d1927afdac601af638392f3b5cd7c6f7b49f0e981",
+    "game/backend/weekly_rivalry_client.gd": "3883af9b29c41ccc0241fc6d5f675e7012688fe43c97f21738ca376bc01593ce",
+    "game/tests/test_rivalry_join_failure.gd": "1ce7d5db49245dda130092819934e6d1325244da13238a8301b38fa938c9b614",
+    "game/tests/test_rivalry_join_failure.gd.uid": "2b45b8a008bb212887e1bb78ef021f0dbe2b72e66a4af3fa2ad988c1d9c2cb39",
+    "game/ui/weekly_rivalry_page.gd": "fc4f8f22670e9cbc7ce9699d2bbe02fc4753226e76cbb4bb46654e2ae47e6360"
+  }
+}

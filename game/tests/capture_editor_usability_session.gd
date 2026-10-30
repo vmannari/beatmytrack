@@ -1,0 +1,170 @@
+extends SceneTree
+## Disposable, offline editor exploration. Authoring uses viewport input only.
+var app: Node
+var folder: String
+var sequence: int = 0
+var started: int
+
+func _initialize() -> void:
+	run.call_deferred()
+
+func frames(count: int = 3) -> void:
+	for index: int in range(count): await process_frame
+
+func run() -> void:
+	folder = ProjectSettings.globalize_path("res://../docs/evidence/editor-usability-session-2026-10-28/session-%d" % OS.get_process_id())
+	for argument: String in OS.get_cmdline_user_args():
+		if argument.begins_with("--session-folder="): folder = argument.trim_prefix("--session-folder=")
+	if not folder.is_absolute_path():
+		push_error("Usability session folder must be absolute")
+		quit(2)
+		return
+	DirAccess.make_dir_recursive_absolute(folder)
+	OS.set_environment("BMT_API_URL", "")
+	OS.set_environment("BMT_DEV_AUTH_KEY", "")
+	root.gui_embed_subwindows = true
+	root.size = Vector2i(1280,720)
+	root.content_scale_size = root.size
+	app = load("res://core/app.tscn").instantiate()
+	app.library = TrackLibrary.new(folder.path_join("storage/tracks"))
+	app.records = LocalRecords.new(folder.path_join("storage/records.json"))
+	app.cloud_root_override = folder.path_join("storage/cloud")
+	started = Time.get_ticks_msec()
+	root.add_child(app)
+	while not app.startup_complete: await process_frame
+	await snapshot("00-start", Time.get_ticks_msec()-started)
+	while true:
+		var path: String = folder.path_join("command-%03d.json" % (sequence+1))
+		if not FileAccess.file_exists(path):
+			await create_timer(0.1).timeout
+			continue
+		var command: Variant = JSON.parse_string(FileAccess.get_file_as_string(path))
+		if not command is Dictionary:
+			await create_timer(0.1).timeout
+			continue
+		sequence += 1
+		started = Time.get_ticks_msec()
+		for action: Dictionary in command.get("actions",[]): await act(action)
+		await snapshot(str(command.get("label","step-%03d" % sequence)),Time.get_ticks_msec()-started)
+		if command.get("quit",false):
+			app.queue_free()
+			await frames(5)
+			quit()
+			return
+
+func act(action: Dictionary) -> void:
+	match str(action.get("type","")):
+		"click":
+			var point: Vector2 = Vector2(action.get("x",0),action.get("y",0))
+			if action.has("name") or action.has("text"):
+				var control: Control = find_control(root,action)
+				if control == null:
+					print("INPUT_TARGET_MISSING ",action)
+					return
+				point = control.get_global_rect().get_center()
+				if control.get_window() != root: point += Vector2(control.get_window().position)
+			await pointer(point,true,int(action.get("button",1)))
+			await pointer(point,false,int(action.get("button",1)))
+		"drag":
+			var from: Vector2 = Vector2(action.from[0],action.from[1])
+			var to: Vector2 = Vector2(action.to[0],action.to[1])
+			var button: int = int(action.get("button",1))
+			await pointer(from,true,button)
+			for i: int in range(1,17):
+				var event := InputEventMouseMotion.new()
+				event.position = from.lerp(to,float(i)/16.0)
+				event.global_position = event.position
+				event.relative = (to-from)/16.0
+				event.button_mask = 1 << (button-1)
+				root.push_input(event,true)
+				await process_frame
+			await pointer(to,false,button)
+		"key":
+			for down: bool in [true,false]:
+				var event := InputEventKey.new()
+				event.keycode = OS.find_keycode_from_string(str(action.key))
+				event.physical_keycode = event.keycode
+				event.ctrl_pressed = action.get("ctrl",false)
+				event.shift_pressed = action.get("shift",false)
+				event.pressed = down
+				Input.parse_input_event(event)
+				await process_frame
+		"key_hold":
+			var event := InputEventKey.new()
+			event.keycode = OS.find_keycode_from_string(str(action.key))
+			event.physical_keycode = event.keycode
+			event.pressed = true
+			Input.parse_input_event(event)
+			await create_timer(float(action.get("seconds",0.25))).timeout
+			event.pressed = false
+			Input.parse_input_event(event)
+		"type":
+			for character: String in str(action.text):
+				var event := InputEventKey.new()
+				event.unicode = character.unicode_at(0)
+				event.pressed = true
+				root.push_input(event,true)
+				await process_frame
+		"resize":
+			root.size = Vector2i(action.width,action.height)
+			root.content_scale_size = root.size
+		"wait": await create_timer(float(action.get("seconds",1))).timeout
+		"wait_practice":
+			var deadline: int = Time.get_ticks_msec()+90000
+			while Time.get_ticks_msec()<deadline and (not is_instance_valid(app.game) or not app.game.preparation_complete): await process_frame
+			await frames(10)
+	await frames(3)
+
+func pointer(point: Vector2, down: bool, button: int) -> void:
+	var event := InputEventMouseButton.new()
+	event.position = point
+	event.global_position = point
+	event.button_index = button
+	event.pressed = down
+	root.push_input(event,true)
+	await process_frame
+
+func find_control(node: Node, action: Dictionary) -> Control:
+	if node is Control and node.is_visible_in_tree():
+		if action.has("name") and str(node.name) == str(action.name): return node
+		if action.has("text") and node is BaseButton and node.get("text") == str(action.text): return node
+	for child: Node in node.get_children():
+		var found: Control = find_control(child,action)
+		if found != null: return found
+	return null
+
+func controls(node: Node, output: Array) -> void:
+	if node is Control and node.is_visible_in_tree() and (node is BaseButton or node is Label or node is LineEdit or node is SpinBox):
+		var rect: Rect2 = node.get_global_rect()
+		if node.get_window() != root: rect.position += Vector2(node.get_window().position)
+		var entry: Dictionary = {"name":str(node.name),"class":node.get_class(),"rect":[rect.position.x,rect.position.y,rect.size.x,rect.size.y],"tooltip":node.tooltip_text}
+		if node is Label or node is BaseButton or node is LineEdit: entry.text = node.get("text")
+		if node is BaseButton: entry.disabled = node.disabled
+		output.append(entry)
+	for child: Node in node.get_children(): controls(child,output)
+
+func snapshot(label: String, input_ms: int) -> void:
+	await create_timer(0.6).timeout
+	await frames(5)
+	var deadline: int = Time.get_ticks_msec()+60000
+	if is_instance_valid(app.canvas):
+		while Time.get_ticks_msec()<deadline and is_instance_valid(app.canvas) and (app.canvas.preparing or app.editor_commits.unsettled() or app.editor_preview_thread != null or (is_instance_valid(app.editor_world) and app.editor_world._building)):
+			await process_frame
+	await frames(5)
+	await RenderingServer.frame_post_draw
+	var state: Dictionary = {"pid":OS.get_process_id(),"sequence":sequence,"label":label,"screen":app.screen,"viewport":[root.size.x,root.size.y],"input_ms":input_ms,"total_ms":Time.get_ticks_msec()-started,"document":app.document.duplicate(true),"controls":[],"renderer":RenderingServer.get_current_rendering_method()}
+	controls(root,state.controls)
+	if is_instance_valid(app.canvas):
+		state.canvas = {"mode":app.canvas.mode,"ghost":app.canvas.ghost.duplicate(true),"preparing":app.canvas.preparing,"selected_piece":app.canvas.selected_piece,"selected_object":app.canvas.selected_object,"zoom":app.canvas.zoom,"pan":[app.canvas.pan.x,app.canvas.pan.y]}
+		state.history_count = app.history.size()
+	if is_instance_valid(app.game):
+		state.game = {"paused":app.game.paused,"production_mode":app.game.production_mode,"position":[app.game.sim.state.position.x,app.game.sim.state.position.y],"speed":app.game.sim.state.velocity.length()}
+	var base: String = "%03d-%s" % [sequence,label]
+	root.get_texture().get_image().save_png(folder.path_join(base+".png"))
+	var file := FileAccess.open(folder.path_join(base+".json"),FileAccess.WRITE)
+	file.store_string(JSON.stringify(state,"\t"))
+	file.close()
+	var latest := FileAccess.open(folder.path_join("latest.json"),FileAccess.WRITE)
+	latest.store_string(JSON.stringify(state))
+	latest.close()
+	print("EDITOR_USABILITY_STEP ",base," total_ms=",state.total_ms)

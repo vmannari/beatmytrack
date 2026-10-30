@@ -63,13 +63,17 @@ func analog_controls() -> bool:
 	return not layout.is_empty() and layout.steering_type != "buttons"
 
 func one_pedal() -> bool:
-	return vehicle_id == "electric"
+	return driver != null and driver.single_pedal
+
+func has_handbrake() -> bool:
+	return not one_pedal() and (driver.handbrake_enabled if driver != null else vehicle_id != "electric")
 
 func _active_keys() -> Array[String]:
 	var keys: Array[String] = ControlLayout.active_keys(layout)
 	if one_pedal():
 		keys.erase("handbrake")
 		if "brake" not in keys: keys.insert(keys.size()-1,"brake") # Reserve its saved position for D/R.
+	if not has_handbrake(): keys.erase("handbrake")
 	return keys
 
 func direction_rect() -> Rect2:
@@ -230,7 +234,7 @@ func zones() -> Array[Rect2]:
 		if one_pedal(): return [left,right,Rect2(),_pedal_art(gas,true),Rect2()]
 		var brake: Rect2 = groups.brake if not analog_controls() else Rect2(gas.position+Vector2(0,gas.size.y*0.5),Vector2(gas.size.x,gas.size.y*0.5))
 		if analog_controls(): gas.size.y *= 0.5
-		return [left, right, _pedal_art(brake,false), _pedal_art(gas,true), groups.handbrake.grow(-10)]
+		return [left, right, _pedal_art(brake,false), _pedal_art(gas,true), groups.handbrake.grow(-10) if has_handbrake() else Rect2()]
 	var result: Array[Rect2] = [Rect2(24, size.y - 156, 100, 92), Rect2(136, size.y - 156, 100, 92),
 		Rect2(size.x - 248, size.y - 156, 100, 92), Rect2(size.x - 136, size.y - 184, 112, 120), Rect2(size.x - 360, size.y - 156, 92, 92)]
 	var scale_value: float = control_scale * (1.15 if mobile_layout else 1.0)
@@ -243,7 +247,7 @@ func zones() -> Array[Rect2]:
 		result[i] = rect
 	if one_pedal():
 		result[2] = Rect2()
-		result[4] = Rect2()
+	if not has_handbrake(): result[4] = Rect2()
 	return result
 
 
@@ -261,7 +265,7 @@ func touch_zones() -> Array[Rect2]:
 		var rectangles: Array[Rect2] = zones()
 		var pedal: Rect2 = groups.accelerator
 		rectangles[2] = Rect2() if one_pedal() else groups.brake if not analog_controls() else Rect2(pedal.position+Vector2(0,pedal.size.y*0.5),Vector2(pedal.size.x,pedal.size.y*0.5))
-		rectangles[4] = Rect2() if one_pedal() else groups.handbrake
+		rectangles[4] = groups.handbrake if has_handbrake() else Rect2()
 		rectangles[3] = pedal if one_pedal() or not analog_controls() else Rect2(pedal.position,Vector2(pedal.size.x,pedal.size.y*0.5))
 		if layout.steering_type == "buttons":
 			rectangles[0] = groups.steer_left
@@ -421,7 +425,7 @@ func pressed_mask() -> int:
 	var result: int = 0
 	if enabled:
 		for i: int in range(ACTIONS.size()):
-			if one_pedal() and i in [2,4]: continue
+			if (one_pedal() and i == 2) or (not has_handbrake() and i == 4): continue
 			if Input.is_action_pressed(ACTIONS[i]) or _touch_pressed(ACTIONS[i]): result |= 1 << i
 	return result
 
@@ -483,7 +487,7 @@ func _draw() -> void:
 			if not one_pedal(): draw_string(font,Vector2(center.x+20,pedal.end.y-28),"BRAKE",HORIZONTAL_ALIGNMENT_LEFT,-1,14,pedal_tint)
 	for art: TouchControlArt in artwork:
 		art.visible = not analog_controls() or art.button_index == 4
-		if one_pedal() and art.button_index in [2,4]: art.visible = false
+		if (one_pedal() and art.button_index == 2) or (not has_handbrake() and art.button_index == 4): art.visible = false
 		var rect: Rect2 = rectangles[art.button_index]
 		if art.artwork_rect != rect:
 			art.artwork_rect = rect

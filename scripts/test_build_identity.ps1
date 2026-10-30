@@ -26,4 +26,56 @@ if ($untracked -ceq $dirty) { throw 'New shipping assets must change client iden
 $project = [System.IO.File]::ReadAllText((Join-Path $fixtureRoot 'game/project.godot'))
 $identity = [System.IO.File]::ReadAllText((Join-Path $fixtureRoot 'game/core/build_identity.gd'))
 if (-not $project.Contains('config/version="' + $untracked + '"') -or -not $identity.Contains('const ID: String = "' + $untracked + '"')) { throw 'Runtime and export versions must match.' }
-Write-Host 'BUILD_IDENTITY: 7 checks passed; isolated fixture retained in build/.'
+function Get-PreviewHash {
+    $text = [System.IO.File]::ReadAllText((Join-Path $fixtureRoot 'game/core/build_identity.gd'))
+    $match = [regex]::Match($text, 'GARAGE_PREVIEW_SHA256: String = "([a-f0-9]{64})"')
+    if (-not $match.Success) { throw 'Generated preview fingerprint is missing.' }
+    return $match.Groups[1].Value
+}
+function Get-HeaderHash {
+    $text = [System.IO.File]::ReadAllText((Join-Path $fixtureRoot 'game/core/build_identity.gd'))
+    $match = [regex]::Match($text, 'HEADER_PREVIEW_SHA256: String = "([a-f0-9]{64})"')
+    if (-not $match.Success) { throw 'Generated header fingerprint is missing.' }
+    return $match.Groups[1].Value
+}
+$headerBefore = Get-HeaderHash
+[System.IO.Directory]::CreateDirectory((Join-Path $fixtureRoot 'game/backend')) | Out-Null
+[System.IO.File]::WriteAllText((Join-Path $fixtureRoot 'game/backend/transport.gd'), '# unrelated transport', $encoding)
+$transportBuild = Write-ClientBuildIdentity $fixtureRoot $fixtureRoot
+if ($transportBuild -ceq $untracked -or (Get-HeaderHash) -cne $headerBefore) { throw 'Transport edits must not invalidate header appearances.' }
+[System.IO.File]::WriteAllText((Join-Path $fixtureRoot 'game/core/app.gd'), '# unrelated navigation', $encoding)
+Write-ClientBuildIdentity $fixtureRoot $fixtureRoot | Out-Null
+if ((Get-HeaderHash) -cne $headerBefore) { throw 'App navigation edits must not invalidate header appearances.' }
+$previewBefore = Get-PreviewHash
+[System.IO.Directory]::CreateDirectory((Join-Path $fixtureRoot 'game/ui')) | Out-Null
+[System.IO.File]::WriteAllText((Join-Path $fixtureRoot 'game/ui/garage_page.gd'), '# changed label', $encoding)
+$menuBuild = Write-ClientBuildIdentity $fixtureRoot $fixtureRoot
+if ($menuBuild -ceq $transportBuild -or (Get-PreviewHash) -cne $previewBefore) { throw 'Menu changes must update the build while retaining saved preview pictures.' }
+if ((Get-HeaderHash) -ceq $headerBefore) { throw 'Conservative UI changes must invalidate header appearances.' }
+[System.IO.Directory]::CreateDirectory((Join-Path $fixtureRoot 'game/vehicle')) | Out-Null
+[System.IO.File]::WriteAllText((Join-Path $fixtureRoot 'game/vehicle/compact_coachwork.gd'), '# first body', $encoding)
+Write-ClientBuildIdentity $fixtureRoot $fixtureRoot | Out-Null
+$bodyPreview = Get-PreviewHash
+if ($bodyPreview -ceq $previewBefore) { throw 'A new model source must invalidate old pictures.' }
+$headerBody = Get-HeaderHash
+[System.IO.File]::WriteAllText((Join-Path $fixtureRoot 'game/vehicle/compact_coachwork.gd'), '# revised body', $encoding)
+Write-ClientBuildIdentity $fixtureRoot $fixtureRoot | Out-Null
+$revisedPreview = Get-PreviewHash
+if ($revisedPreview -ceq $bodyPreview) { throw 'A model edit must invalidate old pictures.' }
+if ((Get-HeaderHash) -ceq $headerBody) { throw 'Model edits must invalidate header appearances.' }
+[System.IO.Directory]::CreateDirectory((Join-Path $fixtureRoot 'game/assets/liveries')) | Out-Null
+[System.IO.File]::WriteAllText((Join-Path $fixtureRoot 'game/assets/liveries/stripe.svg'), '<svg/>', $encoding)
+Write-ClientBuildIdentity $fixtureRoot $fixtureRoot | Out-Null
+$liveryPreview = Get-PreviewHash
+if ($liveryPreview -ceq $revisedPreview) { throw 'Livery artwork must invalidate old pictures.' }
+[System.IO.File]::WriteAllText((Join-Path $fixtureRoot 'game/ui/garage_reflections.gd'), '# revised reflections', $encoding)
+Write-ClientBuildIdentity $fixtureRoot $fixtureRoot | Out-Null
+if ((Get-PreviewHash) -ceq $liveryPreview) { throw 'Lighting/reflection changes must invalidate old pictures.' }
+$renderPreview = Get-PreviewHash
+$renderHeader = Get-HeaderHash
+$project = [System.IO.File]::ReadAllText((Join-Path $fixtureRoot 'game/project.godot'))
+[System.IO.File]::WriteAllText((Join-Path $fixtureRoot 'game/project.godot'), $project + "`n[rendering]`nrenderer/rendering_method=`"mobile`"`n", $encoding)
+Write-ClientBuildIdentity $fixtureRoot $fixtureRoot | Out-Null
+if ((Get-PreviewHash) -ceq $renderPreview) { throw 'Project rendering changes must invalidate old pictures.' }
+if ((Get-HeaderHash) -ceq $renderHeader) { throw 'Rendering changes must invalidate header appearances.' }
+Write-Host 'BUILD_IDENTITY: 18 checks passed; isolated fixture retained in build/.'

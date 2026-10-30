@@ -1,0 +1,254 @@
+--- a/game/resources/cars/hovercraft.tres
++++ b/game/resources/cars/hovercraft.tres
+@@ -2,13 +2,13 @@
+ [ext_resource type="Script" path="res://vehicle/handling_config.gd" id="1"]
+ [resource]
+ script = ExtResource("1")
+-version = "hovercraft-1"
++version = "hovercraft-2"
+ vehicle_id = "hovercraft"
+ profile_name = "Hovercraft"
+ air_cushion = true
+ handbrake_enabled = false
+ mass = 560.0
+-engine_force = 7400.0
++engine_force = 10000.0
+ braking_force = 6500.0
+ rolling_resistance = 45.0
+ drag = 1.2
+@@ -17,7 +17,7 @@
+ rotational_inertia = 780.0
+ steering_rate = 5.0
+ countersteering_rate = 7.0
+-maximum_yaw_rate = 1.35
++maximum_yaw_rate = 1.9
+ wheelbase = 2.45
+ track_width = 1.78
+ collision_radius = 1.55
+--- /dev/null
++++ b/game/tests/test_hovercraft_power_turn.gd
+@@ -0,0 +1,114 @@
++extends "res://backend/runner.gd"
++## Compare the actual prior resource, including momentum and turn-in/settling.
++const BEFORE = preload("res://tests/fixtures/hovercraft_power_turn_before.tres")
++const OUTPUT: String = "res://../docs/evidence/hovercraft-power-turn-2026-10-28/"
++var checks: int = 0
++var failures: int = 0
++var metrics: Dictionary = {}
++
++func _initialize() -> void: run.call_deferred()
++
++func check(ok: bool, label: String) -> void:
++	checks += 1
++	if not ok:
++		failures += 1
++		print("FAIL: ",label)
++
++func moving(config: HandlingConfig, speed: float) -> VehicleSimulation:
++	var sim := VehicleSimulation.new(config)
++	sim.state.velocity = Vector2(0,speed)
++	return sim
++
++func advance(sim: VehicleSimulation, count: int, steer: float = 0.0, throttle: float = 0.0, brake: float = 0.0) -> void:
++	for tick: int in range(count): sim.step(DriveFrame.sample(steer,throttle,brake))
++
++func run() -> void:
++	OS.set_environment("BMT_API_URL","")
++	DirAccess.make_dir_recursive_absolute(ProjectSettings.globalize_path(OUTPUT))
++	var after: HandlingConfig = VehicleCatalog.config("hovercraft")
++	var baseline: Dictionary = BEFORE.snapshot()
++	var current: Dictionary = after.snapshot()
++	check(after.version == "hovercraft-2","new handling identity")
++	for field: String in baseline:
++		if field in ["version","maximum_yaw_rate","engine_force"]: continue
++		check(baseline[field] == current[field],"preserved handling parameter: "+field)
++	check(JSON.stringify(baseline,"",true).sha256_text() != JSON.stringify(current,"",true).sha256_text(),"new tune has a distinct record/replay identity")
++	check(manifest().vehicles.hovercraft.config_hash == JSON.stringify(current,"",true).sha256_text(),"worker advertises the complete current tune")
++	var samples: Array = []
++	for config: HandlingConfig in [BEFORE,after]:
++		var turn: VehicleSimulation = moving(config,20.0)
++		advance(turn,60,0.6,0.5)
++		var turn_rate: float = turn.state.yaw_rate
++		var heading: float = turn.state.heading
++		var slip: float = absf(turn.state.slip_angle())
++		# A released rudder still has a finite unwind and angular settling time.
++		advance(turn,12)
++		var release_rate: float = turn.state.yaw_rate
++		advance(turn,228)
++		check(absf(turn.state.yaw_rate) < 0.001,"released rotation settles: "+config.version)
++		check(release_rate > turn_rate*0.35,"release retains angular inertia: "+config.version)
++		var thrust: VehicleSimulation = moving(config,0.0)
++		advance(thrust,120,0,1)
++		var one_second: float = thrust.state.velocity.length()
++		var sixty_ticks: int = 120
++		while thrust.state.velocity.length() < 60.0/3.6 and sixty_ticks < 2400:
++			advance(thrust,1,0,1)
++			sixty_ticks += 1
++		advance(thrust,2400,0,1)
++		check(thrust.state.velocity.length() <= config.maximum_speed and thrust.state.velocity.length() > 35.0,"130 km/h cap remains attainable and bounded: "+config.version)
++		samples.append({"version":config.version,"heading_0_5s_degrees":rad_to_deg(heading),"yaw_0_5s_degrees_per_second":rad_to_deg(turn_rate),"slip_0_5s_degrees":rad_to_deg(slip),"release_0_1s_yaw":release_rate,"speed_1s_kph":one_second*3.6,"zero_to_60_seconds":sixty_ticks/120.0})
++	check(samples[1].heading_0_5s_degrees > samples[0].heading_0_5s_degrees*1.30,"body turns at least 30% farther during the first half-second")
++	check(samples[1].speed_1s_kph > samples[0].speed_1s_kph*1.25,"throttle supplies a materially stronger push")
++	check(samples[1].zero_to_60_seconds < samples[0].zero_to_60_seconds*0.80,"0-60 acceleration improves by at least 20%")
++	check(samples[1].slip_0_5s_degrees > 10.0,"turning still retains a visible cushion slide")
++	metrics.comparison = samples
++	var old_coast: VehicleSimulation = moving(BEFORE,20.0)
++	var new_coast: VehicleSimulation = moving(after,20.0)
++	old_coast.state.velocity.x = 10.0
++	new_coast.state.velocity.x = 10.0
++	advance(old_coast,60)
++	advance(new_coast,60)
++	check(new_coast.state.snapshot() == old_coast.state.snapshot(),"unpowered straight coasting and sideways momentum remain exactly unchanged")
++	check(new_coast.state.velocity.x > 6.0,"more than 60% of sideways momentum remains after half a second")
++	var angular: VehicleSimulation = moving(after,20.0)
++	angular.state.yaw_rate = 1.0
++	advance(angular,1)
++	check(angular.state.yaw_rate > 0.9 and angular.state.yaw_rate < 1.0,"angular velocity decays rather than snapping to steering demand")
++	var matrix: Array = []
++	for speed: float in [0.0,5.0,15.0,25.0,35.0]:
++		for steer: float in [-1.0,-0.5,0.5,1.0]:
++			for throttle: float in [0.0,0.5,1.0]:
++				var sim: VehicleSimulation = moving(after,speed)
++				var bounded: bool = true
++				for tick: int in range(120):
++					var previous_speed: float = sim.state.velocity.length()
++					advance(sim,1,steer,throttle)
++					bounded = bounded and is_finite(sim.state.heading) and sim.state.velocity.is_finite() and sim.state.velocity.length() <= after.maximum_speed+0.00001
++					if throttle == 0.0: bounded = bounded and sim.state.velocity.length() <= previous_speed+0.00001
++				check(bounded,"finite bounded turn without unpowered energy gain: %s/%s/%s" % [speed,steer,throttle])
++				matrix.append({"speed":speed,"steer":steer,"throttle":throttle,"slip_degrees":rad_to_deg(absf(sim.state.slip_angle())),"final_mps":sim.state.velocity.length()})
++	metrics.turns = matrix
++	var original := VehicleSimulation.new(after)
++	var replay := VehicleSimulation.new(after)
++	var frames: Array = []
++	var saved: Dictionary = {}
++	var yard := PlaygroundData.new()
++	for tick: int in range(3600):
++		var frame := DriveFrame.sample(sin(tick*0.017)*0.7,1.0 if tick%480<320 else 0.0,0.8 if tick%480>390 else 0.0)
++		frames.append(frame.packed())
++		original.step(frame,yard)
++		if tick == 1799: saved = RewindHistory.pack_state(original.state)
++	var decoded: Array = JSON.parse_string(JSON.stringify(frames))
++	for packed: Array in decoded: replay.step(unpack(packed),yard)
++	check(replay.state.snapshot() == original.state.snapshot(),"3600 serialized inputs replay exactly through collisions")
++	RewindHistory.restore(replay.state,saved)
++	for tick: int in range(1800,3600): replay.step(unpack(decoded[tick]),yard)
++	check(replay.state.snapshot() == original.state.snapshot(),"rewind continuation remains exact")
++	var file := FileAccess.open(OUTPUT+"report.json",FileAccess.WRITE)
++	file.store_string(JSON.stringify({"checks":checks,"failures":failures,"metrics":metrics},"\t"))
++	file.close()
++	print("HOVERCRAFT_POWER_TURN: %d checks, %d failures; %s" % [checks,failures,JSON.stringify(samples)])
++	quit(1 if failures else 0)
++
++func unpack(packed: Array) -> DriveFrame:
++	return DriveFrame.sample(float(packed[0])/127.0,float(packed[1])/255.0,float(packed[2])/255.0,float(packed[3])/255.0 if packed.size() > 3 else 0.0)
+--- /dev/null
++++ b/game/tests/fixtures/hovercraft_power_turn_before.tres
+@@ -0,0 +1,28 @@
++[gd_resource type="Resource" script_class="HandlingConfig" load_steps=2 format=3]
++[ext_resource type="Script" path="res://vehicle/handling_config.gd" id="1"]
++[resource]
++script = ExtResource("1")
++version = "hovercraft-1"
++vehicle_id = "hovercraft"
++profile_name = "Hovercraft"
++air_cushion = true
++handbrake_enabled = false
++mass = 560.0
++engine_force = 7400.0
++braking_force = 6500.0
++rolling_resistance = 45.0
++drag = 1.2
++maximum_speed = 36.111111
++reverse_speed = 6.0
++rotational_inertia = 780.0
++steering_rate = 5.0
++countersteering_rate = 7.0
++maximum_yaw_rate = 1.35
++wheelbase = 2.45
++track_width = 1.78
++collision_radius = 1.55
++lateral_response = 0.85
++corner_energy_retention = 0.0
++collision_energy_loss = 0.40
++soil_drag_multiplier = 0.15
++dirty_tire_grip_loss = 0.0
+--- a/game/tests/generate_hovercraft_replay.gd
++++ b/game/tests/generate_hovercraft_replay.gd
+@@ -2,6 +2,8 @@
+ ## Offline five-lap canonical fixture, verified independently by the worker.
+ func run() -> void:
+ 	output_path = "res://../docs/evidence/hovercraft-2026-10-28/five-lap-replay.json"
++	for argument: String in OS.get_cmdline_user_args():
++		if argument.begins_with("--output="): output_path = argument.trim_prefix("--output=")
+ 	var doc: Dictionary = TrackDocument.create_blank()
+ 	doc.id = "hovercraft_oval"
+ 	doc.name = "Hovercraft test oval"
+--- a/game/tests/test_hovercraft.gd
++++ b/game/tests/test_hovercraft.gd
+@@ -29,6 +29,9 @@
+ 	return result
+ 
+ func _run() -> void:
++	var evidence_root: String = EVIDENCE
++	for argument: String in OS.get_cmdline_user_args():
++		if argument.begins_with("--evidence-root="): evidence_root = argument.trim_prefix("--evidence-root=")
+ 	DirAccess.make_dir_recursive_absolute(ProjectSettings.globalize_path(EVIDENCE))
+ 	if "--baseline" in OS.get_cmdline_user_args():
+ 		var file := FileAccess.open(EVIDENCE+"retained-before.json",FileAccess.WRITE)
+@@ -40,7 +43,7 @@
+ 	check(traces() == JSON.parse_string(FileAccess.get_file_as_string(EVIDENCE+"retained-before.json")),"five retained config hashes and 100 state checkpoints stay exact")
+ 	OS.set_environment("BMT_API_URL","")
+ 	graphical = DisplayServer.get_name() != "headless"
+-	output = EVIDENCE.path_join(RenderingServer.get_current_rendering_method() if graphical else "headless")
++	output = evidence_root.path_join(RenderingServer.get_current_rendering_method() if graphical else "headless")
+ 	DirAccess.make_dir_recursive_absolute(ProjectSettings.globalize_path(output))
+ 	check(VehicleCatalog.IDS == ["compact","pickup","kart","forklift","electric","hovercraft"],"new six-vehicle lineup removes Sports Car and Formula")
+ 	check(VehicleCatalog.NAMES.size() == VehicleCatalog.IDS.size() and VehicleCatalog.CLASSES.size() == VehicleCatalog.IDS.size() and VehicleCatalog.DESCRIPTIONS.size() == VehicleCatalog.IDS.size(),"catalogue fields align")
+--- /dev/null
++++ b/docs/HOVERCRAFT_POWER_TURN_2026_10_28.md
+@@ -0,0 +1,35 @@
++# Faster hovercraft rotation and stronger thrust
++
++Owner request: rotate the hull faster, retain its inertia and increase the throttle push.
++
++HPT01-HPT03/R01/Q01: `game/resources/cars/hovercraft.tres` changes only handling version `hovercraft-1` → `hovercraft-2`, engine force 7,400 → 10,000 N (+35.14%) and maximum yaw rate 1.35 → 1.9 rad/s (+40.74%). Angular inertia (780), steering ramps, lateral damping (0.85), mass, braking and the 130 km/h cap retain their prior values. The shared simulation and other vehicle resources are untouched by this task. The new configuration hash separates records/replays from the previous tune.
++
++## Measured behavior
++
++Both configurations use the same current canonical simulation and quantized inputs. The previous resource is retained byte-for-byte as `game/tests/fixtures/hovercraft_power_turn_before.tres`.
++
++| Fixture | Previous | Current |
++| --- | ---: | ---: |
++| Hull angle after 0.5 s at 20 m/s, 60% steering, 50% throttle | 12.5267° | 17.6302° |
++| Yaw rate at that point | 41.2485°/s | 58.0534°/s |
++| Chassis/travel slip at that point | 10.5120° | 14.6525° |
++| Speed after one second of full throttle from rest | 43.2526 km/h | 56.7860 km/h |
++| 0–60 km/h | 1.4583 s | 1.0667 s |
++
++The unchanged straight coasting/sideways-momentum fixture matches the old state exactly. More than 60% of the original sideways speed remains after half a second. Released yaw persists and then settles instead of snapping to demand. These are desktop simulation measurements; owner feel acceptance remains.
++
++## Actual checks and commands
++
++Godot commands use the pinned `4.7.2.stable.official.ed1daf0bf` through `powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1`, with disposable workspace APPDATA and an empty `BMT_API_URL`.
++
++- `-Action TestScript -ScriptPath res://tests/test_hovercraft_power_turn.gd`: 127 checks, zero failures. This covers exact allowed parameter changes, turn-in/release, thrust, unchanged coasting, 60 turn/power cases, dissipative unpowered steering, bounded speed, serialized collision replay and rewind continuation.
++- `-Action TestScript -ScriptPath res://tests/test_hovercraft.gd -TestArgument --evidence-root=res://../docs/evidence/hovercraft-power-turn-2026-10-28/retained`: 50 checks, zero failures, including the original five retained car hashes/100 state checkpoints, roster, saves, collisions, model and audio checks.
++- `-Action TestScript -ScriptPath res://tests/generate_hovercraft_replay.gd -TestArgument --output=res://../docs/evidence/hovercraft-power-turn-2026-10-28/five-lap-replay.json`: five laps, 18,953 elapsed ticks and zero contacts. Original tune evidence is preserved.
++- A separately staged native backend imports its class cache and runs both normal trajectory acceptance and independent canonical replay on this synthetic race. Both accept 18,953 elapsed ticks / 157,942 ms with zero contacts; `worker-verification.json` retains both results.
++- `-Action TestScript -ScriptPath res://tests/test_script_parse.gd`: 1,379 scripts, zero failures.
++
++The two existing test helpers gain optional evidence/output destinations so tune reviews do not overwrite earlier receipts. New test/fixture and this document/status entry accompany the one runtime-resource change. No art, camera, UI or shared physics source changes are required. Existing broader-suite limitations remain recorded in the original Hovercraft document.
++
++`docs/evidence/hovercraft-power-turn-2026-10-28/report.json` contains measurements, hashes and final outcomes; `task.patch` is the task-only review checkpoint. Native staged import, replay and logs are retained beside it.
++
++Reload/rebuild to try the new feel. Matching authorized backend/current-track contracts are needed for live online use of the new handling hash; no rollout was performed. No physical-device attachment query/test, APK, live write, owner-save change, owner-process restart, or Git staging/commit/merge was performed. Concurrent Electric/Garage/backend and generated build metadata are preserved. Owner steering/thrust feel and device acceptance remain.
+--- a/docs/HOVERCRAFT_2026_10_28.md
++++ b/docs/HOVERCRAFT_2026_10_28.md
+@@ -1,4 +1,6 @@
+ # Hovercraft and revised vehicle lineup
++
++Current handling follow-up: [faster rotation and stronger thrust, hovercraft-2](HOVERCRAFT_POWER_TURN_2026_10_28.md). The figures below retain the original hovercraft-1 delivery evidence.
+ 
+ Owner request, 2026-10-28: add a hovercraft and remove the sports car and Formula.
+ 

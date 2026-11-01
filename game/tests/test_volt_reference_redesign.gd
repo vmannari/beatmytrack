@@ -112,7 +112,8 @@ func run() -> void:
 			check(cowl.distance_to(glass_foot) < 0.005,"actual windscreen meets hood: "+str(cowl.distance_to(glass_foot))+label)
 			var cowl_gap: float = edge_gap(edge(windscreen,1,0.0),edge(hood,1,1.0))
 			check(cowl_gap < 0.006,"windscreen meets hood across its width: "+str(cowl_gap)+label)
-			check(cowl.z < -0.98 and cowl.z > -1.07,"windscreen base advances modestly"+label)
+			var cowl_side: Vector3 = point_at_uv(windscreen,Vector2(0.0,0.0))
+			check(absf(cowl.z+0.982) < 0.006 and absf(cowl_side.z+1.02) < 0.006,"curved windscreen base meets designed center and side positions"+label)
 			var rear: MeshInstance3D = car.body.get_node_or_null("ReferenceRear")
 			var rear_pivot: Node3D = car.get_node_or_null("RearLeftWheel")
 			if rear != null and rear_pivot != null and car.front_wheels.size() == 2:
@@ -163,17 +164,59 @@ func run() -> void:
 				else:
 					var gap: float = edge_gap(edge(pane,0,float(side)),edge(rail,0,float(1-side)))
 					check(gap < 0.003,"pane meets roof rail "+section+" side="+str(side)+" gap="+str(gap)+label)
+		var deck: MeshInstance3D = car.body.get_node_or_null("ReferenceRearDeck")
+		var backlight: MeshInstance3D = car.body.get_node_or_null("ReferenceRearScreen")
+		var rear_panel: MeshInstance3D = car.body.get_node_or_null("ReferenceRear")
+		if deck != null and backlight != null and rear_panel != null:
+			var rear_gap: float = edge_gap(edge(backlight,1,1.0),edge(deck,1,0.0))
+			var tail_gap: float = edge_gap(edge(deck,1,1.0),edge(rear_panel,1,1.0))
+			check(rear_gap < 0.0005,"rear glass meets deck gap="+str(rear_gap)+label)
+			check(tail_gap < 0.0005,"deck meets tail gap="+str(tail_gap)+label)
+			for rail_index: int in range(2):
+				var rail: MeshInstance3D = car.body.get_node_or_null("ReferenceRoofRail"+str(rail_index))
+				var rail_gap: float = edge_gap(edge(rail,1,1.0),edge(deck,1,0.0)) if rail != null else INF
+				check(rail_gap < 0.0005,"rear rail meets deck gap="+str(rail_gap)+label)
+		else:
+			check(false,"rear glass, deck and tail surfaces exist"+label)
+		for side_index: int in range(2):
+			var suffix: String = "-1_0" if side_index == 0 else "1_0"
+			var bottom: MeshInstance3D = car.body.get_node_or_null("ReferenceWindowBottom"+suffix)
+			var top: MeshInstance3D = car.body.get_node_or_null("ReferenceWindowTop"+suffix)
+			var flank: MeshInstance3D = car.body.get_node_or_null("ReferenceSide"+suffix)
+			var rail: MeshInstance3D = car.body.get_node_or_null("ReferenceRoofRail"+str(side_index))
+			var belt_gap: float = edge_gap(edge(bottom,1,0.0),edge(flank,1,1.0)) if bottom != null and flank != null else INF
+			var top_gap: float = edge_gap(edge(top,1,1.0),edge(rail,0,float(side_index))) if top != null and rail != null else INF
+			check(belt_gap < 0.002,"window meets side body gap="+str(belt_gap)+label)
+			check(top_gap < 0.002,"window meets roof gap="+str(top_gap)+label)
 		check(car.front_wheels.size() == 2 and car.rolling_wheels.size() == 4,"front steering and four rolling wheels"+label)
 		for pivot: Node3D in car.front_wheels:
 			var spin: Node = pivot.get_node_or_null("WheelSpin")
 			check(spin != null and pivot.get_node_or_null("BrakeAssembly") != null and spin.get_node_or_null("BrakeAssembly") == null,"brake follows steering without spinning"+label)
+		var state := VehicleState.new()
+		var drive := DriveFrame.new()
+		state.tick = 1
+		state.steering = 0.5
+		car.present(Vector2.ZERO,0.0,state,drive)
+		state.tick = 2
+		car.present(Vector2(0,1),0.0,state,drive)
+		var steering_ok := true
+		var rolling_ok := true
+		for pivot: Node3D in car.front_wheels:
+			var brake: Node3D = pivot.get_node_or_null("BrakeAssembly")
+			steering_ok = steering_ok and is_equal_approx(pivot.rotation.y,-0.2) and brake != null and is_zero_approx(brake.rotation.x)
+		for rotor: Node3D in car.rolling_wheels:
+			rolling_ok = rolling_ok and absf(rotor.rotation.x) > 0.01
+		check(steering_ok and rolling_ok,"driving steers calipers and rolls all four wheels"+label)
 		var blades: Array[Node] = car.find_children("RefBladeFace*","MeshInstance3D",true,false)
 		var returns: Array[Node] = car.find_children("RefBladeEdge*","MeshInstance3D",true,false)
 		check(blades.size() == 20 and returns.size() == 40,"five dimensional aero blades per wheel"+label)
 		var saved: Dictionary = VehicleLivery.defaults("electric")
 		saved.colors.body = "638d86"
+		saved.pattern = "apex_twin"
 		car.apply_livery(saved)
 		check(car.paint_materials.body.albedo_color.is_equal_approx(Color("638d86")),"saved body colour applies"+label)
+		var finish: ShaderMaterial = hood.get_active_material(0) as ShaderMaterial if hood != null else null
+		check(car.livery.pattern == "apex_twin" and finish != null and finish.get_shader_parameter("pattern_enabled") and finish.get_shader_parameter("livery_mask") != null,"saved pattern reaches painted hood"+label)
 		car.set_night_headlights(true)
 		check(car.headlights != null and car.headlights.visible and car.headlights.find_child("ReferenceNightLightbar",true,false) != null,"night light uses the new front"+label)
 		car.rear_braking = true
@@ -181,5 +224,16 @@ func run() -> void:
 		check(car.brake_material.emission_energy_multiplier > 2.0,"brake lamps respond"+label)
 		car.free()
 	check(counts.size() == 2 and counts[1] < counts[0] and counts[0] <= 120000 and counts[1] <= 45000,"detailed and simple meshes stay within established budgets")
+	if M.use_baked:
+		var manifest: Variant = JSON.parse_string(FileAccess.get_file_as_string(M.ASSET_ROOT.path_join("manifest.json")))
+		var current: bool = manifest is Dictionary and manifest.has("sources")
+		if current:
+			for file: String in ["electric_car_model.gd","electric_reference_mesh.gd","electric_reference_body.gd","electric_reference_cabin.gd","electric_reference_details.gd"]:
+				current = current and manifest.sources.get(file,"") == FileAccess.get_sha256("res://vehicle/"+file)
+		var loaded := true
+		for key: String in M.meshes:
+			var path: String = M.ASSET_ROOT.path_join(key.sha256_text().left(24)+".res")
+			loaded = loaded and ResourceLoader.exists(path) and ResourceLoader.load(path) == M.meshes[key]
+		check(current and loaded,"all prepared meshes exist, were actually loaded, and match current source manifest")
 	print("VOLT_REFERENCE_REDESIGN: ",checks," checks, ",failures," failures; triangles ",counts," prepared=",M.use_baked)
 	quit(1 if failures else 0)

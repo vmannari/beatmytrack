@@ -1,0 +1,1069 @@
+--- a/game/track/surface_shader_variants.gd
++++ b/game/track/surface_shader_variants.gd
+@@ -21,7 +21,11 @@
+ static var preparations: int = 0
+ static var prepared_hits: int = 0
+ 
+-static func specialize(material: ShaderMaterial, use_prepared: bool = true) -> void:
++static func specialize(material: ShaderMaterial, use_prepared: bool = true, fold_flags: bool = true) -> void:
++	# Previously dynamic bridges need sampler pruning without changing their
++	# branch arithmetic. Carry that choice through duplication and cache reuse.
++	fold_flags = fold_flags and not material.get_meta("surface_preserve_branches",false)
++	if not fold_flags: material.set_meta("surface_preserve_branches",true)
+ 	# The raw shader hides this sampler from non-Night dynamic materials. Keep
+ 	# its binding through ShaderMaterial.duplicate(), which drops undeclared
+ 	# parameters, so retained/prepared Night worlds restore the same texture.
+@@ -31,6 +35,7 @@
+ 		material.set_meta("surface_night_asphalt_wear",night_wear)
+ 		dynamic.set_meta("surface_night_asphalt_wear",night_wear)
+ 	var source: String = material.shader.code
++	var creator_road: bool = source.contains('#include "res://track/creator_road.gdshaderinc"')
+ 	if material.get_shader_parameter("industrial_asphalt") == true:
+ 		source = "#define BMT_NIGHT_ASPHALT\n"+source
+ 	# Reuse the completed compiler result before expanding includes/regexes.
+@@ -41,7 +46,7 @@
+ 		_include_sources = include_sources
+ 		_include_revision += 1
+ 		prepared_keys.clear()
+-	var signature: Array = [source.sha256_text(),_include_revision]
++	var signature: Array = [source.sha256_text(),_include_revision,fold_flags]
+ 	for flag: String in FLAGS+MATERIAL_FLAGS: signature.append(material.get_shader_parameter(flag))
+ 	signature.append(material.get_shader_parameter("terrain_region_channel"))
+ 	signature.append(material.get_shader_parameter("terrain_slots"))
+@@ -59,7 +64,7 @@
+ 	for pass_index: int in range(3):
+ 		for path: String in INCLUDES:
+ 			source = source.replace('#include "'+path+'"',(INCLUDES[path] as ShaderInclude).code)
+-	for flag: String in FLAGS:
++	for flag: String in (FLAGS if fold_flags else []):
+ 		var pattern := RegEx.new()
+ 		pattern.compile("uniform bool "+flag+"\\s*=\\s*(true|false)\\s*;")
+ 		var found: RegExMatch = pattern.search(source)
+@@ -72,11 +77,12 @@
+ 	# biome/sampler choices and unrelated surface roles still fold to constants.
+ 	# Sharing did not pass Mobile's pixel/stability checks; retain its original
+ 	# specialized sources. This targets the Compatibility cold delay.
+-	var share_road_sources: bool = RenderingServer.get_current_rendering_method() == "gl_compatibility"
+-	var shared_road_roles: bool = share_road_sources and (material.get_shader_parameter("wet_road") == true or material.get_shader_parameter("industrial_asphalt") == true)
++	var compatibility: bool = RenderingServer.get_current_rendering_method() == "gl_compatibility"
++	var shared_road_roles: bool = compatibility and (material.get_shader_parameter("wet_road") == true or material.get_shader_parameter("industrial_asphalt") == true)
+ 	# Keep public uniforms for inspection/cache serialization, folding other reads.
+ 	for flag: String in MATERIAL_FLAGS:
+-		if share_road_sources and flag == "edge_fringe" and material.get_shader_parameter("packed_sand") == true: continue
++		if not fold_flags: continue
++		if compatibility and flag == "edge_fringe" and material.get_shader_parameter("packed_sand") == true: continue
+ 		if shared_road_roles and flag in ["asphalt_surface","raised_road_edge","edge_fringe","road_marking"]: continue
+ 		# Keep the snow-bank branch form: Mobile reassociates its filtered toe
+ 		# lighting when constant-folded, changing a sparse MSAA edge pixel.
+@@ -91,14 +97,14 @@
+ 		reads.compile("\\b" + flag + "\\b")
+ 		source = reads.sub(source,"fixed_" + flag,true)
+ 		source = source.replace(reads.sub(found.get_string(),"fixed_" + flag,true),found.get_string() + "\nconst bool fixed_" + flag + " = " + ("true" if enabled else "false") + ";")
+-	if source.contains("uniform int terrain_region_channel"):
++	if fold_flags and source.contains("uniform int terrain_region_channel"):
+ 		var channel_value: Variant = material.get_shader_parameter("terrain_region_channel")
+ 		var channel: int = maxi(0,int(channel_value) if channel_value != null else -1)
+ 		var reads := RegEx.new()
+ 		reads.compile("\\bterrain_region_channel\\b")
+ 		source = reads.sub(source,"fixed_terrain_region_channel",true)
+ 		source = source.replace("uniform int fixed_terrain_region_channel = -1;","uniform int terrain_region_channel = -1;\nconst int fixed_terrain_region_channel = "+str(channel)+";")
+-	if material.get_shader_parameter("terrain_packed") == true:
++	if fold_flags and material.get_shader_parameter("terrain_packed") == true:
+ 		var slots: Vector4i = material.get_shader_parameter("terrain_slots")
+ 		var assignments: String = "vec4 packed = low;\n\tlow = vec4(0.0);\n\thigh = vec4(0.0);"
+ 		var channels: Array[String] = ["r","g","b","a"]
+@@ -113,10 +119,20 @@
+ 	# Alias unreachable biome samples to the shared factor sampler so those
+ 	# declarations cannot consume phone texture units. Active artwork is untouched.
+ 	var inactive: Array[String] = []
++	# painted_grass returns before its fallback texture in these fixed biomes.
++	# Keep Mobile's original sampler layout: its Winter pixels change when these
++	# aliases alter compilation. The eight-sampler reservation targets GLES.
++	# Prune only the over-budget families; Night's existing layout already fits.
++	if compatibility and (material.get_shader_parameter("winter_snow") == true or material.get_shader_parameter("desert_dunes") == true or (material.get_shader_parameter("hybrid_grass") == true and material.get_shader_parameter("grass_shoulder") == true)):
++		inactive.append("painted_grass_texture")
++	# Only the creator-road include gates road_mask entirely on piece_materials.
++	# Winter banks use that name for a different, active mask and must retain it.
++	if compatibility and creator_road and material.get_shader_parameter("winter_snow") == true and not (material.get_shader_parameter("piece_materials") == true): inactive.append("road_mask")
+ 	if not (material.get_shader_parameter("industrial_asphalt") == true): inactive.append("night_asphalt_wear")
+ 	if not (material.get_shader_parameter("industrial_ground") == true): inactive.append("night_ground_albedo")
+ 	if not (material.get_shader_parameter("winter_snow") == true) and not (material.get_shader_parameter("icy_road") == true):
+ 		inactive.append_array(["snow_albedo","ice_albedo","ice_finish","wind_surface_flow"])
++		if compatibility and not (material.get_shader_parameter("industrial_ground") == true) and not (material.get_shader_parameter("industrial_asphalt") == true): inactive.append("snow_road_sources")
+ 	if not (material.get_shader_parameter("desert_dunes") == true) and not (material.get_shader_parameter("packed_sand") == true):
+ 		inactive.append_array(["desert_road_albedo","dune_factors","dune_albedo"])
+ 		if not (material.get_shader_parameter("grass_shoulder") == true): inactive.append("desert_apron")
+--- a/game/track/creator_bridge_visual.gd
++++ b/game/track/creator_bridge_visual.gd
+@@ -153,6 +153,7 @@
+ 		asphalt.set_shader_parameter("sand_color",TrackTheme.DESERT_SHOULDER)
+ 		SurfaceShaderVariants.specialize(asphalt)
+ 	elif theme == "night_city" or road_lift > 0.0: SurfaceShaderVariants.specialize(asphalt)
++	elif RenderingServer.get_current_rendering_method() == "gl_compatibility": SurfaceShaderVariants.specialize(asphalt,true,false)
+ 	road.material_override = asphalt
+ 	road.layers = 1 # Continuous Lambert response rejects lights below the road normal.
+ 	parent.add_child(road)
+--- a/game/track/bridge_presentation.gd
++++ b/game/track/bridge_presentation.gd
+@@ -105,6 +105,7 @@
+ 				asphalt.set_shader_parameter("desert_road_albedo",NativeTrackVisual.DESERT_ROAD_ALBEDO)
+ 				asphalt.set_shader_parameter("desert_road_reference",NativeTrackVisual.desert_road_reference)
+ 				if theme in ["desert","night_city"] or road_surface.lift > 0.0: SurfaceShaderVariants.specialize(asphalt)
++				elif RenderingServer.get_current_rendering_method() == "gl_compatibility": SurfaceShaderVariants.specialize(asphalt,true,false)
+ 				mesh.material_override = asphalt
+ 			else:
+ 				mesh.material_override = _structure_material()
+--- a/game/tests/test_shader_variant_consolidation.gd
++++ b/game/tests/test_shader_variant_consolidation.gd
+@@ -8,6 +8,15 @@
+ func check(ok: bool, label: String) -> void:
+ 	checks += 1
+ 	if not ok: failures += 1; push_error(label)
++
++# The sampler-budget follow-up changes only these three unreachable declarations.
++# All other source bytes still compare against the independent original fixtures.
++func sampler_contract(source: String) -> String:
++	for name: String in ["painted_grass_texture","snow_road_sources","road_mask"]:
++		var declaration := RegEx.new()
++		declaration.compile("(?m)^(uniform sampler2D "+name+"\\b[^;]*;|#define "+name+" surface_factors)\\r?$")
++		source = declaration.sub(source,"// sampler contract: "+name,true)
++	return source
+ 
+ func run() -> void:
+ 	var baseline: GDScript = PROBE.generator([])
+@@ -37,11 +46,12 @@
+ 			var measured: ShaderMaterial = dynamic.duplicate()
+ 			validated.specialize(measured)
+ 			var expected: ShaderMaterial = measured if RenderingServer.get_current_rendering_method() == "gl_compatibility" else control
+-			check(actual.shader.code == expected.shader.code,theme+" uses the exact validated source for this renderer")
+-			old_hashes[control.shader.code.sha256_text()] = true
+-			new_hashes[actual.shader.code.sha256_text()] = true
++			check(sampler_contract(actual.shader.code) == sampler_contract(expected.shader.code),theme+" retains validated source except the three audited sampler declarations")
++			old_hashes[sampler_contract(control.shader.code).sha256_text()] = true
++			new_hashes[sampler_contract(actual.shader.code).sha256_text()] = true
+ 			var bindings_equal: bool = true
+ 			for uniform: Dictionary in control.shader.get_shader_uniform_list():
++				if uniform.name in ["painted_grass_texture","snow_road_sources","road_mask"] and actual.shader.code.contains("#define "+uniform.name+" surface_factors"): continue
+ 				bindings_equal = bindings_equal and actual.get_shader_parameter(uniform.name) == control.get_shader_parameter(uniform.name)
+ 			check(bindings_equal,theme+" retains every material binding and texture identity")
+ 			var prepared: ShaderMaterial = dynamic.duplicate()
+--- a/DEVELOPMENT_STATUS.md
++++ b/DEVELOPMENT_STATUS.md
+@@ -1,3 +1,8 @@
++<!-- SAMPLER-BUDGET-FIX-20261031 -->
++## Compatibility surface sampler budget fixed (2026-10-31)
++SBF01-SBF03/R01/Q01: Inactive sampler pruning and branch-preserving bridge preparation reduce over-budget surfaces from42/96 to0/96 at the unchanged eight-sampler limit. Final component444/original63/consolidation141 checks pass; Mobile original-source289 checks pass. Final affected-biome Compatibility18 image checks and guarded Mobile Winter6 pass with byte-identical images; prior Winter Compatibility output retained and Night sources exact. Previous source-count reductions retained. First-use probes favor final Desert/Storm by5.46%/8.83%, with noisy small samples and no full-startup/device claim. Rejected Mobile candidate retained; renderer guard protects original output. [Evidence, commands and checked patch](docs/SAMPLER_BUDGET_FIX_2026_10_31.md). Reload and owner/device acceptance remain; no owner-save/session, device, backend, deployment or main-index write.
++<!-- /SAMPLER-BUDGET-FIX-20261031 -->
++
+ <!-- DAILY-MEDAL-PAGE-20261031 -->
+ ## Daily track reference page and medals (2026-10-31)
+ DMP01-DMP05/R01: Scenic feature, result/medal/target/nearby lap standings card and UTC week strip follow the supplied reference. Bronze clears75%, silver40%, gold20%; clearing1% earns a distinct platinum/laurel Elite award. Bounded atomic per-account/car daily progress retains best stages and flying laps. Final focused backend5/0, retained page77/0, standings35/0, App13/0 and rules101/0 pass; final native medal-page count, captures, source checkpoint and limitations: [docs/DAILY_MEDAL_PAGE_2026_10_31.md](docs/DAILY_MEDAL_PAGE_2026_10_31.md). Matching client/API rollout, reload and owner/device acceptance remain. No phone test, live/save mutation, deployment, owner restart or main-index write.
+--- a/docs/PHASE_0_PLAN.md
++++ b/docs/PHASE_0_PLAN.md
+@@ -1,3 +1,8 @@
++<!-- SAMPLER-BUDGET-FIX-20261031 -->
++## Compatibility surface sampler budget fixed (2026-10-31)
++SBF01-SBF03/R01/Q01: Inactive sampler pruning and branch-preserving bridge preparation reduce over-budget surfaces from42/96 to0/96 at the unchanged eight-sampler limit. Final component444/original63/consolidation141 checks pass; Mobile original-source289 checks pass. Final affected-biome Compatibility18 image checks and guarded Mobile Winter6 pass with byte-identical images; prior Winter Compatibility output retained and Night sources exact. Previous source-count reductions retained. First-use probes favor final Desert/Storm by5.46%/8.83%, with noisy small samples and no full-startup/device claim. Rejected Mobile candidate retained; renderer guard protects original output. [Evidence, commands and checked patch](SAMPLER_BUDGET_FIX_2026_10_31.md). Reload and owner/device acceptance remain; no owner-save/session, device, backend, deployment or main-index write.
++<!-- /SAMPLER-BUDGET-FIX-20261031 -->
++
+ <!-- DAILY-MEDAL-PAGE-20261031 -->
+ ## Daily track reference page and medals (2026-10-31)
+ DMP01-DMP05/R01: Scenic feature, result/medal/target/nearby lap standings card and UTC week strip follow the supplied reference. Bronze clears75%, silver40%, gold20%; clearing1% earns a distinct platinum/laurel Elite award. Bounded atomic per-account/car daily progress retains best stages and flying laps. Final focused backend5/0, retained page77/0, standings35/0, App13/0 and rules101/0 pass; final native medal-page count, captures, source checkpoint and limitations: [DAILY_MEDAL_PAGE_2026_10_31.md](DAILY_MEDAL_PAGE_2026_10_31.md). Matching client/API rollout, reload and owner/device acceptance remain. No phone test, live/save mutation, deployment, owner restart or main-index write.
+--- /dev/null
++++ b/game/tests/fixtures/sampler_budget_before.gd.txt
+@@ -0,0 +1,149 @@
++class_name SurfaceShaderVariants
++extends RefCounted
++## Fixed visual-material flags become constants; samples and lighting stay intact.
++const FLAGS: Array[String] = ["hybrid_grass","desert_dunes","winter_snow","packed_sand","icy_road","wet_road","industrial_ground","industrial_asphalt"]
++const MATERIAL_FLAGS: Array[String] = ["gravel","grass_shoulder","grass","kerb","asphalt_surface","edge_fringe","road_marking","winter_width_data","winter_bridge_width_data","desert_bridge_width_data","smooth_road_bank","terrain_high_present","terrain_packed","terrain_uniform_enabled","terrain_region_low","raised_road_edge","piece_materials","bridge_material_blend"]
++const INCLUDES: Dictionary = {
++	"res://track/night_ground.gdshaderinc":preload("res://track/night_ground.gdshaderinc"),
++	"res://track/winter_ground_snow.gdshaderinc":preload("res://track/winter_ground_snow.gdshaderinc"),
++	"res://track/winter_wind_variation.gdshaderinc":preload("res://track/winter_wind_variation.gdshaderinc"),
++	"res://track/desert_sun_finish.gdshaderinc":preload("res://track/desert_sun_finish.gdshaderinc"),
++	"res://track/bridge_road.gdshaderinc":preload("res://track/bridge_road.gdshaderinc"),
++	"res://track/creator_road.gdshaderinc":preload("res://track/creator_road.gdshaderinc"),
++	"res://track/terrain.gdshaderinc":preload("res://track/terrain.gdshaderinc"),
++	"res://track/surface_detail.gdshaderinc":preload("res://track/surface_detail.gdshaderinc"),
++	"res://track/winter_ice.gdshaderinc":preload("res://track/winter_ice.gdshaderinc")
++}
++static var cache: Dictionary = {}
++static var prepared_keys: Dictionary = {}
++static var _include_sources: Array[String] = []
++static var _include_revision: int = 0
++static var preparations: int = 0
++static var prepared_hits: int = 0
++
++static func specialize(material: ShaderMaterial, use_prepared: bool = true) -> void:
++	# The raw shader hides this sampler from non-Night dynamic materials. Keep
++	# its binding through ShaderMaterial.duplicate(), which drops undeclared
++	# parameters, so retained/prepared Night worlds restore the same texture.
++	var night_wear: Texture2D = (material.get_meta("surface_night_asphalt_wear") if material.has_meta("surface_night_asphalt_wear") else material.get_shader_parameter("night_asphalt_wear")) as Texture2D
++	var dynamic: ShaderMaterial = material.duplicate()
++	if night_wear != null:
++		material.set_meta("surface_night_asphalt_wear",night_wear)
++		dynamic.set_meta("surface_night_asphalt_wear",night_wear)
++	var source: String = material.shader.code
++	if material.get_shader_parameter("industrial_asphalt") == true:
++		source = "#define BMT_NIGHT_ASPHALT\n"+source
++	# Reuse the completed compiler result before expanding includes/regexes.
++	# Include/source edits and every immutable role/remap value fence the key.
++	var include_sources: Array[String] = []
++	for include: ShaderInclude in INCLUDES.values(): include_sources.append(include.code)
++	if include_sources != _include_sources:
++		_include_sources = include_sources
++		_include_revision += 1
++		prepared_keys.clear()
++	var signature: Array = [source.sha256_text(),_include_revision]
++	for flag: String in FLAGS+MATERIAL_FLAGS: signature.append(material.get_shader_parameter(flag))
++	signature.append(material.get_shader_parameter("terrain_region_channel"))
++	signature.append(material.get_shader_parameter("terrain_slots"))
++	var prepared_key: String = str(signature)
++	if use_prepared and prepared_keys.has(prepared_key) and cache.has(prepared_keys[prepared_key]):
++		material.set_meta("surface_dynamic_material",dynamic)
++		material.shader = cache[prepared_keys[prepared_key]] as Shader
++		if night_wear != null: material.set_shader_parameter("night_asphalt_wear",night_wear)
++		prepared_hits += 1
++		return
++	preparations += 1
++	# Shallow snow/sand banks need continuous light, with matching terrain/skirt lighting.
++	if (material.get_shader_parameter("winter_snow") == true) or (material.get_shader_parameter("desert_dunes") == true):
++		source = source.replace("diffuse_toon","diffuse_burley")
++	for pass_index: int in range(3):
++		for path: String in INCLUDES:
++			source = source.replace('#include "'+path+'"',(INCLUDES[path] as ShaderInclude).code)
++	for flag: String in FLAGS:
++		var pattern := RegEx.new()
++		pattern.compile("uniform bool "+flag+"\\s*=\\s*(true|false)\\s*;")
++		var found: RegExMatch = pattern.search(source)
++		if found == null: continue
++		var value: Variant = material.get_shader_parameter(flag)
++		var enabled: bool = found.get_string(1)=="true" if value==null else bool(value)
++		source = pattern.sub(source,"const bool "+flag+" = "+("true" if enabled else "false")+";",true)
++	# Keep road/fringe draws on one source where their render modes and biome
++	# bindings already match. These uniform branches avoid another cold program;
++	# biome/sampler choices and unrelated surface roles still fold to constants.
++	# Sharing did not pass Mobile's pixel/stability checks; retain its original
++	# specialized sources. This targets the Compatibility cold delay.
++	var share_road_sources: bool = RenderingServer.get_current_rendering_method() == "gl_compatibility"
++	var shared_road_roles: bool = share_road_sources and (material.get_shader_parameter("wet_road") == true or material.get_shader_parameter("industrial_asphalt") == true)
++	# Keep public uniforms for inspection/cache serialization, folding other reads.
++	for flag: String in MATERIAL_FLAGS:
++		if share_road_sources and flag == "edge_fringe" and material.get_shader_parameter("packed_sand") == true: continue
++		if shared_road_roles and flag in ["asphalt_surface","raised_road_edge","edge_fringe","road_marking"]: continue
++		# Keep the snow-bank branch form: Mobile reassociates its filtered toe
++		# lighting when constant-folded, changing a sparse MSAA edge pixel.
++		if flag == "smooth_road_bank" and material.get_shader_parameter("winter_snow") == true: continue
++		var declaration := RegEx.new()
++		declaration.compile("uniform bool " + flag + "\\s*=\\s*(true|false)\\s*;")
++		var found: RegExMatch = declaration.search(source)
++		if found == null: continue
++		var value: Variant = material.get_shader_parameter(flag)
++		var enabled: bool = found.get_string(1) == "true" if value == null else bool(value)
++		var reads := RegEx.new()
++		reads.compile("\\b" + flag + "\\b")
++		source = reads.sub(source,"fixed_" + flag,true)
++		source = source.replace(reads.sub(found.get_string(),"fixed_" + flag,true),found.get_string() + "\nconst bool fixed_" + flag + " = " + ("true" if enabled else "false") + ";")
++	if source.contains("uniform int terrain_region_channel"):
++		var channel_value: Variant = material.get_shader_parameter("terrain_region_channel")
++		var channel: int = maxi(0,int(channel_value) if channel_value != null else -1)
++		var reads := RegEx.new()
++		reads.compile("\\bterrain_region_channel\\b")
++		source = reads.sub(source,"fixed_terrain_region_channel",true)
++		source = source.replace("uniform int fixed_terrain_region_channel = -1;","uniform int terrain_region_channel = -1;\nconst int fixed_terrain_region_channel = "+str(channel)+";")
++	if material.get_shader_parameter("terrain_packed") == true:
++		var slots: Vector4i = material.get_shader_parameter("terrain_slots")
++		var assignments: String = "vec4 packed = low;\n\tlow = vec4(0.0);\n\thigh = vec4(0.0);"
++		var channels: Array[String] = ["r","g","b","a"]
++		for channel: int in range(4):
++			var kind: int = slots[channel]
++			if kind < 0: continue
++			assignments += "\n\t%s.%s = packed.%s;" % ["low" if kind < 4 else "high",channels[kind % 4],channels[channel]]
++		var remap := RegEx.new()
++		remap.compile("(?s)// packed_terrain_begin.*?// packed_terrain_end")
++		source = remap.sub(source,assignments,true)
++	# GLES drivers count declared samplers even in constant-disabled branches.
++	# Alias unreachable biome samples to the shared factor sampler so those
++	# declarations cannot consume phone texture units. Active artwork is untouched.
++	var inactive: Array[String] = []
++	if not (material.get_shader_parameter("industrial_asphalt") == true): inactive.append("night_asphalt_wear")
++	if not (material.get_shader_parameter("industrial_ground") == true): inactive.append("night_ground_albedo")
++	if not (material.get_shader_parameter("winter_snow") == true) and not (material.get_shader_parameter("icy_road") == true):
++		inactive.append_array(["snow_albedo","ice_albedo","ice_finish","wind_surface_flow"])
++	if not (material.get_shader_parameter("desert_dunes") == true) and not (material.get_shader_parameter("packed_sand") == true):
++		inactive.append_array(["desert_road_albedo","dune_factors","dune_albedo"])
++		if not (material.get_shader_parameter("grass_shoulder") == true): inactive.append("desert_apron")
++	if not (material.get_shader_parameter("hybrid_grass") == true):
++		inactive.append_array(["grass_albedo","grass_macro_mask","grass_normal"])
++	for sampler: String in inactive:
++		var declaration := RegEx.new()
++		declaration.compile("uniform sampler2D " + sampler + "\\s*[^;]*;")
++		source = declaration.sub(source,"#define " + sampler + " surface_factors",true)
++	# Aliases in early helper bodies require the shared sampler declared first.
++	var factors := RegEx.new()
++	factors.compile("uniform sampler2D surface_factors\\s*[^;]*;")
++	var factor_declaration: RegExMatch = factors.search(source)
++	if factor_declaration != null:
++		source = factors.sub(source,"",true)
++		var header_end: int = source.find(";",source.find("render_mode")) + 1
++		source = source.insert(header_end,"\n" + factor_declaration.get_string())
++	var key: String = source.sha256_text()
++	if not cache.has(key):
++		var shader := Shader.new()
++		shader.code = source
++		if cache.size()>=64:
++			cache.erase(cache.keys()[0])
++			prepared_keys.clear()
++		cache[key] = shader
++	if prepared_keys.size() >= 64: prepared_keys.erase(prepared_keys.keys()[0])
++	prepared_keys[prepared_key] = key
++	material.set_meta("surface_dynamic_material",dynamic)
++	material.shader = cache[key] as Shader
++	if night_wear != null: material.set_shader_parameter("night_asphalt_wear",night_wear)
+--- /dev/null
++++ b/game/tests/fixtures/sampler_budget_gl_candidate.gd.txt
+@@ -0,0 +1,165 @@
++class_name SurfaceShaderVariants
++extends RefCounted
++## Fixed visual-material flags become constants; samples and lighting stay intact.
++const FLAGS: Array[String] = ["hybrid_grass","desert_dunes","winter_snow","packed_sand","icy_road","wet_road","industrial_ground","industrial_asphalt"]
++const MATERIAL_FLAGS: Array[String] = ["gravel","grass_shoulder","grass","kerb","asphalt_surface","edge_fringe","road_marking","winter_width_data","winter_bridge_width_data","desert_bridge_width_data","smooth_road_bank","terrain_high_present","terrain_packed","terrain_uniform_enabled","terrain_region_low","raised_road_edge","piece_materials","bridge_material_blend"]
++const INCLUDES: Dictionary = {
++	"res://track/night_ground.gdshaderinc":preload("res://track/night_ground.gdshaderinc"),
++	"res://track/winter_ground_snow.gdshaderinc":preload("res://track/winter_ground_snow.gdshaderinc"),
++	"res://track/winter_wind_variation.gdshaderinc":preload("res://track/winter_wind_variation.gdshaderinc"),
++	"res://track/desert_sun_finish.gdshaderinc":preload("res://track/desert_sun_finish.gdshaderinc"),
++	"res://track/bridge_road.gdshaderinc":preload("res://track/bridge_road.gdshaderinc"),
++	"res://track/creator_road.gdshaderinc":preload("res://track/creator_road.gdshaderinc"),
++	"res://track/terrain.gdshaderinc":preload("res://track/terrain.gdshaderinc"),
++	"res://track/surface_detail.gdshaderinc":preload("res://track/surface_detail.gdshaderinc"),
++	"res://track/winter_ice.gdshaderinc":preload("res://track/winter_ice.gdshaderinc")
++}
++static var cache: Dictionary = {}
++static var prepared_keys: Dictionary = {}
++static var _include_sources: Array[String] = []
++static var _include_revision: int = 0
++static var preparations: int = 0
++static var prepared_hits: int = 0
++
++static func specialize(material: ShaderMaterial, use_prepared: bool = true, fold_flags: bool = true) -> void:
++	# Previously dynamic bridges need sampler pruning without changing their
++	# branch arithmetic. Carry that choice through duplication and cache reuse.
++	fold_flags = fold_flags and not material.get_meta("surface_preserve_branches",false)
++	if not fold_flags: material.set_meta("surface_preserve_branches",true)
++	# The raw shader hides this sampler from non-Night dynamic materials. Keep
++	# its binding through ShaderMaterial.duplicate(), which drops undeclared
++	# parameters, so retained/prepared Night worlds restore the same texture.
++	var night_wear: Texture2D = (material.get_meta("surface_night_asphalt_wear") if material.has_meta("surface_night_asphalt_wear") else material.get_shader_parameter("night_asphalt_wear")) as Texture2D
++	var dynamic: ShaderMaterial = material.duplicate()
++	if night_wear != null:
++		material.set_meta("surface_night_asphalt_wear",night_wear)
++		dynamic.set_meta("surface_night_asphalt_wear",night_wear)
++	var source: String = material.shader.code
++	var creator_road: bool = source.contains('#include "res://track/creator_road.gdshaderinc"')
++	if material.get_shader_parameter("industrial_asphalt") == true:
++		source = "#define BMT_NIGHT_ASPHALT\n"+source
++	# Reuse the completed compiler result before expanding includes/regexes.
++	# Include/source edits and every immutable role/remap value fence the key.
++	var include_sources: Array[String] = []
++	for include: ShaderInclude in INCLUDES.values(): include_sources.append(include.code)
++	if include_sources != _include_sources:
++		_include_sources = include_sources
++		_include_revision += 1
++		prepared_keys.clear()
++	var signature: Array = [source.sha256_text(),_include_revision,fold_flags]
++	for flag: String in FLAGS+MATERIAL_FLAGS: signature.append(material.get_shader_parameter(flag))
++	signature.append(material.get_shader_parameter("terrain_region_channel"))
++	signature.append(material.get_shader_parameter("terrain_slots"))
++	var prepared_key: String = str(signature)
++	if use_prepared and prepared_keys.has(prepared_key) and cache.has(prepared_keys[prepared_key]):
++		material.set_meta("surface_dynamic_material",dynamic)
++		material.shader = cache[prepared_keys[prepared_key]] as Shader
++		if night_wear != null: material.set_shader_parameter("night_asphalt_wear",night_wear)
++		prepared_hits += 1
++		return
++	preparations += 1
++	# Shallow snow/sand banks need continuous light, with matching terrain/skirt lighting.
++	if (material.get_shader_parameter("winter_snow") == true) or (material.get_shader_parameter("desert_dunes") == true):
++		source = source.replace("diffuse_toon","diffuse_burley")
++	for pass_index: int in range(3):
++		for path: String in INCLUDES:
++			source = source.replace('#include "'+path+'"',(INCLUDES[path] as ShaderInclude).code)
++	for flag: String in (FLAGS if fold_flags else []):
++		var pattern := RegEx.new()
++		pattern.compile("uniform bool "+flag+"\\s*=\\s*(true|false)\\s*;")
++		var found: RegExMatch = pattern.search(source)
++		if found == null: continue
++		var value: Variant = material.get_shader_parameter(flag)
++		var enabled: bool = found.get_string(1)=="true" if value==null else bool(value)
++		source = pattern.sub(source,"const bool "+flag+" = "+("true" if enabled else "false")+";",true)
++	# Keep road/fringe draws on one source where their render modes and biome
++	# bindings already match. These uniform branches avoid another cold program;
++	# biome/sampler choices and unrelated surface roles still fold to constants.
++	# Sharing did not pass Mobile's pixel/stability checks; retain its original
++	# specialized sources. This targets the Compatibility cold delay.
++	var compatibility: bool = RenderingServer.get_current_rendering_method() == "gl_compatibility"
++	var shared_road_roles: bool = compatibility and (material.get_shader_parameter("wet_road") == true or material.get_shader_parameter("industrial_asphalt") == true)
++	# Keep public uniforms for inspection/cache serialization, folding other reads.
++	for flag: String in MATERIAL_FLAGS:
++		if not fold_flags: continue
++		if compatibility and flag == "edge_fringe" and material.get_shader_parameter("packed_sand") == true: continue
++		if shared_road_roles and flag in ["asphalt_surface","raised_road_edge","edge_fringe","road_marking"]: continue
++		# Keep the snow-bank branch form: Mobile reassociates its filtered toe
++		# lighting when constant-folded, changing a sparse MSAA edge pixel.
++		if flag == "smooth_road_bank" and material.get_shader_parameter("winter_snow") == true: continue
++		var declaration := RegEx.new()
++		declaration.compile("uniform bool " + flag + "\\s*=\\s*(true|false)\\s*;")
++		var found: RegExMatch = declaration.search(source)
++		if found == null: continue
++		var value: Variant = material.get_shader_parameter(flag)
++		var enabled: bool = found.get_string(1) == "true" if value == null else bool(value)
++		var reads := RegEx.new()
++		reads.compile("\\b" + flag + "\\b")
++		source = reads.sub(source,"fixed_" + flag,true)
++		source = source.replace(reads.sub(found.get_string(),"fixed_" + flag,true),found.get_string() + "\nconst bool fixed_" + flag + " = " + ("true" if enabled else "false") + ";")
++	if fold_flags and source.contains("uniform int terrain_region_channel"):
++		var channel_value: Variant = material.get_shader_parameter("terrain_region_channel")
++		var channel: int = maxi(0,int(channel_value) if channel_value != null else -1)
++		var reads := RegEx.new()
++		reads.compile("\\bterrain_region_channel\\b")
++		source = reads.sub(source,"fixed_terrain_region_channel",true)
++		source = source.replace("uniform int fixed_terrain_region_channel = -1;","uniform int terrain_region_channel = -1;\nconst int fixed_terrain_region_channel = "+str(channel)+";")
++	if fold_flags and material.get_shader_parameter("terrain_packed") == true:
++		var slots: Vector4i = material.get_shader_parameter("terrain_slots")
++		var assignments: String = "vec4 packed = low;\n\tlow = vec4(0.0);\n\thigh = vec4(0.0);"
++		var channels: Array[String] = ["r","g","b","a"]
++		for channel: int in range(4):
++			var kind: int = slots[channel]
++			if kind < 0: continue
++			assignments += "\n\t%s.%s = packed.%s;" % ["low" if kind < 4 else "high",channels[kind % 4],channels[channel]]
++		var remap := RegEx.new()
++		remap.compile("(?s)// packed_terrain_begin.*?// packed_terrain_end")
++		source = remap.sub(source,assignments,true)
++	# GLES drivers count declared samplers even in constant-disabled branches.
++	# Alias unreachable biome samples to the shared factor sampler so those
++	# declarations cannot consume phone texture units. Active artwork is untouched.
++	var inactive: Array[String] = []
++	# painted_grass returns before its fallback texture in these fixed biomes.
++	# Keep Mobile's original sampler layout: its Winter pixels change when these
++	# aliases alter compilation. The eight-sampler reservation targets GLES.
++	# Prune only the over-budget families; Night's existing layout already fits.
++	if compatibility and (material.get_shader_parameter("winter_snow") == true or material.get_shader_parameter("desert_dunes") == true or (material.get_shader_parameter("hybrid_grass") == true and material.get_shader_parameter("grass_shoulder") == true)):
++		inactive.append("painted_grass_texture")
++	# Only the creator-road include gates road_mask entirely on piece_materials.
++	# Winter banks use that name for a different, active mask and must retain it.
++	if compatibility and creator_road and material.get_shader_parameter("winter_snow") == true and not (material.get_shader_parameter("piece_materials") == true): inactive.append("road_mask")
++	if not (material.get_shader_parameter("industrial_asphalt") == true): inactive.append("night_asphalt_wear")
++	if not (material.get_shader_parameter("industrial_ground") == true): inactive.append("night_ground_albedo")
++	if not (material.get_shader_parameter("winter_snow") == true) and not (material.get_shader_parameter("icy_road") == true):
++		inactive.append_array(["snow_albedo","ice_albedo","ice_finish","wind_surface_flow"])
++		if compatibility and not (material.get_shader_parameter("industrial_ground") == true) and not (material.get_shader_parameter("industrial_asphalt") == true): inactive.append("snow_road_sources")
++	if not (material.get_shader_parameter("desert_dunes") == true) and not (material.get_shader_parameter("packed_sand") == true):
++		inactive.append_array(["desert_road_albedo","dune_factors","dune_albedo"])
++		if not (material.get_shader_parameter("grass_shoulder") == true): inactive.append("desert_apron")
++	if not (material.get_shader_parameter("hybrid_grass") == true):
++		inactive.append_array(["grass_albedo","grass_macro_mask","grass_normal"])
++	for sampler: String in inactive:
++		var declaration := RegEx.new()
++		declaration.compile("uniform sampler2D " + sampler + "\\s*[^;]*;")
++		source = declaration.sub(source,"#define " + sampler + " surface_factors",true)
++	# Aliases in early helper bodies require the shared sampler declared first.
++	var factors := RegEx.new()
++	factors.compile("uniform sampler2D surface_factors\\s*[^;]*;")
++	var factor_declaration: RegExMatch = factors.search(source)
++	if factor_declaration != null:
++		source = factors.sub(source,"",true)
++		var header_end: int = source.find(";",source.find("render_mode")) + 1
++		source = source.insert(header_end,"\n" + factor_declaration.get_string())
++	var key: String = source.sha256_text()
++	if not cache.has(key):
++		var shader := Shader.new()
++		shader.code = source
++		if cache.size()>=64:
++			cache.erase(cache.keys()[0])
++			prepared_keys.clear()
++		cache[key] = shader
++	if prepared_keys.size() >= 64: prepared_keys.erase(prepared_keys.keys()[0])
++	prepared_keys[prepared_key] = key
++	material.set_meta("surface_dynamic_material",dynamic)
++	material.shader = cache[key] as Shader
++	if night_wear != null: material.set_shader_parameter("night_asphalt_wear",night_wear)
+--- /dev/null
++++ b/docs/SAMPLER_BUDGET_FIX_2026_10_31.md
+@@ -0,0 +1,55 @@
++# GLES surface sampler budget fixed — 31 October 2026
++
++The previous failing test stopped at its first Desert material. A complete inventory of the current task-start source found **42 over-budget materials among 96 sampled surfaces**, across default, Star and mixed-surface bridge fixtures in all five biomes. The final Compatibility/OpenGL check now finds **zero over-budget surfaces**, retaining the existing maximum of eight declared texture samplers. Both desktop and Android are configured to use this renderer. Mobile/Vulkan and Forward+ retain their original shaders.
++
++| Biome | Highest original declaration count | Highest final count |
++| --- | ---: | ---: |
++| Pine | 10 | 8 |
++| Winter | 17 | 8 |
++| Desert | 10 | 8 |
++| Storm | 9 | 8 |
++| Night | 8 | 8 |
++
++These are Compatibility declarations in recursively expanded shader source, including nested meshes and active surface materials, not measurements of a particular driver's active texture-unit usage. The 96 entries are fixture/material observations, not 96 distinct GPU programs. The original 17-sampler Winter bridge had bypassed specialization. The inventory's `after` field records the actual task-start material; its `before` field regenerates through the frozen generator and differs for previously raw bridges.
++
++- **SBF01:** Inventory every relevant material before selecting removals. `inventory.json` records paths, original shader resources, declared sampler names and whether the material was specialized. The original eight-sampler assertion remains unchanged.
++- **SBF02:** Extend the existing inactive-sampler aliases in `game/track/surface_shader_variants.gd` only on Compatibility. Remove the unreachable `painted_grass_texture` fallback for Desert, Winter and Pine's hybrid grass shoulder. Remove `snow_road_sources` outside snowy/icy and Night materials. Remove `road_mask` only in Winter's creator-road shader when `piece_materials` is disabled. Winter banks use that name for an active mask and keep it. Night already fits eight and its complete shader sources remain byte-identical, avoiding unnecessary shader-cache invalidation. Active artwork, UVs, filtering, shading operations and geometry are retained.
++- **SBF03:** On Compatibility, `game/track/creator_bridge_visual.gd` and `game/track/bridge_presentation.gd` prune previously unspecialized bridge materials with `fold_flags=false`. Their original uniform branches remain. This mode is part of the preparation key and survives material duplication through metadata, preventing reuse of a shader with different branch specialization. Existing fully specialized paths retain their mode.
++- **R01:** Final `test_sampler_pruning.gd` passes **444 checks, zero failures**: all 15 fixture/biome combinations, budget limits, surviving parameter/texture identities, cache reuse, unchanged Night sources and no additional shader source variants. Explicit retention cases require fallback grass, mixed-road masks and winter snow sources to retain their exact textures where needed; Winter bank masks and bridge branch/cache separation also pass. The unchanged original sampler regression passes **63 checks, zero failures**. The shader-consolidation regression passes **141 checks, zero failures**, retaining the previous source-count reductions. Native desktop Mobile passes **289 source/binding/cache checks**, verifying original source text for all 96 sampled materials.
++- **Q01:** A task-only patch is checked forward and backward in an owned build directory. It excludes concurrent work and generated build identities and does not write the main Git index.
++
++`game/tests/test_shader_variant_consolidation.gd` now normalizes only the three intentionally changed sampler declarations when comparing the previous independently captured shader bodies. All other text, renderer policy, source populations and retained bindings remain checked. The new sampler regression independently checks the conditions and retained active bindings; the budget and pixel tolerances are not weakened. `game/tests/fixtures/sampler_budget_before.gd.txt` freezes the generator from the start of this task.
++
++`review_sampler_pruning.gd` uses one frozen actual Game scene per biome, with a mixed-surface bridge track. It copies current live shader parameters, including late-bound weather textures, to both arms. The original raw Winter bridge remains raw in the control. Both arms are warmed before each camera view; the comparison still requires an exact restored control and maximum RGB channel change of 2/255. `profile_sampler_first_draw.gd` uses the existing primed, fresh-sampler-name material-grid benchmark against the task-start generator. Driver caches are not erased, so its results are not full startup/race-load or phone measurements.
++
++The broader first candidate passed all 30 Compatibility image checks, with all 15 before/after PNG files byte-identical. Its Mobile run retained stable controls but failed two Winter views (3/255 and 8/255); that candidate is rejected on Mobile. After the renderer guard, the Winter rerun passes all six checks with exact pixels. The final minimal policy keeps the validated Winter Compatibility output and restores Night's original source. Its separate Pine, Desert and Storm rerun passes all 18 checks, with all nine before/after PNG pairs byte-identical and exact restored controls. No image threshold is relaxed.
++
++Broader-pruning GPU and first-use timings varied substantially. `broad-pruning-first-draw.json` is retained, including slower samples; it does not establish a loading improvement. The final policy avoids unnecessary Night changes and limits the other removals to the over-budget families. Steady-GPU timing blocks are retained as diagnostics, not a throughput claim.
++
++The final first-use probe completes with the following samples (milliseconds, two measurements per arm in baseline/candidate/candidate/baseline order):
++
++| Biome | Baseline samples | Final samples | Mean change |
++| --- | --- | --- | ---: |
++| Desert | 7575.950, 7229.996 | 6987.236, 7010.028 | -5.46% |
++| Storm | 11401.567, 9147.314 | 9322.250, 9412.882 | -8.83% |
++
++These small samples favor the final fix but show substantial baseline variation, especially Storm. They do not establish a reliable cold-start speedup. The verified result is removal of the declaration-budget failure, with exact tested pixels and the earlier shader-source consolidation retained. All five jobs in `suite-minimal.log` complete with exit zero, expected completion markers and no detected engine/script/shader errors.
++
++The [machine-readable report](evidence/sampler-budget-fix-2026-10-31/report.json) records results and evidence hashes. The [task-only patch](evidence/sampler-budget-fix-2026-10-31/task.patch) and [checkpoint result](evidence/sampler-budget-fix-2026-10-31/checkpoint.json) capture source changes relative to this task's starting files.
++
++All tests use pinned Godot 4.7.2, isolated profiles under `build/sampler-budget-fix-20261031`, and a disabled API. The initial inventory sets `BMT_SAMPLER_AUDIT=1`, `BMT_SAMPLER_OUTPUT` to the inventory JSON and invokes:
++
++```powershell
++python scripts/run_no_crash_dialog.py -- powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1 -Action TestScript -ScriptPath res://tests/test_sampler_pruning.gd -CommandTimeoutSeconds 300
++```
++
++The component run uses the same command with audit disabled and a separate output/profile. The remaining suite enters through `dev.ps1` once to avoid repeated shipping-asset identity scans:
++
++```powershell
++$env:BMT_SAMPLER_EVIDENCE = Join-Path (Get-Location) 'docs/evidence/sampler-budget-fix-2026-10-31'
++python scripts/run_no_crash_dialog.py -- powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1 -Action TestScript -ScriptPath res://tests/run_sampler_validation.gd -CommandTimeoutSeconds 1800
++```
++
++The suite launches children sequentially with that validated executable and explicit crash-dialog suppression. `BMT_SAMPLER_JOBS` selects comma-separated job names. The first suite ran `samplers,consolidation,compatibility,mobile` and stopped at the rejected Mobile result. The guarded suite ran `component-final,component-mobile,mobile-final,first-draw`. The final narrower suite runs `component-final,samplers,consolidation,compatibility-final,first-draw`, with `BMT_SAMPLER_TIMING_THEMES=desert,storm`. Standalone reproductions are also available through the evidence `run.ps1`. The initial suite's Windows GUI executable left captured stdout empty; actual completion markers and errors were recovered from each isolated Godot log. The runner now supplies an explicit engine log and requires the expected completion marker. Preserve previous outputs when rerunning evidence jobs.
++
++No device test was performed. Client reload, owner appearance acceptance and actual Android loading/GPU acceptance remain. No owner session/save, device, backend or deployment was changed. The fix changes rendering resource declarations and bridge material preparation only; canonical driving and scoring are untouched.
+--- /dev/null
++++ b/docs/evidence/sampler-budget-fix-2026-10-31/run.ps1
+@@ -0,0 +1,28 @@
++param([ValidateSet('component','samplers','consolidation','compatibility','mobile','first-draw')][string]$Mode = 'component')
++$ErrorActionPreference = 'Stop'
++$repoRoot = (Get-Item $PSScriptRoot).Parent.Parent.Parent.FullName
++Set-Location -LiteralPath $repoRoot
++$env:APPDATA = Join-Path $repoRoot "build/sampler-budget-fix-20261031/$Mode"
++$env:BMT_API_URL = ''
++$env:BMT_SAMPLER_AUDIT = ''
++$env:BMT_SAMPLER_OUTPUT = Join-Path $PSScriptRoot "$Mode.json"
++$env:BMT_VARIANT_OUTPUT = Join-Path $PSScriptRoot "$Mode.json"
++$env:BMT_VARIANT_FOLDER = Join-Path $PSScriptRoot $Mode
++$env:BMT_VARIANT_FINAL = '1'
++$env:BMT_VARIANT_THEMES = 'pine,winter,desert,storm,night_city'
++New-Item -ItemType Directory -Force $env:APPDATA | Out-Null
++$testScript = 'test_sampler_pruning.gd'
++$rendererArguments = @()
++if ($Mode -eq 'samplers') { $testScript = 'test_terrain_sampler_budget.gd' }
++if ($Mode -eq 'consolidation') { $testScript = 'test_shader_variant_consolidation.gd' }
++if ($Mode -in @('compatibility','mobile')) {
++    $testScript = 'review_sampler_pruning.gd'
++    $rendererArguments = @('-Graphical','-RenderingMethod',$(if ($Mode -eq 'mobile') { 'mobile' } else { 'gl_compatibility' }))
++}
++if ($Mode -eq 'first-draw') {
++    $testScript = 'profile_sampler_first_draw.gd'
++    $env:BMT_VARIANT_THEMES = 'desert,storm,night_city'
++    $rendererArguments = @('-Graphical','-RenderingMethod','gl_compatibility')
++}
++python scripts/run_no_crash_dialog.py -- powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1 -Action TestScript -ScriptPath "res://tests/$testScript" @rendererArguments -CommandTimeoutSeconds 600 *> (Join-Path $PSScriptRoot "$Mode.log")
++exit $LASTEXITCODE
+--- /dev/null
++++ b/docs/evidence/sampler-budget-fix-2026-10-31/checkpoint.py
+@@ -0,0 +1,65 @@
++"""Round-trip the task-only patch in an owned build folder; never use the index."""
++import difflib
++import hashlib
++import json
++from pathlib import Path
++import subprocess
++import time
++
++root = Path(__file__).resolve().parents[3]
++evidence = Path(__file__).resolve().parent
++existing = {
++    'game/track/surface_shader_variants.gd': 'game/track/surface_shader_variants.gd',
++    'game/track/creator_bridge_visual.gd': 'game/track/creator_bridge_visual.gd',
++    'game/track/bridge_presentation.gd': 'game/track/bridge_presentation.gd',
++    'game/tests/test_shader_variant_consolidation.gd': 'game/tests/test_shader_variant_consolidation.gd',
++    'DEVELOPMENT_STATUS.md': 'DEVELOPMENT_STATUS.md',
++    'docs/PHASE_0_PLAN.md': 'PHASE_0_PLAN.md',
++}
++added = [
++    'game/tests/fixtures/sampler_budget_before.gd.txt',
++    'game/tests/fixtures/sampler_budget_gl_candidate.gd.txt',
++    'docs/SAMPLER_BUDGET_FIX_2026_10_31.md',
++    'docs/evidence/sampler-budget-fix-2026-10-31/run.ps1',
++    'docs/evidence/sampler-budget-fix-2026-10-31/checkpoint.py',
++]
++for stem in ['test_sampler_pruning','review_sampler_pruning','profile_sampler_first_draw','run_sampler_validation']:
++    added.append('game/tests/'+stem+'.gd')
++    if (root/('game/tests/'+stem+'.gd.uid')).exists(): added.append('game/tests/'+stem+'.gd.uid')
++verification = root / 'build/sampler-budget-fix-20261031' / ('patch-'+str(time.time_ns()))
++assert verification.resolve().is_relative_to((root / 'build').resolve())
++verification.mkdir(parents=True)
++patch, after = [], {}
++for name in list(existing) + added:
++    prior = (evidence/'before'/existing[name]).read_text(encoding='utf-8') if name in existing else ''
++    current = (root/name).read_text(encoding='utf-8')
++    destination = verification/name
++    destination.parent.mkdir(parents=True, exist_ok=True)
++    if name in existing:
++        destination.write_text(prior, encoding='utf-8', newline='\n')
++    patch.extend(difflib.unified_diff(prior.splitlines(True), current.splitlines(True),
++                                    fromfile='a/'+name if name in existing else '/dev/null', tofile='b/'+name))
++    after[name] = current
++    snapshot = evidence/'after'/name
++    snapshot.parent.mkdir(parents=True, exist_ok=True)
++    snapshot.write_bytes((root/name).read_bytes())
++patch_path = evidence/'task.patch'
++patch_path.write_text(''.join(patch), encoding='utf-8', newline='\n')
++commands = []
++for flags in [['--check'], [], ['--reverse','--check'], ['--reverse']]:
++    command = ['git','apply','--whitespace=error','--directory='+verification.relative_to(root).as_posix(),
++               *flags,str(patch_path.relative_to(root))]
++    result = subprocess.run(command, cwd=root, text=True, capture_output=True)
++    commands.append({'command':command, 'code':result.returncode, 'output':result.stdout+result.stderr})
++    assert result.returncode == 0, commands[-1]
++    if not flags:
++        for name, current in after.items():
++            assert (verification/name).read_text(encoding='utf-8') == current
++for name, saved in existing.items():
++    assert (verification/name).read_text(encoding='utf-8') == (evidence/'before'/saved).read_text(encoding='utf-8')
++for name in added:
++    assert not (verification/name).exists()
++record = {'commands':commands, 'round_trip_exact':True,
++          'source_sha256':{name:hashlib.sha256((root/name).read_bytes()).hexdigest() for name in after}}
++(evidence/'checkpoint.json').write_text(json.dumps(record,indent=2),encoding='utf-8')
++print('Verified forward/reverse content for',len(after),'task files.')
+--- /dev/null
++++ b/game/tests/test_sampler_pruning.gd
+@@ -0,0 +1,151 @@
++extends SceneTree
++var checks: int = 0
++var failures: int = 0
++var rows: Array = []
++
++func _initialize() -> void: run.call_deferred()
++func check(ok: bool, label: String) -> void:
++	checks += 1
++	if not ok: failures += 1; print("FAIL: ",label)
++
++static func before_generator() -> GDScript:
++	var script := GDScript.new()
++	script.source_code = FileAccess.get_file_as_string("res://tests/fixtures/sampler_budget_before.gd.txt").replace("class_name SurfaceShaderVariants\n","")
++	assert(script.reload() == OK)
++	return script
++
++static func expanded(source: String) -> String:
++	var include_pattern := RegEx.new()
++	include_pattern.compile('#include "([^"]+)"')
++	for pass_index: int in range(8):
++		var includes: Array[RegExMatch] = include_pattern.search_all(source)
++		if includes.is_empty(): break
++		for item: RegExMatch in includes:
++			source = source.replace(item.get_string(),FileAccess.get_file_as_string(item.get_string(1)))
++	return source
++
++static func samplers(source: String) -> Array[String]:
++	var pattern := RegEx.new()
++	pattern.compile("uniform\\s+sampler2D\\s+(\\w+)")
++	var names: Array[String] = []
++	for item: RegExMatch in pattern.search_all(expanded(source)): names.append(item.get_string(1))
++	return names
++
++static func fixture(kind: String, theme: String) -> NativeTrack:
++	var doc: Dictionary = TrackDocument.create_default()
++	if kind == "star": doc = JSON.parse_string(FileAccess.get_file_as_string("res://tests/fixtures/star_spline_lap.json"))
++	if kind == "mixed_bridge":
++		doc = TrackDocument.create_blank()
++		var point := Vector2(-32,-16)
++		var heading: float = 0.0
++		for piece_kind: String in ["straight","bridge","straight","hairpin","straight","hairpin"]:
++			var piece: Dictionary = RoadPieces.create(piece_kind,point,heading,10)
++			piece.length = 32.0 if piece_kind == "bridge" else 64.0 if doc.pieces.size() == 4 else 16.0 if piece_kind == "straight" else 0.0
++			piece.radius = 16.0
++			doc.pieces.append(piece)
++			var pose: Dictionary = RoadPieces.end_pose(piece)
++			point = pose.position; heading = pose.heading
++		var route: Dictionary = RoadPieces.route_from_pieces(doc)
++		assert(route.ok)
++		doc = route.document
++		doc.pieces[0].surface = "gravel"
++	doc.theme = theme
++	return TrackCompiler.compile(doc)
++
++func active_binding_contract() -> void:
++	var sentinel: Texture2D = ImageTexture.create_from_image(Image.create(2,2,false,Image.FORMAT_RGBA8))
++	var cases: Array = [
++		{"flags":{},"keep":["painted_grass_texture","road_mask"]},
++		{"flags":{"desert_dunes":true},"keep":["road_mask"]},
++		{"flags":{"winter_snow":true,"icy_road":true},"keep":["snow_road_sources"]},
++		{"flags":{"hybrid_grass":true,"piece_materials":true},"keep":["painted_grass_texture","road_mask"]},
++		{"flags":{"hybrid_grass":true,"grass_shoulder":true},"keep":["road_mask"]},
++		{"flags":{"icy_road":true},"keep":["painted_grass_texture","snow_road_sources","road_mask"]},
++		{"flags":{"industrial_ground":true},"keep":["painted_grass_texture","snow_road_sources","road_mask"]}]
++	for test_case: Dictionary in cases:
++		var flags: Dictionary = test_case.flags
++		var material := ShaderMaterial.new()
++		material.shader = preload("res://track/creator_road.gdshader")
++		for flag: String in flags: material.set_shader_parameter(flag,flags[flag])
++		for name: String in ["painted_grass_texture","snow_road_sources","road_mask"]: material.set_shader_parameter(name,sentinel)
++		SurfaceShaderVariants.specialize(material)
++		var names: Array[String] = samplers(material.shader.code)
++		for name: String in ["painted_grass_texture","snow_road_sources","road_mask"]:
++			var active: bool = name in test_case.keep
++			check(names.has(name) == active,"only unreachable declaration removed: "+name+" "+str(flags))
++			if active: check(material.get_shader_parameter(name) == sentinel,"active sampler retains its exact texture: "+name)
++	var bank := ShaderMaterial.new()
++	bank.shader = preload("res://track/winter_bank.gdshader")
++	bank.set_shader_parameter("winter_snow",true)
++	bank.set_shader_parameter("icy_road",true)
++	bank.set_shader_parameter("road_mask",sentinel)
++	SurfaceShaderVariants.specialize(bank)
++	check(samplers(bank.shader.code).has("road_mask") and bank.get_shader_parameter("road_mask") == sentinel,"Winter bank's active road mask is retained")
++	var bridge := ShaderMaterial.new()
++	bridge.shader = preload("res://track/bridge_road.gdshader")
++	bridge.set_shader_parameter("icy_road",true)
++	var folded: ShaderMaterial = bridge.duplicate()
++	SurfaceShaderVariants.specialize(bridge,true,false)
++	SurfaceShaderVariants.specialize(folded)
++	check(bridge.shader != folded.shader and bridge.shader.code.contains("uniform bool icy_road"),"bridge pruning preserves branches and cannot alias a folded shader")
++	var replay: ShaderMaterial = bridge.get_meta("surface_dynamic_material").duplicate()
++	SurfaceShaderVariants.specialize(replay)
++	check(replay.shader == bridge.shader,"branch-preserving mode survives duplication and cached preparation")
++
++func run() -> void:
++	var output: String = OS.get_environment("BMT_SAMPLER_OUTPUT")
++	if output.is_empty(): push_error("Explicit output required"); quit(1); return
++	var audit: bool = OS.get_environment("BMT_SAMPLER_AUDIT") == "1"
++	var compatibility: bool = RenderingServer.get_current_rendering_method() == "gl_compatibility"
++	var original: GDScript = before_generator()
++	var validated := GDScript.new()
++	validated.source_code = FileAccess.get_file_as_string("res://tests/fixtures/sampler_budget_gl_candidate.gd.txt").replace("class_name SurfaceShaderVariants\n","")
++	assert(validated.reload() == OK)
++	if not audit and compatibility: active_binding_contract()
++	for kind: String in ["default","star","mixed_bridge"]:
++		for theme: String in ["pine","winter","desert","storm","night_city"]:
++			var track: NativeTrack = fixture(kind,theme)
++			var visual := NativeTrackVisual.new()
++			visual.persist_road_meshes = false; visual.cache_road_meshes = false
++			root.add_child(visual)
++			await visual.build(track,BridgePresentation.new(track))
++			var seen: Dictionary = {}
++			var old_hashes: Dictionary = {}; var new_hashes: Dictionary = {}
++			for node: Node in visual.find_children("*","MeshInstance3D",true,false):
++				if node.mesh == null: continue
++				for surface: int in range(node.mesh.get_surface_count()):
++					var material: ShaderMaterial = node.get_active_material(surface) as ShaderMaterial
++					if material == null or seen.has(material.get_instance_id()): continue
++					seen[material.get_instance_id()] = true
++					var names: Array[String] = samplers(material.shader.code)
++					if not names.has("surface_factors"): continue
++					var dynamic: ShaderMaterial = material.get_meta("surface_dynamic_material",material)
++					var before: ShaderMaterial = dynamic.duplicate()
++					if material.has_meta("surface_dynamic_material") and not dynamic.get_meta("surface_preserve_branches",false): original.specialize(before)
++					var before_names: Array[String] = samplers(before.shader.code)
++					rows.append({"fixture":kind,"theme":theme,"node":str(node.get_path()),"source":dynamic.shader.resource_path,"before":before_names,"after":names,"specialized":material.has_meta("surface_dynamic_material")})
++					if compatibility and names.size() > 8: print("SAMPLER_OVER_BUDGET ",JSON.stringify(rows[-1]))
++					if audit: continue
++					if compatibility: check(names.size() <= 8,kind+"/"+theme+" sampler budget: "+str(names))
++					else: check(material.shader.code == before.shader.code,kind+"/"+theme+" other renderer retains exact original source")
++					if compatibility:
++						var proven: ShaderMaterial = dynamic.duplicate()
++						if material.has_meta("surface_dynamic_material"): validated.specialize(proven)
++						check(material.shader.code == proven.shader.code,kind+"/"+theme+" guarded output matches the pixel-validated candidate exactly")
++						if theme == "night_city": check(material.shader.code == before.shader.code,"Night shader source stays byte-identical")
++					old_hashes[before.shader.code.sha256_text()] = true
++					new_hashes[material.shader.code.sha256_text()] = true
++					var bindings_equal: bool = true
++					for uniform: Dictionary in material.shader.get_shader_uniform_list():
++						bindings_equal = bindings_equal and material.get_shader_parameter(uniform.name) == before.get_shader_parameter(uniform.name)
++					check(bindings_equal,kind+"/"+theme+" retained uniforms/textures are exact")
++					if material.has_meta("surface_dynamic_material"):
++						var cached: ShaderMaterial = dynamic.duplicate()
++						SurfaceShaderVariants.specialize(cached)
++						check(cached.shader == material.shader,kind+"/"+theme+" cache reuses the correct shader")
++			if not audit: check(new_hashes.size() <= old_hashes.size(),kind+"/"+theme+" no added shader variants")
++			visual.free()
++			await process_frame
++	FileAccess.open(output,FileAccess.WRITE).store_string(JSON.stringify({"rows":rows,"renderer":RenderingServer.get_current_rendering_method(),"audit":audit,"checks":checks,"failures":failures},"  "))
++	print("SAMPLER_PRUNING: %d checks, %d failures" % [checks,failures])
++	quit(1 if failures else 0)
+--- /dev/null
++++ b/game/tests/test_sampler_pruning.gd.uid
+@@ -0,0 +1 @@
++uid://dnpyu7kcy85k8
+--- /dev/null
++++ b/game/tests/review_sampler_pruning.gd
+@@ -0,0 +1,96 @@
++extends "res://tests/profile_biome_shaders.gd"
++## Same-scene material A/B against the frozen task-start generator.
++const PROBE = preload("res://tests/probe_shader_variant_consolidation.gd")
++const SAMPLERS = preload("res://tests/test_sampler_pruning.gd")
++
++func run() -> void:
++	folder = OS.get_environment("BMT_VARIANT_FOLDER")
++	if folder.is_empty(): push_error("Explicit output folder required"); quit(1); return
++	DirAccess.make_dir_recursive_absolute(folder)
++	DisplayServer.window_set_vsync_mode(DisplayServer.VSYNC_DISABLED)
++	Engine.max_fps = 0
++	var flags: Array = ["kerb","road_marking"]
++	if not OS.get_environment("BMT_VARIANT_FLAGS").is_empty(): flags = Array(OS.get_environment("BMT_VARIANT_FLAGS").split(","))
++	var candidate: GDScript = PROBE.generator([],false,true)
++	if OS.get_environment("BMT_VARIANT_FINAL") == "1": candidate = PROBE.generator([],false,true)
++	var baseline: GDScript = SAMPLERS.before_generator()
++	if candidate == null: quit(1); return
++	themes = ["pine","winter","desert","storm","night_city"]
++	if not OS.get_environment("BMT_VARIANT_THEMES").is_empty(): themes.assign(OS.get_environment("BMT_VARIANT_THEMES").split(","))
++	for arg: String in OS.get_cmdline_user_args():
++		if arg.begins_with("--themes="): themes.assign(arg.trim_prefix("--themes=").split(","))
++		if arg == "--fringe": flags = ["edge_fringe"]; candidate = PROBE.generator(flags)
++		if arg == "--edges": flags = ["asphalt_surface","raised_road_edge","edge_fringe","road_marking"]; candidate = PROBE.generator(flags)
++		if arg == "--shoulders": flags = ["grass","gravel"]; candidate = PROBE.generator(flags)
++	report = {"renderer":RenderingServer.get_current_rendering_method(),"flags":flags,"shipping_candidate":OS.get_environment("BMT_VARIANT_FINAL") == "1","themes":{},"note":"Same frozen world, camera, lights and textures. Program counts are unique source hashes, not engine pipeline counts. Interleaved desktop renderer timings; no cold driver-cache guarantee."}
++	for theme: String in themes:
++		root.size = Vector2i(1280,720)
++		var doc: Dictionary = SAMPLERS.fixture("mixed_bridge",theme).metadata.creator_document.duplicate(true)
++		doc.theme = theme
++		var track: NativeTrack = TrackCompiler.compile(doc)
++		var game: Node = load("res://core/game.tscn").instantiate()
++		game.initial_track = track
++		game.production_mode = true
++		game.attempt_practice = true
++		root.add_child(game)
++		while not game.preparation_complete: await process_frame
++		game.process_mode = Node.PROCESS_MODE_DISABLED
++		game.race_cues.hide()
++		game.sand_dust.hide()
++		if game.winter_snow_wind != null: game.winter_snow_wind.hide()
++		game.trails.hide()
++		entries.clear()
++		var pairs: Dictionary = {}
++		var baseline_hashes: Dictionary = {}
++		var candidate_hashes: Dictionary = {}
++		for node: Node in game.track_ground.find_children("*","MeshInstance3D",true,false):
++			var material: ShaderMaterial = node.material_override as ShaderMaterial
++			if material == null or not material.has_meta("surface_dynamic_material"): continue
++			var id: int = material.get_instance_id()
++			if not pairs.has(id):
++				var alternative: ShaderMaterial = material.get_meta("surface_dynamic_material").duplicate()
++				alternative.render_priority = material.render_priority
++				for uniform: Dictionary in material.shader.get_shader_uniform_list(): alternative.set_shader_parameter(uniform.name,material.get_shader_parameter(uniform.name))
++				candidate.specialize(alternative)
++				var control: ShaderMaterial = material.get_meta("surface_dynamic_material").duplicate()
++				control.render_priority = material.render_priority
++				for uniform: Dictionary in material.shader.get_shader_uniform_list(): control.set_shader_parameter(uniform.name,material.get_shader_parameter(uniform.name))
++				if not control.get_meta("surface_preserve_branches",false): baseline.specialize(control)
++				pairs[id] = {"baseline":control,"optimized":alternative}
++			baseline_hashes[pairs[id].baseline.shader.code.sha256_text()] = true
++			candidate_hashes[pairs[id].optimized.shader.code.sha256_text()] = true
++			entries.append({"node":node,"baseline":pairs[id].baseline,"optimized":pairs[id].optimized})
++		var proofs: Array = []
++		for view: int in range(3):
++			game.camera.follow(track.route[view*track.route.size()/3],Vector2.ZERO,0.0,0.0,true)
++			await capture_pair("optimized", "")
++			await capture_pair("baseline", "")
++			await measure(root.get_viewport_rid(),2.0)
++			var before: Image = await capture_pair("baseline",theme+"-"+str(view)+"-before.png")
++			var after: Image = await capture_pair("optimized",theme+"-"+str(view)+"-after.png")
++			var restored: Image = await capture_pair("baseline","")
++			var proof: Dictionary = compare(before,after)
++			proof.unstable = compare(before,restored).changed
++			check(proof.unstable == 0,theme+" stable frozen control")
++			check(proof.max_channel_delta <= 2,theme+" unchanged 2/255 visual allowance")
++			proofs.append(proof)
++		root.size = Vector2i(2560,1440)
++		game.camera.follow(track.route[0],Vector2.ZERO,0.0,0.0,true)
++		var viewport: RID = root.get_viewport_rid()
++		RenderingServer.viewport_set_measure_render_time(viewport,true)
++		var stages: Array = []
++		for mode: String in ["baseline","optimized","optimized","baseline"]:
++			set_mode(mode)
++			await measure(viewport,0.5)
++			var stage: Dictionary = await measure(viewport,2.0)
++			stage.mode = mode
++			stages.append(stage)
++		report.themes[theme] = {"nodes":entries.size(),"baseline_programs":baseline_hashes.size(),"candidate_programs":candidate_hashes.size(),"proofs":proofs,"stages":stages}
++		print("VARIANT_RENDER ",JSON.stringify({"theme":theme,"result":report.themes[theme]}))
++		report.checks = checks; report.failures = failures
++		FileAccess.open(folder.path_join("report.json"),FileAccess.WRITE).store_string(JSON.stringify(report,"  "))
++		entries.clear()
++		game.queue_free()
++		for _frame: int in range(5): await process_frame
++	print("VARIANT_RENDER_CHECKS ",checks," / ",failures)
++	quit(1 if failures else 0)
+--- /dev/null
++++ b/game/tests/review_sampler_pruning.gd.uid
+@@ -0,0 +1 @@
++uid://cb35dg0neesj
+--- /dev/null
++++ b/game/tests/profile_sampler_first_draw.gd
+@@ -0,0 +1,95 @@
++extends SceneTree
++## Offline compiler-work probe. Fresh sampler names avoid reusing identical source;
++## this is not an erased-driver-cache or end-to-end race-loading benchmark.
++const PROBE = preload("res://tests/probe_shader_variant_consolidation.gd")
++const SAMPLERS = preload("res://tests/test_sampler_pruning.gd")
++var report: Dictionary = {"rows":[],"note":"Visible material grid, renamed shared sampler per trial, allocation through two draws and readback. Driver caches are not erased. No end-to-end/device claim."}
++
++func _initialize() -> void: run.call_deferred()
++
++func run() -> void:
++	var output: String = OS.get_environment("BMT_VARIANT_OUTPUT")
++	if output.is_empty(): push_error("Explicit output required"); quit(1); return
++	var flags: Array = Array(OS.get_environment("BMT_VARIANT_FLAGS").split(",",false))
++	var candidate: GDScript = PROBE.generator([],false,true)
++	if OS.get_environment("BMT_VARIANT_FINAL") == "1": candidate = PROBE.generator([],false,true)
++	var baseline: GDScript = SAMPLERS.before_generator()
++	if candidate == null or baseline == null: quit(1); return
++	DisplayServer.window_set_vsync_mode(DisplayServer.VSYNC_DISABLED)
++	Engine.max_fps = 0
++	root.size = Vector2i(640,480)
++	var stage := Node3D.new()
++	root.add_child(stage)
++	var camera := Camera3D.new()
++	stage.add_child(camera)
++	camera.projection = Camera3D.PROJECTION_ORTHOGONAL
++	camera.size = 50.0
++	camera.position = Vector3(0,35,10)
++	camera.look_at(Vector3.ZERO)
++	var sun := DirectionalLight3D.new()
++	stage.add_child(sun)
++	sun.rotation_degrees = Vector3(-65,-30,0)
++	sun.shadow_enabled = true
++	var doc: Dictionary = JSON.parse_string(FileAccess.get_file_as_string("res://tests/fixtures/star_spline_lap.json"))
++	var selected: PackedStringArray = OS.get_environment("BMT_VARIANT_THEMES").split(",",false)
++	if selected.is_empty(): selected = ["pine","winter","desert","storm","night_city"]
++	for theme: String in selected:
++		doc.theme = theme
++		var track: NativeTrack = TrackCompiler.compile(doc)
++		var visual := NativeTrackVisual.new()
++		visual.hide()
++		visual.persist_road_meshes = false
++		visual.cache_road_meshes = false
++		stage.add_child(visual)
++		await visual.build(track,BridgePresentation.new(track))
++		var originals: Array[ShaderMaterial] = PROBE.materials(visual)
++		var variants: Dictionary = {"baseline":[],"candidate":[]}
++		for mode: String in variants:
++			for original: ShaderMaterial in originals:
++				var material: ShaderMaterial = original.get_meta("surface_dynamic_material").duplicate()
++				(baseline if mode == "baseline" else candidate).specialize(material)
++				variants[mode].append(material)
++		visual.free()
++		# Prime textures, lighting and common engine pipelines before timed A/B.
++		for mode: String in ["warmup","baseline","candidate","candidate","baseline"]:
++			var material_mode: String = "baseline" if mode == "warmup" else mode
++			var grid := Node3D.new()
++			stage.add_child(grid)
++			var nonce: String = "bmt_probe_sampler_"+str(Time.get_ticks_usec())
++			var shaders: Dictionary = {}
++			var start: int = Time.get_ticks_usec()
++			for index: int in range(variants[material_mode].size()):
++				var original: ShaderMaterial = variants[material_mode][index]
++				var material: ShaderMaterial = original.duplicate()
++				var source: String = original.shader.code
++				# Expand the remaining small includes before renaming their sampler.
++				var include_pattern := RegEx.new()
++				include_pattern.compile('#include "([^"]+)"')
++				for pass_index: int in range(3):
++					for match_include: RegExMatch in include_pattern.search_all(source):
++						source = source.replace(match_include.get_string(),FileAccess.get_file_as_string(match_include.get_string(1)))
++				source = source.replace("surface_factors",nonce)
++				if not shaders.has(source):
++					var shader := Shader.new()
++					shader.code = source
++					shaders[source] = shader
++				material.shader = shaders[source]
++				material.set_shader_parameter(nonce,original.get_shader_parameter("surface_factors"))
++				var mesh := MeshInstance3D.new()
++				var plane := PlaneMesh.new()
++				plane.size = Vector2(9,9)
++				mesh.mesh = plane
++				mesh.material_override = material
++				grid.add_child(mesh)
++				mesh.position = Vector3((index%4-1.5)*10,0,(index/4-1)*10)
++			await RenderingServer.frame_post_draw
++			await RenderingServer.frame_post_draw
++			var captured: Image = root.get_texture().get_image()
++			var elapsed: float = float(Time.get_ticks_usec()-start)/1000.0
++			var row: Dictionary = {"theme":theme,"mode":mode,"sources":shaders.size(),"materials":variants[material_mode].size(),"elapsed_ms":elapsed,"readback_bytes":captured.get_data().size()}
++			report.rows.append(row)
++			print("FIRST_DRAW ",JSON.stringify(row))
++			FileAccess.open(output,FileAccess.WRITE).store_string(JSON.stringify(report,"  "))
++			grid.free()
++			for frame: int in range(3): await process_frame
++	quit()
+--- /dev/null
++++ b/game/tests/profile_sampler_first_draw.gd.uid
+@@ -0,0 +1 @@
++uid://dwwm688r0qmfc
+--- /dev/null
++++ b/game/tests/run_sampler_validation.gd
+@@ -0,0 +1,51 @@
++extends SceneTree
++## Enter through dev.ps1 once; all children use that validated executable and
++## explicit crash-dialog suppression. No repeated shipping-asset hash scans.
++func _initialize() -> void: run.call_deferred()
++
++func run() -> void:
++	var evidence: String = OS.get_environment("BMT_SAMPLER_EVIDENCE")
++	if evidence.is_empty(): push_error("Explicit evidence folder required"); quit(1); return
++	var repository: String = ProjectSettings.globalize_path("res://..").simplify_path()
++	var jobs: Array = [
++		["component-final","test_sampler_pruning.gd",""],
++		["component-mobile","test_sampler_pruning.gd","mobile"],
++		["samplers","test_terrain_sampler_budget.gd",""],
++		["consolidation","test_shader_variant_consolidation.gd",""],
++		["compatibility","review_sampler_pruning.gd","gl_compatibility"],
++		["compatibility-final","review_sampler_pruning.gd","gl_compatibility"],
++		["mobile","review_sampler_pruning.gd","mobile"],
++		["mobile-final","review_sampler_pruning.gd","mobile"],
++		["first-draw","profile_sampler_first_draw.gd","gl_compatibility"]]
++	var selected: PackedStringArray = OS.get_environment("BMT_SAMPLER_JOBS").split(",",false)
++	for job: Array in jobs:
++		var label: String = job[0]
++		if not selected.is_empty() and not selected.has(label): continue
++		var profile: String = repository.path_join("build/sampler-budget-fix-20261031/suite-"+label)
++		DirAccess.make_dir_recursive_absolute(profile)
++		OS.set_environment("APPDATA",profile)
++		OS.set_environment("BMT_API_URL","")
++		OS.set_environment("BMT_SAMPLER_AUDIT","")
++		OS.set_environment("BMT_SAMPLER_OUTPUT",evidence.path_join(label+".json"))
++		OS.set_environment("BMT_VARIANT_FOLDER",evidence.path_join(label))
++		OS.set_environment("BMT_VARIANT_OUTPUT",evidence.path_join(label+".json"))
++		OS.set_environment("BMT_VARIANT_FINAL","1")
++		OS.set_environment("BMT_VARIANT_THEMES","desert,storm,night_city" if label == "first-draw" else "pine,winter,desert,storm,night_city")
++		if label == "mobile-final": OS.set_environment("BMT_VARIANT_THEMES","winter")
++		if label == "compatibility-final": OS.set_environment("BMT_VARIANT_THEMES","pine,desert,storm")
++		if label == "first-draw" and not OS.get_environment("BMT_SAMPLER_TIMING_THEMES").is_empty(): OS.set_environment("BMT_VARIANT_THEMES",OS.get_environment("BMT_SAMPLER_TIMING_THEMES"))
++		var engine_log: String = evidence.path_join(label+"-engine-"+str(Time.get_ticks_usec())+".log")
++		var arguments: PackedStringArray = [repository.path_join("scripts/run_no_crash_dialog.py"),"--",OS.get_executable_path(),"--path",ProjectSettings.globalize_path("res://"),"--script","res://tests/"+job[1],"--log-file",engine_log]
++		if job[2] == "": arguments.append("--headless")
++		else: arguments.append_array(["--rendering-method",job[2]])
++		var output: Array = []
++		var code: int = OS.execute("python",arguments,output,true,false)
++		# A Windows GUI Godot executable can leave captured stdout empty.
++		var content: String = FileAccess.get_file_as_string(engine_log) if FileAccess.file_exists(engine_log) else "\n".join(output)
++		FileAccess.open(evidence.path_join(label+".log"),FileAccess.WRITE).store_string(content)
++		var errors: bool = content.contains("SCRIPT ERROR:") or content.contains("SHADER ERROR:") or content.contains("\nERROR:")
++		var marker: String = {"component-final":"SAMPLER_PRUNING:","component-mobile":"SAMPLER_PRUNING:","samplers":"TERRAIN_SAMPLER_BUDGET:","consolidation":"SHADER_CONSOLIDATION:","compatibility":"VARIANT_RENDER_CHECKS","compatibility-final":"VARIANT_RENDER_CHECKS","mobile":"VARIANT_RENDER_CHECKS","mobile-final":"VARIANT_RENDER_CHECKS","first-draw":"FIRST_DRAW"}[label]
++		errors = errors or not content.contains(marker)
++		print("SAMPLER_SUITE ",label," exit=",code," errors=",errors)
++		if code != 0 or errors: quit(1); return
++	quit()
+--- /dev/null
++++ b/game/tests/run_sampler_validation.gd.uid
+@@ -0,0 +1 @@
++uid://cyb7wg3aowijm

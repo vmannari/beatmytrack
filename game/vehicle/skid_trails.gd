@@ -140,10 +140,11 @@ func sample(state: VehicleState, frame: DriveFrame, bridge: BridgePresentation =
 	var right_kind: int = surface_at(track, right, state.track_elevated)
 	var front_left_kind: int = surface_at(track, front_left, state.track_elevated)
 	var front_right_kind: int = surface_at(track, front_right, state.track_elevated)
-	var left_strength: float = physics_intensity(state, frame, left_kind, -1.0, -1.0)
-	var right_strength: float = physics_intensity(state, frame, right_kind, 1.0, -1.0)
-	var front_left_strength: float = physics_intensity(state, frame, front_left_kind, -1.0, 1.0)
-	var front_right_strength: float = physics_intensity(state, frame, front_right_kind, 1.0, 1.0)
+	var strengths: PackedFloat64Array = _four_intensities(state, frame, left_kind, right_kind, front_left_kind, front_right_kind)
+	var left_strength: float = strengths[0]
+	var right_strength: float = strengths[1]
+	var front_left_strength: float = strengths[2]
+	var front_right_strength: float = strengths[3]
 	var strongest: float = maxf(maxf(left_strength,right_strength),maxf(front_left_strength,front_right_strength))
 	if not active and strongest < 0.035: return
 	if not active:
@@ -255,6 +256,36 @@ static func physics_intensity(state: VehicleState, frame: DriveFrame, surface_ki
 	# prevents mechanically identical left/right ribbons during a sustained arc.
 	var longitudinal_sign: float = signf(state.velocity.dot(state.forward()))
 	var load_bias: float = clampf(1.0 + wheel_side * state.yaw_rate * longitudinal_sign * 0.16, 0.72, 1.28)
+	return clampf(strength * load_bias, 0.0, 1.0)
+
+
+static func _four_intensities(state: VehicleState, frame: DriveFrame, left_kind: int, right_kind: int, front_left_kind: int, front_right_kind: int) -> PackedFloat64Array:
+	# All four contact points share velocity, slip, braking, dirt and yaw. Keep
+	# the same arithmetic as physics_intensity while calculating these once.
+	var speed: float = state.velocity.length()
+	var lateral_speed: float = absf(state.velocity.dot(state.right()))
+	var slip: float = smoothstep(0.035, 0.62, absf(state.slip_angle()))
+	var scrub: float = smoothstep(0.4, 11.0, lateral_speed)
+	var braking: float = frame.brake / 255.0 * smoothstep(2.0, 18.0, speed)
+	var rotation: float = smoothstep(0.15, 1.8, absf(state.yaw_rate)) * smoothstep(3.0, 16.0, speed) * 0.55
+	var contamination: float = state.tire_dirt * smoothstep(1.0, 12.0, speed) * 0.82
+	var rear_dynamic: float = maxf(maxf(slip,scrub),maxf(braking,rotation))
+	var front_dynamic: float = maxf(maxf(slip*0.38,scrub*0.45),maxf(braking*0.78,rotation*0.32))
+	var longitudinal_sign: float = signf(state.velocity.dot(state.forward()))
+	return PackedFloat64Array([
+		_intensity_from_shared(speed,rear_dynamic,contamination,state.yaw_rate,longitudinal_sign,left_kind,-1.0),
+		_intensity_from_shared(speed,rear_dynamic,contamination,state.yaw_rate,longitudinal_sign,right_kind,1.0),
+		_intensity_from_shared(speed,front_dynamic,contamination,state.yaw_rate,longitudinal_sign,front_left_kind,-1.0),
+		_intensity_from_shared(speed,front_dynamic,contamination,state.yaw_rate,longitudinal_sign,front_right_kind,1.0)])
+
+
+static func _intensity_from_shared(speed: float, dynamic: float, contamination: float, yaw_rate: float, longitudinal_sign: float, surface_kind: int, wheel_side: float) -> float:
+	var rolling_surface: float = 0.0
+	if surface_kind in [1, 2, 7, 10]: rolling_surface = smoothstep(1.0, 16.0, speed) * 0.34
+	elif surface_kind == 8: rolling_surface = smoothstep(2.0,18.0,speed)*0.18
+	elif surface_kind in [3, 6, 9, 11]: rolling_surface = smoothstep(2.0, 18.0, speed) * 0.20
+	var strength: float = maxf(dynamic,maxf(rolling_surface,contamination))
+	var load_bias: float = clampf(1.0 + wheel_side * yaw_rate * longitudinal_sign * 0.16, 0.72, 1.28)
 	return clampf(strength * load_bias, 0.0, 1.0)
 
 

@@ -151,7 +151,7 @@ func run() -> void:
 	service.scores.data.next_cursor = null
 	dialog._refresh.pressed.emit()
 	await settle()
-	check(dialog._rows.get_child_count() == 0 and dialog._status.text == "No verified times today.","empty daily board never substitutes all-time records")
+	check(dialog._rows.get_child_count() == 0 and dialog._status.text == "No flying laps yet.","empty flying-lap board never substitutes race totals")
 	await capture("empty")
 	service.scores = scores("kart")
 	service.scores.data.version_id = "00000000-0000-0000-0000-000000000005"

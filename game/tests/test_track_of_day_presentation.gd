@@ -19,10 +19,12 @@ class Feed extends Node:
 	func signed_in() -> bool: return authenticated
 	func cancel_public_reads(_owner: int) -> void: pass
 	func request_public(_path: String, _owner: int) -> Dictionary:
+		if _path != "/track-of-the-day": return {"ok":false}
 		public_calls += 1
 		if held: await released
 		return response.duplicate(true)
 	func request_api(_path: String, _method: int, _body: Dictionary, _key: String, _auth: bool) -> Dictionary:
+		if _path != "/track-of-the-day": return {"ok":false}
 		private_calls += 1
 		if held: await released
 		return response.duplicate(true)
@@ -90,6 +92,16 @@ func run() -> void:
 	await settle()
 	check(not page.entry.is_empty() and not page._race.disabled,"valid public pick is actionable")
 	check(service.public_calls == 1,"signed-out page uses public authority")
+	var calls_before_cache: int = service.public_calls
+	var cached := preload("res://ui/track_of_day_page.gd").new()
+	cached.client = service
+	cached.cloud = app.cloud
+	cached.cached_state = app._daily_track_cache.duplicate(true)
+	root.add_child(cached)
+	check(not cached.entry.is_empty() and not cached._race.disabled and service.public_calls == calls_before_cache,"cached daily pick appears without another request")
+	cached.cached_state.ends_at = cached.cached_state.server_now
+	check(not cached._restore_cached_track(),"expired cached pick is rejected")
+	cached.queue_free()
 	for dimensions: Vector2i in [Vector2i(1280,720),Vector2i(960,540),Vector2i(844,390)]:
 		root.size = dimensions
 		await settle()
@@ -100,7 +112,7 @@ func run() -> void:
 		if not baseline:
 			check(scroll.get_global_rect().encloses(page._race.get_global_rect()),"race action visible without scrolling "+str(dimensions))
 			var hero: Control = page.find_child("DailyTrackCard",true,false)
-			check(hero != null and hero.size.x >= 400 and hero.size.y >= 400,"featured route has a substantial display area "+str(dimensions))
+			check(hero != null and hero.size.x >= 400 and hero.size.x*hero.size.y >= 160000,"featured route has a substantial display area "+str(dimensions))
 	root.size = Vector2i(1280,720)
 	for theme_id: String in ["desert","winter","night_city","storm"]:
 		service.response = pick(theme_id)
@@ -229,6 +241,13 @@ func run() -> void:
 		root.content_scale_size = previous_scale
 		root.size = Vector2i(1280,720)
 		app.root_ui.show()
+	service.response = pick()
+	await page.refresh()
+	app._request_race_mode("free")
+	await settle()
+	app._request_race_mode("daily")
+	var returned: Node = app.content.find_child("TrackOfDayPage",true,false)
+	check(returned != null and not returned.entry.is_empty() and not returned._busy,"returning to daily displays the cached pick immediately")
 	app.queue_free()
 	service.queue_free()
 	await process_frame

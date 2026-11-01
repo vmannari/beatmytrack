@@ -1,0 +1,259 @@
+extends PanelContainer
+signal race_requested
+signal standings_requested
+signal vehicle_selected(index: int)
+const Progress = preload("res://persistence/daily_progress.gd")
+const Medal = preload("res://ui/daily_medal.gd")
+const Rules = preload("res://race/daily_elimination.gd")
+var client: Node
+var records: LocalRecords
+var vehicle: String = "compact"
+var version: String = ""
+var day: int = 0
+var ends_at: int = 0
+var summary: Dictionary = {}
+var result: Dictionary = {}
+var preview: bool = false
+var race_button: Button
+var standings_button: Button
+var car_picker: OptionButton
+var _serial: int = 0
+var _heading: Label
+var _time: Label
+var _position: Label
+var _medals: HBoxContainer
+var _award: Label
+var _gap: Label
+var _target: Label
+var _rows: VBoxContainer
+
+func _ready() -> void:
+	name = "DailyRacePanel"
+	var style: StyleBoxFlat = MenuStyle.box(Color("0b1a26f5"),12)
+	style.border_color = Color("3b5362")
+	style.set_border_width_all(1)
+	style.set_corner_radius_all(10)
+	add_theme_stylebox_override("panel",style)
+	var column := VBoxContainer.new()
+	column.add_theme_constant_override("separation",0)
+	add_child(column)
+	_heading = MenuStyle.label("Your result",14,true)
+	column.add_child(_heading)
+	_time = MenuStyle.label("—",48)
+	_time.name = "DailyResultTime"
+	GameText.user_text(_time)
+	column.add_child(_time)
+	_position = MenuStyle.label("",16,true)
+	_position.name = "DailyResultPosition"
+	GameText.user_text(_position)
+	column.add_child(_position)
+	column.add_child(HSeparator.new())
+	var awards := HBoxContainer.new()
+	awards.add_theme_constant_override("separation",12)
+	column.add_child(awards)
+	_medals = HBoxContainer.new()
+	_medals.add_theme_constant_override("separation",4)
+	awards.add_child(_medals)
+	_award = MenuStyle.label("",24)
+	_award.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	_award.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	_award.size_flags_vertical = Control.SIZE_SHRINK_CENTER
+	awards.add_child(_award)
+	_gap = MenuStyle.label("",20)
+	_gap.name = "DailyMedalGap"
+	_gap.add_theme_color_override("font_color",MenuStyle.ACCENT)
+	_gap.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	column.add_child(_gap)
+	_target = MenuStyle.label("",14,true)
+	_target.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	column.add_child(_target)
+	column.add_child(HSeparator.new())
+	var standings := HBoxContainer.new()
+	column.add_child(standings)
+	var heading: Label = MenuStyle.label("Standings",18,true)
+	heading.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	standings.add_child(heading)
+	standings_button = MenuStyle.button("View all",func() -> void: standings_requested.emit())
+	standings_button.name = "DailyStandingsButton"
+	standings_button.custom_minimum_size.y = 26
+	standings_button.add_theme_font_size_override("font_size",18)
+	for state: String in ["normal","hover","pressed"]: standings_button.add_theme_stylebox_override(state,MenuStyle.box(Color.TRANSPARENT,2))
+	standings_button.add_theme_color_override("font_color",MenuStyle.ACCENT)
+	standings.add_child(standings_button)
+	_rows = VBoxContainer.new()
+	_rows.name = "DailyNearbyStandings"
+	_rows.add_theme_constant_override("separation",2)
+	column.add_child(_rows)
+	var space := Control.new()
+	space.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	column.add_child(space)
+	car_picker = OptionButton.new()
+	car_picker.name = "DailyCar"
+	car_picker.custom_minimum_size.y = 40
+	car_picker.add_theme_font_size_override("font_size",20)
+	for state: String in ["normal","hover","pressed"]: car_picker.add_theme_stylebox_override(state,MenuStyle.box(MenuStyle.PANEL,6))
+	car_picker.clip_text = true
+	for title: String in VehicleCatalog.NAMES: car_picker.add_item(title)
+	car_picker.select(VehicleCatalog.IDS.find(vehicle))
+	car_picker.item_selected.connect(func(index: int) -> void:
+		vehicle = VehicleCatalog.IDS[index]
+		vehicle_selected.emit(index)
+		refresh())
+	column.add_child(car_picker)
+	race_button = MenuStyle.button("Race",func() -> void: race_requested.emit(),true)
+	race_button.name = "DailyRace"
+	race_button.custom_minimum_size.y = 48
+	for state: String in ["normal","hover","pressed"]: race_button.get_theme_stylebox(state).set_content_margin_all(6)
+	race_button.icon = MenuIcon.texture("arrow")
+	race_button.icon_alignment = HORIZONTAL_ALIGNMENT_RIGHT
+	race_button.add_theme_color_override("icon_normal_color",MenuStyle.INK)
+	column.add_child(race_button)
+	race_button.disabled = true
+	standings_button.disabled = true
+	_render()
+
+func _scope() -> String:
+	return str([client.base_url() if client != null and client.has_method("base_url") else "",_player().get("id","guest"),day,version,vehicle])
+
+func _player() -> Dictionary:
+	var value: Variant = client.get("player") if client != null and client.signed_in() else null
+	return value if value is Dictionary else {}
+
+func configure(next_day: int, next_version: String, end: int) -> void:
+	day = next_day
+	version = next_version
+	ends_at = end
+	refresh()
+
+func refresh() -> void:
+	_serial += 1
+	summary = {}
+	result = Progress.best(Progress.load_entries(records),day,version,vehicle)
+	car_picker.select(VehicleCatalog.IDS.find(vehicle))
+	_render()
+	if preview or version.is_empty() or client == null: return
+	var serial: int = _serial
+	var scope: String = _scope()
+	var path: String = "/track-of-the-day/lap-standings?day=%d&version_id=%s&vehicle_id=%s&limit=3&around=true" % [day,version.uri_encode(),vehicle.uri_encode()]
+	if not result.is_empty(): path += "&lap_ticks=%d" % maxi(1,roundi(float(result.best_ms)*0.12))
+	var response: Dictionary = await client.request_api(path,HTTPClient.METHOD_GET,{},"",true) if client.signed_in() else await client.request_public(path,get_instance_id())
+	if not is_inside_tree() or serial != _serial or scope != _scope(): return
+	var data: Dictionary = response.get("data",{}) if response.get("data") is Dictionary else {}
+	if response.get("ok",false) and _valid(data):
+		summary = data.duplicate(true)
+	_render()
+
+func _valid(data: Dictionary) -> bool:
+	if data.get("day") != day or data.get("version_id") != version or data.get("vehicle_id") != vehicle or data.get("ends_at") != ends_at: return false
+	if not _whole(data.get("server_now")) or int(data.server_now) < day*86400 or int(data.server_now) >= ends_at or not _whole(data.get("population")) or int(data.population) < 1: return false
+	if not data.get("items") is Array or data.items.size() > 3 or not data.get("cutoffs") is Array or data.cutoffs.size() != 9: return false
+	var previous: int = 216000
+	for index: int in range(9):
+		var cutoff: Variant = data.cutoffs[index]
+		if not cutoff is Dictionary or cutoff.get("percentile") != Progress.PERCENTILES[index] or not _whole(cutoff.get("lap_ticks")): return false
+		if int(cutoff.lap_ticks) < 1 or int(cutoff.lap_ticks) > previous: return false
+		previous = int(cutoff.lap_ticks)
+	for row: Variant in data.items:
+		if not row is Dictionary or not row.get("display_name") is String: return false
+		if not _whole(row.get("rank")) or int(row.rank) < 1 or int(row.rank) > int(data.population) or not _whole(row.get("time_ticks")) or int(row.time_ticks) < 1 or int(row.time_ticks) > 216000: return false
+	if data.get("comparison") != null:
+		if not data.comparison is Dictionary: return false
+		for field: String in ["position","population","top_percent","candidate_ticks"]:
+			if not _whole(data.comparison.get(field)) or int(data.comparison[field]) < 1: return false
+		if int(data.comparison.position) > int(data.comparison.population) or int(data.comparison.top_percent) > 100 or int(data.comparison.candidate_ticks) > 216000: return false
+	return true
+
+func _whole(value: Variant) -> bool:
+	return (value is int or value is float) and is_finite(float(value)) and float(value) == floor(float(value))
+
+func invalidate() -> void:
+	_serial += 1
+	summary = {}
+	result = {}
+	version = ""
+	_render()
+
+func _render() -> void:
+	if not is_instance_valid(_time): return
+	var played: bool = not result.is_empty()
+	_time.text = Rules.time_text(float(result.best_ms)/1000.0) if played else "—"
+	_position.text = ""
+	if played and summary.get("comparison") is Dictionary:
+		var position: Dictionary = summary.comparison
+		_position.text = "#%d / %s  ·  %s" % [int(position.get("position",0)),str(int(position.get("population",0))),tr("Top %d%%") % int(position.get("top_percent",100))]
+	for child: Node in _medals.get_children():
+		_medals.remove_child(child)
+		child.queue_free()
+	var tier: int = Progress.tier(int(result.get("passed",0)))
+	for level: int in range(1,4):
+		var medal := Medal.new()
+		medal.tier = level
+		medal.earned = tier >= level
+		medal.selected = tier == level
+		medal.custom_minimum_size = Vector2(42,42)
+		_medals.add_child(medal)
+	if tier == 4:
+		var medal := Medal.new()
+		medal.tier = 4
+		medal.selected = true
+		medal.custom_minimum_size = Vector2(50,42)
+		_medals.add_child(medal)
+	_award.text = tr(Progress.TITLES[tier])
+	_award.modulate = Medal.COLORS[4] if tier == 4 else Color.WHITE
+	_gap.text = ""
+	_target.text = ""
+	if tier == 4:
+		_gap.text = tr("Elite earned")
+	elif summary.get("cutoffs") is Array and summary.cutoffs.size() == 9:
+		var next_stage: int = [0,3,5,8][tier]
+		var target: float = float(summary.cutoffs[next_stage].lap_ticks)/120.0
+		var next_title: String = tr(Progress.TITLES[tier+1])
+		var gap: float = float(result.get("best_ms",0))/1000.0-target
+		_gap.text = tr("%.3f s to %s") % [gap,next_title] if played and gap > 0 else tr("Clear the next stage: %s") % next_title
+		_target.text = tr("Target %s") % Rules.time_text(target)
+	else:
+		_gap.text = tr("Bronze · Silver · Gold")
+		_target.text = tr("Clear every stage to earn Elite")
+	race_button.text = tr("Race again") if played else tr("Race")
+	_render_rows()
+
+func _render_rows() -> void:
+	for child: Node in _rows.get_children():
+		_rows.remove_child(child)
+		child.queue_free()
+	var rows: Array = summary.get("items",[]).duplicate(true)
+	if not result.is_empty() and summary.get("comparison") is Dictionary:
+		var own: Dictionary = summary.comparison
+		rows.append({"rank":int(own.position),"time_ticks":int(own.candidate_ticks),"time_ms":int(result.best_ms),"display_name":str(_player().get("display_name",tr("You"))),"self":true})
+	rows.sort_custom(func(a: Dictionary,b: Dictionary) -> bool: return int(a.time_ticks) < int(b.time_ticks))
+	if rows.is_empty():
+		var empty: Label = MenuStyle.label("No flying laps yet." if not version.is_empty() and not summary.is_empty() else "Standings unavailable",16,true)
+		empty.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+		_rows.add_child(empty)
+	for value: Variant in rows.slice(0,3):
+		if not value is Dictionary or not value.get("display_name") is String: continue
+		var row: Dictionary = value
+		var panel := PanelContainer.new()
+		panel.name = "DailyNearbySelf" if row.get("self",false) else "DailyNearbyRow"
+		var style: StyleBoxFlat = MenuStyle.box(Color("ffd34818") if row.get("self",false) else Color.TRANSPARENT,3)
+		if row.get("self",false):
+			style.border_width_left = 3
+			style.border_color = MenuStyle.ACCENT
+		panel.add_theme_stylebox_override("panel",style)
+		_rows.add_child(panel)
+		var columns := HBoxContainer.new()
+		panel.add_child(columns)
+		var rank: Label = MenuStyle.user_label(str(int(row.get("rank",0))),16)
+		rank.custom_minimum_size.x = 30
+		columns.add_child(rank)
+		var driver: Label = MenuStyle.user_label(str(row.display_name),16)
+		driver.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+		driver.text_overrun_behavior = TextServer.OVERRUN_TRIM_ELLIPSIS
+		columns.add_child(driver)
+		var seconds: float = float(row.time_ms)/1000.0 if row.has("time_ms") else float(row.get("time_ticks",0))/120.0
+		var time: Label = MenuStyle.user_label(Rules.time_text(seconds),16)
+		time.add_theme_color_override("font_color",MenuStyle.ACCENT if row.get("self",false) else MenuStyle.TEXT)
+		columns.add_child(time)
+
+func _exit_tree() -> void:
+	if is_instance_valid(client): client.cancel_public_reads(get_instance_id())

@@ -226,9 +226,24 @@ static func build_nose(car: CarVisual) -> void:
 	p.add_child(fairing)
 	var fairing_profile: Array[Vector4] = [Vector4(-1.235,0.13,0.37,0.032),Vector4(-0.87,0.155,0.425,0.035),Vector4(-0.64,0.19,0.515,0.045),Vector4(-0.41,0.175,0.565,0.037),Vector4(-0.35,0.145,0.55,0.027)]
 	fairing_profile = Kits.fairing_profile(kind,fairing_profile)
+	# Seat the leading end in the actual front panel.  The old independent
+	# profiles left several fairings visibly suspended above the nose.
+	var join_z: float = -1.285
+	var join_hit: Dictionary = nose.mesh.generate_triangle_mesh().intersect_ray(Vector3(0,1,join_z),Vector3.DOWN)
+	assert(not join_hit.is_empty(), "Kart fairing requires front panel backing")
+	var tip: Vector4 = fairing_profile[0]
+	tip.x = join_z
+	# Bury the end cap instead of leaving an exposed lip on taller noses.
+	tip.z = join_hit.position.y - tip.w * 1.15
+	fairing_profile.push_front(tip)
 	Kits.panel(fairing,"NassauFairing"+suffix,fairing_profile,paint,s,kind)
-	_fitted_inlay(p,"FairingInlayKeyline"+suffix,fairing.get_child(-1),fairing_profile,0.072,0.06,0.94,trim,s,0.0007)
-	_fitted_inlay(p,"FairingCenterInlay"+suffix,fairing.get_child(-1),fairing_profile,0.064,0.06,0.94,accent,s)
+	_fitted_inlay(p,"FairingInlayKeylineJoined2"+suffix,fairing.get_child(-1),fairing_profile,0.072,0.06,0.94,trim,s,0.0007)
+	_fitted_inlay(p,"FairingCenterInlayJoined2"+suffix,fairing.get_child(-1),fairing_profile,0.064,0.06,0.94,accent,s)
+	if kind=="mohawk":
+		# The low roots disappear into the fairing; the tips sweep rearwards.
+		for fin: Vector3 in [Vector3(-1.16,0.37,0.085),Vector3(-0.97,0.40,0.115),Vector3(-0.78,0.44,0.135),Vector3(-0.59,0.48,0.11)]:
+			var crest: Array[Vector4] = [Vector4(fin.x,0.020,fin.y,0.014),Vector4(fin.x+0.065,0.027,fin.y+fin.z*0.48,fin.z*0.52),Vector4(fin.x+0.15,0.018,fin.y+0.035,0.030),Vector4(fin.x+0.19,0.010,fin.y+0.02,0.012)]
+			Kits.panel(p,"MohawkCrestRefined"+str(fin.x),crest,accent,s,kind)
 	Detail.nose(car,CompactFinish.alloy(Color("6e7778")))
 	for side: float in [-1.0,1.0]:
 		if kind=="stock":
@@ -261,6 +276,11 @@ static func build_pods(car: CarVisual) -> void:
 		pod_profile = Kits.pod_profile(kind,pod_profile)
 		Kits.panel(pod,"FormedSidePod"+suffix,pod_profile,paint,s,kind,true)
 		_fitted_inlay(pod,"PodInsetStripe"+suffix,pod.get_child(-1),pod_profile,0.047,0.17,0.84,accent,s)
+		if kind=="mohawk":
+			# Matching low fins follow the pod crown without reaching the tyres.
+			for fin: Vector3 in [Vector3(-0.43,0.35,0.065),Vector3(-0.22,0.36,0.085),Vector3(-0.01,0.36,0.075)]:
+				var crest: Array[Vector4] = [Vector4(fin.x,0.018,fin.y,0.012),Vector4(fin.x+0.06,0.024,fin.y+fin.z*0.48,fin.z*0.52),Vector4(fin.x+0.15,0.016,fin.y+0.025,0.025),Vector4(fin.x+0.19,0.009,fin.y+0.014,0.010)]
+				Kits.panel(pod,"MohawkPodCrest"+str(fin.x),crest,accent,s,kind,true)
 	Detail.pods(car,CompactFinish.rubber(Color("171e22")),CompactFinish.alloy(Color("6e7778")))
 
 static func build_bumper(car: CarVisual) -> void:

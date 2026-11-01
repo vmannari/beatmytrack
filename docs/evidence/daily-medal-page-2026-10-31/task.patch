@@ -1,0 +1,2920 @@
+diff --git a/AGENTS.md b/AGENTS.md
+--- a/AGENTS.md
++++ b/AGENTS.md
+@@ -1,3 +1,8 @@
++<!-- DAILY-MEDAL-PAGE-20261031 -->
++## Daily track reference page and medals (2026-10-31)
++DMP01-DMP05/R01: Scenic feature, result/medal/target/nearby lap standings card and UTC week strip follow the supplied reference. Bronze clears75%, silver40%, gold20%; clearing1% earns a distinct platinum/laurel Elite award. Bounded atomic per-account/car daily progress retains best stages and flying laps. Final focused backend5/0, retained page77/0, standings35/0, App13/0 and rules101/0 pass; final native medal-page count, captures, source checkpoint and limitations: [docs/DAILY_MEDAL_PAGE_2026_10_31.md](docs/DAILY_MEDAL_PAGE_2026_10_31.md). Matching client/API rollout, reload and owner/device acceptance remain. No phone test, live/save mutation, deployment, owner restart or main-index write.
++<!-- /DAILY-MEDAL-PAGE-20261031 -->
++
+ <!-- DAILY-ELIMINATION-20261031 -->
+ ## Track of the Day flying-lap elimination (2026-10-31)
+ DE01-DE04/R01: One unscored opening lap then nine independently judged flying laps, top75/60/50/40/30/20/10/5/1%. All-time compatible lap PB quantiles, frozen per attempt; ties pass, first miss ends at the line. Dedicated local results and retry; ordinary five-lap scores remain separate. Backend18pass, native rules/results107/0 and daily page77/0; final App/other checks, captures, scoped checkpoint and limitations: [docs/DAILY_ELIMINATION_2026_10_31.md](docs/DAILY_ELIMINATION_2026_10_31.md). Client/backend rollout, reload and owner acceptance remain. No device test, live/save mutation, deployment, owner restart or main-index write.
+diff --git a/DEVELOPMENT_STATUS.md b/DEVELOPMENT_STATUS.md
+--- a/DEVELOPMENT_STATUS.md
++++ b/DEVELOPMENT_STATUS.md
+@@ -1,3 +1,8 @@
++<!-- DAILY-MEDAL-PAGE-20261031 -->
++## Daily track reference page and medals (2026-10-31)
++DMP01-DMP05/R01: Scenic feature, result/medal/target/nearby lap standings card and UTC week strip follow the supplied reference. Bronze clears75%, silver40%, gold20%; clearing1% earns a distinct platinum/laurel Elite award. Bounded atomic per-account/car daily progress retains best stages and flying laps. Final focused backend5/0, retained page77/0, standings35/0, App13/0 and rules101/0 pass; final native medal-page count, captures, source checkpoint and limitations: [docs/DAILY_MEDAL_PAGE_2026_10_31.md](docs/DAILY_MEDAL_PAGE_2026_10_31.md). Matching client/API rollout, reload and owner/device acceptance remain. No phone test, live/save mutation, deployment, owner restart or main-index write.
++<!-- /DAILY-MEDAL-PAGE-20261031 -->
++
+ <!-- VOLT-SUBTLE-FENDERS-20261031 -->
+ ## Volt fenders softened into the electric body (2026-10-31)
+ VSF01-VSF02: Former prominent rims reduced 78% with a broader body blend and thin dark inner edge. Front wheel inset and enclosed bays retained; procedural 96/96 and all 120 bay rays pass. Prepared assets and pictures refresh; reload, owner and phone acceptance remain. [Comparison and validation](docs/VOLT_SUBTLE_FENDERS_2026_10_31.md).
+diff --git a/backend/bmt_backend/daily_lap_standings.py b/backend/bmt_backend/daily_lap_standings.py
+new file mode 100644
+--- /dev/null
++++ b/backend/bmt_backend/daily_lap_standings.py
+@@ -0,0 +1,78 @@
++"""Small pages and nearby flying-lap comparisons from the existing snapshot."""
++from bisect import bisect_left, bisect_right
++
++from fastapi import HTTPException
++from sqlalchemy import select
++
++from .cursors import decode_cursor, encode_cursor
++from .identity_models import Player
++from .runs import comparison_statements
++from .track_models import digest
++
++
++def build(session, context, population, player, *, limit, cursor, around, candidate, artificial):
++    public_id = digest({"version_id": context["version_id"], **context["manifest"]})
++    test_id = digest({"version_id": context["version_id"], **context["manifest"], "test_population": True})
++    owner = player.id if player else ""
++    own = population.own.get(owner) if population.own is not None else None
++    anchor = None
++    if cursor:
++        anchor = decode_cursor(cursor)
++        if (anchor.get("generation") != context["generation"] or anchor.get("board") != public_id
++                or anchor.get("day") != context["day"] or type(anchor.get("ticks")) is not int
++                or not isinstance(anchor.get("player"), str)):
++            raise HTTPException(422, "LAP_STANDINGS_CHANGED")
++    if population.own is not None:
++        ordered = sorted((ticks, identity) for identity, ticks in population.own.items())
++        start = bisect_right(ordered, (anchor["ticks"], anchor["player"])) if anchor else 0
++        if around and candidate:
++            ordered = [row for row in ordered if row[1] != owner]
++            start = max(0, bisect_left(ordered, (candidate, ""))-1)
++            rows = ordered[start:start+2]
++        else:
++            rows = ordered[start:start+limit+1]
++        identities = {identity for _, identity in rows} | ({owner} if owner else set())
++        names = {row.id: row.display_name for row in session.execute(select(Player.id, Player.display_name).where(
++            Player.id.in_(identities), Player.disabled.is_(False), Player.deleted_at.is_(None)))}
++        raw = [(ticks, identity, names[identity]) for ticks, identity in rows if identity in names]
++    else:
++        _, laps = comparison_statements(session, [public_id, test_id] if artificial else [public_id],
++                                        public_id, test_id, artificial)
++        query = select(laps.c.time_ticks, laps.c.player_id, Player.display_name).join(
++            Player, Player.id == laps.c.player_id).where(Player.deleted_at.is_(None))
++        if owner:
++            own = session.scalar(select(laps.c.time_ticks).where(laps.c.player_id == owner))
++        if around and candidate:
++            before = session.execute(query.where(laps.c.time_ticks < candidate, laps.c.player_id != owner)
++                .order_by(laps.c.time_ticks.desc(), laps.c.player_id.desc()).limit(1)).all()
++            after = session.execute(query.where(laps.c.time_ticks >= candidate, laps.c.player_id != owner)
++                .order_by(laps.c.time_ticks, laps.c.player_id).limit(1)).all()
++            raw = before + after
++        else:
++            if anchor:
++                from sqlalchemy import tuple_
++                query = query.where(tuple_(laps.c.time_ticks, laps.c.player_id) > (anchor["ticks"], anchor["player"]))
++            raw = session.execute(query.order_by(laps.c.time_ticks, laps.c.player_id).limit(limit+1)).all()
++        names = dict(session.execute(select(Player.id, Player.display_name).where(Player.id == owner)).all())
++    count = population.cumulative[-1]
++    leader = population.ticks[0]
++
++    def row(ticks, identity, name):
++        faster = population.cumulative[bisect_left(population.ticks, ticks)]
++        if around and candidate and identity != owner:
++            faster += int(candidate < ticks) - int(own is not None and own < ticks)
++        return {"player_id": identity, "display_name": name, "time_ticks": ticks,
++                "rank": max(1, 1+faster),
++                "gap_ticks": max(0, ticks-leader)}
++
++    items = [row(*item) for item in raw[:limit]]
++    comparison = population.position(candidate, own) if candidate else None
++    if candidate and comparison is None:
++        comparison = {"position": 1, "population": max(1, count), "top_percent": 1, "candidate_ticks": candidate}
++    return {**context, "board_id": public_id, "starts_at": context["day"]*86400,
++            "population": comparison["population"] if comparison else count,
++            "items": items, "player": row(own, owner, names[owner]) if own and owner in names else None,
++            "comparison": comparison,
++            "next_cursor": encode_cursor({"generation": context["generation"], "board": public_id,
++                "day": context["day"], "ticks": raw[limit-1][0], "player": raw[limit-1][1]})
++                if not around and len(raw) > limit else None}
+diff --git a/backend/bmt_backend/daily_standings.py b/backend/bmt_backend/daily_standings.py
+--- a/backend/bmt_backend/daily_standings.py
++++ b/backend/bmt_backend/daily_standings.py
+@@ -16,10 +16,32 @@
+ DAY = 86400
+ 
+ 
++@router.get("/v1/track-of-the-day/lap-standings")
++def flying_standings(request: Request, response: Response, background: BackgroundTasks, session: BoardDB,
++                     day: int = Query(..., ge=0), version_id: str = Query(..., min_length=36, max_length=36),
++                     vehicle_id: str = Query("compact", max_length=80), limit: int = Query(10, ge=1, le=50),
++                     cursor: str = Query("", max_length=400), around: bool = False,
++                     lap_ticks: int | None = Query(None, ge=1, le=216000), credentials=Depends(bearer)):
++    from .daily_lap_standings import build
++
++    context, population = _elimination_context(request, response, background, session, day, version_id, vehicle_id, credentials)
++    if population is None:
++        return context
++    artificial = request.app.state.settings.test_drivers_enabled
++    player = current_player(request, credentials, session) if credentials else None
++    return build(session, context, population, player, limit=limit, cursor=cursor,
++                 around=around, candidate=lap_ticks, artificial=artificial)
++
++
+ @router.get("/v1/track-of-the-day/limits")
+ def elimination_limits(request: Request, response: Response, background: BackgroundTasks, session: BoardDB,
+                        day: int = Query(..., ge=0), version_id: str = Query(..., min_length=36, max_length=36),
+                        vehicle_id: str = Query("compact", max_length=80), credentials=Depends(bearer)):
++    context, _ = _elimination_context(request, response, background, session, day, version_id, vehicle_id, credentials)
++    return context
++
++
++def _elimination_context(request, response, background, session, day, version_id, vehicle_id, credentials):
+     from .daily_elimination import POLICY, cutoffs
+     from .histogram_http import schedule_demand
+     from .histogram_snapshots import load_snapshot
+@@ -45,15 +67,15 @@
+         # Return normally so the bounded refresh-interest task is executed.
+         response.status_code = 503
+         response.headers["Retry-After"] = "5"
+-        return {"detail": "LAP_LIMITS_PREPARING"}
++        return {"detail": "LAP_LIMITS_PREPARING"}, None
+     generation, _, (_, laps) = snapshot
+     limits = cutoffs(laps)
+     if not limits:
+         response.status_code = 409
+-        return {"detail": "NO_FLYING_LAP_TIMES"}
++        return {"detail": "NO_FLYING_LAP_TIMES"}, None
+     return {"policy": POLICY, "day": chosen.day, "version_id": version_id, "vehicle_id": vehicle_id,
+             "ends_at": (chosen.day+1)*DAY, "server_now": stamp, "tick_rate": 120,
+-            "generation": generation, "manifest": pinned, "population": laps.cumulative[-1], "cutoffs": limits}
++            "generation": generation, "manifest": pinned, "population": laps.cumulative[-1], "cutoffs": limits}, laps
+ 
+ 
+ def eligible_day(session, ticket, board, submitted_at):
+diff --git a/backend/tests/test_daily_lap_standings.py b/backend/tests/test_daily_lap_standings.py
+new file mode 100644
+--- /dev/null
++++ b/backend/tests/test_daily_lap_standings.py
+@@ -0,0 +1,78 @@
++from test_daily_standings import auth, auth_app, feature, finish  # noqa: F401
++from test_daily_standings import daily as daily_fixture
++
++from bmt_backend.histogram_population import HistogramPopulation
++from bmt_backend.runs import board_manifest
++from bmt_backend.track_models import digest
++
++daily = daily_fixture
++
++
++def prepare(d, monkeypatch):
++    feature(d)
++    bid = digest({"version_id": d.version.id, **board_manifest(d.version, "compact"), "comparison_population": "all"})
++    times = {d.identities[name]["player"]["id"]: ticks
++             for name, ticks in (("Alice", 2400), ("Bob", 1200), ("Carol", 3600), ("Creator", 6000))}
++    laps = HistogramPopulation.from_rows(times.items(), {"board_id": bid})
++    races = HistogramPopulation.from_rows([])
++    monkeypatch.setattr("bmt_backend.histogram_snapshots.load_snapshot", lambda *args: ("first", {}, (races, laps)))
++    return {"day": d.day, "version_id": d.version.id, "vehicle_id": "compact"}
++
++
++def test_flying_lap_pages_and_nearby_candidate_do_not_write_scores(daily, monkeypatch):
++    d = daily
++    params = prepare(d, monkeypatch)
++    page = d.client.get("/v1/track-of-the-day/lap-standings", params={**params, "limit": 2}, headers=auth(d))
++    assert page.status_code == 200, page.text
++    data = page.json()
++    assert [row["display_name"] for row in data["items"]] == ["Bob", "Alice"]
++    assert [row["time_ticks"] for row in data["items"]] == [1200, 2400]
++    assert data["player"]["display_name"] == "Alice" and data["player"]["rank"] == 2
++    next_page = d.client.get("/v1/track-of-the-day/lap-standings",
++        params={**params, "limit": 2, "cursor": data["next_cursor"]}, headers=auth(d)).json()
++    assert [row["display_name"] for row in next_page["items"]] == ["Carol", "Creator"]
++    assert next_page["next_cursor"] is None
++    nearby = d.client.get("/v1/track-of-the-day/lap-standings",
++        params={**params, "around": True, "lap_ticks": 1800, "limit": 3}, headers=auth(d)).json()
++    assert [row["display_name"] for row in nearby["items"]] == ["Bob", "Carol"]
++    assert nearby["comparison"] == {"position": 2, "population": 4, "top_percent": 50, "candidate_ticks": 1800}
++    assert nearby["player"]["time_ticks"] == 2400  # A candidate is only a comparison marker.
++    slower = d.client.get("/v1/track-of-the-day/lap-standings",
++        params={**params, "around": True, "lap_ticks": 5000, "limit": 3}, headers=auth(d)).json()
++    assert [row["rank"] for row in slower["items"]] == [2, 4]
++    assert slower["comparison"]["position"] == 3
++    public = d.client.get("/v1/track-of-the-day/lap-standings", params=params).json()
++    assert public["player"] is None and public["population"] == 4
++
++
++def test_lap_page_scope_and_snapshot_cursors(daily, monkeypatch):
++    d = daily
++    params = prepare(d, monkeypatch)
++    first = d.client.get("/v1/track-of-the-day/lap-standings", params={**params, "limit": 2}).json()
++    assert d.client.get("/v1/track-of-the-day/lap-standings", params={**params, "day": d.day-1}).status_code == 409
++    assert d.client.get("/v1/track-of-the-day/lap-standings", params={**params, "vehicle_id": "unknown"}).status_code == 422
++    assert d.client.get("/v1/track-of-the-day/lap-standings", params={**params, "lap_ticks": 0}).status_code == 422
++    from bmt_backend.cursors import decode_cursor, encode_cursor
++    cursor = decode_cursor(first["next_cursor"])
++    cursor["generation"] = "old"
++    assert d.client.get("/v1/track-of-the-day/lap-standings",
++        params={**params, "cursor": encode_cursor(cursor)}).status_code == 422
++
++
++def test_compact_snapshot_uses_indexed_flying_personal_bests(daily, monkeypatch):
++    d = daily
++    params = prepare(d, monkeypatch)
++    for name, ticks in (("Alice", 120), ("Bob", 100), ("Carol", 150)):
++        finish(d, ticks, name)
++    bid = digest({"version_id": d.version.id, **board_manifest(d.version, "compact"), "comparison_population": "all"})
++    laps = HistogramPopulation.from_frequencies([(20, 1), (24, 1), (30, 1)], own=None, stored_grid={"board_id": bid})
++    monkeypatch.setattr("bmt_backend.histogram_snapshots.load_snapshot",
++                        lambda *args: ("compact", {}, (HistogramPopulation.from_rows([]), laps)))
++    response = d.client.get("/v1/track-of-the-day/lap-standings", params=params, headers=auth(d))
++    assert response.status_code == 200, response.text
++    assert [(row["display_name"], row["time_ticks"]) for row in response.json()["items"]] == [
++        ("Bob", 20), ("Alice", 24), ("Carol", 30)]
++    nearby = d.client.get("/v1/track-of-the-day/lap-standings",
++        params={**params, "around": True, "lap_ticks": 25}, headers=auth(d)).json()
++    assert [row["display_name"] for row in nearby["items"]] == ["Bob", "Carol"]
++    assert nearby["comparison"]["position"] == 2 and nearby["comparison"]["population"] == 3
+diff --git a/docs/DAILY_MEDAL_PAGE_2026_10_31.md b/docs/DAILY_MEDAL_PAGE_2026_10_31.md
+new file mode 100644
+--- /dev/null
++++ b/docs/DAILY_MEDAL_PAGE_2026_10_31.md
+@@ -0,0 +1,65 @@
++# Daily track reference page and medals
++
++**DMP01** follows the supplied page composition: large scenic track card, right-hand personal result/medal/target/nearby standings panel, car selector and Race again action, plus a seven-day strip beneath the preview. The existing top navigation, exact selected track geometry, author, biome and server countdown are retained.
++
++**DMP02** awards medals for elimination stages actually passed, not the percentile of an earlier fast lap:
++
++| Award | Stage cleared | Required successful flying laps |
++| --- | --- | --- |
++| Bronze | Top 75% | 1 |
++| Silver | Top 40% | 4 |
++| Gold | Top 20% | 6 |
++| Elite | Top 1% | 9 |
++
++**DMP03** gives the 1% result a separate icy platinum medal, engraved star, outer selection ring, laurels and Elite title. Existing bronze, silver and gold medals remain visible. The current medal has an outer ring. All award artwork is native drawing plus the existing authored laurel SVG; no new raster generation or external assets.
++
++**DMP04** saves the best completed daily stage and best flying lap independently, so a worse retry cannot remove a medal or replace a faster lap. The opening lap is excluded. Local progress uses an atomic, bounded `records.json.daily.json` sidecar beside the existing account-specific records file, pinned by UTC day, track revision, car and engine/handling/rules/compiler identity. It retains five weeks, has a 512-entry/512KiB limit, and refuses to overwrite unsupported or unreadable saves. Weekly medals follow UTC Monday–Sunday for the selected car; future days show a dash and today has a yellow underline.
++
++**DMP05** shows the remaining lap-time improvement to the next medal. If a fast earlier lap already beats that time but the required stage was not cleared, the panel explicitly asks for that stage. Race totals cannot award medals. The personal nearby row keeps the original millisecond lap time rather than displaying a rounded tick conversion.
++
++The page and View all dialog use `/v1/track-of-the-day/lap-standings`, based on the same compatible, deduplicated all-time flying-lap population as the elimination cutoffs. The endpoint supports nearby candidate comparisons and cursor pages. A single immutable histogram snapshot supplies cutoffs, ranks and generation; small populations use their stored driver map, larger populations read the existing flying-PB rank index. Driver names come from eligible identity rows. Candidate comparisons replace the player's old PB for relative placement only; they do not write scores. Track/day/car/account/generation fences reject stale replies and cursors. The earlier ordinary daily race-time endpoint remains available to its existing callers.
++
++## Local acceptance
++
++Native screenshots and per-run logs are in [the evidence folder](evidence/daily-medal-page-2026-10-31/). The page captures use actual App/runtime UI with explicit synthetic feed, lap-limit and standings fixtures. They are not live account data. Medal persistence fixtures pass actual `DailyElimination.observe` stages before committing.
++
++Actual commands from the repository root:
++
++```powershell
++python docs/evidence/daily-medal-page-2026-10-31/run_native.py test_daily_medal_page --graphical
++python docs/evidence/daily-medal-page-2026-10-31/run_native.py test_track_of_day_presentation --graphical
++python docs/evidence/daily-medal-page-2026-10-31/run_native.py test_daily_standings
++python docs/evidence/daily-medal-page-2026-10-31/run_native.py test_daily_elimination_app
++python docs/evidence/daily-medal-page-2026-10-31/run_native.py test_daily_elimination
++.tools/backend-secure-venv/Scripts/python.exe -m ruff check backend/bmt_backend/daily_standings.py backend/bmt_backend/daily_lap_standings.py backend/tests/test_daily_lap_standings.py
++python docs/evidence/daily-medal-page-2026-10-31/checkpoint.py
++```
++
++From `backend`:
++
++```powershell
++../.tools/backend-secure-venv/Scripts/python.exe -m pytest tests/test_daily_lap_standings.py tests/test_daily_elimination.py tests/test_daily_standings.py tests/test_track_of_day.py -k 'not postgres' -q --disable-warnings --tb=short --basetemp=../build/daily-medal-page-backend-final
++../.tools/backend-secure-venv/Scripts/python.exe -m pytest tests/test_daily_lap_standings.py tests/test_daily_elimination.py -k 'not postgres' -q --disable-warnings --tb=short --basetemp=../build/daily-medal-page-backend-validated
++```
++
++Results:
++
++- Final focused backend suite: **5 passed, 4 deselected**. Covers flying-lap pages, nearby rank changes for faster and slower candidates, compact indexed populations, scope/cursor fencing and retained cutoff behavior. Earlier broader daily selection/standings regression: **20 passed, 19 deselected**; the subsequent compact-population test also passed separately. PostgreSQL/device markers were not enabled.
++- Final native medal page: **88 checks, 0 failures**. Covers all medal boundaries, persistence, UTC weekly history, account/car isolation, stale responses, View all, linked car changes, twelve desktop languages and six narrow component layouts. Captures include bronze, silver, gold, Elite and no-result states.
++- Retained native daily-page fixture: **77 checks, 0 failures**, including long-caption separation, touch/keyboard entry, loading/error/empty states, rollover and translated action fitting.
++- Retained standings fixture: **35 checks, 0 failures**; actual App elimination flow: **13 checks, 0 failures** headless; rules/results: **101 checks, 0 failures** headless.
++- **312 scoped catalogue entries** in twelve languages pass nonempty/format-token checks. Scoped Ruff passes. Source checkpoint verification and exact final file hashes are in `report.json`.
++
++Every automated Godot launch uses the pinned 4.7.2 build through `scripts/run_no_crash_dialog.py`, with separate test APPDATA/LOCALAPPDATA and an empty service origin. No owner save, real authentication or live service was used.
++
++## Findings retained
++
++Early captures exposed the old 440px artwork minimum overlapping the new week strip, a crowded result card, translated countdown width in the narrow component, and long-caption route overlap. These were corrected and the retained route-clearance assertion passes. The original page fixture's separate 400px height assertion was adapted to retain its 160,000px² minimum feature area while sharing height with the requested week strip; feed counters now count only the featured-track authority request, with the new lap requests covered separately. The old empty-board caption expectation was updated to the explicit flying-lap metric. No timing or medal assertion was relaxed.
++
++A first translation append stopped because the shared placeholder regex interpreted literal percentage text as printf tokens. The scoped check distinguishes numeric percentage signs and `%%` escapes from real format tokens; all actual placeholders remain checked. Initial failed runs/logs remain in the evidence directory. Isolated native runs report the existing Windows root-certificate-store warning; they make no external service request. No crash is treated as a pass.
++
++## Remaining acceptance
++
++Medals and weekly progress are local cosmetic records, consistent with the preceding elimination implementation; this task adds no server-authoritative survival score, currency award or cloud medal sync. The new lap-standings API and client need a matching authorised rollout. No migration or new grant is needed because the API already reads the underlying lap/identity tables.
++
++Reload/rebuild and owner visual/gameplay acceptance remain. No phone/Android test, APK, live service mutation, deployment, owner-process restart, main-index staging, commit or merge was performed. No device performance claim is made. Concurrent work is preserved; the task patch is relative to this task's source snapshots, not repository HEAD.
+diff --git a/docs/PHASE_0_PLAN.md b/docs/PHASE_0_PLAN.md
+--- a/docs/PHASE_0_PLAN.md
++++ b/docs/PHASE_0_PLAN.md
+@@ -1,3 +1,8 @@
++<!-- DAILY-MEDAL-PAGE-20261031 -->
++## Daily track reference page and medals (2026-10-31)
++DMP01-DMP05/R01: Scenic feature, result/medal/target/nearby lap standings card and UTC week strip follow the supplied reference. Bronze clears75%, silver40%, gold20%; clearing1% earns a distinct platinum/laurel Elite award. Bounded atomic per-account/car daily progress retains best stages and flying laps. Final focused backend5/0, retained page77/0, standings35/0, App13/0 and rules101/0 pass; final native medal-page count, captures, source checkpoint and limitations: [DAILY_MEDAL_PAGE_2026_10_31.md](DAILY_MEDAL_PAGE_2026_10_31.md). Matching client/API rollout, reload and owner/device acceptance remain. No phone test, live/save mutation, deployment, owner restart or main-index write.
++<!-- /DAILY-MEDAL-PAGE-20261031 -->
++
+ <!-- SHADER-VARIANT-CONSOLIDATION-20261031 -->
+ ## Less cold road-shader work (2026-10-31)
+ SVC01-SVC03/R01/Q01: Compatibility shares one fewer surface source in Desert, Storm and Night; controlled primed first-use work decreases 11.37%, 9.32% and 13.20%. Final source/binding/cache checks pass 141 each in headless Compatibility and native desktop Mobile; Compatibility image checks pass 18. Rejected Mobile image trial remains 18/5; final guard preserves its original sources. Existing Desert sampler 9/8 failure reproduces with the frozen original. Full startup, device and owner acceptance remain. [Commands, evidence and scope](SHADER_VARIANT_CONSOLIDATION_2026_10_31.md).
+diff --git a/docs/evidence/daily-medal-page-2026-10-31/checkpoint.py b/docs/evidence/daily-medal-page-2026-10-31/checkpoint.py
+new file mode 100644
+--- /dev/null
++++ b/docs/evidence/daily-medal-page-2026-10-31/checkpoint.py
+@@ -0,0 +1,79 @@
++"""Task-start source checkpoint; only an owned temporary repository is mutated."""
++import difflib
++import hashlib
++import json
++from pathlib import Path
++import subprocess
++import uuid
++
++root = Path(__file__).resolve().parents[3]
++evidence = Path(__file__).resolve().parent
++existing = [str(path.relative_to(evidence / "before")).replace("\\", "/")
++            for path in (evidence / "before").rglob("*") if path.is_file()]
++added = [
++    "game/persistence/daily_progress.gd", "game/ui/daily_medal.gd", "game/ui/daily_week.gd",
++    "game/ui/daily_result_card.gd", "game/tests/test_daily_medal_page.gd",
++    "backend/bmt_backend/daily_lap_standings.py", "backend/tests/test_daily_lap_standings.py",
++    "scripts/translations/daily_medal_page.tsv", "docs/DAILY_MEDAL_PAGE_2026_10_31.md",
++    "docs/evidence/daily-medal-page-2026-10-31/run_native.py",
++    "docs/evidence/daily-medal-page-2026-10-31/checkpoint.py",
++]
++added += [name + ".uid" for name in added if name.endswith(".gd")]
++paths = sorted(set(existing + added))
++before, after, patches, entries = {}, {}, [], []
++for name in paths:
++    old = evidence / "before" / name
++    new = root / name
++    before[name] = old.read_text(encoding="utf-8") if old.exists() else None
++    after[name] = new.read_text(encoding="utf-8")
++    if before[name] == after[name]:
++        continue
++    patches.append("diff --git a/" + name + " b/" + name + "\n")
++    if not old.exists():
++        patches.append("new file mode 100644\n")
++    patches.extend(difflib.unified_diff((before[name] or "").splitlines(keepends=True),
++        after[name].splitlines(keepends=True), fromfile="a/"+name if old.exists() else "/dev/null",
++        tofile="b/"+name))
++    entries.append({"path":name,"sha256":hashlib.sha256(new.read_bytes()).hexdigest(),
++                    "before_sha256":hashlib.sha256(old.read_bytes()).hexdigest() if old.exists() else None})
++patch = evidence / "task.patch"
++patch.write_text("".join(patches),encoding="utf-8",newline="\n")
++workspace = root / "build" / ("daily-medal-page-checkpoint-"+uuid.uuid4().hex[:10])
++workspace.mkdir(parents=True)
++assert workspace.resolve().is_relative_to((root / "build").resolve())
++def run(*args):
++    result = subprocess.run(["git", "-c", "core.autocrlf=false", *args], cwd=workspace,
++                            capture_output=True,text=True)
++    if result.returncode:
++        raise RuntimeError(result.stdout+result.stderr)
++run("init", "--quiet")
++for name, content in before.items():
++    if content is not None:
++        file = workspace / name
++        file.parent.mkdir(parents=True,exist_ok=True)
++        file.write_text(content,encoding="utf-8",newline="\n")
++run("apply", "--check", str(patch))
++run("apply", str(patch))
++assert all((workspace/name).read_text(encoding="utf-8") == content for name, content in after.items())
++run("apply", "--reverse", "--check", str(patch))
++run("apply", "--reverse", str(patch))
++assert all(not (workspace/name).exists() if content is None else
++           (workspace/name).read_text(encoding="utf-8") == content for name, content in before.items())
++report = {"requirements":["DMP01","DMP02","DMP03","DMP04","DMP05","R01"],"source_files":entries,
++          "checkpoint":{"forward_check":True,"forward_content":True,"reverse_check":True,
++                        "reverse_content":True,"comparison":"normalized UTF-8 text","main_index_changed":False},
++          "validation":{"backend_final_focused":{"passed":5,"deselected":4},
++                        "backend_broader_regression":{"passed":20,"deselected":19},
++                        "medal_page_native":{"checks":88,"failures":0},
++                        "daily_page_native":{"checks":77,"failures":0},
++                        "standings_headless":{"checks":35,"failures":0},
++                        "app_headless":{"checks":13,"failures":0},
++                        "rules_headless":{"checks":101,"failures":0},
++                        "catalogue_checks":312,"ruff":"pass"},
++          "limits":["Daily medals/results remain local cosmetic progress; no survival score or cloud sync",
++                    "New lap standings require matching backend/client rollout", "No phone/Android test",
++                    "Only desktop Compatibility captured; no device performance claim",
++                    "Isolated native runs emit the existing root certificate-store warning"],
++          "screenshots":sorted(str(p.relative_to(evidence)).replace("\\","/") for p in evidence.rglob("*.png"))}
++(evidence / "report.json").write_text(json.dumps(report,indent=2)+"\n",encoding="utf-8")
++print(f"{len(entries)} files: forward/reverse application and normalized content checks pass")
+diff --git a/docs/evidence/daily-medal-page-2026-10-31/run_native.py b/docs/evidence/daily-medal-page-2026-10-31/run_native.py
+new file mode 100644
+--- /dev/null
++++ b/docs/evidence/daily-medal-page-2026-10-31/run_native.py
+@@ -0,0 +1,27 @@
++"""Isolated automated Godot runs; never reads the owner's saves or contacts a service."""
++import os
++from pathlib import Path
++import subprocess
++import sys
++
++root = Path(__file__).resolve().parents[3]
++out = Path(__file__).resolve().parent
++script = next((arg for arg in sys.argv[1:] if not arg.startswith("--")), "test_daily_elimination")
++profile = root / ("build/daily-elimination-profile-"+script)
++profile.mkdir(parents=True, exist_ok=True)
++env = os.environ.copy()
++env.update(APPDATA=str(profile), LOCALAPPDATA=str(profile), BMT_API_URL="",
++           BMT_DAILY_PAGE_OUTPUT=str(out / "page"))
++graphical = "--graphical" in sys.argv
++command = [sys.executable, str(root / "scripts/run_no_crash_dialog.py"), "--",
++           r"C:\apps\Godot 4.7.2\Godot_v4.7.2-stable_win64_console.exe",
++           "--path", str(root / "game"), "--rendering-method", "gl_compatibility",
++           "--audio-driver", "Dummy", "--script", "res://tests/"+script+".gd"]
++if not graphical:
++    command.append("--headless")
++result = subprocess.run(command, cwd=root, env=env, capture_output=True, text=True, encoding="utf-8",
++                        errors="replace", timeout=240)
++output = result.stdout+result.stderr
++(out / (script+("-native" if graphical else "-headless")+"-"+str(os.getpid())+".log")).write_text(output, encoding="utf-8")
++print(output)
++raise SystemExit(result.returncode)
+diff --git a/game/core/app.gd b/game/core/app.gd
+--- a/game/core/app.gd
++++ b/game/core/app.gd
+@@ -1091,6 +1091,7 @@
+ 	var page := preload("res://ui/track_of_day_page.gd").new()
+ 	page.client = online.client
+ 	page.cloud = cloud
++	page.records = records
+ 	page.page_preview = preview
+ 	var scope: String = _daily_cache_scope()
+ 	if scope == _daily_track_cache_scope: page.cached_state = _daily_track_cache.duplicate(true)
+@@ -1131,6 +1132,8 @@
+ 
+ func _daily_results() -> void:
+ 	if game.has_node("DailyResults"): return
++	var request: Dictionary = game.get_meta("daily_request",{})
++	var result_saved: bool = preload("res://persistence/daily_progress.gd").commit(game.preference_records,int(request.get("day",-1)),str(request.get("version_id","")),str(game.vehicle_id),game.track_session,game.daily_elimination)
+ 	_telemetry_race_finished = true
+ 	if client_quality != null: client_quality.finish_race("finished")
+ 	if product_telemetry != null: product_telemetry.set_transport_allowed(true)
+@@ -1142,6 +1145,7 @@
+ 	var panel := preload("res://ui/daily_elimination_results.gd").new()
+ 	panel.rules = game.daily_elimination
+ 	panel.session = game.track_session
++	panel.result_saved = result_saved
+ 	panel.retry_requested.connect(_retry_race)
+ 	panel.return_requested.connect(_leave_race)
+ 	layer.add_child(panel)
+diff --git a/game/localization/de.po b/game/localization/de.po
+--- a/game/localization/de.po
++++ b/game/localization/de.po
+@@ -11284,3 +11284,107 @@
+ #: game/ui/playground_hud.gd
+ msgid "Opening lap"
+ msgstr "Startrunde"
++
++#: daily-medal-page-2026-10-31
++msgid "Your result"
++msgstr "Dein Ergebnis"
++
++#: daily-medal-page-2026-10-31
++msgid "View all"
++msgstr "Alle anzeigen"
++
++#: daily-medal-page-2026-10-31
++msgid "%.3f s to %s"
++msgstr "%.3f s bis %s"
++
++#: daily-medal-page-2026-10-31
++msgid "Pass top %d%%: %s"
++msgstr "Schaffe Top %d%%: %s"
++
++#: daily-medal-page-2026-10-31
++msgid "Target %s"
++msgstr "Ziel %s"
++
++#: daily-medal-page-2026-10-31
++msgid "Bronze 75% · Silver 40% · Gold 20%"
++msgstr "Bronze 75% · Silber 40% · Gold 20%"
++
++#: daily-medal-page-2026-10-31
++msgid "Top 1% earns Elite"
++msgstr "Top 1% erhält Elite"
++
++#: daily-medal-page-2026-10-31
++msgid "No medal yet"
++msgstr "Noch keine Medaille"
++
++#: daily-medal-page-2026-10-31
++msgid "Elite"
++msgstr "Elite"
++
++#: daily-medal-page-2026-10-31
++msgid "No flying laps yet."
++msgstr "Noch keine fliegenden Runden."
++
++#: daily-medal-page-2026-10-31
++msgid "Standings unavailable"
++msgstr "Rangliste nicht verfügbar"
++
++#: daily-medal-page-2026-10-31
++msgid "Best flying laps"
++msgstr "Beste fliegende Runden"
++
++#: daily-medal-page-2026-10-31
++msgid "One best flying lap per driver and car."
++msgstr "Eine beste fliegende Runde je Fahrer und Auto."
++
++#: daily-medal-page-2026-10-31
++msgid "Your best lap"
++msgstr "Deine beste Runde"
++
++#: daily-medal-page-2026-10-31
++msgid "No verified lap yet."
++msgstr "Noch keine verifizierte Runde."
++
++#: daily-medal-page-2026-10-31
++msgid "Daily result could not be saved."
++msgstr "Das Tagesergebnis konnte nicht gespeichert werden."
++
++#: daily-medal-page-2026-10-31
++msgid "Track of the Day"
++msgstr "Strecke des Tages"
++
++#: daily-medal-page-2026-10-31
++msgid "Lap time"
++msgstr "Rundenzeit"
++
++#: daily-medal-page-2026-10-31
++msgid "Top %d%%"
++msgstr "Top %d%%"
++
++#: daily-medal-page-2026-10-31
++msgid "Mon"
++msgstr "Mo"
++
++#: daily-medal-page-2026-10-31
++msgid "Tue"
++msgstr "Di"
++
++#: daily-medal-page-2026-10-31
++msgid "Wed"
++msgstr "Mi"
++
++#: daily-medal-page-2026-10-31
++msgid "Thu"
++msgstr "Do"
++
++#: daily-medal-page-2026-10-31
++msgid "Fri"
++msgstr "Fr"
++
++#: daily-medal-page-2026-10-31
++msgid "Sat"
++msgstr "Sa"
++
++#: daily-medal-page-2026-10-31
++msgid "Sun"
++msgstr "So"
+diff --git a/game/localization/en.po b/game/localization/en.po
+--- a/game/localization/en.po
++++ b/game/localization/en.po
+@@ -11398,3 +11398,107 @@
+ #: game/ui/playground_hud.gd
+ msgid "Opening lap"
+ msgstr "Opening lap"
++
++#: daily-medal-page-2026-10-31
++msgid "Your result"
++msgstr "Your result"
++
++#: daily-medal-page-2026-10-31
++msgid "View all"
++msgstr "View all"
++
++#: daily-medal-page-2026-10-31
++msgid "%.3f s to %s"
++msgstr "%.3f s to %s"
++
++#: daily-medal-page-2026-10-31
++msgid "Target %s"
++msgstr "Target %s"
++
++#: daily-medal-page-2026-10-31
++msgid "Bronze 75% · Silver 40% · Gold 20%"
++msgstr "Bronze 75% · Silver 40% · Gold 20%"
++
++#: daily-medal-page-2026-10-31
++msgid "Top 1% earns Elite"
++msgstr "Top 1% earns Elite"
++
++#: daily-medal-page-2026-10-31
++msgid "No medal yet"
++msgstr "No medal yet"
++
++#: daily-medal-page-2026-10-31
++msgid "Elite"
++msgstr "Elite"
++
++#: daily-medal-page-2026-10-31
++msgid "No flying laps yet."
++msgstr "No flying laps yet."
++
++#: daily-medal-page-2026-10-31
++msgid "Standings unavailable"
++msgstr "Standings unavailable"
++
++#: daily-medal-page-2026-10-31
++msgid "Best flying laps"
++msgstr "Best flying laps"
++
++#: daily-medal-page-2026-10-31
++msgid "One best flying lap per driver and car."
++msgstr "One best flying lap per driver and car."
++
++#: daily-medal-page-2026-10-31
++msgid "Your best lap"
++msgstr "Your best lap"
++
++#: daily-medal-page-2026-10-31
++msgid "No verified lap yet."
++msgstr "No verified lap yet."
++
++#: daily-medal-page-2026-10-31
++msgid "Daily result could not be saved."
++msgstr "Daily result could not be saved."
++
++#: daily-medal-page-2026-10-31
++msgid "Track of the Day"
++msgstr "Track of the Day"
++
++#: daily-medal-page-2026-10-31
++msgid "Lap time"
++msgstr "Lap time"
++
++#: daily-medal-page-2026-10-31
++msgid "Top %d%%"
++msgstr "Top %d%%"
++
++#: daily-medal-page-2026-10-31
++msgid "Mon"
++msgstr "Mon"
++
++#: daily-medal-page-2026-10-31
++msgid "Tue"
++msgstr "Tue"
++
++#: daily-medal-page-2026-10-31
++msgid "Wed"
++msgstr "Wed"
++
++#: daily-medal-page-2026-10-31
++msgid "Thu"
++msgstr "Thu"
++
++#: daily-medal-page-2026-10-31
++msgid "Fri"
++msgstr "Fri"
++
++#: daily-medal-page-2026-10-31
++msgid "Sat"
++msgstr "Sat"
++
++#: daily-medal-page-2026-10-31
++msgid "Sun"
++msgstr "Sun"
++
++#: daily-medal-page-2026-10-31
++msgid "Pass top %d%%: %s"
++msgstr "Pass top %d%%: %s"
+diff --git a/game/localization/es.po b/game/localization/es.po
+--- a/game/localization/es.po
++++ b/game/localization/es.po
+@@ -11284,3 +11284,107 @@
+ #: game/ui/playground_hud.gd
+ msgid "Opening lap"
+ msgstr "Vuelta inicial"
++
++#: daily-medal-page-2026-10-31
++msgid "Your result"
++msgstr "Tu resultado"
++
++#: daily-medal-page-2026-10-31
++msgid "View all"
++msgstr "Ver todos"
++
++#: daily-medal-page-2026-10-31
++msgid "%.3f s to %s"
++msgstr "%.3f s para %s"
++
++#: daily-medal-page-2026-10-31
++msgid "Pass top %d%%: %s"
++msgstr "Supera el top %d%%: %s"
++
++#: daily-medal-page-2026-10-31
++msgid "Target %s"
++msgstr "Objetivo %s"
++
++#: daily-medal-page-2026-10-31
++msgid "Bronze 75% · Silver 40% · Gold 20%"
++msgstr "Bronce 75% · Plata 40% · Oro 20%"
++
++#: daily-medal-page-2026-10-31
++msgid "Top 1% earns Elite"
++msgstr "El top 1% obtiene Élite"
++
++#: daily-medal-page-2026-10-31
++msgid "No medal yet"
++msgstr "Aún sin medalla"
++
++#: daily-medal-page-2026-10-31
++msgid "Elite"
++msgstr "Élite"
++
++#: daily-medal-page-2026-10-31
++msgid "No flying laps yet."
++msgstr "Aún no hay vueltas lanzadas."
++
++#: daily-medal-page-2026-10-31
++msgid "Standings unavailable"
++msgstr "Clasificación no disponible"
++
++#: daily-medal-page-2026-10-31
++msgid "Best flying laps"
++msgstr "Mejores vueltas lanzadas"
++
++#: daily-medal-page-2026-10-31
++msgid "One best flying lap per driver and car."
++msgstr "Una mejor vuelta lanzada por piloto y coche."
++
++#: daily-medal-page-2026-10-31
++msgid "Your best lap"
++msgstr "Tu mejor vuelta"
++
++#: daily-medal-page-2026-10-31
++msgid "No verified lap yet."
++msgstr "Aún no hay vuelta verificada."
++
++#: daily-medal-page-2026-10-31
++msgid "Daily result could not be saved."
++msgstr "No se pudo guardar el resultado diario."
++
++#: daily-medal-page-2026-10-31
++msgid "Track of the Day"
++msgstr "Circuito del día"
++
++#: daily-medal-page-2026-10-31
++msgid "Lap time"
++msgstr "Tiempo de vuelta"
++
++#: daily-medal-page-2026-10-31
++msgid "Top %d%%"
++msgstr "Top %d%%"
++
++#: daily-medal-page-2026-10-31
++msgid "Mon"
++msgstr "Lun"
++
++#: daily-medal-page-2026-10-31
++msgid "Tue"
++msgstr "Mar"
++
++#: daily-medal-page-2026-10-31
++msgid "Wed"
++msgstr "Mié"
++
++#: daily-medal-page-2026-10-31
++msgid "Thu"
++msgstr "Jue"
++
++#: daily-medal-page-2026-10-31
++msgid "Fri"
++msgstr "Vie"
++
++#: daily-medal-page-2026-10-31
++msgid "Sat"
++msgstr "Sáb"
++
++#: daily-medal-page-2026-10-31
++msgid "Sun"
++msgstr "Dom"
+diff --git a/game/localization/fi.po b/game/localization/fi.po
+--- a/game/localization/fi.po
++++ b/game/localization/fi.po
+@@ -11284,3 +11284,107 @@
+ #: game/ui/playground_hud.gd
+ msgid "Opening lap"
+ msgstr "Lähtökierros"
++
++#: daily-medal-page-2026-10-31
++msgid "Your result"
++msgstr "Oma tulos"
++
++#: daily-medal-page-2026-10-31
++msgid "View all"
++msgstr "Näytä kaikki"
++
++#: daily-medal-page-2026-10-31
++msgid "%.3f s to %s"
++msgstr "%.3f s tasoon %s"
++
++#: daily-medal-page-2026-10-31
++msgid "Pass top %d%%: %s"
++msgstr "Läpäise paras %d%%: %s"
++
++#: daily-medal-page-2026-10-31
++msgid "Target %s"
++msgstr "Tavoite %s"
++
++#: daily-medal-page-2026-10-31
++msgid "Bronze 75% · Silver 40% · Gold 20%"
++msgstr "Pronssi 75% · Hopea 40% · Kulta 20%"
++
++#: daily-medal-page-2026-10-31
++msgid "Top 1% earns Elite"
++msgstr "Paras 1% ansaitsee Eliitin"
++
++#: daily-medal-page-2026-10-31
++msgid "No medal yet"
++msgstr "Ei vielä mitalia"
++
++#: daily-medal-page-2026-10-31
++msgid "Elite"
++msgstr "Eliitti"
++
++#: daily-medal-page-2026-10-31
++msgid "No flying laps yet."
++msgstr "Ei vielä lentäviä kierroksia."
++
++#: daily-medal-page-2026-10-31
++msgid "Standings unavailable"
++msgstr "Sijoitukset eivät ole saatavilla"
++
++#: daily-medal-page-2026-10-31
++msgid "Best flying laps"
++msgstr "Parhaat lentävät kierrokset"
++
++#: daily-medal-page-2026-10-31
++msgid "One best flying lap per driver and car."
++msgstr "Yksi paras lentävä kierros kuljettajaa ja autoa kohden."
++
++#: daily-medal-page-2026-10-31
++msgid "Your best lap"
++msgstr "Oma paras kierros"
++
++#: daily-medal-page-2026-10-31
++msgid "No verified lap yet."
++msgstr "Ei vielä varmennettua kierrosta."
++
++#: daily-medal-page-2026-10-31
++msgid "Daily result could not be saved."
++msgstr "Päivän tulosta ei voitu tallentaa."
++
++#: daily-medal-page-2026-10-31
++msgid "Track of the Day"
++msgstr "Päivän rata"
++
++#: daily-medal-page-2026-10-31
++msgid "Lap time"
++msgstr "Kierrosaika"
++
++#: daily-medal-page-2026-10-31
++msgid "Top %d%%"
++msgstr "Paras %d%%"
++
++#: daily-medal-page-2026-10-31
++msgid "Mon"
++msgstr "Ma"
++
++#: daily-medal-page-2026-10-31
++msgid "Tue"
++msgstr "Ti"
++
++#: daily-medal-page-2026-10-31
++msgid "Wed"
++msgstr "Ke"
++
++#: daily-medal-page-2026-10-31
++msgid "Thu"
++msgstr "To"
++
++#: daily-medal-page-2026-10-31
++msgid "Fri"
++msgstr "Pe"
++
++#: daily-medal-page-2026-10-31
++msgid "Sat"
++msgstr "La"
++
++#: daily-medal-page-2026-10-31
++msgid "Sun"
++msgstr "Su"
+diff --git a/game/localization/fr.po b/game/localization/fr.po
+--- a/game/localization/fr.po
++++ b/game/localization/fr.po
+@@ -11284,3 +11284,107 @@
+ #: game/ui/playground_hud.gd
+ msgid "Opening lap"
+ msgstr "Tour de lancement"
++
++#: daily-medal-page-2026-10-31
++msgid "Your result"
++msgstr "Votre résultat"
++
++#: daily-medal-page-2026-10-31
++msgid "View all"
++msgstr "Tout voir"
++
++#: daily-medal-page-2026-10-31
++msgid "%.3f s to %s"
++msgstr "%.3f s pour %s"
++
++#: daily-medal-page-2026-10-31
++msgid "Pass top %d%%: %s"
++msgstr "Passez le top %d%% : %s"
++
++#: daily-medal-page-2026-10-31
++msgid "Target %s"
++msgstr "Objectif %s"
++
++#: daily-medal-page-2026-10-31
++msgid "Bronze 75% · Silver 40% · Gold 20%"
++msgstr "Bronze 75% · Argent 40% · Or 20%"
++
++#: daily-medal-page-2026-10-31
++msgid "Top 1% earns Elite"
++msgstr "Le top 1% obtient Élite"
++
++#: daily-medal-page-2026-10-31
++msgid "No medal yet"
++msgstr "Pas encore de médaille"
++
++#: daily-medal-page-2026-10-31
++msgid "Elite"
++msgstr "Élite"
++
++#: daily-medal-page-2026-10-31
++msgid "No flying laps yet."
++msgstr "Aucun tour lancé pour le moment."
++
++#: daily-medal-page-2026-10-31
++msgid "Standings unavailable"
++msgstr "Classement indisponible"
++
++#: daily-medal-page-2026-10-31
++msgid "Best flying laps"
++msgstr "Meilleurs tours lancés"
++
++#: daily-medal-page-2026-10-31
++msgid "One best flying lap per driver and car."
++msgstr "Un meilleur tour lancé par pilote et voiture."
++
++#: daily-medal-page-2026-10-31
++msgid "Your best lap"
++msgstr "Votre meilleur tour"
++
++#: daily-medal-page-2026-10-31
++msgid "No verified lap yet."
++msgstr "Pas encore de tour vérifié."
++
++#: daily-medal-page-2026-10-31
++msgid "Daily result could not be saved."
++msgstr "Le résultat du jour n'a pas pu être enregistré."
++
++#: daily-medal-page-2026-10-31
++msgid "Track of the Day"
++msgstr "Circuit du jour"
++
++#: daily-medal-page-2026-10-31
++msgid "Lap time"
++msgstr "Temps au tour"
++
++#: daily-medal-page-2026-10-31
++msgid "Top %d%%"
++msgstr "Top %d%%"
++
++#: daily-medal-page-2026-10-31
++msgid "Mon"
++msgstr "Lun"
++
++#: daily-medal-page-2026-10-31
++msgid "Tue"
++msgstr "Mar"
++
++#: daily-medal-page-2026-10-31
++msgid "Wed"
++msgstr "Mer"
++
++#: daily-medal-page-2026-10-31
++msgid "Thu"
++msgstr "Jeu"
++
++#: daily-medal-page-2026-10-31
++msgid "Fri"
++msgstr "Ven"
++
++#: daily-medal-page-2026-10-31
++msgid "Sat"
++msgstr "Sam"
++
++#: daily-medal-page-2026-10-31
++msgid "Sun"
++msgstr "Dim"
+diff --git a/game/localization/it.po b/game/localization/it.po
+--- a/game/localization/it.po
++++ b/game/localization/it.po
+@@ -11284,3 +11284,107 @@
+ #: game/ui/playground_hud.gd
+ msgid "Opening lap"
+ msgstr "Giro iniziale"
++
++#: daily-medal-page-2026-10-31
++msgid "Your result"
++msgstr "Il tuo risultato"
++
++#: daily-medal-page-2026-10-31
++msgid "View all"
++msgstr "Mostra tutto"
++
++#: daily-medal-page-2026-10-31
++msgid "%.3f s to %s"
++msgstr "%.3f s a %s"
++
++#: daily-medal-page-2026-10-31
++msgid "Pass top %d%%: %s"
++msgstr "Supera il top %d%%: %s"
++
++#: daily-medal-page-2026-10-31
++msgid "Target %s"
++msgstr "Obiettivo %s"
++
++#: daily-medal-page-2026-10-31
++msgid "Bronze 75% · Silver 40% · Gold 20%"
++msgstr "Bronzo 75% · Argento 40% · Oro 20%"
++
++#: daily-medal-page-2026-10-31
++msgid "Top 1% earns Elite"
++msgstr "Il top 1% ottiene Élite"
++
++#: daily-medal-page-2026-10-31
++msgid "No medal yet"
++msgstr "Ancora nessuna medaglia"
++
++#: daily-medal-page-2026-10-31
++msgid "Elite"
++msgstr "Élite"
++
++#: daily-medal-page-2026-10-31
++msgid "No flying laps yet."
++msgstr "Ancora nessun giro lanciato."
++
++#: daily-medal-page-2026-10-31
++msgid "Standings unavailable"
++msgstr "Classifica non disponibile"
++
++#: daily-medal-page-2026-10-31
++msgid "Best flying laps"
++msgstr "Migliori giri lanciati"
++
++#: daily-medal-page-2026-10-31
++msgid "One best flying lap per driver and car."
++msgstr "Un miglior giro lanciato per pilota e auto."
++
++#: daily-medal-page-2026-10-31
++msgid "Your best lap"
++msgstr "Il tuo miglior giro"
++
++#: daily-medal-page-2026-10-31
++msgid "No verified lap yet."
++msgstr "Ancora nessun giro verificato."
++
++#: daily-medal-page-2026-10-31
++msgid "Daily result could not be saved."
++msgstr "Impossibile salvare il risultato giornaliero."
++
++#: daily-medal-page-2026-10-31
++msgid "Track of the Day"
++msgstr "Circuito del giorno"
++
++#: daily-medal-page-2026-10-31
++msgid "Lap time"
++msgstr "Tempo sul giro"
++
++#: daily-medal-page-2026-10-31
++msgid "Top %d%%"
++msgstr "Top %d%%"
++
++#: daily-medal-page-2026-10-31
++msgid "Mon"
++msgstr "Lun"
++
++#: daily-medal-page-2026-10-31
++msgid "Tue"
++msgstr "Mar"
++
++#: daily-medal-page-2026-10-31
++msgid "Wed"
++msgstr "Mer"
++
++#: daily-medal-page-2026-10-31
++msgid "Thu"
++msgstr "Gio"
++
++#: daily-medal-page-2026-10-31
++msgid "Fri"
++msgstr "Ven"
++
++#: daily-medal-page-2026-10-31
++msgid "Sat"
++msgstr "Sab"
++
++#: daily-medal-page-2026-10-31
++msgid "Sun"
++msgstr "Dom"
+diff --git a/game/localization/ja.po b/game/localization/ja.po
+--- a/game/localization/ja.po
++++ b/game/localization/ja.po
+@@ -11253,3 +11253,107 @@
+ #: game/ui/playground_hud.gd
+ msgid "Opening lap"
+ msgstr "スタート周回"
++
++#: daily-medal-page-2026-10-31
++msgid "Your result"
++msgstr "あなたの記録"
++
++#: daily-medal-page-2026-10-31
++msgid "View all"
++msgstr "すべて見る"
++
++#: daily-medal-page-2026-10-31
++msgid "%.3f s to %s"
++msgstr "あと%.3f秒で%s"
++
++#: daily-medal-page-2026-10-31
++msgid "Pass top %d%%: %s"
++msgstr "上位%d%%クリア：%s"
++
++#: daily-medal-page-2026-10-31
++msgid "Target %s"
++msgstr "目標 %s"
++
++#: daily-medal-page-2026-10-31
++msgid "Bronze 75% · Silver 40% · Gold 20%"
++msgstr "銅75%・銀40%・金20%"
++
++#: daily-medal-page-2026-10-31
++msgid "Top 1% earns Elite"
++msgstr "上位1%でエリート獲得"
++
++#: daily-medal-page-2026-10-31
++msgid "No medal yet"
++msgstr "メダル未獲得"
++
++#: daily-medal-page-2026-10-31
++msgid "Elite"
++msgstr "エリート"
++
++#: daily-medal-page-2026-10-31
++msgid "No flying laps yet."
++msgstr "計測周回はまだありません。"
++
++#: daily-medal-page-2026-10-31
++msgid "Standings unavailable"
++msgstr "順位を取得できません"
++
++#: daily-medal-page-2026-10-31
++msgid "Best flying laps"
++msgstr "ベスト計測周回"
++
++#: daily-medal-page-2026-10-31
++msgid "One best flying lap per driver and car."
++msgstr "ドライバーと車ごとにベスト計測周回を1件記録。"
++
++#: daily-medal-page-2026-10-31
++msgid "Your best lap"
++msgstr "あなたのベストラップ"
++
++#: daily-medal-page-2026-10-31
++msgid "No verified lap yet."
++msgstr "検証済みの周回はまだありません。"
++
++#: daily-medal-page-2026-10-31
++msgid "Daily result could not be saved."
++msgstr "本日の記録を保存できませんでした。"
++
++#: daily-medal-page-2026-10-31
++msgid "Track of the Day"
++msgstr "本日のコース"
++
++#: daily-medal-page-2026-10-31
++msgid "Lap time"
++msgstr "ラップタイム"
++
++#: daily-medal-page-2026-10-31
++msgid "Top %d%%"
++msgstr "上位%d%%"
++
++#: daily-medal-page-2026-10-31
++msgid "Mon"
++msgstr "月"
++
++#: daily-medal-page-2026-10-31
++msgid "Tue"
++msgstr "火"
++
++#: daily-medal-page-2026-10-31
++msgid "Wed"
++msgstr "水"
++
++#: daily-medal-page-2026-10-31
++msgid "Thu"
++msgstr "木"
++
++#: daily-medal-page-2026-10-31
++msgid "Fri"
++msgstr "金"
++
++#: daily-medal-page-2026-10-31
++msgid "Sat"
++msgstr "土"
++
++#: daily-medal-page-2026-10-31
++msgid "Sun"
++msgstr "日"
+diff --git a/game/localization/ko.po b/game/localization/ko.po
+--- a/game/localization/ko.po
++++ b/game/localization/ko.po
+@@ -11253,3 +11253,107 @@
+ #: game/ui/playground_hud.gd
+ msgid "Opening lap"
+ msgstr "시작 랩"
++
++#: daily-medal-page-2026-10-31
++msgid "Your result"
++msgstr "내 기록"
++
++#: daily-medal-page-2026-10-31
++msgid "View all"
++msgstr "전체 보기"
++
++#: daily-medal-page-2026-10-31
++msgid "%.3f s to %s"
++msgstr "%.3f초 단축하면 %s"
++
++#: daily-medal-page-2026-10-31
++msgid "Pass top %d%%: %s"
++msgstr "상위 %d%% 통과: %s"
++
++#: daily-medal-page-2026-10-31
++msgid "Target %s"
++msgstr "목표 %s"
++
++#: daily-medal-page-2026-10-31
++msgid "Bronze 75% · Silver 40% · Gold 20%"
++msgstr "동 75% · 은 40% · 금 20%"
++
++#: daily-medal-page-2026-10-31
++msgid "Top 1% earns Elite"
++msgstr "상위 1% 달성 시 엘리트"
++
++#: daily-medal-page-2026-10-31
++msgid "No medal yet"
++msgstr "아직 메달 없음"
++
++#: daily-medal-page-2026-10-31
++msgid "Elite"
++msgstr "엘리트"
++
++#: daily-medal-page-2026-10-31
++msgid "No flying laps yet."
++msgstr "아직 플라잉 랩이 없습니다."
++
++#: daily-medal-page-2026-10-31
++msgid "Standings unavailable"
++msgstr "순위를 불러올 수 없음"
++
++#: daily-medal-page-2026-10-31
++msgid "Best flying laps"
++msgstr "최고 플라잉 랩"
++
++#: daily-medal-page-2026-10-31
++msgid "One best flying lap per driver and car."
++msgstr "드라이버와 차량별 최고 플라잉 랩 하나."
++
++#: daily-medal-page-2026-10-31
++msgid "Your best lap"
++msgstr "내 베스트 랩"
++
++#: daily-medal-page-2026-10-31
++msgid "No verified lap yet."
++msgstr "아직 검증된 랩이 없습니다."
++
++#: daily-medal-page-2026-10-31
++msgid "Daily result could not be saved."
++msgstr "오늘의 기록을 저장하지 못했습니다."
++
++#: daily-medal-page-2026-10-31
++msgid "Track of the Day"
++msgstr "오늘의 트랙"
++
++#: daily-medal-page-2026-10-31
++msgid "Lap time"
++msgstr "랩 타임"
++
++#: daily-medal-page-2026-10-31
++msgid "Top %d%%"
++msgstr "상위 %d%%"
++
++#: daily-medal-page-2026-10-31
++msgid "Mon"
++msgstr "월"
++
++#: daily-medal-page-2026-10-31
++msgid "Tue"
++msgstr "화"
++
++#: daily-medal-page-2026-10-31
++msgid "Wed"
++msgstr "수"
++
++#: daily-medal-page-2026-10-31
++msgid "Thu"
++msgstr "목"
++
++#: daily-medal-page-2026-10-31
++msgid "Fri"
++msgstr "금"
++
++#: daily-medal-page-2026-10-31
++msgid "Sat"
++msgstr "토"
++
++#: daily-medal-page-2026-10-31
++msgid "Sun"
++msgstr "일"
+diff --git a/game/localization/nb.po b/game/localization/nb.po
+--- a/game/localization/nb.po
++++ b/game/localization/nb.po
+@@ -11284,3 +11284,107 @@
+ #: game/ui/playground_hud.gd
+ msgid "Opening lap"
+ msgstr "Startrunde"
++
++#: daily-medal-page-2026-10-31
++msgid "Your result"
++msgstr "Ditt resultat"
++
++#: daily-medal-page-2026-10-31
++msgid "View all"
++msgstr "Vis alle"
++
++#: daily-medal-page-2026-10-31
++msgid "%.3f s to %s"
++msgstr "%.3f s til %s"
++
++#: daily-medal-page-2026-10-31
++msgid "Pass top %d%%: %s"
++msgstr "Klar topp %d%%: %s"
++
++#: daily-medal-page-2026-10-31
++msgid "Target %s"
++msgstr "Mål %s"
++
++#: daily-medal-page-2026-10-31
++msgid "Bronze 75% · Silver 40% · Gold 20%"
++msgstr "Bronse 75% · Sølv 40% · Gull 20%"
++
++#: daily-medal-page-2026-10-31
++msgid "Top 1% earns Elite"
++msgstr "Topp 1% gir Elite"
++
++#: daily-medal-page-2026-10-31
++msgid "No medal yet"
++msgstr "Ingen medalje ennå"
++
++#: daily-medal-page-2026-10-31
++msgid "Elite"
++msgstr "Elite"
++
++#: daily-medal-page-2026-10-31
++msgid "No flying laps yet."
++msgstr "Ingen flygende runder ennå."
++
++#: daily-medal-page-2026-10-31
++msgid "Standings unavailable"
++msgstr "Resultatlisten er ikke tilgjengelig"
++
++#: daily-medal-page-2026-10-31
++msgid "Best flying laps"
++msgstr "Beste flygende runder"
++
++#: daily-medal-page-2026-10-31
++msgid "One best flying lap per driver and car."
++msgstr "Én beste flygende runde per fører og bil."
++
++#: daily-medal-page-2026-10-31
++msgid "Your best lap"
++msgstr "Din beste runde"
++
++#: daily-medal-page-2026-10-31
++msgid "No verified lap yet."
++msgstr "Ingen verifisert runde ennå."
++
++#: daily-medal-page-2026-10-31
++msgid "Daily result could not be saved."
++msgstr "Dagens resultat kunne ikke lagres."
++
++#: daily-medal-page-2026-10-31
++msgid "Track of the Day"
++msgstr "Dagens bane"
++
++#: daily-medal-page-2026-10-31
++msgid "Lap time"
++msgstr "Rundetid"
++
++#: daily-medal-page-2026-10-31
++msgid "Top %d%%"
++msgstr "Topp %d%%"
++
++#: daily-medal-page-2026-10-31
++msgid "Mon"
++msgstr "Man"
++
++#: daily-medal-page-2026-10-31
++msgid "Tue"
++msgstr "Tir"
++
++#: daily-medal-page-2026-10-31
++msgid "Wed"
++msgstr "Ons"
++
++#: daily-medal-page-2026-10-31
++msgid "Thu"
++msgstr "Tor"
++
++#: daily-medal-page-2026-10-31
++msgid "Fri"
++msgstr "Fre"
++
++#: daily-medal-page-2026-10-31
++msgid "Sat"
++msgstr "Lør"
++
++#: daily-medal-page-2026-10-31
++msgid "Sun"
++msgstr "Søn"
+diff --git a/game/localization/nl.po b/game/localization/nl.po
+--- a/game/localization/nl.po
++++ b/game/localization/nl.po
+@@ -11284,3 +11284,107 @@
+ #: game/ui/playground_hud.gd
+ msgid "Opening lap"
+ msgstr "Openingsronde"
++
++#: daily-medal-page-2026-10-31
++msgid "Your result"
++msgstr "Jouw resultaat"
++
++#: daily-medal-page-2026-10-31
++msgid "View all"
++msgstr "Alles tonen"
++
++#: daily-medal-page-2026-10-31
++msgid "%.3f s to %s"
++msgstr "%.3f s tot %s"
++
++#: daily-medal-page-2026-10-31
++msgid "Pass top %d%%: %s"
++msgstr "Haal top %d%%: %s"
++
++#: daily-medal-page-2026-10-31
++msgid "Target %s"
++msgstr "Doel %s"
++
++#: daily-medal-page-2026-10-31
++msgid "Bronze 75% · Silver 40% · Gold 20%"
++msgstr "Brons 75% · Zilver 40% · Goud 20%"
++
++#: daily-medal-page-2026-10-31
++msgid "Top 1% earns Elite"
++msgstr "Top 1% verdient Elite"
++
++#: daily-medal-page-2026-10-31
++msgid "No medal yet"
++msgstr "Nog geen medaille"
++
++#: daily-medal-page-2026-10-31
++msgid "Elite"
++msgstr "Elite"
++
++#: daily-medal-page-2026-10-31
++msgid "No flying laps yet."
++msgstr "Nog geen vliegende ronden."
++
++#: daily-medal-page-2026-10-31
++msgid "Standings unavailable"
++msgstr "Klassement niet beschikbaar"
++
++#: daily-medal-page-2026-10-31
++msgid "Best flying laps"
++msgstr "Beste vliegende ronden"
++
++#: daily-medal-page-2026-10-31
++msgid "One best flying lap per driver and car."
++msgstr "Eén beste vliegende ronde per coureur en auto."
++
++#: daily-medal-page-2026-10-31
++msgid "Your best lap"
++msgstr "Jouw beste ronde"
++
++#: daily-medal-page-2026-10-31
++msgid "No verified lap yet."
++msgstr "Nog geen geverifieerde ronde."
++
++#: daily-medal-page-2026-10-31
++msgid "Daily result could not be saved."
++msgstr "Het dagresultaat kon niet worden opgeslagen."
++
++#: daily-medal-page-2026-10-31
++msgid "Track of the Day"
++msgstr "Circuit van de dag"
++
++#: daily-medal-page-2026-10-31
++msgid "Lap time"
++msgstr "Rondetijd"
++
++#: daily-medal-page-2026-10-31
++msgid "Top %d%%"
++msgstr "Top %d%%"
++
++#: daily-medal-page-2026-10-31
++msgid "Mon"
++msgstr "Ma"
++
++#: daily-medal-page-2026-10-31
++msgid "Tue"
++msgstr "Di"
++
++#: daily-medal-page-2026-10-31
++msgid "Wed"
++msgstr "Wo"
++
++#: daily-medal-page-2026-10-31
++msgid "Thu"
++msgstr "Do"
++
++#: daily-medal-page-2026-10-31
++msgid "Fri"
++msgstr "Vr"
++
++#: daily-medal-page-2026-10-31
++msgid "Sat"
++msgstr "Za"
++
++#: daily-medal-page-2026-10-31
++msgid "Sun"
++msgstr "Zo"
+diff --git a/game/localization/pt_BR.po b/game/localization/pt_BR.po
+--- a/game/localization/pt_BR.po
++++ b/game/localization/pt_BR.po
+@@ -11284,3 +11284,107 @@
+ #: game/ui/playground_hud.gd
+ msgid "Opening lap"
+ msgstr "Volta inicial"
++
++#: daily-medal-page-2026-10-31
++msgid "Your result"
++msgstr "Seu resultado"
++
++#: daily-medal-page-2026-10-31
++msgid "View all"
++msgstr "Ver todos"
++
++#: daily-medal-page-2026-10-31
++msgid "%.3f s to %s"
++msgstr "%.3f s para %s"
++
++#: daily-medal-page-2026-10-31
++msgid "Pass top %d%%: %s"
++msgstr "Passe o top %d%%: %s"
++
++#: daily-medal-page-2026-10-31
++msgid "Target %s"
++msgstr "Meta %s"
++
++#: daily-medal-page-2026-10-31
++msgid "Bronze 75% · Silver 40% · Gold 20%"
++msgstr "Bronze 75% · Prata 40% · Ouro 20%"
++
++#: daily-medal-page-2026-10-31
++msgid "Top 1% earns Elite"
++msgstr "O top 1% ganha Elite"
++
++#: daily-medal-page-2026-10-31
++msgid "No medal yet"
++msgstr "Ainda sem medalha"
++
++#: daily-medal-page-2026-10-31
++msgid "Elite"
++msgstr "Elite"
++
++#: daily-medal-page-2026-10-31
++msgid "No flying laps yet."
++msgstr "Ainda sem voltas lançadas."
++
++#: daily-medal-page-2026-10-31
++msgid "Standings unavailable"
++msgstr "Classificação indisponível"
++
++#: daily-medal-page-2026-10-31
++msgid "Best flying laps"
++msgstr "Melhores voltas lançadas"
++
++#: daily-medal-page-2026-10-31
++msgid "One best flying lap per driver and car."
++msgstr "Uma melhor volta lançada por piloto e carro."
++
++#: daily-medal-page-2026-10-31
++msgid "Your best lap"
++msgstr "Sua melhor volta"
++
++#: daily-medal-page-2026-10-31
++msgid "No verified lap yet."
++msgstr "Ainda sem volta verificada."
++
++#: daily-medal-page-2026-10-31
++msgid "Daily result could not be saved."
++msgstr "Não foi possível salvar o resultado diário."
++
++#: daily-medal-page-2026-10-31
++msgid "Track of the Day"
++msgstr "Pista do dia"
++
++#: daily-medal-page-2026-10-31
++msgid "Lap time"
++msgstr "Tempo da volta"
++
++#: daily-medal-page-2026-10-31
++msgid "Top %d%%"
++msgstr "Top %d%%"
++
++#: daily-medal-page-2026-10-31
++msgid "Mon"
++msgstr "Seg"
++
++#: daily-medal-page-2026-10-31
++msgid "Tue"
++msgstr "Ter"
++
++#: daily-medal-page-2026-10-31
++msgid "Wed"
++msgstr "Qua"
++
++#: daily-medal-page-2026-10-31
++msgid "Thu"
++msgstr "Qui"
++
++#: daily-medal-page-2026-10-31
++msgid "Fri"
++msgstr "Sex"
++
++#: daily-medal-page-2026-10-31
++msgid "Sat"
++msgstr "Sáb"
++
++#: daily-medal-page-2026-10-31
++msgid "Sun"
++msgstr "Dom"
+diff --git a/game/localization/sv.po b/game/localization/sv.po
+--- a/game/localization/sv.po
++++ b/game/localization/sv.po
+@@ -11284,3 +11284,107 @@
+ #: game/ui/playground_hud.gd
+ msgid "Opening lap"
+ msgstr "Startvarv"
++
++#: daily-medal-page-2026-10-31
++msgid "Your result"
++msgstr "Ditt resultat"
++
++#: daily-medal-page-2026-10-31
++msgid "View all"
++msgstr "Visa alla"
++
++#: daily-medal-page-2026-10-31
++msgid "%.3f s to %s"
++msgstr "%.3f s till %s"
++
++#: daily-medal-page-2026-10-31
++msgid "Pass top %d%%: %s"
++msgstr "Klara topp %d%%: %s"
++
++#: daily-medal-page-2026-10-31
++msgid "Target %s"
++msgstr "Mål %s"
++
++#: daily-medal-page-2026-10-31
++msgid "Bronze 75% · Silver 40% · Gold 20%"
++msgstr "Brons 75% · Silver 40% · Guld 20%"
++
++#: daily-medal-page-2026-10-31
++msgid "Top 1% earns Elite"
++msgstr "Topp 1% ger Elit"
++
++#: daily-medal-page-2026-10-31
++msgid "No medal yet"
++msgstr "Ingen medalj än"
++
++#: daily-medal-page-2026-10-31
++msgid "Elite"
++msgstr "Elit"
++
++#: daily-medal-page-2026-10-31
++msgid "No flying laps yet."
++msgstr "Inga flygande varv än."
++
++#: daily-medal-page-2026-10-31
++msgid "Standings unavailable"
++msgstr "Resultatlistan är inte tillgänglig"
++
++#: daily-medal-page-2026-10-31
++msgid "Best flying laps"
++msgstr "Bästa flygande varv"
++
++#: daily-medal-page-2026-10-31
++msgid "One best flying lap per driver and car."
++msgstr "Ett bästa flygande varv per förare och bil."
++
++#: daily-medal-page-2026-10-31
++msgid "Your best lap"
++msgstr "Ditt bästa varv"
++
++#: daily-medal-page-2026-10-31
++msgid "No verified lap yet."
++msgstr "Inget verifierat varv än."
++
++#: daily-medal-page-2026-10-31
++msgid "Daily result could not be saved."
++msgstr "Dagens resultat kunde inte sparas."
++
++#: daily-medal-page-2026-10-31
++msgid "Track of the Day"
++msgstr "Dagens bana"
++
++#: daily-medal-page-2026-10-31
++msgid "Lap time"
++msgstr "Varvtid"
++
++#: daily-medal-page-2026-10-31
++msgid "Top %d%%"
++msgstr "Topp %d%%"
++
++#: daily-medal-page-2026-10-31
++msgid "Mon"
++msgstr "Mån"
++
++#: daily-medal-page-2026-10-31
++msgid "Tue"
++msgstr "Tis"
++
++#: daily-medal-page-2026-10-31
++msgid "Wed"
++msgstr "Ons"
++
++#: daily-medal-page-2026-10-31
++msgid "Thu"
++msgstr "Tor"
++
++#: daily-medal-page-2026-10-31
++msgid "Fri"
++msgstr "Fre"
++
++#: daily-medal-page-2026-10-31
++msgid "Sat"
++msgstr "Lör"
++
++#: daily-medal-page-2026-10-31
++msgid "Sun"
++msgstr "Sön"
+diff --git a/game/persistence/daily_progress.gd b/game/persistence/daily_progress.gd
+new file mode 100644
+--- /dev/null
++++ b/game/persistence/daily_progress.gd
+@@ -0,0 +1,68 @@
++extends RefCounted
++## Account-scoped cosmetic daily results; ordinary five-lap records remain independent.
++const IO = preload("res://backend/atomic_json.gd")
++const MAX_BYTES: int = 524288
++const MAX_ENTRIES: int = 512
++const PERCENTILES: Array[int] = [75,60,50,40,30,20,10,5,1]
++const TITLES: Array[String] = ["No medal yet","Bronze","Silver","Gold","Elite"]
++
++static func tier(passed: int) -> int:
++	if passed >= 9: return 4
++	if passed >= 6: return 3
++	if passed >= 4: return 2
++	return 1 if passed >= 1 else 0
++
++static func contract(vehicle: String) -> String:
++	return (str(Engine.get_version_info().hash)+VehicleSimulation.PHYSICS_VERSION+RaceRules.KEY+TrackCompiler.VERSION+JSON.stringify(VehicleCatalog.config(vehicle).snapshot(),"",true)).sha256_text()
++
++static func identity(day: int, version: String, vehicle: String) -> String:
++	return (str(day)+"/"+version+"/"+vehicle+"/"+contract(vehicle)).sha256_text()
++
++static func load_entries(records: LocalRecords) -> Dictionary:
++	if records == null: return {}
++	var document: Dictionary = IO.read(records.path+".daily.json",MAX_BYTES)
++	if document.get("schema") != 1 or not document.get("entries") is Dictionary or document.entries.size() > MAX_ENTRIES: return {}
++	var result: Dictionary = {}
++	for key: Variant in document.entries:
++		var row: Variant = document.entries[key]
++		if key is String and key.length() == 64 and valid(row): result[key] = row.duplicate(true)
++	return result
++
++static func valid(row: Variant) -> bool:
++	if not row is Dictionary: return false
++	for field: String in ["day","passed","best_ms"]:
++		var value: Variant = row.get(field)
++		if not (value is int or value is float) or not is_finite(float(value)) or float(value) != floor(float(value)): return false
++	return int(row.day) >= 0 and int(row.passed) >= 0 and int(row.passed) <= 9 and int(row.best_ms) > 0 and int(row.best_ms) <= 1800000 and row.get("version") is String and row.get("vehicle") in VehicleCatalog.IDS
++
++static func best(entries: Dictionary, day: int, version: String, vehicle: String) -> Dictionary:
++	return entries.get(identity(day,version,vehicle),{}).duplicate(true)
++
++static func commit(records: LocalRecords, day: int, version: String, vehicle: String, session: TrackSession, rules: RefCounted) -> bool:
++	if records == null or day < 0 or version.is_empty() or session.lap_times.size() < 2 or not session.finished: return false
++	var previous_document: Dictionary = IO.read(records.path+".daily.json",MAX_BYTES)
++	if not previous_document.is_empty() and (previous_document.get("schema") != 1 or not previous_document.get("entries") is Dictionary): return false
++	if previous_document.get("entries",{}).size() > MAX_ENTRIES: return false
++	var fastest: float = INF
++	for index: int in range(1,session.lap_times.size()): fastest = minf(fastest,session.lap_times[index])
++	if not is_finite(fastest) or fastest <= 0: return false
++	var entries: Dictionary = load_entries(records)
++	var key: String = identity(day,version,vehicle)
++	var previous: Dictionary = entries.get(key,{})
++	entries[key] = {"day":day,"version":version,"vehicle":vehicle,"passed":maxi(int(previous.get("passed",0)),rules.passed),"best_ms":mini(int(previous.get("best_ms",1800000)),roundi(fastest*1000))}
++	if not valid(entries[key]): return false
++	# Keep five weeks for every car; never let history grow with repeated attempts.
++	for old: String in entries.keys():
++		if int(entries[old].day) < day-35: entries.erase(old)
++	if entries.size() > MAX_ENTRIES: return false
++	return IO.write(records.path+".daily.json",{"schema":1,"entries":entries},MAX_BYTES)
++
++static func week(entries: Dictionary, day: int, vehicle: String) -> Array[int]:
++	var monday: int = day-posmod(day+3,7)
++	var result: Array[int] = []
++	for offset: int in range(7):
++		var award: int = -1 if monday+offset > day else 0
++		for row: Dictionary in entries.values():
++			if int(row.day) == monday+offset and row.vehicle == vehicle: award = maxi(award,tier(int(row.passed)))
++		result.append(award)
++	return result
+diff --git a/game/persistence/daily_progress.gd.uid b/game/persistence/daily_progress.gd.uid
+new file mode 100644
+--- /dev/null
++++ b/game/persistence/daily_progress.gd.uid
+@@ -0,0 +1 @@
++uid://bpcdii087x7ik
+diff --git a/game/tests/test_daily_medal_page.gd b/game/tests/test_daily_medal_page.gd
+new file mode 100644
+--- /dev/null
++++ b/game/tests/test_daily_medal_page.gd
+@@ -0,0 +1,209 @@
++extends SceneTree
++const Progress = preload("res://persistence/daily_progress.gd")
++const Rules = preload("res://race/daily_elimination.gd")
++const LIMITS: Array[float] = [90,84,80,75,74,72,71,70,68]
++const DAY: int = 20757
++const VERSION: String = "00000000-0000-0000-0000-000000000002"
++var checks: int = 0
++var failures: int = 0
++var app: Node
++var page: Node
++var service: Feed
++
++class Feed extends Node:
++	signal released
++	var player: Dictionary = {"id":"local-player","display_name":"Ville"}
++	var pending: bool = false
++	var calls: Array[String] = []
++	func signed_in() -> bool: return true
++	func base_url() -> String: return "http://daily-medal.invalid"
++	func cancel_public_reads(_owner: int) -> void: pass
++	func request_public(path: String, _owner: int) -> Dictionary: return await request_api(path,0,{},"",false)
++	func request_api(path: String, _method: int, _body: Dictionary, _key: String, _auth: bool) -> Dictionary:
++		calls.append(path)
++		var now: int = DAY*86400+3600
++		var response: Dictionary = {"ok":true,"data":{"day":DAY,"server_now":now,"ends_at":(DAY+1)*86400}}
++		if path == "/track-of-the-day":
++			var document: Dictionary = JSON.parse_string(FileAccess.get_file_as_string("res://resources/creator_tracks/lantern_village.json"))
++			response.data.track = {"track_id":"00000000-0000-0000-0000-000000000001","version_id":VERSION,"content_hash":"a".repeat(64),"name":document.name,"creator":document.creator,"theme":"pine","points":document.points,"rating_average":4.7,"rating_count":128}
++			return response
++		var car: String = "compact"
++		var ticks: int = 8698
++		for item: String in path.get_slice("?",1).split("&"):
++			if item.begins_with("vehicle_id="): car = item.get_slice("=",1)
++			if item.begins_with("lap_ticks="): ticks = int(item.get_slice("=",1))
++		var position: int = 8 if ticks < 8160 else 180 if ticks < 8640 else 287 if ticks < 8880 else 900
++		response.data.merge({"version_id":VERSION,"vehicle_id":car,"tick_rate":120,"population":1284,"cutoffs":[],"comparison":{"position":position,"population":1284,"top_percent":ceili(float(position)*100/1284),"candidate_ticks":ticks},"player":null,"next_cursor":null,"items":[{"player_id":"mika","display_name":"Mika","rank":position-1,"time_ticks":ticks-35,"gap_ticks":100},{"player_id":"antti","display_name":"Antti","rank":position+1,"time_ticks":ticks+42,"gap_ticks":177}]})
++		for index: int in range(9): response.data.cutoffs.append({"percentile":Rules.PERCENTILES[index],"lap_ticks":roundi(LIMITS[index]*120)})
++		if pending: await released
++		return response
++
++func _initialize() -> void: run.call_deferred()
++func check(ok: bool, message: String) -> void:
++	checks += 1
++	if not ok:
++		failures += 1
++		push_error(message)
++
++func fixture(records: LocalRecords, day: int, passed: int, vehicle: String = "compact") -> void:
++	var session := TrackSession.new(120,10)
++	var rules := Rules.new()
++	rules.limits = LIMITS.duplicate()
++	var times: Array[float] = [150]
++	for index: int in range(passed): times.append(72.480 if index == 2 and passed == 4 else LIMITS[index]-0.4)
++	if passed < 9: times.append(LIMITS[passed]+10)
++	for lap: float in times:
++		session.lap_times.append(lap)
++		session.completed_laps += 1
++		rules.observe(session)
++	check(rules.passed == passed and session.finished,"fixture clears the specified stages")
++	check(Progress.commit(records,day,VERSION,vehicle,session,rules),"daily medal commits")
++
++func settle() -> void:
++	for frame: int in range(10): await process_frame
++
++func capture(label: String) -> void:
++	if DisplayServer.get_name() == "headless": return
++	await RenderingServer.frame_post_draw
++	var output: String = ProjectSettings.globalize_path("res://../docs/evidence/daily-medal-page-2026-10-31/")
++	check(root.get_texture().get_image().save_png(output.path_join(label+".png")) == OK,"capture "+label)
++
++func run() -> void:
++	create_timer(180).timeout.connect(func() -> void: push_error("Daily medal page deadline"); quit(1))
++	OS.set_environment("BMT_API_URL","")
++	root.size = Vector2i(1280,720)
++	TranslationServer.set_locale("en")
++	for pair: Array in [[0,0],[1,1],[3,1],[4,2],[5,2],[6,3],[8,3],[9,4]]:
++		check(Progress.tier(pair[0]) == pair[1],"exact medal stage boundary "+str(pair[0]))
++	var directory: String = "user://daily_medal_"+TrackLibrary.unique_id()
++	DirAccess.make_dir_recursive_absolute(directory)
++	app = load("res://core/app.tscn").instantiate()
++	app.library = TrackLibrary.new(directory.path_join("tracks"))
++	app.records = LocalRecords.new(directory.path_join("records.json"))
++	app.cloud_root_override = directory.path_join("cloud")
++	root.add_child(app)
++	while not app.startup_complete: await process_frame
++	var monday: int = DAY-posmod(DAY+3,7)
++	fixture(app.records,monday,6)
++	fixture(app.records,monday+2,4)
++	fixture(app.records,monday+3,6)
++	fixture(app.records,monday+4,4)
++	fixture(app.records,DAY,4)
++	fixture(app.records,DAY,1,"kart")
++	fixture(app.records,DAY,6,"pickup")
++	var entries: Dictionary = Progress.load_entries(app.records)
++	check(Progress.week(entries,DAY,"compact") == [3,0,2,3,2,2,-1],"weekly medals use UTC Monday and preserve unplayed/future days")
++	check(Progress.week(entries,DAY,"electric") == [0,0,0,0,0,0,-1],"weekly medals remain car specific")
++	var foreign := LocalRecords.new(directory.path_join("other-account.json"))
++	check(Progress.load_entries(foreign).is_empty(),"account storage does not leak awards")
++	var invalid := LocalRecords.new(directory.path_join("invalid.json"))
++	var io = preload("res://backend/atomic_json.gd")
++	io.write(invalid.path+".daily.json",{"schema":99,"entries":{}})
++	var broken_before: String = FileAccess.get_file_as_string(invalid.path+".daily.json")
++	var invalid_session := TrackSession.new(120,10)
++	invalid_session.lap_times.assign([0.01,100.0])
++	invalid_session.finished = true
++	var invalid_rules := Rules.new()
++	check(not Progress.commit(invalid,DAY,VERSION,"compact",invalid_session,invalid_rules),"unknown save schema cannot be overwritten or reported as saved")
++	check(FileAccess.get_file_as_string(invalid.path+".daily.json") == broken_before,"failed save preserves previous data")
++	app._show_screen("daily")
++	await settle()
++	page = app.content.find_child("TrackOfDayPage",true,false)
++	service = Feed.new()
++	root.add_child(service)
++	page.client = service
++	for connection: Dictionary in page.race_requested.get_connections(): page.race_requested.disconnect(connection.callable)
++	await page.refresh()
++	await settle()
++	var card: Node = page._race_panel
++	check(card.result.passed == 4 and card._award.text == "Silver","page restores earned silver from passed stage 40")
++	check(card._time.text == "1:12.480" and card._gap.text.begins_with("0.480"),"best flying lap and exact gold gap match the reference behavior")
++	check(card._rows.get_child_count() == 3 and card._rows.find_child("DailyNearbySelf",true,false) != null,"nearby flying-lap standings highlight the player")
++	check(card.race_button.text == "Race again","returning player has race again action")
++	for size: Vector2i in [Vector2i(1280,720),Vector2i(960,540),Vector2i(844,390)]:
++		root.size = size
++		await settle()
++		check(not page._hero.get_rect().intersects(card.get_rect()),"feature and result card do not overlap")
++		check(page.find_child("DailyScroll",true,false).get_global_rect().encloses(page._race.get_global_rect()),"race action fits without scrolling")
++		await capture("silver-%dx%d" % [size.x,size.y])
++	root.size = Vector2i(1280,720)
++	await settle()
++	for locale: String in ["en","fr","es","de","pt_BR","ja","ko","nl","it","fi","sv","nb"]:
++		TranslationServer.set_locale(locale)
++		GameText.refresh(self)
++		card._render()
++		await settle()
++		check(page.find_child("DailyScroll",true,false).get_global_rect().encloses(page._race.get_global_rect()),"translated desktop race action fits: "+locale)
++	TranslationServer.set_locale("en")
++	GameText.refresh(self)
++	card._render()
++	for vehicle: String in ["kart","pickup"]:
++		card.car_picker.item_selected.emit(VehicleCatalog.IDS.find(vehicle))
++		await settle()
++		check(card._award.text == ("Bronze" if vehicle == "kart" else "Gold"),"car-specific medal displays "+vehicle)
++		await capture("bronze" if vehicle == "kart" else "gold")
++	card.car_picker.item_selected.emit(0)
++	await settle()
++	card.standings_button.pressed.emit()
++	await settle()
++	var dialog: Node = page._standings
++	check(dialog != null and dialog.flying_laps and not dialog.busy and dialog._rows.get_child_count() == 2,"view all opens flying-lap standings")
++	check(service.calls[-1].contains("/lap-standings?"),"view all requests the same lap metric")
++	dialog._select_vehicle(1)
++	await settle()
++	check(card.vehicle == "pickup" and page._week_strip.vehicle == "pickup","standings car changes update the result card and weekly medals")
++	dialog.queue_free()
++	card.car_picker.item_selected.emit(0)
++	await settle()
++	check(card.vehicle == "compact" and card.result.passed == 4,"car chooser restores the correct saved result")
++	fixture(app.records,DAY,1)
++	check(Progress.best(Progress.load_entries(app.records),DAY,VERSION,"compact").passed == 4,"a worse retry never removes a medal")
++	fixture(app.records,DAY,9)
++	card.refresh()
++	page._update_week()
++	await settle()
++	check(card._award.text == "Elite" and card._medals.get_child_count() == 4,"top one percent has a separate platinum laurel award")
++	await capture("elite")
++	card.vehicle = "electric"
++	card.refresh()
++	await settle()
++	check(card.result.is_empty() and card._time.text == "—" and card._award.text == "No medal yet","changing car cannot show another car's medal or result")
++	await capture("no-result")
++	service.pending = true
++	card.vehicle = "compact"
++	card.refresh()
++	card.vehicle = "electric"
++	card.refresh()
++	service.pending = false
++	service.released.emit()
++	await settle()
++	check(card.summary.vehicle_id == "electric" and card.result.is_empty(),"late old-car response cannot restore stale results")
++	app.root_ui.hide()
++	var narrow := preload("res://ui/track_of_day_page.gd").new()
++	narrow.client = service
++	narrow.cloud = app.cloud
++	narrow.records = app.records
++	narrow.page_preview = true
++	root.add_child(narrow)
++	MenuStyle.fill(narrow)
++	await narrow.refresh()
++	root.content_scale_size = Vector2i.ZERO
++	root.size = Vector2i(390,844)
++	for locale: String in ["en","de","fi","fr","ja","ko"]:
++		TranslationServer.set_locale(locale)
++		GameText.refresh(self)
++		narrow._race_panel._render()
++		await settle()
++		var narrow_card: Node = narrow._race_panel
++		check(narrow_card.get_global_rect().end.x <= root.get_visible_rect().end.x,"narrow translated result card fits: "+locale)
++		(narrow.find_child("DailyScroll",true,false) as ScrollContainer).scroll_vertical = 9999
++		await settle()
++		check(narrow.find_child("DailyScroll",true,false).get_global_rect().intersects(narrow._race.get_global_rect()),"narrow race action is reachable")
++		await capture("portrait-"+locale)
++	TranslationServer.set_locale("en")
++	app.queue_free()
++	narrow.queue_free()
++	service.queue_free()
++	await process_frame
++	print("DAILY_MEDAL_PAGE: %d checks, %d failures" % [checks,failures])
++	quit(1 if failures else 0)
+diff --git a/game/tests/test_daily_medal_page.gd.uid b/game/tests/test_daily_medal_page.gd.uid
+new file mode 100644
+--- /dev/null
++++ b/game/tests/test_daily_medal_page.gd.uid
+@@ -0,0 +1 @@
++uid://bph1t4whdxsv8
+diff --git a/game/tests/test_daily_standings.gd b/game/tests/test_daily_standings.gd
+--- a/game/tests/test_daily_standings.gd
++++ b/game/tests/test_daily_standings.gd
+@@ -151,7 +151,7 @@
+ 	service.scores.data.next_cursor = null
+ 	dialog._refresh.pressed.emit()
+ 	await settle()
+-	check(dialog._rows.get_child_count() == 0 and dialog._status.text == "No verified times today.","empty daily board never substitutes all-time records")
++	check(dialog._rows.get_child_count() == 0 and dialog._status.text == "No flying laps yet.","empty flying-lap board never substitutes race totals")
+ 	await capture("empty")
+ 	service.scores = scores("kart")
+ 	service.scores.data.version_id = "00000000-0000-0000-0000-000000000005"
+diff --git a/game/tests/test_track_of_day_presentation.gd b/game/tests/test_track_of_day_presentation.gd
+--- a/game/tests/test_track_of_day_presentation.gd
++++ b/game/tests/test_track_of_day_presentation.gd
+@@ -19,10 +19,12 @@
+ 	func signed_in() -> bool: return authenticated
+ 	func cancel_public_reads(_owner: int) -> void: pass
+ 	func request_public(_path: String, _owner: int) -> Dictionary:
++		if _path != "/track-of-the-day": return {"ok":false}
+ 		public_calls += 1
+ 		if held: await released
+ 		return response.duplicate(true)
+ 	func request_api(_path: String, _method: int, _body: Dictionary, _key: String, _auth: bool) -> Dictionary:
++		if _path != "/track-of-the-day": return {"ok":false}
+ 		private_calls += 1
+ 		if held: await released
+ 		return response.duplicate(true)
+@@ -110,7 +112,7 @@
+ 		if not baseline:
+ 			check(scroll.get_global_rect().encloses(page._race.get_global_rect()),"race action visible without scrolling "+str(dimensions))
+ 			var hero: Control = page.find_child("DailyTrackCard",true,false)
+-			check(hero != null and hero.size.x >= 400 and hero.size.y >= 400,"featured route has a substantial display area "+str(dimensions))
++			check(hero != null and hero.size.x >= 400 and hero.size.x*hero.size.y >= 160000,"featured route has a substantial display area "+str(dimensions))
+ 	root.size = Vector2i(1280,720)
+ 	for theme_id: String in ["desert","winter","night_city","storm"]:
+ 		service.response = pick(theme_id)
+diff --git a/game/ui/daily_elimination_results.gd b/game/ui/daily_elimination_results.gd
+--- a/game/ui/daily_elimination_results.gd
++++ b/game/ui/daily_elimination_results.gd
+@@ -3,6 +3,7 @@
+ signal return_requested
+ var rules: RefCounted
+ var session: TrackSession
++var result_saved: bool = true
+ 
+ func _ready() -> void:
+ 	MenuStyle.fill(self)
+@@ -26,6 +27,19 @@
+ 	title.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+ 	column.add_child(title)
+ 	column.add_child(MenuStyle.label(tr("Stages passed: %d / 9") % rules.passed,24))
++	var award: int = preload("res://persistence/daily_progress.gd").tier(rules.passed)
++	if award > 0:
++		var medal_row := HBoxContainer.new()
++		column.add_child(medal_row)
++		var medal := preload("res://ui/daily_medal.gd").new()
++		medal.tier = award
++		medal.selected = true
++		medal.custom_minimum_size = Vector2(68,68)
++		medal_row.add_child(medal)
++		var earned: Label = MenuStyle.label(preload("res://persistence/daily_progress.gd").TITLES[award],26)
++		earned.size_flags_vertical = Control.SIZE_SHRINK_CENTER
++		medal_row.add_child(earned)
++	if not result_saved: column.add_child(MenuStyle.label("Daily result could not be saved.",18,true))
+ 	var grid := GridContainer.new()
+ 	grid.name = "DailyLapGrid"
+ 	grid.columns = 3
+diff --git a/game/ui/daily_medal.gd b/game/ui/daily_medal.gd
+new file mode 100644
+--- /dev/null
++++ b/game/ui/daily_medal.gd
+@@ -0,0 +1,49 @@
++extends Control
++## Engraved round medals share the menu palette and existing award laurels.
++var tier: int = 0
++var earned: bool = true
++var selected: bool = false
++const COLORS: Array[Color] = [Color("344e5b"),Color("bf805a"),Color("c4ced4"),Color("e9b63e"),Color("b6ecf5")]
++const LAUREL: Texture2D = preload("res://assets/ui/awards/laurel_left.svg")
++
++func _ready() -> void:
++	mouse_filter = Control.MOUSE_FILTER_IGNORE
++	resized.connect(queue_redraw)
++
++func _draw() -> void:
++	var center: Vector2 = size*0.5
++	var radius: float = minf(size.x,size.y)*0.39
++	var metal: Color = COLORS[clampi(tier,0,4)]
++	if not earned or tier == 0:
++		draw_arc(center,radius,0,TAU,64,metal.darkened(0.15),1.5,true)
++		return
++	draw_circle(center+Vector2(0,2),radius+1,Color("02080bcc"))
++	if selected: draw_arc(center,radius+3.5,0,TAU,64,COLORS[4] if tier == 4 else Color("e9eef2"),1.4,true)
++	for ring: int in range(14):
++		var amount: float = float(ring)/13
++		var color: Color = metal.lightened(0.32).lerp(metal.darkened(0.42),amount)
++		draw_circle(center,radius*(1.0-amount*0.2),color)
++	draw_circle(center,radius*0.78,metal.darkened(0.15))
++	draw_arc(center,radius*0.71,0,TAU,64,metal.lightened(0.23),0.8,true)
++	draw_arc(center,radius*0.93,PI,TAU,32,metal.lightened(0.6),1.3,true)
++	for side: int in [-1,1]:
++		var points := PackedVector2Array()
++		for index: int in range(15):
++			var angle: float = lerpf(0.35,2.5,float(index)/14)
++			points.append(center+Vector2(side*sin(angle)*radius*0.52,cos(angle)*radius*0.55))
++		draw_polyline(points,metal.lightened(0.28),0.9,true)
++		for index: int in range(5):
++			var angle: float = 0.5+index*0.32
++			var at: Vector2 = center+Vector2(side*sin(angle)*radius*0.52,cos(angle)*radius*0.55)
++			draw_line(at,at+Vector2(side*radius*0.15,-radius*0.12),metal.lightened(0.4),1.1,true)
++	var star := PackedVector2Array()
++	for index: int in range(10):
++		var angle: float = -PI/2+index*PI/5
++		star.append(center+Vector2(cos(angle),sin(angle))*radius*(0.34 if index%2 == 0 else 0.15))
++	draw_colored_polygon(star,metal.lightened(0.5))
++	if tier == 4:
++		var branch := Rect2(center.x-radius*1.4,center.y-radius, radius*0.4,radius*2)
++		draw_texture_rect(LAUREL,branch,false,COLORS[4])
++		draw_set_transform(Vector2(size.x,0),0,Vector2(-1,1))
++		draw_texture_rect(LAUREL,branch,false,COLORS[4])
++		draw_set_transform(Vector2.ZERO)
+diff --git a/game/ui/daily_medal.gd.uid b/game/ui/daily_medal.gd.uid
+new file mode 100644
+--- /dev/null
++++ b/game/ui/daily_medal.gd.uid
+@@ -0,0 +1 @@
++uid://b4bjywgrctgf4
+diff --git a/game/ui/daily_result_card.gd b/game/ui/daily_result_card.gd
+new file mode 100644
+--- /dev/null
++++ b/game/ui/daily_result_card.gd
+@@ -0,0 +1,260 @@
++extends PanelContainer
++signal race_requested
++signal standings_requested
++signal vehicle_selected(index: int)
++const Progress = preload("res://persistence/daily_progress.gd")
++const Medal = preload("res://ui/daily_medal.gd")
++const Rules = preload("res://race/daily_elimination.gd")
++var client: Node
++var records: LocalRecords
++var vehicle: String = "compact"
++var version: String = ""
++var day: int = 0
++var ends_at: int = 0
++var summary: Dictionary = {}
++var result: Dictionary = {}
++var preview: bool = false
++var race_button: Button
++var standings_button: Button
++var car_picker: OptionButton
++var _serial: int = 0
++var _heading: Label
++var _time: Label
++var _position: Label
++var _medals: HBoxContainer
++var _award: Label
++var _gap: Label
++var _target: Label
++var _rows: VBoxContainer
++
++func _ready() -> void:
++	name = "DailyRacePanel"
++	var style: StyleBoxFlat = MenuStyle.box(Color("0b1a26f5"),12)
++	style.border_color = Color("3b5362")
++	style.set_border_width_all(1)
++	style.set_corner_radius_all(10)
++	add_theme_stylebox_override("panel",style)
++	var column := VBoxContainer.new()
++	column.add_theme_constant_override("separation",0)
++	add_child(column)
++	_heading = MenuStyle.label("Your result",14,true)
++	column.add_child(_heading)
++	_time = MenuStyle.label("—",48)
++	_time.name = "DailyResultTime"
++	GameText.user_text(_time)
++	column.add_child(_time)
++	_position = MenuStyle.label("",16,true)
++	_position.name = "DailyResultPosition"
++	GameText.user_text(_position)
++	column.add_child(_position)
++	column.add_child(HSeparator.new())
++	var awards := HBoxContainer.new()
++	awards.add_theme_constant_override("separation",12)
++	column.add_child(awards)
++	_medals = HBoxContainer.new()
++	_medals.add_theme_constant_override("separation",4)
++	awards.add_child(_medals)
++	_award = MenuStyle.label("",24)
++	_award.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
++	_award.size_flags_horizontal = Control.SIZE_EXPAND_FILL
++	_award.size_flags_vertical = Control.SIZE_SHRINK_CENTER
++	awards.add_child(_award)
++	_gap = MenuStyle.label("",20)
++	_gap.name = "DailyMedalGap"
++	_gap.add_theme_color_override("font_color",MenuStyle.ACCENT)
++	_gap.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
++	column.add_child(_gap)
++	_target = MenuStyle.label("",14,true)
++	_target.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
++	column.add_child(_target)
++	column.add_child(HSeparator.new())
++	var standings := HBoxContainer.new()
++	column.add_child(standings)
++	var heading: Label = MenuStyle.label("Standings",18,true)
++	heading.size_flags_horizontal = Control.SIZE_EXPAND_FILL
++	standings.add_child(heading)
++	standings_button = MenuStyle.button("View all",func() -> void: standings_requested.emit())
++	standings_button.name = "DailyStandingsButton"
++	standings_button.custom_minimum_size.y = 26
++	standings_button.add_theme_font_size_override("font_size",18)
++	for state: String in ["normal","hover","pressed"]: standings_button.add_theme_stylebox_override(state,MenuStyle.box(Color.TRANSPARENT,2))
++	standings_button.add_theme_color_override("font_color",MenuStyle.ACCENT)
++	standings.add_child(standings_button)
++	_rows = VBoxContainer.new()
++	_rows.name = "DailyNearbyStandings"
++	_rows.add_theme_constant_override("separation",2)
++	column.add_child(_rows)
++	var space := Control.new()
++	space.size_flags_vertical = Control.SIZE_EXPAND_FILL
++	column.add_child(space)
++	car_picker = OptionButton.new()
++	car_picker.name = "DailyCar"
++	car_picker.custom_minimum_size.y = 40
++	car_picker.add_theme_font_size_override("font_size",20)
++	for state: String in ["normal","hover","pressed"]: car_picker.add_theme_stylebox_override(state,MenuStyle.box(MenuStyle.PANEL,6))
++	car_picker.clip_text = true
++	for title: String in VehicleCatalog.NAMES: car_picker.add_item(title)
++	car_picker.select(VehicleCatalog.IDS.find(vehicle))
++	car_picker.item_selected.connect(func(index: int) -> void:
++		vehicle = VehicleCatalog.IDS[index]
++		vehicle_selected.emit(index)
++		refresh())
++	column.add_child(car_picker)
++	race_button = MenuStyle.button("Race",func() -> void: race_requested.emit(),true)
++	race_button.name = "DailyRace"
++	race_button.custom_minimum_size.y = 48
++	for state: String in ["normal","hover","pressed"]: race_button.get_theme_stylebox(state).set_content_margin_all(6)
++	race_button.icon = MenuIcon.texture("arrow")
++	race_button.icon_alignment = HORIZONTAL_ALIGNMENT_RIGHT
++	race_button.add_theme_color_override("icon_normal_color",MenuStyle.INK)
++	column.add_child(race_button)
++	race_button.disabled = true
++	standings_button.disabled = true
++	_render()
++
++func _scope() -> String:
++	return str([client.base_url() if client != null and client.has_method("base_url") else "",_player().get("id","guest"),day,version,vehicle])
++
++func _player() -> Dictionary:
++	var value: Variant = client.get("player") if client != null and client.signed_in() else null
++	return value if value is Dictionary else {}
++
++func configure(next_day: int, next_version: String, end: int) -> void:
++	day = next_day
++	version = next_version
++	ends_at = end
++	refresh()
++
++func refresh() -> void:
++	_serial += 1
++	summary = {}
++	result = Progress.best(Progress.load_entries(records),day,version,vehicle)
++	car_picker.select(VehicleCatalog.IDS.find(vehicle))
++	_render()
++	if preview or version.is_empty() or client == null: return
++	var serial: int = _serial
++	var scope: String = _scope()
++	var path: String = "/track-of-the-day/lap-standings?day=%d&version_id=%s&vehicle_id=%s&limit=3&around=true" % [day,version.uri_encode(),vehicle.uri_encode()]
++	if not result.is_empty(): path += "&lap_ticks=%d" % maxi(1,roundi(float(result.best_ms)*0.12))
++	var response: Dictionary = await client.request_api(path,HTTPClient.METHOD_GET,{},"",true) if client.signed_in() else await client.request_public(path,get_instance_id())
++	if not is_inside_tree() or serial != _serial or scope != _scope(): return
++	var data: Dictionary = response.get("data",{}) if response.get("data") is Dictionary else {}
++	if response.get("ok",false) and _valid(data):
++		summary = data.duplicate(true)
++	_render()
++
++func _valid(data: Dictionary) -> bool:
++	if data.get("day") != day or data.get("version_id") != version or data.get("vehicle_id") != vehicle or data.get("ends_at") != ends_at: return false
++	if not _whole(data.get("server_now")) or int(data.server_now) < day*86400 or int(data.server_now) >= ends_at or not _whole(data.get("population")) or int(data.population) < 1: return false
++	if not data.get("items") is Array or data.items.size() > 3 or not data.get("cutoffs") is Array or data.cutoffs.size() != 9: return false
++	var previous: int = 216000
++	for index: int in range(9):
++		var cutoff: Variant = data.cutoffs[index]
++		if not cutoff is Dictionary or cutoff.get("percentile") != Progress.PERCENTILES[index] or not _whole(cutoff.get("lap_ticks")): return false
++		if int(cutoff.lap_ticks) < 1 or int(cutoff.lap_ticks) > previous: return false
++		previous = int(cutoff.lap_ticks)
++	for row: Variant in data.items:
++		if not row is Dictionary or not row.get("display_name") is String: return false
++		if not _whole(row.get("rank")) or int(row.rank) < 1 or int(row.rank) > int(data.population) or not _whole(row.get("time_ticks")) or int(row.time_ticks) < 1 or int(row.time_ticks) > 216000: return false
++	if data.get("comparison") != null:
++		if not data.comparison is Dictionary: return false
++		for field: String in ["position","population","top_percent","candidate_ticks"]:
++			if not _whole(data.comparison.get(field)) or int(data.comparison[field]) < 1: return false
++		if int(data.comparison.position) > int(data.comparison.population) or int(data.comparison.top_percent) > 100 or int(data.comparison.candidate_ticks) > 216000: return false
++	return true
++
++func _whole(value: Variant) -> bool:
++	return (value is int or value is float) and is_finite(float(value)) and float(value) == floor(float(value))
++
++func invalidate() -> void:
++	_serial += 1
++	summary = {}
++	result = {}
++	version = ""
++	_render()
++
++func _render() -> void:
++	if not is_instance_valid(_time): return
++	var played: bool = not result.is_empty()
++	_time.text = Rules.time_text(float(result.best_ms)/1000.0) if played else "—"
++	_position.text = ""
++	if played and summary.get("comparison") is Dictionary:
++		var position: Dictionary = summary.comparison
++		_position.text = "#%d / %s  ·  %s" % [int(position.get("position",0)),str(int(position.get("population",0))),tr("Top %d%%") % int(position.get("top_percent",100))]
++	for child: Node in _medals.get_children():
++		_medals.remove_child(child)
++		child.queue_free()
++	var tier: int = Progress.tier(int(result.get("passed",0)))
++	for level: int in range(1,4):
++		var medal := Medal.new()
++		medal.tier = level
++		medal.earned = tier >= level
++		medal.selected = tier == level
++		medal.custom_minimum_size = Vector2(42,42)
++		_medals.add_child(medal)
++	if tier == 4:
++		var medal := Medal.new()
++		medal.tier = 4
++		medal.selected = true
++		medal.custom_minimum_size = Vector2(50,42)
++		_medals.add_child(medal)
++	_award.text = tr(Progress.TITLES[tier])
++	_award.modulate = Medal.COLORS[4] if tier == 4 else Color.WHITE
++	_gap.text = ""
++	_target.text = ""
++	if tier == 4:
++		_gap.text = tr("Top 1% — challenge complete")
++	elif summary.get("cutoffs") is Array and summary.cutoffs.size() == 9:
++		var next_stage: int = [0,3,5,8][tier]
++		var target: float = float(summary.cutoffs[next_stage].lap_ticks)/120.0
++		var percent: int = Progress.PERCENTILES[next_stage]
++		var next_title: String = tr(Progress.TITLES[tier+1])
++		var gap: float = float(result.get("best_ms",0))/1000.0-target
++		_gap.text = tr("%.3f s to %s") % [gap,next_title] if played and gap > 0 else tr("Pass top %d%%: %s") % [percent,next_title]
++		_target.text = tr("Target %s") % Rules.time_text(target)
++	else:
++		_gap.text = tr("Bronze 75% · Silver 40% · Gold 20%")
++		_target.text = tr("Top 1% earns Elite")
++	race_button.text = tr("Race again") if played else tr("Race")
++	_render_rows()
++
++func _render_rows() -> void:
++	for child: Node in _rows.get_children():
++		_rows.remove_child(child)
++		child.queue_free()
++	var rows: Array = summary.get("items",[]).duplicate(true)
++	if not result.is_empty() and summary.get("comparison") is Dictionary:
++		var own: Dictionary = summary.comparison
++		rows.append({"rank":int(own.position),"time_ticks":int(own.candidate_ticks),"time_ms":int(result.best_ms),"display_name":str(_player().get("display_name",tr("You"))),"self":true})
++	rows.sort_custom(func(a: Dictionary,b: Dictionary) -> bool: return int(a.time_ticks) < int(b.time_ticks))
++	if rows.is_empty():
++		var empty: Label = MenuStyle.label("No flying laps yet." if not version.is_empty() and not summary.is_empty() else "Standings unavailable",16,true)
++		empty.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
++		_rows.add_child(empty)
++	for value: Variant in rows.slice(0,3):
++		if not value is Dictionary or not value.get("display_name") is String: continue
++		var row: Dictionary = value
++		var panel := PanelContainer.new()
++		panel.name = "DailyNearbySelf" if row.get("self",false) else "DailyNearbyRow"
++		var style: StyleBoxFlat = MenuStyle.box(Color("ffd34818") if row.get("self",false) else Color.TRANSPARENT,3)
++		if row.get("self",false):
++			style.border_width_left = 3
++			style.border_color = MenuStyle.ACCENT
++		panel.add_theme_stylebox_override("panel",style)
++		_rows.add_child(panel)
++		var columns := HBoxContainer.new()
++		panel.add_child(columns)
++		var rank: Label = MenuStyle.user_label(str(int(row.get("rank",0))),16)
++		rank.custom_minimum_size.x = 30
++		columns.add_child(rank)
++		var driver: Label = MenuStyle.user_label(str(row.display_name),16)
++		driver.size_flags_horizontal = Control.SIZE_EXPAND_FILL
++		driver.text_overrun_behavior = TextServer.OVERRUN_TRIM_ELLIPSIS
++		columns.add_child(driver)
++		var seconds: float = float(row.time_ms)/1000.0 if row.has("time_ms") else float(row.get("time_ticks",0))/120.0
++		var time: Label = MenuStyle.user_label(Rules.time_text(seconds),16)
++		time.add_theme_color_override("font_color",MenuStyle.ACCENT if row.get("self",false) else MenuStyle.TEXT)
++		columns.add_child(time)
++
++func _exit_tree() -> void:
++	if is_instance_valid(client): client.cancel_public_reads(get_instance_id())
+diff --git a/game/ui/daily_result_card.gd.uid b/game/ui/daily_result_card.gd.uid
+new file mode 100644
+--- /dev/null
++++ b/game/ui/daily_result_card.gd.uid
+@@ -0,0 +1 @@
++uid://dmxp4by7722nb
+diff --git a/game/ui/daily_standings.gd b/game/ui/daily_standings.gd
+--- a/game/ui/daily_standings.gd
++++ b/game/ui/daily_standings.gd
+@@ -10,6 +10,7 @@
+ var day: int
+ var ends_at: int
+ var server_now: int
++var flying_laps: bool = false
+ var busy: bool = false
+ var _sample_msec: int
+ var _serial: int = 0
+@@ -96,7 +97,7 @@
+ 	identity.add_child(_cars)
+ 	var context := HBoxContainer.new()
+ 	body.add_child(context)
+-	var caption: Label = MenuStyle.label("Today's verified races (UTC)",16,true)
++	var caption: Label = MenuStyle.label("Best flying laps" if flying_laps else "Today's verified races (UTC)",16,true)
+ 	caption.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+ 	context.add_child(caption)
+ 	context.add_child(MenuStyle.label(Time.get_date_string_from_unix_time(day*86400),16,true))
+@@ -125,7 +126,7 @@
+ 	_own.name = "DailyOwnResult"
+ 	_own.add_theme_constant_override("separation",6)
+ 	body.add_child(_own)
+-	var footer: Label = MenuStyle.label("One best time per driver and car.",15,true)
++	var footer: Label = MenuStyle.label("One best flying lap per driver and car." if flying_laps else "One best time per driver and car.",15,true)
+ 	footer.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+ 	body.add_child(footer)
+ 	var actions := HBoxContainer.new()
+@@ -211,6 +212,7 @@
+ 	_status.text = "Loading verified scores…"
+ 	for button: Button in [_previous,_next,_refresh]: button.disabled = true
+ 	var path: String = "/track-of-the-day/standings?day=%d&version_id=%s&vehicle_id=%s&limit=10" % [day,version.uri_encode(),vehicle.uri_encode()]
++	if flying_laps: path = path.replace("/standings?","/lap-standings?")
+ 	if not _cursors[_page].is_empty(): path += "&cursor="+_cursors[_page].uri_encode()
+ 	var response: Dictionary = await client.request_api(path,HTTPClient.METHOD_GET,{},"",true) if client.signed_in() else await client.request_public(path,get_instance_id())
+ 	if not is_inside_tree() or serial != _serial or scope != _scope() or _expired: return
+@@ -229,11 +231,11 @@
+ 		_status.text = GameText.message("%d verified racers\n\n").strip_edges() % int(data.population)
+ 		for item: Dictionary in data.items:
+ 			_rows.add_child(_row(item,str(item.player_id) == str(client.player.get("id","")) and client.signed_in()))
+-		if data.items.is_empty(): _status.text = "No verified times today."
++		if data.items.is_empty(): _status.text = "No flying laps yet." if flying_laps else "No verified times today."
+ 		if client.signed_in():
+-			_own.add_child(MenuStyle.label("Your best today",16,true))
++			_own.add_child(MenuStyle.label("Your best lap" if flying_laps else "Your best today",16,true))
+ 			if data.get("player") is Dictionary: _own.add_child(_row(data.player,true,true))
+-			else: _own.add_child(MenuStyle.label("Complete a verified race to appear here.",16,true))
++			else: _own.add_child(MenuStyle.label("No verified lap yet." if flying_laps else "Complete a verified race to appear here.",16,true))
+ 		else: _own.add_child(MenuStyle.label("Sign in to record a verified time.",16,true))
+ 		_next_cursor = str(data.next_cursor) if data.get("next_cursor") is String else ""
+ 	_previous.disabled = _page == 0
+diff --git a/game/ui/daily_week.gd b/game/ui/daily_week.gd
+new file mode 100644
+--- /dev/null
++++ b/game/ui/daily_week.gd
+@@ -0,0 +1,47 @@
++extends PanelContainer
++const Progress = preload("res://persistence/daily_progress.gd")
++const Medal = preload("res://ui/daily_medal.gd")
++var entries: Dictionary = {}
++var day: int = 0
++var vehicle: String = "compact"
++
++func _ready() -> void: refresh()
++
++func refresh() -> void:
++	for child: Node in get_children():
++		remove_child(child)
++		child.queue_free()
++	var style: StyleBoxFlat = MenuStyle.box(Color("0b1a26e8"),12)
++	style.border_color = Color("3b5362")
++	style.set_border_width_all(1)
++	style.set_corner_radius_all(10)
++	add_theme_stylebox_override("panel",style)
++	var row := HBoxContainer.new()
++	row.add_theme_constant_override("separation",4)
++	add_child(row)
++	var awards: Array[int] = Progress.week(entries,day,vehicle)
++	var today: int = posmod(day+3,7)
++	for index: int in range(7):
++		var column := VBoxContainer.new()
++		column.name = "DailyWeekDay%d" % index
++		column.size_flags_horizontal = Control.SIZE_EXPAND_FILL
++		column.add_theme_constant_override("separation",3)
++		row.add_child(column)
++		var label: Label = MenuStyle.label(["Mon","Tue","Wed","Thu","Fri","Sat","Sun"][index],14,true)
++		label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
++		column.add_child(label)
++		var icon := Medal.new()
++		icon.tier = maxi(0,awards[index])
++		icon.custom_minimum_size = Vector2(28,32)
++		icon.size_flags_horizontal = Control.SIZE_SHRINK_CENTER
++		column.add_child(icon)
++		if awards[index] < 0:
++			icon.hide()
++			var dash: Label = MenuStyle.label("—",26,true)
++			dash.custom_minimum_size.y = 32
++			dash.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
++			column.add_child(dash)
++		var underline := ColorRect.new()
++		underline.color = MenuStyle.ACCENT if today == index else Color.TRANSPARENT
++		underline.custom_minimum_size.y = 3
++		column.add_child(underline)
+diff --git a/game/ui/daily_week.gd.uid b/game/ui/daily_week.gd.uid
+new file mode 100644
+--- /dev/null
++++ b/game/ui/daily_week.gd.uid
+@@ -0,0 +1 @@
++uid://das5cdor5vnwa
+diff --git a/game/ui/track_of_day_art.gd b/game/ui/track_of_day_art.gd
+--- a/game/ui/track_of_day_art.gd
++++ b/game/ui/track_of_day_art.gd
+@@ -19,7 +19,7 @@
+ 		_shade.gradient = gradient
+ 
+ func reserve_caption(height: float) -> void:
+-	caption_height = height+56
++	caption_height = height+12
+ 	_projected_size = Vector2(-1,-1)
+ 	queue_redraw()
+ 
+@@ -28,7 +28,7 @@
+ 	_draw_terrain(area)
+ 	if _shade != null: draw_texture_rect(_shade,Rect2(0,size.y*0.42,size.x,size.y*0.58),false)
+ 	# Keep the actual route above the title instead of laying text over its corners.
+-	_draw_route(Rect2(20,36,maxf(1,size.x-40),maxf(1,size.y-caption_height-44)))
++	_draw_route(Rect2(20,12,maxf(1,size.x-40),maxf(1,size.y-caption_height-12)))
+ 	var frame: StyleBoxFlat = MenuStyle.box(Color.TRANSPARENT,0)
+ 	frame.set_corner_radius_all(10)
+ 	frame.set_border_width_all(2 if has_focus() else 1)
+diff --git a/game/ui/track_of_day_page.gd b/game/ui/track_of_day_page.gd
+--- a/game/ui/track_of_day_page.gd
++++ b/game/ui/track_of_day_page.gd
+@@ -8,6 +8,10 @@
+ const Badge = preload("res://ui/biome_badge.gd")
+ var client: Node
+ var cloud: Node
++var records: LocalRecords
++var _week_strip: PanelContainer
++var _header_row: HBoxContainer
++var _header_identity: VBoxContainer
+ var page_preview: bool = false
+ var cached_state: Dictionary = {}
+ var entry: Dictionary = {}
+@@ -49,7 +53,7 @@
+ 	add_child(scroll)
+ 	var column := VBoxContainer.new()
+ 	column.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+-	column.add_theme_constant_override("separation",20)
++	column.add_theme_constant_override("separation",12)
+ 	scroll.add_child(column)
+ 	_build_header(column)
+ 	_stage = Control.new()
+@@ -58,6 +62,9 @@
+ 	column.add_child(_stage)
+ 	_build_hero()
+ 	_build_race_panel()
++	_week_strip = preload("res://ui/daily_week.gd").new()
++	_week_strip.name = "DailyWeek"
++	_stage.add_child(_week_strip)
+ 	_stage.resized.connect(_arrange)
+ 	_race_panel.minimum_size_changed.connect(_arrange.call_deferred)
+ 	_arrange.call_deferred()
+@@ -80,9 +87,11 @@
+ 
+ func _build_header(parent: Control) -> void:
+ 	var header := HBoxContainer.new()
++	_header_row = header
+ 	header.add_theme_constant_override("separation",24)
+ 	parent.add_child(header)
+ 	var identity := VBoxContainer.new()
++	_header_identity = identity
+ 	identity.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+ 	identity.add_theme_constant_override("separation",4)
+ 	header.add_child(identity)
+@@ -105,14 +114,6 @@
+ 	GameText.user_text(_countdown)
+ 	row.add_child(_countdown)
+ 	_countdown_panel.hide()
+-	_standings_button = MenuStyle.button("Standings",_open_standings)
+-	_standings_button.name = "DailyStandingsButton"
+-	_standings_button.size_flags_vertical = Control.SIZE_SHRINK_CENTER
+-	_standings_button.icon = preload("res://ui/race_mode_icons.gd").texture("trophy")
+-	_standings_button.expand_icon = true
+-	_standings_button.add_theme_constant_override("icon_max_width",24)
+-	_standings_button.disabled = true
+-	header.add_child(_standings_button)
+ 
+ func _build_hero() -> void:
+ 	_hero = PanelContainer.new()
+@@ -147,77 +148,61 @@
+ 	_state.add_child(_status)
+ 
+ func _build_race_panel() -> void:
+-	_race_panel = PanelContainer.new()
+-	_race_panel.name = "DailyRacePanel"
+-	_race_panel.add_theme_stylebox_override("panel",_panel_style(24))
+-	_stage.add_child(_race_panel)
+-	var column := VBoxContainer.new()
+-	column.add_theme_constant_override("separation",12)
+-	_race_panel.add_child(column)
+-	_race_heading = MenuStyle.label("Race",30)
+-	_race_heading.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+-	column.add_child(_race_heading)
+-	var format_row := HBoxContainer.new()
+-	format_row.add_child(_icon("flag",22,MenuStyle.MUTED))
+-	var format_label: Label = MenuStyle.label("1 opening lap + 9 flying laps",20,true)
+-	format_label.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+-	format_label.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+-	format_row.add_child(format_label)
+-	column.add_child(format_row)
+-	var rules: Label = MenuStyle.label("Beat the lap limit to survive.",16,true)
+-	rules.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+-	column.add_child(rules)
+-	_rating_row = HBoxContainer.new()
+-	_rating_row.add_child(_icon("star_filled",20,MenuStyle.ACCENT))
+-	_rating = MenuStyle.label("",18)
+-	GameText.user_text(_rating)
+-	_rating_row.add_child(_rating)
+-	column.add_child(_rating_row)
+-	_rating_row.hide()
+-	column.add_child(HSeparator.new())
+-	column.add_child(MenuStyle.label("Choose car",16,true))
+-	var cars := OptionButton.new()
+-	cars.name = "DailyCar"
+-	cars.custom_minimum_size.y = 54
+-	cars.tooltip_text = "Choose car"
+-	cars.add_theme_font_size_override("font_size",20)
+-	cars.clip_text = true
+-	for title_text: String in VehicleCatalog.NAMES: cars.add_item(title_text)
+-	cars.select(VehicleCatalog.IDS.find(VehicleCatalog.selected))
+-	cars.item_selected.connect(func(index: int) -> void: vehicle_selected.emit(index))
+-	column.add_child(cars)
+-	var space := Control.new()
+-	space.size_flags_vertical = Control.SIZE_EXPAND_FILL
+-	column.add_child(space)
+-	_race = MenuStyle.button("Race",_request_race,true)
+-	_race.name = "DailyRace"
+-	_race.custom_minimum_size.y = 64
+-	_race.icon = MenuIcon.texture("arrow")
+-	_race.icon_alignment = HORIZONTAL_ALIGNMENT_RIGHT
+-	_race.add_theme_constant_override("h_separation",14)
+-	_race.add_theme_color_override("icon_normal_color",MenuStyle.INK)
+-	_race.add_theme_color_override("icon_hover_color",MenuStyle.INK)
+-	_race.add_theme_font_size_override("font_size",28)
+-	_race.disabled = true
+-	column.add_child(_race)
++	var card := preload("res://ui/daily_result_card.gd").new()
++	card.client = client
++	card.records = records
++	card.vehicle = VehicleCatalog.selected
++	card.preview = page_preview
++	_stage.add_child(card)
++	_race_panel = card
++	_race = card.race_button
++	_standings_button = card.standings_button
++	_race_heading = card._heading
++	card.race_requested.connect(_request_race)
++	card.standings_requested.connect(_open_standings)
++	card.vehicle_selected.connect(func(index: int) -> void:
++		vehicle_selected.emit(index)
++		_update_week())
++	# Retain the existing error/retry boundary while the result panel is loading.
+ 	_retry = MenuStyle.button("Retry",refresh,true)
+ 	_retry.name = "DailyRetry"
+-	column.add_child(_retry)
++	card.get_child(0).add_child(_retry)
+ 	_retry.hide()
+-	for button: Button in [_race,_retry]:
+-		for state: String in ["font_focus_color","icon_focus_color","icon_pressed_color"]:
+-			button.add_theme_color_override(state,MenuStyle.INK)
++	_rating_row = HBoxContainer.new()
++	_rating = MenuStyle.label("",18)
++	_rating_row.add_child(_rating)
++	card.get_child(0).add_child(_rating_row)
++	_rating_row.hide()
++
++func _update_week() -> void:
++	if not is_instance_valid(_week_strip): return
++	_week_strip.entries = preload("res://persistence/daily_progress.gd").load_entries(records)
++	_week_strip.day = _server_now/86400
++	_week_strip.vehicle = VehicleCatalog.selected
++	_week_strip.refresh()
+ 
+ func _arrange() -> void:
+-	if not is_instance_valid(_race_panel): return
++	if not is_instance_valid(_race_panel) or not is_instance_valid(_week_strip): return
+ 	var width: float = _stage.size.x
++	var compact_header: bool = width < 620
++	var timer_parent: Node = _header_identity if compact_header else _header_row
++	if _countdown_panel.get_parent() != timer_parent:
++		_countdown_panel.reparent(timer_parent)
++	_countdown_panel.size_flags_horizontal = Control.SIZE_SHRINK_BEGIN if compact_header else Control.SIZE_FILL
++	_countdown_panel.add_theme_stylebox_override("panel",_panel_style(8 if compact_header else 16))
++	_countdown.add_theme_font_size_override("font_size",16 if compact_header else 20)
+ 	var height: float = maxf(440,_race_panel.get_combined_minimum_size().y)
+-	var stacked: bool = width < 860
+-	_stage.custom_minimum_size.y = height+460 if stacked else height
++	var stacked: bool = width < 740
++	var side_width: float = minf(340,width*0.34)
++	var left_width: float = width if stacked else maxf(200,width-side_width-18)
++	var hero_height: float = clampf(left_width*0.9,320,440) if stacked else height-104
++	_stage.custom_minimum_size.y = hero_height+104+height+18 if stacked else height
+ 	_hero.position = Vector2.ZERO
+-	_hero.size = Vector2(width if stacked else maxf(200,width-360),440 if stacked else height)
+-	_race_panel.position = Vector2(0,460) if stacked else Vector2(width-340,0)
+-	_race_panel.size = Vector2(width if stacked else 340,height)
++	_hero.size = Vector2(left_width,hero_height)
++	_week_strip.position = Vector2(0,hero_height+12)
++	_week_strip.size = Vector2(left_width,92)
++	_race_panel.position = Vector2(0,hero_height+122) if stacked else Vector2(width-side_width,0)
++	_race_panel.size = Vector2(width if stacked else side_width,height)
+ 
+ func _panel_style(padding: int) -> StyleBoxFlat:
+ 	var style: StyleBoxFlat = MenuStyle.box(Color("0b1a26f5"),padding)
+@@ -243,6 +228,7 @@
+ 	card.size_flags_vertical = Control.SIZE_EXPAND_FILL
+ 	card.pressed.connect(_request_race)
+ 	_card_slot.add_child(card)
++	card.custom_minimum_size = Vector2(160,220)
+ 	var inset := MarginContainer.new()
+ 	inset.mouse_filter = Control.MOUSE_FILTER_IGNORE
+ 	for side: String in ["left","right","top","bottom"]: inset.add_theme_constant_override("margin_"+side,28)
+@@ -285,14 +271,18 @@
+ 	caption.add_child(creator)
+ 	caption.resized.connect(func() -> void: card.reserve_caption(caption.size.y))
+ 	_update_rating()
+-	_rating_row.show()
++	_rating_row.hide()
+ 	_card_slot.show()
++	_week_strip.show()
+ 	_state.hide()
+ 	_countdown_panel.show()
+ 	_status.hide()
+ 	_race.disabled = false
+ 	_standings_button.disabled = false
+-	_race_heading.text = "Ready to race?"
++	_race_panel.client = client
++	_race_panel.records = records
++	_race_panel.configure(_server_now/86400,str(entry.version_id),_ends_at)
++	_update_week()
+ 	_arrange.call_deferred()
+ 
+ func _update_rating() -> void:
+@@ -310,6 +300,11 @@
+ 	page_preview = false
+ 	var cars: OptionButton = find_child("DailyCar",true,false)
+ 	if cars != null: cars.select(VehicleCatalog.IDS.find(VehicleCatalog.selected))
++	_race_panel.preview = false
++	_race_panel.vehicle = VehicleCatalog.selected
++	if not entry.is_empty():
++		_race_panel.refresh()
++		_update_week()
+ 	if entry.is_empty() and not _busy: refresh()
+ 
+ func refresh() -> void:
+@@ -320,7 +315,8 @@
+ 	_ends_at = 0
+ 	_last_second = -1
+ 	_race.disabled = true
+-	_race_heading.text = "Race"
++	_race_panel.invalidate()
++	_week_strip.hide()
+ 	_standings_button.disabled = true
+ 	_retry.hide()
+ 	_card_slot.hide()
+@@ -388,6 +384,7 @@
+ 		_standings.popup_centered()
+ 		return
+ 	var dialog := preload("res://ui/daily_standings.gd").new()
++	dialog.flying_laps = true
+ 	dialog.client = client
+ 	dialog.cloud = cloud
+ 	dialog.version = str(entry.version_id)
+@@ -396,7 +393,11 @@
+ 	dialog.day = _server_now/86400
+ 	dialog.ends_at = _ends_at
+ 	dialog.server_now = _server_now+int((Time.get_ticks_msec()-_sample_msec)/1000)
+-	dialog.vehicle_selected.connect(func(index: int) -> void: vehicle_selected.emit(index))
++	dialog.vehicle_selected.connect(func(index: int) -> void:
++		vehicle_selected.emit(index)
++		_race_panel.vehicle = VehicleCatalog.IDS[index]
++		_race_panel.refresh()
++		_update_week())
+ 	dialog.day_changed.connect(refresh)
+ 	_standings = dialog
+ 	add_child(dialog)
+diff --git a/scripts/translations/daily_medal_page.tsv b/scripts/translations/daily_medal_page.tsv
+new file mode 100644
+--- /dev/null
++++ b/scripts/translations/daily_medal_page.tsv
+@@ -0,0 +1,26 @@
++Your result|Votre résultat|Tu resultado|Dein Ergebnis|Seu resultado|あなたの記録|내 기록|Jouw resultaat|Il tuo risultato|Oma tulos|Ditt resultat|Ditt resultat
++View all|Tout voir|Ver todos|Alle anzeigen|Ver todos|すべて見る|전체 보기|Alles tonen|Mostra tutto|Näytä kaikki|Visa alla|Vis alle
++%.3f s to %s|%.3f s pour %s|%.3f s para %s|%.3f s bis %s|%.3f s para %s|あと%.3f秒で%s|%.3f초 단축하면 %s|%.3f s tot %s|%.3f s a %s|%.3f s tasoon %s|%.3f s till %s|%.3f s til %s
++Pass top %d%%: %s|Passez le top %d%% : %s|Supera el top %d%%: %s|Schaffe Top %d%%: %s|Passe o top %d%%: %s|上位%d%%クリア：%s|상위 %d%% 통과: %s|Haal top %d%%: %s|Supera il top %d%%: %s|Läpäise paras %d%%: %s|Klara topp %d%%: %s|Klar topp %d%%: %s
++Target %s|Objectif %s|Objetivo %s|Ziel %s|Meta %s|目標 %s|목표 %s|Doel %s|Obiettivo %s|Tavoite %s|Mål %s|Mål %s
++Bronze 75% · Silver 40% · Gold 20%|Bronze 75% · Argent 40% · Or 20%|Bronce 75% · Plata 40% · Oro 20%|Bronze 75% · Silber 40% · Gold 20%|Bronze 75% · Prata 40% · Ouro 20%|銅75%・銀40%・金20%|동 75% · 은 40% · 금 20%|Brons 75% · Zilver 40% · Goud 20%|Bronzo 75% · Argento 40% · Oro 20%|Pronssi 75% · Hopea 40% · Kulta 20%|Brons 75% · Silver 40% · Guld 20%|Bronse 75% · Sølv 40% · Gull 20%
++Top 1% earns Elite|Le top 1% obtient Élite|El top 1% obtiene Élite|Top 1% erhält Elite|O top 1% ganha Elite|上位1%でエリート獲得|상위 1% 달성 시 엘리트|Top 1% verdient Elite|Il top 1% ottiene Élite|Paras 1% ansaitsee Eliitin|Topp 1% ger Elit|Topp 1% gir Elite
++No medal yet|Pas encore de médaille|Aún sin medalla|Noch keine Medaille|Ainda sem medalha|メダル未獲得|아직 메달 없음|Nog geen medaille|Ancora nessuna medaglia|Ei vielä mitalia|Ingen medalj än|Ingen medalje ennå
++Elite|Élite|Élite|Elite|Elite|エリート|엘리트|Elite|Élite|Eliitti|Elit|Elite
++No flying laps yet.|Aucun tour lancé pour le moment.|Aún no hay vueltas lanzadas.|Noch keine fliegenden Runden.|Ainda sem voltas lançadas.|計測周回はまだありません。|아직 플라잉 랩이 없습니다.|Nog geen vliegende ronden.|Ancora nessun giro lanciato.|Ei vielä lentäviä kierroksia.|Inga flygande varv än.|Ingen flygende runder ennå.
++Standings unavailable|Classement indisponible|Clasificación no disponible|Rangliste nicht verfügbar|Classificação indisponível|順位を取得できません|순위를 불러올 수 없음|Klassement niet beschikbaar|Classifica non disponibile|Sijoitukset eivät ole saatavilla|Resultatlistan är inte tillgänglig|Resultatlisten er ikke tilgjengelig
++Best flying laps|Meilleurs tours lancés|Mejores vueltas lanzadas|Beste fliegende Runden|Melhores voltas lançadas|ベスト計測周回|최고 플라잉 랩|Beste vliegende ronden|Migliori giri lanciati|Parhaat lentävät kierrokset|Bästa flygande varv|Beste flygende runder
++One best flying lap per driver and car.|Un meilleur tour lancé par pilote et voiture.|Una mejor vuelta lanzada por piloto y coche.|Eine beste fliegende Runde je Fahrer und Auto.|Uma melhor volta lançada por piloto e carro.|ドライバーと車ごとにベスト計測周回を1件記録。|드라이버와 차량별 최고 플라잉 랩 하나.|Eén beste vliegende ronde per coureur en auto.|Un miglior giro lanciato per pilota e auto.|Yksi paras lentävä kierros kuljettajaa ja autoa kohden.|Ett bästa flygande varv per förare och bil.|Én beste flygende runde per fører og bil.
++Your best lap|Votre meilleur tour|Tu mejor vuelta|Deine beste Runde|Sua melhor volta|あなたのベストラップ|내 베스트 랩|Jouw beste ronde|Il tuo miglior giro|Oma paras kierros|Ditt bästa varv|Din beste runde
++No verified lap yet.|Pas encore de tour vérifié.|Aún no hay vuelta verificada.|Noch keine verifizierte Runde.|Ainda sem volta verificada.|検証済みの周回はまだありません。|아직 검증된 랩이 없습니다.|Nog geen geverifieerde ronde.|Ancora nessun giro verificato.|Ei vielä varmennettua kierrosta.|Inget verifierat varv än.|Ingen verifisert runde ennå.
++Daily result could not be saved.|Le résultat du jour n'a pas pu être enregistré.|No se pudo guardar el resultado diario.|Das Tagesergebnis konnte nicht gespeichert werden.|Não foi possível salvar o resultado diário.|本日の記録を保存できませんでした。|오늘의 기록을 저장하지 못했습니다.|Het dagresultaat kon niet worden opgeslagen.|Impossibile salvare il risultato giornaliero.|Päivän tulosta ei voitu tallentaa.|Dagens resultat kunde inte sparas.|Dagens resultat kunne ikke lagres.
++Track of the Day|Circuit du jour|Circuito del día|Strecke des Tages|Pista do dia|本日のコース|오늘의 트랙|Circuit van de dag|Circuito del giorno|Päivän rata|Dagens bana|Dagens bane
++Lap time|Temps au tour|Tiempo de vuelta|Rundenzeit|Tempo da volta|ラップタイム|랩 타임|Rondetijd|Tempo sul giro|Kierrosaika|Varvtid|Rundetid
++Top %d%%|Top %d%%|Top %d%%|Top %d%%|Top %d%%|上位%d%%|상위 %d%%|Top %d%%|Top %d%%|Paras %d%%|Topp %d%%|Topp %d%%
++Mon|Lun|Lun|Mo|Seg|月|월|Ma|Lun|Ma|Mån|Man
++Tue|Mar|Mar|Di|Ter|火|화|Di|Mar|Ti|Tis|Tir
++Wed|Mer|Mié|Mi|Qua|水|수|Wo|Mer|Ke|Ons|Ons
++Thu|Jeu|Jue|Do|Qui|木|목|Do|Gio|To|Tor|Tor
++Fri|Ven|Vie|Fr|Sex|金|금|Vr|Ven|Pe|Fre|Fre
++Sat|Sam|Sáb|Sa|Sáb|土|토|Za|Sab|La|Lör|Lør
++Sun|Dim|Dom|So|Dom|日|일|Zo|Dom|Su|Sön|Søn

@@ -24,6 +24,8 @@ func tick(app: Node) -> void:
 	var force: bool = pressure_requested
 	var retry: bool = false
 	if app.has_method("_trim_hidden_garage") and (force or telemetry.optional_garage_bytes > GARAGE_BUDGET): app._trim_hidden_garage()
+	# The active scene keeps its own sky reference if this optional cache goes.
+	TrackTheme.trim_winter_sky()
 	if force:
 		preload("res://vehicle/effect_render_preparation.gd").trim_cache(app)
 		CompactDetail.trim_front_cache()
@@ -47,6 +49,7 @@ func tick(app: Node) -> void:
 	retry = not CreatorPropVisual.trim_cache() or retry
 	if is_instance_valid(app.editor_world): app.editor_world.trim_prop_cache()
 	if not force and retained(app).retained_bytes <= RETAINED_BUDGET: _finished(app,retry,force); return
+	preload("res://track/road_support_cache.gd").trim()
 	NativeTrackVisual.trim_editor_cache()
 	if force:
 		app.editor_session.primed = {}
@@ -75,7 +78,9 @@ static func retained(app: Node) -> Dictionary:
 	var scenes: int = app.editor_world.visual_cache_bytes if is_instance_valid(app.editor_world) else 0
 	var props: int = CreatorPropVisual.cache_bytes
 	var other: Dictionary = {"read_bytes":READS.bytes,"encoding_bytes":ENCODING.bytes,"race_world_bytes":WORLDS.bytes_used(),
+		"road_support_bytes":preload("res://track/road_support_cache.gd").bytes_used(),
 		"effect_preparation_bytes":preload("res://vehicle/effect_render_preparation.gd").cache_bytes(app),"front_fitting_bytes":CompactDetail.front_cache_bytes,
+		"winter_sky_bytes":TrackTheme.WINTER_SKY_ESTIMATED_BYTES if TrackTheme.winter_reflection_sky != null else 0,
 		"winter_source_bytes":preload("res://track/winter_road_snow_sources.gd").cache_bytes,
 		"garage_option_gpu_bytes":_option_texture_bytes(),
 		"thumbnail_bytes":ObjectThumbnail.cache_bytes,"boundary_bytes":RoadsideBoundary.cache_bytes,

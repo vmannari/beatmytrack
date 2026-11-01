@@ -24,11 +24,16 @@ func _prepare_mesh(car: CarVisual) -> void:
 		break
 	if mesh == null:
 		var rest: Node3D = preload("res://vehicle/prepared_car_cache.gd").rest_scene(car)
+		if rest == null: rest = _modular_rest_scene(car)
 		if rest == null: mesh = mesh_for(car)
 		else:
 			var tool := SurfaceTool.new()
 			tool.begin(Mesh.PRIMITIVE_TRIANGLES)
-			_append_local(rest,car.global_transform,car.global_transform.affine_inverse(),tool)
+			# Reproduce the construction-time model scale without using the live
+			# car's position or rotation. This also preserves the original order of
+			# floating-point operations when flattening the rest-pose geometry.
+			var canonical := Transform3D(Basis.from_scale(car.scale),Vector3.ZERO)
+			_append_local(rest,canonical,canonical.affine_inverse(),tool)
 			tool.generate_normals()
 			mesh = tool.commit()
 			rest.free()
@@ -38,6 +43,20 @@ func _prepare_mesh(car: CarVisual) -> void:
 			for entry: Dictionary in prepared_meshes: total += int(entry.bytes)
 			while not prepared_meshes.is_empty() and (prepared_meshes.size() >= 4 or total > MAX_BYTES): total -= int(prepared_meshes.pop_front().bytes)
 			prepared_meshes.append({"key":key,"mesh":mesh,"bytes":bytes})
+
+static func _modular_rest_scene(car: CarVisual) -> Node3D:
+	# Modular cars bypass the in-memory rest template. Build a detached copy from
+	# the same immutable modules so late ghost activation cannot capture the
+	# live car's steering, suspension, wheel rotation or world transform.
+	var rest := CarVisual.new()
+	rest.vehicle_id = car.vehicle_id
+	rest.simple_model = car.simple_model
+	rest.editable_kits = car.editable_kits
+	rest.batch_parts = car.batch_parts
+	rest.customisation = car.customisation.duplicate(true)
+	if rest._restore_modular_model(): return rest
+	rest.free()
+	return null
 
 func present(pose: Array) -> void:
 	visible = not pose.is_empty()

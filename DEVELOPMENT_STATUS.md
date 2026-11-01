@@ -1,3 +1,53 @@
+<!-- DAILY-FIXED-LIMITS-20261101 -->
+## Daily limits stay fixed; countdown and results simplified (2026-11-01)
+DFL01-DFL03/R01: Discovery publication atomically stores all car cutoffs in the daily row; reads/retries/PB changes/restarts never reselect them. Migration0072, preparation gates and concurrent-worker tests; next day renews. Countdown uses fixed-width tabular HH:MM; result cutoffs/Limit column and percentage hints removed. Focused backend12/0, retained backend16/0, native307/0 and medal-page88/0 pass; 60 catalogue checks and scoped Ruff pass. Sources, commands, captures, checked checkpoint and limits: [docs/DAILY_FIXED_LIMITS_2026_11_01.md](docs/DAILY_FIXED_LIMITS_2026_11_01.md). Matching migration/producer/API rollout, reload and owner/device acceptance remain. No live migration/deployment, owner-save mutation, phone test, owner restart or main-index write.
+<!-- /DAILY-FIXED-LIMITS-20261101 -->
+
+<!-- VOLT-CURVED-REAR-WINDOW-20261031 -->
+## Volt rear window follows the marked curve (2026-10-31)
+RGC01-RGC03: Lower backlight now bows rearward with gently curved glass and a shared fitted deck boundary. Actual full/simple32/32, fenders96/96, sports/parity104/104 across333 prepared meshes, modular44/44 and App58/58 pass. Six native views each desktop renderer and52 pictures refresh. Previous low front/roof, subtle arches, inset wheels and handling retained. [Before/after, commands and checked source checkpoint](docs/VOLT_CURVED_REAR_WINDOW_2026_10_31.md). Reload and owner appearance acceptance remain; no device test, owner-save/live mutation, deployment, owner restart or main-index write.
+<!-- /VOLT-CURVED-REAR-WINDOW-20261031 -->
+
+<!-- SAMPLER-BUDGET-FIX-20261031 -->
+## Compatibility surface sampler budget fixed (2026-10-31)
+SBF01-SBF03/R01/Q01: Inactive sampler pruning and branch-preserving bridge preparation reduce over-budget surfaces from42/96 to0/96 at the unchanged eight-sampler limit. Final component444/original63/consolidation141 checks pass; Mobile original-source289 checks pass. Final affected-biome Compatibility18 image checks and guarded Mobile Winter6 pass with byte-identical images; prior Winter Compatibility output retained and Night sources exact. Previous source-count reductions retained. First-use probes favor final Desert/Storm by5.46%/8.83%, with noisy small samples and no full-startup/device claim. Rejected Mobile candidate retained; renderer guard protects original output. [Evidence, commands and checked patch](docs/SAMPLER_BUDGET_FIX_2026_10_31.md). Reload and owner/device acceptance remain; no owner-save/session, device, backend, deployment or main-index write.
+<!-- /SAMPLER-BUDGET-FIX-20261031 -->
+
+<!-- DAILY-MEDAL-PAGE-20261031 -->
+## Daily track reference page and medals (2026-10-31)
+DMP01-DMP05/R01: Scenic feature, result/medal/target/nearby lap standings card and UTC week strip follow the supplied reference. Bronze clears75%, silver40%, gold20%; clearing1% earns a distinct platinum/laurel Elite award. Bounded atomic per-account/car daily progress retains best stages and flying laps. Final focused backend5/0, retained page77/0, standings35/0, App13/0 and rules101/0 pass; final native medal-page count, captures, source checkpoint and limitations: [docs/DAILY_MEDAL_PAGE_2026_10_31.md](docs/DAILY_MEDAL_PAGE_2026_10_31.md). Matching client/API rollout, reload and owner/device acceptance remain. No phone test, live/save mutation, deployment, owner restart or main-index write.
+<!-- /DAILY-MEDAL-PAGE-20261031 -->
+
+<!-- VOLT-SUBTLE-FENDERS-20261031 -->
+## Volt fenders softened into the electric body (2026-10-31)
+VSF01-VSF02: Former prominent rims reduced 78% with a broader body blend and thin dark inner edge. Front wheel inset and enclosed bays retained; procedural 96/96 and all 120 bay rays pass. Prepared assets and pictures refresh; reload, owner and phone acceptance remain. [Comparison and validation](docs/VOLT_SUBTLE_FENDERS_2026_10_31.md).
+<!-- /VOLT-SUBTLE-FENDERS-20261031 -->
+
+<!-- VOLT-WHEEL-FENDERS-20261031 -->
+## Volt wheel fit and formed fenders (2026-10-31)
+VWF01-VWF03: Front wheels inset 4.4 cm per side, four projecting rolled fenders and opaque enclosed wheelhouses close the reproduced see-through gaps. Actual mesh checks 96/96 procedural and prepared; all 120 bay rays block, full steering/rotation clears, hood/cabin arrays remain exact. Prepared 333-mesh parity and retained integration checks pass; nine final views each desktop renderer. Native assets and 52 pictures refresh. Reload, owner and phone acceptance remain. [Results and comparison](docs/VOLT_WHEEL_FENDERS_2026_10_31.md).
+<!-- /VOLT-WHEEL-FENDERS-20261031 -->
+
+<!-- SHADER-VARIANT-CONSOLIDATION-20261031 -->
+## Less cold road-shader work (2026-10-31)
+SVC01-SVC03/R01/Q01: Compatibility shares one fewer surface source in Desert, Storm and Night; controlled primed first-use work decreases 11.37%, 9.32% and 13.20%. Final source/binding/cache checks pass 141 each in headless Compatibility and native desktop Mobile; Compatibility image checks pass 18. Rejected Mobile image trial remains 18/5; final guard preserves its original sources. Existing Desert sampler 9/8 failure reproduces with the frozen original. Full startup, device and owner acceptance remain. [Commands, evidence and scope](docs/SHADER_VARIANT_CONSOLIDATION_2026_10_31.md).
+<!-- /SHADER-VARIANT-CONSOLIDATION-20261031 -->
+
+<!-- VOLT-SPORT-REDESIGN-20261031 -->
+## Volt sports redesign (2026-10-31)
+VSR01-VSR04: Windscreen base lowered 11.4 cm, roof lowered 9.8 cm and hood angle 13.05? to 6.93?, with sculpted flanks, formed bumper recesses, fitted optics, swept machined wheels and finished rear. Procedural 98/prepared 104 checks and exact 289-mesh parity pass; both desktop renderers have 18 final views. Prepared geometry, Electric Garage template and 52 pictures refresh. Owner appearance and phone acceptance remain. [Results, comparison and limitations](docs/VOLT_SPORT_REDESIGN_2026_10_31.md).
+<!-- /VOLT-SPORT-REDESIGN-20261031 -->
+
+<!-- DAILY-ELIMINATION-20261031 -->
+## Track of the Day flying-lap elimination (2026-10-31)
+DE01-DE04/R01: One unscored opening lap then nine independently judged flying laps, top75/60/50/40/30/20/10/5/1%. All-time compatible lap PB quantiles, frozen per attempt; ties pass, first miss ends at the line. Dedicated local results and retry; ordinary five-lap scores remain separate. Backend18pass, native rules/results107/0 and daily page77/0; final App/other checks, captures, scoped checkpoint and limitations: [docs/DAILY_ELIMINATION_2026_10_31.md](docs/DAILY_ELIMINATION_2026_10_31.md). Client/backend rollout, reload and owner acceptance remain. No device test, live/save mutation, deployment, owner restart or main-index write.
+<!-- /DAILY-ELIMINATION-20261031 -->
+
+<!-- LOADING-OPTIMISATION-20261031 -->
+## Repeat race loading improved (2026-10-31)
+LTO01–LTO03/R01: Exact bounded road-support reuse and discarded spline work removal. Actual-App Star repeat loading averages 1.992s with support-cache eviction versus 1.106s with reuse; 92 component and 567 race-preparation checks pass. Existing road-height 16 failures reproduce with old support. Cold shaders and Android acceptance remain. [Evidence, commands and checked task patch](docs/LOADING_OPTIMISATION_2026_10_31.md).
+<!-- /LOADING-OPTIMISATION-20261031 -->
+
 <!-- GARAGE-LOADING-20261030 -->
 ## Garage picture preparation overlap (2026-10-30)
 GL01-GL02/R01/Q01: Background PNG writes overlap the next native garage picture, with bounded queued images and memory accounting. Native Compatibility and desktop Mobile first-entry/restart checks and exact picture reuse pass. Cold shaders and phone performance remain open; [commands and limits](docs/GARAGE_LOADING_2026_10_30.md).

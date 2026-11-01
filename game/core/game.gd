@@ -117,6 +117,7 @@ var TRACK_NAMES: Array[String] = BuiltinTracks.ids()
 var native_track: NativeTrack
 var lap_telemetry := LapTelemetry.new()
 var track_session: TrackSession
+var daily_elimination: RefCounted
 var track_ground: Node3D
 var track_debug: TrackDebug
 var ai_enabled: bool = false
@@ -463,7 +464,7 @@ func _advance_physics(_delta: float) -> void:
 	if sim.state.scrape_strength > 0.0:
 		car.add_scrape(sim.state)
 		vehicle_audio.scrape(sim.state.scrape_strength,sim.state.scrape_speed)
-	var roughness: float = native_track.off_road_rumble(sim.state) if native_track != null else 0.0
+	var roughness: float = native_track.off_road_rumble(sim.state,handling) if native_track != null else 0.0
 	var off_track_rumble: float = smoothstep(3.0, 22.0, sim.state.velocity.length()) * roughness
 	camera.set_off_track_rumble(off_track_rumble)
 	if profile_enabled:
@@ -473,6 +474,7 @@ func _advance_physics(_delta: float) -> void:
 		_advance_practice_validation(previous_position,sim.state.position,sim.state.route_index,layer_before_step)
 	if native_track != null and not editor_test:
 		track_session.advance(native_track, previous_position, sim.state.position, sim.state.route_index,sim.state.track_elevated,layer_before_step)
+		if daily_elimination != null: daily_elimination.observe(track_session)
 		if production_mode: race_proof.capture(sim.state,track_session)
 		if profile_enabled:
 			profile_rules_us += Time.get_ticks_usec() - profile_start
@@ -659,7 +661,7 @@ func _present_frame_scoped(delta: float) -> void:
 	car.present_ramp(presented.state,car.position.y,car.rotation.x,native_track != null and presented.state.jump_height == 0.0 and presented.state.roll_ticks == 0 and water_depth == 0.0,true)
 	var body_rumble: float = 0.0
 	if native_track != null:
-		body_rumble = native_track.off_road_rumble(presented.state) * smoothstep(3.0,22.0,presented.state.velocity.length())
+		body_rumble = native_track.off_road_rumble(presented.state,handling) * smoothstep(3.0,22.0,presented.state.velocity.length())
 	var kerb_contacts: Vector4 = native_track.kerb_heights(presented.state,handling) if native_track != null else Vector4.ZERO
 	var bump_track: bool = native_track != null and not native_track.speed_bump_objects.is_empty()
 	var bump_candidates: Array = []
@@ -712,6 +714,7 @@ func _present_frame_scoped(delta: float) -> void:
 		elif production_mode:
 			hud.title.text = str(native_track.metadata.get("title", native_track.metadata.get("name", native_track.identity.replace("_"," ").to_upper())))
 			hud.show_session(track_session)
+			if daily_elimination != null: hud.show_daily_session(track_session,daily_elimination)
 			checkpoint_marker.present(track_session,native_track,bridge_presentation)
 			hud.checkpoint_notice.present(checkpoint_marker,camera,camera.unproject_position(car.global_position) if checkpoint_marker.visible else Vector2.INF)
 			hud.message_label.text = "PAUSED  /  Resume to continue" if paused and not track_session.finished else ("Practice run" if attempt_practice else "")
@@ -765,6 +768,9 @@ func restart() -> void:
 		var distance_to_line: float = (sim.state.position - native_track.finish_center).dot(native_track.finish_forward)
 		sim.state.position -= native_track.finish_forward * maxf(0.0, distance_to_line + 3.0)
 	track_session = TrackSession.new()
+	if daily_elimination != null:
+		daily_elimination.reset()
+		track_session.target_laps = preload("res://race/daily_elimination.gd").LAPS
 	if vehicle_audio != null: vehicle_audio.reset()
 	_save_condition()
 	car_weathering.last_tick = -1

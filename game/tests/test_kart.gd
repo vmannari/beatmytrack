@@ -77,13 +77,14 @@ func _run() -> void:
 
 func _check_top_speed(kart: HandlingConfig) -> void:
 	check(absf(kart.maximum_speed*3.6-140.0) < 0.001,"kart has the owner-requested 140 km/h cap")
-	check(kart.version == "kart-11","current cornering tune retains a separate handling identity")
+	check(kart.version == "kart-12","current cornering tune retains a separate handling identity")
 	var previous: HandlingConfig = kart.duplicate() as HandlingConfig
 	previous.version = "kart-4"
 	previous.maximum_speed = 30.0
+	previous.low_speed_steering_scale = 1.0
 	var values: Dictionary = kart.snapshot()
 	var old_values: Dictionary = previous.snapshot()
-	for key: String in ["version","maximum_speed"]:
+	for key: String in ["version","maximum_speed","low_speed_steering_scale"]:
 		values.erase(key)
 		old_values.erase(key)
 	check(values == old_values,"top-speed tuning preserves every other handling field")

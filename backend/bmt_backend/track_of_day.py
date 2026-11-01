@@ -72,7 +72,9 @@ def candidates(db, *, unseen=True):
     return list(result.values())
 
 
-def step(factory, *, clock=None):
+def step(factory, *, clock=None, include_artificial=False):
+    from .daily_fixed_limits import LimitsPending, prepare
+
     stamp = now() if clock is None else clock
     day = stamp // DAY
     with factory() as db:
@@ -83,7 +85,24 @@ def step(factory, *, clock=None):
             .on_conflict_do_nothing(index_elements=["id"]))
         state = db.scalar(select(TrackOfDayState).where(TrackOfDayState.id == 1)
             .with_for_update(skip_locked=True))
-        if state is None or state.last_day >= day:
+        if state is None or state.last_day > day:
+            db.commit()
+            return False
+        existing = db.get(TrackOfDay, day)
+        if existing is not None:
+            if existing.version_id and not existing.lap_limits:
+                try:
+                    existing.lap_limits = prepare(db, db.get(TrackVersion, existing.version_id), day, stamp,
+                                                 include_artificial=include_artificial)
+                except LimitsPending:
+                    db.rollback()
+                    return False
+                state.last_day = day
+                db.commit()
+                return True
+            db.commit()
+            return False
+        if state.last_day >= day:
             db.commit()
             return False
         ready = list(db.scalars(select(DiscoveryPartition.ready)))
@@ -107,6 +126,14 @@ def step(factory, *, clock=None):
             pool = [{**row, "reason": "startup_repeat"} for row in rows
                 if row["last_day"] == rows[0]["last_day"]]
         item = secrets.choice(pool) if pool else None
+        limits = {}
+        if item:
+            try:
+                limits = prepare(db, db.get(TrackVersion, item["version_id"]), day, stamp,
+                                 include_artificial=include_artificial)
+            except LimitsPending:
+                db.rollback()
+                return False
         if item:
             history = db.get(TrackOfDayHistory, item["track_id"])
             if history is None:
@@ -115,7 +142,8 @@ def step(factory, *, clock=None):
                 history.last_day = day
         db.add(TrackOfDay(day=day, policy=POLICY, track_id=item["track_id"] if item else None,
             version_id=item["version_id"] if item else None,
-            reason=item["reason"] if item else "exhausted" if supply else "empty", selected_at=stamp))
+            reason=item["reason"] if item else "exhausted" if supply else "empty", selected_at=stamp,
+            lap_limits=limits))
         state.last_day = day
         db.commit()
         return True
@@ -130,6 +158,8 @@ def today(request: Request, response: Response, db=Depends(get_session), credent
         chosen = db.get(TrackOfDay, stamp // DAY)
         if chosen is None:
             raise HTTPException(503, "TRACK_OF_DAY_PREPARING", headers={"Retry-After": "30"})
+        if chosen.version_id and not chosen.lap_limits:
+            raise HTTPException(503, "LAP_LIMITS_PREPARING", headers={"Retry-After": "30"})
         items = hydrate(db, request, [{"version_id": chosen.version_id}], player) if chosen.version_id else {}
         return {"day": chosen.day, "starts_at": chosen.day * DAY, "ends_at": (chosen.day + 1) * DAY,
             "server_now": stamp, "policy": chosen.policy, "reason": chosen.reason,

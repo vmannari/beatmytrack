@@ -1,3 +1,18 @@
+<!-- DAILY-FIXED-LIMITS-20261101 -->
+## Daily limits stay fixed; countdown and results simplified (2026-11-01)
+DFL01-DFL03/R01: Discovery publication atomically stores all car cutoffs in the daily row; reads/retries/PB changes/restarts never reselect them. Migration0072, preparation gates and concurrent-worker tests; next day renews. Countdown uses fixed-width tabular HH:MM; result cutoffs/Limit column and percentage hints removed. Focused backend12/0, retained backend16/0, native307/0 and medal-page88/0 pass; 60 catalogue checks and scoped Ruff pass. Sources, commands, captures, checked checkpoint and limits: [docs/DAILY_FIXED_LIMITS_2026_11_01.md](docs/DAILY_FIXED_LIMITS_2026_11_01.md). Matching migration/producer/API rollout, reload and owner/device acceptance remain. No live migration/deployment, owner-save mutation, phone test, owner restart or main-index write.
+<!-- /DAILY-FIXED-LIMITS-20261101 -->
+
+<!-- DAILY-MEDAL-PAGE-20261031 -->
+## Daily track reference page and medals (2026-10-31)
+DMP01-DMP05/R01: Scenic feature, result/medal/target/nearby lap standings card and UTC week strip follow the supplied reference. Bronze clears75%, silver40%, gold20%; clearing1% earns a distinct platinum/laurel Elite award. Bounded atomic per-account/car daily progress retains best stages and flying laps. Final focused backend5/0, retained page77/0, standings35/0, App13/0 and rules101/0 pass; final native medal-page count, captures, source checkpoint and limitations: [docs/DAILY_MEDAL_PAGE_2026_10_31.md](docs/DAILY_MEDAL_PAGE_2026_10_31.md). Matching client/API rollout, reload and owner/device acceptance remain. No phone test, live/save mutation, deployment, owner restart or main-index write.
+<!-- /DAILY-MEDAL-PAGE-20261031 -->
+
+<!-- DAILY-ELIMINATION-20261031 -->
+## Track of the Day flying-lap elimination (2026-10-31)
+DE01-DE04/R01: One unscored opening lap then nine independently judged flying laps, top75/60/50/40/30/20/10/5/1%. All-time compatible lap PB quantiles, frozen per attempt; ties pass, first miss ends at the line. Dedicated local results and retry; ordinary five-lap scores remain separate. Backend18pass, native rules/results107/0 and daily page77/0; final App/other checks, captures, scoped checkpoint and limitations: [docs/DAILY_ELIMINATION_2026_10_31.md](docs/DAILY_ELIMINATION_2026_10_31.md). Client/backend rollout, reload and owner acceptance remain. No device test, live/save mutation, deployment, owner restart or main-index write.
+<!-- /DAILY-ELIMINATION-20261031 -->
+
 <!-- AUTOMATED-GODOT-CRASH-DIALOGS-20261030 -->
 ## Background Godot crash dialogs
 Windows has recorded intermittent native crashes in unattended Godot tests, sometimes displaying a dialog over the owner's game. For Codex-launched, noninteractive Godot commands and test runners, use `python scripts/run_no_crash_dialog.py -- <command> <arguments>`; this scopes Windows crash-dialog suppression to the launched process tree and retains failure exit codes. `scripts/dev.ps1` also protects its noninteractive Godot test launches, but its direct version check and other direct launches need the wrapper. Do not apply this to the owner's interactive editor or game. Suppression does not fix a crash and can prevent Windows Error Reporting dumps; investigate and report failures rather than treating them as passes. Already running sessions are unaffected.

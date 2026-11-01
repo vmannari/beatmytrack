@@ -19,7 +19,7 @@ func _ready() -> void:
 		_shade.gradient = gradient
 
 func reserve_caption(height: float) -> void:
-	caption_height = height+56
+	caption_height = height+12
 	_projected_size = Vector2(-1,-1)
 	queue_redraw()
 
@@ -28,7 +28,7 @@ func _draw() -> void:
 	_draw_terrain(area)
 	if _shade != null: draw_texture_rect(_shade,Rect2(0,size.y*0.42,size.x,size.y*0.58),false)
 	# Keep the actual route above the title instead of laying text over its corners.
-	_draw_route(Rect2(20,36,maxf(1,size.x-40),maxf(1,size.y-caption_height-44)))
+	_draw_route(Rect2(20,12,maxf(1,size.x-40),maxf(1,size.y-caption_height-12)))
 	var frame: StyleBoxFlat = MenuStyle.box(Color.TRANSPARENT,0)
 	frame.set_corner_radius_all(10)
 	frame.set_border_width_all(2 if has_focus() else 1)

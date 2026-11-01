@@ -40,19 +40,25 @@
   signin.addEventListener('click', async () => {
     if (busy) return;
     busy = true; previewReady = false; signin.disabled = true; remove.disabled = true; byId('agreement').checked = false; byId('confirm').hidden = true;
+    token = ''; operation = '';
     // Open synchronously for popup rules. Game credentials/deletion tokens never enter page URLs/storage.
     const popup = window.open('about:blank', '_blank');
     try {
+      if (!popup) throw new Error('Allow the verification window, then retry.');
       const start = await post('/v1/auth/google/browser/start', {});
+      token = start.poll_token; operation = crypto.randomUUID();
       const target = new URL(start.browser_url, location.origin);
       if (target.origin !== location.origin || target.pathname !== '/v1/auth/google/browser') throw new Error('Verification address is unavailable.');
-      token = start.poll_token; operation = crypto.randomUUID();
-      if (!popup) throw new Error('Allow the verification window, then retry.');
-      popup.opener = null; popup.location.replace(target.href);
+      if (!popup.closed) { popup.opener = null; popup.location.replace(target.href); }
       say('Finish verification in the Google window.');
       const deadline = Date.now() + 300000;
+      let nextPoll = Date.now() + 5000;
       while (Date.now() < deadline) {
-        await new Promise(resolve => setTimeout(resolve, 5000));
+        await new Promise(resolve => setTimeout(resolve, 1000));
+        const closed = popup.closed;
+        if (!closed && Date.now() < nextPoll) continue;
+        // A user can close the window immediately after completing Google sign-in.
+        // Check the server first so a successful verification is not discarded.
         const session = await post('/v1/privacy/web-session', { token });
         if (session.status === 'ready') {
           const lines = benefitLines(session.deletion_preview);
@@ -65,9 +71,18 @@
           byId('confirm').hidden = false; say('Verified. Review what remains, then confirm deletion.');
           return;
         }
+        if (closed) throw new Error('Verification window closed. You can try again.');
+        nextPoll = Date.now() + 5000;
       }
       throw new Error('Verification expired. Verify with Google again.');
-    } catch (error) { say(error.message || 'Verification failed. Please retry.'); }
+    } catch (error) {
+      if (popup && !popup.closed) popup.close();
+      // Best-effort invalidation does not delay retry; the server also expires the token.
+      if (token) fetch('/v1/auth/google/browser/cancel', { method: 'POST', credentials: 'omit', cache: 'no-store',
+        headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ token }) }).catch(() => {});
+      token = ''; operation = '';
+      say(error.message || 'Verification failed. Please retry.');
+    }
     finally { busy = false; signin.disabled = false; }
   });
   byId('agreement').addEventListener('change', () => { remove.disabled = busy || !previewReady || !byId('agreement').checked; });

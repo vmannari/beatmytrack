@@ -153,6 +153,7 @@ static func build(parent: Node3D, bridges: Array, theme: String = "pine", road_p
 		asphalt.set_shader_parameter("sand_color",TrackTheme.DESERT_SHOULDER)
 		SurfaceShaderVariants.specialize(asphalt)
 	elif theme == "night_city" or road_lift > 0.0: SurfaceShaderVariants.specialize(asphalt)
+	elif RenderingServer.get_current_rendering_method() == "gl_compatibility": SurfaceShaderVariants.specialize(asphalt,true,false)
 	road.material_override = asphalt
 	road.layers = 1 # Continuous Lambert response rejects lights below the road normal.
 	parent.add_child(road)

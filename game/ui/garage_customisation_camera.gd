@@ -59,10 +59,16 @@ func focus(showroom: CarShowroom, category: String) -> void:
 			"hood": local_target = Vector3(0,0.35,-1.05); direction = Vector3(2,2.5,-4); distance = 2.4
 			"aero": local_target = Vector3(0,0.23,1.23); direction = Vector3(2,1.4,4); distance = 2.3
 			"rims": local_target = Vector3(0.61,0.22,-0.88); direction = Vector3(4,1,-0.8); distance = 1.65
-	if showroom.car.vehicle_id == "forklift" and category == "hood":
-		local_target = Vector3(0,1.02,1.56)
-		direction = Vector3(0.5,0.8,4)
-		distance = 2.6
+	if showroom.car.vehicle_id=="hovercraft":
+		match category:
+			"hood": local_target = Vector3(0,0.75,-1.55); direction = Vector3(2,2.5,-4); distance = 3.2
+			"aero": local_target = Vector3(0,1.3,1.65); direction = Vector3(2,1.5,4); distance = 3.5
+			"rims": local_target = Vector3(0.52,1.03,1.25); direction = Vector3(1.5,1,-4); distance = 2.5
+	if showroom.car.vehicle_id == "forklift":
+		match category:
+			"hood": local_target = Vector3(0,1.48,1.05); direction = Vector3(1.5,3,4); distance = 2.8
+			"aero": local_target = Vector3(0,0.75,1.65); direction = Vector3(2,1.3,4); distance = 2.8
+			"rims": local_target = Vector3(0.8,0.43,-0.93); direction = Vector3(4,1,-1); distance = 2.2
 	# Narrow landscape panes still fit the selected region horizontally.
 	var aspect: float = showroom.size.x / maxf(1.0,showroom.size.y)
 	var whole_body: bool = category in ["body","body_kit"]

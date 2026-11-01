@@ -39,6 +39,35 @@ func run() -> void:
 			check(browser.gallery.get_child(0) == retained and not browser.scanning,"identical queued poll retains existing cards")
 			await capture("queued-1280x720")
 		if state == "verifying": await capture("checking-1280x720")
+	# Older journals can retain a progress state alongside a terminal failure.
+	var failed_job: Dictionary = flow.status_for(doc)
+	failed_job.state = "verifying"
+	failed_job.failure = "Publication verification failed"
+	check(flow._save(staged.path,failed_job),"persist historical failure with checking state")
+	flow.changed.emit(); await wait_browser(browser)
+	check(browser.gallery.get_child(0).get_child(0).draft_badge_text() == "FAILED","terminal failure overrides an old checking badge")
+	# A server failure arriving while the browser is open must refresh the badge.
+	failed_job.erase("failure")
+	failed_job.publication_id = "slot-intent"
+	failed_job.state = "verifying"
+	failed_job.publish_workflow = 2
+	check(flow._save(staged.path,failed_job),"persist active verification")
+	flow.changed.emit(); await wait_browser(browser)
+	client.remote = {"publication_id":"slot-intent","state":"failed","retryable":true,"detail":"Verification failed"}
+	flow._retry_deadlines[str(failed_job.upload_key)] = 0
+	await flow.process_jobs(); await wait_browser(browser)
+	check(browser.gallery.get_child(0).get_child(0).draft_badge_text() == "FAILED","server failure refreshes checking badge")
+	check(browser.find_child("RetryPublication",true,false) != null,"retryable server failure offers retry")
+	failed_job = flow.status_for(doc)
+	failed_job.erase("failure")
+	failed_job.erase("publication_id")
+	failed_job.state = "verifying"
+	failed_job.proof_file = "missing-proof.json"
+	check(flow._save(staged.path,failed_job,true),"persist incomplete local evidence")
+	flow._retry_deadlines[str(failed_job.upload_key)] = 0
+	await flow.process_jobs(); await wait_browser(browser)
+	check(flow.status_for(doc).state == "failed","incomplete local evidence saves terminal failure state")
+	check(browser.gallery.get_child(0).get_child(0).draft_badge_text() == "FAILED","local failure refreshes checking badge")
 	var fallback := TrackTile.new(); fallback.entry = {"tested":false}
 	check(fallback.draft_badge_text() == "DRAFT","untested unpublished track keeps Draft")
 	fallback.entry.tested = true

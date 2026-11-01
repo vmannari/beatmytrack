@@ -105,6 +105,7 @@ func build(parent: Node3D) -> void:
 				asphalt.set_shader_parameter("desert_road_albedo",NativeTrackVisual.DESERT_ROAD_ALBEDO)
 				asphalt.set_shader_parameter("desert_road_reference",NativeTrackVisual.desert_road_reference)
 				if theme in ["desert","night_city"] or road_surface.lift > 0.0: SurfaceShaderVariants.specialize(asphalt)
+				elif RenderingServer.get_current_rendering_method() == "gl_compatibility": SurfaceShaderVariants.specialize(asphalt,true,false)
 				mesh.material_override = asphalt
 			else:
 				mesh.material_override = _structure_material()

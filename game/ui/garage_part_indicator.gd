@@ -14,6 +14,8 @@ func _process(_delta: float) -> void:
 	var point: Vector3 = {"hood":Vector3(0.45,1.0,-1.35),"aero":Vector3(0,1.4,1.84),"rims":Vector3(0.83,0.4,-1.28),"body":Vector3(0.9,0.35,-0.3)}.get(category,Vector3.ZERO)
 	if showroom.car.vehicle_id=="kart":
 		point = {"hood":Vector3(0,0.38,-1.2),"aero":Vector3(0,0.23,1.3),"rims":Vector3(0.61,0.22,-0.88),"body":Vector3(0.65,0.3,-0.1)}.get(category,Vector3.ZERO)
+	if showroom.car.vehicle_id=="hovercraft":
+		point = {"hood":Vector3(0,0.8,-1.6),"aero":Vector3(0,1.4,1.68),"rims":Vector3(0.52,1.03,1.0),"body":Vector3(0.91,0.65,0)}.get(category,Vector3.ZERO)
 	point = showroom.car.global_transform*(point*HandlingConfig.BODY_SCALE)
 	var projected := Vector2.INF
 	if not showroom.camera.is_position_behind(point): projected = showroom.camera.unproject_position(point)*size/Vector2(showroom.showroom_viewport.size)

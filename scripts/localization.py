@@ -17,6 +17,7 @@ import text_encoding
 
 ROOT = Path(__file__).resolve().parents[1]
 DESTINATION = ROOT / "game/localization"
+ENGLISH_COPY = json.loads((ROOT / "scripts/kit_description_english.json").read_text(encoding="utf-8"))
 TOKEN = re.compile(r'''#[^\n]*|""".*?"""|\x27\x27\x27.*?\x27\x27\x27|"(?:\\.|[^"\\])*"|\x27(?:\\.|[^\x27\\])*\x27''', re.S)
 CALL = re.compile(r'\b(tr_n|tr|GameText\.message|GameText\.plural|GameText\.bind_upper|GameText\.bind)\(')
 PERCENT = re.compile(r"%(?:[-+0 #]*)(?:\d+|\*)?(?:\.\d+)?[sdiffoxXc]")
@@ -194,7 +195,7 @@ def render(messages: dict, english: bool = False) -> str:
                           "msgstr[0] " + quoted(source if english else ""),
                           "msgstr[1] " + quoted(entry["plural"] if english else "")])
         else:
-            lines.append("msgstr " + quoted(source if english else ""))
+            lines.append("msgstr " + quoted(ENGLISH_COPY.get(source, source) if english else ""))
         lines.append("")
     return "\n".join(lines) + "\n"
 

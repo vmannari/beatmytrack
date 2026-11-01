@@ -21,7 +21,11 @@ static var _include_revision: int = 0
 static var preparations: int = 0
 static var prepared_hits: int = 0
 
-static func specialize(material: ShaderMaterial, use_prepared: bool = true) -> void:
+static func specialize(material: ShaderMaterial, use_prepared: bool = true, fold_flags: bool = true) -> void:
+	# Previously dynamic bridges need sampler pruning without changing their
+	# branch arithmetic. Carry that choice through duplication and cache reuse.
+	fold_flags = fold_flags and not material.get_meta("surface_preserve_branches",false)
+	if not fold_flags: material.set_meta("surface_preserve_branches",true)
 	# The raw shader hides this sampler from non-Night dynamic materials. Keep
 	# its binding through ShaderMaterial.duplicate(), which drops undeclared
 	# parameters, so retained/prepared Night worlds restore the same texture.
@@ -31,6 +35,7 @@ static func specialize(material: ShaderMaterial, use_prepared: bool = true) -> v
 		material.set_meta("surface_night_asphalt_wear",night_wear)
 		dynamic.set_meta("surface_night_asphalt_wear",night_wear)
 	var source: String = material.shader.code
+	var creator_road: bool = source.contains('#include "res://track/creator_road.gdshaderinc"')
 	if material.get_shader_parameter("industrial_asphalt") == true:
 		source = "#define BMT_NIGHT_ASPHALT\n"+source
 	# Reuse the completed compiler result before expanding includes/regexes.
@@ -41,7 +46,7 @@ static func specialize(material: ShaderMaterial, use_prepared: bool = true) -> v
 		_include_sources = include_sources
 		_include_revision += 1
 		prepared_keys.clear()
-	var signature: Array = [source.sha256_text(),_include_revision]
+	var signature: Array = [source.sha256_text(),_include_revision,fold_flags]
 	for flag: String in FLAGS+MATERIAL_FLAGS: signature.append(material.get_shader_parameter(flag))
 	signature.append(material.get_shader_parameter("terrain_region_channel"))
 	signature.append(material.get_shader_parameter("terrain_slots"))
@@ -59,7 +64,7 @@ static func specialize(material: ShaderMaterial, use_prepared: bool = true) -> v
 	for pass_index: int in range(3):
 		for path: String in INCLUDES:
 			source = source.replace('#include "'+path+'"',(INCLUDES[path] as ShaderInclude).code)
-	for flag: String in FLAGS:
+	for flag: String in (FLAGS if fold_flags else []):
 		var pattern := RegEx.new()
 		pattern.compile("uniform bool "+flag+"\\s*=\\s*(true|false)\\s*;")
 		var found: RegExMatch = pattern.search(source)
@@ -67,9 +72,18 @@ static func specialize(material: ShaderMaterial, use_prepared: bool = true) -> v
 		var value: Variant = material.get_shader_parameter(flag)
 		var enabled: bool = found.get_string(1)=="true" if value==null else bool(value)
 		source = pattern.sub(source,"const bool "+flag+" = "+("true" if enabled else "false")+";",true)
-	# These roles are immutable for a built surface. Keep their public uniforms
-	# for material inspection/cache serialization, but compile their reads away.
+	# Keep road/fringe draws on one source where their render modes and biome
+	# bindings already match. These uniform branches avoid another cold program;
+	# biome/sampler choices and unrelated surface roles still fold to constants.
+	# Sharing did not pass Mobile's pixel/stability checks; retain its original
+	# specialized sources. This targets the Compatibility cold delay.
+	var compatibility: bool = RenderingServer.get_current_rendering_method() == "gl_compatibility"
+	var shared_road_roles: bool = compatibility and (material.get_shader_parameter("wet_road") == true or material.get_shader_parameter("industrial_asphalt") == true)
+	# Keep public uniforms for inspection/cache serialization, folding other reads.
 	for flag: String in MATERIAL_FLAGS:
+		if not fold_flags: continue
+		if compatibility and flag == "edge_fringe" and material.get_shader_parameter("packed_sand") == true: continue
+		if shared_road_roles and flag in ["asphalt_surface","raised_road_edge","edge_fringe","road_marking"]: continue
 		# Keep the snow-bank branch form: Mobile reassociates its filtered toe
 		# lighting when constant-folded, changing a sparse MSAA edge pixel.
 		if flag == "smooth_road_bank" and material.get_shader_parameter("winter_snow") == true: continue
@@ -83,14 +97,14 @@ static func specialize(material: ShaderMaterial, use_prepared: bool = true) -> v
 		reads.compile("\\b" + flag + "\\b")
 		source = reads.sub(source,"fixed_" + flag,true)
 		source = source.replace(reads.sub(found.get_string(),"fixed_" + flag,true),found.get_string() + "\nconst bool fixed_" + flag + " = " + ("true" if enabled else "false") + ";")
-	if source.contains("uniform int terrain_region_channel"):
+	if fold_flags and source.contains("uniform int terrain_region_channel"):
 		var channel_value: Variant = material.get_shader_parameter("terrain_region_channel")
 		var channel: int = maxi(0,int(channel_value) if channel_value != null else -1)
 		var reads := RegEx.new()
 		reads.compile("\\bterrain_region_channel\\b")
 		source = reads.sub(source,"fixed_terrain_region_channel",true)
 		source = source.replace("uniform int fixed_terrain_region_channel = -1;","uniform int terrain_region_channel = -1;\nconst int fixed_terrain_region_channel = "+str(channel)+";")
-	if material.get_shader_parameter("terrain_packed") == true:
+	if fold_flags and material.get_shader_parameter("terrain_packed") == true:
 		var slots: Vector4i = material.get_shader_parameter("terrain_slots")
 		var assignments: String = "vec4 packed = low;\n\tlow = vec4(0.0);\n\thigh = vec4(0.0);"
 		var channels: Array[String] = ["r","g","b","a"]
@@ -105,10 +119,20 @@ static func specialize(material: ShaderMaterial, use_prepared: bool = true) -> v
 	# Alias unreachable biome samples to the shared factor sampler so those
 	# declarations cannot consume phone texture units. Active artwork is untouched.
 	var inactive: Array[String] = []
+	# painted_grass returns before its fallback texture in these fixed biomes.
+	# Keep Mobile's original sampler layout: its Winter pixels change when these
+	# aliases alter compilation. The eight-sampler reservation targets GLES.
+	# Prune only the over-budget families; Night's existing layout already fits.
+	if compatibility and (material.get_shader_parameter("winter_snow") == true or material.get_shader_parameter("desert_dunes") == true or (material.get_shader_parameter("hybrid_grass") == true and material.get_shader_parameter("grass_shoulder") == true)):
+		inactive.append("painted_grass_texture")
+	# Only the creator-road include gates road_mask entirely on piece_materials.
+	# Winter banks use that name for a different, active mask and must retain it.
+	if compatibility and creator_road and material.get_shader_parameter("winter_snow") == true and not (material.get_shader_parameter("piece_materials") == true): inactive.append("road_mask")
 	if not (material.get_shader_parameter("industrial_asphalt") == true): inactive.append("night_asphalt_wear")
 	if not (material.get_shader_parameter("industrial_ground") == true): inactive.append("night_ground_albedo")
 	if not (material.get_shader_parameter("winter_snow") == true) and not (material.get_shader_parameter("icy_road") == true):
 		inactive.append_array(["snow_albedo","ice_albedo","ice_finish","wind_surface_flow"])
+		if compatibility and not (material.get_shader_parameter("industrial_ground") == true) and not (material.get_shader_parameter("industrial_asphalt") == true): inactive.append("snow_road_sources")
 	if not (material.get_shader_parameter("desert_dunes") == true) and not (material.get_shader_parameter("packed_sand") == true):
 		inactive.append_array(["desert_road_albedo","dune_factors","dune_albedo"])
 		if not (material.get_shader_parameter("grass_shoulder") == true): inactive.append("desert_apron")

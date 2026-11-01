@@ -70,8 +70,11 @@ func show_choice(label: String, equipped: bool, owned: bool, cost: int, index: i
 func _layout_cards() -> void:
 	if not is_inside_tree(): return
 	var compact: bool = get_viewport_rect().size.y<650
-	add_theme_constant_override("separation",6 if compact else 12)
-	heading.add_theme_font_size_override("font_size",34 if compact else 46)
-	counter.add_theme_font_size_override("font_size",24 if compact else 30)
+	var separation: int = 6 if compact else 12
+	if not has_theme_constant_override("separation") or get_theme_constant("separation") != separation: add_theme_constant_override("separation",separation)
+	var heading_size: int = 34 if compact else 46
+	if not heading.has_theme_font_size_override("font_size") or heading.get_theme_font_size("font_size") != heading_size: heading.add_theme_font_size_override("font_size",heading_size)
+	var counter_size: int = 24 if compact else 30
+	if not counter.has_theme_font_size_override("font_size") or counter.get_theme_font_size("font_size") != counter_size: counter.add_theme_font_size_override("font_size",counter_size)
 	equip.custom_minimum_size.y = 50 if compact else 60
 	for row: Control in cards.get_children(): row._layout()

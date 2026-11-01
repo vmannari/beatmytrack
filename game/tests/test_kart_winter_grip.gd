@@ -37,10 +37,11 @@ func simulate(config: HandlingConfig, track: NativeTrack, elevated: bool, steer:
 
 func _initialize() -> void:
 	var live: HandlingConfig = VehicleCatalog.config("kart")
-	check(live.version == "kart-11", "changed handling gets its own replay identity")
+	check(live.version == "kart-12", "changed handling gets its own replay identity")
 	# Compare the original winter tune without the later corner-speed change.
 	var kart: HandlingConfig = live.duplicate() as HandlingConfig
 	kart.version = "kart-9"
+	kart.low_speed_steering_scale = 1.0
 	kart.turn_speed_reduction = 0.0
 	var prior: HandlingConfig = kart.duplicate() as HandlingConfig
 	prior.version = "kart-8"

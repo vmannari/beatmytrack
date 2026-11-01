@@ -154,6 +154,13 @@ class RequestBoundary:
         self.discovery_queries = threading.BoundedSemaphore(max(1, min(3, settings.database_pool_size - 1)))
         self.discovery_expensive = threading.BoundedSemaphore(1)
         self.read_leases = OrderedDict()
+        # Only public, anonymous, read-only pages can fall back when the shared
+        # database limiter is unavailable. These bounded per-process windows are
+        # a backstop, not a substitute for a shared edge rate limit.
+        self.public_fallback_until = 0.0
+        self.public_fallback_window = -1
+        self.public_fallback_total = 0
+        self.public_fallback_peers = OrderedDict()
         self.denied_peers = OrderedDict()
         self.denied_credentials = OrderedDict()
         # Admission hints only. Every authenticated request still checks the
@@ -256,6 +263,40 @@ class RequestBoundary:
             while len(self.denied_peers) > 4096:
                 self.denied_peers.popitem(last=False)
         return allowed
+
+    @staticmethod
+    def is_public_fallback_request(scope, headers):
+        if scope["method"] != "GET" or b"authorization" in headers:
+            return False
+        path = scope["path"]
+        if path in ("/", "/robots.txt", "/sitemap.xml", "/privacy", "/privacy/style.css",
+                    "/privacy/deletion.js", "/account-deletion", "/community-rules"):
+            return True
+        if path.startswith("/site/"):
+            from .public_pages import ASSETS
+            return path[6:] in ASSETS
+        return False
+
+    def public_fallback_budget(self, peer):
+        # This method has no await and is called on the event loop. A global
+        # ceiling also bounds abuse when many spoofed/distributed peers evict
+        # the per-peer LRU. Every process has its own independent ceiling.
+        window = int(time.monotonic() // 60)
+        if window != self.public_fallback_window:
+            self.public_fallback_window = window
+            self.public_fallback_total = 0
+            self.public_fallback_peers.clear()
+        per_peer = min(60, self.settings.rate_limit_per_minute)
+        overall = max(60, min(10000, self.settings.rate_limit_per_minute * 20))
+        count = self.public_fallback_peers.get(peer, 0)
+        if count >= per_peer or self.public_fallback_total >= overall:
+            return False
+        self.public_fallback_peers[peer] = count + 1
+        self.public_fallback_peers.move_to_end(peer)
+        while len(self.public_fallback_peers) > 2048:
+            self.public_fallback_peers.popitem(last=False)
+        self.public_fallback_total += 1
+        return True
 
     def known_credential(self, key):
         if self.known_credentials.get(key, 0) <= time.monotonic():
@@ -389,14 +430,27 @@ class RequestBoundary:
                          "read": self.settings.rate_limit_per_minute,
                          "write": self.settings.write_limit_per_minute,
                          "edge": self.settings.edge_limit_per_minute}[admission]
-                try:
-                    if not await self.peer_budget(peer, admission, limit):
+                public_fallback = self.is_public_fallback_request(scope, headers)
+                if public_fallback and time.monotonic() < self.public_fallback_until:
+                    if not self.public_fallback_budget(peer):
                         return await error(429, "RATE_LIMITED")
-                    if (provided and not self.known_credential(credential_key)
-                            and not await self.peer_budget(peer, "credential_admission", self.settings.pre_auth_limit_per_minute)):
-                        return await error(429, "RATE_LIMITED")
-                except SQLAlchemyError as exc:
-                    return await database_error(exc)
+                else:
+                    try:
+                        if not await self.peer_budget(peer, admission, limit):
+                            return await error(429, "RATE_LIMITED")
+                        if (provided and not self.known_credential(credential_key)
+                                and not await self.peer_budget(peer, "credential_admission", self.settings.pre_auth_limit_per_minute)):
+                            return await error(429, "RATE_LIMITED")
+                    except SQLAlchemyError as exc:
+                        if not public_fallback:
+                            return await database_error(exc)
+                        dependency_failure(log, exc, request_id, "database")
+                        probe = getattr(getattr(scope.get("app"), "state", None), "readiness", None)
+                        if probe is not None:
+                            probe.invalidate()
+                        self.public_fallback_until = time.monotonic() + 5.0
+                        if not self.public_fallback_budget(peer):
+                            return await error(429, "RATE_LIMITED")
                 if provided:
                     try:
                         if await run_in_threadpool(self.validated_identity_budget, scope, headers[b"authorization"]):

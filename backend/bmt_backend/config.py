@@ -42,7 +42,7 @@ class Settings:
     temporary_ad_resumes_enabled: bool = False
     telemetry_enabled: bool = False
     client_quality_enabled: bool = False
-    privacy_developer_name: str = "[Developer name — to be confirmed]"
+    privacy_developer_name: str = "Ville Mannari"
     privacy_contact_email: str = ""
     privacy_backup_days: int = 30
     privacy_purchase_days: int = 365

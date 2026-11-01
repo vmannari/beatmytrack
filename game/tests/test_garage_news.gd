@@ -12,6 +12,7 @@ class Backend extends Node:
 	var origin: String = "https://fixture.invalid"
 	var signed: bool = true
 	var delay_reply: bool = false
+	var delay_refresh: bool = false
 	var remote_items: Array = []
 	var remote_friends: Array = [{"player_id":"bob","display_name":"Bob","status":"received"}]
 	func signed_in() -> bool: return signed
@@ -20,6 +21,7 @@ class Backend extends Node:
 	func request_api(path: String, method: HTTPClient.Method = HTTPClient.METHOD_GET, _body: Dictionary = {}, _key: String = "", _auth: bool = false) -> Dictionary:
 		calls.append(str(method)+" "+path)
 		while delay_reply: await get_tree().process_frame
+		while path == "/news/refresh" and delay_refresh: await get_tree().process_frame
 		await get_tree().process_frame
 		var data: Dictionary = {"items":remote_items.duplicate(true),"next_cursor":"","refreshing":false,"checked_day":server_now()/86400}
 		if path == "/news/refresh": data = {"refreshing":false,"checked_day":server_now()/86400}
@@ -74,7 +76,12 @@ func run() -> void:
 	news.identity_changed()
 	await frames()
 	check(backend.calls.is_empty(),"idle client makes no reads")
-	await news.refresh()
+	backend.delay_refresh = true
+	news.refresh()
+	await frames(4)
+	check(news.items.size() == 4 and news.busy, "existing stories appear before a slow daily refresh finishes")
+	backend.delay_refresh = false
+	await frames(4)
 	check(backend.calls.size() == 2 and news.items.size() == 4,"explicit entry requests work and reads page")
 	await news.refresh()
 	check(backend.calls.size() == 2,"repeat entry shares scoped sixty-second cache")
@@ -98,6 +105,7 @@ func run() -> void:
 	menu._choose(1)
 	await frames(4)
 	check(menu.find_child("NewsCarPhoto",true,false) != null and menu._index() == 1,"selected record has its relevant native vehicle photograph")
+	check(News._with_media({"items":[{"vehicle_id":"formula"}]} )[0].vehicle_id == "formula", "news retains the vehicle reported for another car")
 	var photo: Control = menu.find_child("NewsCarPhoto",true,false)
 	check(photo.get_parent().name == "NewsPhotoFrame", "record photograph uses its editorial frame")
 	var selected: Dictionary = menu._stories()[menu._index()]

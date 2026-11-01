@@ -53,6 +53,8 @@ var race_mode_transition_rail: RaceModeRail
 const RACE_MODE_PAGES: Array[String] = ["rivalry", "daily", "tracks", "challenges"]
 var _race_mode_request: int = 0
 var _rivalry_entry_pending: bool = false
+var _daily_track_cache: Dictionary = {}
+var _daily_track_cache_scope: String = ""
 var rivalry_standings_view: Dictionary = {}
 var menu_edge_motion: Tween
 var menu_drag_offset: float = 0.0
@@ -1031,7 +1033,25 @@ func _slide_race_mode_page(direction: int, rail_rect: Rect2, height: float) -> v
 	menu_page_motion.tween_property(menu_body,"position:y",0.0,0.32)
 	menu_page_motion.tween_property(outgoing_menu_page,"position:y",-distance,0.32)
 	menu_page_motion.chain().tween_callback(_finish_menu_page_slide)
-	_prepare_rivalry_page_motion()
+	if screen == "rivalry":
+		_prepare_rivalry_page_motion()
+	else:
+		# The new swipe handler can see the same press that created this page.
+		# Keep that press from settling the slide before its first visible frame.
+		menu_page_motion.pause()
+		_preparing_rivalry_motion = menu_page_motion
+		_start_race_mode_motion.call_deferred(_navigation_generation,menu_page_motion)
+
+func _start_race_mode_motion(generation: int, motion: Tween) -> void:
+	# Let containers and deferred layout settle while the incoming body is still
+	# clipped offscreen, as for the Rivalry page.
+	var draws: int = 1 if DisplayServer.get_name() == "headless" else 4
+	for index: int in range(draws):
+		if DisplayServer.get_name() == "headless": await get_tree().process_frame
+		else: await RenderingServer.frame_post_draw
+		if generation != _navigation_generation or motion != menu_page_motion: return
+	_preparing_rivalry_motion = null
+	motion.play()
 
 func _prepare_rivalry_page_motion() -> void:
 	if screen != "rivalry": return
@@ -1071,14 +1091,87 @@ func _track_of_day(parent: Control = null, preview: bool = false) -> void:
 	var page := preload("res://ui/track_of_day_page.gd").new()
 	page.client = online.client
 	page.cloud = cloud
+	page.records = records
 	page.page_preview = preview
+	var scope: String = _daily_cache_scope()
+	if scope == _daily_track_cache_scope: page.cached_state = _daily_track_cache.duplicate(true)
+	page.track_loaded.connect(func(state: Dictionary) -> void:
+		if scope == _daily_cache_scope():
+			_daily_track_cache_scope = scope
+			_daily_track_cache = state.duplicate(true))
+	page.track_invalidated.connect(func() -> void:
+		if scope == _daily_track_cache_scope:
+			_daily_track_cache.clear()
+			_daily_track_cache_scope = "")
 	page.mode_requested.connect(_request_race_mode)
 	page.vehicle_selected.connect(_select_vehicle)
 	page.race_requested.connect(func(entry: Dictionary) -> void:
 		selected_track = cloud.presentation_track(entry)
-		_start_race(selected_track,false))
+		_start_race(selected_track,false,false,{},null,{"day":int(entry.daily_day),"version_id":str(entry.version_id)}))
 	parent.add_child(page)
 	_keep_race_mode_rail_fixed(page)
+
+func _daily_cache_scope() -> String:
+	return online.client.base_url()+"/"+(str(online.client.player.get("id","")) if online.client.signed_in() else "guest")
+
+func _load_daily_limits(track: NativeTrack, vehicle: String, request: Dictionary) -> RefCounted:
+	var path: String = "/track-of-the-day/limits?day=%d&version_id=%s&vehicle_id=%s" % [int(request.get("day",-1)),str(request.get("version_id","")).uri_encode(),vehicle.uri_encode()]
+	var response: Dictionary = await online.client.request_api(path,HTTPClient.METHOD_GET,{},"",true) if online.client.signed_in() else await online.client.request_public(path,get_instance_id())
+	if not response.get("ok",false): return null
+	var data: Dictionary = response.get("data",{})
+	if int(data.get("day",-1)) != int(request.get("day",-2)) or int(data.get("ends_at",0)) <= int(data.get("server_now",0)): return null
+	var manifest: Dictionary = data.get("manifest",{})
+	var config: HandlingConfig = VehicleCatalog.config(vehicle)
+	var engine: Dictionary = Engine.get_version_info()
+	var engine_version: String = "%s.%s.%s.%s.%s.%s" % [engine.major,engine.minor,engine.patch,engine.status,engine.build,str(engine.hash).left(9)]
+	if str(manifest.get("engine_version","")) != engine_version or int(manifest.get("tick_rate",0)) != VehicleSimulation.TICK_RATE or str(manifest.get("vehicle_id","")) != vehicle or str(manifest.get("track_schema","")) != TrackDocument.SCHEMA: return null
+	if str(manifest.get("track_content_hash","")) != track.content_hash or str(manifest.get("compiler_version","")) != TrackCompiler.VERSION or str(manifest.get("rules_key","")) != RaceRules.KEY: return null
+	if not preload("res://backend/race_compatibility.gd").physics_matches(str(manifest.get("physics_version","")),vehicle) or str(manifest.get("config_hash","")) != JSON.stringify(config.snapshot(),"",true).sha256_text(): return null
+	var rules := preload("res://race/daily_elimination.gd").new()
+	return rules if rules.configure(data,str(track.metadata.get("cloud_version","")),vehicle) else null
+
+func _daily_results() -> void:
+	if game.has_node("DailyResults"): return
+	var request: Dictionary = game.get_meta("daily_request",{})
+	var result_saved: bool = preload("res://persistence/daily_progress.gd").commit(game.preference_records,int(request.get("day",-1)),str(request.get("version_id","")),str(game.vehicle_id),game.track_session,game.daily_elimination)
+	_telemetry_race_finished = true
+	if client_quality != null: client_quality.finish_race("finished")
+	if product_telemetry != null: product_telemetry.set_transport_allowed(true)
+	game.hud.hide()
+	var layer := CanvasLayer.new()
+	layer.name = "DailyResults"
+	layer.layer = 20
+	game.add_child(layer)
+	var panel := preload("res://ui/daily_elimination_results.gd").new()
+	panel.rules = game.daily_elimination
+	panel.session = game.track_session
+	panel.result_saved = result_saved
+	panel.retry_requested.connect(_retry_race)
+	panel.return_requested.connect(_leave_race)
+	layer.add_child(panel)
+
+func _retry_daily_race() -> void:
+	if cloud_starting or not game.preparation_complete: return
+	var active: Node = game
+	var scope: String = _daily_cache_scope()
+	var vehicle: String = str(active.vehicle_id)
+	cloud_starting = true
+	var rules: RefCounted = await _load_daily_limits(active.native_track,vehicle,active.get_meta("daily_request",{}))
+	if not is_instance_valid(active) or game != active: return
+	cloud_starting = false
+	if scope != _daily_cache_scope(): return
+	if rules == null:
+		_notice("Lap limits are unavailable. Return to Track of the Day and try again.")
+		return
+	var results: Node = game.get_node_or_null("DailyResults")
+	if results != null:
+		game.remove_child(results)
+		results.queue_free()
+	game.daily_elimination = rules
+	game.hud.show()
+	_result_game_id = 0
+	_telemetry_begin_attempt(game.native_track)
+	game.restart()
 
 func _keep_race_mode_rail_fixed(page: Control) -> void:
 	if not is_instance_valid(race_mode_transition_rail) or not menu_body.is_ancestor_of(page): return
@@ -1415,6 +1508,8 @@ func _activate_menu_page(generation: int) -> void:
 		if store != null: store.activate()
 
 func _account_changed() -> void:
+	_daily_track_cache.clear()
+	_daily_track_cache_scope = ""
 	if is_instance_valid(publication_notification):
 		var empty_publications: Array[Dictionary] = []
 		publication_notification.set_entries(empty_publications)
@@ -4492,7 +4587,7 @@ func _close_race_loading(expected_id: int = 0) -> void:
 	race_loading.queue_free()
 	race_loading = null
 
-func _prepare_metadata_race(track: NativeTrack, from_editor: bool, offline_only: bool, issued: Dictionary) -> void:
+func _prepare_metadata_race(track: NativeTrack, from_editor: bool, offline_only: bool, issued: Dictionary, daily_request: Dictionary = {}) -> void:
 	var scope: String = lifecycle.scope()
 	var navigation: int = _navigation_generation
 	var starting_screen: String = screen
@@ -4507,7 +4602,7 @@ func _prepare_metadata_race(track: NativeTrack, from_editor: bool, offline_only:
 	if not await _await_selected_preparation(track,overlay_id,scope,navigation,starting_screen,vehicle,selection): return
 	if not track.metadata.get("metadata_only",false):
 		cloud_starting = false
-		await _start_race(track,from_editor,offline_only,issued,overlay)
+		await _start_race(track,from_editor,offline_only,issued,overlay,daily_request)
 		return
 	overlay.stage("Downloading track...")
 	var downloaded: Dictionary = await cloud.download_document(entry)
@@ -4530,12 +4625,12 @@ func _prepare_metadata_race(track: NativeTrack, from_editor: bool, offline_only:
 	cloud.remember_compiled_entry(entry,track)
 	track_catalog.remember_track(entry,track)
 	cloud_starting = false
-	await _start_race(track,from_editor,offline_only,issued,overlay)
+	await _start_race(track,from_editor,offline_only,issued,overlay,daily_request)
 
 func _start_race_road_job(track: NativeTrack) -> RefCounted:
 	return preload("res://editor/road_preparation_job.gd").start(track,get_tree())
 
-func _start_race(track: NativeTrack, from_editor: bool, offline_only: bool = false, rivalry_issued: Dictionary = {}, prepared_loading: RaceLoading = null) -> void:
+func _start_race(track: NativeTrack, from_editor: bool, offline_only: bool = false, rivalry_issued: Dictionary = {}, prepared_loading: RaceLoading = null, daily_request: Dictionary = {}) -> void:
 	if cloud_starting or (is_instance_valid(race_loading) and race_loading != prepared_loading): return
 	if track == null:
 		_notice("Choose a track before starting a race.")
@@ -4545,7 +4640,7 @@ func _start_race(track: NativeTrack, from_editor: bool, offline_only: bool = fal
 		_notice("This player is blocked. Manage blocked players in Settings > Privacy > Community safety.")
 		return
 	if track.metadata.get("metadata_only",false):
-		await _prepare_metadata_race(track,from_editor,offline_only,rivalry_issued)
+		await _prepare_metadata_race(track,from_editor,offline_only,rivalry_issued,daily_request)
 		return
 	if not from_editor and not track.metadata.has("cloud_version") and cloud != null and not tutorial_lesson:
 		_notice("Choose a published backend track from Race.")
@@ -4563,9 +4658,19 @@ func _start_race(track: NativeTrack, from_editor: bool, offline_only: bool = fal
 	if not _race_loading_matches(loading_id): return
 	if _race_preparation_changed(loading_id,original_scope,navigation_generation,starting_screen,selected_vehicle,starting_selection): return
 	if not await _await_selected_preparation(track,loading_id,original_scope,navigation_generation,starting_screen,selected_vehicle,starting_selection): return
+	var daily_rules: RefCounted
+	if not daily_request.is_empty():
+		loading.stage("Loading lap limits?")
+		daily_rules = await _load_daily_limits(track,selected_vehicle,daily_request)
+		if _race_preparation_changed(loading_id,original_scope,navigation_generation,starting_screen,selected_vehicle,starting_selection): return
+		if daily_rules == null:
+			cloud_starting = false
+			_close_race_loading(loading_id)
+			_notice("Lap limits are unavailable for this car. Try again shortly.")
+			return
 	cloud_ticket = {}
 	var road_overlap: RefCounted
-	if not offline_only and not from_editor and track.metadata.has("cloud_version") and online.client.signed_in():
+	if daily_rules == null and not offline_only and not from_editor and track.metadata.has("cloud_version") and online.client.signed_in():
 		loading.stage("Connecting race…")
 		# Once the exact track is compiled, its presentation arrays can be built
 		# while an ordinary ticket request is in flight. Keep ticket issuance at
@@ -4654,6 +4759,8 @@ func _start_race(track: NativeTrack, from_editor: bool, offline_only: bool = fal
 	_race_menu_visible(false)
 	game = GAME_SCENE.instantiate()
 	game.profile_enabled = race_profile_enabled
+	game.daily_elimination = daily_rules
+	game.set_meta("daily_request",daily_request.duplicate(true))
 	game.set("vehicle_id",attempt_vehicle)
 	game.process_mode = Node.PROCESS_MODE_DISABLED
 	game.cooperative_preparation = true
@@ -4673,7 +4780,7 @@ func _start_race(track: NativeTrack, from_editor: bool, offline_only: bool = fal
 	game.set("editor_test", from_editor)
 	# Competitive tickets can consume limited attempts; keep those races on the
 	# handling contract they were issued for. Tutorial driving also stays fixed.
-	game.set("handling_test_enabled", not (rivalry_racing or challenge_racing or tutorial_lesson))
+	game.set("handling_test_enabled", not (rivalry_racing or challenge_racing or tutorial_lesson or daily_rules != null))
 	_prepare_race_rating(track)
 	game.connect("exit_requested", _leave_race)
 	game.connect("edit_here_requested", _edit_here)
@@ -4932,6 +5039,9 @@ func _resume_practice_editor() -> bool:
 
 func _results() -> void:
 	if not is_instance_valid(game) or not game.preparation_complete: return
+	if game.daily_elimination != null:
+		_daily_results()
+		return
 	var result_records: LocalRecords = game.get("preference_records")
 	var session: TrackSession = game.get("track_session")
 	var track: NativeTrack = game.get("native_track")
@@ -5250,6 +5360,9 @@ func _result_capacity_available() -> bool:
 	return false
 
 func _retry_race(offline_only: bool = false) -> void:
+	if is_instance_valid(game) and game.daily_elimination != null:
+		_retry_daily_race()
+		return
 	if race_ad_breaks != null and race_ad_breaks.blocking: return
 	if cloud_starting or not is_instance_valid(game) or not game.preparation_complete: return
 	if product_telemetry != null: product_telemetry.set_transport_allowed(false)

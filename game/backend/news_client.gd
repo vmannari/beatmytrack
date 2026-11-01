@@ -127,17 +127,9 @@ func refresh(poll: bool = false) -> void:
 	changed.emit()
 	var epoch: int = _epoch
 	var day: int = client.server_now()/86400
-	if not poll and checked_day < day:
-		var demand: Dictionary = await client.request_api("/news/refresh",HTTPClient.METHOD_POST,{},"",true)
-		if epoch != _epoch or scope() != _scope: return
-		if not demand.get("ok",false):
-			error = _message(str(demand.get("error","")))
-			busy = false
-			changed.emit()
-			return
+	var request_daily: bool = not poll and checked_day < day
 	var response: Dictionary = await client.request_api("/news",HTTPClient.METHOD_GET,{},"",true)
 	if epoch != _epoch or scope() != _scope: return
-	busy = false
 	if response.get("ok",false):
 		var data: Dictionary = response.get("data",{})
 		items = _merge_publications(_with_media(data))
@@ -148,6 +140,16 @@ func refresh(poll: bool = false) -> void:
 	else:
 		error = _message(str(response.get("error","")))
 	_filter_blocks()
+	# Existing stories can be read while the daily comparison is being queued.
+	changed.emit()
+	if request_daily:
+		var demand: Dictionary = await client.request_api("/news/refresh",HTTPClient.METHOD_POST,{},"",true)
+		if epoch != _epoch or scope() != _scope: return
+		if demand.get("ok",false):
+			refreshing = bool(demand.get("data",{}).get("refreshing",false))
+		else:
+			error = _message(str(demand.get("error","")))
+	busy = false
 	changed.emit()
 
 func more() -> void:

@@ -40,6 +40,10 @@ func difference(a: Variant, b: Variant, path: String = "model") -> String:
 			if a[index]!=b[index]: return difference(a[index],b[index],path+"/"+str(index))
 	return path+" "+str(a).left(140)+" -> "+str(b).left(140)
 func run() -> void:
+	# Exercise the sliced procedural fallback even when offline templates exist.
+	# The prepared path intentionally completes without construction yields.
+	preload("res://vehicle/modular_car_base.gd").enabled = false
+	preload("res://vehicle/modular_car_kits.gd").enabled = false
 	for vehicle: String in VehicleCatalog.IDS:
 		Cache.entries.clear()
 		var original := CarVisual.new()

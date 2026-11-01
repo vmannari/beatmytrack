@@ -47,7 +47,7 @@ func _init() -> void:
 	title.text_overrun_behavior = TextServer.OVERRUN_TRIM_ELLIPSIS
 	copy.add_child(title)
 	description = _label("",14,true,false)
-	description.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	description.text_overrun_behavior = TextServer.OVERRUN_TRIM_ELLIPSIS
 	copy.add_child(description)
 	var value := VBoxContainer.new()
 	_value = value
@@ -135,11 +135,17 @@ func set_selected(chosen: bool) -> void:
 func _layout() -> void:
 	if not is_inside_tree(): return
 	var compact: bool = get_viewport_rect().size.y<650 or size.x<410
-	custom_minimum_size.y = 82 if compact else 100
-	title.add_theme_font_size_override("font_size",20 if compact else 25)
-	description.add_theme_font_size_override("font_size",13 if compact else 15)
-	number.add_theme_font_size_override("font_size",25 if compact else 31)
-	price.add_theme_font_size_override("font_size",21 if compact else 27)
+	# Paint rows always reserve 100px; changing 100 -> 82 -> 100 on each
+	# narrow layout pass repeatedly invalidates the surrounding containers.
+	custom_minimum_size.y = 100 if car_icon != null or not compact else 82
+	_set_font_size(title,20 if compact else 25)
+	_set_font_size(description,13 if compact else 15)
+	_set_font_size(number,25 if compact else 31)
+	_set_font_size(price,21 if compact else 27)
 	if car_icon!=null:
-		custom_minimum_size.y = 100
 		car_icon.custom_minimum_size = Vector2(96,72) if compact else Vector2(112,76)
+
+
+func _set_font_size(label: Label, value: int) -> void:
+	if not label.has_theme_font_size_override("font_size") or label.get_theme_font_size("font_size") != value:
+		label.add_theme_font_size_override("font_size",value)

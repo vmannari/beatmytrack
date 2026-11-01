@@ -2,7 +2,7 @@ class_name NativeTrackVisual
 extends Node3D
 ## Original matte track kit derived solely from native surface geometry.
 
-const VERSION: String = "track-kit-216-compacted-material-blends"
+const VERSION: String = "track-kit-217-desert-road-relief"
 var piece_road_materials: bool = false
 var desert_relief: RefCounted
 const GRASS_VERGE = preload("res://track/grass_road_verge.gd")

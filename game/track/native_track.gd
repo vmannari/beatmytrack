@@ -325,9 +325,16 @@ func surface_factors(state: VehicleState) -> Vector2:
 	return Vector2(base.x*effects.x,base.y+effects.y)
 
 
-func off_road_rumble(state: VehicleState) -> float:
+func off_road_rumble(state: VehicleState, config: HandlingConfig = null) -> float:
 	# Presentation roughness is independent of longitudinal resistance: loose
 	# sand and grass are equally uneven even though their drag/grip differ.
+	if config != null and str(metadata.get("theme", "pine")) == "desert":
+		var contacts: float = 0.0
+		for axle: float in [-0.5, 0.5]:
+			for side: float in [-0.5, 0.5]:
+				var point: Vector2 = state.position + state.forward()*config.wheelbase*axle + state.right()*config.track_width*side
+				if cell_at(point,state.track_elevated) in [1,2]: contacts += 0.25
+		return contacts
 	return 1.0 if cell_at(state.position,state.track_elevated) in [1,2] else 0.0
 
 

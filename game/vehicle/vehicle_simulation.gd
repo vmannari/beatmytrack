@@ -5,7 +5,7 @@ extends RefCounted
 
 const RALLY_HANDBRAKE = preload("res://vehicle/rally_handbrake.gd")
 const BRIDGE_FLIGHT = preload("res://vehicle/bridge_flight.gd")
-const PHYSICS_VERSION: String = "arcade-planar-0.76"
+const PHYSICS_VERSION: String = "arcade-planar-0.77"
 const LOW_SPEED_TURN_FADE_END: float = 16.66 # Below 60 km/h, avoiding float32 endpoint arithmetic.
 const SOIL_TORQUE_GAIN: float = 1.35 # Loose verge bite beyond pure longitudinal drag.
 const SOIL_ROUGH_YAW_ACCELERATION: float = 1.45 # rad/s^2 peak spatial tyre deflection.
@@ -110,6 +110,13 @@ func _step(frame: DriveFrame, ground: PlaygroundData = null) -> void:
 		_step_hovercraft(frame,ground,old_position,old_heading,old_velocity,old_route,old_layer,surface)
 		return
 	var pickup: float = ground.tire_pickup(state) if ground != null else 0.0
+	var wheel_soil: Vector4 = _wheel_soil_contacts(ground) if config.wheel_soil_drag else Vector4(pickup,pickup,pickup,pickup)
+	# Desert road is compacted sand; only loose roadside contacts add this
+	# progressive penalty. Four probes are shared with the existing soil model.
+	var desert_loose: float = 0.0
+	if ground is NativeTrack and str(ground.metadata.get("theme", "pine")) == "desert":
+		desert_loose = (float(wheel_soil.x == 1.0) + float(wheel_soil.y == 1.0) + float(wheel_soil.z == 1.0) + float(wheel_soil.w == 1.0)) * 0.25
+		surface.x *= 1.0 - 0.16 * desert_loose
 	if pickup > 0.0:
 		surface.x = minf(1.0, surface.x * config.loose_surface_grip)
 	var fluids: Vector2 = ground.tire_fluids(state) if ground != null else Vector2.ZERO
@@ -137,6 +144,7 @@ func _step(frame: DriveFrame, ground: PlaygroundData = null) -> void:
 	if config.low_speed_steering_rate_scale < 1.0 and state.velocity.length() < 8.0 and (state.steering == 0.0 or signf(requested_steering) == signf(state.steering)) and absf(requested_steering) > absf(state.steering):
 		# Gentle low-speed lock buildup; unwind and initial countersteer stay quick.
 		steering_response *= lerpf(config.low_speed_steering_rate_scale,1.0,smoothstep(4.0,8.0,state.velocity.length()))
+	steering_response *= 1.0 - 0.20 * desert_loose * smoothstep(3.0,12.0,state.velocity.length())
 	state.steering = move_toward(state.steering, requested_steering, steering_response * STEP)
 	var forward: Vector2 = state.forward()
 	var right: Vector2 = state.right()
@@ -151,13 +159,13 @@ func _step(frame: DriveFrame, ground: PlaygroundData = null) -> void:
 		steer_angle *= lerpf(config.low_speed_steering_scale,1.0,smoothstep(2.0,8.0,speed))
 	var target_yaw: float = longitudinal / config.wheelbase * tan(steer_angle)
 	target_yaw *= config.front_grip / config.rear_grip
-	var wheel_soil: Vector4 = _wheel_soil_contacts(ground) if config.wheel_soil_drag else Vector4(pickup,pickup,pickup,pickup)
 	# Unequal resistance across the car pulls it toward the wheels that left the
 	# road. This is a bounded continuous yaw demand rather than an impulse, so a
 	# one-wheel excursion is noticeable and settles immediately after rejoining.
 	var left_soil: float = (wheel_soil.x + wheel_soil.z) * 0.5
 	var right_soil: float = (wheel_soil.y + wheel_soil.w) * 0.5
 	var soil_drag_rate: float = (7.5 + speed * 0.38) * smoothstep(3.0,14.0,speed) * config.soil_drag_multiplier
+	soil_drag_rate *= 1.0 + 0.25 * desert_loose
 	var brake_turn: float = brake * absf(state.steering) * smoothstep(4.0, 12.0, longitudinal)
 	var lift: float = (1.0 - throttle) * (1.0 - brake) * smoothstep(8.0, 24.0, longitudinal)
 	# Explicit rear braking replaces lift-off unloading rather than stacking with it.

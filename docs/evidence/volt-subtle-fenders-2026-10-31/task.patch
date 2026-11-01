@@ -1,0 +1,156 @@
+diff --git a/DEVELOPMENT_STATUS.md b/DEVELOPMENT_STATUS.md
+index 64264fb..875d0b5 100644
+--- a/DEVELOPMENT_STATUS.md
++++ b/DEVELOPMENT_STATUS.md
+@@ -1,3 +1,13 @@
++<!-- DAILY-MEDAL-PAGE-20261031 -->
++## Daily track reference page and medals (2026-10-31)
++DMP01-DMP05/R01: Scenic feature, result/medal/target/nearby lap standings card and UTC week strip follow the supplied reference. Bronze clears75%, silver40%, gold20%; clearing1% earns a distinct platinum/laurel Elite award. Bounded atomic per-account/car daily progress retains best stages and flying laps. Final focused backend5/0, retained page77/0, standings35/0, App13/0 and rules101/0 pass; final native medal-page count, captures, source checkpoint and limitations: [docs/DAILY_MEDAL_PAGE_2026_10_31.md](docs/DAILY_MEDAL_PAGE_2026_10_31.md). Matching client/API rollout, reload and owner/device acceptance remain. No phone test, live/save mutation, deployment, owner restart or main-index write.
++<!-- /DAILY-MEDAL-PAGE-20261031 -->
++
++<!-- VOLT-SUBTLE-FENDERS-20261031 -->
++## Volt fenders softened into the electric body (2026-10-31)
++VSF01-VSF02: Former prominent rims reduced 78% with a broader body blend and thin dark inner edge. Front wheel inset and enclosed bays retained; procedural 96/96 and all 120 bay rays pass. Prepared assets and pictures refresh; reload, owner and phone acceptance remain. [Comparison and validation](docs/VOLT_SUBTLE_FENDERS_2026_10_31.md).
++<!-- /VOLT-SUBTLE-FENDERS-20261031 -->
++
+ <!-- VOLT-WHEEL-FENDERS-20261031 -->
+ ## Volt wheel fit and formed fenders (2026-10-31)
+ VWF01-VWF03: Front wheels inset 4.4 cm per side, four projecting rolled fenders and opaque enclosed wheelhouses close the reproduced see-through gaps. Actual mesh checks 96/96 procedural and prepared; all 120 bay rays block, full steering/rotation clears, hood/cabin arrays remain exact. Prepared 333-mesh parity and retained integration checks pass; nine final views each desktop renderer. Native assets and 52 pictures refresh. Reload, owner and phone acceptance remain. [Results and comparison](docs/VOLT_WHEEL_FENDERS_2026_10_31.md).
+diff --git a/docs/VOLT_SUBTLE_FENDERS_2026_10_31.md b/docs/VOLT_SUBTLE_FENDERS_2026_10_31.md
+new file mode 100644
+index 0000000..7a66dcc
+--- /dev/null
++++ b/docs/VOLT_SUBTLE_FENDERS_2026_10_31.md
+@@ -0,0 +1,15 @@
++# Volt subtle electric-car arches — 2026-10-31
++
++VSF01 follows the owner's rejection of the prominent fenders. Their outward projection falls from 55 to 12 mm in authored coordinates: **4.8 cm to 1.1 cm at world scale, a 78% reduction**. The transition into the flank is broader. A thin dark inner return replaces the thick painted rolled edge, giving the body a quieter, more integrated electric-car appearance.
++
++[Matched before/after views](evidence/volt-subtle-fenders-2026-10-31/before-after.html) compare the previous fenders with the new native Garage model. The [front quarter](evidence/volt-subtle-fenders-2026-10-31/final-gl/front-quarter.png), [front-wheel close-up](evidence/volt-subtle-fenders-2026-10-31/final-gl/left-front-low.png) and [rear arch](evidence/volt-subtle-fenders-2026-10-31/final-gl/rear-low.png) show the reduced rim.
++
++VSF02 retains the preceding front-wheel inset, complete opaque wheel housings, steering clearance, closed undertray and accepted low hood/cabin. The actual-buffer fixture passes 96/96 procedurally and prepared, including all 120/120 wheel-bay rays in each run. Its former 35–75 mm flare requirement is explicitly replaced by a 6–18 mm target for this owner correction; the other closure, clearance and silhouette checks remain. The exact task-start prominent-fender control fails the eight full/simple style checks and passes the other 88. The retained sports regression passes 104/104, including exact same-process parity across all 333 prepared meshes. Both desktop Compatibility and desktop Mobile produced nine final native views.
++
++Two runtime files change: `electric_reference_body.gd` and the prepared-root constant in `electric_reference_mesh.gd`. Resources use the separate `electric_subtle_fenders_v1` directory. Earlier fender resources are retained and hashed. Preparation also refreshes Electric's current modular assemblies, Garage template, shadow proxies and 52 preview pictures, so cached cars do not hide the revision.
++
++The initial mesh baker reused a cached assembly and produced only the night-light mesh. That incomplete result was detected before final assets were used. The reference baker now disables assembly caches, disables unnecessary batching, awaits model readiness and requires both authored hood variants. Existing modular preparation is restricted to Electric; concurrent other-car work is preserved.
++
++The actual App Garage/race check passes 58/58 with nine captures; its frame-hitch logs are retained and are not a performance result. The modular-assembly comparison passes 44/44 on recheck. Its first run recorded two reuse misses while the other 42 geometry/material/behavior checks passed; subsequent probes found matching keys, source hashes, eligibility and valid holders. Those initial results remain alongside the successful rerun. All 52 preview pictures were rebuilt and imported.
++
++[Actual results, commands, hashes and the task-only source checkpoint](evidence/volt-subtle-fenders-2026-10-31/report.json) record delivery. Every engine command uses the crash-dialog wrapper with an isolated offline profile. Windows certificate-store warnings remain in the logs. Reload/rebuild and owner appearance acceptance remain. No physical-device test/query, APK, live/backend/owner-save mutation, deployment, owner-process restart or main-index write was performed. Desktop Mobile rendering does not establish phone performance.
+diff --git a/game/tests/bake_electric_reference.gd b/game/tests/bake_electric_reference.gd
+index 2a0463f..e7a54ef 100644
+--- a/game/tests/bake_electric_reference.gd
++++ b/game/tests/bake_electric_reference.gd
+@@ -5,15 +5,23 @@ const M = preload("res://vehicle/electric_reference_mesh.gd")
+ func _initialize() -> void: run.call_deferred()
+ 
+ func run() -> void:
++	# Never rebake a restored Garage/modular assembly as authored geometry.
++	preload("res://ui/garage_car_cache.gd").enabled = false
++	preload("res://vehicle/prepared_car_cache.gd").enabled = false
+ 	M.use_baked = false
+ 	M.meshes.clear()
+ 	for simple: bool in [false,true]:
+ 		var car := CarVisual.new()
+ 		car.vehicle_id = "electric"
+ 		car.simple_model = simple
++		car.batch_parts = false
++		car.garage_template = false
++		car.cache_rest_pose = false
+ 		root.add_child(car)
++		while not car.model_ready: await process_frame
+ 		car.set_night_headlights(true)
+ 		car.free()
++	assert(M.meshes.has("ReferenceHood") and M.meshes.has("ReferenceHood_simple"),"Both authored model variants must be generated")
+ 	DirAccess.make_dir_recursive_absolute(ProjectSettings.globalize_path(M.ASSET_ROOT))
+ 	var entries: Array[Dictionary] = []
+ 	for key: String in M.meshes:
+diff --git a/game/tests/test_volt_fenders.gd b/game/tests/test_volt_fenders.gd
+index fcf632e..429f33f 100644
+--- a/game/tests/test_volt_fenders.gd
++++ b/game/tests/test_volt_fenders.gd
+@@ -21,6 +21,10 @@ func run() -> void:
+ 	preload("res://vehicle/prepared_car_cache.gd").enabled = false
+ 	for arg: String in OS.get_cmdline_user_args():
+ 		if arg.begins_with("--output="): output = arg.trim_prefix("--output=")
++		if arg.begins_with("--baseline-body="):
++			var script: GDScript = load("res://vehicle/electric_reference_body.gd")
++			script.source_code = FileAccess.get_file_as_string(arg.trim_prefix("--baseline-body="))
++			assert(script.reload()==OK)
+ 	if "--control" in OS.get_cmdline_user_args():
+ 		for file: String in ["electric_reference_body.gd","electric_reference_details.gd"]:
+ 			var script: GDScript = load("res://vehicle/"+file)
+@@ -56,7 +60,9 @@ func run() -> void:
+ 				var arch: MeshInstance3D = car.body.get_node("ReferenceArch"+suffix)
+ 				var at_lip: Vector3 = point_at_uv(arch,Vector2(0.5,1.0))
+ 				var flare: float = absf(at_lip.x)-B.side_width(at_lip.z,at_lip.y)
+-				check(flare>0.035 and flare<0.075,"fender projects a restrained amount "+suffix+label)
++				# Owner correction: a subtle electric-car shoulder replaces the
++				# former 55 mm flare. Keep a formed edge without a prominent rim.
++				check(flare>0.006 and flare<0.018,"fender blends subtly into body "+suffix+label)
+ 				var packet: Array[MeshInstance3D] = [arch]
+ 				for prefix: String in ["ReferenceWheelWell","VoltFenderReturn","VoltWheelhouseBack","VoltWheelhouseEnd"]:
+ 					for mesh: MeshInstance3D in car.body.find_children(prefix+suffix+"*","MeshInstance3D",false,false): packet.append(mesh)
+diff --git a/game/vehicle/electric_reference_body.gd b/game/vehicle/electric_reference_body.gd
+index 6d0dc5e..997e190 100644
+--- a/game/vehicle/electric_reference_body.gd
++++ b/game/vehicle/electric_reference_body.gd
+@@ -63,23 +63,23 @@ static func flank_point(side: float,z: float,y: float) -> Vector3:
+ 
+ static func fender_point(side: float,axle: float,u: float,v: float) -> Vector3:
+ 	var angle: float=PI*u
+-	var outer_z: float=axle+0.472*cos(angle)
+-	var outer_y: float=minf(maxf(0.24+0.585*sin(angle),wheel_bottom(outer_z)),shoulder(outer_z)-0.002)
++	var outer_z: float=axle+0.490*cos(angle)
++	var outer_y: float=minf(maxf(0.24+0.610*sin(angle),wheel_bottom(outer_z)),shoulder(outer_z)-0.002)
+ 	var inner_z: float=axle+0.43*cos(angle)
+ 	var inner_y: float=maxf(0.24+0.545*sin(angle),wheel_bottom(inner_z))
+ 	var z: float=lerpf(outer_z,inner_z,v)
+ 	var y: float=lerpf(outer_y,inner_y,v)
+ 	var p: Vector3=flank_point(side,z,y)
+-	# The panel grows out of the existing skin and rolls over the opening.
+-	# Its end feet return to the sill instead of leaving a floating arch.
+-	var flare: float=0.055*pow(maxf(0.0,sin(angle)),0.75)
++	# A low, broad shoulder blends into the electric body skin. Only a thin
++	# opening edge remains; the former pronounced rolled flare is removed.
++	var flare: float=0.012*pow(maxf(0.0,sin(angle)),0.75)
+ 	var fold: float=smoothstep(0.0,1.0,v)
+ 	p.x+=side*(flare*fold-0.0008*(1.0-fold))
+ 	return p
+ 
+ static func wheelhouse_edge(side: float,axle: float,u: float) -> Vector3:
+ 	var p: Vector3=fender_point(side,axle,u,1.0)
+-	return p-Vector3(side*0.010,0.009*sin(PI*u),0.009*cos(PI*u))
++	return p-Vector3(side*0.0035,0.004*sin(PI*u),0.004*cos(PI*u))
+ 
+ static func wheelhouse_inner(axle: float) -> float:
+ 	return 0.48 if axle<0.0 else 0.57
+@@ -93,14 +93,14 @@ static func build_wheelhouse(car: CarVisual,side: float,axle: float,paint: Mater
+ 	M.patch(car.body,"ReferenceArch"+label,64,4,func(u: float,v: float)->Vector3:
+ 		return fender_point(side,axle,u,v),paint,Vector3(side,0,0),simple)
+ 	M.patch(car.body,"VoltFenderReturn"+label,64,2,func(u: float,v: float)->Vector3:
+-		return fender_point(side,axle,u,1.0).lerp(wheelhouse_edge(side,axle,u),v),paint,Vector3(side,-0.2,0),simple)
++		return fender_point(side,axle,u,1.0).lerp(wheelhouse_edge(side,axle,u),v),trim,Vector3(side,-0.2,0),simple)
+ 	# A complete cavity: curved roof, opaque inboard bulkhead and two end
+ 	# walls. These surfaces face the tire; the aperture itself stays open.
+ 	M.patch(car.body,"ReferenceWheelWell"+label,64,2,func(u: float,v: float)->Vector3:
+ 		var p: Vector3=wheelhouse_edge(side,axle,u)
+ 		p.x=lerpf(p.x,side*wheelhouse_inner(axle),v)
+ 		return p,trim,Vector3.DOWN,simple,Callable(),func(u: float,_v: float)->Vector3:
+-		return Vector3(0,-sin(PI*u)/0.536,-cos(PI*u)/0.421).normalized())
++		return Vector3(0,-sin(PI*u)/0.541,-cos(PI*u)/0.426).normalized())
+ 	M.patch(car.body,"VoltWheelhouseBack"+label,64,2,func(u: float,v: float)->Vector3:
+ 		var p: Vector3=wheelhouse_edge(side,axle,u)
+ 		return Vector3(side*wheelhouse_inner(axle),lerpf(0.235,p.y,v),p.z),trim,Vector3(side,0,0),simple)
+diff --git a/game/vehicle/electric_reference_mesh.gd b/game/vehicle/electric_reference_mesh.gd
+index 41b3068..5225e8c 100644
+--- a/game/vehicle/electric_reference_mesh.gd
++++ b/game/vehicle/electric_reference_mesh.gd
+@@ -1,6 +1,6 @@
+ extends RefCounted
+ ## Generic sampled mesh builder for the new reference-based Electric car.
+-const ASSET_ROOT := "res://assets/vehicles/electric_sport_fenders_v1"
++const ASSET_ROOT := "res://assets/vehicles/electric_subtle_fenders_v1"
+ static var meshes: Dictionary = {}
+ static var use_baked: bool = true
+ 

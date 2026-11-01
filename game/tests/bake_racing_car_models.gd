@@ -3,6 +3,26 @@ extends SceneTree
 func _initialize() -> void: _bake.call_deferred()
 
 func _bake() -> void:
+	var manifest_path: String = RacingCarModels.ASSET_ROOT.path_join("manifest.json")
+	var existing: Variant = JSON.parse_string(FileAccess.get_file_as_string(manifest_path))
+	var arguments: PackedStringArray = OS.get_cmdline_user_args()
+	var front_only: bool = "--compact-front-only" in arguments
+	var verify_forklift_only: bool = "--verify-forklift-only" in arguments
+	if not existing is Dictionary or not existing.get("cars") is Dictionary:
+		push_error("Racing-model manifest is missing or invalid")
+		quit(1)
+		return
+	var forklift: Array = []
+	if needs_forklift_guard(front_only,verify_forklift_only):
+		forklift = checked_forklift(existing)
+		if forklift.is_empty():
+			push_error("Forklift shadow resources or manifest entry are missing or inconsistent; run res://tests/bake_forklift_racing_shadows.gd first")
+			quit(1)
+			return
+	if verify_forklift_only:
+		print("RACING_FORKLIFT_GUARD: five protected shadow resources match the manifest")
+		quit()
+		return
 	DirAccess.make_dir_recursive_absolute(ProjectSettings.globalize_path(RacingCarModels.COACH_ROOT))
 	CompactCoachwork.use_baked = false
 	CompactCoachwork.meshes.clear()
@@ -10,10 +30,13 @@ func _bake() -> void:
 	glazing.use_baked = false
 	glazing.sheets.clear()
 	var report: Dictionary = {"engine":Engine.get_version_info().string,"provenance":"Reduced sampling of original authored car shapes; offline positions-only shadow LODs.","cars":{}}
-	var front_only: bool = "--compact-front-only" in OS.get_cmdline_user_args()
-	if front_only: report = JSON.parse_string(FileAccess.get_file_as_string(RacingCarModels.ASSET_ROOT.path_join("manifest.json")))
+	if front_only: report = existing
+	else: report.cars["forklift"] = forklift.duplicate(true)
 	for id: String in VehicleCatalog.IDS:
 		if front_only and id!="compact": continue
+		# Forklift has a dedicated silhouette-preserving baker. Generic LOD
+		# generation would discard its narrow forks and overhead-guard shadows.
+		if id=="forklift": continue
 		var car := CarVisual.new()
 		car.vehicle_id = id
 		car.simple_model = true
@@ -80,3 +103,22 @@ func _bake() -> void:
 	FileAccess.open(RacingCarModels.ASSET_ROOT.path_join("manifest.json"),FileAccess.WRITE).store_string(JSON.stringify(report,"\t"))
 	print("RACING_MODEL_BAKE ",count," compact resources, ",bytes," bytes")
 	quit()
+
+func needs_forklift_guard(front_only: bool, verify_forklift_only: bool) -> bool:
+	return not front_only or verify_forklift_only
+
+func checked_forklift(report: Variant) -> Array:
+	if not report is Dictionary or not report.get("cars") is Dictionary: return []
+	var entry: Variant = report.cars.get("forklift",[])
+	if not entry is Array or entry.size() != 5: return []
+	for index: int in range(5):
+		if not entry[index] is Dictionary or int(entry[index].get("frame",-1)) != index: return []
+		var path: String = RacingCarModels.ASSET_ROOT.path_join("forklift_shadow_"+str(index)+".res")
+		if not ResourceLoader.exists(path): return []
+		var mesh: ArrayMesh = load(path) as ArrayMesh
+		if mesh == null or mesh.get_surface_count() != 1: return []
+		var arrays: Array = mesh.surface_get_arrays(0)
+		if arrays[Mesh.ARRAY_INDEX] == null or arrays[Mesh.ARRAY_VERTEX] == null: return []
+		if arrays[Mesh.ARRAY_INDEX].size()/3 != int(entry[index].get("triangles",-1)): return []
+		if arrays[Mesh.ARRAY_VERTEX].size() != int(entry[index].get("vertices",-1)): return []
+	return entry

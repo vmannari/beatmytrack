@@ -549,8 +549,8 @@ func present(state: VehicleState, frame: DriveFrame, track: NativeTrack, delta: 
 	_layer("grass",_grass_gain(state,speed),_grass_pitch(speed),dt,tires_silent or surface_model.grass==0.0 or movement==0.0)
 	# Softer, fuller tire rush in deep sand, with subdued stone detail. The
 	# existing loops blend smoothly instead of adding rhythmic event voices.
-	_layer("sand_roll",movement*(0.12+rolling*0.32)*surface_model.sand*(desert_gain*(1.0+sand_depth*.45) if desert else 1.0),sand_frequency*(.90-sand_depth*.025) if desert else 0.72+clampf(speed/46.0,0,1)*0.38,dt,not sand_contact or movement==0.0)
-	_layer("sand",movement*(0.10+rolling*0.24+scrub*0.24+surface_model.drive*0.22)*surface_model.sand*((.40+sand_depth*.50)*desert_gain if desert else 1.0),sand_frequency*(1.0-sand_depth*.04) if desert else 0.86+clampf(speed/46.0,0,1)*0.20+surface_model.drive*0.06,dt,not sand_contact or movement==0.0)
+	_layer("sand_roll",movement*(0.12+rolling*0.32)*surface_model.sand*(desert_gain*(1.0+sand_depth*.90) if desert else 1.0),sand_frequency*(.90-sand_depth*.05) if desert else 0.72+clampf(speed/46.0,0,1)*0.38,dt,not sand_contact or movement==0.0)
+	_layer("sand",movement*(0.10+rolling*0.24+scrub*0.24+surface_model.drive*0.22)*surface_model.sand*((.40+sand_depth*.85)*desert_gain if desert else 1.0),sand_frequency*(1.0-sand_depth*.08) if desert else 0.86+clampf(speed/46.0,0,1)*0.20+surface_model.drive*0.06,dt,not sand_contact or movement==0.0)
 	_layer("sand_debris",movement*(0.12+rolling*0.30+scrub*0.16+surface_model.drive*0.24)*surface_model.sand*desert_gain*(1.0-sand_depth*.15),sand_frequency,dt,not desert or not sand_contact or movement==0.0)
 	# Fine sand/stone contacts merge into a steady noise bed in Desert.
 	# Do not punctuate it with the former distance-spaced pebble one-shots.

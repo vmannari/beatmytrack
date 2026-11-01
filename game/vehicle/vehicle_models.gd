@@ -42,6 +42,10 @@ static func build(car: CarVisual, id: String) -> void:
 			else:
 				_wheel(car,Vector3(side*half_track,radius,axle),radius,0.36 if id == "formula" else 0.27,trim)
 
+	if id == "forklift":
+		for category: String in VehicleCustomisation.CATEGORIES:
+			preload("res://vehicle/forklift_kits.gd").build(car,category)
+
 static func _box(car: CarVisual, dimensions: Vector3, center: Vector3, material: Material) -> MeshInstance3D:
 	return VisualGeometry.box(car.body,dimensions,center,material)
 

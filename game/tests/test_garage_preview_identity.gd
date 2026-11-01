@@ -23,8 +23,11 @@ func run() -> void:
 	car.vehicle_id = "electric"
 	car.livery = VehicleLivery.for_car({},car.vehicle_id)
 	car.customisation = VehicleCustomisation.defaults()
-	var expected: String = JSON.stringify([cache.VERSION,"electric-fixture",car.vehicle_id,car.livery,{},car.customisation]).sha256_text()
+	var electric_revision: String = "electric-fixture:"+preload("res://vehicle/electric_reference_mesh.gd").ASSET_ROOT
+	var expected: String = JSON.stringify([cache.VERSION,electric_revision,car.vehicle_id,car.livery,{},car.customisation]).sha256_text()
 	check(cache.identity(car) == expected,"known car uses its own visual revision")
+	var previous: String = JSON.stringify([cache.VERSION,"electric-fixture",car.vehicle_id,car.livery,{},car.customisation]).sha256_text()
+	check(cache.identity(car) != previous,"new Volt mesh set cannot reuse an older saved picture")
 	car.vehicle_id = "pickup"
 	car.livery = VehicleLivery.for_car({},car.vehicle_id)
 	expected = JSON.stringify([cache.VERSION,"shared-fixture",car.vehicle_id,car.livery,{},car.customisation]).sha256_text()

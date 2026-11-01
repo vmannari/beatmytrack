@@ -733,7 +733,7 @@ func _update_wash_status() -> void:
 	_wash_status_icon.modulate = colour
 
 func _car_name(id: String) -> String:
-	return VehicleCatalog.title(id).get_slice(" / ",0)
+	return VehicleCatalog.title(id)
 
 func _build_carousel() -> void:
 	if cached_carousel:
@@ -1179,7 +1179,7 @@ func _build_tuning() -> void:
 	tools.add_child(workbench)
 	if not VehicleCustomisation.supported(vehicle_id):
 		workbench.add_child(MenuStyle.label("TUNING",30))
-		var unavailable: Label = MenuStyle.label("Kits available for the Compact and Go-kart",18,true)
+		var unavailable: Label = MenuStyle.label("Kits available for the Rally, Go-kart and Hovercraft",18,true)
 		unavailable.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 		workbench.add_child(unavailable)
 		return

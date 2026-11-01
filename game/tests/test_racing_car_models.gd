@@ -118,8 +118,49 @@ func _run() -> void:
 		check(reduced.triangles < after.triangles*0.8,id+" simpler model reduces triangles")
 		check(reduced.casters == (1 if id == "hovercraft" else 5),id+" shadow casters match the vehicle frames")
 		check(reduced.shadow_triangles < after.shadow_triangles*0.5,id+" shadow geometry reduced")
+		if id == "forklift":
+			check(simple.body.get_node_or_null("RaceShadowProxy") != null,"stock forklift body uses its prepared shadow proxy")
+			var wheel_proxies: int = 0
+			for rotor: Node3D in simple.rolling_wheels:
+				if rotor.get_node_or_null("RaceShadowProxy") != null: wheel_proxies += 1
+			check(wheel_proxies == 4,"stock forklift has one shadow proxy per rolling wheel")
+			var forklift_fitted := CarVisual.new()
+			forklift_fitted.vehicle_id = id
+			forklift_fitted.simple_model = true
+			forklift_fitted.customisation = VehicleCustomisation.defaults()
+			forklift_fitted.customisation.hood = "fork_vent"
+			world.add_child(forklift_fitted)
+			while not forklift_fitted.model_ready: await process_frame
+			check(forklift_fitted.find_children("RaceShadowProxy","MeshInstance3D",true,false).is_empty(),"fitted forklift does not use stock-only shadow proxies")
+			check(inspect(forklift_fitted).casters > 5,"fitted forklift retains its actual silhouette casters")
+			forklift_fitted.queue_free()
+			var editable_forklift := CarVisual.new()
+			editable_forklift.vehicle_id = id
+			editable_forklift.simple_model = true
+			editable_forklift.editable_kits = true
+			world.add_child(editable_forklift)
+			while not editable_forklift.model_ready: await process_frame
+			var editable_wheels: Array[Node3D] = editable_forklift.rolling_wheels.duplicate()
+			for hood: String in ["stock","fork_vent","stock"]:
+				if hood != editable_forklift.customisation.hood:
+					var parts: Dictionary = editable_forklift.customisation.duplicate(true)
+					parts.hood = hood
+					editable_forklift.graphics.restore_originals()
+					editable_forklift.change_kit_parts(parts)
+				check(editable_forklift.find_children("RaceShadowProxy","MeshInstance3D",true,false).is_empty() and inspect(editable_forklift).casters > 5,"editable simple forklift retains silhouette casters with "+hood+" hood")
+				if hood == "fork_vent":
+					var kit_casters: int = 0
+					for frame: Node3D in editable_forklift.kit_frames.get("hood",[]): kit_casters += int(inspect(frame).casters)
+					check(kit_casters > 0,"editable fitted forklift hood casts its own shadow")
+				check(editable_forklift.rolling_wheels == editable_wheels,"editable forklift preserves rolling pivots with "+hood+" hood")
+			editable_forklift.queue_free()
 		if id == "hovercraft":
 			check(simple.rolling_wheels.is_empty() and simple.body.get_node_or_null("FanRotor") != null,id+" independent fan with no wheel frames")
+		elif id == "forklift":
+			var rear_pivots: Dictionary = {}
+			for rotor: Node3D in simple.rolling_wheels:
+				if rotor.get_parent() in simple.rear_wheels: rear_pivots[rotor.get_parent()] = true
+			check(simple.rolling_wheels.size() == 4 and simple.front_wheels.is_empty() and simple.rear_wheels.size() == 2 and rear_pivots.size() == 2,id+" four rolling wheels with two independent rear-steering pivots")
 		else:
 			check(simple.rolling_wheels.size() == 4 and simple.front_wheels.size() == 2,id+" independent wheel frames")
 		var livery: Dictionary = VehicleLivery.defaults(id)
@@ -131,6 +172,13 @@ func _run() -> void:
 		state.steering = 0.4
 		if id == "electric": state.velocity = Vector2(0,10)
 		simple.present(Vector2.ZERO,0,state,DriveFrame.sample(0,0,1))
+		if id == "forklift":
+			var correct_steering: bool = true
+			for rotor: Node3D in simple.rolling_wheels:
+				var pivot: Node3D = rotor.get_parent() as Node3D
+				if pivot in simple.rear_wheels: correct_steering = correct_steering and not is_zero_approx(pivot.rotation.y) and pivot.position.z > 0.0
+				else: correct_steering = correct_steering and is_zero_approx(pivot.rotation.y) and pivot.position.z < 0.0
+			check(correct_steering,"forklift rear wheels steer independently while front wheels remain straight")
 		check(simple.brake_material.albedo_color == Color("f17158"),id+" brake material still responds")
 		if id == "electric":
 			state.velocity = Vector2.ZERO

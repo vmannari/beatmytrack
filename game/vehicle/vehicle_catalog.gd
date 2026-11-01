@@ -4,8 +4,8 @@ extends RefCounted
 const IDS: Array[String] = ["compact", "pickup", "kart", "forklift", "electric", "hovercraft"]
 # Append only: persistence and achievement bits keep their historical identities.
 const ALL_IDS: Array[String] = ["compact", "pickup", "classic", "formula", "kart", "forklift", "electric", "hovercraft"]
-const NAMES: Array[String] = ["COMPACT / 01", "HAULER / 02", "KART / 05", "FORKLIFT / 06", "VOLT / 07", "HOVER / 08"]
-const CLASSES: Array[String] = ["Compact", "Pick-up", "Go-kart", "Forklift", "Electric", "Hovercraft"]
+const NAMES: Array[String] = ["RALLY", "HAULER", "KART", "FORKLIFT", "VOLT", "HOVER"]
+const CLASSES: Array[String] = ["Rally", "Pick-up", "Go-kart", "Forklift", "Electric", "Hovercraft"]
 const DESCRIPTIONS: Array[String] = [
 	"Agile and forgiving. A versatile choice for mixed circuits.",
 	"Heavy power and loose-surface traction. Plan ahead: rotation and braking take longer.",

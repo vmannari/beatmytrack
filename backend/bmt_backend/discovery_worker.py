@@ -41,7 +41,7 @@ def main():
                 worked = step(factory, maintenance=maintenance)
                 if time.monotonic() >= daily_at:
                     daily_work = daily_step(factory)
-                    daily_work = track_of_day_step(factory) or daily_work
+                    daily_work = track_of_day_step(factory, include_artificial=settings.test_drivers_enabled) or daily_work
                     daily_at = time.monotonic() + (0.01 if daily_work else 30)
                     worked = daily_work or worked
                 if time.monotonic() >= report_at:

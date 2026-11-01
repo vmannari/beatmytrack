@@ -24,7 +24,10 @@ static func build(car: CarVisual) -> void:
 	car.paint_materials = {"body":paint,"accent":accent,"detail":detail}
 	car.body.set_meta("hovercraft_revision",4)
 	Hull.build(car.body,paint,accent,detail,rubber,seam,glass,car.brake_material,car.simple_model)
-	Drive.build(car.body,paint,accent,seam,metal,dark_metal,car.simple_model)
+	var housings: Node3D = car.new_kit_frame("rims",car.body) if car.editable_kits else car.body
+	Drive.build(car.body,paint,accent,seam,metal,dark_metal,car.simple_model,str(car.customisation.rims),housings)
+	for category: String in VehicleCustomisation.CATEGORIES:
+		preload("res://vehicle/hovercraft_kits.gd").build(car,category)
 
 static func night_lens(parent: Node3D,material: Material) -> void:
 	Hull.night_lens(parent,material)

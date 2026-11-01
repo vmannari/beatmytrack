@@ -1,0 +1,151 @@
+extends SceneTree
+var checks: int = 0
+var failures: int = 0
+var rows: Array = []
+
+func _initialize() -> void: run.call_deferred()
+func check(ok: bool, label: String) -> void:
+	checks += 1
+	if not ok: failures += 1; print("FAIL: ",label)
+
+static func before_generator() -> GDScript:
+	var script := GDScript.new()
+	script.source_code = FileAccess.get_file_as_string("res://tests/fixtures/sampler_budget_before.gd.txt").replace("class_name SurfaceShaderVariants\n","")
+	assert(script.reload() == OK)
+	return script
+
+static func expanded(source: String) -> String:
+	var include_pattern := RegEx.new()
+	include_pattern.compile('#include "([^"]+)"')
+	for pass_index: int in range(8):
+		var includes: Array[RegExMatch] = include_pattern.search_all(source)
+		if includes.is_empty(): break
+		for item: RegExMatch in includes:
+			source = source.replace(item.get_string(),FileAccess.get_file_as_string(item.get_string(1)))
+	return source
+
+static func samplers(source: String) -> Array[String]:
+	var pattern := RegEx.new()
+	pattern.compile("uniform\\s+sampler2D\\s+(\\w+)")
+	var names: Array[String] = []
+	for item: RegExMatch in pattern.search_all(expanded(source)): names.append(item.get_string(1))
+	return names
+
+static func fixture(kind: String, theme: String) -> NativeTrack:
+	var doc: Dictionary = TrackDocument.create_default()
+	if kind == "star": doc = JSON.parse_string(FileAccess.get_file_as_string("res://tests/fixtures/star_spline_lap.json"))
+	if kind == "mixed_bridge":
+		doc = TrackDocument.create_blank()
+		var point := Vector2(-32,-16)
+		var heading: float = 0.0
+		for piece_kind: String in ["straight","bridge","straight","hairpin","straight","hairpin"]:
+			var piece: Dictionary = RoadPieces.create(piece_kind,point,heading,10)
+			piece.length = 32.0 if piece_kind == "bridge" else 64.0 if doc.pieces.size() == 4 else 16.0 if piece_kind == "straight" else 0.0
+			piece.radius = 16.0
+			doc.pieces.append(piece)
+			var pose: Dictionary = RoadPieces.end_pose(piece)
+			point = pose.position; heading = pose.heading
+		var route: Dictionary = RoadPieces.route_from_pieces(doc)
+		assert(route.ok)
+		doc = route.document
+		doc.pieces[0].surface = "gravel"
+	doc.theme = theme
+	return TrackCompiler.compile(doc)
+
+func active_binding_contract() -> void:
+	var sentinel: Texture2D = ImageTexture.create_from_image(Image.create(2,2,false,Image.FORMAT_RGBA8))
+	var cases: Array = [
+		{"flags":{},"keep":["painted_grass_texture","road_mask"]},
+		{"flags":{"desert_dunes":true},"keep":["road_mask"]},
+		{"flags":{"winter_snow":true,"icy_road":true},"keep":["snow_road_sources"]},
+		{"flags":{"hybrid_grass":true,"piece_materials":true},"keep":["painted_grass_texture","road_mask"]},
+		{"flags":{"hybrid_grass":true,"grass_shoulder":true},"keep":["road_mask"]},
+		{"flags":{"icy_road":true},"keep":["painted_grass_texture","snow_road_sources","road_mask"]},
+		{"flags":{"industrial_ground":true},"keep":["painted_grass_texture","snow_road_sources","road_mask"]}]
+	for test_case: Dictionary in cases:
+		var flags: Dictionary = test_case.flags
+		var material := ShaderMaterial.new()
+		material.shader = preload("res://track/creator_road.gdshader")
+		for flag: String in flags: material.set_shader_parameter(flag,flags[flag])
+		for name: String in ["painted_grass_texture","snow_road_sources","road_mask"]: material.set_shader_parameter(name,sentinel)
+		SurfaceShaderVariants.specialize(material)
+		var names: Array[String] = samplers(material.shader.code)
+		for name: String in ["painted_grass_texture","snow_road_sources","road_mask"]:
+			var active: bool = name in test_case.keep
+			check(names.has(name) == active,"only unreachable declaration removed: "+name+" "+str(flags))
+			if active: check(material.get_shader_parameter(name) == sentinel,"active sampler retains its exact texture: "+name)
+	var bank := ShaderMaterial.new()
+	bank.shader = preload("res://track/winter_bank.gdshader")
+	bank.set_shader_parameter("winter_snow",true)
+	bank.set_shader_parameter("icy_road",true)
+	bank.set_shader_parameter("road_mask",sentinel)
+	SurfaceShaderVariants.specialize(bank)
+	check(samplers(bank.shader.code).has("road_mask") and bank.get_shader_parameter("road_mask") == sentinel,"Winter bank's active road mask is retained")
+	var bridge := ShaderMaterial.new()
+	bridge.shader = preload("res://track/bridge_road.gdshader")
+	bridge.set_shader_parameter("icy_road",true)
+	var folded: ShaderMaterial = bridge.duplicate()
+	SurfaceShaderVariants.specialize(bridge,true,false)
+	SurfaceShaderVariants.specialize(folded)
+	check(bridge.shader != folded.shader and bridge.shader.code.contains("uniform bool icy_road"),"bridge pruning preserves branches and cannot alias a folded shader")
+	var replay: ShaderMaterial = bridge.get_meta("surface_dynamic_material").duplicate()
+	SurfaceShaderVariants.specialize(replay)
+	check(replay.shader == bridge.shader,"branch-preserving mode survives duplication and cached preparation")
+
+func run() -> void:
+	var output: String = OS.get_environment("BMT_SAMPLER_OUTPUT")
+	if output.is_empty(): push_error("Explicit output required"); quit(1); return
+	var audit: bool = OS.get_environment("BMT_SAMPLER_AUDIT") == "1"
+	var compatibility: bool = RenderingServer.get_current_rendering_method() == "gl_compatibility"
+	var original: GDScript = before_generator()
+	var validated := GDScript.new()
+	validated.source_code = FileAccess.get_file_as_string("res://tests/fixtures/sampler_budget_gl_candidate.gd.txt").replace("class_name SurfaceShaderVariants\n","")
+	assert(validated.reload() == OK)
+	if not audit and compatibility: active_binding_contract()
+	for kind: String in ["default","star","mixed_bridge"]:
+		for theme: String in ["pine","winter","desert","storm","night_city"]:
+			var track: NativeTrack = fixture(kind,theme)
+			var visual := NativeTrackVisual.new()
+			visual.persist_road_meshes = false; visual.cache_road_meshes = false
+			root.add_child(visual)
+			await visual.build(track,BridgePresentation.new(track))
+			var seen: Dictionary = {}
+			var old_hashes: Dictionary = {}; var new_hashes: Dictionary = {}
+			for node: Node in visual.find_children("*","MeshInstance3D",true,false):
+				if node.mesh == null: continue
+				for surface: int in range(node.mesh.get_surface_count()):
+					var material: ShaderMaterial = node.get_active_material(surface) as ShaderMaterial
+					if material == null or seen.has(material.get_instance_id()): continue
+					seen[material.get_instance_id()] = true
+					var names: Array[String] = samplers(material.shader.code)
+					if not names.has("surface_factors"): continue
+					var dynamic: ShaderMaterial = material.get_meta("surface_dynamic_material",material)
+					var before: ShaderMaterial = dynamic.duplicate()
+					if material.has_meta("surface_dynamic_material") and not dynamic.get_meta("surface_preserve_branches",false): original.specialize(before)
+					var before_names: Array[String] = samplers(before.shader.code)
+					rows.append({"fixture":kind,"theme":theme,"node":str(node.get_path()),"source":dynamic.shader.resource_path,"before":before_names,"after":names,"specialized":material.has_meta("surface_dynamic_material")})
+					if compatibility and names.size() > 8: print("SAMPLER_OVER_BUDGET ",JSON.stringify(rows[-1]))
+					if audit: continue
+					if compatibility: check(names.size() <= 8,kind+"/"+theme+" sampler budget: "+str(names))
+					else: check(material.shader.code == before.shader.code,kind+"/"+theme+" other renderer retains exact original source")
+					if compatibility:
+						var proven: ShaderMaterial = dynamic.duplicate()
+						if material.has_meta("surface_dynamic_material"): validated.specialize(proven)
+						check(material.shader.code == proven.shader.code,kind+"/"+theme+" guarded output matches the pixel-validated candidate exactly")
+						if theme == "night_city": check(material.shader.code == before.shader.code,"Night shader source stays byte-identical")
+					old_hashes[before.shader.code.sha256_text()] = true
+					new_hashes[material.shader.code.sha256_text()] = true
+					var bindings_equal: bool = true
+					for uniform: Dictionary in material.shader.get_shader_uniform_list():
+						bindings_equal = bindings_equal and material.get_shader_parameter(uniform.name) == before.get_shader_parameter(uniform.name)
+					check(bindings_equal,kind+"/"+theme+" retained uniforms/textures are exact")
+					if material.has_meta("surface_dynamic_material"):
+						var cached: ShaderMaterial = dynamic.duplicate()
+						SurfaceShaderVariants.specialize(cached)
+						check(cached.shader == material.shader,kind+"/"+theme+" cache reuses the correct shader")
+			if not audit: check(new_hashes.size() <= old_hashes.size(),kind+"/"+theme+" no added shader variants")
+			visual.free()
+			await process_frame
+	FileAccess.open(output,FileAccess.WRITE).store_string(JSON.stringify({"rows":rows,"renderer":RenderingServer.get_current_rendering_method(),"audit":audit,"checks":checks,"failures":failures},"  "))
+	print("SAMPLER_PRUNING: %d checks, %d failures" % [checks,failures])
+	quit(1 if failures else 0)

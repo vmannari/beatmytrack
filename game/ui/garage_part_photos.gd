@@ -108,7 +108,7 @@ func _create_studio(paint: Dictionary, parts: Dictionary) -> void:
 	world.add_child(camera)
 	camera.current = true
 
-static func pose(view: Camera3D, category: String, frame: Transform3D) -> void:
+static func pose(view: Camera3D, category: String, frame: Transform3D, vehicle_id: String = "compact") -> void:
 	var target: Vector3
 	var direction: Vector3
 	match category:
@@ -128,6 +128,12 @@ static func pose(view: Camera3D, category: String, frame: Transform3D) -> void:
 			target = Vector3(0,0.45,0)
 			direction = Vector3(3,1.1,-4)
 			view.size = 1.85
+	if vehicle_id == "hovercraft":
+		match category:
+			"hood": target = Vector3(0,0.78,-1.5); direction = Vector3(1.5,1.7,-3); view.size = 1.25
+			"aero": target = Vector3(0,1.35,1.7); direction = Vector3(2,1.2,3); view.size = 2.0
+			"rims": target = Vector3(0,1.03,1.25); direction = Vector3(0.3,0.6,-3); view.size = 1.8
+			"body": target = Vector3(0.8,0.65,0); direction = Vector3(3,1,-1.5); view.size = 2.2
 	var world_target: Vector3 = frame*(target*HandlingConfig.BODY_SCALE)
 	view.look_at_from_position(world_target+frame.basis*direction,world_target)
 	view.keep_aspect = Camera3D.KEEP_HEIGHT

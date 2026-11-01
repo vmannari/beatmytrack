@@ -1,0 +1,425 @@
+--- a/game/track/road_surface_height.gd
++++ b/game/track/road_surface_height.gd
+@@ -4,6 +4,7 @@
+ const RISE: float = 0.05
+ const TERRAIN: float = -0.06
+ const BUCKET: float = 8.0
++const SUPPORT_CACHE = preload("res://track/road_support_cache.gd")
+ var track: NativeTrack
+ var floors: Array[PackedVector2Array] = []
+ var floor_bins: Dictionary = {}
+@@ -14,10 +15,24 @@
+ 	lift = RISE if is_asphalt(track) else 0.0
+ 	if lift == 0.0: return
+ 	var pieces: Array = track.metadata.get("creator_document",{}).get("pieces",[])
++	# Reuse bounded numeric support data, accounted by the retained-memory budget.
++	# Hash the actual pieces so editor mutations cannot reuse stale contours.
++	var digest := HashingContext.new()
++	digest.start(HashingContext.HASH_SHA256)
++	digest.update(var_to_bytes(pieces))
++	var key: String = "support/1/"+digest.finish().hex_encode()
++	var cached: Dictionary = SUPPORT_CACHE.read(key)
++	var stored: Variant = cached.value
++	if stored is Dictionary:
++		for polygon: PackedVector2Array in stored.floors: floors.append(polygon.duplicate())
++		floor_bins = stored.bins.duplicate(true)
++		return
+ 	var topology: Dictionary = RoadPieces.prepare_endpoints(pieces)
+ 	for index: int in range(pieces.size()):
+ 		if pieces[index].kind == "bridge": continue
+-		var shape: Dictionary = VisualRoadJoin.build(pieces,index,0.0,topology)
++		# Spline support uses the swept contours below, never the rounded join.
++		# Building that unused outline repeats expensive intersection/fillet work.
++		var shape: Dictionary = {} if pieces[index].kind == "spline" else VisualRoadJoin.build(pieces,index,0.0,topology)
+ 		var contours: Array[PackedVector2Array] = RoadEdges.section_contours(pieces,index,0.0,topology) if pieces[index].kind == "spline" else shape.contours
+ 		var swept: bool = pieces[index].kind == "spline" or shape.get("swept",false)
+ 		var surfaces: Array[PackedVector2Array] = SplineBorders.surface(SplineBorders.offset(contours,0.16)) if swept else Geometry2D.offset_polygon(contours[0],0.16,Geometry2D.JOIN_ROUND)
+@@ -33,6 +48,10 @@
+ 					var cell := Vector2i(x,y)
+ 					if not floor_bins.has(cell): floor_bins[cell] = []
+ 					floor_bins[cell].append(slot)
++	# Callers own the containers; no cached NativeTrack or mutable instance state.
++	var saved_floors: Array[PackedVector2Array] = []
++	for polygon: PackedVector2Array in floors: saved_floors.append(polygon.duplicate())
++	SUPPORT_CACHE.write(key,{"floors":saved_floors,"bins":floor_bins.duplicate(true)},cached.generation)
+ 
+ static func is_asphalt(data: NativeTrack) -> bool:
+ 	var document: Dictionary = data.metadata.get("creator_document",{})
+--- a/game/editor/editor_memory.gd
++++ b/game/editor/editor_memory.gd
+@@ -49,6 +49,7 @@
+ 	retry = not CreatorPropVisual.trim_cache() or retry
+ 	if is_instance_valid(app.editor_world): app.editor_world.trim_prop_cache()
+ 	if not force and retained(app).retained_bytes <= RETAINED_BUDGET: _finished(app,retry,force); return
++	preload("res://track/road_support_cache.gd").trim()
+ 	NativeTrackVisual.trim_editor_cache()
+ 	if force:
+ 		app.editor_session.primed = {}
+@@ -77,6 +78,7 @@
+ 	var scenes: int = app.editor_world.visual_cache_bytes if is_instance_valid(app.editor_world) else 0
+ 	var props: int = CreatorPropVisual.cache_bytes
+ 	var other: Dictionary = {"read_bytes":READS.bytes,"encoding_bytes":ENCODING.bytes,"race_world_bytes":WORLDS.bytes_used(),
++		"road_support_bytes":preload("res://track/road_support_cache.gd").bytes_used(),
+ 		"effect_preparation_bytes":preload("res://vehicle/effect_render_preparation.gd").cache_bytes(app),"front_fitting_bytes":CompactDetail.front_cache_bytes,
+ 		"winter_sky_bytes":TrackTheme.WINTER_SKY_ESTIMATED_BYTES if TrackTheme.winter_reflection_sky != null else 0,
+ 		"winter_source_bytes":preload("res://track/winter_road_snow_sources.gd").cache_bytes,
+--- /dev/null
++++ b/game/track/road_support_cache.gd
+@@ -0,0 +1,50 @@
++extends RefCounted
++## Pure numeric support data: no track owners, rendering dependencies or disk I/O.
++const MAX_ENTRIES: int = 4
++const MAX_BYTES: int = 2 * 1024 * 1024
++static var entries: Dictionary = {}
++static var bytes: int = 0
++static var generation: int = 0
++static var guard := Mutex.new()
++
++static func read(key: String) -> Dictionary:
++	guard.lock()
++	var entry: Dictionary = entries.get(key,{})
++	if not entry.is_empty():
++		entries.erase(key)
++		entries[key] = entry
++	var result: Dictionary = {"value":entry.get("value"),"generation":generation}
++	guard.unlock()
++	return result
++
++static func write(key: String, value: Dictionary, expected_generation: int) -> void:
++	# Include headroom for dictionary/array containers beyond serialized numbers.
++	var cost: int = var_to_bytes(value).size()*2+key.length()*4+512
++	if cost > MAX_BYTES: return
++	guard.lock()
++	if generation != expected_generation:
++		guard.unlock()
++		return
++	if entries.has(key):
++		bytes -= int(entries[key].bytes)
++		entries.erase(key)
++	while not entries.is_empty() and (entries.size() >= MAX_ENTRIES or bytes+cost > MAX_BYTES):
++		var oldest: String = entries.keys()[0]
++		bytes -= int(entries[oldest].bytes)
++		entries.erase(oldest)
++	entries[key] = {"value":value,"bytes":cost}
++	bytes += cost
++	guard.unlock()
++
++static func trim() -> void:
++	guard.lock()
++	generation += 1
++	entries.clear()
++	bytes = 0
++	guard.unlock()
++
++static func bytes_used() -> int:
++	guard.lock()
++	var result: int = bytes
++	guard.unlock()
++	return result
+--- /dev/null
++++ b/game/tests/test_loading_road_support.gd
+@@ -0,0 +1,102 @@
++extends SceneTree
++## Compare support buffers with the previous constructor, including bridge mouths.
++const HEIGHT = preload("res://track/road_surface_height.gd")
++const CACHE = preload("res://track/road_support_cache.gd")
++var checks: int = 0
++var failures: int = 0
++var rows: Array = []
++
++func _initialize() -> void: run.call_deferred()
++
++func check(ok: bool, label: String) -> void:
++	checks += 1
++	if not ok: failures += 1; push_error(label)
++
++func snapshot(support: RefCounted) -> PackedByteArray:
++	return var_to_bytes([support.lift,support.floors,support.floor_bins])
++
++func run() -> void:
++	var before := GDScript.new()
++	before.source_code = FileAccess.get_file_as_string("res://tests/fixtures/loading_road_support_before.gd.txt")
++	check(before.reload() == OK,"previous implementation compiles")
++	if failures: quit(1); return
++	for fixture: String in ["star_spline_lap","spline_circuit","underpass","knot","silmukka","ajorata","to_the_trees"]:
++		var document: Dictionary = JSON.parse_string(FileAccess.get_file_as_string("res://tests/fixtures/"+fixture+".json"))
++		var track: NativeTrack = TrackCompiler.compile(document)
++		check(track != null,fixture+" compiles")
++		if track == null: continue
++		# Exercise raised support even if the fixture originally has loose terrain.
++		track.metadata.theme = "pine"
++		track.metadata.creator_document.surface = "asphalt"
++		CACHE.trim()
++		var began: int = Time.get_ticks_usec()
++		var old: RefCounted = before.new(track)
++		var old_us: int = Time.get_ticks_usec()-began
++		began = Time.get_ticks_usec()
++		var current: RefCounted = HEIGHT.new(track)
++		var new_us: int = Time.get_ticks_usec()-began
++		check(not current.floors.is_empty(),fixture+" exercises support geometry")
++		check(snapshot(old) == snapshot(current),fixture+" exact contours, order, spatial bins and lift")
++		var sampled: int = 0
++		var equal: bool = true
++		for polygon: PackedVector2Array in current.floors:
++			for point: Vector2 in polygon:
++				for offset: Vector2 in [Vector2.ZERO,Vector2(0.001,0.001),Vector2(-0.001,-0.001)]:
++					equal = equal and old.on_floor(point+offset) == current.on_floor(point+offset)
++					sampled += 1
++		check(equal,fixture+" boundary inclusion stays exact")
++		rows.append({"fixture":fixture,"before_us":old_us,"after_us":new_us,"boundary_samples":sampled,"exact":snapshot(old)==snapshot(current)})
++		check(snapshot(HEIGHT.new(track)) == snapshot(old),fixture+" cached result exact")
++		current.floors[0][0] += Vector2(100,100)
++		current.floors.clear()
++		current.floor_bins.values()[0].clear()
++		current.floor_bins.clear()
++		check(snapshot(HEIGHT.new(track)) == snapshot(old),fixture+" consumer mutation cannot poison cache")
++		if fixture == "star_spline_lap":
++			var times: Array = []
++			# Alternate order after an unmeasured construction of both paths.
++			for cycle: int in range(8):
++				var pair: Dictionary = {}
++				for optimized: bool in ([false,true] if cycle%2 == 0 else [true,false]):
++					began = Time.get_ticks_usec()
++					var support: RefCounted = HEIGHT.new(track) if optimized else before.new(track)
++					pair["after_us" if optimized else "before_us"] = Time.get_ticks_usec()-began
++					check(snapshot(support)==snapshot(old),"timed construction retains exact support")
++				times.append(pair)
++			rows[-1]["interleaved"] = times
++		# A changed width on the same track object must produce a new entry.
++		var pieces: Array = track.metadata.creator_document.pieces
++		var width: float = float(pieces[0].width)
++		var count_before: int = CACHE.entries.size()
++		pieces[0].width = width+0.5
++		check(snapshot(HEIGHT.new(track)) == snapshot(before.new(track)),fixture+" in-place edit invalidates cached support")
++		check(CACHE.entries.size() == count_before+1,fixture+" edited source has a separate cache entry")
++		pieces[0].width = width
++		for theme: String in ["desert","winter"]:
++			track.metadata.theme = theme
++			check(snapshot(before.new(track)) == snapshot(HEIGHT.new(track)),fixture+" "+theme+" unchanged")
++		await process_frame
++	var retired: int = CACHE.generation
++	CACHE.trim()
++	check(CACHE.entries.is_empty() and CACHE.bytes_used() == 0,"memory trim releases all support data")
++	CACHE.write("retired",{"value":1},retired)
++	check(CACHE.entries.is_empty(),"in-flight old work cannot republish after pressure")
++	var track := TrackCompiler.compile(JSON.parse_string(FileAccess.get_file_as_string("res://tests/fixtures/underpass.json")))
++	for index: int in range(7):
++		track.metadata.creator_document.pieces[0].width = 8.0+index
++		HEIGHT.new(track)
++	check(CACHE.entries.size() == 4,"support entries bounded to four")
++	check(CACHE.bytes_used() <= CACHE.MAX_BYTES,"support respects its byte budget")
++	CACHE.trim()
++	var large := PackedByteArray()
++	large.resize(CACHE.MAX_BYTES)
++	CACHE.write("oversized",{"data":large},CACHE.generation)
++	check(CACHE.entries.is_empty(),"oversized entries are not retained")
++	var result := {"checks":checks,"failures":failures,"rows":rows}
++	var output: String = OS.get_environment("BMT_LOADING_OUTPUT")
++	if not output.is_empty():
++		var file := FileAccess.open(output,FileAccess.WRITE)
++		check(file != null,"write evidence")
++		if file != null: file.store_string(JSON.stringify(result,"  "))
++	print("LOADING_ROAD_SUPPORT ",JSON.stringify(result))
++	quit(1 if failures else 0)
+--- /dev/null
++++ b/game/tests/profile_loading_support.gd
+@@ -0,0 +1,64 @@
++extends "res://tests/profile_track_load_stages.gd"
++## Interleaved actual-App measurements: only numeric support-cache reuse differs.
++const ROADS = preload("res://editor/road_preparation.gd")
++const SUPPORT = preload("res://track/road_support_cache.gd")
++var failures: int = 0
++
++func run() -> void:
++	OS.set_environment("BMT_API_URL","")
++	root.size = Vector2i(1280,720)
++	var folder := "user://loading-support-"+TrackLibrary.unique_id()
++	preload("res://track/road_mesh_disk_cache.gd").directory = folder.path_join("roads")
++	var script := instrumented_app()
++	if script == null: quit(1); return
++	app = script.new()
++	app.records = LocalRecords.new(folder.path_join("records.json"))
++	app.records.settings.music_enabled = false
++	app.library = TrackLibrary.new(folder.path_join("tracks"))
++	app.cloud_root_override = folder.path_join("cloud")
++	app.race_profile_enabled = true
++	root.add_child(app)
++	while not app.startup_complete: await process_frame
++	var track: NativeTrack = TrackCompiler.compile(JSON.parse_string(FileAccess.get_file_as_string(TRACK_PATH)))
++	track.metadata.cloud_version = "owned-loading-support"
++	process_frame.connect(observe)
++	for cycle: int in range(5):
++		var control: bool = cycle in [1,3]
++		if control:
++			SUPPORT.trim()
++		app._show_screen("tracks")
++		app.selected_track = track
++		app._load_probe_marks.clear()
++		frames.clear()
++		last_frame = Time.get_ticks_usec()
++		measuring = true
++		var retained_before: int = SUPPORT.entries.size()
++		var began := Time.get_ticks_usec()
++		await app._start_race(track,false,true)
++		var elapsed := (Time.get_ticks_usec()-began)/1000.0
++		measuring = false
++		if not is_instance_valid(app.game) or not app.game.preparation_complete:
++			push_error("Race did not become ready"); quit(1); return
++		app.game.set_physics_process(false)
++		if app.game.countdown_ticks != 360 or app.game.sim.state.tick != 0 or app.game.track_session.target_laps != 5:
++			failures += 1; push_error("Loading changed canonical time/countdown/laps")
++		var row := {"cycle":cycle,"support_evicted_control":control,"retained_before":retained_before,"retained_after":SUPPORT.entries.size(),"wall_ms":elapsed,"max_frame_ms":frames.max(),"marks":app._load_probe_marks.duplicate(true),"road_bytes":ROADS.residency(),"support_bytes":SUPPORT.bytes_used()}
++		samples.append(row)
++		print("LOADING_SUPPORT_APP ",JSON.stringify(row))
++		app._leave_race()
++		await process_frame
++	# Exercise the actual App pressure path and its public accounting.
++	var retained: Dictionary = app.editor_memory.retained(app)
++	if retained.other.road_support_bytes != SUPPORT.bytes_used():
++		failures += 1; push_error("Support missing from retained-memory accounting")
++	app.notification(NOTIFICATION_OS_MEMORY_WARNING)
++	for _frame: int in range(30): await process_frame
++	if not SUPPORT.entries.is_empty():
++		failures += 1; push_error("App memory pressure did not release support cache")
++	var output := OS.get_environment("BMT_LOADING_OUTPUT")
++	if not output.is_empty():
++		FileAccess.open(output,FileAccess.WRITE).store_string(JSON.stringify({"samples":samples,"failures":failures},"  "))
++	app.queue_free()
++	app = null
++	for _frame: int in range(8): await process_frame
++	quit(1 if failures else 0)
+--- /dev/null
++++ b/game/tests/fixtures/loading_road_support_before.gd.txt
+@@ -0,0 +1,96 @@
++extends RefCounted
++## Asphalt-only cosmetic rise. Loose surfaces retain their original geometry.
++const ROAD: float = 0.012
++const RISE: float = 0.05
++const TERRAIN: float = -0.06
++const BUCKET: float = 8.0
++var track: NativeTrack
++var floors: Array[PackedVector2Array] = []
++var floor_bins: Dictionary = {}
++var lift: float = 0.0
++
++func _init(data: NativeTrack) -> void:
++	track = data
++	lift = RISE if is_asphalt(track) else 0.0
++	if lift == 0.0: return
++	var pieces: Array = track.metadata.get("creator_document",{}).get("pieces",[])
++	var topology: Dictionary = RoadPieces.prepare_endpoints(pieces)
++	for index: int in range(pieces.size()):
++		if pieces[index].kind == "bridge": continue
++		var shape: Dictionary = VisualRoadJoin.build(pieces,index,0.0,topology)
++		var contours: Array[PackedVector2Array] = RoadEdges.section_contours(pieces,index,0.0,topology) if pieces[index].kind == "spline" else shape.contours
++		var swept: bool = pieces[index].kind == "spline" or shape.get("swept",false)
++		var surfaces: Array[PackedVector2Array] = SplineBorders.surface(SplineBorders.offset(contours,0.16)) if swept else Geometry2D.offset_polygon(contours[0],0.16,Geometry2D.JOIN_ROUND)
++		for polygon: PackedVector2Array in surfaces:
++			polygon = clip_bridge_mouths(polygon,pieces,index,topology)
++			if polygon.size() < 3: continue
++			var slot: int = floors.size()
++			floors.append(polygon)
++			var bounds := Rect2(polygon[0],Vector2.ZERO)
++			for p: Vector2 in polygon: bounds = bounds.expand(p)
++			for y: int in range(floori(bounds.position.y/BUCKET),floori(bounds.end.y/BUCKET)+1):
++				for x: int in range(floori(bounds.position.x/BUCKET),floori(bounds.end.x/BUCKET)+1):
++					var cell := Vector2i(x,y)
++					if not floor_bins.has(cell): floor_bins[cell] = []
++					floor_bins[cell].append(slot)
++
++static func is_asphalt(data: NativeTrack) -> bool:
++	var document: Dictionary = data.metadata.get("creator_document",{})
++	return str(data.metadata.get("theme","pine")) not in ["desert","winter"] and (document.get("surface","asphalt") == "asphalt" or RoadPieces.has_materials(document))
++
++static func clip_bridge_mouths(polygon: PackedVector2Array, pieces: Array, index: int, topology: Dictionary) -> PackedVector2Array:
++	for cut: Dictionary in RoadEdges._join_cuts(pieces,index,topology):
++		var links: Array = RoadPieces._matches(topology,index,int(cut.endpoint))
++		if links.size() != 1 or pieces[int(links[0][0])].kind != "bridge": continue
++		# The 16 cm road offset extends the mouth beneath its bridge. Trim
++		# only that contiguous cap, since a returning curve can cross the same
++		# infinite plane again far from the bridge (Underpass's 216-degree bend).
++		var distances := PackedFloat32Array()
++		for point: Vector2 in polygon: distances.append((point-Vector2(cut.point)).dot(cut.normal))
++		var seed: int = -1
++		var nearest: float = 0.25*0.25
++		for i: int in range(polygon.size()):
++			var next: int = (i+1)%polygon.size()
++			if distances[i] >= 0.0 or distances[next] >= 0.0: continue
++			var distance: float = Vector2(cut.point).distance_squared_to(Geometry2D.get_closest_point_to_segment(cut.point,polygon[i],polygon[next]))
++			if distance < nearest: nearest = distance; seed = i
++		if seed < 0: continue
++		var trimmed := PackedByteArray()
++		trimmed.resize(polygon.size())
++		for step: int in [-1,1]:
++			var vertex: int = seed if step == 1 else posmod(seed-1,polygon.size())
++			while distances[vertex] < 0.0 and trimmed[vertex] == 0:
++				trimmed[vertex] = 1
++				vertex = posmod(vertex+step,polygon.size())
++		var result := PackedVector2Array()
++		for i: int in range(polygon.size()):
++			var a: Vector2 = polygon[i]
++			var b: Vector2 = polygon[(i+1)%polygon.size()]
++			var da: float = distances[i]
++			var db: float = distances[(i+1)%polygon.size()]
++			if trimmed[i] == 0: result.append(a)
++			if trimmed[i] != trimmed[(i+1)%polygon.size()] and da*db < 0.0: result.append(a.lerp(b,da/(da-db)))
++		polygon = result
++	return polygon
++
++func on_floor(point: Vector2) -> bool:
++	for index: int in floor_bins.get(Vector2i(floori(point.x/BUCKET),floori(point.y/BUCKET)),[]):
++		if Geometry2D.is_point_in_polygon(point,floors[index]): return true
++	return false
++
++static func width(point: Vector2, theme: String) -> float:
++	return (3.0 if theme == "desert" else 1.35) + sin(point.x*0.43+point.y*0.19)*0.20 + sin(point.y*0.91-point.x*0.57)*0.08 + sin(point.x*2.1+point.y*1.7)*0.02
++
++static func bridge_offset(along: float, length: float, original: float = 0.025, raised: float = 0.0) -> float:
++	# Match ground asphalt exactly at both mouths, retaining the deck finish.
++	return raised+lerpf(ROAD, original, smoothstep(0.0, 1.0, minf(along, length-along)))
++
++func ground(point: Vector2) -> float:
++	if lift == 0.0: return 0.0
++	var kind: int = track.cell_at(point)
++	if kind == 0 or (kind == 5 and track.kerbs.height_at(point) > 0.0): return lift
++	# Explicit paint wins over authored road geometry, exactly as in rendering.
++	var cell := Vector2i(floori((point.x+track.half_extent.x)/track.cell_size),floori((track.half_extent.y-point.y)/track.cell_size))
++	var slot: int = cell.y*track.grid_width+cell.x
++	var painted: bool = cell.x >= 0 and cell.y >= 0 and cell.x < track.grid_width and cell.y < track.grid_height and slot < track.kerbs.blocked.size() and track.kerbs.blocked[slot] != 0
++	return lift if not painted and on_floor(point) else 0.0
+--- /dev/null
++++ b/docs/LOADING_OPTIMISATION_2026_10_31.md
+@@ -0,0 +1,33 @@
++# Road support reuse reduces repeat race loading — 31 October 2026
++
++On the offline Star fixture, repeat race loading measured **1.928/2.057 seconds with support-cache eviction versus 1.056/1.156 seconds with reuse**. The average decreased from 1.992 to 1.106 seconds (44.5%). These are alternating runs in one actual App process on Godot 4.7.2, Windows Compatibility/OpenGL and an RTX 3090. Other road, world and shader caches remain warm in both cases. The control evicts only the new support cache; it retains the separate unused-outline optimization. This is a repeat-load measurement for one desktop track, not a startup, cold-driver or Android speedup claim.
++
++Requirements and changes:
++
++- **LTO01:** `game/track/road_surface_height.gd` no longer computes a rounded spline join whose output was discarded before building the actual swept support contours.
++- **LTO02:** The new `game/track/road_support_cache.gd` retains exact numeric contours and spatial bins for at most four source-piece hashes and 2 MiB. It retains no track objects. Callers receive private polygon buffers and containers. In-place piece edits use a different key; terrain/car queries continue using the current track. The helper has no rendering dependency, runtime resource loading, file I/O or wall-clock access.
++- **LTO03:** Two additions in `game/editor/editor_memory.gd` include the cache in the existing 64 MiB retained-memory accounting and release it alongside the road caches. A generation fence rejects work started before a pressure trim. The Star entry accounts for 148,712 bytes; this is a conservative retained-size estimate, not measured peak process or GPU memory.
++- **R01:** `game/tests/test_loading_road_support.gd` and its frozen task-start constructor fixture compare complete data, boundary queries, mutation isolation, edits, entry/byte limits and trim behavior. `game/tests/profile_loading_support.gd` uses the existing timestamp-instrumented App probe for alternating cache controls and actual memory-pressure checks.
++
++The final component regression passed **92 checks, zero failures**, comparing seven tracks and 46,746 boundary samples. Complete support contours, ordering, spatial bins and lift are byte-identical to the previous constructor. Eight interleaved Star samples measured a median **935.566 ms for the previous constructor versus 0.378 ms for cached construction**. Initial uncached Star construction in that run was 987.816 versus 825.638 ms; other cold samples vary, so the repeat result is the demonstrated improvement.
++
++The actual-App run completed five races with zero recorded failures, preserving tick zero, the complete 360-tick countdown and five laps. It also verified retained-memory accounting and actual App pressure cleanup. First race loading was 10.143 seconds with already-used global driver/OS caches. The earlier multi-second cold shader/link bottleneck remains unresolved. This optimization adds no visual change and does not remove any covered graphics preparation.
++
++The retained race-preparation regression passed **567 checks, zero failures**, including cancellation during preparation, metadata hydration, reusable roads, one loading cover, the full countdown and five-lap state.
++
++The older road-height suite reports **120 checks / 16 failures** for current car handling and Desert expectations. A control restores the task-start support constructor and installs it on the suite's bridge objects: it reports the same 16 failure messages and identical driving measurement rows. This isolates support computation, not every historical project dependency; those unrelated assertions remain unresolved. The control source and generator are retained with the evidence. No failing assertions were weakened.
++
++Initial findings are retained: restricted execution reached the component checks but failed the Windows certificate-store access check; normal-access offline runs completed. The first cache candidate exposed shared packed arrays and was corrected with explicit private polygon copies. An empty default-track fixture was replaced with the real Underpass fixture for entry-count coverage. A shared road-section-cache prototype was replaced by the pure numeric helper to keep rendering/resource loading outside canonical setup. An early eviction-order prototype lost the repeat speedup and was corrected before the final measurement.
++
++Commands use a task-owned `APPDATA`, an empty `BMT_API_URL`, and `BMT_LOADING_OUTPUT` pointing into `docs/evidence/loading-optimisation-2026-10-31/`. Every noninteractive Godot process is under the crash-dialog wrapper, including the build entry point's version check:
++
++```powershell
++python scripts/run_no_crash_dialog.py -- powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1 -Action TestScript -ScriptPath res://tests/test_loading_road_support.gd
++python scripts/run_no_crash_dialog.py -- powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1 -Action TestScript -ScriptPath res://tests/profile_loading_support.gd -Graphical -RenderingMethod gl_compatibility -CommandTimeoutSeconds 240
++python scripts/run_no_crash_dialog.py -- powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1 -Action TestScript -ScriptPath res://tests/test_grass_road_height.gd
++python docs/evidence/loading-optimisation-2026-10-31/make_height_control.py
++python scripts/run_no_crash_dialog.py -- powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1 -Action TestScript -ScriptPath res://tests/test_loading_height_control.gd
++python scripts/run_no_crash_dialog.py -- powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1 -Action TestScript -ScriptPath res://tests/test_race_preparation_reuse.gd
++```
++
++[Raw results and logs](evidence/loading-optimisation-2026-10-31/) retain the passing checks, failed attempts and interleaved timings. The task-only source patch excludes concurrent work and build-runner identity regeneration. No owner save, owner process, live service, deployment, main-index staging or commit was changed. No device query or Android test was performed. Reload/rebuild and owner/device loading acceptance remain.

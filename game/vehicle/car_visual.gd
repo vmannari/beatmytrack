@@ -232,6 +232,19 @@ func _ready() -> void:
 	if vehicle_id == "forklift": rear_steering_config = VehicleCatalog.config(vehicle_id)
 	if not VehicleCustomisation.valid(customisation,vehicle_id): customisation = VehicleCustomisation.defaults()
 	if garage_template and preload("res://ui/garage_car_cache.gd").restore(self):
+		# Older stock forklift templates predate editable kit frames.
+		if vehicle_id == "forklift" and editable_kits and kit_frames.is_empty():
+			for category: String in VehicleCustomisation.CATEGORIES:
+				preload("res://vehicle/forklift_kits.gd").build(self,category)
+		if livery.is_empty(): livery = VehicleLivery.defaults(vehicle_id)
+		apply_livery(livery)
+		_update_rear_lights()
+		graphics.configure(self)
+		force_update_transform()
+		for node: Node3D in find_children("*","Node3D",true,false): node.force_update_transform()
+		model_ready = true
+		return
+	if preload("res://vehicle/prepared_car_cache.gd").enabled and _restore_modular_model():
 		if livery.is_empty(): livery = VehicleLivery.defaults(vehicle_id)
 		apply_livery(livery)
 		_update_rear_lights()
@@ -304,6 +317,46 @@ func _ready() -> void:
 	model_ready = true
 
 
+func _restore_modular_model() -> bool:
+	var bases = preload("res://vehicle/modular_car_base.gd")
+	var kits = preload("res://vehicle/modular_car_kits.gd")
+	var wanted: Dictionary = customisation.duplicate(true)
+	if not VehicleCustomisation.valid(wanted,vehicle_id): return false
+	var fitted: bool = wanted != VehicleCustomisation.defaults()
+	# Simple cars use stock-only shadow proxies; a fitted car must retain
+	# its own casters until modular shadow geometry has been prepared and tested.
+	if fitted and simple_model: return false
+	var original_editable: bool = editable_kits
+	var original_children: Array[Node] = get_children()
+	if fitted: editable_kits = true
+	customisation = VehicleCustomisation.defaults()
+	var restored: bool = bases.restore(self)
+	if restored and fitted:
+		# Each module validates before replacing its category. If a later one is
+		# unavailable, the whole prepared assembly is discarded below.
+		for category: String in VehicleCustomisation.CATEGORIES:
+			var option: String = wanted[category]
+			if option != "stock" and not kits.apply(self,category,option):
+				restored = false
+				break
+	customisation = wanted
+	editable_kits = original_editable
+	if restored: return true
+	# A missing, stale or incomplete module must leave the ordinary constructor
+	# with its original empty state, including its existing caller-owned children.
+	for child: Node in get_children():
+		if child not in original_children:
+			remove_child(child)
+			child.queue_free()
+	body = null
+	front_wheels.clear(); rear_wheels.clear(); rolling_wheels.clear()
+	wheel_radii.clear(); wheel_rest_positions.clear(); brake_lights.clear()
+	paint_materials.clear(); paint_variants.clear(); kit_frames.clear()
+	brake_material = null; accent_roof = null
+	underside_material = VisualGeometry.material(Color.BLACK)
+	return false
+
+
 func _finish_render_model() -> void:
 	if simple_model: RacingCarModels.prepare(self)
 	if batch_parts:
@@ -342,10 +395,23 @@ func change_kit_parts(value: Dictionary) -> void:
 	customisation = value.duplicate(true)
 	for category: String in VehicleCustomisation.CATEGORIES:
 		if previous[category]==value[category]: continue
+		if preload("res://vehicle/prepared_car_cache.gd").enabled and preload("res://vehicle/modular_car_kits.gd").apply(self,category,str(value[category])):
+			continue
 		for frame: Node3D in kit_frames.get(category,[]):
 			frame.get_parent().remove_child(frame)
 			frame.queue_free()
 		kit_frames[category] = []
+		if vehicle_id=="forklift":
+			preload("res://vehicle/forklift_kits.gd").build(self,category)
+			if batch_parts:
+				for frame: Node3D in kit_frames[category]: VisualGeometry.batch_static_parts(frame)
+			continue
+		if vehicle_id=="hovercraft":
+			if category=="rims": preload("res://vehicle/hovercraft_sport_drive.gd").rebuild_fans(self)
+			else: preload("res://vehicle/hovercraft_kits.gd").build(self,category)
+			if batch_parts:
+				for frame: Node3D in kit_frames[category]: VisualGeometry.batch_static_parts(frame)
+			continue
 		if vehicle_id=="kart":
 			var kart = preload("res://vehicle/kart_model.gd")
 			match category:

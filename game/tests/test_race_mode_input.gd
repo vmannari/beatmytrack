@@ -62,6 +62,19 @@ func run() -> void:
 		root.size = dimensions
 		app._show_screen("tracks")
 		await settle()
+		# The press that opens a mode must not immediately settle its new slide.
+		for item: Array in [["sun","daily"],["target","challenges"],["flag","tracks"]]:
+			var mode_point: Vector2 = rail_button(item[0]).get_global_rect().get_center()
+			touch(mode_point,true)
+			check(app.screen == item[1] and app.menu_page_motion != null and not is_zero_approx(app.menu_body.position.y),"touch starts visible slide to "+str(item[1]))
+			touch(mode_point,false)
+			check(app.menu_page_motion != null,"release preserves slide to "+str(item[1]))
+			check(not app.menu_page_motion.is_running(),"incoming "+str(item[1])+" waits for layout before sliding")
+			for draw: int in range(6):
+				if DisplayServer.get_name() == "headless": await process_frame
+				else: await RenderingServer.frame_post_draw
+			check(app.menu_page_motion != null and app.menu_page_motion.is_running(),"prepared "+str(item[1])+" starts sliding")
+			await settle()
 		# A mouse press starts on the temporary rail, then lifts after arrival.
 		app._request_race_mode("rivalry")
 		var rivalry_page: WeeklyRivalryPage = app.content.find_child("WeeklyRivalryPage",true,false)

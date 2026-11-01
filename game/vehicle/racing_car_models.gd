@@ -9,7 +9,7 @@ static var shadow_material: ShaderMaterial
 static func prepare(car: CarVisual) -> void:
 	_reduce_primitives(car)
 	# Editable assemblies retain their own casters through later part replacements.
-	if car.vehicle_id=="kart" and car.editable_kits: return
+	if car.vehicle_id in ["kart","forklift"] and car.editable_kits: return
 	# Baked stock shadows cannot describe fitted aero/hood/rim silhouettes.
 	if VehicleCustomisation.supported(car.vehicle_id) and car.customisation != VehicleCustomisation.defaults(): return
 	var frames: Array[Node3D] = [car.body]

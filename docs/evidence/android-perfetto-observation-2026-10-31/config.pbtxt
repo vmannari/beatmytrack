@@ -1,0 +1,44 @@
+# Bounded diagnostic for the explicitly isolated, profileable GL comparison app.
+# System scheduler/frequency metadata is collected on device; only the listed
+# app is eligible for periodic native callstack samples and atrace app tags.
+buffers { size_kb: 16384 fill_policy: DISCARD }
+buffers { size_kb: 32768 fill_policy: DISCARD }
+duration_ms: 120000
+incremental_state_config { clear_period_ms: 5000 }
+data_sources { config {
+  name: "linux.perf"
+  target_buffer: 0
+  perf_event_config {
+    timebase { counter: SW_CPU_CLOCK frequency: 99 timestamp_clock: PERF_CLOCK_MONOTONIC }
+    callstack_sampling {
+      scope { target_cmdline: "org.beatmytrack.rendererprobe.gl20261031" }
+      kernel_frames: false
+    }
+  }
+} }
+data_sources { config {
+  name: "linux.ftrace"
+  target_buffer: 1
+  ftrace_config {
+    ftrace_events: "sched/sched_switch"
+    ftrace_events: "sched/sched_waking"
+    ftrace_events: "power/cpu_frequency"
+    ftrace_events: "power/cpu_idle"
+    
+    ftrace_events: "task/task_newtask"
+    ftrace_events: "task/task_rename"
+    atrace_categories: "gfx"
+    atrace_categories: "view"
+    atrace_categories: "sync"
+    atrace_apps: "org.beatmytrack.rendererprobe.gl20261031"
+    buffer_size_kb: 2048
+    drain_period_ms: 250
+  }
+} }
+data_sources { config {
+  name: "linux.process_stats"
+  target_buffer: 0
+  process_stats_config { scan_all_processes_on_start: true record_thread_names: true }
+} }
+data_sources { config { name: "android.surfaceflinger.frametimeline" target_buffer: 0 } }
+# A registered gpu.renderstages source is appended only when advertised.

@@ -21,40 +21,62 @@ const DESCRIPTIONS: Dictionary = {
 	"rims":["Factory finish","Five broad spokes","Six split spokes","Swept turbine blades","Cross-spoke lattice","Deep recessed centre","Closed rally face","Six sculpted spokes","Ten narrow spokes","Three broad spokes"],
 	"body":["Factory finish","Low front lip and side skirts","Rally arches and mud flaps","Front splitter and sill extensions","Subtle classic arch trim","Touring lip and sill package","Extended wheel arches","Deep splitter and rear diffuser","Raised gravel trim and mud flaps","Sculpted street trim"]}
 
-const KIT_CARS: Array[String] = ["compact","kart"]
+const KIT_CARS: Array[String] = ["compact","kart","hovercraft","forklift"]
+const FORKLIFT_LABELS: Dictionary = {"hood":"Engine cover", "aero":"Rear guard", "rims":"Wheel covers", "body":"Side guards"}
+const FORKLIFT_OPTIONS: Dictionary = {
+	"hood":[["stock","Original"],["fork_vent","Vent cover"],["fork_rib","Ribbed cover"],["fork_twin","Twin intake"]],
+	"aero":[["stock","Original"],["fork_bar","Steel bar"],["fork_wrap","Wraparound guard"],["fork_twin","Twin bar"]],
+	"rims":[["stock","Original"],["fork_disc","Solid disc"],["fork_ring","Bright ring"],["fork_spoke","Six spoke"]],
+	"body":[["stock","Original"],["fork_rail","Side rails"],["fork_plate","Side plates"],["fork_twin","Twin rails"]]}
+const FORKLIFT_DESCRIPTIONS: Dictionary = {
+	"hood":["Factory finish","Raised slotted engine cover","Longitudinal engine ribs","Paired engine intakes"],
+	"aero":["Factory finish","Polished rear protection bar","Guard wrapping the rear corners","Two rear protection bars"],
+	"rims":["Factory finish","Smooth wheel covers","Polished outer rings","Six spoke wheel covers"],
+	"body":["Factory finish","Protective side rails","Fitted side plates","Paired protective rails"]}
+const HOVER_LABELS: Dictionary = {"hood":"Bow", "aero":"Rear wing", "rims":"Fans", "body":"Side sponsons"}
+const HOVER_OPTIONS: Dictionary = {
+	"hood":[["stock","Original"],["hover_blade","Blade bow"],["hover_twin","Twin bow"],["hover_shield","Shield bow"],["hover_arrow","Arrow bow"],["hover_delta","Delta bow"],["hover_channel","Channel bow"],["hover_crest","Crest bow"],["hover_split","Split bow"],["hover_jet","Jet bow"],["hover_enduro","Endurance bow"]],
+	"aero":[["stock","Original"],["hover_low","Low wing"],["hover_twin","Twin wing"],["hover_swept","Swept wing"],["hover_delta","Delta wing"],["hover_raised","Raised wing"],["hover_split","Split wing"],["hover_enduro","Endurance wing"],["hover_arc","Arc wing"],["hover_sport","Sport wing"],["hover_gt","GT wing"]],
+	"rims":[["stock","Original"],["hover_bright","Polished nacelles"],["hover_twin","Twin-ring nacelles"],["hover_guard","Armoured nacelles"],["hover_turbine","Turbine nacelles"],["hover_scythe","Scythe nacelles"],["hover_paddle","Classic propulsors"],["hover_jet","Jet nacelles"],["hover_fan","Sport nacelles"],["hover_carbon","Carbon nacelles"],["hover_race","Race nacelles"]],
+	"body":[["stock","Original"],["hover_sport","Sport sponsons"],["hover_twin","Twin sponsons"],["hover_guard","Guard sponsons"],["hover_blade","Blade sponsons"],["hover_delta","Delta sponsons"],["hover_channel","Channel sponsons"],["hover_enduro","Endurance sponsons"],["hover_swept","Swept sponsons"],["hover_jet","Jet sponsons"],["hover_gt","GT sponsons"]]}
+const HOVER_DESCRIPTIONS: Dictionary = {
+	"hood":["Factory finish","Blade bow","Twin bow","Shield bow","Arrow bow","Delta bow","Channel bow","Crest bow","Split bow","Jet bow","Endurance bow"],
+	"aero":["Factory finish","Low wing","Twin wing","Swept wing","Delta wing","Raised wing","Split wing","Endurance wing","Arc wing","Sport wing","GT wing"],
+	"rims":["Factory finish","Polished nacelles","Twin-ring nacelles","Armoured nacelles","Turbine nacelles","Scythe nacelles","Classic propulsors","Jet nacelles","Sport nacelles","Carbon nacelles","Race nacelles"],
+	"body":["Factory finish","Sport sponsons","Twin sponsons","Guard sponsons","Blade sponsons","Delta sponsons","Channel sponsons","Endurance sponsons","Swept sponsons","Jet sponsons","GT sponsons"]}
 const KART_LABELS: Dictionary = {"hood":"Nose","aero":"Rear bumper","rims":"Rims","body":"Side pods"}
 const KART_OPTIONS: Dictionary = {
 	"hood":[["stock","Original"],["sprint","Sprint nose"],["enduro","Endurance nose"],["wedge","Wedge nose"],
-		["arrow","Arrow nose"],["split","Channel nose"],["shield","Shield nose"],["retro","Rounded nose"]],
+		["arrow","Arrow nose"],["split","Channel nose"],["shield","Shield nose"],["retro","Rounded nose"],["mohawk","Mohawk nose"]],
 	"aero":[["stock","Original"],["loop","Wraparound bumper"],["blade","Wide rear bumper"],["twin","Twin rear bumper"],
 		["oval","Oval bumper"],["cage","Cross brace bumper"],["panel","Slotted bumper"],["chevron","Chevron bumper"]],
 	"rims":[["stock","Original"],["three","Three spoke"],["six","Split six"],["disc","Disc wheel"],
 		["turbine","Turbine wheel"],["mesh","Cross mesh wheel"],["dish","Deep dish wheel"],["star","Five point wheel"]],
 	"body":[["stock","Original"],["sprint","Sprint pods"],["enduro","Endurance pods"],["wedge","Wedge pods"],
-		["blade","Blade pods"],["channel","Channel pods"],["rounded","Rounded pods"],["box","Box pods"]]}
+		["blade","Blade pods"],["channel","Channel pods"],["rounded","Rounded pods"],["box","Box pods"],["mohawk","Mohawk pods"]]}
 const KART_DESCRIPTIONS: Dictionary = {
 	"hood":["Factory finish","Low broad nose with a narrow fairing","Raised nose with a broad fairing","Angular nose with a tapered fairing",
-		"Pointed nose with a raised centre spine","Twin shoulders around a recessed channel","Broad flat shield with squared shoulders","Rounded bumper with a slender fairing"],
+		"Pointed nose with a raised centre spine","Twin shoulders around a recessed channel","Broad flat shield with squared shoulders","Rounded bumper with a slender fairing","Swept fins along a sculpted centre fairing"],
 	"aero":["Factory finish","Moulded bumper with swept ends","Broad low bumper on twin stays","Two bumper rails on twin stays",
 		"Closed oval rail with a centre badge","Tubular frame with diagonal cross braces","Moulded shield with two open slots","Angled bumper with a low centre"],
 	"rims":["Factory finish","Three broad magnesium spokes","Six paired magnesium spokes","Recessed solid magnesium face",
 		"Nine swept solid turbine blades","Crossed bronze spokes with an open centre","Deep bowl with a rolled outer lip","Five broad forged spokes"],
 	"body":["Factory finish","Low side pods with short returns","Deep side pods with raised shoulders","Tapered side pods with angular shoulders",
-		"Low sharp shoulders and a thin trailing edge","Deep channel between raised shoulders","Smooth rounded capsule side pods","Squared side pods with broad flat sides"]}
+		"Low sharp shoulders and a thin trailing edge","Deep channel between raised shoulders","Smooth rounded capsule side pods","Squared side pods with broad flat sides","Sculpted side pods with swept crest fins"]}
 
 static func supported(id: String) -> bool:
 	return id in KIT_CARS
 
 static func options(category: String, id: String = "compact") -> Array:
-	return (KART_OPTIONS if id=="kart" else OPTIONS).get(category,[]) if supported(id) else []
+	return (FORKLIFT_OPTIONS if id=="forklift" else HOVER_OPTIONS if id=="hovercraft" else KART_OPTIONS if id=="kart" else OPTIONS).get(category,[]) if supported(id) else []
 
 static func label(category: String, id: String = "compact") -> String:
-	return str((KART_LABELS if id=="kart" else LABELS).get(category,""))
+	return str((FORKLIFT_LABELS if id=="forklift" else HOVER_LABELS if id=="hovercraft" else KART_LABELS if id=="kart" else LABELS).get(category,""))
 
 static func description(category: String, option: String, id: String = "compact") -> String:
 	var choices: Array = options(category,id)
 	for index: int in range(choices.size()):
-		if choices[index][0]==option: return (KART_DESCRIPTIONS if id=="kart" else DESCRIPTIONS)[category][index]
+		if choices[index][0]==option: return (FORKLIFT_DESCRIPTIONS if id=="forklift" else HOVER_DESCRIPTIONS if id=="hovercraft" else KART_DESCRIPTIONS if id=="kart" else DESCRIPTIONS)[category][index]
 	return ""
 
 static func defaults() -> Dictionary:

@@ -17,11 +17,12 @@ func check(ok: bool, description: String) -> void:
 func run() -> void:
 	var accepted: HandlingConfig = BEFORE.config("kart", 5)
 	var final: HandlingConfig = VehicleCatalog.config("kart")
-	check(final.version == "kart-11", "new canonical handling identity")
+	check(final.version == "kart-12", "new canonical handling identity")
 	# Preserve the selected dry setup as a historical control for the later
 	# winter-grip and high-speed cornering changes.
 	var selected: HandlingConfig = final.duplicate() as HandlingConfig
 	selected.version = "kart-9"
+	selected.low_speed_steering_scale = 1.0
 	selected.turn_speed_reduction = 0.0
 	var expected: Dictionary = accepted.snapshot()
 	var actual: Dictionary = selected.snapshot()

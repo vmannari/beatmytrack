@@ -1,5 +1,7 @@
 """Public navigation must reach the established, verified deletion flow."""
+from copy import copy
 from html.parser import HTMLParser
+from xml.etree import ElementTree
 
 from bmt_backend.public_pages import ASSETS, ROOT
 
@@ -14,6 +16,14 @@ class Links(HTMLParser):
         self.targets.update(value for name, value in attrs if name in ("href", "src") and value)
 
 
+def settings_for_metadata(settings, environment, origin):
+    # Exercise origin rendering without constructing a real production service.
+    result = copy(settings)
+    object.__setattr__(result, "environment", environment)
+    object.__setattr__(result, "public_base_url", origin)
+    return result
+
+
 def test_home_and_all_assets_are_public_and_same_origin(auth_client):
     response = auth_client.get("/")
     assert response.status_code == 200
@@ -25,6 +35,8 @@ def test_home_and_all_assets_are_public_and_same_origin(auth_client):
     assert "nosniff" == response.headers["x-content-type-options"]
     assert "<script" not in response.text
     for target in Links(response.text).targets:
+        if target == auth_client.app.state.settings.public_base_url.rstrip("/") + "/":
+            continue  # Canonical URL is deliberately absolute.
         assert target.startswith(("/", "#")), target
         if not target.startswith("#"):
             linked = auth_client.get(target)
@@ -60,11 +72,51 @@ def test_only_allowlisted_public_assets_can_be_read(auth_client):
     assert auth_client.post("/site/style-v1.css").status_code == 405
 
 
+def test_search_metadata_uses_configured_origin_never_host_header(auth_client):
+    settings = auth_client.app.state.settings
+    auth_client.app.state.settings = settings_for_metadata(settings, "production", "https://game.example")
+    try:
+        page = auth_client.get("/", headers={"host": "attacker.example"})
+        assert '<link rel="canonical" href="https://game.example/">' in page.text
+        assert 'property="og:image" content="https://game.example/site/blind-spot-social-v1.png"' in page.text
+        assert "attacker.example" not in page.text
+        assert "x-robots-tag" not in page.headers
+        robots = auth_client.get("/robots.txt")
+        assert "Sitemap: https://game.example/sitemap.xml" in robots.text
+        sitemap = auth_client.get("/sitemap.xml")
+        root = ElementTree.fromstring(sitemap.content)
+        urls = [node.text for node in root.findall("{*}url/{*}loc")]
+        assert urls == ["https://game.example/", "https://game.example/privacy",
+                        "https://game.example/community-rules", "https://game.example/account-deletion"]
+    finally:
+        auth_client.app.state.settings = settings
+
+
+def test_staging_and_invalid_origins_do_not_advertise_indexable_urls(auth_client):
+    settings = auth_client.app.state.settings
+    try:
+        auth_client.app.state.settings = settings_for_metadata(settings, "development", "https://stage.example")
+        assert auth_client.get("/").headers["x-robots-tag"] == "noindex, nofollow"
+        assert "Disallow: /" in auth_client.get("/robots.txt").text
+        assert auth_client.get("/sitemap.xml").status_code == 404
+        auth_client.app.state.settings = settings_for_metadata(settings, "production", "https://bmt-stg-example.run.app")
+        assert auth_client.get("/").headers["x-robots-tag"] == "noindex, nofollow"
+        assert auth_client.get("/sitemap.xml").status_code == 404
+        auth_client.app.state.settings = settings_for_metadata(settings, "production", 'https://host.example/\"x')
+        page = auth_client.get("/")
+        assert "canonical" not in page.text
+        assert 'property="og:image"' not in page.text
+        assert "Disallow: /" in auth_client.get("/robots.txt").text
+        assert auth_client.get("/sitemap.xml").status_code == 404
+    finally:
+        auth_client.app.state.settings = settings
+
+
 def test_public_site_does_not_add_admin_service_routes(tmp_path):
+    from fastapi.routing import iter_route_contexts
+
     from bmt_backend.app import create_app
     from bmt_backend.config import Settings
-
-    from fastapi.routing import iter_route_contexts
 
     app = create_app(Settings(environment="test", workload_role="admin",
                               database_url="sqlite://", object_dir=str(tmp_path / "objects")))

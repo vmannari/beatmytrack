@@ -77,7 +77,7 @@ def main():
                 check(page.url == origin + "/", f"{width}: return to homepage")
             page.goto(origin + "/privacy")
             check(page.get_by_role("heading", name="Privacy policy", exact=True).is_visible(), "privacy page available")
-            contact_pending = "placeholders awaiting confirmation" in page.locator("body").inner_text()
+            contact_pending = "[Privacy contact — to be confirmed]" in page.locator("body").inner_text()
             page.goto(origin + "/community-rules")
             check(page.get_by_role("heading", name="Public sharing rules", exact=True).is_visible(), "community rules available")
             page.goto(origin + "/account-deletion")

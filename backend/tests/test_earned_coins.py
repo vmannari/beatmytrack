@@ -140,12 +140,16 @@ def test_catalog_matches_shipped_liveries_and_parts():
     root = Path(__file__).resolve().parents[2]
     patterns = json.loads((root / "game/assets/liveries/catalog.json").read_text())
     assert {"livery/" + pattern["id"] for pattern in patterns} == {item for item in PRICES if item.startswith("livery/")}
-    assert len({item for item in PRICES if not item.startswith("kit/kart/")}) == 87
+    assert len({item for item in PRICES if not item.startswith(("kit/kart/", "kit/hovercraft/", "kit/forklift/"))}) == 87
     catalog = json.loads((root / "backend/bmt_backend/vehicle_appearance_catalog.json").read_text())
     expected_kart = {f"kit/kart/{category}/{option}" for category, options in catalog["kart_parts"].items() for option in options if option != "stock"}
     assert {item for item in PRICES if item.startswith("kit/kart/")} == expected_kart
-    assert len(expected_kart) == 28
+    assert len(expected_kart) == 29
     assert all(PRICES[item] == 750 for item in expected_kart)
+    expected_hover = {f"kit/hovercraft/{category}/{option}" for category, options in catalog["hovercraft_parts"].items() for option in options if option != "stock"}
+    assert {item for item in PRICES if item.startswith("kit/hovercraft/")} == expected_hover
+    assert len(expected_hover) == 40
+    assert all(PRICES[item] == 750 for item in expected_hover)
 
 
 def test_history_retention_keeps_balance_unlocks_and_reward_receipts(domain):

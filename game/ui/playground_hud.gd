@@ -34,6 +34,7 @@ var lap_label: Label
 var lap_timer: Label
 var lap_total: Label
 var race_timer: Label
+var clock_caption: Label
 var shortcut_notice_label: Label
 var checkpoint_notice: CheckpointNotice
 var rewind_button: RewindHUDButton
@@ -145,7 +146,7 @@ func _ready() -> void:
 	var clock_info := VBoxContainer.new()
 	clock_info.add_theme_constant_override("separation", 0)
 	timing.add_child(clock_info)
-	var clock_caption := _label("RACE", 16)
+	clock_caption = _label("RACE", 16)
 	clock_caption.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	clock_caption.size_flags_horizontal = Control.SIZE_SHRINK_CENTER
 	clock_info.add_child(clock_caption)
@@ -445,6 +446,16 @@ func show_session(session: TrackSession) -> void:
 		_lap_centiseconds = lap_centiseconds
 		lap_timer.text = _time_text(current)
 
+
+func show_daily_session(session: TrackSession, rules: RefCounted) -> void:
+	# The daily target occupies the existing race-total slot; the lap clock stays live.
+	if session.completed_laps == 0:
+		clock_caption.text = tr("Opening lap")
+		race_timer.text = "—"
+	else:
+		var index: int = mini(rules.passed,rules.PERCENTILES.size()-1)
+		clock_caption.text = tr("Top %d%%") % rules.PERCENTILES[index]
+		race_timer.text = rules.time_text(rules.limits[index])
 
 func _time_text(seconds: float) -> String:
 	# Integer centiseconds avoid a rounded 00:60.00 at minute boundaries.

@@ -19,7 +19,7 @@ func run() -> void:
 		root.size = dimensions
 		root.content_scale_size = dimensions
 		for frame: int in range(5): await process_frame
-		if game.hud.handling_test_choice != null or game.attempt_practice or game.handling.version != "kart-11": failures += 1
+		if game.hud.handling_test_choice != null or game.attempt_practice or game.handling.version != "kart-12": failures += 1
 		var output: String = OS.get_environment("BMT_KART_FINAL_CAPTURE")
 		if not output.is_empty():
 			DirAccess.make_dir_recursive_absolute(output)

@@ -339,7 +339,7 @@ static func presentation_for_fingerprint(fingerprint: String, workflow_directory
 	if fingerprint.length() == 64 and fingerprint.is_valid_hex_number(false):
 		job = _read_job(workflow_directory.path_join(fingerprint+".job.json"),preload("res://backend/cloud_tracks.gd")._read_file)
 	# Retain only presentation fields, never the full authoring document/proof.
-	return {"state":str(job.get("state","")),"ready":_ready_for_job(job),"caption":_caption_for_job(job),"retry":_retry_for_job(job),
+	return {"state":"failed" if job.has("failure") else str(job.get("state","")),"ready":_ready_for_job(job),"caption":_caption_for_job(job),"retry":_retry_for_job(job),
 		"revision_conflict":str(job.get("failure","")).contains("REVISION_CONFLICT"),"needs_slots":_quota_failure(job)}
 
 static func _quota_failure(job: Dictionary) -> bool:
@@ -444,11 +444,13 @@ func _advance(path: String, job: Dictionary, owner_scope: String) -> void:
 		var recording: Dictionary = cloud._read(path.get_base_dir().path_join(str(job.get("proof_file",""))))
 		var input_count: Variant = recording.get("input_count",recording.get("frames",[]).size())
 		if not (input_count is int or input_count is float) or not is_finite(float(input_count)) or float(input_count) != float(int(input_count)) or int(input_count) <= 0:
+			job.state = "failed"
 			job.failure = "The saved creator lap is incomplete. Complete a fresh local test lap."
 			_save(path,job)
 			return
 		var replay: Dictionary = cloud.client._pack_trajectory(int(input_count),recording.get("race_proof",{}),[])
 		if replay.is_empty():
+			job.state = "failed"
 			job.failure = "The saved creator trajectory is incomplete. Complete a fresh local test lap."
 			_save(path,job)
 			return
@@ -461,6 +463,7 @@ func _advance(path: String, job: Dictionary, owner_scope: String) -> void:
 		var wire_contract: Dictionary = job.contract.duplicate(true)
 		var rate: Variant = wire_contract.get("tick_rate")
 		if not (rate is int or rate is float) or not is_finite(float(rate)) or float(rate) != floor(float(rate)) or float(rate) < 1 or float(rate) > 1000:
+			job.state = "failed"
 			job.failure = "The saved creator contract is incomplete. Complete a fresh local test lap."
 			_save(path,job)
 			return
@@ -471,7 +474,9 @@ func _advance(path: String, job: Dictionary, owner_scope: String) -> void:
 		if not response.ok:
 			last_error = str(response.error)
 			_pause_batch(response)
-			if int(response.status) in [400,403,409,410,413,422] or str(response.get("error","")) == "REQUEST_TOO_LARGE": job.failure = "Publication needs attention: "+last_error
+			if int(response.status) in [400,403,409,410,413,422] or str(response.get("error","")) == "REQUEST_TOO_LARGE":
+				job.state = "failed"
+				job.failure = "Publication needs attention: "+last_error
 			else: _delay_job(job,maxi(15,int(response.get("retry_after",0))),true)
 			_save(path,job)
 			return

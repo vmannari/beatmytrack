@@ -8,6 +8,13 @@ const PINE: Array[Color] = [Color("343638"), Color("606b36"), Color("b49b70"), C
 const DESERT: Array[Color] = [Color("ac8b5a"), Color("c5a16b"), Color("c1a478"), Color("3b6165"), Color("9a8870"), Color("c7bc9e"), Color("718c85"), Color("948063")]
 const DESERT_SHOULDER: Color = Color("ad8957")
 const DESERT_SUN_ROTATION: Vector3 = Vector3(-46,-48,0)
+## Shared static radiance, released on memory pressure. Active environments
+## retain their own reference when the optional cache is trimmed.
+static var winter_reflection_sky: Sky
+const WINTER_SKY_ESTIMATED_BYTES: int = 1024 * 1024
+
+static func trim_winter_sky() -> void:
+	winter_reflection_sky = null
 
 
 static func normalized(theme: String) -> String:
@@ -69,13 +76,14 @@ static func apply_lighting(theme: String, environment: Environment, light: Direc
 		light.light_energy = 1.12
 		environment.ambient_light_color = Color("879ec2")
 		environment.ambient_light_energy = 0.48
-		var sky := Sky.new()
-		var material := ShaderMaterial.new()
-		material.shader = preload("res://track/winter_reflection_sky.gdshader")
-		sky.sky_material = material
-		sky.radiance_size = Sky.RADIANCE_SIZE_128
-		sky.process_mode = Sky.PROCESS_MODE_QUALITY
-		environment.sky = sky
+		if winter_reflection_sky == null:
+			winter_reflection_sky = Sky.new()
+			var material := ShaderMaterial.new()
+			material.shader = preload("res://track/winter_reflection_sky.gdshader")
+			winter_reflection_sky.sky_material = material
+			winter_reflection_sky.radiance_size = Sky.RADIANCE_SIZE_128
+			winter_reflection_sky.process_mode = Sky.PROCESS_MODE_QUALITY
+		environment.sky = winter_reflection_sky
 		environment.reflected_light_source = Environment.REFLECTION_SOURCE_SKY
 		environment.fog_enabled = true
 		environment.fog_density = 0.0011

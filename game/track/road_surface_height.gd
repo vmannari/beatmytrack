@@ -4,6 +4,7 @@ const ROAD: float = 0.012
 const RISE: float = 0.05
 const TERRAIN: float = -0.06
 const BUCKET: float = 8.0
+const SUPPORT_CACHE = preload("res://track/road_support_cache.gd")
 var track: NativeTrack
 var floors: Array[PackedVector2Array] = []
 var floor_bins: Dictionary = {}
@@ -14,10 +15,24 @@ func _init(data: NativeTrack) -> void:
 	lift = RISE if is_asphalt(track) else 0.0
 	if lift == 0.0: return
 	var pieces: Array = track.metadata.get("creator_document",{}).get("pieces",[])
+	# Reuse bounded numeric support data, accounted by the retained-memory budget.
+	# Hash the actual pieces so editor mutations cannot reuse stale contours.
+	var digest := HashingContext.new()
+	digest.start(HashingContext.HASH_SHA256)
+	digest.update(var_to_bytes(pieces))
+	var key: String = "support/1/"+digest.finish().hex_encode()
+	var cached: Dictionary = SUPPORT_CACHE.read(key)
+	var stored: Variant = cached.value
+	if stored is Dictionary:
+		for polygon: PackedVector2Array in stored.floors: floors.append(polygon.duplicate())
+		floor_bins = stored.bins.duplicate(true)
+		return
 	var topology: Dictionary = RoadPieces.prepare_endpoints(pieces)
 	for index: int in range(pieces.size()):
 		if pieces[index].kind == "bridge": continue
-		var shape: Dictionary = VisualRoadJoin.build(pieces,index,0.0,topology)
+		# Spline support uses the swept contours below, never the rounded join.
+		# Building that unused outline repeats expensive intersection/fillet work.
+		var shape: Dictionary = {} if pieces[index].kind == "spline" else VisualRoadJoin.build(pieces,index,0.0,topology)
 		var contours: Array[PackedVector2Array] = RoadEdges.section_contours(pieces,index,0.0,topology) if pieces[index].kind == "spline" else shape.contours
 		var swept: bool = pieces[index].kind == "spline" or shape.get("swept",false)
 		var surfaces: Array[PackedVector2Array] = SplineBorders.surface(SplineBorders.offset(contours,0.16)) if swept else Geometry2D.offset_polygon(contours[0],0.16,Geometry2D.JOIN_ROUND)
@@ -33,6 +48,10 @@ func _init(data: NativeTrack) -> void:
 					var cell := Vector2i(x,y)
 					if not floor_bins.has(cell): floor_bins[cell] = []
 					floor_bins[cell].append(slot)
+	# Callers own the containers; no cached NativeTrack or mutable instance state.
+	var saved_floors: Array[PackedVector2Array] = []
+	for polygon: PackedVector2Array in floors: saved_floors.append(polygon.duplicate())
+	SUPPORT_CACHE.write(key,{"floors":saved_floors,"bins":floor_bins.duplicate(true)},cached.generation)
 
 static func is_asphalt(data: NativeTrack) -> bool:
 	var document: Dictionary = data.metadata.get("creator_document",{})

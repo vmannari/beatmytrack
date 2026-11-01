@@ -132,11 +132,13 @@ func _publish_light(i: int) -> void:
 func sync_barrels(nodes: Array, state: VehicleState) -> void:
 	if barrel_sources.is_empty() or not is_visible_in_tree(): return
 	var changed: bool=false
+	# All sources share the same parent; its inverse is identical for this pass.
+	var world_to_local: Transform3D=(get_parent() as Node3D).global_transform.affine_inverse()
 	for source: Dictionary in barrel_sources:
 		if int(source.index)>=nodes.size(): continue
 		var node: Node3D=nodes[int(source.index)]
 		if not node.has_meta("burning_barrel_scale"): continue
-		var pose: Transform3D=(get_parent() as Node3D).global_transform.affine_inverse()*node.global_transform
+		var pose: Transform3D=world_to_local*node.global_transform
 		var row: Array=state.light_props[int(source.index)] if int(source.index)<state.light_props.size() else []
 		var key: Array=[pose,row.slice(10)]
 		if barrel_poses.get(source.index)==key: continue

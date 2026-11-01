@@ -11,6 +11,7 @@ from pathlib import Path
 from bmt_backend.app import create_app
 from bmt_backend.config import Settings
 from bmt_backend.privacy_pages import deletion_page
+from bmt_backend.public_pages import ASSETS
 from playwright.sync_api import sync_playwright
 from starlette.requests import Request
 
@@ -50,6 +51,9 @@ def main():
             elif path in ("/privacy/deletion.js", "/privacy/style.css"):
                 asset = ROOT / "backend/bmt_backend/privacy_ui" / path.rsplit("/", 1)[-1]
                 route.fulfill(status=200, content_type="text/javascript" if path.endswith(".js") else "text/css", body=asset.read_bytes())
+            elif path.startswith("/site/") and path[6:] in ASSETS:
+                asset = ROOT / "backend/bmt_backend/public_ui" / path[6:]
+                route.fulfill(status=200, content_type=ASSETS[path[6:]], body=asset.read_bytes())
             elif path == "/v1/auth/google/browser/start":
                 route.fulfill(json={"poll_token": "fictional-verification", "browser_url": "https://fixture.example/v1/auth/google/browser#fictional"})
             elif path == "/v1/auth/google/browser":

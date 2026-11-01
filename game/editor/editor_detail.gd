@@ -84,25 +84,30 @@ func _rebuild(visual: NativeTrackVisual, track: NativeTrack, batches: RefCounted
 	_proxy_groups.clear(); _members.clear()
 	_objects = batches.sources
 	var source_indices: Dictionary = {}
+	var position_index: Dictionary = {}
+	var position_index_ready: bool = false
 	for index: int in range(_objects.size()):
 		var encoded: String = JSON.stringify(_objects[index],"",true)
 		if not source_indices.has(encoded): source_indices[encoded] = []
 		source_indices[encoded].append(index)
 	for key: String in batches.groups:
 		var indices: Array[int] = []
+		var seen: Dictionary = {}
 		var entry: Dictionary = batches.groups[key]
 		for source: String in entry.get("sources",[]):
 			var encoded: String = source.get_slice("/ground=",0)
 			for index: int in source_indices.get(encoded,[]):
-				if not indices.has(index): indices.append(index)
+				if not seen.has(index): indices.append(index); seen[index] = true
 		if key == "tyres":
 			for index: int in range(_objects.size()):
 				if _objects[index].kind in ["tyre_stack","tyre_wall"]: indices.append(index)
 		elif not key.begins_with("shadow:") and indices.is_empty():
-			for pose: Transform3D in entry.get("poses",[]):
-				for index: int in range(_objects.size()):
-					var position := Vector2(_objects[index].position[0],_objects[index].position[1])
-					if position.distance_squared_to(Vector2(pose.origin.x,-pose.origin.z)) < 0.0001 and not indices.has(index): indices.append(index)
+			var poses: Array = entry.get("poses",[])
+			if not poses.is_empty():
+				if not position_index_ready:
+					position_index = _index_positions(_objects)
+					position_index_ready = true
+				indices = _pose_indices(_objects,poses,position_index)
 		_members[key] = indices
 	var groups: Dictionary = {}
 	var objects: Array = _objects
@@ -130,3 +135,30 @@ func _rebuild(visual: NativeTrackVisual, track: NativeTrack, batches: RefCounted
 		(node.material_override as StandardMaterial3D).vertex_color_use_as_albedo = true
 		node.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
 		proxies.add_child(node); group.node = node; _proxy_groups.append(group)
+
+# Match the previous strict 1 cm radius test, including nearby cell boundaries.
+# Sorting candidates preserves the old object-order traversal for each pose.
+static func _index_positions(objects: Array) -> Dictionary:
+	var result: Dictionary = {}
+	for index: int in range(objects.size()):
+		var position := Vector2(objects[index].position[0],objects[index].position[1])
+		var cell := Vector2i(floori(position.x*100.0),floori(position.y*100.0))
+		if not result.has(cell): result[cell] = []
+		result[cell].append(index)
+	return result
+
+static func _pose_indices(objects: Array, poses: Array, position_index: Dictionary) -> Array[int]:
+	var result: Array[int] = []
+	var seen: Dictionary = {}
+	for pose: Transform3D in poses:
+		var point := Vector2(pose.origin.x,-pose.origin.z)
+		var cell := Vector2i(floori(point.x*100.0),floori(point.y*100.0))
+		var candidates: Array = []
+		for x: int in range(-1,2):
+			for y: int in range(-1,2): candidates.append_array(position_index.get(cell+Vector2i(x,y),[]))
+		candidates.sort()
+		for index: int in candidates:
+			var position := Vector2(objects[index].position[0],objects[index].position[1])
+			if position.distance_squared_to(point) < 0.0001 and not seen.has(index):
+				result.append(index); seen[index] = true
+	return result

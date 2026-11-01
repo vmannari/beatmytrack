@@ -203,11 +203,36 @@ def test_public_pages_are_accessible_escaped_and_cookie_free(auth_app, auth_clie
     auth_app.state.settings = replace(auth_app.state.settings, privacy_developer_name="<script>fixture</script>")
     policy = auth_client.get("/privacy")
     assert policy.status_code == 200 and "&lt;script&gt;fixture&lt;/script&gt;" in policy.text
-    assert "placeholders" in policy.text and "Removed account" in policy.text
+    assert "A privacy contact has not yet been provided" in policy.text and "Removed account" in policy.text
     assert "frame-ancestors 'none'" in policy.headers["content-security-policy"]
     assert "set-cookie" not in policy.headers
     assert auth_client.get("/account-deletion").status_code == 200
     assert auth_client.get("/privacy/deletion.js").status_code == 200
+
+
+def test_privacy_identity_default_and_environment_override(auth_app, auth_client, monkeypatch):
+    from bmt_backend.config import Settings
+
+    monkeypatch.delenv("BMT_PRIVACY_DEVELOPER_NAME", raising=False)
+    monkeypatch.delenv("BMT_PRIVACY_CONTACT_EMAIL", raising=False)
+    assert Settings().privacy_developer_name == "Ville Mannari"
+    assert Settings.from_env().privacy_developer_name == "Ville Mannari"
+    policy = auth_client.get("/privacy").text
+    assert "Ville Mannari" in policy
+    assert "A privacy contact has not yet been provided" in policy
+    assert "[Privacy contact — to be confirmed]" in policy
+
+    monkeypatch.setenv("BMT_PRIVACY_DEVELOPER_NAME", "Example &amp; developer")
+    monkeypatch.setenv("BMT_PRIVACY_CONTACT_EMAIL", "privacy@example.test")
+    settings = Settings.from_env()
+    assert settings.privacy_developer_name == "Example &amp; developer"
+    assert settings.privacy_contact_email == "privacy@example.test"
+    auth_app.state.settings = replace(auth_app.state.settings,
+        privacy_developer_name=settings.privacy_developer_name, privacy_contact_email=settings.privacy_contact_email)
+    configured = auth_client.get("/privacy").text
+    assert "Example &amp;amp; developer" in configured
+    assert "privacy@example.test" in configured
+    assert "A privacy contact has not yet been provided" not in configured
 
 
 def test_storage_failure_does_not_complete_erasure(auth_app, auth_client, sign_in, monkeypatch):

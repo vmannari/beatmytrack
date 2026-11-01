@@ -1,0 +1,213 @@
+class_name CreatorBridgeVisual
+extends RefCounted
+## Original ramp/deck/rail meshes; footprint matches the native upper layer.
+
+const RAIL_TOP: Color = Color("858681")
+const RAIL_SIDE: Color = Color("60635f")
+const ASPHALT_EDGE = preload("res://track/asphalt_edge_profile.gd")
+
+static func build(parent: Node3D, bridges: Array, theme: String = "pine", road_phases: Array[Dictionary] = [], raise_asphalt: bool = true, material_blend: Image = null, map_extent: Vector2 = Vector2.ZERO) -> void:
+	if bridges.is_empty(): return
+	ContactShading.build_bridges(parent,bridges)
+	var tool := SurfaceTool.new()
+	tool.begin(Mesh.PRIMITIVE_TRIANGLES)
+	var deck := SurfaceTool.new()
+	deck.begin(Mesh.PRIMITIVE_TRIANGLES)
+	var road_lift: float = preload("res://track/road_surface_height.gd").RISE if raise_asphalt and theme not in ["desert","winter"] else 0.0
+	var lip := SurfaceTool.new()
+	if road_lift > 0.0: lip.begin(Mesh.PRIMITIVE_TRIANGLES)
+	if road_lift > 0.0:
+		deck.set_normal(Vector3.UP); deck.set_uv2(Vector2.RIGHT)
+	for span_index: int in range(bridges.size()):
+		var span: Dictionary = bridges[span_index]
+		var loose: bool = theme in ["pine","storm"] and span.get("surface","") == "gravel"
+		if theme in ["pine","storm"]: deck.set_uv2(Vector2(1.0,1.0 if loose else 0.0))
+		if theme == "desert":
+			DesertBridgeVisual.append(tool,deck,span,bridges,road_phases[span_index] if span_index < road_phases.size() else {})
+			continue
+		var rails: Dictionary = {}
+		for side: float in [-1.0,1.0]: rails[side] = CreatorBridges.rail_runs(span,bridges,0,float(span.length),side)
+		var count: int = ceili(float(span.length)/0.5)
+		var half: float = float(span.width)*0.5
+		if theme == "winter": deck.set_uv2(Vector2(half,0.0))
+		for i: int in range(count):
+			var a: float = float(span.length)*i/count
+			var b: float = float(span.length)*(i+1)/count
+			var radius: float = ASPHALT_EDGE.RADIUS if road_lift > 0.0 else 0.0
+			strip(deck,span,a,b,-half+radius,half-radius,0.025,Color("343638"),{},road_lift)
+			if road_lift > 0.0:
+				var pa: Vector3 = vertex(span,a,-half+radius,preload("res://track/road_surface_height.gd").bridge_offset(a,float(span.length),0.025,road_lift))
+				var pb: Vector3 = vertex(span,b,half-radius,preload("res://track/road_surface_height.gd").bridge_offset(b,float(span.length),0.025,road_lift))
+				var pc: Vector3 = vertex(span,b,-half+radius,preload("res://track/road_surface_height.gd").bridge_offset(b,float(span.length),0.025,road_lift))
+				var up: Vector3 = (pc-pa).cross(pb-pa).normalized()
+				up /= maxf(up.y,0.001)
+				for side: float in [-1.0,1.0]:
+					var offset_a: float = preload("res://track/road_surface_height.gd").bridge_offset(a,float(span.length),0.025,road_lift)
+					var offset_b: float = preload("res://track/road_surface_height.gd").bridge_offset(b,float(span.length),0.025,road_lift)
+					var outward: Vector3 = VisualGeometry.world(Vector2(0.0,side).rotated(deg_to_rad(float(span.heading))))
+					ASPHALT_EDGE.append(lip,vertex(span,a,side*(half-radius),offset_a),vertex(span,b,side*(half-radius),offset_b),
+						outward,outward,0.0,0.0,Vector2(a,side*(half-radius)),Vector2(b,side*(half-radius)),Vector2(1.0,1.0 if loose else 0.0),false,Vector2(0.0,side),up)
+			for side: float in [-1.0,1.0]:
+				for run: Vector2 in CreatorBridges.clip_runs(rails[side],a,b):
+					var inner: float = half*side
+					var outer: float = (half+CreatorBridges.RAIL)*side
+					# Broad concrete footing, plain grey steel handrail. Both remain
+					# inside the existing solid rail footprint; the underpass stays open.
+					strip(tool,span,run.x,run.y,inner,outer,0.10,Color("afb1a5"))
+					wall(tool,span,run.x,run.y,inner,0.025,0.10,Color("626e70"))
+					wall(tool,span,run.x,run.y,outer,-0.42,0.10,Color("817e70"))
+					strip(tool,span,run.x,run.y,(half+0.63)*side,outer,-0.40,Color("b6ae99"))
+					wall(tool,span,run.x,run.y,outer,-0.42,-0.34,Color("403f38"))
+					var rail: float = (half+0.14)*side
+					var back: float = (half+0.34)*side
+					# One plain rectangular handrail, 20 cm higher than the old crown.
+					strip(tool,span,run.x,run.y,rail,back,0.85,RAIL_TOP)
+					wall(tool,span,run.x,run.y,rail,0.65,0.85,RAIL_SIDE)
+					wall(tool,span,run.x,run.y,back,0.65,0.85,RAIL_SIDE)
+					strip(tool,span,run.x,run.y,rail,back,0.65,RAIL_SIDE)
+					if not loose: _marking(tool,span,run.x,run.y,side,road_lift,material_blend,map_extent)
+			strip(tool,span,a,b,-half-CreatorBridges.RAIL,half+CreatorBridges.RAIL,-0.42,Color("293e4a"))
+		# Sparse slim steel uprights, all within the existing solid rail strip.
+		var posts: int = maxi(1,ceili(float(span.length)/8.0))
+		for i: int in range(posts+1):
+			var a: float = clampf(float(span.length)*i/posts,0,float(span.length)-0.24)
+			var b: float = a+0.24
+			for side: float in [-1.0,1.0]:
+				if CreatorBridges.clip_runs(rails[side],a,b) != [Vector2(a,b)]: continue
+				var inner: float = (half+0.16)*side
+				var outer: float = (half+0.32)*side
+				strip(tool,span,a,b,inner,outer,0.85,RAIL_SIDE)
+				wall(tool,span,a,b,inner,0.10,0.85,RAIL_SIDE)
+				wall(tool,span,a,b,outer,-0.42,0.85,RAIL_SIDE)
+				quad(tool,vertex(span,a,inner,0.10),vertex(span,a,outer,0.10),vertex(span,a,outer,0.85),vertex(span,a,inner,0.85),RAIL_SIDE)
+				quad(tool,vertex(span,b,inner,0.10),vertex(span,b,outer,0.10),vertex(span,b,outer,0.85),vertex(span,b,inner,0.85),RAIL_SIDE)
+		# Recessed expansion joints at the crest of each ramp.
+		for u: float in [CreatorBridges.RAMP,float(span.length)-CreatorBridges.RAMP]:
+			strip(tool,span,u,u+0.055,-half,half,0.034,Color("182c37"),{},road_lift)
+			strip(tool,span,u+0.055,u+0.085,-half,half,0.035,Color("788382"),{},road_lift)
+		# Plain end caps close the handrail.
+		for u: float in [0.0,float(span.length)]:
+			for side: float in [-1.0,1.0]:
+				if CreatorBridges.clip_runs(rails[side],u,u+0.001).is_empty(): continue
+				quad(tool,vertex(span,u,(half+0.14)*side,0.65),vertex(span,u,(half+0.34)*side,0.65),vertex(span,u,(half+0.34)*side,0.85),vertex(span,u,(half+0.14)*side,0.85),RAIL_SIDE)
+		# Small approach markings explain which ends can be driven onto.
+		if not loose:
+			for u: float in [2.0,float(span.length)-2.0]:
+				for side: float in [-1.0,1.0]:
+					var p := Vector2(span.position[0],span.position[1])+Vector2(u,side*1.5).rotated(deg_to_rad(float(span.heading)))
+					var paint: float = _paint_strength(p,material_blend,map_extent)
+					if paint > 0.001: strip(tool,span,u,u+0.18,side*(1.5-paint*0.5),side*(1.5+paint*0.5),0.04,Color("d5d6bb"),{},road_lift)
+	tool.generate_normals()
+	var mesh := MeshInstance3D.new()
+	mesh.add_to_group("race_bridge_rendering")
+	mesh.name = "BridgeSteelAndFascia"
+	mesh.mesh = tool.commit()
+	var material := VisualGeometry.material(Color.WHITE)
+	material.vertex_color_use_as_albedo = true
+	material.cull_mode = BaseMaterial3D.CULL_DISABLED
+	mesh.material_override = material
+	mesh.layers = 2 # Separately culled from headlights while the car is below.
+	if theme == "desert":
+		var stone := ShaderMaterial.new()
+		stone.shader = preload("res://track/desert_bridge.gdshader")
+		mesh.material_override = stone
+		mesh.name = "DesertBridgeSandstone"
+	parent.add_child(mesh)
+	# Retain the original smooth ramp/deck normals. Only then append the
+	# separately shaded lip to this same surface, so it cannot round the lane.
+	deck.generate_normals()
+	if road_lift > 0.0:
+		ASPHALT_EDGE.append_arrays(deck,lip.commit_to_arrays())
+	var road := MeshInstance3D.new()
+	road.add_to_group("race_bridge_rendering")
+	road.name = "BridgeAsphalt"
+	road.mesh = deck.commit()
+	var asphalt := ShaderMaterial.new()
+	asphalt.shader = preload("res://track/storm_bridge_road.gdshader") if theme == "storm" else preload("res://track/bridge_road.gdshader")
+	if theme == "desert": asphalt.shader = preload("res://track/desert_bridge_road.gdshader")
+	asphalt.set_shader_parameter("surface_factors", preload("res://assets/textures/surface_factors_v1.png"))
+	asphalt.set_shader_parameter("road_color",TrackTheme.palette(theme)[0])
+	asphalt.set_shader_parameter("sand_color",TrackTheme.palette(theme)[2].darkened(0.20))
+	asphalt.set_shader_parameter("piece_materials",theme in ["pine","storm"] and bridges.any(func(span: Dictionary) -> bool: return span.has("surface")))
+	asphalt.set_shader_parameter("gravel_road_base",TrackTheme.DESERT[0])
+	asphalt.set_shader_parameter("bridge_material_blend",material_blend != null)
+	if material_blend != null:
+		asphalt.set_shader_parameter("bridge_blend_mask",ImageTexture.create_from_image(material_blend))
+		asphalt.set_shader_parameter("bridge_map_extent",map_extent)
+	asphalt.set_shader_parameter("industrial_asphalt",theme == "night_city")
+	if theme == "night_city": asphalt.set_shader_parameter("night_asphalt_wear",NativeTrackVisual.NIGHT_ASPHALT_WEAR)
+	asphalt.set_shader_parameter("icy_road",theme == "winter")
+	asphalt.set_shader_parameter("ice_albedo", NativeTrackVisual.WINTER_ICE)
+	asphalt.set_shader_parameter("ice_finish", NativeTrackVisual.WINTER_ICE_FINISH)
+	if theme == "winter":
+		asphalt.set_shader_parameter("snow_albedo",NativeTrackVisual.WINTER_SNOW)
+		asphalt.set_shader_parameter("winter_bridge_width_data",true)
+	asphalt.set_shader_parameter("wet_road",theme == "storm")
+	asphalt.set_shader_parameter("packed_sand",theme == "desert")
+	asphalt.set_shader_parameter("raised_road_edge",road_lift > 0.0)
+	asphalt.set_shader_parameter("desert_road_albedo",NativeTrackVisual.DESERT_ROAD_ALBEDO)
+	asphalt.set_shader_parameter("desert_road_reference",NativeTrackVisual.desert_road_reference)
+	if theme == "desert":
+		asphalt.set_shader_parameter("desert_apron",NativeTrackVisual.DESERT_APRON)
+		asphalt.set_shader_parameter("desert_bridge_width_data",true)
+		asphalt.set_shader_parameter("sand_color",TrackTheme.DESERT_SHOULDER)
+		SurfaceShaderVariants.specialize(asphalt)
+	elif theme == "night_city" or road_lift > 0.0: SurfaceShaderVariants.specialize(asphalt)
+	road.material_override = asphalt
+	road.layers = 1 # Continuous Lambert response rejects lights below the road normal.
+	parent.add_child(road)
+
+static func _marking(tool: SurfaceTool, span: Dictionary, a: float, b: float, side: float, road_lift: float, blend: Image, extent: Vector2) -> void:
+	var half: float = float(span.width)*0.5
+	if blend == null:
+		strip(tool,span,a,b,(half-0.30)*side,(half-0.18)*side,0.033,Color("d9d8cc"),{},road_lift)
+		return
+	var center: float = (half-0.24)*side
+	var widths: Array[float] = []
+	for along: float in [a,b]:
+		var p := Vector2(span.position[0],span.position[1])+Vector2(along,center).rotated(deg_to_rad(float(span.heading)))
+		widths.append(0.06*_paint_strength(p,blend,extent))
+	if maxf(widths[0],widths[1]) < 0.001: return
+	var height_a: float = road_lift+lerpf(0.018,0.033,smoothstep(0.0,1.0,minf(a,float(span.length)-a))) if road_lift > 0.0 else 0.033
+	var height_b: float = road_lift+lerpf(0.018,0.033,smoothstep(0.0,1.0,minf(b,float(span.length)-b))) if road_lift > 0.0 else 0.033
+	quad(tool,vertex(span,a,center-widths[0],height_a),vertex(span,b,center-widths[1],height_b),vertex(span,b,center+widths[1],height_b),vertex(span,a,center+widths[0],height_a),Color("d9d8cc"))
+
+static func _paint_strength(p: Vector2, blend: Image, extent: Vector2) -> float:
+	if blend == null: return 1.0
+	var x: int = clampi(floori((p.x+extent.x)/(extent.x*2.0)*blend.get_width()),0,blend.get_width()-1)
+	var y: int = clampi(floori((extent.y-p.y)/(extent.y*2.0)*blend.get_height()),0,blend.get_height()-1)
+	return 1.0-smoothstep(0.0,0.5,blend.get_pixel(x,y).b)
+
+static func vertex(span: Dictionary, along: float, across: float, offset: float) -> Vector3:
+	var p: Vector2 = Vector2(span.position[0],span.position[1])+Vector2(along,across).rotated(deg_to_rad(float(span.heading)))
+	return VisualGeometry.world(p)+Vector3.UP*(CreatorBridges.height(span,p)+offset)
+
+static func strip(tool: SurfaceTool, span: Dictionary, a: float, b: float, left: float, right: float, offset: float, color: Color, road_phase: Dictionary = {}, road_lift: float = 0.0) -> void:
+	# Metres along/across this span, so winter wear follows any bridge heading.
+	tool.set_color(color)
+	if road_lift > 0.0 and is_equal_approx(offset,0.025):
+		var height = preload("res://track/road_surface_height.gd")
+		var pa: Vector3 = vertex(span,a,left,height.bridge_offset(a,float(span.length),offset,road_lift))
+		var pb: Vector3 = vertex(span,b,right,height.bridge_offset(b,float(span.length),offset,road_lift))
+		var pc: Vector3 = vertex(span,b,left,height.bridge_offset(b,float(span.length),offset,road_lift))
+		tool.set_normal((pc-pa).cross(pb-pa).normalized())
+	for uv: Vector2 in [Vector2(a,left),Vector2(b,right),Vector2(b,left),Vector2(a,left),Vector2(a,right),Vector2(b,right)]:
+		if not road_phase.is_empty():
+			# Continue settled shoulder grains onto the mouth, then let them
+			# recede along the first four metres of the stone-confined ramp.
+			tool.set_uv2(Vector2(float(span.width)*0.5,smoothstep(0.0,4.0,minf(uv.x,float(span.length)-uv.x))))
+		# Ground roads measure across with Vector2.orthogonal(): (y,-x).
+		# Bridge geometry uses the opposite transverse basis. Correct the UV
+		# before applying shared phase/sign, including reverse-authored spans.
+		tool.set_uv(preload("res://track/desert_road_union.gd").coordinates(Vector2(uv.x,-uv.y),road_phase) if not road_phase.is_empty() else uv)
+		var height_offset: float = preload("res://track/road_surface_height.gd").bridge_offset(uv.x,float(span.length),offset,road_lift) if is_equal_approx(offset,0.025) else offset
+		if road_lift > 0.0 and not is_equal_approx(offset,0.025):
+			height_offset = road_lift+lerpf(0.018,offset,smoothstep(0.0,1.0,minf(uv.x,float(span.length)-uv.x)))
+		tool.add_vertex(vertex(span,uv.x,uv.y,height_offset))
+
+static func quad(tool: SurfaceTool, a: Vector3, b: Vector3, c: Vector3, d: Vector3, color: Color) -> void:
+	tool.set_color(color)
+	for v: Vector3 in [a,c,b,a,d,c]: tool.add_vertex(v)
+
+static func wall(tool: SurfaceTool, span: Dictionary, a: float, b: float, across: float, low: float, high: float, color: Color) -> void:
+	quad(tool,vertex(span,a,across,low),vertex(span,b,across,low),vertex(span,b,across,high),vertex(span,a,across,high),color)

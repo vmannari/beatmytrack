@@ -229,7 +229,7 @@ func present_part(showroom: CarShowroom, category: String) -> void:
 
 func _update_detail() -> void:
 	var frame: Transform3D = _showroom.car.global_transform
-	preload("res://ui/garage_part_photos.gd").pose(_detail_camera,_category,frame)
+	preload("res://ui/garage_part_photos.gd").pose(_detail_camera,_category,frame,_showroom.car.vehicle_id)
 	_model_state = [frame,_showroom.customisation.duplicate(true),_showroom.livery.duplicate(true)]
 	detail_viewport.render_target_update_mode = SubViewport.UPDATE_ONCE if photo.visible and is_visible_in_tree() else SubViewport.UPDATE_DISABLED
 

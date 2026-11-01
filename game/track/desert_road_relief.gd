@@ -1,7 +1,7 @@
 extends RefCounted
 ## Immutable cosmetic elevation. Never supplied to canonical bridge flight.
-const VERSION: String = "desert-road-relief-1"
-const DEPTH: float = 0.18
+const VERSION: String = "desert-road-relief-2"
+const DEPTH: float = 0.30
 const MAX_FIELD_BYTES: int = 8*1024*1024
 const MAX_EDGE: float = 1.0
 var track: NativeTrack
@@ -21,7 +21,8 @@ func _init(data: NativeTrack = null) -> void:
 	for i: int in range(field.size()):
 		if data.cells[i] == 0 or data.deck_cells[i] >= 0: field[i] = 0.0
 	# A bounded chamfer field keeps both authored and painted road footprints.
-	# The metre-wide flat bed covers original sub-cell contour/raster offsets.
+	# Keep a narrow flat bed for sub-cell contour/raster offsets, then bring the
+	# terrain back up close to the road instead of spreading the rise far out.
 	var diagonal: float = data.cell_size*sqrt(2.0)
 	for pass_index: int in range(2):
 		var step: int = 1 if pass_index == 0 else -1
@@ -37,7 +38,7 @@ func _init(data: NativeTrack = null) -> void:
 	var first: bool = true
 	for y: int in range(h):
 		for x: int in range(w):
-			var i: int = y*w+x; field[i] = -DEPTH*(1.0-smoothstep(1.0,3.0,field[i]))
+			var i: int = y*w+x; field[i] = -DEPTH*(1.0-smoothstep(0.75,2.0,field[i]))
 			if field[i] == 0.0: continue
 			var p := Vector2((x+0.5)*data.cell_size-data.half_extent.x,data.half_extent.y-(y+0.5)*data.cell_size)
 			if first: bounds = Rect2(p,Vector2.ZERO); first = false

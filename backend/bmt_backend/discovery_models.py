@@ -37,6 +37,7 @@ class TrackOfDay(Base):
     version_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
     reason: Mapped[str] = mapped_column(String(24))
     selected_at: Mapped[int] = mapped_column(BigInteger)
+    lap_limits: Mapped[dict] = mapped_column(JSON, default=dict, server_default="{}")
 
 
 class DiscoveryPartition(Base):

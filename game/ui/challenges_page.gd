@@ -67,12 +67,6 @@ func _ready() -> void:
 	header.name = "ChallengeHeader"
 	header.add_theme_constant_override("separation",12)
 	main.add_child(header)
-	if not result_view and not landing_view:
-		var back := _action(header,"Back",func() -> void: landing_requested.emit())
-		back.name = "ChallengeBrowseBack"
-		back.tooltip_text = "Back to Challenges"
-		back.custom_minimum_size.x = 52
-		back.disabled = false
 	var title := MenuStyle.label("CHALLENGE RESULTS" if result_view else "CHALLENGES" if landing_view else "YOUR CHALLENGES" if folder == "sent" else "FIND & PLAY",34)
 	title.name = "ChallengeBrowseTitle"
 	title.text_overrun_behavior = TextServer.OVERRUN_TRIM_ELLIPSIS
@@ -85,11 +79,11 @@ func _ready() -> void:
 		return
 	elif not result_view:
 		if folder == "sent": _action(header,"Create another",_request_creation)
-		var refresh := _action(header,"",func() -> void: refresh_requested.emit())
-		refresh.name = "ChallengeRefresh"
-		refresh.icon = MenuIcon.texture("restart")
-		refresh.tooltip_text = "Refresh challenges"
-		refresh.custom_minimum_size.x = 52
+		var back := _action(header,"Back",func() -> void: landing_requested.emit())
+		back.name = "ChallengeBrowseBack"
+		back.tooltip_text = "Back to Challenges"
+		back.custom_minimum_size.x = 52
+		back.disabled = false
 		_browser_controls(main)
 	if not error.is_empty():
 		var notice := MenuStyle.label(error,17,true)
@@ -180,7 +174,7 @@ func _browse_empty(parent: Control) -> void:
 	var heading := MenuStyle.label(caption,32)
 	heading.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	copy.add_child(heading)
-	var help := MenuStyle.label("Choose a track on the left to see the race." if not items.is_empty() else "Looking for your next opponent." if busy else "Try a different track, driver, format or car." if filtered else "Discover a challenge and join a race to find it here." if folder == "received" else "Your friends' public challenges appear here." if folder == "friends" else "Refresh to look for available races.",18,true)
+	var help := MenuStyle.label("Choose a track on the left to see the race." if not items.is_empty() else "Looking for your next opponent." if busy else "Try a different track, driver, format or car." if filtered else "Discover a challenge and join a race to find it here." if folder == "received" else "Your friends' public challenges appear here." if folder == "friends" else "Please try again." if not error.is_empty() else "Check back later for available races.",18,true)
 	help.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 	help.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	copy.add_child(help)
@@ -188,7 +182,7 @@ func _browse_empty(parent: Control) -> void:
 		if not signed_in and folder != "discover": _action(copy,"Sign in",func() -> void: sign_in_requested.emit(),true)
 		elif filtered: _action(copy,"Clear filters",_clear_filters,true)
 		elif folder != "discover": _action(copy,"Browse Discover",func() -> void: folder_requested.emit("discover"),true)
-		else: _action(copy,"Retry" if not error.is_empty() else "Refresh",func() -> void: refresh_requested.emit())
+		elif not error.is_empty(): _action(copy,"Retry",func() -> void: refresh_requested.emit())
 
 func _landing(parent: Control) -> void:
 	var intro := MenuStyle.label("Find a challenge to race, or start one of your own.",19,true)

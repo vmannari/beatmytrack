@@ -299,8 +299,10 @@ func _changed() -> void:
 		_waiting = false
 		_open.call_deferred()
 		return
-	if _tab == "news" and service != null and service.refreshing and _poll.is_stopped() and _poll_count < 4:
-		_poll.start(pow(2.0,_poll_count+1))
+	# A daily pass may span many batches. Keep checking while it is active so
+	# stories from later boards appear without reopening the newspaper.
+	if _tab == "news" and service != null and not service.busy and service.refreshing and _poll.is_stopped() and _poll_count < 120:
+		_poll.start(5.0)
 
 func _poll_once() -> void:
 	if not _active() or _tab != "news" or service == null: return

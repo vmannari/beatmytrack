@@ -79,7 +79,7 @@ const FACTS: Array[String] = [
 	'Formula has precise grip on asphalt.',
 	'The Go-kart is quick off the line.',
 	'The Go-kart has strong grip in tight turns.',
-	'Kits are available for the Compact and Go-kart.',
+	'Kits are available for the Compact, Go-kart and Hovercraft.',
 	'Go-kart kits include noses, rear bumpers, rims and side pods.',
 	'You can change car colours in the Garage.',
 	'You can add stickers to a car in the Garage.',

@@ -2,6 +2,9 @@ class_name SandDust
 extends Node3D
 # Sixteen small authored emitter resource templates; no simulation state.
 static var prepared_emitters: Array[Dictionary] = []
+## Weak references avoid extending program lifetime beyond live/template materials.
+static var _particle_shaders: Dictionary = {}
+static var _snow_cloud_shader: WeakRef
 const PREPARED_EMITTER_BYTES: int = 2 * 1024 * 1024
 ## Presentation-only, wheel-driven sand spray and lingering dust. Particle state
 ## never feeds back into the fixed-step vehicle simulation.
@@ -493,7 +496,9 @@ func _scale_curve(mode: int) -> CurveTexture:
 
 
 func _particle_material(mode: int) -> ShaderMaterial:
-	var cloud: bool = mode in [MODE_DUST,MODE_SMOKE]
+	var shader_key: int = MODE_MUD if mode == MODE_SAND_SPRAY else mode
+	var cached: Shader = _particle_shaders[shader_key].get_ref() if _particle_shaders.has(shader_key) else null
+	if cached != null: return _material_with_shader(mode,cached)
 	var shader := Shader.new()
 	if mode == MODE_CLIPPING:
 		shader = preload("res://vehicle/grass_clipping.gdshader")
@@ -614,6 +619,12 @@ void fragment() {
 	ALPHA = COLOR.a * alpha;
 }
 """
+	_particle_shaders[shader_key] = weakref(shader)
+	return _material_with_shader(mode,shader)
+
+
+func _material_with_shader(mode: int, shader: Shader) -> ShaderMaterial:
+	var cloud: bool = mode in [MODE_DUST,MODE_SMOKE]
 	var material := ShaderMaterial.new()
 	material.shader = shader
 	material.render_priority = 4 if cloud else 1
@@ -692,12 +703,15 @@ func _snow_cloud(label: String, amount: int, lifetime: float, size: Vector2, alp
 	var particles: GPUParticles3D = _emitter(label,amount,lifetime,size,Color(0.98,0.99,1.0,alpha),MODE_DUST)
 	var material: ShaderMaterial = particles.draw_pass_1.surface_get_material(0)
 	# Only this snow material changes: ordinary dust keeps its exact shader.
-	var snow_shader := Shader.new()
 	var original: String = material.shader.code
 	var shape: String = "alpha = (1.0-smoothstep(0.42,1.0,length(p))) * mix(0.80,1.0,puff.a);"
 	var tint: String = "ALBEDO = COLOR.rgb * mix(0.94,1.04,value);"
 	assert(original.contains(shape) and original.contains(tint),"Snow powder requires the shared textured-cloud renderer")
-	snow_shader.code = original.replace(shape,"alpha = (1.0-smoothstep(0.30,1.0,length(p))) * smoothstep(0.10,0.76,puff.a) * mix(0.40,1.0,smoothstep(0.20,0.74,value));").replace(tint,"ALBEDO = COLOR.rgb * mix(vec3(0.80,0.86,0.94),vec3(1.02),smoothstep(0.18,0.82,value));")
+	var snow_shader: Shader = _snow_cloud_shader.get_ref() if _snow_cloud_shader != null else null
+	if snow_shader == null:
+		snow_shader = Shader.new()
+		snow_shader.code = original.replace(shape,"alpha = (1.0-smoothstep(0.30,1.0,length(p))) * smoothstep(0.10,0.76,puff.a) * mix(0.40,1.0,smoothstep(0.20,0.74,value));").replace(tint,"ALBEDO = COLOR.rgb * mix(vec3(0.80,0.86,0.94),vec3(1.02),smoothstep(0.18,0.82,value));")
+		_snow_cloud_shader = weakref(snow_shader)
 	material.shader = snow_shader
 	material.set_shader_parameter("billowing",true)
 	material.set_shader_parameter("intersection_fade",0.22)

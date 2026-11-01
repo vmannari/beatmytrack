@@ -1,5 +1,5 @@
 """Daily verified results; no all-time PB or raw-run aggregation on reads."""
-from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query, Request, Response
 from sqlalchemy import func, select, tuple_
 
 from .cursors import decode_cursor, encode_cursor
@@ -14,6 +14,76 @@ from .track_models import RunTicket, TrackVersion, digest, now
 
 router = APIRouter(tags=["track of the day"])
 DAY = 86400
+
+
+@router.get("/v1/track-of-the-day/lap-standings")
+def flying_standings(request: Request, response: Response, background: BackgroundTasks, session: BoardDB,
+                     day: int = Query(..., ge=0), version_id: str = Query(..., min_length=36, max_length=36),
+                     vehicle_id: str = Query("compact", max_length=80), limit: int = Query(10, ge=1, le=50),
+                     cursor: str = Query("", max_length=400), around: bool = False,
+                     lap_ticks: int | None = Query(None, ge=1, le=216000), credentials=Depends(bearer)):
+    from .daily_lap_standings import build
+    from .histogram_http import schedule_demand
+    from .histogram_snapshots import load_snapshot
+
+    context, selection = _elimination_context(request, response, background, session, day, version_id, vehicle_id, credentials)
+    if selection is None:
+        return context
+    artificial = selection["include_artificial"] and request.app.state.settings.test_drivers_enabled
+    snapshot = load_snapshot(session, version_id, vehicle_id, artificial)
+    expected = digest({"version_id": version_id, **context["manifest"], "comparison_population": "all"})
+    if snapshot is not None and (snapshot[2][1].stored_grid or {}).get("board_id") != expected:
+        snapshot = None
+    schedule_demand(request, background, version_id, vehicle_id, artificial, unavailable=snapshot is None)
+    if snapshot is None:
+        response.status_code = 503
+        response.headers["Retry-After"] = "5"
+        return {"detail": "LAP_STANDINGS_PREPARING"}
+    context = {**context, "limits_generation": context["generation"], "generation": snapshot[0],
+               "population": snapshot[2][1].cumulative[-1]}
+    player = current_player(request, credentials, session) if credentials else None
+    return build(session, context, snapshot[2][1], player, limit=limit, cursor=cursor,
+                 around=around, candidate=lap_ticks, artificial=artificial)
+
+
+@router.get("/v1/track-of-the-day/limits")
+def elimination_limits(request: Request, response: Response, background: BackgroundTasks, session: BoardDB,
+                       day: int = Query(..., ge=0), version_id: str = Query(..., min_length=36, max_length=36),
+                       vehicle_id: str = Query("compact", max_length=80), credentials=Depends(bearer)):
+    context, _ = _elimination_context(request, response, background, session, day, version_id, vehicle_id, credentials)
+    return context
+
+
+def _elimination_context(request, response, background, session, day, version_id, vehicle_id, credentials):
+    from .daily_elimination import POLICY
+
+    player = current_player(request, credentials, session) if credentials else None
+    response.headers["Cache-Control"] = "private, no-store"
+    stamp = now()
+    chosen = session.get(TrackOfDay, stamp // DAY)
+    if chosen is None:
+        raise HTTPException(503, "TRACK_OF_DAY_PREPARING")
+    if day != chosen.day or version_id != chosen.version_id:
+        raise HTTPException(409, "TRACK_OF_DAY_CHANGED")
+    if not hydrate(session, request, [{"version_id": version_id}], player):
+        raise HTTPException(404, "TRACK_OF_DAY_UNAVAILABLE")
+    pinned = board_manifest(session.get(TrackVersion, version_id), vehicle_id)
+    selection = chosen.lap_limits
+    if not isinstance(selection, dict) or selection.get("policy") != POLICY:
+        response.status_code = 503
+        response.headers["Retry-After"] = "30"
+        return {"detail": "LAP_LIMITS_PREPARING"}, None
+    values = selection.get("vehicles", {}).get(vehicle_id)
+    if values is None or values.get("manifest") != pinned:
+        raise HTTPException(409, "DAILY_LIMITS_CONTRACT_CHANGED")
+    if not values.get("cutoffs"):
+        response.status_code = 409
+        return {"detail": "NO_FLYING_LAP_TIMES"}, None
+    return {"policy": POLICY, "day": chosen.day, "version_id": version_id, "vehicle_id": vehicle_id,
+            "ends_at": (chosen.day+1)*DAY, "server_now": stamp, "tick_rate": 120,
+            "generation": values["generation"], "manifest": values["manifest"],
+            "population": values["population"], "cutoffs": values["cutoffs"],
+            "limits_set_at": selection["set_at"]}, selection
 
 
 def eligible_day(session, ticket, board, submitted_at):

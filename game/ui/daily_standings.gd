@@ -10,6 +10,7 @@ var track_name: String
 var day: int
 var ends_at: int
 var server_now: int
+var flying_laps: bool = false
 var busy: bool = false
 var _sample_msec: int
 var _serial: int = 0
@@ -96,7 +97,7 @@ func _ready() -> void:
 	identity.add_child(_cars)
 	var context := HBoxContainer.new()
 	body.add_child(context)
-	var caption: Label = MenuStyle.label("Today's verified races (UTC)",16,true)
+	var caption: Label = MenuStyle.label("Best flying laps" if flying_laps else "Today's verified races (UTC)",16,true)
 	caption.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	context.add_child(caption)
 	context.add_child(MenuStyle.label(Time.get_date_string_from_unix_time(day*86400),16,true))
@@ -125,7 +126,7 @@ func _ready() -> void:
 	_own.name = "DailyOwnResult"
 	_own.add_theme_constant_override("separation",6)
 	body.add_child(_own)
-	var footer: Label = MenuStyle.label("One best time per driver and car.",15,true)
+	var footer: Label = MenuStyle.label("One best flying lap per driver and car." if flying_laps else "One best time per driver and car.",15,true)
 	footer.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 	body.add_child(footer)
 	var actions := HBoxContainer.new()
@@ -211,6 +212,7 @@ func load_page() -> void:
 	_status.text = "Loading verified scores…"
 	for button: Button in [_previous,_next,_refresh]: button.disabled = true
 	var path: String = "/track-of-the-day/standings?day=%d&version_id=%s&vehicle_id=%s&limit=10" % [day,version.uri_encode(),vehicle.uri_encode()]
+	if flying_laps: path = path.replace("/standings?","/lap-standings?")
 	if not _cursors[_page].is_empty(): path += "&cursor="+_cursors[_page].uri_encode()
 	var response: Dictionary = await client.request_api(path,HTTPClient.METHOD_GET,{},"",true) if client.signed_in() else await client.request_public(path,get_instance_id())
 	if not is_inside_tree() or serial != _serial or scope != _scope() or _expired: return
@@ -229,11 +231,11 @@ func load_page() -> void:
 		_status.text = GameText.message("%d verified racers\n\n").strip_edges() % int(data.population)
 		for item: Dictionary in data.items:
 			_rows.add_child(_row(item,str(item.player_id) == str(client.player.get("id","")) and client.signed_in()))
-		if data.items.is_empty(): _status.text = "No verified times today."
+		if data.items.is_empty(): _status.text = "No flying laps yet." if flying_laps else "No verified times today."
 		if client.signed_in():
-			_own.add_child(MenuStyle.label("Your best today",16,true))
+			_own.add_child(MenuStyle.label("Your best lap" if flying_laps else "Your best today",16,true))
 			if data.get("player") is Dictionary: _own.add_child(_row(data.player,true,true))
-			else: _own.add_child(MenuStyle.label("Complete a verified race to appear here.",16,true))
+			else: _own.add_child(MenuStyle.label("No verified lap yet." if flying_laps else "Complete a verified race to appear here.",16,true))
 		else: _own.add_child(MenuStyle.label("Sign in to record a verified time.",16,true))
 		_next_cursor = str(data.next_cursor) if data.get("next_cursor") is String else ""
 	_previous.disabled = _page == 0

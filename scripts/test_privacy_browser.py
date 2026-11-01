@@ -99,7 +99,7 @@ def main():
             page.on("pageerror", lambda error: errors.append(str(error)))
             page.goto(base + "/privacy")
             expect(page.get_by_role("heading", name="Privacy policy", exact=True)).to_be_visible()
-            check("placeholders" in page.locator("main").inner_text(), "policy clearly identifies unfinished legal contacts")
+            check("A privacy contact has not yet been provided" in page.locator("main").inner_text(), "policy clearly identifies the unfinished privacy contact")
             check(context.cookies() == [], "public resource sets no tracking cookie")
             for width in [1440, 960, 390]:
                 page.set_viewport_size({"width": width, "height": 1000})

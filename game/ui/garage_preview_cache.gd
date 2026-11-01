@@ -95,6 +95,10 @@ func identity(view: CarShowroom) -> String:
 	var identity_script: Script = Build
 	var revisions: Dictionary = identity_script.get_script_constant_map().get("GARAGE_PREVIEW_VEHICLE_SHA256",{})
 	var revision: String = str(revisions.get(view.vehicle_id,Build.GARAGE_PREVIEW_SHA256))
+	# A new prepared Volt mesh set must not reuse pictures from the prior model,
+	# including in an editor session before the next generated build identity.
+	if view.vehicle_id == "electric":
+		revision += ":" + preload("res://vehicle/electric_reference_mesh.gd").ASSET_ROOT
 	return JSON.stringify([VERSION,revision,view.vehicle_id,view.livery,_visible_condition(view.condition),view.customisation]).sha256_text()
 
 func _visible_condition(value: Dictionary) -> Dictionary:

@@ -80,7 +80,7 @@ func run() -> void:
 	DirAccess.make_dir_recursive_absolute(ProjectSettings.globalize_path(output))
 	var defaults: Dictionary = VehicleCustomisation.defaults()
 	for category: String in VehicleCustomisation.CATEGORIES:
-		check(VehicleCustomisation.options(category,"kart").size()==8,"eight kart choices "+category)
+		check(VehicleCustomisation.options(category,"kart").size()==(9 if category in ["hood","body"] else 8),"kart choices "+category)
 		for option: Array in VehicleCustomisation.options(category,"kart"):
 			var value: Dictionary = defaults.duplicate(true)
 			value[category] = option[0]
@@ -185,7 +185,7 @@ func garage() -> void:
 	var retained_viewport: SubViewport = page.showroom.showroom_viewport
 	for category: String in VehicleCustomisation.CATEGORIES:
 		await tap(page.kit_categories[category])
-		check(page.kit_category==category and page.kit_cards.get_child_count()==8,"touch selects kart category "+category)
+		check(page.kit_category==category and page.kit_cards.get_child_count()==(9 if category in ["hood","body"] else 8),"touch selects kart category "+category)
 		check(page.kit_categories[category].text.nocasecmp_to(VehicleCustomisation.label(category,"kart"))==0,"kart category label")
 		for index: int in range(1,8):
 			var before: Dictionary = page.kit_draft.duplicate(true)

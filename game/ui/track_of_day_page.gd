@@ -3,10 +3,17 @@ extends HBoxContainer
 signal mode_requested(mode: String)
 signal race_requested(entry: Dictionary)
 signal vehicle_selected(index: int)
+signal track_loaded(state: Dictionary)
+signal track_invalidated
 const Badge = preload("res://ui/biome_badge.gd")
 var client: Node
 var cloud: Node
+var records: LocalRecords
+var _week_strip: PanelContainer
+var _header_row: HBoxContainer
+var _header_identity: VBoxContainer
 var page_preview: bool = false
+var cached_state: Dictionary = {}
 var entry: Dictionary = {}
 var _ends_at: int = 0
 var _server_now: int = 0
@@ -14,7 +21,7 @@ var _sample_msec: int = 0
 var _busy: bool = false
 var _expired_refresh: bool = false
 var _retry_msec: int = 0
-var _last_second: int = -1
+var _last_minute: int = -1
 var _status: Label
 var _countdown: Label
 var _countdown_panel: PanelContainer
@@ -46,7 +53,7 @@ func _ready() -> void:
 	add_child(scroll)
 	var column := VBoxContainer.new()
 	column.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	column.add_theme_constant_override("separation",20)
+	column.add_theme_constant_override("separation",12)
 	scroll.add_child(column)
 	_build_header(column)
 	_stage = Control.new()
@@ -55,16 +62,36 @@ func _ready() -> void:
 	column.add_child(_stage)
 	_build_hero()
 	_build_race_panel()
+	_week_strip = preload("res://ui/daily_week.gd").new()
+	_week_strip.name = "DailyWeek"
+	_stage.add_child(_week_strip)
 	_stage.resized.connect(_arrange)
 	_race_panel.minimum_size_changed.connect(_arrange.call_deferred)
 	_arrange.call_deferred()
-	if not page_preview: refresh()
+	if not _restore_cached_track() and not page_preview: refresh()
+
+func _restore_cached_track() -> bool:
+	var cached_entry: Dictionary = cached_state.get("entry",{})
+	var ends: int = int(cached_state.get("ends_at",0))
+	var now: int = int(cached_state.get("server_now",0))
+	var sampled: int = int(cached_state.get("sample_msec",0))
+	if sampled <= 0 or Time.get_ticks_msec() < sampled or ends <= now + int((Time.get_ticks_msec()-sampled)/1000): return false
+	if not cloud._valid_entry(cached_entry) or not cloud._allowed(cached_entry): return false
+	entry = cached_entry.duplicate(true)
+	_ends_at = ends
+	_server_now = now
+	_sample_msec = sampled
+	_show_track()
+	_process(0.0)
+	return true
 
 func _build_header(parent: Control) -> void:
 	var header := HBoxContainer.new()
+	_header_row = header
 	header.add_theme_constant_override("separation",24)
 	parent.add_child(header)
 	var identity := VBoxContainer.new()
+	_header_identity = identity
 	identity.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	identity.add_theme_constant_override("separation",4)
 	header.add_child(identity)
@@ -84,17 +111,14 @@ func _build_header(parent: Control) -> void:
 	_countdown_panel.add_child(row)
 	row.add_child(_icon("clock",24,MenuStyle.ACCENT))
 	_countdown = MenuStyle.label("",20)
+	var countdown_font := FontVariation.new()
+	countdown_font.base_font = MenuStyle.BODY
+	countdown_font.opentype_features = {"tnum":1}
+	_countdown.add_theme_font_override("font",countdown_font)
+	_countdown.text_overrun_behavior = TextServer.OVERRUN_TRIM_ELLIPSIS
 	GameText.user_text(_countdown)
 	row.add_child(_countdown)
 	_countdown_panel.hide()
-	_standings_button = MenuStyle.button("Standings",_open_standings)
-	_standings_button.name = "DailyStandingsButton"
-	_standings_button.size_flags_vertical = Control.SIZE_SHRINK_CENTER
-	_standings_button.icon = preload("res://ui/race_mode_icons.gd").texture("trophy")
-	_standings_button.expand_icon = true
-	_standings_button.add_theme_constant_override("icon_max_width",24)
-	_standings_button.disabled = true
-	header.add_child(_standings_button)
 
 func _build_hero() -> void:
 	_hero = PanelContainer.new()
@@ -129,71 +153,62 @@ func _build_hero() -> void:
 	_state.add_child(_status)
 
 func _build_race_panel() -> void:
-	_race_panel = PanelContainer.new()
-	_race_panel.name = "DailyRacePanel"
-	_race_panel.add_theme_stylebox_override("panel",_panel_style(24))
-	_stage.add_child(_race_panel)
-	var column := VBoxContainer.new()
-	column.add_theme_constant_override("separation",18)
-	_race_panel.add_child(column)
-	_race_heading = MenuStyle.label("Race",30)
-	_race_heading.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
-	column.add_child(_race_heading)
-	var format_row := HBoxContainer.new()
-	format_row.add_child(_icon("flag",22,MenuStyle.MUTED))
-	format_row.add_child(MenuStyle.label("5 laps",20,true))
-	column.add_child(format_row)
-	_rating_row = HBoxContainer.new()
-	_rating_row.add_child(_icon("star_filled",20,MenuStyle.ACCENT))
-	_rating = MenuStyle.label("",18)
-	GameText.user_text(_rating)
-	_rating_row.add_child(_rating)
-	column.add_child(_rating_row)
-	_rating_row.hide()
-	column.add_child(HSeparator.new())
-	column.add_child(MenuStyle.label("Choose car",16,true))
-	var cars := OptionButton.new()
-	cars.name = "DailyCar"
-	cars.custom_minimum_size.y = 54
-	cars.tooltip_text = "Choose car"
-	cars.add_theme_font_size_override("font_size",20)
-	cars.clip_text = true
-	for title_text: String in VehicleCatalog.NAMES: cars.add_item(title_text)
-	cars.select(VehicleCatalog.IDS.find(VehicleCatalog.selected))
-	cars.item_selected.connect(func(index: int) -> void: vehicle_selected.emit(index))
-	column.add_child(cars)
-	var space := Control.new()
-	space.size_flags_vertical = Control.SIZE_EXPAND_FILL
-	column.add_child(space)
-	_race = MenuStyle.button("Race",_request_race,true)
-	_race.name = "DailyRace"
-	_race.custom_minimum_size.y = 64
-	_race.icon = MenuIcon.texture("arrow")
-	_race.icon_alignment = HORIZONTAL_ALIGNMENT_RIGHT
-	_race.add_theme_constant_override("h_separation",14)
-	_race.add_theme_color_override("icon_normal_color",MenuStyle.INK)
-	_race.add_theme_color_override("icon_hover_color",MenuStyle.INK)
-	_race.add_theme_font_size_override("font_size",28)
-	_race.disabled = true
-	column.add_child(_race)
+	var card := preload("res://ui/daily_result_card.gd").new()
+	card.client = client
+	card.records = records
+	card.vehicle = VehicleCatalog.selected
+	card.preview = page_preview
+	_stage.add_child(card)
+	_race_panel = card
+	_race = card.race_button
+	_standings_button = card.standings_button
+	_race_heading = card._heading
+	card.race_requested.connect(_request_race)
+	card.standings_requested.connect(_open_standings)
+	card.vehicle_selected.connect(func(index: int) -> void:
+		vehicle_selected.emit(index)
+		_update_week())
+	# Retain the existing error/retry boundary while the result panel is loading.
 	_retry = MenuStyle.button("Retry",refresh,true)
 	_retry.name = "DailyRetry"
-	column.add_child(_retry)
+	card.get_child(0).add_child(_retry)
 	_retry.hide()
-	for button: Button in [_race,_retry]:
-		for state: String in ["font_focus_color","icon_focus_color","icon_pressed_color"]:
-			button.add_theme_color_override(state,MenuStyle.INK)
+	_rating_row = HBoxContainer.new()
+	_rating = MenuStyle.label("",18)
+	_rating_row.add_child(_rating)
+	card.get_child(0).add_child(_rating_row)
+	_rating_row.hide()
+
+func _update_week() -> void:
+	if not is_instance_valid(_week_strip): return
+	_week_strip.entries = preload("res://persistence/daily_progress.gd").load_entries(records)
+	_week_strip.day = _server_now/86400
+	_week_strip.vehicle = VehicleCatalog.selected
+	_week_strip.refresh()
 
 func _arrange() -> void:
-	if not is_instance_valid(_race_panel): return
+	if not is_instance_valid(_race_panel) or not is_instance_valid(_week_strip): return
 	var width: float = _stage.size.x
+	var compact_header: bool = width < 620
+	var timer_parent: Node = _header_identity if compact_header else _header_row
+	if _countdown_panel.get_parent() != timer_parent:
+		_countdown_panel.reparent(timer_parent)
+	_countdown_panel.size_flags_horizontal = Control.SIZE_SHRINK_BEGIN if compact_header else Control.SIZE_FILL
+	_countdown_panel.add_theme_stylebox_override("panel",_panel_style(8 if compact_header else 16))
+	_countdown.add_theme_font_size_override("font_size",16 if compact_header else 20)
+	_set_countdown_width()
 	var height: float = maxf(440,_race_panel.get_combined_minimum_size().y)
-	var stacked: bool = width < 860
-	_stage.custom_minimum_size.y = height+460 if stacked else height
+	var stacked: bool = width < 740
+	var side_width: float = minf(340,width*0.34)
+	var left_width: float = width if stacked else maxf(200,width-side_width-18)
+	var hero_height: float = clampf(left_width*0.9,320,440) if stacked else height-104
+	_stage.custom_minimum_size.y = hero_height+104+height+18 if stacked else height
 	_hero.position = Vector2.ZERO
-	_hero.size = Vector2(width if stacked else maxf(200,width-360),440 if stacked else height)
-	_race_panel.position = Vector2(0,460) if stacked else Vector2(width-340,0)
-	_race_panel.size = Vector2(width if stacked else 340,height)
+	_hero.size = Vector2(left_width,hero_height)
+	_week_strip.position = Vector2(0,hero_height+12)
+	_week_strip.size = Vector2(left_width,92)
+	_race_panel.position = Vector2(0,hero_height+122) if stacked else Vector2(width-side_width,0)
+	_race_panel.size = Vector2(width if stacked else side_width,height)
 
 func _panel_style(padding: int) -> StyleBoxFlat:
 	var style: StyleBoxFlat = MenuStyle.box(Color("0b1a26f5"),padding)
@@ -201,6 +216,12 @@ func _panel_style(padding: int) -> StyleBoxFlat:
 	style.set_border_width_all(1)
 	style.border_color = Color("3b5362")
 	return style
+
+func _set_countdown_width() -> void:
+	if not is_instance_valid(_countdown): return
+	var font: Font = _countdown.get_theme_font("font")
+	var font_size: int = _countdown.get_theme_font_size("font_size")
+	_countdown.custom_minimum_size.x = ceilf(font.get_string_size(tr("Next track in %s") % "88:88",HORIZONTAL_ALIGNMENT_LEFT,-1,font_size).x)
 
 func _icon(kind: String, extent: int, color: Color) -> TextureRect:
 	var glyph := TextureRect.new()
@@ -219,6 +240,7 @@ func _show_track() -> void:
 	card.size_flags_vertical = Control.SIZE_EXPAND_FILL
 	card.pressed.connect(_request_race)
 	_card_slot.add_child(card)
+	card.custom_minimum_size = Vector2(160,220)
 	var inset := MarginContainer.new()
 	inset.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	for side: String in ["left","right","top","bottom"]: inset.add_theme_constant_override("margin_"+side,28)
@@ -261,14 +283,18 @@ func _show_track() -> void:
 	caption.add_child(creator)
 	caption.resized.connect(func() -> void: card.reserve_caption(caption.size.y))
 	_update_rating()
-	_rating_row.show()
+	_rating_row.hide()
 	_card_slot.show()
+	_week_strip.show()
 	_state.hide()
 	_countdown_panel.show()
 	_status.hide()
 	_race.disabled = false
 	_standings_button.disabled = false
-	_race_heading.text = "Ready to race?"
+	_race_panel.client = client
+	_race_panel.records = records
+	_race_panel.configure(_server_now/86400,str(entry.version_id),_ends_at)
+	_update_week()
 	_arrange.call_deferred()
 
 func _update_rating() -> void:
@@ -276,7 +302,8 @@ func _update_rating() -> void:
 
 func _notification(what: int) -> void:
 	if what == NOTIFICATION_TRANSLATION_CHANGED:
-		_last_second = -1
+		_last_minute = -1
+		_set_countdown_width()
 		if is_instance_valid(_rating) and not entry.is_empty(): _update_rating()
 
 func _exit_tree() -> void:
@@ -286,16 +313,23 @@ func activate() -> void:
 	page_preview = false
 	var cars: OptionButton = find_child("DailyCar",true,false)
 	if cars != null: cars.select(VehicleCatalog.IDS.find(VehicleCatalog.selected))
+	_race_panel.preview = false
+	_race_panel.vehicle = VehicleCatalog.selected
+	if not entry.is_empty():
+		_race_panel.refresh()
+		_update_week()
 	if entry.is_empty() and not _busy: refresh()
 
 func refresh() -> void:
 	if _busy or not is_inside_tree(): return
+	track_invalidated.emit()
 	_busy = true
 	_retry_msec = 0
 	_ends_at = 0
-	_last_second = -1
+	_last_minute = -1
 	_race.disabled = true
-	_race_heading.text = "Race"
+	_race_panel.invalidate()
+	_week_strip.hide()
 	_standings_button.disabled = true
 	_retry.hide()
 	_card_slot.hide()
@@ -332,14 +366,16 @@ func refresh() -> void:
 		return
 	_show_track()
 	_process(0.0)
+	track_loaded.emit({"entry":entry.duplicate(true),"ends_at":_ends_at,"server_now":_server_now,"sample_msec":_sample_msec})
 
 func _process(_delta: float) -> void:
 	if not page_preview and not _busy and _retry_msec > 0 and Time.get_ticks_msec() >= _retry_msec: refresh()
 	if _ends_at <= 0: return
 	var remaining: int = maxi(0,_ends_at-_server_now-int((Time.get_ticks_msec()-_sample_msec)/1000))
-	if remaining != _last_second:
-		_last_second = remaining
-		_countdown.text = tr("Next track in %s") % ("%02d:%02d:%02d" % [remaining/3600,(remaining/60)%60,remaining%60])
+	var minutes: int = remaining/60
+	if minutes != _last_minute:
+		_last_minute = minutes
+		_countdown.text = tr("Next track in %s") % ("%02d:%02d" % [minutes/60,minutes%60])
 	if remaining == 0:
 		_race.disabled = true
 		if not _busy and not _expired_refresh and not page_preview:
@@ -352,7 +388,9 @@ func _request_race() -> void:
 	var version: String = str(entry.version_id)
 	await refresh()
 	if not entry.is_empty() and str(entry.version_id) == version:
-		race_requested.emit(entry.duplicate(true))
+		var requested: Dictionary = entry.duplicate(true)
+		requested["daily_day"] = _server_now/86400
+		race_requested.emit(requested)
 
 func _open_standings() -> void:
 	if _busy or entry.is_empty() or _ends_at <= _server_now: return
@@ -360,6 +398,7 @@ func _open_standings() -> void:
 		_standings.popup_centered()
 		return
 	var dialog := preload("res://ui/daily_standings.gd").new()
+	dialog.flying_laps = true
 	dialog.client = client
 	dialog.cloud = cloud
 	dialog.version = str(entry.version_id)
@@ -368,7 +407,11 @@ func _open_standings() -> void:
 	dialog.day = _server_now/86400
 	dialog.ends_at = _ends_at
 	dialog.server_now = _server_now+int((Time.get_ticks_msec()-_sample_msec)/1000)
-	dialog.vehicle_selected.connect(func(index: int) -> void: vehicle_selected.emit(index))
+	dialog.vehicle_selected.connect(func(index: int) -> void:
+		vehicle_selected.emit(index)
+		_race_panel.vehicle = VehicleCatalog.IDS[index]
+		_race_panel.refresh()
+		_update_week())
 	dialog.day_changed.connect(refresh)
 	_standings = dialog
 	add_child(dialog)

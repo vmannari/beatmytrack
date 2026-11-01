@@ -15,15 +15,11 @@ func check(ok: bool, label: String) -> void:
 func settle() -> void:
 	for frame: int in range(5): await process_frame
 
-func clock_text(value: String) -> String:
-	var pattern := RegEx.create_from_string("[0-9]{2}:[0-9]{2}(:[0-9]{2})?")
-	var found: RegExMatch = pattern.search(value)
-	return found.get_string() if found != null else ""
-
 func capture(name: String) -> void:
 	if DisplayServer.get_name() == "headless": return
 	await RenderingServer.frame_post_draw
 	var folder: String = ProjectSettings.globalize_path("res://../docs/evidence/daily-fixed-limits-2026-11-01")
+	if not OS.get_environment("BMT_DAILY_FIXED_EVIDENCE").is_empty(): folder = OS.get_environment("BMT_DAILY_FIXED_EVIDENCE")
 	check(root.get_texture().get_image().save_png(folder.path_join(name+".png")) == OK,"capture "+name)
 
 func run() -> void:
@@ -58,8 +54,8 @@ func run() -> void:
 			page._process(0.0)
 			await settle()
 			check(is_equal_approx(page._countdown_panel.size.x,width),"countdown width stays fixed: "+locale+" "+str(remaining))
-			var expected: String = "%02d:%02d" % [remaining/3600,(remaining/60)%60]
-			check(clock_text(page._countdown.text) == expected,"countdown contains hours and minutes only: "+locale)
+			var expected: String = tr("%d hours %d minutes") % [remaining/3600,(remaining/60)%60]
+			check(page._countdown.text == expected,"countdown spells out hours and minutes: "+locale)
 	TranslationServer.set_locale("en")
 	GameText.refresh(self)
 	page._server_now = page._ends_at-(4*3600+31*60+57)

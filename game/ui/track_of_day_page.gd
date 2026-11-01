@@ -221,7 +221,7 @@ func _set_countdown_width() -> void:
 	if not is_instance_valid(_countdown): return
 	var font: Font = _countdown.get_theme_font("font")
 	var font_size: int = _countdown.get_theme_font_size("font_size")
-	_countdown.custom_minimum_size.x = ceilf(font.get_string_size(tr("Next track in %s") % "88:88",HORIZONTAL_ALIGNMENT_LEFT,-1,font_size).x)
+	_countdown.custom_minimum_size.x = ceilf(font.get_string_size(tr("%d hours %d minutes") % [88,88],HORIZONTAL_ALIGNMENT_LEFT,-1,font_size).x)
 
 func _icon(kind: String, extent: int, color: Color) -> TextureRect:
 	var glyph := TextureRect.new()
@@ -375,7 +375,7 @@ func _process(_delta: float) -> void:
 	var minutes: int = remaining/60
 	if minutes != _last_minute:
 		_last_minute = minutes
-		_countdown.text = tr("Next track in %s") % ("%02d:%02d" % [minutes/60,minutes%60])
+		_countdown.text = tr("%d hours %d minutes") % [minutes/60,minutes%60]
 	if remaining == 0:
 		_race.disabled = true
 		if not _busy and not _expired_refresh and not page_preview:

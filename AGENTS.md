@@ -1,3 +1,8 @@
+<!-- DAILY-TIMER-WORDS-20261101 -->
+## Daily timer spells out its units (2026-11-01)
+DTF01: Fixed-width duration reads e.g.04 hours31 minutes, with tabular numerals and all twelve languages. Native307/0 and twelve scoped catalogue checks pass. Commands, screenshot and scoped checkpoint: [docs/DAILY_TIMER_WORDS_2026_11_01.md](docs/DAILY_TIMER_WORDS_2026_11_01.md). Reload/owner appearance acceptance remain; no phone test, backend change, deployment, owner-save/process mutation or main-index write.
+<!-- /DAILY-TIMER-WORDS-20261101 -->
+
 <!-- DAILY-FIXED-LIMITS-20261101 -->
 ## Daily limits stay fixed; countdown and results simplified (2026-11-01)
 DFL01-DFL03/R01: Discovery publication atomically stores all car cutoffs in the daily row; reads/retries/PB changes/restarts never reselect them. Migration0072, preparation gates and concurrent-worker tests; next day renews. Countdown uses fixed-width tabular HH:MM; result cutoffs/Limit column and percentage hints removed. Focused backend12/0, retained backend16/0, native307/0 and medal-page88/0 pass; 60 catalogue checks and scoped Ruff pass. Sources, commands, captures, checked checkpoint and limits: [docs/DAILY_FIXED_LIMITS_2026_11_01.md](docs/DAILY_FIXED_LIMITS_2026_11_01.md). Matching migration/producer/API rollout, reload and owner/device acceptance remain. No live migration/deployment, owner-save mutation, phone test, owner restart or main-index write.

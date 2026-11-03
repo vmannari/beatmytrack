@@ -181,10 +181,15 @@ static func update(station: Node3D, settings: Dictionary) -> void:
 	for index: int in range(collection.size()):
 		var sleeve := Node3D.new()
 		sleeve.name = "LPSleeve_" + collection[index].id
-		sleeve.position = Vector3(0.43,0.96,-0.12+index*0.036)
+		# Leave room for the whole 33cm sleeve to sweep around its bottom edge.
+		# The crate's inner faces are at z = +/-0.196; at -0.70 radians
+		# the top travels 0.213m forward, and at +0.10 it travels 0.033m back.
+		# Keeping every pivot in this interval clears both walls at every angle.
+		sleeve.position = Vector3(0.43,0.96,lerpf(0.026,0.156,float(index)/maxi(1,collection.size()-1)))
 		sleeve.set_meta("lp_index",index)
 		shelf.add_child(sleeve)
-		GarageEnvironment.box(sleeve,Vector3(0,0.165,0),Vector3(0.33,0.33,0.003),GarageEnvironment.surface("sleevepaper","d4cdbf",0,0.9))
+		var edge_color: Color = Library.palette(collection[index].id)[0]
+		GarageEnvironment.box(sleeve,Vector3(0,0.165,0),Vector3(0.33,0.33,0.003),GarageEnvironment.surface("sleevepaper_"+collection[index].id,edge_color.to_html(false),0,0.9))
 		var cover := StandardMaterial3D.new()
 		cover.albedo_texture = Library.cover(collection[index].id)
 		cover.roughness = 0.8
@@ -200,11 +205,12 @@ static func update(station: Node3D, settings: Dictionary) -> void:
 		title.position = Vector3(0,0.271,-0.003)
 		title.rotation.y = PI
 		title.modulate = Color("f3ead4")
-		title.outline_size = 0
+		title.outline_size = 6
+		title.outline_modulate = Color(0,0,0,0.85)
 		sleeve.add_child(title)
 	present_browse(shelf,0.0)
 
 static func present_browse(shelf: Node3D, position: float) -> void:
 	for sleeve: Node3D in shelf.get_children():
 		var distance: float = float(sleeve.get_meta("lp_index",0))-position
-		sleeve.rotation.x = lerpf(0.10,-0.70,clampf(-distance,0.0,1.0))
+		sleeve.rotation.x = lerpf(0.10,-0.70,smoothstep(0.0,1.0,-distance))

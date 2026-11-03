@@ -1,0 +1,436 @@
+diff --git a/AGENTS.md b/AGENTS.md
+--- a/AGENTS.md
++++ b/AGENTS.md
+@@ -1,3 +1,8 @@
++<!-- RACE-LOADING-REVIEW-20261102 -->
++## Race loading evaluated; further options ranked (2026-11-02)
++RLR01-RLR03/Q01: Evaluation only; shipping loader/art/physics unchanged. Two stable-recorded-source native profiles pass136/0 across18 entries; supporting Compatibility follow-up19/0 has concurrent App changes explicitly retained. Combined155/0,20 entries/11 retries. Actual trace confirms full-world admission/eviction every entry; pooled effects still await20/32 draws. Recommend bounded effect preparation and shared-resource retention policy first, then selected-event CPU preparation/small representative warming/local final scenery artifacts. Ordinary/Daily retries already reuse Game. Timings, alternatives, gates, commands and checked task-only checkpoint: [docs/RACE_LOADING_REVIEW_2026_11_02.md](docs/RACE_LOADING_REVIEW_2026_11_02.md). No cold-driver/device/first-lap/visual-equivalence or implemented-speedup claim; no device query/test, owner-save/process change, live/backend access, deployment or main-index write. Concurrent work preserved.
++<!-- /RACE-LOADING-REVIEW-20261102 -->
++
+ <!-- FORKLIFT-CABIN-KITS-20261102 -->
+ ## Forklift cabin frames and ten more options per kit (2026-11-02)
+ FKC01-FKC04: Cabin frame replaces Side guards with removable posts/roof; existing saved/owned IDs remain. Ten additional options per category give fourteen choices each. Four bases,104 full/simple modules and Garage template refresh. Raw741/0, exact Original6/0, prepared1580/0, Garage187/0 each desktop renderer and focused backend171 pass;112 settled native captures. Retained backend40pass/1skip retains the unchanged sticker-catalogue failure. Commands, first fixture/environment findings, hashes, task-only checkpoint and limits: [docs/FORKLIFT_CABIN_KITS_2026_11_02.md](docs/FORKLIFT_CABIN_KITS_2026_11_02.md). Matching online catalogue rollout, English-fallback copy, reload and owner/device acceptance remain. No device test, APK, real purchase, owner-save/process change, live mutation, deployment or main-index write; concurrent work preserved.
+diff --git a/DEVELOPMENT_STATUS.md b/DEVELOPMENT_STATUS.md
+--- a/DEVELOPMENT_STATUS.md
++++ b/DEVELOPMENT_STATUS.md
+@@ -1,3 +1,8 @@
++<!-- RACE-LOADING-REVIEW-20261102 -->
++## Race loading evaluated; further options ranked (2026-11-02)
++RLR01-RLR03/Q01: Evaluation only; shipping loader/art/physics unchanged. Two stable-recorded-source native profiles pass136/0 across18 entries; supporting Compatibility follow-up19/0 has concurrent App changes explicitly retained. Combined155/0,20 entries/11 retries. Actual trace confirms full-world admission/eviction every entry; pooled effects still await20/32 draws. Recommend bounded effect preparation and shared-resource retention policy first, then selected-event CPU preparation/small representative warming/local final scenery artifacts. Ordinary/Daily retries already reuse Game. Timings, alternatives, gates, commands and checked task-only checkpoint: [docs/RACE_LOADING_REVIEW_2026_11_02.md](docs/RACE_LOADING_REVIEW_2026_11_02.md). No cold-driver/device/first-lap/visual-equivalence or implemented-speedup claim; no device query/test, owner-save/process change, live/backend access, deployment or main-index write. Concurrent work preserved.
++<!-- /RACE-LOADING-REVIEW-20261102 -->
++
+ <!-- FORKLIFT-CABIN-KITS-20261102 -->
+ ## Forklift cabin frames and ten more options per kit (2026-11-02)
+ FKC01-FKC04: Cabin frame replaces Side guards with removable posts/roof; existing saved/owned IDs remain. Ten additional options per category give fourteen choices each. Four bases,104 full/simple modules and Garage template refresh. Raw741/0, exact Original6/0, prepared1580/0, Garage187/0 each desktop renderer and focused backend171 pass;112 settled native captures. Retained backend40pass/1skip retains the unchanged sticker-catalogue failure. Commands, first fixture/environment findings, hashes, task-only checkpoint and limits: [docs/FORKLIFT_CABIN_KITS_2026_11_02.md](docs/FORKLIFT_CABIN_KITS_2026_11_02.md). Matching online catalogue rollout, English-fallback copy, reload and owner/device acceptance remain. No device test, APK, real purchase, owner-save/process change, live mutation, deployment or main-index write; concurrent work preserved.
+diff --git a/game/tests/review_race_loading_2026_11_02.gd b/game/tests/review_race_loading_2026_11_02.gd
+new file mode 100644
+--- /dev/null
++++ b/game/tests/review_race_loading_2026_11_02.gd
+@@ -0,0 +1,138 @@
++extends "res://tests/profile_track_load_stages.gd"
++## Evaluation only: exact shipping loading sequence, timestamp hooks in RAM.
++## Private records, cloud folder and disk cache; no network or owner data.
++const WORLDS = preload("res://track/prepared_world_cache.gd")
++var checks: int = 0
++var failures: int = 0
++var cache_events: Array = []
++var last_cache_state: Array = []
++var current_case: String = "startup"
++
++func observe() -> void:
++	super.observe()
++	if not is_instance_valid(app): return
++	var state: Array = [WORLDS.entries.size(),WORLDS.bytes_used(),app.editor_memory.trims]
++	if state == last_cache_state: return
++	last_cache_state = state
++	cache_events.append({"us":Time.get_ticks_usec(),"case":current_case,"state":state,"telemetry":app.editor_memory.telemetry.duplicate(true)})
++
++func instrumented_app() -> GDScript:
++	# Daily limits were added after the older profiler; keep that original
++	# diagnostic and adapt the anchors only for this evaluation.
++	var source := FileAccess.get_file_as_string(APP_PATH).replace("\r\n","\n")
++	var start := source.find("func _start_race(track:")
++	var end := source.find("\nfunc _race_installation_current(",start)
++	if start < 0 or end <= start: push_error("Missing race function"); return null
++	var body := source.substr(start,end-start)
++	var hooks := [
++		["\tif not await _await_selected_preparation(track,","selected_wait_begin"],
++		["\tvar daily_rules: RefCounted","selected_wait_end"],
++		["\tvar prepared_roads: Dictionary = {}","roads_begin"],
++		["\treturning_to_editor = from_editor","roads_end"],
++		["\tadd_child(game)\n\tvar prepared_game: Node = game","game_begin"],
++		["\tif is_instance_valid(prepared_game.world_render_preparation):","game_end"],
++		["\t\tif not await prepared_game.world_render_preparation.prepare(","graphics_begin"],
++		["\tif rivalry_racing:\n\t\tgame.ghost_mode","graphics_end"],
++		["\tvar preparation_started: int = Time.get_ticks_usec()","effects_begin"],
++		["\tvar preparation_ms: float = (Time.get_ticks_usec() - preparation_started)","effects_end"],
++		["\t_close_race_loading(loading_id)\n\n","race_end"],
++	]
++	for hook: Array in hooks:
++		var needle: String = hook[0]
++		if body.count(needle) != 1: push_error("Review anchor changed: "+str(hook[1])); return null
++		var indent := "\t\t" if needle.begins_with("\t\t") else "\t"
++		body = body.replace(needle,indent+"_load_probe_mark(\""+str(hook[1])+"\")\n"+needle)
++	source = source.substr(0,start)+body+source.substr(end)
++	source += "\nvar _load_probe_marks: Array = []\nfunc _load_probe_mark(label: String) -> void:\n\t_load_probe_marks.append({\"name\":label,\"us\":Time.get_ticks_usec()})\n"
++	var script := GDScript.new()
++	script.source_code = source
++	if script.reload() != OK: push_error("Review App failed to compile"); return null
++	return script
++
++func verify(value: bool, label: String) -> void:
++	checks += 1
++	if not value:
++		failures += 1
++		printerr("LOAD_REVIEW_FAIL ", label)
++
++func run() -> void:
++	OS.set_environment("BMT_API_URL", "")
++	root.size = Vector2i(1280,720)
++	var folder := "user://race-loading-review-"+TrackLibrary.unique_id()
++	preload("res://track/road_mesh_disk_cache.gd").directory = folder.path_join("roads")
++	var script := instrumented_app()
++	if script == null: quit(1); return
++	app = script.new()
++	app.records = LocalRecords.new(folder.path_join("records.json"))
++	app.records.settings.music_enabled = false
++	app.library = TrackLibrary.new(folder.path_join("tracks"))
++	app.cloud_root_override = folder.path_join("cloud")
++	app.race_profile_enabled = true
++	root.add_child(app)
++	while not app.startup_complete: await process_frame
++	process_frame.connect(observe)
++	var themes: PackedStringArray = ["pine","desert","winter"]
++	var cycles: int = 3
++	for argument: String in OS.get_cmdline_user_args():
++		if argument.begins_with("--themes="): themes = argument.trim_prefix("--themes=").split(",")
++		if argument.begins_with("--cycles="): cycles = clampi(argument.trim_prefix("--cycles=").to_int(),1,3)
++	for theme: String in themes:
++		var document: Dictionary = JSON.parse_string(FileAccess.get_file_as_string(TRACK_PATH))
++		document.theme = theme
++		var began := Time.get_ticks_usec()
++		var track: NativeTrack = TrackCompiler.compile(document)
++		var compile_ms := (Time.get_ticks_usec()-began)/1000.0
++		verify(track != null,theme+" compilation")
++		if track == null: continue
++		track.metadata.cloud_version = "owned-loading-review"
++		WORLDS.entries.clear()
++		for cycle: int in range(cycles):
++			current_case = theme+"-"+str(cycle)
++			app.records.settings.camera_mode = "overhead"
++			app._show_screen("tracks")
++			app.selected_track = track
++			app._load_probe_marks.clear()
++			frames.clear()
++			last_frame = Time.get_ticks_usec()
++			measuring = true
++			began = Time.get_ticks_usec()
++			await app._start_race(track,false,true)
++			var wall_ms := (Time.get_ticks_usec()-began)/1000.0
++			measuring = false
++			verify(is_instance_valid(app.game),theme+" game installed")
++			if not is_instance_valid(app.game): continue
++			var game: Node = app.game
++			game.set_physics_process(false)
++			game.hitch_diagnostics.persist_enabled = false
++			verify(game.preparation_complete,theme+" construction complete")
++			verify(game.sim.state.tick == 0,theme+" canonical tick zero")
++			verify(game.countdown_ticks == 360,theme+" complete countdown")
++			verify(game.track_session.target_laps == 5,theme+" five laps")
++			verify(not is_instance_valid(app.race_loading),theme+" loading cover released")
++			var row := {"theme":theme,"cycle":cycle,"compile_ms_before_race":compile_ms,"wall_ms":wall_ms,"max_frame_ms":frames.max() if not frames.is_empty() else 0.0,"marks":app._load_probe_marks.duplicate(true),"game_costs":game.preparation_costs.duplicate(true),"world_costs":game.track_ground.build_costs.duplicate(true),"effects_finish_ms":game.bridge_preparation_ms,"effect_counts":game.effect_preparation_counts.duplicate(true),"world_cache_entries":WORLDS.entries.size(),"world_cache_bytes":WORLDS.bytes_used()}
++			if is_instance_valid(game.world_render_preparation):
++				row.draw_groups = game.world_render_preparation.frame_groups
++				row.draw_wait_max_us = game.world_render_preparation.draw_us_max
++			var game_id: int = game.get_instance_id()
++			began = Time.get_ticks_usec()
++			await app._retry_race(true)
++			row.retry_ms = (Time.get_ticks_usec()-began)/1000.0
++			verify(is_instance_valid(app.game) and app.game.get_instance_id() == game_id,theme+" retry reuses Game")
++			verify(game.sim.state.tick == 0 and game.countdown_ticks == 360,theme+" retry retains exact start")
++			samples.append(row)
++			print("RACE_LOADING_REVIEW ",JSON.stringify(row))
++			app._leave_race()
++			await process_frame
++	var output := OS.get_environment("BMT_LOADING_OUTPUT")
++	verify(not output.is_empty(),"explicit evidence destination")
++	if not output.is_empty():
++		var file := FileAccess.open(output,FileAccess.WRITE)
++		verify(file != null,"evidence opens")
++		if file != null:
++			file.store_string(JSON.stringify({"checks":checks,"failures":failures,"engine":Engine.get_version_info().string,"renderer":RenderingServer.get_current_rendering_method(),"adapter":RenderingServer.get_video_adapter_name(),"headless":DisplayServer.get_name()=="headless","app_sha256":FileAccess.get_sha256(APP_PATH),"game_sha256":FileAccess.get_sha256("res://core/game.gd"),"samples":samples,"cache_events":cache_events},"  "))
++			file.close()
++	app.queue_free()
++	app = null
++	for _frame: int in range(8): await process_frame
++	print("RACE_LOADING_REVIEW_COMPLETE ",checks," checks, ",failures," failures")
++	quit(1 if failures else 0)
+diff --git a/docs/RACE_LOADING_REVIEW_2026_11_02.md b/docs/RACE_LOADING_REVIEW_2026_11_02.md
+new file mode 100644
+--- /dev/null
++++ b/docs/RACE_LOADING_REVIEW_2026_11_02.md
+@@ -0,0 +1,100 @@
++# Race loading evaluation — 2 November 2026
++
++There is further scope to reduce race-entry time without reducing visual detail. The first implementation candidates are **bounded reuse/batching of effect preparation** and **a cache policy that retains useful scenery instead of repeatedly admitting and evicting it**. Preparing more exact CPU work during track selection is the next scheduling improvement. These are recommendations, not implemented speedups. The existing first-use Compatibility graphics problem remains relevant.
++
++This task changes no shipping loader, renderer, art, simulation or backend. RLR01 evaluates the current path; RLR02 measures current first/repeated entry and retry; RLR03 ranks alternative approaches with appearance gates; Q01 records reproducible evidence and a scoped checkpoint.
++
++## Fresh observations
++
++Two sequential offline actual-App runs used Godot `4.7.2.stable.official.ed1daf0bf`, Windows, RTX 3090, 1280×720 and Dummy audio. Each process used a new private APPDATA, records, library, cloud folder and road disk cache. The fixture is the same Star spline document, with Pine, Desert and Winter themes, each entered three times. Compilation happens before the timed entry; selection prefetch, network, ticket requests and Daily lap-limit retrieval are excluded. The selected car is the default detailed Compact. These are **fresh application/cache profiles, not controlled cold-driver tests**. Driver/OS caches were not cleared, the host was shared and themes share earlier program/car work in each process. Renderer runs are not an A/B comparison.
++
++| Renderer / theme | First entry | Subsequent entries | Subsequent effects/final preparation |
++| --- | ---: | ---: | ---: |
++| Compatibility / Pine | 23.36 s | 6.92–7.20 s | 4.85–4.96 s |
++| Compatibility / Desert | 27.62 s | 10.91–12.66 s | 7.08–8.44 s |
++| Compatibility / Winter | 23.14 s | 15.11–17.74 s | 12.89–15.42 s |
++| Desktop Mobile / Pine | 27.89 s | 1.83–2.16 s | 0.338–0.339 s |
++| Desktop Mobile / Desert | 19.97 s | 3.86–4.49 s | 0.337–0.340 s |
++| Desktop Mobile / Winter | 11.43 s | 1.88–1.93 s | 0.545–0.547 s |
++
++The effects column includes covered frames of the world/car and other prepared effects, plus final drawing and cleanup. It is not isolated particle CPU/GPU time. The high Compatibility waits cannot be assigned to driver compilation, GPU saturation or a specific material from these timestamps. The timing difference between renderers is not a measured benefit of switching renderer.
++
++The primary Compatibility run passed **59 checks / 0 failures**; Mobile passed **77 / 0**. Eighteen entries preserve readiness, canonical tick zero, the complete 360-tick countdown and five laps. Mobile also verifies nine actual `App._retry_race(true)` calls reuse the same Game and restore the exact start; they take **15.706–21.551 ms**, excluding online authorization. These checks do not exercise driving through a full lap or establish visual equivalence for a proposed optimization.
++
++The separate short Compatibility follow-up passed **19 / 0** over two Pine entries and two retries. Its observed totals were 32.83/12.11 s and retry 14.840/16.538 ms. Concurrent work changed `game/core/app.gd` during this follow-up; retain it as supporting behavior evidence, not a stable-source timing comparison. The two primary runs have unchanged hashes for all eight recorded sources across each run. The report's `app_sha256` is read from disk at report time, not a hash of the in-memory instrumented App. There is no whole-tree source freeze claim.
++
++All runs combined: **155 checks, zero failures; 20 entries; 11 retries**. Raw JSON, logs, source receipts and derived stage tables are in [the evidence folder](evidence/race-loading-review-2026-11-02/). The earlier severe cold measurements are preserved in [the October stage analysis](TRACK_LOAD_STAGE_ANALYSIS_2026_10_31.md) and [cold follow-up](COLD_LOADING_FOLLOWUP_2026_10_31.md); these newer cache-sensitive runs do not supersede or resolve them.
++
++## What already works
++
++- `App._retry_race` and `_retry_daily_race` reuse the live Game. Ordinary online retries still obtain replacement authorization as required; Daily retries retrieve the applicable limits. Recommending a generic “keep the level for retry” would duplicate existing behavior. The slower repeated-entry rows above deliberately leave and reopen the race.
++- Free Race selection already waits 650 ms, compiles/downloads the exact selected revision if necessary, and prepares roads plus Winter cover. Cancellation is fenced by selection, car, account, navigation and revision.
++- Ordinary ticket requests already overlap a needed road job. This does not cover every mode or Daily limit retrieval, and issuance semantics must remain intact.
++- Native CPU road, Desert relief, Winter and raster helpers, bounded local numeric road artifacts, numeric support reuse, modular/rest-pose car caches, world templates, shared particle shaders and proxy pooling already exist.
++- The first primary entry submitted 34 world graphics groups; later themes needed 9/11 on Compatibility and 10/11 on Mobile. Every subsequent entry for a theme submitted **zero** world groups. Adding another blanket world warm-up pass would be counterproductive.
++- Warm Compact construction measured roughly **16–29 ms**, whereas first Pine construction measured 2.41 s Compatibility and 13.73 s Mobile. The latter includes cooperative yields and rendering/resource work; it is not pure geometry CPU time. Extend cache eligibility/earlier preparation only after measuring misses, rather than replacing an already cached warm path.
++
++## Findings and ranked options
++
++### 1. Reduce repeated covered effect draws
++
++`effect_render_preparation.gd::prepare` still awaits one covered draw for **each live emitter**, even after `Pool.take` reuses its proxy: 20 for Pine/Desert and 32 for Winter. Warm entries reused all 20/32 but retained those waits. This creates a latency floor proportional to the cost/pacing of each complete covered frame.
++
++Implement bounded, explicit preparation families and receipts for equivalent renderer contexts. Prepare cold/unrecognized combinations conservatively; batch validated warm equivalents and retain the final full covered frame. Keys must include the relevant process configuration, draw shader and mesh format, instancing, render state and lighting context. Do not group by emitter name, shared shader object alone, or recursively serialize arbitrary resource graphs. Keep independent live uniforms/materials and invalidate receipts on resource/settings/context changes and pressure.
++
++The older [repeat batching experiment](evidence/track-load-effects-2026-10-31/README.md#exploratory-repeat-batching) already showed feasibility, but its unbounded serialization key was rejected for production. Its savings cannot be applied to today's timings. This recommendation is to build the missing bounded design and validate it, not to ship that prototype.
++
++Acceptance: both renderers, all five themes/current cars, first real emissions and a complete first lap, exact restored appearance, different cosmetics, navigation/account cancellation, pressure, resource changes and graphics-context recovery. The measured phase is an opportunity ceiling; it is not a forecast of recoverable seconds.
++
++### 2. Stop scenery cache churn within the existing memory allowance
++
++The Mobile process-frame trace records an admission followed by eviction at the next memory trim for **every one of the nine entries**. Cache state alternates between one prepared world and zero. Pine's world estimate is 57,270,264 bytes, Desert's 53,867,072 and Winter's 40,815,820 (**54.62/51.37/38.93 MiB**). Retained telemetry after eviction is around 41–46 MiB before adding the world again. `EditorMemory` applies a combined **64 MiB** allowance, despite `PreparedWorldCache` separately allowing up to 64 MiB. Repeated builds report new partition/cache work, consistent with the recorded evictions.
++
++Account shared immutable resources across road/world owners before choosing retention. Current accounting totals the caches separately; the estimates are not measurements of unique resident GPU memory. Give useful current-track scenery an explicit place in that shared allowance, consider retaining only the costly scenery portions, and avoid packing a complete optional world that the admission policy will immediately discard. Keep pressure cleanup and all existing hard bounds. Do not simply raise phone memory limits.
++
++Full Game construction on warm Mobile entries still took 1.03–3.69 s, including work beyond scenery. Cache packing itself took only about 4–12 ms in these runs; optimizing serialization alone is unlikely to recover the larger span. Actual savings need a paired retention-policy experiment, resource-identity accounting and pressure tests.
++
++### 3. Prepare an exact CPU packet while the selected event is visible
++
++Extend existing selected-track preparation rather than adding another speculative builder. It currently returns roads/cover; ground query, bridge/support and checkpoint-layout preparation are still launched later by `Game._build_ground`. The first road wait here was 3.49–9.41 s across the primary runs. More finished scenery data could be prepared device-side during selection, with incremental cancellation and bounded admission. Daily/Rivalry detail pages could use the same exact-revision ownership path where they currently do not receive Free Race's selection preparation.
++
++This reduces the wait after pressing Race only to the extent that selection dwell overlaps useful work; it does not remove that work or justify delaying startup or freezing an interactive menu. Keep one owner for mutable track preparation. Do not run simultaneous jobs that mutate the same track. Publish only complete matching results; never issue competitive attempts speculatively.
++
++### 4. Use a small representative graphics preparation scene
++
++The current world pass progressively reveals already prepared geometry; the effects pass draws against the assembled world and keeps earlier proxies alive. A different design could draw bounded representative mesh/material/instancing combinations in a small staging viewport, then perform the actual full world draw before uncovering the race. Another variant keeps earlier prepared groups hidden until the representative passes finish. Final car/terrain textures, geometry, effects and resolution remain unchanged.
++
++The potential benefit is less repeated rendering while warming. It does **not** remove an indivisible driver compile/link. Match MSAA, shader features, shadow/light variants, render formats and depth/screen dependencies; Night and soft particles need particular care. A tiny unrelated shader quad is not proof the real race pipeline is ready. Measure total entry, largest frame, peak memory and the first full driving lap. Reject any path that merely moves a stall after loading.
++
++### 5. Cache more finished device-generated scenery on disk
++
++Keep the current trust boundary: published documents are data and geometry is prepared on the player's device. Locally generated, versioned final scenery packets could extend today's road-only disk cache and preserve some work across process restarts and RAM eviction. Use atomic writes, corruption/size validation, bounded decoding, content/art/algorithm identities and safe fallback.
++
++This is consistent with the owner's earlier rejection of server-side visual packs. The [older local finished-world experiment](NEW_TRACK_LOADING_REVIEW_2026_10_18.md) is CPU feasibility evidence, not a current end-to-end speedup or a reason to accept downloaded engine scenes. Disk I/O, storage, shader readiness and mutable prop isolation still need evaluation; RAM accounting remains necessary.
++
++### 6. Treat graphics variant reduction and another renderer as separate experiments
++
++Further sharing of truly equivalent shader/mesh/render configurations may reduce first-use work without changing output. Recent [surface consolidation](SHADER_VARIANT_CONSOLIDATION_2026_10_31.md) and [sampler fixes](SAMPLER_BUDGET_FIX_2026_10_31.md) already did some of this; some Mobile candidates failed appearance comparisons and were correctly guarded out. Continue only with exact/unchanged-threshold image controls and first-lap measurements. Do not merge variants merely because shader text matches.
++
++Godot's [pipeline documentation](https://docs.godotengine.org/en/stable/tutorials/performance/pipeline_compilations.html) distinguishes Compatibility's covered visible draws from Mobile/Forward+ pipeline precompilation and ubershaders. It also states that export shader baking does not help Compatibility and cannot bake hardware-specific final pipelines. The current project selects Compatibility on desktop and Android. A Mobile/Vulkan trial is an architectural option, with shader baking/precompilation as supporting features, not an already validated switch. Runtime-generated specialized shaders also need investigation because export-time scanning may not see every generated form.
++
++An Android renderer decision requires matched final appearance, device support, depth/soft-particle/reflection behavior, memory, battery/thermal and cold/first-lap results. Today's sequential RTX observations cannot decide it. The earlier custom background GL compiler exceeded its memory and first-draw gates; retain those findings and do not ship unsupported hooks on this evidence.
++
++## Validation, reproduction and limits
++
++Changed task files: the diagnostic `game/tests/review_race_loading_2026_11_02.gd`, this report, task-only evidence/reproduction helpers, and short AGENTS/DEVELOPMENT_STATUS entries. The diagnostic instruments a GDScript copy in memory, never the shipping App. It runs the shipping loading sequence, redirects all player-facing persistence to its own profile, and disables the API. There is no visible UI change, so no new appearance acceptance is claimed or required for the evaluation itself.
++
++Actual commands from the workspace root:
++
++```powershell
++python docs/evidence/race-loading-review-2026-11-02/run_review.py gl_compatibility
++python docs/evidence/race-loading-review-2026-11-02/run_review.py mobile
++python docs/evidence/race-loading-review-2026-11-02/run_review.py gl_compatibility -- --themes=pine --cycles=2
++python docs/evidence/race-loading-review-2026-11-02/summarize_review.py
++```
++
++The runner uses `scripts/run_no_crash_dialog.py`, the pinned executable and a 360-second process-tree timeout. The primary Compatibility artifacts were renamed `compat-three-themes.*` before the follow-up. The initial diagnostic stopped correctly at an obsolete pre-Daily anchor; its next attempt exposed CRLF-sensitive multiline matching. Both logs are retained; the evaluation probe normalizes line endings and uses the current Daily anchor. The initial restricted runs emitted the Windows certificate-store error. The final three graphical runs used normal-access isolated offline processes and returned zero without detected engine/script/shader errors. A report-generation assertion detected concurrent App changes in the follow-up; it now records those changes explicitly while requiring stable recorded sources in both primary runs.
++
++`python docs/evidence/race-loading-review-2026-11-02/checkpoint.py` produced the [task-only patch](evidence/race-loading-review-2026-11-02/task.patch). Forward application, reverse application and normalized file-content round trips passed in an owned workspace directory; the [checkpoint receipt](evidence/race-loading-review-2026-11-02/checkpoint.json) records the exact commands and hashes. No main Git index was written.
++
++Remaining acceptance is attached to the proposed implementations above. No Android device query/test, APK/export, live/backend access or mutation, owner-save change, owner-process restart, deployment or main-index staging/commit/merge was performed. No release-build speedup, genuine cold-driver improvement, phone performance, complete-first-lap validation or new visual-equivalence result is claimed.
+diff --git a/docs/evidence/race-loading-review-2026-11-02/run_review.py b/docs/evidence/race-loading-review-2026-11-02/run_review.py
+new file mode 100644
+--- /dev/null
++++ b/docs/evidence/race-loading-review-2026-11-02/run_review.py
+@@ -0,0 +1,43 @@
++"""Bounded isolated offline desktop review; run from the repository root."""
++import hashlib
++import json
++import os
++from pathlib import Path
++import subprocess
++import sys
++import time
++
++root = Path(__file__).resolve().parents[3]
++evidence = Path(__file__).resolve().parent
++renderer = sys.argv[1] if len(sys.argv) > 1 else "gl_compatibility"
++assert renderer in ("gl_compatibility", "mobile")
++label = "compat" if renderer == "gl_compatibility" else "mobile"
++profile = root / "build" / "race-loading-review-20261102" / (label + "-" + str(time.time_ns()))
++profile.mkdir(parents=True)
++env = os.environ.copy()
++env.update(APPDATA=str(profile), BMT_API_URL="", BMT_LOADING_OUTPUT=str(evidence / (label + ".json")))
++command = [sys.executable, str(root / "scripts/run_no_crash_dialog.py"), "--",
++           "C:/apps/Godot 4.7.2/Godot_v4.7.2-stable_win64_console.exe", "--path", str(root / "game"),
++           "--audio-driver", "Dummy", "--rendering-method", renderer,
++           "--script", "res://tests/review_race_loading_2026_11_02.gd", *sys.argv[2:]]
++paths = ["game/core/app.gd", "game/core/game.gd", "game/track/native_track_visual.gd",
++         "game/race/world_render_preparation.gd", "game/vehicle/effect_render_preparation.gd",
++         "game/race/selected_track_preparation.gd", "game/race/race_ground_preparation.gd",
++         "game/tests/review_race_loading_2026_11_02.gd"]
++def hashes():
++    return {p: hashlib.sha256((root / p).read_bytes()).hexdigest() for p in paths}
++receipt = dict(command=command, profile=str(profile), before=hashes())
++began = time.monotonic()
++with (evidence / (label + ".log")).open("w", encoding="utf-8") as log:
++    process = subprocess.Popen(command, env=env, cwd=root, stdout=log, stderr=subprocess.STDOUT)
++    try:
++        receipt["exit_code"] = process.wait(timeout=360)
++    except subprocess.TimeoutExpired:
++        # Only the process tree created above, never another Godot session.
++        subprocess.run(["taskkill", "/PID", str(process.pid), "/T", "/F"], capture_output=True, check=False)
++        process.wait(timeout=20)
++        receipt["exit_code"] = 124
++receipt.update(elapsed_seconds=time.monotonic()-began, after=hashes())
++(evidence / (label + "-receipt.json")).write_text(json.dumps(receipt, indent=2), encoding="utf-8")
++print(json.dumps({k: receipt[k] for k in ("exit_code", "elapsed_seconds", "profile")}))
++sys.exit(receipt["exit_code"])
+diff --git a/docs/evidence/race-loading-review-2026-11-02/summarize_review.py b/docs/evidence/race-loading-review-2026-11-02/summarize_review.py
+new file mode 100644
+--- /dev/null
++++ b/docs/evidence/race-loading-review-2026-11-02/summarize_review.py
+@@ -0,0 +1,46 @@
++"""Derive review tables and verification receipts from completed raw runs."""
++import hashlib
++import json
++from pathlib import Path
++
++folder = Path(__file__).resolve().parent
++summary = {"checks": 0, "failures": 0, "race_entries": 0, "retries": 0, "runs": []}
++for name in ("compat-three-themes", "mobile", "compat"):
++    data = json.loads((folder / (name + ".json")).read_text(encoding="utf-8"))
++    receipt = json.loads((folder / (name + "-receipt.json")).read_text(encoding="utf-8"))
++    assert receipt["exit_code"] == 0
++    changed = [p for p in receipt["before"] if receipt["before"][p] != receipt["after"][p]]
++    if name != "compat":
++        assert not changed, name + " primary measured sources changed"
++    assert data["failures"] == 0 and not data["headless"]
++    summary["checks"] += data["checks"]
++    summary["failures"] += data["failures"]
++    summary["race_entries"] += len(data["samples"])
++    rows = []
++    for row in data["samples"]:
++        marks = {x["name"]: x["us"] for x in row["marks"]}
++        durations = {stage: (marks[end] - marks[start]) / 1000 for stage, start, end in [
++            ("selected_wait_ms", "selected_wait_begin", "selected_wait_end"),
++            ("roads_ms", "roads_begin", "roads_end"),
++            ("game_ms", "game_begin", "game_end"),
++            ("world_graphics_ms", "graphics_begin", "graphics_end"),
++            ("effects_finish_ms", "effects_begin", "effects_end")]}
++        row_out = {k: row[k] for k in ("theme", "cycle", "wall_ms", "max_frame_ms", "draw_groups", "effect_counts")}
++        row_out.update(durations)
++        if "retry_ms" in row:
++            row_out["retry_ms"] = row["retry_ms"]
++            summary["retries"] += 1
++        rows.append(row_out)
++    summary["runs"].append({"name": name, "checks": data["checks"], "renderer": data["renderer"], "changed_sources": changed, "rows": rows,
++                            "cache_events": data.get("cache_events", [])})
++summary["evidence_sha256"] = {p.name: hashlib.sha256(p.read_bytes()).hexdigest()
++                              for p in sorted(folder.iterdir()) if p.suffix in (".json", ".log", ".txt", ".py")
++                              and p.name != "summary.json"}
++(folder / "summary.json").write_text(json.dumps(summary, indent=2) + "\n", encoding="utf-8")
++print(json.dumps({k: summary[k] for k in ("checks", "failures", "race_entries", "retries")}))
++for run in summary["runs"]:
++    print(run["name"])
++    for row in run["rows"]:
++        print(row["theme"], row["cycle"], "total", round(row["wall_ms"]), "roads", round(row["roads_ms"]),
++              "game", round(row["game_ms"]), "graphics", round(row["world_graphics_ms"]),
++              "effects", round(row["effects_finish_ms"]), "retry", row.get("retry_ms", "unmeasured"))
+diff --git a/docs/evidence/race-loading-review-2026-11-02/checkpoint.py b/docs/evidence/race-loading-review-2026-11-02/checkpoint.py
+new file mode 100644
+--- /dev/null
++++ b/docs/evidence/race-loading-review-2026-11-02/checkpoint.py
+@@ -0,0 +1,60 @@
++"""Create/check this evaluation's patch without writing the main Git index."""
++import difflib
++import hashlib
++import json
++from pathlib import Path
++import subprocess
++import time
++
++evidence = Path(__file__).resolve().parent
++root = evidence.parents[2]
++changed = ["AGENTS.md", "DEVELOPMENT_STATUS.md"]
++added = ["game/tests/review_race_loading_2026_11_02.gd", "docs/RACE_LOADING_REVIEW_2026_11_02.md",
++         "docs/evidence/race-loading-review-2026-11-02/run_review.py",
++         "docs/evidence/race-loading-review-2026-11-02/summarize_review.py",
++         "docs/evidence/race-loading-review-2026-11-02/checkpoint.py"]
++def normalized(path):
++    return path.read_bytes().replace(b"\r\n", b"\n")
++
++parts = []
++before = {}
++after = {}
++for path in changed + added:
++    old = normalized(evidence / "task-base" / path) if path in changed else b""
++    new = normalized(root / path)
++    before[path], after[path] = old, new
++    parts.append("diff --git a/" + path + " b/" + path + "\n")
++    if path in added:
++        parts.append("new file mode 100644\n")
++    parts.extend(difflib.unified_diff(old.decode("utf-8").splitlines(keepends=True),
++                                    new.decode("utf-8").splitlines(keepends=True),
++                                    fromfile="a/" + path if path in changed else "/dev/null", tofile="b/" + path))
++patch = evidence / "task.patch"
++patch.write_bytes("".join(parts).encode("utf-8"))
++owned = root / "build/race-loading-review-20261102" / ("checkpoint-" + str(time.time_ns()))
++owned.mkdir(parents=True)
++assert owned.resolve().is_relative_to((root / "build/race-loading-review-20261102").resolve())
++for path in changed:
++    target = owned / path
++    target.parent.mkdir(parents=True, exist_ok=True)
++    target.write_bytes(before[path])
++directory = "--directory=" + owned.relative_to(root).as_posix()
++commands = []
++def apply(*args):
++    command = ["git", "apply", *args, str(patch)]
++    result = subprocess.run(command, cwd=root, capture_output=True, text=True)
++    commands.append(dict(command=command, exit_code=result.returncode, output=result.stdout + result.stderr))
++    assert result.returncode == 0, result.stderr
++
++apply(directory, "--check")
++apply(directory)
++assert all(normalized(owned / p) == after[p] for p in changed + added)
++apply(directory, "--reverse", "--check")
++apply(directory, "--reverse")
++assert all(normalized(owned / p) == before[p] for p in changed)
++assert all(not (owned / p).exists() for p in added)
++report = dict(files=changed + added, forward_content_exact=True, reverse_content_exact=True,
++              main_index_written=False, patch_sha256=hashlib.sha256(patch.read_bytes()).hexdigest(),
++              source_sha256={p: hashlib.sha256(after[p]).hexdigest() for p in changed + added}, commands=commands)
++(evidence / "checkpoint.json").write_text(json.dumps(report, indent=2) + "\n", encoding="utf-8")
++print("Task-only patch: forward/reverse/content checks passed in owned directory; no main index write.")

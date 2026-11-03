@@ -54,6 +54,7 @@ func run() -> void:
 	app._start_race(track, false, true)
 	check(app.race_loading != null and app.game == null, "loading appears before race scene construction")
 	check(app.race_loading.title_label.text == app.track_title(track), "loading names the actual track")
+	check("5 laps" in app.race_loading.facts_label.text, "ordinary loading still identifies five laps")
 	check(app.race_loading.activity.indeterminate and not app.race_loading.activity.show_percentage, "activity indicator does not invent percentage progress")
 	var first: Node = app.race_loading
 	first.tree_exiting.connect(func() -> void:
@@ -84,6 +85,11 @@ func run() -> void:
 	check(app.game != null and app.game.editor_test and app.game.countdown_ticks == 0 and app.race_loading == null, "editor practice uses loading then remains untimed")
 	if app.game != null: app._leave_race()
 	await _check_ticket_failure(track)
+	var practice_loading := Loading.new()
+	root.add_child(practice_loading)
+	practice_loading.configure("Ellipse", "pine", track.route, true)
+	check("Practice (untimed)" in practice_loading.facts_label.text, "practice loading keeps its untimed description")
+	practice_loading.queue_free()
 	if graphical:
 		await _capture_layouts(track)
 		check(saved_transition, "real menu-to-race loading screenshot saved")

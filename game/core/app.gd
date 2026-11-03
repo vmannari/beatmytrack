@@ -261,6 +261,9 @@ func _wake_optional_work() -> void:
 	if not is_inside_tree() or is_queued_for_deletion(): return
 	preload("res://backend/menu_snapshot_writer.gd").resume()
 	if is_instance_valid(_garage_preloader): _garage_preloader.invalidate()
+	# Results restore the race menu without _show_screen. Wake any achievement
+	# receipt deferred during driving/loading as soon as its read is allowed.
+	if achievements != null and _background_work_allowed(): achievements.resume_pending()
 
 func _result_poll_allowed(area: String) -> bool:
 	if not _background_work_allowed(): return false
@@ -371,8 +374,8 @@ func _ready() -> void:
 	_tutorial_existing_save = FileAccess.file_exists(records.path) or FileAccess.file_exists(records.path+".bak")
 	profile_root = records.path.get_base_dir()
 	records.load_records()
+	GameSoundtrack.instance().bind_records(records)
 	GameSoundtrack.instance().apply_settings(records.settings)
-	GameSoundtrack.instance().show_menu()
 	library.owner_name = "Guest"
 	online = AccountController.new()
 	online.client.session_path = records.path.get_base_dir().path_join("account_session.cfg")
@@ -532,14 +535,16 @@ func _ready() -> void:
 	# First Garage entry prepares one live showroom; carousel photos are cached.
 	_show_screen("restoring")
 	if capture_path.is_empty(): await online.start_session()
-	preload("res://ui/garage_preview_cache.gd").prefetch_catalogue(get_tree())
+	# Restoring a saved account can replace Guest's music preferences. Start
+	# only after the active profile is known, before the remaining picture work.
+	GameSoundtrack.instance().show_menu()
 	_garage_preloader=preload("res://ui/garage_preloader.gd").new()
 	_garage_preloader.app=self
 	add_child(_garage_preloader)
 	await header_car_cache.prepare_selected()
-	await _garage_preloader.prepare_pictures()
 	_show_screen(capture_screen if not capture_path.is_empty() else "rivalry" if online.profile_ready() else "account")
 	startup_complete = true
+	preload("res://ui/garage_preview_cache.gd").prefetch_catalogue(get_tree())
 	tutorial = preload("res://tutorial/tutorial_controller.gd").new()
 	tutorial.app = self
 	add_child(tutorial)
@@ -562,10 +567,6 @@ func _show_screen(next: String) -> void:
 		_open_rivalry()
 		return
 	_garage_picture_navigation+=1
-	if next=="garage" and DisplayServer.get_name()!="headless" and is_instance_valid(_garage_preloader) and not _garage_preloader.pictures_ready():
-		if screen=="garage" and is_instance_valid(_retained_garage) and _retained_garage.records!=records: _show_screen("restoring")
-		_open_garage_with_pictures(_garage_picture_navigation,records)
-		return
 	_wake_optional_work.call_deferred()
 	if next != "tracks" and discovery_provider != null: discovery_provider.comparisons.cancel_speculation()
 	if appearance_sync != null and (next == "garage" or appearance_sync._needs_recovery()): appearance_sync.refresh_if_stale()
@@ -598,7 +599,7 @@ func _show_screen(next: String) -> void:
 		game = null
 		challenge_racing = false
 		challenge_result_view = false
-	if not is_instance_valid(game): GameSoundtrack.instance().show_menu()
+	if not is_instance_valid(game) and (startup_complete or next != "restoring"): GameSoundtrack.instance().show_menu()
 	if rivalry_racing and rivalry_section in ["race_results", "result"] and next not in ["rivalry","challenge_create"] and is_instance_valid(game):
 		remove_child(game)
 		game.queue_free()
@@ -853,8 +854,6 @@ func _show_screen(next: String) -> void:
 
 func _open_profile_achievements(family: String = "") -> void:
 	var owner: LocalRecords = records
-	if not _garage_pictures_ready():
-		if not await _prepare_garage_pictures(): return
 	if not is_inside_tree() or screen != "profile" or records != owner: return
 	_show_screen("garage")
 	if not is_instance_valid(_retained_garage) or screen != "garage": return
@@ -1146,6 +1145,13 @@ func _daily_results() -> void:
 	panel.rules = game.daily_elimination
 	panel.session = game.track_session
 	panel.result_saved = result_saved
+	panel.client = online.client
+	panel.cloud = cloud
+	panel.day = int(request.get("day",-1))
+	panel.version = str(request.get("version_id",""))
+	panel.vehicle = str(game.vehicle_id)
+	panel.track_name = str(game.native_track.metadata.get("name","Track of the Day"))
+	panel.theme_id = str(game.native_track.metadata.get("theme","pine"))
 	panel.retry_requested.connect(_retry_race)
 	panel.return_requested.connect(_leave_race)
 	layer.add_child(panel)
@@ -1202,11 +1208,6 @@ func _drag_menu_edge(distance: float) -> void:
 	_set_menu_preview_input(menu_body, true)
 	var direction: int = 1 if distance < 0.0 else -1
 	menu_neighbor_direction = direction
-	if menu_neighbors.has(direction) and menu_neighbors[direction].screen=="garage" and not _garage_pictures_ready():
-		for neighbor: Dictionary in menu_neighbors.values(): neighbor.body.hide()
-		menu_body.position.x=signf(distance)*64.0*(1.0-exp(-absf(distance)/160.0))
-		menu_drag_offset=0.0
-		return
 	# A neighbor is also an entry route. Do not expose its unresolved cards under
 	# the finger while the initial membership request is still in flight.
 	if menu_neighbors.has(direction) and menu_neighbors[direction].screen == "rivalry" and _rivalry_needs_entry_data():
@@ -1361,10 +1362,6 @@ func _set_menu_preview_input(node: Node, disabled: bool) -> void:
 		control.remove_meta("page_mouse_filter")
 
 func _commit_menu_neighbor(direction: int) -> void:
-	if menu_neighbors[direction].screen=="garage" and DisplayServer.get_name()!="headless" and not _garage_preloader.pictures_ready():
-		_stop_menu_edge_motion()
-		_show_screen("garage")
-		return
 	if menu_neighbors[direction].screen == "rivalry" and _rivalry_needs_entry_data():
 		_stop_menu_edge_motion()
 		_open_rivalry()
@@ -1454,9 +1451,6 @@ func _refresh_cached_menu_page(destination: String, column: VBoxContainer) -> vo
 
 func _navigate_menu_page(next: String) -> void:
 	_garage_picture_navigation+=1
-	if next=="garage" and not _garage_pictures_ready():
-		_show_screen(next)
-		return
 	# Explicit refreshes still use _show_screen. User navigation promotes the same
 	# already warmed controls as swipes, avoiding shell/layout rebuilding on taps.
 	if next == "rivalry":
@@ -1617,6 +1611,7 @@ func _select_player_storage() -> void:
 		records = LocalRecords.new(directory.path_join("records.json"))
 		library = TrackLibrary.new(directory.path_join("tracks"))
 	records.load_records()
+	GameSoundtrack.instance().bind_records(records)
 	GameSoundtrack.instance().apply_settings(records.settings)
 	library.owner_name = online.player_name() if not identity.is_empty() else "Guest"
 	document = {}
@@ -1809,7 +1804,8 @@ func _begin_selected_geometry(generation: int, entry: Dictionary, source: Dictio
 	if _selected_preparation_obsolete(generation): return
 	if _selected_preparation_track.metadata.get("metadata_only",false) and source.is_empty():
 		_cancel_selected_preparation(); return
-	if not _selected_preparation_track.metadata.get("metadata_only",false) and not NativeTrackVisual.race_roads_need_preparation(_selected_preparation_track):
+	var layout_ready: bool = SELECTED_PREPARATION.ready_for_job() and _selected_preparation_track._race_gates.get("rules_key","") == RaceRules.KEY and _selected_preparation_track._race_gates.get("notice_version",0) == TrackSession.NOTICE_LAYOUT_VERSION
+	if not _selected_preparation_track.metadata.get("metadata_only",false) and not NativeTrackVisual.race_roads_need_preparation(_selected_preparation_track) and layout_ready:
 		_cancel_selected_preparation(); return
 	_selected_preparation_entry = entry.duplicate(true)
 	_selected_preparation_source = source
@@ -1838,6 +1834,7 @@ func _poll_selected_preparation() -> void:
 			for property: Dictionary in ready.get_property_list():
 				if int(property.usage) & PROPERTY_USAGE_SCRIPT_VARIABLE: _selected_preparation_track.set(property.name,ready.get(property.name))
 			cloud.remember_compiled_entry(_selected_preparation_entry,_selected_preparation_track)
+			_ensure_track_catalog()
 			track_catalog.remember_track(_selected_preparation_entry,_selected_preparation_track)
 	else:
 		NativeTrackVisual.ROAD_DISK_CACHE.discard_arrays(result.get("receipt",{}))
@@ -2842,17 +2839,13 @@ func _garage_appearance_changed() -> void:
 	if is_instance_valid(_retained_garage) and _retained_garage.records == records:
 		_retained_garage.refresh_cosmetics()
 
-func _open_garage_with_pictures(request: int,owner_records: LocalRecords) -> void:
-	var generation: int=_navigation_generation
-	var current: Callable=func() -> bool: return is_inside_tree() and request==_garage_picture_navigation and generation==_navigation_generation and records==owner_records
-	if await _garage_preloader.prepare_pictures(current):
-		if current.call(): _show_screen("garage")
-
 func _garage_pictures_ready() -> bool:
 	if DisplayServer.get_name()=="headless": return true
 	return is_instance_valid(_garage_preloader) and _garage_preloader.pictures_ready()
 
 func _prepare_garage_pictures() -> bool:
+	# Explicit callers can request a complete snapshot. Startup/navigation
+	# never await this optional work; visible missing views use car ghosts.
 	var generation: int=_navigation_generation
 	var owner_records: LocalRecords=records
 	var current: Callable=func() -> bool: return is_inside_tree() and generation==_navigation_generation and records==owner_records
@@ -2893,13 +2886,14 @@ func _garage(parent: Control = null) -> void:
 		return
 	var page := GaragePage.new()
 	_retained_garage = page
-	# Use the original interactive showroom with the saved appearance on entry.
+	# A prepared studio transfers directly; an early visit presents the page
+	# with a neutral car while the exact saved live studio prepares underneath.
 	page.cached_carousel = true
 	page.prepared_pictures=_garage_preloader.picture_pool() if is_instance_valid(_garage_preloader) else {}
-	page.car_pictures_ready=_garage_pictures_ready
-	page.prepare_car_pictures=_prepare_garage_pictures
 	page.preview_can_render=func() -> bool: return _publishing_slots_foreground and _background_work_allowed() and (menu_page_motion==null or not menu_page_motion.is_running())
 	if is_instance_valid(_garage_preloader): page.preloaded_showroom=_garage_preloader.take()
+	page.progressive_entry=page.preloaded_showroom==null
+	page.opening_can_begin=func() -> bool: return _publishing_slots_foreground and _background_work_allowed() and not editor_memory.pressure_requested and (menu_page_motion==null or not menu_page_motion.is_running())
 	page.achievements = achievements
 	page.news_client = online.client.news
 	page.account_requested.connect(_open_account)
@@ -2948,7 +2942,7 @@ func _start_garage_free_drive() -> void:
 			return
 	if not is_instance_valid(prepared_game) or game != prepared_game: return
 	if is_instance_valid(prepared_game.world_render_preparation):
-		loading.stage("Preparing graphics...")
+		loading.stage("Preparing your drive...")
 		var stage_current: Callable = _race_installation_current.bind(loading_id,original_scope,navigation,"garage",vehicle,selection)
 		if not await prepared_game.world_render_preparation.prepare(_present_race_loading,stage_current):
 			if is_queued_for_deletion(): return
@@ -4514,7 +4508,7 @@ func _race_menu_visible(value: bool) -> void:
 var _draft_test_save_context: Dictionary = {}
 var _draft_test_save_dialog: AcceptDialog
 
-func _open_race_loading(track: NativeTrack = null, practice: bool = false) -> RaceLoading:
+func _open_race_loading(track: NativeTrack = null, practice: bool = false, elimination: bool = false) -> RaceLoading:
 	if product_telemetry != null: product_telemetry.set_transport_allowed(false)
 	if discovery_provider != null: discovery_provider.comparisons.cancel_speculation()
 	_stop_menu_page_motion()
@@ -4528,7 +4522,7 @@ func _open_race_loading(track: NativeTrack = null, practice: bool = false) -> Ra
 	deadline.timeout.connect(_race_loading_timed_out.bind(race_loading.get_instance_id()))
 	deadline.start(RACE_LOAD_DEADLINE_SECONDS)
 	if track != null:
-		race_loading.configure(track_title(track), str(track.metadata.get("theme", "pine")), track.route, practice)
+		race_loading.configure(track_title(track), str(track.metadata.get("theme", "pine")), track.route, practice, elimination)
 	return race_loading
 
 func _present_race_loading() -> bool:
@@ -4594,7 +4588,7 @@ func _prepare_metadata_race(track: NativeTrack, from_editor: bool, offline_only:
 	var vehicle: String = VehicleCatalog.selected
 	var selection: NativeTrack = selected_track
 	var entry: Dictionary = track.metadata.cloud_entry.duplicate(true)
-	var overlay: RaceLoading = _open_race_loading(track,from_editor)
+	var overlay: RaceLoading = _open_race_loading(track,from_editor,not daily_request.is_empty())
 	var overlay_id: int = overlay.get_instance_id()
 	cloud_starting = true
 	await _present_race_loading()
@@ -4623,6 +4617,7 @@ func _prepare_metadata_race(track: NativeTrack, from_editor: bool, offline_only:
 	for property: Dictionary in ready.get_property_list():
 		if int(property.usage) & PROPERTY_USAGE_SCRIPT_VARIABLE: track.set(property.name,ready.get(property.name))
 	cloud.remember_compiled_entry(entry,track)
+	_ensure_track_catalog()
 	track_catalog.remember_track(entry,track)
 	cloud_starting = false
 	await _start_race(track,from_editor,offline_only,issued,overlay,daily_request)
@@ -4651,7 +4646,7 @@ func _start_race(track: NativeTrack, from_editor: bool, offline_only: bool = fal
 	var selected_vehicle: String = VehicleCatalog.selected
 	var attempt_vehicle: String = rivalry.model.vehicle_id if not rivalry_issued.is_empty() and not rivalry_issued.has("challenge_code") else selected_vehicle
 	var starting_selection: NativeTrack = selected_track
-	var loading: RaceLoading = prepared_loading if is_instance_valid(prepared_loading) else _open_race_loading(track, from_editor)
+	var loading: RaceLoading = prepared_loading if is_instance_valid(prepared_loading) else _open_race_loading(track, from_editor, not daily_request.is_empty())
 	var loading_id: int = loading.get_instance_id()
 	cloud_starting = true
 	if prepared_loading == null: await _present_race_loading()
@@ -4804,7 +4799,7 @@ func _start_race(track: NativeTrack, from_editor: bool, offline_only: bool = fal
 			return
 	if not is_instance_valid(prepared_game) or game != prepared_game: return
 	if is_instance_valid(prepared_game.world_render_preparation):
-		loading.stage("Preparing graphics...")
+		loading.stage("Preparing your drive...")
 		var stage_current: Callable = _race_installation_current.bind(loading_id,original_scope,navigation_generation,starting_screen,selected_vehicle,starting_selection)
 		if not await prepared_game.world_render_preparation.prepare(_present_race_loading,stage_current):
 			if is_queued_for_deletion(): return
@@ -6582,8 +6577,8 @@ func _select_header_vehicle(index: int) -> void:
 	if is_instance_valid(_retained_garage) and _retained_garage.records == records and _retained_garage.is_visible_in_tree():
 		_retained_garage.refresh_selection()
 	if not is_instance_valid(content): return
-	var daily_car: OptionButton = content.find_child("DailyCar",true,false)
-	if daily_car != null: daily_car.select(index)
+	var daily_page: Node = content.find_child("TrackOfDayPage",true,false)
+	if daily_page != null: daily_page.activate()
 	var browser: TrackBrowser = content.find_child("TrackBrowser",true,false) as TrackBrowser
 	if browser != null:
 		browser._show_detail()

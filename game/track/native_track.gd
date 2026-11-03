@@ -338,6 +338,29 @@ func off_road_rumble(state: VehicleState, config: HandlingConfig = null) -> floa
 	return 1.0 if cell_at(state.position,state.track_elevated) in [1,2] else 0.0
 
 
+func off_road_suspension_heights(state: VehicleState, config: HandlingConfig) -> Vector4:
+	# Presentation-only ground profile, sampled at each tyre in world space.
+	# Broad undulations and shorter irregularities both follow travelled distance.
+	if state.track_elevated or state.jump_height > 0.0 or state.roll_ticks > 0 or config.air_cushion:
+		return Vector4.ZERO
+	var movement: float = smoothstep(0.5, 5.0, state.velocity.length())
+	if movement == 0.0: return Vector4.ZERO
+	var heights := Vector4.ZERO
+	var index: int = 0
+	for axle: float in [0.5, -0.5]:
+		for side: float in [-0.5, 0.5]:
+			var point: Vector2 = state.position + state.forward()*config.wheelbase*axle + state.right()*config.track_width*side
+			if cell_at(point) in [1,2]:
+				# Stronger broad rises and dips, with a 5 m cross-wave for
+				# more axle/side articulation between the long undulations.
+				var broad: float = 0.140*sin(point.x*0.22+point.y*0.29) + 0.080*sin(point.x*0.16-point.y*0.21+1.1)
+				var uneven: float = 0.030*sin(point.x*0.70-point.y*0.95+2.0)
+				var fine: float = 0.018*sin(point.x*2.1+point.y*2.7) + 0.012*sin(point.x*3.4-point.y*2.2+0.7)
+				heights[index] = (broad+uneven+fine)*movement
+			index += 1
+	return heights
+
+
 func _native_surface_factors(state: VehicleState) -> Vector2:
 	var speed: float = state.velocity.length()
 	match cell_at(state.position, state.track_elevated):

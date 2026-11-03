@@ -65,6 +65,9 @@ func run() -> void:
 	studio.queue_free()
 	await frames(12)
 	# Destruction also cancels a deliberately paused, partly built opening.
+	# Earlier work in this same process already warmed these programs. Make
+	# this cancellation fixture actually own an unfinished preparation batch.
+	preload("res://ui/garage_first_draw.gd").warmed.clear()
 	var pending: CarShowroom=preload("res://ui/garage_opening_showroom.gd").new()
 	pending.garage_mode=true
 	root.add_child(pending)

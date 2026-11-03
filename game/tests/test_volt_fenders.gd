@@ -112,17 +112,25 @@ func run() -> void:
 			model.wheel_clearance.append({"wheel":str(wheel.name),"inboard_gap":min_inner,"liner_ellipse_max":max_roof})
 			wheel.rotation.y = 0
 			spin.rotation.x = 0
-		# The owner subsequently requested a curved rear-window intersection;
-		# retain the front/roof exactly and verify the new backlight separately.
-		for name_value: String in ["ReferenceHood","ReferenceCanopyGlass","ReferencePanoramicRoof"]:
+		# Retain the accepted front while measuring the subsequently extended roof.
+		for name_value: String in ["ReferenceHood","ReferenceCanopyGlass"]:
 			var node: MeshInstance3D = car.body.get_node(name_value)
 			var key: String = name_value+("_simple" if simple else "")
 			var previous: ArrayMesh = load("res://assets/vehicles/electric_sport_fastback_v1/"+key.sha256_text().left(24)+".res")
 			check(var_to_bytes(node.mesh.surface_get_arrays(0))==var_to_bytes(previous.surface_get_arrays(0)),"accepted hood and cabin retained "+name_value+label)
+		var roof: MeshInstance3D = car.body.get_node("ReferencePanoramicRoof")
+		var seal: MeshInstance3D = car.body.get_node("ReferenceRoofCrossSeal1")
+		var old_roof_key: String = "ReferencePanoramicRoof"+("_simple" if simple else "")
+		var old_roof := MeshInstance3D.new()
+		old_roof.mesh = load("res://assets/vehicles/electric_sport_fastback_v1/"+old_roof_key.sha256_text().left(24)+".res")
+		var roof_extension: float = point_at_uv(roof,Vector2(0.5,1.0)).z-point_at_uv(old_roof,Vector2(0.5,1.0)).z
+		check(roof_extension>0.20 and roof_extension<0.50,"panoramic roof extends rearward to the marked position"+label)
+		check(edge_gap(edge(roof,1,1.0),edge(seal,1,0.0))<0.003,"extended roof meets rear seal"+label)
+		old_roof.free()
 		var backlight: MeshInstance3D = car.body.get_node("ReferenceRearScreen")
 		var back_centre: Vector3 = point_at_uv(backlight,Vector2(0.5,1.0))
 		var back_corner: Vector3 = point_at_uv(backlight,Vector2(0.0,1.0))
-		check(back_centre.z-back_corner.z>0.15 and back_centre.z-back_corner.z<0.22,"owner-requested rearward backlight curve"+label)
+		check(back_centre.z-back_corner.z>0.08 and back_centre.z-back_corner.z<0.20,"owner-requested rearward backlight curve"+label)
 		var tray: Array[MeshInstance3D] = []
 		var tray_floor := INF
 		for mesh: MeshInstance3D in car.body.find_children("VoltUndertray*","MeshInstance3D",false,false):

@@ -69,9 +69,10 @@ func focus(showroom: CarShowroom, category: String) -> void:
 			"hood": local_target = Vector3(0,1.48,1.05); direction = Vector3(1.5,3,4); distance = 2.8
 			"aero": local_target = Vector3(0,0.75,1.65); direction = Vector3(2,1.3,4); distance = 2.8
 			"rims": local_target = Vector3(0.8,0.43,-0.93); direction = Vector3(4,1,-1); distance = 2.2
+			"body_kit": local_target = Vector3(0,1.94,0.02); direction = Vector3(3,2.1,-3.6); distance = 4.4
 	# Narrow landscape panes still fit the selected region horizontally.
 	var aspect: float = showroom.size.x / maxf(1.0,showroom.size.y)
-	var whole_body: bool = category in ["body","body_kit"]
+	var whole_body: bool = category in ["body","body_kit"] and not (category=="body_kit" and showroom.car.vehicle_id=="forklift")
 	if not whole_body: distance *= maxf(1.0,0.95/maxf(0.4,aspect))
 	var frame: Transform3D = showroom.car.global_transform
 	_local_target = local_target*HandlingConfig.BODY_SCALE
@@ -107,7 +108,7 @@ func _resize_focus(showroom: CarShowroom) -> void:
 	var previous_aspect: float = float(_viewport_size.x)/maxf(1.0,_viewport_size.y)
 	var aspect: float = showroom.size.x/maxf(1.0,showroom.size.y)
 	target = showroom.car.global_transform*_local_target
-	if focused_category in ["body","body_kit"]:
+	if focused_category in ["body","body_kit"] and not (focused_category=="body_kit" and showroom.car.vehicle_id=="forklift"):
 		_distance = _fit_body(showroom,_model_bounds(showroom.car),target,direction)
 	else:
 		_distance *= maxf(1.0,0.95/maxf(0.4,aspect))/maxf(1.0,0.95/maxf(0.4,previous_aspect))

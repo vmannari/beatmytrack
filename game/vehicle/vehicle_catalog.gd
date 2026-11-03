@@ -1,14 +1,13 @@
 class_name VehicleCatalog
 extends RefCounted
 ## Authored local cars; no unlocks or purchases. IDs pin handling and artwork.
-const IDS: Array[String] = ["compact", "pickup", "kart", "forklift", "electric", "hovercraft"]
+const IDS: Array[String] = ["compact", "kart", "forklift", "electric", "hovercraft"]
 # Append only: persistence and achievement bits keep their historical identities.
 const ALL_IDS: Array[String] = ["compact", "pickup", "classic", "formula", "kart", "forklift", "electric", "hovercraft"]
-const NAMES: Array[String] = ["RALLY", "HAULER", "KART", "FORKLIFT", "VOLT", "HOVER"]
-const CLASSES: Array[String] = ["Rally", "Pick-up", "Go-kart", "Forklift", "Electric", "Hovercraft"]
+const NAMES: Array[String] = ["RALLY", "KART", "FORKLIFT", "VOLT", "HOVER"]
+const CLASSES: Array[String] = ["Rally", "Go-kart", "Forklift", "Electric", "Hovercraft"]
 const DESCRIPTIONS: Array[String] = [
 	"Agile and forgiving. A versatile choice for mixed circuits.",
-	"Heavy power and loose-surface traction. Plan ahead: rotation and braking take longer.",
 	"Quick off the line. Tight turns and strong grip; low speed on long straights.",
 	"Rear-wheel steering swings the tail wide. Tight turns and heavy traction; a low top speed.",
 	"Instant rear-wheel power with responsive steering. Feed in the accelerator for a controlled slide; release for regeneration. Use the brake pedal to slow down, then hold it while stopped to reverse. No handbrake.",

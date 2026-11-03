@@ -92,10 +92,11 @@ func _ready() -> void:
 	surface.resized.connect(_layout)
 	_layout()
 
-func configure(title: String, theme_id: String, points: PackedVector2Array, practice: bool = false) -> void:
+func configure(title: String, theme_id: String, points: PackedVector2Array, practice: bool = false, elimination: bool = false) -> void:
 	title_label.text = title
 	scenery.texture = TrackTile.scenery_texture(theme_id)
-	GameText.bind(facts_label,"{biome}  ·  {race}  ·  {car}",{"biome":tr(TrackTheme.title(theme_id)),"race":tr("Practice (untimed)" if practice else "5 laps"),"car":tr(VehicleCatalog.title())})
+	var race_description: String = "Elimination" if elimination else "Practice (untimed)" if practice else "5 laps"
+	GameText.bind(facts_label,"{biome}  ·  {race}  ·  {car}",{"biome":tr(TrackTheme.title(theme_id)),"race":tr(race_description),"car":tr(VehicleCatalog.title())})
 	route = points
 	route_view.queue_redraw()
 

@@ -1,0 +1,278 @@
+--- a/DEVELOPMENT_STATUS.md
++++ b/DEVELOPMENT_STATUS.md
+@@ -2917,3 +2917,8 @@
+ <!-- SUPER-WASH-ANIMATION-20261102 -->
+ Superwash now animates a fitted rollover machine with three rotating brushes and rinse spray for3.6s. Local clean/save remains immediate; cancellation and idle retention pass. Native89/0 each desktop renderer, retained Super Wash257/0 and hose81/0;30 captures/55-frame motion preview. Commands, source-only checkpoint, initial findings and remaining owner/phone acceptance: [docs/SUPER_WASH_ANIMATION_2026_11_02.md](docs/SUPER_WASH_ANIMATION_2026_11_02.md). No device test, owner-save/process mutation, backend/live access, deployment or main-index write; concurrent work retained.
+ <!-- /SUPER-WASH-ANIMATION-20261102 -->
++
++<!-- OFFTRACK-ROUGHNESS-20261103 -->
++## More uneven off-track response (2026-11-03)
++OTR01-OTR02/R01/Q01: Stronger broad heights, a 5.3 m cross-wave and 50% larger fine irregularities increase measured Compact heave span 10.2-16.7% and combined pitch/roll span 18.3-57.5% versus the immediately previous damped profile. Existing smoothness/protected-surface/deterministic presentation gates remain. Headless91/0, retained13/0+59/0 and native152/0 each desktop renderer with122 frames pass. One runtime source; terrain mesh and canonical handling remain. Actual commands, limitations, native comparison and scoped checked checkpoint: [docs/OFFTRACK_ROUGHNESS_2026_11_03.md](docs/OFFTRACK_ROUGHNESS_2026_11_03.md). Reload/owner driving/device acceptance remain; no physical-device test/query, APK, owner-save/process change, live/backend access, deployment or main-index write; concurrent work preserved.
++<!-- /OFFTRACK-ROUGHNESS-20261103 -->
+--- a/game/track/native_track.gd
++++ b/game/track/native_track.gd
+@@ -351,11 +351,12 @@
+ 		for side: float in [-0.5, 0.5]:
+ 			var point: Vector2 = state.position + state.forward()*config.wheelbase*axle + state.right()*config.track_width*side
+ 			if cell_at(point) in [1,2]:
+-				# 17–24 m undulations give the sprung body time to follow the
+-				# ground, with enough height to read separately from fine rumble.
+-				var broad: float = 0.120*sin(point.x*0.22+point.y*0.29) + 0.075*sin(point.x*0.16-point.y*0.21+1.1)
+-				var fine: float = 0.012*sin(point.x*2.1+point.y*2.7) + 0.008*sin(point.x*3.4-point.y*2.2+0.7)
+-				heights[index] = (broad+fine)*movement
++				# Stronger broad rises and dips, with a 5 m cross-wave for
++				# more axle/side articulation between the long undulations.
++				var broad: float = 0.140*sin(point.x*0.22+point.y*0.29) + 0.080*sin(point.x*0.16-point.y*0.21+1.1)
++				var uneven: float = 0.030*sin(point.x*0.70-point.y*0.95+2.0)
++				var fine: float = 0.018*sin(point.x*2.1+point.y*2.7) + 0.012*sin(point.x*3.4-point.y*2.2+0.7)
++				heights[index] = (broad+uneven+fine)*movement
+ 			index += 1
+ 	return heights
+ 
+--- /dev/null
++++ b/game/tests/test_offtrack_roughness.gd
+@@ -0,0 +1,207 @@
++extends SceneTree
++## Compare stronger off-track motion with the previous damped wheel profile.
++
++const OUTPUT = "res://../docs/evidence/offtrack-roughness-2026-11-03"
++var checks: int = 0
++var failures: int = 0
++
++func _initialize() -> void:
++	run.call_deferred()
++
++func check(ok: bool, label: String) -> void:
++	checks += 1
++	if not ok:
++		failures += 1
++		print("FAIL: ",label)
++
++func field(kind: int) -> NativeTrack:
++	var track := NativeTrack.new()
++	track.cell_size = 1.0
++	track.grid_width = 400
++	track.grid_height = 400
++	track.half_extent = Vector2(200,200)
++	track.cells.resize(160000)
++	track.cells.fill(kind)
++	return track
++
++func previous_heights(state: VehicleState, config: HandlingConfig) -> Vector4:
++	# Exact task-start profile, retained only as a comparison control.
++	var heights := Vector4.ZERO
++	var index: int = 0
++	for axle: float in [0.5,-0.5]:
++		for side: float in [-0.5,0.5]:
++			var p: Vector2 = state.position+state.forward()*config.wheelbase*axle+state.right()*config.track_width*side
++			heights[index] = 0.120*sin(p.x*0.22+p.y*0.29)+0.075*sin(p.x*0.16-p.y*0.21+1.1)+0.012*sin(p.x*2.1+p.y*2.7)+0.008*sin(p.x*3.4-p.y*2.2+0.7)
++			index += 1
++	return heights
++
++func historical_heights(state: VehicleState, config: HandlingConfig) -> Vector4:
++	var heights := Vector4.ZERO
++	var index: int = 0
++	for axle: float in [0.5,-0.5]:
++		for side: float in [-0.5,0.5]:
++			var p: Vector2 = state.position+state.forward()*config.wheelbase*axle+state.right()*config.track_width*side
++			heights[index] = 0.048*sin(p.x*0.36+p.y*0.48)+0.028*sin(p.x*0.27-p.y*0.34+1.1)+0.012*sin(p.x*2.1+p.y*2.7)+0.008*sin(p.x*3.4-p.y*2.2+0.7)
++			index += 1
++	return heights
++
++func pose(h: Vector4, config: HandlingConfig) -> Vector3:
++	return Vector3((h.x+h.y+h.z+h.w)*0.25,atan2((h.x+h.y-h.z-h.w)*0.5,config.wheelbase),atan2((h.y+h.w-h.x-h.z)*0.5,config.track_width))
++
++func run() -> void:
++	var track := field(1)
++	var config: HandlingConfig = VehicleCatalog.config("compact")
++	var metrics: Array = []
++	var previous := CarVisual.new()
++	previous.vehicle_id = "compact"
++	root.add_child(previous)
++	var car := CarVisual.new()
++	car.vehicle_id = "compact"
++	root.add_child(car)
++	for speed: float in [5.0,12.0,22.0]:
++		for heading: float in [0.0,0.8,1.6,2.4]:
++			var state := VehicleState.new()
++			state.heading = heading
++			state.velocity = state.forward()*speed
++			var low := Vector3(INF,INF,INF)
++			var high := Vector3(-INF,-INF,-INF)
++			var old_low := Vector3(INF,INF,INF)
++			var old_high := Vector3(-INF,-INF,-INF)
++			var exact: bool = true
++			var frozen: bool = true
++			var last_smoothed: float = 0.0
++			var smoothed: float = 0.0
++			var slow_travel: float = 0.0
++			var total_travel: float = 0.0
++			var max_step: float = 0.0
++			var last_height: float = 0.0
++			var previous_low := Vector3(INF,INF,INF)
++			var previous_high := Vector3(-INF,-INF,-INF)
++			for tick: int in range(1441):
++				state.tick = tick
++				state.position = Vector2(3,4)+state.forward()*speed*float(tick)/120.0
++				var snapshot: Array = state.snapshot()
++				var h: Vector4 = track.off_road_suspension_heights(state,config)
++				car.present_suspension(state,0.0,true,0.0,Vector4.ZERO,Vector4.ZERO,false,Vector3.ZERO,h,pose(h,config))
++				var prior: Vector4 = previous_heights(state,config)
++				previous.present_suspension(state,0.0,true,0.0,Vector4.ZERO,Vector4.ZERO,false,Vector3.ZERO,prior,pose(prior,config))
++				var current: Vector3 = car.terrain_suspension
++				car.present_suspension(state,0.0,true,0.0,Vector4.ZERO,Vector4.ZERO,false,Vector3.ZERO,h,pose(h,config))
++				frozen = frozen and current == car.terrain_suspension
++				exact = exact and snapshot == state.snapshot()
++				if tick > 120:
++					previous_low = previous_low.min(previous.terrain_suspension)
++					previous_high = previous_high.max(previous.terrain_suspension)
++					low = low.min(current)
++					high = high.max(current)
++					var earlier: Vector3 = pose(historical_heights(state,config),config)
++					old_low = old_low.min(earlier)
++					old_high = old_high.max(earlier)
++					# Average over 2.4 m at every speed; a fixed time window would
++					# incorrectly reject the same spatial profile at higher speeds.
++					smoothed = lerpf(smoothed,current.x,speed/(120.0*2.4))
++					if tick > 240:
++						slow_travel += absf(smoothed-last_smoothed)
++						total_travel += absf(current.x-last_height)
++						max_step = maxf(max_step,absf(current.x-last_height))
++					last_smoothed = smoothed
++					last_height = current.x
++			var span: Vector3 = high-low
++			var previous_span: Vector3 = previous_high-previous_low
++			check(span.x > previous_span.x*1.10,"heave is stronger than the previous damped profile")
++			check(Vector2(span.y,span.z).length() > Vector2(previous_span.y,previous_span.z).length()*1.10,"pitch/roll is stronger than the previous damped profile")
++			check(span.x > 0.15 and span.x > (old_high.x-old_low.x)*1.7,"broad heave survives damping at speed=%s heading=%s" % [speed,heading])
++			check(maxf(span.y,span.z) > deg_to_rad(2.0),"body visibly pitches or rolls")
++			check(slow_travel/total_travel > 0.65,"slow undulations dominate body travel")
++			check(max_step < 0.012 and maxf(absf(low.x),absf(high.x)) < 0.24,"smooth bounded body travel")
++			check(exact and frozen,"sampling preserves canonical state and duplicate snapshots freeze")
++			metrics.append({"previous_heave_span_m":previous_span.x,"previous_pitch_span_deg":rad_to_deg(previous_span.y),"previous_roll_span_deg":rad_to_deg(previous_span.z),"speed_m_s":speed,"heading":heading,"body_heave_span_m":span.x,"pitch_span_deg":rad_to_deg(span.y),"roll_span_deg":rad_to_deg(span.z),"slow_travel_ratio":slow_travel/total_travel,"old_undamped_heave_span_m":old_high.x-old_low.x})
++	var state := VehicleState.new()
++	state.position = Vector2(3,4)
++	state.velocity = Vector2(0,12)
++	var grass: Vector4 = track.off_road_suspension_heights(state,config)
++	track.cells.fill(2)
++	check(track.off_road_suspension_heights(state,config) == grass,"both loose-ground types share the broad profile")
++	for kind: int in [0,3,4,5,6,7]:
++		track.cells.fill(kind)
++		check(track.off_road_suspension_heights(state,config) == Vector4.ZERO,"protected surface remains flat: "+str(kind))
++	car.free()
++	previous.free()
++	DirAccess.make_dir_recursive_absolute(ProjectSettings.globalize_path(OUTPUT))
++	var report := FileAccess.open(OUTPUT+"/motion-metrics.json",FileAccess.WRITE)
++	report.store_string(JSON.stringify(metrics,"\t"))
++	report.close()
++	if "--capture" in OS.get_cmdline_user_args():
++		await capture()
++	print("OFFTRACK_ROUGHNESS: %d checks, %d failures" % [checks,failures])
++	quit(1 if failures else 0)
++
++func capture() -> void:
++	# Staged native comparison: identical distance samples and actual car springs.
++	root.size = Vector2i(960,540)
++	root.content_scale_size = root.size
++	var world := Node3D.new()
++	root.add_child(world)
++	var environment := WorldEnvironment.new()
++	var settings := Environment.new()
++	settings.background_mode = Environment.BG_COLOR
++	settings.background_color = Color("526752")
++	settings.ambient_light_source = Environment.AMBIENT_SOURCE_COLOR
++	settings.ambient_light_color = Color.WHITE
++	settings.ambient_light_energy = 0.6
++	environment.environment = settings
++	world.add_child(environment)
++	var ground: StandardMaterial3D = VisualGeometry.material(Color("526752"))
++	VisualGeometry.box(world,Vector3(40,0.1,40),Vector3(0,-0.15,0),ground)
++	var line: StandardMaterial3D = VisualGeometry.material(Color("7b8d71"))
++	for z: int in range(-10,11,2):
++		VisualGeometry.box(world,Vector3(16,0.005,0.018),Vector3(0,-0.09,z),line)
++	var light := DirectionalLight3D.new()
++	light.rotation_degrees = Vector3(-55,-30,0)
++	world.add_child(light)
++	var camera := Camera3D.new()
++	world.add_child(camera)
++	camera.position = Vector3(7,12,10)
++	camera.look_at(Vector3(0,0.5,0))
++	camera.projection = Camera3D.PROJECTION_ORTHOGONAL
++	camera.size = 9.5
++	var overlay := CanvasLayer.new()
++	root.add_child(overlay)
++	var title := Label.new()
++	title.text = "ROUGHER OFF-TRACK SUSPENSION  |  12 m/s  |  staged native comparison"
++	title.position = Vector2(22,18)
++	overlay.add_child(title)
++	var track := field(1)
++	var config: HandlingConfig = VehicleCatalog.config("compact")
++	var cars: Array[CarVisual] = []
++	for i: int in range(2):
++		var car := CarVisual.new()
++		car.vehicle_id = "compact"
++		world.add_child(car)
++		car.position.x = -3.2 if i == 0 else 3.2
++		cars.append(car)
++		var label := Label3D.new()
++		label.text = "Before" if i == 0 else "More uneven"
++		label.position = Vector3(car.position.x,1.7,0)
++		label.billboard = BaseMaterial3D.BILLBOARD_ENABLED
++		label.font_size = 48
++		world.add_child(label)
++	for car: CarVisual in cars:
++		while not car.model_ready: await process_frame
++	var state := VehicleState.new()
++	state.velocity = Vector2(0,12)
++	var destination: String = ProjectSettings.globalize_path(OUTPUT).path_join("frames-"+RenderingServer.get_current_rendering_method())
++	DirAccess.make_dir_recursive_absolute(destination)
++	for tick: int in range(721):
++		state.tick = tick
++		state.position = Vector2(3,4+float(tick)*0.1)
++		for i: int in range(2):
++			var h: Vector4 = previous_heights(state,config) if i == 0 else track.off_road_suspension_heights(state,config)
++			cars[i].present_suspension(state,0.0,true,0.0,Vector4.ZERO,Vector4.ZERO,false,Vector3.ZERO,h,pose(h,config))
++		if tick >= 120 and tick%10 == 0:
++			await process_frame
++			await RenderingServer.frame_post_draw
++			check(root.get_texture().get_image().save_png(destination.path_join("%03d.png" % ((tick-120)/10))) == OK,"native comparison capture")
++	world.queue_free()
++	overlay.queue_free()
++	await process_frame
+--- /dev/null
++++ b/docs/OFFTRACK_ROUGHNESS_2026_11_03.md
+@@ -0,0 +1,34 @@
++# More uneven off-track response - 2026-11-03
++
++OTR01: Make off-track driving more uneven than the November 2 profile. OTR02: Retain protected surfaces, per-wheel response, deterministic presentation and the existing smoothness limits. R01/Q01: Native visual evidence and a task-only review checkpoint.
++
++`game/track/native_track.gd` raises broad wave amplitudes from 120/75 mm to 140/80 mm, adds a 30 mm cross-wave with an approximately 5.3 m wavelength, and raises the fine irregularities from 12/8 mm to 18/12 mm. This gives stronger rises/dips and more independent axle/side movement. These are sampled presentation heights for wheel/body suspension; the rendered terrain mesh is unchanged. Canonical handling, collision, road/kerb geometry, timing and competitive identities are unchanged.
++
++`game/tests/test_offtrack_roughness.gd` compares two actual Compact spring responses against identical trajectories at 5, 12 and 22 m/s in four headings. Its control is the exact immediately previous profile. Across those twelve paths, body heave span increases 10.2-16.7%; the combined pitch/roll span increases 18.3-57.5%. At 12 m/s, body heave span is 0.368-0.424 m. Existing historical broad-profile gates are retained, including less than 12 mm heave change per tick, less than 240 mm absolute body heave, and more than 65% slow-travel dominance. Grass and loose soil agree; all protected surface exclusions, airborne/bridge/roll/stationary/hover exclusions, per-wheel contacts and road settling pass. These are measured staged paths, not a universal maximum.
++
++| Actual command target | Result |
++| --- | --- |
++| `test_offtrack_roughness.gd`, headless | 91 checks, 0 failures |
++| Unchanged `test_off_road_suspension.gd`, headless | 13 checks, 0 failures |
++| Unchanged `test_suspension.gd`, headless | 59 checks, 0 failures |
++| `test_offtrack_roughness.gd -- --capture`, native Compatibility | 152 checks, 0 failures; 61 frames |
++| Same, native desktop Mobile | 152 checks, 0 failures; 61 frames |
++
++Successful commands ran from the repository root using the pinned Godot 4.7.2 standard console executable and the required crash-dialog wrapper. Process-local APPDATA and LOCALAPPDATA pointed to absolute workspace directories under `build/offtrack-roughness/`, isolating the owner's saves. The known root-certificate-store warning appears in each test log; these fixtures perform no network operations. All five final process exit codes are zero. An initial source-edit script stopped before changes because its Unicode comment match failed through PowerShell; the subsequent attempted test reported a missing file. ASCII-only matching corrected the edit before the successful runs. No failing test gate was changed.
++
++```powershell
++$env:APPDATA = Join-Path (Get-Location) 'build/offtrack-roughness/appdata'
++$env:LOCALAPPDATA = Join-Path (Get-Location) 'build/offtrack-roughness/localappdata'
++python scripts/run_no_crash_dialog.py -- 'C:\apps\Godot 4.7.2\Godot_v4.7.2-stable_win64_console.exe' --headless --path game --log-file 'C:/Codes/Godot/Beat my track/docs/evidence/offtrack-roughness-2026-11-03/roughness-headless.log' --script res://tests/test_offtrack_roughness.gd
++python scripts/run_no_crash_dialog.py -- 'C:\apps\Godot 4.7.2\Godot_v4.7.2-stable_win64_console.exe' --headless --path game --log-file 'C:/Codes/Godot/Beat my track/docs/evidence/offtrack-roughness-2026-11-03/off-road-retained.log' --script res://tests/test_off_road_suspension.gd
++python scripts/run_no_crash_dialog.py -- 'C:\apps\Godot 4.7.2\Godot_v4.7.2-stable_win64_console.exe' --headless --path game --log-file 'C:/Codes/Godot/Beat my track/docs/evidence/offtrack-roughness-2026-11-03/suspension-retained.log' --script res://tests/test_suspension.gd
++python scripts/run_no_crash_dialog.py -- 'C:\apps\Godot 4.7.2\Godot_v4.7.2-stable_win64_console.exe' --path game --position -16000,-16000 --rendering-method gl_compatibility --log-file 'C:/Codes/Godot/Beat my track/docs/evidence/offtrack-roughness-2026-11-03/roughness-native-compatibility.log' --script res://tests/test_offtrack_roughness.gd -- --capture
++python scripts/run_no_crash_dialog.py -- 'C:\apps\Godot 4.7.2\Godot_v4.7.2-stable_win64_console.exe' --path game --position -16000,-16000 --rendering-method mobile --log-file 'C:/Codes/Godot/Beat my track/docs/evidence/offtrack-roughness-2026-11-03/roughness-native-mobile.log' --script res://tests/test_offtrack_roughness.gd -- --capture
++python docs/evidence/offtrack-roughness-2026-11-03/artifacts.py
++```
++
++[Native comparison playback](evidence/offtrack-roughness-2026-11-03/comparison.html), [Compatibility still](evidence/offtrack-roughness-2026-11-03/frames-gl_compatibility/020.png), [Mobile still](evidence/offtrack-roughness-2026-11-03/frames-mobile/020.png), [motion measurements](evidence/offtrack-roughness-2026-11-03/motion-metrics.json). The playback uses actual models and suspension with identical 12 m/s distance samples; its camera and flat staging grid are evidence only. The existing time-based surface rumble is omitted equally from both cars to isolate the distance-based response. This is not captured race driving.
++
++The artifact command records source hashes and verifies forward/reverse application and exact contents of `task.patch` in a temporary directory. It never writes the main Git index. Earlier uncommitted suspension work and concurrent changes are preserved.
++
++Reload and owner driving/appearance acceptance remain. Native rendered comparison covers Compact; other cars retain their existing compliance. No physical-device query/test, APK, owner-save/process change, live/backend access, deployment, commit or merge was performed. Device performance remains unmeasured.

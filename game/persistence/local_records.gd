@@ -211,6 +211,8 @@ static func _normalize(data: Variant) -> Dictionary:
 			if not preload("res://persistence/cosmetic_catalog.gd").valid_owned(preferences[field]): return {}
 		elif field == "music_record":
 			if not preload("res://soundtrack/record_library.gd").valid_id(preferences[field]): return {}
+		elif field == "music_playlist":
+			if not preload("res://soundtrack/record_library.gd").valid_playlist(preferences[field]): return {}
 		elif field == "vehicle_conditions":
 			if not VehicleCondition.valid_collection(preferences[field]): return {}
 		elif field == "vehicle_liveries":

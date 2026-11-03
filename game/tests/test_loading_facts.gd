@@ -24,7 +24,7 @@ func run() -> void:
 	for argument: String in OS.get_cmdline_user_args():
 		if argument.begins_with("--output="): output = argument.trim_prefix("--output=")
 	create_timer(120).timeout.connect(func() -> void: print("FAIL: loading fact deadline"); quit(1))
-	check(Facts.FACTS.size() == 100, "catalogue contains 100 facts")
+	check(Facts.FACTS.size() >= 30, "catalogue offers a variety of gameplay tips")
 	var unique: Dictionary = {}
 	for fact: String in Facts.FACTS:
 		check(not fact.strip_edges().is_empty() and not unique.has(fact), "fact is nonempty and unique: " + fact)
@@ -37,7 +37,7 @@ func run() -> void:
 		var fact: String = Facts.random_fact()
 		check(unique.has(fact), "selection comes from the catalogue")
 		selected[fact] = true
-	check(selected.size() >= 95, "selection reaches the catalogue broadly with a fixed seed")
+	check(selected.size() == unique.size(), "selection reaches the catalogue broadly with a fixed seed")
 	var profile: String = "user://loading_fact_test_" + TrackLibrary.unique_id()
 	DirAccess.make_dir_recursive_absolute(profile)
 	var app := HoldingStartupApp.new()

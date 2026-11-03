@@ -56,6 +56,7 @@ def elimination_limits(request: Request, response: Response, background: Backgro
 
 def _elimination_context(request, response, background, session, day, version_id, vehicle_id, credentials):
     from .daily_elimination import POLICY
+    from .daily_fixed_limits import selection_for_version
 
     player = current_player(request, credentials, session) if credentials else None
     response.headers["Cache-Control"] = "private, no-store"
@@ -63,12 +64,12 @@ def _elimination_context(request, response, background, session, day, version_id
     chosen = session.get(TrackOfDay, stamp // DAY)
     if chosen is None:
         raise HTTPException(503, "TRACK_OF_DAY_PREPARING")
-    if day != chosen.day or version_id != chosen.version_id:
+    selection = selection_for_version(chosen, version_id)
+    if day != chosen.day or selection is None:
         raise HTTPException(409, "TRACK_OF_DAY_CHANGED")
     if not hydrate(session, request, [{"version_id": version_id}], player):
         raise HTTPException(404, "TRACK_OF_DAY_UNAVAILABLE")
     pinned = board_manifest(session.get(TrackVersion, version_id), vehicle_id)
-    selection = chosen.lap_limits
     if not isinstance(selection, dict) or selection.get("policy") != POLICY:
         response.status_code = 503
         response.headers["Retry-After"] = "30"
@@ -100,7 +101,8 @@ def eligible_day(session, ticket, board, submitted_at):
         return None
     chosen = session.get(TrackOfDay, day)
     player = session.get(Player, ticket.player_id)
-    if (chosen is None or chosen.version_id != board.version_id or player is None
+    from .daily_fixed_limits import selection_for_version
+    if (chosen is None or selection_for_version(chosen, board.version_id) is None or player is None
             or player.disabled or player.deleted_at is not None or player.is_test_driver):
         return None
     return day
@@ -155,7 +157,8 @@ def standings(request: Request, response: Response, session: BoardDB,
         chosen = session.get(TrackOfDay, stamp // DAY)
         if chosen is None:
             raise HTTPException(503, "TRACK_OF_DAY_PREPARING", headers={"Retry-After": "30"})
-        if day != chosen.day or version_id != chosen.version_id:
+        from .daily_fixed_limits import selection_for_version
+        if day != chosen.day or selection_for_version(chosen, version_id) is None:
             raise HTTPException(409, "TRACK_OF_DAY_CHANGED")
         if not hydrate(session, request, [{"version_id": version_id}], player):
             raise HTTPException(404, "TRACK_OF_DAY_UNAVAILABLE")

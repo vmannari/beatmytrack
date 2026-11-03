@@ -42,7 +42,7 @@ static func prepare(data: Variant) -> Dictionary:
 		var selected: Variant = settings.music_record
 		if not selected is String: return {}
 		var records = preload("res://soundtrack/record_library.gd")
-		if not records.valid_id(selected) and not _old_music_id(selected): return {}
+		if not records.valid_id(selected) and not _old_music_id(selected) and selected not in ["exploration", "open_road", "after_hours", "golden_hour", "coastline", "night_drive", "workshop_sessions"]: return {}
 		settings.music_record = records.selected(settings).id
 	return result
 

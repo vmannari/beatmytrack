@@ -4,7 +4,7 @@ var preview_service: Node
 var preview_key: String = ""
 var displayed_key: String = ""
 var _image: TextureRect
-var _placeholder: CenterContainer
+var _placeholder: Control
 
 func _ready() -> void:
 	read_only = true
@@ -17,26 +17,13 @@ func _ready() -> void:
 	_image.texture_filter = CanvasItem.TEXTURE_FILTER_LINEAR
 	add_child(_image)
 	MenuStyle.fill(_image)
-	_placeholder = CenterContainer.new()
+	_placeholder = preload("res://ui/garage_loading_car.gd").new()
 	_placeholder.name = "PreviewLoading"
+	_placeholder.vehicle_id = vehicle_id
+	_placeholder.compact = true
 	_placeholder.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	add_child(_placeholder)
 	MenuStyle.fill(_placeholder)
-	var column := VBoxContainer.new()
-	column.mouse_filter = Control.MOUSE_FILTER_IGNORE
-	column.add_theme_constant_override("separation", 4)
-	_placeholder.add_child(column)
-	var emblem := TextureRect.new()
-	emblem.texture = preload("res://ui/garage_mode_icons.gd").texture("cars")
-	emblem.custom_minimum_size = Vector2(28,28)
-	emblem.expand_mode = TextureRect.EXPAND_IGNORE_SIZE
-	emblem.stretch_mode = TextureRect.STRETCH_KEEP_ASPECT_CENTERED
-	emblem.modulate = MenuStyle.MUTED
-	emblem.mouse_filter = Control.MOUSE_FILTER_IGNORE
-	column.add_child(emblem)
-	var caption: Label = MenuStyle.label("Loading preview…",16,true)
-	caption.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-	column.add_child(caption)
 	set_process(false)
 	refresh_thumbnail()
 

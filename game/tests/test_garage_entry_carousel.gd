@@ -63,10 +63,11 @@ func run() -> void:
 	# In the baseline the screen remains restoring until covered preparation ends.
 	while app.screen != "garage": await process_frame
 	var page: GaragePage = app._retained_garage
-	check(page!=null and page.cached_carousel and page.thumbnails.size()==7,"actual Garage contains all seven catalogue cars")
-	check(not page.progressive_entry,"cold entry uses the saved live car immediately")
-	check(page.showroom.find_child("GarageOpeningPicture",true,false)==null,"cold main view never shows a stock-photo cover")
-	check(page.showroom.car!=null and page.showroom.car.livery==paints.compact,"cold native car starts with its saved livery")
+	check(page!=null and page.cached_carousel and page.thumbnails.size()==VehicleCatalog.IDS.size(),"actual Garage contains all current catalogue cars")
+	check(page.progressive_entry,"cold entry defers the live car behind a neutral placeholder")
+	var cover: Control=page.showroom.find_child("GarageOpeningPicture",true,false)
+	check(cover!=null and cover.get_script()==preload("res://ui/garage_loading_car.gd"),"cold main view uses the car's abstract mask")
+	check(page.showroom.livery==paints.compact,"deferred native car starts with its saved livery")
 	for id: String in VehicleCatalog.IDS:
 		var card: CarShowroom = page.thumbnails[id]
 		check(card.condition==conditions[id],"saved condition retained "+id)
@@ -83,6 +84,7 @@ func run() -> void:
 	if page.progressive_entry:
 		while page.showroom.preparing: await process_frame
 		await frames(2)
+	check(page.showroom.car.livery==paints.compact,"first revealed native car has its saved livery")
 	check(page.showroom.find_children("*","SubViewport",true,false).size()==3,"main live studio owns exactly three viewports after preparation")
 	if DisplayServer.get_name()=="headless":
 		check(page.find_children("*","SubViewport",true,false).size()==3,"one live Garage retains exactly three viewports")

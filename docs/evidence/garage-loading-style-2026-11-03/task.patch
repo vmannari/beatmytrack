@@ -1,0 +1,388 @@
+diff --git a/game/ui/garage_loading_car.gd b/game/ui/garage_loading_car.gd
+--- a/game/ui/garage_loading_car.gd
++++ b/game/ui/garage_loading_car.gd
+@@ -8,6 +8,8 @@
+ 			_mask.vehicle_id = vehicle_id
+ 			_mask.queue_redraw()
+ var _mask: Control
++var compact: bool = false
++var _caption: Label
+ 
+ class Mask extends Control:
+ 	var vehicle_id: String = "compact"
+@@ -16,13 +18,14 @@
+ 		texture_filter = CanvasItem.TEXTURE_FILTER_LINEAR
+ 		var finish := ShaderMaterial.new()
+ 		finish.shader = preload("res://ui/garage_loading_car.gdshader")
++		finish.set_shader_parameter("atlas_columns",float(Art.CAR_IDS.size()))
+ 		material = finish
+ 		resized.connect(queue_redraw)
+ 		set_process(false)
+ 	func _draw() -> void:
+ 		if size.x <= 0 or size.y <= 0: return
+ 		var index: int = maxi(0,Art.CAR_IDS.find(vehicle_id))
+-		var width: float = minf(size.x*0.86,size.y*1.5*0.90)
++		var width: float = minf(size.x*0.86,size.y*1.85)
+ 		var dimensions := Vector2(width,width/1.5)
+ 		draw_texture_rect_region(Art.SILHOUETTES,Rect2((size-dimensions)*0.5,dimensions),Rect2(Vector2(index*Art.TILE.x,0),Art.TILE))
+ 
+@@ -30,7 +33,12 @@
+ 	mouse_filter = Control.MOUSE_FILTER_IGNORE
+ 	clip_contents = true
+ 	var background := ColorRect.new()
+-	background.color = Color("142127")
++	background.name = "LoadingAtmosphere"
++	var atmosphere := ShaderMaterial.new()
++	atmosphere.shader = preload("res://ui/garage_loading_car.gdshader")
++	atmosphere.set_shader_parameter("backdrop",true)
++	atmosphere.set_shader_parameter("compact_preview",compact)
++	background.material = atmosphere
+ 	background.mouse_filter = Control.MOUSE_FILTER_IGNORE
+ 	add_child(background)
+ 	MenuStyle.fill(background)
+@@ -39,4 +47,21 @@
+ 	_mask.vehicle_id = vehicle_id
+ 	add_child(_mask)
+ 	MenuStyle.fill(_mask)
++	_mask.offset_top = 3 if compact else 60
++	_mask.offset_bottom = -58 if compact else -70
++	_caption = MenuStyle.label("Loading preview…",14 if compact else 19)
++	_caption.name = "LoadingCaption"
++	GameText.bind(_caption,"Loading preview…")
++	_caption.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
++	_caption.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
++	_caption.text_overrun_behavior = TextServer.OVERRUN_TRIM_ELLIPSIS
++	_caption.add_theme_color_override("font_color",Color("a8cdd6"))
++	_caption.add_theme_color_override("font_shadow_color",Color(0,0,0,0.45))
++	_caption.add_theme_constant_override("shadow_offset_y",1)
++	add_child(_caption)
++	_caption.set_anchors_and_offsets_preset(Control.PRESET_BOTTOM_WIDE)
++	_caption.offset_left = 12
++	_caption.offset_right = -12
++	_caption.offset_top = -63 if compact else -58
++	_caption.offset_bottom = -41 if compact else -28
+ 	set_process(false)
+diff --git a/game/ui/garage_loading_car.gdshader b/game/ui/garage_loading_car.gdshader
+--- a/game/ui/garage_loading_car.gdshader
++++ b/game/ui/garage_loading_car.gdshader
+@@ -1,9 +1,37 @@
+ shader_type canvas_item;
+ render_mode unshaded;
+ 
++uniform bool backdrop = false;
++uniform bool compact_preview = false;
++uniform float atlas_columns = 5.0;
++
+ void fragment() {
+-	float shape = texture(TEXTURE,UV).a;
+-	float grey = mix(0.64,0.46,UV.y);
+-	float breathe = 0.67+0.045*sin(TIME*1.6);
+-	COLOR = vec4(vec3(grey),shape*breathe);
++	float breathe = 0.5+0.5*sin(TIME*1.85);
++	if (backdrop) {
++		vec3 base = mix(vec3(0.028,0.055,0.080),vec3(0.045,0.100,0.125),UV.y);
++		vec2 halo_at = vec2(0.5,compact_preview ? 0.30 : 0.47);
++		vec2 halo_delta = (UV-halo_at)*vec2(2.0,3.0);
++		float halo = exp(-dot(halo_delta,halo_delta)*2.0);
++		vec2 floor_delta = (UV-vec2(0.5,compact_preview ? 0.53 : 0.76))*vec2(2.8,24.0);
++		float floor_glow = exp(-dot(floor_delta,floor_delta)*2.0);
++		vec3 ambience = vec3(0.025,0.115,0.155)*halo*(0.80+0.20*breathe);
++		COLOR = vec4(base+ambience+vec3(0.015,0.065,0.085)*floor_glow,1.0);
++	} else {
++		float shape = texture(TEXTURE,UV).a;
++		vec2 step_uv = TEXTURE_PIXEL_SIZE*1.8;
++		float left = texture(TEXTURE,UV-vec2(step_uv.x,0.0)).a;
++		float right = texture(TEXTURE,UV+vec2(step_uv.x,0.0)).a;
++		float above = texture(TEXTURE,UV-vec2(0.0,step_uv.y)).a;
++		float below = texture(TEXTURE,UV+vec2(0.0,step_uv.y)).a;
++		float rim = max(0.0,shape-min(min(left,right),min(above,below)));
++		float soft_edge = max(0.0,max(max(left,right),max(above,below))-shape);
++		vec2 local_uv = vec2(fract(UV.x*atlas_columns),UV.y);
++		float sweep_at = fract(TIME/4.8)*1.8-0.3;
++		float sweep = exp(-pow((local_uv.x+local_uv.y*0.2-sweep_at)/0.16,2.0));
++		vec3 tint = mix(vec3(0.12,0.33,0.43),vec3(0.50,0.77,0.82),1.0-local_uv.y);
++		tint += vec3(0.09,0.13,0.14)*sweep;
++		tint = mix(tint,vec3(0.65,0.91,0.97),min(1.0,rim*1.7));
++		float opacity = shape*(0.46+0.20*breathe)+rim*0.22+soft_edge*0.13;
++		COLOR = vec4(tint,min(1.0,opacity));
++	}
+ }
+diff --git a/game/ui/garage_cached_thumbnail.gd b/game/ui/garage_cached_thumbnail.gd
+--- a/game/ui/garage_cached_thumbnail.gd
++++ b/game/ui/garage_cached_thumbnail.gd
+@@ -20,6 +20,7 @@
+ 	_placeholder = preload("res://ui/garage_loading_car.gd").new()
+ 	_placeholder.name = "PreviewLoading"
+ 	_placeholder.vehicle_id = vehicle_id
++	_placeholder.compact = true
+ 	_placeholder.mouse_filter = Control.MOUSE_FILTER_IGNORE
+ 	add_child(_placeholder)
+ 	MenuStyle.fill(_placeholder)
+diff --git a/AGENTS.md b/AGENTS.md
+--- a/AGENTS.md
++++ b/AGENTS.md
+@@ -1,3 +1,8 @@
++<!-- GARAGE-LOADING-STYLE-20261103 -->
++## Garage loading ghosts have colour, light and loading text (2026-11-03)
++GLS01-GLS03: Blue/teal ghost gradients, luminous contours, background/ground glow and a slow pulse/light sweep replace plain grey. Existing translated Loading preview text fits main/compact cards without covering car names; actual model masks and final views remain. Real-App269/0 each desktop renderer includes all twelve locale fits and rendered motion sampling;16 native captures. Three runtime sources; no added 3D worlds or CPU animation callbacks. Commands, views and checked task-only checkpoint: [docs/GARAGE_LOADING_STYLE_2026_11_03.md](docs/GARAGE_LOADING_STYLE_2026_11_03.md). Reload/owner/device acceptance remain; no device test, APK, owner-save/process change, backend/live access, deployment or main-index write; concurrent work preserved.
++<!-- /GARAGE-LOADING-STYLE-20261103 -->
++
+ <!-- GARAGE-DEFERRED-VIEWS-20261102 -->
+ ## Garage pictures defer; unready views show grey model silhouettes (2026-11-02)
+ GDF01-GDF04: Startup retains the equipped header and defers Garage work; tab/swipe/profile/Cars entry no longer waits for every photograph. Existing actual-model masks pulse grey until exact pictures/full original studio, reflections and wall contents are ready. Only fully prepared preloads transfer directly; partial/stale entry stays covered. Actual-App61/0 each desktop renderer, headless44/0 and retained checks total764/0;15 native captures. Separate standalone Mobile reflection assertions18/0 hang in shutdown and are not a pass; verified owned cleanup and other first fixture failures are retained. Commands, captures, limits and task-only checked checkpoint: [docs/GARAGE_DEFERRED_VIEWS_2026_11_02.md](docs/GARAGE_DEFERRED_VIEWS_2026_11_02.md). Reload/owner/device acceptance remain; no quantified speedup/FPS claim, device test, APK, owner-save/process change, backend/live access, deployment or main-index write. Concurrent work preserved.
+diff --git a/DEVELOPMENT_STATUS.md b/DEVELOPMENT_STATUS.md
+--- a/DEVELOPMENT_STATUS.md
++++ b/DEVELOPMENT_STATUS.md
+@@ -1,3 +1,8 @@
++<!-- GARAGE-LOADING-STYLE-20261103 -->
++## Garage loading ghosts have colour, light and loading text (2026-11-03)
++GLS01-GLS03: Blue/teal ghosts, luminous edges, soft glow, stronger slow pulse and light sweep make missing previews distinct. Existing translated Loading preview text fits all twelve locales above compact car-name footers. Native actual-App269/0 each desktop renderer and16 captures pass; rendered motion verified. Three runtime sources; deferred entry, actual model masks and completed views retained. Sources, commands and task-only checked checkpoint: [docs/GARAGE_LOADING_STYLE_2026_11_03.md](docs/GARAGE_LOADING_STYLE_2026_11_03.md). Reload/owner/device appearance acceptance remain. No phone test, APK, owner-save/process change, live/backend access, deployment or main-index write; concurrent work preserved.
++<!-- /GARAGE-LOADING-STYLE-20261103 -->
++
+ <!-- GARAGE-DEFERRED-VIEWS-20261102 -->
+ ## Garage pictures defer; unready views show grey model silhouettes (2026-11-02)
+ GDF01-GDF04: Garage preparation no longer gates startup/navigation; equipped header stays correct. Main/carousel loading views use existing actual-car masks with a gentle grey pulse; full original finishes, reflections, wall contents and controls reveal only when ready. Fully prepared handoff remains; partial/stale work uses the cover. Actual-App61/0 each desktop renderer, headless44/0 and retained checks total764/0;15 native captures. Standalone Mobile reflection probe18/0 assertions hangs on shutdown and is excluded from passes; owned cleanup/first fixture failures retained. Sources, commands, views and checked task-only checkpoint: [docs/GARAGE_DEFERRED_VIEWS_2026_11_02.md](docs/GARAGE_DEFERRED_VIEWS_2026_11_02.md). Reload and owner/device acceptance remain. No quantified speedup/FPS claim, device test, APK, owner-save/process change, backend/live access, deployment or main-index write; concurrent work preserved.
+diff --git a/game/tests/test_garage_loading_style.gd b/game/tests/test_garage_loading_style.gd
+new file mode 100644
+--- /dev/null
++++ b/game/tests/test_garage_loading_style.gd
+@@ -0,0 +1,52 @@
++extends "res://tests/test_garage_deferred_views.gd"
++## Rendered loading-state review plus the retained real-App lifecycle checks.
++var reviewed: bool = false
++
++func caption_fits(placeholder: Control, label: String) -> void:
++	var caption: Label = placeholder.get_node("LoadingCaption")
++	var font: Font = caption.get_theme_font("font")
++	var width: float = font.get_string_size(caption.text,HORIZONTAL_ALIGNMENT_LEFT,-1,caption.get_theme_font_size("font_size")).x
++	check(width <= caption.size.x,"localized loading text fits "+label)
++	check(caption.position.x >= 0 and caption.get_rect().end.x <= placeholder.size.x,"loading text stays inside its preview "+label)
++	if placeholder.compact:
++		check(caption.get_rect().end.y <= placeholder.size.y-36,"loading message clears the car-name footer "+label)
++
++func pixels_changed(a: Image, b: Image) -> int:
++	var changed: int = 0
++	for y: int in range(0,a.get_height(),3):
++		for x: int in range(0,a.get_width(),3):
++			var delta: Color = a.get_pixel(x,y)-b.get_pixel(x,y)
++			if absf(delta.r)+absf(delta.g)+absf(delta.b) > 0.012: changed += 1
++	return changed
++
++func capture(label: String) -> void:
++	if DisplayServer.get_name() == "headless": return
++	if label == "loading-1280x720" and not reviewed:
++		reviewed = true
++		var page: GaragePage = app._retained_garage
++		var cover: Control = page.showroom.get_node("GarageOpeningPicture")
++		for locale: String in ["en","fi","de","fr","es","pt_BR","ja","ko","nl","it","sv","nb"]:
++			GameFonts.configure(locale)
++			TranslationServer.set_locale(locale)
++			GameText.refresh(self)
++			await frames(3)
++			caption_fits(cover,"main/"+locale)
++			for id: String in page.thumbnails: caption_fits(page.thumbnails[id]._placeholder,id+"/"+locale)
++			if locale in ["fi","de","ja"]: await super.capture("loading-"+locale)
++		GameFonts.configure("en")
++		TranslationServer.set_locale("en")
++		GameText.refresh(self)
++		await frames(4)
++		await RenderingServer.frame_post_draw
++		var region := Rect2i(cover.get_node("LoadingCarMask").get_global_rect())
++		var first: Image = root.get_texture().get_image().get_region(region)
++		await create_timer(0.55).timeout
++		await RenderingServer.frame_post_draw
++		var second: Image = root.get_texture().get_image().get_region(region)
++		await create_timer(0.55).timeout
++		await RenderingServer.frame_post_draw
++		var third: Image = root.get_texture().get_image().get_region(region)
++		var motion: int = maxi(pixels_changed(first,second),pixels_changed(second,third))
++		check(motion > 100,"rendered ghost and light actually animate")
++		print("GARAGE_LOADING_STYLE_MOTION changed_samples=",motion)
++	await super.capture(label)
+diff --git a/docs/GARAGE_LOADING_STYLE_2026_11_03.md b/docs/GARAGE_LOADING_STYLE_2026_11_03.md
+new file mode 100644
+--- /dev/null
++++ b/docs/GARAGE_LOADING_STYLE_2026_11_03.md
+@@ -0,0 +1,37 @@
++# Garage loading previews — 3 November 2026
++
++The plain grey loading silhouettes now use a blue/teal ghost finish, luminous contour, soft background/ground glow and a passing light sweep. A more noticeable slow pulse and translated **Loading preview…** caption identify the temporary state. The main view and compact cards share the style, with separate spacing so the small caption clears the car-name footer.
++
++Requirements: GLS01 improve the loading previews' colour/composition; GLS02 make their loading state clear through motion and text; GLS03 verify actual rendering, localization and retained deferred-view behavior.
++
++Three runtime files change: `game/ui/garage_loading_car.gd`, its shader, and `garage_cached_thumbnail.gd` to opt into compact spacing. The existing actual-car alpha atlas remains the source. The background and ghost animate in the canvas shader; there are no added 3D worlds, per-frame script callbacks or CPU tweens. `Loading preview…` already exists in all twelve catalogues; `GameText.bind` refreshes the caption when language changes. Finished photographs, native materials, startup/navigation preparation and appearance ownership are unchanged.
++
++The real-App review extends `test_garage_deferred_views.gd` with rendered motion sampling and caption bounds/width checks for all twelve locales. It retains the parent test's startup, header, early entry, car-preview, queued-workshop, navigation, pressure/owner, saved-paint, original-reflection and thumbnail-delivery checks.
++
++| Actual run | Result |
++| --- | --- |
++| Native Compatibility | **269 checks / 0 failures** |
++| Native desktop Mobile | **269 checks / 0 failures** |
++
++Both processes exit zero and retain unchanged hashes for the seven recorded sources across each run. **538 checks / 0 failures**, sixteen native captures at 1280×720, 960×540 and 1600×900, including Finnish/German/Japanese text views. Actual sampled animation changes 14,283 / 11,787 pixels on the respective three-pixel sampling grids across the inspected car-region frames. This is evidence of visible animation, not an FPS benchmark. Both logs retain the sandbox's Windows root-certificate-store error; no script/shader errors or timeout were recorded. No clean-environment claim is made.
++
++Views:
++
++- [Compatibility loading preview](evidence/garage-loading-style-2026-11-03/compat/loading-1280x720.png), [small window](evidence/garage-loading-style-2026-11-03/compat/loading-960x540.png).
++- [Finnish](evidence/garage-loading-style-2026-11-03/compat/loading-fi.png), [German](evidence/garage-loading-style-2026-11-03/compat/loading-de.png), [Japanese](evidence/garage-loading-style-2026-11-03/compat/loading-ja.png).
++- [Desktop Mobile loading](evidence/garage-loading-style-2026-11-03/mobile/loading-1280x720.png), [completed native views](evidence/garage-loading-style-2026-11-03/mobile/pictures-ready-1280x720.png).
++
++Actual commands from the workspace root:
++
++```powershell
++python docs/evidence/garage-loading-style-2026-11-03/run_check.py compat
++python docs/evidence/garage-loading-style-2026-11-03/run_check.py mobile --renderer mobile
++python docs/evidence/garage-loading-style-2026-11-03/summarize.py
++python docs/evidence/garage-loading-style-2026-11-03/checkpoint.py
++```
++
++The runner uses the pinned `4.7.2.stable.official.ed1daf0bf` executable through `scripts/run_no_crash_dialog.py`, private application/records/library/cloud folders, Dummy audio, disabled API and a 300-second owned-process deadline. Its receipts retain commands, profiles and source hashes. Native views use an RTX 3090 on Windows; the renderer runs are sequential validation, not a performance comparison. The [summary](evidence/garage-loading-style-2026-11-03/summary.json) records capture hashes. Choose new labels for reruns to preserve these artifacts.
++
++The task-only patch includes the three runtime changes, new visual-review fixture, helpers, report and short AGENTS/DEVELOPMENT_STATUS entries. Forward/reverse application and normalized content round trips are checked in an owned workspace directory; the main Git index is not written. Other work remains preserved.
++
++Reload and owner appearance acceptance remain. No physical-device query/test, APK, backend/live access, real authentication/purchase, owner-save change, owner-process restart, deployment or main-index write. No loading-time or FPS improvement is claimed.
+diff --git a/docs/evidence/garage-loading-style-2026-11-03/run_check.py b/docs/evidence/garage-loading-style-2026-11-03/run_check.py
+new file mode 100644
+--- /dev/null
++++ b/docs/evidence/garage-loading-style-2026-11-03/run_check.py
+@@ -0,0 +1,50 @@
++"""Isolated native review of Garage loading art; preserves prior task evidence."""
++import argparse
++import hashlib
++import json
++import os
++from pathlib import Path
++import subprocess
++import sys
++import time
++
++parser = argparse.ArgumentParser()
++parser.add_argument("label")
++parser.add_argument("--renderer", default="gl_compatibility", choices=["gl_compatibility", "mobile"])
++args = parser.parse_args()
++evidence = Path(__file__).resolve().parent
++root = evidence.parents[2]
++profile = root / "build/garage-loading-style-20261103" / (args.label+"-"+str(time.time_ns()))
++profile.mkdir(parents=True)
++output = evidence / args.label
++output.mkdir(exist_ok=True)
++env = os.environ.copy()
++env.update(APPDATA=str(profile), BMT_API_URL="", BMT_GARAGE_DEFERRED_EVIDENCE=str(output))
++command = [sys.executable, str(root / "scripts/run_no_crash_dialog.py"), "--",
++           "C:/apps/Godot 4.7.2/Godot_v4.7.2-stable_win64_console.exe", "--path", str(root / "game"),
++           "--audio-driver", "Dummy", "--rendering-method", args.renderer,
++           "--script", "res://tests/test_garage_loading_style.gd"]
++paths = ["game/ui/garage_loading_car.gd", "game/ui/garage_loading_car.gdshader",
++         "game/ui/garage_cached_thumbnail.gd", "game/tests/test_garage_loading_style.gd",
++         "game/tests/test_garage_deferred_views.gd", "game/core/app.gd", "game/core/build_identity.gd"]
++def hashes():
++    return {path: hashlib.sha256((root/path).read_bytes()).hexdigest() for path in paths}
++receipt = dict(command=command, profile=str(profile), before=hashes())
++started = time.monotonic()
++with (evidence / (args.label+".log")).open("w",encoding="utf-8") as log:
++    process = subprocess.Popen(command,env=env,cwd=root,stdout=log,stderr=subprocess.STDOUT)
++    (evidence / (args.label+"-running.json")).write_text(json.dumps(dict(pid=process.pid,**receipt),indent=2))
++    try:
++        receipt["exit_code"] = process.wait(timeout=300)
++    except subprocess.TimeoutExpired:
++        receipt["exit_code"] = 124
++        subprocess.run(["taskkill","/PID",str(process.pid),"/T","/F"],capture_output=True,check=False)
++        try:
++            process.wait(timeout=20)
++        except subprocess.TimeoutExpired:
++            receipt["cleanup_failed"] = True
++receipt.update(elapsed_seconds=time.monotonic()-started,after=hashes())
++receipt["changed_sources"] = [path for path in paths if receipt["before"][path] != receipt["after"][path]]
++(evidence / (args.label+"-receipt.json")).write_text(json.dumps(receipt,indent=2)+"\n")
++print(json.dumps({key:receipt[key] for key in ("exit_code","elapsed_seconds","changed_sources")}))
++sys.exit(receipt["exit_code"])
+diff --git a/docs/evidence/garage-loading-style-2026-11-03/summarize.py b/docs/evidence/garage-loading-style-2026-11-03/summarize.py
+new file mode 100644
+--- /dev/null
++++ b/docs/evidence/garage-loading-style-2026-11-03/summarize.py
+@@ -0,0 +1,22 @@
++"""Summarize real-App loading-art review and retain native image hashes."""
++import hashlib
++import json
++from pathlib import Path
++import re
++
++folder = Path(__file__).resolve().parent
++summary = {"checks": 0, "failures": 0, "runs": [], "captures": {}}
++for label in ("compat", "mobile"):
++    receipt = json.loads((folder/(label+"-receipt.json")).read_text())
++    report = json.loads((folder/label/"report.json").read_text())
++    log = (folder/(label+".log")).read_text()
++    assert receipt["exit_code"] == 0 and report["failures"] == 0 and "SCRIPT ERROR:" not in log, label
++    summary["checks"] += report["checks"]
++    summary["runs"].append(dict(label=label, checks=report["checks"], failures=report["failures"],
++                                changed_sources=receipt["changed_sources"],
++                                motion=re.findall(r"changed_samples=(\d+)",log),
++                                engine_errors=re.findall(r"^ERROR:.*$",log,re.M)))
++    for capture in sorted((folder/label).glob("*.png")):
++        summary["captures"][str(capture.relative_to(folder))] = hashlib.sha256(capture.read_bytes()).hexdigest()
++(folder/"summary.json").write_text(json.dumps(summary,indent=2)+"\n")
++print("Native checks:",summary["checks"],"failures:",summary["failures"],"captures:",len(summary["captures"]))
+diff --git a/docs/evidence/garage-loading-style-2026-11-03/checkpoint.py b/docs/evidence/garage-loading-style-2026-11-03/checkpoint.py
+new file mode 100644
+--- /dev/null
++++ b/docs/evidence/garage-loading-style-2026-11-03/checkpoint.py
+@@ -0,0 +1,58 @@
++"""Check this task's patch without modifying the main Git index."""
++import difflib
++import hashlib
++import json
++from pathlib import Path
++import subprocess
++import time
++
++evidence = Path(__file__).resolve().parent
++root = evidence.parents[2]
++changed = ["game/ui/garage_loading_car.gd", "game/ui/garage_loading_car.gdshader",
++           "game/ui/garage_cached_thumbnail.gd", "AGENTS.md", "DEVELOPMENT_STATUS.md"]
++added = ["game/tests/test_garage_loading_style.gd", "docs/GARAGE_LOADING_STYLE_2026_11_03.md",
++         *["docs/evidence/garage-loading-style-2026-11-03/"+name for name in
++           ("run_check.py", "summarize.py", "checkpoint.py")]]
++
++def normalized(path):
++    return path.read_bytes().replace(b"\r\n",b"\n")
++
++parts, before, after = [], {}, {}
++for path in changed+added:
++    new = normalized(root/path)
++    old = normalized(evidence/"before"/path) if path in changed else b""
++    if path in ("AGENTS.md", "DEVELOPMENT_STATUS.md"):
++        begin, end = b"<!-- GARAGE-LOADING-STYLE-20261103 -->", b"<!-- /GARAGE-LOADING-STYLE-20261103 -->"
++        assert new.count(begin) == new.count(end) == 1
++        start, stop = new.index(begin), new.index(end)+len(end)
++        if new[stop:stop+2] == b"\n\n": stop += 2
++        elif new[stop:stop+1] == b"\n": stop += 1
++        old = new[:start]+new[stop:]
++    before[path], after[path] = old, new
++    parts.append("diff --git a/"+path+" b/"+path+"\n")
++    if path in added: parts.append("new file mode 100644\n")
++    parts.extend(difflib.unified_diff(old.decode().splitlines(keepends=True),new.decode().splitlines(keepends=True),
++                                    fromfile="a/"+path if path in changed else "/dev/null",tofile="b/"+path))
++patch = evidence/"task.patch"
++patch.write_bytes("".join(parts).encode())
++owned = root/"build/garage-loading-style-20261103"/("checkpoint-"+str(time.time_ns()))
++owned.mkdir(parents=True)
++assert owned.resolve().is_relative_to((root/"build/garage-loading-style-20261103").resolve())
++for path in changed:
++    target = owned/path
++    target.parent.mkdir(parents=True,exist_ok=True)
++    target.write_bytes(before[path])
++commands = []
++for arguments in (("--check",),(),("--reverse","--check"),("--reverse",)):
++    command = ["git","apply","--directory="+owned.relative_to(root).as_posix(),*arguments,str(patch)]
++    result = subprocess.run(command,cwd=root,capture_output=True,text=True)
++    commands.append(dict(command=command,exit_code=result.returncode,output=result.stdout+result.stderr))
++    assert result.returncode == 0, result.stderr
++    if arguments == (): assert all(normalized(owned/path) == after[path] for path in changed+added)
++assert all(normalized(owned/path) == before[path] for path in changed)
++assert all(not (owned/path).exists() for path in added)
++receipt = dict(files=changed+added,forward_content_exact=True,reverse_content_exact=True,main_index_written=False,
++               patch_sha256=hashlib.sha256(patch.read_bytes()).hexdigest(),commands=commands,
++               source_sha256={path:hashlib.sha256(after[path]).hexdigest() for path in changed+added})
++(evidence/"checkpoint.json").write_text(json.dumps(receipt,indent=2)+"\n")
++print("Task-only patch forward/reverse/content checks pass; no main index write.")

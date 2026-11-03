@@ -13,6 +13,7 @@ var slice_max: int = 0
 var stop_at: int = -1
 var trim_at: int = -1
 var draw_calls: int = 0
+var drawn_proxies: int = 0
 var allowed: bool = true
 var action: String = ""
 var owner: Node3D
@@ -120,7 +121,12 @@ func is_current() -> bool: return allowed and is_instance_valid(world) and world
 func draw() -> bool:
 	draw_calls+=1
 	var proxies: Array=world.find_children("Covered*","GPUParticles3D",true,false)
-	check(proxies.size()==draw_calls,"one additional emitter is initialized per covered draw")
+	var added: int = proxies.size()-drawn_proxies
+	check(added >= 1 and added <= EFFECTS.REUSED_PER_DRAW,"each covered draw binds a bounded nonempty batch")
+	for node: Node in proxies.slice(drawn_proxies):
+		if not bool(node.get_meta("preparation_reused",false)):
+			check(added == 1,"fresh GPU nodes retain individual preparation draws")
+	drawn_proxies = proxies.size()
 	if action=="cancel" and draw_calls==2: allowed=false
 	if action=="pressure" and draw_calls==2: EFFECTS.trim_cache(owner)
 	if action=="teardown" and draw_calls==2: world.queue_free()
@@ -142,7 +148,7 @@ func effects() -> void:
 			track.metadata.theme=theme;track.bridge_height=2.0
 			source.prepare_track(track)
 			var state: PackedByteArray=emitter_state(source)
-			draw_calls=0;allowed=true;action=""
+			draw_calls=0;drawn_proxies=0;allowed=true;action=""
 			var prepared: Dictionary=await EFFECTS.prepare(world,source,camera,null,owner,draw,is_current)
 			var graphical: bool=DisplayServer.get_name()!="headless"
 			check(bool(prepared.complete) and prepared.particles==(source.get_child_count() if graphical else 0),"every original effect family completes preparation")
@@ -177,7 +183,7 @@ func effects() -> void:
 	if DisplayServer.get_name()!="headless":
 		for interruption: String in ["cancel","pressure","teardown"]:
 			var source:=SandDust.new();world.add_child(source)
-			draw_calls=0;allowed=true;action=interruption
+			draw_calls=0;drawn_proxies=0;allowed=true;action=interruption
 			var prepared: Dictionary=await EFFECTS.prepare(world,source,camera,null,owner,draw,is_current)
 			check(bool(prepared.complete)==(interruption=="pressure"),"interruption cannot publish an unfinished preparation")
 			EFFECTS.end(prepared)

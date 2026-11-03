@@ -51,6 +51,7 @@ const STANDINGS_GUTTER: int = 12
 const QUIET_BORDER := Color("2e495a88")
 const Badge = preload("res://ui/biome_badge.gd")
 const TrackAccent = preload("res://ui/rivalry_track_accents.gd")
+const LoadingVisual = preload("res://ui/rivalry_loading_visual.gd")
 
 class TrackProfile extends LapRouteView:
 	func _draw() -> void:
@@ -74,7 +75,7 @@ func _notification(what: int) -> void:
 
 func _content_key() -> PackedByteArray:
 	var loading_view: bool = (model.tracks.is_empty() or model.empty_completed_week()) and signed_in and error.is_empty() and (busy or model.received_msec == 0)
-	return var_to_bytes([circuit_mode,model.world_circuit,section,selected if section in ["detail","result"] else -1,signed_in,pending_result,race_details,standings_identity,loading_view,model.week,model.completed,model.scope,model.sample,model.test_population,model.group_id,model.status,model.placement,model.forming,model.vehicle_id,model.source_self,model.points_policy,model.personal_best_slots,_track_projection(true),model.server_standings,model.recorded_times,model.pb_count,model.last_result,finale_livery,finale_customisation,finale_condition])
+	return var_to_bytes([circuit_mode,model.world_circuit,section,selected if section in ["detail","result"] else -1,signed_in,pending_result,race_details,standings_identity,loading_view,VehicleCatalog.selected if loading_view and not circuit_mode else "",model.week,model.completed,model.scope,model.sample,model.test_population,model.group_id,model.status,model.placement,model.forming,model.vehicle_id,model.source_self,model.points_policy,model.personal_best_slots,_track_projection(true),model.server_standings,model.recorded_times,model.pb_count,model.last_result,finale_livery,finale_customisation,finale_condition])
 
 func _track_projection(scores: bool) -> Array:
 	var values: Array = []
@@ -447,14 +448,47 @@ func _loading(parent: Control) -> void:
 	field.add_theme_constant_override("separation",12)
 	parent.add_child(field)
 	var podium := HBoxContainer.new()
-	podium.custom_minimum_size.y = 184
+	podium.name = "RivalryLoadingPodium"
+	podium.custom_minimum_size.y = 194
 	podium.add_theme_constant_override("separation",10)
 	field.add_child(podium)
-	for position: int in [1,0,2]: _loading_block(podium,184).size_flags_vertical = Control.SIZE_SHRINK_END
+	for position: int in [1,0,2]:
+		var card: VBoxContainer = _card(podium,"",0)
+		var panel: PanelContainer = card.get_parent()
+		panel.name = "RivalryLoadingPodium_"+str(position+1)
+		panel.custom_minimum_size.y = 194-position
+		panel.size_flags_vertical = Control.SIZE_SHRINK_END
+		var color: Color = _medal_color(position)
+		var style: StyleBoxFlat = _podium_style(position)
+		panel.add_theme_stylebox_override("panel",style)
+		card.add_theme_constant_override("separation",0)
+		var car: Control = LoadingVisual.new()
+		car.name = "RivalryLoadingCar_"+str(position+1)
+		car.vehicle_id = "compact" if circuit_mode else VehicleCatalog.selected
+		car.podium_color = color
+		car.phase = position*0.22
+		car.size_flags_vertical = Control.SIZE_EXPAND_FILL
+		car.custom_minimum_size.y = 100
+		card.add_child(car)
+		var footer := PanelContainer.new()
+		footer.name = "RivalryLoadingFooter_"+str(position+1)
+		footer.custom_minimum_size.y = 56
+		footer.add_theme_stylebox_override("panel",_podium_footer_style(style,color))
+		card.add_child(footer)
+		var identity: Control = LoadingVisual.new()
+		identity.kind = LoadingVisual.Kind.IDENTITY
+		identity.podium_color = color
+		identity.custom_minimum_size.y = 40
+		footer.add_child(identity)
+		preload("res://ui/rivalry_podium_backdrop.gd").add_to(panel,footer,position)
 	var standings: VBoxContainer = _card(field,"",12)
 	_copy(standings,"STANDINGS",27)
-	_copy(standings,"Loading…",18,MenuStyle.MUTED)
-	_space(standings)
+	var rows: Control = LoadingVisual.new()
+	rows.name = "RivalryLoadingStandings"
+	rows.kind = LoadingVisual.Kind.STANDINGS
+	rows.custom_minimum_size.y = 70
+	rows.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	standings.add_child(rows)
 	var right := VBoxContainer.new()
 	right.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	right.size_flags_stretch_ratio = 1.13
@@ -767,6 +801,27 @@ func _driver_style(row: Dictionary) -> StyleBoxFlat:
 func _medal_color(position: int) -> Color:
 	return MenuStyle.ACCENT if position == 0 else Color("c0d4e3") if position == 1 else Color("dc9069")
 
+func _podium_style(position: int) -> StyleBoxFlat:
+	var style: StyleBoxFlat = MenuStyle.card(1)
+	style.bg_color = Color("27220df5") if position == 0 else Color("152b39f5") if position == 1 else Color("302019f5")
+	style.border_color = Color("f3c936") if position == 0 else Color("477c98") if position == 1 else Color("b66440")
+	style.shadow_color = Color(_medal_color(position),0.15)
+	style.shadow_size = 5 if position == 0 else 3
+	style.border_width_top = 2
+	return style
+
+func _podium_footer_style(style: StyleBoxFlat, color: Color) -> StyleBoxFlat:
+	var footer: StyleBoxFlat = MenuStyle.box(style.bg_color.darkened(0.06),12)
+	footer.corner_radius_top_left = 0
+	footer.corner_radius_top_right = 0
+	footer.corner_radius_bottom_left = 4
+	footer.corner_radius_bottom_right = 4
+	footer.content_margin_top = 7
+	footer.content_margin_bottom = 7
+	footer.border_width_top = 1
+	footer.border_color = Color(color,0.18)
+	return footer
+
 func _podium(parent: Control) -> void:
 	var podium := HBoxContainer.new()
 	podium.name = "RivalryPodium"
@@ -797,12 +852,7 @@ func _podium(parent: Control) -> void:
 		panel.custom_minimum_size.y = 194-position
 		panel.size_flags_vertical = Control.SIZE_SHRINK_END
 		panel.size_flags_stretch_ratio = 1.0
-		var style: StyleBoxFlat = MenuStyle.card(1)
-		style.bg_color = Color("27220df5") if position == 0 else Color("152b39f5") if position == 1 else Color("302019f5")
-		style.border_color = Color("f3c936") if position == 0 else Color("477c98") if position == 1 else Color("b66440")
-		style.shadow_color = Color(color,0.15)
-		style.shadow_size = 5 if position == 0 else 3
-		style.border_width_top = 2
+		var style: StyleBoxFlat = _podium_style(position)
 		panel.add_theme_stylebox_override("panel",style)
 		card.add_theme_constant_override("separation",0)
 		var rank_margin := MarginContainer.new()
@@ -846,15 +896,7 @@ func _podium(parent: Control) -> void:
 		var footer := PanelContainer.new()
 		footer.name = "RivalryPodiumFooter_"+str(position+1)
 		footer.custom_minimum_size.y = 56
-		var footer_style: StyleBoxFlat = MenuStyle.box(style.bg_color.darkened(0.06),12)
-		footer_style.corner_radius_top_left = 0
-		footer_style.corner_radius_top_right = 0
-		footer_style.corner_radius_bottom_left = 4
-		footer_style.corner_radius_bottom_right = 4
-		footer_style.content_margin_top = 7
-		footer_style.content_margin_bottom = 7
-		footer_style.border_width_top = 1
-		footer_style.border_color = Color(color,0.18)
+		var footer_style: StyleBoxFlat = _podium_footer_style(style,color)
 		footer.add_theme_stylebox_override("panel",footer_style)
 		card.add_child(footer)
 		preload("res://ui/rivalry_podium_backdrop.gd").add_to(panel,footer,position)

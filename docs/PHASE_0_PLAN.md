@@ -1,3 +1,53 @@
+<!-- VOLT-BODY-REFINEMENT-20261103 -->
+## Volt lower-body kit refinement (2026-11-03)
+VBR01-VBR04: Complete bumper/corner/sill coverage and formed closed construction for15 alternatives; full/simple assets and cached picture identity refreshed. Construction8162/0, options610/0, tire-fit180/0, clearance79/0, retained hood84/0, prepared1788/0 and Garage54/0 each desktop renderer;210 final native images and55 task-start controls. Factory/IDs/handling retained. [Actual commands, geometry cost, initial failures, before/after review and checked task-only checkpoint](VOLT_BODY_KIT_REFINEMENT_2026_11_03.md). No phone query/test, APK, real purchase, owner-save/process change, live/backend mutation, deployment or main-index write. Reload/owner/device acceptance remain; concurrent work preserved.
+<!-- /VOLT-BODY-REFINEMENT-20261103 -->
+
+<!-- ACHIEVEMENT-TIMING-20261103 -->
+## Deferred achievement updates resume at results (2026-11-03)
+AT01-AT02: Results/menu/loading lifecycle wake now resumes pending authoritative achievement reads under the existing driving guard. Original focused9/5fail becomes9/0 headless and native Compatibility; retained actual-App notification291/0 headless. No criteria/backend/layout change; server verification/offline delays remain. Commands, certificate-store environment error, source checkpoint and limits: [report](ACHIEVEMENT_TIMING_2026_11_03.md). Reload/owner sequence acceptance remains; no device query/test, APK, owner-save/process change, real backend request, deployment or main-index write. Concurrent work preserved.
+<!-- /ACHIEVEMENT-TIMING-20261103 -->
+
+<!-- CHECKPOINT-RESULT-PRESERVING-DEPLOY-20261103 -->
+## Checkpoint backend deployed with existing results retained (2026-11-03)
+CPD01-CPD03/Q01: Owner requires result preservation. Competitive manifest stays exactly rules23/physics0.77; separate layout24 and geom:24 cache namespace refresh gates without changing boards, Rivalry or Daily identities. Six-file patch over deployed image; API/Studio/worker/jobs and separate website preview updated. Managed backup1793728518369; all13 checked result/catalogue table counts match, including7358PBs/7361lapPBs/20556runs. Local63pass, coverage2787/0, hairpin65/0 and exact Linux12757+rewind/47712 proof with nine cuts rejected pass; live one-worker/native/storage checks pass. No migration, republication, deletion or historical rescore. Receipts, credential-diagnostic incident and limits: [CHECKPOINT_RESULTS_PRESERVING_DEPLOYMENT_2026_11_03.md](CHECKPOINT_RESULTS_PRESERVING_DEPLOYMENT_2026_11_03.md). Reload/rebuild client and owner/device acceptance remain. No phone query/test, APK, owner-save/process change, PC backend replacement or main-index write; concurrent work preserved.
+<!-- /CHECKPOINT-RESULT-PRESERVING-DEPLOY-20261103 -->
+
+<!-- CHECKPOINT-ROAD-COVERAGE-20261103 -->
+## Checkpoints cover the complete road and kerbs (2026-11-03)
+CWR01-CWR03/Q01: Physical road/paint/kerb cross-sections form a hard minimum for every gate and finish; rules24 adds folded-hairpin candidates without reducing ordinary recovery. Star105/107 gates; coverage2787/0 headless and each desktop renderer, hairpin65/0 each, real five laps47712ticks/zero collisions/warnings/exact replay. Sweep5144 candidates blocks all large off-road/beyond-recovery cuts; nine historical cuts rejected by native server, real proof/canonical replay accepted. Retained rules/notices/layers/rewind pass; backend34+40 pass. Existing bridge9+80 failures and RuffSIM102 reproduce with before controls. Four native comparison views; checked task-only checkpoint, commands and limits: [CHECKPOINT_ROAD_COVERAGE_2026_11_03.md](CHECKPOINT_ROAD_COVERAGE_2026_11_03.md). Reload, matching authorised client/API/worker rollout and owner/device acceptance remain. No device query/test, APK, owner-save/process change, live mutation, deployment or main-index write; concurrent work preserved.
+<!-- /CHECKPOINT-ROAD-COVERAGE-20261103 -->
+
+<!-- STARTUP-MUSIC-20261102 -->
+## Startup music begins with the active profile's record (2026-11-02)
+SMU01-SMU02: Guest playback waits for saved-account restoration; cold record selection installs the stream before its first decoder starts. Existing live record fades and playlist behavior remain. Original startup regression37/30fail becomes37/0 headless and69/0 native Compatibility; retained soundtrack43/0 and playlist58/0 pass. Two runtime sources and one new regression; initial sandbox startup failure and corrected fixture cleanup are retained. Commands, checked task-only checkpoint and limits: [docs/STARTUP_MUSIC_2026_11_02.md](STARTUP_MUSIC_2026_11_02.md). Reload and owner listening acceptance remain; no device test, owner-save/process change, backend access, deployment or main-index write. Concurrent work preserved.
+<!-- /STARTUP-MUSIC-20261102 -->
+
+<!-- RIVALRY-MODEL-SILHOUETTES-20261102 -->
+## Rivalry placeholders use the actual car models and podium colors (2026-11-02)
+RLS01-RLS03: Owner rejects generic icons. Offline current-model masks for all five cars replace them; selected-car and Compact Circuit identities follow correctly. Loading/final panels and footers share exact medal colors and stage styling, with the gentle pulse/shimmer retained. Five-car native bake0 failures and native135/0 each desktop renderer across three sizes,22 captures; binary-inclusive checkpoint round-trips byte exactly. Initial fixture fingerprint/motion sampling findings and byte-identical refresh for concurrent Forklift changes retained. Sources, commands and limits: [docs/RIVALRY_LOADING_MODEL_SILHOUETTES_2026_11_02.md](RIVALRY_LOADING_MODEL_SILHOUETTES_2026_11_02.md). Owner/device appearance acceptance remains; no loading-time reduction claim. No device test, owner-save/process change, live/backend mutation, deployment or main-index write; concurrent work preserved.
+<!-- /RIVALRY-MODEL-SILHOUETTES-20261102 -->
+
+<!-- RIVALRY-LOADING-PLACEHOLDERS-20261102 -->
+## Rivalry loading cars and standings animation (2026-11-02)
+RLP01-RLP03: Soft abstract car silhouettes pulse gently while empty standings rows shimmer. Shader-driven 2D commands add no 3D worlds or CPU animation callbacks; authoritative-board, retry/error and retained-refresh behavior remain. Initial headless54/0 and final native66/0 each desktop renderer across three sizes; twelve captures. Initial small-window sampling failures and corrected logical-canvas fixture are retained. Sources, commands, checked task-only checkpoint and limits: [docs/RIVALRY_LOADING_PLACEHOLDERS_2026_11_02.md](RIVALRY_LOADING_PLACEHOLDERS_2026_11_02.md). Owner/device appearance acceptance remains; loading-time reduction is not claimed. No device test, owner-save/process change, live/backend mutation, deployment or main-index write. Concurrent work preserved.
+<!-- /RIVALRY-LOADING-PLACEHOLDERS-20261102 -->
+
+<!-- GARAGE-IDLE-AUDIT-20261101 -->
+## Other Garage elements audited for unnecessary drawing (2026-11-01)
+GIA01-GIA04: Off-camera snow no longer redraws the room after material preparation; melting and reflected-only visibility remain. Stationary wash cursors reuse drawing commands, and washing empty space submits no invisible-feedback draws. All eight sections settle; both desktop renderers48/0, hose81/0 and wash surfaces45/0 pass. Original washing139/4 reproduces with task-start sources. Exact cursor/room/five-car retained pixels pass; two runtime sources only. Commands, native views, first highlight-preparation correction and scoped checkpoint: [GARAGE_IDLE_AUDIT_2026_11_01.md](GARAGE_IDLE_AUDIT_2026_11_01.md). Tablet/owner acceptance and FPS remain unmeasured. No device query/test, APK, owner-save/process mutation, live/backend access, deployment or main-index write; concurrent work preserved.
+<!-- /GARAGE-IDLE-AUDIT-20261101 -->
+
+<!-- GARAGE-PERFORMANCE-20261101 -->
+## Garage rendering and model optimisation (2026-11-01)
+GPO01-GPO04: Off-camera playing records no longer redraw the Garage; phase and visible/reflection-only animation remain. Offline half-pixel LOD indices retain original GPU vertex buffers/full-detail geometry; layered Hover and all glazing stay full detail after a rejected canopy trial. Five-car main-view triangles fall25.72-45.09%; rotating component all-pass triangles fall25.08%. Both desktop renderers1589/0, washing45/0 and App menu35/0 pass; kit2424/3 reproduces with task-start sources/assets. Thirty native image pairs include maximum zoom; maximum mean RGB difference0.051605/255 and canopy region exact. Commands, views, memory/package tradeoff and scoped binary checkpoint: [GARAGE_PERFORMANCE_2026_11_01.md](GARAGE_PERFORMANCE_2026_11_01.md). Tablet/owner appearance, FPS and cold-start acceptance remain; no device query/test, APK, owner-save/process change, live mutation, deployment or main-index write. Concurrent work preserved.
+<!-- /GARAGE-PERFORMANCE-20261101 -->
+
+<!-- DAILY-TIMER-UNPADDED-20261101 -->
+## Daily timer has no leading zeros (2026-11-01)
+DTF02: Duration reads e.g.4 hours31 minutes, retaining the fixed-width slot and all twelve languages. Evidence and scoped checkpoint: [DAILY_TIMER_UNPADDED_2026_11_01.md](DAILY_TIMER_UNPADDED_2026_11_01.md). No backend change, phone test, deployment, owner-save/process mutation or main-index write; reload/owner appearance acceptance remain.
+<!-- /DAILY-TIMER-UNPADDED-20261101 -->
+
 <!-- DAILY-TIMER-WORDS-20261101 -->
 ## Daily timer spells out its units (2026-11-01)
 DTF01: Fixed-width duration reads e.g.04 hours31 minutes, with tabular numerals and all twelve languages. Native307/0 and twelve scoped catalogue checks pass. Commands, screenshot and scoped checkpoint: [DAILY_TIMER_WORDS_2026_11_01.md](DAILY_TIMER_WORDS_2026_11_01.md). Reload/owner appearance acceptance remain; no phone test, backend change, deployment, owner-save/process mutation or main-index write.
@@ -3073,3 +3123,6 @@ Owner removes desert tire sounds in favor of sand and flying rocks. A dedicated 
 ## Weekly Rivalry opens with prepared content (2026-10-28)
 RRE01-RRE03/R01/Q01: Owner reports empty cards on opening. Swipe/neighbor/menu entry now reuses the membership gate and retains the current page; both slide directions wait for standings layout and rendered podium cars. New touch cannot bypass preparation; cancellation and actionable failures remain. Original38/11fail becomes50/0 headless and67/0 each desktop renderer, with16 native views. Retained entry66/car-switch36/join-failure38/automatic14/cache27/week38/input57 and parser1397/0 pass. Broader App141/1 editor cancellation failure reproduces with the Rivalry patch removed; two concurrent editor parse attempts and initial sandbox certificate errors remain recorded. Two runtime sources/one new regression; temporary controls removed, concurrent Garage/editor changes and generated metadata excluded from the forward/reverse-checked source-only patch. Commands, hashes, views and limits: docs/RIVALRY_READY_ENTRY_2026_10_28.md and docs/evidence/rivalry-ready-entry-2026-10-28/report.json. Network/construction wait, reload and owner/device acceptance remain. No device query/test, APK, live mutation/deployment, owner-process restart or main-index staging/commit/merge.
 <!-- /RIVALRY-READY-ENTRY-20261028 -->
+<!-- SUPER-WASH-ANIMATION-20261102 -->
+SWA01-SWA02 complete locally: fitted animated Superwash gantry/brushes/spray, preserved instant clean/save and bounded cancel/idle lifecycle. Native89/0 each desktop renderer, existing257/0 Super Wash and81/0 hose pass,30 stills and55 native animation frames. See [SUPER_WASH_ANIMATION_2026_11_02.md](SUPER_WASH_ANIMATION_2026_11_02.md) for commands/checkpoint/limits; owner/phone appearance and performance remain unverified. No device test, owner-save/process change, live/backend mutation, deployment or main-index write. Concurrent work preserved.
+<!-- /SUPER-WASH-ANIMATION-20261102 -->

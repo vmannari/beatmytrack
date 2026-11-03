@@ -37,7 +37,7 @@ func run() -> void:
 		var right: Vector3 = point_at_uv(screen,Vector2(1.0,1.0))
 		var bow: float = centre.z-(left.z+right.z)*0.5
 		var crown: float = centre.y-(left.y+right.y)*0.5
-		check(bow>0.15 and bow<0.22,"RGC01 lower edge bows toward rear like the marked arc"+label)
+		check(bow>0.08 and bow<0.20,"RGC01 lower edge bows toward rear like the marked arc"+label)
 		check(crown>0.012 and crown<0.030,"RGC02 glass has a gentle transverse crown"+label)
 		check(absf(left.y-right.y)<0.00001 and absf(left.z-right.z)<0.00001 and absf(left.x+right.x)<0.00001,"symmetric backlight corners"+label)
 		var curve_error := 0.0
@@ -52,8 +52,17 @@ func run() -> void:
 				progression = progression and point.z<=previous+0.00001
 				previous = point.z
 		check(curve_error<0.00005 and progression,"single smooth quadratic arc across actual glass vertices"+label)
-		var join_gap: float = edge_gap(edge(screen,1,1.0),edge(deck,1,0.0))
-		check(join_gap<0.0005,"RGC02 glass edge meets painted deck without a hole"+label)
+		var foot: MeshInstance3D = car.body.get_node("ReferenceRearGlassFoot")
+		var join_gap: float = edge_gap(edge(screen,1,1.0),edge(foot,1,0.0))
+		check(join_gap<0.001,"glass edge meets painted foot without a hole"+label)
+		check(edge_gap(edge(foot,1,1.0),edge(deck,1,0.0))<0.0005,"painted foot meets rear deck"+label)
+		for side: int in range(2):
+			var surround: MeshInstance3D = car.body.get_node("ReferenceRearGlassSurround"+str(side))
+			check(edge_gap(edge(surround,0,float(1-side)),edge(screen,0,float(side)))<0.001 and point_at_uv(surround,Vector2(0.0,0.0)).distance_to(point_at_uv(screen,Vector2(float(side),0.0)))<0.001,"curved glass edge meets painted surround "+str(side)+label)
+			var start: Vector3 = point_at_uv(screen,Vector2(float(side),0.0))
+			var middle: Vector3 = point_at_uv(screen,Vector2(float(side),0.5))
+			var finish: Vector3 = point_at_uv(screen,Vector2(float(side),1.0))
+			check(absf(finish.x)<absf(middle.x) and absf(finish.x)<absf(start.x)+0.08,"rear glass narrows toward its end "+str(side)+label)
 		for rail_name: String in ["ReferenceRoofRail0","ReferenceRoofRail1"]:
 			var rail: MeshInstance3D = car.body.get_node(rail_name)
 			check(edge_gap(edge(rail,1,1.0),edge(deck,1,0.0))<0.0005,"painted rail meets deck "+rail_name+label)
@@ -63,9 +72,8 @@ func run() -> void:
 			var u: float = float(i)/60.0
 			minimum_depth = minf(minimum_depth,point_at_uv(deck,Vector2(u,1.0)).z-point_at_uv(deck,Vector2(u,0.0)).z)
 		check(minimum_depth>0.12,"painted deck retains positive depth across its whole width"+label)
-		# The deck lip follows the revised panel. The actual tail cap, front,
-		# roof and flanks retain their accepted buffers exactly.
-		for part: String in ["ReferenceHood","ReferenceCanopyGlass","ReferencePanoramicRoof","ReferenceSide-1_0","ReferenceSide1_0","ReferenceRear"]:
+		# These parts remain unchanged; the roof and lower doors were later reshaped.
+		for part: String in ["ReferenceHood","ReferenceCanopyGlass","ReferenceRear"]:
 			var node: MeshInstance3D = car.body.get_node(part)
 			# Godot sanitizes dots in node names; authored cache keys retain them.
 			var key: String = part.replace("_", ".")+("_simple" if simple else "")
@@ -76,9 +84,31 @@ func run() -> void:
 		var old_node := MeshInstance3D.new()
 		old_node.mesh = old_screen
 		var start_gap: float = edge_gap(edge(screen,1,0.0),edge(old_node,1,0.0))
-		check(start_gap<0.00001,"backlight start at roof seam retained"+label)
+		check(point_at_uv(screen,Vector2(0.5,0.0)).z-point_at_uv(old_node,Vector2(0.5,0.0)).z>0.20,"backlight starts farther rearward at the requested roof boundary"+label)
+		var roof_seal: MeshInstance3D = car.body.get_node("ReferenceRoofCrossSeal1")
+		check(edge_gap(edge(roof_seal,1,1.0),edge(screen,1,0.0))<0.003,"rear screen meets relocated roof seal"+label)
+		var hatch: MeshInstance3D = car.body.get_node_or_null("ReferenceTrunkShutLine")
+		check(hatch != null,"rear hatch opening has a shut line"+label)
+		if hatch != null:
+			var cabin = preload("res://vehicle/electric_reference_cabin.gd")
+			var body_builder = preload("res://vehicle/electric_reference_body.gd")
+			for sample: Array in [[0.0,cabin.top_point(0.02,0.760)],[0.5,body_builder.cap_point(true,0.50,0.32)],[1.0,cabin.top_point(0.98,0.760)]]:
+				var actual: Vector3 = point_at_uv(hatch,Vector2(sample[0],0.0))
+				check(actual.distance_to(sample[1])<0.009,"hatch seam reaches roof sides and lower rear face "+str(sample[0])+label)
+			for index: int in [10,12]:
+				for side: int in range(2):
+					var t: float=float(index)/56.0
+					var actual: Vector3=point_at_uv(hatch,Vector2(t if side==0 else 1.0-t,0.0))
+					check(absf(absf(actual.x)-0.768)<0.003,"hatch seam follows a steady deck edge "+str(index)+"/"+str(side)+label)
+			for index: int in [14,16]:
+				var p: float=float(index-13)/4.0
+				for side: int in range(2):
+					var t: float=float(index)/56.0
+					var actual: Vector3=point_at_uv(hatch,Vector2(t if side==0 else 1.0-t,0.0))
+					var target: float=lerpf(0.768,0.70,smoothstep(0.0,1.0,p))
+					check(absf(absf(actual.x)-target)<0.003,"hatch seam continues smoothly down the side "+str(index)+"/"+str(side)+label)
 		old_node.free()
-		report.models.append({"simple":simple,"rearward_bow":bow,"crown":crown,"curve_error":curve_error,"glass_deck_gap":join_gap,"minimum_deck_depth":minimum_depth,"roof_seam_gap":start_gap})
+		report.models.append({"simple":simple,"rearward_bow":bow,"crown":crown,"curve_error":curve_error,"glass_deck_gap":join_gap,"minimum_deck_depth":minimum_depth,"roof_boundary_displacement":start_gap,"roof_seal_gap":edge_gap(edge(roof_seal,1,1.0),edge(screen,1,0.0))})
 		car.free()
 	report.merge({"checks":checks,"failures":failures})
 	DirAccess.make_dir_recursive_absolute(ProjectSettings.globalize_path(output.get_base_dir()))

@@ -24,6 +24,8 @@ var _route_hints := PackedInt32Array()
 var _start_progress: float = 0.0
 var _layers: Array[bool] = []
 var _finish_elevated: bool = false
+var _finish_road_widths := Vector2.ZERO
+var _finish_widths := Vector2.ZERO
 var _spline_corridor: bool = false
 var _notice_route_bins: Dictionary = {}
 var _notice_approaches: Array[Dictionary] = []
@@ -31,7 +33,7 @@ var _notice_route_layers := PackedByteArray()
 var _notice_layer_offsets := PackedInt32Array()
 const NOTICE_LAYOUT_VERSION: int = 4
 const NOTICE_CELL_M: float = 8.0
-const GATE_LAYOUT_FIELDS: Array[String] = ["_start_progress","_finish_elevated","_spline_corridor","_centers","_directions","_progress","_widths","_road_widths","_notice_reach","_route_hints","_layers","_notice_route_bins","_notice_approaches","_notice_route_layers","_notice_layer_offsets"]
+const GATE_LAYOUT_FIELDS: Array[String] = ["_start_progress","_finish_elevated","_finish_road_widths","_finish_widths","_spline_corridor","_centers","_directions","_progress","_widths","_road_widths","_notice_reach","_route_hints","_layers","_notice_route_bins","_notice_approaches","_notice_route_layers","_notice_layer_offsets"]
 
 func _init(rate: int = 120, laps: int = RaceRules.LAPS) -> void:
 	tick_rate = rate
@@ -40,7 +42,7 @@ func _init(rate: int = 120, laps: int = RaceRules.LAPS) -> void:
 func _configure(track: NativeTrack) -> void:
 	# Bake the gate corridor once. Acceptance visits only the current gate and
 	# its neighbour, regardless of track length or total gate count.
-	if track._race_gates.get("rules_key","") == RaceRules.KEY and track._race_gates.get("notice_version",0) == NOTICE_LAYOUT_VERSION:
+	if track._race_gates.get("rules_key","") == RaceRules.KEY and track._race_gates.get("notice_version",0) == NOTICE_LAYOUT_VERSION and track._race_gates.get("checkpoint_layout_version",0) == RaceRules.CHECKPOINT_LAYOUT_VERSION:
 		for field: String in GATE_LAYOUT_FIELDS:
 			var value: Variant = track._race_gates[field]
 			set(field,value.duplicate() if value is Array else value)
@@ -58,6 +60,16 @@ func _configure(track: NativeTrack) -> void:
 		if piece.kind == "spline": _spline_corridor = true; break
 	var count: int = maxi(4,ceili(track.route_length/(RaceRules.SPLINE_GATE_SPACING_M if _spline_corridor else 12.0)))
 	var corners: Array[Dictionary] = _road_corners(track)
+	if _spline_corridor:
+		# Inspect folded bends more closely; the common legal-lane ordering
+		# below still discards gates which would require an artificial loop.
+		for distance: float in range(1,ceili(track.route_length),RaceRules.HAIRPIN_GATE_SPACING_M):
+			for corner: Dictionary in corners:
+				if float(corner.half_span) < float(corner.road_half)*SplineGateCorridor.HAIRPIN_MITER_RATIO: continue
+				var separation: float = absf(distance-float(corner.distance))
+				separation = minf(separation,track.route_length-separation)
+				if separation <= float(corner.reach)*2.0+float(corner.road_half):
+					targets.append(distance); break
 	for i: int in range(1,count):
 		var distance: float = track.route_length*i/count
 		var overlaps_corner: bool = false
@@ -70,11 +82,12 @@ func _configure(track: NativeTrack) -> void:
 	for corner: Dictionary in corners: targets.append(corner.distance)
 	targets.sort()
 	var dirt: bool = track.metadata.get("creator_document",{}).get("surface","") == "dirt" or not track.metadata.has("creator_document")
+	var coverage := preload("res://race/road_gate_coverage.gd").new(track)
 	for distance: float in targets:
 		var junction: Dictionary = {}
 		for corner: Dictionary in corners:
 			if is_equal_approx(distance,float(corner.distance)): junction = corner; break
-		if junction.is_empty() and not _progress.is_empty() and distance-_progress[-1] < (1.5 if _spline_corridor else 3.0): continue
+		if junction.is_empty() and not _progress.is_empty() and distance-_progress[-1] < (0.5 if _spline_corridor else 3.0): continue
 		var absolute: float = _start_progress+distance
 		var center: Vector2 = track._race_route_point(absolute)
 		var direction: Vector2 = (track._race_route_point(absolute+2.0)-track._race_route_point(absolute-2.0)).normalized()
@@ -107,21 +120,9 @@ func _configure(track: NativeTrack) -> void:
 			elevated = route_elevated
 		_layers.append(elevated)
 		var widths := Vector2(half+0.75,half+0.75)
-		var road_widths := Vector2(half,half)
 		var allowed: Array = [0,2,5] if dirt else [0,5]
-		if track.grid_width > 0 and track.cell_at(center,elevated) in allowed:
-			# Spline sweeps can extend past the authored chord's miter span.
-			# Measure the connected road/kerb cross-section, stopping at the
-			# first gap so a nearby returning branch cannot widen this gate.
-			var scan_limit: float = half+1.5 if junction.is_empty() else maxf(half+1.5,half*1.5)
-			for side: int in range(2):
-				var span: float = 0.0
-				var sign_value: float = -1.0 if side == 0 else 1.0
-				while span < scan_limit and track.cell_at(center+normal*span*sign_value,elevated) in allowed: span += 0.25
-				road_widths[side] = maxf(0.0,span-0.125)
-				# Keep a forgiving centre recovery beyond the
-				# connected road/kerb edge, including sharp spline bends.
-				widths[side] = road_widths[side]+RaceRules.CHECKPOINT_RECOVERY_M
+		var road_widths: Vector2 = _gate_road_spans(track,coverage,center,direction,half,elevated,allowed)
+		if track.grid_width > 0: widths = road_widths+Vector2.ONE*RaceRules.CHECKPOINT_RECOVERY_M
 		# A shallow excursion already loses grip/time. Allow extra inside
 		# recovery space, fading it out before a tight hairpin can be cut.
 		var approach: Vector2 = (center-track._race_route_point(absolute-8.0)).normalized()
@@ -156,13 +157,36 @@ func _configure(track: NativeTrack) -> void:
 			_centers.remove_at(index); _directions.remove_at(index); _progress.remove_at(index)
 			_notice_reach.remove_at(index); _route_hints.remove_at(index)
 			_notice_approaches.remove_at(index)
+	_finish_road_widths = _gate_road_spans(track,coverage,track.finish_center,track.finish_forward,track.finish_half_width,_finish_elevated,[0,2,5] if dirt else [0,5])
+	_finish_widths = _finish_road_widths+Vector2.ONE*1.5
 	_prepare_notice_route(track)
 	initialized = true
-	var prepared: Dictionary = {"rules_key":RaceRules.KEY,"notice_version":NOTICE_LAYOUT_VERSION}
+	var prepared: Dictionary = {"rules_key":RaceRules.KEY,"notice_version":NOTICE_LAYOUT_VERSION,"checkpoint_layout_version":RaceRules.CHECKPOINT_LAYOUT_VERSION}
 	for field: String in GATE_LAYOUT_FIELDS:
 		var value: Variant = get(field)
 		prepared[field] = value.duplicate() if value is Array else value
 	track._race_gates = prepared
+
+func _gate_road_spans(track: NativeTrack, coverage: RefCounted, center: Vector2, direction: Vector2, half: float, elevated: bool, allowed: Array) -> Vector2:
+	var raster := Vector2.ONE*half
+	if track.grid_width > 0 and _gate_surface(track,center,elevated,allowed):
+		# Stop only at the physical edge, never an authored-width scan cap.
+		var normal: Vector2 = direction.orthogonal()
+		for side: int in range(2):
+			var span: float = 0.0
+			var sign_value: float = -1.0 if side == 0 else 1.0
+			while span < track.half_extent.length()*2.0 and _gate_surface(track,center+normal*span*sign_value,elevated,allowed): span += 0.05
+			raster[side] = span
+	return coverage.spans(center,direction,raster,elevated)
+
+func _gate_surface(track: NativeTrack, point: Vector2, elevated: bool, allowed: Array) -> bool:
+	if elevated:
+		# cell_at deliberately treats empty upper cells as drivable fallback;
+		# gate measurement must stop at the actual deck instead.
+		var x: int = floori((point.x+track.half_extent.x)/track.cell_size)
+		var y: int = floori((track.half_extent.y-point.y)/track.cell_size)
+		return x >= 0 and y >= 0 and x < track.grid_width and y < track.grid_height and track.deck_cells[y*track.grid_width+x] in allowed
+	return track.cell_at(point) in allowed or track.kerbs.height_at(point) > 0.00001
 
 func _prepare_notice_route(track: NativeTrack) -> void:
 	_prepare_notice_layers(track)
@@ -303,14 +327,14 @@ func _inside(index: int, point: Vector2) -> bool:
 	return lateral >= -_widths[index].x and lateral <= _widths[index].y
 
 func checkpoint_position(track: NativeTrack) -> Vector2:
-	if next_checkpoint >= _centers.size(): return track.finish_center
+	if next_checkpoint >= _centers.size(): return track.finish_center+track.finish_forward.orthogonal()*(_finish_widths.y-_finish_widths.x)*0.5
 	# Draw the actual asymmetric span, including the inside recovery margin.
 	var widths: Vector2 = _widths[next_checkpoint]
 	return _centers[next_checkpoint]+_directions[next_checkpoint].orthogonal()*(widths.y-widths.x)*0.5
 func checkpoint_direction(track: NativeTrack) -> Vector2:
 	return _directions[next_checkpoint] if next_checkpoint < _directions.size() else track.finish_forward
 func checkpoint_width(track: NativeTrack) -> float:
-	if next_checkpoint >= _centers.size(): return track.finish_half_width*2.0
+	if next_checkpoint >= _centers.size(): return _finish_widths.x+_finish_widths.y
 	return _widths[next_checkpoint].x+_widths[next_checkpoint].y
 func checkpoint_count() -> int: return _centers.size()
 func checkpoint_elevated() -> bool:
@@ -319,9 +343,9 @@ func checkpoint_elevated() -> bool:
 func checkpoint_road_center(track: NativeTrack) -> Vector2:
 	return _centers[next_checkpoint] if next_checkpoint < _centers.size() else track.finish_center
 func checkpoint_road_spans(track: NativeTrack) -> Vector2:
-	return _road_widths[next_checkpoint] if next_checkpoint < _road_widths.size() else Vector2.ONE*track.finish_half_width
+	return _road_widths[next_checkpoint] if next_checkpoint < _road_widths.size() else _finish_road_widths
 func checkpoint_acceptance_spans(track: NativeTrack) -> Vector2:
-	return _widths[next_checkpoint] if next_checkpoint < _widths.size() else Vector2.ONE*track.finish_half_width
+	return _widths[next_checkpoint] if next_checkpoint < _widths.size() else _finish_widths
 
 func _crossing(index: int, from: Vector2, to: Vector2) -> float:
 	var before: float = (from-_centers[index]).dot(_directions[index])
@@ -378,7 +402,8 @@ func advance(track: NativeTrack, from: Vector2, to: Vector2, route_index: int, e
 	if not finish_armed or before > 0.0 or after <= 0.0: return
 	var crossing: float = -before/(after-before)
 	var finish_point: Vector2 = from.lerp(to,crossing)
-	if _crossing_layer(track,from,to,crossing,route_index,elevated,previous_layer) != _finish_elevated or absf((finish_point-track.finish_center).cross(track.finish_forward)) > track.finish_half_width+1.5:
+	var finish_lateral: float = (finish_point-track.finish_center).dot(track.finish_forward.orthogonal())
+	if _crossing_layer(track,from,to,crossing,route_index,elevated,previous_layer) != _finish_elevated or finish_lateral < -_finish_widths.x or finish_lateral > _finish_widths.y:
 		if next_checkpoint == _centers.size() and finish_point.distance_squared_to(track.finish_center) < 1600.0: missed_checkpoint = next_checkpoint
 		return
 	if next_checkpoint < _centers.size():

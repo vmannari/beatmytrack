@@ -1,3 +1,8 @@
+<!-- CHECKPOINT-RESULT-PRESERVING-DEPLOY-20261103 -->
+## Checkpoint backend deployed with existing results retained (2026-11-03)
+CPD01-CPD03/Q01: Owner requires result preservation. Competitive manifest stays exactly rules23/physics0.77; separate layout24 and geom:24 cache namespace refresh gates without changing boards, Rivalry or Daily identities. Six-file patch over deployed image; API/Studio/worker/jobs and separate website preview updated. Managed backup1793728518369; all13 checked result/catalogue table counts match, including7358PBs/7361lapPBs/20556runs. Local63pass, coverage2787/0, hairpin65/0 and exact Linux12757+rewind/47712 proof with nine cuts rejected pass; live one-worker/native/storage checks pass. No migration, republication, deletion or historical rescore. Receipts, credential-diagnostic incident and limits: [../../docs/CHECKPOINT_RESULTS_PRESERVING_DEPLOYMENT_2026_11_03.md](../../docs/CHECKPOINT_RESULTS_PRESERVING_DEPLOYMENT_2026_11_03.md). Reload/rebuild client and owner/device acceptance remain. No phone query/test, APK, owner-save/process change, PC backend replacement or main-index write; concurrent work preserved.
+<!-- /CHECKPOINT-RESULT-PRESERVING-DEPLOY-20261103 -->
+
 <!-- BACKEND-LOCAL-RACES-20261028 -->
 Artificial generation runs locally on demand: `./scripts/artificial-races.ps1` handles one attempt from the current batch; `-ListRivalries` and `-RivalryId <id>` handle existing artificial weekly fields. Cloud workers verify normal uploads. See [commands, recovery, measurements and release evidence](../../docs/BACKEND_RESOURCE_OPTIMISATION_2026_10_28.md).
 <!-- /BACKEND-LOCAL-RACES-20261028 -->

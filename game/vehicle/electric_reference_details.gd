@@ -29,11 +29,38 @@ static func wheel(car: CarVisual, side: float, axle: float, rubber: Material, gr
 	car.add_child(pivot)
 	CompactDetail.tire(pivot, rubber, car.simple_model)
 	# Swept, split-faced forged spokes replace the broad flat aero triangles.
-	M.patch(pivot, "RefWheelBarrel" + str(side), 64, 6, func(u: float, v: float) -> Vector3:
+	var rim_parent: Node3D = car.new_kit_frame("rims",pivot) if car.editable_kits else pivot
+	if str(car.customisation.rims)=="stock":
+		stock_rim(car,rim_parent,side,graphite,inner,bright)
+	else:
+		preload("res://vehicle/electric_kits.gd").rim(car,rim_parent,side)
+	if axle < 0:
+		car.front_wheels.append(pivot)
+	car.register_rolling_wheel(pivot, 0.37)
+	# Brake assembly follows steering but stays stationary while the wheel spins.
+	var fixed := Node3D.new()
+	fixed.name = "BrakeAssembly"
+	pivot.add_child(fixed)
+	var rotor_material := CompactFinish.alloy(Color("6f7779"))
+	rotor_material.roughness = 0.52
+	var rotor := VisualGeometry.cylinder(fixed, 0.226, 0.008, Vector3(side * 0.112, 0, 0), rotor_material, true)
+	rotor.rotation.z = PI * 0.5
+	var caliper_material := CompactFinish.alloy(Color("a78751"))
+	M.rounded(fixed, "RefCaliper" + str(side), Vector3(0.024, 0.16, 0.068), Vector3(side * 0.137, 0.01, 0.175), 0.010, caliper_material)
+	M.patch(fixed,"SportRotorGroove"+str(side),64,2,func(u: float,v: float)->Vector3:
+		var angle: float=TAU*u
+		var radius: float=lerpf(0.198,0.201,v)
+		return Vector3(side*0.117,radius*sin(angle),radius*cos(angle)),inner,Vector3(side,0,0),car.simple_model)
+	if car.simple_model:
+		for mesh: MeshInstance3D in fixed.find_children("*", "MeshInstance3D", true, false):
+			mesh.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+
+static func stock_rim(car: CarVisual, parent: Node3D, side: float, graphite: Material, inner: Material, bright: Material) -> void:
+	M.patch(parent, "RefWheelBarrel" + str(side), 64, 6, func(u: float, v: float) -> Vector3:
 		var angle: float = TAU * u
 		var radius: float = lerpf(0.279, 0.305, v)
 		return Vector3(side * 0.142, radius * sin(angle), radius * cos(angle)), inner, Vector3(side, 0, 0), car.simple_model)
-	M.patch(pivot, "RefWheelRim" + str(side), 64, 4, func(u: float, v: float) -> Vector3:
+	M.patch(parent, "RefWheelRim" + str(side), 64, 4, func(u: float, v: float) -> Vector3:
 		var angle: float = TAU * u
 		var radius: float = lerpf(0.296, 0.307, v)
 		return Vector3(side * (0.145 + 0.003 * sin(PI * v)), radius * sin(angle), radius * cos(angle)), graphite, Vector3(side, 0, 0), car.simple_model)
@@ -41,7 +68,7 @@ static func wheel(car: CarVisual, side: float, axle: float, rubber: Material, gr
 		var blade := Node3D.new()
 		blade.name = "AeroBlade" + str(spoke)
 		blade.rotation.x = TAU * spoke / 5.0
-		pivot.add_child(blade)
+		parent.add_child(blade)
 		M.patch(blade, "RefBladeFace" + str(side), 8, 12, func(u: float, v: float) -> Vector3:
 			var radius: float = lerpf(0.061, 0.292, v)
 			var theta: float = -0.28*v*v+lerpf(-1.0, 1.0, u)*lerpf(0.25,0.15,v)
@@ -64,33 +91,13 @@ static func wheel(car: CarVisual, side: float, axle: float, rubber: Material, gr
 			var radius: float=lerpf(0.075,0.292,v)
 			var theta: float=-0.28*v*v-lerpf(0.25,0.15,v)+0.025*u
 			return Vector3(side*0.153,radius*sin(theta),radius*cos(theta)),bright,Vector3(side,0,0),car.simple_model)
-	var cap := VisualGeometry.cylinder(pivot, 0.057, 0.013, Vector3(side * 0.151, 0, 0), graphite, true)
+	var cap := VisualGeometry.cylinder(parent, 0.057, 0.013, Vector3(side * 0.151, 0, 0), graphite, true)
 	cap.name = "WheelCentre"
 	cap.rotation.z = PI * 0.5
 	for bolt: int in range(5):
 		var angle: float = TAU * bolt / 5.0
-		var lug := VisualGeometry.cylinder(pivot, 0.006, 0.004, Vector3(side * 0.159, 0.045 * sin(angle), 0.045 * cos(angle)), inner, true)
+		var lug := VisualGeometry.cylinder(parent, 0.006, 0.004, Vector3(side * 0.159, 0.045 * sin(angle), 0.045 * cos(angle)), inner, true)
 		lug.rotation.z = PI * 0.5
-	if axle < 0:
-		car.front_wheels.append(pivot)
-	car.register_rolling_wheel(pivot, 0.37)
-	# Brake assembly follows steering but stays stationary while the wheel spins.
-	var fixed := Node3D.new()
-	fixed.name = "BrakeAssembly"
-	pivot.add_child(fixed)
-	var rotor_material := CompactFinish.alloy(Color("6f7779"))
-	rotor_material.roughness = 0.52
-	var rotor := VisualGeometry.cylinder(fixed, 0.226, 0.008, Vector3(side * 0.112, 0, 0), rotor_material, true)
-	rotor.rotation.z = PI * 0.5
-	var caliper_material := CompactFinish.alloy(Color("a78751"))
-	M.rounded(fixed, "RefCaliper" + str(side), Vector3(0.024, 0.16, 0.068), Vector3(side * 0.137, 0.01, 0.175), 0.010, caliper_material)
-	M.patch(fixed,"SportRotorGroove"+str(side),64,2,func(u: float,v: float)->Vector3:
-		var angle: float=TAU*u
-		var radius: float=lerpf(0.198,0.201,v)
-		return Vector3(side*0.117,radius*sin(angle),radius*cos(angle)),inner,Vector3(side,0,0),car.simple_model)
-	if car.simple_model:
-		for mesh: MeshInstance3D in fixed.find_children("*", "MeshInstance3D", true, false):
-			mesh.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
 
 static func handle(car: CarVisual, side: float, z: float, _paint: Material, trim: Material) -> void:
 	# A small, flush body-colour pull inside a fine perimeter seam.

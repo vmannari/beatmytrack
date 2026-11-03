@@ -17,6 +17,7 @@ var wash_previous := Vector2.ZERO
 var wash_pointer_valid: bool = false
 var wash_elapsed: float = 0.0
 var wash_effect: Node3D
+var super_wash_effect: Node3D
 var pick_meshes: Array[Dictionary] = []
 var vehicle_id: String = "compact"
 var read_only: bool = false
@@ -65,6 +66,11 @@ var _last_render_state: Array = []
 var render_requests: int = 0
 var _settle_draws: int = 0
 var _reflection_settle_draws: int = 0
+var _record_visibility_state: Array = []
+var _record_visible: bool = true
+var _weather_visibility_state: Array = []
+var _weather_visible: bool = true
+var _last_wash_cursor_state: Array = []
 const DEFAULT_YAW: float = -0.70
 const GARAGE_CAMERA_YAW: float = 0.0
 const MIN_ELEVATION: float = PI / 36.0 # 5 degrees, always above the floor.
@@ -85,6 +91,8 @@ func _ready() -> void:
 	viewport.render_target_update_mode = SubViewport.UPDATE_ONCE
 	viewport.msaa_3d = Viewport.MSAA_2X if read_only and not preview_live_lighting else Viewport.MSAA_4X
 	viewport.scaling_3d_scale = 1.0
+	# Prepared meshes retain full detail and use subpixel index-only LODs.
+	viewport.mesh_lod_threshold = 0.5
 	# Render at display pixel density, including canvas/window scaling.
 	# The standalone viewport also keeps carousel renders genuinely one-shot.
 	var holder := Node.new()
@@ -153,6 +161,7 @@ func refresh_thumbnail() -> void:
 	invalidate_render()
 
 func replace_car(id: String, paint: Dictionary, wear: Dictionary, parts: Dictionary = {}) -> void:
+	_dispose_super_wash()
 	finish_kit_transition()
 	finish_paint_transition()
 	finish_car_transition()
@@ -204,6 +213,7 @@ func apply_customisation(value: Dictionary, animate_kit: bool = false) -> void:
 	if customisation==value:
 		if not animate_kit: finish_kit_transition()
 		return
+	_dispose_super_wash()
 	finish_kit_transition()
 	finish_paint_transition()
 	finish_car_transition()
@@ -329,6 +339,8 @@ func update_records(settings: Dictionary) -> void:
 	if not is_instance_valid(record_station) or relevant == _record_settings: return
 	_record_settings = relevant
 	preload("res://ui/garage_record_station.gd").update(record_station,settings)
+	if is_instance_valid(record_sleeves) and is_finite(_browse_position):
+		preload("res://ui/garage_record_station.gd").present_browse(record_sleeves,_browse_position)
 	invalidate_render()
 
 func browse_records(position: float) -> void:
@@ -464,6 +476,10 @@ func _trophy_input(event: InputEvent) -> void:
 		if tapped: trophy_tapped.emit(event.position)
 
 func _clear_gesture() -> void:
+	if is_instance_valid(super_wash_effect):
+		var active: bool = super_wash_effect.visible
+		super_wash_effect.reset()
+		if active: invalidate_render()
 	_wall_pointer = -2
 	_wall_press = Vector2.INF
 	washing = false
@@ -520,6 +536,19 @@ func set_wash_mode(enabled: bool) -> void:
 	wash_pointer_valid = false
 	wash_mode = enabled
 	queue_redraw()
+
+func play_super_wash() -> void:
+	if read_only or not garage_mode or not showroom_ready or not is_visible_in_tree(): return
+	finish_car_transition()
+	if not is_instance_valid(super_wash_effect):
+		super_wash_effect = preload("res://ui/garage_super_wash.gd").new()
+		super_wash_effect.prepare(car)
+	super_wash_effect.play()
+	invalidate_render()
+
+func _dispose_super_wash() -> void:
+	if is_instance_valid(super_wash_effect): super_wash_effect.queue_free()
+	super_wash_effect = null
 
 func set_wash_tool(tool: String) -> void:
 	if tool not in ["mitt", "hose"] or tool == wash_tool: return
@@ -586,6 +615,7 @@ func _wash_effect_changed() -> void:
 
 func invalidate_render() -> void:
 	_render_dirty = true
+	_weather_visibility_state.clear()
 	if is_instance_valid(showroom_viewport) and not is_visible_in_tree(): showroom_viewport.render_target_update_mode = SubViewport.UPDATE_DISABLED
 	if is_inside_tree() and is_visible_in_tree() and is_instance_valid(camera): _request_render()
 
@@ -620,7 +650,64 @@ func _submit_render(reflection_changed: bool = true, room_animation: bool = fals
 	render_requests += 1
 
 func _render_state() -> Array:
-	return [camera.transform,camera.fov,camera.keep_aspect,showroom_viewport.size,car.get_instance_id(),turntable.transform if is_instance_valid(turntable) else car.transform,weathering.parameter_uploads,weathering.wash_mask_uploads,is_instance_valid(wash_effect) and wash_effect.visible]
+	var weather_visible: bool = _weathering_visible()
+	return [camera.transform,camera.fov,camera.keep_aspect,showroom_viewport.size,car.get_instance_id(),turntable.transform if is_instance_valid(turntable) else car.transform,weathering.installed,weathering.parameter_uploads if weather_visible else 0,weathering.wash_mask_uploads if weather_visible else 0,is_instance_valid(wash_effect) and wash_effect.visible]
+
+func _weathering_visible() -> bool:
+	var state: Array = [camera.global_transform,camera.fov,camera.keep_aspect,showroom_viewport.size,car.get_instance_id(),car.global_transform,car.customisation.duplicate(),weathering.get_instance_id(),reflections != null and reflections.enabled]
+	if state == _weather_visibility_state: return _weather_visible
+	_weather_visibility_state = state
+	_weather_visible = false
+	var bounds := AABB()
+	var first: bool = true
+	# Use actual affected meshes, including fitted parts and wheel frames;
+	# persisted wash-volume bounds intentionally exclude some fitted kits.
+	for binding: Dictionary in weathering.bindings:
+		var part: MeshInstance3D = binding.node
+		if not is_instance_valid(part) or part.mesh == null: continue
+		var box: AABB = part.global_transform * part.mesh.get_aabb().grow(part.extra_cull_margin)
+		bounds = box if first else bounds.merge(box)
+		first = false
+	if first: return false
+	var captures: Array[Camera3D] = [camera]
+	if reflections != null and reflections.enabled:
+		reflections.sync()
+		captures.append_array(reflections.cameras)
+	for capture: Camera3D in captures:
+		var visible: bool = true
+		for plane: Plane in capture.get_frustum():
+			if plane.distance_to(bounds.get_support(-plane.normal)) > 0.0:
+				visible = false
+				break
+		if visible:
+			_weather_visible = true
+			break
+	return _weather_visible
+
+func _record_animation_visible() -> bool:
+	if record_vinyl == null or camera == null: return false
+	var state: Array = [camera.global_transform,camera.fov,camera.keep_aspect,showroom_viewport.size,reflections != null and reflections.enabled]
+	if state == _record_visibility_state: return _record_visible
+	_record_visibility_state = state
+	_record_visible = false
+	var cameras: Array[Camera3D] = [camera]
+	# The floor can show the record even when it is outside the main camera.
+	if reflections != null and reflections.enabled:
+		reflections.sync()
+		cameras.append(reflections.cameras[0])
+	# Bound the entire spinning disc, label and spindle through every rotation.
+	var center: Vector3 = record_vinyl.global_position
+	var radius: float = 0.18
+	for capture: Camera3D in cameras:
+		var visible: bool = true
+		for plane: Plane in capture.get_frustum():
+			if plane.distance_to(center) > radius:
+				visible = false
+				break
+		if visible:
+			_record_visible = true
+			break
+	return _record_visible
 
 func _process(delta: float) -> void:
 	if not is_visible_in_tree():
@@ -637,8 +724,9 @@ func _process(delta: float) -> void:
 		var bus: int = AudioServer.get_bus_index("Music")
 		if music.mode == "menu" and music.music_enabled and music.menu_player.playing and not music.menu_player.stream_paused and not AudioServer.is_bus_mute(bus):
 			if record_vinyl != null: record_vinyl.rotation.y = wrapf(record_vinyl.rotation.y + delta * TAU * (100.0/3.0) / 60.0,0,TAU)
-			animated = true
-			room_animation = true
+			if _record_animation_visible():
+				animated = true
+				room_animation = true
 	if weathering.snow_amount > 0.0 or weathering.slow_snow_amount > 0.0:
 		weathering.melt(delta)
 		wash_elapsed += delta
@@ -659,14 +747,23 @@ func _process(delta: float) -> void:
 			wash_elapsed = 0.0
 			condition_changed.emit()
 	if wash_effect != null and (wash_effect.visible or (washing and wash_mode)):
+		var was_visible: bool = wash_effect.visible
 		wash_effect.advance(delta, washing and wash_mode)
+		if was_visible or wash_effect.visible:
+			animated = true
+			reflection_animation = true
+	if is_instance_valid(super_wash_effect) and super_wash_effect.visible:
+		super_wash_effect.advance(delta)
 		animated = true
 		reflection_animation = true
 	var state: Array = _render_state()
 	if animated or _render_dirty or state != _last_render_state:
 		_request_render(reflection_animation or _render_dirty or state != _last_render_state,room_animation)
 	_last_render_state = state
-	if wash_mode: queue_redraw()
+	var cursor_state: Array = [wash_pointer,wash_pointer_valid,washing] if wash_mode else []
+	if cursor_state != _last_wash_cursor_state:
+		_last_wash_cursor_state = cursor_state
+		queue_redraw()
 
 func _draw() -> void:
 	if wash_mode and wash_pointer_valid and not washing:

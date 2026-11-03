@@ -54,11 +54,14 @@ static func side_width(z: float,y: float) -> float:
 	var swell: float=0.025*sin(PI*t)+0.012*door*exp(-pow((t-0.72)/0.12,2))
 	var hollow: float=0.028*door*exp(-pow((t-0.40)/0.22,2))
 	var lower_fold: float=0.014*door*exp(-pow((t-0.18)/0.10,2))
+	# Carry the door bottoms outward, easing the extra width into the arches
+	# and into the existing upper door crown.
+	var lower_door_width: float=0.075*(1.0-smoothstep(0.72,1.15,absf(z)))*(1.0-smoothstep(0.08,0.65,t))
 	var end_tuck: float=0.075*smoothstep(1.45,2.05,absf(z))*pow(1.0-t,1.6)
 	var radius: float=front_shoulder_round(z)+rear_shoulder_round(z)+0.030*door
 	var upper: float=clampf((y-(h-radius))/maxf(radius,0.00001),0.0,1.0)
 	var roundover: float=radius*(1.0-sqrt(maxf(0.0,1.0-upper*upper)))
-	return top_width(z)+swell-hollow+lower_fold-0.075*pow(1.0-t,2)-end_tuck-roundover
+	return top_width(z)+swell-hollow+lower_fold+lower_door_width-0.075*pow(1.0-t,2)-end_tuck-roundover
 
 static func side_point(side: float,z: float,y: float) -> Vector3:
 	return Vector3(side*side_width(z,y),y,z)
@@ -236,6 +239,34 @@ static func cap_point(rear: bool,u: float,v: float) -> Vector3:
 		x=lerpf(x,upper_x,lerpf(smoothstep(0.35,1.0,v),smoothstep(0.80,1.0,v),smoothstep(0.78,1.0,absf(a))))
 	return Vector3(x,y,z)
 
+static func hatch_left_u(on_deck: bool,v: float,width: float) -> float:
+	# Resolve the same physical hatch width on the deck and tail surfaces.
+	var low: float=0.0
+	var high: float=0.5
+	for _step: int in range(18):
+		var mid: float=(low+high)*0.5
+		var x: float=deck_point(mid,v).x if on_deck else cap_point(true,mid,v).x
+		if x < -width: low=mid
+		else: high=mid
+	return (low+high)*0.5
+
+static func hatch_rear_left_u(v: float) -> float:
+	var p: float=clampf((1.0-v)/0.68,0.0,1.0)
+	return hatch_left_u(false,v,lerpf(0.768,0.70,smoothstep(0.0,1.0,p)))
+
+static func rear_lamp_strip(parent: Node3D,name_value: String,v0: float,v1: float,material: Material,simple: bool,offset: float,outer: float) -> void:
+	# The two hatch gaps continue through both the housing and the lit guide.
+	# Each border follows the same formed tail and hatch path at every height.
+	var gap: float=0.0045
+	for part: int in range(3):
+		var label: String=name_value if part==1 else name_value+("Left" if part==0 else "Right")
+		M.patch(parent,label,64 if part==1 else 16,4,func(u: float,v: float)->Vector3:
+			var height: float=lerpf(v0,v1,v)
+			var edge: float=hatch_rear_left_u(height)
+			var start: float=outer if part==0 else edge+gap if part==1 else 1.0-edge+gap
+			var end: float=edge-gap if part==0 else 1.0-edge-gap if part==1 else 1.0-outer
+			return cap_point(true,lerpf(start,end,u),height)+Vector3.BACK*offset,material,Vector3.BACK,simple)
+
 static func front_lightbar_point(u: float,v: float) -> Vector3:
 	var p: Vector3=cap_point(false,u,front_lamp_v(u,v,true))
 	return p+Vector3.FORWARD*0.006
@@ -312,13 +343,12 @@ static func front_recess(parent: Node3D,label: String,v0: float,v1: float,left: 
 			var uv:=Vector2(u,0.0) if edge==0 else Vector2(1.0,u) if edge==1 else Vector2(1.0-u,1.0) if edge==2 else Vector2(0.0,1.0-u)
 			return point.call(uv.x,uv.y)+Vector3.BACK*depth*v,dark,Vector3.FORWARD,simple)
 
-static func build(car: CarVisual,paint: Material,trim: Material,bright: Material) -> void:
-	var body: Node3D=car.body
+static func build_hood(car: CarVisual,parent: Node3D,paint: Material,trim: Material) -> void:
 	var simple: bool=car.simple_model
-	M.patch(body,"ReferenceHood",80,48,hood_point,paint,Vector3.UP,simple)
+	M.patch(parent,"ReferenceHood",80,48,hood_point,paint,Vector3.UP,simple)
 	# A fitted shut line defines the bonnet instead of leaving one featureless
 	# upper casting. It closes around the cowl without crossing the glazing.
-	M.ribbon(body,"SportBonnetShutLine",func(t: float)->Vector3:
+	M.ribbon(parent,"SportBonnetShutLine",func(t: float)->Vector3:
 		var u: float
 		var v: float
 		if t<0.25:
@@ -330,6 +360,13 @@ static func build(car: CarVisual,paint: Material,trim: Material,bright: Material
 		else:
 			u=0.09;v=lerpf(0.97,0.045,(t-0.75)*4.0)
 		return hood_point(u,v)+Vector3.UP*0.0012,144,0.0009,trim,simple)
+
+static func build(car: CarVisual,paint: Material,trim: Material,bright: Material) -> void:
+	var body: Node3D=car.body
+	var simple: bool=car.simple_model
+	if str(car.customisation.hood)=="stock":
+		var hood_parent: Node3D=car.new_kit_frame("hood",body) if car.editable_kits else body
+		build_hood(car,hood_parent,paint,trim)
 	# Matching transverse stations make the deck and curved tail share the
 	# same polygon edge, including the tightly rounded corners.
 	M.patch(body,"ReferenceRearDeck",120,20,deck_point,paint,Vector3.UP,simple)
@@ -441,8 +478,14 @@ static func build(car: CarVisual,paint: Material,trim: Material,bright: Material
 	# A fine lower lip sits below the closed, grille-free nose.
 	cap_strip(body,"ReferenceFrontSplitter",false,0.035,0.965,0.01,0.035,trim,simple,0.008)
 	cap_strip(body,"ReferenceFrontSplitterEdge",false,0.045,0.955,0.008,0.018,bright,simple,0.011)
-	cap_strip(body,"ReferenceRearLampHousing",true,0.02,0.98,0.79,0.86,trim,simple,0.003)
-	cap_strip(body,"ReferenceRearLightbar",true,0.025,0.975,0.805,0.835,car.brake_material,simple,0.004)
+	rear_lamp_strip(body,"ReferenceRearLampHousing",0.79,0.86,trim,simple,0.003,0.02)
+	rear_lamp_strip(body,"ReferenceRearLightbar",0.805,0.835,car.brake_material,simple,0.004,0.025)
+	for side: int in range(2):
+		M.patch(body,"ReferenceRearLampHatchJoint"+str(side),4,8,func(u: float,v: float)->Vector3:
+			var height: float=lerpf(0.79,0.86,v)
+			var edge: float=hatch_rear_left_u(height)
+			var centre: float=edge if side==0 else 1.0-edge
+			return cap_point(true,centre+lerpf(-0.0045,0.0045,u),height)+Vector3.BACK*0.005,trim,Vector3.BACK,simple)
 	cap_strip(body,"ReferenceRearDiffuser",true,0.08,0.92,0.025,0.085,trim,simple,0.003)
 	cap_strip(body,"SportRearValance",true,0.06,0.94,0.085,0.25,trim,simple,0.006)
 	# Five short diffuser fences follow the curved rear instead of exposed

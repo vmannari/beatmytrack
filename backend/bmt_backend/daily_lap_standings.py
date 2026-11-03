@@ -32,13 +32,14 @@ def build(session, context, population, player, *, limit, cursor, around, candid
         else:
             rows = ordered[start:start+limit+1]
         identities = {identity for _, identity in rows} | ({owner} if owner else set())
-        names = {row.id: row.display_name for row in session.execute(select(Player.id, Player.display_name).where(
+        names = {row.id: (row.display_name, row.country_code) for row in session.execute(
+            select(Player.id, Player.display_name, Player.country_code).where(
             Player.id.in_(identities), Player.disabled.is_(False), Player.deleted_at.is_(None)))}
-        raw = [(ticks, identity, names[identity]) for ticks, identity in rows if identity in names]
+        raw = [(ticks, identity, *names[identity]) for ticks, identity in rows if identity in names]
     else:
         _, laps = comparison_statements(session, [public_id, test_id] if artificial else [public_id],
                                         public_id, test_id, artificial)
-        query = select(laps.c.time_ticks, laps.c.player_id, Player.display_name).join(
+        query = select(laps.c.time_ticks, laps.c.player_id, Player.display_name, Player.country_code).join(
             Player, Player.id == laps.c.player_id).where(Player.deleted_at.is_(None))
         if owner:
             own = session.scalar(select(laps.c.time_ticks).where(laps.c.player_id == owner))
@@ -53,15 +54,16 @@ def build(session, context, population, player, *, limit, cursor, around, candid
                 from sqlalchemy import tuple_
                 query = query.where(tuple_(laps.c.time_ticks, laps.c.player_id) > (anchor["ticks"], anchor["player"]))
             raw = session.execute(query.order_by(laps.c.time_ticks, laps.c.player_id).limit(limit+1)).all()
-        names = dict(session.execute(select(Player.id, Player.display_name).where(Player.id == owner)).all())
+        names = {row.id: (row.display_name, row.country_code) for row in session.execute(
+            select(Player.id, Player.display_name, Player.country_code).where(Player.id == owner))}
     count = population.cumulative[-1]
     leader = population.ticks[0]
 
-    def row(ticks, identity, name):
+    def row(ticks, identity, name, country):
         faster = population.cumulative[bisect_left(population.ticks, ticks)]
         if around and candidate and identity != owner:
             faster += int(candidate < ticks) - int(own is not None and own < ticks)
-        return {"player_id": identity, "display_name": name, "time_ticks": ticks,
+        return {"player_id": identity, "display_name": name, "country_code": country, "time_ticks": ticks,
                 "rank": max(1, 1+faster),
                 "gap_ticks": max(0, ticks-leader)}
 
@@ -71,7 +73,7 @@ def build(session, context, population, player, *, limit, cursor, around, candid
         comparison = {"position": 1, "population": max(1, count), "top_percent": 1, "candidate_ticks": candidate}
     return {**context, "board_id": public_id, "starts_at": context["day"]*86400,
             "population": comparison["population"] if comparison else count,
-            "items": items, "player": row(own, owner, names[owner]) if own and owner in names else None,
+            "items": items, "player": row(own, owner, *names[owner]) if own and owner in names else None,
             "comparison": comparison,
             "next_cursor": encode_cursor({"generation": context["generation"], "board": public_id,
                 "day": context["day"], "ticks": raw[limit-1][0], "player": raw[limit-1][1]})

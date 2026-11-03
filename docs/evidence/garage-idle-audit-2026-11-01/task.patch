@@ -1,0 +1,436 @@
+diff --git a/AGENTS.md b/AGENTS.md
+index 0d6b251c222a5eda97bf1d2586279d714d318cd4..19dbee0dd73b412924bc88d5826c9d8698decf47 100644
+--- a/AGENTS.md
++++ b/AGENTS.md
+@@ -1,3 +1,8 @@
++<!-- GARAGE-IDLE-AUDIT-20261101 -->
++## Other Garage elements audited for unnecessary drawing (2026-11-01)
++GIA01-GIA04: Off-camera snow no longer redraws the room after material preparation; melting and reflected-only visibility remain. Stationary wash cursors reuse drawing commands, and washing empty space submits no invisible-feedback draws. All eight sections settle; both desktop renderers48/0, hose81/0 and wash surfaces45/0 pass. Original washing139/4 reproduces with task-start sources. Exact cursor/room/five-car retained pixels pass; two runtime sources only. Commands, native views, first highlight-preparation correction and scoped checkpoint: [docs/GARAGE_IDLE_AUDIT_2026_11_01.md](docs/GARAGE_IDLE_AUDIT_2026_11_01.md). Tablet/owner acceptance and FPS remain unmeasured. No device query/test, APK, owner-save/process mutation, live/backend access, deployment or main-index write; concurrent work preserved.
++<!-- /GARAGE-IDLE-AUDIT-20261101 -->
++
+ <!-- GARAGE-PERFORMANCE-20261101 -->
+ ## Garage rendering and model optimisation (2026-11-01)
+ GPO01-GPO04: Off-camera playing records no longer redraw the Garage; phase and visible/reflection-only animation remain. Offline half-pixel LOD indices retain original GPU vertex buffers/full-detail geometry; layered Hover and all glazing stay full detail after a rejected canopy trial. Five-car main-view triangles fall25.72-45.09%; rotating component all-pass triangles fall25.08%. Both desktop renderers1589/0, washing45/0 and App menu35/0 pass; kit2424/3 reproduces with task-start sources/assets. Thirty native image pairs include maximum zoom; maximum mean RGB difference0.051605/255 and canopy region exact. Commands, views, memory/package tradeoff and scoped binary checkpoint: [docs/GARAGE_PERFORMANCE_2026_11_01.md](docs/GARAGE_PERFORMANCE_2026_11_01.md). Tablet/owner appearance, FPS and cold-start acceptance remain; no device query/test, APK, owner-save/process change, live mutation, deployment or main-index write. Concurrent work preserved.
+diff --git a/DEVELOPMENT_STATUS.md b/DEVELOPMENT_STATUS.md
+index 093acb25606bad73c2e340c81b9dfaf80d0bf8b8..3f7488547a3d4f117571fd04f68b4df6b172a93c 100644
+--- a/DEVELOPMENT_STATUS.md
++++ b/DEVELOPMENT_STATUS.md
+@@ -1,3 +1,8 @@
++<!-- GARAGE-IDLE-AUDIT-20261101 -->
++## Other Garage elements audited for unnecessary drawing (2026-11-01)
++GIA01-GIA04: Off-camera snow no longer redraws the room after material preparation; melting and reflected-only visibility remain. Stationary wash cursors reuse drawing commands, and washing empty space submits no invisible-feedback draws. All eight sections settle; both desktop renderers48/0, hose81/0 and wash surfaces45/0 pass. Original washing139/4 reproduces with task-start sources. Exact cursor/room/five-car retained pixels pass; two runtime sources only. Commands, native views, first highlight-preparation correction and scoped checkpoint: [docs/GARAGE_IDLE_AUDIT_2026_11_01.md](docs/GARAGE_IDLE_AUDIT_2026_11_01.md). Tablet/owner acceptance and FPS remain unmeasured. No device query/test, APK, owner-save/process mutation, live/backend access, deployment or main-index write; concurrent work preserved.
++<!-- /GARAGE-IDLE-AUDIT-20261101 -->
++
+ <!-- GARAGE-PERFORMANCE-20261101 -->
+ ## Garage rendering and model optimisation (2026-11-01)
+ GPO01-GPO04: Off-camera playing records no longer redraw the Garage; phase and visible/reflection-only animation remain. Offline half-pixel LOD indices retain original GPU vertex buffers/full-detail geometry; layered Hover and all glazing stay full detail after a rejected canopy trial. Five-car main-view triangles fall25.72-45.09%; rotating component all-pass triangles fall25.08%. Both desktop renderers1589/0, washing45/0 and App menu35/0 pass; kit2424/3 reproduces with task-start sources/assets. Thirty native image pairs include maximum zoom; maximum mean RGB difference0.051605/255 and canopy region exact. Commands, views, memory/package tradeoff and scoped binary checkpoint: [docs/GARAGE_PERFORMANCE_2026_11_01.md](docs/GARAGE_PERFORMANCE_2026_11_01.md). Tablet/owner appearance, FPS and cold-start acceptance remain; no device query/test, APK, owner-save/process change, live mutation, deployment or main-index write. Concurrent work preserved.
+diff --git a/docs/GARAGE_IDLE_AUDIT_2026_11_01.md b/docs/GARAGE_IDLE_AUDIT_2026_11_01.md
+new file mode 100644
+index 0000000000000000000000000000000000000000..a5ccf48a8e537508874bfdd9466aa5009e5f90a0
+--- /dev/null
++++ b/docs/GARAGE_IDLE_AUDIT_2026_11_01.md
+@@ -0,0 +1,63 @@
++# Garage idle-work audit — 2026-11-01
++
++Inspected the remaining Garage elements and fixed three further sources of unnecessary drawing. These are local source changes; no tablet/device query or test, APK, deployment, live backend access, owner-save/process mutation or main Git index write was performed. Tablet FPS and owner acceptance remain unmeasured.
++
++| ID | Finding and resulting behavior |
++|---|---|
++| GIA01 | Audited static props/lights/shaders, car/trophy/record views, washing feedback, carousel, paint thumbnails, selected-part previews, News polling and hidden sections. All eight actual Garage sections settle without repeated main-view or reflection requests. |
++| GIA02 | Snow kept redrawing an unchanged room while the affected car was outside every camera. Logical melting and persistence continue; subsequent uniform changes no longer invalidate a view that cannot contain them. First material installation/removal still receives its bounded preparation draws. |
++| GIA03 | A stationary wash cursor rebuilt its canvas drawing every frame. It now rebuilds only when pointer/gesture state changes. Its displayed pixels remain exact. This saves CPU drawing construction; the retained cursor is still presented by the normal canvas renderer. |
++| GIA04 | Holding the wash tool over empty space requested main/floor/car-reflection draws despite having no contact, foam or droplets. Invisible empty feedback no longer emits redraw signals or marks the scene animated. Genuine contact, visible tails and the final disappearance still update. |
++
++The snow visibility cache uses the world bounds of actual weathered meshes, including wheels and fitted parts, against the main camera and both reflection cameras. Persisted wash-volume bounds intentionally omit some fitted geometry, so they are not used for culling. Camera, viewport, car, fitted parts, weathering ownership and reflection settings participate in the cache; explicit rendering invalidation clears it. A car visible only in reflection still updates. New material installation/removal remains a rendering-state change, preserving first-use material/shadow preparation even when the car is off camera.
++
++The controls load the archived task-start versions of both runtime sources in their own processes. At 1280×720 on desktop Compatibility, a 30-frame observation gives:
++
++| Situation | Task-start behavior | Final behavior |
++|---|---:|---:|
++| Snow melting outside the record view | 58 render requests; about 354,286 triangles/frame | 0 render requests; retained image only, 2 triangles/frame |
++| Stationary wash cursor | 29 canvas `_draw()` executions | 0 canvas `_draw()` executions |
++| Wash held over empty space | 58 render requests; about 402,610 triangles/frame | 0 render requests; retained image only, 2 triangles/frame |
++| Visible or reflection-only snow | Continues drawing | Continues drawing |
++| Settled clean car, trophy and record views | 0 repeated requests | 0 repeated requests |
++
++Render-request counters include the existing bounded settling callbacks, so they are not counts of displayed frames. These desktop counters are evidence of removed work, not tablet FPS or energy measurements. Actual snow amounts continue falling in the off-camera samples.
++
++Other inspected elements:
++
++| Element | Audit result |
++|---|---|
++| Workshop shell, furniture, tools, plant, drain, lamps | Static geometry/lighting; no continuous scene animation found. Garage shaders contain no `TIME`-driven animation. Their lighting/shading still costs work whenever a legitimate render occurs. |
++| Trophy/achievement display | Rebuilt on service/navigation updates; no spinning or pulsing idle loop. The settled Trophy section submits no repeated 3D requests. |
++| LP sleeves and car/paint/part transitions | Input-driven, bounded tweens; hidden LP controls finish their motion. |
++| Carousel and paint icons | Retained 2D pictures; native misses are bounded and visibility-gated. Paint-icon processing stops when its queue drains. |
++| Selected-part detail | One-shot extra camera only when model state changes and the photo is visible. |
++| News/Friends/ranking | Visibility/section-gated refresh; the News poll is one-shot, bounded and stopped when hidden. |
++| Garage page layout and condition checks | Still polled while the page is visible. They remain possible CPU-profiling targets; this audit does not claim they are free or change their responsive layout behavior. |
++
++Final verification:
++
++- `test_garage_idle_elements.gd`: **48 checks, zero failures** with native Compatibility and **48/0** with desktop Vulkan Mobile. These include all eight sections, all five snowy cars at three zoom levels, reflection-only snow, hidden/finished effects, moving/stationary cursor, empty-space washing and byte-exact retained/forced image comparisons.
++- Stationary cursor pictures match the corresponding renderer's original control. The off-camera room and all five frozen snowy-car images match a forced redraw exactly in the final runs. Captures include eight Garage sections, five cars, the cursor and the record-room comparison for each renderer.
++- Existing hose regression: **81/0**, headless. Existing exterior/wash-surface regression: **45/0**, headless.
++- Existing washing-animation regression: **139 checks, four failures**. The task-start source control reproduces all four: serialized completed-wash restart and three forklift pick/contact/clean assertions. No existing assertion was changed or weakened.
++
++The initial stricter image checks exposed three one-level highlight differences after installing snow materials outside the view. Adding material-installed state to the render key retains that initial preparation draw; the unchanged exact-pixel assertions pass afterward. An earlier Mobile control also retained a frozen-Kart image mismatch; it is not counted as a passing control. Final source passes both renderers. Initial diagnostics and captures remain in the evidence folder.
++
++All native launches use pinned Godot `4.7.2.stable.official.ed1daf0bf`, the scoped crash-dialog wrapper, empty `BMT_API_URL` and workspace-only `APPDATA`/`LOCALAPPDATA`. Normal local access was required for Godot's previously established Windows certificate-store startup limitation. Commands run include:
++
++```powershell
++$idleGodot = 'C:/apps/Godot 4.7.2/Godot_v4.7.2-stable_win64_console.exe'
++python scripts/run_no_crash_dialog.py -- $idleGodot --path game --rendering-method gl_compatibility --position 10000,10000 --script res://tests/test_garage_idle_elements.gd -- --baseline --output=res://../docs/evidence/garage-idle-audit-2026-11-01/control
++python scripts/run_no_crash_dialog.py -- $idleGodot --path game --rendering-method mobile --position 10000,10000 --script res://tests/test_garage_idle_elements.gd -- --baseline --output=res://../docs/evidence/garage-idle-audit-2026-11-01/control/mobile
++python scripts/run_no_crash_dialog.py -- $idleGodot --path game --rendering-method gl_compatibility --position 10000,10000 --script res://tests/test_garage_idle_elements.gd -- --output=res://../docs/evidence/garage-idle-audit-2026-11-01/after/gl_compatibility
++python scripts/run_no_crash_dialog.py -- $idleGodot --path game --rendering-method mobile --position 10000,10000 --script res://tests/test_garage_idle_elements.gd -- --output=res://../docs/evidence/garage-idle-audit-2026-11-01/after/mobile
++python scripts/run_no_crash_dialog.py -- $idleGodot --path game --rendering-method gl_compatibility --position 10000,10000 --script res://tests/test_garage_wash_animation.gd -- --evidence-root=res://../docs/evidence/garage-idle-audit-2026-11-01/wash-animation-gl
++python scripts/run_no_crash_dialog.py -- $idleGodot --path game --rendering-method gl_compatibility --position 10000,10000 --script res://tests/probe_garage_wash_idle_control.gd -- --evidence-root=res://../docs/evidence/garage-idle-audit-2026-11-01/wash-control
++python scripts/run_no_crash_dialog.py -- $idleGodot --headless --path game --script res://tests/test_garage_hose.gd -- --evidence-root=res://../docs/evidence/garage-idle-audit-2026-11-01/hose
++python scripts/run_no_crash_dialog.py -- $idleGodot --headless --path game --script res://tests/test_garage_wash_surfaces.gd
++```
++
++Only two runtime sources change: `game/ui/car_showroom.gd` and `game/ui/garage_wash_effect.gd`. Supporting files are the focused audit, archived-runtime control, this document and status entries. Geometry, materials, physics, washing rates, masks, UI layout and backend code are unchanged. The previous Garage LOD/record work and concurrent soundtrack/model changes are preserved.
++
++[Results and hashes](evidence/garage-idle-audit-2026-11-01/report.json), [native captures](evidence/garage-idle-audit-2026-11-01/after), [logs](evidence/garage-idle-audit-2026-11-01/logs) and [scoped source checkpoint](evidence/garage-idle-audit-2026-11-01/task.patch). The checkpoint passes forward/reverse checks and exact-content round trips in an isolated Git directory; the main index is unchanged. The world-bound test uses Godot's documented [AABB support point](https://docs.godotengine.org/en/stable/classes/class_aabb.html#class-aabb-method-get-support).
+diff --git a/docs/PHASE_0_PLAN.md b/docs/PHASE_0_PLAN.md
+index 351c80cad9eb4f925193848ab0a93b027aa3a2d8..81de269c84ade2de2de1b300c4009cfe19692eab 100644
+--- a/docs/PHASE_0_PLAN.md
++++ b/docs/PHASE_0_PLAN.md
+@@ -1,3 +1,8 @@
++<!-- GARAGE-IDLE-AUDIT-20261101 -->
++## Other Garage elements audited for unnecessary drawing (2026-11-01)
++GIA01-GIA04: Off-camera snow no longer redraws the room after material preparation; melting and reflected-only visibility remain. Stationary wash cursors reuse drawing commands, and washing empty space submits no invisible-feedback draws. All eight sections settle; both desktop renderers48/0, hose81/0 and wash surfaces45/0 pass. Original washing139/4 reproduces with task-start sources. Exact cursor/room/five-car retained pixels pass; two runtime sources only. Commands, native views, first highlight-preparation correction and scoped checkpoint: [GARAGE_IDLE_AUDIT_2026_11_01.md](GARAGE_IDLE_AUDIT_2026_11_01.md). Tablet/owner acceptance and FPS remain unmeasured. No device query/test, APK, owner-save/process mutation, live/backend access, deployment or main-index write; concurrent work preserved.
++<!-- /GARAGE-IDLE-AUDIT-20261101 -->
++
+ <!-- GARAGE-PERFORMANCE-20261101 -->
+ ## Garage rendering and model optimisation (2026-11-01)
+ GPO01-GPO04: Off-camera playing records no longer redraw the Garage; phase and visible/reflection-only animation remain. Offline half-pixel LOD indices retain original GPU vertex buffers/full-detail geometry; layered Hover and all glazing stay full detail after a rejected canopy trial. Five-car main-view triangles fall25.72-45.09%; rotating component all-pass triangles fall25.08%. Both desktop renderers1589/0, washing45/0 and App menu35/0 pass; kit2424/3 reproduces with task-start sources/assets. Thirty native image pairs include maximum zoom; maximum mean RGB difference0.051605/255 and canopy region exact. Commands, views, memory/package tradeoff and scoped binary checkpoint: [GARAGE_PERFORMANCE_2026_11_01.md](GARAGE_PERFORMANCE_2026_11_01.md). Tablet/owner appearance, FPS and cold-start acceptance remain; no device query/test, APK, owner-save/process change, live mutation, deployment or main-index write. Concurrent work preserved.
+diff --git a/game/tests/probe_garage_wash_idle_control.gd b/game/tests/probe_garage_wash_idle_control.gd
+new file mode 100644
+index 0000000000000000000000000000000000000000..0bb022ccb190bd3fbc86059f7b72402c5968280d
+--- /dev/null
++++ b/game/tests/probe_garage_wash_idle_control.gd
+@@ -0,0 +1,8 @@
++extends "res://tests/test_garage_wash_animation.gd"
++## Attribute existing washing-fixture failures to the archived task-start runtime.
++func _initialize() -> void:
++	for relative: String in ["ui/car_showroom.gd","ui/garage_wash_effect.gd"]:
++		var script: Script = load("res://"+relative)
++		script.source_code = FileAccess.get_file_as_string("res://../docs/evidence/garage-idle-audit-2026-11-01/before/game/"+relative)
++		assert(script.reload(true) == OK)
++	super._initialize()
+diff --git a/game/tests/test_garage_idle_elements.gd b/game/tests/test_garage_idle_elements.gd
+new file mode 100644
+index 0000000000000000000000000000000000000000..4e67540ad1ed0ddab420b96cb610abd5bab411c1
+--- /dev/null
++++ b/game/tests/test_garage_idle_elements.gd
+@@ -0,0 +1,201 @@
++extends SceneTree
++## GIA01-GIA04: unchanged room elements, snow and idle washing draw costs.
++var output: String = "res://../docs/evidence/garage-idle-audit-2026-11-01"
++var baseline: bool = false
++var checks: int = 0
++var failures: int = 0
++var report: Dictionary = {}
++const Fixture = preload("res://tests/test_customisation_carousel.gd")
++
++class CountedShowroom extends CarShowroom:
++	var canvas_draws: int = 0
++	func _draw() -> void:
++		canvas_draws += 1
++		super._draw()
++
++func _initialize() -> void: run.call_deferred()
++func check(ok: bool,label: String) -> void:
++	checks += 1
++	if not ok:
++		failures += 1
++		print("FAIL: ",label)
++func frames(count: int = 12) -> void:
++	for tick: int in range(count): await process_frame
++	if DisplayServer.get_name() != "headless": await RenderingServer.frame_post_draw
++
++func sample(view: CountedShowroom,label: String) -> Dictionary:
++	await frames()
++	var draws: int = view.render_requests
++	var canvas: int = view.canvas_draws
++	var reflections: PackedInt64Array = view.reflections.draw_requests.duplicate()
++	var snow: float = view.weathering.snow_amount
++	var primitives: Array[float] = []
++	for tick: int in range(30):
++		await process_frame
++		primitives.append(Performance.get_monitor(Performance.RENDER_TOTAL_PRIMITIVES_IN_FRAME))
++	primitives.sort()
++	var row: Dictionary = {"requests":view.render_requests-draws,"canvas_draws":view.canvas_draws-canvas,"reflection_requests":[view.reflections.draw_requests[0]-reflections[0],view.reflections.draw_requests[1]-reflections[1]],"snow_before":snow,"snow_after":view.weathering.snow_amount,"primitives_median":primitives[15]}
++	report[label] = row
++	print("GARAGE_IDLE_SAMPLE ",label," ",JSON.stringify(row))
++	return row
++
++func section_audit() -> void:
++	var page := GaragePage.new()
++	page.cached_carousel = true
++	page.records = LocalRecords.new("user://garage-idle-audit-"+TrackLibrary.unique_id()+".json")
++	page.records.settings.music_enabled = false
++	var shop := Fixture.Shop.new()
++	root.add_child(shop)
++	page.economy = shop
++	root.add_child(page)
++	page.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
++	while not page.showroom.showroom_ready: await process_frame
++	var modes: Dictionary = {}
++	for destination: String in ["cars","care","customise","tuning","trophies","records","news","achievements"]:
++		page._show_section(destination)
++		if destination == "customise": page._set_customise_tab("stickers")
++		await create_timer(0.8).timeout
++		while page._workbench_focus_pending or page._menu_motion != null: await process_frame
++		await frames()
++		var before: int = page.showroom.render_requests
++		var reflection_before: PackedInt64Array = page.showroom.reflections.draw_requests.duplicate()
++		await frames(20)
++		modes[destination] = {"requests":page.showroom.render_requests-before,"reflections":[page.showroom.reflections.draw_requests[0]-reflection_before[0],page.showroom.reflections.draw_requests[1]-reflection_before[1]]}
++		check(modes[destination].requests == 0,"actual Garage section idle: "+destination)
++		if DisplayServer.get_name() != "headless": root.get_texture().get_image().save_png(output.path_join("page-"+destination+".png"))
++	report.sections = modes
++	page.free(); shop.free()
++	await frames(2)
++
++func run() -> void:
++	create_timer(180).timeout.connect(func() -> void: print("FAIL: Garage idle audit deadline"); quit(1))
++	for argument: String in OS.get_cmdline_user_args():
++		if argument == "--baseline": baseline = true
++		if argument.begins_with("--output="): output = argument.trim_prefix("--output=")
++	output = ProjectSettings.globalize_path(output)
++	DirAccess.make_dir_recursive_absolute(output)
++	if baseline:
++		for relative: String in ["ui/car_showroom.gd","ui/garage_wash_effect.gd"]:
++			var script: Script = load("res://"+relative)
++			script.source_code = FileAccess.get_file_as_string("res://../docs/evidence/garage-idle-audit-2026-11-01/before/game/"+relative)
++			assert(script.reload(true) == OK)
++	Engine.max_fps = 60
++	root.size = Vector2i(1280,720)
++	GameSoundtrack.instance().music_enabled = false
++	GameSoundtrack.instance().menu_player.stop()
++	var view := CountedShowroom.new()
++	view.garage_mode = true
++	root.add_child(view)
++	view.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
++	while not view.showroom_ready: await process_frame
++	for destination: String in ["car","trophies","records"]:
++		view.set_trophy_view(destination == "trophies")
++		view.set_record_view(destination == "records")
++		await create_timer(0.75).timeout
++		var row: Dictionary = await sample(view,"clean_"+destination)
++		check(row.requests == 0,"settled "+destination+" is idle")
++	view.set_record_view(true)
++	await frames()
++	view.weathering.restore({"snow":0.9,"slow_snow":0.4})
++	var snowy: Dictionary = await sample(view,"snow_off_camera")
++	check(snowy.snow_after < snowy.snow_before,"off-camera snow continues melting")
++	if not baseline: check(snowy.requests == 0,"off-camera snow does not redraw unchanged room")
++	if DisplayServer.get_name() != "headless":
++		view.set_process(false)
++		var room_image: Image = view.showroom_viewport.get_texture().get_image()
++		room_image.save_png(output.path_join("room-retained.png"))
++		var retained_room: PackedByteArray = room_image.get_data()
++		view._submit_render()
++		await frames()
++		view.showroom_viewport.get_texture().get_image().save_png(output.path_join("room-forced.png"))
++		check(view.showroom_viewport.get_texture().get_image().get_data() == retained_room,"off-camera melt leaves room pixels unchanged")
++		view.set_process(true)
++	view.set_record_view(false)
++	await create_timer(0.75).timeout
++	var visible: Dictionary = await sample(view,"snow_visible")
++	check(visible.requests > 0,"visible snow remains animated")
++	# The real car is outside the main camera but visible below the floor.
++	view.camera.fov = 10.0
++	view.camera.position = Vector3(0,3,-9)
++	view.camera.look_at(Vector3(0,-1.05,0))
++	view.invalidate_render()
++	if not baseline:
++		check(not view.camera.is_position_in_frustum(Vector3(0,1,0)),"reflection-only fixture excludes direct car")
++		check(view._weathering_visible(),"reflection-only car remains eligible for weather redraws")
++	var mirrored: Dictionary = await sample(view,"snow_reflection_only")
++	check(mirrored.requests > 0,"reflected snow keeps updating")
++	view.camera.fov = 40.0
++	view.reset_view()
++	view.weathering.restore({"snow":0.0,"slow_snow":0.0,"dirt":0.0})
++	view.invalidate_render()
++	view.set_wash_mode(true)
++	var motion := InputEventMouseMotion.new()
++	motion.position = Vector2(460,330)
++	view._wash_input(motion)
++	var cursor: Dictionary = await sample(view,"stationary_wash_cursor")
++	check(cursor.requests == 0,"stationary wash cursor does not redraw 3D")
++	if not baseline: check(cursor.canvas_draws == 0,"stationary wash cursor does not redraw canvas")
++	if DisplayServer.get_name() != "headless":
++		root.get_texture().get_image().save_png(output.path_join("cursor-still.png"))
++		var control_path: String = ProjectSettings.globalize_path("res://../docs/evidence/garage-idle-audit-2026-11-01/control/"+RenderingServer.get_current_rendering_method()+"/cursor-still.png")
++		if not baseline:
++			check(FileAccess.file_exists(control_path),"renderer-matched cursor control exists")
++		if not baseline and FileAccess.file_exists(control_path):
++			var retained: Image = root.get_texture().get_image()
++			check(retained.get_data() == Image.load_from_file(control_path).get_data(),"stationary cursor pixels match original drawing")
++		var before: int = view.canvas_draws
++		motion.position += Vector2(80,20)
++		view._wash_input(motion)
++		await frames(2)
++		check(view.canvas_draws > before,"moving wash cursor redraws")
++		root.get_texture().get_image().save_png(output.path_join("cursor-moved.png"))
++	var press := InputEventMouseButton.new()
++	press.button_index = MOUSE_BUTTON_LEFT
++	press.position = Vector2(12,12)
++	press.pressed = true
++	check(view.pick_body_surface(press.position).is_empty(),"empty wash fixture misses the car")
++	view._wash_input(press)
++	var empty: Dictionary = await sample(view,"washing_empty_space")
++	check(not view.wash_effect.visible,"empty wash has no visible feedback")
++	if not baseline: check(empty.requests == 0,"holding wash over empty space submits no 3D draws")
++	press.pressed = false
++	view._wash_input(press)
++	view.set_wash_mode(false)
++	var tail: Dictionary = await sample(view,"washing_finished")
++	check(tail.requests == 0 and tail.canvas_draws == 0,"finished washing has no residual drawing")
++	view.hide()
++	var hidden: Dictionary = await sample(view,"hidden_garage")
++	check(hidden.requests == 0,"hidden Garage submits no draws")
++	view.show()
++	view.weathering.restore({"snow":0.6,"slow_snow":0.1})
++	view.set_process(false)
++	for id: String in VehicleCatalog.IDS:
++		if id != view.vehicle_id:
++			view.replace_car(id,VehicleLivery.defaults(id),{"snow":0.6})
++			view.finish_car_transition()
++		if not baseline:
++			for zoom: float in [CarShowroom.MIN_ZOOM,1.0,CarShowroom.MAX_ZOOM]:
++				view.set_zoom(zoom)
++				check(view._weathering_visible(),"snow visibility follows "+id+" zoom "+str(zoom))
++		view.reset_view()
++		view.invalidate_render()
++		await frames()
++		if DisplayServer.get_name() != "headless":
++			var snow_image: Image = view.showroom_viewport.get_texture().get_image()
++			snow_image.save_png(output.path_join("snow-retained-"+id+".png"))
++			var original: PackedByteArray = snow_image.get_data()
++			view._submit_render()
++			await frames()
++			check(view.showroom_viewport.get_texture().get_image().get_data() == original,"retained snowy car equals forced drawing "+id)
++			view.showroom_viewport.get_texture().get_image().save_png(output.path_join("snow-"+id+".png"))
++	report.checks = checks
++	report.failures = failures
++	report.renderer = RenderingServer.get_current_rendering_method()
++	FileAccess.open(output.path_join("report.json"),FileAccess.WRITE).store_string(JSON.stringify(report,"\t"))
++	view.free()
++	await section_audit()
++	report.checks = checks
++	report.failures = failures
++	FileAccess.open(output.path_join("report.json"),FileAccess.WRITE).store_string(JSON.stringify(report,"\t"))
++	print("GARAGE_IDLE_ELEMENTS ",checks," checks, ",failures," failures")
++	quit(1 if failures else 0)
+diff --git a/game/ui/car_showroom.gd b/game/ui/car_showroom.gd
+index d878691dc98f874379553afcc68d80f45303258b..17f1c61aadd50339992a17f3c0b09385a8f1a3c0 100644
+--- a/game/ui/car_showroom.gd
++++ b/game/ui/car_showroom.gd
+@@ -67,6 +67,9 @@ var _settle_draws: int = 0
+ var _reflection_settle_draws: int = 0
+ var _record_visibility_state: Array = []
+ var _record_visible: bool = true
++var _weather_visibility_state: Array = []
++var _weather_visible: bool = true
++var _last_wash_cursor_state: Array = []
+ const DEFAULT_YAW: float = -0.70
+ const GARAGE_CAMERA_YAW: float = 0.0
+ const MIN_ELEVATION: float = PI / 36.0 # 5 degrees, always above the floor.
+@@ -590,6 +593,7 @@ func _wash_effect_changed() -> void:
+ 
+ func invalidate_render() -> void:
+ 	_render_dirty = true
++	_weather_visibility_state.clear()
+ 	if is_instance_valid(showroom_viewport) and not is_visible_in_tree(): showroom_viewport.render_target_update_mode = SubViewport.UPDATE_DISABLED
+ 	if is_inside_tree() and is_visible_in_tree() and is_instance_valid(camera): _request_render()
+ 
+@@ -624,7 +628,39 @@ func _submit_render(reflection_changed: bool = true, room_animation: bool = fals
+ 	render_requests += 1
+ 
+ func _render_state() -> Array:
+-	return [camera.transform,camera.fov,camera.keep_aspect,showroom_viewport.size,car.get_instance_id(),turntable.transform if is_instance_valid(turntable) else car.transform,weathering.parameter_uploads,weathering.wash_mask_uploads,is_instance_valid(wash_effect) and wash_effect.visible]
++	var weather_visible: bool = _weathering_visible()
++	return [camera.transform,camera.fov,camera.keep_aspect,showroom_viewport.size,car.get_instance_id(),turntable.transform if is_instance_valid(turntable) else car.transform,weathering.installed,weathering.parameter_uploads if weather_visible else 0,weathering.wash_mask_uploads if weather_visible else 0,is_instance_valid(wash_effect) and wash_effect.visible]
++
++func _weathering_visible() -> bool:
++	var state: Array = [camera.global_transform,camera.fov,camera.keep_aspect,showroom_viewport.size,car.get_instance_id(),car.global_transform,car.customisation.duplicate(),weathering.get_instance_id(),reflections != null and reflections.enabled]
++	if state == _weather_visibility_state: return _weather_visible
++	_weather_visibility_state = state
++	_weather_visible = false
++	var bounds := AABB()
++	var first: bool = true
++	# Use actual affected meshes, including fitted parts and wheel frames;
++	# persisted wash-volume bounds intentionally exclude some fitted kits.
++	for binding: Dictionary in weathering.bindings:
++		var part: MeshInstance3D = binding.node
++		if not is_instance_valid(part) or part.mesh == null: continue
++		var box: AABB = part.global_transform * part.mesh.get_aabb().grow(part.extra_cull_margin)
++		bounds = box if first else bounds.merge(box)
++		first = false
++	if first: return false
++	var captures: Array[Camera3D] = [camera]
++	if reflections != null and reflections.enabled:
++		reflections.sync()
++		captures.append_array(reflections.cameras)
++	for capture: Camera3D in captures:
++		var visible: bool = true
++		for plane: Plane in capture.get_frustum():
++			if plane.distance_to(bounds.get_support(-plane.normal)) > 0.0:
++				visible = false
++				break
++		if visible:
++			_weather_visible = true
++			break
++	return _weather_visible
+ 
+ func _record_animation_visible() -> bool:
+ 	if record_vinyl == null or camera == null: return false
+@@ -689,14 +725,19 @@ func _process(delta: float) -> void:
+ 			wash_elapsed = 0.0
+ 			condition_changed.emit()
+ 	if wash_effect != null and (wash_effect.visible or (washing and wash_mode)):
++		var was_visible: bool = wash_effect.visible
+ 		wash_effect.advance(delta, washing and wash_mode)
+-		animated = true
+-		reflection_animation = true
++		if was_visible or wash_effect.visible:
++			animated = true
++			reflection_animation = true
+ 	var state: Array = _render_state()
+ 	if animated or _render_dirty or state != _last_render_state:
+ 		_request_render(reflection_animation or _render_dirty or state != _last_render_state,room_animation)
+ 	_last_render_state = state
+-	if wash_mode: queue_redraw()
++	var cursor_state: Array = [wash_pointer,wash_pointer_valid,washing] if wash_mode else []
++	if cursor_state != _last_wash_cursor_state:
++		_last_wash_cursor_state = cursor_state
++		queue_redraw()
+ 
+ func _draw() -> void:
+ 	if wash_mode and wash_pointer_valid and not washing:
+diff --git a/game/ui/garage_wash_effect.gd b/game/ui/garage_wash_effect.gd
+index 248255ac0f8064fbe6469dabfdfc244124b0fa86..bae3ed62cc8b528c0d213dae23ee7d980e6cdd7c 100644
+--- a/game/ui/garage_wash_effect.gd
++++ b/game/ui/garage_wash_effect.gd
+@@ -117,6 +117,7 @@ func _prepare_hose() -> void:
+ 	jet.visibility_changed.connect(visual_changed.emit)
+ 
+ func advance(delta: float, active: bool) -> void:
++	var was_visible: bool = visible
+ 	var step: float = clampf(delta, 0.0, 0.1)
+ 	clock += step
+ 	var touching: bool = active and not contact.is_empty()
+@@ -157,7 +158,7 @@ func advance(delta: float, active: bool) -> void:
+ 	var alive: int = _advance_pool(foam, foam_slots, step, false)
+ 	alive += _advance_pool(water, water_slots, step, true)
+ 	visible = touching or alive > 0
+-	visual_changed.emit()
++	if was_visible or visible: visual_changed.emit()
+ 
+ func _emit(frame: Basis) -> void:
+ 	# Indexed sequences avoid global RNG side effects and remain bounded forever.

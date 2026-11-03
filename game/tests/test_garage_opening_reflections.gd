@@ -34,8 +34,8 @@ func run() -> void:
 	studio.customisation=VehicleCustomisation.defaults()
 	root.add_child(studio)
 	MenuStyle.fill(studio)
-	var picture: TextureRect=studio.find_child("GarageOpeningPicture",true,false)
-	check(picture!=null and picture.visible and picture.texture!=null,"original stock picture is available immediately")
+	var picture: Control=studio.find_child("GarageOpeningPicture",true,false)
+	check(picture!=null and picture.visible and picture.get_script()==preload("res://ui/garage_loading_car.gd"),"neutral model placeholder is available immediately")
 	var last_input: int=studio._last_input
 	var hover:=InputEventMouseMotion.new()
 	studio._input(hover)

@@ -20,11 +20,6 @@ static func build(car: CarVisual) -> void:
 	var body: Node3D = car.body
 	# Cast rear counterweight: rounded shoulders and an inset, removable engine lid.
 	_box(body,Vector3(1.69,0.80,0.97),Vector3(0,1.02,1.07),0.17,paint,detail,"CastCounterweight")
-	_box(body,Vector3(1.43,0.055,0.83),Vector3(0,1.441,1.04),0.024,rubber,detail,"EngineLidGasket")
-	_box(body,Vector3(1.39,0.065,0.79),Vector3(0,1.476,1.04),0.028,accent,detail,"EngineLid")
-	_box(body,Vector3(0.83,0.008,0.49),Vector3(0,1.511,1.06),0.012,rubber,1,"CoolingRecess")
-	for index: int in range(10):
-		_box(body,Vector3(0.78,0.016,0.022),Vector3(0,1.519,0.848+index*0.047),0.007,dark,1,"CoolingLouvre")
 	# Continuous formed sidework, with open wheel arches and functional entry steps.
 	for side: float in [-1.0,1.0]:
 		_side_skin(car,side,paint)
@@ -41,7 +36,6 @@ static func build(car: CarVisual) -> void:
 	_guard(car,dark,steel,bright,rubber,accent,amber,detail)
 	_mast(car,dark,steel,bright,rubber,detail)
 	# Recessed rear light assemblies, perimeter bumper and safety bars.
-	_box(body,Vector3(1.52,0.19,0.15),Vector3(0,0.57,1.59),0.055,rubber,detail,"RearBumper")
 	for side: float in [-1.0,1.0]:
 		_box(body,Vector3(0.27,0.17,0.06),Vector3(side*0.55,1.10,1.548),0.032,rubber,detail,"TailLampRecess")
 		_box(body,Vector3(0.22,0.11,0.045),Vector3(side*0.55,1.10,1.584),0.023,car.brake_material,detail,"TailLampLens")
@@ -56,6 +50,20 @@ static func build(car: CarVisual) -> void:
 
 static func config_axle() -> float:
 	return 1.72/(2.0*HandlingConfig.BODY_SCALE)
+
+static func stock_engine_cover(car: CarVisual, parent: Node3D) -> void:
+	var detail: int = 1 if car.simple_model else 3
+	var rubber := CompactFinish.rubber(Color("172024"))
+	var dark := CompactFinish.paint(Color("273439"))
+	dark.roughness = 0.54
+	_box(parent,Vector3(1.43,0.055,0.83),Vector3(0,1.441,1.04),0.024,rubber,detail,"EngineLidGasket")
+	_box(parent,Vector3(1.39,0.065,0.79),Vector3(0,1.476,1.04),0.028,car.paint_materials.accent,detail,"EngineLid")
+	_box(parent,Vector3(0.83,0.008,0.49),Vector3(0,1.511,1.06),0.012,rubber,1,"CoolingRecess")
+	for index: int in range(10):
+		_box(parent,Vector3(0.78,0.016,0.022),Vector3(0,1.519,0.848+index*0.047),0.007,dark,1,"CoolingLouvre")
+
+static func stock_rear_guard(car: CarVisual, parent: Node3D) -> void:
+	_box(parent,Vector3(1.52,0.19,0.15),Vector3(0,0.57,1.59),0.055,CompactFinish.rubber(Color("172024")),1 if car.simple_model else 3,"RearBumper")
 
 static func _side_skin(car: CarVisual, side: float, paint: Material) -> void:
 	var tool := SurfaceTool.new()
@@ -170,11 +178,6 @@ static func _operator(car: CarVisual, seat: Material, rubber: Material, dark: Ma
 static func _guard(car: CarVisual, dark: Material, steel: Material, bright: Material, rubber: Material, accent: Material, amber: Material, detail: int) -> void:
 	var parent: Node3D = car.body
 	for side: float in [-1.0,1.0]:
-		for z: float in [-0.77,0.74]:
-			_beam(parent,Vector3(side*0.65,1.02,z),Vector3(side*0.71,2.61,z+0.06),0.078,dark,detail)
-			_box(parent,Vector3(0.17,0.11,0.19),Vector3(side*0.65,1.05,z),0.021,steel,detail,"GuardFoot")
-			_bolt(parent,Vector3(side*0.74,1.06,z),Vector3(side,0,0),0.021,bright)
-		_box(parent,Vector3(0.13,0.12,1.85),Vector3(side*0.71,2.65,0.02),0.033,dark,detail,"GuardSideRail")
 		_box(parent,Vector3(0.25,0.17,0.16),Vector3(side*0.70,2.47,-0.81),0.045,rubber,detail,"WorkLampHousing")
 		_box(parent,Vector3(0.21,0.12,0.025),Vector3(side*0.70,2.47,-0.902),0.025,bright,detail,"WorkLampReflector")
 		_box(parent,Vector3(0.18,0.09,0.018),Vector3(side*0.70,2.47,-0.921),0.020,accent,detail,"WorkLampLens")
@@ -183,16 +186,30 @@ static func _guard(car: CarVisual, dark: Material, steel: Material, bright: Mate
 		_pipe(parent,[Vector3(side*0.70,2.23,-0.69),Vector3(side*0.86,2.23,-0.62),Vector3(side*0.88,2.17,-0.58)],0.014,dark)
 		_box(parent,Vector3(0.17,0.23,0.07),Vector3(side*0.88,2.13,-0.54),0.037,rubber,detail,"MirrorHousing")
 		_box(parent,Vector3(0.13,0.18,0.008),Vector3(side*0.88,2.13,-0.50),0.025,bright,detail,"MirrorGlass")
-	for z: float in [-0.85,0.90]:
-		_box(parent,Vector3(1.49,0.12,0.12),Vector3(0,2.65,z),0.031,dark,detail,"GuardCrossRail")
-	for index: int in range(6):
-		_box(parent,Vector3(1.34,0.052,0.061),Vector3(0,2.675,-0.65+index*0.27),0.017,dark,detail,"GuardSlat")
 	var beacon_base := VisualGeometry.cylinder(parent,0.115,0.044,Vector3(0.55,2.74,0.65),rubber,true)
 	beacon_base.name = "BeaconBase"
 	VisualGeometry.cylinder(parent,0.087,0.14,Vector3(0.55,2.83,0.65),amber,true)
 	VisualGeometry.cylinder(parent,0.089,0.021,Vector3(0.55,2.908,0.65),amber,true)
 	for index: int in range(3):
 		VisualGeometry.ring(parent,Vector3(0.55,2.784+index*0.039,0.65),0.086,0.004,amber)
+
+static func stock_cabin(car: CarVisual, parent: Node3D) -> void:
+	# Original structure is replaceable; lamps, mirrors and beacon stay fixed.
+	var dark := CompactFinish.paint(Color("273439"))
+	dark.roughness = 0.54
+	var steel := CompactFinish.alloy(Color("687576"))
+	var bright := CompactFinish.alloy(Color("bac5c1"))
+	var detail: int = 1 if car.simple_model else 3
+	for side: float in [-1.0,1.0]:
+		for z: float in [-0.77,0.74]:
+			_beam(parent,Vector3(side*0.65,1.02,z),Vector3(side*0.71,2.61,z+0.06),0.078,dark,detail)
+			_box(parent,Vector3(0.17,0.11,0.19),Vector3(side*0.65,1.05,z),0.021,steel,detail,"GuardFoot")
+			_bolt(parent,Vector3(side*0.74,1.06,z),Vector3(side,0,0),0.021,bright)
+		_box(parent,Vector3(0.13,0.12,1.85),Vector3(side*0.71,2.65,0.02),0.033,dark,detail,"GuardSideRail")
+	for z: float in [-0.85,0.90]:
+		_box(parent,Vector3(1.49,0.12,0.12),Vector3(0,2.65,z),0.031,dark,detail,"GuardCrossRail")
+	for index: int in range(6):
+		_box(parent,Vector3(1.34,0.052,0.061),Vector3(0,2.675,-0.65+index*0.27),0.017,dark,detail,"GuardSlat")
 
 static func _mast(car: CarVisual, dark: Material, steel: Material, bright: Material, rubber: Material, detail: int) -> void:
 	var parent: Node3D = car.body
@@ -253,35 +270,43 @@ static func wheel(car: CarVisual, center: Vector3, radius: float, width: float) 
 	CompactDetail.tire(pivot,CompactFinish.rubber(Color("172024")),car.simple_model)
 	var tire: MeshInstance3D = pivot.get_child(0)
 	tire.scale = Vector3(width/0.28,radius/0.37,radius/0.37)
+	if center.z>0.0: car.rear_wheels.append(pivot)
+	car.register_rolling_wheel(pivot,radius)
+
+static func stock_wheel(parent: Node3D, radius: float, width: float, side: float, closed_trim: bool = false) -> void:
 	var rim := CompactFinish.paint(Color("b3b5a9"))
 	rim.metallic = 0.48
 	var dark := CompactFinish.rubber(Color("263034"))
 	var bright := CompactFinish.alloy(Color("9ba7a5"))
-	var side: float = signf(center.x)
 	var scale_factor: float = radius/0.43
 	var face: float = width*0.48
 	# Recessed pressed-steel dish, rolled rim lip, raised hub and six lug nuts.
-	var dish := VisualGeometry.cylinder(pivot,radius*0.63,width*0.85,Vector3.ZERO,rim,true)
+	var dish := VisualGeometry.cylinder(parent,radius*0.63,width*0.85,Vector3.ZERO,rim,true)
 	dish.rotation.z = PI*0.5
-	var well := VisualGeometry.cylinder(pivot,radius*0.47,0.018,Vector3(side*(face+0.005),0,0),dark,true)
+	var well := VisualGeometry.cylinder(parent,radius*0.47,0.018,Vector3(side*(face+0.005),0,0),dark,true)
 	well.rotation.z = PI*0.5
-	var hub := VisualGeometry.cylinder(pivot,radius*0.26,0.050,Vector3(side*(face+0.023),0,0),rim,true)
+	var hub := VisualGeometry.cylinder(parent,radius*0.26,0.050,Vector3(side*(face+0.023),0,0),rim,true)
 	hub.rotation.z = PI*0.5
 	var lip := Node3D.new()
-	pivot.add_child(lip)
+	parent.add_child(lip)
 	lip.position.x = side*(face+0.008)
 	lip.rotation.z = PI*0.5
-	VisualGeometry.ring(lip,Vector3.ZERO,radius*0.59,0.018*scale_factor,bright)
-	VisualGeometry.ring(lip,Vector3.ZERO,radius*0.48,0.009*scale_factor,rim)
+	if not closed_trim:
+		VisualGeometry.ring(lip,Vector3.ZERO,radius*0.59,0.018*scale_factor,bright)
+		VisualGeometry.ring(lip,Vector3.ZERO,radius*0.48,0.009*scale_factor,rim)
 	for index: int in range(6):
 		var angle: float = index*TAU/6.0
-		_bolt(pivot,Vector3(side*(face+0.047),sin(angle)*radius*0.18,cos(angle)*radius*0.18),Vector3(side,0,0),0.016*scale_factor,bright)
-		var hole := VisualGeometry.cylinder(pivot,0.032*scale_factor,0.012,Vector3(side*(face+0.016),sin(angle)*radius*0.48,cos(angle)*radius*0.48),dark,true)
+		_bolt(parent,Vector3(side*(face+0.047),sin(angle)*radius*0.18,cos(angle)*radius*0.18),Vector3(side,0,0),0.016*scale_factor,bright)
+		var hole := VisualGeometry.cylinder(parent,0.032*scale_factor,0.012,Vector3(side*(face+0.016),sin(angle)*radius*0.48,cos(angle)*radius*0.48),dark,true)
 		hole.rotation.z = PI*0.5
 	# A valve stem adds scale without additional moving frames.
-	_beam(pivot,Vector3(side*face,0,radius*0.52),Vector3(side*(face+0.032),0,radius*0.52),0.012,dark,1)
-	if center.z>0.0: car.rear_wheels.append(pivot)
-	car.register_rolling_wheel(pivot,radius)
+	_beam(parent,Vector3(side*face,0,radius*0.52),Vector3(side*(face+0.032),0,radius*0.52),0.012,dark,1)
+	if closed_trim:
+		for node: MeshInstance3D in parent.find_children("*","MeshInstance3D",true,false):
+			if node.mesh is CylinderMesh:
+				var copy: CylinderMesh=node.mesh.duplicate()
+				copy.rings=1
+				node.mesh=copy
 
 static func _bolt(parent: Node3D, point: Vector3, normal: Vector3, radius: float, material: Material) -> void:
 	var bolt := VisualGeometry.cylinder(parent,radius,0.014,point,material,true)

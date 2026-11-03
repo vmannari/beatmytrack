@@ -3,13 +3,31 @@ extends RefCounted
 const MAX_ENTRIES: int = 5
 const MAX_BYTES: int = 64 * 1024 * 1024
 static var entries: Array[Dictionary] = []
+static var generation: int = 0
 
 static func bytes_used() -> int:
 	var total: int = 0
 	for entry: Dictionary in entries: total += int(entry.bytes)
 	return total
 
+static func shared_road_bytes(roads: Array) -> int:
+	# Only identical immutable resource objects prove shared buffers. Geometry
+	# equality/names do not; nodes and mutable instance buffers remain private.
+	var owned: Dictionary = {}
+	for entry: Dictionary in entries:
+		for id: int in entry.get("resources",{}): owned[id] = int(entry.resources[id])
+	var total: int = 0
+	var seen: Dictionary = {}
+	for entry: Dictionary in roads:
+		for data: Dictionary in entry.meshes:
+			var id: int = data.mesh.get_instance_id()
+			if owned.has(id) and not seen.has(id):
+				seen[id] = true
+				total += int(owned[id])
+	return total
+
 static func trim_cache(allowance: int = 0) -> void:
+	generation += 1
 	var total: int = bytes_used()
 	while not entries.is_empty() and total > allowance: total -= int(entries.pop_front().bytes)
 
@@ -34,6 +52,7 @@ static func restore(key: Array, visual: Node3D) -> bool:
 
 static func remember(key: Array, visual: Node3D, track: NativeTrack) -> void:
 	var resources: Dictionary = {}
+	var retained_resources: Dictionary = {}
 	# Include CPU/GPU grid masks conservatively, then each mesh/buffer once.
 	var bytes: int = track.cells.size()*(20 if track.metadata.get("theme","pine") == "desert" else 16)
 	for child: Node in visual.get_children(): bytes += _resource_bytes(child,resources)
@@ -44,6 +63,9 @@ static func remember(key: Array, visual: Node3D, track: NativeTrack) -> void:
 		holder.add_child(copy)
 		_own(copy,holder)
 		_isolate_instances(copy)
+		_resource_bytes(copy,retained_resources)
+	bytes += retained_resources.size()*32
+	if bytes > MAX_BYTES: holder.free(); return
 	var scene := PackedScene.new()
 	var packed: Error = scene.pack(holder)
 	holder.free()
@@ -58,7 +80,7 @@ static func remember(key: Array, visual: Node3D, track: NativeTrack) -> void:
 	for entry: Dictionary in entries: total += int(entry.bytes)
 	while not entries.is_empty() and (entries.size() >= MAX_ENTRIES or total > MAX_BYTES):
 		total -= int(entries.pop_front().bytes)
-	entries.append({"key":key.duplicate(true),"scene":scene,"bytes":bytes,"metadata":metadata,"props":paths,"tyres":visual.tyre_instances.get_index() if visual.tyre_instances != null else -1,"scenic_count":visual.scenic_count})
+	entries.append({"key":key.duplicate(true),"scene":scene,"bytes":bytes,"resources":retained_resources,"metadata":metadata,"props":paths,"tyres":visual.tyre_instances.get_index() if visual.tyre_instances != null else -1,"scenic_count":visual.scenic_count})
 
 static func _own(node: Node, holder: Node) -> void:
 	node.owner = holder
@@ -102,7 +124,9 @@ static func restore_cooperative(key: Array, visual: NativeTrackVisual) -> bool:
 
 
 static func remember_cooperative(key: Array, visual: NativeTrackVisual, track: NativeTrack) -> void:
+	var started_generation: int = generation
 	var resources: Dictionary = {}
+	var retained_resources: Dictionary = {}
 	var bytes: int = track.cells.size()*(20 if track.metadata.get("theme","pine") == "desert" else 16)
 	for child: Node in visual.get_children():
 		if not await visual._yield_build(): return
@@ -121,6 +145,7 @@ static func remember_cooperative(key: Array, visual: NativeTrackVisual, track: N
 		holder.add_child(copy)
 		_own(copy,holder)
 		_isolate_instances(copy)
+		_resource_bytes(copy,retained_resources)
 		if visual.profile_build: visual.build_costs.cache_duplicate_max_us = maxi(int(visual.build_costs.get("cache_duplicate_max_us",0)),Time.get_ticks_usec()-duplicate_started)
 	if not await visual._yield_build():
 		if is_instance_valid(lease): lease.free()
@@ -132,7 +157,8 @@ static func remember_cooperative(key: Array, visual: NativeTrackVisual, track: N
 	lease.free()
 	# Packing is an indivisible engine call. Publish only a complete current
 	# scene; never expose partial cache entries during cooperative preparation.
-	if packed != OK or not visual._build_is_current(): return
+	bytes += retained_resources.size()*32
+	if packed != OK or not visual._build_is_current() or started_generation != generation or bytes > MAX_BYTES: return
 	var paths: Array[int] = []
 	for prop: Node3D in visual.light_instances: paths.append(prop.get_index())
 	var metadata: Dictionary = {}
@@ -142,7 +168,7 @@ static func remember_cooperative(key: Array, visual: NativeTrackVisual, track: N
 	var total: int = bytes
 	for entry: Dictionary in entries: total += int(entry.bytes)
 	while not entries.is_empty() and (entries.size() >= MAX_ENTRIES or total > MAX_BYTES): total -= int(entries.pop_front().bytes)
-	entries.append({"key":key.duplicate(true),"scene":scene,"bytes":bytes,"metadata":metadata,"props":paths,"tyres":visual.tyre_instances.get_index() if visual.tyre_instances != null else -1,"scenic_count":visual.scenic_count})
+	entries.append({"key":key.duplicate(true),"scene":scene,"bytes":bytes,"resources":retained_resources,"metadata":metadata,"props":paths,"tyres":visual.tyre_instances.get_index() if visual.tyre_instances != null else -1,"scenic_count":visual.scenic_count})
 
 static func _isolate_instances(node: Node) -> void:
 	if node is MultiMeshInstance3D and node.multimesh != null:
@@ -169,15 +195,17 @@ static func _resource_bytes(node: Node, seen: Dictionary) -> int:
 		mesh = node.multimesh.mesh
 		bytes += node.multimesh.instance_count*128
 	if mesh != null and not seen.has(mesh.get_instance_id()):
-		seen[mesh.get_instance_id()] = true
+		var mesh_bytes: int = 0
 		for surface: int in range(mesh.get_surface_count()):
 			if mesh is ArrayMesh:
 				# Counts are enough for this conservative budget. Avoid decoding
 				# complete vertex/index arrays again after spatial preparation.
-				bytes += mesh.surface_get_array_len(surface)*96+mesh.surface_get_array_index_len(surface)*4
+				mesh_bytes += mesh.surface_get_array_len(surface)*96+mesh.surface_get_array_index_len(surface)*4
 				continue
 			var arrays: Array = mesh.surface_get_arrays(surface)
-			bytes += arrays[Mesh.ARRAY_VERTEX].size()*96
-			if arrays[Mesh.ARRAY_INDEX] != null: bytes += arrays[Mesh.ARRAY_INDEX].size()*4
+			mesh_bytes += arrays[Mesh.ARRAY_VERTEX].size()*96
+			if arrays[Mesh.ARRAY_INDEX] != null: mesh_bytes += arrays[Mesh.ARRAY_INDEX].size()*4
+		seen[mesh.get_instance_id()] = mesh_bytes
+		bytes += mesh_bytes
 	for child: Node in node.get_children(): bytes += _resource_bytes(child,seen)
 	return bytes

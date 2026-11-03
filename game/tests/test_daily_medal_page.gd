@@ -12,7 +12,7 @@ var service: Feed
 
 class Feed extends Node:
 	signal released
-	var player: Dictionary = {"id":"local-player","display_name":"Ville"}
+	var player: Dictionary = {"id":"local-player","display_name":"Ville","country_code":"FI"}
 	var pending: bool = false
 	var calls: Array[String] = []
 	func signed_in() -> bool: return true
@@ -34,6 +34,8 @@ class Feed extends Node:
 			if item.begins_with("lap_ticks="): ticks = int(item.get_slice("=",1))
 		var position: int = 8 if ticks < 8160 else 180 if ticks < 8640 else 287 if ticks < 8880 else 900
 		response.data.merge({"version_id":VERSION,"vehicle_id":car,"tick_rate":120,"population":1284,"cutoffs":[],"comparison":{"position":position,"population":1284,"top_percent":ceili(float(position)*100/1284),"candidate_ticks":ticks},"player":null,"next_cursor":null,"items":[{"player_id":"mika","display_name":"Mika","rank":position-1,"time_ticks":ticks-35,"gap_ticks":100},{"player_id":"antti","display_name":"Antti","rank":position+1,"time_ticks":ticks+42,"gap_ticks":177}]})
+		response.data.items[0]["country_code"] = "JP"
+		response.data.items[1]["country_code"] = "SE"
 		for index: int in range(9): response.data.cutoffs.append({"percentile":Rules.PERCENTILES[index],"lap_ticks":roundi(LIMITS[index]*120)})
 		if pending: await released
 		return response
@@ -66,6 +68,7 @@ func capture(label: String) -> void:
 	if DisplayServer.get_name() == "headless": return
 	await RenderingServer.frame_post_draw
 	var output: String = ProjectSettings.globalize_path("res://../docs/evidence/daily-medal-page-2026-10-31/")
+	if not OS.get_environment("BMT_DAILY_MEDAL_OUTPUT").is_empty(): output = OS.get_environment("BMT_DAILY_MEDAL_OUTPUT")
 	check(root.get_texture().get_image().save_png(output.path_join(label+".png")) == OK,"capture "+label)
 
 func run() -> void:
@@ -90,7 +93,7 @@ func run() -> void:
 	fixture(app.records,monday+4,4)
 	fixture(app.records,DAY,4)
 	fixture(app.records,DAY,1,"kart")
-	fixture(app.records,DAY,6,"pickup")
+	fixture(app.records,DAY,6,"forklift")
 	var entries: Dictionary = Progress.load_entries(app.records)
 	check(Progress.week(entries,DAY,"compact") == [3,0,2,3,2,2,-1],"weekly medals use UTC Monday and preserve unplayed/future days")
 	check(Progress.week(entries,DAY,"electric") == [0,0,0,0,0,0,-1],"weekly medals remain car specific")
@@ -116,15 +119,27 @@ func run() -> void:
 	await page.refresh()
 	await settle()
 	var card: Node = page._race_panel
-	check(card.result.passed == 4 and card._award.text == "Silver","page restores earned silver from passed stage 40")
-	check(card._time.text == "1:12.480" and card._gap.text.begins_with("0.480"),"best flying lap and exact gold gap match the reference behavior")
+	check(card.find_children("*","OptionButton",true,false).is_empty(),"daily race card has no car dropdown")
+	check(card.result.passed == 4 and card._medals.get_child(1).selected and card._medals.get_child(1).earned,"page restores earned silver from passed stage 40")
+	check(card._time.text == "1:12.480" and card._target.text == "Target 1:12.000" and card._target.tooltip_text.begins_with("0.480"),"best flying lap and exact gold gap match the reference behavior")
 	check(card._rows.get_child_count() == 3 and card._rows.find_child("DailyNearbySelf",true,false) != null,"nearby flying-lap standings highlight the player")
+	var own_flag: TextureRect = card._rows.find_child("DailyNearbySelf",true,false).find_child("PlayerCountryFlag",true,false)
+	check(own_flag.get_meta("country_code") == "FI" and own_flag.texture == PlayerCountry.texture("FI"),"local candidate row retains the account's country flag")
+	var nearby_flags: Array[Node] = card._rows.find_children("PlayerCountryFlag","TextureRect",true,false)
+	check(nearby_flags.size() == 3 and nearby_flags[0].get_meta("country_code") == "JP" and nearby_flags[2].get_meta("country_code") == "SE","nearby opponents show the service country flags")
+	for label: Label in card.find_children("*","Label",true,false):
+		check(label.text != "Silver" and not label.text.contains("Clear the next stage") and not label.text.contains("s to Gold"),"medal names and next-medal sentences do not repeat the icons")
 	check(card.race_button.text == "Race again","returning player has race again action")
-	for size: Vector2i in [Vector2i(1280,720),Vector2i(960,540),Vector2i(844,390)]:
+	for size: Vector2i in [Vector2i(1440,900),Vector2i(1280,720),Vector2i(960,540),Vector2i(844,390)]:
 		root.size = size
 		await settle()
 		check(not page._hero.get_rect().intersects(card.get_rect()),"feature and result card do not overlap")
 		check(page.find_child("DailyScroll",true,false).get_global_rect().encloses(page._race.get_global_rect()),"race action fits without scrolling")
+		for row: Control in card._rows.get_children():
+			check(card.get_global_rect().encloses(row.get_global_rect()),"standings with flags stay inside the result card at "+str(size))
+		if size.y >= 720:
+			var viewport_bottom: float = page.find_child("DailyScroll",true,false).get_global_rect().end.y
+			check(absf(page._stage.get_global_rect().end.y-viewport_bottom) < 2.0,"daily event fills the available height at "+str(size))
 		await capture("silver-%dx%d" % [size.x,size.y])
 	root.size = Vector2i(1280,720)
 	await settle()
@@ -137,37 +152,38 @@ func run() -> void:
 	TranslationServer.set_locale("en")
 	GameText.refresh(self)
 	card._render()
-	for vehicle: String in ["kart","pickup"]:
-		card.car_picker.item_selected.emit(VehicleCatalog.IDS.find(vehicle))
+	for vehicle: String in ["kart","forklift"]:
+		app._select_header_vehicle(VehicleCatalog.IDS.find(vehicle))
 		await settle()
-		check(card._award.text == ("Bronze" if vehicle == "kart" else "Gold"),"car-specific medal displays "+vehicle)
+		check(card._medals.get_child(0 if vehicle == "kart" else 2).selected,"car-specific medal displays "+vehicle)
 		await capture("bronze" if vehicle == "kart" else "gold")
-	card.car_picker.item_selected.emit(0)
+	app._select_header_vehicle(0)
 	await settle()
 	card.standings_button.pressed.emit()
 	await settle()
 	var dialog: Node = page._standings
 	check(dialog != null and dialog.flying_laps and not dialog.busy and dialog._rows.get_child_count() == 2,"view all opens flying-lap standings")
 	check(service.calls[-1].contains("/lap-standings?"),"view all requests the same lap metric")
-	dialog._select_vehicle(1)
+	check(dialog._rows.find_children("PlayerCountryFlag","TextureRect",true,false).size() == 2,"View all retains its shared country flags")
+	dialog._select_vehicle(2)
 	await settle()
-	check(card.vehicle == "pickup" and page._week_strip.vehicle == "pickup","standings car changes update the result card and weekly medals")
+	check(card.vehicle == "forklift" and page._week_strip.vehicle == "forklift","standings car changes update the result card and weekly medals")
 	dialog.queue_free()
-	card.car_picker.item_selected.emit(0)
+	app._select_header_vehicle(0)
 	await settle()
-	check(card.vehicle == "compact" and card.result.passed == 4,"car chooser restores the correct saved result")
+	check(card.vehicle == "compact" and card.result.passed == 4,"header car selection restores the correct saved result")
 	fixture(app.records,DAY,1)
 	check(Progress.best(Progress.load_entries(app.records),DAY,VERSION,"compact").passed == 4,"a worse retry never removes a medal")
 	fixture(app.records,DAY,9)
 	card.refresh()
 	page._update_week()
 	await settle()
-	check(card._award.text == "Elite" and card._medals.get_child_count() == 4,"top one percent has a separate platinum laurel award")
+	check(card._medals.get_child(3).tier == 4 and card._medals.get_child(3).selected and card._medals.get_child_count() == 4,"top one percent has a separate platinum laurel award")
 	await capture("elite")
 	card.vehicle = "electric"
 	card.refresh()
 	await settle()
-	check(card.result.is_empty() and card._time.text == "—" and card._award.text == "No medal yet","changing car cannot show another car's medal or result")
+	check(card.result.is_empty() and card._time.text == "—" and not card._medals.get_child(0).earned,"changing car cannot show another car's medal or result")
 	await capture("no-result")
 	service.pending = true
 	card.vehicle = "compact"

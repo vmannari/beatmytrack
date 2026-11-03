@@ -35,6 +35,7 @@ var _refresh_request_id: String = ""
 var resume_recovery: Node
 var session_vault: RefCounted = preload("res://backend/session_vault.gd").new()
 var _idle_requests: Array[HTTPRequest] = []
+var _ipv4_fallback: RefCounted = preload("res://backend/ipv4_fallback.gd").new()
 var network_health: RefCounted = preload("res://backend/network_health.gd").new()
 var analytics_opt_in: bool = true
 var _delete_request_id: String = ""
@@ -113,6 +114,7 @@ func _take_request() -> HTTPRequest:
 	else: request = _idle_requests.pop_back()
 	request.set_meta("cancelled",false)
 	request.set_meta("owner_id",0)
+	request.set_tls_options(TLSOptions.client())
 	return request
 
 func _release_request(request: HTTPRequest) -> void:
@@ -758,17 +760,34 @@ func _send_transport(path: String, method: HTTPClient.Method, payload: Dictionar
 		request.body_size_limit = 65536
 	request.max_redirects = 0 # Never forward credentials to a redirect target.
 	profile_start = Time.get_ticks_usec()
-	var start: Error = request.request_raw(_base_url+"/v1"+path,headers,method,packet.body)
-	if start != OK:
-		_release_request.call_deferred(request)
-		var failed: Dictionary = _failure("REQUEST_START_FAILED")
-		failed.not_delivered = true
-		return failed
 	if owner_id != 0 and (method == HTTPClient.METHOD_GET or path.begins_with("/discovery/") or owner_id < 0):
 		request.set_meta("owner_id",owner_id)
 		_public_reads.append(request)
 	if path == "/telemetry/batches": _telemetry_requests.append(request)
 	if run_wait: _run_wait_requests.append(request)
+	var route: Dictionary = await _ipv4_fallback.route(origin, get_tree())
+	var stale: bool = origin != _base_url or (authorized and generation != _session_generation)
+	if bool(request.get_meta("cancelled",false)) or stale:
+		_public_reads.erase(request)
+		_telemetry_requests.erase(request)
+		_run_wait_requests.erase(request)
+		_release_request.call_deferred(request)
+		return _failure("CANCELLED" if not stale else "ACCOUNT_CHANGED")
+	var request_origin: String = origin
+	if not route.is_empty():
+		request_origin = route.url
+		# The IP selects routing only: SNI/certificate identity and Host stay original.
+		request.set_tls_options(TLSOptions.client(null, route.host))
+		headers.append("Host: " + str(route.authority))
+	var start: Error = request.request_raw(request_origin+"/v1"+path,headers,method,packet.body)
+	if start != OK:
+		_public_reads.erase(request)
+		_telemetry_requests.erase(request)
+		_run_wait_requests.erase(request)
+		_release_request.call_deferred(request)
+		var failed: Dictionary = _failure("REQUEST_START_FAILED")
+		failed.not_delivered = true
+		return failed
 	var completed: Array = await request.request_completed
 	_profile_request(path,"http",profile_start)
 	if metrics.collect:

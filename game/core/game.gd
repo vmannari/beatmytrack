@@ -674,7 +674,11 @@ func _present_frame_scoped(delta: float) -> void:
 	var bump_pose := Vector3((bump_contacts.x+bump_contacts.y+bump_contacts.z+bump_contacts.w)*0.25,
 		atan2((bump_contacts.x+bump_contacts.y-bump_contacts.z-bump_contacts.w)*0.5,handling.wheelbase),
 		atan2((bump_contacts.y+bump_contacts.w-bump_contacts.x-bump_contacts.z)*0.5,handling.track_width))
-	car.present_suspension(presented.state, car.rotation.x, water_depth == 0.0 and car.ramp_lift <= 0.005, body_rumble, kerb_contacts,bump_contacts,bump_track,bump_pose)
+	var terrain_contacts: Vector4 = native_track.off_road_suspension_heights(presented.state,handling) if native_track != null and water_depth == 0.0 and car.ramp_lift <= 0.005 else Vector4.ZERO
+	var terrain_pose := Vector3((terrain_contacts.x+terrain_contacts.y+terrain_contacts.z+terrain_contacts.w)*0.25,
+		atan2((terrain_contacts.x+terrain_contacts.y-terrain_contacts.z-terrain_contacts.w)*0.5,handling.wheelbase),
+		atan2((terrain_contacts.y+terrain_contacts.w-terrain_contacts.x-terrain_contacts.z)*0.5,handling.track_width))
+	car.present_suspension(presented.state, car.rotation.x, water_depth == 0.0 and car.ramp_lift <= 0.005, body_rumble, kerb_contacts,bump_contacts,bump_track,bump_pose,terrain_contacts,terrain_pose)
 	car.position.y += bump_pose.x
 	car.rotation.x += bump_pose.y
 	car.rotation.z += bump_pose.z
@@ -781,7 +785,9 @@ func restart() -> void:
 	if desert_rattlesnake != null: desert_rattlesnake.reset()
 	if winter_wind != null: winter_wind.reset()
 	if winter_snow_wind != null: winter_snow_wind.reset()
-	if preference_records != null: GameSoundtrack.instance().apply_settings(preference_records.settings)
+	if preference_records != null:
+		GameSoundtrack.instance().bind_records(preference_records)
+		GameSoundtrack.instance().apply_settings(preference_records.settings)
 	GameSoundtrack.instance().begin_race(self,str(native_track.metadata.get("theme","pine")) if native_track != null else "pine",sim.state)
 	practice_validation = TrackSession.new(120,1)
 	var authored: Dictionary = native_track.metadata.get("creator_document",{}) if native_track!=null else {}

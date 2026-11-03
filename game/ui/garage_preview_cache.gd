@@ -30,7 +30,13 @@ var idle_ms: int=750
 
 func _ready() -> void:
 	_last_input=Time.get_ticks_msec()
+	preload("res://ui/preview_touch_input.gd").bind(self)
 	if get_parent() is CanvasItem: get_parent().visibility_changed.connect(_visibility_changed)
+
+func _release_preview_touch(index: int) -> void:
+	if _touches.has(index):
+		_touches.erase(index)
+		_last_input=Time.get_ticks_msec()
 
 func _input(event: InputEvent) -> void:
 	if event is InputEventScreenTouch:
@@ -99,6 +105,8 @@ func identity(view: CarShowroom) -> String:
 	# including in an editor session before the next generated build identity.
 	if view.vehicle_id == "electric":
 		revision += ":" + preload("res://vehicle/electric_reference_mesh.gd").ASSET_ROOT
+		revision += ":" + preload("res://vehicle/electric_kits.gd").HOOD_REVISION
+		revision += ":" + preload("res://vehicle/electric_body_kits.gd").REVISION
 	return JSON.stringify([VERSION,revision,view.vehicle_id,view.livery,_visible_condition(view.condition),view.customisation]).sha256_text()
 
 func _visible_condition(value: Dictionary) -> Dictionary:
@@ -108,9 +116,9 @@ func _visible_condition(value: Dictionary) -> Dictionary:
 		if float(value.get(field,0.0)) != 0.0: return value
 	return {}
 
-func warm_records(records: LocalRecords) -> void:
+func warm_records(records: LocalRecords, read_immediately: bool=true) -> void:
 	remember_pictures=true
-	immediate_reads=true
+	immediate_reads=read_immediately
 	directory=records.path+".garage-previews"
 	for id: String in VehicleCatalog.IDS:
 		var view: CarShowroom=warm_views.get(id)

@@ -102,7 +102,9 @@ func run() -> void:
 		var deck: MeshInstance3D = car.body.get_node("ReferenceRearDeck")
 		var rear: MeshInstance3D = car.body.get_node("ReferenceRear")
 		var rear_glass: MeshInstance3D = car.body.get_node("ReferenceRearScreen")
-		check(edge_gap(edge(rear_glass,1,1.0),edge(deck,1,0.0))<0.0005,"rear glass stays joined to deck"+label)
+		var rear_foot: MeshInstance3D = car.body.get_node("ReferenceRearGlassFoot")
+		check(edge_gap(edge(rear_glass,1,1.0),edge(rear_foot,1,0.0))<0.001,"rear glass meets its painted foot"+label)
+		check(edge_gap(edge(rear_foot,1,1.0),edge(deck,1,0.0))<0.0005,"painted glass foot meets deck"+label)
 		check(edge_gap(edge(deck,1,1.0),edge(rear,1,1.0))<0.0005,"deck stays joined to tail"+label)
 		for part: String in ["SportBonnetShutLine","SportDeckLip","SportRearValance"]:
 			check(car.body.get_node_or_null(part)!=null,"finished body detail "+part+label)

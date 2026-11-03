@@ -53,12 +53,14 @@ func _ready() -> void:
 	add_child(scroll)
 	var column := VBoxContainer.new()
 	column.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	column.size_flags_vertical = Control.SIZE_EXPAND_FILL
 	column.add_theme_constant_override("separation",12)
 	scroll.add_child(column)
 	_build_header(column)
 	_stage = Control.new()
 	_stage.name = "DailyEvent"
 	_stage.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	_stage.size_flags_vertical = Control.SIZE_EXPAND_FILL
 	column.add_child(_stage)
 	_build_hero()
 	_build_race_panel()
@@ -67,6 +69,7 @@ func _ready() -> void:
 	_stage.add_child(_week_strip)
 	_stage.resized.connect(_arrange)
 	_race_panel.minimum_size_changed.connect(_arrange.call_deferred)
+	_week_strip.minimum_size_changed.connect(_arrange.call_deferred)
 	_arrange.call_deferred()
 	if not _restore_cached_track() and not page_preview: refresh()
 
@@ -155,6 +158,7 @@ func _build_hero() -> void:
 func _build_race_panel() -> void:
 	var card := preload("res://ui/daily_result_card.gd").new()
 	card.client = client
+	card.cloud = cloud
 	card.records = records
 	card.vehicle = VehicleCatalog.selected
 	card.preview = page_preview
@@ -165,9 +169,6 @@ func _build_race_panel() -> void:
 	_race_heading = card._heading
 	card.race_requested.connect(_request_race)
 	card.standings_requested.connect(_open_standings)
-	card.vehicle_selected.connect(func(index: int) -> void:
-		vehicle_selected.emit(index)
-		_update_week())
 	# Retain the existing error/retry boundary while the result panel is loading.
 	_retry = MenuStyle.button("Retry",refresh,true)
 	_retry.name = "DailyRetry"
@@ -197,17 +198,20 @@ func _arrange() -> void:
 	_countdown_panel.add_theme_stylebox_override("panel",_panel_style(8 if compact_header else 16))
 	_countdown.add_theme_font_size_override("font_size",16 if compact_header else 20)
 	_set_countdown_width()
-	var height: float = maxf(440,_race_panel.get_combined_minimum_size().y)
 	var stacked: bool = width < 740
+	var minimum_height: float = maxf(440,_race_panel.get_combined_minimum_size().y)
+	var height: float = minimum_height if stacked else maxf(minimum_height,_stage.size.y)
 	var side_width: float = minf(340,width*0.34)
 	var left_width: float = width if stacked else maxf(200,width-side_width-18)
-	var hero_height: float = clampf(left_width*0.9,320,440) if stacked else height-104
-	_stage.custom_minimum_size.y = hero_height+104+height+18 if stacked else height
+	var week_height: float = maxf(92,_week_strip.get_combined_minimum_size().y)
+	var week_space: float = week_height+12
+	var hero_height: float = clampf(left_width*0.9,320,440) if stacked else height-week_space
+	_stage.custom_minimum_size.y = hero_height+week_space+height+18 if stacked else minimum_height
 	_hero.position = Vector2.ZERO
 	_hero.size = Vector2(left_width,hero_height)
 	_week_strip.position = Vector2(0,hero_height+12)
-	_week_strip.size = Vector2(left_width,92)
-	_race_panel.position = Vector2(0,hero_height+122) if stacked else Vector2(width-side_width,0)
+	_week_strip.size = Vector2(left_width,week_height)
+	_race_panel.position = Vector2(0,hero_height+week_space+18) if stacked else Vector2(width-side_width,0)
 	_race_panel.size = Vector2(width if stacked else side_width,height)
 
 func _panel_style(padding: int) -> StyleBoxFlat:
@@ -311,8 +315,6 @@ func _exit_tree() -> void:
 
 func activate() -> void:
 	page_preview = false
-	var cars: OptionButton = find_child("DailyCar",true,false)
-	if cars != null: cars.select(VehicleCatalog.IDS.find(VehicleCatalog.selected))
 	_race_panel.preview = false
 	_race_panel.vehicle = VehicleCatalog.selected
 	if not entry.is_empty():

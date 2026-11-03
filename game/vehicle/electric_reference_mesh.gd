@@ -1,6 +1,6 @@
 extends RefCounted
 ## Generic sampled mesh builder for the new reference-based Electric car.
-const ASSET_ROOT := "res://assets/vehicles/electric_aligned_doors_v1"
+const ASSET_ROOT := "res://assets/vehicles/electric_rear_lamp_gaps_v1"
 static var meshes: Dictionary = {}
 static var use_baked: bool = true
 

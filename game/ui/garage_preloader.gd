@@ -25,6 +25,7 @@ var _picture_waiters: int=0
 
 func _ready() -> void:
 	_tree_ref=weakref(get_tree())
+	preload("res://ui/preview_touch_input.gd").bind(self)
 	last_input=Time.get_ticks_msec()
 	foreground=app._publishing_slots_foreground
 	if DisplayServer.get_name()=="headless": _menu_drawn=true
@@ -56,7 +57,7 @@ func _sync_pictures() -> void:
 		picture_service.can_render=_pictures_allowed
 		add_child(picture_service)
 	if _pictures_dirty:
-		picture_service.warm_records(picture_records)
+		picture_service.warm_records(picture_records,false)
 		_pictures_dirty=false
 
 func _pictures_allowed() -> bool:
@@ -64,6 +65,7 @@ func _pictures_allowed() -> bool:
 	if app.menu_page_motion!=null and app.menu_page_motion.is_running(): return false
 	if not is_instance_valid(app._retained_garage) or not app._retained_garage.is_visible_in_tree(): return true
 	var page: GaragePage=app._retained_garage
+	if page.progressive_entry and page.showroom.preparing: return false
 	return page.section!="cars" and is_instance_valid(page._preview_service) and page._preview_service.renderer==null and (page._menu_motion==null or not page._menu_motion.is_running())
 
 func pictures_ready() -> bool:
@@ -72,6 +74,9 @@ func pictures_ready() -> bool:
 	return is_instance_valid(picture_service) and picture_records==app.records and picture_service.pictures_ready()
 
 func picture_pool() -> Dictionary:
+	# This is an explicit Garage entry, including a requested capture screen.
+	# Share ownership even when it is the initial destination.
+	_sync_pictures()
 	return picture_service.ready_pictures if is_instance_valid(picture_service) and picture_records==app.records else {}
 
 func prepare_pictures(still_current: Callable=Callable()) -> bool:
@@ -98,12 +103,14 @@ func _process(_delta: float) -> void:
 	if evicted:
 		set_process(not _pending.is_empty())
 		return
+	# Equipped-header preparation owns startup. Garage pictures and native
+	# worlds only begin after the initial menu has become usable.
+	if not is_instance_valid(app) or not app.startup_complete: return
 	if _pictures_dirty or picture_records!=app.records: _sync_pictures()
 	if is_instance_valid(picture_service):
 		var allowed: bool=app._background_work_allowed() and app._publishing_slots_foreground and not app.editor_memory.pressure_requested
 		if not allowed: picture_service.suspend_previews()
 		picture_service.set_process(allowed)
-	if not is_instance_valid(app) or not app.startup_complete: return
 	if DisplayServer.get_name()!="headless" and is_instance_valid(picture_service) and not picture_service.pictures_ready(): return
 	if is_instance_valid(app.game) or is_instance_valid(app.race_loading) or app.cloud_starting or is_instance_valid(app._retained_garage):
 		_reset()
@@ -141,7 +148,7 @@ func _process(_delta: float) -> void:
 		studio.livery=_pin.paint.duplicate(true)
 		studio.customisation=_pin.parts.duplicate(true)
 		studio.condition=_pin.wear.duplicate(true)
-		studio.record_settings={"music_record":app.records.settings.get("music_record","exploration")}
+		studio.record_settings={"music_record":app.records.settings.get("music_record",preload("res://soundtrack/record_library.gd").DEFAULT_ID)}
 		studio.achievement_service=app.achievements
 		studio.permitted=_allowed
 		studio.position=Vector2(-16384,-16384)
@@ -165,9 +172,9 @@ func _allowed(for_render: bool=true) -> bool:
 	return _menu_drawn and Time.get_ticks_msec()-last_input>=(idle_ms if for_render else mini(idle_ms,150))
 
 func take() -> CarShowroom:
-	if studio==null or not studio.showroom_ready or _pin!=_spec():
-		# Keep decoded public assets alive through the synchronous normal entry.
-		# The next process tick releases them after Garage has loaded its nodes.
+	if studio==null or not studio.showroom_ready or not studio.prepared or _pin!=_spec():
+		# Only a fully drawn studio can skip the loading ghost. Keep decoded
+		# public assets alive for the staged fallback to reuse.
 		_reset(true)
 		return null
 	var result: CarShowroom=studio
@@ -239,6 +246,11 @@ func _input(event: InputEvent) -> void:
 		else: _touches.erase(event.index)
 	var active: bool=event is InputEventMouseButton or event is InputEventScreenTouch or event is InputEventScreenDrag or event is InputEventKey or event is InputEventJoypadButton or (event is InputEventJoypadMotion and absf(event.axis_value)>0.2) or (event is InputEventMouseMotion and event.button_mask!=0)
 	if active: last_input=Time.get_ticks_msec()
+
+func _release_preview_touch(index: int) -> void:
+	if _touches.has(index):
+		_touches.erase(index)
+		last_input=Time.get_ticks_msec()
 
 func _notification(what: int) -> void:
 	if what in [NOTIFICATION_APPLICATION_FOCUS_OUT,NOTIFICATION_APPLICATION_PAUSED]:

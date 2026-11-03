@@ -1,0 +1,255 @@
+--- a/game/ui/weekly_rivalry_page.gd
++++ b/game/ui/weekly_rivalry_page.gd
+@@ -51,6 +51,7 @@
+ const QUIET_BORDER := Color("2e495a88")
+ const Badge = preload("res://ui/biome_badge.gd")
+ const TrackAccent = preload("res://ui/rivalry_track_accents.gd")
++const LoadingVisual = preload("res://ui/rivalry_loading_visual.gd")
+ 
+ class TrackProfile extends LapRouteView:
+ 	func _draw() -> void:
+@@ -447,14 +448,32 @@
+ 	field.add_theme_constant_override("separation",12)
+ 	parent.add_child(field)
+ 	var podium := HBoxContainer.new()
+-	podium.custom_minimum_size.y = 184
++	podium.name = "RivalryLoadingPodium"
++	podium.custom_minimum_size.y = 194
+ 	podium.add_theme_constant_override("separation",10)
+ 	field.add_child(podium)
+-	for position: int in [1,0,2]: _loading_block(podium,184).size_flags_vertical = Control.SIZE_SHRINK_END
++	for position: int in [1,0,2]:
++		var card: VBoxContainer = _card(podium,"",0)
++		card.get_parent().name = "RivalryLoadingPodium_"+str(position+1)
++		card.add_theme_constant_override("separation",0)
++		var car: Control = LoadingVisual.new()
++		car.name = "RivalryLoadingCar_"+str(position+1)
++		car.phase = position*0.22
++		car.size_flags_vertical = Control.SIZE_EXPAND_FILL
++		car.custom_minimum_size.y = 100
++		card.add_child(car)
++		var identity: Control = LoadingVisual.new()
++		identity.kind = LoadingVisual.Kind.IDENTITY
++		identity.custom_minimum_size.y = 50
++		card.add_child(identity)
+ 	var standings: VBoxContainer = _card(field,"",12)
+ 	_copy(standings,"STANDINGS",27)
+-	_copy(standings,"Loading…",18,MenuStyle.MUTED)
+-	_space(standings)
++	var rows: Control = LoadingVisual.new()
++	rows.name = "RivalryLoadingStandings"
++	rows.kind = LoadingVisual.Kind.STANDINGS
++	rows.custom_minimum_size.y = 70
++	rows.size_flags_vertical = Control.SIZE_EXPAND_FILL
++	standings.add_child(rows)
+ 	var right := VBoxContainer.new()
+ 	right.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+ 	right.size_flags_stretch_ratio = 1.13
+--- /dev/null
++++ b/game/ui/rivalry_loading_visual.gd
+@@ -0,0 +1,48 @@
++extends Control
++## Inexpensive 2D loading art. Retained draw commands; motion lives in the shader.
++enum Kind { CAR, STANDINGS, IDENTITY }
++var kind: Kind = Kind.CAR
++var phase: float = 0.0
++static var _white: ImageTexture
++
++func _ready() -> void:
++	mouse_filter = Control.MOUSE_FILTER_IGNORE
++	clip_contents = true
++	var finish := ShaderMaterial.new()
++	finish.shader = preload("res://ui/rivalry_loading_visual.gdshader")
++	finish.set_shader_parameter("vehicle",kind == Kind.CAR)
++	finish.set_shader_parameter("phase_offset",phase)
++	material = finish
++	resized.connect(queue_redraw)
++	set_process(false)
++
++func _bar(rect: Rect2, color: Color, radius: int = 4) -> void:
++	var style := StyleBoxFlat.new()
++	style.bg_color = color
++	style.set_corner_radius_all(radius)
++	draw_style_box(style,rect)
++
++func _draw() -> void:
++	if size.x < 1.0 or size.y < 1.0: return
++	if kind == Kind.CAR:
++		if _white == null:
++			var pixel := Image.create(1,1,false,Image.FORMAT_RGBA8)
++			pixel.fill(Color.WHITE)
++			_white = ImageTexture.create_from_image(pixel)
++		var width: float = minf(size.x-12.0,size.y*2.5)
++		var dimensions := Vector2(maxf(1.0,width),maxf(1.0,width/2.5))
++		draw_texture_rect(_white,Rect2((size-dimensions)*0.5,dimensions),false)
++	elif kind == Kind.IDENTITY:
++		_bar(Rect2(size.x*0.19,7,size.x*0.62,9),Color("5b768966"))
++		_bar(Rect2(size.x*0.34,26,size.x*0.32,12),Color("6d87916b"))
++	else:
++		var rows: int = clampi(floori((size.y+5.0)/35.0),2,9)
++		var stride: float = minf(39.0,size.y/rows)
++		for index: int in range(rows):
++			var top: float = index*stride
++			_bar(Rect2(0,top,size.x,stride-3.0),Color("263e4b48"),5)
++			_bar(Rect2(7,top+8,19,stride-19),Color("58718066"))
++			var name_width: float = maxf(18.0,(size.x-124.0)*[0.70,0.92,0.58,0.80,0.64][index%5])
++			_bar(Rect2(37,top+12,name_width,8),Color("67849473"))
++			_bar(Rect2(size.x-67,top+12,22,8),Color("607d8e66"))
++			_bar(Rect2(size.x-28,top+12,20,8),Color("526c7b55"))
+--- /dev/null
++++ b/game/ui/rivalry_loading_visual.gdshader
+@@ -0,0 +1,53 @@
++shader_type canvas_item;
++render_mode unshaded;
++
++uniform bool vehicle = false;
++uniform float phase_offset = 0.0;
++
++float rounded_box(vec2 point, vec2 extent, float radius) {
++	vec2 outside = abs(point) - extent + vec2(radius);
++	return length(max(outside,vec2(0.0))) + min(max(outside.x,outside.y),0.0) - radius;
++}
++
++float cabin(vec2 point) {
++	// Convex roof and sloping pillars: an anonymous, deliberately indistinct car.
++	vec2 a = vec2(-0.53,-0.045);
++	vec2 b = vec2(-0.31,-0.29);
++	vec2 c = vec2(0.28,-0.27);
++	vec2 d = vec2(0.51,-0.045);
++	float left = dot(point-a,normalize(vec2(b.y-a.y,a.x-b.x)));
++	float roof = dot(point-b,normalize(vec2(c.y-b.y,b.x-c.x)));
++	float right = dot(point-c,normalize(vec2(d.y-c.y,c.x-d.x)));
++	float bottom = dot(point-d,vec2(0.0,1.0));
++	return max(max(left,roof),max(right,bottom));
++}
++
++void fragment() {
++	float clock = TIME + phase_offset;
++	if (vehicle) {
++		vec2 point = (UV-vec2(0.5))*vec2(2.5,1.0);
++		point.y += point.x*0.045;
++		float blur = 0.027;
++		float body = rounded_box(point-vec2(0.0,0.045),vec2(0.87,0.135),0.085);
++		float roof = cabin(point);
++		float wheels = min(length(point-vec2(-0.54,0.17)),length(point-vec2(0.55,0.17)))-0.112;
++		float shape = min(min(body,roof),wheels);
++		float silhouette = 1.0-smoothstep(-blur,blur,shape);
++		float glass = (1.0-smoothstep(-blur,blur,cabin(point+vec2(0.0,-0.018))+0.045));
++		vec3 paint = mix(vec3(0.23,0.34,0.41),vec3(0.43,0.55,0.61),clamp(0.5-point.y*2.0,0.0,1.0));
++		paint = mix(paint,vec3(0.13,0.22,0.29),glass*0.7);
++		float tires = 1.0-smoothstep(-blur,blur,wheels+0.018);
++		paint = mix(paint,vec3(0.16,0.23,0.28),tires*0.6);
++		float highlight = exp(-pow((point.y+0.015)/0.024,2.0))*0.09;
++		paint += vec3(highlight);
++		float shadow = exp(-pow(point.x/0.88,4.0)-pow((point.y-0.30)/0.065,2.0))*0.16;
++		float pulse = 0.84+0.035*sin(clock*1.75);
++		COLOR = vec4(paint,max(silhouette*0.75,shadow)*pulse);
++	} else {
++		// A broad, low-contrast diagonal sweep keeps the rows calm and coordinated.
++		float sweep = fract(clock/3.4)*2.3-0.65;
++		float band = exp(-pow((SCREEN_UV.x+SCREEN_UV.y*0.12-sweep)/0.19,2.0));
++		float breathe = 0.94+0.025*sin(clock*1.75+SCREEN_UV.y*4.0);
++		COLOR = vec4(COLOR.rgb+vec3(0.045,0.055,0.060)*band,COLOR.a*breathe*(0.94+0.06*band));
++	}
++}
+--- /dev/null
++++ b/game/tests/test_rivalry_loading_visuals.gd
+@@ -0,0 +1,98 @@
++extends "res://tests/test_rivalry_result.gd"
++## Loading art, actual animation, error/retry and authoritative-board handoff.
++const Visual = preload("res://ui/rivalry_loading_visual.gd")
++
++func mean_delta(a: Image, b: Image, region: Rect2i) -> float:
++	var difference: float = 0.0
++	var count: int = 0
++	for y: int in range(region.position.y,region.end.y,2):
++		for x: int in range(region.position.x,region.end.x,2):
++			var first: Color = a.get_pixel(x,y)
++			var second: Color = b.get_pixel(x,y)
++			difference += absf(first.r-second.r)+absf(first.g-second.g)+absf(first.b-second.b)
++			count += 3
++	return difference*255.0/maxi(1,count)
++
++func settle() -> void:
++	for frame: int in range(8): await process_frame
++
++func run() -> void:
++	OS.set_environment("BMT_API_URL","")
++	if DisplayServer.get_name() != "headless": root.position = Vector2i(-12000,-12000)
++	evidence = ProjectSettings.globalize_path("res://../docs/evidence/rivalry-loading-placeholders-2026-11-02/"+RenderingServer.get_current_rendering_method())
++	DirAccess.make_dir_recursive_absolute(evidence)
++	for dimensions: Vector2i in [Vector2i(1280,720),Vector2i(960,540),Vector2i(1600,720)]:
++		root.size = dimensions
++		root.content_scale_size = dimensions
++		var background := MenuBackdrop.new()
++		root.add_child(background)
++		background.size = Vector2(dimensions)
++		var shell := VBoxContainer.new()
++		shell.theme = MenuStyle.theme()
++		shell.position = Vector2(24,20)
++		shell.size = Vector2(dimensions)-Vector2(48,40)
++		root.add_child(shell)
++		var brand := MenuBrand.new()
++		brand.custom_minimum_size.y = 60
++		shell.add_child(brand)
++		var page := WeeklyRivalryPage.new()
++		page.model = WeeklyRivalry.new()
++		page.signed_in = true
++		page.busy = true
++		shell.add_child(page)
++		await settle()
++		check(page.find_child("RivalryLoading",true,false) != null,"unresolved selected car shows the loading presentation")
++		check(page.find_children("*","SubViewport",true,false).is_empty(),"loading art creates no 3D car worlds or render targets")
++		check(page.find_child("RivalryDriversPanel",true,false) == null,"loading never invents driver scores or publishes another car's standings")
++		check(not page.ready_for_display(),"placeholder does not bypass the fresh-membership entry gate")
++		var rows: Control = page.find_child("RivalryLoadingStandings",true,false)
++		check(rows != null and rows.size.y >= 70 and root.get_visible_rect().encloses(rows.get_global_rect()),"animated table fits the smaller hub")
++		for position: int in range(1,4):
++			var car: Control = page.find_child("RivalryLoadingCar_"+str(position),true,false)
++			check(car != null and car.size.x > 20 and car.size.y >= 100 and root.get_visible_rect().encloses(car.get_global_rect()),"each abstract car is visible inside its podium card")
++			check(car.mouse_filter == Control.MOUSE_FILTER_IGNORE and not car.is_processing(),"car animation uses no input interception or CPU frame callbacks")
++		var retained: Control = page.find_child("RivalryLoadingCar_1",true,false)
++		var builds: int = page.content_builds
++		page.refresh_presentation()
++		check(page.content_builds == builds and page.find_child("RivalryLoadingCar_1",true,false) == retained,"pending notifications retain the same placeholder controls")
++		if DisplayServer.get_name() != "headless":
++			await RenderingServer.frame_post_draw
++			var first: Image = root.get_texture().get_image()
++			check(first.save_png(evidence.path_join("loading-%dx%d.png" % [dimensions.x,dimensions.y])) == OK,"save native loading view")
++			await create_timer(0.65).timeout
++			await RenderingServer.frame_post_draw
++			var second: Image = root.get_texture().get_image()
++			var cars_delta: float = mean_delta(first,second,Rect2i(retained.get_global_rect()))
++			var rows_delta: float = mean_delta(first,second,Rect2i(rows.get_global_rect()))
++			check(cars_delta > 0.001 and cars_delta < 4.0,"native abstract-car pulse changes pixels gently")
++			check(rows_delta > 0.001 and rows_delta < 5.0,"native standings shimmer changes pixels gently")
++			print("RIVALRY_LOADING_MOTION ",JSON.stringify({"size":str(dimensions),"car_mean_delta_255":cars_delta,"rows_mean_delta_255":rows_delta}))
++			check(second.save_png(evidence.path_join("loading-motion-%dx%d.png" % [dimensions.x,dimensions.y])) == OK,"save second animation sample")
++		var old_visual: WeakRef = weakref(retained)
++		page.busy = false
++		page.error = "Rivalry unavailable. Check your connection and try again."
++		page.refresh_presentation()
++		await settle()
++		var retry: Button = page.find_child("RivalryRefresh",true,false)
++		check(retry != null and not retry.disabled and page.find_child("RivalryLoading",true,false) == null,"failure replaces loading with an actionable retry")
++		check(old_visual.get_ref() == null,"departing loading controls and their animation materials are released")
++		page.busy = true
++		page.error = ""
++		page.refresh_presentation()
++		check(page.find_child("RivalryLoadingCar_1",true,false) != null,"retry restores the loading art")
++		page.model.apply_snapshot(fixture())
++		page.busy = false
++		page.refresh_presentation()
++		await settle()
++		check(page.find_child("RivalryLoading",true,false) == null and page.find_child("RivalryLoadingStandings",true,false) == null,"final server board removes all loading visuals")
++		check(page.find_child("RivalryDriversPanel",true,false) != null and page.find_child("RivalryPodiumCar_1",true,false) != null,"handoff retains the real standings and player cars")
++		var before_refresh: Node = page.find_child("RivalryPodiumCar_1",true,false)
++		page.busy = true
++		page.background_refresh = true
++		page.refresh_presentation()
++		check(page.find_child("RivalryPodiumCar_1",true,false) == before_refresh and page.find_child("RivalryLoading",true,false) == null,"same-car background refresh keeps usable standings")
++		shell.free()
++		background.free()
++		await process_frame
++	print("RIVALRY_LOADING_VISUALS: %d checks, %d failures" % [checks,failures])
++	quit(1 if failures else 0)

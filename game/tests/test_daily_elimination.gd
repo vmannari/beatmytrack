@@ -150,10 +150,19 @@ func render_results(session: TrackSession, rules: RefCounted, title: String) -> 
 	panel.rules = rules
 	panel.session = session
 	root.add_child(panel)
+	var signals := {"retry":false,"return":false}
+	panel.retry_requested.connect(func() -> void: signals.retry = true)
+	panel.return_requested.connect(func() -> void: signals["return"] = true)
+	panel.find_child("DailyRetryRace",true,false).pressed.emit()
+	panel.find_child("DailyReturn",true,false).pressed.emit()
+	check(signals.retry and signals["return"],"result actions preserve retry and return signals")
 	for size: Vector2i in [Vector2i(960,540),Vector2i(844,390),Vector2i(390,844)]:
 		root.size = size
 		for frame: int in range(4): await process_frame
 		check(panel.size.x <= size.x,"result fits viewport "+str(size))
+		var lap_grid: GridContainer = panel.find_child("DailyLapGrid",true,false)
+		check(lap_grid.get_child_count() == session.lap_times.size()-1,"each flying lap has a result card")
+		check(lap_grid.get_global_rect().end.x <= size.x,"lap cards fit viewport "+str(size))
 		if DisplayServer.get_name() != "headless":
 			await RenderingServer.frame_post_draw
 			var output: String = ProjectSettings.globalize_path("res://../docs/evidence/daily-elimination-2026-10-31")

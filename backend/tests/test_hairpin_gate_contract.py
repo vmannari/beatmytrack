@@ -12,13 +12,14 @@ def geometry(rules):
                       [-1, 0, -1, 0, 1, 0, -1, 1, 0]]}
 
 
-def test_rules23_uses_the_client_gate_span_and_preserves_old_contract():
+@pytest.mark.parametrize("rules", ["standing-5-road-gates-v23", "standing-5-road-gates-v24"])
+def test_current_rules_use_the_client_gate_span_and_preserve_old_contract(rules):
     proof = {"schema": "bmt-race-path-v1", "samples": [[0, 0, 1.1, 0]] +
              [[index*6, 2 if index % 2 else -2, 1.1, 0] for index in range(1, 11)]}
     assert check(geometry("standing-5-road-gates-v22"), proof, 60, "compact")["lap_ticks"] == [12]*5
     with pytest.raises(VerificationError, match="ordered road gates"):
-        check(geometry("standing-5-road-gates-v23"), proof, 60, "compact")
+        check(geometry(rules), proof, 60, "compact")
     inside = {"schema": proof["schema"], "samples": [[row[0],row[1],1.0,row[3]] for row in proof["samples"]]}
-    exact = geometry("standing-5-road-gates-v23")
+    exact = geometry(rules)
     exact["start"][1] = 1.0
     assert check(exact, inside, 60, "compact")["lap_ticks"] == [12]*5

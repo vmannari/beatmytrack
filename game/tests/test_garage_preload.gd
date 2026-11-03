@@ -155,6 +155,7 @@ func run() -> void:
 	paint.colors.body="326da8"
 	app.records.settings.vehicle_liveries.compact=paint.duplicate(true)
 	app._show_screen("garage")
+	while app._retained_garage.progressive_entry and app._retained_garage.showroom.preparing: await process_frame
 	check(app._retained_garage.showroom.car.livery==paint,"a late saved-paint change uses the current live appearance")
 	check(not app._retained_garage.showroom.is_queued_for_deletion(),"stale preload rejection leaves a live normal showroom")
 	await frames(4)
@@ -164,6 +165,7 @@ func run() -> void:
 	stale=weakref(loader.studio)
 	app.records=LocalRecords.new(folder.path_join("another-owner.json"))
 	app._show_screen("garage")
+	while app._retained_garage.progressive_entry and app._retained_garage.showroom.preparing: await process_frame
 	check(app._retained_garage.showroom.car.livery==VehicleLivery.defaults("compact"),"another records owner cannot adopt the prior appearance")
 	await frames(4)
 	check(stale.get_ref()==null,"owner replacement releases the old private world")
@@ -189,8 +191,10 @@ func run() -> void:
 	check(loader.studio==null and loader._resources.has(asset),"asset decoding runs before native work is allowed")
 	var decoded: WeakRef=weakref(loader._resources[asset])
 	app._show_screen("garage")
-	check(app._retained_garage.showroom.showroom_ready and decoded.get_ref()!=null,"resource-only entry builds live 3D using the retained asset")
-	check(app._retained_garage.showroom.find_child("GarageOpeningPicture",true,false)==null,"resource-only fallback uses the normal live view")
+	var fallback: CarShowroom=app._retained_garage.showroom
+	check(not fallback.showroom_ready and fallback.get_node("GarageOpeningPicture").get_script()==preload("res://ui/garage_loading_car.gd"),"resource-only entry presents a neutral car before native work")
+	while fallback.preparing and Time.get_ticks_msec()<deadline: await process_frame
+	check(fallback.showroom_ready and fallback.get_node_or_null("GarageOpeningPicture")==null,"resource-only fallback reveals the original live view")
 	# Entering while the first draw batch is outstanding restores every original.
 	loader=await replace_loader(app)
 	deadline=Time.get_ticks_msec()+30000
@@ -198,10 +202,12 @@ func run() -> void:
 	var partial: CarShowroom=loader.studio
 	var margins: Array=partial._held.duplicate()
 	app._show_screen("garage")
-	check(app._retained_garage.showroom==partial and partial.adopted,"partially warmed studio transfers without waiting")
+	check(app._retained_garage.showroom!=partial and app._retained_garage.progressive_entry and app._retained_garage.showroom.get_node("GarageOpeningPicture").get_script()==preload("res://ui/garage_loading_car.gd"),"partially warmed studio keeps the neutral placeholder until full readiness")
 	for entry: Dictionary in margins:
 		var node: Object=entry.node.get_ref()
 		if is_instance_valid(node): check(node.visible and node.extra_cull_margin==entry.margin,"partial handoff restores visibility and original culling")
+	while app._retained_garage.showroom.preparing and Time.get_ticks_msec()<deadline: await process_frame
+	check(app._retained_garage.showroom.showroom_ready and app._retained_garage.showroom.get_node_or_null("GarageOpeningPicture")==null,"partial fallback reveals the complete original live studio")
 	loader=await replace_loader(app)
 	var parts: Dictionary=VehicleCustomisation.defaults()
 	parts.aero="wing"
@@ -212,6 +218,9 @@ func run() -> void:
 	var building: CarShowroom=loader.studio
 	timings.constructor_interrupted=not building.showroom_ready
 	app._show_screen("garage")
+	if app._retained_garage.progressive_entry:
+		check(app._retained_garage.showroom.get_node("GarageOpeningPicture").get_script()==preload("res://ui/garage_loading_car.gd"),"interrupted construction presents a neutral current-car placeholder")
+		while app._retained_garage.showroom.preparing and Time.get_ticks_msec()<deadline: await process_frame
 	check(app._retained_garage.showroom.showroom_ready and app._retained_garage.showroom.car.customisation==parts,"entry during cooperative construction opens the current complete car")
 	if timings.constructor_interrupted: check(app._retained_garage.showroom!=building,"unfinished constructor is retired before normal entry")
 	await finish(app)

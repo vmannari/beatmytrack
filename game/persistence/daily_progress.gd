@@ -33,7 +33,7 @@ static func valid(row: Variant) -> bool:
 	for field: String in ["day","passed","best_ms"]:
 		var value: Variant = row.get(field)
 		if not (value is int or value is float) or not is_finite(float(value)) or float(value) != floor(float(value)): return false
-	return int(row.day) >= 0 and int(row.passed) >= 0 and int(row.passed) <= 9 and int(row.best_ms) > 0 and int(row.best_ms) <= 1800000 and row.get("version") is String and row.get("vehicle") in VehicleCatalog.IDS
+	return int(row.day) >= 0 and int(row.passed) >= 0 and int(row.passed) <= 9 and int(row.best_ms) > 0 and int(row.best_ms) <= 1800000 and row.get("version") is String and row.get("vehicle") in VehicleCatalog.ALL_IDS
 
 static func best(entries: Dictionary, day: int, version: String, vehicle: String) -> Dictionary:
 	return entries.get(identity(day,version,vehicle),{}).duplicate(true)

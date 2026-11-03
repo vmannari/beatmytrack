@@ -3,15 +3,15 @@ extends RefCounted
 ## Nine purposeful packages: road mouldings, air dams, homologation arches,
 ## mounted rally flaps and a complete splitter / diffuser assembly.
 const PROFILES: Dictionary = {
-	"street":{"flare":0.035,"bottom":0.300,"depth":0.050},
+	"street":{"flare":0.035,"bottom":0.312,"depth":0.050},
 	"rally":{"flare":0.035,"bottom":0.325,"depth":0.032,"arch":0.046,"flaps":true},
-	"club":{"flare":0.065,"bottom":0.280,"depth":0.100,"arch":0.062,"tray":true},
-	"heritage":{"flare":0.022,"bottom":0.315,"depth":0.035,"arch":0.024},
+	"club":{"flare":0.070,"bottom":0.265,"depth":0.115,"arch":0.062,"tray":true},
+	"heritage":{"flare":0.018,"bottom":0.335,"depth":0.022,"arch":0.024},
 	"touring":{"flare":0.045,"bottom":0.285,"depth":0.067,"tray":true},
-	"wide":{"flare":0.090,"bottom":0.300,"depth":0.072,"arch":0.090},
+	"wide":{"flare":0.105,"bottom":0.292,"depth":0.100,"arch":0.105},
 	"endurance":{"flare":0.080,"bottom":0.270,"depth":0.135,"arch":0.082,"tray":true},
-	"gravel":{"flare":0.041,"bottom":0.325,"depth":0.040,"arch":0.059,"flaps":true},
-	"urban":{"flare":0.035,"bottom":0.295,"depth":0.057,"tray":true}}
+	"gravel":{"flare":0.055,"bottom":0.345,"depth":0.045,"arch":0.070,"flaps":true},
+	"urban":{"flare":0.055,"bottom":0.290,"depth":0.075,"tray":true}}
 
 static func build(root: Node3D, kind: String, paint: Material, trim: Material, metal: Material) -> void:
 	var profile: Dictionary = PROFILES[kind]
@@ -27,7 +27,10 @@ static func build(root: Node3D, kind: String, paint: Material, trim: Material, m
 			var z: float = lerpf(-0.82,0.82,u)
 			var q: Vector2 = CompactKitSurface.contour(section,v,0.006)
 			var taper: float = 0.40+0.60*smoothstep(0,0.14,u)*(1-smoothstep(0.86,1,u))
-			return Vector3(side*(CompactCoachwork.body_width(q.y,z)+q.x*taper),q.y,z),outer,32,20)
+			# Distinct rocker profiles: kicked rear shoulders, straight classic trim,
+			# and a wider competition sill all blend into the stock wheel openings.
+			var shape: float = _sill_shape(kind,u)
+			return Vector3(side*(CompactCoachwork.body_width(q.y,z)+q.x*taper*shape),q.y,z),outer,32,20)
 		if profile.get("tray",false):
 			var ledge: Array[Vector2] = [Vector2(-0.005,low+0.021),Vector2(profile.flare+0.022,low+0.014),Vector2(profile.flare+0.022,low+0.002),Vector2(-0.008,low+0.008)]
 			CompactKitSurface.solid(root,key+"sillblade"+str(side),func(u: float,v: float) -> Vector3:
@@ -49,9 +52,47 @@ static func build(root: Node3D, kind: String, paint: Material, trim: Material, m
 			var p: Vector2 = CompactCoachwork._bumper_path(rear,u)
 			var tangent: Vector2 = (CompactCoachwork._bumper_path(rear,minf(1,u+0.0002))-CompactCoachwork._bumper_path(rear,maxf(0,u-0.0002))).normalized()
 			var q: Vector2 = CompactKitSurface.contour(section,v,0.006)
-			p += Vector2(-tangent.y,tangent.x)*q.x
+			var outward: float = q.x
+			if q.x > 0.0:
+				outward *= _bumper_shape(kind,rear,u)
+			p += Vector2(-tangent.y,tangent.x)*outward
 			return Vector3(p.x,q.y,p.y),apron_material,64,24)
 	if profile.get("tray",false): _aero_floor(root,key,kind,low,float(profile.depth),trim)
+
+# Profiles use continuous curves so the ends and returns stay attached.
+static func _sill_shape(kind: String, u: float) -> float:
+	match kind:
+		"rally": return 0.75 + 0.40*u
+		"club": return 0.85 + 0.35*sin(PI*u)
+		"heritage": return 0.8
+		"touring": return 0.8 + 0.25*u
+		"wide": return 1.0 + 0.35*pow(sin(PI*u),2)
+		"endurance": return 1.15 + 0.25*u
+		"gravel": return 1.15 - 0.30*sin(PI*u)
+		"urban": return 0.75 + 0.50*u
+	return 1.0
+
+static func _bumper_shape(kind: String, rear: bool, u: float) -> float:
+	var center: float = pow(maxf(0.0,1.0-absf(2.0*u-1.0)),2.0)
+	var shoulders: float = pow(sin(2.0*PI*u),2.0)
+	match kind:
+		"street": return 0.85 + 0.25*center
+		"rally": return 0.8 + 0.45*shoulders
+		"club": return 1.0 + 0.35*center
+		"heritage": return 0.85
+		"touring": return 0.9 + 0.25*center
+		"wide": return 0.9 + 0.55*shoulders
+		"endurance": return 1.0 + (0.35 if rear else 0.55)*center
+		"gravel": return 0.9 + 0.45*center
+		"urban": return 0.9 + 0.40*shoulders
+	return 1.0
+
+# Raise the outer shoulders towards a squared homologation flare while leaving
+# the inner wheel opening untouched. The return follows this same radius.
+static func _arch_radius(kind: String, angle: float, radius: float) -> float:
+	var shoulder: float = pow(absf(sin(2.0*angle)),2.0)
+	var amount: float = {"rally":0.034,"club":0.025,"wide":0.065,"endurance":0.045,"gravel":0.022}.get(kind,0.0)
+	return radius + amount*shoulder*clampf((radius-0.460)/0.032,0.0,1.0)
 
 static func _arch(root: Node3D, key: String, kind: String, side: float, axle: float, flare: float, material: Material, metal: Material) -> void:
 	var outer: float = 0.461 if kind=="heritage" else 0.492
@@ -59,12 +100,13 @@ static func _arch(root: Node3D, key: String, kind: String, side: float, axle: fl
 	CompactKitSurface.solid(root,key+"arch%s/%s"%[side,axle],func(u: float,v: float) -> Vector3:
 		var angle: float = lerpf(-0.10,PI+0.10,u)
 		var q: Vector2 = CompactKitSurface.contour(section,v,0.0018)
-		var y: float = 0.37+sin(angle)*q.x
-		var z: float = axle+cos(angle)*q.x
-		return Vector3(side*(CompactCoachwork.body_width(y,z)+CompactKits.arch_roll(q.x,axle)+maxf(0.009,q.y)),y,z),material,40,24)
-	# The visible flare and its existing clearance remain exact. A separate
-	# returned backing fills the previously open space behind that shell.
-	var embed: float = 0.007 if CompactKits.simple_parts else 0.004
+		var radius: float = _arch_radius(kind,angle,q.x)
+		var y: float = 0.37+sin(angle)*radius
+		var z: float = axle+cos(angle)*radius
+		return Vector3(side*(CompactCoachwork.body_width(y,z)+CompactKits.arch_roll(radius,axle)+maxf(0.009,q.y)),y,z),material,40,24)
+	# The inner clearance remains unchanged. A matching returned backing
+	# fills the space behind the shaped outer flare.
+	var embed: float = 0.020 if CompactKits.simple_parts else 0.015
 	var mounting_section: Array[Vector2] = [Vector2(0.423,0),Vector2(outer,0),Vector2(outer,1),Vector2(0.440,1),Vector2(0.423,1)]
 	CompactKitSurface.solid(root,key+"fendermount%s/%s"%[side,axle],func(u: float,v: float) -> Vector3:
 		# The surface UVs are float32; quantise cap samples identically so their
@@ -72,19 +114,21 @@ static func _arch(root: Node3D, key: String, kind: String, side: float, axle: fl
 		var parameter := Vector2(u,v)
 		var angle: float = lerpf(-0.10,PI+0.10,parameter.x)
 		var q: Vector2 = CompactKitSurface.contour(mounting_section,parameter.y,0.0008)
-		var y: float = 0.37+sin(angle)*q.x
-		var z: float = axle+cos(angle)*q.x
+		var radius: float = _arch_radius(kind,angle,q.x)
+		var y: float = 0.37+sin(angle)*radius
+		var z: float = axle+cos(angle)*radius
 		var rear_offset: float = lerpf(0.018,flare-0.007,clampf((q.x-0.423)/0.017,0,1)) if q.x<0.440 else lerpf(flare-0.007,0.009,(q.x-0.440)/(outer-0.440))
 		var offset: float = lerpf(-embed,rear_offset+0.005,q.y)
-		return Vector3(side*(CompactCoachwork.body_width(y,z)+CompactKits.arch_roll(q.x,axle)+offset),y,z),material,40 if CompactKits.simple_parts else 20,20)
+		return Vector3(side*(CompactCoachwork.body_width(y,z)+CompactKits.arch_roll(radius,axle)+offset),y,z),material,40 if CompactKits.simple_parts else 20,20)
 	if kind in ["rally","gravel","wide"]:
 		for index: int in range(7):
 			var angle: float = lerpf(0.10,PI-0.10,index/6.0)
 			var radius: float = 0.474
-			var y: float = 0.37+sin(angle)*radius
-			var z: float = axle+cos(angle)*radius
+			var shaped_radius: float = _arch_radius(kind,angle,radius)
+			var y: float = 0.37+sin(angle)*shaped_radius
+			var z: float = axle+cos(angle)*shaped_radius
 			var offset: float = lerpf(flare,0.017,(radius-0.441)/(outer-0.441))
-			var bolt := CompactKits._cylinder(root,0.005,0.003,Vector3(side*(CompactCoachwork.body_width(y,z)+CompactKits.arch_roll(radius,axle)+offset+0.0015),y,z),metal,8)
+			var bolt := CompactKits._cylinder(root,0.005,0.003,Vector3(side*(CompactCoachwork.body_width(y,z)+CompactKits.arch_roll(shaped_radius,axle)+offset+0.0015),y,z),metal,8)
 			bolt.rotation.z = PI*0.5
 
 static func _flap(root: Node3D, key: String, side: float, axle: float, gravel: bool, trim: Material, metal: Material) -> void:

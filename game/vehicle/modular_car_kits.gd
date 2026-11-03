@@ -19,7 +19,15 @@ static func geometry_sources(id: String) -> Dictionary:
 
 static func key_for(car: CarVisual, category: String, option: String) -> Array:
 	var config: HandlingConfig = VehicleCatalog.config(car.vehicle_id)
-	return [SCHEMA,car.vehicle_id,car.simple_model,car.editable_kits,car.batch_parts,VisualGeometry.optimize_model_geometry,HandlingConfig.BODY_SCALE,config.wheelbase,config.track_width,category,option,engine_key(),Base.build_revision(car.vehicle_id)]
+	var key: Array = [SCHEMA,car.vehicle_id,car.simple_model,car.editable_kits,car.batch_parts,VisualGeometry.optimize_model_geometry,HandlingConfig.BODY_SCALE,config.wheelbase,config.track_width,category,option,engine_key(),Base.build_revision(car.vehicle_id)]
+	# Superseded Rally modules cannot be reused in packaged builds, where
+	# source-file hash validation is unavailable.
+	if car.vehicle_id == "compact" and category == "body": key.append("rally-body-2")
+	if car.vehicle_id == "compact" and category == "aero": key.append("rally-aero-2")
+	if car.vehicle_id == "electric": key.append("volt-visible-kits-2")
+	if car.vehicle_id == "electric" and category == "body": key.append(preload("res://vehicle/electric_body_kits.gd").REVISION)
+	if car.vehicle_id == "electric" and category == "hood": key.append(preload("res://vehicle/electric_kits.gd").HOOD_REVISION)
+	return key
 
 static func path_for(car: CarVisual, category: String, option: String) -> String:
 	return DIRECTORY.path_join(car.vehicle_id).path_join("simple" if car.simple_model else "full").path_join(category).path_join(option+".scn")

@@ -1,0 +1,793 @@
+diff --git a/AGENTS.md b/AGENTS.md
+index 47ef024..f0cc39f 100644
+--- a/AGENTS.md
++++ b/AGENTS.md
+@@ -1,3 +1,8 @@
++<!-- RECORD-PLAYLIST-20261102 -->
++## Choose which music records join the playlist (2026-11-02)
++RPL01-RPL03: Independent saved checkboxes include/exclude each record; all fourteen default included, at least one retained. Automatic advance and Previous/Next follow selection; excluded records remain directly playable. Atomic validation/reload/failed-save recovery retain playback and pause state. Focused57/0 headless and61/0 each desktop renderer; retained soundtrack41/0, record-player39/0 and records54/0 pass, with36 scoped translations and six native captures. Sources, actual commands, initial fixture/capture findings, task-only checkpoint and limits: [docs/RECORD_PLAYLIST_2026_11_02.md](docs/RECORD_PLAYLIST_2026_11_02.md). Reload and owner/device acceptance remain. No physical-device query/test, APK, owner-save/process change, live/backend mutation, deployment or main-index write; concurrent work preserved.
++<!-- /RECORD-PLAYLIST-20261102 -->
++
+ <!-- SUPER-WASH-ANIMATION-20261102 -->
+ ## Superwash automatic brush animation (2026-11-02)
+ SWA01-SWA02: Actual-car rollover gantry, three rotating brushes and fixed96-drop spray traverse nose to tail in3.6s; existing instant local cleaning/saving remains. Manual washing/navigation/hiding clear feedback; model/kit changes discard it and idle drawing settles. Native89/0 each desktop renderer, retained Super Wash257/0 and hose81/0 pass; thirty settled views and55-frame native motion preview. Initial startup/certificate restriction and corrected fiber alignment retained. Sources, commands, scoped checkpoint and limits: [docs/SUPER_WASH_ANIMATION_2026_11_02.md](docs/SUPER_WASH_ANIMATION_2026_11_02.md). Reload and owner/device appearance/performance acceptance remain. No device query/test, APK, owner-save/process change, live/backend mutation, deployment or main-index write; concurrent work preserved.
+diff --git a/docs/RECORD_PLAYLIST_2026_11_02.md b/docs/RECORD_PLAYLIST_2026_11_02.md
+new file mode 100644
+index 0000000..dd3c35e
+--- /dev/null
++++ b/docs/RECORD_PLAYLIST_2026_11_02.md
+@@ -0,0 +1,44 @@
++# Selectable record playlist
++
++RPL01 adds a saved Playlist checkbox beside every Garage record. All fourteen records start included for existing saves. Membership changes save immediately without changing the current track, pause state or volume. A record outside the playlist remains available for direct play. Keep at least one record selected; its checkbox is disabled with a translated explanation when it is the only remaining entry.
++
++RPL02 makes automatic end-of-record advancement and Previous/Next follow the selected records in catalogue order, including wraparound and navigation from a directly played excluded record. A single selected record repeats. Automatic advancement reads the bound LocalRecords object's current settings, including after another atomic save replaces its dictionary. Racing remains silent and cannot advance the menu playlist.
++
++RPL03 adds the optional `settings.music_playlist` array to the existing schema-2 preferences. Its entries must be distinct known record IDs, with one to fourteen entries. Missing preferences retain the original all-record behavior. LocalRecords validates saves and reloads through its existing atomic path; failed saves restore both saved membership and checkbox state and use the existing Garage storage notice. There is no backend contract change.
++
++Changed runtime files:
++
++- `game/ui/garage_records_menu.gd`: independent 52-unit checkbox targets, translated heading/accessibility/last-entry explanation, immediate save and selected-record transport.
++- `game/soundtrack/record_library.gd`: bounded playlist validation, default membership and shared directional selection.
++- `game/soundtrack/audio_world.gd`: filtered automatic advancement using current bound preferences.
++- `game/persistence/local_records.gd`: validation of the additive preference.
++
++Supporting files: `game/tests/test_record_playlist.gd`, three authored rows in `scripts/translations/record_playlist.tsv`, the source catalogue and twelve locale catalogues, this document, the AGENTS entry, and task-owned evidence/runner/checkpoint scripts. Catalogue changes append only the three task messages and retain concurrent translations.
++
++Actual commands, run from the repository root:
++
++```powershell
++python docs/evidence/record-playlist-2026-11-02/run_native.py
++python docs/evidence/record-playlist-2026-11-02/run_native.py --graphical
++python docs/evidence/record-playlist-2026-11-02/run_native.py --graphical --mobile
++python docs/evidence/record-playlist-2026-11-02/run_native.py test_supplied_soundtrack
++python docs/evidence/record-playlist-2026-11-02/run_native.py test_record_player_redesign --graphical
++python docs/evidence/record-playlist-2026-11-02/run_native.py test_records
++python docs/evidence/record-playlist-2026-11-02/check_catalogues.py
++git diff --check -- game/soundtrack/record_library.gd game/soundtrack/audio_world.gd game/ui/garage_records_menu.gd game/persistence/local_records.gd
++python docs/evidence/record-playlist-2026-11-02/checkpoint.py
++```
++
++Final results: playlist **57 checks / 0 failures headless**, **61 / 0 native Compatibility**, **61 / 0 native desktop Mobile**. Retained supplied soundtrack **41 / 0**, native record-player interaction/layout **39 / 0**, local records **54 / 0**. Combined **313 checks / 0 failures**. Scoped catalogue checks verify all **36 translations**, three source messages and matching placeholders. No whole-project localization-clean claim is made. Git whitespace checks pass with existing line-ending notices.
++
++The focused fixture uses the actual App/Garage, isolated storage and an empty service origin. It covers mouse/touch membership changes independent of direct play, disk reload, both transport directions, automatic advancement after another save, actual native end-of-track signals, paused editing, a one-record playlist, race guards, rejected empty/duplicate/unknown/malformed values, visible failed-save recovery and subsequent successful edits. Six native captures cover 960x540, 1280x720 and 1600x900 across both renderers:
++
++- [Compatibility 960x540](evidence/record-playlist-2026-11-02/gl_compatibility/playlist-960x540.png)
++- [Compatibility 1280x720](evidence/record-playlist-2026-11-02/gl_compatibility/playlist-1280x720.png)
++- [Desktop Mobile 1280x720](evidence/record-playlist-2026-11-02/mobile/playlist-1280x720.png)
++
++Initial fixture findings are retained: the first run assumed a `music_record` key existed even when default selection had never needed saving. It raised a script error and stalled, then its exact owned headless process was identified and stopped. The corrected fixture explicitly commits its starting selection. Initial successful native captures showed the intentionally triggered storage-error dialog; the fixture now dismisses that notice before capturing the record controls. Neither correction changes production behavior or weakens an assertion. The sandbox denied process enumeration; a scoped elevated command identified only the exact fixture command line. PowerShell `Stop-Process` failed, then the verified process's `.Kill()` succeeded. The task runner now bounds its own launched process tree on timeout. The existing Windows root-certificate-store warning occurs in successful offline runs and is retained in logs. Native tests use the Dummy audio driver; delivered speaker sound was not assessed.
++
++The review checkpoint uses task-start runtime/catalogue files and a fresh baseline immediately before adding the shared AGENTS entry. New files are additions. It preserves concurrent workspace edits, and its patch passes forward/reverse application and normalized-text equality checks inside an owned temporary repository. The main Git index is untouched; no commit or merge is made there.
++
++Reload and owner appearance/touch acceptance remain. No physical-device query/test, APK, real authentication, purchase, owner-save/process change, live/backend mutation or deployment was performed.
+diff --git a/docs/evidence/record-playlist-2026-11-02/check_catalogues.py b/docs/evidence/record-playlist-2026-11-02/check_catalogues.py
+new file mode 100644
+index 0000000..aea31c2
+--- /dev/null
++++ b/docs/evidence/record-playlist-2026-11-02/check_catalogues.py
+@@ -0,0 +1,20 @@
++"""Verify only the directly authored playlist messages without rewriting catalogues."""
++from pathlib import Path
++import sys
++
++root = Path(__file__).resolve().parents[3]
++sys.path.insert(0, str(root / 'scripts'))
++import localization
++
++rows = [line.split('|') for line in (root / 'scripts/translations/record_playlist.tsv').read_text(encoding='utf-8').splitlines() if line]
++languages = ['en', 'fr', 'es', 'de', 'pt_BR', 'ja', 'ko', 'nl', 'it', 'fi', 'sv', 'nb']
++for index, language in enumerate(languages):
++    catalogue = localization.parse_po((root / f'game/localization/{language}.po').read_text(encoding='utf-8'))
++    for row in rows:
++        assert len(row) == len(languages)
++        value = catalogue[('', row[0])]['msgstr']
++        assert value == row[index], (language, row[0])
++        assert localization.placeholders(value) == localization.placeholders(row[0])
++source = localization.parse_po((root / 'game/localization/messages.pot').read_text(encoding='utf-8'))
++assert all(('', row[0]) in source for row in rows)
++print('Scoped playlist catalogues: 36 translations, 3 source messages, valid placeholders')
+diff --git a/docs/evidence/record-playlist-2026-11-02/checkpoint.py b/docs/evidence/record-playlist-2026-11-02/checkpoint.py
+new file mode 100644
+index 0000000..06de9a1
+--- /dev/null
++++ b/docs/evidence/record-playlist-2026-11-02/checkpoint.py
+@@ -0,0 +1,56 @@
++"""Create and round-trip a task-only patch in an owned temporary Git repository."""
++from pathlib import Path
++import hashlib
++import json
++import subprocess
++import tempfile
++
++root = Path(__file__).resolve().parents[3]
++out = Path(__file__).resolve().parent
++before = root / 'build/record-playlist-2026-11-02/before'
++files = ['game/soundtrack/record_library.gd', 'game/soundtrack/audio_world.gd',
++         'game/ui/garage_records_menu.gd', 'game/persistence/local_records.gd',
++         'game/tests/test_record_playlist.gd', 'scripts/translations/record_playlist.tsv',
++         'docs/RECORD_PLAYLIST_2026_11_02.md', 'AGENTS.md',
++         'docs/evidence/record-playlist-2026-11-02/run_native.py',
++         'docs/evidence/record-playlist-2026-11-02/check_catalogues.py',
++         'docs/evidence/record-playlist-2026-11-02/checkpoint.py',
++         'game/localization/messages.pot']
++files += ['game/localization/' + lang + '.po' for lang in ['en', 'fr', 'es', 'de', 'pt_BR', 'ja', 'ko', 'nl', 'it', 'fi', 'sv', 'nb']]
++
++def normalized(path):
++    return path.read_text(encoding='utf-8').encode('utf-8')
++
++old = {name: normalized(before / name) for name in files if (before / name).exists()}
++new = {name: normalized(root / name) for name in files}
++with tempfile.TemporaryDirectory(prefix='checkpoint-', dir=root / 'build/record-playlist-2026-11-02') as temporary:
++    repo = Path(temporary)
++    def git(*args):
++        return subprocess.run(['git', '-c', 'core.autocrlf=false', *args], cwd=repo, check=True, capture_output=True).stdout
++    def write(values):
++        for name, data in values.items():
++            path = repo / name
++            path.parent.mkdir(parents=True, exist_ok=True)
++            path.write_bytes(data)
++    git('init', '-q')
++    write(old)
++    git('add', '--all')
++    git('-c', 'user.name=Task checkpoint', '-c', 'user.email=checkpoint@localhost', 'commit', '-qm', 'Task-start sources')
++    write(new)
++    git('add', '--all')
++    patch = git('diff', '--cached', '--binary', '--no-ext-diff')
++    patch_path = out / 'task-only.patch'
++    patch_path.write_bytes(patch)
++    git('apply', '--reverse', '--check', str(patch_path))
++    git('apply', '--reverse', str(patch_path))
++    for name in files:
++        path = repo / name
++        assert (path.read_bytes() if path.exists() else None) == old.get(name), name
++    git('apply', '--check', str(patch_path))
++    git('apply', str(patch_path))
++    assert all((repo / name).read_bytes() == data for name, data in new.items())
++report = {'files': len(files), 'patch_sha256': hashlib.sha256(patch).hexdigest(),
++          'forward_reverse_equal': True,
++          'sources': {name: hashlib.sha256(data).hexdigest() for name, data in new.items()}}
++(out / 'checkpoint.json').write_text(json.dumps(report, indent=2) + '\n', encoding='utf-8')
++print(f'Task-only checkpoint: {len(files)} files, forward/reverse normalized-text equality passed')
+diff --git a/docs/evidence/record-playlist-2026-11-02/run_native.py b/docs/evidence/record-playlist-2026-11-02/run_native.py
+new file mode 100644
+index 0000000..7ede831
+--- /dev/null
++++ b/docs/evidence/record-playlist-2026-11-02/run_native.py
+@@ -0,0 +1,36 @@
++"""Offline isolated playlist checks using the pinned engine and crash-dialog wrapper."""
++import os
++from pathlib import Path
++import subprocess
++import sys
++
++root = Path(__file__).resolve().parents[3]
++out = Path(__file__).resolve().parent
++script = next((arg for arg in sys.argv[1:] if not arg.startswith('--')), 'test_record_playlist')
++graphical = '--graphical' in sys.argv
++renderer = 'mobile' if '--mobile' in sys.argv else 'gl_compatibility'
++profile = root / 'build/record-playlist-2026-11-02' / (script + '-' + renderer)
++profile.mkdir(parents=True, exist_ok=True)
++env = dict(os.environ, APPDATA=str(profile), LOCALAPPDATA=str(profile), BMT_API_URL='',
++           BMT_PLAYLIST_EVIDENCE=str(out / renderer))
++(out / renderer).mkdir(parents=True, exist_ok=True)
++(root / 'build/soundtrack-2026-test').mkdir(parents=True, exist_ok=True)
++command = [sys.executable, str(root / 'scripts/run_no_crash_dialog.py'), '--',
++           r'C:\apps\Godot 4.7.2\Godot_v4.7.2-stable_win64_console.exe',
++           '--path', str(root / 'game'), '--rendering-method', renderer,
++           '--audio-driver', 'Dummy', '--script', 'res://tests/' + script + '.gd']
++if not graphical:
++    command.append('--headless')
++process = subprocess.Popen(command, cwd=root, env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
++                           text=True, encoding='utf-8', errors='replace')
++try:
++    stdout, stderr = process.communicate(timeout=240)
++except subprocess.TimeoutExpired:
++    # The wrapper owns Godot; terminate this exact launched tree before draining pipes.
++    subprocess.run(['taskkill', '/PID', str(process.pid), '/T', '/F'], capture_output=True, check=False)
++    stdout, stderr = process.communicate(timeout=15)
++    stderr += '\nTask-owned native test exceeded 240 seconds.\n'
++output = stdout + stderr
++(out / (script + '-' + renderer + ('-native' if graphical else '-headless') + '.log')).write_text(output, encoding='utf-8')
++print(output)
++raise SystemExit(process.returncode)
+diff --git a/game/localization/de.po b/game/localization/de.po
+index 3a263b1..2841b7c 100644
+--- a/game/localization/de.po
++++ b/game/localization/de.po
+@@ -11451,3 +11451,15 @@ msgstr "Gesamte Rangliste"
+ #: game/ui/daily_elimination_results.gd game/ui/daily_results_standings.gd
+ msgid "Best lap"
+ msgstr "Beste Runde"
++
++#: game/ui/garage_records_menu.gd
++msgid "PLAYLIST"
++msgstr "PLAYLIST"
++
++#: game/ui/garage_records_menu.gd
++msgid "Include {title} in playlist"
++msgstr "{title} zur Playlist hinzufügen"
++
++#: game/ui/garage_records_menu.gd
++msgid "Keep at least one track in the playlist."
++msgstr "Behalte mindestens einen Titel in der Playlist."
+diff --git a/game/localization/en.po b/game/localization/en.po
+index 73cbfea..3e94167 100644
+--- a/game/localization/en.po
++++ b/game/localization/en.po
+@@ -11565,3 +11565,15 @@ msgstr "View full standings"
+ #: game/ui/daily_elimination_results.gd game/ui/daily_results_standings.gd
+ msgid "Best lap"
+ msgstr "Best lap"
++
++#: game/ui/garage_records_menu.gd
++msgid "PLAYLIST"
++msgstr "PLAYLIST"
++
++#: game/ui/garage_records_menu.gd
++msgid "Include {title} in playlist"
++msgstr "Include {title} in playlist"
++
++#: game/ui/garage_records_menu.gd
++msgid "Keep at least one track in the playlist."
++msgstr "Keep at least one track in the playlist."
+diff --git a/game/localization/es.po b/game/localization/es.po
+index d40c186..d0abf52 100644
+--- a/game/localization/es.po
++++ b/game/localization/es.po
+@@ -11451,3 +11451,15 @@ msgstr "Ver clasificación completa"
+ #: game/ui/daily_elimination_results.gd game/ui/daily_results_standings.gd
+ msgid "Best lap"
+ msgstr "Mejor vuelta"
++
++#: game/ui/garage_records_menu.gd
++msgid "PLAYLIST"
++msgstr "LISTA DE REPRODUCCIÓN"
++
++#: game/ui/garage_records_menu.gd
++msgid "Include {title} in playlist"
++msgstr "Incluir {title} en la lista de reproducción"
++
++#: game/ui/garage_records_menu.gd
++msgid "Keep at least one track in the playlist."
++msgstr "Mantén al menos una canción en la lista de reproducción."
+diff --git a/game/localization/fi.po b/game/localization/fi.po
+index 1a8b229..31255c3 100644
+--- a/game/localization/fi.po
++++ b/game/localization/fi.po
+@@ -11451,3 +11451,15 @@ msgstr "Näytä kaikki sijoitukset"
+ #: game/ui/daily_elimination_results.gd game/ui/daily_results_standings.gd
+ msgid "Best lap"
+ msgstr "Paras kierros"
++
++#: game/ui/garage_records_menu.gd
++msgid "PLAYLIST"
++msgstr "SOITTOLISTA"
++
++#: game/ui/garage_records_menu.gd
++msgid "Include {title} in playlist"
++msgstr "Sisällytä {title} soittolistaan"
++
++#: game/ui/garage_records_menu.gd
++msgid "Keep at least one track in the playlist."
++msgstr "Säilytä soittolistassa vähintään yksi kappale."
+diff --git a/game/localization/fr.po b/game/localization/fr.po
+index 40527c3..59d23d8 100644
+--- a/game/localization/fr.po
++++ b/game/localization/fr.po
+@@ -11451,3 +11451,15 @@ msgstr "Voir tout le classement"
+ #: game/ui/daily_elimination_results.gd game/ui/daily_results_standings.gd
+ msgid "Best lap"
+ msgstr "Meilleur tour"
++
++#: game/ui/garage_records_menu.gd
++msgid "PLAYLIST"
++msgstr "LISTE DE LECTURE"
++
++#: game/ui/garage_records_menu.gd
++msgid "Include {title} in playlist"
++msgstr "Inclure {title} dans la liste de lecture"
++
++#: game/ui/garage_records_menu.gd
++msgid "Keep at least one track in the playlist."
++msgstr "Gardez au moins un morceau dans la liste de lecture."
+diff --git a/game/localization/it.po b/game/localization/it.po
+index 52fd599..49f9841 100644
+--- a/game/localization/it.po
++++ b/game/localization/it.po
+@@ -11451,3 +11451,15 @@ msgstr "Classifica completa"
+ #: game/ui/daily_elimination_results.gd game/ui/daily_results_standings.gd
+ msgid "Best lap"
+ msgstr "Miglior giro"
++
++#: game/ui/garage_records_menu.gd
++msgid "PLAYLIST"
++msgstr "PLAYLIST"
++
++#: game/ui/garage_records_menu.gd
++msgid "Include {title} in playlist"
++msgstr "Includi {title} nella playlist"
++
++#: game/ui/garage_records_menu.gd
++msgid "Keep at least one track in the playlist."
++msgstr "Mantieni almeno un brano nella playlist."
+diff --git a/game/localization/ja.po b/game/localization/ja.po
+index ae9e2a8..91eb045 100644
+--- a/game/localization/ja.po
++++ b/game/localization/ja.po
+@@ -11420,3 +11420,15 @@ msgstr "ランキング全体を見る"
+ #: game/ui/daily_elimination_results.gd game/ui/daily_results_standings.gd
+ msgid "Best lap"
+ msgstr "ベストラップ"
++
++#: game/ui/garage_records_menu.gd
++msgid "PLAYLIST"
++msgstr "プレイリスト"
++
++#: game/ui/garage_records_menu.gd
++msgid "Include {title} in playlist"
++msgstr "{title}をプレイリストに含める"
++
++#: game/ui/garage_records_menu.gd
++msgid "Keep at least one track in the playlist."
++msgstr "プレイリストには少なくとも1曲を残してください。"
+diff --git a/game/localization/ko.po b/game/localization/ko.po
+index 42baecb..ca44f3a 100644
+--- a/game/localization/ko.po
++++ b/game/localization/ko.po
+@@ -11420,3 +11420,15 @@ msgstr "전체 순위 보기"
+ #: game/ui/daily_elimination_results.gd game/ui/daily_results_standings.gd
+ msgid "Best lap"
+ msgstr "최고 랩"
++
++#: game/ui/garage_records_menu.gd
++msgid "PLAYLIST"
++msgstr "재생 목록"
++
++#: game/ui/garage_records_menu.gd
++msgid "Include {title} in playlist"
++msgstr "재생 목록에 {title} 포함"
++
++#: game/ui/garage_records_menu.gd
++msgid "Keep at least one track in the playlist."
++msgstr "재생 목록에 한 곡 이상 남겨 주세요."
+diff --git a/game/localization/messages.pot b/game/localization/messages.pot
+index 95192f5..dd1bf9d 100644
+--- a/game/localization/messages.pot
++++ b/game/localization/messages.pot
+@@ -11386,3 +11386,15 @@ msgstr ""
+ #: game/ui/daily_elimination_results.gd game/ui/daily_results_standings.gd
+ msgid "Best lap"
+ msgstr ""
++
++#: game/ui/garage_records_menu.gd
++msgid "PLAYLIST"
++msgstr ""
++
++#: game/ui/garage_records_menu.gd
++msgid "Include {title} in playlist"
++msgstr ""
++
++#: game/ui/garage_records_menu.gd
++msgid "Keep at least one track in the playlist."
++msgstr ""
+diff --git a/game/localization/nb.po b/game/localization/nb.po
+index dab679f..61e857b 100644
+--- a/game/localization/nb.po
++++ b/game/localization/nb.po
+@@ -11451,3 +11451,15 @@ msgstr "Vis hele resultatlisten"
+ #: game/ui/daily_elimination_results.gd game/ui/daily_results_standings.gd
+ msgid "Best lap"
+ msgstr "Beste runde"
++
++#: game/ui/garage_records_menu.gd
++msgid "PLAYLIST"
++msgstr "SPILLELISTE"
++
++#: game/ui/garage_records_menu.gd
++msgid "Include {title} in playlist"
++msgstr "Ta med {title} i spillelisten"
++
++#: game/ui/garage_records_menu.gd
++msgid "Keep at least one track in the playlist."
++msgstr "Behold minst én låt i spillelisten."
+diff --git a/game/localization/nl.po b/game/localization/nl.po
+index 68b5467..a0b8d8a 100644
+--- a/game/localization/nl.po
++++ b/game/localization/nl.po
+@@ -11451,3 +11451,15 @@ msgstr "Volledig klassement"
+ #: game/ui/daily_elimination_results.gd game/ui/daily_results_standings.gd
+ msgid "Best lap"
+ msgstr "Beste ronde"
++
++#: game/ui/garage_records_menu.gd
++msgid "PLAYLIST"
++msgstr "AFSPEELLIJST"
++
++#: game/ui/garage_records_menu.gd
++msgid "Include {title} in playlist"
++msgstr "{title} opnemen in afspeellijst"
++
++#: game/ui/garage_records_menu.gd
++msgid "Keep at least one track in the playlist."
++msgstr "Laat minstens één nummer in de afspeellijst staan."
+diff --git a/game/localization/pt_BR.po b/game/localization/pt_BR.po
+index a84db4d..5fa49be 100644
+--- a/game/localization/pt_BR.po
++++ b/game/localization/pt_BR.po
+@@ -11451,3 +11451,15 @@ msgstr "Ver classificação completa"
+ #: game/ui/daily_elimination_results.gd game/ui/daily_results_standings.gd
+ msgid "Best lap"
+ msgstr "Melhor volta"
++
++#: game/ui/garage_records_menu.gd
++msgid "PLAYLIST"
++msgstr "LISTA DE REPRODUÇÃO"
++
++#: game/ui/garage_records_menu.gd
++msgid "Include {title} in playlist"
++msgstr "Incluir {title} na lista de reprodução"
++
++#: game/ui/garage_records_menu.gd
++msgid "Keep at least one track in the playlist."
++msgstr "Mantenha pelo menos uma faixa na lista de reprodução."
+diff --git a/game/localization/sv.po b/game/localization/sv.po
+index 0a8cf75..30724f1 100644
+--- a/game/localization/sv.po
++++ b/game/localization/sv.po
+@@ -11451,3 +11451,15 @@ msgstr "Visa hela resultatlistan"
+ #: game/ui/daily_elimination_results.gd game/ui/daily_results_standings.gd
+ msgid "Best lap"
+ msgstr "Bästa varv"
++
++#: game/ui/garage_records_menu.gd
++msgid "PLAYLIST"
++msgstr "SPELLISTA"
++
++#: game/ui/garage_records_menu.gd
++msgid "Include {title} in playlist"
++msgstr "Ta med {title} i spellistan"
++
++#: game/ui/garage_records_menu.gd
++msgid "Keep at least one track in the playlist."
++msgstr "Behåll minst en låt i spellistan."
+diff --git a/game/persistence/local_records.gd b/game/persistence/local_records.gd
+index 9accf3c..235a1b3 100644
+--- a/game/persistence/local_records.gd
++++ b/game/persistence/local_records.gd
+@@ -211,6 +211,8 @@ static func _normalize(data: Variant) -> Dictionary:
+ 			if not preload("res://persistence/cosmetic_catalog.gd").valid_owned(preferences[field]): return {}
+ 		elif field == "music_record":
+ 			if not preload("res://soundtrack/record_library.gd").valid_id(preferences[field]): return {}
++		elif field == "music_playlist":
++			if not preload("res://soundtrack/record_library.gd").valid_playlist(preferences[field]): return {}
+ 		elif field == "vehicle_conditions":
+ 			if not VehicleCondition.valid_collection(preferences[field]): return {}
+ 		elif field == "vehicle_liveries":
+diff --git a/game/soundtrack/audio_world.gd b/game/soundtrack/audio_world.gd
+index 550d583..93509fd 100644
+--- a/game/soundtrack/audio_world.gd
++++ b/game/soundtrack/audio_world.gd
+@@ -96,13 +96,9 @@ func _loop(file: String) -> AudioStreamOggVorbis:
+ 
+ func _menu_finished() -> void:
+ 	if mode != "menu" or not music_enabled or _pending_record != null: return
+-	var collection: Array[Dictionary] = RecordLibrary.CATALOG
+-	var index: int = 0
+-	for i: int in range(collection.size()):
+-		if collection[i].id == menu_record: index = i
+-	var next: Dictionary = collection[(index + 1) % collection.size()]
+-	menu_record = next.id
+ 	var records: LocalRecords = _records.get_ref() if _records != null else null
++	var next: Dictionary = RecordLibrary.next_record(records.settings if records != null else _settings,menu_record)
++	menu_record = next.id
+ 	if records != null: records.settings["music_record"] = menu_record
+ 	else: _settings["music_record"] = menu_record
+ 	menu_player.stream = RecordLibrary.stream(next)
+diff --git a/game/soundtrack/record_library.gd b/game/soundtrack/record_library.gd
+index e0fe334..2824753 100644
+--- a/game/soundtrack/record_library.gd
++++ b/game/soundtrack/record_library.gd
+@@ -46,6 +46,33 @@ static func stream(item: Dictionary) -> AudioStream:
+ static func valid_id(value: Variant) -> bool:
+ 	return value is String and not entry(value).is_empty()
+ 
++static func valid_playlist(value: Variant) -> bool:
++	if not value is Array or value.is_empty() or value.size() > CATALOG.size(): return false
++	var seen: Dictionary = {}
++	for id: Variant in value:
++		if not valid_id(id) or seen.has(id): return false
++		seen[id] = true
++	return true
++
++static func playlist(settings: Dictionary) -> Array[Dictionary]:
++	var ids: Variant = settings.get("music_playlist")
++	if not valid_playlist(ids): return entries()
++	var result: Array[Dictionary] = []
++	for item: Dictionary in CATALOG:
++		if item.id in ids: result.append(item.duplicate(true))
++	return result
++
++static func next_record(settings: Dictionary, current: String, direction: int = 1) -> Dictionary:
++	var collection: Array[Dictionary] = playlist(settings)
++	var index: int = -1
++	for i: int in range(CATALOG.size()):
++		if CATALOG[i].id == current: index = i; break
++	for step: int in range(1,CATALOG.size()+1):
++		var candidate: Dictionary = CATALOG[posmod(index+step*direction,CATALOG.size())]
++		for item: Dictionary in collection:
++			if item.id == candidate.id: return item
++	return collection[0]
++
+ static func palette(id: String) -> Array[Color]:
+ 	var item: Dictionary = entry(id)
+ 	if item.is_empty(): item = entry(DEFAULT_ID)
+diff --git a/game/tests/test_record_playlist.gd b/game/tests/test_record_playlist.gd
+new file mode 100644
+index 0000000..20812d9
+--- /dev/null
++++ b/game/tests/test_record_playlist.gd
+@@ -0,0 +1,150 @@
++extends SceneTree
++## Saved playlist membership, real input, transport and end-of-record behavior.
++const Library = preload("res://soundtrack/record_library.gd")
++var checks: int = 0
++var failures: int = 0
++var output: String = OS.get_environment("BMT_PLAYLIST_EVIDENCE")
++
++func _initialize() -> void: run.call_deferred()
++
++func check(value: bool, message: String) -> void:
++	checks += 1
++	if not value:
++		failures += 1
++		print("FAIL: " + message)
++
++func settle() -> void:
++	await create_timer(0.8).timeout
++	for i: int in range(4): await process_frame
++	if DisplayServer.get_name() != "headless": await RenderingServer.frame_post_draw
++
++func tap(control: Control, touch: bool = false) -> void:
++	var point: Vector2 = control.get_global_rect().get_center()
++	for down: bool in [true,false]:
++		if touch:
++			var event := InputEventScreenTouch.new()
++			event.position = point
++			event.index = 0
++			event.pressed = down
++			root.push_input(event,true)
++		else:
++			var event := InputEventMouseButton.new()
++			event.position = point
++			event.global_position = point
++			event.button_index = MOUSE_BUTTON_LEFT
++			event.pressed = down
++			root.push_input(event,true)
++		await process_frame
++
++func run() -> void:
++	OS.set_environment("BMT_API_URL","")
++	root.size = Vector2i(1280,720)
++	root.content_scale_size = root.size
++	check(Library.playlist({}).size() == 14,"existing saves include every record by default")
++	for invalid: Variant in [null,{},"blacktop_thunder",[],[Library.DEFAULT_ID,Library.DEFAULT_ID],["missing"],[2]]:
++		check(not Library.valid_playlist(invalid),"invalid playlist rejected: " + str(invalid))
++	var folder: String = "user://record_playlist_" + TrackLibrary.unique_id()
++	DirAccess.make_dir_recursive_absolute(folder)
++	var app = load("res://core/app.tscn").instantiate()
++	app.records = LocalRecords.new(folder.path_join("records.json"))
++	app.library = TrackLibrary.new(folder)
++	app.cloud_root_override = folder.path_join("cloud")
++	root.add_child(app)
++	while not app.startup_complete: await process_frame
++	app._show_screen("garage")
++	await settle()
++	var page: GaragePage = app.root_ui.find_child("GaragePage",true,false)
++	page._show_section("records")
++	await settle()
++	var menu = page.records_menu
++	var music: GameSoundtrack = GameSoundtrack.instance()
++	music._notification(Node.NOTIFICATION_APPLICATION_FOCUS_IN)
++	app.records.settings.music_record = Library.DEFAULT_ID
++	check(menu._commit(),"initial selected-record preference saves")
++	check(menu.playlist_checks.size() == 14,"each record has a playlist checkbox")
++	check(menu.playlist_checks.all(func(button: CheckBox) -> bool: return button.button_pressed),"all records initially checked")
++	menu._select_record(0)
++	await settle()
++	var original_stream: AudioStream = music.menu_player.stream
++	await tap(menu.playlist_checks[1])
++	check(not menu.playlist_checks[1].button_pressed and Library.playlist(app.records.settings).size() == 13,"mouse removes a record from playlist")
++	check(app.records.settings.music_record == Library.DEFAULT_ID and music.menu_player.stream == original_stream,"membership changes leave current playback alone")
++	await tap(menu.playlist_checks[0],true)
++	check(not menu.playlist_checks[0].button_pressed,"touch removes the playing record without selecting another")
++	check(app.records.settings.music_record == Library.DEFAULT_ID,"checkbox tap does not trigger direct play")
++	var reload := LocalRecords.new(app.records.path)
++	reload.load_records()
++	check(Library.playlist(reload.settings).size() == 12 and Library.DEFAULT_ID not in reload.settings.music_playlist,"playlist survives disk reload")
++	music._menu_finished()
++	check(music.menu_record == Library.CATALOG[2].id and menu.now_title.text == Library.CATALOG[2].title,"automatic advance skips excluded records and updates UI")
++	menu._skip_record(-1)
++	music._process(1.0)
++	check(music.menu_record == Library.CATALOG[13].id,"previous wraps over excluded records")
++	menu._skip_record(1)
++	music._process(1.0)
++	check(music.menu_record == Library.CATALOG[2].id,"next wraps over excluded records")
++	menu._select_record(1)
++	music._process(1.0)
++	check(music.menu_record == Library.CATALOG[1].id and not menu.playlist_checks[1].button_pressed,"excluded record can still be played directly")
++	menu._skip_record(-1)
++	music._process(1.0)
++	check(music.menu_record == Library.CATALOG[13].id,"previous from an excluded record finds the prior included record")
++	# A later atomic save replaces settings; auto advance must use the bound current dictionary.
++	check(app.records.save_records() == OK,"unrelated save preserves playlist")
++	music._menu_finished()
++	check(music.menu_record == Library.CATALOG[2].id,"automatic advance reads membership after settings replacement")
++	if music.output_enabled:
++		music.menu_player.seek(maxf(0.0,music.menu_player.stream.get_length()-0.2))
++		await create_timer(0.8).timeout
++		check(music.menu_record == Library.CATALOG[3].id,"actual native finished signal advances within playlist")
++	menu._toggle_play()
++	menu._set_in_playlist(true,Library.DEFAULT_ID)
++	check(not music.music_enabled,"editing playlist retains paused music")
++	menu._toggle_play()
++	for index: int in range(1,14): menu._set_in_playlist(false,Library.CATALOG[index].id)
++	check(app.records.settings.music_playlist == [Library.DEFAULT_ID],"one-record playlist is valid")
++	check(menu.playlist_checks[0].disabled and menu.playlist_checks[0].button_pressed,"last included record stays selected with an explanation")
++	menu._set_in_playlist(false,Library.DEFAULT_ID)
++	check(app.records.settings.music_playlist == [Library.DEFAULT_ID],"empty selection cannot replace last valid playlist")
++	menu._select_record(0)
++	music._process(1.0)
++	music._menu_finished()
++	check(music.menu_record == Library.DEFAULT_ID,"single-record playlist repeats that record")
++	music.mode = "race"
++	music._menu_finished()
++	check(music.menu_record == Library.DEFAULT_ID,"race context cannot advance menu music")
++	music.show_menu()
++	var saved_path: String = app.records.path
++	app.records.path = folder.path_join("missing/records.json")
++	menu._set_in_playlist(true,Library.CATALOG[1].id)
++	check(app.records.settings.music_playlist == [Library.DEFAULT_ID] and not menu.playlist_checks[1].button_pressed,"failed save restores membership and checkbox")
++	check(menu.status.text.contains("Could not save"),"failed save is visible")
++	for dialog: Node in app.root_ui.find_children("*","FaultDialog",true,false):
++		dialog.confirmed.emit()
++	await process_frame
++	app.records.path = saved_path
++	menu._set_in_playlist(true,Library.CATALOG[2].id)
++	check(app.records.settings.music_playlist.size() == 2 and menu.playlist_checks[2].button_pressed,"playlist can be edited again after save recovery")
++	var committed: Dictionary = app.records.settings.duplicate(true)
++	app.records.settings.music_playlist = ["missing"]
++	check(app.records.save_records() == ERR_INVALID_DATA and app.records.settings == committed,"save validation rejects malformed playlist and retains preferences")
++	menu._refresh()
++	for dimensions: Vector2i in [Vector2i(960,540),Vector2i(1280,720),Vector2i(1600,900)]:
++		root.size = dimensions
++		root.content_scale_size = dimensions
++		menu.track_scroll.scroll_vertical = 0
++		await settle()
++		var bounds := Rect2(Vector2.ZERO,Vector2(dimensions))
++		for control: Control in [menu,menu.track_scroll,menu.playlist_heading,menu.playlist_checks[0],menu.track_rows[0],menu.transport]:
++			check(bounds.encloses(control.get_global_rect()),"control fits " + control.name + " " + str(dimensions))
++		check(menu.playlist_checks[0].size.x >= 52 and menu.playlist_checks[0].size.y >= 52,"playlist checkbox has a touch-sized target")
++		check(menu.track_rows[0].get_global_rect().end.x <= menu.playlist_checks[0].global_position.x,"play and membership targets do not overlap")
++		if DisplayServer.get_name() != "headless" and not output.is_empty():
++			DirAccess.make_dir_recursive_absolute(output)
++			check(root.get_texture().get_image().save_png(output.path_join("playlist-%dx%d.png" % [dimensions.x,dimensions.y])) == OK,"native playlist screenshot")
++	app.queue_free()
++	await process_frame
++	music.menu_player.stop()
++	if music.output_enabled: await create_timer(0.3).timeout
++	print("RECORD_PLAYLIST: %d checks, %d failures" % [checks,failures])
++	quit(1 if failures else 0)
+diff --git a/game/ui/garage_records_menu.gd b/game/ui/garage_records_menu.gd
+index 9dd1f74..b2b7e59 100644
+--- a/game/ui/garage_records_menu.gd
++++ b/game/ui/garage_records_menu.gd
+@@ -25,6 +25,8 @@ var save_timer: Timer
+ var track_scroll: ScrollContainer
+ var track_rows: Array[Button] = []
+ var track_states: Array[Label] = []
++var playlist_checks: Array[CheckBox] = []
++var playlist_heading: Label
+ 
+ func _ready() -> void:
+ 	display_position = float(browse_index)
+@@ -95,8 +97,13 @@ func _ready() -> void:
+ 	volume_value.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
+ 	volume_row.add_child(volume_value)
+ 	volume.value_changed.connect(_preview_volume)
++	var list_heading := HBoxContainer.new()
++	add_child(list_heading)
+ 	var list_title := MenuStyle.label("CHOOSE A TRACK",13,true)
+-	add_child(list_title)
++	list_title.size_flags_horizontal = Control.SIZE_EXPAND_FILL
++	list_heading.add_child(list_title)
++	playlist_heading = MenuStyle.label(tr("PLAYLIST"),11,true)
++	list_heading.add_child(playlist_heading)
+ 	track_scroll = preload("res://ui/vertical_swipe_scroll.gd").new()
+ 	track_scroll.name = "GarageTrackList"
+ 	track_scroll.horizontal_scroll_mode = ScrollContainer.SCROLL_MODE_DISABLED
+@@ -111,13 +118,24 @@ func _ready() -> void:
+ 	track_scroll.add_child(tracks)
+ 	for index: int in range(Library.CATALOG.size()):
+ 		var item: Dictionary = Library.CATALOG[index]
++		var track := HBoxContainer.new()
++		track.size_flags_horizontal = Control.SIZE_EXPAND_FILL
++		track.add_theme_constant_override("separation",4)
++		tracks.add_child(track)
+ 		var row := Button.new()
+ 		row.name = "GarageTrack_" + item.id
+ 		row.custom_minimum_size.y = 52
+ 		row.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+ 		row.mouse_default_cursor_shape = Control.CURSOR_POINTING_HAND
+ 		row.pressed.connect(_select_record.bind(index))
+-		tracks.add_child(row)
++		track.add_child(row)
++		var included := CheckBox.new()
++		included.name = "GaragePlaylist_" + item.id
++		included.custom_minimum_size = Vector2(52,52)
++		included.mouse_default_cursor_shape = Control.CURSOR_POINTING_HAND
++		included.toggled.connect(_set_in_playlist.bind(item.id))
++		track.add_child(included)
++		playlist_checks.append(included)
+ 		var content := HBoxContainer.new()
+ 		content.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+ 		content.offset_left = 6
+@@ -178,6 +196,10 @@ func _record_advanced(id: String) -> void:
+ 
+ func _refresh() -> void:
+ 	var current: Dictionary = Library.selected(records.settings)
++	var playlist: Array[Dictionary] = Library.playlist(records.settings)
++	var included_ids: Array[String] = []
++	for item: Dictionary in playlist: included_ids.append(item.id)
++	playlist_heading.text = tr("PLAYLIST")
+ 	var enabled: bool = records.settings.get("music_enabled",true)
+ 	now_cover.texture = Library.cover(current.id)
+ 	now_title.text = current.title
+@@ -191,6 +213,11 @@ func _refresh() -> void:
+ 	for index: int in range(track_rows.size()):
+ 		var item: Dictionary = Library.CATALOG[index]
+ 		var selected: bool = item.id == current.id
++		var included: CheckBox = playlist_checks[index]
++		included.set_pressed_no_signal(item.id in included_ids)
++		included.disabled = included.button_pressed and included_ids.size() == 1
++		included.accessibility_name = GameText.message("Include {title} in playlist",{"title":item.title})
++		included.tooltip_text = tr("Keep at least one track in the playlist.") if included.disabled else included.accessibility_name
+ 		var row: Button = track_rows[index]
+ 		row.accessibility_name = GameText.message("Playing · {title}" if selected and enabled else "Play {title}",{"title":item.title})
+ 		row.tooltip_text = row.accessibility_name
+@@ -229,12 +256,23 @@ func _browse_to(index: int) -> void:
+ 	flip_motion.tween_callback(func() -> void: flip_motion = null)
+ 
+ func _skip_record(direction: int) -> void:
+-	var current: Dictionary = Library.selected(records.settings)
++	var next: Dictionary = Library.next_record(records.settings,Library.selected(records.settings).id,direction)
+ 	for index: int in range(Library.CATALOG.size()):
+-		if Library.CATALOG[index].id == current.id:
+-			_select_record(posmod(index + direction,Library.CATALOG.size()))
++		if Library.CATALOG[index].id == next.id:
++			_select_record(index)
+ 			return
+ 
++func _set_in_playlist(included: bool, id: String) -> void:
++	var ids: Array[String] = []
++	for item: Dictionary in Library.playlist(records.settings):
++		if item.id != id or included: ids.append(item.id)
++	if included and id not in ids: ids.append(id)
++	if ids.is_empty():
++		_refresh()
++		return
++	records.settings.music_playlist = ids
++	_commit()
++
+ func _commit() -> bool:
+ 	if records.save_records() != OK:
+ 		GameSoundtrack.instance().apply_settings(records.settings)
+diff --git a/scripts/translations/record_playlist.tsv b/scripts/translations/record_playlist.tsv
+new file mode 100644
+index 0000000..215e618
+--- /dev/null
++++ b/scripts/translations/record_playlist.tsv
+@@ -0,0 +1,3 @@
++PLAYLIST|LISTE DE LECTURE|LISTA DE REPRODUCCIÓN|PLAYLIST|LISTA DE REPRODUÇÃO|プレイリスト|재생 목록|AFSPEELLIJST|PLAYLIST|SOITTOLISTA|SPELLISTA|SPILLELISTE
++Include {title} in playlist|Inclure {title} dans la liste de lecture|Incluir {title} en la lista de reproducción|{title} zur Playlist hinzufügen|Incluir {title} na lista de reprodução|{title}をプレイリストに含める|재생 목록에 {title} 포함|{title} opnemen in afspeellijst|Includi {title} nella playlist|Sisällytä {title} soittolistaan|Ta med {title} i spellistan|Ta med {title} i spillelisten
++Keep at least one track in the playlist.|Gardez au moins un morceau dans la liste de lecture.|Mantén al menos una canción en la lista de reproducción.|Behalte mindestens einen Titel in der Playlist.|Mantenha pelo menos uma faixa na lista de reprodução.|プレイリストには少なくとも1曲を残してください。|재생 목록에 한 곡 이상 남겨 주세요.|Laat minstens één nummer in de afspeellijst staan.|Mantieni almeno un brano nella playlist.|Säilytä soittolistassa vähintään yksi kappale.|Behåll minst en låt i spellistan.|Behold minst én låt i spillelisten.

@@ -82,9 +82,6 @@ var thumbnails: Dictionary = {}
 var cached_carousel: bool = false
 var _preview_service: Node
 var prepared_pictures: Dictionary={}
-var car_pictures_ready: Callable
-var prepare_car_pictures: Callable
-var _picture_section_request: int=0
 var tile_stride: int = 240
 var _condition_saved: Dictionary = {}
 var _condition_presented: Dictionary = {}
@@ -632,6 +629,7 @@ func _create_showroom() -> void:
 		showroom=CarShowroom.new()
 	preloaded_showroom=null
 	if progressive_entry: showroom.can_begin_studio=opening_can_begin
+	if progressive_entry: showroom.achievement_service=achievements
 	if progressive_entry: showroom.studio_prepared.connect(_studio_prepared)
 	if progressive_entry: showroom.studio_interactive.connect(_studio_prepared)
 	showroom.name = "GarageShowroom"
@@ -740,7 +738,7 @@ func _build_carousel() -> void:
 		_preview_service = preload("res://ui/garage_preview_cache.gd").new()
 		_preview_service.ready_pictures=prepared_pictures
 		_preview_service.remember_pictures=true
-		_preview_service.immediate_reads=true
+		_preview_service.immediate_reads=false
 		_preview_service.can_render=func() -> bool: return (not progressive_entry or not showroom.preparing) and (_menu_motion==null or not _menu_motion.is_running()) and (not preview_can_render.is_valid() or bool(preview_can_render.call()))
 		if showroom.has_method("take_carousel_picture"): _preview_service.prepared_picture=showroom.take_carousel_picture()
 		_preview_service.directory = records.path+".garage-previews"
@@ -953,20 +951,14 @@ func _navigate_section(next: String) -> void:
 
 func _studio_prepared() -> void:
 	_condition_presented=showroom.weathering.snapshot()
+	preview.get_node("GarageViewControls").visible=section not in ["trophies","records","news","achievements"]
+	_achievements_changed()
 	if not _opening_section.is_empty():
 		var destination: String=_opening_section
 		_opening_section=""
 		_show_section(destination)
 
-func _show_ready_cars(request: int) -> void:
-	if prepare_car_pictures.is_valid() and await prepare_car_pictures.call():
-		if is_inside_tree() and is_visible_in_tree() and request==_picture_section_request: _show_section("cars")
-
 func _show_section(next: String) -> void:
-	_picture_section_request+=1
-	if next=="cars" and car_pictures_ready.is_valid() and not car_pictures_ready.call():
-		_show_ready_cars(_picture_section_request)
-		return
 	if progressive_entry and is_instance_valid(showroom) and showroom.preparing and not showroom.interaction_ready and next not in ["cars","news","achievements"]:
 		_opening_section=next
 		return
@@ -1003,8 +995,8 @@ func _show_section(next: String) -> void:
 	actions.visible = _actions_slot.visible
 	if is_instance_valid(_coin_balance): _coin_balance.visible = next not in ["customise","tuning","care"]
 	if is_instance_valid(_coin_status): _coin_status.visible = next not in ["customise","tuning","care"]
-	_tools_slot.size_flags_vertical = Control.SIZE_EXPAND_FILL if next in ["news","achievements"] or is_instance_valid(customise_layout) else Control.SIZE_FILL
-	tools.size_flags_vertical = Control.SIZE_EXPAND_FILL if next in ["news","achievements"] or is_instance_valid(customise_layout) else Control.SIZE_FILL
+	_tools_slot.size_flags_vertical = Control.SIZE_EXPAND_FILL if next in ["news","achievements","records"] or is_instance_valid(customise_layout) else Control.SIZE_FILL
+	tools.size_flags_vertical = Control.SIZE_EXPAND_FILL if next in ["news","achievements","records"] or is_instance_valid(customise_layout) else Control.SIZE_FILL
 	if next == "news": tools_panel.add_theme_stylebox_override("panel",StyleBoxEmpty.new())
 	elif next == "achievements": tools_panel.add_theme_stylebox_override("panel",MenuStyle.card(8))
 	elif next in ["customise","tuning"]: tools_panel.add_theme_stylebox_override("panel",StudioStyle.panel(16))
@@ -1014,7 +1006,7 @@ func _show_section(next: String) -> void:
 	showroom.set_trophy_view(next == "trophies")
 	showroom.set_record_view(next == "records")
 	heading.text = "RECORD PLAYER" if next == "records" else "TROPHY WALL" if next == "trophies" else _car_name(vehicle_id)
-	preview.get_node("GarageViewControls").visible = next not in ["trophies","records"]
+	preview.get_node("GarageViewControls").visible = next not in ["trophies","records"] and (not progressive_entry or showroom.interaction_ready)
 	pickers.clear()
 	wash_button = null
 	_presets = null
@@ -1692,6 +1684,7 @@ func _super_wash() -> void:
 	# the underside and wheels, then recreate the clean weathering textures.
 	showroom.weathering.reset()
 	showroom.weathering.restore({})
+	showroom.play_super_wash()
 	showroom.invalidate_render()
 	_save_condition()
 	_update_wash_status()

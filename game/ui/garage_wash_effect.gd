@@ -117,6 +117,7 @@ func _prepare_hose() -> void:
 	jet.visibility_changed.connect(visual_changed.emit)
 
 func advance(delta: float, active: bool) -> void:
+	var was_visible: bool = visible
 	var step: float = clampf(delta, 0.0, 0.1)
 	clock += step
 	var touching: bool = active and not contact.is_empty()
@@ -157,7 +158,7 @@ func advance(delta: float, active: bool) -> void:
 	var alive: int = _advance_pool(foam, foam_slots, step, false)
 	alive += _advance_pool(water, water_slots, step, true)
 	visible = touching or alive > 0
-	visual_changed.emit()
+	if was_visible or visible: visual_changed.emit()
 
 func _emit(frame: Basis) -> void:
 	# Indexed sequences avoid global RNG side effects and remain bounded forever.

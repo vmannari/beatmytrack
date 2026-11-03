@@ -67,10 +67,10 @@ func run() -> void:
 	var card: Node = page._race_panel
 	card.result = {"passed":4,"best_ms":70000}
 	card._render()
-	check(not card._gap.text.contains("%") and not card._target.text.contains("%"),"result-card stage hint omits percentage limits")
+	check(not card._target.text.contains("%"),"result-card stage hint omits percentage limits")
 	card.result = {"passed":9,"best_ms":67600}
 	card._render()
-	check(card._gap.text == "Elite earned","Elite recognition has no cutoff label")
+	check(not card._target.visible and card._medals.get_child(3).selected,"Elite recognition has no cutoff label")
 	app.root_ui.hide()
 	root.content_scale_size = Vector2i.ZERO
 	for completed: bool in [false,true]:
@@ -91,7 +91,10 @@ func run() -> void:
 			root.size = size
 			await settle()
 			var grid: GridContainer = result.find_child("DailyLapGrid",true,false)
-			check(grid.columns == 2 and grid.get_child_count() == 2+(session.lap_times.size()-1)*2,"results contain only flying-lap numbers and times")
+			check(grid.get_child_count() == session.lap_times.size()-1,"results contain one card per flying lap")
+			for index: int in range(grid.get_child_count()):
+				var row: Node = grid.get_child(index).get_child(0)
+				check(row.get_child(0).text == "%02d" % (index+1) and row.get_child(1).text == Rules.time_text(session.lap_times[index+1]),"result cards preserve actual flying-lap numbers and times")
 			for label: Node in result.find_children("*","Label",true,false): check(not label.text.contains("%") and label.text != "Limit","post-race results do not expose cutoff percentages or limits")
 			await capture(("complete" if completed else "eliminated")+"-%dx%d" % [size.x,size.y])
 		result.queue_free()

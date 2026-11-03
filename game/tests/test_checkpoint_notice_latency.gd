@@ -71,8 +71,10 @@ func run() -> void:
 		var old = before_session(track)
 		track._race_gates = prepared
 		if old._centers == configured._centers:
-			for field: String in ["_centers","_directions","_widths","_road_widths","_progress","_layers"]:
+			for field: String in ["_centers","_directions","_progress","_layers"]:
 				check(old.get(field) == configured.get(field),"unchanged ordinary gate acceptance %s/%s" % [entry.name,field])
+			for gate: int in range(configured.checkpoint_count()):
+				check(configured._widths[gate].x >= configured._road_widths[gate].x and configured._widths[gate].y >= configured._road_widths[gate].y,"rules24 acceptance includes its complete road/kerb span %s/%d" % [entry.name,gate])
 		else:
 			check(RaceRules.KEY == "standing-5-road-gates-v23" and configured._spline_corridor,"hairpin geometry changes use a separate rules version: "+str(entry.name))
 		if not baseline:

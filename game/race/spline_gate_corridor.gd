@@ -90,8 +90,8 @@ static func select(session: RefCounted, track: NativeTrack) -> PackedInt32Array:
 			var outgoing: Vector2 = (track._race_route_point(absolute+8.0)-session._centers[gate]).normalized()
 			var inside: int = 1 if (outgoing-incoming).dot(session._directions[gate].orthogonal()) > 0.0 else 0
 			var bound: float = maxf(0.0,high if inside == 1 else -low)+APEX_SLACK_M
-			session._widths[gate][inside] = minf(session._widths[gate][inside],bound)
-			session._road_widths[gate] = Vector2(minf(session._road_widths[gate].x,session._widths[gate].x),minf(session._road_widths[gate].y,session._widths[gate].y))
+			# Shortcut references may reduce recovery, never the physical road.
+			session._widths[gate][inside] = maxf(session._road_widths[gate][inside],minf(session._widths[gate][inside],bound))
 	var paved_crossings: Array[PackedFloat64Array] = []
 	for lane_index: int in range(lanes.size()):
 		if not hairpins.is_empty() and lane_index < edge_count: continue
@@ -138,6 +138,12 @@ static func select(session: RefCounted, track: NativeTrack) -> PackedInt32Array:
 	for lane_index: int in range(lanes.size()):
 		var path: PackedVector2Array = lanes[lane_index]
 		var events: PackedFloat64Array = crossings[lane_index]
+		# A recovery offset which misses a mandatory apex is itself a bypass.
+		# Its partial approach must not hide the warning after a real shortcut.
+		var complete: bool = true
+		for gate: int in selected:
+			if events[gate] < 0.0: complete = false; break
+		if not complete: continue
 		var previous_event: float = 0.0
 		var accepted_event: float = 0.0
 		for gate: int in selected:

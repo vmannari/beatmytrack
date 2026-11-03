@@ -30,14 +30,15 @@ def test_forklift_parts(category, option):
             Appearance.model_validate(value)
 
 
-def test_forklift_purchase_and_sync(domain):
+@pytest.mark.parametrize("category,option", [("hood", "fork_vent"), ("body", "fork_canopy"), ("rims", "fork_star"), ("aero", "fork_tow")])
+def test_forklift_purchase_and_sync(domain, category, option):
     value = appearance("forklift")
-    value["customisation"]["hood"] = "fork_vent"
+    value["customisation"][category] = option
     assert put(domain, value).status_code == 403
     fund(domain, amount=750, player="Alice")
     purchase = domain.client.post(
         "/v1/economy/purchases",
-        json={"item_id": "kit/forklift/hood/fork_vent", "expected_price": 750},
+        json={"item_id": f"kit/forklift/{category}/{option}", "expected_price": 750},
         headers=headers(domain, "Alice", str(uuid4())),
     )
     assert purchase.status_code == 200

@@ -24,6 +24,9 @@ static func build(car: CarVisual) -> void:
 	BODY.build(car,paint,trim,bright)
 	CABIN.build(car,paint,trim,glass_shader)
 	DETAILS.build(car,paint,trim,bright,glass_shader)
+	for category: String in ["hood","aero","body"]:
+		if category=="hood" and str(car.customisation.hood)=="stock": continue
+		preload("res://vehicle/electric_kits.gd").build(car,category)
 
 static func night_lens(parent: Node3D, material: Material) -> void:
 	M.patch(parent,"ReferenceNightLightbar",72,4,func(u: float,v: float)->Vector3:

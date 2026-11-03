@@ -6,6 +6,7 @@ import json
 from .verifier import MAX_FRAMES, VerificationError
 
 SCHEMA = "bmt-trajectory-v1"
+CHECKPOINT_LAYOUT_VERSION = 24
 GEOMETRY_CACHE_ENTRIES = 64
 GEOMETRY_CACHE_BYTES = 8 * 1024 * 1024
 
@@ -46,11 +47,12 @@ def prepared_geometry(app, document_hash, document=None):
     from .track_models import OperationState, digest, now
 
     active = app.state.verifier.manifest()
-    identity = (document_hash, digest(build_contract(active)))
-    key = "geom:"+document_hash
+    identity = (document_hash, digest(build_contract(active)), CHECKPOINT_LAYOUT_VERSION)
+    key = "geom:"+str(CHECKPOINT_LAYOUT_VERSION)+":"+document_hash
 
     def matches(geometry):
-        return all(geometry.get("manifest", {}).get(field) == active[field] for field in BUILD_FIELDS)
+        return (geometry.get("checkpoint_layout_version") == CHECKPOINT_LAYOUT_VERSION
+                and all(geometry.get("manifest", {}).get(field) == active[field] for field in BUILD_FIELDS))
 
     def load(session):
         stored = session.get(OperationState,key)
@@ -115,10 +117,10 @@ def check(geometry, proof, ticks, vehicle, *, creator_test=False):
     samples = proof["samples"]
     width, layer_index = (4,3) if proof["schema"] == "bmt-race-path-v1" else (8,6)
     gates = geometry["gates"]
-    # Rules23 supplies the complete recovery span. An extra 15 cm can bridge
+    # Rules23 and later supply the complete recovery span. An extra 15 cm can bridge
     # the deliberately separated inside edges of a folded hairpin. Retain
     # historical tolerance for older geometry; allow only numeric roundoff now.
-    gate_slack = 0.0001 if geometry["manifest"].get("rules_key") == "standing-5-road-gates-v23" else 0.15
+    gate_slack = 0.0001 if geometry["manifest"].get("rules_key") in ("standing-5-road-gates-v23", "standing-5-road-gates-v24") else 0.15
     start = geometry["creator_start"] if creator_test else geometry["start"]
     limit = geometry["maximum_speed"][vehicle] * 1.1 / 120.0
     # The 5 cm allowance belongs to the ordinary six-tick capture interval.

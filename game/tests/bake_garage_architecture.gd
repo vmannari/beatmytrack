@@ -7,6 +7,7 @@ const SOURCES: Array[String]=[
 	"ui/garage_audio_lid.gdshader","ui/garage_display_backing.gdshader",
 	"ui/garage_display_stone.gdshader","ui/garage_surface_finish.gdshader",
 	"soundtrack/record_library.gd",
+	"tests/support/garage_mesh_lods.gd",
 ]
 func _initialize() -> void: run.call_deferred()
 func run() -> void:
@@ -18,6 +19,7 @@ func run() -> void:
 	GarageEnvironment.build(world,car,false,false)
 	var path: String="res://assets/garage/workshop_v1.scn"
 	var error: Error=ResourceSaver.save(GarageEnvironment.architecture_scene,path,ResourceSaver.FLAG_COMPRESS)
+	if error == OK: error = preload("res://tests/support/garage_mesh_lods.gd").new().bake(path)
 	if error==OK:
 		var hashes: Dictionary={}
 		for source: String in SOURCES: hashes[source]=FileAccess.get_sha256("res://"+source)

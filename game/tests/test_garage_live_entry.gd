@@ -80,9 +80,11 @@ func run() -> void:
 	timings.entry_dispatch_ms=(Time.get_ticks_usec()-start)/1000.0
 	var page: GaragePage=app._retained_garage
 	var view: CarShowroom=page.showroom
-	check(not page.progressive_entry,"production Garage uses the original live showroom")
-	check(view.find_child("GarageOpeningPicture",true,false)==null,"first Garage has no stock picture cover")
-	check(is_instance_valid(view.car) and view.showroom_ready,"native saved car exists when Garage entry returns")
+	check(page.progressive_entry,"cold Garage opens before native construction")
+	var loading: Control=view.find_child("GarageOpeningPicture",true,false)
+	check(loading!=null and loading.get_script()==preload("res://ui/garage_loading_car.gd"),"first Garage uses a neutral car placeholder")
+	while view.preparing: await process_frame
+	check(is_instance_valid(view.car) and view.showroom_ready and view.get_node_or_null("GarageOpeningPicture")==null,"native saved car replaces the placeholder when ready")
 	var yaw: float=view.yaw
 	drag(view,Vector2(20,0))
 	check(view.yaw!=yaw,"first drag moves the car through its connected input handler")
@@ -129,5 +131,6 @@ func run() -> void:
 	check(view.yaw!=yaw,"retained world remains movable")
 	app.records=LocalRecords.new(folder.path_join("other-records.json"))
 	app._show_screen("garage")
+	while app._retained_garage.progressive_entry and app._retained_garage.showroom.preparing: await process_frame
 	check(app._retained_garage!=page and app._retained_garage.showroom.car.livery==VehicleLivery.defaults("compact"),"owner replacement uses its own saved/default appearance")
 	await finish(app)

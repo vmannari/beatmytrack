@@ -1,4 +1,5 @@
 extends VBoxContainer
+## A visible, direct-play track list with a persistent now-playing transport.
 const Library = preload("res://soundtrack/record_library.gd")
 const Hardware = preload("res://ui/garage_audio_style.gd")
 signal changed
@@ -7,61 +8,73 @@ signal browsed(index: int)
 signal flipping(position: float)
 var records: LocalRecords
 var browse_index: int = 0
-var crate: Control
-var album_counter: Label
+var display_position: float = 0.0:
+	set(value):
+		display_position = value
+		flipping.emit(value)
+var flip_motion: Tween
 var status: Label
-var play_button: Button
+var now_title: Label
+var now_cover: TextureRect
 var transport: Button
-var previous_button: Button
-var next_button: Button
 var skip_previous: Button
 var skip_next: Button
 var volume: HSlider
 var volume_value: Label
 var save_timer: Timer
+var track_scroll: ScrollContainer
+var track_rows: Array[Button] = []
+var track_states: Array[Label] = []
+var playlist_checks: Array[CheckBox] = []
+var playlist_heading: Label
+var playlist_count: Label
+var track_panels: Array[PanelContainer] = []
 
 func _ready() -> void:
+	display_position = float(browse_index)
 	name = "GarageRecordsWorkbench"
 	size_flags_vertical = Control.SIZE_EXPAND_FILL
-	add_theme_constant_override("separation",8)
+	add_theme_constant_override("separation",6)
 	var heading := HBoxContainer.new()
 	add_child(heading)
-	var title: Label = MenuStyle.label("LP BOX",24)
+	var title: Label = MenuStyle.label(tr("YOUR RECORDS"),24)
 	title.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	heading.add_child(title)
-	album_counter = MenuStyle.label("",13,true)
-	album_counter.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
-	previous_button = MenuStyle.button("",func() -> void: crate.flip_by(-1))
-	previous_button.name = "GaragePreviousLP"
-	previous_button.icon = Hardware.texture("previous")
-	previous_button.tooltip_text = "Browse previous sleeve"
-	previous_button.accessibility_name = "Browse previous sleeve"
-	Hardware.button(previous_button,false,true)
-	heading.add_child(previous_button)
-	heading.add_child(album_counter)
-	next_button = MenuStyle.button("",func() -> void: crate.flip_by(1))
-	next_button.name = "GarageNextLP"
-	next_button.icon = Hardware.texture("next")
-	next_button.tooltip_text = "Browse next sleeve"
-	next_button.accessibility_name = "Browse next sleeve"
-	Hardware.button(next_button,false,true)
-	heading.add_child(next_button)
-	crate = preload("res://ui/garage_lp_box.gd").new()
-	crate.browse_index = clampi(browse_index,0,Library.CATALOG.size()-1)
-	crate.browsed.connect(_browsed)
-	crate.activated.connect(func(_id: String) -> void: _play_browsed())
-	crate.flipping.connect(func(position: float) -> void: flipping.emit(position))
-	add_child(crate)
-	status = MenuStyle.label("",14,true)
+	var count := MenuStyle.label("%02d %s" % [Library.CATALOG.size(),tr("TRACKS")],12,true)
+	count.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
+	heading.add_child(count)
+	var playing := HBoxContainer.new()
+	playing.add_theme_constant_override("separation",10)
+	add_child(playing)
+	now_cover = TextureRect.new()
+	now_cover.name = "GarageNowPlayingCover"
+	now_cover.custom_minimum_size = Vector2(60,60)
+	now_cover.expand_mode = TextureRect.EXPAND_IGNORE_SIZE
+	now_cover.stretch_mode = TextureRect.STRETCH_KEEP_ASPECT_COVERED
+	playing.add_child(now_cover)
+	var details := VBoxContainer.new()
+	details.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	details.alignment = BoxContainer.ALIGNMENT_CENTER
+	details.add_theme_constant_override("separation",1)
+	playing.add_child(details)
+	status = MenuStyle.label("",12,true)
 	status.name = "GarageRecordStatus"
-	status.text_overrun_behavior = TextServer.OVERRUN_TRIM_ELLIPSIS
-	add_child(status)
-	# Explicitly playing a browsed release is separate from the stable transport.
-	# This action appears when another authored playable release is selected.
-	play_button = MenuStyle.button("",_play_browsed)
-	play_button.name = "GaragePlayLP"
-	Hardware.button(play_button)
-	add_child(play_button)
+	details.add_child(status)
+	now_title = MenuStyle.label("",20)
+	now_title.name = "GarageNowPlayingTitle"
+	now_title.add_theme_font_override("font",MenuStyle.DISPLAY)
+	now_title.text_overrun_behavior = TextServer.OVERRUN_TRIM_ELLIPSIS
+	details.add_child(now_title)
+	var playback := HBoxContainer.new()
+	playback.alignment = BoxContainer.ALIGNMENT_CENTER
+	playback.add_theme_constant_override("separation",10)
+	add_child(playback)
+	skip_previous = _transport_button("GaragePreviousRecording","skip_previous",func() -> void: _skip_record(-1))
+	playback.add_child(skip_previous)
+	transport = _transport_button("GarageRecordTransport","pause",_toggle_play)
+	playback.add_child(transport)
+	skip_next = _transport_button("GarageNextRecording","skip_next",func() -> void: _skip_record(1))
+	playback.add_child(skip_next)
 	var volume_row := HBoxContainer.new()
 	volume_row.add_theme_constant_override("separation",6)
 	add_child(volume_row)
@@ -86,106 +99,202 @@ func _ready() -> void:
 	volume_value.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
 	volume_row.add_child(volume_value)
 	volume.value_changed.connect(_preview_volume)
-	var playback := HBoxContainer.new()
-	playback.add_theme_constant_override("separation",16)
-	playback.alignment = BoxContainer.ALIGNMENT_CENTER
-	add_child(playback)
-	skip_previous = MenuStyle.button("",func() -> void: _skip_record(-1))
-	skip_previous.name = "GaragePreviousRecording"
-	skip_previous.icon = Hardware.texture("skip_previous")
-	Hardware.button(skip_previous,false,true)
-	playback.add_child(skip_previous)
-	transport = MenuStyle.button("",_toggle_play)
-	transport.name = "GarageRecordTransport"
-	Hardware.button(transport,true)
-	playback.add_child(transport)
-	skip_next = MenuStyle.button("",func() -> void: _skip_record(1))
-	skip_next.name = "GarageNextRecording"
-	skip_next.icon = Hardware.texture("skip_next")
-	Hardware.button(skip_next,false,true)
-	playback.add_child(skip_next)
+	var list_heading := HBoxContainer.new()
+	add_child(list_heading)
+	playlist_heading = MenuStyle.label(tr("PLAYLIST"),13,true)
+	playlist_heading.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	list_heading.add_child(playlist_heading)
+	playlist_count = MenuStyle.label("",12,true)
+	playlist_count.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
+	list_heading.add_child(playlist_count)
+	track_scroll = preload("res://ui/vertical_swipe_scroll.gd").new()
+	track_scroll.name = "GarageTrackList"
+	track_scroll.horizontal_scroll_mode = ScrollContainer.SCROLL_MODE_DISABLED
+	track_scroll.vertical_scroll_mode = ScrollContainer.SCROLL_MODE_AUTO
+	track_scroll.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	track_scroll.custom_minimum_size.y = 104
+	track_scroll.follow_focus = true
+	add_child(track_scroll)
+	var tracks := VBoxContainer.new()
+	tracks.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	tracks.add_theme_constant_override("separation",3)
+	track_scroll.add_child(tracks)
+	for index: int in range(Library.CATALOG.size()):
+		var item: Dictionary = Library.CATALOG[index]
+		var panel := PanelContainer.new()
+		panel.name = "GarageRecordRow_" + item.id
+		panel.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+		tracks.add_child(panel)
+		track_panels.append(panel)
+		var track := HBoxContainer.new()
+		track.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+		track.add_theme_constant_override("separation",0)
+		panel.add_child(track)
+		var row := Button.new()
+		row.name = "GarageTrack_" + item.id
+		row.custom_minimum_size.y = 52
+		row.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+		row.mouse_default_cursor_shape = Control.CURSOR_POINTING_HAND
+		row.pressed.connect(_select_record.bind(index))
+		track.add_child(row)
+		var included: CheckBox = preload("res://ui/garage_playlist_toggle.gd").new()
+		included.name = "GaragePlaylist_" + item.id
+		included.custom_minimum_size = Vector2(52,52)
+		included.mouse_default_cursor_shape = Control.CURSOR_POINTING_HAND
+		included.toggled.connect(_set_in_playlist.bind(item.id))
+		track.add_child(included)
+		playlist_checks.append(included)
+		var content := HBoxContainer.new()
+		content.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+		content.offset_left = 6
+		content.offset_right = -8
+		content.offset_top = 4
+		content.offset_bottom = -4
+		content.add_theme_constant_override("separation",8)
+		content.mouse_filter = Control.MOUSE_FILTER_IGNORE
+		row.add_child(content)
+		var art := TextureRect.new()
+		art.texture = Library.cover(item.id)
+		art.custom_minimum_size = Vector2(44,44)
+		art.expand_mode = TextureRect.EXPAND_IGNORE_SIZE
+		art.stretch_mode = TextureRect.STRETCH_KEEP_ASPECT_COVERED
+		art.mouse_filter = Control.MOUSE_FILTER_IGNORE
+		content.add_child(art)
+		var name_label := MenuStyle.label(item.title,16)
+		name_label.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+		name_label.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
+		name_label.text_overrun_behavior = TextServer.OVERRUN_TRIM_ELLIPSIS
+		content.add_child(name_label)
+		var state := MenuStyle.label("",11,true)
+		state.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
+		content.add_child(state)
+		track_rows.append(row)
+		track_states.append(state)
 	save_timer = Timer.new()
 	save_timer.one_shot = true
 	save_timer.wait_time = 0.25
 	add_child(save_timer)
 	save_timer.timeout.connect(_save_volume)
+	GameSoundtrack.instance().record_advanced.connect(_record_advanced)
 	visibility_changed.connect(_visibility_changed)
 	get_viewport().size_changed.connect(_fit_layout)
 	_fit_layout()
 	_refresh()
 
+func _transport_button(node_name: String, icon_name: String, action: Callable) -> Button:
+	var button: Button = MenuStyle.button("",action)
+	button.name = node_name
+	button.icon = Hardware.texture(icon_name)
+	Hardware.button(button,node_name == "GarageRecordTransport",true)
+	button.custom_minimum_size = Vector2(48,48)
+	return button
+
 func _fit_layout() -> void:
 	var compact: bool = get_viewport_rect().size.y < 650
-	add_theme_constant_override("separation",6 if compact else 8)
-	crate.custom_minimum_size.y = 116 if compact else 190
-	transport.custom_minimum_size = Vector2(52,52) if compact else Vector2(60,60)
+	add_theme_constant_override("separation",4 if compact else 6)
+	now_cover.custom_minimum_size = Vector2(48,48) if compact else Vector2(60,60)
+	track_scroll.custom_minimum_size.y = 76 if compact else 104
 
-func _browsed(index: int) -> void:
-	browse_index = index
-	if status != null: _refresh()
-	browsed.emit(index)
+func _record_advanced(id: String) -> void:
+	for index: int in range(Library.CATALOG.size()):
+		if Library.CATALOG[index].id == id:
+			_browse_to(index)
+			break
+	_refresh()
 
 func _refresh() -> void:
-	var item: Dictionary = Library.CATALOG[browse_index]
 	var current: Dictionary = Library.selected(records.settings)
+	var playlist: Array[Dictionary] = Library.playlist(records.settings)
+	var included_ids: Array[String] = []
+	for item: Dictionary in playlist: included_ids.append(item.id)
+	playlist_heading.text = tr("PLAYLIST")
+	playlist_count.text = "%02d / %02d" % [included_ids.size(),Library.CATALOG.size()]
 	var enabled: bool = records.settings.get("music_enabled",true)
-	crate.accessibility_name = GameText.message("LP collection · {title}",{"title":item.title})
-	crate.tooltip_text = item.title+" · "+tr("Available" if Library.playable(item.id) else "Music coming later")
-	album_counter.text = "%02d / %02d" % [browse_index+1,Library.CATALOG.size()]
-	previous_button.disabled = browse_index==0
-	next_button.disabled = browse_index==Library.CATALOG.size()-1
-	var available: bool = Library.playable(item.id)
-	play_button.disabled = not available
-	GameText.bind(play_button,"Music coming later" if not available else "Play {title}",{"title":item.title})
-	play_button.visible = available and current.id!=item.id
-	play_button.icon = Hardware.texture("play")
-	play_button.tooltip_text = GameText.message("Play {title}",{"title":item.title})
-	play_button.accessibility_name = play_button.tooltip_text
+	now_cover.texture = Library.cover(current.id)
+	now_title.text = current.title
+	status.text = tr("NOW PLAYING" if enabled else "PAUSED")
 	transport.icon = Hardware.texture("pause" if enabled else "play")
 	transport.tooltip_text = GameText.message("Pause {title}" if enabled else "Play {title}",{"title":current.title})
 	transport.accessibility_name = transport.tooltip_text
-	GameText.bind(status,"Playing · {title}" if enabled else "Paused · {title}",{"title":current.title})
-	status.tooltip_text = status.text
-	var has_other_record: bool = Library.entries().any(func(release: Dictionary) -> bool: return release.id!=current.id and Library.playable(release.id))
 	for button: Button in [skip_previous,skip_next]:
-		button.disabled = not has_other_record
-		button.tooltip_text = ("Previous recording" if button==skip_previous else "Next recording") if has_other_record else "No other recordings available yet"
+		button.tooltip_text = tr("Previous recording") if button == skip_previous else tr("Next recording")
 		button.accessibility_name = button.tooltip_text
+	for index: int in range(track_rows.size()):
+		var item: Dictionary = Library.CATALOG[index]
+		var selected: bool = item.id == current.id
+		var included: CheckBox = playlist_checks[index]
+		included.set_pressed_no_signal(item.id in included_ids)
+		included.disabled = included.button_pressed and included_ids.size() == 1
+		included.accessibility_name = GameText.message("Include {title} in playlist",{"title":item.title})
+		included.tooltip_text = tr("Keep at least one track in the playlist.") if included.disabled else included.accessibility_name
+		included.queue_redraw()
+		var row: Button = track_rows[index]
+		row.accessibility_name = GameText.message("Playing · {title}" if selected and enabled else "Play {title}",{"title":item.title})
+		row.tooltip_text = row.accessibility_name
+		track_states[index].text = ("●" if enabled else "Ⅱ") if selected else "▶"
+		track_states[index].add_theme_color_override("font_color",MenuStyle.ACCENT if selected else MenuStyle.MUTED)
+		var surface := MenuStyle.box(Color("1b2e35") if selected else Color("101f28"),0)
+		surface.set_corner_radius_all(5)
+		surface.border_color = Color("c3a568") if selected else Color("263740")
+		surface.border_width_left = 2 if selected else 0
+		surface.border_width_bottom = 0 if selected else 1
+		track_panels[index].add_theme_stylebox_override("panel",surface)
+		for state: String in ["normal","hover","pressed","focus"]:
+			var fill := Color(0.65,0.77,0.80,0.06) if state == "hover" else Color(0.65,0.77,0.80,0.10) if state == "pressed" else Color.TRANSPARENT
+			var box := MenuStyle.box(fill,0)
+			box.set_corner_radius_all(4)
+			if state == "focus":
+				box.border_color = Color("9b895e")
+				box.set_border_width_all(1)
+				box.set_expand_margin_all(-2)
+			row.add_theme_stylebox_override(state,box)
 	_update_volume_caption()
 	changed.emit()
 
 func _notification(what: int) -> void:
 	if what == NOTIFICATION_TRANSLATION_CHANGED and is_instance_valid(status): _refresh.call_deferred()
 
-func _play_browsed() -> void:
-	var item: Dictionary = Library.CATALOG[browse_index]
+func _select_record(index: int) -> void:
+	var item: Dictionary = Library.CATALOG[index]
 	if not Library.playable(item.id): return
-	var current: Dictionary = Library.selected(records.settings)
-	if current.id==item.id and records.settings.get("music_enabled",true):
-		_toggle_play()
-		return
-	records.settings.music_record = item.id
-	records.settings.music_enabled = true
-	_commit()
+	if Library.selected(records.settings).id != item.id or not records.settings.get("music_enabled",true):
+		records.settings.music_record = item.id
+		records.settings.music_enabled = true
+		if not _commit(): return
+	_browse_to(index)
+
+func _browse_to(index: int) -> void:
+	browse_index = index
+	browsed.emit(index)
+	if flip_motion != null: flip_motion.kill()
+	# Retarget from the visible pose, including during rapid track changes.
+	var duration: float = clampf(absf(float(index)-display_position)*0.14,0.40,1.10)
+	flip_motion = create_tween()
+	flip_motion.tween_property(self,"display_position",float(index),duration).set_trans(Tween.TRANS_SINE).set_ease(Tween.EASE_IN_OUT)
+	flip_motion.tween_callback(func() -> void: flip_motion = null)
 
 func _skip_record(direction: int) -> void:
-	var current: Dictionary = Library.selected(records.settings)
-	var collection: Array[Dictionary] = Library.entries()
-	var current_index: int = 0
-	for index: int in range(collection.size()):
-		if collection[index].id==current.id: current_index = index
-	for offset: int in range(1,collection.size()):
-		var index: int = posmod(current_index+direction*offset,collection.size())
-		if not Library.playable(collection[index].id): continue
-		records.settings.music_record = collection[index].id
-		records.settings.music_enabled = true
-		crate.flip_to(index)
-		_commit()
+	var next: Dictionary = Library.next_record(records.settings,Library.selected(records.settings).id,direction)
+	for index: int in range(Library.CATALOG.size()):
+		if Library.CATALOG[index].id == next.id:
+			_select_record(index)
+			return
+
+func _set_in_playlist(included: bool, id: String) -> void:
+	var ids: Array[String] = []
+	for item: Dictionary in Library.playlist(records.settings):
+		if item.id != id or included: ids.append(item.id)
+	if included and id not in ids: ids.append(id)
+	if ids.is_empty():
+		_refresh()
 		return
+	records.settings.music_playlist = ids
+	_commit()
 
 func _commit() -> bool:
 	if records.save_records() != OK:
 		GameSoundtrack.instance().apply_settings(records.settings)
+		_refresh()
 		status.text = "Could not save. Please try again."
 		save_failed.emit()
 		return false
@@ -211,7 +320,10 @@ func _update_volume_caption() -> void:
 func _save_volume() -> void: _commit()
 
 func finish() -> void:
-	crate.finish()
+	if flip_motion != null:
+		flip_motion.kill()
+		flip_motion = null
+		display_position = float(browse_index)
 	if not save_timer.is_stopped():
 		save_timer.stop()
 		_save_volume()

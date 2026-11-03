@@ -43,6 +43,13 @@ func tick(app: Node) -> void:
 		app.editor_raster_cache.clear(); app.editor_raster_cache["enabled"] = true
 	else: retry = true
 	if not force and retained(app).retained_bytes <= RETAINED_BUDGET: _finished(app,retry,force); return
+	if not force and not WORLDS.entries.is_empty():
+		# Prefer the completed world to a few idle preparation proxies. Evicting
+		# these never affects live effects; they are redrawn on the next entry.
+		var excess: int = retained(app).retained_bytes-RETAINED_BUDGET
+		var effects = preload("res://vehicle/effect_render_preparation.gd")
+		effects.trim_to(app,maxi(0,effects.cache_bytes(app)-excess))
+		if retained(app).retained_bytes <= RETAINED_BUDGET: _finished(app,retry,force); return
 	WORLDS.trim_cache(0 if force else maxi(0,WORLDS.bytes_used()-(retained(app).retained_bytes-RETAINED_BUDGET)))
 	if force: preload("res://track/winter_road_snow_sources.gd").trim_cache()
 	if not force and retained(app).retained_bytes <= RETAINED_BUDGET: _finished(app,retry,force); return
@@ -69,6 +76,7 @@ func _finished(app: Node, retry: bool, force: bool) -> void:
 
 static func retained(app: Node) -> Dictionary:
 	var roads: Dictionary = ROADS.residency()
+	var shared_roads: int = mini(int(roads.gpu),WORLDS.shared_road_bytes(NativeTrackVisual._road_mesh_cache))
 	var history: int = HISTORY.bytes_used([app.history,app.redo_history,app.editor_gesture_history,app.editor_gesture_redo,[app.editor_session.primed] if not app.editor_session.primed.is_empty() else []])
 	var compiled: int = 0
 	if app.editor_preview_thread == null:
@@ -77,7 +85,7 @@ static func retained(app: Node) -> Dictionary:
 	var raster: int = int(app.editor_raster_cache.get("prepared_bytes",0))+int(app.editor_raster_cache.get("auxiliary_bytes",0)) if app.editor_preview_thread == null else 24*1024*1024
 	var scenes: int = app.editor_world.visual_cache_bytes if is_instance_valid(app.editor_world) else 0
 	var props: int = CreatorPropVisual.cache_bytes
-	var other: Dictionary = {"read_bytes":READS.bytes,"encoding_bytes":ENCODING.bytes,"race_world_bytes":WORLDS.bytes_used(),
+	var other: Dictionary = {"read_bytes":READS.bytes,"encoding_bytes":ENCODING.bytes,"race_world_bytes":maxi(0,WORLDS.bytes_used()-shared_roads),
 		"road_support_bytes":preload("res://track/road_support_cache.gd").bytes_used(),
 		"effect_preparation_bytes":preload("res://vehicle/effect_render_preparation.gd").cache_bytes(app),"front_fitting_bytes":CompactDetail.front_cache_bytes,
 		"winter_sky_bytes":TrackTheme.WINTER_SKY_ESTIMATED_BYTES if TrackTheme.winter_reflection_sky != null else 0,
@@ -93,7 +101,7 @@ static func retained(app: Node) -> Dictionary:
 	for category: String in garage: garage_bytes += int(garage[category])
 	var other_bytes: int = 0
 	for value: int in other.values(): other_bytes += value
-	return {"history_bytes":history,"road_packet_bytes":roads.packets,"road_section_bytes":roads.sections,"road_gpu_bytes":roads.gpu,
+	return {"history_bytes":history,"road_packet_bytes":roads.packets,"road_section_bytes":roads.sections,"road_gpu_bytes":roads.gpu,"shared_road_bytes":shared_roads,
 		"compiled_bytes":compiled,"raster_bytes":raster,"detached_scene_bytes":scenes,"prop_bytes":props,
 		"other":other,"garage":garage,"optional_garage_bytes":garage_bytes,"retained_bytes":history+roads.packets+roads.sections+roads.gpu+compiled+raster+scenes+props+other_bytes}
 

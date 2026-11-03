@@ -87,6 +87,13 @@ func _run() -> void:
 		var vehicle := VehicleSimulation.new(VehicleCatalog.config(id))
 		vehicle.state.velocity = Vector2(vehicle.config.maximum_speed,0)
 		vehicle.step(DriveFrame.new(),track)
+		if id in ["forklift", "hovercraft"]:
+			var stays_upright: bool = vehicle.state.roll_ticks == 0
+			for tick: int in range(120):
+				vehicle.step(DriveFrame.new(),track)
+				stays_upright = stays_upright and vehicle.state.roll_ticks == 0
+			check(stays_upright,id+" stays upright on loose ground at its own speed cap")
+			continue
 		var ticks: int = 0
 		while vehicle.state.roll_ticks > 0 and ticks < 720:
 			vehicle.step(DriveFrame.new(),track)

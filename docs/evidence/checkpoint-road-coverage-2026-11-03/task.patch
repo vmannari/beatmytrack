@@ -1,0 +1,2998 @@
+diff --git a/AGENTS.md b/AGENTS.md
+index e5fb9e4..2377521 100644
+--- a/AGENTS.md
++++ b/AGENTS.md
+@@ -1,3 +1,8 @@
++<!-- CHECKPOINT-ROAD-COVERAGE-20261103 -->
++## Checkpoints cover the complete road and kerbs (2026-11-03)
++CWR01-CWR03/Q01: Physical road/paint/kerb cross-sections form a hard minimum for every gate and finish; rules24 adds folded-hairpin candidates without reducing ordinary recovery. Star105/107 gates; coverage2787/0 headless and each desktop renderer, hairpin65/0 each, real five laps47712ticks/zero collisions/warnings/exact replay. Sweep5144 candidates blocks all large off-road/beyond-recovery cuts; nine historical cuts rejected by native server, real proof/canonical replay accepted. Retained rules/notices/layers/rewind pass; backend34+40 pass. Existing bridge9+80 failures and RuffSIM102 reproduce with before controls. Four native comparison views; checked task-only checkpoint, commands and limits: [docs/CHECKPOINT_ROAD_COVERAGE_2026_11_03.md](docs/CHECKPOINT_ROAD_COVERAGE_2026_11_03.md). Reload, matching authorised client/API/worker rollout and owner/device acceptance remain. No device query/test, APK, owner-save/process change, live mutation, deployment or main-index write; concurrent work preserved.
++<!-- /CHECKPOINT-ROAD-COVERAGE-20261103 -->
++
+ <!-- FORKLIFT-CABIN-VARIATION-20261103 -->
+ ## Forklift cabin frames have distinct architectures (2026-11-03)
+ FCV01-FCV03/R01: All thirteen alternatives replace the former shared rectangular profile with round transverse hoops, tapered pressed pillars, rear-only cantilever columns, swept/wedge roofs, longitudinal barrel/transverse vault arches, roof X/diamond/screen structures, weather/sun canopies and heavy haunches. Fourteen choices and every item ID remain; other kit builders/server catalogue exact. Construction8606/0, raw741/0, exact Original12/0, prepared1580/0 and actual Garage187/0 each desktop renderer;154 final native captures and before/after gallery. Four bases/104 modules/Garage template refresh. First tight heavy-frame bend failures retained and corrected without relaxing gates. Sources, commands, hashes, task-only checkpoint and limits: [docs/FORKLIFT_CABIN_VARIATION_2026_11_03.md](docs/FORKLIFT_CABIN_VARIATION_2026_11_03.md). Reload/owner appearance and device acceptance remain. No device query/test, APK, real purchase, owner-save/process change, live/backend mutation, deployment or main-index write; concurrent work preserved.
+diff --git a/DEVELOPMENT_STATUS.md b/DEVELOPMENT_STATUS.md
+index f257704..1deeed5 100644
+--- a/DEVELOPMENT_STATUS.md
++++ b/DEVELOPMENT_STATUS.md
+@@ -1,3 +1,8 @@
++<!-- CHECKPOINT-ROAD-COVERAGE-20261103 -->
++## Checkpoints cover the complete road and kerbs (2026-11-03)
++CWR01-CWR03/Q01: Physical road/paint/kerb cross-sections form a hard minimum for every gate and finish; rules24 adds folded-hairpin candidates without reducing ordinary recovery. Star105/107 gates; coverage2787/0 headless and each desktop renderer, hairpin65/0 each, real five laps47712ticks/zero collisions/warnings/exact replay. Sweep5144 candidates blocks all large off-road/beyond-recovery cuts; nine historical cuts rejected by native server, real proof/canonical replay accepted. Retained rules/notices/layers/rewind pass; backend34+40 pass. Existing bridge9+80 failures and RuffSIM102 reproduce with before controls. Four native comparison views; checked task-only checkpoint, commands and limits: [docs/CHECKPOINT_ROAD_COVERAGE_2026_11_03.md](docs/CHECKPOINT_ROAD_COVERAGE_2026_11_03.md). Reload, matching authorised client/API/worker rollout and owner/device acceptance remain. No device query/test, APK, owner-save/process change, live mutation, deployment or main-index write; concurrent work preserved.
++<!-- /CHECKPOINT-ROAD-COVERAGE-20261103 -->
++
+ <!-- FORKLIFT-CABIN-VARIATION-20261103 -->
+ ## Forklift cabin frames have distinct architectures (2026-11-03)
+ FCV01-FCV03/R01: All thirteen alternatives replace the former shared rectangular profile with round transverse hoops, tapered pressed pillars, rear-only cantilever columns, swept/wedge roofs, longitudinal barrel/transverse vault arches, roof X/diamond/screen structures, weather/sun canopies and heavy haunches. Fourteen choices and every item ID remain; other kit builders/server catalogue exact. Construction8606/0, raw741/0, exact Original12/0, prepared1580/0 and actual Garage187/0 each desktop renderer;154 final native captures and before/after gallery. Four bases/104 modules/Garage template refresh. First tight heavy-frame bend failures retained and corrected without relaxing gates. Sources, commands, hashes, task-only checkpoint and limits: [docs/FORKLIFT_CABIN_VARIATION_2026_11_03.md](docs/FORKLIFT_CABIN_VARIATION_2026_11_03.md). Reload/owner appearance and device acceptance remain. No device query/test, APK, real purchase, owner-save/process change, live/backend mutation, deployment or main-index write; concurrent work preserved.
+diff --git a/backend/bmt_backend/contracts.py b/backend/bmt_backend/contracts.py
+index e67d8e9..963c0a5 100644
+--- a/backend/bmt_backend/contracts.py
++++ b/backend/bmt_backend/contracts.py
+@@ -46,8 +46,9 @@ def current_manifest(manifest: dict) -> dict:
+         "standing-5-road-gates-v20",
+         "standing-5-road-gates-v21",
+         "standing-5-road-gates-v22",
++        "standing-5-road-gates-v23",
+     ):
+-        result["rules_key"] = "standing-5-road-gates-v23"
++        result["rules_key"] = "standing-5-road-gates-v24"
+     if result.get("physics_version") in {f"arcade-planar-0.{n}" for n in range(39, 53)}:
+         result["physics_version"] = "arcade-planar-0.53"
+     return result
+diff --git a/backend/bmt_backend/rivalry.py b/backend/bmt_backend/rivalry.py
+index 59022ca..8672cac 100644
+--- a/backend/bmt_backend/rivalry.py
++++ b/backend/bmt_backend/rivalry.py
+@@ -97,7 +97,7 @@ def compatible_fields(column, active, vehicle):
+         values = [active[field]]
+         if field == "physics_version":
+             values = list(compatible_physics_versions(active[field], vehicle))
+-        if field == "rules_key" and active[field] in ("standing-5-road-gates-v18", "standing-5-road-gates-v19", "standing-5-road-gates-v20", "standing-5-road-gates-v21", "standing-5-road-gates-v22", "standing-5-road-gates-v23"):
++        if field == "rules_key" and active[field] in ("standing-5-road-gates-v18", "standing-5-road-gates-v19", "standing-5-road-gates-v20", "standing-5-road-gates-v21", "standing-5-road-gates-v22", "standing-5-road-gates-v23", "standing-5-road-gates-v24"):
+             upper = int(active[field].rsplit("v", 1)[1])
+             values += [f"standing-5-road-gates-v{n}" for n in range(12, upper)]
+         if field == "physics_version" and active[field] in ("arcade-planar-0.50", "arcade-planar-0.51", "arcade-planar-0.52", "arcade-planar-0.53"):
+diff --git a/backend/bmt_backend/trajectory_verifier.py b/backend/bmt_backend/trajectory_verifier.py
+index ff2f97d..37c80c0 100644
+--- a/backend/bmt_backend/trajectory_verifier.py
++++ b/backend/bmt_backend/trajectory_verifier.py
+@@ -1,180 +1,180 @@
+-"""A single pass over movement and ordered gate crossings; no game simulation."""
+-from __future__ import annotations
+-
+-import json
+-
+-from .verifier import MAX_FRAMES, VerificationError
+-
+-SCHEMA = "bmt-trajectory-v1"
+-GEOMETRY_CACHE_ENTRIES = 64
+-GEOMETRY_CACHE_BYTES = 8 * 1024 * 1024
+-
+-
+-def clean_race_report(proof, ticks):
+-    """Recorded incidents gate a fixed cosmetic bonus after acceptance.
+-
+-    This follows the lightweight evidence policy, not independent collision
+-    re-simulation. Missing/malformed reports earn no bonus and cannot invalidate
+-    a valid trajectory or choose a coin amount.
+-    """
+-    report = proof.get("incidents") if type(proof) is dict else None
+-    return (type(report) is dict and set(report) == {"schema", "ticks", "collision_count", "off_track"}
+-            and report.get("schema") == "bmt-race-incidents-v1"
+-            and type(report.get("ticks")) is int and report["ticks"] == ticks and 0 < ticks <= MAX_FRAMES
+-            and type(report.get("collision_count")) is int and report["collision_count"] == 0
+-            and type(report.get("off_track")) is bool and not report["off_track"])
+-
+-
+-def input_count(replay):
+-    return replay.get("input_count") if replay.get("schema") == SCHEMA else len(replay.get("frames", []))
+-
+-
+-def duration(replay):
+-    return input_count(replay) - sum(event["from_tick"]-event["to_tick"] for event in replay.get("rewinds", []))
+-
+-
+-def prepared_geometry(app, document_hash, document=None):
+-    """Bounded immutable descriptors, keyed by content and exact verifier build.
+-
+-    Warm workers need neither the track object nor another SQL descriptor read.
+-    Keep bytes in the cache so callers own their decoded geometry and cannot
+-    mutate another race's gates. Cold preparation retains the durable SQL cache.
+-    """
+-    from .board_cache import cached as remember
+-    from .contracts import BUILD_FIELDS, build_contract
+-    from .storage import canonical_json
+-    from .track_models import OperationState, digest, now
+-
+-    active = app.state.verifier.manifest()
+-    identity = (document_hash, digest(build_contract(active)))
+-    key = "geom:"+document_hash
+-
+-    def matches(geometry):
+-        return all(geometry.get("manifest", {}).get(field) == active[field] for field in BUILD_FIELDS)
+-
+-    def load(session):
+-        stored = session.get(OperationState,key)
+-        if stored is not None and matches(stored.details):
+-            return canonical_json(stored.details)
+-        # Release the descriptor read before storage pins, IO or native work.
+-        session.rollback()
+-        source = document if document is not None else app.state.blobs.get_json(document_hash)
+-        geometry = app.state.verifier.race_geometry(source)
+-        if not matches(geometry):
+-            from .verifier import VerifierUnavailable
+-            raise VerifierUnavailable("Prepared geometry differs from verifier build")
+-        session.merge(OperationState(id=key,updated_at=now(),details=geometry))
+-        session.commit()
+-        return canonical_json(geometry)
+-
+-    with app.state.session_factory() as session:
+-        encoded = remember(session,identity,lambda: load(session),namespace="verification-geometry",
+-            max_entries=GEOMETRY_CACHE_ENTRIES,max_weight=GEOMETRY_CACHE_BYTES,weight=len)
+-    return json.loads(encoded)
+-
+-
+-def validate_envelope(replay):
+-    if (type(replay) is not dict or replay.get("schema") != SCHEMA
+-            or set(replay)-{"schema", "input_count", "race_proof", "rewinds", "ghost", "claimed_lap_ticks"}
+-            or type(replay.get("input_count")) is not int or not 1 <= replay["input_count"] <= MAX_FRAMES
+-            or type(replay.get("race_proof")) is not dict):
+-        raise VerificationError("Malformed trajectory envelope")
+-    # Reuse the existing receipt timeline contract without needing control frames.
+-    offset, tick, receipts = 0, 0, set()
+-    events = replay.get("rewinds", [])
+-    if type(events) is not list or len(events) > 3:
+-        raise VerificationError("Malformed trajectory rewinds")
+-    for event in events:
+-        if (type(event) is not dict or set(event) != {"receipt_id", "input_offset", "from_tick", "to_tick"}
+-                or type(event["receipt_id"]) is not str or len(event["receipt_id"]) != 36
+-                or event["receipt_id"] in receipts
+-                or any(type(event[key]) is not int for key in ("input_offset", "from_tick", "to_tick"))
+-                or not offset < event["input_offset"] < replay["input_count"]
+-                or event["from_tick"] != tick+event["input_offset"]-offset
+-                or not 0 <= event["to_tick"] < event["from_tick"]
+-                or event["from_tick"]-event["to_tick"] > 1200):
+-            raise VerificationError("Invalid trajectory rewind timeline")
+-        receipts.add(event["receipt_id"])
+-        offset, tick = event["input_offset"], event["to_tick"]
+-    if not 0 < duration(replay) <= MAX_FRAMES:
+-        raise VerificationError("Invalid trajectory duration")
+-    if "claimed_lap_ticks" in replay:
+-        laps = replay["claimed_lap_ticks"]
+-        if (type(laps) is not list or len(laps) != 5
+-                or any(type(value) is not int or not 0 < value <= MAX_FRAMES for value in laps)
+-                or sum(laps) != duration(replay)):
+-            raise VerificationError("Invalid claimed lap timing")
+-
+-
+-def check(geometry, proof, ticks, vehicle, *, creator_test=False):
+-    """Check samples once. Geometry is prepared from the pinned server track."""
+-    if (type(proof) is not dict or set(proof) not in ({"schema", "samples"}, {"schema", "samples", "incidents"})
+-            or proof.get("schema") not in ("bmt-race-proof-v1", "bmt-race-path-v1") or type(proof["samples"]) is not list
+-            or not 2 <= len(proof["samples"]) <= MAX_FRAMES//6+12):
+-        raise VerificationError("Race trajectory is required")
+-    samples = proof["samples"]
+-    width, layer_index = (4,3) if proof["schema"] == "bmt-race-path-v1" else (8,6)
+-    gates = geometry["gates"]
+-    # Rules23 supplies the complete recovery span. An extra 15 cm can bridge
+-    # the deliberately separated inside edges of a folded hairpin. Retain
+-    # historical tolerance for older geometry; allow only numeric roundoff now.
+-    gate_slack = 0.0001 if geometry["manifest"].get("rules_key") == "standing-5-road-gates-v23" else 0.15
+-    start = geometry["creator_start"] if creator_test else geometry["start"]
+-    limit = geometry["maximum_speed"][vehicle] * 1.1 / 120.0
+-    # The 5 cm allowance belongs to the ordinary six-tick capture interval.
+-    # Scale it with elapsed time so inserting dense samples cannot buy speed.
+-    # Cache the six squared bounds instead of exponentiating for every sample.
+-    distance_limits = (0.0,) + tuple((limit*dt + 0.05*(dt/6))**2 for dt in range(1, 7))
+-    number_types = (int, float)
+-    extent_x, extent_y = geometry["extent"]
+-    target_laps = 1 if creator_test else 5
+-    gate_index, laps, previous_tick, last_lap = 0, 0, -1, 0
+-    px, py, previous_layer = start
+-    lap_ticks = []
+-    nx, ny, origin, sx, sy, side_origin, low, high, expected_layer = gates[0]
+-    gate_before = 0.0
+-    for sample in samples:
+-        if (type(sample) is not list or len(sample) != width
+-                or type(sample[0]) is not int or type(sample[layer_index]) is not int or sample[layer_index] not in (0, 1)):
+-            raise VerificationError("Malformed trajectory sample")
+-        tick, x, y, layer = sample[0],sample[1],sample[2],sample[layer_index]
+-        if (type(x) not in number_types or type(y) not in number_types
+-                or not (-extent_x <= x <= extent_x and -extent_y <= y <= extent_y)):
+-            raise VerificationError("Trajectory is outside the track")
+-        if previous_tick < 0:
+-            if tick != 0 or (x-px)**2+(y-py)**2 > 0.15**2 or layer != previous_layer:
+-                raise VerificationError("Trajectory does not begin at the race start")
+-            # The recorded start may differ within tolerance. Gate crossings
+-            # must use that actual position, just like every later segment.
+-            gate_before = nx*x+ny*y+origin
+-        else:
+-            dt = tick-previous_tick
+-            if not 1 <= dt <= 6 or tick > ticks or laps == target_laps:
+-                raise VerificationError("Trajectory timeline is incomplete")
+-            dx, dy = x-px, y-py
+-            if dx*dx+dy*dy > distance_limits[dt]:
+-                raise VerificationError("Trajectory jumps or exceeds the car speed limit")
+-            consumed = -1.0
+-            after = nx*x+ny*y+origin
+-            while laps < target_laps and gate_before <= 0.0 and after > 0.0:
+-                fraction = -gate_before/(after-gate_before)
+-                side = sx*(px+dx*fraction)+sy*(py+dy*fraction)+side_origin
+-                if (fraction < consumed-0.000001 or not low-gate_slack <= side <= high+gate_slack
+-                        or expected_layer not in (previous_layer, layer)):
+-                    break
+-                consumed = fraction
+-                gate_index += 1
+-                if gate_index == len(gates):
+-                    laps += 1
+-                    lap_ticks.append(tick-last_lap)
+-                    last_lap, gate_index = tick, 0
+-                nx, ny, origin, sx, sy, side_origin, low, high, expected_layer = gates[gate_index]
+-                gate_before = nx*px+ny*py+origin
+-                after = nx*x+ny*y+origin
+-            gate_before = after
+-        previous_tick, px, py, previous_layer = tick, x, y, layer
+-    if laps != target_laps or previous_tick != ticks or sum(lap_ticks) != ticks:
+-        raise VerificationError("Trajectory does not complete the required laps and ordered road gates")
+-    return {"time_ticks": ticks, "time_ms": round(ticks*1000/120), "lap_ticks": lap_ticks,
+-            "manifest": geometry["manifest"], "verification_method": "trajectory-v1",
+-            "incident_free": clean_race_report(proof,ticks)}
++"""A single pass over movement and ordered gate crossings; no game simulation."""
++from __future__ import annotations
++
++import json
++
++from .verifier import MAX_FRAMES, VerificationError
++
++SCHEMA = "bmt-trajectory-v1"
++GEOMETRY_CACHE_ENTRIES = 64
++GEOMETRY_CACHE_BYTES = 8 * 1024 * 1024
++
++
++def clean_race_report(proof, ticks):
++    """Recorded incidents gate a fixed cosmetic bonus after acceptance.
++
++    This follows the lightweight evidence policy, not independent collision
++    re-simulation. Missing/malformed reports earn no bonus and cannot invalidate
++    a valid trajectory or choose a coin amount.
++    """
++    report = proof.get("incidents") if type(proof) is dict else None
++    return (type(report) is dict and set(report) == {"schema", "ticks", "collision_count", "off_track"}
++            and report.get("schema") == "bmt-race-incidents-v1"
++            and type(report.get("ticks")) is int and report["ticks"] == ticks and 0 < ticks <= MAX_FRAMES
++            and type(report.get("collision_count")) is int and report["collision_count"] == 0
++            and type(report.get("off_track")) is bool and not report["off_track"])
++
++
++def input_count(replay):
++    return replay.get("input_count") if replay.get("schema") == SCHEMA else len(replay.get("frames", []))
++
++
++def duration(replay):
++    return input_count(replay) - sum(event["from_tick"]-event["to_tick"] for event in replay.get("rewinds", []))
++
++
++def prepared_geometry(app, document_hash, document=None):
++    """Bounded immutable descriptors, keyed by content and exact verifier build.
++
++    Warm workers need neither the track object nor another SQL descriptor read.
++    Keep bytes in the cache so callers own their decoded geometry and cannot
++    mutate another race's gates. Cold preparation retains the durable SQL cache.
++    """
++    from .board_cache import cached as remember
++    from .contracts import BUILD_FIELDS, build_contract
++    from .storage import canonical_json
++    from .track_models import OperationState, digest, now
++
++    active = app.state.verifier.manifest()
++    identity = (document_hash, digest(build_contract(active)))
++    key = "geom:"+document_hash
++
++    def matches(geometry):
++        return all(geometry.get("manifest", {}).get(field) == active[field] for field in BUILD_FIELDS)
++
++    def load(session):
++        stored = session.get(OperationState,key)
++        if stored is not None and matches(stored.details):
++            return canonical_json(stored.details)
++        # Release the descriptor read before storage pins, IO or native work.
++        session.rollback()
++        source = document if document is not None else app.state.blobs.get_json(document_hash)
++        geometry = app.state.verifier.race_geometry(source)
++        if not matches(geometry):
++            from .verifier import VerifierUnavailable
++            raise VerifierUnavailable("Prepared geometry differs from verifier build")
++        session.merge(OperationState(id=key,updated_at=now(),details=geometry))
++        session.commit()
++        return canonical_json(geometry)
++
++    with app.state.session_factory() as session:
++        encoded = remember(session,identity,lambda: load(session),namespace="verification-geometry",
++            max_entries=GEOMETRY_CACHE_ENTRIES,max_weight=GEOMETRY_CACHE_BYTES,weight=len)
++    return json.loads(encoded)
++
++
++def validate_envelope(replay):
++    if (type(replay) is not dict or replay.get("schema") != SCHEMA
++            or set(replay)-{"schema", "input_count", "race_proof", "rewinds", "ghost", "claimed_lap_ticks"}
++            or type(replay.get("input_count")) is not int or not 1 <= replay["input_count"] <= MAX_FRAMES
++            or type(replay.get("race_proof")) is not dict):
++        raise VerificationError("Malformed trajectory envelope")
++    # Reuse the existing receipt timeline contract without needing control frames.
++    offset, tick, receipts = 0, 0, set()
++    events = replay.get("rewinds", [])
++    if type(events) is not list or len(events) > 3:
++        raise VerificationError("Malformed trajectory rewinds")
++    for event in events:
++        if (type(event) is not dict or set(event) != {"receipt_id", "input_offset", "from_tick", "to_tick"}
++                or type(event["receipt_id"]) is not str or len(event["receipt_id"]) != 36
++                or event["receipt_id"] in receipts
++                or any(type(event[key]) is not int for key in ("input_offset", "from_tick", "to_tick"))
++                or not offset < event["input_offset"] < replay["input_count"]
++                or event["from_tick"] != tick+event["input_offset"]-offset
++                or not 0 <= event["to_tick"] < event["from_tick"]
++                or event["from_tick"]-event["to_tick"] > 1200):
++            raise VerificationError("Invalid trajectory rewind timeline")
++        receipts.add(event["receipt_id"])
++        offset, tick = event["input_offset"], event["to_tick"]
++    if not 0 < duration(replay) <= MAX_FRAMES:
++        raise VerificationError("Invalid trajectory duration")
++    if "claimed_lap_ticks" in replay:
++        laps = replay["claimed_lap_ticks"]
++        if (type(laps) is not list or len(laps) != 5
++                or any(type(value) is not int or not 0 < value <= MAX_FRAMES for value in laps)
++                or sum(laps) != duration(replay)):
++            raise VerificationError("Invalid claimed lap timing")
++
++
++def check(geometry, proof, ticks, vehicle, *, creator_test=False):
++    """Check samples once. Geometry is prepared from the pinned server track."""
++    if (type(proof) is not dict or set(proof) not in ({"schema", "samples"}, {"schema", "samples", "incidents"})
++            or proof.get("schema") not in ("bmt-race-proof-v1", "bmt-race-path-v1") or type(proof["samples"]) is not list
++            or not 2 <= len(proof["samples"]) <= MAX_FRAMES//6+12):
++        raise VerificationError("Race trajectory is required")
++    samples = proof["samples"]
++    width, layer_index = (4,3) if proof["schema"] == "bmt-race-path-v1" else (8,6)
++    gates = geometry["gates"]
++    # Rules23 and later supply the complete recovery span. An extra 15 cm can bridge
++    # the deliberately separated inside edges of a folded hairpin. Retain
++    # historical tolerance for older geometry; allow only numeric roundoff now.
++    gate_slack = 0.0001 if geometry["manifest"].get("rules_key") in ("standing-5-road-gates-v23", "standing-5-road-gates-v24") else 0.15
++    start = geometry["creator_start"] if creator_test else geometry["start"]
++    limit = geometry["maximum_speed"][vehicle] * 1.1 / 120.0
++    # The 5 cm allowance belongs to the ordinary six-tick capture interval.
++    # Scale it with elapsed time so inserting dense samples cannot buy speed.
++    # Cache the six squared bounds instead of exponentiating for every sample.
++    distance_limits = (0.0,) + tuple((limit*dt + 0.05*(dt/6))**2 for dt in range(1, 7))
++    number_types = (int, float)
++    extent_x, extent_y = geometry["extent"]
++    target_laps = 1 if creator_test else 5
++    gate_index, laps, previous_tick, last_lap = 0, 0, -1, 0
++    px, py, previous_layer = start
++    lap_ticks = []
++    nx, ny, origin, sx, sy, side_origin, low, high, expected_layer = gates[0]
++    gate_before = 0.0
++    for sample in samples:
++        if (type(sample) is not list or len(sample) != width
++                or type(sample[0]) is not int or type(sample[layer_index]) is not int or sample[layer_index] not in (0, 1)):
++            raise VerificationError("Malformed trajectory sample")
++        tick, x, y, layer = sample[0],sample[1],sample[2],sample[layer_index]
++        if (type(x) not in number_types or type(y) not in number_types
++                or not (-extent_x <= x <= extent_x and -extent_y <= y <= extent_y)):
++            raise VerificationError("Trajectory is outside the track")
++        if previous_tick < 0:
++            if tick != 0 or (x-px)**2+(y-py)**2 > 0.15**2 or layer != previous_layer:
++                raise VerificationError("Trajectory does not begin at the race start")
++            # The recorded start may differ within tolerance. Gate crossings
++            # must use that actual position, just like every later segment.
++            gate_before = nx*x+ny*y+origin
++        else:
++            dt = tick-previous_tick
++            if not 1 <= dt <= 6 or tick > ticks or laps == target_laps:
++                raise VerificationError("Trajectory timeline is incomplete")
++            dx, dy = x-px, y-py
++            if dx*dx+dy*dy > distance_limits[dt]:
++                raise VerificationError("Trajectory jumps or exceeds the car speed limit")
++            consumed = -1.0
++            after = nx*x+ny*y+origin
++            while laps < target_laps and gate_before <= 0.0 and after > 0.0:
++                fraction = -gate_before/(after-gate_before)
++                side = sx*(px+dx*fraction)+sy*(py+dy*fraction)+side_origin
++                if (fraction < consumed-0.000001 or not low-gate_slack <= side <= high+gate_slack
++                        or expected_layer not in (previous_layer, layer)):
++                    break
++                consumed = fraction
++                gate_index += 1
++                if gate_index == len(gates):
++                    laps += 1
++                    lap_ticks.append(tick-last_lap)
++                    last_lap, gate_index = tick, 0
++                nx, ny, origin, sx, sy, side_origin, low, high, expected_layer = gates[gate_index]
++                gate_before = nx*px+ny*py+origin
++                after = nx*x+ny*y+origin
++            gate_before = after
++        previous_tick, px, py, previous_layer = tick, x, y, layer
++    if laps != target_laps or previous_tick != ticks or sum(lap_ticks) != ticks:
++        raise VerificationError("Trajectory does not complete the required laps and ordered road gates")
++    return {"time_ticks": ticks, "time_ms": round(ticks*1000/120), "lap_ticks": lap_ticks,
++            "manifest": geometry["manifest"], "verification_method": "trajectory-v1",
++            "incident_free": clean_race_report(proof,ticks)}
+diff --git a/backend/tests/test_hairpin_gate_contract.py b/backend/tests/test_hairpin_gate_contract.py
+index c8a3158..4e6fb2c 100644
+--- a/backend/tests/test_hairpin_gate_contract.py
++++ b/backend/tests/test_hairpin_gate_contract.py
+@@ -1,24 +1,25 @@
+-"""Rules23 must not reopen a folded road join with server-only padding."""
+-import pytest
+-
+-from bmt_backend.trajectory_verifier import check
+-from bmt_backend.verifier import VerificationError
+-
+-
+-def geometry(rules):
+-    return {"start": [0, 1.1, 0], "extent": [10, 10],
+-            "manifest": {"rules_key": rules}, "maximum_speed": {"compact": 120},
+-            "gates": [[1, 0, -1, 0, 1, 0, -1, 1, 0],
+-                      [-1, 0, -1, 0, 1, 0, -1, 1, 0]]}
+-
+-
+-def test_rules23_uses_the_client_gate_span_and_preserves_old_contract():
+-    proof = {"schema": "bmt-race-path-v1", "samples": [[0, 0, 1.1, 0]] +
+-             [[index*6, 2 if index % 2 else -2, 1.1, 0] for index in range(1, 11)]}
+-    assert check(geometry("standing-5-road-gates-v22"), proof, 60, "compact")["lap_ticks"] == [12]*5
+-    with pytest.raises(VerificationError, match="ordered road gates"):
+-        check(geometry("standing-5-road-gates-v23"), proof, 60, "compact")
+-    inside = {"schema": proof["schema"], "samples": [[row[0],row[1],1.0,row[3]] for row in proof["samples"]]}
+-    exact = geometry("standing-5-road-gates-v23")
+-    exact["start"][1] = 1.0
+-    assert check(exact, inside, 60, "compact")["lap_ticks"] == [12]*5
++"""Rules23 must not reopen a folded road join with server-only padding."""
++import pytest
++
++from bmt_backend.trajectory_verifier import check
++from bmt_backend.verifier import VerificationError
++
++
++def geometry(rules):
++    return {"start": [0, 1.1, 0], "extent": [10, 10],
++            "manifest": {"rules_key": rules}, "maximum_speed": {"compact": 120},
++            "gates": [[1, 0, -1, 0, 1, 0, -1, 1, 0],
++                      [-1, 0, -1, 0, 1, 0, -1, 1, 0]]}
++
++
++@pytest.mark.parametrize("rules", ["standing-5-road-gates-v23", "standing-5-road-gates-v24"])
++def test_current_rules_use_the_client_gate_span_and_preserve_old_contract(rules):
++    proof = {"schema": "bmt-race-path-v1", "samples": [[0, 0, 1.1, 0]] +
++             [[index*6, 2 if index % 2 else -2, 1.1, 0] for index in range(1, 11)]}
++    assert check(geometry("standing-5-road-gates-v22"), proof, 60, "compact")["lap_ticks"] == [12]*5
++    with pytest.raises(VerificationError, match="ordered road gates"):
++        check(geometry(rules), proof, 60, "compact")
++    inside = {"schema": proof["schema"], "samples": [[row[0],row[1],1.0,row[3]] for row in proof["samples"]]}
++    exact = geometry(rules)
++    exact["start"][1] = 1.0
++    assert check(exact, inside, 60, "compact")["lap_ticks"] == [12]*5
+diff --git a/backend/tests/test_review_reliability.py b/backend/tests/test_review_reliability.py
+index b4ea984..313ad3d 100644
+--- a/backend/tests/test_review_reliability.py
++++ b/backend/tests/test_review_reliability.py
+@@ -1,266 +1,266 @@
+-"""Regressions for the October full review; all writes use disposable databases."""
+-import os
+-from dataclasses import replace
+-
+-import pytest
+-from sqlalchemy import update
+-from test_domains import domain as domain_fixture
+-from test_domains import headers, public_course, submit, ticket, upload
+-
+-from bmt_backend.contracts import build_contract, current_manifest
+-from bmt_backend.identity_models import Player
+-from bmt_backend.maintenance import backfill_discovery, retain
+-from bmt_backend.operations import competition_health, heartbeat
+-from bmt_backend.track_models import PersonalBest, Run, Track, TrackValidation, TrackVersion, now
+-from bmt_backend.worker import process_one
+-
+-domain = domain_fixture
+-
+-
+-def test_broad_json_tree_is_rejected_without_accepting_nonfinite_values():
+-    from bmt_backend.middleware import parse_body
+-    # Fits the body byte limit, but has excessive container overhead.
+-    with pytest.raises(ValueError, match="node limit"):
+-        parse_body(b"[" + b"[]," * 1200000 + b"[]]")
+-
+-
+-@pytest.mark.parametrize("physics", ["arcade-planar-0.39", "arcade-planar-0.48"])
+-@pytest.mark.parametrize("purpose", ["race", "creator_test"])
+-@pytest.mark.parametrize("rules", ["standing-5-road-gates-v12", "standing-5-road-gates-v13", "standing-5-road-gates-v14", "standing-5-road-gates-v15", "standing-5-road-gates-v16", "standing-5-road-gates-v18", "standing-5-road-gates-v19", "standing-5-road-gates-v20", "standing-5-road-gates-v21", "standing-5-road-gates-v22"])
+-def test_full_manifest_upgrade_verifies(domain, physics, purpose, rules):
+-    base = domain.app.state.verifier.manifest()
+-    domain.app.state.verifier.manifest = lambda: {**base, "physics_version": "arcade-planar-0.53", "rules_key": "standing-5-road-gates-v23"}
+-    version = upload(domain)
+-    with domain.factory() as session:
+-        row = session.get(TrackVersion, version["version_id"])
+-        row.manifest = {**row.manifest, "physics_version": physics, "rules_key": rules}
+-        original = dict(row.manifest)
+-        session.commit()
+-    metadata = domain.client.get("/v1/me/tracks", headers=headers(domain))
+-    assert metadata.status_code == 200
+-    visible = next(item for item in metadata.json()["items"] if item["version_id"] == version["version_id"])
+-    assert visible["manifest"]["rules_key"] == "standing-5-road-gates-v23"
+-    response = domain.client.post("/v1/run-tickets", json={"version_id": version["version_id"], "vehicle_id": "compact", "purpose": purpose}, headers=headers(domain))
+-    assert response.status_code == 201, response.text
+-    run = submit(domain, response.json())
+-    assert process_one(domain.app)
+-    with domain.factory() as session:
+-        assert session.get(Run, run["run_id"]).status == "verified"
+-        assert session.get(TrackVersion, version["version_id"]).manifest == original
+-    assert current_manifest(original)["physics_version"] == "arcade-planar-0.53"
+-    assert current_manifest(original)["rules_key"] == "standing-5-road-gates-v23"
+-
+-
+-def test_global_admission_and_fair_claims(domain):
+-    version, _ = public_course(domain)
+-    domain.app.state.settings = replace(domain.app.state.settings, max_queued_runs=3)
+-    first = submit(domain, ticket(domain, version, "Alice"), "Alice")
+-    second = submit(domain, ticket(domain, version, "Alice"), "Alice")
+-    third = submit(domain, ticket(domain, version, "Bob"), "Bob")
+-    full = domain.client.post("/v1/runs", json={"ticket_id": ticket(domain, version, "Carol")["ticket_id"], "replay": {"schema": "bmt-replay-v1", "frames": [[0,255,0]]}}, headers=headers(domain, "Carol"))
+-    assert full.status_code == 429 and full.headers["retry-after"]
+-    assert process_one(domain.app)
+-    assert process_one(domain.app)
+-    with domain.factory() as session:
+-        assert session.get(Run, third["run_id"]).status == "verified"
+-        assert sum(session.get(Run, job["run_id"]).status == "verified" for job in (first, second)) == 1
+-    health = competition_health(domain.app)
+-    assert health["active_workers"] == 1 and health["queue_depth"] == 1
+-
+-
+-def test_health_requests_never_parse_large_post(domain, monkeypatch):
+-    monkeypatch.setattr("bmt_backend.middleware.parse_body", lambda body: pytest.fail("health payload parsed"))
+-    response = domain.client.post("/healthz", content=b"x" * 3024048, headers={"content-type": "application/json"})
+-    assert response.status_code == 405
+-    assert domain.client.get("/healthz").status_code == 200
+-
+-
+-def test_competition_health_does_not_trust_an_incompatible_fresh_worker(domain):
+-    manifest = domain.app.state.verifier.manifest()
+-    build = build_contract(manifest)
+-    heartbeat(domain.app, "older-worker", build={**build, "rules_key":"older-rules"})
+-    assert competition_health(domain.app)["status"] == "worker_build_mismatch"
+-    heartbeat(domain.app, "compatible-worker", build=build)
+-    assert competition_health(domain.app)["status"] == "ready"
+-
+-
+-def test_track_validations_share_admission_with_races(domain):
+-    version, _ = public_course(domain)
+-    domain.app.state.settings = replace(domain.app.state.settings, max_queued_runs=2)
+-    submit(domain, ticket(domain, version, "Alice"), "Alice")
+-    body = {"name":"Private", "document":{"schema":"creator-track-v5", "id":"private", "points":[]},
+-            "authoring_id":"private", "defer_validation":True}
+-    first = domain.client.post("/v1/tracks", json=body, headers=headers(domain))
+-    assert first.status_code == 201, first.text
+-    # A retry of the same immutable snapshot consumes no second queue slot.
+-    duplicate = domain.client.post("/v1/tracks", json=body, headers=headers(domain))
+-    assert duplicate.status_code == 201 and duplicate.json()["version_id"] == first.json()["version_id"]
+-    changed = {**body, "document":{**body["document"], "points":[[1,1]]}}
+-    full = domain.client.post("/v1/tracks", json=changed, headers=headers(domain))
+-    assert full.status_code == 429 and full.headers["retry-after"]
+-    race = domain.client.post("/v1/runs", json={"ticket_id":ticket(domain, version, "Bob")["ticket_id"],
+-        "replay":{"schema":"bmt-replay-v1", "frames":[[0,255,0]]}}, headers=headers(domain, "Bob"))
+-    assert race.status_code == 429
+-    health = competition_health(domain.app)
+-    assert health["queue_depth"] == 2 and health["pending_track_validations"] == 1
+-
+-
+-def test_private_validation_claims_are_fair_between_owners(domain):
+-    from legacy_validation_fixture import process_one as validate_one
+-    versions = []
+-    for owner, source in [("Alice","first"), ("Alice","second"), ("Bob","third")]:
+-        body = {"name":source, "document":{"schema":"creator-track-v5", "id":source, "points":[]},
+-                "authoring_id":source, "defer_validation":True}
+-        response = domain.client.post("/v1/tracks", json=body, headers=headers(domain, owner))
+-        assert response.status_code == 201, response.text
+-        versions.append(response.json()["version_id"])
+-    assert validate_one(domain.app) and validate_one(domain.app)
+-    with domain.factory() as session:
+-        assert session.get(TrackValidation, versions[2]).status == "validated"
+-        assert sum(session.get(TrackValidation, version).status == "validated" for version in versions[:2]) == 1
+-
+-
+-def test_discovery_backfill_handles_json_null_and_is_resumable(domain):
+-    version = upload(domain, document={"shape":"oval", "points":[[0,0],[20,0],[20,20],[0,20]]})
+-    with domain.factory() as session:
+-        session.get(TrackVersion, version["version_id"]).discovery = None
+-        session.commit()
+-    assert backfill_discovery(domain.factory, domain.app.state.blobs, limit=1)["backfilled"] == 1
+-    assert backfill_discovery(domain.factory, domain.app.state.blobs, limit=1)["backfilled"] == 0
+-    with domain.factory() as session:
+-        assert session.get(TrackVersion, version["version_id"]).discovery["points"]
+-
+-
+-def test_catalog_cursor_crosses_legacy_cap_without_blob_reads(domain, monkeypatch):
+-    with domain.factory() as session:
+-        session.add_all([Track(id=f"track-{n}", owner_id=domain.players["Creator"]) for n in range(10102)])
+-        session.flush()
+-        session.add_all([TrackVersion(id=f"{n:036d}", track_id=f"track-{n}", number=1, name=f"Course {n}", content_hash="a"*64, manifest={}, discovery={"theme":"pine","points":[]}, state="published", published_at=now(), created_at=now()) for n in range(10102)])
+-        session.commit()
+-    monkeypatch.setattr(domain.app.state.blobs, "get_json", lambda key: pytest.fail("discovery read immutable blob"))
+-    cursor, seen = "", set()
+-    for _ in range(102):
+-        response = domain.client.get("/v1/tracks", params={"limit":100, "cursor":cursor})
+-        assert response.status_code == 200, response.text
+-        page = response.json()
+-        for item in page["items"]:
+-            assert item["version_id"] not in seen and "manifest" not in item
+-            seen.add(item["version_id"])
+-        cursor = page["next_cursor"]
+-        if cursor is None: break
+-    assert len(seen) == 10102 and cursor is None
+-    assert domain.client.get("/v1/tracks", params={"cursor":"broken"}).status_code == 422
+-
+-
+-def test_retention_preserves_pb_proof_and_all_course_content(domain):
+-    version, _ = public_course(domain)
+-    extra = submit(domain, ticket(domain, version), frames=100)
+-    assert process_one(domain.app)
+-    old = now() - 100 * 86400
+-    with domain.factory() as session:
+-        session.execute(update(Run).values(finished_at=old))
+-        session.commit()
+-    blobs = domain.app.state.blobs
+-    orphan = blobs.put_json({"uncommitted": True})
+-    os.utime(blobs._path(orphan), (old, old))
+-    unmanaged = blobs.root / "aa" / ("z"*64 + ".json")
+-    unmanaged.parent.mkdir(exist_ok=True)
+-    unmanaged.write_text("{}")
+-    os.utime(unmanaged, (old, old))
+-    plan = retain(domain.factory, blobs)
+-    assert plan["runs"] == 1 and plan["orphaned_objects"] >= 1
+-    with pytest.raises(ValueError): retain(domain.factory, blobs, apply=True)
+-    result = retain(domain.factory, blobs, apply=True, offline=True)
+-    assert result["applied"] and not blobs._path(orphan).exists()
+-    assert unmanaged.exists() # GC is restricted to valid content-addressed keys.
+-    with domain.factory() as session:
+-        assert session.get(Run, extra["run_id"]) is None
+-        course = session.get(TrackVersion, version["version_id"])
+-        assert session.get(Run, course.creator_test_run_id) is not None
+-        assert blobs.get_json(course.content_hash)
+-
+-
+-def test_poll_budget_does_not_exhaust_sign_in_budget(domain):
+-    from fastapi.testclient import TestClient
+-
+-    from bmt_backend.app import create_app
+-    app = create_app(replace(domain.app.state.settings, auth_limit_per_minute=30, google_client_ids=("test",)), engine=domain.app.state.engine)
+-    with TestClient(app) as client:
+-        for _ in range(40):
+-            response = client.post("/v1/auth/google/browser/poll", json={"token":"a"*48})
+-            assert response.status_code != 429
+-        assert client.post("/v1/auth/google/challenge").status_code == 201
+-
+-
+-def test_document_etag_rechecks_disabled_owner(domain):
+-    version, _ = public_course(domain)
+-    path = f"/v1/track-versions/{version['version_id']}/document"
+-    first = domain.client.get(path)
+-    assert first.status_code == 200 and "must-revalidate" in first.headers["cache-control"]
+-    assert domain.client.get(path, headers={"If-None-Match":first.headers["etag"]}).status_code == 304
+-    with domain.factory() as session:
+-        session.get(Player, domain.players["Creator"]).disabled = True
+-        session.commit()
+-    assert domain.client.get(path, headers={"If-None-Match":first.headers["etag"]}).status_code == 404
+-
+-
+-def test_board_cache_tracks_pbs_and_restrictions_across_sessions(domain):
+-    version, _ = public_course(domain)
+-    first = submit(domain, ticket(domain, version, "Alice"), "Alice", frames=30)
+-    assert process_one(domain.app)
+-    board = first["board_id"]
+-    path = f"/v1/boards/{board}"
+-    # Populate both caches, then change their inputs through separate DB sessions.
+-    assert domain.client.get(path).json()["population"] == 2
+-    from bmt_backend.histogram_snapshots import refresh_all_for_diagnostics
+-    def fresh_histogram():
+-        refresh_all_for_diagnostics(domain.app)
+-        return domain.client.get(path+"/histogram").json()
+-    assert fresh_histogram()["maximum_ticks"] == 300
+-    second = submit(domain, ticket(domain, version, "Bob"), "Bob", frames=80)
+-    assert process_one(domain.app)
+-    assert domain.client.get(path).json()["population"] == 3
+-    assert fresh_histogram()["maximum_ticks"] == 400
+-    with domain.factory() as session:
+-        session.get(Player, domain.players["Bob"]).disabled = True
+-        session.commit()
+-    assert domain.client.get(path).json()["population"] == 2
+-    assert fresh_histogram()["maximum_ticks"] == 300
+-    with domain.factory() as session:
+-        session.execute(update(PersonalBest).where(PersonalBest.board_id == board, PersonalBest.player_id == domain.players["Creator"]).values(time_ticks=90))
+-        session.commit()
+-    assert fresh_histogram()["maximum_ticks"] == 150
+-    assert second["run_id"] != first["run_id"]
+-
+-
+-def test_board_cursor_preserves_competition_ties(domain):
+-    version, _ = public_course(domain)
+-    for name in ("Alice", "Bob", "Carol"):
+-        result = submit(domain, ticket(domain, version, name), name, frames=60)
+-        assert process_one(domain.app)
+-    path = f"/v1/boards/{result['board_id']}"
+-    first = domain.client.get(path, params={"limit":2}).json()
+-    second = domain.client.get(path, params={"limit":2, "cursor":first["next_cursor"]}).json()
+-    rows = first["items"] + second["items"]
+-    assert len({row["player_id"] for row in rows}) == 4
+-    assert [row["position"] for row in rows] == [1,2,3,4]
+-    assert [row["rank"] for row in rows] == [1,1,1,1]
+-    assert second["next_cursor"] is None
+-
+-
+-def test_historical_contract_waits_for_compatible_worker_and_never_rescored(domain, monkeypatch):
+-    version, _ = public_course(domain)
+-    issued = ticket(domain, version)
+-    submitted = submit(domain, issued)
+-    from bmt_backend.track_models import Board
+-    with domain.factory() as session:
+-        board = session.get(Board, issued["board_id"])
+-        original = {**board.manifest, "rules_key":"historical-build"}
+-        board.manifest = original
+-        session.commit()
+-    monkeypatch.setattr(domain.app.state.verifier, "verify_run", lambda *args, **kwargs: pytest.fail("historical replay was rescored"))
+-    assert not process_one(domain.app)
+-    with domain.factory() as session:
+-        job = session.get(Run, submitted["run_id"])
+-        assert job.status == "queued" and job.attempts == 0
+-        assert session.get(Board, issued["board_id"]).manifest == original
++"""Regressions for the October full review; all writes use disposable databases."""
++import os
++from dataclasses import replace
++
++import pytest
++from sqlalchemy import update
++from test_domains import domain as domain_fixture
++from test_domains import headers, public_course, submit, ticket, upload
++
++from bmt_backend.contracts import build_contract, current_manifest
++from bmt_backend.identity_models import Player
++from bmt_backend.maintenance import backfill_discovery, retain
++from bmt_backend.operations import competition_health, heartbeat
++from bmt_backend.track_models import PersonalBest, Run, Track, TrackValidation, TrackVersion, now
++from bmt_backend.worker import process_one
++
++domain = domain_fixture
++
++
++def test_broad_json_tree_is_rejected_without_accepting_nonfinite_values():
++    from bmt_backend.middleware import parse_body
++    # Fits the body byte limit, but has excessive container overhead.
++    with pytest.raises(ValueError, match="node limit"):
++        parse_body(b"[" + b"[]," * 1200000 + b"[]]")
++
++
++@pytest.mark.parametrize("physics", ["arcade-planar-0.39", "arcade-planar-0.48"])
++@pytest.mark.parametrize("purpose", ["race", "creator_test"])
++@pytest.mark.parametrize("rules", ["standing-5-road-gates-v12", "standing-5-road-gates-v13", "standing-5-road-gates-v14", "standing-5-road-gates-v15", "standing-5-road-gates-v16", "standing-5-road-gates-v18", "standing-5-road-gates-v19", "standing-5-road-gates-v20", "standing-5-road-gates-v21", "standing-5-road-gates-v22"])
++def test_full_manifest_upgrade_verifies(domain, physics, purpose, rules):
++    base = domain.app.state.verifier.manifest()
++    domain.app.state.verifier.manifest = lambda: {**base, "physics_version": "arcade-planar-0.53", "rules_key": "standing-5-road-gates-v24"}
++    version = upload(domain)
++    with domain.factory() as session:
++        row = session.get(TrackVersion, version["version_id"])
++        row.manifest = {**row.manifest, "physics_version": physics, "rules_key": rules}
++        original = dict(row.manifest)
++        session.commit()
++    metadata = domain.client.get("/v1/me/tracks", headers=headers(domain))
++    assert metadata.status_code == 200
++    visible = next(item for item in metadata.json()["items"] if item["version_id"] == version["version_id"])
++    assert visible["manifest"]["rules_key"] == "standing-5-road-gates-v24"
++    response = domain.client.post("/v1/run-tickets", json={"version_id": version["version_id"], "vehicle_id": "compact", "purpose": purpose}, headers=headers(domain))
++    assert response.status_code == 201, response.text
++    run = submit(domain, response.json())
++    assert process_one(domain.app)
++    with domain.factory() as session:
++        assert session.get(Run, run["run_id"]).status == "verified"
++        assert session.get(TrackVersion, version["version_id"]).manifest == original
++    assert current_manifest(original)["physics_version"] == "arcade-planar-0.53"
++    assert current_manifest(original)["rules_key"] == "standing-5-road-gates-v24"
++
++
++def test_global_admission_and_fair_claims(domain):
++    version, _ = public_course(domain)
++    domain.app.state.settings = replace(domain.app.state.settings, max_queued_runs=3)
++    first = submit(domain, ticket(domain, version, "Alice"), "Alice")
++    second = submit(domain, ticket(domain, version, "Alice"), "Alice")
++    third = submit(domain, ticket(domain, version, "Bob"), "Bob")
++    full = domain.client.post("/v1/runs", json={"ticket_id": ticket(domain, version, "Carol")["ticket_id"], "replay": {"schema": "bmt-replay-v1", "frames": [[0,255,0]]}}, headers=headers(domain, "Carol"))
++    assert full.status_code == 429 and full.headers["retry-after"]
++    assert process_one(domain.app)
++    assert process_one(domain.app)
++    with domain.factory() as session:
++        assert session.get(Run, third["run_id"]).status == "verified"
++        assert sum(session.get(Run, job["run_id"]).status == "verified" for job in (first, second)) == 1
++    health = competition_health(domain.app)
++    assert health["active_workers"] == 1 and health["queue_depth"] == 1
++
++
++def test_health_requests_never_parse_large_post(domain, monkeypatch):
++    monkeypatch.setattr("bmt_backend.middleware.parse_body", lambda body: pytest.fail("health payload parsed"))
++    response = domain.client.post("/healthz", content=b"x" * 3024048, headers={"content-type": "application/json"})
++    assert response.status_code == 405
++    assert domain.client.get("/healthz").status_code == 200
++
++
++def test_competition_health_does_not_trust_an_incompatible_fresh_worker(domain):
++    manifest = domain.app.state.verifier.manifest()
++    build = build_contract(manifest)
++    heartbeat(domain.app, "older-worker", build={**build, "rules_key":"older-rules"})
++    assert competition_health(domain.app)["status"] == "worker_build_mismatch"
++    heartbeat(domain.app, "compatible-worker", build=build)
++    assert competition_health(domain.app)["status"] == "ready"
++
++
++def test_track_validations_share_admission_with_races(domain):
++    version, _ = public_course(domain)
++    domain.app.state.settings = replace(domain.app.state.settings, max_queued_runs=2)
++    submit(domain, ticket(domain, version, "Alice"), "Alice")
++    body = {"name":"Private", "document":{"schema":"creator-track-v5", "id":"private", "points":[]},
++            "authoring_id":"private", "defer_validation":True}
++    first = domain.client.post("/v1/tracks", json=body, headers=headers(domain))
++    assert first.status_code == 201, first.text
++    # A retry of the same immutable snapshot consumes no second queue slot.
++    duplicate = domain.client.post("/v1/tracks", json=body, headers=headers(domain))
++    assert duplicate.status_code == 201 and duplicate.json()["version_id"] == first.json()["version_id"]
++    changed = {**body, "document":{**body["document"], "points":[[1,1]]}}
++    full = domain.client.post("/v1/tracks", json=changed, headers=headers(domain))
++    assert full.status_code == 429 and full.headers["retry-after"]
++    race = domain.client.post("/v1/runs", json={"ticket_id":ticket(domain, version, "Bob")["ticket_id"],
++        "replay":{"schema":"bmt-replay-v1", "frames":[[0,255,0]]}}, headers=headers(domain, "Bob"))
++    assert race.status_code == 429
++    health = competition_health(domain.app)
++    assert health["queue_depth"] == 2 and health["pending_track_validations"] == 1
++
++
++def test_private_validation_claims_are_fair_between_owners(domain):
++    from legacy_validation_fixture import process_one as validate_one
++    versions = []
++    for owner, source in [("Alice","first"), ("Alice","second"), ("Bob","third")]:
++        body = {"name":source, "document":{"schema":"creator-track-v5", "id":source, "points":[]},
++                "authoring_id":source, "defer_validation":True}
++        response = domain.client.post("/v1/tracks", json=body, headers=headers(domain, owner))
++        assert response.status_code == 201, response.text
++        versions.append(response.json()["version_id"])
++    assert validate_one(domain.app) and validate_one(domain.app)
++    with domain.factory() as session:
++        assert session.get(TrackValidation, versions[2]).status == "validated"
++        assert sum(session.get(TrackValidation, version).status == "validated" for version in versions[:2]) == 1
++
++
++def test_discovery_backfill_handles_json_null_and_is_resumable(domain):
++    version = upload(domain, document={"shape":"oval", "points":[[0,0],[20,0],[20,20],[0,20]]})
++    with domain.factory() as session:
++        session.get(TrackVersion, version["version_id"]).discovery = None
++        session.commit()
++    assert backfill_discovery(domain.factory, domain.app.state.blobs, limit=1)["backfilled"] == 1
++    assert backfill_discovery(domain.factory, domain.app.state.blobs, limit=1)["backfilled"] == 0
++    with domain.factory() as session:
++        assert session.get(TrackVersion, version["version_id"]).discovery["points"]
++
++
++def test_catalog_cursor_crosses_legacy_cap_without_blob_reads(domain, monkeypatch):
++    with domain.factory() as session:
++        session.add_all([Track(id=f"track-{n}", owner_id=domain.players["Creator"]) for n in range(10102)])
++        session.flush()
++        session.add_all([TrackVersion(id=f"{n:036d}", track_id=f"track-{n}", number=1, name=f"Course {n}", content_hash="a"*64, manifest={}, discovery={"theme":"pine","points":[]}, state="published", published_at=now(), created_at=now()) for n in range(10102)])
++        session.commit()
++    monkeypatch.setattr(domain.app.state.blobs, "get_json", lambda key: pytest.fail("discovery read immutable blob"))
++    cursor, seen = "", set()
++    for _ in range(102):
++        response = domain.client.get("/v1/tracks", params={"limit":100, "cursor":cursor})
++        assert response.status_code == 200, response.text
++        page = response.json()
++        for item in page["items"]:
++            assert item["version_id"] not in seen and "manifest" not in item
++            seen.add(item["version_id"])
++        cursor = page["next_cursor"]
++        if cursor is None: break
++    assert len(seen) == 10102 and cursor is None
++    assert domain.client.get("/v1/tracks", params={"cursor":"broken"}).status_code == 422
++
++
++def test_retention_preserves_pb_proof_and_all_course_content(domain):
++    version, _ = public_course(domain)
++    extra = submit(domain, ticket(domain, version), frames=100)
++    assert process_one(domain.app)
++    old = now() - 100 * 86400
++    with domain.factory() as session:
++        session.execute(update(Run).values(finished_at=old))
++        session.commit()
++    blobs = domain.app.state.blobs
++    orphan = blobs.put_json({"uncommitted": True})
++    os.utime(blobs._path(orphan), (old, old))
++    unmanaged = blobs.root / "aa" / ("z"*64 + ".json")
++    unmanaged.parent.mkdir(exist_ok=True)
++    unmanaged.write_text("{}")
++    os.utime(unmanaged, (old, old))
++    plan = retain(domain.factory, blobs)
++    assert plan["runs"] == 1 and plan["orphaned_objects"] >= 1
++    with pytest.raises(ValueError): retain(domain.factory, blobs, apply=True)
++    result = retain(domain.factory, blobs, apply=True, offline=True)
++    assert result["applied"] and not blobs._path(orphan).exists()
++    assert unmanaged.exists() # GC is restricted to valid content-addressed keys.
++    with domain.factory() as session:
++        assert session.get(Run, extra["run_id"]) is None
++        course = session.get(TrackVersion, version["version_id"])
++        assert session.get(Run, course.creator_test_run_id) is not None
++        assert blobs.get_json(course.content_hash)
++
++
++def test_poll_budget_does_not_exhaust_sign_in_budget(domain):
++    from fastapi.testclient import TestClient
++
++    from bmt_backend.app import create_app
++    app = create_app(replace(domain.app.state.settings, auth_limit_per_minute=30, google_client_ids=("test",)), engine=domain.app.state.engine)
++    with TestClient(app) as client:
++        for _ in range(40):
++            response = client.post("/v1/auth/google/browser/poll", json={"token":"a"*48})
++            assert response.status_code != 429
++        assert client.post("/v1/auth/google/challenge").status_code == 201
++
++
++def test_document_etag_rechecks_disabled_owner(domain):
++    version, _ = public_course(domain)
++    path = f"/v1/track-versions/{version['version_id']}/document"
++    first = domain.client.get(path)
++    assert first.status_code == 200 and "must-revalidate" in first.headers["cache-control"]
++    assert domain.client.get(path, headers={"If-None-Match":first.headers["etag"]}).status_code == 304
++    with domain.factory() as session:
++        session.get(Player, domain.players["Creator"]).disabled = True
++        session.commit()
++    assert domain.client.get(path, headers={"If-None-Match":first.headers["etag"]}).status_code == 404
++
++
++def test_board_cache_tracks_pbs_and_restrictions_across_sessions(domain):
++    version, _ = public_course(domain)
++    first = submit(domain, ticket(domain, version, "Alice"), "Alice", frames=30)
++    assert process_one(domain.app)
++    board = first["board_id"]
++    path = f"/v1/boards/{board}"
++    # Populate both caches, then change their inputs through separate DB sessions.
++    assert domain.client.get(path).json()["population"] == 2
++    from bmt_backend.histogram_snapshots import refresh_all_for_diagnostics
++    def fresh_histogram():
++        refresh_all_for_diagnostics(domain.app)
++        return domain.client.get(path+"/histogram").json()
++    assert fresh_histogram()["maximum_ticks"] == 300
++    second = submit(domain, ticket(domain, version, "Bob"), "Bob", frames=80)
++    assert process_one(domain.app)
++    assert domain.client.get(path).json()["population"] == 3
++    assert fresh_histogram()["maximum_ticks"] == 400
++    with domain.factory() as session:
++        session.get(Player, domain.players["Bob"]).disabled = True
++        session.commit()
++    assert domain.client.get(path).json()["population"] == 2
++    assert fresh_histogram()["maximum_ticks"] == 300
++    with domain.factory() as session:
++        session.execute(update(PersonalBest).where(PersonalBest.board_id == board, PersonalBest.player_id == domain.players["Creator"]).values(time_ticks=90))
++        session.commit()
++    assert fresh_histogram()["maximum_ticks"] == 150
++    assert second["run_id"] != first["run_id"]
++
++
++def test_board_cursor_preserves_competition_ties(domain):
++    version, _ = public_course(domain)
++    for name in ("Alice", "Bob", "Carol"):
++        result = submit(domain, ticket(domain, version, name), name, frames=60)
++        assert process_one(domain.app)
++    path = f"/v1/boards/{result['board_id']}"
++    first = domain.client.get(path, params={"limit":2}).json()
++    second = domain.client.get(path, params={"limit":2, "cursor":first["next_cursor"]}).json()
++    rows = first["items"] + second["items"]
++    assert len({row["player_id"] for row in rows}) == 4
++    assert [row["position"] for row in rows] == [1,2,3,4]
++    assert [row["rank"] for row in rows] == [1,1,1,1]
++    assert second["next_cursor"] is None
++
++
++def test_historical_contract_waits_for_compatible_worker_and_never_rescored(domain, monkeypatch):
++    version, _ = public_course(domain)
++    issued = ticket(domain, version)
++    submitted = submit(domain, issued)
++    from bmt_backend.track_models import Board
++    with domain.factory() as session:
++        board = session.get(Board, issued["board_id"])
++        original = {**board.manifest, "rules_key":"historical-build"}
++        board.manifest = original
++        session.commit()
++    monkeypatch.setattr(domain.app.state.verifier, "verify_run", lambda *args, **kwargs: pytest.fail("historical replay was rescored"))
++    assert not process_one(domain.app)
++    with domain.factory() as session:
++        job = session.get(Run, submitted["run_id"])
++        assert job.status == "queued" and job.attempts == 0
++        assert session.get(Board, issued["board_id"]).manifest == original
+diff --git a/backend/tests/test_verifier.py b/backend/tests/test_verifier.py
+index a453d20..595f17b 100644
+--- a/backend/tests/test_verifier.py
++++ b/backend/tests/test_verifier.py
+@@ -133,16 +133,16 @@ def test_spline_gate_rules_do_not_relabel_historical_boards(race_fixture):
+     previous = copy.deepcopy(race_fixture["expected_manifest"])
+     previous["rules_key"] = "standing-5-road-gates-v19"
+     assert race_fixture["expected_manifest"]["rules_key"] == "standing-5-road-gates-v22"
+-    assert current_manifest(previous)["rules_key"] == "standing-5-road-gates-v23"
++    assert current_manifest(previous)["rules_key"] == "standing-5-road-gates-v24"
+     assert previous["rules_key"] == "standing-5-road-gates-v19"  # Stored immutable revision is not rewritten.
+     current_board = board_manifest(SimpleNamespace(manifest=previous), "compact")
+     previous_board = {**current_board, "rules_key": "standing-5-road-gates-v19"}
+     from bmt_backend.track_models import digest
+ 
+-    assert current_board["rules_key"] == "standing-5-road-gates-v23"
++    assert current_board["rules_key"] == "standing-5-road-gates-v24"
+     rules22_board = {**current_board, "rules_key": "standing-5-road-gates-v22"}
+     assert digest(current_board) != digest(rules22_board)
+-    assert current_manifest(race_fixture["expected_manifest"])["rules_key"] == "standing-5-road-gates-v23"
++    assert current_manifest(race_fixture["expected_manifest"])["rules_key"] == "standing-5-road-gates-v24"
+     assert digest(current_board) != digest(previous_board)  # New attempts never merge into the old board.
+ 
+ 
+@@ -563,4 +563,4 @@ def test_early_launch_delay_verifies_in_standalone_runner(real_verifier, race_fi
+     replay["frames"] = [[0, 255, 0, 0, 2]] + [[0, 255, 0]] * 71 + replay["frames"]
+     result = real_verifier.verify_canonical_diagnostic(race_fixture["document"], replay, race_fixture["vehicle_id"])
+     assert result["time_ticks"] == race_fixture["time_ticks"] + 72
+-    assert result["manifest"]["rules_key"] == "standing-5-road-gates-v23"
++    assert result["manifest"]["rules_key"] == "standing-5-road-gates-v24"
+diff --git a/final/docs/CHECKPOINT_ROAD_COVERAGE_2026_11_03.md b/docs/CHECKPOINT_ROAD_COVERAGE_2026_11_03.md
+new file mode 100644
+index 0000000..d7c1b42
+--- /dev/null
++++ b/docs/CHECKPOINT_ROAD_COVERAGE_2026_11_03.md
+@@ -0,0 +1,81 @@
++# Checkpoints cover the complete road and kerbs
++
++2026-11-03. Local implementation of the owner's Star screenshot report.
++
++| Requirement | Result |
++| --- | --- |
++| CWR01 | Every measured gate and finish spans the connected physical road, painted edge and kerbs. Inside shortcut fitting cannot reduce that minimum. |
++| CWR02 | Additional 3 m candidates around folded spline hairpins retain an ordered legal corridor and block the reproduced large off-road bypasses. Ordinary recovery remains 2 m. |
++| CWR03 | Rules24 fences cached layouts and new verification contracts. Native client/server geometry exports include the same asymmetric finish spans. |
++| CWRQ01 | Independent surface sampling, edge crossings, shortcut sweeps, actual five-lap driving/replay, bridge controls and native comparison views. |
++
++The old capped raster scan stopped before the physical edge, and the spline selector could subsequently shorten the inside span below the road itself. The initial Star-only regression reproduced **160 failures in 456 checks**. At the hairpin corresponding to the supplied screenshot, the inside marker span was 12.6723 m despite the connected road/kerb cross-section extending about 23.45 m. The final native span is **23.50 m**; the outside span changes from 6.125 m to 6.20 m.
++
++`RoadGateCoverage` intersects the actual cleaned road contours/painted edges and kerb triangles with the gate plane, merges connected intervals and stops before disconnected returning branches. Spatial bins bound polygon lookup during preparation. The raster measurement no longer has an authored-width cap; upper-layer measurement uses actual deck cells rather than `cell_at`'s permissive empty-upper-cell fallback. Spline fitting can remove recovery space, but always retains the measured road span. Finish measurement, presentation and the server descriptor share the same asymmetric bounds.
++
++Widening gates alone reopened several grass-gap hairpin cuts. Additional candidates around folded corners close those gaps without globally reducing recovery. Star now selects 105/107 gates in forward/reverse directions, compared with 38/38. The existing common-lane ordering still excludes intersecting requirements which would force artificial loops. New first preparation costs about 4.47/4.60 seconds in one headless observation; retained preparation took 64/1071 microseconds. These are local observations, not a phone/loading-speed claim.
++
++Recovery lanes which themselves miss a mandatory apex no longer contribute partial approach protection to the notice envelope. This corrects the first new 4.86 m warning delay to 3.66 m, within the unchanged 4 m spline limit. No checkpoint is credited by notice logic.
++
++## Changes
++
++Runtime: `game/race/track_session.gd`, `spline_gate_corridor.gd`, `race_rules.gd`, new `road_gate_coverage.gd`, and `game/backend/runner.gd`.
++
++Server contract: `backend/bmt_backend/contracts.py`, `rivalry.py`, `trajectory_verifier.py`. Current manifests upgrade through rules23 to rules24; historical board documents remain immutable. Rules23/24 retain the existing numeric-only server gate tolerance.
++
++Tests: new `game/tests/test_checkpoint_road_coverage.gd` and `capture_checkpoint_road_coverage.gd`; existing checkpoint rules, bridge-exit version fence, notice-latency, Star consistency, backend gate-contract, verifier and manifest-upgrade fixtures. `scripts/run_checkpoint_coverage_checks.py` isolates profiles and bounds test execution; `scripts/verify_checkpoint_coverage.py` checks exported native geometry and canonical replay offline.
++
++Two old Star expectations deliberately rejected an entirely paved taper path because of the shortened inside span. Those expectations now require the newly covered path to complete with no warning, verify that it stays paved, and retain the other wide-profile rejection checks. The prior notice fixture's exact-width equality was replaced with full-road containment; ordinary centres, directions, progress and layers remain checked exactly. Deep-cut, recovery, layer, timing and replay limits were not relaxed.
++
++## Actual verification
++
++Pinned engine: `4.7.2.stable.official.ed1daf0bf`. Automated Godot children use `scripts/run_no_crash_dialog.py`; native captures and runner tests use workspace-local APPDATA/LOCALAPPDATA profiles.
++
++| Check | Actual outcome |
++| --- | --- |
++| Road/kerb/finish coverage, independent support-polygon sampling and outermost legal crossing | **2787/0** headless, **2787/0** Compatibility, **2787/0** desktop Mobile |
++| Retained hairpin regression | **65/0** headless and each desktop renderer |
++| Real Compact Star drive | Five laps, **47712 ticks**, zero collisions and warnings; quantized replay exact, each renderer |
++| Star shortcut sweep | 2575 forward + 2569 reverse candidates saving at least 3 m; zero accepted large off-road cuts, zero accepted beyond-recovery cuts, each desktop renderer |
++| Ordinary road gates | **266/0** |
++| Star consistency / ordinary recovery | **62/0**, **32/0** |
++| Bridge layers / notices / Knot / notice latency / Compact rewind | **259/0**, **537/0**, **252/0**, **604/0**, **591/0** |
++| Native before/after views | **7/0** each renderer; four final PNGs, same physical gate and fixed camera |
++| Native server integration | Nine historical hairpin bypasses rejected; real five-lap sparse proof accepted; **47712** canonical ticks accepted under rules24 |
++| Focused backend gate/speed/start/history contracts | **34 passed** |
++| Disposable SQLite historical manifest upgrades | **40 passed**, 67 deselected |
++| Scoped Ruff / Python compilation / task diff whitespace | Pass, with inherited Ruff issue below excluded from a clean claim |
++
++The shortcut sweep still allows two small reverse recovery excursions saving approximately 3.49 m and 3.45 m; both remain within ordinary recovery. It also allows entirely paved cornering. This is not an exhaustive proof over every possible trajectory or creator document.
++
++Actual command groups, expanded commands, durations and exit codes are retained in the `results*.json` receipts and `logs/` under [the evidence directory](evidence/checkpoint-road-coverage-2026-11-03/). Principal commands:
++
++```powershell
++python scripts/run_no_crash_dialog.py -- 'C:\apps\Godot 4.7.2\Godot_v4.7.2-stable_win64_console.exe' --version
++python scripts/run_checkpoint_coverage_checks.py test_checkpoint_road_coverage
++python scripts/run_checkpoint_coverage_checks.py test_checkpoint_notice_latency test_star_checkpoint_consistency test_checkpoint_forgiveness test_knot_checkpoint_notices
++python scripts/run_checkpoint_coverage_checks.py test_hairpin_checkpoints:gl_compatibility test_hairpin_checkpoints:mobile test_checkpoint_road_coverage:mobile test_star_checkpoint_shortcuts:mobile
++python scripts/run_checkpoint_coverage_checks.py capture_checkpoint_road_coverage:gl_compatibility capture_checkpoint_road_coverage:mobile
++& '.tools/backend-secure-venv/Scripts/python.exe' scripts/verify_checkpoint_coverage.py
++```
++
++From `backend/`:
++
++```powershell
++& '../.tools/backend-secure-venv/Scripts/python.exe' -m pytest tests/test_hairpin_gate_contract.py tests/test_trajectory_integrity.py tests/test_verifier.py::test_spline_gate_rules_do_not_relabel_historical_boards -q
++& '../.tools/backend-secure-venv/Scripts/python.exe' -m pytest tests/test_review_reliability.py -k 'full_manifest_upgrade and sqlite' -q
++```
++
++## Controls, intermediate failures and limits
++
++The existing bridge-entry fixture has **9/258** vehicle transition failures; bridge-exit has **80/2527**. Saved pre-change gate/corridor controls reproduce the **same failure messages exactly** (9 and 80), without script errors. These suites are not counted as passes. [Control comparison](evidence/checkpoint-road-coverage-2026-11-03/inherited-bridge-failures.json). The first dynamic entry control needed a corresponding untyped local rewind adapter; its earlier type-error run is retained and excluded. These adapters live only in evidence/build files.
++
++The first additional inside-margin restriction broke ordinary recovery and a real edge drive; it was removed. Initial 1 m candidates were reduced to 3 m after the shortcut sweep passed. A trial admitting all width-expanded, loop-trimmed lane profiles reopened large off-road cuts and was rejected. The first expanded coverage fixture needed a guard for Silmukka's missing independent `start_line`. Initial native captures omitted the staged world's render preparation; final captures run that exact preparation and show actual road/car geometry. These were fixture or intermediate findings, not final passes.
++
++Godot reports the sandbox's Windows root-certificate-store restriction; initial manual commands also encountered user-log access errors. Final runner logs use explicit workspace paths. Offline native integration accepts only the specifically recorded certificate diagnostic and fails on other engine errors. No clean environment-log claim is made.
++
++Ruff reports an existing `SIM102` at `backend/bmt_backend/rivalry.py:276`, reproduced with the saved pre-change source. Other changed backend files pass scoped Ruff. A broad backend review run was interrupted; only the completed focused and SQLite upgrade results above are claimed. The unavailable local catalog manifest prevented the optional catalog-wide fixture; no live catalog was fetched.
++
++No physical-device query/test, APK/export/install, owner save/process change, authenticated backend/live mutation, deployment or main-index write was performed. Concurrent workspace work remains. Reload/rebuild, matching authorised client/API/worker rollout, owner driving/appearance acceptance and physical-device performance remain outstanding.
++
++[Native before/after gallery](evidence/checkpoint-road-coverage-2026-11-03/comparison.html). [Task-only source checkpoint and hashes](evidence/checkpoint-road-coverage-2026-11-03/checkpoint.json).
+diff --git a/docs/PHASE_0_PLAN.md b/docs/PHASE_0_PLAN.md
+index e924b2b..0917571 100644
+--- a/docs/PHASE_0_PLAN.md
++++ b/docs/PHASE_0_PLAN.md
+@@ -1,3 +1,8 @@
++<!-- CHECKPOINT-ROAD-COVERAGE-20261103 -->
++## Checkpoints cover the complete road and kerbs (2026-11-03)
++CWR01-CWR03/Q01: Physical road/paint/kerb cross-sections form a hard minimum for every gate and finish; rules24 adds folded-hairpin candidates without reducing ordinary recovery. Star105/107 gates; coverage2787/0 headless and each desktop renderer, hairpin65/0 each, real five laps47712ticks/zero collisions/warnings/exact replay. Sweep5144 candidates blocks all large off-road/beyond-recovery cuts; nine historical cuts rejected by native server, real proof/canonical replay accepted. Retained rules/notices/layers/rewind pass; backend34+40 pass. Existing bridge9+80 failures and RuffSIM102 reproduce with before controls. Four native comparison views; checked task-only checkpoint, commands and limits: [CHECKPOINT_ROAD_COVERAGE_2026_11_03.md](CHECKPOINT_ROAD_COVERAGE_2026_11_03.md). Reload, matching authorised client/API/worker rollout and owner/device acceptance remain. No device query/test, APK, owner-save/process change, live mutation, deployment or main-index write; concurrent work preserved.
++<!-- /CHECKPOINT-ROAD-COVERAGE-20261103 -->
++
+ <!-- STARTUP-MUSIC-20261102 -->
+ ## Startup music begins with the active profile's record (2026-11-02)
+ SMU01-SMU02: Guest playback waits for saved-account restoration; cold record selection installs the stream before its first decoder starts. Existing live record fades and playlist behavior remain. Original startup regression37/30fail becomes37/0 headless and69/0 native Compatibility; retained soundtrack43/0 and playlist58/0 pass. Two runtime sources and one new regression; initial sandbox startup failure and corrected fixture cleanup are retained. Commands, checked task-only checkpoint and limits: [docs/STARTUP_MUSIC_2026_11_02.md](STARTUP_MUSIC_2026_11_02.md). Reload and owner listening acceptance remain; no device test, owner-save/process change, backend access, deployment or main-index write. Concurrent work preserved.
+diff --git a/game/backend/runner.gd b/game/backend/runner.gd
+index 5bfbd19..4b6d92b 100644
+--- a/game/backend/runner.gd
++++ b/game/backend/runner.gd
+@@ -47,7 +47,7 @@ func race_geometry(track: NativeTrack, doc: Dictionary, info: Dictionary) -> Dic
+ 	var gates: Array = []
+ 	for index: int in range(session._centers.size()):
+ 		gates.append(_gate(session._centers[index],session._directions[index],session._widths[index],int(session._layers[index])))
+-	gates.append(_gate(track.finish_center,track.finish_forward,Vector2.ONE*(track.finish_half_width+1.5),int(session._finish_elevated)))
++	gates.append(_gate(track.finish_center,track.finish_forward,session._finish_widths,int(session._finish_elevated)))
+ 	var start: Vector2 = track.spawn-track.finish_forward*maxf(0.0,(track.spawn-track.finish_center).dot(track.finish_forward)+3.0)
+ 	var creator := Vector2(doc.start_line.position[0],doc.start_line.position[1])
+ 	var layer: bool = track.elevated_at(start,track.nearest_route(start))
+diff --git a/game/race/race_rules.gd b/game/race/race_rules.gd
+index 9a49364..e846b5e 100644
+--- a/game/race/race_rules.gd
++++ b/game/race/race_rules.gd
+@@ -2,6 +2,7 @@ class_name RaceRules
+ extends RefCounted
+ 
+ const LAPS: int = 5
+-const KEY: String = "standing-5-road-gates-v23"
++const KEY: String = "standing-5-road-gates-v24"
+ const CHECKPOINT_RECOVERY_M: float = 2.0
+ const SPLINE_GATE_SPACING_M: float = 8.0
++const HAIRPIN_GATE_SPACING_M: int = 3
+diff --git a/final/game/race/road_gate_coverage.gd b/game/race/road_gate_coverage.gd
+new file mode 100644
+index 0000000..a09764a
+--- /dev/null
++++ b/game/race/road_gate_coverage.gd
+@@ -0,0 +1,83 @@
++class_name RoadGateCoverage
++extends RefCounted
++## Exact road-strip and kerb cross-sections, prepared once per gate layout.
++var ground: Array[PackedVector2Array] = []
++var decks: Array[PackedVector2Array] = []
++var ground_bins: Dictionary = {}
++var deck_bins: Dictionary = {}
++var reach: float = 0.0
++const CELL_M: float = 8.0
++
++func _init(track: NativeTrack) -> void:
++	reach = track.half_extent.length()*2.0
++	var pieces: Array = track.metadata.get("creator_document",{}).get("pieces",[])
++	var topology: Dictionary = RoadPieces.prepare_endpoints(pieces)
++	for index: int in range(pieces.size()):
++		var polygons: Array[PackedVector2Array] = decks if pieces[index].kind == "bridge" else ground
++		var contours: Array[PackedVector2Array]
++		if pieces[index].kind == "spline":
++			# Use the same cleaned folded borders and painted edge as the road.
++			contours = SplineBorders.surface(RoadEdges.section_contours(pieces,index,0.16,topology))
++		else:
++			var shape: Dictionary = VisualRoadJoin.build(pieces,index,0.0,topology)
++			contours = SplineBorders.surface(SplineBorders.offset(shape.contours,0.16)) if shape.get("swept",false) else Geometry2D.offset_polygon(shape.contours[0],0.16,Geometry2D.JOIN_ROUND)
++		for contour: PackedVector2Array in contours:
++			var indices: PackedInt32Array = Geometry2D.triangulate_polygon(contour)
++			for i: int in range(0,indices.size(),3): polygons.append(PackedVector2Array([contour[indices[i]],contour[indices[i+1]],contour[indices[i+2]]]))
++	for triangle: Dictionary in track.kerbs.triangles: ground.append(triangle.points)
++	_index(ground,ground_bins)
++	_index(decks,deck_bins)
++
++func _index(polygons: Array[PackedVector2Array], bins: Dictionary) -> void:
++	for index: int in range(polygons.size()):
++		var low: Vector2 = polygons[index][0]
++		var high: Vector2 = low
++		for point: Vector2 in polygons[index]: low = low.min(point); high = high.max(point)
++		var first := Vector2i((low/CELL_M).floor())
++		var last := Vector2i((high/CELL_M).floor())
++		for y: int in range(first.y,last.y+1):
++			for x: int in range(first.x,last.x+1):
++				var key := Vector2i(x,y)
++				if not bins.has(key): bins[key] = PackedInt32Array()
++				bins[key].append(index)
++
++func spans(center: Vector2, direction: Vector2, raster: Vector2, elevated: bool) -> Vector2:
++	var normal: Vector2 = direction.orthogonal()
++	var intervals: Array[Vector2] = [Vector2(-raster.x,raster.y)]
++	var polygons: Array[PackedVector2Array] = decks if elevated else ground
++	var bins: Dictionary = deck_bins if elevated else ground_bins
++	var candidates: Dictionary = {}
++	var visited: Dictionary = {}
++	for step: int in range(-ceili(reach/(CELL_M*0.5)),ceili(reach/(CELL_M*0.5))+1):
++		var key := Vector2i(((center+normal*step*CELL_M*0.5)/CELL_M).floor())
++		for y: int in range(-1,2):
++			for x: int in range(-1,2):
++				var cell: Vector2i = key+Vector2i(x,y)
++				if visited.has(cell): continue
++				visited[cell] = true
++				for index: int in bins.get(cell,PackedInt32Array()): candidates[index] = true
++	for index: int in candidates:
++		var polygon: PackedVector2Array = polygons[index]
++		var low: float = INF
++		var high: float = -INF
++		for i: int in range(polygon.size()):
++			var a: Vector2 = polygon[i]-center
++			var b: Vector2 = polygon[(i+1)%polygon.size()]-center
++			var before: float = a.dot(direction)
++			var after: float = b.dot(direction)
++			if absf(before) < 0.00001:
++				low = minf(low,a.dot(normal)); high = maxf(high,a.dot(normal))
++			if (before < 0.0 and after > 0.0) or (before > 0.0 and after < 0.0):
++				var lateral: float = a.lerp(b,-before/(after-before)).dot(normal)
++				low = minf(low,lateral); high = maxf(high,lateral)
++		if high >= low: intervals.append(Vector2(low,high))
++	intervals.sort_custom(func(a: Vector2,b: Vector2) -> bool: return a.x < b.x)
++	var connected: Vector2 = intervals[0]
++	# Merge only the connected road through this gate. A returning arm across
++	# an actual gap cannot enlarge the checkpoint, even on the same layer.
++	for interval: Vector2 in intervals:
++		if interval.x > connected.y+0.0001:
++			if connected.x <= 0.0 and connected.y >= 0.0: break
++			connected = interval
++		else: connected.y = maxf(connected.y,interval.y)
++	return Vector2(-connected.x,connected.y)
+diff --git a/game/race/spline_gate_corridor.gd b/game/race/spline_gate_corridor.gd
+index 7d449ac..b445d5d 100644
+--- a/game/race/spline_gate_corridor.gd
++++ b/game/race/spline_gate_corridor.gd
+@@ -1,220 +1,226 @@
+-class_name SplineGateCorridor
+-extends RefCounted
+-## Preserve ordinary recovery while keeping folded hairpin apices mandatory.
+-const LANE_HALF_STEPS: int = 28
+-const LANE_COUNT: int = LANE_HALF_STEPS*2+1
+-const EDGE_HALF_STEPS: int = 22
+-const ROAD_EDGE_MARGIN_M: float = 0.5
+-const APEX_SLACK_M: float = 0.5
+-const HAIRPIN_MITER_RATIO: float = 1.8
+-
+-static func lane(track: NativeTrack, fraction: float, constant_width: bool = false, rejoin_start: bool = true, recovery_m: float = RaceRules.CHECKPOINT_RECOVERY_M) -> PackedVector2Array:
+-	var path := PackedVector2Array()
+-	var minimum_half: float = INF
+-	for width: float in track.route_widths: minimum_half = minf(minimum_half,width*0.5)
+-	for i: int in range(track.route.size()):
+-		var tangent: Vector2 = (track.route[(i+1)%track.route.size()]-track.route[posmod(i-1,track.route.size())]).normalized()
+-		var half: float = track.route_widths[i]*0.5 if track.route_widths.size() == track.route.size() else 5.0
+-		# Include interior lanes which keep their offset as a road widens,
+-		# as well as the separate paths following its variable-width edges.
+-		if constant_width: half = minf(half,minimum_half)
+-		var end_distance: float = minf(track.route_cumulative[i],track.route_length-track.route_cumulative[i])
+-		var lateral: float = (half+recovery_m)*fraction
+-		path.append(track.route[i]+tangent.orthogonal()*lateral*(smoothstep(0.0,12.0,end_distance) if rejoin_start else 1.0))
+-	path.append(path[0]); path.append(path[1])
+-	var result := PackedVector2Array()
+-	for point: Vector2 in path:
+-		if result.size() >= 3:
+-			var travelled: float = 0.0
+-			for index: int in range(result.size()-3,-1,-1):
+-				travelled += result[index].distance_to(result[index+1])
+-				if travelled > 20.0: break
+-				var hit: Variant = Geometry2D.segment_intersects_segment(result[index],result[index+1],result[-1],point)
+-				if hit is Vector2 and hit.distance_to(point) > 0.001:
+-					result.resize(index+1); result.append(hit); break
+-		result.append(point)
+-	return result
+-
+-static func select(session: RefCounted, track: NativeTrack) -> PackedInt32Array:
+-	var crossings: Array[PackedFloat64Array] = []
+-	var lanes: Array[PackedVector2Array] = []
+-	var corners: Array[Dictionary] = session._road_corners(track)
+-	var hairpins: Array[Dictionary] = []
+-	for corner: Dictionary in corners:
+-		if float(corner.half_span) >= float(corner.road_half)*HAIRPIN_MITER_RATIO: hairpins.append(corner)
+-	var priorities := PackedInt32Array()
+-	for gate: int in range(session._centers.size()):
+-		var priority: int = 1
+-		for corner: Dictionary in corners:
+-			if absf(float(corner.distance)-session._progress[gate]) < 0.01:
+-				for hairpin: Dictionary in hairpins:
+-					var separation: float = absf(float(corner.distance)-float(hairpin.distance))
+-					separation = minf(separation,track.route_length-separation)
+-					if separation <= float(hairpin.reach)*2.0+float(hairpin.road_half)+RaceRules.CHECKPOINT_RECOVERY_M:
+-						priority = session._centers.size()+1
+-						break
+-				break
+-		priorities.append(priority)
+-	var route_bins: Dictionary = {}
+-	for i: int in range(track.route.size()):
+-		var key := Vector2i((track.route[i]/8.0).floor())
+-		if not route_bins.has(key): route_bins[key] = []
+-		route_bins[key].append(i)
+-	# A recovery lane can erase the very hairpin it should recover around.
+-	# Expanding an inner lane with a neighbouring wider road can erase it too.
+-	# Use interior road/kerb references for the required order; full recovery lanes
+-	# still prepare notices and ordinary/outer gate spans remain unchanged.
+-	var edge_steps: int = EDGE_HALF_STEPS if not hairpins.is_empty() else LANE_HALF_STEPS
+-	var edge_count: int = edge_steps*2+1
+-	var edge_margin: float = ROAD_EDGE_MARGIN_M if not hairpins.is_empty() else RaceRules.CHECKPOINT_RECOVERY_M
+-	for lane_index: int in range(edge_count*3):
+-		var path: PackedVector2Array = lane(track,float(lane_index%edge_count-edge_steps)/edge_steps,lane_index >= edge_count,lane_index < edge_count*2,edge_margin)
+-		lanes.append(path)
+-		crossings.append(_crossings(session,path))
+-	for gate: int in range(session._centers.size()):
+-		if priorities[gate] == 1: continue
+-		var low: float = INF
+-		var high: float = -INF
+-		var valid: bool = true
+-		for lane_index: int in range(lanes.size()):
+-			if lane_index < edge_count: continue
+-			var event: float = crossings[lane_index][gate]
+-			if event < 0.0: valid = false; break
+-			var index: int = floori(event)
+-			var point: Vector2 = lanes[lane_index][index].lerp(lanes[lane_index][index+1],event-index)
+-			var lateral: float = (point-session._centers[gate]).dot(session._directions[gate].orthogonal())
+-			low = minf(low,lateral); high = maxf(high,lateral)
+-		if valid:
+-			var absolute: float = session._start_progress+session._progress[gate]
+-			var incoming: Vector2 = (session._centers[gate]-track._race_route_point(absolute-8.0)).normalized()
+-			var outgoing: Vector2 = (track._race_route_point(absolute+8.0)-session._centers[gate]).normalized()
+-			var inside: int = 1 if (outgoing-incoming).dot(session._directions[gate].orthogonal()) > 0.0 else 0
+-			var bound: float = maxf(0.0,high if inside == 1 else -low)+APEX_SLACK_M
+-			session._widths[gate][inside] = minf(session._widths[gate][inside],bound)
+-			session._road_widths[gate] = Vector2(minf(session._road_widths[gate].x,session._widths[gate].x),minf(session._road_widths[gate].y,session._widths[gate].y))
+-	var paved_crossings: Array[PackedFloat64Array] = []
+-	for lane_index: int in range(lanes.size()):
+-		if not hairpins.is_empty() and lane_index < edge_count: continue
+-		paved_crossings.append(_crossings(session,lanes[lane_index]))
++class_name SplineGateCorridor
++extends RefCounted
++## Preserve ordinary recovery while keeping folded hairpin apices mandatory.
++const LANE_HALF_STEPS: int = 28
++const LANE_COUNT: int = LANE_HALF_STEPS*2+1
++const EDGE_HALF_STEPS: int = 22
++const ROAD_EDGE_MARGIN_M: float = 0.5
++const APEX_SLACK_M: float = 0.5
++const HAIRPIN_MITER_RATIO: float = 1.8
++
++static func lane(track: NativeTrack, fraction: float, constant_width: bool = false, rejoin_start: bool = true, recovery_m: float = RaceRules.CHECKPOINT_RECOVERY_M) -> PackedVector2Array:
++	var path := PackedVector2Array()
++	var minimum_half: float = INF
++	for width: float in track.route_widths: minimum_half = minf(minimum_half,width*0.5)
++	for i: int in range(track.route.size()):
++		var tangent: Vector2 = (track.route[(i+1)%track.route.size()]-track.route[posmod(i-1,track.route.size())]).normalized()
++		var half: float = track.route_widths[i]*0.5 if track.route_widths.size() == track.route.size() else 5.0
++		# Include interior lanes which keep their offset as a road widens,
++		# as well as the separate paths following its variable-width edges.
++		if constant_width: half = minf(half,minimum_half)
++		var end_distance: float = minf(track.route_cumulative[i],track.route_length-track.route_cumulative[i])
++		var lateral: float = (half+recovery_m)*fraction
++		path.append(track.route[i]+tangent.orthogonal()*lateral*(smoothstep(0.0,12.0,end_distance) if rejoin_start else 1.0))
++	path.append(path[0]); path.append(path[1])
++	var result := PackedVector2Array()
++	for point: Vector2 in path:
++		if result.size() >= 3:
++			var travelled: float = 0.0
++			for index: int in range(result.size()-3,-1,-1):
++				travelled += result[index].distance_to(result[index+1])
++				if travelled > 20.0: break
++				var hit: Variant = Geometry2D.segment_intersects_segment(result[index],result[index+1],result[-1],point)
++				if hit is Vector2 and hit.distance_to(point) > 0.001:
++					result.resize(index+1); result.append(hit); break
++		result.append(point)
++	return result
++
++static func select(session: RefCounted, track: NativeTrack) -> PackedInt32Array:
++	var crossings: Array[PackedFloat64Array] = []
++	var lanes: Array[PackedVector2Array] = []
++	var corners: Array[Dictionary] = session._road_corners(track)
++	var hairpins: Array[Dictionary] = []
++	for corner: Dictionary in corners:
++		if float(corner.half_span) >= float(corner.road_half)*HAIRPIN_MITER_RATIO: hairpins.append(corner)
++	var priorities := PackedInt32Array()
++	for gate: int in range(session._centers.size()):
++		var priority: int = 1
++		for corner: Dictionary in corners:
++			if absf(float(corner.distance)-session._progress[gate]) < 0.01:
++				for hairpin: Dictionary in hairpins:
++					var separation: float = absf(float(corner.distance)-float(hairpin.distance))
++					separation = minf(separation,track.route_length-separation)
++					if separation <= float(hairpin.reach)*2.0+float(hairpin.road_half)+RaceRules.CHECKPOINT_RECOVERY_M:
++						priority = session._centers.size()+1
++						break
++				break
++		priorities.append(priority)
++	var route_bins: Dictionary = {}
++	for i: int in range(track.route.size()):
++		var key := Vector2i((track.route[i]/8.0).floor())
++		if not route_bins.has(key): route_bins[key] = []
++		route_bins[key].append(i)
++	# A recovery lane can erase the very hairpin it should recover around.
++	# Expanding an inner lane with a neighbouring wider road can erase it too.
++	# Use interior road/kerb references for the required order; full recovery lanes
++	# still prepare notices and ordinary/outer gate spans remain unchanged.
++	var edge_steps: int = EDGE_HALF_STEPS if not hairpins.is_empty() else LANE_HALF_STEPS
++	var edge_count: int = edge_steps*2+1
++	var edge_margin: float = ROAD_EDGE_MARGIN_M if not hairpins.is_empty() else RaceRules.CHECKPOINT_RECOVERY_M
++	for lane_index: int in range(edge_count*3):
++		var path: PackedVector2Array = lane(track,float(lane_index%edge_count-edge_steps)/edge_steps,lane_index >= edge_count,lane_index < edge_count*2,edge_margin)
++		lanes.append(path)
++		crossings.append(_crossings(session,path))
++	for gate: int in range(session._centers.size()):
++		if priorities[gate] == 1: continue
++		var low: float = INF
++		var high: float = -INF
++		var valid: bool = true
++		for lane_index: int in range(lanes.size()):
++			if lane_index < edge_count: continue
++			var event: float = crossings[lane_index][gate]
++			if event < 0.0: valid = false; break
++			var index: int = floori(event)
++			var point: Vector2 = lanes[lane_index][index].lerp(lanes[lane_index][index+1],event-index)
++			var lateral: float = (point-session._centers[gate]).dot(session._directions[gate].orthogonal())
++			low = minf(low,lateral); high = maxf(high,lateral)
++		if valid:
++			var absolute: float = session._start_progress+session._progress[gate]
++			var incoming: Vector2 = (session._centers[gate]-track._race_route_point(absolute-8.0)).normalized()
++			var outgoing: Vector2 = (track._race_route_point(absolute+8.0)-session._centers[gate]).normalized()
++			var inside: int = 1 if (outgoing-incoming).dot(session._directions[gate].orthogonal()) > 0.0 else 0
++			var bound: float = maxf(0.0,high if inside == 1 else -low)+APEX_SLACK_M
++			# Shortcut references may reduce recovery, never the physical road.
++			session._widths[gate][inside] = maxf(session._road_widths[gate][inside],minf(session._widths[gate][inside],bound))
++	var paved_crossings: Array[PackedFloat64Array] = []
++	for lane_index: int in range(lanes.size()):
++		if not hairpins.is_empty() and lane_index < edge_count: continue
++		paved_crossings.append(_crossings(session,lanes[lane_index]))
+ 	var paved_lanes: Array[PackedVector2Array] = lanes.duplicate()
+-	lanes.clear(); crossings.clear()
+-	for lane_index: int in range(LANE_COUNT*3):
+-		var path: PackedVector2Array = lane(track,float(lane_index%LANE_COUNT-LANE_HALF_STEPS)/LANE_HALF_STEPS,lane_index >= LANE_COUNT,lane_index < LANE_COUNT*2)
+-		lanes.append(path); crossings.append(_crossings(session,path))
+-	if not hairpins.is_empty():
+-		for path: PackedVector2Array in paved_lanes:
+-			lanes.append(path); crossings.append(_crossings(session,path))
+-	var counts := PackedInt32Array()
+-	var previous := PackedInt32Array()
+-	var costs := PackedFloat32Array()
+-	var best: int = -1
+-	for gate: int in range(session._centers.size()):
+-		var weight: int = priorities[gate]
+-		var valid: bool = true
+-		var references: Array[PackedFloat64Array] = paved_crossings
+-		for lane_index: int in range(references.size()) if valid else []:
+-			if references[lane_index][gate] < 0.0: valid = false; break
+-		counts.append(weight if valid else 0); previous.append(-1)
+-		var width: Vector2 = session._widths[gate]
+-		costs.append(width.x+width.y)
+-		if not valid: continue
+-		for earlier: int in range(gate):
+-			if counts[earlier] == 0: continue
+-			var ordered: bool = true
+-			for events: PackedFloat64Array in paved_crossings:
+-				if events[earlier] >= events[gate]-0.00001: ordered = false; break
+-			if ordered and (counts[earlier]+weight > counts[gate] or (counts[earlier]+weight == counts[gate] and costs[earlier]+width.x+width.y < costs[gate])):
+-				counts[gate] = counts[earlier]+weight; previous[gate] = earlier
+-				costs[gate] = costs[earlier]+width.x+width.y
+-		if best < 0 or counts[gate] > counts[best] or (counts[gate] == counts[best] and costs[gate] < costs[best]): best = gate
+-	var selected := PackedInt32Array()
+-	while best >= 0:
+-		selected.append(best); best = previous[best]
+-	selected.reverse()
+-	# The nearest physical road can be the returning arm before this gate.
+-	# Bound that display-only projection along every accepted lane approach.
+-	var projections: Dictionary = {}
+-	for gate: int in range(session._centers.size()): session._notice_approaches.append({})
+-	for lane_index: int in range(lanes.size()):
+-		var path: PackedVector2Array = lanes[lane_index]
+-		var events: PackedFloat64Array = crossings[lane_index]
+-		var previous_event: float = 0.0
+-		var accepted_event: float = 0.0
+-		for gate: int in selected:
+-			var event: float = events[gate]
+-			if event < 0.0: continue
+-			var reach: float = session._notice_reach[gate]
+-			var cells: Dictionary = session._notice_approaches[gate]
+-			# Runtime can accept an earlier valid crossing than the nearest
+-			# crossing used to select the common chain on a folded spline.
+-			# Protect the approach actually driven after that earlier crossing.
+-			var next_event: float = event
+-			for i: int in range(floori(accepted_event),path.size()-1):
+-				var fraction: float = session._crossing(gate,path[i],path[i+1])
+-				if fraction < 0.0 or i+fraction < accepted_event-0.000001: continue
+-				if session._inside(gate,path[i].lerp(path[i+1],fraction)):
+-					next_event = i+fraction; break
+-			for i: int in range(floori(accepted_event),mini(floori(next_event)+1,path.size()-1)):
+-				var a: Vector2 = path[i].lerp(path[i+1],clampf(accepted_event-i,0.0,1.0))
+-				var b: Vector2 = path[i].lerp(path[i+1],clampf(next_event-i,0.0,1.0))
+-				var steps: int = maxi(1,ceili(a.distance_to(b)*2.0))
+-				for step: int in range(steps+1): cells[Vector2i(a.lerp(b,float(step)/steps).floor())] = true
+-			accepted_event = next_event
+-			for i: int in range(floori(previous_event),mini(ceili(event)+1,path.size()-1)):
+-				var point: Vector2 = path[i]
+-				var progress: float = float(projections.get(point,NAN))
+-				if is_nan(progress):
+-					progress = _projection(track,point,route_bins)
+-					projections[point] = progress
+-				var ahead: float = wrapf(progress-session._start_progress-session._progress[gate],-track.route_length*0.5,track.route_length*0.5)
+-				reach = maxf(reach,ahead+1.0)
+-			session._notice_reach[gate] = reach
+-			previous_event = event
+-	return selected
+-
+-static func _crossings(session: RefCounted, path: PackedVector2Array) -> PackedFloat64Array:
+-	var events := PackedFloat64Array()
+-	for gate: int in range(session._centers.size()):
+-		var event: float = -1.0
+-		var nearest: float = INF
+-		var center: Vector2 = session._centers[gate]
+-		var direction: Vector2 = session._directions[gate]
+-		var normal: Vector2 = direction.orthogonal()
+-		var widths: Vector2 = session._widths[gate]
+-		var before: float = (path[0]-center).dot(direction)
+-		for i: int in range(path.size()-1):
+-			var after: float = (path[i+1]-center).dot(direction)
+-			var f: float = -before/(after-before) if before <= 0.0 and after > 0.0 else -1.0
+-			before = after
+-			if f < 0.0: continue
+-			var p: Vector2 = path[i].lerp(path[i+1],f)
+-			var lateral: float = (p-center).dot(normal)
+-			if lateral < -widths.x or lateral > widths.y: continue
+-			if p.distance_squared_to(center) < nearest:
+-				nearest = p.distance_squared_to(center); event = i+f
+-		events.append(event)
+-	return events
+-
+-static func _projection(track: NativeTrack, point: Vector2, bins: Dictionary) -> float:
+-	var key := Vector2i((point/8.0).floor())
+-	var best: float = INF
+-	var nearest: int = 0
+-	for y: int in range(-2,3):
+-		for x: int in range(-2,3):
+-			for index: int in bins.get(key+Vector2i(x,y),[]):
+-				var distance: float = point.distance_squared_to(track.route[index])
+-				if distance < best or (distance == best and index < nearest):
+-					best = distance; nearest = index
+-	# The unvisited cells are at least 16 m away. Sparse routes retain the
+-	# original exact global search when that bound cannot prove the result.
+-	if best > 256.0: nearest = track.nearest_route(point)
+-	best = INF
+-	var progress: float = track.route_cumulative[nearest]
+-	for offset: int in range(-1,2):
+-		var index: int = posmod(nearest+offset,track.route.size())
+-		var edge: Vector2 = track.route[(index+1)%track.route.size()]-track.route[index]
+-		var fraction: float = clampf((point-track.route[index]).dot(edge)/maxf(edge.length_squared(),0.000001),0.0,1.0)
+-		var distance: float = point.distance_squared_to(track.route[index]+edge*fraction)
+-		if distance < best:
+-			best = distance; progress = track.route_cumulative[index]+edge.length()*fraction
+-	return progress
++	lanes.clear(); crossings.clear()
++	for lane_index: int in range(LANE_COUNT*3):
++		var path: PackedVector2Array = lane(track,float(lane_index%LANE_COUNT-LANE_HALF_STEPS)/LANE_HALF_STEPS,lane_index >= LANE_COUNT,lane_index < LANE_COUNT*2)
++		lanes.append(path); crossings.append(_crossings(session,path))
++	if not hairpins.is_empty():
++		for path: PackedVector2Array in paved_lanes:
++			lanes.append(path); crossings.append(_crossings(session,path))
++	var counts := PackedInt32Array()
++	var previous := PackedInt32Array()
++	var costs := PackedFloat32Array()
++	var best: int = -1
++	for gate: int in range(session._centers.size()):
++		var weight: int = priorities[gate]
++		var valid: bool = true
++		var references: Array[PackedFloat64Array] = paved_crossings
++		for lane_index: int in range(references.size()) if valid else []:
++			if references[lane_index][gate] < 0.0: valid = false; break
++		counts.append(weight if valid else 0); previous.append(-1)
++		var width: Vector2 = session._widths[gate]
++		costs.append(width.x+width.y)
++		if not valid: continue
++		for earlier: int in range(gate):
++			if counts[earlier] == 0: continue
++			var ordered: bool = true
++			for events: PackedFloat64Array in paved_crossings:
++				if events[earlier] >= events[gate]-0.00001: ordered = false; break
++			if ordered and (counts[earlier]+weight > counts[gate] or (counts[earlier]+weight == counts[gate] and costs[earlier]+width.x+width.y < costs[gate])):
++				counts[gate] = counts[earlier]+weight; previous[gate] = earlier
++				costs[gate] = costs[earlier]+width.x+width.y
++		if best < 0 or counts[gate] > counts[best] or (counts[gate] == counts[best] and costs[gate] < costs[best]): best = gate
++	var selected := PackedInt32Array()
++	while best >= 0:
++		selected.append(best); best = previous[best]
++	selected.reverse()
++	# The nearest physical road can be the returning arm before this gate.
++	# Bound that display-only projection along every accepted lane approach.
++	var projections: Dictionary = {}
++	for gate: int in range(session._centers.size()): session._notice_approaches.append({})
++	for lane_index: int in range(lanes.size()):
++		var path: PackedVector2Array = lanes[lane_index]
++		var events: PackedFloat64Array = crossings[lane_index]
++		# A recovery offset which misses a mandatory apex is itself a bypass.
++		# Its partial approach must not hide the warning after a real shortcut.
++		var complete: bool = true
++		for gate: int in selected:
++			if events[gate] < 0.0: complete = false; break
++		if not complete: continue
++		var previous_event: float = 0.0
++		var accepted_event: float = 0.0
++		for gate: int in selected:
++			var event: float = events[gate]
++			if event < 0.0: continue
++			var reach: float = session._notice_reach[gate]
++			var cells: Dictionary = session._notice_approaches[gate]
++			# Runtime can accept an earlier valid crossing than the nearest
++			# crossing used to select the common chain on a folded spline.
++			# Protect the approach actually driven after that earlier crossing.
++			var next_event: float = event
++			for i: int in range(floori(accepted_event),path.size()-1):
++				var fraction: float = session._crossing(gate,path[i],path[i+1])
++				if fraction < 0.0 or i+fraction < accepted_event-0.000001: continue
++				if session._inside(gate,path[i].lerp(path[i+1],fraction)):
++					next_event = i+fraction; break
++			for i: int in range(floori(accepted_event),mini(floori(next_event)+1,path.size()-1)):
++				var a: Vector2 = path[i].lerp(path[i+1],clampf(accepted_event-i,0.0,1.0))
++				var b: Vector2 = path[i].lerp(path[i+1],clampf(next_event-i,0.0,1.0))
++				var steps: int = maxi(1,ceili(a.distance_to(b)*2.0))
++				for step: int in range(steps+1): cells[Vector2i(a.lerp(b,float(step)/steps).floor())] = true
++			accepted_event = next_event
++			for i: int in range(floori(previous_event),mini(ceili(event)+1,path.size()-1)):
++				var point: Vector2 = path[i]
++				var progress: float = float(projections.get(point,NAN))
++				if is_nan(progress):
++					progress = _projection(track,point,route_bins)
++					projections[point] = progress
++				var ahead: float = wrapf(progress-session._start_progress-session._progress[gate],-track.route_length*0.5,track.route_length*0.5)
++				reach = maxf(reach,ahead+1.0)
++			session._notice_reach[gate] = reach
++			previous_event = event
++	return selected
++
++static func _crossings(session: RefCounted, path: PackedVector2Array) -> PackedFloat64Array:
++	var events := PackedFloat64Array()
++	for gate: int in range(session._centers.size()):
++		var event: float = -1.0
++		var nearest: float = INF
++		var center: Vector2 = session._centers[gate]
++		var direction: Vector2 = session._directions[gate]
++		var normal: Vector2 = direction.orthogonal()
++		var widths: Vector2 = session._widths[gate]
++		var before: float = (path[0]-center).dot(direction)
++		for i: int in range(path.size()-1):
++			var after: float = (path[i+1]-center).dot(direction)
++			var f: float = -before/(after-before) if before <= 0.0 and after > 0.0 else -1.0
++			before = after
++			if f < 0.0: continue
++			var p: Vector2 = path[i].lerp(path[i+1],f)
++			var lateral: float = (p-center).dot(normal)
++			if lateral < -widths.x or lateral > widths.y: continue
++			if p.distance_squared_to(center) < nearest:
++				nearest = p.distance_squared_to(center); event = i+f
++		events.append(event)
++	return events
++
++static func _projection(track: NativeTrack, point: Vector2, bins: Dictionary) -> float:
++	var key := Vector2i((point/8.0).floor())
++	var best: float = INF
++	var nearest: int = 0
++	for y: int in range(-2,3):
++		for x: int in range(-2,3):
++			for index: int in bins.get(key+Vector2i(x,y),[]):
++				var distance: float = point.distance_squared_to(track.route[index])
++				if distance < best or (distance == best and index < nearest):
++					best = distance; nearest = index
++	# The unvisited cells are at least 16 m away. Sparse routes retain the
++	# original exact global search when that bound cannot prove the result.
++	if best > 256.0: nearest = track.nearest_route(point)
++	best = INF
++	var progress: float = track.route_cumulative[nearest]
++	for offset: int in range(-1,2):
++		var index: int = posmod(nearest+offset,track.route.size())
++		var edge: Vector2 = track.route[(index+1)%track.route.size()]-track.route[index]
++		var fraction: float = clampf((point-track.route[index]).dot(edge)/maxf(edge.length_squared(),0.000001),0.0,1.0)
++		var distance: float = point.distance_squared_to(track.route[index]+edge*fraction)
++		if distance < best:
++			best = distance; progress = track.route_cumulative[index]+edge.length()*fraction
++	return progress
+diff --git a/game/race/track_session.gd b/game/race/track_session.gd
+index 43f1be2..c7bae2f 100644
+--- a/game/race/track_session.gd
++++ b/game/race/track_session.gd
+@@ -24,6 +24,8 @@ var _route_hints := PackedInt32Array()
+ var _start_progress: float = 0.0
+ var _layers: Array[bool] = []
+ var _finish_elevated: bool = false
++var _finish_road_widths := Vector2.ZERO
++var _finish_widths := Vector2.ZERO
+ var _spline_corridor: bool = false
+ var _notice_route_bins: Dictionary = {}
+ var _notice_approaches: Array[Dictionary] = []
+@@ -31,7 +33,7 @@ var _notice_route_layers := PackedByteArray()
+ var _notice_layer_offsets := PackedInt32Array()
+ const NOTICE_LAYOUT_VERSION: int = 4
+ const NOTICE_CELL_M: float = 8.0
+-const GATE_LAYOUT_FIELDS: Array[String] = ["_start_progress","_finish_elevated","_spline_corridor","_centers","_directions","_progress","_widths","_road_widths","_notice_reach","_route_hints","_layers","_notice_route_bins","_notice_approaches","_notice_route_layers","_notice_layer_offsets"]
++const GATE_LAYOUT_FIELDS: Array[String] = ["_start_progress","_finish_elevated","_finish_road_widths","_finish_widths","_spline_corridor","_centers","_directions","_progress","_widths","_road_widths","_notice_reach","_route_hints","_layers","_notice_route_bins","_notice_approaches","_notice_route_layers","_notice_layer_offsets"]
+ 
+ func _init(rate: int = 120, laps: int = RaceRules.LAPS) -> void:
+ 	tick_rate = rate
+@@ -58,6 +60,16 @@ func _configure(track: NativeTrack) -> void:
+ 		if piece.kind == "spline": _spline_corridor = true; break
+ 	var count: int = maxi(4,ceili(track.route_length/(RaceRules.SPLINE_GATE_SPACING_M if _spline_corridor else 12.0)))
+ 	var corners: Array[Dictionary] = _road_corners(track)
++	if _spline_corridor:
++		# Inspect folded bends more closely; the common legal-lane ordering
++		# below still discards gates which would require an artificial loop.
++		for distance: float in range(1,ceili(track.route_length),RaceRules.HAIRPIN_GATE_SPACING_M):
++			for corner: Dictionary in corners:
++				if float(corner.half_span) < float(corner.road_half)*SplineGateCorridor.HAIRPIN_MITER_RATIO: continue
++				var separation: float = absf(distance-float(corner.distance))
++				separation = minf(separation,track.route_length-separation)
++				if separation <= float(corner.reach)*2.0+float(corner.road_half):
++					targets.append(distance); break
+ 	for i: int in range(1,count):
+ 		var distance: float = track.route_length*i/count
+ 		var overlaps_corner: bool = false
+@@ -70,11 +82,12 @@ func _configure(track: NativeTrack) -> void:
+ 	for corner: Dictionary in corners: targets.append(corner.distance)
+ 	targets.sort()
+ 	var dirt: bool = track.metadata.get("creator_document",{}).get("surface","") == "dirt" or not track.metadata.has("creator_document")
++	var coverage := preload("res://race/road_gate_coverage.gd").new(track)
+ 	for distance: float in targets:
+ 		var junction: Dictionary = {}
+ 		for corner: Dictionary in corners:
+ 			if is_equal_approx(distance,float(corner.distance)): junction = corner; break
+-		if junction.is_empty() and not _progress.is_empty() and distance-_progress[-1] < (1.5 if _spline_corridor else 3.0): continue
++		if junction.is_empty() and not _progress.is_empty() and distance-_progress[-1] < (0.5 if _spline_corridor else 3.0): continue
+ 		var absolute: float = _start_progress+distance
+ 		var center: Vector2 = track._race_route_point(absolute)
+ 		var direction: Vector2 = (track._race_route_point(absolute+2.0)-track._race_route_point(absolute-2.0)).normalized()
+@@ -107,21 +120,9 @@ func _configure(track: NativeTrack) -> void:
+ 			elevated = route_elevated
+ 		_layers.append(elevated)
+ 		var widths := Vector2(half+0.75,half+0.75)
+-		var road_widths := Vector2(half,half)
+ 		var allowed: Array = [0,2,5] if dirt else [0,5]
+-		if track.grid_width > 0 and track.cell_at(center,elevated) in allowed:
+-			# Spline sweeps can extend past the authored chord's miter span.
+-			# Measure the connected road/kerb cross-section, stopping at the
+-			# first gap so a nearby returning branch cannot widen this gate.
+-			var scan_limit: float = half+1.5 if junction.is_empty() else maxf(half+1.5,half*1.5)
+-			for side: int in range(2):
+-				var span: float = 0.0
+-				var sign_value: float = -1.0 if side == 0 else 1.0
+-				while span < scan_limit and track.cell_at(center+normal*span*sign_value,elevated) in allowed: span += 0.25
+-				road_widths[side] = maxf(0.0,span-0.125)
+-				# Keep a forgiving centre recovery beyond the
+-				# connected road/kerb edge, including sharp spline bends.
+-				widths[side] = road_widths[side]+RaceRules.CHECKPOINT_RECOVERY_M
++		var road_widths: Vector2 = _gate_road_spans(track,coverage,center,direction,half,elevated,allowed)
++		if track.grid_width > 0: widths = road_widths+Vector2.ONE*RaceRules.CHECKPOINT_RECOVERY_M
+ 		# A shallow excursion already loses grip/time. Allow extra inside
+ 		# recovery space, fading it out before a tight hairpin can be cut.
+ 		var approach: Vector2 = (center-track._race_route_point(absolute-8.0)).normalized()
+@@ -156,6 +157,8 @@ func _configure(track: NativeTrack) -> void:
+ 			_centers.remove_at(index); _directions.remove_at(index); _progress.remove_at(index)
+ 			_notice_reach.remove_at(index); _route_hints.remove_at(index)
+ 			_notice_approaches.remove_at(index)
++	_finish_road_widths = _gate_road_spans(track,coverage,track.finish_center,track.finish_forward,track.finish_half_width,_finish_elevated,[0,2,5] if dirt else [0,5])
++	_finish_widths = _finish_road_widths+Vector2.ONE*1.5
+ 	_prepare_notice_route(track)
+ 	initialized = true
+ 	var prepared: Dictionary = {"rules_key":RaceRules.KEY,"notice_version":NOTICE_LAYOUT_VERSION}
+@@ -164,6 +167,27 @@ func _configure(track: NativeTrack) -> void:
+ 		prepared[field] = value.duplicate() if value is Array else value
+ 	track._race_gates = prepared
+ 
++func _gate_road_spans(track: NativeTrack, coverage: RefCounted, center: Vector2, direction: Vector2, half: float, elevated: bool, allowed: Array) -> Vector2:
++	var raster := Vector2.ONE*half
++	if track.grid_width > 0 and _gate_surface(track,center,elevated,allowed):
++		# Stop only at the physical edge, never an authored-width scan cap.
++		var normal: Vector2 = direction.orthogonal()
++		for side: int in range(2):
++			var span: float = 0.0
++			var sign_value: float = -1.0 if side == 0 else 1.0
++			while span < track.half_extent.length()*2.0 and _gate_surface(track,center+normal*span*sign_value,elevated,allowed): span += 0.05
++			raster[side] = span
++	return coverage.spans(center,direction,raster,elevated)
++
++func _gate_surface(track: NativeTrack, point: Vector2, elevated: bool, allowed: Array) -> bool:
++	if elevated:
++		# cell_at deliberately treats empty upper cells as drivable fallback;
++		# gate measurement must stop at the actual deck instead.
++		var x: int = floori((point.x+track.half_extent.x)/track.cell_size)
++		var y: int = floori((track.half_extent.y-point.y)/track.cell_size)
++		return x >= 0 and y >= 0 and x < track.grid_width and y < track.grid_height and track.deck_cells[y*track.grid_width+x] in allowed
++	return track.cell_at(point) in allowed or track.kerbs.height_at(point) > 0.00001
++
+ func _prepare_notice_route(track: NativeTrack) -> void:
+ 	_prepare_notice_layers(track)
+ 	# Index segments once, including long sparse fixture edges. A local
+@@ -303,14 +327,14 @@ func _inside(index: int, point: Vector2) -> bool:
+ 	return lateral >= -_widths[index].x and lateral <= _widths[index].y
+ 
+ func checkpoint_position(track: NativeTrack) -> Vector2:
+-	if next_checkpoint >= _centers.size(): return track.finish_center
++	if next_checkpoint >= _centers.size(): return track.finish_center+track.finish_forward.orthogonal()*(_finish_widths.y-_finish_widths.x)*0.5
+ 	# Draw the actual asymmetric span, including the inside recovery margin.
+ 	var widths: Vector2 = _widths[next_checkpoint]
+ 	return _centers[next_checkpoint]+_directions[next_checkpoint].orthogonal()*(widths.y-widths.x)*0.5
+ func checkpoint_direction(track: NativeTrack) -> Vector2:
+ 	return _directions[next_checkpoint] if next_checkpoint < _directions.size() else track.finish_forward
+ func checkpoint_width(track: NativeTrack) -> float:
+-	if next_checkpoint >= _centers.size(): return track.finish_half_width*2.0
++	if next_checkpoint >= _centers.size(): return _finish_widths.x+_finish_widths.y
+ 	return _widths[next_checkpoint].x+_widths[next_checkpoint].y
+ func checkpoint_count() -> int: return _centers.size()
+ func checkpoint_elevated() -> bool:
+@@ -319,9 +343,9 @@ func checkpoint_elevated() -> bool:
+ func checkpoint_road_center(track: NativeTrack) -> Vector2:
+ 	return _centers[next_checkpoint] if next_checkpoint < _centers.size() else track.finish_center
+ func checkpoint_road_spans(track: NativeTrack) -> Vector2:
+-	return _road_widths[next_checkpoint] if next_checkpoint < _road_widths.size() else Vector2.ONE*track.finish_half_width
++	return _road_widths[next_checkpoint] if next_checkpoint < _road_widths.size() else _finish_road_widths
+ func checkpoint_acceptance_spans(track: NativeTrack) -> Vector2:
+-	return _widths[next_checkpoint] if next_checkpoint < _widths.size() else Vector2.ONE*track.finish_half_width
++	return _widths[next_checkpoint] if next_checkpoint < _widths.size() else _finish_widths
+ 
+ func _crossing(index: int, from: Vector2, to: Vector2) -> float:
+ 	var before: float = (from-_centers[index]).dot(_directions[index])
+@@ -378,7 +402,8 @@ func advance(track: NativeTrack, from: Vector2, to: Vector2, route_index: int, e
+ 	if not finish_armed or before > 0.0 or after <= 0.0: return
+ 	var crossing: float = -before/(after-before)
+ 	var finish_point: Vector2 = from.lerp(to,crossing)
+-	if _crossing_layer(track,from,to,crossing,route_index,elevated,previous_layer) != _finish_elevated or absf((finish_point-track.finish_center).cross(track.finish_forward)) > track.finish_half_width+1.5:
++	var finish_lateral: float = (finish_point-track.finish_center).dot(track.finish_forward.orthogonal())
++	if _crossing_layer(track,from,to,crossing,route_index,elevated,previous_layer) != _finish_elevated or finish_lateral < -_finish_widths.x or finish_lateral > _finish_widths.y:
+ 		if next_checkpoint == _centers.size() and finish_point.distance_squared_to(track.finish_center) < 1600.0: missed_checkpoint = next_checkpoint
+ 		return
+ 	if next_checkpoint < _centers.size():
+diff --git a/final/game/tests/capture_checkpoint_road_coverage.gd b/game/tests/capture_checkpoint_road_coverage.gd
+new file mode 100644
+index 0000000..eea5c4c
+--- /dev/null
++++ b/game/tests/capture_checkpoint_road_coverage.gd
+@@ -0,0 +1,58 @@
++extends "res://tests/test_checkpoint_rules.gd"
++const OUTPUT := "res://../build/checkpoint-road-coverage-2026-11-03/"
++
++func run() -> void:
++	root.size = Vector2i(1600,1000)
++	var doc: Dictionary = JSON.parse_string(FileAccess.get_file_as_string("res://tests/fixtures/star_spline_lap.json"))
++	var track: NativeTrack = TrackCompiler.compile(doc)
++	var previous: RefCounted = load(OUTPUT+"control_session.gd").new(120,5)
++	previous._configure(track)
++	track._race_gates.clear()
++	var session := TrackSession.new(120,5); session._configure(track)
++	var game: Node = load("res://core/game.tscn").instantiate()
++	game.initial_track = track; game.production_mode = true
++	game.cooperative_preparation = true; game.paused = true
++	root.add_child(game)
++	while not game.preparation_complete: await process_frame
++	game.set_physics_process(false); game.paused = true; game.countdown_ticks = 0; game.race_cues.hide()
++	check(await game.world_render_preparation.prepare(draw_frame,func() -> bool: return is_instance_valid(game)),"complete the actual covered-world render preparation")
++	var directory: String = OUTPUT+RenderingServer.get_current_rendering_method()
++	DirAccess.make_dir_recursive_absolute(ProjectSettings.globalize_path(directory))
++	var target := Vector2(8.275532,63.54075)
++	for stage: String in ["before","after"]:
++		var displayed := TrackSession.new(120,5); displayed._configure(track)
++		if stage == "before":
++			for field: String in ["_centers","_directions","_widths","_road_widths","_progress","_layers"]: displayed.set(field,previous.get(field).duplicate())
++		var nearest: float = INF
++		for gate: int in range(displayed.checkpoint_count()):
++			var distance: float = displayed._centers[gate].distance_squared_to(target)
++			if distance < nearest: nearest = distance; displayed.next_checkpoint = gate
++		check(nearest < 0.001,"compare the same physical Star hairpin checkpoint")
++		displayed.missed_checkpoint = displayed.next_checkpoint
++		var direction: Vector2 = displayed.checkpoint_direction(track)
++		var point: Vector2 = target-direction*8.0
++		game.sim.state.position = point; game.sim.state.heading = atan2(direction.x,direction.y)
++		game.sim.state.route_index = track.nearest_route(point)
++		game.previous_position = point; game.previous_heading = game.sim.state.heading
++		game.track_session = displayed
++		game._paused_presentation_key.clear()
++		game._process(0.0)
++		game.set_process(false)
++		game.camera.follow(target,Vector2.ZERO,0.0,0.0,true)
++		game.checkpoint_marker.previous_gate = -2
++		game.checkpoint_marker.present(displayed,track,game.bridge_presentation)
++		game.hud.checkpoint_notice.present(game.checkpoint_marker,game.camera,game.camera.unproject_position(game.car.global_position))
++		for frame: int in range(8): await process_frame
++		await RenderingServer.frame_post_draw
++		check(root.get_texture().get_image().save_png(directory.path_join(stage+"-hairpin.png")) == OK,"save native "+stage+" checkpoint view")
++		var widths: Vector2 = displayed.checkpoint_road_spans(track)
++		check(absf(game.checkpoint_marker.road_span-widths.x-widths.y) < 0.001,"native marker uses the measured physical span")
++		print("NATIVE_CHECKPOINT ",stage," center=",displayed.checkpoint_road_center(track)," spans=",widths)
++	game.queue_free(); await process_frame
++	print("CHECKPOINT_COVERAGE_CAPTURE: %d checks, %d failures" % [checks,failures])
++	quit(1 if failures else 0)
++
++func draw_frame() -> bool:
++	await process_frame
++	await RenderingServer.frame_post_draw
++	return true
+diff --git a/game/tests/test_bridge_exit_checkpoints.gd b/game/tests/test_bridge_exit_checkpoints.gd
+index c009403..2c33f91 100644
+--- a/game/tests/test_bridge_exit_checkpoints.gd
++++ b/game/tests/test_bridge_exit_checkpoints.gd
+@@ -1,49 +1,49 @@
+-extends "res://tests/test_checkpoint_bridge_layers.gd"
+-## Drive every vehicle through the affected Over and under exits on ordinary lanes.
+-
+-func run() -> void:
+-	check(RaceRules.KEY == "standing-5-road-gates-v23","current ordered gate geometry has its own pinned rules key")
+-	var document: Dictionary = JSON.parse_string(FileAccess.get_file_as_string("res://tests/fixtures/over_and_under.json"))
+-	var track: NativeTrack = TrackCompiler.compile(document)
+-	_check_layers(track)
+-	var reverse: Dictionary = document.duplicate(true)
+-	reverse.start_line.heading = fposmod(float(reverse.start_line.heading)+180.0,360.0)
+-	var reverse_track: NativeTrack = TrackCompiler.compile(reverse)
+-	_check_layers(reverse_track)
+-	var reverse_bridge: Dictionary = track.creator_bridges[1].duplicate(true)
+-	var axis: Vector2 = Vector2.RIGHT.rotated(deg_to_rad(float(reverse_bridge.heading)))
+-	var end: Vector2 = Vector2(reverse_bridge.position[0],reverse_bridge.position[1])+axis*float(reverse_bridge.length)
+-	reverse_bridge.position = [end.x,end.y]
+-	reverse_bridge.heading = fposmod(float(reverse_bridge.heading)+180.0,360.0)
+-	for vehicle_id: String in VehicleCatalog.IDS:
+-		for speed: float in [30.0,60.0,90.0,120.0,160.0,200.0]:
+-			for phase: int in range(8):
+-				for lateral: float in [-2.0,-1.0,0.0,1.0,2.0]:
+-					_exit_lane(track,12,track.creator_bridges[0],speed,float(phase)/8.0,lateral,vehicle_id)
+-					_exit_lane(reverse_track,16,reverse_bridge,speed,float(phase)/8.0,lateral,vehicle_id)
+-		print("EXIT_VEHICLE_DONE ",vehicle_id)
+-	print("BRIDGE_EXIT_TESTS: ",checks," checks, ",failures," failures")
+-	quit(0 if failures == 0 else 1)
+-
+-func _exit_lane(track: NativeTrack, gate: int, bridge: Dictionary, speed: float, phase: float, lateral: float, vehicle_id: String) -> void:
+-	var session := TrackSession.new(120,1)
+-	session._configure(track)
+-	session.next_checkpoint = gate
+-	var forward: Vector2 = Vector2.RIGHT.rotated(deg_to_rad(float(bridge.heading)))
+-	var end: Vector2 = Vector2(bridge.position[0],bridge.position[1])+forward*float(bridge.length)
+-	var sim := VehicleSimulation.new(VehicleCatalog.config(vehicle_id))
+-	sim.reset(end-forward*(3.0+phase*speed/3.6/120.0)+forward.orthogonal()*lateral,atan2(forward.x,forward.y))
+-	sim.state.route_index = track.nearest_route(sim.state.position)
+-	sim.state.track_elevated = true
+-	sim.state.velocity = forward*speed/3.6
+-	var on_road: bool = true
+-	var warned: bool = false
+-	for tick: int in range(240):
+-		var before: Vector2 = sim.state.position
+-		var previous_layer: int = int(sim.state.track_elevated)
+-		sim.step(DriveFrame.new(),track)
+-		session.advance(track,before,sim.state.position,sim.state.route_index,sim.state.track_elevated,previous_layer)
+-		on_road = on_road and track.cell_at(sim.state.position,sim.state.track_elevated) in [0,5]
+-		warned = warned or session.missed_checkpoint >= 0
+-		if session.next_checkpoint > gate or warned: break
+-	check(session.next_checkpoint > gate and not warned and on_road and sim.state.collision_count == 0,"actual exit %s stays on road and accepts %s seeded %s km/h phase %s lane %s" % [gate,vehicle_id,speed,phase,lateral])
++extends "res://tests/test_checkpoint_bridge_layers.gd"
++## Drive every vehicle through the affected Over and under exits on ordinary lanes.
++
++func run() -> void:
++	check(RaceRules.KEY == "standing-5-road-gates-v24","current ordered gate geometry has its own pinned rules key")
++	var document: Dictionary = JSON.parse_string(FileAccess.get_file_as_string("res://tests/fixtures/over_and_under.json"))
++	var track: NativeTrack = TrackCompiler.compile(document)
++	_check_layers(track)
++	var reverse: Dictionary = document.duplicate(true)
++	reverse.start_line.heading = fposmod(float(reverse.start_line.heading)+180.0,360.0)
++	var reverse_track: NativeTrack = TrackCompiler.compile(reverse)
++	_check_layers(reverse_track)
++	var reverse_bridge: Dictionary = track.creator_bridges[1].duplicate(true)
++	var axis: Vector2 = Vector2.RIGHT.rotated(deg_to_rad(float(reverse_bridge.heading)))
++	var end: Vector2 = Vector2(reverse_bridge.position[0],reverse_bridge.position[1])+axis*float(reverse_bridge.length)
++	reverse_bridge.position = [end.x,end.y]
++	reverse_bridge.heading = fposmod(float(reverse_bridge.heading)+180.0,360.0)
++	for vehicle_id: String in VehicleCatalog.IDS:
++		for speed: float in [30.0,60.0,90.0,120.0,160.0,200.0]:
++			for phase: int in range(8):
++				for lateral: float in [-2.0,-1.0,0.0,1.0,2.0]:
++					_exit_lane(track,12,track.creator_bridges[0],speed,float(phase)/8.0,lateral,vehicle_id)
++					_exit_lane(reverse_track,16,reverse_bridge,speed,float(phase)/8.0,lateral,vehicle_id)
++		print("EXIT_VEHICLE_DONE ",vehicle_id)
++	print("BRIDGE_EXIT_TESTS: ",checks," checks, ",failures," failures")
++	quit(0 if failures == 0 else 1)
++
++func _exit_lane(track: NativeTrack, gate: int, bridge: Dictionary, speed: float, phase: float, lateral: float, vehicle_id: String) -> void:
++	var session := TrackSession.new(120,1)
++	session._configure(track)
++	session.next_checkpoint = gate
++	var forward: Vector2 = Vector2.RIGHT.rotated(deg_to_rad(float(bridge.heading)))
++	var end: Vector2 = Vector2(bridge.position[0],bridge.position[1])+forward*float(bridge.length)
++	var sim := VehicleSimulation.new(VehicleCatalog.config(vehicle_id))
++	sim.reset(end-forward*(3.0+phase*speed/3.6/120.0)+forward.orthogonal()*lateral,atan2(forward.x,forward.y))
++	sim.state.route_index = track.nearest_route(sim.state.position)
++	sim.state.track_elevated = true
++	sim.state.velocity = forward*speed/3.6
++	var on_road: bool = true
++	var warned: bool = false
++	for tick: int in range(240):
++		var before: Vector2 = sim.state.position
++		var previous_layer: int = int(sim.state.track_elevated)
++		sim.step(DriveFrame.new(),track)
++		session.advance(track,before,sim.state.position,sim.state.route_index,sim.state.track_elevated,previous_layer)
++		on_road = on_road and track.cell_at(sim.state.position,sim.state.track_elevated) in [0,5]
++		warned = warned or session.missed_checkpoint >= 0
++		if session.next_checkpoint > gate or warned: break
++	check(session.next_checkpoint > gate and not warned and on_road and sim.state.collision_count == 0,"actual exit %s stays on road and accepts %s seeded %s km/h phase %s lane %s" % [gate,vehicle_id,speed,phase,lateral])
+diff --git a/game/tests/test_checkpoint_notice_latency.gd b/game/tests/test_checkpoint_notice_latency.gd
+index a9ef354..989e8ac 100644
+--- a/game/tests/test_checkpoint_notice_latency.gd
++++ b/game/tests/test_checkpoint_notice_latency.gd
+@@ -1,152 +1,154 @@
+-extends "res://tests/test_checkpoint_rules.gd"
+-## Retained-track reproductions: notice timing, legal approaches and unchanged gates.
+-const EVIDENCE := "res://../docs/evidence/checkpoint-notice-2026-10-17/"
+-var report: Array = []
+-var previous: GDScript
+-var previous_corridor: GDScript
+-
+-func before_session(track: NativeTrack):
+-	var session = previous.new(120,1)
+-	session._notice_test_corridor = previous_corridor
+-	session._configure(track)
+-	return session
+-
+-func check(ok: bool, message: String) -> void:
+-	checks += 1
+-	if not ok:
+-		failures += 1
+-		print("FAIL: "+message)
+-
+-func walk(session, track: NativeTrack, path: PackedVector2Array, state: Dictionary) -> void:
+-	for i: int in range(path.size()-1):
+-		var steps: int = maxi(1,ceili(path[i].distance_to(path[i+1])/0.2))
+-		for step: int in range(steps):
+-			var a: Vector2 = path[i].lerp(path[i+1],float(step)/steps)
+-			var b: Vector2 = path[i].lerp(path[i+1],float(step+1)/steps)
+-			state.hint = track.nearest_route(b,int(state.hint))
+-			var old_layer: int = int(state.layer)
+-			state.layer = CreatorBridges.layer_at(track.creator_bridges,b,bool(state.layer)) if not track.creator_bridges.is_empty() else track.elevated_at(b,int(state.hint))
+-			session.advance(track,a,b,int(state.hint),bool(state.layer),old_layer)
+-			state.distance += a.distance_to(b)
+-			if session.missed_checkpoint >= 0 and not state.has("notice"):
+-				state.notice = {"distance":state.distance,"gate":session.missed_checkpoint,"point":[b.x,b.y],"progress":session.last_progress,"offset":session._notice_offset(track,session.last_progress) if session.next_checkpoint < session.checkpoint_count() else 0.0}
+-
+-func path_between(track: NativeTrack, begin: float, end: float) -> PackedVector2Array:
+-	var start: float = track.route_progress(track.finish_center)
+-	var path := PackedVector2Array([track._race_route_point(start+begin)])
+-	var distances: Array[float] = []
+-	for i: int in range(track.route.size()):
+-		var distance: float = fposmod(track.route_cumulative[i]-start,track.route_length)
+-		if distance > begin and distance < end: distances.append(distance)
+-	distances.sort()
+-	for distance: float in distances: path.append(track._race_route_point(start+distance))
+-	path.append(track._race_route_point(start+end))
+-	return path
+-
+-func run() -> void:
+-	var baseline: bool = "--baseline" in OS.get_cmdline_user_args()
+-	var entries: Array = [
+-		{"name":"Star","path":"res://tests/fixtures/star_spline_lap.json"},
+-		{"name":"Star reverse","path":"res://tests/fixtures/star_spline_lap.json","reverse":true},
+-		{"name":"Silmukka fixture","path":"res://tests/fixtures/silmukka.json"},
+-		{"name":"Dust cloud fixture","path":"res://tests/fixtures/dust_cloud.json"},
+-		{"name":"Over and under fixture","path":"res://tests/fixtures/over_and_under.json"}]
+-	if "--catalog" in OS.get_cmdline_user_args():
+-		var manifest: Dictionary = JSON.parse_string(FileAccess.get_file_as_string("res://../build/catalog-road-review-2026-10-16/manifest.json"))
+-		entries.append_array(manifest.entries)
+-	previous_corridor = GDScript.new()
+-	previous_corridor.source_code = FileAccess.get_file_as_string(EVIDENCE+"before/game/race/spline_gate_corridor.gd").replace("\r\n","\n").replace("class_name SplineGateCorridor\n","")
+-	check(previous_corridor.reload() == OK,"task-start corridor loads")
+-	previous = GDScript.new()
+-	previous.source_code = FileAccess.get_file_as_string(EVIDENCE+"before/game/race/track_session.gd").replace("\r\n","\n").replace("class_name TrackSession\n","").replace("extends RefCounted\n","extends RefCounted\nvar _notice_test_corridor: GDScript\n").replace("SplineGateCorridor.select(self,track)","_notice_test_corridor.select(self,track)")
+-	check(previous.reload() == OK,"task-start session loads for exact gate comparison")
+-	for entry: Dictionary in entries:
+-		var doc: Dictionary = JSON.parse_string(FileAccess.get_file_as_string(entry.path))
+-		if entry.get("reverse",false): doc.start_line.heading = fposmod(float(doc.start_line.heading)+180.0,360.0)
+-		var track: NativeTrack = TrackCompiler.compile(doc)
+-		var configured = before_session(track) if baseline else TrackSession.new(120,1)
+-		configured._configure(track)
+-		var prepared: Dictionary = track._race_gates
+-		track._race_gates = {}
+-		var old = before_session(track)
+-		track._race_gates = prepared
+-		if old._centers == configured._centers:
+-			for field: String in ["_centers","_directions","_widths","_road_widths","_progress","_layers"]:
+-				check(old.get(field) == configured.get(field),"unchanged ordinary gate acceptance %s/%s" % [entry.name,field])
+-		else:
+-			check(RaceRules.KEY == "standing-5-road-gates-v23" and configured._spline_corridor,"hairpin geometry changes use a separate rules version: "+str(entry.name))
+-		if not baseline:
+-			track._race_gates.erase("notice_version")
+-			var fresh := TrackSession.new(120,1); fresh._configure(track)
+-			check(track._race_gates.notice_version == TrackSession.NOTICE_LAYOUT_VERSION and fresh._centers == configured._centers,"retained rules22 cache rebuilds stale notices without changing gates: "+str(entry.name))
+-		var old_ahead_notices: int = 0
+-		var ahead_examples: Array = []
+-		for gate: int in range(1,configured.checkpoint_count()-3):
+-			var position: float = configured._start_progress+configured._progress[gate]-3.0
+-			if configured._progress[gate]-configured._progress[gate-1] < 4.0: continue
+-			var a: Vector2 = track._race_route_point(position-0.1)
+-			var b: Vector2 = track._race_route_point(position)
+-			if (b-configured._centers[gate]).dot(configured._directions[gate]) >= -0.1: continue
+-			var stale_hint: int = configured._route_hints[gate+3]
+-			var earlier = before_session(track); earlier.next_checkpoint = gate
+-			earlier.advance(track,a,b,stale_hint,configured._layers[gate])
+-			if earlier.missed_checkpoint >= 0:
+-				old_ahead_notices += 1
+-				ahead_examples.append({"gate":gate,"hint":stale_hint,"point":[b.x,b.y],"position":position})
+-			var recovered := TrackSession.new(120,1); recovered._configure(track); recovered.next_checkpoint = gate
+-			recovered.advance(track,a,b,stale_hint,configured._layers[gate])
+-			check(recovered.missed_checkpoint == -1,"stale future-branch hint cannot mark the gate ahead missed %s/%d" % [entry.name,gate])
+-		var clean = before_session(track) if baseline else TrackSession.new(120,1)
+-		var clean_state: Dictionary = {"hint":track.nearest_route(track.finish_center),"layer":configured._finish_elevated,"distance":0.0}
+-		var full: PackedVector2Array = path_between(track,0.1,track.route_length-0.001)
+-		full.append(track._race_route_point(configured._start_progress+0.2))
+-		walk(clean,track,full,clean_state)
+-		check(clean.finished and not clean_state.has("notice"),"full centreline has no premature warning: "+str(entry.name))
+-		var maximum: float = 0.0
+-		for reach: float in configured._notice_reach: maximum = maxf(maximum,reach)
+-		print("NOTICE_TRACK ",entry.name," gates=",configured.checkpoint_count()," max_reach=",maximum)
+-		var worst: Dictionary = {"delay":-1.0}
+-		var blocked: int = 0
+-		var wrong_layer_rejoins: int = 0
+-		var silent_cuts: int = 0
+-		for gate: int in range(configured.checkpoint_count()):
+-			var begin: float = configured._progress[gate]-12.0
+-			var end: float = minf(track.route_length-1.0,begin+48.0)
+-			if begin < 1.0 or end-begin < 40.0: continue
+-			var a: Vector2 = track._race_route_point(configured._start_progress+begin)
+-			var b: Vector2 = track._race_route_point(configured._start_progress+end)
+-			if a.distance_to(b) > end-begin-8.0: continue
+-			var session = before_session(track) if baseline else TrackSession.new(120,1)
+-			var state: Dictionary = {"hint":track.nearest_route(track.finish_center),"layer":configured._finish_elevated,"distance":0.0}
+-			walk(session,track,path_between(track,0.1,begin),state)
+-			if state.has("notice"): continue
+-			walk(session,track,PackedVector2Array([a,b]),state)
+-			var rejoin: float = state.distance
+-			var end_index: int = 0
+-			var wrapped: float = fposmod(configured._start_progress+end,track.route_length)
+-			while end_index+1 < track.route.size() and track.route_cumulative[end_index+1] <= wrapped: end_index += 1
+-			var correct_rejoin_layer: bool = bool(state.layer) == track.elevated_at(b,end_index)
+-			var remainder: PackedVector2Array = path_between(track,end,track.route_length-0.001)
+-			remainder.append(track._race_route_point(configured._start_progress+0.2))
+-			walk(session,track,remainder,state)
+-			if session.finished: continue
+-			blocked += 1
+-			if not correct_rejoin_layer: wrong_layer_rejoins += 1
+-			if not baseline: check(state.has("notice"),"blocked bypass has a notice %s/%d" % [entry.name,gate])
+-			if not state.has("notice"):
+-				silent_cuts += 1
+-				continue
+-			var delay: float = maxf(0.0,float(state.notice.distance)-rejoin)
+-			# At a crossing, stay quiet until the car has left the required
+-			# road's recovery corridor. Never trade a prompt notice for a
+-			# false miss on the road underneath or the earlier ground arm.
+-			var maximum_delay: float = 4.0 if configured._spline_corridor else 8.0
+-			if not baseline and correct_rejoin_layer: check(delay <= maximum_delay,"shortcut notice within %.0fm of road reentry %s/%d: %.2fm" % [maximum_delay,entry.name,gate,delay])
+-			if correct_rejoin_layer and delay > float(worst.delay): worst = {"delay":delay,"begin":begin,"end":end,"notice":state.notice,"rejoin_distance":rejoin}
+-		report.append({"name":entry.name,"maximum_reach":maximum,"blocked_cuts":blocked,"wrong_layer_rejoins":wrong_layer_rejoins,"silent_cuts":silent_cuts,"old_ahead_notices":old_ahead_notices,"ahead_examples":ahead_examples,"worst":worst,"prepared_bytes":var_to_bytes(track._race_gates).size()})
+-		print("NOTICE_WORST ",entry.name," ahead_false_before=",old_ahead_notices," ",worst)
+-	var scope: String = "catalog" if "--catalog" in OS.get_cmdline_user_args() else "fixtures"
+-	var file := FileAccess.open("res://../docs/evidence/hairpin-checkpoints-2026-10-18/"+("baseline" if baseline else "final")+"-"+scope+"-latency.json",FileAccess.WRITE)
+-	file.store_string(JSON.stringify(report,"\t")); file.close()
+-	print("CHECKPOINT_NOTICE_LATENCY: %d checks, %d failures" % [checks,failures])
+-	quit(1 if failures else 0)
++extends "res://tests/test_checkpoint_rules.gd"
++## Retained-track reproductions: notice timing, legal approaches and unchanged gates.
++const EVIDENCE := "res://../docs/evidence/checkpoint-notice-2026-10-17/"
++var report: Array = []
++var previous: GDScript
++var previous_corridor: GDScript
++
++func before_session(track: NativeTrack):
++	var session = previous.new(120,1)
++	session._notice_test_corridor = previous_corridor
++	session._configure(track)
++	return session
++
++func check(ok: bool, message: String) -> void:
++	checks += 1
++	if not ok:
++		failures += 1
++		print("FAIL: "+message)
++
++func walk(session, track: NativeTrack, path: PackedVector2Array, state: Dictionary) -> void:
++	for i: int in range(path.size()-1):
++		var steps: int = maxi(1,ceili(path[i].distance_to(path[i+1])/0.2))
++		for step: int in range(steps):
++			var a: Vector2 = path[i].lerp(path[i+1],float(step)/steps)
++			var b: Vector2 = path[i].lerp(path[i+1],float(step+1)/steps)
++			state.hint = track.nearest_route(b,int(state.hint))
++			var old_layer: int = int(state.layer)
++			state.layer = CreatorBridges.layer_at(track.creator_bridges,b,bool(state.layer)) if not track.creator_bridges.is_empty() else track.elevated_at(b,int(state.hint))
++			session.advance(track,a,b,int(state.hint),bool(state.layer),old_layer)
++			state.distance += a.distance_to(b)
++			if session.missed_checkpoint >= 0 and not state.has("notice"):
++				state.notice = {"distance":state.distance,"gate":session.missed_checkpoint,"point":[b.x,b.y],"progress":session.last_progress,"offset":session._notice_offset(track,session.last_progress) if session.next_checkpoint < session.checkpoint_count() else 0.0}
++
++func path_between(track: NativeTrack, begin: float, end: float) -> PackedVector2Array:
++	var start: float = track.route_progress(track.finish_center)
++	var path := PackedVector2Array([track._race_route_point(start+begin)])
++	var distances: Array[float] = []
++	for i: int in range(track.route.size()):
++		var distance: float = fposmod(track.route_cumulative[i]-start,track.route_length)
++		if distance > begin and distance < end: distances.append(distance)
++	distances.sort()
++	for distance: float in distances: path.append(track._race_route_point(start+distance))
++	path.append(track._race_route_point(start+end))
++	return path
++
++func run() -> void:
++	var baseline: bool = "--baseline" in OS.get_cmdline_user_args()
++	var entries: Array = [
++		{"name":"Star","path":"res://tests/fixtures/star_spline_lap.json"},
++		{"name":"Star reverse","path":"res://tests/fixtures/star_spline_lap.json","reverse":true},
++		{"name":"Silmukka fixture","path":"res://tests/fixtures/silmukka.json"},
++		{"name":"Dust cloud fixture","path":"res://tests/fixtures/dust_cloud.json"},
++		{"name":"Over and under fixture","path":"res://tests/fixtures/over_and_under.json"}]
++	if "--catalog" in OS.get_cmdline_user_args():
++		var manifest: Dictionary = JSON.parse_string(FileAccess.get_file_as_string("res://../build/catalog-road-review-2026-10-16/manifest.json"))
++		entries.append_array(manifest.entries)
++	previous_corridor = GDScript.new()
++	previous_corridor.source_code = FileAccess.get_file_as_string(EVIDENCE+"before/game/race/spline_gate_corridor.gd").replace("\r\n","\n").replace("class_name SplineGateCorridor\n","")
++	check(previous_corridor.reload() == OK,"task-start corridor loads")
++	previous = GDScript.new()
++	previous.source_code = FileAccess.get_file_as_string(EVIDENCE+"before/game/race/track_session.gd").replace("\r\n","\n").replace("class_name TrackSession\n","").replace("extends RefCounted\n","extends RefCounted\nvar _notice_test_corridor: GDScript\n").replace("SplineGateCorridor.select(self,track)","_notice_test_corridor.select(self,track)")
++	check(previous.reload() == OK,"task-start session loads for exact gate comparison")
++	for entry: Dictionary in entries:
++		var doc: Dictionary = JSON.parse_string(FileAccess.get_file_as_string(entry.path))
++		if entry.get("reverse",false): doc.start_line.heading = fposmod(float(doc.start_line.heading)+180.0,360.0)
++		var track: NativeTrack = TrackCompiler.compile(doc)
++		var configured = before_session(track) if baseline else TrackSession.new(120,1)
++		configured._configure(track)
++		var prepared: Dictionary = track._race_gates
++		track._race_gates = {}
++		var old = before_session(track)
++		track._race_gates = prepared
++		if old._centers == configured._centers:
++			for field: String in ["_centers","_directions","_progress","_layers"]:
++				check(old.get(field) == configured.get(field),"unchanged ordinary gate acceptance %s/%s" % [entry.name,field])
++			for gate: int in range(configured.checkpoint_count()):
++				check(configured._widths[gate].x >= configured._road_widths[gate].x and configured._widths[gate].y >= configured._road_widths[gate].y,"rules24 acceptance includes its complete road/kerb span %s/%d" % [entry.name,gate])
++		else:
++			check(RaceRules.KEY == "standing-5-road-gates-v24" and configured._spline_corridor,"hairpin geometry changes use a separate rules version: "+str(entry.name))
++		if not baseline:
++			track._race_gates.erase("notice_version")
++			var fresh := TrackSession.new(120,1); fresh._configure(track)
++			check(track._race_gates.notice_version == TrackSession.NOTICE_LAYOUT_VERSION and fresh._centers == configured._centers,"retained rules22 cache rebuilds stale notices without changing gates: "+str(entry.name))
++		var old_ahead_notices: int = 0
++		var ahead_examples: Array = []
++		for gate: int in range(1,configured.checkpoint_count()-3):
++			var position: float = configured._start_progress+configured._progress[gate]-3.0
++			if configured._progress[gate]-configured._progress[gate-1] < 4.0: continue
++			var a: Vector2 = track._race_route_point(position-0.1)
++			var b: Vector2 = track._race_route_point(position)
++			if (b-configured._centers[gate]).dot(configured._directions[gate]) >= -0.1: continue
++			var stale_hint: int = configured._route_hints[gate+3]
++			var earlier = before_session(track); earlier.next_checkpoint = gate
++			earlier.advance(track,a,b,stale_hint,configured._layers[gate])
++			if earlier.missed_checkpoint >= 0:
++				old_ahead_notices += 1
++				ahead_examples.append({"gate":gate,"hint":stale_hint,"point":[b.x,b.y],"position":position})
++			var recovered := TrackSession.new(120,1); recovered._configure(track); recovered.next_checkpoint = gate
++			recovered.advance(track,a,b,stale_hint,configured._layers[gate])
++			check(recovered.missed_checkpoint == -1,"stale future-branch hint cannot mark the gate ahead missed %s/%d" % [entry.name,gate])
++		var clean = before_session(track) if baseline else TrackSession.new(120,1)
++		var clean_state: Dictionary = {"hint":track.nearest_route(track.finish_center),"layer":configured._finish_elevated,"distance":0.0}
++		var full: PackedVector2Array = path_between(track,0.1,track.route_length-0.001)
++		full.append(track._race_route_point(configured._start_progress+0.2))
++		walk(clean,track,full,clean_state)
++		check(clean.finished and not clean_state.has("notice"),"full centreline has no premature warning: "+str(entry.name))
++		var maximum: float = 0.0
++		for reach: float in configured._notice_reach: maximum = maxf(maximum,reach)
++		print("NOTICE_TRACK ",entry.name," gates=",configured.checkpoint_count()," max_reach=",maximum)
++		var worst: Dictionary = {"delay":-1.0}
++		var blocked: int = 0
++		var wrong_layer_rejoins: int = 0
++		var silent_cuts: int = 0
++		for gate: int in range(configured.checkpoint_count()):
++			var begin: float = configured._progress[gate]-12.0
++			var end: float = minf(track.route_length-1.0,begin+48.0)
++			if begin < 1.0 or end-begin < 40.0: continue
++			var a: Vector2 = track._race_route_point(configured._start_progress+begin)
++			var b: Vector2 = track._race_route_point(configured._start_progress+end)
++			if a.distance_to(b) > end-begin-8.0: continue
++			var session = before_session(track) if baseline else TrackSession.new(120,1)
++			var state: Dictionary = {"hint":track.nearest_route(track.finish_center),"layer":configured._finish_elevated,"distance":0.0}
++			walk(session,track,path_between(track,0.1,begin),state)
++			if state.has("notice"): continue
++			walk(session,track,PackedVector2Array([a,b]),state)
++			var rejoin: float = state.distance
++			var end_index: int = 0
++			var wrapped: float = fposmod(configured._start_progress+end,track.route_length)
++			while end_index+1 < track.route.size() and track.route_cumulative[end_index+1] <= wrapped: end_index += 1
++			var correct_rejoin_layer: bool = bool(state.layer) == track.elevated_at(b,end_index)
++			var remainder: PackedVector2Array = path_between(track,end,track.route_length-0.001)
++			remainder.append(track._race_route_point(configured._start_progress+0.2))
++			walk(session,track,remainder,state)
++			if session.finished: continue
++			blocked += 1
++			if not correct_rejoin_layer: wrong_layer_rejoins += 1
++			if not baseline: check(state.has("notice"),"blocked bypass has a notice %s/%d" % [entry.name,gate])
++			if not state.has("notice"):
++				silent_cuts += 1
++				continue
++			var delay: float = maxf(0.0,float(state.notice.distance)-rejoin)
++			# At a crossing, stay quiet until the car has left the required
++			# road's recovery corridor. Never trade a prompt notice for a
++			# false miss on the road underneath or the earlier ground arm.
++			var maximum_delay: float = 4.0 if configured._spline_corridor else 8.0
++			if not baseline and correct_rejoin_layer: check(delay <= maximum_delay,"shortcut notice within %.0fm of road reentry %s/%d: %.2fm" % [maximum_delay,entry.name,gate,delay])
++			if correct_rejoin_layer and delay > float(worst.delay): worst = {"delay":delay,"begin":begin,"end":end,"notice":state.notice,"rejoin_distance":rejoin}
++		report.append({"name":entry.name,"maximum_reach":maximum,"blocked_cuts":blocked,"wrong_layer_rejoins":wrong_layer_rejoins,"silent_cuts":silent_cuts,"old_ahead_notices":old_ahead_notices,"ahead_examples":ahead_examples,"worst":worst,"prepared_bytes":var_to_bytes(track._race_gates).size()})
++		print("NOTICE_WORST ",entry.name," ahead_false_before=",old_ahead_notices," ",worst)
++	var scope: String = "catalog" if "--catalog" in OS.get_cmdline_user_args() else "fixtures"
++	var file := FileAccess.open("res://../docs/evidence/hairpin-checkpoints-2026-10-18/"+("baseline" if baseline else "final")+"-"+scope+"-latency.json",FileAccess.WRITE)
++	file.store_string(JSON.stringify(report,"\t")); file.close()
++	print("CHECKPOINT_NOTICE_LATENCY: %d checks, %d failures" % [checks,failures])
++	quit(1 if failures else 0)
+diff --git a/final/game/tests/test_checkpoint_road_coverage.gd b/game/tests/test_checkpoint_road_coverage.gd
+new file mode 100644
+index 0000000..6f87ad3
+--- /dev/null
++++ b/game/tests/test_checkpoint_road_coverage.gd
+@@ -0,0 +1,62 @@
++extends "res://tests/test_star_gate_tolerance.gd"
++## Physical road and kerbs are the minimum gate span, including folded apices.
++const OUTPUT := "res://../build/checkpoint-road-coverage-2026-11-03/"
++
++func run() -> void:
++	var rows: Array = []
++	for fixture: String in ["star_spline_lap","silmukka","dust_cloud","over_and_under","knot"]:
++		for reverse: bool in [false,true]:
++			var doc: Dictionary = JSON.parse_string(FileAccess.get_file_as_string("res://tests/fixtures/"+fixture+".json"))
++			if reverse and not doc.has("start_line"): continue
++			if reverse: doc.start_line.heading = fposmod(float(doc.start_line.heading)+180.0,360.0)
++			var track: NativeTrack = TrackCompiler.compile(doc)
++			var session := TrackSession.new(120,1); session._configure(track)
++			var support := preload("res://track/road_surface_height.gd").new(track)
++			track._race_gates.rules_key = "standing-5-road-gates-v23"
++			var fresh := TrackSession.new(120,1); fresh._configure(track)
++			check(track._race_gates.rules_key == RaceRules.KEY and fresh._widths == session._widths and fresh._finish_widths == session._finish_widths,"rules23 gate cache rebuilds with complete road and finish coverage")
++			for fraction: float in [-1.0,-0.75,0.75,1.0]:
++				var path: PackedVector2Array = SplineGateCorridor.lane(track,fraction,false,true,0.5)
++				var actual := TrackSession.new(120,1); drive_path(actual,track,path)
++				print("WIDE_PROFILE reverse=",reverse," fraction=",fraction," offroad_samples=",offroad_samples(track,path)," finished=",actual.finished)
++			for gate: int in range(session.checkpoint_count()+1):
++				session.next_checkpoint = gate
++				var center: Vector2 = session.checkpoint_road_center(track)
++				var direction: Vector2 = session.checkpoint_direction(track)
++				var road: Vector2 = session.checkpoint_road_spans(track)
++				var acceptance: Vector2 = session.checkpoint_acceptance_spans(track)
++				var normal: Vector2 = direction.orthogonal()
++				for side: int in range(2):
++					var sign_value: float = -1.0 if side == 0 else 1.0
++					var span: float = 0.0
++					# Deliberately independent of authored widths and production scan caps.
++					while span < track.half_extent.length()*2.0:
++						var point: Vector2 = center+normal*span*sign_value
++						if not physical(track,support,point,session.checkpoint_elevated()): break
++						span += 0.05
++					var edge: float = maxf(0.0,span-0.05)
++					check(road[side]+0.001 >= edge,"marker covers road/kerbs %s gate=%d side=%d edge=%.3f marker=%.3f" % [reverse,gate,side,edge,road[side]])
++					check(acceptance[side]+0.001 >= edge,"acceptance covers road/kerbs %s gate=%d side=%d" % [reverse,gate,side])
++					var crossing: Vector2 = center+normal*maxf(0.0,edge-0.02)*sign_value
++					var actual := TrackSession.new(120,1); actual._configure(track); actual.next_checkpoint = gate
++					actual.finish_armed = true; actual.route_distance = 20.0
++					actual.advance(track,crossing-direction*0.01,crossing+direction*0.01,track.nearest_route(crossing),session.checkpoint_elevated())
++					check(actual.finished if gate == session.checkpoint_count() else actual.next_checkpoint > gate,"outermost legal crossing consumes checkpoint %s/%d/%d" % [reverse,gate,side])
++					rows.append({"fixture":fixture,"reverse":reverse,"gate":gate,"side":side,"edge":edge,"marker":road[side],"accepted":acceptance[side],"center":[center.x,center.y],"direction":[direction.x,direction.y]})
++	var name: String = "baseline" if "--baseline" in OS.get_cmdline_user_args() else "final"
++	var file := FileAccess.open(OUTPUT+name+"-coverage.json",FileAccess.WRITE)
++	file.store_string(JSON.stringify(rows,"\t")); file.close()
++	print("CHECKPOINT_ROAD_COVERAGE: %d checks, %d failures" % [checks,failures])
++	quit(1 if failures else 0)
++
++func physical(track: NativeTrack, support: RefCounted, point: Vector2, elevated: bool) -> bool:
++	if elevated:
++		var x: int = floori((point.x+track.half_extent.x)/track.cell_size)
++		var y: int = floori((track.half_extent.y-point.y)/track.cell_size)
++		return x >= 0 and y >= 0 and x < track.grid_width and y < track.grid_height and track.deck_cells[y*track.grid_width+x] in [0,5]
++	if track.cell_at(point) in [0,5] or track.kerbs.height_at(point) > 0.00001: return true
++	# Independently sample the actual rendered support polygons, without the
++	# production line-intersection/interval-merging algorithm.
++	for index: int in support.floor_bins.get(Vector2i((point/8.0).floor()),[]):
++		if Geometry2D.is_point_in_polygon(point,support.floors[index]): return true
++	return false
+diff --git a/game/tests/test_checkpoint_rules.gd b/game/tests/test_checkpoint_rules.gd
+index fe4eaa4..12b1986 100644
+--- a/game/tests/test_checkpoint_rules.gd
++++ b/game/tests/test_checkpoint_rules.gd
+@@ -1,212 +1,212 @@
+-extends SceneTree
+-var checks: int = 0
+-var failures: int = 0
+-func _initialize() -> void: call_deferred("run")
+-func check(ok: bool, message: String) -> void:
+-	checks += 1
+-	if not ok:
+-		failures += 1
+-		push_error(message)
+-func fixture() -> NativeTrack:
+-	var track := NativeTrack.new()
+-	track.route = PackedVector2Array([Vector2(0,0),Vector2(40,0),Vector2(40,40),Vector2(0,40)])
+-	track.finish_center = Vector2.ZERO
+-	track.finish_forward = Vector2.RIGHT
+-	track.finish_half_width = 6.0
+-	track._build_route_distance()
+-	for p: Vector2 in [Vector2(20,0),Vector2(40,20),Vector2(20,40),Vector2(0,20)]: track.checkpoints.append(Rect2(p-Vector2(6,6),Vector2(12,12)))
+-	return track
+-func drive(session: TrackSession, track: NativeTrack, path: PackedVector2Array, spacing: float = 0.5) -> bool:
+-	var warned: bool = false
+-	for i: int in range(path.size()-1):
+-		var count: int = maxi(1,ceili(path[i].distance_to(path[i+1])/spacing))
+-		for j: int in range(count):
+-			var a: Vector2 = path[i].lerp(path[i+1],float(j)/count)
+-			var b: Vector2 = path[i].lerp(path[i+1],float(j+1)/count)
+-			session.advance(track,a,b,track.nearest_route(b),track.elevated_at(b,track.nearest_route(b)))
+-			warned = warned or session.missed_checkpoint >= 0
+-	return warned
+-func run() -> void:
+-	_sharp_joins()
+-	var track := fixture()
+-	var loop := PackedVector2Array([Vector2(1,0),Vector2(40,0),Vector2(40,40),Vector2(0,40),Vector2(0,0),Vector2(1,0)])
+-	for spacing: float in [0.1,0.5,3.0,50.0]:
+-		var session := TrackSession.new()
+-		for lap: int in range(5):
+-			drive(session,track,loop,spacing)
+-			check(session.completed_laps == lap+1,"ordered full lap at spacing "+str(spacing))
+-		check(session.finished and session.lap_times.size() == 5,"five laps finish")
+-		var ticks: int = session.elapsed_ticks
+-		session.advance(track,Vector2.ZERO,Vector2.ONE,0)
+-		check(session.elapsed_ticks == ticks,"finish freezes official time")
+-		check(is_equal_approx(session.race_time_seconds(),session.lap_times.reduce(func(total: float,v: float) -> float: return total+v,0.0)),"lap times equal race clock without penalty")
+-	var missed := TrackSession.new(120,1)
+-	drive(missed,track,PackedVector2Array([Vector2(1,0),Vector2(40,20),Vector2(40,40),Vector2(0,40),Vector2(0,0),Vector2(1,0)]))
+-	check(not missed.finished and missed.completed_laps == 0 and missed.next_checkpoint < missed.checkpoint_count(),"skipped gate blocks the finish and cannot be credited out of order")
+-	check(missed.missed_checkpoint == missed.next_checkpoint,"missing road section is highlighted")
+-	check(is_equal_approx(missed.race_time_seconds(),float(missed.elapsed_ticks)/missed.tick_rate),"no shortcut penalty under checkpoint rules")
+-	var before_recovery: int = missed.elapsed_ticks
+-	drive(missed,track,loop)
+-	check(missed.finished and missed.missed_checkpoint == -1,"returning through all required gates recovers the lap")
+-	check(missed.lap_times[0] > before_recovery/120.0,"recovery time remains in the lap")
+-	var reverse := TrackSession.new(120,1)
+-	drive(reverse,track,PackedVector2Array([Vector2(30,0),Vector2(10,0)]))
+-	check(reverse.next_checkpoint == 0,"reverse crossing does not consume a forward gate")
+-	for i: int in range(1000): reverse.advance(track,Vector2(20,0),Vector2(20,0),0)
+-	check(reverse.next_checkpoint == 0 and not reverse.finished,"stationary overlap cannot manufacture progress")
+-	var sweep := TrackSession.new(120,1)
+-	drive(sweep,track,PackedVector2Array([Vector2(-10,0),Vector2(30,0)]),100.0)
+-	check(sweep.next_checkpoint >= 2,"swept high-speed gate crossing cannot tunnel")
+-	var outside := TrackSession.new(120,1)
+-	drive(outside,track,PackedVector2Array([Vector2(0,12),Vector2(30,12)]),100.0)
+-	check(outside.next_checkpoint == 0 and outside.missed_checkpoint == 0,"passing beside the gate is a miss")
+-	var sparse := fixture()
+-	sparse.checkpoints.clear()
+-	var automatic := TrackSession.new(120,1)
+-	drive(automatic,sparse,loop)
+-	check(automatic.finished and automatic.checkpoint_count() >= 8 and automatic.checkpoint_count() <= 16,"native routes get ordered gates with redundant apex neighbours removed")
+-	check(RaceRules.KEY == "standing-5-road-gates-v23","road-edge checkpoint spans use a new rules key")
+-	# Real creator hairpins: a cut must block the eventual finish, even when
+-	# the car rejoins and follows the rest of the route correctly.
+-	var document: Dictionary = JSON.parse_string(FileAccess.get_file_as_string("res://tests/fixtures/silmukka.json"))
+-	var real_track: NativeTrack = TrackCompiler.compile(document)
+-	var clean := TrackSession.new(120,1)
+-	var full := real_track.route.duplicate()
+-	full.append(real_track.route[0])
+-	full.append(real_track.route[1])
+-	drive(clean,real_track,full)
+-	check(clean.finished,"complete real hairpin route finishes")
+-	for start: int in [50,55,60,65]:
+-		for end: int in [85,90,95,100]:
+-			var cut := TrackSession.new(120,1)
+-			var path := PackedVector2Array()
+-			for i: int in range(start+1): path.append(real_track.route[i])
+-			for i: int in range(end,real_track.route.size()): path.append(real_track.route[i])
+-			path.append(real_track.route[0])
+-			path.append(real_track.route[1])
+-			drive(cut,real_track,path)
+-			check(not cut.finished and cut.missed_checkpoint >= 0,"hairpin shortcut blocks finish %d -> %d" % [start,end])
+-			drive(cut,real_track,full)
+-			check(cut.finished,"return to missed hairpin section recovers %d -> %d" % [start,end])
+-	# Tight continuous hairpins: legal inner/outer lines at up to 240 m/s
+-	# equivalent sweep lengths, including gate-plane intersections in infield.
+-	for radius: float in [6.0,10.0]:
+-		var bend := NativeTrack.new()
+-		for i: int in range(128): bend.route.append(Vector2.from_angle(TAU*i/128)*radius)
+-		bend.route_widths.resize(128)
+-		bend.route_widths.fill(10.0)
+-		bend.finish_center = bend.route[0]
+-		bend.finish_forward = Vector2(0,1)
+-		bend.finish_half_width = 6.0
+-		bend._build_route_distance()
+-		for offset: float in [-4.0,0.0,4.0,10.0]:
+-			for spacing: float in [0.1,0.5,2.0]:
+-				var arc := PackedVector2Array()
+-				var samples: int = maxi(8,ceili(TAU*(radius+offset)/spacing))
+-				for i: int in range(samples+2):
+-					# Rejoin the road for the independently bounded finish line.
+-					var fraction: float = float(i)/samples
+-					var excursion: float = offset if fraction > 0.12 and fraction < 0.88 else minf(offset,4.0)
+-					arc.append(Vector2.from_angle(TAU*i/samples)*(radius+excursion))
+-				var legal := TrackSession.new(120,1)
+-				var warned: bool = drive(legal,bend,arc,spacing)
+-				check(legal.finished and not warned,"tight hairpin legal radius %s offset %s sweep %s" % [radius,offset,spacing])
+-		var cut := TrackSession.new(120,1)
+-		var diagonal := PackedVector2Array([bend.route[0],bend.route[64]])
+-		for i: int in range(65,130): diagonal.append(bend.route[i%128])
+-		drive(cut,bend,diagonal)
+-		check(not cut.finished and cut.missed_checkpoint >= 0,"tight hairpin diameter shortcut rejected")
+-	# Gentle bends allow a three-metre inside recovery margin in either direction.
+-	for winding: float in [-1.0,1.0]:
+-		var gentle := NativeTrack.new()
+-		for i: int in range(256): gentle.route.append(Vector2.from_angle(winding*TAU*i/256)*40.0)
+-		gentle.route_widths.resize(256)
+-		gentle.route_widths.fill(10.0)
+-		gentle.finish_center = gentle.route[0]
+-		gentle.finish_forward = Vector2(0,winding)
+-		gentle.finish_half_width = 6.0
+-		gentle._build_route_distance()
+-		for lateral: float in [7.5,11.0,-7.5,-10.5,-13.0]:
+-			var recovery := TrackSession.new(120,1)
+-			recovery._configure(gentle)
+-			var center: Vector2 = recovery._centers[0]
+-			var tangent: Vector2 = recovery._directions[0]
+-			var point: Vector2 = center-center.normalized()*lateral
+-			recovery.advance(gentle,point-tangent,point+tangent,0)
+-			check((recovery.next_checkpoint > 0) == (lateral in [7.5,-7.5,-10.5]),"inside and outside recovery allowed; excessive excursions bounded")
+-			var marker_center: Vector2 = recovery.checkpoint_position(gentle)
+-			var normal: Vector2 = recovery.checkpoint_direction(gentle).orthogonal()
+-			var half_span: float = recovery.checkpoint_width(gentle)*0.5
+-			check(recovery._inside(recovery.next_checkpoint,marker_center-normal*(half_span-0.01)) and recovery._inside(recovery.next_checkpoint,marker_center+normal*(half_span-0.01)),"visible marker matches asymmetric accepted span")
+-	var measured := TrackSession.new(120,100000)
+-	measured.advance(track,Vector2.ZERO,Vector2(1,0),0)
+-	var start: int = Time.get_ticks_usec()
+-	for i: int in range(12000): measured.advance(track,Vector2(1,0),Vector2(1.2,0),0)
+-	print("CHECKPOINT_CPU_US_PER_TICK: ",(Time.get_ticks_usec()-start)/12000.0)
+-	print("CHECKPOINT_TESTS: ",checks," checks, ",failures," failures")
+-	quit(0 if failures == 0 else 1)
+-
+-func _sharp_joins() -> void:
+-	# A closed parallelogram made from real straight pieces, with a start
+-	# halfway along a straight. Offset vertices use the road's mitred joins.
+-	for angle: float in [60.0,90.0,120.0]:
+-		for winding: float in [-1.0,1.0]:
+-			var edge := Vector2.RIGHT.rotated(deg_to_rad(angle)*winding)*60.0
+-			var vertices := PackedVector2Array([Vector2(-30,-20),Vector2(30,-20),Vector2(30,-20)+edge,Vector2(-30,-20)+edge])
+-			var doc: Dictionary = TrackDocument.create_blank()
+-			for i: int in range(4):
+-				var delta: Vector2 = vertices[(i+1)%4]-vertices[i]
+-				var piece: Dictionary = RoadPieces.create("straight",vertices[i],fposmod(rad_to_deg(delta.angle()),360.0),10.0)
+-				piece.length = delta.length()
+-				doc.pieces.append(piece)
+-			doc = RoadPieces.route_from_pieces(doc).document
+-			doc["start_line"] = {"position":[0.0,-20.0],"heading":0.0}
+-			var track: NativeTrack = TrackCompiler.compile(doc)
+-			check(track != null,"sharp join fixture compiles: "+str(TrackDocument.validate(doc)))
+-			if track == null: continue
+-			var reverse_doc: Dictionary = doc.duplicate(true)
+-			reverse_doc.start_line.heading = 180.0
+-			var reverse_track: NativeTrack = TrackCompiler.compile(reverse_doc)
+-			if angle == 120.0 and winding == 1.0:
+-				var artifact := FileAccess.open("res://../build/sharp-join-fixture.json",FileAccess.WRITE)
+-				artifact.store_string(JSON.stringify(doc,"\t"))
+-			var cut_path := PackedVector2Array([Vector2(1,-20),vertices[1]+edge.normalized()*30.0,vertices[2],vertices[3],vertices[0],Vector2(1,-20)])
+-			var cut := TrackSession.new(120,1)
+-			drive(cut,track,cut_path)
+-			check(not cut.finished and cut.missed_checkpoint >= 0,"off-road sharp corner cut blocks finish %s/%s" % [angle,winding])
+-			var recovery := PackedVector2Array([Vector2(1,-20),vertices[1],vertices[2],vertices[3],vertices[0],Vector2(1,-20)])
+-			drive(cut,track,recovery)
+-			check(cut.finished,"returning through sharp join recovers the lap")
+-			for offset: float in [-3.8,0.0,3.8]:
+-				var path := PackedVector2Array([Vector2(1,-20+offset)])
+-				for step: int in range(1,5):
+-					var i: int = step%4
+-					var incoming: Vector2 = (vertices[i]-vertices[posmod(i-1,4)]).normalized()
+-					var outgoing: Vector2 = (vertices[(i+1)%4]-vertices[i]).normalized()
+-					var normal: Vector2 = Vector2(-(incoming+outgoing).y,(incoming+outgoing).x).normalized()
+-					if offset*winding < 0.0:
+-						# Raster roads round the outer tip. Follow that road area,
+-						# rather than the decorative outer miter extension.
+-						path.append(vertices[i]+Vector2(-incoming.y,incoming.x)*offset)
+-						path.append(vertices[i]+Vector2(-outgoing.y,outgoing.x)*offset)
+-					else:
+-						path.append(vertices[i]+normal*offset/maxf(0.25,normal.dot(Vector2(-incoming.y,incoming.x))))
+-				path.append(Vector2(1,-20+offset))
+-				var on_road: bool = true
+-				for i: int in range(path.size()-1):
+-					var samples: int = ceili(path[i].distance_to(path[i+1])/0.25)
+-					for j: int in range(samples+1):
+-						var point: Vector2 = path[i].lerp(path[i+1],float(j)/samples)
+-						on_road = on_road and track.cell_at(point,false) in [0,5]
+-				check(on_road,"sharp join path stays on compiled road %s/%s/%s" % [angle,winding,offset])
+-				for spacing: float in [0.1,0.5,2.0]:
+-					var session := TrackSession.new(120,1)
+-					var warned: bool = drive(session,track,path,spacing)
+-					check(session.finished and not warned,"sharp join legal lap %s/%s/%s/%s gate %s" % [angle,winding,offset,spacing,session.next_checkpoint])
+-					var reverse_path: PackedVector2Array = path.duplicate()
+-					reverse_path.reverse()
+-					reverse_path[0] = Vector2(-1,-20+offset)
+-					reverse_path[-1] = reverse_path[0]
+-					var reverse_session := TrackSession.new(120,1)
+-					var reverse_warned: bool = drive(reverse_session,reverse_track,reverse_path,spacing)
+-					check(reverse_session.finished and not reverse_warned,"reversed start respects sharp join gate direction %s/%s/%s/%s" % [angle,winding,offset,spacing])
++extends SceneTree
++var checks: int = 0
++var failures: int = 0
++func _initialize() -> void: call_deferred("run")
++func check(ok: bool, message: String) -> void:
++	checks += 1
++	if not ok:
++		failures += 1
++		push_error(message)
++func fixture() -> NativeTrack:
++	var track := NativeTrack.new()
++	track.route = PackedVector2Array([Vector2(0,0),Vector2(40,0),Vector2(40,40),Vector2(0,40)])
++	track.finish_center = Vector2.ZERO
++	track.finish_forward = Vector2.RIGHT
++	track.finish_half_width = 6.0
++	track._build_route_distance()
++	for p: Vector2 in [Vector2(20,0),Vector2(40,20),Vector2(20,40),Vector2(0,20)]: track.checkpoints.append(Rect2(p-Vector2(6,6),Vector2(12,12)))
++	return track
++func drive(session: TrackSession, track: NativeTrack, path: PackedVector2Array, spacing: float = 0.5) -> bool:
++	var warned: bool = false
++	for i: int in range(path.size()-1):
++		var count: int = maxi(1,ceili(path[i].distance_to(path[i+1])/spacing))
++		for j: int in range(count):
++			var a: Vector2 = path[i].lerp(path[i+1],float(j)/count)
++			var b: Vector2 = path[i].lerp(path[i+1],float(j+1)/count)
++			session.advance(track,a,b,track.nearest_route(b),track.elevated_at(b,track.nearest_route(b)))
++			warned = warned or session.missed_checkpoint >= 0
++	return warned
++func run() -> void:
++	_sharp_joins()
++	var track := fixture()
++	var loop := PackedVector2Array([Vector2(1,0),Vector2(40,0),Vector2(40,40),Vector2(0,40),Vector2(0,0),Vector2(1,0)])
++	for spacing: float in [0.1,0.5,3.0,50.0]:
++		var session := TrackSession.new()
++		for lap: int in range(5):
++			drive(session,track,loop,spacing)
++			check(session.completed_laps == lap+1,"ordered full lap at spacing "+str(spacing))
++		check(session.finished and session.lap_times.size() == 5,"five laps finish")
++		var ticks: int = session.elapsed_ticks
++		session.advance(track,Vector2.ZERO,Vector2.ONE,0)
++		check(session.elapsed_ticks == ticks,"finish freezes official time")
++		check(is_equal_approx(session.race_time_seconds(),session.lap_times.reduce(func(total: float,v: float) -> float: return total+v,0.0)),"lap times equal race clock without penalty")
++	var missed := TrackSession.new(120,1)
++	drive(missed,track,PackedVector2Array([Vector2(1,0),Vector2(40,20),Vector2(40,40),Vector2(0,40),Vector2(0,0),Vector2(1,0)]))
++	check(not missed.finished and missed.completed_laps == 0 and missed.next_checkpoint < missed.checkpoint_count(),"skipped gate blocks the finish and cannot be credited out of order")
++	check(missed.missed_checkpoint == missed.next_checkpoint,"missing road section is highlighted")
++	check(is_equal_approx(missed.race_time_seconds(),float(missed.elapsed_ticks)/missed.tick_rate),"no shortcut penalty under checkpoint rules")
++	var before_recovery: int = missed.elapsed_ticks
++	drive(missed,track,loop)
++	check(missed.finished and missed.missed_checkpoint == -1,"returning through all required gates recovers the lap")
++	check(missed.lap_times[0] > before_recovery/120.0,"recovery time remains in the lap")
++	var reverse := TrackSession.new(120,1)
++	drive(reverse,track,PackedVector2Array([Vector2(30,0),Vector2(10,0)]))
++	check(reverse.next_checkpoint == 0,"reverse crossing does not consume a forward gate")
++	for i: int in range(1000): reverse.advance(track,Vector2(20,0),Vector2(20,0),0)
++	check(reverse.next_checkpoint == 0 and not reverse.finished,"stationary overlap cannot manufacture progress")
++	var sweep := TrackSession.new(120,1)
++	drive(sweep,track,PackedVector2Array([Vector2(-10,0),Vector2(30,0)]),100.0)
++	check(sweep.next_checkpoint >= 2,"swept high-speed gate crossing cannot tunnel")
++	var outside := TrackSession.new(120,1)
++	drive(outside,track,PackedVector2Array([Vector2(0,12),Vector2(30,12)]),100.0)
++	check(outside.next_checkpoint == 0 and outside.missed_checkpoint == 0,"passing beside the gate is a miss")
++	var sparse := fixture()
++	sparse.checkpoints.clear()
++	var automatic := TrackSession.new(120,1)
++	drive(automatic,sparse,loop)
++	check(automatic.finished and automatic.checkpoint_count() >= 8 and automatic.checkpoint_count() <= 16,"native routes get ordered gates with redundant apex neighbours removed")
++	check(RaceRules.KEY == "standing-5-road-gates-v24","road-edge checkpoint spans use a new rules key")
++	# Real creator hairpins: a cut must block the eventual finish, even when
++	# the car rejoins and follows the rest of the route correctly.
++	var document: Dictionary = JSON.parse_string(FileAccess.get_file_as_string("res://tests/fixtures/silmukka.json"))
++	var real_track: NativeTrack = TrackCompiler.compile(document)
++	var clean := TrackSession.new(120,1)
++	var full := real_track.route.duplicate()
++	full.append(real_track.route[0])
++	full.append(real_track.route[1])
++	drive(clean,real_track,full)
++	check(clean.finished,"complete real hairpin route finishes")
++	for start: int in [50,55,60,65]:
++		for end: int in [85,90,95,100]:
++			var cut := TrackSession.new(120,1)
++			var path := PackedVector2Array()
++			for i: int in range(start+1): path.append(real_track.route[i])
++			for i: int in range(end,real_track.route.size()): path.append(real_track.route[i])
++			path.append(real_track.route[0])
++			path.append(real_track.route[1])
++			drive(cut,real_track,path)
++			check(not cut.finished and cut.missed_checkpoint >= 0,"hairpin shortcut blocks finish %d -> %d" % [start,end])
++			drive(cut,real_track,full)
++			check(cut.finished,"return to missed hairpin section recovers %d -> %d" % [start,end])
++	# Tight continuous hairpins: legal inner/outer lines at up to 240 m/s
++	# equivalent sweep lengths, including gate-plane intersections in infield.
++	for radius: float in [6.0,10.0]:
++		var bend := NativeTrack.new()
++		for i: int in range(128): bend.route.append(Vector2.from_angle(TAU*i/128)*radius)
++		bend.route_widths.resize(128)
++		bend.route_widths.fill(10.0)
++		bend.finish_center = bend.route[0]
++		bend.finish_forward = Vector2(0,1)
++		bend.finish_half_width = 6.0
++		bend._build_route_distance()
++		for offset: float in [-4.0,0.0,4.0,10.0]:
++			for spacing: float in [0.1,0.5,2.0]:
++				var arc := PackedVector2Array()
++				var samples: int = maxi(8,ceili(TAU*(radius+offset)/spacing))
++				for i: int in range(samples+2):
++					# Rejoin the road for the independently bounded finish line.
++					var fraction: float = float(i)/samples
++					var excursion: float = offset if fraction > 0.12 and fraction < 0.88 else minf(offset,4.0)
++					arc.append(Vector2.from_angle(TAU*i/samples)*(radius+excursion))
++				var legal := TrackSession.new(120,1)
++				var warned: bool = drive(legal,bend,arc,spacing)
++				check(legal.finished and not warned,"tight hairpin legal radius %s offset %s sweep %s" % [radius,offset,spacing])
++		var cut := TrackSession.new(120,1)
++		var diagonal := PackedVector2Array([bend.route[0],bend.route[64]])
++		for i: int in range(65,130): diagonal.append(bend.route[i%128])
++		drive(cut,bend,diagonal)
++		check(not cut.finished and cut.missed_checkpoint >= 0,"tight hairpin diameter shortcut rejected")
++	# Gentle bends allow a three-metre inside recovery margin in either direction.
++	for winding: float in [-1.0,1.0]:
++		var gentle := NativeTrack.new()
++		for i: int in range(256): gentle.route.append(Vector2.from_angle(winding*TAU*i/256)*40.0)
++		gentle.route_widths.resize(256)
++		gentle.route_widths.fill(10.0)
++		gentle.finish_center = gentle.route[0]
++		gentle.finish_forward = Vector2(0,winding)
++		gentle.finish_half_width = 6.0
++		gentle._build_route_distance()
++		for lateral: float in [7.5,11.0,-7.5,-10.5,-13.0]:
++			var recovery := TrackSession.new(120,1)
++			recovery._configure(gentle)
++			var center: Vector2 = recovery._centers[0]
++			var tangent: Vector2 = recovery._directions[0]
++			var point: Vector2 = center-center.normalized()*lateral
++			recovery.advance(gentle,point-tangent,point+tangent,0)
++			check((recovery.next_checkpoint > 0) == (lateral in [7.5,-7.5,-10.5]),"inside and outside recovery allowed; excessive excursions bounded")
++			var marker_center: Vector2 = recovery.checkpoint_position(gentle)
++			var normal: Vector2 = recovery.checkpoint_direction(gentle).orthogonal()
++			var half_span: float = recovery.checkpoint_width(gentle)*0.5
++			check(recovery._inside(recovery.next_checkpoint,marker_center-normal*(half_span-0.01)) and recovery._inside(recovery.next_checkpoint,marker_center+normal*(half_span-0.01)),"visible marker matches asymmetric accepted span")
++	var measured := TrackSession.new(120,100000)
++	measured.advance(track,Vector2.ZERO,Vector2(1,0),0)
++	var start: int = Time.get_ticks_usec()
++	for i: int in range(12000): measured.advance(track,Vector2(1,0),Vector2(1.2,0),0)
++	print("CHECKPOINT_CPU_US_PER_TICK: ",(Time.get_ticks_usec()-start)/12000.0)
++	print("CHECKPOINT_TESTS: ",checks," checks, ",failures," failures")
++	quit(0 if failures == 0 else 1)
++
++func _sharp_joins() -> void:
++	# A closed parallelogram made from real straight pieces, with a start
++	# halfway along a straight. Offset vertices use the road's mitred joins.
++	for angle: float in [60.0,90.0,120.0]:
++		for winding: float in [-1.0,1.0]:
++			var edge := Vector2.RIGHT.rotated(deg_to_rad(angle)*winding)*60.0
++			var vertices := PackedVector2Array([Vector2(-30,-20),Vector2(30,-20),Vector2(30,-20)+edge,Vector2(-30,-20)+edge])
++			var doc: Dictionary = TrackDocument.create_blank()
++			for i: int in range(4):
++				var delta: Vector2 = vertices[(i+1)%4]-vertices[i]
++				var piece: Dictionary = RoadPieces.create("straight",vertices[i],fposmod(rad_to_deg(delta.angle()),360.0),10.0)
++				piece.length = delta.length()
++				doc.pieces.append(piece)
++			doc = RoadPieces.route_from_pieces(doc).document
++			doc["start_line"] = {"position":[0.0,-20.0],"heading":0.0}
++			var track: NativeTrack = TrackCompiler.compile(doc)
++			check(track != null,"sharp join fixture compiles: "+str(TrackDocument.validate(doc)))
++			if track == null: continue
++			var reverse_doc: Dictionary = doc.duplicate(true)
++			reverse_doc.start_line.heading = 180.0
++			var reverse_track: NativeTrack = TrackCompiler.compile(reverse_doc)
++			if angle == 120.0 and winding == 1.0:
++				var artifact := FileAccess.open("res://../build/sharp-join-fixture.json",FileAccess.WRITE)
++				artifact.store_string(JSON.stringify(doc,"\t"))
++			var cut_path := PackedVector2Array([Vector2(1,-20),vertices[1]+edge.normalized()*30.0,vertices[2],vertices[3],vertices[0],Vector2(1,-20)])
++			var cut := TrackSession.new(120,1)
++			drive(cut,track,cut_path)
++			check(not cut.finished and cut.missed_checkpoint >= 0,"off-road sharp corner cut blocks finish %s/%s" % [angle,winding])
++			var recovery := PackedVector2Array([Vector2(1,-20),vertices[1],vertices[2],vertices[3],vertices[0],Vector2(1,-20)])
++			drive(cut,track,recovery)
++			check(cut.finished,"returning through sharp join recovers the lap")
++			for offset: float in [-3.8,0.0,3.8]:
++				var path := PackedVector2Array([Vector2(1,-20+offset)])
++				for step: int in range(1,5):
++					var i: int = step%4
++					var incoming: Vector2 = (vertices[i]-vertices[posmod(i-1,4)]).normalized()
++					var outgoing: Vector2 = (vertices[(i+1)%4]-vertices[i]).normalized()
++					var normal: Vector2 = Vector2(-(incoming+outgoing).y,(incoming+outgoing).x).normalized()
++					if offset*winding < 0.0:
++						# Raster roads round the outer tip. Follow that road area,
++						# rather than the decorative outer miter extension.
++						path.append(vertices[i]+Vector2(-incoming.y,incoming.x)*offset)
++						path.append(vertices[i]+Vector2(-outgoing.y,outgoing.x)*offset)
++					else:
++						path.append(vertices[i]+normal*offset/maxf(0.25,normal.dot(Vector2(-incoming.y,incoming.x))))
++				path.append(Vector2(1,-20+offset))
++				var on_road: bool = true
++				for i: int in range(path.size()-1):
++					var samples: int = ceili(path[i].distance_to(path[i+1])/0.25)
++					for j: int in range(samples+1):
++						var point: Vector2 = path[i].lerp(path[i+1],float(j)/samples)
++						on_road = on_road and track.cell_at(point,false) in [0,5]
++				check(on_road,"sharp join path stays on compiled road %s/%s/%s" % [angle,winding,offset])
++				for spacing: float in [0.1,0.5,2.0]:
++					var session := TrackSession.new(120,1)
++					var warned: bool = drive(session,track,path,spacing)
++					check(session.finished and not warned,"sharp join legal lap %s/%s/%s/%s gate %s" % [angle,winding,offset,spacing,session.next_checkpoint])
++					var reverse_path: PackedVector2Array = path.duplicate()
++					reverse_path.reverse()
++					reverse_path[0] = Vector2(-1,-20+offset)
++					reverse_path[-1] = reverse_path[0]
++					var reverse_session := TrackSession.new(120,1)
++					var reverse_warned: bool = drive(reverse_session,reverse_track,reverse_path,spacing)
++					check(reverse_session.finished and not reverse_warned,"reversed start respects sharp join gate direction %s/%s/%s/%s" % [angle,winding,offset,spacing])
+diff --git a/game/tests/test_star_checkpoint_consistency.gd b/game/tests/test_star_checkpoint_consistency.gd
+index 5ff72b8..7fd9fc6 100644
+--- a/game/tests/test_star_checkpoint_consistency.gd
++++ b/game/tests/test_star_checkpoint_consistency.gd
+@@ -32,9 +32,12 @@ func run() -> void:
+ 			var boundary: PackedVector2Array = SplineGateCorridor.lane(track,offset,false,true,0.5)
+ 			var session := TrackSession.new(120,1); notices = 0
+ 			drive_path(session,track,boundary)
+-			# The circuit has opposite turns: either large variable-width
+-			# offset erases an inner nose where the neighbouring road widens.
+-			if absf(offset) > 0.5:
++			# The old inner-span clamp rejected this entirely paved taper line.
++			# Rules24's minimum physical road span makes it a legal crossing.
++			var covered_taper: bool = is_equal_approx(offset,0.75 if reverse else -0.75)
++			if covered_taper:
++				check(offroad_samples(track,boundary) == 0 and session.finished and notices == 0,"full road width includes the paved taper line %s/%s" % [reverse,offset])
++			elif absf(offset) > 0.5:
+ 				check(not session.finished and notices > 0,"wide profile cannot erase an inner hairpin %s/%s" % [reverse,offset])
+ 			else:
+ 				check(session.finished and notices == 0,"variable-width interior line stays usable %s/%s" % [reverse,offset])
+diff --git a/final/scripts/run_checkpoint_coverage_checks.py b/scripts/run_checkpoint_coverage_checks.py
+new file mode 100644
+index 0000000..d7ccc3b
+--- /dev/null
++++ b/scripts/run_checkpoint_coverage_checks.py
+@@ -0,0 +1,61 @@
++"""Isolated, bounded local Godot regressions; no owner profile or device access."""
++import json
++import os
++from pathlib import Path
++import subprocess
++import sys
++import time
++
++ROOT = Path(__file__).resolve().parents[1]
++OUTPUT = ROOT / "build/checkpoint-road-coverage-2026-11-03"
++GODOT = Path(os.environ.get("GODOT_BIN", "C:/apps/Godot 4.7.2/Godot_v4.7.2-stable_win64_console.exe"))
++
++
++def main():
++    scripts = sys.argv[1:] or [
++        "test_checkpoint_road_coverage", "test_star_checkpoint_shortcuts",
++        "test_hairpin_checkpoints", "test_star_checkpoint_consistency",
++        "test_checkpoint_forgiveness", "test_checkpoint_rules",
++        "test_checkpoint_bridge_layers", "test_bridge_entry_checkpoints",
++        "test_bridge_exit_checkpoints", "test_checkpoint_notices",
++        "test_knot_checkpoint_notices", "test_checkpoint_notice_latency",
++        "test_rewind", "test_checkpoint_catalog_routes",
++    ]
++    (OUTPUT / "logs").mkdir(parents=True, exist_ok=True)
++    env = os.environ.copy()
++    for key in ("APPDATA", "LOCALAPPDATA"):
++        path = OUTPUT / "profiles" / key
++        path.mkdir(parents=True, exist_ok=True)
++        env[key] = str(path)
++    results = []
++    for script in scripts:
++        args = script.split(":")
++        name = args[0]
++        renderer = args[1] if len(args) > 1 else "headless"
++        label = name + "-" + renderer
++        command = [sys.executable, "scripts/run_no_crash_dialog.py", "--", str(GODOT),
++                   "--path", "game", "--log-file", str(OUTPUT / "logs" / (label + "-engine.log"))]
++        command += ["--headless"] if renderer == "headless" else ["--rendering-method", renderer]
++        command += ["--script", "res://tests/" + name + ".gd"]
++        start = time.monotonic()
++        log = OUTPUT / "logs" / (label + ".log")
++        with log.open("w", encoding="utf-8") as stream:
++            process = subprocess.Popen(command, cwd=ROOT, env=env, stdout=stream, stderr=subprocess.STDOUT)
++            try:
++                code = process.wait(timeout=240)
++            except subprocess.TimeoutExpired:
++                # This PID belongs to this invocation and its wrapper only.
++                subprocess.run(["taskkill", "/PID", str(process.pid), "/T", "/F"], capture_output=True)
++                code = 124
++        output = log.read_text(encoding="utf-8", errors="replace")
++        failed = code != 0 or "SCRIPT ERROR:" in output or "FAIL:" in output
++        result = {"name": label, "command": command, "exit_code": code, "failed": failed,
++                  "seconds": round(time.monotonic() - start, 3), "log": str(log.relative_to(ROOT))}
++        results.append(result)
++        print(json.dumps(result), flush=True)
++        (OUTPUT / ("results-" + str(os.getpid()) + ".json")).write_text(json.dumps(results, indent=2), encoding="utf-8")
++    return int(any(row["failed"] for row in results))
++
++
++if __name__ == "__main__":
++    raise SystemExit(main())
+diff --git a/final/scripts/verify_checkpoint_coverage.py b/scripts/verify_checkpoint_coverage.py
+new file mode 100644
+index 0000000..c73d1ca
+--- /dev/null
++++ b/scripts/verify_checkpoint_coverage.py
+@@ -0,0 +1,72 @@
++"""Offline native gate exports, historical shortcuts and exact canonical replay."""
++import json
++import os
++from pathlib import Path
++import subprocess
++import sys
++
++ROOT = Path(__file__).resolve().parents[1]
++sys.path.insert(0, str(ROOT / "backend"))
++from bmt_backend.trajectory_verifier import check
++from bmt_backend.verifier import VerificationError
++
++OUTPUT = ROOT / "build/checkpoint-road-coverage-2026-11-03"
++OLD = ROOT / "docs/evidence/hairpin-checkpoints-2026-10-18"
++GODOT = os.environ.get("GODOT_BIN", "C:/apps/Godot 4.7.2/Godot_v4.7.2-stable_win64_console.exe")
++
++
++def native(label, request):
++    source, target = OUTPUT / (label + "-input.json"), OUTPUT / (label + "-output.json")
++    source.write_text(json.dumps(request), encoding="utf-8")
++    command = [sys.executable, "scripts/run_no_crash_dialog.py", "--", GODOT, "--headless",
++               "--path", "game", "--log-file", str(OUTPUT / "logs" / (label + "-engine.log")),
++               "--script", "res://backend/runner.gd", "--", "--input=" + str(source), "--output=" + str(target)]
++    env = os.environ.copy()
++    for key in ("APPDATA", "LOCALAPPDATA"):
++        directory = OUTPUT / "profiles" / ("native-" + key)
++        directory.mkdir(parents=True, exist_ok=True)
++        env[key] = str(directory)
++    result = subprocess.run(command, cwd=ROOT, env=env, capture_output=True, timeout=180)
++    log = (result.stdout + result.stderr).decode("utf-8", errors="replace")
++    (OUTPUT / "logs" / (label + ".log")).write_text(log, encoding="utf-8")
++    assert result.returncode == 0 and "SCRIPT ERROR:" not in log, log[-2000:]
++    # The workspace sandbox consistently denies Windows' root certificate store.
++    # No networking occurs here; preserve that diagnostic explicitly.
++    assert all("Failed to read the root certificate store" in line for line in log.splitlines() if "ERROR:" in line), log[-2000:]
++    response = json.loads(target.read_text(encoding="utf-8"))
++    assert response["ok"], response
++    print(label + " native export accepted", flush=True)
++    return response["result"]
++
++
++def main():
++    geometries, cuts = {}, []
++    for case in json.loads((OLD / "hairpin-trajectories.json").read_text()):
++        key = bool(case["reverse"])
++        if key not in geometries:
++            geometries[key] = native("geometry-" + str(key), {"operation": "race_geometry", "document": case["document"]})
++        geometry = geometries[key]
++        assert geometry["manifest"]["rules_key"] == "standing-5-road-gates-v24"
++        proof = case["trajectory"]
++        try:
++            check(geometry, proof["proof"], proof["ticks"], "compact")
++        except VerificationError as error:
++            cuts.append({"reverse": key, "begin": case["begin"], "rejected": str(error)})
++        else:
++            raise AssertionError("Historical hairpin bypass accepted")
++    recording = json.loads((ROOT / "build/hairpin-checkpoints-2026-10-18/star-edge-five-lap-replay.json").read_text())
++    real = check(geometries[False], recording["race_proof"], recording["time_ticks"], "compact")
++    assert len(real["lap_ticks"]) == 5
++    canonical = native("canonical-edge", {"operation": "diagnostic_replay", "document": recording["document"],
++                                          "replay": recording["replay"], "vehicle_id": "compact", "capture_ghost": False})
++    assert canonical["time_ticks"] == recording["time_ticks"] == 47712
++    assert canonical["manifest"]["rules_key"] == "standing-5-road-gates-v24"
++    report = {"cuts": cuts, "real_sparse_lap_ticks": real["lap_ticks"], "canonical_ticks": canonical["time_ticks"],
++              "canonical_lap_ticks": canonical["lap_ticks"], "manifest": canonical["manifest"],
++              "environment_error": "Windows root certificate store denied by sandbox; retained in native logs"}
++    (OUTPUT / "native-verifier.json").write_text(json.dumps(report, indent=2), encoding="utf-8")
++    print(f"NATIVE_COVERAGE: {len(cuts)} historical cuts rejected; real five-lap proof and 47712 canonical ticks accepted")
++
++
++if __name__ == "__main__":
++    main()

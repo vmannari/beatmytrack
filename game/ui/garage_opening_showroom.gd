@@ -5,7 +5,8 @@ signal studio_interactive
 const FirstDraw=preload("res://ui/garage_first_draw.gd")
 var preparing: bool=true
 var can_begin_studio: Callable
-var _picture: TextureRect
+var achievement_service: Node
+var _picture: Control
 var _pending: Dictionary={}
 var _record_choice: Dictionary={}
 var _warm_view: SubViewport
@@ -25,12 +26,10 @@ func _ready() -> void:
 	_tree_ref=weakref(get_tree())
 	set_process(false)
 	mouse_filter=Control.MOUSE_FILTER_STOP
-	_picture=TextureRect.new()
+	_picture=preload("res://ui/garage_loading_car.gd").new()
 	_picture.name="GarageOpeningPicture"
-	_picture.expand_mode=TextureRect.EXPAND_IGNORE_SIZE
-	_picture.stretch_mode=TextureRect.STRETCH_KEEP_ASPECT_COVERED
 	_picture.mouse_filter=Control.MOUSE_FILTER_IGNORE
-	_picture.texture=load("res://assets/garage/previews_v1/"+vehicle_id+".png")
+	_picture.vehicle_id=vehicle_id
 	add_child(_picture)
 	MenuStyle.fill(_picture)
 	child_entered_tree.connect(func(_child: Node) -> void: _cover.call_deferred())
@@ -38,7 +37,7 @@ func _ready() -> void:
 	set_process_input(true)
 	# Resource decoding may run off the UI thread; nodes and renderer stay owned.
 	for path: String in ["res://assets/garage/cars_v1/"+vehicle_id+".scn",GarageEnvironment.PREPARED_ARCHITECTURE]:
-		if ResourceLoader.exists(path) and ResourceLoader.load_threaded_request(path)==OK: _loads.append(path)
+		if DisplayServer.get_name()!="headless" and ResourceLoader.exists(path) and ResourceLoader.load_threaded_request(path)==OK: _loads.append(path)
 	_begin_studio.call_deferred()
 
 func _cover() -> void:
@@ -64,6 +63,9 @@ func _begin_studio() -> void:
 	cooperative_build=true
 	await super._ready()
 	if not is_inside_tree() or is_queued_for_deletion(): return
+	# The ordinary page applies its wall contents synchronously. Its deferred
+	# counterpart must include them before holding/warming the actual scene.
+	preload("res://ui/achievement_display.gd").update(self,achievement_service)
 	# One MSAA level prevents renderer precompilation switching back and forth
 	# between the live view and its two reflection captures.
 	for view: SubViewport in reflections.views: view.msaa_3d=showroom_viewport.msaa_3d
@@ -100,12 +102,12 @@ func _begin_studio() -> void:
 		first.hold(car)
 		first.hold(camera.get_parent())
 		move_child(_picture,get_child_count()-1)
-		# Keep the original photograph over first-use work. A flat substitute
-		# removes the reflective floor, glass, paint lighting and cast shadows.
+		# Keep the neutral loading car over first-use work. The final reveal
+		# still uses the original full finishes, lighting and planar reflections.
 		while not first.pending.is_empty() and _current_preparation():
 			# Do not even reveal a cold native material into the shadow pass while
 			# input is active. Wait before prepare() exposes its next group.
-			while _current_preparation() and (not is_visible_in_tree() or Time.get_ticks_msec()-_last_input<750): await get_tree().process_frame
+			while _current_preparation() and (not _entry_presented() or Time.get_ticks_msec()-_last_input<750): await get_tree().process_frame
 			if not _current_preparation(): break
 			await first.prepare(_draw_studio,_current_warm_batch)
 		if not _current_studio(): return
@@ -117,7 +119,7 @@ func _begin_studio() -> void:
 		# targets must settle under the picture before the first live reveal.
 		for _settle: int in range(4):
 			if not _current_preparation(): break
-			while _current_studio() and not is_visible_in_tree(): await get_tree().process_frame
+			while _current_studio() and not _entry_presented(): await get_tree().process_frame
 			if not _current_preparation(): break
 			super._process(0.0)
 			showroom_viewport.render_target_update_mode=SubViewport.UPDATE_ONCE
@@ -148,13 +150,13 @@ func _entry_presented() -> bool:
 	return is_visible_in_tree() and (not can_begin_studio.is_valid() or can_begin_studio.call())
 
 func _current_warm_batch() -> bool:
-	return _current_preparation() and is_visible_in_tree() and Time.get_ticks_msec()-_last_input>=750
+	return _current_preparation() and _entry_presented() and Time.get_ticks_msec()-_last_input>=750
 
 func _current_studio() -> bool:
 	return is_inside_tree() and not is_queued_for_deletion()
 
 func _draw_studio() -> bool:
-	while _current_studio() and not is_visible_in_tree(): await get_tree().process_frame
+	while _current_studio() and not _entry_presented(): await get_tree().process_frame
 	# Compile full finishes only after the player pauses their interaction.
 	while _current_preparation() and Time.get_ticks_msec()-_last_input<750: await get_tree().process_frame
 	if not _current_preparation(): return false
@@ -170,7 +172,7 @@ func replace_car(id: String,paint: Dictionary,wear: Dictionary,parts: Dictionary
 	if preparing:
 		_pending={"vehicle":id,"paint":paint.duplicate(true),"wear":wear.duplicate(true),"parts":parts.duplicate(true)}
 		if _picture!=null:
-			_picture.texture=load("res://assets/garage/previews_v1/"+id+".png")
+			_picture.vehicle_id=id
 			_picture.show()
 		return
 	super.replace_car(id,paint,wear,parts)

@@ -130,16 +130,24 @@ func run() -> void:
 				check(false,"profile measurements have all components"+label)
 		if front != null:
 			check(front.material_override == car.paint_materials.body,"closed fascia uses the body paint"+label)
+			# The current nose is made of several fitted panels and recessed
+			# cooling/air-curtain backs, rather than one full-height upper mesh.
+			var fascia: Array[MeshInstance3D] = [front]
+			for prefix: String in ["SportLowerBumper","SportBumper","SportCurtain","SportCooling"]:
+				for part: MeshInstance3D in car.body.find_children(prefix+"*","MeshInstance3D",false,false): fascia.append(part)
 			for x: float in [-0.45,0.0,0.45]:
 				for y: float in [0.34,0.48,0.62]:
-					check(intersects_front(front,x,y),"closed front surface covers "+str(Vector2(x,y))+label)
+					var covered := false
+					for part: MeshInstance3D in fascia: covered = covered or intersects_front(part,x,y)
+					check(covered,"fitted front panels cover "+str(Vector2(x,y))+label)
 		check(car.body.find_children("*AirCurtain*","MeshInstance3D",true,false).is_empty() and car.body.find_children("*Intake*","MeshInstance3D",true,false).is_empty() and car.body.find_children("*Exhaust*","MeshInstance3D",true,false).is_empty(),"no false intake or exhaust geometry"+label)
 		for name_value: String in ["ReferencePanoramicRoof","ReferenceRearScreen","ReferenceRoofRail0","ReferenceRoofRail1","ReferenceFrontLightbar","ReferenceRearLightbar"]:
 			check(car.body.get_node_or_null(name_value) != null,"distinct cabin or light part "+name_value+label)
 		for side: String in ["-1_0","1_0"]:
-			for part: String in ["ReferenceFrontSideGlass","ReferenceRearSideGlass","ReferenceQuarterGlass","ReferenceAPillar","ReferenceBPillar","ReferenceCPillar"]:
+			for part: String in ["ReferenceFrontSideGlass","ReferenceRearSideGlass","ReferenceRearQuarterPanel","ReferenceAPillar","ReferenceBPillar","ReferenceCPillar"]:
 				check(car.body.get_node_or_null(part+side) != null,"distinct window or pillar "+part+side+label)
-			for join: Array in [["ReferenceAPillar","ReferenceFrontSideGlass"],["ReferenceFrontSideGlass","ReferenceBPillar"],["ReferenceBPillar","ReferenceRearSideGlass"],["ReferenceRearSideGlass","ReferenceCPillar"],["ReferenceCPillar","ReferenceQuarterGlass"],["ReferenceQuarterGlass","ReferenceRearPillar"]]:
+			check(car.body.get_node_or_null("ReferenceQuarterGlass"+side)==null,"rear quarter window removed "+side+label)
+			for join: Array in [["ReferenceAPillar","ReferenceFrontSideGlass"],["ReferenceFrontSideGlass","ReferenceBPillar"],["ReferenceBPillar","ReferenceRearSideGlass"],["ReferenceRearSideGlass","ReferenceCPillar"],["ReferenceCPillar","ReferenceRearQuarterPanel"],["ReferenceRearQuarterPanel","ReferenceRearPillar"]]:
 				var first: MeshInstance3D = car.body.get_node_or_null(str(join[0])+side)
 				var second: MeshInstance3D = car.body.get_node_or_null(str(join[1])+side)
 				if first == null or second == null:
@@ -155,7 +163,7 @@ func run() -> void:
 			else:
 				var gap: float = edge_gap(edge(first,1,1.0),edge(second,1,0.0))
 				check(gap < 0.003,"actual fitted canopy join "+str(join)+" gap="+str(gap)+label)
-		for section: String in ["ReferenceCanopyGlass","ReferencePanoramicRoof","ReferenceRearScreen"]:
+		for section: String in ["ReferenceCanopyGlass","ReferencePanoramicRoof"]:
 			var pane: MeshInstance3D = car.body.get_node_or_null(section)
 			for side: int in range(2):
 				var rail: MeshInstance3D = car.body.get_node_or_null("ReferenceRoofRail"+str(side))
@@ -164,13 +172,21 @@ func run() -> void:
 				else:
 					var gap: float = edge_gap(edge(pane,0,float(side)),edge(rail,0,float(1-side)))
 					check(gap < 0.003,"pane meets roof rail "+section+" side="+str(side)+" gap="+str(gap)+label)
+		var rear_screen: MeshInstance3D = car.body.get_node("ReferenceRearScreen")
+		for side: int in range(2):
+			var surround: MeshInstance3D = car.body.get_node("ReferenceRearGlassSurround"+str(side))
+			var rail: MeshInstance3D = car.body.get_node("ReferenceRoofRail"+str(side))
+			check(edge_gap(edge(surround,0,float(1-side)),edge(rear_screen,0,float(side)))<0.001 and point_at_uv(surround,Vector2(0.0,0.0)).distance_to(point_at_uv(rear_screen,Vector2(float(side),0.0)))<0.001,"rear glass meets tapered side surround "+str(side)+label)
+			check(edge_gap(edge(surround,0,float(side)),edge(rail,0,float(1-side)))<0.003,"rear surround meets roof rail "+str(side)+label)
 		var deck: MeshInstance3D = car.body.get_node_or_null("ReferenceRearDeck")
 		var backlight: MeshInstance3D = car.body.get_node_or_null("ReferenceRearScreen")
 		var rear_panel: MeshInstance3D = car.body.get_node_or_null("ReferenceRear")
 		if deck != null and backlight != null and rear_panel != null:
-			var rear_gap: float = edge_gap(edge(backlight,1,1.0),edge(deck,1,0.0))
+			var foot: MeshInstance3D = car.body.get_node("ReferenceRearGlassFoot")
+			var rear_gap: float = edge_gap(edge(backlight,1,1.0),edge(foot,1,0.0))
 			var tail_gap: float = edge_gap(edge(deck,1,1.0),edge(rear_panel,1,1.0))
-			check(rear_gap < 0.0005,"rear glass meets deck gap="+str(rear_gap)+label)
+			check(rear_gap < 0.001,"rear glass meets painted foot gap="+str(rear_gap)+label)
+			check(edge_gap(edge(foot,1,1.0),edge(deck,1,0.0))<0.0005,"painted foot meets deck"+label)
 			check(tail_gap < 0.0005,"deck meets tail gap="+str(tail_gap)+label)
 			for rail_index: int in range(2):
 				var rail: MeshInstance3D = car.body.get_node_or_null("ReferenceRoofRail"+str(rail_index))

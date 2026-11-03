@@ -337,6 +337,11 @@ def process_one(app):
                 failure, detail = str(exc.detail), str(exc.detail)
                 if detail == REJECTION:
                     failure = "name_not_allowed"
+            except SQLAlchemyError:
+                # The savepoint rolls back catalogue/proof/slot effects while
+                # the outer claim can durably schedule its bounded retry.
+                failure = "validator_unavailable"
+                detail = "Publication could not be saved temporarily; the saved request can retry."
         intent.failure_code, intent.detail, intent.lease_token = failure, detail, None
         if failure == "validator_unavailable" and intent.attempts < app.state.settings.max_job_attempts:
             intent.status, intent.lease_until = "queued", now() + min(60, 2 ** min(intent.attempts, 6))
@@ -364,8 +369,13 @@ def _commit_publication(app, session, intent, manifest, result, document):
         raise HTTPException(409, "PUBLICATION_TRACK_UNAVAILABLE")
     if track is None:
         track = Track(owner_id=intent.player_id, authoring_id=intent.authoring_id)
-        track.official = session.scalar(select(Identity.id).where(Identity.player_id == intent.player_id,
-            Identity.provider == "development", Identity.subject == "developer")) is not None
+        if session.bind.dialect.name == "postgresql":
+            # The worker cannot read authentication tables. This fixed-schema
+            # definer exposes only the existing official-publisher predicate.
+            track.official = session.scalar(select(func.bmt_is_official_publisher(intent.player_id)))
+        else:
+            track.official = session.scalar(select(Identity.id).where(Identity.player_id == intent.player_id,
+                Identity.provider == "development", Identity.subject == "developer")) is not None
         session.add(track)
         session.flush()
     elif track.authoring_id is None:

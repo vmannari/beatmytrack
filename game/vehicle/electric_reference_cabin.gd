@@ -62,7 +62,36 @@ static func b_center(v: float) -> float:
 	return lerpf(Body.WINDOW_B_FOOT,0.460,v)
 
 static func c_center(v: float) -> float:
-	return lerpf(Body.WINDOW_C_FOOT,0.742,v)
+	# Bow the rear door glass edge gently rearward while retaining its fitted
+	# endpoints at the door seam and roof rail.
+	return lerpf(Body.WINDOW_C_FOOT,0.742,v)+0.012*sin(PI*v)
+
+static func rear_screen_inset(v: float) -> float:
+	# The sides gently sweep inwards as the glass approaches the rear deck.
+	return 0.02+0.08*v*v
+
+static func hatch_left_u(on_deck: bool,v: float,width: float) -> float:
+	return Body.hatch_left_u(on_deck,v,width)
+
+static func hatch_seam_point(t: float) -> Vector3:
+	# One symmetric shut line runs from the roof boundary, along the rear
+	# glass and deck, then down and across the lower face of the liftgate.
+	var a: float=minf(t,1.0-t)*56.0
+	var mirrored: bool=t>0.5
+	if a<=9.0:
+		return top_point(0.98 if mirrored else 0.02,lerpf(0.760,1.0,a/9.0))+Vector3.UP*0.003
+	if a<=13.0:
+		var p: float=(a-9.0)/4.0
+		var u: float=hatch_left_u(true,p,0.768)
+		return Body.deck_point(1.0-u if mirrored else u,p)+Vector3.UP*0.003
+	if a<=17.0:
+		var p: float=(a-13.0)/4.0
+		var v: float=lerpf(1.0,0.32,p)
+		var u: float=Body.hatch_rear_left_u(v)
+		return Body.cap_point(true,1.0-u if mirrored else u,v)+Vector3.UP*(0.003*(1.0-p))+Vector3.BACK*(0.006*p)
+	var start: float=hatch_left_u(false,0.32,0.70)
+	var u: float=lerpf(start,0.50,(a-17.0)/11.0)
+	return Body.cap_point(true,1.0-u if mirrored else u,0.32)+Vector3.BACK*0.006
 
 static func build(car: CarVisual,paint: Material,trim: Material,glass: Material) -> void:
 	# Windshield, panoramic roof and backlight are distinct, fitted sections of
@@ -77,7 +106,7 @@ static func build(car: CarVisual,paint: Material,trim: Material,glass: Material)
 	var roof_glass: Material=top_glass.duplicate()
 	if roof_glass is ShaderMaterial:
 		(roof_glass as ShaderMaterial).set_shader_parameter("glass_tint_srgb",Vector3(0.026,0.043,0.055))
-	var sections: Array=[["ReferenceCanopyGlass",0.0,0.285,top_glass,24],["ReferencePanoramicRoof",0.289,0.653,roof_glass,24],["ReferenceRearScreen",0.657,1.0,top_glass,24]]
+	var sections: Array=[["ReferenceCanopyGlass",0.0,0.285,top_glass,24],["ReferencePanoramicRoof",0.289,0.756,roof_glass,20]]
 	for section: Array in sections:
 		var label: String=section[0]
 		var begin: float=section[1]
@@ -86,9 +115,20 @@ static func build(car: CarVisual,paint: Material,trim: Material,glass: Material)
 		var rows: int=section[4]
 		Surface.patch(car.body,label,48,rows,func(u: float,v: float)->Vector3:
 			return top_point(lerpf(0.02,0.98,u),lerpf(begin,end,v)),material,Vector3.UP,car.simple_model)
+	Surface.patch(car.body,"ReferenceRearScreen",48,22,func(u: float,v: float)->Vector3:
+		var inset: float=rear_screen_inset(v)
+		return top_point(lerpf(inset,1.0-inset,u),lerpf(0.760,0.970,v)),top_glass,Vector3.UP,car.simple_model)
+	for side: int in range(2):
+		Surface.patch(car.body,"ReferenceRearGlassSurround"+str(side),2,22,func(u: float,v: float)->Vector3:
+			var inset: float=rear_screen_inset(v)
+			var across: float=lerpf(0.02,inset,u) if side==0 else lerpf(1.0-inset,0.98,u)
+			return top_point(across,lerpf(0.760,0.970,v)),paint,Vector3.UP,car.simple_model)
+	Surface.patch(car.body,"ReferenceRearGlassFoot",48,2,func(u: float,v: float)->Vector3:
+		return top_point(lerpf(0.02,0.98,u),lerpf(0.970,1.0,v)),paint,Vector3.UP,car.simple_model)
+	Surface.ribbon(car.body,"ReferenceTrunkShutLine",hatch_seam_point,56,0.0013,trim,car.simple_model)
 	for seam: int in range(2):
-		var begin: float=0.285 if seam==0 else 0.653
-		var end: float=0.289 if seam==0 else 0.657
+		var begin: float=0.285 if seam==0 else 0.756
+		var end: float=0.289 if seam==0 else 0.760
 		Surface.patch(car.body,"ReferenceRoofCrossSeal"+str(seam),48,2,func(u: float,v: float)->Vector3:
 			return top_point(lerpf(0.02,0.98,u),lerpf(begin,end,v)),trim,Vector3.UP,car.simple_model)
 	for edge: int in range(2):
@@ -113,12 +153,12 @@ static func build(car: CarVisual,paint: Material,trim: Material,glass: Material)
 			return side_point(side,lerpf(b_center(v)+0.012,c_center(v)-0.008,u),lerpf(0.075,0.945,v)),side_glass,hint,car.simple_model)
 		Surface.patch(car.body,"ReferenceCPillar"+suffix,3,24,func(u: float,v: float)->Vector3:
 			return side_point(side,c_center(v)+lerpf(-0.008,0.008,u),lerpf(0.075,0.945,v)),trim,hint,car.simple_model)
-		Surface.patch(car.body,"ReferenceQuarterGlass"+suffix,18,24,func(u: float,v: float)->Vector3:
-			return side_point(side,lerpf(c_center(v)+0.008,glass_end(v),u),lerpf(0.075,0.945,v)),side_glass,hint,car.simple_model)
+		Surface.patch(car.body,"ReferenceRearQuarterPanel"+suffix,18,24,func(u: float,v: float)->Vector3:
+			return side_point(side,lerpf(c_center(v)+0.008,glass_end(v),u),lerpf(0.075,0.945,v)),paint,hint,car.simple_model)
 		Surface.patch(car.body,"ReferenceRearPillar"+suffix,10,24,func(u: float,v: float)->Vector3:
 			return side_point(side,lerpf(glass_end(v),1.0,u),lerpf(0.075,0.945,v)),paint,hint,car.simple_model)
 		Surface.patch(car.body,"ReferenceWindowGasket"+suffix,56,2,func(u: float,v: float)->Vector3:
-			return side_point(side,lerpf(glass_start(0.0),glass_end(0.0),u),lerpf(0.067,0.081,v))+Vector3(side*0.001,0.0,0.0),trim,hint,car.simple_model)
+			return side_point(side,lerpf(glass_start(0.0),c_center(0.0)+0.008,u),lerpf(0.067,0.081,v))+Vector3(side*0.001,0.0,0.0),trim,hint,car.simple_model)
 		# Continue the shut lines across the narrow painted window belt.
 		for index: int in range(3):
 			var station: float=[Body.WINDOW_A_FOOT,Body.WINDOW_B_FOOT,Body.WINDOW_C_FOOT][index]

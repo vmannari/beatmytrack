@@ -90,6 +90,25 @@ func run() -> void:
 		"content_hash":"a".repeat(64),"name":document.name,"creator":document.creator,"theme":"pine",
 		"points":document.points,"rating_average":4.7,"rating_count":128}}}
 	service.scores = scores()
+	var result := preload("res://ui/daily_elimination_results.gd").new()
+	result.rules = preload("res://race/daily_elimination.gd").new()
+	result.session = TrackSession.new()
+	result.client = service
+	result.day = 20754
+	result.version = "00000000-0000-0000-0000-000000000002"
+	result.vehicle = "compact"
+	result.track_name = "Test track"
+	root.add_child(result)
+	var result_board: Button = result.find_child("DailyResultsStandingsButton",true,false)
+	check(result_board != null,"daily results expose standings")
+	result_board.pressed.emit()
+	await process_frame
+	var result_dialog: Node = result.get_node_or_null("DailyStandings")
+	check(result_dialog != null and result_dialog.flying_laps and result_dialog.vehicle == "compact","results open the flying-lap board for the raced car")
+	check(not service.calls.is_empty() and "/lap-standings?" in service.calls.back(),"results request the flying-lap standings")
+	result.queue_free()
+	await process_frame
+	service.calls.clear()
 	page.client = service
 	await page.refresh()
 	await settle()
@@ -173,7 +192,8 @@ func run() -> void:
 	var calls: int = service.calls.size()
 	app.cloud.race_verified.emit()
 	await settle()
-	check(service.calls.size() == calls+1,"verified race completion automatically refreshes an open board")
+	var refreshed: Array[String] = service.calls.slice(calls)
+	check(refreshed.size() == 2 and refreshed.any(func(path: String) -> bool: return path.contains("limit=10")) and refreshed.any(func(path: String) -> bool: return path.contains("limit=3")),"verified race completion refreshes both the open board and daily card")
 	TranslationServer.set_locale("fi")
 	GameText.refresh(self)
 	await settle()

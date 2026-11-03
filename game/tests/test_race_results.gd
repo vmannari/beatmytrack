@@ -347,10 +347,14 @@ func run() -> void:
 	rating_row.stars[2].pressed.emit()
 	restored.load_records()
 	check(int(restored.settings.track_ratings.get(track.identity,0)) == 3,"standings edits persist")
-	for page_size: Vector2i in [Vector2i(1280,720),Vector2i(1920,1080),Vector2i(2400,1080)]:
+	for page_size: Vector2i in [Vector2i(1280,683),Vector2i(1280,720),Vector2i(1920,1080),Vector2i(2400,1080)]:
 		root.size = page_size
 		await settle()
 		check((app.get("root_ui") as Control).get_global_rect().encloses(page.get_global_rect()),"Race Complete fits "+str(page_size))
+		for action_name: String in ["BackToResults","RaceSelectedTrack"]:
+			var action := page.find_child(action_name,true,false) as Button
+			check(page.get_global_rect().encloses(action.get_global_rect()),"completion action fully visible: "+action_name+" "+str(page_size))
+			check(action.size.y >= 60,"completion action retains touch height")
 		await screenshot("race-complete-"+str(page_size.x)+"x"+str(page_size.y))
 	(page as RaceComplete).cards[2].pressed.emit()
 	check((page as RaceComplete).race_button.text.contains(str((page as RaceComplete).recommendations[2].name).to_upper()),"recommendation selects primary race action")

@@ -1,0 +1,974 @@
+diff --git a/AGENTS.md b/AGENTS.md
+--- a/AGENTS.md
++++ b/AGENTS.md
+@@ -1,3 +1,8 @@
++<!-- THUMBNAIL-STUDIO-EXPERIMENT-20261103 -->
++## Dedicated thumbnail studio measured and rejected (2026-11-03)
++TSE01-TSE03: One-view plain studio tested against actual async five-car preview batches. First Compatibility35.143to19.174s, later1.384to1.290s; desktop Mobile first38.855to35.581s, later26.192to26.304s. Later all-PNG completion regresses2.8%/1.0%; lower referenced scene estimates do not establish RAM/startup savings. Candidate not shipped; seven production sources byte-exact restored, original pictures/full Garage/loading ghosts retained. Four primary native runs296/0,20 captures; isolated archived fixtures reproduce56/0. Commands, limits, sources and task-only checkpoint: [docs/THUMBNAIL_STUDIO_EXPERIMENT_2026_11_03.md](docs/THUMBNAIL_STUDIO_EXPERIMENT_2026_11_03.md). No phone/cold-driver/startup-speedup claim, device query/test, APK, owner-save/process change, backend/live mutation, deployment or main-index write; concurrent work preserved.
++<!-- /THUMBNAIL-STUDIO-EXPERIMENT-20261103 -->
++
+ <!-- OBSOLETE-ASSET-CLEANUP-20261103 -->
+ ## Obsolete revisions excluded from Android export (2026-11-03)
+ OAC01-OAC03:46 old vehicle banks/16 old challenge posters gain explicit export exclusions; source/history/current11banks/fiveposters and both architectures retained. Frozen paired content ZIP327.42to217.15MiB saves110.27MiB/33.68%;15582 expected entries removed,8203 retained content files exact,218 class declarations/every retained UID exact. Packed11019/0 each loads5242resources with516 identical metrics; source catalog21/0 and licences520/0. Initial ConfigFile comment/index findings and matched desktop Android-library/environment errors retained. Sources, commands, concurrent-source limits and task-only checkpoint: [docs/OBSOLETE_ASSET_CLEANUP_2026_11_03.md](docs/OBSOLETE_ASSET_CLEANUP_2026_11_03.md). No APK/AAB, phone query/test, owner-save/process change, backend/live access, deployment or main-index write; concurrent work preserved. Normal rebuild/owner/device acceptance remain.
+diff --git a/DEVELOPMENT_STATUS.md b/DEVELOPMENT_STATUS.md
+--- a/DEVELOPMENT_STATUS.md
++++ b/DEVELOPMENT_STATUS.md
+@@ -1,3 +1,8 @@
++<!-- THUMBNAIL-STUDIO-EXPERIMENT-20261103 -->
++## Dedicated thumbnail studio measured and rejected (2026-11-03)
++TSE01-TSE03: One-view plain studio tested against actual async five-car preview batches. First Compatibility35.143to19.174s, later1.384to1.290s; desktop Mobile first38.855to35.581s, later26.192to26.304s. Later all-PNG completion regresses2.8%/1.0%; lower referenced scene estimates do not establish RAM/startup savings. Candidate not shipped; seven production sources byte-exact restored, original pictures/full Garage/loading ghosts retained. Four primary native runs296/0,20 captures; isolated archived fixtures reproduce56/0. Commands, limits, sources and task-only checkpoint: [docs/THUMBNAIL_STUDIO_EXPERIMENT_2026_11_03.md](docs/THUMBNAIL_STUDIO_EXPERIMENT_2026_11_03.md). No phone/cold-driver/startup-speedup claim, device query/test, APK, owner-save/process change, backend/live mutation, deployment or main-index write; concurrent work preserved.
++<!-- /THUMBNAIL-STUDIO-EXPERIMENT-20261103 -->
++
+ <!-- ACHIEVEMENT-TIMING-20261103 -->
+ ## Deferred achievement updates resume at results (2026-11-03)
+ AT01-AT02: Results/menu/loading lifecycle wake now resumes pending authoritative achievement reads under the existing driving guard. Original focused9/5fail becomes9/0 headless and native Compatibility; retained actual-App notification291/0 headless. No criteria/backend/layout change; server verification/offline delays remain. Commands, certificate-store environment error, source checkpoint and limits: [report](docs/ACHIEVEMENT_TIMING_2026_11_03.md). Reload/owner sequence acceptance remains; no device query/test, APK, owner-save/process change, real backend request, deployment or main-index write. Concurrent work preserved.
+diff --git a/game/tests/profile_thumbnail_studio.gd b/game/tests/profile_thumbnail_studio.gd
+new file mode 100644
+--- /dev/null
++++ b/game/tests/profile_thumbnail_studio.gd
+@@ -0,0 +1,180 @@
++extends SceneTree
++## Real preview-service misses. Same car, resolution, AA, read/write and settling.
++const Candidate = preload("res://tests/fixtures/thumbnail_studio_candidate.gd")
++var checks: int = 0
++var failures: int = 0
++var rows: Array = []
++var output: String
++var measuring: bool = false
++var last_frame: int = 0
++var largest_frame: int = 0
++
++class MeasuredService extends "res://tests/fixtures/thumbnail_studio_cache.gd":
++	var candidate: bool = false
++	var captured_us: int = 0
++	var audit_us: int = 0
++	var metrics: Dictionary = {}
++	var deliveries: Array = []
++	func _make_renderer() -> CarShowroom:
++		# Concrete retained control remains the old renderer after integration.
++		return Candidate.new() if candidate else preload("res://ui/garage_preview_renderer.gd").new()
++	func _capture() -> void:
++		var view: CarShowroom = renderer
++		super._capture()
++		if not is_instance_valid(view) or renderer != null: return
++		captured_us = Time.get_ticks_usec()
++		var began: int = Time.get_ticks_usec()
++		metrics = {"nodes":view.find_children("*","Node",true,false).size(),
++			"meshes":view.find_children("*","GeometryInstance3D",true,false).size(),
++			"scene_bytes_estimate":preload("res://track/prepared_world_cache.gd")._resource_bytes(view,{}),
++			"viewports":view.find_children("*","SubViewport",true,false).size(),"viewport_pixels":0,
++			"vehicle":view.car.vehicle_id,"livery":view.car.livery.duplicate(true),"parts":view.car.customisation.duplicate(true),
++			"body_color":view.car.paint_materials.body.albedo_color.to_html(false),"dirt":view.weathering.dirt_amount}
++		for viewport: SubViewport in view.find_children("*","SubViewport",true,false): metrics.viewport_pixels += viewport.size.x*viewport.size.y
++		audit_us = Time.get_ticks_usec()-began
++		deliveries.append({"us":captured_us,"audit_us":audit_us,"metrics":metrics.duplicate(true)})
++
++func _initialize() -> void: run.call_deferred()
++func check(value: bool, label: String) -> void:
++	checks += 1
++	if not value: failures += 1; printerr("THUMBNAIL_STUDIO_FAIL ",label)
++func observe() -> void:
++	var now: int = Time.get_ticks_usec()
++	if measuring and last_frame > 0: largest_frame = maxi(largest_frame,now-last_frame)
++	last_frame = now
++func run() -> void:
++	OS.set_environment("BMT_API_URL","")
++	output = OS.get_environment("BMT_THUMBNAIL_OUTPUT")
++	DirAccess.make_dir_recursive_absolute(output)
++	root.size = Vector2i(1280,720)
++	process_frame.connect(observe)
++	var order: Array[bool] = [false,true]
++	if "--candidate-first" in OS.get_cmdline_user_args(): order.reverse()
++	if "--only-original" in OS.get_cmdline_user_args(): order = [false]
++	if "--only-studio" in OS.get_cmdline_user_args(): order = [true]
++	var rounds: int = 3
++	if "--quick" in OS.get_cmdline_user_args(): rounds = 1
++	if "--batch" in OS.get_cmdline_user_args():
++		await batch(order,rounds)
++		finish()
++		return
++	for round_index: int in range(rounds):
++		for id: String in VehicleCatalog.IDS:
++			var paint: Dictionary = VehicleLivery.defaults(id)
++			paint.colors.body = "32b5d7"
++			paint.pattern = "offset_gt"
++			var parts: Dictionary = VehicleCustomisation.defaults()
++			if id in ["compact","kart","forklift","electric"]:
++				var choices: Array = VehicleCustomisation.options("aero",id)
++				if choices.size() > 1: parts.aero = choices[1][0]
++			var wear: Dictionary = VehicleWeathering.new().snapshot()
++			wear.dirt = 0.12
++			for candidate: bool in order:
++				var label: String = ("studio" if candidate else "original")+"-"+id+"-"+str(round_index)
++				var service := MeasuredService.new()
++				service.candidate = candidate
++				service.idle_ms = 0
++				service.directory = "user://thumbnail-benchmark/"+label
++				root.add_child(service)
++				var tile: CarShowroom = preload("res://ui/garage_cached_thumbnail.gd").new()
++				tile.preview_service = service
++				tile.vehicle_id = id
++				tile.livery = paint.duplicate(true)
++				tile.customisation = parts.duplicate(true)
++				tile.condition = wear.duplicate(true)
++				tile.position = Vector2(20,20)
++				tile.size = Vector2(300,140)
++				largest_frame = 0
++				last_frame = Time.get_ticks_usec()
++				var began: int = last_frame
++				measuring = true
++				root.add_child(tile)
++				var deadline: int = Time.get_ticks_msec()+90000
++				while tile._image.texture == null and Time.get_ticks_msec() < deadline: await process_frame
++				measuring = false
++				check(tile._image.texture != null,"actual picture delivered "+label)
++				if tile._image.texture == null: quit(1); return
++				while (service.worker != null or not service.pending_writes.is_empty()) and Time.get_ticks_msec() < deadline: await process_frame
++				var persisted: int = Time.get_ticks_usec()
++				check(service.worker == null and service.pending_writes.is_empty(),"PNG write completed "+label)
++				check(service.metrics.vehicle == id and service.metrics.livery == paint and service.metrics.parts == parts,"saved model/paint/kits preserved "+label)
++				check(service.metrics.body_color == paint.colors.body,"actual paint material preserved "+label)
++				check(service.metrics.viewports == (1 if candidate else 3),"expected capture views "+label)
++				var image: Image = tile._image.texture.get_image()
++				check(image.get_size() == Vector2i(2048,512),"unchanged native picture dimensions "+label)
++				if round_index == 0: check(image.save_png(output.path_join(label+".png")) == OK,"native capture "+label)
++				var row: Dictionary = {"round":round_index,"vehicle":id,"candidate":candidate,
++					"picture_ms":(service.captured_us-began)/1000.0,"persisted_ms":(persisted-began-service.audit_us)/1000.0,
++					"largest_frame_ms":largest_frame/1000.0,"audit_us":service.audit_us,"metrics":service.metrics}
++				rows.append(row)
++				print("THUMBNAIL_SAMPLE ",JSON.stringify(row))
++				tile.queue_free()
++				service.queue_free()
++				for _frame: int in range(6): await process_frame
++			order.reverse()
++	finish()
++
++func finish() -> void:
++	var file := FileAccess.open(output.path_join("report.json"),FileAccess.WRITE)
++	file.store_string(JSON.stringify({"checks":checks,"failures":failures,"renderer":RenderingServer.get_current_rendering_method(),"rows":rows},"  "))
++	file.close()
++	print("THUMBNAIL_STUDIO_COMPLETE ",checks," checks, ",failures," failures")
++	quit(1 if failures else 0)
++
++func batch(order: Array[bool], rounds: int) -> void:
++	for round_index: int in range(rounds):
++		for candidate: bool in order:
++			var label: String = ("studio" if candidate else "original")+"-batch-"+str(round_index)
++			var service := MeasuredService.new()
++			service.candidate = candidate
++			service.idle_ms = 0
++			root.add_child(service)
++			var records := LocalRecords.new("user://thumbnail-batch/"+label+"/records.json")
++			var paints: Dictionary = {}
++			var kits: Dictionary = {}
++			var conditions: Dictionary = {}
++			for id: String in VehicleCatalog.IDS:
++				var paint: Dictionary = VehicleLivery.defaults(id)
++				paint.colors.body = "32b5d7"
++				paint.pattern = "offset_gt"
++				paints[id] = paint
++				var parts: Dictionary = VehicleCustomisation.defaults()
++				if id != "hovercraft":
++					var choices: Array = VehicleCustomisation.options("aero",id)
++					if choices.size() > 1: parts.aero = choices[1][0]
++				kits[id] = parts
++				var wear: Dictionary = VehicleWeathering.new().snapshot()
++				wear.dirt = 0.12
++				conditions[id] = wear
++			records.settings = {"vehicle_liveries":paints,"vehicle_customisation":kits,"vehicle_conditions":conditions}
++			var began: int = Time.get_ticks_usec()
++			largest_frame = 0
++			last_frame = began
++			measuring = true
++			service.warm_records(records,false)
++			var deadline: int = Time.get_ticks_msec()+150000
++			while not service.pictures_ready() and Time.get_ticks_msec() < deadline: await process_frame
++			measuring = false
++			check(service.pictures_ready(),"all five actual pictures delivered "+label)
++			if not service.pictures_ready(): quit(1); return
++			var delivered: int = service.captured_us
++			while (service.worker != null or not service.pending_writes.is_empty()) and Time.get_ticks_msec() < deadline: await process_frame
++			var persisted: int = Time.get_ticks_usec()
++			check(service.worker == null and service.pending_writes.is_empty(),"all five PNG writes completed "+label)
++			check(service.deliveries.size() == VehicleCatalog.IDS.size(),"one capture per actual car "+label)
++			for delivery: Dictionary in service.deliveries:
++				var id: String = delivery.metrics.vehicle
++				check(delivery.metrics.livery == paints[id] and delivery.metrics.parts == kits[id],"exact saved appearance "+label+"/"+id)
++				check(delivery.metrics.body_color == paints[id].colors.body,"actual paint preserved "+label+"/"+id)
++				check(is_equal_approx(delivery.metrics.dirt,0.12),"saved condition preserved "+label+"/"+id)
++				check(delivery.metrics.viewports == (1 if candidate else 3),"bounded views "+label+"/"+id)
++				if round_index == 0:
++					var image: Image = service.ready_pictures[id].texture.get_image()
++					check(image.save_png(output.path_join(("studio-" if candidate else "original-")+id+".png")) == OK,"native batch view "+id)
++			var row: Dictionary = {"batch":true,"round":round_index,"candidate":candidate,"picture_ms":(delivered-began)/1000.0,
++				"persisted_ms":(persisted-began)/1000.0,"largest_frame_ms":largest_frame/1000.0,"deliveries":service.deliveries}
++			rows.append(row)
++			print("THUMBNAIL_BATCH ",JSON.stringify(row))
++			service.queue_free()
++			for _frame: int in range(8): await process_frame
++		order.reverse()
+diff --git a/game/tests/profile_thumbnail_studio.gd.uid b/game/tests/profile_thumbnail_studio.gd.uid
+new file mode 100644
+--- /dev/null
++++ b/game/tests/profile_thumbnail_studio.gd.uid
+@@ -0,0 +1 @@
++uid://da1dwhi2lr3iy
+diff --git a/game/tests/fixtures/thumbnail_studio_candidate.gd b/game/tests/fixtures/thumbnail_studio_candidate.gd
+new file mode 100644
+--- /dev/null
++++ b/game/tests/fixtures/thumbnail_studio_candidate.gd
+@@ -0,0 +1,122 @@
++extends "res://ui/garage_preview_renderer.gd"
++## Candidate: the exact car in one photographic viewport, without the workshop.
++func _ready() -> void:
++	set_process(false)
++	read_only = true
++	garage_mode = true
++	elevation = atan(0.16)
++	mouse_filter = Control.MOUSE_FILTER_IGNORE
++	showroom_viewport = SubViewport.new()
++	showroom_viewport.own_world_3d = true
++	showroom_viewport.size = Vector2i(2048,512)
++	# Keep the existing capture resolution/AA while measuring the scene change.
++	showroom_viewport.msaa_3d = Viewport.MSAA_4X
++	showroom_viewport.mesh_lod_threshold = 0.5
++	showroom_viewport.render_target_update_mode = SubViewport.UPDATE_DISABLED
++	var holder := Node.new()
++	holder.name = "ThumbnailWorld"
++	add_child(holder)
++	holder.add_child(showroom_viewport)
++	var image := TextureRect.new()
++	image.name = "ModelRender"
++	image.texture = showroom_viewport.get_texture()
++	image.expand_mode = TextureRect.EXPAND_IGNORE_SIZE
++	image.mouse_filter = Control.MOUSE_FILTER_IGNORE
++	image.texture_filter = CanvasItem.TEXTURE_FILTER_LINEAR
++	add_child(image)
++	MenuStyle.fill(image)
++	var world := Node3D.new()
++	world.name = "ThumbnailStudio"
++	showroom_viewport.add_child(world)
++	car = CarVisual.new()
++	car.vehicle_id = vehicle_id
++	car.garage_template = true
++	car.editable_kits = VehicleCustomisation.supported(vehicle_id)
++	car.livery = livery
++	car.customisation = customisation
++	car.cooperative_build = cooperative_build
++	world.add_child(car)
++	while not car.model_ready:
++		await get_tree().process_frame
++		if not is_inside_tree() or is_queued_for_deletion(): return
++	turntable = Node3D.new()
++	turntable.name = "ThumbnailStage"
++	world.add_child(turntable)
++	car.reparent(turntable)
++	car.position.y = GarageEnvironment.DECK_HEIGHT
++	var environment: WorldEnvironment = GarageEnvironment.build_lighting(world,true)
++	environment.environment.ambient_light_energy = 0.54
++	world.get_node("GarageKey").light_energy = 1.08
++	ShowroomStudio._studio_glass(car,{})
++	var floor := MeshInstance3D.new()
++	floor.name = "ThumbnailFloor"
++	# A few curved strips remove the horizon seam without constructing a room.
++	var tool := SurfaceTool.new()
++	tool.begin(Mesh.PRIMITIVE_TRIANGLES)
++	var profile: Array[Vector2] = [Vector2(-40,0),Vector2(8,0)]
++	var normals: Array[Vector3] = [Vector3.UP,Vector3.UP]
++	for step: int in range(1,13):
++		var angle: float = step*PI/24.0
++		profile.append(Vector2(8+4*sin(angle),4*(1-cos(angle))))
++		normals.append(Vector3(0,cos(angle),-sin(angle)))
++	profile.append(Vector2(12,20))
++	normals.append(Vector3(0,0,-1))
++	for index: int in range(profile.size()-1):
++		var a: Vector2 = profile[index]
++		var b: Vector2 = profile[index+1]
++		var points: Array[Vector3] = [Vector3(-40,a.y,a.x),Vector3(-40,b.y,b.x),Vector3(40,b.y,b.x),Vector3(40,a.y,a.x)]
++		for vertex: int in [0,2,1,0,3,2]:
++			tool.set_normal(normals[index if vertex in [0,3] else index+1])
++			tool.add_vertex(points[vertex])
++	floor.mesh = tool.commit()
++	var floor_finish := ShaderMaterial.new()
++	floor_finish.shader = preload("res://ui/studio_floor.gdshader")
++	floor.material_override = floor_finish
++	floor.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
++	world.add_child(floor)
++	var deck := MeshInstance3D.new()
++	deck.name = "ThumbnailDeck"
++	var cylinder := CylinderMesh.new()
++	cylinder.top_radius = GarageEnvironment.DECK_RADIUS
++	cylinder.bottom_radius = GarageEnvironment.DECK_RADIUS
++	cylinder.height = 0.20
++	cylinder.radial_segments = 64
++	deck.mesh = cylinder
++	deck.position.y = 0.115
++	var finish := StandardMaterial3D.new()
++	finish.albedo_color = Color("293d49")
++	finish.roughness = 0.8
++	finish.metallic = 0.05
++	deck.material_override = finish
++	deck.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
++	world.add_child(deck)
++	_shadow(turntable,Vector3(0,0.220,0),Vector2(2.3,4.4)*HandlingConfig.BODY_SCALE,0.34)
++	for wheel: Vector3 in car.wheel_rest_positions:
++		_shadow(turntable,Vector3(wheel.x*HandlingConfig.BODY_SCALE,0.222,wheel.z*HandlingConfig.BODY_SCALE),Vector2(0.62,0.85),0.52)
++	weathering.configure(car,"pine",VehicleCatalog.config(vehicle_id))
++	weathering.restore(condition)
++	camera = Camera3D.new()
++	world.add_child(camera)
++	camera.projection = Camera3D.PROJECTION_PERSPECTIVE
++	camera.fov = 38.0
++	camera.current = true
++	_orbit()
++	camera.keep_aspect = Camera3D.KEEP_HEIGHT
++	resized.connect(refresh_thumbnail)
++	visibility_changed.connect(refresh_thumbnail)
++	refresh_thumbnail()
++	showroom_ready = true
++
++func _shadow(parent: Node3D, at: Vector3, dimensions: Vector2, opacity: float) -> void:
++	var shadow := MeshInstance3D.new()
++	shadow.name = "ThumbnailContactShadow"
++	var plane := PlaneMesh.new()
++	plane.size = dimensions
++	shadow.mesh = plane
++	shadow.position = at
++	shadow.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
++	var finish := ShaderMaterial.new()
++	finish.shader = preload("res://tests/fixtures/thumbnail_studio_shadow.gdshader")
++	finish.set_shader_parameter("opacity",opacity)
++	shadow.material_override = finish
++	parent.add_child(shadow)
+diff --git a/game/tests/fixtures/thumbnail_studio_candidate.gd.uid b/game/tests/fixtures/thumbnail_studio_candidate.gd.uid
+new file mode 100644
+--- /dev/null
++++ b/game/tests/fixtures/thumbnail_studio_candidate.gd.uid
+@@ -0,0 +1 @@
++uid://cb72y7q7s1hqx
+diff --git a/game/tests/fixtures/thumbnail_studio_shadow.gdshader b/game/tests/fixtures/thumbnail_studio_shadow.gdshader
+new file mode 100644
+--- /dev/null
++++ b/game/tests/fixtures/thumbnail_studio_shadow.gdshader
+@@ -0,0 +1,9 @@
++shader_type spatial;
++render_mode unshaded, cull_disabled, depth_draw_never;
++uniform float opacity = 0.34;
++void fragment() {
++	vec2 point = (UV-vec2(0.5))*2.0;
++	float falloff = exp(-dot(point,point)*3.8);
++	ALBEDO = vec3(0.008,0.015,0.022);
++	ALPHA = falloff*opacity*(1.0-smoothstep(0.65,1.0,length(point)));
++}
+diff --git a/game/tests/fixtures/thumbnail_studio_shadow.gdshader.uid b/game/tests/fixtures/thumbnail_studio_shadow.gdshader.uid
+new file mode 100644
+--- /dev/null
++++ b/game/tests/fixtures/thumbnail_studio_shadow.gdshader.uid
+@@ -0,0 +1 @@
++uid://wpolu536pg3v
+diff --git a/game/tests/fixtures/thumbnail_studio_cache.gd b/game/tests/fixtures/thumbnail_studio_cache.gd
+new file mode 100644
+--- /dev/null
++++ b/game/tests/fixtures/thumbnail_studio_cache.gd
+@@ -0,0 +1,367 @@
++extends Node
++## One native capture and one owned IO worker. Workers never access a view/node.
++const Build = preload("res://core/build_identity.gd")
++const Work = preload("res://editor/work_job.gd")
++const VERSION: String = "garage-native-previews-v2"
++const MAX_FILES: int = 14
++static var factory_pictures: Dictionary={}
++static var pending_pictures: Array[String]=[]
++var directory: String = ""
++var queued: Array[Dictionary] = []
++var active: Dictionary = {}
++var renderer: CarShowroom
++var worker: RefCounted
++var io: Dictionary = {}
++var frames: int = 0
++var renders: int = 0
++var cache_hits: int = 0
++var readback_us: int = 0
++var file_io_us: int = 0
++var can_render: Callable
++var prepared_picture: Dictionary={}
++var pending_writes: Array[Dictionary]=[]
++var ready_pictures: Dictionary={}
++var remember_pictures: bool=false
++var immediate_reads: bool=false
++var warm_views: Dictionary={}
++var _last_input: int=0
++var _touches: Dictionary={}
++var idle_ms: int=750
++
++func _ready() -> void:
++	_last_input=Time.get_ticks_msec()
++	preload("res://ui/preview_touch_input.gd").bind(self)
++	if get_parent() is CanvasItem: get_parent().visibility_changed.connect(_visibility_changed)
++
++func _release_preview_touch(index: int) -> void:
++	if _touches.has(index):
++		_touches.erase(index)
++		_last_input=Time.get_ticks_msec()
++
++func _input(event: InputEvent) -> void:
++	if event is InputEventScreenTouch:
++		if event.pressed and not event.canceled: _touches[event.index]=true
++		else: _touches.erase(event.index)
++	if event is InputEventMouseButton or event is InputEventScreenTouch or event is InputEventScreenDrag or event is InputEventKey or event is InputEventJoypadButton or (event is InputEventJoypadMotion and absf(event.axis_value)>0.2) or (event is InputEventMouseMotion and event.button_mask!=0): _last_input=Time.get_ticks_msec()
++
++func _render_allowed() -> bool:
++	if not _touches.is_empty() or Input.is_anything_pressed() or Time.get_ticks_msec()-_last_input<idle_ms: return false
++	var focus: Control=get_viewport().gui_get_focus_owner()
++	if focus is LineEdit or focus is TextEdit: return false
++	return not can_render.is_valid() or bool(can_render.call())
++
++func _notification(what: int) -> void:
++	if what in [NOTIFICATION_APPLICATION_FOCUS_OUT,NOTIFICATION_APPLICATION_PAUSED,NOTIFICATION_APPLICATION_FOCUS_IN,NOTIFICATION_APPLICATION_RESUMED]:
++		_touches.clear()
++		_last_input=Time.get_ticks_msec()
++
++func _visibility_changed() -> void:
++	if get_parent() is CanvasItem and not get_parent().is_visible_in_tree(): suspend_previews()
++
++func suspend_previews() -> void:
++	# Parked Garage processing is disabled, so cancellation cannot depend on its
++	# next _process callback. Keep only current queued work for a later revisit.
++	if not active.is_empty() and _current(active): queued.push_front(active)
++	_finish()
++	if worker != null and io.get("read",false): worker.cancel()
++var catalogue: Dictionary = {}
++
++func catalogue_texture(vehicle: String) -> Texture2D:
++	if not catalogue.has(vehicle):
++		if factory_pictures.has(vehicle):
++			catalogue[vehicle]=factory_pictures[vehicle]
++			return catalogue[vehicle]
++		var path: String = "res://assets/garage/previews_v1/"+vehicle+".png"
++		if ResourceLoader.exists(path): catalogue[vehicle] = load(path)
++	return catalogue.get(vehicle)
++
++static func prefetch_catalogue(tree: SceneTree) -> void:
++	# Only seven public stock photographs; no Garage world or account data.
++	if not pending_pictures.is_empty() or factory_pictures.size()==VehicleCatalog.IDS.size(): return
++	for id: String in VehicleCatalog.IDS:
++		if factory_pictures.has(id): continue
++		var path: String="res://assets/garage/previews_v1/"+id+".png"
++		if ResourceLoader.exists(path) and ResourceLoader.load_threaded_request(path)==OK: pending_pictures.append(id)
++	_poll_pictures(weakref(tree))
++
++static func _poll_pictures(tree_ref: WeakRef) -> void:
++	for index: int in range(pending_pictures.size()-1,-1,-1):
++		var id: String=pending_pictures[index]
++		var path: String="res://assets/garage/previews_v1/"+id+".png"
++		var status: int=ResourceLoader.load_threaded_get_status(path)
++		if status==ResourceLoader.THREAD_LOAD_IN_PROGRESS: continue
++		if status==ResourceLoader.THREAD_LOAD_LOADED: factory_pictures[id]=ResourceLoader.load_threaded_get(path)
++		pending_pictures.remove_at(index)
++	var tree: Object=tree_ref.get_ref()
++	if not pending_pictures.is_empty() and is_instance_valid(tree): tree.process_frame.connect(_poll_pictures.bind(tree_ref),CONNECT_ONE_SHOT)
++
++func identity(view: CarShowroom) -> String:
++	# Older generated identities do not have a per-car revision. Keep their
++	# conservative shared fingerprint until the next normal build refresh.
++	var identity_script: Script = Build
++	var revisions: Dictionary = identity_script.get_script_constant_map().get("GARAGE_PREVIEW_VEHICLE_SHA256",{})
++	var revision: String = str(revisions.get(view.vehicle_id,Build.GARAGE_PREVIEW_SHA256))
++	# A new prepared Volt mesh set must not reuse pictures from the prior model,
++	# including in an editor session before the next generated build identity.
++	if view.vehicle_id == "electric":
++		revision += ":" + preload("res://vehicle/electric_reference_mesh.gd").ASSET_ROOT
++		revision += ":" + preload("res://vehicle/electric_kits.gd").HOOD_REVISION
++	return JSON.stringify([VERSION,revision,view.vehicle_id,view.livery,_visible_condition(view.condition),view.customisation]).sha256_text()
++
++func _visible_condition(value: Dictionary) -> Dictionary:
++	# A saved clean snapshot has the same original finish as an absent condition.
++	if not value.is_empty() and value.get("version") != 1: return value
++	for field: String in ["dirt","snow","slow_dirt","slow_snow","wetness","mud","smudge"]:
++		if float(value.get(field,0.0)) != 0.0: return value
++	return {}
++
++func warm_records(records: LocalRecords, read_immediately: bool=true) -> void:
++	remember_pictures=true
++	immediate_reads=read_immediately
++	directory=records.path+".garage-previews"
++	for id: String in VehicleCatalog.IDS:
++		var view: CarShowroom=warm_views.get(id)
++		var fresh: bool=view==null
++		if fresh:
++			view=preload("res://ui/garage_cached_thumbnail.gd").new()
++			view.vehicle_id=id
++			view.preview_service=self
++			view.hide()
++			warm_views[id]=view
++		view.livery=VehicleLivery.for_car(records.settings,id)
++		view.condition=VehicleCondition.read(records,id)
++		view.customisation=VehicleCustomisation.for_car(records.settings,id)
++		if fresh: add_child(view)
++		else: view.refresh_thumbnail()
++		if view.displayed_key==view.preview_key and view._image.texture!=null: _publish(view,view.preview_key,view._image.texture)
++
++func pictures_ready() -> bool:
++	if warm_views.size()!=VehicleCatalog.IDS.size(): return false
++	for view: CarShowroom in warm_views.values():
++		if _remembered(view.vehicle_id,view.preview_key)==null: return false
++	return true
++
++func _remembered(vehicle: String,key: String) -> Texture2D:
++	if not remember_pictures or directory.is_empty(): return null
++	var picture: Dictionary=ready_pictures.get(vehicle,{})
++	return picture.get("texture") if picture.get("key")==key else null
++
++func _publish(view: CarShowroom,key: String,texture: Texture2D) -> void:
++	if view.preview_key!=key or texture==null: return
++	if remember_pictures and not directory.is_empty(): ready_pictures[view.vehicle_id]={"key":key,"texture":texture}
++	view.publish_preview(key,texture)
++
++func picture_bytes(seen: Dictionary) -> int:
++	var bytes: int=0
++	var textures: Array=[]
++	for picture: Dictionary in ready_pictures.values(): textures.append(picture.texture)
++	for view: CarShowroom in warm_views.values():
++		if view._image!=null: textures.append(view._image.texture)
++	for texture: Texture2D in textures:
++		if texture==null or seen.has(texture.get_instance_id()): continue
++		seen[texture.get_instance_id()]=true
++		bytes+=texture.get_width()*texture.get_height()*4
++	return bytes
++
++func request(view: CarShowroom) -> void:
++	var key: String = identity(view)
++	var remembered: Texture2D=_remembered(view.vehicle_id,key)
++	if remembered!=null:
++		cache_hits+=1
++		if prepared_picture.get("vehicle")==view.vehicle_id: prepared_picture={}
++		view.publish_preview(key,remembered)
++		return
++	if prepared_picture.get("vehicle")==view.vehicle_id and prepared_picture.get("paint")==view.livery and prepared_picture.get("condition")==view.condition and prepared_picture.get("parts")==view.customisation:
++		cache_hits+=1
++		_publish(view,key,prepared_picture.texture)
++		if not directory.is_empty() and prepared_picture.get("persisted_key","")!=key:
++			pending_writes.append({"key":key,"texture":prepared_picture.texture})
++			prepared_picture.persisted_key=key
++		return
++	if _default(view):
++		var texture: Texture2D = catalogue_texture(view.vehicle_id)
++		if texture != null:
++			cache_hits += 1
++			_publish(view,key,texture)
++			return
++	if immediate_reads and not directory.is_empty():
++		var result: Dictionary=_read(func() -> bool: return false,directory.path_join(key+".png"))
++		file_io_us+=int(result.us)
++		if result.image is Image:
++			cache_hits+=1
++			_publish(view,key,ImageTexture.create_from_image(result.image))
++			return
++	for index: int in range(queued.size()-1,-1,-1):
++		if queued[index].view.get_ref() == view or not _current(queued[index]): queued.remove_at(index)
++	if active.get("key") == key and active.view.get_ref() == view: return
++	if io.get("key") == key and _view(io) == view: return
++	queued.append({"view":weakref(view),"key":key,"vehicle":view.vehicle_id,"paint":view.livery.duplicate(true),"condition":view.condition.duplicate(true),"parts":view.customisation.duplicate(true),"read":not immediate_reads})
++
++func _default(view: CarShowroom) -> bool:
++	return view.livery == VehicleLivery.for_car({},view.vehicle_id) and _visible_condition(view.condition).is_empty() and view.customisation == VehicleCustomisation.defaults()
++
++func _current(job: Dictionary, visible: bool = false) -> bool:
++	var view: Object = _view(job)
++	return is_instance_valid(view) and view.preview_key == job.key and (not visible or warm_views.get(view.vehicle_id)==view or _on_screen(view))
++
++func _on_screen(view: Control) -> bool:
++	if not view.is_visible_in_tree(): return false
++	var rect: Rect2 = view.get_global_rect().intersection(view.get_viewport_rect())
++	var ancestor: Node = view.get_parent()
++	while ancestor != null and rect.has_area():
++		if ancestor is Control and ancestor.clip_contents:
++			rect = rect.intersection(ancestor.get_global_rect())
++		ancestor = ancestor.get_parent()
++	return rect.has_area()
++
++func _view(job: Dictionary) -> Object:
++	var reference: WeakRef = job.get("view")
++	return reference.get_ref() if reference != null else null
++
++func _make_renderer() -> CarShowroom:
++	return preload("res://ui/garage_preview_renderer.gd").new()
++
++func _process(_delta: float) -> void:
++	if worker != null and worker.done:
++		var result: Dictionary = worker.result if worker.result is Dictionary else {}
++		file_io_us += int(result.get("us",0))
++		worker = null
++		if io.get("read",false) and _current(io):
++			if result.get("image") is Image and _current(io,true):
++				cache_hits += 1
++				_publish(io.view.get_ref(),io.key,ImageTexture.create_from_image(result.image))
++			else:
++				io.read = result.get("image") is Image
++				queued.append(io)
++		io = {}
++	# A read can satisfy a queued view, so finish it before starting another
++	# capture. A write owns only an Image and may run alongside the next world.
++	if worker != null and io.get("read",false): return
++	if worker == null and not active.is_empty() and not pending_writes.is_empty(): _start_write()
++	if not active.is_empty():
++		var remembered: Texture2D=_remembered(active.vehicle,active.key)
++		if _current(active) and remembered!=null:
++			_publish(active.view.get_ref(),active.key,remembered)
++			_finish()
++			return
++		if not _current(active,true):
++			if _current(active): queued.push_front(active)
++			_finish()
++			return
++		if not renderer.showroom_ready: return
++		if not _render_allowed():
++			renderer.showroom_viewport.render_target_update_mode=SubViewport.UPDATE_DISABLED
++			if renderer.reflections != null:
++				for view: SubViewport in renderer.reflections.views: view.render_target_update_mode=SubViewport.UPDATE_DISABLED
++			return
++		frames -= 1
++		if frames >= 0:
++			renderer._submit_render()
++		elif (worker == null or pending_writes.is_empty()) and not RenderingServer.frame_post_draw.is_connected(_capture): RenderingServer.frame_post_draw.connect(_capture,CONNECT_ONE_SHOT)
++		return
++	# Read every visible saved PNG before starting a missing car's native world.
++	# A cold miss must not hold already stored pictures behind its construction.
++	if worker == null and not directory.is_empty():
++		for index: int in range(queued.size()):
++			var next: Dictionary=queued[index]
++			if next.read and _current(next,true):
++				queued.remove_at(index)
++				io=next
++				worker=Work.start(_read.bind(directory.path_join(next.key+".png")),get_tree())
++				return
++	elif worker != null and not directory.is_empty():
++		for next: Dictionary in queued:
++			if next.read and _current(next,true): return
++	if worker == null and not pending_writes.is_empty(): _start_write()
++	for _index: int in range(queued.size()):
++		var next: Dictionary = queued.pop_front()
++		if not _current(next): continue
++		if next.read and not directory.is_empty():
++			queued.append(next)
++			continue
++		var remembered: Texture2D=_remembered(next.vehicle,next.key)
++		if remembered!=null:
++			_publish(next.view.get_ref(),next.key,remembered)
++			continue
++		if not _current(next,true): queued.append(next); continue
++		if DisplayServer.get_name() == "headless": continue
++		if not _render_allowed():
++			queued.push_front(next)
++			return
++		active = next
++		renderer = _make_renderer()
++		renderer.read_only = true; renderer.garage_mode = true
++		renderer.preview_live_lighting = true
++		renderer.cooperative_build = true
++		renderer.vehicle_id = next.vehicle; renderer.livery = next.paint
++		renderer.condition = next.condition; renderer.customisation = next.parts
++		renderer.framing_scale = 0.84
++		renderer.position = Vector2(-16384,-16384); renderer.size = Vector2(2048,512)
++		add_child(renderer)
++		frames = 4; renders += 1
++		return
++
++func _capture() -> void:
++	if active.is_empty() or not is_instance_valid(renderer): return
++	if not _render_allowed(): return
++	if _current(active) and not _current(active,true): queued.push_front(active)
++	if _current(active,true):
++		var started: int = Time.get_ticks_usec()
++		var image: Image = renderer.showroom_viewport.get_texture().get_image()
++		readback_us += Time.get_ticks_usec()-started
++		_publish(active.view.get_ref(),active.key,ImageTexture.create_from_image(image))
++		if not directory.is_empty():
++			pending_writes.append({"key":active.key,"image":image})
++	_finish()
++
++func _start_write() -> void:
++	var picture: Dictionary=pending_writes.pop_front()
++	if directory.is_empty(): return
++	var image: Image=picture.get("image")
++	if image==null: image=picture.texture.get_image()
++	io={"key":picture.key,"read":false}
++	worker=Work.start(_write.bind(directory,picture.key,image),get_tree())
++
++func _finish() -> void:
++	if RenderingServer.frame_post_draw.is_connected(_capture): RenderingServer.frame_post_draw.disconnect(_capture)
++	if is_instance_valid(renderer):
++		remove_child(renderer)
++		renderer.queue_free()
++	renderer = null; active = {}
++
++func _exit_tree() -> void:
++	_finish()
++	if worker != null: worker.cancel()
++	queued.clear()
++	pending_writes.clear()
++
++static func _read(cancelled: Callable, path: String) -> Dictionary:
++	var started: int = Time.get_ticks_usec()
++	var image: Image
++	var file := FileAccess.open(path,FileAccess.READ)
++	if file != null and file.get_length() <= 8388608 and not cancelled.call():
++		var bytes: PackedByteArray = file.get_buffer(file.get_length())
++		if bytes.size() >= 33 and bytes.slice(0,8) == PackedByteArray([137,80,78,71,13,10,26,10]) and bytes.slice(16,24) == PackedByteArray([0,0,8,0,0,0,2,0]):
++			var decoded := Image.new()
++			if decoded.load_png_from_buffer(bytes) == OK and decoded.get_size() == Vector2i(2048,512): image = decoded
++	return {"image":image,"us":Time.get_ticks_usec()-started}
++
++static func _write(cancelled: Callable, directory: String, key: String, image: Image) -> Dictionary:
++	var started: int = Time.get_ticks_usec()
++	if not cancelled.call() and DirAccess.make_dir_recursive_absolute(directory) == OK:
++		var temporary: String = directory.path_join(key+".tmp.png")
++		if image.save_png(temporary) == OK:
++			if cancelled.call(): DirAccess.remove_absolute(temporary)
++			else: DirAccess.rename_absolute(temporary,directory.path_join(key+".png"))
++		_trim(directory)
++	return {"us":Time.get_ticks_usec()-started}
++
++static func _trim(directory: String) -> void:
++	var folder := DirAccess.open(directory)
++	if folder == null: return
++	var files: Array[Dictionary] = []
++	for name: String in folder.get_files():
++		if not name.ends_with(".png") or name.trim_suffix(".png").length()!=64 or not name.trim_suffix(".png").is_valid_hex_number(): continue
++		files.append({"name":name,"at":FileAccess.get_modified_time(directory.path_join(name))})
++	files.sort_custom(func(a: Dictionary,b: Dictionary) -> bool: return a.at < b.at)
++	while files.size() > MAX_FILES: DirAccess.remove_absolute(directory.path_join(files.pop_front().name))
+diff --git a/docs/THUMBNAIL_STUDIO_EXPERIMENT_2026_11_03.md b/docs/THUMBNAIL_STUDIO_EXPERIMENT_2026_11_03.md
+new file mode 100644
+--- /dev/null
++++ b/docs/THUMBNAIL_STUDIO_EXPERIMENT_2026_11_03.md
+@@ -0,0 +1,51 @@
++# Dedicated thumbnail studio experiment — 2026-11-03
++
++Decision: **do not ship this candidate**. The first Compatibility batch improved substantially, but the benefit did not persist across renderers and later batches. Production sources were restored byte for byte to the task-start snapshots. The prototype remains only in test fixtures, with raw captures and measurements retained.
++
++## Measured result
++
++Time to publish all five uncached customized car pictures through the real asynchronous preview service:
++
++| Desktop renderer / batch | Existing workshop | Dedicated studio | Change |
++| --- | ---: | ---: | ---: |
++| Compatibility, first batch in process | 35.143 s | 19.174 s | 45.4% faster |
++| Compatibility, median of next two uncached batches | 1.384 s | 1.290 s | 6.8% faster |
++| Mobile, first batch in process | 38.855 s | 35.581 s | 8.4% faster |
++| Mobile, median of next two uncached batches | 26.192 s | 26.304 s | 0.4% slower |
++
++Including completion of all PNG writes, later Compatibility batches went from 1.641 to 1.687 s (2.8% slower); later Mobile batches went from 26.361 to 26.624 s (1.0% slower). The data does not establish a repeatable general loading improvement sufficient to replace the workshop pictures. The full car and saved appearance still have to be prepared; this experiment does not attribute the remaining time to a specific internal phase.
++
++The candidate uses one viewport instead of three, with 1,048,576 total viewport pixels instead of 1,343,488. The conservative scene resource estimates fall from 33.73–41.14 MB to 4.96–12.37 MB across the five cars (approximately 70–85% less). These are referenced scene resources, **not incremental RAM, GPU allocation, process RSS or phone PSS**; the main Garage may already share resources.
++
++The visual cost is losing the workshop, planar reflections and real contact shadows in favor of a curved plain background, simple platform and soft static contact shadow. The final prototype retains the exact car, livery, fitted parts and condition; its lighting is visibly simpler. See the matched native [workshop capture](evidence/thumbnail-studio-2026-11-03/measure-compat-original/original-compact.png) and [candidate capture](evidence/thumbnail-studio-2026-11-03/measure-compat-studio/studio-compact.png). All five cars were captured under both desktop renderers: twenty final comparison PNGs.
++
++## Method and limits
++
++The experiment used the actual `GaragePreviewCache` scheduling, async disk-read/PNG-write paths and bounded overlap. Each measured batch requests all five current cars with private fresh disk-cache directories, body color `32b5d7`, `offset_gt` livery, an alternate aero part where available, and dirt 0.12. Both renderers retain the original 2048×512 main capture, 4× MSAA, camera/framing and capture settling. Only the studio scene changes. Candidate lighting uses the existing showroom glass treatment and Garage lights with adjusted ambient/key intensity; no workshop or planar reflection views are built.
++
++Four separate native processes supplied the final comparison, one strategy per process, three batches per process. Order was original then studio for Compatibility, studio then original for desktop Mobile. One first-use sample and two later samples per strategy are insufficient for a statistical or cold-driver claim. OS/driver caches were not cleared. These are shared Windows desktop results, **not phone results or measured game-startup savings**. Garage work was already deferred from startup in the earlier change.
++
++The four final runs passed **296 checks, zero failures**, including exact saved livery/kit metadata, actual body material color, condition, bounded viewport counts, five delivered pictures and completed writes. Receipt hashes record stable capture/car sources during each run; concurrent `game/core/build_identity.gd` changed during the last Mobile control. The whole repository was not frozen. Logs retain the Windows certificate-store environment error; there are no script/shader failures in these four runs.
++
++Exploratory captures and timings remain separate. Early candidates had a reversed floor winding, banded cove normals and an unsuitable shadow falloff; these were corrected before the four final measurements. `batch-compat-studio.log` retains an initial mixed-indentation parse failure, corrected in subsequent runs. None of those measurements enter the table above.
++
++## Retained artifacts and reproduction
++
++Final raw runs are under `docs/evidence/thumbnail-studio-2026-11-03/measure-{compat,mobile}-{original,studio}/`, with adjacent logs and receipts. [summary.json](evidence/thumbnail-studio-2026-11-03/summary.json) is derived by `summarize.py`. `as-measured/` preserves the exact temporary service hook, candidate, shader and benchmark used for those four runs.
++
++After rejecting the change, the candidate and experimental service snapshot were moved into `game/tests/fixtures/thumbnail_studio_*`; the profiler now references those fixtures. Existing export settings exclude `tests/*`. An additional `archived-repro --batch --quick` native run validates both archived strategies after this move: **56 checks, zero failures**. It is a reproduction check, excluded from the final timing comparison.
++
++From the workspace root:
++
++```powershell
++python docs/evidence/thumbnail-studio-2026-11-03/run_check.py repeat-compat-original --batch --only-original
++python docs/evidence/thumbnail-studio-2026-11-03/run_check.py repeat-compat-studio --batch --only-studio
++python docs/evidence/thumbnail-studio-2026-11-03/run_check.py repeat-mobile-studio --renderer mobile --batch --only-studio
++python docs/evidence/thumbnail-studio-2026-11-03/run_check.py repeat-mobile-original --renderer mobile --batch --only-original
++python docs/evidence/thumbnail-studio-2026-11-03/summarize.py
++python docs/evidence/thumbnail-studio-2026-11-03/checkpoint.py
++```
++
++The runner uses the pinned Godot 4.7.2 console executable through `scripts/run_no_crash_dialog.py`, isolated APPDATA, disabled API URL and a bounded process wait. Production preview cache/renderer, Garage page/preloader, preview bake/check and build-identity scripts match their task-start snapshots exactly. Cache identities, existing images, full Garage and approved loading ghosts remain unchanged. The task-only patch contains diagnostics and documentation only, with forward/reverse/content verification in an isolated build directory and no main-index write.
++
++No device query/test, APK/export, backend/live mutation, owner save/process change or deployment occurred. Concurrent work was preserved.
+diff --git a/docs/evidence/thumbnail-studio-2026-11-03/run_check.py b/docs/evidence/thumbnail-studio-2026-11-03/run_check.py
+new file mode 100644
+--- /dev/null
++++ b/docs/evidence/thumbnail-studio-2026-11-03/run_check.py
+@@ -0,0 +1,48 @@
++"""Bounded private native thumbnail experiment; no owner data/network/index."""
++import argparse
++import hashlib
++import json
++import os
++from pathlib import Path
++import subprocess
++import sys
++import time
++
++p = argparse.ArgumentParser()
++p.add_argument("label")
++p.add_argument("--renderer",default="gl_compatibility",choices=["gl_compatibility","mobile"])
++p.add_argument("--script",default="res://tests/profile_thumbnail_studio.gd")
++args, extra = p.parse_known_args()
++evidence = Path(__file__).resolve().parent
++root = evidence.parents[2]
++output = evidence/args.label
++output.mkdir(exist_ok=True)
++profile = root/"build/thumbnail-studio-20261103"/(args.label+"-"+str(time.time_ns()))
++profile.mkdir(parents=True)
++env = os.environ.copy()
++env.update(APPDATA=str(profile),BMT_API_URL="",BMT_THUMBNAIL_OUTPUT=str(output),BMT_GARAGE_DEFERRED_EVIDENCE=str(output))
++command = [sys.executable,str(root/"scripts/run_no_crash_dialog.py"),"--",
++           "C:/apps/Godot 4.7.2/Godot_v4.7.2-stable_win64_console.exe","--path",str(root/"game"),
++           "--audio-driver","Dummy","--rendering-method",args.renderer,"--script",args.script,"--","--output="+str(output),*extra]
++paths = ["game/ui/garage_preview_cache.gd","game/ui/garage_preview_renderer.gd","game/tests/fixtures/thumbnail_studio_candidate.gd",
++         "game/tests/fixtures/thumbnail_studio_shadow.gdshader","game/tests/fixtures/thumbnail_studio_cache.gd","game/ui/car_showroom.gd","game/ui/garage_environment.gd",
++         "game/ui/garage_reflections.gd","game/core/build_identity.gd",args.script.replace("res://","game/")]
++paths += [str(path.relative_to(root)).replace("\\","/") for path in (root/"game/vehicle").glob("*.gd")]
++def hashes():
++    return {path:hashlib.sha256((root/path).read_bytes()).hexdigest() for path in paths}
++receipt = dict(command=command,profile=str(profile),before=hashes())
++started = time.monotonic()
++with (evidence/(args.label+".log")).open("w",encoding="utf-8") as log:
++    process = subprocess.Popen(command,env=env,cwd=root,stdout=log,stderr=subprocess.STDOUT)
++    (evidence/(args.label+"-running.json")).write_text(json.dumps(dict(pid=process.pid,**receipt),indent=2))
++    try: receipt["exit_code"] = process.wait(timeout=420)
++    except subprocess.TimeoutExpired:
++        receipt["exit_code"] = 124
++        subprocess.run(["taskkill","/PID",str(process.pid),"/T","/F"],capture_output=True,check=False)
++        try: process.wait(timeout=20)
++        except subprocess.TimeoutExpired: receipt["cleanup_failed"] = True
++receipt.update(elapsed_seconds=time.monotonic()-started,after=hashes())
++receipt["changed_sources"] = [path for path in paths if receipt["before"][path] != receipt["after"][path]]
++(evidence/(args.label+"-receipt.json")).write_text(json.dumps(receipt,indent=2)+"\n")
++print(json.dumps({key:receipt[key] for key in ("exit_code","elapsed_seconds","changed_sources")}))
++sys.exit(receipt["exit_code"])
+diff --git a/docs/evidence/thumbnail-studio-2026-11-03/summarize.py b/docs/evidence/thumbnail-studio-2026-11-03/summarize.py
+new file mode 100644
+--- /dev/null
++++ b/docs/evidence/thumbnail-studio-2026-11-03/summarize.py
+@@ -0,0 +1,54 @@
++"""Summarize the four final native comparisons; exclude exploratory variants."""
++import hashlib
++import json
++from pathlib import Path
++from statistics import median
++
++evidence = Path(__file__).resolve().parent
++root = evidence.parents[2]
++summary = {"decision": "restore original; dedicated studio not shipped", "checks": 0,
++           "failures": 0, "renderers": {}, "source_changes_during_runs": {}}
++for renderer in ("compat", "mobile"):
++    runs = {}
++    for strategy in ("original", "studio"):
++        label = f"measure-{renderer}-{strategy}"
++        report = json.loads((evidence/label/"report.json").read_text())
++        receipt = json.loads((evidence/(label+"-receipt.json")).read_text())
++        assert receipt["exit_code"] == report["failures"] == 0
++        assert len(report["rows"]) == 3
++        assert set(receipt["changed_sources"]) <= {"game/core/build_identity.gd"}
++        summary["checks"] += report["checks"]
++        summary["source_changes_during_runs"][label] = receipt["changed_sources"]
++        rows = report["rows"]
++        runs[strategy] = {
++            "first": {key: rows[0][key] for key in ("picture_ms", "persisted_ms")},
++            "later_median": {key: median(row[key] for row in rows[1:])
++                             for key in ("picture_ms", "persisted_ms")},
++            "rounds": [{key: row[key] for key in ("round", "picture_ms", "persisted_ms", "largest_frame_ms")}
++                       for row in rows],
++            "scene_estimates": {item["metrics"]["vehicle"]: {
++                key: item["metrics"][key] for key in ("scene_bytes_estimate", "viewports", "viewport_pixels", "nodes", "meshes")}
++                for item in rows[0]["deliveries"]},
++        }
++    runs["reduction_percent"] = {
++        phase: {key: 100*(1-runs["studio"][phase][key]/runs["original"][phase][key])
++                for key in ("picture_ms", "persisted_ms")}
++        for phase in ("first", "later_median")}
++    summary["renderers"][renderer] = runs
++
++production = ["game/ui/garage_preview_cache.gd", "game/ui/garage_preview_renderer.gd",
++              "game/ui/garage_page.gd", "game/ui/garage_preloaded_studio.gd",
++              "scripts/bake_garage_previews.gd", "scripts/check_garage_previews.py", "scripts/build_identity.ps1"]
++summary["production_matches_before"] = {}
++for path in production:
++    current = (root/path).read_bytes()
++    assert current == (evidence/"before"/path).read_bytes(), path
++    summary["production_matches_before"][path] = hashlib.sha256(current).hexdigest()
++assert not (root/"game/ui/garage_thumbnail_studio.gd").exists()
++assert not (root/"game/ui/garage_thumbnail_shadow.gdshader").exists()
++summary["primary_native_pngs"] = sum(len(list((evidence/label).glob("*.png")))
++    for label in summary["source_changes_during_runs"])
++(evidence/"summary.json").write_text(json.dumps(summary, indent=2)+"\n")
++print(json.dumps({key: summary[key] for key in ("decision", "checks", "failures", "primary_native_pngs")}))
++for name, result in summary["renderers"].items():
++    print(name, result["reduction_percent"])
+diff --git a/docs/evidence/thumbnail-studio-2026-11-03/checkpoint.py b/docs/evidence/thumbnail-studio-2026-11-03/checkpoint.py
+new file mode 100644
+--- /dev/null
++++ b/docs/evidence/thumbnail-studio-2026-11-03/checkpoint.py
+@@ -0,0 +1,61 @@
++"""Check this task's patch without modifying the main Git index."""
++import difflib
++import hashlib
++import json
++from pathlib import Path
++import subprocess
++import time
++
++evidence = Path(__file__).resolve().parent
++root = evidence.parents[2]
++changed = ["AGENTS.md", "DEVELOPMENT_STATUS.md"]
++added = ["game/tests/profile_thumbnail_studio.gd", "game/tests/profile_thumbnail_studio.gd.uid",
++         "game/tests/fixtures/thumbnail_studio_candidate.gd", "game/tests/fixtures/thumbnail_studio_candidate.gd.uid",
++         "game/tests/fixtures/thumbnail_studio_shadow.gdshader", "game/tests/fixtures/thumbnail_studio_shadow.gdshader.uid",
++         "game/tests/fixtures/thumbnail_studio_cache.gd",
++         "docs/THUMBNAIL_STUDIO_EXPERIMENT_2026_11_03.md",
++         *["docs/evidence/thumbnail-studio-2026-11-03/"+name for name in
++           ("run_check.py", "summarize.py", "checkpoint.py")]]
++
++def normalized(path):
++    return path.read_bytes().replace(b"\r\n",b"\n")
++
++parts, before, after = [], {}, {}
++for path in changed+added:
++    new = normalized(root/path)
++    old = b""
++    if path in ("AGENTS.md", "DEVELOPMENT_STATUS.md"):
++        begin, end = b"<!-- THUMBNAIL-STUDIO-EXPERIMENT-20261103 -->", b"<!-- /THUMBNAIL-STUDIO-EXPERIMENT-20261103 -->"
++        assert new.count(begin) == new.count(end) == 1
++        start, stop = new.index(begin), new.index(end)+len(end)
++        if new[stop:stop+2] == b"\n\n": stop += 2
++        elif new[stop:stop+1] == b"\n": stop += 1
++        old = new[:start]+new[stop:]
++    before[path], after[path] = old, new
++    parts.append("diff --git a/"+path+" b/"+path+"\n")
++    if path in added: parts.append("new file mode 100644\n")
++    parts.extend(difflib.unified_diff(old.decode().splitlines(keepends=True),new.decode().splitlines(keepends=True),
++                                    fromfile="a/"+path if path in changed else "/dev/null",tofile="b/"+path))
++patch = evidence/"task.patch"
++patch.write_bytes("".join(parts).encode())
++owned = root/"build/thumbnail-studio-20261103"/("checkpoint-"+str(time.time_ns()))
++owned.mkdir(parents=True)
++assert owned.resolve().is_relative_to((root/"build/thumbnail-studio-20261103").resolve())
++for path in changed:
++    target = owned/path
++    target.parent.mkdir(parents=True,exist_ok=True)
++    target.write_bytes(before[path])
++commands = []
++for arguments in (("--check",),(),("--reverse","--check"),("--reverse",)):
++    command = ["git","apply","--directory="+owned.relative_to(root).as_posix(),*arguments,str(patch)]
++    result = subprocess.run(command,cwd=root,capture_output=True,text=True)
++    commands.append(dict(command=command,exit_code=result.returncode,output=result.stdout+result.stderr))
++    assert result.returncode == 0, result.stderr
++    if arguments == (): assert all(normalized(owned/path) == after[path] for path in changed+added)
++assert all(normalized(owned/path) == before[path] for path in changed)
++assert all(not (owned/path).exists() for path in added)
++receipt = dict(files=changed+added,forward_content_exact=True,reverse_content_exact=True,main_index_written=False,
++               patch_sha256=hashlib.sha256(patch.read_bytes()).hexdigest(),commands=commands,
++               source_sha256={path:hashlib.sha256(after[path]).hexdigest() for path in changed+added})
++(evidence/"checkpoint.json").write_text(json.dumps(receipt,indent=2)+"\n")
++print("Task-only patch forward/reverse/content checks pass; no main index write.")

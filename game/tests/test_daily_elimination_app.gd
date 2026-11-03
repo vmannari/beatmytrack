@@ -38,7 +38,17 @@ func run() -> void:
 	track.metadata.cloud_version = "daily-test"
 	app.selected_track = track
 	var records_before: Dictionary = app.records.records.duplicate(true)
-	await app._start_race(track,false,false,{},null,{"day":20757,"version_id":"daily-test"})
+	var request: Dictionary = {"day":20757,"version_id":"daily-test"}
+	# The metadata/download path presents its overlay before any asynchronous work.
+	track.metadata.cloud_entry = {}
+	app._prepare_metadata_race(track,false,false,{},request)
+	check(app.race_loading != null and "Elimination" in app.race_loading.facts_label.text,"metadata loading immediately identifies elimination")
+	app._close_race_loading()
+	await process_frame
+	track.metadata.erase("cloud_entry")
+	app._start_race(track,false,false,{},null,request)
+	check(app.race_loading != null and "Elimination" in app.race_loading.facts_label.text,"daily race loading immediately identifies elimination")
+	while app.cloud_starting: await process_frame
 	check(app.game != null,"actual App enters the daily race")
 	if app.game == null:
 		app.queue_free()
@@ -73,6 +83,9 @@ func run() -> void:
 	check(game.finish_sim != null,"elimination enters the existing finish transition")
 	game._complete_finish()
 	check(game.has_node("DailyResults") and not game.hud.visible,"App completion displays daily results")
+	var result: Node = game.get_node("DailyResults").get_child(0)
+	check(result.day == int(request.day) and result.version == str(request.version_id) and result.vehicle == str(game.vehicle_id),"App pins inline standings to the completed daily attempt")
+	check(result.theme_id == str(track.metadata.get("theme","pine")),"result backdrop follows the completed biome")
 	await capture("app-eliminated")
 	app._results()
 	check(game.get_node("DailyResults").get_child_count() == 1,"duplicate completion has one result panel")

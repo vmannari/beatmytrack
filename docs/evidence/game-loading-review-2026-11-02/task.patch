@@ -1,0 +1,423 @@
+diff --git a/AGENTS.md b/AGENTS.md
+--- a/AGENTS.md
++++ b/AGENTS.md
+@@ -2,6 +2,11 @@
+ ## Superwash automatic brush animation (2026-11-02)
+ SWA01-SWA02: Actual-car rollover gantry, three rotating brushes and fixed96-drop spray traverse nose to tail in3.6s; existing instant local cleaning/saving remains. Manual washing/navigation/hiding clear feedback; model/kit changes discard it and idle drawing settles. Native89/0 each desktop renderer, retained Super Wash257/0 and hose81/0 pass; thirty settled views and55-frame native motion preview. Initial startup/certificate restriction and corrected fiber alignment retained. Sources, commands, scoped checkpoint and limits: [docs/SUPER_WASH_ANIMATION_2026_11_02.md](docs/SUPER_WASH_ANIMATION_2026_11_02.md). Reload and owner/device appearance/performance acceptance remain. No device query/test, APK, owner-save/process change, live/backend mutation, deployment or main-index write; concurrent work preserved.
+ <!-- /SUPER-WASH-ANIMATION-20261102 -->
++
++<!-- GAME-LOADING-REVIEW-20261102 -->
++## Startup and current race loading reviewed (2026-11-02)
++GLR01-GLR04: Evaluation only; existing concurrent loader changes retained. Startup60/0 and actual-App36/0 each desktop renderer pass; eight entries/eight retries. Customized cold initialization28.288s includes12.540s header/15.535s Garage; cached0.282s, with App resource loading10.595–12.088s still separate. Compatibility Pine50.707s first/0.514s reopen, Winter22.701/1.864s; Pine retained but Winter still evicts. Rank deferred Garage misses, smaller startup dependencies, first-use graphics, Winter retention and exact-event overlap. Commands, limits and checked task-only checkpoint: [docs/GAME_LOADING_REVIEW_2026_11_02.md](docs/GAME_LOADING_REVIEW_2026_11_02.md). No implemented speedup, clean environment-log, cold-driver/export/phone/first-lap claim; no device query/test, owner-save/process change, backend/live access, deployment or main-index write.
++<!-- /GAME-LOADING-REVIEW-20261102 -->
+ 
+ <!-- RACE-LOADING-REVIEW-20261102 -->
+ ## Race loading evaluated; further options ranked (2026-11-02)
+diff --git a/DEVELOPMENT_STATUS.md b/DEVELOPMENT_STATUS.md
+--- a/DEVELOPMENT_STATUS.md
++++ b/DEVELOPMENT_STATUS.md
+@@ -1,3 +1,8 @@
++<!-- GAME-LOADING-REVIEW-20261102 -->
++## Startup and current race loading reviewed (2026-11-02)
++GLR01-GLR04: Review only,132/0 checks; existing concurrent loader changes retained. Cold customized initialization28.288s includes15.535s Garage preparation; cached0.282s, while App resource loading remains10.595–12.088s. Compatibility Pine50.707/0.514s and Winter22.701/1.864s first/reopen; eight entries/eight retries across both desktop renderers. Pine cache now survives, Winter still evicts. Ranked changes, stage measurements, actual commands and checked task-only checkpoint: [docs/GAME_LOADING_REVIEW_2026_11_02.md](docs/GAME_LOADING_REVIEW_2026_11_02.md). No implemented speedup, clean environment-log, cold-driver/export/phone/first-lap claim. No device query/test, owner-save/process change, backend/live access, deployment or main-index write; concurrent work preserved.
++<!-- /GAME-LOADING-REVIEW-20261102 -->
++
+ <!-- OFFTRACK-BROAD-HEIGHT-20261102 -->
+ ## Broader off-track suspension height variation (2026-11-02)
+ OTH01-OTH02: Broad wheel-sampled visual height amplitudes increase48/28to120/75mm and wavelengths10.5/14.5to17.3/23.8m. Actual Compact spring motion spans0.239–0.371m across twelve speed/heading cases. Focused67/0, retained off-road13/0 and suspension59/0 headless; native Compatibility128/0 with61 comparison frames. Terrain mesh/canonical handling remain unchanged. Native playback, commands, initial fixture/environment findings, task-only checked patch and limits: [docs/OFFTRACK_BROAD_HEIGHT_2026_11_02.md](docs/OFFTRACK_BROAD_HEIGHT_2026_11_02.md). Reload and owner driving/appearance acceptance remain; no phone test, APK, backend/live operation, deployment, owner-save/process change or main-index write. Concurrent work preserved.
+diff --git a/game/tests/review_game_startup_2026_11_02.gd b/game/tests/review_game_startup_2026_11_02.gd
+new file mode 100644
+--- /dev/null
++++ b/game/tests/review_game_startup_2026_11_02.gd
+@@ -0,0 +1,100 @@
++extends SceneTree
++## Timestamp hooks only, injected into an in-memory App copy. Offline private profile.
++var checks: int = 0
++var failures: int = 0
++
++func _initialize() -> void: run.call_deferred()
++
++func check(value: bool, label: String) -> void:
++	checks += 1
++	if not value: failures += 1; printerr("STARTUP_REVIEW_FAIL ",label)
++
++func run() -> void:
++	OS.set_environment("BMT_API_URL","")
++	root.size = Vector2i(1280,720)
++	create_timer(150).timeout.connect(func() -> void: printerr("STARTUP_REVIEW_TIMEOUT"); quit(1))
++	var customized: bool = "--custom" in OS.get_cmdline_user_args()
++	var records := LocalRecords.new("user://loading-review/records.json")
++	if customized and not FileAccess.file_exists(records.path):
++		DirAccess.make_dir_recursive_absolute(records.path.get_base_dir())
++		var paint: Dictionary = VehicleLivery.defaults("compact")
++		paint.colors.body = "32b5d7"
++		records.settings = {"selected_car":"compact","music_enabled":false,"vehicle_liveries":{"compact":paint}}
++		check(records.save_records() == OK,"private custom fixture saved")
++	var began: int = Time.get_ticks_usec()
++	var shipping_scene: PackedScene = load("res://core/app.tscn")
++	var resource_load_ms: float = (Time.get_ticks_usec()-began)/1000.0
++	check(shipping_scene != null,"shipping App scene loads")
++	began = Time.get_ticks_usec()
++	var source: String = FileAccess.get_file_as_string("res://core/app.gd").replace("\r\n","\n")
++	var begin: int = source.find("func _ready() -> void:")
++	var end: int = source.find("\nfunc ",begin+1)
++	check(begin >= 0 and end > begin,"startup function located")
++	if failures: quit(1); return
++	var body: String = source.substr(begin,end-begin)
++	var hooks: Array = [
++		["\tpreload(\"res://backend/menu_snapshot_writer.gd\").shared().background_allowed", "ready_begin"],
++		["\trecords.load_records()", "records_begin"],
++		["\tGameSoundtrack.instance().bind_records(records)", "services_begin"],
++		["\tselected_track = NativeTrack.read(\"res://resources/tracks/\" + BUILTIN_IDS[0]", "track_begin"],
++		["\tmenu_layer = CanvasLayer.new()", "overlays_begin"],
++		["\t_show_screen(\"restoring\")", "restoring_begin"],
++		["\tif capture_path.is_empty(): await online.start_session()", "session_begin"],
++		["\tpreload(\"res://ui/garage_preview_cache.gd\").prefetch_catalogue", "session_end"],
++		["\tawait header_car_cache.prepare_selected()", "header_begin"],
++		["\tawait _garage_preloader.prepare_pictures()", "garage_pictures_begin"],
++		["\t_show_screen(capture_screen if", "final_screen_begin"],
++		["\tstartup_complete = true", "menu_ready"]
++	]
++	for hook: Array in hooks:
++		check(body.count(hook[0]) == 1,"unique hook "+hook[1])
++		body = body.replace(hook[0],"\t_startup_review_marks.append({\"name\":\""+hook[1]+"\",\"us\":Time.get_ticks_usec()})\n"+hook[0])
++	if failures: quit(1); return
++	source = source.substr(0,begin)+body+source.substr(end)+"\nvar _startup_review_marks: Array = []\n"
++	var script := GDScript.new()
++	script.source_code = source
++	check(script.reload() == OK,"instrumented App compiles")
++	if failures: quit(1); return
++	var compile_ms: float = (Time.get_ticks_usec()-began)/1000.0
++	var app: Node = script.new()
++	app.records = records
++	app.library = TrackLibrary.new("user://loading-review/tracks")
++	app.cloud_root_override = "user://loading-review/cloud"
++	var app_started: int = Time.get_ticks_usec()
++	root.add_child(app)
++	while not app.startup_complete:
++		# This background-launched measurement represents foreground startup.
++		# Match the existing equipped-header fixture; do not measure focus parking.
++		app._publishing_slots_foreground = true
++		await process_frame
++	var ready_ms: float = (Time.get_ticks_usec()-app_started)/1000.0
++	check(app.screen == "account","offline guest reaches sign-in")
++	check(not app.online.configured,"network disabled")
++	check(is_instance_valid(app._garage_preloader.picture_service),"picture service installed")
++	var pictures: Node = app._garage_preloader.picture_service
++	check(pictures.pictures_ready(),"all Garage pictures ready at startup")
++	if customized:
++		check(preload("res://ui/header_car_icons.gd").ready("compact",records),"equipped header ready")
++	var result: Dictionary = {"checks":checks,"failures":failures,"customized":customized,
++		"engine":Engine.get_version_info().string,"renderer":RenderingServer.get_current_rendering_method(),
++		"shipping_scene_load_ms":resource_load_ms,"instrumented_reload_ms":compile_ms,"app_ready_ms":ready_ms,"marks":app._startup_review_marks,
++		"garage_renders":pictures.renders,"garage_disk_hits":pictures.cache_hits,
++		"header_captures":app.header_car_cache.captures,"header_disk_hits":app.header_car_cache.disk_hits}
++	# Allow already admitted PNG writes to finish outside the startup timing.
++	# An immediate test teardown must not manufacture a restart cache miss.
++	app._garage_preloader.idle_ms = 100000
++	var deadline: int = Time.get_ticks_msec()+10000
++	while pictures.worker != null or not pictures.pending_writes.is_empty() or not pictures.io.is_empty() or not app.header_car_cache.idle():
++		if Time.get_ticks_msec() >= deadline: break
++		app._publishing_slots_foreground = true
++		await process_frame
++	result.writes_drained = pictures.worker == null and pictures.pending_writes.is_empty() and pictures.io.is_empty() and app.header_car_cache.idle()
++	var output: String = OS.get_environment("BMT_LOADING_OUTPUT")
++	var file := FileAccess.open(output,FileAccess.WRITE)
++	if file == null: printerr("STARTUP_REVIEW_NO_OUTPUT"); quit(1); return
++	file.store_string(JSON.stringify(result,"  "))
++	file.close()
++	print("STARTUP_REVIEW ",JSON.stringify(result))
++	app.queue_free()
++	for _frame: int in range(10): await process_frame
++	quit(1 if failures else 0)
+diff --git a/game/tests/review_app_resources_2026_11_02.gd b/game/tests/review_app_resources_2026_11_02.gd
+new file mode 100644
+--- /dev/null
++++ b/game/tests/review_app_resources_2026_11_02.gd
+@@ -0,0 +1,21 @@
++extends SceneTree
++## Load real resources in a fresh process without preloading App in the probe.
++func _initialize() -> void: run.call_deferred()
++
++func run() -> void:
++	var resources: Array[Resource] = []
++	var rows: Array = []
++	var paths: PackedStringArray = OS.get_cmdline_user_args()
++	if paths.is_empty(): paths.append("res://core/app.tscn")
++	for path: String in paths:
++		var began: int = Time.get_ticks_usec()
++		var resource: Resource = load(path)
++		rows.append({"path":path,"ms":(Time.get_ticks_usec()-began)/1000.0,"ok":resource != null})
++		resources.append(resource)
++	var output: String = OS.get_environment("BMT_LOADING_OUTPUT")
++	var file := FileAccess.open(output,FileAccess.WRITE)
++	if file == null: quit(1); return
++	file.store_string(JSON.stringify({"renderer":RenderingServer.get_current_rendering_method(),"rows":rows},"  "))
++	file.close()
++	print("RESOURCE_REVIEW ",JSON.stringify(rows))
++	quit(1 if resources.has(null) else 0)
+diff --git a/docs/GAME_LOADING_REVIEW_2026_11_02.md b/docs/GAME_LOADING_REVIEW_2026_11_02.md
+new file mode 100644
+--- /dev/null
++++ b/docs/GAME_LOADING_REVIEW_2026_11_02.md
+@@ -0,0 +1,83 @@
++# Game loading review — 2 November 2026
++
++There is substantial scope to shorten startup and first race entry. The current workspace already contains race-loading changes beyond the earlier review: bounded batches of reused particle proxies, shared road/world accounting, world-priority trimming, and more selected-track CPU preparation. Those changes were preserved. This evaluation changes no shipping code and claims no implemented speedup.
++
++Requirements: GLR01 review actual startup; GLR02 measure current first/repeated race entry and retry; GLR03 rank remaining improvements; GLR04 preserve reproducible evidence and a task-only checkpoint.
++
++## Measurements
++
++Pinned Godot `4.7.2.stable.official.ed1daf0bf`, Windows, RTX 3090, 1280×720, Dummy audio. Each race renderer used its own fresh private application/road-cache profile. Startup uses private stock/customized Compact profiles; the cached run reuses the customized profile after admitted PNG writes have finished. The API is explicitly disabled. No owner data or processes are changed.
++
++These are development desktop measurements, with shared host activity and existing driver/OS caches. They are not controlled cold-driver tests, export benchmarks, renderer comparisons or Android predictions.
++
++### Startup
++
++| Profile | App scene/resource load | Initialization after App installation | Equipped header preparation | All Garage pictures preparation |
++| --- | ---: | ---: | ---: | ---: |
++| Stock, fresh private profile | 10.595 s | 0.281 s | <0.001 s | 0.034 s |
++| Customized Compact, fresh image caches | 11.590 s | 28.288 s | 12.540 s | 15.535 s |
++| Same customized profile, completed PNG caches | 11.511 s | 0.282 s | 0.065 s | 0.001 s |
++
++Header/Garage columns are portions of initialization, not extra time to add. The customized fixture changes only the body paint. Cold initialization rendered one header image and one Garage image; cached initialization rendered neither. All five current catalogue vehicles have matching Garage pictures before the existing startup gate releases.
++
++The resource timer measures an actual `load("res://core/app.tscn")` before reloading an instrumented App copy. Instrumented reload costs 0.899–0.999 s in these three runs and is excluded from initialization. The diagnostic has already loaded some dependencies before that timer, and process/engine/autoload startup is excluded. Consequently the table describes slices, not full launch-to-interaction totals.
++
++A second probe without game-class references independently measures **12.088 s** to load the shipping App scene. A separate ordered-resource probe measures Game first at 7.769 s, Garage page next at 3.226 s, TrackBrowser at 0.519 s, Rivalry page at 0.537 s, then remaining App loading at 5.569 s. These are order-dependent resource/dependency loads; do not add them to the App-only run or treat their differences as recoverable savings.
++
++### Race entry
++
++Actual App sequence, offline Star fixture, default detailed Compact. Compilation happens before timing. Pine is first in each process; Winter follows and benefits from earlier shared work. Each theme is entered twice, leaving the Game between entries. Selection dwell/prefetch, downloads, competitive authorization and Daily limit requests are excluded.
++
++| Renderer/theme | First entry | Reopen same theme | First-entry largest frame | Reopen largest frame |
++| --- | ---: | ---: | ---: | ---: |
++| Compatibility / Pine | 50.707 s | 0.514 s | 6.021 s | 78 ms |
++| Compatibility / Winter | 22.701 s | 1.864 s | 3.449 s | 142 ms |
++| Desktop Mobile / Pine | 36.020 s | 0.842 s | 4.556 s | 211 ms |
++| Desktop Mobile / Winter | 12.529 s | 1.715 s | 2.821 s | 85 ms |
++
++Compatibility Pine's first entry spends 4.971 s waiting for roads, 6.134 s in Game installation, 31.467 s in staged world graphics preparation and 7.995 s in effects/final preparation. Winter's corresponding phases are 3.271/4.553/10.033/4.771 s. Phase timers include cooperative yields, rendering/resource work and covered frames; they do not isolate CPU geometry, particle GPU time or native driver compilation.
++
++All eight actual `App._retry_race(true)` calls reuse the same Game and take **12.556–19.240 ms**, excluding online authorization. Each entry preserves completed preparation, canonical tick zero, the full 360-tick countdown and five laps. No complete driving lap was measured.
++
++The current results supersede using the earlier review's repeated-entry numbers to describe this workspace. They are not a controlled before/after test of the intervening changes.
++
++## Recommended work, in order
++
++1. **Move Garage picture misses off the startup gate.** `App._ready` awaits the equipped header, then *all* Garage pictures before showing account/Rivalry. The cold customized case spends 15.535 s on the latter even though the initial guest destination has no Garage. Keep exact equipped-header readiness; let Garage pictures prepare when background work is eligible. `_show_screen` already routes Garage navigation through `_open_garage_with_pictures`, so a direct early visit can still wait for matching images. Preserve cancellation, account changes, pressure/input/foreground handling and no-wrong-livery behavior. The measured phase is an opportunity ceiling, not a demonstrated 15.5-second saving; moving work may affect the first Garage visit and menu responsiveness.
++
++2. **Reduce the resource graph required to open the first screen.** App has an eager `GAME_SCENE` preload plus editor, Garage, race and menu dependencies, including preloads written inside functions. A cached profile still pays roughly 11.5 s in the measured App loading slice. Split services/page factories and defer optional resource reads, with bounded preparation during eligible menu idle. Moving one constant is insufficient if typed references and other preloads still load the same dependencies. Measure a representative release export first, then verify actual launch-to-first-interaction and first navigation/race costs. The desktop source-script result does not establish an equivalent exported or phone saving.
++
++3. **Target first-use graphics preparation, rather than another blanket warm pass.** Compatibility Pine spends 31.467 s in the world preparation phase and retains a six-second frame. Subsequent same-theme world preparation submits zero new groups. Evaluate a small representative staging scene or hiding earlier prepared groups to reduce repeated full-world drawing, while retaining the final complete covered draw. Measure exact appearance, largest frame, peak memory and a complete first driving lap; reject moving a stall past the loading cover. Current timestamps do not prove the cause of each large frame. Earlier native compile/link attribution in `NATIVE_SHADER_PREPARATION_2026_10_28.md` remains historical evidence, not fresh attribution. No unsupported background GL compiler or renderer switch is justified here.
++
++4. **Fix the remaining Winter retention tradeoff within the current allowance.** Pine now stays cached: the trace records 28,245,312 bytes of shared roads and about 61.04 MB retained after trimming. Winter still repeatedly admits and evicts a 40,818,796-byte world. After eviction, approximately 36.03 MB remains, including 30,273,088 bytes of cached road GPU resources, with no shared-road deduction. This is not proof those road resources are unnecessary; inspect their identity/use and consider evicting unrelated idle roads or retaining a smaller costly scenery subset before dropping the current world. Keep the 64 MiB allowance and pressure cleanup. A snapshot taken immediately after entry sees one world and would miss the later eviction; the process-frame trace catches it on both renderers.
++
++5. **Extend exact-event preparation and overlap independent waits.** Free Race already has a 650 ms selected-track preparation gate, now also priming query/gate/support data. Its validity checks explicitly require the `tracks` screen; Daily/Rivalry detail pages do not receive that same selection path. Reuse exact revision/car/account ownership for those modes rather than introduce another track-mutating worker. Daily limits currently finish before the later road-job stage; investigate overlapping independent CPU work with that read while preserving all day/revision/car/manifest and cancellation checks. Network savings are unmeasured because these profiles are offline. Never issue a competitive attempt speculatively.
++
++Existing warm proxy batching should be measured further only after these changes; it already draws every actual source and does not infer shader equivalence from an emitter name. Ordinary and Daily retry reuse already exists, so rebuilding that facility would duplicate existing behavior. Disk scenery packets remain a possible later CPU-cache extension, with versioning, bounded decoding and corruption fallback; they will not by themselves resolve first-use graphics work.
++
++## Evidence and reproduction
++
++The three primary startup runs pass **60 checks / 0 failures**. Each race renderer passes **36 / 0**, giving **132 / 0** total, eight entries and eight retries. The two resource probes load all six requested resources successfully. Raw JSON/logs, per-run commands, before/after source hashes, profiles and the derived [summary](evidence/game-loading-review-2026-11-02/summary.json) are in [the evidence directory](evidence/game-loading-review-2026-11-02/).
++
++From the workspace root, using `python docs/evidence/game-loading-review-2026-11-02/run_review.py`:
++
++```text
++startup-stock-v2 res://tests/review_game_startup_2026_11_02.gd --profile stock-v2
++startup-custom-foreground res://tests/review_game_startup_2026_11_02.gd --profile custom-foreground --custom
++startup-custom-drain res://tests/review_game_startup_2026_11_02.gd --profile custom-foreground --custom
++startup-custom-cached res://tests/review_game_startup_2026_11_02.gd --profile custom-foreground --custom
++race-compat res://tests/review_race_loading_2026_11_02.gd --themes=pine,winter --cycles=2
++race-mobile res://tests/review_race_loading_2026_11_02.gd --renderer mobile --themes=pine,winter --cycles=2
++resources-app res://tests/review_app_resources_2026_11_02.gd res://core/app.tscn
++resources-parts res://tests/review_app_resources_2026_11_02.gd res://core/game.tscn res://ui/garage_page.gd res://ui/track_browser.gd res://ui/weekly_rivalry_page.gd res://core/app.tscn
++```
++
++These are arguments following the runner command, not standalone commands. Choose new labels/profile directories for fresh reruns rather than overwrite evidence. `python docs/evidence/game-loading-review-2026-11-02/summarize.py` derives the table and rejects failed runs or changes among recorded sources. The runner uses `scripts/run_no_crash_dialog.py` and a 300-second timeout scoped to its own process tree.
++
++The initial startup probe rejected a nonunique track-read anchor before running App; the failure log is retained. An initial instrumented-load result was refined to time the actual shipping resource load separately. Early immediate-teardown/restart probes are supplementary: PNG completion and build identity affect cache reuse, so they are not the primary cached measurement. The final diagnostic drains admitted writes after the timing; the cached run confirms one header disk hit, five ready Garage images and zero native captures. Its runner additionally hashes build identity/project configuration. Earlier receipts cover their listed sources only, not those extra identities or the whole tree. Recorded source hashes remain stable within every primary run.
++
++Every primary native log retains the sandbox's Windows root-certificate-store error. Runs exit zero with no script/shader errors, but this is not a clean environment-log claim. The first exploratory stock probe also retains two ObjectDB instances/one resource at shutdown; primary logs do not reproduce that finding. No invariant was relaxed.
++
++Task files: two new diagnostic scripts, this report, evidence runners/summary/checkpoint helpers, and concise AGENTS/DEVELOPMENT_STATUS entries. Startup hooks are injected into a GDScript copy in memory; the race diagnostic reuses the existing instrumented actual-App probe. `checkpoint.py` produces a task-only patch and checks forward/reverse application and normalized contents in an owned workspace directory without writing the main Git index. Existing unrelated changes remain preserved.
++
++No visible game changes or new appearance-equivalence claim. No phone/device query or test, APK/export, real authentication/purchase, backend/live access, deployment, owner-save change or owner-process restart. Remaining acceptance belongs to each proposed implementation above; genuine cold-driver, signed-in startup/network, all cars/themes, graphics-context recovery, first-lap and Android results remain unmeasured.
+diff --git a/docs/evidence/game-loading-review-2026-11-02/run_review.py b/docs/evidence/game-loading-review-2026-11-02/run_review.py
+new file mode 100644
+--- /dev/null
++++ b/docs/evidence/game-loading-review-2026-11-02/run_review.py
+@@ -0,0 +1,50 @@
++"""Isolated offline measurements; never touch an owner's profile or old evidence."""
++import argparse
++import hashlib
++import json
++import os
++from pathlib import Path
++import subprocess
++import sys
++import time
++
++p = argparse.ArgumentParser()
++p.add_argument("label")
++p.add_argument("script")
++p.add_argument("--renderer", default="gl_compatibility", choices=["gl_compatibility", "mobile"])
++p.add_argument("--profile", default="")
++args, extra = p.parse_known_args()
++evidence = Path(__file__).resolve().parent
++root = evidence.parents[2]
++profile = root / "build/game-loading-review-20261102" / (args.profile or args.label)
++profile.mkdir(parents=True, exist_ok=True)
++env = os.environ.copy()
++env.update(APPDATA=str(profile), BMT_API_URL="", BMT_LOADING_OUTPUT=str(evidence / (args.label + ".json")))
++command = [sys.executable, str(root / "scripts/run_no_crash_dialog.py"), "--",
++           "C:/apps/Godot 4.7.2/Godot_v4.7.2-stable_win64_console.exe", "--path", str(root / "game"),
++           "--audio-driver", "Dummy", "--rendering-method", args.renderer,
++           "--script", args.script, "--", *extra]
++paths = ["game/core/app.gd", "game/core/game.gd", "game/core/build_identity.gd", "game/project.godot", "game/ui/garage_preloader.gd",
++         "game/ui/garage_preview_cache.gd", "game/ui/header_car_appearance_cache.gd",
++         "game/vehicle/effect_render_preparation.gd", "game/vehicle/effect_preparation_pool.gd",
++         "game/track/prepared_world_cache.gd", "game/editor/editor_memory.gd",
++         "game/race/selected_track_preparation.gd", "game/race/race_ground_preparation.gd",
++         "game/track/native_track_visual.gd", "game/race/world_render_preparation.gd",
++         args.script.replace("res://", "game/")]
++def hashes():
++    return {path: hashlib.sha256((root / path).read_bytes()).hexdigest() for path in paths}
++receipt = dict(command=command, profile=str(profile), before=hashes())
++began = time.monotonic()
++with (evidence / (args.label + ".log")).open("w", encoding="utf-8") as log:
++    process = subprocess.Popen(command, env=env, cwd=root, stdout=log, stderr=subprocess.STDOUT)
++    try:
++        receipt["exit_code"] = process.wait(timeout=300)
++    except subprocess.TimeoutExpired:
++        subprocess.run(["taskkill", "/PID", str(process.pid), "/T", "/F"], capture_output=True, check=False)
++        process.wait(timeout=20)
++        receipt["exit_code"] = 124
++receipt.update(elapsed_seconds=time.monotonic()-began, after=hashes())
++receipt["changed_sources"] = [path for path in paths if receipt["before"][path] != receipt["after"][path]]
++(evidence / (args.label + "-receipt.json")).write_text(json.dumps(receipt, indent=2), encoding="utf-8")
++print(json.dumps({key: receipt[key] for key in ("exit_code", "elapsed_seconds", "changed_sources")}))
++sys.exit(receipt["exit_code"])
+diff --git a/docs/evidence/game-loading-review-2026-11-02/summarize.py b/docs/evidence/game-loading-review-2026-11-02/summarize.py
+new file mode 100644
+--- /dev/null
++++ b/docs/evidence/game-loading-review-2026-11-02/summarize.py
+@@ -0,0 +1,48 @@
++"""Derive stage timings from raw runs; reject failed or changing-source runs."""
++import json
++from pathlib import Path
++
++folder = Path(__file__).resolve().parent
++summary = {"startup": [], "races": [], "resources": [], "checks": 0, "failures": 0}
++for label in ("startup-stock-v2", "startup-custom-foreground", "startup-custom-cached",
++              "race-compat", "race-mobile", "resources-app", "resources-parts"):
++    data = json.loads((folder / (label + ".json")).read_text())
++    receipt = json.loads((folder / (label + "-receipt.json")).read_text())
++    assert receipt["exit_code"] == 0 and not receipt["changed_sources"], label
++    assert data.get("failures", 0) == 0, label
++    summary["checks"] += data.get("checks", 0)
++    if label.startswith("startup"):
++        marks = {row["name"]: row["us"] for row in data["marks"]}
++        row = {key: value for key, value in data.items() if key != "marks"}
++        row.update(label=label, header_ms=(marks["garage_pictures_begin"]-marks["header_begin"])/1000,
++                   garage_pictures_ms=(marks["final_screen_begin"]-marks["garage_pictures_begin"])/1000)
++        summary["startup"].append(row)
++    elif label.startswith("race"):
++        rows = []
++        for sample in data["samples"]:
++            marks = {row["name"]: row["us"] for row in sample["marks"]}
++            row = {key: sample[key] for key in ("theme", "cycle", "wall_ms", "max_frame_ms", "retry_ms", "effect_counts", "world_costs")}
++            for key, begin, end in (("roads_ms", "roads_begin", "roads_end"),
++                                    ("game_ms", "game_begin", "game_end"),
++                                    ("graphics_ms", "graphics_begin", "graphics_end"),
++                                    ("effects_ms", "effects_begin", "effects_end")):
++                row[key] = (marks[end]-marks[begin])/1000
++            rows.append(row)
++        summary["races"].append({"label": label, "rows": rows, "cache_events": [
++            {"case": event["case"], "state": event["state"], "telemetry": event["telemetry"]}
++            for event in data["cache_events"]]})
++    else:
++        assert all(row["ok"] for row in data["rows"]), label
++        summary["resources"].append({"label": label, "rows": data["rows"]})
++(folder / "summary.json").write_text(json.dumps(summary, indent=2)+"\n")
++print("Checks:", summary["checks"], "Failures:", summary["failures"])
++for row in summary["startup"]:
++    print(row["label"], "load", round(row["shipping_scene_load_ms"]), "ready", round(row["app_ready_ms"]),
++          "header", round(row["header_ms"]), "garage", round(row["garage_pictures_ms"]))
++for run in summary["races"]:
++    for row in run["rows"]:
++        print(run["label"], row["theme"], row["cycle"], "total", round(row["wall_ms"]),
++              "roads", round(row["roads_ms"]), "game", round(row["game_ms"]),
++              "graphics", round(row["graphics_ms"]), "effects", round(row["effects_ms"]))
++for run in summary["resources"]:
++    print(run["label"], run["rows"])
+diff --git a/docs/evidence/game-loading-review-2026-11-02/checkpoint.py b/docs/evidence/game-loading-review-2026-11-02/checkpoint.py
+new file mode 100644
+--- /dev/null
++++ b/docs/evidence/game-loading-review-2026-11-02/checkpoint.py
+@@ -0,0 +1,64 @@
++"""Task-only patch with forward/reverse checks; never writes the main index."""
++import difflib
++import hashlib
++import json
++from pathlib import Path
++import shutil
++import subprocess
++import sys
++import time
++
++evidence = Path(__file__).resolve().parent
++root = evidence.parents[2]
++changed = ["AGENTS.md", "DEVELOPMENT_STATUS.md"]
++added = ["game/tests/review_game_startup_2026_11_02.gd", "game/tests/review_app_resources_2026_11_02.gd",
++         "docs/GAME_LOADING_REVIEW_2026_11_02.md", *[
++             "docs/evidence/game-loading-review-2026-11-02/" + name
++             for name in ("run_review.py", "summarize.py", "checkpoint.py")]]
++if "--seed" in sys.argv:
++    for path in changed:
++        target = evidence / "task-base" / path
++        assert not target.exists(), "Never overwrite the task baseline"
++        target.parent.mkdir(parents=True, exist_ok=True)
++        shutil.copyfile(root / path, target)
++    print("Task baseline saved.")
++    sys.exit(0)
++
++def normalized(path):
++    return path.read_bytes().replace(b"\r\n", b"\n")
++
++parts, before, after = [], {}, {}
++for path in changed + added:
++    old = normalized(evidence / "task-base" / path) if path in changed else b""
++    new = normalized(root / path)
++    before[path], after[path] = old, new
++    parts.append("diff --git a/" + path + " b/" + path + "\n")
++    if path in added:
++        parts.append("new file mode 100644\n")
++    parts.extend(difflib.unified_diff(old.decode().splitlines(keepends=True), new.decode().splitlines(keepends=True),
++                                    fromfile="a/" + path if path in changed else "/dev/null", tofile="b/" + path))
++patch = evidence / "task.patch"
++patch.write_bytes("".join(parts).encode())
++owned = root / "build/game-loading-review-20261102" / ("checkpoint-" + str(time.time_ns()))
++owned.mkdir(parents=True)
++assert owned.resolve().is_relative_to((root / "build/game-loading-review-20261102").resolve())
++for path in changed:
++    target = owned / path
++    target.parent.mkdir(parents=True, exist_ok=True)
++    target.write_bytes(before[path])
++directory = "--directory=" + owned.relative_to(root).as_posix()
++commands = []
++for arguments in (("--check",), (), ("--reverse", "--check"), ("--reverse",)):
++    command = ["git", "apply", directory, *arguments, str(patch)]
++    result = subprocess.run(command, cwd=root, capture_output=True, text=True)
++    commands.append(dict(command=command, exit_code=result.returncode, output=result.stdout + result.stderr))
++    assert result.returncode == 0, result.stderr
++    if arguments == ():
++        assert all(normalized(owned / path) == after[path] for path in changed + added)
++assert all(normalized(owned / path) == before[path] for path in changed)
++assert all(not (owned / path).exists() for path in added)
++report = dict(files=changed + added, forward_content_exact=True, reverse_content_exact=True, main_index_written=False,
++              patch_sha256=hashlib.sha256(patch.read_bytes()).hexdigest(),
++              source_sha256={path: hashlib.sha256(after[path]).hexdigest() for path in changed + added}, commands=commands)
++(evidence / "checkpoint.json").write_text(json.dumps(report, indent=2) + "\n")
++print("Task-only patch forward/reverse/content checks pass; main index unchanged.")

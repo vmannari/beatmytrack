@@ -393,6 +393,46 @@ def test_concurrent_publication_delivery_has_one_intent_and_one_effect(publicati
     with domain.factory() as session:
         assert count(session, PublicationIntent) == count(session, TrackVersion) == count(session, PublicationSlot) == count(session, Run) == 1
         assert session.get(Entitlements, domain.players["Creator"]).slots == 0
+
+
+def test_database_commit_failure_rolls_back_and_durably_retries(publications, monkeypatch):
+    from sqlalchemy.exc import ProgrammingError
+    from bmt_backend import publications as implementation
+
+    domain = publications
+    intent = request(domain)
+    original = implementation._commit_publication
+
+    def failed(app, session, *arguments):
+        original(app, session, *arguments)
+        # Raise from PostgreSQL itself when available, leaving the savepoint
+        # failed as a real permission error does, after all candidate writes.
+        if session.bind.dialect.name == "postgresql":
+            from sqlalchemy import text
+            session.execute(text("SELECT missing_publication_fixture_column FROM tracks"))
+        raise ProgrammingError("fixture", {}, RuntimeError("permission denied"))
+
+    monkeypatch.setattr(implementation, "_commit_publication", failed)
+    assert process_one(domain.app)
+    failed_status = status(domain, intent["publication_id"])
+    assert failed_status["state"] == "queued"
+    assert failed_status["failure_code"] == "validator_unavailable" and failed_status["retryable"]
+    with domain.factory() as session:
+        assert count(session, Track) == count(session, TrackVersion) == count(session, Run) == 0
+        assert count(session, PublicationSlot) == count(session, NewsPublication) == 0
+        assert session.get(Entitlements, domain.players["Creator"]).slots == 1
+        row = session.get(PublicationIntent, intent["publication_id"])
+        evidence = row.content_hash, row.replay_hash, row.operation_key
+        assert row.lease_token is None and row.lease_until > 0
+        row.lease_until = 0
+        session.commit()
+    monkeypatch.setattr(implementation, "_commit_publication", original)
+    assert process_one(domain.app)
+    assert status(domain, intent["publication_id"])["state"] == "published"
+    with domain.factory() as session:
+        row = session.get(PublicationIntent, intent["publication_id"])
+        assert (row.content_hash, row.replay_hash, row.operation_key) == evidence
+        assert count(session, TrackVersion) == count(session, Run) == count(session, PublicationSlot) == 1
         assert session.get(QueueCapacity, 1).pending == 0
 
 

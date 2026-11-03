@@ -1,0 +1,326 @@
+diff --git a/AGENTS.md b/AGENTS.md
+index f23066a..9f7facc 100644
+--- a/AGENTS.md
++++ b/AGENTS.md
+@@ -1,3 +1,8 @@
++<!-- RECORD-PLAYLIST-STYLE-20261102 -->
++## Playlist selection uses restrained integrated controls (2026-11-02)
++RPS01-RPS03: Owner rejects yellow checkbox tiles. Small native brass check/plus marks in full52-unit targets replace them; continuous cover/title/control rows, a thin playing accent and selected/total count improve the hierarchy. Existing saved membership/playback/input behavior remains. Actual-App63/0 each desktop renderer and retained native record-player39/0 pass; ten final native views include all-selected, mixed and keyboard focus. Sources, commands, checkpoint and limits: [docs/RECORD_PLAYLIST_STYLE_2026_11_02.md](docs/RECORD_PLAYLIST_STYLE_2026_11_02.md). Reload and owner appearance/device acceptance remain. No physical-device query/test, APK, owner-save/process change, live/backend mutation, deployment or main-index write; concurrent work preserved.
++<!-- /RECORD-PLAYLIST-STYLE-20261102 -->
++
+ <!-- STARTUP-MUSIC-20261102 -->
+ ## Startup music begins with the active profile's record (2026-11-02)
+ SMU01-SMU02: Guest playback waits for saved-account restoration; cold record selection installs the stream before its first decoder starts. Existing live record fades and playlist behavior remain. Original startup regression37/30fail becomes37/0 headless and69/0 native Compatibility; retained soundtrack43/0 and playlist58/0 pass. Two runtime sources and one new regression; initial sandbox startup failure and corrected fixture cleanup are retained. Commands, checked task-only checkpoint and limits: [docs/STARTUP_MUSIC_2026_11_02.md](docs/STARTUP_MUSIC_2026_11_02.md). Reload and owner listening acceptance remain; no device test, owner-save/process change, backend access, deployment or main-index write. Concurrent work preserved.
+diff --git a/docs/RECORD_PLAYLIST_STYLE_2026_11_02.md b/docs/RECORD_PLAYLIST_STYLE_2026_11_02.md
+new file mode 100644
+index 0000000..eaf79c9
+--- /dev/null
++++ b/docs/RECORD_PLAYLIST_STYLE_2026_11_02.md
+@@ -0,0 +1,40 @@
++# Record playlist styling revised
++
++RPS01 replaces the rejected yellow checkbox tiles with small, original brass check marks and muted plus marks. Each retains its independent 52x52 input target. Included/excluded, hover, focus and last-record-disabled states share the native Garage palette. The new control draws on changes to its state; it adds no animation or per-frame processing.
++
++RPS02 makes each cover, title, playback indicator and playlist control part of one continuous track row. The playing record has a subdued blue surface and thin brass leading edge. Other rows use dark surfaces and fine separators. The title no longer includes a number prefix, freeing space for the name. A single Playlist heading and selected/total count replace the two competing column headings.
++
++RPS03 retains saved membership, direct play, skip/automatic advance, pause, volume, the minimum-one-record rule, accessibility text and failed-save recovery. Playback, persistence and translation sources are unchanged by this follow-up.
++
++Changed files:
++
++- `game/ui/garage_records_menu.gd`: shared row surfaces, restrained focus/hover styles, count, title spacing and integration of the custom control.
++- `game/ui/garage_playlist_toggle.gd`: native CheckBox subclass with transparent theme styling and antialiased check/plus, hover and focus marks. Native toggle/input semantics are retained.
++- `game/tests/test_record_playlist.gd`: adds all-included and keyboard-focus captures to the existing behavior fixture, then clears focus and moves its synthetic pointer away for settled mixed-state captures. Existing assertions remain.
++- This document, the AGENTS entry and the task-owned runner/checkpoint/evidence.
++
++Actual commands:
++
++```powershell
++python docs/evidence/record-playlist-style-2026-11-02/run_native.py --graphical
++python docs/evidence/record-playlist-style-2026-11-02/run_native.py --graphical --mobile
++python docs/evidence/record-playlist-style-2026-11-02/run_native.py test_record_player_redesign --graphical
++git diff --check -- game/ui/garage_records_menu.gd game/tests/test_record_playlist.gd
++python docs/evidence/record-playlist-style-2026-11-02/checkpoint.py
++```
++
++Results: actual App/Garage playlist **63 checks, 0 failures in Compatibility**, **63 checks, 0 failures in desktop Mobile**; retained native record-player interaction/layout **39 checks, 0 failures**. Total **165 checks, 0 failures**. Focused coverage retains mouse/touch membership, direct play, saved selection/reload, skip/wrap/actual end-of-record advancement, pause, last-entry and failed-save behavior. The retained fixture additionally covers scroll gestures, later-track selection and keyboard activation. No new implementation-mirroring visual assertions were added.
++
++Ten final native screenshots show all-included and keyboard-focus states at 1280x720, plus mixed selection at 960x540, 1280x720 and 1600x900 in both renderers. Captures were visually inspected, including the narrow view and the two control states:
++
++- [All records selected](evidence/record-playlist-style-2026-11-02/gl_compatibility/playlist-all-included.png)
++- [Mixed selection](evidence/record-playlist-style-2026-11-02/gl_compatibility/playlist-1280x720.png)
++- [Small view](evidence/record-playlist-style-2026-11-02/gl_compatibility/playlist-960x540.png)
++- [Keyboard focus](evidence/record-playlist-style-2026-11-02/gl_compatibility/playlist-keyboard-focus.png)
++- [Desktop Mobile](evidence/record-playlist-style-2026-11-02/mobile/playlist-1280x720.png)
++
++The first native style run passed 61/0 before the two additional state captures were added. Final settled captures clear the fixture's previous mouse/keyboard focus; keyboard focus is preserved in its dedicated view. The existing root-certificate-store warning remains in successful offline logs. An initial source-diff print encountered the Windows console's encoding restriction; a UTF-8 print completed the source review. No runtime failure was concealed or assertion weakened. Native runs use pinned Godot 4.7.2 through `scripts/run_no_crash_dialog.py`, isolated storage, an empty API origin and Dummy audio. They do not assess delivered speaker audio.
++
++The task-only checkpoint includes the two runtime files, adapted existing fixture, document, shared AGENTS addition and evidence scripts. Its task-start sources and immediately-before-addition AGENTS baseline preserve concurrent work. It passes forward/reverse application and normalized-text equality in an owned temporary repository; the main index remains untouched.
++
++Reload and owner appearance/touch acceptance remain. No physical-device query/test, APK, owner-save/process change, live/backend mutation, purchase, deployment or main-index staging/commit/merge was performed.
+diff --git a/docs/evidence/record-playlist-style-2026-11-02/checkpoint.py b/docs/evidence/record-playlist-style-2026-11-02/checkpoint.py
+new file mode 100644
+index 0000000..0d35f34
+--- /dev/null
++++ b/docs/evidence/record-playlist-style-2026-11-02/checkpoint.py
+@@ -0,0 +1,51 @@
++"""Round-trip this style revision alone, preserving the rest of the working tree."""
++from pathlib import Path
++import hashlib
++import json
++import subprocess
++import tempfile
++
++root = Path(__file__).resolve().parents[3]
++out = Path(__file__).resolve().parent
++before = root / 'build/record-playlist-style-2026-11-02/before'
++files = ['game/ui/garage_records_menu.gd', 'game/ui/garage_playlist_toggle.gd',
++         'game/tests/test_record_playlist.gd', 'docs/RECORD_PLAYLIST_STYLE_2026_11_02.md',
++         'AGENTS.md', 'docs/evidence/record-playlist-style-2026-11-02/run_native.py',
++         'docs/evidence/record-playlist-style-2026-11-02/checkpoint.py']
++
++def normalized(path):
++    return path.read_text(encoding='utf-8').encode('utf-8')
++
++old = {name: normalized(before / name) for name in files if (before / name).exists()}
++new = {name: normalized(root / name) for name in files}
++with tempfile.TemporaryDirectory(prefix='checkpoint-', dir=root / 'build/record-playlist-style-2026-11-02') as temporary:
++    repo = Path(temporary)
++    def git(*args):
++        return subprocess.run(['git', '-c', 'core.autocrlf=false', *args], cwd=repo, check=True, capture_output=True).stdout
++    def write(values):
++        for name, data in values.items():
++            target = repo / name
++            target.parent.mkdir(parents=True, exist_ok=True)
++            target.write_bytes(data)
++    git('init', '-q')
++    write(old)
++    git('add', '--all')
++    git('-c', 'user.name=Task checkpoint', '-c', 'user.email=checkpoint@localhost', 'commit', '-qm', 'Task-start sources')
++    write(new)
++    git('add', '--all')
++    patch = git('diff', '--cached', '--binary', '--no-ext-diff')
++    patch_path = out / 'task-only.patch'
++    patch_path.write_bytes(patch)
++    git('apply', '--reverse', '--check', str(patch_path))
++    git('apply', '--reverse', str(patch_path))
++    for name in files:
++        target = repo / name
++        assert (target.read_bytes() if target.exists() else None) == old.get(name), name
++    git('apply', '--check', str(patch_path))
++    git('apply', str(patch_path))
++    assert all((repo / name).read_bytes() == data for name, data in new.items())
++report = {'files': len(files), 'patch_sha256': hashlib.sha256(patch).hexdigest(),
++          'forward_reverse_equal': True,
++          'sources': {name: hashlib.sha256(data).hexdigest() for name, data in new.items()}}
++(out / 'checkpoint.json').write_text(json.dumps(report, indent=2) + '\n', encoding='utf-8')
++print(f'Style checkpoint: {len(files)} files, forward/reverse normalized-text equality passed')
+diff --git a/docs/evidence/record-playlist-style-2026-11-02/run_native.py b/docs/evidence/record-playlist-style-2026-11-02/run_native.py
+new file mode 100644
+index 0000000..49d4099
+--- /dev/null
++++ b/docs/evidence/record-playlist-style-2026-11-02/run_native.py
+@@ -0,0 +1,36 @@
++"""Offline isolated playlist checks using the pinned engine and crash-dialog wrapper."""
++import os
++from pathlib import Path
++import subprocess
++import sys
++
++root = Path(__file__).resolve().parents[3]
++out = Path(__file__).resolve().parent
++script = next((arg for arg in sys.argv[1:] if not arg.startswith('--')), 'test_record_playlist')
++graphical = '--graphical' in sys.argv
++renderer = 'mobile' if '--mobile' in sys.argv else 'gl_compatibility'
++profile = root / 'build/record-playlist-style-2026-11-02' / (script + '-' + renderer)
++profile.mkdir(parents=True, exist_ok=True)
++env = dict(os.environ, APPDATA=str(profile), LOCALAPPDATA=str(profile), BMT_API_URL='',
++           BMT_PLAYLIST_EVIDENCE=str(out / renderer))
++(out / renderer).mkdir(parents=True, exist_ok=True)
++(root / 'build/soundtrack-2026-test').mkdir(parents=True, exist_ok=True)
++command = [sys.executable, str(root / 'scripts/run_no_crash_dialog.py'), '--',
++           r'C:\apps\Godot 4.7.2\Godot_v4.7.2-stable_win64_console.exe',
++           '--path', str(root / 'game'), '--rendering-method', renderer,
++           '--audio-driver', 'Dummy', '--script', 'res://tests/' + script + '.gd']
++if not graphical:
++    command.append('--headless')
++process = subprocess.Popen(command, cwd=root, env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
++                           text=True, encoding='utf-8', errors='replace')
++try:
++    stdout, stderr = process.communicate(timeout=240)
++except subprocess.TimeoutExpired:
++    # The wrapper owns Godot; terminate this exact launched tree before draining pipes.
++    subprocess.run(['taskkill', '/PID', str(process.pid), '/T', '/F'], capture_output=True, check=False)
++    stdout, stderr = process.communicate(timeout=15)
++    stderr += '\nTask-owned native test exceeded 240 seconds.\n'
++output = stdout + stderr
++(out / (script + '-' + renderer + ('-native' if graphical else '-headless') + '.log')).write_text(output, encoding='utf-8')
++print(output)
++raise SystemExit(process.returncode)
+diff --git a/game/tests/test_record_playlist.gd b/game/tests/test_record_playlist.gd
+index 20812d9..3ebd2ca 100644
+--- a/game/tests/test_record_playlist.gd
++++ b/game/tests/test_record_playlist.gd
+@@ -65,6 +65,13 @@ func run() -> void:
+ 	check(menu.playlist_checks.all(func(button: CheckBox) -> bool: return button.button_pressed),"all records initially checked")
+ 	menu._select_record(0)
+ 	await settle()
++	if DisplayServer.get_name() != "headless" and not output.is_empty():
++		DirAccess.make_dir_recursive_absolute(output)
++		check(root.get_texture().get_image().save_png(output.path_join("playlist-all-included.png")) == OK,"native all-included playlist screenshot")
++		menu.playlist_checks[1].grab_focus()
++		await process_frame
++		await RenderingServer.frame_post_draw
++		check(root.get_texture().get_image().save_png(output.path_join("playlist-keyboard-focus.png")) == OK,"native playlist focus screenshot")
+ 	var original_stream: AudioStream = music.menu_player.stream
+ 	await tap(menu.playlist_checks[1])
+ 	check(not menu.playlist_checks[1].button_pressed and Library.playlist(app.records.settings).size() == 13,"mouse removes a record from playlist")
+@@ -129,6 +136,11 @@ func run() -> void:
+ 	app.records.settings.music_playlist = ["missing"]
+ 	check(app.records.save_records() == ERR_INVALID_DATA and app.records.settings == committed,"save validation rejects malformed playlist and retains preferences")
+ 	menu._refresh()
++	root.gui_release_focus()
++	var pointer := InputEventMouseMotion.new()
++	pointer.position = Vector2(200,200)
++	pointer.global_position = pointer.position
++	root.push_input(pointer,true)
+ 	for dimensions: Vector2i in [Vector2i(960,540),Vector2i(1280,720),Vector2i(1600,900)]:
+ 		root.size = dimensions
+ 		root.content_scale_size = dimensions
+diff --git a/game/ui/garage_playlist_toggle.gd b/game/ui/garage_playlist_toggle.gd
+new file mode 100644
+index 0000000..c41680f
+--- /dev/null
++++ b/game/ui/garage_playlist_toggle.gd
+@@ -0,0 +1,26 @@
++extends CheckBox
++## Small machined-brass membership mark inside a full-sized touch target.
++
++func _ready() -> void:
++	var empty := ImageTexture.create_from_image(Image.create_empty(1,1,false,Image.FORMAT_RGBA8))
++	for icon_name: String in ["checked","unchecked","checked_disabled","unchecked_disabled","radio_checked","radio_unchecked","radio_checked_disabled","radio_unchecked_disabled"]:
++		add_theme_icon_override(icon_name,empty)
++	for state: String in ["normal","hover","pressed","hover_pressed","disabled","focus"]:
++		add_theme_stylebox_override(state,StyleBoxEmpty.new())
++	for event: Signal in [toggled,mouse_entered,mouse_exited,focus_entered,focus_exited]:
++		event.connect(func(_value: Variant = null) -> void: queue_redraw())
++
++func _draw() -> void:
++	var centre: Vector2 = size*0.5
++	var hovered: bool = is_hovered() and not disabled
++	var brass := Color("d8bd7f")
++	var rim: Color = brass if button_pressed else Color("91a6ae") if hovered else Color("526b76")
++	if hovered: draw_circle(centre,18,Color(0.74,0.65,0.43,0.10),true,-1,true)
++	if has_focus(): draw_arc(centre,18,0,TAU,64,Color("9b895e"),1,true)
++	if button_pressed: draw_circle(centre,10,Color("283a36"),true,-1,true)
++	draw_arc(centre,10,0,TAU,48,rim,1.2,true)
++	if button_pressed:
++		draw_polyline(PackedVector2Array([centre+Vector2(-4,0),centre+Vector2(-1,3),centre+Vector2(5,-4)]),brass,1.8,true)
++	else:
++		draw_line(centre+Vector2(-4,0),centre+Vector2(4,0),rim,1.2,true)
++		draw_line(centre+Vector2(0,-4),centre+Vector2(0,4),rim,1.2,true)
+diff --git a/game/ui/garage_records_menu.gd b/game/ui/garage_records_menu.gd
+index b2b7e59..add8b47 100644
+--- a/game/ui/garage_records_menu.gd
++++ b/game/ui/garage_records_menu.gd
+@@ -27,6 +27,8 @@ var track_rows: Array[Button] = []
+ var track_states: Array[Label] = []
+ var playlist_checks: Array[CheckBox] = []
+ var playlist_heading: Label
++var playlist_count: Label
++var track_panels: Array[PanelContainer] = []
+ 
+ func _ready() -> void:
+ 	display_position = float(browse_index)
+@@ -99,11 +101,12 @@ func _ready() -> void:
+ 	volume.value_changed.connect(_preview_volume)
+ 	var list_heading := HBoxContainer.new()
+ 	add_child(list_heading)
+-	var list_title := MenuStyle.label("CHOOSE A TRACK",13,true)
+-	list_title.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+-	list_heading.add_child(list_title)
+-	playlist_heading = MenuStyle.label(tr("PLAYLIST"),11,true)
++	playlist_heading = MenuStyle.label(tr("PLAYLIST"),13,true)
++	playlist_heading.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+ 	list_heading.add_child(playlist_heading)
++	playlist_count = MenuStyle.label("",12,true)
++	playlist_count.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
++	list_heading.add_child(playlist_count)
+ 	track_scroll = preload("res://ui/vertical_swipe_scroll.gd").new()
+ 	track_scroll.name = "GarageTrackList"
+ 	track_scroll.horizontal_scroll_mode = ScrollContainer.SCROLL_MODE_DISABLED
+@@ -118,10 +121,15 @@ func _ready() -> void:
+ 	track_scroll.add_child(tracks)
+ 	for index: int in range(Library.CATALOG.size()):
+ 		var item: Dictionary = Library.CATALOG[index]
++		var panel := PanelContainer.new()
++		panel.name = "GarageRecordRow_" + item.id
++		panel.size_flags_horizontal = Control.SIZE_EXPAND_FILL
++		tracks.add_child(panel)
++		track_panels.append(panel)
+ 		var track := HBoxContainer.new()
+ 		track.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+-		track.add_theme_constant_override("separation",4)
+-		tracks.add_child(track)
++		track.add_theme_constant_override("separation",0)
++		panel.add_child(track)
+ 		var row := Button.new()
+ 		row.name = "GarageTrack_" + item.id
+ 		row.custom_minimum_size.y = 52
+@@ -129,7 +137,7 @@ func _ready() -> void:
+ 		row.mouse_default_cursor_shape = Control.CURSOR_POINTING_HAND
+ 		row.pressed.connect(_select_record.bind(index))
+ 		track.add_child(row)
+-		var included := CheckBox.new()
++		var included: CheckBox = preload("res://ui/garage_playlist_toggle.gd").new()
+ 		included.name = "GaragePlaylist_" + item.id
+ 		included.custom_minimum_size = Vector2(52,52)
+ 		included.mouse_default_cursor_shape = Control.CURSOR_POINTING_HAND
+@@ -152,7 +160,7 @@ func _ready() -> void:
+ 		art.stretch_mode = TextureRect.STRETCH_KEEP_ASPECT_COVERED
+ 		art.mouse_filter = Control.MOUSE_FILTER_IGNORE
+ 		content.add_child(art)
+-		var name_label := MenuStyle.label("%02d  %s" % [index+1,item.title],16)
++		var name_label := MenuStyle.label(item.title,16)
+ 		name_label.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+ 		name_label.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
+ 		name_label.text_overrun_behavior = TextServer.OVERRUN_TRIM_ELLIPSIS
+@@ -200,6 +208,7 @@ func _refresh() -> void:
+ 	var included_ids: Array[String] = []
+ 	for item: Dictionary in playlist: included_ids.append(item.id)
+ 	playlist_heading.text = tr("PLAYLIST")
++	playlist_count.text = "%02d / %02d" % [included_ids.size(),Library.CATALOG.size()]
+ 	var enabled: bool = records.settings.get("music_enabled",true)
+ 	now_cover.texture = Library.cover(current.id)
+ 	now_title.text = current.title
+@@ -218,17 +227,26 @@ func _refresh() -> void:
+ 		included.disabled = included.button_pressed and included_ids.size() == 1
+ 		included.accessibility_name = GameText.message("Include {title} in playlist",{"title":item.title})
+ 		included.tooltip_text = tr("Keep at least one track in the playlist.") if included.disabled else included.accessibility_name
++		included.queue_redraw()
+ 		var row: Button = track_rows[index]
+ 		row.accessibility_name = GameText.message("Playing · {title}" if selected and enabled else "Play {title}",{"title":item.title})
+ 		row.tooltip_text = row.accessibility_name
+ 		track_states[index].text = ("●" if enabled else "Ⅱ") if selected else "▶"
+ 		track_states[index].add_theme_color_override("font_color",MenuStyle.ACCENT if selected else MenuStyle.MUTED)
+-		for state: String in ["normal","hover","pressed"]:
+-			var fill := Color("304448") if selected else Color("1b303a") if state == "hover" else Color("243f48") if state == "pressed" else Color("11232c")
++		var surface := MenuStyle.box(Color("1b2e35") if selected else Color("101f28"),0)
++		surface.set_corner_radius_all(5)
++		surface.border_color = Color("c3a568") if selected else Color("263740")
++		surface.border_width_left = 2 if selected else 0
++		surface.border_width_bottom = 0 if selected else 1
++		track_panels[index].add_theme_stylebox_override("panel",surface)
++		for state: String in ["normal","hover","pressed","focus"]:
++			var fill := Color(0.65,0.77,0.80,0.06) if state == "hover" else Color(0.65,0.77,0.80,0.10) if state == "pressed" else Color.TRANSPARENT
+ 			var box := MenuStyle.box(fill,0)
+-			box.set_corner_radius_all(5)
+-			box.border_color = MenuStyle.ACCENT if selected else Color.TRANSPARENT
+-			box.set_border_width_all(1 if selected else 0)
++			box.set_corner_radius_all(4)
++			if state == "focus":
++				box.border_color = Color("9b895e")
++				box.set_border_width_all(1)
++				box.set_expand_margin_all(-2)
+ 			row.add_theme_stylebox_override(state,box)
+ 	_update_volume_caption()
+ 	changed.emit()

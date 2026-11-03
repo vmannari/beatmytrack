@@ -47,7 +47,7 @@ func race_geometry(track: NativeTrack, doc: Dictionary, info: Dictionary) -> Dic
 	var gates: Array = []
 	for index: int in range(session._centers.size()):
 		gates.append(_gate(session._centers[index],session._directions[index],session._widths[index],int(session._layers[index])))
-	gates.append(_gate(track.finish_center,track.finish_forward,Vector2.ONE*(track.finish_half_width+1.5),int(session._finish_elevated)))
+	gates.append(_gate(track.finish_center,track.finish_forward,session._finish_widths,int(session._finish_elevated)))
 	var start: Vector2 = track.spawn-track.finish_forward*maxf(0.0,(track.spawn-track.finish_center).dot(track.finish_forward)+3.0)
 	var creator := Vector2(doc.start_line.position[0],doc.start_line.position[1])
 	var layer: bool = track.elevated_at(start,track.nearest_route(start))
@@ -57,7 +57,7 @@ func race_geometry(track: NativeTrack, doc: Dictionary, info: Dictionary) -> Dic
 		creator_layer = CreatorBridges.initial_layer(track.creator_bridges,creator,PI*0.5-deg_to_rad(float(doc.start_line.heading)))
 	var speeds: Dictionary = {}
 	for id: String in VehicleCatalog.IDS: speeds[id] = VehicleCatalog.config(id).maximum_speed
-	return {"gates":gates,"start":[start.x,start.y,int(layer)],"creator_start":[creator.x,creator.y,int(creator_layer)],
+	return {"checkpoint_layout_version":RaceRules.CHECKPOINT_LAYOUT_VERSION,"gates":gates,"start":[start.x,start.y,int(layer)],"creator_start":[creator.x,creator.y,int(creator_layer)],
 		"maximum_speed":speeds,"extent":[track.half_extent.x,track.half_extent.y],"manifest":info}
 
 func _gate(center: Vector2, direction: Vector2, widths: Vector2, layer: int) -> Array:

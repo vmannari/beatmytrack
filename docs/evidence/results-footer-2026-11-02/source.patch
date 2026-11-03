@@ -1,0 +1,163 @@
+diff --git a/game/tests/test_race_results.gd b/game/tests/test_race_results.gd
+index e797b1050..8682d34e8 100644
+--- a/game/tests/test_race_results.gd
++++ b/game/tests/test_race_results.gd
+@@ -347,10 +347,14 @@ func run() -> void:
+ 	rating_row.stars[2].pressed.emit()
+ 	restored.load_records()
+ 	check(int(restored.settings.track_ratings.get(track.identity,0)) == 3,"standings edits persist")
+-	for page_size: Vector2i in [Vector2i(1280,720),Vector2i(1920,1080),Vector2i(2400,1080)]:
++	for page_size: Vector2i in [Vector2i(1280,683),Vector2i(1280,720),Vector2i(1920,1080),Vector2i(2400,1080)]:
+ 		root.size = page_size
+ 		await settle()
+ 		check((app.get("root_ui") as Control).get_global_rect().encloses(page.get_global_rect()),"Race Complete fits "+str(page_size))
++		for action_name: String in ["BackToResults","RaceSelectedTrack"]:
++			var action := page.find_child(action_name,true,false) as Button
++			check(page.get_global_rect().encloses(action.get_global_rect()),"completion action fully visible: "+action_name+" "+str(page_size))
++			check(action.size.y >= 60,"completion action retains touch height")
+ 		await screenshot("race-complete-"+str(page_size.x)+"x"+str(page_size.y))
+ 	(page as RaceComplete).cards[2].pressed.emit()
+ 	check((page as RaceComplete).race_button.text.contains(str((page as RaceComplete).recommendations[2].name).to_upper()),"recommendation selects primary race action")
+diff --git a/game/ui/race_complete.gd b/game/ui/race_complete.gd
+index 0ad9d3b83..257c5dd70 100644
+--- a/game/ui/race_complete.gd
++++ b/game/ui/race_complete.gd
+@@ -69,13 +69,26 @@ func _ready() -> void:
+ 	home.add_theme_constant_override("icon_max_width",30)
+ 	home.custom_minimum_size = Vector2(56,54)
+ 	header.add_child(home)
++	# Reserve the footer's touch targets even when the content is taller than
++	# the available canvas (short windows, safe areas or translated labels).
++	var scroll := ScrollContainer.new()
++	scroll.name = "CompletionScroll"
++	scroll.horizontal_scroll_mode = ScrollContainer.SCROLL_MODE_DISABLED
++	scroll.size_flags_vertical = Control.SIZE_EXPAND_FILL
++	scroll.follow_focus = true
++	add_child(scroll)
++	var content := VBoxContainer.new()
++	content.size_flags_horizontal = Control.SIZE_EXPAND_FILL
++	content.size_flags_vertical = Control.SIZE_EXPAND_FILL
++	content.add_theme_constant_override("separation",10)
++	scroll.add_child(content)
+ 	var main := HBoxContainer.new()
+ 	main.size_flags_vertical = Control.SIZE_EXPAND_FILL
+ 	main.add_theme_constant_override("separation",12)
+-	add_child(main)
++	content.add_child(main)
+ 	_rewards(main)
+ 	_standings(main)
+-	_recommendations()
++	_recommendations(content)
+ 	_actions()
+ 	if economy != null: economy.changed.connect(_update_coin_status)
+ 	if not recommendations.is_empty(): select_track(0)
+@@ -446,8 +459,8 @@ func _comparison_unavailable(message: String) -> void:
+ 	global_rank.text = ""
+ 	lap_population.text = ""
+ 
+-func _recommendations() -> void:
+-	var panel: VBoxContainer = RaceResults._card(self,0)
++func _recommendations(parent: Control) -> void:
++	var panel: VBoxContainer = RaceResults._card(parent,0)
+ 	var row := HBoxContainer.new()
+ 	row.add_theme_constant_override("separation",10)
+ 	panel.add_child(row)
+diff --git a/game/tests/test_results_footer_fit.gd b/game/tests/test_results_footer_fit.gd
+new file mode 100644
+index 000000000..15431fda5
+--- /dev/null
++++ b/game/tests/test_results_footer_fit.gd
+@@ -0,0 +1,65 @@
++extends SceneTree
++## Isolated completion layout: no App, network or owner records.
++var checks: int = 0
++var failures: int = 0
++
++func _initialize() -> void:
++	call_deferred("run")
++
++func check(value: bool, message: String) -> void:
++	checks += 1
++	if not value:
++		failures += 1
++		print("FAIL: "+message)
++
++func settle() -> void:
++	for frame: int in range(8): await process_frame
++
++func run() -> void:
++	var source := RaceResults.new()
++	source.circuit = "Blind Spot"
++	source.vehicle_name = "Volt"
++	source.total = 90.142
++	source.laps = [25.0,16.097,16.5,16.5,15.0]
++	var page := RaceComplete.new()
++	page.theme = MenuStyle.theme()
++	page.results = source
++	page.facts = {"flying":16.097,"incident_free":true}
++	page.rating_records = LocalRecords.new("user://footer-fit-unused.json")
++	page.rating_track_id = "footer-fit"
++	for index: int in range(3):
++		page.recommendations.append({"name":["Knot","Slippery","Silmukka"][index],"entry":{"id":str(index),"theme":"winter" if index == 1 else "pine"},"category":"different_biome" if index == 1 else "local","route":PackedVector2Array([Vector2.ZERO,Vector2(100,0),Vector2(100,100),Vector2.ZERO]),"laps":5,"estimated_seconds":120,"reason":"Similar length · New challenge"})
++	root.add_child(page)
++	page.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
++	page.offset_left = 32
++	page.offset_top = 16
++	page.offset_right = -32
++	page.offset_bottom = -16
++	var scroll := page.get_node("CompletionScroll") as ScrollContainer
++	for dimensions: Vector2i in [Vector2i(1280,683),Vector2i(1280,720),Vector2i(960,540),Vector2i(1920,1080),Vector2i(1600,720)]:
++		root.size = dimensions
++		await settle()
++		# Canvas-items stretch keeps a logical canvas at small window sizes.
++		var viewport_rect: Rect2 = root.get_visible_rect()
++		check(viewport_rect.encloses(page.get_global_rect()),"page fits "+str(dimensions))
++		for button: Node in page.race_button.get_parent().get_children():
++			check(viewport_rect.encloses((button as Button).get_global_rect()),"footer button fits "+str(dimensions))
++			check((button as Button).size.y >= 60,"touch target retained")
++		var footer_before: Rect2 = page.race_button.get_global_rect()
++		scroll.scroll_vertical = 10000
++		await settle()
++		check(page.race_button.get_global_rect() == footer_before,"scroll keeps footer fixed")
++		check(scroll.get_global_rect().encloses(page.cards[0].get_global_rect()),"recommendations reachable "+str(dimensions))
++		if "--capture" in OS.get_cmdline_user_args():
++			await RenderingServer.frame_post_draw
++			var directory: String = ProjectSettings.globalize_path("res://../docs/evidence/results-footer-2026-11-02")
++			DirAccess.make_dir_recursive_absolute(directory)
++			check(root.get_texture().get_image().save_png(directory.path_join("footer-%dx%d.png" % [dimensions.x,dimensions.y])) == OK,"capture saved")
++		scroll.scroll_vertical = 0
++	page.select_track(2)
++	check(page.race_button.text.contains("SILMUKKA"),"recommendation still updates action")
++	page.queue_free()
++	source.free()
++	await settle()
++	print("RESULTS_FOOTER_FIT: %d checks, %d failures" % [checks,failures])
++	quit(1 if failures else 0)
+diff --git a/docs/RESULTS_FOOTER_FIT_2026_11_02.md b/docs/RESULTS_FOOTER_FIT_2026_11_02.md
+new file mode 100644
+index 000000000..3b9c23c36
+--- /dev/null
++++ b/docs/RESULTS_FOOTER_FIT_2026_11_02.md
+@@ -0,0 +1,22 @@
++# Race completion footer fits (2026-11-02)
++
++RFF01: Keep Results, Tracks and Race selected track fully inside the screen with their existing 60 logical pixel minimum height. RFF02: Preserve access to rewards, standings, rating and recommendations when space is constrained.
++
++`game/ui/race_complete.gd` reserves the header and action row outside a vertically expanding ScrollContainer. Rewards, standings and recommendations retain their layout inside its expanding content; excess height scrolls, including keyboard focus following. No results, reward, recommendation or navigation contracts change.
++
++`game/tests/test_results_footer_fit.gd` exercises the actual menu theme, rating row and three recommendations at 1280×683 (owner screenshot aspect), 1280×720, 960×540, 1920×1080 and 1600×720. It checks every footer button against the logical stretched canvas, minimum touch height, stationary footer during scrolling, reachable recommendation cards and selection caption. `game/tests/test_race_results.gd` also gains the screenshot aspect and explicit action bounds checks.
++
++Validation:
++
++```powershell
++$env:APPDATA = Join-Path (Get-Location) 'build/results-footer-test/fit-userdata'
++powershell -NoProfile -ExecutionPolicy Bypass -Command "& ./scripts/dev.ps1 -Action TestScript -ScriptPath res://tests/test_results_footer_fit.gd -Graphical -RenderingMethod gl_compatibility -TestArgument @('--capture') -CommandTimeoutSeconds 120"
++```
++
++Pinned Godot 4.7.2, native Compatibility: **51 checks, 0 failures**, five captures. Log: `build/logs/TestScript-18592/test-script.log`. [Screenshot at owner aspect](evidence/results-footer-2026-11-02/footer-1280x683.png). All captures are under `docs/evidence/results-footer-2026-11-02/`.
++
++The initial focused run incorrectly compared logical canvas bounds with physical window pixels and omitted the application theme: 51 checks, 8 failures. Corrected the fixture to use `root.get_visible_rect()` and `MenuStyle.theme()`; assertions retain all button checks. The initial native capture and log remain recorded in `build/logs/TestScript-30440/test-script.log` (captures refreshed by final run).
++
++The broader existing `test_race_results.gd` native capture stopped before reaching Race Complete with `Lambda capture at index 0 was freed. Passed "null" instead.` (exit 1, `build/logs/TestScript-8776/test-script.log`); it is not reported as passing. Initial direct PowerShell execution was blocked by execution policy; explicit process-scoped Bypass was used. Sandbox launches stalled on log/certificate-store access; successful native runs used normal Windows access and isolated APPDATA. The dev wrapper suppresses crash dialogs for its own test child only.
++
++No device test, deployment, owner save or owner process change was performed. Owner appearance/input acceptance after reload remains. Concurrent workspace changes and build-identity regeneration are outside this change. Task source patch: `docs/evidence/results-footer-2026-11-02/source.patch`; no main-index writes.

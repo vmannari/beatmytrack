@@ -1,11 +1,11 @@
 extends PanelContainer
 signal race_requested
 signal standings_requested
-signal vehicle_selected(index: int)
 const Progress = preload("res://persistence/daily_progress.gd")
 const Medal = preload("res://ui/daily_medal.gd")
 const Rules = preload("res://race/daily_elimination.gd")
 var client: Node
+var cloud: Node
 var records: LocalRecords
 var vehicle: String = "compact"
 var version: String = ""
@@ -16,16 +16,16 @@ var result: Dictionary = {}
 var preview: bool = false
 var race_button: Button
 var standings_button: Button
-var car_picker: OptionButton
 var _serial: int = 0
 var _heading: Label
 var _time: Label
 var _position: Label
 var _medals: HBoxContainer
-var _award: Label
-var _gap: Label
 var _target: Label
 var _rows: VBoxContainer
+var _loading: bool = false
+var _failed: bool = false
+var _retry: Button
 
 func _ready() -> void:
 	name = "DailyRacePanel"
@@ -48,23 +48,11 @@ func _ready() -> void:
 	GameText.user_text(_position)
 	column.add_child(_position)
 	column.add_child(HSeparator.new())
-	var awards := HBoxContainer.new()
-	awards.add_theme_constant_override("separation",12)
-	column.add_child(awards)
 	_medals = HBoxContainer.new()
 	_medals.add_theme_constant_override("separation",4)
-	awards.add_child(_medals)
-	_award = MenuStyle.label("",24)
-	_award.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
-	_award.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	_award.size_flags_vertical = Control.SIZE_SHRINK_CENTER
-	awards.add_child(_award)
-	_gap = MenuStyle.label("",20)
-	_gap.name = "DailyMedalGap"
-	_gap.add_theme_color_override("font_color",MenuStyle.ACCENT)
-	_gap.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
-	column.add_child(_gap)
-	_target = MenuStyle.label("",14,true)
+	column.add_child(_medals)
+	_target = MenuStyle.label("",16,true)
+	_target.mouse_filter = Control.MOUSE_FILTER_PASS
 	_target.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 	column.add_child(_target)
 	column.add_child(HSeparator.new())
@@ -84,22 +72,12 @@ func _ready() -> void:
 	_rows.name = "DailyNearbyStandings"
 	_rows.add_theme_constant_override("separation",2)
 	column.add_child(_rows)
+	_retry = MenuStyle.button("Try again",refresh)
+	_retry.hide()
+	column.add_child(_retry)
 	var space := Control.new()
 	space.size_flags_vertical = Control.SIZE_EXPAND_FILL
 	column.add_child(space)
-	car_picker = OptionButton.new()
-	car_picker.name = "DailyCar"
-	car_picker.custom_minimum_size.y = 40
-	car_picker.add_theme_font_size_override("font_size",20)
-	for state: String in ["normal","hover","pressed"]: car_picker.add_theme_stylebox_override(state,MenuStyle.box(MenuStyle.PANEL,6))
-	car_picker.clip_text = true
-	for title: String in VehicleCatalog.NAMES: car_picker.add_item(title)
-	car_picker.select(VehicleCatalog.IDS.find(vehicle))
-	car_picker.item_selected.connect(func(index: int) -> void:
-		vehicle = VehicleCatalog.IDS[index]
-		vehicle_selected.emit(index)
-		refresh())
-	column.add_child(car_picker)
 	race_button = MenuStyle.button("Race",func() -> void: race_requested.emit(),true)
 	race_button.name = "DailyRace"
 	race_button.custom_minimum_size.y = 48
@@ -110,6 +88,8 @@ func _ready() -> void:
 	column.add_child(race_button)
 	race_button.disabled = true
 	standings_button.disabled = true
+	if is_instance_valid(client) and client.has_signal("identity_changed"): client.identity_changed.connect(refresh)
+	if is_instance_valid(cloud) and cloud.has_signal("race_verified"): cloud.race_verified.connect(refresh)
 	_render()
 
 func _scope() -> String:
@@ -128,19 +108,44 @@ func configure(next_day: int, next_version: String, end: int) -> void:
 func refresh() -> void:
 	_serial += 1
 	summary = {}
+	_loading = not preview and not version.is_empty() and client != null
+	_failed = false
 	result = Progress.best(Progress.load_entries(records),day,version,vehicle)
-	car_picker.select(VehicleCatalog.IDS.find(vehicle))
+	# The service client outlives menu pages. Reuse only this exact account,
+	# event, car and local comparison; elapsed time fences the UTC boundary.
+	var cache_key: String = _scope()+str([records.path if records != null else "",result.get("best_ms",0)])
+	var cache: Dictionary = client.get_meta("daily_card_standings",{}) if is_instance_valid(client) else {}
+	var cached: Dictionary = cache.get(cache_key,{})
+	if not cached.is_empty():
+		var elapsed: int = maxi(0,Time.get_ticks_msec()-int(cached.sample_msec))/1000
+		if int(cached.data.server_now)+elapsed < ends_at and _valid(cached.data):
+			summary = cached.data.duplicate(true)
 	_render()
 	if preview or version.is_empty() or client == null: return
 	var serial: int = _serial
 	var scope: String = _scope()
 	var path: String = "/track-of-the-day/lap-standings?day=%d&version_id=%s&vehicle_id=%s&limit=3&around=true" % [day,version.uri_encode(),vehicle.uri_encode()]
 	if not result.is_empty(): path += "&lap_ticks=%d" % maxi(1,roundi(float(result.best_ms)*0.12))
-	var response: Dictionary = await client.request_api(path,HTTPClient.METHOD_GET,{},"",true) if client.signed_in() else await client.request_public(path,get_instance_id())
+	var response: Dictionary = {}
+	for attempt: int in range(4):
+		response = await client.request_api(path,HTTPClient.METHOD_GET,{},"",true) if client.signed_in() else await client.request_public(path,get_instance_id())
+		if not is_inside_tree() or serial != _serial or scope != _scope(): return
+		# A newly selected car can still be preparing its server snapshot. Keep
+		# the loading state while the service does that work, then retry boundedly.
+		if attempt == 3 or int(response.get("status",0)) != 503 or str(response.get("error","")) not in ["LAP_STANDINGS_PREPARING","LAP_LIMITS_PREPARING","TRACK_OF_DAY_PREPARING"]: break
+		await get_tree().create_timer(clampi(int(response.get("retry_after",5)),1,30)).timeout
+		if not is_inside_tree() or serial != _serial or scope != _scope(): return
 	if not is_inside_tree() or serial != _serial or scope != _scope(): return
+	_loading = false
 	var data: Dictionary = response.get("data",{}) if response.get("data") is Dictionary else {}
 	if response.get("ok",false) and _valid(data):
 		summary = data.duplicate(true)
+		cache = client.get_meta("daily_card_standings",{})
+		cache[cache_key] = {"data":summary.duplicate(true),"sample_msec":Time.get_ticks_msec()}
+		while cache.size() > 24: cache.erase(cache.keys()[0])
+		client.set_meta("daily_card_standings",cache)
+	else:
+		_failed = true
 	_render()
 
 func _valid(data: Dictionary) -> bool:
@@ -171,6 +176,8 @@ func invalidate() -> void:
 	summary = {}
 	result = {}
 	version = ""
+	_loading = false
+	_failed = false
 	_render()
 
 func _render() -> void:
@@ -191,29 +198,27 @@ func _render() -> void:
 		medal.earned = tier >= level
 		medal.selected = tier == level
 		medal.custom_minimum_size = Vector2(42,42)
+		medal.tooltip_text = tr(Progress.TITLES[level])
 		_medals.add_child(medal)
+		medal.mouse_filter = Control.MOUSE_FILTER_PASS
 	if tier == 4:
 		var medal := Medal.new()
 		medal.tier = 4
 		medal.selected = true
 		medal.custom_minimum_size = Vector2(50,42)
+		medal.tooltip_text = tr(Progress.TITLES[4])
 		_medals.add_child(medal)
-	_award.text = tr(Progress.TITLES[tier])
-	_award.modulate = Medal.COLORS[4] if tier == 4 else Color.WHITE
-	_gap.text = ""
+		medal.mouse_filter = Control.MOUSE_FILTER_PASS
 	_target.text = ""
-	if tier == 4:
-		_gap.text = tr("Elite earned")
-	elif summary.get("cutoffs") is Array and summary.cutoffs.size() == 9:
+	_target.tooltip_text = ""
+	if tier < 4 and summary.get("cutoffs") is Array and summary.cutoffs.size() == 9:
 		var next_stage: int = [0,3,5,8][tier]
 		var target: float = float(summary.cutoffs[next_stage].lap_ticks)/120.0
 		var next_title: String = tr(Progress.TITLES[tier+1])
 		var gap: float = float(result.get("best_ms",0))/1000.0-target
-		_gap.text = tr("%.3f s to %s") % [gap,next_title] if played and gap > 0 else tr("Clear the next stage: %s") % next_title
 		_target.text = tr("Target %s") % Rules.time_text(target)
-	else:
-		_gap.text = tr("Bronze · Silver · Gold")
-		_target.text = tr("Clear every stage to earn Elite")
+		_target.tooltip_text = tr("%.3f s to %s") % [gap,next_title] if played and gap > 0 else tr("Clear the next stage: %s") % next_title
+	_target.visible = not _target.text.is_empty()
 	race_button.text = tr("Race again") if played else tr("Race")
 	_render_rows()
 
@@ -222,22 +227,27 @@ func _render_rows() -> void:
 		_rows.remove_child(child)
 		child.queue_free()
 	var rows: Array = summary.get("items",[]).duplicate(true)
+	_retry.visible = _failed
 	if not result.is_empty() and summary.get("comparison") is Dictionary:
 		var own: Dictionary = summary.comparison
-		rows.append({"rank":int(own.position),"time_ticks":int(own.candidate_ticks),"time_ms":int(result.best_ms),"display_name":str(_player().get("display_name",tr("You"))),"self":true})
+		rows = rows.filter(func(row: Dictionary) -> bool: return str(row.get("player_id","")) != str(_player().get("id","")))
+		rows.append({"rank":int(own.position),"time_ticks":int(own.candidate_ticks),"time_ms":int(result.best_ms),"display_name":str(_player().get("display_name",tr("You"))),"country_code":str(_player().get("country_code","")),"self":true})
 	rows.sort_custom(func(a: Dictionary,b: Dictionary) -> bool: return int(a.time_ticks) < int(b.time_ticks))
 	if rows.is_empty():
 		var empty: Label = MenuStyle.label("No flying laps yet." if not version.is_empty() and not summary.is_empty() else "Standings unavailable",16,true)
 		empty.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+		if _loading: empty.text = tr("Loading standings…")
+		elif _failed: empty.text = tr("Could not load today's standings. Try again.")
 		_rows.add_child(empty)
 	for value: Variant in rows.slice(0,3):
 		if not value is Dictionary or not value.get("display_name") is String: continue
 		var row: Dictionary = value
+		row["self"] = row.get("self",false) or (not _player().is_empty() and str(row.get("player_id","")) == str(_player().get("id","")))
 		var panel := PanelContainer.new()
 		panel.name = "DailyNearbySelf" if row.get("self",false) else "DailyNearbyRow"
-		var style: StyleBoxFlat = MenuStyle.box(Color("ffd34818") if row.get("self",false) else Color.TRANSPARENT,3)
+		var style: StyleBoxFlat = MenuStyle.box(Color("ffd34820") if row.get("self",false) else Color("0b1c2799"),6)
 		if row.get("self",false):
-			style.border_width_left = 3
+			style.set_border_width_all(1)
 			style.border_color = MenuStyle.ACCENT
 		panel.add_theme_stylebox_override("panel",style)
 		_rows.add_child(panel)
@@ -246,14 +256,19 @@ func _render_rows() -> void:
 		var rank: Label = MenuStyle.user_label(str(int(row.get("rank",0))),16)
 		rank.custom_minimum_size.x = 30
 		columns.add_child(rank)
+		columns.add_child(PlayerCountry.flag(str(row.get("country_code","")),22))
 		var driver: Label = MenuStyle.user_label(str(row.display_name),16)
 		driver.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 		driver.text_overrun_behavior = TextServer.OVERRUN_TRIM_ELLIPSIS
+		driver.tooltip_text = str(row.display_name)
+		driver.mouse_filter = Control.MOUSE_FILTER_PASS
 		columns.add_child(driver)
 		var seconds: float = float(row.time_ms)/1000.0 if row.has("time_ms") else float(row.get("time_ticks",0))/120.0
 		var time: Label = MenuStyle.user_label(Rules.time_text(seconds),16)
 		time.add_theme_color_override("font_color",MenuStyle.ACCENT if row.get("self",false) else MenuStyle.TEXT)
 		columns.add_child(time)
+		if row.get("self",false):
+			for label: Label in columns.find_children("*","Label",true,false): label.add_theme_color_override("font_color",MenuStyle.ACCENT)
 
 func _exit_tree() -> void:
 	if is_instance_valid(client): client.cancel_public_reads(get_instance_id())

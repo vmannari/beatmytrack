@@ -26,6 +26,16 @@ static func run(cancelled: Callable, selected: NativeTrack, entry: Dictionary, d
 	var packet: Dictionary = ROADS.prepare(track,false,false,cancelled)
 	packet = ROADS.with_winter_cover(packet,track,cancelled)
 	if cancelled.call(): return {}
+	# Prime existing query/gate data and the bounded numeric support cache in
+	# this same worker. Do not construct another bridge/Desert field or repeat
+	# the Winter cover bake, and retain no extra presenter/track owner.
+	track._creator_query()
+	if cancelled.call(): return {}
+	preload("res://track/road_surface_height.gd").new(track)
+	if cancelled.call(): return {}
+	var session := TrackSession.new()
+	session._configure(track)
+	if cancelled.call(): return {}
 	receipt = DISK.stage_arrays(disk_key,packet,cancelled)
 	if cancelled.call(): DISK.discard_arrays(receipt); return {}
 	# Oversized packets are released here; only the existing road LRU can keep

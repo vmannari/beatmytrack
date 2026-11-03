@@ -268,7 +268,7 @@ func _whole(value: Variant) -> bool:
 	# infinities and NaNs still cannot become verified ranks or timing ticks.
 	return (value is int or value is float) and is_finite(float(value)) and float(value) == floorf(float(value))
 
-func _columns(values: Array, headers: bool = false) -> HBoxContainer:
+func _columns(values: Array, headers: bool = false, country: String = "") -> HBoxContainer:
 	var row := HBoxContainer.new()
 	row.add_theme_constant_override("separation",12)
 	for index: int in range(4):
@@ -278,21 +278,36 @@ func _columns(values: Array, headers: bool = false) -> HBoxContainer:
 		label.custom_minimum_size.x = [50,0,118,96][index]
 		label.text_overrun_behavior = TextServer.OVERRUN_TRIM_ELLIPSIS
 		if index >= 2: label.horizontal_alignment = HORIZONTAL_ALIGNMENT_RIGHT
-		row.add_child(label)
+		if index == 1:
+			var identity := HBoxContainer.new()
+			identity.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+			identity.add_theme_constant_override("separation",8)
+			if headers:
+				var space := Control.new()
+				space.custom_minimum_size.x = 24
+				identity.add_child(space)
+			else: identity.add_child(PlayerCountry.flag(country,24))
+			label.tooltip_text = str(values[index])
+			identity.add_child(label)
+			row.add_child(identity)
+		else: row.add_child(label)
 	return row
 
 func _row(item: Dictionary, own: bool, sticky: bool = false) -> PanelContainer:
 	var panel := PanelContainer.new()
 	panel.name = "DailySelfRow" if own else "DailyStanding"
-	var style: StyleBoxFlat = MenuStyle.box(Color("ffd348") if own else Color("112735"),10)
+	var style: StyleBoxFlat = MenuStyle.box(Color("ffd34820") if own else Color("0b1c2799"),10)
+	if own:
+		style.set_border_width_all(1)
+		style.border_color = MenuStyle.ACCENT
 	style.set_corner_radius_all(5)
 	if sticky: style.content_margin_right = 10+MenuStyle.SCROLLBAR_LANE
 	panel.add_theme_stylebox_override("panel",style)
 	var gap: String = "+%.3f" % (float(item.gap_ticks)/_tick_rate) if int(item.gap_ticks) > 0 else "—"
-	var columns: HBoxContainer = _columns([str(int(item.rank)),str(item.display_name),MenuStyle.time_text(float(item.time_ticks)/_tick_rate),gap])
+	var columns: HBoxContainer = _columns([str(int(item.rank)),str(item.display_name),MenuStyle.time_text(float(item.time_ticks)/_tick_rate),gap],false,str(item.get("country_code","")))
 	panel.add_child(columns)
-	for label: Label in columns.get_children():
-		if own: label.add_theme_color_override("font_color",MenuStyle.INK)
+	for label: Label in columns.find_children("*","Label",true,false):
+		if own: label.add_theme_color_override("font_color",MenuStyle.ACCENT)
 	columns.get_child(1).tooltip_text = str(item.display_name)
 	return panel
 

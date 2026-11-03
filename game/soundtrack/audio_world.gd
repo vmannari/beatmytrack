@@ -2,7 +2,7 @@ class_name GameSoundtrack
 extends Node
 ## Recorded music and interface feedback, entirely outside canonical simulation.
 const BANK: String = "res://assets/audio/locked_in_v1/"
-const MENU_ASSET: String = "res://assets/audio/menu_exploration_v1/exploration_menu_loop.ogg"
+signal record_advanced(id: String)
 const RecordLibrary = preload("res://soundtrack/record_library.gd")
 const LAYERS: Array[String] = ["pulse", "lock", "groove", "hook", "wide", "soar"]
 const DEFAULTS: Dictionary = {"music_volume": 0.7, "vehicle_volume": 1.0, "interface_volume": 0.7}
@@ -12,6 +12,8 @@ const FADE_SECONDS: float = BAR_SECONDS * 2.0
 var menu_player: AudioStreamPlayer
 var menu_record: String = RecordLibrary.DEFAULT_ID
 var music_enabled: bool = true
+var _settings: Dictionary = {}
+var _records: WeakRef
 var _pending_record: AudioStream
 var _record_fade: float = 1.0
 var race_player: AudioStreamPlayer
@@ -63,7 +65,8 @@ func _ready() -> void:
 	output_enabled = DisplayServer.get_name() != "headless"
 	if output_enabled: windows_output.configure()
 	menu_player = _player("MenuScore", "Music")
-	menu_player.stream = _menu_loop()
+	menu_player.stream = RecordLibrary.stream(RecordLibrary.selected({}))
+	menu_player.finished.connect(_menu_finished)
 	menu_player.volume_db = -80.0
 	race_player = _player("RaceScore", "Music")
 	race_player.volume_db = -80.0
@@ -91,21 +94,41 @@ func _loop(file: String) -> AudioStreamOggVorbis:
 	return stream
 
 
-func _menu_loop() -> AudioStream:
-	return AudioLoop.prepare(load(MENU_ASSET) as AudioStream)
+func _menu_finished() -> void:
+	if mode != "menu" or not music_enabled or _pending_record != null: return
+	var records: LocalRecords = _records.get_ref() if _records != null else null
+	var next: Dictionary = RecordLibrary.next_record(records.settings if records != null else _settings,menu_record)
+	menu_record = next.id
+	if records != null: records.settings["music_record"] = menu_record
+	else: _settings["music_record"] = menu_record
+	menu_player.stream = RecordLibrary.stream(next)
+	if output_enabled: menu_player.play()
+	record_advanced.emit(menu_record)
+
+
+func bind_records(records: LocalRecords) -> void:
+	_records = weakref(records) if records != null else null
 
 
 func apply_settings(settings: Dictionary) -> void:
+	_settings = settings
 	music_enabled = settings.get("music_enabled",true) == true
 	var entry: Dictionary = RecordLibrary.selected(settings)
 	if entry.id != menu_record:
 		var next: AudioStream = RecordLibrary.stream(entry)
 		if next == null:
 			entry = RecordLibrary.selected({})
-			next = _menu_loop()
+			next = RecordLibrary.stream(entry)
 		if entry.id != menu_record:
 			menu_record = entry.id
-			_pending_record = next
+			if not menu_player.has_stream_playback():
+				# Cold startup has nothing to fade out. Install the saved selection
+				# before show_menu() can start the default record's decoder.
+				menu_player.stream = next
+				_pending_record = null
+				_record_fade = 1.0
+			else:
+				_pending_record = next
 	if mode == "menu":
 		menu_target = 1.0 if music_enabled else 0.0
 		if music_enabled and output_enabled and _pending_record == null:
@@ -135,7 +158,7 @@ func show_menu() -> void:
 	menu_target = 1.0 if music_enabled else 0.0
 	race_target = 0.0
 	race_player.stream_paused = app_suspended
-	if output_enabled and music_enabled and not menu_player.has_stream_playback(): menu_player.play()
+	if output_enabled and music_enabled and _pending_record == null and not menu_player.has_stream_playback(): menu_player.play()
 	menu_player.stream_paused = app_suspended
 
 

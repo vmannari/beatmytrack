@@ -151,6 +151,7 @@ def step(factory, *, clock=None, include_artificial=False):
 
 @router.get("/v1/track-of-the-day")
 def today(request: Request, response: Response, db=Depends(get_session), credentials=Depends(bearer)):
+    from .daily_fixed_limits import displayed_version
     player = current_player(request, credentials, db) if credentials else None
     stamp = now()
     response.headers["Cache-Control"] = "private, no-store"
@@ -160,7 +161,8 @@ def today(request: Request, response: Response, db=Depends(get_session), credent
             raise HTTPException(503, "TRACK_OF_DAY_PREPARING", headers={"Retry-After": "30"})
         if chosen.version_id and not chosen.lap_limits:
             raise HTTPException(503, "LAP_LIMITS_PREPARING", headers={"Retry-After": "30"})
-        items = hydrate(db, request, [{"version_id": chosen.version_id}], player) if chosen.version_id else {}
+        version_id = displayed_version(chosen)
+        items = hydrate(db, request, [{"version_id": version_id}], player) if version_id else {}
         return {"day": chosen.day, "starts_at": chosen.day * DAY, "ends_at": (chosen.day + 1) * DAY,
             "server_now": stamp, "policy": chosen.policy, "reason": chosen.reason,
-            "status": "ready" if items else "unavailable", "track": items.get(chosen.version_id)}
+            "status": "ready" if items else "unavailable", "track": items.get(version_id)}

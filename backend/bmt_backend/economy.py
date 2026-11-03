@@ -30,6 +30,8 @@ PRICES = {**{"livery/" + item: 500 for item in CATALOG["patterns"] if item != "p
              for category, items in CATALOG["kart_parts"].items() for item in items if item != "stock"},
           **{"kit/hovercraft/" + category + "/" + item: 750
              for category, items in CATALOG["hovercraft_parts"].items() for item in items if item != "stock"},
+          **{"kit/electric/" + category + "/" + item: 750
+             for category, items in CATALOG["electric_parts"].items() for item in items if item != "stock"},
           **{"kit/forklift/" + category + "/" + item: 750
              for category, items in CATALOG["forklift_parts"].items() for item in items if item != "stock"}}
 MAX_BALANCE = 2147483647

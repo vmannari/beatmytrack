@@ -32,9 +32,12 @@ func run() -> void:
 			var boundary: PackedVector2Array = SplineGateCorridor.lane(track,offset,false,true,0.5)
 			var session := TrackSession.new(120,1); notices = 0
 			drive_path(session,track,boundary)
-			# The circuit has opposite turns: either large variable-width
-			# offset erases an inner nose where the neighbouring road widens.
-			if absf(offset) > 0.5:
+			# The old inner-span clamp rejected this entirely paved taper line.
+			# Rules24's minimum physical road span makes it a legal crossing.
+			var covered_taper: bool = is_equal_approx(offset,0.75 if reverse else -0.75)
+			if covered_taper:
+				check(offroad_samples(track,boundary) == 0 and session.finished and notices == 0,"full road width includes the paved taper line %s/%s" % [reverse,offset])
+			elif absf(offset) > 0.5:
 				check(not session.finished and notices > 0,"wide profile cannot erase an inner hairpin %s/%s" % [reverse,offset])
 			else:
 				check(session.finished and notices == 0,"variable-width interior line stays usable %s/%s" % [reverse,offset])

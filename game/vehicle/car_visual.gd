@@ -132,6 +132,8 @@ var body: Node3D
 var brake_material: StandardMaterial3D
 var suspension := Vector3.ZERO # heave, pitch, roll
 var suspension_speed := Vector3.ZERO
+var terrain_suspension := Vector3.ZERO # presentation-only heave, pitch, roll
+var terrain_suspension_speed := Vector3.ZERO
 var last_tick: int = -1
 var last_velocity := Vector2.ZERO
 var last_jump_velocity: float = 0.0
@@ -152,6 +154,7 @@ var ramp_body_pitch: float = 0.0
 const MAX_SURFACE_HEAVE: float = 0.028
 const MAX_SURFACE_ROLL: float = 0.009
 const MAX_COLLISION_SUSPENSION_SPEED: float = 1.25
+static var electric_tire_angles: PackedVector2Array = PackedVector2Array()
 
 
 func add_collision_impact(state: VehicleState, resolved_velocity_change: Vector2) -> void:
@@ -401,6 +404,11 @@ func change_kit_parts(value: Dictionary) -> void:
 			frame.get_parent().remove_child(frame)
 			frame.queue_free()
 		kit_frames[category] = []
+		if vehicle_id=="electric":
+			preload("res://vehicle/electric_kits.gd").build(self,category)
+			if batch_parts:
+				for frame: Node3D in kit_frames[category]: VisualGeometry.batch_static_parts(frame)
+			continue
 		if vehicle_id=="forklift":
 			preload("res://vehicle/forklift_kits.gd").build(self,category)
 			if batch_parts:
@@ -517,11 +525,13 @@ func register_rolling_wheel(pivot: Node3D, radius: float) -> void:
 	wheel_rest_positions.append(pivot.position)
 
 
-func present_suspension(state: VehicleState, road_pitch: float, dry_contact: bool = true, surface_rumble: float = 0.0, kerb_heights: Vector4 = Vector4.ZERO, bump_heights: Vector4 = Vector4.ZERO, bump_track: bool = false, bump_pose: Vector3 = Vector3.ZERO) -> void:
+func present_suspension(state: VehicleState, road_pitch: float, dry_contact: bool = true, surface_rumble: float = 0.0, kerb_heights: Vector4 = Vector4.ZERO, bump_heights: Vector4 = Vector4.ZERO, bump_track: bool = false, bump_pose: Vector3 = Vector3.ZERO, terrain_heights: Vector4 = Vector4.ZERO, terrain_pose: Vector3 = Vector3.ZERO) -> void:
 	# Consume snapshots once, independent of display rate; never write to simulation.
 	if last_tick < 0 or state.tick < last_tick or state.tick - last_tick > 30:
 		suspension = Vector3.ZERO
 		suspension_speed = Vector3.ZERO
+		terrain_suspension = Vector3.ZERO
+		terrain_suspension_speed = Vector3.ZERO
 		spark_cooldown = 0.0
 		for spark: Dictionary in sparks:
 			spark.life = 0.0
@@ -565,6 +575,9 @@ func present_suspension(state: VehicleState, road_pitch: float, dry_contact: boo
 			suspension.x = clampf(suspension.x, -0.11, 0.06)
 			suspension.y = clampf(suspension.y, -0.12, 0.12)
 			suspension.z = clampf(suspension.z, -0.12, 0.12)
+			var terrain_target: Vector3 = terrain_pose if not airborne and state.roll_ticks == 0 else Vector3.ZERO
+			terrain_suspension_speed += ((terrain_target-terrain_suspension)*Vector3(85.0,100.0,100.0)-terrain_suspension_speed*Vector3(12.0,13.0,13.0))/120.0
+			terrain_suspension += terrain_suspension_speed/120.0
 		var hard_ramp: bool = not was_airborne and absf(road_pitch) > 0.12 and absf(slope_rate) * state.velocity.length() > 16.0
 		if dry_contact and not airborne and state.velocity.length() > 9.0 and spark_cooldown == 0.0 and (impact > 3.0 or hard_ramp):
 			_emit_sparks(state, road_pitch)
@@ -582,10 +595,10 @@ func present_suspension(state: VehicleState, road_pitch: float, dry_contact: boo
 	var phase: float = state.tick / 120.0
 	var surface_heave: float = (sin(phase * 55.0) + sin(phase * 31.0) * 0.35) * MAX_SURFACE_HEAVE * rumble
 	var surface_roll: float = (sin(phase * 43.0) + cos(phase * 29.0) * 0.30) * MAX_SURFACE_ROLL * rumble
-	body.position.y = suspension.x * compliance / HandlingConfig.BODY_SCALE + surface_heave
+	body.position.y = (suspension.x + terrain_suspension.x) * compliance / HandlingConfig.BODY_SCALE + surface_heave
 	var body_pitch: float = state.bump_transfer.x if bump_track and state.jump_height == 0.0 and state.roll_ticks == 0 else suspension.y
-	body.rotation.x = (body_pitch + ramp_body_pitch) * compliance
-	body.rotation.z = suspension.z * compliance + surface_roll
+	body.rotation.x = (body_pitch + ramp_body_pitch + terrain_suspension.y) * compliance
+	body.rotation.z = (suspension.z + terrain_suspension.z) * compliance + surface_roll
 	# The canonical spring moves the chassis; each tyre follows its own contact
 	# instead of inheriting that rigid plane. Keep diagonal/single-wheel contact.
 	var kerb_pose: Vector3 = state.kerb_offset if state.jump_height == 0.0 and state.roll_ticks == 0 else Vector3.ZERO
@@ -596,6 +609,8 @@ func present_suspension(state: VehicleState, road_pitch: float, dry_contact: boo
 		var contact_index: int = (0 if rest.z < 0.0 else 2) + (0 if rest.x < 0.0 else 1)
 		var height: float = kerb_heights[contact_index] if state.jump_height == 0.0 and state.roll_ticks == 0 else 0.0
 		wheel.position.y = (rest.y + (height-kerb_pose.x)/HandlingConfig.BODY_SCALE - kerb_basis.x.y*rest.x - kerb_basis.z.y*rest.z)/kerb_basis.y.y
+		if state.jump_height == 0.0 and state.roll_ticks == 0:
+			wheel.position.y += terrain_heights[contact_index]/HandlingConfig.BODY_SCALE
 	# Accentuate the existing damped response, preserving the contacted side and
 	# axle. The kart retains its stiffer chassis; canonical handling is untouched.
 	body.rotation.x += kerb_pose.y * 0.70 * compliance
@@ -607,6 +622,38 @@ func present_suspension(state: VehicleState, road_pitch: float, dry_contact: boo
 			var wheel: Node3D = rolling_wheels[i].get_parent() as Node3D
 			var slot: int = (0 if rest.z < 0.0 else 2)+(0 if rest.x < 0.0 else 1)
 			wheel.position.y += ((bump_heights[slot]-bump_pose.x)/HandlingConfig.BODY_SCALE-basis.x.y*rest.x-basis.z.y*rest.z)/basis.y.y
+	if vehicle_id == "electric":
+		# Its low wheel arches leave less visual travel than the shared body.
+		# Ease the sprung shell before applying the final clearance correction.
+		body.rotation.x = 0.035*tanh(body.rotation.x/0.035)
+		body.rotation.z = 0.035*tanh(body.rotation.z/0.035)
+		body.position.y = maxf(body.position.y,-0.025)
+		_keep_electric_body_clear_of_tires()
+
+
+func _keep_electric_body_clear_of_tires() -> void:
+	# The wheels keep their road contacts while the sprung body pitches, rolls
+	# and heaves independently. Lift only the rendered body when that motion
+	# would push a tire through the wheel opening.
+	const BODY = preload("res://vehicle/electric_reference_body.gd")
+	const TIRE_RINGS: Array[Vector2] = [Vector2(-0.14,0.32),Vector2(-0.075,0.37),Vector2(0.075,0.37),Vector2(0.14,0.32)]
+	if electric_tire_angles.is_empty():
+		for index: int in range(32):
+			var angle: float = TAU*float(index)/32.0
+			electric_tire_angles.append(Vector2(sin(angle),cos(angle)))
+	for _pass: int in range(3):
+		var inverse: Transform3D = body.transform.affine_inverse()
+		var lift := 0.0
+		for rotor: Node3D in rolling_wheels:
+			var wheel: Node3D = rotor.get_parent() as Node3D
+			var local_wheel: Transform3D = inverse*wheel.transform
+			for ring: Vector2 in TIRE_RINGS:
+				for direction: Vector2 in electric_tire_angles:
+					var point: Vector3 = local_wheel*Vector3(ring.x,ring.y*direction.x,ring.y*direction.y)
+					if point.y > 0.24:
+						lift = maxf(lift,point.y-BODY.wheel_bottom(point.z)+0.004)
+		if lift <= 0.0: break
+		body.position.y += lift/maxf(inverse.basis.y.y,0.5)
 
 
 # Conservative cross-section of the wheels, body, mirrors and roof in model metres.

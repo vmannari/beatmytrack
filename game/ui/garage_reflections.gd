@@ -30,6 +30,7 @@ func build(source: CarShowroom, world: Node3D, stage: Node3D) -> void:
 		view.world_3d = owner.showroom_viewport.find_world_3d()
 		view.msaa_3d = Viewport.MSAA_2X
 		view.scaling_3d_scale = 1.0
+		view.mesh_lod_threshold = 0.5
 		view.transparent_bg = true
 		view.render_target_update_mode = SubViewport.UPDATE_ONCE
 		holder.add_child(view)

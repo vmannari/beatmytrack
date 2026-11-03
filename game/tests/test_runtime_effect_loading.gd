@@ -10,6 +10,7 @@ var observed: bool = false
 var cases: Array[Dictionary] = []
 var frozen: bool = true
 var largest_first_group: int = 0
+var first_group_fresh: bool = false
 
 func _initialize() -> void: run.call_deferred()
 func check(ok: bool, label: String) -> void:
@@ -23,7 +24,10 @@ func observe() -> void:
 	if world==null: return
 	var proxies: Array=world.find_children("Covered*","GPUParticles3D",true,false)
 	if proxies.is_empty(): return
-	if not observed: largest_first_group=maxi(largest_first_group,proxies.size())
+	if not observed:
+		largest_first_group=maxi(largest_first_group,proxies.size())
+		for node: Node in proxies:
+			first_group_fresh = first_group_fresh or not bool(node.get_meta("preparation_reused",false))
 	observed=true
 	frozen=frozen and game.sim.state.tick==0 and game.track_session.elapsed_ticks==0 and game.countdown_ticks==360 and game.trails.cursor==0 and game.trails.instances.visible_instance_count==0 and game.trails.instances.instance_count==16384
 	if interrupted or mode=="complete": return
@@ -56,15 +60,18 @@ func first_emission(game: Node) -> void:
 		original.source.restart(true);original.source.emitting=original.emitting
 		original.source.transform=original.pose;original.source.amount_ratio=original.ratio;original.source.speed_scale=original.speed
 
+func track_for(_theme: String) -> NativeTrack:
+	return NativeTrack.read("res://resources/tracks/ellipse.json")
+
 func race(vehicle: String, theme: String, interruption: String="complete") -> void:
 	VehicleCatalog.selected=vehicle
 	app.online.client.configure("")
 	app._show_screen("tracks")
-	var track: NativeTrack=NativeTrack.read("res://resources/tracks/ellipse.json")
+	var track: NativeTrack=track_for(theme)
 	track.metadata.theme=theme
 	track.metadata.cloud_version="owned-staged-effects"
 	app.selected_track=track
-	mode=interruption;interrupted=false;observed=false;frozen=true;largest_first_group=0
+	mode=interruption;interrupted=false;observed=false;frozen=true;largest_first_group=0;first_group_fresh=false
 	var revealed: Dictionary={}
 	var began: int=Time.get_ticks_usec()
 	app._start_race(track,false,true)
@@ -78,15 +85,19 @@ func race(vehicle: String, theme: String, interruption: String="complete") -> vo
 		for _frame: int in range(8): await process_frame
 		check(interrupted and not is_instance_valid(app),"App teardown retires active particle preparation")
 		return
-	check(observed,"actual loading reached the staged particle draw")
+	# Cancellation may already have freed Game; use the attempted car contract.
+	var expected_particles: bool = not VehicleCatalog.config(vehicle).air_cushion
+	check(observed==expected_particles,"visible tyres stage particles; air-cushion cars stage no invisible tyre effects")
 	check(frozen,"all staged draws preserve canonical tick, elapsed ticks, countdown and full empty trail ring")
-	check(largest_first_group==1,"actual App adds only one particle proxy before its first covered draw")
+	check((largest_first_group>=1 and largest_first_group<=EFFECTS.REUSED_PER_DRAW) if expected_particles else largest_first_group==0,"actual App starts with a bounded visible preparation batch")
+	if first_group_fresh: check(largest_first_group==1,"fresh App GPU proxies retain individual first draws")
 	if interruption in ["complete","pressure"]:
 		check(is_instance_valid(app.game) and not app.cloud_starting,"actual car/theme preparation completes")
 		if is_instance_valid(app.game):
 			app.game.set_physics_process(false)
 			check(revealed.get("tick",-1)==0 and revealed.get("countdown",-1)==360,"actual reveal retains tick zero and complete countdown")
-			check(app.game.effects_prepared and app.game.effect_preparation_counts.particles==app.game.sand_dust.get_child_count(),"every actual source emitter is prepared before reveal")
+			var count: int = app.game.sand_dust.get_child_count() if expected_particles else 0
+			check(app.game.effects_prepared==expected_particles and app.game.effect_preparation_counts.particles==count,"every visible source emitter is prepared before reveal")
 			check(app.game.get_node("World").find_children("Covered*","",true,false).is_empty(),"actual race contains no temporary preparation nodes")
 			var source_emission: bool=false
 			for source: GPUParticles3D in app.game.sand_dust.get_children(): source_emission=source_emission or source.emitting

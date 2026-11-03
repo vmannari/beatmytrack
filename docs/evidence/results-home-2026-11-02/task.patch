@@ -1,0 +1,35 @@
+--- a/game/ui/race_complete.gd
++++ b/game/ui/race_complete.gd
+@@ -51,9 +51,11 @@
+ 	if is_instance_valid(cloud_client) and cloud_client.has_signal("run_completed"):
+ 		cloud_client.run_completed.connect(_run_completed)
+ 	add_theme_constant_override("separation",10)
++	var header_margin := MarginContainer.new()
++	add_child(header_margin)
+ 	var header := HBoxContainer.new()
+ 	header.add_theme_constant_override("separation",14)
+-	add_child(header)
++	header_margin.add_child(header)
+ 	header.add_child(ResultsIcons.view("flag",42))
+ 	var titles := VBoxContainer.new()
+ 	titles.add_theme_constant_override("separation",0)
+@@ -67,7 +69,8 @@
+ 	home.icon = ResultsIcons.texture("home")
+ 	home.expand_icon = true
+ 	home.add_theme_constant_override("icon_max_width",30)
+-	home.custom_minimum_size = Vector2(56,54)
++	home.custom_minimum_size = Vector2(56,56)
++	home.size_flags_vertical = Control.SIZE_SHRINK_CENTER
+ 	header.add_child(home)
+ 	# Reserve the footer's touch targets even when the content is taller than
+ 	# the available canvas (short windows, safe areas or translated labels).
+@@ -82,6 +85,9 @@
+ 	content.size_flags_vertical = Control.SIZE_EXPAND_FILL
+ 	content.add_theme_constant_override("separation",10)
+ 	scroll.add_child(content)
++	# Follow the card edge, including the lane reserved for a visible scrollbar.
++	content.resized.connect(func() -> void:
++		header_margin.add_theme_constant_override("margin_right",maxi(0,roundi(scroll.size.x-content.size.x))))
+ 	var main := HBoxContainer.new()
+ 	main.size_flags_vertical = Control.SIZE_EXPAND_FILL
+ 	main.add_theme_constant_override("separation",12)

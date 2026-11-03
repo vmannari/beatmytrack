@@ -18,7 +18,7 @@ def setup(app):
 
     def geometry(document):
         built.append(document)
-        return {"manifest":{**copy.deepcopy(active),"track_content_hash":document.get("shape","oval")},
+        return {"checkpoint_layout_version":trajectory_verifier.CHECKPOINT_LAYOUT_VERSION,"manifest":{**copy.deepcopy(active),"track_content_hash":document.get("shape","oval")},
                 "gates":[[1,0,-1,0,1,0,-10,10,0]],"start":[0,0,0],"creator_start":[0,0,0],
                 "extent":[10,10],"maximum_speed":{"compact":120}}
 
@@ -79,6 +79,31 @@ def test_cold_worker_uses_durable_descriptor_without_loading_track(auth_app, mon
     assert len(built) == 1
 
 
+def test_checkpoint_layout_refresh_keeps_competition_identity_and_old_descriptor(auth_app):
+    active,built,key,document,geometry = setup(auth_app)
+    active["rules_key"] = "standing-5-road-gates-v23"
+    old = geometry(document)
+    old.pop("checkpoint_layout_version")
+    with auth_app.state.session_factory() as db:
+        db.add(OperationState(id="geom:"+key, details=old))
+        db.commit()
+    original = copy.deepcopy(active)
+    current = trajectory_verifier.prepared_geometry(auth_app,key)
+    assert active == original and current["manifest"]["rules_key"] == "standing-5-road-gates-v23"
+    assert current["checkpoint_layout_version"] == 24 and len(built) == 2
+    with auth_app.state.session_factory() as db:
+        assert db.get(OperationState,"geom:"+key).details == old
+
+
+def test_older_checkpoint_layout_cannot_be_installed_under_current_cache_key(auth_app, monkeypatch):
+    _active,_built,key,document,geometry = setup(auth_app)
+    old = geometry(document)
+    old["checkpoint_layout_version"] = 23
+    monkeypatch.setattr(auth_app.state.verifier,"race_geometry",lambda _document: old)
+    with pytest.raises(RuntimeError, match="differs from verifier build"):
+        trajectory_verifier.prepared_geometry(auth_app,key)
+
+
 def test_descriptor_cache_has_entry_and_byte_limits(auth_app, monkeypatch):
     _active,_built,key,_document,geometry = setup(auth_app)
     monkeypatch.setattr(trajectory_verifier,"GEOMETRY_CACHE_ENTRIES",2)
@@ -95,7 +120,7 @@ def test_descriptor_cache_has_entry_and_byte_limits(auth_app, monkeypatch):
     huge = geometry({"shape":"large"})
     huge["padding"] = "x"*3000
     with auth_app.state.session_factory() as db:
-        db.add(OperationState(id="geom:"+key,details=huge))
+        db.add(OperationState(id="geom:"+str(trajectory_verifier.CHECKPOINT_LAYOUT_VERSION)+":"+key,details=huge))
         db.commit()
     assert trajectory_verifier.prepared_geometry(auth_app,key) == huge
     with board_cache._lock:
@@ -156,7 +181,7 @@ def test_generated_descriptor_cannot_cross_builds_or_content_keys(auth_app, monk
     with pytest.raises(RuntimeError,match="differs from verifier build"):
         trajectory_verifier.prepared_geometry(auth_app,key)
     with auth_app.state.session_factory() as db:
-        assert db.get(OperationState,"geom:"+key) is None
+        assert db.get(OperationState,"geom:"+str(trajectory_verifier.CHECKPOINT_LAYOUT_VERSION)+":"+key) is None
     monkeypatch.setattr(auth_app.state.verifier,"race_geometry",geometry)
     first = trajectory_verifier.prepared_geometry(auth_app,key)
     other = auth_app.state.blobs.put_json({"shape":"second-track"})

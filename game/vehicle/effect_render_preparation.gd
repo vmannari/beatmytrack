@@ -5,10 +5,12 @@ extends RefCounted
 const BATCH_NAMES: Array[String] = ["WoodFragments","LooseHayFragments","SnowChunks","IceShards","SnowPowder","GroundDrifts","BankPowder","AirborneGrains"]
 const Pool = preload("res://vehicle/effect_preparation_pool.gd")
 const POOL_NAME: String = "EffectPreparationPool"
+const REUSED_PER_DRAW: int = 4
 
 static func prepare(world: Node3D, effects: SandDust, camera: Camera3D, impact: TextureRect, owner: Node, draw: Callable, current: Callable) -> Dictionary:
-	# Keep begin() synchronous for isolated previews. Production draws exactly one
-	# newly bound particle proxy per interval and checks ownership after each await.
+	# Fresh proxies retain individual draws. Reused nodes share bounded draws,
+	# but every actual source still renders, including changed materials/state.
+	# No program equivalence or warm-program receipt is inferred from reuse.
 	var prepared: Dictionary = begin(world,null,camera,impact)
 	prepared["complete"] = DisplayServer.get_name() == "headless"
 	if DisplayServer.get_name() == "headless": return prepared
@@ -25,22 +27,30 @@ static func prepare(world: Node3D, effects: SandDust, camera: Camera3D, impact: 
 	if is_instance_valid(effects) and effects.is_visible_in_tree():
 		for source: Node in effects.get_children():
 			if source is GPUParticles3D and source.is_visible_in_tree(): sources.append(weakref(source))
-	for source_ref: WeakRef in sources:
+	var cursor: int = 0
+	while cursor < sources.size():
 		if not _current(world,camera,current) or not is_instance_valid(pool): return prepared
-		var source: GPUParticles3D = source_ref.get_ref()
-		if source == null: return prepared
-		var particles: GPUParticles3D = pool.take("Covered"+str(source.name))
-		if bool(particles.get_meta("preparation_reused",false)): prepared.reused += 1
-		_configure_particle(particles,source,world,camera)
-		# Earlier staged proxies must remain drawable through the later lighting
-		# contexts even when a short-lived particle has already expired.
-		particles.one_shot = false
-		pool.measure(particles)
-		prepared.nodes.append(particles)
-		prepared.particles += 1
+		var batch: Array[GPUParticles3D] = []
+		while cursor < sources.size() and batch.size() < REUSED_PER_DRAW:
+			var source: GPUParticles3D = sources[cursor].get_ref()
+			if source == null: return prepared
+			var reused: bool = pool.contains("Covered"+str(source.name))
+			if not reused and not batch.is_empty(): break
+			cursor += 1
+			var particles: GPUParticles3D = pool.take("Covered"+str(source.name))
+			if reused: prepared.reused += 1
+			_configure_particle(particles,source,world,camera)
+			# Proxies remain drawable for subsequent lighting contexts.
+			particles.one_shot = false
+			pool.measure(particles)
+			prepared.nodes.append(particles)
+			prepared.particles += 1
+			batch.append(particles)
+			if not reused: break
 		if not draw.is_valid() or not bool(await draw.call()): return prepared
 		if not _current(world,camera,current): return prepared
-		if is_instance_valid(particles): prepared.initialized[particles.get_instance_id()] = true
+		for particles: GPUParticles3D in batch:
+			if is_instance_valid(particles): prepared.initialized[particles.get_instance_id()] = true
 	prepared.complete = true
 	return prepared
 
@@ -54,6 +64,10 @@ static func trim_cache(owner: Node) -> void:
 static func cache_bytes(owner: Node) -> int:
 	var pool: Node = owner.get_node_or_null(POOL_NAME)
 	return int(pool.bytes) if pool != null else 0
+
+static func trim_to(owner: Node, allowance: int) -> void:
+	var pool: Node = owner.get_node_or_null(POOL_NAME)
+	if pool != null: pool.trim_to(allowance)
 
 static func _configure_particle(particles: GPUParticles3D, source: GPUParticles3D, world: Node3D, camera: Camera3D) -> void:
 	particles.emitting = false

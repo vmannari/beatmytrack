@@ -106,6 +106,7 @@ func _scroll() -> ScrollContainer:
 func _patterns() -> void:
 	pattern_shelf = preload("res://ui/garage_parts_list.gd").new()
 	pattern_shelf.caption_row.hide() # The existing Appearance header owns the wallet.
+	pattern_shelf.heading.get_parent().hide() # Patterns need no category heading or selection counter.
 	_content.add_child(pattern_shelf)
 	pattern_shelf.equip.pressed.connect(page._equip_cosmetic_preview)
 	pattern_scroll = pattern_shelf.scroll

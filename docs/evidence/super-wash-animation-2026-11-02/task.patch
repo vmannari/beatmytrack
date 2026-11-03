@@ -1,0 +1,614 @@
+diff --git a/game/ui/car_showroom.gd b/game/ui/car_showroom.gd
+--- a/game/ui/car_showroom.gd
++++ b/game/ui/car_showroom.gd
+@@ -17,6 +17,7 @@
+ var wash_pointer_valid: bool = false
+ var wash_elapsed: float = 0.0
+ var wash_effect: Node3D
++var super_wash_effect: Node3D
+ var pick_meshes: Array[Dictionary] = []
+ var vehicle_id: String = "compact"
+ var read_only: bool = false
+@@ -160,6 +161,7 @@
+ 	invalidate_render()
+ 
+ func replace_car(id: String, paint: Dictionary, wear: Dictionary, parts: Dictionary = {}) -> void:
++	_dispose_super_wash()
+ 	finish_kit_transition()
+ 	finish_paint_transition()
+ 	finish_car_transition()
+@@ -211,6 +213,7 @@
+ 	if customisation==value:
+ 		if not animate_kit: finish_kit_transition()
+ 		return
++	_dispose_super_wash()
+ 	finish_kit_transition()
+ 	finish_paint_transition()
+ 	finish_car_transition()
+@@ -473,6 +476,10 @@
+ 		if tapped: trophy_tapped.emit(event.position)
+ 
+ func _clear_gesture() -> void:
++	if is_instance_valid(super_wash_effect):
++		var active: bool = super_wash_effect.visible
++		super_wash_effect.reset()
++		if active: invalidate_render()
+ 	_wall_pointer = -2
+ 	_wall_press = Vector2.INF
+ 	washing = false
+@@ -529,6 +536,19 @@
+ 	wash_pointer_valid = false
+ 	wash_mode = enabled
+ 	queue_redraw()
++
++func play_super_wash() -> void:
++	if read_only or not garage_mode or not showroom_ready or not is_visible_in_tree(): return
++	finish_car_transition()
++	if not is_instance_valid(super_wash_effect):
++		super_wash_effect = preload("res://ui/garage_super_wash.gd").new()
++		super_wash_effect.prepare(car)
++	super_wash_effect.play()
++	invalidate_render()
++
++func _dispose_super_wash() -> void:
++	if is_instance_valid(super_wash_effect): super_wash_effect.queue_free()
++	super_wash_effect = null
+ 
+ func set_wash_tool(tool: String) -> void:
+ 	if tool not in ["mitt", "hose"] or tool == wash_tool: return
+@@ -732,6 +752,10 @@
+ 		if was_visible or wash_effect.visible:
+ 			animated = true
+ 			reflection_animation = true
++	if is_instance_valid(super_wash_effect) and super_wash_effect.visible:
++		super_wash_effect.advance(delta)
++		animated = true
++		reflection_animation = true
+ 	var state: Array = _render_state()
+ 	if animated or _render_dirty or state != _last_render_state:
+ 		_request_render(reflection_animation or _render_dirty or state != _last_render_state,room_animation)
+diff --git a/game/ui/garage_page.gd b/game/ui/garage_page.gd
+--- a/game/ui/garage_page.gd
++++ b/game/ui/garage_page.gd
+@@ -1692,6 +1692,7 @@
+ 	# the underside and wheels, then recreate the clean weathering textures.
+ 	showroom.weathering.reset()
+ 	showroom.weathering.restore({})
++	showroom.play_super_wash()
+ 	showroom.invalidate_render()
+ 	_save_condition()
+ 	_update_wash_status()
+diff --git a/AGENTS.md b/AGENTS.md
+--- a/AGENTS.md
++++ b/AGENTS.md
+@@ -1,3 +1,8 @@
++<!-- SUPER-WASH-ANIMATION-20261102 -->
++## Superwash automatic brush animation (2026-11-02)
++SWA01-SWA02: Actual-car rollover gantry, three rotating brushes and fixed96-drop spray traverse nose to tail in3.6s; existing instant local cleaning/saving remains. Manual washing/navigation/hiding clear feedback; model/kit changes discard it and idle drawing settles. Native89/0 each desktop renderer, retained Super Wash257/0 and hose81/0 pass; thirty settled views and55-frame native motion preview. Initial startup/certificate restriction and corrected fiber alignment retained. Sources, commands, scoped checkpoint and limits: [docs/SUPER_WASH_ANIMATION_2026_11_02.md](docs/SUPER_WASH_ANIMATION_2026_11_02.md). Reload and owner/device appearance/performance acceptance remain. No device query/test, APK, owner-save/process change, live/backend mutation, deployment or main-index write; concurrent work preserved.
++<!-- /SUPER-WASH-ANIMATION-20261102 -->
++
+ <!-- RACE-LOADING-REVIEW-20261102 -->
+ ## Race loading evaluated; further options ranked (2026-11-02)
+ RLR01-RLR03/Q01: Evaluation only; shipping loader/art/physics unchanged. Two stable-recorded-source native profiles pass136/0 across18 entries; supporting Compatibility follow-up19/0 has concurrent App changes explicitly retained. Combined155/0,20 entries/11 retries. Actual trace confirms full-world admission/eviction every entry; pooled effects still await20/32 draws. Recommend bounded effect preparation and shared-resource retention policy first, then selected-event CPU preparation/small representative warming/local final scenery artifacts. Ordinary/Daily retries already reuse Game. Timings, alternatives, gates, commands and checked task-only checkpoint: [docs/RACE_LOADING_REVIEW_2026_11_02.md](docs/RACE_LOADING_REVIEW_2026_11_02.md). No cold-driver/device/first-lap/visual-equivalence or implemented-speedup claim; no device query/test, owner-save/process change, live/backend access, deployment or main-index write. Concurrent work preserved.
+diff --git a/DEVELOPMENT_STATUS.md b/DEVELOPMENT_STATUS.md
+--- a/DEVELOPMENT_STATUS.md
++++ b/DEVELOPMENT_STATUS.md
+@@ -2859,3 +2859,6 @@
+ ## Weekly Rivalry opens with prepared content (2026-10-28)
+ RRE01-RRE03/R01/Q01: Owner reports empty cards on opening. Swipe/neighbor/menu entry now reuses the membership gate and retains the current page; both slide directions wait for standings layout and rendered podium cars. New touch cannot bypass preparation; cancellation and actionable failures remain. Original38/11fail becomes50/0 headless and67/0 each desktop renderer, with16 native views. Retained entry66/car-switch36/join-failure38/automatic14/cache27/week38/input57 and parser1397/0 pass. Broader App141/1 editor cancellation failure reproduces with the Rivalry patch removed; two concurrent editor parse attempts and initial sandbox certificate errors remain recorded. Two runtime sources/one new regression; temporary controls removed, concurrent Garage/editor changes and generated metadata excluded from the forward/reverse-checked source-only patch. Commands, hashes, views and limits: docs/RIVALRY_READY_ENTRY_2026_10_28.md and docs/evidence/rivalry-ready-entry-2026-10-28/report.json. Network/construction wait, reload and owner/device acceptance remain. No device query/test, APK, live mutation/deployment, owner-process restart or main-index staging/commit/merge.
+ <!-- /RIVALRY-READY-ENTRY-20261028 -->
++<!-- SUPER-WASH-ANIMATION-20261102 -->
++Superwash now animates a fitted rollover machine with three rotating brushes and rinse spray for3.6s. Local clean/save remains immediate; cancellation and idle retention pass. Native89/0 each desktop renderer, retained Super Wash257/0 and hose81/0;30 captures/55-frame motion preview. Commands, source-only checkpoint, initial findings and remaining owner/phone acceptance: [docs/SUPER_WASH_ANIMATION_2026_11_02.md](docs/SUPER_WASH_ANIMATION_2026_11_02.md). No device test, owner-save/process mutation, backend/live access, deployment or main-index write; concurrent work retained.
++<!-- /SUPER-WASH-ANIMATION-20261102 -->
+diff --git a/docs/PHASE_0_PLAN.md b/docs/PHASE_0_PLAN.md
+--- a/docs/PHASE_0_PLAN.md
++++ b/docs/PHASE_0_PLAN.md
+@@ -3098,3 +3098,6 @@
+ ## Weekly Rivalry opens with prepared content (2026-10-28)
+ RRE01-RRE03/R01/Q01: Owner reports empty cards on opening. Swipe/neighbor/menu entry now reuses the membership gate and retains the current page; both slide directions wait for standings layout and rendered podium cars. New touch cannot bypass preparation; cancellation and actionable failures remain. Original38/11fail becomes50/0 headless and67/0 each desktop renderer, with16 native views. Retained entry66/car-switch36/join-failure38/automatic14/cache27/week38/input57 and parser1397/0 pass. Broader App141/1 editor cancellation failure reproduces with the Rivalry patch removed; two concurrent editor parse attempts and initial sandbox certificate errors remain recorded. Two runtime sources/one new regression; temporary controls removed, concurrent Garage/editor changes and generated metadata excluded from the forward/reverse-checked source-only patch. Commands, hashes, views and limits: docs/RIVALRY_READY_ENTRY_2026_10_28.md and docs/evidence/rivalry-ready-entry-2026-10-28/report.json. Network/construction wait, reload and owner/device acceptance remain. No device query/test, APK, live mutation/deployment, owner-process restart or main-index staging/commit/merge.
+ <!-- /RIVALRY-READY-ENTRY-20261028 -->
++<!-- SUPER-WASH-ANIMATION-20261102 -->
++SWA01-SWA02 complete locally: fitted animated Superwash gantry/brushes/spray, preserved instant clean/save and bounded cancel/idle lifecycle. Native89/0 each desktop renderer, existing257/0 Super Wash and81/0 hose pass,30 stills and55 native animation frames. See [SUPER_WASH_ANIMATION_2026_11_02.md](SUPER_WASH_ANIMATION_2026_11_02.md) for commands/checkpoint/limits; owner/phone appearance and performance remain unverified. No device test, owner-save/process change, live/backend mutation, deployment or main-index write. Concurrent work preserved.
++<!-- /SUPER-WASH-ANIMATION-20261102 -->
+diff --git a/game/ui/garage_super_wash.gd b/game/ui/garage_super_wash.gd
+new file mode 100644
+--- /dev/null
++++ b/game/ui/garage_super_wash.gd
+@@ -0,0 +1,168 @@
++extends Node3D
++## Presentation only: a reusable rollover wash in the existing Garage world.
++const SECONDS: float = 3.6
++const WATER_COUNT: int = 96
++const LAYERS: int = 1 | GarageReflections.ROOM_LAYER | GarageReflections.CAR_LAYER
++var elapsed: float = 0.0
++var bounds := AABB()
++var gantry: Node3D
++var rollers: Array[Node3D] = []
++var water: MultiMeshInstance3D
++var travel := Vector2.ZERO
++var width: float = 0.0
++var height: float = 0.0
++
++func prepare(car: CarVisual) -> void:
++	name = "GarageSuperWashEffect"
++	# Bind to the actual model's frame, so orbiting the pedestal carries the rig.
++	car.add_child(self)
++	var first: bool = true
++	var inverse: Transform3D = car.global_transform.affine_inverse()
++	for node: Node in car.find_children("*","MeshInstance3D",true,false):
++		var part := node as MeshInstance3D
++		if part.mesh == null or not part.is_visible_in_tree(): continue
++		if part.material_override is ShaderMaterial and part.material_override.shader == preload("res://ui/studio_contact.gdshader"): continue
++		var box: AABB = inverse * part.global_transform * part.get_aabb()
++		bounds = box if first else bounds.merge(box)
++		first = false
++	width = bounds.size.x + 0.68
++	height = bounds.end.y + 0.46
++	travel = Vector2(bounds.position.z-0.60,bounds.end.z+0.60)
++	gantry = Node3D.new()
++	add_child(gantry)
++	var metal := StandardMaterial3D.new()
++	metal.albedo_color = Color("8c999b")
++	metal.metallic = 0.55
++	metal.roughness = 0.48
++	var dark := StandardMaterial3D.new()
++	dark.albedo_color = Color("263b43")
++	dark.metallic = 0.25
++	dark.roughness = 0.65
++	var frame := SurfaceTool.new()
++	frame.begin(Mesh.PRIMITIVE_TRIANGLES)
++	var hardware := SurfaceTool.new()
++	hardware.begin(Mesh.PRIMITIVE_TRIANGLES)
++	for side: float in [-1.0,1.0]:
++		var x: float = side*width*0.5
++		_box(frame,Vector3(x,height*0.5,0),Vector3(0.11,height,0.15))
++		_box(hardware,Vector3(x,0.06,0),Vector3(0.30,0.12,0.70))
++		_box(hardware,Vector3(x,height-0.12,0),Vector3(0.23,0.27,0.24))
++		var roller := _roller(maxf(0.25,height-0.60),0.23)
++		roller.position = Vector3(x-side*0.16,(height-0.60)*0.5+0.12,0)
++		rollers.append(roller)
++	_box(frame,Vector3(0,height,0),Vector3(width+0.20,0.18,0.24))
++	_box(hardware,Vector3(0,height-0.15,0.12),Vector3(width-0.15,0.07,0.06))
++	_part("SteelArch",frame.commit(),metal)
++	_part("DriveHousings",hardware.commit(),dark)
++	var overhead := _roller(width-0.30,0.23)
++	overhead.position = Vector3(0,height-0.24,0)
++	overhead.rotation.z = PI*0.5
++	rollers.append(overhead)
++	var drop := SphereMesh.new()
++	drop.radius = 1.0
++	drop.height = 2.0
++	drop.radial_segments = 8
++	drop.rings = 4
++	var finish := ShaderMaterial.new()
++	finish.shader = preload("res://ui/garage_wash_water.gdshader")
++	water = _pool("RinseSpray",WATER_COUNT,drop,finish,true)
++	water.multimesh.visible_instance_count = 0
++	reset()
++
++func _box(tool: SurfaceTool, at: Vector3, size: Vector3) -> void:
++	var mesh := BoxMesh.new()
++	mesh.size = size
++	tool.append_from(mesh,0,Transform3D(Basis.IDENTITY,at))
++
++func _part(label: String, mesh: Mesh, finish: Material) -> void:
++	var node := MeshInstance3D.new()
++	node.name = label
++	node.mesh = mesh
++	node.material_override = finish
++	node.layers = LAYERS
++	node.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
++	gantry.add_child(node)
++
++func _pool(label: String, count: int, mesh: Mesh, finish: Material, custom: bool = false) -> MultiMeshInstance3D:
++	var node := MultiMeshInstance3D.new()
++	node.name = label
++	node.multimesh = MultiMesh.new()
++	node.multimesh.transform_format = MultiMesh.TRANSFORM_3D
++	node.multimesh.use_colors = not custom
++	node.multimesh.use_custom_data = custom
++	node.multimesh.mesh = mesh
++	node.multimesh.instance_count = count
++	node.material_override = finish
++	node.layers = LAYERS
++	node.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
++	gantry.add_child(node)
++	return node
++
++func _roller(length: float, radius: float) -> Node3D:
++	var root := Node3D.new()
++	gantry.add_child(root)
++	var fiber := CapsuleMesh.new()
++	fiber.radius = 0.032
++	fiber.height = 0.16
++	fiber.radial_segments = 6
++	fiber.rings = 2
++	var finish := StandardMaterial3D.new()
++	finish.vertex_color_use_as_albedo = true
++	finish.roughness = 0.92
++	var rows: int = clampi(ceili(length/0.075),6,40)
++	var bristles := _pool("MicrofiberRoller",rows*18,fiber,finish)
++	bristles.reparent(root)
++	for row: int in range(rows):
++		for spoke: int in range(18):
++			var angle: float = TAU*spoke/18.0+row*0.23
++			var direction := Vector3(cos(angle),0,sin(angle))
++			var at: Vector3 = direction*(radius-0.07)
++			at.y = lerpf(-length*0.5,length*0.5,float(row)/maxi(1,rows-1))
++			var pose := Basis(Vector3.UP,-angle)*Basis(Vector3.FORWARD,PI*0.5)
++			var index: int = row*18+spoke
++			bristles.multimesh.set_instance_transform(index,Transform3D(pose,at))
++			bristles.multimesh.set_instance_color(index,Color("c5c4af") if (spoke+row/4)%6<4 else Color("4f747d"))
++	return root
++
++func play() -> void:
++	elapsed = 0.0
++	show()
++	_present()
++
++func reset() -> void:
++	elapsed = SECONDS
++	hide()
++	if water != null: water.multimesh.visible_instance_count = 0
++
++func advance(delta: float) -> void:
++	if not visible: return
++	elapsed = minf(SECONDS,elapsed+maxf(0.0,delta))
++	if elapsed >= SECONDS:
++		reset()
++		return
++	_present()
++
++func _present() -> void:
++	var progress: float = smoothstep(0.08,0.92,elapsed/SECONDS)
++	gantry.position = Vector3(bounds.get_center().x,0,lerpf(travel.x,travel.y,progress))
++	# Deployment and retraction happen beyond the car's ends.
++	var deployment: float = smoothstep(0.0,0.25,elapsed)*(1.0-smoothstep(SECONDS-0.25,SECONDS,elapsed))
++	gantry.scale = Vector3.ONE*maxf(0.001,deployment)
++	for index: int in range(rollers.size()):
++		var roller: Node3D = rollers[index]
++		roller.rotation = Vector3(0,elapsed*12.0*(1.0 if index==0 else -1.0),0) if index<2 else Vector3(elapsed*12.0,0,PI*0.5)
++	water.multimesh.visible_instance_count = WATER_COUNT
++	for index: int in range(WATER_COUNT):
++		var age: float = fposmod(elapsed*1.9+float(index)*0.618034,1.0)
++		var across: float = float(index%16)/15.0
++		var side: bool = index>=64
++		var at := Vector3(lerpf(-width*0.45,width*0.45,across),height-0.22,-0.14)
++		if side:
++			var sign_x: float = -1.0 if index%2==0 else 1.0
++			at = Vector3(sign_x*(width*0.5-0.14-age*0.38),height*(0.2+across*0.6),-0.14)
++		at += Vector3(sin(index*2.4)*age*0.08,-age*age*(height+0.10),-age*0.34)
++		var size: float = 0.014+0.008*float(index%3)/2.0
++		var shape := Basis.from_scale(Vector3(size,size*(2.0+age*3.0),size))
++		if at.y<0.025: shape = Basis.from_scale(Vector3.ZERO)
++		water.multimesh.set_instance_transform(index,Transform3D(shape,at))
++		water.multimesh.set_instance_custom_data(index,Color(0,age,1,0))
+diff --git a/game/tests/test_super_wash_animation.gd b/game/tests/test_super_wash_animation.gd
+new file mode 100644
+--- /dev/null
++++ b/game/tests/test_super_wash_animation.gd
+@@ -0,0 +1,121 @@
++extends SceneTree
++## Exercise real Garage cleaning and bounded feedback with isolated local records.
++var checks: int = 0
++var failures: int = 0
++var output: String
++
++func _initialize() -> void: run.call_deferred()
++
++func check(ok: bool, label: String) -> void:
++	checks += 1
++	if not ok:
++		failures += 1
++		print("FAIL: ",label)
++
++func settle() -> void:
++	await create_timer(0.8).timeout
++	if DisplayServer.get_name()!="headless": await RenderingServer.frame_post_draw
++
++func capture(page: GaragePage, label: String) -> void:
++	if DisplayServer.get_name()=="headless": return
++	page.showroom.invalidate_render()
++	for index: int in range(5): await process_frame
++	await RenderingServer.frame_post_draw
++	check(root.get_texture().get_image().save_png(output.path_join(label+".png"))==OK,"capture "+label)
++
++func run() -> void:
++	OS.set_environment("BMT_API_URL","")
++	output = OS.get_environment("BMT_SUPER_WASH_OUTPUT").path_join(RenderingServer.get_current_rendering_method())
++	DirAccess.make_dir_recursive_absolute(output)
++	var directory: String = "user://super_wash_animation_"+TrackLibrary.unique_id()
++	DirAccess.make_dir_recursive_absolute(directory)
++	var records := LocalRecords.new(directory.path_join("records.json"))
++	var dirty: Dictionary = VehicleWeathering.new().snapshot()
++	for field: String in ["dirt","slow_dirt","mud","smudge"]: dirty[field] = 0.95
++	for id: String in VehicleCatalog.IDS: VehicleCondition.save(records,id,dirty)
++	root.size = Vector2i(1280,720)
++	var page := GaragePage.new()
++	page.records = records
++	page.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
++	root.add_child(page)
++	await settle()
++	if OS.has_environment("BMT_SUPER_WASH_MOTION"):
++		page._show_section("care")
++		await settle()
++		page.showroom.set_process(false)
++		page._super_wash()
++		DirAccess.make_dir_recursive_absolute(output.path_join("motion"))
++		for frame: int in range(55):
++			await capture(page,"motion/frame-%03d" % frame)
++			page.showroom.super_wash_effect.advance(1.0/15.0)
++		page.queue_free()
++		await process_frame
++		print("SUPER_WASH_MOTION: %d checks, %d failures; 55 native frames at stepped 15 Hz" % [checks,failures])
++		quit(1 if failures else 0)
++		return
++	for index: int in range(VehicleCatalog.IDS.size()):
++		var id: String = VehicleCatalog.IDS[index]
++		page.open_car(index)
++		page._show_section("care")
++		await settle()
++		var showroom: CarShowroom = page.showroom
++		showroom.set_process(false)
++		var paint: Dictionary = showroom.livery.duplicate(true)
++		var parts: Dictionary = showroom.customisation.duplicate(true)
++		page.preview.get_node("GarageWashTools/GarageSuperWash").pressed.emit()
++		var effect: Node3D = showroom.super_wash_effect
++		check(is_instance_valid(effect) and effect.visible,id+" starts automatic wash from its real button")
++		check(effect.get_parent()==showroom.car,id+" rig follows actual selected car")
++		check(VehicleCondition.read(records,id).dirt==0.0,id+" clean result saved immediately")
++		check(not showroom.wash_mode and not showroom.washing,id+" manual washing ends")
++		check(effect.rollers.size()==3,id+" three powered brushes")
++		check(effect.water.multimesh.instance_count==96,id+" fixed spray pool")
++		check(effect.travel.x<effect.bounds.position.z and effect.travel.y>effect.bounds.end.z,id+" complete nose-to-tail pass")
++		effect.advance(0.7)
++		var start: Vector3 = effect.gantry.position
++		var spin: Vector3 = effect.rollers[0].rotation
++		await capture(page,id+"-start")
++		effect.advance(1.1)
++		check(effect.gantry.position.z>start.z and effect.rollers[0].rotation!=spin,id+" machine travels and brushes rotate")
++		await capture(page,id+"-middle")
++		var node_count: int = effect.get_child_count()
++		effect.advance(1.0)
++		await capture(page,id+"-rinse")
++		effect.advance(0.9)
++		check(not effect.visible and effect.water.multimesh.visible_instance_count==0,id+" completion leaves no active spray")
++		check(showroom.livery==paint and showroom.customisation==parts,id+" retains equipped paint and fittings")
++		showroom.play_super_wash()
++		check(showroom.super_wash_effect==effect and effect.get_child_count()==node_count,id+" repeats reuse the same rig")
++		showroom.set_wash_mode(true)
++		check(not effect.visible,id+" manual wash cancels automatic feedback")
++		showroom.set_wash_mode(false)
++		showroom.play_super_wash()
++		page._show_section("cars")
++		check(not effect.visible,id+" section navigation cancels feedback")
++		page._show_section("care")
++		await settle()
++		showroom.play_super_wash()
++		page.hide()
++		check(not effect.visible,id+" hiding clears feedback")
++		page.show()
++		showroom.set_process(true)
++	await settle()
++	page._super_wash()
++	var outgoing: Node3D = page.showroom.super_wash_effect
++	page.open_car(0)
++	check(not is_instance_valid(page.showroom.super_wash_effect),"car replacement discards previous rig")
++	await settle()
++	check(not is_instance_valid(outgoing),"outgoing rig freed with old model")
++	page._show_section("care")
++	await settle()
++	page._super_wash()
++	await create_timer(4.0).timeout
++	check(not page.showroom.super_wash_effect.visible,"normal process completes the animation")
++	await settle()
++	var requests: int = page.showroom.render_requests
++	await create_timer(0.5).timeout
++	check(page.showroom.render_requests==requests,"completed wash resumes retained idle drawing")
++	page.queue_free()
++	await process_frame
++	print("SUPER_WASH_ANIMATION: %d checks, %d failures" % [checks,failures])
++	quit(1 if failures else 0)
+diff --git a/docs/SUPER_WASH_ANIMATION_2026_11_02.md b/docs/SUPER_WASH_ANIMATION_2026_11_02.md
+new file mode 100644
+--- /dev/null
++++ b/docs/SUPER_WASH_ANIMATION_2026_11_02.md
+@@ -0,0 +1,39 @@
++# Superwash animation — 2026-11-02
++
++SWA01: Pressing Super Wash now starts a 3.6-second rollover machine over the actual selected car: two counter-rotating side brushes, an overhead roller and falling rinse spray. The rig deploys beyond the nose, traverses the entire model and retracts past the tail. It fits the visible model bounds, including equipped parts, and follows the existing rotating pedestal. The established instantaneous, local-only complete cleaning and save remain; interruption cannot lose a completed wash.
++
++SWA02: Manual washing, navigation, hiding, car replacement and kit replacement clear/dispose feedback. Repeated uses reuse the rig for the same model. The three brush MultiMeshes, merged steel/hardware and fixed 96-droplet MultiMesh total six geometry submissions per existing view, with no shadow casting, extra world, viewport, physics, backend, image asset or dependency. Animation advances through the existing showroom process only while visible; completion returns to retained idle drawing. Paint and fitted parts remain untouched.
++
++Runtime changes: `game/ui/garage_super_wash.gd` implements the presentation; `game/ui/car_showroom.gd` owns animation and cleanup; one added line in `game/ui/garage_page.gd` starts it after the existing clean reset. Regression: `game/tests/test_super_wash_animation.gd`. Supporting runner, encoder, scoped patch and source snapshots are under `docs/evidence/super-wash-animation-2026-11-02/`.
++
++Actual validation with pinned Godot 4.7.2:
++
++| Check | Result |
++| --- | --- |
++| Final native Compatibility animation | 89 checks, 0 failures |
++| Final native desktop Mobile/Vulkan animation | 89 checks, 0 failures |
++| Existing native Compatibility Super Wash regression | 257 checks, 0 failures |
++| Existing headless hose regression | 81 checks, 0 failures |
++| Initial headless animation | 74 checks, 0 failures; sandbox certificate-store error retained |
++| Native motion capture | 55 frame saves, 0 failures; 15 Hz manually stepped production animation |
++
++Both final renderers have start/middle/rinse captures for Compact, Kart, Forklift, Electric and Hovercraft. [Animated native preview](evidence/super-wash-animation-2026-11-02/super-wash-animation.png), [Compact](evidence/super-wash-animation-2026-11-02/gl_compatibility/compact-middle.png), [Forklift](evidence/super-wash-animation-2026-11-02/gl_compatibility/forklift-middle.png), [Mobile Hovercraft](evidence/super-wash-animation-2026-11-02/mobile/hovercraft-middle.png). Motion preview is a lossless APNG of actual native renders, not an FPS measurement.
++
++Commands from repository root:
++
++```powershell
++python docs/evidence/super-wash-animation-2026-11-02/run.py
++python docs/evidence/super-wash-animation-2026-11-02/run.py --direct
++python docs/evidence/super-wash-animation-2026-11-02/run.py --direct --mode gl_compatibility
++python docs/evidence/super-wash-animation-2026-11-02/run.py --direct --mode mobile
++python docs/evidence/super-wash-animation-2026-11-02/run.py --direct --mode gl_compatibility --test test_super_wash
++python docs/evidence/super-wash-animation-2026-11-02/run.py --direct --test test_garage_hose
++python docs/evidence/super-wash-animation-2026-11-02/run.py --direct --mode gl_compatibility --motion
++python docs/evidence/super-wash-animation-2026-11-02/encode_motion.py
++python docs/evidence/super-wash-animation-2026-11-02/checkpoint.py
++git diff --check -- game/ui/car_showroom.gd game/ui/garage_page.gd
++```
++
++The initial `scripts/dev.ps1` attempt failed during restricted Windows startup with certificate/access-denied errors. A direct pinned-engine fallback provides an explicit workspace log; its headless run passes assertions but retains the certificate-store error. Approved native runs outside that restriction pass cleanly, using a private APPDATA/LOCALAPPDATA profile and disabled backend URL. All automated launches use `scripts/run_no_crash_dialog.py`. Initial native geometry passes are retained in `initial-native.log` and `initial-rig.gd.txt`; visual inspection corrected fiber alignment/density before the final two-renderer checks. The dev entry point regenerated build metadata; it is excluded from this task's checkpoint. Pre-existing Garage/record/layout/model and other concurrent edits remain preserved.
++
++Owner appearance and physical-phone performance/touch acceptance remain. Reload/rebuild to see the animation. No device attachment query/test, APK, owner-save or owner-process change, live/backend mutation, deployment or main-index write was performed.
+diff --git a/docs/evidence/super-wash-animation-2026-11-02/run.py b/docs/evidence/super-wash-animation-2026-11-02/run.py
+new file mode 100644
+--- /dev/null
++++ b/docs/evidence/super-wash-animation-2026-11-02/run.py
+@@ -0,0 +1,34 @@
++"""Pinned dev entry point, private profile, crash-dialog suppression and logs."""
++import argparse
++import os
++from pathlib import Path
++import subprocess
++import sys
++
++ROOT = Path(__file__).resolve().parents[3]
++HERE = Path(__file__).parent
++parser = argparse.ArgumentParser()
++parser.add_argument("--mode", choices=["headless", "gl_compatibility", "mobile"], default="headless")
++parser.add_argument("--test", default="test_super_wash_animation")
++parser.add_argument("--direct", action="store_true", help="Pinned engine fallback when the dev entry point cannot open its user log")
++parser.add_argument("--motion", action="store_true")
++args = parser.parse_args()
++profile = ROOT / "tmp/super-wash-animation-profile"
++profile.mkdir(parents=True, exist_ok=True)
++env = os.environ.copy()
++env.update(APPDATA=str(profile), LOCALAPPDATA=str(profile), BMT_API_URL="", BMT_SUPER_WASH_OUTPUT=str(HERE))
++if args.motion:
++    env["BMT_SUPER_WASH_MOTION"] = "1"
++command = [sys.executable, str(ROOT / "scripts/run_no_crash_dialog.py"), "--", "powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", str(ROOT / "scripts/dev.ps1"), "-Action", "TestScript", "-ScriptPath", f"res://tests/{args.test}.gd", "-CommandTimeoutSeconds", "240"]
++if args.mode != "headless":
++    command += ["-Graphical", "-RenderingMethod", args.mode]
++if args.direct:
++    command = [sys.executable, str(ROOT / "scripts/run_no_crash_dialog.py"), "--", env.get("GODOT_BIN", r"C:\apps\Godot 4.7.2\Godot_v4.7.2-stable_win64_console.exe"), "--path", str(ROOT / "game"), "--log-file", str(HERE / f"engine-{args.test}-{args.mode}.log"), "--script", f"res://tests/{args.test}.gd"]
++    command += ["--headless"] if args.mode == "headless" else ["--rendering-method", args.mode]
++log = HERE / f"{args.test}-{args.mode}{'-direct' if args.direct else ''}{'-motion' if args.motion else ''}.log"
++with log.open("w", encoding="utf-8") as stream:
++    result = subprocess.run(command, cwd=ROOT, env=env, stdout=stream, stderr=subprocess.STDOUT, timeout=280, creationflags=subprocess.CREATE_NO_WINDOW)
++lines = log.read_text(encoding="utf-8").splitlines()
++print(f"{args.test} / {args.mode}: exit {result.returncode}")
++print("\n".join(lines[-24:]))
++raise SystemExit(result.returncode)
+diff --git a/docs/evidence/super-wash-animation-2026-11-02/encode_motion.py b/docs/evidence/super-wash-animation-2026-11-02/encode_motion.py
+new file mode 100644
+--- /dev/null
++++ b/docs/evidence/super-wash-animation-2026-11-02/encode_motion.py
+@@ -0,0 +1,54 @@
++"""Lossless APNG from the actual native frames; no image library required."""
++from pathlib import Path
++import struct
++import zlib
++
++HERE = Path(__file__).parent
++
++
++def parse(path):
++    source = path.read_bytes()
++    assert source[:8] == b"\x89PNG\r\n\x1a\n"
++    parts, offset = [], 8
++    while offset < len(source):
++        size = struct.unpack(">I", source[offset:offset+4])[0]
++        kind = source[offset+4:offset+8]
++        data = source[offset+8:offset+8+size]
++        assert struct.unpack(">I", source[offset+8+size:offset+12+size])[0] == zlib.crc32(kind+data) & 0xffffffff
++        parts.append((kind, data))
++        offset += size+12
++    return parts
++
++
++def chunk(kind, data):
++    return struct.pack(">I", len(data))+kind+data+struct.pack(">I", zlib.crc32(kind+data) & 0xffffffff)
++
++
++paths = sorted((HERE / "gl_compatibility/motion").glob("frame-*.png"))
++assert len(paths) == 55
++first = parse(paths[0])
++header = next(data for kind, data in first if kind == b"IHDR")
++width, height = struct.unpack(">II", header[:8])
++result = bytearray(b"\x89PNG\r\n\x1a\n")+chunk(b"IHDR", header)
++for kind, data in first:
++    if kind not in (b"IHDR", b"IDAT", b"IEND"):
++        result += chunk(kind, data)
++result += chunk(b"acTL", struct.pack(">II", len(paths), 0))
++sequence = 0
++for index, path in enumerate(paths):
++    parts = parse(path)
++    assert next(data for kind, data in parts if kind == b"IHDR") == header
++    result += chunk(b"fcTL", struct.pack(">IIIIIHHBB", sequence, width, height, 0, 0, 1, 15, 0, 0))
++    sequence += 1
++    for kind, data in parts:
++        if kind != b"IDAT":
++            continue
++        if index == 0:
++            result += chunk(b"IDAT", data)
++        else:
++            result += chunk(b"fdAT", struct.pack(">I", sequence)+data)
++            sequence += 1
++result += chunk(b"IEND", b"")
++target = HERE / "super-wash-animation.png"
++target.write_bytes(result)
++print(f"{target.name}: {width}x{height}, {len(paths)} actual frames, {len(result)} bytes; stepped 15 Hz, not a performance measurement")
+diff --git a/docs/evidence/super-wash-animation-2026-11-02/checkpoint.py b/docs/evidence/super-wash-animation-2026-11-02/checkpoint.py
+new file mode 100644
+--- /dev/null
++++ b/docs/evidence/super-wash-animation-2026-11-02/checkpoint.py
+@@ -0,0 +1,56 @@
++"""Create a task-only source patch and prove exact forward/reverse application."""
++import difflib
++import hashlib
++import json
++from pathlib import Path
++import shutil
++import subprocess
++
++ROOT = Path(__file__).resolve().parents[3]
++HERE = Path(__file__).parent
++existing = ["game/ui/car_showroom.gd", "game/ui/garage_page.gd", "AGENTS.md", "DEVELOPMENT_STATUS.md", "docs/PHASE_0_PLAN.md"]
++new = ["game/ui/garage_super_wash.gd", "game/tests/test_super_wash_animation.gd", "docs/SUPER_WASH_ANIMATION_2026_11_02.md"]
++new += [str(path.relative_to(ROOT)).replace("\\", "/") for path in [HERE / "run.py", HERE / "encode_motion.py", HERE / "checkpoint.py"]]
++scratch = ROOT / "tmp/super-wash-animation-checkpoint"
++scratch.mkdir(parents=True, exist_ok=True)
++patch = []
++hashes = {}
++for relative in existing + new:
++    current = ROOT / relative
++    original = HERE / "before" / relative
++    before = original.read_text(encoding="utf-8") if relative in existing else ""
++    after = current.read_text(encoding="utf-8")
++    patch.append(f"diff --git a/{relative} b/{relative}\n")
++    if relative in new:
++        patch.append("new file mode 100644\n")
++    patch.extend(difflib.unified_diff(before.splitlines(keepends=True), after.splitlines(keepends=True), fromfile=f"a/{relative}" if relative in existing else "/dev/null", tofile=f"b/{relative}"))
++    copy = scratch / relative
++    copy.parent.mkdir(parents=True, exist_ok=True)
++    if relative in existing:
++        # Match the LF-normalized patch's working-tree line endings.
++        copy.write_bytes(before.encode("utf-8"))
++    else:
++        copy.unlink(missing_ok=True)
++    hashes[relative] = hashlib.sha256(current.read_bytes()).hexdigest()
++target = HERE / "task.patch"
++target.write_text("".join(patch), encoding="utf-8", newline="\n")
++for flags in [["--check"], [], ["--check", "--reverse"], ["--reverse"]]:
++    subprocess.run(["git", "apply", *flags, "--directory=tmp/super-wash-animation-checkpoint", str(target)], cwd=ROOT, check=True)
++    if not flags:
++        for relative in existing + new:
++            assert (scratch / relative).read_text(encoding="utf-8") == (ROOT / relative).read_text(encoding="utf-8")
++for relative in existing:
++    assert (scratch / relative).read_text(encoding="utf-8") == (HERE / "before" / relative).read_text(encoding="utf-8")
++for relative in new:
++    assert not (scratch / relative).exists()
++report = {
++    "requirements": ["SWA01", "SWA02"],
++    "source_sha256": hashes,
++    "patch_sha256": hashlib.sha256(target.read_bytes()).hexdigest(),
++    "forward_reverse_content_check": "pass; independent scratch files, main index untouched",
++    "results": {"native_compatibility": "89 checks, 0 failures", "native_desktop_mobile": "89 checks, 0 failures", "retained_super_wash_compatibility": "257 checks, 0 failures", "retained_hose_headless": "81 checks, 0 failures", "initial_headless": "74 checks, 0 failures; certificate-store error retained", "motion_capture": "55 frames, 0 failures; production presentation manually stepped at 15 Hz"},
++    "motion_sha256": hashlib.sha256((HERE / "super-wash-animation.png").read_bytes()).hexdigest(),
++    "limitations": ["No physical-device test or performance claim", "Owner appearance acceptance and reload remain", "No owner-save/process, backend/live, deployment or main-index mutation", "Initial restricted dev entry startup failed; logs retained", "Build metadata regenerated by dev entry excluded; concurrent work retained"],
++}
++(HERE / "report.json").write_text(json.dumps(report, indent=2)+"\n", encoding="utf-8")
++print(f"Task-only checkpoint: {len(existing)+len(new)} source files; forward/reverse/content checks pass")

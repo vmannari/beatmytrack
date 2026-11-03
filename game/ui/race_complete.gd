@@ -51,9 +51,11 @@ func _ready() -> void:
 	if is_instance_valid(cloud_client) and cloud_client.has_signal("run_completed"):
 		cloud_client.run_completed.connect(_run_completed)
 	add_theme_constant_override("separation",10)
+	var header_margin := MarginContainer.new()
+	add_child(header_margin)
 	var header := HBoxContainer.new()
 	header.add_theme_constant_override("separation",14)
-	add_child(header)
+	header_margin.add_child(header)
 	header.add_child(ResultsIcons.view("flag",42))
 	var titles := VBoxContainer.new()
 	titles.add_theme_constant_override("separation",0)
@@ -67,15 +69,32 @@ func _ready() -> void:
 	home.icon = ResultsIcons.texture("home")
 	home.expand_icon = true
 	home.add_theme_constant_override("icon_max_width",30)
-	home.custom_minimum_size = Vector2(56,54)
+	home.custom_minimum_size = Vector2(56,56)
+	home.size_flags_vertical = Control.SIZE_SHRINK_CENTER
 	header.add_child(home)
+	# Reserve the footer's touch targets even when the content is taller than
+	# the available canvas (short windows, safe areas or translated labels).
+	var scroll := ScrollContainer.new()
+	scroll.name = "CompletionScroll"
+	scroll.horizontal_scroll_mode = ScrollContainer.SCROLL_MODE_DISABLED
+	scroll.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	scroll.follow_focus = true
+	add_child(scroll)
+	var content := VBoxContainer.new()
+	content.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	content.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	content.add_theme_constant_override("separation",10)
+	scroll.add_child(content)
+	# Follow the card edge, including the lane reserved for a visible scrollbar.
+	content.resized.connect(func() -> void:
+		header_margin.add_theme_constant_override("margin_right",maxi(0,roundi(scroll.size.x-content.size.x))))
 	var main := HBoxContainer.new()
 	main.size_flags_vertical = Control.SIZE_EXPAND_FILL
 	main.add_theme_constant_override("separation",12)
-	add_child(main)
+	content.add_child(main)
 	_rewards(main)
 	_standings(main)
-	_recommendations()
+	_recommendations(content)
 	_actions()
 	if economy != null: economy.changed.connect(_update_coin_status)
 	if not recommendations.is_empty(): select_track(0)
@@ -229,7 +248,7 @@ func _set_reward_total(value: float) -> void:
 func _standings(parent: Control) -> void:
 	var body: VBoxContainer = _section(parent,16)
 	body.get_parent().size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	body.add_theme_constant_override("separation",8)
+	body.add_theme_constant_override("separation",6)
 	var heading := HBoxContainer.new()
 	var title := MenuStyle.label("W H E R E  Y O U  S T A N D",23)
 	title.size_flags_horizontal = Control.SIZE_EXPAND_FILL
@@ -281,7 +300,8 @@ func _standings(parent: Control) -> void:
 		card.add_child(context)
 		context.hide()
 		var chart := TrackDistribution.new()
-		chart.custom_minimum_size = Vector2(180,130)
+		# Let the charts yield height before the next-track cards need scrolling.
+		chart.custom_minimum_size = Vector2(180,104)
 		chart.size_flags_vertical = Control.SIZE_EXPAND_FILL
 		if kind == "RACE TIME":
 			race_chart = chart
@@ -446,8 +466,8 @@ func _comparison_unavailable(message: String) -> void:
 	global_rank.text = ""
 	lap_population.text = ""
 
-func _recommendations() -> void:
-	var panel: VBoxContainer = RaceResults._card(self,0)
+func _recommendations(parent: Control) -> void:
+	var panel: VBoxContainer = RaceResults._card(parent,0)
 	var row := HBoxContainer.new()
 	row.add_theme_constant_override("separation",10)
 	panel.add_child(row)

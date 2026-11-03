@@ -36,6 +36,11 @@ func measure(particles: GPUParticles3D) -> void:
 	particles.set_meta("preparation_bytes",cost)
 	particles.set_meta("preparation_resources",seen)
 
+func contains(label: String) -> bool:
+	for entry: Dictionary in entries:
+		if entry.label == label: return true
+	return false
+
 func put(particles: GPUParticles3D, initialized: bool) -> void:
 	if not is_instance_valid(particles): return
 	var cost: int = int(particles.get_meta("preparation_bytes",MAX_BYTES+1))
@@ -70,6 +75,14 @@ func trim() -> void:
 	for entry: Dictionary in entries: entry.node.free()
 	entries.clear()
 	bytes = 0
+
+func trim_to(allowance: int) -> void:
+	# Evict idle leases without disabling future retention or touching in-flight
+	# proxies. Real OS pressure still uses trim() and its suppression fence.
+	while not entries.is_empty() and bytes > maxi(0,allowance):
+		var entry: Dictionary = entries.pop_front()
+		entry.node.free()
+		bytes = _footprint()
 
 static func _estimate(value: Variant, seen: Dictionary) -> int:
 	if value is Resource:

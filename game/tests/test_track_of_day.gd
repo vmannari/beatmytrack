@@ -75,10 +75,10 @@ func run() -> void:
 	page._process(0.0)
 	await loaded(page)
 	check(page._ends_at > page._server_now and str(page.entry.version_id) == original,"midnight refresh replaces expired presentation")
-	# Exercise the real car picker and normal race pipeline using the pinned revision.
-	var cars: OptionButton = page.find_child("DailyCar",true,false)
-	cars.item_selected.emit(VehicleCatalog.IDS.find("compact"))
-	check(VehicleCatalog.selected == "compact","daily car picker uses ordinary selection")
+	# Exercise the header car selection and normal race pipeline using the pinned revision.
+	check(page.find_child("DailyCar",true,false) == null,"daily race card has no car dropdown")
+	app._select_header_vehicle(VehicleCatalog.IDS.find("compact"))
+	check(VehicleCatalog.selected == "compact","daily race uses ordinary header selection")
 	page._request_race()
 	var began: int = Time.get_ticks_msec()
 	while (app.game == null or app.cloud_starting) and Time.get_ticks_msec()-began < 90000: await process_frame

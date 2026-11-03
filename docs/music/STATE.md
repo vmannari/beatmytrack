@@ -1,8 +1,26 @@
 # Beat My Track - Music State
 
-_Last updated: 2026-10-14_
+_Last updated: 2026-11-01_
 
 ## Current runtime direction
+
+On 2026-11-01 the owner requests a substantial player and cover redesign and
+more intuitive selection. The player now shows a direct-play track list, a
+persistent now-playing panel, transport and volume; the physical Garage box
+still reflects the chosen sleeve. Fourteen individually generated illustrations
+replace the earlier vector covers. The original complete mixes and race-silence
+behavior remain unchanged. See `../MUSIC_PLAYER_REDESIGN_2026_11_01.md`.
+
+On 2026-11-01 the owner supplies fourteen complete MP3 mixes in `temp/audio`
+and asks for them to replace the menu music and appear in the player with
+appropriate covers. The unmodified mixes now play in catalogue order, wrap at
+the end, and can be selected from fourteen original illustrated sleeves. Prior
+Exploration/placeholder selections migrate to the first track; race music stays
+off. The supplied source files are preserved. See
+`../SUPPLIED_MENU_SOUNDTRACK_2026_11_01.md` and the asset provenance manifest.
+The request authorizes this use; creator, production method and distribution
+licence were not supplied and remain unverified. No subjective listening or
+phone review is claimed.
 
 On 2026-10-14 the owner corrects the LP collection to a box of flippable sleeves,
 with no personal-music importing. Exploration remains playable; six authored

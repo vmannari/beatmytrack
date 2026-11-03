@@ -5,6 +5,7 @@ from uuid import UUID, uuid5
 from sqlalchemy import func, select
 
 from .contracts import build_contract, current_manifest
+from .discovery_models import DiscoveryDay
 from .identity_models import Player
 from .track_models import Track, TrackVersion, digest, now
 
@@ -60,6 +61,7 @@ def plan_refresh(session, blobs, verifier):
 def apply_refresh(session, plan):
     """Caller commits once, after every source/head has passed its locked recheck."""
     inserted = []
+    replacements = {}
     for item in sorted(plan, key=lambda value:value["track_id"]):
         track = session.scalar(select(Track).where(Track.id == item["track_id"]).with_for_update())
         if track is None or track.hidden or track.archived:
@@ -80,5 +82,23 @@ def apply_refresh(session, plan):
             created_at=at,published_at=at,revision_key=digest({"source_version":head.id,"manifest":manifest}),
             creator_test_run_id=None,rating_sum=0,rating_count=0,verified_finishers=0))
         inserted.append(identity)
+        replacements[head.id] = (head.track_id, identity)
     session.flush()
+    # The daily Free Race selection pins versions as well as tracks. A build-only
+    # refresh must advance those pins atomically or it advertises unraceable
+    # versions for the rest of the day. Preserve its tracks, order and metadata.
+    if replacements:
+        daily = session.scalar(select(DiscoveryDay).where(
+            DiscoveryDay.day == now() // 86400).with_for_update())
+        if daily is not None and not daily.published_at:
+            raise RuntimeError("Daily discovery selection is being prepared; retry the build refresh")
+        if daily is not None and daily.published_at:
+            items = deepcopy(daily.items)
+            for item in items:
+                replacement = replacements.get(item.get("version_id"))
+                if replacement is not None:
+                    if item.get("track_id") != replacement[0]:
+                        raise RuntimeError("Daily discovery track/version mismatch")
+                    item["version_id"] = replacement[1]
+            daily.items = items
     return inserted

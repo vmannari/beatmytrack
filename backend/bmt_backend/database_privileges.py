@@ -253,7 +253,10 @@ def relation_policy(workload):
 def reviewed_function(row):
     signature = row["proname"], row["args"]
     if row["prosecdef"]:
-        return (signature == ("bmt_redact_removed_audit", "text") and row["returns"] == "void"
+        return ((signature, row["returns"]) in {
+                    (("bmt_redact_removed_audit", "text"), "void"),
+                    (("bmt_is_official_publisher", "text"), "boolean"),
+                }
                 and row["proconfig"] == ["search_path=pg_catalog"])
     return (row["extension"] == "pg_trgm"
             or HELPERS.get(signature) == row["returns"]

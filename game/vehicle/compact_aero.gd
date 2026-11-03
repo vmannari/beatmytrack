@@ -1,19 +1,19 @@
 class_name CompactAero
 extends RefCounted
 ## Original silhouette collection. Coordinates are the compact's unscaled metres.
-## Rear mounts land on painted hatch metal below the glazing, not on its glass.
+## Hatch mounts follow the sloping painted pillars beside the rear glazing.
 const PROFILES: Dictionary = {
-	"wing":{"center":Vector3(0,1.790,1.330),"half":0.88,"chord":0.20,"rise":0.014,"sweep":0.070,"thickness":0.021,"rake":0.033,"taper":0.175,"mount":"roof"},
-	"ducktail":{"center":Vector3(0,1.055,2.020),"half":0.70,"chord":0.12,"rise":0.025,"sweep":0.005,"thickness":0.010,"rake":0.055,"taper":0.16,"mount":"integral"},
-	"touring":{"center":Vector3(0,1.125,2.115),"half":0.73,"chord":0.145,"rise":0.065,"sweep":0.055,"thickness":0.019,"rake":0.028,"taper":0.36,"mount":"integral"},
+	"wing":{"center":Vector3(0,1.790,1.330),"half":0.88,"chord":0.20,"rise":0.025,"sweep":0.110,"thickness":0.021,"rake":0.033,"taper":0.30,"mount":"roof"},
+	"ducktail":{"center":Vector3(0,1.055,2.020),"half":0.70,"chord":0.12,"rise":0.035,"sweep":0.005,"thickness":0.010,"rake":0.070,"taper":0.16,"mount":"integral"},
+	"touring":{"center":Vector3(0,1.315,1.765),"half":0.70,"chord":0.135,"rise":0.040,"sweep":0.035,"thickness":0.017,"rake":0.025,"taper":0.40,"mount":"hatch","mount_x":0.640,"mount_y":1.205},
 	"pedestal":{"center":Vector3(0,1.255,2.215),"half":0.85,"chord":0.155,"rise":0.006,"sweep":0.010,"thickness":0.023,"rake":0.025,"taper":0.08,"mount":"rear","mount_x":0.46},
 	"swan":{"center":Vector3(0,1.840,1.465),"half":0.88,"chord":0.190,"rise":0.032,"sweep":-0.045,"thickness":0.020,"rake":0.026,"taper":0.26,"mount":"roof"},
 	"biwing":{"center":Vector3(0,1.510,2.240),"half":0.81,"chord":0.150,"rise":0.005,"sweep":0.020,"thickness":0.020,"rake":0.025,"taper":0.13,"mount":"rear","mount_x":0.52},
 	"rallywing":{"center":Vector3(0,1.735,1.850),"half":0.82,"chord":0.150,"rise":-0.100,"sweep":-0.030,"thickness":0.022,"rake":0.022,"taper":0.12,"mount":"roof"},
 	"endurance":{"center":Vector3(0,1.390,2.345),"half":0.93,"chord":0.240,"rise":0.015,"sweep":0.045,"thickness":0.025,"rake":0.032,"taper":0.13,"mount":"rear","mount_x":0.55},
-	"whale":{"center":Vector3(0,1.185,2.195),"half":0.79,"chord":0.260,"rise":0.085,"sweep":0.030,"thickness":0.033,"rake":0.055,"taper":-0.18,"mount":"integral"},
+	"whale":{"center":Vector3(0,1.185,2.195),"half":0.79,"chord":0.260,"rise":0.120,"sweep":0.030,"thickness":0.033,"rake":0.055,"taper":-0.25,"mount":"integral"},
 	"drag":{"center":Vector3(0,1.055,2.300),"half":0.77,"chord":0.285,"rise":0.0,"sweep":-0.025,"thickness":0.012,"rake":0.006,"taper":0.05,"mount":"rear","mount_x":0.47},
-	"splitwing":{"center":Vector3(0,1.315,2.250),"half":0.85,"chord":0.185,"rise":-0.075,"sweep":0.080,"thickness":0.022,"rake":0.027,"taper":0.32,"mount":"rear","mount_x":0.45}}
+	"splitwing":{"center":Vector3(0,1.410,1.820),"half":0.82,"chord":0.185,"rise":0.055,"sweep":0.100,"thickness":0.022,"rake":0.027,"taper":0.38,"mount":"hatch","mount_x":0.640,"mount_y":1.275}}
 
 static func roll_extent(kind: String) -> Vector2:
 	var p: Dictionary = PROFILES[kind]
@@ -24,7 +24,8 @@ static func mount_point(kind: String, side: float) -> Vector3:
 	var p: Dictionary = PROFILES[kind]
 	if p.mount=="roof": return CompactCoachwork.roof_point(side*0.87,0.94)
 	var x: float = side*float(p.get("mount_x",0.50))
-	return Vector3(x,0.976,CompactCoachwork.rear_skin(x,0.976))
+	var y: float = float(p.get("mount_y",0.976))
+	return Vector3(x,y,CompactCoachwork.rear_skin(x,y))
 
 static func blade_point(kind: String, x: float, ring: float, layer: int = 0) -> Vector3:
 	var p: Dictionary = PROFILES[kind]
@@ -44,13 +45,14 @@ static func build(root: Node3D, kind: String, paint: Material, trim: Material, m
 	var prefix: String = "aero6/"+kind+"/"
 	var half: float = p.half
 	if p.mount=="integral": _foundation(root,kind,prefix,paint)
-	elif p.mount=="rear":
+	elif p.mount in ["rear","hatch"]:
 		for side: float in [-1,1]:
 			var mount: Vector3 = mount_point(kind,side)
-			_rear_saddle(root,prefix+str(side)+"/",mount,trim,metal)
-			var target: Vector3 = Vector3(mount.x,center.y-0.021,center.z-0.012)
-			if kind=="splitwing": target.y -= 0.026
-			_support(root,prefix+str(side)+"/upright",mount+Vector3(0,0,0.023),target,0.015,0.030,metal,0.0)
+			_rear_saddle(root,prefix+str(side)+"/",mount,trim,metal,p.mount=="hatch")
+			# Land each strut inside the actual curved airfoil, including its
+			# spanwise rise and sweep, so the joint follows every profile.
+			var target: Vector3 = blade_point(kind,mount.x,0.75) if p.mount=="hatch" else Vector3(mount.x,center.y-0.021,center.z-0.012)
+			_support(root,prefix+str(side)+"/upright",mount+Vector3(0,0,0.018 if p.mount=="hatch" else 0.023),target,0.015,0.030,metal,0.0)
 			if kind in ["endurance","biwing"]:
 				_support(root,prefix+str(side)+"/brace",mount+Vector3(0,-0.045,0.030),target-Vector3(0,0.015,0.105),0.009,0.014,trim,-0.035)
 	else:
@@ -99,10 +101,14 @@ static func _support(root: Node3D, key: String, start: Vector3, finish: Vector3,
 		var q: Vector2 = CompactKitSurface.contour(section,v,0.003)
 		return p+Vector3.RIGHT*q.x+normal*q.y,material,20,16)
 
-static func _rear_saddle(root: Node3D, key: String, mount: Vector3, trim: Material, metal: Material) -> void:
-	# Both curved faces follow the actual rear metal, well below the hatch glass.
-	for surface: Array in [["seal",0.007,trim,0.096,0.091],["plate",0.016,metal,0.078,0.075]]:
-		_pad(root,key+str(surface[0]),mount,float(surface[3]),float(surface[4]),0.001 if surface[0]=="seal" else 0.007,float(surface[1]),surface[2])
+static func _rear_saddle(root: Node3D, key: String, mount: Vector3, trim: Material, metal: Material, hatch: bool = false) -> void:
+	# The hatch saddles are narrow enough to sit on the painted pillars just
+	# outside the glazing, and both faces follow the slope of the actual skin.
+	var width: float = 0.055 if hatch else 0.096
+	var height: float = 0.080 if hatch else 0.091
+	for surface: Array in [["seal",0.007,trim,width,height],["plate",0.016,metal,width-0.018,height-0.016]]:
+		var back: float = (-0.002 if hatch else 0.001) if surface[0]=="seal" else 0.007
+		_pad(root,key+str(surface[0]),mount,float(surface[3]),float(surface[4]),back,float(surface[1]),surface[2])
 	for y: float in [-0.025,0.025]:
 		var at := Vector3(mount.x,mount.y+y,CompactCoachwork.rear_skin(mount.x,mount.y+y)+0.021)
 		var bolt := CompactKits._cylinder(root,0.0075,0.005,at,metal,10)

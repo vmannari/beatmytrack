@@ -1,0 +1,1985 @@
+diff --git a/AGENTS.md b/AGENTS.md
+--- a/AGENTS.md
++++ b/AGENTS.md
+@@ -2,6 +2,11 @@
+ ## Forklift kits rebuilt after visual rejection (2026-11-02)
+ FKR01-FKR05/R01/Q01: All52 alternatives now use fitted industrial construction: complete formed lids, recessed wheel centres with real apertures/rolled flanges, supported counterweight bumpers and continuous cabin portals. Fourteen choices/category and all IDs/ownership remain; server catalogue exact. Original body/wheels12/0, options741/0, construction8564/0, prepared1580/0, Garage187/0 each desktop renderer, retained model97/0 and backend60pass/4deselected;224 final native captures and matched comparison gallery. Four bases/104 modules/Garage template refresh. Initial seam/budget/tip-normal and raised-wheel findings retained; no geometry test or limit relaxed. Commands, source hashes, scoped checkpoint and limits: [docs/FORKLIFT_KIT_REFINEMENT_2026_11_02.md](docs/FORKLIFT_KIT_REFINEMENT_2026_11_02.md). Reload/owner appearance and touch/device performance acceptance remain. No device test, APK, real purchase, owner-save/process change, live mutation, deployment or main-index write; concurrent work preserved.
+ <!-- /FORKLIFT-KIT-REFINEMENT-20261102 -->
++
++<!-- RACE-LOADING-IMPLEMENTATION-20261102 -->
++## Repeated race loading optimised within existing visuals and budgets (2026-11-02)
++RLX01-RLX03/R01/Q01: Up to four reused effect proxies per draw still render every source; exact shared road/world buffers count once and ordinary arbitration prefers finished scenery; selected worker primes existing query/support/gates. Interleaved desktop Star/Pine warm medians1.274to0.503s Compatibility and1.958to0.727s Mobile; twelve exact warm-control PNG comparisons. Focused20/0, native622/0 each, actual-Mobile135/0; five opening laps each renderer have zero contacts, final Compatibility interruption31/0 and old-loader Desert13/0. Older disk/cloud fixture controls and concurrent Garage shutdown error are retained explicitly. Sources, commands, limits and scoped checkpoint: [docs/RACE_LOADING_IMPLEMENTATION_2026_11_02.md](docs/RACE_LOADING_IMPLEMENTATION_2026_11_02.md). No phone/cold-driver/60FPS claim, device test/query, owner-save/process change, authenticated live write, deployment or main-index write. Concurrent startup/Garage/music/Daily work preserved; reload and owner/device acceptance remain.
++<!-- /RACE-LOADING-IMPLEMENTATION-20261102 -->
+ 
+ <!-- RECORD-PLAYLIST-STYLE-20261102 -->
+ ## Playlist selection uses restrained integrated controls (2026-11-02)
+diff --git a/DEVELOPMENT_STATUS.md b/DEVELOPMENT_STATUS.md
+--- a/DEVELOPMENT_STATUS.md
++++ b/DEVELOPMENT_STATUS.md
+@@ -2,6 +2,11 @@
+ ## Forklift kits rebuilt after visual rejection (2026-11-02)
+ FKR01-FKR05/R01/Q01: All52 alternatives now use fitted industrial construction: complete formed lids, recessed wheel centres with real apertures/rolled flanges, supported counterweight bumpers and continuous cabin portals. Fourteen choices/category and all IDs/ownership remain; server catalogue exact. Original body/wheels12/0, options741/0, construction8564/0, prepared1580/0, Garage187/0 each desktop renderer, retained model97/0 and backend60pass/4deselected;224 final native captures and matched comparison gallery. Four bases/104 modules/Garage template refresh. Initial seam/budget/tip-normal and raised-wheel findings retained; no geometry test or limit relaxed. Commands, source hashes, scoped checkpoint and limits: [docs/FORKLIFT_KIT_REFINEMENT_2026_11_02.md](docs/FORKLIFT_KIT_REFINEMENT_2026_11_02.md). Reload/owner appearance and touch/device performance acceptance remain. No device test, APK, real purchase, owner-save/process change, live mutation, deployment or main-index write; concurrent work preserved.
+ <!-- /FORKLIFT-KIT-REFINEMENT-20261102 -->
++
++<!-- RACE-LOADING-IMPLEMENTATION-20261102 -->
++## Repeated race loading optimised within existing visuals and budgets (2026-11-02)
++RLX01-RLX03/R01/Q01: Up to four reused effect proxies per draw still render every source; exact shared road/world buffers count once and ordinary arbitration prefers finished scenery; selected worker primes existing query/support/gates. Interleaved desktop Star/Pine warm medians1.274to0.503s Compatibility and1.958to0.727s Mobile; twelve exact warm-control PNG comparisons. Focused20/0, native622/0 each, actual-Mobile135/0; five opening laps each renderer have zero contacts, final Compatibility interruption31/0 and old-loader Desert13/0. Older disk/cloud fixture controls and concurrent Garage shutdown error are retained explicitly. Sources, commands, limits and scoped checkpoint: [docs/RACE_LOADING_IMPLEMENTATION_2026_11_02.md](docs/RACE_LOADING_IMPLEMENTATION_2026_11_02.md). No phone/cold-driver/60FPS claim, device test/query, owner-save/process change, authenticated live write, deployment or main-index write. Concurrent startup/Garage/music/Daily work preserved; reload and owner/device acceptance remain.
++<!-- /RACE-LOADING-IMPLEMENTATION-20261102 -->
+ 
+ <!-- STARTUP-MUSIC-20261102 -->
+ ## Startup music begins with the active profile's record (2026-11-02)
+diff --git a/game/core/app.gd b/game/core/app.gd
+--- a/game/core/app.gd
++++ b/game/core/app.gd
+@@ -1801,7 +1801,8 @@
+ 	if _selected_preparation_obsolete(generation): return
+ 	if _selected_preparation_track.metadata.get("metadata_only",false) and source.is_empty():
+ 		_cancel_selected_preparation(); return
+-	if not _selected_preparation_track.metadata.get("metadata_only",false) and not NativeTrackVisual.race_roads_need_preparation(_selected_preparation_track):
++	var layout_ready: bool = SELECTED_PREPARATION.ready_for_job() and _selected_preparation_track._race_gates.get("rules_key","") == RaceRules.KEY and _selected_preparation_track._race_gates.get("notice_version",0) == TrackSession.NOTICE_LAYOUT_VERSION
++	if not _selected_preparation_track.metadata.get("metadata_only",false) and not NativeTrackVisual.race_roads_need_preparation(_selected_preparation_track) and layout_ready:
+ 		_cancel_selected_preparation(); return
+ 	_selected_preparation_entry = entry.duplicate(true)
+ 	_selected_preparation_source = source
+diff --git a/game/editor/editor_memory.gd b/game/editor/editor_memory.gd
+--- a/game/editor/editor_memory.gd
++++ b/game/editor/editor_memory.gd
+@@ -43,6 +43,13 @@
+ 		app.editor_raster_cache.clear(); app.editor_raster_cache["enabled"] = true
+ 	else: retry = true
+ 	if not force and retained(app).retained_bytes <= RETAINED_BUDGET: _finished(app,retry,force); return
++	if not force and not WORLDS.entries.is_empty():
++		# Prefer the completed world to a few idle preparation proxies. Evicting
++		# these never affects live effects; they are redrawn on the next entry.
++		var excess: int = retained(app).retained_bytes-RETAINED_BUDGET
++		var effects = preload("res://vehicle/effect_render_preparation.gd")
++		effects.trim_to(app,maxi(0,effects.cache_bytes(app)-excess))
++		if retained(app).retained_bytes <= RETAINED_BUDGET: _finished(app,retry,force); return
+ 	WORLDS.trim_cache(0 if force else maxi(0,WORLDS.bytes_used()-(retained(app).retained_bytes-RETAINED_BUDGET)))
+ 	if force: preload("res://track/winter_road_snow_sources.gd").trim_cache()
+ 	if not force and retained(app).retained_bytes <= RETAINED_BUDGET: _finished(app,retry,force); return
+@@ -69,6 +76,7 @@
+ 
+ static func retained(app: Node) -> Dictionary:
+ 	var roads: Dictionary = ROADS.residency()
++	var shared_roads: int = mini(int(roads.gpu),WORLDS.shared_road_bytes(NativeTrackVisual._road_mesh_cache))
+ 	var history: int = HISTORY.bytes_used([app.history,app.redo_history,app.editor_gesture_history,app.editor_gesture_redo,[app.editor_session.primed] if not app.editor_session.primed.is_empty() else []])
+ 	var compiled: int = 0
+ 	if app.editor_preview_thread == null:
+@@ -77,7 +85,7 @@
+ 	var raster: int = int(app.editor_raster_cache.get("prepared_bytes",0))+int(app.editor_raster_cache.get("auxiliary_bytes",0)) if app.editor_preview_thread == null else 24*1024*1024
+ 	var scenes: int = app.editor_world.visual_cache_bytes if is_instance_valid(app.editor_world) else 0
+ 	var props: int = CreatorPropVisual.cache_bytes
+-	var other: Dictionary = {"read_bytes":READS.bytes,"encoding_bytes":ENCODING.bytes,"race_world_bytes":WORLDS.bytes_used(),
++	var other: Dictionary = {"read_bytes":READS.bytes,"encoding_bytes":ENCODING.bytes,"race_world_bytes":maxi(0,WORLDS.bytes_used()-shared_roads),
+ 		"road_support_bytes":preload("res://track/road_support_cache.gd").bytes_used(),
+ 		"effect_preparation_bytes":preload("res://vehicle/effect_render_preparation.gd").cache_bytes(app),"front_fitting_bytes":CompactDetail.front_cache_bytes,
+ 		"winter_sky_bytes":TrackTheme.WINTER_SKY_ESTIMATED_BYTES if TrackTheme.winter_reflection_sky != null else 0,
+@@ -93,7 +101,7 @@
+ 	for category: String in garage: garage_bytes += int(garage[category])
+ 	var other_bytes: int = 0
+ 	for value: int in other.values(): other_bytes += value
+-	return {"history_bytes":history,"road_packet_bytes":roads.packets,"road_section_bytes":roads.sections,"road_gpu_bytes":roads.gpu,
++	return {"history_bytes":history,"road_packet_bytes":roads.packets,"road_section_bytes":roads.sections,"road_gpu_bytes":roads.gpu,"shared_road_bytes":shared_roads,
+ 		"compiled_bytes":compiled,"raster_bytes":raster,"detached_scene_bytes":scenes,"prop_bytes":props,
+ 		"other":other,"garage":garage,"optional_garage_bytes":garage_bytes,"retained_bytes":history+roads.packets+roads.sections+roads.gpu+compiled+raster+scenes+props+other_bytes}
+ 
+diff --git a/game/race/selected_track_preparation.gd b/game/race/selected_track_preparation.gd
+--- a/game/race/selected_track_preparation.gd
++++ b/game/race/selected_track_preparation.gd
+@@ -25,6 +25,16 @@
+ 	var disk_key: Array = ROADS.disk_key_for(track)
+ 	var packet: Dictionary = ROADS.prepare(track,false,false,cancelled)
+ 	packet = ROADS.with_winter_cover(packet,track,cancelled)
++	if cancelled.call(): return {}
++	# Prime existing query/gate data and the bounded numeric support cache in
++	# this same worker. Do not construct another bridge/Desert field or repeat
++	# the Winter cover bake, and retain no extra presenter/track owner.
++	track._creator_query()
++	if cancelled.call(): return {}
++	preload("res://track/road_surface_height.gd").new(track)
++	if cancelled.call(): return {}
++	var session := TrackSession.new()
++	session._configure(track)
+ 	if cancelled.call(): return {}
+ 	receipt = DISK.stage_arrays(disk_key,packet,cancelled)
+ 	if cancelled.call(): DISK.discard_arrays(receipt); return {}
+diff --git a/game/track/prepared_world_cache.gd b/game/track/prepared_world_cache.gd
+--- a/game/track/prepared_world_cache.gd
++++ b/game/track/prepared_world_cache.gd
+@@ -3,13 +3,31 @@
+ const MAX_ENTRIES: int = 5
+ const MAX_BYTES: int = 64 * 1024 * 1024
+ static var entries: Array[Dictionary] = []
++static var generation: int = 0
+ 
+ static func bytes_used() -> int:
+ 	var total: int = 0
+ 	for entry: Dictionary in entries: total += int(entry.bytes)
+ 	return total
+ 
++static func shared_road_bytes(roads: Array) -> int:
++	# Only identical immutable resource objects prove shared buffers. Geometry
++	# equality/names do not; nodes and mutable instance buffers remain private.
++	var owned: Dictionary = {}
++	for entry: Dictionary in entries:
++		for id: int in entry.get("resources",{}): owned[id] = int(entry.resources[id])
++	var total: int = 0
++	var seen: Dictionary = {}
++	for entry: Dictionary in roads:
++		for data: Dictionary in entry.meshes:
++			var id: int = data.mesh.get_instance_id()
++			if owned.has(id) and not seen.has(id):
++				seen[id] = true
++				total += int(owned[id])
++	return total
++
+ static func trim_cache(allowance: int = 0) -> void:
++	generation += 1
+ 	var total: int = bytes_used()
+ 	while not entries.is_empty() and total > allowance: total -= int(entries.pop_front().bytes)
+ 
+@@ -34,6 +52,7 @@
+ 
+ static func remember(key: Array, visual: Node3D, track: NativeTrack) -> void:
+ 	var resources: Dictionary = {}
++	var retained_resources: Dictionary = {}
+ 	# Include CPU/GPU grid masks conservatively, then each mesh/buffer once.
+ 	var bytes: int = track.cells.size()*(20 if track.metadata.get("theme","pine") == "desert" else 16)
+ 	for child: Node in visual.get_children(): bytes += _resource_bytes(child,resources)
+@@ -44,6 +63,9 @@
+ 		holder.add_child(copy)
+ 		_own(copy,holder)
+ 		_isolate_instances(copy)
++		_resource_bytes(copy,retained_resources)
++	bytes += retained_resources.size()*32
++	if bytes > MAX_BYTES: holder.free(); return
+ 	var scene := PackedScene.new()
+ 	var packed: Error = scene.pack(holder)
+ 	holder.free()
+@@ -58,7 +80,7 @@
+ 	for entry: Dictionary in entries: total += int(entry.bytes)
+ 	while not entries.is_empty() and (entries.size() >= MAX_ENTRIES or total > MAX_BYTES):
+ 		total -= int(entries.pop_front().bytes)
+-	entries.append({"key":key.duplicate(true),"scene":scene,"bytes":bytes,"metadata":metadata,"props":paths,"tyres":visual.tyre_instances.get_index() if visual.tyre_instances != null else -1,"scenic_count":visual.scenic_count})
++	entries.append({"key":key.duplicate(true),"scene":scene,"bytes":bytes,"resources":retained_resources,"metadata":metadata,"props":paths,"tyres":visual.tyre_instances.get_index() if visual.tyre_instances != null else -1,"scenic_count":visual.scenic_count})
+ 
+ static func _own(node: Node, holder: Node) -> void:
+ 	node.owner = holder
+@@ -102,7 +124,9 @@
+ 
+ 
+ static func remember_cooperative(key: Array, visual: NativeTrackVisual, track: NativeTrack) -> void:
++	var started_generation: int = generation
+ 	var resources: Dictionary = {}
++	var retained_resources: Dictionary = {}
+ 	var bytes: int = track.cells.size()*(20 if track.metadata.get("theme","pine") == "desert" else 16)
+ 	for child: Node in visual.get_children():
+ 		if not await visual._yield_build(): return
+@@ -121,6 +145,7 @@
+ 		holder.add_child(copy)
+ 		_own(copy,holder)
+ 		_isolate_instances(copy)
++		_resource_bytes(copy,retained_resources)
+ 		if visual.profile_build: visual.build_costs.cache_duplicate_max_us = maxi(int(visual.build_costs.get("cache_duplicate_max_us",0)),Time.get_ticks_usec()-duplicate_started)
+ 	if not await visual._yield_build():
+ 		if is_instance_valid(lease): lease.free()
+@@ -132,7 +157,8 @@
+ 	lease.free()
+ 	# Packing is an indivisible engine call. Publish only a complete current
+ 	# scene; never expose partial cache entries during cooperative preparation.
+-	if packed != OK or not visual._build_is_current(): return
++	bytes += retained_resources.size()*32
++	if packed != OK or not visual._build_is_current() or started_generation != generation or bytes > MAX_BYTES: return
+ 	var paths: Array[int] = []
+ 	for prop: Node3D in visual.light_instances: paths.append(prop.get_index())
+ 	var metadata: Dictionary = {}
+@@ -142,7 +168,7 @@
+ 	var total: int = bytes
+ 	for entry: Dictionary in entries: total += int(entry.bytes)
+ 	while not entries.is_empty() and (entries.size() >= MAX_ENTRIES or total > MAX_BYTES): total -= int(entries.pop_front().bytes)
+-	entries.append({"key":key.duplicate(true),"scene":scene,"bytes":bytes,"metadata":metadata,"props":paths,"tyres":visual.tyre_instances.get_index() if visual.tyre_instances != null else -1,"scenic_count":visual.scenic_count})
++	entries.append({"key":key.duplicate(true),"scene":scene,"bytes":bytes,"resources":retained_resources,"metadata":metadata,"props":paths,"tyres":visual.tyre_instances.get_index() if visual.tyre_instances != null else -1,"scenic_count":visual.scenic_count})
+ 
+ static func _isolate_instances(node: Node) -> void:
+ 	if node is MultiMeshInstance3D and node.multimesh != null:
+@@ -169,15 +195,17 @@
+ 		mesh = node.multimesh.mesh
+ 		bytes += node.multimesh.instance_count*128
+ 	if mesh != null and not seen.has(mesh.get_instance_id()):
+-		seen[mesh.get_instance_id()] = true
++		var mesh_bytes: int = 0
+ 		for surface: int in range(mesh.get_surface_count()):
+ 			if mesh is ArrayMesh:
+ 				# Counts are enough for this conservative budget. Avoid decoding
+ 				# complete vertex/index arrays again after spatial preparation.
+-				bytes += mesh.surface_get_array_len(surface)*96+mesh.surface_get_array_index_len(surface)*4
++				mesh_bytes += mesh.surface_get_array_len(surface)*96+mesh.surface_get_array_index_len(surface)*4
+ 				continue
+ 			var arrays: Array = mesh.surface_get_arrays(surface)
+-			bytes += arrays[Mesh.ARRAY_VERTEX].size()*96
+-			if arrays[Mesh.ARRAY_INDEX] != null: bytes += arrays[Mesh.ARRAY_INDEX].size()*4
++			mesh_bytes += arrays[Mesh.ARRAY_VERTEX].size()*96
++			if arrays[Mesh.ARRAY_INDEX] != null: mesh_bytes += arrays[Mesh.ARRAY_INDEX].size()*4
++		seen[mesh.get_instance_id()] = mesh_bytes
++		bytes += mesh_bytes
+ 	for child: Node in node.get_children(): bytes += _resource_bytes(child,seen)
+ 	return bytes
+diff --git a/game/vehicle/effect_preparation_pool.gd b/game/vehicle/effect_preparation_pool.gd
+--- a/game/vehicle/effect_preparation_pool.gd
++++ b/game/vehicle/effect_preparation_pool.gd
+@@ -36,6 +36,11 @@
+ 	particles.set_meta("preparation_bytes",cost)
+ 	particles.set_meta("preparation_resources",seen)
+ 
++func contains(label: String) -> bool:
++	for entry: Dictionary in entries:
++		if entry.label == label: return true
++	return false
++
+ func put(particles: GPUParticles3D, initialized: bool) -> void:
+ 	if not is_instance_valid(particles): return
+ 	var cost: int = int(particles.get_meta("preparation_bytes",MAX_BYTES+1))
+@@ -71,6 +76,14 @@
+ 	entries.clear()
+ 	bytes = 0
+ 
++func trim_to(allowance: int) -> void:
++	# Evict idle leases without disabling future retention or touching in-flight
++	# proxies. Real OS pressure still uses trim() and its suppression fence.
++	while not entries.is_empty() and bytes > maxi(0,allowance):
++		var entry: Dictionary = entries.pop_front()
++		entry.node.free()
++		bytes = _footprint()
++
+ static func _estimate(value: Variant, seen: Dictionary) -> int:
+ 	if value is Resource:
+ 		if seen.has(value.get_instance_id()): return 0
+diff --git a/game/vehicle/effect_render_preparation.gd b/game/vehicle/effect_render_preparation.gd
+--- a/game/vehicle/effect_render_preparation.gd
++++ b/game/vehicle/effect_render_preparation.gd
+@@ -5,10 +5,12 @@
+ const BATCH_NAMES: Array[String] = ["WoodFragments","LooseHayFragments","SnowChunks","IceShards","SnowPowder","GroundDrifts","BankPowder","AirborneGrains"]
+ const Pool = preload("res://vehicle/effect_preparation_pool.gd")
+ const POOL_NAME: String = "EffectPreparationPool"
++const REUSED_PER_DRAW: int = 4
+ 
+ static func prepare(world: Node3D, effects: SandDust, camera: Camera3D, impact: TextureRect, owner: Node, draw: Callable, current: Callable) -> Dictionary:
+-	# Keep begin() synchronous for isolated previews. Production draws exactly one
+-	# newly bound particle proxy per interval and checks ownership after each await.
++	# Fresh proxies retain individual draws. Reused nodes share bounded draws,
++	# but every actual source still renders, including changed materials/state.
++	# No program equivalence or warm-program receipt is inferred from reuse.
+ 	var prepared: Dictionary = begin(world,null,camera,impact)
+ 	prepared["complete"] = DisplayServer.get_name() == "headless"
+ 	if DisplayServer.get_name() == "headless": return prepared
+@@ -25,22 +27,30 @@
+ 	if is_instance_valid(effects) and effects.is_visible_in_tree():
+ 		for source: Node in effects.get_children():
+ 			if source is GPUParticles3D and source.is_visible_in_tree(): sources.append(weakref(source))
+-	for source_ref: WeakRef in sources:
++	var cursor: int = 0
++	while cursor < sources.size():
+ 		if not _current(world,camera,current) or not is_instance_valid(pool): return prepared
+-		var source: GPUParticles3D = source_ref.get_ref()
+-		if source == null: return prepared
+-		var particles: GPUParticles3D = pool.take("Covered"+str(source.name))
+-		if bool(particles.get_meta("preparation_reused",false)): prepared.reused += 1
+-		_configure_particle(particles,source,world,camera)
+-		# Earlier staged proxies must remain drawable through the later lighting
+-		# contexts even when a short-lived particle has already expired.
+-		particles.one_shot = false
+-		pool.measure(particles)
+-		prepared.nodes.append(particles)
+-		prepared.particles += 1
++		var batch: Array[GPUParticles3D] = []
++		while cursor < sources.size() and batch.size() < REUSED_PER_DRAW:
++			var source: GPUParticles3D = sources[cursor].get_ref()
++			if source == null: return prepared
++			var reused: bool = pool.contains("Covered"+str(source.name))
++			if not reused and not batch.is_empty(): break
++			cursor += 1
++			var particles: GPUParticles3D = pool.take("Covered"+str(source.name))
++			if reused: prepared.reused += 1
++			_configure_particle(particles,source,world,camera)
++			# Proxies remain drawable for subsequent lighting contexts.
++			particles.one_shot = false
++			pool.measure(particles)
++			prepared.nodes.append(particles)
++			prepared.particles += 1
++			batch.append(particles)
++			if not reused: break
+ 		if not draw.is_valid() or not bool(await draw.call()): return prepared
+ 		if not _current(world,camera,current): return prepared
+-		if is_instance_valid(particles): prepared.initialized[particles.get_instance_id()] = true
++		for particles: GPUParticles3D in batch:
++			if is_instance_valid(particles): prepared.initialized[particles.get_instance_id()] = true
+ 	prepared.complete = true
+ 	return prepared
+ 
+@@ -54,6 +64,10 @@
+ static func cache_bytes(owner: Node) -> int:
+ 	var pool: Node = owner.get_node_or_null(POOL_NAME)
+ 	return int(pool.bytes) if pool != null else 0
++
++static func trim_to(owner: Node, allowance: int) -> void:
++	var pool: Node = owner.get_node_or_null(POOL_NAME)
++	if pool != null: pool.trim_to(allowance)
+ 
+ static func _configure_particle(particles: GPUParticles3D, source: GPUParticles3D, world: Node3D, camera: Camera3D) -> void:
+ 	particles.emitting = false
+diff --git a/game/tests/test_runtime_loading_fixes.gd b/game/tests/test_runtime_loading_fixes.gd
+--- a/game/tests/test_runtime_loading_fixes.gd
++++ b/game/tests/test_runtime_loading_fixes.gd
+@@ -13,6 +13,7 @@
+ var stop_at: int = -1
+ var trim_at: int = -1
+ var draw_calls: int = 0
++var drawn_proxies: int = 0
+ var allowed: bool = true
+ var action: String = ""
+ var owner: Node3D
+@@ -120,7 +121,12 @@
+ func draw() -> bool:
+ 	draw_calls+=1
+ 	var proxies: Array=world.find_children("Covered*","GPUParticles3D",true,false)
+-	check(proxies.size()==draw_calls,"one additional emitter is initialized per covered draw")
++	var added: int = proxies.size()-drawn_proxies
++	check(added >= 1 and added <= EFFECTS.REUSED_PER_DRAW,"each covered draw binds a bounded nonempty batch")
++	for node: Node in proxies.slice(drawn_proxies):
++		if not bool(node.get_meta("preparation_reused",false)):
++			check(added == 1,"fresh GPU nodes retain individual preparation draws")
++	drawn_proxies = proxies.size()
+ 	if action=="cancel" and draw_calls==2: allowed=false
+ 	if action=="pressure" and draw_calls==2: EFFECTS.trim_cache(owner)
+ 	if action=="teardown" and draw_calls==2: world.queue_free()
+@@ -142,7 +148,7 @@
+ 			track.metadata.theme=theme;track.bridge_height=2.0
+ 			source.prepare_track(track)
+ 			var state: PackedByteArray=emitter_state(source)
+-			draw_calls=0;allowed=true;action=""
++			draw_calls=0;drawn_proxies=0;allowed=true;action=""
+ 			var prepared: Dictionary=await EFFECTS.prepare(world,source,camera,null,owner,draw,is_current)
+ 			var graphical: bool=DisplayServer.get_name()!="headless"
+ 			check(bool(prepared.complete) and prepared.particles==(source.get_child_count() if graphical else 0),"every original effect family completes preparation")
+@@ -177,7 +183,7 @@
+ 	if DisplayServer.get_name()!="headless":
+ 		for interruption: String in ["cancel","pressure","teardown"]:
+ 			var source:=SandDust.new();world.add_child(source)
+-			draw_calls=0;allowed=true;action=interruption
++			draw_calls=0;drawn_proxies=0;allowed=true;action=interruption
+ 			var prepared: Dictionary=await EFFECTS.prepare(world,source,camera,null,owner,draw,is_current)
+ 			check(bool(prepared.complete)==(interruption=="pressure"),"interruption cannot publish an unfinished preparation")
+ 			EFFECTS.end(prepared)
+diff --git a/game/tests/test_runtime_effect_loading.gd b/game/tests/test_runtime_effect_loading.gd
+--- a/game/tests/test_runtime_effect_loading.gd
++++ b/game/tests/test_runtime_effect_loading.gd
+@@ -10,6 +10,7 @@
+ var cases: Array[Dictionary] = []
+ var frozen: bool = true
+ var largest_first_group: int = 0
++var first_group_fresh: bool = false
+ 
+ func _initialize() -> void: run.call_deferred()
+ func check(ok: bool, label: String) -> void:
+@@ -23,7 +24,10 @@
+ 	if world==null: return
+ 	var proxies: Array=world.find_children("Covered*","GPUParticles3D",true,false)
+ 	if proxies.is_empty(): return
+-	if not observed: largest_first_group=maxi(largest_first_group,proxies.size())
++	if not observed:
++		largest_first_group=maxi(largest_first_group,proxies.size())
++		for node: Node in proxies:
++			first_group_fresh = first_group_fresh or not bool(node.get_meta("preparation_reused",false))
+ 	observed=true
+ 	frozen=frozen and game.sim.state.tick==0 and game.track_session.elapsed_ticks==0 and game.countdown_ticks==360 and game.trails.cursor==0 and game.trails.instances.visible_instance_count==0 and game.trails.instances.instance_count==16384
+ 	if interrupted or mode=="complete": return
+@@ -56,15 +60,18 @@
+ 		original.source.restart(true);original.source.emitting=original.emitting
+ 		original.source.transform=original.pose;original.source.amount_ratio=original.ratio;original.source.speed_scale=original.speed
+ 
++func track_for(_theme: String) -> NativeTrack:
++	return NativeTrack.read("res://resources/tracks/ellipse.json")
++
+ func race(vehicle: String, theme: String, interruption: String="complete") -> void:
+ 	VehicleCatalog.selected=vehicle
+ 	app.online.client.configure("")
+ 	app._show_screen("tracks")
+-	var track: NativeTrack=NativeTrack.read("res://resources/tracks/ellipse.json")
++	var track: NativeTrack=track_for(theme)
+ 	track.metadata.theme=theme
+ 	track.metadata.cloud_version="owned-staged-effects"
+ 	app.selected_track=track
+-	mode=interruption;interrupted=false;observed=false;frozen=true;largest_first_group=0
++	mode=interruption;interrupted=false;observed=false;frozen=true;largest_first_group=0;first_group_fresh=false
+ 	var revealed: Dictionary={}
+ 	var began: int=Time.get_ticks_usec()
+ 	app._start_race(track,false,true)
+@@ -78,15 +85,19 @@
+ 		for _frame: int in range(8): await process_frame
+ 		check(interrupted and not is_instance_valid(app),"App teardown retires active particle preparation")
+ 		return
+-	check(observed,"actual loading reached the staged particle draw")
++	# Cancellation may already have freed Game; use the attempted car contract.
++	var expected_particles: bool = not VehicleCatalog.config(vehicle).air_cushion
++	check(observed==expected_particles,"visible tyres stage particles; air-cushion cars stage no invisible tyre effects")
+ 	check(frozen,"all staged draws preserve canonical tick, elapsed ticks, countdown and full empty trail ring")
+-	check(largest_first_group==1,"actual App adds only one particle proxy before its first covered draw")
++	check((largest_first_group>=1 and largest_first_group<=EFFECTS.REUSED_PER_DRAW) if expected_particles else largest_first_group==0,"actual App starts with a bounded visible preparation batch")
++	if first_group_fresh: check(largest_first_group==1,"fresh App GPU proxies retain individual first draws")
+ 	if interruption in ["complete","pressure"]:
+ 		check(is_instance_valid(app.game) and not app.cloud_starting,"actual car/theme preparation completes")
+ 		if is_instance_valid(app.game):
+ 			app.game.set_physics_process(false)
+ 			check(revealed.get("tick",-1)==0 and revealed.get("countdown",-1)==360,"actual reveal retains tick zero and complete countdown")
+-			check(app.game.effects_prepared and app.game.effect_preparation_counts.particles==app.game.sand_dust.get_child_count(),"every actual source emitter is prepared before reveal")
++			var count: int = app.game.sand_dust.get_child_count() if expected_particles else 0
++			check(app.game.effects_prepared==expected_particles and app.game.effect_preparation_counts.particles==count,"every visible source emitter is prepared before reveal")
+ 			check(app.game.get_node("World").find_children("Covered*","",true,false).is_empty(),"actual race contains no temporary preparation nodes")
+ 			var source_emission: bool=false
+ 			for source: GPUParticles3D in app.game.sand_dust.get_children(): source_emission=source_emission or source.emitting
+diff --git a/docs/RACE_LOADING_IMPLEMENTATION_2026_11_02.md b/docs/RACE_LOADING_IMPLEMENTATION_2026_11_02.md
+new file mode 100644
+--- /dev/null
++++ b/docs/RACE_LOADING_IMPLEMENTATION_2026_11_02.md
+@@ -0,0 +1,63 @@
++# Faster repeated race entry — 2 November 2026
++
++The first three recommendations from the [loading evaluation](RACE_LOADING_REVIEW_2026_11_02.md) are implemented locally: bounded effect draws, useful scenery retention within the existing memory allowance, and earlier selected-track CPU preparation. No car, terrain, shader, texture, visual-quality setting, camera, handling or backend contract changes are made.
++
++## Measured result
++
++An interleaved offline actual-App Star/Pine fixture compared the task-start effect loop and memory policy with the new policies in the same process. Both paths use current geometry/rendering and retain the final full covered draw. The private profiles use Godot 4.7.2, Windows, RTX 3090, 1280×720 and Dummy audio. After startup, engine time is frozen for stable images and tick-zero loading observations. Driver/OS caches are not erased; the host is shared. This is a warm desktop re-entry experiment, not a cold-driver, packaged-build or Android result.
++
++| Renderer | Warm control samples | Optimized retained-world samples | Median reduction |
++| --- | --- | --- | ---: |
++| Compatibility | 1,231.790 / 1,273.798 / 1,317.334 ms | 508.748 / 497.366 ms | 60.51% |
++| Desktop Mobile | 2,109.850 / 1,957.707 / 1,747.385 ms | 700.775 / 754.065 ms | 62.84% |
++
++The optimized pairs first populate their scenery cache, then consume it. Cycles 2/6 are those population entries, not included in the retained-world column: 984.944/1,037.728 ms Compatibility and 1,563.702/1,314.483 ms Mobile. Cold process seeds, all eight rows per renderer, pre-entry cache state, preparation stages and largest frame are retained in the raw evidence. Controls intentionally use the previous policy, so neither control can retain its scenery between entries. These small samples do not establish a general percentage gain.
++
++Each renderer saved eight native frames. All seven post-seed frames within each renderer are byte-identical PNG files, including the optimized frames and later restored controls: **12 independent exact comparisons** against the first warm control. Mobile's initial procedural-car seed differs from every later warm frame in seven channel bytes by 1/255; subsequent control and optimized images match exactly. Both control and optimized loading states keep tick zero, the complete countdown and five laps. The interleaved runs each pass **21 checks / 0 failures**, with stable recorded source hashes within each run.
++
++The four effect/cache implementation sources are unchanged from those measurements. Selected CPU priming was subsequently refined to avoid constructing a discarded bridge/Desert field or rebaking Winter cover; the final CPU path is checked separately. The benchmark bypasses normal selection dwell and does not measure that scheduling benefit. Severe first-use shader/driver work is **not fixed** by this task; removing covered draws or changing the renderer is not part of the implementation.
++
++## Implementation
++
++- **RLX01 — effect preparation:** `game/vehicle/effect_render_preparation.gd` draws up to four reused GPU proxies per covered interval. Fresh nodes retain individual first draws. Every actual source still supplies its own process material, meshes and render settings and is drawn, including when those properties change; there is no inferred shader/pipeline-equivalence shortcut and no recursive serialization key. Cancellation is checked at each bounded draw; only completed batches can return initialized leases. The final full covered frame remains. The existing all-theme bridge fixture observes 28 fresh Pine proxies in 28 draws, then the same 28 retained proxies in seven draws. Winter's bounded pool retains 36/40 nodes and needs 13 draws on repeat, preserving the four required fresh draws.
++- **RLX02 — shared scenery retention:** `game/track/prepared_world_cache.gd` records the immutable mesh identities/costs actually owned by its detached cached copies, including bounded map overhead. `game/editor/editor_memory.gd` subtracts only exact road/world mesh aliases from its combined estimate. Equal arrays in distinct resources do not qualify; nodes and mutable MultiMesh buffers remain independently accounted. Ordinary budget arbitration can evict idle preparation proxies before discarding a completed world. The total 64 MiB allowance, world/road limits and 12 MiB/64-node proxy limits are unchanged. A trim generation also prevents a cooperative snapshot from republishing optional scenery after pressure. Star's example counts 28,245,312 shared stream bytes once and retains its completed world at 61,040,228 estimated bytes after arbitration; these are conservative ownership estimates, not measured GPU allocation or Android PSS.
++- **RLX03 — selected CPU preparation:** `game/race/selected_track_preparation.gd` primes the existing query, bounded numeric support cache and canonical checkpoint layout in the same already-owned selection worker, after roads/cover preparation. It publishes no additional presenter or track owner. `game/core/app.gd` allows a selected track with warm roads but missing/currently obsolete gate layout to receive that work, waiting for retiring jobs before reading layout readiness. Existing account, selection, car, revision, navigation, cancellation and hydration fences remain. Race authorization/ticket issuance is not moved. The layout is exactly equal to the original constructor's data; no simulation or rule version changes are needed.
++
++Proxy retention and scenery retention compete within the same allowance. In the full Star example, budget arbitration keeps six of twenty idle proxies so it can preserve the more valuable completed world; the next entry redraws the other fourteen individually. The policy does not assume that every warm race receives the component fixture's four-to-one batching benefit, and it does not raise memory limits to obtain the speedup.
++
++## Validation and retained findings
++
++The focused ownership/budget/CPU regression passes **20/0** on final sources. It covers exact resource identity, distinct equal geometry, actual cached-scene ownership, preserved active geometry, unchanged combined allowance, ordinary proxy eviction, real pressure suppression, pressure during cooperative snapshotting, exact gate data and cancelled jobs. The existing native fitting/effect/lifetime suite passes **622/0 on each renderer**, retaining its task-start front geometry/shader fingerprints, all five themes including bridge effects, live-source state, node/resource bounds, reuse, cancellation, pressure and teardown.
++
++The earlier actual-App loading-reuse regression passes **526/0** in its recorded headless run. A final rerun on the concurrently updated App records **630/0 assertions but an engine error at shutdown**: `garage_opening_showroom.gd:50` resumes `_begin_studio` after its instance is gone. It is not a clean pass. The same current-App test with the task-start effect loop, memory policy and selected worker records **648/0 assertions and the identical Garage engine error**. Concurrent App startup/Garage/music edits are preserved and excluded from this task's checkpoint; the five recorded race-loading functions remain unchanged. The two raw controls are retained, and this Garage shutdown issue remains unresolved in its concurrent code. Two older suites also retain specific failures rather than weakening their assertions:
++
++- Selected preparation: **59 checks / 1 failure**, requiring an installed `.res` to replace numeric `.arrays`. The unchanged-assertion task-start selected-worker control produces the identical failure and passes its other fences. The current cooperative loader intentionally retains a valid numeric road artifact; its existing write condition does not replace it with a GPU resource artifact on this path. No disk-format behavior is changed here.
++- Prepared-world suite: **85 checks / 1 failure**, expecting a deleted source document to bypass an existing retained-document fallback. Its geometry, material, transform, mutable-instance and budget assertions across all five biomes pass. A cloud-only control using the task-start world-cache class fails the identical assertion (**10/1**) before building or restoring any world. Cloud/cache backend sources are unchanged by this task.
++
++The native driving fixture uses the existing locally stored `backend/tests/fixtures/verified_oval.json`. All five biome opening laps complete with zero contacts on both desktop renderers. The full final Mobile integration run passes **135/0**, including every current car, first real emissions, tick-zero reveal, cancellation/account/car/selection fences, pressure and teardown. Concurrent edits changed App on disk during that run; this is not a whole-tree source freeze, while the recorded race-function scope remains unchanged. Its first real emissions require no new draw pipelines. Compatibility's preceding full run records five valid laps but reports six fixture-only cancellation-observation failures: it queried visibility after Game had already been freed. The corrected focused cancellation/pressure/teardown rerun passes **31/0**; none of those six failures involved a race or material change. Both full-run evidence and correction are retained.
++
++Driving-frame intervals remain observations, not a 60 FPS guarantee. Compatibility records a roughly 214 ms Night frame; its pipeline counter cannot establish native GL compilation behavior. Mobile records one new draw pipeline during the Desert lap, after the separately passing first-emission check. The same verified Desert case with the task-start effect loop and memory policy also records one new draw pipeline, completes its lap with zero contacts and passes **13/0**. Other Mobile biome laps report zero new draw pipelines. The implementation claims reduced loading work, not elimination of all first-lap or driver hitches.
++
++A read-only inspection of twenty prepared modular car scenes finds no newly invalidated previously eligible template from this task: all twenty already fail their task-start source/key guards because of earlier model revisions. They retain their safe procedural fallback. No stale model is blessed and no unrelated model/template/art assets or generated build identity are refreshed.
++
++Initial attempts are preserved: a restricted headless run reports log/certificate-store access errors; the diagnostic control wrapper initially used inconsistent indentation; an initial benchmark called an unavailable shader-time API and was corrected to the documented engine time scale; a control's overly broad preload anchor was corrected to match exact declarations. The original native ellipse left the AI with zero completed laps and 9,239 contacts after 90 seconds. That owned test tree was stopped, its logs retained, and the established verified oval replaced the unsuitable driving fixture. Hover's intentionally hidden tyre effects and post-cancellation lifetime expectations were corrected in the test fixture; complete visible-source coverage, bounds and freeze assertions remain. No runtime AI/handling changes are made.
++
++## Reproduction and scope
++
++All final commands use [the bounded runner](evidence/race-loading-implementation-2026-11-02/run_check.py), which invokes the pinned executable under `scripts/run_no_crash_dialog.py`. Profiles, records, libraries, cloud folders and road caches are task-owned. The final runner also writes an explicit empty private backend configuration to avoid the Windows empty-environment fallback; initial probes used the empty API environment and offline race starts. No real session, purchase, authenticated/live backend write, deployment, APK/export, device query/test, owner-save modification, owner-process restart or main Git index write is performed.
++
++```powershell
++python docs/evidence/race-loading-implementation-2026-11-02/run_check.py focused-final-headless res://tests/test_race_loading_optimisation.gd --headless
++python docs/evidence/race-loading-implementation-2026-11-02/run_check.py effects-compat res://tests/test_runtime_loading_fixes.gd
++python docs/evidence/race-loading-implementation-2026-11-02/run_check.py effects-mobile res://tests/test_runtime_loading_fixes.gd --renderer mobile
++python docs/evidence/race-loading-implementation-2026-11-02/run_check.py interleaved-compat res://tests/profile_race_loading_optimisation.gd
++python docs/evidence/race-loading-implementation-2026-11-02/run_check.py interleaved-mobile res://tests/profile_race_loading_optimisation.gd --renderer mobile
++python docs/evidence/race-loading-implementation-2026-11-02/run_check.py first-lap-mobile res://tests/test_race_loading_first_lap.gd --renderer mobile --timeout 600 -- --first-emission
++python docs/evidence/race-loading-implementation-2026-11-02/run_check.py compat-interruptions-final res://tests/test_race_loading_first_lap.gd -- --only-interruptions
++python docs/evidence/race-loading-implementation-2026-11-02/run_check.py desert-old-loader-mobile res://tests/test_race_loading_first_lap.gd --renderer mobile --timeout 180 -- --first-emission --loading-control --theme=desert
++python docs/evidence/race-loading-implementation-2026-11-02/summarize.py
++```
++
++The [raw evidence](evidence/race-loading-implementation-2026-11-02/) includes controls, failures, all timing rows, images, source hashes, first-lap observations and command receipts. `python docs/evidence/race-loading-implementation-2026-11-02/checkpoint.py` creates the [task-only patch](evidence/race-loading-implementation-2026-11-02/task.patch); forward/reverse application and normalized content round trips pass in an owned directory, as recorded in the [checkpoint receipt](evidence/race-loading-implementation-2026-11-02/checkpoint.json). App/tracker baselines incorporate the concurrent authors' final changes and remove only this task's owned hunks, preventing those changes from entering the patch. No main Git index is written.
++
++The new diagnostics and fixture adaptations are separate from the six runtime source changes. Concurrent Daily/Forklift/Garage/startup/music work and build identities are preserved. Reload/rebuild, owner appearance/loading acceptance and representative Android memory, thermal, cold-start and input acceptance remain.
+diff --git a/game/tests/test_race_loading_optimisation.gd b/game/tests/test_race_loading_optimisation.gd
+new file mode 100644
+--- /dev/null
++++ b/game/tests/test_race_loading_optimisation.gd
+@@ -0,0 +1,114 @@
++extends SceneTree
++const WORLDS = preload("res://track/prepared_world_cache.gd")
++const MEMORY = preload("res://editor/editor_memory.gd")
++const EFFECTS = preload("res://vehicle/effect_render_preparation.gd")
++const POOL = preload("res://vehicle/effect_preparation_pool.gd")
++const SELECTED = preload("res://race/selected_track_preparation.gd")
++var checks: int = 0
++var failures: int = 0
++
++class Session extends RefCounted:
++	var primed: Dictionary = {}
++
++class MemoryOwner extends Node:
++	var canvas: Node
++	var editor_preview_thread: Thread
++	var editor_world: Node
++	var editor_compiled_cache: Array = []
++	var editor_raster_cache: Dictionary = {}
++	var history: Array = []
++	var redo_history: Array = []
++	var editor_gesture_history: Array = []
++	var editor_gesture_redo: Array = []
++	var editor_session := Session.new()
++	const EDITOR_COMPILED_BUDGET: int = 48*1024*1024
++
++class PressureVisual extends NativeTrackVisual:
++	var checkpoints: int = 0
++	func _yield_build() -> bool:
++		checkpoints += 1
++		if checkpoints == 2: preload("res://track/prepared_world_cache.gd").trim_cache()
++		return true
++
++func _initialize() -> void: run.call_deferred()
++func check(value: bool, label: String) -> void:
++	checks += 1
++	if not value: failures += 1; printerr("FAIL ",label)
++
++func triangle() -> ArrayMesh:
++	var arrays: Array = []
++	arrays.resize(Mesh.ARRAY_MAX)
++	arrays[Mesh.ARRAY_VERTEX] = PackedVector3Array([Vector3.ZERO,Vector3.RIGHT,Vector3.FORWARD])
++	arrays[Mesh.ARRAY_NORMAL] = PackedVector3Array([Vector3.UP,Vector3.UP,Vector3.UP])
++	var mesh := ArrayMesh.new()
++	mesh.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES,arrays)
++	return mesh
++
++func cache_accounting() -> void:
++	WORLDS.entries.clear()
++	NativeTrackVisual.trim_editor_cache()
++	var mesh: ArrayMesh = triangle()
++	var visual := NativeTrackVisual.new()
++	root.add_child(visual)
++	var part := MeshInstance3D.new(); part.mesh = mesh; visual.add_child(part)
++	var track := NativeTrack.new()
++	track.metadata = {"theme":"pine"}
++	WORLDS.remember(["fixture"],visual,track)
++	var roads: Array = [{"meshes":[{"mesh":mesh},{"mesh":mesh}]}]
++	check(WORLDS.shared_road_bytes(roads) == 288,"identical road buffer counted once despite multiple references")
++	check(WORLDS.shared_road_bytes([{"meshes":[{"mesh":triangle()}]}]) == 0,"equal arrays in a distinct resource are not shared")
++	var restored := NativeTrackVisual.new(); root.add_child(restored)
++	check(WORLDS.restore(["fixture"],restored),"accounted world restores")
++	check(restored.get_child(0).mesh == mesh,"accounted buffer is actually shared by the cached scene")
++	check(restored.get_child(0) != part,"scene nodes remain independent")
++	var owner := MemoryOwner.new(); root.add_child(owner)
++	var pool := POOL.new(); pool.name = EFFECTS.POOL_NAME; owner.add_child(pool)
++	for index: int in range(4):
++		var particles := GPUParticles3D.new()
++		particles.set_meta("preparation_key",str(index))
++		pool.measure(particles); pool.put(particles,true)
++	NativeTrackVisual._road_mesh_cache = [{"meshes":[{"mesh":mesh}],"bytes":288,"geometry_key":"fixture"}]
++	preload("res://editor/road_preparation.gd").account_gpu(NativeTrackVisual._road_mesh_cache)
++	var before: Dictionary = MEMORY.retained(owner)
++	check(before.shared_road_bytes == 288,"App residency subtracts exactly the shared mesh cost")
++	WORLDS.entries[0].bytes += MEMORY.RETAINED_BUDGET-int(before.retained_bytes)+100000
++	check(MEMORY.retained(owner).retained_bytes > MEMORY.RETAINED_BUDGET,"budget fixture actually requires arbitration")
++	var manager := MEMORY.new()
++	manager.tick(owner)
++	check(WORLDS.entries.size() == 1,"idle proxy eviction preserves useful completed scenery")
++	check(pool.entries.size() < 4 and pool.retaining,"ordinary budget trim releases proxies without pressure suppression")
++	check(MEMORY.retained(owner).retained_bytes <= MEMORY.RETAINED_BUDGET,"shared retention stays inside unchanged total budget")
++	manager.pressure_requested = true; manager.next_sample = 0
++	manager.tick(owner)
++	check(WORLDS.entries.is_empty() and pool.bytes == 0 and not pool.retaining,"real pressure clears worlds/proxies and suppresses new leases")
++	check(WORLDS.shared_road_bytes(roads) == 0,"evicted worlds cannot contribute phantom sharing")
++	owner.free(); restored.free(); visual.free()
++	NativeTrackVisual.trim_editor_cache()
++	var pressured := PressureVisual.new(); root.add_child(pressured)
++	part = MeshInstance3D.new(); part.mesh = mesh; pressured.add_child(part)
++	await WORLDS.remember_cooperative(["pressure"],pressured,track)
++	check(WORLDS.entries.is_empty(),"pressure during cooperative snapshot cannot republish optional scenery")
++	check(pressured.get_child_count() == 1,"cancelled snapshot staging is released without removing active geometry")
++	pressured.free()
++
++func selected_cpu() -> void:
++	var folder := "user://selected-cpu-"+TrackLibrary.unique_id()
++	preload("res://track/road_mesh_disk_cache.gd").directory = folder.path_join("roads")
++	var document: Dictionary = JSON.parse_string(FileAccess.get_file_as_string("res://tests/fixtures/spline_circuit.json"))
++	var expected: NativeTrack = TrackCompiler.compile(document)
++	var session := TrackSession.new(); session._configure(expected)
++	var track: NativeTrack = TrackCompiler.compile(document)
++	check(track._race_gates.is_empty(),"selected CPU fixture starts with cold checkpoint layout")
++	var result: Dictionary = SELECTED.run(func() -> bool: return false,track,{}, {})
++	check(result.get("track") == track,"selected preparation retains exact track identity")
++	check(track._race_gates == expected._race_gates,"early gate preparation is byte-for-byte equal to the original layout")
++	check(track._race_gates.get("rules_key","") == RaceRules.KEY,"early layout uses current race rules")
++	check(not result.has("bridge"),"optional selected preparation retains no extra presenter/track owner")
++	preload("res://track/road_mesh_disk_cache.gd").discard_arrays(result.get("receipt",{}))
++	check(SELECTED.run(func() -> bool: return true,track,{},{}).is_empty(),"cancelled selected job publishes no packet")
++
++func run() -> void:
++	await cache_accounting()
++	selected_cpu()
++	print("RACE_LOADING_OPTIMISATION ",checks," checks, ",failures," failures")
++	quit(1 if failures else 0)
+diff --git a/game/tests/profile_race_loading_optimisation.gd b/game/tests/profile_race_loading_optimisation.gd
+new file mode 100644
+--- /dev/null
++++ b/game/tests/profile_race_loading_optimisation.gd
+@@ -0,0 +1,112 @@
++extends "res://tests/review_race_loading_2026_11_02.gd"
++## Interleaved actual-App control: task-start effect loop and memory policy.
++## Geometry/shaders, preparation coverage and final full draw are unchanged.
++const OLD_MEMORY = preload("res://../docs/evidence/race-loading-implementation-2026-11-02/before/game/editor/editor_memory.gd")
++const NEW_MEMORY = preload("res://editor/editor_memory.gd")
++var control: bool = false
++var case_draws: int = 0
++
++func instrumented_app() -> GDScript:
++	var script := super.instrumented_app()
++	if script == null: return null
++	var needle := 'var effect_preparation = preload("res://vehicle/effect_render_preparation.gd")'
++	var code: String = script.source_code
++	if code.count(needle) != 1: push_error("Missing effect control anchor"); return null
++	code = code.replace(needle,'var effect_preparation = preload("res://../docs/evidence/race-loading-implementation-2026-11-02/before/game/vehicle/effect_render_preparation.gd") if loading_effect_control else preload("res://vehicle/effect_render_preparation.gd")')
++	code += "\nvar loading_effect_control: bool = false\n"
++	script.source_code = code
++	if script.reload() != OK: return null
++	return script
++
++func count_draws() -> void:
++	if not is_instance_valid(app) or not is_instance_valid(app.game): return
++	var world: Node = app.game.get_node_or_null("World")
++	if world != null and not world.find_children("Covered*","GPUParticles3D",true,false).is_empty(): case_draws += 1
++
++func run() -> void:
++	OS.set_environment("BMT_API_URL", "")
++	root.size = Vector2i(1280,720)
++	var folder := "user://loading-optimisation-profile-"+TrackLibrary.unique_id()
++	preload("res://track/road_mesh_disk_cache.gd").directory = folder.path_join("roads")
++	var script := instrumented_app()
++	if script == null: quit(1); return
++	app = script.new()
++	app.records = LocalRecords.new(folder.path_join("records.json"))
++	app.records.settings.music_enabled = false
++	app.library = TrackLibrary.new(folder.path_join("tracks"))
++	app.cloud_root_override = folder.path_join("cloud")
++	app.race_profile_enabled = true
++	root.add_child(app)
++	while not app.startup_complete: await process_frame
++	Engine.time_scale = 0.0
++	var theme := "pine"
++	for argument: String in OS.get_cmdline_user_args():
++		if argument.begins_with("--theme="): theme = argument.trim_prefix("--theme=")
++	var document: Dictionary = JSON.parse_string(FileAccess.get_file_as_string(TRACK_PATH))
++	document.theme = theme
++	var track: NativeTrack = TrackCompiler.compile(document)
++	verify(track != null,"profile compiles")
++	if track == null: quit(1); return
++	track.metadata.cloud_version = "owned-interleaved-loading"
++	WORLDS.entries.clear()
++	process_frame.connect(observe)
++	process_frame.connect(count_draws)
++	var reference: PackedByteArray
++	var pictures: Array = []
++	# Each optimized pair first populates its retained world, then consumes it.
++	# Both control repeats remain warm in shader/car/road caches but use the
++	# original memory policy. Raw pre-entry cache state accompanies every row.
++	for cycle: int in range(8):
++		control = cycle in [0,1,4,5]
++		current_case = theme+"-"+str(cycle)
++		app.loading_effect_control = control
++		app.editor_memory = OLD_MEMORY.new() if control else NEW_MEMORY.new()
++		app.editor_memory.next_sample = 0
++		app.editor_memory.tick(app)
++		var worlds_before: int = WORLDS.entries.size()
++		app._show_screen("tracks"); app.selected_track = track
++		app._load_probe_marks.clear(); frames.clear(); case_draws = 0
++		last_frame = Time.get_ticks_usec(); measuring = true
++		var began: int = Time.get_ticks_usec()
++		await app._start_race(track,false,true)
++		var elapsed: float = (Time.get_ticks_usec()-began)/1000.0
++		measuring = false
++		verify(is_instance_valid(app.game),"interleaved race installs")
++		if not is_instance_valid(app.game): break
++		var game: Node = app.game
++		game.set_physics_process(false)
++		game.hitch_diagnostics.persist_enabled = false
++		verify(game.preparation_complete and game.sim.state.tick == 0 and game.countdown_ticks == 360 and game.track_session.target_laps == 5,"exact race start after either preparation path")
++		var row := {"cycle":cycle,"control":control,"theme":theme,"wall_ms":elapsed,"max_frame_ms":frames.max() if not frames.is_empty() else 0.0,"marks":app._load_probe_marks.duplicate(true),"game_costs":game.preparation_costs.duplicate(true),"world_costs":game.track_ground.build_costs.duplicate(true),"effects_ms":game.bridge_preparation_ms,"effect_counts":game.effect_preparation_counts.duplicate(true),"worlds_before":worlds_before,"covered_process_frames":case_draws}
++		game.process_mode = Node.PROCESS_MODE_DISABLED
++		for _frame: int in range(4): await process_frame
++		if DisplayServer.get_name() != "headless":
++			await RenderingServer.frame_post_draw
++			var picture: Image = root.get_texture().get_image()
++			var data: PackedByteArray = picture.get_data()
++			if reference.is_empty(): reference = data
++			var changed: int = 0
++			var maximum: int = 0
++			for index: int in range(data.size()):
++				var difference: int = absi(int(data[index])-int(reference[index]))
++				if difference > 0: changed += 1; maximum = maxi(maximum,difference)
++			row.image_changed_bytes = changed
++			row.image_max_channel_difference = maximum
++			var path: String = OS.get_environment("BMT_LOADING_OUTPUT").trim_suffix(".json")+"-"+str(cycle)+".png"
++			picture.save_png(path); pictures.append(path)
++			samples.append(row)
++		print("INTERLEAVED_LOADING ",JSON.stringify(row))
++		app._leave_race()
++		for _frame: int in range(4): await process_frame
++		app.editor_memory.next_sample = 0
++		app.editor_memory.tick(app)
++		if not control:
++			verify(NEW_MEMORY.retained(app).retained_bytes <= NEW_MEMORY.RETAINED_BUDGET,"optimized retention respects unchanged total allowance")
++	process_frame.disconnect(count_draws)
++	var result := {"checks":checks,"failures":failures,"renderer":RenderingServer.get_current_rendering_method(),"theme":theme,"samples":samples,"cache_events":cache_events,"pictures":pictures}
++	FileAccess.open(OS.get_environment("BMT_LOADING_OUTPUT"),FileAccess.WRITE).store_string(JSON.stringify(result,"  "))
++	app.queue_free(); app = null; script = null; track = null
++	Engine.time_scale = 1.0
++	for _frame: int in range(12): await process_frame
++	print("INTERLEAVED_LOADING_COMPLETE ",checks," checks, ",failures," failures")
++	quit(1 if failures else 0)
+diff --git a/game/tests/test_race_loading_first_lap.gd b/game/tests/test_race_loading_first_lap.gd
+new file mode 100644
+--- /dev/null
++++ b/game/tests/test_race_loading_first_lap.gd
+@@ -0,0 +1,81 @@
++extends "res://tests/test_runtime_effect_loading.gd"
++## Keep the existing real-App car/theme/emission/interruption checks, then
++## observe a complete AI-driven opening lap in each biome at native pacing.
++var lap_rows: Array = []
++
++func track_for(theme: String) -> NativeTrack:
++	var fixture: Dictionary = JSON.parse_string(FileAccess.get_file_as_string("res://../backend/tests/fixtures/verified_oval.json"))
++	fixture.document.theme = theme
++	return TrackCompiler.compile(fixture.document)
++
++func first_emission(game: Node) -> void:
++	await super.first_emission(game)
++	if mode != "complete" or game.vehicle_id != "compact": return
++	game.ai_enabled = true
++	game.hitch_diagnostics.persist_enabled = false
++	var draw_before: float = Performance.get_monitor(Performance.PIPELINE_COMPILATIONS_DRAW)
++	var began: int = Time.get_ticks_usec()
++	var last: int = began
++	var maximum: float = 0.0
++	var driving_frames: int = 0
++	var deadline: int = Time.get_ticks_msec()+90000
++	game.process_mode = Node.PROCESS_MODE_INHERIT
++	game.set_physics_process(true)
++	while game.track_session.completed_laps < 1 and Time.get_ticks_msec() < deadline:
++		await process_frame
++		var now: int = Time.get_ticks_usec()
++		if game.countdown_ticks == 0:
++			maximum = maxf(maximum,(now-last)/1000.0)
++			driving_frames += 1
++		last = now
++	game.set_physics_process(false)
++	game.process_mode = Node.PROCESS_MODE_DISABLED
++	check(game.track_session.completed_laps >= 1,"prepared "+str(game.native_track.metadata.theme)+" completes actual first driving lap")
++	check(game.countdown_ticks == 0 and game.sim.state.tick > 0,"full countdown precedes the first real lap")
++	var row := {"theme":game.native_track.metadata.theme,"completed_laps":game.track_session.completed_laps,"elapsed_ms":(Time.get_ticks_usec()-began)/1000.0,"driving_frames":driving_frames,"max_driving_frame_ms":maximum,"new_draw_pipelines":Performance.get_monitor(Performance.PIPELINE_COMPILATIONS_DRAW)-draw_before,"contacts":game.sim.state.collision_count}
++	lap_rows.append(row)
++	cases[-1].first_lap = row
++	print("PREPARED_FIRST_LAP ",JSON.stringify(row))
++
++func run() -> void:
++	if DisplayServer.get_name() == "headless": quit(1); return
++	root.size = Vector2i(960,540)
++	var folder := "user://loading-first-lap-"+TrackLibrary.unique_id()
++	preload("res://track/road_mesh_disk_cache.gd").directory = folder.path_join("roads")
++	if "--loading-control" in OS.get_cmdline_user_args():
++		var code: String = FileAccess.get_file_as_string("res://core/app.gd")
++		var effect: String = 'var effect_preparation = preload("res://vehicle/effect_render_preparation.gd")'
++		var memory: String = 'var editor_memory = preload("res://editor/editor_memory.gd").new()'
++		if code.count(effect) != 1 or code.count(memory) != 1:
++			push_error("Missing exact task-start loader control anchors"); quit(1); return
++		code = code.replace(effect,'var effect_preparation = preload("res://../docs/evidence/race-loading-implementation-2026-11-02/before/game/vehicle/effect_render_preparation.gd")')
++		code = code.replace(memory,'var editor_memory = preload("res://../docs/evidence/race-loading-implementation-2026-11-02/before/game/editor/editor_memory.gd").new()')
++		var script := GDScript.new(); script.source_code = code
++		assert(script.reload() == OK)
++		app = script.new()
++	else:
++		app = load("res://core/app.tscn").instantiate()
++	app.records = LocalRecords.new(folder.path_join("records.json"))
++	app.records.settings.music_enabled = false
++	app.library = TrackLibrary.new(folder.path_join("tracks"))
++	app.cloud_root_override = folder.path_join("cloud")
++	root.add_child(app)
++	while not app.startup_complete: await process_frame
++	process_frame.connect(observe)
++	var only_theme: String = ""
++	for argument: String in OS.get_cmdline_user_args():
++		if argument.begins_with("--theme="): only_theme = argument.trim_prefix("--theme=")
++	if not only_theme.is_empty():
++		await race("compact",only_theme)
++	elif not "--only-interruptions" in OS.get_cmdline_user_args():
++		for vehicle: String in VehicleCatalog.IDS: await race(vehicle,"pine")
++		for theme: String in TrackTheme.IDS:
++			if theme != "pine": await race("compact",theme)
++	if only_theme.is_empty():
++		for interruption: String in ["navigation","car","selection","scope","pressure","teardown"]:
++			await race("compact","pine",interruption)
++	process_frame.disconnect(observe)
++	for _frame: int in range(24): await process_frame
++	FileAccess.open(OS.get_environment("BMT_LOADING_OUTPUT"),FileAccess.WRITE).store_string(JSON.stringify({"checks":checks,"failures":failures,"cases":cases,"first_laps":lap_rows},"  "))
++	print("LOADING_FIRST_LAP_COMPLETE ",checks," checks, ",failures," failures")
++	quit(1 if failures else 0)
+diff --git a/game/tests/review_loading_template_sources.gd b/game/tests/review_loading_template_sources.gd
+new file mode 100644
+--- /dev/null
++++ b/game/tests/review_loading_template_sources.gd
+@@ -0,0 +1,27 @@
++extends SceneTree
++const BASE = preload("res://vehicle/modular_car_base.gd")
++func _initialize() -> void: run.call_deferred()
++func run() -> void:
++	var rows: Array = []
++	for id: String in VehicleCatalog.IDS:
++		var current: Dictionary = BASE.source_hashes(id)
++		var before: Dictionary = current.duplicate()
++		for file: String in ["effect_render_preparation.gd","effect_preparation_pool.gd"]:
++			before["vehicle/"+file] = FileAccess.get_sha256("res://../docs/evidence/race-loading-implementation-2026-11-02/before/game/vehicle/"+file)
++		for simple: bool in [false,true]:
++			for editable: bool in [false,true]:
++				var car := CarVisual.new(); car.vehicle_id = id; car.simple_model = simple; car.editable_kits = editable
++				var path: String = BASE.path_for(car)
++				if ResourceLoader.exists(path):
++					var scene: PackedScene = load(path)
++					var holder: Node = scene.instantiate()
++					var data: Dictionary = holder.get_meta("modular_car_base",{})
++					var changed: Array = []
++					for source: String in current:
++						if data.get("sources",{}).get(source,"") != current[source]: changed.append(source)
++					rows.append({"path":path,"key_matches":data.get("key",[]) == BASE.key_for(car),"sources_before_match":data.get("sources",{}) == before,"sources_after_match":data.get("sources",{}) == current,"differences":changed})
++					holder.free()
++				car.free()
++	FileAccess.open(OS.get_environment("BMT_LOADING_OUTPUT"),FileAccess.WRITE).store_string(JSON.stringify({"templates":rows},"  "))
++	print("LOADING_TEMPLATE_SOURCES ",JSON.stringify(rows))
++	quit()
+diff --git a/docs/evidence/race-loading-implementation-2026-11-02/run_check.py b/docs/evidence/race-loading-implementation-2026-11-02/run_check.py
+new file mode 100644
+--- /dev/null
++++ b/docs/evidence/race-loading-implementation-2026-11-02/run_check.py
+@@ -0,0 +1,55 @@
++"""Run one bounded isolated offline Godot check, preserving logs/exit codes."""
++import argparse
++import hashlib
++import json
++import os
++from pathlib import Path
++import subprocess
++import sys
++import time
++
++parser = argparse.ArgumentParser()
++parser.add_argument("label")
++parser.add_argument("script")
++parser.add_argument("--renderer", default="gl_compatibility", choices=["gl_compatibility", "mobile"])
++parser.add_argument("--headless", action="store_true")
++parser.add_argument("--timeout", type=int, default=360)
++parser.add_argument("extra", nargs="*")
++args, extra = parser.parse_known_args()
++evidence = Path(__file__).resolve().parent
++root = evidence.parents[2]
++profile = root / "build/race-loading-implementation-20261102" / (args.label + "-" + str(time.time_ns()))
++profile.mkdir(parents=True)
++offline_config = profile / "Circuit01Lab/backend.cfg"
++offline_config.parent.mkdir(parents=True)
++offline_config.write_text('[backend]\nurl=""\n', encoding="utf-8")
++env = os.environ.copy()
++env.update(APPDATA=str(profile), BMT_API_URL="", BMT_LOADING_OUTPUT=str(evidence / (args.label + ".json")),
++           BMT_RACE_LOADING_EVIDENCE=str(evidence))
++command = [sys.executable, str(root / "scripts/run_no_crash_dialog.py"), "--",
++           "C:/apps/Godot 4.7.2/Godot_v4.7.2-stable_win64_console.exe", "--path", str(root / "game"),
++           "--audio-driver", "Dummy", "--rendering-method", args.renderer,
++           *( ["--headless"] if args.headless else []), "--script", args.script]
++if args.extra or extra:
++    command += ["--", *args.extra, *extra]
++paths = ["game/vehicle/effect_render_preparation.gd", "game/vehicle/effect_preparation_pool.gd",
++         "game/track/prepared_world_cache.gd", "game/editor/editor_memory.gd",
++         "game/race/selected_track_preparation.gd", "game/core/app.gd"]
++def hashes():
++    return {p: hashlib.sha256((root / p).read_bytes()).hexdigest() for p in paths}
++receipt = dict(command=command, profile=str(profile), offline_config=str(offline_config), before=hashes())
++began = time.monotonic()
++with (evidence / (args.label + ".log")).open("w", encoding="utf-8") as log:
++    process = subprocess.Popen(command, env=env, cwd=root, stdout=log, stderr=subprocess.STDOUT)
++    receipt["owned_process_id"] = process.pid
++    (evidence / (args.label + "-running.json")).write_text(json.dumps(receipt, indent=2), encoding="utf-8")
++    try:
++        receipt["exit_code"] = process.wait(timeout=args.timeout)
++    except subprocess.TimeoutExpired:
++        subprocess.run(["taskkill", "/PID", str(process.pid), "/T", "/F"], capture_output=True, check=False)
++        process.wait(timeout=20)
++        receipt["exit_code"] = 124
++receipt.update(elapsed_seconds=time.monotonic()-began, after=hashes())
++(evidence / (args.label + "-receipt.json")).write_text(json.dumps(receipt, indent=2), encoding="utf-8")
++print(json.dumps({k: receipt[k] for k in ("exit_code", "elapsed_seconds", "profile")}))
++sys.exit(receipt["exit_code"])
+diff --git a/docs/evidence/race-loading-implementation-2026-11-02/summarize.py b/docs/evidence/race-loading-implementation-2026-11-02/summarize.py
+new file mode 100644
+--- /dev/null
++++ b/docs/evidence/race-loading-implementation-2026-11-02/summarize.py
+@@ -0,0 +1,38 @@
++"""Derive the loading results from raw interleaved runs and image files."""
++import ast
++import hashlib
++import json
++from pathlib import Path
++import statistics
++
++folder = Path(__file__).resolve().parent
++report = {"performance": [], "visual_pairs": 0, "sources": {}}
++for label in ["interleaved-compat", "interleaved-mobile"]:
++    data = json.loads((folder / (label + ".json")).read_text())
++    receipt = json.loads((folder / (label + "-receipt.json")).read_text())
++    assert receipt["exit_code"] == 0 and data["failures"] == 0
++    assert receipt["before"] == receipt["after"], "sources changed during " + label
++    controls = [r["wall_ms"] for r in data["samples"] if r["control"] and r["cycle"] > 0]
++    cached = [r["wall_ms"] for r in data["samples"] if not r["control"] and r["worlds_before"] > 0]
++    control_median, cached_median = statistics.median(controls), statistics.median(cached)
++    reference = (folder / (label + "-1.png")).read_bytes()
++    for cycle in range(2, 8):
++        assert (folder / (label + "-" + str(cycle) + ".png")).read_bytes() == reference
++        report["visual_pairs"] += 1
++    report["performance"].append(dict(label=label, controls_ms=controls, retained_world_ms=cached,
++                                      control_median_ms=control_median, optimized_median_ms=cached_median,
++                                      reduction_percent=(1 - cached_median / control_median) * 100))
++    report["sources"][label] = receipt["after"]
++for path in folder.glob("*.py"):
++    ast.parse(path.read_text(encoding="utf-8"))
++report["first_laps"] = {}
++for label in ["first-lap-compat-visibility-fixture", "first-lap-mobile", "desert-old-loader-mobile"]:
++    path = folder / (label + ".json")
++    if path.exists():
++        data = json.loads(path.read_text())
++        report["first_laps"][label] = data["first_laps"]
++report["evidence_sha256"] = {p.name: hashlib.sha256(p.read_bytes()).hexdigest()
++                              for p in sorted(folder.iterdir()) if p.suffix in (".json", ".log", ".png", ".py", ".gd")
++                              and p.name != "report.json"}
++(folder / "report.json").write_text(json.dumps(report, indent=2) + "\n", encoding="utf-8")
++print(json.dumps({"performance": report["performance"], "exact_visual_pairs": report["visual_pairs"]}))
+diff --git a/docs/evidence/race-loading-implementation-2026-11-02/checkpoint.py b/docs/evidence/race-loading-implementation-2026-11-02/checkpoint.py
+new file mode 100644
+--- /dev/null
++++ b/docs/evidence/race-loading-implementation-2026-11-02/checkpoint.py
+@@ -0,0 +1,88 @@
++"""Task-only patch and content round trips; no main Git index writes."""
++import difflib
++import hashlib
++import json
++from pathlib import Path
++import subprocess
++import time
++
++evidence = Path(__file__).resolve().parent
++root = evidence.parents[2]
++base = evidence / "checkpoint-base"
++changed = ["AGENTS.md", "DEVELOPMENT_STATUS.md", "game/core/app.gd",
++           "game/editor/editor_memory.gd", "game/race/selected_track_preparation.gd",
++           "game/track/prepared_world_cache.gd", "game/vehicle/effect_preparation_pool.gd",
++           "game/vehicle/effect_render_preparation.gd", "game/tests/test_runtime_loading_fixes.gd",
++           "game/tests/test_runtime_effect_loading.gd"]
++prefix = "docs/evidence/race-loading-implementation-2026-11-02/"
++added = ["docs/RACE_LOADING_IMPLEMENTATION_2026_11_02.md",
++         "game/tests/test_race_loading_optimisation.gd", "game/tests/profile_race_loading_optimisation.gd",
++         "game/tests/test_race_loading_first_lap.gd", "game/tests/review_loading_template_sources.gd",
++         *[prefix + name for name in ("run_check.py", "summarize.py", "checkpoint.py", "selection_control.gd",
++                                      "world_cloud_control.gd", "reuse_control.gd")],
++         *[prefix + "before/" + name for name in ("game/editor/editor_memory.gd",
++                                                 "game/vehicle/effect_render_preparation.gd",
++                                                 "game/track/prepared_world_cache.gd",
++                                                 "game/race/selected_track_preparation.gd")]]
++def normalized(path):
++    return path.read_bytes().replace(b"\r\n", b"\n")
++
++# Rebase only the owned hunks onto today's concurrent App/tracker contents.
++app_lines = normalized(root / "game/core/app.gd").decode("utf-8").splitlines(keepends=True)
++indices = [i for i, s in enumerate(app_lines) if s.lstrip().startswith("var layout_ready: bool = SELECTED_PREPARATION.ready_for_job()")]
++assert len(indices) == 1
++at = indices[0]
++assert app_lines[at + 1].rstrip().endswith("and layout_ready:")
++app_lines[at + 1] = app_lines[at + 1].replace(" and layout_ready:", ":")
++del app_lines[at]
++(base / "game/core/app.gd").write_text("".join(app_lines), encoding="utf-8", newline="")
++marker = "<!-- RACE-LOADING-IMPLEMENTATION-20261102 -->"
++end_marker = "<!-- /RACE-LOADING-IMPLEMENTATION-20261102 -->"
++for name in ("AGENTS.md", "DEVELOPMENT_STATUS.md"):
++    current = normalized(root / name).decode("utf-8")
++    assert current.count(marker) == 1 and current.count(end_marker) == 1
++    start, end = current.index(marker), current.index(end_marker) + len(end_marker)
++    if current[end:].startswith("\n\n"):
++        end += 2
++    (base / name).write_text(current[:start] + current[end:], encoding="utf-8", newline="")
++
++before, after, patch_parts = {}, {}, []
++for path in changed + added:
++    old = normalized(base / path) if path in changed else b""
++    new = normalized(root / path)
++    before[path], after[path] = old, new
++    patch_parts.append("diff --git a/" + path + " b/" + path + "\n")
++    if path in added:
++        patch_parts.append("new file mode 100644\n")
++    patch_parts.extend(difflib.unified_diff(old.decode("utf-8").splitlines(keepends=True),
++                                          new.decode("utf-8").splitlines(keepends=True),
++                                          fromfile="a/" + path if path in changed else "/dev/null", tofile="b/" + path))
++patch = evidence / "task.patch"
++patch.write_bytes("".join(patch_parts).encode("utf-8"))
++owned = root / "build/race-loading-implementation-20261102" / ("checkpoint-" + str(time.time_ns()))
++owned.mkdir(parents=True)
++assert owned.resolve().is_relative_to((root / "build/race-loading-implementation-20261102").resolve())
++for path in changed:
++    target = owned / path
++    target.parent.mkdir(parents=True, exist_ok=True)
++    target.write_bytes(before[path])
++commands = []
++def apply(*arguments):
++    command = ["git", "apply", "--directory=" + owned.relative_to(root).as_posix(), *arguments, str(patch)]
++    result = subprocess.run(command, cwd=root, capture_output=True, text=True)
++    commands.append(dict(command=command, exit_code=result.returncode, output=result.stdout + result.stderr))
++    assert result.returncode == 0, result.stderr
++
++apply("--check")
++apply()
++assert all(normalized(owned / p) == after[p] for p in changed + added)
++apply("--reverse", "--check")
++apply("--reverse")
++assert all(normalized(owned / p) == before[p] for p in changed)
++assert all(not (owned / p).exists() for p in added)
++report = dict(files=changed + added, forward_content_exact=True, reverse_content_exact=True,
++              concurrent_app_tracker_hunks_excluded=True, main_index_written=False,
++              patch_sha256=hashlib.sha256(patch.read_bytes()).hexdigest(), commands=commands,
++              source_sha256={p: hashlib.sha256(after[p]).hexdigest() for p in after})
++(evidence / "checkpoint.json").write_text(json.dumps(report, indent=2) + "\n", encoding="utf-8")
++print("Task-only patch: forward/reverse/content checks passed; concurrent App/tracker changes excluded.")
+diff --git a/docs/evidence/race-loading-implementation-2026-11-02/selection_control.gd b/docs/evidence/race-loading-implementation-2026-11-02/selection_control.gd
+new file mode 100644
+--- /dev/null
++++ b/docs/evidence/race-loading-implementation-2026-11-02/selection_control.gd
+@@ -0,0 +1,197 @@
++extends SceneTree
++const DISK = preload("res://track/road_mesh_disk_cache.gd")
++const ROADS = preload("res://editor/road_preparation.gd")
++const SELECTED = preload("res://race/selected_track_preparation.gd")
++const CLOUD = preload("res://backend/cloud_tracks.gd")
++var checks: int = 0
++var failures: int = 0
++var folder: String
++var app: Node
++var browser: TrackBrowser
++var race_done: bool = false
++
++class DeferredDocumentClient extends "res://backend/backend_client.gd":
++	var calls: int = 0
++	var body: String
++	func _ready() -> void: pass
++	func request_api(_path: String, _method: HTTPClient.Method = HTTPClient.METHOD_GET, _payload: Dictionary = {}, _key: String = "", _authenticated: bool = false) -> Dictionary:
++		calls += 1
++		await get_tree().create_timer(0.15).timeout
++		return {"ok":true,"body":body,"data":JSON.parse_string(body)}
++
++func _initialize() -> void: run.call_deferred()
++func check(ok: bool, label: String) -> void:
++	checks += 1
++	if not ok: failures += 1; push_error(label)
++func write(path: String, value: String) -> void:
++	var file := FileAccess.open(path,FileAccess.WRITE); file.store_string(value); file.close()
++
++func cache_contract() -> void:
++	DISK.directory = folder.path_join("cache-contract")
++	var tool := SurfaceTool.new(); tool.begin(Mesh.PRIMITIVE_TRIANGLES)
++	for point: Vector3 in [Vector3.ZERO,Vector3(0,0,2),Vector3(2,0,0)]: tool.set_normal(Vector3.UP); tool.add_vertex(point)
++	var arrays: Array = tool.commit_to_arrays()
++	var packet: Dictionary = {"key":"geometry-fixture","parts":[{"role":"road","arrays":arrays,"arguments":[Color.WHITE,Vector2(8,8),false,false,false,true,false,false]}],"metadata":{}}
++	var key: Array = ["content-fixture",NativeTrackVisual.VERSION]
++	var receipt: Dictionary = DISK.stage_arrays(key,packet,Callable())
++	check(not receipt.is_empty(),"CPU geometry stages in local storage")
++	check(DISK.read_arrays(key,packet.key).is_empty(),"unpublished worker output cannot become a cache hit")
++	check(DISK.publish_arrays(receipt),"current selection publishes completed arrays")
++	check(DISK.read_arrays(key,packet.key) == packet,"local CPU geometry round trips exact typed arrays")
++	check(DISK.read_arrays(key,"changed-geometry").is_empty(),"geometry revision rejects incompatible arrays")
++	check(DISK.read_arrays(["changed-content",NativeTrackVisual.VERSION],packet.key).is_empty(),"content revision rejects incompatible arrays")
++	var file_path: String = DISK.directory.path_join(DISK.identity(key)+".arrays")
++	write(file_path,"corrupt")
++	check(DISK.read_arrays(key,packet.key).is_empty(),"checksum rejects corrupt local geometry")
++	receipt = DISK.stage_arrays(key,packet,Callable())
++	DISK.discard_arrays(receipt)
++	check(not FileAccess.file_exists(str(receipt.path)),"cancelled preparation discards its private staging file")
++	check(DISK.stage_arrays(key,packet,func() -> bool: return true).is_empty(),"cancelled preparation cannot stage geometry")
++	for i: int in range(11):
++		receipt = DISK.stage_arrays(["bounded",i],packet,Callable())
++		check(DISK.publish_arrays(receipt),"bounded CPU artifact publishes")
++	var directory := DirAccess.open(DISK.directory)
++	var count: int = 0; var bytes: int = 0
++	for name: String in directory.get_files():
++		if not DISK._artifact_filename(name): continue
++		count += 1
++		var file := FileAccess.open(DISK.directory.path_join(name),FileAccess.READ); bytes += file.get_length(); file.close()
++	check(count <= DISK.MAX_FILES and bytes <= DISK.MAX_TOTAL_BYTES,"CPU artifacts share the existing disk count and byte budgets")
++	check(DISK._artifact_filename("a".repeat(64)+".res") and DISK._artifact_filename("a".repeat(64)+".arrays"),"both local artifact representations participate in pruning")
++
++func settle_view() -> void:
++	if browser._view_motion != null: browser._view_motion.kill(); browser._finish_view_transition()
++	if browser._section_motion != null: browser._section_motion.kill(); browser._section_motion = null
++	browser._poll_preparation_hint()
++	browser._preparation_since = Time.get_ticks_msec()-TrackBrowser.PREPARATION_SETTLE_MS-1
++	browser._poll_preparation_hint()
++
++func finish_race(track: NativeTrack) -> void:
++	await app._start_race(track,false,true)
++	race_done = true
++
++func cancellation(entry: Dictionary, kind: String) -> void:
++	app._show_screen("tracks")
++	await process_frame
++	browser = app.content.find_child("TrackBrowser",true,false)
++	browser._set_list_open(false,false)
++	var candidate: NativeTrack = CLOUD.metadata_track(entry)
++	browser.selected_track = candidate; app.selected_track = candidate
++	app._prepare_selected_track(candidate,browser)
++	var job: RefCounted = app._selected_preparation_job
++	check(app._selected_preparation_pending,kind+" starts selected preparation")
++	match kind:
++		"close": browser._close_track_view()
++		"car": VehicleCatalog.selected = "kart"
++		"selection": app.selected_track = NativeTrack.new()
++		"version": candidate.metadata.cloud_version = "different-version"
++		"content": candidate.content_hash = "changed-content"
++		"scope": app._selected_preparation_scope += "/changed"
++		"navigation": app._show_screen("garage")
++	app._poll_selected_preparation()
++	check(not app._selected_preparation_pending and app._selected_preparation_job == null,kind+" cancels preparation")
++	if job != null:
++		var deadline: int = Time.get_ticks_msec()+30000
++		while not job.done and Time.get_ticks_msec()<deadline: await process_frame
++		SELECTED.reap_discarded()
++		check(job.done and job.result == null,kind+" reaps cancelled worker output")
++	VehicleCatalog.selected = "compact"
++
++func run() -> void:
++	OS.set_environment("BMT_API_URL","")
++	folder = ProjectSettings.globalize_path("res://../build/device-track-loading/selection-"+TrackLibrary.unique_id())
++	DirAccess.make_dir_recursive_absolute(folder)
++	cache_contract()
++	DISK.directory = folder.path_join("roads")
++	app = before_app()
++	app.library = TrackLibrary.new(folder.path_join("tracks")); app.records = LocalRecords.new(folder.path_join("records.json")); app.cloud_root_override = folder.path_join("cloud")
++	root.add_child(app)
++	while not app.startup_complete: await process_frame
++	app._show_screen("tracks")
++	await process_frame
++	browser = app.content.find_child("TrackBrowser",true,false)
++	check(browser != null,"actual Free Race browser is available")
++	if browser == null: app.free(); quit(1); return
++	var document: Dictionary = JSON.parse_string(FileAccess.get_file_as_string("res://../backend/tests/fixtures/verified_oval.json"))
++	document = document.get("document",document)
++	document.theme = "desert"
++	var body: String = JSON.stringify(document)
++	var path: String = folder.path_join("document.json"); write(path,body)
++	var entry: Dictionary = {"source":"cloud","cache_path":path,"content_hash":body.sha256_text(),"id":"cloud_device_fixture","name":"Device loading fixture","version_id":"device-v1","track_id":"device-track","creator":"Fixture","theme":"desert","points":document.points}
++	var selected: NativeTrack = CLOUD.metadata_track(entry)
++	app.selected_track = selected; browser.selected_track = selected
++	browser._poll_preparation_hint()
++	check(not app._selected_preparation_pending,"full track list starts no geometry work")
++	browser._set_list_open(false,false)
++	browser._poll_preparation_hint()
++	check(not app._selected_preparation_pending,"detail view waits for its settle interval")
++	settle_view()
++	check(app._selected_preparation_pending,"settled selected detail starts CPU preparation")
++	var original_job: RefCounted = app._selected_preparation_job
++	check(original_job != null,"selected cached document enters the real tree-owned worker")
++	# Race during preparation must consume that job, rather than launch a build
++	# for the same selected track beside it.
++	finish_race(selected)
++	var frames: int = 0
++	var deadline: int = Time.get_ticks_msec()+60000
++	while not race_done and Time.get_ticks_msec()<deadline:
++		await process_frame; frames += 1
++	check(race_done and app.game != null,"race starts after selected preparation handoff")
++	check(frames > 2,"selected preparation and handoff permit process frames")
++	check(not selected.metadata.get("metadata_only",false) and app.selected_track == selected,"preparation hydrates the selected object without replacing its identity")
++	check(app.track_catalog.cached_track(entry) == selected,"compiled selection enters the bounded catalog")
++	if app.game != null:
++		app.game.set_physics_process(false)
++		check(app.game.sim.state.tick == 0 and app.game.countdown_ticks == 360 and app.game.track_session.target_laps == 5,"handoff retains tick zero, full countdown and five laps")
++		var road_path: String = DISK.directory.path_join(DISK.identity(ROADS.disk_key_for(selected)))
++		check(FileAccess.file_exists(road_path+".res") and not FileAccess.file_exists(road_path+".arrays"),"installed road artifact supersedes its CPU staging representation")
++		app._leave_race()
++	for kind: String in ["close","car","selection","version","content","scope","navigation"]: await cancellation(entry,kind)
++	# Delayed document response exercises the real downloader's scope fence.
++	app._show_screen("tracks"); await process_frame
++	browser = app.content.find_child("TrackBrowser",true,false)
++	browser._set_list_open(false,false)
++	var previous_client: Node = app.cloud.client
++	var delayed := DeferredDocumentClient.new(); delayed.body = body; root.add_child(delayed)
++	app.cloud.client = delayed
++	var uncached: Dictionary = entry.duplicate(true); uncached.cache_path = folder.path_join("not-downloaded.json"); uncached.version_id = "delayed-version"
++	selected = CLOUD.metadata_track(uncached); app.selected_track = selected; browser.selected_track = selected
++	app._prepare_selected_track(selected,browser)
++	check(app._selected_preparation_pending and delayed.calls == 1,"settled uncached selection requests its document once")
++	browser._close_track_view(); app._poll_selected_preparation()
++	await create_timer(0.25).timeout
++	check(not FileAccess.file_exists(uncached.cache_path),"obsolete document response cannot write its cache file")
++	check(not app._selected_preparation_pending and app._selected_preparation_job == null,"obsolete document response cannot launch CPU preparation")
++	app.cloud.client = previous_client; delayed.free()
++	app._show_screen("tracks"); await process_frame
++	browser = app.content.find_child("TrackBrowser",true,false)
++	browser._set_list_open(false,false)
++	selected = CLOUD.metadata_track(entry); app.selected_track = selected; browser.selected_track = selected
++	app._prepare_selected_track(selected,browser)
++	# Keep the transport alive beyond its owning UI to check delayed teardown.
++	app._cancel_selected_preparation()
++	var teardown_client := DeferredDocumentClient.new(); teardown_client.body = body; root.add_child(teardown_client)
++	app.cloud.client = teardown_client
++	var teardown_entry: Dictionary = entry.duplicate(true); teardown_entry.cache_path = folder.path_join("teardown-document.json"); teardown_entry.version_id = "teardown-version"
++	selected = CLOUD.metadata_track(teardown_entry); app.selected_track = selected; browser.selected_track = selected
++	app._prepare_selected_track(selected,browser)
++	app.free(); app = null
++	await create_timer(0.25).timeout
++	check(not FileAccess.file_exists(teardown_entry.cache_path),"delayed teardown response cannot publish player files")
++	teardown_client.free()
++	var finish_deadline: int = Time.get_ticks_msec()+30000
++	while not preload("res://editor/work_job.gd").pending.is_empty() and Time.get_ticks_msec()<finish_deadline: await process_frame
++	SELECTED.reap_discarded()
++	check(preload("res://editor/work_job.gd").pending.is_empty() and SELECTED.discarded.is_empty(),"teardown cancels/reaps preparation without retaining its UI")
++	var file := FileAccess.open(folder.path_join("report.json"),FileAccess.WRITE)
++	file.store_string(JSON.stringify({"checks":checks,"failures":failures,"loading_frames":frames},"\t")); file.close()
++	print("DEVICE_RACE_PREPARATION: ",checks," checks, ",failures," failures; frames=",frames," report=",folder.path_join("report.json"))
++	quit(1 if failures else 0)
++
++func before_app() -> Node:
++	var source: String = FileAccess.get_file_as_string("res://core/app.gd")
++	source = source.replace('const SELECTED_PREPARATION = preload("res://race/selected_track_preparation.gd")','const SELECTED_PREPARATION = preload("res://../docs/evidence/race-loading-implementation-2026-11-02/before/game/race/selected_track_preparation.gd")')
++	var script := GDScript.new()
++	script.source_code = source
++	assert(script.reload() == OK)
++	return script.new()
+diff --git a/docs/evidence/race-loading-implementation-2026-11-02/world_cloud_control.gd b/docs/evidence/race-loading-implementation-2026-11-02/world_cloud_control.gd
+new file mode 100644
+--- /dev/null
++++ b/docs/evidence/race-loading-implementation-2026-11-02/world_cloud_control.gd
+@@ -0,0 +1,70 @@
++extends SceneTree
++const Cloud = preload("res://backend/cloud_tracks.gd")
++const Tracks = preload("res://backend/prepared_track_cache.gd")
++const Worlds = preload("res://../docs/evidence/race-loading-implementation-2026-11-02/before/game/track/prepared_world_cache.gd")
++var checks: int = 0
++var failures: int = 0
++
++func _initialize() -> void: call_deferred("run")
++
++func check(value: bool, label: String) -> void:
++	checks += 1
++	if not value: failures += 1; print("FAIL: ",label)
++
++func signature(node: Node) -> Array:
++	var data: Array = [node.get_class()]
++	if node is Node3D: data.append(node.transform)
++	if node is GeometryInstance3D: data.append([node.layers,node.cast_shadow,node.material_override])
++	if node is MeshInstance3D: data.append(node.mesh)
++	if node is MultiMeshInstance3D:
++		data.append([node.multimesh.mesh,node.multimesh.buffer,node.multimesh.instance_count])
++	if node is OmniLight3D: data.append([node.light_color,node.light_energy,node.omni_range,node.light_cull_mask])
++	data.append(node.get_groups())
++	for child: Node in node.get_children(): data.append(signature(child))
++	return data
++
++func run() -> void:
++	var folder: String = ProjectSettings.globalize_path("res://../build/prepared-race-tests")
++	DirAccess.make_dir_recursive_absolute(folder)
++	NativeTrackVisual.ROAD_DISK_CACHE.directory = ""
++	Tracks.clear()
++	Worlds.entries.clear()
++	var doc: Dictionary = JSON.parse_string(FileAccess.get_file_as_string("res://tests/fixtures/ajorata.json"))
++	var body: String = JSON.stringify(doc)
++	var path: String = folder.path_join("document.json")
++	write(path,body)
++	var entry: Dictionary = {"cache_path":path,"content_hash":body.sha256_text(),"id":"fixture","name":"Fixture","version_id":"version-1","track_id":"track-1","creator":"Fixture"}
++	var cold: NativeTrack = Cloud.compile_entry(entry)
++	var warm: NativeTrack = Cloud.compile_entry(entry)
++	check(cold != warm and Tracks._capture(cold) == Tracks._capture(warm),"cached compilation creates an exact independent track")
++	check(cold.kerbs != warm.kerbs and Tracks._capture(cold.kerbs) == Tracks._capture(warm.kerbs),"kerb contact data is exact and independently owned")
++	warm.cells[0] = -99
++	warm.metadata.creator_document.name = "Changed"
++	warm.kerbs.triangles.clear()
++	var restored: NativeTrack = Cloud.compile_entry(entry)
++	check(restored.cells == cold.cells and restored.metadata == cold.metadata and restored.kerbs.triangles == cold.kerbs.triangles,"race/editor mutations cannot alter the prepared snapshot")
++	entry.version_id = "version-2"
++	entry.id = "another-alias"
++	check(Cloud.compile_entry(entry).metadata.cloud_version == "version-2" and Cloud.compile_entry(entry).identity == "another-alias","cache reuse retains current pinned version and identity")
++	write(path,"corrupt")
++	check(Cloud.compile_entry(entry) == null,"warm cache cannot hide a corrupt document")
++	DirAccess.remove_absolute(path)
++	check(Cloud.compile_entry(entry) == null,"warm cache cannot resurrect a removed document")
++	write(path,body)
++	var thread := Thread.new()
++	thread.start(Cloud.compile_entry.bind(entry))
++	var concurrent: NativeTrack = Cloud.compile_entry(entry)
++	check(thread.wait_to_finish().cells == concurrent.cells,"background browsing and race start can reuse the same cache")
++	check(Tracks.restore([path,body.sha256_text(),"different-compiler"]) == null,"compiler revision fences prepared geometry")
++	for index: int in range(7): Tracks.remember(["bounded",index],cold)
++	var track_bytes: int = 0
++	for value: Dictionary in Tracks._entries: track_bytes += int(value.bytes)
++	check(Tracks._entries.size() == Tracks.MAX_ENTRIES and track_bytes <= Tracks.MAX_BYTES,"compiled snapshots obey both memory and entry limits")
++	check(Tracks.restore(["bounded",0]) == null and Tracks.restore(["bounded",6]) != null,"compiled snapshot eviction retains the most recent tracks")
++	print("UNCHANGED_CLOUD_CONTROL ",checks," checks, ",failures," failures")
++	quit(1 if failures else 0)
++
++func write(path: String, body: String) -> void:
++	var file := FileAccess.open(path,FileAccess.WRITE)
++	file.store_string(body)
++	file.close()
+diff --git a/docs/evidence/race-loading-implementation-2026-11-02/reuse_control.gd b/docs/evidence/race-loading-implementation-2026-11-02/reuse_control.gd
+new file mode 100644
+--- /dev/null
++++ b/docs/evidence/race-loading-implementation-2026-11-02/reuse_control.gd
+@@ -0,0 +1,91 @@
++extends SceneTree
++const CLOUD = preload("res://backend/cloud_tracks.gd")
++const DISK = preload("res://track/road_mesh_disk_cache.gd")
++var checks: int = 0
++var failures: int = 0
++var overlay_ids: Dictionary = {}
++var loading_frames: int = 0
++var app: Node
++
++class CountedCloud extends "res://backend/cloud_tracks.gd":
++	var writes: int = 0
++	func _write(path: String, value: Dictionary) -> bool:
++		writes += 1
++		return super._write(path,value)
++
++func _initialize() -> void: run.call_deferred()
++func check(ok: bool, label: String) -> void:
++	checks += 1
++	if not ok: failures += 1; push_error(label)
++
++func observe() -> void:
++	if not is_instance_valid(app) or not is_instance_valid(app.race_loading): return
++	overlay_ids[app.race_loading.get_instance_id()] = true
++	loading_frames += 1
++	if is_instance_valid(app.game) and app.game.process_mode == Node.PROCESS_MODE_DISABLED:
++		check(app.game.sim.state.tick == 0 and app.game.countdown_ticks == 360,"preparation keeps canonical time/countdown frozen")
++
++func run() -> void:
++	OS.set_environment("BMT_API_URL", "")
++	var folder: String = ProjectSettings.globalize_path("res://../build/race-preparation-reuse-"+TrackLibrary.unique_id())
++	DirAccess.make_dir_recursive_absolute(folder); DISK.directory = folder.path_join("roads")
++	app = before_app(); app.library = TrackLibrary.new(folder); app.records = LocalRecords.new(folder.path_join("records.json")); app.cloud_root_override = folder.path_join("cloud")
++	root.add_child(app)
++	while not app.startup_complete: await process_frame
++	app._show_screen("tracks")
++	var document: Dictionary = JSON.parse_string(FileAccess.get_file_as_string("res://tests/fixtures/star_spline_lap.json"))
++	var body: String = JSON.stringify(document)
++	var path: String = folder.path_join("document.json")
++	var file := FileAccess.open(path,FileAccess.WRITE); file.store_string(body); file.close()
++	var entry: Dictionary = {"source":"cloud","cache_path":path,"content_hash":body.sha256_text(),"id":"cloud_reuse_fixture","name":"Loading fixture","version_id":"fixture-v1","track_id":"fixture-track","creator":"Fixture","theme":"pine","points":document.points}
++	var counted := CountedCloud.new(); counted.client = app.online.client; counted.root_override = folder.path_join("counted")
++	check(counted._retain_metadata(entry),"first retained metadata is saved")
++	var writes: int = counted.writes
++	check(writes == 2 and counted._retain_metadata(entry) and counted.writes == writes,"identical verified retained/alias files incur zero writes")
++	var changed: Dictionary = entry.duplicate(true); changed.name = "Updated name"
++	check(counted._retain_metadata(changed) and counted.writes == writes+1,"changed metadata writes once and keeps identical alias")
++	var alias: String = counted.cache_root().path_join("retained").path_join(("cloud_"+str(entry.version_id)).sha256_text()+".json")
++	file = FileAccess.open(alias,FileAccess.WRITE); file.store_string("corrupt"); file.close()
++	check(counted._retain_metadata(changed) and counted.writes == writes+2,"corrupt alias is repaired rather than skipped")
++	counted.free()
++	var downloaded: Dictionary = await app.cloud.download_document(entry)
++	check(not downloaded.is_empty(),"download returns a validated request snapshot")
++	file = FileAccess.open(path,FileAccess.WRITE); file.store_string("corrupt"); file.close()
++	check(CLOUD.compile_entry(entry) == null,"independent compilation still rejects corrupt actual file bytes")
++	check(CLOUD.compile_document(entry,downloaded) != null,"in-flight verified snapshot remains independent of later disk damage")
++	file = FileAccess.open(path,FileAccess.WRITE); file.store_string(body); file.close()
++	app.selected_track = CLOUD.metadata_track(entry)
++	check(NativeTrackVisual.race_roads_need_preparation(CLOUD.compile_entry(entry)),"cold published roads require CPU preparation")
++	process_frame.connect(observe)
++	var started: int = Time.get_ticks_usec()
++	await app._start_race(app.selected_track,false,true)
++	check(overlay_ids.size() == 1,"metadata hydration and start share one loading overlay")
++	check(loading_frames >= 4,"CPU preparation allows loading frames to continue")
++	check(is_instance_valid(app.game) and app.game.countdown_ticks == 360 and app.game.track_session.target_laps == 5,"prepared race starts with all five laps and full countdown")
++	check(app.track_catalog.cached_track(entry) == app.selected_track and not app.selected_track.metadata.get("metadata_only",false),"hydrated selection is retained in the bounded catalog")
++	check(not NativeTrackVisual.race_roads_need_preparation(app.selected_track),"completed roads skip another CPU preparation")
++	app.game.set_physics_process(false); app._leave_race()
++	document.pieces[0].width = float(document.pieces[0].width)+0.5
++	for index: int in range(document.pieces[0].point_widths.size()): document.pieces[0].point_widths[index] = document.pieces[0].width
++	var cold: NativeTrack = TrackCompiler.compile(document)
++	check(cold != null,"changed-width cancellation fixture validates")
++	cold.metadata.cloud_version = "fixture-v2"
++	app.selected_track = cold
++	app._start_race(cold,false,true)
++	await process_frame; await process_frame
++	app._show_screen("garage")
++	for frame: int in range(12): await process_frame
++	check(app.game == null and not is_instance_valid(app.race_loading) and not app.cloud_starting,"navigation cancels CPU preparation without publishing a stale race")
++	var elapsed: float = (Time.get_ticks_usec()-started)/1000.0
++	app.free(); await process_frame
++	print("RACE_PREPARATION_REUSE: ",checks," checks, ",failures," failures; loading_frames=",loading_frames," ms=",elapsed)
++	quit(1 if failures else 0)
++
++func before_app() -> Node:
++	var code: String = FileAccess.get_file_as_string("res://core/app.gd")
++	code = code.replace('var effect_preparation = preload("res://vehicle/effect_render_preparation.gd")','var effect_preparation = preload("res://../docs/evidence/race-loading-implementation-2026-11-02/before/game/vehicle/effect_render_preparation.gd")')
++	code = code.replace('var editor_memory = preload("res://editor/editor_memory.gd").new()','var editor_memory = preload("res://../docs/evidence/race-loading-implementation-2026-11-02/before/game/editor/editor_memory.gd").new()')
++	code = code.replace('const SELECTED_PREPARATION = preload("res://race/selected_track_preparation.gd")','const SELECTED_PREPARATION = preload("res://../docs/evidence/race-loading-implementation-2026-11-02/before/game/race/selected_track_preparation.gd")')
++	var script := GDScript.new(); script.source_code = code
++	assert(script.reload() == OK)
++	return script.new()
+diff --git a/docs/evidence/race-loading-implementation-2026-11-02/before/game/editor/editor_memory.gd b/docs/evidence/race-loading-implementation-2026-11-02/before/game/editor/editor_memory.gd
+new file mode 100644
+--- /dev/null
++++ b/docs/evidence/race-loading-implementation-2026-11-02/before/game/editor/editor_memory.gd
+@@ -0,0 +1,108 @@
++extends RefCounted
++## One editor retention allowance, with explicit headroom for active replacements.
++## Estimates describe owned streams, not RSS, Android PSS or driver allocation.
++const RETAINED_BUDGET: int = 64 * 1024 * 1024
++const GARAGE_BUDGET: int = 96 * 1024 * 1024
++const PRESSURE_HISTORY: int = 2 * 1024 * 1024
++const ROADS = preload("res://editor/road_preparation.gd")
++const HISTORY = preload("res://editor/editor_history.gd")
++const READS = preload("res://persistence/document_read_cache.gd")
++const ENCODING = preload("res://persistence/document_encoding.gd")
++const WORLDS = preload("res://track/prepared_world_cache.gd")
++var next_sample: int = 0
++var pressure_requested: bool = false
++var trims: int = 0
++var telemetry: Dictionary = {}
++
++func tick(app: Node) -> void:
++	if Time.get_ticks_msec() < next_sample: return
++	if is_instance_valid(app.canvas) and app.canvas.active_pointer != -99 and not pressure_requested: return
++	next_sample = Time.get_ticks_msec()+1000
++	if app.editor_preview_thread != null and not pressure_requested: return
++	telemetry = retained(app)
++	if not pressure_requested and telemetry.retained_bytes <= RETAINED_BUDGET and telemetry.optional_garage_bytes <= GARAGE_BUDGET: return
++	var force: bool = pressure_requested
++	var retry: bool = false
++	if app.has_method("_trim_hidden_garage") and (force or telemetry.optional_garage_bytes > GARAGE_BUDGET): app._trim_hidden_garage()
++	# The active scene keeps its own sky reference if this optional cache goes.
++	TrackTheme.trim_winter_sky()
++	if force:
++		preload("res://vehicle/effect_render_preparation.gd").trim_cache(app)
++		CompactDetail.trim_front_cache()
++		preload("res://ui/garage_paint_icons.gd").images.clear()
++		CompactKitThumbnail.images.clear()
++	if is_instance_valid(app.editor_world): app.editor_world.trim_cache()
++	ObjectThumbnail.trim_cache()
++	retry = not READS.trim_cache() or retry
++	retry = not ENCODING.trim_cache() or retry
++	if not force and retained(app).retained_bytes <= RETAINED_BUDGET: _finished(app,retry,force); return
++	# These dictionaries belong to the preview worker while it runs. Never join
++	# a geometry thread in an input/memory-notification callback to trim them.
++	if app.editor_preview_thread == null:
++		app.editor_compiled_cache.clear()
++		app.editor_raster_cache.clear(); app.editor_raster_cache["enabled"] = true
++	else: retry = true
++	if not force and retained(app).retained_bytes <= RETAINED_BUDGET: _finished(app,retry,force); return
++	WORLDS.trim_cache(0 if force else maxi(0,WORLDS.bytes_used()-(retained(app).retained_bytes-RETAINED_BUDGET)))
++	if force: preload("res://track/winter_road_snow_sources.gd").trim_cache()
++	if not force and retained(app).retained_bytes <= RETAINED_BUDGET: _finished(app,retry,force); return
++	retry = not CreatorPropVisual.trim_cache() or retry
++	if is_instance_valid(app.editor_world): app.editor_world.trim_prop_cache()
++	if not force and retained(app).retained_bytes <= RETAINED_BUDGET: _finished(app,retry,force); return
++	preload("res://track/road_support_cache.gd").trim()
++	NativeTrackVisual.trim_editor_cache()
++	if force:
++		app.editor_session.primed = {}
++		HISTORY.trim(app.history,app.redo_history,PRESSURE_HISTORY)
++		if is_instance_valid(app.canvas): app.canvas.trim_cache()
++	# Roadside runs can also be prepared by a population worker. Defer this
++	# main-thread-owned cache trim until all optional jobs have retired.
++	if preload("res://editor/work_job.gd").pending.is_empty():
++		RoadsideBoundary._cache.clear(); RoadsideBoundary.cache_bytes = 0
++	elif force: retry = true
++	_finished(app,retry,force)
++
++func _finished(app: Node, retry: bool, force: bool) -> void:
++	trims += 1
++	pressure_requested = retry and force
++	telemetry = retained(app)
++
++static func retained(app: Node) -> Dictionary:
++	var roads: Dictionary = ROADS.residency()
++	var history: int = HISTORY.bytes_used([app.history,app.redo_history,app.editor_gesture_history,app.editor_gesture_redo,[app.editor_session.primed] if not app.editor_session.primed.is_empty() else []])
++	var compiled: int = 0
++	if app.editor_preview_thread == null:
++		for entry: Dictionary in app.editor_compiled_cache: compiled += int(entry.bytes)
++	else: compiled = app.EDITOR_COMPILED_BUDGET
++	var raster: int = int(app.editor_raster_cache.get("prepared_bytes",0))+int(app.editor_raster_cache.get("auxiliary_bytes",0)) if app.editor_preview_thread == null else 24*1024*1024
++	var scenes: int = app.editor_world.visual_cache_bytes if is_instance_valid(app.editor_world) else 0
++	var props: int = CreatorPropVisual.cache_bytes
++	var other: Dictionary = {"read_bytes":READS.bytes,"encoding_bytes":ENCODING.bytes,"race_world_bytes":WORLDS.bytes_used(),
++		"road_support_bytes":preload("res://track/road_support_cache.gd").bytes_used(),
++		"effect_preparation_bytes":preload("res://vehicle/effect_render_preparation.gd").cache_bytes(app),"front_fitting_bytes":CompactDetail.front_cache_bytes,
++		"winter_sky_bytes":TrackTheme.WINTER_SKY_ESTIMATED_BYTES if TrackTheme.winter_reflection_sky != null else 0,
++		"winter_source_bytes":preload("res://track/winter_road_snow_sources.gd").cache_bytes,
++		"garage_option_gpu_bytes":_option_texture_bytes(),
++		"thumbnail_bytes":ObjectThumbnail.cache_bytes,"boundary_bytes":RoadsideBoundary.cache_bytes,
++		"canvas_bytes":app.canvas.cache_bytes() if is_instance_valid(app.canvas) else 0,
++		"batch_model_bytes":app.editor_world.prop_cache_bytes() if is_instance_valid(app.editor_world) else 0}
++	# Texture residency is an estimate of decoded GPU surfaces, independent of
++	# compressed PNG sizes. Keep the categories visible in pressure telemetry.
++	var garage: Dictionary = app._garage_residency() if app.has_method("_garage_residency") else {}
++	var garage_bytes: int = 0
++	for category: String in garage: garage_bytes += int(garage[category])
++	var other_bytes: int = 0
++	for value: int in other.values(): other_bytes += value
++	return {"history_bytes":history,"road_packet_bytes":roads.packets,"road_section_bytes":roads.sections,"road_gpu_bytes":roads.gpu,
++		"compiled_bytes":compiled,"raster_bytes":raster,"detached_scene_bytes":scenes,"prop_bytes":props,
++		"other":other,"garage":garage,"optional_garage_bytes":garage_bytes,"retained_bytes":history+roads.packets+roads.sections+roads.gpu+compiled+raster+scenes+props+other_bytes}
++
++static func _option_texture_bytes() -> int:
++	var total: int = 0
++	var seen: Dictionary = {}
++	for cache: Dictionary in [preload("res://ui/garage_paint_icons.gd").images,CompactKitThumbnail.images]:
++		for texture: Texture2D in cache.values():
++			if texture == null or seen.has(texture.get_instance_id()): continue
++			seen[texture.get_instance_id()] = true
++			total += texture.get_width()*texture.get_height()*4
++	return total
+diff --git a/docs/evidence/race-loading-implementation-2026-11-02/before/game/vehicle/effect_render_preparation.gd b/docs/evidence/race-loading-implementation-2026-11-02/before/game/vehicle/effect_render_preparation.gd
+new file mode 100644
+--- /dev/null
++++ b/docs/evidence/race-loading-implementation-2026-11-02/before/game/vehicle/effect_render_preparation.gd
+@@ -0,0 +1,172 @@
++extends RefCounted
++## Temporary draws reuse the actual particle/process/mesh materials. Live effect
++## nodes, GPU particle ages, trail slots and canonical state remain untouched.
++# Winter breakups use distinct instanced ice/snow shaders and custom-data powder.
++const BATCH_NAMES: Array[String] = ["WoodFragments","LooseHayFragments","SnowChunks","IceShards","SnowPowder","GroundDrifts","BankPowder","AirborneGrains"]
++const Pool = preload("res://vehicle/effect_preparation_pool.gd")
++const POOL_NAME: String = "EffectPreparationPool"
++
++static func prepare(world: Node3D, effects: SandDust, camera: Camera3D, impact: TextureRect, owner: Node, draw: Callable, current: Callable) -> Dictionary:
++	# Keep begin() synchronous for isolated previews. Production draws exactly one
++	# newly bound particle proxy per interval and checks ownership after each await.
++	var prepared: Dictionary = begin(world,null,camera,impact)
++	prepared["complete"] = DisplayServer.get_name() == "headless"
++	if DisplayServer.get_name() == "headless": return prepared
++	if not _current(world,camera,current) or not is_instance_valid(owner): return prepared
++	var pool: Node3D = owner.get_node_or_null(POOL_NAME)
++	if pool == null:
++		pool = Pool.new()
++		pool.name = POOL_NAME
++		owner.add_child(pool)
++	prepared["pool"] = weakref(pool)
++	prepared["initialized"] = {}
++	prepared["reused"] = 0
++	var sources: Array[WeakRef] = []
++	if is_instance_valid(effects) and effects.is_visible_in_tree():
++		for source: Node in effects.get_children():
++			if source is GPUParticles3D and source.is_visible_in_tree(): sources.append(weakref(source))
++	for source_ref: WeakRef in sources:
++		if not _current(world,camera,current) or not is_instance_valid(pool): return prepared
++		var source: GPUParticles3D = source_ref.get_ref()
++		if source == null: return prepared
++		var particles: GPUParticles3D = pool.take("Covered"+str(source.name))
++		if bool(particles.get_meta("preparation_reused",false)): prepared.reused += 1
++		_configure_particle(particles,source,world,camera)
++		# Earlier staged proxies must remain drawable through the later lighting
++		# contexts even when a short-lived particle has already expired.
++		particles.one_shot = false
++		pool.measure(particles)
++		prepared.nodes.append(particles)
++		prepared.particles += 1
++		if not draw.is_valid() or not bool(await draw.call()): return prepared
++		if not _current(world,camera,current): return prepared
++		if is_instance_valid(particles): prepared.initialized[particles.get_instance_id()] = true
++	prepared.complete = true
++	return prepared
++
++static func _current(world: Variant, camera: Variant, current: Callable) -> bool:
++	return is_instance_valid(world) and world.is_inside_tree() and not world.is_queued_for_deletion() and is_instance_valid(camera) and current.is_valid() and bool(current.call())
++
++static func trim_cache(owner: Node) -> void:
++	var pool: Node = owner.get_node_or_null(POOL_NAME)
++	if pool != null: pool.trim()
++
++static func cache_bytes(owner: Node) -> int:
++	var pool: Node = owner.get_node_or_null(POOL_NAME)
++	return int(pool.bytes) if pool != null else 0
++
++static func _configure_particle(particles: GPUParticles3D, source: GPUParticles3D, world: Node3D, camera: Camera3D) -> void:
++	particles.emitting = false
++	particles.name = "Covered"+str(source.name)
++	particles.set_meta("preparation_key",str(particles.name))
++	particles.process_mode = Node.PROCESS_MODE_ALWAYS
++	for property: String in ["lifetime","fixed_fps","fract_delta","interpolate","local_coords","draw_order","collision_base_size","transform_align","cast_shadow","layers"]:
++		particles.set(property,source.get(property))
++	particles.amount = 1
++	particles.one_shot = true
++	particles.explosiveness = 1.0
++	particles.randomness = 0.0
++	particles.preprocess = minf(source.lifetime*0.2,0.05)
++	particles.process_material = source.process_material
++	particles.draw_passes = source.draw_passes
++	for index: int in range(source.draw_passes): particles.set_draw_pass_mesh(index,source.get_draw_pass_mesh(index))
++	particles.visibility_aabb = source.visibility_aabb
++	if particles.get_parent() == null: world.add_child(particles)
++	else: particles.reparent(world,false)
++	particles.transform = Transform3D.IDENTITY
++	particles.global_position = camera.global_position-camera.global_basis.z*maxf(camera.near+1.0,10.0)
++	particles.speed_scale = 1.0
++	particles.show()
++	particles.restart()
++	particles.emitting = true
++
++static func begin(world: Node3D, effects: SandDust, camera: Camera3D, impact: TextureRect = null) -> Dictionary:
++	var prepared: Dictionary = {"nodes":[],"restore":[],"particles":0,"batches":0,"damage_meshes":0,"canvas":0}
++	if DisplayServer.get_name() == "headless" or world == null or camera == null: return prepared
++	var center: Vector3 = camera.global_position-camera.global_basis.z*maxf(camera.near+1.0,10.0)
++	if effects != null and effects.is_visible_in_tree():
++		for source: Node in effects.get_children():
++			if not source is GPUParticles3D or not source.is_visible_in_tree(): continue
++			var particles := GPUParticles3D.new()
++			particles.name = "Covered"+str(source.name)
++			# The enclosing Game is disabled until the full countdown can begin.
++			particles.process_mode = Node.PROCESS_MODE_ALWAYS
++			for property: String in ["lifetime","fixed_fps","fract_delta","interpolate","local_coords","draw_order","collision_base_size","transform_align","cast_shadow","layers"]:
++				particles.set(property,source.get(property))
++			particles.amount = 1
++			particles.one_shot = true
++			particles.explosiveness = 1.0
++			particles.randomness = 0.0
++			particles.preprocess = minf(source.lifetime*0.2,0.05)
++			particles.process_material = source.process_material
++			particles.draw_passes = source.draw_passes
++			for pass_index: int in range(source.draw_passes): particles.set_draw_pass_mesh(pass_index,source.get_draw_pass_mesh(pass_index))
++			particles.visibility_aabb = source.visibility_aabb
++			world.add_child(particles)
++			particles.global_position = center
++			prepared.nodes.append(particles)
++			prepared.particles += 1
++	# Empty debris and inactive weather batches need their instanced draw path,
++	# not a plain MeshInstance proxy. The original buffers/populations stay exact.
++	for source: Node in world.find_children("*","MultiMeshInstance3D",true,false):
++		if str(source.name) not in BATCH_NAMES or not source.is_visible_in_tree() or source.multimesh.mesh == null: continue
++		var resource: MultiMesh = source.multimesh
++		var instances := MultiMesh.new()
++		instances.transform_format = resource.transform_format
++		instances.use_colors = resource.use_colors
++		instances.use_custom_data = resource.use_custom_data
++		instances.mesh = resource.mesh
++		instances.instance_count = 1
++		instances.set_instance_transform(0,Transform3D(Basis.IDENTITY,source.to_local(center)))
++		if resource.use_colors: instances.set_instance_color(0,Color.WHITE)
++		if resource.use_custom_data: instances.set_instance_custom_data(0,Color(0.5,0.5,0,1))
++		var batch := MultiMeshInstance3D.new()
++		batch.name = "Covered"+str(source.name)
++		batch.multimesh = instances
++		batch.material_override = source.material_override
++		batch.material_overlay = source.material_overlay
++		batch.cast_shadow = source.cast_shadow
++		batch.layers = source.layers
++		world.add_child(batch)
++		batch.global_transform = source.global_transform
++		batch.extra_cull_margin = 2.0
++		prepared.nodes.append(batch)
++		prepared.batches += 1
++	# Damage phases use the prepared originals; only the temporary cull margin
++	# and hidden-child flag are borrowed, then restored even after cancellation.
++	for source: Node in world.find_children("*","MeshInstance3D",true,false):
++		if not source.get_parent().has_meta("breakable_kind") or not str(source.name).begins_with("DamagePhase"): continue
++		if not source.get_parent().is_visible_in_tree(): continue
++		prepared.restore.append({"node":source,"visible":source.visible,"margin":source.extra_cull_margin})
++		source.visible = true
++		var delta: Vector3 = (source.to_local(camera.global_position)-source.get_aabb().get_center()).abs()
++		source.extra_cull_margin = maxf(source.extra_cull_margin,maxf(delta.x,maxf(delta.y,delta.z))+camera.near+1.0)
++		prepared.damage_meshes += 1
++	# The normally hidden crash glass has its own canvas shader. Draw its actual
++	# texture/material without inventing an impact or changing retained damage.
++	if impact != null and impact.material != null and impact.texture != null:
++		var glass := TextureRect.new()
++		glass.name = "CoveredImpactPreparation"
++		glass.texture = impact.texture
++		glass.material = impact.material
++		for property: String in ["expand_mode","stretch_mode","texture_filter","texture_repeat","light_mask","z_index"]: glass.set(property,impact.get(property))
++		glass.mouse_filter = Control.MOUSE_FILTER_IGNORE
++		impact.get_parent().add_child(glass)
++		glass.position = impact.position
++		glass.size = impact.size
++		prepared.nodes.append(glass)
++		prepared.canvas += 1
++	return prepared
++
++static func end(prepared: Dictionary) -> void:
++	for entry: Dictionary in prepared.get("restore",[]):
++		if is_instance_valid(entry.node):
++			entry.node.visible = entry.visible
++			entry.node.extra_cull_margin = entry.margin
++	for node: Variant in prepared.get("nodes",[]):
++		if not is_instance_valid(node): continue
++		var pool: Node = prepared.pool.get_ref() if prepared.has("pool") else null
++		if node is GPUParticles3D and is_instance_valid(pool):
++			pool.put(node,prepared.get("initialized",{}).has(node.get_instance_id()))
++		else: node.free()
++	prepared.clear()
+diff --git a/docs/evidence/race-loading-implementation-2026-11-02/before/game/track/prepared_world_cache.gd b/docs/evidence/race-loading-implementation-2026-11-02/before/game/track/prepared_world_cache.gd
+new file mode 100644
+--- /dev/null
++++ b/docs/evidence/race-loading-implementation-2026-11-02/before/game/track/prepared_world_cache.gd
+@@ -0,0 +1,183 @@
++extends RefCounted
++## Immutable scenery resources; fresh nodes and mutable instance buffers per race.
++const MAX_ENTRIES: int = 5
++const MAX_BYTES: int = 64 * 1024 * 1024
++static var entries: Array[Dictionary] = []
++
++static func bytes_used() -> int:
++	var total: int = 0
++	for entry: Dictionary in entries: total += int(entry.bytes)
++	return total
++
++static func trim_cache(allowance: int = 0) -> void:
++	var total: int = bytes_used()
++	while not entries.is_empty() and total > allowance: total -= int(entries.pop_front().bytes)
++
++static func restore(key: Array, visual: Node3D) -> bool:
++	for index: int in range(entries.size()):
++		if entries[index].key != key: continue
++		var entry: Dictionary = entries.pop_at(index)
++		entries.append(entry)
++		var holder: Node3D = entry.scene.instantiate()
++		visual.tyre_instances = holder.get_child(entry.tyres) if int(entry.tyres) >= 0 else null
++		for child_index: int in entry.props: visual.light_instances.append(holder.get_child(child_index))
++		for child: Node in holder.get_children():
++			_own(child,null)
++			holder.remove_child(child)
++			visual.add_child(child)
++			_isolate_instances(child)
++		holder.free()
++		for name: String in entry.metadata: visual.set_meta(name,entry.metadata[name])
++		visual.scenic_count = entry.scenic_count
++		return true
++	return false
++
++static func remember(key: Array, visual: Node3D, track: NativeTrack) -> void:
++	var resources: Dictionary = {}
++	# Include CPU/GPU grid masks conservatively, then each mesh/buffer once.
++	var bytes: int = track.cells.size()*(20 if track.metadata.get("theme","pine") == "desert" else 16)
++	for child: Node in visual.get_children(): bytes += _resource_bytes(child,resources)
++	if bytes > MAX_BYTES: return
++	var holder := Node3D.new()
++	for child: Node in visual.get_children():
++		var copy: Node = child.duplicate(Node.DUPLICATE_GROUPS | Node.DUPLICATE_SCRIPTS)
++		holder.add_child(copy)
++		_own(copy,holder)
++		_isolate_instances(copy)
++	var scene := PackedScene.new()
++	var packed: Error = scene.pack(holder)
++	holder.free()
++	if packed != OK: return
++	var paths: Array[int] = []
++	for prop: Node3D in visual.light_instances: paths.append(prop.get_index())
++	var metadata: Dictionary = {}
++	for name: String in visual.get_meta_list(): metadata[name] = visual.get_meta(name)
++	for index: int in range(entries.size()-1,-1,-1):
++		if entries[index].key == key: entries.remove_at(index)
++	var total: int = bytes
++	for entry: Dictionary in entries: total += int(entry.bytes)
++	while not entries.is_empty() and (entries.size() >= MAX_ENTRIES or total > MAX_BYTES):
++		total -= int(entries.pop_front().bytes)
++	entries.append({"key":key.duplicate(true),"scene":scene,"bytes":bytes,"metadata":metadata,"props":paths,"tyres":visual.tyre_instances.get_index() if visual.tyre_instances != null else -1,"scenic_count":visual.scenic_count})
++
++static func _own(node: Node, holder: Node) -> void:
++	node.owner = holder
++	if holder != null:
++		for group: StringName in node.get_groups():
++			node.remove_from_group(group)
++			node.add_to_group(group,true)
++	for child: Node in node.get_children(): _own(child,holder)
++
++
++static func restore_cooperative(key: Array, visual: NativeTrackVisual) -> bool:
++	var entry: Dictionary = {}
++	for index: int in range(entries.size()):
++		if entries[index].key != key: continue
++		entry = entries.pop_at(index); entries.append(entry); break
++	if entry.is_empty(): return false
++	if not await visual._yield_build(): return false
++	var instantiate_started: int = Time.get_ticks_usec() if visual.profile_build else 0
++	var holder: Node3D = entry.scene.instantiate()
++	if visual.profile_build: visual.build_costs.cache_instantiate_us = Time.get_ticks_usec()-instantiate_started
++	var lease: Node = preload("res://race/install_staging.gd").new()
++	lease.name = "RaceInstallStaging"; lease.staged = holder; visual.add_child(lease)
++	var tyres: Node3D = holder.get_child(entry.tyres) if int(entry.tyres) >= 0 else null
++	var props: Array[Node3D] = []
++	for index: int in entry.props: props.append(holder.get_child(index))
++	for child: Node in holder.get_children():
++		if not await visual._yield_build():
++			if is_instance_valid(lease): lease.free()
++			return false
++		_own(child,null)
++		holder.remove_child(child)
++		visual.add_child(child)
++		_isolate_instances(child)
++	lease.free()
++	if not visual._build_is_current(): return false
++	visual.tyre_instances = tyres
++	visual.light_instances.assign(props)
++	for name: String in entry.metadata: visual.set_meta(name,entry.metadata[name])
++	visual.scenic_count = entry.scenic_count
++	return true
++
++
++static func remember_cooperative(key: Array, visual: NativeTrackVisual, track: NativeTrack) -> void:
++	var resources: Dictionary = {}
++	var bytes: int = track.cells.size()*(20 if track.metadata.get("theme","pine") == "desert" else 16)
++	for child: Node in visual.get_children():
++		if not await visual._yield_build(): return
++		bytes += _resource_bytes(child,resources)
++	if bytes > MAX_BYTES: return
++	var holder := Node3D.new()
++	var sources: Array[Node] = visual.get_children()
++	var lease: Node = preload("res://race/install_staging.gd").new()
++	lease.name = "RaceInstallStaging"; lease.staged = holder; visual.add_child(lease)
++	for child: Node in sources:
++		if not await visual._yield_build():
++			if is_instance_valid(lease): lease.free()
++			return
++		var duplicate_started: int = Time.get_ticks_usec() if visual.profile_build else 0
++		var copy: Node = child.duplicate(Node.DUPLICATE_GROUPS | Node.DUPLICATE_SCRIPTS)
++		holder.add_child(copy)
++		_own(copy,holder)
++		_isolate_instances(copy)
++		if visual.profile_build: visual.build_costs.cache_duplicate_max_us = maxi(int(visual.build_costs.get("cache_duplicate_max_us",0)),Time.get_ticks_usec()-duplicate_started)
++	if not await visual._yield_build():
++		if is_instance_valid(lease): lease.free()
++		return
++	var scene := PackedScene.new()
++	var pack_started: int = Time.get_ticks_usec() if visual.profile_build else 0
++	var packed: Error = scene.pack(holder)
++	if visual.profile_build: visual.build_costs.cache_pack_us = Time.get_ticks_usec()-pack_started
++	lease.free()
++	# Packing is an indivisible engine call. Publish only a complete current
++	# scene; never expose partial cache entries during cooperative preparation.
++	if packed != OK or not visual._build_is_current(): return
++	var paths: Array[int] = []
++	for prop: Node3D in visual.light_instances: paths.append(prop.get_index())
++	var metadata: Dictionary = {}
++	for name: String in visual.get_meta_list(): metadata[name] = visual.get_meta(name)
++	for index: int in range(entries.size()-1,-1,-1):
++		if entries[index].key == key: entries.remove_at(index)
++	var total: int = bytes
++	for entry: Dictionary in entries: total += int(entry.bytes)
++	while not entries.is_empty() and (entries.size() >= MAX_ENTRIES or total > MAX_BYTES): total -= int(entries.pop_front().bytes)
++	entries.append({"key":key.duplicate(true),"scene":scene,"bytes":bytes,"metadata":metadata,"props":paths,"tyres":visual.tyre_instances.get_index() if visual.tyre_instances != null else -1,"scenic_count":visual.scenic_count})
++
++static func _isolate_instances(node: Node) -> void:
++	if node is MultiMeshInstance3D and node.multimesh != null:
++		var source: MultiMesh = node.multimesh
++		var copy := MultiMesh.new()
++		copy.transform_format = source.transform_format
++		copy.use_colors = source.use_colors
++		copy.use_custom_data = source.use_custom_data
++		copy.mesh = source.mesh
++		copy.instance_count = source.instance_count
++		copy.visible_instance_count = source.visible_instance_count
++		copy.custom_aabb = source.custom_aabb
++		# Dummy/headless rendering has no backing instance buffer.
++		var buffer: PackedFloat32Array = source.buffer
++		if not buffer.is_empty(): copy.buffer = buffer
++		node.multimesh = copy
++	for child: Node in node.get_children(): _isolate_instances(child)
++
++static func _resource_bytes(node: Node, seen: Dictionary) -> int:
++	var bytes: int = 512
++	var mesh: Mesh
++	if node is MeshInstance3D: mesh = node.mesh
++	elif node is MultiMeshInstance3D and node.multimesh != null:
++		mesh = node.multimesh.mesh
++		bytes += node.multimesh.instance_count*128
++	if mesh != null and not seen.has(mesh.get_instance_id()):
++		seen[mesh.get_instance_id()] = true
++		for surface: int in range(mesh.get_surface_count()):
++			if mesh is ArrayMesh:
++				# Counts are enough for this conservative budget. Avoid decoding
++				# complete vertex/index arrays again after spatial preparation.
++				bytes += mesh.surface_get_array_len(surface)*96+mesh.surface_get_array_index_len(surface)*4
++				continue
++			var arrays: Array = mesh.surface_get_arrays(surface)
++			bytes += arrays[Mesh.ARRAY_VERTEX].size()*96
++			if arrays[Mesh.ARRAY_INDEX] != null: bytes += arrays[Mesh.ARRAY_INDEX].size()*4
++	for child: Node in node.get_children(): bytes += _resource_bytes(child,seen)
++	return bytes
+diff --git a/docs/evidence/race-loading-implementation-2026-11-02/before/game/race/selected_track_preparation.gd b/docs/evidence/race-loading-implementation-2026-11-02/before/game/race/selected_track_preparation.gd
+new file mode 100644
+--- /dev/null
++++ b/docs/evidence/race-loading-implementation-2026-11-02/before/game/race/selected_track_preparation.gd
+@@ -0,0 +1,71 @@
++extends RefCounted
++## One selected-track CPU job. Scope validation and publication stay on main.
++const ROADS = preload("res://editor/road_preparation.gd")
++const DISK = preload("res://track/road_mesh_disk_cache.gd")
++static var discarded: Array = []
++static var cleanup_tree: SceneTree
++
++static func start(track: NativeTrack, entry: Dictionary, document: Dictionary, owner_tree: SceneTree) -> RefCounted:
++	var job = preload("res://editor/work_job.gd").start(run.bind(track,entry,document),owner_tree)
++	ensure_cleanup(owner_tree)
++	return job
++
++static func ensure_cleanup(owner_tree: SceneTree) -> void:
++	if cleanup_tree == null:
++		cleanup_tree = owner_tree
++		owner_tree.process_frame.connect(reap_discarded)
++		owner_tree.root.tree_exiting.connect(finish)
++
++static func run(cancelled: Callable, selected: NativeTrack, entry: Dictionary, document: Dictionary) -> Dictionary:
++	var track: NativeTrack = selected
++	if track.metadata.get("metadata_only",false):
++		track = preload("res://backend/cloud_tracks.gd").compile_document(entry,document,cancelled)
++	if track == null or cancelled.call(): return {}
++	var receipt: Dictionary = {}
++	var disk_key: Array = ROADS.disk_key_for(track)
++	var packet: Dictionary = ROADS.prepare(track,false,false,cancelled)
++	packet = ROADS.with_winter_cover(packet,track,cancelled)
++	if cancelled.call(): return {}
++	receipt = DISK.stage_arrays(disk_key,packet,cancelled)
++	if cancelled.call(): DISK.discard_arrays(receipt); return {}
++	# Oversized packets are released here; only the existing road LRU can keep
++	# CPU arrays. The bounded disk artifact supplies a later active race.
++	return {"track":track,"receipt":receipt,"winter_cover":packet.get("winter_cover",{})}
++
++static func request_cancelled(owner: WeakRef, generation: int) -> bool:
++	var app: Node = owner.get_ref()
++	return not is_instance_valid(app) or app.call("_selected_preparation_obsolete",generation)
++
++static func download(owner: WeakRef, generation: int, cloud: Node, entry: Dictionary) -> void:
++	var document: Dictionary = await cloud.download_document(entry,request_cancelled.bind(owner,generation))
++	if request_cancelled(owner,generation): return
++	var app: Node = owner.get_ref()
++	app.call("_begin_selected_geometry",generation,entry,document)
++
++static func cancel(job: RefCounted, owner_tree: SceneTree = null) -> void:
++	if owner_tree != null: ensure_cleanup(owner_tree)
++	if job == null: return
++	job.cancel()
++	if job.done:
++		_discard(job)
++	else:
++		discarded.append(job)
++
++static func _discard(job: RefCounted) -> void:
++	if job.result is Dictionary: DISK.discard_arrays(job.result.get("receipt",{}))
++	job.result = null
++
++static func reap_discarded() -> void:
++	for i: int in range(discarded.size()-1,-1,-1):
++		if not discarded[i].done: continue
++		_discard(discarded[i]); discarded.remove_at(i)
++
++static func ready_for_job() -> bool:
++	reap_discarded()
++	return discarded.is_empty()
++
++static func finish() -> void:
++	# WorkJob's earlier tree-exit handler joins workers before this callback.
++	reap_discarded()
++	discarded.clear()
++	cleanup_tree = null

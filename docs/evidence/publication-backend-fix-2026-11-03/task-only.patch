@@ -1,0 +1,351 @@
+--- a/backend/bmt_backend/publications.py
++++ b/backend/bmt_backend/publications.py
+@@ -337,6 +337,11 @@
+                 failure, detail = str(exc.detail), str(exc.detail)
+                 if detail == REJECTION:
+                     failure = "name_not_allowed"
++            except SQLAlchemyError:
++                # The savepoint rolls back catalogue/proof/slot effects while
++                # the outer claim can durably schedule its bounded retry.
++                failure = "validator_unavailable"
++                detail = "Publication could not be saved temporarily; the saved request can retry."
+         intent.failure_code, intent.detail, intent.lease_token = failure, detail, None
+         if failure == "validator_unavailable" and intent.attempts < app.state.settings.max_job_attempts:
+             intent.status, intent.lease_until = "queued", now() + min(60, 2 ** min(intent.attempts, 6))
+@@ -364,8 +369,13 @@
+         raise HTTPException(409, "PUBLICATION_TRACK_UNAVAILABLE")
+     if track is None:
+         track = Track(owner_id=intent.player_id, authoring_id=intent.authoring_id)
+-        track.official = session.scalar(select(Identity.id).where(Identity.player_id == intent.player_id,
+-            Identity.provider == "development", Identity.subject == "developer")) is not None
++        if session.bind.dialect.name == "postgresql":
++            # The worker cannot read authentication tables. This fixed-schema
++            # definer exposes only the existing official-publisher predicate.
++            track.official = session.scalar(select(func.bmt_is_official_publisher(intent.player_id)))
++        else:
++            track.official = session.scalar(select(Identity.id).where(Identity.player_id == intent.player_id,
++                Identity.provider == "development", Identity.subject == "developer")) is not None
+         session.add(track)
+         session.flush()
+     elif track.authoring_id is None:
+--- a/backend/bmt_backend/database_privileges.py
++++ b/backend/bmt_backend/database_privileges.py
+@@ -253,7 +253,11 @@
+ def reviewed_function(row):
+     signature = row["proname"], row["args"]
+     if row["prosecdef"]:
+-        return (signature == ("bmt_redact_removed_audit", "text") and row["returns"] == "void"
++        return ((signature, row["returns"]) in {
++                    (("bmt_redact_removed_audit", "text"), "void"),
++                    (("bmt_is_official_publisher", "text"), "boolean"),
++                    (("bmt_has_development_identity", "text"), "boolean"),
++                }
+                 and row["proconfig"] == ["search_path=pg_catalog"])
+     return (row["extension"] == "pg_trgm"
+             or HELPERS.get(signature) == row["returns"]
+--- a/backend/bmt_backend/commerce.py
++++ b/backend/bmt_backend/commerce.py
+@@ -42,9 +42,13 @@
+ 
+ 
+ def simulator_allowed(session, settings, player_id):
+-    return (settings is not None and settings.purchase_simulation_enabled and settings.environment == "development"
+-        and settings.dev_auth_enabled and session.scalar(select(Identity.id).where(
+-            Identity.player_id == player_id, Identity.provider == "development")) is not None)
++    if not (settings is not None and settings.purchase_simulation_enabled
++            and settings.environment == "development" and settings.dev_auth_enabled):
++        return False
++    if session.bind.dialect.name == "postgresql" and settings.workload_role == "worker":
++        return session.scalar(select(func.bmt_has_development_identity(player_id)))
++    return session.scalar(select(Identity.id).where(
++        Identity.player_id == player_id, Identity.provider == "development")) is not None
+ 
+ 
+ def gift_recipient(session, buyer_id, recipient_id, product_id, *, settings=None, simulated=False):
+--- /dev/null
++++ b/backend/bmt_backend/migrations/versions/0073_publication_publisher_check.py
+@@ -0,0 +1,36 @@
++"""Expose official publisher classification without worker authentication reads."""
++import sqlalchemy as sa
++from alembic import op
++
++revision = "0073_publication_publisher_check"
++down_revision = "0072_fixed_daily_lap_limits"
++branch_labels = None
++depends_on = None
++
++
++def upgrade():
++    connection = op.get_bind()
++    if connection.dialect.name != "postgresql":
++        return
++    schema = connection.scalar(sa.text("SELECT current_schema()"))
++    quoted = connection.dialect.identifier_preparer.quote_identifier(schema)
++    connection.execute(sa.text(f"""CREATE FUNCTION {quoted}.bmt_is_official_publisher(pid text)
++        RETURNS boolean LANGUAGE sql STABLE SECURITY DEFINER SET search_path=pg_catalog
++        AS $$ SELECT EXISTS (SELECT 1 FROM {quoted}.identities
++            WHERE player_id = pid AND provider = 'development' AND subject = 'developer') $$"""))
++    connection.execute(sa.text(f"REVOKE ALL ON FUNCTION {quoted}.bmt_is_official_publisher(text) FROM PUBLIC"))
++    connection.execute(sa.text(f"""CREATE FUNCTION {quoted}.bmt_has_development_identity(pid text)
++        RETURNS boolean LANGUAGE sql STABLE SECURITY DEFINER SET search_path=pg_catalog
++        AS $$ SELECT EXISTS (SELECT 1 FROM {quoted}.identities
++            WHERE player_id = pid AND provider = 'development') $$"""))
++    connection.execute(sa.text(f"REVOKE ALL ON FUNCTION {quoted}.bmt_has_development_identity(text) FROM PUBLIC"))
++
++
++def downgrade():
++    connection = op.get_bind()
++    if connection.dialect.name != "postgresql":
++        return
++    schema = connection.scalar(sa.text("SELECT current_schema()"))
++    quoted = connection.dialect.identifier_preparer.quote_identifier(schema)
++    connection.execute(sa.text(f"DROP FUNCTION {quoted}.bmt_is_official_publisher(text)"))
++    connection.execute(sa.text(f"DROP FUNCTION {quoted}.bmt_has_development_identity(text)"))
+--- a/backend/tests/test_publication_intents.py
++++ b/backend/tests/test_publication_intents.py
+@@ -393,6 +393,46 @@
+     with domain.factory() as session:
+         assert count(session, PublicationIntent) == count(session, TrackVersion) == count(session, PublicationSlot) == count(session, Run) == 1
+         assert session.get(Entitlements, domain.players["Creator"]).slots == 0
++
++
++def test_database_commit_failure_rolls_back_and_durably_retries(publications, monkeypatch):
++    from sqlalchemy.exc import ProgrammingError
++    from bmt_backend import publications as implementation
++
++    domain = publications
++    intent = request(domain)
++    original = implementation._commit_publication
++
++    def failed(app, session, *arguments):
++        original(app, session, *arguments)
++        # Raise from PostgreSQL itself when available, leaving the savepoint
++        # failed as a real permission error does, after all candidate writes.
++        if session.bind.dialect.name == "postgresql":
++            from sqlalchemy import text
++            session.execute(text("SELECT missing_publication_fixture_column FROM tracks"))
++        raise ProgrammingError("fixture", {}, RuntimeError("permission denied"))
++
++    monkeypatch.setattr(implementation, "_commit_publication", failed)
++    assert process_one(domain.app)
++    failed_status = status(domain, intent["publication_id"])
++    assert failed_status["state"] == "queued"
++    assert failed_status["failure_code"] == "validator_unavailable" and failed_status["retryable"]
++    with domain.factory() as session:
++        assert count(session, Track) == count(session, TrackVersion) == count(session, Run) == 0
++        assert count(session, PublicationSlot) == count(session, NewsPublication) == 0
++        assert session.get(Entitlements, domain.players["Creator"]).slots == 1
++        row = session.get(PublicationIntent, intent["publication_id"])
++        evidence = row.content_hash, row.replay_hash, row.operation_key
++        assert row.lease_token is None and row.lease_until > 0
++        row.lease_until = 0
++        session.commit()
++    monkeypatch.setattr(implementation, "_commit_publication", original)
++    assert process_one(domain.app)
++    assert status(domain, intent["publication_id"])["state"] == "published"
++    with domain.factory() as session:
++        row = session.get(PublicationIntent, intent["publication_id"])
++        assert (row.content_hash, row.replay_hash, row.operation_key) == evidence
++        assert count(session, TrackVersion) == count(session, Run) == count(session, PublicationSlot) == 1
+         assert session.get(QueueCapacity, 1).pending == 0
+ 
+ 
+--- /dev/null
++++ b/backend/tests/test_publication_worker_privileges.py
+@@ -0,0 +1,112 @@
++"""Publish with real PostgreSQL worker authority, including official creators."""
++import uuid
++from dataclasses import replace
++
++import pytest
++from fastapi import Request
++from fastapi.testclient import TestClient
++from sqlalchemy import func, select, text
++from sqlalchemy.engine import make_url
++from sqlalchemy.exc import DBAPIError
++from sqlalchemy.orm import Session
++from test_cloud_setup import database as _database_fixture
++from test_domains import FakeVerifier
++
++from bmt_backend import cloud_setup
++from bmt_backend.app import create_app
++from bmt_backend.commerce_models import Entitlements, PublicationSlot
++from bmt_backend.community import TERMS_VERSION
++from bmt_backend.community_models import CommunityAcceptance
++from bmt_backend.config import Settings
++from bmt_backend.database_privileges import verify_runtime
++from bmt_backend.db import make_engine
++from bmt_backend.identity_models import Identity, Player
++from bmt_backend.publication_models import PublicationIntent
++from bmt_backend.publications import process_one
++from bmt_backend.security import current_player
++from bmt_backend.track_models import Track, TrackVersion
++
++pytestmark = pytest.mark.postgres
++database = _database_fixture
++
++
++@pytest.mark.parametrize("provider,subject,official", [
++    ("development", "ordinary-creator", False),
++    ("development", "developer", True),
++    ("google", "developer", False),
++])
++@pytest.mark.parametrize("simulation", [False, True])
++def test_new_track_publishes_without_worker_identity_reads(database, tmp_path, provider, subject, official, simulation):
++    engine, schema, roles, url = database
++    cloud_setup.setup(engine, uuid.uuid4().hex, roles, schema)
++    peers = {kind: make_engine(make_url(url).set(username=roles[kind], password="isolated-security-test-role")
++                              .render_as_string(hide_password=False), schema=schema)
++             for kind in ("api", "worker")}
++    try:
++        for kind, peer in peers.items():
++            verify_runtime(peer, Settings(workload_role=kind))
++        with Session(engine) as session:
++            player = Player(display_name="Publication fixture")
++            session.add(player)
++            session.flush()
++            player_id = player.id
++            session.add_all([Identity(player_id=player_id, provider=provider, subject=subject),
++                             CommunityAcceptance(player_id=player_id, version=TERMS_VERSION)])
++            session.commit()
++        with pytest.raises(DBAPIError) as denied, peers["worker"].begin() as db:
++            db.execute(text("SELECT id,player_id,provider,subject FROM identities"))
++        assert denied.value.orig.sqlstate == "42501"
++        with peers["worker"].connect() as db:
++            assert db.scalar(text("SELECT bmt_is_official_publisher(:id)"), {"id": player_id}) is official
++            assert db.scalar(text("SELECT bmt_is_official_publisher('unknown')")) is False
++            assert db.scalar(text("SELECT bmt_has_development_identity(:id)"), {"id": player_id}) is (provider == "development")
++        with pytest.raises(DBAPIError) as denied, peers["api"].begin() as db:
++            db.execute(text("SELECT bmt_is_official_publisher(:id)"), {"id": player_id})
++        assert denied.value.orig.sqlstate == "42501"
++        settings = Settings(environment="development" if simulation else "test", local_drafts_only=True,
++                            object_dir=str(tmp_path), purchase_simulation_enabled=simulation,
++                            dev_auth_enabled=simulation, dev_auth_key="p" * 40 if simulation else "")
++        api = create_app(settings, verifier=FakeVerifier(), engine=peers["api"])
++        worker = create_app(replace(settings, workload_role="worker"), verifier=FakeVerifier(), engine=peers["worker"])
++
++        def authenticated(_request: Request):
++            with Session(peers["api"]) as session:
++                player = session.get(Player, player_id)
++                session.expunge(player)
++                return player
++
++        api.dependency_overrides[current_player] = authenticated
++        # Keep normal owner/body validation and storage admission on the API;
++        # only canonical physics is supplied by the existing domain fixture.
++        document = {"schema": "creator-track-v5", "id": "new_publication", "name": "Permission loop",
++                    "shape": "oval", "points": [[0, 0], [20, 0], [20, 20], [0, 20]]}
++        manifest = FakeVerifier().validate_track(document)
++        from bmt_backend.publications import CONTRACT_FIELDS
++        contract = {field: manifest[field] for field in CONTRACT_FIELDS if field != "config_hash"}
++        contract["config_hash"] = manifest["vehicles"]["compact"]["config_hash"]
++        body = {"name": document["name"], "document": document, "vehicle_id": "compact", "contract": contract,
++                "replay": {"schema": "bmt-trajectory-v1", "input_count": 120,
++                           "race_proof": {"schema": "bmt-race-path-v1", "samples": [[0, 0, 0, 0], [120, 0, 0, 0]]}}}
++        with TestClient(api) as client:
++            response = client.post("/v1/publications", json=body, headers={"Idempotency-Key": str(uuid.uuid4())})
++            assert response.status_code == 202, response.text
++            publication_id = response.json()["publication_id"]
++            assert process_one(worker)
++            result = client.get("/v1/me/publications/" + publication_id).json()
++            assert result["state"] == "published", result
++            # A separate request for identical content cannot double consume.
++            repeated = client.post("/v1/publications", json=body, headers={"Idempotency-Key": str(uuid.uuid4())})
++            assert repeated.status_code == 202, repeated.text
++            assert process_one(worker)
++            assert client.get("/v1/me/publications/" + repeated.json()["publication_id"]).json()["receipt"] == result["receipt"]
++        with Session(engine) as session:
++            assert session.scalar(select(Track.official)) is official
++            assert session.scalar(select(func.count()).select_from(TrackVersion)) == 1
++            assert session.scalar(select(func.count()).select_from(PublicationSlot)) == 1
++            free_official = official and not simulation
++            assert session.scalar(select(PublicationSlot.source)) == ("official" if free_official else "initial_or_paid")
++            assert session.get(Entitlements, player_id).slots == (1 if free_official else 0)
++            assert session.get(PublicationIntent, publication_id).status == "published"
++    finally:
++        for peer in peers.values():
++            peer.dispose()
+--- /dev/null
++++ b/docs/PUBLICATION_BACKEND_FIX_2026_11_03.md
+@@ -0,0 +1,61 @@
++# Backend publication repaired and Track#1 published
++
++3 November 2026. The owner's instruction to fix the backend followed the [read-only diagnosis](TRACK_1_PUBLICATION_DIAGNOSIS_2026_11_03.md) and authorised this correction and rollout.
++
++PBF01 removes the verification worker's direct authentication-table reads from new-track classification and development publishing-slot eligibility. PBF02 durably retries database errors during the final publication save, with all candidate track/proof/slot writes rolled back. PBF03 deploys the correction while preserving existing results and recovers the owner's original Track#1 request without another upload, test lap or purchase.
++
++The restricted worker had reached the final publication transaction, then failed on `SELECT identities...`: its database role correctly denied access to that authentication table. The development slot simulator contained another identity lookup on the same worker path. Both are corrected. Migration **0073_publication_publisher_check** installs two Boolean-only functions, `bmt_is_official_publisher(text)` and `bmt_has_development_identity(text)`. Each is a stable SQL security definer with `search_path=pg_catalog` and a fixed, fully qualified identity-table reference. PUBLIC receives no execute permission; the reviewed policy grants execution only to the worker. Raw identity subjects and session credentials remain inaccessible to that role. API-side authentication queries retain their original authority and behavior.
++
++The publication savepoint now catches SQLAlchemy errors and records the existing bounded `validator_unavailable` retry state. A database error after candidate writes rolls back the catalogue, creator proof, news and slot effects; the original operation and evidence survive. Lost database connectivity can still prevent a retry-state write until connectivity recovers; normal durable claim/lease recovery remains in place.
++
++The live backend and its separate website preview now use matching patch images. Four runtime files are overlaid on their exact deployed parents; unrelated workspace/gameplay/vehicle changes are excluded. All ten existing API/Studio/worker/job definitions use the new main image, with the separate website preview retaining its own inherited website files. Resource limits, credentials, runtime settings and traffic destinations are retained. The competitive manifest is exactly unchanged, including rules23, physics0.77 and checkpoint layout24. No historical result was rescored, reset or deleted.
++
++Managed Cloud SQL backup **1793737724395** succeeded before migration and promotion. Main image: `backend@sha256:e4caf9d0ac2887c9bb75253da2a9563fa6b46a7ff1d4120900c7f5e0d99a55bf`. Website preview: `backend@sha256:aec9e53a6001c531be3a615ac2c068442a927313512fbfd2a8c9c8dbecfd97af`.
++
++Track#1's original request **e1045945-cad2-46c8-8b29-d296f39b81ab** had exhausted three infrastructure attempts without creating a track. Recovery used the same owner/entitlement locks and queue admission policy, resetting only that failed request. The corrected worker published it on the first recovered attempt as version **9056493c-e753-44c4-8e89-612ee4715a65**. Uploaded document and proof hashes match before/after exactly; there is one track, one verified creator proof and one publication-slot record. Owner publishing capacity moved **3 to 2**, with source `initial_or_paid`. The public version endpoint returns the published track.
++
++| Preserved inventory/result check | Before | After |
++| --- | ---: | ---: |
++| Boards | 469 | 470 |
++| Personal bests | 7362 | 7362 |
++| Lap personal bests | 7365 | 7365 |
++| Runs | 20560 | 20561 |
++| Rivalry groups | 35 | 35 |
++| Rivalry members | 416 | 416 |
++| Rivalry bests | 849 | 849 |
++| Track versions | 434 | 435 |
++| Publication-slot records | 117 | 118 |
++
++The added board, run, version and slot record belong to the successful publication. These are aggregate checks rather than a byte-level export/comparison of private historical rows. No migration statement modifies those result tables. Final health reports **ready, one available worker, queue depth zero**. API/Studio readiness and private-listener checks pass; temporary rollout tags and the release lock are removed, and retained release receipts/default images are aligned.
++
++Actual verification:
++
++- Local SQLite publication selection: **14 passed, 2 skipped, 17 deselected**. The two SQLite concurrency skips are covered on PostgreSQL in the exact-image runs.
++- Exact Linux main image: **86 passed, 4 skipped**. Exact website-preview image: **86 passed, 4 skipped**. Both include six real restricted-worker cases covering ordinary development creators, the official developer, Google subjects named `developer`, and development simulation on/off. Existing PostgreSQL role/privilege drift, publication idempotency, slot atomicity, owner fences, request retention, news and background scheduling checks pass. The injected real PostgreSQL commit error rolls back all effects and publishes once on retry with unchanged evidence.
++- The same six worker cases with the original publication source produce **six expected permission failures**, directly reproducing the defect. The two remaining optional skips per exact-image suite require an older, unrelated privilege-checker snapshot; the new publication control ran in full.
++- Both native Linux manifests compare equal to the pre-deployment manifest. Scoped Ruff, Python compilation, whitespace and task-only patch forward/reverse checks pass.
++- Live additive migration confirms `bmt_worker` has no identity-column SELECT permission and can execute the official-publisher helper. Successful publication exercises the actual worker and preserved creator proof.
++
++Initial harness and rollout findings remain explicit. A local invocation first used the wrong Python import root, and an unrestricted local parameterized run encountered the existing configured PostgreSQL endpoint errors and was stopped. The owned-container test run initially mounted tests too shallow for repository-relative fixture paths: **60 passed, 4 skipped, 26 fixture errors**. Correcting the mount produced the final clean selections; assertions and privilege gates were not weakened. The first canary-before-migration rollout attempt was interrupted after identifying the API's retained `/ready` startup dependency on the new schema, before promoting traffic. Migration and worker replacement then ran before starting the replacement services. The startup probe remained unchanged. Existing Cloud CLI/WSL sandbox restrictions required approved escalation; TLS verification used the existing Windows trust bundle, and credential values were not printed.
++
++Changed runtime sources: `backend/bmt_backend/publications.py`, `commerce.py`, `database_privileges.py`, and `migrations/versions/0073_publication_publisher_check.py`. Regression sources: `backend/tests/test_publication_worker_privileges.py` and `test_publication_intents.py`. Supporting documentation and [evidence](evidence/publication-backend-fix-2026-11-03/) contain source snapshots/hashes, tests, original control, sanitized backup/recovery/acceptance receipts, rollout source and a checked task-only patch. A concurrent owner checkpoint captured intermediate task edits; the task uses separate before/after snapshots and never stages or writes the main Git index.
++
++Actual commands included:
++
++```text
++# From backend/:
++..\.tools\backend-secure-venv\Scripts\python.exe -m pytest tests/test_publication_intents.py -q -k sqlite --tb=short --show-capture=no
++
++# From the repository root, using .tools/backend-secure-venv/Scripts/python.exe:
++build/publication-backend-fix-2026-11-03/deploy.py inspect
++build/publication-backend-fix-2026-11-03/deploy.py prepare
++build/publication-backend-fix-2026-11-03/deploy.py build
++build/publication-backend-fix-2026-11-03/deploy.py test
++build/publication-backend-fix-2026-11-03/deploy.py push
++build/publication-backend-fix-2026-11-03/deploy.py backup
++build/publication-backend-fix-2026-11-03/deploy.py rollout
++build/publication-backend-fix-2026-11-03/deploy.py recover
++build/publication-backend-fix-2026-11-03/deploy.py verify
++```
++
++No phone query/test, APK/export/install, real purchase, local owner-save modification, owner-game restart or local PC-backend replacement was performed. The owner's app still held its earlier failed status at the final read-only inspection. **Tap Retry once to retrieve the existing successful request**; the backend's retry endpoint returns its published receipt without creating another publication or consuming another slot. Owner UI/device acceptance remains.
+--- a/docs/TRACK_1_PUBLICATION_DIAGNOSIS_2026_11_03.md
++++ b/docs/TRACK_1_PUBLICATION_DIAGNOSIS_2026_11_03.md
+@@ -1,4 +1,6 @@
+ # Track#1 publication diagnosis
++
++Follow-up: the owner authorised a backend fix. It is now deployed, and the original request published successfully with the same recording and one slot consumed. See [the repair and live acceptance report](PUBLICATION_BACKEND_FIX_2026_11_03.md). The inspection below is retained as the original diagnosis.
+ 
+ 3 November 2026. Diagnostic inspection only.
+ 
+--- a/DEVELOPMENT_STATUS.md
++++ b/DEVELOPMENT_STATUS.md
+@@ -2967,3 +2967,8 @@
+ ## More uneven off-track response (2026-11-03)
+ OTR01-OTR02/R01/Q01: Stronger broad heights, a 5.3 m cross-wave and 50% larger fine irregularities increase measured Compact heave span 10.2-16.7% and combined pitch/roll span 18.3-57.5% versus the immediately previous damped profile. Existing smoothness/protected-surface/deterministic presentation gates remain. Headless91/0, retained13/0+59/0 and native152/0 each desktop renderer with122 frames pass. One runtime source; terrain mesh and canonical handling remain. Actual commands, limitations, native comparison and scoped checked checkpoint: [docs/OFFTRACK_ROUGHNESS_2026_11_03.md](docs/OFFTRACK_ROUGHNESS_2026_11_03.md). Reload/owner driving/device acceptance remain; no physical-device test/query, APK, owner-save/process change, live/backend access, deployment or main-index write; concurrent work preserved.
+ <!-- /OFFTRACK-ROUGHNESS-20261103 -->
++<!-- PUBLICATION-BACKEND-FIX-20261103 -->
++## Track#1 publication repaired and deployed (2026-11-03)
++PBF01-PBF03: Worker-only Boolean helpers replace prohibited identity reads in publication/slot simulation; final-save database errors roll back and retry durably. Exact main/preview86pass/4skip each; original-source six permission failures reproduced. Backup1793737724395, additive schema0073 and four-file image patches retain competitive manifest/results. Original Track#1 request publishes once with exact evidence, one creator proof/slot record and capacity3to2; live worker ready/one/queue0. Initial fixture-path and readiness sequencing findings retained. [Sources, commands, receipts and checked task-only checkpoint](docs/PUBLICATION_BACKEND_FIX_2026_11_03.md). App's old cached failure needs one Retry to retrieve the existing receipt; owner/device acceptance remains. No device query/test, APK, real purchase, owner-save/process change, PC backend replacement or main-index write; concurrent work preserved.
++<!-- /PUBLICATION-BACKEND-FIX-20261103 -->
++

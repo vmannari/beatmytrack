@@ -41,8 +41,10 @@ func run() -> void:
 	var control: bool="--control" in OS.get_cmdline_user_args()
 	var builder: Script=load("res://../docs/evidence/volt-body-refinement-2026-11-03/task-base/game/vehicle/electric_kits.gd") if control else K
 	var selected:=PackedStringArray()
+	var report_path: String=""
 	for argument: String in OS.get_cmdline_user_args():
 		if argument.begins_with("--options="): selected=argument.trim_prefix("--options=").split(",")
+		if argument.begins_with("--report="): report_path=argument.trim_prefix("--report=")
 	var report: Array=[]
 	for simple: bool in [false,true]:
 		var car:=CarVisual.new()
@@ -96,7 +98,8 @@ func run() -> void:
 				var direction:=Vector3(side,0,0)
 				var side_name: String=str(side).replace(".","_")
 				for z: float in [-0.87,-0.72,-0.45,0.0,0.45,0.72,0.87]:
-					for y: float in [0.25,0.29,0.34]:
+					# Body skirts belong below the factory doors (bottom 0.31).
+					for y: float in [0.25,0.265,0.28]:
 						var p: Vector3=B.side_point(side,z,y)
 						check(hit(regions.get("Sill"+side_name,faces),p+direction*0.20,p-direction*0.01),label+" complete sill "+str(side)+" "+str(z)+"/"+str(y))
 				for z: float in [-2.025,-1.97,1.97,2.025]:
@@ -108,6 +111,7 @@ func run() -> void:
 			frame.free()
 		car.free()
 	var path: String="res://../docs/evidence/volt-body-refinement-2026-11-03/construction"+("-control" if control else "")+".json"
+	if not report_path.is_empty(): path=report_path
 	FileAccess.open(path,FileAccess.WRITE).store_string(JSON.stringify({"checks":checks,"failures":failures,"choices":report},"\t")+"\n")
 	print("VOLT_BODY_CONSTRUCTION: ",checks," checks, ",failures," failures")
 	quit(1 if failures else 0)

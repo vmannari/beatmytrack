@@ -45,6 +45,7 @@ func run() -> void:
 		if frame in [0, 17, 59, 119]: await capture(output.path_join("look-ahead-turn-%03d.png" % (frame + 1)))
 	game.toggle_pause()
 	game.hud.pause_menu._settings()
+	game.hud.pause_menu.settings_overlay.page._show_section("camera")
 	await capture(output.path_join("pause-camera-1280x720.png"))
 	root.size = Vector2i(960, 540)
 	root.content_scale_size = Vector2i(960, 540)

@@ -42,9 +42,13 @@ def products(request: Request, session: DB):
 
 
 def simulator_allowed(session, settings, player_id):
-    return (settings is not None and settings.purchase_simulation_enabled and settings.environment == "development"
-        and settings.dev_auth_enabled and session.scalar(select(Identity.id).where(
-            Identity.player_id == player_id, Identity.provider == "development")) is not None)
+    if not (settings is not None and settings.purchase_simulation_enabled
+            and settings.environment == "development" and settings.dev_auth_enabled):
+        return False
+    if session.bind.dialect.name == "postgresql" and settings.workload_role == "worker":
+        return session.scalar(select(func.bmt_has_development_identity(player_id)))
+    return session.scalar(select(Identity.id).where(
+        Identity.player_id == player_id, Identity.provider == "development")) is not None
 
 
 def gift_recipient(session, buyer_id, recipient_id, product_id, *, settings=None, simulated=False):

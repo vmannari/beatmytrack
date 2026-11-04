@@ -193,7 +193,7 @@ func run() -> void:
 	app.cloud.race_verified.emit()
 	await settle()
 	var refreshed: Array[String] = service.calls.slice(calls)
-	check(refreshed.size() == 2 and refreshed.any(func(path: String) -> bool: return path.contains("limit=10")) and refreshed.any(func(path: String) -> bool: return path.contains("limit=3")),"verified race completion refreshes both the open board and daily card")
+	check(refreshed.size() == 2 and refreshed.any(func(path: String) -> bool: return path.contains("limit=10")) and refreshed.any(func(path: String) -> bool: return path.contains("limit=6")),"verified race completion refreshes both the open board and expanded daily card")
 	TranslationServer.set_locale("fi")
 	GameText.refresh(self)
 	await settle()

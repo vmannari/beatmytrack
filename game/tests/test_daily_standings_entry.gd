@@ -39,7 +39,7 @@ func run() -> void:
  feed.released.emit()
  check(card._rows.get_child_count() == 1 and card._rows.get_child(0).name == "DailyNearbySelf","first entry shows server own row without a local result")
  var style: StyleBoxFlat = card._rows.get_child(0).get_theme_stylebox("panel")
- check(style.bg_color == Color("ffd34820") and style.border_width_left == 1 and style.border_width_right == 1,"player uses Rivalry tint and outline")
+ check(style.bg_color == Color("1a303df0") and style.border_width_left == 0 and card._rows.get_child(0).find_child("DailyNearbySelfAccent",true,false) != null,"player uses navy fill and an independent straight yellow accent")
  feed.failed = true
  card.refresh()
  check(card._retry.visible and card._rows.get_child(0).name == "DailyNearbySelf","failed background refresh retains cached rows and offers retry")

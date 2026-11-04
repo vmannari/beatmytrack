@@ -17,7 +17,7 @@ func frames(count: int=4) -> void:
 func wait_ready(loader: Node) -> void:
 	var deadline: int=Time.get_ticks_msec()+120000
 	while (loader.studio==null or not loader.studio.prepared) and Time.get_ticks_msec()<deadline: await process_frame
-	check(loader.studio!=null and loader.studio.prepared,"one original world finishes both live and carousel preparation")
+	check(loader.studio!=null and loader.studio.prepared,"the original live world finishes preparation after separate carousel pictures")
 
 func difference(a: Image,b: Image) -> Dictionary:
 	if a.get_size()!=b.get_size(): return {"same_size":false}
@@ -35,6 +35,7 @@ func difference(a: Image,b: Image) -> Dictionary:
 func canonical(page: GaragePage) -> Image:
 	var service: Node=page._preview_service
 	service.prepared_picture={}
+	service.ready_pictures.clear()
 	service.idle_ms=0
 	service.directory="" # Force both controls through native rendering, not PNG reuse.
 	var view: CarShowroom=page.thumbnails.compact
@@ -81,11 +82,11 @@ func run() -> void:
 	var wall: Node=studio.find_child("EarnedAchievements",true,false)
 	check(wall!=null,"actual career wall geometry exists before entry")
 	var wall_id: int=wall.get_instance_id() if wall!=null else 0
-	check(studio._thumbnail_state.is_empty() and not studio.read_only,"completed preparation restores live interaction and camera state")
+	check(not studio.read_only,"completed live preparation retains interactive camera state")
 	check(studio.camera.fov==40.0 and studio.showroom_viewport.msaa_3d==Viewport.MSAA_4X,"main camera and original 4x sampling restored before readiness")
 	check(studio.camera.get_parent().get_node("GarageKey").shadow_enabled,"original main key shadows restored before readiness")
 	check(studio.reflections.views.size()==2 and studio.find_children("*","SubViewport",true,false).size()==3,"same world retains both original reflections without extra views")
-	if DisplayServer.get_name()!="headless": check(studio.carousel_texture!=null and studio.carousel_texture.get_size()==Vector2(2048,512),"saved selected-car picture is captured before entry")
+	if DisplayServer.get_name()!="headless": check(loader.picture_service.pictures_ready(),"separate thumbnail studio pictures are ready before live preload")
 	app._show_screen("garage")
 	var page: GaragePage=app._retained_garage
 	check(page.showroom==studio,"visible Garage adopts the prepared world")
@@ -135,7 +136,7 @@ func run() -> void:
 	held.pressed=true;service._input(held)
 	service.notification(Node.NOTIFICATION_APPLICATION_FOCUS_OUT)
 	check(service._touches.is_empty(),"focus loss retires held touches that may never receive a release")
-	# Enter while temporary thumbnail rendering is in flight: restore immediately.
+	# Interrupt live warming: an incomplete world stays behind the loading ghost.
 	app._show_screen("tracks")
 	while app.menu_page_motion!=null and app.menu_page_motion.is_running(): await process_frame
 	app._trim_hidden_garage()
@@ -144,23 +145,26 @@ func run() -> void:
 	loader.app=app;app._garage_preloader=loader;app.add_child(loader)
 	loader.idle_ms=0;loader.foreground=true
 	var deadline: int=Time.get_ticks_msec()+120000
-	while (loader.studio==null or loader.studio._thumbnail_state.is_empty()) and Time.get_ticks_msec()<deadline: await process_frame
-	check(loader.studio!=null and not loader.studio._thumbnail_state.is_empty(),"fixture interrupts the actual temporary thumbnail pass")
+	while (loader.studio==null or not loader.studio.showroom_ready) and Time.get_ticks_msec()<deadline: await process_frame
+	check(loader.studio!=null and not loader.studio.prepared,"fixture interrupts live warming before full readiness")
 	if loader.studio!=null:
 		studio=loader.studio
-		var state: Dictionary=studio._thumbnail_state.duplicate()
+		var unfinished: WeakRef=weakref(studio)
+		check(not studio.read_only and studio.camera.fov==40.0,"unfinished live warm retains its original camera")
 		app._show_screen("garage")
-		check(app._retained_garage.showroom==studio and studio.adopted,"entry during the thumbnail pass retains the exact live world")
-		check(not studio.read_only and studio._thumbnail_state.is_empty(),"partial-pass adoption removes temporary read-only state")
-		check(studio.camera.transform==state.camera and studio.camera.fov==state.fov,"partial-pass adoption restores original live camera immediately")
-		check(studio.showroom_viewport.msaa_3d==state.msaa and studio.camera.get_parent().get_node("GarageKey").shadow_enabled==state.shadow,"partial-pass adoption restores original sampling and shadows")
-		var yaw: float=studio.yaw
+		var entering: GaragePage=app._retained_garage
+		check(entering.showroom!=studio and entering.progressive_entry,"incomplete live world is replaced by staged entry")
+		check(entering.showroom.find_child("GarageOpeningPicture",true,false)!=null,"partial preparation remains covered by the model ghost")
+		while entering.showroom.preparing and Time.get_ticks_msec()<deadline: await process_frame
+		check(entering.showroom.interaction_ready and entering.showroom.reflections.views.size()==2,"staged fallback restores the interactive full reflected Garage")
+		var yaw: float=entering.showroom.yaw
 		var drag:=InputEventMouseMotion.new()
 		drag.button_mask=MOUSE_BUTTON_MASK_LEFT;drag.relative=Vector2(30,0)
-		studio.gui_input.emit(drag)
-		check(studio.yaw!=yaw,"partial-pass handoff permits live rotation immediately")
+		entering.showroom.gui_input.emit(drag)
+		check(entering.showroom.yaw!=yaw,"completed fallback permits live rotation")
 		await frames(16)
-		check(studio.camera.fov==40.0 and not studio.read_only,"completed asynchronous continuation cannot overwrite adopted live settings")
+		check(unfinished.get_ref()==null,"discarded partial studio releases after entry")
+		check(entering.showroom.camera.fov==40.0 and not entering.showroom.read_only,"asynchronous continuation cannot overwrite live settings")
 	metrics.checks=checks;metrics.failures=failures
 	FileAccess.open(output.path_join("report.json"),FileAccess.WRITE).store_string(JSON.stringify(metrics,"  "))
 	print("GARAGE_FIRST_ENTRY ",JSON.stringify(metrics))

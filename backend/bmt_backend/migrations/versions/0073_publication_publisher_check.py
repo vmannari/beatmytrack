@@ -19,6 +19,11 @@ def upgrade():
         AS $$ SELECT EXISTS (SELECT 1 FROM {quoted}.identities
             WHERE player_id = pid AND provider = 'development' AND subject = 'developer') $$"""))
     connection.execute(sa.text(f"REVOKE ALL ON FUNCTION {quoted}.bmt_is_official_publisher(text) FROM PUBLIC"))
+    connection.execute(sa.text(f"""CREATE FUNCTION {quoted}.bmt_has_development_identity(pid text)
+        RETURNS boolean LANGUAGE sql STABLE SECURITY DEFINER SET search_path=pg_catalog
+        AS $$ SELECT EXISTS (SELECT 1 FROM {quoted}.identities
+            WHERE player_id = pid AND provider = 'development') $$"""))
+    connection.execute(sa.text(f"REVOKE ALL ON FUNCTION {quoted}.bmt_has_development_identity(text) FROM PUBLIC"))
 
 
 def downgrade():
@@ -28,3 +33,4 @@ def downgrade():
     schema = connection.scalar(sa.text("SELECT current_schema()"))
     quoted = connection.dialect.identifier_preparer.quote_identifier(schema)
     connection.execute(sa.text(f"DROP FUNCTION {quoted}.bmt_is_official_publisher(text)"))
+    connection.execute(sa.text(f"DROP FUNCTION {quoted}.bmt_has_development_identity(text)"))

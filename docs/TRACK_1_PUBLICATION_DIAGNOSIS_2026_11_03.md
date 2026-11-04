@@ -1,5 +1,7 @@
 # Track#1 publication diagnosis
 
+Follow-up: the owner authorised a backend fix. It is now deployed, and the original request published successfully with the same recording and one slot consumed. See [the repair and live acceptance report](PUBLICATION_BACKEND_FIX_2026_11_03.md). The inspection below is retained as the original diagnosis.
+
 3 November 2026. Diagnostic inspection only.
 
 Requirements: TPD01 identify the failed publication stage and root cause; TPD02 preserve the existing request, track, recording, account and live configuration.

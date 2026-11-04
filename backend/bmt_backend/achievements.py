@@ -83,6 +83,8 @@ def save(session, row, metrics, stamp, *, flush=True):
                 newly.append(key)
     if newly or row.revision == 0:
         row.rarity_pending = True
+        from .run_signals import wake_after_commit
+        wake_after_commit(session)
     row.metrics, row.unlocked = metrics, unlocked
     row.revision += 1
     if flush:
@@ -107,8 +109,11 @@ def consistent(laps, percent):
 def schedule(session, kind, identity, due_at, facts=None):
     session.execute(insert(session, AchievementCompetition).values(kind=kind, id=identity,
         due_at=due_at, done=False, facts=facts or {}).on_conflict_do_nothing())
-    return session.scalar(select(AchievementCompetition).where(AchievementCompetition.kind == kind,
+    job = session.scalar(select(AchievementCompetition).where(AchievementCompetition.kind == kind,
         AchievementCompetition.id == identity).with_for_update())
+    from .run_signals import wake_after_commit
+    wake_after_commit(session)
+    return job
 
 
 def capture_race(session, run, previous, *, incident_free=False, acceptance=None):
@@ -244,6 +249,7 @@ def observe_record(session, board_id, stamp):
 def process_due(app, *, clock=None):
     """Fair bounded turns: competitions, rarity, held records and creator effects."""
     stamp = now() if clock is None else clock
+    app.state.achievement_next_due = None
     from .creator_achievements import process_one as project_creator
     roles = (process_competition, process_rarity, process_record, None)
     cursor = getattr(app.state, "achievement_role", 0)
@@ -257,12 +263,20 @@ def process_due(app, *, clock=None):
     return False
 
 
+def note_deadline(app, stamp):
+    previous = getattr(app.state, "achievement_next_due", None)
+    app.state.achievement_next_due = stamp if previous is None else min(previous, stamp)
+
+
 def process_competition(app, stamp):
     with app.state.session_factory() as session:
-        job = session.scalar(select(AchievementCompetition).where(AchievementCompetition.done.is_(False),
-            AchievementCompetition.due_at <= stamp).order_by(AchievementCompetition.due_at,
+        job = session.scalar(select(AchievementCompetition).where(AchievementCompetition.done.is_(False))
+            .order_by(AchievementCompetition.due_at,
             AchievementCompetition.kind, AchievementCompetition.id).limit(1).with_for_update(skip_locked=True))
         if job:
+            if job.due_at > stamp:
+                note_deadline(app, job.due_at)
+                return False
             finalize_competition(session, job, stamp)
             session.commit()
             return True
@@ -290,9 +304,12 @@ def process_rarity(app, stamp):
 
 def process_record(app, stamp):
     with app.state.session_factory() as session:
-        record = session.scalar(select(AchievementRecord).where(AchievementRecord.due_at <= stamp)
+        record = session.scalar(select(AchievementRecord)
             .order_by(AchievementRecord.due_at, AchievementRecord.board_id).limit(1).with_for_update(skip_locked=True))
         if record:
+            if record.due_at > stamp:
+                note_deadline(app, record.due_at)
+                return False
             rows = leaders(session, record.board_id)
             if (len(rows) >= 10 and rows[0].player_id == record.player_id
                     and rows[0].time_ticks < rows[1].time_ticks):
@@ -308,10 +325,20 @@ def process_record(app, stamp):
 def drive_idle(app, *, force=False):
     """No timers/services: share the existing worker with bounded idle SQL cost."""
     current = time.monotonic()
-    if not force and current < getattr(app.state, "achievement_check_after", 0):
+    signals = getattr(app.state, "run_signals", None)
+    generation = getattr(signals, "work_generation", 0)
+    hinted = generation != getattr(app.state, "achievement_work_generation", generation)
+    if not force and not hinted and current < getattr(app.state, "achievement_check_after", 0):
         return False
     worked = process_due(app)
-    app.state.achievement_check_after = current + (0.25 if worked else 60.0)
+    # Record the generation captured before processing: work committed during
+    # this pass still gets its own turn, without waiting out an empty scan.
+    app.state.achievement_work_generation = generation
+    delay = 0.25 if worked else 60.0
+    deadline = getattr(app.state, "achievement_next_due", None)
+    if not worked and deadline is not None:
+        delay = min(delay, max(0, deadline - now()))
+    app.state.achievement_check_after = current + delay
     return worked
 
 
@@ -326,7 +353,7 @@ def finalize_competition(session, job, stamp):
     pending = session.scalar(select(Run.id).join(binding, binding.ticket_id == Run.ticket_id)
         .where(competition_id == job.id, Run.status.in_(("queued", "verifying"))).limit(1))
     if pending:
-        job.due_at = stamp + 60
+        job.due_at = stamp + 1
         return
     entity = session.get(RivalryGroup if rivalry else Challenge, job.id)
     if entity is None:

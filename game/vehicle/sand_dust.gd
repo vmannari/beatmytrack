@@ -8,7 +8,7 @@ static var _snow_cloud_shader: WeakRef
 const PREPARED_EMITTER_BYTES: int = 2 * 1024 * 1024
 ## Presentation-only, wheel-driven sand spray and lingering dust. Particle state
 ## never feeds back into the fixed-step vehicle simulation.
-const PRESENTATION_VERSION: String = "desert-dust-22"
+const PRESENTATION_VERSION: String = "desert-dust-23"
 const GRASS_PRESENTATION_VERSION: String = "grass-clippings-2"
 
 const SAND_SURFACE: int = 2
@@ -47,6 +47,8 @@ var _deck_cloud_sources: Dictionary = {}
 var _bridge_count: int = 0
 var _bridge_theme: String = ""
 var _bridge_track: NativeTrack
+var _bridge_presentation: BridgePresentation
+var _bridge_height_offset: float = 0.0
 var _bridge_axes := PackedVector4Array()
 var _bridge_sizes := PackedVector4Array()
 var _bridge_roof := Vector4(CreatorBridges.UNDERPASS_CLEARANCE,0.42,0.65,0.0)
@@ -216,7 +218,7 @@ func clear() -> void:
 
 func sample(state: VehicleState, frame: DriveFrame, track: NativeTrack, bridge: BridgePresentation = null) -> void:
 	if track != null:
-		_bind_bridges(track)
+		_bind_bridges(track,bridge)
 		_set_desert_profile(str(track.metadata.get("theme","pine")) == "desert")
 	var winter: bool = track != null and track.metadata.get("theme","pine") == "winter"
 	if track == null or state.jump_height > 0.0 or state.roll_ticks > 0 or state.velocity.length() < (0.06 if winter else 0.8):
@@ -879,11 +881,15 @@ func _snow_surface_height(at: Vector2, contact_height: float) -> float:
 		height = maxf(height,float(_bank_visual_heights.get(key+offset,contact_height)))
 	return height
 
-func _bind_bridges(track: NativeTrack) -> void:
+func _bind_bridges(track: NativeTrack, bridge: BridgePresentation = null) -> void:
 	var theme: String = str(track.metadata.get("theme",""))
-	if _bridge_track==track and _bridge_theme==theme: return
+	if _bridge_track==track and _bridge_theme==theme and _bridge_presentation==bridge: return
 	assert(track.creator_bridges.size()<=16,"Bridge dust requires the validated sixteen-span contract")
 	_bridge_track = track
+	_bridge_presentation = bridge
+	_bridge_height_offset = 0.0
+	if bridge != null and bridge.visual_relief != null and not bridge.visual_relief.field.is_empty():
+		_bridge_height_offset = -preload("res://track/desert_road_relief.gd").DEPTH
 	_bridge_theme = theme
 	_bridge_count = track.creator_bridges.size()
 	_bridge_axes.resize(16)
@@ -904,6 +910,7 @@ func _bind_cloud_bridge_material(emitter: GPUParticles3D) -> void:
 		material.set_shader_parameter("dust_bridge_axes",_bridge_axes)
 		material.set_shader_parameter("dust_bridge_sizes",_bridge_sizes)
 	material.set_shader_parameter("dust_bridge_roof",_bridge_roof)
+	material.set_shader_parameter("dust_bridge_height_offset",_bridge_height_offset)
 
 func _ensure_deck_clouds() -> void:
 	if not deck_dust_emitters.is_empty(): return

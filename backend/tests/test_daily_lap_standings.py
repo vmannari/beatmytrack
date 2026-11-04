@@ -1,3 +1,4 @@
+import pytest
 from test_daily_standings import auth, auth_app, feature, finish  # noqa: F401
 from test_daily_standings import daily as daily_fixture
 
@@ -91,3 +92,36 @@ def test_compact_snapshot_uses_indexed_flying_personal_bests(daily, monkeypatch)
     assert [row["display_name"] for row in nearby["items"]] == ["Bob", "Carol"]
     assert [row["country_code"] for row in nearby["items"]] == ["SE", "FR"]
     assert nearby["comparison"]["position"] == 2 and nearby["comparison"]["population"] == 3
+
+
+@pytest.mark.parametrize("compact", [False, True])
+def test_expanded_neighbours_fill_six_slots_at_both_edges(daily, monkeypatch, sign_in, compact):
+    d = daily
+    params = prepare(d, monkeypatch)
+    names = [("Bob", 20), ("Alice", 24), ("Carol", 30), ("Creator", 40)]
+    for index in range(4):
+        name = f"Racer{index+1}"
+        d.identities[name] = sign_in(name)
+        names.append((name, 50+index*10))
+    for name, ticks in names:
+        finish(d, ticks*5, name)
+    bid = digest({"version_id": d.version.id, **board_manifest(d.version, "compact"), "comparison_population": "all"})
+    times = {d.identities[name]["player"]["id"]: ticks for name, ticks in names}
+    laps = (HistogramPopulation.from_frequencies([(ticks, 1) for _, ticks in names], own=None,
+                stored_grid={"board_id": bid}) if compact else
+            HistogramPopulation.from_rows(times.items(), {"board_id": bid}))
+    monkeypatch.setattr("bmt_backend.histogram_snapshots.load_snapshot",
+                        lambda *args: ("expanded", {}, (HistogramPopulation.from_rows([]), laps)))
+    for candidate, expected in [(1, [20, 30, 40, 50, 60, 70]),
+                                (35, [20, 30, 40, 50, 60, 70]),
+                                (90, [30, 40, 50, 60, 70, 80])]:
+        response = d.client.get("/v1/track-of-the-day/lap-standings",
+            params={**params, "around": True, "lap_ticks": candidate, "limit": 7}, headers=auth(d))
+        assert response.status_code == 200, response.text
+        data = response.json()
+        assert [row["time_ticks"] for row in data["items"]] == expected
+        assert len({row["player_id"] for row in data["items"]}) == 6
+        assert all(row["display_name"] != "Alice" for row in data["items"])
+        assert data["player"]["time_ticks"] == 24
+        assert data["comparison"]["candidate_ticks"] == candidate
+        assert data["next_cursor"] is None

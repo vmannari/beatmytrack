@@ -1,0 +1,846 @@
+--- a/DEVELOPMENT_STATUS.md
++++ b/DEVELOPMENT_STATUS.md
+@@ -1,3 +1,8 @@
++<!-- STUDIO-REPORTED-TRACKS-20261104 -->
++## Studio reported-track queue and deletion implemented (2026-11-04)
++STR01-STR04: Report totals/distinct reporters/unresolved counts and linked evidence; owner-only confirmed, audited, state-fenced deletion uses existing quarantine while retaining historical results. Existing archived links stay valid until explicit deletion. Focused9pass, retained20pass, restricted PostgreSQL1pass and real-browser9checks pass; seven desktop/tablet views. Sources, actual commands, initial fixture/encoding/compatibility findings and checked task-only checkpoint: [report](docs/STUDIO_REPORTED_TRACKS_2026_11_04.md). No migration/grant expansion; matching authorised Studio rollout and owner acceptance remain. No live access/mutation/deployment, actual track deletion, device query/test, APK, owner-save/process change or main-index write; concurrent work preserved.
++<!-- /STUDIO-REPORTED-TRACKS-20261104 -->
++
+ <!-- VOLT-DOOR-FENDER-FIT-20261103 -->
+ ## Volt kits clear doors and meet the actual fender curves (2026-11-03)
+ VDF01-VDF03 correct the owner's rejection of the prior kit fit: all15 skirts stay below the0.31 door datum (tops0.281?0.298); skirt and bumper ends follow the existing painted arch curves instead of fixed short Z bounds. New fit540/0 rejects archived parts540/480fail; construction8162/0, tire-hull clearance181/0 with positive intrusion control, retained options610/0 and Garage54/0 each desktop renderer pass.320 final native plain/patterned views; preceding recording retained and archived parts recaptured in current lighting for comparison. Four bases/120 modules/Volt Garage refresh; hood builders/catalogue/62 hood files retained. Initial tip/offset findings and superseded bakes retained, no gate relaxed. [Report, accepted prepared counts and checked task-only checkpoint](docs/VOLT_DOOR_FENDER_FIT_2026_11_03.md). Reload/owner appearance/device acceptance remain. No device query/test, APK, real purchase, owner-save/process change, live/backend mutation, deployment or main-index write; concurrent work preserved.
+--- a/backend/bmt_backend/admin.py
++++ b/backend/bmt_backend/admin.py
+@@ -77,7 +77,7 @@
+ def asset(name: str):
+     if name in ("usage.js", "usage.css"):
+         return FileResponse(UI / name)
+-    if name not in ("app.js", "signin.js", "commerce.js", "support.js", "studio.js", "product_analytics.js", "operations.js", "style.css", "catalogue.js", "catalogue.css", "monitor.js", "network.js", "monitor.css", "monitor_views.js", "monitor_views.css", "insights.js", "insights.css", "platform.js", "platform.css", "game_config.js", "game_config.css", "ranking.js"):
++    if name not in ("app.js", "signin.js", "commerce.js", "support.js", "studio.js", "product_analytics.js", "operations.js", "reported_tracks.js", "style.css", "catalogue.js", "catalogue.css", "monitor.js", "network.js", "monitor.css", "monitor_views.js", "monitor_views.css", "insights.js", "insights.css", "platform.js", "platform.css", "game_config.js", "game_config.css", "ranking.js"):
+         raise HTTPException(404)
+     return FileResponse(UI / name)
+ 
+@@ -275,6 +275,9 @@
+             if prior.request_hash != hashed:
+                 raise HTTPException(409, "COMMAND_ID_REUSED")
+             return {"audit_id": prior.id, "after": prior.after}
++        if model == Track and db.scalar(select(AdminAudit.id).where(
++                AdminAudit.entity_id == entity_id, AdminAudit.action == "track_deletion").limit(1)):
++            raise HTTPException(409, "TRACK_DELETED")
+         changed = db.execute(
+             update(model)
+             .where(model.id == entity_id, getattr(model, field) == body.expected,
+--- a/backend/bmt_backend/http_routes.py
++++ b/backend/bmt_backend/http_routes.py
+@@ -13,7 +13,7 @@
+         for name in ("studio_identity", "admin", "admin_commerce", "admin_purchase_controls", "admin_player_grants",
+                      "admin_support", "studio", "studio_analysis", "studio_metrics", "studio_usage", "studio_jobs",
+                      "studio_ranking", "studio_incidents", "studio_finance", "studio_experiments", "game_config",
+-                     "studio_governance", "studio_alarms", "studio_cases", "studio_competitions", "studio_rivalry", "studio_catalogue"):
++                     "studio_governance", "studio_alarms", "studio_cases", "studio_competitions", "studio_rivalry", "studio_catalogue", "studio_reported_tracks"):
+             mount(name)
+         mount("publications", "admin_router", "/v1")
+     if settings.workload_role != "admin":
+--- a/backend/bmt_backend/studio_cases.py
++++ b/backend/bmt_backend/studio_cases.py
+@@ -145,6 +145,9 @@
+                 raise HTTPException(422, "TRACK_CASE_REQUIRED")
+             reason = safe_text(payload.text, 500)
+             track = session.scalar(select(Track).where(Track.id == case.track_id).with_for_update())
++            if session.scalar(select(AdminAudit.id).where(AdminAudit.entity_id == track.id,
++                    AdminAudit.action == "track_deletion").limit(1)):
++                raise HTTPException(409, "TRACK_DELETED")
+             quarantine = session.get(StudioQuarantine, track.id)
+             if payload.kind == "quarantine":
+                 if track.hidden or quarantine:
+--- a/backend/bmt_backend/studio_catalogue.py
++++ b/backend/bmt_backend/studio_catalogue.py
+@@ -15,6 +15,7 @@
+ from sqlalchemy.orm import aliased, load_only
+ 
+ from .admin import Access, Window, record
++from .admin_models import AdminAudit
+ from .admin_ranges import calendar_range
+ from .commerce import access_values, catalog_products, entitlement_payload, simulator_allowed
+ from .commerce_models import Entitlements, PublicationSlot, Purchase
+@@ -209,6 +210,8 @@
+         parent, player = session.get(Track, version.track_id), None
+         player = session.get(Player, parent.owner_id)
+         result = track_record(version, parent, player)
++        result["deleted"] = session.scalar(select(AdminAudit.id).where(
++            AdminAudit.entity_id == parent.id, AdminAudit.action == "track_deletion").limit(1)) is not None
+         result.update(content_hash=version.content_hash,
+             manifest={key: version.manifest.get(key) for key in MANIFEST_FIELDS if key in version.manifest},
+             creator_test_run_id=version.creator_test_run_id)
+--- a/backend/bmt_backend/admin_ui/app.js
++++ b/backend/bmt_backend/admin_ui/app.js
+@@ -12,7 +12,7 @@
+ const sections=[['overview','Overview','\u25eb','START HERE'],['alarms','Operations & alarms','!',''],
+  ['usage','Usage & costs','\u25f4',''],
+  ['product','Player behaviour','\u2197','UNDERSTAND'],['quality','Game quality','\u2301',''],['economy','Monetisation','\u25a3',''],
+- ['tracks','Content & competitions','\u25b1','INVESTIGATE'],['cases','Player support','\u25c7',''],
++ ['tracks','Content & competitions','\u25b1','INVESTIGATE'],['reported-tracks','Reported tracks','\u2691',''],['cases','Player support','\u25c7',''],
+  ['studio','Administration','\u25a4','MANAGE']];
+ const titles={...Object.fromEntries(sections.map(x=>[x[0],x[1]])),players:'Players',races:'Race evidence',publications:'Publications',competitions:'Competitions',system:'Service health'};
+ const date=v=>v?new Date(v*1000).toISOString().replace('T',' ').slice(0,19)+' UTC':'—';
+@@ -101,10 +101,11 @@
+  try{
+   const overviewQuery=new URLSearchParams({days:$('#days').value==='custom'?'7':$('#days').value});
+   if(params.has('since')){overviewQuery.set('since',params.get('since'));overviewQuery.set('until',params.get('until'));}
+-  const d=await api((['usage','alarms','quality','cases','competitions','publications','tracks','players','races','studio','system','economy','live','product','analytics'].includes(section)?'studio/context?':'overview?')+overviewQuery);if(ticket!==generation)return;
++  const d=await api((['usage','alarms','quality','reported-tracks','cases','competitions','publications','tracks','players','races','studio','system','economy','live','product','analytics'].includes(section)?'studio/context?':'overview?')+overviewQuery);if(ticket!==generation)return;
+   role=d.role;reporting=d;params=rangeParams(params);
+   let html='';
+   if(section==='alarms')html=await platformIncidents(id,params);
++  else if(section==='reported-tracks')html=await reportedTracks(id,params);
+   else if(section==='usage')html=await studioUsage(params);
+   else if(section==='quality')html=await platformQuality(params);
+   else if(['tracks','players'].includes(section))html=await catalogueView(section,id,params);
+@@ -125,7 +126,7 @@
+   else if(section==='analytics')html=intro('Race evidence','Inspect submitted results and their verification outcomes.','INVESTIGATE')+await listing('races',params);
+   else html=intro('Page not found','Use the navigation to choose a workspace.');
+   if(ticket!==generation)return;
+-  if(['tracks','publications','competitions'].includes(section))html=pTabs([['tracks','Track catalogue'],['publications','Publication requests'],['competitions','Competitions']],section,params)+html;if(['cases','players','races'].includes(section))html=pTabs([['cases','Support cases'],['players','Player directory'],['races','Race evidence']],section,params)+html;html='<div class="platform-actions"><button class="btn" id="platform-save">Save view</button>'+pExportAction(section,params)+'</div>'+html;$('#main').innerHTML=html;
++  if(['tracks','reported-tracks','publications','competitions'].includes(section))html=pTabs([['tracks','Track catalogue'],['reported-tracks','Reported tracks'],['publications','Publication requests'],['competitions','Competitions']],section,params)+html;if(['cases','players','races'].includes(section))html=pTabs([['cases','Support cases'],['players','Player directory'],['races','Race evidence']],section,params)+html;html='<div class="platform-actions"><button class="btn" id="platform-save">Save view</button>'+pExportAction(section,params)+'</div>'+html;$('#main').innerHTML=html;
+   if(lastRenderedRoute!==raw){window.scrollTo({top:0,behavior:'instant'});lastRenderedRoute=raw;}
+   $('#role').textContent=role+' access';$('#environment').textContent=d.environment;
+   $('#connection').textContent=location.host;$('#connection').title=location.origin;
+@@ -142,7 +143,7 @@
+   $('#freshness').textContent='Query not completed';$('#retry').onclick=render;
+  }finally{if(ticket===generation)$('#main').removeAttribute('aria-busy');}
+ }
+-function wire(params){const form=$('#filters');if(form)form.onsubmit=e=>{e.preventDefault();const p=new URLSearchParams(params);p.delete('offset');p.delete('cursor');for(const [name,value] of new FormData(form))value?p.set(name,value):p.delete(name);location.hash=location.hash.slice(1).split('?')[0]+'?'+p;};document.querySelectorAll('[data-offset]').forEach(b=>b.onclick=()=>{params.set('offset',b.dataset.offset);location.hash=location.hash.slice(1).split('?')[0]+'?'+params;});document.querySelectorAll('[data-page-cursor]').forEach(b=>b.onclick=()=>{params.delete('offset');params.set('cursor',b.dataset.pageCursor);location.hash=location.hash.slice(1).split('?')[0]+'?'+params;});if($('#command'))$('#command').onclick=()=>confirmCommand($('#command').dataset);wireCommerce(params);wireSupport();wireStudio();wireCatalogue();wireMonitor();wireInsights();wirePlatform(params);wireGameConfig(params);}
++function wire(params){const form=$('#filters');if(form)form.onsubmit=e=>{e.preventDefault();const p=new URLSearchParams(params);p.delete('offset');p.delete('cursor');for(const [name,value] of new FormData(form))value?p.set(name,value):p.delete(name);location.hash=location.hash.slice(1).split('?')[0]+'?'+p;};document.querySelectorAll('[data-offset]').forEach(b=>b.onclick=()=>{params.set('offset',b.dataset.offset);location.hash=location.hash.slice(1).split('?')[0]+'?'+params;});document.querySelectorAll('[data-page-cursor]').forEach(b=>b.onclick=()=>{params.delete('offset');params.set('cursor',b.dataset.pageCursor);location.hash=location.hash.slice(1).split('?')[0]+'?'+params;});if($('#command'))$('#command').onclick=()=>confirmCommand($('#command').dataset);wireCommerce(params);wireSupport();wireStudio();wireCatalogue();wireReportedTracks();wireMonitor();wireInsights();wirePlatform(params);wireGameConfig(params);}
+ function dialogToken(){return {dialog:dialogGeneration,auth:authGeneration,page:generation};}
+ function dialogIsCurrent(token){return token.dialog===dialogGeneration&&token.auth===authGeneration&&token.page===generation&&$('#dialog').open;}
+ function modal(html){
+--- a/backend/bmt_backend/admin_ui/catalogue.js
++++ b/backend/bmt_backend/admin_ui/catalogue.js
+@@ -63,7 +63,7 @@
+  const d=await api('catalogue/tracks/'+encodeURIComponent(id)+'?'+query),t=d.track;role=d.role;
+  const races=d.recent_races.map(r=>`<tr><td>${link('races',r.id,'Inspect race')}<small class="stc-table-note">${esc(date(r.created_at))}</small></td><td>${link('players',r.player_id,r.player_name)}</td><td>${status(r.status)}</td><td>${esc(r.vehicle_id)}</td><td>${r.accepted_seconds==null?'Unavailable':r.accepted_seconds.toFixed(3)+' s'}</td></tr>`).join('');
+  return intro(t.name+' / v'+t.number,`${t.preview.theme||'Biome unavailable'} · Published immutable version`,'IMMUTABLE CONTENT')+
+-  `<div class="console-actions"><a class="btn" href="${catalogueBackHref('tracks',params)}">← All tracks</a>${link('players',t.creator_id,'Open creator: '+t.creator_name)}<a class="btn btn-primary" href="${scopedHref('quality?kind=segment_summary&version='+encodeURIComponent(id),params)}">Investigate heatmap</a>${role==='owner'?`<button class="btn" data-case-action="create" data-track-id="${esc(t.track_id)}">Open moderation case</button><button class="btn" id="command" data-kind="tracks" data-id="${esc(t.track_id)}" data-value="${t.hidden}">${t.hidden?'Show track':'Hide track'}</button>`:''}</div>`+
++  `<div class="console-actions"><a class="btn" href="${catalogueBackHref('tracks',params)}">← All tracks</a>${link('players',t.creator_id,'Open creator: '+t.creator_name)}<a class="btn btn-primary" href="${scopedHref('quality?kind=segment_summary&version='+encodeURIComponent(id),params)}">Investigate heatmap</a>${role==='owner'?`<button class="btn" data-case-action="create" data-track-id="${esc(t.track_id)}">Open moderation case</button>${t.deleted?'<span class="console-note">Deleted; removed from public access</span>':`<button class="btn" id="command" data-kind="tracks" data-id="${esc(t.track_id)}" data-value="${t.hidden}">${t.hidden?'Show track':'Hide track'}</button>`}`:''}</div>`+
+   `<div class="stc-summary">${catalogueStat('Verified finishers',t.verified_finishers,'Qualified public distinct drivers')}${catalogueStat('Rating',t.rating_average==null?null:t.rating_average.toFixed(1)+' / 5',t.rating_count+' qualified ratings')}${catalogueStat('Observed exposures',t.discovery?.exposures,t.discovery?t.discovery.selections+' card selections':'No observed discovery coverage')}</div>`+
+   `<div class="stc-split"><section class="card"><div class="card-head"><h3>Stored route shape</h3></div><div class="console-padding">${catalogueShape(t.preview)}<p class="console-note">Prepared lap route, ${t.preview.points.length} points. Start marker is gold. The schematic does not represent road widths or elevation.</p></div></section>${card('Version & creator context',`<dl class="stc-facts"><div><dt>Canonical version</dt><dd class="stc-id">${esc(id)}</dd></div><div><dt>Creator</dt><dd>${link('players',t.creator_id,t.creator_name)}</dd></div><div><dt>Catalogue</dt><dd>${t.official?'Official':'Community'} · ${t.archived?'Archived':t.hidden?'Hidden':'Visible'}</dd></div><div><dt>Published</dt><dd>${esc(date(t.published_at))}</dd></div><div><dt>Content hash</dt><dd class="stc-id">${esc(t.content_hash)}</dd></div><div><dt>Creator proof</dt><dd>${t.creator_test_run_id?link('races',t.creator_test_run_id,'Inspect creator lap'):'Unavailable'}</dd></div></dl><details><summary>Pinned content / eligibility contract</summary>${kv(t.manifest)}</details>`)}
+   </div><div class="stc-split">${card('Latest server race evidence',`<div class="console-table"><table><thead><tr><th>Submitted</th><th>Driver</th><th>Outcome</th><th>Car</th><th>Accepted time</th></tr></thead><tbody>${races}</tbody></table>${races?'':'<p class="stc-empty">No server race submissions on this version.</p>'}</div><p class="console-note">Latest 20 submissions across pinned boards. Submitted attempts are not a discovery funnel.</p>`)}${card('Published versions & cases',`<h4>Versions</h4><div class="stc-chips">${d.versions.map(v=>`<a class="btn ${v.id===id?'btn-primary':''}" href="${catalogueHref('tracks/'+v.id,params)}">v${v.number}</a>`).join('')}</div>${d.versions_truncated?'<p>Latest 20 published versions only.</p>':''}<h4>Linked support cases</h4>${catalogueCases(d.cases)}${d.cases_truncated?'<p>Latest 10 cases only.</p>':''}`)}</div>`;
+--- a/backend/bmt_backend/admin_ui/index.html
++++ b/backend/bmt_backend/admin_ui/index.html
+@@ -20,6 +20,7 @@
+   <script src="/admin/assets/studio.js" defer></script>
+   <script src="/admin/assets/product_analytics.js" defer></script>
+   <script src="/admin/assets/operations.js" defer></script>
++  <script src="/admin/assets/reported_tracks.js" defer></script>
+   <script src="/admin/assets/insights.js" defer></script>
+   <script src="/admin/assets/platform.js" defer></script>
+   <script src="/admin/assets/game_config.js" defer></script>
+--- a/backend/bmt_backend/admin_ui/operations.js
++++ b/backend/bmt_backend/admin_ui/operations.js
+@@ -37,7 +37,7 @@
+ function caseEventBody(event){
+  const detail=event.detail||{};
+  if(event.kind==='transition')return `<p class="case-state-change">${status(detail.from)} <span>→</span> ${status(detail.to)}</p><p class="case-note">${esc(detail.reason)}</p>`;
+- if(event.kind==='quarantine'||event.kind==='restore')return `<p class="case-note">${esc(detail.reason)}</p><p class="case-event-link">${monLink('tracks?q='+encodeURIComponent(detail.track_id)+'&versions=all','Inspect affected published versions')} · ${monLink('system/audit?q='+encodeURIComponent(detail.audit_id),'Inspect visibility audit')}</p>`;
++ if(event.kind==='quarantine'||event.kind==='restore'||event.kind==='track_deleted')return `<p class="case-note">${esc(detail.reason)}</p><p class="case-event-link">${monLink('tracks?q='+encodeURIComponent(detail.track_id)+'&versions=all','Inspect affected published versions')} · ${monLink('system/audit?q='+encodeURIComponent(detail.audit_id),'Inspect visibility audit')}</p>`;
+  if(event.kind==='created')return `<p class="case-note">${esc(detail.title)}</p>`;
+  if(event.kind==='issue')return `<p class="case-issue-reference">${esc(detail.text)}</p><p class="mon-caption">Recorded issue reference; no external tracker or automatic linkage is configured.</p>`;
+  return `${detail.reason?`<span class="case-source-label">${esc(detail.reason.replaceAll('_',' '))}</span>`:''}<p class="case-note">${esc(detail.text||'No note text retained.')}</p>`;
+@@ -50,7 +50,7 @@
+   const rows=d.items.map(c=>`<tr><td><a class="case-title-link" href="#cases/${esc(c.id)}">${esc(c.title)}</a><small class="mon-id">${esc(c.id)}</small></td><td>${status(c.status)}</td><td>${c.player_id?link('players',c.player_id,'Open player'):'No player linked'}${c.track_id?`<small>${monLink('tracks?q='+encodeURIComponent(c.track_id)+'&versions=all','Published content')}</small>`:''}</td><td>${esc(date(c.updated_at))}<small>Revision ${c.revision}</small></td></tr>`).join('');
+   return `<div class="mon-view case-workspace">${intro('Support cases','Backend Studio owner reviews reports daily. Prioritize child safety and credible threats; record each decision.','TRUST & SUPPORT')}<div class="mon-view-actions">${role==='owner'?'<button class="btn btn-primary" data-case-action="create">New case</button>':'<span class="mon-caption">Analyst inspection · read-only</span>'}${monLink('players','Find a player')}${monLink('competitions','Inspect competition provenance')}</div><div class="mon-stats case-page-stats">${monStat('Cases on this page',monCount(d.items.length),'Current status filter; not a global total')}${monStat('Unresolved on this page',monCount(needs),'Open, investigating or appealed')}${monStat('Latest case update',d.items.length?date(d.items[0].updated_at):'Unavailable','Append-only evidence; revision-fenced decisions')}</div>${monCard('Case investigation queue','Latest activity first; inspect evidence before changing account or content access',`<form id="case-filters" class="stc-filters"><label>Case state<select name="status"><option value="">All states</option>${['open','investigating','appealed','resolved'].map(value=>`<option value="${value}" ${params.get('status')===value?'selected':''}>${value}</option>`).join('')}</select></label><button class="btn btn-primary">Apply</button></form><div class="console-table case-list-table"><table><thead><tr><th>Case / evidence</th><th>State</th><th>Investigation context</th><th>Updated</th></tr></thead><tbody>${rows}</tbody></table>${rows?'':'<div class="mon-source-empty"><h4>No cases in this scope</h4><p>Change the status filter, or open a case from a player or published track investigation.</p></div>'}</div><div class="console-pager"><span>${d.items.length} cases on this bounded page${d.has_more?' · more retained cases available':''}</span><a class="btn ${offset===0?'stc-disabled':''}" href="${page(Math.max(0,offset-limit))}" ${offset===0?'aria-disabled="true" tabindex="-1"':''}>Previous</a><a class="btn ${!d.has_more||offset+limit>10000?'stc-disabled':''}" href="${page(offset+limit)}" ${!d.has_more||offset+limit>10000?'aria-disabled="true" tabindex="-1"':''}>Next</a></div>`)}<p class="mon-caption">Cases are evidence to investigate. Verified account recovery, production compensation, external ticket synchronization and individual staff SSO are unavailable.</p></div>`;
+  }
+- const c=d.case,transitions=d.allowed_transitions||[],titles={created:'Case opened',reported:'Player report received',appealed:'Appeal received',note:'Investigation note',issue:'Issue reference linked',transition:'Case state changed',quarantine:'Track quarantined',restore:'Track restored'};
++ const c=d.case,transitions=d.allowed_transitions||[],titles={created:'Case opened',reported:'Player report received',appealed:'Appeal received',note:'Investigation note',issue:'Issue reference linked',transition:'Case state changed',quarantine:'Track quarantined',restore:'Track restored',track_deleted:'Track deleted'};
+  const action=(kind,label,primary=false)=>`<button class="btn ${primary?'btn-primary':''}" data-case-action="${kind}" data-case-id="${esc(c.id)}" data-case-revision="${c.revision}" data-case-transitions="${esc(transitions.join(','))}">${label}</button>`;
+  const timeline=`<ol class="case-timeline">${d.events.map(event=>`<li><time>${esc(date(event.created_at))}<small>Revision ${event.revision??'Unavailable'} · ${esc(event.actor)}</small></time><div><h4>${esc(titles[event.kind]||event.kind)}</h4>${caseEventBody(event)}<details><summary>Event reference</summary><span class="mon-id">${esc(event.id)}</span></details></div></li>`).join('')}</ol>${d.events.length?'':'<div class="mon-source-empty"><h4>No retained activity</h4><p>This case has no retained evidence events to inspect.</p></div>'}${d.history_truncated?'<p class="mon-caption">Latest 100 case events shown. Earlier activity is outside this response budget.</p>':''}`;
+  const context=monDefinition([['Case state',status(c.status)],['Revision',monCount(c.revision)],['Created',esc(date(c.created_at))],['Latest activity',esc(date(c.updated_at))],['Reporter',c.player_id?link('players',c.player_id,'Inspect reporter'):'No player linked'],['Reported player',c.reported_player_id?link('players',c.reported_player_id,'Inspect reported player'):'No player reported'],['Moderation owner','Backend Studio owner'],['Content',c.track_id?monLink('tracks?q='+encodeURIComponent(c.track_id)+'&versions=all','Inspect published versions'):'No track linked']]);
+--- /dev/null
++++ b/backend/bmt_backend/studio_reported_tracks.py
+@@ -0,0 +1,182 @@
++"""Grouped player reports and audited, result-preserving track removal."""
++from typing import Literal
++from uuid import UUID
++
++from fastapi import APIRouter, HTTPException, Query, Request
++from pydantic import BaseModel, ConfigDict, Field
++from sqlalchemy import case, func, or_, select
++from sqlalchemy.exc import IntegrityError
++
++from .admin import Access
++from .admin_models import AdminAudit
++from .identity_models import Player
++from .middleware import ParsedJSONRoute
++from .studio_case_models import StudioCase, StudioCaseEvent, StudioQuarantine
++from .studio_cases import begin, owner, safe_text
++from .studio_catalogue import preview, response, snapshot
++from .track_models import Track, TrackVersion, digest, now
++
++router = APIRouter(route_class=ParsedJSONRoute, tags=["Studio reported tracks"])
++
++
++def reports():
++    # Notes, appeals and repeated delivery never increase the report count.
++    return select(StudioCaseEvent.case_id,
++                  func.min(StudioCaseEvent.created_at).label("reported_at")).where(
++        StudioCaseEvent.kind == "reported", StudioCaseEvent.actor == "player"
++    ).group_by(StudioCaseEvent.case_id).subquery()
++
++
++def state_token(session, track):
++    audits = session.scalar(select(func.count()).select_from(AdminAudit).where(AdminAudit.entity_id == track.id))
++    version = session.scalar(select(func.max(TrackVersion.number)).where(TrackVersion.track_id == track.id))
++    return digest({"track": track.id, "hidden": track.hidden, "archived": track.archived,
++                   "audit_count": audits, "latest_version": version})
++
++
++def latest_id():
++    return select(TrackVersion.id).where(TrackVersion.track_id == Track.id).order_by(
++        TrackVersion.number.desc(), TrackVersion.id).limit(1).correlate(Track).scalar_subquery()
++
++
++def deleted_track():
++    return select(AdminAudit.id).where(AdminAudit.entity_id == Track.id,
++                                       AdminAudit.action == "track_deletion").correlate(Track).exists()
++
++
++@router.get("/v1/admin/reported-tracks")
++def reported_tracks(request: Request, role: Access, q: str = Query("", max_length=100),
++                    visibility: Literal["active", "deleted", "all"] = "active",
++                    sort: Literal["reports", "recent"] = "reports",
++                    offset: int = Query(0, ge=0, le=10000), limit: int = Query(25, ge=1, le=100)):
++    source = reports()
++    counts = select(StudioCase.track_id,
++        func.count().label("report_count"), func.count(func.distinct(StudioCase.player_id)).label("reporters"),
++        func.sum(case((StudioCase.status != "resolved", 1), else_=0)).label("unresolved"),
++        func.max(source.c.reported_at).label("last_reported_at")
++    ).join(source, source.c.case_id == StudioCase.id).where(StudioCase.track_id.is_not(None)).group_by(
++        StudioCase.track_id).subquery()
++    with request.app.state.session_factory() as session:
++        snapshot(session)
++        query = select(Track, TrackVersion, Player.display_name, counts, deleted_track().label("deleted")).select_from(Track).join(
++            counts, counts.c.track_id == Track.id).join(TrackVersion, TrackVersion.id == latest_id()).join(
++            Player, Player.id == Track.owner_id)
++        if visibility != "all":
++            query = query.where(deleted_track() if visibility == "deleted" else ~deleted_track())
++        if q.strip():
++            pattern = "%" + q.strip().replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_") + "%"
++            query = query.where(or_(TrackVersion.name.ilike(pattern, escape="\\"),
++                                    Player.display_name.ilike(pattern, escape="\\"), Track.id == q.strip()))
++        order = [counts.c.report_count.desc(), counts.c.last_reported_at.desc()] if sort == "reports" else [
++            counts.c.last_reported_at.desc(), counts.c.report_count.desc()]
++        rows = session.execute(query.order_by(*order, Track.id).offset(offset).limit(limit + 1)).all()
++        items = []
++        for row in rows[:limit]:
++            track, version, creator = row[:3]
++            values = row._mapping
++            items.append({"track_id": track.id, "version_id": version.id, "name": version.name,
++                          "creator_id": track.owner_id, "creator_name": creator,
++                          "hidden": track.hidden, "deleted": values["deleted"], "preview": preview(version.discovery),
++                          **{field: values[field] for field in ("report_count", "reporters", "unresolved", "last_reported_at")}})
++        return response({"role": role, "items": items, "offset": offset, "limit": limit,
++                         "has_more": len(rows) > limit, "scope": "All retained player reports, across every track version"})
++
++
++@router.get("/v1/admin/reported-tracks/{track_id}")
++def reported_track(track_id: UUID, request: Request, role: Access,
++                   offset: int = Query(0, ge=0, le=10000), limit: int = Query(25, ge=1, le=100)):
++    source = reports()
++    with request.app.state.session_factory() as session:
++        snapshot(session)
++        track = session.get(Track, str(track_id))
++        if track is None:
++            raise HTTPException(404, "TRACK_NOT_FOUND")
++        total, reporters, unresolved = session.execute(select(func.count(),
++            func.count(func.distinct(StudioCase.player_id)),
++            func.coalesce(func.sum(case((StudioCase.status != "resolved", 1), else_=0)), 0)
++        ).select_from(StudioCase).join(source, source.c.case_id == StudioCase.id).where(
++            StudioCase.track_id == track.id)).one()
++        if not total:
++            raise HTTPException(404, "REPORTED_TRACK_NOT_FOUND")
++        version = session.scalar(select(TrackVersion).where(TrackVersion.track_id == track.id).order_by(
++            TrackVersion.number.desc(), TrackVersion.id).limit(1))
++        rows = session.execute(select(StudioCase, StudioCaseEvent, Player.display_name).join(
++            StudioCaseEvent, StudioCaseEvent.case_id == StudioCase.id).outerjoin(
++            Player, Player.id == StudioCase.player_id).where(StudioCase.track_id == track.id,
++            StudioCaseEvent.kind == "reported", StudioCaseEvent.actor == "player").order_by(
++            StudioCaseEvent.created_at.desc(), StudioCase.id).offset(offset).limit(limit + 1)).all()
++        return response({"role": role, "track": {"track_id": track.id, "name": version.name if version else "Removed track",
++            "version_id": version.id if version else None,
++            "deleted": session.scalar(select(deleted_track()).select_from(Track).where(Track.id == track.id)), "hidden": track.hidden,
++            "state_token": state_token(session, track), "report_count": total, "reporters": reporters,
++            "unresolved": unresolved, "preview": preview(version.discovery if version else {})},
++            "items": [{"case_id": c.id, "revision": c.revision, "status": c.status,
++                       "reporter": name or "Removed account", "reported_at": event.created_at,
++                       "reason": event.detail.get("reason", "track_issue"), "text": event.detail.get("text", ""),
++                       "version_id": event.detail.get("version_id")} for c, event, name in rows[:limit]],
++            "offset": offset, "limit": limit, "has_more": len(rows) > limit})
++
++
++class DeleteTrack(BaseModel):
++    model_config = ConfigDict(extra="forbid", strict=True)
++    command_id: str = Field(pattern=r"^[0-9a-fA-F-]{36}$")
++    case_id: str = Field(pattern=r"^[0-9a-fA-F-]{36}$")
++    expected_revision: int = Field(ge=0)
++    expected_state: str = Field(pattern=r"^[0-9a-f]{64}$")
++    reason: str = Field(min_length=8, max_length=500)
++    acknowledged: Literal[True]
++
++
++@router.post("/v1/admin/reported-tracks/{track_id}/delete")
++def delete_track(track_id: UUID, body: DeleteTrack, request: Request, role: Access):
++    owner(role)
++    try:
++        UUID(body.command_id)
++        UUID(body.case_id)
++    except ValueError:
++        raise HTTPException(422, "INVALID_COMMAND_ID") from None
++    reason = safe_text(body.reason, 500)
++    if len(reason) < 8:
++        raise HTTPException(422, "REASON_REQUIRED")
++    identity, hashed = body.command_id, digest({"track_id": str(track_id), **body.model_dump()})
++    with request.app.state.session_factory() as session:
++        begin(session, identity)
++        old = session.scalar(select(AdminAudit).where(AdminAudit.command_id == identity))
++        if old:
++            if old.request_hash != hashed:
++                raise HTTPException(409, "COMMAND_ID_REUSED")
++            return {"audit_id": old.id, "deleted": True}
++        linked = session.scalar(select(StudioCase).where(StudioCase.id == body.case_id,
++            StudioCase.track_id == str(track_id)).with_for_update())
++        if linked is None or not session.scalar(select(StudioCaseEvent.id).where(
++                StudioCaseEvent.case_id == linked.id, StudioCaseEvent.kind == "reported",
++                StudioCaseEvent.actor == "player").limit(1)):
++            raise HTTPException(404, "TRACK_REPORT_REQUIRED")
++        track = session.scalar(select(Track).where(Track.id == str(track_id)).with_for_update())
++        if linked.revision != body.expected_revision or state_token(session, track) != body.expected_state:
++            raise HTTPException(409, "STATE_CHANGED_REFRESH_REQUIRED")
++        if session.scalar(select(AdminAudit.id).where(AdminAudit.entity_id == track.id,
++                AdminAudit.action == "track_deletion").limit(1)):
++            raise HTTPException(409, "TRACK_ALREADY_DELETED")
++        before = {"hidden": track.hidden, "archived": track.archived}
++        track.hidden, track.archived = True, True
++        audit = AdminAudit(command_id=identity, actor=role, action="track_deletion", entity_id=track.id,
++            reason=reason, before=before, after={"hidden": True, "archived": True, "case_id": linked.id},
++            request_hash=hashed, request_id=request.state.request_id)
++        session.add(audit)
++        session.flush()
++        quarantine = session.get(StudioQuarantine, track.id)
++        if quarantine is None:
++            session.add(StudioQuarantine(track_id=track.id, case_id=linked.id, audit_id=audit.id))
++        else:
++            quarantine.case_id, quarantine.audit_id = linked.id, audit.id
++        linked.revision += 1
++        linked.updated_at = now()
++        session.add(StudioCaseEvent(id=identity, case_id=linked.id, actor=role, kind="track_deleted",
++            revision=linked.revision, detail={"track_id": track.id, "audit_id": audit.id, "reason": reason}, request_hash=hashed))
++        try:
++            session.commit()
++        except IntegrityError:
++            session.rollback()
++            raise HTTPException(409, "COMMAND_CONFLICT") from None
++        return {"audit_id": audit.id, "deleted": True}
+--- /dev/null
++++ b/backend/bmt_backend/admin_ui/reported_tracks.js
+@@ -0,0 +1,41 @@
++'use strict';
++let reportedTrackView=null;
++function reportedHref(id,params,changes={}){
++ const query=new URLSearchParams(params);for(const [name,value] of Object.entries(changes))value==null?query.delete(name):query.set(name,String(value));
++ return '#reported-tracks'+(id?'/'+encodeURIComponent(id):'')+(query.size?'?'+query:'');
++}
++function reportedPager(data,id,params){
++ const href=offset=>reportedHref(id,params,{offset});
++ return `<div class="console-pager"><span>${data.items.length?data.offset+1:0}–${data.offset+data.items.length}</span><a class="btn ${data.offset?'':'stc-disabled'}" ${data.offset?'':'aria-disabled="true" tabindex="-1"'} href="${href(Math.max(0,data.offset-data.limit))}">Previous</a><a class="btn ${data.has_more?'':'stc-disabled'}" ${data.has_more?'':'aria-disabled="true" tabindex="-1"'} href="${href(data.offset+data.limit)}">Next</a></div>`;
++}
++async function reportedTracks(id,params){
++ const ticket=generation,query=new URLSearchParams();
++ for(const field of id?['offset','limit']:['q','visibility','sort','offset','limit'])if(params.has(field))query.set(field,params.get(field));
++ const data=await api('reported-tracks'+(id?'/'+encodeURIComponent(id):'')+'?'+query);role=data.role;
++ if(ticket===generation)reportedTrackView=id?{data,params:new URLSearchParams(params)}:null;
++ if(!id){
++  const rows=data.items.map(t=>`<tr><td><a class="stc-track-identity" href="${reportedHref(t.track_id,params,{offset:null})}">${catalogueShape(t.preview,true)}<span><strong>${esc(t.name)}</strong><small>${esc(t.creator_name)}</small></span></a></td><td><strong>${esc(t.report_count)}</strong></td><td>${esc(t.reporters)}</td><td>${esc(t.unresolved)}</td><td>${esc(date(t.last_reported_at))}</td><td>${status(t.deleted?'Deleted':t.hidden?'Hidden':'Visible')}</td><td><a class="btn" href="${reportedHref(t.track_id,params,{offset:null})}">Review reports</a></td></tr>`).join('');
++  return intro('Reported tracks','Review player reports and decide which tracks need action.','MODERATION')+card('Report queue',`<form id="reported-track-filters" class="stc-filters"><label class="stc-search">Find a track<input name="q" maxlength="100" placeholder="Track name, creator or track ID" value="${esc(params.get('q')||'')}"></label>${catalogueSelect('visibility','Tracks',[['active','Not deleted'],['deleted','Deleted'],['all','All reported tracks']],params.get('visibility')||'active')}${catalogueSelect('sort','Sort by',[['reports','Most reported'],['recent','Latest report']],params.get('sort')||'reports')}<button class="btn btn-primary">Apply</button><a class="btn" href="#reported-tracks">Reset</a></form><p class="console-note">${esc(data.scope)}. Reports are reviewed by a person; volume alone does not remove a track.</p><div class="console-table"><table><thead><tr><th>Track / creator</th><th>Reports</th><th>Reporters</th><th>Unresolved</th><th>Latest report</th><th>Visibility</th><th>Action</th></tr></thead><tbody>${rows}</tbody></table>${rows?'':'<div class="stc-empty"><h3>No reported tracks in this view</h3><p>Try another search or include deleted tracks.</p></div>'}</div>${reportedPager(data,'',params)}`);
++ }
++ const t=data.track,rows=data.items.map(r=>`<tr><td>${esc(date(r.reported_at))}<small>${esc(r.reporter)}</small></td><td><strong>${esc(r.reason.replaceAll('_',' '))}</strong><p class="case-note">${esc(r.text)}</p>${r.version_id?link('tracks',r.version_id,'Reported version'):''}</td><td>${status(r.status)}</td><td>${link('cases',r.case_id,'Open case')}</td></tr>`).join('');
++ return intro(t.name,'Reports across all published versions.','REPORTED TRACK')+`<div class="console-actions"><a class="btn" href="${reportedHref('',params,{offset:null})}">Back to reported tracks</a>${t.version_id?link('tracks',t.version_id,'Inspect track'):''}${t.deleted?status('Deleted'):role==='owner'?'<button class="btn btn-primary" id="delete-reported-track">Delete track</button>':'<span class="console-note">Owner access required to delete tracks.</span>'}</div><div class="stc-summary">${catalogueStat('Reports',t.report_count,'All retained player reports')}${catalogueStat('Reporters',t.reporters,'Distinct retained accounts')}${catalogueStat('Unresolved',t.unresolved,'Open, investigating or appealed')}</div>`+(t.deleted?'<p class="console-note" role="status">This track has been deleted from public access. Reports and historical race records are retained.</p>':'')+card('Player reports',`<div class="console-table"><table><thead><tr><th>Reported / player</th><th>Reason / details</th><th>Case state</th><th>Investigation</th></tr></thead><tbody>${rows}</tbody></table></div>${reportedPager(data,id,params)}`);
++}
++function wireReportedTracks(){
++ const form=$('#reported-track-filters');if(form)form.onsubmit=event=>{event.preventDefault();const query=new URLSearchParams();for(const [name,value] of new FormData(form))if(value)query.set(name,value);location.hash=reportedHref('',query);};
++ const button=$('#delete-reported-track');if(!button||!reportedTrackView||role!=='owner')return;
++ const view=reportedTrackView;
++ button.onclick=()=>{
++  const {track,items}=view.data,report=items[0];if(!report)return;
++  modal(`<h2>Delete ${esc(track.name)}?</h2><p>This removes every version from public racing, discovery and shared links. Reports and past race records are retained. This view cannot restore the track.</p><form id="reported-track-delete"><label>Recorded reason<textarea name="reason" minlength="8" maxlength="500" required></textarea></label><label><input name="acknowledged" type="checkbox" required> I understand this removes the track from public access.</label><p class="console-error" id="reported-delete-error" role="alert" hidden></p><div class="console-actions"><button class="btn" type="button" data-close>Cancel</button><button class="btn btn-primary" type="submit">Confirm deletion</button></div></form>`);
++  const token=dialogToken();let command=crypto.randomUUID(),pending=null;
++  $('#reported-track-delete').onsubmit=async event=>{
++   event.preventDefault();if(!dialogIsCurrent(token))return;
++   const submit=event.target.querySelector('[type=submit]');submit.disabled=true;
++   // Retain the exact command/body after a lost response; edits need a new command.
++   const body=pending||(pending={command_id:command,case_id:report.case_id,expected_revision:report.revision,expected_state:track.state_token,reason:event.target.elements.reason.value.trim(),acknowledged:true});
++   event.target.elements.reason.disabled=true;event.target.elements.acknowledged.disabled=true;
++   try{await api('reported-tracks/'+track.track_id+'/delete',body);if(!dialogIsCurrent(token))return;$('#dialog').close();await render();}
++   catch(error){if(dialogIsCurrent(token)){const notice=$('#reported-delete-error');notice.hidden=false;notice.textContent=error.message==='STATE_CHANGED_REFRESH_REQUIRED'?'The track or report changed. Close this dialog and refresh before deleting.':error.message;submit.disabled=error.status===409;if(error.status===422){pending=null;command=crypto.randomUUID();event.target.elements.reason.disabled=false;event.target.elements.acknowledged.disabled=false;}}}
++  };
++ };
++}
+--- /dev/null
++++ b/backend/tests/test_studio_reported_tracks.py
+@@ -0,0 +1,221 @@
++"""Report aggregation and owner-only deletion preserve evidence and old results."""
++from uuid import uuid4
++
++import pytest
++from sqlalchemy import func, select
++from test_studio import evidence as _evidence
++from test_studio import headers
++
++from bmt_backend.admin_models import AdminAudit
++from bmt_backend.studio_case_models import StudioCase, StudioCaseEvent
++from bmt_backend.track_models import PersonalBest, Run, Track, TrackVersion
++
++evidence = _evidence
++
++
++@pytest.fixture
++def reported(evidence):
++    client, app, ids = evidence
++    with app.state.session_factory() as session:
++        track_id = session.get(TrackVersion, ids['version']).track_id
++        cases = []
++        for index, state in enumerate(['open', 'resolved', 'appealed']):
++            case = StudioCase(track_id=track_id, player_id=ids['other'] if index == 2 else ids['player'],
++                              title='Track report', status=state)
++            session.add(case)
++            session.flush()
++            session.add(StudioCaseEvent(id=str(uuid4()), case_id=case.id, actor='player', kind='reported',
++                request_hash='a'*64, detail={'reason': 'harassment', 'text': '<script>Unsafe track</script>',
++                                             'version_id': ids['version']}, created_at=100+index))
++            cases.append(case.id)
++        staff = StudioCase(track_id=track_id, title='Staff case, not a report')
++        session.add(staff)
++        session.flush()
++        session.add(StudioCaseEvent(id=str(uuid4()), case_id=staff.id, actor='owner', kind='created',
++                                    request_hash='b'*64, detail={'text': 'Staff only'}))
++        session.add(StudioCaseEvent(id=str(uuid4()), case_id=cases[0], actor='owner', kind='note', revision=1,
++                                    request_hash='c'*64, detail={'text': 'Private staff-only analysis'}))
++        session.commit()
++        ids.update(track=track_id, reports=cases, staff=staff.id)
++    return client, app, ids
++
++
++def deletion(client, ids, credentials=None):
++    data = client.get('/v1/admin/reported-tracks/'+ids['track'], headers=credentials or headers()).json()
++    report = data['items'][0]
++    return {'command_id': str(uuid4()), 'case_id': report['case_id'], 'expected_revision': report['revision'],
++            'expected_state': data['track']['state_token'], 'reason': 'Reviewed player reports; remove this track.',
++            'acknowledged': True}
++
++
++def test_grouped_counts_and_report_details_are_private_and_not_note_counts(reported):
++    client, _, ids = reported
++    url = '/v1/admin/reported-tracks'
++    assert client.get(url).status_code == 401
++    for role in ('analyst', 'owner'):
++        response = client.get(url, headers=headers(role))
++        assert response.status_code == 200, response.text
++        assert response.headers['cache-control'] == 'no-store'
++        row, = response.json()['items']
++        assert row['track_id'] == ids['track']
++        assert (row['report_count'], row['reporters'], row['unresolved']) == (3, 2, 2)
++        assert row['name'] == 'Newer version'
++    data = client.get(url+'/'+ids['track']+'?limit=2', headers=headers()).json()
++    assert len(data['items']) == 2 and data['has_more']
++    assert data['track']['report_count'] == 3
++    assert len(client.get(url+'/'+ids['track']+'?limit=2&offset=2', headers=headers()).json()['items']) == 1
++    assert 'Private staff-only analysis' not in str(data)
++    assert 'private-provider-subject' not in str(data)
++    assert client.get(url+'?q=unmatched', headers=headers()).json()['items'] == []
++    assert client.get(url+'?visibility=deleted', headers=headers()).json()['items'] == []
++
++
++def test_delete_is_confirmed_idempotent_and_retains_results(reported):
++    client, app, ids = reported
++    url = '/v1/admin/reported-tracks/'+ids['track']+'/delete'
++    body = deletion(client, ids)
++    for auth in ({}, headers()):
++        assert client.post(url, json=body, headers=auth).status_code in (401, 403)
++    for change in ({'acknowledged': False}, {'reason': 'short'}):
++        assert client.post(url, json={**body, **change}, headers=headers('owner')).status_code == 422
++    with app.state.session_factory() as session:
++        before = {model.__tablename__: session.scalar(select(func.count()).select_from(model))
++                  for model in (TrackVersion, Run, PersonalBest)}
++    result = client.post(url, json=body, headers=headers('owner'))
++    assert result.status_code == 200, result.text
++    assert client.post(url, json=body, headers=headers('owner')).json() == result.json()
++    assert client.post(url, json={**body, 'reason': 'Different reason with the same command'},
++                       headers=headers('owner')).status_code == 409
++    assert client.get('/v1/track-versions/'+ids['version']).status_code == 404
++    assert client.get('/v1/track-versions/'+ids['version']+'/document').status_code == 404
++    assert client.get('/v1/admin/reported-tracks', headers=headers()).json()['items'] == []
++    deleted = client.get('/v1/admin/reported-tracks?visibility=deleted', headers=headers()).json()['items']
++    assert len(deleted) == 1 and deleted[0]['report_count'] == 3
++    with app.state.session_factory() as session:
++        assert session.get(Track, ids['track']).archived and session.get(Track, ids['track']).hidden
++        assert {model.__tablename__: session.scalar(select(func.count()).select_from(model))
++                for model in (TrackVersion, Run, PersonalBest)} == before
++        assert session.scalar(select(func.count()).select_from(AdminAudit)) == 1
++        audit = session.scalar(select(AdminAudit))
++        assert audit.action == 'track_deletion' and audit.after['case_id'] == body['case_id']
++    show = {'command_id': str(uuid4()), 'action': 'track_visibility', 'entity_id': ids['track'],
++            'expected': True, 'value': False, 'reason': 'Attempt to reverse a deleted track', 'acknowledged': True}
++    assert client.post('/v1/admin/commands', json=show, headers=headers('owner')).status_code == 409
++    restore = {'command_id': str(uuid4()), 'expected_revision': 1, 'kind': 'restore', 'text': 'Attempt case restore'}
++    assert client.post('/v1/admin/cases/'+body['case_id']+'/events', json=restore,
++                       headers=headers('owner')).status_code == 409
++
++
++@pytest.mark.parametrize('change', ['visibility', 'version', 'case'])
++def test_delete_rejects_stale_review(reported, change):
++    client, app, ids = reported
++    body = deletion(client, ids)
++    with app.state.session_factory() as session:
++        if change == 'visibility':
++            session.get(Track, ids['track']).hidden = True
++        elif change == 'version':
++            session.add(TrackVersion(track_id=ids['track'], number=3, name='Changed content',
++                                    content_hash='d'*64, manifest={}, state='published'))
++        else:
++            session.get(StudioCase, body['case_id']).revision += 1
++        session.commit()
++    result = client.post('/v1/admin/reported-tracks/'+ids['track']+'/delete', json=body, headers=headers('owner'))
++    assert result.status_code == 409, result.text
++    with app.state.session_factory() as session:
++        assert not session.get(Track, ids['track']).archived
++
++
++def test_staff_case_cannot_substitute_for_a_player_report(reported):
++    client, _, ids = reported
++    body = {**deletion(client, ids), 'case_id': ids['staff']}
++    assert client.post('/v1/admin/reported-tracks/'+ids['track']+'/delete', json=body,
++                       headers=headers('owner')).status_code == 404
++
++
++def test_old_archive_keeps_links_until_explicit_deletion(reported):
++    client, app, ids = reported
++    with app.state.session_factory() as session:
++        session.get(Track, ids['track']).archived = True
++        session.commit()
++    assert client.get('/v1/track-versions/'+ids['version']).status_code == 200
++    active = client.get('/v1/admin/reported-tracks', headers=headers()).json()['items']
++    assert len(active) == 1 and not active[0]['deleted']
++    result = client.post('/v1/admin/reported-tracks/'+ids['track']+'/delete',
++                         json=deletion(client, ids), headers=headers('owner'))
++    assert result.status_code == 200, result.text
++    assert client.get('/v1/track-versions/'+ids['version']).status_code == 404
++
++
++@pytest.fixture
++def restricted_database(request):
++    # Reuse the explicitly disposable PostgreSQL authority fixture only for
++    # this test; ordinary local report tests use isolated SQLite databases.
++    from test_cloud_setup import database
++    yield from database.__wrapped__()
++
++
++@pytest.mark.postgres
++def test_restricted_admin_can_list_and_delete_reported_track(restricted_database, tmp_path):
++    from fastapi.testclient import TestClient
++    from sqlalchemy import event
++    from sqlalchemy.engine import make_url
++    from sqlalchemy.orm import Session
++    from test_domains import FakeVerifier
++
++    from bmt_backend import cloud_setup
++    from bmt_backend.app import create_app
++    from bmt_backend.config import Settings
++    from bmt_backend.database_privileges import verify_runtime
++    from bmt_backend.db import make_engine
++    from bmt_backend.identity_models import Player
++
++    engine, schema, roles, url = restricted_database
++    cloud_setup.setup(engine, uuid4().hex, roles, schema)
++    peer = make_engine(make_url(url).set(username=roles['admin'], password='isolated-security-test-role')
++                       .render_as_string(hide_password=False), schema=schema)
++    failures = []
++    @event.listens_for(peer, 'handle_error')
++    def diagnose(context):
++        detail = getattr(context.original_exception, 'diag', None)
++        failures.append(getattr(detail, 'message_primary', 'Database operation failed'))
++    try:
++        verify_runtime(peer, Settings(workload_role='admin'))
++        with Session(engine) as session:
++            player = Player(display_name='Restricted admin fixture')
++            session.add(player)
++            session.flush()
++            track = Track(owner_id=player.id)
++            session.add(track)
++            session.flush()
++            session.add(TrackVersion(track_id=track.id, number=1, name='Restricted fixture track',
++                                    content_hash='f'*64, manifest={}, state='published'))
++            report = StudioCase(track_id=track.id, player_id=player.id, title='Track report')
++            session.add(report)
++            session.flush()
++            session.add(StudioCaseEvent(id=str(uuid4()), case_id=report.id, actor='player', kind='reported',
++                                       detail={'reason': 'track_issue', 'text': 'Please review this track'}, request_hash='e'*64))
++            session.commit()
++            identity = track.id
++        app = create_app(Settings(workload_role='admin', studio_staff_audiences=('staff',),
++            studio_staff_subjects='{"known":{"name":"Owner","role":"owner"}}',
++            object_dir=str(tmp_path)), engine=peer, verifier=FakeVerifier())
++        class StaffVerifier:
++            def verify(self, token):
++                assert token == 'staff'
++                return {'sub': 'known', 'amr': ['mfa']}
++        app.state.staff_identity_verifier = StaffVerifier()
++        credentials = {'Authorization': 'Bearer staff'}
++        with TestClient(app) as client:
++            response = client.get('/v1/admin/reported-tracks', headers=credentials)
++            assert response.status_code == 200, (response.text, failures)
++            assert response.json()['items'][0]['report_count'] == 1
++            body = deletion(client, {'track': identity}, credentials)
++            response = client.post('/v1/admin/reported-tracks/'+identity+'/delete', json=body, headers=credentials)
++            assert response.status_code == 200, response.text
++            assert client.post('/v1/admin/reported-tracks/'+identity+'/delete', json=body,
++                               headers=credentials).json() == response.json()
++        with Session(engine) as session:
++            assert session.get(Track, identity).archived
++            assert session.scalar(select(func.count()).select_from(TrackVersion)) == 1
++    finally:
++        peer.dispose()
+--- /dev/null
++++ b/scripts/test_reported_tracks_console.py
+@@ -0,0 +1,190 @@
++"""Reported-track moderation in an isolated loopback Studio, including lost replies."""
++import argparse
++import json
++import secrets
++import socket
++import subprocess
++import sys
++import time
++from pathlib import Path
++from uuid import uuid4
++
++ROOT = Path(__file__).resolve().parents[1]
++sys.path[:0] = [str(ROOT / 'backend'), str(ROOT / 'backend/tests'), str(ROOT / 'scripts')]
++OUT = ROOT / 'docs/evidence/reported-tracks-2026-11-04'
++
++
++def serve(folder, port):
++    from dataclasses import replace
++
++    import bmt_backend.app as application
++    import uvicorn
++    from test_backend_studio_console import serve as base
++    create_app = application.create_app
++    # The historical fixture predates the explicit legacy-key development gate.
++    application.create_app = lambda settings, **kwargs: create_app(
++        replace(settings, studio_legacy_keys_enabled=True), **kwargs)
++    original = uvicorn.run
++
++    def seeded(app, **kwargs):
++        from bmt_backend.studio_case_models import StudioCase, StudioCaseEvent
++        from bmt_backend.track_models import Track, TrackVersion, now
++        fixture = json.loads((folder / 'fixture.json').read_text())
++        with app.state.session_factory() as session:
++            version = session.get(TrackVersion, fixture['version_id'])
++            version.name = 'Harbour Circuit'
++            version.discovery = {'theme': 'pine', 'points': [[0, 0], [50, 0], [70, 35], [50, 60], [0, 50], [0, 0]]}
++            track_id = version.track_id
++            for index in range(4):
++                track = Track(owner_id=fixture['player_id']) if index else session.get(Track, track_id)
++                if index:
++                    session.add(track)
++                    session.flush()
++                    session.add(TrackVersion(track_id=track.id, number=1, name=['', 'Winter Switchback', 'City Sprint', 'Pine Ridge'][index],
++                        content_hash=str(index)*64, manifest={}, state='published', discovery=version.discovery))
++                for number in range([7, 4, 2, 1][index]):
++                    case = StudioCase(track_id=track.id, player_id=fixture['player_id'] if number % 2 else fixture['artificial_player_id'],
++                                      title='Player track report', status='resolved' if number == 1 else 'open')
++                    session.add(case)
++                    session.flush()
++                    session.add(StudioCaseEvent(id=str(uuid4()), case_id=case.id, actor='player', kind='reported',
++                        detail={'reason': 'track_issue', 'text': '<script>alert("report")</script> The shortcut skips most of the lap.' if number == 0 else 'Please review the reported section.', 'version_id': version.id if not index else None},
++                        request_hash='a'*64, created_at=now()-number*3600))
++            session.commit()
++            fixture['track_id'] = track_id
++        (folder/'fixture.json').write_text(json.dumps(fixture))
++        original(app, **kwargs)
++    uvicorn.run = seeded
++    base(folder, port)
++
++
++def main():
++    parser = argparse.ArgumentParser()
++    parser.add_argument('--serve', type=Path)
++    parser.add_argument('--port', type=int)
++    args = parser.parse_args()
++    if args.serve:
++        serve(args.serve, args.port)
++        return
++    import httpx
++    from playwright.sync_api import expect, sync_playwright
++    OUT.mkdir(parents=True, exist_ok=True)
++    folder = ROOT/'build'/('reported-tracks-browser-'+uuid4().hex[:8])
++    folder.mkdir()
++    config = {key: secrets.token_urlsafe(32) for key in ('owner', 'analyst', 'development')}
++    (folder/'config.private.json').write_text(json.dumps(config))
++    with socket.socket() as sock:
++        sock.bind(('127.0.0.1', 0))
++        port = sock.getsockname()[1]
++    base = f'http://127.0.0.1:{port}'
++    checks = []
++    with (folder/'server.log').open('w', encoding='utf-8') as log:
++        server = subprocess.Popen([sys.executable, str(Path(__file__).resolve()), '--serve', str(folder), '--port', str(port)],
++                                  stdout=log, stderr=log, creationflags=subprocess.CREATE_NO_WINDOW)
++        try:
++            with httpx.Client(base_url=base, timeout=15) as http:
++                for _ in range(100):
++                    if server.poll() is not None:
++                        raise RuntimeError('Owned server failed; inspect '+str(folder/'server.log'))
++                    try:
++                        if http.get('/health').status_code == 200:
++                            break
++                    except httpx.ConnectError:
++                        pass
++                    time.sleep(.2)
++                else:
++                    raise RuntimeError('Owned server did not become ready')
++            fixture = json.loads((folder/'fixture.json').read_text())
++            with sync_playwright() as driver:
++                browser = driver.chromium.launch(headless=True, executable_path='C:/Program Files (x86)/Microsoft/Edge/Application/msedge.exe')
++                page = browser.new_page(viewport={'width': 1440, 'height': 1000})
++                errors = []
++                page.on('pageerror', lambda error: errors.append(str(error)))
++                page.goto(base+'/admin#reported-tracks')
++                page.fill('#key', config['owner'])
++                page.locator('#login button').click()
++                expect(page.locator('h1')).to_have_text('Reported tracks')
++                expect(page.locator('#main tbody tr')).to_have_count(4)
++                assert page.locator('#main tbody tr').first.inner_text().count('7') >= 1
++                page.screenshot(path=str(OUT/'queue-desktop.png'), full_page=True)
++                checks.append('Owner queue groups four reported tracks and sorts by total reports')
++                page.locator('[name=q]').fill('Harbour')
++                page.locator('#reported-track-filters button').click()
++                expect(page.locator('#main tbody tr')).to_have_count(1)
++                page.get_by_role('link', name='Review reports').click()
++                expect(page.locator('h1')).to_have_text('Harbour Circuit')
++                expect(page.locator('#main tbody tr')).to_have_count(7)
++                assert page.locator('#main script').count() == 0
++                page.screenshot(path=str(OUT/'reports-desktop.png'), full_page=True)
++                checks.append('Search, report reasons, escaped player text and case links render')
++                page.locator('#delete-reported-track').click()
++                expect(page.get_by_role('heading', name='Delete Harbour Circuit?')).to_be_visible()
++                page.screenshot(path=str(OUT/'delete-confirmation.png'), full_page=True)
++                page.get_by_role('button', name='Cancel', exact=True).click()
++                expect(page.locator('#dialog')).not_to_be_visible()
++                checks.append('Deletion preview can be cancelled')
++                page.set_viewport_size({'width': 768, 'height': 1024})
++                page.screenshot(path=str(OUT/'reports-tablet.png'), full_page=True)
++                page.set_viewport_size({'width': 1440, 'height': 1000})
++                replies = []
++
++                def lost_reply(route):
++                    replies.append(route.request.post_data_json)
++                    if len(replies) == 1:
++                        response = route.fetch()
++                        assert response.status == 200
++                        route.fulfill(status=503, content_type='application/json', body='{"detail":"Reply lost after commit; retry"}')
++                    else:
++                        route.continue_()
++                page.route('**/reported-tracks/*/delete', lost_reply)
++                page.locator('#delete-reported-track').click()
++                page.locator('[name=reason]').fill('Reviewed the player reports and confirmed abusive layout.')
++                page.locator('[name=acknowledged]').check()
++                page.get_by_role('button', name='Confirm deletion', exact=True).click()
++                expect(page.locator('#reported-delete-error')).to_be_visible()
++                expect(page.get_by_role('button', name='Confirm deletion', exact=True)).to_be_enabled()
++                page.get_by_role('button', name='Confirm deletion', exact=True).click()
++                expect(page.locator('#dialog')).not_to_be_visible()
++                expect(page.locator('#main')).to_contain_text('This track has been deleted from public access.')
++                assert replies[0] == replies[1]
++                page.screenshot(path=str(OUT/'deleted-track.png'), full_page=True)
++                checks.append('Lost deletion reply retries the exact command and shows retained reports')
++                with httpx.Client(base_url=base, timeout=15) as http:
++                    assert http.get('/v1/track-versions/'+fixture['version_id']).status_code == 404
++                    headers = {'Authorization': 'Bearer '+config['owner']}
++                    audit = http.get('/v1/admin/entities/audit?all=1', headers=headers).json()
++                    assert len([r for r in audit['items'] if r['action'] == 'track_deletion']) == 1
++                checks.append('Deleted public version is inaccessible and only one audit decision exists')
++                page.evaluate("id => location.hash='cases/'+id", replies[0]['case_id'])
++                expect(page.locator('#main')).to_contain_text('Track deleted')
++                page.screenshot(path=str(OUT/'case-deletion-audit.png'), full_page=True)
++                checks.append('Linked support case displays the deletion reason and audit link')
++                page.evaluate("id => location.hash='tracks/'+id", fixture['version_id'])
++                expect(page.locator('#main')).to_contain_text('Deleted; removed from public access')
++                assert page.locator('#command').count() == 0
++                page.evaluate("id => location.hash='reported-tracks/'+id", fixture['track_id'])
++                expect(page.locator('h1')).to_have_text('Harbour Circuit')
++                checks.append('Catalogue retains historical evidence and offers no Show action for deleted tracks')
++                page.locator('#logout').click()
++                page.fill('#key', config['analyst'])
++                page.locator('#login button').click()
++                expect(page.locator('h1')).to_have_text('Harbour Circuit')
++                assert page.locator('#delete-reported-track').count() == 0
++                page.evaluate("location.hash='reported-tracks?visibility=all'")
++                expect(page.locator('h1')).to_have_text('Reported tracks')
++                expect(page.locator('#main tbody tr')).to_have_count(4)
++                page.screenshot(path=str(OUT/'analyst-queue.png'), full_page=True)
++                checks.append('Analyst can inspect the complete queue but has no deletion control')
++                assert not errors, errors
++                checks.append('Zero browser JavaScript errors')
++                browser.close()
++            (OUT/'browser.json').write_text(json.dumps({'checks': checks, 'loopback_only': True}, indent=2)+'\n')
++            print(f'Reported tracks browser: {len(checks)} checks passed')
++        finally:
++            if server.poll() is None:
++                server.terminate()
++                server.wait(timeout=10)
++
++
++if __name__ == '__main__':
++    main()
+--- /dev/null
++++ b/docs/STUDIO_REPORTED_TRACKS_2026_11_04.md
+@@ -0,0 +1,40 @@
++# Studio reported tracks and deletion
++
++4 November 2026. Implementation and local acceptance are complete; production deployment has not been performed.
++
++STR01 adds **Reported tracks** to Studio navigation and the content tabs. The queue groups actual player report cases by track across all versions, showing total reports, distinct retained reporters, unresolved reports and latest report time. Search matches track name, creator or track ID; filters include active/deleted/all tracks, with report-count/latest-report sorting and bounded pages. Staff notes, appeals and repeated delivery do not inflate report counts. Counts cover all retained reports rather than the global activity-date window. Erased reporters remain in the report total but are excluded from the distinct retained-account count.
++
++STR02 provides the individual report reasons, escaped player text, reported-version links and support-case links. Analyst access is read-only. Queries use stored metadata/route projections, not track documents or replay/geometry work. Report lists are paginated; grouping still aggregates the retained report inventory. No large-scale performance claim is made.
++
++STR03 adds owner-only **Delete track**, with a preview naming the track, required acknowledgement and recorded reason. The backend requires a genuine linked player-report case, current case revision and current track state. The state token includes visibility, archive state, audit count and latest version number, rejecting intervening moderation or publication changes. Deletion atomically records an audit entry and a case event, marks the track hidden/archived, and installs the existing public quarantine. A lost response retries the identical command/body; repeated delivery returns the existing receipt. The catalogue offers no Show action for deleted tracks, and existing visibility/case-restoration commands reject an explicitly deleted track.
++
++STR04 preserves the version documents, reports, verified runs, personal bests and publication-slot accounting. This is permanent removal from public access through Studio, not physical erasure of linked history. Existing archived tracks keep their previous shared-link behavior until explicitly deleted through this action. A dedicated regression checks that compatibility boundary. Existing public quarantine checks already reject all deleted-version metadata/document requests and race starts; no public track route or client protocol change is needed. Moderation reports are not automatically resolved and publishing capacity is not refunded. Previously downloaded offline content cannot be remotely erased by this backend action.
++
++No schema migration, new table or expanded database grant is required. Production Studio uses its existing named staff/MFA boundary and restricted database role. No live report, track or account was modified during development.
++
++Validation completed:
++
++- Focused new moderation plus retained case workflow: **9 passed, 1 PostgreSQL test deselected**. Covers private reads, exact counts, pagination, analyst/unauthenticated denials, acknowledgement/reason validation, idempotency, command conflicts, stale track/version/case decisions, valid report-case linkage, historical result retention, restoration guards and old-archive compatibility.
++- Retained catalogue, community-safety and published-track selection: **20 passed, 8 PostgreSQL cases deselected**.
++- Isolated PostgreSQL17 with the actual restricted Studio role, production settings and a local named MFA staff verifier: **1 passed, 7 deselected**. Exercises grouped reads, details, deletion/quarantine, idempotent response and retained versions. It uses a local existing backend image with the changed runtime modules mounted; it is not a full new release-image acceptance claim. No real provider sign-in was performed.
++- Real headless Edge against a newly owned loopback Studio: **9 checks passed**, with seven final captures. Checks include search, escaped report text, cancelled confirmation, lost response after a committed deletion, identical-body retry, one audit decision, public inaccessibility, case audit display, historical catalogue/no Show action, analyst inspection and no JavaScript errors. Desktop 1440px and tablet 768px captures were reviewed. Tablet report tables retain the shared horizontal scrolling behavior.
++- Scoped Ruff and whitespace checks pass. The task-only checkpoint passes forward/reverse application checks without touching the main index.
++
++Initial findings are retained: the secure Python environment lacked Playwright, so the existing browser environment was used without installing dependencies; the older browser fixture initially lacked the explicit development legacy-key gate, corrected only in that owned fixture. A catalogue-copy encoding error was corrected and the browser selection rerun. The first restricted PostgreSQL fixture supplied a legacy key and attempted game-session token admission, correctly denied by Studio's restricted role; it was replaced with the established named MFA staff fixture. The final PostgreSQL run succeeds without weakening permissions. A preliminary broad archive restriction was removed before final acceptance to preserve existing archived links. Initial sanitized PostgreSQL failures remain in the evidence folder. Existing deprecation/index-reflection and isolated-container marker warnings remain; none are reported as test failures or a clean full-suite result.
++
++Runtime changes are in `backend/bmt_backend/studio_reported_tracks.py`, `http_routes.py`, `admin.py`, `studio_cases.py`, `studio_catalogue.py`, and the Studio `reported_tracks.js`, `app.js`, `catalogue.js`, `operations.js`, `index.html`. Tests are in `backend/tests/test_studio_reported_tracks.py` and `scripts/test_reported_tracks_console.py`. Documentation, source snapshots/hashes, JUnit results, browser checks, PostgreSQL harness and checked patch are retained under [the evidence directory](evidence/reported-tracks-2026-11-04/). Concurrent backend/achievement/Daily work was preserved.
++
++Actual commands:
++
++```text
++# From backend/:
++..\.tools\backend-secure-venv\Scripts\python.exe -m pytest tests/test_studio_reported_tracks.py tests/test_studio_moderation.py -q -k "not restricted_admin" --tb=short --show-capture=no --junitxml=../docs/evidence/reported-tracks-2026-11-04/backend.xml
++..\.tools\backend-secure-venv\Scripts\python.exe -m pytest tests/test_studio_catalogue.py tests/test_community_safety.py tests/test_published_track_routes.py -q -k "not postgres" --tb=short --show-capture=no --junitxml=../docs/evidence/reported-tracks-2026-11-04/retained.xml
++
++# From the repository root:
++.tools/backend-secure-venv/Scripts/python.exe build/reported-tracks-2026-11-04/postgres.py
++.tools/backend-venv/Scripts/python.exe scripts/test_reported_tracks_console.py
++.tools/backend-secure-venv/Scripts/python.exe -m ruff check backend/bmt_backend/studio_reported_tracks.py backend/tests/test_studio_reported_tracks.py scripts/test_reported_tracks_console.py
++```
++
++Matching authorised Studio rollout and owner acceptance remain. No production deployment, live/backend access or mutation, actual track deletion, phone/device query or test, APK/export, owner-save/process change, or main-index write was performed. Only owned local fixture tracks were deleted. The fixture server and labelled PostgreSQL resources were stopped/removed after verification.

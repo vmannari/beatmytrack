@@ -121,14 +121,14 @@ func run() -> void:
 	var card: Node = page._race_panel
 	check(card.find_children("*","OptionButton",true,false).is_empty(),"daily race card has no car dropdown")
 	check(card.result.passed == 4 and card._medals.get_child(1).selected and card._medals.get_child(1).earned,"page restores earned silver from passed stage 40")
-	check(card._time.text == "1:12.480" and card._target.text == "Target 1:12.000" and card._target.tooltip_text.begins_with("0.480"),"best flying lap and exact gold gap match the reference behavior")
+	check(card._time.text == "1:12.480" and card._target.text == "1:12.000" and card._target.tooltip_text.begins_with("0.480"),"best flying lap and exact gold gap match the reference behavior")
 	check(card._rows.get_child_count() == 3 and card._rows.find_child("DailyNearbySelf",true,false) != null,"nearby flying-lap standings highlight the player")
 	var own_flag: TextureRect = card._rows.find_child("DailyNearbySelf",true,false).find_child("PlayerCountryFlag",true,false)
 	check(own_flag.get_meta("country_code") == "FI" and own_flag.texture == PlayerCountry.texture("FI"),"local candidate row retains the account's country flag")
 	var nearby_flags: Array[Node] = card._rows.find_children("PlayerCountryFlag","TextureRect",true,false)
 	check(nearby_flags.size() == 3 and nearby_flags[0].get_meta("country_code") == "JP" and nearby_flags[2].get_meta("country_code") == "SE","nearby opponents show the service country flags")
 	for label: Label in card.find_children("*","Label",true,false):
-		check(label.text != "Silver" and not label.text.contains("Clear the next stage") and not label.text.contains("s to Gold"),"medal names and next-medal sentences do not repeat the icons")
+		check(not label.text.contains("Clear the next stage") and not label.text.contains("s to Gold"),"next-medal sentences do not repeat the icons")
 	check(card.race_button.text == "Race again","returning player has race again action")
 	for size: Vector2i in [Vector2i(1440,900),Vector2i(1280,720),Vector2i(960,540),Vector2i(844,390)]:
 		root.size = size

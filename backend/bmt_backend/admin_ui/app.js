@@ -12,7 +12,7 @@ function setReportingPolicy(policy){
 const sections=[['overview','Overview','\u25eb','START HERE'],['alarms','Operations & alarms','!',''],
  ['usage','Usage & costs','\u25f4',''],
  ['product','Player behaviour','\u2197','UNDERSTAND'],['quality','Game quality','\u2301',''],['economy','Monetisation','\u25a3',''],
- ['tracks','Content & competitions','\u25b1','INVESTIGATE'],['cases','Player support','\u25c7',''],
+ ['tracks','Content & competitions','\u25b1','INVESTIGATE'],['reported-tracks','Reported tracks','\u2691',''],['cases','Player support','\u25c7',''],
  ['studio','Administration','\u25a4','MANAGE']];
 const titles={...Object.fromEntries(sections.map(x=>[x[0],x[1]])),players:'Players',races:'Race evidence',publications:'Publications',competitions:'Competitions',system:'Service health'};
 const date=v=>v?new Date(v*1000).toISOString().replace('T',' ').slice(0,19)+' UTC':'—';
@@ -101,10 +101,11 @@ async function render(){
  try{
   const overviewQuery=new URLSearchParams({days:$('#days').value==='custom'?'7':$('#days').value});
   if(params.has('since')){overviewQuery.set('since',params.get('since'));overviewQuery.set('until',params.get('until'));}
-  const d=await api((['usage','alarms','quality','cases','competitions','publications','tracks','players','races','studio','system','economy','live','product','analytics'].includes(section)?'studio/context?':'overview?')+overviewQuery);if(ticket!==generation)return;
+  const d=await api((['usage','alarms','quality','reported-tracks','cases','competitions','publications','tracks','players','races','studio','system','economy','live','product','analytics'].includes(section)?'studio/context?':'overview?')+overviewQuery);if(ticket!==generation)return;
   role=d.role;reporting=d;params=rangeParams(params);
   let html='';
   if(section==='alarms')html=await platformIncidents(id,params);
+  else if(section==='reported-tracks')html=await reportedTracks(id,params);
   else if(section==='usage')html=await studioUsage(params);
   else if(section==='quality')html=await platformQuality(params);
   else if(['tracks','players'].includes(section))html=await catalogueView(section,id,params);
@@ -125,7 +126,7 @@ async function render(){
   else if(section==='analytics')html=intro('Race evidence','Inspect submitted results and their verification outcomes.','INVESTIGATE')+await listing('races',params);
   else html=intro('Page not found','Use the navigation to choose a workspace.');
   if(ticket!==generation)return;
-  if(['tracks','publications','competitions'].includes(section))html=pTabs([['tracks','Track catalogue'],['publications','Publication requests'],['competitions','Competitions']],section,params)+html;if(['cases','players','races'].includes(section))html=pTabs([['cases','Support cases'],['players','Player directory'],['races','Race evidence']],section,params)+html;html='<div class="platform-actions"><button class="btn" id="platform-save">Save view</button>'+pExportAction(section,params)+'</div>'+html;$('#main').innerHTML=html;
+  if(['tracks','reported-tracks','publications','competitions'].includes(section))html=pTabs([['tracks','Track catalogue'],['reported-tracks','Reported tracks'],['publications','Publication requests'],['competitions','Competitions']],section,params)+html;if(['cases','players','races'].includes(section))html=pTabs([['cases','Support cases'],['players','Player directory'],['races','Race evidence']],section,params)+html;html='<div class="platform-actions"><button class="btn" id="platform-save">Save view</button>'+pExportAction(section,params)+'</div>'+html;$('#main').innerHTML=html;
   if(lastRenderedRoute!==raw){window.scrollTo({top:0,behavior:'instant'});lastRenderedRoute=raw;}
   $('#role').textContent=role+' access';$('#environment').textContent=d.environment;
   $('#connection').textContent=location.host;$('#connection').title=location.origin;
@@ -142,7 +143,7 @@ async function render(){
   $('#freshness').textContent='Query not completed';$('#retry').onclick=render;
  }finally{if(ticket===generation)$('#main').removeAttribute('aria-busy');}
 }
-function wire(params){const form=$('#filters');if(form)form.onsubmit=e=>{e.preventDefault();const p=new URLSearchParams(params);p.delete('offset');p.delete('cursor');for(const [name,value] of new FormData(form))value?p.set(name,value):p.delete(name);location.hash=location.hash.slice(1).split('?')[0]+'?'+p;};document.querySelectorAll('[data-offset]').forEach(b=>b.onclick=()=>{params.set('offset',b.dataset.offset);location.hash=location.hash.slice(1).split('?')[0]+'?'+params;});document.querySelectorAll('[data-page-cursor]').forEach(b=>b.onclick=()=>{params.delete('offset');params.set('cursor',b.dataset.pageCursor);location.hash=location.hash.slice(1).split('?')[0]+'?'+params;});if($('#command'))$('#command').onclick=()=>confirmCommand($('#command').dataset);wireCommerce(params);wireSupport();wireStudio();wireCatalogue();wireMonitor();wireInsights();wirePlatform(params);wireGameConfig(params);}
+function wire(params){const form=$('#filters');if(form)form.onsubmit=e=>{e.preventDefault();const p=new URLSearchParams(params);p.delete('offset');p.delete('cursor');for(const [name,value] of new FormData(form))value?p.set(name,value):p.delete(name);location.hash=location.hash.slice(1).split('?')[0]+'?'+p;};document.querySelectorAll('[data-offset]').forEach(b=>b.onclick=()=>{params.set('offset',b.dataset.offset);location.hash=location.hash.slice(1).split('?')[0]+'?'+params;});document.querySelectorAll('[data-page-cursor]').forEach(b=>b.onclick=()=>{params.delete('offset');params.set('cursor',b.dataset.pageCursor);location.hash=location.hash.slice(1).split('?')[0]+'?'+params;});if($('#command'))$('#command').onclick=()=>confirmCommand($('#command').dataset);wireCommerce(params);wireSupport();wireStudio();wireCatalogue();wireReportedTracks();wireMonitor();wireInsights();wirePlatform(params);wireGameConfig(params);}
 function dialogToken(){return {dialog:dialogGeneration,auth:authGeneration,page:generation};}
 function dialogIsCurrent(token){return token.dialog===dialogGeneration&&token.auth===authGeneration&&token.page===generation&&$('#dialog').open;}
 function modal(html){

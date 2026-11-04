@@ -145,6 +145,9 @@ def append_event(case_id: UUID, payload: Action, request: Request, role: Access)
                 raise HTTPException(422, "TRACK_CASE_REQUIRED")
             reason = safe_text(payload.text, 500)
             track = session.scalar(select(Track).where(Track.id == case.track_id).with_for_update())
+            if session.scalar(select(AdminAudit.id).where(AdminAudit.entity_id == track.id,
+                    AdminAudit.action == "track_deletion").limit(1)):
+                raise HTTPException(409, "TRACK_DELETED")
             quarantine = session.get(StudioQuarantine, track.id)
             if payload.kind == "quarantine":
                 if track.hidden or quarantine:

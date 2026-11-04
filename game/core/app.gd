@@ -4807,6 +4807,7 @@ func _start_race(track: NativeTrack, from_editor: bool, offline_only: bool = fal
 			if is_instance_valid(prepared_game): _discard_preparing_game(prepared_game)
 			_close_race_loading(loading_id)
 			return
+	game.opponent_ghost = rivalry_racing or challenge_racing or (offline_only and screen == "challenges")
 	if rivalry_racing:
 		game.ghost_mode = "race" if not rivalry_recording.is_empty() else "off"
 		game.ghost_bests = {"race":rivalry_recording} if not rivalry_recording.is_empty() else {}
@@ -5441,6 +5442,7 @@ func _retry_race(offline_only: bool = false) -> void:
 	_telemetry_observe("race_retried",_telemetry_track_properties(track,"restart"))
 	_telemetry_begin_attempt(track)
 	game.call("restart")
+	game.opponent_ghost = rivalry_racing or challenge_racing
 	if rivalry_racing:
 		game.ghost_mode = "race" if not rivalry_recording.is_empty() else "off"
 		game.ghost_bests = {"race":rivalry_recording} if not rivalry_recording.is_empty() else {}

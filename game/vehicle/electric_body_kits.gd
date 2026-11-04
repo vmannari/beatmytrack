@@ -2,7 +2,7 @@ extends RefCounted
 ## Complete formed lower coachwork. Metres in the reference body's coordinates.
 const M = preload("res://vehicle/electric_reference_mesh.gd")
 const B = preload("res://vehicle/electric_reference_body.gd")
-const REVISION := "volt-formed-body-1"
+const REVISION := "volt-door-fender-fit-2"
 # Explicit silhouettes: projection, sill breadth, front rise and rear rise.
 # Road packages stay restrained; competition packages have deeper venturi decks.
 const PROFILES: Array[Vector4] = [
@@ -14,7 +14,14 @@ const PROFILES: Array[Vector4] = [
 	Vector4(0.088,0.058,0.29,0.32), Vector4(0.110,0.071,0.31,0.36),
 	Vector4(0.058,0.040,0.25,0.28), Vector4(0.045,0.035,0.24,0.27),
 	Vector4(0.125,0.077,0.32,0.37)]
-const SILL_RISE: Array[float] = [0.365,0.400,0.385,0.355,0.415,0.405,0.390,0.400,0.385,0.420,0.395,0.425,0.370,0.360,0.430]
+const SILL_RISE: Array[float] = [0.284,0.290,0.288,0.281,0.294,0.292,0.289,0.291,0.287,0.295,0.290,0.296,0.283,0.282,0.298]
+
+static func arch_joint(side: float,axle: float,direction: float,y: float) -> Vector3:
+	# Sample the actual painted opening, rather than ending a rectangular strip
+	# at a guessed Z. This is shared with the existing fender, not the tire.
+	var angle: float=asin(clampf((maxf(y,0.243)-0.24)/0.545,0.0,1.0))
+	var u: float=angle/PI if direction>0.0 else 1.0-angle/PI
+	return B.fender_point(side,axle,u,1.0)
 
 static func profile(i: int) -> Vector4:
 	return PROFILES[i-1]
@@ -62,23 +69,32 @@ static func cap_surface(i: int,rear: bool,u: float,v: float,outer: bool=true) ->
 
 static func sill_surface(side: float,i: int,u: float,v: float,outer: bool=true) -> Vector3:
 	var spec: Vector4=profile(i)
-	var z: float=lerpf(-0.90,0.90,u)
-	var sweep: float=smoothstep(0.05,0.95,u)
-	var rise: float=SILL_RISE[i-1]+(0.025*sweep if i in [3,8,9,12,15] else 0.008*sin(PI*u))
-	var y: float=lerpf(0.225,rise,v)
+	# Every package stays below the 0.31 m factory door bottoms. Its end
+	# stations follow the inner arch curve at every height of the section.
+	var rise: float=SILL_RISE[i-1]
+	var blend: float=smoothstep(0.0,0.10,u)*(1.0-smoothstep(0.90,1.0,u))
+	var low: float=lerpf(0.243,0.225,blend)
+	var y: float=lerpf(low,rise,v)
+	var front: Vector3=arch_joint(side,-B.AXLE,1.0,y)
+	var rear: Vector3=arch_joint(side,B.AXLE,-1.0,y)
+	var z: float=lerpf(front.z,rear.z,u)
 	var p: Vector3=B.side_point(side,z,maxf(0.24,y))
 	p.y=y
-	var breadth: float=0.002
+	var fitted: Vector3=front.lerp(rear,u)
+	var end_weight: float=1.0-blend
+	p.x=lerpf(p.x,fitted.x,end_weight)
+	p.y=lerpf(p.y,fitted.y,end_weight)
+	var breadth: float=-0.002
 	if outer:
 		# A tucked upper joint, rolled shoulder and broad lower blade.
-		var longitudinal: float=smoothstep(0.0,0.11,u)*(1.0-smoothstep(0.89,1.0,u))
+		var longitudinal: float=blend
 		var section: float=pow(sin(PI*v),1.4)
 		match i:
 			2,3,5,6,10,12,15: section=smoothstep(0.0,0.23,v)*(1.0-smoothstep(0.67,1.0,v))
 			8: section=smoothstep(0.0,0.15,v)*(1.0-smoothstep(0.32,1.0,v))
 			11: section=0.70*pow(sin(PI*v),1.4)+0.30*pow(sin(TAU*v),2)
 			13: section=0.72*pow(sin(PI*v),2)-0.12*pow(sin(TAU*v),2)
-		breadth=0.003+longitudinal*(spec.y*section+0.024*pow(1.0-v,2))
+		breadth=0.001+longitudinal*(spec.y*section+0.024*pow(1.0-v,2))
 		if i in [8,10,12,15]: breadth+=longitudinal*0.016*pow(1.0-v,3)
 		if i in [5,6,8,10,11,12,15]: breadth+=0.014*longitudinal*smoothstep(0.63,0.90,u)*pow(sin(PI*v),2)
 	p.x+=side*breadth
@@ -142,13 +158,22 @@ static func build(car: CarVisual,parent: Node3D,option: String,i: int) -> void:
 
 static func corner_surface(side: float,i: int,rear: bool,u: float,v: float,outer: bool=true) -> Vector3:
 	var edge: Vector3=cap_surface(i,rear,0.0 if side<0.0 else 1.0,v,outer)
-	var z: float=lerpf(B.REAR if rear else B.FRONT,1.94 if rear else -1.94,u)
-	var p: Vector3=B.flank_point(side,z,edge.y)
+	# The lower surface rises into the foot of the arch. The whole boundary
+	# ends on the painted fender curve, so no exposed pillar remains between
+	# a short bumper strip and the wheel opening.
+	var ease: float=smoothstep(0.0,1.0,u)
+	var y: float=lerpf(edge.y,maxf(0.243+0.018*v,edge.y),ease)
+	var axle: float=B.AXLE if rear else -B.AXLE
+	var arch: Vector3=arch_joint(side,axle,1.0 if rear else -1.0,y)
+	var z: float=lerpf(B.REAR if rear else B.FRONT,arch.z,u)
+	var p: Vector3=B.flank_point(side,z,y)
 	var joint: Vector3=B.flank_point(side,B.REAR if rear else B.FRONT,edge.y)
 	# Transfer the exact cap/side seam correction, easing into factory metal.
-	var fade: float=1.0-smoothstep(0.0,1.0,u)
+	var fade: float=1.0-ease
 	p+=(edge-joint)*fade
-	if outer: p.x+=side*0.002*(1.0-fade)
+	var arch_side: Vector3=B.flank_point(side,arch.z,y)
+	p+=(arch-arch_side)*ease
+	p.x+=side*(0.001 if outer else -0.002)*ease
 	return p
 
 static func build_rear_tunnels(car: CarVisual,parent: Node3D,label: String,i: int,black: Material,graphite: Material) -> void:

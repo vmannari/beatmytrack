@@ -6,11 +6,12 @@ import sys
 
 ROOT = Path(__file__).resolve().parents[1]
 EVIDENCE = ROOT / "docs/evidence/volt-body-refinement-2026-11-03"
+PROFILE_ROOT = ROOT / "build/volt-body-refinement"
 
 
 def main():
     name, script, *arguments = sys.argv[1:]
-    profile = ROOT / "build/volt-body-refinement" / name
+    profile = PROFILE_ROOT / name
     env = os.environ.copy()
     for variable in ("APPDATA", "LOCALAPPDATA"):
         directory = profile / variable.lower()

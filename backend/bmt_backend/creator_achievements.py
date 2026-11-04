@@ -31,6 +31,8 @@ def enqueue(session, run, creator_id):
         select(Player.id).where(Player.id == creator_id, Player.disabled.is_(False),
             Player.deleted_at.is_(None), Player.is_test_driver.is_(False)).exists())
     session.execute(insert(session, Event).from_select(list(values), source).on_conflict_do_nothing())
+    from .run_signals import wake_after_commit
+    wake_after_commit(session)
 
 
 def capture_reach(session, run_id, creator_id, value):

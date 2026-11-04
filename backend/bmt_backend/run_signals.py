@@ -46,6 +46,7 @@ class RunSignals:
         self.pending = set()
         self.pending_work = False
         self.work_hint = False
+        self.work_generation = 0
         self.idle_worker = False
         self.users = 0
         self.thread = None
@@ -131,6 +132,7 @@ class RunSignals:
     def _deliver(self, work, run_ids):
         with self.condition:
             if work:
+                self.work_generation += 1
                 self.work_hint = True
                 self.worker.set()
             watches = tuple(w for w in self.watches if w.run_id in run_ids)
@@ -226,6 +228,12 @@ class RunSignals:
             if not raw.closed:
                 raw.execute("UNLISTEN *")
                 raw.execute("SELECT set_config('statement_timeout', %s, false)", (previous_timeout,))
+
+
+def wake_after_commit(session):
+    """Share the existing lossy worker hint without IO inside the transaction."""
+    if getattr(session.get_bind(), "_bmt_run_signals", None) is not None:
+        session.info.setdefault("run_signals", {"work": False, "done": set()})["work"] = True
 
 
 @event.listens_for(Session, "after_flush")

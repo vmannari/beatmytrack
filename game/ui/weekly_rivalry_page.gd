@@ -494,19 +494,47 @@ func _loading(parent: Control) -> void:
 	right.size_flags_stretch_ratio = 1.13
 	right.add_theme_constant_override("separation",6)
 	parent.add_child(right)
-	var tracks: VBoxContainer = _card(right,"",12)
-	tracks.add_theme_constant_override("separation",6)
-	_copy(tracks,"THIS WEEK'S TRACKS",26)
-	for _slot: int in range(5): _loading_block(tracks,48).size_flags_vertical = Control.SIZE_EXPAND_FILL
+	var tracks: VBoxContainer = _track_card(right)
+	tracks.get_parent().name = "RivalryLoadingTracksPanel"
+	var leading: Label = find_child("RivalryTracksLeading",true,false)
+	leading.text = GameText.message("%d OF %d LEADING") % [0,5]
+	leading.modulate.a = 0.0
+	var progress: Label = find_child("RivalryTrackProgress",true,false)
+	progress.text = GameText.message("%d / %d COMPLETED") % [0,5]
+	progress.modulate.a = 0.0
+	find_child("RivalryTrackLeadStrip",true,false).modulate.a = 0.0
+	var status: RichTextLabel = find_child("RivalryTracksHint",true,false)
+	status.name = "RivalryLoadingTracksStatus"
+	status.add_text(GameText.message("Loading tracks…"))
+	status.tooltip_text = status.get_parsed_text()
+	for slot: int in range(5): _loading_track_row(tracks,slot)
 
-func _loading_block(parent: Control, height: int) -> Control:
-	var block := PanelContainer.new()
-	block.custom_minimum_size.y = height
-	block.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	block.mouse_filter = Control.MOUSE_FILTER_IGNORE
-	block.add_theme_stylebox_override("panel",MenuStyle.box(Color("29425266"),6))
-	parent.add_child(block)
-	return block
+func _loading_track_row(parent: Control, slot: int) -> void:
+	var row := Control.new()
+	row.name = "RivalryLoadingTrack_"+str(slot)
+	row.custom_minimum_size.y = 54
+	row.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	row.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	row.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	parent.add_child(row)
+	var art: Control = LoadingVisual.new()
+	art.name = "RivalryLoadingTrackArt_"+str(slot)
+	art.kind = LoadingVisual.Kind.TRACK
+	art.track_slot = slot
+	row.add_child(art)
+	MenuStyle.fill(art)
+	var number := PanelContainer.new()
+	number.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	var number_style: StyleBoxFlat = MenuStyle.box(Color("071b29ed"),1)
+	number_style.set_corner_radius_all(0)
+	number.add_theme_stylebox_override("panel",number_style)
+	number.position = Vector2(6,4)
+	number.custom_minimum_size = Vector2(28,24)
+	row.add_child(number)
+	var label: Label = _copy(number,"%02d" % (slot+1),16,MenuStyle.MUTED)
+	label.add_theme_font_override("font",MenuStyle.DISPLAY)
+	label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	label.mouse_filter = Control.MOUSE_FILTER_IGNORE
 
 func _empty(parent: Control) -> void:
 	var hero: VBoxContainer = _card(parent,"winter",28)
@@ -540,9 +568,32 @@ func _championship(parent: Control, finale: bool) -> void:
 	right.size_flags_stretch_ratio = 1.13
 	right.add_theme_constant_override("separation",6)
 	parent.add_child(right)
-	var tracks: VBoxContainer = _card(right,"",12)
+	var tracks: VBoxContainer = _track_card(right,finale)
+	track_rows.clear()
+	for index: int in range(model.tracks.size()): _track_row(tracks,index)
+	if finale and not model.empty_completed_week():
+		var actions := HBoxContainer.new()
+		actions.name = "RivalryFinaleActions"
+		tracks.add_child(actions)
+		var share: Button = _action(actions,"SHARE RESULTS","RivalryShareResults",func() -> void: share_requested.emit())
+		share.icon = MenuIcon.texture("share")
+		share.expand_icon = true
+		share.add_theme_constant_override("icon_max_width",20)
+		share.clip_text = true
+		share.add_theme_font_size_override("font_size",20)
+		share.disabled = busy
+		var next: Button = _action(actions,"CONTINUE TO NEXT WEEK","RivalryNextWeek",func() -> void: continue_requested.emit(),true)
+		next.clip_text = true
+		next.add_theme_font_size_override("font_size",20)
+		next.disabled = busy
+	_update_track_header()
+	_select_track(selected)
+
+func _track_card(parent: Control, finale: bool = false) -> VBoxContainer:
+	var tracks: VBoxContainer = _card(parent,"",12)
 	tracks.get_parent().name = "RivalryTracksPanel"
-	tracks.add_theme_constant_override("separation",2 if finale else 6)
+	_fit_track_spacing(tracks,finale)
+	tracks.resized.connect(_fit_track_spacing.bind(tracks,finale))
 	var heading := HBoxContainer.new()
 	heading.add_theme_constant_override("separation",10)
 	tracks.add_child(heading)
@@ -573,7 +624,10 @@ func _championship(parent: Control, finale: bool) -> void:
 	subtitle.visible = not error.is_empty()
 	var hint := RichTextLabel.new()
 	hint.name = "RivalryTracksHint"
-	hint.fit_content = true
+	hint.fit_content = finale
+	if not finale:
+		hint.custom_minimum_size.y = ceili(MenuStyle.BODY.get_height(15))
+		hint.autowrap_mode = TextServer.AUTOWRAP_OFF
 	hint.scroll_active = false
 	hint.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	hint.add_theme_font_override("normal_font",MenuStyle.BODY)
@@ -607,25 +661,12 @@ func _championship(parent: Control, finale: bool) -> void:
 	time_heading.name = "RivalryTrackTimeHeading"
 	time_heading.custom_minimum_size.x = 116
 	time_heading.horizontal_alignment = HORIZONTAL_ALIGNMENT_RIGHT
-	track_rows.clear()
-	for index: int in range(model.tracks.size()): _track_row(tracks,index)
-	if finale and not model.empty_completed_week():
-		var actions := HBoxContainer.new()
-		actions.name = "RivalryFinaleActions"
-		tracks.add_child(actions)
-		var share: Button = _action(actions,"SHARE RESULTS","RivalryShareResults",func() -> void: share_requested.emit())
-		share.icon = MenuIcon.texture("share")
-		share.expand_icon = true
-		share.add_theme_constant_override("icon_max_width",20)
-		share.clip_text = true
-		share.add_theme_font_size_override("font_size",20)
-		share.disabled = busy
-		var next: Button = _action(actions,"CONTINUE TO NEXT WEEK","RivalryNextWeek",func() -> void: continue_requested.emit(),true)
-		next.clip_text = true
-		next.add_theme_font_size_override("font_size",20)
-		next.disabled = busy
-	_update_track_header()
-	_select_track(selected)
+	return tracks
+
+func _fit_track_spacing(tracks: VBoxContainer, finale: bool) -> void:
+	var gap: int = 2 if finale else 0 if get_viewport_rect().size.y < 600 else 6
+	if tracks.get_theme_constant("separation") != gap:
+		tracks.add_theme_constant_override("separation",gap)
 
 func _driver_table(parent: Control, title: String) -> void:
 	var table: VBoxContainer = _card(parent,"",12)
@@ -968,6 +1009,7 @@ func _track_header_state() -> Dictionary:
 	return result
 
 func _update_track_header() -> void:
+	if model.tracks.is_empty(): return
 	var label := find_child("RivalryTracksLeading",true,false) as Label
 	if label == null: return
 	var state: Dictionary = _track_header_state()
@@ -1004,6 +1046,7 @@ func _update_track_header() -> void:
 		hint.push_color(MenuStyle.ACCENT)
 		hint.add_text(tr("Pick a track to begin." if state.completed == 0 else "Choose your next target."))
 	hint.pop()
+	hint.tooltip_text = hint.get_parsed_text()
 	for index: int in range(_track_views.size()):
 		_track_views[index].target.visible = index == int(state.target)
 		track_rows[index].tooltip_text = "View "+str(model.tracks[index].name)

@@ -13,7 +13,7 @@ def mount_routes(app, settings):
         for name in ("studio_identity", "admin", "admin_commerce", "admin_purchase_controls", "admin_player_grants",
                      "admin_support", "studio", "studio_analysis", "studio_metrics", "studio_usage", "studio_jobs",
                      "studio_ranking", "studio_incidents", "studio_finance", "studio_experiments", "game_config",
-                     "studio_governance", "studio_alarms", "studio_cases", "studio_competitions", "studio_rivalry", "studio_catalogue"):
+                     "studio_governance", "studio_alarms", "studio_cases", "studio_competitions", "studio_rivalry", "studio_catalogue", "studio_reported_tracks"):
             mount(name)
         mount("publications", "admin_router", "/v1")
     if settings.workload_role != "admin":

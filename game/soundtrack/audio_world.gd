@@ -111,6 +111,8 @@ func bind_records(records: LocalRecords) -> void:
 
 
 func apply_settings(settings: Dictionary) -> void:
+	# All audio preferences use their named buses; discard the legacy pause mute.
+	AudioServer.set_bus_mute(0, false)
 	_settings = settings
 	music_enabled = settings.get("music_enabled",true) == true
 	var entry: Dictionary = RecordLibrary.selected(settings)

@@ -51,11 +51,12 @@ func run() -> void:
 			await capture("%s-ghost-%dx%d.png" % [mode,dimensions.x,dimensions.y])
 	game.toggle_pause()
 	game.hud.pause_menu._settings()
-	var selector: OptionButton = game.hud.pause_menu.find_child("RaceGhostMode",true,false)
-	assert(selector != null and selector.size.y >= 52)
-	selector.select(2)
-	selector.item_selected.emit(2)
-	assert(game.ghost_mode == "race")
+	var settings: SettingsPage = game.hud.pause_menu.settings_overlay.page
+	settings._show_section("ghosts")
+	var selector: Button = settings.find_child("Ghost_race",true,false)
+	assert(selector != null)
+	selector.pressed.emit()
+	assert(settings._apply() and game.ghost_mode == "race")
 	root.size = Vector2i(1280,720)
 	root.content_scale_size = root.size
 	await capture("pause-ghost-settings-1280x720.png")

@@ -1,0 +1,210 @@
+diff --git a/game/tests/test_rivalry_loading_visuals.gd b/game/tests/test_rivalry_loading_visuals.gd
+index 23343e65e..cae80b8af 100644
+--- a/game/tests/test_rivalry_loading_visuals.gd
++++ b/game/tests/test_rivalry_loading_visuals.gd
+@@ -19,7 +19,9 @@ func settle() -> void:
+ func run() -> void:
+ 	OS.set_environment("BMT_API_URL","")
+ 	if DisplayServer.get_name() != "headless": root.position = Vector2i(-12000,-12000)
+-	evidence = ProjectSettings.globalize_path("res://../docs/evidence/rivalry-loading-model-silhouettes-2026-11-02/"+RenderingServer.get_current_rendering_method())
++	var output: String = OS.get_environment("BMT_RIVALRY_LOADING_EVIDENCE")
++	if output.is_empty(): output = "res://../docs/evidence/rivalry-loading-tracks-2026-11-04"
++	evidence = ProjectSettings.globalize_path(output).path_join(RenderingServer.get_current_rendering_method())
+ 	DirAccess.make_dir_recursive_absolute(evidence)
+ 	var atlas: Image = Visual.SILHOUETTES.get_image()
+ 	check(atlas != null and atlas.get_size() == Vector2i(1920,256),"packaged silhouette atlas loads")
+@@ -59,6 +61,18 @@ func run() -> void:
+ 		check(not page.ready_for_display(),"placeholder does not bypass the fresh-membership entry gate")
+ 		var rows: Control = page.find_child("RivalryLoadingStandings",true,false)
+ 		check(rows != null and rows.size.y >= 70 and root.get_visible_rect().encloses(rows.get_global_rect()),"animated table fits the smaller hub")
++		var tracks: Control = page.find_child("RivalryLoadingTracksPanel",true,false)
++		check(tracks != null and shell.get_global_rect().encloses(tracks.get_global_rect()),"weekly track loading panel stays inside the available menu area")
++		var track_status: Label = page.find_child("RivalryLoadingTracksStatus",true,false)
++		check(track_status != null and track_status.text == GameText.message("Loading tracks…"),"weekly track placeholders explain the wait with existing translated copy")
++		for slot: int in range(5):
++			var track: Control = page.find_child("RivalryLoadingTrack_"+str(slot),true,false)
++			var art: Control = page.find_child("RivalryLoadingTrackArt_"+str(slot),true,false)
++			check(track != null and track.size.y >= 48 and tracks.get_global_rect().encloses(track.get_global_rect()),"all five track placeholders fit without clipping")
++			check(art != null and art.kind == Visual.Kind.TRACK and art.track_slot == slot and not art.is_processing(),"each track row uses retained 2D drawing and shader animation")
++			check(track.mouse_filter == Control.MOUSE_FILTER_IGNORE and art.mouse_filter == Control.MOUSE_FILTER_IGNORE and track.find_children("*","Button",true,false).is_empty(),"unresolved tracks cannot intercept input or start a race")
++			var number: Label = track.find_children("*","Label",true,false)[0]
++			check(number.text == "%02d" % (slot+1),"track placeholders retain the five stable slot numbers")
+ 		var loading_styles: Dictionary = {}
+ 		for position: int in range(1,4):
+ 			var car: Control = page.find_child("RivalryLoadingCar_"+str(position),true,false)
+@@ -73,6 +87,7 @@ func run() -> void:
+ 		var builds: int = page.content_builds
+ 		page.refresh_presentation()
+ 		check(page.content_builds == builds and page.find_child("RivalryLoadingCar_1",true,false) == retained,"pending notifications retain the same placeholder controls")
++		check(page.find_child("RivalryLoadingTracksPanel",true,false) == tracks,"pending notifications also retain the track animation")
+ 		if DisplayServer.get_name() != "headless":
+ 			await RenderingServer.frame_post_draw
+ 			var first: Image = root.get_texture().get_image()
+@@ -82,20 +97,23 @@ func run() -> void:
+ 			var second: Image = root.get_texture().get_image()
+ 			var cars_delta: float = mean_delta(first,second,Rect2i(retained.get_global_rect()))
+ 			var rows_delta: float = mean_delta(first,second,Rect2i(rows.get_global_rect()))
++			var tracks_delta: float = mean_delta(first,second,Rect2i(tracks.get_global_rect()))
+ 			var sample_seconds: float = 0.65
+ 			# Flat masks can quantize to the same alpha on either side of a pulse peak.
+ 			# Sample the next part of the real animation before judging it stationary.
+-			if cars_delta <= 0.001 or rows_delta <= 0.001:
++			if cars_delta <= 0.001 or rows_delta <= 0.001 or tracks_delta <= 0.001:
+ 				await create_timer(0.65).timeout
+ 				await RenderingServer.frame_post_draw
+ 				var third: Image = root.get_texture().get_image()
+ 				cars_delta = maxf(cars_delta,mean_delta(first,third,Rect2i(retained.get_global_rect())))
+ 				rows_delta = maxf(rows_delta,mean_delta(first,third,Rect2i(rows.get_global_rect())))
++				tracks_delta = maxf(tracks_delta,mean_delta(first,third,Rect2i(tracks.get_global_rect())))
+ 				second = third
+ 				sample_seconds = 1.3
+ 			check(cars_delta > 0.001 and cars_delta < 4.0,"native model-silhouette pulse changes pixels gently")
+ 			check(rows_delta > 0.001 and rows_delta < 5.0,"native standings shimmer changes pixels gently")
+-			print("RIVALRY_LOADING_MOTION ",JSON.stringify({"size":str(dimensions),"sample_seconds":sample_seconds,"car_mean_delta_255":cars_delta,"rows_mean_delta_255":rows_delta}))
++			check(tracks_delta > 0.001 and tracks_delta < 5.0,"native weekly track shimmer changes pixels gently")
++			print("RIVALRY_LOADING_MOTION ",JSON.stringify({"size":str(dimensions),"sample_seconds":sample_seconds,"car_mean_delta_255":cars_delta,"rows_mean_delta_255":rows_delta,"tracks_mean_delta_255":tracks_delta}))
+ 			check(second.save_png(evidence.path_join("loading-motion-%dx%d.png" % [dimensions.x,dimensions.y])) == OK,"save second animation sample")
+ 		if dimensions.x == 1280:
+ 			for id: String in Visual.CAR_IDS:
+@@ -117,6 +135,7 @@ func run() -> void:
+ 			page.refresh_presentation()
+ 			retained = page.find_child("RivalryLoadingCar_1",true,false)
+ 		var old_visual: WeakRef = weakref(retained)
++		var old_tracks: WeakRef = weakref(page.find_child("RivalryLoadingTracksPanel",true,false))
+ 		page.busy = false
+ 		page.error = "Rivalry unavailable. Check your connection and try again."
+ 		page.refresh_presentation()
+@@ -124,15 +143,18 @@ func run() -> void:
+ 		var retry: Button = page.find_child("RivalryRefresh",true,false)
+ 		check(retry != null and not retry.disabled and page.find_child("RivalryLoading",true,false) == null,"failure replaces loading with an actionable retry")
+ 		check(old_visual.get_ref() == null,"departing loading controls and their animation materials are released")
++		check(old_tracks.get_ref() == null,"failure releases the track placeholders and their animation materials")
+ 		page.busy = true
+ 		page.error = ""
+ 		page.refresh_presentation()
+ 		check(page.find_child("RivalryLoadingCar_1",true,false) != null,"retry restores the loading art")
++		check(page.find_child("RivalryLoadingTracksPanel",true,false) != null,"retry also restores the weekly track presentation")
+ 		page.model.apply_snapshot(fixture())
+ 		page.busy = false
+ 		page.refresh_presentation()
+ 		await settle()
+ 		check(page.find_child("RivalryLoading",true,false) == null and page.find_child("RivalryLoadingStandings",true,false) == null,"final server board removes all loading visuals")
++		check(page.find_child("RivalryLoadingTracksPanel",true,false) == null and page.find_child("SelectRivalryTrack_4",true,false) != null,"authoritative tracks replace all five placeholders with usable rows")
+ 		check(page.find_child("RivalryDriversPanel",true,false) != null and page.find_child("RivalryPodiumCar_1",true,false) != null,"handoff retains the real standings and player cars")
+ 		for position: int in range(1,4):
+ 			var panel: PanelContainer = page.find_child("RivalryPodium_"+str(position),true,false)
+diff --git a/game/ui/rivalry_loading_visual.gd b/game/ui/rivalry_loading_visual.gd
+index cc28a0035..6c87913f2 100644
+--- a/game/ui/rivalry_loading_visual.gd
++++ b/game/ui/rivalry_loading_visual.gd
+@@ -1,10 +1,11 @@
+ extends Control
+ ## Inexpensive 2D loading art. Retained draw commands; motion lives in the shader.
+-enum Kind { CAR, STANDINGS, IDENTITY }
++enum Kind { CAR, STANDINGS, IDENTITY, TRACK }
+ var kind: Kind = Kind.CAR
+ var phase: float = 0.0
+ var vehicle_id: String = "compact"
+ var podium_color := Color("c0d4e3")
++var track_slot: int = 0
+ const CAR_IDS: Array[String] = ["compact","kart","forklift","electric","hovercraft"]
+ const TILE := Vector2(384,256)
+ const SILHOUETTES: Texture2D = preload("res://assets/menu/rivalry_loading_cars_v1.png")
+@@ -39,6 +40,8 @@ func _draw() -> void:
+ 	elif kind == Kind.IDENTITY:
+ 		_bar(Rect2(size.x*0.19,7,size.x*0.62,9),Color(podium_color,0.22))
+ 		_bar(Rect2(size.x*0.34,26,size.x*0.32,12),Color(podium_color,0.30))
++	elif kind == Kind.TRACK:
++		_draw_track()
+ 	else:
+ 		var rows: int = clampi(floori((size.y+5.0)/35.0),2,9)
+ 		var stride: float = minf(39.0,size.y/rows)
+@@ -50,3 +53,31 @@ func _draw() -> void:
+ 			_bar(Rect2(37,top+12,name_width,8),Color("67849473"))
+ 			_bar(Rect2(size.x-67,top+12,22,8),Color("607d8e66"))
+ 			_bar(Rect2(size.x-28,top+12,20,8),Color("526c7b55"))
++
++func _draw_track() -> void:
++	# Match the populated row's thumbnail/copy/time layout. This neutral schematic
++	# is deliberately shared by all slots; it does not preview an unknown route.
++	var thumbnail := Rect2(6,4,110,size.y-8)
++	_bar(thumbnail,Color("173341cc"),2)
++	var center := thumbnail.position+Vector2(68,thumbnail.size.y*0.5)
++	var extent := Vector2(31,minf(21,thumbnail.size.y*0.32))
++	var circuit := PackedVector2Array()
++	for step: int in range(49):
++		var angle: float = TAU*step/48.0
++		circuit.append(center+Vector2(cos(angle)*extent.x,sin(angle)*extent.y))
++	draw_polyline(circuit,Color("365563bb"),7.0,true)
++	draw_polyline(circuit,Color("7d9caa88"),2.0,true)
++	# Quiet surveying marks keep the thumbnail recognisable as loading artwork.
++	draw_line(center-Vector2(6,0),center+Vector2(6,0),Color("55758455"),1.0,true)
++	draw_line(center-Vector2(0,5),center+Vector2(0,5),Color("55758455"),1.0,true)
++	var middle: float = size.y*0.5
++	var copy_left: float = 126.0
++	var stats_left: float = size.x-105.0
++	var copy_width: float = maxf(12,stats_left-copy_left-22.0)
++	_bar(Rect2(copy_left,middle-15,copy_width*[0.82,0.64,0.92,0.72,0.86][track_slot%5],10),Color("7b98a788"))
++	_bar(Rect2(copy_left,middle+5,12,12),Color("557d8c77"),3)
++	_bar(Rect2(copy_left+19,middle+8,minf(64,copy_width-19),6),Color("63859466"),3)
++	_bar(Rect2(stats_left,middle-11,20,20),Color("496b7d66"),5)
++	_bar(Rect2(size.x-70,middle-9,62,8),Color("7895a477"))
++	_bar(Rect2(size.x-48,middle+7,40,6),Color("56778766"),3)
++	draw_line(Vector2(6,size.y-1),Vector2(size.x-6,size.y-1),Color("31566a88"),1.0)
+diff --git a/game/ui/weekly_rivalry_page.gd b/game/ui/weekly_rivalry_page.gd
+index 47171cd78..98536acf9 100644
+--- a/game/ui/weekly_rivalry_page.gd
++++ b/game/ui/weekly_rivalry_page.gd
+@@ -495,18 +495,43 @@ func _loading(parent: Control) -> void:
+ 	right.add_theme_constant_override("separation",6)
+ 	parent.add_child(right)
+ 	var tracks: VBoxContainer = _card(right,"",12)
++	tracks.get_parent().name = "RivalryLoadingTracksPanel"
+ 	tracks.add_theme_constant_override("separation",6)
+ 	_copy(tracks,"THIS WEEK'S TRACKS",26)
+-	for _slot: int in range(5): _loading_block(tracks,48).size_flags_vertical = Control.SIZE_EXPAND_FILL
++	var status: Label = _copy(tracks,"Loading tracks…",15,MenuStyle.MUTED)
++	status.name = "RivalryLoadingTracksStatus"
++	status.autowrap_mode = TextServer.AUTOWRAP_OFF
++	status.text_overrun_behavior = TextServer.OVERRUN_TRIM_ELLIPSIS
++	status.clip_text = true
++	status.tooltip_text = status.text
++	for slot: int in range(5): _loading_track_row(tracks,slot)
+ 
+-func _loading_block(parent: Control, height: int) -> Control:
+-	var block := PanelContainer.new()
+-	block.custom_minimum_size.y = height
+-	block.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+-	block.mouse_filter = Control.MOUSE_FILTER_IGNORE
+-	block.add_theme_stylebox_override("panel",MenuStyle.box(Color("29425266"),6))
+-	parent.add_child(block)
+-	return block
++func _loading_track_row(parent: Control, slot: int) -> void:
++	var row := Control.new()
++	row.name = "RivalryLoadingTrack_"+str(slot)
++	row.custom_minimum_size.y = 48
++	row.size_flags_horizontal = Control.SIZE_EXPAND_FILL
++	row.size_flags_vertical = Control.SIZE_EXPAND_FILL
++	row.mouse_filter = Control.MOUSE_FILTER_IGNORE
++	parent.add_child(row)
++	var art: Control = LoadingVisual.new()
++	art.name = "RivalryLoadingTrackArt_"+str(slot)
++	art.kind = LoadingVisual.Kind.TRACK
++	art.track_slot = slot
++	row.add_child(art)
++	MenuStyle.fill(art)
++	var number := PanelContainer.new()
++	number.mouse_filter = Control.MOUSE_FILTER_IGNORE
++	var number_style: StyleBoxFlat = MenuStyle.box(Color("071b29ed"),1)
++	number_style.set_corner_radius_all(0)
++	number.add_theme_stylebox_override("panel",number_style)
++	number.position = Vector2(6,4)
++	number.custom_minimum_size = Vector2(28,24)
++	row.add_child(number)
++	var label: Label = _copy(number,"%02d" % (slot+1),16,MenuStyle.MUTED)
++	label.add_theme_font_override("font",MenuStyle.DISPLAY)
++	label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
++	label.mouse_filter = Control.MOUSE_FILTER_IGNORE
+ 
+ func _empty(parent: Control) -> void:
+ 	var hero: VBoxContainer = _card(parent,"winter",28)

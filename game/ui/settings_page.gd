@@ -6,6 +6,7 @@ signal account_requested
 signal privacy_changed(enabled: bool)
 signal tutorial_requested
 signal help_requested(topic: String)
+signal settings_applied
 
 var records: LocalRecords
 var signed_in: bool = false
@@ -38,8 +39,17 @@ var categories: Dictionary = {}
 var reset_button: Button
 var apply_button: Button
 var content_scroll: ScrollContainer
-var content_footer: HBoxContainer
+var content_footer: BoxContainer
 var licences_panel: Control
+var race_context: bool = false
+var live_ghost_settings: bool = true
+var allowed_sections: Array[String] = []
+var dirty: bool = false
+var compact: bool = false
+var narrow: bool = false
+var category_picker: OptionButton
+var compact_navigation: BoxContainer
+var compact_reset: Button
 
 const TITLES: Dictionary = {
 	"language": ["Language", "Changes apply immediately."],
@@ -74,10 +84,13 @@ func _ready() -> void:
 	draft_graphics = preload("res://presentation/graphics_preferences.gd").preferences(records.settings)
 	draft_analytics = bool(records.settings.get("optional_analytics",false))
 	for key: String in GameSoundtrack.DEFAULTS: draft_audio[key] = GameSoundtrack.preference(records.settings, key)
-	ad_adapter = preload("res://platform/admob_test_ads.gd").new()
-	add_child(ad_adapter)
+	if development_available:
+		ad_adapter = preload("res://platform/admob_test_ads.gd").new()
+		add_child(ad_adapter)
 	_build_sidebar()
 	_build_panel()
+	resized.connect(_responsive)
+	_responsive()
 	_show_section(section)
 
 func _build_sidebar() -> void:
@@ -108,13 +121,13 @@ func _build_sidebar() -> void:
 	category_list.add_theme_constant_override("separation", 10)
 	category_scroll.add_child(category_list)
 	for item: Array in [
-		["language", "Language", "Game language", "gear"],
 		["controls", "Controls", "Steering and layout", "controller"],
 		["camera", "Camera", "View and road ahead", "compass"],
-		["graphics", "Graphics", "Image quality", "garage"],
 		["ghosts", "Ghosts", "Your personal best", "garage"],
 		["audio", "Audio", "Music and sound", "headphones"],
 		["haptics", "Haptics", "Feedback and vibration", "phone"],
+		["graphics", "Graphics", "Image quality", "garage"],
+		["language", "Language", "Game language", "gear"],
 		["account", "Account", "Profile and sign-in", "person"],
 		["privacy", "Privacy", "Data and account removal", "gear"],
 		["help", "Help", "Tutorial and game tips", "help"],
@@ -122,6 +135,7 @@ func _build_sidebar() -> void:
 		["development", "Development", "Ads and testing", "gear"],
 	]:
 		var id: String = item[0]
+		if not allowed_sections.is_empty() and id not in allowed_sections: continue
 		if id == "development" and not development_available: continue
 		var button: Button = preload("res://ui/content_fit_button.gd").new()
 		button.pressed.connect(_show_section.bind(id))
@@ -173,6 +187,22 @@ func _build_panel() -> void:
 	var column := VBoxContainer.new()
 	column.add_theme_constant_override("separation", 12)
 	panel.add_child(column)
+	compact_navigation = BoxContainer.new()
+	compact_navigation.add_theme_constant_override("separation", 12)
+	column.add_child(compact_navigation)
+	category_picker = OptionButton.new()
+	category_picker.name = "SettingsCategoryPicker"
+	category_picker.custom_minimum_size.y = 52
+	category_picker.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	category_picker.fit_to_longest_item = false
+	for id: String in categories:
+		category_picker.add_item(TITLES[id][0])
+		category_picker.set_item_metadata(category_picker.item_count - 1, id)
+	category_picker.item_selected.connect(func(index: int) -> void: _show_section(str(category_picker.get_item_metadata(index))))
+	compact_navigation.add_child(category_picker)
+	compact_reset = MenuStyle.button("Reset controls", _reset)
+	compact_reset.name = "ResetSettingsCompact"
+	compact_navigation.add_child(compact_reset)
 	var header := VBoxContainer.new()
 	header.add_theme_constant_override("separation", 3)
 	column.add_child(header)
@@ -190,7 +220,7 @@ func _build_panel() -> void:
 	body.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	body.add_theme_constant_override("separation", 8)
 	scroll.add_child(body)
-	var footer := HBoxContainer.new()
+	var footer := BoxContainer.new()
 	content_footer = footer
 	column.add_child(footer)
 	status = _label("Changes are saved when you apply them.", 16, true)
@@ -208,9 +238,12 @@ func _build_panel() -> void:
 	footer.add_child(apply)
 
 func _show_section(id: String) -> void:
+	if not categories.has(id): return
 	if id == "development" and not development_available: return
+	if section != id: content_scroll.scroll_vertical = 0
 	section = id
 	status.text = "Ad settings use Apply. Simulated purchases take effect immediately." if id == "development" else "Changes are saved when you apply them."
+	if dirty: status.text = "Unapplied changes"
 	if id == "help": status.text = "Replay a lesson whenever you like."
 	apply_button.visible = id not in ["help","language","licences"]
 	content_scroll.visible = id != "licences"
@@ -219,6 +252,8 @@ func _show_section(id: String) -> void:
 	if id == "language": status.text = ""
 	heading.text = TITLES[id][0]
 	subtitle.text = TITLES[id][1]
+	if id == "ghosts" and race_context and not live_ghost_settings:
+		subtitle.text = "Personal ghost settings apply to your next race."
 	for key: String in categories:
 		var item: Dictionary = categories[key]
 		var selected: bool = key == id
@@ -230,6 +265,10 @@ func _show_section(id: String) -> void:
 			(item[field] as Control).modulate = MenuStyle.ACCENT if selected else MenuStyle.MUTED
 	reset_button.visible = id not in ["account","privacy","help","language","licences"]
 	reset_button.text = "Reset graphics" if id == "graphics" else "Reset audio" if id == "audio" else "Reset development" if id == "development" else "Reset ghosts" if id == "ghosts" else "Reset camera" if id == "camera" else "Reset haptics" if id == "haptics" else "Reset controls"
+	compact_reset.text = reset_button.text
+	compact_reset.visible = reset_button.visible
+	for index: int in range(category_picker.item_count):
+		if category_picker.get_item_metadata(index) == id: category_picker.select(index)
 	for child: Node in body.get_children():
 		body.remove_child(child)
 		child.queue_free()
@@ -250,6 +289,18 @@ func _show_section(id: String) -> void:
 		"licences": _licences()
 		"development": _development()
 	_keep_category_visible(id)
+
+func _responsive() -> void:
+	var next_compact: bool = size.x < 1100.0
+	var next_narrow: bool = size.x < 720.0
+	var rebuild: bool = next_narrow != narrow
+	compact = next_compact
+	narrow = next_narrow
+	(find_child("SettingsSidebar",true,false) as Control).visible = not compact
+	compact_navigation.visible = compact
+	compact_navigation.vertical = narrow
+	content_footer.vertical = narrow
+	if rebuild and is_instance_valid(heading): _show_section(section)
 
 func _licences() -> void:
 	if is_instance_valid(licences_panel): return
@@ -283,7 +334,7 @@ func _graphics() -> void:
 	_graphics_choice("shadow_quality","Shadow quality","Higher quality gives sharper car and scenery shadows.")
 	_graphics_choice("render_resolution","3D resolution","Lower values improve performance. Device limits may cap resolution.")
 	_graphics_choice("anti_aliasing","Anti-aliasing","Smooth jagged edges. Higher quality uses more graphics power.")
-	var row: HBoxContainer = _row("CarDetailSettings",18)
+	var row: BoxContainer = _row("CarDetailSettings",18)
 	row.add_child(_copy("Simpler car models", "Use lighter car models and shadows from the next race. Garage previews keep full detail."))
 	var toggle := CheckButton.new()
 	toggle.name = "SimpleCarModels"
@@ -299,7 +350,7 @@ func _graphics() -> void:
 
 func _graphics_choice(field: String, title: String, description: String) -> void:
 	const GRAPHICS = preload("res://presentation/graphics_preferences.gd")
-	var row: HBoxContainer = _row("Graphics_"+field,14)
+	var row: BoxContainer = _row("Graphics_"+field,14)
 	row.add_child(_copy(title,description))
 	var choice := OptionButton.new()
 	choice.name = "GraphicsChoice_"+field
@@ -327,7 +378,7 @@ func _keep_category_visible(id: String) -> void:
 	scroll.ensure_control_visible(categories[id].button)
 
 func _development() -> void:
-	var row: HBoxContainer = _row("DevelopmentAds", 18)
+	var row: BoxContainer = _row("DevelopmentAds", 18)
 	row.add_child(_copy("Show ads", "Show AdMob test ads for ad-backed resumes. Off keeps development resumes free."))
 	var toggle := CheckButton.new()
 	toggle.name = "DevelopmentShowAds"
@@ -342,7 +393,7 @@ func _development() -> void:
 		if is_instance_valid(ad_test_button): ad_test_button.disabled = not on or ad_test_busy or not preload("res://platform/admob_test_ads.gd").supported()
 		_changed())
 	row.add_child(toggle)
-	var test_row: HBoxContainer = _row("DevelopmentAdTest", 18)
+	var test_row: BoxContainer = _row("DevelopmentAdTest", 18)
 	test_row.add_child(_copy("Rewarded ad test", "Preview a test ad here. This does not spend or add resumes."))
 	ad_test_button = MenuStyle.button("Test rewarded ad", _test_rewarded_ad)
 	ad_test_button.name = "TestRewardedAd"
@@ -375,14 +426,14 @@ func _test_rewarded_ad() -> void:
 	status.add_theme_color_override("font_color", MenuStyle.POSITIVE if result.ok else MenuStyle.ACCENT)
 
 func _controls() -> void:
-	var steering: HBoxContainer = _row("SteeringSettings", 16)
+	var steering: BoxContainer = _row("SteeringSettings", 16)
 	var copy := VBoxContainer.new()
 	copy.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	copy.add_theme_constant_override("separation", 10)
 	steering.add_child(copy)
 	copy.add_child(MenuStyle.label("Steering mode", 24))
 	copy.add_child(_label("Choose your on-screen steering control.", 16, true))
-	var modes := HBoxContainer.new()
+	var modes := HFlowContainer.new()
 	modes.add_theme_constant_override("separation", 8)
 	copy.add_child(modes)
 	var labels: Array[String] = ["Buttons", "Analog slider", "Analog joystick"]
@@ -406,7 +457,7 @@ func _controls() -> void:
 	var preview_title: Label = _label("Tap left or right" if draft_layout.steering_type == "buttons" else "Slide left or right", 16, true)
 	preview_title.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	preview.add_child(preview_title)
-	var layout_row: HBoxContainer = _row("LayoutSettings", 16)
+	var layout_row: BoxContainer = _row("LayoutSettings", 16)
 	layout_row.add_child(_copy("Control layout", "Move and resize your on-screen controls."))
 	var label_toggle := CheckButton.new()
 	label_toggle.name = "ShowControlLabels"
@@ -426,7 +477,7 @@ func _controls() -> void:
 	customize.size_flags_vertical = Control.SIZE_SHRINK_CENTER
 	customize.add_theme_stylebox_override("normal", _surface(12, 1.0))
 	layout_row.add_child(customize)
-	var keyboard: HBoxContainer = _row("KeyboardSettings", 16)
+	var keyboard: BoxContainer = _row("KeyboardSettings", 16)
 	var explanation: VBoxContainer = _copy("Keyboard shortcuts", "Desktop driving controls")
 	explanation.size_flags_horizontal = Control.SIZE_FILL
 	explanation.custom_minimum_size.x = 220
@@ -436,7 +487,8 @@ func _controls() -> void:
 	keys.add_theme_constant_override("separation", 8)
 	keyboard.add_child(keys)
 	for entry: Array in [["A / D  ·  ← / →", "Steer left / right"], ["W / S  ·  ↑ / ↓", "Accelerate / brake"], ["Space  ·  R  ·  Esc", "Handbrake / retry / pause"]]:
-		var line := HBoxContainer.new()
+		var line := BoxContainer.new()
+		line.vertical = narrow
 		keys.add_child(line)
 		var keycap: Label = _label(entry[0], 16)
 		keycap.size_flags_horizontal = Control.SIZE_FILL
@@ -447,7 +499,7 @@ func _controls() -> void:
 func _camera() -> void:
 	for index: int in range(CameraProfile.MODES.size()):
 		var mode: String = CameraProfile.MODES[index]
-		var row: HBoxContainer = _row("CameraRow_" + mode, 14)
+		var row: BoxContainer = _row("CameraRow_" + mode, 14)
 		row.add_child(_copy(CameraProfile.TITLES[index], CameraProfile.DESCRIPTIONS[index]))
 		var choice: Button = _choice("Selected" if draft_camera == mode else "Select", draft_camera == mode, func() -> void:
 			draft_camera = mode
@@ -458,7 +510,7 @@ func _camera() -> void:
 		choice.size_flags_vertical = Control.SIZE_SHRINK_CENTER
 		choice.custom_minimum_size.x = 150
 		row.add_child(choice)
-	var zoom_row: HBoxContainer = _row("SpeedZoomSettings", 14)
+	var zoom_row: BoxContainer = _row("SpeedZoomSettings", 14)
 	zoom_row.add_child(_copy("Speed zoom", "Show more road as speed increases."))
 	var zoom := CheckButton.new()
 	zoom.name = "CameraSpeedZoom"
@@ -471,7 +523,7 @@ func _camera() -> void:
 		zoom.text = "On" if on else "Off"
 		_changed())
 	zoom_row.add_child(zoom)
-	var strength_row: HBoxContainer = _row("SpeedZoomStrengthSettings", 14)
+	var strength_row: BoxContainer = _row("SpeedZoomStrengthSettings", 14)
 	strength_row.add_child(_copy("Zoom strength", "Maximum extra view at high speed."))
 	var strength_column := VBoxContainer.new()
 	strength_column.custom_minimum_size.x = 220
@@ -502,7 +554,7 @@ func _camera() -> void:
 func _ghosts() -> void:
 	for index: int in range(PersonalGhostRun.MODES.size()):
 		var mode: String = PersonalGhostRun.MODES[index]
-		var row: HBoxContainer = _row("GhostRow_" + mode, 14)
+		var row: BoxContainer = _row("GhostRow_" + mode, 14)
 		row.add_child(_copy(PersonalGhostRun.TITLES[index], PersonalGhostRun.DESCRIPTIONS[index]))
 		var choice: Button = _choice("Selected" if draft_ghost == mode else "Select", draft_ghost == mode, func() -> void:
 			draft_ghost = mode
@@ -521,7 +573,7 @@ func _audio() -> void:
 		["interface_volume", "Interface", "Menu selections and confirmations."],
 	]:
 		var key: String = item[0]
-		var row: HBoxContainer = _row("AudioRow_" + key, 18)
+		var row: BoxContainer = _row("AudioRow_" + key, 18)
 		row.add_child(_copy(item[1], item[2]))
 		var column := VBoxContainer.new()
 		column.custom_minimum_size.x = 250
@@ -546,13 +598,13 @@ func _audio() -> void:
 
 
 func _haptics() -> void:
-	var row: HBoxContainer = _row("HapticSettings", 18)
+	var row: BoxContainer = _row("HapticSettings", 18)
 	var column := VBoxContainer.new()
 	column.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	column.add_theme_constant_override("separation", 16)
 	row.add_child(column)
 	column.add_child(_copy("Steering feedback", "Vibration when you press a steering button."))
-	var choices := HBoxContainer.new()
+	var choices := HFlowContainer.new()
 	choices.add_theme_constant_override("separation", 8)
 	column.add_child(choices)
 	var titles: Array[String] = ["Off", "Light", "Medium", "Strong"]
@@ -565,7 +617,7 @@ func _haptics() -> void:
 			_show_section("haptics"))
 		choice.name = "Haptics" + titles[index]
 		choices.add_child(choice)
-	var drift: HBoxContainer = _row("DriftHapticSettings", 18)
+	var drift: BoxContainer = _row("DriftHapticSettings", 18)
 	drift.add_child(_copy("Drift feedback", "Vibration as your car slides through a corner."))
 	var toggle := CheckButton.new()
 	toggle.name = "DriftHaptics"
@@ -580,7 +632,7 @@ func _haptics() -> void:
 	drift.add_child(toggle)
 
 func _account() -> void:
-	var row: HBoxContainer = _row("AccountSettings", 18)
+	var row: BoxContainer = _row("AccountSettings", 18)
 	row.add_child(_icon("person", 36))
 	if signed_in: row.add_child(PlayerCountry.flag(country_code,32))
 	var identity: VBoxContainer = _copy(player_name, "Signed in" if signed_in else "Race locally or sign in to share tracks and submit verified times.")
@@ -593,11 +645,12 @@ func _account() -> void:
 	row.add_child(manage)
 
 func _changed() -> void:
+	dirty = true
 	status.text = "Unapplied changes"
 	status.add_theme_color_override("font_color", MenuStyle.ACCENT)
 
 func _privacy() -> void:
-	var row: HBoxContainer = _row("OptionalAnalyticsSettings",18)
+	var row: BoxContainer = _row("OptionalAnalyticsSettings",18)
 	row.add_child(_copy("Share optional analytics", "Help improve menus, races and connection reliability. Shares usage, device/graphics information and bounded performance/network summaries with our backend. Off stops collection and clears pending observations on this device; online race verification continues."))
 	var toggle := CheckButton.new()
 	toggle.name = "OptionalAnalytics"
@@ -644,12 +697,14 @@ func _reset() -> void:
 		draft_drift_haptics = true
 	else:
 		draft_layout = ControlLayout.preset()
-		draft_haptics = 0.2
 		draft_labels = true
 	_changed()
 	_show_section(section)
 
 func _apply() -> bool:
+	if records.path.is_empty():
+		status.text = "Could not save. Please try again."
+		return false
 	records.settings.control_layout = draft_layout.duplicate(true)
 	records.settings.steering_haptics = draft_haptics
 	records.settings.drift_haptics = draft_drift_haptics
@@ -667,19 +722,23 @@ func _apply() -> bool:
 	status.text = "Settings applied" if error == OK else "Could not save. Please try again."
 	status.add_theme_color_override("font_color", MenuStyle.POSITIVE if error == OK else MenuStyle.ACCENT)
 	if error == OK: GameSoundtrack.instance().apply_settings(records.settings)
-	if error == OK: TouchControls.SteeringHaptics.press(draft_haptics)
-	if error == OK: privacy_changed.emit(draft_analytics)
+	if error == OK:
+		dirty = false
+		if not race_context: TouchControls.SteeringHaptics.press(draft_haptics)
+		privacy_changed.emit(draft_analytics)
+		settings_applied.emit()
 	return error == OK
 
 func _customize() -> void:
 	if _apply(): customize_requested.emit()
 
-func _row(node_name: String, padding: int) -> HBoxContainer:
+func _row(node_name: String, padding: int) -> BoxContainer:
 	var panel := PanelContainer.new()
 	panel.name = node_name
 	panel.add_theme_stylebox_override("panel", _surface(padding, 0.72))
 	body.add_child(panel)
-	var row := HBoxContainer.new()
+	var row := BoxContainer.new()
+	row.vertical = narrow
 	row.add_theme_constant_override("separation", 24)
 	panel.add_child(row)
 	return row

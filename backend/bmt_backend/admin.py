@@ -77,7 +77,7 @@ def console(request: Request):
 def asset(name: str):
     if name in ("usage.js", "usage.css"):
         return FileResponse(UI / name)
-    if name not in ("app.js", "signin.js", "commerce.js", "support.js", "studio.js", "product_analytics.js", "operations.js", "style.css", "catalogue.js", "catalogue.css", "monitor.js", "network.js", "monitor.css", "monitor_views.js", "monitor_views.css", "insights.js", "insights.css", "platform.js", "platform.css", "game_config.js", "game_config.css", "ranking.js"):
+    if name not in ("app.js", "signin.js", "commerce.js", "support.js", "studio.js", "product_analytics.js", "operations.js", "reported_tracks.js", "style.css", "catalogue.js", "catalogue.css", "monitor.js", "network.js", "monitor.css", "monitor_views.js", "monitor_views.css", "insights.js", "insights.css", "platform.js", "platform.css", "game_config.js", "game_config.css", "ranking.js"):
         raise HTTPException(404)
     return FileResponse(UI / name)
 
@@ -275,6 +275,9 @@ def command(body: Command, request: Request, role: Access):
             if prior.request_hash != hashed:
                 raise HTTPException(409, "COMMAND_ID_REUSED")
             return {"audit_id": prior.id, "after": prior.after}
+        if model == Track and db.scalar(select(AdminAudit.id).where(
+                AdminAudit.entity_id == entity_id, AdminAudit.action == "track_deletion").limit(1)):
+            raise HTTPException(409, "TRACK_DELETED")
         changed = db.execute(
             update(model)
             .where(model.id == entity_id, getattr(model, field) == body.expected,

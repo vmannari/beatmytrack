@@ -224,7 +224,6 @@ func residency(seen: Dictionary={}) -> Dictionary:
 			result.preload_picture_viewport_gpu_bytes=pixels
 	if is_instance_valid(studio):
 		result.preload_asset_bytes=4*1024*1024
-		if studio.carousel_texture!=null: result.preload_asset_bytes+=2048*512*4
 		result.preload_scene_bytes=preload("res://track/prepared_world_cache.gd")._resource_bytes(studio,{})
 		for view: SubViewport in studio.find_children("*","SubViewport",true,false): result.preload_viewport_gpu_bytes+=view.size.x*view.size.y*16
 	return result

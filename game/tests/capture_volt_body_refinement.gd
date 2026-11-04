@@ -2,6 +2,8 @@ extends SceneTree
 ## Every lower-body package under the real Garage lights; no account or save.
 var output := "res://../docs/evidence/volt-body-refinement-2026-11-03/before"
 var selected := PackedStringArray()
+var pattern := "plain"
+var body_control: Script
 
 func _initialize() -> void: run.call_deferred()
 
@@ -9,6 +11,9 @@ func run() -> void:
 	for argument: String in OS.get_cmdline_user_args():
 		if argument.begins_with("--output="): output=argument.trim_prefix("--output=")
 		if argument.begins_with("--options="): selected=argument.trim_prefix("--options=").split(",")
+		if argument.begins_with("--pattern="): pattern=argument.trim_prefix("--pattern=")
+		if argument=="--body-control":
+			body_control=load("res://../docs/evidence/volt-door-fender-fit-2026-11-03/before/game/vehicle/electric_body_kits.gd")
 	if DisplayServer.get_name()=="headless": quit(1); return
 	DirAccess.make_dir_recursive_absolute(ProjectSettings.globalize_path(output))
 	root.size=Vector2i(1280,720)
@@ -27,6 +32,10 @@ func run() -> void:
 	for colour: String in ["silver","blue"]:
 		var finish: Dictionary=VehicleLivery.defaults("electric")
 		finish.colors.body="205a78" if colour=="blue" else "b8bbb9"
+		finish.pattern=pattern
+		if pattern!="plain":
+			finish.colors.accent="6418da"
+			finish.colors.detail="ab3833"
 		room.apply_livery(finish)
 		for option: Array in VehicleCustomisation.options("body","electric"):
 			if not selected.is_empty() and str(option[0]) not in selected: continue
@@ -35,6 +44,17 @@ func run() -> void:
 			var parts: Dictionary=VehicleCustomisation.defaults()
 			parts.body=option[0]
 			room.apply_customisation(parts)
+			if body_control!=null and option[0]!="stock":
+				# Render the archived rejected parts in the current room/lights.
+				# This fixture's isolated showroom never writes an owner profile.
+				for old_frame: Node3D in room.car.kit_frames.body:
+					old_frame.get_parent().remove_child(old_frame)
+					old_frame.free()
+				room.car.kit_frames.body=[]
+				preload("res://vehicle/electric_reference_mesh.gd").meshes.clear()
+				preload("res://vehicle/electric_reference_mesh.gd").use_baked=false
+				var frame: Node3D=room.car.new_kit_frame("body",room.car.body)
+				body_control.build(room.car,frame,str(option[0]),preload("res://vehicle/electric_kits.gd").index_for("body",str(option[0])))
 			for view: String in ["quarter","front","side","rear_quarter","rear"]:
 				room.elevation=atan(0.24 if view in ["quarter","rear_quarter"] else 0.09)
 				room._orbit()

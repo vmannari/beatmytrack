@@ -256,6 +256,7 @@ def reviewed_function(row):
         return ((signature, row["returns"]) in {
                     (("bmt_redact_removed_audit", "text"), "void"),
                     (("bmt_is_official_publisher", "text"), "boolean"),
+                    (("bmt_has_development_identity", "text"), "boolean"),
                 }
                 and row["proconfig"] == ["search_path=pg_catalog"])
     return (row["extension"] == "pg_trgm"

@@ -6,9 +6,9 @@ function Test-GaragePreviewSource([string]$Relative) {
     # Menu layout, translations, backend and build metadata do not repaint a car.
     if ($Relative -match '^game/(vehicle/|assets/(garage/|liveries/)|resources/(cars/|[^/]+\.tres$))' -or
         $Relative -in @('godot-version.txt', 'game/project.godot', 'game/soundtrack/record_library.gd')) { return $true }
-    if ($Relative -match '^game/ui/(showroom_|studio_)' -or $Relative -match '^game/ui/garage_.*\.gdshader(inc)?$') { return $true }
+    if ($Relative -match '^game/ui/(showroom_|studio_|garage_thumbnail_)' -or $Relative -match '^game/ui/garage_.*\.gdshader(inc)?$') { return $true }
     return $Relative -in @(
-        'game/ui/car_showroom.gd', 'game/ui/garage_preview_renderer.gd', 'game/ui/garage_car_cache.gd',
+        'game/ui/car_showroom.gd', 'game/ui/garage_preview_renderer.gd', 'game/ui/garage_thumbnail_studio.gd', 'game/ui/garage_car_cache.gd',
         'game/ui/garage_preloaded_studio.gd', 'game/ui/handling_selection.gd',
         'game/ui/garage_environment.gd', 'game/ui/garage_reflections.gd', 'game/ui/garage_details.gd',
         'game/ui/garage_drain.gd', 'game/ui/garage_furnishings.gd', 'game/ui/garage_materials.gd',

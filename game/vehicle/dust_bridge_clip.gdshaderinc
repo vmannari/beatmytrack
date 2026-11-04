@@ -4,6 +4,8 @@ uniform vec4 dust_bridge_axes[16]; // World XZ origin and longitudinal unit vect
 uniform vec4 dust_bridge_sizes[16]; // Length, half width, height, ramp length.
 uniform vec4 dust_bridge_roof = vec4(2.2,0.42,0.65,0.0); // Clearance, thickness, sandstone arch drop, desert.
 uniform bool dust_upper_layer = false;
+// Cosmetic road relief moves the bridge and its emitted clouds together.
+uniform float dust_bridge_height_offset = 0.0;
 
 float dust_bridge_deck(float along, vec4 size) {
 	return size.z*min(smoothstep(0.0,size.w,along),1.0-smoothstep(size.x-size.w,size.x,along));
@@ -12,6 +14,8 @@ float dust_bridge_deck(float along, vec4 size) {
 // Clip the projected roof directly as well as the puff's world-space volume.
 // This does not depend on mobile MSAA depth-texture resolve at bridge edges.
 float dust_bridge_projected_visibility(vec3 world, vec3 camera_ray, float birth_height) {
+	world.y -= dust_bridge_height_offset;
+	birth_height -= dust_bridge_height_offset;
 	vec3 slope = camera_ray/max(camera_ray.y,0.01);
 	for (int i = 0; i < dust_bridge_count; i++) {
 		vec4 axes = dust_bridge_axes[i];
@@ -46,6 +50,8 @@ float dust_bridge_projected_visibility(vec3 world, vec3 camera_ray, float birth_
 }
 
 float dust_bridge_visibility_at_height(vec3 world, float birth_height) {
+	world.y -= dust_bridge_height_offset;
+	birth_height -= dust_bridge_height_offset;
 	float visible = 1.0;
 	for (int i = 0; i < dust_bridge_count; i++) {
 		vec4 axes = dust_bridge_axes[i];
@@ -84,6 +90,8 @@ float dust_bridge_visibility(vec3 world) {
 // still below it. Ground-bank particles retain their original sealed layer.
 float dust_bridge_surface_visibility(vec3 opaque_world, float particle_height) {
 	if (!dust_upper_layer) { return dust_bridge_visibility(opaque_world); }
+	opaque_world.y -= dust_bridge_height_offset;
+	particle_height -= dust_bridge_height_offset;
 	float visible = 1.0;
 	for (int i = 0; i < dust_bridge_count; i++) {
 		vec4 axes = dust_bridge_axes[i];

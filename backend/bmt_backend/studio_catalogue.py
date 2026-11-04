@@ -15,6 +15,7 @@ from sqlalchemy import func, or_, select, text
 from sqlalchemy.orm import aliased, load_only
 
 from .admin import Access, Window, record
+from .admin_models import AdminAudit
 from .admin_ranges import calendar_range
 from .commerce import access_values, catalog_products, entitlement_payload, simulator_allowed
 from .commerce_models import Entitlements, PublicationSlot, Purchase
@@ -209,6 +210,8 @@ def track(version_id: UUID, request: Request, role: Access, window: Window):
         parent, player = session.get(Track, version.track_id), None
         player = session.get(Player, parent.owner_id)
         result = track_record(version, parent, player)
+        result["deleted"] = session.scalar(select(AdminAudit.id).where(
+            AdminAudit.entity_id == parent.id, AdminAudit.action == "track_deletion").limit(1)) is not None
         result.update(content_hash=version.content_hash,
             manifest={key: version.manifest.get(key) for key in MANIFEST_FIELDS if key in version.manifest},
             creator_test_run_id=version.creator_test_run_id)

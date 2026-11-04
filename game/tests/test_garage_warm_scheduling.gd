@@ -56,7 +56,7 @@ func run() -> void:
 	studio.warm()
 	await stopped()
 	check(studio.prepared,"explicit resume prepares the exact live view")
-	check(studio.carousel_texture!=null if DisplayServer.get_name()!="headless" else studio.carousel_texture==null,"native carousel readback is ready; the dummy renderer does not invent a texture")
+	check(not studio.read_only and studio.camera.fov==40.0,"live preparation never switches to the carousel camera")
 	before=studio.warm_draws
 	studio.queue_redraw()
 	await frames(4)

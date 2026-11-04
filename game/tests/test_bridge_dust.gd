@@ -20,6 +20,9 @@ func bind_mask(upper: bool) -> void:
 			var value: Variant = actual.get_shader_parameter(uniform.name)
 			if value!=null: mask.set_shader_parameter(uniform.name,value)
 	mask.set_shader_parameter("dust_upper_layer",upper)
+	# These analytic geometry probes use canonical bridge coordinates. Actual
+	# deformed scenery/emission is covered by test_desert_bridge_dust.gd.
+	mask.set_shader_parameter("dust_bridge_height_offset",0.0)
 
 func pixel(point: Vector3, visible: bool, label: String) -> void:
 	mask.set_shader_parameter("sample_world",point)
@@ -158,6 +161,18 @@ void fragment() { ALBEDO = vec3(1.0); ALPHA = surface_sample ? dust_bridge_surfa
 	dust.sample(state,DriveFrame.new(),track)
 	bind_mask(false)
 	await pixel(VisualGeometry.world(state.position)+Vector3.UP*4.5,true,"a track without bridges keeps original cloud visibility")
+	var relieved: NativeTrack = TrackCompiler.compile(JSON.parse_string(FileAccess.get_file_as_string("res://tests/fixtures/dust_cloud.json")))
+	var presentation := BridgePresentation.new(relieved)
+	dust._bind_bridges(relieved,presentation)
+	check(dust.cloud_emitters().all(func(e: GPUParticles3D) -> bool: return is_equal_approx(e.draw_pass_1.surface_get_material(0).get_shader_parameter("dust_bridge_height_offset"),-preload("res://track/desert_road_relief.gd").DEPTH)),"every cloud bank receives the active desert relief")
+	var empty_presentation := BridgePresentation.new(relieved)
+	empty_presentation.visual_relief.field.clear()
+	dust._bind_bridges(relieved,empty_presentation)
+	check(is_zero_approx(original.get_shader_parameter("dust_bridge_height_offset")),"empty relief field retains original bridge coordinates")
+	dust._bind_bridges(relieved,presentation)
+	check(is_equal_approx(original.get_shader_parameter("dust_bridge_height_offset"),-preload("res://track/desert_road_relief.gd").DEPTH),"same-track presentation change restores relief")
+	dust._bind_bridges(track)
+	check(dust.cloud_emitters().all(func(e: GPUParticles3D) -> bool: return is_zero_approx(e.draw_pass_1.surface_get_material(0).get_shader_parameter("dust_bridge_height_offset"))),"leaving desert clears the relief on every cloud bank")
 	# Witness actual particle CUSTOM data after lofting and moving its emitter.
 	quad.visible = false
 	camera.projection = Camera3D.PROJECTION_ORTHOGONAL

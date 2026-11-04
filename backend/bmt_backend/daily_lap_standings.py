@@ -15,6 +15,8 @@ def build(session, context, population, player, *, limit, cursor, around, candid
     test_id = digest({"version_id": context["version_id"], **context["manifest"], "test_population": True})
     owner = player.id if player else ""
     own = population.own.get(owner) if population.own is not None else None
+    # Nearby pages reserve one slot for the candidate drawn by the client.
+    neighbours = max(0, limit-1)
     anchor = None
     if cursor:
         anchor = decode_cursor(cursor)
@@ -27,8 +29,9 @@ def build(session, context, population, player, *, limit, cursor, around, candid
         start = bisect_right(ordered, (anchor["ticks"], anchor["player"])) if anchor else 0
         if around and candidate:
             ordered = [row for row in ordered if row[1] != owner]
-            start = max(0, bisect_left(ordered, (candidate, ""))-1)
-            rows = ordered[start:start+2]
+            start = max(0, min(bisect_left(ordered, (candidate, ""))-neighbours//2,
+                               len(ordered)-neighbours))
+            rows = ordered[start:start+neighbours]
         else:
             rows = ordered[start:start+limit+1]
         identities = {identity for _, identity in rows} | ({owner} if owner else set())
@@ -45,10 +48,11 @@ def build(session, context, population, player, *, limit, cursor, around, candid
             own = session.scalar(select(laps.c.time_ticks).where(laps.c.player_id == owner))
         if around and candidate:
             before = session.execute(query.where(laps.c.time_ticks < candidate, laps.c.player_id != owner)
-                .order_by(laps.c.time_ticks.desc(), laps.c.player_id.desc()).limit(1)).all()
+                .order_by(laps.c.time_ticks.desc(), laps.c.player_id.desc()).limit(neighbours)).all()
             after = session.execute(query.where(laps.c.time_ticks >= candidate, laps.c.player_id != owner)
-                .order_by(laps.c.time_ticks, laps.c.player_id).limit(1)).all()
-            raw = before + after
+                .order_by(laps.c.time_ticks, laps.c.player_id).limit(neighbours)).all()
+            before_count = min(len(before), max(neighbours//2, neighbours-len(after)))
+            raw = list(reversed(before[:before_count])) + after[:neighbours-before_count]
         else:
             if anchor:
                 from sqlalchemy import tuple_

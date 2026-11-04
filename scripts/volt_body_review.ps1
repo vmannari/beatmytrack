@@ -1,4 +1,5 @@
 # Native Garage contact sheets and pixel differences; built-in Windows drawing.
+param([string]$EvidencePath = 'docs/evidence/volt-body-refinement-2026-11-03')
 $ErrorActionPreference = 'Stop'
 Add-Type -AssemblyName System.Drawing
 Add-Type -ReferencedAssemblies System.Drawing -TypeDefinition @'
@@ -28,7 +29,7 @@ public static class VoltBodyReview {
     }
 }
 '@
-$reviewRoot = Join-Path (Split-Path -Parent $PSScriptRoot) 'docs/evidence/volt-body-refinement-2026-11-03'
+$reviewRoot = Join-Path (Split-Path -Parent $PSScriptRoot) $EvidencePath
 $choices = @('street','sport','club','touring','track','endurance','carbon','blade','sweep','wide','split','gt','aero','stealth','race')
 $font = New-Object System.Drawing.Font('Segoe UI', 11)
 $brush = New-Object System.Drawing.SolidBrush([System.Drawing.ColorTranslator]::FromHtml('#d5e2e7'))

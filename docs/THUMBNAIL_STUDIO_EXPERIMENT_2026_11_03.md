@@ -1,5 +1,7 @@
 # Dedicated thumbnail studio experiment — 2026-11-03
 
+Follow-up: the owner subsequently chose to keep the studio for the project's selected Compatibility renderer. See [the enabled integration and validation](THUMBNAIL_STUDIO_ENABLED_2026_11_03.md). The decision and source-restoration checks below describe the earlier experiment; its historical summarizer assumes that restored source state.
+
 Decision: **do not ship this candidate**. The first Compatibility batch improved substantially, but the benefit did not persist across renderers and later batches. Production sources were restored byte for byte to the task-start snapshots. The prototype remains only in test fixtures, with raw captures and measurements retained.
 
 ## Measured result

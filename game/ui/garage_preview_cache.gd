@@ -2,7 +2,7 @@ extends Node
 ## One native capture and one owned IO worker. Workers never access a view/node.
 const Build = preload("res://core/build_identity.gd")
 const Work = preload("res://editor/work_job.gd")
-const VERSION: String = "garage-native-previews-v2"
+const VERSION: String = "garage-thumbnail-studio-v5"
 const MAX_FILES: int = 14
 static var factory_pictures: Dictionary={}
 static var pending_pictures: Array[String]=[]
@@ -219,6 +219,9 @@ func _view(job: Dictionary) -> Object:
 	var reference: WeakRef = job.get("view")
 	return reference.get_ref() if reference != null else null
 
+func _make_renderer() -> CarShowroom:
+	return preload("res://ui/garage_thumbnail_studio.gd").new()
+
 func _process(_delta: float) -> void:
 	if worker != null and worker.done:
 		var result: Dictionary = worker.result if worker.result is Dictionary else {}
@@ -249,7 +252,8 @@ func _process(_delta: float) -> void:
 		if not renderer.showroom_ready: return
 		if not _render_allowed():
 			renderer.showroom_viewport.render_target_update_mode=SubViewport.UPDATE_DISABLED
-			for view: SubViewport in renderer.reflections.views: view.render_target_update_mode=SubViewport.UPDATE_DISABLED
+			if renderer.reflections!=null:
+				for view: SubViewport in renderer.reflections.views: view.render_target_update_mode=SubViewport.UPDATE_DISABLED
 			return
 		frames -= 1
 		if frames >= 0:
@@ -286,7 +290,7 @@ func _process(_delta: float) -> void:
 			queued.push_front(next)
 			return
 		active = next
-		renderer = preload("res://ui/garage_preview_renderer.gd").new()
+		renderer = _make_renderer()
 		renderer.read_only = true; renderer.garage_mode = true
 		renderer.preview_live_lighting = true
 		renderer.cooperative_build = true

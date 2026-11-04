@@ -69,6 +69,7 @@ var rewind_ghosts: Node3D
 var personal_ghost: PersonalGhost
 var prepared_road_packet: Dictionary = {}
 var ghost_mode: String = "lap"
+var opponent_ghost: bool = false
 var ghost_run := PersonalGhostRun.new()
 var ghost_store: LocalGhosts
 var ghost_bests: Dictionary = {}
@@ -756,7 +757,9 @@ func restart() -> void:
 		hud.direction_button.disabled = false
 	frame = DriveFrame.new()
 	paused = false
-	if hud != null and hud.pause_menu != null: hud.pause_menu.hide()
+	if hud != null and hud.pause_menu != null:
+		hud.pause_menu.close_settings()
+		hud.pause_menu.hide()
 	attempt_practice = editor_test or handling_test_index >= 0
 	countdown_ticks = 360 if production_mode and not editor_test else 0
 	if hud != null: hud.set_handling_test_countdown(countdown_ticks > 0)
@@ -887,12 +890,15 @@ func toggle_pause(capture: bool = true) -> void:
 	if not preparation_complete: return
 	if is_instance_valid(rewind_panel): return
 	if production_mode and not editor_test and track_session.finished: return
+	if paused and hud.pause_menu.settings_open():
+		if not hud.pause_menu.settings_overlay.finish_for_resume(): return
 	if not paused and capture: hud.pause_menu.capture_race()
 	paused = not paused
 	if paused and is_instance_valid(camera): camera.clear_shake()
 	if sand_dust != null: sand_dust.set_water_paused(paused)
 	hud.pause_menu.visible = paused
 	if paused: hud.pause_menu.show_main()
+	else: hud.pause_menu.close_settings()
 	driver.clear()
 	frame = DriveFrame.new()
 	hud.touch.enabled = not paused
@@ -921,6 +927,10 @@ func _save_recording() -> void:
 func _unhandled_key_input(event: InputEvent) -> void:
 	if not preparation_complete: return
 	if not event.is_pressed() or event.is_echo():
+		return
+	if paused and hud.pause_menu.settings_open():
+		if event.is_action_pressed("pause"): hud.pause_menu.settings_back()
+		get_viewport().set_input_as_handled()
 		return
 	if production_mode and not editor_test and track_session.finished and event.is_action_pressed("restart"):
 		retry_requested.emit()
@@ -961,6 +971,25 @@ func _unhandled_key_input(event: InputEvent) -> void:
 				ai_enabled = not ai_enabled
 				restart()
 
+
+func apply_saved_driving_settings() -> void:
+	if preference_records == null: return
+	var settings: Dictionary = preference_records.settings
+	camera.set_mode(str(settings.get("camera_mode", "overhead")))
+	camera.speed_zoom_enabled = bool(settings.get("camera_speed_zoom", true))
+	camera.speed_zoom_strength = float(settings.get("camera_speed_zoom_strength", CameraProfile.DEFAULT_SPEED_ZOOM_STRENGTH))
+	var presented: VehicleSimulation = finish_sim if finish_sim != null else sim
+	camera.follow(presented.state.position, presented.state.velocity, presented.state.heading, 0.0, true)
+	hud.touch.layout = ControlLayout.from_settings(settings)
+	hud.touch.show_labels = bool(settings.get("control_labels", true))
+	hud.touch.haptic_strength = float(settings.get("steering_haptics", 0.2))
+	drift_haptics_enabled = bool(settings.get("drift_haptics", true))
+	if personal_ghost != null and not opponent_ghost:
+		ghost_mode = str(settings.get("ghost_mode", "lap"))
+		_prepare_personal_ghost()
+	# Apply presentation preferences without entering the simulation or saving twice.
+	driver.clear()
+	frame = DriveFrame.new()
 
 func set_ghost_mode(value: String) -> Error:
 	if value not in PersonalGhostRun.MODES: return ERR_INVALID_PARAMETER

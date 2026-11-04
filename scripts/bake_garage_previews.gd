@@ -1,13 +1,13 @@
 extends SceneTree
 ## Run with the pinned engine and a graphical renderer. Native game assets only.
-const NATIVE_UI: Array[String] = ["car_showroom.gd","garage_environment.gd","garage_reflections.gd","garage_details.gd","garage_drain.gd","garage_furnishings.gd","garage_materials.gd","garage_workshop.gd","garage_record_station.gd","garage_lp_box.gd","garage_plant.gd","garage_car_reveal.gd","garage_wash_effect.gd","garage_wash_geometry.gd","garage_wash_tool.gd","garage_hose_geometry.gd","garage_hose_rig.gd"]
+const NATIVE_UI: Array[String] = ["garage_thumbnail_studio.gd","garage_preview_renderer.gd","car_showroom.gd","garage_environment.gd","garage_reflections.gd","garage_details.gd","garage_drain.gd","garage_furnishings.gd","garage_materials.gd","garage_workshop.gd","garage_record_station.gd","garage_lp_box.gd","garage_plant.gd","garage_car_reveal.gd","garage_wash_effect.gd","garage_wash_geometry.gd","garage_wash_tool.gd","garage_hose_geometry.gd","garage_hose_rig.gd"]
 
 func _sources() -> Dictionary:
 	var sources: Dictionary = {}
 	for directory: String in ["res://vehicle","res://ui"]:
 		for name: String in DirAccess.get_files_at(directory):
 			if not name.ends_with(".gd") and not name.ends_with(".gdshader") and not name.ends_with(".gdshaderinc"): continue
-			if directory.ends_with("/ui") and not (name in NATIVE_UI or name.begins_with("showroom_") or name.begins_with("studio_") or (name.begins_with("garage_") and not name.ends_with(".gd"))): continue
+			if directory.ends_with("/ui") and not (name in NATIVE_UI or name.begins_with("garage_thumbnail_") or name.begins_with("showroom_") or name.begins_with("studio_") or (name.begins_with("garage_") and not name.ends_with(".gd"))): continue
 			var path: String = directory.path_join(name)
 			sources["game/"+path.trim_prefix("res://")] = FileAccess.get_sha256(path)
 	for name: String in DirAccess.get_files_at("res://resources/cars"):
@@ -27,7 +27,7 @@ func run() -> void:
 	var sources: Dictionary = _sources()
 	var hashes: Dictionary = {}
 	for id: String in VehicleCatalog.IDS:
-		var view := CarShowroom.new()
+		var view := preload("res://ui/garage_thumbnail_studio.gd").new()
 		view.vehicle_id = id
 		view.read_only = true
 		view.garage_mode = true
@@ -36,9 +36,9 @@ func run() -> void:
 		view.customisation = VehicleCustomisation.defaults()
 		view.size = Vector2(2048,512)
 		root.add_child(view)
+		while not view.showroom_ready: await process_frame
 		for index: int in range(5):
-			view.showroom_viewport.render_target_update_mode = SubViewport.UPDATE_ONCE
-			view.reflections.request_draw()
+			view._submit_render()
 			await process_frame
 			await RenderingServer.frame_post_draw
 		var pixels: Image = view.showroom_viewport.get_texture().get_image()
@@ -54,5 +54,5 @@ func run() -> void:
 		quit(1)
 		return
 	var output := FileAccess.open(folder.path_join("provenance.json"),FileAccess.WRITE)
-	output.store_string(JSON.stringify({"source":"Full original CarShowroom, default paint/kits, clean condition, original workshop and reflection settings","engine":Engine.get_version_info().string,"renderer":RenderingServer.get_current_rendering_method(),"size":[2048,512],"hashes":hashes,"sources":sources},"\t")+"\n")
+	output.store_string(JSON.stringify({"source":"Dedicated thumbnail studio, full car, default paint/kits, clean condition, soft seamless backdrop and one car-only planar turntable reflection","engine":Engine.get_version_info().string,"renderer":RenderingServer.get_current_rendering_method(),"size":[2048,512],"hashes":hashes,"sources":sources},"\t")+"\n")
 	quit()

@@ -1,10 +1,11 @@
 extends Control
 ## Inexpensive 2D loading art. Retained draw commands; motion lives in the shader.
-enum Kind { CAR, STANDINGS, IDENTITY }
+enum Kind { CAR, STANDINGS, IDENTITY, TRACK }
 var kind: Kind = Kind.CAR
 var phase: float = 0.0
 var vehicle_id: String = "compact"
 var podium_color := Color("c0d4e3")
+var track_slot: int = 0
 const CAR_IDS: Array[String] = ["compact","kart","forklift","electric","hovercraft"]
 const TILE := Vector2(384,256)
 const SILHOUETTES: Texture2D = preload("res://assets/menu/rivalry_loading_cars_v1.png")
@@ -39,6 +40,8 @@ func _draw() -> void:
 	elif kind == Kind.IDENTITY:
 		_bar(Rect2(size.x*0.19,7,size.x*0.62,9),Color(podium_color,0.22))
 		_bar(Rect2(size.x*0.34,26,size.x*0.32,12),Color(podium_color,0.30))
+	elif kind == Kind.TRACK:
+		_draw_track()
 	else:
 		var rows: int = clampi(floori((size.y+5.0)/35.0),2,9)
 		var stride: float = minf(39.0,size.y/rows)
@@ -50,3 +53,37 @@ func _draw() -> void:
 			_bar(Rect2(37,top+12,name_width,8),Color("67849473"))
 			_bar(Rect2(size.x-67,top+12,22,8),Color("607d8e66"))
 			_bar(Rect2(size.x-28,top+12,20,8),Color("526c7b55"))
+
+func track_thumbnail_rect() -> Rect2:
+	# The populated HBox also respects the title plus the 20-unit biome line.
+	var copy_height: float = ceilf(MenuStyle.DISPLAY.get_height(24))+21.0
+	return Rect2(6,4,110,maxf(size.y-8,copy_height))
+
+func _draw_track() -> void:
+	# Match the populated row's thumbnail/copy/time layout. This neutral schematic
+	# is deliberately shared by all slots; it does not preview an unknown route.
+	var thumbnail: Rect2 = track_thumbnail_rect()
+	_bar(thumbnail,Color("173341cc"),2)
+	var center := thumbnail.position+Vector2(68,thumbnail.size.y*0.5)
+	var extent := Vector2(31,minf(21,thumbnail.size.y*0.32))
+	var circuit := PackedVector2Array()
+	for step: int in range(49):
+		var angle: float = TAU*step/48.0
+		circuit.append(center+Vector2(cos(angle)*extent.x,sin(angle)*extent.y))
+	draw_polyline(circuit,Color("365563bb"),7.0,true)
+	draw_polyline(circuit,Color("7d9caa88"),2.0,true)
+	# Quiet surveying marks keep the thumbnail recognisable as loading artwork.
+	draw_line(center-Vector2(6,0),center+Vector2(6,0),Color("55758455"),1.0,true)
+	draw_line(center-Vector2(0,5),center+Vector2(0,5),Color("55758455"),1.0,true)
+	var middle: float = size.y*0.5
+	var copy_left: float = 126.0
+	var stats_left: float = size.x-199.0
+	var copy_width: float = maxf(12,stats_left-copy_left-22.0)
+	_bar(Rect2(copy_left,middle-15,copy_width*[0.82,0.64,0.92,0.72,0.86][track_slot%5],10),Color("7b98a788"))
+	_bar(Rect2(copy_left,middle+5,12,12),Color("557d8c77"),3)
+	_bar(Rect2(copy_left+19,middle+8,maxf(0,minf(64,copy_width-19)),6),Color("63859466"),3)
+	_bar(Rect2(stats_left,middle-15,56,30),Color("496b7d66"),5)
+	draw_line(Vector2(size.x-133,middle-20),Vector2(size.x-133,middle+20),Color("2c4e6088"),1.0)
+	_bar(Rect2(size.x-104,middle-9,98,8),Color("7895a477"))
+	_bar(Rect2(size.x-76,middle+7,70,6),Color("56778766"),3)
+	draw_line(Vector2(6,size.y-1),Vector2(size.x-6,size.y-1),Color("31566a88"),1.0)

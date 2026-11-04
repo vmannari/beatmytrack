@@ -101,9 +101,6 @@ func _build_header(parent: Control) -> void:
 	var title: Label = MenuStyle.label("Track of the day",38)
 	title.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 	identity.add_child(title)
-	var subtitle: Label = MenuStyle.label("One track. Everyone. A new pick every day.",18,true)
-	subtitle.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
-	identity.add_child(subtitle)
 	_countdown_panel = PanelContainer.new()
 	_countdown_panel.name = "DailyCountdown"
 	_countdown_panel.size_flags_vertical = Control.SIZE_SHRINK_CENTER

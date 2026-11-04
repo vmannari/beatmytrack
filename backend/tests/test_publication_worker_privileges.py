@@ -1,5 +1,6 @@
 """Publish with real PostgreSQL worker authority, including official creators."""
 import uuid
+from dataclasses import replace
 
 import pytest
 from fastapi import Request
@@ -8,7 +9,7 @@ from sqlalchemy import func, select, text
 from sqlalchemy.engine import make_url
 from sqlalchemy.exc import DBAPIError
 from sqlalchemy.orm import Session
-from test_cloud_setup import database  # noqa: F401
+from test_cloud_setup import database as _database_fixture
 from test_domains import FakeVerifier
 
 from bmt_backend import cloud_setup
@@ -26,6 +27,7 @@ from bmt_backend.security import current_player
 from bmt_backend.track_models import Track, TrackVersion
 
 pytestmark = pytest.mark.postgres
+database = _database_fixture
 
 
 @pytest.mark.parametrize("provider,subject,official", [
@@ -33,7 +35,8 @@ pytestmark = pytest.mark.postgres
     ("development", "developer", True),
     ("google", "developer", False),
 ])
-def test_new_track_publishes_without_worker_identity_reads(database, tmp_path, provider, subject, official):
+@pytest.mark.parametrize("simulation", [False, True])
+def test_new_track_publishes_without_worker_identity_reads(database, tmp_path, provider, subject, official, simulation):
     engine, schema, roles, url = database
     cloud_setup.setup(engine, uuid.uuid4().hex, roles, schema)
     peers = {kind: make_engine(make_url(url).set(username=roles[kind], password="isolated-security-test-role")
@@ -56,12 +59,15 @@ def test_new_track_publishes_without_worker_identity_reads(database, tmp_path, p
         with peers["worker"].connect() as db:
             assert db.scalar(text("SELECT bmt_is_official_publisher(:id)"), {"id": player_id}) is official
             assert db.scalar(text("SELECT bmt_is_official_publisher('unknown')")) is False
+            assert db.scalar(text("SELECT bmt_has_development_identity(:id)"), {"id": player_id}) is (provider == "development")
         with pytest.raises(DBAPIError) as denied, peers["api"].begin() as db:
             db.execute(text("SELECT bmt_is_official_publisher(:id)"), {"id": player_id})
         assert denied.value.orig.sqlstate == "42501"
-        settings = Settings(environment="test", local_drafts_only=True, object_dir=str(tmp_path))
+        settings = Settings(environment="development" if simulation else "test", local_drafts_only=True,
+                            object_dir=str(tmp_path), purchase_simulation_enabled=simulation,
+                            dev_auth_enabled=simulation, dev_auth_key="p" * 40 if simulation else "")
         api = create_app(settings, verifier=FakeVerifier(), engine=peers["api"])
-        worker = create_app(settings, verifier=FakeVerifier(), engine=peers["worker"])
+        worker = create_app(replace(settings, workload_role="worker"), verifier=FakeVerifier(), engine=peers["worker"])
 
         def authenticated(_request: Request):
             with Session(peers["api"]) as session:
@@ -97,8 +103,9 @@ def test_new_track_publishes_without_worker_identity_reads(database, tmp_path, p
             assert session.scalar(select(Track.official)) is official
             assert session.scalar(select(func.count()).select_from(TrackVersion)) == 1
             assert session.scalar(select(func.count()).select_from(PublicationSlot)) == 1
-            assert session.scalar(select(PublicationSlot.source)) == ("official" if official else "initial_or_paid")
-            assert session.get(Entitlements, player_id).slots == (1 if official else 0)
+            free_official = official and not simulation
+            assert session.scalar(select(PublicationSlot.source)) == ("official" if free_official else "initial_or_paid")
+            assert session.get(Entitlements, player_id).slots == (1 if free_official else 0)
             assert session.get(PublicationIntent, publication_id).status == "published"
     finally:
         for peer in peers.values():

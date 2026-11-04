@@ -3,7 +3,6 @@ extends "res://ui/car_showroom.gd"
 var permitted: Callable
 var record_settings: Dictionary={}
 var achievement_service: Node
-var carousel_texture: Texture2D
 var prepared: bool=false
 var adopted: bool=false
 var warming: bool=false
@@ -11,9 +10,7 @@ var warm_draws: int=0
 var max_draw_ms: float=0.0
 var _pending: Array[Dictionary]=[]
 var _held: Array[Dictionary]=[]
-var _phase: int=0
 var _phase_draws: int=0
-var _thumbnail_state: Dictionary={}
 var _material_keys: Dictionary={}
 var _warm_setup_ready: bool=false
 
@@ -38,11 +35,6 @@ func _ready() -> void:
 func invalidate_render() -> void:
 	if adopted: super.invalidate_render()
 	else: _render_dirty=true
-
-func refresh_thumbnail() -> void:
-	super.refresh_thumbnail()
-	if not _thumbnail_state.is_empty() and is_instance_valid(showroom_viewport):
-		showroom_viewport.size=Vector2i(2048,512)
 
 func _process(delta: float) -> void:
 	if adopted: super._process(delta)
@@ -82,19 +74,12 @@ func warm() -> void:
 			var node: Object=entry.node.get_ref()
 			if is_instance_valid(node): node.extra_cull_margin=entry.margin
 	while _pending.is_empty() and _allowed() and not prepared:
-		# Warm/capture the exact existing carousel pose in this same world,
-		# then restore all original live settings before handoff.
-		if _phase==1 and _thumbnail_state.is_empty(): _begin_thumbnail()
+		# Carousel pictures have their own studio. Finish only this live view,
+		# keeping its camera, awards and reflections intact throughout warming.
 		await _warm_frame()
 		if adopted or not is_inside_tree() or is_queued_for_deletion(): break
 		_phase_draws+=1
-		if _phase_draws<4: continue
-		_phase_draws=0
-		if _phase==1:
-			if DisplayServer.get_name()!="headless": carousel_texture=ImageTexture.create_from_image(showroom_viewport.get_texture().get_image())
-			_restore_thumbnail()
-		_phase+=1
-		if _phase==3: prepared=true
+		if _phase_draws>=4: prepared=true
 	warming=false
 	if not adopted: _stop_draws()
 
@@ -111,14 +96,12 @@ func _warm_frame() -> void:
 func adopt() -> void:
 	adopted=true
 	permitted=Callable()
-	_restore_thumbnail()
 	achievement_service=null
 	release_geometry()
 	mouse_filter=Control.MOUSE_FILTER_STOP
 	invalidate_render()
 
 func release_geometry() -> void:
-	_restore_thumbnail()
 	for entry: Dictionary in _held:
 		var node: Object=entry.node.get_ref()
 		if is_instance_valid(node):
@@ -159,43 +142,6 @@ func _material_key(material: Material) -> String:
 	var result: String=str(key)
 	_material_keys[id]=result
 	return result
-
-func take_carousel_picture() -> Dictionary:
-	if carousel_texture==null: return {}
-	var result: Dictionary={"vehicle":vehicle_id,"paint":livery.duplicate(true),"condition":condition.duplicate(true),"parts":customisation.duplicate(true),"texture":carousel_texture}
-	carousel_texture=null
-	return result
-
-func _begin_thumbnail() -> void:
-	var key: DirectionalLight3D=camera.get_parent().get_node("GarageKey")
-	var awards: Node3D=find_child("EarnedAchievements",true,false)
-	_thumbnail_state={"size":size,"msaa":showroom_viewport.msaa_3d,"camera":camera.transform,"fov":camera.fov,"distance":garage_distance,"shadow":key.shadow_enabled,"awards":weakref(awards) if awards!=null else null,"awards_visible":awards.visible if awards!=null else false,"read_only":read_only,"roof":roof.visible}
-	if awards!=null: awards.hide()
-	super.update_records({})
-	read_only=true
-	garage_distance=0
-	camera.fov=38.0
-	showroom_viewport.msaa_3d=Viewport.MSAA_4X
-	size=Vector2(2048,512)
-	refresh_thumbnail()
-	_orbit()
-
-func _restore_thumbnail() -> void:
-	if _thumbnail_state.is_empty(): return
-	var state: Dictionary=_thumbnail_state
-	_thumbnail_state={}
-	read_only=state.read_only
-	garage_distance=state.distance
-	camera.transform=state.camera
-	camera.fov=state.fov
-	camera.get_parent().get_node("GarageKey").shadow_enabled=state.shadow
-	showroom_viewport.msaa_3d=state.msaa
-	size=state.size
-	roof.visible=state.roof
-	var awards: Object=state.awards.get_ref() if state.awards!=null else null
-	if is_instance_valid(awards): awards.visible=state.awards_visible
-	super.update_records(record_settings)
-	refresh_thumbnail()
 
 func _stop_draws() -> void:
 	_settle_draws=0

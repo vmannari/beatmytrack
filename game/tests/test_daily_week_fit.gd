@@ -117,7 +117,7 @@ func run() -> void:
 	await settle()
 	var card: Node = page._race_panel
 	check(card.result.passed == 4 and card._medals.get_child(1).selected and card._medals.get_child(1).earned,"page restores earned silver from passed stage 40")
-	check(card._time.text == "1:12.480" and card._target.text == "Target 1:12.000" and card._target.tooltip_text.begins_with("0.480"),"best flying lap and exact gold gap match the reference behavior")
+	check(card._time.text == "1:12.480" and card._target.text == "1:12.000" and card._target.tooltip_text.begins_with("0.480"),"best flying lap and exact gold gap match the reference behavior")
 	check(card._rows.get_child_count() == 3 and card._rows.find_child("DailyNearbySelf",true,false) != null,"nearby flying-lap standings highlight the player")
 	check(card.race_button.text == "Race again","returning player has race again action")
 	for size: Vector2i in [Vector2i(2538,1147),Vector2i(1440,900),Vector2i(1280,720),Vector2i(960,540),Vector2i(844,390)]:

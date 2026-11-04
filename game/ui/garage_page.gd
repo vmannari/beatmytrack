@@ -740,7 +740,6 @@ func _build_carousel() -> void:
 		_preview_service.remember_pictures=true
 		_preview_service.immediate_reads=false
 		_preview_service.can_render=func() -> bool: return (not progressive_entry or not showroom.preparing) and (_menu_motion==null or not _menu_motion.is_running()) and (not preview_can_render.is_valid() or bool(preview_can_render.call()))
-		if showroom.has_method("take_carousel_picture"): _preview_service.prepared_picture=showroom.take_carousel_picture()
 		_preview_service.directory = records.path+".garage-previews"
 		add_child(_preview_service)
 	gallery_slot = Control.new()

@@ -1,0 +1,239 @@
+diff --git a/game/ui/weekly_rivalry_page.gd b/game/ui/weekly_rivalry_page.gd
+--- a/game/ui/weekly_rivalry_page.gd
++++ b/game/ui/weekly_rivalry_page.gd
+@@ -494,22 +494,25 @@
+ 	right.size_flags_stretch_ratio = 1.13
+ 	right.add_theme_constant_override("separation",6)
+ 	parent.add_child(right)
+-	var tracks: VBoxContainer = _card(right,"",12)
++	var tracks: VBoxContainer = _track_card(right)
+ 	tracks.get_parent().name = "RivalryLoadingTracksPanel"
+-	tracks.add_theme_constant_override("separation",6)
+-	_copy(tracks,"THIS WEEK'S TRACKS",26)
+-	var status: Label = _copy(tracks,"Loading tracks…",15,MenuStyle.MUTED)
++	var leading: Label = find_child("RivalryTracksLeading",true,false)
++	leading.text = GameText.message("%d OF %d LEADING") % [0,5]
++	leading.modulate.a = 0.0
++	var progress: Label = find_child("RivalryTrackProgress",true,false)
++	progress.text = GameText.message("%d / %d COMPLETED") % [0,5]
++	progress.modulate.a = 0.0
++	find_child("RivalryTrackLeadStrip",true,false).modulate.a = 0.0
++	var status: RichTextLabel = find_child("RivalryTracksHint",true,false)
+ 	status.name = "RivalryLoadingTracksStatus"
+-	status.autowrap_mode = TextServer.AUTOWRAP_OFF
+-	status.text_overrun_behavior = TextServer.OVERRUN_TRIM_ELLIPSIS
+-	status.clip_text = true
+-	status.tooltip_text = status.text
++	status.add_text(GameText.message("Loading tracks…"))
++	status.tooltip_text = status.get_parsed_text()
+ 	for slot: int in range(5): _loading_track_row(tracks,slot)
+ 
+ func _loading_track_row(parent: Control, slot: int) -> void:
+ 	var row := Control.new()
+ 	row.name = "RivalryLoadingTrack_"+str(slot)
+-	row.custom_minimum_size.y = 48
++	row.custom_minimum_size.y = 54
+ 	row.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+ 	row.size_flags_vertical = Control.SIZE_EXPAND_FILL
+ 	row.mouse_filter = Control.MOUSE_FILTER_IGNORE
+@@ -565,9 +568,32 @@
+ 	right.size_flags_stretch_ratio = 1.13
+ 	right.add_theme_constant_override("separation",6)
+ 	parent.add_child(right)
+-	var tracks: VBoxContainer = _card(right,"",12)
++	var tracks: VBoxContainer = _track_card(right,finale)
++	track_rows.clear()
++	for index: int in range(model.tracks.size()): _track_row(tracks,index)
++	if finale and not model.empty_completed_week():
++		var actions := HBoxContainer.new()
++		actions.name = "RivalryFinaleActions"
++		tracks.add_child(actions)
++		var share: Button = _action(actions,"SHARE RESULTS","RivalryShareResults",func() -> void: share_requested.emit())
++		share.icon = MenuIcon.texture("share")
++		share.expand_icon = true
++		share.add_theme_constant_override("icon_max_width",20)
++		share.clip_text = true
++		share.add_theme_font_size_override("font_size",20)
++		share.disabled = busy
++		var next: Button = _action(actions,"CONTINUE TO NEXT WEEK","RivalryNextWeek",func() -> void: continue_requested.emit(),true)
++		next.clip_text = true
++		next.add_theme_font_size_override("font_size",20)
++		next.disabled = busy
++	_update_track_header()
++	_select_track(selected)
++
++func _track_card(parent: Control, finale: bool = false) -> VBoxContainer:
++	var tracks: VBoxContainer = _card(parent,"",12)
+ 	tracks.get_parent().name = "RivalryTracksPanel"
+-	tracks.add_theme_constant_override("separation",2 if finale else 6)
++	_fit_track_spacing(tracks,finale)
++	tracks.resized.connect(_fit_track_spacing.bind(tracks,finale))
+ 	var heading := HBoxContainer.new()
+ 	heading.add_theme_constant_override("separation",10)
+ 	tracks.add_child(heading)
+@@ -598,7 +624,10 @@
+ 	subtitle.visible = not error.is_empty()
+ 	var hint := RichTextLabel.new()
+ 	hint.name = "RivalryTracksHint"
+-	hint.fit_content = true
++	hint.fit_content = finale
++	if not finale:
++		hint.custom_minimum_size.y = ceili(MenuStyle.BODY.get_height(15))
++		hint.autowrap_mode = TextServer.AUTOWRAP_OFF
+ 	hint.scroll_active = false
+ 	hint.mouse_filter = Control.MOUSE_FILTER_IGNORE
+ 	hint.add_theme_font_override("normal_font",MenuStyle.BODY)
+@@ -632,25 +661,12 @@
+ 	time_heading.name = "RivalryTrackTimeHeading"
+ 	time_heading.custom_minimum_size.x = 116
+ 	time_heading.horizontal_alignment = HORIZONTAL_ALIGNMENT_RIGHT
+-	track_rows.clear()
+-	for index: int in range(model.tracks.size()): _track_row(tracks,index)
+-	if finale and not model.empty_completed_week():
+-		var actions := HBoxContainer.new()
+-		actions.name = "RivalryFinaleActions"
+-		tracks.add_child(actions)
+-		var share: Button = _action(actions,"SHARE RESULTS","RivalryShareResults",func() -> void: share_requested.emit())
+-		share.icon = MenuIcon.texture("share")
+-		share.expand_icon = true
+-		share.add_theme_constant_override("icon_max_width",20)
+-		share.clip_text = true
+-		share.add_theme_font_size_override("font_size",20)
+-		share.disabled = busy
+-		var next: Button = _action(actions,"CONTINUE TO NEXT WEEK","RivalryNextWeek",func() -> void: continue_requested.emit(),true)
+-		next.clip_text = true
+-		next.add_theme_font_size_override("font_size",20)
+-		next.disabled = busy
+-	_update_track_header()
+-	_select_track(selected)
++	return tracks
++
++func _fit_track_spacing(tracks: VBoxContainer, finale: bool) -> void:
++	var gap: int = 2 if finale else 0 if get_viewport_rect().size.y < 600 else 6
++	if tracks.get_theme_constant("separation") != gap:
++		tracks.add_theme_constant_override("separation",gap)
+ 
+ func _driver_table(parent: Control, title: String) -> void:
+ 	var table: VBoxContainer = _card(parent,"",12)
+@@ -993,6 +1009,7 @@
+ 	return result
+ 
+ func _update_track_header() -> void:
++	if model.tracks.is_empty(): return
+ 	var label := find_child("RivalryTracksLeading",true,false) as Label
+ 	if label == null: return
+ 	var state: Dictionary = _track_header_state()
+@@ -1029,6 +1046,7 @@
+ 		hint.push_color(MenuStyle.ACCENT)
+ 		hint.add_text(tr("Pick a track to begin." if state.completed == 0 else "Choose your next target."))
+ 	hint.pop()
++	hint.tooltip_text = hint.get_parsed_text()
+ 	for index: int in range(_track_views.size()):
+ 		_track_views[index].target.visible = index == int(state.target)
+ 		track_rows[index].tooltip_text = "View "+str(model.tracks[index].name)
+diff --git a/game/ui/rivalry_loading_visual.gd b/game/ui/rivalry_loading_visual.gd
+--- a/game/ui/rivalry_loading_visual.gd
++++ b/game/ui/rivalry_loading_visual.gd
+@@ -54,10 +54,15 @@
+ 			_bar(Rect2(size.x-67,top+12,22,8),Color("607d8e66"))
+ 			_bar(Rect2(size.x-28,top+12,20,8),Color("526c7b55"))
+ 
++func track_thumbnail_rect() -> Rect2:
++	# The populated HBox also respects the title plus the 20-unit biome line.
++	var copy_height: float = ceilf(MenuStyle.DISPLAY.get_height(24))+21.0
++	return Rect2(6,4,110,maxf(size.y-8,copy_height))
++
+ func _draw_track() -> void:
+ 	# Match the populated row's thumbnail/copy/time layout. This neutral schematic
+ 	# is deliberately shared by all slots; it does not preview an unknown route.
+-	var thumbnail := Rect2(6,4,110,size.y-8)
++	var thumbnail: Rect2 = track_thumbnail_rect()
+ 	_bar(thumbnail,Color("173341cc"),2)
+ 	var center := thumbnail.position+Vector2(68,thumbnail.size.y*0.5)
+ 	var extent := Vector2(31,minf(21,thumbnail.size.y*0.32))
+@@ -72,12 +77,13 @@
+ 	draw_line(center-Vector2(0,5),center+Vector2(0,5),Color("55758455"),1.0,true)
+ 	var middle: float = size.y*0.5
+ 	var copy_left: float = 126.0
+-	var stats_left: float = size.x-105.0
++	var stats_left: float = size.x-199.0
+ 	var copy_width: float = maxf(12,stats_left-copy_left-22.0)
+ 	_bar(Rect2(copy_left,middle-15,copy_width*[0.82,0.64,0.92,0.72,0.86][track_slot%5],10),Color("7b98a788"))
+ 	_bar(Rect2(copy_left,middle+5,12,12),Color("557d8c77"),3)
+-	_bar(Rect2(copy_left+19,middle+8,minf(64,copy_width-19),6),Color("63859466"),3)
+-	_bar(Rect2(stats_left,middle-11,20,20),Color("496b7d66"),5)
+-	_bar(Rect2(size.x-70,middle-9,62,8),Color("7895a477"))
+-	_bar(Rect2(size.x-48,middle+7,40,6),Color("56778766"),3)
++	_bar(Rect2(copy_left+19,middle+8,maxf(0,minf(64,copy_width-19)),6),Color("63859466"),3)
++	_bar(Rect2(stats_left,middle-15,56,30),Color("496b7d66"),5)
++	draw_line(Vector2(size.x-133,middle-20),Vector2(size.x-133,middle+20),Color("2c4e6088"),1.0)
++	_bar(Rect2(size.x-104,middle-9,98,8),Color("7895a477"))
++	_bar(Rect2(size.x-76,middle+7,70,6),Color("56778766"),3)
+ 	draw_line(Vector2(6,size.y-1),Vector2(size.x-6,size.y-1),Color("31566a88"),1.0)
+diff --git a/game/tests/test_rivalry_loading_visuals.gd b/game/tests/test_rivalry_loading_visuals.gd
+--- a/game/tests/test_rivalry_loading_visuals.gd
++++ b/game/tests/test_rivalry_loading_visuals.gd
+@@ -63,8 +63,8 @@
+ 		check(rows != null and rows.size.y >= 70 and root.get_visible_rect().encloses(rows.get_global_rect()),"animated table fits the smaller hub")
+ 		var tracks: Control = page.find_child("RivalryLoadingTracksPanel",true,false)
+ 		check(tracks != null and shell.get_global_rect().encloses(tracks.get_global_rect()),"weekly track loading panel stays inside the available menu area")
+-		var track_status: Label = page.find_child("RivalryLoadingTracksStatus",true,false)
+-		check(track_status != null and track_status.text == GameText.message("Loading tracks…"),"weekly track placeholders explain the wait with existing translated copy")
++		var track_status: RichTextLabel = page.find_child("RivalryLoadingTracksStatus",true,false)
++		check(track_status != null and track_status.get_parsed_text() == GameText.message("Loading tracks…"),"weekly track placeholders explain the wait with existing translated copy")
+ 		for slot: int in range(5):
+ 			var track: Control = page.find_child("RivalryLoadingTrack_"+str(slot),true,false)
+ 			var art: Control = page.find_child("RivalryLoadingTrackArt_"+str(slot),true,false)
+@@ -149,6 +149,29 @@
+ 		page.refresh_presentation()
+ 		check(page.find_child("RivalryLoadingCar_1",true,false) != null,"retry restores the loading art")
+ 		check(page.find_child("RivalryLoadingTracksPanel",true,false) != null,"retry also restores the weekly track presentation")
++		await settle()
++		if dimensions.x == 960:
++			for resized_dimensions: Vector2i in [Vector2i(1280,720),dimensions]:
++				root.size = resized_dimensions
++				root.content_scale_size = resized_dimensions
++				background.size = Vector2(resized_dimensions)
++				shell.size = Vector2(resized_dimensions)-Vector2(48,40)
++				await settle()
++				# This fixture's shell is manually sized rather than anchored by App.
++				# Reapply its bounds after the old minimum has settled on resize.
++				shell.size = Vector2(resized_dimensions)-Vector2(48,40)
++				await settle()
++				check(root.get_visible_rect().encloses(page.find_child("RivalryLoadingTracksPanel",true,false).get_global_rect()),"pending track layout still fits after resizing across the compact threshold")
++		var loading_geometry: Array[Rect2] = []
++		var loading_thumbnails: Array[Rect2] = []
++		for slot: int in range(5):
++			loading_geometry.append(page.find_child("RivalryLoadingTrack_"+str(slot),true,false).get_global_rect())
++			var art: Control = page.find_child("RivalryLoadingTrackArt_"+str(slot),true,false)
++			var preview: Rect2 = art.track_thumbnail_rect()
++			preview.position += art.global_position
++			loading_thumbnails.append(preview)
++		var loading_panel: Rect2 = page.find_child("RivalryLoadingTracksPanel",true,false).get_global_rect()
++		var loading_podium: Rect2 = page.find_child("RivalryLoadingPodium",true,false).get_global_rect()
+ 		page.model.apply_snapshot(fixture())
+ 		page.busy = false
+ 		page.refresh_presentation()
+@@ -156,6 +179,22 @@
+ 		check(page.find_child("RivalryLoading",true,false) == null and page.find_child("RivalryLoadingStandings",true,false) == null,"final server board removes all loading visuals")
+ 		check(page.find_child("RivalryLoadingTracksPanel",true,false) == null and page.find_child("SelectRivalryTrack_4",true,false) != null,"authoritative tracks replace all five placeholders with usable rows")
+ 		check(page.find_child("RivalryDriversPanel",true,false) != null and page.find_child("RivalryPodiumCar_1",true,false) != null,"handoff retains the real standings and player cars")
++		var final_panel: Rect2 = page.find_child("RivalryTracksPanel",true,false).get_global_rect()
++		var final_podium: Rect2 = page.find_child("RivalryPodium",true,false).get_global_rect()
++		print("RIVALRY_LOADING_LAYOUT ",JSON.stringify({"size":str(dimensions),"loading_panel":str(loading_panel),"final_panel":str(final_panel),"loading_podium":str(loading_podium),"final_podium":str(final_podium)}))
++		check(loading_panel.is_equal_approx(final_panel),"track panel keeps its exact position and dimensions when content is ready")
++		check(loading_podium.is_equal_approx(final_podium),"podium keeps its exact position and dimensions when content is ready")
++		check(shell.get_global_rect().encloses(final_panel) and root.get_visible_rect().encloses(final_panel),"all five ready tracks stay inside the available menu area")
++		for slot: int in range(5):
++			var actual: Rect2 = page.find_child("RivalryTrackRow_"+str(slot),true,false).get_global_rect()
++			print("RIVALRY_LOADING_ROW ",slot," ",loading_geometry[slot]," -> ",actual)
++			check(loading_geometry[slot].is_equal_approx(actual),"each track slot stays fixed when the real track replaces its placeholder")
++			var thumbnail: Rect2 = page.find_child("RivalryTrackThumbnail_"+str(slot),true,false).get_global_rect()
++			print("RIVALRY_LOADING_THUMBNAIL ",slot," ",loading_thumbnails[slot]," -> ",thumbnail)
++			check(thumbnail.is_equal_approx(loading_thumbnails[slot]),"the real thumbnail occupies the exact placeholder thumbnail rectangle")
++		if DisplayServer.get_name() != "headless":
++			await RenderingServer.frame_post_draw
++			check(root.get_texture().get_image().save_png(evidence.path_join("ready-%dx%d.png" % [dimensions.x,dimensions.y])) == OK,"capture ready layout for comparison with loading")
+ 		for position: int in range(1,4):
+ 			var panel: PanelContainer = page.find_child("RivalryPodium_"+str(position),true,false)
+ 			var footer: PanelContainer = page.find_child("RivalryPodiumFooter_"+str(position),true,false)

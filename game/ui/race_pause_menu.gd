@@ -4,6 +4,7 @@ var hud: PlaygroundHUD
 var column: VBoxContainer
 var frozen: TextureRect
 var drawer: PanelContainer
+var settings_overlay: Control
 const BLUE := Color("35c4ff")
 
 func _ready() -> void:
@@ -79,6 +80,7 @@ func _clear(title: String) -> void:
 	column.add_child(line)
 
 func show_main() -> void:
+	close_settings()
 	_clear("PAUSED")
 	_row("Resume","Continue driving" if hud.free_drive_mode else "Continue the race","play",func() -> void: hud.pause_requested.emit(), MenuStyle.ACCENT)
 	_row("Restart","Return the car to the hall entrance" if hud.free_drive_mode else "Start this race again","restart",func() -> void: hud.restart_requested.emit())
@@ -162,108 +164,25 @@ func _help() -> void:
 	_row("Back","Return to pause menu","arrow",show_main)
 
 func _settings() -> void:
-	_clear("RACE SETTINGS")
-	var audio := CheckButton.new()
-	audio.text = "Sound"
-	audio.button_pressed = not AudioServer.is_bus_mute(0)
-	audio.toggled.connect(func(on: bool) -> void: AudioServer.set_bus_mute(0,not on))
-	column.add_child(audio)
-	column.add_child(MenuStyle.label("Camera",22))
-	var camera_choice := OptionButton.new()
-	camera_choice.name = "RaceCameraMode"
-	camera_choice.custom_minimum_size.y = 52
-	for title: String in CameraProfile.TITLES: camera_choice.add_item(title)
-	var game: Node = hud.get_parent()
-	var camera_index: int = CameraProfile.MODES.find(game.camera.mode)
-	camera_choice.select(camera_index)
-	var camera_description: Label = MenuStyle.label(CameraProfile.DESCRIPTIONS[camera_index], 16, true)
-	camera_description.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
-	camera_choice.item_selected.connect(func(index: int) -> void:
-		var error: Error = game.set_camera_mode(CameraProfile.MODES[index])
-		camera_description.text = CameraProfile.DESCRIPTIONS[index]
-		status.text = "Camera changed" if error == OK else "Camera changed for this race. Could not save preference."
-	)
-	column.add_child(camera_choice)
-	column.add_child(camera_description)
-	var speed_zoom := CheckButton.new()
-	speed_zoom.name = "RaceSpeedZoom"
-	speed_zoom.text = "Speed zoom"
-	speed_zoom.custom_minimum_size.y = 52
-	speed_zoom.button_pressed = game.camera.speed_zoom_enabled
-	speed_zoom.toggled.connect(func(on: bool) -> void:
-		var error: Error = game.set_camera_speed_zoom(on)
-		status.text = "Speed zoom changed" if error == OK else "Zoom changed for this race. Could not save preference."
-	)
-	column.add_child(speed_zoom)
-	var strength_row := HBoxContainer.new()
-	column.add_child(strength_row)
-	var strength_value: Label = MenuStyle.label("Zoom strength", 18)
-	strength_value.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	strength_row.add_child(strength_value)
-	var strength_amount: Label = MenuStyle.label("%d%%" % roundi(game.camera.speed_zoom_strength * 100.0), 18, true)
-	strength_amount.name = "RaceSpeedZoomStrengthValue"
-	strength_row.add_child(strength_amount)
-	var strength := HSlider.new()
-	strength.name = "RaceSpeedZoomStrength"
-	strength.max_value = CameraProfile.MAX_SPEED_ZOOM_STRENGTH * 100.0
-	strength.step = 1.0
-	strength.value = game.camera.speed_zoom_strength * 100.0
-	strength.custom_minimum_size.y = 52
-	strength.editable = game.camera.speed_zoom_enabled
-	strength.modulate.a = 1.0 if game.camera.speed_zoom_enabled else 0.45
-	strength.drag_started.connect(func() -> void: strength.set_meta("dragging", true))
-	strength.value_changed.connect(func(amount: float) -> void:
-		strength_amount.text = "%d%%" % roundi(amount)
-		var error: Error = game.set_camera_speed_zoom_strength(amount / 100.0, not bool(strength.get_meta("dragging", false)))
-		status.text = "Zoom strength changed" if error == OK else "Zoom changed for this race. Could not save preference."
-	)
-	strength.drag_ended.connect(func(changed: bool) -> void:
-		strength.set_meta("dragging", false)
-		if not changed: return
-		var error: Error = game.set_camera_speed_zoom_strength(strength.value / 100.0)
-		status.text = "Zoom strength changed" if error == OK else "Zoom changed for this race. Could not save preference."
-	)
-	speed_zoom.toggled.connect(func(on: bool) -> void:
-		strength.editable = on
-		strength.modulate.a = 1.0 if on else 0.45)
-	column.add_child(strength)
-	if game.personal_ghost != null:
-		column.add_child(MenuStyle.label("Ghost",22))
-		var ghost_choice := OptionButton.new()
-		ghost_choice.name = "RaceGhostMode"
-		ghost_choice.custom_minimum_size.y = 52
-		for title: String in PersonalGhostRun.TITLES: ghost_choice.add_item(title)
-		ghost_choice.select(PersonalGhostRun.MODES.find(game.ghost_mode))
-		var ghost_description: Label = MenuStyle.label(game.ghost_description(),16,true)
-		ghost_description.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
-		ghost_choice.item_selected.connect(func(index: int) -> void:
-			var error: Error = game.set_ghost_mode(PersonalGhostRun.MODES[index])
-			ghost_description.text = game.ghost_description()
-			status.text = "Ghost changed" if error == OK else "Ghost changed for this race. Could not save preference."
-		)
-		column.add_child(ghost_choice)
-		column.add_child(ghost_description)
-	column.add_child(MenuStyle.label("Steering",22))
-	var steering := OptionButton.new()
-	for title: String in ["Buttons","Horizontal slider","Joystick"]: steering.add_item(title)
-	var layout: Dictionary = hud.touch.layout if not hud.touch.layout.is_empty() else ControlLayout.preset()
-	steering.select(ControlLayout.METHODS.find(str(layout.steering_type)))
-	steering.item_selected.connect(func(index: int) -> void:
-		var changed: Dictionary = layout.duplicate(true)
-		changed.steering_type = ControlLayout.METHODS[index]
-		hud.touch.layout = changed
-		var records: LocalRecords = hud.get_parent().rating_records
-		if records != null:
-			records.settings.control_layout = changed
-			if records.save_records() != OK: status.text = "Could not save controls."
-	)
-	column.add_child(steering)
-	status = MenuStyle.label("Sound applies to this session. Driving preferences are saved when available.",16,true)
-	status.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
-	column.add_child(status)
-	_row("Back","Return to pause menu","arrow",show_main)
+	close_settings()
+	drawer.hide()
+	settings_overlay = preload("res://ui/race_settings_overlay.gd").new()
+	settings_overlay.game = hud.get_parent()
+	settings_overlay.closed.connect(show_main)
+	add_child(settings_overlay)
 
-var status: Label
+func settings_open() -> bool:
+	return is_instance_valid(settings_overlay)
+
+func settings_back() -> void:
+	if settings_open(): settings_overlay.go_back()
+
+func close_settings() -> void:
+	if settings_open():
+		remove_child(settings_overlay)
+		settings_overlay.queue_free()
+		settings_overlay = null
+	if is_instance_valid(drawer): drawer.show()
 
 func capture_race() -> void:
 	if DisplayServer.get_name() == "headless": return

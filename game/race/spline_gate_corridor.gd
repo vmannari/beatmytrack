@@ -8,19 +8,38 @@ const ROAD_EDGE_MARGIN_M: float = 0.5
 const APEX_SLACK_M: float = 0.5
 const HAIRPIN_MITER_RATIO: float = 1.8
 
-static func lane(track: NativeTrack, fraction: float, constant_width: bool = false, rejoin_start: bool = true, recovery_m: float = RaceRules.CHECKPOINT_RECOVERY_M) -> PackedVector2Array:
-	var path := PackedVector2Array()
+static func _lane_basis(track: NativeTrack) -> Dictionary:
+	var normals := PackedVector2Array()
+	var halves := PackedFloat64Array()
+	var rejoins := PackedFloat64Array()
 	var minimum_half: float = INF
 	for width: float in track.route_widths: minimum_half = minf(minimum_half,width*0.5)
 	for i: int in range(track.route.size()):
 		var tangent: Vector2 = (track.route[(i+1)%track.route.size()]-track.route[posmod(i-1,track.route.size())]).normalized()
-		var half: float = track.route_widths[i]*0.5 if track.route_widths.size() == track.route.size() else 5.0
+		normals.append(tangent.orthogonal())
+		halves.append(track.route_widths[i]*0.5 if track.route_widths.size() == track.route.size() else 5.0)
+		var end_distance: float = minf(track.route_cumulative[i],track.route_length-track.route_cumulative[i])
+		rejoins.append(smoothstep(0.0,12.0,end_distance))
+	var uniform: bool = true
+	for half: float in halves:
+		if half != minimum_half: uniform = false; break
+	return {"normals":normals,"halves":halves,"rejoins":rejoins,"minimum_half":minimum_half,"uniform":uniform}
+
+static func lane(track: NativeTrack, fraction: float, constant_width: bool = false, rejoin_start: bool = true, recovery_m: float = RaceRules.CHECKPOINT_RECOVERY_M, basis: Dictionary = {}) -> PackedVector2Array:
+	# Basis belongs only to this preparation. Preserve double scalar values and
+	# the original ordered Vector2 multiplies; do not fold their rounding steps.
+	if basis.is_empty(): basis = _lane_basis(track)
+	var path := PackedVector2Array()
+	var normals: PackedVector2Array = basis.normals
+	var halves: PackedFloat64Array = basis.halves
+	var rejoins: PackedFloat64Array = basis.rejoins
+	for i: int in range(track.route.size()):
+		var half: float = halves[i]
 		# Include interior lanes which keep their offset as a road widens,
 		# as well as the separate paths following its variable-width edges.
-		if constant_width: half = minf(half,minimum_half)
-		var end_distance: float = minf(track.route_cumulative[i],track.route_length-track.route_cumulative[i])
+		if constant_width: half = minf(half,basis.minimum_half)
 		var lateral: float = (half+recovery_m)*fraction
-		path.append(track.route[i]+tangent.orthogonal()*lateral*(smoothstep(0.0,12.0,end_distance) if rejoin_start else 1.0))
+		path.append(track.route[i]+normals[i]*lateral*(rejoins[i] if rejoin_start else 1.0))
 	path.append(path[0]); path.append(path[1])
 	var result := PackedVector2Array()
 	for point: Vector2 in path:
@@ -67,10 +86,14 @@ static func select(session: RefCounted, track: NativeTrack) -> PackedInt32Array:
 	var edge_steps: int = EDGE_HALF_STEPS if not hairpins.is_empty() else LANE_HALF_STEPS
 	var edge_count: int = edge_steps*2+1
 	var edge_margin: float = ROAD_EDGE_MARGIN_M if not hairpins.is_empty() else RaceRules.CHECKPOINT_RECOVERY_M
+	var basis: Dictionary = _lane_basis(track)
+	var lane_cache: Dictionary = {}
+	var crossing_cache: Dictionary = {}
+	var initial_widths: PackedByteArray = var_to_bytes(session._widths)
 	for lane_index: int in range(edge_count*3):
-		var path: PackedVector2Array = lane(track,float(lane_index%edge_count-edge_steps)/edge_steps,lane_index >= edge_count,lane_index < edge_count*2,edge_margin)
+		var path: PackedVector2Array = _cached_lane(track,float(lane_index%edge_count-edge_steps)/edge_steps,lane_index >= edge_count,lane_index < edge_count*2,edge_margin,basis,lane_cache)
 		lanes.append(path)
-		crossings.append(_crossings(session,path))
+		crossings.append(_cached_crossings(session,path,crossing_cache))
 	for gate: int in range(session._centers.size()):
 		if priorities[gate] == 1: continue
 		var low: float = INF
@@ -93,17 +116,28 @@ static func select(session: RefCounted, track: NativeTrack) -> PackedInt32Array:
 			# Shortcut references may reduce recovery, never the physical road.
 			session._widths[gate][inside] = maxf(session._road_widths[gate][inside],minf(session._widths[gate][inside],bound))
 	var paved_crossings: Array[PackedFloat64Array] = []
+	var edge_crossings: Array[PackedFloat64Array] = []
+	var widths_changed: bool = initial_widths != var_to_bytes(session._widths)
+	if widths_changed: crossing_cache.clear()
 	for lane_index: int in range(lanes.size()):
+		# Narrowed hairpin widths require new crossings. Otherwise the original
+		# exact events remain valid, including nearest-crossing/tie order.
+		var events: PackedFloat64Array = _cached_crossings(session,lanes[lane_index],crossing_cache) if widths_changed else crossings[lane_index]
+		edge_crossings.append(events)
 		if not hairpins.is_empty() and lane_index < edge_count: continue
-		paved_crossings.append(_crossings(session,lanes[lane_index]))
-	var paved_lanes: Array[PackedVector2Array] = lanes.duplicate()
-	lanes.clear(); crossings.clear()
-	for lane_index: int in range(LANE_COUNT*3):
-		var path: PackedVector2Array = lane(track,float(lane_index%LANE_COUNT-LANE_HALF_STEPS)/LANE_HALF_STEPS,lane_index >= LANE_COUNT,lane_index < LANE_COUNT*2)
-		lanes.append(path); crossings.append(_crossings(session,path))
+		paved_crossings.append(events)
 	if not hairpins.is_empty():
-		for path: PackedVector2Array in paved_lanes:
-			lanes.append(path); crossings.append(_crossings(session,path))
+		var paved_lanes: Array[PackedVector2Array] = lanes.duplicate()
+		lanes.clear(); crossings.clear()
+		for lane_index: int in range(LANE_COUNT*3):
+			var path: PackedVector2Array = _cached_lane(track,float(lane_index%LANE_COUNT-LANE_HALF_STEPS)/LANE_HALF_STEPS,lane_index >= LANE_COUNT,lane_index < LANE_COUNT*2,RaceRules.CHECKPOINT_RECOVERY_M,basis,lane_cache)
+			lanes.append(path); crossings.append(_cached_crossings(session,path,crossing_cache))
+		for lane_index: int in range(paved_lanes.size()):
+			lanes.append(paved_lanes[lane_index]); crossings.append(edge_crossings[lane_index])
+	else:
+		# With no folded hairpins, edge and recovery passes have exactly the
+		# same fractions, width mode, rejoin flag and recovery margin.
+		crossings.assign(edge_crossings)
 	var counts := PackedInt32Array()
 	var previous := PackedInt32Array()
 	var costs := PackedFloat32Array()
@@ -177,6 +211,20 @@ static func select(session: RefCounted, track: NativeTrack) -> PackedInt32Array:
 			session._notice_reach[gate] = reach
 			previous_event = event
 	return selected
+
+static func _cached_lane(track: NativeTrack, fraction: float, constant_width: bool, rejoin_start: bool, recovery_m: float, basis: Dictionary, cache: Dictionary) -> PackedVector2Array:
+	# On uniform-width routes min(half, minimum_half) is the same half.
+	# Keep variable widths and every lane in the downstream ordered passes.
+	var key: PackedByteArray = var_to_bytes([fraction,constant_width and not basis.uniform,rejoin_start,recovery_m])
+	if not cache.has(key): cache[key] = lane(track,fraction,constant_width,rejoin_start,recovery_m,basis)
+	return cache[key]
+
+static func _cached_crossings(session: RefCounted, path: PackedVector2Array, cache: Dictionary) -> PackedFloat64Array:
+	# Exact serialized points, including their order/rounding. Different lane
+	# modes often produce identical paths; width changes discard this cache.
+	var key: PackedByteArray = var_to_bytes(path)
+	if not cache.has(key): cache[key] = _crossings(session,path)
+	return cache[key]
 
 static func _crossings(session: RefCounted, path: PackedVector2Array) -> PackedFloat64Array:
 	var events := PackedFloat64Array()

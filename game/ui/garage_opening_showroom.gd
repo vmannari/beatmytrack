@@ -115,6 +115,8 @@ func _begin_studio() -> void:
 		first.queue_free()
 		_first=null
 		if not _record_choice.is_empty(): super.update_records(_record_choice)
+		var graphics: Script=preload("res://rendering/graphics_preparation.gd")
+		var capture: Dictionary=graphics.begin_capture(camera.get_parent(),showroom_viewport,camera)
 		# The original main image, both planar reflections and their resized
 		# targets must settle under the picture before the first live reveal.
 		for _settle: int in range(4):
@@ -127,7 +129,9 @@ func _begin_studio() -> void:
 			if DisplayServer.get_name()!="headless": await RenderingServer.frame_post_draw
 			await get_tree().process_frame
 		if not _current_studio(): return
-		if _pending.is_empty(): break
+		if _pending.is_empty():
+			graphics.finish_capture(capture,camera.get_parent(),showroom_viewport,camera)
+			break
 	_warm_view.queue_free()
 	_warm_view=null
 	_restore_lights()

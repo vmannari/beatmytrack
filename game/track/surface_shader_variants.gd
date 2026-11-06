@@ -150,6 +150,10 @@ static func specialize(material: ShaderMaterial, use_prepared: bool = true, fold
 		source = factors.sub(source,"",true)
 		var header_end: int = source.find(";",source.find("render_mode")) + 1
 		source = source.insert(header_end,"\n" + factor_declaration.get_string())
+	if compatibility and fold_flags:
+		var fixed_names: Array[String] = FLAGS.duplicate()
+		for flag: String in MATERIAL_FLAGS: fixed_names.append("fixed_"+flag)
+		source = preload("res://track/surface_shader_pruning.gd").reduce(source,fixed_names)
 	var key: String = source.sha256_text()
 	if not cache.has(key):
 		var shader := Shader.new()

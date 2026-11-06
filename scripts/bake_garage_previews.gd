@@ -1,6 +1,6 @@
 extends SceneTree
 ## Run with the pinned engine and a graphical renderer. Native game assets only.
-const NATIVE_UI: Array[String] = ["garage_thumbnail_studio.gd","garage_preview_renderer.gd","car_showroom.gd","garage_environment.gd","garage_reflections.gd","garage_details.gd","garage_drain.gd","garage_furnishings.gd","garage_materials.gd","garage_workshop.gd","garage_record_station.gd","garage_lp_box.gd","garage_plant.gd","garage_car_reveal.gd","garage_wash_effect.gd","garage_wash_geometry.gd","garage_wash_tool.gd","garage_hose_geometry.gd","garage_hose_rig.gd"]
+const NATIVE_UI: Array[String] = ["garage_car_cache.gd","garage_thumbnail_studio.gd","garage_preview_renderer.gd","car_showroom.gd","garage_environment.gd","garage_reflections.gd","garage_details.gd","garage_drain.gd","garage_furnishings.gd","garage_materials.gd","garage_workshop.gd","garage_record_station.gd","garage_lp_box.gd","garage_plant.gd","garage_car_reveal.gd","garage_wash_effect.gd","garage_wash_geometry.gd","garage_wash_tool.gd","garage_hose_geometry.gd","garage_hose_rig.gd"]
 
 func _sources() -> Dictionary:
 	var sources: Dictionary = {}
@@ -12,7 +12,7 @@ func _sources() -> Dictionary:
 			sources["game/"+path.trim_prefix("res://")] = FileAccess.get_sha256(path)
 	for name: String in DirAccess.get_files_at("res://resources/cars"):
 		if name.ends_with(".tres"): sources["game/resources/cars/"+name] = FileAccess.get_sha256("res://resources/cars/"+name)
-	for path: String in ["res://resources/original_slide.tres","res://soundtrack/record_library.gd"]:
+	for path: String in ["res://vehicle/prepared_asset_dependencies.json","res://resources/original_slide.tres","res://soundtrack/record_library.gd"]:
 		sources["game/"+path.trim_prefix("res://")] = FileAccess.get_sha256(path)
 	return sources
 
@@ -26,7 +26,11 @@ func run() -> void:
 	DirAccess.make_dir_recursive_absolute(folder)
 	var sources: Dictionary = _sources()
 	var hashes: Dictionary = {}
+	var geometry_revisions: Dictionary = {}
+	var prepared_scenes: Dictionary = {}
 	for id: String in VehicleCatalog.IDS:
+		geometry_revisions[id]=preload("res://vehicle/modular_car_base.gd").build_revision(id)
+		prepared_scenes[id]=FileAccess.get_sha256("res://assets/garage/cars_v1/"+id+".scn")
 		var view := preload("res://ui/garage_thumbnail_studio.gd").new()
 		view.vehicle_id = id
 		view.read_only = true
@@ -54,5 +58,5 @@ func run() -> void:
 		quit(1)
 		return
 	var output := FileAccess.open(folder.path_join("provenance.json"),FileAccess.WRITE)
-	output.store_string(JSON.stringify({"source":"Dedicated thumbnail studio, full car, default paint/kits, clean condition, soft seamless backdrop and one car-only planar turntable reflection","engine":Engine.get_version_info().string,"renderer":RenderingServer.get_current_rendering_method(),"size":[2048,512],"hashes":hashes,"sources":sources},"\t")+"\n")
+	output.store_string(JSON.stringify({"source":"Dedicated thumbnail studio, full car, default paint/kits, clean condition, soft seamless backdrop and one car-only planar turntable reflection","engine":Engine.get_version_info().string,"renderer":RenderingServer.get_current_rendering_method(),"size":[2048,512],"hashes":hashes,"geometry_revisions":geometry_revisions,"prepared_scenes":prepared_scenes,"sources":sources},"\t")+"\n")
 	quit()

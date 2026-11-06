@@ -50,7 +50,7 @@ def display_text(value: str) -> bool:
 
 def sources() -> list[Path]:
     files = [*ROOT.glob("game/ui/*.gd"), *ROOT.glob("game/tutorial/*.gd"), *ROOT.glob("game/editor/*.gd"),
-             *ROOT.glob("game/vehicle/*catalog.gd"), ROOT / "game/core/app.gd",
+             *ROOT.glob("game/vehicle/*catalog.gd"), ROOT / "game/core/app.gd", *ROOT.glob("game/core/features/*.gd"),
              ROOT / "game/backend/account_controller.gd", ROOT / "game/backend/cosmetic_economy.gd",
              ROOT / "game/backend/cloud_tracks.gd", ROOT / "game/input/control_layout.gd",
              ROOT / "game/track/track_theme.gd", ROOT / "game/soundtrack/record_library.gd",

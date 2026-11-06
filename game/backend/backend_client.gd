@@ -213,6 +213,9 @@ func quality_supported() -> bool:
 func network_supported() -> bool:
 	return telemetry_supported() and int(_capabilities.get("product_telemetry",{}).get("network_schema_version",0)) == 1
 
+func shader_profiles_supported() -> bool:
+	return telemetry_supported() and int(_capabilities.get("product_telemetry",{}).get("shader_profile_schema_version",0)) == 1
+
 func _network_scope() -> String:
 	return (_base_url+"/"+str(player.get("id",""))).sha256_text()
 

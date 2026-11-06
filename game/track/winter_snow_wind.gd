@@ -34,6 +34,7 @@ var source_track: NativeTrack
 var surface_materials: Array[ShaderMaterial] = []
 var surface_bindings: Array[Dictionary] = []
 var surface_instances: Dictionary = {}
+var _surface_leases: Array[Dictionary] = []
 var last_focus: Vector2 = Vector2.ZERO
 var surface_child_count: int = -1
 var car_visual: Node3D
@@ -231,9 +232,12 @@ func _bind_surface(mesh: MeshInstance3D, index: int, original: ShaderMaterial) -
 	var material: ShaderMaterial
 	if surface_instances.has(key): material = surface_instances[key]
 	else:
-		material = original.duplicate() as ShaderMaterial
+		var lease: Dictionary = preload("res://track/prepared_world_cache.gd").acquire_surface(bank_visual,original,self)
+		material = lease.material
+		_surface_leases.append(lease)
 		material.set_shader_parameter("wind_surface_flow",preload("res://assets/textures/winter_wind_flow_v1.png"))
 		road_sources.bind(material)
+		preload("res://track/prepared_world_cache.gd").account_surface(bank_visual,material)
 		surface_instances[key] = material
 		surface_materials.append(material)
 	var previous: Material = mesh.material_override if index < 0 else mesh.get_surface_override_material(index)
@@ -261,6 +265,8 @@ func _release_surfaces() -> void:
 		if index < 0 and mesh.material_override == binding.material: mesh.material_override = binding.original
 		elif index >= 0 and mesh.mesh != null and index < mesh.mesh.get_surface_count() and mesh.get_surface_override_material(index) == binding.material: mesh.set_surface_override_material(index,binding.original)
 	surface_materials.clear(); surface_instances.clear(); surface_bindings.clear()
+	for lease: Dictionary in _surface_leases: preload("res://track/prepared_world_cache.gd").release_surface(lease,self)
+	_surface_leases.clear()
 	surface_child_count = -1
 
 func _exit_tree() -> void:

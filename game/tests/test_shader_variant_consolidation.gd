@@ -10,8 +10,13 @@ func check(ok: bool, label: String) -> void:
 	if not ok: failures += 1; push_error(label)
 
 # The sampler-budget follow-up changes only these three unreachable declarations.
-# All other source bytes still compare against the independent original fixtures.
+# The first-use pass also removes proven inactive bodies. Its parsing and scope
+# contract is tested separately; retain the prior sharing/binding/cache checks.
 func sampler_contract(source: String) -> String:
+	if RenderingServer.get_current_rendering_method() == "gl_compatibility":
+		var names: Array[String] = SurfaceShaderVariants.FLAGS.duplicate()
+		for flag: String in SurfaceShaderVariants.MATERIAL_FLAGS: names.append("fixed_"+flag)
+		source = preload("res://track/surface_shader_pruning.gd").reduce(source,names)
 	for name: String in ["painted_grass_texture","snow_road_sources","road_mask"]:
 		var declaration := RegEx.new()
 		declaration.compile("(?m)^(uniform sampler2D "+name+"\\b[^;]*;|#define "+name+" surface_factors)\\r?$")
@@ -46,7 +51,7 @@ func run() -> void:
 			var measured: ShaderMaterial = dynamic.duplicate()
 			validated.specialize(measured)
 			var expected: ShaderMaterial = measured if RenderingServer.get_current_rendering_method() == "gl_compatibility" else control
-			check(sampler_contract(actual.shader.code) == sampler_contract(expected.shader.code),theme+" retains validated source except the three audited sampler declarations")
+			check(sampler_contract(actual.shader.code) == sampler_contract(expected.shader.code),theme+" retains validated source after audited sampler and inactive-body passes")
 			old_hashes[sampler_contract(control.shader.code).sha256_text()] = true
 			new_hashes[sampler_contract(actual.shader.code).sha256_text()] = true
 			var bindings_equal: bool = true

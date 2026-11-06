@@ -1,0 +1,146 @@
+extends SceneTree
+const Worlds=preload("res://track/prepared_world_cache.gd")
+const Roads=preload("res://editor/road_preparation.gd")
+const Before=preload("res://../docs/evidence/selected-events-retention-2026-11-04/before/game/editor/editor_memory.gd")
+var checks: int=0
+var failures: int=0
+var app: Node
+var rows: Array=[]
+var variants: Dictionary={}
+var comparisons: Array=[]
+
+func snapshot() -> Array:
+	var result: Array=[]
+	var materials: Dictionary={}
+	for node: GeometryInstance3D in app.game.track_ground.find_children("*","GeometryInstance3D",true,false):
+		var material: Material=node.material_override
+		var state: Dictionary={"name":str(node.name),"transform":var_to_str(node.global_transform),"shadow":node.cast_shadow,"visible":node.visible,"layers":node.layers}
+		if material is ShaderMaterial:
+			var id: int=material.get_instance_id()
+			if not materials.has(id):
+				var values: Dictionary={}
+				for uniform: Dictionary in material.shader.get_shader_uniform_list():
+					var value: Variant=material.get_shader_parameter(uniform.name)
+					if value==null: value=RenderingServer.shader_get_parameter_default(material.shader.get_rid(),uniform.name)
+					if value is Texture2D: value=[value.resource_path,value.get_image().get_data().hex_encode().sha256_text()]
+					values[uniform.name]=var_to_str(value)
+				materials[id]=values
+			state["uniforms"]=materials[id]
+		result.append(state)
+	return result
+func _initialize() -> void: run.call_deferred()
+func check(ok: bool, label: String) -> void:
+	checks+=1
+	if not ok: failures+=1; push_error(label)
+func observe() -> void:
+	if is_instance_valid(app.game): app.game.profile_enabled=true
+	if is_instance_valid(app._garage_preloader):
+		app._garage_preloader.idle_ms=100000000
+		app._garage_preloader.foreground=false
+
+func diagnose(label: String) -> void:
+	for mode: String in ["no_world","no_ui","no_roads","settled_culling"]:
+		var saved: Array=[]
+		if mode=="no_world":
+			var world: Node3D=app.game.get_node("World"); saved.append([world,"visible",world.visible]); world.hide()
+		if mode=="no_ui":
+			for ui: Control in app.game.find_children("*","Control",true,false): saved.append([ui,"visible",ui.visible]); ui.hide()
+		for node: Node in app.game.find_children("*","Node3D",true,false):
+			if mode=="no_roads" and node is MeshInstance3D and node.material_override is ShaderMaterial and (node.material_override.shader.code.contains("icy_road") or node.material_override.shader.code.contains("winter_snow")):
+				saved.append([node,"visible",node.visible]); node.hide()
+			if (mode=="no_multimesh" and node is MultiMeshInstance3D) or (mode=="no_wind" and node is WinterSnowWind) or (mode=="no_banks" and node is MeshInstance3D and node.material_override is ShaderMaterial and node.material_override.shader.code.contains("smooth_road_bank")):
+				saved.append([node,"visible",node.visible]); node.hide()
+			if mode=="no_shadows" and node is GeometryInstance3D:
+				saved.append([node,"cast_shadow",node.cast_shadow]); node.cast_shadow=GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+			if mode=="settled_culling" and node.has_method("set_spatial_draws_enabled"):
+				node.set_spatial_draws_enabled(true); node._process(0.0)
+		for i: int in range(4): await RenderingServer.frame_post_draw
+		var image: Image=root.get_texture().get_image()
+		if not variants.has(mode): variants[mode]=image.get_data()
+		comparisons.append({"label":label,"mode":mode,"exact":variants[mode]==image.get_data()})
+		image.save_png(OS.get_environment("BMT_GRAPHICS_EVIDENCE").path_join(label+"-"+mode+".png"))
+		for item: Array in saved: item[0].set(item[1],item[2])
+func run() -> void:
+	root.size=Vector2i(960,540)
+	var control: bool="--control" in OS.get_cmdline_user_args()
+	for argument: String in OS.get_cmdline_user_args():
+		if argument.begins_with("--viewport="):
+			var dimensions: PackedStringArray=argument.trim_prefix("--viewport=").split("x")
+			root.size=Vector2i(int(dimensions[0]),int(dimensions[1]))
+	var folder: String=ProjectSettings.globalize_path("res://../build/selected-events-retention-20261104/scenery-"+TrackLibrary.unique_id())
+	DirAccess.make_dir_recursive_absolute(folder)
+	NativeTrackVisual.ROAD_DISK_CACHE.directory=folder.path_join("roads")
+	Worlds.trim_cache(); NativeTrackVisual.trim_editor_cache()
+	app=load("res://core/app.tscn").instantiate()
+	app.library=TrackLibrary.new(folder.path_join("library")); app.records=LocalRecords.new(folder.path_join("records.json")); app.cloud_root_override=folder.path_join("cloud")
+	app.records.settings.music_enabled=false
+	root.add_child(app)
+	while not app.startup_complete: await process_frame
+	if control: app.editor_memory=Before.new()
+	app.editor_memory.next_sample=Time.get_ticks_msec()+100000000
+	process_frame.connect(observe)
+	Engine.time_scale=0.0
+	var reference: PackedByteArray
+	var tracks: Dictionary={}
+	for theme: String in ["pine","winter","winter","winter"]:
+		if not tracks.has(theme):
+			var doc: Dictionary=JSON.parse_string(FileAccess.get_file_as_string("res://tests/fixtures/star_spline_lap.json"))
+			doc.theme=theme
+			var compiled: NativeTrack=TrackCompiler.compile(doc)
+			compiled.metadata.cloud_version="fixture-"+theme
+			tracks[theme]=compiled
+		var track: NativeTrack=tracks[theme]
+		app._show_screen("tracks"); app.selected_track=track
+		var began: int=Time.get_ticks_usec()
+		await app._start_race(track,false,true)
+		check(is_instance_valid(app.game) and app.game.preparation_complete,"actual "+theme+" race completes")
+		if not is_instance_valid(app.game): break
+		app.game.set_physics_process(false)
+		var elapsed: float=(Time.get_ticks_usec()-began)/1000.0
+		while not preload("res://editor/work_job.gd").pending.is_empty(): await process_frame
+		var before: Dictionary=preload("res://editor/editor_memory.gd").retained(app)
+		var pixels_before: PackedByteArray
+		if DisplayServer.get_name()!="headless":
+			for i: int in range(20): await RenderingServer.frame_post_draw
+			pixels_before=root.get_texture().get_image().get_data()
+			root.get_texture().get_image().save_png(OS.get_environment("BMT_GRAPHICS_EVIDENCE").path_join(theme+"-"+str(rows.size())+"-before-trim.png"))
+		var admitted: bool=Worlds.entries.any(func(entry: Dictionary) -> bool: return entry.key[0]==track.content_hash)
+		app.editor_memory.next_sample=0
+		app.editor_memory.tick(app)
+		app.editor_memory.next_sample=Time.get_ticks_msec()+100000000
+		var after: Dictionary=preload("res://editor/editor_memory.gd").retained(app)
+		var kept: bool=Worlds.entries.any(func(entry: Dictionary) -> bool: return entry.key[0]==track.content_hash)
+		check(after.retained_bytes<=app.editor_memory.RETAINED_BUDGET,"unchanged global retention budget after arbitration")
+		check(Worlds.bytes_used()<=Worlds.MAX_BYTES,"unchanged scenery cache budget")
+		check(app.game.sim.state.tick==0 and app.game.countdown_ticks==360,"retention leaves canonical countdown frozen")
+		if not control and theme=="winter": check(kept,"Winter completed scenery survives ordinary arbitration")
+		var exact: bool=true
+		if DisplayServer.get_name()!="headless":
+			for i: int in range(20): await RenderingServer.frame_post_draw
+			check(pixels_before==root.get_texture().get_image().get_data(),"ordinary retention leaves the active native view pixel-exact")
+			root.get_texture().get_image().save_png(OS.get_environment("BMT_GRAPHICS_EVIDENCE").path_join(theme+"-"+str(rows.size())+"-after-trim.png"))
+		if theme=="winter" and DisplayServer.get_name()!="headless":
+			if "--isolate-particles" in OS.get_cmdline_user_args():
+				for particles: GPUParticles3D in app.find_children("*","GPUParticles3D",true,false): particles.hide()
+			for i: int in range(4): await RenderingServer.frame_post_draw
+			var image: Image=root.get_texture().get_image()
+			if reference.is_empty(): reference=image.get_data()
+			else: exact=reference==image.get_data(); check(exact,"retained Winter re-entry pixels are exact")
+			image.save_png(OS.get_environment("BMT_GRAPHICS_EVIDENCE").path_join("winter-"+str(rows.size())+".png"))
+			if "--diagnose" in OS.get_cmdline_user_args(): await diagnose("winter-"+str(rows.size()))
+			if "--snapshot" in OS.get_cmdline_user_args(): FileAccess.open(OS.get_environment("BMT_GRAPHICS_EVIDENCE").path_join("snapshot-"+str(rows.size())+".json"),FileAccess.WRITE).store_string(JSON.stringify(snapshot(),"  "))
+		var visual: NativeTrackVisual=app.game.get_node("World").find_child("*",false,false) as NativeTrackVisual
+		rows.append({"theme":theme,"entry_ms":elapsed,"admitted":admitted,"kept":kept,"world_bytes":Worlds.bytes_used(),"before":before,"after":after,"exact":exact,"costs":app.game.preparation_costs.duplicate(true),"world_costs":visual.build_costs.duplicate(true) if visual!=null else {}})
+		app._leave_race()
+		for i: int in range(3): await process_frame
+	# Actual pressure keeps its original authority to release all optional worlds.
+	app.editor_memory.pressure_requested=true; app.editor_memory.next_sample=0; app.editor_memory.tick(app)
+	check(Worlds.entries.is_empty(),"pressure evicts every optional completed world")
+	check(TrackTheme.winter_reflection_sky==null,"pressure releases the optional static sky")
+	check(app.editor_memory.RETAINED_BUDGET==64*1024*1024 and Roads.BUDGET==32*1024*1024,"no memory limits increase")
+	process_frame.disconnect(observe)
+	app.queue_free()
+	for i: int in range(8): await process_frame
+	FileAccess.open(OS.get_environment("BMT_LOADING_OUTPUT"),FileAccess.WRITE).store_string(JSON.stringify({"checks":checks,"failures":failures,"control":control,"rows":rows,"comparisons":comparisons},"  "))
+	print("SELECTED_SCENERY ",checks," checks, ",failures," failures")
+	quit(1 if failures else 0)

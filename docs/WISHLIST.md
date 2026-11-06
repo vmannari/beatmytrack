@@ -2,6 +2,18 @@
 
 Ideas recorded for later consideration. Inclusion does not authorize implementation. Keep each item here with its status and scope.
 
+## Backend-generated checkpoint layouts
+
+Recorded 2026-11-06 at the owner's explicit request. **Deferred; do not implement yet.**
+
+Generate the complete client checkpoint layout once per published track and preparation version, store it in the backend, deliver it alongside the track and cache it locally. Build on the backend's existing cached verification-gate calculation, which currently exports only a subset of the client layout. This could avoid repeated lane/crossing calculations across players and app restarts while retaining every checkpoint, shortcut rule and visual.
+
+Keep the editable `creator-track-v5` document unchanged. Store the generated artifact separately, linked to the exact source/geometry identity, checkpoint/notice algorithm versions and relevant compiler/native dependencies. Do not alter existing track, leaderboard or result identities merely to add preparation data. Validate bounded sizes, complete fields, numeric precision and structural consistency; use atomic publication/caching and fall back to local calculation for missing, incompatible or invalid artifacts. Server race verification remains independent of downloaded client data.
+
+Before implementation, define the complete export/transport schema, generation and invalidation lifecycle, compatibility with existing clients, access rules and bounded storage. Prove equality with fresh client layouts across supported platforms, then retain coverage, shortcut rejection and replay checks. The desktop feasibility probe measured Star's current build at 3.63 seconds versus a 19 ms median geometry-key/read/decode/install path for an identical 159,200-byte layout. These freshly written-file component measurements are not backend-transfer, restart, tablet or full-race speedup claims.
+
+Related investigation: [alternative race-loading implementations](RACE_LOADING_ALTERNATIVES_2026_11_06.md). Existing checkpoint optimization: [preparation and bounded process cache](CHECKPOINT_PREPARATION_2026_11_05.md).
+
 ## Wet-asphalt tire sound
 
 Recorded 2026-10-09 at the owner's explicit request. **Deferred; do not implement yet.**

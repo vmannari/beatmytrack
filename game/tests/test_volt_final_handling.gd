@@ -16,17 +16,20 @@ func _initialize() -> void:
 
 func run() -> void:
 	var chosen: HandlingConfig = OLD_PRESETS.config("electric", 5)
+	# The selected Turn 5 remains the reference, with the later approved
+	# parking-speed correction independently covered by test_volt_slow_steering.
+	chosen.low_speed_steering_scale = 0.75
 	var final: HandlingConfig = VehicleCatalog.config("electric")
 	var old_values: Dictionary = chosen.snapshot()
 	var new_values: Dictionary = final.snapshot()
-	check(final.version == "electric-28" and final.profile_name == "Volt", "final Volt has its own standard identity")
+	check(final.version == "electric-29" and final.profile_name == "Volt", "final Volt has its own standard identity")
 	check(final.winter_road_grip == 0.90, "winter road grip is reduced")
 	old_values.erase("version")
 	old_values.erase("profile_name")
 	new_values.erase("version")
 	new_values.erase("profile_name")
 	new_values.erase("winter_road_grip")
-	check(old_values == new_values, "all physical fields exactly match the selected Turn 5")
+	check(old_values == new_values, "physical fields match Turn 5 plus approved parking correction")
 	check(PRESETS.names("electric").is_empty(), "final Volt offers no experimental choices")
 	check(PRESETS.config("electric", 5).snapshot() == final.snapshot(), "direct test selection cannot replace final Volt")
 	for start_speed: float in [0.0, 50.0, 100.0, 140.0, 180.0]:

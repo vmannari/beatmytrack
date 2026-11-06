@@ -79,6 +79,8 @@ func run() -> void:
 		app._leave_race()
 	app._start_race(track, false, true)
 	app._show_screen("garage")
+	check(app.race_loading == null and app.game == null, "navigation immediately cancels the race before feature entry")
+	while is_instance_valid(app._feature_loading): await process_frame
 	await _wait_loading()
 	check(app.game == null and app.race_loading == null and app.screen == "garage", "navigation cancels stale preparation without launching a hidden race")
 	await app._start_race(track, true, true)

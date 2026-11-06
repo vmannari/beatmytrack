@@ -1260,6 +1260,18 @@ static func trim_editor_cache() -> void:
 	preload("res://editor/road_preparation.gd").account_gpu(_road_mesh_cache)
 	preload("res://editor/road_preparation.gd").trim_retained()
 
+static func trim_private_road_cache(release_bytes: int) -> void:
+	# Removing exact aliases saves nothing. Prefer independent older roads;
+	# live scenes retain their resources and verified disk fallback remains.
+	var released: int = 0
+	for entry: Dictionary in _road_mesh_cache.duplicate():
+		if released >= release_bytes: break
+		var private_bytes: int = maxi(0,int(entry.bytes)-PREPARED_WORLDS.shared_road_bytes([entry]))
+		if private_bytes == 0: continue
+		_road_mesh_cache.erase(entry)
+		released += private_bytes
+	EDITOR_ROADS.account_gpu(_road_mesh_cache)
+
 static func reserve_editor_sections() -> void:
 	# Bound the combined idle cache at its existing 32 MiB while reserving
 	# half for local CPU work. Live editor/race nodes still own their resources.

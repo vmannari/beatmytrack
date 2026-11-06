@@ -1,7 +1,9 @@
 extends RefCounted
 ## Immutable scenery resources; fresh nodes and mutable instance buffers per race.
+## Winter's optional surface materials are exclusively leased and reset on return.
 const MAX_ENTRIES: int = 5
 const MAX_BYTES: int = 64 * 1024 * 1024
+const SURFACE_BYTES: int = 8192 # Material object, parameter map and GPU UBO estimate.
 static var entries: Array[Dictionary] = []
 static var generation: int = 0
 
@@ -47,6 +49,7 @@ static func restore(key: Array, visual: Node3D) -> bool:
 		holder.free()
 		for name: String in entry.metadata: visual.set_meta(name,entry.metadata[name])
 		visual.scenic_count = entry.scenic_count
+		visual.set_meta("prepared_world_key",key.duplicate(true))
 		return true
 	return false
 
@@ -81,6 +84,7 @@ static func remember(key: Array, visual: Node3D, track: NativeTrack) -> void:
 	while not entries.is_empty() and (entries.size() >= MAX_ENTRIES or total > MAX_BYTES):
 		total -= int(entries.pop_front().bytes)
 	entries.append({"key":key.duplicate(true),"scene":scene,"bytes":bytes,"resources":retained_resources,"metadata":metadata,"props":paths,"tyres":visual.tyre_instances.get_index() if visual.tyre_instances != null else -1,"scenic_count":visual.scenic_count})
+	visual.set_meta("prepared_world_key",key.duplicate(true))
 
 static func _own(node: Node, holder: Node) -> void:
 	node.owner = holder
@@ -120,6 +124,7 @@ static func restore_cooperative(key: Array, visual: NativeTrackVisual) -> bool:
 	visual.light_instances.assign(props)
 	for name: String in entry.metadata: visual.set_meta(name,entry.metadata[name])
 	visual.scenic_count = entry.scenic_count
+	visual.set_meta("prepared_world_key",key.duplicate(true))
 	return true
 
 
@@ -169,6 +174,61 @@ static func remember_cooperative(key: Array, visual: NativeTrackVisual, track: N
 	for entry: Dictionary in entries: total += int(entry.bytes)
 	while not entries.is_empty() and (entries.size() >= MAX_ENTRIES or total > MAX_BYTES): total -= int(entries.pop_front().bytes)
 	entries.append({"key":key.duplicate(true),"scene":scene,"bytes":bytes,"resources":retained_resources,"metadata":metadata,"props":paths,"tyres":visual.tyre_instances.get_index() if visual.tyre_instances != null else -1,"scenic_count":visual.scenic_count})
+	visual.set_meta("prepared_world_key",key.duplicate(true))
+
+static func _surface_entry(visual: Node3D) -> Dictionary:
+	var key: Array = visual.get_meta("prepared_world_key",[])
+	for entry: Dictionary in entries:
+		if entry.key == key: return entry
+	return {}
+
+static func acquire_surface(visual: Node3D, original: ShaderMaterial, owner: Node) -> Dictionary:
+	var entry: Dictionary = _surface_entry(visual)
+	var key: String = str(original.get_instance_id())+":"+original.shader.code.sha256_text()
+	var surfaces: Dictionary = entry.get("surfaces",{})
+	var record: Dictionary = surfaces.get(key,{})
+	if not record.is_empty():
+		var borrower: Object = record.owner.get_ref() if record.owner != null else null
+		if not is_instance_valid(borrower) or borrower == owner:
+			record.owner = weakref(owner)
+			return record
+	# Sharing a live owner's mutable wind state is never allowed.
+	var result: Dictionary = {"material":original.duplicate(),"original":original,"owner":weakref(owner)}
+	if entry.is_empty() or not record.is_empty(): return result
+	if surfaces.size() >= 512 or bytes_used()+SURFACE_BYTES > MAX_BYTES:
+		entries.erase(entry); generation += 1
+		return result
+	entry.bytes += SURFACE_BYTES
+	surfaces[key] = result
+	entry["surfaces"] = surfaces
+	return result
+
+static func account_surface(visual: Node3D, material: ShaderMaterial) -> void:
+	var entry: Dictionary = _surface_entry(visual)
+	if entry.is_empty(): return
+	var texture: Texture2D = material.get_shader_parameter("snow_road_sources")
+	if texture == null: return
+	# Count an entire float lookup's CPU/GPU footprint conservatively even if
+	# the independent bounded source cache also currently owns the same lookup.
+	# All surfaces of this immutable world bind the same lookup. Reserve its
+	# largest footprint rather than accumulating identities after regeneration.
+	var required: int = texture.get_width()*texture.get_height()*32
+	var bytes: int = maxi(0,required-int(entry.get("surface_texture_bytes",0)))
+	if bytes_used()+bytes > MAX_BYTES:
+		entries.erase(entry); generation += 1
+		return
+	entry["surface_texture_bytes"] = maxi(required,int(entry.get("surface_texture_bytes",0)))
+	entry.bytes += bytes
+
+static func release_surface(record: Dictionary, owner: Node) -> void:
+	if record.owner == null or record.owner.get_ref() != owner: return
+	var material: ShaderMaterial = record.material
+	var original: ShaderMaterial = record.original
+	material.set_shader_parameter("wind_surface_strength",0.0)
+	# Idle leases retain no run-specific source texture or presentation state.
+	for name: String in ["wind_surface_flow","snow_road_sources","wind_surface_elapsed","wind_surface_travel","wind_surface_focus","wind_surface_car","snow_source_bounds","snow_edge_sources"]:
+		material.set_shader_parameter(name,original.get_shader_parameter(name))
+	record.owner = null
 
 static func _isolate_instances(node: Node) -> void:
 	if node is MultiMeshInstance3D and node.multimesh != null:

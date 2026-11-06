@@ -7,38 +7,8 @@ const CHANGE_SECONDS: float = 0.24
 const MAX_BLEND_STEP: float = 1.0/30.0
 var _outgoing: TextureRect
 var _change: Tween
+var _placeholder: TextureRect
 
-class ProfilePreview extends "res://ui/rivalry_victory_car.gd":
-	func _fit_camera() -> void:
-		var camera: Camera3D = viewport.get_camera_3d()
-		if camera == null: return
-		# Center the visible model rather than the podium's fixed world target.
-		# Translate in the camera plane to retain the Rivalry viewing angle.
-		var points := PackedVector3Array()
-		var view: Transform3D = camera.global_transform.affine_inverse()
-		var depth_range := Vector2(INF,-INF)
-		for mesh: Node in car.find_children("*","MeshInstance3D",true,false):
-			if not mesh.is_visible_in_tree() or mesh.mesh == null: continue
-			var bounds: AABB = mesh.get_aabb()
-			for x: float in [bounds.position.x,bounds.end.x]:
-				for y: float in [bounds.position.y,bounds.end.y]:
-					for z: float in [bounds.position.z,bounds.end.z]:
-						var point: Vector3 = view*mesh.to_global(Vector3(x,y,z))
-						points.append(point)
-						depth_range.x = minf(depth_range.x,-point.z)
-						depth_range.y = maxf(depth_range.y,-point.z)
-		if points.is_empty(): return
-		var shift := Vector2.ZERO
-		for _pass: int in range(4):
-			var low := Vector2(INF,INF)
-			var high := Vector2(-INF,-INF)
-			for point: Vector3 in points:
-				var projected: Vector2 = (Vector2(point.x,point.y)-shift)/maxf(0.01,-point.z)
-				low = low.min(projected)
-				high = high.max(projected)
-			shift += (low+high)*0.5*(depth_range.x+depth_range.y)*0.5
-		camera.position += camera.basis*Vector3(shift.x,shift.y,0)
-		super._fit_camera()
 
 func _ready() -> void:
 	set_process(false)
@@ -58,6 +28,11 @@ func refresh() -> void:
 		MenuStyle.fill(preview)
 	if vehicle_id == vehicle and preview.texture == preload("res://ui/header_car_icons.gd").texture(vehicle,records): return
 	vehicle_id = vehicle
+	_sync_placeholder()
+	if preview.texture != null and preload("res://ui/header_car_icons.gd").texture(vehicle_id,records) == null:
+		# A previous account/design must not remain visible while a miss waits.
+		_settle()
+		return
 	if preview.texture == null or not is_visible_in_tree():
 		_settle()
 	elif _change == null:
@@ -124,6 +99,24 @@ func _settle() -> void:
 	# a size from its previous parent while this retained widget is reattached.
 	MenuStyle.fill(preview)
 	if not vehicle_id.is_empty(): preview.texture = preload("res://ui/header_car_icons.gd").texture(vehicle_id,records)
+	_sync_placeholder()
+
+func _sync_placeholder() -> void:
+	var missing: bool = not vehicle_id.is_empty() and preload("res://ui/header_car_icons.gd").texture(vehicle_id,records) == null
+	if missing and _placeholder == null:
+		_placeholder = _picture()
+		_placeholder.name = "HeaderCarLoadingSilhouette"
+		_placeholder.modulate = Color("8399a5")
+		add_child(_placeholder)
+		move_child(_placeholder,0)
+		MenuStyle.fill(_placeholder)
+	if _placeholder == null: return
+	_placeholder.visible = missing
+	if not missing: return
+	var texture := AtlasTexture.new()
+	texture.atlas = preload("res://assets/menu/rivalry_loading_cars_v1.png")
+	texture.region = Rect2(Vector2(maxi(0,VehicleCatalog.IDS.find(vehicle_id))*384,0),Vector2(384,256))
+	_placeholder.texture = texture
 
 func _visibility_changed() -> void:
 	if not is_visible_in_tree(): _settle()
@@ -132,29 +125,10 @@ func _exit_tree() -> void:
 	_settle()
 
 static func make_preview(vehicle: String, paint: Dictionary, parts: Dictionary) -> Control:
-	var result := ProfilePreview.new()
-	result.name = "ProfileCarRender"
-	result.vehicle_id = vehicle
-	result.livery = paint.duplicate(true)
-	result.customisation = parts.duplicate(true)
-	result.simple_model = true
-	result.podium_presentation = true
-	result.fit_to_frame = true
-	return result
+	return load("res://ui/profile_car_renderer.gd").make_preview(vehicle,paint,parts)
 
 static func apply_presentation(view: Control) -> void:
-	var environment: WorldEnvironment = view.viewport.find_child("PodiumReflectionEnvironment",true,false)
-	environment.environment.ambient_light_energy = 0.7
-	var fill := DirectionalLight3D.new()
-	fill.name = "ProfileReadabilityFill"
-	fill.light_energy = 0.65
-	fill.rotation = view.viewport.get_camera_3d().rotation
-	view.car.get_parent().add_child(fill)
-	view._refresh()
+	load("res://ui/profile_car_renderer.gd").apply_presentation(view)
 
 static func repaint_preview(view: Control, paint: Dictionary) -> void:
-	# Icon batches retain geometry, camera, lights and radiance. Only paint changes.
-	view.livery = paint.duplicate(true)
-	view.car.apply_livery(paint)
-	if view.car.vehicle_id!="compact":
-		preload("res://ui/rivalry_podium_studio.gd")._garage_paint(view.car)
+	load("res://ui/profile_car_renderer.gd").repaint_preview(view,paint)

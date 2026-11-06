@@ -103,6 +103,7 @@ func record(track: NativeTrack, handling: HandlingConfig, race_time: float, laps
 	var raced: Array = settings.get("raced_tracks",[]).duplicate()
 	if track.identity not in raced: raced.append(track.identity)
 	settings["raced_tracks"] = raced
+	preload("res://persistence/driving_history.gd").record(self,track,handling.vehicle_id)
 	return save_records()
 
 
@@ -205,6 +206,8 @@ static func _normalize(data: Variant) -> Dictionary:
 			if not preferences[field] is String or preferences[field] not in VehicleCatalog.ALL_IDS: return {}
 		elif field == "achievements":
 			if not AchievementProgress.valid(preferences[field]): return {}
+		elif field == "driving_history":
+			if not preload("res://persistence/driving_history.gd").valid(preferences[field]): return {}
 		elif field == "guest_coins":
 			if not preload("res://persistence/cosmetic_catalog.gd").valid_guest(preferences[field]): return {}
 		elif field == "cosmetic_legacy":

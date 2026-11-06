@@ -2,6 +2,7 @@ extends Node
 ## One native capture and one owned IO worker. Workers never access a view/node.
 const Build = preload("res://core/build_identity.gd")
 const Work = preload("res://editor/work_job.gd")
+const Graphics = preload("res://rendering/graphics_preparation.gd")
 const VERSION: String = "garage-thumbnail-studio-v5"
 const MAX_FILES: int = 14
 static var factory_pictures: Dictionary={}
@@ -27,6 +28,7 @@ var warm_views: Dictionary={}
 var _last_input: int=0
 var _touches: Dictionary={}
 var idle_ms: int=750
+var _graphics_ticket: Dictionary={}
 
 func _ready() -> void:
 	_last_input=Time.get_ticks_msec()
@@ -255,6 +257,7 @@ func _process(_delta: float) -> void:
 			if renderer.reflections!=null:
 				for view: SubViewport in renderer.reflections.views: view.render_target_update_mode=SubViewport.UPDATE_DISABLED
 			return
+		if _graphics_ticket.is_empty(): _graphics_ticket=Graphics.begin_capture(renderer.camera.get_parent(),renderer.showroom_viewport,renderer.camera)
 		frames -= 1
 		if frames >= 0:
 			renderer._submit_render()
@@ -307,6 +310,7 @@ func _capture() -> void:
 	if not _render_allowed(): return
 	if _current(active) and not _current(active,true): queued.push_front(active)
 	if _current(active,true):
+		Graphics.finish_capture(_graphics_ticket,renderer.camera.get_parent(),renderer.showroom_viewport,renderer.camera)
 		var started: int = Time.get_ticks_usec()
 		var image: Image = renderer.showroom_viewport.get_texture().get_image()
 		readback_us += Time.get_ticks_usec()-started
@@ -329,6 +333,7 @@ func _finish() -> void:
 		remove_child(renderer)
 		renderer.queue_free()
 	renderer = null; active = {}
+	_graphics_ticket = {}
 
 func _exit_tree() -> void:
 	_finish()

@@ -1,0 +1,3418 @@
+diff --git a/game/race/world_render_preparation.gd b/game/race/world_render_preparation.gd
+--- a/game/race/world_render_preparation.gd
++++ b/game/race/world_render_preparation.gd
+@@ -1,7 +1,13 @@
+ extends Node
+ ## Stage first use of actual material/mesh combinations under the loading cover.
+ ## Lifetime belongs to Game, so navigation cannot leave hidden surviving meshes.
+-static var warmed: Dictionary = {}
++const Graphics = preload("res://rendering/graphics_preparation.gd")
++const FAST_DRAW_US: int = Graphics.FAST_DRAW_US
++static var warmed: Dictionary = Graphics.warmed
++var programs_per_draw: int = Graphics.PROGRAMS_PER_DRAW
++var adaptive: bool = true
++var _batch_programs: int = 1
++var _fast_draws: int = 0
+ # Insertion order retains the original first-seen program order; each bucket
+ # is consumed from the end, just like the former reverse scan of all nodes.
+ var pending: Dictionary = {}
+@@ -10,94 +16,138 @@
+ var frame_groups: int = 0
+ var draw_us_max: int = 0
+ var _material_keys: Dictionary = {}
++var _world: WeakRef
++var _hold_context: String = ""
++var _active_margins: Array[Dictionary] = []
+ 
+ func hold(world: Node) -> void:
++	_world = weakref(world)
++	_hold_context = ""
+ 	for geometry: GeometryInstance3D in world.find_children("*","GeometryInstance3D",true,false):
+ 		if not geometry.is_visible_in_tree(): continue
+-		var key: String = _key(geometry,_material_keys)
+-		if warmed.has(key): continue
+-		if not pending.has(key):
+-			pending[key] = []
+-			_pending_keys.append(key)
+-		pending[key].append(weakref(geometry))
+-		geometry.hide()
++		hold_geometry(geometry)
++
++func hold_geometry(geometry: GeometryInstance3D) -> void:
++	if _world == null: _world = weakref(geometry.get_parent())
++	var key: String = _key(geometry,_material_keys)
++	var camera: Camera3D = get_parent().get("camera") if get_parent() != null else null
++	if camera != null:
++		if _hold_context.is_empty(): _hold_context = Graphics.context(_view(),_world.get_ref(),camera)
++		if Graphics.cacheable(geometry) and Graphics.ready(_hold_context,Graphics.receipt_key(geometry,_hold_context,_material_keys)): return
++	if not pending.has(key):
++		pending[key] = []
++		_pending_keys.append(key)
++	pending[key].append(weakref(geometry))
++	geometry.hide()
++
++func _view() -> Viewport:
++	return get_parent().showroom_viewport if "showroom_viewport" in get_parent() else get_viewport()
+ 
+ func prepare(draw: Callable, current: Callable) -> bool:
++	var instance: WeakRef = weakref(self)
++	var camera: Camera3D = get_parent().get("camera")
++	var world: Node = _world.get_ref() if _world != null else null
++	var context: String = Graphics.context(_view(),world,camera)
+ 	while not pending.is_empty():
+-		if not current.call(): return false
+-		while not pending.has(_pending_keys[_key_cursor]): _key_cursor += 1
+-		var key: String = _pending_keys[_key_cursor]
+-		var bucket: Array = pending[key]
+-		var shown: int = 0
++		if not current.is_valid() or not current.call(): return false
++		_material_keys.clear()
++		var epoch: int = Graphics.generation
++		var submitted: Array[Dictionary] = []
+ 		var margins: Array[Dictionary] = []
+-		var camera: Camera3D = get_parent().get("camera")
+-		while not bucket.is_empty() and shown < 8:
+-			var node: Object = bucket.pop_back().get_ref()
+-			if is_instance_valid(node):
++		var budget: int = mini(_batch_programs,programs_per_draw) if adaptive else programs_per_draw
++		while not pending.is_empty() and submitted.size() < clampi(budget,1,Graphics.PROGRAMS_PER_DRAW):
++			while _key_cursor < _pending_keys.size() and not pending.has(_pending_keys[_key_cursor]): _key_cursor += 1
++			if _key_cursor >= _pending_keys.size(): break
++			var key: String = _pending_keys[_key_cursor]
++			var bucket: Array = pending[key]
++			# Keys are rechecked after yields. Changed programs must get a real draw.
++			var refreshed: Array = []
++			for reference: WeakRef in bucket:
++				var node: Object = reference.get_ref()
++				if not is_instance_valid(node): continue
++				var actual: String = _key(node,_material_keys)
++				if actual != key:
++					if not pending.has(actual): pending[actual] = []; _pending_keys.append(actual)
++					pending[actual].append(reference)
++				elif Graphics.cacheable(node) and Graphics.ready(context,Graphics.receipt_key(node,context,_material_keys)): node.show()
++				else: refreshed.append(reference)
++			bucket.assign(refreshed)
++			if bucket.is_empty(): pending.erase(key); continue
++			var sources: Array[Dictionary] = []
++			while not bucket.is_empty() and sources.size() < Graphics.OBJECTS_PER_PROGRAM:
++				var node: Object = bucket.pop_back().get_ref()
++				if not is_instance_valid(node): continue
+ 				if node is MeshInstance3D and camera != null:
+ 					margins.append({"node":weakref(node),"margin":node.extra_cull_margin})
+ 					var bounds: AABB = node.get_aabb()
+ 					var distance: Vector3 = (node.to_local(camera.global_position)-bounds.get_center()).abs()
+ 					node.extra_cull_margin = maxf(node.extra_cull_margin,maxf(distance.x,maxf(distance.y,distance.z))+camera.near+1.0)
+ 				node.show()
+-				shown += 1
+-		if bucket.is_empty(): pending.erase(key)
+-		if shown == 0: continue
++				sources.append({"node":weakref(node),"key":key,"receipt":Graphics.receipt_key(node,context,_material_keys)})
++			if sources.is_empty(): pending.erase(key); continue
++			submitted.append({"key":key,"bucket":bucket,"sources":sources})
++			# Leave a failed program at this cursor so its remaining geometry
++			# participates in the next real draw, preserving the retry contract.
++			_key_cursor += 1
++		if submitted.is_empty(): continue
+ 		var began: int = Time.get_ticks_usec()
++		_active_margins = margins
+ 		var drawn: bool = await draw.call()
+ 		for entry: Dictionary in margins:
+ 			var node: Object = entry.node.get_ref()
+ 			if is_instance_valid(node): node.extra_cull_margin = entry.margin
++		if not is_instance_valid(instance.get_ref()): return false
++		_active_margins = []
+ 		if not current.is_valid() or not current.call(): return false
+ 		draw_us_max = maxi(draw_us_max,Time.get_ticks_usec()-began)
++		# Begin conservatively. Slow native/driver work restores one program
++		# per interval; two fast real draws admit the bounded warm batch.
++		if drawn and Time.get_ticks_usec()-began <= FAST_DRAW_US:
++			_fast_draws += 1
++			if _fast_draws >= 2: _batch_programs = Graphics.PROGRAMS_PER_DRAW
++		else:
++			_fast_draws = 0
++			_batch_programs = 1
+ 		frame_groups += 1
+-		if drawn:
+-			if warmed.size() >= 512: warmed.clear()
+-			warmed[key] = true
+-			# One bounded batch has submitted this exact program/format/shadow
+-			# combination. Remaining instances need visibility, not another draw
+-			# of the same compiled program. The final covered world draw remains.
+-			while not bucket.is_empty():
+-				var node: Object = bucket.pop_back().get_ref()
+-				if is_instance_valid(node): node.show()
+-			pending.erase(key)
++		var valid_context: bool = epoch == Graphics.generation and context == Graphics.context(_view(),world,camera)
++		if not valid_context: _fast_draws = 0; _batch_programs = 1
++		_material_keys.clear()
++		for group: Dictionary in submitted:
++			var valid: bool = drawn and valid_context
++			for source: Dictionary in group.sources:
++				var node: Object = source.node.get_ref()
++				if not is_instance_valid(node) or _key(node,_material_keys) != source.key or Graphics.receipt_key(node,context,_material_keys) != source.receipt: valid = false
++			if valid:
++				for source: Dictionary in group.sources:
++					# Expanded staging bounds may select a different set of local
++					# lights. Spatial views publish only their normal full captures.
++					if not Graphics.spatial_context(context) and Graphics.cacheable(source.node.get_ref()): Graphics.complete(context,source.receipt,epoch)
++				for reference: WeakRef in group.bucket:
++					var node: Object = reference.get_ref()
++					if is_instance_valid(node): node.show()
++				pending.erase(group.key)
++			elif group.bucket.is_empty():
++				for source: Dictionary in group.sources:
++					if is_instance_valid(source.node.get_ref()): group.bucket.append(source.node)
++		# Rescan unresolved groups after a failed draw, mutation or invalidation.
++		_key_cursor = 0
++		context = Graphics.context(_view(),world,camera)
+ 	_material_keys.clear()
+ 	_pending_keys.clear()
+ 	_key_cursor = 0
+ 	return current.call()
+ 
+ static func _key(node: GeometryInstance3D, materials: Dictionary = {}) -> String:
+-	var mesh: Mesh = node.mesh if node is MeshInstance3D else node.multimesh.mesh if node is MultiMeshInstance3D and node.multimesh != null else null
+-	var parts: Array = [node.get_class(),node.cast_shadow,node.layers]
+-	if mesh != null:
+-		for surface: int in range(mesh.get_surface_count()):
+-			var material: Material = node.get_active_material(surface) if node is MeshInstance3D else node.material_override if node.material_override != null else mesh.surface_get_material(surface)
+-			# Identity inspection must not force lazy backend shader creation here.
+-			parts.append(_material_key(material,materials))
+-			parts.append(mesh.surface_get_format(surface) if mesh is ArrayMesh else mesh.get_class())
+-	return str(parts)
++	return Graphics.geometry_key(node,materials)
+ 
+ static func _material_key(material: Material, cache: Dictionary) -> String:
+-	if material == null: return "none"
+-	var id: int = material.get_instance_id()
+-	if cache.has(id): return cache[id]
+-	var features: Array = [material.get_class()]
+-	if material is ShaderMaterial:
+-		features.append(material.shader.get_instance_id() if material.shader != null else 0)
+-	elif material is BaseMaterial3D:
+-		for property: Dictionary in material.get_property_list():
+-			if not int(property.usage)&PROPERTY_USAGE_STORAGE: continue
+-			if property.name in ["resource_local_to_scene","resource_name","resource_path","next_pass"]: continue
+-			var value: Variant = material.get(property.name)
+-			if value is bool or value is int: features.append([property.name,value])
+-			elif property.hint == PROPERTY_HINT_RESOURCE_TYPE and "Texture" in str(property.hint_string): features.append([property.name,value != null])
+-	else: features.append(id)
+-	features.append(_material_key(material.next_pass,cache))
+-	var result: String = str(features).sha256_text()
+-	cache[id] = result
+-	return result
++	return Graphics._material_key(material,cache)
+ 
+-func _exit_tree() -> void:
++func release() -> void:
++	for entry: Dictionary in _active_margins:
++		var node: Object = entry.node.get_ref()
++		if is_instance_valid(node): node.extra_cull_margin = entry.margin
++	_active_margins.clear()
+ 	for bucket: Array in pending.values():
+ 		for reference: WeakRef in bucket:
+ 			var node: Object = reference.get_ref()
+@@ -106,3 +156,7 @@
+ 	_pending_keys.clear()
+ 	_key_cursor = 0
+ 	_material_keys.clear()
++	_hold_context = ""
++
++func _exit_tree() -> void:
++	release()
+diff --git a/game/ui/garage_first_draw.gd b/game/ui/garage_first_draw.gd
+--- a/game/ui/garage_first_draw.gd
++++ b/game/ui/garage_first_draw.gd
+@@ -1,72 +1,161 @@
+ extends Node
+-## Garage-owned staging survives its retained page moving between menu slots.
+-const Key=preload("res://race/world_render_preparation.gd")
+-static var warmed: Dictionary={}
+-var pending: Array[Dictionary]=[]
+-var held: Array[WeakRef]=[]
++## Garage-owned staging; shared receipts require matching actual render features.
++const Key = preload("res://rendering/graphics_preparation.gd")
++static var warmed: Dictionary = Key.warmed
++var pending: Array[Dictionary] = []
++var held: Array[WeakRef] = []
++var frame_groups: int = 0
++var _copies: Array[GeometryInstance3D] = []
++var _local_warmed: Dictionary = {}
++var _batch_programs: int = 1
++var _fast_draws: int = 0
++
++func _context() -> String:
++	var owner: Node = get_parent()
++	var camera: Camera3D = owner.get("camera")
++	var view: Viewport = owner.showroom_viewport if "showroom_viewport" in owner else get_viewport()
++	return Key.context(view,camera.get_parent() if camera != null else owner,camera)
++
+ func queue_geometry(node: GeometryInstance3D) -> bool:
+-	var key: String=Key._key(node)
++	if not node is MeshInstance3D and not node is MultiMeshInstance3D: return false
++	var key: String = Key.geometry_key(node)
+ 	for index: int in range(pending.size()-1,-1,-1):
+-		if pending[index].node.get_ref()==node: pending.remove_at(index)
+-	if warmed.has(key):
++		if pending[index].node.get_ref() == node: pending.remove_at(index)
++	if Key.ready(_context(),Key.receipt_key(node,_context())):
+ 		node.show()
+ 		return false
+ 	pending.append({"node":weakref(node),"key":key})
+-	held.append(weakref(node))
++	if not held.any(func(reference: WeakRef) -> bool: return reference.get_ref() == node): held.append(weakref(node))
+ 	node.hide()
+ 	return true
++
+ func hold(world: Node) -> void:
++	var materials: Dictionary = {}
++	var context: String = _context()
+ 	for node: GeometryInstance3D in world.find_children("*","GeometryInstance3D",true,false):
+ 		if not node.is_visible_in_tree(): continue
+-		var key: String=Key._key(node)
+-		if warmed.has(key): continue
++		if not node is MeshInstance3D and not node is MultiMeshInstance3D: continue
++		var key: String = Key.geometry_key(node,materials)
++		if Key.ready(context,Key.receipt_key(node,context,materials)): continue
+ 		pending.append({"node":weakref(node),"key":key})
+ 		held.append(weakref(node))
+ 		node.hide()
++
+ func release() -> void:
++	_clear_copies()
+ 	for reference: WeakRef in held:
+-		var node: Object=reference.get_ref()
++		var node: Object = reference.get_ref()
+ 		if is_instance_valid(node): node.show()
+ 	held.clear()
+ 	pending.clear()
+-func prepare(draw: Callable,current: Callable) -> bool:
++	_local_warmed.clear()
++	_batch_programs = 1
++	_fast_draws = 0
++
++func _clear_copies() -> void:
++	for copy: GeometryInstance3D in _copies:
++		if is_instance_valid(copy):
++			if copy.get_parent() != null: copy.get_parent().remove_child(copy)
++			copy.queue_free()
++	_copies.clear()
++
++func _copy(source: GeometryInstance3D, camera: Camera3D) -> GeometryInstance3D:
++	var copy: GeometryInstance3D
++	if source is MeshInstance3D:
++		var mesh_copy := MeshInstance3D.new()
++		mesh_copy.mesh = source.mesh
++		mesh_copy.skin = source.skin
++		if source.mesh is ArrayMesh:
++			for index: int in range(source.mesh.get_blend_shape_count()): mesh_copy.set_blend_shape_value(index,source.get_blend_shape_value(index))
++		for surface: int in range(source.mesh.get_surface_count()): mesh_copy.set_surface_override_material(surface,source.get_surface_override_material(surface))
++		copy = mesh_copy
++	elif source is MultiMeshInstance3D:
++		var instances_copy := MultiMeshInstance3D.new()
++		instances_copy.multimesh = source.multimesh
++		copy = instances_copy
++	else: return null
++	copy.set_meta("garage_opening_warm",true)
++	copy.material_override = source.material_override
++	copy.material_overlay = source.material_overlay
++	copy.cast_shadow = source.cast_shadow
++	copy.gi_mode = source.gi_mode
++	copy.layers = 8
++	camera.get_parent().add_child(copy)
++	if source is MeshInstance3D:
++		var skeleton: Node = source.get_node_or_null(source.skeleton)
++		if skeleton is Skeleton3D: copy.skeleton = copy.get_path_to(skeleton)
++	copy.global_transform = source.global_transform
++	var bounds: AABB = source.get_aabb()
++	var delta: Vector3 = (source.to_local(camera.global_position)-bounds.get_center()).abs()
++	copy.extra_cull_margin = maxf(source.extra_cull_margin,maxf(delta.x,maxf(delta.y,delta.z))+camera.near+1.0)
++	_copies.append(copy)
++	return copy
++
++func prepare(draw: Callable, current: Callable) -> bool:
++	var instance: WeakRef = weakref(self)
+ 	while not pending.is_empty():
+ 		if not current.is_valid() or not current.call(): return false
+-		var key: String=pending[0].key
+-		var shown: int=0
+-		var copies: Array[MeshInstance3D]=[]
+-		var drawn_keys: Array[Dictionary]=[]
+-		var camera: Camera3D=get_parent().get("camera")
++		var camera: Camera3D = get_parent().get("camera")
++		var context: String = _context()
++		var epoch: int = Key.generation
++		var groups: Array[String] = []
++		var submitted: Array[Dictionary] = []
++		var materials: Dictionary = {}
+ 		for index: int in range(pending.size()-1,-1,-1):
+-			if pending[index].key!=key or shown>=8: continue
+-			var node: Object=pending[index].node.get_ref()
+-			if is_instance_valid(node):
+-				drawn_keys.append({"node":weakref(node),"key":Key._key(node)})
+-				if node is MeshInstance3D:
+-					var copy:=MeshInstance3D.new()
+-					copy.set_meta("garage_opening_warm",true)
+-					copy.mesh=node.mesh
+-					copy.material_override=node.material_override
+-					copy.material_overlay=node.material_overlay
+-					copy.cast_shadow=node.cast_shadow
+-					copy.layers=8
+-					for surface: int in range(node.mesh.get_surface_count()): copy.set_surface_override_material(surface,node.get_surface_override_material(surface))
+-					camera.get_parent().add_child(copy)
+-					copy.global_transform=node.global_transform
+-					var delta: Vector3=(node.to_local(camera.global_position)-node.get_aabb().get_center()).abs()
+-					copy.extra_cull_margin=maxf(node.extra_cull_margin,maxf(delta.x,maxf(delta.y,delta.z))+camera.near+1.0)
+-					copies.append(copy)
+-			pending.remove_at(index)
+-			shown+=1
+-		var drawn: bool=await draw.call()
+-		for copy: MeshInstance3D in copies:
+-			if is_instance_valid(copy):
+-				if copy.get_parent()!=null: copy.get_parent().remove_child(copy)
+-				copy.queue_free()
+-		if not current.is_valid() or not current.call(): return false
+-		if drawn:
+-			if warmed.size()>=512: warmed.clear()
+-			for entry: Dictionary in drawn_keys:
+-				var node: Object=entry.node.get_ref()
+-				if is_instance_valid(node) and Key._key(node)==entry.key: warmed[entry.key]=true
++			var node: Object = pending[index].node.get_ref()
++			if not is_instance_valid(node): pending.remove_at(index); continue
++			pending[index].key = Key.geometry_key(node,materials)
++		for entry: Dictionary in pending:
++			if not groups.has(entry.key): groups.append(entry.key)
++			if groups.size() >= _batch_programs: break
++		for key: String in groups:
++			if _local_warmed.has(str(epoch)+context+key):
++				for index: int in range(pending.size()-1,-1,-1):
++					if pending[index].key == key: pending.remove_at(index)
++				continue
++			var shown: int = 0
++			for index: int in range(pending.size()-1,-1,-1):
++				if pending[index].key != key or shown >= Key.OBJECTS_PER_PROGRAM: continue
++				var entry: Dictionary = pending[index]
++				var node: Object = entry.node.get_ref()
++				if _copy(node,camera) == null: node.show()
++				submitted.append(entry)
++				pending.remove_at(index)
++				shown += 1
++		if submitted.is_empty(): continue
++		var began: int = Time.get_ticks_usec()
++		var drawn: bool = await draw.call()
++		if not is_instance_valid(instance.get_ref()): return false
++		_clear_copies()
++		frame_groups += 1
++		if not current.is_valid() or not current.call():
++			pending.append_array(submitted)
++			_fast_draws = 0
++			_batch_programs = 1
++			return false
++		var valid_context: bool = drawn and epoch == Key.generation and context == _context()
++		if valid_context and Time.get_ticks_usec()-began <= Key.FAST_DRAW_US:
++			_fast_draws += 1
++			if _fast_draws >= 2: _batch_programs = Key.PROGRAMS_PER_DRAW
++		else:
++			_fast_draws = 0
++			_batch_programs = 1
++		var valid_keys: Dictionary = {}
++		for entry: Dictionary in submitted:
++			var node: Object = entry.node.get_ref()
++			var valid: bool = valid_context and is_instance_valid(node) and Key.geometry_key(node) == entry.key
++			valid_keys[entry.key] = bool(valid_keys.get(entry.key,true)) and valid
++			if not valid: pending.append(entry)
++		for key: String in valid_keys:
++			if not valid_keys[key]: continue
++			# Proxy draws certify this local pass only. The owning full-view
++			# settle sequence publishes cross-view receipts after real captures.
++			_local_warmed[str(epoch)+context+key] = true
++			# The final complete main view and both reflection draws still
++			# precede live reveal; other instances need no repeated program draw.
++			for index: int in range(pending.size()-1,-1,-1):
++				if pending[index].key == key: pending.remove_at(index)
+ 	return current.is_valid() and current.call()
++
++func _exit_tree() -> void:
++	release()
+diff --git a/game/ui/garage_preloaded_studio.gd b/game/ui/garage_preloaded_studio.gd
+--- a/game/ui/garage_preloaded_studio.gd
++++ b/game/ui/garage_preloaded_studio.gd
+@@ -8,11 +8,13 @@
+ var warming: bool=false
+ var warm_draws: int=0
+ var max_draw_ms: float=0.0
+-var _pending: Array[Dictionary]=[]
++var _pending: Dictionary={}
+ var _held: Array[Dictionary]=[]
+ var _phase_draws: int=0
+ var _material_keys: Dictionary={}
+ var _warm_setup_ready: bool=false
++var _graphics: Node
++var _capture_ticket: Dictionary={}
+ 
+ func _ready() -> void:
+ 	cooperative_build=true
+@@ -21,14 +23,18 @@
+ 	mouse_filter=Control.MOUSE_FILTER_IGNORE
+ 	super.update_records(record_settings)
+ 	preload("res://ui/achievement_display.gd").update(self,achievement_service)
++	_graphics=preload("res://race/world_render_preparation.gd").new()
++	add_child(_graphics)
+ 	for node: GeometryInstance3D in camera.get_parent().find_children("*","GeometryInstance3D",true,false):
+ 		if not node.is_visible_in_tree(): continue
+ 		var priority: int=0 if node.name=="GarageConcrete" or (reflections!=null and node is MeshInstance3D and node.material_override==reflections.deck_material) else 1 if car.is_ancestor_of(node) else 2
+ 		var entry: Dictionary={"node":weakref(node),"margin":node.extra_cull_margin,"key":_geometry_key(node),"priority":priority,"order":_held.size()}
+ 		_held.append(entry)
+-		_pending.append(entry)
+-		node.hide()
+-	_pending.sort_custom(func(a: Dictionary,b: Dictionary) -> bool: return a.priority<b.priority if a.priority!=b.priority else a.order<b.order)
++	_held.sort_custom(func(a: Dictionary,b: Dictionary) -> bool: return a.priority<b.priority if a.priority!=b.priority else a.order<b.order)
++	# Preserve floor/car/room ordering while sharing the race queue and ledger.
++	_graphics._world=weakref(camera.get_parent())
++	for entry: Dictionary in _held: _graphics.hold_geometry(entry.node.get_ref())
++	_pending=_graphics.pending
+ 	_stop_draws()
+ 	_warm_setup_ready=true
+ 
+@@ -44,54 +50,34 @@
+ 
+ func warm() -> void:
+ 	if warming or prepared or not _warm_setup_ready or not _allowed(): return
++	var instance: WeakRef=weakref(self)
+ 	warming=true
+-	while not _pending.is_empty() and _allowed():
+-		var key: String=_pending[0].key
+-		var shown: int=0
+-		var group: Array[Dictionary]=[]
+-		for index: int in range(_pending.size()-1,-1,-1):
+-			if _pending[index].key!=key or shown>=8: continue
+-			var entry: Dictionary=_pending[index]
+-			var node: Object=entry.node.get_ref()
+-			if is_instance_valid(node):
+-				if node is MeshInstance3D:
+-					var distance: Vector3=(node.to_local(camera.global_position)-node.get_aabb().get_center()).abs()
+-					node.extra_cull_margin=maxf(node.extra_cull_margin,maxf(distance.x,maxf(distance.y,distance.z))+camera.near+1.0)
+-				node.show()
+-				group.append(entry)
+-			_pending.remove_at(index)
+-			shown+=1
+-		# Visit another program before uploading more objects that use the same
+-		# one. An early handoff then inherits broader real pipeline preparation.
+-		var repeated: Array[Dictionary]=[]
+-		for index: int in range(_pending.size()-1,-1,-1):
+-			if _pending[index].key==key:
+-				repeated.push_front(_pending[index])
+-				_pending.remove_at(index)
+-		_pending.append_array(repeated)
+-		await _warm_frame()
+-		for entry: Dictionary in group:
+-			var node: Object=entry.node.get_ref()
+-			if is_instance_valid(node): node.extra_cull_margin=entry.margin
++	if not _pending.is_empty() and _allowed(): await _graphics.prepare(_warm_frame,_allowed)
++	if not is_instance_valid(instance.get_ref()): return
++	if _pending.is_empty() and _capture_ticket.is_empty():
++		_capture_ticket=preload("res://rendering/graphics_preparation.gd").begin_capture(camera.get_parent(),showroom_viewport,camera)
+ 	while _pending.is_empty() and _allowed() and not prepared:
+ 		# Carousel pictures have their own studio. Finish only this live view,
+ 		# keeping its camera, awards and reflections intact throughout warming.
+ 		await _warm_frame()
++		if not is_instance_valid(instance.get_ref()): return
+ 		if adopted or not is_inside_tree() or is_queued_for_deletion(): break
+ 		_phase_draws+=1
+ 		if _phase_draws>=4: prepared=true
++	if prepared: preload("res://rendering/graphics_preparation.gd").finish_capture(_capture_ticket,camera.get_parent(),showroom_viewport,camera)
+ 	warming=false
+ 	if not adopted: _stop_draws()
+ 
+-func _warm_frame() -> void:
++func _warm_frame() -> bool:
+ 	# This helper is deliberately separate from CanvasItem's _draw callback.
+-	if not warming or not _warm_setup_ready or not _allowed(): return
++	if not warming or not _warm_setup_ready or not _allowed(): return false
+ 	var began: int=Time.get_ticks_usec()
+ 	_submit_render()
+ 	warm_draws+=1
+ 	if DisplayServer.get_name()!="headless": await RenderingServer.frame_post_draw
+ 	max_draw_ms=maxf(max_draw_ms,(Time.get_ticks_usec()-began)/1000.0)
+ 	if is_inside_tree() and not is_queued_for_deletion(): await get_tree().process_frame
++	return is_inside_tree() and not is_queued_for_deletion()
+ 
+ func adopt() -> void:
+ 	adopted=true
+@@ -102,6 +88,7 @@
+ 	invalidate_render()
+ 
+ func release_geometry() -> void:
++	if is_instance_valid(_graphics): _graphics.release()
+ 	for entry: Dictionary in _held:
+ 		var node: Object=entry.node.get_ref()
+ 		if is_instance_valid(node):
+@@ -110,38 +97,10 @@
+ 	_held.clear()
+ 	_pending.clear()
+ 	_material_keys.clear()
++	_capture_ticket.clear()
+ 
+ func _geometry_key(node: GeometryInstance3D) -> String:
+-	var mesh: Mesh=node.mesh if node is MeshInstance3D else node.multimesh.mesh if node is MultiMeshInstance3D and node.multimesh!=null else null
+-	var key: Array=[node.get_class(),node.cast_shadow]
+-	if mesh!=null:
+-		for surface: int in range(mesh.get_surface_count()):
+-			var material: Material=node.get_active_material(surface) if node is MeshInstance3D else node.material_override if node.material_override!=null else mesh.surface_get_material(surface)
+-			key.append(_material_key(material))
+-			key.append(mesh.surface_get_format(surface) if mesh is ArrayMesh else mesh.get_class())
+-	return str(key)
+-
+-func _material_key(material: Material) -> String:
+-	if material==null: return "none"
+-	var id: int=material.get_instance_id()
+-	if _material_keys.has(id): return _material_keys[id]
+-	var key: Array=[material.get_class()]
+-	if material is ShaderMaterial:
+-		key.append(material.shader.get_instance_id() if material.shader!=null else 0)
+-	elif material is BaseMaterial3D:
+-		# Shader features are modes, flags and texture presence. Colours and
+-		# scalar surface uniforms do not require another compiled program.
+-		for property: Dictionary in material.get_property_list():
+-			if not int(property.usage)&PROPERTY_USAGE_STORAGE: continue
+-			if property.name in ["resource_local_to_scene","resource_name","resource_path","next_pass"]: continue
+-			var value: Variant=material.get(property.name)
+-			if value is bool or value is int: key.append([property.name,value])
+-			elif property.hint==PROPERTY_HINT_RESOURCE_TYPE and "Texture" in str(property.hint_string): key.append([property.name,value!=null])
+-	else: key.append(id)
+-	key.append(_material_key(material.next_pass) if material.next_pass!=null else "none")
+-	var result: String=str(key)
+-	_material_keys[id]=result
+-	return result
++	return preload("res://rendering/graphics_preparation.gd").geometry_key(node,_material_keys)
+ 
+ func _stop_draws() -> void:
+ 	_settle_draws=0
+diff --git a/game/ui/garage_opening_showroom.gd b/game/ui/garage_opening_showroom.gd
+--- a/game/ui/garage_opening_showroom.gd
++++ b/game/ui/garage_opening_showroom.gd
+@@ -115,6 +115,8 @@
+ 		first.queue_free()
+ 		_first=null
+ 		if not _record_choice.is_empty(): super.update_records(_record_choice)
++		var graphics: Script=preload("res://rendering/graphics_preparation.gd")
++		var capture: Dictionary=graphics.begin_capture(camera.get_parent(),showroom_viewport,camera)
+ 		# The original main image, both planar reflections and their resized
+ 		# targets must settle under the picture before the first live reveal.
+ 		for _settle: int in range(4):
+@@ -127,7 +129,9 @@
+ 			if DisplayServer.get_name()!="headless": await RenderingServer.frame_post_draw
+ 			await get_tree().process_frame
+ 		if not _current_studio(): return
+-		if _pending.is_empty(): break
++		if _pending.is_empty():
++			graphics.finish_capture(capture,camera.get_parent(),showroom_viewport,camera)
++			break
+ 	_warm_view.queue_free()
+ 	_warm_view=null
+ 	_restore_lights()
+diff --git a/game/ui/header_car_appearance_cache.gd b/game/ui/header_car_appearance_cache.gd
+--- a/game/ui/header_car_appearance_cache.gd
++++ b/game/ui/header_car_appearance_cache.gd
+@@ -3,6 +3,7 @@
+ signal changed(vehicle: String)
+ const Icons = preload("res://ui/header_car_icons.gd")
+ const Work = preload("res://editor/work_job.gd")
++const Graphics = preload("res://rendering/graphics_preparation.gd")
+ const SIZE := Vector2i(176,112)
+ const FILE_LIMIT: int = 14
+ var records: LocalRecords
+@@ -22,6 +23,7 @@
+ var _io_kind: String = ""
+ var _draws: int = 0
+ var _stage: String = ""
++var _graphics_ticket: Dictionary = {}
+ var _debounce: Timer
+ var preparing_selected: bool = false
+ 
+@@ -125,6 +127,7 @@
+ 	if canvas != null and not _valid(_current): _release()
+ 	if _stage == "build" and studio.presentation_ready:
+ 		load("res://ui/profile_car.gd").apply_presentation(studio)
++		_graphics_ticket = Graphics.begin_capture(studio.car.get_parent(),studio.viewport,studio.viewport.get_camera_3d())
+ 		_stage = "draw"
+ 		_draws = 5
+ 		RenderingServer.frame_post_draw.connect(_after_draw)
+@@ -170,6 +173,7 @@
+ 	_draws -= 1
+ 	if _draws > 0: return
+ 	if _valid(_current):
++		Graphics.finish_capture(_graphics_ticket,studio.car.get_parent(),studio.viewport,studio.viewport.get_camera_3d())
+ 		var pixels: Image = canvas.get_texture().get_image()
+ 		captures += 1
+ 		_io_job = _current
+@@ -186,6 +190,7 @@
+ 	studio = null
+ 	_current = {}
+ 	_stage = ""
++	_graphics_ticket = {}
+ 
+ func _exit_tree() -> void:
+ 	preparing_selected = false
+diff --git a/game/ui/garage_preview_cache.gd b/game/ui/garage_preview_cache.gd
+--- a/game/ui/garage_preview_cache.gd
++++ b/game/ui/garage_preview_cache.gd
+@@ -2,6 +2,7 @@
+ ## One native capture and one owned IO worker. Workers never access a view/node.
+ const Build = preload("res://core/build_identity.gd")
+ const Work = preload("res://editor/work_job.gd")
++const Graphics = preload("res://rendering/graphics_preparation.gd")
+ const VERSION: String = "garage-thumbnail-studio-v5"
+ const MAX_FILES: int = 14
+ static var factory_pictures: Dictionary={}
+@@ -27,6 +28,7 @@
+ var _last_input: int=0
+ var _touches: Dictionary={}
+ var idle_ms: int=750
++var _graphics_ticket: Dictionary={}
+ 
+ func _ready() -> void:
+ 	_last_input=Time.get_ticks_msec()
+@@ -255,6 +257,7 @@
+ 			if renderer.reflections!=null:
+ 				for view: SubViewport in renderer.reflections.views: view.render_target_update_mode=SubViewport.UPDATE_DISABLED
+ 			return
++		if _graphics_ticket.is_empty(): _graphics_ticket=Graphics.begin_capture(renderer.camera.get_parent(),renderer.showroom_viewport,renderer.camera)
+ 		frames -= 1
+ 		if frames >= 0:
+ 			renderer._submit_render()
+@@ -307,6 +310,7 @@
+ 	if not _render_allowed(): return
+ 	if _current(active) and not _current(active,true): queued.push_front(active)
+ 	if _current(active,true):
++		Graphics.finish_capture(_graphics_ticket,renderer.camera.get_parent(),renderer.showroom_viewport,renderer.camera)
+ 		var started: int = Time.get_ticks_usec()
+ 		var image: Image = renderer.showroom_viewport.get_texture().get_image()
+ 		readback_us += Time.get_ticks_usec()-started
+@@ -329,6 +333,7 @@
+ 		remove_child(renderer)
+ 		renderer.queue_free()
+ 	renderer = null; active = {}
++	_graphics_ticket = {}
+ 
+ func _exit_tree() -> void:
+ 	_finish()
+diff --git a/game/tests/test_world_render_buckets.gd b/game/tests/test_world_render_buckets.gd
+--- a/game/tests/test_world_render_buckets.gd
++++ b/game/tests/test_world_render_buckets.gd
+@@ -22,6 +22,9 @@
+ 	stage.camera = Camera3D.new()
+ 	stage.add_child(stage.camera)
+ 	var preparation = PREPARATION.new()
++	# Keep the single-program retry/order contract, alongside the new bounded
++	# multi-program and cross-view native fixture.
++	preparation.programs_per_draw = 1
+ 	stage.add_child(preparation)
+ 	PREPARATION.warmed.clear()
+ 	var groups: Array = [[],[],[]]
+diff --git a/AGENTS.md b/AGENTS.md
+--- a/AGENTS.md
++++ b/AGENTS.md
+@@ -1,3 +1,8 @@
++<!-- SHARED-GRAPHICS-PREPARATION-20261104 -->
++## Race and Garage share conservative native graphics preparation (2026-11-04)
++GPC01-GPC04: Bounded process-local receipts match actual renderer/AA/light/material/source features; spot/omni require exact mesh/pose/bounds and normal full captures. Race/preloaded Garage share a queue; opening Garage keeps its proxy target. Adaptive one-to-four programs/eight objects starts conservatively; real header/thumbnail/full-Garage settles contribute without extra captures or reduced quality. Same-owner warm Pine34to10 draws/275.155to77.357ms, Winter35to10/279.630to84.422ms and Garage43to12/348.743to105.240ms have exact final pixels. Shared168/0 each desktop renderer, race/Garage31/0, header26/0, thumbnails18/0, actual-App61/0 and retained148/0; Compatibility123/0 and Mobile133/0 each include five zero-contact opening laps. Cold Garage still has a3.698s draw; no cold/startup/phone speedup claim. Initial failures, independent-header variance, baseline Desert pipeline and matched audio teardown warnings retained. [Implementation, commands, controls, limits and checked task-only patch](docs/SHARED_GRAPHICS_PREPARATION_2026_11_04.md). Reload/owner/device acceptance remain; no device query/test, APK, owner-save/process change, backend/live request, deployment or main-index write; concurrent startup/assets work preserved.
++<!-- /SHARED-GRAPHICS-PREPARATION-20261104 -->
++
+ <!-- STARTUP-SHELL-20261104 -->
+ ## Menu shell defers Race, Editor and Garage dependencies (2026-11-04)
+ MSH01-MSH05: App-owned on-demand controllers retain screens, callbacks, services and worker lifetimes; lazy header renderer/memory policy and light Garage coordinator keep initial Account free of optional 3D graphs. Matched frozen desktop stock first menu16.044?17.255s to6.215?9.336s; resource12.201?13.278s to2.441?3.344s; final shell5.151s/resource1.959s. Cached custom12.106to4.913s, uncached24.244to22.556s remains rendering-bound. Twelve accepted runs546/0,3179 copy keys exact; four views pixel-exact, Garage five pixels max1/255 with original-repeat three pixels max1/255. Legacy swipe75 matching control failures, incomplete headless Rivalry and boot teardown warning retained; native populated Rivalry10/0. [Architecture, timings, controls, limits and checked task-only patch](docs/STARTUP_SHELL_2026_11_04.md). Reload/owner/device acceptance remain; no device query/test, APK, owner-save/process change, live/backend request, deployment or main-index write; concurrent work preserved.
+diff --git a/DEVELOPMENT_STATUS.md b/DEVELOPMENT_STATUS.md
+--- a/DEVELOPMENT_STATUS.md
++++ b/DEVELOPMENT_STATUS.md
+@@ -1,3 +1,8 @@
++<!-- SHARED-GRAPHICS-PREPARATION-20261104 -->
++## Race and Garage share conservative native graphics preparation (2026-11-04)
++GPC01-GPC04: Bounded process-local receipts match actual renderer/AA/light/material/source features; spot/omni require exact mesh/pose/bounds and normal full captures. Race/preloaded Garage share a queue; opening Garage keeps its proxy target. Adaptive one-to-four programs/eight objects starts conservatively; real header/thumbnail/full-Garage settles contribute without extra captures or reduced quality. Same-owner warm Pine34to10 draws/275.155to77.357ms, Winter35to10/279.630to84.422ms and Garage43to12/348.743to105.240ms have exact final pixels. Shared168/0 each desktop renderer, race/Garage31/0, header26/0, thumbnails18/0, actual-App61/0 and retained148/0; Compatibility123/0 and Mobile133/0 each include five zero-contact opening laps. Cold Garage still has a3.698s draw; no cold/startup/phone speedup claim. Initial failures, independent-header variance, baseline Desert pipeline and matched audio teardown warnings retained. [Implementation, commands, controls, limits and checked task-only patch](docs/SHARED_GRAPHICS_PREPARATION_2026_11_04.md). Reload/owner/device acceptance remain; no device query/test, APK, owner-save/process change, backend/live request, deployment or main-index write; concurrent startup/assets work preserved.
++<!-- /SHARED-GRAPHICS-PREPARATION-20261104 -->
++
+ <!-- STARTUP-SHELL-20261104 -->
+ ## Menu shell defers Race, Editor and Garage dependencies (2026-11-04)
+ MSH01-MSH05: App-owned on-demand controllers retain screens, callbacks, services and worker lifetimes; lazy header renderer/memory policy and light Garage coordinator keep initial Account free of optional 3D graphs. Matched frozen desktop stock first menu16.044?17.255s to6.215?9.336s; resource12.201?13.278s to2.441?3.344s; final shell5.151s/resource1.959s. Cached custom12.106to4.913s, uncached24.244to22.556s remains rendering-bound. Twelve accepted runs546/0,3179 copy keys exact; four views pixel-exact, Garage five pixels max1/255 with original-repeat three pixels max1/255. Legacy swipe75 matching control failures, incomplete headless Rivalry and boot teardown warning retained; native populated Rivalry10/0. [Architecture, timings, controls, limits and checked task-only patch](docs/STARTUP_SHELL_2026_11_04.md). Reload/owner/device acceptance remain; no device query/test, APK, owner-save/process change, live/backend request, deployment or main-index write; concurrent work preserved.
+diff --git a/game/rendering/graphics_preparation.gd b/game/rendering/graphics_preparation.gd
+new file mode 100644
+--- /dev/null
++++ b/game/rendering/graphics_preparation.gd
+@@ -0,0 +1,192 @@
++extends RefCounted
++## Process-local receipts for real completed draws. No nodes, meshes, materials,
++## or GPU handles survive here; a receipt is valid only in its render context.
++const LIMIT: int = 512
++const PROGRAMS_PER_DRAW: int = 4
++const OBJECTS_PER_PROGRAM: int = 8
++const FAST_DRAW_US: int = 50000 # Includes cooperative frame yields.
++static var warmed: Dictionary = {}
++static var generation: int = 0
++static var hits: int = 0
++static var submissions: int = 0
++static var _watcher: WeakRef
++static var _feature_properties: Dictionary = {}
++static var _contexts: Dictionary = {}
++
++class Lifetime extends Node:
++	signal reset(reason: String)
++	func _notification(what: int) -> void:
++		if what == NOTIFICATION_APPLICATION_RESUMED: reset.emit("resume")
++		if what == NOTIFICATION_OS_MEMORY_WARNING: reset.emit("memory")
++	func _exit_tree() -> void: reset.emit("tree_exit")
++
++static func watch(tree: SceneTree) -> void:
++	if _watcher != null and is_instance_valid(_watcher.get_ref()): return
++	var lifetime := Lifetime.new()
++	lifetime.name = "GraphicsPreparationLifetime"
++	lifetime.reset.connect(invalidate)
++	_watcher = weakref(lifetime)
++	tree.root.add_child.call_deferred(lifetime)
++
++static func invalidate(_reason: String = "explicit") -> void:
++	generation += 1
++	warmed.clear()
++	_contexts.clear()
++
++static func ready(context: String, program: String) -> bool:
++	var key: String = context+":"+program
++	if not warmed.has(key): return false
++	# An LRU contains strings only and stays bounded even through repeated views.
++	warmed.erase(key)
++	warmed[key] = true
++	hits += 1
++	return true
++
++static func cacheable(node: GeometryInstance3D) -> bool:
++	# Actual particle process/draw coverage belongs to the dedicated effect
++	# preparer. An empty emitter draw cannot certify its shader program here.
++	if node is MeshInstance3D:
++		return node.skin == null and not node.get_node_or_null(node.skeleton) is Skeleton3D and (not node.mesh is ArrayMesh or node.mesh.get_blend_shape_count() == 0)
++	return node is MultiMeshInstance3D
++
++static func receipt_key(node: GeometryInstance3D, context_id: String, materials: Dictionary = {}) -> String:
++	var program: String = geometry_key(node,materials)
++	if not _contexts.get(context_id,{}).get("spatial",false): return program
++	# A spot/omni context can choose lights by bounds. Cross-view reuse then
++	# requires the same immutable mesh, pose and bounds, not merely its format.
++	var mesh: Mesh = node.mesh if node is MeshInstance3D else node.multimesh.mesh if node is MultiMeshInstance3D and node.multimesh != null else null
++	return var_to_bytes([program,mesh.get_instance_id() if mesh != null else 0,node.global_transform,node.get_aabb()]).hex_encode().sha256_text()
++
++static func spatial_context(context_id: String) -> bool:
++	return _contexts.get(context_id,{}).get("spatial",false)
++
++static func complete(context: String, program: String, epoch: int) -> void:
++	if epoch != generation or context.is_empty() or not _contexts.get(context,{}).get("reusable",false): return
++	var key: String = context+":"+program
++	if warmed.has(key): warmed.erase(key)
++	while warmed.size() >= LIMIT: warmed.erase(warmed.keys()[0])
++	warmed[key] = true
++	submissions += 1
++
++static func context(view: Viewport, world: Node, camera: Camera3D) -> String:
++	if view == null or world == null or camera == null: return ""
++	if world.is_inside_tree(): watch(world.get_tree())
++	var flags: Array = ["graphics-context-1",RenderingServer.get_current_rendering_method(),
++		view.msaa_3d,view.screen_space_aa,view.use_taa,view.transparent_bg,
++		view.use_occlusion_culling,camera.projection if camera != null else -1,
++		camera.cull_mask if camera != null else 0,_viewport_features(view)]
++	var environment: Environment = world.get_world_3d().environment if world is Node3D and world.is_inside_tree() else null
++	if camera.environment != null: environment = camera.environment
++	flags.append(_features(environment))
++	flags.append(_features(environment.sky) if environment != null and environment.sky != null else [])
++	flags.append(_features(camera.attributes))
++	var lighting_layers: int = camera.cull_mask
++	for geometry: GeometryInstance3D in world.find_children("*","GeometryInstance3D",true,false):
++		# A mesh seen on layer 1 may also receive a light restricted to layer 4.
++		# Preserve its complete membership, even while preparation hides it.
++		if geometry.layers & camera.cull_mask: lighting_layers |= geometry.layers
++	var lights: Array[String] = []
++	var spatial: bool = false
++	for light: Light3D in world.find_children("*","Light3D",true,false):
++		if not light.is_visible_in_tree(): continue
++		if not (light.light_cull_mask & lighting_layers): continue
++		spatial = spatial or not light is DirectionalLight3D
++		lights.append(var_to_bytes([_features(light),light.global_transform,light.light_cull_mask & lighting_layers]).hex_encode())
++	lights.sort()
++	flags.append(lights)
++	if spatial: flags.append([camera.global_transform,camera.fov,camera.size,camera.near,camera.far,camera.keep_aspect,view.get_visible_rect().size])
++	# These features affect pipeline compilation even if their nodes are hidden.
++	var reusable: bool = true
++	for kind: String in ["ReflectionProbe","LightmapGI","VoxelGI"]:
++		var count: int = world.find_children("*",kind,true,false).size()
++		flags.append([kind,count])
++		reusable = reusable and count == 0
++	var result: String = var_to_bytes(flags).hex_encode().sha256_text()
++	if not _contexts.has(result) and _contexts.size() >= LIMIT: invalidate("context bound")
++	_contexts[result] = {"spatial":spatial,"reusable":reusable}
++	return result
++
++static func _viewport_features(view: Viewport) -> Array:
++	var result: Array = [view.get_class()]
++	# Scheduling/clear modes change as a one-shot target is submitted. They
++	# are not pipeline state and must not invalidate that very capture.
++	for name: String in ["scaling_3d_mode","debug_draw","disable_3d","use_xr","use_debanding","use_hdr_2d","positional_shadow_atlas_size","positional_shadow_atlas_16_bits"]:
++		if name in view: result.append([name,view.get(name)])
++	return result
++
++static func _features(resource: Object) -> Array:
++	if resource == null: return []
++	# ShaderMaterial's dynamic property list asks the backend for its uniforms.
++	# That can create a lazy shader before the scheduled native draw. Its
++	# program is fully described by the shader source/identity and next pass.
++	if resource is ShaderMaterial: return [resource.get_class(),resource.render_priority]
++	var result: Array = [resource.get_class()]
++	var kind: String = resource.get_class()
++	if not _feature_properties.has(kind):
++		var properties: Array = []
++		for property: Dictionary in resource.get_property_list():
++			if not int(property.usage)&PROPERTY_USAGE_STORAGE: continue
++			var name: String = property.name
++			if name.begins_with("resource_") or name.begins_with("shader_parameter/") or name in ["next_pass","owner","script"]: continue
++			if resource is Light3D and name in ["layers","light_cull_mask"]: continue
++			properties.append([name,property.hint == PROPERTY_HINT_RESOURCE_TYPE and "Texture" in str(property.hint_string)])
++		_feature_properties[kind] = properties
++	for property: Array in _feature_properties[kind]:
++		var name: String = property[0]
++		var value: Variant = resource.get(name)
++		if value is bool or value is int: result.append([name,value])
++		elif resource is Light3D and (value is float or value is Color or value is Vector3 or value is Transform3D): result.append([name,value])
++		elif property[1]: result.append([name,value != null])
++	return result
++
++static func geometry_key(node: GeometryInstance3D, materials: Dictionary = {}) -> String:
++	var mesh: Mesh = node.mesh if node is MeshInstance3D else node.multimesh.mesh if node is MultiMeshInstance3D and node.multimesh != null else null
++	var parts: Array = ["graphics-program-1",node.get_class(),node.cast_shadow,node.layers,node.gi_mode,
++		node.visibility_range_fade_mode,_material_key(node.material_overlay,materials)]
++	if node is MeshInstance3D: parts.append([node.skin != null,node.get_node_or_null(node.skeleton) is Skeleton3D,node.mesh.get_blend_shape_count() if node.mesh is ArrayMesh else 0])
++	if node is MultiMeshInstance3D and node.multimesh != null:
++		parts.append([node.multimesh.transform_format,node.multimesh.use_colors,node.multimesh.use_custom_data])
++	if mesh != null:
++		for surface: int in range(mesh.get_surface_count()):
++			var material: Material = node.get_active_material(surface) if node is MeshInstance3D else node.material_override if node.material_override != null else mesh.surface_get_material(surface)
++			parts.append(_material_key(material,materials))
++			parts.append([mesh.surface_get_format(surface),mesh.surface_get_primitive_type(surface)] if mesh is ArrayMesh else _features(mesh))
++	return str(parts).sha256_text()
++
++static func _material_key(material: Material, cache: Dictionary = {}) -> String:
++	if material == null: return "none"
++	var id: int = material.get_instance_id()
++	if cache.has(id): return cache[id]
++	# Break malformed next-pass cycles without a recursive shader/RID query.
++	cache[id] = "cycle-"+str(id)
++	var features: Array = _features(material)
++	if material is ShaderMaterial:
++		if material.shader != null:
++			var shader_key: String = "shader-"+str(material.shader.get_instance_id())
++			if not cache.has(shader_key): cache[shader_key] = material.shader.code.sha256_text()
++			features.append([material.shader.get_instance_id(),cache[shader_key]])
++		else: features.append([])
++	elif not material is BaseMaterial3D: features.append(id)
++	features.append(_material_key(material.next_pass,cache))
++	var result: String = str(features).sha256_text()
++	cache[id] = result
++	return result
++
++static func begin_capture(world: Node3D, view: Viewport, camera: Camera3D) -> Dictionary:
++	var samples: Array[Dictionary] = []
++	var materials: Dictionary = {}
++	var context_id: String = context(view,world,camera)
++	# Header/thumbnail callers retain their complete native settle sequence.
++	# Publish only mesh sources whose bounds reach the actual capture camera.
++	for node: MeshInstance3D in world.find_children("*","MeshInstance3D",true,false):
++		if node.mesh == null or not cacheable(node) or not node.is_visible_in_tree() or not (node.layers & camera.cull_mask): continue
++		if view.use_occlusion_culling or not camera.is_position_in_frustum(node.to_global(node.get_aabb().get_center())): continue
++		samples.append({"node":weakref(node),"key":receipt_key(node,context_id,materials)})
++	return {"context":context_id,"epoch":generation,"samples":samples}
++
++static func finish_capture(ticket: Dictionary, world: Node3D, view: Viewport, camera: Camera3D) -> void:
++	if ticket.is_empty() or ticket.epoch != generation or ticket.context != context(view,world,camera): return
++	for sample: Dictionary in ticket.samples:
++		var node: Object = sample.node.get_ref()
++		if is_instance_valid(node) and node.is_visible_in_tree() and receipt_key(node,ticket.context) == sample.key:
++			complete(ticket.context,sample.key,ticket.epoch)
+diff --git a/docs/SHARED_GRAPHICS_PREPARATION_2026_11_04.md b/docs/SHARED_GRAPHICS_PREPARATION_2026_11_04.md
+new file mode 100644
+--- /dev/null
++++ b/docs/SHARED_GRAPHICS_PREPARATION_2026_11_04.md
+@@ -0,0 +1,89 @@
++# Shared graphics preparation — 2026-11-04
++
++Implemented the requested controlled prototype across race scenery, live/preloaded Garage, custom headers and thumbnail captures. Compatible completed draws now contribute to one bounded process-local registry. Race and Garage staging use adaptive batches instead of always scheduling one material program per interval. The production rendering, geometry, cameras, picture sizes, antialiasing, reflections and final settle sequences remain in place.
++
++This reduces redundant **warm preparation intervals**. It does not establish a reduction in the earlier Pine 24.1-second first-use world-rendering measurement, startup time, phone loading time or worst-case driver compilation stall. Compatibility still draws the actual programs; no precompilation switch replaces that work. See the [Godot pipeline compilation documentation](https://docs.godotengine.org/en/4.7/tutorials/performance/pipeline_compilations.html).
++
++## Implementation and validity
++
++**GPC01 — one conservative registry.** `game/rendering/graphics_preparation.gd` stores at most 512 string receipts and bounded context descriptions. It retains no scene, mesh, material, texture or GPU handle. Native property *names* are cached; current values are reread. ShaderMaterial keys inspect shader identity/source rather than asking for the dynamic uniform property list, which can itself trigger lazy shader creation. Resume, memory warning and tree exit invalidate the registry; an epoch rejects obsolete work completing after invalidation.
++
++Receipts distinguish renderer, viewport pipeline settings including AA, environment/sky features, camera projection/layers, lighting, geometry format, material modes/flags/texture presence, custom shader source, overlays, next passes and relevant mesh features. Changing a source after a yield prevents publication. Lighting includes complete layer membership of visible-source geometry: a mesh visible on layer 1 that also occupies layer 4 can receive a layer-4 light. Temporary Garage warm-light clones on unrelated layer 8 do not falsely change the real view's light layout.
++
++Directional contexts can reuse program preparation across different owners when those features match. A spot/omni context additionally requires the same mesh instance, pose, bounds, camera pose/projection extent and complete light influence settings. Forced culling margins can change local-light selection, so staging does **not** publish spatial receipts. Normal completed full-view captures publish those instead. Contexts containing ReflectionProbe, LightmapGI or VoxelGI fail closed for sharing. Skinned/blend-shape meshes and particle emitters do not gain generic reusable receipts; existing dedicated particle preparation remains responsible for real emissions.
++
++**GPC02 — bounded adaptive native staging.** `world_render_preparation.gd` is shared by Game and the preloaded Garage. The opening Garage keeps its existing proxy target and uses the same feature keys and batching policy. Both start with **one program**, permit up to **four** after two successful draws taking at most 50 ms each, and return to one after a slow/failed draw or context change. Each program submits at most eight representative objects. The duration includes cooperative frame yields; this is a scheduling heuristic, not a GPU-time guarantee. Slow native compilation remains unbounded by this threshold. Original visibility, culling margins, retries, floor/car/room priority and navigation cancellation are preserved.
++
++**GPC03 — real views contribute without extra captures.** Header, thumbnail and live/preloaded Garage take a weak source snapshot before their existing full settle/capture sequence and publish only unchanged, camera-visible eligible sources afterward. Header retains five draws. Garage retains four final full main/reflection settles. Thumbnail retains its 2048×512/4×AA main view and 768×192/2×AA shared-world planar reflection. No extra 3D world or cloned car was introduced. Opening-Garage proxy submissions certify only that local preparation pass; they cannot certify another view's pipeline.
++
++**GPC04 — ownership and appearance.** In-flight sources are weak references. Owner release restores held geometry/margins and disposes proxy copies. A bounded process cache is not a new retained-scene pool. Production header/thumbnail metadata calls do not alter image pixels or capture counts. The renderer, authored appearance gates and all final reflections remain intact.
++
++## Controlled performance observations
++
++Godot 4.7.2, desktop NVIDIA RTX 3090, Compatibility. Each pair replays the archived task-start queue and new queue on the **same already-built native scene**, with settled GPU programs, and compares the final image byte for byte. These are individual preparation-stage observations, not aggregate startup/entry improvements or cold-driver benchmarks.
++
++| Same-owner replay | Before draws | Shared draws | Before stage | Shared stage | Final pixels |
++| --- | ---: | ---: | ---: | ---: | --- |
++| Pine | 34 | 10 | 275.155 ms | 77.357 ms | Exact |
++| Winter | 35 | 10 | 279.630 ms | 84.422 ms | Exact |
++| Full live Garage, both reflections | 43 | 12 | 348.743 ms | 105.240 ms | Exact |
++
++Pine/Winter receipts are `same-owner-race-final.json`; Garage is `final-garage.json`. Reduced scheduled draws are directly observed. The timings are warm samples; no statistical or cold improvement is inferred. The final cold Garage scheduling fixture still records a **3697.945 ms** maximum draw and 39 warm calls. Earlier wider initial batching recorded 6035 ms in that fixture. These unmatched observations motivated the conservative adaptive start; they do not prove a maximum-frame improvement.
++
++Cross-owner reuse, AA/light/source isolation, exact local-light restrictions and completed-capture publication are exercised separately by the native shared component fixture. The real header/thumbnail integration checks verify their contributions. Different render contexts intentionally miss rather than reuse questionable work; the cache does not assert all four view types can share every program.
++
++## Native verification and receipts
++
++All commands use `docs/evidence/graphics-preparation-2026-11-04/run_check.py`, which pins the engine, records the exact command/process/source hashes, uses a private APPDATA under `build/graphics-preparation-20261104`, disables the backend URL and selects Dummy audio. `run_final_checks.py` runs the final Compatibility matrix serially. Its individual receipt/log/JSON files are authoritative; `summary.json` includes **all attempts**, including failures and earlier source revisions.
++
++Selected final checks:
++
++| Fixture / receipt label | Scope | Assertions |
++| --- | --- | ---: |
++| `final-components-compat`, `final-components-mobile` | Native shared keys, real draws, cross-owner reuse, mutation, AA/light/epoch isolation, bounded registry, cancellation and exact pixels | 168/0 each |
++| `final-buckets` | Retained original single-program retry/order contract, headless | 41/0 |
++| `final-editor` | Retained editor graphics preparation | 91/0 |
++| `final-warm` | Retained permission/input/scheduling/adoption gates | 16/0 |
++| `same-owner-race-final` | Real App Pine/Winter before/shared on same Game, full root pixels, canonical tick 0 | 20/0 |
++| `final-garage` | Full native Garage before/shared on same owner, both reflections and exact pixels | 11/0 |
++| `final-header` | Five custom headers, native pixels around receipt publication and existing appearance gate | 26/0 |
++| `final-thumbnails` | Five full custom pictures, actual planar reflection, dimensions/AA, exact publication pixels, resource release | 18/0 |
++| `final-entry` | Actual App Garage entry, three sizes, hidden/input/resource/owner fences | 61/0 |
++| `final-compat-laps` | Full retained first-emission/first-lap/loading interruption integration | 123/0 |
++| `final-mobile` | Full retained integration on desktop Mobile | 133/0 |
++| `world-lifecycle-verbose`, `world-lifecycle-control` | Navigation, car/selection/scope changes and teardown after first native stage; new versus archived world queue | 10/0 each |
++| `before-desert-mobile` | Archived world queue, first Desert lap and emission | 13/0 |
++
++The Mobile integration completes five biome opening laps with zero contacts. First-emission draw pipeline deltas are zero. Desert creates one later draw pipeline; the archived queue reproduces the same one, so this is not claimed solved. The integration wrapper only disables unrelated optional Garage preloading between rapid race entries; all retained race/emission/cancellation assertions remain. It changes no production preloading policy. The last runtime adjustment after `final-mobile` moves the same 50 ms constant to the shared module and adds the analogous opening-Garage adaptive scheduling; final component checks cover both renderer parsing and the final shared code.
++
++The final Compatibility run completes all five opening laps with zero contacts and zero new draw pipelines during those laps. It also records a 778.960 ms Desert countdown hitch at tick 0/countdown 342. Reduced preparation intervals do not establish hitch-free countdowns or driving. Raw per-biome driving frames, pipeline deltas and contacts are retained in the integration JSON.
++
++The eleven selected final-source receipts total **743 assertions, zero failures**, all exit 0, no text-source changes during any selected run and exact matches to the seven final runtime hashes. They have no engine warnings or script/shader/resource errors; the certificate-store environment error remains. `summary.json:selected_final` checks these conditions explicitly. The earlier Mobile full integration and archived lifecycle/Desert controls remain additional evidence with their source-revision and warning limits recorded separately.
++
++Native exactness is tested on the **same target and scene**. Independent header controls already differ by a few channel bytes even when both use the archived implementation. Therefore the header fixture records independent-picture metrics, asserts byte equality across receipt publication on the same target and retains the existing authored `<0.02` normalized appearance limit. That appearance gate has not been relaxed. Independent ImageTexture readback equality is recorded rather than assumed.
++
++Screenshots accompany the component, race, Garage, header, thumbnail and actual-entry label directories. `compare_pngs.py` is a read-only RGBA PNG comparator. Archived task-start sources are in `before/game/...`. Reproduction examples:
++
++```powershell
++python docs/evidence/graphics-preparation-2026-11-04/run_final_checks.py
++python docs/evidence/graphics-preparation-2026-11-04/run_check.py final-components-mobile res://tests/test_shared_graphics_preparation.gd --renderer mobile
++python docs/evidence/graphics-preparation-2026-11-04/run_check.py same-owner-race-final res://tests/test_shared_graphics_race_pixels.gd --timeout 300
++python docs/evidence/graphics-preparation-2026-11-04/run_check.py final-mobile res://tests/test_shared_graphics_first_laps.gd --renderer mobile --timeout 600 --first-emission
++python docs/evidence/graphics-preparation-2026-11-04/run_check.py world-lifecycle-control res://tests/test_shared_graphics_lifecycle.gd --verbose --control
++python docs/evidence/graphics-preparation-2026-11-04/summarize.py
++python docs/evidence/graphics-preparation-2026-11-04/checkpoint.py
++```
++
++Use a fresh label for further runs to preserve these receipts. The task-only checkpoint contains only this task's runtime/tests/report/evidence helpers, archived comparison sources and marker blocks. It is checked forward/reverse with exact normalized content in an owned build directory and never writes the main index.
++
++## Failed experiments, environment and limits
++
++- Initial primitive-mesh blend-shape introspection used an ArrayMesh-only API; corrected type guarding. A fixture then ran past its error and required stopping only its recorded, task-owned process tree. No owner process was changed.
++- Initial component capture directory/counter issues and thumbnail one-shot scheduling included in the context were corrected. Scheduling/clear modes are excluded from the pipeline signature; real AA/pipeline settings remain included.
++- An initial overstrict independent-header byte-equality test fails against the archived-before repeated control too. Raw attempts and metrics remain. Same-target native proof and the unchanged appearance gate replace that invalid assumption.
++- An earlier interleaved profiler showed introspection overhead, leading to property-name caching and avoiding ShaderMaterial's dynamic uniform query. Its independent-picture assertions retain failures; it is not counted as a clean visual pass or used for the performance table.
++- An earlier non-isolated Mobile integration reaches 134/0 assertions but leaks graphics resources at shutdown, so it is not presented as a clean run. The final isolated Mobile integration exits cleanly apart from the environment certificate error. The final lifecycle new/control pair both retain exactly the same two MP3 audio instances and one soundtrack resource at verbose shutdown, with no additional graphics leak. Causality for the earlier leak is not established.
++- Windows engine logs report `Failed to read the root certificate store`; no backend request is enabled. Receipts retain these environment errors.
++- Concurrent startup-shell and prepared-asset work changed App modules, build identity and baked assets during some earlier runs. Exact before/after text-source hashes and changed-source lists are retained. Final same-owner comparisons isolate the changed queue on identical scene IDs; claims here do not attribute concurrent startup/bake improvements to this task. Binary assets were not frozen for the whole session.
++
++Reload/owner appearance acceptance and actual phone performance remain. No device query/test, APK/AAB, owner-save mutation, real authentication, live/backend request, deployment or main-index write was performed. This implementation targets repeated graphics preparation; genuinely cold compilation and the remaining startup/geometry/network costs require separate measurements.
+diff --git a/game/tests/graphics_control_scene.gd b/game/tests/graphics_control_scene.gd
+new file mode 100644
+--- /dev/null
++++ b/game/tests/graphics_control_scene.gd
+@@ -0,0 +1,15 @@
++extends RefCounted
++## Test-only packed Game with the task-start queue and otherwise current code.
++static func create() -> PackedScene:
++	var code: String = FileAccess.get_file_as_string("res://core/game.gd")
++	var needle: String = 'preload("res://race/world_render_preparation.gd").new()'
++	if code.count(needle) != 1: push_error("Missing exact world queue constructor"); return null
++	var script := GDScript.new()
++	script.source_code = code.replace(needle,'preload("res://../docs/evidence/graphics-preparation-2026-11-04/before/game/race/world_render_preparation.gd").new()')
++	if script.reload() != OK: return null
++	var original: Node = load("res://core/game.tscn").instantiate()
++	original.set_script(script)
++	var scene := PackedScene.new()
++	var error: Error = scene.pack(original)
++	original.free()
++	return scene if error == OK else null
+diff --git a/game/tests/profile_shared_graphics_preparation.gd b/game/tests/profile_shared_graphics_preparation.gd
+new file mode 100644
+--- /dev/null
++++ b/game/tests/profile_shared_graphics_preparation.gd
+@@ -0,0 +1,134 @@
++extends "res://tests/review_race_loading_2026_11_02.gd"
++## Same current App/Game/art, interleaved task-start and shared graphics queues.
++const Shared = preload("res://rendering/graphics_preparation.gd")
++const Before = preload("res://../docs/evidence/graphics-preparation-2026-11-04/before/game/race/world_render_preparation.gd")
++var _race_script: GDScript
++
++func instrumented_app() -> GDScript:
++	var code: String = FileAccess.get_file_as_string("res://core/features/race.gd").replace("\r\n","\n")
++	var begin: int = code.find("static func _start_race(app:")
++	var end: int = code.find("\nstatic func _race_installation_current(",begin)
++	if begin < 0 or end < begin: push_error("Missing current race module"); return null
++	var body: String = code.substr(begin,end-begin)
++	var hooks: Array = [
++		["\tif not await app._await_selected_preparation(track,","selected_wait_begin"],
++		["\tvar daily_rules: RefCounted","selected_wait_end"],
++		["\tvar prepared_roads: Dictionary = {}","roads_begin"],
++		["\tapp.returning_to_editor = from_editor","roads_end"],
++		["\tapp.add_child(app.game)","game_begin"],
++		["\tif is_instance_valid(prepared_game.world_render_preparation):","game_end"],
++		["\t\tif not await prepared_game.world_render_preparation.prepare(","graphics_begin"],
++		["\tapp.game.opponent_ghost =","graphics_end"],
++		["\tvar preparation_started: int = Time.get_ticks_usec()","effects_begin"],
++		["\tvar preparation_ms: float = (Time.get_ticks_usec() - preparation_started)","effects_end"],
++		["\tapp._close_race_loading(loading_id)\n\n","race_end"]]
++	for hook: Array in hooks:
++		if body.count(hook[0]) != 1: push_error("Current graphics probe anchor: "+hook[1]); return null
++		var indent: String = "\t\t" if hook[0].begins_with("\t\t") else "\t"
++		body = body.replace(hook[0],indent+"app._load_probe_mark(\""+hook[1]+"\")\n"+hook[0])
++	_race_script = GDScript.new()
++	_race_script.source_code = code.substr(0,begin)+body+code.substr(end)
++	if _race_script.reload() != OK: return null
++	var source: String = FileAccess.get_file_as_string(APP_PATH)
++	source += "\nvar _load_probe_marks: Array = []\nfunc _load_probe_mark(label: String) -> void:\n\t_load_probe_marks.append({\"name\":label,\"us\":Time.get_ticks_usec()})\n"
++	var script := GDScript.new()
++	script.source_code = source
++	return script if script.reload() == OK else null
++
++func control_scene() -> PackedScene:
++	var code: String = FileAccess.get_file_as_string("res://core/game.gd")
++	var needle: String = 'preload("res://race/world_render_preparation.gd").new()'
++	if code.count(needle) != 1: push_error("Missing exact graphics control constructor"); return null
++	code = code.replace(needle,'preload("res://../docs/evidence/graphics-preparation-2026-11-04/before/game/race/world_render_preparation.gd").new()')
++	var script := GDScript.new()
++	script.source_code = code
++	if script.reload() != OK: return null
++	var original: Node = load("res://core/game.tscn").instantiate()
++	original.set_script(script)
++	var scene := PackedScene.new()
++	var error: Error = scene.pack(original)
++	original.free()
++	return scene if error == OK else null
++
++func run() -> void:
++	create_timer(300,true,false,true).timeout.connect(func() -> void: printerr("GRAPHICS_PROFILE_TIMEOUT"); quit(1))
++	root.size = Vector2i(1280,720)
++	var folder: String = "user://shared-graphics-profile"
++	preload("res://track/road_mesh_disk_cache.gd").directory = folder.path_join("roads")
++	var script: GDScript = instrumented_app()
++	if script == null: quit(1); return
++	var old_scene: PackedScene = control_scene()
++	if old_scene == null: quit(1); return
++	var new_scene: PackedScene = load("res://core/game.tscn")
++	app = script.new()
++	app._feature_resources["res://core/features/race.gd"] = _race_script
++	app.records = LocalRecords.new(folder.path_join("records.json"))
++	app.records.settings.music_enabled = false
++	app.library = TrackLibrary.new(folder.path_join("tracks"))
++	app.cloud_root_override = folder.path_join("cloud")
++	app.race_profile_enabled = true
++	root.add_child(app)
++	while not app.startup_complete:
++		app._publishing_slots_foreground = true
++		await process_frame
++	# Isolate actual race preparation from unrelated optional Garage work.
++	app._garage_preloader.idle_ms = 100000000
++	app._garage_preloader.foreground = false
++	Engine.time_scale = 0.0
++	var theme: String = "pine"
++	for argument: String in OS.get_cmdline_user_args():
++		if argument.begins_with("--theme="): theme = argument.trim_prefix("--theme=")
++	var document: Dictionary = JSON.parse_string(FileAccess.get_file_as_string(TRACK_PATH))
++	document.theme = theme
++	var track: NativeTrack = TrackCompiler.compile(document)
++	track.metadata.cloud_version = "owned-shared-graphics-review"
++	process_frame.connect(observe)
++	var reference: PackedByteArray
++	for cycle: int in range(6):
++		var control: bool = cycle in [0,1,3,5]
++		app._feature_resources["res://core/game.tscn"] = old_scene if control else new_scene
++		Before.warmed.clear()
++		Shared.invalidate("controlled cold program ledger")
++		current_case = theme+"-"+str(cycle)
++		app._show_screen("tracks")
++		app.selected_track = track
++		app._load_probe_marks.clear()
++		frames.clear()
++		last_frame = Time.get_ticks_usec()
++		measuring = true
++		var began: int = Time.get_ticks_usec()
++		await app._start_race(track,false,true)
++		var elapsed: float = (Time.get_ticks_usec()-began)/1000.0
++		measuring = false
++		verify(is_instance_valid(app.game),"actual race installed "+str(cycle))
++		if not is_instance_valid(app.game): break
++		var game: Node = app.game
++		game.set_physics_process(false)
++		game.process_mode = Node.PROCESS_MODE_DISABLED
++		game.hitch_diagnostics.persist_enabled = false
++		verify(game.preparation_complete and game.sim.state.tick == 0 and game.countdown_ticks == 360 and game.track_session.target_laps == 5,"exact race start "+str(cycle))
++		var row: Dictionary = {"cycle":cycle,"control":control,"theme":theme,"wall_ms":elapsed,"max_frame_ms":frames.max() if not frames.is_empty() else 0.0,"marks":app._load_probe_marks.duplicate(true),"groups":game.world_render_preparation.frame_groups,"graphics_max_draw_us":game.world_render_preparation.draw_us_max,"effects_ms":game.bridge_preparation_ms,"world_cache_bytes":WORLDS.bytes_used()}
++		for _i: int in range(4): await process_frame
++		await RenderingServer.frame_post_draw
++		var picture: Image = root.get_texture().get_image()
++		if cycle == 1: reference = picture.get_data()
++		if cycle >= 2:
++			verify(reference == picture.get_data(),"exact warm native control/optimized pixels "+str(cycle))
++			row.image_exact = reference == picture.get_data()
++		verify(picture.save_png(OS.get_environment("BMT_GRAPHICS_EVIDENCE").path_join(str(cycle)+".png")) == OK,"native capture "+str(cycle))
++		samples.append(row)
++		print("SHARED_GRAPHICS_PROFILE ",JSON.stringify(row))
++		app._leave_race()
++		for _i: int in range(4): await process_frame
++	FileAccess.open(OS.get_environment("BMT_LOADING_OUTPUT"),FileAccess.WRITE).store_string(JSON.stringify({"checks":checks,"failures":failures,"samples":samples,"renderer":RenderingServer.get_current_rendering_method(),"cache_events":cache_events},"  "))
++	app.queue_free()
++	app = null
++	process_frame.disconnect(observe)
++	script = null
++	old_scene = null
++	new_scene = null
++	_race_script = null
++	track = null
++	Engine.time_scale = 1.0
++	for _i: int in range(16): await process_frame
++	quit(1 if failures else 0)
+diff --git a/game/tests/test_shared_graphics_before_lap.gd b/game/tests/test_shared_graphics_before_lap.gd
+new file mode 100644
+--- /dev/null
++++ b/game/tests/test_shared_graphics_before_lap.gd
+@@ -0,0 +1,49 @@
++extends "res://tests/test_race_loading_first_lap.gd"
++## Same current App, effects, car and physics with only the task-start world queue.
++func old_scene() -> PackedScene:
++	var code: String = FileAccess.get_file_as_string("res://core/game.gd")
++	var needle: String = 'preload("res://race/world_render_preparation.gd").new()'
++	if code.count(needle) != 1: push_error("Missing world control constructor"); return null
++	code = code.replace(needle,'preload("res://../docs/evidence/graphics-preparation-2026-11-04/before/game/race/world_render_preparation.gd").new()')
++	var script := GDScript.new()
++	script.source_code = code
++	if script.reload() != OK: return null
++	var node: Node = load("res://core/game.tscn").instantiate()
++	node.set_script(script)
++	var result := PackedScene.new()
++	var error: Error = result.pack(node)
++	node.free()
++	return result if error == OK else null
++func run() -> void:
++	create_timer(200).timeout.connect(func() -> void: printerr("BEFORE_LAP_TIMEOUT"); quit(1))
++	root.size = Vector2i(960,540)
++	app = load("res://core/app.tscn").instantiate()
++	var control: PackedScene = old_scene()
++	if control == null: quit(1); return
++	app._feature_resources["res://core/game.tscn"] = control
++	app.records = LocalRecords.new("user://graphics-before-lap/records.json")
++	app.records.settings.music_enabled = false
++	app.library = TrackLibrary.new("user://graphics-before-lap/tracks")
++	app.cloud_root_override = "user://graphics-before-lap/cloud"
++	preload("res://track/road_mesh_disk_cache.gd").directory = "user://graphics-before-lap/roads"
++	root.add_child(app)
++	while not app.startup_complete: await process_frame
++	if not "--only-interruptions" in OS.get_cmdline_user_args():
++		app._garage_preloader.idle_ms = 100000000
++		app._garage_preloader.foreground = false
++	process_frame.connect(observe)
++	var theme: String = "desert"
++	for argument: String in OS.get_cmdline_user_args():
++		if argument.begins_with("--theme="): theme = argument.trim_prefix("--theme=")
++	if "--only-interruptions" in OS.get_cmdline_user_args():
++		for action: String in ["navigation","car","selection","scope","pressure","teardown"]:
++			await race("compact","pine",action)
++	else: await race("compact",theme)
++	process_frame.disconnect(observe)
++	app.queue_free()
++	app = null
++	control = null
++	for _i: int in range(24): await process_frame
++	FileAccess.open(OS.get_environment("BMT_LOADING_OUTPUT"),FileAccess.WRITE).store_string(JSON.stringify({"checks":checks,"failures":failures,"cases":cases,"first_laps":lap_rows},"  "))
++	print("BEFORE_GRAPHICS_LAP ",checks," checks, ",failures," failures")
++	quit(1 if failures else 0)
+diff --git a/game/tests/test_shared_graphics_first_laps.gd b/game/tests/test_shared_graphics_first_laps.gd
+new file mode 100644
+--- /dev/null
++++ b/game/tests/test_shared_graphics_first_laps.gd
+@@ -0,0 +1,8 @@
++extends "res://tests/test_race_loading_first_lap.gd"
++## Retain every existing car/theme/emission/cancellation assertion; isolate
++## races from the unrelated optional Garage job between rapid test entries.
++func observe() -> void:
++	super.observe()
++	if is_instance_valid(app) and is_instance_valid(app._garage_preloader):
++		app._garage_preloader.idle_ms = 100000000
++		app._garage_preloader.foreground = false
+diff --git a/game/tests/test_shared_graphics_garage.gd b/game/tests/test_shared_graphics_garage.gd
+new file mode 100644
+--- /dev/null
++++ b/game/tests/test_shared_graphics_garage.gd
+@@ -0,0 +1,65 @@
++extends SceneTree
++## Replay old/shared staging on the very same full live Garage and reflections.
++const Queue = preload("res://race/world_render_preparation.gd")
++const Before = preload("res://../docs/evidence/graphics-preparation-2026-11-04/before/game/race/world_render_preparation.gd")
++const Shared = preload("res://rendering/graphics_preparation.gd")
++var checks: int = 0
++var failures: int = 0
++var studio: Node
++var rows: Array = []
++func _initialize() -> void: run.call_deferred()
++func check(ok: bool, label: String) -> void:
++	checks += 1
++	if not ok: failures += 1; printerr("GRAPHICS_GARAGE_FAIL ",label)
++func draw() -> bool:
++	studio._submit_render()
++	await RenderingServer.frame_post_draw
++	await process_frame
++	return true
++func run() -> void:
++	create_timer(180,true,false,true).timeout.connect(func() -> void: printerr("GRAPHICS_GARAGE_TIMEOUT"); quit(1))
++	root.size = Vector2i(1280,720)
++	Engine.time_scale = 0.0
++	studio = load("res://ui/garage_preloaded_studio.gd").new()
++	studio.vehicle_id = "compact"
++	studio.garage_mode = true
++	studio.framing_scale = 0.84
++	studio.size = Vector2(1168,360)
++	studio.livery = VehicleLivery.defaults("compact")
++	studio.livery.colors.body = "32b5d7"
++	studio.livery.pattern = "offset_gt"
++	studio.permitted = func() -> bool: return true
++	root.add_child(studio)
++	while not studio._warm_setup_ready: await process_frame
++	studio.warm()
++	while studio.warming: await process_frame
++	check(studio.prepared,"actual live Garage prepared")
++	check(studio.reflections.views.size() == 2,"both original planar views remain")
++	studio.adopt()
++	for _i: int in range(8): await draw()
++	var reference: Image = studio.showroom_viewport.get_texture().get_image()
++	check(reference.save_png(OS.get_environment("BMT_GRAPHICS_EVIDENCE").path_join("reference.png")) == OK,"full live reference")
++	for control: bool in [true,false]:
++		Before.warmed.clear()
++		Shared.invalidate()
++		var queue: Node = Before.new() if control else Queue.new()
++		studio.add_child(queue)
++		queue.hold(studio.camera.get_parent())
++		var began: int = Time.get_ticks_usec()
++		check(await queue.prepare(draw,func() -> bool: return true),"actual Garage replay completes "+str(control))
++		var elapsed: float = (Time.get_ticks_usec()-began)/1000.0
++		for _i: int in range(4): await draw()
++		var actual: Image = studio.showroom_viewport.get_texture().get_image()
++		check(actual.get_data() == reference.get_data(),"exact same-owner Garage pixels "+str(control))
++		check(actual.save_png(OS.get_environment("BMT_GRAPHICS_EVIDENCE").path_join("garage-"+str(control)+".png")) == OK,"native Garage replay evidence")
++		rows.append({"control":control,"ms":elapsed,"draws":queue.frame_groups,"exact":actual.get_data() == reference.get_data()})
++		queue.free()
++	check(studio.showroom_viewport.msaa_3d == Viewport.MSAA_4X,"full original live sampling retained")
++	check(studio.showroom_viewport.find_world_3d() == studio.reflections.views[0].find_world_3d(),"reflections still share the actual world")
++	FileAccess.open(OS.get_environment("BMT_LOADING_OUTPUT"),FileAccess.WRITE).store_string(JSON.stringify({"checks":checks,"failures":failures,"rows":rows,"renderer":RenderingServer.get_current_rendering_method()},"  "))
++	studio.queue_free()
++	studio = null
++	Engine.time_scale = 1.0
++	for _i: int in range(16): await process_frame
++	print("GRAPHICS_GARAGE ",checks," checks, ",failures," failures")
++	quit(1 if failures else 0)
+diff --git a/game/tests/test_shared_graphics_header.gd b/game/tests/test_shared_graphics_header.gd
+new file mode 100644
+--- /dev/null
++++ b/game/tests/test_shared_graphics_header.gd
+@@ -0,0 +1,146 @@
++extends SceneTree
++## Actual header capture versus its retained native reference and gated teardown.
++const Cache = preload("res://ui/header_car_appearance_cache.gd")
++const Icons = preload("res://ui/header_car_icons.gd")
++const Profile = preload("res://ui/profile_car.gd")
++const Shared = preload("res://rendering/graphics_preparation.gd")
++const Before = preload("res://../docs/evidence/graphics-preparation-2026-11-04/before/game/ui/header_car_appearance_cache.gd")
++var checks: int = 0
++var failures: int = 0
++
++class Captured extends "res://ui/header_car_appearance_cache.gd":
++	var same_frame_exact: bool = false
++	var texture_roundtrip_exact: bool = false
++	func _after_draw() -> void:
++		if canvas == null or _stage != "draw" or _draws != 1:
++			super._after_draw()
++			return
++		var image: Image = canvas.get_texture().get_image()
++		var key: String = _current.key
++		# Compare the actual operation added by this task in the same target.
++		# Publishing a mipmapped ImageTexture is an existing GPU round trip.
++		preload("res://rendering/graphics_preparation.gd").finish_capture(_graphics_ticket,studio.car.get_parent(),studio.viewport,studio.viewport.get_camera_3d())
++		same_frame_exact = image.get_data() == canvas.get_texture().get_image().get_data()
++		super._after_draw()
++		var texture: Texture2D = preload("res://ui/header_car_icons.gd").customized.get(key)
++		if texture != null:
++			var published: Image = texture.get_image()
++			published.clear_mipmaps()
++			texture_roundtrip_exact = image.get_data() == published.get_data()
++
++func appearance_difference(actual: Image, expected: Image) -> float:
++	# Retain the existing equipped-header reference invariant, including its
++	# straight/premultiplied alpha conversion. Separate native allocations are
++	# not bit deterministic: the archived unchanged-control comparison proves it.
++	var difference: float = 0.0
++	for y: int in range(0,Icons.SIZE.y,2):
++		for x: int in range(0,Icons.SIZE.x,2):
++			var a: Color = actual.get_pixel(x,y)
++			var b: Color = expected.get_pixel(x,y)
++			if b.a > 0 and b.a < 1: b = Color(minf(1,b.r/b.a),minf(1,b.g/b.a),minf(1,b.b/b.a),b.a)
++			difference += absf(a.r-b.r)+absf(a.g-b.g)+absf(a.b-b.b)+absf(a.a-b.a)
++	return difference/float(Icons.SIZE.x*Icons.SIZE.y)
++func _initialize() -> void: run.call_deferred()
++func check(ok: bool, label: String) -> void:
++	checks += 1
++	if not ok: failures += 1; printerr("GRAPHICS_HEADER_FAIL ",label)
++func frames(count: int = 5) -> void:
++	for _i: int in range(count): await process_frame
++func run() -> void:
++	create_timer(100,true,false,true).timeout.connect(func() -> void: printerr("GRAPHICS_HEADER_TIMEOUT"); quit(1))
++	root.size = Vector2i(640,360)
++	Engine.time_scale = 0.0
++	var rows: Array = []
++	for id: String in VehicleCatalog.IDS:
++		var selected: String = ""
++		for argument: String in OS.get_cmdline_user_args():
++			if argument.begins_with("--vehicle="): selected = argument.trim_prefix("--vehicle=")
++		if not selected.is_empty() and id != selected: continue
++		var records := LocalRecords.new("user://graphics-header/"+id+"/records.json")
++		var paint: Dictionary = VehicleLivery.defaults(id)
++		paint.colors.body = "32b5d7"
++		paint.pattern = "offset_gt"
++		records.settings = {"vehicle_liveries":{id:paint},"selected_car":id}
++		VehicleCatalog.selected = id
++		var baseline_records := LocalRecords.new("user://graphics-header-before/"+id+"/records.json")
++		baseline_records.settings = records.settings.duplicate(true)
++		var baseline: Node = Before.new()
++		baseline.allowed = func() -> bool: return true
++		root.add_child(baseline)
++		baseline.bind_records(baseline_records)
++		while not baseline.idle(): await process_frame
++		var baseline_image: Image = Icons.texture(id,baseline_records).get_image()
++		baseline_image.clear_mipmaps()
++		baseline_image.save_png(OS.get_environment("BMT_GRAPHICS_EVIDENCE").path_join(id+"-before.png"))
++		baseline.queue_free()
++		await frames(8)
++		var repeated_records := LocalRecords.new("user://graphics-header-repeat/"+id+"/records.json")
++		repeated_records.settings = records.settings.duplicate(true)
++		var repeated: Node = Before.new()
++		repeated.allowed = func() -> bool: return true
++		root.add_child(repeated)
++		repeated.bind_records(repeated_records)
++		while not repeated.idle(): await process_frame
++		var repeated_image: Image = Icons.texture(id,repeated_records).get_image()
++		repeated_image.clear_mipmaps()
++		repeated_image.save_png(OS.get_environment("BMT_GRAPHICS_EVIDENCE").path_join(id+"-control-repeat.png"))
++		print("HEADER_UNCHANGED_CONTROL_EXACT ",id," ",baseline_image.get_data() == repeated_image.get_data())
++		repeated.queue_free()
++		await frames(8)
++		var service: Node = Captured.new()
++		var permission: Dictionary = {"allowed":true}
++		service.allowed = func() -> bool: return permission.allowed
++		root.add_child(service)
++		Shared.invalidate()
++		service.bind_records(records)
++		var began: int = Time.get_ticks_usec()
++		while not service.idle(): await process_frame
++		var elapsed: float = (Time.get_ticks_usec()-began)/1000.0
++		check(service.captures == 1 and service.peak_worlds == 1 and service.canvas == null,"one owned exact capture "+id)
++		check(not Shared.warmed.is_empty(),"header contributes valid completed preparation "+id)
++		var actual: Image = Icons.texture(id,records).get_image()
++		actual.clear_mipmaps()
++		check(service.same_frame_exact,"shared bookkeeping preserves exact actual capture pixels "+id)
++		var canvas := SubViewport.new()
++		canvas.size = Icons.SIZE
++		canvas.disable_3d = true
++		canvas.transparent_bg = true
++		canvas.render_target_update_mode = SubViewport.UPDATE_ALWAYS
++		root.add_child(canvas)
++		var reference: Control = Profile.make_preview(id,paint,VehicleCustomisation.defaults())
++		reference.header_template = true
++		reference.cooperative_build = true
++		reference.cache_rest_pose = false
++		reference.size = Vector2(Icons.SIZE)
++		canvas.add_child(reference)
++		while not reference.presentation_ready: await process_frame
++		Profile.apply_presentation(reference)
++		for _i: int in range(7): await RenderingServer.frame_post_draw
++		var expected: Image = canvas.get_texture().get_image()
++		expected.save_png(OS.get_environment("BMT_GRAPHICS_EVIDENCE").path_join(id+"-reference.png"))
++		print("HEADER_PIXEL_META ",id," ",actual.get_size(),"/",baseline_image.get_size(),"/",expected.get_size()," bytes ",actual.get_data().size(),"/",baseline_image.get_data().size(),"/",expected.get_data().size())
++		var difference: float = appearance_difference(actual,expected)
++		check(difference < 0.02,"retained native equipped-header appearance invariant "+id)
++		check(actual.save_png(OS.get_environment("BMT_GRAPHICS_EVIDENCE").path_join(id+".png")) == OK,"native header evidence "+id)
++		rows.append({"vehicle":id,"ms":elapsed,"programs":Shared.warmed.size(),"same_frame_exact":service.same_frame_exact,"texture_roundtrip_exact":service.texture_roundtrip_exact,"appearance_difference":difference,"baseline_exact":actual.get_data() == baseline_image.get_data(),"unchanged_control_exact":baseline_image.get_data() == repeated_image.get_data()})
++		canvas.queue_free()
++		service.queue_free()
++		await frames(8)
++	var records := LocalRecords.new("user://graphics-header/cancel/records.json")
++	var paint: Dictionary = VehicleLivery.defaults("compact")
++	paint.colors.body = "ff4411"
++	records.settings = {"vehicle_liveries":{"compact":paint}}
++	var service: Node = Cache.new()
++	var permission: Dictionary = {"allowed":false}
++	service.allowed = func() -> bool: return permission.allowed
++	root.add_child(service)
++	Shared.invalidate()
++	service.bind_records(records)
++	await frames(8)
++	check(service.canvas == null and Shared.warmed.is_empty(),"gated header never starts a renderer or publishes preparation")
++	service.queue_free()
++	await frames(8)
++	FileAccess.open(OS.get_environment("BMT_LOADING_OUTPUT"),FileAccess.WRITE).store_string(JSON.stringify({"checks":checks,"failures":failures,"rows":rows,"renderer":RenderingServer.get_current_rendering_method()},"  "))
++	print("GRAPHICS_HEADER ",checks," checks, ",failures," failures")
++	Engine.time_scale = 1.0
++	quit(1 if failures else 0)
+diff --git a/game/tests/test_shared_graphics_lifecycle.gd b/game/tests/test_shared_graphics_lifecycle.gd
+new file mode 100644
+--- /dev/null
++++ b/game/tests/test_shared_graphics_lifecycle.gd
+@@ -0,0 +1,60 @@
++extends SceneTree
++## Interrupt the actual App's world queue, including after a real submission.
++const Shared = preload("res://rendering/graphics_preparation.gd")
++var app: Node
++var mode: String
++var interrupted: bool = false
++var checks: int = 0
++var failures: int = 0
++func _initialize() -> void: run.call_deferred()
++func check(ok: bool, label: String) -> void:
++	checks += 1
++	if not ok: failures += 1; printerr("GRAPHICS_LIFECYCLE_FAIL ",label)
++func observe() -> void:
++	if interrupted or not is_instance_valid(app) or not is_instance_valid(app.game): return
++	var queue: Node = app.game.world_render_preparation
++	if not is_instance_valid(queue) or queue.pending.is_empty() or queue.frame_groups < 1: return
++	interrupted = true
++	match mode:
++		"navigation": app._show_screen("settings")
++		"car": VehicleCatalog.selected = "kart"
++		"selection": app.selected_track = NativeTrack.new()
++		"scope": app.online.client.configure("http://127.0.0.1:1")
++		"teardown": app.queue_free()
++func run() -> void:
++	create_timer(180).timeout.connect(func() -> void: printerr("GRAPHICS_LIFECYCLE_TIMEOUT"); quit(1))
++	root.size = Vector2i(960,540)
++	app = load("res://core/app.tscn").instantiate()
++	if "--control" in OS.get_cmdline_user_args():
++		var scene: PackedScene = preload("res://tests/graphics_control_scene.gd").create()
++		if scene == null: quit(1); return
++		app._feature_resources["res://core/game.tscn"] = scene
++	app.records = LocalRecords.new("user://graphics-lifecycle/records.json")
++	app.records.settings.music_enabled = false
++	app.library = TrackLibrary.new("user://graphics-lifecycle/tracks")
++	app.cloud_root_override = "user://graphics-lifecycle/cloud"
++	root.add_child(app)
++	while not app.startup_complete:
++		app._publishing_slots_foreground = true
++		await process_frame
++	var track: NativeTrack = TrackCompiler.compile(TrackDocument.create_default())
++	track.metadata.cloud_version = "owned-graphics-lifecycle"
++	process_frame.connect(observe)
++	for action: String in ["navigation","car","selection","scope","teardown"]:
++		mode = action
++		interrupted = false
++		Shared.invalidate()
++		VehicleCatalog.selected = "compact"
++		app.online.client.configure("")
++		app._show_screen("tracks")
++		app.selected_track = track
++		app._start_race(track,false,true)
++		while is_instance_valid(app) and (not interrupted or is_instance_valid(app.game) or is_instance_valid(app.race_loading)): await process_frame
++		for _i: int in range(8): await process_frame
++		check(interrupted,"actual world submission interrupted "+action)
++		if action == "teardown": check(not is_instance_valid(app),"App and its native preparation release")
++		else: check(not is_instance_valid(app.game) and not is_instance_valid(app.race_loading) and not app.cloud_starting,"abandoned graphics cannot activate "+action)
++	process_frame.disconnect(observe)
++	FileAccess.open(OS.get_environment("BMT_LOADING_OUTPUT"),FileAccess.WRITE).store_string(JSON.stringify({"checks":checks,"failures":failures,"renderer":RenderingServer.get_current_rendering_method()},"  "))
++	print("GRAPHICS_LIFECYCLE ",checks," checks, ",failures," failures")
++	quit(1 if failures else 0)
+diff --git a/game/tests/test_shared_graphics_preparation.gd b/game/tests/test_shared_graphics_preparation.gd
+new file mode 100644
+--- /dev/null
++++ b/game/tests/test_shared_graphics_preparation.gd
+@@ -0,0 +1,158 @@
++extends SceneTree
++## Native before/after pixels, bounded work, context reuse and invalidation.
++const Shared = preload("res://rendering/graphics_preparation.gd")
++const Queue = preload("res://race/world_render_preparation.gd")
++const Before = preload("res://../docs/evidence/graphics-preparation-2026-11-04/before/game/race/world_render_preparation.gd")
++var checks: int = 0
++var failures: int = 0
++var rows: Array = []
++var view: SubViewport
++var stage: Stage
++var nodes: Array[MeshInstance3D] = []
++
++class Stage extends Node3D:
++	var camera: Camera3D
++	var showroom_viewport: SubViewport
++
++func _initialize() -> void: run.call_deferred()
++func check(ok: bool, label: String) -> void:
++	checks += 1
++	if not ok: failures += 1; printerr("SHARED_GRAPHICS_FAIL ",label)
++func draw() -> bool:
++	view.render_target_update_mode = SubViewport.UPDATE_ONCE
++	if DisplayServer.get_name() != "headless": await RenderingServer.frame_post_draw
++	await process_frame
++	return true
++func pixels() -> PackedByteArray:
++	return view.get_texture().get_image().get_data()
++func run() -> void:
++	create_timer(90).timeout.connect(func() -> void: printerr("SHARED_GRAPHICS_TIMEOUT"); quit(1))
++	root.size = Vector2i(640,360)
++	view = SubViewport.new()
++	view.size = Vector2i(512,256)
++	view.own_world_3d = true
++	view.msaa_3d = Viewport.MSAA_4X
++	root.add_child(view)
++	stage = Stage.new()
++	stage.showroom_viewport = view
++	view.add_child(stage)
++	stage.camera = Camera3D.new()
++	stage.add_child(stage.camera)
++	stage.camera.position = Vector3(0,8,9)
++	stage.camera.look_at(Vector3.ZERO)
++	stage.camera.projection = Camera3D.PROJECTION_ORTHOGONAL
++	stage.camera.size = 16
++	stage.camera.current = true
++	var materials: Array[ShaderMaterial] = []
++	for index: int in range(7):
++		var shader := Shader.new()
++		shader.code = "shader_type spatial; render_mode unshaded; uniform vec4 pigment : source_color; void fragment(){ALBEDO=pigment.rgb;} //"+str(index)
++		var material := ShaderMaterial.new()
++		material.shader = shader
++		material.set_shader_parameter("pigment",Color.from_hsv(float(index)/7.0,0.7,0.8))
++		materials.append(material)
++	for index: int in range(70):
++		var node := MeshInstance3D.new()
++		node.mesh = BoxMesh.new()
++		node.material_override = materials[index%7]
++		node.position = Vector3((index%10-4.5)*1.2,0,(index/10-3)*1.2)
++		node.extra_cull_margin = 0.01*index
++		stage.add_child(node)
++		nodes.append(node)
++	var reference: PackedByteArray
++	for control: bool in [true,false]:
++		Before.warmed.clear()
++		Shared.invalidate()
++		var queue: Node = Before.new() if control else Queue.new()
++		stage.add_child(queue)
++		queue.hold(stage)
++		var observed: Dictionary = {"draws":0,"first_objects":0}
++		var submit: Callable = func() -> bool:
++			observed.draws += 1
++			if observed.draws == 1: observed.first_objects = nodes.filter(func(node: MeshInstance3D) -> bool: return node.visible).size()
++			return await draw()
++		var began: int = Time.get_ticks_usec()
++		check(await queue.prepare(submit,func() -> bool: return true),"native queue completes "+str(control))
++		var elapsed: float = (Time.get_ticks_usec()-began)/1000.0
++		check(nodes.all(func(node: MeshInstance3D) -> bool: return node.visible),"complete visibility restored")
++		for index: int in range(nodes.size()): check(is_equal_approx(nodes[index].extra_cull_margin,0.01*index),"original culling margin "+str(index))
++		check(observed.draws == 7 if control else observed.draws >= ceili(7.0/Shared.PROGRAMS_PER_DRAW) and observed.draws <= 7,"seven real programs respect the adaptive bounded submission policy")
++		check(observed.first_objects == Shared.OBJECTS_PER_PROGRAM,"first submission conservatively exposes one program")
++		for _i: int in range(4): await draw()
++		if DisplayServer.get_name() != "headless":
++			var image: Image = view.get_texture().get_image()
++			if control: reference = image.get_data()
++			else: check(reference == image.get_data(),"final native pixels equal the task-start queue")
++			check(image.save_png(OS.get_environment("BMT_GRAPHICS_EVIDENCE").path_join("queue-"+str(control)+".png")) == OK,"native evidence capture")
++		rows.append({"control":control,"ms":elapsed,"draws":observed.draws,"first_objects":observed.first_objects})
++		queue.free()
++	# Two different owners share only successfully completed matching contexts.
++	var reused := Queue.new()
++	stage.add_child(reused)
++	reused.hold(stage)
++	check(reused.pending.is_empty(),"another owner reuses matching completed preparation")
++	var key: String = Shared.geometry_key(nodes[0])
++	var context: String = Shared.context(view,stage,stage.camera)
++	check(Shared.ready(context,key),"completed program has a shared receipt")
++	view.render_target_update_mode = SubViewport.UPDATE_DISABLED
++	check(Shared.context(view,stage,stage.camera) == context,"one-shot scheduling is not a different pipeline context")
++	view.render_target_update_mode = SubViewport.UPDATE_ONCE
++	view.msaa_3d = Viewport.MSAA_2X
++	check(not Shared.ready(Shared.context(view,stage,stage.camera),key),"AA changes never reuse the other render context")
++	view.msaa_3d = Viewport.MSAA_4X
++	var light := DirectionalLight3D.new()
++	stage.add_child(light)
++	check(not Shared.ready(Shared.context(view,stage,stage.camera),key),"lighting changes never reuse the former context")
++	light.free()
++	var spot := SpotLight3D.new()
++	stage.add_child(spot)
++	var local_context: String = Shared.context(view,stage,stage.camera)
++	var first_receipt: String = Shared.receipt_key(nodes[0],local_context)
++	var second_receipt: String = Shared.receipt_key(nodes[7],local_context)
++	check(Shared.spatial_context(local_context) and first_receipt != second_receipt,"local lights require exact mesh and pose receipts")
++	Shared.complete(local_context,first_receipt,Shared.generation)
++	check(Shared.ready(local_context,first_receipt) and not Shared.ready(local_context,second_receipt),"a local-light receipt cannot certify another mesh position")
++	spot.spot_range += 1.0
++	check(Shared.context(view,stage,stage.camera) != local_context,"local-light influence changes invalidate the context")
++	spot.free()
++	var overlay := ShaderMaterial.new()
++	overlay.shader = materials[1].shader
++	nodes[0].material_overlay = overlay
++	check(Shared.geometry_key(nodes[0]) != key,"overlay programs distinguish geometry keys")
++	nodes[0].material_overlay = null
++	var shader: Shader = materials[0].shader
++	var code: String = shader.code
++	shader.code += "\n// source changed"
++	check(Shared.geometry_key(nodes[0]) != key,"in-place shader edits invalidate the program")
++	shader.code = code
++	var epoch: int = Shared.generation
++	Shared.invalidate("context loss")
++	context = Shared.context(view,stage,stage.camera)
++	Shared.complete(context,key,epoch)
++	check(not Shared.ready(context,key),"an old in-flight draw cannot republish after invalidation")
++	for index: int in range(Shared.LIMIT+8): Shared.complete(context,str(index),Shared.generation)
++	check(Shared.warmed.size() == Shared.LIMIT,"shared registry is bounded")
++	Shared.invalidate()
++	reused.hold(stage)
++	var calls: Dictionary = {"count":0}
++	var cancel: Callable = func() -> bool:
++		calls.count += 1
++		return await draw()
++	check(not await reused.prepare(cancel,func() -> bool: return calls.count == 0),"cancellation after native submission stops publication")
++	check(Shared.warmed.is_empty(),"cancelled draws publish no shared receipts")
++	reused.free()
++	check(nodes.all(func(node: MeshInstance3D) -> bool: return node.visible),"cancelled owner releases all held geometry")
++	var ticket: Dictionary = Shared.begin_capture(stage,view,stage.camera)
++	await draw()
++	Shared.finish_capture(ticket,stage,view,stage.camera)
++	check(Shared.ready(Shared.context(view,stage,stage.camera),key),"completed capture seeds the same shared ledger")
++	var changed_ticket: Dictionary = Shared.begin_capture(stage,view,stage.camera)
++	Shared.invalidate()
++	Shared.finish_capture(changed_ticket,stage,view,stage.camera)
++	check(Shared.warmed.is_empty(),"obsolete capture cannot seed preparation")
++	var output: String = OS.get_environment("BMT_LOADING_OUTPUT")
++	FileAccess.open(output,FileAccess.WRITE).store_string(JSON.stringify({"checks":checks,"failures":failures,"rows":rows,"renderer":RenderingServer.get_current_rendering_method()},"  "))
++	view.queue_free()
++	for _i: int in range(6): await process_frame
++	print("SHARED_GRAPHICS ",checks," checks, ",failures," failures")
++	quit(1 if failures else 0)
+diff --git a/game/tests/test_shared_graphics_race_pixels.gd b/game/tests/test_shared_graphics_race_pixels.gd
+new file mode 100644
+--- /dev/null
++++ b/game/tests/test_shared_graphics_race_pixels.gd
+@@ -0,0 +1,72 @@
++extends SceneTree
++## Replay task-start/shared staging on the same actual race, at canonical tick zero.
++const Queue = preload("res://race/world_render_preparation.gd")
++const Before = preload("res://../docs/evidence/graphics-preparation-2026-11-04/before/game/race/world_render_preparation.gd")
++const Shared = preload("res://rendering/graphics_preparation.gd")
++var app: Node
++var checks: int = 0
++var failures: int = 0
++var rows: Array = []
++func _initialize() -> void: run.call_deferred()
++func check(ok: bool, label: String) -> void:
++	checks += 1
++	if not ok: failures += 1; printerr("GRAPHICS_RACE_PIXELS_FAIL ",label)
++func draw() -> bool:
++	await process_frame
++	await RenderingServer.frame_post_draw
++	return true
++func run() -> void:
++	create_timer(220,true,false,true).timeout.connect(func() -> void: printerr("GRAPHICS_RACE_PIXELS_TIMEOUT"); quit(1))
++	root.size = Vector2i(1280,720)
++	app = load("res://core/app.tscn").instantiate()
++	app.records = LocalRecords.new("user://graphics-race-pixels/records.json")
++	app.records.settings.music_enabled = false
++	app.library = TrackLibrary.new("user://graphics-race-pixels/tracks")
++	app.cloud_root_override = "user://graphics-race-pixels/cloud"
++	root.add_child(app)
++	while not app.startup_complete: await process_frame
++	app._garage_preloader.idle_ms = 100000000
++	app._garage_preloader.foreground = false
++	Engine.time_scale = 0.0
++	for theme: String in ["pine","winter"]:
++		var document: Dictionary = JSON.parse_string(FileAccess.get_file_as_string("res://tests/fixtures/star_spline_lap.json"))
++		document.theme = theme
++		var track: NativeTrack = TrackCompiler.compile(document)
++		track.metadata.cloud_version = "owned-graphics-pixel-check"
++		app._show_screen("tracks")
++		app.selected_track = track
++		await app._start_race(track,false,true)
++		check(is_instance_valid(app.game),"actual race installs "+theme)
++		if not is_instance_valid(app.game): quit(1); return
++		var game: Node = app.game
++		game.process_mode = Node.PROCESS_MODE_DISABLED
++		game.set_physics_process(false)
++		game.hitch_diagnostics.persist_enabled = false
++		for _i: int in range(6): await draw()
++		var reference: Image = root.get_texture().get_image()
++		check(reference.save_png(OS.get_environment("BMT_GRAPHICS_EVIDENCE").path_join(theme+"-reference.png")) == OK,"native actual race reference")
++		for control: bool in [true,false]:
++			Before.warmed.clear()
++			Shared.invalidate()
++			var queue: Node = Before.new() if control else Queue.new()
++			game.add_child(queue)
++			queue.hold(game.get_node("World"))
++			var began: int = Time.get_ticks_usec()
++			check(await queue.prepare(draw,func() -> bool: return true),"native race replay finishes "+theme+str(control))
++			var elapsed: float = (Time.get_ticks_usec()-began)/1000.0
++			for _i: int in range(4): await draw()
++			var image: Image = root.get_texture().get_image()
++			check(reference.get_data() == image.get_data(),"exact same-owner full race pixels "+theme+str(control))
++			check(image.save_png(OS.get_environment("BMT_GRAPHICS_EVIDENCE").path_join(theme+"-"+str(control)+".png")) == OK,"native race replay capture")
++			check(game.sim.state.tick == 0 and game.countdown_ticks == 360 and game.track_session.target_laps == 5,"canonical start and full countdown retained")
++			rows.append({"theme":theme,"control":control,"draws":queue.frame_groups,"ms":elapsed,"exact":reference.get_data() == image.get_data()})
++			queue.free()
++		app._leave_race()
++		for _i: int in range(4): await process_frame
++	app.queue_free()
++	app = null
++	Engine.time_scale = 1.0
++	for _i: int in range(16): await process_frame
++	FileAccess.open(OS.get_environment("BMT_LOADING_OUTPUT"),FileAccess.WRITE).store_string(JSON.stringify({"checks":checks,"failures":failures,"rows":rows,"renderer":RenderingServer.get_current_rendering_method()},"  "))
++	print("GRAPHICS_RACE_PIXELS ",checks," checks, ",failures," failures")
++	quit(1 if failures else 0)
+diff --git a/game/tests/test_shared_graphics_thumbnails.gd b/game/tests/test_shared_graphics_thumbnails.gd
+new file mode 100644
+--- /dev/null
++++ b/game/tests/test_shared_graphics_thumbnails.gd
+@@ -0,0 +1,53 @@
++extends SceneTree
++## Production five-car captures retain their native target, AA and reflection.
++const Shared = preload("res://rendering/graphics_preparation.gd")
++var checks: int = 0
++var failures: int = 0
++class Captured extends "res://ui/garage_preview_cache.gd":
++	var unchanged: Array[bool] = []
++	var actual_views: Array[Dictionary] = []
++	func _capture() -> void:
++		if not is_instance_valid(renderer) or not _render_allowed() or not _current(active,true):
++			super._capture()
++			return
++		var image: Image = renderer.showroom_viewport.get_texture().get_image()
++		preload("res://rendering/graphics_preparation.gd").finish_capture(_graphics_ticket,renderer.camera.get_parent(),renderer.showroom_viewport,renderer.camera)
++		unchanged.append(image.get_data() == renderer.showroom_viewport.get_texture().get_image().get_data())
++		actual_views.append({"size":renderer.showroom_viewport.size,"aa":renderer.showroom_viewport.msaa_3d,"reflections":renderer.reflections.views.size(),"world_shared":renderer.showroom_viewport.find_world_3d() == renderer.reflections.views[0].find_world_3d()})
++		super._capture()
++func _initialize() -> void: run.call_deferred()
++func check(ok: bool, label: String) -> void:
++	checks += 1
++	if not ok: failures += 1; printerr("GRAPHICS_THUMBNAILS_FAIL ",label)
++func run() -> void:
++	create_timer(160).timeout.connect(func() -> void: printerr("GRAPHICS_THUMBNAILS_TIMEOUT"); quit(1))
++	root.size = Vector2i(1280,720)
++	var records := LocalRecords.new("user://graphics-thumbnails/records.json")
++	var paints: Dictionary = {}
++	for id: String in VehicleCatalog.IDS:
++		var paint: Dictionary = VehicleLivery.defaults(id)
++		paint.colors.body = "32b5d7"
++		paint.pattern = "offset_gt"
++		paints[id] = paint
++	records.settings = {"vehicle_liveries":paints}
++	var service := Captured.new()
++	service.idle_ms = 0
++	root.add_child(service)
++	Shared.invalidate()
++	service.warm_records(records,false)
++	while not service.pictures_ready(): await process_frame
++	check(service.renders == 5 and service.unchanged.size() == 5,"one capture for each current car")
++	check(service.unchanged.all(func(ok: bool) -> bool: return ok),"shared bookkeeping preserves all actual native thumbnail pixels")
++	for view: Dictionary in service.actual_views:
++		check(view.size == Vector2i(2048,512) and view.aa == Viewport.MSAA_4X,"full original capture size and sampling")
++		check(view.reflections == 1 and view.world_shared,"actual car-only planar capture retained")
++	check(not Shared.warmed.is_empty(),"thumbnail captures contribute completed context-specific preparation")
++	for id: String in VehicleCatalog.IDS:
++		var texture: Texture2D = service.ready_pictures[id].texture
++		check(texture.get_image().save_png(OS.get_environment("BMT_GRAPHICS_EVIDENCE").path_join(id+".png")) == OK,"actual thumbnail evidence "+id)
++	while service.worker != null or not service.pending_writes.is_empty(): await process_frame
++	service.queue_free()
++	for _i: int in range(12): await process_frame
++	FileAccess.open(OS.get_environment("BMT_LOADING_OUTPUT"),FileAccess.WRITE).store_string(JSON.stringify({"checks":checks,"failures":failures,"renderer":RenderingServer.get_current_rendering_method()},"  "))
++	print("GRAPHICS_THUMBNAILS ",checks," checks, ",failures," failures")
++	quit(1 if failures else 0)
+diff --git a/docs/evidence/graphics-preparation-2026-11-04/before/game/race/world_render_preparation.gd b/docs/evidence/graphics-preparation-2026-11-04/before/game/race/world_render_preparation.gd
+new file mode 100644
+--- /dev/null
++++ b/docs/evidence/graphics-preparation-2026-11-04/before/game/race/world_render_preparation.gd
+@@ -0,0 +1,108 @@
++extends Node
++## Stage first use of actual material/mesh combinations under the loading cover.
++## Lifetime belongs to Game, so navigation cannot leave hidden surviving meshes.
++static var warmed: Dictionary = {}
++# Insertion order retains the original first-seen program order; each bucket
++# is consumed from the end, just like the former reverse scan of all nodes.
++var pending: Dictionary = {}
++var _pending_keys: Array[String] = []
++var _key_cursor: int = 0
++var frame_groups: int = 0
++var draw_us_max: int = 0
++var _material_keys: Dictionary = {}
++
++func hold(world: Node) -> void:
++	for geometry: GeometryInstance3D in world.find_children("*","GeometryInstance3D",true,false):
++		if not geometry.is_visible_in_tree(): continue
++		var key: String = _key(geometry,_material_keys)
++		if warmed.has(key): continue
++		if not pending.has(key):
++			pending[key] = []
++			_pending_keys.append(key)
++		pending[key].append(weakref(geometry))
++		geometry.hide()
++
++func prepare(draw: Callable, current: Callable) -> bool:
++	while not pending.is_empty():
++		if not current.call(): return false
++		while not pending.has(_pending_keys[_key_cursor]): _key_cursor += 1
++		var key: String = _pending_keys[_key_cursor]
++		var bucket: Array = pending[key]
++		var shown: int = 0
++		var margins: Array[Dictionary] = []
++		var camera: Camera3D = get_parent().get("camera")
++		while not bucket.is_empty() and shown < 8:
++			var node: Object = bucket.pop_back().get_ref()
++			if is_instance_valid(node):
++				if node is MeshInstance3D and camera != null:
++					margins.append({"node":weakref(node),"margin":node.extra_cull_margin})
++					var bounds: AABB = node.get_aabb()
++					var distance: Vector3 = (node.to_local(camera.global_position)-bounds.get_center()).abs()
++					node.extra_cull_margin = maxf(node.extra_cull_margin,maxf(distance.x,maxf(distance.y,distance.z))+camera.near+1.0)
++				node.show()
++				shown += 1
++		if bucket.is_empty(): pending.erase(key)
++		if shown == 0: continue
++		var began: int = Time.get_ticks_usec()
++		var drawn: bool = await draw.call()
++		for entry: Dictionary in margins:
++			var node: Object = entry.node.get_ref()
++			if is_instance_valid(node): node.extra_cull_margin = entry.margin
++		if not current.is_valid() or not current.call(): return false
++		draw_us_max = maxi(draw_us_max,Time.get_ticks_usec()-began)
++		frame_groups += 1
++		if drawn:
++			if warmed.size() >= 512: warmed.clear()
++			warmed[key] = true
++			# One bounded batch has submitted this exact program/format/shadow
++			# combination. Remaining instances need visibility, not another draw
++			# of the same compiled program. The final covered world draw remains.
++			while not bucket.is_empty():
++				var node: Object = bucket.pop_back().get_ref()
++				if is_instance_valid(node): node.show()
++			pending.erase(key)
++	_material_keys.clear()
++	_pending_keys.clear()
++	_key_cursor = 0
++	return current.call()
++
++static func _key(node: GeometryInstance3D, materials: Dictionary = {}) -> String:
++	var mesh: Mesh = node.mesh if node is MeshInstance3D else node.multimesh.mesh if node is MultiMeshInstance3D and node.multimesh != null else null
++	var parts: Array = [node.get_class(),node.cast_shadow,node.layers]
++	if mesh != null:
++		for surface: int in range(mesh.get_surface_count()):
++			var material: Material = node.get_active_material(surface) if node is MeshInstance3D else node.material_override if node.material_override != null else mesh.surface_get_material(surface)
++			# Identity inspection must not force lazy backend shader creation here.
++			parts.append(_material_key(material,materials))
++			parts.append(mesh.surface_get_format(surface) if mesh is ArrayMesh else mesh.get_class())
++	return str(parts)
++
++static func _material_key(material: Material, cache: Dictionary) -> String:
++	if material == null: return "none"
++	var id: int = material.get_instance_id()
++	if cache.has(id): return cache[id]
++	var features: Array = [material.get_class()]
++	if material is ShaderMaterial:
++		features.append(material.shader.get_instance_id() if material.shader != null else 0)
++	elif material is BaseMaterial3D:
++		for property: Dictionary in material.get_property_list():
++			if not int(property.usage)&PROPERTY_USAGE_STORAGE: continue
++			if property.name in ["resource_local_to_scene","resource_name","resource_path","next_pass"]: continue
++			var value: Variant = material.get(property.name)
++			if value is bool or value is int: features.append([property.name,value])
++			elif property.hint == PROPERTY_HINT_RESOURCE_TYPE and "Texture" in str(property.hint_string): features.append([property.name,value != null])
++	else: features.append(id)
++	features.append(_material_key(material.next_pass,cache))
++	var result: String = str(features).sha256_text()
++	cache[id] = result
++	return result
++
++func _exit_tree() -> void:
++	for bucket: Array in pending.values():
++		for reference: WeakRef in bucket:
++			var node: Object = reference.get_ref()
++			if is_instance_valid(node): node.show()
++	pending.clear()
++	_pending_keys.clear()
++	_key_cursor = 0
++	_material_keys.clear()
+diff --git a/docs/evidence/graphics-preparation-2026-11-04/before/game/tests/test_world_render_buckets.gd b/docs/evidence/graphics-preparation-2026-11-04/before/game/tests/test_world_render_buckets.gd
+new file mode 100644
+--- /dev/null
++++ b/docs/evidence/graphics-preparation-2026-11-04/before/game/tests/test_world_render_buckets.gd
+@@ -0,0 +1,74 @@
++extends SceneTree
++
++const PREPARATION = preload("res://race/world_render_preparation.gd")
++var checks: int = 0
++var failures: int = 0
++
++class Stage extends Node3D:
++	var camera: Camera3D
++
++func _initialize() -> void:
++	run.call_deferred()
++
++func check(ok: bool, label: String) -> void:
++	checks += 1
++	if not ok:
++		failures += 1
++		print("FAIL: ",label)
++
++func run() -> void:
++	var stage := Stage.new()
++	root.add_child(stage)
++	stage.camera = Camera3D.new()
++	stage.add_child(stage.camera)
++	var preparation = PREPARATION.new()
++	stage.add_child(preparation)
++	PREPARATION.warmed.clear()
++	var groups: Array = [[],[],[]]
++	# Interleave three render programs. Two need more than one bounded batch
++	# when the draw reports failure; their last members must be shown first.
++	for index: int in range(30):
++		var mesh := MeshInstance3D.new()
++		mesh.mesh = BoxMesh.new()
++		mesh.layers = 1 << (index % 3)
++		mesh.extra_cull_margin = float(index) / 10.0
++		stage.add_child(mesh)
++		groups[index % 3].append(mesh)
++	preparation.hold(stage)
++	var visits: Array = []
++	var draw: Callable = func() -> bool:
++		var visible: Array = []
++		for group: Array in groups:
++			var indices: Array = []
++			for i: int in range(group.size()):
++				if group[i].visible: indices.append(i)
++			visible.append(indices)
++		visits.append(visible)
++		await process_frame
++		return visits.size() != 1
++	check(await preparation.prepare(draw,func() -> bool: return true),"preparation completes")
++	check(visits.size() == 4,"failed first draw retries and other programs each draw once")
++	check(visits[0] == [[2,3,4,5,6,7,8,9],[],[]],"first program draws last eight in reverse-scan order")
++	check(visits[1] == [[0,1,2,3,4,5,6,7,8,9],[],[]],"failed draw retries remaining geometry")
++	check(visits[2] == [[0,1,2,3,4,5,6,7,8,9],[2,3,4,5,6,7,8,9],[]],"first-seen program order survives interleaving")
++	check(preparation.pending.is_empty() and PREPARATION.warmed.size() == 3,"all buckets complete and successful programs warm")
++	for index: int in range(30):
++		var node: MeshInstance3D = groups[index % 3][index / 3]
++		check(node.visible and is_equal_approx(node.extra_cull_margin,float(index) / 10.0),"visibility and cull margin restored")
++	PREPARATION.warmed.clear()
++	preparation.hold(stage)
++	var calls: Array = []
++	var cancel_draw: Callable = func() -> bool:
++		calls.append(true)
++		await process_frame
++		return true
++	check(not await preparation.prepare(cancel_draw,func() -> bool: return calls.is_empty()),"cancellation after draw stops preparation")
++	check(not preparation.pending.is_empty(),"unsubmitted nodes remain held for teardown")
++	preparation.queue_free()
++	await process_frame
++	for group: Array in groups:
++		check(group.all(func(node: MeshInstance3D) -> bool: return node.visible),"teardown reveals cancelled program")
++	stage.queue_free()
++	await process_frame
++	print("WORLD_RENDER_BUCKETS: %d checks, %d failures" % [checks,failures])
++	quit(1 if failures else 0)
+diff --git a/docs/evidence/graphics-preparation-2026-11-04/before/game/ui/garage_first_draw.gd b/docs/evidence/graphics-preparation-2026-11-04/before/game/ui/garage_first_draw.gd
+new file mode 100644
+--- /dev/null
++++ b/docs/evidence/graphics-preparation-2026-11-04/before/game/ui/garage_first_draw.gd
+@@ -0,0 +1,72 @@
++extends Node
++## Garage-owned staging survives its retained page moving between menu slots.
++const Key=preload("res://race/world_render_preparation.gd")
++static var warmed: Dictionary={}
++var pending: Array[Dictionary]=[]
++var held: Array[WeakRef]=[]
++func queue_geometry(node: GeometryInstance3D) -> bool:
++	var key: String=Key._key(node)
++	for index: int in range(pending.size()-1,-1,-1):
++		if pending[index].node.get_ref()==node: pending.remove_at(index)
++	if warmed.has(key):
++		node.show()
++		return false
++	pending.append({"node":weakref(node),"key":key})
++	held.append(weakref(node))
++	node.hide()
++	return true
++func hold(world: Node) -> void:
++	for node: GeometryInstance3D in world.find_children("*","GeometryInstance3D",true,false):
++		if not node.is_visible_in_tree(): continue
++		var key: String=Key._key(node)
++		if warmed.has(key): continue
++		pending.append({"node":weakref(node),"key":key})
++		held.append(weakref(node))
++		node.hide()
++func release() -> void:
++	for reference: WeakRef in held:
++		var node: Object=reference.get_ref()
++		if is_instance_valid(node): node.show()
++	held.clear()
++	pending.clear()
++func prepare(draw: Callable,current: Callable) -> bool:
++	while not pending.is_empty():
++		if not current.is_valid() or not current.call(): return false
++		var key: String=pending[0].key
++		var shown: int=0
++		var copies: Array[MeshInstance3D]=[]
++		var drawn_keys: Array[Dictionary]=[]
++		var camera: Camera3D=get_parent().get("camera")
++		for index: int in range(pending.size()-1,-1,-1):
++			if pending[index].key!=key or shown>=8: continue
++			var node: Object=pending[index].node.get_ref()
++			if is_instance_valid(node):
++				drawn_keys.append({"node":weakref(node),"key":Key._key(node)})
++				if node is MeshInstance3D:
++					var copy:=MeshInstance3D.new()
++					copy.set_meta("garage_opening_warm",true)
++					copy.mesh=node.mesh
++					copy.material_override=node.material_override
++					copy.material_overlay=node.material_overlay
++					copy.cast_shadow=node.cast_shadow
++					copy.layers=8
++					for surface: int in range(node.mesh.get_surface_count()): copy.set_surface_override_material(surface,node.get_surface_override_material(surface))
++					camera.get_parent().add_child(copy)
++					copy.global_transform=node.global_transform
++					var delta: Vector3=(node.to_local(camera.global_position)-node.get_aabb().get_center()).abs()
++					copy.extra_cull_margin=maxf(node.extra_cull_margin,maxf(delta.x,maxf(delta.y,delta.z))+camera.near+1.0)
++					copies.append(copy)
++			pending.remove_at(index)
++			shown+=1
++		var drawn: bool=await draw.call()
++		for copy: MeshInstance3D in copies:
++			if is_instance_valid(copy):
++				if copy.get_parent()!=null: copy.get_parent().remove_child(copy)
++				copy.queue_free()
++		if not current.is_valid() or not current.call(): return false
++		if drawn:
++			if warmed.size()>=512: warmed.clear()
++			for entry: Dictionary in drawn_keys:
++				var node: Object=entry.node.get_ref()
++				if is_instance_valid(node) and Key._key(node)==entry.key: warmed[entry.key]=true
++	return current.is_valid() and current.call()
+diff --git a/docs/evidence/graphics-preparation-2026-11-04/before/game/ui/garage_opening_showroom.gd b/docs/evidence/graphics-preparation-2026-11-04/before/game/ui/garage_opening_showroom.gd
+new file mode 100644
+--- /dev/null
++++ b/docs/evidence/graphics-preparation-2026-11-04/before/game/ui/garage_opening_showroom.gd
+@@ -0,0 +1,236 @@
++extends "res://ui/car_showroom.gd"
++## Keep the ordinary Garage page usable while its real studio takes first draws.
++signal studio_prepared
++signal studio_interactive
++const FirstDraw=preload("res://ui/garage_first_draw.gd")
++var preparing: bool=true
++var can_begin_studio: Callable
++var achievement_service: Node
++var _picture: Control
++var _pending: Dictionary={}
++var _record_choice: Dictionary={}
++var _warm_view: SubViewport
++var _warm_camera: Camera3D
++var _last_input: int=0
++var interaction_ready: bool=false
++var opening_started: int=0
++var live_ready_ms: float=0.0
++var _loads: Array[String]=[]
++var _resources: Array[Resource]=[]
++var _lights: Array[Dictionary]=[]
++var _tree_ref: WeakRef
++var _first: Node
++
++func _ready() -> void:
++	opening_started=Time.get_ticks_usec()
++	_tree_ref=weakref(get_tree())
++	set_process(false)
++	mouse_filter=Control.MOUSE_FILTER_STOP
++	_picture=preload("res://ui/garage_loading_car.gd").new()
++	_picture.name="GarageOpeningPicture"
++	_picture.mouse_filter=Control.MOUSE_FILTER_IGNORE
++	_picture.vehicle_id=vehicle_id
++	add_child(_picture)
++	MenuStyle.fill(_picture)
++	child_entered_tree.connect(func(_child: Node) -> void: _cover.call_deferred())
++	weathering.restore(condition)
++	set_process_input(true)
++	# Resource decoding may run off the UI thread; nodes and renderer stay owned.
++	for path: String in ["res://assets/garage/cars_v1/"+vehicle_id+".scn",GarageEnvironment.PREPARED_ARCHITECTURE]:
++		if DisplayServer.get_name()!="headless" and ResourceLoader.exists(path) and ResourceLoader.load_threaded_request(path)==OK: _loads.append(path)
++	_begin_studio.call_deferred()
++
++func _cover() -> void:
++	if preparing and is_instance_valid(_picture) and _picture.get_index()!=get_child_count()-1:
++		move_child(_picture,get_child_count()-1)
++
++func _begin_studio() -> void:
++	await get_tree().process_frame
++	if not is_inside_tree() or is_queued_for_deletion(): return
++	while _current_studio():
++		while _current_studio() and not _entry_presented(): await get_tree().process_frame
++		if not _current_studio(): return
++		# Finish the incoming page's actual draw before submitting a native world.
++		if DisplayServer.get_name()!="headless": await RenderingServer.frame_post_draw
++		await get_tree().process_frame
++		if _entry_presented(): break
++	if not _current_studio(): return
++	for path: String in _loads:
++		while _current_studio() and ResourceLoader.load_threaded_get_status(path)==ResourceLoader.THREAD_LOAD_IN_PROGRESS: await get_tree().process_frame
++		if not _current_studio(): return
++		if ResourceLoader.load_threaded_get_status(path)==ResourceLoader.THREAD_LOAD_LOADED: _resources.append(ResourceLoader.load_threaded_get(path))
++	_loads.clear()
++	cooperative_build=true
++	await super._ready()
++	if not is_inside_tree() or is_queued_for_deletion(): return
++	# The ordinary page applies its wall contents synchronously. Its deferred
++	# counterpart must include them before holding/warming the actual scene.
++	preload("res://ui/achievement_display.gd").update(self,achievement_service)
++	# One MSAA level prevents renderer precompilation switching back and forth
++	# between the live view and its two reflection captures.
++	for view: SubViewport in reflections.views: view.msaa_3d=showroom_viewport.msaa_3d
++	_warm_view=SubViewport.new()
++	_warm_view.world_3d=showroom_viewport.find_world_3d()
++	_warm_view.size=Vector2i(64,64)
++	_warm_view.msaa_3d=showroom_viewport.msaa_3d
++	_warm_view.render_target_update_mode=SubViewport.UPDATE_DISABLED
++	add_child(_warm_view)
++	_warm_camera=Camera3D.new()
++	_warm_camera.cull_mask=8
++	_warm_view.add_child(_warm_camera)
++	_warm_camera.current=true
++	for light: Node in camera.get_parent().find_children("*","Light3D",true,false):
++		var copy: Node=light.duplicate()
++		copy.layers=8
++		copy.light_cull_mask=8
++		light.get_parent().add_child(copy)
++		_lights.append({"source":weakref(light),"mask":light.light_cull_mask,"copy":copy})
++		light.light_cull_mask&=7
++	while _current_studio():
++		if not _pending.is_empty():
++			var target: Dictionary=_pending
++			_pending={}
++			var previous: Node3D=turntable
++			super.replace_car(target.vehicle,target.paint,target.wear,target.parts)
++			super.finish_car_transition()
++			if is_instance_valid(previous) and previous!=turntable and previous.get_parent()!=null:
++				previous.get_parent().remove_child(previous)
++				previous.queue_free()
++		var first: Node=FirstDraw.new()
++		_first=first
++		add_child(first)
++		first.hold(car)
++		first.hold(camera.get_parent())
++		move_child(_picture,get_child_count()-1)
++		# Keep the neutral loading car over first-use work. The final reveal
++		# still uses the original full finishes, lighting and planar reflections.
++		while not first.pending.is_empty() and _current_preparation():
++			# Do not even reveal a cold native material into the shadow pass while
++			# input is active. Wait before prepare() exposes its next group.
++			while _current_preparation() and (not _entry_presented() or Time.get_ticks_msec()-_last_input<750): await get_tree().process_frame
++			if not _current_preparation(): break
++			await first.prepare(_draw_studio,_current_warm_batch)
++		if not _current_studio(): return
++		first.release()
++		first.queue_free()
++		_first=null
++		if not _record_choice.is_empty(): super.update_records(_record_choice)
++		# The original main image, both planar reflections and their resized
++		# targets must settle under the picture before the first live reveal.
++		for _settle: int in range(4):
++			if not _current_preparation(): break
++			while _current_studio() and not _entry_presented(): await get_tree().process_frame
++			if not _current_preparation(): break
++			super._process(0.0)
++			showroom_viewport.render_target_update_mode=SubViewport.UPDATE_ONCE
++			reflections.request_draw()
++			if DisplayServer.get_name()!="headless": await RenderingServer.frame_post_draw
++			await get_tree().process_frame
++		if not _current_studio(): return
++		if _pending.is_empty(): break
++	_warm_view.queue_free()
++	_warm_view=null
++	_restore_lights()
++	_resources.clear()
++	preparing=false
++	interaction_ready=true
++	live_ready_ms=(Time.get_ticks_usec()-opening_started)/1000.0
++	print("GARAGE_LIVE_READY_MS ",live_ready_ms)
++	_picture.queue_free()
++	_picture=null
++	set_process(true)
++	studio_interactive.emit()
++	studio_prepared.emit()
++	invalidate_render()
++
++func _current_preparation() -> bool:
++	return _current_studio() and _pending.is_empty()
++
++func _entry_presented() -> bool:
++	return is_visible_in_tree() and (not can_begin_studio.is_valid() or can_begin_studio.call())
++
++func _current_warm_batch() -> bool:
++	return _current_preparation() and _entry_presented() and Time.get_ticks_msec()-_last_input>=750
++
++func _current_studio() -> bool:
++	return is_inside_tree() and not is_queued_for_deletion()
++
++func _draw_studio() -> bool:
++	while _current_studio() and not _entry_presented(): await get_tree().process_frame
++	# Compile full finishes only after the player pauses their interaction.
++	while _current_preparation() and Time.get_ticks_msec()-_last_input<750: await get_tree().process_frame
++	if not _current_preparation(): return false
++	_warm_camera.transform=camera.transform
++	_warm_camera.fov=camera.fov
++	_warm_camera.keep_aspect=camera.keep_aspect
++	_warm_view.render_target_update_mode=SubViewport.UPDATE_ONCE
++	if DisplayServer.get_name()!="headless": await RenderingServer.frame_post_draw
++	await get_tree().process_frame
++	return _current_studio()
++
++func replace_car(id: String,paint: Dictionary,wear: Dictionary,parts: Dictionary={}) -> void:
++	if preparing:
++		_pending={"vehicle":id,"paint":paint.duplicate(true),"wear":wear.duplicate(true),"parts":parts.duplicate(true)}
++		if _picture!=null:
++			_picture.vehicle_id=id
++			_picture.show()
++		return
++	super.replace_car(id,paint,wear,parts)
++
++func apply_livery(value: Dictionary,animate_paint: bool=false) -> void:
++	if preparing:
++		if _pending.is_empty(): _pending={"vehicle":vehicle_id,"paint":livery.duplicate(true),"wear":condition.duplicate(true),"parts":customisation.duplicate(true)}
++		_pending.paint=value.duplicate(true)
++		return
++	super.apply_livery(value,animate_paint)
++
++func apply_customisation(value: Dictionary,animate_kit: bool=false) -> void:
++	if preparing:
++		if _pending.is_empty(): _pending={"vehicle":vehicle_id,"paint":livery.duplicate(true),"wear":condition.duplicate(true),"parts":customisation.duplicate(true)}
++		_pending.parts=value.duplicate(true)
++		return
++	super.apply_customisation(value,animate_kit)
++
++func update_records(settings: Dictionary) -> void:
++	if preparing:
++		_record_choice=settings.duplicate(true)
++	else: super.update_records(settings)
++
++func _drag(event: InputEvent) -> void:
++	if not preparing or interaction_ready: super._drag(event)
++
++func _input(event: InputEvent) -> void:
++	var active: bool=event is InputEventMouseButton or event is InputEventScreenTouch or event is InputEventScreenDrag or event is InputEventKey or (event is InputEventMouseMotion and event.button_mask!=0)
++	if preparing and is_visible_in_tree() and active: _last_input=Time.get_ticks_msec()
++
++func _process(delta: float) -> void:
++	if not preparing or interaction_ready: super._process(delta)
++
++func _exit_tree() -> void:
++	super._exit_tree()
++
++func _notification(what: int) -> void:
++	super._notification(what)
++	if what==NOTIFICATION_PREDELETE:
++		_restore_lights()
++	if what==NOTIFICATION_PREDELETE and not _loads.is_empty():
++		_retire_loads(_loads.duplicate(),_tree_ref)
++		_loads.clear()
++
++func _restore_lights() -> void:
++	for item: Dictionary in _lights:
++		var light: Object=item.source.get_ref()
++		if is_instance_valid(light): light.light_cull_mask=item.mask
++		if is_instance_valid(item.copy):
++			if item.copy.get_parent()!=null: item.copy.get_parent().remove_child(item.copy)
++			item.copy.queue_free()
++	_lights.clear()
++
++static func _retire_loads(paths: Array[String],tree_ref: WeakRef) -> void:
++	var pending: Array[String]=[]
++	for path: String in paths:
++		var status: int=ResourceLoader.load_threaded_get_status(path)
++		if status==ResourceLoader.THREAD_LOAD_IN_PROGRESS: pending.append(path)
++		elif status==ResourceLoader.THREAD_LOAD_LOADED: ResourceLoader.load_threaded_get(path)
++	var tree: Object=tree_ref.get_ref()
++	if not pending.is_empty() and is_instance_valid(tree): tree.process_frame.connect(_retire_loads.bind(pending,tree_ref),CONNECT_ONE_SHOT)
+diff --git a/docs/evidence/graphics-preparation-2026-11-04/before/game/ui/garage_preloaded_studio.gd b/docs/evidence/graphics-preparation-2026-11-04/before/game/ui/garage_preloaded_studio.gd
+new file mode 100644
+--- /dev/null
++++ b/docs/evidence/graphics-preparation-2026-11-04/before/game/ui/garage_preloaded_studio.gd
+@@ -0,0 +1,156 @@
++extends "res://ui/car_showroom.gd"
++## The original live studio, warmed offscreen and transferred without rebuilding.
++var permitted: Callable
++var record_settings: Dictionary={}
++var achievement_service: Node
++var prepared: bool=false
++var adopted: bool=false
++var warming: bool=false
++var warm_draws: int=0
++var max_draw_ms: float=0.0
++var _pending: Array[Dictionary]=[]
++var _held: Array[Dictionary]=[]
++var _phase_draws: int=0
++var _material_keys: Dictionary={}
++var _warm_setup_ready: bool=false
++
++func _ready() -> void:
++	cooperative_build=true
++	await super._ready()
++	if not is_inside_tree() or is_queued_for_deletion(): return
++	mouse_filter=Control.MOUSE_FILTER_IGNORE
++	super.update_records(record_settings)
++	preload("res://ui/achievement_display.gd").update(self,achievement_service)
++	for node: GeometryInstance3D in camera.get_parent().find_children("*","GeometryInstance3D",true,false):
++		if not node.is_visible_in_tree(): continue
++		var priority: int=0 if node.name=="GarageConcrete" or (reflections!=null and node is MeshInstance3D and node.material_override==reflections.deck_material) else 1 if car.is_ancestor_of(node) else 2
++		var entry: Dictionary={"node":weakref(node),"margin":node.extra_cull_margin,"key":_geometry_key(node),"priority":priority,"order":_held.size()}
++		_held.append(entry)
++		_pending.append(entry)
++		node.hide()
++	_pending.sort_custom(func(a: Dictionary,b: Dictionary) -> bool: return a.priority<b.priority if a.priority!=b.priority else a.order<b.order)
++	_stop_draws()
++	_warm_setup_ready=true
++
++func invalidate_render() -> void:
++	if adopted: super.invalidate_render()
++	else: _render_dirty=true
++
++func _process(delta: float) -> void:
++	if adopted: super._process(delta)
++
++func _allowed() -> bool:
++	return not adopted and is_inside_tree() and not is_queued_for_deletion() and permitted.is_valid() and permitted.call()
++
++func warm() -> void:
++	if warming or prepared or not _warm_setup_ready or not _allowed(): return
++	warming=true
++	while not _pending.is_empty() and _allowed():
++		var key: String=_pending[0].key
++		var shown: int=0
++		var group: Array[Dictionary]=[]
++		for index: int in range(_pending.size()-1,-1,-1):
++			if _pending[index].key!=key or shown>=8: continue
++			var entry: Dictionary=_pending[index]
++			var node: Object=entry.node.get_ref()
++			if is_instance_valid(node):
++				if node is MeshInstance3D:
++					var distance: Vector3=(node.to_local(camera.global_position)-node.get_aabb().get_center()).abs()
++					node.extra_cull_margin=maxf(node.extra_cull_margin,maxf(distance.x,maxf(distance.y,distance.z))+camera.near+1.0)
++				node.show()
++				group.append(entry)
++			_pending.remove_at(index)
++			shown+=1
++		# Visit another program before uploading more objects that use the same
++		# one. An early handoff then inherits broader real pipeline preparation.
++		var repeated: Array[Dictionary]=[]
++		for index: int in range(_pending.size()-1,-1,-1):
++			if _pending[index].key==key:
++				repeated.push_front(_pending[index])
++				_pending.remove_at(index)
++		_pending.append_array(repeated)
++		await _warm_frame()
++		for entry: Dictionary in group:
++			var node: Object=entry.node.get_ref()
++			if is_instance_valid(node): node.extra_cull_margin=entry.margin
++	while _pending.is_empty() and _allowed() and not prepared:
++		# Carousel pictures have their own studio. Finish only this live view,
++		# keeping its camera, awards and reflections intact throughout warming.
++		await _warm_frame()
++		if adopted or not is_inside_tree() or is_queued_for_deletion(): break
++		_phase_draws+=1
++		if _phase_draws>=4: prepared=true
++	warming=false
++	if not adopted: _stop_draws()
++
++func _warm_frame() -> void:
++	# This helper is deliberately separate from CanvasItem's _draw callback.
++	if not warming or not _warm_setup_ready or not _allowed(): return
++	var began: int=Time.get_ticks_usec()
++	_submit_render()
++	warm_draws+=1
++	if DisplayServer.get_name()!="headless": await RenderingServer.frame_post_draw
++	max_draw_ms=maxf(max_draw_ms,(Time.get_ticks_usec()-began)/1000.0)
++	if is_inside_tree() and not is_queued_for_deletion(): await get_tree().process_frame
++
++func adopt() -> void:
++	adopted=true
++	permitted=Callable()
++	achievement_service=null
++	release_geometry()
++	mouse_filter=Control.MOUSE_FILTER_STOP
++	invalidate_render()
++
++func release_geometry() -> void:
++	for entry: Dictionary in _held:
++		var node: Object=entry.node.get_ref()
++		if is_instance_valid(node):
++			node.extra_cull_margin=entry.margin
++			node.show()
++	_held.clear()
++	_pending.clear()
++	_material_keys.clear()
++
++func _geometry_key(node: GeometryInstance3D) -> String:
++	var mesh: Mesh=node.mesh if node is MeshInstance3D else node.multimesh.mesh if node is MultiMeshInstance3D and node.multimesh!=null else null
++	var key: Array=[node.get_class(),node.cast_shadow]
++	if mesh!=null:
++		for surface: int in range(mesh.get_surface_count()):
++			var material: Material=node.get_active_material(surface) if node is MeshInstance3D else node.material_override if node.material_override!=null else mesh.surface_get_material(surface)
++			key.append(_material_key(material))
++			key.append(mesh.surface_get_format(surface) if mesh is ArrayMesh else mesh.get_class())
++	return str(key)
++
++func _material_key(material: Material) -> String:
++	if material==null: return "none"
++	var id: int=material.get_instance_id()
++	if _material_keys.has(id): return _material_keys[id]
++	var key: Array=[material.get_class()]
++	if material is ShaderMaterial:
++		key.append(material.shader.get_instance_id() if material.shader!=null else 0)
++	elif material is BaseMaterial3D:
++		# Shader features are modes, flags and texture presence. Colours and
++		# scalar surface uniforms do not require another compiled program.
++		for property: Dictionary in material.get_property_list():
++			if not int(property.usage)&PROPERTY_USAGE_STORAGE: continue
++			if property.name in ["resource_local_to_scene","resource_name","resource_path","next_pass"]: continue
++			var value: Variant=material.get(property.name)
++			if value is bool or value is int: key.append([property.name,value])
++			elif property.hint==PROPERTY_HINT_RESOURCE_TYPE and "Texture" in str(property.hint_string): key.append([property.name,value!=null])
++	else: key.append(id)
++	key.append(_material_key(material.next_pass) if material.next_pass!=null else "none")
++	var result: String=str(key)
++	_material_keys[id]=result
++	return result
++
++func _stop_draws() -> void:
++	_settle_draws=0
++	_reflection_settle_draws=0
++	if RenderingServer.frame_post_draw.is_connected(_finish_render): RenderingServer.frame_post_draw.disconnect(_finish_render)
++	if is_instance_valid(showroom_viewport): showroom_viewport.render_target_update_mode=SubViewport.UPDATE_DISABLED
++	if reflections!=null:
++		for view: SubViewport in reflections.views: view.render_target_update_mode=SubViewport.UPDATE_DISABLED
++
++func _notification(what: int) -> void:
++	if what==NOTIFICATION_PREDELETE: release_geometry()
++	super._notification(what)
+diff --git a/docs/evidence/graphics-preparation-2026-11-04/before/game/ui/garage_preview_cache.gd b/docs/evidence/graphics-preparation-2026-11-04/before/game/ui/garage_preview_cache.gd
+new file mode 100644
+--- /dev/null
++++ b/docs/evidence/graphics-preparation-2026-11-04/before/game/ui/garage_preview_cache.gd
+@@ -0,0 +1,368 @@
++extends Node
++## One native capture and one owned IO worker. Workers never access a view/node.
++const Build = preload("res://core/build_identity.gd")
++const Work = preload("res://editor/work_job.gd")
++const VERSION: String = "garage-thumbnail-studio-v5"
++const MAX_FILES: int = 14
++static var factory_pictures: Dictionary={}
++static var pending_pictures: Array[String]=[]
++var directory: String = ""
++var queued: Array[Dictionary] = []
++var active: Dictionary = {}
++var renderer: CarShowroom
++var worker: RefCounted
++var io: Dictionary = {}
++var frames: int = 0
++var renders: int = 0
++var cache_hits: int = 0
++var readback_us: int = 0
++var file_io_us: int = 0
++var can_render: Callable
++var prepared_picture: Dictionary={}
++var pending_writes: Array[Dictionary]=[]
++var ready_pictures: Dictionary={}
++var remember_pictures: bool=false
++var immediate_reads: bool=false
++var warm_views: Dictionary={}
++var _last_input: int=0
++var _touches: Dictionary={}
++var idle_ms: int=750
++
++func _ready() -> void:
++	_last_input=Time.get_ticks_msec()
++	preload("res://ui/preview_touch_input.gd").bind(self)
++	if get_parent() is CanvasItem: get_parent().visibility_changed.connect(_visibility_changed)
++
++func _release_preview_touch(index: int) -> void:
++	if _touches.has(index):
++		_touches.erase(index)
++		_last_input=Time.get_ticks_msec()
++
++func _input(event: InputEvent) -> void:
++	if event is InputEventScreenTouch:
++		if event.pressed and not event.canceled: _touches[event.index]=true
++		else: _touches.erase(event.index)
++	if event is InputEventMouseButton or event is InputEventScreenTouch or event is InputEventScreenDrag or event is InputEventKey or event is InputEventJoypadButton or (event is InputEventJoypadMotion and absf(event.axis_value)>0.2) or (event is InputEventMouseMotion and event.button_mask!=0): _last_input=Time.get_ticks_msec()
++
++func _render_allowed() -> bool:
++	if not _touches.is_empty() or Input.is_anything_pressed() or Time.get_ticks_msec()-_last_input<idle_ms: return false
++	var focus: Control=get_viewport().gui_get_focus_owner()
++	if focus is LineEdit or focus is TextEdit: return false
++	return not can_render.is_valid() or bool(can_render.call())
++
++func _notification(what: int) -> void:
++	if what in [NOTIFICATION_APPLICATION_FOCUS_OUT,NOTIFICATION_APPLICATION_PAUSED,NOTIFICATION_APPLICATION_FOCUS_IN,NOTIFICATION_APPLICATION_RESUMED]:
++		_touches.clear()
++		_last_input=Time.get_ticks_msec()
++
++func _visibility_changed() -> void:
++	if get_parent() is CanvasItem and not get_parent().is_visible_in_tree(): suspend_previews()
++
++func suspend_previews() -> void:
++	# Parked Garage processing is disabled, so cancellation cannot depend on its
++	# next _process callback. Keep only current queued work for a later revisit.
++	if not active.is_empty() and _current(active): queued.push_front(active)
++	_finish()
++	if worker != null and io.get("read",false): worker.cancel()
++var catalogue: Dictionary = {}
++
++func catalogue_texture(vehicle: String) -> Texture2D:
++	if not catalogue.has(vehicle):
++		if factory_pictures.has(vehicle):
++			catalogue[vehicle]=factory_pictures[vehicle]
++			return catalogue[vehicle]
++		var path: String = "res://assets/garage/previews_v1/"+vehicle+".png"
++		if ResourceLoader.exists(path): catalogue[vehicle] = load(path)
++	return catalogue.get(vehicle)
++
++static func prefetch_catalogue(tree: SceneTree) -> void:
++	# Only seven public stock photographs; no Garage world or account data.
++	if not pending_pictures.is_empty() or factory_pictures.size()==VehicleCatalog.IDS.size(): return
++	for id: String in VehicleCatalog.IDS:
++		if factory_pictures.has(id): continue
++		var path: String="res://assets/garage/previews_v1/"+id+".png"
++		if ResourceLoader.exists(path) and ResourceLoader.load_threaded_request(path)==OK: pending_pictures.append(id)
++	_poll_pictures(weakref(tree))
++
++static func _poll_pictures(tree_ref: WeakRef) -> void:
++	for index: int in range(pending_pictures.size()-1,-1,-1):
++		var id: String=pending_pictures[index]
++		var path: String="res://assets/garage/previews_v1/"+id+".png"
++		var status: int=ResourceLoader.load_threaded_get_status(path)
++		if status==ResourceLoader.THREAD_LOAD_IN_PROGRESS: continue
++		if status==ResourceLoader.THREAD_LOAD_LOADED: factory_pictures[id]=ResourceLoader.load_threaded_get(path)
++		pending_pictures.remove_at(index)
++	var tree: Object=tree_ref.get_ref()
++	if not pending_pictures.is_empty() and is_instance_valid(tree): tree.process_frame.connect(_poll_pictures.bind(tree_ref),CONNECT_ONE_SHOT)
++
++func identity(view: CarShowroom) -> String:
++	# Older generated identities do not have a per-car revision. Keep their
++	# conservative shared fingerprint until the next normal build refresh.
++	var identity_script: Script = Build
++	var revisions: Dictionary = identity_script.get_script_constant_map().get("GARAGE_PREVIEW_VEHICLE_SHA256",{})
++	var revision: String = str(revisions.get(view.vehicle_id,Build.GARAGE_PREVIEW_SHA256))
++	# A new prepared Volt mesh set must not reuse pictures from the prior model,
++	# including in an editor session before the next generated build identity.
++	if view.vehicle_id == "electric":
++		revision += ":" + preload("res://vehicle/electric_reference_mesh.gd").ASSET_ROOT
++		revision += ":" + preload("res://vehicle/electric_kits.gd").HOOD_REVISION
++		revision += ":" + preload("res://vehicle/electric_body_kits.gd").REVISION
++	return JSON.stringify([VERSION,revision,view.vehicle_id,view.livery,_visible_condition(view.condition),view.customisation]).sha256_text()
++
++func _visible_condition(value: Dictionary) -> Dictionary:
++	# A saved clean snapshot has the same original finish as an absent condition.
++	if not value.is_empty() and value.get("version") != 1: return value
++	for field: String in ["dirt","snow","slow_dirt","slow_snow","wetness","mud","smudge"]:
++		if float(value.get(field,0.0)) != 0.0: return value
++	return {}
++
++func warm_records(records: LocalRecords, read_immediately: bool=true) -> void:
++	remember_pictures=true
++	immediate_reads=read_immediately
++	directory=records.path+".garage-previews"
++	for id: String in VehicleCatalog.IDS:
++		var view: CarShowroom=warm_views.get(id)
++		var fresh: bool=view==null
++		if fresh:
++			view=preload("res://ui/garage_cached_thumbnail.gd").new()
++			view.vehicle_id=id
++			view.preview_service=self
++			view.hide()
++			warm_views[id]=view
++		view.livery=VehicleLivery.for_car(records.settings,id)
++		view.condition=VehicleCondition.read(records,id)
++		view.customisation=VehicleCustomisation.for_car(records.settings,id)
++		if fresh: add_child(view)
++		else: view.refresh_thumbnail()
++		if view.displayed_key==view.preview_key and view._image.texture!=null: _publish(view,view.preview_key,view._image.texture)
++
++func pictures_ready() -> bool:
++	if warm_views.size()!=VehicleCatalog.IDS.size(): return false
++	for view: CarShowroom in warm_views.values():
++		if _remembered(view.vehicle_id,view.preview_key)==null: return false
++	return true
++
++func _remembered(vehicle: String,key: String) -> Texture2D:
++	if not remember_pictures or directory.is_empty(): return null
++	var picture: Dictionary=ready_pictures.get(vehicle,{})
++	return picture.get("texture") if picture.get("key")==key else null
++
++func _publish(view: CarShowroom,key: String,texture: Texture2D) -> void:
++	if view.preview_key!=key or texture==null: return
++	if remember_pictures and not directory.is_empty(): ready_pictures[view.vehicle_id]={"key":key,"texture":texture}
++	view.publish_preview(key,texture)
++
++func picture_bytes(seen: Dictionary) -> int:
++	var bytes: int=0
++	var textures: Array=[]
++	for picture: Dictionary in ready_pictures.values(): textures.append(picture.texture)
++	for view: CarShowroom in warm_views.values():
++		if view._image!=null: textures.append(view._image.texture)
++	for texture: Texture2D in textures:
++		if texture==null or seen.has(texture.get_instance_id()): continue
++		seen[texture.get_instance_id()]=true
++		bytes+=texture.get_width()*texture.get_height()*4
++	return bytes
++
++func request(view: CarShowroom) -> void:
++	var key: String = identity(view)
++	var remembered: Texture2D=_remembered(view.vehicle_id,key)
++	if remembered!=null:
++		cache_hits+=1
++		if prepared_picture.get("vehicle")==view.vehicle_id: prepared_picture={}
++		view.publish_preview(key,remembered)
++		return
++	if prepared_picture.get("vehicle")==view.vehicle_id and prepared_picture.get("paint")==view.livery and prepared_picture.get("condition")==view.condition and prepared_picture.get("parts")==view.customisation:
++		cache_hits+=1
++		_publish(view,key,prepared_picture.texture)
++		if not directory.is_empty() and prepared_picture.get("persisted_key","")!=key:
++			pending_writes.append({"key":key,"texture":prepared_picture.texture})
++			prepared_picture.persisted_key=key
++		return
++	if _default(view):
++		var texture: Texture2D = catalogue_texture(view.vehicle_id)
++		if texture != null:
++			cache_hits += 1
++			_publish(view,key,texture)
++			return
++	if immediate_reads and not directory.is_empty():
++		var result: Dictionary=_read(func() -> bool: return false,directory.path_join(key+".png"))
++		file_io_us+=int(result.us)
++		if result.image is Image:
++			cache_hits+=1
++			_publish(view,key,ImageTexture.create_from_image(result.image))
++			return
++	for index: int in range(queued.size()-1,-1,-1):
++		if queued[index].view.get_ref() == view or not _current(queued[index]): queued.remove_at(index)
++	if active.get("key") == key and active.view.get_ref() == view: return
++	if io.get("key") == key and _view(io) == view: return
++	queued.append({"view":weakref(view),"key":key,"vehicle":view.vehicle_id,"paint":view.livery.duplicate(true),"condition":view.condition.duplicate(true),"parts":view.customisation.duplicate(true),"read":not immediate_reads})
++
++func _default(view: CarShowroom) -> bool:
++	return view.livery == VehicleLivery.for_car({},view.vehicle_id) and _visible_condition(view.condition).is_empty() and view.customisation == VehicleCustomisation.defaults()
++
++func _current(job: Dictionary, visible: bool = false) -> bool:
++	var view: Object = _view(job)
++	return is_instance_valid(view) and view.preview_key == job.key and (not visible or warm_views.get(view.vehicle_id)==view or _on_screen(view))
++
++func _on_screen(view: Control) -> bool:
++	if not view.is_visible_in_tree(): return false
++	var rect: Rect2 = view.get_global_rect().intersection(view.get_viewport_rect())
++	var ancestor: Node = view.get_parent()
++	while ancestor != null and rect.has_area():
++		if ancestor is Control and ancestor.clip_contents:
++			rect = rect.intersection(ancestor.get_global_rect())
++		ancestor = ancestor.get_parent()
++	return rect.has_area()
++
++func _view(job: Dictionary) -> Object:
++	var reference: WeakRef = job.get("view")
++	return reference.get_ref() if reference != null else null
++
++func _make_renderer() -> CarShowroom:
++	return preload("res://ui/garage_thumbnail_studio.gd").new()
++
++func _process(_delta: float) -> void:
++	if worker != null and worker.done:
++		var result: Dictionary = worker.result if worker.result is Dictionary else {}
++		file_io_us += int(result.get("us",0))
++		worker = null
++		if io.get("read",false) and _current(io):
++			if result.get("image") is Image and _current(io,true):
++				cache_hits += 1
++				_publish(io.view.get_ref(),io.key,ImageTexture.create_from_image(result.image))
++			else:
++				io.read = result.get("image") is Image
++				queued.append(io)
++		io = {}
++	# A read can satisfy a queued view, so finish it before starting another
++	# capture. A write owns only an Image and may run alongside the next world.
++	if worker != null and io.get("read",false): return
++	if worker == null and not active.is_empty() and not pending_writes.is_empty(): _start_write()
++	if not active.is_empty():
++		var remembered: Texture2D=_remembered(active.vehicle,active.key)
++		if _current(active) and remembered!=null:
++			_publish(active.view.get_ref(),active.key,remembered)
++			_finish()
++			return
++		if not _current(active,true):
++			if _current(active): queued.push_front(active)
++			_finish()
++			return
++		if not renderer.showroom_ready: return
++		if not _render_allowed():
++			renderer.showroom_viewport.render_target_update_mode=SubViewport.UPDATE_DISABLED
++			if renderer.reflections!=null:
++				for view: SubViewport in renderer.reflections.views: view.render_target_update_mode=SubViewport.UPDATE_DISABLED
++			return
++		frames -= 1
++		if frames >= 0:
++			renderer._submit_render()
++		elif (worker == null or pending_writes.is_empty()) and not RenderingServer.frame_post_draw.is_connected(_capture): RenderingServer.frame_post_draw.connect(_capture,CONNECT_ONE_SHOT)
++		return
++	# Read every visible saved PNG before starting a missing car's native world.
++	# A cold miss must not hold already stored pictures behind its construction.
++	if worker == null and not directory.is_empty():
++		for index: int in range(queued.size()):
++			var next: Dictionary=queued[index]
++			if next.read and _current(next,true):
++				queued.remove_at(index)
++				io=next
++				worker=Work.start(_read.bind(directory.path_join(next.key+".png")),get_tree())
++				return
++	elif worker != null and not directory.is_empty():
++		for next: Dictionary in queued:
++			if next.read and _current(next,true): return
++	if worker == null and not pending_writes.is_empty(): _start_write()
++	for _index: int in range(queued.size()):
++		var next: Dictionary = queued.pop_front()
++		if not _current(next): continue
++		if next.read and not directory.is_empty():
++			queued.append(next)
++			continue
++		var remembered: Texture2D=_remembered(next.vehicle,next.key)
++		if remembered!=null:
++			_publish(next.view.get_ref(),next.key,remembered)
++			continue
++		if not _current(next,true): queued.append(next); continue
++		if DisplayServer.get_name() == "headless": continue
++		if not _render_allowed():
++			queued.push_front(next)
++			return
++		active = next
++		renderer = _make_renderer()
++		renderer.read_only = true; renderer.garage_mode = true
++		renderer.preview_live_lighting = true
++		renderer.cooperative_build = true
++		renderer.vehicle_id = next.vehicle; renderer.livery = next.paint
++		renderer.condition = next.condition; renderer.customisation = next.parts
++		renderer.framing_scale = 0.84
++		renderer.position = Vector2(-16384,-16384); renderer.size = Vector2(2048,512)
++		add_child(renderer)
++		frames = 4; renders += 1
++		return
++
++func _capture() -> void:
++	if active.is_empty() or not is_instance_valid(renderer): return
++	if not _render_allowed(): return
++	if _current(active) and not _current(active,true): queued.push_front(active)
++	if _current(active,true):
++		var started: int = Time.get_ticks_usec()
++		var image: Image = renderer.showroom_viewport.get_texture().get_image()
++		readback_us += Time.get_ticks_usec()-started
++		_publish(active.view.get_ref(),active.key,ImageTexture.create_from_image(image))
++		if not directory.is_empty():
++			pending_writes.append({"key":active.key,"image":image})
++	_finish()
++
++func _start_write() -> void:
++	var picture: Dictionary=pending_writes.pop_front()
++	if directory.is_empty(): return
++	var image: Image=picture.get("image")
++	if image==null: image=picture.texture.get_image()
++	io={"key":picture.key,"read":false}
++	worker=Work.start(_write.bind(directory,picture.key,image),get_tree())
++
++func _finish() -> void:
++	if RenderingServer.frame_post_draw.is_connected(_capture): RenderingServer.frame_post_draw.disconnect(_capture)
++	if is_instance_valid(renderer):
++		remove_child(renderer)
++		renderer.queue_free()
++	renderer = null; active = {}
++
++func _exit_tree() -> void:
++	_finish()
++	if worker != null: worker.cancel()
++	queued.clear()
++	pending_writes.clear()
++
++static func _read(cancelled: Callable, path: String) -> Dictionary:
++	var started: int = Time.get_ticks_usec()
++	var image: Image
++	var file := FileAccess.open(path,FileAccess.READ)
++	if file != null and file.get_length() <= 8388608 and not cancelled.call():
++		var bytes: PackedByteArray = file.get_buffer(file.get_length())
++		if bytes.size() >= 33 and bytes.slice(0,8) == PackedByteArray([137,80,78,71,13,10,26,10]) and bytes.slice(16,24) == PackedByteArray([0,0,8,0,0,0,2,0]):
++			var decoded := Image.new()
++			if decoded.load_png_from_buffer(bytes) == OK and decoded.get_size() == Vector2i(2048,512): image = decoded
++	return {"image":image,"us":Time.get_ticks_usec()-started}
++
++static func _write(cancelled: Callable, directory: String, key: String, image: Image) -> Dictionary:
++	var started: int = Time.get_ticks_usec()
++	if not cancelled.call() and DirAccess.make_dir_recursive_absolute(directory) == OK:
++		var temporary: String = directory.path_join(key+".tmp.png")
++		if image.save_png(temporary) == OK:
++			if cancelled.call(): DirAccess.remove_absolute(temporary)
++			else: DirAccess.rename_absolute(temporary,directory.path_join(key+".png"))
++		_trim(directory)
++	return {"us":Time.get_ticks_usec()-started}
++
++static func _trim(directory: String) -> void:
++	var folder := DirAccess.open(directory)
++	if folder == null: return
++	var files: Array[Dictionary] = []
++	for name: String in folder.get_files():
++		if not name.ends_with(".png") or name.trim_suffix(".png").length()!=64 or not name.trim_suffix(".png").is_valid_hex_number(): continue
++		files.append({"name":name,"at":FileAccess.get_modified_time(directory.path_join(name))})
++	files.sort_custom(func(a: Dictionary,b: Dictionary) -> bool: return a.at < b.at)
++	while files.size() > MAX_FILES: DirAccess.remove_absolute(directory.path_join(files.pop_front().name))
+diff --git a/docs/evidence/graphics-preparation-2026-11-04/before/game/ui/header_car_appearance_cache.gd b/docs/evidence/graphics-preparation-2026-11-04/before/game/ui/header_car_appearance_cache.gd
+new file mode 100644
+--- /dev/null
++++ b/docs/evidence/graphics-preparation-2026-11-04/before/game/ui/header_car_appearance_cache.gd
+@@ -0,0 +1,235 @@
++extends Node
++## One cooperative capture on an equipped-appearance miss; menu visits read PNGs.
++signal changed(vehicle: String)
++const Icons = preload("res://ui/header_car_icons.gd")
++const Work = preload("res://editor/work_job.gd")
++const SIZE := Vector2i(176,112)
++const FILE_LIMIT: int = 14
++var records: LocalRecords
++var allowed: Callable
++var directory: String
++var captures: int = 0
++var disk_hits: int = 0
++var peak_worlds: int = 0
++var active_worlds: int = 0
++var canvas: SubViewport
++var studio: Control
++var _epoch: int = 0
++var _jobs: Array[Dictionary] = []
++var _current: Dictionary = {}
++var _io: RefCounted
++var _io_job: Dictionary = {}
++var _io_kind: String = ""
++var _draws: int = 0
++var _stage: String = ""
++var _debounce: Timer
++var preparing_selected: bool = false
++
++func _ready() -> void:
++	_debounce = Timer.new()
++	_debounce.one_shot = true
++	_debounce.wait_time = 0.35
++	_debounce.timeout.connect(_scan)
++	add_child(_debounce)
++	set_process(false)
++
++func bind_records(value: LocalRecords) -> void:
++	if records == value: return
++	if records != null and records.appearance_committed.is_connected(_committed): records.appearance_committed.disconnect(_committed)
++	_epoch += 1
++	_debounce.stop()
++	_jobs.clear()
++	_current = {}
++	_release()
++	if _io != null: _io.cancel()
++	_io_job = {}
++	records = value
++	if records != null:
++		directory = records.path.get_base_dir().path_join("header_appearance_icons")
++		records.appearance_committed.connect(_committed)
++		_scan()
++
++func _committed() -> void:
++	_debounce.start()
++
++func _scan() -> void:
++	if records == null: return
++	for vehicle: String in VehicleCatalog.IDS:
++		var paint: Dictionary = VehicleLivery.for_car(records.settings,vehicle)
++		var parts: Dictionary = VehicleCustomisation.for_car(records.settings,vehicle)
++		var key: String = Icons.appearance_key(vehicle,records)
++		if paint == VehicleLivery.defaults(vehicle) and parts == VehicleCustomisation.defaults():
++			changed.emit(vehicle)
++			continue
++		if Icons.customized.has(key):
++			changed.emit(vehicle)
++			continue
++		if _current.get("key") == key or _io_job.get("key") == key: continue
++		var pending: bool = false
++		for job: Dictionary in _jobs:
++			if job.key == key: pending = true
++		if pending: continue
++		for index: int in range(_jobs.size()-1,-1,-1):
++			if _jobs[index].vehicle == vehicle: _jobs.remove_at(index)
++		_jobs.append({"vehicle":vehicle,"paint":paint,"parts":parts,"key":key,"epoch":_epoch,"read":true})
++	set_process(not _jobs.is_empty() or _io != null or canvas != null)
++
++func _valid(job: Dictionary) -> bool:
++	return not job.is_empty() and records != null and job.epoch == _epoch and job.key == Icons.appearance_key(job.vehicle,records)
++
++func idle() -> bool:
++	return _jobs.is_empty() and _io == null and canvas == null and _debounce.is_stopped()
++
++func prepare_selected() -> bool:
++	if DisplayServer.get_name() == "headless": return Icons.ready(VehicleCatalog.selected,records)
++	preparing_selected = true
++	var target: String = ""
++	var deadline: int = Time.get_ticks_msec()+45000
++	while is_inside_tree() and records != null and not Icons.ready(VehicleCatalog.selected,records):
++		if Time.get_ticks_msec() >= deadline: break
++		var key: String = Icons.appearance_key(VehicleCatalog.selected,records)
++		if key != target:
++			target = key
++			_scan()
++			# The visible selection comes before other cars in the dropdown.
++			for index: int in range(_jobs.size()):
++				if _jobs[index].key == key:
++					_jobs.push_front(_jobs.pop_at(index))
++					break
++		await get_tree().process_frame
++	preparing_selected = false
++	return Icons.ready(VehicleCatalog.selected,records)
++
++func _process(_delta: float) -> void:
++	var permitted: bool = allowed.is_valid() and bool(allowed.call())
++	# Keep at most the existing completed job until its consumer is eligible.
++	# Invalid owner/appearance results can be discarded without GPU publication.
++	if _io != null and _io.done and (permitted or _io_job.is_empty() or _io_job.get("epoch",-1)!=_epoch):
++		var result: Dictionary = _io.result if _io.result is Dictionary else {}
++		_io = null
++		if _valid(_io_job):
++			if result.get("image") is Image:
++				if _io_kind == "read": disk_hits += 1
++				Icons.publish(_io_job.key,result.image)
++				changed.emit(_io_job.vehicle)
++			elif _io_kind == "read" and DisplayServer.get_name() != "headless":
++				_io_job.read = false
++				_jobs.push_front(_io_job)
++		_io_job = {}
++		_io_kind = ""
++	if not permitted:
++		if canvas != null:
++			if _valid(_current): _jobs.push_front(_current)
++			_release()
++		return
++	if canvas != null and not _valid(_current): _release()
++	if _stage == "build" and studio.presentation_ready:
++		load("res://ui/profile_car.gd").apply_presentation(studio)
++		_stage = "draw"
++		_draws = 5
++		RenderingServer.frame_post_draw.connect(_after_draw)
++	if _stage == "draw":
++		canvas.render_target_update_mode = SubViewport.UPDATE_ONCE
++		studio.viewport.render_target_update_mode = SubViewport.UPDATE_ONCE
++	if canvas == null and _io == null:
++		while not _jobs.is_empty():
++			var job: Dictionary = _jobs.pop_front()
++			if not _valid(job): continue
++			if Icons.customized.has(job.key): changed.emit(job.vehicle); continue
++			if job.read:
++				_io_job = job
++				_io_kind = "read"
++				_io = Work.start(_read.bind(directory.path_join(job.key+".png")),get_tree())
++			else:
++				_current = job
++				canvas = SubViewport.new()
++				canvas.size = SIZE
++				canvas.disable_3d = true
++				canvas.transparent_bg = true
++				canvas.render_target_update_mode = SubViewport.UPDATE_DISABLED
++				add_child(canvas)
++				studio = load("res://ui/profile_car.gd").make_preview(job.vehicle,job.paint,job.parts)
++				studio.size = Vector2(SIZE)
++				studio.cooperative_build = true
++				studio.cache_rest_pose = false
++				studio.header_template = true
++				_stage = "build"
++				canvas.add_child(studio)
++				active_worlds += 1
++				canvas.tree_exited.connect(func() -> void: active_worlds -= 1,CONNECT_ONE_SHOT)
++				peak_worlds = maxi(peak_worlds,active_worlds)
++			break
++	if idle(): set_process(false)
++
++func _after_draw() -> void:
++	if canvas == null or _stage != "draw": return
++	if not allowed.is_valid() or not bool(allowed.call()):
++		if _valid(_current): _jobs.push_front(_current)
++		_release()
++		return
++	_draws -= 1
++	if _draws > 0: return
++	if _valid(_current):
++		var pixels: Image = canvas.get_texture().get_image()
++		captures += 1
++		_io_job = _current
++		_io_kind = "write"
++		_io = Work.start(_write.bind(directory,_current.key,pixels),get_tree())
++	_release()
++
++func _release() -> void:
++	if RenderingServer.frame_post_draw.is_connected(_after_draw): RenderingServer.frame_post_draw.disconnect(_after_draw)
++	if is_instance_valid(canvas):
++		remove_child(canvas)
++		canvas.queue_free()
++	canvas = null
++	studio = null
++	_current = {}
++	_stage = ""
++
++func _exit_tree() -> void:
++	preparing_selected = false
++	if records != null and records.appearance_committed.is_connected(_committed): records.appearance_committed.disconnect(_committed)
++	if is_instance_valid(_debounce): _debounce.stop()
++	_release()
++	if _io != null: _io.cancel()
++	_io = null
++	_io_job.clear()
++	_jobs.clear()
++	records = null
++	allowed = Callable()
++
++static func _read(cancelled: Callable, path: String) -> Dictionary:
++	var file := FileAccess.open(path,FileAccess.READ)
++	if file == null or file.get_length() > 131072 or cancelled.call(): return {}
++	var bytes: PackedByteArray = file.get_buffer(file.get_length())
++	if bytes.size()<33 or bytes.slice(0,8)!=PackedByteArray([137,80,78,71,13,10,26,10]) or bytes.slice(16,24)!=PackedByteArray([0,0,0,176,0,0,0,112]): return {}
++	var pixels := Image.new()
++	if pixels.load_png_from_buffer(bytes)!=OK or pixels.get_size()!=SIZE: return {}
++	return {"image":pixels}
++
++static func _write(cancelled: Callable, path: String, key: String, pixels: Image) -> Dictionary:
++	pixels.convert(Image.FORMAT_RGBA8)
++	for y: int in range(SIZE.y):
++		if cancelled.call(): return {}
++		for x: int in range(SIZE.x):
++			var color: Color = pixels.get_pixel(x,y)
++			if color.a > 0 and color.a < 1:
++				pixels.set_pixel(x,y,Color(minf(1,color.r/color.a),minf(1,color.g/color.a),minf(1,color.b/color.a),color.a))
++	if DirAccess.make_dir_recursive_absolute(path)!=OK: return {"image":pixels}
++	var destination: String = path.path_join(key+".png")
++	var temporary: String = path.path_join(key+"-"+str(Time.get_ticks_usec())+".tmp.png")
++	if pixels.save_png(temporary)==OK:
++		if cancelled.call():
++			DirAccess.remove_absolute(temporary)
++			return {}
++		if FileAccess.file_exists(destination): DirAccess.remove_absolute(destination)
++		if DirAccess.rename_absolute(temporary,destination)!=OK: DirAccess.remove_absolute(temporary)
++	var folder := DirAccess.open(path)
++	if folder == null: return {} if cancelled.call() else {"image":pixels}
++	var files: Array[Dictionary] = []
++	for name: String in folder.get_files():
++		if name.ends_with(".png") and name.trim_suffix(".png").length()==64 and name.trim_suffix(".png").is_valid_hex_number(): files.append({"name":name,"time":FileAccess.get_modified_time(path.path_join(name))})
++	files.sort_custom(func(a: Dictionary,b: Dictionary) -> bool: return a.time<b.time)
++	while files.size()>FILE_LIMIT: DirAccess.remove_absolute(path.path_join(files.pop_front().name))
++	return {} if cancelled.call() else {"image":pixels}
+diff --git a/docs/evidence/graphics-preparation-2026-11-04/run_check.py b/docs/evidence/graphics-preparation-2026-11-04/run_check.py
+new file mode 100644
+--- /dev/null
++++ b/docs/evidence/graphics-preparation-2026-11-04/run_check.py
+@@ -0,0 +1,60 @@
++"""Bounded, offline native loading review with private profiles and source receipts."""
++import argparse
++import hashlib
++import json
++import os
++from pathlib import Path
++import subprocess
++import sys
++import time
++
++p = argparse.ArgumentParser()
++p.add_argument('label')
++p.add_argument('script')
++p.add_argument('--profile', default='')
++p.add_argument('--renderer', default='gl_compatibility')
++p.add_argument('--timeout', type=int, default=360)
++p.add_argument('--headless', action='store_true')
++p.add_argument('--verbose', action='store_true')
++args, extra = p.parse_known_args()
++evidence = Path(__file__).resolve().parent
++root = evidence.parents[2]
++profile = root / 'build/graphics-preparation-20261104' / (args.profile or args.label)
++profile.mkdir(parents=True, exist_ok=True)
++config = profile / 'Circuit01Lab/backend.cfg'
++config.parent.mkdir(exist_ok=True)
++config.write_text('[backend]\nurl=""\n', encoding='utf-8')
++env = os.environ.copy()
++env.update(APPDATA=str(profile), BMT_API_URL='', BMT_LOADING_OUTPUT=str(evidence / (args.label+'.json')))
++env.update(BMT_GRAPHICS_EVIDENCE=str(evidence / args.label), BMT_THUMBNAIL_OUTPUT=str(evidence / args.label),
++           BMT_GARAGE_DEFERRED_EVIDENCE=str(evidence / args.label))
++(evidence / args.label).mkdir(exist_ok=True)
++command = [sys.executable, str(root / 'scripts/run_no_crash_dialog.py'), '--',
++    'C:/apps/Godot 4.7.2/Godot_v4.7.2-stable_win64_console.exe', '--path', str(root/'game'),
++    '--audio-driver', 'Dummy', '--rendering-method', args.renderer,
++    *(['--headless'] if args.headless else []), *(['--verbose'] if args.verbose else []), '--script', args.script, '--', *extra]
++
++def hashes():
++    paths = [path for path in (root/'game').rglob('*') if path.is_file()
++             and '.godot' not in path.parts and path.suffix in ('.gd', '.gdshader', '.gdshaderinc', '.tscn')]
++    paths.append(root/'game/project.godot')
++    return {str(path.relative_to(root)).replace('\\','/'): hashlib.sha256(path.read_bytes()).hexdigest() for path in paths}
++
++receipt = dict(command=command, profile=str(profile), before=hashes())
++began = time.monotonic()
++with (evidence/(args.label+'.log')).open('w', encoding='utf-8') as log:
++    process = subprocess.Popen(command, env=env, cwd=root, stdout=log, stderr=subprocess.STDOUT)
++    receipt['owned_process_id'] = process.pid
++    (evidence/(args.label+'-running.json')).write_text(json.dumps(receipt, indent=2), encoding='utf-8')
++    try:
++        receipt['exit_code'] = process.wait(timeout=args.timeout)
++    except subprocess.TimeoutExpired:
++        subprocess.run(['taskkill','/PID',str(process.pid),'/T','/F'], capture_output=True, check=False)
++        process.wait(timeout=20)
++        receipt['exit_code'] = 124
++receipt.update(elapsed_seconds=time.monotonic()-began, after=hashes())
++receipt['changed_sources'] = [path for path in receipt['before'].keys() | receipt['after'].keys()
++                            if receipt['before'].get(path) != receipt['after'].get(path)]
++(evidence/(args.label+'-receipt.json')).write_text(json.dumps(receipt, indent=2), encoding='utf-8')
++print(json.dumps({key: receipt[key] for key in ('exit_code','elapsed_seconds','changed_sources')}))
++sys.exit(receipt['exit_code'])
+diff --git a/docs/evidence/graphics-preparation-2026-11-04/run_final_checks.py b/docs/evidence/graphics-preparation-2026-11-04/run_final_checks.py
+new file mode 100644
+--- /dev/null
++++ b/docs/evidence/graphics-preparation-2026-11-04/run_final_checks.py
+@@ -0,0 +1,26 @@
++"""Run the final retained/native matrix serially, preserving each child receipt."""
++from pathlib import Path
++import subprocess
++import sys
++
++root = Path(__file__).resolve().parents[3]
++runner = root/'docs/evidence/graphics-preparation-2026-11-04/run_check.py'
++cases = [
++    ('final-components-compat','res://tests/test_shared_graphics_preparation.gd',[]),
++    ('final-buckets','res://tests/test_world_render_buckets.gd',['--headless','--timeout','45']),
++    ('final-editor','res://tests/test_editor_graphics_preparation.gd',['--timeout','80']),
++    ('final-warm','res://tests/test_garage_warm_scheduling.gd',['--timeout','180','--output=res://../docs/evidence/graphics-preparation-2026-11-04/final-warm']),
++    ('final-garage','res://tests/test_shared_graphics_garage.gd',['--timeout','200']),
++    ('final-header','res://tests/test_shared_graphics_header.gd',['--timeout','150']),
++    ('final-thumbnails','res://tests/test_shared_graphics_thumbnails.gd',['--timeout','180']),
++    ('final-entry','res://tests/test_garage_deferred_views.gd',['--timeout','300']),
++    ('final-compat-laps','res://tests/test_shared_graphics_first_laps.gd',['--timeout','600','--first-emission']),
++]
++failed = []
++for label,script,extra in cases:
++    print('FINAL_CHECK_START',label,flush=True)
++    result = subprocess.run([sys.executable,str(runner),label,script,*extra],cwd=root,check=False)
++    print('FINAL_CHECK_END',label,result.returncode,flush=True)
++    if result.returncode: failed.append(label)
++print('FINAL_CHECK_FAILURES',failed,flush=True)
++sys.exit(1 if failed else 0)
+diff --git a/docs/evidence/graphics-preparation-2026-11-04/summarize.py b/docs/evidence/graphics-preparation-2026-11-04/summarize.py
+new file mode 100644
+--- /dev/null
++++ b/docs/evidence/graphics-preparation-2026-11-04/summarize.py
+@@ -0,0 +1,46 @@
++"""Keep all attempts, assertions, errors and source scope beside the native proof."""
++import hashlib
++import json
++from pathlib import Path
++import re
++
++evidence = Path(__file__).resolve().parent
++root = evidence.parents[2]
++runtime = ['game/rendering/graphics_preparation.gd','game/race/world_render_preparation.gd',
++           'game/ui/garage_first_draw.gd','game/ui/garage_preloaded_studio.gd',
++           'game/ui/garage_opening_showroom.gd','game/ui/header_car_appearance_cache.gd',
++           'game/ui/garage_preview_cache.gd']
++current = {path:hashlib.sha256((root/path).read_bytes()).hexdigest() for path in runtime}
++summary = dict(runtime_sha256=current,runs={})
++for receipt_path in sorted(evidence.glob('*-receipt.json')):
++    label = receipt_path.name.removesuffix('-receipt.json')
++    receipt = json.loads(receipt_path.read_text(encoding='utf-8'))
++    result_path = evidence/(label+'.json')
++    if not result_path.exists(): result_path = evidence/label/'report.json'
++    result = json.loads(result_path.read_text(encoding='utf-8')) if result_path.exists() else {}
++    log = (evidence/(label+'.log')).read_text(encoding='utf-8',errors='replace')
++    checks,failures = result.get('checks'),result.get('failures')
++    if checks is None:
++        matches = re.findall(r'(\d+) checks,\s*(\d+) failures',log)
++        if matches: checks,failures = map(int,matches[-1])
++    summary['runs'][label] = dict(exit_code=receipt['exit_code'],checks=checks,failures=failures,
++        source_changes=receipt['changed_sources'],
++        runtime_changes=[path for path in runtime if receipt['before'].get(path)!=receipt['after'].get(path)],
++        matches_final_runtime=all(receipt['after'].get(path)==current[path] for path in runtime),
++        engine_errors=[line for line in log.splitlines() if 'ERROR:' in line or 'TIMEOUT' in line],
++        warnings=[line for line in log.splitlines() if 'WARNING:' in line],
++        rows=result.get('rows',result.get('samples',[])),first_laps=result.get('first_laps',[]))
++labels = ['final-components-compat','final-components-mobile','final-buckets','final-editor',
++          'final-warm','final-garage','final-header','final-thumbnails','final-entry',
++          'same-owner-race-final','final-compat-laps']
++selected = {label:summary['runs'].get(label) for label in labels}
++summary['selected_final'] = dict(labels=labels,
++    complete=all(run is not None for run in selected.values()),
++    assertions=sum(run['checks'] or 0 for run in selected.values() if run is not None),
++    all_pass=all(run is not None and run['exit_code']==0 and run['failures']==0
++                 and run['matches_final_runtime'] and not run['source_changes']
++                 and not run['warnings'] and all('root certificate store' in error for error in run['engine_errors'])
++                 for run in selected.values()))
++(evidence/'summary.json').write_text(json.dumps(summary,indent=2)+'\n',encoding='utf-8')
++print(json.dumps({label:{key:run[key] for key in ('exit_code','checks','failures','matches_final_runtime','runtime_changes')}
++                  for label,run in summary['runs'].items()},indent=2))
+diff --git a/docs/evidence/graphics-preparation-2026-11-04/compare_pngs.py b/docs/evidence/graphics-preparation-2026-11-04/compare_pngs.py
+new file mode 100644
+--- /dev/null
++++ b/docs/evidence/graphics-preparation-2026-11-04/compare_pngs.py
+@@ -0,0 +1,64 @@
++"""Read-only byte comparison of Godot RGBA8 PNG captures, using stdlib only."""
++import json
++from pathlib import Path
++import struct
++import sys
++import zlib
++
++def rgba(path):
++    content = path.read_bytes()
++    assert content[:8] == b'\x89PNG\r\n\x1a\n'
++    cursor, compressed = 8, bytearray()
++    width = height = 0
++    while cursor < len(content):
++        length = struct.unpack('>I',content[cursor:cursor+4])[0]
++        tag, data = content[cursor+4:cursor+8], content[cursor+8:cursor+8+length]
++        if tag == b'IHDR':
++            width,height,depth,kind,compression,filtering,interlace = struct.unpack('>IIBBBBB',data)
++            assert (depth,kind,compression,filtering,interlace)==(8,6,0,0,0)
++        if tag == b'IDAT': compressed.extend(data)
++        cursor += length+12
++    raw = zlib.decompress(compressed)
++    stride = width*4
++    previous, result, offset = bytearray(stride), bytearray(), 0
++    for _ in range(height):
++        kind = raw[offset]
++        row = bytearray(raw[offset+1:offset+1+stride])
++        offset += stride+1
++        for i in range(stride):
++            a = row[i-4] if i>=4 else 0
++            b = previous[i]
++            c = previous[i-4] if i>=4 else 0
++            if kind == 1: row[i] = (row[i]+a)&255
++            elif kind == 2: row[i] = (row[i]+b)&255
++            elif kind == 3: row[i] = (row[i]+(a+b)//2)&255
++            elif kind == 4:
++                p = a+b-c
++                pa,pb,pc = abs(p-a),abs(p-b),abs(p-c)
++                predictor = a if pa<=pb and pa<=pc else b if pb<=pc else c
++                row[i] = (row[i]+predictor)&255
++            else: assert kind == 0
++        result.extend(row)
++        previous = row
++    return width,height,result
++
++reference = Path(sys.argv[1])
++width,height,expected = rgba(reference)
++rows = []
++for name in sys.argv[2:]:
++    path = Path(name)
++    w,h,actual = rgba(path)
++    assert (w,h)==(width,height)
++    count = maximum = total = 0
++    left,top,right,bottom = width,height,-1,-1
++    for index,(a,b) in enumerate(zip(expected,actual)):
++        difference = abs(a-b)
++        if difference:
++            count += 1
++            total += difference
++            maximum = max(maximum,difference)
++            x,y = (index//4)%width,(index//4)//width
++            left,top,right,bottom = min(left,x),min(top,y),max(right,x),max(bottom,y)
++    rows.append(dict(path=str(path),changed_channels=count,max_channel_difference=maximum,
++                     total_difference=total,bounds=[left,top,right,bottom] if count else None))
++print(json.dumps(rows,indent=2))
+diff --git a/docs/evidence/graphics-preparation-2026-11-04/checkpoint.py b/docs/evidence/graphics-preparation-2026-11-04/checkpoint.py
+new file mode 100644
+--- /dev/null
++++ b/docs/evidence/graphics-preparation-2026-11-04/checkpoint.py
+@@ -0,0 +1,76 @@
++"""Check this task's patch in an owned directory without writing the main index."""
++import difflib
++import hashlib
++import json
++from pathlib import Path
++import subprocess
++import time
++
++evidence = Path(__file__).resolve().parent
++root = evidence.parents[2]
++runtime_changed = [
++    'game/race/world_render_preparation.gd',
++    'game/ui/garage_first_draw.gd',
++    'game/ui/garage_preloaded_studio.gd',
++    'game/ui/garage_opening_showroom.gd',
++    'game/ui/header_car_appearance_cache.gd',
++    'game/ui/garage_preview_cache.gd',
++    'game/tests/test_world_render_buckets.gd',
++]
++trackers = ['AGENTS.md','DEVELOPMENT_STATUS.md']
++added = ['game/rendering/graphics_preparation.gd','docs/SHARED_GRAPHICS_PREPARATION_2026_11_04.md']
++added += ['game/tests/'+name+'.gd' for name in (
++    'graphics_control_scene','profile_shared_graphics_preparation',
++    'test_shared_graphics_before_lap','test_shared_graphics_first_laps',
++    'test_shared_graphics_garage','test_shared_graphics_header',
++    'test_shared_graphics_lifecycle','test_shared_graphics_preparation',
++    'test_shared_graphics_race_pixels','test_shared_graphics_thumbnails')]
++added += [path.relative_to(root).as_posix() for path in sorted((evidence/'before').rglob('*')) if path.is_file()]
++added += [(evidence/name).relative_to(root).as_posix() for name in (
++    'run_check.py','run_final_checks.py','summarize.py','compare_pngs.py','checkpoint.py')]
++marker = '<!-- SHARED-GRAPHICS-PREPARATION-20261104 -->'
++end_marker = '<!-- /SHARED-GRAPHICS-PREPARATION-20261104 -->'
++before, after, parts = {}, {}, []
++for path in runtime_changed+trackers+added:
++    new = (root/path).read_bytes().replace(b'\r\n',b'\n')
++    old = b''
++    if path in runtime_changed:
++        old = (evidence/'before'/path).read_bytes().replace(b'\r\n',b'\n')
++    elif path in trackers:
++        # Preserve concurrent tracker updates identically on both patch sides.
++        text = new.decode('utf-8')
++        assert text.count(marker)==1 and text.count(end_marker)==1
++        start = text.index(marker)
++        end = text.index(end_marker)+len(end_marker)
++        if text[end:end+2]=='\n\n': end += 2
++        elif text[end:end+1]=='\n': end += 1
++        old = (text[:start]+text[end:]).encode('utf-8')
++    before[path], after[path] = old, new
++    parts.append(f'diff --git a/{path} b/{path}\n')
++    if path in added: parts.append('new file mode 100644\n')
++    parts.extend(difflib.unified_diff(old.decode().splitlines(keepends=True),new.decode().splitlines(keepends=True),
++        fromfile='/dev/null' if path in added else 'a/'+path,tofile='b/'+path))
++patch = evidence/'task.patch'
++patch.write_bytes(''.join(parts).encode())
++owned = root/'build/graphics-preparation-20261104'/('checkpoint-'+str(time.time_ns()))
++owned.mkdir(parents=True)
++assert owned.resolve().is_relative_to((root/'build/graphics-preparation-20261104').resolve())
++for path in runtime_changed+trackers:
++    target = owned/path
++    target.parent.mkdir(parents=True,exist_ok=True)
++    target.write_bytes(before[path])
++commands = []
++for arguments in (('--check',),(),('--reverse','--check'),('--reverse',)):
++    command = ['git','apply','--directory='+owned.relative_to(root).as_posix(),*arguments,str(patch)]
++    result = subprocess.run(command,cwd=root,capture_output=True,text=True)
++    commands.append(dict(command=command,exit_code=result.returncode,output=result.stdout+result.stderr))
++    assert result.returncode==0,result.stderr
++    if arguments==():
++        assert all((owned/path).read_bytes().replace(b'\r\n',b'\n')==after[path] for path in after)
++assert all((owned/path).read_bytes().replace(b'\r\n',b'\n')==before[path] for path in runtime_changed+trackers)
++assert all(not (owned/path).exists() for path in added)
++report = dict(files=list(after),forward_content_exact=True,reverse_content_exact=True,main_index_written=False,
++    patch_sha256=hashlib.sha256(patch.read_bytes()).hexdigest(),commands=commands,
++    source_sha256={path:hashlib.sha256(after[path]).hexdigest() for path in after})
++(evidence/'checkpoint.json').write_text(json.dumps(report,indent=2)+'\n',encoding='utf-8')
++print('Task-only patch forward/reverse/content checks pass; main index unchanged.')

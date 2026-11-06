@@ -1,0 +1,133 @@
+extends SceneTree
+## Isolated engine requests; includes terminal failure and a real blocked worker.
+const Loader = preload("res://core/feature_resource_loader.gd")
+var checks: int = 0
+var failures: int = 0
+
+class BlockingFormat extends ResourceFormatLoader:
+	var entered := Semaphore.new()
+	var release := Semaphore.new()
+	var fail: bool = false
+	func _get_recognized_extensions() -> PackedStringArray: return PackedStringArray(["featurefixture"])
+	func _handles_type(type: StringName) -> bool: return type == &"Resource"
+	func _get_resource_type(path: String) -> String: return "Resource" if path.get_extension() == "featurefixture" else ""
+	func _load(_path: String,_original: String,_sub_threads: bool,_cache_mode: int) -> Variant:
+		entered.post()
+		release.wait()
+		if fail: return ERR_CANT_OPEN
+		var result := Resource.new()
+		result.resource_name = "worker finished"
+		return result
+
+func _initialize() -> void: run.call_deferred()
+
+func check(value: bool, message: String) -> void:
+	checks += 1
+	if not value:
+		failures += 1
+		print("FAIL: "+message)
+
+func _wait_done(entry: Dictionary) -> void:
+	var deadline: int = Time.get_ticks_msec()+5000
+	while not entry.done and Time.get_ticks_msec() < deadline: await process_frame
+	check(entry.done,"request completes within bounded wait")
+
+func _wait_entered(format: BlockingFormat) -> bool:
+	var deadline: int = Time.get_ticks_msec()+5000
+	while Time.get_ticks_msec() < deadline:
+		if format.entered.try_wait(): return true
+		await process_frame
+	return false
+
+func _write(path: String, body: String) -> void:
+	var file := FileAccess.open(path,FileAccess.WRITE)
+	check(file != null,"owned fixture opens")
+	if file != null: file.store_string(body)
+
+func run() -> void:
+	var folder: String = "user://feature-resource-loader-"+str(Time.get_ticks_usec())
+	check(DirAccess.make_dir_recursive_absolute(folder) == OK,"private fixture directory")
+	var owner := Loader.new()
+	root.add_child(owner)
+	var path: String = folder.path_join("missing.tres")
+	print("EXPECTED_FAILURE_BEGIN: missing resource")
+	var failed: Dictionary = owner.request(path)
+	await _wait_done(failed)
+	print("EXPECTED_FAILURE_END: missing resource")
+	check(failed.failed and failed.resource == null,"missing resource is reported as failure")
+	check(ResourceLoader.load_threaded_get_status(path) == ResourceLoader.THREAD_LOAD_INVALID_RESOURCE,"failed request relinquishes engine token")
+	_write(path,"[gd_resource type=\"Resource\" format=3]\n\n[resource]\nresource_name = \"retry loaded\"\n")
+	var retry: Dictionary = owner.request(path)
+	var shared: Dictionary = owner.request(path)
+	await _wait_done(retry)
+	check(not retry.failed and retry.resource != null and retry.resource.resource_name == "retry loaded","same path retries after missing file is created")
+	check(shared.done and shared.resource == retry.resource,"concurrent waiters share one result")
+	check(ResourceLoader.load_threaded_get_status(path) == ResourceLoader.THREAD_LOAD_INVALID_RESOURCE,"shared request consumes exactly one engine token")
+	check(owner.request(path).resource == retry.resource,"completed request is reusable")
+	check(not owner.is_processing(),"completed owner stops polling")
+	owner.queue_free()
+	await process_frame
+	await process_frame
+
+	var format := BlockingFormat.new()
+	ResourceLoader.add_resource_format_loader(format,true)
+	for fail: bool in [false,true]:
+		format.fail = fail
+		path = folder.path_join("retire-failed.featurefixture" if fail else "retire-loaded.featurefixture")
+		_write(path,"owned fixture")
+		owner = Loader.new()
+		root.add_child(owner)
+		var pending: Dictionary = owner.request(path)
+		var entered: bool = await _wait_entered(format)
+		check(entered,"request is running on the controlled worker")
+		check(not pending.done,"worker remains unfinished before owner exits")
+		owner.queue_free()
+		await process_frame
+		await process_frame
+		check(not is_instance_valid(owner),"owner teardown returns before blocked worker finishes")
+		check(ResourceLoader.load_threaded_get_status(path) == ResourceLoader.THREAD_LOAD_IN_PROGRESS,"teardown does not synchronously join unfinished resource")
+		if fail: print("EXPECTED_FAILURE_BEGIN: retired worker")
+		format.release.post()
+		var deadline: int = Time.get_ticks_msec()+5000
+		while ResourceLoader.load_threaded_get_status(path) != ResourceLoader.THREAD_LOAD_INVALID_RESOURCE and Time.get_ticks_msec() < deadline:
+			await process_frame
+		if fail: print("EXPECTED_FAILURE_END: retired worker")
+		check(ResourceLoader.load_threaded_get_status(path) == ResourceLoader.THREAD_LOAD_INVALID_RESOURCE,"retired worker relinquishes terminal token")
+		check(not pending.done and pending.resource == null,"retired waiter is never delivered to deleted owner")
+	await _garage_failures(folder,format)
+	ResourceLoader.remove_resource_format_loader(format)
+	for frame: int in range(4): await process_frame
+	print("Feature resource loader: %d checks, %d failures" % [checks,failures])
+	quit(1 if failures else 0)
+
+func _garage_failures(folder: String, format: BlockingFormat) -> void:
+	# The existing Garage coordinator owns engine requests separately. Exercise
+	# its normal poll and PREDELETE retirement with the same real worker gate.
+	var script: GDScript = load("res://ui/garage_preloader.gd")
+	format.fail = true
+	for retiring: bool in [false,true]:
+		var path: String = folder.path_join("garage-retire.featurefixture" if retiring else "garage-poll.featurefixture")
+		_write(path,"owned fixture")
+		var preloader: Node = script.new()
+		preloader._tree_ref = weakref(self)
+		preloader._wanted.append(path)
+		check(ResourceLoader.load_threaded_request(path) == OK,"Garage fixture request starts")
+		preloader._pending.append(path)
+		check(await _wait_entered(format),"Garage fixture reaches worker gate")
+		if retiring:
+			preloader.free()
+			check(not is_instance_valid(preloader),"Garage retirement does not join unfinished worker")
+		else:
+			preloader._poll_loads()
+			check(preloader._pending.size() == 1,"Garage poll preserves unfinished worker")
+		print("EXPECTED_FAILURE_BEGIN: Garage worker")
+		format.release.post()
+		var deadline: int = Time.get_ticks_msec()+5000
+		while ResourceLoader.load_threaded_get_status(path) != ResourceLoader.THREAD_LOAD_INVALID_RESOURCE and Time.get_ticks_msec() < deadline:
+			if not retiring: preloader._poll_loads()
+			await process_frame
+		print("EXPECTED_FAILURE_END: Garage worker")
+		check(ResourceLoader.load_threaded_get_status(path) == ResourceLoader.THREAD_LOAD_INVALID_RESOURCE,"Garage failure relinquishes engine token")
+		if not retiring:
+			check(preloader._failed.has(path) and not preloader._resources.has(path) and preloader._pending.is_empty(),"Garage failure never installs a null resource")
+			preloader.free()

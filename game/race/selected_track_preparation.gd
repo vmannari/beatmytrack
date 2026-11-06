@@ -34,7 +34,7 @@ static func run(cancelled: Callable, selected: NativeTrack, entry: Dictionary, d
 	preload("res://track/road_surface_height.gd").new(track)
 	if cancelled.call(): return {}
 	var session := TrackSession.new()
-	session._configure(track)
+	session.prepare_cached(track,cancelled)
 	if cancelled.call(): return {}
 	receipt = DISK.stage_arrays(disk_key,packet,cancelled)
 	if cancelled.call(): DISK.discard_arrays(receipt); return {}

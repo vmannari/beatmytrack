@@ -22,6 +22,9 @@ func run() -> void:
 	stage.camera = Camera3D.new()
 	stage.add_child(stage.camera)
 	var preparation = PREPARATION.new()
+	# Keep the single-program retry/order contract, alongside the new bounded
+	# multi-program and cross-view native fixture.
+	preparation.programs_per_draw = 1
 	stage.add_child(preparation)
 	PREPARATION.warmed.clear()
 	var groups: Array = [[],[],[]]

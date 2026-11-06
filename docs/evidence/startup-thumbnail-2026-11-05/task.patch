@@ -1,0 +1,1169 @@
+--- a/game/core/app.gd
++++ b/game/core/app.gd
+@@ -265,6 +265,7 @@
+ 
+ func _wake_optional_work() -> void:
+ 	if not is_inside_tree() or is_queued_for_deletion(): return
++	if is_instance_valid(header_car_cache): header_car_cache.resume_pending()
+ 	preload("res://backend/menu_snapshot_writer.gd").resume()
+ 	if is_instance_valid(_garage_preloader): _garage_preloader.invalidate()
+ 	# Results restore the race menu without _show_screen. Wake any achievement
+@@ -364,7 +365,10 @@
+ 	appearance_sync.bind_records(records)
+ 	appearance_sync.changed.connect(_garage_appearance_changed)
+ 	header_car_cache = preload("res://ui/header_car_appearance_cache.gd").new()
+-	header_car_cache.allowed = _header_car_capture_allowed
++	header_car_cache.allowed = _header_car_work_allowed
++	header_car_cache.capture_allowed = _header_car_capture_allowed
++	header_car_cache.capture_started.connect(_header_car_capture_started)
++	header_car_cache.capture_finished.connect(_header_car_capture_finished)
+ 	header_car_cache.changed.connect(_header_car_picture_ready)
+ 	add_child(header_car_cache)
+ 	header_car_cache.bind_records(records)
+@@ -505,7 +509,8 @@
+ 	_garage_preloader=preload("res://ui/garage_preloader.gd").new()
+ 	_garage_preloader.app=self
+ 	add_child(_garage_preloader)
+-	await header_car_cache.prepare_selected()
++	# Missing custom pictures use a 2D silhouette. Native header preparation
++	# belongs to an explicit Garage visit, never first-menu readiness.
+ 	_show_screen(capture_screen if not capture_path.is_empty() else "rivalry" if online.profile_ready() else "account")
+ 	startup_complete = true
+ 	if DisplayServer.get_name() == "headless": _initial_menu_presented = true
+@@ -2182,8 +2187,37 @@
+ 	var current: Callable=func() -> bool: return is_inside_tree() and generation==_navigation_generation and records==owner_records
+ 	return await _garage_preloader.prepare_pictures(current)
+ 
+-func _header_car_capture_allowed() -> bool:
+-	return (startup_complete or header_car_cache.preparing_selected) and not is_instance_valid(game) and _background_work_allowed() and (screen != "restoring" or header_car_cache.preparing_selected)
++var _header_capture_cover: Control
++
++func _header_car_work_allowed() -> bool:
++	return startup_complete and _publishing_slots_foreground and not is_instance_valid(game) and _background_work_allowed() and screen != "restoring"
++
++func _header_car_capture_allowed(vehicle: String) -> bool:
++	if not _header_car_work_allowed() or screen != "garage" or editor_memory.pressure_requested: return false
++	if menu_page_motion != null and menu_page_motion.is_running(): return false
++	if not is_instance_valid(_retained_garage) or _retained_garage.records != records or not _retained_garage.is_visible_in_tree(): return false
++	var showroom: Control = _retained_garage.showroom
++	if not is_instance_valid(showroom) or not showroom.showroom_ready or showroom.vehicle_id != vehicle: return false
++	if _retained_garage.progressive_entry and showroom.preparing: return false
++	return true
++
++func _header_car_capture_started(vehicle: String) -> void:
++	_header_car_capture_finished()
++	if not _header_car_capture_allowed(vehicle): return
++	var showroom: Control = _retained_garage.showroom
++	showroom._clear_gesture()
++	_header_capture_cover = load("res://ui/garage_loading_car.gd").new()
++	_header_capture_cover.name = "HeaderPicturePreparation"
++	_header_capture_cover.vehicle_id = vehicle
++	showroom.add_child(_header_capture_cover)
++	MenuStyle.fill(_header_capture_cover)
++	_header_capture_cover.mouse_filter = Control.MOUSE_FILTER_STOP
++
++func _header_car_capture_finished() -> void:
++	if is_instance_valid(_header_capture_cover):
++		if _header_capture_cover.get_parent() != null: _header_capture_cover.get_parent().remove_child(_header_capture_cover)
++		_header_capture_cover.queue_free()
++	_header_capture_cover = null
+ 
+ func _header_car_picture_ready(vehicle: String) -> void:
+ 	if not is_instance_valid(account_button): return
+--- a/game/ui/header_car_appearance_cache.gd
++++ b/game/ui/header_car_appearance_cache.gd
+@@ -1,6 +1,8 @@
+ extends Node
+ ## One cooperative capture on an equipped-appearance miss; menu visits read PNGs.
+ signal changed(vehicle: String)
++signal capture_started(vehicle: String)
++signal capture_finished
+ const Icons = preload("res://ui/header_car_icons.gd")
+ const Work = preload("res://editor/work_job.gd")
+ const Graphics = preload("res://rendering/graphics_preparation.gd")
+@@ -8,6 +10,9 @@
+ const FILE_LIMIT: int = 14
+ var records: LocalRecords
+ var allowed: Callable
++# App permits cheap PNG reads in menus, but cold native captures only in Garage.
++# Standalone tools retain their explicitly supplied `allowed` capture policy.
++var capture_allowed: Callable
+ var directory: String
+ var captures: int = 0
+ var disk_hits: int = 0
+@@ -23,8 +28,11 @@
+ var _io_kind: String = ""
+ var _draws: int = 0
+ var _stage: String = ""
++var _cover_ready: bool = false
++var _capture_announced: bool = false
+ var _graphics_ticket: Dictionary = {}
+ var _debounce: Timer
++var _retry: Timer
+ var preparing_selected: bool = false
+ 
+ func _ready() -> void:
+@@ -33,13 +41,28 @@
+ 	_debounce.wait_time = 0.35
+ 	_debounce.timeout.connect(_scan)
+ 	add_child(_debounce)
++	_retry = Timer.new()
++	_retry.one_shot = true
++	_retry.wait_time = 0.25
++	_retry.timeout.connect(resume_pending)
++	add_child(_retry)
+ 	set_process(false)
++
++func resume_pending() -> void:
++	_retry.stop()
++	set_process(not _jobs.is_empty() or _io != null or not _current.is_empty())
++
++func _wait_for_opportunity() -> void:
++	# Deferred appearances must not hash every saved design on every menu frame.
++	set_process(false)
++	_retry.start()
+ 
+ func bind_records(value: LocalRecords) -> void:
+ 	if records == value: return
+ 	if records != null and records.appearance_committed.is_connected(_committed): records.appearance_committed.disconnect(_committed)
+ 	_epoch += 1
+ 	_debounce.stop()
++	_retry.stop()
+ 	_jobs.clear()
+ 	_current = {}
+ 	_release()
+@@ -52,6 +75,8 @@
+ 		_scan()
+ 
+ func _committed() -> void:
++	# Stop displaying an obsolete saved design during the debounce/read window.
++	for vehicle: String in VehicleCatalog.IDS: changed.emit(vehicle)
+ 	_debounce.start()
+ 
+ func _scan() -> void:
+@@ -74,13 +99,22 @@
+ 		for index: int in range(_jobs.size()-1,-1,-1):
+ 			if _jobs[index].vehicle == vehicle: _jobs.remove_at(index)
+ 		_jobs.append({"vehicle":vehicle,"paint":paint,"parts":parts,"key":key,"epoch":_epoch,"read":true})
+-	set_process(not _jobs.is_empty() or _io != null or canvas != null)
++	resume_pending()
+ 
+ func _valid(job: Dictionary) -> bool:
+ 	return not job.is_empty() and records != null and job.epoch == _epoch and job.key == Icons.appearance_key(job.vehicle,records)
+ 
+ func idle() -> bool:
+-	return _jobs.is_empty() and _io == null and canvas == null and _debounce.is_stopped()
++	return _jobs.is_empty() and _io == null and _current.is_empty() and canvas == null and _debounce.is_stopped()
++
++func reads_idle() -> bool:
++	return _io == null and _debounce.is_stopped() and not _jobs.any(func(job: Dictionary) -> bool: return bool(job.read))
++
++func _can_capture(job: Dictionary) -> bool:
++	return not capture_allowed.is_valid() or bool(capture_allowed.call(str(job.get("vehicle",""))))
++
++func _cover_drawn() -> void:
++	_cover_ready = true
+ 
+ func prepare_selected() -> bool:
+ 	if DisplayServer.get_name() == "headless": return Icons.ready(VehicleCatalog.selected,records)
+@@ -119,12 +153,31 @@
+ 				_jobs.push_front(_io_job)
+ 		_io_job = {}
+ 		_io_kind = ""
+-	if not permitted:
+-		if canvas != null:
++	if not permitted or (not _current.is_empty() and not _can_capture(_current)):
++		if not _current.is_empty():
+ 			if _valid(_current): _jobs.push_front(_current)
+ 			_release()
+-		return
+-	if canvas != null and not _valid(_current): _release()
++		if not permitted:
++			_wait_for_opportunity()
++			return
++	if not _current.is_empty() and not _valid(_current): _release()
++	if _stage == "cover" and _cover_ready:
++		canvas = SubViewport.new()
++		canvas.size = SIZE
++		canvas.disable_3d = true
++		canvas.transparent_bg = true
++		canvas.render_target_update_mode = SubViewport.UPDATE_DISABLED
++		add_child(canvas)
++		studio = load("res://ui/profile_car.gd").make_preview(_current.vehicle,_current.paint,_current.parts)
++		studio.size = Vector2(SIZE)
++		studio.cooperative_build = true
++		studio.cache_rest_pose = false
++		studio.header_template = true
++		_stage = "build"
++		canvas.add_child(studio)
++		active_worlds += 1
++		canvas.tree_exited.connect(func() -> void: active_worlds -= 1,CONNECT_ONE_SHOT)
++		peak_worlds = maxi(peak_worlds,active_worlds)
+ 	if _stage == "build" and studio.presentation_ready:
+ 		load("res://ui/profile_car.gd").apply_presentation(studio)
+ 		_graphics_ticket = Graphics.begin_capture(studio.car.get_parent(),studio.viewport,studio.viewport.get_camera_3d())
+@@ -134,8 +187,11 @@
+ 	if _stage == "draw":
+ 		canvas.render_target_update_mode = SubViewport.UPDATE_ONCE
+ 		studio.viewport.render_target_update_mode = SubViewport.UPDATE_ONCE
+-	if canvas == null and _io == null:
+-		while not _jobs.is_empty():
++	if _current.is_empty() and _io == null:
++		# A deferred capture must not prevent another car's cheap disk read.
++		var remaining: int = _jobs.size()
++		while remaining > 0 and not _jobs.is_empty():
++			remaining -= 1
+ 			var job: Dictionary = _jobs.pop_front()
+ 			if not _valid(job): continue
+ 			if Icons.customized.has(job.key): changed.emit(job.vehicle); continue
+@@ -144,29 +200,24 @@
+ 				_io_kind = "read"
+ 				_io = Work.start(_read.bind(directory.path_join(job.key+".png")),get_tree())
+ 			else:
++				if not _can_capture(job):
++					_jobs.append(job)
++					continue
+ 				_current = job
+-				canvas = SubViewport.new()
+-				canvas.size = SIZE
+-				canvas.disable_3d = true
+-				canvas.transparent_bg = true
+-				canvas.render_target_update_mode = SubViewport.UPDATE_DISABLED
+-				add_child(canvas)
+-				studio = load("res://ui/profile_car.gd").make_preview(job.vehicle,job.paint,job.parts)
+-				studio.size = Vector2(SIZE)
+-				studio.cooperative_build = true
+-				studio.cache_rest_pose = false
+-				studio.header_template = true
+-				_stage = "build"
+-				canvas.add_child(studio)
+-				active_worlds += 1
+-				canvas.tree_exited.connect(func() -> void: active_worlds -= 1,CONNECT_ONE_SHOT)
+-				peak_worlds = maxi(peak_worlds,active_worlds)
++				_stage = "cover"
++				_cover_ready = false
++				_capture_announced = true
++				capture_started.emit(str(job.vehicle))
++				# The Garage's loading picture must actually draw before even the
++				# renderer resource is loaded or its native model is constructed.
++				RenderingServer.frame_post_draw.connect(_cover_drawn,CONNECT_ONE_SHOT)
+ 			break
+ 	if idle(): set_process(false)
++	elif _current.is_empty() and _io == null: _wait_for_opportunity()
+ 
+ func _after_draw() -> void:
+ 	if canvas == null or _stage != "draw": return
+-	if not allowed.is_valid() or not bool(allowed.call()):
++	if not allowed.is_valid() or not bool(allowed.call()) or not _can_capture(_current):
+ 		if _valid(_current): _jobs.push_front(_current)
+ 		_release()
+ 		return
+@@ -182,6 +233,7 @@
+ 	_release()
+ 
+ func _release() -> void:
++	if RenderingServer.frame_post_draw.is_connected(_cover_drawn): RenderingServer.frame_post_draw.disconnect(_cover_drawn)
+ 	if RenderingServer.frame_post_draw.is_connected(_after_draw): RenderingServer.frame_post_draw.disconnect(_after_draw)
+ 	if is_instance_valid(canvas):
+ 		remove_child(canvas)
+@@ -190,12 +242,17 @@
+ 	studio = null
+ 	_current = {}
+ 	_stage = ""
++	_cover_ready = false
+ 	_graphics_ticket = {}
++	if _capture_announced:
++		_capture_announced = false
++		capture_finished.emit()
+ 
+ func _exit_tree() -> void:
+ 	preparing_selected = false
+ 	if records != null and records.appearance_committed.is_connected(_committed): records.appearance_committed.disconnect(_committed)
+ 	if is_instance_valid(_debounce): _debounce.stop()
++	if is_instance_valid(_retry): _retry.stop()
+ 	_release()
+ 	if _io != null: _io.cancel()
+ 	_io = null
+@@ -203,6 +260,7 @@
+ 	_jobs.clear()
+ 	records = null
+ 	allowed = Callable()
++	capture_allowed = Callable()
+ 
+ static func _read(cancelled: Callable, path: String) -> Dictionary:
+ 	var file := FileAccess.open(path,FileAccess.READ)
+--- a/game/ui/profile_car.gd
++++ b/game/ui/profile_car.gd
+@@ -7,6 +7,7 @@
+ const MAX_BLEND_STEP: float = 1.0/30.0
+ var _outgoing: TextureRect
+ var _change: Tween
++var _placeholder: TextureRect
+ 
+ 
+ func _ready() -> void:
+@@ -27,6 +28,11 @@
+ 		MenuStyle.fill(preview)
+ 	if vehicle_id == vehicle and preview.texture == preload("res://ui/header_car_icons.gd").texture(vehicle,records): return
+ 	vehicle_id = vehicle
++	_sync_placeholder()
++	if preview.texture != null and preload("res://ui/header_car_icons.gd").texture(vehicle_id,records) == null:
++		# A previous account/design must not remain visible while a miss waits.
++		_settle()
++		return
+ 	if preview.texture == null or not is_visible_in_tree():
+ 		_settle()
+ 	elif _change == null:
+@@ -93,6 +99,24 @@
+ 	# a size from its previous parent while this retained widget is reattached.
+ 	MenuStyle.fill(preview)
+ 	if not vehicle_id.is_empty(): preview.texture = preload("res://ui/header_car_icons.gd").texture(vehicle_id,records)
++	_sync_placeholder()
++
++func _sync_placeholder() -> void:
++	var missing: bool = not vehicle_id.is_empty() and preload("res://ui/header_car_icons.gd").texture(vehicle_id,records) == null
++	if missing and _placeholder == null:
++		_placeholder = _picture()
++		_placeholder.name = "HeaderCarLoadingSilhouette"
++		_placeholder.modulate = Color("8399a5")
++		add_child(_placeholder)
++		move_child(_placeholder,0)
++		MenuStyle.fill(_placeholder)
++	if _placeholder == null: return
++	_placeholder.visible = missing
++	if not missing: return
++	var texture := AtlasTexture.new()
++	texture.atlas = preload("res://assets/menu/rivalry_loading_cars_v1.png")
++	texture.region = Rect2(Vector2(maxi(0,VehicleCatalog.IDS.find(vehicle_id))*384,0),Vector2(384,256))
++	_placeholder.texture = texture
+ 
+ func _visibility_changed() -> void:
+ 	if not is_visible_in_tree(): _settle()
+--- a/AGENTS.md
++++ b/AGENTS.md
+@@ -1,3 +1,8 @@
++<!-- STARTUP-THUMBNAIL-20261105 -->
++## Missing custom car pictures no longer hold the first menu (2026-11-05)
++STH01-STH03/STHQ01: Account restoration opens the menu before optional header pictures; exact PNG reads continue, misses show an existing model silhouette. One scoped native capture requires the same visible ready Garage/car and an actually drawn cover; saves remove obsolete paint, gates cancel, deferred reads do not starve and eligibility retries sleep for250ms. Frozen desktop Compatibility custom-miss medians25.454to8.635s from two samples/version; no phone/cold-driver/first-race claim. Primary198/0 includes actual-App43/0 each desktop renderer, all-five native references26/0 each and19/0 lifecycle fences;17 accepted stable-source runs. Initial missing-directory fixture, source-changing image run, independent-render variance and MP3 shutdown warning retained; two original shell controls do not reproduce the latter in this task. No shader prototype enabled: the separate weathering study found no dependable loading gain. [Sources, commands, images, limits and checked task-only patch](docs/STARTUP_THUMBNAIL_2026_11_05.md). Reload/owner/device acceptance remain; no device query/test, APK, owner-save/process change, backend/live request, deployment or main-index write; concurrent work preserved.
++<!-- /STARTUP-THUMBNAIL-20261105 -->
++
+ <!-- WEATHERING-LINKING-20261105 -->
+ ## Fixed-role weathering linking tested; current shared shaders retained (2026-11-05)
+ WLS01-WLS03: Evidence-only prototype. Broad wheel/trim/role splits increase whole-car first-use cost as sources rise2to3/5. Compact toon rear-trim replacement retains two sources; four fresh-source samples/version give toon medians3.205to2.831s and whole-car5.879to5.677s, but plain ABBA regresses4.9%. Four actual-App ABBA runs retain187programs/36checks; toon means2.531to2.477s overlap and unrelated links vary31.741-36.120s. No dependable race-loading gain established; no runtime or prepared-asset change. Final36views/restored controls exact, three positive visibility controls and one zero-contact Pine opening lap pass; final targeted assertions160/0, earlier109/0 retained. Countdown hitches/132ms driving maximum and initial argument/timeout/owned-cleanup failure retained; no smooth-frame claim. [Prototype, commands, measurements, limits and checked task-only checkpoint](docs/WEATHERING_LINKING_2026_11_05.md). No device query/test, APK, owner-save/process change, backend/live request, deployment or main-index write; concurrent work preserved.
+--- a/DEVELOPMENT_STATUS.md
++++ b/DEVELOPMENT_STATUS.md
+@@ -1,3 +1,8 @@
++<!-- STARTUP-THUMBNAIL-20261105 -->
++## Missing custom car pictures no longer hold the first menu (2026-11-05)
++STH01-STH03/STHQ01: Account restoration opens the menu before optional header pictures; exact PNG reads continue, misses show an existing model silhouette. One scoped native capture requires the same visible ready Garage/car and an actually drawn cover; saves remove obsolete paint, gates cancel, deferred reads do not starve and eligibility retries sleep for250ms. Frozen desktop Compatibility custom-miss medians25.454to8.635s from two samples/version; no phone/cold-driver/first-race claim. Primary198/0 includes actual-App43/0 each desktop renderer, all-five native references26/0 each and19/0 lifecycle fences;17 accepted stable-source runs. Initial missing-directory fixture, source-changing image run, independent-render variance and MP3 shutdown warning retained; two original shell controls do not reproduce the latter in this task. No shader prototype enabled: the separate weathering study found no dependable loading gain. [Sources, commands, images, limits and checked task-only patch](docs/STARTUP_THUMBNAIL_2026_11_05.md). Reload/owner/device acceptance remain; no device query/test, APK, owner-save/process change, backend/live request, deployment or main-index write; concurrent work preserved.
++<!-- /STARTUP-THUMBNAIL-20261105 -->
++
+ <!-- WEATHERING-LINKING-20261105 -->
+ ## Fixed-role weathering linking tested; current shared shaders retained (2026-11-05)
+ WLS01-WLS03: Evidence-only prototype. Broad wheel/trim/role splits increase whole-car first-use cost as sources rise2to3/5. Compact toon rear-trim replacement retains two sources; four fresh-source samples/version give toon medians3.205to2.831s and whole-car5.879to5.677s, but plain ABBA regresses4.9%. Four actual-App ABBA runs retain187programs/36checks; toon means2.531to2.477s overlap and unrelated links vary31.741-36.120s. No dependable race-loading gain established; no runtime or prepared-asset change. Final36views/restored controls exact, three positive visibility controls and one zero-contact Pine opening lap pass; final targeted assertions160/0, earlier109/0 retained. Countdown hitches/132ms driving maximum and initial argument/timeout/owned-cleanup failure retained; no smooth-frame claim. [Prototype, commands, measurements, limits and checked task-only checkpoint](docs/WEATHERING_LINKING_2026_11_05.md). No device query/test, APK, owner-save/process change, backend/live request, deployment or main-index write; concurrent work preserved.
+--- a/docs/PHASE_0_PLAN.md
++++ b/docs/PHASE_0_PLAN.md
+@@ -1,3 +1,8 @@
++<!-- STARTUP-THUMBNAIL-20261105 -->
++## Missing custom car pictures no longer hold the first menu (2026-11-05)
++STH01-STH03/STHQ01: Account restoration opens the menu before optional header pictures; exact PNG reads continue, misses show an existing model silhouette. One scoped native capture requires the same visible ready Garage/car and an actually drawn cover; saves remove obsolete paint, gates cancel, deferred reads do not starve and eligibility retries sleep for250ms. Frozen desktop Compatibility custom-miss medians25.454to8.635s from two samples/version; no phone/cold-driver/first-race claim. Primary198/0 includes actual-App43/0 each desktop renderer, all-five native references26/0 each and19/0 lifecycle fences;17 accepted stable-source runs. Initial missing-directory fixture, source-changing image run, independent-render variance and MP3 shutdown warning retained; two original shell controls do not reproduce the latter in this task. No shader prototype enabled: the separate weathering study found no dependable loading gain. [Sources, commands, images, limits and checked task-only patch](STARTUP_THUMBNAIL_2026_11_05.md). Reload/owner/device acceptance remain; no device query/test, APK, owner-save/process change, backend/live request, deployment or main-index write; concurrent work preserved.
++<!-- /STARTUP-THUMBNAIL-20261105 -->
++
+ <!-- DAILY-STANDINGS-LATENCY-20261104 -->
+ ## Today's standings wait for a background snapshot (2026-11-04)
+ DSL01-DSL03: Investigation only. Public46GETs/39ready/7preparing; bounded cloud51GETs show21-61ms service latency and an earlier Electric503-to-200 sequence separated by5.223s. Four cars initially lack usable standings despite ready limits. Actual native card3scenarios/exit0: one preparation adds5.019s retry/frame waits, three15.011s; render4.4-9.1ms. Recommend bounded prewarming of today's five snapshots; no runtime fix/deploy. [Commands, evidence, limits and checked task-only patch](DAILY_STANDINGS_LATENCY_2026_11_04.md). No phone/device query/test, APK, owner-save/process change, real auth, admin/database mutation, deployment or main-index write. Public GETs can enqueue normal refresh demand; concurrent work preserved.
+--- /dev/null
++++ b/game/tests/profile_deferred_header.gd
+@@ -0,0 +1,48 @@
++extends SceneTree
++## Identical offline, fresh-process startup probe for the archived and new App.
++func _initialize() -> void: run.call_deferred()
++func run() -> void:
++	root.size = Vector2i(1280,720)
++	var customized: bool = "--stock" not in OS.get_cmdline_user_args()
++	var began: int = Time.get_ticks_usec()
++	var script: Script = load("res://core/app.gd")
++	var loaded: int = Time.get_ticks_usec()
++	var app: Node = script.new()
++	var records: RefCounted = load("res://persistence/local_records.gd").new("user://header-startup/records.json")
++	if not FileAccess.file_exists(records.path):
++		DirAccess.make_dir_recursive_absolute(records.path.get_base_dir())
++		records.settings.music_enabled = false
++		if customized:
++			var paint: Dictionary = load("res://vehicle/vehicle_livery.gd").defaults("compact")
++			paint.colors.body = "32b5d7"
++			records.settings.vehicle_liveries = {"compact":paint}
++		assert(records.save_records() == OK)
++	app.records = records
++	app.library = load("res://persistence/track_library.gd").new("user://header-startup/tracks")
++	app.cloud_root_override = "user://header-startup/cloud"
++	var installed: int = Time.get_ticks_usec()
++	root.add_child(app)
++	while not app.startup_complete:
++		app._publishing_slots_foreground = true
++		await process_frame
++	var ready: int = Time.get_ticks_usec()
++	app._garage_preloader.set_process(false)
++	await RenderingServer.frame_post_draw
++	var presented: int = Time.get_ticks_usec()
++	var result: Dictionary = {"customized":customized,"resource_ms":(loaded-began)/1000.0,"initialization_ms":(ready-installed)/1000.0,"engine_to_menu_ms":presented/1000.0,"header_captures":app.header_car_cache.captures,"header_disk_hits":app.header_car_cache.disk_hits,"network_disabled":not app.online.configured,"screen":app.screen,"feature_resources":app._feature_resources.keys()}
++	var deadline: int = Time.get_ticks_msec()+10000
++	while Time.get_ticks_msec() < deadline:
++		app._publishing_slots_foreground = true
++		if app.header_car_cache.reads_idle() if app.header_car_cache.has_method("reads_idle") else app.header_car_cache.idle(): break
++		await process_frame
++	result.io_drained = app.header_car_cache.reads_idle() if app.header_car_cache.has_method("reads_idle") else app.header_car_cache.idle()
++	result.settled_disk_hits = app.header_car_cache.disk_hits
++	result.settled_captures = app.header_car_cache.captures
++	result.peak_worlds = app.header_car_cache.peak_worlds
++	FileAccess.open(OS.get_environment("BMT_LOADING_OUTPUT"),FileAccess.WRITE).store_string(JSON.stringify(result,"  "))
++	print("DEFERRED_HEADER_PROFILE ",JSON.stringify(result))
++	app.queue_free()
++	app = null
++	script = null
++	for _i: int in range(12): await process_frame
++	quit(0 if result.network_disabled and result.screen == "account" and result.io_drained else 1)
+--- /dev/null
++++ b/game/tests/test_deferred_header.gd
+@@ -0,0 +1,140 @@
++extends SceneTree
++## Production App policy: cheap reads anywhere, native captures in covered Garage.
++const Icons = preload("res://ui/header_car_icons.gd")
++var app: Node
++var checks: int = 0
++var failures: int = 0
++var cover_starts: int = 0
++var cover_draws: int = 0
++var capture_cover_draws: int = 0
++var cancel_next: bool = false
++var output: String
++func _initialize() -> void: run.call_deferred()
++func check(ok: bool, label: String) -> void:
++	checks += 1
++	if not ok: failures += 1; printerr("DEFERRED_HEADER_FAIL ",label)
++func frames(count: int = 6) -> void:
++	for _i: int in range(count):
++		app._publishing_slots_foreground = true
++		await process_frame
++func wait_reads() -> void:
++	var deadline: int = Time.get_ticks_msec()+10000
++	while not app.header_car_cache.reads_idle() and Time.get_ticks_msec()<deadline: await frames(1)
++	check(app.header_car_cache.reads_idle(),"all queued disk reads finish despite deferred native work")
++func picture() -> Control: return app.account_button.get_node("MenuProfileCar")
++func shot(label: String) -> void:
++	if DisplayServer.get_name()=="headless": return
++	await RenderingServer.frame_post_draw
++	check(root.get_texture().get_image().save_png(output.path_join(label+".png"))==OK,"native view "+label)
++func capture_started(_vehicle: String) -> void:
++	cover_starts += 1
++	check(is_instance_valid(app._header_capture_cover) and app._header_capture_cover.is_visible_in_tree(),"production capture has a visible cover")
++	check(app.header_car_cache.canvas==null,"cover is installed before renderer construction")
++	capture_cover_draws = cover_draws
++	if cancel_next: app._show_screen.call_deferred("tracks")
++func after_draw() -> void:
++	if not is_instance_valid(app): return
++	if is_instance_valid(app._header_capture_cover):
++		cover_draws += 1
++		if app.header_car_cache.canvas!=null:
++			check(cover_draws>capture_cover_draws+1,"cover drew before the first native construction")
++func run() -> void:
++	create_timer(180,true,false,true).timeout.connect(func() -> void: printerr("DEFERRED_HEADER_TIMEOUT"); quit(1))
++	output = OS.get_environment("BMT_GRAPHICS_EVIDENCE")
++	root.size = Vector2i(1280,720)
++	Icons.customized.clear()
++	app = load("res://core/app.gd").new()
++	var records := LocalRecords.new("user://deferred-header/records.json")
++	DirAccess.make_dir_recursive_absolute(records.path.get_base_dir())
++	var paint: Dictionary = VehicleLivery.defaults("compact")
++	paint.colors.body = "32b5d7"
++	var kart_paint: Dictionary = VehicleLivery.defaults("kart")
++	kart_paint.colors.body = "c82e37"
++	records.settings = {"music_enabled":false,"selected_car":"compact","vehicle_liveries":{"compact":paint,"kart":kart_paint}}
++	check(records.save_records()==OK,"isolated saved custom appearances")
++	app.records = records
++	app.library = TrackLibrary.new("user://deferred-header/tracks")
++	app.cloud_root_override = "user://deferred-header/cloud"
++	root.add_child(app)
++	while not app.startup_complete: await frames(1)
++	app._garage_preloader.idle_ms = 1000000
++	var cache: Node = app.header_car_cache
++	check(not app.online.configured and app.screen=="account","actual offline startup completes")
++	check(cache.captures==0 and cache.peak_worlds==0,"custom startup never constructs a header world")
++	await wait_reads()
++	app.race_area_mode = "free"
++	app._show_screen("tracks")
++	await frames(20)
++	check(picture().preview.texture==null and picture()._placeholder.visible,"missing saved design shows a neutral silhouette")
++	check(picture()._placeholder.texture.region==Rect2(0,0,384,256),"silhouette uses the selected actual model")
++	check(cache.captures==0 and cache.canvas==null,"visible menu never starts a cold header capture")
++	check(app.account_button.find_children("*","Node3D",true,false).is_empty() and app.account_button.find_children("*","SubViewport",true,false).is_empty(),"header and picker stay 2D")
++	await shot("menu-silhouette")
++	# A later car's disk hit must pass an earlier deferred capture in the queue.
++	var pixels := Image.create(176,112,false,Image.FORMAT_RGBA8)
++	pixels.fill(Color("c82e37"))
++	DirAccess.make_dir_recursive_absolute(cache.directory)
++	var kart_key: String = Icons.appearance_key("kart",records)
++	check(pixels.save_png(cache.directory.path_join(kart_key+".png"))==OK,"seed bounded exact-key disk read")
++	cache.bind_records(null)
++	cache.bind_records(records)
++	await wait_reads()
++	check(cache.disk_hits==1 and Icons.customized.has(kart_key),"deferred first-car capture does not starve another car's disk hit")
++	check(cache.captures==0 and cache.peak_worlds==0,"disk hits need no renderer")
++	for screen: String in ["settings","profile","tracks"]:
++		app._show_screen(screen)
++		await frames(8)
++		check(not app._header_car_capture_allowed("compact"),"no native header capture on "+screen)
++	check(cache.captures==0,"ordinary navigation keeps native work deferred")
++	if "--garage" in OS.get_cmdline_user_args():
++		cache.capture_started.connect(capture_started)
++		RenderingServer.frame_post_draw.connect(after_draw)
++		app._show_screen("garage")
++		var deadline: int = Time.get_ticks_msec()+100000
++		while cache.captures==0 and Time.get_ticks_msec()<deadline:
++			await frames(1)
++			if cache._stage=="cover" and cache._cover_ready: await shot("garage-cover")
++		await wait_reads()
++		await frames(10)
++		check(cache.captures==1 and Icons.ready("compact",records),"covered ready Garage produces one exact saved picture")
++		check(cover_starts==1 and cover_draws>0 and cache.peak_worlds==1,"one bounded native world after a drawn cover")
++		check(cache.canvas==null and not is_instance_valid(app._header_capture_cover),"completed capture releases its world and cover")
++		check(not app._header_car_capture_allowed("forklift"),"unrelated car cannot trigger cold capture in the visible Garage")
++		check(picture().preview.texture==Icons.texture("compact",records) and not picture()._placeholder.visible,"finished picture replaces the silhouette")
++		await shot("garage-ready")
++		var first: PackedByteArray = Icons.texture("compact",records).get_image().get_data()
++		Icons.customized.clear()
++		cache.bind_records(null)
++		cache.bind_records(records)
++		await wait_reads()
++		check(cache.captures==1 and Icons.texture("compact",records).get_image().get_data()==first,"persisted PNG reloads exact final pixels without a capture")
++		# A freshly committed appearance removes the previous paint immediately.
++		paint.colors.body = "779922"
++		records.settings.vehicle_liveries.compact = paint.duplicate(true)
++		cancel_next = true
++		check(records.save_records()==OK,"save next isolated appearance")
++		check(picture().preview.texture==null and picture()._placeholder.visible,"commit immediately clears obsolete saved paint")
++		deadline = Time.get_ticks_msec()+10000
++		while app.screen=="garage" and Time.get_ticks_msec()<deadline: await frames(1)
++		await frames(12)
++		check(app.screen=="tracks" and cache.captures==1 and cache.canvas==null and not is_instance_valid(app._header_capture_cover),"navigation during cover cancels before renderer construction")
++		check(not Icons.ready("compact",records),"cancelled appearance cannot publish stale pixels")
++		RenderingServer.frame_post_draw.disconnect(after_draw)
++	# Rebinding drops queued work from the old account.
++	var old_key: String = Icons.appearance_key("compact",records)
++	var other := LocalRecords.new("user://deferred-header/other.json")
++	other.settings.music_enabled = false
++	app.records = other
++	cache.bind_records(other)
++	app._show_screen("settings")
++	await frames(12)
++	check(cache.idle() and cache.canvas==null and cache.records==other,"account replacement drops deferred old-owner work")
++	check(not Icons.customized.has(old_key),"old owner never publishes after replacement")
++	check(picture().preview.texture==Icons.texture("compact"),"new stock account displays its own bundled picture")
++	var result: Dictionary = {"checks":checks,"failures":failures,"captures":cache.captures,"disk_hits":cache.disk_hits,"peak_worlds":cache.peak_worlds,"cover_starts":cover_starts,"cover_draws":cover_draws}
++	FileAccess.open(OS.get_environment("BMT_LOADING_OUTPUT"),FileAccess.WRITE).store_string(JSON.stringify(result,"  "))
++	app.queue_free()
++	app = null
++	for _i: int in range(12): await process_frame
++	print("DEFERRED_HEADER ",JSON.stringify(result))
++	quit(1 if failures else 0)
+--- /dev/null
++++ b/game/tests/test_header_capture_fences.gd
+@@ -0,0 +1,113 @@
++extends SceneTree
++## Exercise the production policy and a race-entry draw boundary without a race.
++const Icons = preload("res://ui/header_car_icons.gd")
++var checks: int = 0
++var failures: int = 0
++class ReadyShowroom extends Control:
++	var showroom_ready: bool = true
++	var vehicle_id: String = "compact"
++	var preparing: bool = false
++class ReadyGarage extends Control:
++	var records: LocalRecords
++	var showroom: Control
++	var progressive_entry: bool = true
++class CompletedRead extends RefCounted:
++	var done: bool = true
++	var result: Dictionary
++	func cancel() -> void: pass
++func _initialize() -> void: run.call_deferred()
++func check(ok: bool, label: String) -> void:
++	checks += 1
++	if not ok: failures += 1; printerr("HEADER_FENCE_FAIL ",label)
++func run() -> void:
++	var app: Node = load("res://core/app.gd").new()
++	app.records = LocalRecords.new("user://capture-fences/records.json")
++	app.records.settings.music_enabled = false
++	app.library = TrackLibrary.new("user://capture-fences/tracks")
++	app.cloud_root_override = "user://capture-fences/cloud"
++	root.add_child(app)
++	while not app.startup_complete:
++		app._publishing_slots_foreground = true
++		await process_frame
++	app._garage_preloader.set_process(false)
++	check(not app.online.configured,"isolated offline App")
++	var garage := ReadyGarage.new()
++	garage.records = app.records
++	garage.showroom = ReadyShowroom.new()
++	garage.add_child(garage.showroom)
++	root.add_child(garage)
++	app._retained_garage = garage
++	app.screen = "garage"
++	check(app._header_car_capture_allowed("compact"),"ready visible matching Garage is an eligible opportunity")
++	check(not app._header_car_capture_allowed("kart"),"different vehicle cannot use the opportunity")
++	garage.showroom.preparing = true
++	check(not app._header_car_capture_allowed("compact"),"opening Garage preparation takes priority")
++	garage.showroom.preparing = false
++	garage.showroom.showroom_ready = false
++	check(not app._header_car_capture_allowed("compact"),"unfinished showroom is ineligible")
++	garage.showroom.showroom_ready = true
++	garage.hide()
++	check(not app._header_car_capture_allowed("compact"),"hidden retained Garage is ineligible")
++	garage.show()
++	garage.records = LocalRecords.new("user://capture-fences/other.json")
++	check(not app._header_car_capture_allowed("compact"),"different Garage owner is ineligible")
++	garage.records = app.records
++	app.editor_memory.pressure_requested = true
++	check(not app._header_car_capture_allowed("compact"),"memory pressure prevents capture")
++	app.editor_memory.pressure_requested = false
++	app._publishing_slots_foreground = false
++	check(not app._header_car_work_allowed() and not app._header_car_capture_allowed("compact"),"backgrounding blocks reads and captures")
++	app._publishing_slots_foreground = true
++	app.cloud_starting = true
++	check(not app._header_car_work_allowed(),"race CPU/network join blocks optional work")
++	app.cloud_starting = false
++	app.race_loading = preload("res://ui/race_loading.gd").new()
++	check(not app._header_car_work_allowed(),"race loading cover blocks optional work")
++	app.race_loading.free()
++	app.race_loading = null
++	app.menu_page_motion = app.create_tween()
++	app.menu_page_motion.tween_interval(1.0)
++	check(not app._header_car_capture_allowed("compact"),"page transition blocks capture")
++	app.menu_page_motion.kill()
++	app.menu_page_motion = null
++	# Close the policy between cache processing and its actual draw callback.
++	var cache: Node = app.header_car_cache
++	var key: String = Icons.appearance_key("compact",app.records)
++	cache.canvas = SubViewport.new()
++	cache.add_child(cache.canvas)
++	cache._current = {"vehicle":"compact","key":key,"epoch":cache._epoch,"read":false}
++	cache._stage = "draw"
++	cache._draws = 1
++	app.game = Node.new()
++	check(not app._header_car_work_allowed(),"installed game closes optional work")
++	cache._after_draw()
++	check(cache.canvas==null and cache._io==null and cache.captures==0,"late draw never reads back or writes after race entry")
++	check(cache._jobs.size()==1 and cache._jobs[0].key==key,"interrupted capture keeps exactly one pinned retry")
++	cache._jobs.clear()
++	# A completed read is held until permission returns, without mipmap/upload.
++	var pixels := Image.create(176,112,false,Image.FORMAT_RGBA8)
++	pixels.fill(Color("32b5d7"))
++	cache._io = CompletedRead.new()
++	cache._io.result = {"image":pixels}
++	cache._io_job = {"vehicle":"compact","key":key,"epoch":cache._epoch}
++	cache._io_kind = "read"
++	cache._process(0.0)
++	check(cache._io!=null and not Icons.customized.has(key) and not pixels.has_mipmaps(),"completed read cannot publish during a race")
++	check(not cache.is_processing(),"blocked service sleeps instead of polling every frame")
++	app.game.free()
++	app.game = null
++	cache._process(0.0)
++	check(cache._io==null and cache.disk_hits==1 and Icons.customized.has(key),"eligible read publishes once after the gate opens")
++	cache._process(0.0)
++	check(cache.disk_hits==1,"completed read never publishes twice")
++	app._retained_garage = null
++	app.screen = "account"
++	garage.queue_free()
++	Icons.customized.clear()
++	app.queue_free()
++	app = null
++	for _i: int in range(12): await process_frame
++	var result: Dictionary = {"checks":checks,"failures":failures}
++	FileAccess.open(OS.get_environment("BMT_LOADING_OUTPUT"),FileAccess.WRITE).store_string(JSON.stringify(result,"  "))
++	print("HEADER_FENCES ",checks," checks ",failures," failures")
++	quit(1 if failures else 0)
+--- /dev/null
++++ b/docs/STARTUP_THUMBNAIL_2026_11_05.md
+@@ -0,0 +1,86 @@
++# Custom car pictures no longer delay the first menu — 2026-11-05
++
++The first menu now opens after account restoration without waiting for a missing equipped-car photograph. A missing picture shows a neutral silhouette of the selected model. Exact cached PNGs load independently. Creating a new photograph waits for a visible, ready Garage showing that car, behind its existing loading-picture presentation.
++
++Two frozen desktop Compatibility samples per version reduce first-menu time with a custom-picture cache miss from 24.501/26.408 seconds to 8.331/8.940 seconds. The medians are 25.454 to 8.635 seconds, a 16.819-second reduction (66.1%) in this sample. This is an offline desktop startup observation, not an Android or cleared-driver-cache result.
++
++## Requirements and implementation
++
++| ID | Result | Sources |
++|---|---|---|
++| STH01 | Account restoration and the initial destination remain; thumbnail readiness is removed from startup's blocking path. | `game/core/app.gd` |
++| STH02 | Cached images can load in eligible foreground menus. Cold native capture requires the same visible Garage owner and car, a ready showroom, no page transition or memory pressure, and no game/loading/background state. The cover must actually draw before loading the native renderer. | `game/core/app.gd`, `game/ui/header_car_appearance_cache.gd` |
++| STH03 | Missing images use an existing model silhouette; a saved appearance change immediately removes obsolete paint. Existing appearance/source/renderer/account keys, scoped cancellation, one native world, 14-file/texture bounds and rendering quality remain. Deferred captures do not starve disk reads and retry eligibility at 250 ms intervals instead of every frame. | `game/ui/profile_car.gd`, `game/ui/header_car_appearance_cache.gd` |
++| STHQ01 | Frozen before/after probes, actual-App navigation/capture/reload tests, policy boundary checks, all-five-car native references and source receipts verify delivery. | Three new fixtures under `game/tests/`; [evidence and runners](evidence/startup-thumbnail-2026-11-05/) |
++
++The capture uses the same 176×112 target, renderer factory, camera/presentation, cooperative build, graphics receipts, five settling draws, alpha conversion and atomic PNG writer. There is no shader, model, prepared scene, lighting, renderer, backend or physics change. Existing neutral loading art supplies both silhouettes; no new artwork or translation is introduced.
++
++A picture absent from disk and memory can remain a silhouette until the player opens Garage for that car. Saving a customization there schedules its exact saved appearance after the existing debounce. Other saved cars cannot trigger unrelated cold captures. Leaving Garage, changing owners/appearance or closing an eligibility gate cancels preparation and removes its cover. Already admitted image work retains the existing publication gate.
++
++This intentionally supersedes the older startup-photo contract that required the equipped image before the first menu and allowed regeneration on Account. `test_deferred_header.gd` defines the new production contract; older historical startup/equipped-cache fixtures that require immediate capture in ordinary menus are not used as acceptance for this policy. The retained all-car native reference fixture verifies the unchanged capture output independently.
++
++The normal build's broad header-source identity may invalidate old header PNG keys after these UI-source edits. That guard remains intact; misses use the new covered path. Vehicle/prepared-geometry sources and their dependency rules are unchanged. Test runs keep the same frozen build identity for a controlled comparison and do not regenerate shared build metadata.
++
++## Measurements
++
++The owned project copies mutable code and prepared Garage/car/menu content; imported/static directories and native resources retain the documented shared links. Before and after runs use this same project, exact engine, resolution and probe. The three runtime files are restored from byte-exact task-start/candidate snapshots between versions. Each process receives a private offline profile, empty backend URL and Dummy audio. Source hashes are checked around every accepted run. The custom-miss order is original, candidate, candidate, original, each with a fresh profile.
++
++| Case | First menu | Startup / settled header captures | Notes |
++|---|---:|---:|---|
++| Original custom miss A | 24.501 s | 1 / 1 | One header world |
++| Candidate custom miss B | 8.331 s | 0 / 0 | No header world |
++| Candidate custom miss B | 8.940 s | 0 / 0 | No header world |
++| Original custom miss A | 26.408 s | 1 / 1 | One header world |
++| Original stock | 9.189 s | 0 / 0 | Single control sample |
++| Candidate stock | 7.659 s | 0 / 0 | Single sample; no separate stock-speedup claim |
++| Candidate persisted custom hit | 8.059 s | 0 / 0 | Separate process; one exact-key PNG read after the menu |
++
++Custom initialization falls from 16.912/18.006 seconds to 0.520/0.566 seconds. Resource loading remains roughly 3.1–3.5 seconds in those four runs. All seven startup probes reach the offline Account destination with no optional feature controllers loaded. The first menu metric includes engine time to its first completed draw; it is not full Garage or first-race readiness.
++
++The capture cost has been deferred to an explicit covered Garage opportunity, not removed from the renderer. Native shader compilation can still block a Garage loading frame. This change makes no first-race, steady-FPS, total-session-work, memory/PSS or battery claim. Neither the GPU driver cache nor filesystem caches were cleared.
++
++## Verification
++
++The primary final-runtime checks total **198 assertions, zero failures**:
++
++| Check | Result |
++|---|---:|
++| Actual-App policy/cache/navigation, headless | 19/0 |
++| Actual-App Garage cover, capture, exact PNG reload, save invalidation and navigation cancellation, desktop Compatibility | 43/0 |
++| Same actual-App flow, desktop Mobile | 43/0 |
++| Retained first-menu dependency closure | 22/0 |
++| All five native header images and existing appearance invariant, Compatibility | 26/0 |
++| Same all-five reference checks, Mobile, final stable-source repeat | 26/0 |
++| Production owner/car/foreground/loading/race/pressure/transition fences and late-draw/held-read boundaries | 19/0 |
++
++An additional verbose candidate shell run passes 22/0; two archived-runtime shell controls pass 22/0 each. The 17 accepted process receipts contain no parser/shader errors, timeouts or source changes. The validator also confirms startup's original one-world versus candidate zero-world contrast, the separate-process disk hit, exact write/reload pixels, final source hashes and captured views.
++
++The reference checks retain the pre-existing `<0.02` appearance-error threshold; no tolerance was relaxed. Separate allocations are not generally pixel-identical, including unchanged archived repeats. Same-target graphics bookkeeping remains pixel-exact, and the actual-App PNG reload is byte-exact. No claim is made that all independently rendered before/after images are byte-identical. Forty native car/reference/control PNGs plus six final actual-App views are retained.
++
++Visible states reviewed include [the menu silhouette](evidence/startup-thumbnail-2026-11-05/frozen-contract-compatibility/menu-silhouette.png), [the drawn Garage cover](evidence/startup-thumbnail-2026-11-05/frozen-contract-compatibility/garage-cover.png), [the finished Compatibility view](evidence/startup-thumbnail-2026-11-05/frozen-contract-compatibility/garage-ready.png) and [the finished desktop Mobile view](evidence/startup-thumbnail-2026-11-05/frozen-contract-mobile/garage-ready.png).
++
++Initial findings remain in the evidence. The first headless fixture omitted its private records directory, failed to save, then reached a nil placeholder and its internal deadline. The corrected fixture passed 19/0. The first native implementation passed 43/0 before the later sleeping-work change. The initial all-car Mobile run passed 26/0 but another test file was copied into the frozen project during the run; it is excluded from the stable-source acceptance total and repeated as `final-header-mobile` without changes. The first patch-format check rejected CRLF in the new helper/JSON files; those task-owned files were normalized to LF and the unchanged whitespace check repeated. None of these receipts is overwritten.
++
++All runs retain the environment's root-certificate-store error. The candidate shell dependency fixture also retains a shutdown warning for two objects and one resource. Its verbose run identifies `AudioStreamMP3`, `AudioStreamPlaybackMP3` and `01-blacktop-thunder.mp3`; the fixture leaves music enabled, unlike the new startup/contract probes. Both task-start shell controls were clean apart from the certificate diagnostic, so this task does not claim a matched reproduction. The same two-object/one-resource warning is documented in the [earlier shell study](STARTUP_SHELL_2026_11_04.md) and its `cold-closure-final.log`. These diagnostics remain explicit; passing assertions do not imply clean whole-app teardown or a memory-soak result.
++
++## Shader decision and remaining acceptance
++
++The concurrent [weathering-linking study](WEATHERING_LINKING_2026_11_05.md) already tested the proposed expensive shader specialization. Broad splits increased the number of programs and whole-car cost; the narrow two-source candidate did not show a dependable complete loading improvement. This task preserves that result and does not enable a speculative shader change. First-use race graphics remain a high-priority unresolved cost.
++
++Reload the local project to see the new behavior. Owner appearance/touch acceptance and Android cold/warm startup, Garage interaction, first-race and memory measurements remain. No device attachment query or device test was performed. No APK/AAB, owner-save modification, owner-process restart, live/backend request, deployment or main-index write was performed. Unrelated concurrent work is preserved.
++
++## Commands and checkpoint
++
++The exact `godot-version.txt` build is `4.7.2.stable.official.ed1daf0bf`. Runners invoke `C:/apps/Godot 4.7.2/Godot_v4.7.2-stable_win64_console.exe` directly to avoid the dev wrapper regenerating shared build identity. Every process command, private profile, exit code, diagnostic and source receipt is stored in its `run.json`.
++
++```powershell
++python docs/evidence/startup-thumbnail-2026-11-05/freeze_project.py
++python docs/evidence/startup-thumbnail-2026-11-05/run_matrix.py
++# Additional exact commands are retained in these process receipts:
++# final-fences, frozen-before-shell, final-header-mobile,
++# final-shell-verbose, baseline-shell-verbose.
++python docs/evidence/startup-thumbnail-2026-11-05/validate.py
++python docs/evidence/startup-thumbnail-2026-11-05/checkpoint.py
++```
++
++The matrix uses fresh named output/profile directories; choose new run names for a repeat rather than overwriting evidence. `freeze_project.py` creates only owned copies/junctions. [validation.json](evidence/startup-thumbnail-2026-11-05/validation.json) records accepted counts, timing arithmetic and delivery hashes. The [task-only patch](evidence/startup-thumbnail-2026-11-05/task.patch) is checked and round-tripped in an isolated repository; the owner's Git index remains untouched. An initial round-trip also exposed inherited Git line-ending conversion; per-command `core.autocrlf=false` in the owned repository preserves exact source bytes without changing owner configuration. Raw image/profile evidence remains alongside that source checkpoint.
+--- /dev/null
++++ b/docs/evidence/startup-thumbnail-2026-11-05/freeze_project.py
+@@ -0,0 +1,65 @@
++"""Freeze mutable code/prepared assets; share unchanged imported/static content.
++
++All copies/junctions are task-owned. No deletion or mutation of shared assets.
++Both control and candidate resolve res:// against this same frozen project.
++"""
++import hashlib
++import json
++from pathlib import Path
++import shutil
++import subprocess
++import time
++
++evidence = Path(__file__).resolve().parent
++root = evidence.parents[2]
++owned = root/'build/startup-thumbnail-20261105'/('frozen-'+str(time.time_ns()))
++game = owned/'game'
++game.mkdir(parents=True)
++fixture = owned/'backend/tests/fixtures/verified_oval.json'
++fixture.parent.mkdir(parents=True,exist_ok=True)
++shutil.copyfile(root/'backend/tests/fixtures/verified_oval.json',fixture)
++copied = [fixture]
++shared = []
++
++def copy_tree(source,destination):
++    if source.is_file():
++        destination.parent.mkdir(parents=True,exist_ok=True)
++        shutil.copyfile(source,destination)
++        copied.append(destination)
++    else:
++        destination.mkdir(parents=True,exist_ok=True)
++        for path in source.iterdir(): copy_tree(path,destination/path.name)
++
++def junction(source,destination):
++    assert source.resolve().is_relative_to(root.resolve())
++    assert destination.absolute().is_relative_to(owned.absolute())
++    # These are fixed local paths, safely quoted as PowerShell literals.
++    command = 'New-Item -ItemType Junction -Path '+"'"+str(destination).replace("'","''")+"' -Target '"+str(source).replace("'","''")+"' | Out-Null"
++    subprocess.run(['powershell','-NoProfile','-Command',command],check=True)
++    shared.append(dict(source=str(source),path=str(destination)))
++
++for path in (root/'game').iterdir():
++    if path.name in ('.godot','assets','android'): continue
++    copy_tree(path,game/path.name)
++(game/'assets').mkdir()
++for path in (root/'game/assets').iterdir():
++    if path.name in ('garage','menu'): copy_tree(path,game/'assets'/path.name)
++    elif path.name == 'vehicles':
++        (game/'assets/vehicles').mkdir()
++        for bank in path.iterdir():
++            destination = game/'assets/vehicles'/bank.name
++            if bank.name in ('modular_car_bases_v1','modular_kits_v1') or bank.is_file(): copy_tree(bank,destination)
++            else: junction(bank,destination)
++    elif path.is_dir(): junction(path,game/'assets'/path.name)
++    else: copy_tree(path,game/'assets'/path.name)
++(game/'.godot').mkdir()
++for name in ('global_script_class_cache.cfg','uid_cache.bin','extension_list.cfg'):
++    source = root/'game/.godot'/name
++    if source.exists(): copy_tree(source,game/'.godot'/name)
++junction(root/'game/.godot/imported',game/'.godot/imported')
++for name in ('docs','native'):
++    if (root/name).is_dir(): junction(root/name,owned/name)
++manifest = {path.relative_to(owned).as_posix():hashlib.sha256(path.read_bytes()).hexdigest() for path in copied}
++report = dict(project=str(game),copied_files=len(copied),copied_sha256=manifest,shared=shared)
++(evidence/'frozen-project.json').write_text(json.dumps(report,indent=2)+'\n',encoding='utf-8')
++print(json.dumps({'project':str(game),'copied_files':len(copied),'shared_directories':len(shared)}))
+--- /dev/null
++++ b/docs/evidence/startup-thumbnail-2026-11-05/run_case.py
+@@ -0,0 +1,79 @@
++"""Bounded, offline desktop test in an isolated profile; never touches owner saves."""
++import argparse
++import ctypes
++import hashlib
++import json
++import os
++from pathlib import Path
++import re
++import subprocess
++import time
++
++OUT = Path(__file__).resolve().parent
++ROOT = OUT.parents[2]
++ENGINE = Path('C:/apps/Godot 4.7.2/Godot_v4.7.2-stable_win64_console.exe')
++
++def sources(project):
++    return {p.relative_to(project).as_posix(): hashlib.sha256(p.read_bytes()).hexdigest()
++            for p in project.rglob('*') if p.is_file() and '/.godot/' not in p.as_posix()
++            and '/assets/' not in p.as_posix() and p.suffix in {'.gd','.gdshader','.gdshaderinc','.tscn','.godot','.cfg','.gdextension'}}
++
++def main():
++    parser = argparse.ArgumentParser(allow_abbrev=False)
++    parser.add_argument('name')
++    parser.add_argument('script')
++    parser.add_argument('--project', type=Path, default=ROOT/'game')
++    parser.add_argument('--native', action='store_true')
++    parser.add_argument('--verbose', action='store_true')
++    parser.add_argument('--renderer', default='gl_compatibility')
++    parser.add_argument('--profile')
++    parser.add_argument('--timeout', type=int, default=240)
++    parser.add_argument('--args', nargs=argparse.REMAINDER, default=[])
++    args = parser.parse_args()
++    if os.name == 'nt':
++        kernel = ctypes.WinDLL('kernel32',use_last_error=True)
++        kernel.SetErrorMode(kernel.GetErrorMode() | 0x0002)
++    version = subprocess.check_output([str(ENGINE),'--version'],text=True).strip()
++    assert version == (ROOT/'godot-version.txt').read_text().strip()
++    output = OUT/args.name
++    output.mkdir(exist_ok=False)
++    profile = ROOT/'build/startup-thumbnail-20261105/profiles'/(args.profile or args.name)
++    env = os.environ.copy()
++    for key in ['BMT_API_URL','BMT_DEV_AUTH_KEY','BMT_NATIVE_TRACE','BMT_NATIVE_EXTENSION']:
++        env.pop(key,None)
++    for key in ['APPDATA','LOCALAPPDATA']:
++        destination = profile/key.lower()
++        destination.mkdir(parents=True,exist_ok=True)
++        env[key] = str(destination)
++    user = Path(env['APPDATA'])/'Circuit01Lab'
++    user.mkdir(exist_ok=True)
++    (user/'backend.cfg').write_text('[backend]\nurl=""\n',encoding='utf-8')
++    env['BMT_LOADING_OUTPUT'] = str(output/'result.json')
++    env['BMT_GRAPHICS_EVIDENCE'] = str(output)
++    command = [str(ENGINE),'--path',str(args.project),'--audio-driver','Dummy']
++    command += ['--rendering-method',args.renderer,'--position','10000,10000','--resolution','1280x720'] if args.native else ['--headless']
++    command += ['--script','res://tests/'+args.script]
++    if args.verbose: command += ['--verbose']
++    if args.args: command += ['--']+args.args
++    before = sources(args.project)
++    started = time.monotonic()
++    timeout = False
++    with (output/'run.log').open('w',encoding='utf-8') as log:
++        try:
++            result = subprocess.run(command,cwd=ROOT,env=env,stdout=log,stderr=subprocess.STDOUT,timeout=args.timeout,creationflags=subprocess.CREATE_NO_WINDOW if os.name=='nt' else 0)
++            code = result.returncode
++        except subprocess.TimeoutExpired:
++            code = None
++            timeout = True
++    after = sources(args.project)
++    log = (output/'run.log').read_text(encoding='utf-8',errors='replace')
++    row = dict(name=args.name,command=command,version=version,profile=str(profile),elapsed_seconds=time.monotonic()-started,exit_code=code,timeout=timeout,
++               source_changes=[p for p in sorted(before.keys()|after.keys()) if before.get(p)!=after.get(p)],
++               script_error=bool(re.search(r'SCRIPT ERROR|SHADER ERROR|Parse Error|Compile Error',log)),
++               results=[line for line in log.splitlines() if re.search(r'checks|failures|DEFERRED_HEADER|SHELL_READY|GRAPHICS_HEADER|FAIL|TIMEOUT',line)],
++               diagnostics=[line for line in log.splitlines() if re.search(r'WARNING:|ERROR:|leaked|still in use',line)])
++    (output/'run.json').write_text(json.dumps(row,indent=2)+'\n',encoding='utf-8')
++    (output/'sources.json').write_text(json.dumps(before,indent=2)+'\n',encoding='utf-8')
++    print(json.dumps(row),flush=True)
++
++if __name__=='__main__': main()
+--- /dev/null
++++ b/docs/evidence/startup-thumbnail-2026-11-05/run_matrix.py
+@@ -0,0 +1,49 @@
++"""Serial frozen A/B startup probes followed by native/lifecycle regressions."""
++import hashlib
++import json
++from pathlib import Path
++import shutil
++import subprocess
++import sys
++
++OUT = Path(__file__).resolve().parent
++ROOT = OUT.parents[2]
++PROJECT = Path(json.loads((OUT/'frozen-project.json').read_text())['project'])
++RUNTIME = ['game/core/app.gd','game/ui/header_car_appearance_cache.gd','game/ui/profile_car.gd']
++TESTS = ['game/tests/profile_deferred_header.gd','game/tests/test_deferred_header.gd']
++
++def variant(name):
++    for relative in RUNTIME:
++        shutil.copyfile(OUT/name/relative, PROJECT.parent/relative)
++
++def run(name, script, *options):
++    subprocess.run([sys.executable,str(OUT/'run_case.py'),name,script,'--project',str(PROJECT),*options],check=True)
++
++for relative in RUNTIME+TESTS:
++    source = ROOT/relative
++    destination = OUT/'after'/relative
++    destination.parent.mkdir(parents=True,exist_ok=True)
++    shutil.copyfile(source,destination)
++    shutil.copyfile(source,PROJECT.parent/relative)
++(OUT/'candidate-sha256.json').write_text(json.dumps({p:hashlib.sha256((OUT/'after'/p).read_bytes()).hexdigest() for p in RUNTIME+TESTS},indent=2)+'\n')
++try:
++    variant('before')
++    run('frozen-before-custom-1','profile_deferred_header.gd','--native')
++    variant('after')
++    run('frozen-after-custom-1','profile_deferred_header.gd','--native')
++    run('frozen-after-custom-2','profile_deferred_header.gd','--native')
++    variant('before')
++    run('frozen-before-custom-2','profile_deferred_header.gd','--native')
++    run('frozen-before-stock','profile_deferred_header.gd','--native','--args','--stock')
++    variant('after')
++    run('frozen-after-stock','profile_deferred_header.gd','--native','--args','--stock')
++    # Read the baseline-produced exact-key PNG in a separate candidate process.
++    run('frozen-after-disk-hit','profile_deferred_header.gd','--native','--profile','frozen-before-custom-1')
++    run('frozen-contract-headless','test_deferred_header.gd')
++    run('frozen-contract-compatibility','test_deferred_header.gd','--native','--args','--garage')
++    run('frozen-contract-mobile','test_deferred_header.gd','--native','--renderer','mobile','--args','--garage')
++    run('frozen-shell','test_startup_shell.gd','--native')
++    run('frozen-header-compatibility','test_shared_graphics_header.gd','--native')
++    run('frozen-header-mobile','test_shared_graphics_header.gd','--native','--renderer','mobile')
++finally:
++    variant('after')
+--- /dev/null
++++ b/docs/evidence/startup-thumbnail-2026-11-05/validate.py
+@@ -0,0 +1,66 @@
++"""Verify completed receipts, controlled startup contrast and current delivery."""
++import hashlib
++import json
++from pathlib import Path
++import re
++import statistics
++
++OUT = Path(__file__).resolve().parent
++ROOT = OUT.parents[2]
++PROFILES = ['frozen-before-custom-1','frozen-after-custom-1','frozen-after-custom-2','frozen-before-custom-2','frozen-before-stock','frozen-after-stock','frozen-after-disk-hit']
++TESTS = {'frozen-contract-headless':19,'frozen-contract-compatibility':43,'frozen-contract-mobile':43,
++         'frozen-shell':22,'frozen-header-compatibility':26,'final-header-mobile':26,'final-fences':19,'frozen-before-shell':22,
++         'final-shell-verbose':22,'baseline-shell-verbose':22}
++rows = []
++for name in PROFILES+list(TESTS):
++    row = json.loads((OUT/name/'run.json').read_text())
++    assert row['exit_code']==0 and not row['timeout'] and not row['script_error'] and not row['source_changes'],row
++    assert row['version']==(ROOT/'godot-version.txt').read_text().strip()
++    result_path = OUT/name/'result.json'
++    if name in TESTS:
++        if result_path.exists():
++            result = json.loads(result_path.read_text())
++            assert result['checks']==TESTS[name] and result['failures']==0,(name,result)
++        else:
++            assert re.search(rf'{TESTS[name]} checks[ ,]+0 failures',(OUT/name/'run.log').read_text()),name
++    rows.append(row)
++before = [json.loads((OUT/name/'result.json').read_text()) for name in ['frozen-before-custom-1','frozen-before-custom-2']]
++after = [json.loads((OUT/name/'result.json').read_text()) for name in ['frozen-after-custom-1','frozen-after-custom-2']]
++for row in before:
++    assert row['header_captures']==1 and row['peak_worlds']==1 and row['io_drained']
++for row in after:
++    assert row['header_captures']==0 and row['settled_captures']==0 and row['peak_worlds']==0 and row['io_drained']
++hit = json.loads((OUT/'frozen-after-disk-hit/result.json').read_text())
++assert hit['settled_disk_hits']==1 and hit['settled_captures']==0 and hit['peak_worlds']==0
++for name in PROFILES:
++    row = json.loads((OUT/name/'result.json').read_text())
++    assert row['network_disabled'] and row['screen']=='account' and not row['feature_resources']
++for name in ['frozen-contract-compatibility','frozen-contract-mobile']:
++    row = json.loads((OUT/name/'result.json').read_text())
++    assert row['captures']==1 and row['disk_hits']==3 and row['peak_worlds']==1 and row['cover_starts']==2
++    for view in ['menu-silhouette','garage-cover','garage-ready']:
++        assert (OUT/name/(view+'.png')).stat().st_size>10000
++for name in ['frozen-header-compatibility','final-header-mobile']:
++    row = json.loads((OUT/name/'result.json').read_text())
++    assert len(row['rows'])==5
++    for car in row['rows']:
++        assert car['same_frame_exact'] and car['appearance_difference']<0.02
++diagnostics_before = json.loads((OUT/'frozen-before-shell/run.json').read_text())['diagnostics']
++diagnostics_after = json.loads((OUT/'frozen-shell/run.json').read_text())['diagnostics']
++verbose_log = (OUT/'final-shell-verbose/run.log').read_text()
++assert 'AudioStreamMP3' in verbose_log and 'AudioStreamPlaybackMP3' in verbose_log
++files = ['game/core/app.gd','game/ui/header_car_appearance_cache.gd','game/ui/profile_car.gd',
++         'game/tests/profile_deferred_header.gd','game/tests/test_deferred_header.gd','game/tests/test_header_capture_fences.gd']
++hashes = {}
++for relative in files:
++    actual = (ROOT/relative).read_bytes()
++    assert actual==(OUT/'after'/relative).read_bytes(),relative
++    hashes[relative] = hashlib.sha256(actual).hexdigest()
++old = statistics.median(row['engine_to_menu_ms'] for row in before)
++new = statistics.median(row['engine_to_menu_ms'] for row in after)
++summary = dict(accepted_runs=len(rows),primary_candidate_assertions=198,candidate_diagnostic_assertions=22,baseline_assertions=44,failures=0,
++               before_custom_ms=[row['engine_to_menu_ms'] for row in before],after_custom_ms=[row['engine_to_menu_ms'] for row in after],
++               before_median_ms=old,after_median_ms=new,reduction_ms=old-new,reduction_percent=100*(old-new)/old,
++               desktop_only=True,phone_tested=False,shader_changes=False,delivery_sha256=hashes,shell_diagnostics=diagnostics_after,baseline_shell_diagnostics=diagnostics_before)
++(OUT/'validation.json').write_bytes((json.dumps(summary,indent=2)+'\n').encode('utf-8'))
++print(json.dumps(summary))
+--- /dev/null
++++ b/docs/evidence/startup-thumbnail-2026-11-05/update_trackers.py
+@@ -0,0 +1,30 @@
++"""Prepend this task only, preserving every existing tracker byte."""
++from pathlib import Path
++
++OUT = Path(__file__).resolve().parent
++ROOT = OUT.parents[2]
++MARKER = '<!-- STARTUP-THUMBNAIL-20261105 -->'
++for relative in ['AGENTS.md','DEVELOPMENT_STATUS.md','docs/PHASE_0_PLAN.md']:
++    path = ROOT/relative
++    before = path.read_bytes()
++    if MARKER.encode() in before:
++        continue
++    snapshot = OUT/'before'/relative
++    snapshot.parent.mkdir(parents=True,exist_ok=True)
++    assert not snapshot.exists()
++    snapshot.write_bytes(before)
++    link = 'STARTUP_THUMBNAIL_2026_11_05.md' if relative.startswith('docs/') else 'docs/STARTUP_THUMBNAIL_2026_11_05.md'
++    block = (MARKER+'\n## Missing custom car pictures no longer hold the first menu (2026-11-05)\n'
++             'STH01-STH03/STHQ01: Account restoration opens the menu before optional header pictures; exact PNG reads continue, misses show an existing model silhouette. '
++             'One scoped native capture requires the same visible ready Garage/car and an actually drawn cover; saves remove obsolete paint, gates cancel, deferred reads do not starve and eligibility retries sleep for250ms. '
++             'Frozen desktop Compatibility custom-miss medians25.454to8.635s from two samples/version; no phone/cold-driver/first-race claim. '
++             'Primary198/0 includes actual-App43/0 each desktop renderer, all-five native references26/0 each and19/0 lifecycle fences;17 accepted stable-source runs. '
++             'Initial missing-directory fixture, source-changing image run, independent-render variance and MP3 shutdown warning retained; two original shell controls do not reproduce the latter in this task. '
++             'No shader prototype enabled: the separate weathering study found no dependable loading gain. '
++             '[Sources, commands, images, limits and checked task-only patch]('+link+'). '
++             'Reload/owner/device acceptance remain; no device query/test, APK, owner-save/process change, backend/live request, deployment or main-index write; concurrent work preserved.\n'
++             '<!-- /STARTUP-THUMBNAIL-20261105 -->\n\n')
++    path.write_bytes(block.encode('utf-8')+before)
++    after = OUT/'after'/relative
++    after.parent.mkdir(parents=True,exist_ok=True)
++    after.write_bytes(path.read_bytes())
+--- /dev/null
++++ b/docs/evidence/startup-thumbnail-2026-11-05/checkpoint.py
+@@ -0,0 +1,48 @@
++"""Build and round-trip only this task's patch in an owned repository."""
++import difflib
++import hashlib
++import json
++from pathlib import Path
++import subprocess
++import time
++
++OUT = Path(__file__).resolve().parent
++ROOT = OUT.parents[2]
++prefix = OUT.relative_to(ROOT).as_posix()
++changed = ['game/core/app.gd','game/ui/header_car_appearance_cache.gd','game/ui/profile_car.gd',
++           'AGENTS.md','DEVELOPMENT_STATUS.md','docs/PHASE_0_PLAN.md']
++new = ['game/tests/profile_deferred_header.gd','game/tests/test_deferred_header.gd','game/tests/test_header_capture_fences.gd',
++       'docs/STARTUP_THUMBNAIL_2026_11_05.md']
++new += [prefix+'/'+name for name in ['freeze_project.py','run_case.py','run_matrix.py','validate.py','update_trackers.py','checkpoint.py','validation.json']]
++owned = ROOT/'build/startup-thumbnail-20261105'/('checkpoint-'+str(time.time_ns()))
++owned.mkdir(parents=True)
++subprocess.run(['git','init','--quiet',str(owned)],check=True)
++before = {path:(OUT/'before'/path).read_bytes() for path in changed}
++after = {path:(ROOT/path).read_bytes() for path in changed+new}
++patch = []
++for path in changed+new:
++    original = before.get(path,b'')
++    if path in before:
++        destination = owned/path
++        destination.parent.mkdir(parents=True,exist_ok=True)
++        destination.write_bytes(original)
++    patch.append(''.join(difflib.unified_diff(original.decode('utf-8').splitlines(True),after[path].decode('utf-8').splitlines(True),
++                                           fromfile='a/'+path if path in before else '/dev/null',tofile='b/'+path)))
++patch_path = OUT/'task.patch'
++patch_path.write_bytes(''.join(patch).encode('utf-8'))
++commands = []
++def git(*args):
++    command = ['git','-C',str(owned),'-c','core.autocrlf=false','-c','core.eol=lf',*args]
++    result = subprocess.run(command,check=True,capture_output=True,text=True)
++    commands.append(dict(command=command,exit_code=result.returncode,stdout=result.stdout,stderr=result.stderr))
++git('apply','--check','--whitespace=error',str(patch_path))
++git('apply','--whitespace=error',str(patch_path))
++for path,data in after.items(): assert (owned/path).read_bytes()==data,path
++git('apply','--reverse','--check',str(patch_path))
++git('apply','--reverse',str(patch_path))
++for path,data in before.items(): assert (owned/path).read_bytes()==data,path
++for path in new: assert not (owned/path).exists(),path
++report = dict(files=len(after),path=str(patch_path),sha256=hashlib.sha256(patch_path.read_bytes()).hexdigest(),
++              checked=True,forward_byte_exact=True,reverse_byte_exact=True,main_index_written=False,commands=commands)
++(OUT/'checkpoint.json').write_text(json.dumps(report,indent=2)+'\n',encoding='utf-8')
++print(json.dumps({key:value for key,value in report.items() if key!='commands'}))
+--- /dev/null
++++ b/docs/evidence/startup-thumbnail-2026-11-05/validation.json
+@@ -0,0 +1,38 @@
++{
++  "accepted_runs": 17,
++  "primary_candidate_assertions": 198,
++  "candidate_diagnostic_assertions": 22,
++  "baseline_assertions": 44,
++  "failures": 0,
++  "before_custom_ms": [
++    24501.131,
++    26407.713
++  ],
++  "after_custom_ms": [
++    8330.811,
++    8939.541
++  ],
++  "before_median_ms": 25454.422,
++  "after_median_ms": 8635.176,
++  "reduction_ms": 16819.246,
++  "reduction_percent": 66.0759297539736,
++  "desktop_only": true,
++  "phone_tested": false,
++  "shader_changes": false,
++  "delivery_sha256": {
++    "game/core/app.gd": "9ee33c64c3cbf28e651f06a5cd4a8a4a52a63a010503714bf214b6d33fd8f76a",
++    "game/ui/header_car_appearance_cache.gd": "d5b39a6dc9c9122da4fd15a4bcf5d277e40b9a9775ae26f54af10946221ac2eb",
++    "game/ui/profile_car.gd": "08eedc3da8d5d1846d532a2c7d2eb6b136445ec989570c4b62d7ae6ceeb50a33",
++    "game/tests/profile_deferred_header.gd": "3a2d0c0fb330f110e4fe7ba0c4c2588a8e6a1dbac1397781a338994c0c3d79ec",
++    "game/tests/test_deferred_header.gd": "da89b83a234e4dc0b33a0680f92c9e1dfbe86f1c272967fc421d7224f604b6d1",
++    "game/tests/test_header_capture_fences.gd": "ace4b0847d7baf80986d947c67132092ff2ae46dd1489ee2acbfe6dda3b6e4be"
++  },
++  "shell_diagnostics": [
++    "ERROR: Failed to read the root certificate store.",
++    "WARNING: 2 ObjectDB instances were leaked at exit (run with `--verbose` for details).",
++    "ERROR: 1 resources still in use at exit (run with --verbose for details)."
++  ],
++  "baseline_shell_diagnostics": [
++    "ERROR: Failed to read the root certificate store."
++  ]
++}

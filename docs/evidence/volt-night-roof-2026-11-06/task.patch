@@ -1,0 +1,297 @@
+--- a/AGENTS.md
++++ b/AGENTS.md
+@@ -1,3 +1,8 @@
++<!-- VOLT-NIGHT-ROOF-20261106 -->
++## Volt pale roof in Night traced to unshaded daytime reflection (2026-11-06)
++VNR01-VNR03: Investigation only. Dark panoramic-glass tint uses a fixed unshaded daytime sky; no biome input. Production Game/stock Volt native Compatibility passes13/0 with seven captures. All16780 isolated roof pixels remain exact under Night, day and all lights off; restored frame/track/state exact. Recommend car-owned Night reflection palette with daylight/studio and shared Hovercraft/prepared-asset checks. No runtime fix. [Evidence, commands, limits and task-only checkpoint](docs/VOLT_NIGHT_ROOF_2026_11_06.md). Initial execution-policy/native-access failures retained; standard entry point refreshes generated build identity. No device query/test, APK, owner-save/process change, live/backend request, deployment or main-index write; concurrent work preserved. Corrected implementation and owner/device acceptance remain.
++<!-- /VOLT-NIGHT-ROOF-20261106 -->
++
+ <!-- PROFILE-REDESIGN-20261106 -->
+ ## Driver profile redesigned around cars, creations and achievements (2026-11-06)
+ PRF01-PRF07: Compact identity/totals, five visible car cards with recorded kilometres/races, paginated own publications with verified finish counts and cancellable local drafts. Atomic local history preserves failed-save rollback; private grouped backend reads distinguish finishes from drivers. Achievement title/height/Prestige/focus fixes keep collection/details inside Profile. Focused379/0 headless and390/0 each desktop renderer; retained23/54/758/1220 pass,324 translation checks and4 SQLite tests pass. Broad achievement424/3 Garage failures reproduce with before controls; PostgreSQL setup timeout and Mobile teardown warning/stall retained. [Implementation, captures, commands, historical limits and task-only checkpoint](docs/PROFILE_REDESIGN_2026_11_06.md). Matching backend rollout, client reload and owner/device acceptance remain; no lifetime reconstruction or AAA certification. No device query/test, APK, owner-save/process change, live mutation, deployment or main-index write; concurrent work preserved.
+--- a/DEVELOPMENT_STATUS.md
++++ b/DEVELOPMENT_STATUS.md
+@@ -1,3 +1,8 @@
++<!-- VOLT-NIGHT-ROOF-20261106 -->
++## Volt pale roof in Night traced to unshaded daytime reflection (2026-11-06)
++VNR01-VNR03: Investigation only. Dark panoramic-glass tint uses a fixed unshaded daytime sky; no biome input. Production Game/stock Volt native Compatibility passes13/0 with seven captures. All16780 isolated roof pixels remain exact under Night, day and all lights off; restored frame/track/state exact. Recommend car-owned Night reflection palette with daylight/studio and shared Hovercraft/prepared-asset checks. No runtime fix. [Evidence, commands, limits and task-only checkpoint](docs/VOLT_NIGHT_ROOF_2026_11_06.md). Initial execution-policy/native-access failures retained; standard entry point refreshes generated build identity. No device query/test, APK, owner-save/process change, live/backend request, deployment or main-index write; concurrent work preserved. Corrected implementation and owner/device acceptance remain.
++<!-- /VOLT-NIGHT-ROOF-20261106 -->
++
+ <!-- PROFILE-REDESIGN-20261106 -->
+ ## Driver profile redesigned around cars, creations and achievements (2026-11-06)
+ PRF01-PRF07: Compact identity/totals, five visible car cards with recorded kilometres/races, paginated own publications with verified finish counts and cancellable local drafts. Atomic local history preserves failed-save rollback; private grouped backend reads distinguish finishes from drivers. Achievement title/height/Prestige/focus fixes keep collection/details inside Profile. Focused379/0 headless and390/0 each desktop renderer; retained23/54/758/1220 pass,324 translation checks and4 SQLite tests pass. Broad achievement424/3 Garage failures reproduce with before controls; PostgreSQL setup timeout and Mobile teardown warning/stall retained. [Implementation, captures, commands, historical limits and task-only checkpoint](docs/PROFILE_REDESIGN_2026_11_06.md). Matching backend rollout, client reload and owner/device acceptance remain; no lifetime reconstruction or AAA certification. No device query/test, APK, owner-save/process change, live mutation, deployment or main-index write; concurrent work preserved.
+--- a/docs/PHASE_0_PLAN.md
++++ b/docs/PHASE_0_PLAN.md
+@@ -1,3 +1,8 @@
++<!-- VOLT-NIGHT-ROOF-20261106 -->
++## Volt pale roof in Night traced to unshaded daytime reflection (2026-11-06)
++VNR01-VNR03: Investigation only. Dark panoramic-glass tint uses a fixed unshaded daytime sky; no biome input. Production Game/stock Volt native Compatibility passes13/0 with seven captures. All16780 isolated roof pixels remain exact under Night, day and all lights off; restored frame/track/state exact. Recommend car-owned Night reflection palette with daylight/studio and shared Hovercraft/prepared-asset checks. No runtime fix. [Evidence, commands, limits and task-only checkpoint](VOLT_NIGHT_ROOF_2026_11_06.md). Initial execution-policy/native-access failures retained; standard entry point refreshes generated build identity. No device query/test, APK, owner-save/process change, live/backend request, deployment or main-index write; concurrent work preserved. Corrected implementation and owner/device acceptance remain.
++<!-- /VOLT-NIGHT-ROOF-20261106 -->
++
+ <!-- PROFILE-REDESIGN-20261106 -->
+ ## Driver profile redesigned around cars, creations and achievements (2026-11-06)
+ PRF01-PRF07: Compact identity/totals, five visible car cards with recorded kilometres/races, paginated own publications with verified finish counts and cancellable local drafts. Atomic local history preserves failed-save rollback; private grouped backend reads distinguish finishes from drivers. Achievement title/height/Prestige/focus fixes keep collection/details inside Profile. Focused379/0 headless and390/0 each desktop renderer; retained23/54/758/1220 pass,324 translation checks and4 SQLite tests pass. Broad achievement424/3 Garage failures reproduce with before controls; PostgreSQL setup timeout and Mobile teardown warning/stall retained. [Implementation, captures, commands, historical limits and task-only checkpoint](PROFILE_REDESIGN_2026_11_06.md). Matching backend rollout, client reload and owner/device acceptance remain; no lifetime reconstruction or AAA certification. No device query/test, APK, owner-save/process change, live mutation, deployment or main-index write; concurrent work preserved.
+--- /dev/null
++++ b/game/tests/review_volt_night_roof.gd
+@@ -0,0 +1,117 @@
++extends SceneTree
++## Investigation only: production Game, private runner profile, no shipping edits.
++const GLASS: Shader = preload("res://vehicle/electric_glass.gdshader")
++var output: String = "res://../docs/evidence/volt-night-roof-2026-11-06"
++var checks: int = 0
++var failures: int = 0
++var rows: Array[Dictionary] = []
++
++func _initialize() -> void:
++	run.call_deferred()
++
++func check(ok: bool, message: String) -> void:
++	checks += 1
++	if not ok:
++		failures += 1
++		print("FAIL: ", message)
++
++func capture(label: String) -> Image:
++	for frame: int in range(6): await RenderingServer.frame_post_draw
++	var picture: Image = root.get_texture().get_image()
++	check(picture.save_png(output.path_join(label + ".png")) == OK, "save " + label)
++	return picture
++
++func run() -> void:
++	if DisplayServer.get_name() == "headless":
++		quit(2)
++		return
++	output = output.path_join(RenderingServer.get_current_rendering_method())
++	DirAccess.make_dir_recursive_absolute(ProjectSettings.globalize_path(output))
++	root.size = Vector2i(1280,720)
++	root.content_scale_size = root.size
++	var doc: Dictionary = TrackDocument.create_default()
++	doc.theme = "night_city"
++	doc["automatic_scenery"] = false
++	var track: NativeTrack = TrackCompiler.compile(doc)
++	var canonical: PackedByteArray = var_to_bytes([track.content_hash, track.cells, track.route, track.metadata])
++	var game: Node = load("res://core/game.tscn").instantiate()
++	game.initial_track = track
++	game.vehicle_id = "electric"
++	game.production_mode = true
++	root.add_child(game)
++	while not game.preparation_complete: await process_frame
++	game.set_process(false)
++	game.set_physics_process(false)
++	game.hitch_diagnostics.persist_enabled = false
++	game.paused = true
++	game._present_frame(0.0)
++	game.race_cues.reset()
++	game.process_mode = Node.PROCESS_MODE_DISABLED
++	var state: Array = game.sim.state.snapshot()
++	var roof: Array[Dictionary] = []
++	for mesh: MeshInstance3D in game.car.find_children("*", "MeshInstance3D", true, false):
++		for index: int in range(mesh.mesh.get_surface_count()):
++			var material: ShaderMaterial = mesh.get_active_material(index) as ShaderMaterial
++			if material == null or material.shader != GLASS: continue
++			var tint: Variant = material.get_shader_parameter("glass_tint_srgb")
++			if tint is Vector3 and tint.is_equal_approx(Vector3(0.026,0.043,0.055)):
++				roof.append({"node":mesh, "index":index, "material":material, "override":mesh.material_override != null})
++	check(not roof.is_empty(), "production panoramic roof material found")
++	await capture("night-production-camera")
++	# Diagnostic close view preserves the race camera angle; production framing
++	# above remains the acceptance context, and no shipping camera is changed.
++	game.camera.size = 6.0
++	game.camera.position += game.car.global_position + Vector3(0,0.6,0) - game.camera.focus
++	var night: Image = await capture("night-close")
++	var lights: Array[Node] = game.find_children("*", "Light3D", true, false)
++	var energies: Array[float] = []
++	for light: Light3D in lights:
++		energies.append(light.light_energy)
++		light.light_energy = 0.0
++	game.biome_environment.ambient_light_energy = 0.0
++	var dark: Image = await capture("all-lights-off-close")
++	for index: int in range(lights.size()): lights[index].light_energy = energies[index]
++	TrackTheme.apply_lighting("pine", game.biome_environment, game.biome_light)
++	var day: Image = await capture("day-lighting-close")
++	TrackTheme.apply_lighting("night_city", game.biome_environment, game.biome_light)
++	var masks: Array[Image] = []
++	for white: bool in [false,true]:
++		var marker := StandardMaterial3D.new()
++		marker.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
++		marker.albedo_color = Color.WHITE if white else Color.BLACK
++		for binding: Dictionary in roof:
++			if binding.override: binding.node.material_override = marker
++			else: binding.node.set_surface_override_material(binding.index, marker)
++		masks.append(await capture("roof-mask-white" if white else "roof-mask-black"))
++	for binding: Dictionary in roof:
++		if binding.override: binding.node.material_override = binding.material
++		else: binding.node.set_surface_override_material(binding.index, binding.material)
++	var restored: Image = await capture("night-restored-close")
++	var count: int = 0
++	var sums: Array[Vector3] = [Vector3.ZERO,Vector3.ZERO,Vector3.ZERO]
++	var maximum_difference: float = 0.0
++	for y: int in range(night.get_height()):
++		for x: int in range(night.get_width()):
++			if masks[1].get_pixel(x,y).r - masks[0].get_pixel(x,y).r < 0.95: continue
++			count += 1
++			var pictures: Array[Image] = [night,dark,day]
++			for index: int in range(3):
++				var color: Color = pictures[index].get_pixel(x,y)
++				sums[index] += Vector3(color.r,color.g,color.b)
++				var difference: Color = color - night.get_pixel(x,y)
++				maximum_difference = maxf(maximum_difference,maxf(absf(difference.r),maxf(absf(difference.g),absf(difference.b))))
++	check(count > 100, "roof visibly occupies more than 100 interior pixels")
++	check(maximum_difference <= 1.0/255.0, "roof ignores day/night and all lights off")
++	check(night.get_data() == restored.get_data(), "material controls restore the original night frame exactly")
++	check(game.sim.state.snapshot() == state, "simulation unchanged")
++	check(canonical == var_to_bytes([track.content_hash, track.cells, track.route, track.metadata]), "track unchanged")
++	for index: int in range(3):
++		var average: Vector3 = sums[index] * 255.0 / maxi(count,1)
++		rows.append({"lighting":["night","all_off","day"][index],"roof_mean_rgb_255":[average.x,average.y,average.z]})
++	var report: Dictionary = {"checks":checks,"failures":failures,"roof_materials":roof.size(),"roof_interior_pixels":count,"maximum_lighting_difference_255":maximum_difference*255.0,"lighting":rows,"glass_sha256":FileAccess.get_sha256("res://vehicle/electric_glass.gdshader")}
++	FileAccess.open(output.path_join("report.json"),FileAccess.WRITE).store_string(JSON.stringify(report,"\t"))
++	print("VOLT_NIGHT_ROOF: ",JSON.stringify(report))
++	game.queue_free()
++	await process_frame
++	await create_timer(0.2).timeout
++	quit(1 if failures else 0)
+--- /dev/null
++++ b/docs/VOLT_NIGHT_ROOF_2026_11_06.md
+@@ -0,0 +1,35 @@
++# Volt pale roof in Night — investigation, 2026-11-06
++
++The panoramic roof retains its daytime reflection in Night. It is dark tinted glass in the model, but `electric_glass.gdshader` uses `render_mode unshaded` and a fixed analytic daytime sky/cloud palette. Neither the biome's ambient light nor any scene light affects its output. The body darkens while the glass remains comparatively pale. This reproduces the reported appearance as pale grey-blue in the tested desktop view; it is not a white paint assignment.
++
++## Requirements and findings
++
++- **VNR01 — trace the roof material.** `game/vehicle/electric_reference_cabin.gd:106` creates a separate panoramic-roof material with display-space tint `(0.026, 0.043, 0.055)`. `game/vehicle/electric_glass.gdshader:2` makes it unshaded; lines 19–23 construct the daytime reflection and line 31 mixes it into the final colour. Only `studio_mode` changes the analytic environment. There is no Night input. `VehicleWeathering._bind` skips this glass because it is not a StandardMaterial3D/livery material, so weathering does not correct the lighting response.
++- **VNR02 — confirm in native rendering.** The production Game scene, stock Volt and a generated Night track run in a private offline profile. The ordinary race camera is captured first. A diagnostic close view then compares the same car, pose and roof under Night lighting, every scene light plus ambient disabled, and daytime lighting. Black/white roof-only material controls identify 16,780 fully covered interior roof pixels. Their mean RGB is exactly `(47.963, 62.333, 70.506)` on a 0–255 scale in all three cases; maximum difference is **zero**. This demonstrates the failure without relying on the roof being hidden or on a shader-source assertion. Restoring the original material reproduces the complete Night frame byte-for-byte. Track data and simulation state remain unchanged.
++- **VNR03 — identify the bounded correction.** Give the analytic glass reflection a dark Night palette/strength selected through car-owned materials at race preparation, preserving daylight and studio defaults. Do not globally darken the car paint or scene. The same shader is used by Hovercraft, so any implementation needs explicit scope and checks for both models, prepared/procedural cars, daytime and Garage transitions. Honour the existing prepared-asset and thumbnail provenance checks. No correction is implemented by this investigation.
++
++## Evidence and actual commands
++
++```powershell
++python docs/evidence/volt-night-roof-2026-11-06/run_review.py gl_compatibility
++python docs/evidence/volt-night-roof-2026-11-06/checkpoint.py
++```
++
++The runner uses `scripts/dev.ps1 -Action TestScript -ScriptPath res://tests/review_volt_night_roof.gd -Graphical -RenderingMethod gl_compatibility -CommandTimeoutSeconds 180`, with a process-scoped execution policy and private APPDATA/LOCALAPPDATA under `build/volt-night-roof-20261106`. It uses the pinned Godot `4.7.2.stable.official.ed1daf0bf`. Final desktop Compatibility / RTX 3090 run: **exit 0, 13 checks, 0 failures**, seven native captures. The [process receipt](evidence/volt-night-roof-2026-11-06/gl_compatibility-receipt.json) confirms the five inspected shipping sources and the fixture remain unchanged during the accepted run. The [pixel report](evidence/volt-night-roof-2026-11-06/gl_compatibility/report.json) contains exact measurements.
++
++- [Production race framing](evidence/volt-night-roof-2026-11-06/gl_compatibility/night-production-camera.png)
++- [Night diagnostic close view](evidence/volt-night-roof-2026-11-06/gl_compatibility/night-close.png)
++- [All lighting disabled](evidence/volt-night-roof-2026-11-06/gl_compatibility/all-lights-off-close.png)
++- [Same roof under day lighting](evidence/volt-night-roof-2026-11-06/gl_compatibility/day-lighting-close.png)
++
++An initial launch was blocked by PowerShell's script execution policy. A second sandboxed launch returned exit 1 with root-certificate-store and Access denied messages; subsequent capture files were not treated as an accepted run. A complete permitted desktop rerun produced the accepted receipt and images. A sandboxed process-list diagnostic also returned Access denied. The initial logs/receipts are retained beside the final evidence; none count as passing tests.
++
++The first isolated patch round-trip hit inherited Git newline conversion during the byte-equality check. Setting `core.autocrlf=false` in that disposable verification repository preserved the existing mixed line endings; the repeated forward/reverse checks and byte comparisons passed. No main-repository Git configuration was changed.
++
++## Files, checkpoint and limits
++
++Added `game/tests/review_volt_night_roof.gd`, the evidence runner and this report; updated the three project status summaries. The reviewable [task patch](evidence/volt-night-roof-2026-11-06/task.patch) contains only those investigation changes, with [forward/reverse verification](evidence/volt-night-roof-2026-11-06/checkpoint.json). Native images, logs and receipts remain alongside it.
++
++No material, model, biome lighting or gameplay implementation was changed. The standard `dev.ps1` entry point refreshed generated client identity metadata; concurrent changes are preserved and excluded from the task patch. No main-index staging or commit was performed.
++
++No device query/test, APK/export, owner-save/process change, live/backend request or deployment. The owner's exact car configuration, track and camera were not supplied; this verifies the underlying material fault in a local stock-car reproduction. Mobile renderer, physical-device appearance, a corrected implementation and owner acceptance remain untested.
+--- /dev/null
++++ b/docs/evidence/volt-night-roof-2026-11-06/run_review.py
+@@ -0,0 +1,35 @@
++"""Run the native investigation through the pinned entry point with private saves."""
++import hashlib
++import json
++import os
++from pathlib import Path
++import subprocess
++import sys
++import time
++
++evidence = Path(__file__).resolve().parent
++root = evidence.parents[2]
++renderer = sys.argv[1] if len(sys.argv) > 1 else 'gl_compatibility'
++profile = root / 'build/volt-night-roof-20261106' / renderer
++(profile / 'Circuit01Lab').mkdir(parents=True, exist_ok=True)
++(profile / 'Circuit01Lab/backend.cfg').write_text('[backend]\nurl=""\n', encoding='utf-8')
++env = os.environ.copy()
++env.update(APPDATA=str(profile), LOCALAPPDATA=str(profile), BMT_API_URL='')
++paths = [root / path for path in (
++    'game/vehicle/electric_glass.gdshader', 'game/vehicle/electric_reference_cabin.gd',
++    'game/vehicle/car_visual.gd', 'game/core/game.gd', 'game/track/track_theme.gd',
++    'game/tests/review_volt_night_roof.gd')]
++def hashes():
++    return {str(path.relative_to(root)): hashlib.sha256(path.read_bytes()).hexdigest() for path in paths}
++command = ['powershell', '-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', str(root / 'scripts/dev.ps1'),
++           '-Action', 'TestScript', '-ScriptPath', 'res://tests/review_volt_night_roof.gd',
++           '-Graphical', '-RenderingMethod', renderer, '-CommandTimeoutSeconds', '180']
++receipt = {'command': command, 'profile': str(profile), 'before': hashes()}
++start = time.monotonic()
++with (evidence / (renderer + '.log')).open('w', encoding='utf-8') as log:
++    result = subprocess.run(command, cwd=root, env=env, stdout=log, stderr=subprocess.STDOUT)
++receipt.update(exit_code=result.returncode, elapsed_seconds=time.monotonic()-start, after=hashes())
++receipt['sources_unchanged'] = receipt['before'] == receipt['after']
++(evidence / (renderer + '-receipt.json')).write_text(json.dumps(receipt, indent=2), encoding='utf-8')
++print(json.dumps(receipt))
++sys.exit(result.returncode)
+--- /dev/null
++++ b/docs/evidence/volt-night-roof-2026-11-06/checkpoint.py
+@@ -0,0 +1,65 @@
++"""Prepend task evidence to current trackers; verify a task-only patch without staging."""
++import difflib
++import hashlib
++import json
++from pathlib import Path
++import subprocess
++import tempfile
++
++evidence = Path(__file__).resolve().parent
++root = evidence.parents[2]
++summary = '''<!-- VOLT-NIGHT-ROOF-20261106 -->
++## Volt pale roof in Night traced to unshaded daytime reflection (2026-11-06)
++VNR01-VNR03: Investigation only. Dark panoramic-glass tint uses a fixed unshaded daytime sky; no biome input. Production Game/stock Volt native Compatibility passes13/0 with seven captures. All16780 isolated roof pixels remain exact under Night, day and all lights off; restored frame/track/state exact. Recommend car-owned Night reflection palette with daylight/studio and shared Hovercraft/prepared-asset checks. No runtime fix. [Evidence, commands, limits and task-only checkpoint](LINK). Initial execution-policy/native-access failures retained; standard entry point refreshes generated build identity. No device query/test, APK, owner-save/process change, live/backend request, deployment or main-index write; concurrent work preserved. Corrected implementation and owner/device acceptance remain.
++<!-- /VOLT-NIGHT-ROOF-20261106 -->
++
++'''
++before = {}
++after = {}
++for relative in ['AGENTS.md', 'DEVELOPMENT_STATUS.md', 'docs/PHASE_0_PLAN.md']:
++    path = root / relative
++    old = path.read_bytes()
++    link = 'VOLT_NIGHT_ROOF_2026_11_06.md' if relative.startswith('docs/') else 'docs/VOLT_NIGHT_ROOF_2026_11_06.md'
++    prefix = summary.replace('LINK', link).encode('utf-8')
++    if old.startswith(prefix): old = old[len(prefix):]
++    assert b'<!-- VOLT-NIGHT-ROOF-20261106 -->' not in old
++    new = prefix + old
++    before[relative] = old
++    after[relative] = new
++    path.write_bytes(new)
++for relative in ['game/tests/review_volt_night_roof.gd', 'docs/VOLT_NIGHT_ROOF_2026_11_06.md',
++                 'docs/evidence/volt-night-roof-2026-11-06/run_review.py',
++                 'docs/evidence/volt-night-roof-2026-11-06/checkpoint.py']:
++    before[relative] = b''
++    after[relative] = (root / relative).read_bytes()
++patch = b''
++for relative in before:
++    patch += b''.join(difflib.diff_bytes(difflib.unified_diff,
++        before[relative].splitlines(keepends=True), after[relative].splitlines(keepends=True),
++        fromfile=('a/' + relative).encode() if before[relative] else b'/dev/null',
++        tofile=('b/' + relative).encode()))
++patch_path = evidence / 'task.patch'
++patch_path.write_bytes(patch)
++with tempfile.TemporaryDirectory(prefix='bmt-volt-night-checkpoint-') as temporary:
++    directory = Path(temporary)
++    subprocess.run(['git', 'init', '-q', str(directory)], check=True)
++    subprocess.run(['git', '-C', str(directory), 'config', 'core.autocrlf', 'false'], check=True)
++    for relative, content in before.items():
++        if not content: continue
++        path = directory / relative
++        path.parent.mkdir(parents=True, exist_ok=True)
++        path.write_bytes(content)
++    commands = []
++    for options in [['--check'], [], ['--reverse', '--check'], ['--reverse']]:
++        command = ['git', '-C', str(directory), 'apply', *options, str(patch_path)]
++        completed = subprocess.run(command, capture_output=True, text=True)
++        commands.append({'options': options, 'exit_code': completed.returncode, 'stderr': completed.stderr})
++        assert completed.returncode == 0, completed.stderr
++        if options == []:
++            assert all((directory / path).read_bytes() == content for path, content in after.items())
++    assert all((directory / path).read_bytes() == content if content else not (directory / path).exists()
++               for path, content in before.items())
++receipt = {'files': list(before), 'patch_sha256': hashlib.sha256(patch).hexdigest(),
++           'forward_content_exact': True, 'reverse_content_exact': True, 'commands': commands}
++(evidence / 'checkpoint.json').write_text(json.dumps(receipt, indent=2), encoding='utf-8')
++print(json.dumps(receipt))

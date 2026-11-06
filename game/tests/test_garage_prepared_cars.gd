@@ -38,12 +38,17 @@ func shape(car: CarVisual) -> Array:
 				value.append(finish(node.get_active_material(surface)))
 	return value
 func make(id: String,prepared: bool) -> CarVisual:
+	preload("res://vehicle/modular_car_base.gd").enabled=false
+	preload("res://vehicle/prepared_car_cache.gd").enabled=false
 	var car:=CarVisual.new()
 	car.vehicle_id=id
 	car.livery=VehicleLivery.defaults(id)
-	car.editable_kits=id=="compact"
+	car.editable_kits=VehicleCustomisation.supported(id)
 	car.garage_template=prepared
 	root.add_child(car)
+	# Baking assigns stable names to anonymous nodes. Match those names before
+	# comparing paths; geometry, hierarchy, transforms and finishes stay exact.
+	preload("res://vehicle/prepared_car_cache.gd")._stable_names(car)
 	return car
 func difference(a: Variant,b: Variant,path: String="") -> void:
 	if a is Array and b is Array:

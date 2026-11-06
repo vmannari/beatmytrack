@@ -51,7 +51,21 @@ $previewBefore = Get-PreviewHash
 [System.IO.File]::WriteAllText((Join-Path $fixtureRoot 'game/ui/garage_page.gd'), '# changed label', $encoding)
 $menuBuild = Write-ClientBuildIdentity $fixtureRoot $fixtureRoot
 if ($menuBuild -ceq $transportBuild -or (Get-PreviewHash) -cne $previewBefore) { throw 'Menu changes must update the build while retaining saved preview pictures.' }
-if ((Get-HeaderHash) -ceq $headerBefore) { throw 'Conservative UI changes must invalidate header appearances.' }
+if ((Get-HeaderHash) -cne $headerBefore) { throw 'Garage page composition must not invalidate header appearances.' }
+foreach ($relative in @('game/ui/own_profile_page.gd','game/ui/header_car_picker.gd','game/ui/garage_preloader.gd','game/localization/en.po','game/core/features/garage.gd')) {
+    $destination = Join-Path $fixtureRoot $relative
+    [System.IO.Directory]::CreateDirectory((Split-Path -Parent $destination)) | Out-Null
+    [System.IO.File]::WriteAllText($destination, '# unrelated presentation', $encoding)
+    Write-ClientBuildIdentity $fixtureRoot $fixtureRoot | Out-Null
+    if ((Get-HeaderHash) -cne $headerBefore) { throw "Non-rendering source invalidated header pictures: $relative" }
+    if (@(Get-GaragePreviewVehicles $relative).Count -ne 0) { throw "Non-rendering source invalidated carousel pictures: $relative" }
+}
+foreach ($relative in @('game/ui/profile_car.gd','game/ui/profile_car_renderer.gd','game/ui/rivalry_podium_studio.gd','game/ui/header_car_appearance_cache.gd','game/ui/new_visual_helper.gd')) {
+    $priorHeader = Get-HeaderHash
+    [System.IO.File]::WriteAllText((Join-Path $fixtureRoot $relative), '# visual source or unknown dependency', $encoding)
+    Write-ClientBuildIdentity $fixtureRoot $fixtureRoot | Out-Null
+    if ((Get-HeaderHash) -ceq $priorHeader) { throw "Visual/unknown source must invalidate header pictures: $relative" }
+}
 [System.IO.Directory]::CreateDirectory((Join-Path $fixtureRoot 'game/vehicle')) | Out-Null
 [System.IO.File]::WriteAllText((Join-Path $fixtureRoot 'game/vehicle/compact_coachwork.gd'), '# first body', $encoding)
 Write-ClientBuildIdentity $fixtureRoot $fixtureRoot | Out-Null
@@ -78,4 +92,4 @@ $project = [System.IO.File]::ReadAllText((Join-Path $fixtureRoot 'game/project.g
 Write-ClientBuildIdentity $fixtureRoot $fixtureRoot | Out-Null
 if ((Get-PreviewHash) -ceq $renderPreview) { throw 'Project rendering changes must invalidate old pictures.' }
 if ((Get-HeaderHash) -ceq $renderHeader) { throw 'Rendering changes must invalidate header appearances.' }
-Write-Host 'BUILD_IDENTITY: 18 checks passed; isolated fixture retained in build/.'
+Write-Host 'BUILD_IDENTITY: 33 checks passed; isolated fixture retained in build/.'

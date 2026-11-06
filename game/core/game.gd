@@ -92,6 +92,7 @@ var tire_effect_frame := DriveFrame.new()
 var recorder := HandlingRecorder.new()
 var car: CarVisual
 var car_weathering := VehicleWeathering.new()
+var electric_glass_lighting := preload("res://race/electric_glass_lighting.gd").new()
 var condition_save_elapsed: float = 0.0
 var contact_shadow: MeshInstance3D
 var cloud_shadow: MeshInstance3D
@@ -168,6 +169,8 @@ var _render_viewport: Viewport
 var _base_msaa: Viewport.MSAA = Viewport.MSAA_DISABLED
 var _base_render_scale: float = 1.0
 var _graphics: Dictionary = {}
+var shader_profile: Node
+var shader_telemetry: Node
 var _shadow_size_changed: bool = false
 var _base_shadow_size: int = 1024
 var _base_shadow_16_bits: bool = true
@@ -216,6 +219,9 @@ func _ready() -> void:
 	if initial_track != null:
 		native_track = initial_track
 		yard = native_track
+	shader_profile = preload("res://rendering/biome_shader_profile.gd").new()
+	add_child(shader_profile)
+	shader_profile.begin(self,shader_telemetry)
 	var world: Node3D = $World
 	countdown_ticks = 360 if production_mode and not editor_test else 0
 	await _build_ground(world)
@@ -270,6 +276,7 @@ func _ready() -> void:
 		personal_ghost.configure(car,false)
 	contact_shadow = ContactShading.car_shadow(world)
 	car.set_night_headlights(native_track != null and native_track.metadata.get("theme","pine") == "night_city")
+	electric_glass_lighting.configure(car, str(native_track.metadata.get("theme", "pine")) if native_track != null else "pine")
 	preparation_mark = Time.get_ticks_usec() if profile_enabled else 0
 	car_weathering.configure(car, str(native_track.metadata.get("theme", "pine")) if native_track != null else "pine", handling)
 	car_weathering.restore(VehicleCondition.read(preference_records, vehicle_id))
@@ -1173,11 +1180,13 @@ func _exit_tree() -> void:
 
 
 func cycle_track() -> void:
+	if is_instance_valid(shader_profile): shader_profile.finish()
 	preparation_complete = false
 	track_index = (track_index + 1) % (TRACK_NAMES.size() + 1)
 	track_ground.queue_free()
 	native_track = NativeTrack.read("res://resources/tracks/" + TRACK_NAMES[track_index] + ".json") if track_index < TRACK_NAMES.size() else null
 	yard = native_track if native_track != null else PlaygroundData.new()
+	if is_instance_valid(shader_profile): shader_profile.begin(self,shader_telemetry)
 	await _build_ground($World)
 	if not _preparation_is_current(): return
 	_update_weather()
@@ -1223,6 +1232,7 @@ func _update_weather() -> void:
 	TrackTheme.apply_lighting(str(native_track.metadata.get("theme","pine")) if native_track != null else "pine",biome_environment,biome_light)
 	biome_light.shadow_enabled = _graphics.get("shadow_quality","auto") != "off"
 	var weather_theme: String = str(native_track.metadata.get("theme","pine")) if native_track != null else "pine"
+	if car != null: electric_glass_lighting.configure(car, weather_theme)
 	if car != null and car_weathering.theme != weather_theme:
 		car_weathering.configure(car, weather_theme, handling)
 	if night_ambience == null:

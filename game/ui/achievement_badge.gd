@@ -28,10 +28,12 @@ static func texture(index: int, level: int) -> AtlasTexture:
 
 func _draw() -> void:
 	var index: int = motif
+	var honor: bool = prestige
 	if not family_id.is_empty():
 		for i: int in range(AchievementProgress.catalog().families.size()):
 			if AchievementProgress.catalog().families[i].id == family_id:
 				index = i
+				honor = bool(AchievementProgress.catalog().families[i].prestige)
 				break
 	var width: float = minf(size.x,size.y)
-	draw_texture_rect(texture(index,tier),Rect2((size-Vector2.ONE*width)*0.5,Vector2.ONE*width),false)
+	draw_texture_rect(texture(index,3 if honor and tier > 0 else tier),Rect2((size-Vector2.ONE*width)*0.5,Vector2.ONE*width),false)

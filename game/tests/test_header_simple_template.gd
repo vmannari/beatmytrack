@@ -38,12 +38,15 @@ func shape(car: CarVisual) -> Array:
 				value.append(finish(node.get_active_material(surface)))
 	return value
 func make(id: String,prepared: bool) -> CarVisual:
+	preload("res://vehicle/modular_car_base.gd").enabled=false
+	preload("res://vehicle/prepared_car_cache.gd").enabled=false
 	var car: CarVisual = load("res://ui/rivalry_victory_car.gd").HeaderCarVisual.new() if prepared else CarVisual.new()
 	car.vehicle_id=id
 	car.livery=VehicleLivery.defaults(id)
 	car.simple_model=true
 	# HeaderCarVisual is selected above
 	root.add_child(car)
+	preload("res://vehicle/prepared_car_cache.gd")._stable_names(car)
 	return car
 func difference(a: Variant,b: Variant,path: String="") -> void:
 	if a is Array and b is Array:

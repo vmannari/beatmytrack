@@ -37,6 +37,12 @@ class Account extends Node:
 class Awards extends Node:
 	signal changed
 	var selected: Array = []
+	var status: String = ""
+	var snapshot: Dictionary = {}
+	var busy: bool = false
+	func refresh() -> void: pass
+	func authenticated() -> bool: return false
+	func toggle_feature(_id: String) -> void: pass
 	func featured() -> Array: return selected
 	func source(_family: Dictionary) -> Dictionary: return {"metrics":{"races":10},"unlocked":{}}
 
@@ -59,6 +65,7 @@ class Preloader extends Node:
 	var picture_records: LocalRecords
 
 class Host extends Node:
+	var library: TrackLibrary
 	var _garage_preloader: Node
 	var online: Node
 	var cloud: Node
@@ -136,15 +143,15 @@ func run() -> void:
 	pictures.warm_views[VehicleCatalog.selected] = picture_view
 	pictures.texture = ImageTexture.create_from_image(Image.create(4,4,false,Image.FORMAT_RGBA8))
 	page.refresh_car()
-	check(page.hero_photo.visible and page.hero_photo.texture == pictures.texture,"exact Garage picture is shown")
+	check(page.photos[VehicleCatalog.selected].texture == pictures.texture,"exact Garage picture is shown")
 	picture_view.livery = {"stale":true}
 	page.refresh_car()
-	check(not page.hero_photo.visible and page.hero_car.visible,"stale appearance never shows as current car")
+	check(page.photos[VehicleCatalog.selected].texture != pictures.texture,"stale appearance never shows as current car")
 	host._garage_preloader = null
 	var original_car: String = VehicleCatalog.selected
 	VehicleCatalog.selected = "kart"
 	page.refresh_car()
-	check(page.find_child("ProfileSelectedCarName",true,false).text == VehicleCatalog.title("kart"),"car selection updates profile")
+	check(page.fleet.get_node("ProfileCar_kart").find_child("SelectedCar",true,false).visible,"car selection updates profile")
 	VehicleCatalog.selected = original_car
 	page.refresh_car()
 	var capture_path: String = OS.get_environment("BMT_PROFILE_CAPTURE")
@@ -152,7 +159,9 @@ func run() -> void:
 		await RenderingServer.frame_post_draw
 		check(root.get_texture().get_image().save_png(capture_path) == OK,"profile capture saved")
 	page.find_child("ProfileBadge_races",true,false).pressed.emit()
-	check(host.action == "achievement:races","badge opens its achievement")
+	check(page.collection != null and page.collection.selected == "races","badge opens its achievement")
+	page.collection._close_sheet()
+	page._close_collection()
 	page.find_child("ProfileTrack_one",true,false).pressed.emit()
 	check(host.action == "one","track opens exact publication")
 	page.size = Vector2(400,720)
@@ -166,7 +175,7 @@ func run() -> void:
 	page = make_page(host)
 	await settle()
 	check(page.find_child("ProfilePlayerName",true,false).text == "Guest","guest identity shown")
-	check(page.find_child("ProfileRacingStats",true,false) == null,"new player sees race empty state")
+	check(page.total_values.races.text == "0","new player sees zero completed races")
 	check("Sign in" in page.find_child("ProfileRankingStatus",true,false).text,"guest ranking explains sign in")
 	page.queue_free()
 	await settle()
@@ -220,7 +229,7 @@ func run() -> void:
 		check(app.root_ui.find_child("ProfilePlayerName",true,false).text == "Guest","actual guest profile shows identity")
 		app.root_ui.find_child("ProfileChooseAchievements",true,false).pressed.emit()
 		await settle()
-		check(app.screen == "garage" and app._retained_garage.section == "achievements","profile opens the actual achievement collection")
+		check(app.screen == "profile" and app.root_ui.find_child("AchievementsMenu",true,false) != null,"profile opens the actual achievement collection")
 		app._show_screen("profile")
 		app.root_ui.find_child("ManageAccount",true,false).pressed.emit()
 		check(app.screen == "account","profile account action opens account")

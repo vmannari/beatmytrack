@@ -10,7 +10,7 @@ from sqlalchemy import select, text
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 
-from . import game_config_observations, network_health, quality, race_statistics
+from . import game_config_observations, network_health, quality, race_statistics, shader_profiles
 from .db import get_session
 from .middleware import ParsedJSONRoute
 from .security import current_player
@@ -50,6 +50,7 @@ ALLOWED.update(quality.FIELDS)
 ALLOWED.update(game_config_observations.FIELDS)
 ALLOWED.update(network_health.FIELDS)
 ALLOWED["race_statistics"] = race_statistics.REQUIRED | race_statistics.OPTIONAL
+ALLOWED["shader_profile"] = shader_profiles.FIELDS
 REASONS = {"launch", "resume", "inactivity", "finished", "restart", "exit", "background", "unknown",
     "save", "publish", "edit", "test", "open", "join", "create", "share"}
 
@@ -74,6 +75,8 @@ def integer(value, low=0, high=86400000):
 
 
 def properties(name, value):
+    if name == "shader_profile":
+        return shader_profiles.validate(value)
     if name in game_config_observations.NAMES:
         return game_config_observations.validate(name, value)
     configuration = {}
@@ -209,7 +212,7 @@ def accept_batch(batch: Batch, request: Request, session: DB, player: Auth):
                 raise ValueError("INVALID_EVENT")
             if request.app.state.settings.local_drafts_only and name in LOCAL_AUTHORING_NAMES:
                 raise ValueError("INVALID_EVENT")
-            if name in quality.NAMES | network_health.NAMES | {"race_statistics"} and not request.app.state.settings.client_quality_enabled:
+            if name in quality.NAMES | network_health.NAMES | {"race_statistics", "shader_profile"} and not request.app.state.settings.client_quality_enabled:
                 raise ValueError("INVALID_EVENT")
             occurred = integer(raw["occurred_at"], high=4102444800)
             if occurred < at - MAX_AGE or occurred > at + FUTURE_ALLOWANCE:

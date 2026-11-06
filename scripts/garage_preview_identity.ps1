@@ -8,9 +8,12 @@ function Get-GaragePreviewVehicleIds {
 function Get-GaragePreviewVehicles([string]$Relative) {
     # New visual files are shared by default, rather than silently omitted.
     # These narrowly excluded files cannot affect the captured showroom.
-    if ($Relative -match '^game/(backend/|diagnostics/|music/|assets/menu/header_car_templates_v1/)' -or
+    if ($Relative -match '^game/(backend/|diagnostics/|music/|localization/|core/features/|assets/menu/header_car_templates_v1/)' -or
         ($Relative -match '^game/soundtrack/' -and $Relative -ne 'game/soundtrack/record_library.gd') -or
-        $Relative -in @('game/core/app.gd', 'game/ui/garage_page.gd')) { return @() }
+        $Relative -in @('game/core/app.gd', 'game/ui/garage_page.gd', 'game/ui/garage_preloader.gd',
+            'game/ui/own_profile_page.gd', 'game/ui/achievements_menu.gd', 'game/ui/achievement_badge.gd',
+            'game/ui/profile_car.gd', 'game/ui/header_car_picker.gd', 'game/ui/header_car_motion.gd',
+            'game/ui/track_of_day_page.gd', 'game/ui/menu_page_swipe.gd', 'game/persistence/local_records.gd')) { return @() }
     if ($Relative -notmatch '^(game/|native/)' -and $Relative -ne 'godot-version.txt') { return @() }
     $vehicles = @(Get-GaragePreviewVehicleIds)
     # Only resources consumed by one named car are separated. Source files,

@@ -21,18 +21,7 @@ static func key_for(car: CarVisual) -> Array:
 	return [SCHEMA,Engine.get_version_info().string,build_revision(car.vehicle_id),car.vehicle_id,car.simple_model,car.editable_kits,car.batch_parts,VisualGeometry.optimize_model_geometry,HandlingConfig.BODY_SCALE,config.wheelbase,config.track_width]
 
 static func source_hashes(id: String) -> Dictionary:
-	# Builders share helpers between car families (including Compact finishes
-	# and Hovercraft surface generation). Be conservative in a source checkout.
-	var result: Dictionary = {}
-	for file: String in DirAccess.get_files_at("res://vehicle"):
-		if file.ends_with(".gd") or file.ends_with(".gdshader") or file.ends_with(".gdshaderinc"):
-			result["vehicle/"+file] = FileAccess.get_sha256("res://vehicle/"+file)
-	for file: String in DirAccess.get_files_at("res://track"):
-		if file.ends_with(".gdshader") or file.ends_with(".gdshaderinc"):
-			result["track/"+file] = FileAccess.get_sha256("res://track/"+file)
-	for path: String in ["res://resources/cars/"+id+".tres","res://vehicle/handling_config.gd","res://assets/fonts/BarlowCondensed-SemiBold.ttf"]:
-		if FileAccess.file_exists(path): result[path] = FileAccess.get_sha256(path)
-	return result
+	return preload("res://vehicle/prepared_asset_sources.gd").hashes(id)
 
 static func _eligible(car: CarVisual) -> bool:
 	var revision: String = build_revision(car.vehicle_id)
@@ -53,8 +42,9 @@ static func restore(car: CarVisual) -> bool:
 	# Packaged builds may contain compiled scripts rather than source files.
 	# In a source checkout, reject any stale scene before touching the car.
 	if FileAccess.file_exists("res://vehicle/car_visual.gd"):
-		if not _sources.has(car.vehicle_id): _sources[car.vehicle_id] = source_hashes(car.vehicle_id)
-		if data.get("sources",{}) != _sources[car.vehicle_id]:
+		var validation=preload("res://vehicle/prepared_asset_sources.gd")
+		if not _sources.has(car.vehicle_id): _sources[car.vehicle_id] = validation.runtime_hashes(car.vehicle_id)
+		if validation.runtime_projection(data.get("sources",{})) != _sources[car.vehicle_id]:
 			holder.free()
 			return false
 	# Validate every stored path before mutating the live car. A corrupt or

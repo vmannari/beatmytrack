@@ -2,7 +2,7 @@ extends RefCounted
 ## Optional stock-kit simple Compact header geometry; fail closed on source or engine changes.
 const Cache=preload("res://vehicle/prepared_car_cache.gd")
 const DIRECTORY: String="res://assets/menu/header_car_templates_v1/"
-const SCHEMA: String="header-simple-rest-v1"
+const SCHEMA: String="header-simple-rest-v2"
 const Build = preload("res://core/build_identity.gd")
 static var enabled: bool=true
 static var hits: int=0
@@ -20,18 +20,16 @@ static func geometry_key(car: CarVisual) -> Array:
 	return [SCHEMA,car.vehicle_id,car.simple_model,car.editable_kits,car.batch_parts,VisualGeometry.optimize_model_geometry,HandlingConfig.BODY_SCALE,config.wheelbase,config.track_width]
 
 static func geometry_sources() -> Dictionary:
-	var result: Dictionary={}
-	for file: String in DirAccess.get_files_at("res://vehicle"):
-		if not file.ends_with(".gd"): continue
-		if file in ["car_visual.gd","vehicle_models.gd","visual_geometry.gd"] or file.begins_with("compact_") or file.begins_with("electric_") or file.begins_with("kart_") or file.begins_with("forklift_") or file.begins_with("hovercraft_"):
-			result[file]=FileAccess.get_sha256("res://vehicle/"+file)
+	var result: Dictionary=preload("res://vehicle/modular_car_base.gd").source_hashes("compact")
+	result["game/ui/header_simple_cache.gd"]=FileAccess.get_sha256("res://ui/header_simple_cache.gd")
 	return result
+
+static func geometry_revision() -> String:
+	return preload("res://vehicle/modular_car_base.gd").build_revision("compact")
 
 static func restore(car: CarVisual) -> bool:
 	if not enabled or not car.simple_model or car.vehicle_id!="compact" or car.customisation!=VehicleCustomisation.defaults(): return false
-	var build_script: Script = Build
-	var revisions: Dictionary = build_script.get_script_constant_map().get("GARAGE_PREVIEW_VEHICLE_SHA256",{})
-	var revision: String = str(revisions.get(car.vehicle_id,""))
+	var revision: String = geometry_revision()
 	if revision.length()!=64 or not revision.is_valid_hex_number(): return false
 	var path: String=DIRECTORY+car.vehicle_id+".scn"
 	if not ResourceLoader.exists(path): return false
@@ -47,8 +45,9 @@ static func restore(car: CarVisual) -> bool:
 		holder.free()
 		return false
 	if OS.has_feature("editor") and FileAccess.file_exists("res://vehicle/car_visual.gd"):
-		if source_hashes.is_empty(): source_hashes=geometry_sources()
-		if data.get("sources",{})!=source_hashes:
+		var validation=preload("res://vehicle/prepared_asset_sources.gd")
+		if source_hashes.is_empty(): source_hashes=validation.runtime_hashes("compact")
+		if validation.runtime_projection(data.get("sources",{}))!=source_hashes:
 			holder.free()
 			return false
 	var copies: Dictionary={"mutable":Cache._mutable_roles(data)}

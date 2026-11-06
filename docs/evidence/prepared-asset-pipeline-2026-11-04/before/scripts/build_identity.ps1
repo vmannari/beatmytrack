@@ -1,0 +1,155 @@
+# Deterministic client identity, including uncommitted shipping sources.
+# Dot-source from dev.ps1; no network, credentials or player files are read.
+. (Join-Path $PSScriptRoot 'garage_preview_identity.ps1')
+function Test-GaragePreviewSource([string]$Relative) {
+    # Match the native preview baker's conservative model/room dependencies.
+    # Menu layout, translations, backend and build metadata do not repaint a car.
+    if ($Relative -match '^game/(vehicle/|assets/(garage/|liveries/)|resources/(cars/|[^/]+\.tres$))' -or
+        $Relative -in @('godot-version.txt', 'game/project.godot', 'game/soundtrack/record_library.gd')) { return $true }
+    if ($Relative -match '^game/ui/(showroom_|studio_|garage_thumbnail_)' -or $Relative -match '^game/ui/garage_.*\.gdshader(inc)?$') { return $true }
+    return $Relative -in @(
+        'game/ui/car_showroom.gd', 'game/ui/garage_preview_renderer.gd', 'game/ui/garage_thumbnail_studio.gd', 'game/ui/garage_car_cache.gd',
+        'game/ui/garage_preloaded_studio.gd', 'game/ui/handling_selection.gd',
+        'game/ui/garage_environment.gd', 'game/ui/garage_reflections.gd', 'game/ui/garage_details.gd',
+        'game/ui/garage_drain.gd', 'game/ui/garage_furnishings.gd', 'game/ui/garage_materials.gd',
+        'game/ui/garage_workshop.gd', 'game/ui/garage_record_station.gd', 'game/ui/garage_lp_box.gd',
+        'game/ui/garage_plant.gd', 'game/ui/garage_car_reveal.gd', 'game/ui/garage_wash_effect.gd',
+        'game/ui/garage_wash_geometry.gd', 'game/ui/garage_wash_tool.gd', 'game/ui/garage_hose_geometry.gd',
+        'game/ui/garage_hose_rig.gd'
+    )
+}
+
+function Test-HeaderPreviewSource([string]$Relative) {
+    # Keep the visual closure conservative: retain models, shaders, UI, assets,
+    # editor/track helpers, native code and project settings. Account transport,
+    # music and App navigation cannot change the captured car's pixels.
+    if ($Relative -match '^game/(backend/|soundtrack/|diagnostics/)' -or $Relative -eq 'game/core/app.gd') { return $false }
+    return $true
+}
+
+function Get-ModularCarVehicles([string]$Relative) {
+    # These generated scenes are outputs, not inputs. Including them would
+    # make the embedded source revision change as a consequence of each bake.
+    if ($Relative -match '^game/assets/vehicles/(modular_car_bases_v1|modular_kits_v1)/') { return @() }
+    # RacingCarModels loads shadow geometry by vehicle ID; this manifest is
+    # provenance for the offline baker and is never read by the runtime.
+    if ($Relative -eq 'game/assets/vehicles/racing_simple_v1/manifest.json') { return @() }
+    # Only the Electric reference builder reads this mesh directory. Unknown
+    # vehicle assets and all model scripts remain shared, including similarly
+    # named future directories whose consumers have not yet been established.
+    if ($Relative -match '^game/assets/vehicles/electric_subtle_fenders_v1/' -or
+        $Relative -match '^game/assets/vehicles/racing_simple_v1/electric_shadow_[0-9]+\.res$') { return @('electric') }
+    $vehicles = @(Get-GaragePreviewVehicleIds)
+    if ($Relative -match '^game/resources/cars/(compact|pickup|classic|formula|kart|forklift|electric|hovercraft)\.tres$') { return @($Matches[1]) }
+    # Model scripts and prepared mesh/shader inputs are shared conservatively;
+    # livery data can be referenced by stored materials in an assembly.
+    if ($Relative -match '^game/(vehicle/|assets/vehicles/|assets/liveries/|assets/fonts/|resources/)' -or
+        $Relative -match '^game/track/[^/]+\.gdshader(inc)?$' -or $Relative -eq 'godot-version.txt') { return $vehicles }
+    return @()
+}
+
+function Write-ClientBuildIdentity([string]$RepositoryRoot, [string]$OutputDirectory) {
+    $projectPath = Join-Path $RepositoryRoot 'game/project.godot'
+    $projectText = [System.IO.File]::ReadAllText($projectPath)
+    $baseMatch = [regex]::Match($projectText, '(?m)^config/base_version="([A-Za-z0-9._-]{1,40})"\r?$')
+    if (-not $baseMatch.Success) { throw 'Client base version is missing or invalid.' }
+    $baseVersion = $baseMatch.Groups[1].Value
+    $presetPath = Join-Path $RepositoryRoot 'game/export_presets.cfg'
+    $presetText = [System.IO.File]::ReadAllText($presetPath)
+    $excludeMatch = [regex]::Match($presetText, '(?m)^exclude_filter="([^"]*)"\r?$')
+    $excluded = @($excludeMatch.Groups[1].Value.Split(',') | Where-Object { $_ })
+    $paths = @(& git -C $RepositoryRoot -c core.quotepath=false ls-files --cached --others --exclude-standard -- game native godot-version.txt scripts/build_identity.ps1 scripts/garage_preview_identity.ps1)
+    if ($LASTEXITCODE -ne 0) { throw 'Cannot enumerate client build sources.' }
+    $paths = @($paths | Where-Object {
+        $relative = $_
+        $include = $relative -notmatch '^game/(\.godot/|android/|tests/|music/)' -and $relative -notmatch '\.uid$' -and $relative -ne 'game/core/build_identity.gd'
+        if ($relative.StartsWith('game/')) {
+            foreach ($pattern in $excluded) { if ($relative.Substring(5) -like $pattern) { $include = $false; break } }
+        }
+        $include
+    } | Sort-Object -Unique)
+    $encoding = New-Object System.Text.UTF8Encoding($false)
+    $digest = [System.Security.Cryptography.SHA256]::Create()
+    $previewDigest = [System.Security.Cryptography.SHA256]::Create()
+    $headerDigest = [System.Security.Cryptography.SHA256]::Create()
+    $vehicleDigests = [ordered]@{}
+    foreach ($vehicle in @(Get-GaragePreviewVehicleIds)) { $vehicleDigests[$vehicle] = [System.Security.Cryptography.SHA256]::Create() }
+    $modularDigests = [ordered]@{}
+    foreach ($vehicle in @(Get-GaragePreviewVehicleIds)) { $modularDigests[$vehicle] = [System.Security.Cryptography.SHA256]::Create() }
+    $fileCount = 0
+    $previewFileCount = 0
+    $headerFileCount = 0
+    try {
+        foreach ($relative in $paths) {
+            $absolute = Join-Path $RepositoryRoot $relative
+            if (-not [System.IO.File]::Exists($absolute)) { continue }
+            [byte[]]$bytes = $null
+            if ($relative -eq 'game/project.godot') {
+                $normalized = [regex]::Replace($projectText, '(?m)^config/version="[^"]*"\r?$', 'config/version="GENERATED"')
+                $bytes = $encoding.GetBytes($normalized.Replace("`r`n", "`n"))
+            } else { $bytes = [System.IO.File]::ReadAllBytes($absolute) }
+            $fileDigest = [System.Security.Cryptography.SHA256]::Create()
+            try { $fileHash = ([BitConverter]::ToString($fileDigest.ComputeHash([byte[]]$bytes, 0, $bytes.Length))).Replace('-', '').ToLowerInvariant() }
+            finally { $fileDigest.Dispose() }
+            $record = $encoding.GetBytes($relative + "`n" + $fileHash + "`n")
+            [void]$digest.TransformBlock($record, 0, $record.Length, $record, 0)
+            if (Test-GaragePreviewSource $relative) {
+                [void]$previewDigest.TransformBlock($record, 0, $record.Length, $record, 0)
+                $previewFileCount++
+            }
+            if (Test-HeaderPreviewSource $relative) {
+                [void]$headerDigest.TransformBlock($record, 0, $record.Length, $record, 0)
+                $headerFileCount++
+            }
+            foreach ($vehicle in @(Get-GaragePreviewVehicles $relative)) {
+                [void]$vehicleDigests[$vehicle].TransformBlock($record, 0, $record.Length, $record, 0)
+            }
+            foreach ($vehicle in @(Get-ModularCarVehicles $relative)) {
+                [void]$modularDigests[$vehicle].TransformBlock($record, 0, $record.Length, $record, 0)
+            }
+            $fileCount++
+        }
+        [void]$digest.TransformFinalBlock([byte[]]@(), 0, 0)
+        $sourceHash = ([BitConverter]::ToString($digest.Hash)).Replace('-', '').ToLowerInvariant()
+        [void]$previewDigest.TransformFinalBlock([byte[]]@(), 0, 0)
+        $previewHash = ([BitConverter]::ToString($previewDigest.Hash)).Replace('-', '').ToLowerInvariant()
+        [void]$headerDigest.TransformFinalBlock([byte[]]@(), 0, 0)
+        $headerHash = ([BitConverter]::ToString($headerDigest.Hash)).Replace('-', '').ToLowerInvariant()
+        $vehicleHashes = [ordered]@{}
+        foreach ($vehicle in $vehicleDigests.Keys) {
+            $vehicleDigest = $vehicleDigests[$vehicle]
+            [void]$vehicleDigest.TransformFinalBlock([byte[]]@(), 0, 0)
+            $vehicleHashes[$vehicle] = ([BitConverter]::ToString($vehicleDigest.Hash)).Replace('-', '').ToLowerInvariant()
+        }
+        $modularHashes = [ordered]@{}
+        foreach ($vehicle in $modularDigests.Keys) {
+            $modularDigest = $modularDigests[$vehicle]
+            [void]$modularDigest.TransformFinalBlock([byte[]]@(), 0, 0)
+            $modularHashes[$vehicle] = ([BitConverter]::ToString($modularDigest.Hash)).Replace('-', '').ToLowerInvariant()
+        }
+    } finally {
+        $digest.Dispose(); $previewDigest.Dispose(); $headerDigest.Dispose()
+        foreach ($vehicleDigest in $vehicleDigests.Values) { $vehicleDigest.Dispose() }
+        foreach ($modularDigest in $modularDigests.Values) { $modularDigest.Dispose() }
+    }
+    $identifier = $baseVersion + '.' + $sourceHash.Substring(0, 32)
+    $vehicleHashText = ConvertTo-Json -InputObject $vehicleHashes -Compress
+    $modularHashText = ConvertTo-Json -InputObject $modularHashes -Compress
+    $identityText = "extends RefCounted`n# Generated by scripts/dev.ps1. Never recompute during gameplay.`nconst ID: String = `"$identifier`"`nconst SOURCE_SHA256: String = `"$sourceHash`"`nconst GARAGE_PREVIEW_SHA256: String = `"$previewHash`"`nconst GARAGE_PREVIEW_VEHICLE_SHA256: Dictionary = $vehicleHashText`nconst MODULAR_CAR_SHA256: Dictionary = $modularHashText`nconst HEADER_PREVIEW_SHA256: String = `"$headerHash`"`n"
+    $identityPath = Join-Path $RepositoryRoot 'game/core/build_identity.gd'
+    [System.IO.Directory]::CreateDirectory((Split-Path -Parent $identityPath)) | Out-Null
+    $nextProject = [regex]::Replace($projectText, '(?m)^config/version="[^"]*"\r?$', ('config/version="' + $identifier + '"'))
+    # Android's empty version/name uses application/config/version.
+    if ($presetText -notmatch '(?m)^version/name=""\r?$') { throw 'Android version/name must inherit the generated project version.' }
+    foreach ($entry in @(@($identityPath, $identityText), @($projectPath, $nextProject))) {
+        if (-not [System.IO.File]::Exists($entry[0]) -or [System.IO.File]::ReadAllText($entry[0]) -cne $entry[1]) {
+            [System.IO.File]::WriteAllText($entry[0], $entry[1], $encoding)
+        }
+    }
+    if ($OutputDirectory) {
+        [System.IO.Directory]::CreateDirectory($OutputDirectory) | Out-Null
+        $receipt = @{ build_id = $identifier; source_sha256 = $sourceHash; source_files = $fileCount; garage_preview_sha256 = $previewHash; garage_preview_files = $previewFileCount; garage_preview_vehicle_sha256 = $vehicleHashes; modular_car_sha256 = $modularHashes; header_preview_sha256 = $headerHash; header_preview_files = $headerFileCount }
+        [System.IO.File]::WriteAllText((Join-Path $OutputDirectory 'client-build-identity.json'), ($receipt | ConvertTo-Json) + "`n", $encoding)
+    }
+    return $identifier
+}

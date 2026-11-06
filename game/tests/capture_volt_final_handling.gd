@@ -16,7 +16,7 @@ func run() -> void:
 	game.countdown_ticks = 0
 	game.race_cues.hide()
 	for frame: int in range(10): await process_frame
-	var ok: bool = game.hud.handling_test_choice == null and game.handling.version == "electric-28" and not game.attempt_practice
+	var ok: bool = game.hud.handling_test_choice == null and game.handling.version == "electric-29" and not game.attempt_practice
 	var output: String = OS.get_environment("BMT_VOLT_FINAL_CAPTURE")
 	if not output.is_empty():
 		DirAccess.make_dir_recursive_absolute(output)

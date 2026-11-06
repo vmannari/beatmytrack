@@ -5,6 +5,7 @@ param(
     [string]$GodotPath = $env:GODOT_BIN,
     [string]$DeviceSerial = '',
     [string]$AdbPath = $env:ADB_BIN,
+    [ValidateSet('Android Debug', 'Android ARM64')][string]$AndroidPreset = 'Android Debug',
     [string]$TracksPath = (Join-Path $env:APPDATA 'Circuit01Lab/tracks'),
     [string]$Track = '',
     [string]$Screen = '',
@@ -39,7 +40,8 @@ $repoRoot = Split-Path -Parent $PSScriptRoot
 $projectRoot = Join-Path $repoRoot 'game'
 $buildRoot = Join-Path $repoRoot 'build'
 $expectedVersion = (Get-Content -LiteralPath (Join-Path $repoRoot 'godot-version.txt') -Raw).Trim()
-$apkPath = Join-Path $buildRoot 'android/circuit01-debug.apk'
+$apkName = if ($AndroidPreset -eq 'Android ARM64') { 'circuit01-arm64.apk' } else { 'circuit01-debug.apk' }
+$apkPath = Join-Path $buildRoot ('android/' + $apkName)
 $packageId = 'org.circuit01.handlinglab'
 $trackArguments = @()
 if ($Track) { $trackArguments += "--track=$Track" }
@@ -368,6 +370,10 @@ function Prepare-AndroidGradle {
 }
 
 function Export-Android {
+    & python (Join-Path $PSScriptRoot 'check_android_delivery.py') --preset $AndroidPreset
+    if ($LASTEXITCODE) { throw 'Android delivery preset is inconsistent. No export started.' }
+	& python (Join-Path $PSScriptRoot 'prepare_car_assets.py') --verify --godot $script:godot --output (Join-Path $commandLogRoot 'prepared-assets')
+	if ($LASTEXITCODE) { throw 'Prepared car assets are stale or missing. Run scripts/prepare_car_assets.py before exporting.' }
 	& python (Join-Path $PSScriptRoot 'check_garage_previews.py')
 	if ($LASTEXITCODE) { throw 'Garage preview assets are stale or missing. Bake native previews before exporting.' }
     Test-AndroidTools
@@ -383,17 +389,21 @@ function Export-Android {
         if ([Environment]::OSVersion.Platform -eq [PlatformID]::Win32NT -and [string]$savedJavaOptions -notmatch 'javax\.net\.ssl\.trustStore') {
             $env:JAVA_TOOL_OPTIONS = ([string]$savedJavaOptions + ' -Djavax.net.ssl.trustStoreType=Windows-ROOT -Djavax.net.ssl.trustStore=NONE').Trim()
         }
-        Invoke-Checked $script:godot @('--headless', '--path', $projectRoot, '--export-debug', 'Android Debug', $freshApk) 'android-export.log'
+        Invoke-Checked $script:godot @('--headless', '--path', $projectRoot, '--export-debug', $AndroidPreset, $freshApk) 'android-export.log'
     } finally {
         $env:JAVA_TOOL_OPTIONS = $savedJavaOptions
     }
     if (-not (Test-Path -LiteralPath $freshApk -PathType Leaf)) { throw 'Export returned without an APK.' }
+    & python (Join-Path $PSScriptRoot 'check_android_delivery.py') --preset $AndroidPreset --artifact $freshApk
+    if ($LASTEXITCODE) { throw 'Exported APK failed delivery validation; previous APK retained.' }
     Move-Item -LiteralPath $freshApk -Destination $apkPath -Force
-    Write-Host "APK: $apkPath"
+    Write-Host "APK ($AndroidPreset): $apkPath"
 }
 
 function Install-Android {
-    if (-not (Test-Path -LiteralPath $apkPath -PathType Leaf)) { throw 'No debug APK. Run ExportAndroid first.' }
+    if (-not (Test-Path -LiteralPath $apkPath -PathType Leaf)) { throw "No APK for $AndroidPreset. Run ExportAndroid with the same -AndroidPreset first." }
+    & python (Join-Path $PSScriptRoot 'check_android_delivery.py') --preset $AndroidPreset --artifact $apkPath
+    if ($LASTEXITCODE) { throw 'APK delivery validation failed; no device installation attempted.' }
     $adb = Get-Adb
     $serial = Get-SelectedDevice $adb
     Invoke-Checked $adb @('-s', $serial, 'install', '-r', $apkPath) 'adb-install.log'

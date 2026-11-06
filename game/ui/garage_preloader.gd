@@ -1,10 +1,13 @@
 extends Node
 ## One account-bound, optional studio. Asset reads precede idle-only native work.
-const Studio=preload("res://ui/garage_preloaded_studio.gd")
-const Pictures=preload("res://ui/garage_preview_cache.gd")
+var Studio: Script:
+	get: return load("res://ui/garage_preloaded_studio.gd")
+var Pictures: Script
+const PICTURE_SCRIPT: String = "res://ui/garage_preview_cache.gd"
+const ARCHITECTURE: String = "res://assets/garage/workshop_v1.scn"
 const MAX_PENDING: int=4
 var app: Node
-var studio: CarShowroom
+var studio: Control
 var idle_ms: int=250
 var last_input: int=0
 var foreground: bool=true
@@ -44,6 +47,8 @@ func invalidate() -> void:
 	if not evicted: set_process(true)
 
 func _sync_pictures() -> void:
+	if Pictures == null:
+		Pictures = load(PICTURE_SCRIPT)
 	if not is_instance_valid(picture_service) or picture_records!=app.records:
 		if picture_records!=null and picture_records.appearance_committed.is_connected(invalidate): picture_records.appearance_committed.disconnect(invalidate)
 		if is_instance_valid(picture_service):
@@ -63,8 +68,11 @@ func _sync_pictures() -> void:
 func _pictures_allowed() -> bool:
 	if not is_instance_valid(app) or not app._publishing_slots_foreground or not app._background_work_allowed() or app.editor_memory.pressure_requested: return false
 	if app.menu_page_motion!=null and app.menu_page_motion.is_running(): return false
-	if not is_instance_valid(app._retained_garage) or not app._retained_garage.is_visible_in_tree(): return true
-	var page: GaragePage=app._retained_garage
+	if is_instance_valid(app.header_car_cache) and app.header_car_cache.capture_active(): return false
+	if not is_instance_valid(app._retained_garage):
+		return _picture_waiters>0 or (is_instance_valid(studio) and studio.prepared)
+	if not app._retained_garage.is_visible_in_tree(): return true
+	var page: Control=app._retained_garage
 	if page.progressive_entry and page.showroom.preparing: return false
 	return page.section!="cars" and is_instance_valid(page._preview_service) and page._preview_service.renderer==null and (page._menu_motion==null or not page._menu_motion.is_running())
 
@@ -103,15 +111,23 @@ func _process(_delta: float) -> void:
 	if evicted:
 		set_process(not _pending.is_empty())
 		return
-	# Equipped-header preparation owns startup. Garage pictures and native
-	# worlds only begin after the initial menu has become usable.
+	# The first menu stays independent. Missing header pictures have priority;
+	# the live Garage then prepares before unrelated carousel cache misses.
 	if not is_instance_valid(app) or not app.startup_complete: return
+	if Pictures == null and (not foreground or not app._publishing_slots_foreground or not app._background_work_allowed() or app.editor_memory.pressure_requested): return
+	if is_instance_valid(app.header_car_cache) and app.header_car_cache.captures_pending() and not is_instance_valid(app._retained_garage):
+		# A save can queue a header while an optional carousel render is active.
+		# Retire that render before granting the header its exclusive opportunity.
+		if is_instance_valid(picture_service) and picture_service.renderer!=null: picture_service.suspend_previews()
+		_reset()
+		return
+	if app.get("_initial_menu_presented") == false or not _picture_script_ready(): return
 	if _pictures_dirty or picture_records!=app.records: _sync_pictures()
 	if is_instance_valid(picture_service):
 		var allowed: bool=app._background_work_allowed() and app._publishing_slots_foreground and not app.editor_memory.pressure_requested
 		if not allowed: picture_service.suspend_previews()
 		picture_service.set_process(allowed)
-	if DisplayServer.get_name()!="headless" and is_instance_valid(picture_service) and not picture_service.pictures_ready(): return
+	if is_instance_valid(picture_service) and picture_service.renderer!=null: return
 	if is_instance_valid(app.game) or is_instance_valid(app.race_loading) or app.cloud_starting or is_instance_valid(app._retained_garage):
 		_reset()
 		# Consume outstanding threaded reads before sleeping. Menu/lifecycle
@@ -125,7 +141,7 @@ func _process(_delta: float) -> void:
 		if current!=_pin:
 			_reset()
 			_pin=current
-			_wanted.assign(["res://assets/garage/cars_v1/"+current.vehicle+".scn",GarageEnvironment.PREPARED_ARCHITECTURE])
+			_wanted.assign(["res://assets/garage/cars_v1/"+current.vehicle+".scn",ARCHITECTURE])
 			if current.paint.pattern!="plain": _wanted.append(LiveryCatalog.ROOT+current.paint.pattern+".svg")
 			if current.paint.stickers.hood.id!="none" or current.paint.stickers.roof.id!="none": _wanted.append(LiveryCatalog.ROOT+"stickers.svg")
 	for path: String in _wanted:
@@ -171,13 +187,19 @@ func _allowed(for_render: bool=true) -> bool:
 	# wait for the full deliberate-input idle window after the menu is visible.
 	return _menu_drawn and Time.get_ticks_msec()-last_input>=(idle_ms if for_render else mini(idle_ms,150))
 
-func take() -> CarShowroom:
+func presentation_idle() -> bool:
+	if not foreground or not _menu_drawn or not _touches.is_empty() or Input.is_anything_pressed(): return false
+	if Time.get_ticks_msec()-last_input<maxi(750,idle_ms): return false
+	var focus: Control=get_viewport().gui_get_focus_owner()
+	return not focus is LineEdit and not focus is TextEdit
+
+func take() -> Control:
 	if studio==null or not studio.showroom_ready or not studio.prepared or _pin!=_spec():
 		# Only a fully drawn studio can skip the loading ghost. Keep decoded
 		# public assets alive for the staged fallback to reuse.
 		_reset(true)
 		return null
-	var result: CarShowroom=studio
+	var result: Control=studio
 	studio=null
 	result.adopt()
 	remove_child(result)
@@ -218,13 +240,13 @@ func residency(seen: Dictionary={}) -> Dictionary:
 		result.preload_picture_gpu_bytes=picture_service.picture_bytes(seen)
 		result.preload_picture_io_cpu_bytes=16*1024*1024 if picture_service.worker!=null or not picture_service.pending_writes.is_empty() else 0
 		if picture_service.renderer!=null:
-			result.preload_picture_scene_bytes=preload("res://track/prepared_world_cache.gd")._resource_bytes(picture_service.renderer,{})
+			result.preload_picture_scene_bytes=load("res://track/prepared_world_cache.gd")._resource_bytes(picture_service.renderer,{})
 			var pixels: int=0
 			for viewport: SubViewport in picture_service.renderer.find_children("*","SubViewport",true,false): pixels+=viewport.size.x*viewport.size.y*16
 			result.preload_picture_viewport_gpu_bytes=pixels
 	if is_instance_valid(studio):
 		result.preload_asset_bytes=4*1024*1024
-		result.preload_scene_bytes=preload("res://track/prepared_world_cache.gd")._resource_bytes(studio,{})
+		result.preload_scene_bytes=load("res://track/prepared_world_cache.gd")._resource_bytes(studio,{})
 		for view: SubViewport in studio.find_children("*","SubViewport",true,false): result.preload_viewport_gpu_bytes+=view.size.x*view.size.y*16
 	return result
 
@@ -236,7 +258,11 @@ func _poll_loads() -> void:
 		if status==ResourceLoader.THREAD_LOAD_LOADED:
 			var resource: Resource=ResourceLoader.load_threaded_get(path)
 			if not evicted and _wanted.has(path): _resources[path]=resource
-		else: _failed[path]=true
+		else:
+			# A failed threaded request still owns an engine request token.
+			# Consume its terminal result so a later retry can actually reload.
+			if status==ResourceLoader.THREAD_LOAD_FAILED: ResourceLoader.load_threaded_get(path)
+			_failed[path]=true
 		_pending.remove_at(index)
 
 func _input(event: InputEvent) -> void:
@@ -268,6 +294,18 @@ static func _retire(paths: Array[String],tree_ref: WeakRef) -> void:
 	for path: String in paths:
 		var status: int=ResourceLoader.load_threaded_get_status(path)
 		if status==ResourceLoader.THREAD_LOAD_IN_PROGRESS: pending.append(path)
-		elif status==ResourceLoader.THREAD_LOAD_LOADED: ResourceLoader.load_threaded_get(path)
+		elif status in [ResourceLoader.THREAD_LOAD_LOADED,ResourceLoader.THREAD_LOAD_FAILED]: ResourceLoader.load_threaded_get(path)
 	var tree: Object=tree_ref.get_ref() if tree_ref!=null else null
 	if not pending.is_empty() and is_instance_valid(tree): tree.process_frame.connect(_retire.bind(pending,tree_ref),CONNECT_ONE_SHOT)
+
+func _picture_script_ready() -> bool:
+	if Pictures != null: return true
+	# Wait until the first menu has drawn and deliberate input has settled.
+	# Requiring another screen to load CarVisual first left initial-menu idle
+	# preparation permanently disabled after the menu-shell split.
+	# Script compilation stays on the owner thread; public scene/PNG reads keep
+	# their existing workers after the presentation types are available.
+	if not presentation_idle(): return false
+	Pictures = load(PICTURE_SCRIPT)
+	Pictures.prefetch_catalogue(get_tree())
+	return true

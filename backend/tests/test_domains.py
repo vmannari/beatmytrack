@@ -309,6 +309,48 @@ def test_ratings_require_completion_disallow_self_and_replace_vote(domain):
     assert domain.client.put(path, json={"score": True}, headers=headers(domain, "Bob")).status_code == 422
 
 
+def test_track_rating_is_shared_across_vehicle_boards(domain, monkeypatch):
+    vehicles = ("compact", "kart", "forklift", "electric", "hovercraft")
+    manifest = domain.app.state.verifier.manifest()
+    monkeypatch.setattr(domain.app.state.verifier, "manifest", lambda: {
+        **manifest, "vehicles": {vehicle: manifest["vehicles"]["compact"] for vehicle in vehicles}
+    })
+    version, _ = public_course(domain)
+    version_id = version["version_id"]
+    path = f"/v1/track-versions/{version_id}/rating"
+    race(domain, version, "Alice")
+    first = domain.client.put(path, json={"score": 4}, headers=headers(domain, "Alice"))
+    assert first.status_code == 200, first.text
+    boards = set()
+    for score, vehicle in enumerate(vehicles, start=1):
+        # Reading a rating has no car parameter. Additional cars create their
+        # own race boards but keep replacing the account's single track vote.
+        own = domain.client.get(path, headers=headers(domain, "Alice"))
+        assert own.json() == {"score": 4 if score == 1 else score - 1, "eligible": True}
+        issued = domain.client.post("/v1/run-tickets", json={
+            "version_id": version_id, "vehicle_id": vehicle
+        }, headers=headers(domain, "Alice"))
+        assert issued.status_code == 201, issued.text
+        submitted = submit(domain, issued.json(), "Alice")
+        assert process_one(domain.app)
+        result = domain.client.get(f"/v1/runs/{submitted['run_id']}", headers=headers(domain, "Alice"))
+        assert result.json()["status"] == "verified", result.text
+        boards.add(result.json()["board_id"])
+        changed = domain.client.put(path, json={"score": score}, headers=headers(domain, "Alice"))
+        assert changed.status_code == 200, changed.text
+        assert changed.json()["rating_count"] == 1
+        assert changed.json()["rating_average"] == score
+        summary = domain.client.get(f"/v1/track-versions/{version_id}").json()
+        assert summary["rating_count"] == 1 and summary["rating_average"] == score
+    assert len(boards) == len(vehicles)
+    assert domain.client.get(path, headers=headers(domain, "Alice")).json() == {
+        "score": 5, "eligible": True
+    }
+    assert domain.client.get(path, headers=headers(domain, "Bob")).json() == {
+        "score": 0, "eligible": False
+    }
+
+
 def test_best_lap_histogram_counts_each_driver_once_across_verified_attempts(domain):
     version, board = public_course(domain)
     alice = race(domain, version, "Alice", frames=20)

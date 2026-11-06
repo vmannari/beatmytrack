@@ -179,6 +179,13 @@ static func trim_retained() -> void:
 	section_entries.clear(); section_counts.clear(); section_bytes = 0
 	guard.unlock()
 
+static func trim_cpu_to(allowance: int) -> void:
+	# Prefer finished scenery to cheap idle CPU intermediates/final packets.
+	guard.lock()
+	while not section_entries.is_empty() and bytes+section_bytes > maxi(0,allowance): _evict_section()
+	while not entries.is_empty() and bytes+section_bytes > maxi(0,allowance): bytes -= int(entries.pop_front().bytes)
+	guard.unlock()
+
 static func reserve_sections() -> void:
 	guard.lock()
 	# A completed/cancelled race can leave a large final CPU packet even when

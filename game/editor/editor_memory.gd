@@ -9,6 +9,7 @@ const HISTORY = preload("res://editor/editor_history.gd")
 const READS = preload("res://persistence/document_read_cache.gd")
 const ENCODING = preload("res://persistence/document_encoding.gd")
 const WORLDS = preload("res://track/prepared_world_cache.gd")
+const GATE_LAYOUTS = preload("res://race/checkpoint_layout_cache.gd")
 var next_sample: int = 0
 var pressure_requested: bool = false
 var trims: int = 0
@@ -23,9 +24,15 @@ func tick(app: Node) -> void:
 	if not pressure_requested and telemetry.retained_bytes <= RETAINED_BUDGET and telemetry.optional_garage_bytes <= GARAGE_BUDGET: return
 	var force: bool = pressure_requested
 	var retry: bool = false
+	# Numeric layouts are optional across track owners. Active tracks retain
+	# their own copies; trimming never changes an installed race or joins a job.
+	GATE_LAYOUTS.trim_to(0 if force else maxi(0,GATE_LAYOUTS.bytes_used()-(telemetry.retained_bytes-RETAINED_BUDGET)))
 	if app.has_method("_trim_hidden_garage") and (force or telemetry.optional_garage_bytes > GARAGE_BUDGET): app._trim_hidden_garage()
-	# The active scene keeps its own sky reference if this optional cache goes.
-	TrackTheme.trim_winter_sky()
+	# The completed Winter world and its small static radiance resource form
+	# one useful presentation. Recreating that sky on re-entry repeats native
+	# preparation; ordinary trims prefer independent road work below instead.
+	var winter_world: bool = WORLDS.entries.any(func(entry: Dictionary) -> bool: return entry.key.size()>4 and entry.key[4]=="winter")
+	if force or not winter_world: TrackTheme.trim_winter_sky()
 	if force:
 		preload("res://vehicle/effect_render_preparation.gd").trim_cache(app)
 		CompactDetail.trim_front_cache()
@@ -50,6 +57,15 @@ func tick(app: Node) -> void:
 		var effects = preload("res://vehicle/effect_render_preparation.gd")
 		effects.trim_to(app,maxi(0,effects.cache_bytes(app)-excess))
 		if retained(app).retained_bytes <= RETAINED_BUDGET: _finished(app,retry,force); return
+		# Preserve completed scenery before cheap CPU work and independent road
+		# GPU entries. Do not compete with any running preparation worker.
+		if preload("res://editor/work_job.gd").pending.is_empty():
+			var roads: Dictionary = ROADS.residency()
+			excess = retained(app).retained_bytes-RETAINED_BUDGET
+			ROADS.trim_cpu_to(maxi(0,int(roads.packets)+int(roads.sections)-excess))
+			if retained(app).retained_bytes <= RETAINED_BUDGET: _finished(app,retry,force); return
+			NativeTrackVisual.trim_private_road_cache(retained(app).retained_bytes-RETAINED_BUDGET)
+			if retained(app).retained_bytes <= RETAINED_BUDGET: _finished(app,retry,force); return
 	WORLDS.trim_cache(0 if force else maxi(0,WORLDS.bytes_used()-(retained(app).retained_bytes-RETAINED_BUDGET)))
 	if force: preload("res://track/winter_road_snow_sources.gd").trim_cache()
 	if not force and retained(app).retained_bytes <= RETAINED_BUDGET: _finished(app,retry,force); return
@@ -86,6 +102,7 @@ static func retained(app: Node) -> Dictionary:
 	var scenes: int = app.editor_world.visual_cache_bytes if is_instance_valid(app.editor_world) else 0
 	var props: int = CreatorPropVisual.cache_bytes
 	var other: Dictionary = {"read_bytes":READS.bytes,"encoding_bytes":ENCODING.bytes,"race_world_bytes":maxi(0,WORLDS.bytes_used()-shared_roads),
+		"checkpoint_layout_bytes":GATE_LAYOUTS.bytes_used(),
 		"road_support_bytes":preload("res://track/road_support_cache.gd").bytes_used(),
 		"effect_preparation_bytes":preload("res://vehicle/effect_render_preparation.gd").cache_bytes(app),"front_fitting_bytes":CompactDetail.front_cache_bytes,
 		"winter_sky_bytes":TrackTheme.WINTER_SKY_ESTIMATED_BYTES if TrackTheme.winter_reflection_sky != null else 0,

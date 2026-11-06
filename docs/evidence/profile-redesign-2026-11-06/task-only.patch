@@ -1,0 +1,3070 @@
+--- a/game/ui/own_profile_page.gd
++++ b/game/ui/own_profile_page.gd
+@@ -1,90 +1,100 @@
+ extends VBoxContainer
+-## The player's own profile. Remote summaries are read only and account fenced.
++## Read-only driver overview. Asynchronous results belong to one account.
++const Icons = preload("res://ui/header_car_icons.gd")
++const Scans = preload("res://persistence/draft_scan.gd")
++const Numbers = preload("res://ui/achievement_detail.gd")
+ var app: Node
+ var client: Node
+ var records: LocalRecords
+ var service: Node
+ var scope: String
++var request_epoch: int = 0
+ var overview: GridContainer
++var fleet: GridContainer
+ var track_grid: GridContainer
+ var badge_grid: GridContainer
+ var track_status: Label
+ var ranking_status: Label
+ var track_action: Button
+-var request_epoch: int = 0
+-var hero_photo: TextureRect
+-var hero_car: Control
++var badge_summary: Label
++var fleet_note: Label
++var page_body: VBoxContainer
++var scroll: ScrollContainer
++var collection: Control
++var photos: Dictionary = {}
++var car_values: Dictionary = {}
++var total_values: Dictionary = {}
++var remote_cars: Dictionary = {}
+ var photo_timer: Timer
+-
+-class HeroArt extends Control:
+-	func _ready() -> void:
+-		mouse_filter = Control.MOUSE_FILTER_IGNORE
+-	func _draw() -> void:
+-		var bounds: Rect2 = Rect2(Vector2.ZERO,size)
+-		draw_rect(bounds,Color("102631"))
+-		for i: int in range(32):
+-			var y: float = size.y*float(i)/32.0
+-			draw_rect(Rect2(0,y,size.x,size.y/32.0+1),Color("1d3b45").lerp(Color("0a1820"),float(i)/32.0))
+-		var right: float = size.x
+-		draw_colored_polygon(PackedVector2Array([Vector2(right*0.40,0),Vector2(right*0.63,0),Vector2(right*0.49,size.y),Vector2(right*0.26,size.y)]),Color(0.56,0.77,0.74,0.035))
+-		draw_line(Vector2(right*0.59,0),Vector2(right*0.45,size.y),Color(0.75,0.90,0.84,0.10),1.0)
++var track_mode: String = "published"
++var published: Array[Dictionary] = []
++var drafts: Array[Dictionary] = []
++var next_offset: int = 0
++var track_busy: bool = false
++var track_error: bool = false
++var loaded_tracks: bool = false
++var draft_scan: RefCounted
++var draft_directory: String = ""
++var draft_revision: int = -1
++var draft_loading: bool = false
++var track_tabs: Dictionary = {}
+ 
+ func _ready() -> void:
++	set_process(false)
+ 	name = "OwnProfilePage"
+ 	client = app.online.client
+ 	records = app.records
+ 	service = app.achievements
+ 	scope = _scope()
+ 	size_flags_vertical = Control.SIZE_EXPAND_FILL
+-	add_theme_constant_override("separation",8)
+-	var heading := HBoxContainer.new()
+-	add_child(heading)
+-	var title: Label = MenuStyle.label("PROFILE",36)
+-	title.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+-	heading.add_child(title)
+-	var account: Button = MenuStyle.button("Edit profile" if client.signed_in() else "Sign in",app._open_account)
+-	account.name = "ManageAccount"
+-	heading.add_child(account)
+-	var scroll := ScrollContainer.new()
++	add_theme_constant_override("separation",0)
++	page_body = VBoxContainer.new()
++	page_body.size_flags_vertical = Control.SIZE_EXPAND_FILL
++	page_body.add_theme_constant_override("separation",12)
++	add_child(page_body)
++	_build_identity()
++	scroll = preload("res://ui/vertical_swipe_scroll.gd").new()
+ 	scroll.name = "ProfileScroll"
+ 	scroll.horizontal_scroll_mode = ScrollContainer.SCROLL_MODE_DISABLED
+ 	scroll.size_flags_vertical = Control.SIZE_EXPAND_FILL
+-	add_child(scroll)
++	scroll.follow_focus = true
++	page_body.add_child(scroll)
+ 	var body := VBoxContainer.new()
+ 	body.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+-	body.add_theme_constant_override("separation",12)
++	body.add_theme_constant_override("separation",16)
+ 	scroll.add_child(body)
+-	_build_identity(body)
++	_build_stats(body)
++	_build_fleet(body)
+ 	overview = GridContainer.new()
+ 	overview.name = "ProfileOverview"
+-	overview.columns = 2
+-	overview.add_theme_constant_override("h_separation",12)
+-	overview.add_theme_constant_override("v_separation",12)
++	overview.size_flags_horizontal = Control.SIZE_EXPAND_FILL
++	overview.add_theme_constant_override("h_separation",16)
++	overview.add_theme_constant_override("v_separation",16)
+ 	body.add_child(overview)
+-	_build_stats(overview)
+-	_build_ranking(overview)
+-	_build_achievements(body)
+-	_build_tracks(body)
+-	if client.signed_in():
+-		var uploads: Button = MenuStyle.button("Race uploads",app.cloud.show_uploads.bind(app.root_ui))
+-		uploads.name = "ProfileRaceUploads"
+-		body.add_child(uploads)
++	_build_tracks(overview)
++	_build_achievements(overview)
++	_build_ranking(body)
+ 	resized.connect(_layout)
++	get_viewport().size_changed.connect(_layout)
+ 	_layout.call_deferred()
+ 	if client.has_signal("identity_changed"): client.identity_changed.connect(_identity_changed)
+-	if service != null: service.changed.connect(_refresh_badges)
++	if service != null:
++		service.changed.connect(_refresh_badges)
++		if service.has_method("refresh"): service.refresh.call_deferred()
+ 	photo_timer = Timer.new()
+ 	photo_timer.wait_time = 1.0
+ 	photo_timer.timeout.connect(_refresh_car_picture)
+ 	add_child(photo_timer)
+ 	photo_timer.start()
+ 	_refresh_car_picture()
++	_start_drafts()
+ 	if client.signed_in():
+ 		_load_tracks.call_deferred()
++		_load_car_history.call_deferred()
+ 		if preload("res://backend/world_ranking_client.gd").supported(client): _load_ranking.call_deferred()
+ 
+ func _scope() -> String:
+-	return client.base_url()+"/"+str(client.player.get("id",""))
++	return client.base_url()+"/"+str(client.player.get("id",""))+"/"+str(client.signed_in())
+ 
+ func _active(epoch: int) -> bool:
+ 	return is_inside_tree() and not is_queued_for_deletion() and epoch == request_epoch and scope == _scope() and app.records == records
+@@ -92,227 +102,267 @@
+ func _identity_changed() -> void:
+ 	if scope == _scope(): return
+ 	request_epoch += 1
+-	# The app owns profile transitions and reconstructs this page for the new owner.
+ 	visible = false
++	if draft_scan != null: draft_scan.cancel()
+ 
+ func _layout() -> void:
+-	if not is_instance_valid(overview): return
+-	var width: float = size.x
+-	overview.columns = 2 if width >= 760 else 1
+-	badge_grid.columns = 3 if width >= 760 else 2 if width >= 460 else 1
+-	track_grid.columns = 3 if width >= 900 else 2 if width >= 540 else 1
+-
+-func _panel(parent: Control, id: String) -> VBoxContainer:
++	if not is_inside_tree() or not is_instance_valid(overview): return
++	var width: float = minf(size.x,get_viewport().get_visible_rect().size.x)-MenuStyle.SCROLLBAR_LANE
++	overview.columns = 2 if width >= 880 else 1
++	fleet.columns = 5 if width >= 850 else 3 if width >= 560 else 2 if width >= 340 else 1
++	badge_grid.columns = 1
++	track_grid.columns = 1
++	var stats: GridContainer = find_child("ProfileRacingStats",true,false)
++	stats.columns = 4 if width >= 560 else 2
++
++func _label(parent: Node, value: String, font_size: int = 18, muted: bool = false) -> Label:
++	var label: Label = MenuStyle.label(value,font_size,muted)
++	label.mouse_filter = Control.MOUSE_FILTER_IGNORE
++	label.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
++	parent.add_child(label)
++	return label
++
++func _panel(parent: Node, id: String, padding: int = 16) -> VBoxContainer:
+ 	var panel := PanelContainer.new()
+ 	panel.name = id
+ 	panel.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+-	var style: StyleBoxFlat = MenuStyle.box(Color("101f29"),16)
+-	style.set_corner_radius_all(8)
+-	style.border_color = Color("29434d")
++	panel.size_flags_vertical = Control.SIZE_EXPAND_FILL
++	var style: StyleBoxFlat = MenuStyle.box(MenuStyle.PANEL,padding)
++	style.border_color = Color("2a3d48")
+ 	style.set_border_width_all(1)
+ 	panel.add_theme_stylebox_override("panel",style)
+ 	parent.add_child(panel)
+ 	var box := VBoxContainer.new()
+ 	box.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+-	box.add_theme_constant_override("separation",8)
++	box.add_theme_constant_override("separation",10)
+ 	panel.add_child(box)
+ 	return box
+ 
+-func _label(parent: Control, value: String, font_size: int = 18, muted: bool = false) -> Label:
+-	var label: Label = MenuStyle.label(value,font_size,muted)
+-	label.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+-	parent.add_child(label)
+-	return label
+-
+-func _section_heading(parent: Control, value: String, action_text: String, callback: Callable) -> Button:
++func _action(value: String, callback: Callable) -> Button:
++	var button: Button = MenuStyle.button(value,callback)
++	button.custom_minimum_size.y = 52
++	button.add_theme_font_size_override("font_size",18)
++	return button
++
++func _section(parent: Node, title: String, caption: String, callback: Callable) -> Button:
+ 	var row := HBoxContainer.new()
+-	row.add_theme_constant_override("separation",12)
+ 	parent.add_child(row)
+-	var label: Label = _label(row,value,22)
++	var label: Label = _label(row,title,24)
+ 	label.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+ 	label.size_flags_vertical = Control.SIZE_SHRINK_CENTER
+-	var action: Button = _text_action(action_text,callback)
+-	row.add_child(action)
+-	return action
+-
+-func _text_action(value: String, callback: Callable) -> Button:
+-	var button: Button = MenuStyle.button(value,callback)
+-	button.custom_minimum_size.y = 48
+-	button.size_flags_horizontal = Control.SIZE_SHRINK_BEGIN
+-	button.add_theme_font_size_override("font_size",19)
+-	button.add_theme_stylebox_override("normal",MenuStyle.box(Color(0.17,0.26,0.30,0.40),10))
+-	button.add_theme_stylebox_override("hover",MenuStyle.box(Color("284858"),10))
+-	button.add_theme_color_override("font_color",MenuStyle.TEXT)
++	var button: Button = _action(caption,callback)
++	button.add_theme_stylebox_override("normal",MenuStyle.box(Color.TRANSPARENT,8))
++	row.add_child(button)
+ 	return button
+ 
+-func _build_identity(parent: Control) -> void:
+-	var frame := PanelContainer.new()
+-	frame.name = "ProfileIdentity"
+-	frame.custom_minimum_size.y = 224
+-	frame.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+-	var style: StyleBoxFlat = MenuStyle.box(Color("102631"),0)
+-	style.set_corner_radius_all(8)
+-	style.border_color = Color("34535b")
+-	style.set_border_width_all(1)
+-	frame.add_theme_stylebox_override("panel",style)
+-	parent.add_child(frame)
+-	var stage := Control.new()
+-	stage.custom_minimum_size.y = 224
+-	stage.clip_contents = true
+-	frame.add_child(stage)
+-	var art := HeroArt.new()
+-	stage.add_child(art)
+-	MenuStyle.fill(art)
+-	var layout := HBoxContainer.new()
+-	layout.add_theme_constant_override("separation",0)
+-	stage.add_child(layout)
+-	MenuStyle.fill(layout)
+-	var margin := MarginContainer.new()
+-	margin.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+-	margin.size_flags_stretch_ratio = 0.95
+-	for side: String in ["left","right","top","bottom"]: margin.add_theme_constant_override("margin_"+side,24)
+-	layout.add_child(margin)
++func _build_identity() -> void:
++	var row := HBoxContainer.new()
++	row.name = "ProfileIdentity"
++	row.add_theme_constant_override("separation",14)
++	page_body.add_child(row)
++	var country: String = str(client.player.get("country_code","")) if client.signed_in() else ""
++	if not country.is_empty():
++		var flag: Control = PlayerCountry.flag(country,38)
++		flag.size_flags_vertical = Control.SIZE_SHRINK_CENTER
++		row.add_child(flag)
++	var identity := VBoxContainer.new()
++	identity.size_flags_horizontal = Control.SIZE_EXPAND_FILL
++	identity.add_theme_constant_override("separation",0)
++	row.add_child(identity)
++	var eyebrow: Label = _label(identity,"DRIVER PROFILE",13,true)
++	eyebrow.add_theme_color_override("font_color",MenuStyle.ACCENT)
++	var title: Label = _label(identity,app.online.player_name() if client.signed_in() else "Guest",34)
++	title.name = "ProfilePlayerName"
++	title.autowrap_mode = TextServer.AUTOWRAP_OFF
++	title.text_overrun_behavior = TextServer.OVERRUN_TRIM_ELLIPSIS
++	title.clip_text = true
++	if client.signed_in(): GameText.user_text(title)
++	var account: Button = _action("Edit profile" if client.signed_in() else "Sign in",app._open_account)
++	account.name = "ManageAccount"
++	account.size_flags_vertical = Control.SIZE_SHRINK_CENTER
++	row.add_child(account)
++
++func _build_stats(parent: Node) -> void:
++	var box: VBoxContainer = _panel(parent,"ProfileRacing",12)
++	var grid := GridContainer.new()
++	grid.name = "ProfileRacingStats"
++	grid.columns = 4
++	grid.add_theme_constant_override("h_separation",20)
++	box.add_child(grid)
++	var metrics: Dictionary = AchievementProgress.read(records).metrics
++	total_values.races = _stat(grid,Numbers.number(int(metrics.get("races",0))),"Completed races")
++	total_values.distance_m = _stat(grid,GameText.message("%.1f km") % (float(metrics.get("distance_m",0))/1000.0),"Distance driven")
++	total_values.tracks = _stat(grid,Numbers.number(int(metrics.get("tracks",0))),"Tracks raced")
++	total_values.cars = _stat(grid,Numbers.number(int(metrics.get("cars",0))),"Cars raced")
++	grid.tooltip_text = "Progress recorded on this device; earlier races may not be included."
++
++func _stat(parent: Node, value: String, caption: String) -> Label:
+ 	var box := VBoxContainer.new()
+-	box.add_theme_constant_override("separation",5)
+-	margin.add_child(box)
+-	var eyebrow: Label = _label(box,"DRIVER PROFILE",15)
+-	eyebrow.add_theme_color_override("font_color",MenuStyle.ACCENT)
++	box.mouse_filter = Control.MOUSE_FILTER_IGNORE
++	box.size_flags_horizontal = Control.SIZE_EXPAND_FILL
++	box.add_theme_constant_override("separation",0)
++	parent.add_child(box)
++	var number: Label = _label(box,value,28)
++	_label(box,caption,15,true)
++	return number
++
++func _build_fleet(parent: Node) -> void:
++	var section := VBoxContainer.new()
++	section.add_theme_constant_override("separation",6)
++	parent.add_child(section)
++	var heading := HBoxContainer.new()
++	section.add_child(heading)
++	var title: Label = _label(heading,"YOUR CARS",24)
++	title.size_flags_horizontal = Control.SIZE_EXPAND_FILL
++	fleet_note = _label(heading,"Recorded on this device",14,true)
++	fleet_note.autowrap_mode = TextServer.AUTOWRAP_OFF
++	fleet_note.size_flags_vertical = Control.SIZE_SHRINK_CENTER
++	fleet_note.tooltip_text = "Progress recorded on this device; earlier races may not be included."
++	fleet = GridContainer.new()
++	fleet.name = "ProfileFleet"
++	fleet.columns = 5
++	fleet.add_theme_constant_override("h_separation",10)
++	fleet.add_theme_constant_override("v_separation",10)
++	section.add_child(fleet)
++	for id: String in VehicleCatalog.IDS:
++		var box: VBoxContainer = _panel(fleet,"ProfileCar_"+id,10)
++		box.add_theme_constant_override("separation",4)
++		var line := HBoxContainer.new()
++		box.add_child(line)
++		var car_name: Label = _label(line,VehicleCatalog.title(id),22)
++		car_name.add_theme_font_override("font",MenuStyle.DISPLAY)
++		car_name.name = "CarName"
++		car_name.size_flags_horizontal = Control.SIZE_EXPAND_FILL
++		var selected: Label = _label(line,"●",14)
++		selected.autowrap_mode = TextServer.AUTOWRAP_OFF
++		selected.name = "SelectedCar"
++		selected.add_theme_color_override("font_color",MenuStyle.ACCENT)
++		selected.tooltip_text = "Current car"
++		selected.visible = id == VehicleCatalog.selected
++		var picture := TextureRect.new()
++		picture.name = "CarPhoto"
++		picture.expand_mode = TextureRect.EXPAND_IGNORE_SIZE
++		picture.stretch_mode = TextureRect.STRETCH_KEEP_ASPECT_CENTERED
++		picture.custom_minimum_size = Vector2(0,100)
++		picture.texture_filter = CanvasItem.TEXTURE_FILTER_LINEAR_WITH_MIPMAPS
++		picture.mouse_filter = Control.MOUSE_FILTER_IGNORE
++		box.add_child(picture)
++		photos[id] = picture
++		var values := HBoxContainer.new()
++		values.add_theme_constant_override("separation",8)
++		box.add_child(values)
++		var distance: Label = _stat(values,"—","km driven")
++		var races: Label = _stat(values,"—","Races")
++		distance.add_theme_font_size_override("font_size",24)
++		races.add_theme_font_size_override("font_size",24)
++		car_values[id] = {"distance":distance,"races":races}
++	_refresh_car_values()
++
++func _refresh_car_values() -> void:
++	var local: Dictionary = records.settings.get("driving_history",{}).get("cars",{})
++	var values: Dictionary = remote_cars if not remote_cars.is_empty() else local
++	var new_driver: bool = int(AchievementProgress.read(records).metrics.get("races",0)) == 0
++	for id: String in car_values:
++		var data: Dictionary = values.get(id,{"races":0,"distance_m":0} if new_driver else {})
++		car_values[id].races.text = Numbers.number(int(data.races)) if data.has("races") else "—"
++		car_values[id].distance.text = "%.1f" % (float(data.distance_m)/1000.0) if data.get("distance_m") != null else "—"
++		car_values[id].distance.tooltip_text = "Distance in completed races. Earlier races may not be included."
++
++func refresh_car() -> void:
++	_refresh_car_picture()
++
++func _refresh_car_picture() -> void:
++	if not _active(request_epoch) or not is_visible_in_tree(): return
++	var preloader: Node = app.get("_garage_preloader")
++	var pictures: Node = preloader.get("picture_service") if is_instance_valid(preloader) else null
++	for id: String in photos:
++		var texture: Texture2D
++		var studio: bool = false
++		if is_instance_valid(pictures) and preloader.get("picture_records") == records:
++			var view: Node = pictures.warm_views.get(id)
++			if is_instance_valid(view) and view.livery == VehicleLivery.for_car(records.settings,id) and view.customisation == VehicleCustomisation.for_car(records.settings,id) and view.condition == VehicleCondition.read(records,id):
++				texture = pictures._remembered(id,view.preview_key)
++				studio = texture != null
++		if texture == null and Icons.stock_appearance(id,records):
++			texture = load("res://assets/garage/previews_v1/"+id+".png")
++			studio = true
++		if texture == null: texture = Icons.texture(id,records)
++		photos[id].modulate = Color.WHITE
++		if texture == null:
++			var silhouette := AtlasTexture.new()
++			silhouette.atlas = preload("res://assets/menu/rivalry_loading_cars_v1.png")
++			silhouette.region = Rect2(VehicleCatalog.IDS.find(id)*384,0,384,256)
++			texture = silhouette
++			photos[id].modulate = Color("8399a5")
++		photos[id].texture = texture
++		photos[id].stretch_mode = TextureRect.STRETCH_KEEP_ASPECT_COVERED if studio else TextureRect.STRETCH_KEEP_ASPECT_CENTERED
++		var card: Control = fleet.get_node("ProfileCar_"+id)
++		card.find_child("SelectedCar",true,false).visible = id == VehicleCatalog.selected
++		var style: StyleBoxFlat = card.get_theme_stylebox("panel").duplicate()
++		style.border_color = MenuStyle.ACCENT.darkened(0.28) if id == VehicleCatalog.selected else Color("2a3d48")
++		card.add_theme_stylebox_override("panel",style)
++
++func _load_car_history() -> void:
++	var epoch: int = request_epoch
++	var response: Dictionary = await client.request_api("/me/profile-statistics",HTTPClient.METHOD_GET,{},"",true)
++	if not _active(epoch) or not response.get("ok",false): return
++	var data: Variant = response.get("data",{}).get("cars")
++	if not data is Dictionary: return
++	for id: String in VehicleCatalog.IDS:
++		var car: Variant = data.get(id,{})
++		if not car is Dictionary or not AchievementProgress.whole(car.get("races")): return
++		if car.get("distance_m") != null and not AchievementProgress.whole(car.distance_m): return
++	remote_cars = data.duplicate(true)
++	fleet_note.text = "Verified race history"
++	fleet_note.tooltip_text = "Recorded verified races. Older archived races may not be included."
++	var totals: Dictionary = response.data.get("totals",{})
++	for key: String in total_values:
++		if not totals.has(key): continue
++		if totals[key] == null:
++			total_values[key].text = "—"
++			continue
++		if not AchievementProgress.whole(totals[key]): continue
++		total_values[key].text = GameText.message("%.1f km") % (float(totals[key])/1000.0) if key == "distance_m" else Numbers.number(int(totals[key]))
++	find_child("ProfileRacingStats",true,false).tooltip_text = fleet_note.tooltip_text
++	_refresh_car_values()
++
++func _build_ranking(parent: Node) -> void:
++	var box: VBoxContainer = _panel(parent,"ProfileRanking",12)
+ 	var row := HBoxContainer.new()
+-	row.add_theme_constant_override("separation",10)
+ 	box.add_child(row)
+-	var country: String = str(client.player.get("country_code","")) if client.signed_in() else ""
+-	if not country.is_empty(): row.add_child(PlayerCountry.flag(country,32))
+-	var identity: Label = _label(row,app.online.player_name() if client.signed_in() else "Guest",38)
+-	identity.name = "ProfilePlayerName"
+-	identity.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+-	identity.autowrap_mode = TextServer.AUTOWRAP_OFF
+-	identity.custom_minimum_size.y = 46
+-	identity.clip_text = true
+-	identity.text_overrun_behavior = TextServer.OVERRUN_TRIM_ELLIPSIS
+-	if client.signed_in(): GameText.user_text(identity)
+-	_label(box,PlayerCountry.country_name(country) if client.signed_in() else "Your racing story starts here",17,true)
+-	var spacer := Control.new()
+-	spacer.size_flags_vertical = Control.SIZE_EXPAND_FILL
+-	box.add_child(spacer)
+-	_label(box,"CURRENT CAR",14,true)
+-	var car_name: Label = _label(box,VehicleCatalog.title(VehicleCatalog.selected),24)
+-	car_name.name = "ProfileSelectedCarName"
+-	var picture := Control.new()
+-	picture.name = "ProfileCarStage"
+-	picture.clip_contents = true
+-	picture.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+-	picture.size_flags_stretch_ratio = 1.2
+-	picture.mouse_filter = Control.MOUSE_FILTER_IGNORE
+-	layout.add_child(picture)
+-	hero_car = preload("res://ui/profile_car.gd").new()
+-	hero_car.name = "ProfileSelectedCar"
+-	hero_car.records = records
+-	picture.add_child(hero_car)
+-	MenuStyle.fill(hero_car)
+-	hero_photo = TextureRect.new()
+-	hero_photo.name = "ProfileCarPhoto"
+-	hero_photo.expand_mode = TextureRect.EXPAND_IGNORE_SIZE
+-	hero_photo.stretch_mode = TextureRect.STRETCH_KEEP_ASPECT_COVERED
+-	hero_photo.texture_filter = CanvasItem.TEXTURE_FILTER_LINEAR_WITH_MIPMAPS
+-	hero_photo.mouse_filter = Control.MOUSE_FILTER_IGNORE
+-	hero_photo.scale = Vector2(1.55,1.55)
+-	hero_photo.resized.connect(func() -> void: hero_photo.pivot_offset = hero_photo.size*0.5)
+-	picture.add_child(hero_photo)
+-	MenuStyle.fill(hero_photo)
+-	hero_photo.hide()
+-
+-func refresh_car() -> void:
+-	var car: Control = find_child("ProfileSelectedCar",true,false)
+-	var car_name: Label = find_child("ProfileSelectedCarName",true,false)
+-	if car != null: car.refresh()
+-	if car_name != null: car_name.text = VehicleCatalog.title(VehicleCatalog.selected)
+-	_refresh_car_picture()
+-
+-func _refresh_car_picture() -> void:
+-	if not is_instance_valid(hero_photo): return
+-	var preloader: Node = app.get("_garage_preloader")
+-	var service_node: Node = preloader.get("picture_service") if is_instance_valid(preloader) else null
+-	var picture: Texture2D
+-	if is_instance_valid(service_node) and preloader.get("picture_records") == records:
+-		var view: Node = service_node.warm_views.get(VehicleCatalog.selected)
+-		if is_instance_valid(view) and view.livery == VehicleLivery.for_car(records.settings,VehicleCatalog.selected) and view.customisation == VehicleCustomisation.for_car(records.settings,VehicleCatalog.selected) and view.condition == VehicleCondition.read(records,VehicleCatalog.selected):
+-			picture = service_node._remembered(VehicleCatalog.selected,view.preview_key)
+-	hero_photo.texture = picture
+-	hero_photo.visible = picture != null
+-	hero_car.visible = picture == null
+-
+-func _build_ranking(parent: Control) -> void:
+-	var box: VBoxContainer = _panel(parent,"ProfileRanking")
+-	_label(box,"WORLD RANKING",22)
+-	var presentation := HBoxContainer.new()
+-	presentation.size_flags_vertical = Control.SIZE_EXPAND_FILL
+-	presentation.add_theme_constant_override("separation",12)
+-	box.add_child(presentation)
+-	ranking_status = _label(presentation,"Loading ranking…" if client.signed_in() and preload("res://backend/world_ranking_client.gd").supported(client) else "World Ranking is unavailable." if client.signed_in() else "Sign in to compete in the World Ranking.",21,true)
++	var copy := VBoxContainer.new()
++	copy.size_flags_horizontal = Control.SIZE_EXPAND_FILL
++	copy.add_theme_constant_override("separation",2)
++	row.add_child(copy)
++	_label(copy,"WORLD RANKING",18)
++	ranking_status = _label(copy,"Loading ranking…" if client.signed_in() else "Sign in to compete in the World Ranking.",16,true)
+ 	ranking_status.name = "ProfileRankingStatus"
+-	ranking_status.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+-	var emblem := TextureRect.new()
+-	emblem.name = "ProfileRankingEmblem"
+-	emblem.texture = preload("res://ui/race_mode_icons.gd").texture("trophy")
+-	emblem.expand_mode = TextureRect.EXPAND_IGNORE_SIZE
+-	emblem.stretch_mode = TextureRect.STRETCH_KEEP_ASPECT_CENTERED
+-	emblem.custom_minimum_size = Vector2(72,72)
+-	emblem.size_flags_vertical = Control.SIZE_SHRINK_CENTER
+-	emblem.modulate = Color(0.75,0.84,0.84,0.35)
+-	emblem.mouse_filter = Control.MOUSE_FILTER_IGNORE
+-	presentation.add_child(emblem)
+ 	if client.signed_in() and preload("res://backend/world_ranking_client.gd").supported(client):
+-		var action: Button = _text_action("View ranking  →",func() -> void: preload("res://ui/world_ranking.gd").open(app.root_ui,client))
+-		action.name = "ProfileViewRanking"
+-		box.add_child(action)
++		row.add_child(_action("View ranking",func() -> void: preload("res://ui/world_ranking.gd").open(app.root_ui,client)))
++	elif client.signed_in(): ranking_status.text = "World Ranking is unavailable."
++	if client.signed_in():
++		var uploads: Button = _action("Race uploads",app.cloud.show_uploads.bind(app.root_ui))
++		uploads.name = "ProfileRaceUploads"
++		row.add_child(uploads)
+ 
+ func _load_ranking() -> void:
+ 	var epoch: int = request_epoch
+ 	var adapter: Node = preload("res://backend/world_ranking_client.gd").for_client(client)
+ 	var response: Dictionary = await adapter.profile()
+ 	if not _active(epoch): return
+-	if not response.ok:
+-		ranking_status.text = "Could not load ranking. Open World Ranking to retry."
++	if not response.ok: ranking_status.text = "Could not load ranking. Open World Ranking to retry."
+ 	elif response.data.get("world_rank") != null:
+-		ranking_status.text = GameText.message("World #%d\n%d points") % [int(response.data.world_rank),int(response.data.points)]
++		ranking_status.text = GameText.message("World #%d · %d points") % [int(response.data.world_rank),int(response.data.points)]
+ 		ranking_status.add_theme_color_override("font_color",MenuStyle.ACCENT)
+-		ranking_status.add_theme_font_size_override("font_size",28)
+-	elif response.data.get("state") == "unranked":
+-		ranking_status.text = "Unranked · Finish five Circuit tracks"
+-	else:
+-		ranking_status.text = "World Ranking has not started yet."
+-
+-func _build_stats(parent: Control) -> void:
+-	var box: VBoxContainer = _panel(parent,"ProfileRacing")
+-	_label(box,"YOUR RACING",22)
+-	var metrics: Dictionary = AchievementProgress.read(records).metrics
+-	if int(metrics.get("races",0)) == 0:
+-		_label(box,"Complete a race to start your racing story.",19,true)
+-		box.add_child(_text_action("Find a race  →",app._open_race_area))
+-	else:
+-		var grid := GridContainer.new()
+-		grid.name = "ProfileRacingStats"
+-		grid.columns = 2
+-		box.add_child(grid)
+-		_stat(grid,str(int(metrics.get("races",0))),"Completed races")
+-		_stat(grid,GameText.message("%.1f km") % (float(metrics.get("distance_m",0))/1000.0),"Distance driven")
+-		_stat(grid,str(int(metrics.get("tracks",0))),"Tracks raced")
+-		_stat(grid,str(int(metrics.get("clean",0))),"Clean races")
+-	_label(box,"Progress recorded on this device; earlier races may not be included.",15,true)
+-
+-func _stat(parent: Control, value: String, caption: String) -> void:
+-	var box := VBoxContainer.new()
+-	box.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+-	box.add_theme_constant_override("separation",0)
+-	parent.add_child(box)
+-	var number: Label = _label(box,value,30)
+-	number.add_theme_color_override("font_color",MenuStyle.ACCENT)
+-	_label(box,caption,16,true)
+-
+-func _build_achievements(parent: Control) -> void:
++	elif response.data.get("state") == "unranked": ranking_status.text = "Unranked · Finish five Circuit tracks"
++	else: ranking_status.text = "World Ranking has not started yet."
++
++func _build_achievements(parent: Node) -> void:
+ 	var box: VBoxContainer = _panel(parent,"ProfileAchievements")
+-	var choose: Button = _section_heading(box,"FEATURED ACHIEVEMENTS","Choose featured  →",app._open_profile_achievements)
++	var choose: Button = _section(box,"ACHIEVEMENTS","View collection",show_achievements)
+ 	choose.name = "ProfileChooseAchievements"
++	badge_summary = _label(box,"",15,true)
++	badge_summary.name = "ProfileAchievementSummary"
+ 	badge_grid = GridContainer.new()
+ 	badge_grid.name = "ProfileBadgeGrid"
+ 	box.add_child(badge_grid)
+@@ -320,121 +370,232 @@
+ 
+ func _refresh_badges() -> void:
+ 	if not is_instance_valid(badge_grid): return
+-	for child: Node in badge_grid.get_children():
+-		badge_grid.remove_child(child)
+-		child.queue_free()
++	_clear(badge_grid)
+ 	var featured: Array = service.featured() if service != null else []
+-	if featured.is_empty():
+-		_label(badge_grid,"Earn achievements and choose your favourites to display here.",18,true)
+-		return
++	var families: Array[Dictionary] = []
++	var earned: int = 0
++	var total: int = 0
+ 	for family: Dictionary in AchievementProgress.catalog().families:
+-		if family.id not in featured: continue
+-		var level: int = AchievementProgress.tier(family,service.source(family))
+-		var button: Button = MenuStyle.button("",app._open_profile_achievements.bind(str(family.id)))
+-		button.name = "ProfileBadge_"+str(family.id)
+-		button.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+-		button.custom_minimum_size.y = 90
+-		badge_grid.add_child(button)
+-		var row := HBoxContainer.new()
+-		row.mouse_filter = Control.MOUSE_FILTER_IGNORE
+-		button.add_child(row)
+-		MenuStyle.fill(row)
++		var source: Dictionary = service.source(family) if service != null else AchievementProgress.empty()
++		earned += AchievementProgress.tier(family,source)
++		total += family.tiers.size()
++		if family.id in featured: families.append(family)
++	badge_summary.text = GameText.message("%d / %d earned") % [earned,total]
++	if families.is_empty():
++		for family: Dictionary in AchievementProgress.catalog().families:
++			if family.id in ["races","distance","tracks"]: families.append(family)
++	for family: Dictionary in families:
++		var source: Dictionary = service.source(family) if service != null else AchievementProgress.empty()
++		var level: int = AchievementProgress.tier(family,source)
++		var row: HBoxContainer = _row_button(badge_grid,"ProfileBadge_"+str(family.id),show_achievements.bind(str(family.id)))
+ 		var badge := AchievementBadge.new()
+ 		badge.family_id = family.id
+-		badge.tier = level
++		badge.prestige = family.prestige
++		badge.tier = 3 if family.prestige and level > 0 else level
+ 		row.add_child(badge)
++		badge.custom_minimum_size = Vector2(64,64)
+ 		var copy := VBoxContainer.new()
+ 		copy.mouse_filter = Control.MOUSE_FILTER_IGNORE
+ 		copy.size_flags_horizontal = Control.SIZE_EXPAND_FILL
++		copy.alignment = BoxContainer.ALIGNMENT_CENTER
++		copy.add_theme_constant_override("separation",3)
+ 		row.add_child(copy)
+-		_label(copy,str(family.title),18)
+-		_label(copy,["Locked","Bronze","Silver","Gold","Platinum"][clampi(level,0,4)],15,true)
+-
+-func _build_tracks(parent: Control) -> void:
++		_label(copy,str(family.title),21)
++		var caption: String = "Prestige earned" if family.prestige and level > 0 else ["Not yet earned","Bronze earned","Silver earned","Gold earned","Platinum earned"][level]
++		_label(copy,caption,14,true)
++		var progress := ProgressBar.new()
++		progress.custom_minimum_size.y = 3
++		progress.mouse_filter = Control.MOUSE_FILTER_IGNORE
++		progress.show_percentage = false
++		progress.add_theme_stylebox_override("fill",MenuStyle.box(AchievementBadge.METALS[3 if family.prestige else maxi(level,1)],0))
++		progress.max_value = family.tiers[mini(level,family.tiers.size()-1)]
++		progress.value = progress.max_value if level == family.tiers.size() else int(source.get("metrics",{}).get(family.metric,0))
++		copy.add_child(progress)
++
++func show_achievements(family: String = "") -> void:
++	if collection != null: return
++	page_body.hide()
++	photo_timer.stop()
++	collection = preload("res://ui/achievements_menu.gd").new()
++	collection.service = service
++	collection.trophy_room_requested.connect(_close_collection)
++	add_child(collection)
++	collection.find_child("AchievementClose",true,false).tooltip_text = "Back to profile"
++	if not family.is_empty(): collection._show_achievement(family)
++	else: collection.find_child("AchievementClose",true,false).grab_focus()
++
++func _close_collection() -> void:
++	remove_child(collection)
++	collection.queue_free()
++	collection = null
++	page_body.show()
++	photo_timer.start()
++	_refresh_badges()
++	find_child("ProfileChooseAchievements",true,false).grab_focus()
++
++func _row_button(parent: Node, id: String, callback: Callable) -> HBoxContainer:
++	var button: Button = _action("",callback)
++	button.name = id
++	button.size_flags_horizontal = Control.SIZE_EXPAND_FILL
++	button.add_theme_stylebox_override("normal",MenuStyle.box(Color("152630"),0))
++	button.add_theme_stylebox_override("pressed",MenuStyle.box(Color("29434f"),0))
++	parent.add_child(button)
++	var inset := MarginContainer.new()
++	inset.mouse_filter = Control.MOUSE_FILTER_IGNORE
++	for side: String in ["left","right","top","bottom"]: inset.add_theme_constant_override("margin_"+side,10)
++	button.add_child(inset)
++	MenuStyle.fill(inset)
++	var row := HBoxContainer.new()
++	row.mouse_filter = Control.MOUSE_FILTER_IGNORE
++	row.add_theme_constant_override("separation",12)
++	inset.add_child(row)
++	# Button minimums do not follow children. Propagate wrapped height only;
++	# the grid owns width so long names cannot push the page off screen.
++	inset.minimum_size_changed.connect(func() -> void:
++		if is_instance_valid(button): button.custom_minimum_size.y = maxf(80,inset.get_combined_minimum_size().y))
++	return row
++
++func _build_tracks(parent: Node) -> void:
+ 	var box: VBoxContainer = _panel(parent,"ProfilePublishedTracks")
+-	track_action = _section_heading(box,"YOUR PUBLISHED TRACKS","View all  →",app._open_profile_tracks)
+-	track_action.name = "ProfileViewTracks"
+-	track_action.visible = false
+-	track_status = _label(box,"Loading published tracks…" if client.signed_in() else "Sign in to see your published tracks.",18,true)
++	var create: Button = _section(box,"CREATED TRACKS","Create a track",app._new_document)
++	create.name = "ProfileCreateTrack"
++	var tabs := HBoxContainer.new()
++	box.add_child(tabs)
++	track_mode = "published" if client.signed_in() else "drafts"
++	for item: Array in [["published","Published"],["drafts","Drafts"]]:
++		var button: Button = _action(item[1],_select_tracks.bind(item[0]))
++		button.size_flags_horizontal = Control.SIZE_EXPAND_FILL
++		tabs.add_child(button)
++		track_tabs[item[0]] = button
++	track_status = _label(box,"Loading published tracks…",16,true)
+ 	track_status.name = "ProfileTrackStatus"
+ 	track_grid = GridContainer.new()
+ 	track_grid.name = "ProfileTrackGrid"
++	track_grid.size_flags_horizontal = Control.SIZE_EXPAND_FILL
++	track_grid.add_theme_constant_override("v_separation",8)
+ 	box.add_child(track_grid)
+-	if not client.signed_in(): box.add_child(_text_action("Create a track  →",app._new_document))
++	track_action = _action("More tracks",_load_tracks)
++	track_action.name = "ProfileViewTracks"
++	box.add_child(track_action)
++	_render_tracks()
++
++func _select_tracks(mode: String) -> void:
++	track_mode = mode
++	_render_tracks()
+ 
+ func _load_tracks() -> void:
++	if track_busy or not client.signed_in(): return
++	track_busy = true
++	track_error = false
++	_render_tracks()
+ 	var epoch: int = request_epoch
+-	var owner_id: String = str(client.player.get("id",""))
+-	var cursor: String = ""
+-	var seen: Dictionary = {}
+-	var count: int = 0
+-	for page: int in range(5):
+-		var path: String = "/tracks?creator="+app.online.player_name().uri_encode()+"&limit=20"
+-		if not cursor.is_empty(): path += "&cursor="+cursor.uri_encode()
+-		var response: Dictionary = await client.request_api(path,HTTPClient.METHOD_GET,{},"",true)
+-		if not _active(epoch): return
+-		if not response.ok:
+-			track_status.text = "Could not load published tracks."
+-			track_action.text = "Retry"
+-			track_action.visible = true
+-			track_action.pressed.disconnect(app._open_profile_tracks)
+-			track_action.pressed.connect(_retry_tracks,CONNECT_ONE_SHOT)
+-			return
++	var response: Dictionary = await client.request_api("/me/tracks?heads=true&profile_stats=true&limit=12&offset="+str(next_offset),HTTPClient.METHOD_GET,{},"",true)
++	if not _active(epoch): return
++	track_busy = false
++	loaded_tracks = true
++	track_error = not response.get("ok",false)
++	if not track_error:
++		var ids: Dictionary = {}
++		for item: Dictionary in published: ids[str(item.track_id)] = true
+ 		for entry: Variant in response.data.get("items",[]):
+-			if not entry is Dictionary or str(entry.get("creator_id","")) != owner_id: continue
++			if not entry is Dictionary or str(entry.get("creator_id","")) != str(client.player.get("id","")) or entry.get("state","published") != "published": continue
+ 			if is_instance_valid(client.safety) and not client.safety.allows(entry): continue
+-			_add_track(entry)
+-			count += 1
+-			if count >= 3: break
+-		cursor = str(response.data.get("next_cursor","") if response.data.get("next_cursor") != null else "")
+-		if count >= 3 or cursor.is_empty() or seen.has(cursor): break
+-		seen[cursor] = true
+-	track_status.text = "" if count > 0 else "Your published tracks will appear here." if cursor.is_empty() else "No tracks found in this preview. View all tracks to search."
+-	track_status.visible = not track_status.text.is_empty()
+-	track_action.visible = count > 0 or not cursor.is_empty()
+-	if count == 0 and cursor.is_empty():
+-		track_action.text = "Create a track"
+-		track_action.pressed.disconnect(app._open_profile_tracks)
+-		track_action.pressed.connect(app._new_document)
+-		track_action.visible = true
+-
+-func _retry_tracks() -> void:
+-	for child: Node in track_grid.get_children():
+-		track_grid.remove_child(child)
+-		child.queue_free()
+-	track_status.show()
+-	track_status.text = "Loading published tracks…"
+-	track_action.text = "View all  →"
+-	track_action.hide()
+-	track_action.pressed.connect(app._open_profile_tracks)
+-	_load_tracks()
+-
+-func _add_track(entry: Dictionary) -> void:
+-	var button: Button = MenuStyle.button("",app._open_published_track.bind(entry))
+-	button.name = "ProfileTrack_"+str(entry.get("track_id",""))
+-	button.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+-	button.custom_minimum_size.y = 110
+-	track_grid.add_child(button)
+-	var row := HBoxContainer.new()
+-	row.mouse_filter = Control.MOUSE_FILTER_IGNORE
+-	button.add_child(row)
+-	MenuStyle.fill(row)
++			if ids.has(str(entry.get("track_id",""))): continue
++			published.append(entry)
++			ids[str(entry.track_id)] = true
++		var next: Variant = response.data.get("next_offset")
++		next_offset = int(next) if next != null and int(next) > next_offset and int(next) <= 10000 else -1
++	_render_tracks()
++
++func _start_drafts() -> void:
++	var library: TrackLibrary = app.get("library")
++	if library == null: return
++	draft_directory = library.directory
++	draft_revision = library.revision
++	draft_loading = true
++	draft_scan = Scans.start(draft_directory,get_tree())
++	set_process(true)
++	_render_tracks()
++
++func _process(_delta: float) -> void:
++	if draft_scan == null or not draft_scan.done: return
++	var completed: RefCounted = draft_scan
++	draft_scan = null
++	set_process(false)
++	if not _active(request_epoch): return
++	var library: TrackLibrary = app.get("library")
++	if library == null: return
++	if library.directory != draft_directory or library.revision != draft_revision:
++		_start_drafts()
++		return
++	drafts = completed.entries
++	draft_loading = false
++	_render_tracks()
++
++func _render_tracks() -> void:
++	if not is_instance_valid(track_grid): return
++	_clear(track_grid)
++	for mode: String in track_tabs:
++		track_tabs[mode].add_theme_color_override("font_color",MenuStyle.ACCENT if mode == track_mode else MenuStyle.MUTED)
++		track_tabs[mode].add_theme_stylebox_override("normal",MenuStyle.box(Color("233844") if mode == track_mode else Color.TRANSPARENT,8))
++	var entries: Array[Dictionary] = published if track_mode == "published" else drafts
++	for entry: Dictionary in entries: _add_track(entry,track_mode == "drafts")
++	track_action.visible = track_mode == "published" and client.signed_in() and (track_error or next_offset >= 0)
++	track_action.disabled = track_busy
++	track_action.text = "Retry" if track_error else "Loading…" if track_busy else "More tracks"
++	var status: String = ""
++	if track_mode == "drafts":
++		if draft_loading: status = "Loading drafts…"
++		elif drafts.is_empty(): status = "Your next great circuit starts here."
++	elif not client.signed_in(): status = "Sign in to see your published tracks."
++	elif track_error: status = "Could not load published tracks."
++	elif track_busy and entries.is_empty(): status = "Loading published tracks…"
++	elif loaded_tracks and entries.is_empty(): status = "Your published tracks will appear here."
++	track_status.text = status
++	track_status.visible = not status.is_empty()
++
++func _add_track(entry: Dictionary, draft: bool = false) -> void:
++	var doc: Dictionary = entry.get("document",entry)
++	var id: String = str(entry.get("id",entry.get("track_id","")))
++	var callback: Callable = app._load_saved_document.bind(str(entry.get("load_id",id))) if draft else app._open_published_track.bind(entry)
++	var row: HBoxContainer = _row_button(track_grid,"ProfileTrack_"+id,callback)
+ 	var route := LapRouteView.new()
+ 	route.miniature = true
+-	route.custom_minimum_size = Vector2(70,70)
+-	for point: Variant in entry.get("points",[]):
++	route.mouse_filter = Control.MOUSE_FILTER_IGNORE
++	route.custom_minimum_size = Vector2(72,64)
++	for point: Variant in doc.get("points",[]):
+ 		if point is Array and point.size() == 2: route.route.append(Vector2(float(point[0]),float(point[1])))
+ 	row.add_child(route)
+ 	var copy := VBoxContainer.new()
+ 	copy.mouse_filter = Control.MOUSE_FILTER_IGNORE
+ 	copy.size_flags_horizontal = Control.SIZE_EXPAND_FILL
++	copy.alignment = BoxContainer.ALIGNMENT_CENTER
++	copy.add_theme_constant_override("separation",3)
+ 	row.add_child(copy)
+-	var title: Label = _label(copy,str(entry.get("name","Track")),19)
++	var title: Label = _label(copy,str(doc.get("name","Track")),22)
+ 	GameText.user_text(title)
+ 	title.autowrap_mode = TextServer.AUTOWRAP_OFF
+-	title.custom_minimum_size.y = 26
+ 	title.clip_text = true
+ 	title.text_overrun_behavior = TextServer.OVERRUN_TRIM_ELLIPSIS
+-	_label(copy,str(entry.get("theme","pine")).capitalize(),16,true)
+-	if entry.get("rating_average") != null:
+-		_label(copy,GameText.message("★ %.1f · %d ratings") % [float(entry.rating_average),int(entry.get("rating_count",0))],15,true)
++	var subtitle: String = tr(TrackTheme.title(str(doc.get("theme","pine"))))
++	if draft: subtitle += " · "+tr("Draft")
++	elif entry.get("rating_average") != null: subtitle += " · ★ %.1f" % float(entry.rating_average)
++	_label(copy,subtitle,14,true)
++	var races: Variant = records.settings.get("driving_history",{}).get("tracks",{}).get(id) if draft else entry.get("verified_races")
++	var number: Label = _stat(row,Numbers.number(int(races)) if races != null else "—","Your races" if draft else "Verified races")
++	var counter: VBoxContainer = number.get_parent()
++	counter.size_flags_horizontal = Control.SIZE_SHRINK_END
++	counter.custom_minimum_size.x = 108
++	(counter.get_child(1) as Label).horizontal_alignment = HORIZONTAL_ALIGNMENT_RIGHT
++	number.name = "TrackRaceCount"
++	number.horizontal_alignment = HORIZONTAL_ALIGNMENT_RIGHT
++	number.tooltip_text = "Completed races on this device" if draft else "Recorded verified races on this version. Older archived races may not be included."
++
++func _clear(parent: Node) -> void:
++	for child: Node in parent.get_children():
++		parent.remove_child(child)
++		child.queue_free()
++
++func _exit_tree() -> void:
++	request_epoch += 1
++	if draft_scan != null: draft_scan.cancel()
+--- a/game/ui/achievements_menu.gd
++++ b/game/ui/achievements_menu.gd
+@@ -124,8 +124,10 @@
+ 	row.offset_top = 8
+ 	row.offset_right = -10
+ 	row.offset_bottom = -8
++	row.minimum_size_changed.connect(func() -> void:
++		if is_instance_valid(button): button.custom_minimum_size.y = maxf(100,row.get_combined_minimum_size().y+16))
+ 	var badge := AchievementBadge.new()
+-	badge.tier = level
++	badge.tier = 3 if f.prestige and level > 0 else level
+ 	badge.prestige = f.prestige
+ 	badge.motif = AchievementProgress.catalog().families.find(f)
+ 	badge.family_id = f.id
+@@ -137,6 +139,8 @@
+ 	copy.alignment = BoxContainer.ALIGNMENT_CENTER
+ 	row.add_child(copy)
+ 	var title: Label = MenuStyle.label(f.title,22)
++	title.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
++	title.custom_minimum_size.y = 28
+ 	title.text_overrun_behavior = TextServer.OVERRUN_TRIM_ELLIPSIS
+ 	copy.add_child(title)
+ 	var next: int = mini(level,f.tiers.size()-1)
+@@ -258,9 +262,13 @@
+ 	_sheet_footer.add_theme_constant_override("separation",10)
+ 	body.add_child(_sheet_footer)
+ 	_layout_sheet()
+-	close.grab_focus.call_deferred()
++	_focus_sheet_close.call_deferred(weakref(close))
+ 	_sheet_panel.modulate.a = 0.0
+ 	_sheet_panel.create_tween().tween_property(_sheet_panel,"modulate:a",1.0,0.16)
++
++func _focus_sheet_close(reference: WeakRef) -> void:
++	var close: Control = reference.get_ref()
++	if is_instance_valid(close) and close.is_inside_tree() and close.is_visible_in_tree(): close.grab_focus()
+ 
+ func _layout_sheet() -> void:
+ 	if not is_instance_valid(_sheet_panel): return
+@@ -290,7 +298,7 @@
+ 		var target: Control = _sheet_return_focus.get_ref() if _sheet_return_focus != null else null
+ 		if not is_instance_valid(target) or not target.is_inside_tree() or not target.is_visible_in_tree():
+ 			target = grid.get_node_or_null("Achievement_"+selected) if is_instance_valid(grid) else null
+-		if is_instance_valid(target): target.grab_focus()
++		if is_instance_valid(target) and target.is_inside_tree() and target.is_visible_in_tree(): target.grab_focus()
+ 	_sheet_return_focus = null
+ 
+ func _input(event: InputEvent) -> void:
+--- a/game/ui/achievement_badge.gd
++++ b/game/ui/achievement_badge.gd
+@@ -28,10 +28,12 @@
+ 
+ func _draw() -> void:
+ 	var index: int = motif
++	var honor: bool = prestige
+ 	if not family_id.is_empty():
+ 		for i: int in range(AchievementProgress.catalog().families.size()):
+ 			if AchievementProgress.catalog().families[i].id == family_id:
+ 				index = i
++				honor = bool(AchievementProgress.catalog().families[i].prestige)
+ 				break
+ 	var width: float = minf(size.x,size.y)
+-	draw_texture_rect(texture(index,tier),Rect2((size-Vector2.ONE*width)*0.5,Vector2.ONE*width),false)
++	draw_texture_rect(texture(index,3 if honor and tier > 0 else tier),Rect2((size-Vector2.ONE*width)*0.5,Vector2.ONE*width),false)
+--- a/game/persistence/local_records.gd
++++ b/game/persistence/local_records.gd
+@@ -103,6 +103,7 @@
+ 	var raced: Array = settings.get("raced_tracks",[]).duplicate()
+ 	if track.identity not in raced: raced.append(track.identity)
+ 	settings["raced_tracks"] = raced
++	preload("res://persistence/driving_history.gd").record(self,track,handling.vehicle_id)
+ 	return save_records()
+ 
+ 
+@@ -205,6 +206,8 @@
+ 			if not preferences[field] is String or preferences[field] not in VehicleCatalog.ALL_IDS: return {}
+ 		elif field == "achievements":
+ 			if not AchievementProgress.valid(preferences[field]): return {}
++		elif field == "driving_history":
++			if not preload("res://persistence/driving_history.gd").valid(preferences[field]): return {}
+ 		elif field == "guest_coins":
+ 			if not preload("res://persistence/cosmetic_catalog.gd").valid_guest(preferences[field]): return {}
+ 		elif field == "cosmetic_legacy":
+--- a/game/tests/test_own_profile_page.gd
++++ b/game/tests/test_own_profile_page.gd
+@@ -37,6 +37,12 @@
+ class Awards extends Node:
+ 	signal changed
+ 	var selected: Array = []
++	var status: String = ""
++	var snapshot: Dictionary = {}
++	var busy: bool = false
++	func refresh() -> void: pass
++	func authenticated() -> bool: return false
++	func toggle_feature(_id: String) -> void: pass
+ 	func featured() -> Array: return selected
+ 	func source(_family: Dictionary) -> Dictionary: return {"metrics":{"races":10},"unlocked":{}}
+ 
+@@ -59,6 +65,7 @@
+ 	var picture_records: LocalRecords
+ 
+ class Host extends Node:
++	var library: TrackLibrary
+ 	var _garage_preloader: Node
+ 	var online: Node
+ 	var cloud: Node
+@@ -136,15 +143,15 @@
+ 	pictures.warm_views[VehicleCatalog.selected] = picture_view
+ 	pictures.texture = ImageTexture.create_from_image(Image.create(4,4,false,Image.FORMAT_RGBA8))
+ 	page.refresh_car()
+-	check(page.hero_photo.visible and page.hero_photo.texture == pictures.texture,"exact Garage picture is shown")
++	check(page.photos[VehicleCatalog.selected].texture == pictures.texture,"exact Garage picture is shown")
+ 	picture_view.livery = {"stale":true}
+ 	page.refresh_car()
+-	check(not page.hero_photo.visible and page.hero_car.visible,"stale appearance never shows as current car")
++	check(page.photos[VehicleCatalog.selected].texture != pictures.texture,"stale appearance never shows as current car")
+ 	host._garage_preloader = null
+ 	var original_car: String = VehicleCatalog.selected
+ 	VehicleCatalog.selected = "kart"
+ 	page.refresh_car()
+-	check(page.find_child("ProfileSelectedCarName",true,false).text == VehicleCatalog.title("kart"),"car selection updates profile")
++	check(page.fleet.get_node("ProfileCar_kart").find_child("SelectedCar",true,false).visible,"car selection updates profile")
+ 	VehicleCatalog.selected = original_car
+ 	page.refresh_car()
+ 	var capture_path: String = OS.get_environment("BMT_PROFILE_CAPTURE")
+@@ -152,7 +159,9 @@
+ 		await RenderingServer.frame_post_draw
+ 		check(root.get_texture().get_image().save_png(capture_path) == OK,"profile capture saved")
+ 	page.find_child("ProfileBadge_races",true,false).pressed.emit()
+-	check(host.action == "achievement:races","badge opens its achievement")
++	check(page.collection != null and page.collection.selected == "races","badge opens its achievement")
++	page.collection._close_sheet()
++	page._close_collection()
+ 	page.find_child("ProfileTrack_one",true,false).pressed.emit()
+ 	check(host.action == "one","track opens exact publication")
+ 	page.size = Vector2(400,720)
+@@ -166,7 +175,7 @@
+ 	page = make_page(host)
+ 	await settle()
+ 	check(page.find_child("ProfilePlayerName",true,false).text == "Guest","guest identity shown")
+-	check(page.find_child("ProfileRacingStats",true,false) == null,"new player sees race empty state")
++	check(page.total_values.races.text == "0","new player sees zero completed races")
+ 	check("Sign in" in page.find_child("ProfileRankingStatus",true,false).text,"guest ranking explains sign in")
+ 	page.queue_free()
+ 	await settle()
+@@ -220,7 +229,7 @@
+ 		check(app.root_ui.find_child("ProfilePlayerName",true,false).text == "Guest","actual guest profile shows identity")
+ 		app.root_ui.find_child("ProfileChooseAchievements",true,false).pressed.emit()
+ 		await settle()
+-		check(app.screen == "garage" and app._retained_garage.section == "achievements","profile opens the actual achievement collection")
++		check(app.screen == "profile" and app.root_ui.find_child("AchievementsMenu",true,false) != null,"profile opens the actual achievement collection")
+ 		app._show_screen("profile")
+ 		app.root_ui.find_child("ManageAccount",true,false).pressed.emit()
+ 		check(app.screen == "account","profile account action opens account")
+--- a/game/tests/test_records.gd
++++ b/game/tests/test_records.gd
+@@ -139,6 +139,7 @@
+ 	var laps: Array[float] = [10.0,21.0,23.0,30.0,30.0]
+ 	store.record(track,handling,114.0,laps)
+ 	var before: Dictionary = store.records.duplicate(true)
++	var committed_settings: Dictionary = store.settings.duplicate(true)
+ 	var committed_path: String = store.path
+ 	# A regular file as parent makes write failure deterministic with any
+ 	# privilege level. No permission mutation or owner files are involved.
+@@ -149,7 +150,7 @@
+ 	check(store.record(track,handling,110.0,laps) != OK,"unwritable destination reports failure")
+ 	check(store.records == before and store.best_for(track,handling) == 114.0,"failed improved PB rolls back memory")
+ 	store.settings = {"touch_scale":1.2,"left_handed":true}
+-	check(store.save_records() != OK and store.settings == {"raced_tracks":[track.identity]},"failed settings save restores last committed preferences")
++	check(store.save_records() != OK and store.settings == committed_settings,"failed settings save restores all committed preferences and driving history")
+ 	var empty := LocalRecords.new(store.path)
+ 	check(empty.record(track,handling,110.0,laps) != OK and empty.best_for(track,handling) == 0.0,"failed first record never appears as a phantom PB")
+ 	var reload := LocalRecords.new(committed_path)
+--- a/backend/bmt_backend/tracks.py
++++ b/backend/bmt_backend/tracks.py
+@@ -159,6 +159,14 @@
+     )
+ 
+ 
++@router.get("/me/profile-statistics")
++def my_profile_statistics(session: DB, player: Auth, response: Response) -> dict:
++    from .profile_statistics import car_history
++
++    response.headers["Cache-Control"] = "private, no-store"
++    return car_history(session, player.id)
++
++
+ @router.get("/me/tracks")
+ def my_tracks(
+     request: Request,
+@@ -167,6 +175,7 @@
+     offset: int = Query(0, ge=0, le=10000),
+     limit: int = Query(20, ge=1, le=100),
+     heads: bool = False,
++    profile_stats: bool = False,
+ ) -> dict:
+     latest_query = select(TrackVersion.track_id, func.max(TrackVersion.number).label("number"))
+     if request.app.state.settings.local_drafts_only:
+@@ -184,8 +193,15 @@
+         .offset(offset)
+         .limit(limit + 1)
+     ).all()
++    items = [_payload(request, session, row) for row in versions[:limit]]
++    if profile_stats:
++        from .profile_statistics import track_races
++
++        counts = track_races(session, [row.id for row in versions[:limit]])
++        for item in items:
++            item["verified_races"] = counts[item["version_id"]]
+     return {
+-        "items": [_payload(request, session, row) for row in versions[:limit]],
++        "items": items,
+         "next_offset": offset + limit if len(versions) > limit else None,
+     }
+ 
+--- a/AGENTS.md
++++ b/AGENTS.md
+@@ -1,3 +1,8 @@
++<!-- PROFILE-REDESIGN-20261106 -->
++## Driver profile redesigned around cars, creations and achievements (2026-11-06)
++PRF01-PRF07: Compact identity/totals, five visible car cards with recorded kilometres/races, paginated own publications with verified finish counts and cancellable local drafts. Atomic local history preserves failed-save rollback; private grouped backend reads distinguish finishes from drivers. Achievement title/height/Prestige/focus fixes keep collection/details inside Profile. Focused379/0 headless and390/0 each desktop renderer; retained23/54/758/1220 pass,324 translation checks and4 SQLite tests pass. Broad achievement424/3 Garage failures reproduce with before controls; PostgreSQL setup timeout and Mobile teardown warning/stall retained. [Implementation, captures, commands, historical limits and task-only checkpoint](docs/PROFILE_REDESIGN_2026_11_06.md). Matching backend rollout, client reload and owner/device acceptance remain; no lifetime reconstruction or AAA certification. No device query/test, APK, owner-save/process change, live mutation, deployment or main-index write; concurrent work preserved.
++<!-- /PROFILE-REDESIGN-20261106 -->
++
+ <!-- RACE-LOADING-ALTERNATIVES-20261106 -->
+ ## Alternative race-loading implementations investigated (2026-11-06)
+ RLA01-RLA03: Investigation only. Frozen headless exact-layout artifact probe45/0 across Star/Over-and-Under/Knot; current Star build3.633s versus19.030ms median geometry-key/read/decode/install,159200bytes. Freshly written files, no cold-storage/restart/device/whole-loading claim; full artifact validation remains unimplemented. Recommend bounded persistent layouts first, native variant-use/existing-binary-cache audit next, then selective/parallel in-context preparation and native lane arithmetic. Pinned engine eagerly initializes base variants and already caches binaries; broad weathering splits remain rejected. Scenery artifacts, threaded feature loading and Mobile renderer tradeoffs distinguished from existing improvements. Initial decoder-signature parse failure retained; shipping sources unchanged. [Evidence, implementation options, primary references and task-only checkpoint](docs/RACE_LOADING_ALTERNATIVES_2026_11_06.md). No device query/test, APK, owner-save/process change, backend/live request, deployment or main-index write; concurrent work preserved.
+--- a/DEVELOPMENT_STATUS.md
++++ b/DEVELOPMENT_STATUS.md
+@@ -1,3 +1,8 @@
++<!-- PROFILE-REDESIGN-20261106 -->
++## Driver profile redesigned around cars, creations and achievements (2026-11-06)
++PRF01-PRF07: Compact identity/totals, five visible car cards with recorded kilometres/races, paginated own publications with verified finish counts and cancellable local drafts. Atomic local history preserves failed-save rollback; private grouped backend reads distinguish finishes from drivers. Achievement title/height/Prestige/focus fixes keep collection/details inside Profile. Focused379/0 headless and390/0 each desktop renderer; retained23/54/758/1220 pass,324 translation checks and4 SQLite tests pass. Broad achievement424/3 Garage failures reproduce with before controls; PostgreSQL setup timeout and Mobile teardown warning/stall retained. [Implementation, captures, commands, historical limits and task-only checkpoint](docs/PROFILE_REDESIGN_2026_11_06.md). Matching backend rollout, client reload and owner/device acceptance remain; no lifetime reconstruction or AAA certification. No device query/test, APK, owner-save/process change, live mutation, deployment or main-index write; concurrent work preserved.
++<!-- /PROFILE-REDESIGN-20261106 -->
++
+ <!-- RACE-LOADING-ALTERNATIVES-20261106 -->
+ ## Alternative race-loading implementations investigated (2026-11-06)
+ RLA01-RLA03: Investigation only. Frozen headless exact-layout artifact probe45/0 across Star/Over-and-Under/Knot; current Star build3.633s versus19.030ms median geometry-key/read/decode/install,159200bytes. Freshly written files, no cold-storage/restart/device/whole-loading claim; full artifact validation remains unimplemented. Recommend bounded persistent layouts first, native variant-use/existing-binary-cache audit next, then selective/parallel in-context preparation and native lane arithmetic. Pinned engine eagerly initializes base variants and already caches binaries; broad weathering splits remain rejected. Scenery artifacts, threaded feature loading and Mobile renderer tradeoffs distinguished from existing improvements. Initial decoder-signature parse failure retained; shipping sources unchanged. [Evidence, implementation options, primary references and task-only checkpoint](docs/RACE_LOADING_ALTERNATIVES_2026_11_06.md). No device query/test, APK, owner-save/process change, backend/live request, deployment or main-index write; concurrent work preserved.
+--- a/docs/PHASE_0_PLAN.md
++++ b/docs/PHASE_0_PLAN.md
+@@ -1,3 +1,8 @@
++<!-- PROFILE-REDESIGN-20261106 -->
++## Driver profile redesigned around cars, creations and achievements (2026-11-06)
++PRF01-PRF07: Compact identity/totals, five visible car cards with recorded kilometres/races, paginated own publications with verified finish counts and cancellable local drafts. Atomic local history preserves failed-save rollback; private grouped backend reads distinguish finishes from drivers. Achievement title/height/Prestige/focus fixes keep collection/details inside Profile. Focused379/0 headless and390/0 each desktop renderer; retained23/54/758/1220 pass,324 translation checks and4 SQLite tests pass. Broad achievement424/3 Garage failures reproduce with before controls; PostgreSQL setup timeout and Mobile teardown warning/stall retained. [Implementation, captures, commands, historical limits and task-only checkpoint](PROFILE_REDESIGN_2026_11_06.md). Matching backend rollout, client reload and owner/device acceptance remain; no lifetime reconstruction or AAA certification. No device query/test, APK, owner-save/process change, live mutation, deployment or main-index write; concurrent work preserved.
++<!-- /PROFILE-REDESIGN-20261106 -->
++
+ <!-- TABLET-STARTUP-DEPLOY-20261105 -->
+ ## Startup update installed on OnePlus Pad 2 (2026-11-05)
+ TSD01-TSD02/TSDQ01: Owner explicitly requests tablet deployment. Fresh pinned Android build7d30296e6932663c4577ef390f74e988 replaces307f1d5c6726377d85c73e6cf9eacf00 via install-r; app data and original first-install timestamp retained. Prepared468resources/1925checks, five photographs/156source hashes, import/APP_READY, driving72/0, catalogue21/0 and menu41/0 pass. APK407041136bytes/all8903ZIP checksums valid; device OPD2403/Android15/Adreno750 Compatibility reachesAPP_READY with no matched startup errors and inspected signed-in menu. Catalogue anchor/export text-data warnings and initial ADB sandbox/focus-probe limitations retained. [Commands, APK identity, screenshot, receipt and limits](TABLET_STARTUP_DEPLOYMENT_2026_11_05.md). Deployment/startup smoke complete; no tablet performance gain, Garage/race/thermal/memory acceptance claimed. No uninstall/clear-data, PC-save change, track sync, backend deployment/admin mutation or main-index write; concurrent work preserved.
+--- a/game/localization/en.po
++++ b/game/localization/en.po
+@@ -11589,3 +11589,111 @@
+ #: game/ui/daily_result_card.gd
+ msgid "Target"
+ msgstr "Target"
++
++#: game/ui/own_profile_page.gd
++msgid "DRIVER PROFILE"
++msgstr "DRIVER PROFILE"
++
++#: game/ui/own_profile_page.gd
++msgid "YOUR CARS"
++msgstr "YOUR CARS"
++
++#: game/ui/own_profile_page.gd
++msgid "CREATED TRACKS"
++msgstr "CREATED TRACKS"
++
++#: game/ui/own_profile_page.gd
++msgid "View collection"
++msgstr "View collection"
++
++#: game/ui/own_profile_page.gd
++msgid "Cars raced"
++msgstr "Cars raced"
++
++#: game/ui/own_profile_page.gd
++msgid "km driven"
++msgstr "km driven"
++
++#: game/ui/own_profile_page.gd
++msgid "Your races"
++msgstr "Your races"
++
++#: game/ui/own_profile_page.gd
++msgid "Verified races"
++msgstr "Verified races"
++
++#: game/ui/own_profile_page.gd
++msgid "Recorded on this device"
++msgstr "Recorded on this device"
++
++#: game/ui/own_profile_page.gd
++msgid "Verified race history"
++msgstr "Verified race history"
++
++#: game/ui/own_profile_page.gd
++msgid "%d / %d earned"
++msgstr "%d / %d earned"
++
++#: game/ui/own_profile_page.gd
++msgid "Back to profile"
++msgstr "Back to profile"
++
++#: game/ui/own_profile_page.gd
++msgid "Drafts"
++msgstr "Drafts"
++
++#: game/ui/own_profile_page.gd
++msgid "Published"
++msgstr "Published"
++
++#: game/ui/own_profile_page.gd
++msgid "Current car"
++msgstr "Current car"
++
++#: game/ui/own_profile_page.gd
++msgid "Your next great circuit starts here."
++msgstr "Your next great circuit starts here."
++
++#: game/ui/own_profile_page.gd
++msgid "Completed races"
++msgstr "Completed races"
++
++#: game/ui/own_profile_page.gd
++msgid "Distance driven"
++msgstr "Distance driven"
++
++#: game/ui/own_profile_page.gd
++msgid "Tracks raced"
++msgstr "Tracks raced"
++
++#: game/ui/own_profile_page.gd
++msgid "Edit profile"
++msgstr "Edit profile"
++
++#: game/ui/own_profile_page.gd
++msgid "Create a track"
++msgstr "Create a track"
++
++#: game/ui/own_profile_page.gd
++msgid "%.1f km"
++msgstr "%.1f km"
++
++#: game/ui/own_profile_page.gd
++msgid "Progress recorded on this device; earlier races may not be included."
++msgstr "Progress recorded on this device; earlier races may not be included."
++
++#: game/ui/own_profile_page.gd
++msgid "Distance in completed races. Earlier races may not be included."
++msgstr "Distance in completed races. Earlier races may not be included."
++
++#: game/ui/own_profile_page.gd
++msgid "Recorded verified races. Older archived races may not be included."
++msgstr "Recorded verified races. Older archived races may not be included."
++
++#: game/ui/own_profile_page.gd
++msgid "Completed races on this device"
++msgstr "Completed races on this device"
++
++#: game/ui/own_profile_page.gd
++msgid "Races"
++msgstr "Races"
+--- a/game/localization/fr.po
++++ b/game/localization/fr.po
+@@ -11475,3 +11475,111 @@
+ #: game/ui/daily_result_card.gd
+ msgid "Target"
+ msgstr "Objectif"
++
++#: game/ui/own_profile_page.gd
++msgid "DRIVER PROFILE"
++msgstr "PROFIL PILOTE"
++
++#: game/ui/own_profile_page.gd
++msgid "YOUR CARS"
++msgstr "VOS VOITURES"
++
++#: game/ui/own_profile_page.gd
++msgid "CREATED TRACKS"
++msgstr "CIRCUITS CRÉÉS"
++
++#: game/ui/own_profile_page.gd
++msgid "View collection"
++msgstr "Voir la collection"
++
++#: game/ui/own_profile_page.gd
++msgid "Cars raced"
++msgstr "Voitures pilotées"
++
++#: game/ui/own_profile_page.gd
++msgid "km driven"
++msgstr "km parcourus"
++
++#: game/ui/own_profile_page.gd
++msgid "Your races"
++msgstr "Vos courses"
++
++#: game/ui/own_profile_page.gd
++msgid "Verified races"
++msgstr "Courses vérifiées"
++
++#: game/ui/own_profile_page.gd
++msgid "Recorded on this device"
++msgstr "Enregistré sur cet appareil"
++
++#: game/ui/own_profile_page.gd
++msgid "Verified race history"
++msgstr "Historique des courses vérifiées"
++
++#: game/ui/own_profile_page.gd
++msgid "%d / %d earned"
++msgstr "%d / %d obtenus"
++
++#: game/ui/own_profile_page.gd
++msgid "Back to profile"
++msgstr "Retour au profil"
++
++#: game/ui/own_profile_page.gd
++msgid "Drafts"
++msgstr "Brouillons"
++
++#: game/ui/own_profile_page.gd
++msgid "Published"
++msgstr "Publié"
++
++#: game/ui/own_profile_page.gd
++msgid "Current car"
++msgstr "Voiture actuelle"
++
++#: game/ui/own_profile_page.gd
++msgid "Your next great circuit starts here."
++msgstr "Votre prochain grand circuit commence ici."
++
++#: game/ui/own_profile_page.gd
++msgid "Completed races"
++msgstr "Courses terminées"
++
++#: game/ui/own_profile_page.gd
++msgid "Distance driven"
++msgstr "Distance parcourue"
++
++#: game/ui/own_profile_page.gd
++msgid "Tracks raced"
++msgstr "Circuits parcourus"
++
++#: game/ui/own_profile_page.gd
++msgid "Edit profile"
++msgstr "Modifier le profil"
++
++#: game/ui/own_profile_page.gd
++msgid "Create a track"
++msgstr "Créer un circuit"
++
++#: game/ui/own_profile_page.gd
++msgid "%.1f km"
++msgstr "%.1f km"
++
++#: game/ui/own_profile_page.gd
++msgid "Progress recorded on this device; earlier races may not be included."
++msgstr "Progression enregistrée sur cet appareil ; les anciennes courses peuvent manquer."
++
++#: game/ui/own_profile_page.gd
++msgid "Distance in completed races. Earlier races may not be included."
++msgstr "Distance des courses terminées. Les anciennes courses peuvent manquer."
++
++#: game/ui/own_profile_page.gd
++msgid "Recorded verified races. Older archived races may not be included."
++msgstr "Courses vérifiées enregistrées. Les anciennes courses archivées peuvent manquer."
++
++#: game/ui/own_profile_page.gd
++msgid "Completed races on this device"
++msgstr "Courses terminées sur cet appareil"
++
++#: game/ui/own_profile_page.gd
++msgid "Races"
++msgstr "Courses"
+--- a/game/localization/es.po
++++ b/game/localization/es.po
+@@ -11475,3 +11475,111 @@
+ #: game/ui/daily_result_card.gd
+ msgid "Target"
+ msgstr "Objetivo"
++
++#: game/ui/own_profile_page.gd
++msgid "DRIVER PROFILE"
++msgstr "PERFIL DE PILOTO"
++
++#: game/ui/own_profile_page.gd
++msgid "YOUR CARS"
++msgstr "TUS COCHES"
++
++#: game/ui/own_profile_page.gd
++msgid "CREATED TRACKS"
++msgstr "CIRCUITOS CREADOS"
++
++#: game/ui/own_profile_page.gd
++msgid "View collection"
++msgstr "Ver colección"
++
++#: game/ui/own_profile_page.gd
++msgid "Cars raced"
++msgstr "Coches utilizados"
++
++#: game/ui/own_profile_page.gd
++msgid "km driven"
++msgstr "km recorridos"
++
++#: game/ui/own_profile_page.gd
++msgid "Your races"
++msgstr "Tus carreras"
++
++#: game/ui/own_profile_page.gd
++msgid "Verified races"
++msgstr "Carreras verificadas"
++
++#: game/ui/own_profile_page.gd
++msgid "Recorded on this device"
++msgstr "Registrado en este dispositivo"
++
++#: game/ui/own_profile_page.gd
++msgid "Verified race history"
++msgstr "Historial de carreras verificadas"
++
++#: game/ui/own_profile_page.gd
++msgid "%d / %d earned"
++msgstr "%d / %d conseguidos"
++
++#: game/ui/own_profile_page.gd
++msgid "Back to profile"
++msgstr "Volver al perfil"
++
++#: game/ui/own_profile_page.gd
++msgid "Drafts"
++msgstr "Borradores"
++
++#: game/ui/own_profile_page.gd
++msgid "Published"
++msgstr "Publicado"
++
++#: game/ui/own_profile_page.gd
++msgid "Current car"
++msgstr "Coche actual"
++
++#: game/ui/own_profile_page.gd
++msgid "Your next great circuit starts here."
++msgstr "Tu próximo gran circuito empieza aquí."
++
++#: game/ui/own_profile_page.gd
++msgid "Completed races"
++msgstr "Carreras completadas"
++
++#: game/ui/own_profile_page.gd
++msgid "Distance driven"
++msgstr "Distancia recorrida"
++
++#: game/ui/own_profile_page.gd
++msgid "Tracks raced"
++msgstr "Circuitos disputados"
++
++#: game/ui/own_profile_page.gd
++msgid "Edit profile"
++msgstr "Editar perfil"
++
++#: game/ui/own_profile_page.gd
++msgid "Create a track"
++msgstr "Crear circuito"
++
++#: game/ui/own_profile_page.gd
++msgid "%.1f km"
++msgstr "%.1f km"
++
++#: game/ui/own_profile_page.gd
++msgid "Progress recorded on this device; earlier races may not be included."
++msgstr "Progreso registrado en este dispositivo; puede que falten carreras anteriores."
++
++#: game/ui/own_profile_page.gd
++msgid "Distance in completed races. Earlier races may not be included."
++msgstr "Distancia en carreras completadas. Puede que falten carreras anteriores."
++
++#: game/ui/own_profile_page.gd
++msgid "Recorded verified races. Older archived races may not be included."
++msgstr "Carreras verificadas registradas. Puede que falten carreras antiguas archivadas."
++
++#: game/ui/own_profile_page.gd
++msgid "Completed races on this device"
++msgstr "Carreras completadas en este dispositivo"
++
++#: game/ui/own_profile_page.gd
++msgid "Races"
++msgstr "Carreras"
+--- a/game/localization/de.po
++++ b/game/localization/de.po
+@@ -11475,3 +11475,111 @@
+ #: game/ui/daily_result_card.gd
+ msgid "Target"
+ msgstr "Ziel"
++
++#: game/ui/own_profile_page.gd
++msgid "DRIVER PROFILE"
++msgstr "FAHRERPROFIL"
++
++#: game/ui/own_profile_page.gd
++msgid "YOUR CARS"
++msgstr "DEINE AUTOS"
++
++#: game/ui/own_profile_page.gd
++msgid "CREATED TRACKS"
++msgstr "ERSTELLTE STRECKEN"
++
++#: game/ui/own_profile_page.gd
++msgid "View collection"
++msgstr "Sammlung ansehen"
++
++#: game/ui/own_profile_page.gd
++msgid "Cars raced"
++msgstr "Gefahrene Autos"
++
++#: game/ui/own_profile_page.gd
++msgid "km driven"
++msgstr "km gefahren"
++
++#: game/ui/own_profile_page.gd
++msgid "Your races"
++msgstr "Deine Rennen"
++
++#: game/ui/own_profile_page.gd
++msgid "Verified races"
++msgstr "Verifizierte Rennen"
++
++#: game/ui/own_profile_page.gd
++msgid "Recorded on this device"
++msgstr "Auf diesem Gerät erfasst"
++
++#: game/ui/own_profile_page.gd
++msgid "Verified race history"
++msgstr "Verifizierter Rennverlauf"
++
++#: game/ui/own_profile_page.gd
++msgid "%d / %d earned"
++msgstr "%d / %d erhalten"
++
++#: game/ui/own_profile_page.gd
++msgid "Back to profile"
++msgstr "Zurück zum Profil"
++
++#: game/ui/own_profile_page.gd
++msgid "Drafts"
++msgstr "Entwürfe"
++
++#: game/ui/own_profile_page.gd
++msgid "Published"
++msgstr "Veröffentlicht"
++
++#: game/ui/own_profile_page.gd
++msgid "Current car"
++msgstr "Aktuelles Auto"
++
++#: game/ui/own_profile_page.gd
++msgid "Your next great circuit starts here."
++msgstr "Deine nächste großartige Strecke beginnt hier."
++
++#: game/ui/own_profile_page.gd
++msgid "Completed races"
++msgstr "Abgeschlossene Rennen"
++
++#: game/ui/own_profile_page.gd
++msgid "Distance driven"
++msgstr "Gefahrene Strecke"
++
++#: game/ui/own_profile_page.gd
++msgid "Tracks raced"
++msgstr "Gefahrene Strecken"
++
++#: game/ui/own_profile_page.gd
++msgid "Edit profile"
++msgstr "Profil bearbeiten"
++
++#: game/ui/own_profile_page.gd
++msgid "Create a track"
++msgstr "Strecke erstellen"
++
++#: game/ui/own_profile_page.gd
++msgid "%.1f km"
++msgstr "%.1f km"
++
++#: game/ui/own_profile_page.gd
++msgid "Progress recorded on this device; earlier races may not be included."
++msgstr "Auf diesem Gerät erfasster Fortschritt; frühere Rennen fehlen möglicherweise."
++
++#: game/ui/own_profile_page.gd
++msgid "Distance in completed races. Earlier races may not be included."
++msgstr "Strecke abgeschlossener Rennen. Frühere Rennen fehlen möglicherweise."
++
++#: game/ui/own_profile_page.gd
++msgid "Recorded verified races. Older archived races may not be included."
++msgstr "Erfasste verifizierte Rennen. Ältere archivierte Rennen fehlen möglicherweise."
++
++#: game/ui/own_profile_page.gd
++msgid "Completed races on this device"
++msgstr "Abgeschlossene Rennen auf diesem Gerät"
++
++#: game/ui/own_profile_page.gd
++msgid "Races"
++msgstr "Rennen"
+--- a/game/localization/pt_BR.po
++++ b/game/localization/pt_BR.po
+@@ -11475,3 +11475,111 @@
+ #: game/ui/daily_result_card.gd
+ msgid "Target"
+ msgstr "Meta"
++
++#: game/ui/own_profile_page.gd
++msgid "DRIVER PROFILE"
++msgstr "PERFIL DO PILOTO"
++
++#: game/ui/own_profile_page.gd
++msgid "YOUR CARS"
++msgstr "SEUS CARROS"
++
++#: game/ui/own_profile_page.gd
++msgid "CREATED TRACKS"
++msgstr "PISTAS CRIADAS"
++
++#: game/ui/own_profile_page.gd
++msgid "View collection"
++msgstr "Ver coleção"
++
++#: game/ui/own_profile_page.gd
++msgid "Cars raced"
++msgstr "Carros utilizados"
++
++#: game/ui/own_profile_page.gd
++msgid "km driven"
++msgstr "km percorridos"
++
++#: game/ui/own_profile_page.gd
++msgid "Your races"
++msgstr "Suas corridas"
++
++#: game/ui/own_profile_page.gd
++msgid "Verified races"
++msgstr "Corridas verificadas"
++
++#: game/ui/own_profile_page.gd
++msgid "Recorded on this device"
++msgstr "Registrado neste dispositivo"
++
++#: game/ui/own_profile_page.gd
++msgid "Verified race history"
++msgstr "Histórico de corridas verificadas"
++
++#: game/ui/own_profile_page.gd
++msgid "%d / %d earned"
++msgstr "%d / %d conquistados"
++
++#: game/ui/own_profile_page.gd
++msgid "Back to profile"
++msgstr "Voltar ao perfil"
++
++#: game/ui/own_profile_page.gd
++msgid "Drafts"
++msgstr "Rascunhos"
++
++#: game/ui/own_profile_page.gd
++msgid "Published"
++msgstr "Publicado"
++
++#: game/ui/own_profile_page.gd
++msgid "Current car"
++msgstr "Carro atual"
++
++#: game/ui/own_profile_page.gd
++msgid "Your next great circuit starts here."
++msgstr "Sua próxima grande pista começa aqui."
++
++#: game/ui/own_profile_page.gd
++msgid "Completed races"
++msgstr "Corridas concluídas"
++
++#: game/ui/own_profile_page.gd
++msgid "Distance driven"
++msgstr "Distância percorrida"
++
++#: game/ui/own_profile_page.gd
++msgid "Tracks raced"
++msgstr "Pistas disputadas"
++
++#: game/ui/own_profile_page.gd
++msgid "Edit profile"
++msgstr "Editar perfil"
++
++#: game/ui/own_profile_page.gd
++msgid "Create a track"
++msgstr "Criar pista"
++
++#: game/ui/own_profile_page.gd
++msgid "%.1f km"
++msgstr "%.1f km"
++
++#: game/ui/own_profile_page.gd
++msgid "Progress recorded on this device; earlier races may not be included."
++msgstr "Progresso registrado neste dispositivo; corridas anteriores podem não estar incluídas."
++
++#: game/ui/own_profile_page.gd
++msgid "Distance in completed races. Earlier races may not be included."
++msgstr "Distância em corridas concluídas. Corridas anteriores podem não estar incluídas."
++
++#: game/ui/own_profile_page.gd
++msgid "Recorded verified races. Older archived races may not be included."
++msgstr "Corridas verificadas registradas. Corridas antigas arquivadas podem não estar incluídas."
++
++#: game/ui/own_profile_page.gd
++msgid "Completed races on this device"
++msgstr "Corridas concluídas neste dispositivo"
++
++#: game/ui/own_profile_page.gd
++msgid "Races"
++msgstr "Corridas"
+--- a/game/localization/ja.po
++++ b/game/localization/ja.po
+@@ -11444,3 +11444,111 @@
+ #: game/ui/daily_result_card.gd
+ msgid "Target"
+ msgstr "目標"
++
++#: game/ui/own_profile_page.gd
++msgid "DRIVER PROFILE"
++msgstr "ドライバープロフィール"
++
++#: game/ui/own_profile_page.gd
++msgid "YOUR CARS"
++msgstr "所有車"
++
++#: game/ui/own_profile_page.gd
++msgid "CREATED TRACKS"
++msgstr "作成したコース"
++
++#: game/ui/own_profile_page.gd
++msgid "View collection"
++msgstr "コレクションを見る"
++
++#: game/ui/own_profile_page.gd
++msgid "Cars raced"
++msgstr "レースで使った車"
++
++#: game/ui/own_profile_page.gd
++msgid "km driven"
++msgstr "走行距離（km）"
++
++#: game/ui/own_profile_page.gd
++msgid "Your races"
++msgstr "自分のレース"
++
++#: game/ui/own_profile_page.gd
++msgid "Verified races"
++msgstr "検証済みレース"
++
++#: game/ui/own_profile_page.gd
++msgid "Recorded on this device"
++msgstr "この端末の記録"
++
++#: game/ui/own_profile_page.gd
++msgid "Verified race history"
++msgstr "検証済みレースの履歴"
++
++#: game/ui/own_profile_page.gd
++msgid "%d / %d earned"
++msgstr "%d / %d 獲得"
++
++#: game/ui/own_profile_page.gd
++msgid "Back to profile"
++msgstr "プロフィールに戻る"
++
++#: game/ui/own_profile_page.gd
++msgid "Drafts"
++msgstr "下書き"
++
++#: game/ui/own_profile_page.gd
++msgid "Published"
++msgstr "公開済み"
++
++#: game/ui/own_profile_page.gd
++msgid "Current car"
++msgstr "現在の車"
++
++#: game/ui/own_profile_page.gd
++msgid "Your next great circuit starts here."
++msgstr "次の素晴らしいコースをここから。"
++
++#: game/ui/own_profile_page.gd
++msgid "Completed races"
++msgstr "完走したレース"
++
++#: game/ui/own_profile_page.gd
++msgid "Distance driven"
++msgstr "走行距離"
++
++#: game/ui/own_profile_page.gd
++msgid "Tracks raced"
++msgstr "走行したコース"
++
++#: game/ui/own_profile_page.gd
++msgid "Edit profile"
++msgstr "プロフィール編集"
++
++#: game/ui/own_profile_page.gd
++msgid "Create a track"
++msgstr "コースを作成"
++
++#: game/ui/own_profile_page.gd
++msgid "%.1f km"
++msgstr "%.1f km"
++
++#: game/ui/own_profile_page.gd
++msgid "Progress recorded on this device; earlier races may not be included."
++msgstr "この端末で記録した進捗です。過去のレースが含まれない場合があります。"
++
++#: game/ui/own_profile_page.gd
++msgid "Distance in completed races. Earlier races may not be included."
++msgstr "完走したレースの距離です。過去のレースが含まれない場合があります。"
++
++#: game/ui/own_profile_page.gd
++msgid "Recorded verified races. Older archived races may not be included."
++msgstr "記録済みの検証済みレースです。過去のアーカイブ済みレースが含まれない場合があります。"
++
++#: game/ui/own_profile_page.gd
++msgid "Completed races on this device"
++msgstr "この端末で完走したレース"
++
++#: game/ui/own_profile_page.gd
++msgid "Races"
++msgstr "レース"
+--- a/game/localization/ko.po
++++ b/game/localization/ko.po
+@@ -11444,3 +11444,111 @@
+ #: game/ui/daily_result_card.gd
+ msgid "Target"
+ msgstr "목표"
++
++#: game/ui/own_profile_page.gd
++msgid "DRIVER PROFILE"
++msgstr "드라이버 프로필"
++
++#: game/ui/own_profile_page.gd
++msgid "YOUR CARS"
++msgstr "내 차량"
++
++#: game/ui/own_profile_page.gd
++msgid "CREATED TRACKS"
++msgstr "제작한 트랙"
++
++#: game/ui/own_profile_page.gd
++msgid "View collection"
++msgstr "컬렉션 보기"
++
++#: game/ui/own_profile_page.gd
++msgid "Cars raced"
++msgstr "레이스에 사용한 차량"
++
++#: game/ui/own_profile_page.gd
++msgid "km driven"
++msgstr "주행 거리(km)"
++
++#: game/ui/own_profile_page.gd
++msgid "Your races"
++msgstr "내 레이스"
++
++#: game/ui/own_profile_page.gd
++msgid "Verified races"
++msgstr "검증된 레이스"
++
++#: game/ui/own_profile_page.gd
++msgid "Recorded on this device"
++msgstr "이 기기의 기록"
++
++#: game/ui/own_profile_page.gd
++msgid "Verified race history"
++msgstr "검증된 레이스 기록"
++
++#: game/ui/own_profile_page.gd
++msgid "%d / %d earned"
++msgstr "%d / %d 획득"
++
++#: game/ui/own_profile_page.gd
++msgid "Back to profile"
++msgstr "프로필로 돌아가기"
++
++#: game/ui/own_profile_page.gd
++msgid "Drafts"
++msgstr "초안"
++
++#: game/ui/own_profile_page.gd
++msgid "Published"
++msgstr "게시됨"
++
++#: game/ui/own_profile_page.gd
++msgid "Current car"
++msgstr "현재 차량"
++
++#: game/ui/own_profile_page.gd
++msgid "Your next great circuit starts here."
++msgstr "멋진 다음 트랙을 여기서 시작하세요."
++
++#: game/ui/own_profile_page.gd
++msgid "Completed races"
++msgstr "완주한 레이스"
++
++#: game/ui/own_profile_page.gd
++msgid "Distance driven"
++msgstr "주행 거리"
++
++#: game/ui/own_profile_page.gd
++msgid "Tracks raced"
++msgstr "주행한 트랙"
++
++#: game/ui/own_profile_page.gd
++msgid "Edit profile"
++msgstr "프로필 편집"
++
++#: game/ui/own_profile_page.gd
++msgid "Create a track"
++msgstr "트랙 만들기"
++
++#: game/ui/own_profile_page.gd
++msgid "%.1f km"
++msgstr "%.1f km"
++
++#: game/ui/own_profile_page.gd
++msgid "Progress recorded on this device; earlier races may not be included."
++msgstr "이 기기에 기록된 진행 상황입니다. 이전 레이스가 포함되지 않을 수 있습니다."
++
++#: game/ui/own_profile_page.gd
++msgid "Distance in completed races. Earlier races may not be included."
++msgstr "완주한 레이스의 거리입니다. 이전 레이스가 포함되지 않을 수 있습니다."
++
++#: game/ui/own_profile_page.gd
++msgid "Recorded verified races. Older archived races may not be included."
++msgstr "기록된 검증 레이스입니다. 오래된 보관 레이스가 포함되지 않을 수 있습니다."
++
++#: game/ui/own_profile_page.gd
++msgid "Completed races on this device"
++msgstr "이 기기에서 완주한 레이스"
++
++#: game/ui/own_profile_page.gd
++msgid "Races"
++msgstr "레이스"
+--- a/game/localization/nl.po
++++ b/game/localization/nl.po
+@@ -11475,3 +11475,111 @@
+ #: game/ui/daily_result_card.gd
+ msgid "Target"
+ msgstr "Doel"
++
++#: game/ui/own_profile_page.gd
++msgid "DRIVER PROFILE"
++msgstr "COUREURSPROFIEL"
++
++#: game/ui/own_profile_page.gd
++msgid "YOUR CARS"
++msgstr "JE AUTO’S"
++
++#: game/ui/own_profile_page.gd
++msgid "CREATED TRACKS"
++msgstr "GEMAAKTE CIRCUITS"
++
++#: game/ui/own_profile_page.gd
++msgid "View collection"
++msgstr "Collectie bekijken"
++
++#: game/ui/own_profile_page.gd
++msgid "Cars raced"
++msgstr "Gereden auto’s"
++
++#: game/ui/own_profile_page.gd
++msgid "km driven"
++msgstr "km gereden"
++
++#: game/ui/own_profile_page.gd
++msgid "Your races"
++msgstr "Jouw races"
++
++#: game/ui/own_profile_page.gd
++msgid "Verified races"
++msgstr "Geverifieerde races"
++
++#: game/ui/own_profile_page.gd
++msgid "Recorded on this device"
++msgstr "Op dit apparaat vastgelegd"
++
++#: game/ui/own_profile_page.gd
++msgid "Verified race history"
++msgstr "Geverifieerde racegeschiedenis"
++
++#: game/ui/own_profile_page.gd
++msgid "%d / %d earned"
++msgstr "%d / %d behaald"
++
++#: game/ui/own_profile_page.gd
++msgid "Back to profile"
++msgstr "Terug naar profiel"
++
++#: game/ui/own_profile_page.gd
++msgid "Drafts"
++msgstr "Concepten"
++
++#: game/ui/own_profile_page.gd
++msgid "Published"
++msgstr "Gepubliceerd"
++
++#: game/ui/own_profile_page.gd
++msgid "Current car"
++msgstr "Huidige auto"
++
++#: game/ui/own_profile_page.gd
++msgid "Your next great circuit starts here."
++msgstr "Je volgende geweldige circuit begint hier."
++
++#: game/ui/own_profile_page.gd
++msgid "Completed races"
++msgstr "Voltooide races"
++
++#: game/ui/own_profile_page.gd
++msgid "Distance driven"
++msgstr "Gereden afstand"
++
++#: game/ui/own_profile_page.gd
++msgid "Tracks raced"
++msgstr "Gereden circuits"
++
++#: game/ui/own_profile_page.gd
++msgid "Edit profile"
++msgstr "Profiel bewerken"
++
++#: game/ui/own_profile_page.gd
++msgid "Create a track"
++msgstr "Circuit maken"
++
++#: game/ui/own_profile_page.gd
++msgid "%.1f km"
++msgstr "%.1f km"
++
++#: game/ui/own_profile_page.gd
++msgid "Progress recorded on this device; earlier races may not be included."
++msgstr "Voortgang op dit apparaat; eerdere races ontbreken mogelijk."
++
++#: game/ui/own_profile_page.gd
++msgid "Distance in completed races. Earlier races may not be included."
++msgstr "Afstand in voltooide races. Eerdere races ontbreken mogelijk."
++
++#: game/ui/own_profile_page.gd
++msgid "Recorded verified races. Older archived races may not be included."
++msgstr "Vastgelegde geverifieerde races. Oudere gearchiveerde races ontbreken mogelijk."
++
++#: game/ui/own_profile_page.gd
++msgid "Completed races on this device"
++msgstr "Voltooide races op dit apparaat"
++
++#: game/ui/own_profile_page.gd
++msgid "Races"
++msgstr "Races"
+--- a/game/localization/it.po
++++ b/game/localization/it.po
+@@ -11475,3 +11475,111 @@
+ #: game/ui/daily_result_card.gd
+ msgid "Target"
+ msgstr "Obiettivo"
++
++#: game/ui/own_profile_page.gd
++msgid "DRIVER PROFILE"
++msgstr "PROFILO PILOTA"
++
++#: game/ui/own_profile_page.gd
++msgid "YOUR CARS"
++msgstr "LE TUE AUTO"
++
++#: game/ui/own_profile_page.gd
++msgid "CREATED TRACKS"
++msgstr "CIRCUITI CREATI"
++
++#: game/ui/own_profile_page.gd
++msgid "View collection"
++msgstr "Vedi collezione"
++
++#: game/ui/own_profile_page.gd
++msgid "Cars raced"
++msgstr "Auto utilizzate"
++
++#: game/ui/own_profile_page.gd
++msgid "km driven"
++msgstr "km percorsi"
++
++#: game/ui/own_profile_page.gd
++msgid "Your races"
++msgstr "Le tue gare"
++
++#: game/ui/own_profile_page.gd
++msgid "Verified races"
++msgstr "Gare verificate"
++
++#: game/ui/own_profile_page.gd
++msgid "Recorded on this device"
++msgstr "Registrato su questo dispositivo"
++
++#: game/ui/own_profile_page.gd
++msgid "Verified race history"
++msgstr "Cronologia gare verificate"
++
++#: game/ui/own_profile_page.gd
++msgid "%d / %d earned"
++msgstr "%d / %d ottenuti"
++
++#: game/ui/own_profile_page.gd
++msgid "Back to profile"
++msgstr "Torna al profilo"
++
++#: game/ui/own_profile_page.gd
++msgid "Drafts"
++msgstr "Bozze"
++
++#: game/ui/own_profile_page.gd
++msgid "Published"
++msgstr "Pubblicato"
++
++#: game/ui/own_profile_page.gd
++msgid "Current car"
++msgstr "Auto attuale"
++
++#: game/ui/own_profile_page.gd
++msgid "Your next great circuit starts here."
++msgstr "Il tuo prossimo grande circuito inizia qui."
++
++#: game/ui/own_profile_page.gd
++msgid "Completed races"
++msgstr "Gare completate"
++
++#: game/ui/own_profile_page.gd
++msgid "Distance driven"
++msgstr "Distanza percorsa"
++
++#: game/ui/own_profile_page.gd
++msgid "Tracks raced"
++msgstr "Circuiti disputati"
++
++#: game/ui/own_profile_page.gd
++msgid "Edit profile"
++msgstr "Modifica profilo"
++
++#: game/ui/own_profile_page.gd
++msgid "Create a track"
++msgstr "Crea circuito"
++
++#: game/ui/own_profile_page.gd
++msgid "%.1f km"
++msgstr "%.1f km"
++
++#: game/ui/own_profile_page.gd
++msgid "Progress recorded on this device; earlier races may not be included."
++msgstr "Progressi registrati su questo dispositivo; le gare precedenti potrebbero non essere incluse."
++
++#: game/ui/own_profile_page.gd
++msgid "Distance in completed races. Earlier races may not be included."
++msgstr "Distanza nelle gare completate. Le gare precedenti potrebbero non essere incluse."
++
++#: game/ui/own_profile_page.gd
++msgid "Recorded verified races. Older archived races may not be included."
++msgstr "Gare verificate registrate. Le vecchie gare archiviate potrebbero non essere incluse."
++
++#: game/ui/own_profile_page.gd
++msgid "Completed races on this device"
++msgstr "Gare completate su questo dispositivo"
++
++#: game/ui/own_profile_page.gd
++msgid "Races"
++msgstr "Gare"
+--- a/game/localization/fi.po
++++ b/game/localization/fi.po
+@@ -11475,3 +11475,111 @@
+ #: game/ui/daily_result_card.gd
+ msgid "Target"
+ msgstr "Tavoite"
++
++#: game/ui/own_profile_page.gd
++msgid "DRIVER PROFILE"
++msgstr "KULJETTAJAPROFIILI"
++
++#: game/ui/own_profile_page.gd
++msgid "YOUR CARS"
++msgstr "AUTOSI"
++
++#: game/ui/own_profile_page.gd
++msgid "CREATED TRACKS"
++msgstr "LUODUT RADAT"
++
++#: game/ui/own_profile_page.gd
++msgid "View collection"
++msgstr "Näytä kokoelma"
++
++#: game/ui/own_profile_page.gd
++msgid "Cars raced"
++msgstr "Kisoissa käytetyt autot"
++
++#: game/ui/own_profile_page.gd
++msgid "km driven"
++msgstr "ajetut km"
++
++#: game/ui/own_profile_page.gd
++msgid "Your races"
++msgstr "Omat kisat"
++
++#: game/ui/own_profile_page.gd
++msgid "Verified races"
++msgstr "Vahvistetut kisat"
++
++#: game/ui/own_profile_page.gd
++msgid "Recorded on this device"
++msgstr "Tallennettu tällä laitteella"
++
++#: game/ui/own_profile_page.gd
++msgid "Verified race history"
++msgstr "Vahvistettu kisahistoria"
++
++#: game/ui/own_profile_page.gd
++msgid "%d / %d earned"
++msgstr "%d / %d saavutettu"
++
++#: game/ui/own_profile_page.gd
++msgid "Back to profile"
++msgstr "Takaisin profiiliin"
++
++#: game/ui/own_profile_page.gd
++msgid "Drafts"
++msgstr "Luonnokset"
++
++#: game/ui/own_profile_page.gd
++msgid "Published"
++msgstr "Julkaistu"
++
++#: game/ui/own_profile_page.gd
++msgid "Current car"
++msgstr "Nykyinen auto"
++
++#: game/ui/own_profile_page.gd
++msgid "Your next great circuit starts here."
++msgstr "Seuraava upea ratasi alkaa tästä."
++
++#: game/ui/own_profile_page.gd
++msgid "Completed races"
++msgstr "Ajetut kisat"
++
++#: game/ui/own_profile_page.gd
++msgid "Distance driven"
++msgstr "Ajettu matka"
++
++#: game/ui/own_profile_page.gd
++msgid "Tracks raced"
++msgstr "Ajetut radat"
++
++#: game/ui/own_profile_page.gd
++msgid "Edit profile"
++msgstr "Muokkaa profiilia"
++
++#: game/ui/own_profile_page.gd
++msgid "Create a track"
++msgstr "Luo rata"
++
++#: game/ui/own_profile_page.gd
++msgid "%.1f km"
++msgstr "%.1f km"
++
++#: game/ui/own_profile_page.gd
++msgid "Progress recorded on this device; earlier races may not be included."
++msgstr "Tällä laitteella tallennettu edistyminen; aiemmat kisat eivät välttämättä sisälly lukuihin."
++
++#: game/ui/own_profile_page.gd
++msgid "Distance in completed races. Earlier races may not be included."
++msgstr "Ajettujen kisojen matka. Aiemmat kisat eivät välttämättä sisälly lukuun."
++
++#: game/ui/own_profile_page.gd
++msgid "Recorded verified races. Older archived races may not be included."
++msgstr "Tallennetut vahvistetut kisat. Vanhat arkistoidut kisat eivät välttämättä sisälly lukuihin."
++
++#: game/ui/own_profile_page.gd
++msgid "Completed races on this device"
++msgstr "Tällä laitteella ajetut kisat"
++
++#: game/ui/own_profile_page.gd
++msgid "Races"
++msgstr "Kisat"
+--- a/game/localization/sv.po
++++ b/game/localization/sv.po
+@@ -11475,3 +11475,111 @@
+ #: game/ui/daily_result_card.gd
+ msgid "Target"
+ msgstr "Mål"
++
++#: game/ui/own_profile_page.gd
++msgid "DRIVER PROFILE"
++msgstr "FÖRARPROFIL"
++
++#: game/ui/own_profile_page.gd
++msgid "YOUR CARS"
++msgstr "DINA BILAR"
++
++#: game/ui/own_profile_page.gd
++msgid "CREATED TRACKS"
++msgstr "SKAPADE BANOR"
++
++#: game/ui/own_profile_page.gd
++msgid "View collection"
++msgstr "Visa samling"
++
++#: game/ui/own_profile_page.gd
++msgid "Cars raced"
++msgstr "Bilar körda"
++
++#: game/ui/own_profile_page.gd
++msgid "km driven"
++msgstr "km körda"
++
++#: game/ui/own_profile_page.gd
++msgid "Your races"
++msgstr "Dina lopp"
++
++#: game/ui/own_profile_page.gd
++msgid "Verified races"
++msgstr "Verifierade lopp"
++
++#: game/ui/own_profile_page.gd
++msgid "Recorded on this device"
++msgstr "Registrerat på den här enheten"
++
++#: game/ui/own_profile_page.gd
++msgid "Verified race history"
++msgstr "Verifierad lopphistorik"
++
++#: game/ui/own_profile_page.gd
++msgid "%d / %d earned"
++msgstr "%d / %d uppnådda"
++
++#: game/ui/own_profile_page.gd
++msgid "Back to profile"
++msgstr "Tillbaka till profilen"
++
++#: game/ui/own_profile_page.gd
++msgid "Drafts"
++msgstr "Utkast"
++
++#: game/ui/own_profile_page.gd
++msgid "Published"
++msgstr "Publicerad"
++
++#: game/ui/own_profile_page.gd
++msgid "Current car"
++msgstr "Aktuell bil"
++
++#: game/ui/own_profile_page.gd
++msgid "Your next great circuit starts here."
++msgstr "Din nästa fantastiska bana börjar här."
++
++#: game/ui/own_profile_page.gd
++msgid "Completed races"
++msgstr "Slutförda lopp"
++
++#: game/ui/own_profile_page.gd
++msgid "Distance driven"
++msgstr "Körd sträcka"
++
++#: game/ui/own_profile_page.gd
++msgid "Tracks raced"
++msgstr "Banor körda"
++
++#: game/ui/own_profile_page.gd
++msgid "Edit profile"
++msgstr "Redigera profil"
++
++#: game/ui/own_profile_page.gd
++msgid "Create a track"
++msgstr "Skapa bana"
++
++#: game/ui/own_profile_page.gd
++msgid "%.1f km"
++msgstr "%.1f km"
++
++#: game/ui/own_profile_page.gd
++msgid "Progress recorded on this device; earlier races may not be included."
++msgstr "Framsteg på den här enheten; tidigare lopp kanske inte ingår."
++
++#: game/ui/own_profile_page.gd
++msgid "Distance in completed races. Earlier races may not be included."
++msgstr "Sträcka i slutförda lopp. Tidigare lopp kanske inte ingår."
++
++#: game/ui/own_profile_page.gd
++msgid "Recorded verified races. Older archived races may not be included."
++msgstr "Registrerade verifierade lopp. Äldre arkiverade lopp kanske inte ingår."
++
++#: game/ui/own_profile_page.gd
++msgid "Completed races on this device"
++msgstr "Slutförda lopp på den här enheten"
++
++#: game/ui/own_profile_page.gd
++msgid "Races"
++msgstr "Lopp"
+--- a/game/localization/nb.po
++++ b/game/localization/nb.po
+@@ -11475,3 +11475,111 @@
+ #: game/ui/daily_result_card.gd
+ msgid "Target"
+ msgstr "Mål"
++
++#: game/ui/own_profile_page.gd
++msgid "DRIVER PROFILE"
++msgstr "FØRERPROFIL"
++
++#: game/ui/own_profile_page.gd
++msgid "YOUR CARS"
++msgstr "BILENE DINE"
++
++#: game/ui/own_profile_page.gd
++msgid "CREATED TRACKS"
++msgstr "OPPRETTEDE BANER"
++
++#: game/ui/own_profile_page.gd
++msgid "View collection"
++msgstr "Vis samling"
++
++#: game/ui/own_profile_page.gd
++msgid "Cars raced"
++msgstr "Biler kjørt"
++
++#: game/ui/own_profile_page.gd
++msgid "km driven"
++msgstr "km kjørt"
++
++#: game/ui/own_profile_page.gd
++msgid "Your races"
++msgstr "Dine løp"
++
++#: game/ui/own_profile_page.gd
++msgid "Verified races"
++msgstr "Verifiserte løp"
++
++#: game/ui/own_profile_page.gd
++msgid "Recorded on this device"
++msgstr "Registrert på denne enheten"
++
++#: game/ui/own_profile_page.gd
++msgid "Verified race history"
++msgstr "Verifisert løpshistorikk"
++
++#: game/ui/own_profile_page.gd
++msgid "%d / %d earned"
++msgstr "%d / %d oppnådd"
++
++#: game/ui/own_profile_page.gd
++msgid "Back to profile"
++msgstr "Tilbake til profilen"
++
++#: game/ui/own_profile_page.gd
++msgid "Drafts"
++msgstr "Utkast"
++
++#: game/ui/own_profile_page.gd
++msgid "Published"
++msgstr "Publisert"
++
++#: game/ui/own_profile_page.gd
++msgid "Current car"
++msgstr "Nåværende bil"
++
++#: game/ui/own_profile_page.gd
++msgid "Your next great circuit starts here."
++msgstr "Din neste flotte bane starter her."
++
++#: game/ui/own_profile_page.gd
++msgid "Completed races"
++msgstr "Fullførte løp"
++
++#: game/ui/own_profile_page.gd
++msgid "Distance driven"
++msgstr "Kjørt distanse"
++
++#: game/ui/own_profile_page.gd
++msgid "Tracks raced"
++msgstr "Baner kjørt"
++
++#: game/ui/own_profile_page.gd
++msgid "Edit profile"
++msgstr "Rediger profil"
++
++#: game/ui/own_profile_page.gd
++msgid "Create a track"
++msgstr "Opprett bane"
++
++#: game/ui/own_profile_page.gd
++msgid "%.1f km"
++msgstr "%.1f km"
++
++#: game/ui/own_profile_page.gd
++msgid "Progress recorded on this device; earlier races may not be included."
++msgstr "Fremgang på denne enheten; tidligere løp er kanskje ikke inkludert."
++
++#: game/ui/own_profile_page.gd
++msgid "Distance in completed races. Earlier races may not be included."
++msgstr "Distanse i fullførte løp. Tidligere løp er kanskje ikke inkludert."
++
++#: game/ui/own_profile_page.gd
++msgid "Recorded verified races. Older archived races may not be included."
++msgstr "Registrerte verifiserte løp. Eldre arkiverte løp er kanskje ikke inkludert."
++
++#: game/ui/own_profile_page.gd
++msgid "Completed races on this device"
++msgstr "Fullførte løp på denne enheten"
++
++#: game/ui/own_profile_page.gd
++msgid "Races"
++msgstr "Løp"
+--- /dev/null
++++ b/game/persistence/driving_history.gd
+@@ -0,0 +1,29 @@
++extends RefCounted
++## Completed local races, committed atomically with their personal bests.
++## No retrospective allocation of old aggregate distance to individual cars.
++const MAX_TRACKS: int = 1000
++
++static func valid(value: Variant) -> bool:
++	if not value is Dictionary or value.size() != 3 or value.get("version") != 1: return false
++	if not AchievementProgress.whole(value.version): return false
++	if not value.get("cars") is Dictionary or value.cars.size() > VehicleCatalog.ALL_IDS.size(): return false
++	if not value.get("tracks") is Dictionary or value.tracks.size() > MAX_TRACKS: return false
++	for id: Variant in value.cars:
++		var car: Variant = value.cars[id]
++		if id not in VehicleCatalog.ALL_IDS or not car is Dictionary or car.size() != 2: return false
++		if not AchievementProgress.whole(car.get("races")) or not AchievementProgress.whole(car.get("distance_m")): return false
++	for id: Variant in value.tracks:
++		if not id is String or id.is_empty() or id.length() > 128 or not AchievementProgress.whole(value.tracks[id]): return false
++	return true
++
++static func record(records: LocalRecords, track: NativeTrack, vehicle: String) -> void:
++	if vehicle not in VehicleCatalog.ALL_IDS: return
++	var data: Dictionary = records.settings.get("driving_history",{"version":1,"cars":{},"tracks":{}}).duplicate(true)
++	var car: Dictionary = data.cars.get(vehicle,{"races":0,"distance_m":0})
++	AchievementProgress.bump(car,"races")
++	AchievementProgress.bump(car,"distance_m",maxi(0,roundi(track.route_length*RaceRules.LAPS)))
++	data.cars[vehicle] = car
++	var id: String = track.identity
++	if not id.is_empty() and id.length() <= 128 and (data.tracks.has(id) or data.tracks.size() < MAX_TRACKS):
++		AchievementProgress.bump(data.tracks,id)
++	records.settings.driving_history = data
+--- /dev/null
++++ b/game/persistence/driving_history.gd.uid
+@@ -0,0 +1 @@
++uid://bx3uxs1hfxagv
+--- /dev/null
++++ b/game/tests/test_profile_redesign.gd
+@@ -0,0 +1,224 @@
++extends "res://tests/test_own_profile_page.gd"
++## Isolated fixture names/counts; no owner saves, authentication or live reads.
++class ProfileHost extends Host:
++	func _load_saved_document(id: String) -> void: action = "draft:"+id
++
++class ProfileClient extends Client:
++	var requests: Array[String] = []
++	var fail_stats: bool = false
++	func request_api(path: String, _method: int, _payload: Dictionary, _key: String, _auth: bool) -> Dictionary:
++		requests.append(path)
++		if delayed: await reply
++		if path == "/ranking/me": return {"ok":true,"data":{"state":"published","world_rank":128,"points":2450,"results":[],"career":{}}}
++		if path == "/me/profile-statistics":
++			if fail_stats: return {"ok":false,"status":404}
++			var cars: Dictionary = {}
++			for i: int in range(VehicleCatalog.IDS.size()): cars[VehicleCatalog.IDS[i]] = {"races":(i+1)*12,"distance_m":(i+1)*12500}
++			return {"ok":true,"data":{"schema":1,"cars":cars,"totals":{"races":180,"distance_m":187500,"tracks":18,"cars":5}}}
++		if fail_tracks: return {"ok":false}
++		var items: Array = [{"creator_id":"someone-else","track_id":"other","name":"Other"}]
++		var names: Array = ["Forest Sprint","Over and Under","Midnight Loop","The Long Way Home"]
++		for i: int in range(4):
++			items.append({"creator_id":player.id,"track_id":"track"+str(i),"version_id":"version"+str(i),"name":names[i],"theme":["pine","desert","night_city","winter"][i],"points":[[0,0],[30,0],[50,15],[40,35],[5,40],[-10,10]],"rating_average":4.6,"verified_races":(i+1)*153,"state":"published"})
++		return {"ok":true,"data":{"items":items,"next_offset":null}}
++
++func capture(name: String) -> void:
++	var directory: String = OS.get_environment("BMT_PROFILE_CAPTURE")
++	if DisplayServer.get_name() == "headless" or directory.is_empty(): return
++	await RenderingServer.frame_post_draw
++	check(root.get_texture().get_image().save_png(directory.path_join(name+".png")) == OK,"capture "+name)
++
++func bounds(control: Control) -> void:
++	var area: Rect2 = control.get_global_rect().grow(1)
++	for item: Node in control.find_children("*","Label",true,false):
++		if not item.is_visible_in_tree(): continue
++		check(area.encloses(item.get_global_rect()),"text inside "+str(control.name)+" / "+str(item.name))
++
++func tap(control: Control) -> void:
++	var event := InputEventMouseButton.new()
++	event.button_index = MOUSE_BUTTON_LEFT
++	event.position = control.get_global_rect().get_center()
++	event.pressed = true
++	root.push_input(event,true)
++	event = event.duplicate()
++	event.pressed = false
++	root.push_input(event,true)
++	await settle()
++
++func run() -> void:
++	root.content_scale_size = Vector2i.ZERO
++	root.size = Vector2i(1280,720)
++	var folder: String = "user://profile_redesign_"+TrackLibrary.unique_id()
++	DirAccess.make_dir_recursive_absolute(folder)
++	var host := ProfileHost.new()
++	root.add_child(host)
++	host.library = TrackLibrary.new(folder.path_join("tracks"))
++	var doc: Dictionary = TrackDocument.create_default()
++	doc.name = "My first circuit"
++	check(host.library.save_document(doc) == OK,"isolated draft saved")
++	var client := ProfileClient.new()
++	host.add_child(client)
++	var account := Account.new()
++	account.client = client
++	host.online = account
++	host.add_child(account)
++	var cloud := Cloud.new()
++	host.cloud = cloud
++	host.add_child(cloud)
++	host.root_ui = host
++	host.records = LocalRecords.new(folder.path_join("records.json"))
++	host.records.settings.achievements = AchievementProgress.empty()
++	host.records.settings.achievements.metrics = {"races":42,"distance_m":186000,"tracks":18,"clean":12}
++	host.records.settings.achievements.unlocked = {"races/1":1,"distance/1":1,"tracks/1":1}
++	host.records.settings.achievements.featured = ["races","distance","tracks"]
++	var awards: Node = preload("res://backend/achievements_client.gd").new()
++	awards.records = host.records
++	host.achievements = awards
++	host.add_child(awards)
++	var page: Control = make_page(host)
++	await settle()
++	check(page.fleet.get_child_count() == 5,"all current cars appear together")
++	check(page.published.size() == 4,"more than three created tracks remain visible")
++	check(page.find_child("ProfileTrack_other",true,false) == null,"exact owner filtering")
++	check(page.car_values.electric.races.text == "48" and page.car_values.electric.distance.text == "50.0","remote per-car history shown")
++	check(page.find_child("ProfileTrack_track0",true,false).find_child("TrackRaceCount",true,false).text == "153","actual verified race count")
++	for resolution: Vector2i in [Vector2i(1720,900),Vector2i(1280,720),Vector2i(960,540),Vector2i(400,720)]:
++		root.size = resolution
++		await settle()
++		page._layout()
++		await settle()
++		check(page.size.x <= root.size.x+1,"profile fits "+str(resolution))
++		check(page.fleet.get_global_rect().end.x <= root.size.x+1,"fleet fits "+str(resolution))
++		for card: Control in page.fleet.get_children(): bounds(card)
++		for card: Control in page.badge_grid.get_children(): bounds(card)
++		for card: Control in page.track_grid.get_children(): bounds(card)
++		await capture("profile-%dx%d" % [resolution.x,resolution.y])
++	root.size = Vector2i(1280,720)
++	await settle()
++	page.scroll.scroll_vertical = 320
++	await settle()
++	await tap(page.find_child("ProfileTrack_track0",true,false).find_child("TrackRaceCount",true,false))
++	check(host.action == "track0","race count area activates its exact track with mouse input")
++	await capture("profile-records")
++	page.scroll.scroll_vertical = 0
++	await settle()
++	page._select_tracks("drafts")
++	await settle()
++	check(page.drafts.size() == 1,"local drafts loaded by cancellable scanner")
++	check(page.track_grid.get_child_count() == 1,"draft tab shows saved creation")
++	page.track_grid.get_child(0).pressed.emit()
++	check(host.action == "draft:"+str(doc.id),"draft opens exact editor document")
++	await capture("profile-drafts")
++	page._select_tracks("published")
++	page.find_child("ProfileBadge_races",true,false).pressed.emit()
++	await settle()
++	check(page.collection != null and not page.page_body.visible,"achievement opens within profile")
++	check(page.collection.selected == "races","exact medal details open")
++	await capture("achievement-detail")
++	page.collection._close_sheet()
++	await settle()
++	for card: Control in page.collection.grid.get_children():
++		bounds(card)
++		var title: Label = card.get_child(0).get_child(1).get_child(0)
++		check(title.size.y >= 26 and not title.text.is_empty(),"every achievement has a visible title")
++	await capture("achievement-collection")
++	page.collection.find_child("AchievementClose",true,false).pressed.emit()
++	await settle()
++	check(page.page_body.visible and page.collection == null,"collection returns to same profile")
++	client.player.display_name = "A long driver name that must stay inside the profile header"
++	page.queue_free()
++	await settle()
++	TranslationServer.set_locale("de")
++	page = make_page(host)
++	await settle()
++	check(page.size.x <= root.get_visible_rect().size.x+1,"German profile stays inside window")
++	for card: Control in page.fleet.get_children(): bounds(card)
++	await capture("profile-de")
++	TranslationServer.set_locale("en")
++	client.fail_stats = true
++	client.fail_tracks = true
++	page.queue_free()
++	await settle()
++	page = make_page(host)
++	await settle()
++	check(page.track_action.text == "Retry","failure keeps retry available")
++	check(page.car_values.compact.races.text == "—","missing historical counts are not invented")
++	client.fail_tracks = false
++	page.track_action.pressed.emit()
++	await settle()
++	check(page.published.size() == 4,"retry retains exact publications")
++	page.queue_free()
++	await settle()
++	client.delayed = true
++	page = make_page(host)
++	await settle()
++	client.player.id = "different"
++	client.identity_changed.emit()
++	client.reply.emit()
++	await settle()
++	check(not page.visible and page.published.is_empty() and page.remote_cars.is_empty(),"late replies cannot cross accounts")
++	page.queue_free()
++	await settle()
++	_test_history(folder)
++	host.queue_free()
++	await settle()
++	await _actual_app(folder)
++	print("Profile redesign: %d checks, %d failures" % [checks,failures])
++	quit(1 if failures else 0)
++
++func _test_history(folder: String) -> void:
++	var store := LocalRecords.new(folder.path_join("history.json"))
++	var track: NativeTrack = TrackCompiler.compile(TrackDocument.create_default())
++	var laps: Array[float] = [10.0,10.0,10.0,10.0,10.0]
++	check(store.record(track,VehicleCatalog.config("electric"),50.0,laps) == OK,"history commits with result")
++	var saved := LocalRecords.new(store.path)
++	saved.load_records()
++	check(saved.settings.driving_history.cars.electric.races == 1,"per-car races survive restart")
++	check(saved.settings.driving_history.cars.electric.distance_m == roundi(track.route_length*5),"distance uses completed course length")
++	check(saved.settings.driving_history.tracks[track.identity] == 1,"per-track race count survives restart")
++	check(store.record(track,VehicleCatalog.config("electric"),51.0,laps) != OK,"invalid result is rejected")
++	check(store.settings.driving_history.cars.electric.races == 1,"rejected result cannot count")
++	check(store.record(track,VehicleCatalog.config("kart"),50.0,laps) == OK,"second car records separately")
++	store.path = folder.path_join("missing/history.json")
++	check(store.record(track,VehicleCatalog.config("electric"),50.0,laps) != OK,"failed persistence rejects history")
++	check(store.settings.driving_history.cars.electric.races == 1,"failed save rolls back race counter")
++	var invalid: Dictionary = store.settings.driving_history.duplicate(true)
++	invalid.cars.electric.races = -1
++	check(not preload("res://persistence/driving_history.gd").valid(invalid),"negative counters rejected")
++
++func _actual_app(folder: String) -> void:
++	OS.set_environment("BMT_API_URL","")
++	root.size = Vector2i(1280,720)
++	var app: Node = (load("res://core/app.tscn") as PackedScene).instantiate()
++	app.records = LocalRecords.new(folder.path_join("app-records.json"))
++	app.records.settings.achievements = AchievementProgress.empty()
++	app.records.settings.achievements.metrics = {"races":180,"distance_m":187500,"tracks":18,"cars":5}
++	app.records.settings.achievements.unlocked = {"races/1":1,"races/2":1,"distance/1":1,"tracks/1":1}
++	app.records.settings.achievements.featured = ["races","distance","tracks"]
++	app.records.settings.driving_history = {"version":1,"cars":{},"tracks":{}}
++	for i: int in range(VehicleCatalog.IDS.size()):
++		app.records.settings.driving_history.cars[VehicleCatalog.IDS[i]] = {"races":(i+1)*12,"distance_m":(i+1)*12500}
++	check(app.records.save_records() == OK,"save isolated populated app fixture")
++	app.library = TrackLibrary.new(folder.path_join("app-tracks"))
++	var doc: Dictionary = TrackDocument.create_default()
++	doc.name = "My first circuit"
++	check(app.library.save_document(doc) == OK,"save isolated app creation")
++	app.cloud_root_override = folder.path_join("cloud")
++	root.add_child(app)
++	var deadline: int = Time.get_ticks_msec()+30000
++	while not app.startup_complete and Time.get_ticks_msec() < deadline: await process_frame
++	check(app.startup_complete,"actual isolated app starts")
++	if app.startup_complete:
++		app._show_screen("profile")
++		await settle()
++		await capture("actual-app-profile")
++		app.root_ui.find_child("ProfileChooseAchievements",true,false).pressed.emit()
++		await settle()
++		check(app.screen == "profile" and app.root_ui.find_child("AchievementsMenu",true,false) != null,"actual app collection stays in profile")
++		await capture("actual-app-achievements")
++		app.root_ui.find_child("AchievementClose",true,false).pressed.emit()
++		await settle()
++		app.root_ui.find_child("ManageAccount",true,false).pressed.emit()
++		check(app.screen == "account","edit profile preserves account navigation")
++	app.queue_free()
++	await settle()
+--- /dev/null
++++ b/game/tests/test_profile_redesign.gd.uid
+@@ -0,0 +1 @@
++uid://cju4jf71s7hol
+--- /dev/null
++++ b/backend/bmt_backend/profile_statistics.py
+@@ -0,0 +1,64 @@
++"""Private read models for recorded, verified ordinary races; no score writes."""
++from math import isfinite
++
++from sqlalchemy import func, select
++
++from .identity_models import Player
++from .track_models import Board, Run, TrackVersion
++
++CARS = ("compact", "kart", "forklift", "electric", "hovercraft")
++
++
++def ordinary(manifest):
++    return (not manifest.get("purpose") and not manifest.get("test_population")
++            and manifest.get("laps", 5) == 5)
++
++
++def car_history(session, player_id):
++    # Group in SQL through the existing player/board indexes. Neither replay
++    # blobs nor one Python object per race is loaded into the API process.
++    counts = (select(Run.board_id, func.count().label("races"))
++              .where(Run.player_id == player_id, Run.status == "verified")
++              .group_by(Run.board_id).subquery())
++    rows = session.execute(select(Board.vehicle_id, Board.manifest, TrackVersion.track_id,
++                                  TrackVersion.manifest, counts.c.races)
++                           .join(counts, counts.c.board_id == Board.id)
++                           .join(TrackVersion, TrackVersion.id == Board.version_id))
++    cars = {car: {"races": 0, "distance_m": 0} for car in CARS}
++    tracks = set()
++    for vehicle, board, track, version, races in rows:
++        if vehicle not in cars or not ordinary(board):
++            continue
++        item = cars[vehicle]
++        tracks.add(track)
++        item["races"] += races
++        length = version.get("route_length")
++        if type(length) not in (float, int) or not isfinite(length) or not 0 < length <= 100000:
++            item["distance_m"] = None
++        elif item["distance_m"] is not None:
++            item["distance_m"] += round(length * 5) * races
++    totals = {"races": sum(item["races"] for item in cars.values()),
++              "distance_m": (sum(item["distance_m"] for item in cars.values())
++                             if all(item["distance_m"] is not None for item in cars.values()) else None),
++              "tracks": len(tracks), "cars": sum(item["races"] > 0 for item in cars.values())}
++    return {"schema": 1, "cars": cars, "totals": totals,
++            "scope": "recorded_verified_ordinary_races"}
++
++
++def track_races(session, version_ids):
++    """Actual finishes, including repeat drivers, on these published versions."""
++    result = {identity: 0 for identity in version_ids}
++    if not result:
++        return result
++    counts = (select(Run.board_id, func.count().label("races"))
++                           .join(Board, Run.board_id == Board.id)
++                           .join(Player, Player.id == Run.player_id)
++                           .where(Board.version_id.in_(version_ids), Run.status == "verified",
++                                  Player.disabled.is_(False), Player.is_test_driver.is_(False))
++                           .group_by(Run.board_id).subquery())
++    rows = session.execute(select(Board.version_id, Board.manifest, counts.c.races)
++                           .join(counts, counts.c.board_id == Board.id))
++    for version, manifest, count in rows:
++        if ordinary(manifest):
++            result[version] += count
++    return result
+--- /dev/null
++++ b/backend/tests/test_profile_statistics.py
+@@ -0,0 +1,90 @@
++"""Private profile counts distinguish repeated finishes, drivers and failures."""
++# ruff: noqa: F811 -- pytest fixtures are imported for discovery.
++from sqlalchemy import event, select
++from test_domains import domain, headers, publish, race, upload  # noqa: F401
++
++from bmt_backend.identity_models import Player
++from bmt_backend.profile_statistics import car_history, track_races
++from bmt_backend.track_models import Board, Run, TrackVersion
++
++
++def course(d):
++    version = upload(d)
++    race(d, version, frames=100)
++    publish(d, version)
++    return version
++
++
++def test_profile_is_private_and_counts_races_not_personal_bests(domain):
++    d = domain
++    version = course(d)
++    race(d, version, "Alice", frames=50)
++    race(d, version, "Alice", frames=40)
++    race(d, version, "Bob", frames=30)
++    assert d.client.get("/v1/me/profile-statistics").status_code == 401
++    response = d.client.get("/v1/me/profile-statistics", headers=headers(d, "Alice"))
++    assert response.status_code == 200, response.text
++    assert response.headers["cache-control"] == "private, no-store"
++    assert response.json()["cars"]["compact"] == {"races": 2, "distance_m": 2200}
++    assert response.json()["cars"]["electric"] == {"races": 0, "distance_m": 0}
++    bob = d.client.get("/v1/me/profile-statistics", headers=headers(d, "Bob"))
++    assert bob.json()["cars"]["compact"]["races"] == 1
++    listed = d.client.get("/v1/me/tracks?heads=true&profile_stats=true", headers=headers(d))
++    assert listed.status_code == 200, listed.text
++    # The legacy fixture's creator qualifying run is itself an ordinary
++    # five-lap verified run, so it also belongs in the published-version count.
++    assert listed.json()["items"][0]["verified_races"] == 4
++
++
++def test_profile_reads_are_aggregated_and_do_not_mutate(domain):
++    d = domain
++    version = course(d)
++    race(d, version, "Alice", frames=50)
++    statements = []
++
++    def record(_conn, _cursor, statement, _parameters, _context, _many):
++        statements.append(statement.lower())
++
++    event.listen(d.app.state.engine, "before_cursor_execute", record)
++    try:
++        with d.factory() as session:
++            assert car_history(session, d.players["Alice"])["cars"]["compact"]["races"] == 1
++            assert track_races(session, [version["version_id"]])[version["version_id"]] == 2
++    finally:
++        event.remove(d.app.state.engine, "before_cursor_execute", record)
++    assert len(statements) == 2
++    assert all(sql.lstrip().startswith("select") and "group by" in sql for sql in statements)
++
++
++def test_missing_distance_is_unknown_and_failed_runs_do_not_count(domain):
++    d = domain
++    version = course(d)
++    race(d, version, "Alice", frames=50)
++    with d.factory() as session:
++        row = session.get(TrackVersion, version["version_id"])
++        row.manifest = {key: value for key, value in row.manifest.items() if key != "route_length"}
++        session.commit()
++        assert car_history(session, d.players["Alice"])["cars"]["compact"] == {"races": 1, "distance_m": None}
++        for run in session.scalars(select(Run).where(Run.player_id == d.players["Alice"])):
++            run.status = "rejected"
++        session.commit()
++        assert car_history(session, d.players["Alice"])["cars"]["compact"]["races"] == 0
++        assert track_races(session, [version["version_id"]])[version["version_id"]] == 1
++
++
++def test_artificial_disabled_and_nonordinary_runs_are_not_public_plays(domain):
++    d = domain
++    version = course(d)
++    race(d, version, "Alice", frames=50)
++    race(d, version, "Bob", frames=40)
++    with d.factory() as session:
++        session.get(Player, d.players["Bob"]).is_test_driver = True
++        session.get(Player, d.players["Creator"]).disabled = True
++        session.commit()
++        assert track_races(session, [version["version_id"]])[version["version_id"]] == 1
++        boards = session.scalars(select(Board).where(Board.version_id == version["version_id"])).all()
++        for board in boards:
++            board.manifest = {**board.manifest, "purpose": "creator_test"}
++        session.commit()
++        assert track_races(session, [version["version_id"]])[version["version_id"]] == 0
++        assert car_history(session, d.players["Alice"])["totals"]["races"] == 0
+--- /dev/null
++++ b/scripts/translations/profile_redesign.tsv
+@@ -0,0 +1,28 @@
++# en|fr|es|de|pt_BR|ja|ko|nl|it|fi|sv|nb
++Races|Courses|Carreras|Rennen|Corridas|レース|레이스|Races|Gare|Kisat|Lopp|Løp
++DRIVER PROFILE|PROFIL PILOTE|PERFIL DE PILOTO|FAHRERPROFIL|PERFIL DO PILOTO|ドライバープロフィール|드라이버 프로필|COUREURSPROFIEL|PROFILO PILOTA|KULJETTAJAPROFIILI|FÖRARPROFIL|FØRERPROFIL
++YOUR CARS|VOS VOITURES|TUS COCHES|DEINE AUTOS|SEUS CARROS|所有車|내 차량|JE AUTO’S|LE TUE AUTO|AUTOSI|DINA BILAR|BILENE DINE
++CREATED TRACKS|CIRCUITS CRÉÉS|CIRCUITOS CREADOS|ERSTELLTE STRECKEN|PISTAS CRIADAS|作成したコース|제작한 트랙|GEMAAKTE CIRCUITS|CIRCUITI CREATI|LUODUT RADAT|SKAPADE BANOR|OPPRETTEDE BANER
++View collection|Voir la collection|Ver colección|Sammlung ansehen|Ver coleção|コレクションを見る|컬렉션 보기|Collectie bekijken|Vedi collezione|Näytä kokoelma|Visa samling|Vis samling
++Cars raced|Voitures pilotées|Coches utilizados|Gefahrene Autos|Carros utilizados|レースで使った車|레이스에 사용한 차량|Gereden auto’s|Auto utilizzate|Kisoissa käytetyt autot|Bilar körda|Biler kjørt
++km driven|km parcourus|km recorridos|km gefahren|km percorridos|走行距離（km）|주행 거리(km)|km gereden|km percorsi|ajetut km|km körda|km kjørt
++Your races|Vos courses|Tus carreras|Deine Rennen|Suas corridas|自分のレース|내 레이스|Jouw races|Le tue gare|Omat kisat|Dina lopp|Dine løp
++Verified races|Courses vérifiées|Carreras verificadas|Verifizierte Rennen|Corridas verificadas|検証済みレース|검증된 레이스|Geverifieerde races|Gare verificate|Vahvistetut kisat|Verifierade lopp|Verifiserte løp
++Recorded on this device|Enregistré sur cet appareil|Registrado en este dispositivo|Auf diesem Gerät erfasst|Registrado neste dispositivo|この端末の記録|이 기기의 기록|Op dit apparaat vastgelegd|Registrato su questo dispositivo|Tallennettu tällä laitteella|Registrerat på den här enheten|Registrert på denne enheten
++Verified race history|Historique des courses vérifiées|Historial de carreras verificadas|Verifizierter Rennverlauf|Histórico de corridas verificadas|検証済みレースの履歴|검증된 레이스 기록|Geverifieerde racegeschiedenis|Cronologia gare verificate|Vahvistettu kisahistoria|Verifierad lopphistorik|Verifisert løpshistorikk
++%d / %d earned|%d / %d obtenus|%d / %d conseguidos|%d / %d erhalten|%d / %d conquistados|%d / %d 獲得|%d / %d 획득|%d / %d behaald|%d / %d ottenuti|%d / %d saavutettu|%d / %d uppnådda|%d / %d oppnådd
++Back to profile|Retour au profil|Volver al perfil|Zurück zum Profil|Voltar ao perfil|プロフィールに戻る|프로필로 돌아가기|Terug naar profiel|Torna al profilo|Takaisin profiiliin|Tillbaka till profilen|Tilbake til profilen
++Drafts|Brouillons|Borradores|Entwürfe|Rascunhos|下書き|초안|Concepten|Bozze|Luonnokset|Utkast|Utkast
++Published|Publié|Publicado|Veröffentlicht|Publicado|公開済み|게시됨|Gepubliceerd|Pubblicato|Julkaistu|Publicerad|Publisert
++Current car|Voiture actuelle|Coche actual|Aktuelles Auto|Carro atual|現在の車|현재 차량|Huidige auto|Auto attuale|Nykyinen auto|Aktuell bil|Nåværende bil
++Your next great circuit starts here.|Votre prochain grand circuit commence ici.|Tu próximo gran circuito empieza aquí.|Deine nächste großartige Strecke beginnt hier.|Sua próxima grande pista começa aqui.|次の素晴らしいコースをここから。|멋진 다음 트랙을 여기서 시작하세요.|Je volgende geweldige circuit begint hier.|Il tuo prossimo grande circuito inizia qui.|Seuraava upea ratasi alkaa tästä.|Din nästa fantastiska bana börjar här.|Din neste flotte bane starter her.
++Completed races|Courses terminées|Carreras completadas|Abgeschlossene Rennen|Corridas concluídas|完走したレース|완주한 레이스|Voltooide races|Gare completate|Ajetut kisat|Slutförda lopp|Fullførte løp
++Distance driven|Distance parcourue|Distancia recorrida|Gefahrene Strecke|Distância percorrida|走行距離|주행 거리|Gereden afstand|Distanza percorsa|Ajettu matka|Körd sträcka|Kjørt distanse
++Tracks raced|Circuits parcourus|Circuitos disputados|Gefahrene Strecken|Pistas disputadas|走行したコース|주행한 트랙|Gereden circuits|Circuiti disputati|Ajetut radat|Banor körda|Baner kjørt
++Edit profile|Modifier le profil|Editar perfil|Profil bearbeiten|Editar perfil|プロフィール編集|프로필 편집|Profiel bewerken|Modifica profilo|Muokkaa profiilia|Redigera profil|Rediger profil
++Create a track|Créer un circuit|Crear circuito|Strecke erstellen|Criar pista|コースを作成|트랙 만들기|Circuit maken|Crea circuito|Luo rata|Skapa bana|Opprett bane
++%.1f km|%.1f km|%.1f km|%.1f km|%.1f km|%.1f km|%.1f km|%.1f km|%.1f km|%.1f km|%.1f km|%.1f km
++Progress recorded on this device; earlier races may not be included.|Progression enregistrée sur cet appareil ; les anciennes courses peuvent manquer.|Progreso registrado en este dispositivo; puede que falten carreras anteriores.|Auf diesem Gerät erfasster Fortschritt; frühere Rennen fehlen möglicherweise.|Progresso registrado neste dispositivo; corridas anteriores podem não estar incluídas.|この端末で記録した進捗です。過去のレースが含まれない場合があります。|이 기기에 기록된 진행 상황입니다. 이전 레이스가 포함되지 않을 수 있습니다.|Voortgang op dit apparaat; eerdere races ontbreken mogelijk.|Progressi registrati su questo dispositivo; le gare precedenti potrebbero non essere incluse.|Tällä laitteella tallennettu edistyminen; aiemmat kisat eivät välttämättä sisälly lukuihin.|Framsteg på den här enheten; tidigare lopp kanske inte ingår.|Fremgang på denne enheten; tidligere løp er kanskje ikke inkludert.
++Distance in completed races. Earlier races may not be included.|Distance des courses terminées. Les anciennes courses peuvent manquer.|Distancia en carreras completadas. Puede que falten carreras anteriores.|Strecke abgeschlossener Rennen. Frühere Rennen fehlen möglicherweise.|Distância em corridas concluídas. Corridas anteriores podem não estar incluídas.|完走したレースの距離です。過去のレースが含まれない場合があります。|완주한 레이스의 거리입니다. 이전 레이스가 포함되지 않을 수 있습니다.|Afstand in voltooide races. Eerdere races ontbreken mogelijk.|Distanza nelle gare completate. Le gare precedenti potrebbero non essere incluse.|Ajettujen kisojen matka. Aiemmat kisat eivät välttämättä sisälly lukuun.|Sträcka i slutförda lopp. Tidigare lopp kanske inte ingår.|Distanse i fullførte løp. Tidligere løp er kanskje ikke inkludert.
++Recorded verified races. Older archived races may not be included.|Courses vérifiées enregistrées. Les anciennes courses archivées peuvent manquer.|Carreras verificadas registradas. Puede que falten carreras antiguas archivadas.|Erfasste verifizierte Rennen. Ältere archivierte Rennen fehlen möglicherweise.|Corridas verificadas registradas. Corridas antigas arquivadas podem não estar incluídas.|記録済みの検証済みレースです。過去のアーカイブ済みレースが含まれない場合があります。|기록된 검증 레이스입니다. 오래된 보관 레이스가 포함되지 않을 수 있습니다.|Vastgelegde geverifieerde races. Oudere gearchiveerde races ontbreken mogelijk.|Gare verificate registrate. Le vecchie gare archiviate potrebbero non essere incluse.|Tallennetut vahvistetut kisat. Vanhat arkistoidut kisat eivät välttämättä sisälly lukuihin.|Registrerade verifierade lopp. Äldre arkiverade lopp kanske inte ingår.|Registrerte verifiserte løp. Eldre arkiverte løp er kanskje ikke inkludert.
++Completed races on this device|Courses terminées sur cet appareil|Carreras completadas en este dispositivo|Abgeschlossene Rennen auf diesem Gerät|Corridas concluídas neste dispositivo|この端末で完走したレース|이 기기에서 완주한 레이스|Voltooide races op dit apparaat|Gare completate su questo dispositivo|Tällä laitteella ajetut kisat|Slutförda lopp på den här enheten|Fullførte løp på denne enheten
+--- /dev/null
++++ b/docs/PROFILE_REDESIGN_2026_11_06.md
+@@ -0,0 +1,74 @@
++# Driver profile redesign — 6 November 2026
++
++The profile now uses the existing menu palette, Barlow typography and native car photographs. A compact identity and racing summary lead into all five cars, with kilometres and race counts on each card. Created tracks and achievements share the next row; World Ranking and uploads are secondary. These are implemented Godot views, not image mockups.
++
++## Requirements and implementation
++
++| ID | Delivered behavior | Main sources |
++| --- | --- | --- |
++| PRF01 | Compact driver identity, four statistics, five simultaneous car cards in ordinary landscape widths, responsive two/three-column fleet on narrower layouts | `game/ui/own_profile_page.gd` |
++| PRF02 | Exact prepared Garage pictures where available; existing equipped-header cache or model silhouette for custom misses; no new 3D capture or Garage opening | `game/ui/own_profile_page.gd` |
++| PRF03 | Per-car completed-race counts and course kilometres persist in the same atomic transaction as local results; failed saves roll back both; existing saves remain readable | `game/persistence/driving_history.gd`, `local_records.gd` |
++| PRF04 | Own published tracks use authenticated owner lookup and explicit pagination instead of a three-track name-search preview. Drafts use the existing cancellable worker and open the exact editor document. Route, biome, rating and race count are visible | `game/ui/own_profile_page.gd`, `backend/bmt_backend/tracks.py` |
++| PRF05 | Achievement cards inherit wrapped content height, titles have a visible line, Prestige uses gold artwork, and deferred focus checks node lifetime. Collection/details open inside the profile and return to the same overview | `game/ui/achievements_menu.gd`, `achievement_badge.gd`, `own_profile_page.gd` |
++| PRF06 | Private per-car verified history and published-version verified finish counts are grouped in SQL. Repeat finishes count separately from distinct drivers; rejected, artificial public, disabled public and creator-test runs are excluded as applicable | `backend/bmt_backend/profile_statistics.py`, `tracks.py` |
++| PRF07 | 27 profile labels/explanations authored in all 12 supported locales; existing catalogue entries preserved | `scripts/translations/profile_redesign.tsv`, `game/localization/*.po` |
++
++The new local `settings.driving_history` is optional and strictly bounded to the known vehicle identities and 1,000 track counters. It does not enter physics, score authority, rewards or uploaded proofs. Counts measure completed five-lap courses, not odometer telemetry or abandoned laps. Canonical behavior and existing achievement thresholds are unchanged.
++
++The private `GET /v1/me/profile-statistics` returns current-car history and matching overview totals. `GET /v1/me/tracks?heads=true&profile_stats=true` adds `verified_races` for each returned version. Both are reads. There is no schema migration, publication, rescore, server write from profile viewing, or new external dependency.
++
++## Native views
++
++All identities/counts in these captures are isolated fixtures, not the owner's data.
++
++- [Actual App with its normal menu shell and a populated local fixture](evidence/profile-redesign-2026-11-06/captures/actual-app-profile.png).
++- [Complete overview at 1720 × 900](evidence/profile-redesign-2026-11-06/captures/profile-1720x900.png).
++- [Created tracks, race counts and medals](evidence/profile-redesign-2026-11-06/captures/profile-records.png).
++- [Achievement collection with visible titles](evidence/profile-redesign-2026-11-06/captures/achievement-collection.png) and [medal details](evidence/profile-redesign-2026-11-06/captures/achievement-detail.png).
++- [400px layout](evidence/profile-redesign-2026-11-06/captures/profile-400x720.png), [German/long name](evidence/profile-redesign-2026-11-06/captures/profile-de.png), and [desktop Mobile captures](evidence/profile-redesign-2026-11-06/captures/mobile).
++
++## Validation performed
++
++Pinned engine: `4.7.2.stable.official.ed1daf0bf`. All launches use an isolated `APPDATA` below `build/profile-redesign/user`, an empty `BMT_API_URL`, fixture records/libraries and the crash-dialog wrapper. No owner saves or running owner processes were changed.
++
++| Check | Actual result |
++| --- | --- |
++| `test_profile_redesign.gd`, headless | 379 checks, 0 failures |
++| Same, native Compatibility | 390 checks, 0 failures; 11 captures |
++| Same, desktop Mobile | 390 checks, 0 failures; 11 captures |
++| Same, later verbose desktop Mobile without captures | Printed 379 checks, 0 failures, then stalled during shutdown; identified and stopped only the owned test processes |
++| Retained `test_own_profile_page.gd` | 23 checks, 0 failures |
++| Retained `test_records.gd` | 54 checks, 0 failures |
++| Retained `test_achievement_detail.gd` | 758 checks, 0 failures |
++| Retained `test_achievement_detail_layout.gd` | 1,220 checks, 0 failures |
++| Broad `test_achievements.gd` | 424 checks, 3 Garage wash/customisation failures; exact same three failures in task-before UI/persistence control |
++| `tests/test_profile_statistics.py`, SQLite | 4 passed, 4 PostgreSQL cases deselected |
++| Same PostgreSQL cases | 4 setup errors: configured local database connection timed out; no PostgreSQL validation claimed |
++| Scoped Ruff | Passed |
++| Scoped translations | 324 message/placeholder checks passed; German native view inspected |
++| Pinned editor import / `scripts/dev.ps1 -Action CheckScript -ScriptPath res://ui/own_profile_page.gd` | Completed; no profile parser failure |
++| Task source whitespace / task-only patch | See `evidence/profile-redesign-2026-11-06/checkpoint.json` |
++
++Representative commands actually run from the repository root:
++
++```powershell
++$env:APPDATA = (Resolve-Path 'build/profile-redesign/user').Path
++$env:BMT_API_URL = ''
++python scripts/run_no_crash_dialog.py -- 'C:/apps/Godot 4.7.2/Godot_v4.7.2-stable_win64_console.exe' --headless --path game --script res://tests/test_profile_redesign.gd
++python scripts/run_no_crash_dialog.py -- 'C:/apps/Godot 4.7.2/Godot_v4.7.2-stable_win64_console.exe' --path game --rendering-method gl_compatibility --script res://tests/test_profile_redesign.gd
++python scripts/run_no_crash_dialog.py -- 'C:/apps/Godot 4.7.2/Godot_v4.7.2-stable_win64_console.exe' --path game --rendering-method mobile --script res://tests/test_profile_redesign.gd
++powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1 -Action CheckScript -ScriptPath res://ui/own_profile_page.gd
++```
++
++From `backend/`: `../.tools/backend-secure-venv/Scripts/python.exe -m pytest tests/test_profile_statistics.py -q -k 'not postgres'`, then the PostgreSQL selection; scoped Ruff checked `profile_statistics.py`, `tracks.py` and the new test. Raw retained logs are under the evidence directory. The before-control project copies UI/persistence and uses workspace junctions for unchanged resources; production sources were never swapped for the control.
++
++## Initial findings and limits
++
++The first responsive probe incorrectly compared physical window pixels with the project's 1280px logical canvas; the fixture now explicitly sets its content scale before measuring. A real wrapped status-label width issue, collapsed achievement titles, a clickable-stat child intercept, and a deferred focus-on-removed-control were corrected. The old records assertion assumed only `raced_tracks` could exist; it now compares the entire committed preference snapshot, including new history, preserving the rollback invariant. Initial backend assertions omitted the legacy fixture's ordinary creator qualifying race; the fixture contract was inspected and assertions corrected. No failing gameplay invariant was relaxed.
++
++The Windows root-certificate-store diagnostic appears in existing and new engine launches. The accepted desktop Mobile run exited after reporting a single ObjectDB instance. A supplementary verbose run printed all 379 passing assertions but stalled before shutdown completed; it does not establish a clean teardown. After sandbox process inspection was denied, approved elevated read-only inspection identified only this task's console PID 37024 and child PID 34356 by the exact test command; those owned processes were stopped. No owner process was stopped. Verbose Mobile also reports RGB8-to-RGBA8 hardware conversion. The broader localization checker reports 6,943 existing/inventory errors; only this task's 324 authored entries are claimed validated. PostgreSQL's failed setup trace included a local test connection string; that log was redacted and is not included in the source patch.
++
++**Historical completeness:** server history comes from retained verified ordinary runs. Old archived attempts and Daily flying-lap results are not reconstructed or relabeled as lifetime totals. The UI identifies verified/local recorded history and provides its historical limitation in tooltips. Local per-car counters start with this update; a missing old counter is a dash, not a fabricated zero. A genuinely new driver shows zero. Missing custom images retain the actual model silhouette until the existing image service has the exact saved appearance.
++
++**Remaining acceptance:** matching backend rollout is needed for server per-car history and published race counts; older servers keep local values and show unavailable counts. Client reload/rebuild, owner appearance review, and physical tablet touch/appearance checks remain. No device attachment query or device test, APK/export, production deployment, real authentication, purchase, publication, owner-save modification or main Git index write was performed. Existing concurrent work and generated build identity changes are excluded from the task-only checkpoint. This is not a certification of AAA quality or device performance.

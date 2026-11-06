@@ -1,12 +1,18 @@
 extends Node
-## One cooperative capture on an equipped-appearance miss; menu visits read PNGs.
+## One cooperative capture on an equipped-appearance miss, after the first menu.
 signal changed(vehicle: String)
+signal capture_started(vehicle: String)
+signal capture_finished
 const Icons = preload("res://ui/header_car_icons.gd")
 const Work = preload("res://editor/work_job.gd")
+const Graphics = preload("res://rendering/graphics_preparation.gd")
 const SIZE := Vector2i(176,112)
 const FILE_LIMIT: int = 14
 var records: LocalRecords
 var allowed: Callable
+# App admits captures in settled idle menus or the ready selected Garage.
+# Standalone tools retain their explicitly supplied `allowed` capture policy.
+var capture_allowed: Callable
 var directory: String
 var captures: int = 0
 var disk_hits: int = 0
@@ -22,7 +28,13 @@ var _io_job: Dictionary = {}
 var _io_kind: String = ""
 var _draws: int = 0
 var _stage: String = ""
+var _cover_ready: bool = false
+var _capture_announced: bool = false
+var _graphics_ticket: Dictionary = {}
+var _preparation: Node
+var _capture_generation: int = 0
 var _debounce: Timer
+var _retry: Timer
 var preparing_selected: bool = false
 
 func _ready() -> void:
@@ -31,13 +43,28 @@ func _ready() -> void:
 	_debounce.wait_time = 0.35
 	_debounce.timeout.connect(_scan)
 	add_child(_debounce)
+	_retry = Timer.new()
+	_retry.one_shot = true
+	_retry.wait_time = 0.25
+	_retry.timeout.connect(resume_pending)
+	add_child(_retry)
 	set_process(false)
+
+func resume_pending() -> void:
+	_retry.stop()
+	set_process(not _jobs.is_empty() or _io != null or not _current.is_empty())
+
+func _wait_for_opportunity() -> void:
+	# Deferred appearances must not hash every saved design on every menu frame.
+	set_process(false)
+	_retry.start()
 
 func bind_records(value: LocalRecords) -> void:
 	if records == value: return
 	if records != null and records.appearance_committed.is_connected(_committed): records.appearance_committed.disconnect(_committed)
 	_epoch += 1
 	_debounce.stop()
+	_retry.stop()
 	_jobs.clear()
 	_current = {}
 	_release()
@@ -50,6 +77,8 @@ func bind_records(value: LocalRecords) -> void:
 		_scan()
 
 func _committed() -> void:
+	# Stop displaying an obsolete saved design during the debounce/read window.
+	for vehicle: String in VehicleCatalog.IDS: changed.emit(vehicle)
 	_debounce.start()
 
 func _scan() -> void:
@@ -72,13 +101,30 @@ func _scan() -> void:
 		for index: int in range(_jobs.size()-1,-1,-1):
 			if _jobs[index].vehicle == vehicle: _jobs.remove_at(index)
 		_jobs.append({"vehicle":vehicle,"paint":paint,"parts":parts,"key":key,"epoch":_epoch,"read":true})
-	set_process(not _jobs.is_empty() or _io != null or canvas != null)
+	resume_pending()
+
+func captures_pending() -> bool:
+	# The cache validates queued keys when it wakes; idle coordination must not
+	# rehash every saved appearance on every frame of a deferred capture.
+	return not _current.is_empty() or not _jobs.is_empty()
+
+func capture_active() -> bool:
+	return not _current.is_empty()
 
 func _valid(job: Dictionary) -> bool:
 	return not job.is_empty() and records != null and job.epoch == _epoch and job.key == Icons.appearance_key(job.vehicle,records)
 
 func idle() -> bool:
-	return _jobs.is_empty() and _io == null and canvas == null and _debounce.is_stopped()
+	return _jobs.is_empty() and _io == null and _current.is_empty() and canvas == null and _debounce.is_stopped()
+
+func reads_idle() -> bool:
+	return _io == null and _debounce.is_stopped() and not _jobs.any(func(job: Dictionary) -> bool: return bool(job.read))
+
+func _can_capture(job: Dictionary) -> bool:
+	return not capture_allowed.is_valid() or bool(capture_allowed.call(str(job.get("vehicle",""))))
+
+func _cover_drawn() -> void:
+	_cover_ready = true
 
 func prepare_selected() -> bool:
 	if DisplayServer.get_name() == "headless": return Icons.ready(VehicleCatalog.selected,records)
@@ -117,22 +163,59 @@ func _process(_delta: float) -> void:
 				_jobs.push_front(_io_job)
 		_io_job = {}
 		_io_kind = ""
-	if not permitted:
-		if canvas != null:
+	if not permitted or (not _current.is_empty() and not _can_capture(_current)):
+		if not _current.is_empty():
 			if _valid(_current): _jobs.push_front(_current)
 			_release()
+		if not permitted:
+			_wait_for_opportunity()
+			return
+	if not _current.is_empty() and not _valid(_current): _release()
+	if _stage == "cover" and _cover_ready:
+		canvas = SubViewport.new()
+		canvas.size = SIZE
+		canvas.disable_3d = true
+		canvas.transparent_bg = true
+		canvas.render_target_update_mode = SubViewport.UPDATE_DISABLED
+		add_child(canvas)
+		studio = load("res://ui/profile_car.gd").make_preview(_current.vehicle,_current.paint,_current.parts)
+		studio.size = Vector2(SIZE)
+		studio.cooperative_build = true
+		studio.cache_rest_pose = false
+		studio.header_template = true
+		studio.deferred_render = true
+		_stage = "build"
+		canvas.add_child(studio)
+		active_worlds += 1
+		canvas.tree_exited.connect(func() -> void: active_worlds -= 1,CONNECT_ONE_SHOT)
+		peak_worlds = maxi(peak_worlds,active_worlds)
+		# Resource compilation and the first native program can each be costly.
+		# Finish this owner-thread build interval before submitting a first draw.
 		return
-	if canvas != null and not _valid(_current): _release()
 	if _stage == "build" and studio.presentation_ready:
 		load("res://ui/profile_car.gd").apply_presentation(studio)
-		_stage = "draw"
-		_draws = 5
-		RenderingServer.frame_post_draw.connect(_after_draw)
+		# Use the same bounded material queue as the live Garage. A small target
+		# still needs the original native programs; its pixel size cannot bound
+		# the cost of submitting every cold material in a single frame.
+		_preparation = load("res://race/world_render_preparation.gd").new()
+		studio.add_child(_preparation)
+		studio.preparing_render = true
+		_preparation.hold(studio.car.get_parent())
+		_stage = "prepare"
+		_prepare_header(_capture_generation,weakref(studio))
 	if _stage == "draw":
 		canvas.render_target_update_mode = SubViewport.UPDATE_ONCE
 		studio.viewport.render_target_update_mode = SubViewport.UPDATE_ONCE
-	if canvas == null and _io == null:
-		while not _jobs.is_empty():
+	if _current.is_empty() and _io == null:
+		# Finish cheap reads before admitting a cold native world. Prioritize the
+		# visible selected car within each group, including after foreground return.
+		_jobs.sort_custom(func(a: Dictionary,b: Dictionary) -> bool:
+			if bool(a.read)!=bool(b.read): return bool(a.read)
+			return a.vehicle==VehicleCatalog.selected and b.vehicle!=VehicleCatalog.selected)
+		# A deferred capture must not prevent another car's cheap disk read.
+		var remaining: int = _jobs.size()
+		while remaining > 0 and not _jobs.is_empty():
+			remaining -= 1
 			var job: Dictionary = _jobs.pop_front()
 			if not _valid(job): continue
 			if Icons.customized.has(job.key): changed.emit(job.vehicle); continue
@@ -141,35 +224,53 @@ func _process(_delta: float) -> void:
 				_io_kind = "read"
 				_io = Work.start(_read.bind(directory.path_join(job.key+".png")),get_tree())
 			else:
+				if not _can_capture(job):
+					_jobs.append(job)
+					continue
 				_current = job
-				canvas = SubViewport.new()
-				canvas.size = SIZE
-				canvas.disable_3d = true
-				canvas.transparent_bg = true
-				canvas.render_target_update_mode = SubViewport.UPDATE_DISABLED
-				add_child(canvas)
-				studio = load("res://ui/profile_car.gd").make_preview(job.vehicle,job.paint,job.parts)
-				studio.size = Vector2(SIZE)
-				studio.cooperative_build = true
-				studio.cache_rest_pose = false
-				studio.header_template = true
-				_stage = "build"
-				canvas.add_child(studio)
-				active_worlds += 1
-				canvas.tree_exited.connect(func() -> void: active_worlds -= 1,CONNECT_ONE_SHOT)
-				peak_worlds = maxi(peak_worlds,active_worlds)
+				_stage = "cover"
+				_cover_ready = false
+				_capture_announced = true
+				capture_started.emit(str(job.vehicle))
+				# The Garage's loading picture must actually draw before even the
+				# renderer resource is loaded or its native model is constructed.
+				RenderingServer.frame_post_draw.connect(_cover_drawn,CONNECT_ONE_SHOT)
 			break
 	if idle(): set_process(false)
+	elif _current.is_empty() and _io == null: _wait_for_opportunity()
+
+func _preparation_current(generation: int, owner: WeakRef) -> bool:
+	return generation == _capture_generation and is_instance_valid(studio) and owner.get_ref() == studio and _valid(_current) and allowed.is_valid() and bool(allowed.call()) and _can_capture(_current)
+
+func _preparation_frame(generation: int, owner: WeakRef) -> bool:
+	if not _preparation_current(generation,owner): return false
+	canvas.render_target_update_mode = SubViewport.UPDATE_ONCE
+	studio.viewport.render_target_update_mode = SubViewport.UPDATE_ONCE
+	await RenderingServer.frame_post_draw
+	if not _preparation_current(generation,owner): return false
+	await get_tree().process_frame
+	return _preparation_current(generation,owner)
+
+func _prepare_header(generation: int, owner: WeakRef) -> void:
+	var complete: bool = await _preparation.prepare(_preparation_frame.bind(generation,owner),_preparation_current.bind(generation,owner))
+	if not complete or not _preparation_current(generation,owner): return
+	_preparation.release()
+	studio.preparing_render = false
+	_graphics_ticket = Graphics.begin_capture(studio.car.get_parent(),studio.viewport,studio.viewport.get_camera_3d())
+	_stage = "draw"
+	_draws = 5
+	RenderingServer.frame_post_draw.connect(_after_draw)
 
 func _after_draw() -> void:
 	if canvas == null or _stage != "draw": return
-	if not allowed.is_valid() or not bool(allowed.call()):
+	if not allowed.is_valid() or not bool(allowed.call()) or not _can_capture(_current):
 		if _valid(_current): _jobs.push_front(_current)
 		_release()
 		return
 	_draws -= 1
 	if _draws > 0: return
 	if _valid(_current):
+		Graphics.finish_capture(_graphics_ticket,studio.car.get_parent(),studio.viewport,studio.viewport.get_camera_3d())
 		var pixels: Image = canvas.get_texture().get_image()
 		captures += 1
 		_io_job = _current
@@ -178,6 +279,10 @@ func _after_draw() -> void:
 	_release()
 
 func _release() -> void:
+	_capture_generation += 1
+	if is_instance_valid(_preparation): _preparation.release()
+	_preparation = null
+	if RenderingServer.frame_post_draw.is_connected(_cover_drawn): RenderingServer.frame_post_draw.disconnect(_cover_drawn)
 	if RenderingServer.frame_post_draw.is_connected(_after_draw): RenderingServer.frame_post_draw.disconnect(_after_draw)
 	if is_instance_valid(canvas):
 		remove_child(canvas)
@@ -186,11 +291,17 @@ func _release() -> void:
 	studio = null
 	_current = {}
 	_stage = ""
+	_cover_ready = false
+	_graphics_ticket = {}
+	if _capture_announced:
+		_capture_announced = false
+		capture_finished.emit()
 
 func _exit_tree() -> void:
 	preparing_selected = false
 	if records != null and records.appearance_committed.is_connected(_committed): records.appearance_committed.disconnect(_committed)
 	if is_instance_valid(_debounce): _debounce.stop()
+	if is_instance_valid(_retry): _retry.stop()
 	_release()
 	if _io != null: _io.cancel()
 	_io = null
@@ -198,6 +309,7 @@ func _exit_tree() -> void:
 	_jobs.clear()
 	records = null
 	allowed = Callable()
+	capture_allowed = Callable()
 
 static func _read(cancelled: Callable, path: String) -> Dictionary:
 	var file := FileAccess.open(path,FileAccess.READ)

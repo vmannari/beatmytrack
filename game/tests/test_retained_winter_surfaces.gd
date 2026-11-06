@@ -1,0 +1,48 @@
+extends SceneTree
+const Worlds=preload("res://track/prepared_world_cache.gd")
+var checks: int=0
+var failures: int=0
+func _initialize() -> void: run.call_deferred()
+func check(ok: bool,label: String) -> void:
+	checks+=1
+	if not ok: failures+=1; push_error(label)
+func run() -> void:
+	Worlds.trim_cache()
+	var visual:=NativeTrackVisual.new(); root.add_child(visual)
+	var source:=ShaderMaterial.new(); source.shader=Shader.new()
+	source.shader.code="shader_type spatial; uniform float wind_surface_strength=0.0; uniform sampler2D snow_road_sources; uniform sampler2D wind_surface_flow; void fragment(){ ALBEDO=vec3(0.5+wind_surface_strength*0.1); }"
+	var mesh:=MeshInstance3D.new(); mesh.mesh=BoxMesh.new(); mesh.material_override=source; visual.add_child(mesh)
+	var track:=NativeTrack.new(); track.metadata={"theme":"winter"}
+	Worlds.remember(["winter-surface-fixture"],visual,track)
+	var before: int=Worlds.bytes_used()
+	var a:=Node.new(); var b:=Node.new(); root.add_child(a); root.add_child(b)
+	var first: Dictionary=Worlds.acquire_surface(visual,source,a)
+	check(first.material!=source,"first lease retains a separate mutable wind material")
+	check(Worlds.bytes_used()==before+Worlds.SURFACE_BYTES,"retained material state has an explicit budget reservation")
+	first.material.set_shader_parameter("wind_surface_strength",0.7)
+	var image:=Image.create(16,16,false,Image.FORMAT_RGBAF)
+	var texture:=ImageTexture.create_from_image(image)
+	first.material.set_shader_parameter("snow_road_sources",texture)
+	Worlds.account_surface(visual,first.material)
+	check(Worlds.bytes_used()==before+Worlds.SURFACE_BYTES+16*16*32,"unique float lookup reserves its CPU/GPU footprint")
+	Worlds.account_surface(visual,first.material)
+	check(Worlds.bytes_used()==before+Worlds.SURFACE_BYTES+16*16*32,"the same lookup is reserved once per world")
+	var concurrent: Dictionary=Worlds.acquire_surface(visual,source,b)
+	check(concurrent.material!=first.material and concurrent.material!=source,"concurrent owner receives a private material")
+	concurrent.material.set_shader_parameter("wind_surface_strength",0.1)
+	check(is_equal_approx(float(first.material.get_shader_parameter("wind_surface_strength")),0.7),"another owner cannot mutate a leased surface")
+	Worlds.release_surface(concurrent,b)
+	Worlds.release_surface(first,a)
+	check(float(first.material.get_shader_parameter("wind_surface_strength"))==0.0,"returned wind state is reset")
+	check(first.material.get_shader_parameter("snow_road_sources")==null,"idle surface retains no run-specific lookup")
+	var again: Dictionary=Worlds.acquire_surface(visual,source,b)
+	check(again.material==first.material,"later owner reuses the exact prepared material identity")
+	check(source.get_shader_parameter("snow_road_sources")==null,"immutable scene source remains untouched")
+	Worlds.trim_cache()
+	check(again.material!=null and is_instance_valid(again.material),"pressure releases cache ownership while an active lease survives")
+	var after_pressure: Dictionary=Worlds.acquire_surface(visual,source,a)
+	check(after_pressure.material!=again.material,"an evicted world cannot republish a stale surface lease")
+	Worlds.release_surface(again,b); Worlds.release_surface(after_pressure,a)
+	a.free(); b.free(); visual.free()
+	print("RETAINED_WINTER_SURFACES ",checks," checks, ",failures," failures")
+	quit(1 if failures else 0)

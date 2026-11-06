@@ -124,8 +124,10 @@ func _card(f: Dictionary, source: Dictionary, level: int) -> void:
 	row.offset_top = 8
 	row.offset_right = -10
 	row.offset_bottom = -8
+	row.minimum_size_changed.connect(func() -> void:
+		if is_instance_valid(button): button.custom_minimum_size.y = maxf(100,row.get_combined_minimum_size().y+16))
 	var badge := AchievementBadge.new()
-	badge.tier = level
+	badge.tier = 3 if f.prestige and level > 0 else level
 	badge.prestige = f.prestige
 	badge.motif = AchievementProgress.catalog().families.find(f)
 	badge.family_id = f.id
@@ -137,6 +139,8 @@ func _card(f: Dictionary, source: Dictionary, level: int) -> void:
 	copy.alignment = BoxContainer.ALIGNMENT_CENTER
 	row.add_child(copy)
 	var title: Label = MenuStyle.label(f.title,22)
+	title.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	title.custom_minimum_size.y = 28
 	title.text_overrun_behavior = TextServer.OVERRUN_TRIM_ELLIPSIS
 	copy.add_child(title)
 	var next: int = mini(level,f.tiers.size()-1)
@@ -258,9 +262,13 @@ func _open_sheet(title: String, kind: String) -> void:
 	_sheet_footer.add_theme_constant_override("separation",10)
 	body.add_child(_sheet_footer)
 	_layout_sheet()
-	close.grab_focus.call_deferred()
+	_focus_sheet_close.call_deferred(weakref(close))
 	_sheet_panel.modulate.a = 0.0
 	_sheet_panel.create_tween().tween_property(_sheet_panel,"modulate:a",1.0,0.16)
+
+func _focus_sheet_close(reference: WeakRef) -> void:
+	var close: Control = reference.get_ref()
+	if is_instance_valid(close) and close.is_inside_tree() and close.is_visible_in_tree(): close.grab_focus()
 
 func _layout_sheet() -> void:
 	if not is_instance_valid(_sheet_panel): return
@@ -290,7 +298,7 @@ func _close_sheet() -> void:
 		var target: Control = _sheet_return_focus.get_ref() if _sheet_return_focus != null else null
 		if not is_instance_valid(target) or not target.is_inside_tree() or not target.is_visible_in_tree():
 			target = grid.get_node_or_null("Achievement_"+selected) if is_instance_valid(grid) else null
-		if is_instance_valid(target): target.grab_focus()
+		if is_instance_valid(target) and target.is_inside_tree() and target.is_visible_in_tree(): target.grab_focus()
 	_sheet_return_focus = null
 
 func _input(event: InputEvent) -> void:

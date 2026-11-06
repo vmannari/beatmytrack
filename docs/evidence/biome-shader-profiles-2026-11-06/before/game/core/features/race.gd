@@ -1,0 +1,998 @@
+extends Node
+## Race composition. State and scene ownership stay with App.
+const RaceLoading = preload("res://ui/race_loading.gd")
+const DailyPreparation = preload("res://race/daily_start_preparation.gd")
+
+func run_load_daily_limits(app: Node, track: NativeTrack, vehicle: String, request: Dictionary) -> RefCounted:
+	var preparation: RefCounted = DailyPreparation.find(app.race_loading)
+	if preparation != null and not preparation.matches(track,vehicle,request): return null
+	var request_started: int = Time.get_ticks_msec()
+	# A race tap may already own the read while CPU work runs. Retries still
+	# request fresh limits through this same transport and validation path.
+	var response: Dictionary = await preparation.await_response(app.get_tree()) if preparation != null else await DailyPreparation.request_limits(app.online.client,vehicle,request,app.get_instance_id())
+	if not is_instance_valid(app) or not app.is_inside_tree() or app.is_queued_for_deletion(): return null
+	if not response.get("ok",false): return null
+	var data: Dictionary = response.get("data",{})
+	if int(data.get("day",-1)) != int(request.get("day",-2)) or int(data.get("ends_at",0)) <= int(data.get("server_now",0)): return null
+	if preparation == null and Time.get_ticks_msec()-request_started >= (int(data.ends_at)-int(data.server_now))*1000: return null
+	var manifest: Dictionary = data.get("manifest",{})
+	var config: HandlingConfig = VehicleCatalog.config(vehicle)
+	var engine: Dictionary = Engine.get_version_info()
+	var engine_version: String = "%s.%s.%s.%s.%s.%s" % [engine.major,engine.minor,engine.patch,engine.status,engine.build,str(engine.hash).left(9)]
+	if str(manifest.get("engine_version","")) != engine_version or int(manifest.get("tick_rate",0)) != VehicleSimulation.TICK_RATE or str(manifest.get("vehicle_id","")) != vehicle or str(manifest.get("track_schema","")) != TrackDocument.SCHEMA: return null
+	if str(manifest.get("track_content_hash","")) != track.content_hash or str(manifest.get("compiler_version","")) != TrackCompiler.VERSION or str(manifest.get("rules_key","")) != RaceRules.KEY: return null
+	if not preload("res://backend/race_compatibility.gd").physics_matches(str(manifest.get("physics_version","")),vehicle) or str(manifest.get("config_hash","")) != JSON.stringify(config.snapshot(),"",true).sha256_text(): return null
+	var rules = preload("res://race/daily_elimination.gd").new()
+	return rules if rules.configure(data,str(track.metadata.get("cloud_version","")),vehicle) else null
+
+func run_daily_results(app: Node) -> void:
+	if app.game.has_node("DailyResults"): return
+	var request: Dictionary = app.game.get_meta("daily_request",{})
+	var result_saved: bool = preload("res://persistence/daily_progress.gd").commit(app.game.preference_records,int(request.get("day",-1)),str(request.get("version_id","")),str(app.game.vehicle_id),app.game.track_session,app.game.daily_elimination)
+	app._telemetry_race_finished = true
+	if app.client_quality != null: app.client_quality.finish_race("finished")
+	if app.product_telemetry != null: app.product_telemetry.set_transport_allowed(true)
+	app.game.hud.hide()
+	var layer = CanvasLayer.new()
+	layer.name = "DailyResults"
+	layer.layer = 20
+	app.game.add_child(layer)
+	var panel = preload("res://ui/daily_elimination_results.gd").new()
+	panel.rules = app.game.daily_elimination
+	panel.session = app.game.track_session
+	panel.result_saved = result_saved
+	panel.client = app.online.client
+	panel.cloud = app.cloud
+	panel.day = int(request.get("day",-1))
+	panel.version = str(request.get("version_id",""))
+	panel.vehicle = str(app.game.vehicle_id)
+	panel.track_name = str(app.game.native_track.metadata.get("name","Track of the Day"))
+	panel.theme_id = str(app.game.native_track.metadata.get("theme","pine"))
+	panel.retry_requested.connect(app._retry_race)
+	panel.return_requested.connect(app._leave_race)
+	layer.add_child(panel)
+
+func run_retry_daily_race(app: Node) -> void:
+	if app.cloud_starting or not app.game.preparation_complete: return
+	var active: Node = app.game
+	var scope: String = app._daily_cache_scope()
+	var vehicle: String = str(active.vehicle_id)
+	app.cloud_starting = true
+	var rules: RefCounted = await app._load_daily_limits(active.native_track,vehicle,active.get_meta("daily_request",{}))
+	if not is_instance_valid(active) or app.game != active: return
+	app.cloud_starting = false
+	if scope != app._daily_cache_scope(): return
+	if rules == null:
+		app._notice("Lap limits are unavailable. Return to Track of the Day and try again.")
+		return
+	var results: Node = app.game.get_node_or_null("DailyResults")
+	if results != null:
+		app.game.remove_child(results)
+		results.queue_free()
+	app.game.daily_elimination = rules
+	app.game.hud.show()
+	app._result_game_id = 0
+	app._telemetry_begin_attempt(app.game.native_track)
+	app.game.restart()
+
+func run_open_race_loading(app: Node, track: NativeTrack = null, practice: bool = false, elimination: bool = false) -> RaceLoading:
+	if app.product_telemetry != null: app.product_telemetry.set_transport_allowed(false)
+	if app.discovery_provider != null: app.discovery_provider.comparisons.cancel_speculation()
+	app._stop_menu_page_motion()
+	app.race_loading = RaceLoading.new()
+	app.add_child(app.race_loading)
+	var deadline = Timer.new()
+	deadline.name = "RaceLoadingDeadline"
+	deadline.process_mode = Node.PROCESS_MODE_ALWAYS
+	deadline.one_shot = true
+	app.race_loading.add_child(deadline)
+	deadline.timeout.connect(app._race_loading_timed_out.bind(app.race_loading.get_instance_id()))
+	deadline.start(app.RACE_LOAD_DEADLINE_SECONDS)
+	if track != null:
+		app.race_loading.configure(app.track_title(track), str(track.metadata.get("theme", "pine")), track.route, practice, elimination)
+	return app.race_loading
+
+func run_present_race_loading(app: Node) -> bool:
+	# Layout and actually draw the overlay before synchronous scene construction.
+	await app.get_tree().process_frame
+	if DisplayServer.get_name() == "headless": return false
+	# Minimized/suspended windows may stop emitting frame_post_draw entirely.
+	# Wait for an actual draw normally, but never make it an unbounded race gate.
+	var drawn: Dictionary = {"done": false}
+	var observe: Callable = func() -> void: drawn.done = true
+	RenderingServer.frame_post_draw.connect(observe, CONNECT_ONE_SHOT)
+	var began: int = Time.get_ticks_msec()
+	while not drawn.done and Time.get_ticks_msec() - began < app.RACE_LOAD_DRAW_WAIT_MSEC:
+		await app.get_tree().process_frame
+	if RenderingServer.frame_post_draw.is_connected(observe):
+		RenderingServer.frame_post_draw.disconnect(observe)
+	return drawn.done
+
+func run_race_loading_matches(app: Node, expected_id: int) -> bool:
+	return is_instance_valid(app.race_loading) and app.race_loading.get_instance_id() == expected_id
+
+func run_race_preparation_changed(app: Node, expected_id: int, scope: String, navigation: int, starting_screen: String, vehicle: String, selection: NativeTrack) -> bool:
+	if not app._race_loading_matches(expected_id): return true
+	# Navigation cancels intentionally. Changes on the same page need feedback.
+	if navigation != app._navigation_generation or starting_screen != app.screen:
+		app._close_race_loading(expected_id)
+		return true
+	var reason: String = ""
+	if scope != app.lifecycle.scope(): reason = "Account changed while preparing the race. Try again."
+	elif vehicle != VehicleCatalog.selected: reason = "Car changed while preparing the race. Try again."
+	elif selection != app.selected_track: reason = "Track changed while preparing the race. Try again."
+	elif DailyPreparation.find(app.race_loading) != null and not DailyPreparation.find(app.race_loading).valid(): reason = "Lap limits are unavailable for this car. Try again shortly."
+	if reason.is_empty(): return false
+	app.cloud_ticket = {}
+	app._close_race_loading(expected_id)
+	app._notice(reason)
+	return true
+
+func run_race_loading_timed_out(app: Node, expected_id: int) -> void:
+	if not app._race_loading_matches(expected_id): return
+	push_warning("Race preparation timed out at stage: " + app.race_loading.status_label.text)
+	# A partially constructed world is still disabled and has no race result.
+	if is_instance_valid(app.game) and app.game.process_mode == Node.PROCESS_MODE_DISABLED:
+		app._discard_preparing_game(app.game)
+	app.cloud_ticket = {}
+	app.cloud_starting = false
+	app._close_race_loading(expected_id)
+	app._race_menu_visible(true)
+	app._show_screen(app.screen)
+	app._notice("Race loading timed out. Try again.")
+
+func run_close_race_loading(app: Node, expected_id: int = 0) -> void:
+	if not is_instance_valid(app.race_loading): return
+	if expected_id != 0 and app.race_loading.get_instance_id() != expected_id: return
+	app.cloud_starting = false
+	app.remove_child(app.race_loading)
+	app.race_loading.queue_free()
+	app.race_loading = null
+
+func run_prepare_metadata_race(app: Node, track: NativeTrack, from_editor: bool, offline_only: bool, issued: Dictionary, daily_request: Dictionary = {}) -> void:
+	daily_request = daily_request.duplicate(true)
+	var scope: String = app.lifecycle.scope()
+	var navigation: int = app._navigation_generation
+	var starting_screen: String = app.screen
+	var vehicle: String = VehicleCatalog.selected
+	var selection: NativeTrack = app.selected_track
+	var entry: Dictionary = track.metadata.cloud_entry.duplicate(true)
+	var overlay: RaceLoading = app._open_race_loading(track,from_editor,not daily_request.is_empty())
+	var overlay_id: int = overlay.get_instance_id()
+	app.cloud_starting = true
+	await app._present_race_loading()
+	if app._race_preparation_changed(overlay_id,scope,navigation,starting_screen,vehicle,selection): return
+	if not daily_request.is_empty(): DailyPreparation.begin(app,track,vehicle,daily_request,overlay)
+	if not await app._await_selected_preparation(track,overlay_id,scope,navigation,starting_screen,vehicle,selection): return
+	if not track.metadata.get("metadata_only",false):
+		app.cloud_starting = false
+		await app._start_race(track,from_editor,offline_only,issued,overlay,daily_request)
+		return
+	overlay.stage("Downloading track...")
+	var downloaded: Dictionary = await app.cloud.download_document(entry)
+	if app._race_preparation_changed(overlay_id,scope,navigation,starting_screen,vehicle,selection): return
+	if downloaded.is_empty():
+		app._close_race_loading(overlay_id)
+		app._notice(app.cloud.last_error if not app.cloud.last_error.is_empty() else "Track download failed. Check your connection and try again.")
+		return
+	overlay.stage("Preparing track…")
+	var ready: Variant = await app.online.client._background(app.cloud.compile_document.bind(entry,downloaded))
+	if app._race_preparation_changed(overlay_id,scope,navigation,starting_screen,vehicle,selection): return
+	if not ready is NativeTrack:
+		app._close_race_loading(overlay_id)
+		app._notice("Track could not be prepared. Try again.")
+		return
+	# Keep the selected object identity, but hydrate every pinned geometry field
+	# before the existing ticket/manifest checks and canonical scene construction.
+	for property: Dictionary in ready.get_property_list():
+		if int(property.usage) & PROPERTY_USAGE_SCRIPT_VARIABLE: track.set(property.name,ready.get(property.name))
+	track.metadata["cloud_entry"] = entry.duplicate(true)
+	app.cloud.remember_compiled_entry(entry,track)
+	app._ensure_track_catalog()
+	app.track_catalog.remember_track(entry,track)
+	app.cloud_starting = false
+	await app._start_race(track,from_editor,offline_only,issued,overlay,daily_request)
+
+func run_start_race_road_job(app: Node, track: NativeTrack) -> RefCounted:
+	return preload("res://editor/road_preparation_job.gd").start(track,app.get_tree())
+
+func run_start_race(app: Node, track: NativeTrack, from_editor: bool, offline_only: bool = false, rivalry_issued: Dictionary = {}, prepared_loading: RaceLoading = null, daily_request: Dictionary = {}) -> void:
+	daily_request = daily_request.duplicate(true)
+	if app.cloud_starting or (is_instance_valid(app.race_loading) and app.race_loading != prepared_loading): return
+	if track == null:
+		app._notice("Choose a track before starting a race.")
+		return
+	var tutorial_lesson: bool = app.tutorial != null and app.tutorial.authorizes(track)
+	if app.cloud != null and is_instance_valid(app.online.client.get("safety")) and not app.online.client.safety.allows(track.metadata.get("cloud_entry",track.metadata)):
+		app._notice("This player is blocked. Manage blocked players in Settings > Privacy > Community safety.")
+		return
+	if track.metadata.get("metadata_only",false):
+		await app._prepare_metadata_race(track,from_editor,offline_only,rivalry_issued,daily_request)
+		return
+	if not from_editor and not track.metadata.has("cloud_version") and app.cloud != null and not tutorial_lesson:
+		app._notice("Choose a published backend track from Race.")
+		return
+	var original_scope: String = app.lifecycle.scope()
+	var navigation_generation: int = app._navigation_generation
+	var starting_screen: String = app.screen
+	var selected_vehicle: String = VehicleCatalog.selected
+	var attempt_vehicle: String = app.rivalry.model.vehicle_id if not rivalry_issued.is_empty() and not rivalry_issued.has("challenge_code") else selected_vehicle
+	var starting_selection: NativeTrack = app.selected_track
+	var loading: RaceLoading = prepared_loading if is_instance_valid(prepared_loading) else app._open_race_loading(track, from_editor, not daily_request.is_empty())
+	var loading_id: int = loading.get_instance_id()
+	app.cloud_starting = true
+	if prepared_loading == null: await app._present_race_loading()
+	if not app._race_loading_matches(loading_id): return
+	if app._race_preparation_changed(loading_id,original_scope,navigation_generation,starting_screen,selected_vehicle,starting_selection): return
+	var daily_preparation: RefCounted
+	if not daily_request.is_empty(): daily_preparation = DailyPreparation.begin(app,track,selected_vehicle,daily_request,loading)
+	if not await app._await_selected_preparation(track,loading_id,original_scope,navigation_generation,starting_screen,selected_vehicle,starting_selection): return
+	var daily_rules: RefCounted
+	if not daily_request.is_empty():
+		loading.stage("Loading lap limits?")
+		daily_preparation.geometry_finished()
+		daily_rules = await app._load_daily_limits(track,selected_vehicle,daily_request)
+		if app._race_preparation_changed(loading_id,original_scope,navigation_generation,starting_screen,selected_vehicle,starting_selection): return
+		if daily_rules == null:
+			app.cloud_starting = false
+			app._close_race_loading(loading_id)
+			app._notice("Lap limits are unavailable for this car. Try again shortly.")
+			return
+	app.cloud_ticket = {}
+	var road_overlap: RefCounted
+	if daily_rules == null and not offline_only and not from_editor and track.metadata.has("cloud_version") and app.online.client.signed_in():
+		loading.stage("Connecting race…")
+		# Once the exact track is compiled, its presentation arrays can be built
+		# while an ordinary ticket request is in flight. Keep ticket issuance at
+		# the same point, and do not compete with an editor/save road builder.
+		if rivalry_issued.is_empty() and preload("res://track/road_cache_bakes.gd").job == null and preload("res://track/road_cache_bakes.gd").pending_track == null and app.SELECTED_PREPARATION.ready_for_job() and NativeTrackVisual.race_roads_need_preparation(track):
+			road_overlap = preload("res://race/road_ticket_overlap.gd").new()
+			road_overlap.attach(app._start_race_road_job(track),app.get_tree(),loading)
+		var issued: Dictionary = await app.cloud.ticket(track,false,attempt_vehicle,null,rivalry_issued) if not rivalry_issued.is_empty() else await app.cloud.ticket(track)
+		if not app._race_loading_matches(loading_id): return
+		if app._race_preparation_changed(loading_id,original_scope,navigation_generation,starting_screen,selected_vehicle,starting_selection): return
+		app.cloud_ticket = issued
+		if not app.cloud_ticket.is_empty():
+			app.cloud_ticket._owner_id = str(app.online.client.player.id)
+			app.cloud_ticket._origin = str(app.online.client.base_url())
+			if rivalry_issued.has("challenge_code"): app.challenges.result_ticket = str(app.cloud_ticket.ticket_id)
+			elif not rivalry_issued.is_empty(): app.rivalry.result_ticket = str(app.cloud_ticket.ticket_id)
+		if app.cloud_ticket.is_empty():
+			app.cloud_starting = false
+			app._close_race_loading(loading_id)
+			var failure: String = app.cloud.last_error if not app.cloud.last_error.is_empty() else "Could not connect the race. Check your connection and try again."
+			if not rivalry_issued.is_empty():
+				if rivalry_issued.has("challenge_code"):
+					app.challenges.error = failure
+					app._challenges()
+				else:
+					app.rivalry.error = failure
+					app._rivalry()
+				app._notice(failure)
+				return
+			var offline_dialog = ConfirmationDialog.new()
+			offline_dialog.title = "Online race unavailable"
+			offline_dialog.dialog_text = failure+"\nRace offline with a local time? This attempt will not enter the online leaderboard."
+			offline_dialog.ok_button_text = "Race offline"
+			app._own_dialog(offline_dialog)
+			offline_dialog.confirmed.connect(func() -> void:
+				if navigation_generation == app._navigation_generation and app.screen == starting_screen and VehicleCatalog.selected == selected_vehicle and app.selected_track == starting_selection:
+					app._start_race(track,from_editor,true))
+			offline_dialog.popup_centered()
+			return
+	loading.stage("Loading track…")
+	await app._present_race_loading()
+	if not app._race_loading_matches(loading_id): return
+	if app._race_preparation_changed(loading_id,original_scope,navigation_generation,starting_screen,selected_vehicle,starting_selection): return
+	var prepared_roads: Dictionary = {}
+	var road_job: RefCounted = road_overlap.take() if road_overlap != null else null
+	if road_job == null and NativeTrackVisual.race_roads_need_preparation(track):
+		# Reap cancelled work, and share a save-time bake only when it has the
+		# exact same disk identity. Unrelated saved tracks must not delay a race.
+		var road_disk_key: Array = preload("res://editor/road_preparation.gd").disk_key_for(track)
+		while not app.SELECTED_PREPARATION.ready_for_job() or preload("res://track/road_cache_bakes.gd").baking_key(road_disk_key):
+			await app.get_tree().process_frame
+			if app._race_preparation_changed(loading_id,original_scope,navigation_generation,starting_screen,selected_vehicle,starting_selection): return
+		road_job = app._start_race_road_job(track)
+	if road_job != null:
+		while not road_job.done:
+			await app.get_tree().process_frame
+			if app._race_preparation_changed(loading_id,original_scope,navigation_generation,starting_screen,selected_vehicle,starting_selection):
+				preload("res://race/selected_track_preparation.gd").cancel(road_job,app.get_tree())
+				return
+		prepared_roads = road_job.result if road_job.result is Dictionary else {}
+		NativeTrackVisual.ROAD_DISK_CACHE.publish_arrays(prepared_roads.get("receipt",{}))
+		prepared_roads.erase("receipt")
+	app.returning_to_editor = from_editor
+	app.challenge_racing = rivalry_issued.has("challenge_code")
+	app.challenge_practice = offline_only and app.screen == "challenges" and not app.challenges.selected.is_empty()
+	app.rivalry_racing = not rivalry_issued.is_empty() and not app.challenge_racing
+	app.test_return_to_drafts = from_editor and app.screen == "drafts"
+	app.test_document_snapshot = app.document.duplicate(true) if from_editor else {}
+	if from_editor:
+		app.test_library_snapshot = app.library
+		app.test_scope_snapshot = app.lifecycle.scope() if app.lifecycle != null else ""
+		app.test_vehicle_snapshot = VehicleCatalog.selected
+	if not from_editor and not tutorial_lesson and app.records.settings.get("last_track","") != track.identity:
+		var previous_track: String = str(app.records.settings.get("last_track",""))
+		app.records.settings["last_track"] = track.identity
+		if app.records.save_records() != OK:
+			app.records.settings["last_track"] = previous_track
+			app.pending_menu_notice = "This circuit could not be remembered for next time. Check available storage."
+	if is_instance_valid(app.canvas):
+		app.canvas.cancel_gesture()
+		app.editor_view = {"zoom":app.canvas.zoom,"pan":app.canvas.pan,"mode":app.canvas.mode,"selected":app.canvas.selected,"selected_object":app.canvas.selected_object,"stamp_kind":app.canvas.stamp_kind,"stamp_scale":app.canvas.stamp_scale,"stamp_span":app.canvas.stamp_span,"stamp_jump_profile":app.canvas.stamp_jump_profile,"stamp_container_color":app.canvas.stamp_container_color,"run_shape":app.canvas.run_shape,"free_run":app.canvas.free_run,"brush_surface":app.canvas.brush_surface,"brush_width":app.canvas.brush_width,"paint_mode":app.canvas.paint_mode,"brush_shape":app.canvas.brush_shape,"selected_piece":app.canvas.selected_piece,"selected_objects":app.canvas.object_indices(),"multi_select":app.canvas.multi_select,"object_snap":app.canvas.object_snap,"detailed_scenery":not app.editor_world._detail.enabled if is_instance_valid(app.editor_world) else false}
+	app._stop_menu_page_motion()
+	app._practice_editor_context = {}
+	if from_editor and app.screen == "create" and is_instance_valid(app.canvas) and app.canvas.document == app.document:
+		app._practice_editor_context = {"root":app.root_ui.get_instance_id(),"navigation":app._navigation_generation,"mode":app.root_ui.process_mode}
+	app._race_menu_visible(false)
+	app.game = app.GAME_SCENE.instantiate()
+	app.game.profile_enabled = app.race_profile_enabled
+	app.game.daily_elimination = daily_rules
+	app.game.set_meta("daily_request",daily_request.duplicate(true))
+	app.game.set("vehicle_id",attempt_vehicle)
+	app.game.process_mode = Node.PROCESS_MODE_DISABLED
+	app.game.cooperative_preparation = true
+	app.game.preparation_current = app._race_installation_current.bind(loading_id,original_scope,navigation_generation,starting_screen,selected_vehicle,starting_selection)
+	app.game.set_meta("soundtrack_rivalry", app.rivalry_racing)
+	app.game.set_meta("race_offline_only", offline_only)
+	app.game.set_meta("tutorial_lesson", tutorial_lesson)
+	if app.challenge_racing:
+		app.game.set_meta("challenge_attempt",{"code":str(rivalry_issued.challenge_code),"stage":int(rivalry_issued.get("_challenge_stage",app.challenges.selected_stage)),"scope":app.challenges.scope()})
+	app.game.set("initial_track", track)
+	app.game.set("prepared_road_packet",prepared_roads)
+	app.game.set("production_mode", true)
+	app.game.set("resume_client",null if tutorial_lesson else app.online.client)
+	app.game.set("resume_ticket_id",str(app.cloud_ticket.get("ticket_id","")))
+	app.game.set("rating_records", null if tutorial_lesson or track.metadata.has("cloud_version") else app.records)
+	app.game.set("preference_records", app.records)
+	app.game.set("editor_test", from_editor)
+	# Competitive tickets can consume limited attempts; keep those races on the
+	# handling contract they were issued for. Tutorial driving also stays fixed.
+	app.game.set("handling_test_enabled", not (app.rivalry_racing or app.challenge_racing or tutorial_lesson or daily_rules != null))
+	app._prepare_race_rating(track)
+	app.game.connect("exit_requested", app._leave_race)
+	app.game.connect("edit_here_requested", app._edit_here)
+	app.game.connect("race_completed", app._results)
+	app.game.connect("practice_lap_completed", app._complete_draft_test,CONNECT_DEFERRED)
+	app.game.connect("retry_requested", app._retry_race)
+	app.game.connect("handling_test_started", func() -> void:
+		if not is_instance_valid(app.game): return
+		app.cloud_ticket = {}
+		app.game.set("resume_ticket_id", "")
+		app.game.set_meta("race_offline_only", true)
+		var vote: Variant = app.game.get("cloud_rating")
+		if is_instance_valid(vote): vote.abandon()
+		app.game.set("cloud_rating", null))
+	app.add_child(app.game)
+	var prepared_game: Node = app.game
+	while is_instance_valid(prepared_game) and app.game == prepared_game and not prepared_game.preparation_complete:
+		await app.get_tree().process_frame
+		if app._race_preparation_changed(loading_id,original_scope,navigation_generation,starting_screen,selected_vehicle,starting_selection):
+			app._discard_preparing_game(prepared_game)
+			return
+	if not is_instance_valid(prepared_game) or app.game != prepared_game: return
+	if is_instance_valid(prepared_game.world_render_preparation):
+		loading.stage("Preparing your drive...")
+		var stage_current: Callable = app._race_installation_current.bind(loading_id,original_scope,navigation_generation,starting_screen,selected_vehicle,starting_selection)
+		if not await prepared_game.world_render_preparation.prepare(app._present_race_loading,stage_current):
+			if app.is_queued_for_deletion(): return
+			app._race_preparation_changed(loading_id,original_scope,navigation_generation,starting_screen,selected_vehicle,starting_selection)
+			if is_instance_valid(prepared_game): app._discard_preparing_game(prepared_game)
+			app._close_race_loading(loading_id)
+			return
+	app.game.opponent_ghost = app.rivalry_racing or app.challenge_racing or (offline_only and app.screen == "challenges")
+	if app.rivalry_racing:
+		app.game.ghost_mode = "race" if not app.rivalry_recording.is_empty() else "off"
+		app.game.ghost_bests = {"race":app.rivalry_recording} if not app.rivalry_recording.is_empty() else {}
+	elif app.challenge_racing or (offline_only and app.screen == "challenges"):
+		app.game.ghost_mode = "race" if not app.challenge_recording.is_empty() else "off"
+		app.game.ghost_bests = {"race":app.challenge_recording} if not app.challenge_recording.is_empty() else {}
+	app.game.call("_prepare_personal_ghost")
+	var hud: PlaygroundHUD = app.game.get("hud")
+	if tutorial_lesson and hud.rewind_button != null: hud.rewind_button.hide()
+	hud.touch.control_scale = app.ui_touch_scale
+	hud.touch.left_handed = app.ui_left_handed
+	hud.touch.haptic_strength = float(app.records.settings.get("steering_haptics",0.2))
+	hud.touch.layout = ControlLayout.from_settings(app.records.settings)
+	hud.touch.show_labels = bool(app.records.settings.get("control_labels", true))
+	# Render the prepared world once with the countdown/input still frozen.
+	app.game.call("_process", 0.0)
+	loading.stage("Preparing start…")
+	var prepared_finish: VehicleWeathering = app.game.get("car_weathering")
+	var finish_warmed: bool = prepared_finish.begin_render_warmup()
+	var prepared_personal_ghost: PersonalGhost = app.game.get("personal_ghost")
+	var ghost_pose: Transform3D = Transform3D.IDENTITY
+	var ghost_visible: bool = false
+	if is_instance_valid(prepared_personal_ghost) and prepared_personal_ghost.mesh != null:
+		ghost_pose = prepared_personal_ghost.transform
+		ghost_visible = prepared_personal_ghost.visible
+		prepared_personal_ghost.position = app.game.get("car").position+Vector3.UP*0.05
+		prepared_personal_ghost.rotation = app.game.get("car").rotation
+		prepared_personal_ghost.show()
+	var bridge_preparation = preload("res://track/bridge_render_preparation.gd")
+	var prepared_bridges: Array[Dictionary] = []
+	if DisplayServer.get_name() != "headless": prepared_bridges = bridge_preparation.begin(app.game.get("track_ground"), app.game.get("camera"))
+	var bridge_meshes: int = prepared_bridges.size()
+	var prepared_hazards: Array[Dictionary] = []
+	if DisplayServer.get_name() != "headless": prepared_hazards = bridge_preparation.begin_groups(app.game.get("track_ground"), app.game.get("camera"), ["race_hazard_rendering"])
+	var hazard_meshes: int = prepared_hazards.size()
+	var trail_preparation = preload("res://vehicle/trail_render_preparation.gd")
+	var prepared_trail: MultiMeshInstance3D = trail_preparation.begin(app.game.get("trails"), app.game.get("camera"), track, app.game.get("sim").state)
+	var trail_warmed: bool = prepared_trail != null
+	var effect_preparation = preload("res://vehicle/effect_render_preparation.gd")
+	var preparation_started: int = Time.get_ticks_usec()
+	var effect_current: Callable = app._race_installation_current.bind(loading_id,original_scope,navigation_generation,starting_screen,selected_vehicle,starting_selection)
+	var prepared_effects: Dictionary = await effect_preparation.prepare(app.game.get_node("World"),app.game.get("sand_dust"),app.game.get("camera"),app.game.get("impact_cracks"),app,app._present_race_loading,effect_current)
+	var effects_drawn: bool = bool(prepared_effects.get("complete",false))
+	var effect_counts: Dictionary = {"particles":prepared_effects.particles,"batches":prepared_effects.batches,"damage_meshes":prepared_effects.damage_meshes,"canvas":prepared_effects.canvas,"reused":int(prepared_effects.get("reused",0))}
+	var finish_drawn: bool = false
+	if effects_drawn and effect_current.is_valid() and effect_current.call() and is_instance_valid(prepared_game) and app.game == prepared_game:
+		finish_drawn = await app._present_race_loading()
+	var night_preparation: Dictionary = {"drawn":false,"items":0,"contexts":0,"sets":0,"elapsed_ms":0.0,"truncated":0,"light_limit":false}
+	if effects_drawn and is_instance_valid(prepared_game) and app.game == prepared_game:
+		night_preparation = await app._prepare_night_lighting(loading_id, prepared_game)
+	if is_instance_valid(prepared_personal_ghost) and prepared_personal_ghost.mesh != null:
+		prepared_personal_ghost.transform = ghost_pose
+		prepared_personal_ghost.visible = ghost_visible
+	# Restore even if navigation or the loading deadline removed the game.
+	bridge_preparation.end(prepared_bridges)
+	bridge_preparation.end(prepared_hazards)
+	if is_instance_valid(prepared_trail): trail_preparation.end(prepared_trail)
+	effect_preparation.end(prepared_effects)
+	var preparation_ms: float = (Time.get_ticks_usec() - preparation_started) / 1000.0
+	# Always restore after the bounded draw wait, including cancellation/focus loss.
+	prepared_finish.end_render_warmup()
+	if not effects_drawn:
+		if app.is_queued_for_deletion(): return
+		app._race_preparation_changed(loading_id,original_scope,navigation_generation,starting_screen,selected_vehicle,starting_selection)
+		if is_instance_valid(prepared_game): app._discard_preparing_game(prepared_game)
+		app._close_race_loading(loading_id)
+		return
+	if finish_warmed and night_preparation.contexts > 0:
+		# Clean and weathered car materials can have separate shader RIDs.
+		var clean_night: Dictionary = await app._prepare_night_lighting(loading_id, prepared_game)
+		night_preparation.drawn = night_preparation.drawn and clean_night.drawn
+		night_preparation.contexts += clean_night.contexts
+		night_preparation.sets += clean_night.sets
+		night_preparation.elapsed_ms += clean_night.elapsed_ms
+		night_preparation.truncated = maxi(night_preparation.truncated, clean_night.truncated)
+		night_preparation.light_limit = night_preparation.light_limit or clean_night.light_limit
+	if (finish_warmed or night_preparation.contexts > 0) and app._race_loading_matches(loading_id) and is_instance_valid(prepared_game) and app.game == prepared_game:
+		app.game.call("_process", 0.0)
+		# The exact clean/livery finish is visible before releasing the loading cover.
+		await app._present_race_loading()
+	if not app._race_loading_matches(loading_id):
+		if is_instance_valid(prepared_game) and app.game == prepared_game and prepared_game.process_mode == Node.PROCESS_MODE_DISABLED:
+			app._leave_race()
+		return
+	if not is_instance_valid(prepared_game) or app.game != prepared_game:
+		app.cloud_starting = false
+		app._close_race_loading(loading_id)
+		return
+	if app._race_preparation_changed(loading_id,original_scope,navigation_generation,starting_screen,selected_vehicle,starting_selection):
+		app.cloud_starting = false
+		app._close_race_loading(loading_id)
+		app._leave_race()
+		return
+	app.game.set("weathering_prepared", finish_drawn)
+	app.game.set("bridge_prepared", finish_drawn and bridge_meshes > 0)
+	app.game.set("bridge_preparation_meshes", bridge_meshes)
+	app.game.set("hazards_prepared", finish_drawn and hazard_meshes > 0)
+	app.game.set("hazard_preparation_meshes", hazard_meshes)
+	app.game.set("trails_prepared", finish_drawn and trail_warmed)
+	app.game.set("effects_prepared", finish_drawn and effect_counts.particles > 0)
+	app.game.set("effect_preparation_counts",effect_counts)
+	app.game.set("night_preparation",night_preparation)
+	# This is the shared covered finish/bridge draw, not isolated bridge GPU time.
+	app.game.set("bridge_preparation_ms", preparation_ms)
+	app.game.preparation_current = Callable()
+	app.game.process_mode = Node.PROCESS_MODE_INHERIT
+	app._telemetry_begin_attempt(track)
+	if app.race_ad_breaks != null and not tutorial_lesson and not app.returning_to_editor and not bool(app.game.get("attempt_practice")): app.race_ad_breaks.prepare()
+	app.cloud_starting = false
+	app._close_race_loading(loading_id)
+
+
+func run_race_installation_current(app: Node, loading_id: int, scope: String, navigation: int, starting_screen: String, vehicle: String, selection: NativeTrack) -> bool:
+	return not app.is_queued_for_deletion() and app._race_loading_matches(loading_id) and scope == app.lifecycle.scope() and navigation == app._navigation_generation and starting_screen == app.screen and vehicle == VehicleCatalog.selected and selection == app.selected_track and (DailyPreparation.find(app.race_loading) == null or DailyPreparation.find(app.race_loading).valid())
+
+
+func run_discard_preparing_game(app: Node, prepared_game: Node) -> void:
+	if not is_instance_valid(prepared_game) or app.game != prepared_game or prepared_game.process_mode != Node.PROCESS_MODE_DISABLED: return
+	prepared_game.cancel_preparation()
+	app.remove_child(prepared_game)
+	prepared_game.queue_free()
+	app.game = null
+	app.cloud_ticket = {}
+	if not app._practice_editor_context.is_empty() and is_instance_valid(app.root_ui) and app.root_ui.get_instance_id() == app._practice_editor_context.root:
+		app.root_ui.process_mode = app._practice_editor_context.mode
+	app._practice_editor_context = {}
+	app._race_menu_visible(true)
+
+func run_prepare_night_lighting(app: Node, loading_id: int, prepared_game: Node) -> Dictionary:
+	var summary: Dictionary = {"drawn":false,"items":0,"contexts":0,"sets":0,"elapsed_ms":0.0,"truncated":0,"light_limit":false}
+	if DisplayServer.get_name() == "headless" or RenderingServer.get_current_rendering_method() != "gl_compatibility": return summary
+	if not app._race_loading_matches(loading_id) or not is_instance_valid(prepared_game) or app.game != prepared_game: return summary
+	var track: NativeTrack = prepared_game.get("native_track")
+	if track == null or track.metadata.get("theme", "pine") != "night_city": return summary
+	var preparation = preload("res://track/night_render_preparation.gd")
+	var started: int = Time.get_ticks_usec()
+	var prepared: Dictionary = preparation.begin(prepared_game.get_node("World"), prepared_game.get("camera"))
+	summary.items = prepared.items
+	summary.truncated = prepared.truncated
+	summary.light_limit = prepared.light_limit
+	if prepared.nodes.size() == 2:
+		for context: int in range(preparation.CONTEXTS):
+			if not app._race_loading_matches(loading_id) or not is_instance_valid(prepared_game) or app.game != prepared_game: break
+			preparation.set_context(prepared, context)
+			if not await app._present_race_loading(): break
+			summary.contexts += 1
+		summary.drawn = summary.contexts == preparation.CONTEXTS
+		summary.sets = 1
+	preparation.end(prepared)
+	summary.elapsed_ms = (Time.get_ticks_usec() - started) / 1000.0
+	return summary
+
+func run_edit_here(app: Node, position: Vector2) -> void:
+	app._leave_race()
+	if is_instance_valid(app.canvas):
+		app.canvas.pan += app.canvas.size*0.5-app.canvas.to_screen(position)
+		app.canvas.refresh()
+
+func run_leave_race(app: Node) -> void:
+	if is_instance_valid(app.game) and app.game.get("free_drive_mode") == true:
+		app._leave_garage_free_drive()
+		return
+	if app._draft_test_save_is_current(app._draft_test_save_context):
+		app._show_draft_test_save_recovery()
+		return
+	app._clear_draft_test_save_recovery()
+	if app.race_ad_breaks != null and app.race_ad_breaks.blocking: return
+	if is_instance_valid(app.game) and app.game.preparation_complete and not app.cloud_ticket.is_empty() and bool(app.game.get("track_session").finished):
+		app._results()
+		if not app.cloud_ticket.is_empty(): return
+	if is_instance_valid(app.game) and app.game.preparation_complete and not app._telemetry_race_finished:
+		var complete: bool = bool(app.game.get("track_session").finished)
+		if app.client_quality != null: app.client_quality.finish_race("finished" if complete else "abandoned")
+		app._telemetry_observe("race_finished" if complete else "race_abandoned",app._telemetry_track_properties(app.game.get("native_track"),"finished" if complete else "exit"))
+		app._telemetry_race_finished = complete
+	if app.product_telemetry != null: app.product_telemetry.set_transport_allowed(true)
+	if is_instance_valid(app.game):
+		app.remove_child(app.game)
+		app.game.queue_free()
+	app.game = null
+	if not app._queued_track_link.is_empty():
+		var queued_track: String = app._queued_track_link
+		app._queued_track_link = ""
+		app._show_screen("tracks")
+		app._receive_track_link.call_deferred(queued_track)
+		return
+	if not app.challenge_queued_invitation.is_empty():
+		var queued: String = app.challenge_queued_invitation
+		app.challenge_queued_invitation = ""
+		app.challenge_racing = false
+		app.rivalry_racing = false
+		app.challenge_result_view = false
+		app._receive_challenge(queued)
+		return
+	if app.challenge_racing or app.challenge_practice:
+		app.challenge_racing = false
+		app.challenge_practice = false
+		app.challenge_result_view = false
+		app._show_screen("challenges")
+	elif app.rivalry_racing:
+		app.rivalry_racing = false
+		app.rivalry_section = "overview"
+		app._show_screen("rivalry")
+	elif not app._resume_practice_editor(): app._show_screen("drafts" if app.test_return_to_drafts else "create" if app.returning_to_editor else "daily" if app.race_area_mode == "daily" else "tracks")
+	app._practice_editor_context = {}
+	app.test_return_to_drafts = false
+	if not app.pending_menu_notice.is_empty():
+		app._notice(app.pending_menu_notice)
+		app.pending_menu_notice = ""
+
+func run_resume_practice_editor(app: Node) -> bool:
+	if not app.returning_to_editor or app.test_return_to_drafts or app._practice_editor_context.is_empty(): return false
+	if not is_instance_valid(app.root_ui) or not is_instance_valid(app.canvas) or not is_instance_valid(app.editor_world): return false
+	if app.root_ui.get_instance_id() != app._practice_editor_context.root or app._navigation_generation != app._practice_editor_context.navigation or app.screen != "create": return false
+	if app.library != app.test_library_snapshot or (app.lifecycle != null and app.lifecycle.scope() != app.test_scope_snapshot) or VehicleCatalog.selected != app.test_vehicle_snapshot: return false
+	if app.document != app.test_document_snapshot or app.canvas.document != app.document: return false
+	app._close_race_loading()
+	app.root_ui.process_mode = app._practice_editor_context.mode
+	app._race_menu_visible(true)
+	NativeTrackVisual.reserve_editor_sections()
+	GameSoundtrack.instance().show_menu()
+	app._update_editor_issues()
+	app._lifecycle_changed()
+	return true
+
+func run_results(app: Node) -> void:
+	if not is_instance_valid(app.game) or not app.game.preparation_complete: return
+	if app.game.daily_elimination != null:
+		app._daily_results()
+		return
+	var result_records: LocalRecords = app.game.get("preference_records")
+	var session: TrackSession = app.game.get("track_session")
+	var track: NativeTrack = app.game.get("native_track")
+	var total: float = session.race_time_seconds()
+	var clean: bool = not bool(app.game.get("attempt_practice")) and not app.returning_to_editor
+	if app._result_game_id == app.game.get_instance_id(): return
+	app._result_game_id = app.game.get_instance_id()
+	if clean and session.finished and app.race_ad_breaks != null: app.race_ad_breaks.record_finish()
+	if app.client_quality != null: app.client_quality.finish_race("finished")
+	app._telemetry_race_finished = true
+	app._telemetry_observe("race_finished",app._telemetry_track_properties(track,"finished"))
+	if app.product_telemetry != null: app.product_telemetry.set_transport_allowed(true)
+	var local_result_notice: String = ""
+	if session.finished and not app.cloud_ticket.is_empty() and (not clean or not app.game.attempt_evidence.eligible(app.game.race_proof)):
+		# Incomplete/practice evidence cannot be retried into a valid upload. It
+		# must not strand Challenge Continue behind an impossible save admission.
+		local_result_notice = "Recording limit reached. This race cannot enter online standings." if not app.game.attempt_evidence.eligible(app.game.race_proof) else "This practice run cannot enter online standings."
+		app.cloud_ticket = {}
+		app.challenge_seed = {}
+		if app.challenge_racing:
+			app.challenges.result_ticket = ""; app.challenges.result_state = ""; app.challenges.outcome = {}; app.challenges.error = local_result_notice
+		if app.rivalry_racing:
+			app.rivalry.result_ticket = ""; app.rivalry.result_state = ""; app.rivalry.error = local_result_notice
+	var online_queued: bool = clean and session.finished and not app.cloud_ticket.is_empty() and app.game.attempt_evidence.eligible(app.game.race_proof)
+	var challenge_source_ticket: String = str(app.cloud_ticket.get("ticket_id",""))
+	var finished_challenge: Dictionary = app._challenge_finished_context(track,total,session.completed_laps,challenge_source_ticket,str(app.game.get("vehicle_id"))) if online_queued else {}
+	if app.challenge_racing and online_queued:
+		app.challenges.begin_result(challenge_source_ticket)
+		app.challenges.poll_result()
+	if not app.challenge_seed.is_empty():
+		app.challenge_seed.ticket_id = challenge_source_ticket
+		app.challenge_seed.finished = finished_challenge.duplicate(true)
+	if app.rivalry_racing:
+		app.rivalry_result_pending = online_queued
+		# Verification runs behind the normal PB/lap summary until Continue.
+		app.rivalry_section = "race_results"
+		if online_queued: app.rivalry.model.preview_result(app.rivalry_track,session.elapsed_ticks,total)
+		else: app.rivalry.model.last_result = {"ms":roundi(total*1000.0)}
+		if online_queued: app.rivalry.poll_result()
+	var previous: float = result_records.best_for(track, app.game.get("handling"))
+	var first_reward_track: bool = track.identity not in result_records.settings.get("raced_tracks",[])
+	if app.rivalry_racing:
+		app.rivalry_race_details = {"previous":previous,"clean":clean and session.finished,
+			"laps":session.completed_laps,"distance_m":track.route_length*session.completed_laps,
+			"theme":str(track.metadata.get("theme","pine")),"route":track.route.duplicate()}
+	GameSoundtrack.instance().results_feedback(previous - total if previous > 0.0 else 0.0, clean and session.finished)
+	var previous_lap: float = float(result_records.records.get(result_records.key_for(track,app.game.get("handling")),{}).get("flying_ms",0))/1000.0
+	var result_data: RaceResultData = RaceResultData.build(track,session.lap_times,app.game.get("lap_telemetry"),bool(app.game.get("attempt_practice")))
+	var flying: float = 0.0
+	for i: int in range(1,session.lap_times.size()):
+		if flying == 0 or session.lap_times[i] < flying: flying = session.lap_times[i]
+	var incident_free: bool = app.game.sim.state.collision_count == 0 and result_data.laps.size() == RaceRules.LAPS
+	for lap: Dictionary in result_data.laps:
+		if lap.get("samples",[]).is_empty() or not lap.get("events",[]).is_empty() or lap.get("events_truncated",false): incident_free = false
+	var reward_facts: Dictionary = {"complete":clean and session.finished,"total":total,"previous":previous,"previous_lap":previous_lap,"flying":flying,"incident_free":incident_free,"first_track":first_reward_track,"track_id":track.identity}
+	var saved: bool = not clean
+	if clean:
+		AchievementProgress.race(result_records,track,str(app.game.get("vehicle_id")),session.lap_times,reward_facts)
+		saved = result_records.record(track, app.game.get("handling"), total, session.lap_times) == OK
+	if clean and saved:
+		var ghost_error: Error = app.game.save_personal_ghost()
+		if ghost_error != OK: app.pending_menu_notice = "Best time saved. Could not save its local ghost."
+	(app.game.get("hud") as PlaygroundHUD).hide()
+	# The summary replaces the menu children. Retire their references before
+	# Continue or a background result update can revisit the previous page.
+	if app.screen == "rivalry" and is_instance_valid(app.content): app._remember_rivalry_standings(app.content)
+	app._stop_menu_page_motion()
+	if is_instance_valid(app._retained_garage) and app.root_ui.is_ancestor_of(app._retained_garage): app._park_garage()
+	app._park_rivalry_page(app.root_ui)
+	app.menu_neighbors.clear()
+	app.content = null
+	app.menu_body = null
+	app.menu_body_slot = null
+	app.menu_body_backgrounds.clear()
+	app._race_menu_visible(true)
+	for child: Node in app.root_ui.get_children():
+		app.root_ui.remove_child(child)
+		child.queue_free()
+	var background = ColorRect.new()
+	background.color = Color.WHITE
+	var blur = ShaderMaterial.new()
+	blur.shader = preload("res://ui/results_backdrop.gdshader")
+	background.material = blur
+	MenuStyle.fill(background)
+	app.root_ui.add_child(background)
+	var center = MarginContainer.new()
+	MenuStyle.fill(center)
+	for side: String in ["left","right"]: center.add_theme_constant_override("margin_"+side,32)
+	for side: String in ["top","bottom"]: center.add_theme_constant_override("margin_"+side,16)
+	app.root_ui.add_child(center)
+	app._apply_editor_safe_area(center)
+	center.resized.connect(app._apply_editor_safe_area.bind(center))
+	var panel = RaceResults.new()
+	panel.circuit = app.track_title(track)
+	panel.vehicle_name = VehicleCatalog.title(app.game.vehicle_id)
+	panel.total = total
+	panel.previous = previous
+	panel.best = result_records.best_for(track,app.game.get("handling"))
+	panel.laps = session.lap_times.duplicate()
+	panel.clean = clean
+	panel.saved = saved
+	panel.verification_notice = local_result_notice
+	panel.editor = app.returning_to_editor
+	panel.challenge_active = app.challenge_racing or app.challenge_practice or not app.challenge_seed.is_empty()
+	panel.challenge_available = online_queued and not app.returning_to_editor and not panel.challenge_active
+	panel.challenge_requested.connect(func() -> void:
+		app._create_challenge_dialog(str(finished_challenge.entry.version_id),str(finished_challenge.vehicle_id),challenge_source_ticket,604800,finished_challenge,0,{},true))
+	panel.result = result_data
+	panel.set_meta("reward_facts",reward_facts)
+	panel.set_meta("reward_ticket",challenge_source_ticket)
+	panel.set_meta("coin_receipt",{"status":"pending" if online_queued else "unavailable","amount":0,"rows":[]})
+	panel.continue_requested.connect(app._results_continue.bind(panel,center))
+	panel.retry_requested.connect(app._retry_race)
+	panel.return_requested.connect(app._leave_race)
+	if bool(app.game.get_meta("tutorial_lesson",false)):
+		var lesson_scroll = ScrollContainer.new()
+		lesson_scroll.name = "TutorialResultScroll"
+		lesson_scroll.horizontal_scroll_mode = ScrollContainer.SCROLL_MODE_DISABLED
+		center.add_child(lesson_scroll)
+		lesson_scroll.add_child(panel)
+	else: center.add_child(panel)
+	if track.metadata.has("cloud_version"):
+		var online_status = Label.new()
+		online_status.name = "CloudRunStatus"
+		online_status.text = "Could not connect to the server. We'll retry automatically."
+		if not app.game.attempt_evidence.eligible(app.game.race_proof): online_status.text = "Saved locally. This attempt exceeds the online recording limit." if clean and saved else "Online recording limit reached. Restart for a verified result."
+		online_status.visible = (online_queued and app.cloud.run_connection_failed) or not app.game.attempt_evidence.eligible(app.game.race_proof)
+		panel.add_child(online_status)
+		if online_queued:
+			var update_status: Callable = func() -> void:
+				if is_instance_valid(online_status): online_status.visible = app.cloud.run_connection_failed
+			app.cloud.changed.connect(update_status)
+			online_status.tree_exiting.connect(func() -> void:
+				if app.cloud.changed.is_connected(update_status): app.cloud.changed.disconnect(update_status))
+	app.root_ui.modulate.a = 0.0
+	app.create_tween().tween_property(app.root_ui, "modulate:a", 1.0, 0.4).set_trans(Tween.TRANS_SINE).set_ease(Tween.EASE_OUT)
+	if online_queued: app._save_result_upload(app.game,app.cloud_ticket,app.game.get("online_frames"),"",app.game.get("online_rewinds"))
+	if clean and session.finished: app._try_race_ad.call_deferred(app._result_game_id,panel)
+
+func run_try_race_ad(app: Node, finished_game: int, panel: Control) -> void:
+	if is_instance_valid(app.game) and bool(app.game.get_meta("tutorial_lesson",false)): return
+	if app.race_ad_breaks == null: return
+	if app.game_configuration != null:
+		app.game_configuration.set_transport_allowed(true)
+		app.game_configuration.at_result(false)
+		app._remote_config_changed()
+	var at_break: Callable = func() -> bool:
+		return app._publishing_slots_foreground and is_instance_valid(app.game) and app.game.preparation_complete and app.game.get_instance_id() == finished_game and bool(app.game.get("track_session").finished) and is_instance_valid(panel) and panel.is_visible_in_tree()
+	if app.game_configuration != null and app.game_configuration.negotiated and app.race_ad_breaks.enabled and is_instance_valid(app.race_ad_breaks.adapter) and app.race_ad_breaks.adapter.supported():
+		await app.game_configuration.renew_result_permission()
+	if not at_break.call(): return
+	if app.game_configuration != null and app.game_configuration.needs_ad_exposure() and app.race_ad_breaks.enabled and is_instance_valid(app.race_ad_breaks.adapter) and app.race_ad_breaks.adapter.supported():
+		var eligible: bool = await app.race_ad_breaks._eligible(preload("res://backend/store_access_cache.gd").identity(app.online.client))
+		if eligible and at_break.call() and app.game_configuration.needs_ad_exposure(): app.game_configuration.expose("ads","race_result")
+	if not at_break.call(): return
+	var was_due: bool = app.race_ad_breaks.due() and app.race_ad_breaks.can_present()
+	var outcome: Dictionary = await app.race_ad_breaks.show_if_due(at_break)
+	if app.game_configuration != null and at_break.call():
+		app.game_configuration.record_ad_decision("shown" if outcome.get("shown",false) else "unavailable" if was_due else "suppressed")
+
+func run_save_result_upload(app: Node, completed_game: Node, ticket_data: Dictionary, frames: Variant, publish_version: String, rewinds: Array) -> void:
+	ticket_data = ticket_data.duplicate()
+	if is_instance_valid(completed_game) and not completed_game.attempt_evidence.eligible(completed_game.race_proof): return
+	if is_instance_valid(completed_game) and completed_game.get("race_proof") != null and bool(app.cloud.client.get("_capabilities").get("lightweight_race_proofs",false)):
+		var proof: Dictionary = completed_game.race_proof.recording(completed_game.track_session)
+		if not proof.is_empty():
+			var incidents: Dictionary = preload("res://race/race_incidents.gd").build(completed_game.track_session,completed_game.lap_telemetry,completed_game.sim.state)
+			if not incidents.is_empty(): proof.incidents = incidents
+			ticket_data["_race_proof"] = proof
+			ticket_data["_race_ghost_source"] = completed_game.ghost_run.snapshot_for_save()
+			ticket_data["_claimed_lap_ticks"] = preload("res://backend/backend_client.gd")._lap_tick_summary(completed_game.track_session.lap_times,completed_game.track_session.elapsed_ticks,completed_game.track_session.tick_rate)
+	if not app.cloud.enqueue_completed(ticket_data,frames,publish_version,rewinds):
+		app._notice("This recorded result could not enter the save queue. Keep this race open and free storage.")
+		return
+	# Ownership transfers immediately; navigation never cancels its durable save.
+	if is_instance_valid(completed_game) and app.game == completed_game:
+		app.cloud_ticket = {}
+
+func run_results_continue(app: Node, results: RaceResults, parent: Control) -> void:
+	if app.race_ad_breaks != null and app.race_ad_breaks.blocking: return
+	if app.challenge_practice:
+		app.challenge_practice = false
+		app._clear_challenge_game()
+		app._show_screen("challenges")
+		return
+	if app.challenge_racing:
+		if not app.cloud_ticket.is_empty():
+			app._save_result_upload(app.game,app.cloud_ticket,app.game.get("online_frames"),"",app.game.get("online_rewinds"))
+			if not app.cloud_ticket.is_empty(): return
+		app.challenge_result_view = true
+		# Feedback can select another track or invitation. It owns no retryable Game.
+		app._clear_challenge_game()
+		app._show_screen("challenges")
+		app.challenges.poll_result()
+		return
+	if not app.challenge_seed.is_empty():
+		var seed: Dictionary = app.challenge_seed.duplicate(true)
+		app.challenge_seed = {}
+		if is_instance_valid(app.game):
+			app.remove_child(app.game)
+			app.game.queue_free()
+			app.game = null
+		app._open_challenges()
+		app._create_challenge_dialog(str(seed.version_id),str(seed.vehicle_id),str(seed.get("ticket_id","")),int(seed.get("duration_seconds",604800)),seed.get("finished",{}),int(seed.get("attempt_limit",0)),seed.get("configuration",{}))
+		return
+	if app.rivalry_racing:
+		app.rivalry_section = "result"
+		app._show_screen("rivalry")
+		if app.rivalry_result_pending: app.rivalry.poll_result()
+		return
+	results.hide()
+	var page = RaceComplete.new()
+	page.results = results
+	page.rating_records = app.records
+	page.rating_track_id = (app.game.get("native_track") as NativeTrack).identity
+	page.cloud_client = app.online.client
+	app._configure_result_comparisons()
+	page.comparison_cache = app.discovery_provider.comparisons
+	page.cloud_sync = app.cloud
+	var finish_vote: Variant = app.game.get("cloud_rating")
+	if is_instance_valid(finish_vote): page.finish_vote = finish_vote
+	page.vehicle_id = str(app.game.get("vehicle_id"))
+	page.cloud_version = str((app.game.get("native_track") as NativeTrack).metadata.get("cloud_version",""))
+	page.facts = results.get_meta("reward_facts",{})
+	page.economy = app.cosmetic_economy
+	page.reward_ticket = str(results.get_meta("reward_ticket",""))
+	page.coin_receipt = results.get_meta("coin_receipt",{})
+	app._ensure_track_catalog()
+	if app.track_catalog.indexed_revision != app.library.revision:
+		app.track_catalog.entries.clear()
+		if app.cloud != null:
+			app.cloud.add_to_catalog(app.track_catalog,app.discovery_provider)
+		else:
+			for id: String in app.BUILTIN_IDS: app.track_catalog.add_builtin(id)
+			for id: String in app.track_catalog.local_ids(): app.track_catalog.add_local(id)
+		app.track_catalog.indexed_revision = app.library.revision
+	page.recommendations = RaceRecommendations.suggest(app.track_catalog,app.game.get("native_track"))
+	page.back_requested.connect(func() -> void:
+		parent.remove_child(page)
+		page.queue_free()
+		results.show())
+	page.home_requested.connect(func() -> void:
+		if is_instance_valid(app.game):
+			app.remove_child(app.game)
+			app.game.queue_free()
+		app.game = null
+		app.returning_to_editor = false
+		app._show_screen("tracks"))
+	page.tracks_requested.connect(app._leave_race)
+	page.race_requested.connect(app._next_result_race)
+	parent.add_child(page)
+
+func run_next_result_race(app: Node, recommendation: Dictionary) -> void:
+	if app.race_ad_breaks != null and app.race_ad_breaks.blocking: return
+	var next_track: NativeTrack = app.track_catalog.cached_track(recommendation.entry)
+	if next_track == null:
+		next_track = app.cloud.presentation_track(recommendation.entry) if recommendation.entry.source == "cloud" else app.track_catalog.resolve(recommendation.entry)
+	if next_track == null:
+		app._notice("This track is no longer available. Choose another track.")
+		return
+	if is_instance_valid(app.game):
+		app.remove_child(app.game)
+		app.game.queue_free()
+	app.game = null
+	app.selected_track = next_track
+	app._start_race(next_track,false)
+
+func run_result_capacity_available(app: Node) -> bool:
+	app.cloud._ensure_result_saves()
+	if app.cloud.result_saves.can_start_attempt(): return true
+	app._notice("Previous results are waiting for storage. Free space or race offline.")
+	return false
+
+func run_retry_race(app: Node, offline_only: bool = false) -> void:
+	if is_instance_valid(app.game) and app.game.daily_elimination != null:
+		app._retry_daily_race()
+		return
+	if app.race_ad_breaks != null and app.race_ad_breaks.blocking: return
+	if app.cloud_starting or not is_instance_valid(app.game) or not app.game.preparation_complete: return
+	if app.product_telemetry != null: app.product_telemetry.set_transport_allowed(false)
+	if not app.cloud_ticket.is_empty() and bool(app.game.get("track_session").finished):
+		app._results()
+		if not app.cloud_ticket.is_empty(): return
+	var active_game: Node = app.game
+	var account_id: String = str(app.online.client.player.get("id",""))
+	var origin: String = str(app.online.client.base_url())
+	var track: NativeTrack = app.game.get("native_track")
+	var replacement: Dictionary = {}
+	var retry_offline: bool = (offline_only or bool(app.game.get_meta("race_offline_only",false))) and not (app.rivalry_racing or app.challenge_racing)
+	var challenge_attempt: Dictionary = app.game.get_meta("challenge_attempt",{})
+	if app.challenge_racing and (not app.online.client.signed_in() or str(challenge_attempt.get("scope","")) != app.challenges.scope() or str(challenge_attempt.get("code","")) != str(app.challenges.selected.get("code",""))):
+		app._notice("Open the challenge and select a track to race again.")
+		return
+	if not retry_offline and track.metadata.has("cloud_version") and app.online.client.signed_in():
+		if not app._result_capacity_available(): return
+		app.cloud_starting = true
+		var issued: Dictionary = await app.challenges.ticket(int(challenge_attempt.get("stage",0))) if app.challenge_racing else await app.rivalry.ticket(app.rivalry_track) if app.rivalry_racing else {}
+		if app.game != active_game or not is_instance_valid(active_game) or str(app.online.client.player.get("id","")) != account_id or str(app.online.client.base_url()) != origin:
+			app.cloud_starting = false
+			return
+		replacement = await app.cloud.ticket(track,false,str(active_game.get("vehicle_id")),active_game.get("handling"),issued) if not (app.rivalry_racing or app.challenge_racing) or not issued.is_empty() else {}
+		if app.game != active_game or not is_instance_valid(active_game) or str(app.online.client.player.get("id","")) != account_id or str(app.online.client.base_url()) != origin:
+			app.cloud_starting = false
+			return
+		if replacement.is_empty():
+			app.cloud_starting = false
+			if app.rivalry_racing or app.challenge_racing:
+				var failure: String = app.challenges.error if app.challenge_racing and issued.is_empty() else app.cloud.last_error
+				app._notice("Could not start verified retry: "+(failure if not failure.is_empty() else "Check your connection and try again."))
+			else:
+				var offline_dialog = ConfirmationDialog.new()
+				offline_dialog.title = "Online race unavailable"
+				offline_dialog.dialog_text = app.cloud.last_error+"\nRestart offline with a local time? This attempt will not enter the online leaderboard."
+				offline_dialog.ok_button_text = "Race offline"
+				app._own_dialog(offline_dialog)
+				offline_dialog.confirmed.connect(func() -> void:
+					if app.game == active_game and is_instance_valid(active_game) and str(app.online.client.player.get("id","")) == account_id and str(app.online.client.base_url()) == origin:
+						app._retry_race(true))
+				offline_dialog.popup_centered()
+			return
+	if app.challenge_racing:
+		# Keep the start lock through the optional download; repeated presses
+		# during this await must not spend another track's try.
+		app.challenge_recording = await app.challenges.ghost(int(challenge_attempt.get("stage",0)))
+		if app.game != active_game or not is_instance_valid(active_game) or str(app.online.client.player.get("id","")) != account_id or str(app.online.client.base_url()) != origin or str(challenge_attempt.get("code","")) != str(app.challenges.selected.get("code","")):
+			app.cloud_starting = false
+			return
+		app.challenge_result_view = false
+		app.challenges.result_ticket = ""
+		app.challenges.result_state = ""
+	if app.rivalry_racing:
+		app.cloud_starting = true
+		var refreshed_recording: Dictionary = await app._rivalry_ghost(app.rivalry_track,app.rivalry_ghost_choice,true)
+		app.cloud_starting = false
+		if app.game != active_game or not is_instance_valid(active_game) or str(app.online.client.player.get("id","")) != account_id or str(app.online.client.base_url()) != origin: return
+		app.rivalry_recording = refreshed_recording
+	app.cloud_starting = false
+	app.cloud_ticket = replacement
+	if app.rivalry_racing:
+		app.rivalry.result_ticket = str(replacement.get("ticket_id",""))
+		app.rivalry.result_state = ""
+		app.rivalry_result_pending = false
+	if not app.cloud_ticket.is_empty():
+		app.cloud_ticket._owner_id = account_id
+		app.cloud_ticket._origin = origin
+	app._race_menu_visible(false)
+	(app.game.get("hud") as PlaygroundHUD).show()
+	app.game.set("resume_ticket_id",str(app.cloud_ticket.get("ticket_id","")))
+	app.game.set("preference_records",app.records) # A confirmed restart begins a new attempt.
+	app.game.set("rating_records",null if bool(app.game.get_meta("tutorial_lesson",false)) or track.metadata.has("cloud_version") else app.records)
+	app._prepare_race_rating(track)
+	app.game.set_meta("race_offline_only",retry_offline)
+	# Retry reuses the Game node but starts a new scored attempt. Keep duplicate
+	# finish signals idempotent within an attempt, without suppressing its retry.
+	app._result_game_id = 0
+	if app.client_quality != null: app.client_quality.finish_race("restarted")
+	if not app._telemetry_race_finished: app._telemetry_observe("race_abandoned",app._telemetry_track_properties(track,"restart"))
+	app._telemetry_observe("race_retried",app._telemetry_track_properties(track,"restart"))
+	app._telemetry_begin_attempt(track)
+	app.game.call("restart")
+	app.game.opponent_ghost = app.rivalry_racing or app.challenge_racing
+	if app.rivalry_racing:
+		app.game.ghost_mode = "race" if not app.rivalry_recording.is_empty() else "off"
+		app.game.ghost_bests = {"race":app.rivalry_recording} if not app.rivalry_recording.is_empty() else {}
+	elif app.challenge_racing:
+		app.game.ghost_mode = "race" if not app.challenge_recording.is_empty() else "off"
+		app.game.ghost_bests = {"race":app.challenge_recording} if not app.challenge_recording.is_empty() else {}
+	app.game.call("_prepare_personal_ghost")
+
+func run_prepare_race_rating(app: Node, track: NativeTrack) -> void:
+	var previous_vote: Variant = app.game.get("cloud_rating")
+	if is_instance_valid(previous_vote): previous_vote.abandon()
+	app.game.set("cloud_rating",null)
+	if app.cloud_ticket.is_empty() or bool(app.game.get("editor_test")) or not track.metadata.has("cloud_version"): return
+	var vote = preload("res://backend/finish_rating.gd").new()
+	vote.client = app.online.client
+	vote.sync = app.cloud
+	if app.rivalry_racing: vote.rivalry_sync = app.rivalry
+	vote.version = str(track.metadata.cloud_version)
+	vote.creator_id = str(track.metadata.get("cloud_creator_id",""))
+	app.cloud.add_child(vote)
+	app.game.set("cloud_rating",vote)
+

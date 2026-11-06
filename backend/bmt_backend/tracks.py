@@ -159,6 +159,14 @@ def hide(track_id: str, session: DB, player: Auth, key: Key) -> dict:
     )
 
 
+@router.get("/me/profile-statistics")
+def my_profile_statistics(session: DB, player: Auth, response: Response) -> dict:
+    from .profile_statistics import car_history
+
+    response.headers["Cache-Control"] = "private, no-store"
+    return car_history(session, player.id)
+
+
 @router.get("/me/tracks")
 def my_tracks(
     request: Request,
@@ -167,6 +175,7 @@ def my_tracks(
     offset: int = Query(0, ge=0, le=10000),
     limit: int = Query(20, ge=1, le=100),
     heads: bool = False,
+    profile_stats: bool = False,
 ) -> dict:
     latest_query = select(TrackVersion.track_id, func.max(TrackVersion.number).label("number"))
     if request.app.state.settings.local_drafts_only:
@@ -184,8 +193,15 @@ def my_tracks(
         .offset(offset)
         .limit(limit + 1)
     ).all()
+    items = [_payload(request, session, row) for row in versions[:limit]]
+    if profile_stats:
+        from .profile_statistics import track_races
+
+        counts = track_races(session, [row.id for row in versions[:limit]])
+        for item in items:
+            item["verified_races"] = counts[item["version_id"]]
     return {
-        "items": [_payload(request, session, row) for row in versions[:limit]],
+        "items": items,
         "next_offset": offset + limit if len(versions) > limit else None,
     }
 

@@ -4,6 +4,7 @@ render_mode unshaded;
 // Opaque laminated glazing: one fixed analytic environment, with no scene
 // capture or screen read. Shared-car glazing and production lights are intact.
 uniform bool studio_mode = false;
+uniform bool night_mode = false;
 uniform bool mirror_surface = false;
 uniform bool show_frit = true;
 uniform vec3 glass_tint_srgb = vec3(0.045, 0.074, 0.090);
@@ -25,10 +26,25 @@ void fragment() {
 		float key = pow(max(0.0,dot(direction,normalize(vec3(-0.65,0.8,-0.35)))),6.0);
 		float fill = pow(max(0.0,dot(direction,normalize(vec3(0.8,0.35,0.5)))),12.0);
 		environment = vec3(0.07,0.11,0.14)+vec3(0.42,0.48,0.52)*key+vec3(0.17,0.21,0.24)*fill;
+	} else if (night_mode) {
+		// Moonlit glass retains its curved reflection without reflecting a
+		// daytime sky as a pale panel against the dark body and road.
+		environment = mix(vec3(0.025,0.035,0.050),vec3(0.10,0.14,0.20),sky);
 	}
 	// An explicitly display-space palette avoids implicit/default uniform
 	// conversions. Compatibility writes sRGB; Mobile expects linear output.
 	vec3 colour = mix(glass_tint_srgb*0.55,environment,0.38+0.42*fresnel);
+	if (night_mode && !studio_mode && !show_frit && !mirror_surface) {
+		// The unfritted canopy faces the sky. Avoid a saturated, uniform sky
+		// fill: its curved normals should reveal a quiet reflection instead.
+		vec3 night_sky = mix(vec3(0.04,0.06,0.085),vec3(0.12,0.16,0.28),smoothstep(0.35,0.95,direction.y));
+		// Matches the Night directional light (-58, -35 degrees).
+		float moon = pow(max(0.0,dot(direction,normalize(vec3(-0.304,0.848,0.434)))),8.0);
+		night_sky += vec3(0.10,0.12,0.15)*moon;
+		colour = mix(glass_tint_srgb*0.55,night_sky,0.23+0.50*fresnel);
+		float edge = min(min(UV.x,1.0-UV.x),min(UV.y,1.0-UV.y));
+		colour = mix(vec3(0.006,0.010,0.013),colour,smoothstep(0.0,0.025,edge));
+	}
 	// One analytic reflection response in both renderers, with a fitted frit.
 	// No extra scene capture, transparency sorting, or screen-reading pass.
 	if (!mirror_surface && show_frit) {

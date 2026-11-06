@@ -1,0 +1,3455 @@
+diff --git a/AGENTS.md b/AGENTS.md
+--- a/AGENTS.md
++++ b/AGENTS.md
+@@ -1,3 +1,8 @@
++<!-- FIRST-USE-GRAPHICS-20261105 -->
++## Inactive surface shader branches are removed before native preparation (2026-11-05)
++FUG01-FUG03/Q01: Allowlisted fixed Compatibility flags remove only proven unreachable bodies; uniforms, active shading, dynamic bridges, other renderers and existing64-source bounds remain. Native attribution finds31.433s whole-run linking and a6.482s first particle-stage draw dominated by car/world programs;187 captured keys remain, unused custom-radiance usage disappears from24 Pine programs. Three controlled fresh-source experiments give six-surface medians9.749to9.168s, with98ms final Pine pruning CPU; component-only, no total-loading/phone claim. Production15views/restored controls pixel-exact, GPU medians within0.7%;719/0 final assertions include123/0 Compatibility and133/0 desktop Mobile with five zero-contact opening laps each. One Mobile Desert draw pipeline remains. Rejected radiance-only experiment, fixture/option failures and original teardown warnings retained. [Implementation, commands, controls, limits and task-only checkpoint](docs/FIRST_USE_GRAPHICS_2026_11_05.md). Reload/owner/device acceptance remain; no device query/test, APK, owner-save/process change, backend/live request, deployment or main-index write; concurrent work preserved.
++<!-- /FIRST-USE-GRAPHICS-20261105 -->
++
+ <!-- DAILY-LOADING-OVERLAP-20261105 -->
+ ## Daily limits read overlaps selected-track CPU preparation (2026-11-05)
+ DLO01-DLO04: One loading-cover receipt starts a fresh read only after the race tap, across compiled/metadata hydration paths. CPU and limits join before installation; original full manifest/cutoff checks, ten laps/tick0/countdown360 and fresh retries remain. Account/client/session/navigation/car/object/full source/version/day pins and monotonic expiry include read/CPU/render waits; weak static reads release on owner teardown. Controlled300ms CPU/200ms response joins524/513to309/314ms; two artificial-delay samples, no live/cold/phone claim. Eight final-runtime runs301/0 include native/headless98/0 each and real unfinished-worker7/0; archived controller reproduces the overlap failure8/1. Initial missing-meta, teardown, native fixture deadline, timing and parser findings retained. [Implementation, controls, commands, limits and checked task-only patch](docs/DAILY_LOADING_OVERLAP_2026_11_05.md). Reload/owner/device acceptance remain; no device query/test, APK, owner-save/process change, real authentication, live/backend request, deployment or main-index write; concurrent work preserved.
+diff --git a/DEVELOPMENT_STATUS.md b/DEVELOPMENT_STATUS.md
+--- a/DEVELOPMENT_STATUS.md
++++ b/DEVELOPMENT_STATUS.md
+@@ -1,3 +1,8 @@
++<!-- FIRST-USE-GRAPHICS-20261105 -->
++## Inactive surface shader branches are removed before native preparation (2026-11-05)
++FUG01-FUG03/Q01: Allowlisted fixed Compatibility flags remove only proven unreachable bodies; uniforms, active shading, dynamic bridges, other renderers and existing64-source bounds remain. Native attribution finds31.433s whole-run linking and a6.482s first particle-stage draw dominated by car/world programs;187 captured keys remain, unused custom-radiance usage disappears from24 Pine programs. Three controlled fresh-source experiments give six-surface medians9.749to9.168s, with98ms final Pine pruning CPU; component-only, no total-loading/phone claim. Production15views/restored controls pixel-exact, GPU medians within0.7%;719/0 final assertions include123/0 Compatibility and133/0 desktop Mobile with five zero-contact opening laps each. One Mobile Desert draw pipeline remains. Rejected radiance-only experiment, fixture/option failures and original teardown warnings retained. [Implementation, commands, controls, limits and task-only checkpoint](docs/FIRST_USE_GRAPHICS_2026_11_05.md). Reload/owner/device acceptance remain; no device query/test, APK, owner-save/process change, backend/live request, deployment or main-index write; concurrent work preserved.
++<!-- /FIRST-USE-GRAPHICS-20261105 -->
++
+ <!-- DAILY-LOADING-OVERLAP-20261105 -->
+ ## Daily limits read overlaps selected-track CPU preparation (2026-11-05)
+ DLO01-DLO04: One loading-cover receipt starts a fresh read only after the race tap, across compiled/metadata hydration paths. CPU and limits join before installation; original full manifest/cutoff checks, ten laps/tick0/countdown360 and fresh retries remain. Account/client/session/navigation/car/object/full source/version/day pins and monotonic expiry include read/CPU/render waits; weak static reads release on owner teardown. Controlled300ms CPU/200ms response joins524/513to309/314ms; two artificial-delay samples, no live/cold/phone claim. Eight final-runtime runs301/0 include native/headless98/0 each and real unfinished-worker7/0; archived controller reproduces the overlap failure8/1. Initial missing-meta, teardown, native fixture deadline, timing and parser findings retained. [Implementation, controls, commands, limits and checked task-only patch](docs/DAILY_LOADING_OVERLAP_2026_11_05.md). Reload/owner/device acceptance remain; no device query/test, APK, owner-save/process change, real authentication, live/backend request, deployment or main-index write; concurrent work preserved.
+diff --git a/game/track/surface_shader_variants.gd b/game/track/surface_shader_variants.gd
+--- a/game/track/surface_shader_variants.gd
++++ b/game/track/surface_shader_variants.gd
+@@ -150,6 +150,10 @@
+ 		source = factors.sub(source,"",true)
+ 		var header_end: int = source.find(";",source.find("render_mode")) + 1
+ 		source = source.insert(header_end,"\n" + factor_declaration.get_string())
++	if compatibility and fold_flags:
++		var fixed_names: Array[String] = FLAGS.duplicate()
++		for flag: String in MATERIAL_FLAGS: fixed_names.append("fixed_"+flag)
++		source = preload("res://track/surface_shader_pruning.gd").reduce(source,fixed_names)
+ 	var key: String = source.sha256_text()
+ 	if not cache.has(key):
+ 		var shader := Shader.new()
+diff --git a/game/tests/test_shader_variant_consolidation.gd b/game/tests/test_shader_variant_consolidation.gd
+--- a/game/tests/test_shader_variant_consolidation.gd
++++ b/game/tests/test_shader_variant_consolidation.gd
+@@ -10,8 +10,13 @@
+ 	if not ok: failures += 1; push_error(label)
+ 
+ # The sampler-budget follow-up changes only these three unreachable declarations.
+-# All other source bytes still compare against the independent original fixtures.
++# The first-use pass also removes proven inactive bodies. Its parsing and scope
++# contract is tested separately; retain the prior sharing/binding/cache checks.
+ func sampler_contract(source: String) -> String:
++	if RenderingServer.get_current_rendering_method() == "gl_compatibility":
++		var names: Array[String] = SurfaceShaderVariants.FLAGS.duplicate()
++		for flag: String in SurfaceShaderVariants.MATERIAL_FLAGS: names.append("fixed_"+flag)
++		source = preload("res://track/surface_shader_pruning.gd").reduce(source,names)
+ 	for name: String in ["painted_grass_texture","snow_road_sources","road_mask"]:
+ 		var declaration := RegEx.new()
+ 		declaration.compile("(?m)^(uniform sampler2D "+name+"\\b[^;]*;|#define "+name+" surface_factors)\\r?$")
+@@ -46,7 +51,7 @@
+ 			var measured: ShaderMaterial = dynamic.duplicate()
+ 			validated.specialize(measured)
+ 			var expected: ShaderMaterial = measured if RenderingServer.get_current_rendering_method() == "gl_compatibility" else control
+-			check(sampler_contract(actual.shader.code) == sampler_contract(expected.shader.code),theme+" retains validated source except the three audited sampler declarations")
++			check(sampler_contract(actual.shader.code) == sampler_contract(expected.shader.code),theme+" retains validated source after audited sampler and inactive-body passes")
+ 			old_hashes[sampler_contract(control.shader.code).sha256_text()] = true
+ 			new_hashes[sampler_contract(actual.shader.code).sha256_text()] = true
+ 			var bindings_equal: bool = true
+diff --git a/game/track/surface_shader_pruning.gd b/game/track/surface_shader_pruning.gd
+new file mode 100644
+--- /dev/null
++++ b/game/track/surface_shader_pruning.gd
+@@ -0,0 +1,85 @@
++extends RefCounted
++## Remove unreachable bodies before Godot records native shader feature usage.
++## Conditions, else branches, public uniforms and active arithmetic stay intact.
++static func reduce(source: String, names: Array[String]) -> String:
++	if source.is_empty(): return source
++	var masked: String = _mask(source)
++	var constants: Dictionary = {}
++	var declarations := RegEx.new()
++	declarations.compile("(?m)^\\s*const\\s+bool\\s+(\\w+)\\s*=\\s*(true|false)\\s*;")
++	for found: RegExMatch in declarations.search_all(masked):
++		var name: String = found.get_string(1)
++		if name not in names: continue
++		var prefix: String = masked.substr(0,found.get_start())
++		if prefix.count("{") != prefix.count("}"): continue
++		# A local variable/parameter or a second conditional declaration makes
++		# the name ambiguous. Keep its original branches in that case.
++		var bindings := RegEx.new()
++		bindings.compile("\\bbool\\s+"+name+"\\b")
++		if bindings.search_all(masked).size() != 1: continue
++		bindings.compile("\\bbool\\s+[^;{}]*,\\s*"+name+"\\b")
++		if bindings.search(masked) != null: continue
++		var macros := RegEx.new()
++		macros.compile("(?m)^\\s*#\\s*(define|undef)\\s+"+name+"\\b")
++		if macros.search(masked) != null: continue
++		constants[name] = found.get_string(2) == "true"
++	var guards := RegEx.new()
++	guards.compile("\\bif\\s*\\(\\s*(!?)\\s*(\\w+)\\s*(?=\\)|&&)")
++	var edits: Array[Vector2i] = []
++	var until: int = -1
++	for found: RegExMatch in guards.search_all(masked):
++		if found.get_start() < until: continue
++		var flag: String = found.get_string(2)
++		if not constants.has(flag): continue
++		var value: bool = constants[flag]
++		if found.get_string(1) == "!": value = not value
++		if value: continue
++		var open: int = masked.find("(",found.get_start())
++		var depth: int = 1
++		var index: int = open+1
++		var ambiguous: bool = false
++		while index < masked.length() and depth > 0:
++			var char: String = masked[index]
++			if char == "(": depth += 1
++			elif char == ")": depth -= 1
++			elif char == "#" or (depth == 1 and char in ["|","^","?",","]): ambiguous = true
++			index += 1
++		if depth != 0 or ambiguous: continue
++		while index < masked.length() and masked[index] in [" ","\t","\n","\r"]: index += 1
++		if index >= masked.length() or masked[index] != "{": continue
++		open = index; depth = 1; index += 1
++		while index < masked.length() and depth > 0:
++			if masked[index] == "{": depth += 1
++			elif masked[index] == "}": depth -= 1
++			index += 1
++		if depth != 0: continue
++		# Preprocessor directives can affect text outside a runtime-false body.
++		if masked.substr(open+1,index-open-2).contains("#"): continue
++		edits.append(Vector2i(open+1,index-1))
++		until = index
++	# Reverse offsets keep nested and adjacent removals independent.
++	for edit_index: int in range(edits.size()-1,-1,-1):
++		var edit: Vector2i = edits[edit_index]
++		source = source.substr(0,edit.x)+source.substr(edit.y)
++	return source
++
++static func _mask(source: String) -> String:
++	# A same-length character mask keeps Unicode offsets valid while excluding
++	# comments and quoted include paths from brace and declaration matching.
++	var result: PackedStringArray = source.split("")
++	var index: int = 0
++	while index < result.size():
++		if source.substr(index,2) == "//":
++			while index < result.size() and source[index] != "\n": result[index] = " "; index += 1
++		elif source.substr(index,2) == "/*":
++			var end: int = source.find("*/",index+2)
++			end = source.length() if end < 0 else end+2
++			while index < end: result[index] = " "; index += 1
++		elif source[index] == '"':
++			result[index] = " "; index += 1
++			while index < result.size():
++				var char: String = source[index]; result[index] = " "; index += 1
++				if char == "\\" and index < result.size(): result[index] = " "; index += 1
++				elif char == '"': break
++		else: index += 1
++	return "".join(result)
+diff --git a/game/tests/test_surface_shader_pruning.gd b/game/tests/test_surface_shader_pruning.gd
+new file mode 100644
+--- /dev/null
++++ b/game/tests/test_surface_shader_pruning.gd
+@@ -0,0 +1,58 @@
++extends SceneTree
++const PRUNE = preload("res://track/surface_shader_pruning.gd")
++var checks: int = 0
++var failures: int = 0
++const NAMES: Array[String] = ["fixed_test"]
++func check(ok: bool, label: String) -> void:
++	checks += 1
++	if not ok: failures += 1; push_error(label)
++func _initialize() -> void: run.call_deferred()
++func run() -> void:
++	var header := "const bool fixed_test = false;\n"
++	var body := "RADIANCE = vec4(1.0);"
++	var cases: Array = [
++		["if (fixed_test) {"+body+"} else { ALBEDO = vec3(0.2); }","if (fixed_test) {} else { ALBEDO = vec3(0.2); }"],
++		["if (fixed_test && (other || third)) {"+body+"}","if (fixed_test && (other || third)) {}"],
++		["if (fixed_test) {if (other) {"+body+"}}","if (fixed_test) {}"],
++		["if (fixed_test) {/* } é */ "+body+"}","if (fixed_test) {}"],
++		["if (fixed_test) {"+body+"} if (fixed_test) {"+body+"}","if (fixed_test) {} if (fixed_test) {}"]]
++	for pair: Array in cases:
++		var source: String = header+pair[0]
++		var result: String = PRUNE.reduce(source,NAMES)
++		check(result == header+pair[1],"false guard preserves surrounding code")
++		check(PRUNE.reduce(result,NAMES) == result,"pruning is idempotent")
++	for condition: String in ["!fixed_test","fixed_test || other","fixed_test && other || third","fixed_test && other ? a : b","fixed_test ^^ other","other && fixed_test","(fixed_test)"]:
++		var source: String = header+"if ("+condition+") {"+body+"}"
++		check(PRUNE.reduce(source,NAMES) == source,"active or unsupported condition stays exact: "+condition)
++	for source: String in ["",header+"if (fixed_test) "+body,header+"if (fixed_test) {"+body,
++		header+"void helper(bool fixed_test) {if (fixed_test) {"+body+"}}",
++		header+"void helper() {bool fixed_test = true; if (fixed_test) {"+body+"}}",
++		header+"void helper() {bool other = true, fixed_test = true; if (fixed_test) {"+body+"}}",
++		header+"void helper() {bool other = helper(), fixed_test = true; if (fixed_test) {"+body+"}}",
++		"void helper() {\n"+header+"if (fixed_test) {"+body+"}}",
++		header+"#define fixed_test other\nif (fixed_test) {"+body+"}",
++		header+"if (fixed_test) {\n#define EXTERNAL 1\n"+body+"}",
++		"// "+header+"if (fixed_test) {"+body+"}",
++		"/* "+header+"*/ if (fixed_test) {"+body+"}"]:
++		check(PRUNE.reduce(source,NAMES) == source,"empty, ambiguous, local and preprocessor cases stay exact")
++	var unknown := "const bool other = false;\nif (other) {"+body+"}"
++	check(PRUNE.reduce(unknown,NAMES) == unknown,"unknown constants stay exact")
++	var true_source := "const bool fixed_test = true;\nif (!fixed_test) {"+body+"}"
++	check(PRUNE.reduce(true_source,NAMES) == "const bool fixed_test = true;\nif (!fixed_test) {}","negated true guard is unreachable")
++	var names: Array[String] = SurfaceShaderVariants.FLAGS.duplicate()
++	for flag: String in SurfaceShaderVariants.MATERIAL_FLAGS: names.append("fixed_"+flag)
++	var compatibility: bool = RenderingServer.get_current_rendering_method() == "gl_compatibility"
++	for folded: bool in [false,true]:
++		for icy: bool in [false,true]:
++			var material := ShaderMaterial.new()
++			material.shader = load("res://track/creator_road.gdshader")
++			material.set_shader_parameter("icy_road",icy)
++			material.set_shader_parameter("winter_snow",not icy)
++			material.set_shader_parameter("asphalt_surface",true)
++			SurfaceShaderVariants.specialize(material,false,folded)
++			check(material.shader.code.contains("RADIANCE =") == (not compatibility or not folded or icy),"actual icy flag controls radiance, independently of snow flag")
++			var copy: ShaderMaterial = material.get_meta("surface_dynamic_material").duplicate()
++			SurfaceShaderVariants.specialize(copy,true,folded)
++			check(copy.shader == material.shader,"prepared and fresh paths share the same result")
++	print("SURFACE_SHADER_PRUNING: %d checks, %d failures" % [checks,failures])
++	quit(1 if failures else 0)
+diff --git a/game/tests/profile_first_use_graphics.gd b/game/tests/profile_first_use_graphics.gd
+new file mode 100644
+--- /dev/null
++++ b/game/tests/profile_first_use_graphics.gd
+@@ -0,0 +1,76 @@
++extends SceneTree
++## Offline actual-App fixture; optional hooks exist only in the frozen project.
++var checks: int = 0
++var failures: int = 0
++var app: Node
++var frames: Array[float] = []
++var last_frame: int = 0
++var measuring: bool = false
++var rows: Array = []
++
++func _initialize() -> void: run.call_deferred()
++func check(ok: bool, label: String) -> void:
++	checks += 1
++	if not ok: failures += 1; push_error(label)
++func observe() -> void:
++	var now: int = Time.get_ticks_usec()
++	if measuring and last_frame: frames.append((now-last_frame)/1000.0)
++	last_frame = now
++func run() -> void:
++	var output: String = OS.get_environment("BMT_GRAPHICS_OUTPUT")
++	if output.is_empty():
++		push_error("An explicit owned graphics output folder is required")
++		quit(1)
++		return
++	DirAccess.make_dir_recursive_absolute(output)
++	var probe: GDScript = load("res://tests/graphics_probe.gd") if FileAccess.file_exists("res://tests/graphics_probe.gd") else null
++	if OS.get_environment("BMT_NATIVE_TRACE") == "1":
++		check(GDExtensionManager.load_extension(OS.get_environment("BMT_NATIVE_EXTENSION")) == GDExtensionManager.LOAD_STATUS_OK,"owned native diagnostic loads")
++	root.size = Vector2i(1280,720)
++	var folder := "user://first-use-graphics"
++	NativeTrackVisual.ROAD_DISK_CACHE.directory = folder.path_join("roads")
++	app = load("res://core/app.tscn").instantiate()
++	app.records = LocalRecords.new(folder.path_join("records.json")); app.records.settings.music_enabled = false
++	app.library = TrackLibrary.new(folder.path_join("tracks")); app.cloud_root_override = folder.path_join("cloud")
++	app.race_profile_enabled = true
++	root.add_child(app)
++	while not app.startup_complete: await process_frame
++	process_frame.connect(observe)
++	var themes: PackedStringArray = OS.get_environment("BMT_GRAPHICS_THEMES").split(",")
++	if themes.is_empty() or themes[0].is_empty(): themes = ["pine"]
++	for theme: String in themes:
++		var document: Dictionary = JSON.parse_string(FileAccess.get_file_as_string("res://tests/fixtures/star_spline_lap.json")); document.theme = theme
++		var track: NativeTrack = TrackCompiler.compile(document)
++		track.metadata.cloud_version = "owned-first-use-graphics"
++		preload("res://track/prepared_world_cache.gd").trim_cache()
++		for cycle: int in range(2):
++			if probe != null: probe.case_name = theme+"-"+str(cycle)
++			app.records.settings.camera_mode = "overhead"
++			app._show_screen("tracks"); app.selected_track = track
++			frames.clear(); last_frame = Time.get_ticks_usec(); measuring = true
++			var began: int = Time.get_ticks_usec()
++			print("RACE_BEGIN ",theme," ",cycle," ",int(Time.get_unix_time_from_system()*1000000.0))
++			await app._start_race(track,false,true)
++			var elapsed: int = Time.get_ticks_usec()-began
++			measuring = false
++			check(is_instance_valid(app.game) and app.game.preparation_complete,"full actual-App race readiness")
++			if not is_instance_valid(app.game): continue
++			var game: Node = app.game
++			game.set_physics_process(false); game.hitch_diagnostics.persist_enabled = false
++			check(game.sim.state.tick == 0 and game.countdown_ticks == 360,"unchanged tick-zero and countdown")
++			check(not is_instance_valid(app.race_loading),"loading cover releases after readiness")
++			var row := {"theme":theme,"cycle":cycle,"wall_us":elapsed,"max_frame_ms":frames.max(),"game":game.preparation_costs.duplicate(true),"world":game.track_ground.build_costs.duplicate(true),"effects":game.effect_preparation_counts.duplicate(true),"effects_ms":game.bridge_preparation_ms,"draw_groups":game.world_render_preparation.frame_groups,"draw_max_us":game.world_render_preparation.draw_us_max}
++			game.paused = true; game._process(0.0)
++			for index: int in range(24): await process_frame
++			await RenderingServer.frame_post_draw
++			root.get_texture().get_image().save_png(output.path_join(theme+"-"+str(cycle)+".png"))
++			var identity: int = game.get_instance_id()
++			await app._retry_race(true)
++			check(is_instance_valid(app.game) and app.game.get_instance_id() == identity,"retry retains Game")
++			rows.append(row); print("FIRST_USE_ROW ",JSON.stringify(row))
++			app._leave_race(); await process_frame
++	app.queue_free(); app = null
++	for index: int in range(32): await process_frame
++	FileAccess.open(output.path_join("profile.json"),FileAccess.WRITE).store_string(JSON.stringify({"rows":rows,"draws":probe.rows if probe != null else [],"checks":checks,"failures":failures},"  "))
++	print("FIRST_USE_GRAPHICS: %d checks, %d failures" % [checks,failures])
++	quit(1 if failures else 0)
+diff --git a/docs/FIRST_USE_GRAPHICS_2026_11_05.md b/docs/FIRST_USE_GRAPHICS_2026_11_05.md
+new file mode 100644
+--- /dev/null
++++ b/docs/FIRST_USE_GRAPHICS_2026_11_05.md
+@@ -0,0 +1,96 @@
++# First-use race graphics preparation — 5 November 2026
++
++The approved work is to attribute expensive first-use graphics work and reduce it without sacrificing the existing presentation. The implemented candidate removes only proven unreachable shader block bodies before Godot prepares native programs. It preserves active calculations, public uniforms, material identities, the full covered preparation sequence, and the existing bounded shader caches. This is a small component optimization, not a solution to the entire previously measured 31.3-second graphics phase.
++
++## Requirements and implementation
++
++| ID | Requirement | Implementation/evidence |
++|---|---|---|
++| FUG01 | Attribute actual first-use work | Owned native capture of compile/link/draw/upload calls, correlated with actual App world/effect preparation groups and exact generated program sources. |
++| FUG02 | Reduce expensive work without changing art | `game/track/surface_shader_pruning.gd`, called once per new fixed Compatibility source by `surface_shader_variants.gd`, before source interning. |
++| FUG03 | Preserve readiness, reuse, bindings and bounds | Existing 64-source/prepared-key limits and signatures remain; cache hits bypass pruning. Dynamic `surface_preserve_branches` materials and other renderers keep the original path. |
++| FUGQ01 | Validate pixels, rendering and opening laps | Same-scene original/candidate/restored-original comparisons, interleaved GPU measurements, source/binding/cache regressions and real App opening laps. Actual final results are recorded below. |
++
++Only allowlisted global `const bool` names produced by the existing specialization pass are eligible. A leading false constant, or negated true constant, must guard a balanced braced body. Unknown/local/shadowed/macro-controlled names, non-braced statements, disjunctions, ternaries and bodies containing preprocessor directives retain their original text. Comments and quoted paths are masked with character offsets preserved. Conditions, `else` branches and declarations outside removed bodies remain unchanged. No driver-specific binary or native extension is shipped.
++
++The existing shader-consolidation regression now compares its prior source contract after the approved inactive-body pass, while retaining binding, sharing, exact prepared-hit and cache-bound assertions. Separate parsing/scope tests cover the new transformation, including mismatched `icy_road`/`winter_snow` values and dynamic material fallback. The new `profile_first_use_graphics.gd` fixture requires an explicit output folder and uses private offline App records through the supplied runner.
++
++## Attribution
++
++The frozen Compatibility baseline captures 187 native programs with zero import attempts, failures or skipped compiles. Across the diagnostic App run, calls exceeding the 2 ms logging threshold account for 31.433 s of program linking, 1.310 s of shader compilation, 0.084 s of texture uploads and 0.070 s of the traced draw calls. These are whole-run totals, including menu initialization; they must not be substituted for a race-phase total. Native shader-source capture adds diagnostic overhead, and driver caches were not erased.
++
++The first `CoveredDust0` preparation draw lasts 6.482 s, of which 6.101 s is traced linking and 0.204 s compilation. It triggers 27 distinct native program keys, including car weathering shaders and other work made visible by that preparation stage. Calling this a slow dust shader would misattribute the cost. The two most expensive individual links are weathering variants at about 1.03 and 1.01 s; their captured stage sources differ by the instancing define. This work remains.
++
++Surface shaders also retain inactive biome branches after the existing constant-specialization pass. In the Pine trace, pruning removes `CUSTOM_RADIANCE_USED` from 24 captured surface programs while preserving the total program count. Merely suppressing the authored Winter radiance write did **not** provide a useful saving in a separate experiment: original median 9.798 s versus candidate 9.852 s for the visible six-material grid. That narrower candidate is rejected and its logs remain.
++
++## Measurements and controls
++
++Three interleaved A/B/B/A experiments use all six actual Pine surface materials on a visible grid, with fresh shared-sampler names per trial. Timings include shader allocation, two real draws and readback, after texture/common-pipeline warmup. They isolate fresh-source compiler work, not an erased-driver-cache launch or end-to-end race time.
++
++| Run | Original samples, ms | Pruned samples, ms |
++|---|---|---|
++| `prune-fresh-abba` | 9837.750, 9642.798 | 9228.732, 9430.542 |
++| `prune-fresh-repeat` | 9683.839, 9813.796 | 9023.161, 9107.100 |
++| `final-fresh-abba` | 9898.166, 9616.957 | 8875.606, 9296.379 |
++
++The six-sample combined medians are 9.749 s and 9.168 s, a 0.581 s / 6.0% component reduction. The final-code pair alone has medians 9.758 s and 9.086 s. The initial prototype's separate CPU pass over those six sources takes 75.5–130.8 ms (median 90.8 ms), and final pruning takes 98.4 ms, so this is not all net loading savings. Changed source hashes require fresh native cache entries; old shader binaries are not migrated.
++
++The initial instrumented actual-App samples were 47.493 s original and 44.814 s prototype for first entry, then 0.311 and 0.216 s for retained re-entry. Unchanged car shaders and car construction also sped up between these runs. Therefore their 2.679-second difference is **not** claimed as an optimization benefit. The useful evidence is the controlled component comparison, exact images and lifecycle checks.
++
++Both the prototype and production candidate have 15 pixel-exact views across Pine, Winter, Desert, Storm and Night City, with all restored-original controls exact. At 2560×1440, the final mean stage-median GPU times are below; shader counts and draw/primitive counts remain unchanged. This does not establish sustained driving FPS or phone performance.
++
++| Biome | Original GPU, ms | Candidate GPU, ms |
++|---|---:|---:|
++| Pine | 1.0940 | 1.0935 |
++| Winter | 1.0780 | 1.0755 |
++| Desert | 1.2580 | 1.2615 |
++| Storm | 1.2710 | 1.2790 |
++| Night City | 1.2325 | 1.2340 |
++
++The final native App capture has exactly the same 187 generated native program keys as the measured prototype, with zero imports, failures or skipped compiles. Its first entry is 44.096 s and retained re-entry 0.308 s, again observations rather than an end-to-end improvement claim. A final conservative multiple-declaration shadow guard passes 39 focused checks; all 29 generated surface sources across the five biomes remain byte-exact against the native-tested helper. Final pruning costs are Pine 98.393 ms, Winter 83.792 ms, Desert 69.458 ms, Storm 90.242 ms and Night City 101.168 ms, aggregated over each biome's unique source set.
++
++## Commands, final validation and retained findings
++
++Evidence and per-run source hashes are under [first-use-graphics-2026-11-05](evidence/first-use-graphics-2026-11-05). `frozen-project.json` records the owned source copy; static imported content is shared through recorded junctions. `run_check.py` uses the pinned Godot 4.7.2 executable, Dummy audio, private APPDATA/LOCALAPPDATA, an empty backend URL, bounded timeouts and before/after source receipts. Native GPU experiments run sequentially.
++
++```powershell
++python docs/evidence/first-use-graphics-2026-11-05/freeze_project.py
++& 'C:/msys64/mingw64/bin/g++.exe' docs/evidence/first-use-graphics-2026-11-05/harness/program_probe.cpp -I .tools/godot-cpp-music/gdextension -std=c++17 -O2 -shared -static -lopengl32 -lbcrypt -lpsapi -o docs/evidence/first-use-graphics-2026-11-05/harness/program_probe.dll
++python docs/evidence/first-use-graphics-2026-11-05/prepare_probe.py
++python docs/evidence/first-use-graphics-2026-11-05/run_check.py pine-native-baseline res://tests/profile_first_use_graphics.gd --frozen --native --timeout 240
++python docs/evidence/first-use-graphics-2026-11-05/candidate.py prune
++python docs/evidence/first-use-graphics-2026-11-05/run_check.py pine-native-prune res://tests/profile_first_use_graphics.gd --frozen --native --timeout 240
++python docs/evidence/first-use-graphics-2026-11-05/prepare_comparison.py
++python docs/evidence/first-use-graphics-2026-11-05/run_check.py prune-pixels-fixed res://tests/review_first_use_comparison.gd --frozen --themes pine,winter,desert,storm,night_city --timeout 400
++python docs/evidence/first-use-graphics-2026-11-05/run_check.py prune-fresh-abba res://tests/profile_first_use_comparison.gd --frozen --themes pine --timeout 300
++python docs/evidence/first-use-graphics-2026-11-05/candidate.py radiance
++python docs/evidence/first-use-graphics-2026-11-05/run_check.py radiance-fresh-abba res://tests/profile_first_use_comparison.gd --frozen --themes pine --timeout 300
++python docs/evidence/first-use-graphics-2026-11-05/candidate.py prune
++python docs/evidence/first-use-graphics-2026-11-05/run_check.py prune-fresh-repeat res://tests/profile_first_use_comparison.gd --frozen --themes pine --timeout 300
++# Copy the reviewed shipping sources into the owned project before final tests.
++python docs/evidence/first-use-graphics-2026-11-05/run_final.py
++python docs/evidence/first-use-graphics-2026-11-05/finish_validation.py
++python docs/evidence/first-use-graphics-2026-11-05/run_original_control.py
++python docs/evidence/first-use-graphics-2026-11-05/analyze.py final-native
++python docs/evidence/first-use-graphics-2026-11-05/summarize.py
++python docs/evidence/first-use-graphics-2026-11-05/delivery_checks.py
++python docs/evidence/first-use-graphics-2026-11-05/checkpoint.py
++```
++
++Final native validation passes 37 focused checks per desktop renderer, 141 retained shader-sharing/binding/cache checks per renderer, 30 image/control checks and 9 actual-App entry/retry checks. Final hardening passes 39 focused headless checks and 29 byte-exact source comparisons. Compatibility opening-lap/emission/cancellation coverage passes 123 checks; desktop Mobile passes 133. Each completes five actual opening laps with zero contacts. The observed maximum driving-frame times are 17.478 ms and 13.340 ms respectively, not a sustained/device performance claim. Mobile's Desert lap records one additional draw pipeline, as in the prior shared-graphics investigation; no zero-pipeline opening-lap claim is made. Other observed opening laps record zero.
++
++The accepted final runs total 719 assertions with zero failures. `delivery-checks.json` requires positive counts, five zero-contact laps per renderer, all 15 exact images/controls, stable per-run sources and no script/shader errors. It also verifies that the original world/effect/shared-preparation sources and both road shader includes remain byte-exact: only the two named runtime GDScript files implement the change.
++
++The independent task-start generator produces the expected focused regression: 39 checks with one failure because it retains the inactive radiance write. The current generator passes 39/0. The controlled original run restores the candidate bytes exactly afterward; it is recorded separately from accepted runs.
++
++The initial comparison fixture failed its exact source anchor because copied Windows text used CRLF; normalization repairs the fixture without changing shaders or assertions. The first CPU probe used a nonexistent `shaders/` subdirectory and printed empty-source errors despite exit 0; it is rejected, with the corrected explicit-existence-check run retained. Root certificate-store startup errors recur in the offline environment. Original and prototype App native traces both report two ObjectDB instances and one resource at exit. These logs are retained rather than called clean runs.
++
++The first Compatibility lap invocation lacked the frozen copy of `backend/tests/fixtures/verified_oval.json`: it ran zero checks and is rejected despite exit 0. The initial Mobile invocation passes 103 loading/cancellation checks but omits the required `--first-emission` option, so it establishes no emission or lap coverage. Corrected runs explicitly enable the option. Delivery validation requires five completed zero-contact laps per renderer and positive assertion counts. The runner now rejects `SCRIPT ERROR`/`SHADER ERROR` output even when Godot returns zero.
++
++The broad prototype is evidence-only and intentionally superseded by the conservative production helper. The rejected radiance-only experiment used a snow-based shortcut and was exercised only on Pine; production uses actual proven constants, with a regression for independently varied snow/ice flags. No prototype parser, diagnostic DLL, conditional-radiance shader edit or native hook is enabled in shipping runtime code.
++
++## Scope and remaining acceptance
++
++No camera, artwork, texture, mesh, scenery population, particle quantity, shadow quality, antialiasing, checkpoint, physics or shortcut rule changes. No phone/device query or test, APK/export, owner-save/process change, live/backend request, deployment or main-index write. Concurrent loading, checkpoint, prepared-asset and shared-graphics changes are preserved. Reload/rebuild, owner appearance acceptance and actual-device latency/memory/first-lap acceptance remain. No total-race-loading, cold-driver-cache, startup, phone or 60 FPS improvement is claimed.
++
++The [task-only patch](evidence/first-use-graphics-2026-11-05/task.patch) and [forward/reverse/content verification](evidence/first-use-graphics-2026-11-05/checkpoint.json) leave the main Git index untouched. The large remaining first-use delay is native program linking, particularly vehicle/weathering variants; further major gains need a separately measured engine/compiler approach that also passes first-draw and memory limits.
+diff --git a/docs/evidence/first-use-graphics-2026-11-05/analyze.py b/docs/evidence/first-use-graphics-2026-11-05/analyze.py
+new file mode 100644
+--- /dev/null
++++ b/docs/evidence/first-use-graphics-2026-11-05/analyze.py
+@@ -0,0 +1,42 @@
++"""Correlate native calls with real draw intervals and captured source jobs."""
++import collections,json,re,struct,sys
++from pathlib import Path
++evidence=Path(__file__).resolve().parent
++label=sys.argv[1]
++calls=[]; draws=[]; races=[]
++for line in (evidence/(label+'.log')).read_text(errors='replace').splitlines():
++    if line.startswith('NATIVE_CALL '):
++        fields=dict(re.findall(r'(\w+)=([^ ]+)',line))
++        calls.append({**fields,'us':int(fields['us']),'end':int(fields['utc_end_us'])})
++    elif line.startswith('GRAPHICS_END '): draws.append(json.loads(line[len('GRAPHICS_END '):]))
++    elif line.startswith('RACE_BEGIN '):
++        _,theme,cycle,utc=line.split();races.append(dict(theme=theme,cycle=int(cycle),utc=int(utc)))
++def job(key):
++    path=evidence/label/'jobs'/(key+'.job')
++    if not path.exists(): return {}
++    data=path.read_bytes(); at=4; strings=[]
++    for _ in range(3):
++        size=struct.unpack_from('<I',data,at)[0];at+=4
++        strings.append(data[at:at+size].decode());at+=size
++    combined=strings[1]+strings[2]
++    defines=re.findall(r'^\s*#define\s+([^\r\n]+)',combined,re.M)
++    flags=re.findall(r'const bool\s+(\w+)\s*=\s*(true|false)',combined)
++    return dict(vertex_bytes=len(strings[1]),fragment_bytes=len(strings[2]),defines=sorted(set(defines)),flags=dict(flags))
++for draw in draws:
++    overlapping=[call for call in calls if int(draw['utc_begin_us'])<=call['end']<=int(draw['utc_end_us'])]
++    draw['native_us_by_api']=dict(collections.Counter())
++    for call in overlapping:
++        draw['native_us_by_api'][call['api']]=draw['native_us_by_api'].get(call['api'],0)+call['us']
++    draw['programs']=sorted(set(call['key'] for call in overlapping if call['key']!='-'))
++totals=collections.Counter()
++programs=collections.defaultdict(lambda:collections.Counter())
++for call in calls:
++    totals[call['api']]+=call['us']
++    if call['key']!='-': programs[call['key']][call['api']]+=call['us']
++ranked=[dict(key=key,timings=dict(timings),source=job(key)) for key,timings in sorted(programs.items(),key=lambda pair:sum(pair[1].values()),reverse=True)]
++result=dict(label=label,native_us=dict(totals),programs=ranked,draws=draws,races=races,native_threshold_us=2000)
++(evidence/(label+'-analysis.json')).write_text(json.dumps(result,indent=2)+'\n')
++print('Native seconds:',{key:round(value/1e6,3) for key,value in totals.items()})
++for draw in sorted(draws,key=lambda row:row['us'],reverse=True)[:12]:
++    print(draw['case'],draw['kind'],round(draw['us']/1e6,3),{key:round(value/1e6,3) for key,value in draw['native_us_by_api'].items()},[(source['path'],[material.get('origin',material.get('shader_path',material.get('class'))) for material in source['materials']]) for source in draw['sources'][:2]])
++for row in ranked[:6]: print(row['key'][:12],row['timings'],row['source'].get('flags',{}))
+diff --git a/docs/evidence/first-use-graphics-2026-11-05/candidate.py b/docs/evidence/first-use-graphics-2026-11-05/candidate.py
+new file mode 100644
+--- /dev/null
++++ b/docs/evidence/first-use-graphics-2026-11-05/candidate.py
+@@ -0,0 +1,28 @@
++"""Select a reversible candidate only in the task-owned frozen project."""
++import json,shutil,sys
++from pathlib import Path
++evidence=Path(__file__).resolve().parent
++game=Path(json.loads((evidence/'frozen-project.json').read_text())['project'])
++mode=sys.argv[1]
++assert mode in ('before','prune','radiance')
++for name in ('creator_road.gdshaderinc','bridge_road.gdshaderinc'):
++    archive=evidence/'before/game/track'/name
++    if not archive.exists(): shutil.copyfile(game/'track'/name,archive)
++    include=archive.read_text()
++    if mode=='radiance':
++        line='  RADIANCE = winter_seam_radiance(NORMAL,VIEW,INV_VIEW_MATRIX,winter_seam_weight(finish,frost));'
++        assert include.count(line)==1
++        include=include.replace(line,'#ifndef BMT_NO_WINTER_SEAM_RADIANCE\n'+line+'\n#endif')
++    (game/'track'/name).write_text(include,encoding='utf-8')
++shutil.copyfile(evidence/'harness/shader_branch_probe.gd',game/'tests/shader_branch_probe.gd')
++source=(evidence/'before/game/track/surface_shader_variants.gd').read_text()
++if mode=='prune':
++    anchor='\tvar key: String = source.sha256_text()'
++    assert source.count(anchor)==1
++    source=source.replace(anchor,'\tif compatibility and fold_flags:\n\t\tsource = preload("res://tests/shader_branch_probe.gd").reduce(source)\n'+anchor)
++elif mode=='radiance':
++    anchor='\tvar key: String = source.sha256_text()'
++    assert source.count(anchor)==1
++    source=source.replace(anchor,'\t# Godot records RADIANCE usage before eliminating constant-false branches.\n\t# Omit only the authored Winter seam write when its fixed flag is false.\n\t# Dynamic bridges and other renderers keep their original feature selection.\n\tif compatibility and fold_flags and source.contains("const bool winter_snow = false;"):\n\t\tsource = "#define BMT_NO_WINTER_SEAM_RADIANCE\\n"+source\n'+anchor)
++(game/'track/surface_shader_variants.gd').write_text(source,encoding='utf-8')
++print('Frozen candidate:',mode)
+diff --git a/docs/evidence/first-use-graphics-2026-11-05/checkpoint.py b/docs/evidence/first-use-graphics-2026-11-05/checkpoint.py
+new file mode 100644
+--- /dev/null
++++ b/docs/evidence/first-use-graphics-2026-11-05/checkpoint.py
+@@ -0,0 +1,62 @@
++"""Round-trip a task-only source patch without writing the repository index."""
++import difflib
++import hashlib
++import json
++from pathlib import Path
++import subprocess
++import time
++
++evidence = Path(__file__).resolve().parent
++root = evidence.parents[2]
++prefix = evidence.relative_to(root).as_posix()+'/'
++trackers = ['AGENTS.md','DEVELOPMENT_STATUS.md']
++runtime = ['game/track/surface_shader_variants.gd','game/tests/test_shader_variant_consolidation.gd']
++changed = trackers+runtime
++added = ['game/track/surface_shader_pruning.gd','game/tests/test_surface_shader_pruning.gd','game/tests/profile_first_use_graphics.gd','docs/FIRST_USE_GRAPHICS_2026_11_05.md']
++added += [prefix+path.name for path in sorted(evidence.glob('*.py'))]
++added += [prefix+name for name in ('summary.json','final-suite.json','final-hardening.json','opening-lap-fixture.json','delivery-checks.json','original-control.json')]
++added += [path.relative_to(root).as_posix() for path in sorted((evidence/'before').rglob('*')) if path.is_file()]
++added += [path.relative_to(root).as_posix() for path in sorted((evidence/'harness').iterdir()) if path.suffix in ('.cpp','.hpp','.gd','.txt')]
++marker = '<!-- FIRST-USE-GRAPHICS-20261105 -->'
++end_marker = '<!-- /FIRST-USE-GRAPHICS-20261105 -->'
++before, after, parts = {}, {}, []
++for path in changed+added:
++    new = (root/path).read_bytes().replace(b'\r\n',b'\n')
++    old = b''
++    if path in runtime:
++        old = (evidence/'before'/path).read_bytes().replace(b'\r\n',b'\n')
++    elif path in trackers:
++        text = new.decode('utf-8')
++        assert text.count(marker)==1 and text.count(end_marker)==1
++        start = text.index(marker)
++        end = text.index(end_marker)+len(end_marker)
++        if text[end:end+2]=='\n\n': end += 2
++        elif text[end:end+1]=='\n': end += 1
++        old = (text[:start]+text[end:]).encode('utf-8')
++    before[path], after[path] = old,new
++    parts.append(f'diff --git a/{path} b/{path}\n')
++    if path in added: parts.append('new file mode 100644\n')
++    for line in difflib.unified_diff(old.decode().splitlines(keepends=True),new.decode().splitlines(keepends=True),fromfile='a/'+path if path in changed else '/dev/null',tofile='b/'+path):
++        parts.append(line if line.endswith('\n') else line+'\n\\ No newline at end of file\n')
++patch = evidence/'task.patch'
++patch.write_bytes(''.join(parts).encode())
++owned = root/'build/first-use-graphics-20261105'/('checkpoint-'+str(time.time_ns()))
++owned.mkdir(parents=True)
++assert owned.resolve().is_relative_to((root/'build/first-use-graphics-20261105').resolve())
++for path in changed:
++    target = owned/path
++    target.parent.mkdir(parents=True,exist_ok=True)
++    target.write_bytes(before[path])
++commands = []
++for arguments in (('--check',),(),('--reverse','--check'),('--reverse',)):
++    command = ['git','apply','--directory='+owned.relative_to(root).as_posix(),*arguments,str(patch)]
++    result = subprocess.run(command,cwd=root,capture_output=True,text=True)
++    commands.append(dict(command=command,exit_code=result.returncode,output=result.stdout+result.stderr))
++    assert result.returncode==0,result.stderr
++    if not arguments:
++        assert all((owned/path).read_bytes().replace(b'\r\n',b'\n')==after[path] for path in changed+added)
++assert all((owned/path).read_bytes().replace(b'\r\n',b'\n')==before[path] for path in changed)
++assert all(not (owned/path).exists() for path in added)
++report = dict(files=changed+added,forward_content_exact=True,reverse_content_exact=True,main_index_written=False,patch_sha256=hashlib.sha256(patch.read_bytes()).hexdigest(),commands=commands,source_sha256={path:hashlib.sha256(after[path]).hexdigest() for path in changed+added})
++(evidence/'checkpoint.json').write_text(json.dumps(report,indent=2)+'\n')
++print('Task-only patch forward/reverse/content checks pass; main index untouched.')
+diff --git a/docs/evidence/first-use-graphics-2026-11-05/delivery_checks.py b/docs/evidence/first-use-graphics-2026-11-05/delivery_checks.py
+new file mode 100644
+--- /dev/null
++++ b/docs/evidence/first-use-graphics-2026-11-05/delivery_checks.py
+@@ -0,0 +1,34 @@
++"""Validate concrete delivered evidence; exit zero alone is insufficient."""
++import hashlib,json,re
++from pathlib import Path
++p=Path(__file__).resolve().parent
++root=p.parents[2]
++labels=['contract-gl','consolidation-gl','final-pixels','final-native','contract-mobile','consolidation-mobile','first-laps-mobile-fixed','first-laps-gl-fixed','final-contract','final-source-parity','final-fresh-abba']
++rows=[]
++for label in labels:
++    receipt=json.loads((p/(label+'-receipt.json')).read_text())
++    log=(p/(label+'.log')).read_text(errors='replace')
++    assert receipt['exit_code']==0 and not receipt['changed_sources'],label
++    assert 'SCRIPT ERROR:' not in log and 'SHADER ERROR:' not in log,label
++    counts=re.findall(r'(?:SURFACE_SHADER_PRUNING|SHADER_CONSOLIDATION|FIRST_USE_GRAPHICS|FINAL_PRUNING_PARITY): (\d+) checks, (\d+) failures',log)
++    if label=='final-pixels': counts=re.findall(r'VARIANT_RENDER_CHECKS (\d+) / (\d+)',log)
++    if 'first-laps' in label:
++        data=json.loads((p/(label+'.json')).read_text())
++        assert len(data['first_laps'])==5 and all(r['completed_laps']>=1 and r['contacts']==0 for r in data['first_laps']),label
++        counts=[(str(data['checks']),str(data['failures']))]
++    assert (counts and int(counts[-1][0])>0 and int(counts[-1][1])==0) or label=='final-fresh-abba',label
++    rows.append(dict(label=label,checks=int(counts[-1][0]) if counts else 0,failures=0))
++pixels=json.loads((p/'final-pixels/report.json').read_text())
++assert len(pixels['themes'])==5
++assert all(len(t['proofs'])==3 and all(v['changed']==0 and v['unstable']==0 for v in t['proofs']) for t in pixels['themes'].values())
++a={f.name for f in (p/'pine-native-prune/jobs').glob('*.job')}
++b={f.name for f in (p/'final-native/jobs').glob('*.job')}
++assert len(a)==187 and a==b
++unchanged={}
++for name in ['game/race/world_render_preparation.gd','game/vehicle/effect_render_preparation.gd','game/rendering/graphics_preparation.gd','game/track/creator_road.gdshaderinc','game/track/bridge_road.gdshaderinc']:
++    unchanged[name]=(root/name).read_bytes()==(p/'before'/name).read_bytes()
++assert all(unchanged.values()),unchanged
++files=['game/track/surface_shader_variants.gd','game/track/surface_shader_pruning.gd','game/tests/test_surface_shader_pruning.gd','game/tests/test_shader_variant_consolidation.gd','game/tests/profile_first_use_graphics.gd']
++result=dict(runs=rows,checks=sum(r['checks'] for r in rows),failures=0,pixel_exact_views=15,restored_controls=15,native_program_keys_identical=187,unchanged_task_start_sources=unchanged,source_sha256={f:hashlib.sha256((root/f).read_bytes()).hexdigest() for f in files},diagnostic_dll_sha256=hashlib.sha256((p/'harness/program_probe.dll').read_bytes()).hexdigest())
++(p/'delivery-checks.json').write_text(json.dumps(result,indent=2)+'\n')
++print(json.dumps(result,indent=2))
+diff --git a/docs/evidence/first-use-graphics-2026-11-05/finish_validation.py b/docs/evidence/first-use-graphics-2026-11-05/finish_validation.py
+new file mode 100644
+--- /dev/null
++++ b/docs/evidence/first-use-graphics-2026-11-05/finish_validation.py
+@@ -0,0 +1,28 @@
++"""Install the final extra shadow guard after the native suite, then prove parity."""
++import json,shutil,subprocess,sys
++from pathlib import Path
++p=Path(__file__).resolve().parent
++root=p.parents[2]
++game=Path(json.loads((p/'frozen-project.json').read_text())['project'])
++suite=json.loads((p/'final-suite.json').read_text())
++assert len(suite)==8 and all(row['exit_code']==0 for row in suite)
++reference=p/'harness/validated_pruning.gd.txt'
++if not reference.exists(): shutil.copyfile(game/'track/surface_shader_pruning.gd',reference)
++shutil.copyfile(reference,game/'tests/fixtures/first_use_validated_pruning.gd.txt')
++for name in ('track/surface_shader_pruning.gd','tests/test_surface_shader_pruning.gd'):
++    shutil.copyfile(root/'game'/name,game/name)
++shutil.copyfile(p/'harness/verify_final_pruning.gd',game/'tests/verify_final_pruning.gd')
++rows=[]
++for label,script,extra in [
++    ('final-contract','test_surface_shader_pruning.gd',['--headless']),
++    ('final-source-parity','verify_final_pruning.gd',['--headless']),
++    ('first-laps-gl-fixed','test_shared_graphics_first_laps.gd',['--first-emission']),
++    ('first-laps-mobile-fixed','test_shared_graphics_first_laps.gd',['--renderer','mobile','--first-emission']),
++    ('final-fresh-abba','profile_first_use_comparison.gd',[]),
++]:
++    command=[sys.executable,str(p/'run_check.py'),label,'res://tests/'+script,'--frozen','--timeout','420' if 'first-laps' in label else '180',*extra]
++    print('RUN',label,flush=True)
++    code=subprocess.run(command).returncode
++    rows.append(dict(label=label,exit_code=code,command=command))
++    (p/'final-hardening.json').write_text(json.dumps(rows,indent=2)+'\n')
++    if code: sys.exit(code)
+diff --git a/docs/evidence/first-use-graphics-2026-11-05/freeze_project.py b/docs/evidence/first-use-graphics-2026-11-05/freeze_project.py
+new file mode 100644
+--- /dev/null
++++ b/docs/evidence/first-use-graphics-2026-11-05/freeze_project.py
+@@ -0,0 +1,67 @@
++"""Freeze mutable code/prepared assets; share unchanged imported/static content.
++
++All copies/junctions are task-owned. No deletion or mutation of shared assets.
++Both control and candidate resolve res:// against this same frozen project.
++"""
++import hashlib
++import json
++from pathlib import Path
++import shutil
++import subprocess
++import time
++
++evidence = Path(__file__).resolve().parent
++root = evidence.parents[2]
++owned = root/'build/first-use-graphics-20261105'/('frozen-'+str(time.time_ns()))
++game = owned/'game'
++game.mkdir(parents=True)
++fixture = owned/'backend/tests/fixtures/verified_oval.json'
++fixture.parent.mkdir(parents=True,exist_ok=True)
++shutil.copyfile(root/'backend/tests/fixtures/verified_oval.json',fixture)
++copied = [fixture]
++shared = []
++
++def copy_tree(source,destination):
++    if source.is_file():
++        destination.parent.mkdir(parents=True,exist_ok=True)
++        shutil.copyfile(source,destination)
++        copied.append(destination)
++    else:
++        destination.mkdir(parents=True,exist_ok=True)
++        for path in source.iterdir(): copy_tree(path,destination/path.name)
++
++def junction(source,destination):
++    assert source.resolve().is_relative_to(root.resolve())
++    assert destination.absolute().is_relative_to(owned.absolute())
++    # These are fixed local paths, safely quoted as PowerShell literals.
++    command = 'New-Item -ItemType Junction -Path '+"'"+str(destination).replace("'","''")+"' -Target '"+str(source).replace("'","''")+"' | Out-Null"
++    subprocess.run(['powershell','-NoProfile','-Command',command],check=True)
++    shared.append(dict(source=str(source),path=str(destination)))
++
++for path in (root/'game').iterdir():
++    if path.name in ('.godot','assets','android'): continue
++    copy_tree(path,game/path.name)
++(game/'assets').mkdir()
++for path in (root/'game/assets').iterdir():
++    if path.name in ('garage','menu'): copy_tree(path,game/'assets'/path.name)
++    elif path.name == 'vehicles':
++        (game/'assets/vehicles').mkdir()
++        for bank in path.iterdir():
++            destination = game/'assets/vehicles'/bank.name
++            if bank.name in ('modular_car_bases_v1','modular_kits_v1') or bank.is_file(): copy_tree(bank,destination)
++            else: junction(bank,destination)
++    elif path.is_dir(): junction(path,game/'assets'/path.name)
++    else: copy_tree(path,game/'assets'/path.name)
++(game/'.godot').mkdir()
++for name in ('global_script_class_cache.cfg','uid_cache.bin','extension_list.cfg'):
++    source = root/'game/.godot'/name
++    if source.exists(): copy_tree(source,game/'.godot'/name)
++junction(root/'game/.godot/imported',game/'.godot/imported')
++for name in ('docs','native'):
++    if (root/name).is_dir(): junction(root/name,owned/name)
++manifest = {path.relative_to(owned).as_posix():hashlib.sha256(path.read_bytes()).hexdigest() for path in copied}
++report = dict(project=str(game),copied_files=len(copied),copied_sha256=manifest,shared=shared)
++(evidence/'frozen-project.json').write_text(json.dumps(report,indent=2)+'\n',encoding='utf-8')
++print(json.dumps({'project':str(game),'copied_files':len(copied),'shared_directories':len(shared)}))
++
++
+diff --git a/docs/evidence/first-use-graphics-2026-11-05/prepare_comparison.py b/docs/evidence/first-use-graphics-2026-11-05/prepare_comparison.py
+new file mode 100644
+--- /dev/null
++++ b/docs/evidence/first-use-graphics-2026-11-05/prepare_comparison.py
+@@ -0,0 +1,18 @@
++"""Adapt retained same-scene and first-draw controls inside the owned copy."""
++import json
++from pathlib import Path
++evidence=Path(__file__).resolve().parent
++game=Path(json.loads((evidence/'frozen-project.json').read_text())['project'])
++baseline=(evidence/'before/game/track/surface_shader_variants.gd').read_text().replace('class_name SurfaceShaderVariants\n','')
++(game/'tests/fixtures/first_use_before.gd.txt').write_text(baseline,encoding='utf-8')
++probe=(game/'tests/probe_shader_variant_consolidation.gd').read_text().replace('shader_consolidation_before.gd.txt','first_use_before.gd.txt')
++probe=probe.replace('FileAccess.get_file_as_string(path).replace(', 'FileAccess.get_file_as_string(path).replace("\\r\\n","\\n").replace(')
++(game/'tests/probe_first_use_comparison.gd').write_text(probe,encoding='utf-8')
++for old,new in [('review_shader_variant_consolidation.gd','review_first_use_comparison.gd'),('profile_variant_first_draw.gd','profile_first_use_comparison.gd')]:
++    source=(game/'tests'/old).read_text().replace('probe_shader_variant_consolidation.gd','probe_first_use_comparison.gd')
++    source=source.replace('OS.get_environment("BMT_VARIANT_FOLDER")','OS.get_environment("BMT_GRAPHICS_OUTPUT")')
++    source=source.replace('OS.get_environment("BMT_VARIANT_OUTPUT")','OS.get_environment("BMT_GRAPHICS_OUTPUT").path_join("first-draw.json")')
++    source=source.replace('OS.get_environment("BMT_VARIANT_THEMES")','OS.get_environment("BMT_GRAPHICS_THEMES")')
++    source=source.replace('if OS.get_environment("BMT_VARIANT_FINAL") == "1":','if true:')
++    (game/'tests'/new).write_text(source,encoding='utf-8')
++print('Prepared task-start controls')
+diff --git a/docs/evidence/first-use-graphics-2026-11-05/prepare_probe.py b/docs/evidence/first-use-graphics-2026-11-05/prepare_probe.py
+new file mode 100644
+--- /dev/null
++++ b/docs/evidence/first-use-graphics-2026-11-05/prepare_probe.py
+@@ -0,0 +1,27 @@
++"""Timestamp-only draw hooks in the owned frozen sources, never shipping code."""
++import hashlib,json,shutil
++from pathlib import Path
++evidence=Path(__file__).resolve().parent
++root=evidence.parents[2]
++game=Path(json.loads((evidence/'frozen-project.json').read_text())['project'])
++assert game.resolve().is_relative_to((root/'build/first-use-graphics-20261105').resolve())
++shutil.copyfile(evidence/'harness/graphics_probe.gd',game/'tests/graphics_probe.gd')
++shutil.copyfile(root/'game/tests/profile_first_use_graphics.gd',game/'tests/profile_first_use_graphics.gd')
++patches={
++ 'race/world_render_preparation.gd':[
++  ('\t\tvar drawn: bool = await draw.call()', '\t\tvar diagnostic: Dictionary = preload("res://tests/graphics_probe.gd").begin("world",submitted)\n\t\tvar drawn: bool = await draw.call()\n\t\tpreload("res://tests/graphics_probe.gd").end(diagnostic,drawn)')],
++ 'vehicle/effect_render_preparation.gd':[
++  ('\t\tif not draw.is_valid() or not bool(await draw.call()): return prepared', '\t\tvar diagnostic: Dictionary = preload("res://tests/graphics_probe.gd").begin("particles",batch)\n\t\tif not draw.is_valid() or not bool(await draw.call()): return prepared\n\t\tpreload("res://tests/graphics_probe.gd").end(diagnostic,true)')]
++}
++receipts=[]
++for name,changes in patches.items():
++    source=(evidence/'before/game'/name).read_text()
++    for before,after in changes:
++        assert source.count(before)==1,(name,before)
++        source=source.replace(before,after)
++    (game/name).write_text(source,encoding='utf-8')
++    receipts.append({'path':name,'sha256':hashlib.sha256((game/name).read_bytes()).hexdigest()})
++dll=(evidence/'harness/program_probe.dll').as_posix()
++(evidence/'harness/program_probe.gdextension').write_text('[configuration]\nentry_symbol="program_probe_init"\ncompatibility_minimum="4.7"\n[libraries]\nwindows.debug.x86_64="'+dll+'"\nwindows.release.x86_64="'+dll+'"\n')
++(evidence/'probe-receipts.json').write_text(json.dumps(receipts,indent=2)+'\n')
++print('Installed isolated native/draw diagnostics.')
+diff --git a/docs/evidence/first-use-graphics-2026-11-05/run_check.py b/docs/evidence/first-use-graphics-2026-11-05/run_check.py
+new file mode 100644
+--- /dev/null
++++ b/docs/evidence/first-use-graphics-2026-11-05/run_check.py
+@@ -0,0 +1,72 @@
++"""Bounded, offline native loading review with private profiles and source receipts."""
++import argparse
++import hashlib
++import json
++import os
++from pathlib import Path
++import subprocess
++import sys
++import time
++
++p = argparse.ArgumentParser()
++p.add_argument('label')
++p.add_argument('script')
++p.add_argument('--frozen', action='store_true')
++p.add_argument('--profile', default='')
++p.add_argument('--renderer', default='gl_compatibility')
++p.add_argument('--timeout', type=int, default=360)
++p.add_argument('--headless', action='store_true')
++p.add_argument('--verbose', action='store_true')
++p.add_argument('--native', action='store_true')
++p.add_argument('--themes', default='pine')
++args, extra = p.parse_known_args()
++evidence = Path(__file__).resolve().parent
++root = evidence.parents[2]
++project = Path(json.loads((evidence/'frozen-project.json').read_text())['project']) if args.frozen else root/'game'
++profile = root / 'build/first-use-graphics-20261105' / (args.profile or args.label)
++profile.mkdir(parents=True, exist_ok=True)
++config = profile / 'Circuit01Lab/backend.cfg'
++config.parent.mkdir(exist_ok=True)
++config.write_text('[backend]\nurl=""\n', encoding='utf-8')
++env = os.environ.copy()
++env.update(APPDATA=str(profile), BMT_API_URL='', BMT_LOADING_OUTPUT=str(evidence / (args.label+'.json')))
++output=evidence/args.label
++output.mkdir(exist_ok=True)
++env.update(LOCALAPPDATA=str(profile),BMT_GRAPHICS_OUTPUT=str(output),BMT_GRAPHICS_THEMES=args.themes,
++    BMT_NATIVE_TRACE='1' if args.native else '0',BMT_NATIVE_EXTENSION=str(evidence/'harness/program_probe.gdextension'),
++    BMT_PREP_MODE='capture',BMT_PREP_JOBS=str(output/'jobs'),BMT_PREP_BINARIES=str(output/'binaries'),BMT_PREP_REPORT=str(output/'native-report.json'))
++assert hashlib.sha256(Path('C:/apps/Godot 4.7.2/Godot_v4.7.2-stable_win64.exe').read_bytes()).hexdigest()=='ab1824f85bfd8e0e4128182c000c4003a3e042245b2967848d089b2a04b22424'
++command = [sys.executable, str(root / 'scripts/run_no_crash_dialog.py'), '--',
++    'C:/apps/Godot 4.7.2/Godot_v4.7.2-stable_win64_console.exe', '--path', str(project),
++    '--audio-driver', 'Dummy', '--rendering-method', args.renderer,
++    *(['--headless'] if args.headless else []), *(['--verbose'] if args.verbose else []), '--script', args.script, '--', *extra]
++
++def hashes():
++    paths = [path for path in project.rglob('*') if path.is_file()
++             and '.godot' not in path.parts and path.suffix in ('.gd', '.gdshader', '.gdshaderinc', '.tscn', '.scn')]
++    paths.append(project/'project.godot')
++    return {str(path.relative_to(project)).replace('\\','/'): hashlib.sha256(path.read_bytes()).hexdigest() for path in paths}
++
++receipt = dict(command=command, profile=str(profile), before=hashes())
++began = time.monotonic()
++with (evidence/(args.label+'.log')).open('w', encoding='utf-8') as log:
++    process = subprocess.Popen(command, env=env, cwd=root, stdout=log, stderr=subprocess.STDOUT)
++    receipt['owned_process_id'] = process.pid
++    (evidence/(args.label+'-running.json')).write_text(json.dumps(receipt, indent=2), encoding='utf-8')
++    try:
++        receipt['exit_code'] = process.wait(timeout=args.timeout)
++    except subprocess.TimeoutExpired:
++        subprocess.run(['taskkill','/PID',str(process.pid),'/T','/F'], capture_output=True, check=False)
++        process.wait(timeout=20)
++        receipt['exit_code'] = 124
++receipt['process_exit_code'] = receipt['exit_code']
++receipt['script_errors'] = [line for line in (evidence/(args.label+'.log')).read_text(encoding='utf-8',errors='replace').splitlines() if line.startswith(('SCRIPT ERROR:','SHADER ERROR:'))]
++if receipt['exit_code']==0 and receipt['script_errors']: receipt['exit_code']=1
++receipt.update(elapsed_seconds=time.monotonic()-began, after=hashes())
++receipt['changed_sources'] = [path for path in receipt['before'].keys() | receipt['after'].keys()
++                            if receipt['before'].get(path) != receipt['after'].get(path)]
++(evidence/(args.label+'-receipt.json')).write_text(json.dumps(receipt, indent=2), encoding='utf-8')
++print(json.dumps({key: receipt[key] for key in ('exit_code','elapsed_seconds','changed_sources')}))
++sys.exit(receipt['exit_code'])
++
++
+diff --git a/docs/evidence/first-use-graphics-2026-11-05/run_final.py b/docs/evidence/first-use-graphics-2026-11-05/run_final.py
+new file mode 100644
+--- /dev/null
++++ b/docs/evidence/first-use-graphics-2026-11-05/run_final.py
+@@ -0,0 +1,22 @@
++"""Sequential native validation: no concurrent GPU timing runs."""
++import json,subprocess,sys
++from pathlib import Path
++p=Path(__file__).resolve().parent
++checks=[
++ ('contract-gl','test_surface_shader_pruning.gd','gl_compatibility',90,[]),
++ ('consolidation-gl','test_shader_variant_consolidation.gd','gl_compatibility',180,[]),
++ ('final-pixels','review_first_use_comparison.gd','gl_compatibility',400,['--themes','pine,winter,desert,storm,night_city']),
++ ('final-native','profile_first_use_graphics.gd','gl_compatibility',240,['--native']),
++ ('first-laps-gl','test_shared_graphics_first_laps.gd','gl_compatibility',420,['--first-emission']),
++ ('contract-mobile','test_surface_shader_pruning.gd','mobile',90,[]),
++ ('consolidation-mobile','test_shader_variant_consolidation.gd','mobile',180,[]),
++ ('first-laps-mobile','test_shared_graphics_first_laps.gd','mobile',420,['--first-emission']),
++]
++rows=[]
++for label,script,renderer,timeout,extra in checks:
++    command=[sys.executable,str(p/'run_check.py'),label,'res://tests/'+script,'--frozen','--renderer',renderer,'--timeout',str(timeout),*extra]
++    print('RUN',label,flush=True)
++    code=subprocess.run(command).returncode
++    rows.append(dict(label=label,exit_code=code,command=command))
++    (p/'final-suite.json').write_text(json.dumps(rows,indent=2)+'\n')
++    if code: sys.exit(code)
+diff --git a/docs/evidence/first-use-graphics-2026-11-05/run_original_control.py b/docs/evidence/first-use-graphics-2026-11-05/run_original_control.py
+new file mode 100644
+--- /dev/null
++++ b/docs/evidence/first-use-graphics-2026-11-05/run_original_control.py
+@@ -0,0 +1,18 @@
++"""Demonstrate the actual-material regression against the task-start generator."""
++import hashlib,json,subprocess,sys
++from pathlib import Path
++p=Path(__file__).resolve().parent
++game=Path(json.loads((p/'frozen-project.json').read_text())['project'])
++target=game/'track/surface_shader_variants.gd'
++candidate=target.read_bytes()
++try:
++    target.write_bytes((p/'before/game/track/surface_shader_variants.gd').read_bytes())
++    command=[sys.executable,str(p/'run_check.py'),'original-contract','res://tests/test_surface_shader_pruning.gd','--frozen','--headless','--timeout','60']
++    result=subprocess.run(command)
++    log=(p/'original-contract.log').read_text(errors='replace')
++    assert result.returncode==1 and 'SURFACE_SHADER_PRUNING: 39 checks, 1 failures' in log and 'SCRIPT ERROR:' not in log
++finally:
++    target.write_bytes(candidate)
++assert target.read_bytes()==candidate
++(p/'original-control.json').write_text(json.dumps({'expected_exit':1,'checks':39,'expected_failures':1,'candidate_restored_exact':True,'restored_sha256':hashlib.sha256(candidate).hexdigest()},indent=2)+'\n')
++print('Original retains the inactive radiance write; final candidate restored exactly.')
+diff --git a/docs/evidence/first-use-graphics-2026-11-05/summarize.py b/docs/evidence/first-use-graphics-2026-11-05/summarize.py
+new file mode 100644
+--- /dev/null
++++ b/docs/evidence/first-use-graphics-2026-11-05/summarize.py
+@@ -0,0 +1,32 @@
++"""Small review summary; raw measurements and failed attempts remain alongside it."""
++import collections,json,statistics
++from pathlib import Path
++p=Path(__file__).resolve().parent
++result={'native':{},'pixels':{},'first_draw':{}}
++for label in ('pine-native-baseline','pine-native-prune','final-native'):
++    a=json.loads((p/(label+'-analysis.json')).read_text())
++    profile=json.loads((p/label/'profile.json').read_text())
++    features=collections.Counter()
++    for program in a['programs']:
++        if program['source'].get('flags'):
++            features.update(f for f in program['source']['defines'] if f=='CUSTOM_RADIANCE_USED')
++    result['native'][label]={'calls_over_2ms_us':a['native_us'],'rows':profile['rows'],
++        'surface_features':dict(features),'capture':json.loads((p/label/'native-report.json').read_text()),
++        'world_draw_us':sum(d['us'] for d in a['draws'] if d['kind']=='world' and d['case']=='pine-0'),
++        'particle_draw_us':sum(d['us'] for d in a['draws'] if d['kind']=='particles' and d['case']=='pine-0')}
++for path in p.glob('*/report.json'):
++    report=json.loads(path.read_text())
++    if 'themes' not in report: continue
++    themes={}
++    for theme,row in report['themes'].items():
++        gpu={mode:statistics.mean(s['gpu_ms']['p50'] for s in row['stages'] if s['mode']==mode) for mode in ('baseline','optimized')}
++        themes[theme]={'proofs':row['proofs'],'gpu_p50_ms_mean':gpu,'sources':[row['baseline_programs'],row['candidate_programs']]}
++    result['pixels'][path.parent.name]={'checks':report['checks'],'failures':report['failures'],'themes':themes}
++for path in p.glob('*/first-draw.json'):
++    report=json.loads(path.read_text())
++    rows={}
++    for theme in sorted(set(r['theme'] for r in report['rows'])):
++        rows[theme]={mode:[r['elapsed_ms'] for r in report['rows'] if r['theme']==theme and r['mode']==mode] for mode in ('baseline','candidate')}
++    result['first_draw'][path.parent.name]=rows
++(p/'summary.json').write_text(json.dumps(result,indent=2)+'\n')
++print(json.dumps({key:list(value) for key,value in result.items()}))
+diff --git a/docs/evidence/first-use-graphics-2026-11-05/summary.json b/docs/evidence/first-use-graphics-2026-11-05/summary.json
+new file mode 100644
+--- /dev/null
++++ b/docs/evidence/first-use-graphics-2026-11-05/summary.json
+@@ -0,0 +1,658 @@
++{
++  "native": {
++    "pine-native-baseline": {
++      "calls_over_2ms_us": {
++        "glTexImage2D": 83763,
++        "glCompileShader": 1310404,
++        "glLinkProgram": 31433463,
++        "glDrawElementsInstanced": 44066,
++        "glDrawElements": 25531
++      },
++      "rows": [
++        {
++          "cycle": 0,
++          "draw_groups": 27,
++          "draw_max_us": 1927936,
++          "effects": {
++            "batches": 0,
++            "canvas": 1,
++            "damage_meshes": 0,
++            "particles": 20,
++            "reused": 0
++          },
++          "effects_ms": 8323.954,
++          "game": {
++            "car_slice_at": "body",
++            "car_slice_max_us": 89063,
++            "car_us": 1150085,
++            "car_yields": 121,
++            "diagnostics_us": 10863,
++            "effects_audio_wall_us": 120658,
++            "hold_us": 10876,
++            "hud_setup_us": 16358,
++            "restart_us": 16361,
++            "weather_us": 393,
++            "weathering_us": 9946
++          },
++          "max_frame_ms": 6050.483,
++          "theme": "pine",
++          "wall_us": 47493363,
++          "world": {
++            "bridge_us": 110,
++            "cache_duplicate_max_us": 1550,
++            "cache_pack_us": 5404,
++            "partition_child_wall_max_us": 205925,
++            "snow_us": 9
++          }
++        },
++        {
++          "cycle": 1,
++          "draw_groups": 1,
++          "draw_max_us": 8433,
++          "effects": {
++            "batches": 0,
++            "canvas": 1,
++            "damage_meshes": 0,
++            "particles": 20,
++            "reused": 20
++          },
++          "effects_ms": 99.764,
++          "game": {
++            "car_slice_at": "",
++            "car_slice_max_us": 0,
++            "car_us": 20600,
++            "car_yields": 0,
++            "diagnostics_us": 15163,
++            "effects_audio_wall_us": 14914,
++            "hold_us": 12347,
++            "hud_setup_us": 14589,
++            "restart_us": 16777,
++            "weather_us": 279,
++            "weathering_us": 1957
++          },
++          "max_frame_ms": 53.343,
++          "theme": "pine",
++          "wall_us": 311133,
++          "world": {
++            "cache_instantiate_us": 820
++          }
++        }
++      ],
++      "surface_features": {
++        "CUSTOM_RADIANCE_USED": 24
++      },
++      "capture": {
++        "installed": true,
++        "captures": 187,
++        "imports": 0,
++        "misses": 0,
++        "failures": 0,
++        "skipped_compiles": 0,
++        "max_import_us": 0,
++        "max_original_link_us": 1047231,
++        "private_bytes": 954417152,
++        "peak_commit_bytes": 1134702592,
++        "working_set_bytes": 634408960,
++        "peak_working_set_bytes": 852090880
++      },
++      "world_draw_us": 25975733,
++      "particle_draw_us": 8268267
++    },
++    "pine-native-prune": {
++      "calls_over_2ms_us": {
++        "glTexImage2D": 53499,
++        "glLinkProgram": 28371905,
++        "glDrawElementsInstanced": 37913,
++        "glCompileShader": 990310,
++        "glDrawElements": 33087
++      },
++      "rows": [
++        {
++          "cycle": 0,
++          "draw_groups": 27,
++          "draw_max_us": 2079815,
++          "effects": {
++            "batches": 0,
++            "canvas": 1,
++            "damage_meshes": 0,
++            "particles": 20,
++            "reused": 0
++          },
++          "effects_ms": 6874.246,
++          "game": {
++            "car_slice_at": "body",
++            "car_slice_max_us": 71584,
++            "car_us": 666492,
++            "car_yields": 97,
++            "diagnostics_us": 9107,
++            "effects_audio_wall_us": 113612,
++            "hold_us": 10755,
++            "hud_setup_us": 14616,
++            "restart_us": 14686,
++            "weather_us": 232,
++            "weathering_us": 8980
++          },
++          "max_frame_ms": 4933.597,
++          "theme": "pine",
++          "wall_us": 44814098,
++          "world": {
++            "bridge_us": 98,
++            "cache_duplicate_max_us": 1008,
++            "cache_pack_us": 3137,
++            "partition_child_wall_max_us": 125668,
++            "snow_us": 4
++          }
++        },
++        {
++          "cycle": 1,
++          "draw_groups": 1,
++          "draw_max_us": 10773,
++          "effects": {
++            "batches": 0,
++            "canvas": 1,
++            "damage_meshes": 0,
++            "particles": 20,
++            "reused": 20
++          },
++          "effects_ms": 62.163,
++          "game": {
++            "car_slice_at": "",
++            "car_slice_max_us": 0,
++            "car_us": 19303,
++            "car_yields": 0,
++            "diagnostics_us": 9410,
++            "effects_audio_wall_us": 12551,
++            "hold_us": 11775,
++            "hud_setup_us": 11499,
++            "restart_us": 12302,
++            "weather_us": 313,
++            "weathering_us": 1850
++          },
++          "max_frame_ms": 42.764,
++          "theme": "pine",
++          "wall_us": 216391,
++          "world": {
++            "cache_instantiate_us": 682
++          }
++        }
++      ],
++      "surface_features": {},
++      "capture": {
++        "installed": true,
++        "captures": 187,
++        "imports": 0,
++        "misses": 0,
++        "failures": 0,
++        "skipped_compiles": 0,
++        "max_import_us": 0,
++        "max_original_link_us": 793945,
++        "private_bytes": 927158272,
++        "peak_commit_bytes": 1128534016,
++        "working_set_bytes": 624062464,
++        "peak_working_set_bytes": 841068544
++      },
++      "world_draw_us": 23966544,
++      "particle_draw_us": 6819092
++    },
++    "final-native": {
++      "calls_over_2ms_us": {
++        "glTexImage2D": 51200,
++        "glLinkProgram": 28690493,
++        "glCompileShader": 980360,
++        "glDrawElementsInstanced": 41305,
++        "glDrawElements": 23959
++      },
++      "rows": [
++        {
++          "cycle": 0,
++          "draw_groups": 30,
++          "draw_max_us": 2020077,
++          "effects": {
++            "batches": 0,
++            "canvas": 1,
++            "damage_meshes": 0,
++            "particles": 20,
++            "reused": 0
++          },
++          "effects_ms": 7594.723,
++          "game": {
++            "car_slice_at": "body",
++            "car_slice_max_us": 68596,
++            "car_us": 883024,
++            "car_yields": 94,
++            "diagnostics_us": 8804,
++            "effects_audio_wall_us": 115252,
++            "hold_us": 10486,
++            "hud_setup_us": 15380,
++            "restart_us": 14471,
++            "weather_us": 246,
++            "weathering_us": 9701
++          },
++          "max_frame_ms": 5632.388,
++          "theme": "pine",
++          "wall_us": 44096265,
++          "world": {
++            "bridge_us": 101,
++            "cache_duplicate_max_us": 894,
++            "cache_pack_us": 3250,
++            "partition_child_wall_max_us": 132529,
++            "snow_us": 4
++          }
++        },
++        {
++          "cycle": 1,
++          "draw_groups": 1,
++          "draw_max_us": 9619,
++          "effects": {
++            "batches": 0,
++            "canvas": 1,
++            "damage_meshes": 0,
++            "particles": 20,
++            "reused": 20
++          },
++          "effects_ms": 97.774,
++          "game": {
++            "car_slice_at": "",
++            "car_slice_max_us": 0,
++            "car_us": 17931,
++            "car_yields": 0,
++            "diagnostics_us": 11094,
++            "effects_audio_wall_us": 9814,
++            "hold_us": 14113,
++            "hud_setup_us": 18977,
++            "restart_us": 14649,
++            "weather_us": 219,
++            "weathering_us": 1327
++          },
++          "max_frame_ms": 47.748,
++          "theme": "pine",
++          "wall_us": 307555,
++          "world": {
++            "cache_instantiate_us": 872
++          }
++        }
++      ],
++      "surface_features": {},
++      "capture": {
++        "installed": true,
++        "captures": 187,
++        "imports": 0,
++        "misses": 0,
++        "failures": 0,
++        "skipped_compiles": 0,
++        "max_import_us": 0,
++        "max_original_link_us": 1004795,
++        "private_bytes": 927825920,
++        "peak_commit_bytes": 1113485312,
++        "working_set_bytes": 620097536,
++        "peak_working_set_bytes": 838729728
++      },
++      "world_draw_us": 23764949,
++      "particle_draw_us": 7545467
++    }
++  },
++  "pixels": {
++    "final-pixels": {
++      "checks": 30,
++      "failures": 0,
++      "themes": {
++        "desert": {
++          "proofs": [
++            {
++              "changed": 0,
++              "max_channel_delta": 0,
++              "mean_channel_delta": 0.0,
++              "unstable": 0
++            },
++            {
++              "changed": 0,
++              "max_channel_delta": 0,
++              "mean_channel_delta": 0.0,
++              "unstable": 0
++            },
++            {
++              "changed": 0,
++              "max_channel_delta": 0,
++              "mean_channel_delta": 0.0,
++              "unstable": 0
++            }
++          ],
++          "gpu_p50_ms_mean": {
++            "baseline": 1.2580000162124652,
++            "optimized": 1.261500000953675
++          },
++          "sources": [
++            5,
++            5
++          ]
++        },
++        "night_city": {
++          "proofs": [
++            {
++              "changed": 0,
++              "max_channel_delta": 0,
++              "mean_channel_delta": 0.0,
++              "unstable": 0
++            },
++            {
++              "changed": 0,
++              "max_channel_delta": 0,
++              "mean_channel_delta": 0.0,
++              "unstable": 0
++            },
++            {
++              "changed": 0,
++              "max_channel_delta": 0,
++              "mean_channel_delta": 0.0,
++              "unstable": 0
++            }
++          ],
++          "gpu_p50_ms_mean": {
++            "baseline": 1.2325000166893,
++            "optimized": 1.234000027179715
++          },
++          "sources": [
++            6,
++            6
++          ]
++        },
++        "pine": {
++          "proofs": [
++            {
++              "changed": 0,
++              "max_channel_delta": 0,
++              "mean_channel_delta": 0.0,
++              "unstable": 0
++            },
++            {
++              "changed": 0,
++              "max_channel_delta": 0,
++              "mean_channel_delta": 0.0,
++              "unstable": 0
++            },
++            {
++              "changed": 0,
++              "max_channel_delta": 0,
++              "mean_channel_delta": 0.0,
++              "unstable": 0
++            }
++          ],
++          "gpu_p50_ms_mean": {
++            "baseline": 1.09400004148483,
++            "optimized": 1.09350001811981
++          },
++          "sources": [
++            6,
++            6
++          ]
++        },
++        "storm": {
++          "proofs": [
++            {
++              "changed": 0,
++              "max_channel_delta": 0,
++              "mean_channel_delta": 0.0,
++              "unstable": 0
++            },
++            {
++              "changed": 0,
++              "max_channel_delta": 0,
++              "mean_channel_delta": 0.0,
++              "unstable": 0
++            },
++            {
++              "changed": 0,
++              "max_channel_delta": 0,
++              "mean_channel_delta": 0.0,
++              "unstable": 0
++            }
++          ],
++          "gpu_p50_ms_mean": {
++            "baseline": 1.27099996805191,
++            "optimized": 1.2789999842643751
++          },
++          "sources": [
++            6,
++            6
++          ]
++        },
++        "winter": {
++          "proofs": [
++            {
++              "changed": 0,
++              "max_channel_delta": 0,
++              "mean_channel_delta": 0.0,
++              "unstable": 0
++            },
++            {
++              "changed": 0,
++              "max_channel_delta": 0,
++              "mean_channel_delta": 0.0,
++              "unstable": 0
++            },
++            {
++              "changed": 0,
++              "max_channel_delta": 0,
++              "mean_channel_delta": 0.0,
++              "unstable": 0
++            }
++          ],
++          "gpu_p50_ms_mean": {
++            "baseline": 1.0780000090599051,
++            "optimized": 1.075500011444095
++          },
++          "sources": [
++            6,
++            6
++          ]
++        }
++      }
++    },
++    "prune-pixels-fixed": {
++      "checks": 30,
++      "failures": 0,
++      "themes": {
++        "desert": {
++          "proofs": [
++            {
++              "changed": 0,
++              "max_channel_delta": 0,
++              "mean_channel_delta": 0.0,
++              "unstable": 0
++            },
++            {
++              "changed": 0,
++              "max_channel_delta": 0,
++              "mean_channel_delta": 0.0,
++              "unstable": 0
++            },
++            {
++              "changed": 0,
++              "max_channel_delta": 0,
++              "mean_channel_delta": 0.0,
++              "unstable": 0
++            }
++          ],
++          "gpu_p50_ms_mean": {
++            "baseline": 1.24099999666214,
++            "optimized": 1.236999988555905
++          },
++          "sources": [
++            5,
++            5
++          ]
++        },
++        "night_city": {
++          "proofs": [
++            {
++              "changed": 0,
++              "max_channel_delta": 0,
++              "mean_channel_delta": 0.0,
++              "unstable": 0
++            },
++            {
++              "changed": 0,
++              "max_channel_delta": 0,
++              "mean_channel_delta": 0.0,
++              "unstable": 0
++            },
++            {
++              "changed": 0,
++              "max_channel_delta": 0,
++              "mean_channel_delta": 0.0,
++              "unstable": 0
++            }
++          ],
++          "gpu_p50_ms_mean": {
++            "baseline": 1.23100000619888,
++            "optimized": 1.23149996995926
++          },
++          "sources": [
++            6,
++            6
++          ]
++        },
++        "pine": {
++          "proofs": [
++            {
++              "changed": 0,
++              "max_channel_delta": 0,
++              "mean_channel_delta": 0.0,
++              "unstable": 0
++            },
++            {
++              "changed": 0,
++              "max_channel_delta": 0,
++              "mean_channel_delta": 0.0,
++              "unstable": 0
++            },
++            {
++              "changed": 0,
++              "max_channel_delta": 0,
++              "mean_channel_delta": 0.0,
++              "unstable": 0
++            }
++          ],
++          "gpu_p50_ms_mean": {
++            "baseline": 1.0735000371933001,
++            "optimized": 1.06549996137619
++          },
++          "sources": [
++            6,
++            6
++          ]
++        },
++        "storm": {
++          "proofs": [
++            {
++              "changed": 0,
++              "max_channel_delta": 0,
++              "mean_channel_delta": 0.0,
++              "unstable": 0
++            },
++            {
++              "changed": 0,
++              "max_channel_delta": 0,
++              "mean_channel_delta": 0.0,
++              "unstable": 0
++            },
++            {
++              "changed": 0,
++              "max_channel_delta": 0,
++              "mean_channel_delta": 0.0,
++              "unstable": 0
++            }
++          ],
++          "gpu_p50_ms_mean": {
++            "baseline": 1.27649998664856,
++            "optimized": 1.262000024318695
++          },
++          "sources": [
++            6,
++            6
++          ]
++        },
++        "winter": {
++          "proofs": [
++            {
++              "changed": 0,
++              "max_channel_delta": 0,
++              "mean_channel_delta": 0.0,
++              "unstable": 0
++            },
++            {
++              "changed": 0,
++              "max_channel_delta": 0,
++              "mean_channel_delta": 0.0,
++              "unstable": 0
++            },
++            {
++              "changed": 0,
++              "max_channel_delta": 0,
++              "mean_channel_delta": 0.0,
++              "unstable": 0
++            }
++          ],
++          "gpu_p50_ms_mean": {
++            "baseline": 1.0630000233650199,
++            "optimized": 1.05699998140335
++          },
++          "sources": [
++            6,
++            6
++          ]
++        }
++      }
++    }
++  },
++  "first_draw": {
++    "final-fresh-abba": {
++      "pine": {
++        "baseline": [
++          9898.166,
++          9616.957
++        ],
++        "candidate": [
++          8875.606,
++          9296.379
++        ]
++      }
++    },
++    "prune-fresh-abba": {
++      "pine": {
++        "baseline": [
++          9837.75,
++          9642.798
++        ],
++        "candidate": [
++          9228.732,
++          9430.542
++        ]
++      }
++    },
++    "prune-fresh-repeat": {
++      "pine": {
++        "baseline": [
++          9683.839,
++          9813.796
++        ],
++        "candidate": [
++          9023.161,
++          9107.1
++        ]
++      }
++    },
++    "radiance-fresh-abba": {
++      "pine": {
++        "baseline": [
++          9944.375,
++          9652.153
++        ],
++        "candidate": [
++          10113.449,
++          9590.31
++        ]
++      }
++    }
++  }
++}
+diff --git a/docs/evidence/first-use-graphics-2026-11-05/final-suite.json b/docs/evidence/first-use-graphics-2026-11-05/final-suite.json
+new file mode 100644
+--- /dev/null
++++ b/docs/evidence/first-use-graphics-2026-11-05/final-suite.json
+@@ -0,0 +1,125 @@
++[
++  {
++    "label": "contract-gl",
++    "exit_code": 0,
++    "command": [
++      "C:\\Users\\ville\\AppData\\Local\\Programs\\Python\\Python310\\python.exe",
++      "C:\\Codes\\Godot\\Beat my track\\docs\\evidence\\first-use-graphics-2026-11-05\\run_check.py",
++      "contract-gl",
++      "res://tests/test_surface_shader_pruning.gd",
++      "--frozen",
++      "--renderer",
++      "gl_compatibility",
++      "--timeout",
++      "90"
++    ]
++  },
++  {
++    "label": "consolidation-gl",
++    "exit_code": 0,
++    "command": [
++      "C:\\Users\\ville\\AppData\\Local\\Programs\\Python\\Python310\\python.exe",
++      "C:\\Codes\\Godot\\Beat my track\\docs\\evidence\\first-use-graphics-2026-11-05\\run_check.py",
++      "consolidation-gl",
++      "res://tests/test_shader_variant_consolidation.gd",
++      "--frozen",
++      "--renderer",
++      "gl_compatibility",
++      "--timeout",
++      "180"
++    ]
++  },
++  {
++    "label": "final-pixels",
++    "exit_code": 0,
++    "command": [
++      "C:\\Users\\ville\\AppData\\Local\\Programs\\Python\\Python310\\python.exe",
++      "C:\\Codes\\Godot\\Beat my track\\docs\\evidence\\first-use-graphics-2026-11-05\\run_check.py",
++      "final-pixels",
++      "res://tests/review_first_use_comparison.gd",
++      "--frozen",
++      "--renderer",
++      "gl_compatibility",
++      "--timeout",
++      "400",
++      "--themes",
++      "pine,winter,desert,storm,night_city"
++    ]
++  },
++  {
++    "label": "final-native",
++    "exit_code": 0,
++    "command": [
++      "C:\\Users\\ville\\AppData\\Local\\Programs\\Python\\Python310\\python.exe",
++      "C:\\Codes\\Godot\\Beat my track\\docs\\evidence\\first-use-graphics-2026-11-05\\run_check.py",
++      "final-native",
++      "res://tests/profile_first_use_graphics.gd",
++      "--frozen",
++      "--renderer",
++      "gl_compatibility",
++      "--timeout",
++      "240",
++      "--native"
++    ]
++  },
++  {
++    "label": "first-laps-gl",
++    "exit_code": 0,
++    "command": [
++      "C:\\Users\\ville\\AppData\\Local\\Programs\\Python\\Python310\\python.exe",
++      "C:\\Codes\\Godot\\Beat my track\\docs\\evidence\\first-use-graphics-2026-11-05\\run_check.py",
++      "first-laps-gl",
++      "res://tests/test_shared_graphics_first_laps.gd",
++      "--frozen",
++      "--renderer",
++      "gl_compatibility",
++      "--timeout",
++      "420"
++    ]
++  },
++  {
++    "label": "contract-mobile",
++    "exit_code": 0,
++    "command": [
++      "C:\\Users\\ville\\AppData\\Local\\Programs\\Python\\Python310\\python.exe",
++      "C:\\Codes\\Godot\\Beat my track\\docs\\evidence\\first-use-graphics-2026-11-05\\run_check.py",
++      "contract-mobile",
++      "res://tests/test_surface_shader_pruning.gd",
++      "--frozen",
++      "--renderer",
++      "mobile",
++      "--timeout",
++      "90"
++    ]
++  },
++  {
++    "label": "consolidation-mobile",
++    "exit_code": 0,
++    "command": [
++      "C:\\Users\\ville\\AppData\\Local\\Programs\\Python\\Python310\\python.exe",
++      "C:\\Codes\\Godot\\Beat my track\\docs\\evidence\\first-use-graphics-2026-11-05\\run_check.py",
++      "consolidation-mobile",
++      "res://tests/test_shader_variant_consolidation.gd",
++      "--frozen",
++      "--renderer",
++      "mobile",
++      "--timeout",
++      "180"
++    ]
++  },
++  {
++    "label": "first-laps-mobile",
++    "exit_code": 0,
++    "command": [
++      "C:\\Users\\ville\\AppData\\Local\\Programs\\Python\\Python310\\python.exe",
++      "C:\\Codes\\Godot\\Beat my track\\docs\\evidence\\first-use-graphics-2026-11-05\\run_check.py",
++      "first-laps-mobile",
++      "res://tests/test_shared_graphics_first_laps.gd",
++      "--frozen",
++      "--renderer",
++      "mobile",
++      "--timeout",
++      "420"
++    ]
++  }
++]
+diff --git a/docs/evidence/first-use-graphics-2026-11-05/final-hardening.json b/docs/evidence/first-use-graphics-2026-11-05/final-hardening.json
+new file mode 100644
+--- /dev/null
++++ b/docs/evidence/first-use-graphics-2026-11-05/final-hardening.json
+@@ -0,0 +1,73 @@
++[
++  {
++    "label": "final-contract",
++    "exit_code": 0,
++    "command": [
++      "C:\\Users\\ville\\AppData\\Local\\Programs\\Python\\Python310\\python.exe",
++      "C:\\Codes\\Godot\\Beat my track\\docs\\evidence\\first-use-graphics-2026-11-05\\run_check.py",
++      "final-contract",
++      "res://tests/test_surface_shader_pruning.gd",
++      "--frozen",
++      "--timeout",
++      "180",
++      "--headless"
++    ]
++  },
++  {
++    "label": "final-source-parity",
++    "exit_code": 0,
++    "command": [
++      "C:\\Users\\ville\\AppData\\Local\\Programs\\Python\\Python310\\python.exe",
++      "C:\\Codes\\Godot\\Beat my track\\docs\\evidence\\first-use-graphics-2026-11-05\\run_check.py",
++      "final-source-parity",
++      "res://tests/verify_final_pruning.gd",
++      "--frozen",
++      "--timeout",
++      "180",
++      "--headless"
++    ]
++  },
++  {
++    "label": "first-laps-gl-fixed",
++    "exit_code": 0,
++    "command": [
++      "C:\\Users\\ville\\AppData\\Local\\Programs\\Python\\Python310\\python.exe",
++      "C:\\Codes\\Godot\\Beat my track\\docs\\evidence\\first-use-graphics-2026-11-05\\run_check.py",
++      "first-laps-gl-fixed",
++      "res://tests/test_shared_graphics_first_laps.gd",
++      "--frozen",
++      "--timeout",
++      "420",
++      "--first-emission"
++    ]
++  },
++  {
++    "label": "first-laps-mobile-fixed",
++    "exit_code": 0,
++    "command": [
++      "C:\\Users\\ville\\AppData\\Local\\Programs\\Python\\Python310\\python.exe",
++      "C:\\Codes\\Godot\\Beat my track\\docs\\evidence\\first-use-graphics-2026-11-05\\run_check.py",
++      "first-laps-mobile-fixed",
++      "res://tests/test_shared_graphics_first_laps.gd",
++      "--frozen",
++      "--timeout",
++      "420",
++      "--renderer",
++      "mobile",
++      "--first-emission"
++    ]
++  },
++  {
++    "label": "final-fresh-abba",
++    "exit_code": 0,
++    "command": [
++      "C:\\Users\\ville\\AppData\\Local\\Programs\\Python\\Python310\\python.exe",
++      "C:\\Codes\\Godot\\Beat my track\\docs\\evidence\\first-use-graphics-2026-11-05\\run_check.py",
++      "final-fresh-abba",
++      "res://tests/profile_first_use_comparison.gd",
++      "--frozen",
++      "--timeout",
++      "180"
++    ]
++  }
++]
+diff --git a/docs/evidence/first-use-graphics-2026-11-05/opening-lap-fixture.json b/docs/evidence/first-use-graphics-2026-11-05/opening-lap-fixture.json
+new file mode 100644
+--- /dev/null
++++ b/docs/evidence/first-use-graphics-2026-11-05/opening-lap-fixture.json
+@@ -0,0 +1,5 @@
++{
++  "source": "C:\\Codes\\Godot\\Beat my track\\backend\\tests\\fixtures\\verified_oval.json",
++  "destination": "C:\\Codes\\Godot\\Beat my track\\build\\first-use-graphics-20261105\\frozen-1793857448364027000\\backend\\tests\\fixtures\\verified_oval.json",
++  "sha256": "bc008dbfae086aa541443e699585e70eda5b5d6a882ac1ba466bab85b58e8149"
++}
+diff --git a/docs/evidence/first-use-graphics-2026-11-05/delivery-checks.json b/docs/evidence/first-use-graphics-2026-11-05/delivery-checks.json
+new file mode 100644
+--- /dev/null
++++ b/docs/evidence/first-use-graphics-2026-11-05/delivery-checks.json
+@@ -0,0 +1,79 @@
++{
++  "runs": [
++    {
++      "label": "contract-gl",
++      "checks": 37,
++      "failures": 0
++    },
++    {
++      "label": "consolidation-gl",
++      "checks": 141,
++      "failures": 0
++    },
++    {
++      "label": "final-pixels",
++      "checks": 30,
++      "failures": 0
++    },
++    {
++      "label": "final-native",
++      "checks": 9,
++      "failures": 0
++    },
++    {
++      "label": "contract-mobile",
++      "checks": 37,
++      "failures": 0
++    },
++    {
++      "label": "consolidation-mobile",
++      "checks": 141,
++      "failures": 0
++    },
++    {
++      "label": "first-laps-mobile-fixed",
++      "checks": 133,
++      "failures": 0
++    },
++    {
++      "label": "first-laps-gl-fixed",
++      "checks": 123,
++      "failures": 0
++    },
++    {
++      "label": "final-contract",
++      "checks": 39,
++      "failures": 0
++    },
++    {
++      "label": "final-source-parity",
++      "checks": 29,
++      "failures": 0
++    },
++    {
++      "label": "final-fresh-abba",
++      "checks": 0,
++      "failures": 0
++    }
++  ],
++  "checks": 719,
++  "failures": 0,
++  "pixel_exact_views": 15,
++  "restored_controls": 15,
++  "native_program_keys_identical": 187,
++  "unchanged_task_start_sources": {
++    "game/race/world_render_preparation.gd": true,
++    "game/vehicle/effect_render_preparation.gd": true,
++    "game/rendering/graphics_preparation.gd": true,
++    "game/track/creator_road.gdshaderinc": true,
++    "game/track/bridge_road.gdshaderinc": true
++  },
++  "source_sha256": {
++    "game/track/surface_shader_variants.gd": "7c6b759a1b1fb04d4c649787b46cd02e2e3dfa3a427affa43b128b522b654359",
++    "game/track/surface_shader_pruning.gd": "b5bfffd8e8942f84bf0668221406ec536579862c402a973d50da75d7c3610c81",
++    "game/tests/test_surface_shader_pruning.gd": "d4b473703e46e0c954b67ef7ca075955870669ec847df49d45c27a54eccc636e",
++    "game/tests/test_shader_variant_consolidation.gd": "22edbb1005d2b42708e21f9da9f5ef757d0ca1d7abfc01989d956a6f7fe9fcc0",
++    "game/tests/profile_first_use_graphics.gd": "6e5363979a45d3af5ffd92a303b4c27e774a4f2b704f79bf0586e24376f0eac0"
++  },
++  "diagnostic_dll_sha256": "ff6b6e9c5e8e95ee310087777e7aecc5b537a0be9113bbff5f61684c49acb997"
++}
+diff --git a/docs/evidence/first-use-graphics-2026-11-05/original-control.json b/docs/evidence/first-use-graphics-2026-11-05/original-control.json
+new file mode 100644
+--- /dev/null
++++ b/docs/evidence/first-use-graphics-2026-11-05/original-control.json
+@@ -0,0 +1,7 @@
++{
++  "expected_exit": 1,
++  "checks": 39,
++  "expected_failures": 1,
++  "candidate_restored_exact": true,
++  "restored_sha256": "7c6b759a1b1fb04d4c649787b46cd02e2e3dfa3a427affa43b128b522b654359"
++}
+diff --git a/docs/evidence/first-use-graphics-2026-11-05/before/game/race/world_render_preparation.gd b/docs/evidence/first-use-graphics-2026-11-05/before/game/race/world_render_preparation.gd
+new file mode 100644
+--- /dev/null
++++ b/docs/evidence/first-use-graphics-2026-11-05/before/game/race/world_render_preparation.gd
+@@ -0,0 +1,162 @@
++extends Node
++## Stage first use of actual material/mesh combinations under the loading cover.
++## Lifetime belongs to Game, so navigation cannot leave hidden surviving meshes.
++const Graphics = preload("res://rendering/graphics_preparation.gd")
++const FAST_DRAW_US: int = Graphics.FAST_DRAW_US
++static var warmed: Dictionary = Graphics.warmed
++var programs_per_draw: int = Graphics.PROGRAMS_PER_DRAW
++var adaptive: bool = true
++var _batch_programs: int = 1
++var _fast_draws: int = 0
++# Insertion order retains the original first-seen program order; each bucket
++# is consumed from the end, just like the former reverse scan of all nodes.
++var pending: Dictionary = {}
++var _pending_keys: Array[String] = []
++var _key_cursor: int = 0
++var frame_groups: int = 0
++var draw_us_max: int = 0
++var _material_keys: Dictionary = {}
++var _world: WeakRef
++var _hold_context: String = ""
++var _active_margins: Array[Dictionary] = []
++
++func hold(world: Node) -> void:
++	_world = weakref(world)
++	_hold_context = ""
++	for geometry: GeometryInstance3D in world.find_children("*","GeometryInstance3D",true,false):
++		if not geometry.is_visible_in_tree(): continue
++		hold_geometry(geometry)
++
++func hold_geometry(geometry: GeometryInstance3D) -> void:
++	if _world == null: _world = weakref(geometry.get_parent())
++	var key: String = _key(geometry,_material_keys)
++	var camera: Camera3D = get_parent().get("camera") if get_parent() != null else null
++	if camera != null:
++		if _hold_context.is_empty(): _hold_context = Graphics.context(_view(),_world.get_ref(),camera)
++		if Graphics.cacheable(geometry) and Graphics.ready(_hold_context,Graphics.receipt_key(geometry,_hold_context,_material_keys)): return
++	if not pending.has(key):
++		pending[key] = []
++		_pending_keys.append(key)
++	pending[key].append(weakref(geometry))
++	geometry.hide()
++
++func _view() -> Viewport:
++	return get_parent().showroom_viewport if "showroom_viewport" in get_parent() else get_viewport()
++
++func prepare(draw: Callable, current: Callable) -> bool:
++	var instance: WeakRef = weakref(self)
++	var camera: Camera3D = get_parent().get("camera")
++	var world: Node = _world.get_ref() if _world != null else null
++	var context: String = Graphics.context(_view(),world,camera)
++	while not pending.is_empty():
++		if not current.is_valid() or not current.call(): return false
++		_material_keys.clear()
++		var epoch: int = Graphics.generation
++		var submitted: Array[Dictionary] = []
++		var margins: Array[Dictionary] = []
++		var budget: int = mini(_batch_programs,programs_per_draw) if adaptive else programs_per_draw
++		while not pending.is_empty() and submitted.size() < clampi(budget,1,Graphics.PROGRAMS_PER_DRAW):
++			while _key_cursor < _pending_keys.size() and not pending.has(_pending_keys[_key_cursor]): _key_cursor += 1
++			if _key_cursor >= _pending_keys.size(): break
++			var key: String = _pending_keys[_key_cursor]
++			var bucket: Array = pending[key]
++			# Keys are rechecked after yields. Changed programs must get a real draw.
++			var refreshed: Array = []
++			for reference: WeakRef in bucket:
++				var node: Object = reference.get_ref()
++				if not is_instance_valid(node): continue
++				var actual: String = _key(node,_material_keys)
++				if actual != key:
++					if not pending.has(actual): pending[actual] = []; _pending_keys.append(actual)
++					pending[actual].append(reference)
++				elif Graphics.cacheable(node) and Graphics.ready(context,Graphics.receipt_key(node,context,_material_keys)): node.show()
++				else: refreshed.append(reference)
++			bucket.assign(refreshed)
++			if bucket.is_empty(): pending.erase(key); continue
++			var sources: Array[Dictionary] = []
++			while not bucket.is_empty() and sources.size() < Graphics.OBJECTS_PER_PROGRAM:
++				var node: Object = bucket.pop_back().get_ref()
++				if not is_instance_valid(node): continue
++				if node is MeshInstance3D and camera != null:
++					margins.append({"node":weakref(node),"margin":node.extra_cull_margin})
++					var bounds: AABB = node.get_aabb()
++					var distance: Vector3 = (node.to_local(camera.global_position)-bounds.get_center()).abs()
++					node.extra_cull_margin = maxf(node.extra_cull_margin,maxf(distance.x,maxf(distance.y,distance.z))+camera.near+1.0)
++				node.show()
++				sources.append({"node":weakref(node),"key":key,"receipt":Graphics.receipt_key(node,context,_material_keys)})
++			if sources.is_empty(): pending.erase(key); continue
++			submitted.append({"key":key,"bucket":bucket,"sources":sources})
++			# Leave a failed program at this cursor so its remaining geometry
++			# participates in the next real draw, preserving the retry contract.
++			_key_cursor += 1
++		if submitted.is_empty(): continue
++		var began: int = Time.get_ticks_usec()
++		_active_margins = margins
++		var drawn: bool = await draw.call()
++		for entry: Dictionary in margins:
++			var node: Object = entry.node.get_ref()
++			if is_instance_valid(node): node.extra_cull_margin = entry.margin
++		if not is_instance_valid(instance.get_ref()): return false
++		_active_margins = []
++		if not current.is_valid() or not current.call(): return false
++		draw_us_max = maxi(draw_us_max,Time.get_ticks_usec()-began)
++		# Begin conservatively. Slow native/driver work restores one program
++		# per interval; two fast real draws admit the bounded warm batch.
++		if drawn and Time.get_ticks_usec()-began <= FAST_DRAW_US:
++			_fast_draws += 1
++			if _fast_draws >= 2: _batch_programs = Graphics.PROGRAMS_PER_DRAW
++		else:
++			_fast_draws = 0
++			_batch_programs = 1
++		frame_groups += 1
++		var valid_context: bool = epoch == Graphics.generation and context == Graphics.context(_view(),world,camera)
++		if not valid_context: _fast_draws = 0; _batch_programs = 1
++		_material_keys.clear()
++		for group: Dictionary in submitted:
++			var valid: bool = drawn and valid_context
++			for source: Dictionary in group.sources:
++				var node: Object = source.node.get_ref()
++				if not is_instance_valid(node) or _key(node,_material_keys) != source.key or Graphics.receipt_key(node,context,_material_keys) != source.receipt: valid = false
++			if valid:
++				for source: Dictionary in group.sources:
++					# Expanded staging bounds may select a different set of local
++					# lights. Spatial views publish only their normal full captures.
++					if not Graphics.spatial_context(context) and Graphics.cacheable(source.node.get_ref()): Graphics.complete(context,source.receipt,epoch)
++				for reference: WeakRef in group.bucket:
++					var node: Object = reference.get_ref()
++					if is_instance_valid(node): node.show()
++				pending.erase(group.key)
++			elif group.bucket.is_empty():
++				for source: Dictionary in group.sources:
++					if is_instance_valid(source.node.get_ref()): group.bucket.append(source.node)
++		# Rescan unresolved groups after a failed draw, mutation or invalidation.
++		_key_cursor = 0
++		context = Graphics.context(_view(),world,camera)
++	_material_keys.clear()
++	_pending_keys.clear()
++	_key_cursor = 0
++	return current.call()
++
++static func _key(node: GeometryInstance3D, materials: Dictionary = {}) -> String:
++	return Graphics.geometry_key(node,materials)
++
++static func _material_key(material: Material, cache: Dictionary) -> String:
++	return Graphics._material_key(material,cache)
++
++func release() -> void:
++	for entry: Dictionary in _active_margins:
++		var node: Object = entry.node.get_ref()
++		if is_instance_valid(node): node.extra_cull_margin = entry.margin
++	_active_margins.clear()
++	for bucket: Array in pending.values():
++		for reference: WeakRef in bucket:
++			var node: Object = reference.get_ref()
++			if is_instance_valid(node): node.show()
++	pending.clear()
++	_pending_keys.clear()
++	_key_cursor = 0
++	_material_keys.clear()
++	_hold_context = ""
++
++func _exit_tree() -> void:
++	release()
+diff --git a/docs/evidence/first-use-graphics-2026-11-05/before/game/rendering/graphics_preparation.gd b/docs/evidence/first-use-graphics-2026-11-05/before/game/rendering/graphics_preparation.gd
+new file mode 100644
+--- /dev/null
++++ b/docs/evidence/first-use-graphics-2026-11-05/before/game/rendering/graphics_preparation.gd
+@@ -0,0 +1,192 @@
++extends RefCounted
++## Process-local receipts for real completed draws. No nodes, meshes, materials,
++## or GPU handles survive here; a receipt is valid only in its render context.
++const LIMIT: int = 512
++const PROGRAMS_PER_DRAW: int = 4
++const OBJECTS_PER_PROGRAM: int = 8
++const FAST_DRAW_US: int = 50000 # Includes cooperative frame yields.
++static var warmed: Dictionary = {}
++static var generation: int = 0
++static var hits: int = 0
++static var submissions: int = 0
++static var _watcher: WeakRef
++static var _feature_properties: Dictionary = {}
++static var _contexts: Dictionary = {}
++
++class Lifetime extends Node:
++	signal reset(reason: String)
++	func _notification(what: int) -> void:
++		if what == NOTIFICATION_APPLICATION_RESUMED: reset.emit("resume")
++		if what == NOTIFICATION_OS_MEMORY_WARNING: reset.emit("memory")
++	func _exit_tree() -> void: reset.emit("tree_exit")
++
++static func watch(tree: SceneTree) -> void:
++	if _watcher != null and is_instance_valid(_watcher.get_ref()): return
++	var lifetime := Lifetime.new()
++	lifetime.name = "GraphicsPreparationLifetime"
++	lifetime.reset.connect(invalidate)
++	_watcher = weakref(lifetime)
++	tree.root.add_child.call_deferred(lifetime)
++
++static func invalidate(_reason: String = "explicit") -> void:
++	generation += 1
++	warmed.clear()
++	_contexts.clear()
++
++static func ready(context: String, program: String) -> bool:
++	var key: String = context+":"+program
++	if not warmed.has(key): return false
++	# An LRU contains strings only and stays bounded even through repeated views.
++	warmed.erase(key)
++	warmed[key] = true
++	hits += 1
++	return true
++
++static func cacheable(node: GeometryInstance3D) -> bool:
++	# Actual particle process/draw coverage belongs to the dedicated effect
++	# preparer. An empty emitter draw cannot certify its shader program here.
++	if node is MeshInstance3D:
++		return node.skin == null and not node.get_node_or_null(node.skeleton) is Skeleton3D and (not node.mesh is ArrayMesh or node.mesh.get_blend_shape_count() == 0)
++	return node is MultiMeshInstance3D
++
++static func receipt_key(node: GeometryInstance3D, context_id: String, materials: Dictionary = {}) -> String:
++	var program: String = geometry_key(node,materials)
++	if not _contexts.get(context_id,{}).get("spatial",false): return program
++	# A spot/omni context can choose lights by bounds. Cross-view reuse then
++	# requires the same immutable mesh, pose and bounds, not merely its format.
++	var mesh: Mesh = node.mesh if node is MeshInstance3D else node.multimesh.mesh if node is MultiMeshInstance3D and node.multimesh != null else null
++	return var_to_bytes([program,mesh.get_instance_id() if mesh != null else 0,node.global_transform,node.get_aabb()]).hex_encode().sha256_text()
++
++static func spatial_context(context_id: String) -> bool:
++	return _contexts.get(context_id,{}).get("spatial",false)
++
++static func complete(context: String, program: String, epoch: int) -> void:
++	if epoch != generation or context.is_empty() or not _contexts.get(context,{}).get("reusable",false): return
++	var key: String = context+":"+program
++	if warmed.has(key): warmed.erase(key)
++	while warmed.size() >= LIMIT: warmed.erase(warmed.keys()[0])
++	warmed[key] = true
++	submissions += 1
++
++static func context(view: Viewport, world: Node, camera: Camera3D) -> String:
++	if view == null or world == null or camera == null: return ""
++	if world.is_inside_tree(): watch(world.get_tree())
++	var flags: Array = ["graphics-context-1",RenderingServer.get_current_rendering_method(),
++		view.msaa_3d,view.screen_space_aa,view.use_taa,view.transparent_bg,
++		view.use_occlusion_culling,camera.projection if camera != null else -1,
++		camera.cull_mask if camera != null else 0,_viewport_features(view)]
++	var environment: Environment = world.get_world_3d().environment if world is Node3D and world.is_inside_tree() else null
++	if camera.environment != null: environment = camera.environment
++	flags.append(_features(environment))
++	flags.append(_features(environment.sky) if environment != null and environment.sky != null else [])
++	flags.append(_features(camera.attributes))
++	var lighting_layers: int = camera.cull_mask
++	for geometry: GeometryInstance3D in world.find_children("*","GeometryInstance3D",true,false):
++		# A mesh seen on layer 1 may also receive a light restricted to layer 4.
++		# Preserve its complete membership, even while preparation hides it.
++		if geometry.layers & camera.cull_mask: lighting_layers |= geometry.layers
++	var lights: Array[String] = []
++	var spatial: bool = false
++	for light: Light3D in world.find_children("*","Light3D",true,false):
++		if not light.is_visible_in_tree(): continue
++		if not (light.light_cull_mask & lighting_layers): continue
++		spatial = spatial or not light is DirectionalLight3D
++		lights.append(var_to_bytes([_features(light),light.global_transform,light.light_cull_mask & lighting_layers]).hex_encode())
++	lights.sort()
++	flags.append(lights)
++	if spatial: flags.append([camera.global_transform,camera.fov,camera.size,camera.near,camera.far,camera.keep_aspect,view.get_visible_rect().size])
++	# These features affect pipeline compilation even if their nodes are hidden.
++	var reusable: bool = true
++	for kind: String in ["ReflectionProbe","LightmapGI","VoxelGI"]:
++		var count: int = world.find_children("*",kind,true,false).size()
++		flags.append([kind,count])
++		reusable = reusable and count == 0
++	var result: String = var_to_bytes(flags).hex_encode().sha256_text()
++	if not _contexts.has(result) and _contexts.size() >= LIMIT: invalidate("context bound")
++	_contexts[result] = {"spatial":spatial,"reusable":reusable}
++	return result
++
++static func _viewport_features(view: Viewport) -> Array:
++	var result: Array = [view.get_class()]
++	# Scheduling/clear modes change as a one-shot target is submitted. They
++	# are not pipeline state and must not invalidate that very capture.
++	for name: String in ["scaling_3d_mode","debug_draw","disable_3d","use_xr","use_debanding","use_hdr_2d","positional_shadow_atlas_size","positional_shadow_atlas_16_bits"]:
++		if name in view: result.append([name,view.get(name)])
++	return result
++
++static func _features(resource: Object) -> Array:
++	if resource == null: return []
++	# ShaderMaterial's dynamic property list asks the backend for its uniforms.
++	# That can create a lazy shader before the scheduled native draw. Its
++	# program is fully described by the shader source/identity and next pass.
++	if resource is ShaderMaterial: return [resource.get_class(),resource.render_priority]
++	var result: Array = [resource.get_class()]
++	var kind: String = resource.get_class()
++	if not _feature_properties.has(kind):
++		var properties: Array = []
++		for property: Dictionary in resource.get_property_list():
++			if not int(property.usage)&PROPERTY_USAGE_STORAGE: continue
++			var name: String = property.name
++			if name.begins_with("resource_") or name.begins_with("shader_parameter/") or name in ["next_pass","owner","script"]: continue
++			if resource is Light3D and name in ["layers","light_cull_mask"]: continue
++			properties.append([name,property.hint == PROPERTY_HINT_RESOURCE_TYPE and "Texture" in str(property.hint_string)])
++		_feature_properties[kind] = properties
++	for property: Array in _feature_properties[kind]:
++		var name: String = property[0]
++		var value: Variant = resource.get(name)
++		if value is bool or value is int: result.append([name,value])
++		elif resource is Light3D and (value is float or value is Color or value is Vector3 or value is Transform3D): result.append([name,value])
++		elif property[1]: result.append([name,value != null])
++	return result
++
++static func geometry_key(node: GeometryInstance3D, materials: Dictionary = {}) -> String:
++	var mesh: Mesh = node.mesh if node is MeshInstance3D else node.multimesh.mesh if node is MultiMeshInstance3D and node.multimesh != null else null
++	var parts: Array = ["graphics-program-1",node.get_class(),node.cast_shadow,node.layers,node.gi_mode,
++		node.visibility_range_fade_mode,_material_key(node.material_overlay,materials)]
++	if node is MeshInstance3D: parts.append([node.skin != null,node.get_node_or_null(node.skeleton) is Skeleton3D,node.mesh.get_blend_shape_count() if node.mesh is ArrayMesh else 0])
++	if node is MultiMeshInstance3D and node.multimesh != null:
++		parts.append([node.multimesh.transform_format,node.multimesh.use_colors,node.multimesh.use_custom_data])
++	if mesh != null:
++		for surface: int in range(mesh.get_surface_count()):
++			var material: Material = node.get_active_material(surface) if node is MeshInstance3D else node.material_override if node.material_override != null else mesh.surface_get_material(surface)
++			parts.append(_material_key(material,materials))
++			parts.append([mesh.surface_get_format(surface),mesh.surface_get_primitive_type(surface)] if mesh is ArrayMesh else _features(mesh))
++	return str(parts).sha256_text()
++
++static func _material_key(material: Material, cache: Dictionary = {}) -> String:
++	if material == null: return "none"
++	var id: int = material.get_instance_id()
++	if cache.has(id): return cache[id]
++	# Break malformed next-pass cycles without a recursive shader/RID query.
++	cache[id] = "cycle-"+str(id)
++	var features: Array = _features(material)
++	if material is ShaderMaterial:
++		if material.shader != null:
++			var shader_key: String = "shader-"+str(material.shader.get_instance_id())
++			if not cache.has(shader_key): cache[shader_key] = material.shader.code.sha256_text()
++			features.append([material.shader.get_instance_id(),cache[shader_key]])
++		else: features.append([])
++	elif not material is BaseMaterial3D: features.append(id)
++	features.append(_material_key(material.next_pass,cache))
++	var result: String = str(features).sha256_text()
++	cache[id] = result
++	return result
++
++static func begin_capture(world: Node3D, view: Viewport, camera: Camera3D) -> Dictionary:
++	var samples: Array[Dictionary] = []
++	var materials: Dictionary = {}
++	var context_id: String = context(view,world,camera)
++	# Header/thumbnail callers retain their complete native settle sequence.
++	# Publish only mesh sources whose bounds reach the actual capture camera.
++	for node: MeshInstance3D in world.find_children("*","MeshInstance3D",true,false):
++		if node.mesh == null or not cacheable(node) or not node.is_visible_in_tree() or not (node.layers & camera.cull_mask): continue
++		if view.use_occlusion_culling or not camera.is_position_in_frustum(node.to_global(node.get_aabb().get_center())): continue
++		samples.append({"node":weakref(node),"key":receipt_key(node,context_id,materials)})
++	return {"context":context_id,"epoch":generation,"samples":samples}
++
++static func finish_capture(ticket: Dictionary, world: Node3D, view: Viewport, camera: Camera3D) -> void:
++	if ticket.is_empty() or ticket.epoch != generation or ticket.context != context(view,world,camera): return
++	for sample: Dictionary in ticket.samples:
++		var node: Object = sample.node.get_ref()
++		if is_instance_valid(node) and node.is_visible_in_tree() and receipt_key(node,ticket.context) == sample.key:
++			complete(ticket.context,sample.key,ticket.epoch)
+diff --git a/docs/evidence/first-use-graphics-2026-11-05/before/game/tests/test_shader_variant_consolidation.gd b/docs/evidence/first-use-graphics-2026-11-05/before/game/tests/test_shader_variant_consolidation.gd
+new file mode 100644
+--- /dev/null
++++ b/docs/evidence/first-use-graphics-2026-11-05/before/game/tests/test_shader_variant_consolidation.gd
+@@ -0,0 +1,74 @@
++extends SceneTree
++const PROBE = preload("res://tests/probe_shader_variant_consolidation.gd")
++var checks: int = 0
++var failures: int = 0
++
++func _initialize() -> void: run.call_deferred()
++
++func check(ok: bool, label: String) -> void:
++	checks += 1
++	if not ok: failures += 1; push_error(label)
++
++# The sampler-budget follow-up changes only these three unreachable declarations.
++# All other source bytes still compare against the independent original fixtures.
++func sampler_contract(source: String) -> String:
++	for name: String in ["painted_grass_texture","snow_road_sources","road_mask"]:
++		var declaration := RegEx.new()
++		declaration.compile("(?m)^(uniform sampler2D "+name+"\\b[^;]*;|#define "+name+" surface_factors)\\r?$")
++		source = declaration.sub(source,"// sampler contract: "+name,true)
++	return source
++
++func run() -> void:
++	var baseline: GDScript = PROBE.generator([])
++	check(baseline != null,"task-start generator loads independently")
++	if baseline == null: quit(1); return
++	var validated := GDScript.new()
++	validated.source_code = FileAccess.get_file_as_string("res://tests/fixtures/shader_consolidation_gl_candidate.gd.txt").replace("class_name SurfaceShaderVariants\n","")
++	check(validated.reload() == OK,"measured Compatibility candidate loads independently")
++	var doc: Dictionary = JSON.parse_string(FileAccess.get_file_as_string("res://tests/fixtures/star_spline_lap.json"))
++	var counts: Dictionary = {}
++	for theme: String in ["pine","winter","desert","storm","night_city"]:
++		doc.theme = theme
++		var track: NativeTrack = TrackCompiler.compile(doc)
++		var visual := NativeTrackVisual.new()
++		visual.persist_road_meshes = false
++		visual.cache_road_meshes = false
++		root.add_child(visual)
++		await visual.build(track,BridgePresentation.new(track))
++		var old_hashes: Dictionary = {}
++		var new_hashes: Dictionary = {}
++		var originals: Array[ShaderMaterial] = PROBE.materials(visual)
++		check(not originals.is_empty(),theme+" exercises real surface materials")
++		for actual: ShaderMaterial in originals:
++			var dynamic: ShaderMaterial = actual.get_meta("surface_dynamic_material")
++			var control: ShaderMaterial = dynamic.duplicate()
++			baseline.specialize(control)
++			var measured: ShaderMaterial = dynamic.duplicate()
++			validated.specialize(measured)
++			var expected: ShaderMaterial = measured if RenderingServer.get_current_rendering_method() == "gl_compatibility" else control
++			check(sampler_contract(actual.shader.code) == sampler_contract(expected.shader.code),theme+" retains validated source except the three audited sampler declarations")
++			old_hashes[sampler_contract(control.shader.code).sha256_text()] = true
++			new_hashes[sampler_contract(actual.shader.code).sha256_text()] = true
++			var bindings_equal: bool = true
++			for uniform: Dictionary in control.shader.get_shader_uniform_list():
++				if uniform.name in ["painted_grass_texture","snow_road_sources","road_mask"] and actual.shader.code.contains("#define "+uniform.name+" surface_factors"): continue
++				bindings_equal = bindings_equal and actual.get_shader_parameter(uniform.name) == control.get_shader_parameter(uniform.name)
++			check(bindings_equal,theme+" retains every material binding and texture identity")
++			var prepared: ShaderMaterial = dynamic.duplicate()
++			var hits: int = SurfaceShaderVariants.prepared_hits
++			SurfaceShaderVariants.specialize(prepared)
++			check(prepared.shader == actual.shader and SurfaceShaderVariants.prepared_hits == hits+1,theme+" prepared signature reuses the correct shared shader")
++			var uncached: ShaderMaterial = dynamic.duplicate()
++			SurfaceShaderVariants.specialize(uncached,false)
++			check(uncached.shader == actual.shader,theme+" fresh preparation agrees with cached preparation")
++		if theme in ["pine","winter"] or RenderingServer.get_current_rendering_method() != "gl_compatibility":
++			check(new_hashes == old_hashes,theme+" original shader sources stay exact")
++		else:
++			check(new_hashes.size() == old_hashes.size()-1,theme+" removes exactly one source on the Star fixture")
++		counts[theme] = {"before":old_hashes.size(),"after":new_hashes.size()}
++		visual.free()
++		await process_frame
++	check(SurfaceShaderVariants.cache.size() <= 64 and SurfaceShaderVariants.prepared_keys.size() <= 64,"original cache bounds remain")
++	print("CONSOLIDATION_SOURCES ",JSON.stringify(counts))
++	print("SHADER_CONSOLIDATION: %d checks, %d failures" % [checks,failures])
++	quit(1 if failures else 0)
+diff --git a/docs/evidence/first-use-graphics-2026-11-05/before/game/track/bridge_road.gdshaderinc b/docs/evidence/first-use-graphics-2026-11-05/before/game/track/bridge_road.gdshaderinc
+new file mode 100644
+--- /dev/null
++++ b/docs/evidence/first-use-graphics-2026-11-05/before/game/track/bridge_road.gdshaderinc
+@@ -0,0 +1,70 @@
++#include "res://track/surface_detail.gdshaderinc"
++uniform vec4 road_color : source_color = vec4(0.204,0.212,0.220,1.0);
++uniform bool winter_bridge_width_data = false;
++uniform bool desert_bridge_width_data = false;
++uniform bool raised_road_edge = false;
++uniform bool bridge_material_blend = false;
++uniform sampler2D bridge_blend_mask : filter_linear, repeat_disable;
++uniform vec2 bridge_map_extent;
++uniform vec4 sand_color : source_color = vec4(0.60,0.50,0.37,1.0);
++varying vec3 world_position;
++varying float winter_half_width;
++varying vec2 desert_apron_data;
++varying float asphalt_edge_shade;
++varying float loose_bridge;
++void vertex() {
++    world_position = (MODEL_MATRIX * vec4(VERTEX,1.0)).xyz;
++    winter_half_width = winter_bridge_width_data ? UV2.x : 5.0;
++    desert_apron_data = UV2;
++    asphalt_edge_shade = COLOR.a;
++    loose_bridge = piece_materials ? UV2.y : 0.0;
++    if (NORMAL.y < 0.0) { NORMAL = -NORMAL; }
++}
++void fragment() {
++    float loose = loose_bridge;
++    if (bridge_material_blend) { loose = texture(bridge_blend_mask,(world_position.xz+bridge_map_extent)/(bridge_map_extent*2.0)).b; }
++    if (piece_materials) { loose = road_material_coverage(loose,world_position.xz); }
++    if (packed_sand) { ALBEDO = compacted_road(road_color.rgb,UV); }
++    else if (icy_road) { ALBEDO = winter_wear_width(UV,world_position.xz,winter_half_width); }
++    else { ALBEDO = surface_detail(road_color.rgb,world_position.xz,true); }
++    if (piece_materials) {
++        vec2 axis = dFdx(world_position.xz)*dFdy(UV.y)-dFdy(world_position.xz)*dFdx(UV.y);
++        axis /= max(length(axis),0.000001);
++        vec2 encoded = vec2(axis.x*axis.x-axis.y*axis.y,2.0*axis.x*axis.y);
++        ALBEDO = mix(ALBEDO,road_gravel_color(road_material_metres(world_position.xz,encoded)),loose);
++    }
++    if (raised_road_edge) ALBEDO *= asphalt_edge_shade;
++    if (packed_sand && desert_bridge_width_data) {
++        // Same 1.95 m foot as the exposed ground fringe. UV.y already has
++        // the corrected signed cross-road coordinate, independent of phase.
++        float across = clamp((abs(UV.y)-desert_apron_data.x+1.45)/1.95,0.0,1.0);
++        float deposited = desert_bank_coverage(across,world_position.xz)*(1.0-desert_apron_data.y);
++        if (deposited > 0.001) ALBEDO = mix(ALBEDO,desert_shoulder(sand_color.rgb,world_position.xz),deposited);
++    }
++    ROUGHNESS = 1.0;
++ SPECULAR = 0.0;
++ if (icy_road) {
++  vec2 road_uv = winter_road_uv(UV);
++  vec4 finish = texture(ice_finish,road_uv);
++  float frost = winter_edge_frost(UV,world_position.xz,winter_half_width);
++  vec2 ice_response = winter_reflective_finish(finish,frost);
++  ROUGHNESS = ice_response.x;
++  SPECULAR = ice_response.y;
++  NORMAL = winter_road_ice_normal(finish.rg,NORMAL,VIEW_MATRIX,world_position.xz,road_uv);
++  RADIANCE = winter_seam_radiance(NORMAL,VIEW,INV_VIEW_MATRIX,winter_seam_weight(finish,frost));
++ }
++ if (wet_road) {
++  ROUGHNESS = mix(wet_road_roughness(world_position.xz),1.0,loose);
++  SPECULAR = wet_road_specular(world_position.xz)*(1.0-loose);
++ }
++ if (wet_road) NORMAL = wet_road_relief(world_position.xz,NORMAL,VIEW_MATRIX,1.0-loose);
++	if (loose > 0.0) NORMAL = sand_relief(world_position.xz,NORMAL,VIEW_MATRIX,loose*0.25);
++	if (icy_road) {
++		float powder = winter_ground_powder(world_position.xz,1.0);
++		ALBEDO = mix(ALBEDO,vec3(0.92,0.945,0.97),powder);
++		ROUGHNESS = mix(ROUGHNESS,1.0,powder);
++		SPECULAR *= 1.0-powder;
++		NORMAL = normalize(mix(NORMAL,(VIEW_MATRIX*vec4(0.0,1.0,0.0,0.0)).xyz,powder));
++		RADIANCE *= 1.0-powder;
++	}
++}
+diff --git a/docs/evidence/first-use-graphics-2026-11-05/before/game/track/creator_road.gdshaderinc b/docs/evidence/first-use-graphics-2026-11-05/before/game/track/creator_road.gdshaderinc
+new file mode 100644
+--- /dev/null
++++ b/docs/evidence/first-use-graphics-2026-11-05/before/game/track/creator_road.gdshaderinc
+@@ -0,0 +1,203 @@
++#include "res://track/surface_detail.gdshaderinc"
++#include "res://track/kerb_paint.gdshaderinc"
++
++uniform sampler2D overlay_mask : filter_nearest, repeat_disable;
++uniform sampler2D verge_blend_mask : filter_linear, repeat_disable;
++uniform sampler2D road_mask : filter_linear, repeat_disable;
++uniform vec2 road_mask_texel;
++uniform vec4 sand_color : source_color;
++uniform vec2 map_extent;
++uniform vec4 road_color : source_color;
++uniform vec4 asphalt_base_color : source_color;
++uniform bool gravel = false;
++uniform bool grass_shoulder = false;
++uniform bool grass = false;
++uniform bool kerb = false;
++uniform bool asphalt_surface = false;
++uniform bool edge_fringe = false;
++uniform bool raised_road_edge = false;
++uniform bool road_marking = false;
++uniform bool winter_width_data = false;
++uniform vec4 kerb_pale : source_color = vec4(0.87,0.867,0.827,1.0);
++uniform vec4 grass_color : source_color;
++varying vec3 world_position;
++varying float bank_slope;
++varying float winter_half_width;
++varying vec4 desert_join;
++
++void vertex() {
++	bank_slope = 1.0-NORMAL.y;
++	winter_half_width = COLOR.r*32.0;
++	desert_join = COLOR;
++	world_position = (MODEL_MATRIX * vec4(VERTEX, 1.0)).xyz;
++}
++
++// Filter only the decorative sand join; road/marking masks stay exact.
++float sand_coverage(vec2 uv) {
++	vec2 d = 0.65 / vec2(textureSize(verge_blend_mask,0));
++	float value = texture(verge_blend_mask,uv).b * 4.0;
++	value += 2.0*(texture(verge_blend_mask,uv+vec2(d.x,0.0)).b+texture(verge_blend_mask,uv-vec2(d.x,0.0)).b);
++	value += 2.0*(texture(verge_blend_mask,uv+vec2(0.0,d.y)).b+texture(verge_blend_mask,uv-vec2(0.0,d.y)).b);
++	value += texture(verge_blend_mask,uv+d).b+texture(verge_blend_mask,uv-d).b;
++	value += texture(verge_blend_mask,uv+vec2(d.x,-d.y)).b+texture(verge_blend_mask,uv+vec2(-d.x,d.y)).b;
++	float sand = value / 16.0;
++	if (sand > 0.001 && sand < 0.999) {
++		sand = 1.0-grass_fringe(mix(0.55,0.98,1.0-sand),world_position.xz);
++	}
++	return sand;
++}
++
++void fragment() {
++	vec2 map_uv = (world_position.xz + map_extent) / (map_extent * 2.0);
++	// Every painted cell wins over the procedural road, including asphalt
++	// paint used to open a junction. Obstacles keep their native footprints.
++	if (any(lessThan(map_uv, vec2(0.0))) || any(greaterThan(map_uv, vec2(1.0)))
++			|| texture(overlay_mask, map_uv).r < 0.5) { discard; }
++	// Keep-road protects the road mesh, not its grass skirt or gravel fringe.
++	vec3 mask = texture(overlay_mask,map_uv).rgb;
++	float loose_road = piece_materials && (asphalt_surface || road_marking) ? texture(road_mask,map_uv).g : 0.0;
++	if (piece_materials) { loose_road = road_material_coverage(loose_road,world_position.xz); }
++	vec2 material_metres = road_material_metres(world_position.xz,UV2);
++	if ((grass || gravel) && mask.g < 0.5 && mask.b < 0.5) { discard; }
++	float sand = 0.0;
++	if (gravel || (grass && !winter_snow && !desert_dunes)) { sand = sand_coverage(map_uv); }
++	float relief_weight = grass ? (1.0-sand) : 0.0;
++	// Avoid shading a base that the fixed material role immediately replaces.
++	if (asphalt_surface && icy_road && !edge_fringe) { ALBEDO = winter_wear_width(UV,world_position.xz,winter_width_data ? winter_half_width : 5.0); }
++	else if (asphalt_surface && packed_sand) { ALBEDO = compacted_road(road_color.rgb,edge_fringe ? UV2 : UV); }
++	else if (!(grass || gravel || kerb)) { ALBEDO = surface_detail(road_color.rgb, world_position.xz, asphalt_surface); }
++	if (asphalt_surface && packed_sand && desert_join.a > 0.001) {
++		float along = atan(desert_join.g*2.0-1.0,desert_join.r*2.0-1.0)*10.0/6.28318530718;
++		vec2 other_uv = vec2(along,(desert_join.b-0.5)*32.0);
++		ALBEDO = mix(ALBEDO,compacted_road(road_color.rgb,other_uv),desert_join.a);
++	}
++	if (asphalt_surface && !wet_road && !icy_road && !packed_sand) {
++		ALBEDO = directional_asphalt(ALBEDO,world_position.xz,UV2);
++	}
++	float wet_coverage = wet_road && asphalt_surface ? 1.0 : 0.0;
++	if (edge_fringe && !icy_road) {
++		// UV.y spans the cosmetic blend strip (1.95 m for desert), so
++		// curves never inherit the coarse canonical surface-grid staircase.
++		float breakup = pigment(world_position.xz * (packed_sand ? 0.18 : 5.5) + vec2(4.1, 13.7));
++		float cutoff = 0.84 + (breakup - 0.5) * 0.22;
++		// Reuse the grass/sand shoulder's settled + broken fringe blend.
++		// Remap it across a wider band, retaining texture through the transition.
++		float asphalt_coverage = packed_sand ? 1.0-desert_bank_coverage(UV.y,world_position.xz) : 1.0 - smoothstep(cutoff - 0.30, cutoff + 0.20, UV.y);
++		// Below the raised lip this is sand, with only sparse asphalt crumbs.
++		if (raised_road_edge) asphalt_coverage = 0.08*(1.0-smoothstep(0.0,0.35,UV.y))*breakup;
++		vec3 shoulder = packed_sand ? desert_shoulder(sand_color.rgb,world_position.xz) : sand_detail(sand_color.rgb, world_position.xz);
++		ALBEDO = mix(shoulder, ALBEDO, asphalt_coverage);
++		// Six-centimetre soft contact band, filtered with the existing strip UV.
++		if (raised_road_edge) ALBEDO *= 1.0-0.18*(1.0-smoothstep(0.0,0.30,UV.y))*(0.75+0.25*breakup);
++		wet_coverage *= asphalt_coverage;
++	}
++	if (raised_road_edge && !edge_fringe) ALBEDO *= desert_join.a;
++	if (road_marking) {
++		// Preserve a continuous readable line while breaking up its pigment
++		// with mild fading and sparse asphalt-coloured chips.
++		float fade = pigment(world_position.xz * 1.9 + vec2(27.0, 8.0)) * 0.12;
++		float chip_noise = pigment(world_position.xz * 13.0 + vec2(5.0, 41.0));
++		float chip_aa = max(fwidth(chip_noise) * 0.75, 0.025);
++		float chips = smoothstep(0.66 - chip_aa, 0.78 + chip_aa, chip_noise) * 0.42;
++		vec3 worn_asphalt = surface_detail(asphalt_base_color.rgb, world_position.xz, true);
++		ALBEDO = mix(ALBEDO, worn_asphalt, fade + chips);
++	}
++	if (grass) {
++		ALBEDO = painted_grass(road_color.rgb,world_position.xz);
++		if (!winter_snow && !desert_dunes) ALBEDO = mix(ALBEDO,sand_detail(sand_color.rgb,world_position.xz),sand);
++	}
++	if (kerb) {
++		// Fit complete equal blocks to each exposed run. An odd count starts
++		// and ends white; no arbitrary half-red slivers at curve boundaries.
++		float count = max(1.0,2.0*floor(UV.y/3.0)+1.0);
++		float block_length = max(UV.y/count,0.001);
++		float tip = smoothstep(0.0, min(block_length,1.8), min(UV.x,UV.y-UV.x));
++		if (UV2.x > mix(0.12,1.0,tip)) { discard; }
++		float phase = mod(UV.x+block_length,block_length*2.0);
++		float aa = max(fwidth(UV.x),0.001);
++		float pale = smoothstep(block_length-aa,block_length+aa,phase);
++		if (UV.x < aa || UV.x > UV.y-aa) { pale = 1.0; }
++		ALBEDO = racing_kerb_paint(mix(road_color.rgb,kerb_pale.rgb,pale),world_position.xz,UV.x,1.0);
++	}
++	if (gravel) {
++		ALBEDO = packed_sand ? desert_shoulder(road_color.rgb,world_position.xz) : sand_detail(road_color.rgb,world_position.xz);
++		if (packed_sand) {
++			float contact = 1.0-smoothstep(0.10,0.32,UV.y);
++			ALBEDO *= 1.0-contact*0.025;
++		}
++		float fringe;
++		if (packed_sand) {
++			float drift_edge = UV.y+(texture(surface_factors,world_position.xz/28.0).g-0.5)*0.24*4.0*UV.y*(1.0-UV.y);
++			fringe = smoothstep(0.58,1.0,drift_edge)*(1.0-sand);
++		} else { fringe = (hybrid_grass ? shoulder_fringe(UV.y,world_position.xz) : grass_fringe(UV.y,world_position.xz))*(1.0-sand); }
++		ALBEDO = mix(ALBEDO,painted_grass(grass_color.rgb,world_position.xz),fringe);
++		relief_weight = fringe;
++		if (grass_shoulder) {
++			// Real sloped sand replaces the old lower, flat contact strip.
++			vec2 grit_uv = world_position.xz/2.0;
++			vec3 grit = texture(desert_apron,grit_uv).rgb-texture(desert_apron,grit_uv,4.0).rgb;
++			ALBEDO = max(ALBEDO+grit*0.28*(1.0-fringe),vec3(0.0));
++			float profile_across = clamp((0.027-world_position.y)/0.065,0.0,1.0);
++			ALBEDO *= 1.0-0.16*(1.0-smoothstep(0.0,0.16,profile_across));
++			if (UV.x < -0.5) { ALBEDO = desert_join.rgb; relief_weight = 0.0; }
++		}
++	}
++	if (loose_road > 0.0 && asphalt_surface) {
++		float coverage = edge_fringe ? 1.0-smoothstep(0.3,1.0,UV.y) : 1.0;
++		vec3 stone = road_gravel_color(material_metres);
++		if (raised_road_edge && !edge_fringe) { stone *= desert_join.a; }
++		ALBEDO = mix(ALBEDO,stone,loose_road*coverage);
++		wet_coverage *= 1.0-loose_road;
++	}
++	if (piece_materials && road_marking) {
++		float paint = 1.0-smoothstep(0.0,0.5,loose_road);
++		if (paint < 0.001) { discard; }
++		vec3 under = mix(surface_detail(asphalt_base_color.rgb,world_position.xz,true),road_gravel_color(material_metres),loose_road);
++		ALBEDO = mix(under,ALBEDO,paint);
++	}
++	ROUGHNESS = 1.0;
++ SPECULAR = 0.0;
++ if (icy_road && asphalt_surface && !edge_fringe) {
++  vec2 road_uv = winter_road_uv(UV);
++  vec4 finish = texture(ice_finish,road_uv);
++  float frost = winter_edge_frost(UV,world_position.xz,winter_width_data ? winter_half_width : 5.0);
++  vec2 ice_response = winter_reflective_finish(finish,frost);
++  ROUGHNESS = ice_response.x;
++  SPECULAR = ice_response.y;
++  NORMAL = winter_road_ice_normal(finish.rg,NORMAL,VIEW_MATRIX,world_position.xz,road_uv);
++  RADIANCE = winter_seam_radiance(NORMAL,VIEW,INV_VIEW_MATRIX,winter_seam_weight(finish,frost));
++ }
++ if (wet_road && wet_coverage > 0.0) {
++  ROUGHNESS = mix(1.0,wet_road_roughness(world_position.xz),wet_coverage);
++  SPECULAR = wet_road_specular(world_position.xz)*wet_coverage;
++ }
++ if (wet_road && (road_marking || kerb)) {
++  ALBEDO *= 0.90;
++  ROUGHNESS = mix(kerb ? 0.30 : 0.24,1.0,loose_road);
++  SPECULAR = 0.5*(1.0-loose_road);
++ }
++	bool verge_detail = grass_shoulder && UV.x < -0.5;
++	NORMAL = grass_relief(world_position.xz,NORMAL,VIEW_MATRIX,verge_detail ? 0.0 : relief_weight);
++	NORMAL = sand_relief(world_position.xz,NORMAL,VIEW_MATRIX,verge_detail ? 0.0 : (grass || gravel) ? (1.0-relief_weight)*(grass_shoulder ? 0.25 : 1.0) : 0.0);
++	if (loose_road > 0.0 && asphalt_surface) NORMAL = sand_relief(world_position.xz,NORMAL,VIEW_MATRIX,loose_road*0.25);
++	NORMAL = winter_snow_relief(world_position.xz,NORMAL,VIEW_MATRIX,(grass || gravel) ? 1.0 : 0.0);
++	// Cosmetic skirts/loose sand carry dunes; the firm timed road stays smooth.
++	NORMAL = dune_relief(world_position.xz,NORMAL,VIEW_MATRIX,grass ? 1.0 : (gravel ? smoothstep(0.6,1.0,UV.y)*(1.0-sand) : 0.0));
++ if (desert_dunes && (grass || gravel)) {
++  vec3 mineral = texture(surface_factors,world_position.xz/24.0,0.65).rgb;
++  float footprint = length(fwidth(world_position.xz));
++  vec2 finish = mineral_sun_finish(mineral,footprint,1.0);
++  ROUGHNESS = finish.x;
++  SPECULAR = finish.y;
++  if (grass) NORMAL = mineral_terrain_normal(mineral,footprint,1.0,NORMAL,VIEW_MATRIX);
++ }
++ if (wet_road) NORMAL = wet_road_relief(world_position.xz,NORMAL,VIEW_MATRIX,wet_coverage);
++	if (winter_snow && !kerb && !road_marking) {
++		float powder = winter_ground_powder(world_position.xz,asphalt_surface ? 1.0 : 0.22);
++		ALBEDO = mix(ALBEDO,vec3(0.92,0.945,0.97),powder);
++		ROUGHNESS = mix(ROUGHNESS,1.0,powder);
++		SPECULAR *= 1.0-powder;
++		NORMAL = normalize(mix(NORMAL,(VIEW_MATRIX*vec4(0.0,1.0,0.0,0.0)).xyz,powder));
++		RADIANCE *= 1.0-powder;
++	}
++}
+diff --git a/docs/evidence/first-use-graphics-2026-11-05/before/game/track/surface_shader_variants.gd b/docs/evidence/first-use-graphics-2026-11-05/before/game/track/surface_shader_variants.gd
+new file mode 100644
+--- /dev/null
++++ b/docs/evidence/first-use-graphics-2026-11-05/before/game/track/surface_shader_variants.gd
+@@ -0,0 +1,165 @@
++class_name SurfaceShaderVariants
++extends RefCounted
++## Fixed visual-material flags become constants; samples and lighting stay intact.
++const FLAGS: Array[String] = ["hybrid_grass","desert_dunes","winter_snow","packed_sand","icy_road","wet_road","industrial_ground","industrial_asphalt"]
++const MATERIAL_FLAGS: Array[String] = ["gravel","grass_shoulder","grass","kerb","asphalt_surface","edge_fringe","road_marking","winter_width_data","winter_bridge_width_data","desert_bridge_width_data","smooth_road_bank","terrain_high_present","terrain_packed","terrain_uniform_enabled","terrain_region_low","raised_road_edge","piece_materials","bridge_material_blend"]
++const INCLUDES: Dictionary = {
++	"res://track/night_ground.gdshaderinc":preload("res://track/night_ground.gdshaderinc"),
++	"res://track/winter_ground_snow.gdshaderinc":preload("res://track/winter_ground_snow.gdshaderinc"),
++	"res://track/winter_wind_variation.gdshaderinc":preload("res://track/winter_wind_variation.gdshaderinc"),
++	"res://track/desert_sun_finish.gdshaderinc":preload("res://track/desert_sun_finish.gdshaderinc"),
++	"res://track/bridge_road.gdshaderinc":preload("res://track/bridge_road.gdshaderinc"),
++	"res://track/creator_road.gdshaderinc":preload("res://track/creator_road.gdshaderinc"),
++	"res://track/terrain.gdshaderinc":preload("res://track/terrain.gdshaderinc"),
++	"res://track/surface_detail.gdshaderinc":preload("res://track/surface_detail.gdshaderinc"),
++	"res://track/winter_ice.gdshaderinc":preload("res://track/winter_ice.gdshaderinc")
++}
++static var cache: Dictionary = {}
++static var prepared_keys: Dictionary = {}
++static var _include_sources: Array[String] = []
++static var _include_revision: int = 0
++static var preparations: int = 0
++static var prepared_hits: int = 0
++
++static func specialize(material: ShaderMaterial, use_prepared: bool = true, fold_flags: bool = true) -> void:
++	# Previously dynamic bridges need sampler pruning without changing their
++	# branch arithmetic. Carry that choice through duplication and cache reuse.
++	fold_flags = fold_flags and not material.get_meta("surface_preserve_branches",false)
++	if not fold_flags: material.set_meta("surface_preserve_branches",true)
++	# The raw shader hides this sampler from non-Night dynamic materials. Keep
++	# its binding through ShaderMaterial.duplicate(), which drops undeclared
++	# parameters, so retained/prepared Night worlds restore the same texture.
++	var night_wear: Texture2D = (material.get_meta("surface_night_asphalt_wear") if material.has_meta("surface_night_asphalt_wear") else material.get_shader_parameter("night_asphalt_wear")) as Texture2D
++	var dynamic: ShaderMaterial = material.duplicate()
++	if night_wear != null:
++		material.set_meta("surface_night_asphalt_wear",night_wear)
++		dynamic.set_meta("surface_night_asphalt_wear",night_wear)
++	var source: String = material.shader.code
++	var creator_road: bool = source.contains('#include "res://track/creator_road.gdshaderinc"')
++	if material.get_shader_parameter("industrial_asphalt") == true:
++		source = "#define BMT_NIGHT_ASPHALT\n"+source
++	# Reuse the completed compiler result before expanding includes/regexes.
++	# Include/source edits and every immutable role/remap value fence the key.
++	var include_sources: Array[String] = []
++	for include: ShaderInclude in INCLUDES.values(): include_sources.append(include.code)
++	if include_sources != _include_sources:
++		_include_sources = include_sources
++		_include_revision += 1
++		prepared_keys.clear()
++	var signature: Array = [source.sha256_text(),_include_revision,fold_flags]
++	for flag: String in FLAGS+MATERIAL_FLAGS: signature.append(material.get_shader_parameter(flag))
++	signature.append(material.get_shader_parameter("terrain_region_channel"))
++	signature.append(material.get_shader_parameter("terrain_slots"))
++	var prepared_key: String = str(signature)
++	if use_prepared and prepared_keys.has(prepared_key) and cache.has(prepared_keys[prepared_key]):
++		material.set_meta("surface_dynamic_material",dynamic)
++		material.shader = cache[prepared_keys[prepared_key]] as Shader
++		if night_wear != null: material.set_shader_parameter("night_asphalt_wear",night_wear)
++		prepared_hits += 1
++		return
++	preparations += 1
++	# Shallow snow/sand banks need continuous light, with matching terrain/skirt lighting.
++	if (material.get_shader_parameter("winter_snow") == true) or (material.get_shader_parameter("desert_dunes") == true):
++		source = source.replace("diffuse_toon","diffuse_burley")
++	for pass_index: int in range(3):
++		for path: String in INCLUDES:
++			source = source.replace('#include "'+path+'"',(INCLUDES[path] as ShaderInclude).code)
++	for flag: String in (FLAGS if fold_flags else []):
++		var pattern := RegEx.new()
++		pattern.compile("uniform bool "+flag+"\\s*=\\s*(true|false)\\s*;")
++		var found: RegExMatch = pattern.search(source)
++		if found == null: continue
++		var value: Variant = material.get_shader_parameter(flag)
++		var enabled: bool = found.get_string(1)=="true" if value==null else bool(value)
++		source = pattern.sub(source,"const bool "+flag+" = "+("true" if enabled else "false")+";",true)
++	# Keep road/fringe draws on one source where their render modes and biome
++	# bindings already match. These uniform branches avoid another cold program;
++	# biome/sampler choices and unrelated surface roles still fold to constants.
++	# Sharing did not pass Mobile's pixel/stability checks; retain its original
++	# specialized sources. This targets the Compatibility cold delay.
++	var compatibility: bool = RenderingServer.get_current_rendering_method() == "gl_compatibility"
++	var shared_road_roles: bool = compatibility and (material.get_shader_parameter("wet_road") == true or material.get_shader_parameter("industrial_asphalt") == true)
++	# Keep public uniforms for inspection/cache serialization, folding other reads.
++	for flag: String in MATERIAL_FLAGS:
++		if not fold_flags: continue
++		if compatibility and flag == "edge_fringe" and material.get_shader_parameter("packed_sand") == true: continue
++		if shared_road_roles and flag in ["asphalt_surface","raised_road_edge","edge_fringe","road_marking"]: continue
++		# Keep the snow-bank branch form: Mobile reassociates its filtered toe
++		# lighting when constant-folded, changing a sparse MSAA edge pixel.
++		if flag == "smooth_road_bank" and material.get_shader_parameter("winter_snow") == true: continue
++		var declaration := RegEx.new()
++		declaration.compile("uniform bool " + flag + "\\s*=\\s*(true|false)\\s*;")
++		var found: RegExMatch = declaration.search(source)
++		if found == null: continue
++		var value: Variant = material.get_shader_parameter(flag)
++		var enabled: bool = found.get_string(1) == "true" if value == null else bool(value)
++		var reads := RegEx.new()
++		reads.compile("\\b" + flag + "\\b")
++		source = reads.sub(source,"fixed_" + flag,true)
++		source = source.replace(reads.sub(found.get_string(),"fixed_" + flag,true),found.get_string() + "\nconst bool fixed_" + flag + " = " + ("true" if enabled else "false") + ";")
++	if fold_flags and source.contains("uniform int terrain_region_channel"):
++		var channel_value: Variant = material.get_shader_parameter("terrain_region_channel")
++		var channel: int = maxi(0,int(channel_value) if channel_value != null else -1)
++		var reads := RegEx.new()
++		reads.compile("\\bterrain_region_channel\\b")
++		source = reads.sub(source,"fixed_terrain_region_channel",true)
++		source = source.replace("uniform int fixed_terrain_region_channel = -1;","uniform int terrain_region_channel = -1;\nconst int fixed_terrain_region_channel = "+str(channel)+";")
++	if fold_flags and material.get_shader_parameter("terrain_packed") == true:
++		var slots: Vector4i = material.get_shader_parameter("terrain_slots")
++		var assignments: String = "vec4 packed = low;\n\tlow = vec4(0.0);\n\thigh = vec4(0.0);"
++		var channels: Array[String] = ["r","g","b","a"]
++		for channel: int in range(4):
++			var kind: int = slots[channel]
++			if kind < 0: continue
++			assignments += "\n\t%s.%s = packed.%s;" % ["low" if kind < 4 else "high",channels[kind % 4],channels[channel]]
++		var remap := RegEx.new()
++		remap.compile("(?s)// packed_terrain_begin.*?// packed_terrain_end")
++		source = remap.sub(source,assignments,true)
++	# GLES drivers count declared samplers even in constant-disabled branches.
++	# Alias unreachable biome samples to the shared factor sampler so those
++	# declarations cannot consume phone texture units. Active artwork is untouched.
++	var inactive: Array[String] = []
++	# painted_grass returns before its fallback texture in these fixed biomes.
++	# Keep Mobile's original sampler layout: its Winter pixels change when these
++	# aliases alter compilation. The eight-sampler reservation targets GLES.
++	# Prune only the over-budget families; Night's existing layout already fits.
++	if compatibility and (material.get_shader_parameter("winter_snow") == true or material.get_shader_parameter("desert_dunes") == true or (material.get_shader_parameter("hybrid_grass") == true and material.get_shader_parameter("grass_shoulder") == true)):
++		inactive.append("painted_grass_texture")
++	# Only the creator-road include gates road_mask entirely on piece_materials.
++	# Winter banks use that name for a different, active mask and must retain it.
++	if compatibility and creator_road and material.get_shader_parameter("winter_snow") == true and not (material.get_shader_parameter("piece_materials") == true): inactive.append("road_mask")
++	if not (material.get_shader_parameter("industrial_asphalt") == true): inactive.append("night_asphalt_wear")
++	if not (material.get_shader_parameter("industrial_ground") == true): inactive.append("night_ground_albedo")
++	if not (material.get_shader_parameter("winter_snow") == true) and not (material.get_shader_parameter("icy_road") == true):
++		inactive.append_array(["snow_albedo","ice_albedo","ice_finish","wind_surface_flow"])
++		if compatibility and not (material.get_shader_parameter("industrial_ground") == true) and not (material.get_shader_parameter("industrial_asphalt") == true): inactive.append("snow_road_sources")
++	if not (material.get_shader_parameter("desert_dunes") == true) and not (material.get_shader_parameter("packed_sand") == true):
++		inactive.append_array(["desert_road_albedo","dune_factors","dune_albedo"])
++		if not (material.get_shader_parameter("grass_shoulder") == true): inactive.append("desert_apron")
++	if not (material.get_shader_parameter("hybrid_grass") == true):
++		inactive.append_array(["grass_albedo","grass_macro_mask","grass_normal"])
++	for sampler: String in inactive:
++		var declaration := RegEx.new()
++		declaration.compile("uniform sampler2D " + sampler + "\\s*[^;]*;")
++		source = declaration.sub(source,"#define " + sampler + " surface_factors",true)
++	# Aliases in early helper bodies require the shared sampler declared first.
++	var factors := RegEx.new()
++	factors.compile("uniform sampler2D surface_factors\\s*[^;]*;")
++	var factor_declaration: RegExMatch = factors.search(source)
++	if factor_declaration != null:
++		source = factors.sub(source,"",true)
++		var header_end: int = source.find(";",source.find("render_mode")) + 1
++		source = source.insert(header_end,"\n" + factor_declaration.get_string())
++	var key: String = source.sha256_text()
++	if not cache.has(key):
++		var shader := Shader.new()
++		shader.code = source
++		if cache.size()>=64:
++			cache.erase(cache.keys()[0])
++			prepared_keys.clear()
++		cache[key] = shader
++	if prepared_keys.size() >= 64: prepared_keys.erase(prepared_keys.keys()[0])
++	prepared_keys[prepared_key] = key
++	material.set_meta("surface_dynamic_material",dynamic)
++	material.shader = cache[key] as Shader
++	if night_wear != null: material.set_shader_parameter("night_asphalt_wear",night_wear)
+diff --git a/docs/evidence/first-use-graphics-2026-11-05/before/game/vehicle/effect_render_preparation.gd b/docs/evidence/first-use-graphics-2026-11-05/before/game/vehicle/effect_render_preparation.gd
+new file mode 100644
+--- /dev/null
++++ b/docs/evidence/first-use-graphics-2026-11-05/before/game/vehicle/effect_render_preparation.gd
+@@ -0,0 +1,186 @@
++extends RefCounted
++## Temporary draws reuse the actual particle/process/mesh materials. Live effect
++## nodes, GPU particle ages, trail slots and canonical state remain untouched.
++# Winter breakups use distinct instanced ice/snow shaders and custom-data powder.
++const BATCH_NAMES: Array[String] = ["WoodFragments","LooseHayFragments","SnowChunks","IceShards","SnowPowder","GroundDrifts","BankPowder","AirborneGrains"]
++const Pool = preload("res://vehicle/effect_preparation_pool.gd")
++const POOL_NAME: String = "EffectPreparationPool"
++const REUSED_PER_DRAW: int = 4
++
++static func prepare(world: Node3D, effects: SandDust, camera: Camera3D, impact: TextureRect, owner: Node, draw: Callable, current: Callable) -> Dictionary:
++	# Fresh proxies retain individual draws. Reused nodes share bounded draws,
++	# but every actual source still renders, including changed materials/state.
++	# No program equivalence or warm-program receipt is inferred from reuse.
++	var prepared: Dictionary = begin(world,null,camera,impact)
++	prepared["complete"] = DisplayServer.get_name() == "headless"
++	if DisplayServer.get_name() == "headless": return prepared
++	if not _current(world,camera,current) or not is_instance_valid(owner): return prepared
++	var pool: Node3D = owner.get_node_or_null(POOL_NAME)
++	if pool == null:
++		pool = Pool.new()
++		pool.name = POOL_NAME
++		owner.add_child(pool)
++	prepared["pool"] = weakref(pool)
++	prepared["initialized"] = {}
++	prepared["reused"] = 0
++	var sources: Array[WeakRef] = []
++	if is_instance_valid(effects) and effects.is_visible_in_tree():
++		for source: Node in effects.get_children():
++			if source is GPUParticles3D and source.is_visible_in_tree(): sources.append(weakref(source))
++	var cursor: int = 0
++	while cursor < sources.size():
++		if not _current(world,camera,current) or not is_instance_valid(pool): return prepared
++		var batch: Array[GPUParticles3D] = []
++		while cursor < sources.size() and batch.size() < REUSED_PER_DRAW:
++			var source: GPUParticles3D = sources[cursor].get_ref()
++			if source == null: return prepared
++			var reused: bool = pool.contains("Covered"+str(source.name))
++			if not reused and not batch.is_empty(): break
++			cursor += 1
++			var particles: GPUParticles3D = pool.take("Covered"+str(source.name))
++			if reused: prepared.reused += 1
++			_configure_particle(particles,source,world,camera)
++			# Proxies remain drawable for subsequent lighting contexts.
++			particles.one_shot = false
++			pool.measure(particles)
++			prepared.nodes.append(particles)
++			prepared.particles += 1
++			batch.append(particles)
++			if not reused: break
++		if not draw.is_valid() or not bool(await draw.call()): return prepared
++		if not _current(world,camera,current): return prepared
++		for particles: GPUParticles3D in batch:
++			if is_instance_valid(particles): prepared.initialized[particles.get_instance_id()] = true
++	prepared.complete = true
++	return prepared
++
++static func _current(world: Variant, camera: Variant, current: Callable) -> bool:
++	return is_instance_valid(world) and world.is_inside_tree() and not world.is_queued_for_deletion() and is_instance_valid(camera) and current.is_valid() and bool(current.call())
++
++static func trim_cache(owner: Node) -> void:
++	var pool: Node = owner.get_node_or_null(POOL_NAME)
++	if pool != null: pool.trim()
++
++static func cache_bytes(owner: Node) -> int:
++	var pool: Node = owner.get_node_or_null(POOL_NAME)
++	return int(pool.bytes) if pool != null else 0
++
++static func trim_to(owner: Node, allowance: int) -> void:
++	var pool: Node = owner.get_node_or_null(POOL_NAME)
++	if pool != null: pool.trim_to(allowance)
++
++static func _configure_particle(particles: GPUParticles3D, source: GPUParticles3D, world: Node3D, camera: Camera3D) -> void:
++	particles.emitting = false
++	particles.name = "Covered"+str(source.name)
++	particles.set_meta("preparation_key",str(particles.name))
++	particles.process_mode = Node.PROCESS_MODE_ALWAYS
++	for property: String in ["lifetime","fixed_fps","fract_delta","interpolate","local_coords","draw_order","collision_base_size","transform_align","cast_shadow","layers"]:
++		particles.set(property,source.get(property))
++	particles.amount = 1
++	particles.one_shot = true
++	particles.explosiveness = 1.0
++	particles.randomness = 0.0
++	particles.preprocess = minf(source.lifetime*0.2,0.05)
++	particles.process_material = source.process_material
++	particles.draw_passes = source.draw_passes
++	for index: int in range(source.draw_passes): particles.set_draw_pass_mesh(index,source.get_draw_pass_mesh(index))
++	particles.visibility_aabb = source.visibility_aabb
++	if particles.get_parent() == null: world.add_child(particles)
++	else: particles.reparent(world,false)
++	particles.transform = Transform3D.IDENTITY
++	particles.global_position = camera.global_position-camera.global_basis.z*maxf(camera.near+1.0,10.0)
++	particles.speed_scale = 1.0
++	particles.show()
++	particles.restart()
++	particles.emitting = true
++
++static func begin(world: Node3D, effects: SandDust, camera: Camera3D, impact: TextureRect = null) -> Dictionary:
++	var prepared: Dictionary = {"nodes":[],"restore":[],"particles":0,"batches":0,"damage_meshes":0,"canvas":0}
++	if DisplayServer.get_name() == "headless" or world == null or camera == null: return prepared
++	var center: Vector3 = camera.global_position-camera.global_basis.z*maxf(camera.near+1.0,10.0)
++	if effects != null and effects.is_visible_in_tree():
++		for source: Node in effects.get_children():
++			if not source is GPUParticles3D or not source.is_visible_in_tree(): continue
++			var particles := GPUParticles3D.new()
++			particles.name = "Covered"+str(source.name)
++			# The enclosing Game is disabled until the full countdown can begin.
++			particles.process_mode = Node.PROCESS_MODE_ALWAYS
++			for property: String in ["lifetime","fixed_fps","fract_delta","interpolate","local_coords","draw_order","collision_base_size","transform_align","cast_shadow","layers"]:
++				particles.set(property,source.get(property))
++			particles.amount = 1
++			particles.one_shot = true
++			particles.explosiveness = 1.0
++			particles.randomness = 0.0
++			particles.preprocess = minf(source.lifetime*0.2,0.05)
++			particles.process_material = source.process_material
++			particles.draw_passes = source.draw_passes
++			for pass_index: int in range(source.draw_passes): particles.set_draw_pass_mesh(pass_index,source.get_draw_pass_mesh(pass_index))
++			particles.visibility_aabb = source.visibility_aabb
++			world.add_child(particles)
++			particles.global_position = center
++			prepared.nodes.append(particles)
++			prepared.particles += 1
++	# Empty debris and inactive weather batches need their instanced draw path,
++	# not a plain MeshInstance proxy. The original buffers/populations stay exact.
++	for source: Node in world.find_children("*","MultiMeshInstance3D",true,false):
++		if str(source.name) not in BATCH_NAMES or not source.is_visible_in_tree() or source.multimesh.mesh == null: continue
++		var resource: MultiMesh = source.multimesh
++		var instances := MultiMesh.new()
++		instances.transform_format = resource.transform_format
++		instances.use_colors = resource.use_colors
++		instances.use_custom_data = resource.use_custom_data
++		instances.mesh = resource.mesh
++		instances.instance_count = 1
++		instances.set_instance_transform(0,Transform3D(Basis.IDENTITY,source.to_local(center)))
++		if resource.use_colors: instances.set_instance_color(0,Color.WHITE)
++		if resource.use_custom_data: instances.set_instance_custom_data(0,Color(0.5,0.5,0,1))
++		var batch := MultiMeshInstance3D.new()
++		batch.name = "Covered"+str(source.name)
++		batch.multimesh = instances
++		batch.material_override = source.material_override
++		batch.material_overlay = source.material_overlay
++		batch.cast_shadow = source.cast_shadow
++		batch.layers = source.layers
++		world.add_child(batch)
++		batch.global_transform = source.global_transform
++		batch.extra_cull_margin = 2.0
++		prepared.nodes.append(batch)
++		prepared.batches += 1
++	# Damage phases use the prepared originals; only the temporary cull margin
++	# and hidden-child flag are borrowed, then restored even after cancellation.
++	for source: Node in world.find_children("*","MeshInstance3D",true,false):
++		if not source.get_parent().has_meta("breakable_kind") or not str(source.name).begins_with("DamagePhase"): continue
++		if not source.get_parent().is_visible_in_tree(): continue
++		prepared.restore.append({"node":source,"visible":source.visible,"margin":source.extra_cull_margin})
++		source.visible = true
++		var delta: Vector3 = (source.to_local(camera.global_position)-source.get_aabb().get_center()).abs()
++		source.extra_cull_margin = maxf(source.extra_cull_margin,maxf(delta.x,maxf(delta.y,delta.z))+camera.near+1.0)
++		prepared.damage_meshes += 1
++	# The normally hidden crash glass has its own canvas shader. Draw its actual
++	# texture/material without inventing an impact or changing retained damage.
++	if impact != null and impact.material != null and impact.texture != null:
++		var glass := TextureRect.new()
++		glass.name = "CoveredImpactPreparation"
++		glass.texture = impact.texture
++		glass.material = impact.material
++		for property: String in ["expand_mode","stretch_mode","texture_filter","texture_repeat","light_mask","z_index"]: glass.set(property,impact.get(property))
++		glass.mouse_filter = Control.MOUSE_FILTER_IGNORE
++		impact.get_parent().add_child(glass)
++		glass.position = impact.position
++		glass.size = impact.size
++		prepared.nodes.append(glass)
++		prepared.canvas += 1
++	return prepared
++
++static func end(prepared: Dictionary) -> void:
++	for entry: Dictionary in prepared.get("restore",[]):
++		if is_instance_valid(entry.node):
++			entry.node.visible = entry.visible
++			entry.node.extra_cull_margin = entry.margin
++	for node: Variant in prepared.get("nodes",[]):
++		if not is_instance_valid(node): continue
++		var pool: Node = prepared.pool.get_ref() if prepared.has("pool") else null
++		if node is GPUParticles3D and is_instance_valid(pool):
++			pool.put(node,prepared.get("initialized",{}).has(node.get_instance_id()))
++		else: node.free()
++	prepared.clear()
+diff --git a/docs/evidence/first-use-graphics-2026-11-05/harness/graphics_probe.gd b/docs/evidence/first-use-graphics-2026-11-05/harness/graphics_probe.gd
+new file mode 100644
+--- /dev/null
++++ b/docs/evidence/first-use-graphics-2026-11-05/harness/graphics_probe.gd
+@@ -0,0 +1,51 @@
++extends RefCounted
++## Diagnostic only, copied into an isolated frozen project.
++static var case_name: String = "startup"
++static var known: Dictionary = {}
++static var rows: Array = []
++
++static func material(material: Material) -> Dictionary:
++	if material == null: return {}
++	var result := {"class":material.get_class(),"path":material.resource_path}
++	if material is ShaderMaterial and material.shader != null:
++		var key: String = material.shader.code.sha256_text()
++		result.hash = key
++		result.shader_path = material.shader.resource_path
++		if material.has_meta("surface_dynamic_material"):
++			result.origin = material.get_meta("surface_dynamic_material").shader.resource_path
++		if not known.has(key):
++			known[key] = true
++			FileAccess.open(OS.get_environment("BMT_GRAPHICS_OUTPUT").path_join(key+".gdshader"),FileAccess.WRITE).store_string(material.shader.code)
++	return result
++
++static func node(node: Node) -> Dictionary:
++	var result := {"path":str(node.get_path()),"class":node.get_class(),"materials":[]}
++	if node is MeshInstance3D and node.mesh != null:
++		for index: int in range(node.mesh.get_surface_count()): result.materials.append(material(node.get_active_material(index)))
++	elif node is MultiMeshInstance3D and node.multimesh != null and node.multimesh.mesh != null:
++		for index: int in range(node.multimesh.mesh.get_surface_count()): result.materials.append(material(node.material_override if node.material_override != null else node.multimesh.mesh.surface_get_material(index)))
++	elif node is GPUParticles3D:
++		result.process = material(node.process_material)
++		for index: int in range(node.draw_passes):
++			var mesh: Mesh = node.get_draw_pass_mesh(index)
++			if mesh != null:
++				for surface: int in range(mesh.get_surface_count()): result.materials.append(material(mesh.surface_get_material(surface)))
++	return result
++
++static func begin(kind: String, groups: Array) -> Dictionary:
++	var sources: Array = []
++	for group: Variant in groups:
++		if group is Dictionary:
++			for source: Dictionary in group.sources:
++				var value: Dictionary = node(source.node.get_ref()); value.key = group.key; sources.append(value)
++		else: sources.append(node(group))
++	var ticket := {"case":case_name,"kind":kind,"sources":sources,"utc_begin_us":int(Time.get_unix_time_from_system()*1000000.0),"begin_us":Time.get_ticks_usec()}
++	print("GRAPHICS_BEGIN ",JSON.stringify(ticket))
++	return ticket
++
++static func end(ticket: Dictionary, ok: bool) -> void:
++	ticket.us = Time.get_ticks_usec()-int(ticket.begin_us)
++	ticket.utc_end_us = int(Time.get_unix_time_from_system()*1000000.0)
++	ticket.ok = ok
++	rows.append(ticket)
++	print("GRAPHICS_END ",JSON.stringify(ticket))
+diff --git a/docs/evidence/first-use-graphics-2026-11-05/harness/profile_pruning_cpu.gd b/docs/evidence/first-use-graphics-2026-11-05/harness/profile_pruning_cpu.gd
+new file mode 100644
+--- /dev/null
++++ b/docs/evidence/first-use-graphics-2026-11-05/harness/profile_pruning_cpu.gd
+@@ -0,0 +1,23 @@
++extends SceneTree
++const PRUNE = preload("res://tests/shader_branch_probe.gd")
++func _initialize() -> void:
++	var folder: String = OS.get_environment("BMT_PRUNE_BASELINE")
++	var profile: Dictionary = JSON.parse_string(FileAccess.get_file_as_string(folder.path_join("profile.json")))
++	var sources: Dictionary = {}
++	for draw: Dictionary in profile.draws:
++		for node: Dictionary in draw.sources:
++			for material: Dictionary in node.materials:
++				if str(material.get("origin","")).begins_with("res://track/"):
++					var path: String = folder.path_join(material.hash+".gdshader")
++					if not FileAccess.file_exists(path): push_error("Missing source "+path); quit(1); return
++					sources[material.hash] = FileAccess.get_file_as_string(path)
++	var times: Array = []
++	var removed: int = 0
++	for trial: int in range(5):
++		var began: int = Time.get_ticks_usec()
++		for source: String in sources.values():
++			var candidate: String = PRUNE.reduce(source)
++			if trial == 0: removed += source.length()-candidate.length()
++		times.append((Time.get_ticks_usec()-began)/1000.0)
++	print("PRUNING_CPU ",JSON.stringify({"sources":sources.size(),"removed_characters":removed,"batch_ms":times}))
++	quit()
+diff --git a/docs/evidence/first-use-graphics-2026-11-05/harness/program_probe.cpp b/docs/evidence/first-use-graphics-2026-11-05/harness/program_probe.cpp
+new file mode 100644
+--- /dev/null
++++ b/docs/evidence/first-use-graphics-2026-11-05/harness/program_probe.cpp
+@@ -0,0 +1,100 @@
++// Evidence-only interceptor in an SHA256-pinned, owned Godot test process.
++// It is not an engine API and must never be loaded by the production project.
++#include "shader_job.hpp"
++#include "gdextension_interface.h"
++#include <map>
++#include <set>
++using namespace prep;
++using Obj=void(APIENTRY*)(GLuint);using Query=void(APIENTRY*)(GLuint,GLenum,GLint*);
++using Feedback=void(APIENTRY*)(GLuint,GLsizei,const char* const*,GLenum);
++using BindingCall=void(APIENTRY*)(GLuint,GLuint,const char*);
++static Obj original_compile,original_link,original_delete_shader,original_delete_program;
++static Query original_shader_iv;static Feedback original_feedback;static BindingCall original_attribute,original_output;
++static Query original_program_iv;static Obj original_use;
++using Location=GLint(APIENTRY*)(GLuint,const char*);static Location original_location;
++using BufferData=void(APIENTRY*)(GLenum,intptr_t,const void*,GLenum);static BufferData original_buffer;
++using TexImage=void(APIENTRY*)(GLenum,GLint,GLint,GLsizei,GLsizei,GLint,GLenum,GLenum,const void*);static TexImage original_image;
++using DrawElements=void(APIENTRY*)(GLenum,GLsizei,GLenum,const void*);static DrawElements original_draw;
++using DrawInstances=void(APIENTRY*)(GLenum,GLsizei,GLenum,const void*,GLsizei);static DrawInstances original_instances;
++static std::map<GLuint,Job> link_state;static std::set<GLuint> skipped;
++static fs::path jobs_dir,binaries_dir,report_path;static std::string identity,mode;
++static int captures=0,imports=0,misses=0,failures=0,skipped_compiles=0;
++static uint64_t max_import=0,max_link=0;static bool installed=false;
++static std::set<std::string> seen;
++static std::map<GLuint,std::string> program_keys;
++static GLuint active_program=0;
++struct Patch{void** slot;void* original;void* replacement;};static std::vector<Patch> patches;
++
++static Job job_for(GLuint program){
++ Job job=link_state[program];job.driver=identity;
++ using Attached=void(APIENTRY*)(GLuint,GLsizei,GLsizei*,GLuint*);using Source=void(APIENTRY*)(GLuint,GLsizei,GLsizei*,char*);
++ GLuint ids[8]{};GLsizei count=0;gl<Attached>("glGetAttachedShaders")(program,8,&count,ids);
++ for(int i=0;i<count;i++){GLint size=0,type=0;original_shader_iv(ids[i],0x8B88,&size);original_shader_iv(ids[i],0x8B4F,&type);if(size<=0||size>int(MAX_JOB/2))throw std::runtime_error("stage size");std::vector<char> text(size);GLsizei used=0;gl<Source>("glGetShaderSource")(ids[i],size,&used,text.data());if(type==0x8B31)job.vertex.assign(text.data(),used);else if(type==0x8B30)job.fragment.assign(text.data(),used);else throw std::runtime_error("unexpected shader stage");}
++ return job;
++}
++static void slow(const char* api,uint64_t began,GLuint program=0){auto duration=us()-began;if(duration<2000)return;FILETIME time;GetSystemTimePreciseAsFileTime(&time);auto utc=(((uint64_t(time.dwHighDateTime)<<32)|time.dwLowDateTime)-116444736000000000ULL)/10;auto found=program_keys.find(program);std::printf("NATIVE_CALL api=%s us=%llu utc_end_us=%llu program=%u key=%s\n",api,duration,utc,program,found==program_keys.end()?"-":found->second.c_str());std::fflush(stdout);}
++static void APIENTRY compile(GLuint shader){if(mode=="import"){skipped.insert(shader);skipped_compiles++;}else{auto t=us();original_compile(shader);slow("glCompileShader",t);}}
++static void APIENTRY shader_iv(GLuint shader,GLenum field,GLint* value){if(mode=="import"&&field==0x8B81&&skipped.count(shader))*value=GL_TRUE;else{auto t=us();original_shader_iv(shader,field,value);slow("glGetShaderiv",t);}}
++static void APIENTRY program_iv(GLuint program,GLenum field,GLint* value){auto t=us();original_program_iv(program,field,value);slow("glGetProgramiv",t);}
++static void APIENTRY use(GLuint program){active_program=program;auto t=us();original_use(program);slow("glUseProgram",t,program);}
++static GLint APIENTRY location(GLuint program,const char* name){auto t=us();auto value=original_location(program,name);slow("glGetUniformLocation",t);return value;}
++static void APIENTRY buffer(GLenum target,intptr_t size,const void* data,GLenum usage){auto t=us();original_buffer(target,size,data,usage);slow("glBufferData",t);}
++static void APIENTRY image(GLenum target,GLint level,GLint format,GLsizei width,GLsizei height,GLint border,GLenum input_format,GLenum type,const void* data){auto t=us();original_image(target,level,format,width,height,border,input_format,type,data);slow("glTexImage2D",t);}
++static void APIENTRY draw(GLenum mode,GLsizei count,GLenum type,const void* indices){auto t=us();original_draw(mode,count,type,indices);slow("glDrawElements",t,active_program);}
++static void APIENTRY instances(GLenum mode,GLsizei count,GLenum type,const void* indices,GLsizei instances){auto t=us();original_instances(mode,count,type,indices,instances);slow("glDrawElementsInstanced",t,active_program);}
++static void APIENTRY feedback(GLuint program,GLsizei count,const char* const* names,GLenum packing){auto& job=link_state[program];job.feedback_mode=packing;job.feedback.clear();for(int i=0;i<count;i++)job.feedback.emplace_back(names[i]);original_feedback(program,count,names,packing);}
++static void binding(std::vector<Binding>& bindings,GLuint index,const char* name){auto found=std::find_if(bindings.begin(),bindings.end(),[&](auto& v){return v.name==name;});if(found==bindings.end())bindings.push_back({index,name});else found->index=index;}
++static void APIENTRY attribute(GLuint program,GLuint index,const char* name){binding(link_state[program].attributes,index,name);original_attribute(program,index,name);}
++static void APIENTRY output(GLuint program,GLuint index,const char* name){binding(link_state[program].outputs,index,name);original_output(program,index,name);}
++static void APIENTRY delete_shader(GLuint shader){skipped.erase(shader);original_delete_shader(shader);}
++static void APIENTRY delete_program(GLuint program){link_state.erase(program);program_keys.erase(program);original_delete_program(program);}
++static void APIENTRY link(GLuint program){
++ auto began=us();
++ if(mode=="trace"){original_link(program);slow("glLinkProgram",began);return;}
++ try{
++  auto job=job_for(program);auto encoded=job.encode();auto key=sha(encoded);program_keys[program]=key;
++  if(mode=="capture"){
++   if(seen.insert(key).second){if(captures>=512)throw std::runtime_error("inventory bound");if(!fs::exists(jobs_dir/(key+".job")))atomic(jobs_dir/(key+".job"),encoded);captures++;}
++   std::printf("NATIVE_PROGRAM program=%u key=%s vertex_bytes=%zu fragment_bytes=%zu\n",program,key.c_str(),job.vertex.size(),job.fragment.size());std::fflush(stdout);
++  }else{
++   auto bytes=read(binaries_dir/(key+".bin"),MAX_BINARY+4096);GLenum format=0;auto binary=decode_binary(bytes,key,identity,format);
++   using Binary=void(APIENTRY*)(GLuint,GLenum,const void*,GLsizei);auto t=us();gl<Binary>("glProgramBinary")(program,format,binary.data(),GLsizei(binary.size()));GLint ok=0;gl<Query>("glGetProgramiv")(program,0x8B82,&ok);max_import=std::max(max_import,us()-t);if(!ok){if(misses<3){using Log=void(APIENTRY*)(GLuint,GLsizei,GLsizei*,char*);char info[2048]{};gl<Log>("glGetProgramInfoLog")(program,sizeof(info),nullptr,info);std::fprintf(stderr,"PROGRAM_BINARY_REJECT format=%u error=%u detail=%s\n",format,glGetError(),info);}throw std::runtime_error("binary rejected");}imports++;
++   std::printf("PROGRAM_IMPORT key=%s bytes=%zu native_us=%llu all_us=%llu\n",key.c_str(),binary.size(),us()-t,us()-began);std::fflush(stdout);return;
++  }
++ }catch(const std::exception& error){failures++;if(mode=="import")misses++;std::fprintf(stderr,"PROGRAM_PROBE_FALLBACK %s\n",error.what());}
++ // A miss is a failed prototype gate, never a different material. Finish the
++ // original shader path so its final pixels can still be inspected.
++ if(mode=="import"){
++  using Attached=void(APIENTRY*)(GLuint,GLsizei,GLsizei*,GLuint*);GLuint ids[8]{};GLsizei count=0;gl<Attached>("glGetAttachedShaders")(program,8,&count,ids);for(int i=0;i<count;i++)if(skipped.erase(ids[i]))original_compile(ids[i]);
++ }
++ auto native_began=us();original_link(program);slow("glLinkProgram",native_began,program);max_link=std::max(max_link,us()-began);
++}
++static std::vector<void**> slots(void* address){
++ auto base=reinterpret_cast<unsigned char*>(GetModuleHandle(nullptr));auto dos=reinterpret_cast<IMAGE_DOS_HEADER*>(base);auto nt=reinterpret_cast<IMAGE_NT_HEADERS*>(base+dos->e_lfanew);auto section=IMAGE_FIRST_SECTION(nt);std::vector<void**> found;
++ for(int i=0;i<nt->FileHeader.NumberOfSections;i++){if(!(section[i].Characteristics&IMAGE_SCN_MEM_WRITE))continue;auto begin=base+section[i].VirtualAddress;auto size=section[i].Misc.VirtualSize;
++  for(size_t at=0;at+sizeof(void*)<=size;at+=sizeof(void*)){auto slot=reinterpret_cast<void**>(begin+at);if(*slot==address)found.push_back(slot);}}
++ return found;
++}
++template<class T>static void prepare_patch(const char* name,T replacement,T& original,bool required=true){
++ original=gl<T>(name);auto found=slots(reinterpret_cast<void*>(original));if(found.empty()&&!required){std::printf("PROGRAM_PROBE_SLOT %s unavailable\n",name);return;}if(found.empty()||found.size()>8)throw std::runtime_error(std::string("unexpected GLAD slots ")+name);
++ for(auto slot:found)patches.push_back({slot,*slot,reinterpret_cast<void*>(replacement)});
++ std::printf("PROGRAM_PROBE_SLOT %s count=%zu\n",name,found.size());
++}
++static void initialize(void*,GDExtensionInitializationLevel level){
++ if(level!=GDEXTENSION_INITIALIZATION_SCENE)return;
++ try{
++  auto mode_env=std::getenv("BMT_PREP_MODE"),jobs_env=std::getenv("BMT_PREP_JOBS"),binary_env=std::getenv("BMT_PREP_BINARIES"),report_env=std::getenv("BMT_PREP_REPORT");
++  if(!mode_env||!jobs_env||!binary_env||!report_env)throw std::runtime_error("missing diagnostic configuration");mode=mode_env;if(mode!="capture"&&mode!="import"&&mode!="trace")throw std::runtime_error("diagnostic mode");jobs_dir=jobs_env;binaries_dir=binary_env;report_path=report_env;fs::create_directories(jobs_dir);identity=driver();
++  GLint profile=0,flags=0;glGetIntegerv(0x9126,&profile);glGetIntegerv(0x821E,&flags);std::printf("PROGRAM_PROBE_CONTEXT profile=%d flags=%d\n",profile,flags);
++  prepare_patch("glCompileShader",compile,original_compile);prepare_patch("glGetShaderiv",shader_iv,original_shader_iv);prepare_patch("glLinkProgram",link,original_link);prepare_patch("glTransformFeedbackVaryings",feedback,original_feedback);prepare_patch("glBindAttribLocation",attribute,original_attribute);prepare_patch("glBindFragDataLocation",output,original_output);prepare_patch("glDeleteShader",delete_shader,original_delete_shader);prepare_patch("glDeleteProgram",delete_program,original_delete_program);
++  prepare_patch("glGetProgramiv",program_iv,original_program_iv);prepare_patch("glUseProgram",use,original_use);prepare_patch("glGetUniformLocation",location,original_location);prepare_patch("glBufferData",buffer,original_buffer);prepare_patch("glTexImage2D",image,original_image,false);prepare_patch("glDrawElements",draw,original_draw,false);prepare_patch("glDrawElementsInstanced",instances,original_instances);
++  for(auto& patch:patches)*patch.slot=patch.replacement;installed=true;std::printf("PROGRAM_PROBE_READY mode=%s\n",mode.c_str());std::fflush(stdout);
++ }catch(const std::exception& e){failures++;std::fprintf(stderr,"PROGRAM_PROBE_INIT_FAILED %s\n",e.what());}
++}
++static void deinitialize(void*,GDExtensionInitializationLevel level){
++ if(level!=GDEXTENSION_INITIALIZATION_SCENE)return;
++ if(installed)for(auto& patch:patches)if(*patch.slot==patch.replacement)*patch.slot=patch.original;
++ std::string report="{\"installed\":"+std::string(installed?"true":"false")+",\"captures\":"+std::to_string(captures)+",\"imports\":"+std::to_string(imports)+",\"misses\":"+std::to_string(misses)+",\"failures\":"+std::to_string(failures)+",\"skipped_compiles\":"+std::to_string(skipped_compiles)+",\"max_import_us\":"+std::to_string(max_import)+",\"max_original_link_us\":"+std::to_string(max_link)+","+memory()+"}";
++ try{if(!report_path.empty())atomic(report_path,Bytes(report.begin(),report.end()));}catch(...){}std::printf("PROGRAM_PROBE_RESULT %s\n",report.c_str());std::fflush(stdout);
++}
++extern "C" __declspec(dllexport) GDExtensionBool program_probe_init(GDExtensionInterfaceGetProcAddress,GDExtensionClassLibraryPtr,GDExtensionInitialization* init){init->minimum_initialization_level=GDEXTENSION_INITIALIZATION_SCENE;init->userdata=nullptr;init->initialize=initialize;init->deinitialize=deinitialize;return 1;}
+diff --git a/docs/evidence/first-use-graphics-2026-11-05/harness/shader_branch_probe.gd b/docs/evidence/first-use-graphics-2026-11-05/harness/shader_branch_probe.gd
+new file mode 100644
+--- /dev/null
++++ b/docs/evidence/first-use-graphics-2026-11-05/harness/shader_branch_probe.gd
+@@ -0,0 +1,65 @@
++extends RefCounted
++## Candidate: remove only block bodies guarded by a leading false constant.
++static func reduce(source: String) -> String:
++	var masked: String = mask(source)
++	var constants: Dictionary = {}
++	var declarations := RegEx.new(); declarations.compile("\\bconst\\s+bool\\s+(\\w+)\\s*=\\s*(true|false)\\s*;")
++	for found: RegExMatch in declarations.search_all(masked): constants[found.get_string(1)] = found.get_string(2) == "true"
++	var guards := RegEx.new(); guards.compile("\\bif\\s*\\(\\s*(!?)\\s*(\\w+)\\s*(?=\\)|&&)")
++	var edits: Array[Vector2i] = []
++	var until: int = -1
++	for found: RegExMatch in guards.search_all(masked):
++		if found.get_start() < until: continue
++		var flag: String = found.get_string(2)
++		if not constants.has(flag): continue
++		var value: bool = constants[flag]
++		if found.get_string(1) == "!": value = not value
++		if value: continue
++		var open: int = masked.find("(",found.get_start())
++		var depth: int = 1
++		var index: int = open+1
++		var disjunction: bool = false
++		while index < masked.length() and depth > 0:
++			var char: String = masked[index]
++			if char == "(": depth += 1
++			elif char == ")": depth -= 1
++			elif depth == 1 and (char == "|" or char == "?"): disjunction = true
++			index += 1
++		if depth != 0 or disjunction: continue
++		while index < masked.length() and masked[index] in [" ","\t","\n","\r"]: index += 1
++		if index >= masked.length() or masked[index] != "{": continue
++		open = index; depth = 1; index += 1
++		while index < masked.length() and depth > 0:
++			if masked[index] == "{": depth += 1
++			elif masked[index] == "}": depth -= 1
++			index += 1
++		if depth != 0: continue
++		# Preserve condition, braces, else and declarations outside this block.
++		edits.append(Vector2i(open+1,index-1)); until = index
++	for edit: Vector2i in reversed(edits): source = source.substr(0,edit.x)+source.substr(edit.y)
++	return source
++
++static func reversed(values: Array[Vector2i]) -> Array[Vector2i]:
++	var result: Array[Vector2i] = values.duplicate(); result.reverse(); return result
++
++static func mask(source: String) -> String:
++	var bytes: PackedByteArray = source.to_utf8_buffer()
++	# Author shaders use ASCII syntax. Replace comment/string characters with
++	# spaces in a same-length character mask, keeping offsets in String units.
++	var result: PackedStringArray = source.split("")
++	var index: int = 0
++	while index < result.size():
++		if source.substr(index,2) == "//":
++			while index < result.size() and source[index] != "\n": result[index] = " "; index += 1
++		elif source.substr(index,2) == "/*":
++			var end: int = source.find("*/",index+2)
++			end = source.length() if end < 0 else end+2
++			while index < end: result[index] = " "; index += 1
++		elif source[index] == '"':
++			result[index] = " "; index += 1
++			while index < result.size():
++				var char: String = source[index]; result[index] = " "; index += 1
++				if char == "\\" and index < result.size(): result[index] = " "; index += 1
++				elif char == '"': break
++		else: index += 1
++	return "".join(result)
+diff --git a/docs/evidence/first-use-graphics-2026-11-05/harness/shader_job.hpp b/docs/evidence/first-use-graphics-2026-11-05/harness/shader_job.hpp
+new file mode 100644
+--- /dev/null
++++ b/docs/evidence/first-use-graphics-2026-11-05/harness/shader_job.hpp
+@@ -0,0 +1,85 @@
++#pragma once
++#define WIN32_LEAN_AND_MEAN
++#include <windows.h>
++#include <bcrypt.h>
++#include <psapi.h>
++#include <GL/gl.h>
++#include <algorithm>
++#include <cstdint>
++#include <cstdio>
++#include <cstring>
++#include <filesystem>
++#include <fstream>
++#include <stdexcept>
++#include <string>
++#include <vector>
++
++namespace prep {
++namespace fs=std::filesystem;
++using Bytes=std::vector<unsigned char>;
++constexpr size_t MAX_JOB=4*1024*1024,MAX_BINARY=8*1024*1024;
++inline uint64_t us(){LARGE_INTEGER value,frequency;QueryPerformanceCounter(&value);QueryPerformanceFrequency(&frequency);return uint64_t(value.QuadPart)*1000000/uint64_t(frequency.QuadPart);}
++inline std::string sha(const Bytes& data){
++ BCRYPT_ALG_HANDLE algorithm=nullptr;BCRYPT_HASH_HANDLE hash=nullptr;
++ if(BCryptOpenAlgorithmProvider(&algorithm,BCRYPT_SHA256_ALGORITHM,nullptr,0)<0)throw std::runtime_error("SHA256 provider");
++ unsigned char digest[32]{};
++ bool ok=BCryptCreateHash(algorithm,&hash,nullptr,0,nullptr,0,0)>=0&&BCryptHashData(hash,const_cast<PUCHAR>(data.data()),ULONG(data.size()),0)>=0&&BCryptFinishHash(hash,digest,32,0)>=0;
++ if(hash)BCryptDestroyHash(hash);BCryptCloseAlgorithmProvider(algorithm,0);if(!ok)throw std::runtime_error("SHA256 hash");
++ std::string text;for(auto byte:digest){char pair[3];std::snprintf(pair,3,"%02x",byte);text+=pair;}return text;
++}
++inline Bytes read(const fs::path& path,size_t max){
++ auto size=fs::file_size(path);if(size>max)throw std::runtime_error("file exceeds bound");
++ Bytes bytes(size);std::ifstream file(path,std::ios::binary);if(size&&!file.read(reinterpret_cast<char*>(bytes.data()),size))throw std::runtime_error("file read");return bytes;
++}
++inline void atomic(const fs::path& path,const Bytes& bytes){
++ auto temp=path;temp+=".tmp";std::ofstream file(temp,std::ios::binary|std::ios::trunc);file.write(reinterpret_cast<const char*>(bytes.data()),bytes.size());file.close();if(!file)throw std::runtime_error("file write");
++ if(!MoveFileExW(temp.c_str(),path.c_str(),MOVEFILE_REPLACE_EXISTING|MOVEFILE_WRITE_THROUGH))throw std::runtime_error("atomic publish");
++}
++inline void put(Bytes& b,uint32_t n){for(int i=0;i<4;i++)b.push_back((n>>(i*8))&255);}
++inline void put(Bytes& b,const std::string& s){put(b,uint32_t(s.size()));b.insert(b.end(),s.begin(),s.end());}
++struct Reader {
++ const Bytes& b;size_t at=0;
++ uint32_t number(){if(at+4>b.size())throw std::runtime_error("truncated header");uint32_t n=0;for(int i=0;i<4;i++)n|=uint32_t(b[at++])<<(i*8);return n;}
++ std::string string(){auto n=number();if(n>MAX_JOB||n>b.size()-at)throw std::runtime_error("truncated string");std::string s(reinterpret_cast<const char*>(b.data()+at),n);at+=n;return s;}
++};
++struct Binding {GLuint index;std::string name;};
++struct Job {
++ std::string driver,vertex,fragment;GLenum feedback_mode=0x8C8C;
++ std::vector<std::string> feedback;std::vector<Binding> attributes,outputs;
++ Bytes encode()const{
++  Bytes b;put(b,0x314A5342);put(b,driver);put(b,vertex);put(b,fragment);put(b,feedback_mode);put(b,uint32_t(feedback.size()));for(auto&s:feedback)put(b,s);
++  for(auto* list:{&attributes,&outputs}){put(b,uint32_t(list->size()));for(auto&v:*list){put(b,v.index);put(b,v.name);}}
++  if(b.size()>MAX_JOB)throw std::runtime_error("source job exceeds bound");return b;
++ }
++ static Job decode(const Bytes& b){
++  Reader r{b};if(r.number()!=0x314A5342)throw std::runtime_error("job magic");Job job;job.driver=r.string();job.vertex=r.string();job.fragment=r.string();job.feedback_mode=r.number();
++  auto count=r.number();if(count>64)throw std::runtime_error("feedback count");while(count--)job.feedback.push_back(r.string());
++  for(auto* list:{&job.attributes,&job.outputs}){count=r.number();if(count>64)throw std::runtime_error("binding count");while(count--){auto index=r.number();list->push_back({index,r.string()});}}
++  if(r.at!=b.size()||job.vertex.empty())throw std::runtime_error("job body");return job;
++ }
++};
++inline Bytes encode_binary(const std::string& key,const std::string& driver,GLenum format,const Bytes& binary){
++ Bytes b;put(b,0x31425342);put(b,key);put(b,driver);put(b,format);put(b,sha(binary));put(b,uint32_t(binary.size()));b.insert(b.end(),binary.begin(),binary.end());return b;
++}
++inline Bytes decode_binary(const Bytes& b,const std::string& key,const std::string& driver,GLenum& format){
++ Reader r{b};if(r.number()!=0x31425342||r.string()!=key||r.string()!=driver)throw std::runtime_error("binary identity");format=r.number();auto expected=r.string();auto n=r.number();
++ if(n>MAX_BINARY||n!=b.size()-r.at)throw std::runtime_error("binary length");Bytes data(b.begin()+r.at,b.end());if(sha(data)!=expected)throw std::runtime_error("binary checksum");return data;
++}
++inline std::string driver(){std::string s;for(auto name:{GL_VENDOR,GL_RENDERER,GL_VERSION,0x8B8C}){auto value=glGetString(name);if(!value)throw std::runtime_error("GL identity");s+=reinterpret_cast<const char*>(value);s+='\n';}GLint profile=0,flags=0;glGetIntegerv(0x9126,&profile);glGetIntegerv(0x821E,&flags);s+="context_profile="+std::to_string(profile)+";context_flags="+std::to_string(flags)+"\n";return s;}
++template<class T>T gl(const char* name){auto address=wglGetProcAddress(name);if(!address||reinterpret_cast<uintptr_t>(address)<=3||reinterpret_cast<intptr_t>(address)==-1)address=GetProcAddress(GetModuleHandleW(L"opengl32.dll"),name);if(!address)throw std::runtime_error(name);return reinterpret_cast<T>(address);}
++struct Context {
++ HWND window=nullptr;HDC dc=nullptr;HGLRC context=nullptr;
++ Context(){
++  WNDCLASSW cls{};cls.lpfnWndProc=DefWindowProcW;cls.hInstance=GetModuleHandle(nullptr);cls.lpszClassName=L"OwnedShaderPreparationWorker";RegisterClassW(&cls);
++  window=CreateWindowExW(0,cls.lpszClassName,L"",WS_POPUP,0,0,16,16,nullptr,nullptr,cls.hInstance,nullptr);dc=GetDC(window);PIXELFORMATDESCRIPTOR p{};p.nSize=sizeof(p);p.nVersion=1;p.dwFlags=PFD_DRAW_TO_WINDOW|PFD_SUPPORT_OPENGL|PFD_DOUBLEBUFFER;p.iPixelType=PFD_TYPE_RGBA;p.cColorBits=24;
++  if(!SetPixelFormat(dc,ChoosePixelFormat(dc,&p),&p))throw std::runtime_error("pixel format");context=wglCreateContext(dc);if(!context||!wglMakeCurrent(dc,context))throw std::runtime_error("legacy context");
++  // Match this pinned Godot's core, forward-compatible context. This is part
++  // of the program-binary identity, not implied by the GL version string.
++  using Create=HGLRC(WINAPI*)(HDC,HGLRC,const int*);int attributes[]={0x2091,3,0x2092,3,0x9126,1,0x2094,2,0};auto core=gl<Create>("wglCreateContextAttribsARB")(dc,nullptr,attributes);if(!core)throw std::runtime_error("core context");wglMakeCurrent(dc,core);wglDeleteContext(context);context=core;
++ }
++ ~Context(){wglMakeCurrent(nullptr,nullptr);if(context)wglDeleteContext(context);if(dc)ReleaseDC(window,dc);if(window)DestroyWindow(window);}
++};
++inline std::string memory(){PROCESS_MEMORY_COUNTERS_EX m{};m.cb=sizeof(m);if(!GetProcessMemoryInfo(GetCurrentProcess(),reinterpret_cast<PROCESS_MEMORY_COUNTERS*>(&m),sizeof(m)))throw std::runtime_error("process memory");
++ return "\"private_bytes\":"+std::to_string(m.PrivateUsage)+",\"peak_commit_bytes\":"+std::to_string(m.PeakPagefileUsage)+",\"working_set_bytes\":"+std::to_string(m.WorkingSetSize)+",\"peak_working_set_bytes\":"+std::to_string(m.PeakWorkingSetSize);
++}
++}
+diff --git a/docs/evidence/first-use-graphics-2026-11-05/harness/validated_pruning.gd.txt b/docs/evidence/first-use-graphics-2026-11-05/harness/validated_pruning.gd.txt
+new file mode 100644
+--- /dev/null
++++ b/docs/evidence/first-use-graphics-2026-11-05/harness/validated_pruning.gd.txt
+@@ -0,0 +1,83 @@
++extends RefCounted
++## Remove unreachable bodies before Godot records native shader feature usage.
++## Conditions, else branches, public uniforms and active arithmetic stay intact.
++static func reduce(source: String, names: Array[String]) -> String:
++	if source.is_empty(): return source
++	var masked: String = _mask(source)
++	var constants: Dictionary = {}
++	var declarations := RegEx.new()
++	declarations.compile("(?m)^\\s*const\\s+bool\\s+(\\w+)\\s*=\\s*(true|false)\\s*;")
++	for found: RegExMatch in declarations.search_all(masked):
++		var name: String = found.get_string(1)
++		if name not in names: continue
++		var prefix: String = masked.substr(0,found.get_start())
++		if prefix.count("{") != prefix.count("}"): continue
++		# A local variable/parameter or a second conditional declaration makes
++		# the name ambiguous. Keep its original branches in that case.
++		var bindings := RegEx.new()
++		bindings.compile("\\bbool\\s+"+name+"\\b")
++		if bindings.search_all(masked).size() != 1: continue
++		var macros := RegEx.new()
++		macros.compile("(?m)^\\s*#\\s*(define|undef)\\s+"+name+"\\b")
++		if macros.search(masked) != null: continue
++		constants[name] = found.get_string(2) == "true"
++	var guards := RegEx.new()
++	guards.compile("\\bif\\s*\\(\\s*(!?)\\s*(\\w+)\\s*(?=\\)|&&)")
++	var edits: Array[Vector2i] = []
++	var until: int = -1
++	for found: RegExMatch in guards.search_all(masked):
++		if found.get_start() < until: continue
++		var flag: String = found.get_string(2)
++		if not constants.has(flag): continue
++		var value: bool = constants[flag]
++		if found.get_string(1) == "!": value = not value
++		if value: continue
++		var open: int = masked.find("(",found.get_start())
++		var depth: int = 1
++		var index: int = open+1
++		var ambiguous: bool = false
++		while index < masked.length() and depth > 0:
++			var char: String = masked[index]
++			if char == "(": depth += 1
++			elif char == ")": depth -= 1
++			elif char == "#" or (depth == 1 and char in ["|","^","?",","]): ambiguous = true
++			index += 1
++		if depth != 0 or ambiguous: continue
++		while index < masked.length() and masked[index] in [" ","\t","\n","\r"]: index += 1
++		if index >= masked.length() or masked[index] != "{": continue
++		open = index; depth = 1; index += 1
++		while index < masked.length() and depth > 0:
++			if masked[index] == "{": depth += 1
++			elif masked[index] == "}": depth -= 1
++			index += 1
++		if depth != 0: continue
++		# Preprocessor directives can affect text outside a runtime-false body.
++		if masked.substr(open+1,index-open-2).contains("#"): continue
++		edits.append(Vector2i(open+1,index-1))
++		until = index
++	# Reverse offsets keep nested and adjacent removals independent.
++	for edit_index: int in range(edits.size()-1,-1,-1):
++		var edit: Vector2i = edits[edit_index]
++		source = source.substr(0,edit.x)+source.substr(edit.y)
++	return source
++
++static func _mask(source: String) -> String:
++	# A same-length character mask keeps Unicode offsets valid while excluding
++	# comments and quoted include paths from brace and declaration matching.
++	var result: PackedStringArray = source.split("")
++	var index: int = 0
++	while index < result.size():
++		if source.substr(index,2) == "//":
++			while index < result.size() and source[index] != "\n": result[index] = " "; index += 1
++		elif source.substr(index,2) == "/*":
++			var end: int = source.find("*/",index+2)
++			end = source.length() if end < 0 else end+2
++			while index < end: result[index] = " "; index += 1
++		elif source[index] == '"':
++			result[index] = " "; index += 1
++			while index < result.size():
++				var char: String = source[index]; result[index] = " "; index += 1
++				if char == "\\" and index < result.size(): result[index] = " "; index += 1
++				elif char == '"': break
++		else: index += 1
++	return "".join(result)
+diff --git a/docs/evidence/first-use-graphics-2026-11-05/harness/verify_final_pruning.gd b/docs/evidence/first-use-graphics-2026-11-05/harness/verify_final_pruning.gd
+new file mode 100644
+--- /dev/null
++++ b/docs/evidence/first-use-graphics-2026-11-05/harness/verify_final_pruning.gd
+@@ -0,0 +1,39 @@
++extends SceneTree
++const PRUNE = preload("res://track/surface_shader_pruning.gd")
++const PROBE = preload("res://tests/probe_first_use_comparison.gd")
++var checks: int = 0
++var failures: int = 0
++func _initialize() -> void: run.call_deferred()
++func run() -> void:
++	var reference := GDScript.new()
++	reference.source_code = FileAccess.get_file_as_string("res://tests/fixtures/first_use_validated_pruning.gd.txt")
++	if reference.reload() != OK: quit(1); return
++	var baseline: GDScript = PROBE.generator([])
++	var names: Array[String] = SurfaceShaderVariants.FLAGS.duplicate()
++	for flag: String in SurfaceShaderVariants.MATERIAL_FLAGS: names.append("fixed_"+flag)
++	var document: Dictionary = JSON.parse_string(FileAccess.get_file_as_string("res://tests/fixtures/star_spline_lap.json"))
++	for theme: String in ["pine","winter","desert","storm","night_city"]:
++		document.theme = theme
++		var track: NativeTrack = TrackCompiler.compile(document)
++		var world := NativeTrackVisual.new()
++		world.persist_road_meshes = false; world.cache_road_meshes = false
++		root.add_child(world)
++		await world.build(track,BridgePresentation.new(track))
++		var sources: Dictionary = {}
++		for original: ShaderMaterial in PROBE.materials(world):
++			var material: ShaderMaterial = original.get_meta("surface_dynamic_material").duplicate()
++			baseline.specialize(material,false)
++			sources[material.shader.code] = true
++		var elapsed: int = 0
++		for source: String in sources:
++			var before: String = reference.reduce(source,names)
++			var start: int = Time.get_ticks_usec()
++			var after: String = PRUNE.reduce(source,names)
++			elapsed += Time.get_ticks_usec()-start
++			checks += 1
++			if before != after: failures += 1; push_error(theme+" validated shader changed")
++		print("FINAL_PRUNING_PARITY ",theme," sources=",sources.size()," cpu_ms=",elapsed/1000.0)
++		world.free()
++		await process_frame
++	print("FINAL_PRUNING_PARITY: %d checks, %d failures" % [checks,failures])
++	quit(1 if failures else 0)

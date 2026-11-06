@@ -1,0 +1,28 @@
+extends Node
+## Daily composition; state and callbacks remain owned by App.
+
+func run_track_of_day(app: Node, parent: Control = null, preview: bool = false) -> void:
+	if parent == null: parent = app.content
+	var page = preload("res://ui/track_of_day_page.gd").new()
+	page.client = app.online.client
+	page.cloud = app.cloud
+	page.records = app.records
+	page.page_preview = preview
+	var scope: String = app._daily_cache_scope()
+	if scope == app._daily_track_cache_scope: page.cached_state = app._daily_track_cache.duplicate(true)
+	page.track_loaded.connect(func(state: Dictionary) -> void:
+		if scope == app._daily_cache_scope():
+			app._daily_track_cache_scope = scope
+			app._daily_track_cache = state.duplicate(true))
+	page.track_invalidated.connect(func() -> void:
+		if scope == app._daily_track_cache_scope:
+			app._daily_track_cache.clear()
+			app._daily_track_cache_scope = "")
+	page.mode_requested.connect(app._request_race_mode)
+	page.vehicle_selected.connect(app._select_vehicle)
+	page.race_requested.connect(func(entry: Dictionary) -> void:
+		app.selected_track = app.cloud.presentation_track(entry)
+		app._start_race(app.selected_track,false,false,{},null,{"day":int(entry.daily_day),"version_id":str(entry.version_id)}))
+	parent.add_child(page)
+	app._keep_race_mode_rail_fixed(page)
+

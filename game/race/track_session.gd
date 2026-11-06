@@ -34,15 +34,49 @@ var _notice_layer_offsets := PackedInt32Array()
 const NOTICE_LAYOUT_VERSION: int = 4
 const NOTICE_CELL_M: float = 8.0
 const GATE_LAYOUT_FIELDS: Array[String] = ["_start_progress","_finish_elevated","_finish_road_widths","_finish_widths","_spline_corridor","_centers","_directions","_progress","_widths","_road_widths","_notice_reach","_route_hints","_layers","_notice_route_bins","_notice_approaches","_notice_route_layers","_notice_layer_offsets"]
+const LAYOUT_CACHE = preload("res://race/checkpoint_layout_cache.gd")
 
 func _init(rate: int = 120, laps: int = RaceRules.LAPS) -> void:
 	tick_rate = rate
 	target_laps = laps
 
-func _configure(track: NativeTrack) -> void:
+func prepare_cached(track: NativeTrack, cancelled: Callable) -> void:
+	# Explicit preparation worker entry only. _configure/advance remain disk-free.
+	if cancelled.call(): return
+	var ready: bool = track._race_gates.get("rules_key","") == RaceRules.KEY and track._race_gates.get("notice_version",0) == NOTICE_LAYOUT_VERSION and track._race_gates.get("checkpoint_layout_version",0) == RaceRules.CHECKPOINT_LAYOUT_VERSION
+	if ready: _configure(track); return
+	var versions: Array = [RaceRules.KEY,NOTICE_LAYOUT_VERSION,RaceRules.CHECKPOINT_LAYOUT_VERSION]
+	var key: String = LAYOUT_CACHE.key_for(track,versions)
+	var cached: Dictionary = LAYOUT_CACHE.read(key)
+	if not cached.layout.is_empty(): _configure(track,key,cached); return
+	# The menu/canonical session dependency graph does not load this optional IO
+	# helper. Only a worker cache miss resolves it, with no renderer resources.
+	var disk: GDScript = load("res://race/checkpoint_layout_disk_cache.gd")
+	var disk_hit: bool = false
+	if LAYOUT_CACHE.current(cached.generation):
+		cached.layout = disk.read_entry(key,track,versions)
+		disk_hit = not cached.layout.is_empty()
+	if cancelled.call(): return
+	if disk_hit and not LAYOUT_CACHE.current(cached.generation): cached.layout = {}; disk_hit = false
+	_configure(track,key,cached,false)
+	if cancelled.call() or not LAYOUT_CACHE.current(cached.generation): return
+	LAYOUT_CACHE.store(key,track._race_gates,cached.generation)
+	if not disk_hit:
+		disk.write_entry(key,track._race_gates,track,versions,func() -> bool: return cancelled.call() or not LAYOUT_CACHE.current(cached.generation))
+
+func _configure(track: NativeTrack, supplied_key: String = "", supplied_cache: Dictionary = {}, retain_cache: bool = true) -> void:
 	# Bake the gate corridor once. Acceptance visits only the current gate and
 	# its neighbour, regardless of track length or total gate count.
 	if track._race_gates.get("rules_key","") == RaceRules.KEY and track._race_gates.get("notice_version",0) == NOTICE_LAYOUT_VERSION and track._race_gates.get("checkpoint_layout_version",0) == RaceRules.CHECKPOINT_LAYOUT_VERSION:
+		for field: String in GATE_LAYOUT_FIELDS:
+			var value: Variant = track._race_gates[field]
+			set(field,value.duplicate() if value is Array else value)
+		initialized = true
+		return
+	var layout_key: String = supplied_key if not supplied_cache.is_empty() else LAYOUT_CACHE.key_for(track,[RaceRules.KEY,NOTICE_LAYOUT_VERSION,RaceRules.CHECKPOINT_LAYOUT_VERSION])
+	var cached: Dictionary = supplied_cache if not supplied_cache.is_empty() else LAYOUT_CACHE.read(layout_key)
+	if not cached.layout.is_empty():
+		track._race_gates = cached.layout
 		for field: String in GATE_LAYOUT_FIELDS:
 			var value: Variant = track._race_gates[field]
 			set(field,value.duplicate() if value is Array else value)
@@ -166,6 +200,7 @@ func _configure(track: NativeTrack) -> void:
 		var value: Variant = get(field)
 		prepared[field] = value.duplicate() if value is Array else value
 	track._race_gates = prepared
+	if retain_cache: LAYOUT_CACHE.store(layout_key,prepared,int(cached.generation))
 
 func _gate_road_spans(track: NativeTrack, coverage: RefCounted, center: Vector2, direction: Vector2, half: float, elevated: bool, allowed: Array) -> Vector2:
 	var raster := Vector2.ONE*half

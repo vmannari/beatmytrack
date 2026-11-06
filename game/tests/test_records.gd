@@ -139,6 +139,7 @@ func _check_failures() -> void:
 	var laps: Array[float] = [10.0,21.0,23.0,30.0,30.0]
 	store.record(track,handling,114.0,laps)
 	var before: Dictionary = store.records.duplicate(true)
+	var committed_settings: Dictionary = store.settings.duplicate(true)
 	var committed_path: String = store.path
 	# A regular file as parent makes write failure deterministic with any
 	# privilege level. No permission mutation or owner files are involved.
@@ -149,7 +150,7 @@ func _check_failures() -> void:
 	check(store.record(track,handling,110.0,laps) != OK,"unwritable destination reports failure")
 	check(store.records == before and store.best_for(track,handling) == 114.0,"failed improved PB rolls back memory")
 	store.settings = {"touch_scale":1.2,"left_handed":true}
-	check(store.save_records() != OK and store.settings == {"raced_tracks":[track.identity]},"failed settings save restores last committed preferences")
+	check(store.save_records() != OK and store.settings == committed_settings,"failed settings save restores all committed preferences and driving history")
 	var empty := LocalRecords.new(store.path)
 	check(empty.record(track,handling,110.0,laps) != OK and empty.best_for(track,handling) == 0.0,"failed first record never appears as a phantom PB")
 	var reload := LocalRecords.new(committed_path)

@@ -69,9 +69,9 @@ var _event_ids: Array[String] = uuid_pool(128)
 var _provisional_first_opens: Dictionary = {}
 var _collection_started_scope: String = ""
 var _process_exit_cursor: int = 0
-const QUALITY_NAMES: Array[String] = ["quality_summary","process_exit","race_statistics"]
+const QUALITY_NAMES: Array[String] = ["quality_summary","process_exit","race_statistics","shader_profile"]
 const NETWORK_NAMES: Array[String] = ["network_summary","network_failure"]
-const PASSIVE_NAMES: Array[String] = ["session_heartbeat","quality_summary","process_exit","network_summary","network_failure"]
+const PASSIVE_NAMES: Array[String] = ["session_heartbeat","quality_summary","process_exit","network_summary","network_failure","shader_profile"]
 const QUALITY_NUMBERS: Array[String] = ["samples","slow","segment","cell_x","cell_y","exit_reason","b0","b1","b2","b3","b4","b5","b6","b7"]
 
 static func uuid() -> String:
@@ -202,7 +202,7 @@ func _anchor_clock() -> void:
 	_clock_quality = "server_estimate" if estimated > 0 else "client_clock"
 
 func observe(name: String, properties: Dictionary = {}, once_key: String = "") -> bool:
-	if name == "race_statistics": return false # Only a negotiated lifecycle capture may enqueue this.
+	if name in ["race_statistics","shader_profile"]: return false # Only a scoped lifecycle capture may enqueue these.
 	if name in NETWORK_NAMES and (not _allowed or not _network_supported()): return false
 	if name in ["track_exposed","track_selected"]:
 		var published_version: Variant = properties.get("track_version_id","")
@@ -251,9 +251,16 @@ func observe_race_statistics(properties: Dictionary, captured_scope: String) -> 
 	if safe.is_empty(): return false
 	return _enqueue("race_statistics",safe,str(safe.race_id))
 
+func observe_shader_profile(properties: Dictionary, captured_scope: String) -> bool:
+	if not enabled or client == null or not client.has_method("shader_profiles_supported") or not client.shader_profiles_supported(): return false
+	if captured_scope == "guest" or captured_scope != _scope or (client.base_url()+"/"+str(client.player.get("id",""))).sha256_text() != captured_scope: return false
+	var safe: Dictionary = preload("res://backend/shader_profile_telemetry.gd").normalize(properties)
+	if safe.is_empty() or _event_ids.size() <= 32: return false
+	return _enqueue("shader_profile",safe)
+
 static func _entry_budget(entry: Dictionary) -> int:
 	# Conservative UTF-8/envelope bounds avoid per-event JSON work during driving.
-	return 8192 if entry.event.name == "race_statistics" else 4096 if entry.event.name == "network_summary" else 1536
+	return 8192 if entry.event.name in ["race_statistics","shader_profile"] else 4096 if entry.event.name == "network_summary" else 1536
 
 func _enqueue(name: String, safe: Dictionary, identifier: String = "") -> bool:
 	_sequence += 1
@@ -295,6 +302,7 @@ func _safe_properties(name: String, properties: Dictionary) -> Dictionary:
 		return config
 	if name in NETWORK_NAMES: return preload("res://backend/network_health.gd").normalize(name,properties)
 	if name == "race_statistics": return _safe_race_statistics(properties)
+	if name == "shader_profile": return preload("res://backend/shader_profile_telemetry.gd").normalize(properties)
 	var allowed: Array[String] = []
 	if name == "quality_summary": allowed = ["device_class","scene","samples","slow","b0","b1","b2","b3","b4","b5","b6","b7"]
 	elif name == "process_exit": allowed = ["exit_reason","device_class"]
@@ -491,6 +499,7 @@ func batch_payload() -> Dictionary:
 		if str(entry.scope) != _scope or not _persisted_ids.has(str(entry.event.id)): continue
 		if entry.event.name in NETWORK_NAMES and not _network_supported(): continue
 		if entry.event.name == "race_statistics" and not _package_supported(entry.event.properties): continue
+		if entry.event.name == "shader_profile" and (not client.has_method("shader_profiles_supported") or not client.shader_profiles_supported()): continue
 		if build.is_empty():
 			build = str(entry.build_id)
 			platform = str(entry.platform)
@@ -614,7 +623,7 @@ func _finish_thread(completed: Variant = null) -> void:
 				if entry is Dictionary and _scope_pattern.search(str(entry.get("scope",""))) != null and _build_pattern.search(str(entry.get("build_id",""))) != null and entry.get("platform","") in ["android","windows","linux","ios"] and entry.get("clock_quality","") in ["server_estimate","client_clock"] and entry.get("event") is Dictionary and (entry.event.get("name","") in EVENT_NAMES or entry.event.get("name","") in QUALITY_NAMES or entry.event.get("name","") in NETWORK_NAMES or entry.event.get("name","") in CONFIG_NAMES) and _uuid_pattern.search(str(entry.event.get("id",""))) != null and _uuid_pattern.search(str(entry.event.get("session_id",""))) != null and entry.event.get("properties") is Dictionary:
 					var original: Dictionary = entry.event
 					entry.event = {"id":str(original.id),"name":str(original.name),"occurred_at":_saved_integer(original.get("occurred_at",0)),"session_id":str(original.session_id),"seq":_saved_integer(original.get("seq",0)),"monotonic_ms":_saved_integer(original.get("monotonic_ms",0)),"properties":_safe_properties(str(original.name),original.properties)}
-					if (original.name == "race_statistics" or original.name in NETWORK_NAMES or original.name in CONFIG_NAMES) and entry.event.properties.is_empty(): continue
+					if (original.name in ["race_statistics","shader_profile"] or original.name in NETWORK_NAMES or original.name in CONFIG_NAMES) and entry.event.properties.is_empty(): continue
 					restored.append(entry)
 					_persisted_ids[str(entry.event.id)] = true
 					if restored.size() >= MAX_EVENTS: break

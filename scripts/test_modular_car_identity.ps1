@@ -8,6 +8,7 @@ Set-StrictMode -Version Latest
 # generated shipping identities or player files are touched.
 $fixture = Join-Path (Split-Path -Parent $PSScriptRoot) ('build/modular-identity-fixture-' + [guid]::NewGuid().ToString('N'))
 $encoding = New-Object System.Text.UTF8Encoding($false)
+$script:ModularIdentityChecks = 0
 function Set-FixtureFile([string]$Relative, [string]$Value) {
     $path = Join-Path $fixture $Relative
     [System.IO.Directory]::CreateDirectory((Split-Path -Parent $path)) | Out-Null
@@ -19,6 +20,7 @@ function Get-FixtureIdentity {
 }
 function Assert-Changed($Before, $After, [string[]]$Expected, [string]$Label) {
     foreach ($vehicle in @(Get-GaragePreviewVehicleIds)) {
+        $script:ModularIdentityChecks++
         $changed = $Before.modular_car_sha256.$vehicle -cne $After.modular_car_sha256.$vehicle
         if ($changed -ne ($vehicle -in $Expected)) { throw "$Label produced an unexpected modular revision for $vehicle" }
     }
@@ -57,7 +59,7 @@ Assert-Changed $before $after @('electric') 'Electric shadow proxy'
 $before = $after
 Set-FixtureFile 'game/assets/vehicles/racing_simple_v1/forklift_shadow_0.res' 'forklift shadow changed'
 $after = Get-FixtureIdentity
-Assert-Changed $before $after $all 'unknown/shared forklift shadow'
+Assert-Changed $before $after @('forklift') 'Forklift shadow input'
 
 $before = $after
 Set-FixtureFile 'game/assets/vehicles/racing_simple_v1/manifest.json' 'manifest changed'
@@ -73,7 +75,22 @@ Assert-Changed $before $after $all 'unknown similarly named directory'
 $before = $after
 Set-FixtureFile 'game/vehicle/electric_reference_mesh.gd' '# electric source changed'
 $after = Get-FixtureIdentity
-Assert-Changed $before $after $all 'all model scripts remain shared'
+Assert-Changed $before $after @('electric') 'Electric builder is vehicle-local'
+
+$before = $after
+Set-FixtureFile 'game/vehicle/compact_detail.gd' '# shared tyre helper changed'
+$after = Get-FixtureIdentity
+Assert-Changed $before $after @('compact','electric','forklift') 'shared tyre helper retains actual consumers'
+
+$before = $after
+Set-FixtureFile 'game/vehicle/compact_finish.gd' '# shared finish changed'
+$after = Get-FixtureIdentity
+Assert-Changed $before $after @('compact','kart','electric','forklift','hovercraft') 'shared finish retains all actual consumers'
+
+$before = $after
+Set-FixtureFile 'game/vehicle/electric_glass.gdshader' '# shared glass changed'
+$after = Get-FixtureIdentity
+Assert-Changed $before $after @('electric','hovercraft') 'Hover keeps its Electric glass dependency'
 
 $before = $after
 Set-FixtureFile 'game/assets/vehicles/modular_car_bases_v1/compact.scn' 'generated base changed'
@@ -87,4 +104,24 @@ Set-FixtureFile 'game/resources/cars/kart.tres' 'kart changed'
 $after = Get-FixtureIdentity
 Assert-Changed $before $after @('kart') 'per-car handling resource'
 
-Write-Host 'MODULAR_CAR_IDENTITY: 72 vehicle/hash checks and 2 complete-identity checks passed; isolated fixture retained in build.'
+$before = $after
+Set-FixtureFile 'game/assets/garage/cars_v1/compact.scn' 'generated Garage template changed'
+$after = Get-FixtureIdentity
+Assert-Changed $before $after @() 'Garage output cannot change geometry or header-template revisions'
+
+$before = $after
+Set-FixtureFile 'game/ui/header_simple_cache.gd' '# header rest schema changed'
+$after = Get-FixtureIdentity
+Assert-Changed $before $after @('compact') 'header template helper'
+
+$before = $after
+Set-FixtureFile 'game/ui/garage_car_cache.gd' '# shared Garage rest schema changed'
+$after = Get-FixtureIdentity
+Assert-Changed $before $after $all 'Garage template helper'
+
+$before = $after
+Set-FixtureFile 'game/vehicle/new_geometry_helper.gd' '# unknown geometry stays shared'
+$after = Get-FixtureIdentity
+Assert-Changed $before $after $all 'unknown helper remains conservative'
+
+Write-Host "MODULAR_CAR_IDENTITY: $script:ModularIdentityChecks vehicle/hash checks and 2 complete-identity checks passed; isolated fixture retained in build."

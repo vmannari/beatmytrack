@@ -2,21 +2,18 @@ extends RefCounted
 ## Offline rest-pose geometry for the Garage. Meshes are shared; finishes are owned.
 const Cache=preload("res://vehicle/prepared_car_cache.gd")
 const DIRECTORY: String="res://assets/garage/cars_v1/"
-const SCHEMA: String="garage-rest-v1"
+const SCHEMA: String="garage-rest-v2"
 static var enabled: bool=true
 static var hits: int=0
 static var source_hashes: Dictionary={}
 
 static func geometry_key(car: CarVisual) -> Array:
 	var config: HandlingConfig=VehicleCatalog.config(car.vehicle_id)
-	return [SCHEMA,car.vehicle_id,car.editable_kits,car.batch_parts,VisualGeometry.optimize_model_geometry,HandlingConfig.BODY_SCALE,config.wheelbase,config.track_width]
+	return [SCHEMA,Engine.get_version_info().string,preload("res://vehicle/modular_car_base.gd").build_revision(car.vehicle_id),car.vehicle_id,car.editable_kits,car.batch_parts,VisualGeometry.optimize_model_geometry,HandlingConfig.BODY_SCALE,config.wheelbase,config.track_width]
 
-static func geometry_sources() -> Dictionary:
-	var result: Dictionary={}
-	for file: String in DirAccess.get_files_at("res://vehicle"):
-		if not file.ends_with(".gd"): continue
-		if file in ["car_visual.gd","vehicle_models.gd","visual_geometry.gd"] or file.begins_with("compact_") or file.begins_with("electric_") or file.begins_with("kart_") or file.begins_with("forklift_") or file.begins_with("hovercraft_"):
-			result[file]=FileAccess.get_sha256("res://vehicle/"+file)
+static func geometry_sources(id: String="compact") -> Dictionary:
+	var result: Dictionary=preload("res://vehicle/modular_car_base.gd").source_hashes(id)
+	result["game/ui/garage_car_cache.gd"]=FileAccess.get_sha256("res://ui/garage_car_cache.gd")
 	return result
 
 static func restore(car: CarVisual) -> bool:
@@ -27,8 +24,9 @@ static func restore(car: CarVisual) -> bool:
 	var holder: Node3D=scene.instantiate()
 	var data: Dictionary=holder.get_meta("garage_rest",{})
 	if OS.has_feature("editor") and FileAccess.file_exists("res://vehicle/car_visual.gd"):
-		if source_hashes.is_empty(): source_hashes=geometry_sources()
-		if data.get("sources",{})!=source_hashes:
+		var validation=preload("res://vehicle/prepared_asset_sources.gd")
+		if not source_hashes.has(car.vehicle_id): source_hashes[car.vehicle_id]=validation.runtime_hashes(car.vehicle_id)
+		if validation.runtime_projection(data.get("sources",{}))!=source_hashes[car.vehicle_id]:
 			holder.free()
 			return false
 	if data.get("key",[])!=geometry_key(car):
@@ -75,7 +73,7 @@ static func bake(car: CarVisual) -> Error:
 			saved.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES,node.mesh.surface_get_arrays(index))
 			saved.surface_set_material(index,node.mesh.surface_get_material(index))
 		node.mesh=saved
-	var data: Dictionary={"schema":SCHEMA,"sources":geometry_sources(),"key":geometry_key(car),"vehicle":car.vehicle_id,"editable":car.editable_kits,
+	var data: Dictionary={"schema":SCHEMA,"sources":geometry_sources(car.vehicle_id),"key":geometry_key(car),"vehicle":car.vehicle_id,"editable":car.editable_kits,
 		"body":entry.body,"wheel_radii":entry.wheel_radii,"wheel_rest_positions":entry.wheel_rest_positions,
 		"paint_materials":{},"paint_variants":[],"kit_frames":entry.kit_frames}
 	for field: String in ["front_wheels","rear_wheels","rolling_wheels","brake_lights"]: data[field]=entry[field]

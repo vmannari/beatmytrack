@@ -19,7 +19,7 @@ def mount_routes(app, settings):
     if settings.workload_role != "admin":
         mount("game_config", "public_router")
         mount("studio_experiments", "public_router")
-        for name in ("telemetry", "community", "privacy", "privacy_pages", "public_pages", "product_analytics", "quality", "network_health"):
+        for name in ("telemetry", "community", "privacy", "privacy_pages", "public_pages", "product_analytics", "quality", "network_health", "shader_profiles"):
             mount(name)
         mount("news", prefix="/v1")
         mount("race_statistics")

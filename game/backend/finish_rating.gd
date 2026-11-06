@@ -21,6 +21,7 @@ func _ready() -> void:
 	account_id = str(client.player.get("id",""))
 	origin = str(client.base_url())
 	sync.changed.connect(_sync_changed)
+	if sync.has_signal("race_verified"): sync.race_verified.connect(_race_verified)
 	if is_instance_valid(rivalry_sync): rivalry_sync.changed.connect(_rivalry_changed)
 	if client.has_signal("identity_changed"): client.identity_changed.connect(_identity_changed)
 	_load()
@@ -28,6 +29,7 @@ func _ready() -> void:
 func _exit_tree() -> void:
 	if is_instance_valid(rivalry_sync) and rivalry_sync.changed.is_connected(_rivalry_changed): rivalry_sync.changed.disconnect(_rivalry_changed)
 	if is_instance_valid(sync) and sync.changed.is_connected(_sync_changed): sync.changed.disconnect(_sync_changed)
+	if is_instance_valid(sync) and sync.has_signal("race_verified") and sync.race_verified.is_connected(_race_verified): sync.race_verified.disconnect(_race_verified)
 	if is_instance_valid(client) and client.has_signal("identity_changed") and client.identity_changed.is_connected(_identity_changed): client.identity_changed.disconnect(_identity_changed)
 
 func _same_account() -> bool:
@@ -65,7 +67,13 @@ func _identity_changed() -> void:
 	if not _same_account(): queue_free()
 
 func _sync_changed() -> void:
-	if selected_score == 0 or sending or not (str(sync.status).begins_with("Race verified") or str(sync.status).begins_with("Race completed")): return
+	if not (str(sync.status).begins_with("Race verified") or str(sync.status).begins_with("Race completed")): return
+	_race_verified()
+
+func _race_verified() -> void:
+	# General status describes the last job in a batch. Another car's pending
+	# upload must not hide the completion that qualifies this track's vote.
+	if selected_score == 0 or sending or is_queued_for_deletion() or not _same_account(): return
 	if loading: reload_pending = true
 	else: _load()
 

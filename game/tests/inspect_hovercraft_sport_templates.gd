@@ -13,9 +13,11 @@ func run() -> void:
 	var output: String = "res://../docs/evidence/hovercraft-sport-redesign-2026-10-29/template-context.json"
 	for argument: String in OS.get_cmdline_user_args():
 		if argument.begins_with("--output="): output = argument.trim_prefix("--output=")
-	var current_sources: Dictionary = preload("res://ui/garage_car_cache.gd").geometry_sources()
 	var rows: Array = []
+	var current_sources: Dictionary = {}
 	for id: String in VehicleCatalog.IDS:
+		var vehicle_sources: Dictionary = preload("res://ui/garage_car_cache.gd").geometry_sources(id)
+		current_sources[id] = vehicle_sources
 		var path: String = "res://assets/garage/cars_v1/"+id+".scn"
 		var before_path: String = "res://../docs/evidence/hovercraft-sport-redesign-2026-10-29/before/game/assets/garage/cars_v1/"+id+".scn"
 		var current: Node3D = (load(path) as PackedScene).instantiate()
@@ -24,9 +26,9 @@ func run() -> void:
 		var before_sources: Dictionary = before.get_meta("garage_rest").sources
 		var mismatches: Array = []
 		var before_mismatches: Array = []
-		for key: String in current_sources:
-			if saved_sources.get(key,"") != current_sources[key]: mismatches.append(key)
-			if before_sources.get(key,"") != current_sources[key]: before_mismatches.append(key)
+		for key: String in vehicle_sources:
+			if saved_sources.get(key,"") != vehicle_sources[key]: mismatches.append(key)
+			if before_sources.get(key,"") != vehicle_sources[key]: before_mismatches.append(key)
 		var row: Dictionary = {"vehicle":id,"before_geometry":geometry(before),"current_geometry":geometry(current),"before_source_guard_mismatches":before_mismatches,"source_guard_mismatches":mismatches,"saved_sources":saved_sources}
 		row.geometry_unchanged = row.before_geometry == row.current_geometry
 		rows.append(row)

@@ -1,0 +1,1643 @@
+diff --git a/AGENTS.md b/AGENTS.md
+--- a/AGENTS.md
++++ b/AGENTS.md
+@@ -1,3 +1,8 @@
++<!-- RACE-LOADING-REAUDIT-20261104 -->
++## Current race loading and alternative implementations reviewed (2026-11-04)
++RRA01-RRA04: Investigation only. Frozen Compatibility five-theme first entries19.155–43.005s, immediate re-entry0.533–1.480s; desktop Mobile13.579–22.813s/0.497–2.289s. Pine31.281s graphics/effects; exact checkpoint layouts4.956–5.099s,33–51us reuse. Timestamped corridor4.555s/5.217s retains159200 exact layout bytes/105 gates. Winter world survives but effects evict; settled Pine0.862–1.011s/6of20 reused, Winter third0.798s/32of32. Recommend cost-aware eviction, exact lane/crossing optimization and artifacts, independent readiness milestones, final scenery artifacts and targeted native graphics work. Six frozen runs237/0,26entries/26retries; initial concurrent-source36/0 retained separately. Resource-only race-controller load3.224s is outside the phase probe. [Commands, costs, alternatives, limits and checked task-only patch](docs/RACE_LOADING_REAUDIT_2026_11_04.md). No runtime/visual changes, device query/test, APK, owner-save/process change, backend/live request, deployment or main-index write; concurrent work preserved. Proposed savings/appearance/device acceptance remain unverified.
++<!-- /RACE-LOADING-REAUDIT-20261104 -->
++
+ <!-- SHARED-GRAPHICS-PREPARATION-20261104 -->
+ ## Race and Garage share conservative native graphics preparation (2026-11-04)
+ GPC01-GPC04: Bounded process-local receipts match actual renderer/AA/light/material/source features; spot/omni require exact mesh/pose/bounds and normal full captures. Race/preloaded Garage share a queue; opening Garage keeps its proxy target. Adaptive one-to-four programs/eight objects starts conservatively; real header/thumbnail/full-Garage settles contribute without extra captures or reduced quality. Same-owner warm Pine34to10 draws/275.155to77.357ms, Winter35to10/279.630to84.422ms and Garage43to12/348.743to105.240ms have exact final pixels. Shared168/0 each desktop renderer, race/Garage31/0, header26/0, thumbnails18/0, actual-App61/0 and retained148/0; Compatibility123/0 and Mobile133/0 each include five zero-contact opening laps. Cold Garage still has a3.698s draw; no cold/startup/phone speedup claim. Initial failures, independent-header variance, baseline Desert pipeline and matched audio teardown warnings retained. [Implementation, commands, controls, limits and checked task-only patch](docs/SHARED_GRAPHICS_PREPARATION_2026_11_04.md). Reload/owner/device acceptance remain; no device query/test, APK, owner-save/process change, backend/live request, deployment or main-index write; concurrent startup/assets work preserved.
+diff --git a/DEVELOPMENT_STATUS.md b/DEVELOPMENT_STATUS.md
+--- a/DEVELOPMENT_STATUS.md
++++ b/DEVELOPMENT_STATUS.md
+@@ -1,3 +1,8 @@
++<!-- RACE-LOADING-REAUDIT-20261104 -->
++## Current race loading and alternative implementations reviewed (2026-11-04)
++RRA01-RRA04: Investigation only. Frozen Compatibility five-theme first entries19.155–43.005s, immediate re-entry0.533–1.480s; desktop Mobile13.579–22.813s/0.497–2.289s. Pine31.281s graphics/effects; exact checkpoint layouts4.956–5.099s,33–51us reuse. Timestamped corridor4.555s/5.217s retains159200 exact layout bytes/105 gates. Winter world survives but effects evict; settled Pine0.862–1.011s/6of20 reused, Winter third0.798s/32of32. Recommend cost-aware eviction, exact lane/crossing optimization and artifacts, independent readiness milestones, final scenery artifacts and targeted native graphics work. Six frozen runs237/0,26entries/26retries; initial concurrent-source36/0 retained separately. Resource-only race-controller load3.224s is outside the phase probe. [Commands, costs, alternatives, limits and checked task-only patch](docs/RACE_LOADING_REAUDIT_2026_11_04.md). No runtime/visual changes, device query/test, APK, owner-save/process change, backend/live request, deployment or main-index write; concurrent work preserved. Proposed savings/appearance/device acceptance remain unverified.
++<!-- /RACE-LOADING-REAUDIT-20261104 -->
++
+ <!-- SHARED-GRAPHICS-PREPARATION-20261104 -->
+ ## Race and Garage share conservative native graphics preparation (2026-11-04)
+ GPC01-GPC04: Bounded process-local receipts match actual renderer/AA/light/material/source features; spot/omni require exact mesh/pose/bounds and normal full captures. Race/preloaded Garage share a queue; opening Garage keeps its proxy target. Adaptive one-to-four programs/eight objects starts conservatively; real header/thumbnail/full-Garage settles contribute without extra captures or reduced quality. Same-owner warm Pine34to10 draws/275.155to77.357ms, Winter35to10/279.630to84.422ms and Garage43to12/348.743to105.240ms have exact final pixels. Shared168/0 each desktop renderer, race/Garage31/0, header26/0, thumbnails18/0, actual-App61/0 and retained148/0; Compatibility123/0 and Mobile133/0 each include five zero-contact opening laps. Cold Garage still has a3.698s draw; no cold/startup/phone speedup claim. Initial failures, independent-header variance, baseline Desert pipeline and matched audio teardown warnings retained. [Implementation, commands, controls, limits and checked task-only patch](docs/SHARED_GRAPHICS_PREPARATION_2026_11_04.md). Reload/owner/device acceptance remain; no device query/test, APK, owner-save/process change, backend/live request, deployment or main-index write; concurrent startup/assets work preserved.
+diff --git a/game/tests/review_race_loading_2026_11_04.gd b/game/tests/review_race_loading_2026_11_04.gd
+new file mode 100644
+--- /dev/null
++++ b/game/tests/review_race_loading_2026_11_04.gd
+@@ -0,0 +1,163 @@
++extends "res://tests/profile_track_load_stages.gd"
++## Evaluation only: exact shipping loading sequence, timestamp hooks in RAM.
++## Private records, cloud folder and disk cache; no network or owner data.
++const WORLDS = preload("res://track/prepared_world_cache.gd")
++var checks: int = 0
++var failures: int = 0
++var cache_events: Array = []
++var last_cache_state: Array = []
++var last_stage: String = ""
++var stages: Array = []
++var current_case: String = "startup"
++
++func observe() -> void:
++	super.observe()
++	if not is_instance_valid(app): return
++	var phase: String = str(app._load_probe_marks.back().name) if not app._load_probe_marks.is_empty() else "menu"
++	if is_instance_valid(app.game):
++		var world: Node = app.game.get_node_or_null("World")
++		if world != null:
++			for child: Node in world.get_children():
++				if child is NativeTrackVisual: phase += ":"+child.build_stage; break
++	if current_case+phase != last_stage:
++		last_stage = current_case+phase
++		var mark := {"case":current_case,"phase":phase,"us":Time.get_ticks_usec()}
++		stages.append(mark)
++		print("REVIEW_STAGE ",JSON.stringify(mark))
++	var effect_bytes: int = preload("res://vehicle/effect_render_preparation.gd").cache_bytes(app)
++	var state: Array = [WORLDS.entries.size(),WORLDS.bytes_used(),app.editor_memory.trims,effect_bytes]
++	if state == last_cache_state: return
++	last_cache_state = state
++	cache_events.append({"us":Time.get_ticks_usec(),"case":current_case,"state":state,"telemetry":app.editor_memory.telemetry.duplicate(true),"instant_retained":preload("res://editor/editor_memory.gd").retained(app)})
++
++var race_probe: GDScript
++
++func instrumented_app() -> GDScript:
++	var source := FileAccess.get_file_as_string("res://core/features/race.gd").replace("\r\n","\n")
++	var start := source.find("func run_start_race(app:")
++	var end := source.find("\nfunc run_race_installation_current(",start)
++	if start < 0 or end <= start: push_error("Missing controller race function"); return null
++	var body := source.substr(start,end-start)
++	var hooks := [
++		["\tif not await app._await_selected_preparation(track,","selected_wait_begin"],
++		["\tvar daily_rules: RefCounted","selected_wait_end"],
++		["\tvar prepared_roads: Dictionary = {}","roads_begin"],
++		["\tapp.returning_to_editor = from_editor","roads_end"],
++		["\tapp.add_child(app.game)\n\tvar prepared_game: Node = app.game","game_begin"],
++		["\tif is_instance_valid(prepared_game.world_render_preparation):","game_end"],
++		["\t\tif not await prepared_game.world_render_preparation.prepare(","graphics_begin"],
++		["\tapp.game.opponent_ghost =","graphics_end"],
++		["\tvar preparation_started: int = Time.get_ticks_usec()","effects_begin"],
++		["\tvar preparation_ms: float = (Time.get_ticks_usec() - preparation_started)","effects_end"],
++		["\tapp._close_race_loading(loading_id)\n\n","race_end"],
++	]
++	for hook: Array in hooks:
++		var needle: String = hook[0]
++		if body.count(needle) != 1: push_error("Review anchor changed: "+str(hook[1])); return null
++		var indent := "\t\t" if needle.begins_with("\t\t") else "\t"
++		body = body.replace(needle,indent+"app._load_probe_mark(\""+str(hook[1])+"\")\n"+needle)
++	source = source.substr(0,start)+body+source.substr(end)
++	race_probe = GDScript.new()
++	race_probe.source_code = source
++	if race_probe.reload() != OK: push_error("Review controller failed to compile"); return null
++	source = FileAccess.get_file_as_string(APP_PATH).replace("\r\n","\n")
++	var needle := "var resource: Resource = load(path)"
++	if source.count(needle) != 1: push_error("Feature load anchor changed"); return null
++	source = source.replace(needle,"var resource: Resource = _load_probe_race if path == \"res://core/features/race.gd\" else load(path)")
++	source += "\nvar _load_probe_race: GDScript\nvar _load_probe_marks: Array = []\nfunc _load_probe_mark(label: String) -> void:\n\t_load_probe_marks.append({\"name\":label,\"us\":Time.get_ticks_usec()})\n"
++	var script := GDScript.new()
++	script.source_code = source
++	if script.reload() != OK: push_error("Review App failed to compile"); return null
++	return script
++
++func verify(value: bool, label: String) -> void:
++	checks += 1
++	if not value:
++		failures += 1
++		printerr("LOAD_REVIEW_FAIL ", label)
++
++func run() -> void:
++	OS.set_environment("BMT_API_URL", "")
++	root.size = Vector2i(1280,720)
++	var folder := "user://race-loading-review-"+TrackLibrary.unique_id()
++	preload("res://track/road_mesh_disk_cache.gd").directory = folder.path_join("roads")
++	var script := instrumented_app()
++	if script == null: quit(1); return
++	app = script.new()
++	app._load_probe_race = race_probe
++	app.records = LocalRecords.new(folder.path_join("records.json"))
++	app.records.settings.music_enabled = false
++	app.library = TrackLibrary.new(folder.path_join("tracks"))
++	app.cloud_root_override = folder.path_join("cloud")
++	app.race_profile_enabled = true
++	root.add_child(app)
++	while not app.startup_complete: await process_frame
++	process_frame.connect(observe)
++	var themes: PackedStringArray = ["pine","desert","winter"]
++	var cycles: int = 3
++	var dwell_ms: int = 0
++	for argument: String in OS.get_cmdline_user_args():
++		if argument.begins_with("--dwell-ms="): dwell_ms = clampi(argument.trim_prefix("--dwell-ms=").to_int(),0,3000)
++		if argument.begins_with("--themes="): themes = argument.trim_prefix("--themes=").split(",")
++		if argument.begins_with("--cycles="): cycles = clampi(argument.trim_prefix("--cycles=").to_int(),1,3)
++	for theme: String in themes:
++		var document: Dictionary = JSON.parse_string(FileAccess.get_file_as_string(TRACK_PATH))
++		document.theme = theme
++		var began := Time.get_ticks_usec()
++		var track: NativeTrack = TrackCompiler.compile(document)
++		var compile_ms := (Time.get_ticks_usec()-began)/1000.0
++		verify(track != null,theme+" compilation")
++		if track == null: continue
++		track.metadata.cloud_version = "owned-loading-review"
++		WORLDS.entries.clear()
++		for cycle: int in range(cycles):
++			current_case = theme+"-"+str(cycle)
++			app.records.settings.camera_mode = "overhead"
++			app._show_screen("tracks")
++			app.selected_track = track
++			app._load_probe_marks.clear()
++			frames.clear()
++			last_frame = Time.get_ticks_usec()
++			measuring = true
++			began = Time.get_ticks_usec()
++			await app._start_race(track,false,true)
++			var wall_ms := (Time.get_ticks_usec()-began)/1000.0
++			measuring = false
++			verify(is_instance_valid(app.game),theme+" game installed")
++			if not is_instance_valid(app.game): continue
++			var game: Node = app.game
++			game.set_physics_process(false)
++			game.hitch_diagnostics.persist_enabled = false
++			verify(game.preparation_complete,theme+" construction complete")
++			verify(game.sim.state.tick == 0,theme+" canonical tick zero")
++			verify(game.countdown_ticks == 360,theme+" complete countdown")
++			verify(game.track_session.target_laps == 5,theme+" five laps")
++			verify(not is_instance_valid(app.race_loading),theme+" loading cover released")
++			var row := {"theme":theme,"cycle":cycle,"compile_ms_before_race":compile_ms,"wall_ms":wall_ms,"max_frame_ms":frames.max() if not frames.is_empty() else 0.0,"marks":app._load_probe_marks.duplicate(true),"game_costs":game.preparation_costs.duplicate(true),"world_costs":game.track_ground.build_costs.duplicate(true),"effects_finish_ms":game.bridge_preparation_ms,"effect_counts":game.effect_preparation_counts.duplicate(true),"feature_load_ms":app.feature_load_ms.duplicate(true),"world_cache_entries":WORLDS.entries.size(),"world_cache_bytes":WORLDS.bytes_used()}
++			if is_instance_valid(game.world_render_preparation):
++				row.draw_groups = game.world_render_preparation.frame_groups
++				row.draw_wait_max_us = game.world_render_preparation.draw_us_max
++			var game_id: int = game.get_instance_id()
++			began = Time.get_ticks_usec()
++			await app._retry_race(true)
++			row.retry_ms = (Time.get_ticks_usec()-began)/1000.0
++			verify(is_instance_valid(app.game) and app.game.get_instance_id() == game_id,theme+" retry reuses Game")
++			verify(game.sim.state.tick == 0 and game.countdown_ticks == 360,theme+" retry retains exact start")
++			samples.append(row)
++			print("RACE_LOADING_REVIEW ",JSON.stringify(row))
++			app._leave_race()
++			await process_frame
++			if dwell_ms > 0: await create_timer(dwell_ms/1000.0).timeout
++	var output := OS.get_environment("BMT_LOADING_OUTPUT")
++	verify(not output.is_empty(),"explicit evidence destination")
++	if not output.is_empty():
++		var file := FileAccess.open(output,FileAccess.WRITE)
++		verify(file != null,"evidence opens")
++		if file != null:
++			file.store_string(JSON.stringify({"checks":checks,"failures":failures,"engine":Engine.get_version_info().string,"renderer":RenderingServer.get_current_rendering_method(),"adapter":RenderingServer.get_video_adapter_name(),"headless":DisplayServer.get_name()=="headless","app_sha256":FileAccess.get_sha256(APP_PATH),"game_sha256":FileAccess.get_sha256("res://core/game.gd"),"samples":samples,"cache_events":cache_events,"stages":stages,"dwell_ms":dwell_ms},"  "))
++			file.close()
++	app.queue_free()
++	app = null
++	for _frame: int in range(8): await process_frame
++	print("RACE_LOADING_REVIEW_COMPLETE ",checks," checks, ",failures," failures")
++	quit(1 if failures else 0)
+diff --git a/game/tests/review_race_cpu_2026_11_04.gd b/game/tests/review_race_cpu_2026_11_04.gd
+new file mode 100644
+--- /dev/null
++++ b/game/tests/review_race_cpu_2026_11_04.gd
+@@ -0,0 +1,44 @@
++extends SceneTree
++## Diagnostic component timings, independent of rendering and network.
++var rows: Array = []
++var checks: int = 0
++var failures: int = 0
++
++func _initialize() -> void:
++	run.call_deferred()
++
++func run() -> void:
++	for theme: String in ["pine","winter","desert","storm","night_city"]:
++		var document: Dictionary = JSON.parse_string(FileAccess.get_file_as_string("res://tests/fixtures/star_spline_lap.json"))
++		document.theme = theme
++		var began: int = Time.get_ticks_usec()
++		var track: NativeTrack = TrackCompiler.compile(document)
++		var compile_us: int = Time.get_ticks_usec()-began
++		if track == null:
++			push_error("Track compilation failed"); quit(1); return
++		for cycle: int in range(2):
++			var row := {"theme":theme,"cycle":cycle,"compile_us":compile_us}
++			began = Time.get_ticks_usec()
++			track._creator_query()
++			row.query_us = Time.get_ticks_usec()-began
++			began = Time.get_ticks_usec()
++			var bridge := BridgePresentation.new(track)
++			row.bridge_us = Time.get_ticks_usec()-began
++			began = Time.get_ticks_usec()
++			var session := TrackSession.new()
++			session._configure(track)
++			row.gates_us = Time.get_ticks_usec()-began
++			row.gates = session._centers.size()
++			checks += 1
++			if not session.initialized or session.target_laps != 5 or track._race_gates.get("checkpoint_layout_version",0) != RaceRules.CHECKPOINT_LAYOUT_VERSION:
++				failures += 1
++			row.bridge_present = bridge != null
++			rows.append(row)
++			print("REVIEW_CPU ",JSON.stringify(row))
++			await process_frame
++	var output := OS.get_environment("BMT_LOADING_OUTPUT")
++	var file := FileAccess.open(output,FileAccess.WRITE)
++	if file == null: quit(1); return
++	file.store_string(JSON.stringify({"rows":rows,"checks":checks,"failures":failures,"engine":Engine.get_version_info().string},"  "))
++	file.close()
++	quit(1 if failures else 0)
+diff --git a/game/tests/review_gate_stages_2026_11_04.gd b/game/tests/review_gate_stages_2026_11_04.gd
+new file mode 100644
+--- /dev/null
++++ b/game/tests/review_gate_stages_2026_11_04.gd
+@@ -0,0 +1,49 @@
++extends SceneTree
++## Timestamp-only in-memory copies; compare every resulting gate-layout byte.
++func _initialize() -> void:
++	run.call_deferred()
++
++func run() -> void:
++	var corridor_source := FileAccess.get_file_as_string("res://race/spline_gate_corridor.gd").replace("\r\n","\n").replace("class_name SplineGateCorridor\n","")
++	var hooks := [
++		["\tvar crossings: Array[PackedFloat64Array] = []","start"],
++		["\tvar paved_crossings: Array[PackedFloat64Array] = []","edge_lanes_done"],
++		["\tvar counts := PackedInt32Array()","recovery_lanes_done"],
++		["\tvar selected := PackedInt32Array()","selection_done"],
++		["\tvar projections: Dictionary = {}","notices_begin"],
++		["\treturn selected\n","notices_end"],
++	]
++	for hook: Array in hooks:
++		if corridor_source.count(hook[0]) != 1: push_error("Gate stage anchor changed"); quit(1); return
++		corridor_source = corridor_source.replace(hook[0],"\tsession.set_meta(\"review_"+str(hook[1])+"\",Time.get_ticks_usec())\n"+str(hook[0]))
++	var corridor := GDScript.new()
++	corridor.source_code = corridor_source
++	if corridor.reload() != OK: quit(1); return
++	var session_source := FileAccess.get_file_as_string("res://race/track_session.gd").replace("\r\n","\n").replace("class_name TrackSession\n","")
++	var needle := "SplineGateCorridor.select(self,track)"
++	if session_source.count(needle) != 1: push_error("Gate select anchor changed"); quit(1); return
++	session_source = session_source.replace(needle,"_review_corridor.select(self,track)")+"\nvar _review_corridor: GDScript\n"
++	var session_script := GDScript.new()
++	session_script.source_code = session_source
++	if session_script.reload() != OK: quit(1); return
++	var track: NativeTrack = TrackCompiler.compile(JSON.parse_string(FileAccess.get_file_as_string("res://tests/fixtures/star_spline_lap.json")))
++	var session: RefCounted = session_script.new()
++	session._review_corridor = corridor
++	var began := Time.get_ticks_usec()
++	session._configure(track)
++	var total: int = Time.get_ticks_usec()-began
++	var marks: Dictionary = {}
++	for hook: Array in hooks: marks[hook[1]] = session.get_meta("review_"+str(hook[1]))
++	var instrumented: PackedByteArray = var_to_bytes(track._race_gates)
++	track._race_gates = {}
++	var original := TrackSession.new()
++	began = Time.get_ticks_usec()
++	original._configure(track)
++	var original_us: int = Time.get_ticks_usec()-began
++	var exact: bool = instrumented == var_to_bytes(track._race_gates)
++	var output := {"total_us":total,"original_us":original_us,"marks":marks,"layout_bytes":instrumented.size(),"layout_exact":exact,"gates":original._centers.size(),"checks":1,"failures":0 if exact else 1}
++	print("GATE_STAGES ",JSON.stringify(output))
++	var file := FileAccess.open(OS.get_environment("BMT_LOADING_OUTPUT"),FileAccess.WRITE)
++	if file == null: quit(1); return
++	file.store_string(JSON.stringify(output,"  ")); file.close()
++	quit(0 if exact else 1)
+diff --git a/docs/RACE_LOADING_REAUDIT_2026_11_04.md b/docs/RACE_LOADING_REAUDIT_2026_11_04.md
+new file mode 100644
+--- /dev/null
++++ b/docs/RACE_LOADING_REAUDIT_2026_11_04.md
+@@ -0,0 +1,148 @@
++# Race loading: current costs and alternatives — 2026-11-04
++
++Investigation only. RRA01 measures current entry/re-entry/retry; RRA02 attributes remaining work; RRA03 evaluates implementations preserving appearance; RRA04 retains reproducible evidence and a task-only checkpoint. No shipping source, visual, quality setting, physics rule or memory budget was changed.
++
++## Findings
++
++The remaining problem has two substantial parts: native first-use graphics work and CPU preparation of the exact race. Repeated entry is much faster, but cache eviction and Night's local-light preparation still matter. Reducing object detail is not necessary for the proposed work.
++
++This review accounts for changes already present: the deferred App shell, rebuilt prepared cars, shared graphics receipts/adaptive batches, selected Daily/Rivalry preparation, and retention of Winter scenery/sky. It does not recommend implementing those features again. Some of the latter changes are concurrent work, not changes made or certified by this review.
++
++## Current measurements
++
++Pinned Godot `4.7.2.stable.official.ed1daf0bf`, Windows RTX 3090, 1280×720, detailed stock Compact, Dummy audio, explicit offline backend configuration and private profiles. The same Star spline document is compiled separately for Pine, Winter, Desert, Storm and Night, in that order. Each theme gets two entries and two actual App retries. The complete-world cache is explicitly cleared between themes, but other caches are not. These are per-theme first-use observations in a sequence, not five independent cold starts.
++
++Mutable runtime code, prepared scenes and relevant pictures were copied into an owned snapshot. Static content/imports are shared by junction. Every accepted run records unchanged code/scene hashes before and after. OS/driver caches were not erased. Native renderer runs are serial, and neither renderer is a phone measurement.
++
++| Theme | Compatibility first entry | Immediate re-entry | Desktop Mobile first entry | Immediate re-entry |
++| --- | ---: | ---: | ---: | ---: |
++| Pine | 43.005 s | 0.533 s | 22.813 s | 0.769 s |
++| Winter | 22.853 s | 1.326 s | 13.916 s | 2.289 s |
++| Desert | 21.776 s | 1.327 s | 18.693 s | 1.176 s |
++| Storm | 19.155 s | 0.543 s | 13.579 s | 0.497 s |
++| Night | 30.488 s | 1.480 s | 14.768 s | 0.767 s |
++
++Compatibility retries of the existing Game take **11.2–18.0 ms**. They already reuse the prepared race; a new reset architecture is not the priority. Compatibility's largest first-entry frame intervals range from **1.650 to 5.153 seconds**, and immediate re-entry still has **156–176 ms** maxima. Loading completion is not evidence of smooth frames.
++
++The phase probe injects timestamps into in-memory copies of the current App/race controller, preserving its operations and readiness checks. The controller/dependency compilation needed by that instrumentation happens before the entry timer. Track compilation, menu selection dwell, real network requests and process startup are also outside the table. `game.tscn` first resource loading remains inside the entry timer (742 ms in the Compatibility run). The table is therefore a loading-path measurement, not a complete user-tap/launch benchmark. Individual phase durations include scheduling, rendering and yields; they are not pure CPU or GPU samples.
++
++A separate fresh-process resource probe, with no App dependencies in its test script, loads App in **2.114 seconds**, then the race controller in **3.224 seconds**, then `game.tscn` in **0.905 seconds**. The controller is loaded synchronously by App before its own loading-cover logic can run. This is another potential first-action delay: the shell has deferred work, not eliminated it. Actual menu navigation may already have loaded overlapping dependencies, so do not simply add 3.224 seconds to the stage table. A small dependency-free cover entry point and carefully scheduled feature loading would improve first feedback; binary resource staging and further dependency separation can target the cost itself.
++
++### Compatibility phase breakdown
++
++| First entry | Road preparation/wait | Game installation | Staged world graphics | Effects/final preparation |
++| --- | ---: | ---: | ---: | ---: |
++| Pine | 3.718 s | 7.084 s | 24.144 s | 7.137 s |
++| Winter | 2.778 s | 6.497 s | 9.718 s | 3.792 s |
++| Desert | 7.207 s | 6.604 s | 7.811 s | 0.099 s |
++| Storm | 2.955 s | 6.155 s | 8.666 s | 1.325 s |
++| Night | 3.080 s | 6.239 s | 12.958 s | 7.802 s |
++
++The remaining time includes resource loading, overlay draws, transitions between marks and final settling. Desert's cheap first effects phase benefits from earlier themes; its slower repeated effects phase below is not contradictory.
++
++## Specific remaining costs
++
++### 1. First-use graphics remain dominant
++
++Pine spends **31.281 seconds**, approximately **73%** of its measured entry, in world graphics plus effects/final preparation. The shared queue reduces warm scheduling overhead, but cannot interrupt a slow driver call or make a previously unseen program free. Existing October native attribution measured compile/link spans covering 98.264% of one 5.207-second Star stall; that is historical native evidence, not a new attribution of every phase in this review. See [the native investigation](NATIVE_SHADER_PREPARATION_2026_10_28.md).
++
++Current `SurfaceShaderVariants` already interns source-equivalent shaders and shares selected Compatibility road roles. Further work should identify the remaining expensive programs and redundant feature combinations, then compare original rendered pixels and driving cost. Replacing all variants with a large generic shader can trade loading time for worse ongoing GPU work; it is not automatically an improvement.
++
++Compatibility requires real in-frustum preparation draws. Godot's ubershader/pipeline-precompilation mechanism applies to Mobile/Forward+, not Compatibility. [Godot 4.7 pipeline documentation](https://docs.godotengine.org/en/4.7/tutorials/performance/pipeline_compilations.html).
++
++The desktop Mobile rows make a renderer experiment plausible, especially for Night, but Winter re-entry is worse in this sample. They do not establish equal appearance, device compatibility, power use or a universal faster renderer. Retain the present renderer until those are measured.
++
++### 2. Checkpoint-layout construction is a large, precisely identified CPU cost
++
++A separate headless component probe measures **4.956–5.099 seconds** for the initial `TrackSession._configure()` on each of the five themed Star documents. Reuse of its exact cached layout takes **33–51 microseconds**. Pine's first bridge/support preparation adds 0.968 seconds; Desert's relief still takes 0.164 seconds on its repeat. These are component observations, not extra time to add to the native table.
++
++Timestamp-only in-memory instrumentation further measures **4.555 of 5.217 seconds** inside `SplineGateCorridor.select()`:
++
++| Corridor phase | Time |
++| --- | ---: |
++| Initial lane generation/crossings and corner preparation | 1.127 s |
++| Paved/recovery lane and crossing passes | 2.618 s |
++| Selecting the ordered gate chain | 0.031 s |
++| Notice preparation | 0.779 s |
++
++The instrumented result matches all **159,200 serialized bytes** of the original layout, with 105 gates. The original uninstrumented calculation takes 5.083 seconds in that control. This validates attribution, not a faster implementation.
++
++The best CPU investigation is therefore lane/crossing preparation, rather than the much cheaper final chain selection. Reuse identical intermediate lane geometry and crossings where their exact inputs/widths match, or move the same ordered packed-array arithmetic into the existing native library. Preserve every lane sample, road/kerb coverage, hairpin rule, tie break and floating-point result. An optimization here needs the complete gate-coverage, shortcut rejection and canonical replay controls; reducing samples or widening acceptance would change correctness.
++
++The small result also makes a versioned local compiled-layout artifact attractive. Key it by the complete track/compiler/rules/checkpoint-layout/notice schema and build dependencies, validate it and fall back to the original calculation. Persisting one exact layout can avoid rebuilding it after a process restart. The observed 159 KB is for this one track, not a universal bound or a measured disk-load saving.
++
++### 3. Cache arbitration discards useful effects before freeing larger idle resources
++
++The frozen trace retains Winter's complete world: **41,266,156 estimated bytes**, with a 0.9–1 ms warm scene instantiation in the earlier supporting sample. The old conclusion that every Winter entry loses its world no longer describes this snapshot.
++
++However, ordinary trimming removes all **32** prepared Winter particle proxies before freeing unrelated road resources. The trace falls from **85.41 MiB** retained to **42.31 MiB**. Re-creating the effects brings it to **53.96 MiB**, still under the unchanged 64 MiB allowance. Winter's repeated effects/final phase is **993 ms**; its retained world graphics stage is only **23 ms**. The memory values are policy estimates, not physical RAM/GPU measurements.
++
++In `editor_memory.gd`, effects are trimmed before CPU road data and private road GPU entries. A cost-aware eviction plan should first choose a set of disposable entries that reaches the allowance, then apply it. In this observed Winter state, evicting the large independent road allocation can leave room for the effects as well as the world. Avoid evicting effects and then discovering that a later large eviction leaves enough spare space to have kept them.
++
++Desert is more constrained: after trimming, other retained content is already **61.44 MiB**, and its full effect pool would exceed 64 MiB. Its repeated effects phase is **673 ms**, with zero reused proxies. Prefer a useful subset selected by preparation cost and actual shared-resource footprint; do not assume all effects fit or raise the budget from desktop evidence. Existing pressure handling must still release optional retention.
++
++Immediate re-entry can precede the once-per-second memory sample. Consequently, warm measurements must include a settled menu interval as well as rapid loops. Pool-byte decreases during an active load also include taking leases out of the pool; they are not all evictions. Only trim-counter changes and policy inspection support the eviction finding.
++
++A separate frozen Compatibility run waits **1.5 seconds in the menu** between three entries per theme, retaining ordinary optional-Garage scheduling:
++
++| Theme | First entry | Second entry / reused particles | Third entry / reused particles |
++| --- | ---: | ---: | ---: |
++| Pine | 45.598 s | 1.011 s / 6 of 20 | 0.862 s / 6 of 20 |
++| Winter | 26.804 s | 1.472 s / 0 of 32 | 0.798 s / 32 of 32 |
++
++Pine's trim repeats after every entry. Winter's third entry benefits from the previous eviction of unrelated roads and can keep its effects. These observations confirm sensitivity to cache state; differences between first-entry runs are not an implementation speedup or an isolated measure of Garage contention. The menu wait itself is outside each entry timer.
++
++### 4. CPU work and network readiness are still partly serialized
++
++`selected_track.gd` and `selected_event.gd` now prepare the visible exact Free Race/Daily/Rivalry selection. `selected_track_preparation.run()` builds roads, support and gates in its worker. This is already useful and should be retained.
++
++But `race.gd:run_start_race()` awaits the selected worker before starting the Daily limits read. The same wait also precedes the ordinary ticket/road-overlap section. An unfinished selected job can therefore delay an otherwise independent request. The existing road/ticket overlap is valuable, but does not resolve every selected-job case.
++
++A better structure is one App-owned prepared-race transaction with separate milestones: validated document/identity, CPU layout/road arrays, immutable presentation resources, native graphics readiness, and server authorization. Start independent work as soon as its exact prerequisites exist; join those milestones only before installing/enabling the race. A metadata-only track must first have a trustworthy identity, and every late result must revalidate account, navigation, car, day/week and revision. Never speculate a limited-attempt ticket while browsing. Daily read overlap is a scheduling proposal; no live latency saving was measured here.
++
++### 5. Night needs a distinct optimization strategy
++
++Night re-entry still spends **481 ms** in world staging and **586 ms** in effects/final preparation, with 13 world batches; Pine uses one batch and 34 ms. The shared registry deliberately requires exact mesh/pose/bounds and normal full captures for local lights. Its representative staging cannot safely certify arbitrary point/spot-light combinations.
++
++Investigate retaining exact Night presentation resources and light influence sets, then preparing the actual remaining contexts. Broadening receipts just to reduce batch counts risks first-use stalls later in the lap and incorrect light coverage. Keep clean/weathered finishes, headlamps, actual spatial light combinations and final complete draws.
++
++## Recommended implementation order and alternatives
++
++| Work | What it can improve | Appearance/correctness condition |
++| --- | --- | --- |
++| Plan cache eviction by cost and shared bytes | Re-entry, particularly the reproduced Winter effect churn | Keep the 64 MiB allowance and existing pressure/lifetime rules; no change to live effects |
++| Optimize/cache exact checkpoint-layout preparation | Roughly five seconds of currently measured CPU work when no ready layout exists | Byte-identical layout, complete gate/shortcut/replay controls; unchanged competitive identities |
++| Expose preparation milestones and overlap independent reads | Tap-to-ready time when selection preparation is incomplete | Existing identity, expiry, cancellation and attempt boundaries |
++| Extend local prepared content to final scenery chunks | Repeated CPU generation, spatial partitioning, decode/upload work | Exact geometry, encoded normals, materials, transforms and LOD behavior; bounded artifacts and fallback |
++| Target expensive graphics variants or a supported native preparation service | The largest remaining first-use render stalls | Native exact-image/first-lap proof and bounded workspace; driver first draw remains a separate gate |
++
++The strongest longer-term alternative is an **exact compiled-content pipeline**: prepare immutable track presentation chunks and CPU layout artifacts during authoring/build or a local cache fill; runtime decodes/uploads those artifacts, attaches fresh mutable state, and completes device-specific graphics preparation. Extend the existing road-array, prepared-car and world-cache mechanisms rather than introduce another unrelated cache. Official bundled tracks can be prepared during a build; downloaded tracks need validated numeric artifacts, bounded local storage and the existing procedural fallback. This will not remove shader compilation on a new device.
++
++A full retained Game is less attractive as the first change: retries already do it, while cross-event reuse adds reset/isolation complexity for damage, ghosts, weather, audio and authorization. Streaming scenery after the countdown risks visible pop-in and first-lap stalls. Replacing the loading screen with an image only changes perceived readiness. Neither is a demonstrated solution to the measured work.
++
++A custom native background compiler remains research. The earlier exact-image prototype imported 192 programs, yet retained 221–235 ms first draws and required 162 MiB compiler memory. It did not meet the existing responsiveness/memory gates. Ordinary worker threads also cannot safely own arbitrary active scene/GPU operations. [Godot threading constraints](https://docs.godotengine.org/en/4.7/tutorials/performance/thread_safe_apis.html). Threaded resource reads can help prepared binary content, but fetching before completion still blocks; the project's earlier threaded GDScript experiment already had lifecycle failures. [Godot background loading](https://docs.godotengine.org/en/4.7/tutorials/io/background_loading.html).
++
++## Reproduction, scope and acceptance
++
++Raw logs, source receipts, the frozen-project manifest and derived tables are in [the evidence directory](evidence/race-loading-reaudit-2026-11-04/) and [summary.json](evidence/race-loading-reaudit-2026-11-04/summary.json). Run serially with new labels to preserve receipts:
++
++```powershell
++python docs/evidence/race-loading-reaudit-2026-11-04/prepare_probe.py
++python docs/evidence/race-loading-reaudit-2026-11-04/freeze_project.py
++python docs/evidence/race-loading-reaudit-2026-11-04/run_review.py frozen-compat-1 res://tests/review_race_loading_2026_11_04.gd --frozen --themes=pine,winter,desert,storm,night_city --cycles=2 --timeout 600
++python docs/evidence/race-loading-reaudit-2026-11-04/run_review.py frozen-cpu res://tests/review_race_cpu_2026_11_04.gd --frozen --headless --timeout 150
++python docs/evidence/race-loading-reaudit-2026-11-04/run_review.py frozen-mobile-1 res://tests/review_race_loading_2026_11_04.gd --frozen --renderer mobile --themes=pine,winter,desert,storm,night_city --cycles=2 --timeout 600
++python docs/evidence/race-loading-reaudit-2026-11-04/run_review.py frozen-gate-stages res://tests/review_gate_stages_2026_11_04.gd --frozen --headless --timeout 90
++python docs/evidence/race-loading-reaudit-2026-11-04/run_review.py frozen-compat-dwell res://tests/review_race_loading_2026_11_04.gd --frozen --themes=pine,winter --cycles=3 --dwell-ms=1500 --timeout 360
++python docs/evidence/race-loading-reaudit-2026-11-04/run_review.py frozen-feature-resources res://tests/review_app_resources_2026_11_02.gd --frozen res://core/app.tscn res://core/features/race.gd res://core/game.tscn --timeout 90
++python docs/evidence/race-loading-reaudit-2026-11-04/summarize.py
++python docs/evidence/race-loading-reaudit-2026-11-04/checkpoint.py
++```
++
++The initial live-workspace Compatibility run has 36/0 checks, but two files changed during it (`prepared_world_cache.gd` and a concurrent Winter test); it is supporting evidence only. Frozen native runs preserve completed preparation, tick zero, all 360 countdown ticks, five laps, cover release and actual retry identity/state. This investigation does not drive a first lap or establish new image equivalence. The existing first-lap and exact-pixel controls remain requirements for implementations, not newly claimed passes.
++
++The three frozen native race runs complete **26 entries and 26 retries**, with **226 checks / 0 failures**. The CPU probe adds **10/0** and the exact-layout instrumentation control **1/0**, for **237/0**. The resource-only observation adds no assertion count. Diagnostic additions to the frozen project between completed runs are recorded in its manifest; each run has no source/scene changes during execution. No performance threshold or production invariant was relaxed.
++
++All engine logs retain the Windows root-certificate-store environment error; no backend URL is configured. Diagnostic-only additions and repository tracking/report updates form this task. The task-only checkpoint excludes concurrent runtime work and does not write the main index. No physical-device query/test, APK/export, owner-save/process change, real authentication, live/backend request, deployment or quality reduction was performed.
++
++Before shipping any proposed optimization: matched first-use and warm controls, identical final visuals across cars/themes/finishes and all lights, real opening laps/countdown, cancellation/account/revision races, memory pressure, packaged loading and representative Android memory/thermal/input measurements remain necessary. No proposed saving is claimed as implemented.
+diff --git a/docs/evidence/race-loading-reaudit-2026-11-04/run_review.py b/docs/evidence/race-loading-reaudit-2026-11-04/run_review.py
+new file mode 100644
+--- /dev/null
++++ b/docs/evidence/race-loading-reaudit-2026-11-04/run_review.py
+@@ -0,0 +1,58 @@
++"""Bounded, offline native loading review with private profiles and source receipts."""
++import argparse
++import hashlib
++import json
++import os
++from pathlib import Path
++import subprocess
++import sys
++import time
++
++p = argparse.ArgumentParser()
++p.add_argument('label')
++p.add_argument('script')
++p.add_argument('--frozen', action='store_true')
++p.add_argument('--profile', default='')
++p.add_argument('--renderer', default='gl_compatibility')
++p.add_argument('--timeout', type=int, default=360)
++p.add_argument('--headless', action='store_true')
++args, extra = p.parse_known_args()
++evidence = Path(__file__).resolve().parent
++root = evidence.parents[2]
++project = Path(json.loads((evidence/'frozen-project.json').read_text())['project']) if args.frozen else root/'game'
++profile = root / 'build/race-loading-reaudit-20261104' / (args.profile or args.label)
++profile.mkdir(parents=True, exist_ok=True)
++config = profile / 'Circuit01Lab/backend.cfg'
++config.parent.mkdir(exist_ok=True)
++config.write_text('[backend]\nurl=""\n', encoding='utf-8')
++env = os.environ.copy()
++env.update(APPDATA=str(profile), BMT_API_URL='', BMT_LOADING_OUTPUT=str(evidence / (args.label+'.json')))
++command = [sys.executable, str(root / 'scripts/run_no_crash_dialog.py'), '--',
++    'C:/apps/Godot 4.7.2/Godot_v4.7.2-stable_win64_console.exe', '--path', str(project),
++    '--audio-driver', 'Dummy', '--rendering-method', args.renderer,
++    *(['--headless'] if args.headless else []), '--script', args.script, '--', *extra]
++
++def hashes():
++    paths = [path for path in project.rglob('*') if path.is_file()
++             and '.godot' not in path.parts and path.suffix in ('.gd', '.gdshader', '.gdshaderinc', '.tscn', '.scn')]
++    paths.append(project/'project.godot')
++    return {str(path.relative_to(project)).replace('\\','/'): hashlib.sha256(path.read_bytes()).hexdigest() for path in paths}
++
++receipt = dict(command=command, profile=str(profile), before=hashes())
++began = time.monotonic()
++with (evidence/(args.label+'.log')).open('w', encoding='utf-8') as log:
++    process = subprocess.Popen(command, env=env, cwd=root, stdout=log, stderr=subprocess.STDOUT)
++    receipt['owned_process_id'] = process.pid
++    (evidence/(args.label+'-running.json')).write_text(json.dumps(receipt, indent=2), encoding='utf-8')
++    try:
++        receipt['exit_code'] = process.wait(timeout=args.timeout)
++    except subprocess.TimeoutExpired:
++        subprocess.run(['taskkill','/PID',str(process.pid),'/T','/F'], capture_output=True, check=False)
++        process.wait(timeout=20)
++        receipt['exit_code'] = 124
++receipt.update(elapsed_seconds=time.monotonic()-began, after=hashes())
++receipt['changed_sources'] = [path for path in receipt['before'].keys() | receipt['after'].keys()
++                            if receipt['before'].get(path) != receipt['after'].get(path)]
++(evidence/(args.label+'-receipt.json')).write_text(json.dumps(receipt, indent=2), encoding='utf-8')
++print(json.dumps({key: receipt[key] for key in ('exit_code','elapsed_seconds','changed_sources')}))
++sys.exit(receipt['exit_code'])
+diff --git a/docs/evidence/race-loading-reaudit-2026-11-04/summarize.py b/docs/evidence/race-loading-reaudit-2026-11-04/summarize.py
+new file mode 100644
+--- /dev/null
++++ b/docs/evidence/race-loading-reaudit-2026-11-04/summarize.py
+@@ -0,0 +1,47 @@
++"""Derive stage tables and keep every attempt's status/source limitations."""
++import json
++from pathlib import Path
++
++EVIDENCE = Path(__file__).resolve().parent
++summary = {'runs': {}, 'race_rows': [], 'cpu_rows': []}
++pairs = {
++    'roads_ms': ('roads_begin', 'roads_end'),
++    'game_ms': ('game_begin', 'game_end'),
++    'world_ms': ('graphics_begin', 'graphics_end'),
++    'effects_ms': ('effects_begin', 'effects_end'),
++}
++for receipt_path in sorted(EVIDENCE.glob('*-receipt.json')):
++    label = receipt_path.name.removesuffix('-receipt.json')
++    receipt = json.loads(receipt_path.read_text(encoding='utf-8'))
++    result_path = EVIDENCE / (label + '.json')
++    result = json.loads(result_path.read_text(encoding='utf-8')) if result_path.exists() else {}
++    log = (EVIDENCE / (label + '.log')).read_text(encoding='utf-8', errors='replace')
++    summary['runs'][label] = {
++        'exit_code': receipt['exit_code'],
++        'elapsed_seconds': receipt['elapsed_seconds'],
++        'changed_sources': receipt['changed_sources'],
++        'checks': result.get('checks', 0), 'failures': result.get('failures', 0),
++        'diagnostics': [line for line in log.splitlines() if any(word in line for word in ('ERROR:', 'WARNING:', 'SCRIPT ERROR:'))],
++    }
++    for row in result.get('samples', []):
++        marks = {mark['name']: mark['us'] for mark in row['marks']}
++        values = {name: round((marks[end] - marks[start]) / 1000, 3) for name, (start, end) in pairs.items()}
++        summary['race_rows'].append({
++            'run': label, **{key: row.get(key) for key in (
++                'theme', 'cycle', 'wall_ms', 'max_frame_ms', 'retry_ms',
++                'draw_groups', 'world_cache_bytes', 'effect_counts')}, **values,
++        })
++    if label == 'frozen-cpu':
++        summary['cpu_rows'] = result['rows']
++    if label == 'frozen-gate-stages':
++        summary['gate_stages'] = result
++    if label == 'frozen-feature-resources':
++        summary['feature_resources'] = result['rows']
++accepted = [label for label, run in summary['runs'].items()
++            if label.startswith('frozen-') and run['exit_code'] == 0
++            and not run['changed_sources'] and run['failures'] == 0]
++summary['stable_successful_runs'] = accepted
++summary['stable_checks'] = sum(summary['runs'][label]['checks'] for label in accepted)
++summary['stable_failures'] = sum(summary['runs'][label]['failures'] for label in accepted)
++(EVIDENCE / 'summary.json').write_text(json.dumps(summary, indent=2) + '\n', encoding='utf-8')
++print(json.dumps({'runs': summary['runs'], 'stable_checks': summary['stable_checks']}, indent=2))
+diff --git a/docs/evidence/race-loading-reaudit-2026-11-04/checkpoint.py b/docs/evidence/race-loading-reaudit-2026-11-04/checkpoint.py
+new file mode 100644
+--- /dev/null
++++ b/docs/evidence/race-loading-reaudit-2026-11-04/checkpoint.py
+@@ -0,0 +1,61 @@
++"""Check a task-only review patch in an owned directory; never touch main index."""
++import difflib
++import hashlib
++import json
++from pathlib import Path
++import subprocess
++import time
++
++evidence = Path(__file__).resolve().parent
++root = evidence.parents[2]
++changed = ['AGENTS.md','DEVELOPMENT_STATUS.md']
++added = ['game/tests/'+name for name in (
++    'review_race_loading_2026_11_04.gd','review_race_cpu_2026_11_04.gd',
++    'review_gate_stages_2026_11_04.gd')]
++added += ['docs/RACE_LOADING_REAUDIT_2026_11_04.md']
++added += ['docs/evidence/race-loading-reaudit-2026-11-04/'+name for name in ('run_review.py','summarize.py','checkpoint.py','prepare_probe.py','freeze_project.py','summary.json')]
++marker = '<!-- RACE-LOADING-REAUDIT-20261104 -->'
++end_marker = '<!-- /RACE-LOADING-REAUDIT-20261104 -->'
++before, after, parts = {}, {}, []
++for path in changed+added:
++    new = (root/path).read_bytes().replace(b'\r\n',b'\n')
++    old = b''
++    if path in changed:
++        # Synthesize the task base by removing only our unique marker block.
++        # Concurrent tracker updates therefore appear identically on both sides.
++        text = new.decode('utf-8')
++        assert text.count(marker)==1 and text.count(end_marker)==1
++        start = text.index(marker)
++        end = text.index(end_marker)+len(end_marker)
++        if text[end:end+2]=='\n\n': end += 2
++        elif text[end:end+1]=='\n': end += 1
++        old = (text[:start]+text[end:]).encode('utf-8')
++    before[path], after[path] = old, new
++    parts.append(f'diff --git a/{path} b/{path}\n')
++    if path in added: parts.append('new file mode 100644\n')
++    parts.extend(difflib.unified_diff(old.decode().splitlines(keepends=True),new.decode().splitlines(keepends=True),
++        fromfile='a/'+path if path in changed else '/dev/null',tofile='b/'+path))
++patch = evidence/'task.patch'
++patch.write_bytes(''.join(parts).encode())
++owned = root/'build/race-loading-reaudit-20261104'/('checkpoint-'+str(time.time_ns()))
++owned.mkdir(parents=True)
++assert owned.resolve().is_relative_to((root/'build/race-loading-reaudit-20261104').resolve())
++for path in changed:
++    target = owned/path
++    target.parent.mkdir(parents=True,exist_ok=True)
++    target.write_bytes(before[path])
++commands = []
++for arguments in (('--check',),(),('--reverse','--check'),('--reverse',)):
++    command = ['git','apply','--directory='+owned.relative_to(root).as_posix(),*arguments,str(patch)]
++    result = subprocess.run(command,cwd=root,capture_output=True,text=True)
++    commands.append(dict(command=command,exit_code=result.returncode,output=result.stdout+result.stderr))
++    assert result.returncode==0,result.stderr
++    if arguments==():
++        assert all((owned/path).read_bytes().replace(b'\r\n',b'\n')==after[path] for path in changed+added)
++assert all((owned/path).read_bytes().replace(b'\r\n',b'\n')==before[path] for path in changed)
++assert all(not (owned/path).exists() for path in added)
++report = dict(files=changed+added,forward_content_exact=True,reverse_content_exact=True,main_index_written=False,
++    patch_sha256=hashlib.sha256(patch.read_bytes()).hexdigest(),commands=commands,
++    source_sha256={path:hashlib.sha256(after[path]).hexdigest() for path in changed+added})
++(evidence/'checkpoint.json').write_text(json.dumps(report,indent=2)+'\n',encoding='utf-8')
++print('Task-only patch forward/reverse/content checks pass; main index unchanged.')
+diff --git a/docs/evidence/race-loading-reaudit-2026-11-04/prepare_probe.py b/docs/evidence/race-loading-reaudit-2026-11-04/prepare_probe.py
+new file mode 100644
+--- /dev/null
++++ b/docs/evidence/race-loading-reaudit-2026-11-04/prepare_probe.py
+@@ -0,0 +1,82 @@
++"""Create a timestamp-only adapter for the extracted App race controller."""
++from pathlib import Path
++
++ROOT = Path(__file__).resolve().parents[3]
++old = (ROOT / 'game/tests/review_race_loading_2026_11_02.gd').read_text(encoding='utf-8')
++start = old.index('func instrumented_app()')
++end = old.index('\nfunc verify(', start)
++adapter = '''var race_probe: GDScript
++
++func instrumented_app() -> GDScript:
++	var source := FileAccess.get_file_as_string("res://core/features/race.gd").replace("\\r\\n","\\n")
++	var start := source.find("func run_start_race(app:")
++	var end := source.find("\\nfunc run_race_installation_current(",start)
++	if start < 0 or end <= start: push_error("Missing controller race function"); return null
++	var body := source.substr(start,end-start)
++	var hooks := [
++		["\\tif not await app._await_selected_preparation(track,","selected_wait_begin"],
++		["\\tvar daily_rules: RefCounted","selected_wait_end"],
++		["\\tvar prepared_roads: Dictionary = {}","roads_begin"],
++		["\\tapp.returning_to_editor = from_editor","roads_end"],
++		["\\tapp.add_child(app.game)\\n\\tvar prepared_game: Node = app.game","game_begin"],
++		["\\tif is_instance_valid(prepared_game.world_render_preparation):","game_end"],
++		["\\t\\tif not await prepared_game.world_render_preparation.prepare(","graphics_begin"],
++		["\\tapp.game.opponent_ghost =","graphics_end"],
++		["\\tvar preparation_started: int = Time.get_ticks_usec()","effects_begin"],
++		["\\tvar preparation_ms: float = (Time.get_ticks_usec() - preparation_started)","effects_end"],
++		["\\tapp._close_race_loading(loading_id)\\n\\n","race_end"],
++	]
++	for hook: Array in hooks:
++		var needle: String = hook[0]
++		if body.count(needle) != 1: push_error("Review anchor changed: "+str(hook[1])); return null
++		var indent := "\\t\\t" if needle.begins_with("\\t\\t") else "\\t"
++		body = body.replace(needle,indent+"app._load_probe_mark(\\\""+str(hook[1])+"\\\")\\n"+needle)
++	source = source.substr(0,start)+body+source.substr(end)
++	race_probe = GDScript.new()
++	race_probe.source_code = source
++	if race_probe.reload() != OK: push_error("Review controller failed to compile"); return null
++	source = FileAccess.get_file_as_string(APP_PATH).replace("\\r\\n","\\n")
++	var needle := "var resource: Resource = load(path)"
++	if source.count(needle) != 1: push_error("Feature load anchor changed"); return null
++	source = source.replace(needle,"var resource: Resource = _load_probe_race if path == \\\"res://core/features/race.gd\\\" else load(path)")
++	source += "\\nvar _load_probe_race: GDScript\\nvar _load_probe_marks: Array = []\\nfunc _load_probe_mark(label: String) -> void:\\n\\t_load_probe_marks.append({\\\"name\\\":label,\\\"us\\\":Time.get_ticks_usec()})\\n"
++	var script := GDScript.new()
++	script.source_code = source
++	if script.reload() != OK: push_error("Review App failed to compile"); return null
++	return script
++'''
++new = old[:start] + adapter + old[end:]
++new = new.replace('app = script.new()', 'app = script.new()\n\tapp._load_probe_race = race_probe')
++new = new.replace('"world_cache_entries":WORLDS.entries.size()', '"feature_load_ms":app.feature_load_ms.duplicate(true),"world_cache_entries":WORLDS.entries.size()')
++new = new.replace('var last_cache_state: Array = []', 'var last_cache_state: Array = []\nvar last_stage: String = ""\nvar stages: Array = []')
++new = new.replace('var state: Array = [WORLDS.entries.size(),WORLDS.bytes_used(),app.editor_memory.trims]', '''var phase: String = str(app._load_probe_marks.back().name) if not app._load_probe_marks.is_empty() else "menu"
++	if is_instance_valid(app.game):
++		var world: Node = app.game.get_node_or_null("World")
++		if world != null:
++			for child: Node in world.get_children():
++				if child is NativeTrackVisual: phase += ":"+child.build_stage; break
++	if current_case+phase != last_stage:
++		last_stage = current_case+phase
++		var mark := {"case":current_case,"phase":phase,"us":Time.get_ticks_usec()}
++		stages.append(mark)
++		print("REVIEW_STAGE ",JSON.stringify(mark))
++	var effect_bytes: int = preload("res://vehicle/effect_render_preparation.gd").cache_bytes(app)
++	var state: Array = [WORLDS.entries.size(),WORLDS.bytes_used(),app.editor_memory.trims,effect_bytes]''')
++new = new.replace('"telemetry":app.editor_memory.telemetry.duplicate(true)', '"telemetry":app.editor_memory.telemetry.duplicate(true),"instant_retained":preload("res://editor/editor_memory.gd").retained(app)')
++new = new.replace('"cache_events":cache_events}', '"cache_events":cache_events,"stages":stages}')
++new = new.replace('var cycles: int = 3', 'var cycles: int = 3\n\tvar dwell_ms: int = 0')
++new = new.replace('for argument: String in OS.get_cmdline_user_args():', 'for argument: String in OS.get_cmdline_user_args():\n\t\tif argument.begins_with("--dwell-ms="): dwell_ms = clampi(argument.trim_prefix("--dwell-ms=").to_int(),0,3000)')
++new = new.replace('app._leave_race()\n\t\t\tawait process_frame', 'app._leave_race()\n\t\t\tawait process_frame\n\t\t\tif dwell_ms > 0: await create_timer(dwell_ms/1000.0).timeout')
++new = new.replace('"cache_events":cache_events,"stages":stages}', '"cache_events":cache_events,"stages":stages,"dwell_ms":dwell_ms}')
++(ROOT / 'game/tests/review_race_loading_2026_11_04.gd').write_text(new, encoding='utf-8')
++
++runner = (ROOT / 'docs/evidence/loading-review-2026-11-04/run_review.py').read_text(encoding='utf-8')
++runner = runner.replace('build/loading-review-20261104', 'build/race-loading-reaudit-20261104')
++runner = runner.replace("and path.suffix in ('.gd', '.gdshader', '.gdshaderinc', '.tscn')", "and path.suffix in ('.gd', '.gdshader', '.gdshaderinc', '.tscn', '.scn')")
++runner = runner.replace("p.add_argument('--profile'", "p.add_argument('--frozen', action='store_true')\np.add_argument('--profile'")
++runner = runner.replace("root = evidence.parents[2]", "root = evidence.parents[2]\nproject = Path(json.loads((evidence/'frozen-project.json').read_text())['project']) if args.frozen else root/'game'")
++runner = runner.replace("str(root/'game')", "str(project)").replace("(root/'game').rglob", "project.rglob").replace("paths.append(root/'game/project.godot')", "paths.append(project/'project.godot')").replace("str(path.relative_to(root))", "str(path.relative_to(project))")
++(Path(__file__).parent / 'run_review.py').write_text(runner, encoding='utf-8')
++freeze = (ROOT / 'docs/evidence/startup-shell-2026-11-04/freeze_project.py').read_text(encoding='utf-8')
++freeze = freeze.replace('build/startup-shell-20261104', 'build/race-loading-reaudit-20261104')
++(Path(__file__).parent / 'freeze_project.py').write_text(freeze, encoding='utf-8')
+diff --git a/docs/evidence/race-loading-reaudit-2026-11-04/freeze_project.py b/docs/evidence/race-loading-reaudit-2026-11-04/freeze_project.py
+new file mode 100644
+--- /dev/null
++++ b/docs/evidence/race-loading-reaudit-2026-11-04/freeze_project.py
+@@ -0,0 +1,62 @@
++"""Freeze mutable code/prepared assets; share unchanged imported/static content.
++
++All copies/junctions are task-owned. No deletion or mutation of shared assets.
++Both control and candidate resolve res:// against this same frozen project.
++"""
++import hashlib
++import json
++from pathlib import Path
++import shutil
++import subprocess
++import time
++
++evidence = Path(__file__).resolve().parent
++root = evidence.parents[2]
++owned = root/'build/race-loading-reaudit-20261104'/('frozen-'+str(time.time_ns()))
++game = owned/'game'
++game.mkdir(parents=True)
++copied = []
++shared = []
++
++def copy_tree(source,destination):
++    if source.is_file():
++        destination.parent.mkdir(parents=True,exist_ok=True)
++        shutil.copyfile(source,destination)
++        copied.append(destination)
++    else:
++        destination.mkdir(parents=True,exist_ok=True)
++        for path in source.iterdir(): copy_tree(path,destination/path.name)
++
++def junction(source,destination):
++    assert source.resolve().is_relative_to(root.resolve())
++    assert destination.absolute().is_relative_to(owned.absolute())
++    # These are fixed local paths, safely quoted as PowerShell literals.
++    command = 'New-Item -ItemType Junction -Path '+"'"+str(destination).replace("'","''")+"' -Target '"+str(source).replace("'","''")+"' | Out-Null"
++    subprocess.run(['powershell','-NoProfile','-Command',command],check=True)
++    shared.append(dict(source=str(source),path=str(destination)))
++
++for path in (root/'game').iterdir():
++    if path.name in ('.godot','assets','android'): continue
++    copy_tree(path,game/path.name)
++(game/'assets').mkdir()
++for path in (root/'game/assets').iterdir():
++    if path.name in ('garage','menu'): copy_tree(path,game/'assets'/path.name)
++    elif path.name == 'vehicles':
++        (game/'assets/vehicles').mkdir()
++        for bank in path.iterdir():
++            destination = game/'assets/vehicles'/bank.name
++            if bank.name in ('modular_car_bases_v1','modular_kits_v1') or bank.is_file(): copy_tree(bank,destination)
++            else: junction(bank,destination)
++    elif path.is_dir(): junction(path,game/'assets'/path.name)
++    else: copy_tree(path,game/'assets'/path.name)
++(game/'.godot').mkdir()
++for name in ('global_script_class_cache.cfg','uid_cache.bin','extension_list.cfg'):
++    source = root/'game/.godot'/name
++    if source.exists(): copy_tree(source,game/'.godot'/name)
++junction(root/'game/.godot/imported',game/'.godot/imported')
++for name in ('docs','native'):
++    if (root/name).is_dir(): junction(root/name,owned/name)
++manifest = {path.relative_to(owned).as_posix():hashlib.sha256(path.read_bytes()).hexdigest() for path in copied}
++report = dict(project=str(game),copied_files=len(copied),copied_sha256=manifest,shared=shared)
++(evidence/'frozen-project.json').write_text(json.dumps(report,indent=2)+'\n',encoding='utf-8')
++print(json.dumps({'project':str(game),'copied_files':len(copied),'shared_directories':len(shared)}))
+diff --git a/docs/evidence/race-loading-reaudit-2026-11-04/summary.json b/docs/evidence/race-loading-reaudit-2026-11-04/summary.json
+new file mode 100644
+--- /dev/null
++++ b/docs/evidence/race-loading-reaudit-2026-11-04/summary.json
+@@ -0,0 +1,855 @@
++{
++  "runs": {
++    "compat-pine-winter-1": {
++      "exit_code": 0,
++      "elapsed_seconds": 85.36000000000058,
++      "changed_sources": [
++        "game/track/prepared_world_cache.gd",
++        "game/tests/test_retained_winter_surfaces.gd"
++      ],
++      "checks": 36,
++      "failures": 0,
++      "diagnostics": [
++        "ERROR: Failed to read the root certificate store."
++      ]
++    },
++    "frozen-compat-1": {
++      "exit_code": 0,
++      "elapsed_seconds": 156.64100000000326,
++      "changed_sources": [],
++      "checks": 87,
++      "failures": 0,
++      "diagnostics": [
++        "ERROR: Failed to read the root certificate store."
++      ]
++    },
++    "frozen-compat-dwell": {
++      "exit_code": 0,
++      "elapsed_seconds": 112.04699999999139,
++      "changed_sources": [],
++      "checks": 52,
++      "failures": 0,
++      "diagnostics": [
++        "ERROR: Failed to read the root certificate store."
++      ]
++    },
++    "frozen-cpu": {
++      "exit_code": 0,
++      "elapsed_seconds": 32.26499999999942,
++      "changed_sources": [],
++      "checks": 10,
++      "failures": 0,
++      "diagnostics": [
++        "ERROR: Failed to read the root certificate store."
++      ]
++    },
++    "frozen-feature-resources": {
++      "exit_code": 0,
++      "elapsed_seconds": 10.031999999991967,
++      "changed_sources": [],
++      "checks": 0,
++      "failures": 0,
++      "diagnostics": [
++        "ERROR: Failed to read the root certificate store."
++      ]
++    },
++    "frozen-gate-stages": {
++      "exit_code": 0,
++      "elapsed_seconds": 12.468999999997322,
++      "changed_sources": [],
++      "checks": 1,
++      "failures": 0,
++      "diagnostics": [
++        "ERROR: Failed to read the root certificate store."
++      ]
++    },
++    "frozen-mobile-1": {
++      "exit_code": 0,
++      "elapsed_seconds": 106.92200000000594,
++      "changed_sources": [],
++      "checks": 87,
++      "failures": 0,
++      "diagnostics": [
++        "ERROR: Failed to read the root certificate store."
++      ]
++    }
++  },
++  "race_rows": [
++    {
++      "run": "compat-pine-winter-1",
++      "theme": "pine",
++      "cycle": 0,
++      "wall_ms": 47804.312,
++      "max_frame_ms": 5447.661,
++      "retry_ms": 11.273,
++      "draw_groups": 26,
++      "world_cache_bytes": 57273848,
++      "effect_counts": {
++        "batches": 0,
++        "canvas": 1,
++        "damage_meshes": 0,
++        "particles": 20,
++        "reused": 0
++      },
++      "roads_ms": 4479.055,
++      "game_ms": 7723.736,
++      "world_ms": 27082.758,
++      "effects_ms": 7269.408
++    },
++    {
++      "run": "compat-pine-winter-1",
++      "theme": "pine",
++      "cycle": 1,
++      "wall_ms": 468.788,
++      "max_frame_ms": 138.421,
++      "retry_ms": 11.838,
++      "draw_groups": 1,
++      "world_cache_bytes": 57273848,
++      "effect_counts": {
++        "batches": 0,
++        "canvas": 1,
++        "damage_meshes": 0,
++        "particles": 20,
++        "reused": 20
++      },
++      "roads_ms": 0.033,
++      "game_ms": 133.563,
++      "world_ms": 25.956,
++      "effects_ms": 220.545
++    },
++    {
++      "run": "compat-pine-winter-1",
++      "theme": "winter",
++      "cycle": 0,
++      "wall_ms": 22832.243,
++      "max_frame_ms": 2407.24,
++      "retry_ms": 12.129,
++      "draw_groups": 25,
++      "world_cache_bytes": 41266156,
++      "effect_counts": {
++        "batches": 3,
++        "canvas": 1,
++        "damage_meshes": 0,
++        "particles": 32,
++        "reused": 6
++      },
++      "roads_ms": 2779.883,
++      "game_ms": 6215.582,
++      "world_ms": 9715.023,
++      "effects_ms": 4066.539
++    },
++    {
++      "run": "compat-pine-winter-1",
++      "theme": "winter",
++      "cycle": 1,
++      "wall_ms": 1441.231,
++      "max_frame_ms": 180.892,
++      "retry_ms": 16.273,
++      "draw_groups": 1,
++      "world_cache_bytes": 41266156,
++      "effect_counts": {
++        "batches": 3,
++        "canvas": 1,
++        "damage_meshes": 0,
++        "particles": 32,
++        "reused": 0
++      },
++      "roads_ms": 0.024,
++      "game_ms": 266.081,
++      "world_ms": 27.036,
++      "effects_ms": 1036.921
++    },
++    {
++      "run": "frozen-compat-1",
++      "theme": "pine",
++      "cycle": 0,
++      "wall_ms": 43004.804,
++      "max_frame_ms": 5152.85,
++      "retry_ms": 13.083,
++      "draw_groups": 29,
++      "world_cache_bytes": 57273848,
++      "effect_counts": {
++        "batches": 0,
++        "canvas": 1,
++        "damage_meshes": 0,
++        "particles": 20,
++        "reused": 0
++      },
++      "roads_ms": 3718.325,
++      "game_ms": 7084.151,
++      "world_ms": 24144.228,
++      "effects_ms": 7137.162
++    },
++    {
++      "run": "frozen-compat-1",
++      "theme": "pine",
++      "cycle": 1,
++      "wall_ms": 532.617,
++      "max_frame_ms": 175.742,
++      "retry_ms": 11.478,
++      "draw_groups": 1,
++      "world_cache_bytes": 57273848,
++      "effect_counts": {
++        "batches": 0,
++        "canvas": 1,
++        "damage_meshes": 0,
++        "particles": 20,
++        "reused": 20
++      },
++      "roads_ms": 0.025,
++      "game_ms": 151.088,
++      "world_ms": 34.17,
++      "effects_ms": 257.764
++    },
++    {
++      "run": "frozen-compat-1",
++      "theme": "winter",
++      "cycle": 0,
++      "wall_ms": 22852.708,
++      "max_frame_ms": 2280.02,
++      "retry_ms": 11.198,
++      "draw_groups": 25,
++      "world_cache_bytes": 41266156,
++      "effect_counts": {
++        "batches": 3,
++        "canvas": 1,
++        "damage_meshes": 0,
++        "particles": 32,
++        "reused": 6
++      },
++      "roads_ms": 2778.282,
++      "game_ms": 6497.295,
++      "world_ms": 9717.798,
++      "effects_ms": 3792.047
++    },
++    {
++      "run": "frozen-compat-1",
++      "theme": "winter",
++      "cycle": 1,
++      "wall_ms": 1326.464,
++      "max_frame_ms": 164.014,
++      "retry_ms": 15.075,
++      "draw_groups": 1,
++      "world_cache_bytes": 41266156,
++      "effect_counts": {
++        "batches": 3,
++        "canvas": 1,
++        "damage_meshes": 0,
++        "particles": 32,
++        "reused": 0
++      },
++      "roads_ms": 0.032,
++      "game_ms": 206.159,
++      "world_ms": 22.511,
++      "effects_ms": 993.269
++    },
++    {
++      "run": "frozen-compat-1",
++      "theme": "desert",
++      "cycle": 0,
++      "wall_ms": 21775.517,
++      "max_frame_ms": 1650.028,
++      "retry_ms": 15.115,
++      "draw_groups": 16,
++      "world_cache_bytes": 53877536,
++      "effect_counts": {
++        "batches": 0,
++        "canvas": 1,
++        "damage_meshes": 0,
++        "particles": 20,
++        "reused": 20
++      },
++      "roads_ms": 7206.77,
++      "game_ms": 6604.368,
++      "world_ms": 7811.265,
++      "effects_ms": 99.19
++    },
++    {
++      "run": "frozen-compat-1",
++      "theme": "desert",
++      "cycle": 1,
++      "wall_ms": 1326.759,
++      "max_frame_ms": 155.885,
++      "retry_ms": 11.382,
++      "draw_groups": 1,
++      "world_cache_bytes": 53877536,
++      "effect_counts": {
++        "batches": 0,
++        "canvas": 1,
++        "damage_meshes": 0,
++        "particles": 20,
++        "reused": 0
++      },
++      "roads_ms": 0.033,
++      "game_ms": 498.589,
++      "world_ms": 46.486,
++      "effects_ms": 672.723
++    },
++    {
++      "run": "frozen-compat-1",
++      "theme": "storm",
++      "cycle": 0,
++      "wall_ms": 19155.153,
++      "max_frame_ms": 2150.625,
++      "retry_ms": 11.56,
++      "draw_groups": 26,
++      "world_cache_bytes": 40944200,
++      "effect_counts": {
++        "batches": 0,
++        "canvas": 1,
++        "damage_meshes": 0,
++        "particles": 24,
++        "reused": 6
++      },
++      "roads_ms": 2955.042,
++      "game_ms": 6155.393,
++      "world_ms": 8666.373,
++      "effects_ms": 1324.522
++    },
++    {
++      "run": "frozen-compat-1",
++      "theme": "storm",
++      "cycle": 1,
++      "wall_ms": 543.274,
++      "max_frame_ms": 156.785,
++      "retry_ms": 12.246,
++      "draw_groups": 2,
++      "world_cache_bytes": 40944200,
++      "effect_counts": {
++        "batches": 0,
++        "canvas": 1,
++        "damage_meshes": 0,
++        "particles": 24,
++        "reused": 24
++      },
++      "roads_ms": 0.027,
++      "game_ms": 144.188,
++      "world_ms": 40.622,
++      "effects_ms": 252.515
++    },
++    {
++      "run": "frozen-compat-1",
++      "theme": "night_city",
++      "cycle": 0,
++      "wall_ms": 30487.939,
++      "max_frame_ms": 3368.16,
++      "retry_ms": 11.403,
++      "draw_groups": 26,
++      "world_cache_bytes": 41185008,
++      "effect_counts": {
++        "batches": 0,
++        "canvas": 1,
++        "damage_meshes": 0,
++        "particles": 20,
++        "reused": 20
++      },
++      "roads_ms": 3079.982,
++      "game_ms": 6239.154,
++      "world_ms": 12958.234,
++      "effects_ms": 7802.222
++    },
++    {
++      "run": "frozen-compat-1",
++      "theme": "night_city",
++      "cycle": 1,
++      "wall_ms": 1479.733,
++      "max_frame_ms": 161.093,
++      "retry_ms": 17.99,
++      "draw_groups": 13,
++      "world_cache_bytes": 41185008,
++      "effect_counts": {
++        "batches": 0,
++        "canvas": 1,
++        "damage_meshes": 0,
++        "particles": 20,
++        "reused": 20
++      },
++      "roads_ms": 0.026,
++      "game_ms": 155.697,
++      "world_ms": 480.647,
++      "effects_ms": 586.454
++    },
++    {
++      "run": "frozen-compat-dwell",
++      "theme": "pine",
++      "cycle": 0,
++      "wall_ms": 45598.084,
++      "max_frame_ms": 5778.589,
++      "retry_ms": 19.705,
++      "draw_groups": 26,
++      "world_cache_bytes": 57273848,
++      "effect_counts": {
++        "batches": 0,
++        "canvas": 1,
++        "damage_meshes": 0,
++        "particles": 20,
++        "reused": 0
++      },
++      "roads_ms": 3811.128,
++      "game_ms": 7234.887,
++      "world_ms": 25890.357,
++      "effects_ms": 7783.171
++    },
++    {
++      "run": "frozen-compat-dwell",
++      "theme": "pine",
++      "cycle": 1,
++      "wall_ms": 1011.476,
++      "max_frame_ms": 127.703,
++      "retry_ms": 19.112,
++      "draw_groups": 1,
++      "world_cache_bytes": 57273848,
++      "effect_counts": {
++        "batches": 0,
++        "canvas": 1,
++        "damage_meshes": 0,
++        "particles": 20,
++        "reused": 6
++      },
++      "roads_ms": 0.027,
++      "game_ms": 157.266,
++      "world_ms": 26.876,
++      "effects_ms": 578.731
++    },
++    {
++      "run": "frozen-compat-dwell",
++      "theme": "pine",
++      "cycle": 2,
++      "wall_ms": 862.245,
++      "max_frame_ms": 139.626,
++      "retry_ms": 19.705,
++      "draw_groups": 1,
++      "world_cache_bytes": 57273848,
++      "effect_counts": {
++        "batches": 0,
++        "canvas": 1,
++        "damage_meshes": 0,
++        "particles": 20,
++        "reused": 6
++      },
++      "roads_ms": 0.025,
++      "game_ms": 176.201,
++      "world_ms": 25.922,
++      "effects_ms": 548.097
++    },
++    {
++      "run": "frozen-compat-dwell",
++      "theme": "winter",
++      "cycle": 0,
++      "wall_ms": 26804.473,
++      "max_frame_ms": 2578.418,
++      "retry_ms": 19.164,
++      "draw_groups": 25,
++      "world_cache_bytes": 41266156,
++      "effect_counts": {
++        "batches": 3,
++        "canvas": 1,
++        "damage_meshes": 0,
++        "particles": 32,
++        "reused": 6
++      },
++      "roads_ms": 2812.995,
++      "game_ms": 7316.567,
++      "world_ms": 10908.728,
++      "effects_ms": 4331.787
++    },
++    {
++      "run": "frozen-compat-dwell",
++      "theme": "winter",
++      "cycle": 1,
++      "wall_ms": 1472.06,
++      "max_frame_ms": 181.313,
++      "retry_ms": 18.9,
++      "draw_groups": 1,
++      "world_cache_bytes": 41266156,
++      "effect_counts": {
++        "batches": 3,
++        "canvas": 1,
++        "damage_meshes": 0,
++        "particles": 32,
++        "reused": 0
++      },
++      "roads_ms": 0.043,
++      "game_ms": 280.732,
++      "world_ms": 30.478,
++      "effects_ms": 1040.372
++    },
++    {
++      "run": "frozen-compat-dwell",
++      "theme": "winter",
++      "cycle": 2,
++      "wall_ms": 797.889,
++      "max_frame_ms": 162.615,
++      "retry_ms": 17.509,
++      "draw_groups": 1,
++      "world_cache_bytes": 41266156,
++      "effect_counts": {
++        "batches": 3,
++        "canvas": 1,
++        "damage_meshes": 0,
++        "particles": 32,
++        "reused": 32
++      },
++      "roads_ms": 0.034,
++      "game_ms": 262.064,
++      "world_ms": 31.342,
++      "effects_ms": 370.707
++    },
++    {
++      "run": "frozen-mobile-1",
++      "theme": "pine",
++      "cycle": 0,
++      "wall_ms": 22813.436,
++      "max_frame_ms": 4178.774,
++      "retry_ms": 12.146,
++      "draw_groups": 17,
++      "world_cache_bytes": 57273848,
++      "effect_counts": {
++        "batches": 0,
++        "canvas": 1,
++        "damage_meshes": 0,
++        "particles": 20,
++        "reused": 0
++      },
++      "roads_ms": 4398.185,
++      "game_ms": 13704.005,
++      "world_ms": 1586.282,
++      "effects_ms": 1952.277
++    },
++    {
++      "run": "frozen-mobile-1",
++      "theme": "pine",
++      "cycle": 1,
++      "wall_ms": 769.441,
++      "max_frame_ms": 306.065,
++      "retry_ms": 10.924,
++      "draw_groups": 1,
++      "world_cache_bytes": 57273848,
++      "effect_counts": {
++        "batches": 0,
++        "canvas": 1,
++        "damage_meshes": 0,
++        "particles": 20,
++        "reused": 20
++      },
++      "roads_ms": 0.034,
++      "game_ms": 496.762,
++      "world_ms": 23.341,
++      "effects_ms": 90.591
++    },
++    {
++      "run": "frozen-mobile-1",
++      "theme": "winter",
++      "cycle": 0,
++      "wall_ms": 13915.896,
++      "max_frame_ms": 2187.552,
++      "retry_ms": 20.886,
++      "draw_groups": 12,
++      "world_cache_bytes": 41266156,
++      "effect_counts": {
++        "batches": 3,
++        "canvas": 1,
++        "damage_meshes": 0,
++        "particles": 32,
++        "reused": 6
++      },
++      "roads_ms": 2971.111,
++      "game_ms": 7808.743,
++      "world_ms": 2621.744,
++      "effects_ms": 472.399
++    },
++    {
++      "run": "frozen-mobile-1",
++      "theme": "winter",
++      "cycle": 1,
++      "wall_ms": 2288.576,
++      "max_frame_ms": 169.339,
++      "retry_ms": 14.357,
++      "draw_groups": 1,
++      "world_cache_bytes": 41266156,
++      "effect_counts": {
++        "batches": 3,
++        "canvas": 1,
++        "damage_meshes": 0,
++        "particles": 32,
++        "reused": 0
++      },
++      "roads_ms": 0.024,
++      "game_ms": 1679.936,
++      "world_ms": 23.926,
++      "effects_ms": 546.632
++    },
++    {
++      "run": "frozen-mobile-1",
++      "theme": "desert",
++      "cycle": 0,
++      "wall_ms": 18692.811,
++      "max_frame_ms": 2111.096,
++      "retry_ms": 16.843,
++      "draw_groups": 11,
++      "world_cache_bytes": 53877536,
++      "effect_counts": {
++        "batches": 0,
++        "canvas": 1,
++        "damage_meshes": 0,
++        "particles": 20,
++        "reused": 20
++      },
++      "roads_ms": 6879.427,
++      "game_ms": 9127.351,
++      "world_ms": 2552.974,
++      "effects_ms": 90.363
++    },
++    {
++      "run": "frozen-mobile-1",
++      "theme": "desert",
++      "cycle": 1,
++      "wall_ms": 1176.117,
++      "max_frame_ms": 175.257,
++      "retry_ms": 15.402,
++      "draw_groups": 1,
++      "world_cache_bytes": 53877536,
++      "effect_counts": {
++        "batches": 0,
++        "canvas": 1,
++        "damage_meshes": 0,
++        "particles": 20,
++        "reused": 0
++      },
++      "roads_ms": 0.028,
++      "game_ms": 743.627,
++      "world_ms": 32.982,
++      "effects_ms": 349.282
++    },
++    {
++      "run": "frozen-mobile-1",
++      "theme": "storm",
++      "cycle": 0,
++      "wall_ms": 13578.703,
++      "max_frame_ms": 2065.277,
++      "retry_ms": 21.015,
++      "draw_groups": 11,
++      "world_cache_bytes": 40944200,
++      "effect_counts": {
++        "batches": 0,
++        "canvas": 1,
++        "damage_meshes": 0,
++        "particles": 24,
++        "reused": 6
++      },
++      "roads_ms": 2985.84,
++      "game_ms": 7870.962,
++      "world_ms": 2274.474,
++      "effects_ms": 402.416
++    },
++    {
++      "run": "frozen-mobile-1",
++      "theme": "storm",
++      "cycle": 1,
++      "wall_ms": 496.573,
++      "max_frame_ms": 133.884,
++      "retry_ms": 12.508,
++      "draw_groups": 2,
++      "world_cache_bytes": 40944200,
++      "effect_counts": {
++        "batches": 0,
++        "canvas": 1,
++        "damage_meshes": 0,
++        "particles": 24,
++        "reused": 24
++      },
++      "roads_ms": 0.044,
++      "game_ms": 306.396,
++      "world_ms": 29.024,
++      "effects_ms": 120.841
++    },
++    {
++      "run": "frozen-mobile-1",
++      "theme": "night_city",
++      "cycle": 0,
++      "wall_ms": 14767.6,
++      "max_frame_ms": 2298.96,
++      "retry_ms": 20.496,
++      "draw_groups": 11,
++      "world_cache_bytes": 41185008,
++      "effect_counts": {
++        "batches": 0,
++        "canvas": 1,
++        "damage_meshes": 0,
++        "particles": 20,
++        "reused": 20
++      },
++      "roads_ms": 3216.748,
++      "game_ms": 8695.8,
++      "world_ms": 2631.616,
++      "effects_ms": 176.882
++    },
++    {
++      "run": "frozen-mobile-1",
++      "theme": "night_city",
++      "cycle": 1,
++      "wall_ms": 767.396,
++      "max_frame_ms": 185.067,
++      "retry_ms": 13.182,
++      "draw_groups": 10,
++      "world_cache_bytes": 41185008,
++      "effect_counts": {
++        "batches": 0,
++        "canvas": 1,
++        "damage_meshes": 0,
++        "particles": 20,
++        "reused": 20
++      },
++      "roads_ms": 0.027,
++      "game_ms": 423.973,
++      "world_ms": 165.478,
++      "effects_ms": 122.206
++    }
++  ],
++  "cpu_rows": [
++    {
++      "bridge_present": true,
++      "bridge_us": 967667,
++      "compile_us": 267486,
++      "cycle": 0,
++      "gates": 105,
++      "gates_us": 4993243,
++      "query_us": 56,
++      "theme": "pine"
++    },
++    {
++      "bridge_present": true,
++      "bridge_us": 462,
++      "compile_us": 267486,
++      "cycle": 1,
++      "gates": 105,
++      "gates_us": 48,
++      "query_us": 10,
++      "theme": "pine"
++    },
++    {
++      "bridge_present": true,
++      "bridge_us": 30,
++      "compile_us": 579370,
++      "cycle": 0,
++      "gates": 105,
++      "gates_us": 5011102,
++      "query_us": 40,
++      "theme": "winter"
++    },
++    {
++      "bridge_present": true,
++      "bridge_us": 33,
++      "compile_us": 579370,
++      "cycle": 1,
++      "gates": 105,
++      "gates_us": 33,
++      "query_us": 7,
++      "theme": "winter"
++    },
++    {
++      "bridge_present": true,
++      "bridge_us": 197128,
++      "compile_us": 229369,
++      "cycle": 0,
++      "gates": 105,
++      "gates_us": 4956192,
++      "query_us": 34,
++      "theme": "desert"
++    },
++    {
++      "bridge_present": true,
++      "bridge_us": 164366,
++      "compile_us": 229369,
++      "cycle": 1,
++      "gates": 105,
++      "gates_us": 51,
++      "query_us": 7,
++      "theme": "desert"
++    },
++    {
++      "bridge_present": true,
++      "bridge_us": 353,
++      "compile_us": 217530,
++      "cycle": 0,
++      "gates": 105,
++      "gates_us": 4996753,
++      "query_us": 42,
++      "theme": "storm"
++    },
++    {
++      "bridge_present": true,
++      "bridge_us": 582,
++      "compile_us": 217530,
++      "cycle": 1,
++      "gates": 105,
++      "gates_us": 37,
++      "query_us": 8,
++      "theme": "storm"
++    },
++    {
++      "bridge_present": true,
++      "bridge_us": 502,
++      "compile_us": 204153,
++      "cycle": 0,
++      "gates": 105,
++      "gates_us": 5098612,
++      "query_us": 31,
++      "theme": "night_city"
++    },
++    {
++      "bridge_present": true,
++      "bridge_us": 433,
++      "compile_us": 204153,
++      "cycle": 1,
++      "gates": 105,
++      "gates_us": 37,
++      "query_us": 7,
++      "theme": "night_city"
++    }
++  ],
++  "feature_resources": [
++    {
++      "ms": 2114.355,
++      "ok": true,
++      "path": "res://core/app.tscn"
++    },
++    {
++      "ms": 3224.342,
++      "ok": true,
++      "path": "res://core/features/race.gd"
++    },
++    {
++      "ms": 905.108,
++      "ok": true,
++      "path": "res://core/game.tscn"
++    }
++  ],
++  "gate_stages": {
++    "checks": 1,
++    "failures": 0,
++    "gates": 105,
++    "layout_bytes": 159200,
++    "layout_exact": true,
++    "marks": {
++      "edge_lanes_done": 3747077,
++      "notices_begin": 6396155,
++      "notices_end": 7174821,
++      "recovery_lanes_done": 6365265,
++      "selection_done": 6396138,
++      "start": 2620201
++    },
++    "original_us": 5083189,
++    "total_us": 5217288
++  },
++  "stable_successful_runs": [
++    "frozen-compat-1",
++    "frozen-compat-dwell",
++    "frozen-cpu",
++    "frozen-feature-resources",
++    "frozen-gate-stages",
++    "frozen-mobile-1"
++  ],
++  "stable_checks": 237,
++  "stable_failures": 0
++}

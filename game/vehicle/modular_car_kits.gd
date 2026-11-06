@@ -87,8 +87,12 @@ static func _open(car: CarVisual, category: String, option: String) -> Dictionar
 	var data: Dictionary = holder.get_meta("modular_kit",{})
 	if data.get("key",[]) != key_for(car,category,option): holder.free(); return {}
 	if FileAccess.file_exists("res://vehicle/car_visual.gd"):
-		if not source_hashes.has(car.vehicle_id): source_hashes[car.vehicle_id] = geometry_sources(car.vehicle_id)
-		if data.get("sources",{}) != source_hashes[car.vehicle_id]: holder.free(); return {}
+		var validation=preload("res://vehicle/prepared_asset_sources.gd")
+		if not source_hashes.has(car.vehicle_id):
+			var current: Dictionary=validation.runtime_hashes(car.vehicle_id)
+			current["vehicle/modular_car_kits.gd"]=FileAccess.get_sha256("res://vehicle/modular_car_kits.gd")
+			source_hashes[car.vehicle_id]=current
+		if validation.runtime_projection(data.get("sources",{})) != source_hashes[car.vehicle_id]: holder.free(); return {}
 	var bindings: Dictionary = {}
 	var has_body: bool = false
 	for role: Dictionary in data.get("roles",[]):

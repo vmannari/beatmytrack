@@ -5,6 +5,7 @@ signal race_requested(entry: Dictionary)
 signal vehicle_selected(index: int)
 signal track_loaded(state: Dictionary)
 signal track_invalidated
+signal preparation_requested(entry: Dictionary)
 const Badge = preload("res://ui/biome_badge.gd")
 var client: Node
 var cloud: Node
@@ -297,6 +298,7 @@ func _show_track() -> void:
 	_race_panel.configure(_server_now/86400,str(entry.version_id),_ends_at)
 	_update_week()
 	_arrange.call_deferred()
+	preparation_requested.emit(entry)
 
 func _update_rating() -> void:
 	_rating.text = "%.1f (%d)" % [float(entry.rating_average),int(entry.rating_count)] if entry.get("rating_average") != null else tr("Unrated (0)")

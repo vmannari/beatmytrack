@@ -162,7 +162,7 @@ func _draw() -> void:
 func draw_floor(canvas: Control) -> void:
 	if not visible: return
 	if not is_instance_valid(camera) or not floor_target.is_finite(): return
-	var world: Vector3 = VisualGeometry.world(floor_target)+Vector3(0,0.08,0)
+	var world := Vector3(floor_target.x,0.08,-floor_target.y)
 	if camera.is_position_behind(world): return
 	var center: Vector2 = camera.unproject_position(world)
 	var bounds: Rect2 = safe_area().grow(-28)

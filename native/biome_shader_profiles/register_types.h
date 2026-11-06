@@ -1,0 +1,3 @@
+#include "modules/register_module_types.h"
+void initialize_biome_shader_profiles_module(ModuleInitializationLevel level);
+void uninitialize_biome_shader_profiles_module(ModuleInitializationLevel level);

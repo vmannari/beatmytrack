@@ -11,7 +11,7 @@ static func run(cancelled: Callable, track: NativeTrack) -> Dictionary:
 	# build the exact existing layout here, before Game.restart reads that cache.
 	if cancelled.call(): return {}
 	var session := TrackSession.new()
-	session._configure(track)
+	session.prepare_cached(track,cancelled)
 	if cancelled.call(): return {}
 	var cover: Dictionary = {}
 	if track.metadata.get("theme","pine") == "winter" and track.editor_winter_cover.is_empty(): cover = WinterScenery.cover_data(track,cancelled)

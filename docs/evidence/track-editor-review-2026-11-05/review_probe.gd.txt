@@ -1,0 +1,125 @@
+extends SceneTree
+
+var app: Node
+var output: String = "res://../build/track-editor-review-2026-11-05"
+var findings: Dictionary = {}
+
+func _initialize() -> void:
+	run.call_deferred()
+
+func frames(count: int = 4) -> void:
+	for _index: int in range(count): await process_frame
+
+func record(label: String, value: Dictionary) -> void:
+	findings[label] = value
+	print("REVIEW_PROBE ",label," ",JSON.stringify(value))
+
+func close_dialogs() -> void:
+	for window: Node in app.find_children("*","Window",true,false):
+		if window is Window: window.hide(); window.queue_free()
+	await frames()
+
+func settle() -> void:
+	var deadline: int = Time.get_ticks_msec()+60000
+	while Time.get_ticks_msec()<deadline and (app.editor_preview_thread != null or app.editor_commits.unsettled() or app.editor_writes.unsettled(app.library,str(app.document.id)) or app.editor_world._building):
+		await process_frame
+	await frames()
+
+func run() -> void:
+	create_timer(240,true,false,true).timeout.connect(func() -> void: printerr("REVIEW_TIMEOUT"); quit(2))
+	root.size = Vector2i(1280,720)
+	var offline := ConfigFile.new()
+	offline.set_value("backend","url","")
+	if offline.save("user://backend.cfg") != OK: quit(2); return
+	app = load("res://core/app.tscn").instantiate()
+	app.library = TrackLibrary.new("user://review-probe/tracks")
+	app.records = LocalRecords.new("user://review-probe/records.json")
+	app.records.settings.music_enabled = false
+	app.cloud_root_override = "user://review-probe/cloud"
+	root.add_child(app)
+	while not app.startup_complete: await process_frame
+	if app.online.configured:
+		printerr("REVIEW_REQUIRES_OFFLINE"); quit(2); return
+	app._garage_preloader.set_process(false)
+	var document: Dictionary = TrackDocument.create_default()
+	document.id = "discard_review"
+	document.name = "Saved baseline"
+	document.objects = [{"kind":"cone","position":[40.0,40.0],"rotation":0.0}]
+	app.document = document
+	app.canvas = null
+	app._show_screen("create")
+	await settle()
+	if not app._save_track_now(): printerr("BASELINE_SAVE_FAILED"); quit(2); return
+	await close_dialogs()
+	await settle()
+	# Settled autosave control: deletion works, but Back still restores rejected memory.
+	app._remember()
+	app.document.objects[0].position = [43.0,40.0]
+	app._save_draft(true)
+	await settle()
+	app._open_drafts()
+	var settled_discard: ConfirmationDialog = app.root_ui.find_child("SaveChangesDialog",true,false)
+	settled_discard.custom_action.emit(&"discard")
+	var settled_wip: Dictionary = app.library.load_wip("discard_review")
+	await frames()
+	var settled_browser: Node = app.root_ui.find_child("DraftBrowser",true,false)
+	settled_browser.back_requested.emit()
+	await settle()
+	record("discard_settled_control",{"wip_removed":settled_wip.is_empty(),"back_objects":app.document.objects,"unsaved_after_back":app._editor_has_unsaved_changes()})
+	# Pause App polling only to make the ordinary in-flight autosave window deterministic.
+	app.set_process(false)
+	app._remember()
+	app.document.objects[0].position = [45.0,40.0]
+	app._save_draft(true)
+	var pending_before: bool = app.editor_commits.unsettled()
+	app._open_drafts()
+	var discard: ConfirmationDialog = app.root_ui.find_child("SaveChangesDialog",true,false)
+	if discard == null: printerr("DISCARD_DIALOG_MISSING"); quit(2); return
+	discard.custom_action.emit(&"discard")
+	var recovered: Dictionary = app.library.load_wip("discard_review")
+	record("discard_pending_autosave",{"pending_before":pending_before,"screen":app.screen,"wip_recreated":not recovered.is_empty(),"wip_objects":recovered.get("objects",[]),"saved_original_objects":app.library.load_document("discard_review").objects})
+	app.set_process(true)
+	await frames()
+	var browser: Node = app.root_ui.find_child("DraftBrowser",true,false)
+	if browser != null: browser.back_requested.emit()
+	await settle()
+	record("back_after_discard",{"screen":app.screen,"objects":app.document.objects,"unsaved":app._editor_has_unsaved_changes()})
+	# A title edit should create an undo step and invalidate the previous redo branch.
+	app.history.clear(); app.redo_history.clear()
+	app._remember()
+	app.document.objects[0].position = [50.0,40.0]
+	app._save_draft(true)
+	await settle()
+	app._undo()
+	await settle()
+	app._rename_track()
+	var rename: ConfirmationDialog = app.root_ui.find_child("RenameDialog",true,false)
+	var field: LineEdit = rename.find_child("CircuitName",true,false)
+	field.text = "New review name"
+	rename.confirmed.emit()
+	await frames()
+	var before_redo: Dictionary = {"title":app.document.name,"undo_count":app.history.size(),"redo_count":app.redo_history.size()}
+	app._redo()
+	await settle()
+	record("rename_redo",{"after_rename":before_redo,"after_redo_title":app.document.name,"objects":app.document.objects})
+	# A failed fork must not leave App pointing at the newly generated unsaved copy.
+	app._show_screen("drafts")
+	await frames()
+	var source: Dictionary = app.library.load_document("discard_review")
+	source.name = "1234567890123456789012345678901234567890"
+	var valid_source: bool = TrackDocument.validate(source).is_empty()
+	app._fork_track_draft(source)
+	record("fork_maximum_title",{"source_valid":valid_source,"result_title":app.document.name,"title_length":str(app.document.name).length(),"screen":app.screen,"save_error":app.library.last_error,"stored":not app.library.load_wip(str(app.document.id)).is_empty()})
+	await close_dialogs()
+	source.name = "12345678901234567890123456789012345"
+	app._fork_track_draft(source)
+	await settle()
+	record("fork_shorter_control",{"title_length":str(app.document.name).length(),"screen":app.screen,"stored":not app.library.load_wip(str(app.document.id)).is_empty()})
+	app.queue_free()
+	GameSoundtrack.instance().queue_free()
+	await frames(5)
+	await create_timer(0.3).timeout
+	var file: FileAccess = FileAccess.open(output+"/probes.json",FileAccess.WRITE)
+	file.store_string(JSON.stringify(findings,"\t")); file.close()
+	print("REVIEW_PROBES_COMPLETE")
+	quit(0)

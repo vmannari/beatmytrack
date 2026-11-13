@@ -1,0 +1,1325 @@
+diff --git a/backend/bmt_backend/product_worker.py b/backend/bmt_backend/product_worker.py
+index acfba57..4058114 100644
+--- a/backend/bmt_backend/product_worker.py
++++ b/backend/bmt_backend/product_worker.py
+@@ -7,23 +7,14 @@ import threading
+ import time
+ from dataclasses import replace
+ 
+-from sqlalchemy import select
+-
+ from .config import Settings
+ from .db import make_engine, make_session_factory
+ from .observability import configure_logging, failure_site
+ from .product_analytics import project_pending
+-from .telemetry_models import ProductEvent
+ from .telemetry_processing import actor_once, maintenance, publish, record_failure, retry_stage, shared_once
+ from .telemetry_queue import PreparationSchedule, fold_one
+ 
+ 
+-def pending_exists(factory):
+-    with factory() as session:
+-        return session.scalar(select(ProductEvent.id).where(ProductEvent.processed_at.is_(None))
+-            .order_by(ProductEvent.received_at, ProductEvent.id).limit(1)) is not None
+-
+-
+ def log_failure(event, error, stage):
+     fields = {"exception_type": type(error).__name__, "failure_site": failure_site(error)}
+     if stage in ("actor", "shared", "rollup", "maintenance", "metadata"):
+diff --git a/backend/bmt_backend/rivalry.py b/backend/bmt_backend/rivalry.py
+index f22578e..dea6d0c 100644
+--- a/backend/bmt_backend/rivalry.py
++++ b/backend/bmt_backend/rivalry.py
+@@ -622,11 +622,3 @@ def snapshot_response(request, session, group, player_id):
+     return response(request, session, group, player_id, now())
+ 
+ 
+-def conditional_snapshot(request, value):
+-    from fastapi.responses import JSONResponse, Response
+-    stable = {key: data for key, data in value.items() if key not in ("server_now", "remaining_seconds")}
+-    tag = '"' + digest(stable) + '"'
+-    headers = {"ETag": tag, "Cache-Control": "private, no-cache, must-revalidate", "Vary": "Authorization, Accept-Encoding", "X-Server-Time": str(value["server_now"])}
+-    if request.headers.get("if-none-match") == tag:
+-        return Response(status_code=304, headers=headers)
+-    return JSONResponse(value, headers=headers)
+diff --git a/game/backend/cloud_tracks.gd b/game/backend/cloud_tracks.gd
+index 60248b6..e55e5cc 100644
+--- a/game/backend/cloud_tracks.gd
++++ b/game/backend/cloud_tracks.gd
+@@ -723,20 +723,6 @@ func _submission_ticket(ticket_data: Dictionary) -> Dictionary:
+ 		pinned._wire_options.result = 0
+ 	return pinned
+ 
+-func queue_run(ticket_data: Dictionary, frames: Variant, publish_version: String = "", rewinds: Array = []) -> bool:
+-	# Synchronous compatibility for small local diagnostics. The runtime uses
+-	# queue_run_async so replay hashing, encoding and atomic writes yield frames.
+-	var owner: String = str(ticket_data.get("_owner_id",client.player.get("id","")))
+-	var origin: String = str(ticket_data.get("_origin",client.base_url()))
+-	if ticket_data.is_empty() or owner.is_empty() or origin.is_empty(): return false
+-	var root_path: String = (root_override if not root_override.is_empty() else "user://cloud").path_join(origin.sha256_text())
+-	var saved: bool = _queue_run_io(_submission_ticket(ticket_data),frames,publish_version,rewinds,root_path,owner,client.server_now() if client.has_method("server_now") else 0)
+-	if saved:
+-		_empty_outboxes.erase(root_path.path_join("players").path_join(owner.sha256_text()).path_join("runs"))
+-		changed.emit()
+-	else: last_error = "The race could not be saved. Free storage and retry."
+-	return saved
+-
+ func queue_run_async(ticket_data: Dictionary, frames: Variant, publish_version: String = "", rewinds: Array = []) -> bool:
+ 	var owner: String = str(ticket_data.get("_owner_id",client.player.get("id","")))
+ 	var origin: String = str(ticket_data.get("_origin",client.base_url()))
+@@ -883,18 +869,6 @@ func _migrate_outbox() -> bool:
+ 	_migrated_outboxes[path] = true
+ 	return true
+ 
+-func upload_jobs() -> Array[Dictionary]:
+-	var result: Array[Dictionary] = []
+-	var directory: String = outbox_path().get_base_dir().path_join("runs")
+-	var files: PackedStringArray = DirAccess.get_files_at(directory) if DirAccess.dir_exists_absolute(directory) else PackedStringArray()
+-	files.sort()
+-	for filename: String in files:
+-		if not filename.ends_with(".job.json"): continue
+-		var job: Dictionary = _read_upload_job(directory.path_join(filename))
+-		if job.is_empty(): continue
+-		result.append(job)
+-	return result
+-
+ func dismiss_upload(ticket_id: String) -> bool:
+ 	var job: Dictionary = upload_job(ticket_id)
+ 	if job.is_empty() or not (job.has("done") or job.has("failure")): return false
+diff --git a/game/core/app.gd b/game/core/app.gd
+index fa0d57c..2dc49b8 100644
+--- a/game/core/app.gd
++++ b/game/core/app.gd
+@@ -826,24 +826,6 @@ func _show_screen(next: String) -> void:
+ 	elif slide: _slide_menu_page(slide_direction, drag_offset)
+ 	else: _prepare_menu_neighbors.call_deferred(_navigation_generation)
+ 
+-func _open_profile_achievements(family: String = "") -> void:
+-	var owner: LocalRecords = records
+-	if not is_inside_tree() or screen != "profile" or records != owner: return
+-	await _show_screen("garage")
+-	if not is_instance_valid(_retained_garage) or screen != "garage": return
+-	_retained_garage._show_section("achievements")
+-	if not family.is_empty():
+-		var album: Node = _retained_garage.find_child("AchievementsMenu",true,false)
+-		if album != null: album._show_achievement(family)
+-
+-func _open_profile_tracks() -> void:
+-	browser_state.clear()
+-	browser_state.search = online.player_name()
+-	browser_state.search_kind = 2
+-	browser_state.page = 0
+-	race_area_mode = "free"
+-	_show_screen("tracks")
+-
+ func _attach_profile_car(parent: Control) -> void:
+ 	var view: Control = _retained_profile_car
+ 	if view.get_parent() != null: view.reparent(parent,false)
+diff --git a/game/core/features/editor.gd b/game/core/features/editor.gd
+index 9cab527..0145070 100644
+--- a/game/core/features/editor.gd
++++ b/game/core/features/editor.gd
+@@ -307,7 +307,6 @@ func run_editor(app: Node) -> void:
+ 	app.object_browser.container_color_chosen.connect(app._container_colour)
+ 	app.object_browser.rotation_requested.connect(app._object_rotation_dialog)
+ 	app.object_browser.rotation_chosen.connect(app._set_object_rotation)
+-	app.object_browser.controls_requested.connect(func() -> void: app._object_property_editing(""))
+ 	app.object_controls_panel = PanelContainer.new()
+ 	app.object_controls_panel.name = "ObjectControlStrip"
+ 	app.object_controls_panel.add_theme_stylebox_override("panel",EditorStyle.panel())
+diff --git a/game/core/game.gd b/game/core/game.gd
+index e6ce9f3..df28377 100644
+--- a/game/core/game.gd
++++ b/game/core/game.gd
+@@ -1010,14 +1010,6 @@ func set_ghost_mode(value: String) -> Error:
+ 	return preference_records.save_records()
+ 
+ 
+-func ghost_description() -> String:
+-	var index: int = PersonalGhostRun.MODES.find(ghost_mode)
+-	var description: String = PersonalGhostRun.DESCRIPTIONS[index]
+-	if ghost_mode != "off" and not ghost_bests.has(ghost_mode):
+-		description += " No recording yet. Match or improve your best in a completed race."
+-	return description
+-
+-
+ func _present_personal_ghost(weight: float) -> void:
+ 	if personal_ghost == null: return
+ 	if countdown_ticks > 0 or finish_sim != null or is_instance_valid(rewind_panel) or ghost_mode == "off":
+diff --git a/game/editor/editor_memory.gd b/game/editor/editor_memory.gd
+index c4b4798..541fbb6 100644
+--- a/game/editor/editor_memory.gd
++++ b/game/editor/editor_memory.gd
+@@ -37,7 +37,6 @@ func tick(app: Node) -> void:
+ 		preload("res://vehicle/effect_render_preparation.gd").trim_cache(app)
+ 		CompactDetail.trim_front_cache()
+ 		preload("res://ui/garage_paint_icons.gd").images.clear()
+-		CompactKitThumbnail.images.clear()
+ 	if is_instance_valid(app.editor_world): app.editor_world.trim_cache()
+ 	ObjectThumbnail.trim_cache()
+ 	retry = not READS.trim_cache() or retry
+@@ -128,7 +127,7 @@ static func retained(app: Node) -> Dictionary:
+ static func _option_texture_bytes() -> int:
+ 	var total: int = 0
+ 	var seen: Dictionary = {}
+-	for cache: Dictionary in [preload("res://ui/garage_paint_icons.gd").images,CompactKitThumbnail.images]:
++	for cache: Dictionary in [preload("res://ui/garage_paint_icons.gd").images]:
+ 		for texture: Texture2D in cache.values():
+ 			if texture == null or seen.has(texture.get_instance_id()): continue
+ 			seen[texture.get_instance_id()] = true
+diff --git a/game/editor/object_browser.gd b/game/editor/object_browser.gd
+index 58a57da..560507f 100644
+--- a/game/editor/object_browser.gd
++++ b/game/editor/object_browser.gd
+@@ -10,7 +10,6 @@ signal select_requested
+ signal populate_requested
+ signal rotation_requested
+ signal rotation_chosen(angle: float)
+-signal controls_requested
+ signal snap_chosen(step: float)
+ var category: String = "All"
+ var biome: String = "pine"
+@@ -164,9 +163,6 @@ func refresh() -> void:
+ 	if not is_instance_valid(tiles): return
+ 	_tiles()
+ 
+-func open_properties() -> void:
+-	controls_requested.emit()
+-
+ func _activate_asset(kind: String) -> void:
+ 	if not CreatorCatalog.available(kind,biome): return
+ 	if CreatorCatalog.JUMP_ASSETS.has(kind):
+diff --git a/game/persistence/track_library.gd b/game/persistence/track_library.gd
+index 87c52c7..9f0d2a0 100644
+--- a/game/persistence/track_library.gd
++++ b/game/persistence/track_library.gd
+@@ -229,9 +229,6 @@ func delete_wip(id: String) -> Error:
+ 	if error == OK: revision += 1
+ 	return error
+ 
+-func list_wips() -> Array[Dictionary]:
+-	return TrackLibrary.new(directory.path_join("wip")).list_documents()
+-
+ func editable_entries(summaries: bool = false, cancelled: Callable = Callable()) -> Array[Dictionary]:
+ 	# Saved originals and editor autosaves are versions of the same local draft.
+ 	var by_id: Dictionary = {}
+diff --git a/game/tests/audit_race_work_recheck.gd b/game/tests/audit_race_work_recheck.gd
+index ad3151d..f31e4d5 100644
+--- a/game/tests/audit_race_work_recheck.gd
++++ b/game/tests/audit_race_work_recheck.gd
+@@ -227,13 +227,16 @@ func run() -> void:
+ 	await emit_app_timer(0.5)
+ 	check(paths(client,client.phase).is_empty(),"Hidden challenge/rivalry results have no polling consumer")
+ 	client.phase = "visible_challenge_result"
+-	app._show_screen("challenges")
++	await app._show_screen("challenges")
+ 	app.challenges._next_poll = 0
+ 	app.challenges.poll_result()
+ 	await frames()
+ 	check(paths(client,client.phase).any(func(path: String) -> bool: return path.begins_with("/challenge-results/")),"Visible pending challenge result still polls")
+ 	client.phase = "visible_rivalry_result"
+-	app._show_screen("rivalry")
++	await app._show_screen("rivalry")
++	var rivalry_probe_deadline: int = Time.get_ticks_msec()+3000
++	while app.rivalry.busy and Time.get_ticks_msec()<rivalry_probe_deadline: await process_frame
++	check(not app.rivalry.busy,"Rivalry entry read completes before the result polling probe")
+ 	app.rivalry._next_poll_msec = 0
+ 	app.rivalry.poll_result()
+ 	await frames()
+@@ -252,16 +255,17 @@ func run() -> void:
+ 	await empty_cloud.flush_outbox()
+ 	check(empty_cloud.profile_flush_passes>empty_passes and paths(client,client.phase).any(func(path: String) -> bool: return path.contains("audit-existing-run-2")),"New durable result wakes an idle outbox")
+ 	check(app.cloud.upload_job(ticket).key == "audit-existing-operation","Race deferral preserves original upload identity")
+-	for asynchronous: bool in [false,true]:
++	for retry: bool in [false,true]:
+ 		var writer: Node = load("res://backend/cloud_tracks.gd").new()
+-		writer.client = client; writer.root_override = folder.path_join("writer-"+str(asynchronous))
++		writer.client = client; writer.root_override = folder.path_join("writer-"+str(retry))
+ 		app.add_child(writer)
+ 		await writer.flush_outbox()
+ 		var before_write: int = writer.profile_flush_passes
+-		var ticket_data: Dictionary = {"ticket_id":"audit-writer-"+str(asynchronous),"_submit_key":"audit-writer-original-key"}
+-		var saved: bool = await writer.queue_run_async(ticket_data,[[0,255,0]]) if asynchronous else writer.queue_run(ticket_data,[[0,255,0]])
++		var ticket_data: Dictionary = {"ticket_id":"audit-writer-"+str(retry),"_submit_key":"audit-writer-original-key"}
++		if retry: await writer.queue_run_async(ticket_data,[[0,255,0]])
++		var saved: bool = await writer.queue_run_async(ticket_data,[[0,255,0]])
+ 		await writer.flush_outbox()
+-		check(saved and writer.profile_flush_passes>before_write and writer.upload_job(ticket_data.ticket_id).key == ticket_data._submit_key,"Actual synchronous/asynchronous result writer wakes idle outbox with original key")
++		check(saved and writer.profile_flush_passes>before_write and writer.upload_job(ticket_data.ticket_id).key == ticket_data._submit_key,"Actual asynchronous result writer wakes idle outbox with original key")
+ 	client.phase = "empty_resume_recovery"
+ 	await client.resume_recovery.reconcile()
+ 	var recovery_callbacks: int = client.resume_recovery.profile_callback_us
+diff --git a/game/tests/bake_compact_kit_previews.gd b/game/tests/bake_compact_kit_previews.gd
+index 14f1180..6aada59 100644
+--- a/game/tests/bake_compact_kit_previews.gd
++++ b/game/tests/bake_compact_kit_previews.gd
+@@ -1,4 +1,5 @@
+ extends SceneTree
++const OfflineKitThumbnail = preload("res://tests/support/offline_kit_thumbnail.gd")
+ ## Offline original-model photographs and immutable authored part meshes.
+ const ASSET_ROOT: String = "res://assets/vehicles/compact_kits_v1"
+ func _initialize() -> void: _run.call_deferred()
+@@ -10,8 +11,8 @@ func _run() -> void:
+ 	CompactKits.use_baked = false
+ 	preload("res://vehicle/prepared_car_cache.gd").enabled = false
+ 	CompactKits.meshes.clear()
+-	CompactKitThumbnail.use_prepared = false
+-	CompactKitThumbnail.images.clear()
++	OfflineKitThumbnail.use_prepared = false
++	OfflineKitThumbnail.images.clear()
+ 	var aero_only: bool = "--aero-only" in OS.get_cmdline_user_args()
+ 	var selected: Array[String] = []
+ 	var selected_ids: Array[String] = []
+@@ -32,7 +33,7 @@ func _run() -> void:
+ 		if not selected.is_empty() and category not in selected: continue
+ 		for option: Array in VehicleCustomisation.OPTIONS[category]:
+ 			if not selected_ids.is_empty() and str(option[0]) not in selected_ids: continue
+-			var photo: CompactKitThumbnail = CompactKitThumbnail.make(category,option,false,func() -> void: pass)
++			var photo: OfflineKitThumbnail = OfflineKitThumbnail.make(category,option,false,func() -> void: pass)
+ 			root.add_child(photo)
+ 			for frame: int in range(6):
+ 				await process_frame
+diff --git a/game/tests/capture_compact_aero_variety.gd b/game/tests/capture_compact_aero_variety.gd
+index 3557327..4e52a1d 100644
+--- a/game/tests/capture_compact_aero_variety.gd
++++ b/game/tests/capture_compact_aero_variety.gd
+@@ -1,4 +1,5 @@
+ extends SceneTree
++const OfflineKitThumbnail = preload("res://tests/support/offline_kit_thumbnail.gd")
+ ## Identical native side/rear/close cameras expose mount height and aft position.
+ var output: String = "res://../docs/evidence/compact-aero-variety-2026-10-14/compatibility"
+ var view: CarShowroom
+@@ -51,7 +52,7 @@ func _run() -> void:
+ 	grid.add_theme_constant_override("v_separation",8)
+ 	column.add_child(grid)
+ 	for option: Array in VehicleCustomisation.OPTIONS.aero:
+-		var card: CompactKitThumbnail = CompactKitThumbnail.make("aero",option,false,func() -> void: pass)
++		var card: OfflineKitThumbnail = OfflineKitThumbnail.make("aero",option,false,func() -> void: pass)
+ 		card.custom_minimum_size = Vector2(380,150)
+ 		grid.add_child(card)
+ 	await settle()
+diff --git a/game/tests/capture_compact_kit_catalog.gd b/game/tests/capture_compact_kit_catalog.gd
+index 46c1edd..b435f78 100644
+--- a/game/tests/capture_compact_kit_catalog.gd
++++ b/game/tests/capture_compact_kit_catalog.gd
+@@ -1,4 +1,5 @@
+ extends SceneTree
++const OfflineKitThumbnail = preload("res://tests/support/offline_kit_thumbnail.gd")
+ ## Review sheets of the shipping native photographs, rendered with native UI.
+ var output: String = "res://../docs/evidence/compact-kits-expanded-2026-10-14/catalog-compatibility"
+ func _initialize() -> void: _run.call_deferred()
+@@ -25,7 +26,7 @@ func _run() -> void:
+ 		grid.add_theme_constant_override("v_separation",8)
+ 		column.add_child(grid)
+ 		for option: Array in VehicleCustomisation.OPTIONS[category]:
+-			var card: CompactKitThumbnail = CompactKitThumbnail.make(category,option,false,func() -> void: pass)
++			var card: OfflineKitThumbnail = OfflineKitThumbnail.make(category,option,false,func() -> void: pass)
+ 			card.custom_minimum_size = Vector2(380,132)
+ 			grid.add_child(card)
+ 		for frame: int in range(6): await process_frame
+diff --git a/game/tests/capture_review_reliability.gd b/game/tests/capture_review_reliability.gd
+index 96b63cf..8a29df2 100644
+--- a/game/tests/capture_review_reliability.gd
++++ b/game/tests/capture_review_reliability.gd
+@@ -18,9 +18,9 @@ func run() -> void:
+ 	app.online.client.configure("http://127.0.0.1:1")
+ 	app.online.client._access_token = "disposable-fixture"
+ 	app.online.client.player = {"id":"review-fixture", "display_name":"Review fixture"}
+-	app.cloud.queue_run({"ticket_id":"pending-fixture"},[[0,255,0]])
+-	app.cloud.queue_run({"ticket_id":"failed-fixture"},[[0,255,0]])
+-	for job: Dictionary in app.cloud.upload_jobs():
++	(await app.cloud.queue_run_async({"ticket_id":"pending-fixture"},[[0,255,0]]))
++	(await app.cloud.queue_run_async({"ticket_id":"failed-fixture"},[[0,255,0]]))
++	for job: Dictionary in (await app.cloud.upload_history()):
+ 		if job.ticket == "failed-fixture":
+ 			job.failure = "invalid_replay"
+ 			app.cloud._save_job(str(job._path),job)
+diff --git a/game/tests/review_backend_exceptions.gd b/game/tests/review_backend_exceptions.gd
+index a484def..1a20bb8 100644
+--- a/game/tests/review_backend_exceptions.gd
++++ b/game/tests/review_backend_exceptions.gd
+@@ -96,7 +96,7 @@ func _run() -> void:
+ 		var repository: String = ProjectSettings.globalize_path("res://").trim_suffix("/").get_base_dir()
+ 		cloud.root_override = repository.path_join("build/exception-probe-outbox").path_join(mode+"-"+str(Time.get_ticks_usec()))
+ 		var ticket_id: String = "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb"
+-		cloud.queue_run({"ticket_id":ticket_id},[[0,255,0]],"",[])
++		(await cloud.queue_run_async({"ticket_id":ticket_id},[[0,255,0]],"",[]))
+ 		if mode == "missing":
+ 			var job: Dictionary = cloud.upload_job(ticket_id)
+ 			var path: String = str(job._path)
+diff --git a/game/tests/review_pass2_probes.gd b/game/tests/review_pass2_probes.gd
+index 9cb8dd7..432f1f8 100644
+--- a/game/tests/review_pass2_probes.gd
++++ b/game/tests/review_pass2_probes.gd
+@@ -128,7 +128,9 @@ func run() -> void:
+ 		var loaded: int = 0
+ 		for sample: int in range(3):
+ 			var began: int = Time.get_ticks_usec()
+-			loaded = history_cloud.upload_jobs().size()
++			loaded = 0
++			for history_page: int in range((population+99)/100):
++				loaded += (await history_cloud.upload_history(history_page)).size()
+ 			samples.append(float(Time.get_ticks_usec()-began)/1000.0)
+ 		var began: int = Time.get_ticks_usec()
+ 		await history_cloud.flush_outbox()
+diff --git a/game/tests/support/challenge_rules_input.gd b/game/tests/support/challenge_rules_input.gd
+new file mode 100644
+index 0000000..faddfc9
+--- /dev/null
++++ b/game/tests/support/challenge_rules_input.gd
+@@ -0,0 +1,15 @@
++extends RefCounted
++## Test input adapter for current Challenge controls; owns no production policy.
++static func choose(sheet: ChallengeCreate, choices: Dictionary) -> void:
++	var was_format: bool = sheet._step == ChallengeCreate.FORMAT
++	if not sheet.results_only:
++		var open: Button = sheet._custom_button if was_format else sheet._rules_button
++		open.pressed.emit()
++	for key: String in choices:
++		var prefix: String = {"mode":"ChallengeResultMode_" if sheet.results_only else "ChallengeCustomMode_","duration":"ChallengeDuration_","tries":"ChallengeTries_"}[key]
++		var button: Button = sheet.find_child(prefix+str(choices[key]),true,false)
++		assert(button != null and not button.disabled)
++		button.pressed.emit()
++	if not sheet.results_only:
++		sheet.get_ok_button().pressed.emit()
++		if was_format: (sheet.find_child("CloseChallengeCreate",true,false) as Button).pressed.emit()
+diff --git a/game/tests/support/challenge_rules_input.gd.uid b/game/tests/support/challenge_rules_input.gd.uid
+new file mode 100644
+index 0000000..a6ec0b8
+--- /dev/null
++++ b/game/tests/support/challenge_rules_input.gd.uid
+@@ -0,0 +1 @@
++uid://dm6i3n5bdky6x
+diff --git a/game/ui/compact_kit_thumbnail.gd b/game/tests/support/offline_kit_thumbnail.gd
+similarity index 100%
+rename from game/ui/compact_kit_thumbnail.gd
+rename to game/tests/support/offline_kit_thumbnail.gd
+diff --git a/game/ui/compact_kit_thumbnail.gd.uid b/game/tests/support/offline_kit_thumbnail.gd.uid
+similarity index 100%
+rename from game/ui/compact_kit_thumbnail.gd.uid
+rename to game/tests/support/offline_kit_thumbnail.gd.uid
+diff --git a/game/tests/test_backend_exception_recovery.gd b/game/tests/test_backend_exception_recovery.gd
+index 58386d2..f3bc7c7 100644
+--- a/game/tests/test_backend_exception_recovery.gd
++++ b/game/tests/test_backend_exception_recovery.gd
+@@ -119,7 +119,7 @@ func run() -> void:
+ 
+ 	var malformed: API = api("malformed")
+ 	var cloud: Node = cloud_for(malformed,"malformed")
+-	check(cloud.queue_run({"ticket_id":TICKET},[[0,255,0]],""),"fixture recording is durable")
++	check((await cloud.queue_run_async({"ticket_id":TICKET},[[0,255,0]],"")),"fixture recording is durable")
+ 	await cloud.flush_outbox()
+ 	var job: Dictionary = cloud.upload_job(TICKET)
+ 	check(not cloud.flushing and not job.has("failure") and not job.has("run_id"),"bad success releases latch and retains retryable recording")
+@@ -133,7 +133,7 @@ func run() -> void:
+ 
+ 	var missing: API = api("missing")
+ 	cloud = cloud_for(missing,"missing")
+-	cloud.queue_run({"ticket_id":TICKET,"_submit_key":"restore-original-key"},[[0,255,0]],"")
++	(await cloud.queue_run_async({"ticket_id":TICKET,"_submit_key":"restore-original-key"},[[0,255,0]],""))
+ 	job = cloud.upload_job(TICKET)
+ 	var path: String = str(job._path)
+ 	job.erase("_path")
+diff --git a/game/tests/test_backend_scalability.gd b/game/tests/test_backend_scalability.gd
+index 4226999..fac79ba 100644
+--- a/game/tests/test_backend_scalability.gd
++++ b/game/tests/test_backend_scalability.gd
+@@ -48,7 +48,7 @@ func run() -> void:
+ 	before = frames_seen
+ 	check(await cloud.queue_run_async({"ticket_id":"large-fixture"},large),"large outbox atomically persists")
+ 	check(frames_seen > before+1,"outbox hash/JSON/file writes yield rendering frames")
+-	var jobs: Array = cloud.upload_jobs()
++	var jobs: Array = (await cloud.upload_history())
+ 	check(jobs.size() == 1,"durable metadata names one outbox job")
+ 	var restored: Variant = await client._background(Cloud._load_replay.bind(cloud.outbox_path().get_base_dir().path_join("runs").path_join(jobs[0].replay),jobs[0].replay_hash))
+ 	check(restored is Dictionary and restored.has("frames") and restored.frames.size() == large.size(),"background read validates the full durable replay hash")
+diff --git a/game/tests/test_challenges.gd b/game/tests/test_challenges.gd
+index 681beb8..c2a2ed7 100644
+--- a/game/tests/test_challenges.gd
++++ b/game/tests/test_challenges.gd
+@@ -196,7 +196,7 @@ func _finished_sheet_tests(sample: Dictionary) -> void:
+ 		var rect: Rect2 = sheet._car_page.get_global_rect()
+ 		check(rect.position.x >= 0 and rect.position.y >= 0 and rect.end.x <= root.get_visible_rect().size.x+1 and rect.end.y <= root.get_visible_rect().size.y+1,"custom sheet stays within the viewport")
+ 		check(sheet.get_parent() == root,"creation is an embedded menu control")
+-		sheet._choose_attempt_limit(3)
++		preload("res://tests/support/challenge_rules_input.gd").choose(sheet,{"tries":3})
+ 		check("3 tries per driver" in sheet._rule_details.text,"summary reflects selected tries")
+ 		await _capture("finished-page",dimensions)
+ 		client.answer = {"ok":false,"error":"NETWORK_ERROR"}
+@@ -277,7 +277,7 @@ func _page_tests() -> void:
+ 		check(app.root_ui.find_child("MenuHeader",true,false) != null,"creation keeps the original top navigation")
+ 		create._source = {"status":"verified","run_id":"fixture","ms":88110}
+ 		create._checking = false
+-		create._choose_attempt_limit(3)
++		preload("res://tests/support/challenge_rules_input.gd").choose(create,{"tries":3})
+ 		create._update()
+ 		await process_frame
+ 		await process_frame
+@@ -290,7 +290,7 @@ func _page_tests() -> void:
+ 		var actions: Control = create.find_child("ChallengeCreateActions",true,false)
+ 		check(actions.get_global_rect().position.y >= create._formats.get_global_rect().end.y,"primary actions follow the format posters")
+ 		check(create._custom_button.is_visible_in_tree(),"custom challenge is a separate subtle action")
+-		create._choose_mode(1)
++		preload("res://tests/support/challenge_rules_input.gd").choose(create,{"mode":1})
+ 		check(create._summary_time.text == "Fastest time wins" and not create._time.visible,"group preview has no timed target")
+ 		await _capture("menu-create-group",dimensions)
+ 		create._choose_format("duel")
+diff --git a/game/tests/test_challenges_http.gd b/game/tests/test_challenges_http.gd
+index 56219d4..4a0877c 100644
+--- a/game/tests/test_challenges_http.gd
++++ b/game/tests/test_challenges_http.gd
+@@ -87,8 +87,7 @@ func run() -> void:
+ 		draft._advance()
+ 		while draft._checking: await process_frame
+ 		check(draft.get_ok_button().disabled and draft._race.visible,"new creator is offered a race instead of an invented target")
+-		draft._choose_duration(86400)
+-		draft._choose_attempt_limit(3)
++		preload("res://tests/support/challenge_rules_input.gd").choose(draft,{"duration":86400,"tries":3})
+ 		draft._race.pressed.emit()
+ 		while app.game == null or not app.game.preparation_complete: await process_frame
+ 	else: await app._start_race(track,false)
+diff --git a/game/tests/test_cloud_tracks.gd b/game/tests/test_cloud_tracks.gd
+index fcec280..b5e47d9 100644
+--- a/game/tests/test_cloud_tracks.gd
++++ b/game/tests/test_cloud_tracks.gd
+@@ -32,7 +32,7 @@ func check(value: bool, description: String) -> void:
+ func settle(cloud: Node) -> void:
+ 	for attempt: int in range(100):
+ 		await cloud.flush_outbox()
+-		var jobs: Array = cloud.upload_jobs()
++		var jobs: Array = (await cloud.upload_history())
+ 		if not jobs.is_empty() and jobs.all(func(job: Dictionary) -> bool: return job.has("done") or job.has("failure")): return
+ 		await create_timer(0.2).timeout
+ 	check(false,"verification completes before deadline: "+cloud.status)
+@@ -107,7 +107,7 @@ func run() -> void:
+ 	ticket.data["_race_proof"] = fixture.race_proof
+ 	ticket.data["_race_ghost"] = fixture.ghost
+ 	check(ticket.ok,"creator gets server contract")
+-	check(cloud.queue_run(ticket.data,fixture.replay.frames),"ordinary creator race replay durably queued after publication")
++	check((await cloud.queue_run_async(ticket.data,fixture.replay.frames)),"ordinary creator race replay durably queued after publication")
+ 	await settle(cloud)
+ 	await cloud.refresh(true)
+ 	check(cloud.entries.size() == 1,"verified publication enters cloud discovery")
+@@ -192,7 +192,7 @@ func run() -> void:
+ 	check(game.online_frames.size() == fixture.replay.frames.size()+1200,"audit includes original and resumed input segments")
+ 	race["_race_proof"] = game.race_proof.recording(game.track_session)
+ 	race["_race_ghost"] = game.ghost_run.recording("race")
+-	check(cloud.queue_run(race,game.online_frames,"",game.online_rewinds),"actual game replay persisted")
++	check((await cloud.queue_run_async(race,game.online_frames,"",game.online_rewinds)),"actual game replay persisted")
+ 	game.restart()
+ 	check(game.online_frames.is_empty(),"retry resets captured inputs")
+ 	game.queue_free()
+@@ -203,7 +203,7 @@ func run() -> void:
+ 	restored.root_override = cloud.root_override
+ 	root.add_child(restored)
+ 	await settle(restored)
+-	check(restored.upload_jobs()[-1].get("done",false),"rewind replay survives outbox reload and earns a verified leaderboard result")
++	check((await restored.upload_history())[-1].get("done",false),"rewind replay survives outbox reload and earns a verified leaderboard result")
+ 	var board: Dictionary = await client.request_api("/track-versions/"+version+"/leaderboard?vehicle_id=compact&limit=1")
+ 	check(board.ok and board.data.population == 2 and board.data.items.size() == 1 and board.data.next_offset == 1,"verified scores paginated per vehicle")
+ 	var other: Dictionary = await client.request_api("/track-versions/"+version+"/leaderboard?vehicle_id=kart")
+diff --git a/game/tests/test_compact_kits.gd b/game/tests/test_compact_kits.gd
+index 303fcab..0999dae 100644
+--- a/game/tests/test_compact_kits.gd
++++ b/game/tests/test_compact_kits.gd
+@@ -138,7 +138,7 @@ func _run() -> void:
+ 		if not page.kit_scroll.get_global_rect().encloses(last.get_global_rect()):
+ 			print("KIT_FOCUS_BOUNDS ",dimensions," scroll=",page.kit_scroll.get_global_rect()," card=",last.get_global_rect()," value=",page.kit_scroll.scroll_vertical," focused=",root.gui_get_focus_owner()==last)
+ 		check(page.kit_scroll.get_global_rect().encloses(last.get_global_rect()),"focus reveals last of thirteen aero choices")
+-		check(CompactKitThumbnail.images.size()<=16,"retained native-photo cache stays bounded")
++		check(page.kit_cards.get_child_count()==VehicleCustomisation.options(page.kit_category,page.vehicle_id).size() and page.kit_cards.find_children("*","SubViewport",true,false).is_empty(),"current Parts list stays bounded without per-option worlds")
+ 		check(app.root_ui.get_global_rect().encloses(page.actions.get_global_rect()),"actions fit "+str(dimensions))
+ 		check(app.root_ui.get_global_rect().encloses(page.kit_scroll.get_global_rect()),"scrolling parts fit "+str(dimensions))
+ 		check(page.showroom.size.y>=250,"usable showroom "+str(dimensions))
+@@ -206,7 +206,7 @@ func _run() -> void:
+ 	await process_frame
+ 	check(reflections.views.is_empty(),"real showroom teardown releases reflection views")
+ 	var report := FileAccess.open(output.path_join("geometry.json"),FileAccess.WRITE)
+-	report.store_string(JSON.stringify({"checks":checks,"failures":failures,"geometry":metrics,"cached_parts":CompactKits.meshes.size(),"cached_images":CompactKitThumbnail.images.size()},"\t"))
++	report.store_string(JSON.stringify({"checks":checks,"failures":failures,"geometry":metrics,"cached_parts":CompactKits.meshes.size()},"\t"))
+ 	report.close()
+ 	print("COMPACT_KITS: %d checks, %d failures"%[checks,failures])
+ 	quit(1 if failures else 0)
+diff --git a/game/tests/test_customisation_carousel.gd b/game/tests/test_customisation_carousel.gd
+index 6037ce1..da8b9a1 100644
+--- a/game/tests/test_customisation_carousel.gd
++++ b/game/tests/test_customisation_carousel.gd
+@@ -32,6 +32,13 @@ func check(ok: bool, label: String) -> void:
+ 	if not ok:
+ 		failures += 1
+ 		print("FAIL: "+label)
++func untinted(car: CarVisual, paint: Dictionary) -> bool:
++	for node: MeshInstance3D in car.find_children("*","MeshInstance3D",true,false):
++		if node.material_overlay != null: return false
++	for slot: String in VehicleLivery.SLOTS:
++		if car.paint_materials.has(slot) and not car.paint_materials[slot].albedo_color.is_equal_approx(Color(str(paint.colors[slot]))): return false
++	return true
++
+ func settle() -> void:
+ 	while page._workbench_focus_pending or page._menu_motion != null or (page.showroom.camera_motion != null and page.showroom.camera_motion.is_running()): await process_frame
+ 	for frame: int in range(12): await process_frame
+@@ -90,7 +97,7 @@ func run() -> void:
+ 			check(page.showroom.customisation[category] == option[0],"unowned preview visible "+category+"/"+str(option[0]))
+ 			check(page.kit_draft[category] == "stock" and page.records.settings == original,"preview leaves equipped/save exact "+category+str(index))
+ 			check(shop.purchases == 0 and page._purchase_dialog == null,"browse never purchases or opens confirmation")
+-			check(page._part_indicator.visible and page._part_highlight.meshes.is_empty(),"selected native part marked without altering its finish "+category)
++			check(page._part_indicator.visible and untinted(page.showroom.car,page.draft),"selected native part marked without altering its finish "+category)
+ 		await settle()
+ 		check(page.showroom.car == car and page.showroom.showroom_viewport == viewport,"preview retains actual car and viewport "+category)
+ 		check(page._customisation_camera.focused_category == focus and not page.showroom.camera.transform.is_equal_approx(home_camera),"main Garage camera focuses on "+category)
+@@ -110,9 +117,9 @@ func run() -> void:
+ 		check(page.showroom.customisation[category] == "stock" and page.records.settings == original,"original option previews without saving "+category)
+ 		var cancel_view: Transform3D = page.showroom.camera.transform
+ 		page._cancel_cosmetic_preview()
+-		check(page.showroom.customisation == page.kit_draft and page._part_highlight.meshes.is_empty(),"cancel restores part and highlight "+category)
++		check(page.showroom.customisation == page.kit_draft and not page._part_indicator.visible and untinted(page.showroom.car,page.draft),"cancel restores part and highlight "+category)
+ 		check(page.showroom.camera.transform.is_equal_approx(cancel_view) and page._customisation_camera.focused_category==focus,"cancel keeps the editing view on the equipped part "+category)
+-	check(CompactKitThumbnail.images.size()<=16,"sixteen-photo cache remains bounded")
++	check(page.kit_cards.get_child_count()==VehicleCustomisation.options(page.kit_category,page.vehicle_id).size() and page.kit_cards.find_children("*","SubViewport",true,false).is_empty(),"current Parts list stays bounded without per-option worlds")
+ 	page._select_kit_category("hood")
+ 	page._preview_kit("hood","louvres")
+ 	page._equip_cosmetic_preview()
+@@ -146,7 +153,7 @@ func run() -> void:
+ 	check(page._cosmetic_preview.is_empty() and page.showroom.customisation.hood == "louvres","account switch restores equipped appearance")
+ 	page._preview_kit("hood","dome")
+ 	page._show_section("care")
+-	check(page.showroom.customisation.hood == "louvres" and page._part_highlight.meshes.is_empty(),"navigation discards preview and overlay")
++	check(page.showroom.customisation.hood == "louvres" and not page._part_indicator.visible and untinted(page.showroom.car,page.draft),"navigation discards preview and overlay")
+ 	page._show_section("customise")
+ 	await settle()
+ 	check(page._customisation_camera.focused_category=="body","opening Patterns focuses the main Garage body")
+diff --git a/game/tests/test_garage_customisation_speed.gd b/game/tests/test_garage_customisation_speed.gd
+index 382eca2..29afe80 100644
+--- a/game/tests/test_garage_customisation_speed.gd
++++ b/game/tests/test_garage_customisation_speed.gd
+@@ -14,6 +14,8 @@ func digest(bytes: PackedByteArray) -> String:
+ 	hash.update(bytes)
+ 	return hash.finish().hex_encode()
+ func settle() -> void:
++	var page: GaragePage = root.find_child("GaragePage",true,false)
++	while page != null and (page._workbench_focus_pending or (page.showroom != null and page.showroom.get("preparing")==true)): await process_frame
+ 	for frame: int in range(6): await process_frame
+ 	if DisplayServer.get_name()!="headless": await RenderingServer.frame_post_draw
+ func _run() -> void:
+@@ -26,23 +28,6 @@ func _run() -> void:
+ 	for key: String in manifest.meshes:
+ 		var resource: ArrayMesh = load(CompactKits.ASSET_ROOT.path_join("meshes/"+str(manifest.meshes[key].file)))
+ 		check(resource!=null and digest(var_to_bytes(resource.surface_get_arrays(0)))==manifest.meshes[key].surface_sha256,"prepared arrays exact "+key)
+-	CompactKitThumbnail.images.clear()
+-	for category: String in VehicleCustomisation.CATEGORIES:
+-		for option: Array in VehicleCustomisation.OPTIONS[category]:
+-			var card: CompactKitThumbnail = CompactKitThumbnail.make(category,option,false,func() -> void: pass)
+-			root.add_child(card)
+-			check(card.viewport==null,"cold preview needs no car/world: "+category+"/"+str(option[0]))
+-			var path: String = CompactKits.ASSET_ROOT.path_join("previews/"+RenderingServer.get_current_rendering_method()+"/"+category+"_"+str(option[0])+".png")
+-			var original := Image.new()
+-			original.load_png_from_buffer(FileAccess.get_file_as_bytes(path))
+-			var imported: Image = card.image.texture.get_image()
+-			imported.clear_mipmaps()
+-			original.convert(Image.FORMAT_RGBA8)
+-			imported.convert(Image.FORMAT_RGBA8)
+-			check(original.get_data()==imported.get_data(),"preview pixels exact "+category+"/"+str(option[0]))
+-			card.queue_free()
+-			await process_frame
+-	check(CompactKitThumbnail.images.size()<=16,"preview byte budget retains sixteen images")
+ 	var folder: String = "user://garage_speed_checks_"+TrackLibrary.unique_id()
+ 	DirAccess.make_dir_recursive_absolute(folder)
+ 	var app: Node = load("res://core/app.tscn").instantiate()
+@@ -86,6 +71,12 @@ func _run() -> void:
+ 	check(page.livery_menu!=menu and page.livery_menu.find_child("StickerRoof",true,false)==null,"car switch invalidates physical-panel tools")
+ 	page.open_car(0)
+ 	page._show_section("tuning")
++	for category: String in VehicleCustomisation.CATEGORIES:
++		page._select_kit_category(category)
++		check(page.kit_cards.get_child_count()==VehicleCustomisation.options(category,page.vehicle_id).size(),"actual Parts list contains every "+category+" choice")
++		for card: Control in page.kit_cards.get_children():
++			check(card.get_script()==preload("res://ui/garage_part_option.gd") and card.find_children("*","SubViewport",true,false).is_empty(),"actual option is a row without an extra car/world")
++	page._select_kit_category("hood")
+ 	page._select_kit("hood","louvres")
+ 	var installed: CarVisual = page.showroom.car
+ 	page.showroom.apply_customisation(page.kit_draft)
+diff --git a/game/tests/test_garage_swipe_scroll.gd b/game/tests/test_garage_swipe_scroll.gd
+index b1d605a..742d7f1 100644
+--- a/game/tests/test_garage_swipe_scroll.gd
++++ b/game/tests/test_garage_swipe_scroll.gd
+@@ -263,7 +263,7 @@ func _run() -> void:
+ 		last.grab_focus()
+ 		await settle()
+ 		check(page.kit_scroll.get_global_rect().encloses(last.get_global_rect()),"keyboard focus still reveals last kit")
+-		check(CompactKitThumbnail.images.size()<=16,"sixteen-photo cache bound retained")
++		check(page.kit_cards.get_child_count()==VehicleCustomisation.options(page.kit_category,page.vehicle_id).size() and page.kit_cards.find_children("*","SubViewport",true,false).is_empty(),"current Parts list stays bounded without per-option worlds")
+ 	check(page.showroom==showroom and showroom.car==car and showroom.camera.transform==camera,"swipes and tabs retain actual car and camera")
+ 	check(showroom.weathering.snapshot()==condition,"swipes retain exact local condition")
+ 	app.queue_free()
+diff --git a/game/tests/test_garage_tuning_layout.gd b/game/tests/test_garage_tuning_layout.gd
+index 9e6f2a1..5ea4f47 100644
+--- a/game/tests/test_garage_tuning_layout.gd
++++ b/game/tests/test_garage_tuning_layout.gd
+@@ -75,7 +75,7 @@ func _run() -> void:
+ 			last.grab_focus()
+ 			await settle()
+ 			check(page.kit_scroll.get_global_rect().encloses(last.get_global_rect()),"focus reveals last "+category+" choice")
+-			check(CompactKitThumbnail.images.size()<=16,"native photo cache remains bounded")
++			check(page.kit_cards.get_child_count()==VehicleCustomisation.options(page.kit_category,page.vehicle_id).size() and page.kit_cards.find_children("*","SubViewport",true,false).is_empty(),"current Parts list stays bounded without per-option worlds")
+ 		await capture("tuning-"+str(dimensions.x))
+ 	page._show_section("care")
+ 	await settle()
+diff --git a/game/tests/test_mission_outbox.gd b/game/tests/test_mission_outbox.gd
+index acb47bc..7f013b1 100644
+--- a/game/tests/test_mission_outbox.gd
++++ b/game/tests/test_mission_outbox.gd
+@@ -10,17 +10,17 @@ class HeldClient extends Node:
+ 	var origin: String = "http://127.0.0.1:1"
+ 	var held: bool = true
+ 	var requests: Array[Dictionary] = []
+-	var _capabilities: Dictionary = {}
++	var _capabilities: Dictionary = {"submission_recovery_version":1}
+ 	func signed_in() -> bool: return not player.is_empty()
+ 	func base_url() -> String: return origin
+ 	func server_now() -> int: return 1000
+ 	func new_operation_key() -> String: return "mission-retry-key-unchanged"
+ 	func _background(work: Callable) -> Variant: return work.call()
+-	func submit_run(ticket_id: String, _frames: Array, key: String, _rewinds: Array = [], _proof: Dictionary = {}, _ghost: Dictionary = {}) -> Dictionary:
+-		requests.append({"owner":player.id,"origin":origin,"ticket":ticket_id,"key":key})
+-		if held: await respond
+-		return {"ok":true,"status":202,"data":{"run_id":"mission-accepted-run","status":"verified","time_ticks":100,"lap_ticks":[20,20,20,20,20]}}
+ 	func request_api(_path: String, _method: HTTPClient.Method = HTTPClient.METHOD_GET, _data: Dictionary = {}, _key: String = "", _auth: bool = false) -> Dictionary:
++		if _path.ends_with("/submission"): return {"ok":true,"status":200,"data":{"run":null}}
++		if _path=="/runs" and _method==HTTPClient.METHOD_POST:
++			requests.append({"owner":player.id,"origin":origin,"ticket":_data.ticket_id,"key":_key})
++			if held: await respond
+ 		return {"ok":true,"status":200,"data":{"run_id":"mission-accepted-run","status":"verified","time_ticks":100,"lap_ticks":[20,20,20,20,20]}}
+ 
+ func _initialize() -> void: call_deferred("run")
+@@ -44,7 +44,7 @@ func run() -> void:
+ 	root.add_child(cloud)
+ 	var saved_root: String = cloud.root_override
+ 	var ticket_data: Dictionary = {"ticket_id":"mission-original-ticket","_owner_id":"mission-alice","_origin":client.origin,"_submit_key":"mission-original-key"}
+-	check(cloud.queue_run(ticket_data,[[0,255,0],[0,255,0]]),"original owner replay saved atomically")
++	check((await cloud.queue_run_async(ticket_data,[[0,255,0],[0,255,0]])),"original owner replay saved atomically")
+ 	var alice_path: String = cloud.outbox_path()
+ 	var state: Dictionary = {"done":false}
+ 	finish_flush(cloud,state)
+@@ -59,9 +59,9 @@ func run() -> void:
+ 		if state.done: break
+ 		await process_frame
+ 	check(state.done,"late response completed without blocking the new account")
+-	check(cloud.upload_jobs().is_empty(),"late Alice response creates no Bob job or result")
++	check((await cloud.upload_history()).is_empty(),"late Alice response creates no Bob job or result")
+ 	client.player = {"id":"mission-alice"}
+-	var pending: Array[Dictionary] = cloud.upload_jobs()
++	var pending: Array[Dictionary] = (await cloud.upload_history())
+ 	check(pending.size() == 1 and not pending[0].has("done"),"original owner evidence remains pending after account switch")
+ 	check(pending.size() == 1 and pending[0].key == "mission-original-key","original operation identity retained")
+ 	cloud.queue_free()
+@@ -73,12 +73,12 @@ func run() -> void:
+ 	root.add_child(restored)
+ 	client.held = false
+ 	await restored.flush_outbox()
+-	var completed: Array[Dictionary] = restored.upload_jobs()
++	var completed: Array[Dictionary] = (await restored.upload_history())
+ 	check(completed.size() == 1 and completed[0].get("done",false),"original owner recovers the saved race after adapter restart")
+ 	check(client.requests.size() == 2 and client.requests[0] == client.requests[1],"retry preserves original account/origin/ticket/key")
+ 	check(completed.size() == 1 and completed[0].run_id == "mission-accepted-run","same accepted server run recovered")
+ 	client.player = {"id":"mission-bob"}
+-	check(restored.upload_jobs().is_empty(),"verified Alice result remains absent from Bob history")
++	check((await restored.upload_history()).is_empty(),"verified Alice result remains absent from Bob history")
+ 	print("MISSION_OUTBOX ",checks," checks, ",failures," failures")
+ 	restored.queue_free()
+ 	client.queue_free()
+diff --git a/game/tests/test_offline_kit_photos.gd b/game/tests/test_offline_kit_photos.gd
+new file mode 100644
+index 0000000..bd1e78e
+--- /dev/null
++++ b/game/tests/test_offline_kit_photos.gd
+@@ -0,0 +1,31 @@
++extends SceneTree
++## Offline legacy photograph generator: intentionally excluded from production.
++const OfflineKitThumbnail = preload("res://tests/support/offline_kit_thumbnail.gd")
++var checks: int = 0
++var failures: int = 0
++func _initialize() -> void: run.call_deferred()
++func check(value: bool, label: String) -> void:
++	checks += 1
++	if not value:
++		failures += 1
++		print("FAIL: "+label)
++func run() -> void:
++	OfflineKitThumbnail.images.clear()
++	for category: String in VehicleCustomisation.CATEGORIES:
++		for option: Array in VehicleCustomisation.OPTIONS[category]:
++			var card: OfflineKitThumbnail = OfflineKitThumbnail.make(category,option,false,func() -> void: pass)
++			root.add_child(card)
++			check(card.viewport==null,"cold preview needs no car/world: "+category+"/"+str(option[0]))
++			var path: String = CompactKits.ASSET_ROOT.path_join("previews/"+RenderingServer.get_current_rendering_method()+"/"+category+"_"+str(option[0])+".png")
++			var original := Image.new()
++			original.load_png_from_buffer(FileAccess.get_file_as_bytes(path))
++			var imported: Image = card.image.texture.get_image()
++			imported.clear_mipmaps()
++			original.convert(Image.FORMAT_RGBA8)
++			imported.convert(Image.FORMAT_RGBA8)
++			check(original.get_data()==imported.get_data(),"preview pixels exact "+category+"/"+str(option[0]))
++			card.queue_free()
++			await process_frame
++	check(OfflineKitThumbnail.images.size()<=16,"preview byte budget retains sixteen images")
++	print("OFFLINE_KIT_PHOTOS: %d checks, %d failures" % [checks,failures])
++	quit(1 if failures else 0)
+diff --git a/game/tests/test_offline_kit_photos.gd.uid b/game/tests/test_offline_kit_photos.gd.uid
+new file mode 100644
+index 0000000..73ccb42
+--- /dev/null
++++ b/game/tests/test_offline_kit_photos.gd.uid
+@@ -0,0 +1 @@
++uid://bulwdwhfhgalp
+diff --git a/game/tests/test_own_profile_page.gd b/game/tests/test_own_profile_page.gd
+index 525086a..bb2947d 100644
+--- a/game/tests/test_own_profile_page.gd
++++ b/game/tests/test_own_profile_page.gd
+@@ -76,8 +76,6 @@ class Host extends Node:
+ 	func _open_account() -> void: action = "account"
+ 	func _open_race_area() -> void: action = "race"
+ 	func _new_document() -> void: action = "create"
+-	func _open_profile_tracks() -> void: action = "tracks"
+-	func _open_profile_achievements(family: String = "") -> void: action = "achievement:"+family
+ 	func _open_published_track(entry: Dictionary) -> void: action = str(entry.get("track_id",""))
+ 
+ func _initialize() -> void: run.call_deferred()
+diff --git a/game/tests/test_pending_input_recovery.gd b/game/tests/test_pending_input_recovery.gd
+index 60596bc..349994e 100644
+--- a/game/tests/test_pending_input_recovery.gd
++++ b/game/tests/test_pending_input_recovery.gd
+@@ -87,7 +87,7 @@ func run() -> void:
+ 	var proof: Dictionary = {"schema":"bmt-race-proof-v1","samples":[[0,0.0,0.0,0.0,0.0,0.0,0,0.0],[3,1.0,2.0,0.2,1.0,2.0,0,0.0]]}
+ 	var receipt: Array = [{"receipt_id":"11111111-1111-4111-8111-111111111111","input_offset":2,"from_tick":2,"to_tick":0}]
+ 	var ticket: Dictionary = {"ticket_id":"new-count-journal","_submit_key":"count-key","_race_proof":proof,"_race_ghost":{"ticks":3},"_wire_options":{"path":0,"incidents":false}}
+-	check(cloud.queue_run(ticket,exact_controls,"",receipt),"new count journal saves with actual proof and rewind")
++	check((await cloud.queue_run_async(ticket,exact_controls,"",receipt)),"new count journal saves with actual proof and rewind")
+ 	var count_job: Dictionary = cloud.upload_job(ticket.ticket_id)
+ 	var count_path: String = str(count_job._path); count_job.erase("_path")
+ 	var result: Dictionary = await cloud._submit_saved(count_job,count_path)
+diff --git a/game/tests/test_prompt_run_confirmation.gd b/game/tests/test_prompt_run_confirmation.gd
+index e12a609..7f82fa9 100644
+--- a/game/tests/test_prompt_run_confirmation.gd
++++ b/game/tests/test_prompt_run_confirmation.gd
+@@ -97,7 +97,7 @@ func run() -> void:
+ 	cloud.client = server
+ 	cloud.root_override = "user://prompt_completion_"+TrackLibrary.unique_id()
+ 	root.add_child(cloud)
+-	check(cloud.queue_run({"ticket_id":"ticket-a"},[[0,255,0]]),"outbox fixture keeps the original durable evidence")
++	check((await cloud.queue_run_async({"ticket_id":"ticket-a"},[[0,255,0]])),"outbox fixture keeps the original durable evidence")
+ 	var job: Dictionary = cloud.upload_job("ticket-a")
+ 	job.run_id = "run-a"
+ 	cloud._save_job(str(job._path),job)
+diff --git a/game/tests/test_race_work_demand.gd b/game/tests/test_race_work_demand.gd
+index 31fea7e..cc9db8b 100644
+--- a/game/tests/test_race_work_demand.gd
++++ b/game/tests/test_race_work_demand.gd
+@@ -226,13 +226,16 @@ func run() -> void:
+ 	await emit_app_timer(0.5)
+ 	check(paths(client,client.phase).is_empty(),"Hidden challenge/rivalry results have no polling consumer")
+ 	client.phase = "visible_challenge_result"
+-	app._show_screen("challenges")
++	await app._show_screen("challenges")
+ 	app.challenges._next_poll = 0
+ 	app.challenges.poll_result()
+ 	await frames()
+ 	check(paths(client,client.phase).any(func(path: String) -> bool: return path.begins_with("/challenge-results/")),"Visible pending challenge result still polls")
+ 	client.phase = "visible_rivalry_result"
+-	app._show_screen("rivalry")
++	await app._show_screen("rivalry")
++	var rivalry_probe_deadline: int = Time.get_ticks_msec()+3000
++	while app.rivalry.busy and Time.get_ticks_msec()<rivalry_probe_deadline: await process_frame
++	check(not app.rivalry.busy,"Rivalry entry read completes before the result polling probe")
+ 	app.rivalry._next_poll_msec = 0
+ 	app.rivalry.poll_result()
+ 	await frames()
+@@ -251,16 +254,17 @@ func run() -> void:
+ 	await empty_cloud.flush_outbox()
+ 	check(empty_cloud.profile_flush_passes>empty_passes and paths(client,client.phase).any(func(path: String) -> bool: return path.contains("audit-existing-run-2")),"New durable result wakes an idle outbox")
+ 	check(app.cloud.upload_job(ticket).key == "audit-existing-operation","Race deferral preserves original upload identity")
+-	for asynchronous: bool in [false,true]:
++	for retry: bool in [false,true]:
+ 		var writer: Node = load("res://backend/cloud_tracks.gd").new()
+-		writer.client = client; writer.root_override = folder.path_join("writer-"+str(asynchronous))
++		writer.client = client; writer.root_override = folder.path_join("writer-"+str(retry))
+ 		app.add_child(writer)
+ 		await writer.flush_outbox()
+ 		var before_write: int = writer.profile_flush_passes
+-		var ticket_data: Dictionary = {"ticket_id":"audit-writer-"+str(asynchronous),"_submit_key":"audit-writer-original-key"}
+-		var saved: bool = await writer.queue_run_async(ticket_data,[[0,255,0]]) if asynchronous else writer.queue_run(ticket_data,[[0,255,0]])
++		var ticket_data: Dictionary = {"ticket_id":"audit-writer-"+str(retry),"_submit_key":"audit-writer-original-key"}
++		if retry: await writer.queue_run_async(ticket_data,[[0,255,0]])
++		var saved: bool = await writer.queue_run_async(ticket_data,[[0,255,0]])
+ 		await writer.flush_outbox()
+-		check(saved and writer.profile_flush_passes>before_write and writer.upload_job(ticket_data.ticket_id).key == ticket_data._submit_key,"Actual synchronous/asynchronous result writer wakes idle outbox with original key")
++		check(saved and writer.profile_flush_passes>before_write and writer.upload_job(ticket_data.ticket_id).key == ticket_data._submit_key,"Actual asynchronous result writer wakes idle outbox with original key")
+ 	client.phase = "empty_resume_recovery"
+ 	await client.resume_recovery.reconcile()
+ 	var recovery_callbacks: int = client.resume_recovery.profile_callback_us
+diff --git a/game/tests/test_rejected_race_replay.gd b/game/tests/test_rejected_race_replay.gd
+index a68ac15..30b576a 100644
+--- a/game/tests/test_rejected_race_replay.gd
++++ b/game/tests/test_rejected_race_replay.gd
+@@ -83,13 +83,13 @@ func rejection_upload() -> void:
+ 	cloud.client = client
+ 	cloud.root_override = "user://rejected_replay_test_"+TrackLibrary.unique_id()
+ 	root.add_child(cloud)
+-	check(cloud.queue_run({"ticket_id":"rejected-fixture"},[[0,255,0]]),"queue disposable upload")
+-	var job: Dictionary = cloud.upload_jobs()[0]
++	check((await cloud.queue_run_async({"ticket_id":"rejected-fixture"},[[0,255,0]])),"queue disposable upload")
++	var job: Dictionary = (await cloud.upload_history())[0]
+ 	job.run_id = "rejected-fixture-run"
+ 	cloud._save_job(str(job._path),job)
+ 	await cloud.flush_outbox()
+ 	check(cloud.status.contains("Server replay could not verify this finish") and not cloud.status.contains("invalid_replay"),"polled rejection explains recovery instead of showing an internal code")
+-	var retained: Dictionary = cloud.upload_jobs()[0]
++	var retained: Dictionary = (await cloud.upload_history())[0]
+ 	var replay_path: String = str(retained._path).get_base_dir().path_join(str(retained.replay))
+ 	check(retained.failure == "invalid_replay" and not retained.retryable and cloud._replay_integrity(replay_path,str(retained.replay_hash)),"terminal rejection preserves replay and original diagnostic code")
+ 	if DisplayServer.get_name() != "headless":
+diff --git a/game/tests/test_resume_recovery_budget.gd b/game/tests/test_resume_recovery_budget.gd
+index 3417897..5676180 100644
+--- a/game/tests/test_resume_recovery_budget.gd
++++ b/game/tests/test_resume_recovery_budget.gd
+@@ -221,12 +221,12 @@ func run() -> void:
+ 		var cloud: Node = cloud_for(api,"outbox-%s"%rate_limited)
+ 		var proof: Dictionary = {"schema":"bmt-race-proof-v1","samples":[[0,0,0,0,0,0,0,0],[1,1,0,0,1,0,0,0]]}
+ 		for index: int in range(20):
+-			check(cloud.queue_run({"ticket_id":"outbox-ticket-%d"%index,"_submit_key":"original-key-%d"%index,"_race_proof":proof,"_wire_options":{"path":0,"incidents":false}},[[0,255,0]]),"outbox backlog is durable")
++			check((await cloud.queue_run_async({"ticket_id":"outbox-ticket-%d"%index,"_submit_key":"original-key-%d"%index,"_race_proof":proof,"_wire_options":{"path":0,"incidents":false}},[[0,255,0]])),"outbox backlog is durable")
+ 		api.reply = failure(429,"RATE_LIMITED",120) if rate_limited else {"ok":true,"status":202,"data":{"run_id":"run-fixture","status":"verified"},"error":""}
+ 		await cloud.flush_outbox()
+ 		await cloud.flush_outbox()
+ 		check(api.paths.size() == 1,"outbox %s does not spend the budget on every remaining job"%rate_limited)
+-		check(cloud.upload_jobs().size() == 20,"outbox retains every saved result")
++		check((await cloud.upload_history()).size() == 20,"outbox retains every saved result")
+ 		if rate_limited:
+ 			var request_scope: String = api.base_url()+"/fixture-owner"
+ 			check(int(cloud._flush_deadlines[request_scope])-Time.get_ticks_msec() > 110000,"whole outbox honors Retry-After")
+diff --git a/game/tests/test_review_followups.gd b/game/tests/test_review_followups.gd
+index 2fa5304..77ef6c4 100644
+--- a/game/tests/test_review_followups.gd
++++ b/game/tests/test_review_followups.gd
+@@ -224,7 +224,7 @@ func run() -> void:
+ 	await cloud.flush_outbox()
+ 	measurements.history_2000_idle_flush_usec = Time.get_ticks_usec()-before
+ 	check(cloud.metadata_reads == 0,"ordinary polling reads no completed receipt metadata")
+-	for index: int in range(40): check(cloud.queue_run({"ticket_id":"pending-"+str(index)},[[0,0,0]]),"pending replay is durably indexed")
++	for index: int in range(40): check((await cloud.queue_run_async({"ticket_id":"pending-"+str(index)},[[0,0,0]])),"pending replay is durably indexed")
+ 	cloud.metadata_reads = 0
+ 	await cloud.flush_outbox()
+ 	check(queue.submissions.size() == 16 and cloud.metadata_reads <= 16,"one poll processes at most sixteen indexed jobs")
+@@ -234,9 +234,9 @@ func run() -> void:
+ 	check(queue.submissions.size() == 40,"pending traversal does not skip a boundary job")
+ 	var pinned: Dictionary = {"ticket_id":"original-owner-race","_owner_id":"fixture-player","_origin":queue.base_url()}
+ 	queue.clear_session()
+-	check(cloud.queue_run(pinned,[[0,0,0]]),"a completed original-owner race survives session expiry")
++	check((await cloud.queue_run_async(pinned,[[0,0,0]])),"a completed original-owner race survives session expiry")
+ 	check(FileAccess.file_exists(directory.path_join("original-owner-race".sha256_text()+".job.json")),"expired-session race remains in the original owner's outbox")
+-	check(cloud.upload_jobs().is_empty(),"Guest cannot read the previous owner's upload jobs")
++	check((await cloud.upload_history()).is_empty(),"Guest cannot read the previous owner's upload jobs")
+ 	cloud.free(); queue.free()
+ 
+ 	await check_expiry_and_navigation(document)
+diff --git a/game/tests/test_review_reliability.gd b/game/tests/test_review_reliability.gd
+index 96b583f..56a3fc8 100644
+--- a/game/tests/test_review_reliability.gd
++++ b/game/tests/test_review_reliability.gd
+@@ -70,15 +70,15 @@ func run() -> void:
+ 	root.add_child(cloud)
+ 	var frames: Array = []
+ 	for index: int in range(216000): frames.append([0,255,0,255])
+-	for index: int in range(3): check(cloud.queue_run({"ticket_id":"fixture-ticket-"+str(index)},frames),"maximum replay %d is durably queued" % index)
+-	check(cloud.upload_jobs().size() == 3,"three maximum replays survive an adapter reload")
+-	check(cloud.queue_run({"ticket_id":"fixture-ticket-0"},frames),"repeated completion accepts the same recorded replay")
+-	check(cloud.upload_jobs().size() == 3,"repeated completion retains one submission")
+-	check(not cloud.queue_run({"ticket_id":"fixture-ticket-0"},[[0,0,0]]),"a conflicting attempt cannot overwrite the saved replay")
++	for index: int in range(3): check((await cloud.queue_run_async({"ticket_id":"fixture-ticket-"+str(index)},frames)),"maximum replay %d is durably queued" % index)
++	check((await cloud.upload_history()).size() == 3,"three maximum replays survive an adapter reload")
++	check((await cloud.queue_run_async({"ticket_id":"fixture-ticket-0"},frames)),"repeated completion accepts the same recorded replay")
++	check((await cloud.upload_history()).size() == 3,"repeated completion retains one submission")
++	check(not (await cloud.queue_run_async({"ticket_id":"fixture-ticket-0"},[[0,0,0]])),"a conflicting attempt cannot overwrite the saved replay")
+ 	var legacy: String = cloud.outbox_path()
+ 	cloud._write(legacy,{"jobs":[{"ticket":"legacy-ticket","frames":[[0,0,0]],"key":"legacy-key","publish":"","publish_key":"publish-key"}]})
+ 	check(cloud._migrate_outbox() and FileAccess.file_exists(legacy+".migrated"),"legacy replay migration retains a recovery copy")
+-	check(cloud.upload_jobs().size() == 4,"migration preserves prior and newly queued races")
++	check((await cloud.upload_history()).size() == 4,"migration preserves prior and newly queued races")
+ 	var corrupt := FileAccess.open(legacy,FileAccess.WRITE)
+ 	corrupt.store_string("broken JSON")
+ 	corrupt.close()
+diff --git a/game/tests/test_run_confirmation.gd b/game/tests/test_run_confirmation.gd
+index 6895d6b..2aab8e9 100644
+--- a/game/tests/test_run_confirmation.gd
++++ b/game/tests/test_run_confirmation.gd
+@@ -97,7 +97,7 @@ func run() -> void:
+ 	cloud.client = client
+ 	cloud.root_override = "user://run_confirmation_"+TrackLibrary.unique_id()
+ 	root.add_child(cloud)
+-	check(cloud.queue_run({"ticket_id":"ticket-a"},[[0,255,0]]),"completion fixture is durably queued")
++	check((await cloud.queue_run_async({"ticket_id":"ticket-a"},[[0,255,0]])),"completion fixture is durably queued")
+ 	var job: Dictionary = cloud.upload_job("ticket-a")
+ 	job.run_id = "run-a"
+ 	cloud._save_job(str(job._path),job)
+diff --git a/game/tests/test_scale_optimisations.gd b/game/tests/test_scale_optimisations.gd
+index 2196663..485fbae 100644
+--- a/game/tests/test_scale_optimisations.gd
++++ b/game/tests/test_scale_optimisations.gd
+@@ -65,14 +65,14 @@ func run() -> void:
+ 	cloud.root_override = directory.path_join("cloud")
+ 	root.add_child(cloud)
+ 	var issued: Dictionary = {"ticket_id":"00000000-0000-4000-8000-000000000001","_submit_key":"pinned-original-key","_race_proof":proof()}
+-	check(cloud.queue_run(issued,frames),"durable new job admitted")
++	check((await cloud.queue_run_async(issued,frames)),"durable new job admitted")
+ 	var runs: String = cloud.outbox_path().get_base_dir().path_join("runs")
+ 	var path: String = runs.path_join(str(issued.ticket_id).sha256_text()+".job.json")
+ 	var job: Dictionary = Cloud._read_file(path)
+ 	check(int(job.wire_options.path) == 1 and job.wire_options.incidents == true,"wire and reward options pinned before first request")
+ 	var original_recording: String = FileAccess.get_file_as_string(runs.path_join(str(job.replay)))
+ 	client._capabilities = {"trajectory_verification":true}
+-	check(cloud.queue_run(issued,frames),"repeat queue is idempotent after capability change")
++	check((await cloud.queue_run_async(issued,frames)),"repeat queue is idempotent after capability change")
+ 	check(Cloud._read_file(path).wire_options.path == 1,"repeat queue never replaces original options")
+ 	var deferred: Dictionary = await cloud._submit_saved(job,path)
+ 	check(not deferred.ok and deferred.status == 503 and client.requests[-1].path == "/bootstrap","older server defers packed job without sending an unsupported submission")
+diff --git a/game/ui/challenge_create.gd b/game/ui/challenge_create.gd
+index 5d43b50..5b60e4c 100644
+--- a/game/ui/challenge_create.gd
++++ b/game/ui/challenge_create.gd
+@@ -530,10 +530,6 @@ func _choose_format(key: String) -> void:
+ 	_active_slot = mini(_active_slot,_required_tracks()-1)
+ 	_refresh_tracks()
+ 
+-func _choose_mode(index: int) -> void: mode = index; selected_format = "custom"; _update()
+-func _choose_duration(seconds: int) -> void: duration = seconds; selected_format = "custom"; _update()
+-func _choose_attempt_limit(value: int) -> void: attempt_limit = value; selected_format = "custom"; _update()
+-
+ func _check_source() -> void:
+ 	_serial += 1
+ 	var serial: int = _serial
+diff --git a/game/ui/garage_first_draw.gd b/game/ui/garage_first_draw.gd
+index 740bf63..3857288 100644
+--- a/game/ui/garage_first_draw.gd
++++ b/game/ui/garage_first_draw.gd
+@@ -16,19 +16,6 @@ func _context() -> String:
+ 	var view: Viewport = owner.showroom_viewport if "showroom_viewport" in owner else get_viewport()
+ 	return Key.context(view,camera.get_parent() if camera != null else owner,camera)
+ 
+-func queue_geometry(node: GeometryInstance3D) -> bool:
+-	if not node is MeshInstance3D and not node is MultiMeshInstance3D: return false
+-	var key: String = Key.geometry_key(node)
+-	for index: int in range(pending.size()-1,-1,-1):
+-		if pending[index].node.get_ref() == node: pending.remove_at(index)
+-	if Key.ready(_context(),Key.receipt_key(node,_context())):
+-		node.show()
+-		return false
+-	pending.append({"node":weakref(node),"key":key})
+-	if not held.any(func(reference: WeakRef) -> bool: return reference.get_ref() == node): held.append(weakref(node))
+-	node.hide()
+-	return true
+-
+ func hold(world: Node) -> void:
+ 	var materials: Dictionary = {}
+ 	var context: String = _context()
+diff --git a/game/ui/garage_page.gd b/game/ui/garage_page.gd
+index d6407c9..16d7580 100644
+--- a/game/ui/garage_page.gd
++++ b/game/ui/garage_page.gd
+@@ -101,7 +101,6 @@ var _compare_parts: Dictionary = {}
+ var _compare_livery: Dictionary = {}
+ var _compare_button: Button
+ var _part_indicator: Control
+-var _part_highlight := preload("res://ui/garage_part_highlight.gd").new()
+ var _customisation_camera := preload("res://ui/garage_customisation_camera.gd").new()
+ var _customise_tab: String = "livery"
+ var _sticker_surface: String = "hood"
+@@ -1299,7 +1298,6 @@ func _set_part_compare(active: bool) -> void:
+ 		showroom.apply_livery(draft)
+ 	else: return
+ 	_condition_presented = showroom.weathering.snapshot()
+-	_part_highlight.clear()
+ 	_part_indicator.hide()
+ 	GameText.bind(_compare_button,"Showing equipped")
+ 	showroom.invalidate_render()
+@@ -1325,7 +1323,6 @@ func _cancel_cosmetic_preview(refresh: bool = true, restore_appearance: bool = t
+ 	if is_instance_valid(_part_indicator): _part_indicator.hide()
+ 	_preview_serial += 1
+ 	if is_instance_valid(_preview_hint): _preview_hint.hide()
+-	_part_highlight.clear()
+ 	if not _cosmetic_preview.is_empty():
+ 		var kind: String = str(_cosmetic_preview.kind)
+ 		_cosmetic_preview.clear()
+diff --git a/game/ui/garage_part_highlight.gd b/game/ui/garage_part_highlight.gd
+deleted file mode 100644
+index c956ae6..0000000
+--- a/game/ui/garage_part_highlight.gd
++++ /dev/null
+@@ -1,23 +0,0 @@
+-extends RefCounted
+-## Menu-only overlay, applied to the selected part's existing mesh instances.
+-var meshes: Array[Dictionary] = []
+-var material: ShaderMaterial
+-
+-func clear() -> void:
+-	for entry: Dictionary in meshes:
+-		var node: MeshInstance3D = entry.node.get_ref()
+-		if is_instance_valid(node) and node.material_overlay == material: node.material_overlay = entry.previous
+-	meshes.clear()
+-
+-func show_part(car: CarVisual, category: String) -> void:
+-	clear()
+-	if material == null:
+-		material = ShaderMaterial.new()
+-		material.shader = preload("res://ui/garage_part_highlight.gdshader")
+-	for frame: Node3D in car.kit_frames.get(category,[]): _visit(frame)
+-
+-func _visit(node: Node) -> void:
+-	if node is MeshInstance3D and node.mesh != null:
+-		meshes.append({"node":weakref(node),"previous":node.material_overlay})
+-		node.material_overlay = material
+-	for child: Node in node.get_children(): _visit(child)
+diff --git a/game/ui/garage_part_highlight.gd.uid b/game/ui/garage_part_highlight.gd.uid
+deleted file mode 100644
+index 6e73e2e..0000000
+--- a/game/ui/garage_part_highlight.gd.uid
++++ /dev/null
+@@ -1 +0,0 @@
+-uid://dw32hd86gikeu
+diff --git a/game/ui/garage_part_highlight.gdshader b/game/ui/garage_part_highlight.gdshader
+deleted file mode 100644
+index 8895e90..0000000
+--- a/game/ui/garage_part_highlight.gdshader
++++ /dev/null
+@@ -1,8 +0,0 @@
+-shader_type spatial;
+-render_mode unshaded, blend_mix, depth_draw_never, cull_back;
+-// A quiet gold surface tint and stronger silhouette retain the part's finish.
+-void fragment() {
+-	float rim = pow(1.0 - abs(dot(normalize(NORMAL), normalize(VIEW))), 2.0);
+-	ALBEDO = vec3(1.0, 0.72, 0.14);
+-	ALPHA = 0.14 + 0.48 * rim;
+-}
+diff --git a/game/ui/garage_part_highlight.gdshader.uid b/game/ui/garage_part_highlight.gdshader.uid
+deleted file mode 100644
+index b4cb51e..0000000
+--- a/game/ui/garage_part_highlight.gdshader.uid
++++ /dev/null
+@@ -1 +0,0 @@
+-uid://ba760ebutb1rt
+diff --git a/game/ui/garage_part_photos.gd b/game/ui/garage_part_photos.gd
+deleted file mode 100644
+index 43c90ba..0000000
+--- a/game/ui/garage_part_photos.gd
++++ /dev/null
+@@ -1,148 +0,0 @@
+-extends Node
+-## A single temporary studio prepares painted option photos, then releases its world.
+-const SIZE := Vector2i(320,208)
+-var _jobs: Array[Dictionary] = []
+-var busy: bool = false
+-var viewport: SubViewport
+-var car: CarVisual
+-var camera: Camera3D
+-var rendered: int = 0
+-var active_worlds: int = 0
+-var peak_worlds: int = 0
+-
+-func request(card: CompactKitThumbnail, category: String, option: String, paint: Dictionary, fitted: Dictionary) -> void:
+-	var parts: Dictionary = fitted.duplicate(true)
+-	parts[category] = option
+-	var key: String = "painted-part-1/"+RenderingServer.get_current_rendering_method()+"/"+JSON.stringify([category,paint,parts]).sha256_text()
+-	card.cache_key = key
+-	card.set_meta("photo_livery",paint.duplicate(true))
+-	card.set_meta("photo_parts",parts)
+-	if CompactKitThumbnail.images.has(key):
+-		card.image.texture = CompactKitThumbnail.images[key]
+-		return
+-	if DisplayServer.get_name() == "headless": return
+-	# Avoid briefly showing a different paint job while this bounded job is pending.
+-	card.image.texture = null
+-	# Replace stale work for this card and discard detached category requests.
+-	for index: int in range(_jobs.size()-1,-1,-1):
+-		var waiting: CompactKitThumbnail = _jobs[index].card.get_ref()
+-		if not is_instance_valid(waiting) or not waiting.is_inside_tree() or waiting==card:
+-			_jobs.remove_at(index)
+-	_jobs.append({"card":weakref(card),"category":category,"paint":paint.duplicate(true),"parts":parts,"key":key})
+-	if not busy:
+-		busy = true
+-		_drain.call_deferred()
+-
+-func _drain() -> void:
+-	while not _jobs.is_empty() and is_inside_tree() and (get_parent() as Control).is_visible_in_tree():
+-		var job: Dictionary = _jobs.pop_front()
+-		var tile: CompactKitThumbnail = job.card.get_ref()
+-		if not is_instance_valid(tile) or not tile.is_inside_tree(): continue
+-		if viewport == null: _create_studio(job.paint,job.parts)
+-		else:
+-			car.graphics.restore_originals()
+-			car.change_kit_parts(job.parts)
+-			car.apply_livery(job.paint)
+-			ShowroomStudio._studio_glass(car,{})
+-		pose(camera,str(job.category),Transform3D.IDENTITY)
+-		# One submission after transforms settle; no continuously rendered thumbnails.
+-		await RenderingServer.frame_post_draw
+-		if not is_inside_tree(): return
+-		viewport.render_target_update_mode = SubViewport.UPDATE_ONCE
+-		await RenderingServer.frame_post_draw
+-		if not is_inside_tree(): return
+-		var pixels: Image = viewport.get_texture().get_image()
+-		if pixels == null or pixels.is_empty(): continue
+-		pixels.generate_mipmaps()
+-		var texture: ImageTexture = ImageTexture.create_from_image(pixels)
+-		if CompactKitThumbnail.images.size() >= CompactKitThumbnail.CACHE_LIMIT:
+-			CompactKitThumbnail.images.erase(CompactKitThumbnail.images.keys()[0])
+-		CompactKitThumbnail.images[job.key] = texture
+-		rendered += 1
+-		tile = job.card.get_ref()
+-		if is_instance_valid(tile) and tile.is_inside_tree() and tile.cache_key == job.key:
+-			tile.image.texture = texture
+-	_jobs.clear()
+-	_release_studio()
+-	busy = false
+-
+-func _create_studio(paint: Dictionary, parts: Dictionary) -> void:
+-	viewport = SubViewport.new()
+-	viewport.name = "GarageOptionPhotoStudio"
+-	viewport.size = SIZE
+-	viewport.own_world_3d = true
+-	viewport.gui_disable_input = true
+-	viewport.msaa_3d = Viewport.MSAA_2X
+-	viewport.render_target_update_mode = SubViewport.UPDATE_DISABLED
+-	add_child(viewport)
+-	active_worlds += 1
+-	peak_worlds = maxi(peak_worlds,active_worlds)
+-	var world := Node3D.new()
+-	viewport.add_child(world)
+-	car = CarVisual.new()
+-	car.editable_kits = true
+-	car.livery = paint
+-	car.customisation = parts
+-	world.add_child(car)
+-	var environment := WorldEnvironment.new()
+-	environment.environment = Environment.new()
+-	environment.environment.background_mode = Environment.BG_COLOR
+-	environment.environment.background_color = Color("101b23")
+-	environment.environment.ambient_light_source = Environment.AMBIENT_SOURCE_COLOR
+-	environment.environment.ambient_light_color = Color("d6dbe0")
+-	environment.environment.ambient_light_energy = 0.65
+-	world.add_child(environment)
+-	var key := DirectionalLight3D.new()
+-	key.rotation_degrees = Vector3(-55,-35,0)
+-	key.light_color = Color("fff2e0")
+-	key.light_energy = 0.9
+-	world.add_child(key)
+-	var fill := DirectionalLight3D.new()
+-	fill.rotation_degrees = Vector3(-25,145,0)
+-	fill.light_color = Color("c5d3df")
+-	fill.light_energy = 0.32
+-	world.add_child(fill)
+-	ShowroomStudio._studio_glass(car,{})
+-	camera = Camera3D.new()
+-	camera.projection = Camera3D.PROJECTION_ORTHOGONAL
+-	world.add_child(camera)
+-	camera.current = true
+-
+-static func pose(view: Camera3D, category: String, frame: Transform3D, vehicle_id: String = "compact") -> void:
+-	var target: Vector3
+-	var direction: Vector3
+-	match category:
+-		"hood":
+-			target = Vector3(0,1.0,-1.45)
+-			direction = Vector3(1.8,2.5,-3.5)
+-			view.size = 1.15
+-		"aero":
+-			target = Vector3(0,1.39,1.84)
+-			direction = Vector3(3,0.95,3)
+-			view.size = 1.65
+-		"rims":
+-			target = Vector3(0.83,0.37,-1.28)
+-			direction = Vector3(4,0.8,-0.8)
+-			view.size = 0.95
+-		_:
+-			target = Vector3(0,0.45,0)
+-			direction = Vector3(3,1.1,-4)
+-			view.size = 1.85
+-	if vehicle_id == "hovercraft":
+-		match category:
+-			"hood": target = Vector3(0,0.78,-1.5); direction = Vector3(1.5,1.7,-3); view.size = 1.25
+-			"aero": target = Vector3(0,1.35,1.7); direction = Vector3(2,1.2,3); view.size = 2.0
+-			"rims": target = Vector3(0,1.03,1.25); direction = Vector3(0.3,0.6,-3); view.size = 1.8
+-			"body": target = Vector3(0.8,0.65,0); direction = Vector3(3,1,-1.5); view.size = 2.2
+-	var world_target: Vector3 = frame*(target*HandlingConfig.BODY_SCALE)
+-	view.look_at_from_position(world_target+frame.basis*direction,world_target)
+-	view.keep_aspect = Camera3D.KEEP_HEIGHT
+-
+-func _release_studio() -> void:
+-	if is_instance_valid(viewport):
+-		remove_child(viewport)
+-		viewport.queue_free()
+-	viewport = null
+-	car = null
+-	camera = null
+-	active_worlds = 0
+diff --git a/game/ui/garage_part_photos.gd.uid b/game/ui/garage_part_photos.gd.uid
+deleted file mode 100644
+index 236f3ff..0000000
+--- a/game/ui/garage_part_photos.gd.uid
++++ /dev/null
+@@ -1 +0,0 @@
+-uid://kul6ii0mh322
+diff --git a/game/ui/rivalry_award_art.gd b/game/ui/rivalry_award_art.gd
+index 2a096cb..b849cf9 100644
+--- a/game/ui/rivalry_award_art.gd
++++ b/game/ui/rivalry_award_art.gd
+@@ -28,10 +28,6 @@ func laurel_geometry() -> Dictionary:
+ func crown_rect() -> Rect2:
+ 	return Rect2(size.x*0.5-13,1,26,17.3333) if badge else Rect2(size.x*0.5-24,crown_center_y-12,48,32)
+ 
+-func crown_geometry() -> PackedVector2Array:
+-	var rect: Rect2 = crown_rect()
+-	return PackedVector2Array([rect.position,Vector2(rect.end.x,rect.position.y),rect.end,Vector2(rect.position.x,rect.end.y)])
+-
+ func _draw() -> void:
+ 	if tier == 0: return
+ 	var geometry: Dictionary = laurel_geometry()
+diff --git a/game/vehicle/electric_coachwork.gd b/game/vehicle/electric_coachwork.gd
+index 3188466..bde15f6 100644
+--- a/game/vehicle/electric_coachwork.gd
++++ b/game/vehicle/electric_coachwork.gd
+@@ -312,7 +312,6 @@ static func canopy_point(u: float,v: float) -> Vector3:
+ 	if v<=0.68: return raw_canopy_point(u,v)
+ 	if v<=REAR_WINDOW_END: return rear_window_point(u,(v-0.68)/(REAR_WINDOW_END-0.68))
+ 	return rear_apron_point(u,(v-REAR_WINDOW_END)/(1-REAR_WINDOW_END))
+-static func canopy_width(v: float) -> float: return canopy_point(1,v).x
+ static func roof_point(u: float,v: float) -> Vector3: return canopy_point(u,lerpf(0.27,0.68,v))
+ static func screen_point(rear_face: bool,u: float,v: float) -> Vector3: return rear_window_point(u,v) if rear_face else canopy_point(u,lerpf(0,0.27,v))
+ static func cabin_section(side: float,u: float,v: float) -> Vector3:
+diff --git a/game/vehicle/electric_reference_body.gd b/game/vehicle/electric_reference_body.gd
+index 3d4e875..6f76c33 100644
+--- a/game/vehicle/electric_reference_body.gd
++++ b/game/vehicle/electric_reference_body.gd
+@@ -319,10 +319,6 @@ static func cap_strip(parent: Node3D,name_value: String,rear: bool,u0: float,u1:
+ 
+ # Bounds in the same UV space as the front cap, so the opening rims, inset
+ # backs and the surrounding paint all share exactly the same boundary.
+-static func intake_edge(side: float,t: float) -> float:
+-	var half: float=lerpf(0.365,0.325,t)+0.008*sin(PI*t)
+-	return front_uv_from_width(0.5+side*half)
+-
+ static func curtain_edge(side: float,outer: bool,t: float) -> float:
+ 	# The outside edge is nearly vertical. A soft inner edge tapers into the
+ 	# ends, following the upright air-curtain shape of the reference.
+diff --git a/game/vehicle/kart_geometry.gd b/game/vehicle/kart_geometry.gd
+index 35eebb1..c08ae4e 100644
+--- a/game/vehicle/kart_geometry.gd
++++ b/game/vehicle/kart_geometry.gd
+@@ -131,10 +131,6 @@ static func loft_station(profile: Array[Vector4], t: float) -> Vector4:
+ 	result.w = maxf(0.001,result.w)
+ 	return result
+ 
+-static func loft_top(profile: Array[Vector4], x: float, t: float, exponent: float = 0.65) -> Vector3:
+-	var p: Vector4 = loft_station(profile,t)
+-	return Vector3(x,p.z+p.w*pow(maxf(0,1-pow(absf(x)/p.y,2/exponent)),exponent*0.5)+0.0015,p.x)
+-
+ static func lathe(parent: Node3D, label: String, profile: Array[Vector2], material: Material, simple: bool) -> MeshInstance3D:
+ 	var sample := func(u: float,v: float) -> Vector3:
+ 		var at: float = v*(profile.size()-1)

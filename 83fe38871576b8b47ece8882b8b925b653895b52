@@ -1,0 +1,552 @@
+diff --git a/docs/COMPACT_KIT_REVIEW_2026_10_25.md b/docs/COMPACT_KIT_REVIEW_2026_10_25.md
+new file mode 100644
+index 0000000..2a0e46a
+--- /dev/null
++++ b/docs/COMPACT_KIT_REVIEW_2026_10_25.md
+@@ -0,0 +1,53 @@
++# Compact custom-kit review — 2026-10-25
++
++The current compact catalogue has 43 independently selectable choices: 10 hoods, 13 rear-aero options, 10 rims and 10 body packages, including Original in each category. This review identifies three P2 visual-construction defects. No production model, material, thumbnail, physics, configuration, camera or existing assertion is changed.
++
++Open the [native review gallery](evidence/compact-kit-review-2026-10-25/review.html). Every choice has current front, rear and detail views in Compatibility and desktop Mobile: 139 images per renderer. Twelve additional diagnostic views per renderer show the findings and detailed/simplified combined assemblies. Desktop Mobile means Windows Vulkan, not a physical-device test.
++
++1. **CKR01 — Roof lip has no fitted attachment to the roof.** Its entire prepared surface is offset above the roof/hatch, with no supporting root, mounting pads or gasket. At sampled mesh vertices, the smallest vertical separation from the highest stock surface at the same X/Z is **0.01857 detailed / 0.01979 simple model metres**. The low side view visibly shows background under the lip. Source: [compact_kits.gd:186](../game/vehicle/compact_kits.gd#L186), especially the fixed vertical offset at line 191. Evidence: [Compatibility side](evidence/compact-kit-review-2026-10-25/diagnostic-gl_compatibility/roof-lip-side.png), [Mobile side](evidence/compact-kit-review-2026-10-25/diagnostic-mobile/roof-lip-side.png). Fit a continuous underside/root or explicit mounts to the actual roof, retaining the selected silhouette and saved `lip` ID.
++
++2. **CKR02 — Six body packages have detached arch extensions.** Rally, Club sport, Heritage, Wide arch, Endurance and Gravel add closed flare shells but keep even their hidden returns outside the original rolled arches/panels. The generator forces a minimum outward offset; the decorative fasteners do not provide a connection to the original sheet. Native oblique close-ups show the resulting exposed edge/gap. Actual positive-side prepared vertices above Y=0.385 have a smallest sampled lateral clearance of **0.00949 detailed / 0.00995 simple model metres** across the six packages and both axles. Source: [compact_body_kits.gd:58](../game/vehicle/compact_body_kits.gd#L58), [outward clamp:64](../game/vehicle/compact_body_kits.gd#L64). Evidence: [Wide arch close-up](evidence/compact-kit-review-2026-10-25/diagnostic-gl_compatibility/wide-arch.png), [Mobile close-up](evidence/compact-kit-review-2026-10-25/diagnostic-mobile/wide-arch.png), [Rally](evidence/compact-kit-review-2026-10-25/diagnostic-gl_compatibility/rally-arch.png). Add an inward mounting return or fitted gasket while preserving original tyre clearance. The existing outer-face clearance requirement should remain; a mounting return needs its own attachment check instead of requiring every hidden vertex to remain outside the stock panel.
++
++3. **CKR03 — Simplified dome inserts intersect the hood.** The Power dome and Vented dome accent patches have their own reduced tessellation and only a 1.2 mm analytical offset. Their actual triangles cross the independently triangulated hood. Downward rays at matching X/Z find **57/4,383** Power dome samples below the sheet, with a worst depth of **0.631 mm**, and **46/4,383** Vented dome samples, worst **0.852 mm**. The simplified combined native model has a visible blue break through the accent insert in both renderers. Detailed inserts remain above the sheet in all 4,385 sampled locations per hood; the initial apparent irregular detailed outline is not evidence of a detailed-model intersection. Source: [compact_hood_kits.gd:34](../game/vehicle/compact_hood_kits.gd#L34). Evidence: [detailed comparison](evidence/compact-kit-review-2026-10-25/diagnostic-gl_compatibility/full-combined-insert.png), [simple break](evidence/compact-kit-review-2026-10-25/diagnostic-gl_compatibility/simple-combined-insert.png), [Mobile simple](evidence/compact-kit-review-2026-10-25/diagnostic-mobile/simple-combined-insert.png). Share the actual supporting triangulation or derive the overlay from the final sheet surface.
++
++The rims and larger wing assemblies have coherent silhouettes in the reviewed native views. This review did not identify an additional rim/window, tyre-envelope, plate-frame or glazing-clearance defect. That observation is limited to the captured views and existing checks; it does not establish universal intersection freedom or owner acceptance of every design.
++
++The new diagnostic [review_compact_kits.gd](../game/tests/review_compact_kits.gd) reads the existing prepared resources. Insert heights come from actual triangle ray intersections. Arch measurements identify original surfaces by immutable mesh identity, then compare both ray directions to the outermost original side at matching Y/Z. They cover the positive side; the source mirrors the construction, but no independent negative-side numerical audit is claimed. Some rear samples near the opening have no stock ray hit and are reported separately. Lip measurements include all original body-mounted meshes near the roof. These are sampled vertical/lateral distances in unscaled model coordinates, not continuous minimum Euclidean distances or physical-car dimensions. Both renderer measurement JSON files agree exactly. No part is hidden for the screenshots, and diagnostic cameras do not modify production camera sources.
++
++Actual retained checks on the current sources:
++
++| Check | Result |
++|---|---|
++| Prepared fabricated construction | 1,354 checks, 0 failures |
++| Geometry, normals, boundaries, articulation, wash and roll (`--parts-only`) | 5,223 checks, 0 failures |
++| Complete catalogue, source/prepared equivalence and combination budgets | 1,543 checks, 0 failures; 1,260 prepared meshes |
++| Rear aero fit/glazing/roll and retained editing | 836 checks, 0 failures |
++| Independent part replacement, original wheels, paint and condition | 346 checks, 0 failures |
++| Current parts-focus/preview/equip workflow, native Compatibility | 475 checks, 0 failures |
++| Full project parser | 1,200 scripts, 0 failures |
++| New diagnostic, Compatibility and desktop Mobile | Both execute successfully and save the three findings; process exit zero is not a clean-model acceptance result |
++
++The current maximum visible assemblies have **166,016 detailed / 64,740 simple triangles**, retaining the 170,000 limit for all **13,000 combinations per detail level**. Source/prepared equivalence passes for every kit mesh. This review does not bake or refresh any shipping resource or photo.
++
++The older `test_compact_kits.gd` remains red: **547 checks, 47 failures**. Forty-three selection checks and three Painting/Tuning transfers still require the camera to equal the pre-category transform; this conflicts with the accepted [parts-focus behavior](GARAGE_PARTS_FOCUS_2026_10_25.md), which the current 475-check suite covers. The remaining `actions fit (960, 540)` check measures the old `GarageActions` control while Parts explicitly hides it (`garage_page.gd:877–878`); the actual captured [960×540 Parts page](evidence/compact-kit-review-2026-10-25/workflow-gl_compatibility/tuning-960.png) has no visible bottom action row. Those failures are preserved, not removed or counted as passing. Updating those legacy expectations is separate work. Existing detailed/simple construction tests do not measure the three attachment/overlay defects above.
++
++All engine commands use pinned Godot 4.7.2 through `scripts/dev.ps1`, with APPDATA/LOCALAPPDATA isolated under `build/compact-kit-review`. Exact commands, logs, hashes, measurements and dispositions are in [report.json](evidence/compact-kit-review-2026-10-25/report.json). Representative commands:
++
++```powershell
++powershell -NoProfile -ExecutionPolicy Bypass -File docs/evidence/compact-kit-review-2026-10-25/run.ps1 -Job construction
++powershell -NoProfile -ExecutionPolicy Bypass -File docs/evidence/compact-kit-review-2026-10-25/run.ps1 -Job geometry
++powershell -NoProfile -ExecutionPolicy Bypass -File docs/evidence/compact-kit-review-2026-10-25/run.ps1 -Job catalog
++powershell -NoProfile -ExecutionPolicy Bypass -File docs/evidence/compact-kit-review-2026-10-25/run.ps1 -Job capture -Renderer mobile
++powershell -NoProfile -ExecutionPolicy Bypass -File docs/evidence/compact-kit-review-2026-10-25/run.ps1 -Job diagnostic -Renderer mobile
++powershell -NoProfile -ExecutionPolicy Bypass -File docs/evidence/compact-kit-review-2026-10-25/run.ps1 -Job focus
++python docs/evidence/compact-kit-review-2026-10-25/review_tools.py
++python docs/evidence/compact-kit-review-2026-10-25/finalize.py
++```
++
++The initial sandbox engine run could not read the Windows certificate store. Its first wrapper mistakenly recorded exit zero without retaining the child status; that run is invalid, and the wrapper is corrected. Successful native runs used approved certificate-store access. Two initial arch diagnostics accidentally selected only the named left stock surfaces because duplicate right-side node labels are renamed; their impossible roughly 1.77 m gaps are retained as invalid measurements. The final diagnostic selects both sides by resource identity. A first contact-sheet helper failed because Pillow is absent; the completed sheets use existing Windows System.Drawing without installing dependencies.
++
++Q01 is review only; R01 retains existing assertions and records actual outcomes; G01 supplies a diagnostic/document-only isolated Git checkpoint and native evidence. Added files are this report, `game/tests/review_compact_kits.gd` and its UID, plus scoped runners/gallery/report helpers and evidence under `docs/evidence/compact-kit-review-2026-10-25`. The normal branch/index and concurrent work remain untouched by the checkpoint. Corrective model work is pending.
++
++Final hash verification detected a concurrent change in `vehicle_simulation.gd`: the rear-drive launch-slip steering fade changed from `smoothstep(0.1,0.5,...)` to `smoothstep(0.1,0.35,...)`. The context snapshot and both hashes are retained separately in the report. All 1,536 pinned asset files and the other 33 source snapshots still match. The model findings are independent of that later propulsion edit; no physics-regression acceptance is claimed for it.
++
++No device attachment check or device test, APK, purchase/authentication, live mutation, deployment or owner-process restart was performed. Owner/device appearance, motion, brightness and cost acceptance remain.
+diff --git a/docs/evidence/compact-kit-review-2026-10-25/finalize.py b/docs/evidence/compact-kit-review-2026-10-25/finalize.py
+new file mode 100644
+index 0000000..767ca62
+--- /dev/null
++++ b/docs/evidence/compact-kit-review-2026-10-25/finalize.py
+@@ -0,0 +1,160 @@
++"""Record observed review outcomes and make an isolated, additions-only checkpoint."""
++from pathlib import Path
++import hashlib
++import json
++import re
++import shutil
++import subprocess
++
++ROOT = Path(__file__).resolve().parent
++REPO = ROOT.parents[2]
++CHECKPOINT = REPO / 'build/compact-kit-review/checkpoint-repo'
++
++
++def digest(path):
++    return hashlib.sha256(path.read_bytes()).hexdigest()
++
++
++def git(args, cwd=REPO):
++    result = subprocess.run(['git', *args], cwd=cwd, capture_output=True, check=True)
++    return result.stdout.decode('utf-8', errors='replace')
++
++
++def read_json(path):
++    return json.loads(path.read_text(encoding='utf-8-sig'))
++
++
++def main():
++    expected = {
++        'construction-gl_compatibility': ('COMPACT_KIT_CONSTRUCTION', 1354, 0),
++        'geometry-gl_compatibility': ('KIT_GEOMETRY', 5223, 0),
++        'catalog-gl_compatibility': ('EXPANDED_COMPACT_CATALOG', 1543, 0),
++        'aero-gl_compatibility': ('COMPACT_AERO_VARIETY', 836, 0),
++        'incremental-gl_compatibility': ('INCREMENTAL_COMPACT_KITS', 346, 0),
++        'focus-gl_compatibility': ('CUSTOMISATION_CAROUSEL', 475, 0),
++        'workflow-gl_compatibility': ('COMPACT_KITS', 547, 47),
++        'parser-gl_compatibility': ('SCRIPT_PARSE', 1200, 0),
++    }
++    checks = {}
++    for job, (marker, count, failures) in expected.items():
++        log = (ROOT / f'{job}.log').read_text(encoding='utf-8-sig')
++        pattern = re.escape(marker) + rf': {count} (?:checks|scripts), {failures} failures'
++        assert re.search(pattern, log), job
++        command = read_json(ROOT / f'{job}-command.json')
++        assert command['exit_code'] == (1 if failures else 0), job
++        checks[job] = {'checks': count, 'failures': failures, 'command': command}
++    for job in ('capture-gl_compatibility', 'capture-mobile', 'diagnostic-gl_compatibility', 'diagnostic-mobile'):
++        command = read_json(ROOT / f'{job}-command.json')
++        assert command['exit_code'] == 0
++        checks[job] = {'command': command, 'png_count': len(list((ROOT / job).rglob('*.png')))}
++    measurements = read_json(ROOT / 'diagnostic-gl_compatibility/measurements.json')
++    assert measurements == read_json(ROOT / 'diagnostic-mobile/measurements.json')
++    assert checks['capture-gl_compatibility']['png_count'] == checks['capture-mobile']['png_count'] == 139
++    assert checks['diagnostic-gl_compatibility']['png_count'] == checks['diagnostic-mobile']['png_count'] == 12
++
++    # Pin the source inspected by the review, including unchanged old regressions.
++    sources = set((REPO / 'game/vehicle').glob('compact_*.gd'))
++    for relative in (
++        'game/vehicle/car_visual.gd', 'game/vehicle/vehicle_customisation.gd',
++        'game/vehicle/racing_car_models.gd', 'game/vehicle/prepared_car_cache.gd',
++        'game/vehicle/vehicle_simulation.gd', 'game/vehicle/handling_config.gd',
++        'game/ui/car_showroom.gd', 'game/ui/garage_page.gd',
++        'game/ui/garage_customisation_camera.gd', 'game/ui/compact_kit_thumbnail.gd',
++        'game/resources/compact_fun.tres', 'game/tests/capture_compact_kit_review.gd',
++        'game/tests/review_compact_kits.gd', 'game/tests/test_compact_kit_construction.gd',
++        'game/tests/test_compact_kit_geometry.gd', 'game/tests/test_expanded_compact_catalog.gd',
++        'game/tests/test_compact_aero_variety.gd', 'game/tests/test_incremental_compact_kits.gd',
++        'game/tests/test_compact_kits.gd', 'game/tests/test_customisation_carousel.gd',
++    ):
++        sources.add(REPO / relative)
++    source_hashes = {}
++    concurrent_changes = []
++    for source in sorted(sources):
++        relative = source.relative_to(REPO)
++        target = ROOT / 'reviewed-source' / relative
++        target.parent.mkdir(parents=True, exist_ok=True)
++        if target.exists():
++            if digest(target) != digest(source):
++                # Preserve unrelated ongoing propulsion work, and retain the
++                # exact context snapshot rather than silently replacing it.
++                assert relative.as_posix() == 'game/vehicle/vehicle_simulation.gd', f'Review source changed: {relative}'
++                concurrent_changes.append({'path':relative.as_posix(),'review_snapshot_sha256':digest(target),'current_sha256':digest(source),'disposition':'Concurrent rear-drive launch-slip steering fade; unrelated to prepared kit joins. No claim that physics regressions cover this later edit.'})
++        else:
++            shutil.copyfile(source, target)
++        source_hashes[relative.as_posix()] = digest(target)
++    assets = set()
++    for folder in ('game/assets/vehicles/compact_kits_v1', 'game/assets/vehicles/compact_coachwork_v3', 'game/assets/vehicles/racing_simple_v1/compact'):
++        assets.update(p for p in (REPO / folder).rglob('*') if p.is_file())
++    asset_hashes = {p.relative_to(REPO).as_posix(): digest(p) for p in sorted(assets)}
++    (ROOT / 'reviewed-source-hashes.json').write_text(json.dumps(source_hashes, indent=2) + '\n', encoding='utf-8')
++    (ROOT / 'reviewed-asset-hashes.json').write_text(json.dumps(asset_hashes, indent=2) + '\n', encoding='utf-8')
++
++    added = [
++        'game/tests/review_compact_kits.gd',
++        'game/tests/review_compact_kits.gd.uid',
++        'docs/COMPACT_KIT_REVIEW_2026_10_25.md',
++        *[f'docs/evidence/compact-kit-review-2026-10-25/{name}' for name in ('run.ps1','make_sheets.ps1','review_tools.py','finalize.py')],
++    ]
++    CHECKPOINT.mkdir(parents=True, exist_ok=True)
++    if not (CHECKPOINT / '.git').exists():
++        git(['init', '--initial-branch=compact-kit-review'], CHECKPOINT)
++        git(['config', 'user.name', 'Codex'], CHECKPOINT)
++        git(['config', 'user.email', 'codex@local.invalid'], CHECKPOINT)
++        git(['config', 'core.autocrlf', 'false'], CHECKPOINT)
++    for relative in added:
++        destination = CHECKPOINT / relative
++        destination.parent.mkdir(parents=True, exist_ok=True)
++        shutil.copyfile(REPO / relative, destination)
++    git(['add', '--', *added], CHECKPOINT)
++    has_commit = subprocess.run(['git', 'rev-parse', '--verify', 'HEAD'], cwd=CHECKPOINT, capture_output=True).returncode == 0
++    staged = subprocess.run(['git', 'diff', '--cached', '--quiet'], cwd=CHECKPOINT).returncode
++    if not has_commit:
++        git(['commit', '-m', 'Review compact custom-kit construction and retain native evidence'], CHECKPOINT)
++    elif staged:
++        git(['commit', '--amend', '--no-edit'], CHECKPOINT)
++    commit = git(['rev-parse', 'HEAD'], CHECKPOINT).strip()
++    validation = git(['show', '--check', '--oneline', 'HEAD'], CHECKPOINT)
++    patch = git(['show', '--binary', '--format=', 'HEAD'], CHECKPOINT)
++    (ROOT / 'task-only.patch').write_text(patch, encoding='utf-8', newline='\n')
++    reverse = git(['apply', '--reverse', '--check', str(ROOT / 'task-only.patch')])
++    (ROOT / 'checkpoint-validation.txt').write_text(validation + reverse, encoding='utf-8')
++
++    report = {
++        'date': '2026-10-25',
++        'scope': 'Read-only review of all 43 compact custom-kit options; production geometry and old assertions unchanged.',
++        'requirements': {'CKR01': 'Roof-lip attachment', 'CKR02': 'Arch-extension attachment', 'CKR03': 'Simplified crown insert clearance', 'R01': 'Retained checks and actual failures', 'G01': 'Native evidence and isolated additions-only checkpoint', 'Q01': 'Review only; correction pending'},
++        'findings': [
++            {'id':'CKR01','priority':'P2','title':'Roof lip floats above the roof without mounts','source':'game/vehicle/compact_kits.gd:186','evidence':'diagnostic-gl_compatibility/roof-lip-side.png'},
++            {'id':'CKR02','priority':'P2','title':'Arch extension returns remain detached from stock panels','options':['rally','club','heritage','wide','endurance','gravel'],'source':'game/vehicle/compact_body_kits.gd:58','evidence':'diagnostic-gl_compatibility/wide-arch.png'},
++            {'id':'CKR03','priority':'P2','title':'Simplified Power dome and Vented dome accent patches intersect the hood','source':'game/vehicle/compact_hood_kits.gd:34','evidence':'diagnostic-mobile/simple-combined-insert.png'},
++        ],
++        'checks': checks,
++        'measurements': measurements,
++        'renderer_measurements_identical': True,
++        'catalog': read_json(ROOT / 'catalog-gl_compatibility/catalog.json'),
++        'measurement_limits': ['Unscaled model metres; sampled vertical/lateral clearances, not continuous minimum Euclidean distances.', 'Arch numbers cover positive side at Y>=0.385; absent stock ray hits are excluded and counted.', 'Detailed insert clearances are positive; the confirmed insert intersections concern simplified meshes.', 'Successful diagnostic exit means execution, not absence of findings.'],
++        'legacy_workflow_failures': {'total':47,'pre_category_camera_equalities':46,'bounds_of_hidden_actions':1,'status':'Preserved; current parts-focus behavior is separately validated. No existing assertion changed.'},
++        'unsuccessful_attempts': [
++            'Initial sandbox construction run failed certificate-store access. Its uncorrected wrapper falsely recorded exit zero; log is retained and that result is invalid.',
++            'Initial and second arch diagnostics selected only left stock nodes through repeated labels. Their approximately 1.77 metre gaps are invalid; final measurements select mesh identities.',
++            'Pillow imports failed in the first Python contact-sheet helper and Python39 probe. No packages installed; final sheets use Windows System.Drawing.',
++        ],
++        'engine': (REPO / 'godot-version.txt').read_text().strip(),
++        'source_hashes': 'reviewed-source-hashes.json',
++        'concurrent_source_changes': concurrent_changes,
++        'asset_hashes': 'reviewed-asset-hashes.json',
++        'checkpoint': {'path':CHECKPOINT.relative_to(REPO).as_posix(),'commit':commit,'files':added,'patch':'task-only.patch','show_check':'passed','reverse_apply_check':'passed','shared_index_modified_by_checkpoint':False},
++        'device_test_performed': False,
++        'device_attachment_checked': False,
++        'apk_or_deployment_performed': False,
++        'production_model_fixes_performed': False,
++        'remaining_acceptance': ['Correct the three model findings in separate authorized work.', 'Owner/device visual, motion and cost acceptance.'],
++    }
++    evidence = [p for p in ROOT.rglob('*') if p.is_file() and p.name != 'report.json' and 'reviewed-source' not in p.parts]
++    report['evidence_sha256'] = {p.relative_to(ROOT).as_posix():digest(p) for p in sorted(evidence)}
++    (ROOT / 'report.json').write_text(json.dumps(report, indent=2) + '\n', encoding='utf-8')
++    print(json.dumps({'findings':len(report['findings']),'native_review_views':302,'sources_pinned':len(source_hashes),'asset_files_pinned':len(asset_hashes),'checkpoint':commit,'legacy_ui_failures':47}))
++
++
++if __name__ == '__main__':
++    main()
+diff --git a/docs/evidence/compact-kit-review-2026-10-25/make_sheets.ps1 b/docs/evidence/compact-kit-review-2026-10-25/make_sheets.ps1
+new file mode 100644
+index 0000000..2ded44f
+--- /dev/null
++++ b/docs/evidence/compact-kit-review-2026-10-25/make_sheets.ps1
+@@ -0,0 +1,25 @@
++$ErrorActionPreference = 'Stop'
++Add-Type -AssemblyName System.Drawing
++foreach ($folder in Get-ChildItem -LiteralPath $PSScriptRoot -Directory -Filter 'capture-*') {
++    foreach ($category in @('hood','aero','rims','body')) {
++        $views = @(Get-ChildItem -LiteralPath (Join-Path $folder.FullName $category) -Filter '*-detail.png' | Sort-Object Name)
++        if ($views.Count -eq 0) { continue }
++        $sheet = New-Object System.Drawing.Bitmap(960,([int][Math]::Ceiling($views.Count/2.0)*324))
++        $graphics = [System.Drawing.Graphics]::FromImage($sheet)
++        $graphics.Clear([System.Drawing.Color]::FromArgb(24,33,42))
++        $graphics.InterpolationMode = [System.Drawing.Drawing2D.InterpolationMode]::HighQualityBicubic
++        $font = New-Object System.Drawing.Font('Arial',12)
++        for ($index=0; $index -lt $views.Count; $index++) {
++            $x = [int](($index % 2)*480)
++            $y = [int]([Math]::Floor($index/2.0)*324)
++            $graphics.DrawString($views[$index].BaseName,$font,[System.Drawing.Brushes]::White,$x+8,$y+3)
++            $original = [System.Drawing.Image]::FromFile($views[$index].FullName)
++            $graphics.DrawImage($original,$x,($y+24),480,300)
++            $original.Dispose()
++        }
++        $sheet.Save((Join-Path $PSScriptRoot ($folder.Name+'-'+$category+'-sheet.png')),[System.Drawing.Imaging.ImageFormat]::Png)
++        $font.Dispose()
++        $graphics.Dispose()
++        $sheet.Dispose()
++    }
++}
+diff --git a/docs/evidence/compact-kit-review-2026-10-25/review_tools.py b/docs/evidence/compact-kit-review-2026-10-25/review_tools.py
+new file mode 100644
+index 0000000..c82effc
+--- /dev/null
++++ b/docs/evidence/compact-kit-review-2026-10-25/review_tools.py
+@@ -0,0 +1,32 @@
++"""Make labelled contact sheets and a local gallery from unaltered native views."""
++from pathlib import Path
++import html
++
++ROOT = Path(__file__).resolve().parent
++
++
++def main():
++    cards = []
++    for folder in sorted(ROOT.glob('capture-*')):
++        for category in ('hood', 'aero', 'rims', 'body'):
++            for path in sorted((folder / category).glob('*.png')):
++                relative = path.relative_to(ROOT).as_posix()
++                label = f'{folder.name} / {category} / {path.stem}'
++                cards.append(f'<a href="{relative}"><figure><img loading="lazy" src="{relative}"><figcaption>{html.escape(label)}</figcaption></figure></a>')
++    diagnostics = []
++    for folder in sorted(ROOT.glob('diagnostic-*')):
++        if not folder.is_dir():
++            continue
++        for path in sorted(folder.glob('*.png')):
++            relative = path.relative_to(ROOT).as_posix()
++            label = f'{folder.name} / {path.stem}'
++            diagnostics.append(f'<a href="{relative}"><figure><img loading="lazy" src="{relative}"><figcaption>{html.escape(label)}</figcaption></figure></a>')
++    (ROOT / 'review.html').write_text('''<!doctype html><meta charset="utf-8"><title>Compact kit review, 2026-10-25</title>
++<style>body{background:#18212a;color:#edf1f3;font:16px system-ui;margin:24px}main{display:grid;grid-template-columns:repeat(auto-fit,minmax(380px,1fr));gap:16px}figure{margin:0}img{width:100%}a{color:inherit}select,input{font:inherit;padding:8px;margin:8px}</style>
++<h1>Compact custom kits: native review</h1><p>Current prepared geometry. Open any image at full size. Desktop renderers; no device acceptance claim.</p>
++<p>Findings: floating Roof lip; detached arch extensions on six body kits; simplified Power dome and Vented dome accent inserts intersect their hoods. See <a href="../../COMPACT_KIT_REVIEW_2026_10_25.md">review report</a> and <a href="report.json">measurements and checks</a>.</p>
++<label>Filter <input id="filter" placeholder="e.g. hood / scoop"></label><main>''' + ''.join(diagnostics + cards) + '''</main><script>document.querySelector('#filter').addEventListener('input',e=>{for(const card of document.querySelectorAll('main>a'))card.hidden=!card.textContent.toLowerCase().includes(e.target.value.toLowerCase())})</script>''', encoding='utf-8')
++
++
++if __name__ == '__main__':
++    main()
+diff --git a/docs/evidence/compact-kit-review-2026-10-25/run.ps1 b/docs/evidence/compact-kit-review-2026-10-25/run.ps1
+new file mode 100644
+index 0000000..3708a1f
+--- /dev/null
++++ b/docs/evidence/compact-kit-review-2026-10-25/run.ps1
+@@ -0,0 +1,41 @@
++param(
++    [ValidateSet('construction','geometry','catalog','aero','incremental','workflow','focus','capture','diagnostic','parser')]
++    [string]$Job = 'construction',
++    [ValidateSet('gl_compatibility','mobile')][string]$Renderer = 'gl_compatibility'
++)
++$ErrorActionPreference = 'Stop'
++$repo = (Resolve-Path (Join-Path $PSScriptRoot '../../..')).Path
++Set-Location -LiteralPath $repo
++$env:APPDATA = Join-Path $repo 'build/compact-kit-review/appdata'
++$env:LOCALAPPDATA = Join-Path $repo 'build/compact-kit-review/localappdata'
++New-Item -ItemType Directory -Force $env:APPDATA,$env:LOCALAPPDATA | Out-Null
++$scripts = @{
++    construction='test_compact_kit_construction.gd'
++    geometry='test_compact_kit_geometry.gd'
++    catalog='test_expanded_compact_catalog.gd'
++    aero='test_compact_aero_variety.gd'
++    incremental='test_incremental_compact_kits.gd'
++    workflow='test_compact_kits.gd'
++    focus='test_customisation_carousel.gd'
++    capture='capture_compact_kit_review.gd'
++    diagnostic='review_compact_kits.gd'
++    parser='test_script_parse.gd'
++}
++$folder = "$Job-$Renderer"
++$testArgs = @("--evidence-root=res://../docs/evidence/compact-kit-review-2026-10-25/$folder")
++if ($Job -eq 'geometry') { $testArgs += '--parts-only' }
++$parameters = @{
++    ScriptPath="res://tests/$($scripts[$Job])"
++    Graphical=($Job -in @('capture','diagnostic','workflow','focus'))
++    RenderingMethod=$Renderer
++    TestArgument=$testArgs
++    CommandTimeoutSeconds=600
++}
++if ($Renderer -eq 'mobile') { $parameters.RenderingDriver = 'vulkan' }
++$result = 0
++try { & ./scripts/dev.ps1 TestScript @parameters; $result = $LASTEXITCODE }
++catch { Write-Host $_; $result = 1 }
++$log = "$repo/build/logs/TestScript-$PID/test-script.log"
++if (Test-Path -LiteralPath $log) { Copy-Item -LiteralPath $log -Destination "$PSScriptRoot/$folder.log" }
++@{job=$Job; renderer=$Renderer; script=$scripts[$Job]; arguments=$testArgs; exit_code=$result; log="build/logs/TestScript-$PID/test-script.log"} | ConvertTo-Json | Set-Content "$PSScriptRoot/$folder-command.json"
++exit $result
+diff --git a/game/tests/review_compact_kits.gd b/game/tests/review_compact_kits.gd
+new file mode 100644
+index 0000000..9c4fdf6
+--- /dev/null
++++ b/game/tests/review_compact_kits.gd
+@@ -0,0 +1,198 @@
++extends SceneTree
++## Read-only measurements of prepared kit joins; no production meshes are rebuilt.
++var output: String = "res://../docs/evidence/compact-kit-review-2026-10-25/diagnostic"
++var manifest: Dictionary
++var measurements: Dictionary = {"insert_clearance":[],"arch_clearance":[],"roof_lip_clearance":[]}
++
++func _initialize() -> void: run.call_deferred()
++
++func prepared(key: String, simple: bool) -> ArrayMesh:
++	var entry: Dictionary = manifest.meshes[key+("/simple" if simple else "")]
++	return load(CompactKits.ASSET_ROOT.path_join("meshes/"+str(entry.file))) as ArrayMesh
++
++func inspect_inserts(simple: bool) -> void:
++	for kind: String in ["dome","vented"]:
++		var sheet: TriangleMesh = prepared("hood6/"+kind+"/sheet",simple).generate_triangle_mesh()
++		var insert_mesh: ArrayMesh = prepared("hood6/"+kind+"/crowninsert",simple)
++		var insert: TriangleMesh = insert_mesh.generate_triangle_mesh()
++		var bounds: AABB = insert_mesh.get_aabb()
++		var lowest: float = INF
++		var highest: float = -INF
++		var below: int = 0
++		var samples: int = 0
++		var worst := Vector3.ZERO
++		for row: int in range(121):
++			for column: int in range(41):
++				var origin := Vector3(lerpf(bounds.position.x,bounds.end.x,(column+0.5)/41.0),2.0,lerpf(bounds.position.z,bounds.end.z,(row+0.5)/121.0))
++				var overlay_hit: Dictionary = insert.intersect_ray(origin,Vector3.DOWN)
++				if overlay_hit.is_empty(): continue
++				var sheet_hit: Dictionary = sheet.intersect_ray(origin,Vector3.DOWN)
++				if sheet_hit.is_empty(): continue
++				var p: Vector3 = overlay_hit.position
++				var q: Vector3 = sheet_hit.position
++				var clearance: float = p.y-q.y
++				samples += 1
++				if clearance < -0.00001: below += 1
++				if clearance < lowest:
++					lowest = clearance
++					worst = p
++				highest = maxf(highest,clearance)
++		var row: Dictionary = {"kind":kind,"simple":simple,"samples":samples,"below_sheet":below,"min_clearance_model_m":lowest,"max_clearance_model_m":highest,"worst_position":[worst.x,worst.y,worst.z]}
++		measurements.insert_clearance.append(row)
++		print("INSERT_CLEARANCE ",JSON.stringify(row))
++
++func inspect_arches(car: CarVisual, simple: bool) -> void:
++	var stock: Array[Dictionary] = []
++	for part: MeshInstance3D in car.body.find_children("*","MeshInstance3D",true,false):
++		# Names are not identities: duplicate left/right labels can be assigned
++		# automatic node names. Select the immutable prepared mesh resources.
++		var selected: bool = false
++		for key: String in CompactCoachwork.meshes:
++			if key.begins_with("curved_body") or key.begins_with("rolled_wheel_arch") or key.begins_with("arch_rubber_seal"):
++				if part.mesh == CompactCoachwork.meshes[key]: selected = true
++		if not selected: continue
++		var transform: Transform3D = car.body.global_transform.affine_inverse()*part.global_transform
++		stock.append({"mesh":part.mesh.generate_triangle_mesh(),"transform":transform,"inverse":transform.affine_inverse()})
++	assert(not stock.is_empty())
++	for kind: String in ["rally","club","heritage","wide","endurance","gravel"]:
++		for axle: float in [-1.28,1.28]:
++			var arch: ArrayMesh = prepared("body6/"+kind+"/arch1.0/"+str(axle),simple)
++			var points: PackedVector3Array = arch.surface_get_arrays(0)[Mesh.ARRAY_VERTEX]
++			var seen: Dictionary = {}
++			var minimum: float = INF
++			var maximum: float = -INF
++			var samples: int = 0
++			var no_hit: int = 0
++			for point: Vector3 in points:
++				if point.y < 0.385: continue
++				var key: Vector3i = Vector3i((point*1000000).round())
++				if seen.has(key): continue
++				seen[key] = true
++				var highest: float = -INF
++				for surface: Dictionary in stock:
++					var inverse: Transform3D = surface.inverse
++					# Both directions avoid selecting the opposite body side through
++					# a clockwise render surface in the one-sided TriangleMesh API.
++					for side: float in [-1,1]:
++						var hit: Dictionary = (surface.mesh as TriangleMesh).intersect_ray(inverse*Vector3(side*1.5,point.y,point.z),inverse.basis*Vector3(-side,0,0))
++						if not hit.is_empty():
++							var original: Vector3 = (surface.transform as Transform3D)*(hit.position as Vector3)
++							highest = maxf(highest,original.x)
++				if highest == -INF:
++					no_hit += 1
++					continue
++				samples += 1
++				minimum = minf(minimum,point.x-highest)
++				maximum = maxf(maximum,point.x-highest)
++			var row: Dictionary = {"kind":kind,"simple":simple,"axle":axle,"sampled_vertices":samples,"no_stock_ray_hit":no_hit,"min_lateral_gap_model_m":minimum,"max_lateral_gap_model_m":maximum}
++			measurements.arch_clearance.append(row)
++			print("ARCH_CLEARANCE ",JSON.stringify(row))
++
++func inspect_lip(car: CarVisual, simple: bool) -> void:
++	var stock: Array[Dictionary] = []
++	for part: MeshInstance3D in car.body.find_children("*","MeshInstance3D",true,false):
++		var transform: Transform3D = car.body.global_transform.affine_inverse()*part.global_transform
++		var bounds: AABB = transform*part.mesh.get_aabb()
++		if bounds.end.y < 1.35 or bounds.end.z < 0.8: continue
++		stock.append({"mesh":part.mesh.generate_triangle_mesh(),"transform":transform,"inverse":transform.affine_inverse()})
++	var lip: ArrayMesh = prepared("aero6/lip",simple)
++	var points: PackedVector3Array = lip.surface_get_arrays(0)[Mesh.ARRAY_VERTEX]
++	var minimum: float = INF
++	var maximum: float = -INF
++	var samples: int = 0
++	var no_hit: int = 0
++	for point: Vector3 in points:
++		var highest: float = -INF
++		for surface: Dictionary in stock:
++			var inverse: Transform3D = surface.inverse
++			for direction: float in [-1,1]:
++				var origin := Vector3(point.x,0 if direction > 0 else 2.0,point.z)
++				var hit: Dictionary = (surface.mesh as TriangleMesh).intersect_ray(inverse*origin,inverse.basis*Vector3(0,direction,0))
++				if not hit.is_empty():
++					var original: Vector3 = (surface.transform as Transform3D)*(hit.position as Vector3)
++					highest = maxf(highest,original.y)
++		if highest == -INF:
++			no_hit += 1
++			continue
++		samples += 1
++		minimum = minf(minimum,point.y-highest)
++		maximum = maxf(maximum,point.y-highest)
++	var row: Dictionary = {"simple":simple,"sampled_vertices":samples,"no_stock_ray_hit":no_hit,"min_vertical_gap_model_m":minimum,"max_vertical_gap_model_m":maximum}
++	measurements.roof_lip_clearance.append(row)
++	print("ROOF_LIP_CLEARANCE ",JSON.stringify(row))
++
++func settle() -> void:
++	for frame: int in range(8): await process_frame
++	await RenderingServer.frame_post_draw
++
++func capture(view: CarShowroom, label: String, target: Vector3, direction: Vector3) -> void:
++	var at: Vector3 = view.car.body.global_transform*target
++	view.camera.look_at_from_position(at+direction,at)
++	view.reflections.sync()
++	view.invalidate_render()
++	await settle()
++	assert(view.showroom_viewport.get_texture().get_image().save_png(output.path_join(label+".png")) == OK)
++
++func run() -> void:
++	for argument: String in OS.get_cmdline_user_args():
++		if argument.begins_with("--evidence-root="): output = argument.trim_prefix("--evidence-root=")
++	output = ProjectSettings.globalize_path(output)
++	DirAccess.make_dir_recursive_absolute(output)
++	manifest = JSON.parse_string(FileAccess.get_file_as_string(CompactKits.ASSET_ROOT.path_join("manifest.json")))
++	for simple: bool in [false,true]:
++		inspect_inserts(simple)
++		var car := CarVisual.new()
++		car.simple_model = simple
++		car.batch_parts = false
++		car.editable_kits = true
++		root.add_child(car)
++		inspect_arches(car,simple)
++		inspect_lip(car,simple)
++		car.queue_free()
++		await process_frame
++	root.size = Vector2i(1440,900)
++	var host := Control.new()
++	root.add_child(host)
++	MenuStyle.fill(host)
++	var view := CarShowroom.new()
++	view.garage_mode = true
++	host.add_child(view)
++	MenuStyle.fill(view)
++	await settle()
++	for kind: String in ["dome","vented"]:
++		var profile: Dictionary = VehicleCustomisation.defaults()
++		profile.hood = kind
++		view.apply_customisation(profile)
++		await capture(view,kind+"-insert",Vector3(0,1.03,-1.4),Vector3(0.8,1.1,-0.9))
++	for kind: String in ["rally","heritage","wide"]:
++		var profile: Dictionary = VehicleCustomisation.defaults()
++		profile.body = kind
++		view.apply_customisation(profile)
++		await capture(view,kind+"-arch",Vector3(0.925,0.73,-1.28),Vector3(0.60,0.04,-0.53))
++	var roof_profile: Dictionary = VehicleCustomisation.defaults()
++	roof_profile.aero = "lip"
++	view.apply_customisation(roof_profile)
++	await capture(view,"roof-lip-side",Vector3(0.1,1.50,1.15),Vector3(1.65,0.06,0.35))
++	# Full/simple combinations use the normal batched CarVisual assembly.
++	for simple: bool in [false,true]:
++		var current: CarVisual = view.car
++		view.car = CarVisual.new()
++		view.car.simple_model = simple
++		view.car.customisation = {"version":1,"hood":"dome","aero":"biwing","rims":"mesh","body":"wide"}
++		view.car.livery = VehicleLivery.defaults("compact")
++		current.get_parent().add_child(view.car)
++		view.car.transform = current.transform
++		current.get_parent().remove_child(current)
++		current.queue_free()
++		view.reflections.sync()
++		var prefix: String = "simple" if simple else "full"
++		await capture(view,prefix+"-combined-front",Vector3(0,0.72,0),Vector3(3.5,2.5,-4.8))
++		await capture(view,prefix+"-combined-rear",Vector3(0,0.85,0.35),Vector3(3.6,2.0,4.6))
++		await capture(view,prefix+"-combined-insert",Vector3(0,1.03,-1.4),Vector3(0.8,1.1,-0.9))
++	var file := FileAccess.open(output.path_join("measurements.json"),FileAccess.WRITE)
++	file.store_string(JSON.stringify(measurements,"\t"))
++	file.close()
++	host.queue_free()
++	await process_frame
++	print("COMPACT_KIT_DIAGNOSTIC: prepared full/simple measurements and 12 native views; findings are reported without an acceptance exit gate")
++	quit()
+diff --git a/game/tests/review_compact_kits.gd.uid b/game/tests/review_compact_kits.gd.uid
+new file mode 100644
+index 0000000..b9424fb
+--- /dev/null
++++ b/game/tests/review_compact_kits.gd.uid
+@@ -0,0 +1 @@
++uid://bq5wyvwx8qxl4

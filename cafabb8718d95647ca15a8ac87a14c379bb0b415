@@ -1,0 +1,2210 @@
+{
+  "task": "Investigate runtime item 4 and plan the best improvement",
+  "date": "2026-10-27",
+  "generated_utc": "2026-10-27T21:09:10.449560+00:00",
+  "disposition": "Investigation and plan only; no authored production runtime edits",
+  "recommendation": "First remove the asynchronous CanvasItem _draw helper collision. Lead prototype: separate-process exact GLSL compilation with bounded program-binary imports, gated on actual first-draw/UI/Android/memory results.",
+  "environment": {
+    "engine": "4.7.2.stable.official.ed1daf0bf",
+    "engine_path": "C:\\apps\\Godot 4.7.2\\Godot_v4.7.2-stable_win64.exe",
+    "engine_sha256": "ab1824f85bfd8e0e4128182c000c4003a3e042245b2967848d089b2a04b22424",
+    "platform": "Windows desktop",
+    "capabilities": {
+      "vendor": "NVIDIA Corporation",
+      "renderer": "NVIDIA GeForce RTX 3090/PCIe/SSE2",
+      "version": "3.3.0 NVIDIA 616.92",
+      "ARB_parallel_shader_compile": true,
+      "KHR_parallel_shader_compile": true,
+      "ARB_entrypoint": true,
+      "KHR_entrypoint": true
+    },
+    "window": [
+      1280,
+      720
+    ],
+    "app_profiles": "Private APPDATA/LOCALAPPDATA below the task build directory; backend.cfg has an explicit empty URL",
+    "cold_definition": "First engine use in a fresh owned application/cache profile. Global driver caches not cleared; not a clean-driver or physical-device claim."
+  },
+  "native_attribution": {
+    "engine_sha256": "ab1824f85bfd8e0e4128182c000c4003a3e042245b2967848d089b2a04b22424",
+    "image_base": "0x140000000",
+    "most_frequent_return_rva": "0x1411778",
+    "most_frequent_return_va": "0x141411778",
+    "call_instruction_va": "0x141411776",
+    "glad_refptr_rva": "0x7e23a20",
+    "named_entrypoint": "glLinkProgram",
+    "pointer_match": true,
+    "direct_capture": {
+      "program": 73,
+      "link_us": 368973,
+      "vertex_bytes": 33847,
+      "fragment_bytes": 92852
+    },
+    "caveat": "Only the exact pinned executable and owned test process. No private NVIDIA symbol/function-name attribution; sampling perturbs execution."
+  },
+  "analysis": {
+    "cases": [
+      {
+        "label": "app-original",
+        "scope": "app",
+        "variant": "original",
+        "checks": 15,
+        "failures": 1,
+        "ready_us": 5115773,
+        "prepared_us": 38139826,
+        "draws": 67,
+        "max_draw_us": 3030833,
+        "max_frame_us": 3032402,
+        "over_200ms_draws": 26,
+        "draw_helper_without_warm_in_stack": 3,
+        "initial": {
+          "held": 180,
+          "pending": 179,
+          "pipeline": [
+            0.0,
+            0.0,
+            0.0
+          ],
+          "unique_keys": 42
+        },
+        "final_pipeline": [
+          0.0,
+          0.0,
+          0.0
+        ]
+      },
+      {
+        "label": "app-reuse",
+        "scope": "app",
+        "variant": "original",
+        "checks": 15,
+        "failures": 0,
+        "ready_us": 2679457,
+        "prepared_us": 5506463,
+        "draws": 67,
+        "max_draw_us": 138423,
+        "max_frame_us": 228823,
+        "over_200ms_draws": 0,
+        "draw_helper_without_warm_in_stack": 3,
+        "initial": {
+          "held": 180,
+          "pending": 179,
+          "pipeline": [
+            0.0,
+            0.0,
+            0.0
+          ],
+          "unique_keys": 42
+        },
+        "final_pipeline": [
+          0.0,
+          0.0,
+          0.0
+        ]
+      },
+      {
+        "label": "cache-reuse",
+        "scope": "standalone",
+        "variant": "original",
+        "checks": 14,
+        "failures": 0,
+        "ready_us": 2385623,
+        "prepared_us": 5634621,
+        "draws": 66,
+        "max_draw_us": 168314,
+        "max_frame_us": 289800,
+        "over_200ms_draws": 0,
+        "draw_helper_without_warm_in_stack": 4,
+        "initial": {
+          "held": 171,
+          "pending": 171,
+          "pipeline": [
+            0.0,
+            0.0,
+            0.0
+          ],
+          "unique_keys": 42
+        },
+        "final_pipeline": [
+          0.0,
+          0.0,
+          0.0
+        ]
+      },
+      {
+        "label": "mobile-original",
+        "scope": "standalone",
+        "variant": "original",
+        "checks": 14,
+        "failures": 0,
+        "ready_us": 9347784,
+        "prepared_us": 19143018,
+        "draws": 66,
+        "max_draw_us": 8773786,
+        "max_frame_us": 10178427,
+        "over_200ms_draws": 2,
+        "draw_helper_without_warm_in_stack": 4,
+        "initial": {
+          "held": 171,
+          "pending": 171,
+          "pipeline": [
+            2.0,
+            0.0,
+            0.0
+          ],
+          "unique_keys": 42
+        },
+        "final_pipeline": [
+          2.0,
+          37.0,
+          30.0
+        ]
+      },
+      {
+        "label": "original-native-sample",
+        "scope": "standalone",
+        "variant": "original",
+        "checks": 14,
+        "failures": 0,
+        "ready_us": 2439046,
+        "prepared_us": 34711907,
+        "draws": 66,
+        "max_draw_us": 2458108,
+        "max_frame_us": 2459591,
+        "over_200ms_draws": 25,
+        "draw_helper_without_warm_in_stack": 4,
+        "initial": {
+          "held": 171,
+          "pending": 171,
+          "pipeline": [
+            0.0,
+            0.0,
+            0.0
+          ],
+          "unique_keys": 42
+        },
+        "final_pipeline": [
+          0.0,
+          0.0,
+          0.0
+        ]
+      },
+      {
+        "label": "original-standalone",
+        "scope": "standalone",
+        "variant": "original",
+        "checks": 14,
+        "failures": 0,
+        "ready_us": 2642428,
+        "prepared_us": 48533926,
+        "draws": 66,
+        "max_draw_us": 3856478,
+        "max_frame_us": 3858682,
+        "over_200ms_draws": 29,
+        "draw_helper_without_warm_in_stack": 4,
+        "initial": {
+          "held": 171,
+          "pending": 171,
+          "pipeline": [
+            0.0,
+            0.0,
+            0.0
+          ],
+          "unique_keys": 42
+        },
+        "final_pipeline": [
+          0.0,
+          0.0,
+          0.0
+        ]
+      },
+      {
+        "label": "parallel-hint",
+        "scope": "standalone",
+        "variant": "parallel_hint",
+        "checks": 15,
+        "failures": 0,
+        "ready_us": 2968058,
+        "prepared_us": 38030124,
+        "draws": 66,
+        "max_draw_us": 3370447,
+        "max_frame_us": 3383526,
+        "over_200ms_draws": 26,
+        "draw_helper_without_warm_in_stack": 4,
+        "initial": {
+          "held": 171,
+          "pending": 171,
+          "pipeline": [
+            0.0,
+            0.0,
+            0.0
+          ],
+          "unique_keys": 42
+        },
+        "final_pipeline": [
+          0.0,
+          0.0,
+          0.0
+        ]
+      },
+      {
+        "label": "rename-callback",
+        "scope": "standalone",
+        "variant": "rename_callback",
+        "checks": 14,
+        "failures": 0,
+        "ready_us": 2388897,
+        "prepared_us": 34802957,
+        "draws": 62,
+        "max_draw_us": 2235541,
+        "max_frame_us": 2237159,
+        "over_200ms_draws": 25,
+        "draw_helper_without_warm_in_stack": 0,
+        "initial": {
+          "held": 171,
+          "pending": 171,
+          "pipeline": [
+            0.0,
+            0.0,
+            0.0
+          ],
+          "unique_keys": 42
+        },
+        "final_pipeline": [
+          0.0,
+          0.0,
+          0.0
+        ]
+      },
+      {
+        "label": "representatives-split",
+        "scope": "standalone",
+        "variant": "representatives_split",
+        "checks": 14,
+        "failures": 0,
+        "ready_us": 3155022,
+        "prepared_us": 45754057,
+        "draws": 171,
+        "max_draw_us": 3762774,
+        "max_frame_us": 3770911,
+        "over_200ms_draws": 29,
+        "draw_helper_without_warm_in_stack": 117,
+        "initial": {
+          "held": 171,
+          "pending": 171,
+          "pipeline": [
+            0.0,
+            0.0,
+            0.0
+          ],
+          "unique_keys": 42
+        },
+        "final_pipeline": [
+          0.0,
+          0.0,
+          0.0
+        ]
+      },
+      {
+        "label": "separate-thread",
+        "scope": "standalone",
+        "variant": "thread_separate",
+        "checks": 14,
+        "failures": 0,
+        "ready_us": 8401337,
+        "prepared_us": 42325590,
+        "draws": 66,
+        "max_draw_us": 2320613,
+        "max_frame_us": 2321773,
+        "over_200ms_draws": 25,
+        "draw_helper_without_warm_in_stack": 4,
+        "initial": {
+          "held": 171,
+          "pending": 171,
+          "pipeline": [
+            0.0,
+            0.0,
+            0.0
+          ],
+          "unique_keys": 42
+        },
+        "final_pipeline": [
+          0.0,
+          0.0,
+          0.0
+        ]
+      },
+      {
+        "label": "split-standalone",
+        "scope": "standalone",
+        "variant": "split_views",
+        "checks": 14,
+        "failures": 0,
+        "ready_us": 2362397,
+        "prepared_us": 32125739,
+        "draws": 195,
+        "max_draw_us": 1934361,
+        "max_frame_us": 1935931,
+        "over_200ms_draws": 25,
+        "draw_helper_without_warm_in_stack": 133,
+        "initial": {
+          "held": 171,
+          "pending": 171,
+          "pipeline": [
+            0.0,
+            0.0,
+            0.0
+          ],
+          "unique_keys": 42
+        },
+        "final_pipeline": [
+          0.0,
+          0.0,
+          0.0
+        ]
+      }
+    ],
+    "native": {
+      "Garage_over_200ms": {
+        "samples": 186,
+        "frame_windows": 24,
+        "top_modules": {
+          "Godot_v4.7.2-stable_win64": 2,
+          "nvoglv64": 121,
+          "nvgpucomp64": 54,
+          "ntdll": 9
+        },
+        "top_module_cpu_delta_us": {
+          "Godot_v4.7.2-stable_win64": 281250,
+          "nvoglv64": 20109375,
+          "nvgpucomp64": 9078125,
+          "ntdll": 1171875
+        },
+        "nearest_Godot_offsets": {
+          "0x1411778": 127,
+          "0x141158e": 6,
+          "0x14112ed": 3,
+          "0x31bca14": 2,
+          "0x3e8f736": 1,
+          "0x1412d28": 1,
+          "0x42dea": 1,
+          "0x39238fa": 1,
+          "0x3ea96ed": 1
+        },
+        "max_sample_thread_suspend_us": 3622
+      },
+      "parallel_hint_over_200ms": {
+        "samples": 398,
+        "frame_windows": 25,
+        "top_modules": {
+          "Godot_v4.7.2-stable_win64": 3,
+          "ntdll": 233,
+          "unknown": 161,
+          "user32": 1
+        },
+        "top_module_cpu_delta_us": {
+          "Godot_v4.7.2-stable_win64": 343750,
+          "ntdll": 14843750,
+          "unknown": 18218750,
+          "user32": 140625
+        },
+        "nearest_Godot_offsets": {
+          "0x3e86a2f": 1,
+          "0x140f524": 1,
+          "0x510cda1": 1,
+          "0x28b6b": 1,
+          "0x2704": 1,
+          "0x1349a8e": 1
+        },
+        "max_sample_thread_suspend_us": 6507
+      },
+      "race_entire_owned_probe": {
+        "samples": 891,
+        "frame_windows": 0,
+        "top_modules": {
+          "DWrite": 1,
+          "ntdll": 219,
+          "unknown": 338,
+          "Godot_v4.7.2-stable_win64": 272,
+          "win32u": 54,
+          "msvcrt": 5,
+          "KERNEL32": 1
+        },
+        "top_module_cpu_delta_us": {
+          "DWrite": 0,
+          "ntdll": 19687500,
+          "unknown": 52000000,
+          "Godot_v4.7.2-stable_win64": 41312500,
+          "win32u": 7812500,
+          "msvcrt": 703125,
+          "KERNEL32": 140625
+        },
+        "nearest_Godot_offsets": {
+          "0x31bca14": 79,
+          "0x3e575b0": 25,
+          "0x510cda1": 17,
+          "0x134ccb3": 11,
+          "0x383b330": 11,
+          "0x39238fa": 10,
+          "0x134c700": 7,
+          "0x65ebcac": 7,
+          "0x379d94e": 5,
+          "0x383b358": 5,
+          "0x134af00": 4,
+          "0x134c4d9": 4
+        },
+        "max_sample_thread_suspend_us": 7615
+      }
+    },
+    "race": {
+      "checks": 60,
+      "failures": 0,
+      "loads": [
+        {
+          "source": "res://tests/fixtures/star_spline_lap.json",
+          "cycle": 0,
+          "wall_ms": 44416.914,
+          "max_frame_ms": 4979.935,
+          "draw_wait_max_us": 1884603,
+          "draw_groups": 66,
+          "longest": {
+            "ms": 4979.935,
+            "stage": "cache",
+            "status": "Preparing start\u00e2\u20ac\u00a6"
+          },
+          "game": {
+            "car_slice_at": "details",
+            "car_slice_max_us": 49487,
+            "car_us": 577390,
+            "car_yields": 92,
+            "diagnostics_us": 14907,
+            "effects_audio_wall_us": 120862,
+            "hold_us": 1111,
+            "hud_setup_us": 18344,
+            "restart_us": 20001,
+            "weather_us": 332,
+            "weathering_us": 9681
+          },
+          "world": {
+            "bridge_us": 107,
+            "cache_duplicate_max_us": 883,
+            "cache_pack_us": 3101,
+            "partition_child_wall_max_us": 109247,
+            "snow_us": 5
+          }
+        },
+        {
+          "source": "res://tests/fixtures/star_spline_lap.json",
+          "cycle": 1,
+          "wall_ms": 1135.117,
+          "max_frame_ms": 26.37,
+          "draw_wait_max_us": 6110,
+          "draw_groups": 12,
+          "longest": {
+            "ms": 26.37,
+            "stage": "initial",
+            "status": "Preparing graphics..."
+          },
+          "game": {
+            "car_slice_at": "",
+            "car_slice_max_us": 0,
+            "car_us": 3616,
+            "car_yields": 0,
+            "diagnostics_us": 9683,
+            "effects_audio_wall_us": 8802,
+            "hold_us": 883,
+            "hud_setup_us": 9958,
+            "restart_us": 11635,
+            "weather_us": 280,
+            "weathering_us": 1383
+          },
+          "world": {
+            "cache_instantiate_us": 634
+          }
+        },
+        {
+          "source": "res://resources/storm_tracks/storm_freight.json",
+          "cycle": 0,
+          "wall_ms": 16038.203,
+          "max_frame_ms": 1882.335,
+          "draw_wait_max_us": 1847834,
+          "draw_groups": 41,
+          "longest": {
+            "ms": 1882.335,
+            "stage": "cache",
+            "status": "Preparing graphics..."
+          },
+          "game": {
+            "car_slice_at": "",
+            "car_slice_max_us": 0,
+            "car_us": 3321,
+            "car_yields": 0,
+            "diagnostics_us": 20592,
+            "effects_audio_wall_us": 10270,
+            "hold_us": 1673,
+            "hud_setup_us": 11160,
+            "restart_us": 15302,
+            "weather_us": 1644,
+            "weathering_us": 1358
+          },
+          "world": {
+            "bridge_us": 117,
+            "cache_duplicate_max_us": 96,
+            "cache_pack_us": 4647,
+            "partition_child_wall_max_us": 4636,
+            "snow_us": 4
+          }
+        },
+        {
+          "source": "res://resources/storm_tracks/storm_freight.json",
+          "cycle": 1,
+          "wall_ms": 420.122,
+          "max_frame_ms": 36.123,
+          "draw_wait_max_us": 6712,
+          "draw_groups": 12,
+          "longest": {
+            "ms": 36.123,
+            "stage": "initial",
+            "status": "Preparing graphics..."
+          },
+          "game": {
+            "car_slice_at": "",
+            "car_slice_max_us": 0,
+            "car_us": 6716,
+            "car_yields": 0,
+            "diagnostics_us": 19176,
+            "effects_audio_wall_us": 10030,
+            "hold_us": 2440,
+            "hud_setup_us": 13204,
+            "restart_us": 13007,
+            "weather_us": 661,
+            "weathering_us": 1417
+          },
+          "world": {
+            "cache_instantiate_us": 988
+          }
+        },
+        {
+          "source": "res://resources/storm_tracks/storm_switchyard.json",
+          "cycle": 0,
+          "wall_ms": 4083.227,
+          "max_frame_ms": 141.48,
+          "draw_wait_max_us": 40058,
+          "draw_groups": 24,
+          "longest": {
+            "ms": 141.48,
+            "stage": "before world",
+            "status": "Loading track\u00e2\u20ac\u00a6"
+          },
+          "game": {
+            "car_slice_at": "",
+            "car_slice_max_us": 0,
+            "car_us": 3809,
+            "car_yields": 0,
+            "diagnostics_us": 19548,
+            "effects_audio_wall_us": 9101,
+            "hold_us": 1314,
+            "hud_setup_us": 12601,
+            "restart_us": 11632,
+            "weather_us": 625,
+            "weathering_us": 1351
+          },
+          "world": {
+            "bridge_us": 120,
+            "cache_duplicate_max_us": 1185,
+            "cache_pack_us": 5652,
+            "partition_child_wall_max_us": 109134,
+            "snow_us": 5
+          }
+        },
+        {
+          "source": "res://resources/storm_tracks/storm_switchyard.json",
+          "cycle": 1,
+          "wall_ms": 415.307,
+          "max_frame_ms": 36.691,
+          "draw_wait_max_us": 5749,
+          "draw_groups": 12,
+          "longest": {
+            "ms": 36.691,
+            "stage": "initial",
+            "status": "Preparing graphics..."
+          },
+          "game": {
+            "car_slice_at": "",
+            "car_slice_max_us": 0,
+            "car_us": 3668,
+            "car_yields": 0,
+            "diagnostics_us": 18218,
+            "effects_audio_wall_us": 9850,
+            "hold_us": 1377,
+            "hud_setup_us": 11166,
+            "restart_us": 14841,
+            "weather_us": 875,
+            "weathering_us": 1435
+          },
+          "world": {
+            "cache_instantiate_us": 1124
+          }
+        },
+        {
+          "source": "res://resources/storm_tracks/storm_timber.json",
+          "cycle": 0,
+          "wall_ms": 3854.684,
+          "max_frame_ms": 86.11,
+          "draw_wait_max_us": 43764,
+          "draw_groups": 19,
+          "longest": {
+            "ms": 86.11,
+            "stage": "before world",
+            "status": "Loading track\u00e2\u20ac\u00a6"
+          },
+          "game": {
+            "car_slice_at": "",
+            "car_slice_max_us": 0,
+            "car_us": 3553,
+            "car_yields": 0,
+            "diagnostics_us": 18464,
+            "effects_audio_wall_us": 10551,
+            "hold_us": 1428,
+            "hud_setup_us": 13353,
+            "restart_us": 12164,
+            "weather_us": 701,
+            "weathering_us": 1482
+          },
+          "world": {
+            "bridge_us": 104,
+            "cache_duplicate_max_us": 1325,
+            "cache_pack_us": 6640,
+            "partition_child_wall_max_us": 103555,
+            "snow_us": 5
+          }
+        },
+        {
+          "source": "res://resources/storm_tracks/storm_timber.json",
+          "cycle": 1,
+          "wall_ms": 438.057,
+          "max_frame_ms": 38.422,
+          "draw_wait_max_us": 6244,
+          "draw_groups": 12,
+          "longest": {
+            "ms": 38.422,
+            "stage": "initial",
+            "status": "Preparing graphics..."
+          },
+          "game": {
+            "car_slice_at": "",
+            "car_slice_max_us": 0,
+            "car_us": 6490,
+            "car_yields": 0,
+            "diagnostics_us": 20654,
+            "effects_audio_wall_us": 12650,
+            "hold_us": 2277,
+            "hud_setup_us": 15151,
+            "restart_us": 12733,
+            "weather_us": 1023,
+            "weathering_us": 2570
+          },
+          "world": {
+            "cache_instantiate_us": 1484
+          }
+        },
+        {
+          "source": "res://resources/storm_tracks/storm_quarry.json",
+          "cycle": 0,
+          "wall_ms": 4337.717,
+          "max_frame_ms": 113.452,
+          "draw_wait_max_us": 38344,
+          "draw_groups": 20,
+          "longest": {
+            "ms": 113.452,
+            "stage": "before world",
+            "status": "Loading track\u00e2\u20ac\u00a6"
+          },
+          "game": {
+            "car_slice_at": "",
+            "car_slice_max_us": 0,
+            "car_us": 3260,
+            "car_yields": 0,
+            "diagnostics_us": 17186,
+            "effects_audio_wall_us": 9423,
+            "hold_us": 1266,
+            "hud_setup_us": 11895,
+            "restart_us": 13137,
+            "weather_us": 623,
+            "weathering_us": 1414
+          },
+          "world": {
+            "bridge_us": 127,
+            "cache_duplicate_max_us": 106,
+            "cache_pack_us": 4623,
+            "partition_child_wall_max_us": 2972,
+            "snow_us": 4
+          }
+        },
+        {
+          "source": "res://resources/storm_tracks/storm_quarry.json",
+          "cycle": 1,
+          "wall_ms": 404.85,
+          "max_frame_ms": 35.196,
+          "draw_wait_max_us": 5423,
+          "draw_groups": 12,
+          "longest": {
+            "ms": 35.196,
+            "stage": "initial",
+            "status": "Preparing graphics..."
+          },
+          "game": {
+            "car_slice_at": "",
+            "car_slice_max_us": 0,
+            "car_us": 3784,
+            "car_yields": 0,
+            "diagnostics_us": 18726,
+            "effects_audio_wall_us": 9273,
+            "hold_us": 1873,
+            "hud_setup_us": 10849,
+            "restart_us": 12375,
+            "weather_us": 661,
+            "weathering_us": 1365
+          },
+          "world": {
+            "cache_instantiate_us": 1148
+          }
+        },
+        {
+          "source": "res://resources/storm_tracks/storm_floodgate.json",
+          "cycle": 0,
+          "wall_ms": 4601.524,
+          "max_frame_ms": 107.072,
+          "draw_wait_max_us": 40716,
+          "draw_groups": 21,
+          "longest": {
+            "ms": 107.072,
+            "stage": "before world",
+            "status": "Loading track\u00e2\u20ac\u00a6"
+          },
+          "game": {
+            "car_slice_at": "",
+            "car_slice_max_us": 0,
+            "car_us": 3967,
+            "car_yields": 0,
+            "diagnostics_us": 18090,
+            "effects_audio_wall_us": 9741,
+            "hold_us": 1282,
+            "hud_setup_us": 13021,
+            "restart_us": 13248,
+            "weather_us": 639,
+            "weathering_us": 1418
+          },
+          "world": {
+            "bridge_us": 142,
+            "cache_duplicate_max_us": 1323,
+            "cache_pack_us": 5589,
+            "partition_child_wall_max_us": 115274,
+            "snow_us": 7
+          }
+        },
+        {
+          "source": "res://resources/storm_tracks/storm_floodgate.json",
+          "cycle": 1,
+          "wall_ms": 448.579,
+          "max_frame_ms": 35.4,
+          "draw_wait_max_us": 6004,
+          "draw_groups": 12,
+          "longest": {
+            "ms": 35.4,
+            "stage": "initial",
+            "status": "Preparing graphics..."
+          },
+          "game": {
+            "car_slice_at": "",
+            "car_slice_max_us": 0,
+            "car_us": 3744,
+            "car_yields": 0,
+            "diagnostics_us": 18657,
+            "effects_audio_wall_us": 9441,
+            "hold_us": 1274,
+            "hud_setup_us": 9794,
+            "restart_us": 12149,
+            "weather_us": 610,
+            "weathering_us": 1386
+          },
+          "world": {
+            "cache_instantiate_us": 1145
+          }
+        }
+      ],
+      "recorded_frames": 6000
+    },
+    "cache": {
+      "files": 32,
+      "bytes": 30785415
+    },
+    "sources": {
+      "ui/showroom_studio.gd": {
+        "start": "075991fd8ac9c9773a5848afb3f00a2bf6e240305362efb4c330bc2d237fa699",
+        "frozen": "075991fd8ac9c9773a5848afb3f00a2bf6e240305362efb4c330bc2d237fa699",
+        "current": "075991fd8ac9c9773a5848afb3f00a2bf6e240305362efb4c330bc2d237fa699"
+      },
+      "ui/garage_environment.gd": {
+        "start": "9b126a8d47fdfa5c75b3f25e7f551d3f6b09f09544e2650f9eeb04dbfb06521f",
+        "frozen": "9b126a8d47fdfa5c75b3f25e7f551d3f6b09f09544e2650f9eeb04dbfb06521f",
+        "current": "9b126a8d47fdfa5c75b3f25e7f551d3f6b09f09544e2650f9eeb04dbfb06521f"
+      },
+      "ui/garage_reflections.gd": {
+        "start": "9842518ee2c8ee1eff31c3e8ffb27406aa6d8aa420a45f6e52a605bd4ac85922",
+        "frozen": "9842518ee2c8ee1eff31c3e8ffb27406aa6d8aa420a45f6e52a605bd4ac85922",
+        "current": "9842518ee2c8ee1eff31c3e8ffb27406aa6d8aa420a45f6e52a605bd4ac85922"
+      },
+      "ui/car_showroom.gd": {
+        "start": "7c046f786855df1e1a1ca5612bfa537f64d59776ae6321456634a5352b546732",
+        "frozen": "7c046f786855df1e1a1ca5612bfa537f64d59776ae6321456634a5352b546732",
+        "current": "7c046f786855df1e1a1ca5612bfa537f64d59776ae6321456634a5352b546732"
+      },
+      "ui/garage_preloaded_studio.gd": {
+        "start": "d5a8bb8faa4ab1003acf0cabcb4cbcca0d638bb4814794d1009a95e5e276d03e",
+        "frozen": "d5a8bb8faa4ab1003acf0cabcb4cbcca0d638bb4814794d1009a95e5e276d03e",
+        "current": "d5a8bb8faa4ab1003acf0cabcb4cbcca0d638bb4814794d1009a95e5e276d03e"
+      },
+      "ui/garage_preloader.gd": {
+        "start": "596a5eb1fe741f6c16db340b3da5251313626572ad02a8b93977deb7cd2a03f5",
+        "frozen": "596a5eb1fe741f6c16db340b3da5251313626572ad02a8b93977deb7cd2a03f5",
+        "current": "596a5eb1fe741f6c16db340b3da5251313626572ad02a8b93977deb7cd2a03f5"
+      },
+      "core/app.gd": {
+        "start": "4a484bb3d6974e2e618661cd9ce7f2f95bd29f3f59201cb18ea36bea203cb948",
+        "frozen": "4a484bb3d6974e2e618661cd9ce7f2f95bd29f3f59201cb18ea36bea203cb948",
+        "current": "c16a9dc98fd74b19741d91e0bcdf5d0f562b585747dd27c14ab290feca7dc7e8"
+      },
+      "core/game.gd": {
+        "start": "81c0db89b447be0e8f9e6814e9b784fa95fd63317584b708b8345a87d76182db",
+        "frozen": "81c0db89b447be0e8f9e6814e9b784fa95fd63317584b708b8345a87d76182db",
+        "current": "81c0db89b447be0e8f9e6814e9b784fa95fd63317584b708b8345a87d76182db"
+      },
+      "vehicle/effect_render_preparation.gd": {
+        "start": "12155579002cf6f09449b29ab4ccf39986f9069c6dab06274ac1bfdbb0e5e199",
+        "frozen": "12155579002cf6f09449b29ab4ccf39986f9069c6dab06274ac1bfdbb0e5e199",
+        "current": "12155579002cf6f09449b29ab4ccf39986f9069c6dab06274ac1bfdbb0e5e199"
+      },
+      "vehicle/effect_preparation_pool.gd": {
+        "start": "c9324e39e167cb285b300365b0ddd555153cb8a346253c97fc8bbd16fda0ace5",
+        "frozen": "c9324e39e167cb285b300365b0ddd555153cb8a346253c97fc8bbd16fda0ace5",
+        "current": "c9324e39e167cb285b300365b0ddd555153cb8a346253c97fc8bbd16fda0ace5"
+      },
+      "vehicle/skid_trails.gd": {
+        "start": "5c0333553d4840fd5b1b9eebf6bf9b0f8ce42a58b28e260ed6409d38a2e234b3",
+        "frozen": "5c0333553d4840fd5b1b9eebf6bf9b0f8ce42a58b28e260ed6409d38a2e234b3",
+        "current": "5c0333553d4840fd5b1b9eebf6bf9b0f8ce42a58b28e260ed6409d38a2e234b3"
+      },
+      "vehicle/compact_detail.gd": {
+        "start": "c704cd0c978dbc0a18731f2a776c4699618269f30d141ddce119580221a28739",
+        "frozen": "c704cd0c978dbc0a18731f2a776c4699618269f30d141ddce119580221a28739",
+        "current": "c704cd0c978dbc0a18731f2a776c4699618269f30d141ddce119580221a28739"
+      }
+    }
+  },
+  "pixel_comparison": [
+    {
+      "label": "split-standalone",
+      "width": 1168,
+      "height": 360,
+      "changed_pixels": 0,
+      "max_byte_delta": 0,
+      "mean_absolute_RGBA_byte_delta": 0
+    },
+    {
+      "label": "cache-reuse",
+      "width": 1168,
+      "height": 360,
+      "changed_pixels": 0,
+      "max_byte_delta": 0,
+      "mean_absolute_RGBA_byte_delta": 0
+    },
+    {
+      "label": "representatives-split",
+      "width": 1168,
+      "height": 360,
+      "changed_pixels": 0,
+      "max_byte_delta": 0,
+      "mean_absolute_RGBA_byte_delta": 0
+    },
+    {
+      "label": "separate-thread",
+      "width": 1168,
+      "height": 360,
+      "changed_pixels": 0,
+      "max_byte_delta": 0,
+      "mean_absolute_RGBA_byte_delta": 0
+    },
+    {
+      "label": "rename-callback",
+      "width": 1168,
+      "height": 360,
+      "changed_pixels": 0,
+      "max_byte_delta": 0,
+      "mean_absolute_RGBA_byte_delta": 0
+    },
+    {
+      "label": "mobile-original",
+      "width": 1168,
+      "height": 360,
+      "changed_pixels": 420063,
+      "max_byte_delta": 124,
+      "mean_absolute_RGBA_byte_delta": 16.82029406868341
+    }
+  ],
+  "call_order_controls": {
+    "shader_hashes": {
+      "captured.frag": "153ece363378dba8336f4f188a0c72b870ae67bcecde102cc7c083d6db184504",
+      "captured.vert": "fd498eda5498598029b6b8954858c85752bfe456b37b81a30b29283c4b5c9ad5"
+    },
+    "records": [
+      {
+        "label": "v2-current-1",
+        "command": [
+          "C:\\Codes\\Godot\\Beat my track\\build\\cold-render-investigation-2026-10-27\\link_bench.exe",
+          "current",
+          "C:\\Codes\\Godot\\Beat my track\\build\\cold-render-investigation-2026-10-27\\shader-source\\captured.vert",
+          "C:\\Codes\\Godot\\Beat my track\\build\\cold-render-investigation-2026-10-27\\shader-source\\captured.frag"
+        ],
+        "pid": 31752,
+        "exit": 0,
+        "seconds": 0.969,
+        "result": {
+          "mode": "current",
+          "initial_threads_hint": 4294967295,
+          "threads_hint": 2,
+          "success": true,
+          "shared_program_valid": false,
+          "total_us": 421498,
+          "polls": 0,
+          "poll_max_us": 0,
+          "main_heartbeats": 0,
+          "main_gl_max_us": 0,
+          "main_interval_max_us": 0,
+          "operations": [
+            {
+              "name": "vertex_compile",
+              "us": 2
+            },
+            {
+              "name": "vertex_status",
+              "us": 11513
+            },
+            {
+              "name": "fragment_compile",
+              "us": 2
+            },
+            {
+              "name": "fragment_status",
+              "us": 6906
+            },
+            {
+              "name": "link",
+              "us": 5
+            },
+            {
+              "name": "link_status",
+              "us": 402614
+            },
+            {
+              "name": "flush",
+              "us": 2
+            }
+          ]
+        }
+      },
+      {
+        "label": "v2-deferred-1",
+        "command": [
+          "C:\\Codes\\Godot\\Beat my track\\build\\cold-render-investigation-2026-10-27\\link_bench.exe",
+          "deferred",
+          "C:\\Codes\\Godot\\Beat my track\\build\\cold-render-investigation-2026-10-27\\shader-source\\captured.vert",
+          "C:\\Codes\\Godot\\Beat my track\\build\\cold-render-investigation-2026-10-27\\shader-source\\captured.frag"
+        ],
+        "pid": 29028,
+        "exit": 0,
+        "seconds": 0.75,
+        "result": {
+          "mode": "deferred",
+          "initial_threads_hint": 4294967295,
+          "threads_hint": 2,
+          "success": true,
+          "shared_program_valid": false,
+          "total_us": 416417,
+          "polls": 11,
+          "poll_max_us": 762,
+          "main_heartbeats": 0,
+          "main_gl_max_us": 0,
+          "main_interval_max_us": 0,
+          "operations": [
+            {
+              "name": "vertex_compile",
+              "us": 2
+            },
+            {
+              "name": "fragment_compile",
+              "us": 14
+            },
+            {
+              "name": "link",
+              "us": 3
+            },
+            {
+              "name": "link_status",
+              "us": 104654
+            },
+            {
+              "name": "vertex_status",
+              "us": 67
+            },
+            {
+              "name": "fragment_status",
+              "us": 45
+            },
+            {
+              "name": "flush",
+              "us": 2
+            }
+          ]
+        }
+      },
+      {
+        "label": "v2-shared-1",
+        "command": [
+          "C:\\Codes\\Godot\\Beat my track\\build\\cold-render-investigation-2026-10-27\\link_bench.exe",
+          "shared",
+          "C:\\Codes\\Godot\\Beat my track\\build\\cold-render-investigation-2026-10-27\\shader-source\\captured.vert",
+          "C:\\Codes\\Godot\\Beat my track\\build\\cold-render-investigation-2026-10-27\\shader-source\\captured.frag"
+        ],
+        "pid": 34084,
+        "exit": 0,
+        "seconds": 0.875,
+        "result": {
+          "mode": "shared",
+          "initial_threads_hint": 4294967295,
+          "threads_hint": 2,
+          "success": true,
+          "shared_program_valid": true,
+          "total_us": 554542,
+          "polls": 0,
+          "poll_max_us": 0,
+          "main_heartbeats": 6,
+          "main_gl_max_us": 320643,
+          "main_interval_max_us": 78887,
+          "operations": [
+            {
+              "name": "vertex_compile",
+              "us": 4
+            },
+            {
+              "name": "vertex_status",
+              "us": 12800
+            },
+            {
+              "name": "fragment_compile",
+              "us": 2
+            },
+            {
+              "name": "fragment_status",
+              "us": 6381
+            },
+            {
+              "name": "link",
+              "us": 6
+            },
+            {
+              "name": "link_status",
+              "us": 365577
+            },
+            {
+              "name": "flush",
+              "us": 4
+            }
+          ]
+        }
+      },
+      {
+        "label": "v2-deferred-2",
+        "command": [
+          "C:\\Codes\\Godot\\Beat my track\\build\\cold-render-investigation-2026-10-27\\link_bench.exe",
+          "deferred",
+          "C:\\Codes\\Godot\\Beat my track\\build\\cold-render-investigation-2026-10-27\\shader-source\\captured.vert",
+          "C:\\Codes\\Godot\\Beat my track\\build\\cold-render-investigation-2026-10-27\\shader-source\\captured.frag"
+        ],
+        "pid": 28924,
+        "exit": 0,
+        "seconds": 0.718,
+        "result": {
+          "mode": "deferred",
+          "initial_threads_hint": 4294967295,
+          "threads_hint": 2,
+          "success": true,
+          "shared_program_valid": false,
+          "total_us": 393519,
+          "polls": 10,
+          "poll_max_us": 779,
+          "main_heartbeats": 0,
+          "main_gl_max_us": 0,
+          "main_interval_max_us": 0,
+          "operations": [
+            {
+              "name": "vertex_compile",
+              "us": 2
+            },
+            {
+              "name": "fragment_compile",
+              "us": 2
+            },
+            {
+              "name": "link",
+              "us": 4
+            },
+            {
+              "name": "link_status",
+              "us": 103926
+            },
+            {
+              "name": "vertex_status",
+              "us": 141
+            },
+            {
+              "name": "fragment_status",
+              "us": 113
+            },
+            {
+              "name": "flush",
+              "us": 4
+            }
+          ]
+        }
+      },
+      {
+        "label": "v2-current-2",
+        "command": [
+          "C:\\Codes\\Godot\\Beat my track\\build\\cold-render-investigation-2026-10-27\\link_bench.exe",
+          "current",
+          "C:\\Codes\\Godot\\Beat my track\\build\\cold-render-investigation-2026-10-27\\shader-source\\captured.vert",
+          "C:\\Codes\\Godot\\Beat my track\\build\\cold-render-investigation-2026-10-27\\shader-source\\captured.frag"
+        ],
+        "pid": 22936,
+        "exit": 0,
+        "seconds": 0.719,
+        "result": {
+          "mode": "current",
+          "initial_threads_hint": 4294967295,
+          "threads_hint": 2,
+          "success": true,
+          "shared_program_valid": false,
+          "total_us": 390895,
+          "polls": 0,
+          "poll_max_us": 0,
+          "main_heartbeats": 0,
+          "main_gl_max_us": 0,
+          "main_interval_max_us": 0,
+          "operations": [
+            {
+              "name": "vertex_compile",
+              "us": 2
+            },
+            {
+              "name": "vertex_status",
+              "us": 12425
+            },
+            {
+              "name": "fragment_compile",
+              "us": 1
+            },
+            {
+              "name": "fragment_status",
+              "us": 6644
+            },
+            {
+              "name": "link",
+              "us": 5
+            },
+            {
+              "name": "link_status",
+              "us": 371462
+            },
+            {
+              "name": "flush",
+              "us": 5
+            }
+          ]
+        }
+      },
+      {
+        "label": "v2-shared-2",
+        "command": [
+          "C:\\Codes\\Godot\\Beat my track\\build\\cold-render-investigation-2026-10-27\\link_bench.exe",
+          "shared",
+          "C:\\Codes\\Godot\\Beat my track\\build\\cold-render-investigation-2026-10-27\\shader-source\\captured.vert",
+          "C:\\Codes\\Godot\\Beat my track\\build\\cold-render-investigation-2026-10-27\\shader-source\\captured.frag"
+        ],
+        "pid": 7112,
+        "exit": 0,
+        "seconds": 0.859,
+        "result": {
+          "mode": "shared",
+          "initial_threads_hint": 4294967295,
+          "threads_hint": 2,
+          "success": true,
+          "shared_program_valid": true,
+          "total_us": 533348,
+          "polls": 0,
+          "poll_max_us": 0,
+          "main_heartbeats": 5,
+          "main_gl_max_us": 339734,
+          "main_interval_max_us": 78924,
+          "operations": [
+            {
+              "name": "vertex_compile",
+              "us": 3
+            },
+            {
+              "name": "vertex_status",
+              "us": 13938
+            },
+            {
+              "name": "fragment_compile",
+              "us": 1
+            },
+            {
+              "name": "fragment_status",
+              "us": 7200
+            },
+            {
+              "name": "link",
+              "us": 5
+            },
+            {
+              "name": "link_status",
+              "us": 363432
+            },
+            {
+              "name": "flush",
+              "us": 5
+            }
+          ]
+        }
+      }
+    ]
+  },
+  "process_controls": {
+    "records": [
+      {
+        "label": "process-control",
+        "pid": 14696,
+        "command": [
+          "C:\\Codes\\Godot\\Beat my track\\build\\cold-render-investigation-2026-10-27\\link_bench.exe",
+          "heartbeat",
+          "C:\\Codes\\Godot\\Beat my track\\build\\cold-render-investigation-2026-10-27\\shader-source\\captured.vert",
+          "C:\\Codes\\Godot\\Beat my track\\build\\cold-render-investigation-2026-10-27\\shader-source\\captured.frag"
+        ],
+        "exit": 0,
+        "utc_ready_us": 1793134617671458,
+        "utc_end_us": 1793134619753228,
+        "result": {
+          "mode": "heartbeat",
+          "initial_threads_hint": 4294967295,
+          "threads_hint": 2,
+          "success": true,
+          "shared_program_valid": false,
+          "total_us": 2002482,
+          "polls": 0,
+          "poll_max_us": 0,
+          "main_heartbeats": 126,
+          "main_gl_max_us": 491,
+          "main_interval_max_us": 31856,
+          "operations": []
+        }
+      },
+      {
+        "label": "process-compiler-1-save",
+        "pid": 34708,
+        "command": [
+          "C:\\Codes\\Godot\\Beat my track\\build\\cold-render-investigation-2026-10-27\\link_bench.exe",
+          "save",
+          "C:\\Codes\\Godot\\Beat my track\\build\\cold-render-investigation-2026-10-27\\shader-source\\captured.vert",
+          "C:\\Codes\\Godot\\Beat my track\\build\\cold-render-investigation-2026-10-27\\shader-source\\captured.frag"
+        ],
+        "exit": 0,
+        "utc_begin_us": 1793134620008155,
+        "utc_end_us": 1793134620738962,
+        "result": {
+          "mode": "save",
+          "initial_threads_hint": 4294967295,
+          "threads_hint": 2,
+          "success": true,
+          "shared_program_valid": false,
+          "total_us": 396864,
+          "polls": 0,
+          "poll_max_us": 0,
+          "main_heartbeats": 0,
+          "main_gl_max_us": 0,
+          "main_interval_max_us": 0,
+          "operations": [
+            {
+              "name": "vertex_compile",
+              "us": 2
+            },
+            {
+              "name": "vertex_status",
+              "us": 13374
+            },
+            {
+              "name": "fragment_compile",
+              "us": 2
+            },
+            {
+              "name": "fragment_status",
+              "us": 6444
+            },
+            {
+              "name": "link",
+              "us": 5
+            },
+            {
+              "name": "link_status",
+              "us": 374257
+            },
+            {
+              "name": "flush",
+              "us": 15
+            },
+            {
+              "name": "get_program_binary",
+              "us": 213
+            }
+          ]
+        }
+      },
+      {
+        "label": "process-compiler-1-load",
+        "pid": 22176,
+        "command": [
+          "C:\\Codes\\Godot\\Beat my track\\build\\cold-render-investigation-2026-10-27\\link_bench.exe",
+          "load",
+          "C:\\Codes\\Godot\\Beat my track\\build\\cold-render-investigation-2026-10-27\\shader-source\\captured.vert",
+          "C:\\Codes\\Godot\\Beat my track\\build\\cold-render-investigation-2026-10-27\\shader-source\\captured.frag"
+        ],
+        "exit": 0,
+        "utc_begin_us": 1793134620738962,
+        "utc_end_us": 1793134621065389,
+        "result": {
+          "mode": "load",
+          "initial_threads_hint": 4294967295,
+          "threads_hint": 2,
+          "success": true,
+          "shared_program_valid": false,
+          "total_us": 4163,
+          "polls": 0,
+          "poll_max_us": 0,
+          "main_heartbeats": 0,
+          "main_gl_max_us": 0,
+          "main_interval_max_us": 0,
+          "operations": [
+            {
+              "name": "program_binary",
+              "us": 2896
+            },
+            {
+              "name": "link_status",
+              "us": 76
+            }
+          ]
+        }
+      },
+      {
+        "label": "process-compiler-1",
+        "pid": 33176,
+        "command": [
+          "C:\\Codes\\Godot\\Beat my track\\build\\cold-render-investigation-2026-10-27\\link_bench.exe",
+          "heartbeat",
+          "C:\\Codes\\Godot\\Beat my track\\build\\cold-render-investigation-2026-10-27\\shader-source\\captured.vert",
+          "C:\\Codes\\Godot\\Beat my track\\build\\cold-render-investigation-2026-10-27\\shader-source\\captured.frag"
+        ],
+        "exit": 0,
+        "utc_ready_us": 1793134620008155,
+        "utc_end_us": 1793134622092727,
+        "result": {
+          "mode": "heartbeat",
+          "initial_threads_hint": 4294967295,
+          "threads_hint": 2,
+          "success": true,
+          "shared_program_valid": false,
+          "total_us": 2005102,
+          "polls": 0,
+          "poll_max_us": 0,
+          "main_heartbeats": 125,
+          "main_gl_max_us": 1195,
+          "main_interval_max_us": 31527,
+          "operations": []
+        }
+      },
+      {
+        "label": "process-compiler-2-save",
+        "pid": 15200,
+        "command": [
+          "C:\\Codes\\Godot\\Beat my track\\build\\cold-render-investigation-2026-10-27\\link_bench.exe",
+          "save",
+          "C:\\Codes\\Godot\\Beat my track\\build\\cold-render-investigation-2026-10-27\\shader-source\\captured.vert",
+          "C:\\Codes\\Godot\\Beat my track\\build\\cold-render-investigation-2026-10-27\\shader-source\\captured.frag"
+        ],
+        "exit": 0,
+        "utc_begin_us": 1793134622354667,
+        "utc_end_us": 1793134623143600,
+        "result": {
+          "mode": "save",
+          "initial_threads_hint": 4294967295,
+          "threads_hint": 2,
+          "success": true,
+          "shared_program_valid": false,
+          "total_us": 456375,
+          "polls": 0,
+          "poll_max_us": 0,
+          "main_heartbeats": 0,
+          "main_gl_max_us": 0,
+          "main_interval_max_us": 0,
+          "operations": [
+            {
+              "name": "vertex_compile",
+              "us": 2
+            },
+            {
+              "name": "vertex_status",
+              "us": 13018
+            },
+            {
+              "name": "fragment_compile",
+              "us": 2
+            },
+            {
+              "name": "fragment_status",
+              "us": 7768
+            },
+            {
+              "name": "link",
+              "us": 3
+            },
+            {
+              "name": "link_status",
+              "us": 433536
+            },
+            {
+              "name": "flush",
+              "us": 3
+            },
+            {
+              "name": "get_program_binary",
+              "us": 240
+            }
+          ]
+        }
+      },
+      {
+        "label": "process-compiler-2-load",
+        "pid": 15608,
+        "command": [
+          "C:\\Codes\\Godot\\Beat my track\\build\\cold-render-investigation-2026-10-27\\link_bench.exe",
+          "load",
+          "C:\\Codes\\Godot\\Beat my track\\build\\cold-render-investigation-2026-10-27\\shader-source\\captured.vert",
+          "C:\\Codes\\Godot\\Beat my track\\build\\cold-render-investigation-2026-10-27\\shader-source\\captured.frag"
+        ],
+        "exit": 0,
+        "utc_begin_us": 1793134623143600,
+        "utc_end_us": 1793134623497435,
+        "result": {
+          "mode": "load",
+          "initial_threads_hint": 4294967295,
+          "threads_hint": 2,
+          "success": true,
+          "shared_program_valid": false,
+          "total_us": 3812,
+          "polls": 0,
+          "poll_max_us": 0,
+          "main_heartbeats": 0,
+          "main_gl_max_us": 0,
+          "main_interval_max_us": 0,
+          "operations": [
+            {
+              "name": "program_binary",
+              "us": 2678
+            },
+            {
+              "name": "link_status",
+              "us": 23
+            }
+          ]
+        }
+      },
+      {
+        "label": "process-compiler-2",
+        "pid": 36736,
+        "command": [
+          "C:\\Codes\\Godot\\Beat my track\\build\\cold-render-investigation-2026-10-27\\link_bench.exe",
+          "heartbeat",
+          "C:\\Codes\\Godot\\Beat my track\\build\\cold-render-investigation-2026-10-27\\shader-source\\captured.vert",
+          "C:\\Codes\\Godot\\Beat my track\\build\\cold-render-investigation-2026-10-27\\shader-source\\captured.frag"
+        ],
+        "exit": 0,
+        "utc_ready_us": 1793134622354667,
+        "utc_end_us": 1793134624433838,
+        "result": {
+          "mode": "heartbeat",
+          "initial_threads_hint": 4294967295,
+          "threads_hint": 2,
+          "success": true,
+          "shared_program_valid": false,
+          "total_us": 2001487,
+          "polls": 0,
+          "poll_max_us": 0,
+          "main_heartbeats": 127,
+          "main_gl_max_us": 606,
+          "main_interval_max_us": 30726,
+          "operations": []
+        }
+      }
+    ]
+  },
+  "executions": [
+    {
+      "command": [
+        "C:/apps/Godot 4.7.2/Godot_v4.7.2-stable_win64.exe",
+        "--audio-driver",
+        "Dummy",
+        "--rendering-method",
+        "gl_compatibility",
+        "--path",
+        "C:\\Codes\\Godot\\Beat my track\\game",
+        "--script",
+        "C:\\Codes\\Godot\\Beat my track\\build\\cold-render-investigation-2026-10-27\\probe.gd",
+        "--",
+        "--variant=trace_link",
+        "--scope=standalone",
+        "--output=res://../build/cold-render-investigation-2026-10-27/results/api-source"
+      ],
+      "pid": 2752,
+      "exit": 1,
+      "seconds": 41.016,
+      "variant": "trace_link",
+      "scope": "standalone",
+      "renderer": "gl_compatibility",
+      "sampled": false,
+      "profile_label": "api-source",
+      "source_hashes": {
+        "ui/showroom_studio.gd": "075991fd8ac9c9773a5848afb3f00a2bf6e240305362efb4c330bc2d237fa699",
+        "ui/garage_environment.gd": "9b126a8d47fdfa5c75b3f25e7f551d3f6b09f09544e2650f9eeb04dbfb06521f",
+        "ui/garage_reflections.gd": "9842518ee2c8ee1eff31c3e8ffb27406aa6d8aa420a45f6e52a605bd4ac85922",
+        "ui/car_showroom.gd": "7c046f786855df1e1a1ca5612bfa537f64d59776ae6321456634a5352b546732",
+        "ui/garage_preloaded_studio.gd": "d5a8bb8faa4ab1003acf0cabcb4cbcca0d638bb4814794d1009a95e5e276d03e",
+        "ui/garage_preloader.gd": "596a5eb1fe741f6c16db340b3da5251313626572ad02a8b93977deb7cd2a03f5",
+        "core/app.gd": "c16a9dc98fd74b19741d91e0bcdf5d0f562b585747dd27c14ab290feca7dc7e8",
+        "core/game.gd": "81c0db89b447be0e8f9e6814e9b784fa95fd63317584b708b8345a87d76182db",
+        "vehicle/effect_render_preparation.gd": "12155579002cf6f09449b29ab4ccf39986f9069c6dab06274ac1bfdbb0e5e199",
+        "vehicle/effect_preparation_pool.gd": "c9324e39e167cb285b300365b0ddd555153cb8a346253c97fc8bbd16fda0ace5",
+        "vehicle/skid_trails.gd": "5c0333553d4840fd5b1b9eebf6bf9b0f8ce42a58b28e260ed6409d38a2e234b3",
+        "vehicle/compact_detail.gd": "c704cd0c978dbc0a18731f2a776c4699618269f30d141ddce119580221a28739"
+      }
+    },
+    {
+      "command": [
+        "C:/apps/Godot 4.7.2/Godot_v4.7.2-stable_win64.exe",
+        "--audio-driver",
+        "Dummy",
+        "--rendering-method",
+        "gl_compatibility",
+        "--path",
+        "C:\\Codes\\Godot\\Beat my track\\game",
+        "--script",
+        "C:\\Codes\\Godot\\Beat my track\\build\\cold-render-investigation-2026-10-27\\probe.gd",
+        "--",
+        "--variant=trace_link",
+        "--scope=standalone",
+        "--output=res://../build/cold-render-investigation-2026-10-27/results/api-source-static"
+      ],
+      "pid": 34552,
+      "exit": 0,
+      "seconds": 16.36,
+      "variant": "trace_link",
+      "scope": "standalone",
+      "renderer": "gl_compatibility",
+      "sampled": false,
+      "profile_label": "api-source-static",
+      "source_hashes": {
+        "ui/showroom_studio.gd": "075991fd8ac9c9773a5848afb3f00a2bf6e240305362efb4c330bc2d237fa699",
+        "ui/garage_environment.gd": "9b126a8d47fdfa5c75b3f25e7f551d3f6b09f09544e2650f9eeb04dbfb06521f",
+        "ui/garage_reflections.gd": "9842518ee2c8ee1eff31c3e8ffb27406aa6d8aa420a45f6e52a605bd4ac85922",
+        "ui/car_showroom.gd": "7c046f786855df1e1a1ca5612bfa537f64d59776ae6321456634a5352b546732",
+        "ui/garage_preloaded_studio.gd": "d5a8bb8faa4ab1003acf0cabcb4cbcca0d638bb4814794d1009a95e5e276d03e",
+        "ui/garage_preloader.gd": "596a5eb1fe741f6c16db340b3da5251313626572ad02a8b93977deb7cd2a03f5",
+        "core/app.gd": "c16a9dc98fd74b19741d91e0bcdf5d0f562b585747dd27c14ab290feca7dc7e8",
+        "core/game.gd": "81c0db89b447be0e8f9e6814e9b784fa95fd63317584b708b8345a87d76182db",
+        "vehicle/effect_render_preparation.gd": "12155579002cf6f09449b29ab4ccf39986f9069c6dab06274ac1bfdbb0e5e199",
+        "vehicle/effect_preparation_pool.gd": "c9324e39e167cb285b300365b0ddd555153cb8a346253c97fc8bbd16fda0ace5",
+        "vehicle/skid_trails.gd": "5c0333553d4840fd5b1b9eebf6bf9b0f8ce42a58b28e260ed6409d38a2e234b3",
+        "vehicle/compact_detail.gd": "c704cd0c978dbc0a18731f2a776c4699618269f30d141ddce119580221a28739"
+      }
+    },
+    {
+      "command": [
+        "C:/apps/Godot 4.7.2/Godot_v4.7.2-stable_win64.exe",
+        "--audio-driver",
+        "Dummy",
+        "--rendering-method",
+        "gl_compatibility",
+        "--path",
+        "C:\\Codes\\Godot\\Beat my track\\game",
+        "--script",
+        "C:\\Codes\\Godot\\Beat my track\\build\\cold-render-investigation-2026-10-27\\probe.gd",
+        "--",
+        "--variant=original",
+        "--scope=app",
+        "--output=res://../build/cold-render-investigation-2026-10-27/results/app-original"
+      ],
+      "pid": 20688,
+      "exit": 1,
+      "seconds": 57.906,
+      "variant": "original",
+      "scope": "app",
+      "renderer": "gl_compatibility",
+      "sampled": false,
+      "profile_label": "app-original",
+      "source_hashes": {
+        "ui/showroom_studio.gd": "075991fd8ac9c9773a5848afb3f00a2bf6e240305362efb4c330bc2d237fa699",
+        "ui/garage_environment.gd": "9b126a8d47fdfa5c75b3f25e7f551d3f6b09f09544e2650f9eeb04dbfb06521f",
+        "ui/garage_reflections.gd": "9842518ee2c8ee1eff31c3e8ffb27406aa6d8aa420a45f6e52a605bd4ac85922",
+        "ui/car_showroom.gd": "7c046f786855df1e1a1ca5612bfa537f64d59776ae6321456634a5352b546732",
+        "ui/garage_preloaded_studio.gd": "d5a8bb8faa4ab1003acf0cabcb4cbcca0d638bb4814794d1009a95e5e276d03e",
+        "ui/garage_preloader.gd": "596a5eb1fe741f6c16db340b3da5251313626572ad02a8b93977deb7cd2a03f5",
+        "core/app.gd": "4a484bb3d6974e2e618661cd9ce7f2f95bd29f3f59201cb18ea36bea203cb948",
+        "core/game.gd": "81c0db89b447be0e8f9e6814e9b784fa95fd63317584b708b8345a87d76182db",
+        "vehicle/effect_render_preparation.gd": "12155579002cf6f09449b29ab4ccf39986f9069c6dab06274ac1bfdbb0e5e199",
+        "vehicle/effect_preparation_pool.gd": "c9324e39e167cb285b300365b0ddd555153cb8a346253c97fc8bbd16fda0ace5",
+        "vehicle/skid_trails.gd": "5c0333553d4840fd5b1b9eebf6bf9b0f8ce42a58b28e260ed6409d38a2e234b3",
+        "vehicle/compact_detail.gd": "c704cd0c978dbc0a18731f2a776c4699618269f30d141ddce119580221a28739"
+      }
+    },
+    {
+      "command": [
+        "C:/apps/Godot 4.7.2/Godot_v4.7.2-stable_win64.exe",
+        "--audio-driver",
+        "Dummy",
+        "--rendering-method",
+        "gl_compatibility",
+        "--path",
+        "C:\\Codes\\Godot\\Beat my track\\game",
+        "--script",
+        "C:\\Codes\\Godot\\Beat my track\\build\\cold-render-investigation-2026-10-27\\probe.gd",
+        "--",
+        "--variant=original",
+        "--scope=app",
+        "--output=res://../build/cold-render-investigation-2026-10-27/results/app-reuse"
+      ],
+      "pid": 28132,
+      "exit": 0,
+      "seconds": 22.704,
+      "variant": "original",
+      "scope": "app",
+      "renderer": "gl_compatibility",
+      "sampled": false,
+      "profile_label": "app-original",
+      "source_hashes": {
+        "ui/showroom_studio.gd": "075991fd8ac9c9773a5848afb3f00a2bf6e240305362efb4c330bc2d237fa699",
+        "ui/garage_environment.gd": "9b126a8d47fdfa5c75b3f25e7f551d3f6b09f09544e2650f9eeb04dbfb06521f",
+        "ui/garage_reflections.gd": "9842518ee2c8ee1eff31c3e8ffb27406aa6d8aa420a45f6e52a605bd4ac85922",
+        "ui/car_showroom.gd": "7c046f786855df1e1a1ca5612bfa537f64d59776ae6321456634a5352b546732",
+        "ui/garage_preloaded_studio.gd": "d5a8bb8faa4ab1003acf0cabcb4cbcca0d638bb4814794d1009a95e5e276d03e",
+        "ui/garage_preloader.gd": "596a5eb1fe741f6c16db340b3da5251313626572ad02a8b93977deb7cd2a03f5",
+        "core/app.gd": "4a484bb3d6974e2e618661cd9ce7f2f95bd29f3f59201cb18ea36bea203cb948",
+        "core/game.gd": "81c0db89b447be0e8f9e6814e9b784fa95fd63317584b708b8345a87d76182db",
+        "vehicle/effect_render_preparation.gd": "12155579002cf6f09449b29ab4ccf39986f9069c6dab06274ac1bfdbb0e5e199",
+        "vehicle/effect_preparation_pool.gd": "c9324e39e167cb285b300365b0ddd555153cb8a346253c97fc8bbd16fda0ace5",
+        "vehicle/skid_trails.gd": "5c0333553d4840fd5b1b9eebf6bf9b0f8ce42a58b28e260ed6409d38a2e234b3",
+        "vehicle/compact_detail.gd": "c704cd0c978dbc0a18731f2a776c4699618269f30d141ddce119580221a28739"
+      }
+    },
+    {
+      "command": [
+        "C:/apps/Godot 4.7.2/Godot_v4.7.2-stable_win64.exe",
+        "--audio-driver",
+        "Dummy",
+        "--rendering-method",
+        "gl_compatibility",
+        "--path",
+        "C:\\Codes\\Godot\\Beat my track\\game",
+        "--script",
+        "C:\\Codes\\Godot\\Beat my track\\build\\cold-render-investigation-2026-10-27\\probe.gd",
+        "--",
+        "--variant=original",
+        "--scope=standalone",
+        "--output=res://../build/cold-render-investigation-2026-10-27/results/cache-reuse"
+      ],
+      "pid": 30292,
+      "exit": 0,
+      "seconds": 21.641,
+      "variant": "original",
+      "scope": "standalone",
+      "renderer": "gl_compatibility",
+      "sampled": false,
+      "profile_label": "original-standalone",
+      "source_hashes": {
+        "ui/showroom_studio.gd": "075991fd8ac9c9773a5848afb3f00a2bf6e240305362efb4c330bc2d237fa699",
+        "ui/garage_environment.gd": "9b126a8d47fdfa5c75b3f25e7f551d3f6b09f09544e2650f9eeb04dbfb06521f",
+        "ui/garage_reflections.gd": "9842518ee2c8ee1eff31c3e8ffb27406aa6d8aa420a45f6e52a605bd4ac85922",
+        "ui/car_showroom.gd": "7c046f786855df1e1a1ca5612bfa537f64d59776ae6321456634a5352b546732",
+        "ui/garage_preloaded_studio.gd": "d5a8bb8faa4ab1003acf0cabcb4cbcca0d638bb4814794d1009a95e5e276d03e",
+        "ui/garage_preloader.gd": "596a5eb1fe741f6c16db340b3da5251313626572ad02a8b93977deb7cd2a03f5",
+        "core/app.gd": "4a484bb3d6974e2e618661cd9ce7f2f95bd29f3f59201cb18ea36bea203cb948",
+        "core/game.gd": "81c0db89b447be0e8f9e6814e9b784fa95fd63317584b708b8345a87d76182db",
+        "vehicle/effect_render_preparation.gd": "12155579002cf6f09449b29ab4ccf39986f9069c6dab06274ac1bfdbb0e5e199",
+        "vehicle/effect_preparation_pool.gd": "c9324e39e167cb285b300365b0ddd555153cb8a346253c97fc8bbd16fda0ace5",
+        "vehicle/skid_trails.gd": "5c0333553d4840fd5b1b9eebf6bf9b0f8ce42a58b28e260ed6409d38a2e234b3",
+        "vehicle/compact_detail.gd": "c704cd0c978dbc0a18731f2a776c4699618269f30d141ddce119580221a28739"
+      }
+    },
+    {
+      "command": [
+        "C:/apps/Godot 4.7.2/Godot_v4.7.2-stable_win64.exe",
+        "--audio-driver",
+        "Dummy",
+        "--rendering-method",
+        "mobile",
+        "--path",
+        "C:\\Codes\\Godot\\Beat my track\\game",
+        "--script",
+        "C:\\Codes\\Godot\\Beat my track\\build\\cold-render-investigation-2026-10-27\\probe.gd",
+        "--",
+        "--variant=original",
+        "--scope=standalone",
+        "--output=res://../build/cold-render-investigation-2026-10-27/results/mobile-original"
+      ],
+      "pid": 17064,
+      "exit": "timeout",
+      "seconds": 240.219,
+      "variant": "original",
+      "scope": "standalone",
+      "renderer": "mobile",
+      "sampled": false,
+      "profile_label": "mobile-original",
+      "source_hashes": {
+        "ui/showroom_studio.gd": "075991fd8ac9c9773a5848afb3f00a2bf6e240305362efb4c330bc2d237fa699",
+        "ui/garage_environment.gd": "9b126a8d47fdfa5c75b3f25e7f551d3f6b09f09544e2650f9eeb04dbfb06521f",
+        "ui/garage_reflections.gd": "9842518ee2c8ee1eff31c3e8ffb27406aa6d8aa420a45f6e52a605bd4ac85922",
+        "ui/car_showroom.gd": "7c046f786855df1e1a1ca5612bfa537f64d59776ae6321456634a5352b546732",
+        "ui/garage_preloaded_studio.gd": "d5a8bb8faa4ab1003acf0cabcb4cbcca0d638bb4814794d1009a95e5e276d03e",
+        "ui/garage_preloader.gd": "596a5eb1fe741f6c16db340b3da5251313626572ad02a8b93977deb7cd2a03f5",
+        "core/app.gd": "4a484bb3d6974e2e618661cd9ce7f2f95bd29f3f59201cb18ea36bea203cb948",
+        "core/game.gd": "81c0db89b447be0e8f9e6814e9b784fa95fd63317584b708b8345a87d76182db",
+        "vehicle/effect_render_preparation.gd": "12155579002cf6f09449b29ab4ccf39986f9069c6dab06274ac1bfdbb0e5e199",
+        "vehicle/effect_preparation_pool.gd": "c9324e39e167cb285b300365b0ddd555153cb8a346253c97fc8bbd16fda0ace5",
+        "vehicle/skid_trails.gd": "5c0333553d4840fd5b1b9eebf6bf9b0f8ce42a58b28e260ed6409d38a2e234b3",
+        "vehicle/compact_detail.gd": "c704cd0c978dbc0a18731f2a776c4699618269f30d141ddce119580221a28739"
+      }
+    },
+    {
+      "command": [
+        "C:/apps/Godot 4.7.2/Godot_v4.7.2-stable_win64.exe",
+        "--audio-driver",
+        "Dummy",
+        "--rendering-method",
+        "gl_compatibility",
+        "--path",
+        "C:\\Codes\\Godot\\Beat my track\\game",
+        "--script",
+        "C:\\Codes\\Godot\\Beat my track\\build\\cold-render-investigation-2026-10-27\\probe.gd",
+        "--",
+        "--variant=original",
+        "--scope=standalone",
+        "--output=res://../build/cold-render-investigation-2026-10-27/results/original-native-sample"
+      ],
+      "pid": 6496,
+      "exit": 0,
+      "seconds": 52.187,
+      "variant": "original",
+      "scope": "standalone",
+      "renderer": "gl_compatibility",
+      "sampled": true,
+      "source_hashes": {
+        "ui/showroom_studio.gd": "075991fd8ac9c9773a5848afb3f00a2bf6e240305362efb4c330bc2d237fa699",
+        "ui/garage_environment.gd": "9b126a8d47fdfa5c75b3f25e7f551d3f6b09f09544e2650f9eeb04dbfb06521f",
+        "ui/garage_reflections.gd": "9842518ee2c8ee1eff31c3e8ffb27406aa6d8aa420a45f6e52a605bd4ac85922",
+        "ui/car_showroom.gd": "7c046f786855df1e1a1ca5612bfa537f64d59776ae6321456634a5352b546732",
+        "ui/garage_preloaded_studio.gd": "d5a8bb8faa4ab1003acf0cabcb4cbcca0d638bb4814794d1009a95e5e276d03e",
+        "ui/garage_preloader.gd": "596a5eb1fe741f6c16db340b3da5251313626572ad02a8b93977deb7cd2a03f5",
+        "core/app.gd": "4a484bb3d6974e2e618661cd9ce7f2f95bd29f3f59201cb18ea36bea203cb948",
+        "core/game.gd": "81c0db89b447be0e8f9e6814e9b784fa95fd63317584b708b8345a87d76182db",
+        "vehicle/effect_render_preparation.gd": "12155579002cf6f09449b29ab4ccf39986f9069c6dab06274ac1bfdbb0e5e199",
+        "vehicle/effect_preparation_pool.gd": "c9324e39e167cb285b300365b0ddd555153cb8a346253c97fc8bbd16fda0ace5",
+        "vehicle/skid_trails.gd": "5c0333553d4840fd5b1b9eebf6bf9b0f8ce42a58b28e260ed6409d38a2e234b3",
+        "vehicle/compact_detail.gd": "c704cd0c978dbc0a18731f2a776c4699618269f30d141ddce119580221a28739"
+      }
+    },
+    {
+      "command": [
+        "C:/apps/Godot 4.7.2/Godot_v4.7.2-stable_win64.exe",
+        "--audio-driver",
+        "Dummy",
+        "--rendering-method",
+        "gl_compatibility",
+        "--path",
+        "C:\\Codes\\Godot\\Beat my track\\game",
+        "--script",
+        "C:\\Codes\\Godot\\Beat my track\\build\\cold-render-investigation-2026-10-27\\probe.gd",
+        "--",
+        "--variant=original",
+        "--scope=standalone",
+        "--output=res://../build/cold-render-investigation-2026-10-27/results/original-standalone"
+      ],
+      "pid": 34864,
+      "exit": 0,
+      "seconds": 70.906,
+      "variant": "original",
+      "scope": "standalone",
+      "renderer": "gl_compatibility",
+      "sampled": false,
+      "source_hashes": {
+        "ui/showroom_studio.gd": "075991fd8ac9c9773a5848afb3f00a2bf6e240305362efb4c330bc2d237fa699",
+        "ui/garage_environment.gd": "9b126a8d47fdfa5c75b3f25e7f551d3f6b09f09544e2650f9eeb04dbfb06521f",
+        "ui/garage_reflections.gd": "9842518ee2c8ee1eff31c3e8ffb27406aa6d8aa420a45f6e52a605bd4ac85922",
+        "ui/car_showroom.gd": "7c046f786855df1e1a1ca5612bfa537f64d59776ae6321456634a5352b546732",
+        "ui/garage_preloaded_studio.gd": "d5a8bb8faa4ab1003acf0cabcb4cbcca0d638bb4814794d1009a95e5e276d03e",
+        "ui/garage_preloader.gd": "596a5eb1fe741f6c16db340b3da5251313626572ad02a8b93977deb7cd2a03f5",
+        "core/app.gd": "4a484bb3d6974e2e618661cd9ce7f2f95bd29f3f59201cb18ea36bea203cb948",
+        "core/game.gd": "81c0db89b447be0e8f9e6814e9b784fa95fd63317584b708b8345a87d76182db",
+        "vehicle/effect_render_preparation.gd": "12155579002cf6f09449b29ab4ccf39986f9069c6dab06274ac1bfdbb0e5e199",
+        "vehicle/effect_preparation_pool.gd": "c9324e39e167cb285b300365b0ddd555153cb8a346253c97fc8bbd16fda0ace5",
+        "vehicle/skid_trails.gd": "5c0333553d4840fd5b1b9eebf6bf9b0f8ce42a58b28e260ed6409d38a2e234b3",
+        "vehicle/compact_detail.gd": "c704cd0c978dbc0a18731f2a776c4699618269f30d141ddce119580221a28739"
+      }
+    },
+    {
+      "command": [
+        "C:/apps/Godot 4.7.2/Godot_v4.7.2-stable_win64.exe",
+        "--audio-driver",
+        "Dummy",
+        "--rendering-method",
+        "gl_compatibility",
+        "--path",
+        "C:\\Codes\\Godot\\Beat my track\\game",
+        "--script",
+        "C:\\Codes\\Godot\\Beat my track\\build\\cold-render-investigation-2026-10-27\\probe.gd",
+        "--",
+        "--variant=parallel_hint",
+        "--scope=standalone",
+        "--output=res://../build/cold-render-investigation-2026-10-27/results/parallel-hint"
+      ],
+      "pid": 26780,
+      "exit": 0,
+      "seconds": 57.594,
+      "variant": "parallel_hint",
+      "scope": "standalone",
+      "renderer": "gl_compatibility",
+      "sampled": true,
+      "profile_label": "parallel-hint",
+      "source_hashes": {
+        "ui/showroom_studio.gd": "075991fd8ac9c9773a5848afb3f00a2bf6e240305362efb4c330bc2d237fa699",
+        "ui/garage_environment.gd": "9b126a8d47fdfa5c75b3f25e7f551d3f6b09f09544e2650f9eeb04dbfb06521f",
+        "ui/garage_reflections.gd": "9842518ee2c8ee1eff31c3e8ffb27406aa6d8aa420a45f6e52a605bd4ac85922",
+        "ui/car_showroom.gd": "7c046f786855df1e1a1ca5612bfa537f64d59776ae6321456634a5352b546732",
+        "ui/garage_preloaded_studio.gd": "d5a8bb8faa4ab1003acf0cabcb4cbcca0d638bb4814794d1009a95e5e276d03e",
+        "ui/garage_preloader.gd": "596a5eb1fe741f6c16db340b3da5251313626572ad02a8b93977deb7cd2a03f5",
+        "core/app.gd": "c16a9dc98fd74b19741d91e0bcdf5d0f562b585747dd27c14ab290feca7dc7e8",
+        "core/game.gd": "81c0db89b447be0e8f9e6814e9b784fa95fd63317584b708b8345a87d76182db",
+        "vehicle/effect_render_preparation.gd": "12155579002cf6f09449b29ab4ccf39986f9069c6dab06274ac1bfdbb0e5e199",
+        "vehicle/effect_preparation_pool.gd": "c9324e39e167cb285b300365b0ddd555153cb8a346253c97fc8bbd16fda0ace5",
+        "vehicle/skid_trails.gd": "5c0333553d4840fd5b1b9eebf6bf9b0f8ce42a58b28e260ed6409d38a2e234b3",
+        "vehicle/compact_detail.gd": "c704cd0c978dbc0a18731f2a776c4699618269f30d141ddce119580221a28739"
+      }
+    },
+    {
+      "command": [
+        "C:/apps/Godot 4.7.2/Godot_v4.7.2-stable_win64.exe",
+        "--audio-driver",
+        "Dummy",
+        "--rendering-method",
+        "gl_compatibility",
+        "--path",
+        "C:\\Codes\\Godot\\Beat my track\\game",
+        "--script",
+        "C:\\Codes\\Godot\\Beat my track\\build\\cold-render-investigation-2026-10-27\\race_probe.gd"
+      ],
+      "pid": 38304,
+      "exit": 0,
+      "seconds": 102.078,
+      "original_sha256": "6670f19155171fc6091ba11540b7be2848396df2084a45bad0a475f5a0884552",
+      "probe_sha256": "babba04a393c013a1911b0af2098a5c3cd4ef061ac713f47277b314a2a9a1024"
+    },
+    {
+      "command": [
+        "C:/apps/Godot 4.7.2/Godot_v4.7.2-stable_win64.exe",
+        "--audio-driver",
+        "Dummy",
+        "--rendering-method",
+        "gl_compatibility",
+        "--path",
+        "C:\\Codes\\Godot\\Beat my track\\game",
+        "--script",
+        "C:\\Codes\\Godot\\Beat my track\\build\\cold-render-investigation-2026-10-27\\probe.gd",
+        "--",
+        "--variant=rename_callback",
+        "--scope=standalone",
+        "--output=res://../build/cold-render-investigation-2026-10-27/results/rename-callback"
+      ],
+      "pid": 10076,
+      "exit": 0,
+      "seconds": 50.968,
+      "variant": "rename_callback",
+      "scope": "standalone",
+      "renderer": "gl_compatibility",
+      "sampled": false,
+      "profile_label": "rename-callback",
+      "source_hashes": {
+        "ui/showroom_studio.gd": "075991fd8ac9c9773a5848afb3f00a2bf6e240305362efb4c330bc2d237fa699",
+        "ui/garage_environment.gd": "9b126a8d47fdfa5c75b3f25e7f551d3f6b09f09544e2650f9eeb04dbfb06521f",
+        "ui/garage_reflections.gd": "9842518ee2c8ee1eff31c3e8ffb27406aa6d8aa420a45f6e52a605bd4ac85922",
+        "ui/car_showroom.gd": "7c046f786855df1e1a1ca5612bfa537f64d59776ae6321456634a5352b546732",
+        "ui/garage_preloaded_studio.gd": "d5a8bb8faa4ab1003acf0cabcb4cbcca0d638bb4814794d1009a95e5e276d03e",
+        "ui/garage_preloader.gd": "596a5eb1fe741f6c16db340b3da5251313626572ad02a8b93977deb7cd2a03f5",
+        "core/app.gd": "4a484bb3d6974e2e618661cd9ce7f2f95bd29f3f59201cb18ea36bea203cb948",
+        "core/game.gd": "81c0db89b447be0e8f9e6814e9b784fa95fd63317584b708b8345a87d76182db",
+        "vehicle/effect_render_preparation.gd": "12155579002cf6f09449b29ab4ccf39986f9069c6dab06274ac1bfdbb0e5e199",
+        "vehicle/effect_preparation_pool.gd": "c9324e39e167cb285b300365b0ddd555153cb8a346253c97fc8bbd16fda0ace5",
+        "vehicle/skid_trails.gd": "5c0333553d4840fd5b1b9eebf6bf9b0f8ce42a58b28e260ed6409d38a2e234b3",
+        "vehicle/compact_detail.gd": "c704cd0c978dbc0a18731f2a776c4699618269f30d141ddce119580221a28739"
+      }
+    },
+    {
+      "command": [
+        "C:/apps/Godot 4.7.2/Godot_v4.7.2-stable_win64.exe",
+        "--audio-driver",
+        "Dummy",
+        "--rendering-method",
+        "gl_compatibility",
+        "--path",
+        "C:\\Codes\\Godot\\Beat my track\\game",
+        "--script",
+        "C:\\Codes\\Godot\\Beat my track\\build\\cold-render-investigation-2026-10-27\\probe.gd",
+        "--",
+        "--variant=representatives_split",
+        "--scope=standalone",
+        "--output=res://../build/cold-render-investigation-2026-10-27/results/representatives-split"
+      ],
+      "pid": 9272,
+      "exit": 0,
+      "seconds": 66.141,
+      "variant": "representatives_split",
+      "scope": "standalone",
+      "renderer": "gl_compatibility",
+      "sampled": false,
+      "profile_label": "representatives-split",
+      "source_hashes": {
+        "ui/showroom_studio.gd": "075991fd8ac9c9773a5848afb3f00a2bf6e240305362efb4c330bc2d237fa699",
+        "ui/garage_environment.gd": "9b126a8d47fdfa5c75b3f25e7f551d3f6b09f09544e2650f9eeb04dbfb06521f",
+        "ui/garage_reflections.gd": "9842518ee2c8ee1eff31c3e8ffb27406aa6d8aa420a45f6e52a605bd4ac85922",
+        "ui/car_showroom.gd": "7c046f786855df1e1a1ca5612bfa537f64d59776ae6321456634a5352b546732",
+        "ui/garage_preloaded_studio.gd": "d5a8bb8faa4ab1003acf0cabcb4cbcca0d638bb4814794d1009a95e5e276d03e",
+        "ui/garage_preloader.gd": "596a5eb1fe741f6c16db340b3da5251313626572ad02a8b93977deb7cd2a03f5",
+        "core/app.gd": "4a484bb3d6974e2e618661cd9ce7f2f95bd29f3f59201cb18ea36bea203cb948",
+        "core/game.gd": "81c0db89b447be0e8f9e6814e9b784fa95fd63317584b708b8345a87d76182db",
+        "vehicle/effect_render_preparation.gd": "12155579002cf6f09449b29ab4ccf39986f9069c6dab06274ac1bfdbb0e5e199",
+        "vehicle/effect_preparation_pool.gd": "c9324e39e167cb285b300365b0ddd555153cb8a346253c97fc8bbd16fda0ace5",
+        "vehicle/skid_trails.gd": "5c0333553d4840fd5b1b9eebf6bf9b0f8ce42a58b28e260ed6409d38a2e234b3",
+        "vehicle/compact_detail.gd": "c704cd0c978dbc0a18731f2a776c4699618269f30d141ddce119580221a28739"
+      }
+    },
+    {
+      "command": [
+        "C:/apps/Godot 4.7.2/Godot_v4.7.2-stable_win64.exe",
+        "--render-thread",
+        "separate",
+        "--audio-driver",
+        "Dummy",
+        "--rendering-method",
+        "gl_compatibility",
+        "--path",
+        "C:\\Codes\\Godot\\Beat my track\\game",
+        "--script",
+        "C:\\Codes\\Godot\\Beat my track\\build\\cold-render-investigation-2026-10-27\\probe.gd",
+        "--",
+        "--variant=thread_separate",
+        "--scope=standalone",
+        "--output=res://../build/cold-render-investigation-2026-10-27/results/separate-thread"
+      ],
+      "pid": 22016,
+      "exit": 0,
+      "seconds": 57.828,
+      "variant": "thread_separate",
+      "scope": "standalone",
+      "renderer": "gl_compatibility",
+      "sampled": false,
+      "profile_label": "separate-thread",
+      "source_hashes": {
+        "ui/showroom_studio.gd": "075991fd8ac9c9773a5848afb3f00a2bf6e240305362efb4c330bc2d237fa699",
+        "ui/garage_environment.gd": "9b126a8d47fdfa5c75b3f25e7f551d3f6b09f09544e2650f9eeb04dbfb06521f",
+        "ui/garage_reflections.gd": "9842518ee2c8ee1eff31c3e8ffb27406aa6d8aa420a45f6e52a605bd4ac85922",
+        "ui/car_showroom.gd": "7c046f786855df1e1a1ca5612bfa537f64d59776ae6321456634a5352b546732",
+        "ui/garage_preloaded_studio.gd": "d5a8bb8faa4ab1003acf0cabcb4cbcca0d638bb4814794d1009a95e5e276d03e",
+        "ui/garage_preloader.gd": "596a5eb1fe741f6c16db340b3da5251313626572ad02a8b93977deb7cd2a03f5",
+        "core/app.gd": "4a484bb3d6974e2e618661cd9ce7f2f95bd29f3f59201cb18ea36bea203cb948",
+        "core/game.gd": "81c0db89b447be0e8f9e6814e9b784fa95fd63317584b708b8345a87d76182db",
+        "vehicle/effect_render_preparation.gd": "12155579002cf6f09449b29ab4ccf39986f9069c6dab06274ac1bfdbb0e5e199",
+        "vehicle/effect_preparation_pool.gd": "c9324e39e167cb285b300365b0ddd555153cb8a346253c97fc8bbd16fda0ace5",
+        "vehicle/skid_trails.gd": "5c0333553d4840fd5b1b9eebf6bf9b0f8ce42a58b28e260ed6409d38a2e234b3",
+        "vehicle/compact_detail.gd": "c704cd0c978dbc0a18731f2a776c4699618269f30d141ddce119580221a28739"
+      }
+    },
+    {
+      "command": [
+        "C:/apps/Godot 4.7.2/Godot_v4.7.2-stable_win64.exe",
+        "--audio-driver",
+        "Dummy",
+        "--rendering-method",
+        "gl_compatibility",
+        "--path",
+        "C:\\Codes\\Godot\\Beat my track\\game",
+        "--script",
+        "C:\\Codes\\Godot\\Beat my track\\build\\cold-render-investigation-2026-10-27\\probe.gd",
+        "--",
+        "--variant=split_views",
+        "--scope=standalone",
+        "--output=res://../build/cold-render-investigation-2026-10-27/results/split-standalone"
+      ],
+      "pid": 17612,
+      "exit": 0,
+      "seconds": 46.843,
+      "variant": "split_views",
+      "scope": "standalone",
+      "renderer": "gl_compatibility",
+      "sampled": false,
+      "source_hashes": {
+        "ui/showroom_studio.gd": "075991fd8ac9c9773a5848afb3f00a2bf6e240305362efb4c330bc2d237fa699",
+        "ui/garage_environment.gd": "9b126a8d47fdfa5c75b3f25e7f551d3f6b09f09544e2650f9eeb04dbfb06521f",
+        "ui/garage_reflections.gd": "9842518ee2c8ee1eff31c3e8ffb27406aa6d8aa420a45f6e52a605bd4ac85922",
+        "ui/car_showroom.gd": "7c046f786855df1e1a1ca5612bfa537f64d59776ae6321456634a5352b546732",
+        "ui/garage_preloaded_studio.gd": "d5a8bb8faa4ab1003acf0cabcb4cbcca0d638bb4814794d1009a95e5e276d03e",
+        "ui/garage_preloader.gd": "596a5eb1fe741f6c16db340b3da5251313626572ad02a8b93977deb7cd2a03f5",
+        "core/app.gd": "4a484bb3d6974e2e618661cd9ce7f2f95bd29f3f59201cb18ea36bea203cb948",
+        "core/game.gd": "81c0db89b447be0e8f9e6814e9b784fa95fd63317584b708b8345a87d76182db",
+        "vehicle/effect_render_preparation.gd": "12155579002cf6f09449b29ab4ccf39986f9069c6dab06274ac1bfdbb0e5e199",
+        "vehicle/effect_preparation_pool.gd": "c9324e39e167cb285b300365b0ddd555153cb8a346253c97fc8bbd16fda0ace5",
+        "vehicle/skid_trails.gd": "5c0333553d4840fd5b1b9eebf6bf9b0f8ce42a58b28e260ed6409d38a2e234b3",
+        "vehicle/compact_detail.gd": "c704cd0c978dbc0a18731f2a776c4699618269f30d141ddce119580221a28739"
+      }
+    }
+  ],
+  "generated_programs": [
+    {
+      "name": "captured.frag",
+      "bytes": 92852,
+      "sha256": "153ece363378dba8336f4f188a0c72b870ae67bcecde102cc7c083d6db184504",
+      "archived": true
+    },
+    {
+      "name": "captured.vert",
+      "bytes": 33847,
+      "sha256": "fd498eda5498598029b6b8954858c85752bfe456b37b81a30b29283c4b5c9ad5",
+      "archived": true
+    },
+    {
+      "name": "compiled-compiler-1.bin",
+      "bytes": 393998,
+      "sha256": "25571133f7c796f1559a10d261abcfde9dcff6321f0a8f673eba55569a7078e4",
+      "archived": false
+    },
+    {
+      "name": "compiled-compiler-2.bin",
+      "bytes": 393998,
+      "sha256": "8cd09ad89aff866211b0d89b20cc6363bea076a5e2e5fa091476e11d646f1f26",
+      "archived": false
+    }
+  ],
+  "tool_binary_receipts": [
+    {
+      "name": "gl_caps.exe",
+      "sha256": "06ab1bbeb4a2a66c0fe8cbd279293b08cc3314849fc1c7fbbe9d4d9cdaee4c2b",
+      "bytes": 2693104
+    },
+    {
+      "name": "link_bench.exe",
+      "sha256": "8a156e9498a87f3c631f410f569e876d829a6302080331a669a8e5c0d2755377",
+      "bytes": 2914619
+    },
+    {
+      "name": "parallel_probe.dll",
+      "sha256": "43948c87425aab20ce387fb8a38cc9b1f330593cedc26547393822462affa153",
+      "bytes": 2676010
+    },
+    {
+      "name": "sampler.exe",
+      "sha256": "b8c6590e7fcd7ef7f441dc06d73598358241fe15dd9d2f3d26f2658097aaac1c",
+      "bytes": 2712191
+    }
+  ],
+  "compiler_version": "g++.exe (Rev10, Built by MSYS2 project) 12.2.0",
+  "native_harness_versions": {
+    "initial_call_order": "harness/link_bench-v1.cpp",
+    "corrected_call_order": "harness/link_bench-v2.cpp",
+    "process_controls": "harness/link_bench.cpp"
+  },
+  "compiler_reproduction_commands": [
+    "C:/msys64/mingw64/bin/g++.exe build/cold-render-investigation-2026-10-27/gl_caps.cpp -std=c++17 -O2 -static -lopengl32 -lgdi32 -o build/cold-render-investigation-2026-10-27/gl_caps.exe",
+    "C:/msys64/mingw64/bin/g++.exe build/cold-render-investigation-2026-10-27/sampler.cpp -std=c++17 -O2 -static -ldbghelp -o build/cold-render-investigation-2026-10-27/sampler.exe",
+    "C:/msys64/mingw64/bin/g++.exe build/cold-render-investigation-2026-10-27/parallel_probe.cpp -I .tools/godot-cpp-music/gdextension -std=c++17 -O2 -shared -static -lopengl32 -o build/cold-render-investigation-2026-10-27/parallel_probe.dll",
+    "C:/msys64/mingw64/bin/g++.exe build/cold-render-investigation-2026-10-27/link_bench.cpp -std=c++17 -O2 -static -lopengl32 -lgdi32 -o build/cold-render-investigation-2026-10-27/link_bench.exe"
+  ],
+  "inspection_commands": [
+    "C:/msys64/mingw64/bin/objdump.exe -d --start-address=0x141411250 --stop-address=0x1414117b0 C:/apps/Godot 4.7.2/Godot_v4.7.2-stable_win64.exe",
+    "python build/cold-render-investigation-2026-10-27/run_link_bench.py",
+    "python build/cold-render-investigation-2026-10-27/run_process_bench.py",
+    "python build/cold-render-investigation-2026-10-27/analyze.py",
+    "powershell -NoProfile -ExecutionPolicy Bypass -File build/cold-render-investigation-2026-10-27/pixel_compare.ps1",
+    "python build/cold-render-investigation-2026-10-27/make_report.py"
+  ],
+  "findings_retained": [
+    "app-original: 15 checks / 1 fixture failure: carousel texture checked after App normally consumes it. app-reuse checks before transfer: 15/0.",
+    "api-source: missing libwinpthread DLL, 10 checks / 2 failures; static DLL api-source-static: 10/0, exit0.",
+    "mobile-original: all14 assertions and captures complete, but owned child times out during teardown at240s; not clean renderer acceptance.",
+    "inspect-api: initial unisolated headless log rotation denied; corrected isolated profile exits normally.",
+    "PowerShell local script policy initially rejects pixel helper; process-local ExecutionPolicy Bypass succeeds without persistent policy change.",
+    "Initial shared-context bench used one surface; v2 uses separate surfaces and prewarms main clear/swap; both versions retained.",
+    "Known sandbox root-certificate-store errors retained. Separate render-thread control logs synchronization warnings.",
+    "Sampler only suspends threads of validated owned Godot children; maximum Garage suspension10309us. Later driver modules unresolved in parallel-hint/race traces.",
+    "Race UTC frame list capped6000 and does not cover every load; cache stage labels do not attribute the4980ms frame."
+  ],
+  "limits": [
+    "Exploratory interleaved desktop cases, one fixed Compact view, no statistical or normal-launch/phone/FPS claim.",
+    "Seven Garage scripts reloaded from frozen sources; twelve source snapshots; concurrent App edits preserved. Race probe uses shared actual tree.",
+    "Separate-process controls compile one exact GLSL program, draw clear/swap in another process and validate binary link status. No real draw using imported binary, full UI, Android, or helper-memory acceptance.",
+    "Exact canonical/replay, all-car/theme and lifecycle acceptance of the proposed native architecture are future gates, not tested implementation.",
+    "No production fix applied; callback rename, engine preparation API, process service and cache integration remain planned."
+  ],
+  "boundaries": {
+    "physical_device_attachment_query_or_test": false,
+    "apk_aab": false,
+    "real_auth_purchase": false,
+    "owner_save_or_live_service_mutation": false,
+    "deployment": false,
+    "owner_process_restart": false,
+    "main_index_staging_commit_merge": false,
+    "production_runtime_edits": false
+  },
+  "primary_sources": [
+    "https://raw.githubusercontent.com/godotengine/godot/ed1daf0bf/drivers/gles3/shader_gles3.cpp",
+    "https://docs.godotengine.org/en/stable/tutorials/performance/pipeline_compilations.html",
+    "https://registry.khronos.org/OpenGL/extensions/KHR/KHR_parallel_shader_compile.txt",
+    "https://registry.khronos.org/OpenGL/extensions/ARB/ARB_get_program_binary.txt",
+    "https://developer.android.com/guide/components/processes-and-threads"
+  ],
+  "evidence_validation": {
+    "case_count": 11,
+    "original_App_fixture_failure_preserved": true,
+    "race_loads": 12,
+    "race_checks": 60,
+    "corrected_same_process_controls": 6,
+    "process_records": 7,
+    "compiler_and_import_spans_overlap_heartbeat": true,
+    "compared_images": 6,
+    "five_Compatibility_variants_pixel_exact": true
+  }
+}

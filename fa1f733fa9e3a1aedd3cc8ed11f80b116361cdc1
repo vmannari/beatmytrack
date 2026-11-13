@@ -1,0 +1,118 @@
+--- a/game/ui/cosmetic_purchase_preview.gd
++++ b/game/ui/cosmetic_purchase_preview.gd
+@@ -87,7 +87,9 @@
+ 		world.add_child(light)
+ 	ShowroomStudio._contact(world,Vector3(0,0.003,0),Vector2(2.4,4.7)*HandlingConfig.BODY_SCALE,0.62)
+ 	camera = Camera3D.new()
+-	camera.projection = Camera3D.PROJECTION_ORTHOGONAL
++	camera.projection = Camera3D.PROJECTION_PERSPECTIVE
++	camera.fov = 38.0
++	camera.keep_aspect = Camera3D.KEEP_HEIGHT
+ 	camera.current = true
+ 	world.add_child(camera)
+ 	var render := TextureRect.new()
+@@ -141,19 +143,22 @@
+ 		var box := AABB(points[0],Vector3.ZERO)
+ 		for point: Vector3 in points: box = box.expand(point)
+ 		center = box.get_center()
+-	camera.position = center+Vector3(sin(yaw)*8.0,2.8,-cos(yaw)*8.0)
++	# A low, moderate-lens view fits the parked car to the road's perspective.
++	var elevation: float = deg_to_rad(12.0)
++	var direction := Vector3(sin(yaw)*cos(elevation),sin(elevation),-cos(yaw)*cos(elevation))
++	camera.position = center+direction
+ 	camera.look_at(center)
+ 	camera.h_offset = 0
+ 	camera.v_offset = 0
+-	var bounds := Rect2()
+-	var inverse: Transform3D = camera.global_transform.affine_inverse()
+-	for index: int in points.size():
+-		var point: Vector3 = inverse*points[index]
+-		bounds = Rect2(Vector2(point.x,point.y),Vector2.ZERO) if index == 0 else bounds.expand(Vector2(point.x,point.y))
+ 	var aspect: float = float(viewport.size.x)/maxi(1,viewport.size.y)
+-	camera.size = maxf(0.1,maxf(bounds.size.y,bounds.size.x/aspect)*1.12)
+-	camera.h_offset = bounds.get_center().x
+-	camera.v_offset = bounds.get_center().y
++	var tangent: float = tan(deg_to_rad(camera.fov*0.5))
++	var inverse: Basis = camera.global_basis.inverse()
++	var distance: float = 1.0
++	for world_point: Vector3 in points:
++		var point: Vector3 = inverse*(world_point-center)
++		var clearance: float = maxf(absf(point.y)/tangent,absf(point.x)/(tangent*aspect))*1.12
++		distance = maxf(distance,point.z+clearance+camera.near)
++	camera.position = center+direction*distance
+ 	viewport.render_target_update_mode = SubViewport.UPDATE_ONCE
+ 	render_requests += 1
+ 	if is_instance_valid(callout): callout.queue_redraw()
+--- a/game/tests/test_customisation_purchase_layout.gd
++++ b/game/tests/test_customisation_purchase_layout.gd
+@@ -68,6 +68,7 @@
+ 	check(message_rect.size.y+1 >= view.description.get_minimum_size().y,label+": full message has its natural height")
+ 	check(not visible_body.intersects(view.close_button.get_global_rect()),label+": details clear Close")
+ 	check(view.vehicle_preview.presentation_ready,label+": actual native car is ready")
++	inspect_camera(view.vehicle_preview,label)
+ 	check(not view.preview_area.get_global_rect().intersects(visible_body),label+": car and purchase details occupy separate areas")
+ 	check(view.confirm_button.disabled == dialog.get_ok_button().disabled,label+": custom action retains native availability")
+ 	check(view.price_label.text == "750",label+": price uses actual data")
+@@ -77,6 +78,23 @@
+ 		check(bounds.encloses(button.get_global_rect()),label+": button fits panel "+button.text)
+ 		check(button.size.y >= 48,label+": touch height "+button.text)
+ 	print("PURCHASE_RECT: ",label," viewport=",root.get_visible_rect()," panel=",dialog.size," message=",message_rect," visible=",visible_body," actions=",actions.get_global_rect())
++
++func inspect_camera(preview: Node, label: String) -> void:
++	var camera: Camera3D = preview.camera
++	check(camera.projection == Camera3D.PROJECTION_PERSPECTIVE,label+": preview uses natural perspective")
++	check(camera.fov >= 30 and camera.fov <= 42,label+": moderate lens avoids wide-angle exaggeration")
++	var elevation: float = rad_to_deg(asin(camera.global_basis.z.y))
++	check(elevation >= 8 and elevation <= 16,label+": parked-car view avoids the old roof-heavy angle")
++	var near_a: Vector2 = camera.unproject_position(camera.to_global(Vector3(-0.15,0,-5)))
++	var near_b: Vector2 = camera.unproject_position(camera.to_global(Vector3(0.15,0,-5)))
++	var far_a: Vector2 = camera.unproject_position(camera.to_global(Vector3(-0.15,0,-9)))
++	var far_b: Vector2 = camera.unproject_position(camera.to_global(Vector3(0.15,0,-9)))
++	check(near_a.distance_to(near_b) > far_a.distance_to(far_b)*1.5,label+": equal features become smaller with depth")
++	var safe := Rect2(Vector2(preview.viewport.size)*0.025,Vector2(preview.viewport.size)*0.95)
++	var enclosed: bool = not preview.points.is_empty()
++	for point: Vector3 in preview.points:
++		if camera.is_position_behind(point) or not safe.has_point(camera.unproject_position(point)): enclosed = false
++	check(enclosed,label+": every visible-mesh corner keeps framing clearance")
+ 
+ func dismiss(dialog: ConfirmationDialog) -> void:
+ 	dialog.cancel_button.pressed.emit()
+--- /dev/null
++++ b/docs/CUSTOMISATION_PURCHASE_PERSPECTIVE_2026_10_27.md
+@@ -0,0 +1,36 @@
++# Customisation purchase perspective — 2026-10-27
++
++The owner reports an unnatural-looking car perspective in the new purchase window. CPP01 replaces the flattened projection; CPP02 lowers the parked-car viewing angle; CPP03 preserves complete framing while rotating/resizing. R01 preserves the existing car/materials, dialog and transaction behavior. Q01 covers native rendering and regression checks.
++
++The task-start preview uses orthographic projection at a 19.29-degree downward angle. Nearby and distant details consequently have equal projected scale. The corrected preview uses a fixed 38-degree perspective lens and a 12-degree view toward the car's bounds center. Its nearer end now appears larger and its rear recedes, with less roof dominating the image. This is a menu-only camera correction; it does not change the gameplay camera contract.
++
++Camera distance is fitted from the cached visible-mesh corners, including each corner's depth, the viewport aspect and 12% projection padding. The lens remains fixed during drag rotation and resizing. This avoids substituting a wide-angle lens or changing model proportions to fit the sheet. Callouts continue to use the same camera's projection.
++
++Runtime scope is only `game/ui/cosmetic_purchase_preview.gd`. The existing `game/tests/test_customisation_purchase_layout.gd` gains independent projection/depth-response, moderate-lens, lower-angle and all-corner-clearance assertions. It retains all prior layout, native mouse/touch, source reuse, camera isolation, idle rendering, account/purchase, duplicate/stale confirmation, modal cleanup, rear-aero and overflow assertions. No previous assertion is weakened.
++
++Actual results:
++
++| Run | Outcome |
++|---|---|
++| Task-start camera with expanded checks, Compatibility | 622 checks, 84 expected new perspective/angle/depth failures |
++| Corrected camera, native Compatibility | 622 checks, 0 failures |
++| Corrected camera, desktop Mobile/Vulkan | 622 checks, 0 failures |
++| Existing script parser | 1,320 scripts, 0 failures |
++
++Both native suites include the existing six production-stretched window sizes, raw short-landscape/portrait resizing, front/rear views and seven locale/font configurations. New assertions check that equal-size features shrink with distance and every cached visible-mesh corner keeps 2.5% viewport clearance. The original orthographic camera fails the new projection, lens, elevation and depth tests in all 21 inspections; existing framing and behavior assertions continue to run.
++
++The dialog, Garage page, shared popup helper, ordinary showroom, original backdrop, CarVisual and Compact kit/aero source hashes match task start. Their hashes are retained in `before/retained-hashes.json` and the report. No art generation, geometry, finish, lighting, economy or save change is included. Generated build identity and unrelated concurrent work are excluded from the review patch.
++
++Actual commands use the pinned Godot 4.7.2 engine through the existing entry point, with `APPDATA` set to task-owned `test-data`, `mobile-data` or `parser-data` directories under the evidence folder:
++
++```powershell
++# The same native command was first run with the original camera and --evidence=.../baseline.
++powershell -NoProfile -ExecutionPolicy Bypass -File ./scripts/dev.ps1 -Action TestScript -ScriptPath res://tests/test_customisation_purchase_layout.gd -Graphical -RenderingMethod gl_compatibility -TestArgument "--evidence=res://../docs/evidence/customisation-purchase-perspective-2026-10-27/gl_compatibility" -CommandTimeoutSeconds 180
++powershell -NoProfile -ExecutionPolicy Bypass -File ./scripts/dev.ps1 -Action TestScript -ScriptPath res://tests/test_customisation_purchase_layout.gd -Graphical -RenderingMethod mobile -RenderingDriver vulkan -TestArgument "--evidence=res://../docs/evidence/customisation-purchase-perspective-2026-10-27/mobile" -CommandTimeoutSeconds 180
++powershell -NoProfile -ExecutionPolicy Bypass -File ./scripts/dev.ps1 -Action TestScript -ScriptPath res://tests/test_script_parse.gd -CommandTimeoutSeconds 180
++git apply --reverse --check docs/evidence/customisation-purchase-perspective-2026-10-27/checkpoint.patch
++```
++
++The baseline failures, native before/after/front/rear/rotated screenshots, logs, original source, hashes and task-only checkpoint are in `docs/evidence/customisation-purchase-perspective-2026-10-27`.
++
++Reload/rebuild and owner visual acceptance remain. The underlying native model and renderer-specific material appearance are retained; this is not a whole-model redesign or exact photographic calibration. No device attachment check or physical-device test was performed. No APK, real authentication/purchase, owner-save/live mutation, deployment, staging, commit, merge or owner-process restart was performed.

@@ -1,0 +1,26 @@
+<!doctype html>
+<html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Electric whole-car design pass — before / after</title>
+<style>
+:root{font:16px/1.5 system-ui,sans-serif;color-scheme:dark;background:#131c24;color:#e9f0f4}body{max-width:1500px;margin:auto;padding:24px}h1{font-size:30px;margin:0 0 8px}p{max-width:100ch}a{color:#a9d8ef}.controls{display:flex;flex-wrap:wrap;gap:20px;margin:24px 0}label{display:grid;gap:6px}select,input{font:inherit}select{background:#26333e;color:inherit;padding:8px;border:1px solid #627482;border-radius:4px}.compare{position:relative;background:#202a32;aspect-ratio:1.6;overflow:hidden;border:1px solid #435260;border-radius:8px}.compare img{position:absolute;inset:0;width:100%;height:100%;object-fit:contain}.compare .after{clip-path:inset(0 50% 0 0)}.divider{position:absolute;top:0;bottom:0;left:50%;width:2px;background:#d5e6ed;pointer-events:none}.badge{position:absolute;top:12px;background:#121b24d9;padding:7px 12px;border-radius:4px}.left{left:12px}.right{right:12px}.slider{margin:16px 0;max-width:none}.slider input{width:100%}.grid{display:grid;grid-template-columns:1fr 1fr;gap:18px}figure{margin:0;background:#202a32;border:1px solid #3b4a56;border-radius:6px;overflow:hidden}figure img{width:100%;display:block}figcaption{padding:12px}small{color:#b3c2ce}.facts{display:flex;flex-wrap:wrap;gap:30px;padding:16px;background:#202a32;border-radius:6px}@media(max-width:800px){body{padding:14px}.grid{grid-template-columns:1fr}.badge{font-size:13px;padding:4px 7px}}
+</style>
+<h1>Electric: whole-car design pass</h1>
+<p>A curved canopy, a broader clean-tapered bonnet, integrated rear surfaces, fitted glazing and panel reveals, crisper wheels and flatter mirrors. <a href="../../ELECTRIC_DESIGN_PASS_2026_10_26.md">Changes, verification and limits</a>.</p>
+<div class="controls">
+<label>View<select id="view"><option value="front-quarter">Front three-quarter</option><option value="side">Side</option><option value="front">Front</option><option value="rear-quarter">Rear three-quarter</option><option value="rear">Rear</option><option value="top">Top</option><option value="bonnet">Bonnet</option><option value="roof">Roof and glazing</option><option value="wheel">Wheel</option><option value="tail-detail">Rear detail</option><option value="production-camera-studio">Default racing camera over studio</option></select></label>
+<label>Detail<select id="detail"><option value="full">Full</option><option value="simple">Simple</option></select></label>
+<label>Renderer<select id="renderer"><option value="native">Compatibility</option><option value="desktop-mobile">Mobile on desktop Vulkan</option></select></label>
+</div>
+<div class="compare"><img id="before" src="before-native/full-front-quarter.png" alt="Before: original electric car"><img id="after" class="after" src="native/full-front-quarter.png" alt="After: revised electric car"><div id="divider" class="divider"></div><span class="badge left">After · v11</span><span class="badge right">Before · v10</span></div>
+<label class="slider">Reveal the revision<input id="reveal" type="range" min="0" max="100" value="50" aria-label="Amount of after image visible"></label>
+<p><small>Matched neutral-grey studio views. Drag the slider or use its arrow keys. The production-camera option uses the unchanged camera profile over the diagnostic studio, not an actual race scene. “Mobile” here identifies the desktop renderer; it is not a device test.</small></p>
+<div class="grid"><figure><a id="before-link" href="before-native/full-front-quarter.png"><img id="before-whole" src="before-native/full-front-quarter.png" alt="Complete before view"></a><figcaption>Before · source-matched task-start model</figcaption></figure><figure><a id="after-link" href="native/full-front-quarter.png"><img id="after-whole" src="native/full-front-quarter.png" alt="Complete revised view"></a><figcaption>After · revised model, same pose and paint</figcaption></figure></div>
+<p><a href="app-native/garage-1280.png">Actual Garage</a> · <a href="app-native/race.png">Actual gameplay</a> · <a href="acceptance/test_electric_model/electric-headlights.png">Headlights</a> · <a href="report.json">Commands and evidence</a> · <a href="../electric-design-review-2026-10-26/comparison.html">Original EV comparison review</a></p>
+<p><small>Fictional vehicle, original authored game geometry. Reference manufacturers remain design references outside the game assets. Reload the project/game to see the new prepared model in an existing session.</small></p>
+<script>
+const $=id=>document.getElementById(id);
+function update(){const suffix=$('detail').value+'-'+$('view').value+'.png';const before='before-'+$('renderer').value+'/'+suffix;const after=$('renderer').value+'/'+suffix;for(const id of ['before','before-whole'])$(id).src=before;for(const id of ['after','after-whole'])$(id).src=after;$('before-link').href=before;$('after-link').href=after;}
+for(const id of ['view','detail','renderer'])$(id).addEventListener('change',update);
+$('reveal').addEventListener('input',()=>{const value=Number($('reveal').value);$('after').style.clipPath='inset(0 '+(100-value)+'% 0 0)';$('divider').style.left=value+'%';});
+update();
+</script></html>

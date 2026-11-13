@@ -1,0 +1,306 @@
+--- a/AGENTS.md
++++ b/AGENTS.md
+@@ -1,3 +1,8 @@
++<!-- ELECTRIC-190-20261025 -->
++## Electric 190 km/h cap (2026-10-25)
++E19001-E19002/R01/Q01: Owner raises electric top speed158.4to190km/h. Electric-11 changes only version and maximum_speed52.77778m/s; actual190 is reached in3.2667s and held30s, with exact launch/cap/brake/hold replay. Existing cap-based motor falloff naturally quickens0to100 from1.525to1.4917s. Actual190 release stop2.0083s/52.285m; accepted72stop0.7667s/7.5626m remains. Steering/radius/launch-drift/brake/config fields and exact shared physics0.72/model/input/camera sources remain. Speed66/radius64/launch111/low87/release38/car60/one-pedal63/power19/balance22/response86/turn61/laps6/handling88/rewind61/parser1209, App60Compatibility+60desktopMobile and backend72pass/twoexisting exclusions pass. Independent13815input/five-lap verification accepts115122ms. EVbc5abb23 changes only its manifest entry; six other identities, physics and historical recordings remain. Old66/4fail cap regression and initial22/1 old-cap fixture failure are retained. Isolation references match the new cap in memory, with original mechanism bounds retained; actual cap-induced acceleration change is separately measured. Commands, sources, hashes and scoped checkpoint: docs/ELECTRIC_190_2026_10_25.md and docs/evidence/electric-190-2026-10-25/report.json. Reload/rebuild, matching verifier configuration rollout and owner/device driving acceptance remain. No physical-device attachment check/test, APK, purchase, live mutation, deployment, merge or owner-process restart; concurrent work preserved.
++<!-- /ELECTRIC-190-20261025 -->
++
+ <!-- ELECTRIC-TURN-RADIUS-20261025 -->
+ ## Sustained electric radius below 40 km/h (2026-10-25)
+ ETR01-ETR02/R01/Q01: Owner rejects tiny held-turn circles below40km/h; slowing turn-in alone did not fix full steering restored by28.8km/h. Electric-10 bounds sustained curvature through40 by6m minimum radius and9m/s2 cornering acceleration, including power/lift yaw, then smoothly restores accepted behavior by59.976km/h. Matched actual full circles widen20km/h3.94to6.00m,30km/h2.76to7.72 and40km/h3.26to13.72; reverse/partial input, symmetry, replay and fade boundaries pass. Gentle buildup and small launch slip remain. Radius64/launch111/low87/release38/car60/one-pedal63/power19/balance22/response86/turn61/laps6/handling88/rewind61/parser1206, App60Compatibility+60desktopMobile and backend72pass/twoexisting exclusions pass. Three five-lap circuits have zero contacts; independent13817input/five-lap server verification accepts115140ms. Physics0.72/EV750a9964 pin change; six other identities/arithmetic, model/input/cameras remain. Owner correction supersedes old exact29km/h+ and tight43.2km/h expectations; new sustained-circle bounds replace them, with original tolerances retained above transition. Rejected model62/17fail, endpoint/fixture failures and isolated historical-output restoration are retained. Commands, hashes, native evidence and task-only checkpoint: docs/ELECTRIC_TURN_RADIUS_2026_10_25.md and docs/evidence/electric-turn-radius-2026-10-25/report.json. Source changes require reload/rebuild; matching verifier rollout and owner/device radius/drift acceptance remain. No physical-device attachment check/test, APK, purchase, live mutation, deployment, merge or owner-process restart; concurrent work preserved.
+--- a/game/resources/cars/electric.tres
++++ b/game/resources/cars/electric.tres
+@@ -2,7 +2,7 @@
+ [ext_resource type="Script" path="res://vehicle/handling_config.gd" id="1"]
+ [resource]
+ script = ExtResource("1")
+-version = "electric-10"
++version = "electric-11"
+ vehicle_id = "electric"
+ profile_name = "Volt"
+ rear_wheel_drive = true
+@@ -14,7 +14,7 @@
+ braking_force = 26000.0
+ rolling_resistance = 160.0
+ drag = 0.52
+-maximum_speed = 44.0
++maximum_speed = 52.77778
+ reverse_speed = 7.0
+ rotational_inertia = 450.0
+ wheelbase = 2.46
+--- /dev/null
++++ b/game/tests/test_electric_190.gd
+@@ -0,0 +1,67 @@
++extends "res://tests/test_electric_power.gd"
++
++const SPEED_OUTPUT: String = "res://../docs/evidence/electric-190-2026-10-25"
++
++func run() -> void:
++	var old: HandlingConfig = load(SPEED_OUTPUT+"/before/game__resources__cars__electric.tres") as HandlingConfig
++	var current: HandlingConfig = VehicleCatalog.config("electric")
++	check(old.version == "electric-10" and current.version == "electric-11","top-speed correction has a new handling identity")
++	check(absf(current.maximum_speed*3.6-190.0)<0.001,"configured top speed is 190 km/h")
++	for property: String in old.snapshot():
++		if property in ["version","maximum_speed"]: continue
++		check(old.get(property)==current.get(property),"accepted field retained exactly: "+property)
++	var sim := VehicleSimulation.new(current)
++	var replay := VehicleSimulation.new(current)
++	var old_sim := VehicleSimulation.new(old)
++	var old_100: int = 0
++	var new_100: int = 0
++	var reached: int = 0
++	var exact: bool = true
++	for tick: int in range(1200):
++		var frame := DriveFrame.sample(0,1,0)
++		sim.step(frame)
++		replay.step(frame)
++		old_sim.step(frame)
++		exact = exact and sim.state.snapshot()==replay.state.snapshot()
++		if old_100==0 and old_sim.state.velocity.length()>=100.0/3.6: old_100=tick+1
++		if new_100==0 and sim.state.velocity.length()>=100.0/3.6: new_100=tick+1
++		if reached==0 and sim.state.velocity.length()>=190.0/3.6-0.001: reached=tick+1
++	check(reached>0 and reached<1200,"sustained full throttle actually reaches 190 km/h")
++	check(new_100>0 and old_100>0,"both actual tunes reach 100 km/h")
++	var minimum_speed: float = INF
++	var maximum_speed: float = 0.0
++	for tick: int in range(3600):
++		var frame := DriveFrame.sample(0,1,0)
++		sim.step(frame)
++		replay.step(frame)
++		exact = exact and sim.state.snapshot()==replay.state.snapshot()
++		minimum_speed = minf(minimum_speed,sim.state.velocity.length())
++		maximum_speed = maxf(maximum_speed,sim.state.velocity.length())
++	check(minimum_speed*3.6>189.99 and maximum_speed*3.6<190.001,"holds 190 for thirty seconds without exceeding the cap")
++	var stop_start: Vector2 = sim.state.position
++	var stopping_ticks: int = 0
++	var monotonic: bool = true
++	var speed: float = sim.state.velocity.length()
++	while sim.state.velocity!=Vector2.ZERO and stopping_ticks<600:
++		var frame := DriveFrame.sample(0,0,0)
++		sim.step(frame)
++		replay.step(frame)
++		exact = exact and sim.state.snapshot()==replay.state.snapshot()
++		monotonic = monotonic and sim.state.velocity.length()<=speed and sim.state.velocity.y>=0
++		speed=sim.state.velocity.length()
++		stopping_ticks+=1
++	check(monotonic and sim.state.velocity==Vector2.ZERO,"release brakes monotonically from 190 without reversing")
++	check(stopping_ticks/120.0<2.1 and sim.state.position.distance_to(stop_start)<55.0,"retained braking stops from 190 within measured safety bounds")
++	for tick: int in range(600):
++		var frame := DriveFrame.sample(1,0,0)
++		sim.step(frame)
++		replay.step(frame)
++		exact = exact and sim.state.snapshot()==replay.state.snapshot()
++	check(sim.state.velocity==Vector2.ZERO,"released pedal holds zero after the high-speed stop")
++	check(exact,"launch, sustained cap, stop and hold replay tick-exactly")
++	metrics={"old_100_seconds":old_100/120.0,"new_100_seconds":new_100/120.0,"reaches_190_seconds":reached/120.0,"hold_minimum_kph":minimum_speed*3.6,"hold_maximum_kph":maximum_speed*3.6,"stop_190_seconds":stopping_ticks/120.0,"stop_190_metres":sim.state.position.distance_to(stop_start)}
++	var file := FileAccess.open(SPEED_OUTPUT+"/speed.json",FileAccess.WRITE)
++	file.store_string(JSON.stringify({"checks":checks,"failures":failures,"metrics":metrics},"\t"))
++	file.close()
++	print("ELECTRIC_190: %d checks, %d failures " % [checks,failures],JSON.stringify(metrics))
++	quit(1 if failures else 0)
+--- /dev/null
++++ b/game/tests/test_electric_190.gd.uid
+@@ -0,0 +1 @@
++uid://cq6a81tibvtiq
+--- a/game/tests/test_electric_low_speed_steering.gd
++++ b/game/tests/test_electric_low_speed_steering.gd
+@@ -1,5 +1,5 @@
+ extends "res://tests/test_electric_power.gd"
+-const LOW_OUTPUT: String = "res://../docs/evidence/electric-turn-radius-2026-10-25"
++const LOW_OUTPUT: String = "res://../docs/evidence/electric-190-2026-10-25"
+ const LOW_BASELINE: String = "res://../docs/evidence/electric-launch-drift-2026-10-25"
+ const BASELINE: String = "res://../docs/evidence/electric-low-speed-steering-2026-10-25"
+ var previous_simulation: GDScript
+@@ -23,8 +23,10 @@
+ 	check(previous_simulation.reload() == OK,"actual accepted physics0.69 compiles for before/after")
+ 	var old: HandlingConfig = load(BASELINE+"/before/electric-6.tres") as HandlingConfig
+ 	var current: HandlingConfig = VehicleCatalog.config("electric")
+-	check(old.version == "electric-6" and current.version == "electric-10" and VehicleSimulation.PHYSICS_VERSION == "arcade-planar-0.72","low-speed correction has new competitive identity")
++	old.maximum_speed = current.maximum_speed
++	check(old.version == "electric-6" and current.version == "electric-11" and VehicleSimulation.PHYSICS_VERSION == "arcade-planar-0.72","low-speed correction has new competitive identity")
+ 	var preceding: HandlingConfig = load(LOW_BASELINE+"/before/game__resources__cars__electric.tres") as HandlingConfig
++	preceding.maximum_speed = current.maximum_speed
+ 	metrics.onset = {}
+ 	for speed: float in [1.0,3.0,5.0,7.0,-1.0,-3.0,-5.0,-7.0]:
+ 		for steering: float in [0.35,0.65,1.0]:
+--- a/game/tests/test_electric_launch_drift.gd
++++ b/game/tests/test_electric_launch_drift.gd
+@@ -1,6 +1,6 @@
+ extends "res://tests/test_electric_power.gd"
+ 
+-const LAUNCH_OUTPUT: String = "res://../docs/evidence/electric-turn-radius-2026-10-25"
++const LAUNCH_OUTPUT: String = "res://../docs/evidence/electric-190-2026-10-25"
+ const LAUNCH_BASELINE: String = "res://../docs/evidence/electric-launch-drift-2026-10-25"
+ var preceding_simulation: GDScript
+ 
+@@ -33,7 +33,7 @@
+ 	var current: HandlingConfig = VehicleCatalog.config("electric")
+ 	var no_drift: HandlingConfig = current.duplicate() as HandlingConfig
+ 	no_drift.launch_lateral_response_scale = 1.0
+-	check(old.version == "electric-8" and current.version == "electric-10" and VehicleSimulation.PHYSICS_VERSION == "arcade-planar-0.72","new tune and shared physics are versioned")
++	check(old.version == "electric-8" and current.version == "electric-11" and VehicleSimulation.PHYSICS_VERSION == "arcade-planar-0.72","new tune and shared physics are versioned")
+ 	metrics.launches = {}
+ 	for steer: float in [0.35,0.65,1.0]:
+ 		for pedal: float in [0.65,1.0]:
+--- a/game/tests/test_electric_brake_release.gd
++++ b/game/tests/test_electric_brake_release.gd
+@@ -37,7 +37,9 @@
+ 	check(previous_simulation.reload() == OK,"actual preceding physics compiles for comparison")
+ 	var old: HandlingConfig = load(RELEASE_OUTPUT+"/before/electric-5.tres") as HandlingConfig
+ 	var current: HandlingConfig = VehicleCatalog.config("electric")
+-	check(old.version == "electric-5" and current.version == "electric-10" and VehicleSimulation.PHYSICS_VERSION == "arcade-planar-0.72","competitive braking behavior and current low-speed tune are versioned")
++	# Isolate braking/steering from the owner-requested cap and its power falloff.
++	old.maximum_speed = current.maximum_speed
++	check(old.version == "electric-5" and current.version == "electric-11" and VehicleSimulation.PHYSICS_VERSION == "arcade-planar-0.72","competitive braking behavior and current low-speed tune are versioned")
+ 	metrics.stops = {}
+ 	for speed: float in [7.0,20.0,100.0/3.6,44.0,-7.0,-20.0]:
+ 		var before: Dictionary = released_stop(old,speed,true)
+--- a/game/tests/test_electric_power.gd
++++ b/game/tests/test_electric_power.gd
+@@ -45,7 +45,7 @@
+ 		if argument.begins_with("--evidence-root="): output = argument.trim_prefix("--evidence-root=")
+ 	var old: HandlingConfig = load(OUTPUT+"/before/electric.tres") as HandlingConfig
+ 	var current: HandlingConfig = VehicleCatalog.config("electric")
+-	check(old != null and old.version == "electric-2" and current.version == "electric-10","actual original and current balanced competitive tunes")
++	check(old != null and old.version == "electric-2" and current.version == "electric-11","actual original and current balanced competitive tunes")
+ 	metrics.old_launch = launch(old)
+ 	metrics.new_launch = launch(current)
+ 	metrics.old_corner = corner(old,1)
+@@ -78,7 +78,7 @@
+ 		all.step(DriveFrame.sample(0,1,0))
+ 	check(rear.state.velocity.y < all.state.velocity.y,"stronger launch retains a real rear-axle traction ceiling")
+ 	for tick: int in range(1800): rear.step(DriveFrame.sample(0,1,0))
+-	check(rear.state.velocity.length() <= 44 and current.maximum_speed == 44 and current.maximum_speed < old.maximum_speed,"balanced electric obeys the slightly reduced speed cap")
++	check(rear.state.velocity.length() <= current.maximum_speed and absf(current.maximum_speed*3.6-190.0)<0.001,"electric obeys the owner-requested 190 km/h cap")
+ 	for direction: int in [0,255]:
+ 		var ordinary := VehicleSimulation.new(current)
+ 		var requested := VehicleSimulation.new(current)
+--- a/game/tests/test_electric_power_balance.gd
++++ b/game/tests/test_electric_power_balance.gd
+@@ -20,7 +20,7 @@
+ 		if argument.begins_with("--evidence-root="): output = argument.trim_prefix("--evidence-root=")
+ 	var old: HandlingConfig = load(BALANCE_OUTPUT+"/before/electric-4.tres") as HandlingConfig
+ 	var current: HandlingConfig = VehicleCatalog.config("electric")
+-	check(old.version == "electric-4" and current.version == "electric-10","versioned preceding power tune and current brake balance")
++	check(old.version == "electric-4" and current.version == "electric-11","versioned preceding power tune and current brake balance")
+ 	metrics.before_launch = launch(old)
+ 	metrics.after_launch = launch(current)
+ 	for target: float in [20.0,100.0/3.6,40.0]:
+@@ -33,11 +33,11 @@
+ 	check(metrics.after_stop.initial_deceleration >= 14 and metrics.after_stop.initial_deceleration >= metrics.before_stop.initial_deceleration*1.25,"release immediately produces stronger regeneration")
+ 	check(metrics.after_stop.seconds <= metrics.before_stop.seconds*0.8 and metrics.after_stop.metres <= metrics.before_stop.metres*0.8,"complete stop is at least twenty percent sooner and shorter")
+ 	check(metrics.after_stop.stopped and metrics.after_stop.holds,"release reaches exact zero and holds without creep")
+-	check(current.maximum_speed == 44 and current.maximum_speed/old.maximum_speed > 0.90 and current.maximum_speed/old.maximum_speed < 0.95,"top speed is slightly lower at 158.4 km/h")
++	check(absf(current.maximum_speed*3.6-190.0)<0.001,"top speed follows the owner-requested 190 km/h cap")
+ 	var sim := VehicleSimulation.new(current)
+ 	for tick: int in range(3600): sim.step(DriveFrame.sample(0,1,0))
+ 	metrics.top_speed = sim.state.velocity.length()
+-	check(is_equal_approx(sim.state.velocity.length(),44),"actual full-pedal speed reaches and obeys the lower cap")
++	check(is_equal_approx(sim.state.velocity.length(),current.maximum_speed),"actual full-pedal speed reaches and obeys the 190 km/h cap")
+ 	for field: String in ["rotational_inertia","steering_rate","countersteering_rate","steering_angle","high_speed_steering_reduction","maximum_yaw_rate","lateral_grip","lateral_response","corner_energy_retention","throttle_rotation"]:
+ 		check(current.get(field) == old.get(field),"quicker steering and calm corner balance retained: "+field)
+ 	check(current.single_pedal and current.rear_wheel_drive and current.reverse_speed == old.reverse_speed,"one pedal, rear drive and reverse limit retained")
+--- a/game/tests/test_electric_steering_response.gd
++++ b/game/tests/test_electric_steering_response.gd
+@@ -38,7 +38,7 @@
+ 		if argument.begins_with("--evidence-root="): output = argument.trim_prefix("--evidence-root=")
+ 	var old: HandlingConfig = load(RESPONSE_OUTPUT+"/before/electric-3.tres") as HandlingConfig
+ 	var current: HandlingConfig = VehicleCatalog.config("electric")
+-	check(old.version == "electric-3" and current.version == "electric-10","original slow steering versus current balanced electric tune")
++	check(old.version == "electric-3" and current.version == "electric-11","original slow steering versus current balanced electric tune")
+ 	old = steering_reference(old,current)
+ 	for speed: float in [20.0,24.0,36.0,current.maximum_speed]:
+ 		for gas: float in [0.45,0.65,1.0]:
+--- a/game/tests/test_electric_turn_radius.gd
++++ b/game/tests/test_electric_turn_radius.gd
+@@ -1,6 +1,7 @@
+ extends "res://tests/test_electric_power.gd"
+ 
+-const RADIUS_OUTPUT: String = "res://../docs/evidence/electric-turn-radius-2026-10-25"
++const RADIUS_OUTPUT: String = "res://../docs/evidence/electric-190-2026-10-25"
++const RADIUS_BASELINE: String = "res://../docs/evidence/electric-turn-radius-2026-10-25"
+ var prior_simulation: GDScript
+ 
+ func held_circle(config: HandlingConfig, speed: float, steer: float, previous: bool = false) -> Dictionary:
+@@ -47,9 +48,9 @@
+ 
+ func run() -> void:
+ 	prior_simulation = GDScript.new()
+-	prior_simulation.source_code = FileAccess.get_file_as_string(RADIUS_OUTPUT+"/before/game__vehicle__vehicle_simulation.gd").replace("class_name VehicleSimulation","").trim_prefix("\ufeff")
++	prior_simulation.source_code = FileAccess.get_file_as_string(RADIUS_BASELINE+"/before/game__vehicle__vehicle_simulation.gd").replace("class_name VehicleSimulation","").trim_prefix("\ufeff")
+ 	check(prior_simulation.reload() == OK,"actual rejected electric-9 simulation compiles")
+-	var old: HandlingConfig = load(RADIUS_OUTPUT+"/before/game__resources__cars__electric.tres") as HandlingConfig
++	var old: HandlingConfig = load(RADIUS_BASELINE+"/before/game__resources__cars__electric.tres") as HandlingConfig
+ 	var current: HandlingConfig = VehicleCatalog.config("electric")
+ 	metrics.circles = {}
+ 	for kph: float in [5.0,10.0,15.0,20.0,25.0,30.0,35.0,39.9,40.0]:
+@@ -74,12 +75,14 @@
+ 		var reverse: Dictionary = held_circle(current,-kph/3.6,1.0)
+ 		check(reverse.angle >= TAU and reverse.radius >= 6.0*0.98 and reverse.replay_exact,"reverse radius is bounded and replayable: "+str(kph))
+ 	# Exact accepted high-speed arithmetic, including sideways states and throttle/lift.
++	var matched: HandlingConfig = old.duplicate() as HandlingConfig
++	matched.maximum_speed = current.maximum_speed
+ 	var high_exact: bool = true
+ 	for speed: float in [60.0/3.6,20.0,24.0,36.0,44.0]:
+ 		for slip: float in [-0.8,0.0,0.8]:
+ 			for steer: float in [-1.0,0.0,1.0]:
+ 				for gas: float in [0.0,0.25,1.0]:
+-					var before: RefCounted = prior_simulation.new(old)
++					var before: RefCounted = prior_simulation.new(matched)
+ 					var after := VehicleSimulation.new(current)
+ 					before.state.velocity = Vector2(sin(slip),cos(slip))*speed
+ 					after.state.velocity = before.state.velocity
+--- a/backend/tests/fixtures/verified_oval.json
++++ b/backend/tests/fixtures/verified_oval.json
+@@ -64430,8 +64430,8 @@
+         "handling_version": "handling-0.15-original-slide"
+       },
+       "electric": {
+-        "config_hash": "750a9964bffb12b2d46012b0ca7186adaa4c4a250dc06674707e5cba8ef94ca7",
+-        "handling_version": "electric-10"
++        "config_hash": "bc5abb23ae2aaa8b637b0517d3c48bd3cbeae2ea9cb9c29535f801431c79e0c3",
++        "handling_version": "electric-11"
+       },
+       "forklift": {
+         "config_hash": "495947f7424e92c8b14f69c1de5b3a05bb2ab0ce85c4898c0f858e73b3d35003",
+--- /dev/null
++++ b/docs/ELECTRIC_190_2026_10_25.md
+@@ -0,0 +1,37 @@
++# Electric 190 km/h top speed ? 2026-10-25
++
++E19001: Raise the electric car to 190 km/h. E19002/R01/Q01: Retain the accepted steering-radius/launch-drift parameters, braking, six other cars, deterministic replay and reviewable evidence.
++
++Electric-11 changes only version and maximum_speed, from 44.0 to 52.77778 m/s (190 km/h). Shared VehicleSimulation/HandlingConfig bytes are identical to task start; physics remains arcade-planar-0.72. All other resource fields, including the under-40 radius/acceleration bounds and gentle steering buildup/launch slip, pass exact field comparisons. No model, control, camera or six other car resource is changed.
++
++The existing speed-dependent engine falloff uses maximum_speed, so a higher cap naturally makes acceleration slightly quicker without changing engine force. Actual 0?100 km/h improves from 1.525 to 1.4917 seconds. The dedicated native test reaches 190 in 3.2667 seconds and holds it for 30 seconds at 190.000003 km/h (float precision). Released-pedal braking from that speed stops monotonically in 2.0083 seconds / 52.2850 m, then holds exact zero. The existing 72 km/h stop remains 0.7667 seconds / 7.5626 m. Launch/cap/stop/hold replays match every tick.
++
++EV hash is bc5abb23ae2aaa8b637b0517d3c48bd3cbeae2ea9cb9c29535f801431c79e0c3. The backend fixture changes only the electric entry; physics identity, six other vehicle entries, historical rules and recording remain. Matching client/verifier configuration rollout remains necessary; nothing is uploaded.
++
++## Actual validation
++
++Pinned engine: C:/apps/Godot 4.7.2/Godot_v4.7.2-stable_win64_console.exe. OUT below is res://../docs/evidence/electric-190-2026-10-25. Headless suites use --headless --path game --log-file ABSOLUTE_TASK_LOG --script res://tests/SUITE.gd -- --evidence-root=OUT. Native logs and JSON measurements remain under OUT.
++
++| Suite | Passing checks |
++| --- | --- |
++| test_electric_190.gd | 66: exact unchanged fields, actual speed/30-second hold, stopping, zero hold and replay. |
++| test_electric_turn_radius.gd / test_electric_launch_drift.gd / test_electric_low_speed_steering.gd | 64 / 111 / 87. |
++| test_electric_brake_release.gd / test_electric_car.gd / test_electric_one_pedal.gd | 38 / 60 / 63. |
++| test_electric_power.gd / test_electric_power_balance.gd / test_electric_steering_response.gd / test_electric_turning.gd | 19 / 22 / 86 / 61. |
++| test_electric_power_laps.gd | Six checks across three circuits times five laps, with exact replay; contact counts retained in the log. |
++
++Shared handling 88, rewind 61 and parser 1209 pass with zero failures. Actual-App Garage/race tests pass 60 Compatibility and 60 desktop Vulkan Mobile checks. Command: powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1 -Action TestScript -ScriptPath res://tests/test_electric_car_ui.gd -Graphical -RenderingMethod gl_compatibility -TestArgument --evidence-root=OUT/native; second run uses -RenderingMethod mobile -RenderingDriver vulkan and OUT/mobile-native. Native model/control captures remain; manual-stepping hitch messages are not device-performance evidence.
++
++Actual recording command: pinned headless engine --script res://tests/export_electric_power_replay.gd -- --output=OUT/canonical-race.json. .tools/backend-secure-venv/Scripts/python.exe docs/evidence/electric-190-2026-10-25/verify_canonical.py independently accepts 13815 inputs / five laps / 115122 ms with lap ticks [2833,2746,2745,2746,2745], distinct board identity and six unchanged config entries.
++
++Backend command from backend/: ..\.tools\backend-secure-venv\Scripts\python.exe -m pytest tests/test_verifier.py tests/test_electric_car.py -q -k "not postgres and not retained_over_and_under_rejection" --tb=short --basetemp ../build/electric-190-pytest. 72 passed, two existing explicit deselections (PostgreSQL and archived physics-050 ghost rejection), six existing warnings; no new exclusion.
++
++## Retained regressions and review boundary
++
++The actual rejected electric-10 resource produces 66 checks / four expected failures in original-speed.log/json: identity, requested cap, reaching 190 and holding it. The initial balance rerun produces 22/one failure from a remaining literal 44 m/s expectation, retained in its initial log/JSON. The owner-requested 190 target replaces both old reduced-cap expectations; the final 22 checks pass. No braking, drift, radius, replay or other-car bound is relaxed.
++
++Steering/braking isolation tests now match the historical reference's cap to the current cap in process memory. This preserves exact comparisons of those mechanisms while allowing the explicitly requested change in propulsion falloff. Full actual electric-10 versus electric-11 acceleration is measured separately in the speed suite. Immutable historical resources remain unchanged. Tests with fixed output paths now write to this task's evidence root while retaining their separate baseline roots.
++
++Changed sources: game/resources/cars/electric.tres; current version/cap expectations and matched-cap references in test_electric_power.gd, test_electric_power_balance.gd, test_electric_brake_release.gd, test_electric_steering_response.gd, test_electric_low_speed_steering.gd, test_electric_launch_drift.gd and test_electric_turn_radius.gd; new test_electric_190.gd and UID; backend/tests/fixtures/verified_oval.json; AGENTS.md; this document and task evidence. before/ preserves task-start sources; checkpoint.patch contains this task's reviewable delta without staging concurrent work.
++
++Source changes require client reload/rebuild. Owner/device driving acceptance and matching verifier rollout remain. No physical-device attachment check/test, APK, purchase, live mutation, deployment, merge or owner-process restart.

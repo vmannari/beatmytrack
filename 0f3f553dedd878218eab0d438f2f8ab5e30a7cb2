@@ -1,0 +1,38 @@
+--- game/vehicle/car_visual.gd [task start]
++++ game/vehicle/car_visual.gd [concurrent current]
+@@ -15,4 +15,7 @@
+ var graphics := LiveryGraphics.new()
+ var cooperative_build: bool = false
++var cache_rest_pose: bool = true
++var build_budget_us: int = 4000
++var garage_template: bool = false
+ var model_ready: bool = false
+ var _model_slice_started: int = 0
+@@ -27,5 +30,5 @@
+ 	if elapsed > model_max_slice_us:
+ 		model_max_slice_us = elapsed; model_slice_at = _model_stage
+-	if Time.get_ticks_usec()-_model_slice_started >= 4000:
++	if Time.get_ticks_usec()-_model_slice_started >= build_budget_us:
+ 		model_yields += 1
+ 		await get_tree().process_frame
+@@ -226,4 +229,13 @@
+ 	if vehicle_id == "forklift": rear_steering_config = VehicleCatalog.config(vehicle_id)
+ 	if not VehicleCustomisation.valid(customisation): customisation = VehicleCustomisation.defaults()
++	if garage_template and preload("res://ui/garage_car_cache.gd").restore(self):
++		if livery.is_empty(): livery = VehicleLivery.defaults(vehicle_id)
++		apply_livery(livery)
++		_update_rear_lights()
++		graphics.configure(self)
++		force_update_transform()
++		for node: Node3D in find_children("*","Node3D",true,false): node.force_update_transform()
++		model_ready = true
++		return
+ 	if preload("res://vehicle/prepared_car_cache.gd").restore(self):
+ 		if livery.is_empty(): livery = VehicleLivery.defaults(vehicle_id)
+@@ -301,5 +313,5 @@
+ 	_model_stage = "snapshot"
+ 	if livery.is_empty(): livery = VehicleLivery.defaults(vehicle_id)
+-	preload("res://vehicle/prepared_car_cache.gd").remember(self)
++	if cache_rest_pose: preload("res://vehicle/prepared_car_cache.gd").remember(self)
+ 	graphics.configure(self)
+ 	if not await _model_checkpoint(): return

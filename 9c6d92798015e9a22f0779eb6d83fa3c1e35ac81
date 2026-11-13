@@ -1,0 +1,21 @@
+--- game/vehicle/vehicle_simulation.gd [task start]
++++ game/vehicle/vehicle_simulation.gd [concurrent current]
+@@ -6,5 +6,5 @@
+ const RALLY_HANDBRAKE = preload("res://vehicle/rally_handbrake.gd")
+ const BRIDGE_FLIGHT = preload("res://vehicle/bridge_flight.gd")
+-const PHYSICS_VERSION: String = "arcade-planar-0.73"
++const PHYSICS_VERSION: String = "arcade-planar-0.74"
+ const LOW_SPEED_TURN_FADE_END: float = 16.66 # Below 60 km/h, avoiding float32 endpoint arithmetic.
+ const SOIL_TORQUE_GAIN: float = 1.35 # Loose verge bite beyond pure longitudinal drag.
+@@ -234,4 +234,11 @@
+ 		var launch_slip: float = smoothstep(0.35,0.65,throttle) * smoothstep(0.1,0.35,absf(state.steering)) * (1.0-smoothstep(4.0,8.0,speed))
+ 		lateral_response *= lerpf(1.0,config.launch_lateral_response_scale,launch_slip)
++	if config.rear_wheel_drive and config.power_lateral_response_scale < 1.0 and longitudinal > 0.0:
++		# Rear power retains lateral momentum beyond the launch-speed window.
++		# Share the existing launch response rather than stacking both reductions.
++		# Steering/yaw and available motor/braking forces keep their original bounds.
++		var power_slide: float = smoothstep(maxf(0.46,config.coast_pedal+0.20),0.85,throttle) * smoothstep(0.1,0.45,absf(state.steering))
++		var power_response: float = config.lateral_response * lerpf(1.0,config.power_lateral_response_scale,power_slide)
++		lateral_response = minf(lateral_response,power_response)
+ 	var lateral_acceleration: float = clampf((target_lateral - lateral) * lateral_response * tire_grip, -grip_limit, grip_limit)
+ 	var next_lateral: float = move_toward(lateral, target_lateral, absf(lateral_acceleration) * STEP)

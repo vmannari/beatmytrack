@@ -1,0 +1,190 @@
+--- a/game/resources/cars/electric.tres
++++ b/game/resources/cars/electric.tres
+@@ -2,7 +2,7 @@
+ [ext_resource type="Script" path="res://vehicle/handling_config.gd" id="1"]
+ [resource]
+ script = ExtResource("1")
+-version = "electric-22"
++version = "electric-23"
+ vehicle_id = "electric"
+ profile_name = "Volt"
+ rear_wheel_drive = true
+@@ -12,7 +12,7 @@
+ regeneration = 20.0
+ coast_pedal = 0.24
+ mass = 1680.0
+-engine_force = 38000.0
++engine_force = 41000.0
+ braking_force = 26000.0
+ rolling_resistance = 160.0
+ drag = 0.52
+--- a/backend/tests/fixtures/verified_oval.json
++++ b/backend/tests/fixtures/verified_oval.json
+@@ -64430,8 +64430,8 @@
+         "handling_version": "handling-0.15-original-slide"
+       },
+       "electric": {
+-        "config_hash": "0d8db0dea914a4db8e37517b76c4989be2144bd8ba9c6b78d75d4b775aecbf9e",
+-        "handling_version": "electric-22"
++        "config_hash": "a20ecf35bead7cffcfe503248c4c10b8b8c0ea84659669054f588e518f6431e4",
++        "handling_version": "electric-23"
+       },
+       "forklift": {
+         "config_hash": "495947f7424e92c8b14f69c1de5b3a05bb2ab0ce85c4898c0f858e73b3d35003",
+--- a/game/tests/test_electric_brake_reverse.gd
++++ b/game/tests/test_electric_brake_reverse.gd
+@@ -23,11 +23,11 @@
+ 	DirAccess.make_dir_recursive_absolute(ProjectSettings.globalize_path(output))
+ 	var config: HandlingConfig = VehicleCatalog.config("electric")
+ 	var old: HandlingConfig = load(OUTPUT+"/before/game/resources/cars/electric.tres")
+-	check(config.version == "electric-22" and not config.single_pedal and not config.handbrake_enabled,"versioned brake/reverse pedals without handbrake")
++	check(config.version == "electric-23" and not config.single_pedal and not config.handbrake_enabled,"versioned brake/reverse pedals without handbrake")
+ 	var before := old.snapshot()
+ 	var after := config.snapshot()
+ 	for key: String in before:
+-		if key in ["version","single_pedal","power_lateral_response_scale"]: continue
++		if key in ["version","single_pedal","power_lateral_response_scale","engine_force"]: continue
+ 		check(before[key] == after[key],"retained tune: "+key)
+ 	var fixture: Dictionary = JSON.parse_string(FileAccess.get_file_as_string("res://../backend/tests/fixtures/verified_oval.json"))
+ 	for id: String in fixture.expected_manifest.vehicles:
+@@ -37,6 +37,7 @@
+ 	metrics.electric = {"handling_version":config.version,"config_hash":JSON.stringify(config.snapshot(),"",true).sha256_text()}
+ 	# Isolate the brake/reverse contract from the later powered-drift adjustment.
+ 	old.power_lateral_response_scale = config.power_lateral_response_scale
++	old.engine_force = config.engine_force # Later acceleration tune is checked independently.
+ 	# Forward power and lift remain bit exact against the previous one-pedal tune.
+ 	for steer: float in [0.0,0.5,-1.0]:
+ 		var a := VehicleSimulation.new(old)
+--- a/game/tests/test_electric_drift_easier.gd
++++ b/game/tests/test_electric_drift_easier.gd
+@@ -9,7 +9,8 @@
+ 	DirAccess.make_dir_recursive_absolute(ProjectSettings.globalize_path(output))
+ 	var old: HandlingConfig = load(EASE_OUTPUT+"/before/game/resources/cars/electric.tres") as HandlingConfig
+ 	var current: HandlingConfig = VehicleCatalog.config("electric")
+-	check(old.version=="electric-21" and current.version=="electric-22","incremental drift has its own Electric identity")
++	check(old.version=="electric-21" and current.version=="electric-23","incremental drift has its own Electric identity")
++	old.engine_force = current.engine_force # Isolate the drift change from the later acceleration tune.
+ 	check(current.power_lateral_response_scale==0.25,"small power-on rear-response reduction")
+ 	for field: String in old.snapshot():
+ 		if field in ["version","power_lateral_response_scale"]: continue
+--- /dev/null
++++ b/game/tests/test_electric_acceleration.gd
+@@ -0,0 +1,71 @@
++extends "res://tests/probe_electric_slide_access.gd"
++
++const ACCEL_OUTPUT = "res://../docs/evidence/electric-acceleration-2026-10-28"
++
++func rolling(config: HandlingConfig, from_kph: float, to_kph: float, pedal: float) -> float:
++	var sim := VehicleSimulation.new(config)
++	sim.state.velocity = Vector2(0,from_kph/3.6)
++	for tick: int in range(3600):
++		sim.step(DriveFrame.sample(0,pedal,0))
++		if sim.state.velocity.y >= to_kph/3.6: return (tick+1)/120.0
++	return 30.0
++
++func run() -> void:
++	output = ACCEL_OUTPUT
++	for argument: String in OS.get_cmdline_user_args():
++		if argument.begins_with("--evidence-root="): output = argument.trim_prefix("--evidence-root=")
++	DirAccess.make_dir_recursive_absolute(ProjectSettings.globalize_path(output))
++	var old: HandlingConfig = load(ACCEL_OUTPUT+"/before/game/resources/cars/electric.tres")
++	var current: HandlingConfig = VehicleCatalog.config("electric")
++	check(old.version == "electric-22" and current.version == "electric-23","versioned small acceleration increase")
++	check(current.engine_force == 41000.0,"motor force increases by 7.9 percent")
++	check(current.snapshot().size() == old.snapshot().size(),"no new handling capabilities")
++	for key: String in old.snapshot():
++		if key in ["version","engine_force"]: continue
++		check(old.get(key) == current.get(key),"unchanged tune: "+key)
++	metrics.launch = {"before":launch(old),"after":launch(current)}
++	var target := str(100.0/3.6)
++	check(metrics.launch.after[target] < metrics.launch.before[target] and metrics.launch.after[target] >= metrics.launch.before[target]*0.92,"slightly quicker 0-100, within eight percent")
++	metrics.rolling = {}
++	for pedal: float in [0.65,1.0]:
++		var before := rolling(old,50,100,pedal)
++		var after := rolling(current,50,100,pedal)
++		metrics.rolling[str(pedal)] = {"before":before,"after":after}
++		check(after < before and after >= before*0.90,"slightly quicker 50-100 at pedal "+str(pedal))
++	# Zero drive demand leaves service braking, regeneration and hold tick-exact.
++	for speed: float in [-7.0,0.0,20.0,current.maximum_speed]:
++		for brake: float in [0.0,0.5,1.0]:
++			var a := VehicleSimulation.new(old)
++			var b := VehicleSimulation.new(current)
++			a.state.velocity = Vector2(0,speed)
++			b.state.velocity = a.state.velocity
++			var exact := true
++			for tick: int in range(12):
++				a.step(DriveFrame.sample(0,0,brake))
++				b.step(DriveFrame.sample(0,0,brake))
++				exact = exact and a.state.snapshot() == b.state.snapshot()
++			check(exact,"retained lift/brake response "+str(speed)+"/"+str(brake))
++	metrics.turns = {}
++	for kph: float in [0.0,10.0,30.0,50.0,80.0,120.0,170.0]:
++		for steering: float in [0.35,0.65,1.0]:
++			for pedal: float in [0.55,0.65,0.8,1.0]:
++				var before := slide_sample(old,kph,steering,pedal)
++				var after := slide_sample(current,kph,steering,pedal)
++				metrics.turns[str(kph)+"/"+str(steering)+"/"+str(pedal)] = {"before":before,"after":after}
++				check(after.peak < 24.0,"powered slide stays bounded")
++				check(after.end_kph > kph and after.end_kph >= before.end_kph*0.99,"power retains acceleration and turn exit speed")
++				check(after.recovery_ms > 0 and after.recovery_ms <= 300 and after.final_slip < 0.1,"slide remains easy to recover")
++				check(after.replay_exact,"powered turn replays exactly")
++	var cap := VehicleSimulation.new(current)
++	for tick: int in range(3600): cap.step(DriveFrame.sample(0,1,0))
++	check(cap.state.velocity.y <= current.maximum_speed and cap.state.velocity.y > current.maximum_speed-0.1,"unchanged 190 km/h forward cap")
++	for tick: int in range(1200): cap.step(DriveFrame.new())
++	check(cap.state.velocity == Vector2.ZERO,"lift still stops and holds")
++	for tick: int in range(600): cap.step(DriveFrame.sample(0,0,1))
++	check(cap.state.velocity.y >= -current.reverse_speed and cap.state.velocity.y < -6,"reverse remains bounded with stronger motor")
++	metrics.electric = {"handling_version":current.version,"config_hash":JSON.stringify(current.snapshot(),"",true).sha256_text()}
++	var file := FileAccess.open(output+"/acceleration.json",FileAccess.WRITE)
++	file.store_string(JSON.stringify({"checks":checks,"failures":failures,"metrics":metrics},"\t"))
++	file.close()
++	print("ELECTRIC_ACCELERATION: %d checks, %d failures launch=%s rolling=%s" % [checks,failures,JSON.stringify(metrics.launch),JSON.stringify(metrics.rolling)])
++	quit.call_deferred(1 if failures else 0)
+--- /dev/null
++++ b/docs/ELECTRIC_ACCELERATION_2026_10_28.md
+@@ -0,0 +1,33 @@
++# Slightly faster Electric acceleration — 2026-10-28
++
++EAC01 responds to the owner's request for a small acceleration increase. Electric23 changes only its handling version and motor force from 38,000 to 41,000 N (+7.895%). EAC02 retains the recent powered drift setting0.25, launch traction, steering, mass, regeneration20, brake/reverse controls, service brake force, handbrake exclusion and 190 km/h / 7 m/s forward/reverse caps. Shared physics remains 0.75. R01 preserves unrelated work and other-car contracts. Q01 checks launch, rolling acceleration, drift recovery, controls and deterministic five-lap verification.
++
++| Measurement | Electric22 | Electric23 |
++| --- | --- | --- |
++| 0–72 km/h | 1.0583 s | 1.0500 s |
++| 0–100 km/h | 1.4917 s | 1.4667 s |
++| 0–144 km/h | 2.2750 s | 2.1917 s |
++| 50–100 km/h, full pedal | 0.7667 s | 0.7417 s |
++| 50–100 km/h, 65% pedal | 1.4167 s | 1.3167 s |
++
++The moderate-pedal interval improves 7.06%; full-throttle 0–100 improves 1.68%. The retained rear-axle traction budget limits launch improvement: this is not an across-the-board 7.9% acceleration claim. Reverse uses the same stronger motor, with its original delay and speed cap. Service braking still stops from 72 km/h in 1.2833 seconds.
++
++Actual focused checks pass 417/0 against the exact saved Electric22 resource. Every exported field except version/motor force remains equal. The suite checks bounded launch/rolling improvement, exact unpowered braking/lift samples, 84 powered corner combinations, speed caps and replay. Maximum sampled slip is21.815 degrees; straightening recovery is at most200 ms. Existing24-degree/300-ms limits remain. The retained easier-drift comparison passes417/0, and brake/reverse passes104/0; each explicitly normalizes the later motor force in its old reference so it continues to isolate its original behavior. They write separate evidence destinations.
++
++Over and under passes7/0: five ordered laps,34,645 inputs, zero contacts and exact recorded-input replay. The independent verifier and parser results are recorded in [report.json](evidence/electric-acceleration-2026-10-28/report.json), alongside their raw logs. The verifier compares unchanged active other-car identities and explicitly reports Classic/Formula absent due to the earlier concurrent catalogue retirement.
++
++Runtime scope is one resource, `game/resources/cars/electric.tres`. Supporting changes add `game/tests/test_electric_acceleration.gd`, update the two earlier focused tests, and change only Electric's expected identity in `backend/tests/fixtures/verified_oval.json`. Electric23 hashes to `a20ecf35bead7cffcfe503248c4c10b8b8c0ea84659669054f588e518f6431e4`. The source-only scoped patch and reverse-apply check avoid the main index. Task-start and generated build metadata are archived separately; concurrent source changes are preserved and excluded from this patch.
++
++Commands actually run, using the pinned engine through `scripts/dev.ps1`, isolated task-owned APPDATA, and empty `BMT_API_URL`:
++
++```powershell
++powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1 -Action TestScript -ScriptPath res://tests/test_electric_acceleration.gd
++powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1 -Action TestScript -ScriptPath res://tests/test_electric_brake_reverse.gd -TestArgument '--evidence-root=res://../docs/evidence/electric-acceleration-2026-10-28/controls'
++powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1 -Action TestScript -ScriptPath res://tests/test_electric_drift_easier.gd -TestArgument '--evidence-root=res://../docs/evidence/electric-acceleration-2026-10-28/drift'
++powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1 -Action TestScript -ScriptPath res://tests/test_electric_over_under.gd -TestArgument '--evidence-root=res://../docs/evidence/electric-acceleration-2026-10-28/driving'
++powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1 -Action TestScript -ScriptPath res://tests/test_script_parse.gd
++./.tools/backend-secure-venv/Scripts/python.exe docs/evidence/electric-acceleration-2026-10-28/verify_canonical.py
++python docs/evidence/electric-acceleration-2026-10-28/checkpoint.py
++```
++
++The engine runs outside the sandbox to allow its normal certificate-store startup read, with offline isolated profiles. No physical-device attachment query or device test, APK/AAB, authentication/purchase, owner-save mutation, live submission/deployment, owner-process restart, main-index staging, commit or merge is performed. This is a resource-only feel adjustment with no UI/art change or screenshot regeneration. Reload/rebuild, matching backend/current Electric contracts before online use, and owner/device driving-feel acceptance remain. No full release/merge regression, phone performance or frame-rate claim is made.
+--- a/AGENTS.md
++++ b/AGENTS.md
+@@ -1,3 +1,8 @@
++<!-- ELECTRIC-ACCELERATION-20261028 -->
++## Slightly faster Electric acceleration (2026-10-28)
++EAC01-EAC02/R01/Q01: Electric23 changes only version and motor38000to41000N(+7.895%).0-100time1.4917to1.4667s;50-100at65%pedal1.4167to1.3167s. Retained traction limits launch gain. Drift0.25/regen20/steering/brake/reverse/speed caps/shared physics0.75 remain. Focused417/0, retained drift417/0 and controls104/0 pass;84corners peak21.815deg/recovery<=200ms. Five-lap7/0 has34645inputs/zero contacts/exact replay. One runtime resource; focused tests/local fixture identity refresh, concurrent sources/generated metadata excluded from checkpoint. Commands/hashes/verification/limits: docs/ELECTRIC_ACCELERATION_2026_10_28.md and docs/evidence/electric-acceleration-2026-10-28/report.json. Reload/rebuild, matching backend/current Electric contracts and owner/device feel acceptance remain. No device query/test, APK, auth/purchase, owner-save/live mutation, deployment, owner-process restart or main-index staging/commit/merge.
++<!-- /ELECTRIC-ACCELERATION-20261028 -->
++
+ <!-- HOVERCRAFT-POWER-TURN-20261028 -->
+ ## Faster hovercraft rotation and stronger thrust (2026-10-28)
+ HPT01-HPT03/R01/Q01: Hovercraft2 changes only version, thrust7400to10000N(+35.14%) and yaw cap1.35to1.9rad/s(+40.74%). Angular inertia780/lateral damping0.85/steering ramps/brakes/130kmh cap remain. At20m/s/60%steer/50%power, 0.5s hull angle12.5267to17.6302deg; one-second speed43.2526to56.7860kmh;0-60time1.4583to1.0667s. New127/0, retained50/0 including five other hashes/100state checkpoints, parser1379/0 and independent native normal/canonical five-lap verification18953ticks/157942ms/zero contacts pass. One runtime resource; optional test evidence/output destinations preserve old receipts. Reload, matching authorized online contract rollout and owner/device feel acceptance remain. No device query/test, APK, live write/deployment, owner-save/process change or main-index staging/commit/merge. Sources/commands/measurements/scoped patch: docs/HOVERCRAFT_POWER_TURN_2026_10_28.md and docs/evidence/hovercraft-power-turn-2026-10-28/report.json. Concurrent work preserved.

@@ -1,0 +1,578 @@
+--- a/backend/tests/fixtures/verified_oval.json
++++ b/backend/tests/fixtures/verified_oval.json
+@@ -64430,8 +64430,8 @@
+         "handling_version": "handling-0.15-original-slide"
+       },
+       "electric": {
+-        "config_hash": "b51534ece02975f60d5fb0ced5d9225ad6946d5af13ea054d656de2530024f58",
+-        "handling_version": "electric-20"
++        "config_hash": "75f0052f7eb3340bbe98b0c719d98b75402f66d2ecc6726accb83d9fb0ccfa0b",
++        "handling_version": "electric-21"
+       },
+       "forklift": {
+         "config_hash": "495947f7424e92c8b14f69c1de5b3a05bb2ab0ce85c4898c0f858e73b3d35003",
+--- /dev/null
++++ b/docs/ELECTRIC_BRAKE_REVERSE_2026_10_28.md
+@@ -0,0 +1,48 @@
++# Electric brake and reverse — 2026-10-28
++
++EB01 adds the ordinary brake input to Electric21, including keyboard/controller and all touch layouts. EB02 replaces the D/R selector with the existing stopped brake-hold reverse behavior (0.35 s delay, 7 m/s reverse cap); releasing the pedal stops reverse, and the accelerator returns to forward travel. EB03 retains regeneration20, the coast point, motor, steering, powered drift and disabled handbrake. R01 preserves unrelated work and other cars. Q01 covers native controls, deterministic replay and the local verifier.
++
++The resource changes `single_pedal` to false and explicitly selects `handbrake_enabled=false` and `blended_regeneration=true`. The latter keeps the previous four-wheel automatic lift-off blend independent of the pedal layout. These optional capabilities disappear from unchanged cars' snapshots. The shared physics version remains 0.75. Electric21 hashes to `75f0052f7eb3340bbe98b0c719d98b75402f66d2ecc6726accb83d9fb0ccfa0b`. Only its local expected backend fixture identity changes. No server deployment is performed.
++
++Six runtime scripts and one resource change: `driver_input.gd`, `handling_config.gd`, `vehicle_simulation.gd`, `touch_controls.gd`, `playground_hud.gd`, `vehicle_catalog.gd`, and `resources/cars/electric.tres`. The description updates English and eleven authored translations, their packaged PO entries, and the source catalogue. The actual race UI regression now exercises brake-hold reverse. The historical one-pedal suite loads the exact prior Electric20 resource; its original invariants remain. A new focused suite checks current behavior. Existing tune-specific Electric suites beyond those listed below were not rerun; this is not a full release regression claim.
++
++Actual outcomes:
++
++| Check | Result |
++| --- | --- |
++| Focused final headless | 106 checks, 0 failures, clean exit |
++| Compatibility and desktop Mobile | 112 checks each, 0 failures, clean exits; six captures each |
++| Historical Electric20 single-pedal | 63 checks, 0 failures |
++| Shared handling | 88 checks, 0 failures |
++| Project parser | 1,369 scripts, 0 failures |
++| Over and under | 7 checks, 0 failures; five laps, 34,703 inputs, zero contacts, exact replay |
++| Independent local backend verifier | Accepts 34,703 ticks / 289,188 ms, five lap boundaries, exact Electric21 identity |
++| Electric copy | Eleven packaged translations match authored entries; Unicode and placeholders pass |
++| Scoped checkpoint | Git reverse-apply check passes without using the main index |
++
++Forward acceleration and lift-off are tick-exact against Electric20 across 3,600 mixed steering/power/lift inputs. The six historical other-car resource hashes remain exact. Concurrent catalogue work removes Classic/Formula from the active manifest and adds Hovercraft: the verifier comparison reports those absent identities explicitly and checks the other identities still present. Those catalogue edits and the concurrent air-cushion integrator are excluded from this task's patch.
++
++From 72 km/h, the existing 26,000 N service brake stops the Electric in 1.2833 s. Lift-off retains its previous stronger automatic blend (the historical stop is 1.0 s); this task does not retune either force. Holding both pedals cannot launch or reverse the car. Malicious handbrake replay requests remain ineffective.
++
++The actual Garage-to-race UI test was attempted but stops during App preparation because concurrent Hovercraft work has not yet supplied `assets/menu/header_cars_v1/hovercraft.png`. It is not counted as passed. Native focused captures exercise the actual HUD independently: [Compatibility buttons](evidence/electric-brake-reverse-2026-10-28/compatibility/buttonsfalse.png). The initial test fixture lacked its output directory; after creating it, the five-lap test passes. Initial sandbox log/certificate access failures, premature test resource teardown diagnostics, the missing historical-manifest keys, and both original logs remain. Adding the standard NativeTrack preload gives clean final exits. An automatic review rejected an initial broad localization snapshot restore; the completed update uses targeted description edits and exact guards against concurrent extraction changes. No approval remains pending.
++
++The full localization check fails with 770 unrelated/current-catalogue diagnostics and is not a green release gate; an earlier broad extraction attempt reported 1,023 errors and was undone under an exact content guard. The Electric-specific packaged copy checks pass. No claim is made that all existing localization issues are fixed.
++
++Commands actually run use the pinned engine through `scripts/dev.ps1`, with isolated task-owned APPDATA and an empty `BMT_API_URL`:
++
++```powershell
++powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1 -Action TestScript -ScriptPath res://tests/test_electric_brake_reverse.gd
++# Also run with -Graphical -RenderingMethod gl_compatibility, and mobile.
++powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1 -Action TestScript -ScriptPath res://tests/test_electric_one_pedal.gd -TestArgument '--evidence-root=res://../docs/evidence/electric-brake-reverse-2026-10-28/historical'
++powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1 -Action TestScript -ScriptPath res://tests/test_electric_car_ui.gd -Graphical -RenderingMethod gl_compatibility -TestArgument '--evidence-root=res://../docs/evidence/electric-brake-reverse-2026-10-28/game'
++powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1 -Action TestScript -ScriptPath res://tests/test_electric_over_under.gd -TestArgument '--evidence-root=res://../docs/evidence/electric-brake-reverse-2026-10-28/driving'
++powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1 -Action TestHandling
++powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1 -Action TestScript -ScriptPath res://tests/test_script_parse.gd
++./.tools/backend-secure-venv/Scripts/python.exe docs/evidence/electric-brake-reverse-2026-10-28/verify_canonical.py
++python scripts/localization.py extract
++python scripts/localization.py check
++python docs/evidence/electric-brake-reverse-2026-10-28/update_copy.py
++python docs/evidence/electric-brake-reverse-2026-10-28/checkpoint.py
++```
++
++Raw logs, captures, exact before sources, replay, source hashes and the scoped review patch are under [the evidence directory](evidence/electric-brake-reverse-2026-10-28/report.json). Dev-wrapper generated build identities are excluded; concurrent work is not frozen. Client reload/rebuild, owner feel acceptance, a complete App rerun after the concurrent assets arrive, and matching backend/current Electric contracts remain before online use. No physical-device attachment query or device test, APK/AAB, real authentication/purchase, owner-save mutation, live submission/deployment, owner-process restart, main-index staging, commit or merge is performed.
+--- a/game/input/driver_input.gd
++++ b/game/input/driver_input.gd
+@@ -5,6 +5,7 @@
+ var touches: Dictionary = {}
+ var touch_strengths: Dictionary = {}
+ var single_pedal: bool = false
++var handbrake_enabled: bool = true
+ var reverse_selected: bool = false
+ 
+ 
+@@ -30,7 +31,7 @@
+ 		return DriveFrame.sample(_strength(&"steer_right") - _strength(&"steer_left"),
+ 			_strength(&"accelerate"), 1.0 if reverse_selected else 0.0, 0.0)
+ 	return DriveFrame.sample(_strength(&"steer_right") - _strength(&"steer_left"),
+-		_strength(&"accelerate"), _strength(&"brake"), _strength(&"handbrake"))
++		_strength(&"accelerate"), _strength(&"brake"), _strength(&"handbrake") if handbrake_enabled else 0.0)
+ 
+ 
+ func _strength(action: StringName) -> float:
+--- a/game/localization/de.po
++++ b/game/localization/de.po
+@@ -4434,8 +4434,8 @@
+ msgstr "Gespeicherte Strecken werden indexiert  /  %d von %d"
+ 
+ #: game/vehicle/vehicle_catalog.gd:14
+-msgid "Instant rear-wheel power with responsive steering. Feed in the accelerator for a controlled slide; release to brake and stop. Select D or R while stopped. One pedal, no handbrake."
+-msgstr "Sofortige Hinterradkraft und direkte Lenkung. Dosiere das Gas für kontrolliertes Driften; loslassen bremst bis zum Stillstand. Wähle D oder R im Stand. Ein Pedal, keine Handbremse."
++msgid "Instant rear-wheel power with responsive steering. Feed in the accelerator for a controlled slide; release for regeneration. Use the brake pedal to slow down, then hold it while stopped to reverse. No handbrake."
++msgstr "Sofortige Hinterradkraft und direkte Lenkung. Dosiere das Gas für kontrolliertes Driften; loslassen rekuperiert. Bremse und halte das Pedal im Stand gedrückt, um rückwärtszufahren. Keine Handbremse."
+ 
+ #: game/ui/settings_page.gd:521
+ msgid "Interface"
+--- a/game/localization/en.po
++++ b/game/localization/en.po
+@@ -4506,8 +4506,8 @@
+ msgstr "Indexing saved tracks  /  %d of %d"
+ 
+ #: game/vehicle/vehicle_catalog.gd:14
+-msgid "Instant rear-wheel power with responsive steering. Feed in the accelerator for a controlled slide; release to brake and stop. Select D or R while stopped. One pedal, no handbrake."
+-msgstr "Instant rear-wheel power with responsive steering. Feed in the accelerator for a controlled slide; release to brake and stop. Select D or R while stopped. One pedal, no handbrake."
++msgid "Instant rear-wheel power with responsive steering. Feed in the accelerator for a controlled slide; release for regeneration. Use the brake pedal to slow down, then hold it while stopped to reverse. No handbrake."
++msgstr "Instant rear-wheel power with responsive steering. Feed in the accelerator for a controlled slide; release for regeneration. Use the brake pedal to slow down, then hold it while stopped to reverse. No handbrake."
+ 
+ #: game/ui/settings_page.gd:521
+ msgid "Interface"
+--- a/game/localization/es.po
++++ b/game/localization/es.po
+@@ -4434,8 +4434,8 @@
+ msgstr "Indexando pistas guardadas  /  %d de %d"
+ 
+ #: game/vehicle/vehicle_catalog.gd:14
+-msgid "Instant rear-wheel power with responsive steering. Feed in the accelerator for a controlled slide; release to brake and stop. Select D or R while stopped. One pedal, no handbrake."
+-msgstr "Potencia trasera inmediata y dirección ágil. Dosifica el acelerador para un derrape controlado; suéltalo para frenar y parar. Selecciona D o R estando parado. Un pedal, sin freno de mano."
++msgid "Instant rear-wheel power with responsive steering. Feed in the accelerator for a controlled slide; release for regeneration. Use the brake pedal to slow down, then hold it while stopped to reverse. No handbrake."
++msgstr "Potencia trasera inmediata y dirección ágil. Dosifica el acelerador para un derrape controlado; suéltalo para regenerar. Frena y mantén el pedal pisado estando parado para dar marcha atrás. Sin freno de mano."
+ 
+ #: game/ui/settings_page.gd:521
+ msgid "Interface"
+--- a/game/localization/fi.po
++++ b/game/localization/fi.po
+@@ -4434,8 +4434,8 @@
+ msgstr "Luetteloidaan tallennettuja ratoja  /  %d / %d"
+ 
+ #: game/vehicle/vehicle_catalog.gd:14
+-msgid "Instant rear-wheel power with responsive steering. Feed in the accelerator for a controlled slide; release to brake and stop. Select D or R while stopped. One pedal, no handbrake."
+-msgstr "Välitön takaveto ja herkkä ohjaus. Annostele kaasua hallittuun luistoon; vapauta jarruttaaksesi ja pysähtyäksesi. Valitse D tai R pysähdyksissä. Yksi poljin, ei käsijarrua."
++msgid "Instant rear-wheel power with responsive steering. Feed in the accelerator for a controlled slide; release for regeneration. Use the brake pedal to slow down, then hold it while stopped to reverse. No handbrake."
++msgstr "Välitön takaveto ja herkkä ohjaus. Annostele kaasua hallittuun luistoon; vapauta regenerointia varten. Jarruta ja pidä poljin painettuna pysähdyksissä peruuttaaksesi. Ei käsijarrua."
+ 
+ #: game/ui/settings_page.gd:521
+ msgid "Interface"
+--- a/game/localization/fr.po
++++ b/game/localization/fr.po
+@@ -4434,8 +4434,8 @@
+ msgstr "Indexation des circuits sauvegardés  /  %d sur %d"
+ 
+ #: game/vehicle/vehicle_catalog.gd:14
+-msgid "Instant rear-wheel power with responsive steering. Feed in the accelerator for a controlled slide; release to brake and stop. Select D or R while stopped. One pedal, no handbrake."
+-msgstr "Puissance arrière instantanée et direction réactive. Dosez l’accélérateur pour glisser en contrôle ; relâchez pour freiner et vous arrêter. Sélectionnez D ou R à l’arrêt. Une seule pédale, sans frein à main."
++msgid "Instant rear-wheel power with responsive steering. Feed in the accelerator for a controlled slide; release for regeneration. Use the brake pedal to slow down, then hold it while stopped to reverse. No handbrake."
++msgstr "Puissance arrière instantanée et direction réactive. Dosez l’accélérateur pour une glisse contrôlée ; relâchez pour récupérer de l’énergie. Freinez, puis maintenez la pédale à l’arrêt pour reculer. Sans frein à main."
+ 
+ #: game/ui/settings_page.gd:521
+ msgid "Interface"
+--- a/game/localization/it.po
++++ b/game/localization/it.po
+@@ -4434,8 +4434,8 @@
+ msgstr "Indicizzazione piste salvate  /  %d di %d"
+ 
+ #: game/vehicle/vehicle_catalog.gd:14
+-msgid "Instant rear-wheel power with responsive steering. Feed in the accelerator for a controlled slide; release to brake and stop. Select D or R while stopped. One pedal, no handbrake."
+-msgstr "Potenza posteriore immediata e sterzo reattivo. Dosa l’acceleratore per una derapata controllata; rilascialo per frenare e fermarti. Seleziona D o R da fermo. Un pedale, senza freno a mano."
++msgid "Instant rear-wheel power with responsive steering. Feed in the accelerator for a controlled slide; release for regeneration. Use the brake pedal to slow down, then hold it while stopped to reverse. No handbrake."
++msgstr "Potenza posteriore immediata e sterzo reattivo. Dosa l’acceleratore per una derapata controllata; rilascialo per la rigenerazione. Frena e tieni premuto il pedale da fermo per andare in retromarcia. Nessun freno a mano."
+ 
+ #: game/ui/settings_page.gd:521
+ msgid "Interface"
+--- a/game/localization/ja.po
++++ b/game/localization/ja.po
+@@ -4422,8 +4422,8 @@
+ msgstr "保存済みコースを整理中  /  %d / %d"
+ 
+ #: game/vehicle/vehicle_catalog.gd:14
+-msgid "Instant rear-wheel power with responsive steering. Feed in the accelerator for a controlled slide; release to brake and stop. Select D or R while stopped. One pedal, no handbrake."
+-msgstr "瞬時に伝わる後輪のパワーと素直な操舵。アクセルを加減してスライドを操り、離すと減速して停止。停止中に D または R を選択。ワンペダル、ハンドブレーキなし。"
++msgid "Instant rear-wheel power with responsive steering. Feed in the accelerator for a controlled slide; release for regeneration. Use the brake pedal to slow down, then hold it while stopped to reverse. No handbrake."
++msgstr "瞬時の後輪駆動と素直な操舵。アクセルを調節してドリフトを制御し、離すと回生減速します。ブレーキで減速し、停止後も踏み続けると後退します。ハンドブレーキはありません。"
+ 
+ #: game/ui/settings_page.gd:521
+ msgid "Interface"
+--- a/game/localization/ko.po
++++ b/game/localization/ko.po
+@@ -4422,8 +4422,8 @@
+ msgstr "저장된 트랙 색인 중  /  %d / %d"
+ 
+ #: game/vehicle/vehicle_catalog.gd:14
+-msgid "Instant rear-wheel power with responsive steering. Feed in the accelerator for a controlled slide; release to brake and stop. Select D or R while stopped. One pedal, no handbrake."
+-msgstr "즉각적인 후륜 구동과 민감한 조향이 특징입니다. 가속을 조절해 슬라이드를 제어하고, 페달을 놓으면 감속해 멈춥니다. 정지한 상태에서 D 또는 R을 선택하세요. 원 페달 방식이며 핸드브레이크는 없습니다."
++msgid "Instant rear-wheel power with responsive steering. Feed in the accelerator for a controlled slide; release for regeneration. Use the brake pedal to slow down, then hold it while stopped to reverse. No handbrake."
++msgstr "즉각적인 후륜 구동과 민감한 조향. 가속을 조절해 드리프트를 제어하고, 페달을 놓으면 회생 제동합니다. 브레이크로 감속한 뒤 정지 상태에서 계속 밟으면 후진합니다. 핸드브레이크는 없습니다."
+ 
+ #: game/ui/settings_page.gd:521
+ msgid "Interface"
+--- a/game/localization/messages.pot
++++ b/game/localization/messages.pot
+@@ -4506,7 +4506,7 @@
+ msgstr ""
+ 
+ #: game/vehicle/vehicle_catalog.gd:14
+-msgid "Instant rear-wheel power with responsive steering. Feed in the accelerator for a controlled slide; release to brake and stop. Select D or R while stopped. One pedal, no handbrake."
++msgid "Instant rear-wheel power with responsive steering. Feed in the accelerator for a controlled slide; release for regeneration. Use the brake pedal to slow down, then hold it while stopped to reverse. No handbrake."
+ msgstr ""
+ 
+ #: game/ui/settings_page.gd:521
+--- a/game/localization/nb.po
++++ b/game/localization/nb.po
+@@ -4434,8 +4434,8 @@
+ msgstr "Indekserer lagrede baner  /  %d av %d"
+ 
+ #: game/vehicle/vehicle_catalog.gd:14
+-msgid "Instant rear-wheel power with responsive steering. Feed in the accelerator for a controlled slide; release to brake and stop. Select D or R while stopped. One pedal, no handbrake."
+-msgstr "Umiddelbar bakhjulskraft og responsiv styring. Doser gassen for kontrollert sladd; slipp for å bremse og stoppe. Velg D eller R når bilen står stille. Én pedal, ingen håndbrekk."
++msgid "Instant rear-wheel power with responsive steering. Feed in the accelerator for a controlled slide; release for regeneration. Use the brake pedal to slow down, then hold it while stopped to reverse. No handbrake."
++msgstr "Umiddelbar bakhjulskraft og responsiv styring. Doser gassen for kontrollert sladd; slipp for regenerering. Brems og hold pedalen inne når bilen står stille for å rygge. Ingen håndbrekk."
+ 
+ #: game/ui/settings_page.gd:521
+ msgid "Interface"
+--- a/game/localization/nl.po
++++ b/game/localization/nl.po
+@@ -4434,8 +4434,8 @@
+ msgstr "Opgeslagen circuits indexeren  /  %d van %d"
+ 
+ #: game/vehicle/vehicle_catalog.gd:14
+-msgid "Instant rear-wheel power with responsive steering. Feed in the accelerator for a controlled slide; release to brake and stop. Select D or R while stopped. One pedal, no handbrake."
+-msgstr "Direct achterwielvermogen en responsieve besturing. Doseer het gas voor een beheerste drift; laat los om te remmen en stoppen. Kies D of R als je stilstaat. Eén pedaal, geen handrem."
++msgid "Instant rear-wheel power with responsive steering. Feed in the accelerator for a controlled slide; release for regeneration. Use the brake pedal to slow down, then hold it while stopped to reverse. No handbrake."
++msgstr "Direct achterwielvermogen en responsieve besturing. Doseer het gas voor een beheerste drift; laat los voor regeneratie. Rem en houd het pedaal bij stilstand ingedrukt om achteruit te rijden. Geen handrem."
+ 
+ #: game/ui/settings_page.gd:521
+ msgid "Interface"
+--- a/game/localization/pt_BR.po
++++ b/game/localization/pt_BR.po
+@@ -4434,8 +4434,8 @@
+ msgstr "Indexando pistas salvas  /  %d de %d"
+ 
+ #: game/vehicle/vehicle_catalog.gd:14
+-msgid "Instant rear-wheel power with responsive steering. Feed in the accelerator for a controlled slide; release to brake and stop. Select D or R while stopped. One pedal, no handbrake."
+-msgstr "Potência traseira instantânea e direção responsiva. Dose o acelerador para deslizar com controle; solte para frear e parar. Selecione D ou R com o carro parado. Um pedal, sem freio de mão."
++msgid "Instant rear-wheel power with responsive steering. Feed in the accelerator for a controlled slide; release for regeneration. Use the brake pedal to slow down, then hold it while stopped to reverse. No handbrake."
++msgstr "Potência traseira instantânea e direção ágil. Dose o acelerador para deslizar com controle; solte para regenerar. Freie e mantenha o pedal pressionado ao parar para dar ré. Sem freio de mão."
+ 
+ #: game/ui/settings_page.gd:521
+ msgid "Interface"
+--- a/game/localization/sv.po
++++ b/game/localization/sv.po
+@@ -4434,8 +4434,8 @@
+ msgstr "Indexerar sparade banor  /  %d av %d"
+ 
+ #: game/vehicle/vehicle_catalog.gd:14
+-msgid "Instant rear-wheel power with responsive steering. Feed in the accelerator for a controlled slide; release to brake and stop. Select D or R while stopped. One pedal, no handbrake."
+-msgstr "Omedelbar bakhjulskraft och följsam styrning. Dosera gasen för kontrollerad sladd; släpp för att bromsa och stanna. Välj D eller R när bilen står stilla. En pedal, ingen handbroms."
++msgid "Instant rear-wheel power with responsive steering. Feed in the accelerator for a controlled slide; release for regeneration. Use the brake pedal to slow down, then hold it while stopped to reverse. No handbrake."
++msgstr "Omedelbar bakhjulskraft och följsam styrning. Dosera gasen för kontrollerad sladd; släpp för regenerering. Bromsa och håll pedalen nedtryckt när bilen står stilla för att backa. Ingen handbroms."
+ 
+ #: game/ui/settings_page.gd:521
+ msgid "Interface"
+--- a/game/resources/cars/electric.tres
++++ b/game/resources/cars/electric.tres
+@@ -2,11 +2,13 @@
+ [ext_resource type="Script" path="res://vehicle/handling_config.gd" id="1"]
+ [resource]
+ script = ExtResource("1")
+-version = "electric-20"
++version = "electric-21"
+ vehicle_id = "electric"
+ profile_name = "Volt"
+ rear_wheel_drive = true
+-single_pedal = true
++single_pedal = false
++handbrake_enabled = false
++blended_regeneration = true
+ regeneration = 20.0
+ coast_pedal = 0.24
+ mass = 1680.0
+--- /dev/null
++++ b/game/tests/test_electric_brake_reverse.gd
+@@ -0,0 +1,106 @@
++extends SceneTree
++const _NATIVE_TRACK = preload("res://track/native_track.gd")
++
++const OUTPUT = "res://../docs/evidence/electric-brake-reverse-2026-10-28"
++var checks := 0
++var failures := 0
++var metrics := {}
++
++func _initialize() -> void: run.call_deferred()
++
++func check(ok: bool, label: String) -> void:
++	checks += 1
++	if not ok:
++		failures += 1
++		print("FAIL: ",label)
++
++func run() -> void:
++	OS.set_environment("BMT_API_URL", "")
++	DirAccess.make_dir_recursive_absolute(ProjectSettings.globalize_path(OUTPUT))
++	var config: HandlingConfig = VehicleCatalog.config("electric")
++	var old: HandlingConfig = load(OUTPUT+"/before/game/resources/cars/electric.tres")
++	check(config.version == "electric-21" and not config.single_pedal and not config.handbrake_enabled,"versioned brake/reverse pedals without handbrake")
++	var before := old.snapshot()
++	var after := config.snapshot()
++	for key: String in before:
++		if key in ["version","single_pedal"]: continue
++		check(before[key] == after[key],"retained tune: "+key)
++	var fixture: Dictionary = JSON.parse_string(FileAccess.get_file_as_string("res://../backend/tests/fixtures/verified_oval.json"))
++	for id: String in fixture.expected_manifest.vehicles:
++		if id == "electric": continue
++		var other: HandlingConfig = VehicleCatalog.config(id) if id == "compact" else load("res://resources/cars/"+id+".tres")
++		check(JSON.stringify(other.snapshot(),"",true).sha256_text() == fixture.expected_manifest.vehicles[id].config_hash,"unchanged other car: "+id)
++	metrics.electric = {"handling_version":config.version,"config_hash":JSON.stringify(config.snapshot(),"",true).sha256_text()}
++	# Forward power and lift remain bit exact against the previous one-pedal tune.
++	for steer: float in [0.0,0.5,-1.0]:
++		var a := VehicleSimulation.new(old)
++		var b := VehicleSimulation.new(config)
++		var exact := true
++		for tick: int in range(1200):
++			var frame := DriveFrame.sample(steer,1.0 if tick % 300 < 200 else 0.0,0.0)
++			a.step(frame)
++			b.step(frame)
++			exact = exact and a.state.snapshot() == b.state.snapshot()
++		check(exact,"exact retained power/lift steering="+str(steer))
++	var sim := VehicleSimulation.new(config)
++	sim.state.velocity = Vector2(0,20)
++	var ticks := 0
++	while sim.state.velocity.y > 0.0 and ticks < 600:
++		sim.step(DriveFrame.sample(0,0,1))
++		ticks += 1
++	metrics.brake_stop_seconds = ticks / 120.0
++	check(sim.state.velocity.y == 0.0 and ticks < 180,"brake stops forward travel before reverse")
++	for tick: int in range(20): sim.step(DriveFrame.sample(0,0,1))
++	check(sim.state.velocity == Vector2.ZERO,"stopped hold delay prevents immediate reverse")
++	for tick: int in range(240): sim.step(DriveFrame.sample(0,0,1))
++	check(sim.state.velocity.y < -6.0 and sim.state.velocity.y >= -config.reverse_speed,"holding brake drives capped reverse")
++	for tick: int in range(240): sim.step(DriveFrame.new())
++	check(sim.state.velocity == Vector2.ZERO and sim.state.reverse_wait == 0.0,"release stops reverse and clears hold")
++	for tick: int in range(240): sim.step(DriveFrame.sample(0,1,0))
++	check(sim.state.velocity.y > 10,"accelerator returns to forward drive")
++	var both := VehicleSimulation.new(config)
++	for tick: int in range(240): both.step(DriveFrame.sample(0,1,1,1))
++	check(both.state.velocity == Vector2.ZERO and both.state.handbrake_pressure == 0,"brake wins simultaneous pedals; handbrake stays disabled")
++	var replay := VehicleSimulation.new(config)
++	var replay2 := VehicleSimulation.new(config)
++	var deterministic := true
++	for tick: int in range(2400):
++		var command := DriveFrame.sample(sin(tick*0.01),1 if tick%600<200 else 0,1 if tick%600>=200 and tick%600<500 else 0,tick%2)
++		replay.step(command)
++		replay2.step(command)
++		deterministic = deterministic and replay.state.snapshot() == replay2.state.snapshot()
++	check(deterministic,"mixed power/braking/reverse replay is tick exact")
++	root.size = Vector2i(1280,720)
++	for method: String in ControlLayout.METHODS:
++		for left: bool in [false,true]:
++			var hud := PlaygroundHUD.new()
++			hud.config = config
++			hud.driver = DriverInput.new()
++			root.add_child(hud)
++			hud.touch.layout = ControlLayout.preset(left)
++			hud.touch.layout.steering_type = method
++			await process_frame
++			check(hud.direction_button == null and not hud.driver.single_pedal,"actual HUD removes D/R selector")
++			var zones := hud.touch.touch_zones()
++			check(zones[2].has_area() and zones[3].has_area() and not zones[4].has_area(),method+str(left)+" active brake/gas and absent handbrake")
++			var point := zones[2].get_center()
++			if not hud.touch.layout.is_empty(): point = hud.touch._cached_hit_bases[2].get_center()
++			check(hud.touch.action_at(point) == &"brake",method+str(left)+" brake hit target")
++			hud.driver.set_touch(9,&"brake")
++			check(hud.driver.sample().brake == 255 and hud.driver.sample().throttle == 0,"touch brake reaches replay channel")
++			hud.driver.clear()
++			Input.action_press("brake")
++			Input.action_press("handbrake")
++			check(hud.driver.sample().brake == 255 and hud.driver.sample().handbrake == 0,"keyboard/gamepad brake enabled and handbrake ignored")
++			hud.driver.clear()
++			if DisplayServer.get_name() != "headless":
++				await RenderingServer.frame_post_draw
++				check(root.get_texture().get_image().save_png(OUTPUT+"/"+method+str(left)+".png") == OK,"native control capture")
++			hud.free()
++			await process_frame
++	var report := FileAccess.open(OUTPUT+"/results-"+DisplayServer.get_name()+".json",FileAccess.WRITE)
++	report.store_string(JSON.stringify({"checks":checks,"failures":failures,"metrics":metrics},"\t"))
++	report.close()
++	print("ELECTRIC_BRAKE_REVERSE: %d checks, %d failures %s" % [checks,failures,JSON.stringify(metrics)])
++	await process_frame
++	quit.call_deferred(1 if failures else 0)
+--- a/game/tests/test_electric_car_ui.gd
++++ b/game/tests/test_electric_car_ui.gd
+@@ -159,40 +159,27 @@
+ 	game.countdown_label.hide()
+ 	check(game.handling.vehicle_id == "electric" and game.car.vehicle_id == "electric","race uses electric handling and production mesh")
+ 	check(game.trails.wheelbase == game.handling.wheelbase,"tire trails follow electric wheelbase")
+-	check(game.driver.single_pedal,"actual race samples one-pedal input")
++	check(not game.driver.single_pedal and game.hud.direction_button == null,"actual race uses brake/reverse input without D/R selector")
+ 	game.countdown_ticks = 0
+ 	game.sim.state.velocity = Vector2.ZERO
+ 	for dimensions: Vector2i in [Vector2i(960,540),Vector2i(1280,720)]:
+ 		root.size = dimensions
+ 		await settle()
+-		check(root.get_visible_rect().encloses(game.hud.direction_button.get_global_rect()),"D/R fits "+str(dimensions))
+ 		check(root.get_visible_rect().encloses(game.hud.menu_button.get_global_rect()),"Pause remains visible "+str(dimensions))
+-		check(not game.hud.direction_button.get_global_rect().intersects(game.hud.menu_button.get_global_rect()),"D/R and Pause do not overlap "+str(dimensions))
+-		check(game.hud.direction_button.position.is_equal_approx(game.hud.touch.direction_rect().position),"D/R occupies the former brake position "+str(dimensions))
+-		check(game.hud.touch.action_at(game.hud.direction_button.get_global_rect().get_center()) == &"","D/R area cannot trigger the accelerator padding "+str(dimensions))
+-	# A GUI test can lose OS focus while preparing/resizing its window.
++		var zones: Array[Rect2] = game.hud.touch.touch_zones()
++		check(zones[2].has_area() and zones[3].has_area() and not zones[4].has_area(),"actual race exposes brake/gas without handbrake "+str(dimensions))
+ 	if game.paused: game.toggle_pause(false)
+-	var zones: Array[Rect2] = game.hud.touch.touch_zones()
+-	check(not zones[2].has_area() and not zones[4].has_area() and zones[3].has_area(),"actual race exposes only the accelerator pedal")
+-	await tap(game.hud.direction_button)
+-	check(game.driver.reverse_selected,"actual D/R button selects Reverse at rest")
+-	check(game.driver.sample().throttle == 0,"touching D/R never applies the accelerator")
++	Input.action_press("brake")
++	for tick: int in range(150): game._physics_process(VehicleSimulation.STEP)
++	Input.action_release("brake")
++	check(game.sim.state.velocity.dot(game.sim.state.forward()) < -1,"holding brake powers Reverse in actual Game")
++	check(game.frame.brake == 255 and game._tire_effect_frame(game.frame).brake == 255,"reverse keeps the standard brake/reverse replay channel")
++	for tick: int in range(120): game._physics_process(VehicleSimulation.STEP)
++	check(game.sim.state.velocity == Vector2.ZERO,"actual Game release stops fully in Reverse")
+ 	Input.action_press("accelerate")
+ 	for tick: int in range(90): game._physics_process(VehicleSimulation.STEP)
+ 	Input.action_release("accelerate")
+-	check(game.sim.state.velocity.dot(game.sim.state.forward()) < -1,"same gas pedal powers Reverse in actual Game")
+-	check(game.hud.direction_button.disabled,"direction button locks while moving")
+-	check(game.frame.brake == 255 and game._tire_effect_frame(game.frame).brake == 0,"Reverse replay command cannot create locked-wheel smoke or trails")
+-	game.hud.direction_requested.emit()
+-	check(game.driver.reverse_selected,"Game rejects direction changes while moving even if signalled")
+-	for tick: int in range(120): game._physics_process(VehicleSimulation.STEP)
+-	check(game.sim.state.velocity == Vector2.ZERO,"actual Game release stops fully in Reverse")
+-	await click(game.hud.direction_button)
+-	check(not game.driver.reverse_selected,"actual D/R button returns to Drive after complete stop")
+-	Input.action_press("accelerate")
+-	for tick: int in range(90): game._physics_process(VehicleSimulation.STEP)
+-	Input.action_release("accelerate")
+-	check(game.sim.state.velocity.dot(game.sim.state.forward()) > 1,"one gas pedal powers Drive")
++	check(game.sim.state.velocity.dot(game.sim.state.forward()) > 1,"accelerator powers Drive")
+ 	var released_speed: float = game.sim.state.velocity.length()
+ 	game._physics_process(VehicleSimulation.STEP)
+ 	check(game.frame.throttle == 0 and (released_speed-game.sim.state.velocity.length())/VehicleSimulation.STEP >= game.handling.regeneration,"actual Game applies configured regeneration on the first released-pedal tick")
+--- a/game/tests/test_electric_one_pedal.gd
++++ b/game/tests/test_electric_one_pedal.gd
+@@ -15,7 +15,7 @@
+ func run() -> void:
+ 	for argument: String in OS.get_cmdline_user_args():
+ 		if argument.begins_with("--evidence-root="): output = argument.trim_prefix("--evidence-root=")
+-	var config: HandlingConfig = VehicleCatalog.config("electric")
++	var config: HandlingConfig = load("res://../docs/evidence/electric-brake-reverse-2026-10-28/before/game/resources/cars/electric.tres") as HandlingConfig
+ 	check(config.single_pedal and config.rear_wheel_drive,"strict accelerator-only rear-drive tune")
+ 	var lift := VehicleSimulation.new(config)
+ 	lift.state.velocity = Vector2(0,20)
+--- a/game/ui/playground_hud.gd
++++ b/game/ui/playground_hud.gd
+@@ -60,6 +60,7 @@
+ 	add_child(root)
+ 	touch = TouchControls.new()
+ 	driver.single_pedal = config.single_pedal
++	driver.handbrake_enabled = config.handbrake_enabled
+ 	touch.driver = driver
+ 	touch.vehicle_id = config.vehicle_id
+ 	root.add_child(touch)
+--- a/game/ui/touch_controls.gd
++++ b/game/ui/touch_controls.gd
+@@ -63,13 +63,17 @@
+ 	return not layout.is_empty() and layout.steering_type != "buttons"
+ 
+ func one_pedal() -> bool:
+-	return vehicle_id == "electric"
++	return driver != null and driver.single_pedal
++
++func has_handbrake() -> bool:
++	return not one_pedal() and (driver.handbrake_enabled if driver != null else vehicle_id != "electric")
+ 
+ func _active_keys() -> Array[String]:
+ 	var keys: Array[String] = ControlLayout.active_keys(layout)
+ 	if one_pedal():
+ 		keys.erase("handbrake")
+ 		if "brake" not in keys: keys.insert(keys.size()-1,"brake") # Reserve its saved position for D/R.
++	if not has_handbrake(): keys.erase("handbrake")
+ 	return keys
+ 
+ func direction_rect() -> Rect2:
+@@ -230,7 +234,7 @@
+ 		if one_pedal(): return [left,right,Rect2(),_pedal_art(gas,true),Rect2()]
+ 		var brake: Rect2 = groups.brake if not analog_controls() else Rect2(gas.position+Vector2(0,gas.size.y*0.5),Vector2(gas.size.x,gas.size.y*0.5))
+ 		if analog_controls(): gas.size.y *= 0.5
+-		return [left, right, _pedal_art(brake,false), _pedal_art(gas,true), groups.handbrake.grow(-10)]
++		return [left, right, _pedal_art(brake,false), _pedal_art(gas,true), groups.handbrake.grow(-10) if has_handbrake() else Rect2()]
+ 	var result: Array[Rect2] = [Rect2(24, size.y - 156, 100, 92), Rect2(136, size.y - 156, 100, 92),
+ 		Rect2(size.x - 248, size.y - 156, 100, 92), Rect2(size.x - 136, size.y - 184, 112, 120), Rect2(size.x - 360, size.y - 156, 92, 92)]
+ 	var scale_value: float = control_scale * (1.15 if mobile_layout else 1.0)
+@@ -243,7 +247,7 @@
+ 		result[i] = rect
+ 	if one_pedal():
+ 		result[2] = Rect2()
+-		result[4] = Rect2()
++	if not has_handbrake(): result[4] = Rect2()
+ 	return result
+ 
+ 
+@@ -261,7 +265,7 @@
+ 		var rectangles: Array[Rect2] = zones()
+ 		var pedal: Rect2 = groups.accelerator
+ 		rectangles[2] = Rect2() if one_pedal() else groups.brake if not analog_controls() else Rect2(pedal.position+Vector2(0,pedal.size.y*0.5),Vector2(pedal.size.x,pedal.size.y*0.5))
+-		rectangles[4] = Rect2() if one_pedal() else groups.handbrake
++		rectangles[4] = groups.handbrake if has_handbrake() else Rect2()
+ 		rectangles[3] = pedal if one_pedal() or not analog_controls() else Rect2(pedal.position,Vector2(pedal.size.x,pedal.size.y*0.5))
+ 		if layout.steering_type == "buttons":
+ 			rectangles[0] = groups.steer_left
+@@ -421,7 +425,7 @@
+ 	var result: int = 0
+ 	if enabled:
+ 		for i: int in range(ACTIONS.size()):
+-			if one_pedal() and i in [2,4]: continue
++			if (one_pedal() and i == 2) or (not has_handbrake() and i == 4): continue
+ 			if Input.is_action_pressed(ACTIONS[i]) or _touch_pressed(ACTIONS[i]): result |= 1 << i
+ 	return result
+ 
+@@ -483,7 +487,7 @@
+ 			if not one_pedal(): draw_string(font,Vector2(center.x+20,pedal.end.y-28),"BRAKE",HORIZONTAL_ALIGNMENT_LEFT,-1,14,pedal_tint)
+ 	for art: TouchControlArt in artwork:
+ 		art.visible = not analog_controls() or art.button_index == 4
+-		if one_pedal() and art.button_index in [2,4]: art.visible = false
++		if (one_pedal() and art.button_index == 2) or (not has_handbrake() and art.button_index == 4): art.visible = false
+ 		var rect: Rect2 = rectangles[art.button_index]
+ 		if art.artwork_rect != rect:
+ 			art.artwork_rect = rect
+--- a/game/vehicle/handling_config.gd
++++ b/game/vehicle/handling_config.gd
+@@ -7,6 +7,8 @@
+ @export var air_cushion: bool = false # Fan thrust and rudder steering; no wheel traction.
+ @export var rear_wheel_drive: bool = false # Optional driven rear-axle traction budget.
+ @export var single_pedal: bool = false # Accelerator plus stopped D/R selection; no brake/handbrake pedals.
++@export var handbrake_enabled: bool = true
++@export var blended_regeneration: bool = false # Automatic four-wheel lift-off braking independent of pedal layout.
+ @export_range(0.0, 30.0, 0.1) var regeneration: float = 0.0 # Lift-off deceleration, m/s²; one pedal blends automatic brakes.
+ @export_range(0.05, 0.4, 0.01) var coast_pedal: float = 0.18 # Neutral accelerator point for one-pedal cars.
+ @export var rear_steering: bool = false # Rear wheels oppose input; the fixed front axle leads the turn.
+@@ -92,6 +94,8 @@
+ 	if not rear_steering: result.erase("rear_steering")
+ 	if not rear_wheel_drive: result.erase("rear_wheel_drive")
+ 	if not single_pedal: result.erase("single_pedal")
++	if handbrake_enabled: result.erase("handbrake_enabled")
++	if not blended_regeneration: result.erase("blended_regeneration")
+ 	if low_speed_steering_scale == 1.0: result.erase("low_speed_steering_scale")
+ 	if low_speed_steering_rate_scale == 1.0: result.erase("low_speed_steering_rate_scale")
+ 	if launch_lateral_response_scale == 1.0: result.erase("launch_lateral_response_scale")
+--- a/game/vehicle/vehicle_catalog.gd
++++ b/game/vehicle/vehicle_catalog.gd
+@@ -11,7 +11,7 @@
+ 	"Heavy power and loose-surface traction. Plan ahead: rotation and braking take longer.",
+ 	"Quick off the line. Tight turns and strong grip; low speed on long straights.",
+ 	"Rear-wheel steering swings the tail wide. Tight turns and heavy traction; a low top speed.",
+-	"Instant rear-wheel power with responsive steering. Feed in the accelerator for a controlled slide; release to brake and stop. Select D or R while stopped. One pedal, no handbrake.",
++	"Instant rear-wheel power with responsive steering. Feed in the accelerator for a controlled slide; release for regeneration. Use the brake pedal to slow down, then hold it while stopped to reverse. No handbrake.",
+ 	"Fan-powered air cushion with long, flowing slides. Steer early and brake to settle the drift. Hold the brake while stopped to reverse. No handbrake."]
+ static var selected: String = "compact"
+ 
+--- a/game/vehicle/vehicle_simulation.gd
++++ b/game/vehicle/vehicle_simulation.gd
+@@ -53,7 +53,7 @@
+ 	LaunchStart.advance(state, frame)
+ 	# Brake pressure is only input driven; no automatic drift latch.
+ 	var requested_handbrake: float = frame.handbrake / 255.0
+-	if config.single_pedal:
++	if config.single_pedal or not config.handbrake_enabled:
+ 		requested_handbrake = 0.0
+ 		state.handbrake_pressure = 0.0
+ 	state.handbrake_pressure = move_toward(state.handbrake_pressure, requested_handbrake,
+@@ -284,7 +284,7 @@
+ 		# it uses the combined traction budget above, not the motor's rear limit.
+ 		# Ordinary rear-only regen still loses rear load under braking.
+ 		var regenerating: bool = config.regeneration > 0.0 and brake == 0.0 and throttle < config.coast_pedal
+-		if not (config.single_pedal and regenerating) and (brake == 0.0 or brake > 0.0 and longitudinal < -0.15):
++		if not ((config.single_pedal or config.blended_regeneration) and regenerating) and (brake == 0.0 or brake > 0.0 and longitudinal < -0.15):
+ 			var rear_load: float = 0.48 if regenerating else 0.60
+ 			var rear_soil: float = (wheel_soil.z + wheel_soil.w) * 0.5
+ 			var rear_traction: float = config.longitudinal_grip * rear_load * surface.x * drive_tire_grip
+--- a/scripts/translations/vehicles.tsv
++++ b/scripts/translations/vehicles.tsv
+@@ -4,5 +4,5 @@
+ Precise asphalt grip. Low top speed, abrupt slides and harsh off-road penalties.|Adhérence précise sur l’asphalte. Vitesse de pointe faible, décrochages brusques et fortes pénalités hors piste.|Agarre preciso en asfalto. Poca velocidad punta, derrapes bruscos y grandes pérdidas fuera de pista.|Präziser Asphaltgrip. Niedrige Höchstgeschwindigkeit, abrupte Rutscher und starke Nachteile abseits der Strecke.|Aderência precisa no asfalto. Baixa velocidade máxima, derrapagens bruscas e grandes perdas fora da pista.|アスファルトで正確なグリップ。最高速は低め。急なスライドと大きなコース外でのロスに注意。|아스팔트에서 정밀한 접지력을 발휘합니다. 최고 속도가 낮고 급격히 미끄러지며, 코스 이탈 시 손실이 큽니다.|Precieze grip op asfalt. Lage topsnelheid, plotselinge glijpartijen en zware nadelen buiten de baan.|Aderenza precisa sull’asfalto. Velocità massima bassa, scivolate brusche e forti penalità fuori pista.|Tarkka pito asfaltilla. Matala huippunopeus, äkkinäiset luistot ja suuret menetykset radan ulkopuolella.|Precist asfaltgrepp. Låg toppfart, plötsliga sladdar och stora förluster utanför banan.|Presist asfaltgrep. Lav toppfart, brå sladder og store tap utenfor banen.
+ Quick off the line. Tight turns and strong grip; low speed on long straights.|Rapide au départ. Virages serrés et forte adhérence ; vitesse limitée sur les longues lignes droites.|Rápido en la salida. Giros cerrados y gran agarre; lento en las rectas largas.|Schnell vom Start weg. Enge Kurven und starker Grip, aber langsam auf langen Geraden.|Rápido na largada. Curvas fechadas e muita aderência; lento em retas longas.|鋭い加速。小回りと強いグリップが得意だが、長い直線では伸び悩む。|출발 가속이 빠릅니다. 좁은 코너와 강한 접지력이 장점이지만 긴 직선에서는 느립니다.|Snel weg bij de start. Scherpe bochten en sterke grip, maar langzaam op lange rechte stukken.|Rapido in partenza. Curve strette e forte aderenza, ma poca velocità sui lunghi rettilinei.|Nopea lähtemään. Tiukat käännökset ja vahva pito, mutta matala nopeus pitkillä suorilla.|Snabb i starten. Snäva svängar och starkt grepp, men låg fart på långa raksträckor.|Rask fra start. Krappe svinger og godt grep, men lav fart på lange rettstrekninger.
+ Rear-wheel steering swings the tail wide. Tight turns and heavy traction; a low top speed.|La direction arrière fait déborder la queue. Virages serrés et forte motricité ; vitesse de pointe faible.|La dirección trasera desplaza la cola hacia fuera. Giros cerrados y gran tracción; poca velocidad punta.|Die Hinterradlenkung lässt das Heck weit ausschwenken. Enge Kurven und starke Traktion bei niedriger Höchstgeschwindigkeit.|A direção traseira faz a cauda abrir bastante. Curvas fechadas e muita tração; baixa velocidade máxima.|後輪操舵で後部が大きく外へ振れる。小回りと力強い駆動力が特徴。最高速は低め。|후륜 조향으로 뒷부분이 크게 바깥으로 돕니다. 좁은 회전과 강한 구동력이 특징이며 최고 속도는 낮습니다.|Achterwielbesturing laat de achterkant ver uitzwaaien. Scherpe bochten en veel tractie, met een lage topsnelheid.|Lo sterzo posteriore fa allargare la coda. Curve strette e forte trazione, con velocità massima bassa.|Takapyöräohjaus heittää perän ulos. Tiukat käännökset ja vahva vetopito, mutta matala huippunopeus.|Bakhjulsstyrning får bakänden att svepa ut. Snäva svängar och stark dragkraft, men låg toppfart.|Bakhjulsstyring får bakenden til å svinge langt ut. Krappe svinger og stor trekkraft, men lav toppfart.
+-Instant rear-wheel power with responsive steering. Feed in the accelerator for a controlled slide; release to brake and stop. Select D or R while stopped. One pedal, no handbrake.|Puissance arrière instantanée et direction réactive. Dosez l’accélérateur pour glisser en contrôle ; relâchez pour freiner et vous arrêter. Sélectionnez D ou R à l’arrêt. Une seule pédale, sans frein à main.|Potencia trasera inmediata y dirección ágil. Dosifica el acelerador para un derrape controlado; suéltalo para frenar y parar. Selecciona D o R estando parado. Un pedal, sin freno de mano.|Sofortige Hinterradkraft und direkte Lenkung. Dosiere das Gas für kontrolliertes Driften; loslassen bremst bis zum Stillstand. Wähle D oder R im Stand. Ein Pedal, keine Handbremse.|Potência traseira instantânea e direção responsiva. Dose o acelerador para deslizar com controle; solte para frear e parar. Selecione D ou R com o carro parado. Um pedal, sem freio de mão.|瞬時に伝わる後輪のパワーと素直な操舵。アクセルを加減してスライドを操り、離すと減速して停止。停止中に D または R を選択。ワンペダル、ハンドブレーキなし。|즉각적인 후륜 구동과 민감한 조향이 특징입니다. 가속을 조절해 슬라이드를 제어하고, 페달을 놓으면 감속해 멈춥니다. 정지한 상태에서 D 또는 R을 선택하세요. 원 페달 방식이며 핸드브레이크는 없습니다.|Direct achterwielvermogen en responsieve besturing. Doseer het gas voor een beheerste drift; laat los om te remmen en stoppen. Kies D of R als je stilstaat. Eén pedaal, geen handrem.|Potenza posteriore immediata e sterzo reattivo. Dosa l’acceleratore per una derapata controllata; rilascialo per frenare e fermarti. Seleziona D o R da fermo. Un pedale, senza freno a mano.|Välitön takaveto ja herkkä ohjaus. Annostele kaasua hallittuun luistoon; vapauta jarruttaaksesi ja pysähtyäksesi. Valitse D tai R pysähdyksissä. Yksi poljin, ei käsijarrua.|Omedelbar bakhjulskraft och följsam styrning. Dosera gasen för kontrollerad sladd; släpp för att bromsa och stanna. Välj D eller R när bilen står stilla. En pedal, ingen handbroms.|Umiddelbar bakhjulskraft og responsiv styring. Doser gassen for kontrollert sladd; slipp for å bremse og stoppe. Velg D eller R når bilen står stille. Én pedal, ingen håndbrekk.
++Instant rear-wheel power with responsive steering. Feed in the accelerator for a controlled slide; release for regeneration. Use the brake pedal to slow down, then hold it while stopped to reverse. No handbrake.|Puissance arrière instantanée et direction réactive. Dosez l’accélérateur pour une glisse contrôlée ; relâchez pour récupérer de l’énergie. Freinez, puis maintenez la pédale à l’arrêt pour reculer. Sans frein à main.|Potencia trasera inmediata y dirección ágil. Dosifica el acelerador para un derrape controlado; suéltalo para regenerar. Frena y mantén el pedal pisado estando parado para dar marcha atrás. Sin freno de mano.|Sofortige Hinterradkraft und direkte Lenkung. Dosiere das Gas für kontrolliertes Driften; loslassen rekuperiert. Bremse und halte das Pedal im Stand gedrückt, um rückwärtszufahren. Keine Handbremse.|Potência traseira instantânea e direção ágil. Dose o acelerador para deslizar com controle; solte para regenerar. Freie e mantenha o pedal pressionado ao parar para dar ré. Sem freio de mão.|瞬時の後輪駆動と素直な操舵。アクセルを調節してドリフトを制御し、離すと回生減速します。ブレーキで減速し、停止後も踏み続けると後退します。ハンドブレーキはありません。|즉각적인 후륜 구동과 민감한 조향. 가속을 조절해 드리프트를 제어하고, 페달을 놓으면 회생 제동합니다. 브레이크로 감속한 뒤 정지 상태에서 계속 밟으면 후진합니다. 핸드브레이크는 없습니다.|Direct achterwielvermogen en responsieve besturing. Doseer het gas voor een beheerste drift; laat los voor regeneratie. Rem en houd het pedaal bij stilstand ingedrukt om achteruit te rijden. Geen handrem.|Potenza posteriore immediata e sterzo reattivo. Dosa l’acceleratore per una derapata controllata; rilascialo per la rigenerazione. Frena e tieni premuto il pedale da fermo per andare in retromarcia. Nessun freno a mano.|Välitön takaveto ja herkkä ohjaus. Annostele kaasua hallittuun luistoon; vapauta regenerointia varten. Jarruta ja pidä poljin painettuna pysähdyksissä peruuttaaksesi. Ei käsijarrua.|Omedelbar bakhjulskraft och följsam styrning. Dosera gasen för kontrollerad sladd; släpp för regenerering. Bromsa och håll pedalen nedtryckt när bilen står stilla för att backa. Ingen handbroms.|Umiddelbar bakhjulskraft og responsiv styring. Doser gassen for kontrollert sladd; slipp for regenerering. Brems og hold pedalen inne når bilen står stille for å rygge. Ingen håndbrekk.
+ Change between Drive and Reverse while stopped|Passez entre marche avant et arrière à l’arrêt|Cambia entre avance y marcha atrás estando parado|Im Stand zwischen Vorwärts und Rückwärts wechseln|Alterne entre frente e ré com o carro parado|停止中に前進と後退を切り替え|정지한 상태에서 전진과 후진 전환|Wissel tussen vooruit en achteruit als je stilstaat|Passa tra marcia avanti e retromarcia da fermo|Vaihda eteenpäin- ja peruutusvaihteen välillä pysähdyksissä|Växla mellan framåt och bakåt när bilen står stilla|Bytt mellom forover og revers når bilen står stille

@@ -1,0 +1,70 @@
+--- 
++++ 
+@@ -12,2 +12,3 @@
+ signal rotation_chosen(angle: float)
++signal snap_chosen(step: float)
+ var category: String = "All"
+@@ -34,2 +35,7 @@
+ var properties_button: Button
++var snap_step: float = 1.0:
++	set(value):
++		snap_step = value
++		var control: OptionButton = find_child("ObjectSnap",true,false) as OptionButton
++		if control != null: control.select(0 if value == 1.0 else 1 if value > 0 else 2)
+ 
+@@ -55,3 +61,3 @@
+ 	properties_button.name = "ObjectProperties"
+-	properties_button.custom_minimum_size = Vector2(170,44)
++	properties_button.custom_minimum_size = Vector2(112,44)
+ 	top.add_child(properties_button)
+@@ -59,2 +65,10 @@
+ 	set_stamp_rotation(stamp_rotation)
++	var snapping := OptionButton.new()
++	snapping.name = "ObjectSnap"
++	EditorStyle.apply(snapping); snapping.custom_minimum_size = Vector2(112,44)
++	for label: String in ["Snap: 1 m","Snap: 0.25 m","Snap: off"]: snapping.add_item(label)
++	snapping.select(0 if snap_step == 1.0 else 1 if snap_step > 0 else 2)
++	snapping.item_selected.connect(func(index: int) -> void:
++		snap_step = [1.0,0.25,0.0][index]; snap_chosen.emit(snap_step))
++	top.add_child(snapping)
+ 	var populate: Button = _button("Populate",func() -> void: populate_requested.emit())
+@@ -79,3 +93,3 @@
+ 	resized.connect(func() -> void:
+-		var count: int=maxi(1,int((size.x-120)/110))
++		var count: int=maxi(1,int((size.x-120)/118))
+ 		if count!=page_size: page_size=count; page=0; _tiles())
+@@ -133,3 +147,3 @@
+ 	next.visible=(page+1)*page_size<entries.size()
+-	var key: Array = [biome,category if entries.is_empty() else "",stamp_container_color]
++	var key: Array = [biome,category if entries.is_empty() else "",stamp_container_color,current]
+ 	for index: int in range(page*page_size,mini(entries.size(),(page+1)*page_size)): key.append(entries[index][0])
+@@ -148,3 +162,7 @@
+ 		var asset: Array = entries[index]
+-		tiles.add_child(ObjectThumbnail.make(asset[0],asset[1],current == asset[0] or current in asset[3],_activate_asset.bind(asset[0]),biome,stamp_container_color if asset[0] == "container" else ""))
++		var chosen: bool = current == asset[0] or current in asset[3]
++		var kind: String = current if chosen else str(asset[0])
++		var title: String = CreatorCatalog.label(current) if chosen and current != asset[0] else str(asset[1])
++		var tile: Button = ObjectThumbnail.make(kind,title,chosen,_activate_asset.bind(asset[0]),biome,stamp_container_color if asset[0] == "container" else "")
++		tile.name = "Asset_"+str(asset[0]); tiles.add_child(tile)
+ 	if entries.is_empty(): tiles.add_child(MenuStyle.label("No matching objects" if category!="Recent" else "Choose an object to add it here",16))
+@@ -155,4 +173,4 @@
+ 	if is_instance_valid(properties_button):
+-		properties_button.text = GameText.message("%s ? Properties") % CreatorCatalog.label(current)
+-		properties_button.tooltip_text = "Size, orientation and placement settings"
++		properties_button.text = "Properties"
++		properties_button.tooltip_text = CreatorCatalog.label(current)+" / "+GameText.message("Size, orientation and placement settings")
+ 
+@@ -180,3 +198,7 @@
+ 		"kind":
++			var retained_scale: float = stamp_scale
++			var retained_placement: String = placement
+ 			choose(str(value))
++			stamp_scale = retained_scale; placement = retained_placement
++			size_chosen.emit(stamp_scale); mode_chosen.emit(placement)
+ 			open_properties.call_deferred()
+@@ -201,2 +223,5 @@
+ 	if not CreatorCatalog.available(kind,biome): return
++	if CreatorCatalog.JUMP_ASSETS.has(kind):
++		choose(kind)
++		return
+ 	var family: Array = CreatorCatalog.family(kind)

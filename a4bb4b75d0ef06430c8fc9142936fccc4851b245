@@ -1,0 +1,66 @@
+--- task-start
++++ concurrent-context
+@@ -39,6 +39,32 @@
+ 		event.pressed = down
+ 		Input.parse_input_event(event)
+ 		await settle(2)
++
++func powered_drift_review(game: Node, track: NativeTrack) -> void:
++	var configured: float=game.handling.power_lateral_response_scale
++	var peaks: Array[float]=[]
++	for response: float in [1.0,configured]:
++		game.handling.power_lateral_response_scale=response
++		game.driver.clear()
++		game.sim.reset(track.spawn,track.spawn_heading)
++		game.sim.state.velocity=game.sim.state.forward()*10.0
++		Input.action_press("accelerate")
++		Input.action_press("steer_right")
++		var peak: float=0.0
++		for tick: int in range(36):
++			game._physics_process(VehicleSimulation.STEP)
++			peak=maxf(peak,rad_to_deg(absf(game.sim.state.slip_angle())))
++		peaks.append(peak)
++	game.handling.power_lateral_response_scale=configured
++	check(game.frame.throttle==255 and game.frame.steer==127,"actual Game receives simultaneous full accelerator and steering")
++	check(peaks[1]>peaks[0]*1.25 and peaks[1]<8.0,"actual Game acceleration produces a controlled slide over its planted off-power response")
++	check(game.sim.state.velocity.length()>10.0 and game.sim.state.collision_count==0,"actual powered turn accelerates without a contact")
++	print("ELECTRIC_POWER_SLIDE_SAMPLE ",JSON.stringify({"without_power_aid":peaks[0],"with_power_aid":peaks[1]}))
++	await settle(2)
++	await capture("power-slide")
++	game.driver.clear()
++	for tick: int in range(240): game._physics_process(VehicleSimulation.STEP)
++	check(game.sim.state.velocity.length()<0.001 and absf(game.sim.state.slip_angle())<deg_to_rad(0.1),"actual Game lifting and straightening catches the powered slide")
+ 
+ func run() -> void:
+ 	OS.set_environment("BMT_API_URL","")
+@@ -135,7 +161,7 @@
+ 	check(game.frame.brake == 255 and game._tire_effect_frame(game.frame).brake == 0,"Reverse replay command cannot create locked-wheel smoke or trails")
+ 	game.hud.direction_requested.emit()
+ 	check(game.driver.reverse_selected,"Game rejects direction changes while moving even if signalled")
+-	for tick: int in range(40): game._physics_process(VehicleSimulation.STEP)
++	for tick: int in range(120): game._physics_process(VehicleSimulation.STEP)
+ 	check(game.sim.state.velocity == Vector2.ZERO,"actual Game release stops fully in Reverse")
+ 	await click(game.hud.direction_button)
+ 	check(not game.driver.reverse_selected,"actual D/R button returns to Drive after complete stop")
+@@ -145,9 +171,10 @@
+ 	check(game.sim.state.velocity.dot(game.sim.state.forward()) > 1,"one gas pedal powers Drive")
+ 	var released_speed: float = game.sim.state.velocity.length()
+ 	game._physics_process(VehicleSimulation.STEP)
+-	check(game.frame.throttle == 0 and (released_speed-game.sim.state.velocity.length())/VehicleSimulation.STEP >= 26,"actual Game applies braking strength on the first released-pedal tick")
+-	for tick: int in range(95): game._physics_process(VehicleSimulation.STEP)
++	check(game.frame.throttle == 0 and (released_speed-game.sim.state.velocity.length())/VehicleSimulation.STEP >= game.handling.regeneration,"actual Game applies configured regeneration on the first released-pedal tick")
++	for tick: int in range(240): game._physics_process(VehicleSimulation.STEP)
+ 	check(game.sim.state.velocity == Vector2.ZERO,"actual Game release stops fully in Drive")
++	if "--powered-drift" in OS.get_cmdline_user_args(): await powered_drift_review(game,track)
+ 	# Keep the retained exact-stop fixture on its original flat track. Exercise
+ 	# the requested bridge track in a fresh actual Game for keyboard/controller.
+ 	if "--over-and-under" in OS.get_cmdline_user_args():
+@@ -183,7 +210,7 @@
+ 	check(game.sim.state.steering>0.95 and game.sim.state.steering<=1.0,"actual Game reaches usable keyboard lock within 200 ms")
+ 	var keyboard_heading: float=absf(wrapf(game.sim.state.heading-track.spawn_heading,-PI,PI))
+ 	print("ELECTRIC_KEYBOARD_SAMPLE ",JSON.stringify({"heading_degrees":rad_to_deg(keyboard_heading),"steering":game.sim.state.steering}))
+-	check(keyboard_heading>deg_to_rad(2.0) and keyboard_heading<deg_to_rad(10.0),"actual Game retains prompt input with the stronger held-lock curve at 20 km/h")
++	check(keyboard_heading>deg_to_rad(2.0) and keyboard_heading<deg_to_rad(12.0),"actual Game weighted turn-in remains useful and bounded at 20 km/h")
+ 	var keyboard_release: InputEventKey=keyboard.duplicate() as InputEventKey
+ 	keyboard_release.pressed=false
+ 	Input.parse_input_event(keyboard_release)

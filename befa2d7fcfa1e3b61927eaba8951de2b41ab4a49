@@ -1,0 +1,1180 @@
+--- a/game/core/app.gd
++++ b/game/core/app.gd
+@@ -3156,7 +3156,11 @@
+ 	editor_redo.tooltip_text="Redo"
+ 	history.add_child(editor_redo)
+ 	var top := HBoxContainer.new()
++	top.name = "EditorHeaderActions"
+ 	top.alignment = BoxContainer.ALIGNMENT_END
++	# The right-aligned container is wider than its visible buttons. Empty
++	# space must not intercept the history controls when Issues is hidden.
++	top.mouse_filter = Control.MOUSE_FILTER_IGNORE
+ 	overlay.add_child(top)
+ 	top.set_anchors_and_offsets_preset(Control.PRESET_TOP_RIGHT)
+ 	top.offset_left = -600; top.offset_right = -80; top.offset_top = 16
+@@ -3196,6 +3200,13 @@
+ 	publish_button.tooltip_text = "Complete a test drive before publishing this version."
+ 	publish_button.custom_minimum_size=Vector2(132,52)
+ 	top.add_child(publish_button)
++	# Fit the identity/history group into the space left by the right-hand
++	# actions, including the issue button when it appears or disappears.
++	var fit_header: Callable = _fit_editor_header.bind(overlay,header_left,track_name,creator_label,top)
++	overlay.resized.connect(fit_header)
++	top.minimum_size_changed.connect(fit_header)
++	editor_issue_button.visibility_changed.connect(fit_header)
++	fit_header.call_deferred()
+ 	var rail := VBoxContainer.new()
+ 	rail.name = "EditorRail"
+ 	var rail_panel := PanelContainer.new()
+@@ -3244,9 +3255,7 @@
+ 	surface_toolbar.offset_right = 270
+ 	surface_toolbar.offset_top = 78
+ 	surface_toolbar.offset_bottom = 180
+-	surface_toolbar.resized.connect(func() -> void:
+-		surface_toolbar.offset_left = -surface_toolbar.size.x*0.5
+-		surface_toolbar.offset_right = surface_toolbar.size.x*0.5)
++	surface_toolbar.resized.connect(_layout_editor_surface_toolbar)
+ 	surface_actions = HBoxContainer.new()
+ 	surface_actions.add_theme_constant_override("separation",8)
+ 	surface_toolbar.add_child(surface_actions)
+@@ -3307,7 +3316,9 @@
+ 	object_controls_panel.offset_right = -112
+ 	var property_scroll := ScrollContainer.new()
+ 	property_scroll.name = "ObjectControlScroll"
+-	property_scroll.horizontal_scroll_mode = ScrollContainer.SCROLL_MODE_AUTO
++	# Keep the strip's height stable when its controls exceed the available
++	# width; the row still supports horizontal dragging just like the palette.
++	property_scroll.horizontal_scroll_mode = ScrollContainer.SCROLL_MODE_SHOW_NEVER
+ 	property_scroll.vertical_scroll_mode = ScrollContainer.SCROLL_MODE_DISABLED
+ 	object_controls_panel.add_child(property_scroll)
+ 	object_controls = object_browser.options
+@@ -3334,6 +3345,11 @@
+ 		var command: Button=EditorStyle.button(entry[0],entry[1])
+ 		command.name=entry[0]+"Track"
+ 		metadata.add_child(command)
++	var fit_view: Button = EditorStyle.button("Fit view",func() -> void:
++		editor_map_panel.hide()
++		canvas.fit())
++	fit_view.name = "EditorFitView"
++	metadata.add_child(fit_view)
+ 	share_button=EditorStyle.button("Share",_share_dialog)
+ 	metadata.add_child(share_button)
+ 	metadata.add_child(EditorStyle.button("Help",_editor_help))
+@@ -3352,6 +3368,8 @@
+ 		lighting.toggled.connect(editor_world.set_race_lighting_preview)
+ 		metadata.add_child(lighting)
+ 	canvas.selection_changed.connect(_build_editor_tools)
++	canvas.fit_area = _editor_fit_area
++	surface_toolbar.resized.connect(_layout_editor_feedback)
+ 	_restore_pending_tool(_editor_tool())
+ 	_build_editor_tools()
+ 	_refresh_editor()
+@@ -3368,9 +3386,69 @@
+ 	if editor_view.is_empty(): canvas.call_deferred("fit")
+ 	_apply_editor_safe_area(overlay)
+ 	root_ui.resized.connect(_apply_editor_safe_area.bind(overlay))
++	root_ui.resized.connect(_layout_editor_feedback)
++	root_ui.resized.connect(_layout_editor_surface_toolbar)
++
++func _fit_editor_header(overlay: Control, header: HBoxContainer, track_title: Label, creator: Label, actions: HBoxContainer) -> void:
++	if not is_instance_valid(overlay) or not is_instance_valid(header) or not is_instance_valid(actions): return
++	# The actions are right anchored, ending 80 px from the right edge. Leave a
++	# small gap before them, shrinking the title only after hiding the creator.
++	var available: float = maxf(0.0,overlay.size.x-80.0-actions.get_combined_minimum_size().x-header.position.x-8.0)
++	track_title.custom_minimum_size.x = 220.0
++	creator.show()
++	if header.get_combined_minimum_size().x > available:
++		creator.hide()
++		var deficit: float = header.get_combined_minimum_size().x-available
++		track_title.custom_minimum_size.x = maxf(40.0,220.0-deficit)
++	# A free-standing container otherwise keeps its old, wider size on resize.
++	header.size = header.get_combined_minimum_size()
+ 
+ func _editor_box() -> StyleBoxFlat:
+ 	return EditorStyle.panel()
++
++
++func _layout_editor_surface_toolbar() -> void:
++	if not is_instance_valid(surface_toolbar): return
++	var overlay: Control = surface_toolbar.get_parent() as Control
++	var width: float = surface_toolbar.size.x
++	var left: float = (overlay.size.x-width)*0.5
++	if is_instance_valid(editor_save_button):
++		left = maxf(left,editor_save_button.get_global_rect().end.x-overlay.global_position.x+8)
++	left = minf(left,overlay.size.x-width-16)
++	surface_toolbar.offset_left = left-overlay.size.x*0.5
++	surface_toolbar.offset_right = surface_toolbar.offset_left+width
++
++
++func _layout_editor_feedback() -> void:
++	if not is_instance_valid(editor_status) or not is_instance_valid(canvas): return
++	if root_ui.size.y < 672:
++		var rail: Control = root_ui.find_child("EditorRailPanel",true,false) as Control
++		var origin: Vector2 = (editor_status.get_parent() as Control).global_position
++		var left: float = rail.get_global_rect().end.x+8-origin.x if is_instance_valid(rail) else 124.0
++		var top: float = surface_toolbar.get_global_rect().end.y+8-origin.y if is_instance_valid(surface_toolbar) and surface_toolbar.is_visible_in_tree() else 128.0
++		editor_status.position = Vector2(left,top)
++		editor_status.size = Vector2(270,80)
++	else:
++		editor_status.position = Vector2(16,128)
++		editor_status.size = Vector2(320,80)
++
++
++## Keep a fitted circuit clear of the persistent rail, feedback and the
++## currently open authoring panels. Manual pan and zoom remain unrestricted.
++func _editor_fit_area() -> Rect2:
++	var view: Rect2 = canvas.get_global_rect()
++	var left: float = view.position.x+16
++	var top: float = view.position.y+84
++	var right: float = view.end.x-16
++	var bottom: float = view.end.y-16
++	var rail: Control = root_ui.find_child("EditorRailPanel",true,false) as Control
++	if is_instance_valid(rail) and rail.is_visible_in_tree(): left = maxf(left,rail.get_global_rect().end.x+8)
++	if is_instance_valid(editor_status) and editor_status.is_visible_in_tree(): left = maxf(left,editor_status.get_global_rect().end.x+8)
++	if is_instance_valid(surface_toolbar) and surface_toolbar.is_visible_in_tree(): top = maxf(top,surface_toolbar.get_global_rect().end.y+8)
++	for panel: Control in [editor_palette,object_browser,object_controls_panel]:
++		if is_instance_valid(panel) and panel.is_visible_in_tree(): bottom = minf(bottom,panel.get_global_rect().position.y-8)
++	left = minf(left,view.position.x+view.size.x*0.5)
++	return Rect2(Vector2(left,top)-view.position,Vector2(maxf(0,right-left),maxf(0,bottom-top)))
+ 
+ 
+ func _editor_panel(parent: Control, node_name: String) -> PanelContainer:
+@@ -3574,8 +3652,6 @@
+ 	editor_palette.visible = not browsing
+ 	for key: String in editor_mode_buttons: (editor_mode_buttons[key] as Button).set_pressed_no_signal(key == category)
+ 	surface_toolbar.visible = category == "paint"
+-	var track_title: Label = root_ui.find_child("TrackName",true,false)
+-	if track_title != null: track_title.custom_minimum_size.x = 220
+ 	if category == "paint":
+ 		if canvas.brush_surface == 0: canvas.brush_surface = 2
+ 		_build_surface_toolbar()
+@@ -3674,6 +3750,7 @@
+ 	_build_object_controls(category == "objects",browsing)
+ 	editor_guidance = editor_status.text
+ 	if editor_save_error == OK: editor_status.show()
++	_layout_editor_feedback()
+ 
+ 	var context_width: float = 0
+ 	for child: Control in editor_context.get_children(): context_width += child.get_combined_minimum_size().x+6
+--- a/game/editor/editor_canvas.gd
++++ b/game/editor/editor_canvas.gd
+@@ -115,6 +115,8 @@
+ var previous_pointer := Vector2.ZERO
+ var fitted: bool = false
+ var fit_pending_native: bool = false
++## Optional available area in canvas coordinates, supplied by the editor UI.
++var fit_area: Callable
+ var native_preview: NativeTrack
+ var visual_preview: NativeTrack
+ var gesture = preload("res://editor/editor_gesture.gd").new()
+@@ -169,15 +171,25 @@
+ 			for p: Vector2 in CreatorObjects.outline(object): bounds = bounds.expand(p)
+ 		if document.base_track != "" and native_preview != null: bounds = Rect2(-native_preview.half_extent,native_preview.half_extent*2)
+ 		var base: float = scale_factor()
+-		zoom = clampf(minf((size.x-24) / (bounds.size.x + 24), (size.y-156) / (bounds.size.y + 24)) / base, 0.25, 16.0)
+-		pan += size*0.5-to_screen(bounds.get_center())
++		if fit_area.is_valid():
++			var available: Rect2 = fit_area.call()
++			if available.size.x >= 40 and available.size.y >= 40:
++				var projected_height: float = (bounds.size.y+24)*sin(deg_to_rad(PLANNING_PITCH))
++				zoom = clampf(minf(available.size.x/(bounds.size.x+24),available.size.y/projected_height)/base,0.05,16.0)
++				pan += available.get_center()-to_screen(bounds.get_center())
++			else:
++				zoom = clampf(minf((size.x-24)/(bounds.size.x+24),(size.y-156)/(bounds.size.y+24))/base,0.25,16.0)
++				pan += size*0.5-to_screen(bounds.get_center())
++		else:
++			zoom = clampf(minf((size.x-24)/(bounds.size.x+24),(size.y-156)/(bounds.size.y+24))/base,0.25,16.0)
++			pan += size*0.5-to_screen(bounds.get_center())
+ 	queue_redraw()
+ 
+ func zoom_by(factor: float, anchor: Vector2 = Vector2.INF) -> void:
+ 	fit_pending_native = false
+ 	if anchor == Vector2.INF: anchor = size*0.5
+ 	var before: Vector2 = to_world(anchor)
+-	zoom = clampf(zoom * factor, 0.25, 16.0)
++	zoom = clampf(zoom * factor, 0.05 if fit_area.is_valid() else 0.25, 16.0)
+ 	pan += anchor-to_screen(before)
+ 	queue_redraw()
+ 
+@@ -1140,11 +1152,14 @@
+ 		if piece.kind == "bridge": draw_line(to_screen(handle_geometry[key].anchor),handle,Color("b9faff"),1.5,true)
+ 		var axis: Vector2 = (to_screen(handle_geometry[key].increased)-to_screen(handle_geometry[key].anchor)).normalized()
+ 		_draw_geometry_glyph(handle,"span" if key == "radius" and piece.kind == "s_bend" else key,axis,geometry_drag == key and dragging)
+-		var caption: String = geometry_caption(piece,key)
+-		var label_size := Vector2(ThemeDB.fallback_font.get_string_size(caption,HORIZONTAL_ALIGNMENT_LEFT,-1,14).x+12,24)
+-		var label_pos: Vector2 = handle+Vector2(-label_size.x*0.5,24)
+-		draw_style_box(MenuStyle.box(Color("142331"),5),Rect2(label_pos,label_size))
+-		draw_string(ThemeDB.fallback_font,label_pos+Vector2(6,17),caption,HORIZONTAL_ALIGNMENT_LEFT,-1,14,Color.WHITE)
++	var captions: Dictionary = geometry_caption_rects(piece)
++	for key: String in geometry_keys(piece):
++		var label_rect: Rect2 = captions[key]
++		var handle: Vector2 = layout[key]
++		var edge: Vector2 = handle.clamp(label_rect.position,label_rect.end)
++		if handle.distance_to(edge) > 25: draw_line(handle,edge,Color("b9faff"),1.5,true)
++		draw_style_box(MenuStyle.box(Color("142331"),5),label_rect)
++		draw_string(ThemeDB.fallback_font,label_rect.position+Vector2(6,17),geometry_caption(piece,key),HORIZONTAL_ALIGNMENT_LEFT,-1,14,Color.WHITE)
+ 
+ 
+ 	var accept_rect: Rect2 = piece_accept_rect(piece)
+@@ -1229,12 +1244,55 @@
+ 	var value: float = RoadPieces.height(piece) if key == "height" else float(piece.get(key,0.0 if key == "curvature" else 90.0))
+ 	return GameText.message(title)+" "+(GameText.message("%.0f deg") if key in ["angle","heading"] else GameText.message("%.1f m")) % value
+ 
++## Caption boxes avoid every control and one another while remaining near their
++## own handles. The handle positions and touch targets themselves do not move.
++func geometry_caption_rects(piece: Dictionary) -> Dictionary:
++	var layout: Dictionary = geometry_controls(piece)
++	var available := Rect2(Vector2.ZERO,size)
++	if fit_area.is_valid():
++		var visible: Rect2 = fit_area.call()
++		if visible.size.x >= 40 and visible.size.y >= 40: available = visible.intersection(available)
++	return _prepared("caption_layout",[piece,layout,size,pan,scale_factor(),document.get("start_line",{}),TranslationServer.get_locale(),available],_layout_geometry_caption_rects.bind(piece,layout,available))
++
++func _layout_geometry_caption_rects(piece: Dictionary, layout: Dictionary, available: Rect2) -> Dictionary:
++	var blocked: Array[Rect2] = [piece_accept_rect(piece).grow(4)]
++	for value: Vector2 in layout.values(): blocked.append(Rect2(value-Vector2(20,20),Vector2(40,40)))
++	for endpoint: Vector2 in [Vector2(piece.position[0],piece.position[1]),Vector2(RoadPieces.end_pose(piece).position)]:
++		blocked.append(Rect2(to_screen(endpoint)-Vector2(17,17),Vector2(34,34)))
++	if document.has("start_line"):
++		var start: Dictionary = start_controls()
++		blocked.append(Rect2(Vector2(start.flip)-Vector2(28,28),Vector2(56,56)))
++		blocked.append(Rect2(Vector2(start.flip)+Vector2(-67,19),Vector2(138,27)))
++		blocked.append(Rect2(Vector2(start.center)-Vector2(14,14),Vector2(28,28)))
++	var result: Dictionary = {}
++	for key: String in geometry_keys(piece):
++		var caption: String = geometry_caption(piece,key)
++		var label_size := Vector2(ThemeDB.fallback_font.get_string_size(caption,HORIZONTAL_ALIGNMENT_LEFT,-1,14).x+12,24)
++		var handle: Vector2 = layout[key]
++		var chosen := Rect2(handle+Vector2(-label_size.x*0.5,24),label_size)
++		var best_score: float = INF
++		for ring: int in range(7):
++			for direction: Vector2 in [Vector2.DOWN,Vector2.UP,Vector2.LEFT,Vector2.RIGHT,Vector2(-1,-1),Vector2(1,-1),Vector2(-1,1),Vector2(1,1)]:
++				var center: Vector2 = handle+direction*(Vector2(label_size.x*0.5+24,label_size.y*0.5+24)+Vector2.ONE*ring*18)
++				var candidate := Rect2(center-label_size*0.5,label_size)
++				var outside: float = maxf(0,available.position.x-candidate.position.x)+maxf(0,available.position.y-candidate.position.y)+maxf(0,candidate.end.x-available.end.x)+maxf(0,candidate.end.y-available.end.y)
++				var collisions: int = 0
++				for rect: Rect2 in blocked:
++					if rect.intersects(candidate): collisions += 1
++				var score: float = collisions*100000.0+outside*1000.0+center.distance_squared_to(handle)
++				if score < best_score:
++					best_score = score
++					chosen = candidate
++		result[key] = chosen
++		blocked.append(chosen.grow(2))
++	return result
++
+ func _geometry_handle(piece: Dictionary, key: String) -> Vector2:
+ 	return to_world(geometry_controls(piece)[key])
+ 
+ func geometry_controls(piece: Dictionary) -> Dictionary:
+ 	var geometry: Dictionary = _handle_geometry(piece)
+-	return _prepared("handle_layout",[piece,geometry,size,pan,scale_factor()],_layout_geometry_controls.bind(piece,geometry))
++	return _prepared("handle_layout",[piece,geometry,size,pan,scale_factor(),document.get("start_line",{})],_layout_geometry_controls.bind(piece,geometry))
+ 
+ func _handle_geometry(piece: Dictionary, gesture_origin: bool = false) -> Dictionary:
+ 	return _prepared("drag_handle_geometry" if gesture_origin else "handle_geometry",[piece,_attached_end(piece)],_build_handle_geometry.bind(piece))
+--- a/game/editor/object_browser.gd
++++ b/game/editor/object_browser.gd
+@@ -173,7 +173,6 @@
+ 		choose(kind)
+ 		return
+ 	var family: Array = CreatorCatalog.family(kind)
+-	if current == kind or (not family.is_empty() and current in family[3]):
+-		open_properties()
+-	else:
+-		choose(kind)
++	# A highlighted card can be the default while the canvas is in selection
++	# mode. Every card tap must activate placement; keep a chosen family variant.
++	choose(current if not family.is_empty() and current in family[3] else kind)
+--- a/game/track/desert_road_relief.gd
++++ b/game/track/desert_road_relief.gd
+@@ -146,7 +146,9 @@
+ 				if _reusable_meshes.has(key):
+ 					node.mesh = _reusable_meshes[key]
+ 					_refresh_spatial_ranges(node)
+-					for child: Node in node.get_children(): await _apply_node(child,inverse,sliced)
++					for child: Node in node.get_children():
++						if not is_instance_valid(node) or not _current_node(node): return
++						if is_instance_valid(child): await _apply_node(child,inverse,sliced)
+ 					return
+ 				var worker = get_script().new()
+ 				worker.track = track; worker.field = field; worker.bounds = bounds
+@@ -164,8 +166,10 @@
+ 				var prepared: Array = job.result
+ 				var mesh := ArrayMesh.new()
+ 				for upload: Dictionary in prepared:
+-					if not _current_node(node): return
++					if not is_instance_valid(node) or not _current_node(node): return
+ 					if installer != null and not await installer._budget_install(upload.arrays[Mesh.ARRAY_VERTEX].size()): return
++					# The scene may have been retired while the upload budget yielded.
++					if not is_instance_valid(node) or not _current_node(node): return
+ 					mesh.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES,upload.arrays)
+ 					mesh.surface_set_material(mesh.get_surface_count()-1,materials[int(upload.surface)])
+ 				mesh.set_meta("desert_road_relief",VERSION)
+@@ -175,7 +179,11 @@
+ 		if sliced and node.is_inside_tree():
+ 			if race_install: await installer._yield_build()
+ 			else: await node.get_tree().process_frame
+-	for child: Node in node.get_children(): await _apply_node(child,inverse,sliced)
++	# Child coroutines can also yield while this parent or its siblings retire.
++	if sliced and (not is_instance_valid(node) or not _current_node(node)): return
++	for child: Node in node.get_children():
++		if sliced and (not is_instance_valid(node) or not _current_node(node)): return
++		if is_instance_valid(child): await _apply_node(child,inverse,sliced)
+ 
+ func _refresh_spatial_ranges(node: MeshInstance3D) -> void:
+ 	if not node.has_meta("spatial_object_ends"): return
+--- a/game/localization/en.po
++++ b/game/localization/en.po
+@@ -11315,3 +11315,7 @@
+ msgid "Squared side pods with broad flat sides"
+ msgstr "Squared side pods with broad flat sides"
+ 
++
++#: game/core/app.gd
++msgid "Fit view"
++msgstr "Fit view"
+--- a/game/localization/fr.po
++++ b/game/localization/fr.po
+@@ -11201,3 +11201,7 @@
+ msgid "Squared side pods with broad flat sides"
+ msgstr "Pontons carrés aux larges flancs plats"
+ 
++
++#: game/core/app.gd
++msgid "Fit view"
++msgstr "Ajuster la vue"
+--- a/game/localization/es.po
++++ b/game/localization/es.po
+@@ -11201,3 +11201,7 @@
+ msgid "Squared side pods with broad flat sides"
+ msgstr "Pontones cuadrados con lados anchos y planos"
+ 
++
++#: game/core/app.gd
++msgid "Fit view"
++msgstr "Ajustar vista"
+--- a/game/localization/de.po
++++ b/game/localization/de.po
+@@ -11201,3 +11201,7 @@
+ msgid "Squared side pods with broad flat sides"
+ msgstr "Kantige Seitenkästen mit breiten flachen Seiten"
+ 
++
++#: game/core/app.gd
++msgid "Fit view"
++msgstr "Ansicht einpassen"
+--- a/game/localization/pt_BR.po
++++ b/game/localization/pt_BR.po
+@@ -11201,3 +11201,7 @@
+ msgid "Squared side pods with broad flat sides"
+ msgstr "Carenagens quadradas com laterais largas e planas"
+ 
++
++#: game/core/app.gd
++msgid "Fit view"
++msgstr "Ajustar visualização"
+--- a/game/localization/ja.po
++++ b/game/localization/ja.po
+@@ -11170,3 +11170,7 @@
+ msgid "Squared side pods with broad flat sides"
+ msgstr "幅広の平らな側面を持つ角型サイドポッド"
+ 
++
++#: game/core/app.gd
++msgid "Fit view"
++msgstr "表示を合わせる"
+--- a/game/localization/ko.po
++++ b/game/localization/ko.po
+@@ -11170,3 +11170,7 @@
+ msgid "Squared side pods with broad flat sides"
+ msgstr "넓고 평평한 측면의 박스형 사이드 포드"
+ 
++
++#: game/core/app.gd
++msgid "Fit view"
++msgstr "화면 맞추기"
+--- a/game/localization/nl.po
++++ b/game/localization/nl.po
+@@ -11201,3 +11201,7 @@
+ msgid "Squared side pods with broad flat sides"
+ msgstr "Vierkante zijpods met brede vlakke zijkanten"
+ 
++
++#: game/core/app.gd
++msgid "Fit view"
++msgstr "Weergave aanpassen"
+--- a/game/localization/it.po
++++ b/game/localization/it.po
+@@ -11201,3 +11201,7 @@
+ msgid "Squared side pods with broad flat sides"
+ msgstr "Pance squadrate con fianchi larghi e piatti"
+ 
++
++#: game/core/app.gd
++msgid "Fit view"
++msgstr "Adatta vista"
+--- a/game/localization/fi.po
++++ b/game/localization/fi.po
+@@ -11201,3 +11201,7 @@
+ msgid "Squared side pods with broad flat sides"
+ msgstr "Kulmikkaat sivukatteet leveillä tasaisilla kyljillä"
+ 
++
++#: game/core/app.gd
++msgid "Fit view"
++msgstr "Sovita näkymä"
+--- a/game/localization/sv.po
++++ b/game/localization/sv.po
+@@ -11201,3 +11201,7 @@
+ msgid "Squared side pods with broad flat sides"
+ msgstr "Fyrkantiga sidopontoner med breda plana sidor"
+ 
++
++#: game/core/app.gd
++msgid "Fit view"
++msgstr "Anpassa vy"
+--- a/game/localization/nb.po
++++ b/game/localization/nb.po
+@@ -11201,3 +11201,7 @@
+ msgid "Squared side pods with broad flat sides"
+ msgstr "Firkantede sidepontonger med brede flate sider"
+ 
++
++#: game/core/app.gd
++msgid "Fit view"
++msgstr "Tilpass visning"
+--- a/game/localization/messages.pot
++++ b/game/localization/messages.pot
+@@ -11315,3 +11315,7 @@
+ msgid "Squared side pods with broad flat sides"
+ msgstr ""
+ 
++
++#: game/core/app.gd
++msgid "Fit view"
++msgstr ""
+--- /dev/null
++++ b/game/tests/test_editor_fit_and_labels_2026_10_29.gd
+@@ -0,0 +1,168 @@
++extends SceneTree
++## Real editor fit through viewport input plus road-control layout regressions.
++var app: Node
++var checks: int = 0
++var failures: int = 0
++var out: String
++
++func _initialize() -> void: run.call_deferred()
++
++func check(ok: bool, what: String) -> void:
++	checks += 1
++	if not ok:
++		failures += 1
++		print("FAIL: ",what)
++
++func frames(count: int = 3) -> void:
++	for i: int in range(count): await process_frame
++
++func click(control: Control) -> void:
++	if control == null:
++		check(false,"click target exists")
++		return
++	var point: Vector2 = control.get_global_rect().get_center()
++	for down: bool in [true,false]:
++		var event := InputEventMouseButton.new()
++		event.position = point; event.global_position = point
++		event.button_index = MOUSE_BUTTON_LEFT; event.pressed = down
++		root.push_input(event,true)
++		await process_frame
++	await frames()
++
++func tap(control: Control) -> void:
++	if control == null:
++		check(false,"tap target exists")
++		return
++	var point: Vector2 = control.get_global_rect().get_center()
++	for down: bool in [true,false]:
++		var event := InputEventScreenTouch.new()
++		event.index = 7; event.position = point; event.pressed = down
++		Input.parse_input_event(event)
++		await process_frame
++	await frames()
++
++func settle() -> void:
++	var deadline: int = Time.get_ticks_msec()+60000
++	while Time.get_ticks_msec()<deadline and (app.canvas.preparing or app.editor_commits.unsettled() or app.editor_preview_thread != null or app.editor_world._building): await process_frame
++	if app.canvas.preparing or app.editor_world._building: print("FIT_SETTLE_TIMEOUT canvas=",app.canvas.preparing," world=",app.editor_world._building," worker=",app.editor_preview_thread != null," commits=",app.editor_commits.unsettled())
++	check(not app.canvas.preparing and not app.editor_world._building,"editor preparation completed")
++	await frames(5)
++
++func capture(name: String) -> void:
++	if DisplayServer.get_name() == "headless": return
++	await RenderingServer.frame_post_draw
++	check(root.get_texture().get_image().save_png(out.path_join(name+".png")) == OK,"capture "+name)
++
++func named(value: String) -> Control:
++	return app.root_ui.find_child(value,true,false) as Control
++
++func labels() -> void:
++	var canvas := EditorCanvas.new()
++	canvas.document = TrackDocument.create_blank()
++	root.add_child(canvas)
++	canvas.size = Vector2(1280,720)
++	canvas.pan = Vector2.ZERO
++	for kind: String in ["curve","hairpin","s_bend","bridge","taper"]:
++		for heading: float in [0.0,45.0,135.0,270.0]:
++			var piece: Dictionary = RoadPieces.create(kind,Vector2(-12,-6),heading,10)
++			var positions: Dictionary = canvas.geometry_controls(piece)
++			var captions: Dictionary = canvas.geometry_caption_rects(piece)
++			var accept: Rect2 = canvas.piece_accept_rect(piece).grow(4)
++			for key: String in canvas.geometry_keys(piece):
++				var box: Rect2 = captions[key]
++				check(not box.intersects(accept),kind+" "+key+" caption avoids acceptance at "+str(heading))
++				check(Rect2(Vector2.ZERO,canvas.size).encloses(box),kind+" "+key+" caption remains visible at "+str(heading))
++				for handle: Vector2 in positions.values():
++					check(not box.intersects(Rect2(handle-Vector2(20,20),Vector2(40,40))),kind+" caption avoids handle")
++			for first: String in captions:
++				for second: String in captions:
++					if first < second: check(not (captions[first] as Rect2).intersects(captions[second]),kind+" captions do not overlap")
++	canvas.size = Vector2(960,540)
++	canvas.fit_area = func() -> Rect2: return Rect2(400,84,544,182)
++	canvas.document.paint = [{"width":4.0,"points":[[-110.0,-110.0],[110.0,110.0]]}]
++	canvas.fit()
++	var wide_area: Rect2 = canvas.fit_area.call()
++	check(wide_area.has_point(canvas.to_screen(Vector2(-112,-112))) and wide_area.has_point(canvas.to_screen(Vector2(112,112))),"large maps fit into the uncovered area")
++	var fitted_zoom: float = canvas.zoom
++	canvas.zoom_by(1.15)
++	check(canvas.zoom > fitted_zoom and canvas.zoom < 0.25,"zooming in from a large-map fit does not jump to the old minimum")
++	canvas.queue_free()
++	await frames()
++
++func run() -> void:
++	out = ProjectSettings.globalize_path("res://../docs/evidence/editor-usability-fixes-2026-10-29/fit-"+RenderingServer.get_current_rendering_method()+"-"+DisplayServer.get_name())
++	DirAccess.make_dir_recursive_absolute(out)
++	OS.set_environment("BMT_API_URL","")
++	OS.set_environment("BMT_DEV_AUTH_KEY","")
++	root.size = Vector2i(1280,720); root.content_scale_size = root.size
++	await labels()
++	app = load("res://core/app.tscn").instantiate()
++	app.library = TrackLibrary.new(out.path_join("storage/tracks"))
++	app.records = LocalRecords.new(out.path_join("storage/records.json"))
++	app.cloud_root_override = out.path_join("storage/cloud")
++	root.add_child(app)
++	while not app.startup_complete: await process_frame
++	var doc: Dictionary = JSON.parse_string(FileAccess.get_file_as_string("res://tests/fixtures/editor_review_user_track.json"))
++	doc.id = "fit_usability_fixture"
++	app.document = doc
++	app._show_screen("create")
++	await settle()
++	await click(named("EditorObjects"))
++	await click(named("ObjectSizeControl"))
++	for dimensions: Vector2i in [Vector2i(1280,720),Vector2i(960,540)]:
++		root.size = dimensions; root.content_scale_size = dimensions
++		await frames(8)
++		check(not app.editor_status.get_global_rect().intersects(named("EditorRailPanel").get_global_rect()),"feedback does not cover the tool rail "+str(dimensions))
++		check(app.object_controls_panel.size.y <= 100,"object strip remains compact "+str(dimensions))
++		check(not app.object_controls_panel.get_global_rect().intersects(app.object_browser.get_global_rect()),"object strip does not cover palette "+str(dimensions))
++		# Open the real Map menu and activate its touch-visible Fit view action.
++		var menu: Control = null
++		for button: Node in app.root_ui.find_children("*","Button",true,false):
++			if button.text == "Map" and button.is_visible_in_tree(): menu = button; break
++		if dimensions.x == 960 and DisplayServer.get_name() != "headless": await tap(menu)
++		else: await click(menu)
++		var fit_button: Control = named("EditorFitView")
++		check(fit_button != null and fit_button.is_visible_in_tree(),"Fit view is available in Map at "+str(dimensions))
++		var before: Dictionary = app.document.duplicate(true)
++		if dimensions.x == 960 and DisplayServer.get_name() != "headless": await tap(fit_button)
++		else: await click(fit_button)
++		await frames(5)
++		check(app.document == before,"fitting the viewport leaves the track unchanged")
++		var area: Rect2 = app._editor_fit_area()
++		check(area.size.x >= 40 and area.size.y >= 40,"usable fit area remains positive "+str(dimensions))
++		check(area.end.y <= app.object_controls_panel.get_global_rect().position.y-app.canvas.get_global_rect().position.y,"fit area ends above object controls")
++		for piece: Dictionary in doc.pieces:
++			for point: Vector2 in RoadPieces.samples(piece):
++				var margin := Vector2.ONE*float(piece.width)*0.5
++				check(area.has_point(app.canvas.to_screen(point-margin)) and area.has_point(app.canvas.to_screen(point+margin)),"road fits exposed canvas "+str(dimensions))
++		await capture("fitted-objects-%dx%d" % [dimensions.x,dimensions.y])
++		print("EDITOR_FIT_AREA ",dimensions," ",area," zoom=",app.canvas.zoom)
++	await click(named("EditorRoad"))
++	for dimensions: Vector2i in [Vector2i(1280,720),Vector2i(960,540)]:
++		root.size = dimensions; root.content_scale_size = dimensions
++		await frames(8)
++		app.canvas.fit()
++		app.canvas.choose_piece("curve")
++		await frames(5)
++		var area: Rect2 = app._editor_fit_area()
++		var captions: Dictionary = app.canvas.geometry_caption_rects(app.canvas.ghost)
++		for key: String in captions:
++			check(area.encloses(captions[key]),"curve caption remains in unobscured area "+str(dimensions)+" "+key)
++			check(not (captions[key] as Rect2).intersects(app.canvas.piece_accept_rect(app.canvas.ghost)),"curve caption clears acceptance")
++		await capture("curve-labels-%dx%d" % [dimensions.x,dimensions.y])
++	await click(named("EditorSurface"))
++	await frames(5)
++	print("EDITOR_SURFACE_RECTS feedback=",app.editor_status.get_global_rect()," toolbar=",app.surface_toolbar.get_global_rect())
++	await capture("surface-guidance-960x540")
++	check(not app.editor_status.get_global_rect().intersects(named("EditorRailPanel").get_global_rect()),"surface guidance clears the tool rail")
++	check(not app.editor_status.get_global_rect().intersects(app.surface_toolbar.get_global_rect()),"surface guidance clears paint controls")
++	check(not app.editor_save_button.get_global_rect().intersects(app.surface_toolbar.get_global_rect()),"save status clears paint controls")
++	app.canvas.fit()
++	var paint_area: Rect2 = app._editor_fit_area()
++	for piece: Dictionary in doc.pieces:
++		for point: Vector2 in RoadPieces.samples(piece):
++			check(paint_area.has_point(app.canvas.to_screen(point)),"painting fit keeps roads clear of toolbars")
++	app.queue_free()
++	await frames(5)
++	print("EDITOR_FIT_LABELS: %d checks, %d failures" % [checks,failures])
++	quit(1 if failures else 0)
+--- /dev/null
++++ b/game/tests/test_editor_fit_and_labels_2026_10_29.gd.uid
+@@ -0,0 +1 @@
++uid://byonngfctu0b0
+--- /dev/null
++++ b/game/tests/fixtures/editor_review_user_track.json
+@@ -0,0 +1 @@
++{"base_track":"","corners":["sharp","sharp","sharp","sharp","sharp","sharp","sharp","sharp","sharp","sharp","sharp","sharp","sharp","sharp","sharp","sharp","sharp","sharp","sharp","sharp","sharp","sharp","sharp","sharp","sharp","sharp","sharp","sharp","sharp","sharp","sharp","sharp","sharp","sharp","sharp","sharp","sharp","sharp","sharp","sharp","sharp","sharp","sharp","sharp","sharp","sharp","sharp","sharp","sharp","sharp","sharp","sharp","sharp","sharp","sharp","sharp","sharp","sharp","sharp","sharp","sharp","sharp"],"creator":"Guest","id":"track_f0a1d999848dc6f3b8184d32f9ce617b","layout":{},"name":"Dust Bowl Usability","objects":[{"kind":"pebbles","position":[-9.0,17.0],"rotation":0.0},{"kind":"rock","position":[0.0,17.0],"rotation":0.0},{"kind":"rock","position":[10.0,17.0],"rotation":0.0},{"jump_profile":"roller_v1","kind":"jump","position":[0.0,32.0],"rotation":0.0}],"paint":[{"mode":"free","points":[[-8.5,11.5],[-7.0,11.5],[-6.0,11.5],[-5.0,11.5],[-4.0,11.5],[-3.0,11.5],[-1.5,11.5],[-0.5,11.5],[0.5,11.5],[1.5,11.5],[2.5,11.5],[4.0,11.5],[5.0,11.5],[6.0,11.5],[7.0,11.5],[8.0,11.5],[9.5,11.5]],"protect_road":true,"shape":"round","surface":3,"width":10.0}],"pieces":[{"flip":false,"heading":0.0,"kind":"straight","length":28.0,"position":[-13.4999961853027,0.0],"radius":16.0,"width":10.0},{"flip":false,"heading":0.0,"kind":"curve","length":0.0,"position":[14.5000038146973,0.0],"radius":16.0,"width":10.0},{"flip":false,"heading":90.0,"kind":"curve","length":0.0,"position":[30.5000038146973,16.0],"radius":16.0,"width":10.0},{"flip":false,"heading":180.0,"kind":"straight","length":28.0,"position":[14.5000038146973,32.0],"radius":16.0,"width":10.0},{"flip":false,"heading":180.0,"kind":"curve","length":0.0,"position":[-13.4999961853027,31.9999980926514],"radius":16.0,"width":10.0},{"flip":false,"heading":270.0,"kind":"curve","length":0.0,"position":[-29.4999961853027,15.9999961853027],"radius":16.0,"width":10.0}],"points":[[-13.4999961853027,0.0],[-10.9754476547241,0.0],[-8.45089912414551,0.0],[-5.92634963989258,0.0],[-3.40180110931396,0.0],[-0.877252280712128,0.0],[1.64729654788971,0.0],[4.17184543609619,0.0],[6.6963939666748,0.0],[9.22094249725342,0.0],[11.7454919815063,0.0],[14.270040512085,0.0],[16.7866859436035,0.165859878063202],[19.2457504272461,0.7244793176651],[21.5886898040771,1.65714228153229],[23.752836227417,2.95160412788391],[25.6889705657959,4.56718444824219],[27.3469371795654,6.46716737747192],[28.6839847564697,8.60518360137939],[29.6734867095947,10.9247446060181],[30.2786083221436,13.3728723526001],[30.4973487854004,15.885048866272],[30.3156318664551,18.4001636505127],[29.741512298584,20.855583190918],[28.7912158966064,23.1913833618164],[27.4812450408936,25.3461666107178],[25.8534145355225,27.2721271514893],[23.9395027160645,28.9140872955322],[21.7931041717529,30.2375965118408],[19.4654216766357,31.2074947357178],[17.0136489868164,31.7971153259277],[14.5000028610229,32.0],[11.9754543304443,32.0],[9.45090579986572,32.0],[6.92635679244995,32.0],[4.40180778503418,32.0],[1.87725925445557,31.9999980926514],[-0.647289514541626,31.9999980926514],[-3.17183828353882,31.9999980926514],[-5.69638729095459,31.9999980926514],[-8.2209358215332,31.9999980926514],[-10.7454843521118,31.9999980926514],[-13.2700338363647,31.9999980926514],[-15.7866792678833,31.8341388702393],[-18.2457427978516,31.2755184173584],[-20.5886840820313,30.3428554534912],[-22.7528285980225,29.0483932495117],[-24.6889629364014,27.4328117370605],[-26.3469295501709,25.532829284668],[-27.6839771270752,23.3948135375977],[-28.6734790802002,21.075252532959],[-29.278600692749,18.627124786377],[-29.4973392486572,16.1149482727051],[-29.3156242370605,13.5998315811157],[-28.7415046691895,11.1444129943848],[-27.7912082672119,8.80861282348633],[-26.481237411499,6.65383100509644],[-24.8534069061279,4.72786808013916],[-22.9394950866699,3.08590865135193],[-20.7930965423584,1.76239919662476],[-18.4654159545898,0.792500078678131],[-16.0136432647705,0.202879339456558]],"route_override":true,"schema":"creator-track-v5","start_line":{"heading":0.0,"position":[0.49999737739563,0.0]},"surface":"asphalt","theme":"desert","width":10.0,"widths":[10.0,10.0,10.0,10.0,10.0,10.0,10.0,10.0,10.0,10.0,10.0,10.0,10.0,10.0,10.0,10.0,10.0,10.0,10.0,10.0,10.0,10.0,10.0,10.0,10.0,10.0,10.0,10.0,10.0,10.0,10.0,10.0,10.0,10.0,10.0,10.0,10.0,10.0,10.0,10.0,10.0,10.0,10.0,10.0,10.0,10.0,10.0,10.0,10.0,10.0,10.0,10.0,10.0,10.0,10.0,10.0,10.0,10.0,10.0,10.0,10.0,10.0]}
+\ No newline at end of file
+--- /dev/null
++++ b/game/tests/test_editor_header_responsive.gd
+@@ -0,0 +1,143 @@
++extends SceneTree
++## Real App header with actual mouse input, resized while issues appear.
++var app: Node
++var checks: int = 0
++var failures: int = 0
++var folder: String
++
++func _initialize() -> void: run.call_deferred()
++
++func check(ok: bool, message: String) -> void:
++	checks += 1
++	if not ok:
++		failures += 1
++		print("FAIL: ",message)
++
++func frames(count: int = 4) -> void:
++	for i: int in range(count): await process_frame
++
++func settle() -> void:
++	var deadline: int = Time.get_ticks_msec()+60000
++	while Time.get_ticks_msec()<deadline and (app.editor_preview_thread != null or app.editor_commits.unsettled() or app.editor_world._building):
++		await process_frame
++	check(app.editor_preview_thread == null and not app.editor_commits.unsettled(),"editor work settles")
++	await frames(8)
++
++func click(control: Control) -> void:
++	var point: Vector2 = control.get_global_rect().get_center()
++	var motion := InputEventMouseMotion.new()
++	motion.position = point
++	motion.global_position = point
++	root.push_input(motion,true)
++	await process_frame
++	for down: bool in [true,false]:
++		var event := InputEventMouseButton.new()
++		event.position = point
++		event.global_position = point
++		event.button_index = MOUSE_BUTTON_LEFT
++		event.pressed = down
++		root.push_input(event,true)
++		await process_frame
++	await frames()
++
++func tap(control: Control) -> void:
++	var point: Vector2 = control.get_global_rect().get_center()
++	for down: bool in [true,false]:
++		var event := InputEventScreenTouch.new()
++		event.index = 7
++		event.position = point
++		event.pressed = down
++		Input.parse_input_event(event)
++		await process_frame
++	await frames()
++
++func visible_buttons() -> Array[Control]:
++	var result: Array[Control] = []
++	var header: Control = app.root_ui.find_child("EditorIdentityAndHistory",true,false)
++	var overlay: Control = app.root_ui.find_child("EditorOverlay",true,false)
++	for node: Node in header.find_children("*","Button",true,false):
++		if node.is_visible_in_tree(): result.append(node)
++	for node: Node in overlay.get_children():
++		if node is HBoxContainer and node != header:
++			for item: Node in node.find_children("*","Button",true,false):
++				if item.is_visible_in_tree(): result.append(item)
++	var close: Control = app.root_ui.find_child("CloseEditor",true,false)
++	result.append(close)
++	return result
++
++func layout(label: String) -> void:
++	var buttons: Array[Control] = visible_buttons()
++	check(buttons.has(app.editor_undo) and buttons.has(app.editor_redo),label+": both history controls visible")
++	for i: int in range(buttons.size()):
++		var rect: Rect2 = buttons[i].get_global_rect()
++		check(root.get_visible_rect().encloses(rect),label+": target inside viewport: "+str(buttons[i].name))
++		for j: int in range(i+1,buttons.size()):
++			check(not rect.intersects(buttons[j].get_global_rect()),label+": no overlap: "+str(buttons[i].name)+" / "+str(buttons[j].name))
++	if DisplayServer.get_name() != "headless":
++		await RenderingServer.frame_post_draw
++		var path: String = folder.path_join(label+".png")
++		check(root.get_texture().get_image().save_png(path) == OK,"capture saves: "+label)
++
++func run() -> void:
++	folder = ProjectSettings.globalize_path("res://../docs/evidence/editor-header-responsive-2026-10-29")
++	for argument: String in OS.get_cmdline_user_args():
++		if argument.begins_with("--evidence="): folder = argument.trim_prefix("--evidence=")
++	if not folder.is_absolute_path():
++		print("FAIL: evidence path must be absolute")
++		quit(1)
++		return
++	DirAccess.make_dir_recursive_absolute(folder)
++	OS.set_environment("BMT_API_URL","")
++	root.size = Vector2i(1280,720)
++	root.content_scale_size = root.size
++	app = load("res://core/app.tscn").instantiate()
++	app.library = TrackLibrary.new(folder.path_join("storage/tracks"))
++	app.records = LocalRecords.new(folder.path_join("storage/records.json"))
++	app.cloud_root_override = folder.path_join("storage/cloud")
++	root.add_child(app)
++	var deadline: int = Time.get_ticks_msec()+60000
++	while not app.startup_complete and Time.get_ticks_msec()<deadline: await process_frame
++	check(app.startup_complete,"isolated guest startup completes")
++	if not app.startup_complete: quit(1); return
++	app.document = TrackDocument.create_blank()
++	app.document.id = "header_review_track"
++	app.document.name = "An especially long circuit name for UX"
++	app._show_screen("create")
++	await settle()
++	# Create one undoable, open road; the two open ends make Issues visible.
++	app.canvas.choose_piece("straight")
++	app.canvas.confirm_piece()
++	await settle()
++	check(app.editor_issue_button.visible,"open road displays issue action")
++	var with_road: Dictionary = app.document.duplicate(true)
++	for dimensions: Vector2i in [Vector2i(1600,900),Vector2i(1280,720),Vector2i(960,540),Vector2i(900,506),Vector2i(960,540),Vector2i(1280,720)]:
++		root.size = dimensions
++		root.content_scale_size = dimensions
++		await frames(8)
++		await layout("header-%dx%d-issues" % [dimensions.x,dimensions.y])
++		await click(app.editor_undo)
++		await settle()
++		check(app.document.pieces.is_empty(),"pointer Undo removes road at "+str(dimensions))
++		check(not app.editor_map_panel.visible,"Undo does not open Map at "+str(dimensions))
++		check(not app.editor_issue_button.visible,"resolved issues hide action at "+str(dimensions))
++		await layout("header-%dx%d-clear" % [dimensions.x,dimensions.y])
++		await click(app.editor_redo)
++		await settle()
++		check(app.document == with_road,"pointer Redo restores exact road at "+str(dimensions))
++		check(app.editor_issue_button.visible,"issues return on Redo at "+str(dimensions))
++	var title: Label = app.root_ui.find_child("TrackName",true,false)
++	var creator: Label = app.root_ui.find_child("TrackCreator",true,false)
++	check(creator.visible and title.custom_minimum_size.x == 220.0,"wide layout restores creator and full title allocation")
++	root.size = Vector2i(960,540)
++	root.content_scale_size = root.size
++	await frames(8)
++	await tap(app.editor_undo)
++	await settle()
++	check(app.document.pieces.is_empty() and not app.editor_map_panel.visible,"viewport touch Undo removes the road without opening Map")
++	await tap(app.editor_redo)
++	await settle()
++	check(app.document == with_road,"viewport touch Redo restores exact road")
++	app.queue_free()
++	await frames(5)
++	print("EDITOR_HEADER_RESPONSIVE: %d checks, %d failures" % [checks,failures])
++	quit(1 if failures else 0)
+--- /dev/null
++++ b/game/tests/test_editor_header_responsive.gd.uid
+@@ -0,0 +1 @@
++uid://ds7qfrkj0rk7w
+--- /dev/null
++++ b/game/tests/test_object_palette_activation.gd
+@@ -0,0 +1,151 @@
++extends SceneTree
++## Exercise palette activation and placement through actual viewport input.
++var app: Node
++var checks: int = 0
++var failures: int = 0
++var output: String
++
++func _initialize() -> void: run.call_deferred()
++
++func check(condition: bool, label: String) -> void:
++	checks += 1
++	if not condition:
++		failures += 1
++		print("FAIL: ",label)
++
++func frames(count: int = 4) -> void:
++	for _index: int in range(count): await process_frame
++
++func settle() -> void:
++	var deadline: int = Time.get_ticks_msec()+45000
++	await frames()
++	while Time.get_ticks_msec()<deadline and (app.canvas.preparing or app.editor_preview_thread != null or app.editor_commits.unsettled() or app.editor_world._building): await process_frame
++	check(not app.canvas.preparing and app.editor_preview_thread == null and not app.editor_commits.unsettled(),"editor preparation completes")
++	await frames()
++
++func input_at(point: Vector2, touch: bool) -> void:
++	for down: bool in [true,false]:
++		if touch:
++			var event := InputEventScreenTouch.new()
++			event.index = 0; event.position = point; event.pressed = down
++			root.push_input(event,true)
++		else:
++			var event := InputEventMouseButton.new()
++			event.position = point; event.global_position = point
++			event.button_index = MOUSE_BUTTON_LEFT; event.pressed = down
++			root.push_input(event,true)
++		await process_frame
++	await frames()
++
++func press(node_name: String, touch: bool) -> void:
++	var control: Control = app.root_ui.find_child(node_name,true,false)
++	check(is_instance_valid(control) and control.is_visible_in_tree(),"visible "+node_name)
++	if not is_instance_valid(control): print("MISSING_CONTROL: ",node_name," property=",app.editor_object_property," mode=",app.canvas.mode," controls=",app.object_controls.get_children())
++	if is_instance_valid(control): await input_at(control.get_global_rect().get_center(),touch)
++
++func capture(name_value: String) -> void:
++	if DisplayServer.get_name() == "headless": return
++	await RenderingServer.frame_post_draw
++	check(root.get_texture().get_image().save_png(output.path_join(name_value+".png")) == OK,"native screenshot "+name_value)
++
++func run() -> void:
++	OS.set_environment("BMT_API_URL","")
++	OS.set_environment("BMT_DEV_AUTH_KEY","")
++	output = OS.get_environment("BMT_PALETTE_EVIDENCE")
++	if output.is_empty() or not output.is_absolute_path():
++		push_error("Set absolute BMT_PALETTE_EVIDENCE to an isolated output folder")
++		quit(2); return
++	DirAccess.make_dir_recursive_absolute(output)
++	root.size = Vector2i(1280,720); root.content_scale_size = root.size
++	app = load("res://core/app.tscn").instantiate()
++	app.library = TrackLibrary.new(output.path_join("storage/tracks"))
++	app.records = LocalRecords.new(output.path_join("storage/records.json"))
++	app.cloud_root_override = output.path_join("storage/cloud")
++	root.add_child(app)
++	var deadline: int = Time.get_ticks_msec()+45000
++	while not app.startup_complete and Time.get_ticks_msec()<deadline: await process_frame
++	check(app.startup_complete,"isolated app starts")
++	if not app.startup_complete: quit(1); return
++	for touch: bool in [true,false]: await default_rock_flow(touch)
++	await variant_and_jump_flow()
++	await fence_reselect_flow()
++	app.queue_free(); await frames(5)
++	GameSoundtrack.instance().queue_free(); await create_timer(0.2).timeout
++	print("OBJECT_PALETTE_ACTIVATION: %d checks, %d failures" % [checks,failures])
++	quit(1 if failures else 0)
++
++func new_desert(theme: String = "desert") -> void:
++	app.canvas = null
++	app.editor_pending_tools.clear()
++	app.editor_view = {}
++	app.history.clear(); app.redo_history.clear()
++	app.document = TrackDocument.create_blank()
++	app.document.theme = theme
++	app.document.id = "palette_"+TrackLibrary.unique_id()
++	app.document["automatic_scenery"] = false
++	app._show_screen("create")
++	await settle()
++
++func default_rock_flow(touch: bool) -> void:
++	var label: String = "touch" if touch else "mouse"
++	await new_desert()
++	await press("EditorObjects",touch)
++	var rock: Button = app.root_ui.find_child("Asset_rock",true,false)
++	check(rock != null and rock.button_pressed and app.object_browser.current == "rock",label+" default Rock appears highlighted")
++	check(app.canvas.mode == "objects" and app.document.objects.is_empty(),label+" initially starts in object selection mode")
++	await press("Asset_rock",touch)
++	check(app.canvas.mode == "place" and app.canvas.stamp_kind == "rock",label+" clicking highlighted Rock activates Rock placement")
++	check(app.object_browser.current == "rock" and (app.root_ui.find_child("Asset_rock",true,false) as Button).button_pressed,label+" Rock remains visibly selected")
++	check(app.document.objects.is_empty(),label+" activation alone does not edit the track")
++	await capture(label+"-rock-selected")
++	await input_at(app.canvas.to_screen(Vector2(-12,0)),touch)
++	await settle()
++	await input_at(app.canvas.to_screen(Vector2(12,0)),touch)
++	await settle()
++	check(app.document.objects.size() == 2,label+" two ground presses place two rocks")
++	if app.document.objects.size() == 2:
++		check(app.document.objects[0].kind == "rock" and app.document.objects[1].kind == "rock",label+" both placed objects are rocks")
++	check(app.canvas.mode == "place",label+" repeated placement stays active")
++	await capture(label+"-two-rocks")
++
++func variant_and_jump_flow() -> void:
++	await new_desert()
++	await press("EditorObjects",true)
++	await press("Asset_rock",true)
++	var variant: OptionButton = app.root_ui.find_child("ObjectVariant",true,false)
++	check(is_instance_valid(variant),"Rock variant control remains available")
++	if is_instance_valid(variant): variant.select(1); variant.item_selected.emit(1)
++	await frames(5)
++	check(app.canvas.stamp_kind == "boulder","variant control selects Boulder")
++	await press("ObjectSizeControl",true)
++	await press("ObjectSize_2",true)
++	await press("ObjectControlsBack",true)
++	await press("ObjectOrientation",true)
++	await press("ObjectIncrease",true)
++	await press("ObjectControlsBack",true)
++	check(is_equal_approx(app.canvas.stamp_scale,1.5) and is_equal_approx(app.canvas.stamp_rotation,22.5),"size and orientation controls work")
++	await press("Asset_rock",true)
++	check(app.canvas.mode == "place" and app.canvas.stamp_kind == "boulder","reselecting family preserves its chosen Boulder variant")
++	check(is_equal_approx(app.canvas.stamp_scale,1.5) and is_equal_approx(app.canvas.stamp_rotation,22.5),"reselecting family preserves size and orientation")
++	await input_at(app.canvas.to_screen(Vector2(0,0)),true)
++	await settle()
++	check(app.document.objects.size() == 1 and app.document.objects[0].kind == "boulder" and is_equal_approx(float(app.document.objects[0].get("scale",1.0)),1.5) and is_equal_approx(float(app.document.objects[0].rotation),22.5),"native touch places chosen Boulder with its settings")
++	await capture("boulder-settings")
++	await press("Category_Props",true)
++	for asset: String in CreatorCatalog.JUMP_ASSETS:
++		await press("Asset_"+asset,true)
++		var profile: String = str(CreatorCatalog.JUMP_ASSETS[asset])
++		check(app.canvas.mode == "place" and app.canvas.stamp_jump_profile == profile,asset+" selects exact jump")
++		await press("Asset_"+asset,true)
++		check(app.canvas.mode == "place" and app.canvas.stamp_jump_profile == profile,asset+" reselect keeps exact jump")
++
++func fence_reselect_flow() -> void:
++	await new_desert("pine")
++	await press("EditorObjects",true)
++	await press("Category_Barriers",true)
++	await press("Asset_guardrail",true)
++	await press("Placement_curve",true)
++	check(app.canvas.mode == "run" and app.object_browser.placement == "curve","guardrail curve mode is active")
++	await press("Asset_guardrail",true)
++	check(app.canvas.mode == "run" and app.object_browser.placement == "curve","reselecting guardrail retains curve placement")
++	check(app.canvas.run_shape == "curve" and app.canvas.stamp_kind == "guardrail","reselection preserves actual run shape and asset")
+--- /dev/null
++++ b/game/tests/test_object_palette_activation.gd.uid
+@@ -0,0 +1 @@
++uid://duugifuoeiu6d
+--- /dev/null
++++ b/game/tests/test_desert_relief_retirement.gd
+@@ -0,0 +1,84 @@
++extends SceneTree
++## Relief installation must retire safely when the scene is replaced mid-frame.
++var checks: int = 0
++var failures: int = 0
++var returned: int = 0
++
++func _initialize() -> void:
++	run.call_deferred()
++
++func check(condition: bool, message: String) -> void:
++	checks += 1
++	if not condition:
++		failures += 1
++		print("FAIL: ",message)
++
++func apply_then_finish(relief: RefCounted, node: Node3D) -> void:
++	await relief._apply_node(node,Transform3D.IDENTITY,true)
++	returned += 1
++
++func victim() -> MeshInstance3D:
++	var mesh := BoxMesh.new()
++	mesh.set_meta("desert_road_relief","desert-road-relief-1")
++	var result := MeshInstance3D.new()
++	result.mesh = mesh
++	return result
++
++func run() -> void:
++	var script: GDScript = preload("res://track/desert_road_relief.gd")
++	if "--before" in OS.get_cmdline_user_args():
++		script = GDScript.new()
++		script.source_code = FileAccess.get_file_as_string("res://../docs/evidence/editor-review-fixes-2026-10-29/performance/desert_road_relief-before.gd.txt")
++		if script.reload() != OK:
++			print("FAIL: baseline source does not compile")
++			quit(1)
++			return
++	var relief: RefCounted = script.new()
++	var holder := Node3D.new()
++	root.add_child(holder)
++	var removed: MeshInstance3D = victim()
++	holder.add_child(removed)
++	apply_then_finish(relief,removed)
++	removed.free()
++	await process_frame
++	await process_frame
++	check(returned == 1,"freed mesh resumes without dereferencing a dead node")
++	var parent := Node3D.new()
++	parent.add_child(victim())
++	parent.add_child(victim())
++	holder.add_child(parent)
++	apply_then_finish(relief,parent)
++	parent.free()
++	await process_frame
++	await process_frame
++	check(returned == 2,"freed ancestor cancels remaining child traversal")
++	var detached := Node3D.new()
++	detached.add_child(victim())
++	detached.add_child(victim())
++	holder.add_child(detached)
++	apply_then_finish(relief,detached)
++	holder.remove_child(detached)
++	await process_frame
++	await process_frame
++	check(returned == 3,"detached ancestor cancels remaining child traversal")
++	detached.free()
++	var siblings := Node3D.new()
++	siblings.add_child(victim())
++	var removed_sibling: MeshInstance3D = victim()
++	siblings.add_child(removed_sibling)
++	holder.add_child(siblings)
++	apply_then_finish(relief,siblings)
++	removed_sibling.free()
++	for frame: int in range(4): await process_frame
++	check(returned == 4,"a retired sibling is skipped while the live parent completes")
++	var live := Node3D.new()
++	live.add_child(victim())
++	live.add_child(victim())
++	holder.add_child(live)
++	apply_then_finish(relief,live)
++	for frame: int in range(6): await process_frame
++	check(returned == 5,"live ancestor completes normal traversal")
++	check(live.get_child_count() == 2,"normal installation preserves both children")
++	holder.free()
++	print("DESERT_RELIEF_RETIREMENT: %d checks, %d failures" % [checks,failures])
++	quit(1 if failures else 0)
+--- /dev/null
++++ b/game/tests/test_desert_relief_retirement.gd.uid
+@@ -0,0 +1 @@
++uid://bc2ng1xht3v0p
+--- /dev/null
++++ b/game/tests/profile_editor_practice_return_review.gd
+@@ -0,0 +1,133 @@
++extends SceneTree
++## Measures the original review track's actual Edit here input and frame gaps.
++var app: Node
++var started: int
++var timings: Dictionary = {}
++var out: String
++var stages: Dictionary = {}
++var tracking: bool = false
++var last_tick: int = 0
++var last_stage: String = ""
++class ProfileApp extends "res://core/app.gd":
++	var forced_extra: bool = false
++	var covered_draws: int = 0
++	var forced_extra_us: int = 0
++	func _present_race_loading() -> bool:
++		var result: bool = await super._present_race_loading()
++		covered_draws += 1
++		if result and "--force-extra-covered-draw" in OS.get_cmdline_user_args() and not forced_extra and is_instance_valid(game) and game.preparation_complete and is_instance_valid(game.car_weathering) and game.car_weathering._render_warming:
++			var expected: int = 0
++			for node: Node in game.sand_dust.get_children():
++				if node is GPUParticles3D and node.is_visible_in_tree(): expected += 1
++			var actual: int = 0
++			for node: Node in game.get_node("World").find_children("Covered*","GPUParticles3D",true,false):
++				if node.is_visible_in_tree(): actual += 1
++			if expected > 0 and actual == expected:
++				forced_extra = true
++				var began: int = Time.get_ticks_usec()
++				result = await super._present_race_loading()
++				forced_extra_us = Time.get_ticks_usec()-began
++				covered_draws += 1
++		return result
++
++func _initialize() -> void: run.call_deferred()
++
++func _process(_delta: float) -> bool:
++	if not tracking: return false
++	var now: int = Time.get_ticks_usec()
++	if last_tick > 0: stages[last_stage] = int(stages.get(last_stage,0)) + now-last_tick
++	last_tick = now
++	last_stage = "pre-game"
++	if is_instance_valid(app.game):
++		if not app.game.preparation_complete:
++			last_stage = "game-construction"
++		elif is_instance_valid(app.race_loading):
++			last_stage = "graphics-warmup"
++		else: last_stage = "ready"
++	return false
++
++func stamp(label: String) -> void:
++	timings[label] = (Time.get_ticks_usec()-started)/1000.0
++	print("PRACTICE_RETURN_PROFILE ",label," ",timings[label])
++
++func frames(count: int) -> void:
++	for i: int in range(count): await process_frame
++
++func run() -> void:
++	OS.set_environment("BMT_API_URL","")
++	OS.set_environment("BMT_DEV_AUTH_KEY","")
++	root.size = Vector2i(1280,720)
++	root.content_scale_size = root.size
++	var suffix: String = "-drive" if "--drive" in OS.get_cmdline_user_args() else ""
++	if "--force-extra-covered-draw" in OS.get_cmdline_user_args(): suffix += "-extra-draw"
++	for argument: String in OS.get_cmdline_user_args():
++		if argument.begins_with("--run-label="): suffix += "-"+argument.trim_prefix("--run-label=")
++	out = ProjectSettings.globalize_path("res://../tmp/editor-practice-return-profile"+suffix)
++	DirAccess.make_dir_recursive_absolute(out)
++	app = load("res://core/app.tscn").instantiate()
++	app.set_script(ProfileApp)
++	app.race_profile_enabled = true
++	app.library = TrackLibrary.new(out.path_join("storage/tracks"))
++	app.records = LocalRecords.new(out.path_join("storage/records.json"))
++	app.cloud_root_override = out.path_join("storage/cloud")
++	root.add_child(app)
++	while not app.startup_complete: await process_frame
++	var source: String = ProjectSettings.globalize_path("res://../docs/evidence/editor-usability-session-2026-10-28/dust_bowl_usability.json")
++	app.document = JSON.parse_string(FileAccess.get_file_as_string(source))
++	app._show_screen("create")
++	var deadline: int = Time.get_ticks_msec()+90000
++	while (app.editor_commits.unsettled() or app.editor_preview_thread != null or app.editor_world._building or app.canvas.preparing) and Time.get_ticks_msec()<deadline: await process_frame
++	if app.editor_preview_thread != null or app.editor_world._building or app.canvas.preparing:
++		print("FAIL: initial editor did not settle"); quit(1); return
++	started = Time.get_ticks_usec()
++	tracking = true
++	app._test_document()
++	while (not is_instance_valid(app.game) or is_instance_valid(app.race_loading)) and Time.get_ticks_msec()<deadline+90000: await process_frame
++	if not is_instance_valid(app.game) or is_instance_valid(app.race_loading):
++		print("FAIL: practice did not start"); quit(1); return
++	stamp("practice_ready")
++	tracking = false
++	print("PRACTICE_STAGES ",JSON.stringify(stages))
++	print("PRACTICE_GAME_COSTS ",JSON.stringify(app.game.preparation_costs))
++	print("PRACTICE_COVERED_DRAWS ",app.covered_draws," FORCED_EXTRA ",app.forced_extra," FORCED_EXTRA_US ",app.forced_extra_us," EFFECT_COUNTS ",app.game.effect_preparation_counts)
++	print("PRACTICE_RENDER_GROUPS ",app.game.world_render_preparation.frame_groups," MAX_DRAW_US ",app.game.world_render_preparation.draw_us_max," COVERED_MS ",app.game.bridge_preparation_ms)
++	await frames(8)
++	if "--drive" in OS.get_cmdline_user_args():
++		for row: Array in [[KEY_W,0.7],[KEY_S,0.4]]:
++			var key := InputEventKey.new()
++			key.keycode = row[0]; key.physical_keycode = row[0]; key.pressed = true
++			Input.parse_input_event(key)
++			await create_timer(float(row[1])).timeout
++			key.pressed = false
++			Input.parse_input_event(key)
++		await frames(3)
++		print("PRACTICE_CAR_POSITION ",app.game.sim.state.position)
++	var editor: Node = app.root_ui
++	var editor_visual: Node = app.editor_world.visual
++	var old_game: Node = app.game
++	started = Time.get_ticks_usec()
++	old_game.tree_exiting.connect(func() -> void: stamp("game_tree_exiting"))
++	old_game.tree_exited.connect(func() -> void: stamp("game_tree_exited"))
++	var button: Control = root.find_child("EditHere",true,false)
++	if button == null:
++		print("FAIL: Edit here missing"); quit(1); return
++	var point: Vector2 = button.get_global_rect().get_center()
++	var input := InputEventMouseButton.new()
++	input.position = point; input.global_position = point; input.button_index = MOUSE_BUTTON_LEFT; input.pressed = true
++	root.push_input(input,true)
++	stamp("mouse_down_handler")
++	await process_frame
++	stamp("after_down_frame")
++	input.pressed = false
++	root.push_input(input,true)
++	stamp("mouse_up_handler")
++	for i: int in range(10):
++		await process_frame
++		stamp("frame_%d" % i)
++	var ok: bool = not is_instance_valid(app.game) and app.root_ui == editor and app.editor_world.visual == editor_visual and app.document.id == "track_f0a1d999848dc6f3b8184d32f9ce617b"
++	print("PRACTICE_RETURN_RESULT ",ok," ",JSON.stringify(timings))
++	var file := FileAccess.open(out.path_join("result.json"),FileAccess.WRITE)
++	file.store_string(JSON.stringify({"ok":ok,"timings":timings,"stages_us":stages,"covered_draws":app.covered_draws,"forced_extra":app.forced_extra,"forced_extra_us":app.forced_extra_us},"\t")); file.close()
++	app.queue_free()
++	await frames(5)
++	quit(0 if ok else 1)
+--- /dev/null
++++ b/game/tests/profile_editor_practice_return_review.gd.uid
+@@ -0,0 +1 @@
++uid://b0rleyej701y6
+--- /dev/null
++++ b/scripts/translations/editor_fit_view.tsv
+@@ -0,0 +1,2 @@
++# English|fr|es|de|pt_BR|ja|ko|nl|it|fi|sv|nb
++Fit view|Ajuster la vue|Ajustar vista|Ansicht einpassen|Ajustar visualização|表示を合わせる|화면 맞추기|Weergave aanpassen|Adatta vista|Sovita näkymä|Anpassa vy|Tilpass visning

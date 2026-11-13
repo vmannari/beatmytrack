@@ -1,0 +1,180 @@
+--- a/bmt_backend/app.py
++++ b/bmt_backend/app.py
+@@ -113,6 +113,8 @@
+     app.state.engine._bmt_run_signals = app.state.run_signals
+     app.state.identity_budgets = IdentityBudgets(app.state.session_factory)
+     app.state.blobs = make_blob_store(settings, app.state.session_factory)
++    from .immutable_payloads import ImmutablePayloadCache
++    app.state.immutable_payloads = ImmutablePayloadCache()
+     from .erasure_journal import make_journal
+     app.state.erasure_journal = make_journal(settings)
+     app.state.verifier = verifier if verifier is not None else GodotVerifier(settings)
+@@ -277,6 +279,8 @@
+             "discovery_paging_version": 3,
+             "max_request_bytes": settings.max_body_bytes,
+             "upload_encodings": ["identity", "gzip"],
++            "ghost_identity_version": 1,
++            "ghost_wire_version": 1,
+             "replay_wire_schema": "bmt-packed-input-v1",
+             "batch_run_status": True,
+             "run_wait_ms": 2000,
+--- a/bmt_backend/challenges.py
++++ b/bmt_backend/challenges.py
+@@ -575,7 +575,7 @@
+ 
+ @router.get("/challenges/{code}/ghost")
+ def ghost(code: str, request: Request, session: DB, credentials=Depends(bearer),
+-          stage: int | None = Query(default=None, ge=0, le=2)):
++          stage: int | None = Query(default=None, ge=0, le=2), metadata: bool = False, expected_run_id: str = "", encoding: str = "json"):
+     challenge = available(session, code)
+     viewer = current_player(request, credentials, session) if credentials else None
+     if viewer:
+@@ -597,9 +597,10 @@
+     run = session.get(Run, run_id) if run_id else None
+     if run is None or not run.ghost_hash or session.get(Player, run.player_id).disabled:
+         raise HTTPException(404, "Ghost unavailable")
+-    run_id, ghost_hash = run.id, run.ghost_hash
++    run_id, ghost_hash, owner_id = run.id, run.ghost_hash, run.player_id
+     session.commit()
+-    return {"run_id": run_id, "recording": request.app.state.blobs.get_json(ghost_hash)}
++    from .ghost_http import recording_response
++    return recording_response(request, run_id, ghost_hash, owner_id, metadata=metadata, expected_run_id=expected_run_id, encoding=encoding)
+ 
+ 
+ @router.post("/challenges/{code}/cancel")
+--- a/bmt_backend/ghost_http.py
++++ b/bmt_backend/ghost_http.py
+@@ -0,0 +1,33 @@
++"""Current authorization stays in routes; immutable bytes need not be redownloaded."""
++import hashlib
++import re
++
++from fastapi import HTTPException
++from fastapi.responses import JSONResponse, Response
++
++from .storage import canonical_json
++
++
++def recording_response(request, run_id, content_hash, player_id, *, metadata=False, expected_run_id="", encoding="json"):
++    if encoding not in ("json", "packed"):
++        raise HTTPException(422, "UNSUPPORTED_GHOST_ENCODING")
++    if not re.fullmatch(r"[0-9a-f]{64}", content_hash):
++        raise OSError("Invalid recording digest")
++    if expected_run_id and expected_run_id != run_id:
++        raise HTTPException(409, "GHOST_TARGET_CHANGED")
++    value = {"run_id": run_id, "content_hash": content_hash, "player_id": player_id}
++    tag = '"' + hashlib.sha256(canonical_json(value)).hexdigest() + ("-metadata" if metadata else "-"+encoding) + '"'
++    headers = {"ETag": tag, "Cache-Control": "private, no-cache, must-revalidate", "Vary": "Authorization, Accept-Encoding"}
++    if request.headers.get("if-none-match") == tag:
++        return Response(status_code=304, headers=headers)
++    if metadata:
++        return JSONResponse(value, headers=headers)
++    def prepare():
++        recording = request.app.state.blobs.get_json(content_hash)
++        if encoding == "packed":
++            from .ghost_wire import compact
++            recording = compact(recording)
++        return canonical_json({**value, "recording": recording})
++    cache = getattr(request.app.state, "immutable_payloads", None)
++    body = cache.get(("ghost", run_id, content_hash, encoding), prepare) if cache else prepare()
++    return Response(body, media_type="application/json", headers=headers)
+--- a/bmt_backend/ghost_wire.py
++++ b/bmt_backend/ghost_wire.py
+@@ -0,0 +1,19 @@
++"""Optional exact Float64 presentation encoding; scores/proofs are untouched."""
++import base64
++import gzip
++import struct
++
++from .storage import canonical_json
++from .verifier import validate_ghost
++
++
++def compact(recording):
++    validate_ghost(recording, recording["ticks"])
++    body = b"".join(struct.pack("<7d", *row) for row in recording["poses"])
++    value = {"schema": "bmt-packed-ghost-v1", "ticks": recording["ticks"], "count": len(recording["poses"]),
++             "data": base64.b64encode(gzip.compress(body, compresslevel=3, mtime=0)).decode("ascii")}
++    def wire(data):
++        raw = canonical_json(data)
++        return len(gzip.compress(raw, compresslevel=3, mtime=0)) if len(raw) >= 1024 else len(raw)
++    # Do not increase transfers for tiny or unusually compressible JSON ghosts.
++    return value if wire(value) < .95*wire(recording) else recording
+--- a/bmt_backend/immutable_payloads.py
++++ b/bmt_backend/immutable_payloads.py
+@@ -0,0 +1,50 @@
++"""Bounded process-local immutable representations and shared in-flight preparation."""
++import threading
++from collections import OrderedDict
++from concurrent.futures import Future, TimeoutError
++
++from fastapi import HTTPException
++
++
++class ImmutablePayloadCache:
++    def __init__(self, maximum_bytes=32*1024*1024, maximum_entries=256, parallel=4):
++        self.maximum_bytes, self.maximum_entries, self.parallel = maximum_bytes, maximum_entries, parallel
++        self.lock, self.entries, self.pending = threading.Lock(), OrderedDict(), {}
++        self.bytes = 0
++
++    def get(self, key, produce):
++        with self.lock:
++            if key in self.entries:
++                value = self.entries.pop(key)
++                self.entries[key] = value
++                return value
++            owner = key not in self.pending
++            if owner:
++                if len(self.pending) >= self.parallel:
++                    raise HTTPException(503, "CONTENT_PREPARATION_BUSY", headers={"Retry-After": "1"})
++                self.pending[key] = Future()
++            future = self.pending[key]
++        if not owner:
++            try:
++                return future.result(timeout=1.5)
++            except TimeoutError as error:
++                raise HTTPException(503, "CONTENT_PREPARATION_BUSY", headers={"Retry-After": "1"}) from error
++        try:
++            value = produce()
++            if not isinstance(value, bytes):
++                raise TypeError("Immutable representation must be bytes")
++            with self.lock:
++                if len(value) <= self.maximum_bytes:
++                    self.entries[key] = value
++                    self.bytes += len(value)
++                    while self.bytes > self.maximum_bytes or len(self.entries) > self.maximum_entries:
++                        _, removed = self.entries.popitem(last=False)
++                        self.bytes -= len(removed)
++                future.set_result(value)
++            return value
++        except BaseException as error:
++            future.set_exception(error)
++            raise
++        finally:
++            with self.lock:
++                self.pending.pop(key, None)
+--- a/bmt_backend/rivalry.py
++++ b/bmt_backend/rivalry.py
+@@ -577,7 +577,8 @@
+ 
+ 
+ @router.get("/rivalry/{group_id}/tracks/{slot}/ghosts/{driver_id}")
+-def ghost(group_id: str, slot: int, driver_id: str, request: Request, session: BoardDB, player: Auth):
++def ghost(group_id: str, slot: int, driver_id: str, request: Request, session: BoardDB, player: Auth,
++          metadata: bool = False, expected_run_id: str = "", encoding: str = "json"):
+     from .community import check_creator
+     check_creator(session, player.id, driver_id)
+     group, _ = require_member(session, group_id, player.id, request)
+@@ -589,9 +590,10 @@
+     run = session.get(Run, best.run_id) if best else None
+     if run is None or not run.ghost_hash:
+         raise HTTPException(404, "Rival ghost unavailable")
+-    run_id, ghost_hash = run.id, run.ghost_hash
++    run_id, ghost_hash, owner_id = run.id, run.ghost_hash, run.player_id
+     session.commit()
+-    return {"run_id": run_id, "recording": request.app.state.blobs.get_json(ghost_hash)}
++    from .ghost_http import recording_response
++    return recording_response(request, run_id, ghost_hash, owner_id, metadata=metadata, expected_run_id=expected_run_id, encoding=encoding)
+ 
+ 
+ def conditional_snapshot(request, value):

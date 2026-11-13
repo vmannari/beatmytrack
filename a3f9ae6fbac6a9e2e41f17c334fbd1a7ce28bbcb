@@ -1,0 +1,105 @@
+.......F..F.................                                             [100%]
+================================== FAILURES ===================================
+___ test_rivalry_uses_one_snapshot_only_when_score_does_not_improve[sqlite] ___
+
+domain = namespace(app=<fastapi.applications.FastAPI object at 0x0000024277D05550>, client=<starlette.testclient.TestClient obj...0da2', 'Bob': 'dae9535c-d39f-43fb-89c6-2ee906613c14', 'Carol': 'a0281c20-43de-4691-8e56-953caf2c0ca3'}, postgres=False)
+monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x000002427989BDF0>
+
+    def test_rivalry_uses_one_snapshot_only_when_score_does_not_improve(domain, monkeypatch):
+        from bmt_backend import rivalry
+        seed(domain)
+        group = join(domain)["group_id"]
+        calls = []
+        original = rivalry.standings_data
+    
+        def standings(*args, **kwargs):
+            calls.append(1)
+            return original(*args, **kwargs)
+    
+        monkeypatch.setattr(rivalry, "standings_data", standings)
+        for frames, expected in ((30, 2), (35, 1), (30, 1), (20, 2)):
+            issued = rivalry_ticket(domain, group)
+            submitted = submit(domain, issued, "Alice", frames=frames)
+            calls.clear()
+            assert process_one(domain.app)
+>           assert len(calls) == expected
+E           assert 2 == 1
+E            +  where 2 = len([1, 1])
+
+tests\test_backend_work_reduction.py:113: AssertionError
+---------------------------- Captured stderr call -----------------------------
+{"event":"verification_complete","level":"info","run_id":"b8398705-8ab8-4876-ad14-f13383c2e1df","time_ticks":150,"worker_id":"aced4aae-b426-44d9-91be-39b2837d3c27","verification_seconds":0.1326,"verification_compute_ms":null,"verification_method":"canonical-replay","queue_wait_seconds":0}
+{"event":"verification_complete","level":"info","run_id":"744e8f2e-fc99-4a2f-96da-9e99eab71f40","time_ticks":175,"worker_id":"aced4aae-b426-44d9-91be-39b2837d3c27","verification_seconds":0.0262,"verification_compute_ms":null,"verification_method":"canonical-replay","queue_wait_seconds":0}
+------------------------------ Captured log call ------------------------------
+INFO     bmt.worker:worker.py:352 verification_complete
+INFO     bmt.worker:worker.py:352 verification_complete
+-------------------------- Captured stderr teardown ---------------------------
+{"event":"http_cost_summary","interval_seconds":2.845,"body_bytes_after_compression":true,"latency_limits_ms":[10,25,50,100,250,500,1000,5000],"rows":[{"route":"/v1/rivalry/join","method":"POST","status":200,"requests":1,"request_wire_bytes":24,"response_wire_bytes":1393,"duration_ms":362.74,"max_ms":362.74,"latency_buckets":[0,0,0,0,0,1,0,0,0]},{"route":"/v1/rivalry/{group_id}/tickets","method":"POST","status":201,"requests":2,"request_wire_bytes":20,"response_wire_bytes":1306,"duration_ms":49.3,"max_ms":30.59,"latency_buckets":[0,1,1,0,0,0,0,0,0]},{"route":"/v1/runs","method":"POST","status":202,"requests":2,"request_wire_bytes":848,"response_wire_bytes":666,"duration_ms":74.97,"max_ms":45.78,"latency_buckets":[0,0,2,0,0,0,0,0,0]},{"route":"/v1/rivalry/tickets/{ticket_id}/result","method":"GET","status":200,"requests":1,"request_wire_bytes":0,"response_wire_bytes":838,"duration_ms":17.74,"max_ms":17.74,"latency_buckets":[0,1,0,0,0,0,0,0,0]}],"level":"info"}
+---------------------------- Captured log teardown ----------------------------
+INFO     bmt.requests:http_costs.py:59 {"event":"http_cost_summary","interval_seconds":2.845,"body_bytes_after_compression":true,"latency_limits_ms":[10,25,50,100,250,500,1000,5000],"rows":[{"route":"/v1/rivalry/join","method":"POST","status":200,"requests":1,"request_wire_bytes":24,"response_wire_bytes":1393,"duration_ms":362.74,"max_ms":362.74,"latency_buckets":[0,0,0,0,0,1,0,0,0]},{"route":"/v1/rivalry/{group_id}/tickets","method":"POST","status":201,"requests":2,"request_wire_bytes":20,"response_wire_bytes":1306,"duration_ms":49.3,"max_ms":30.59,"latency_buckets":[0,1,1,0,0,0,0,0,0]},{"route":"/v1/runs","method":"POST","status":202,"requests":2,"request_wire_bytes":848,"response_wire_bytes":666,"duration_ms":74.97,"max_ms":45.78,"latency_buckets":[0,0,2,0,0,0,0,0,0]},{"route":"/v1/rivalry/tickets/{ticket_id}/result","method":"GET","status":200,"requests":1,"request_wire_bytes":0,"response_wire_bytes":838,"duration_ms":17.74,"max_ms":17.74,"latency_buckets":[0,1,0,0,0,0,0,0,0]}]}
+___________ test_scheduler_treats_skipped_as_success_without_retry ____________
+
+tmp_path = WindowsPath('C:/Codes/Godot/Beat my track/build/backend-work-reduction-focused/test_scheduler_treats_skipped_0')
+
+    def test_scheduler_treats_skipped_as_success_without_retry(tmp_path):
+        manifest = FakeVerifier().manifest()
+        job = {"id":"x", "subject":"bot", "slot":0, "group_id":None,
+               "status":"submitted", "run_id":"r"}
+        plan = {"manifest":manifest, "profiles":[], "jobs":[job], "mode":"fill", "ends_at":9999,
+                "vehicle_id":"compact", "require_history_completion":True}
+    
+        def call(method, route, **kwargs):
+            assert method == "GET", "A skipped completion must not be retried"
+            if route.startswith("/dev/"):
+                return {"manifest":manifest, "server_now":100}
+            assert route == "/runs/r"
+            return {"status":"skipped", "time_ticks":100, "failure_code":None}
+    
+>       test_population_tool.tick(SimpleNamespace(call=call), plan, None, tmp_path / "plan.json")
+
+tests\test_backend_work_reduction.py:165: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+bmt_backend\test_population_tool.py:429: in tick
+    for job in sorted(plan["jobs"], key=lambda j: (j["due"], j["id"])):
+               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+
+j = {'id': 'x', 'subject': 'bot', 'slot': 0, 'group_id': None, ...}
+
+>   for job in sorted(plan["jobs"], key=lambda j: (j["due"], j["id"])):
+                                                   ^^^^^^^^
+E   KeyError: 'due'
+
+bmt_backend\test_population_tool.py:429: KeyError
+---------------------------- Captured stdout call -----------------------------
+bot � circuit 1 � skipped � 100 ticks
+============================== warnings summary ===============================
+..\.tools\backend-secure-venv\Lib\site-packages\fastapi\testclient.py:1
+  C:\Codes\Godot\Beat my track\.tools\backend-secure-venv\Lib\site-packages\fastapi\testclient.py:1: StarletteDeprecationWarning: Using `httpx` with `starlette.testclient` is deprecated; install `httpx2` instead.
+    from starlette.testclient import TestClient as TestClient  # noqa
+
+tests/test_backend_work_reduction.py: 19 warnings
+  C:\Users\ville\AppData\Local\Google\Cloud SDK\google-cloud-sdk\platform\bundledpython\Lib\contextlib.py:148: SAWarning: Skipped unsupported reflection of expression-based index ix_studio_player_name
+    next(self.gen)
+
+tests/test_backend_work_reduction.py: 19 warnings
+  C:\Users\ville\AppData\Local\Google\Cloud SDK\google-cloud-sdk\platform\bundledpython\Lib\contextlib.py:148: SAWarning: Skipped unsupported reflection of expression-based index ix_studio_published_rating
+    next(self.gen)
+
+tests/test_backend_work_reduction.py: 19 warnings
+  C:\Users\ville\AppData\Local\Google\Cloud SDK\google-cloud-sdk\platform\bundledpython\Lib\contextlib.py:148: SAWarning: Skipped unsupported reflection of expression-based index ix_studio_published_name
+    next(self.gen)
+
+tests/test_backend_work_reduction.py: 19 warnings
+  C:\Users\ville\AppData\Local\Google\Cloud SDK\google-cloud-sdk\platform\bundledpython\Lib\contextlib.py:148: SAWarning: Skipped unsupported reflection of expression-based index ix_discovery_names
+    next(self.gen)
+
+tests/test_backend_work_reduction.py: 19 warnings
+  C:\Users\ville\AppData\Local\Google\Cloud SDK\google-cloud-sdk\platform\bundledpython\Lib\contextlib.py:148: SAWarning: Skipped unsupported reflection of expression-based index ix_compatible_versions
+    next(self.gen)
+
+-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
+=========================== short test summary info ===========================
+FAILED tests/test_backend_work_reduction.py::test_rivalry_uses_one_snapshot_only_when_score_does_not_improve[sqlite]
+FAILED tests/test_backend_work_reduction.py::test_scheduler_treats_skipped_as_success_without_retry
+2 failed, 26 passed, 18 deselected, 96 warnings in 49.25s

@@ -1,0 +1,16 @@
+# Kart Brake turn 5.5 locked — 2026-10-30
+
+KBF01: The owner selects Brake turn 5.5 as the kart's final handling. Its exact physical settings now live in `game/resources/cars/kart.tres` under canonical version `kart-8`. KBF02: Remove kart test modes and their selector; retain the other cars' choices. The only identity changes from the selected test are its standard profile name and version. Engine, brakes, speed cap and shared physics remain unchanged.
+
+The local backend fixture's kart manifest entry now uses version `kart-8` and config hash `171f8d8663fdda59bdf42bfeb906ae3cd02c3c70bbafaa736f1d0848190425f0`. This is a new handling contract: old kart records remain under their original identity. Online kart racing requires a coordinated matching backend/verifier and catalogue rollout; no live service was modified.
+
+Pinned Godot 4.7.2 `ed1daf0bf`, offline with isolated local profiles:
+
+- `--headless --path game --script res://tests/test_kart_final_handling.gd`: 3,613 checks, zero failures. Every physical configuration field matches the selected test; 3,600 mixed-input ticks are exactly identical; actual race setup installs the final handling, hides the selector and stays eligible for normal results.
+- `res://tests/test_kart.gd`: 42 checks, zero failures. Selector 23/0, game integration 22/0, App test-result safeguards 4/0, and the remaining cars' preset regression zero failures.
+- Historical fixtures preserve former tests: Brake turn evolution 73/0, Brake turn 5 turning 107/0, earlier kart refinement 22/0, and kart-7 turning 90/0. Original numerical assertions remain, using archived kart-7 rather than retuning the old controls to the new car.
+- `res://tests/export_kart_speed_replay.gd` generated a 12,792-input five-lap local race. `res://backend/runner.gd` with `diagnostic_replay` accepted the same 12,792 ticks / 106,600 ms under kart-8 and the hash above. This is an offline canonical diagnostic, not a live result submission.
+- Native Compatibility `res://tests/capture_kart_final_handling.gd`: zero failures at 960×540 and 1280×720; [kart race](evidence/kart-final-2026-10-30/kart-race-960x540.png) shows no test selector. The graphical capture logged a 25.56-second cold hitch and shorter hitches.
+- Backend `pytest tests/test_verifier.py -q -k 'real_engine_manifest_pins_every_competitive_config or real_five_lap_race_replays_identically'`: initial sandbox run failed both because the verifier treats the Windows certificate-store error as fatal. A normal-access retry passed the five-lap Compact replay but the manifest test failed because backend appearance types retain retired `classic` and `formula` while the current racing catalogue excludes them. This is outside the kart handling change; no assertion was relaxed.
+
+The first parallel graphical capture exited before rendering and the first historical Brake turn evolution run failed because its earlier reference still read the live kart resource. The successful isolated capture and frozen kart-7 fixture above correct those issues. A concurrent historical fixture run printed 22/0 but exited 1; its standalone rerun exited successfully. Some headless tests reported resources still in use at exit. No physical-device test, owner-save write, APK, backend deployment or owner-process restart was performed.

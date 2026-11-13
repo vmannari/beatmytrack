@@ -1,0 +1,290 @@
+diff --git a/docs/CHALLENGES.md b/docs/CHALLENGES.md
+--- a/docs/CHALLENGES.md
++++ b/docs/CHALLENGES.md
+@@ -4,6 +4,12 @@
+ [creation UI](../game/ui/challenge_create.gd),
+ [challenge API](../backend/bmt_backend/challenges.py) and
+ [series service](../backend/bmt_backend/challenge_series.py).
++
++One-on-one and group flows were rechecked on 2026-10-25 with disposable local
++services and the pinned native client. The checks include three distinct group
++accounts, exact post-race creation, rankings, slower/tied retries, independent
++try exhaustion, account changes and multi-track starts. No challenge runtime fix
++was needed. [Commands, results and limits](CHALLENGE_CHECK_2026_10_25.md).
+ 
+ Menu creation is **format → tracks → car**. One-to-one and Group race pin one track;
+ 3×3 pins three distinct tracks and one car, with three starts per stage and best-only
+diff --git a/backend/tests/test_challenge_group_http.py b/backend/tests/test_challenge_group_http.py
+new file mode 100644
+--- /dev/null
++++ b/backend/tests/test_challenge_group_http.py
+@@ -0,0 +1,24 @@
++"""Three real native identities share a group created from a completed race."""
++import pytest
++from test_challenges_http import prepare
++from test_cloud_client import run_client
++
++
++class GroupFixtureIdentity:
++    def verify(self, token):
++        # Injected only into the disposable fixture app.
++        label, nonce = token.split(":", 1)
++        assert label in {"group-first", "group-second"}
++        return {"sub": label, "nonce": nonce}
++
++
++@pytest.mark.godot
++def test_results_group_three_players_best_only_and_exhausted_tries(tmp_path):
++    def prepare_group(app):
++        prepare(app)
++        app.state.identity_verifier = GroupFixtureIdentity()
++
++    run_client(
++        tmp_path, "res://tests/test_challenge_group_http.gd", prepare=prepare_group,
++        settings_overrides={"google_client_ids": ("challenge-fixture-client",)},
++    )
+diff --git a/game/tests/test_challenge_group_http.gd b/game/tests/test_challenge_group_http.gd
+new file mode 100644
+--- /dev/null
++++ b/game/tests/test_challenge_group_http.gd
+@@ -0,0 +1,152 @@
++extends "res://tests/test_challenges_http.gd"
++## Complete group creation from results, three real accounts and independent tries.
++var group_app: Node
++var group_code: String
++
++func wait_idle() -> void:
++	while group_app.challenges.busy: await process_frame
++	for frame: int in range(3): await process_frame
++
++func close_popups() -> void:
++	for popup: Node in group_app.root_ui.get_children():
++		if popup is AcceptDialog: popup.queue_free()
++
++func own_row(player_id: String) -> Dictionary:
++	for row: Dictionary in group_app.challenges.selected.get("standings",[]):
++		if row.id == player_id: return row
++	return {}
++
++func guest_state_is_clear() -> bool:
++	var selected: Dictionary = group_app.challenges.selected
++	# Public invitations can be selected again by the guest discovery refresh.
++	return group_app.challenges.result_ticket.is_empty() and group_app.challenges.result_state.is_empty() and group_app.challenges.outcome.is_empty() and (selected.is_empty() or (str(selected.get("self_id","guest")) == "" and not selected.get("joined",true)))
++
++func login_member(label: String, username: String) -> String:
++	await group_app.online.client.logout()
++	await wait_idle()
++	check(guest_state_is_clear(),"logout clears the previous member's private result and membership")
++	var nonce: Dictionary = await group_app.online.client.google_challenge()
++	var answer: Dictionary = await group_app.online.client.google_login(label+":"+str(nonce.data.nonce),str(nonce.data.challenge_id),username)
++	check(answer.ok,"independent group member signs in: "+label)
++	await accept_public_rules(group_app.online.client)
++	group_app._receive_challenge(group_code)
++	await wait_idle()
++	check(group_app.challenges.selected.get("code") == group_code and not group_app.challenges.selected.joined,"new member opens the same group invitation: "+label)
++	return str(group_app.online.client.player.id)
++
++func complete(frames: Array, label: String) -> Dictionary:
++	var ticket: String = str(group_app.cloud_ticket.get("ticket_id",""))
++	_drive(group_app.game,frames)
++	check(group_app.game.track_session.finished,label+" completes five ordered laps")
++	group_app._results()
++	var summary: RaceResults = group_app.root_ui.find_child("RaceResults",true,false)
++	check(summary != null and not group_app.challenge_result_view,label+" shows ordinary results before group feedback")
++	summary.continue_requested.emit()
++	check(group_app.game == null and group_app.challenge_result_view,label+" Continue releases the race and opens group feedback")
++	for poll: int in range(120):
++		await group_app.challenges.poll_result()
++		if group_app.challenges.result_state == "verified": break
++		await create_timer(0.15).timeout
++	check(group_app.challenges.result_state == "verified" and group_app.challenges.result_ticket == ticket,label+" receives its own verified result")
++	return group_app.challenges.outcome.duplicate(true)
++
++func delayed(frames: Array, ticks: int) -> Array:
++	var result: Array = []
++	for tick: int in range(ticks): result.append([0,0,0])
++	result.append_array(frames)
++	return result
++
++func run() -> void:
++	fixture = JSON.parse_string(FileAccess.get_file_as_string(OS.get_environment("BMT_CLOUD_FIXTURE")))
++	var folder: String = "user://group_http_"+TrackLibrary.unique_id()
++	group_app = load("res://core/app.tscn").instantiate()
++	group_app.library = TrackLibrary.new(folder.path_join("tracks"))
++	group_app.records = LocalRecords.new(folder.path_join("records.json"))
++	group_app.cloud_root_override = folder.path_join("cloud")
++	root.add_child(group_app)
++	while not group_app.startup_complete: await process_frame
++	var creator_login: Dictionary = await group_app.online.client.developer_login(OS.get_environment("BMT_DEV_AUTH_KEY"))
++	check(creator_login.ok,"group creator signs into the disposable service")
++	await accept_public_rules(group_app.online.client)
++	var creator: String = str(group_app.online.client.player.id)
++	var catalogue: Dictionary = await group_app.online.client.request_api("/tracks?limit=20")
++	var metadata: Dictionary = catalogue.data.items[0]
++	var entry: Dictionary = group_app.cloud.entry_from_metadata(metadata)
++	check(await group_app.cloud.download(entry),"group's pinned track downloads with integrity validation")
++	group_app.selected_track = group_app.cloud.compile_entry(entry)
++	await group_app._start_race(group_app.selected_track,false)
++	var source_ticket: String = str(group_app.cloud_ticket.ticket_id)
++	_drive(group_app.game,delayed(fixture.replay.frames,60))
++	check(group_app.game.track_session.finished,"creator completes the group opening race")
++	group_app._results()
++	var summary: RaceResults = group_app.root_ui.find_child("RaceResults",true,false)
++	(summary.find_child("CreateResultChallenge",true,false) as Button).pressed.emit()
++	var form: ChallengeCreate = group_app.root_ui.find_child("ChallengeCreate",true,false)
++	check(form.results_only and form._step == ChallengeCreate.RESULT,"group creation enters the restricted results setup")
++	(form.find_child("ChallengeResultMode_1",true,false) as Button).pressed.emit()
++	(form.find_child("ChallengeDuration_86400",true,false) as Button).pressed.emit()
++	(form.find_child("ChallengeTries_3",true,false) as Button).pressed.emit()
++	for poll: int in range(120):
++		if not form._checking and form._source.get("status") == "verified": break
++		if not form._checking: form._check_source()
++		await create_timer(0.15).timeout
++	check(form.initial_ticket == source_ticket and not form.get_ok_button().disabled,"group setup uses the exact verified opening ticket")
++	form.get_ok_button().pressed.emit()
++	while group_app.challenges.busy or (is_instance_valid(form) and form._submitting): await process_frame
++	check(not group_app.challenges.selected.is_empty(),"results setup creates a real group invitation")
++	if group_app.challenges.selected.is_empty():
++		print(group_app.challenges.error)
++		quit(1)
++		return
++	var invitation: Dictionary = group_app.challenges.selected.duplicate(true)
++	group_code = invitation.code
++	check(invitation.mode == "group" and invitation.capacity == 20 and invitation.target_ticks == null,"group has twenty-player capacity and no duel target")
++	check(int(invitation.ends_at)-int(invitation.created_at) == 86400 and invitation.attempt_limit == 3,"selected group duration and tries persist")
++	check(invitation.attempts_used == 1 and invitation.attempts_remaining == 2 and invitation.standings.size() == 1,"opening source counts exactly one creator try")
++	check(int(invitation.standings[0].ticks) == int(fixture.time_ticks)+60,"group retains the exact completed source time")
++	check(group_app.game == null and not group_app.challenge_racing,"Create & share finishes without starting another race")
++	close_popups()
++	await capture("group-created-from-results",group_app)
++
++	var first: String = await login_member("group-first","Group First")
++	await group_app._start_challenge_race()
++	check(group_app.game != null and group_app.challenge_racing and not group_app.challenge_practice,"first member joins and starts a verified group attempt")
++	check(group_app.challenges.selected.attempts_used == 1 and group_app.challenges.selected.attempts_remaining == 2,"first member has an independent three-start budget")
++	check(not group_app.game.ghost_bests.get("race",{}).is_empty() and not group_app.game.ghost_bests.race.has("frames"),"member receives the actual group ghost without raw controls")
++	var outcome: Dictionary = await complete(fixture.replay.frames,"first member")
++	var first_best: Dictionary = own_row(first).duplicate(true)
++	check(int(first_best.ticks) == int(fixture.time_ticks) and first_best.rank == 1 and own_row(creator).rank == 2,"faster member moves above the opening creator")
++	check(outcome.get("counted",false) and outcome.get("improved",false),"verified member result counts as its best")
++	check(group_app.challenges.selected.rewards.finish_earned,"verified group finish earns its authoritative finish reward")
++	await capture("group-first-member",group_app)
++	await group_app._start_challenge_race()
++	check(group_app.challenges.selected.attempts_remaining == 1,"slower retry reserves only this member's second start")
++	outcome = await complete(delayed(fixture.replay.frames,30),"slower retry")
++	check(not outcome.get("improved",true) and own_row(first).run_id == first_best.run_id and own_row(first).ticks == first_best.ticks,"slower retry preserves the member's verified best")
++	await group_app._start_challenge_race()
++	check(group_app.challenges.selected.attempts_remaining == 0,"third start exhausts only this member's budget")
++	outcome = await complete(fixture.replay.frames,"tied retry")
++	check(not outcome.get("improved",true) and own_row(first).run_id == first_best.run_id,"tied retry preserves the original best run")
++	var race_button: Button = group_app.root_ui.find_child("ChallengeRace",true,false)
++	check(race_button != null and race_button.disabled,"group feedback disables racing when this member has no tries")
++	var denied: Dictionary = await group_app.online.client.request_api("/challenges/"+group_code+"/tickets",HTTPClient.METHOD_POST,{},group_app.online.client.new_operation_key(),true)
++	check(not denied.ok and int(denied.get("status",0)) == 409,"server rejects an extra start after the group budget is exhausted")
++
++	var second: String = await login_member("group-second","Group Second")
++	check(second != first and second != creator,"third participant is a distinct real fixture account")
++	await group_app._start_challenge_race()
++	check(group_app.game != null and group_app.challenge_racing and group_app.challenges.selected.attempts_remaining == 2,"second member can join and race despite the first member's exhausted budget")
++	await complete(delayed(fixture.replay.frames,120),"second member")
++	check(own_row(first).rank == 1 and own_row(creator).rank == 2 and own_row(second).rank == 3,"three-driver standings order the actual verified times")
++	check(group_app.challenges.selected.standings.size() == 3 and own_row(first).run_id == first_best.run_id,"group retains exactly one best per member")
++	check(group_app.challenges.selected.attempts_used == 1 and group_app.challenges.selected.attempts_remaining == 2,"second member's own remaining tries stay independent")
++	await group_app.challenges.join()
++	check(group_app.challenges.selected.standings.size() == 3,"repeated join creates no duplicate group membership")
++	await capture("group-three-members",group_app)
++	await group_app.online.client.logout()
++	await wait_idle()
++	check(guest_state_is_clear(),"final logout clears the member's private result and polling")
++	group_app.queue_free()
++	for frame: int in range(3): await process_frame
++	print("CHALLENGE_GROUP_HTTP: %d checks, %d failures" % [checks,failures])
++	quit(1 if failures > 0 else 0)
+diff --git a/docs/CHALLENGE_CHECK_2026_10_25.md b/docs/CHALLENGE_CHECK_2026_10_25.md
+new file mode 100644
+--- /dev/null
++++ b/docs/CHALLENGE_CHECK_2026_10_25.md
+@@ -0,0 +1,83 @@
++# Individual and group challenge check — 2026-10-25
++
++Both one-on-one and group challenges passed the local checks. No challenge
++runtime change was needed. Two new regression files exercise a three-account
++group through the actual native App, HTTP API and verification worker.
++
++## Coverage
++
++| Area | Verified behavior |
++| --- | --- |
++| Individual | Exact completed-race target, including slower-than-PB finishes; verified-PB creation; source-drive return; recipient joins, actual target ghost, five-lap verification, signed target gap, rewards, retry and rematch. |
++| Group | Menu creation with a PB or without a source; Create & race; results-screen creation with the selected 24-hour/three-try rules; no fixed duel target. |
++| Three-account group | Creator's opening result counts once; two independent recipients join the same invitation; verified times produce ranks 1/2/3; only each member's best counts; slower and tied retries retain the original best run. |
++| Tries and account boundaries | Each participant has its own budget. An exhausted member sees a disabled race action and the server rejects another start with 409; another member can still join and race. Logout clears result/polling state and guest snapshots contain no signed-in membership. Repeated joining creates no duplicate member. |
++| Broader authority | Unit checks cover two-person and twenty-person capacity, owned/compatible sources, idempotent requests, pending verification, deadlines, cancellation, hidden/blocked sources, rewards and custom/multi-track totals. Native retries pin their original invitation/stage/account. |
++
++## Actual runs
++
++Engine: `4.7.2.stable.official.ed1daf0bf`. Tests used isolated workspace APPDATA,
++disposable SQLite services on loopback and fixture identities. Public-sharing
++terms were explicitly accepted by each test identity. Five-lap races used the
++existing deterministic native driving fixture and actual trajectory verification.
++
++| Check | Result |
++| --- | --- |
++| Backend challenge, discovery, custom-track and series tests, `-k 'sqlite and not migration'` | 43 passed, 2 skipped, 53 deselected |
++| Existing ordinary/race-to-set native HTTP tests | 2 passed; 54 / 52 native checks, zero failures |
++| New three-account group native HTTP test | 1 passed; 58 native checks, zero failures |
++| Existing multi-track native HTTP test | 1 passed; 26 native checks, zero failures |
++| `test_challenge_race_flows` | 34 checks, zero failures |
++| `test_challenges` | 216 checks, zero failures |
++| `test_challenge_result_view` | 293 checks, zero failures |
++| `test_results_challenge_setup`, desktop Compatibility | 82 checks, zero failures |
++| `test_script_parse` | 1,120 scripts, zero failures |
++| Ruff on the new Python test | Passed |
++
++The backend run explicitly excluded PostgreSQL and migration tests. Its two
++SQLite skips are tests that require concurrent PostgreSQL behavior. This is not
++a PostgreSQL/concurrency, migration, production or load certification.
++
++Native commands used `powershell -NoProfile -ExecutionPolicy Bypass -File
++scripts/dev.ps1 TestScript -ScriptPath res://tests/NAME.gd
++-CommandTimeoutSeconds 150`. Results setup used timeout 120 and added
++`-Graphical -RenderingMethod gl_compatibility`. HTTP commands used:
++
++```powershell
++$env:PYTHONPATH = Join-Path (Get-Location) 'backend'
++& .tools/backend-secure-venv/Scripts/python.exe -m pytest backend/tests/test_challenges_http.py -q -s --basetemp=build/challenge-check-http-baseline-2026-10-25
++& .tools/backend-secure-venv/Scripts/python.exe -m pytest backend/tests/test_challenge_group_http.py -q -s --basetemp=build/challenge-group-http-final-2026-10-25
++& .tools/backend-secure-venv/Scripts/python.exe -m pytest backend/tests/test_challenge_multi_http.py -q -s --basetemp=build/challenge-check-multi-http-2026-10-25
++```
++
++Each command also set APPDATA below `build/challenge-check-2026-10-25`.
++[report.json](evidence/challenge-check-2026-10-25/report.json) records commands,
++logs, outcomes and source/artifact fingerprints. The new tests are
++`backend/tests/test_challenge_group_http.py` and
++`game/tests/test_challenge_group_http.gd`. Existing tests and runtime files were
++not edited by this task.
++
++## Corrections and limits
++
++The initial new group fixture reached 58 checks with two failing logout
++assertions: it incorrectly required the selected invitation to be empty after
++logout. Guest discovery is allowed to select a public invitation again. The test
++now waits for that refresh and checks that private result identity, outcome,
++polling and signed-in membership have cleared. All racing/ranking/tries checks
++passed in that initial run. The fixture's source polling was also corrected to
++observe a completed lookup before launching another, and its Python imports were
++formatted. The initial failure log is retained; no existing assertion was removed
++or weakened.
++
++Passing HTTP runs retain dependency/index-reflection warnings and temporary
++comparison-unavailable responses while the isolated catalogue prepares. Native
++runs used approved host access for Windows certificates. There was no TLS bypass.
++Concurrent tutorial and Studio edits were preserved and are outside this task.
++
++No physical-device test or device-attachment check was performed. No APK,
++production service check/mutation, deployment, purchase, social send or
++owner-process restart was performed. Device behavior and production rollout
++compatibility still need their own acceptance.
++
++[Rechecked results setup capture](evidence/challenge-check-2026-10-25/results-setup-1280x720.png)
++and [task-only checkpoint](evidence/challenge-check-2026-10-25/task.patch).

@@ -1,0 +1,25 @@
+# Active car in the profile button (2026-10-25)
+
+PCA01: Replace the top-menu person icon with the selected car in the Rivalry podium style. PCA02: Follow confirmed car selection and saved paint/parts while preserving profile navigation. PCA03: Correct the owner's reviewed alignment/readability, widen the button for names and remove the dropdown arrow. R01/Q01: Capture native views, run existing app checks and retain a task-only checkpoint.
+
+`game/ui/profile_car.gd` wraps the existing Rivalry car renderer with the same simple model, front-facing perspective, paint finish and transparent composite. The revised static preview is 88 by 56 logical units, rendering at twice the display size like the podium. Its camera translates in the viewing plane to center the actual projected model bounds while keeping the Rivalry viewing angle. Additional preview-only fill and ambient lighting make dark vehicles readable at this size. Saved appearance changes and car confirmation refresh it; unchanged appearance keeps the same render. The preview ignores pointer input so the entire profile button remains tappable.
+
+`game/core/app.gd` widens the button from 190 to 240 logical units, matches the navigation's 64-unit height, reserves consistent car/name spacing in every state and removes the chevron and its reserved space. Longer names still expand the button as required. Selection and Garage synchronization refresh the preview. The name, profile destination and selection behavior remain intact. Existing models, shared Rivalry rendering, vehicle configuration and physics are reused without edits. Concurrent changes in the working tree are preserved; the runner's generated build identity is excluded from this task's patch.
+
+Native Compatibility and desktop Mobile reviews rendered all seven selected cars with visible pixels, applied a saved red paint/hood/aero change, retained an unchanged render and opened Profile through an actual touch on the car. Screenshots cover 960×540, 1280×720 and 1720×900 windows, a named forklift and a longer name. Both renderer reports record successful appearance refresh, retained rendering and profile navigation. Existing `TestApp` passed **141 checks, zero failures**. The initial component check-only parse and project import passed; final scripts execute in the native reviews. Import retained the environment's nonfatal missing Android build-tools notice.
+
+Commands used the pinned Godot 4.7.2 runner. `APPDATA` and `LOCALAPPDATA` were redirected to `build/profile-car-appdata` for disposable local data. Native runs used reviewed Windows certificate-store access:
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1 -Action CheckScript -ScriptPath res://ui/profile_car.gd
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1 -Action TestApp -CommandTimeoutSeconds 180
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1 -Action TestScript -ScriptPath res://tests/capture_profile_car.gd -Graphical -RenderingMethod gl_compatibility -CommandTimeoutSeconds 180
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1 -Action TestScript -ScriptPath res://tests/capture_profile_car.gd -Graphical -RenderingMethod mobile -CommandTimeoutSeconds 180
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1 -Action Import -CommandTimeoutSeconds 180
+```
+
+The Compatibility command also ran once with `BMT_PROFILE_CAR_BASELINE=1`, loading the exact task-start App source only in that isolated process's memory. Initial attempts encountered PowerShell execution policy, a collision between two runner build-identity writes, sandbox log-directory restrictions and certificate-store access restrictions. Sequential runner execution, process-local execution-policy bypass, disposable data directories and reviewed native execution resolved these without changing assertions or production behavior.
+
+Review [before](evidence/profile-active-car-2026-10-25/first-review/gl_compatibility/before-compact.png), [after](evidence/profile-active-car-2026-10-25/gl_compatibility/active-compact.png), [customised car](evidence/profile-active-car-2026-10-25/gl_compatibility/customised-compact.png), [named forklift](evidence/profile-active-car-2026-10-25/gl_compatibility/named-forklift.png), [longer name](evidence/profile-active-car-2026-10-25/gl_compatibility/long-name.png) and [profile opened by tapping the car](evidence/profile-active-car-2026-10-25/gl_compatibility/profile-opened-from-car.png). The initial smaller, off-center treatment rejected by the owner remains under `first-review/`, with its exact sources and captures. Both final renderer directories contain all-car screenshots and measurement reports. `report.json` records source hashes and checks; `task-only.patch` is checked against the current files in reverse and against task-start files forward.
+
+Client reload and owner/device visual and frame-pacing acceptance remain. No device attachment check or physical-device test, APK, live mutation, purchase, deployment or owner-process restart was performed.

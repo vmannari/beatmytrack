@@ -1,0 +1,497 @@
+<?xml version="1.0" encoding="utf-8"?><testsuites name="pytest tests"><testsuite name="pytest" errors="0" failures="17" skipped="0" tests="30" time="32.035" timestamp="2026-10-27T20:58:32.755497+02:00" hostname="DESKTOP-96E8L9N"><testcase classname="tests.test_car_compatibility" name="test_car_update_preserves_original_ticket_board_pb_and_worker_execution[sqlite-False-compact]" time="1.451"><failure message="AssertionError: {&quot;detail&quot;:&quot;This version requires a different verifier build; upload and test a new version&quot;}&#10;assert 409 == 201&#10; +  where 409 = &lt;Response [409 Conflict]&gt;.status_code">domain = namespace(app=&lt;fastapi.applications.FastAPI object at 0x000001F14C91C440&gt;, client=&lt;starlette.testclient.TestClient obj...46ca', 'Bob': '7d45f6cb-b9f7-408c-a763-009f2de68ba3', 'Carol': '5c755d52-7121-45aa-9439-e23bafc68364'}, postgres=False)
+vehicle = 'compact', rollback = False
+
+    @pytest.mark.parametrize("vehicle",["compact","pickup","classic","formula","kart","forklift","electric"])
+    @pytest.mark.parametrize("rollback",[False,True])
+    def test_car_update_preserves_original_ticket_board_pb_and_worker_execution(domain, vehicle, rollback):
+        old, current = builds()
+        if rollback:
+            old, current = current, old
+        domain.app.state.verifier = VersionedVerifier(old)
+        version = seed(domain,1)[0]
+        first = issue(domain,version,vehicle)
+        assert first.status_code == 201, first.text
+        first = first.json()
+        queued = submit(domain,first,"Alice")
+        domain.app.state.verifier.build = current
+        reply = issue(domain,version,vehicle)
+        if vehicle == "electric":
+            assert reply.status_code == 409
+            assert not process_one(domain.app)
+            with domain.factory() as db:
+                run = db.get(Run,queued["run_id"])
+                assert run.status == "queued" and run.attempts == 0
+            # The actual old cohort can still finish its own recording.
+            domain.app.state.verifier.build = old
+            assert process_one(domain.app)
+            return
+&gt;       assert reply.status_code == 201, reply.text
+E       AssertionError: {"detail":"This version requires a different verifier build; upload and test a new version"}
+E       assert 409 == 201
+E        +  where 409 = &lt;Response [409 Conflict]&gt;.status_code
+
+backend\tests\test_car_compatibility.py:75: AssertionError</failure></testcase><testcase classname="tests.test_car_compatibility" name="test_car_update_preserves_original_ticket_board_pb_and_worker_execution[sqlite-False-pickup]" time="0.941"><failure message="AssertionError: {&quot;detail&quot;:&quot;This version requires a different verifier build; upload and test a new version&quot;}&#10;assert 409 == 201&#10; +  where 409 = &lt;Response [409 Conflict]&gt;.status_code">domain = namespace(app=&lt;fastapi.applications.FastAPI object at 0x000001F14C9C5400&gt;, client=&lt;starlette.testclient.TestClient obj...c807', 'Bob': '0f065bca-85fc-4614-a8cf-a537c3ce9c05', 'Carol': '66c24531-ce6e-4fd8-96eb-f67b94e1d663'}, postgres=False)
+vehicle = 'pickup', rollback = False
+
+    @pytest.mark.parametrize("vehicle",["compact","pickup","classic","formula","kart","forklift","electric"])
+    @pytest.mark.parametrize("rollback",[False,True])
+    def test_car_update_preserves_original_ticket_board_pb_and_worker_execution(domain, vehicle, rollback):
+        old, current = builds()
+        if rollback:
+            old, current = current, old
+        domain.app.state.verifier = VersionedVerifier(old)
+        version = seed(domain,1)[0]
+        first = issue(domain,version,vehicle)
+        assert first.status_code == 201, first.text
+        first = first.json()
+        queued = submit(domain,first,"Alice")
+        domain.app.state.verifier.build = current
+        reply = issue(domain,version,vehicle)
+        if vehicle == "electric":
+            assert reply.status_code == 409
+            assert not process_one(domain.app)
+            with domain.factory() as db:
+                run = db.get(Run,queued["run_id"])
+                assert run.status == "queued" and run.attempts == 0
+            # The actual old cohort can still finish its own recording.
+            domain.app.state.verifier.build = old
+            assert process_one(domain.app)
+            return
+&gt;       assert reply.status_code == 201, reply.text
+E       AssertionError: {"detail":"This version requires a different verifier build; upload and test a new version"}
+E       assert 409 == 201
+E        +  where 409 = &lt;Response [409 Conflict]&gt;.status_code
+
+backend\tests\test_car_compatibility.py:75: AssertionError</failure></testcase><testcase classname="tests.test_car_compatibility" name="test_car_update_preserves_original_ticket_board_pb_and_worker_execution[sqlite-False-classic]" time="0.881"><failure message="AssertionError: {&quot;detail&quot;:&quot;This version requires a different verifier build; upload and test a new version&quot;}&#10;assert 409 == 201&#10; +  where 409 = &lt;Response [409 Conflict]&gt;.status_code">domain = namespace(app=&lt;fastapi.applications.FastAPI object at 0x000001F14D3B0AD0&gt;, client=&lt;starlette.testclient.TestClient obj...c8a6', 'Bob': '087adb09-e2d7-47ec-9bee-36cd4d308599', 'Carol': '7c09c4c0-3bd5-4249-a678-669e7a3207d0'}, postgres=False)
+vehicle = 'classic', rollback = False
+
+    @pytest.mark.parametrize("vehicle",["compact","pickup","classic","formula","kart","forklift","electric"])
+    @pytest.mark.parametrize("rollback",[False,True])
+    def test_car_update_preserves_original_ticket_board_pb_and_worker_execution(domain, vehicle, rollback):
+        old, current = builds()
+        if rollback:
+            old, current = current, old
+        domain.app.state.verifier = VersionedVerifier(old)
+        version = seed(domain,1)[0]
+        first = issue(domain,version,vehicle)
+        assert first.status_code == 201, first.text
+        first = first.json()
+        queued = submit(domain,first,"Alice")
+        domain.app.state.verifier.build = current
+        reply = issue(domain,version,vehicle)
+        if vehicle == "electric":
+            assert reply.status_code == 409
+            assert not process_one(domain.app)
+            with domain.factory() as db:
+                run = db.get(Run,queued["run_id"])
+                assert run.status == "queued" and run.attempts == 0
+            # The actual old cohort can still finish its own recording.
+            domain.app.state.verifier.build = old
+            assert process_one(domain.app)
+            return
+&gt;       assert reply.status_code == 201, reply.text
+E       AssertionError: {"detail":"This version requires a different verifier build; upload and test a new version"}
+E       assert 409 == 201
+E        +  where 409 = &lt;Response [409 Conflict]&gt;.status_code
+
+backend\tests\test_car_compatibility.py:75: AssertionError</failure></testcase><testcase classname="tests.test_car_compatibility" name="test_car_update_preserves_original_ticket_board_pb_and_worker_execution[sqlite-False-formula]" time="0.879"><failure message="AssertionError: {&quot;detail&quot;:&quot;This version requires a different verifier build; upload and test a new version&quot;}&#10;assert 409 == 201&#10; +  where 409 = &lt;Response [409 Conflict]&gt;.status_code">domain = namespace(app=&lt;fastapi.applications.FastAPI object at 0x000001F14E86CEC0&gt;, client=&lt;starlette.testclient.TestClient obj...2477', 'Bob': '5ef0b3bf-83a2-40b8-a734-1a4183d07c5e', 'Carol': '5a66a388-f111-4153-bea5-73c72c2e6f3c'}, postgres=False)
+vehicle = 'formula', rollback = False
+
+    @pytest.mark.parametrize("vehicle",["compact","pickup","classic","formula","kart","forklift","electric"])
+    @pytest.mark.parametrize("rollback",[False,True])
+    def test_car_update_preserves_original_ticket_board_pb_and_worker_execution(domain, vehicle, rollback):
+        old, current = builds()
+        if rollback:
+            old, current = current, old
+        domain.app.state.verifier = VersionedVerifier(old)
+        version = seed(domain,1)[0]
+        first = issue(domain,version,vehicle)
+        assert first.status_code == 201, first.text
+        first = first.json()
+        queued = submit(domain,first,"Alice")
+        domain.app.state.verifier.build = current
+        reply = issue(domain,version,vehicle)
+        if vehicle == "electric":
+            assert reply.status_code == 409
+            assert not process_one(domain.app)
+            with domain.factory() as db:
+                run = db.get(Run,queued["run_id"])
+                assert run.status == "queued" and run.attempts == 0
+            # The actual old cohort can still finish its own recording.
+            domain.app.state.verifier.build = old
+            assert process_one(domain.app)
+            return
+&gt;       assert reply.status_code == 201, reply.text
+E       AssertionError: {"detail":"This version requires a different verifier build; upload and test a new version"}
+E       assert 409 == 201
+E        +  where 409 = &lt;Response [409 Conflict]&gt;.status_code
+
+backend\tests\test_car_compatibility.py:75: AssertionError</failure></testcase><testcase classname="tests.test_car_compatibility" name="test_car_update_preserves_original_ticket_board_pb_and_worker_execution[sqlite-False-kart]" time="1.085"><failure message="AssertionError: {&quot;detail&quot;:&quot;This version requires a different verifier build; upload and test a new version&quot;}&#10;assert 409 == 201&#10; +  where 409 = &lt;Response [409 Conflict]&gt;.status_code">domain = namespace(app=&lt;fastapi.applications.FastAPI object at 0x000001F14ED6D400&gt;, client=&lt;starlette.testclient.TestClient obj...98db', 'Bob': '74e139aa-c329-40c2-be02-9995b35b0238', 'Carol': 'c98bf688-aad5-41f0-9a6e-45bf0051be6c'}, postgres=False)
+vehicle = 'kart', rollback = False
+
+    @pytest.mark.parametrize("vehicle",["compact","pickup","classic","formula","kart","forklift","electric"])
+    @pytest.mark.parametrize("rollback",[False,True])
+    def test_car_update_preserves_original_ticket_board_pb_and_worker_execution(domain, vehicle, rollback):
+        old, current = builds()
+        if rollback:
+            old, current = current, old
+        domain.app.state.verifier = VersionedVerifier(old)
+        version = seed(domain,1)[0]
+        first = issue(domain,version,vehicle)
+        assert first.status_code == 201, first.text
+        first = first.json()
+        queued = submit(domain,first,"Alice")
+        domain.app.state.verifier.build = current
+        reply = issue(domain,version,vehicle)
+        if vehicle == "electric":
+            assert reply.status_code == 409
+            assert not process_one(domain.app)
+            with domain.factory() as db:
+                run = db.get(Run,queued["run_id"])
+                assert run.status == "queued" and run.attempts == 0
+            # The actual old cohort can still finish its own recording.
+            domain.app.state.verifier.build = old
+            assert process_one(domain.app)
+            return
+&gt;       assert reply.status_code == 201, reply.text
+E       AssertionError: {"detail":"This version requires a different verifier build; upload and test a new version"}
+E       assert 409 == 201
+E        +  where 409 = &lt;Response [409 Conflict]&gt;.status_code
+
+backend\tests\test_car_compatibility.py:75: AssertionError</failure></testcase><testcase classname="tests.test_car_compatibility" name="test_car_update_preserves_original_ticket_board_pb_and_worker_execution[sqlite-False-forklift]" time="1.005"><failure message="AssertionError: {&quot;detail&quot;:&quot;This version requires a different verifier build; upload and test a new version&quot;}&#10;assert 409 == 201&#10; +  where 409 = &lt;Response [409 Conflict]&gt;.status_code">domain = namespace(app=&lt;fastapi.applications.FastAPI object at 0x000001F14D76B620&gt;, client=&lt;starlette.testclient.TestClient obj...7cd3', 'Bob': 'faf0c7bb-5a58-4cd8-b35c-f2eb8d2aaea3', 'Carol': '93c1a9a7-0672-412f-8a32-575729309de6'}, postgres=False)
+vehicle = 'forklift', rollback = False
+
+    @pytest.mark.parametrize("vehicle",["compact","pickup","classic","formula","kart","forklift","electric"])
+    @pytest.mark.parametrize("rollback",[False,True])
+    def test_car_update_preserves_original_ticket_board_pb_and_worker_execution(domain, vehicle, rollback):
+        old, current = builds()
+        if rollback:
+            old, current = current, old
+        domain.app.state.verifier = VersionedVerifier(old)
+        version = seed(domain,1)[0]
+        first = issue(domain,version,vehicle)
+        assert first.status_code == 201, first.text
+        first = first.json()
+        queued = submit(domain,first,"Alice")
+        domain.app.state.verifier.build = current
+        reply = issue(domain,version,vehicle)
+        if vehicle == "electric":
+            assert reply.status_code == 409
+            assert not process_one(domain.app)
+            with domain.factory() as db:
+                run = db.get(Run,queued["run_id"])
+                assert run.status == "queued" and run.attempts == 0
+            # The actual old cohort can still finish its own recording.
+            domain.app.state.verifier.build = old
+            assert process_one(domain.app)
+            return
+&gt;       assert reply.status_code == 201, reply.text
+E       AssertionError: {"detail":"This version requires a different verifier build; upload and test a new version"}
+E       assert 409 == 201
+E        +  where 409 = &lt;Response [409 Conflict]&gt;.status_code
+
+backend\tests\test_car_compatibility.py:75: AssertionError</failure></testcase><testcase classname="tests.test_car_compatibility" name="test_car_update_preserves_original_ticket_board_pb_and_worker_execution[sqlite-False-electric]" time="1.060" /><testcase classname="tests.test_car_compatibility" name="test_car_update_preserves_original_ticket_board_pb_and_worker_execution[sqlite-True-compact]" time="1.175"><failure message="AssertionError: {&quot;detail&quot;:&quot;This version requires a different verifier build; upload and test a new version&quot;}&#10;assert 409 == 201&#10; +  where 409 = &lt;Response [409 Conflict]&gt;.status_code">domain = namespace(app=&lt;fastapi.applications.FastAPI object at 0x000001F15020FE00&gt;, client=&lt;starlette.testclient.TestClient obj...396f', 'Bob': '5185f7b9-6d63-48c6-ac45-cfa855d0d1dc', 'Carol': '3d482800-68d8-4d78-aed0-0310b030d8c1'}, postgres=False)
+vehicle = 'compact', rollback = True
+
+    @pytest.mark.parametrize("vehicle",["compact","pickup","classic","formula","kart","forklift","electric"])
+    @pytest.mark.parametrize("rollback",[False,True])
+    def test_car_update_preserves_original_ticket_board_pb_and_worker_execution(domain, vehicle, rollback):
+        old, current = builds()
+        if rollback:
+            old, current = current, old
+        domain.app.state.verifier = VersionedVerifier(old)
+        version = seed(domain,1)[0]
+        first = issue(domain,version,vehicle)
+        assert first.status_code == 201, first.text
+        first = first.json()
+        queued = submit(domain,first,"Alice")
+        domain.app.state.verifier.build = current
+        reply = issue(domain,version,vehicle)
+        if vehicle == "electric":
+            assert reply.status_code == 409
+            assert not process_one(domain.app)
+            with domain.factory() as db:
+                run = db.get(Run,queued["run_id"])
+                assert run.status == "queued" and run.attempts == 0
+            # The actual old cohort can still finish its own recording.
+            domain.app.state.verifier.build = old
+            assert process_one(domain.app)
+            return
+&gt;       assert reply.status_code == 201, reply.text
+E       AssertionError: {"detail":"This version requires a different verifier build; upload and test a new version"}
+E       assert 409 == 201
+E        +  where 409 = &lt;Response [409 Conflict]&gt;.status_code
+
+backend\tests\test_car_compatibility.py:75: AssertionError</failure></testcase><testcase classname="tests.test_car_compatibility" name="test_car_update_preserves_original_ticket_board_pb_and_worker_execution[sqlite-True-pickup]" time="1.018"><failure message="AssertionError: {&quot;detail&quot;:&quot;This version requires a different verifier build; upload and test a new version&quot;}&#10;assert 409 == 201&#10; +  where 409 = &lt;Response [409 Conflict]&gt;.status_code">domain = namespace(app=&lt;fastapi.applications.FastAPI object at 0x000001F1502C2CF0&gt;, client=&lt;starlette.testclient.TestClient obj...bd53', 'Bob': 'a73f2ef0-ec94-4eed-808b-0994db644f91', 'Carol': 'b57b72fe-2620-4dd1-a191-d4ee5d031c3f'}, postgres=False)
+vehicle = 'pickup', rollback = True
+
+    @pytest.mark.parametrize("vehicle",["compact","pickup","classic","formula","kart","forklift","electric"])
+    @pytest.mark.parametrize("rollback",[False,True])
+    def test_car_update_preserves_original_ticket_board_pb_and_worker_execution(domain, vehicle, rollback):
+        old, current = builds()
+        if rollback:
+            old, current = current, old
+        domain.app.state.verifier = VersionedVerifier(old)
+        version = seed(domain,1)[0]
+        first = issue(domain,version,vehicle)
+        assert first.status_code == 201, first.text
+        first = first.json()
+        queued = submit(domain,first,"Alice")
+        domain.app.state.verifier.build = current
+        reply = issue(domain,version,vehicle)
+        if vehicle == "electric":
+            assert reply.status_code == 409
+            assert not process_one(domain.app)
+            with domain.factory() as db:
+                run = db.get(Run,queued["run_id"])
+                assert run.status == "queued" and run.attempts == 0
+            # The actual old cohort can still finish its own recording.
+            domain.app.state.verifier.build = old
+            assert process_one(domain.app)
+            return
+&gt;       assert reply.status_code == 201, reply.text
+E       AssertionError: {"detail":"This version requires a different verifier build; upload and test a new version"}
+E       assert 409 == 201
+E        +  where 409 = &lt;Response [409 Conflict]&gt;.status_code
+
+backend\tests\test_car_compatibility.py:75: AssertionError</failure></testcase><testcase classname="tests.test_car_compatibility" name="test_car_update_preserves_original_ticket_board_pb_and_worker_execution[sqlite-True-classic]" time="0.891"><failure message="AssertionError: {&quot;detail&quot;:&quot;This version requires a different verifier build; upload and test a new version&quot;}&#10;assert 409 == 201&#10; +  where 409 = &lt;Response [409 Conflict]&gt;.status_code">domain = namespace(app=&lt;fastapi.applications.FastAPI object at 0x000001F150947230&gt;, client=&lt;starlette.testclient.TestClient obj...e814', 'Bob': '266d470b-2f8c-402d-a925-6466442c4cc0', 'Carol': '87f3b924-5019-4d00-a121-86b9ba41b50c'}, postgres=False)
+vehicle = 'classic', rollback = True
+
+    @pytest.mark.parametrize("vehicle",["compact","pickup","classic","formula","kart","forklift","electric"])
+    @pytest.mark.parametrize("rollback",[False,True])
+    def test_car_update_preserves_original_ticket_board_pb_and_worker_execution(domain, vehicle, rollback):
+        old, current = builds()
+        if rollback:
+            old, current = current, old
+        domain.app.state.verifier = VersionedVerifier(old)
+        version = seed(domain,1)[0]
+        first = issue(domain,version,vehicle)
+        assert first.status_code == 201, first.text
+        first = first.json()
+        queued = submit(domain,first,"Alice")
+        domain.app.state.verifier.build = current
+        reply = issue(domain,version,vehicle)
+        if vehicle == "electric":
+            assert reply.status_code == 409
+            assert not process_one(domain.app)
+            with domain.factory() as db:
+                run = db.get(Run,queued["run_id"])
+                assert run.status == "queued" and run.attempts == 0
+            # The actual old cohort can still finish its own recording.
+            domain.app.state.verifier.build = old
+            assert process_one(domain.app)
+            return
+&gt;       assert reply.status_code == 201, reply.text
+E       AssertionError: {"detail":"This version requires a different verifier build; upload and test a new version"}
+E       assert 409 == 201
+E        +  where 409 = &lt;Response [409 Conflict]&gt;.status_code
+
+backend\tests\test_car_compatibility.py:75: AssertionError</failure></testcase><testcase classname="tests.test_car_compatibility" name="test_car_update_preserves_original_ticket_board_pb_and_worker_execution[sqlite-True-formula]" time="0.852"><failure message="AssertionError: {&quot;detail&quot;:&quot;This version requires a different verifier build; upload and test a new version&quot;}&#10;assert 409 == 201&#10; +  where 409 = &lt;Response [409 Conflict]&gt;.status_code">domain = namespace(app=&lt;fastapi.applications.FastAPI object at 0x000001F150DCB8C0&gt;, client=&lt;starlette.testclient.TestClient obj...aadb', 'Bob': '59b08fda-49c1-40c7-87a0-05bd75663a22', 'Carol': 'adb58c40-ae24-401c-a50a-f7385faabb48'}, postgres=False)
+vehicle = 'formula', rollback = True
+
+    @pytest.mark.parametrize("vehicle",["compact","pickup","classic","formula","kart","forklift","electric"])
+    @pytest.mark.parametrize("rollback",[False,True])
+    def test_car_update_preserves_original_ticket_board_pb_and_worker_execution(domain, vehicle, rollback):
+        old, current = builds()
+        if rollback:
+            old, current = current, old
+        domain.app.state.verifier = VersionedVerifier(old)
+        version = seed(domain,1)[0]
+        first = issue(domain,version,vehicle)
+        assert first.status_code == 201, first.text
+        first = first.json()
+        queued = submit(domain,first,"Alice")
+        domain.app.state.verifier.build = current
+        reply = issue(domain,version,vehicle)
+        if vehicle == "electric":
+            assert reply.status_code == 409
+            assert not process_one(domain.app)
+            with domain.factory() as db:
+                run = db.get(Run,queued["run_id"])
+                assert run.status == "queued" and run.attempts == 0
+            # The actual old cohort can still finish its own recording.
+            domain.app.state.verifier.build = old
+            assert process_one(domain.app)
+            return
+&gt;       assert reply.status_code == 201, reply.text
+E       AssertionError: {"detail":"This version requires a different verifier build; upload and test a new version"}
+E       assert 409 == 201
+E        +  where 409 = &lt;Response [409 Conflict]&gt;.status_code
+
+backend\tests\test_car_compatibility.py:75: AssertionError</failure></testcase><testcase classname="tests.test_car_compatibility" name="test_car_update_preserves_original_ticket_board_pb_and_worker_execution[sqlite-True-kart]" time="1.066"><failure message="AssertionError: {&quot;detail&quot;:&quot;This version requires a different verifier build; upload and test a new version&quot;}&#10;assert 409 == 201&#10; +  where 409 = &lt;Response [409 Conflict]&gt;.status_code">domain = namespace(app=&lt;fastapi.applications.FastAPI object at 0x000001F1527F4AD0&gt;, client=&lt;starlette.testclient.TestClient obj...7b72', 'Bob': 'c27a2271-bb22-4abc-827a-5043287ef7ea', 'Carol': 'fbfe461e-f54a-417c-abcc-87cbb1f762f0'}, postgres=False)
+vehicle = 'kart', rollback = True
+
+    @pytest.mark.parametrize("vehicle",["compact","pickup","classic","formula","kart","forklift","electric"])
+    @pytest.mark.parametrize("rollback",[False,True])
+    def test_car_update_preserves_original_ticket_board_pb_and_worker_execution(domain, vehicle, rollback):
+        old, current = builds()
+        if rollback:
+            old, current = current, old
+        domain.app.state.verifier = VersionedVerifier(old)
+        version = seed(domain,1)[0]
+        first = issue(domain,version,vehicle)
+        assert first.status_code == 201, first.text
+        first = first.json()
+        queued = submit(domain,first,"Alice")
+        domain.app.state.verifier.build = current
+        reply = issue(domain,version,vehicle)
+        if vehicle == "electric":
+            assert reply.status_code == 409
+            assert not process_one(domain.app)
+            with domain.factory() as db:
+                run = db.get(Run,queued["run_id"])
+                assert run.status == "queued" and run.attempts == 0
+            # The actual old cohort can still finish its own recording.
+            domain.app.state.verifier.build = old
+            assert process_one(domain.app)
+            return
+&gt;       assert reply.status_code == 201, reply.text
+E       AssertionError: {"detail":"This version requires a different verifier build; upload and test a new version"}
+E       assert 409 == 201
+E        +  where 409 = &lt;Response [409 Conflict]&gt;.status_code
+
+backend\tests\test_car_compatibility.py:75: AssertionError</failure></testcase><testcase classname="tests.test_car_compatibility" name="test_car_update_preserves_original_ticket_board_pb_and_worker_execution[sqlite-True-forklift]" time="0.853"><failure message="AssertionError: {&quot;detail&quot;:&quot;This version requires a different verifier build; upload and test a new version&quot;}&#10;assert 409 == 201&#10; +  where 409 = &lt;Response [409 Conflict]&gt;.status_code">domain = namespace(app=&lt;fastapi.applications.FastAPI object at 0x000001F152ADC6E0&gt;, client=&lt;starlette.testclient.TestClient obj...d4da', 'Bob': '4fc17066-13a6-41fc-9fd3-7f44abfc476f', 'Carol': '5e86644a-c6b6-48fc-ad7b-169728b55022'}, postgres=False)
+vehicle = 'forklift', rollback = True
+
+    @pytest.mark.parametrize("vehicle",["compact","pickup","classic","formula","kart","forklift","electric"])
+    @pytest.mark.parametrize("rollback",[False,True])
+    def test_car_update_preserves_original_ticket_board_pb_and_worker_execution(domain, vehicle, rollback):
+        old, current = builds()
+        if rollback:
+            old, current = current, old
+        domain.app.state.verifier = VersionedVerifier(old)
+        version = seed(domain,1)[0]
+        first = issue(domain,version,vehicle)
+        assert first.status_code == 201, first.text
+        first = first.json()
+        queued = submit(domain,first,"Alice")
+        domain.app.state.verifier.build = current
+        reply = issue(domain,version,vehicle)
+        if vehicle == "electric":
+            assert reply.status_code == 409
+            assert not process_one(domain.app)
+            with domain.factory() as db:
+                run = db.get(Run,queued["run_id"])
+                assert run.status == "queued" and run.attempts == 0
+            # The actual old cohort can still finish its own recording.
+            domain.app.state.verifier.build = old
+            assert process_one(domain.app)
+            return
+&gt;       assert reply.status_code == 201, reply.text
+E       AssertionError: {"detail":"This version requires a different verifier build; upload and test a new version"}
+E       assert 409 == 201
+E        +  where 409 = &lt;Response [409 Conflict]&gt;.status_code
+
+backend\tests\test_car_compatibility.py:75: AssertionError</failure></testcase><testcase classname="tests.test_car_compatibility" name="test_car_update_preserves_original_ticket_board_pb_and_worker_execution[sqlite-True-electric]" time="0.928" /><testcase classname="tests.test_car_compatibility" name="test_unknown_or_selected_car_changes_still_require_the_matching_contract[sqlite-engine_version]" time="0.773" /><testcase classname="tests.test_car_compatibility" name="test_unknown_or_selected_car_changes_still_require_the_matching_contract[sqlite-compiler_version]" time="1.001" /><testcase classname="tests.test_car_compatibility" name="test_unknown_or_selected_car_changes_still_require_the_matching_contract[sqlite-rules_key]" time="1.145" /><testcase classname="tests.test_car_compatibility" name="test_unknown_or_selected_car_changes_still_require_the_matching_contract[sqlite-physics_version]" time="1.306" /><testcase classname="tests.test_car_compatibility" name="test_unknown_or_selected_car_changes_still_require_the_matching_contract[sqlite-config_hash]" time="0.851" /><testcase classname="tests.test_car_compatibility" name="test_optional_and_unrelated_car_metadata_does_not_change_compact_contract[sqlite]" time="0.846"><failure message="AssertionError: assert '11e73772d904...3117395c2440a' == '8cddbc870ad5...26b6a92109791'&#10;  &#10;  - 8cddbc870ad550ea80b32135b951f5540d68885f709f6a11adb26b6a92109791&#10;  + 11e73772d90483c74e3d0e36586f91c5f73943f157b3abde6d53117395c2440a">domain = namespace(app=&lt;fastapi.applications.FastAPI object at 0x000001F154F76E40&gt;, client=&lt;starlette.testclient.TestClient obj...cd5e', 'Bob': 'b137f7d7-791a-4e2a-a846-1cc7ba5c81dd', 'Carol': '87975db0-9bf0-4a9b-86c1-24ca2587571a'}, postgres=False)
+
+    def test_optional_and_unrelated_car_metadata_does_not_change_compact_contract(domain):
+        old, current = builds()
+        domain.app.state.verifier = VersionedVerifier(current)
+        version = seed(domain,1)[0]
+        first = issue(domain,version).json()
+        metadata = deepcopy(current)
+        metadata["vehicles"]["compact"]["future_optional_metadata"] = "ignored"
+        metadata["vehicles"]["new-car"] = {"handling_version":"new-1","config_hash":"new"}
+        metadata["vehicles"]["electric"] = old["vehicles"]["electric"]
+        domain.app.state.verifier.build = metadata
+&gt;       assert plan_contract(current,"compact") == plan_contract(metadata,"compact")
+E       AssertionError: assert '11e73772d904...3117395c2440a' == '8cddbc870ad5...26b6a92109791'
+E         
+E         - 8cddbc870ad550ea80b32135b951f5540d68885f709f6a11adb26b6a92109791
+E         + 11e73772d90483c74e3d0e36586f91c5f73943f157b3abde6d53117395c2440a
+
+backend\tests\test_car_compatibility.py:110: AssertionError</failure></testcase><testcase classname="tests.test_car_compatibility" name="test_future_electric_tune_keeps_every_unrelated_car_contract_exact[sqlite-compact]" time="1.393" /><testcase classname="tests.test_car_compatibility" name="test_future_electric_tune_keeps_every_unrelated_car_contract_exact[sqlite-pickup]" time="0.941" /><testcase classname="tests.test_car_compatibility" name="test_future_electric_tune_keeps_every_unrelated_car_contract_exact[sqlite-classic]" time="0.957" /><testcase classname="tests.test_car_compatibility" name="test_future_electric_tune_keeps_every_unrelated_car_contract_exact[sqlite-formula]" time="0.949" /><testcase classname="tests.test_car_compatibility" name="test_future_electric_tune_keeps_every_unrelated_car_contract_exact[sqlite-kart]" time="1.003" /><testcase classname="tests.test_car_compatibility" name="test_future_electric_tune_keeps_every_unrelated_car_contract_exact[sqlite-forklift]" time="1.973" /><testcase classname="tests.test_car_compatibility" name="test_existing_public_challenge_remains_discoverable_joinable_and_verifiable[sqlite]" time="1.353"><failure message="AssertionError: assert [] == ['9048abb5-18...4f8a36f76bdc']&#10;  &#10;  Right contains one more item: '9048abb5-18b7-405f-8d76-4f8a36f76bdc'&#10;  Use -v to get more diff">domain = namespace(app=&lt;fastapi.applications.FastAPI object at 0x000001F158A52660&gt;, client=&lt;starlette.testclient.TestClient obj...838f', 'Bob': 'e590b858-8c3c-4e13-8092-e0573a5219cf', 'Carol': '68acd925-a185-4499-883c-544d91ce7a4e'}, postgres=False)
+
+    def test_existing_public_challenge_remains_discoverable_joinable_and_verifiable(domain):
+        old, current = builds()
+        domain.app.state.verifier = VersionedVerifier(old)
+        version = seed(domain,1)[0]
+        first = issue(domain,version).json()
+        source = submit(domain,first,"Alice")
+        assert process_one(domain.app)
+        created = domain.client.post("/v1/challenges",json={"version_id":version,"vehicle_id":"compact",
+            "mode":"group","visibility":"public","source_run_id":source["run_id"]},headers=headers(domain,"Alice"))
+        assert created.status_code == 201, created.text
+        challenge = created.json()
+        domain.app.state.verifier.build = current
+        discovered = domain.client.get("/v1/challenges?folder=discover",headers=headers(domain,"Bob"))
+        assert discovered.status_code == 200, discovered.text
+&gt;       assert [row["id"] for row in discovered.json()["items"]] == [challenge["id"]]
+E       AssertionError: assert [] == ['9048abb5-18...4f8a36f76bdc']
+E         
+E         Right contains one more item: '9048abb5-18b7-405f-8d76-4f8a36f76bdc'
+E         Use -v to get more diff
+
+backend\tests\test_car_compatibility.py:152: AssertionError</failure></testcase><testcase classname="tests.test_car_compatibility" name="test_weekly_membership_lineup_and_peer_group_survive_electric_only_release[sqlite-False]" time="1.108"><failure message="KeyError: 'group_id'">domain = namespace(app=&lt;fastapi.applications.FastAPI object at 0x000001F15900EF90&gt;, client=&lt;starlette.testclient.TestClient obj...4cf3', 'Bob': '55574948-22a5-4701-9671-ffd018004453', 'Carol': 'ac5bf4a3-f762-4601-b716-2a14f68e2df8'}, postgres=False)
+world_circuit = False
+
+    @pytest.mark.parametrize("world_circuit",[False,True])
+    def test_weekly_membership_lineup_and_peer_group_survive_electric_only_release(domain, world_circuit):
+        old, current = builds()
+        domain.app.state.verifier = VersionedVerifier(old)
+        if world_circuit:
+            domain.app.state.settings = replace(domain.app.state.settings,world_ranking_launch_week=week_window(now())[0])
+        seed(domain,5)
+        maintain(domain.app)
+        first = join(domain,"Alice")
+        group_id = first["group_id"]
+        with domain.factory() as db:
+            group = db.get(RivalryGroup,group_id)
+            original_tracks, original_key = deepcopy(group.tracks), group.contract_key
+            assert bool(group.world_circuit_id) == world_circuit
+        domain.app.state.verifier.build = current
+        shown = domain.client.get("/v1/rivalry/current?vehicle_id=compact",headers=headers(domain,"Alice"))
+&gt;       assert shown.status_code == 200 and shown.json()["group_id"] == group_id, shown.text
+                                            ^^^^^^^^^^^^^^^^^^^^^^^^
+E       KeyError: 'group_id'
+
+backend\tests\test_car_compatibility.py:180: KeyError</failure></testcase><testcase classname="tests.test_car_compatibility" name="test_weekly_membership_lineup_and_peer_group_survive_electric_only_release[sqlite-True]" time="1.618"><failure message="KeyError: 'group_id'">domain = namespace(app=&lt;fastapi.applications.FastAPI object at 0x000001F159CA0AD0&gt;, client=&lt;starlette.testclient.TestClient obj...a7b7', 'Bob': 'f8e59bdd-9c1a-49b0-8b85-95f1a63c50c9', 'Carol': 'fbf2b751-d1a9-4694-bb34-9aa33fe98210'}, postgres=False)
+world_circuit = True
+
+    @pytest.mark.parametrize("world_circuit",[False,True])
+    def test_weekly_membership_lineup_and_peer_group_survive_electric_only_release(domain, world_circuit):
+        old, current = builds()
+        domain.app.state.verifier = VersionedVerifier(old)
+        if world_circuit:
+            domain.app.state.settings = replace(domain.app.state.settings,world_ranking_launch_week=week_window(now())[0])
+        seed(domain,5)
+        maintain(domain.app)
+        first = join(domain,"Alice")
+        group_id = first["group_id"]
+        with domain.factory() as db:
+            group = db.get(RivalryGroup,group_id)
+            original_tracks, original_key = deepcopy(group.tracks), group.contract_key
+            assert bool(group.world_circuit_id) == world_circuit
+        domain.app.state.verifier.build = current
+        shown = domain.client.get("/v1/rivalry/current?vehicle_id=compact",headers=headers(domain,"Alice"))
+&gt;       assert shown.status_code == 200 and shown.json()["group_id"] == group_id, shown.text
+                                            ^^^^^^^^^^^^^^^^^^^^^^^^
+E       KeyError: 'group_id'
+
+backend\tests\test_car_compatibility.py:180: KeyError</failure></testcase><testcase classname="tests.test_car_compatibility" name="test_saved_creator_lap_uses_selected_car_equivalence_without_relabeling" time="0.009"><failure message="bmt_backend.publications.PublicationFailure: The saved creator lap requires its original track and game build. Its local recording is preserved.">def test_saved_creator_lap_uses_selected_car_equivalence_without_relabeling():
+        old, current = builds()
+        old["track_content_hash"] = current["track_content_hash"] = "same-track"
+        for car in current["vehicles"]:
+            contract = {**old,"config_hash":old["vehicles"][car]["config_hash"]}
+            if car == "electric":
+                with pytest.raises(PublicationFailure):
+                    _check_contract(contract,current,car)
+            else:
+&gt;               _check_contract(contract,current,car)
+
+backend\tests\test_car_compatibility.py:203: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+
+contract = {'compiler_version': 'creator-compiler-27', 'engine_version': '4.7.2.stable.official.ed1daf0bf', 'laps': 5, 'max_frames': 216000, ...}
+manifest = {'compiler_version': 'creator-compiler-27', 'engine_version': '4.7.2.stable.official.ed1daf0bf', 'laps': 5, 'max_frames': 216000, ...}
+vehicle = 'classic'
+
+    def _check_contract(contract, manifest, vehicle):
+        expected = {**manifest, "config_hash": manifest.get("vehicles", {}).get(vehicle, {}).get("config_hash")}
+        if (manifest.get("laps") != 5 or manifest.get("tick_rate") != 120
+                or vehicle not in manifest.get("vehicles", {})
+                or any(contract.get(field) != expected.get(field) for field in CONTRACT_FIELDS)):
+&gt;           raise PublicationFailure("build_mismatch", "The saved creator lap requires its original track and game build. Its local recording is preserved.")
+E           bmt_backend.publications.PublicationFailure: The saved creator lap requires its original track and game build. Its local recording is preserved.
+
+build\compatibility-audit\task-start-v1\bmt_backend\publications.py:260: PublicationFailure</failure></testcase></testsuite></testsuites>

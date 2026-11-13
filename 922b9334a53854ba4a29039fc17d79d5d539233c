@@ -1,0 +1,41 @@
+--- a/game/ui/garage_page.gd
++++ b/game/ui/garage_page.gd
+@@ -774,6 +774,10 @@
+ 		column.add_theme_constant_override("separation", 0)
+ 		card.add_child(column)
+ 		MenuStyle.fill(column)
++		column.offset_left = 2
++		column.offset_top = 2
++		column.offset_right = -2
++		column.offset_bottom = -2
+ 		var model: CarShowroom = preload("res://ui/garage_cached_thumbnail.gd").new() if cached_carousel else CarShowroom.new()
+ 		if cached_carousel: model.preview_service = _preview_service
+ 		model.name = "CarModel_" + id
+@@ -788,12 +792,23 @@
+ 		model.size_flags_vertical = Control.SIZE_EXPAND_FILL
+ 		column.add_child(model)
+ 		thumbnails[id] = model
+-		var footer := MarginContainer.new()
++		var footer := PanelContainer.new()
++		footer.name = "CarCardLabel_" + id
+ 		footer.mouse_filter = Control.MOUSE_FILTER_IGNORE
+-		footer.add_theme_constant_override("margin_left", 14)
+-		footer.add_theme_constant_override("margin_right", 14)
++		var shade: StyleBoxFlat = MenuStyle.box(Color(0.035,0.095,0.13,0.58),0)
++		shade.content_margin_left = 14
++		shade.content_margin_right = 14
++		shade.set_corner_radius_all(0)
++		footer.add_theme_stylebox_override("panel",shade)
+ 		footer.custom_minimum_size.y = 36
+-		column.add_child(footer)
++		# Cover the photograph's bottom edge so the garage shows through the shade.
++		model.add_child(footer)
++		footer.set_anchors_and_offsets_preset(Control.PRESET_BOTTOM_WIDE)
++		footer.offset_top = -36
++		card.mouse_entered.connect(func() -> void: shade.bg_color = Color(0.075,0.16,0.20,0.72))
++		card.mouse_exited.connect(func() -> void: shade.bg_color = Color(0.035,0.095,0.13,0.58))
++		card.button_down.connect(func() -> void: shade.bg_color = Color(0.11,0.20,0.23,0.82))
++		card.button_up.connect(func() -> void: shade.bg_color = Color(0.075,0.16,0.20,0.72) if card.get_global_rect().has_point(card.get_global_mouse_position()) else Color(0.035,0.095,0.13,0.58))
+ 		var caption := MenuStyle.label(_car_name(id), 22)
+ 		caption.name = "CarCardTitle_" + id
+ 		caption.add_theme_font_override("font", MenuStyle.DISPLAY)

@@ -1,0 +1,21 @@
+# Electric clean bonnet outline — 2026-10-26
+
+The owner marks two outward hooks near the nose and supplies another Lucid reference, asking for a cleaner bonnet shape. The correction authors an independent tapered plan-view outline and fits it onto the retained smooth hood. [Matched native before/after gallery](evidence/electric-clean-bonnet-2026-10-26/gallery.html), [actual commands and measurements](evidence/electric-clean-bonnet-2026-10-26/report.json), [task-only Git checkpoint](evidence/electric-clean-bonnet-2026-10-26/checkpoint.patch).
+
+| Requirement | Result |
+| --- | --- |
+| ECB01 | Actual local outward flare falls from 19.390mm to 0.000mm on both sides. The previously reversed seam direction now flows continuously inward toward the front. |
+| ECB02 | A rounded trapezoid with a bowed leading edge supplies a clean physical outline. Its geometry is projected onto the original master hood surface, independently of the fender width. No reference bitmap or Lucid logo ships. |
+| ECB03 | Actual prepared-mesh checks cover 25/25 full and 25/25 simpler side-seam stations, both mirrored outlines and every inner/outer surround corner. Exact original43/12 is retained; final43/43 Compatibility/desktop Mobile pass. Matched front, top, reference-angle, close-up and actual Garage views accompany the measurements. |
+| R01 | All 588 non-bonnet prepared resources are exact originals. The fair body/wing surface and rounded nose remain. Original normal, gap, symmetry, S-turn, finite geometry, articulation and 170000-triangle limits pass without weakened tolerances. |
+| G01 / Q01 | Native menu/news/all49 photos refreshed and imported; isolated binary patch checked, applied and byte-compared with the final tree. Shared Git index remains untouched. |
+
+The earlier front/rear width ratio was insufficient: a taper in surface UV coordinates still inherited the fender's bulge and reversed direction locally. New plan coordinates give the bonnet straight, gently tapered sides, a bowed front and rounded corners. Projection runs only during offline construction or missing-cache fallback, with prepared meshes used in normal gameplay. Mirroring the positive-side projection makes both halves consistent. The surrounding strips align in physical Z and blend back to the cowl endpoints, closing the complete loop.
+
+Only `game/vehicle/electric_coachwork.gd` changes at runtime. `test_electric_hood.gd` updates its expected outer-boundary parameterization while retaining every original strict tolerance; the new independent contour and closed-corner checks add coverage. All other original model, body, fairing, nose and quality test sources, assembly, shader, presentation and production cameras remain exact. Physics/configuration hashes are recorded separately and excluded from the geometry checkpoint.
+
+V10 contains622 prepared resources:588 byte-identical originals and34 changed bonnet resources. The exact v9 directory is verified against its archive before retirement. Full/simple counts are169821/69761, below the unchanged170000 cap. Full detail adds180 triangles; the simpler model adds3428 to retain the complete bonnet contour and surface sampling. Other simpler-model geometry remains unchanged.
+
+Pinned Godot4.7.2 validation is recorded in [the executable23-command batch](evidence/electric-clean-bonnet-2026-10-26/run_validation.ps1). Contour43/43, retained fairing39/39, quality60/60, model34/34, nose32/32, hood34/34, body finish34 and rounded front8 pass. Actual App Garage/race68/68, electric60/one-pedal63, import and parser1234 pass. Initial full-detail/outer-strip symmetry, simple S-turn and cowl-junction failures remain in logs and review images, with their corrections; no bounds were relaxed. One Vulkan fairing process printed39/0 but timed out during exit; the identical retry passes. Its original log/result remain under `logs/initial-timeout`, and `-Resume` reuses already successful checks.
+
+Reload and owner/device appearance, motion and rendering-cost acceptance remain. Desktop Mobile is PC Vulkan. Manual-stepping hitch messages are not a frame-pacing measurement. No physical-device attachment check/test, APK, real purchase, live mutation, deployment or owner-process restart was performed. Concurrent Garage/handling and other work, plus historical evidence, are preserved.

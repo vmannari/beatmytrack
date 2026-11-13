@@ -1,0 +1,33 @@
+# Kart shoulder fit ? 2026-11-12
+
+KSF01?KSF03 address the owner's report that the shoulders were incorrect after the firmer-arm revision. The open sleeve roots are replaced by continuous torso-to-sleeve topology. Rounded, balanced shoulder transitions meet straight upper arms and compact elbows. The joins share the actual torso and sleeve boundaries, use consistent clockwise native winding and retain one vertex correspondence across all six steering poses. Local garment relaxation and broad cloth normals remove the cut-cylinder appearance. Opening parameterisation uses the opening's own centre; a rejected draft parameterised around the lower arm and produced an asymmetric fold.
+
+Native comparisons: [before front](evidence/kart-driver-shoulder-fit-2026-11-12/before-shoulders-front.png), [corrected front](evidence/kart-driver-shoulder-fit-2026-11-12/after-shoulders-front.png), [corrected close-up](evidence/kart-driver-shoulder-fit-2026-11-12/after-body.png), [corrected rear](evidence/kart-driver-shoulder-fit-2026-11-12/after-shoulders-rear.png). Cameras, lighting and default paint are matched. These are native engine captures, not generated illustrations.
+
+The driver totals 12,480 triangles across six material roles: 6,456 animated cloth/glove triangles and 6,024 static helmet triangles. Six cloth/glove poses retain the existing 36-degree wheel motion. The helmet's decoded geometry and finish and the gloves' full native arrays/poses remain exact. The supported lower body and backrest vertices stay fixed. Forearm rows 12 onward are exact; the elbow-exit row can move by at most 10 micrometres because its tangent touches the adjusted upper-arm path.
+
+The dedicated native regression passes 32/0 and checks 1,024 sewn edges, opposite shared-edge directions, finite poses, fixed supported geometry and preserved helmet/gloves/forearms. The starting geometry fails the same connected-shoulder check (32/1). Physical cockpit checks pass 286/0, actual pedal/pan/grip contact 27/0, and all hood/side-pod turning clearance cases 270/0. Direct steering/finish passes 97/0 in each desktop renderer. This is 97 rather than the earlier 130 because four static helmet surfaces no longer repeat animated-surface checks; the dedicated shoulder test independently compares all four helmet surfaces. Production parser passes 553/0.
+
+The authoring source is `game/tests/bake_kart_driver_polish.gd`. `test_kart_shoulder_fit.gd`, `review_kart_shoulder_fit.gd`, the pinned private runner and ordered refresh helper retain reviewable evidence. Attribution notes describe the further adaptation of tomkart's CC BY 4.0 garment. Existing steering code, physics and car configurations are controls.
+
+A concurrent model-storage change split the unchanged helmet out of the moving mesh and introduced `tests/support/kart_driver_finish.gd`. This task preserves that split and its normal filter. The baker supplies the complete six-role mesh to that finisher. The task-only checkpoint baseline includes just the concurrent finisher call; the untouched task-start source remains separately retained under `before/`. The concurrent runtime driver source and static helmet are separately hash controlled. No model-storage optimisation is attributed to this shoulder task.
+
+Representative commands:
+
+```powershell
+python scripts/run_kart_shoulder_fit.py protected-native-bake res://tests/bake_kart_driver_polish.gd --headless -- --evidence-root=res://../docs/evidence/kart-driver-shoulder-fit-2026-11-12
+python scripts/run_kart_shoulder_fit.py shoulder-final res://tests/test_kart_shoulder_fit.gd --headless
+python scripts/run_kart_shoulder_fit.py rejected-open-shoulder-control res://tests/test_kart_shoulder_fit.gd --headless -- --before
+python scripts/run_kart_shoulder_fit.py final-shoulder-views res://tests/review_kart_shoulder_fit.gd --rendering-method gl_compatibility -- --simple
+python scripts/rebuild_kart_shoulder_fit.py
+```
+
+The evidence directory retains rejected join drafts, an initial missing-metadata/split integration failure, an initial nonmanifold opening assertion, the incorrect split-input draft, and failed exact-comparison fixtures. Initial comparison failures led to restoring the original glove normals and locking supported body positions; elbow-exit tangent differences are explicitly bounded rather than claimed exact. Failed owned diagnostic processes were stopped by PID; no owner process was restarted. The Windows certificate-store diagnostic is retained and separately filtered by the existing private runner.
+
+Reload/relaunch and owner appearance acceptance remain. No device query/test, APK, owner-save change, backend request, deployment or main-index write is performed. No blanket AAA or device-performance claim is made.
+
+The final cached steering suite passes **98/0 each renderer** with a verified prepared-base hit. Actual App Garage/race passes **25/0 each**, including the normal Game presentation, both turn directions and centring; Garage and direct production geometry both measure 34,088 visible triangles. Source/module comparisons across every kart kit pass **1,160/0**, and driving passes **72/0**. These runs include cold frame hitches and overlapping offline rebuild activity; they are functional checks, not frame-time qualification.
+
+The complete refresh finishes with **21,043 stable source inputs**, **551 inspected prepared resources / 2,267 checks / zero failures**, and **six native pictures / 157 current source hashes**. All four kart bases, fitted modules, Garage and 49 livery/catalogue/news/header pictures are current. The eight-file source checkpoint passes exact forward/reverse application, strict live reverse checking and whitespace validation with the main index, steering source and eight car configurations unchanged. The concurrent runtime driver and finisher remain byte exact; the static helmet container has a different serialisation hash, but all four raw native surface packets, selected appearance properties and bounds match its concurrent snapshot.
+
+The earlier 24 unrelated-picture control claim from the arm task is **not carried forward**. Concurrent car-model refinement regenerated artwork for other vehicles during this task. Current photos and the Compact header are preserved. Fifteen controls remain byte exact; nine differ, including five native Garage rerenders from the complete shared refresh. An interrupted attempt to restore those five Garage images was reversed once the concurrent artwork was identified; the fresh images again match the successful source/scene provenance. Exact before/after hashes and that correction are retained in `unrelated-picture-receipt.json`. No concurrent authored source or artwork was rolled back in the final result.

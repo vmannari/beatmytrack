@@ -1,0 +1,93 @@
+<?xml version="1.0" encoding="utf-8"?><testsuites name="pytest tests"><testsuite name="pytest" errors="0" failures="2" skipped="0" tests="2" time="5.488" timestamp="2026-10-27T20:55:06.079731+02:00" hostname="DESKTOP-96E8L9N"><testcase classname="tests.test_challenges" name="test_additive_attempt_migration_preserves_existing_challenges[sqlite]" time="3.146"><failure message="RuntimeError: Drain creator achievement events before downgrading 0054">challenge_domain = namespace(app=&lt;fastapi.applications.FastAPI object at 0x0000017E55531160&gt;, client=&lt;starlette.testclient.TestClient obj...c8e3', 'Bob': '373f3af6-f7bf-4522-a474-3b22f510a8e1', 'Carol': '6c67f120-117d-481d-83a0-e10a2fc22a72'}, postgres=False)
+
+    def test_additive_attempt_migration_preserves_existing_challenges(challenge_domain):
+        from alembic import command
+        from bmt_backend.migrate import configuration
+        d = challenge_domain
+        version = setup(d)
+        source = normal_run(d, version)
+        value = create(d, version, mode="group", run_id=source)
+        join(d, value["code"])
+        attempt(d, value["code"], player="Alice", frames=20)
+        attempt(d, value["code"], player="Bob", frames=10)
+        before = d.client.get(f"/v1/challenges/{value['code']}/me", headers=headers(d,"Alice")).json()
+        # Exercise the actual additive transition over an existing schema0020 field.
+&gt;       command.downgrade(configuration(d.app.state.engine), "0020_challenges")
+
+backend\tests\test_challenges.py:480: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+.tools\backend-secure-venv\Lib\site-packages\alembic\command.py:534: in downgrade
+    script.run_env()
+.tools\backend-secure-venv\Lib\site-packages\alembic\script\base.py:550: in run_env
+    util.load_python_file(self.dir, "env.py")
+.tools\backend-secure-venv\Lib\site-packages\alembic\util\pyfiles.py:114: in load_python_file
+    module = load_module_py(module_id, path)
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+.tools\backend-secure-venv\Lib\site-packages\alembic\util\pyfiles.py:132: in load_module_py
+    spec.loader.exec_module(module)  # type: ignore
+    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+&lt;frozen importlib._bootstrap_external&gt;:759: in exec_module
+    ???
+&lt;frozen importlib._bootstrap&gt;:491: in _call_with_frames_removed
+    ???
+build\compatibility-audit\task-start-v1\bmt_backend\migrations\env.py:53: in &lt;module&gt;
+    context.run_migrations()
+&lt;string&gt;:8: in run_migrations
+    ???
+.tools\backend-secure-venv\Lib\site-packages\alembic\runtime\environment.py:970: in run_migrations
+    self.get_context().run_migrations(**kw)
+.tools\backend-secure-venv\Lib\site-packages\alembic\runtime\migration.py:616: in run_migrations
+    step.migration_fn(**kw)
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+
+    def downgrade():
+        # Dropping committed but unapplied effects silently loses awards. Operators
+        # must first stop new writers and drain the outbox with the matching worker.
+        if op.get_bind().scalar(sa.text("SELECT EXISTS (SELECT 1 FROM creator_achievement_events)")):
+&gt;           raise RuntimeError("Drain creator achievement events before downgrading 0054")
+E           RuntimeError: Drain creator achievement events before downgrading 0054
+
+build\compatibility-audit\task-start-v1\bmt_backend\migrations\versions\0054_priority_scaling.py:40: RuntimeError</failure></testcase><testcase classname="tests.test_world_ranking" name="test_shared_circuit_group_independence_and_free_resumes[sqlite]" time="1.374"><failure message="AssertionError: {&quot;detail&quot;:&quot;Race ticket is closed&quot;}&#10;assert 409 == 201&#10; +  where 409 = &lt;Response [409 Conflict]&gt;.status_code">ranking_domain = namespace(app=&lt;fastapi.applications.FastAPI object at 0x0000017E555E2120&gt;, client=&lt;starlette.testclient.TestClient obj...b366', 'Bob': '64446544-4814-4bc6-9343-c195b3699f91', 'Carol': 'fb2cfcc6-b0b6-4950-be11-0e6e8eb2efe5'}, postgres=False)
+monkeypatch = &lt;_pytest.monkeypatch.MonkeyPatch object at 0x0000017E571D36F0&gt;
+
+    def test_shared_circuit_group_independence_and_free_resumes(ranking_domain, monkeypatch):
+        from bmt_backend import resumes, rivalry, rivalry_planning
+        from bmt_backend.resume_models import ResumeReceipt, ResumeWallet
+        from bmt_backend.rivalry_models import RivalryBest
+        from bmt_backend.track_models import Run
+        from bmt_backend.world_circuit import ensure_circuits
+        app = ranking_domain.app
+        settings = replace(app.state.settings, world_ranking_launch_week=LAUNCH, world_ranking_batch_size=2,
+            temporary_ad_resumes_enabled=False)
+        app.state.settings = settings
+        seed(ranking_domain)
+        monkeypatch.setattr(rivalry,"now",lambda: LAUNCH+20)
+        monkeypatch.setattr(rivalry,"skill_score",lambda _db,pid,*_args: 950 if pid == ranking_domain.players["Bob"] else 100)
+        active = app.state.verifier.manifest()
+        with ranking_domain.factory() as db:
+            rivalry_planning.ensure_vehicle(db,active,"compact",LAUNCH-60)
+            ensure_circuits(db,app,active,LAUNCH-60)
+            db.commit()
+        alice, bob = join(ranking_domain,"Alice"), join(ranking_domain,"Bob")
+        assert alice["group_id"] != bob["group_id"]
+        assert alice["world_circuit"]["id"] == bob["world_circuit"]["id"]
+        assert [r["board_id"] for r in alice["tracks"]] == [r["board_id"] for r in bob["tracks"]]
+        issued = rivalry_ticket(ranking_domain,alice["group_id"])
+        ticket_id = issued["ticket_id"]
+        with ranking_domain.factory() as db:
+            db.add(ResumeWallet(player_id=ranking_domain.players["Alice"],balance=9,free_day=resumes.now()//86400))
+            db.commit()
+        wallet = ranking_domain.client.get("/v1/resumes",params={"ticket_id":ticket_id},headers=headers(ranking_domain,"Alice"))
+        assert wallet.json()["circuit_free"] is True and wallet.json()["free_rewinds"] is True
+        recovery = ranking_domain.client.post("/v1/resume-recovery",json={"begin_key":"missing-begin-key-123",
+            "consume_key":"missing-consume-key-123","ticket_id":ticket_id,"action":"inspect",
+            "selection":{"ordinal":1,"input_offset":100,"from_tick":100,"to_tick":0}},headers=headers(ranking_domain,"Alice"))
+        assert recovery.status_code == 200, recovery.text
+        assert recovery.json()["state"] == "absent" and recovery.json()["wallet"]["circuit_free"] is True
+        beginning = ranking_domain.client.post("/v1/resume-races",json={"ticket_id":ticket_id},headers=headers(ranking_domain,"Alice"))
+&gt;       assert beginning.status_code == 201, beginning.text
+E       AssertionError: {"detail":"Race ticket is closed"}
+E       assert 409 == 201
+E        +  where 409 = &lt;Response [409 Conflict]&gt;.status_code
+
+backend\tests\test_world_ranking.py:243: AssertionError</failure></testcase></testsuite></testsuites>

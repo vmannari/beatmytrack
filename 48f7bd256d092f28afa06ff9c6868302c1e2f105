@@ -1,0 +1,216 @@
+......................................s..........sF..................... [ 57%]
+........................F.............s..............                    [100%]
+================================== FAILURES ===================================
+____ test_additive_attempt_migration_preserves_existing_challenges[sqlite] ____
+
+challenge_domain = namespace(app=<fastapi.applications.FastAPI object at 0x00000282644C1160>, client=<starlette.testclient.TestClient obj...abba', 'Bob': '8d2e97b4-4bda-449e-9d92-ae202c7c584e', 'Carol': '9230ec83-be80-4251-b990-d3a68f04a81f'}, postgres=False)
+
+    def test_additive_attempt_migration_preserves_existing_challenges(challenge_domain):
+        from alembic import command
+        from bmt_backend.migrate import configuration
+        d = challenge_domain
+        version = setup(d)
+        source = normal_run(d, version)
+        value = create(d, version, mode="group", run_id=source)
+        join(d, value["code"])
+        attempt(d, value["code"], player="Alice", frames=20)
+        attempt(d, value["code"], player="Bob", frames=10)
+        before = d.client.get(f"/v1/challenges/{value['code']}/me", headers=headers(d,"Alice")).json()
+        # Exercise the actual additive transition over an existing schema0020 field.
+>       command.downgrade(configuration(d.app.state.engine), "0020_challenges")
+
+tests\test_challenges.py:480: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+..\.tools\backend-secure-venv\Lib\site-packages\alembic\command.py:534: in downgrade
+    script.run_env()
+..\.tools\backend-secure-venv\Lib\site-packages\alembic\script\base.py:550: in run_env
+    util.load_python_file(self.dir, "env.py")
+..\.tools\backend-secure-venv\Lib\site-packages\alembic\util\pyfiles.py:114: in load_python_file
+    module = load_module_py(module_id, path)
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+..\.tools\backend-secure-venv\Lib\site-packages\alembic\util\pyfiles.py:132: in load_module_py
+    spec.loader.exec_module(module)  # type: ignore
+    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+<frozen importlib._bootstrap_external>:759: in exec_module
+    ???
+<frozen importlib._bootstrap>:491: in _call_with_frames_removed
+    ???
+bmt_backend\migrations\env.py:53: in <module>
+    context.run_migrations()
+<string>:8: in run_migrations
+    ???
+..\.tools\backend-secure-venv\Lib\site-packages\alembic\runtime\environment.py:970: in run_migrations
+    self.get_context().run_migrations(**kw)
+..\.tools\backend-secure-venv\Lib\site-packages\alembic\runtime\migration.py:616: in run_migrations
+    step.migration_fn(**kw)
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+
+    def downgrade():
+        # Dropping committed but unapplied effects silently loses awards. Operators
+        # must first stop new writers and drain the outbox with the matching worker.
+        if op.get_bind().scalar(sa.text("SELECT EXISTS (SELECT 1 FROM creator_achievement_events)")):
+>           raise RuntimeError("Drain creator achievement events before downgrading 0054")
+E           RuntimeError: Drain creator achievement events before downgrading 0054
+
+bmt_backend\migrations\versions\0054_priority_scaling.py:40: RuntimeError
+---------------------------- Captured stderr call -----------------------------
+{"event":"verification_complete","level":"info","run_id":"ad63b3a1-22f8-42ee-b2c9-7d181e93dc1c","time_ticks":150,"worker_id":"a3dc48b7-9f8a-4732-b226-40f581d1bc1d","verification_seconds":0.0439,"verification_compute_ms":null,"verification_method":"canonical-replay","queue_wait_seconds":0}
+{"event":"verification_complete","level":"info","run_id":"aad40b2d-d6ac-4f9d-8c76-5f09c790670d","time_ticks":100,"worker_id":"a3dc48b7-9f8a-4732-b226-40f581d1bc1d","verification_seconds":0.0472,"verification_compute_ms":null,"verification_method":"canonical-replay","queue_wait_seconds":0}
+{"event":"verification_complete","level":"info","run_id":"527c622e-1c0b-4889-a5cc-0354c174f1c1","time_ticks":50,"worker_id":"a3dc48b7-9f8a-4732-b226-40f581d1bc1d","verification_seconds":0.0363,"verification_compute_ms":null,"verification_method":"canonical-replay","queue_wait_seconds":0}
+------------------------------ Captured log call ------------------------------
+INFO     bmt.worker:worker.py:352 verification_complete
+INFO     bmt.worker:worker.py:352 verification_complete
+INFO     bmt.worker:worker.py:352 verification_complete
+-------------------------- Captured stderr teardown ---------------------------
+{"event":"http_cost_summary","interval_seconds":2.377,"body_bytes_after_compression":true,"latency_limits_ms":[10,25,50,100,250,500,1000,5000],"rows":[{"route":"/v1/run-tickets","method":"POST","status":201,"requests":1,"request_wire_bytes":76,"response_wire_bytes":581,"duration_ms":131.61,"max_ms":131.61,"latency_buckets":[0,0,0,0,1,0,0,0,0]},{"route":"/v1/runs","method":"POST","status":202,"requests":3,"request_wire_bytes":897,"response_wire_bytes":999,"duration_ms":74.36,"max_ms":27.8,"latency_buckets":[0,1,2,0,0,0,0,0,0]},{"route":"/v1/challenges","method":"POST","status":201,"requests":1,"request_wire_bytes":146,"response_wire_bytes":959,"duration_ms":50.46,"max_ms":50.46,"latency_buckets":[0,0,0,1,0,0,0,0,0]},{"route":"/v1/challenges/{code}/join","method":"POST","status":200,"requests":1,"request_wire_bytes":0,"response_wire_bytes":1008,"duration_ms":20.2,"max_ms":20.2,"latency_buckets":[0,1,0,0,0,0,0,0,0]},{"route":"/v1/challenges/{code}/tickets","method":"POST","status":201,"requests":2,"request_wire_bytes":0,"response_wire_bytes":1364,"duration_ms":34.25,"max_ms":18.07,"latency_buckets":[0,2,0,0,0,0,0,0,0]},{"route":"/v1/challenge-results/{ticket_id}","method":"GET","status":200,"requests":2,"request_wire_bytes":0,"response_wire_bytes":2213,"duration_ms":28.07,"max_ms":14.64,"latency_buckets":[0,2,0,0,0,0,0,0,0]},{"route":"/v1/challenges/{code}/me","method":"GET","status":200,"requests":1,"request_wire_bytes":0,"response_wire_bytes":1031,"duration_ms":11.12,"max_ms":11.12,"latency_buckets":[0,1,0,0,0,0,0,0,0]}],"level":"info"}
+---------------------------- Captured log teardown ----------------------------
+INFO     bmt.requests:http_costs.py:59 {"event":"http_cost_summary","interval_seconds":2.377,"body_bytes_after_compression":true,"latency_limits_ms":[10,25,50,100,250,500,1000,5000],"rows":[{"route":"/v1/run-tickets","method":"POST","status":201,"requests":1,"request_wire_bytes":76,"response_wire_bytes":581,"duration_ms":131.61,"max_ms":131.61,"latency_buckets":[0,0,0,0,1,0,0,0,0]},{"route":"/v1/runs","method":"POST","status":202,"requests":3,"request_wire_bytes":897,"response_wire_bytes":999,"duration_ms":74.36,"max_ms":27.8,"latency_buckets":[0,1,2,0,0,0,0,0,0]},{"route":"/v1/challenges","method":"POST","status":201,"requests":1,"request_wire_bytes":146,"response_wire_bytes":959,"duration_ms":50.46,"max_ms":50.46,"latency_buckets":[0,0,0,1,0,0,0,0,0]},{"route":"/v1/challenges/{code}/join","method":"POST","status":200,"requests":1,"request_wire_bytes":0,"response_wire_bytes":1008,"duration_ms":20.2,"max_ms":20.2,"latency_buckets":[0,1,0,0,0,0,0,0,0]},{"route":"/v1/challenges/{code}/tickets","method":"POST","status":201,"requests":2,"request_wire_bytes":0,"response_wire_bytes":1364,"duration_ms":34.25,"max_ms":18.07,"latency_buckets":[0,2,0,0,0,0,0,0,0]},{"route":"/v1/challenge-results/{ticket_id}","method":"GET","status":200,"requests":2,"request_wire_bytes":0,"response_wire_bytes":2213,"duration_ms":28.07,"max_ms":14.64,"latency_buckets":[0,2,0,0,0,0,0,0,0]},{"route":"/v1/challenges/{code}/me","method":"GET","status":200,"requests":1,"request_wire_bytes":0,"response_wire_bytes":1031,"duration_ms":11.12,"max_ms":11.12,"latency_buckets":[0,1,0,0,0,0,0,0,0]}]}
+_______ test_shared_circuit_group_independence_and_free_resumes[sqlite] _______
+
+ranking_domain = namespace(app=<fastapi.applications.FastAPI object at 0x000002827ACB7620>, client=<starlette.testclient.TestClient obj...1248', 'Bob': '395fff53-765c-49d2-afa6-c7913a33c5e2', 'Carol': '37a3aefe-32fb-4731-b81f-d8c582d44afd'}, postgres=False)
+monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x000002827B7CECF0>
+
+    def test_shared_circuit_group_independence_and_free_resumes(ranking_domain, monkeypatch):
+        from bmt_backend import resumes, rivalry, rivalry_planning
+        from bmt_backend.resume_models import ResumeReceipt, ResumeWallet
+        from bmt_backend.rivalry_models import RivalryBest
+        from bmt_backend.track_models import Run
+        from bmt_backend.world_circuit import ensure_circuits
+        app = ranking_domain.app
+        settings = replace(app.state.settings, world_ranking_launch_week=LAUNCH, world_ranking_batch_size=2,
+            temporary_ad_resumes_enabled=False)
+        app.state.settings = settings
+        seed(ranking_domain)
+        monkeypatch.setattr(rivalry,"now",lambda: LAUNCH+20)
+        monkeypatch.setattr(rivalry,"skill_score",lambda _db,pid,*_args: 950 if pid == ranking_domain.players["Bob"] else 100)
+        active = app.state.verifier.manifest()
+        with ranking_domain.factory() as db:
+            rivalry_planning.ensure_vehicle(db,active,"compact",LAUNCH-60)
+            ensure_circuits(db,app,active,LAUNCH-60)
+            db.commit()
+        alice, bob = join(ranking_domain,"Alice"), join(ranking_domain,"Bob")
+        assert alice["group_id"] != bob["group_id"]
+        assert alice["world_circuit"]["id"] == bob["world_circuit"]["id"]
+        assert [r["board_id"] for r in alice["tracks"]] == [r["board_id"] for r in bob["tracks"]]
+        issued = rivalry_ticket(ranking_domain,alice["group_id"])
+        ticket_id = issued["ticket_id"]
+        with ranking_domain.factory() as db:
+            db.add(ResumeWallet(player_id=ranking_domain.players["Alice"],balance=9,free_day=resumes.now()//86400))
+            db.commit()
+        wallet = ranking_domain.client.get("/v1/resumes",params={"ticket_id":ticket_id},headers=headers(ranking_domain,"Alice"))
+        assert wallet.json()["circuit_free"] is True and wallet.json()["free_rewinds"] is True
+        recovery = ranking_domain.client.post("/v1/resume-recovery",json={"begin_key":"missing-begin-key-123",
+            "consume_key":"missing-consume-key-123","ticket_id":ticket_id,"action":"inspect",
+            "selection":{"ordinal":1,"input_offset":100,"from_tick":100,"to_tick":0}},headers=headers(ranking_domain,"Alice"))
+        assert recovery.status_code == 200, recovery.text
+        assert recovery.json()["state"] == "absent" and recovery.json()["wallet"]["circuit_free"] is True
+        beginning = ranking_domain.client.post("/v1/resume-races",json={"ticket_id":ticket_id},headers=headers(ranking_domain,"Alice"))
+>       assert beginning.status_code == 201, beginning.text
+E       AssertionError: {"detail":"Race ticket is closed"}
+E       assert 409 == 201
+E        +  where 409 = <Response [409 Conflict]>.status_code
+
+tests\test_world_ranking.py:243: AssertionError
+---------------------------- Captured stderr call -----------------------------
+{"event":"http_request","request_id":"22f21ead-6c60-405a-89c1-44b0895dc2bb","method":"POST","route":"/v1/resume-races","status":409,"duration_ms":7.69,"request_wire_bytes":52,"request_decoded_bytes":52,"response_wire_bytes":34,"success_sample_per_mille":10,"level":"info"}
+------------------------------ Captured log call ------------------------------
+INFO     bmt.requests:http_costs.py:41 {"event":"http_request","request_id":"22f21ead-6c60-405a-89c1-44b0895dc2bb","method":"POST","route":"/v1/resume-races","status":409,"duration_ms":7.69,"request_wire_bytes":52,"request_decoded_bytes":52,"response_wire_bytes":34,"success_sample_per_mille":10}
+-------------------------- Captured stderr teardown ---------------------------
+{"event":"http_cost_summary","interval_seconds":1.51,"body_bytes_after_compression":true,"latency_limits_ms":[10,25,50,100,250,500,1000,5000],"rows":[{"route":"/v1/rivalry/join","method":"POST","status":200,"requests":2,"request_wire_bytes":48,"response_wire_bytes":2901,"duration_ms":296.57000000000005,"max_ms":275.29,"latency_buckets":[0,1,0,0,0,1,0,0,0]},{"route":"/v1/rivalry/{group_id}/tickets","method":"POST","status":201,"requests":1,"request_wire_bytes":10,"response_wire_bytes":653,"duration_ms":14.26,"max_ms":14.26,"latency_buckets":[0,1,0,0,0,0,0,0,0]},{"route":"/v1/resumes","method":"GET","status":200,"requests":1,"request_wire_bytes":0,"response_wire_bytes":179,"duration_ms":12.64,"max_ms":12.64,"latency_buckets":[0,1,0,0,0,0,0,0,0]},{"route":"/v1/resume-recovery","method":"POST","status":200,"requests":1,"request_wire_bytes":220,"response_wire_bytes":207,"duration_ms":10.46,"max_ms":10.46,"latency_buckets":[0,1,0,0,0,0,0,0,0]},{"route":"/v1/resume-races","method":"POST","status":409,"requests":1,"request_wire_bytes":52,"response_wire_bytes":34,"duration_ms":7.69,"max_ms":7.69,"latency_buckets":[1,0,0,0,0,0,0,0,0]}],"level":"info"}
+---------------------------- Captured log teardown ----------------------------
+INFO     bmt.requests:http_costs.py:59 {"event":"http_cost_summary","interval_seconds":1.51,"body_bytes_after_compression":true,"latency_limits_ms":[10,25,50,100,250,500,1000,5000],"rows":[{"route":"/v1/rivalry/join","method":"POST","status":200,"requests":2,"request_wire_bytes":48,"response_wire_bytes":2901,"duration_ms":296.57000000000005,"max_ms":275.29,"latency_buckets":[0,1,0,0,0,1,0,0,0]},{"route":"/v1/rivalry/{group_id}/tickets","method":"POST","status":201,"requests":1,"request_wire_bytes":10,"response_wire_bytes":653,"duration_ms":14.26,"max_ms":14.26,"latency_buckets":[0,1,0,0,0,0,0,0,0]},{"route":"/v1/resumes","method":"GET","status":200,"requests":1,"request_wire_bytes":0,"response_wire_bytes":179,"duration_ms":12.64,"max_ms":12.64,"latency_buckets":[0,1,0,0,0,0,0,0,0]},{"route":"/v1/resume-recovery","method":"POST","status":200,"requests":1,"request_wire_bytes":220,"response_wire_bytes":207,"duration_ms":10.46,"max_ms":10.46,"latency_buckets":[0,1,0,0,0,0,0,0,0]},{"route":"/v1/resume-races","method":"POST","status":409,"requests":1,"request_wire_bytes":52,"response_wire_bytes":34,"duration_ms":7.69,"max_ms":7.69,"latency_buckets":[1,0,0,0,0,0,0,0,0]}]}
+============================== warnings summary ===============================
+..\.tools\backend-secure-venv\Lib\site-packages\fastapi\testclient.py:1
+  C:\Codes\Godot\Beat my track\.tools\backend-secure-venv\Lib\site-packages\fastapi\testclient.py:1: StarletteDeprecationWarning: Using `httpx` with `starlette.testclient` is deprecated; install `httpx2` instead.
+    from starlette.testclient import TestClient as TestClient  # noqa
+
+tests/test_catalog_builds.py: 5 warnings
+tests/test_exception_recovery.py: 17 warnings
+tests/test_challenges.py: 31 warnings
+tests/test_challenge_discovery.py: 7 warnings
+tests/test_challenge_series.py: 5 warnings
+tests/test_rivalry.py: 10 warnings
+tests/test_rivalry_planning.py: 9 warnings
+tests/test_rivalry_week_completion.py: 4 warnings
+tests/test_world_ranking.py: 21 warnings
+tests/test_review_followups.py: 13 warnings
+  C:\Users\ville\AppData\Local\Google\Cloud SDK\google-cloud-sdk\platform\bundledpython\Lib\contextlib.py:148: SAWarning: Skipped unsupported reflection of expression-based index ix_studio_player_name
+    next(self.gen)
+
+tests/test_catalog_builds.py: 5 warnings
+tests/test_exception_recovery.py: 17 warnings
+tests/test_challenges.py: 31 warnings
+tests/test_challenge_discovery.py: 7 warnings
+tests/test_challenge_series.py: 5 warnings
+tests/test_rivalry.py: 10 warnings
+tests/test_rivalry_planning.py: 9 warnings
+tests/test_rivalry_week_completion.py: 4 warnings
+tests/test_world_ranking.py: 21 warnings
+tests/test_review_followups.py: 13 warnings
+  C:\Users\ville\AppData\Local\Google\Cloud SDK\google-cloud-sdk\platform\bundledpython\Lib\contextlib.py:148: SAWarning: Skipped unsupported reflection of expression-based index ix_studio_published_rating
+    next(self.gen)
+
+tests/test_catalog_builds.py: 5 warnings
+tests/test_exception_recovery.py: 17 warnings
+tests/test_challenges.py: 31 warnings
+tests/test_challenge_discovery.py: 7 warnings
+tests/test_challenge_series.py: 5 warnings
+tests/test_rivalry.py: 10 warnings
+tests/test_rivalry_planning.py: 9 warnings
+tests/test_rivalry_week_completion.py: 4 warnings
+tests/test_world_ranking.py: 21 warnings
+tests/test_review_followups.py: 13 warnings
+  C:\Users\ville\AppData\Local\Google\Cloud SDK\google-cloud-sdk\platform\bundledpython\Lib\contextlib.py:148: SAWarning: Skipped unsupported reflection of expression-based index ix_studio_published_name
+    next(self.gen)
+
+tests/test_catalog_builds.py: 5 warnings
+tests/test_exception_recovery.py: 17 warnings
+tests/test_challenges.py: 31 warnings
+tests/test_challenge_discovery.py: 7 warnings
+tests/test_challenge_series.py: 5 warnings
+tests/test_rivalry.py: 10 warnings
+tests/test_rivalry_planning.py: 9 warnings
+tests/test_rivalry_week_completion.py: 4 warnings
+tests/test_world_ranking.py: 21 warnings
+tests/test_review_followups.py: 13 warnings
+  C:\Users\ville\AppData\Local\Google\Cloud SDK\google-cloud-sdk\platform\bundledpython\Lib\contextlib.py:148: SAWarning: Skipped unsupported reflection of expression-based index ix_discovery_names
+    next(self.gen)
+
+tests/test_catalog_builds.py: 5 warnings
+tests/test_exception_recovery.py: 17 warnings
+tests/test_challenges.py: 31 warnings
+tests/test_challenge_discovery.py: 7 warnings
+tests/test_challenge_series.py: 5 warnings
+tests/test_rivalry.py: 10 warnings
+tests/test_rivalry_planning.py: 9 warnings
+tests/test_rivalry_week_completion.py: 4 warnings
+tests/test_world_ranking.py: 21 warnings
+tests/test_review_followups.py: 13 warnings
+  C:\Users\ville\AppData\Local\Google\Cloud SDK\google-cloud-sdk\platform\bundledpython\Lib\contextlib.py:148: SAWarning: Skipped unsupported reflection of expression-based index ix_compatible_versions
+    next(self.gen)
+
+tests/test_world_ranking.py::test_upgrade_preserves_previous_schema_rows[sqlite]
+  C:\Codes\Godot\Beat my track\backend\tests\test_world_ranking.py:402: SAWarning: Skipped unsupported reflection of expression-based index ix_studio_player_name
+    metadata.reflect(bind=app.state.engine)
+
+tests/test_world_ranking.py::test_upgrade_preserves_previous_schema_rows[sqlite]
+  C:\Codes\Godot\Beat my track\backend\tests\test_world_ranking.py:402: SAWarning: Skipped unsupported reflection of expression-based index ix_studio_published_rating
+    metadata.reflect(bind=app.state.engine)
+
+tests/test_world_ranking.py::test_upgrade_preserves_previous_schema_rows[sqlite]
+  C:\Codes\Godot\Beat my track\backend\tests\test_world_ranking.py:402: SAWarning: Skipped unsupported reflection of expression-based index ix_studio_published_name
+    metadata.reflect(bind=app.state.engine)
+
+tests/test_world_ranking.py::test_upgrade_preserves_previous_schema_rows[sqlite]
+  C:\Codes\Godot\Beat my track\backend\tests\test_world_ranking.py:402: SAWarning: Skipped unsupported reflection of expression-based index ix_discovery_names
+    metadata.reflect(bind=app.state.engine)
+
+tests/test_world_ranking.py::test_upgrade_preserves_previous_schema_rows[sqlite]
+  C:\Codes\Godot\Beat my track\backend\tests\test_world_ranking.py:402: SAWarning: Skipped unsupported reflection of expression-based index ix_compatible_versions
+    metadata.reflect(bind=app.state.engine)
+
+-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
+=========================== short test summary info ===========================
+FAILED tests/test_challenges.py::test_additive_attempt_migration_preserves_existing_challenges[sqlite]
+FAILED tests/test_world_ranking.py::test_shared_circuit_group_independence_and_free_resumes[sqlite]
+2 failed, 120 passed, 3 skipped, 105 deselected, 616 warnings in 201.53s (0:03:21)

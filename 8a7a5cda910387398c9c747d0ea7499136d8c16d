@@ -1,0 +1,852 @@
+--- a/backend/bmt_backend/rivalry.py
++++ b/backend/bmt_backend/rivalry.py
+@@ -202,20 +202,25 @@
+     return rows
+ 
+ 
+-def standings_data(session, group):
+-    players = session.execute(select(Player.id, Player.display_name, Player.is_test_driver, Player.country_code).join(RivalryMember)
+-        .where(RivalryMember.group_id == group.id, Player.disabled.is_(False)).order_by(Player.id)).all()
+-    model = RivalryArchivedBest if group.archived else RivalryBest
+-    bests = {(best.slot, best.player_id): best for best in session.scalars(select(model).where(model.group_id == group.id))}
++def standings_data(session, group, facts=None):
++    if facts is None:
++        players = session.execute(select(Player.id, Player.display_name, Player.is_test_driver, Player.country_code).join(RivalryMember)
++            .where(RivalryMember.group_id == group.id, Player.disabled.is_(False)).order_by(Player.id)).all()
++        model = RivalryArchivedBest if group.archived else RivalryBest
++        bests = {(best.slot, best.player_id): {"ticks": best.time_ticks, "run_id": getattr(best, "run_id", None)}
++                 for best in session.scalars(select(model).where(model.group_id == group.id))}
++    else:
++        players = [(p["id"], p["name"], p["is_test_driver"], p["country_code"]) for p in facts["players"]]
++        bests = {(best["slot"], best["id"]): best for best in facts["bests"]}
+     totals = {pid: {"id": pid, "name": name, "is_test_driver": synthetic, "country_code": country, "points": 0, "completed": 0} for pid, name, synthetic, country in players}
+     tracks = []
+     for slot, entry in enumerate(group.tracks):
+         rows = []
+         for pid, name, synthetic, country in players:
+             best = bests.get((slot, pid))
+-            rows.append({"id": pid, "name": name, "is_test_driver": synthetic, "country_code": country, "ticks": best.time_ticks if best else None,
+-                         "ms": round(best.time_ticks * 1000 / entry["tick_rate"]) if best else None,
+-                         "run_id": getattr(best, "run_id", None) if best else None})
++            rows.append({"id": pid, "name": name, "is_test_driver": synthetic, "country_code": country, "ticks": best["ticks"] if best else None,
++                         "ms": round(best["ticks"] * 1000 / entry["tick_rate"]) if best else None,
++                         "run_id": best["run_id"] if best else None})
+         rankings(rows, "ticks")
+         for row in rows:
+             row["points"] = POINTS[row["rank"] - 1] if row["rank"] else 0
+@@ -229,13 +234,14 @@
+     return tracks, overall
+ 
+ 
+-def snapshot(session, group, player_id, timestamp=None):
++def snapshot(session, group, player_id, timestamp=None, *, facts=None):
+     timestamp = now() if timestamp is None else timestamp
+-    tracks, overall = standings_data(session, group)
+-    from .community import blocked_ids
+-    blocked = set(session.scalars(blocked_ids(session, player_id)))
+-    appearances = dict(session.execute(select(Player.id, Player.vehicle_appearances)
+-        .where(Player.id.in_([row["id"] for row in overall]), Player.deleted_at.is_(None))).all())
++    if facts is None:
++        from .rivalry_reads import read_snapshot
++        facts = read_snapshot(session, group, player_id, timestamp)
++    tracks, overall = standings_data(session, group, facts)
++    blocked = set(facts["blocked"])
++    appearances = {p["id"]: p["appearances"] for p in facts["players"]}
+     for row in overall:
+         appearance = appearances.get(row["id"], {}).get(group.vehicle_id)
+         if appearance is not None:
+@@ -244,14 +250,8 @@
+         if row["id"] in blocked:
+             row["name"], row["country_code"] = "Blocked player", ""
+             row.pop("appearance", None)
+-    pending = session.scalar(select(func.count()).select_from(Run).join(RivalryTicket, RivalryTicket.ticket_id == Run.ticket_id)
+-        .where(RivalryTicket.group_id == group.id, Run.status.in_(("queued", "verifying"))))
+-    state = "active" if timestamp < group.ends_at else "settling" if pending else "complete"
+-    personal_best_slots = []
+-    if state == "complete":
+-        personal_best_slots = sorted(session.scalars(select(RivalryTicket.slot).join(Run, Run.ticket_id == RivalryTicket.ticket_id)
+-            .where(RivalryTicket.group_id == group.id, Run.player_id == player_id, Run.status == "verified",
+-                   RivalryTicket.outcome["personal_best"].as_boolean().is_(True)).distinct()).all())
++    pending, state = facts["pending"], facts["state"]
++    personal_best_slots = facts["personal_best_slots"]
+     iso = datetime.fromtimestamp(group.week_start, timezone.utc).isocalendar()
+     result = {"group_id": group.id, "state": state, "week": iso.week, "year": iso.year,
+               "world_circuit": {"id": group.world_circuit_id, "official": True, "required_tracks": 5,
+@@ -262,27 +262,21 @@
+               "automatic_test_drivers": bool(group.tracks[0].get("automatic_test_drivers", False)),
+               "group_forming": len(overall) < 10, "standings": overall, "self_id": player_id, "tracks": [],
+               "points_policy": list(POINTS), "pending_runs": pending, "personal_best_slots": personal_best_slots}
+-    availability = dict(session.execute(select(TrackVersion.id,
+-        (TrackVersion.state == "published") & Track.hidden.is_(False) & Player.disabled.is_(False))
+-        .join(Track).join(Player, Player.id == Track.owner_id)
+-        .where(TrackVersion.id.in_([item["version_id"] for item in group.tracks]))).all())
+     for slot, pinned in enumerate(group.tracks):
+         entry = pinned["entry"]
+-        version = session.get(TrackVersion, pinned["version_id"])
++        version = facts["versions"].get(pinned["version_id"])
++        available = bool(version and version["available"] and version["owner_id"] not in blocked)
+         if version is not None:
+-            owner = session.get(Player, session.get(Track, version.track_id).owner_id)
+-            if owner.id in blocked:
+-                availability[version.id] = False
+-            if owner.deleted_at is not None:
++            if version["deleted_at"] is not None:
+                 # Refresh redacted source hashes as well as names for retained
+                 # cohort snapshots; their board/score pins remain unchanged.
+-                entry = {**entry, "creator": "Removed account", "content_hash": version.content_hash,
+-                    "redacted_track_hash": version.redacted_track_hash, "canonical_track_hash": version.manifest.get("track_content_hash")}
+-        if not availability.get(pinned["version_id"], False):
++                entry = {**entry, "creator": "Removed account", "content_hash": version["content_hash"],
++                    "redacted_track_hash": version["redacted_track_hash"], "canonical_track_hash": version["canonical_track_hash"]}
++        if not available:
+             # Keep score/board pins while withdrawing objectionable public art/text.
+             entry = {**entry, "name": "Unavailable track", "creator": "Unavailable creator", "points": []}
+         result["tracks"].append({"slot": slot, "entry": entry, "board_id": pinned["board_id"],
+-                                 "available": not group.archived and availability.get(pinned["version_id"], False),
++                                 "available": not group.archived and available,
+                                  "entries": tracks[slot]})
+     return result
+ 
+@@ -336,7 +330,7 @@
+     member = session.scalar(select(RivalryMember).where(RivalryMember.player_id == player.id,
+         RivalryMember.week_start == start, RivalryMember.contract_key == contract))
+     if member:
+-        return conditional_snapshot(request, snapshot(session, session.get(RivalryGroup, member.group_id), player.id))
++        return snapshot_response(request, session, session.get(RivalryGroup, member.group_id), player.id)
+     previous = session.scalar(select(RivalryMember).join(RivalryGroup)
+         .where(RivalryMember.player_id == player.id, RivalryGroup.vehicle_id == vehicle_id,
+                RivalryGroup.test_population.is_(test_population),
+@@ -346,7 +340,7 @@
+         .order_by(RivalryMember.week_start.desc(), RivalryMember.joined_at.desc(),
+                   RivalryGroup.created_at.desc(), RivalryGroup.id).limit(1))
+     if previous:
+-        return conditional_snapshot(request, snapshot(session, session.get(RivalryGroup, previous.group_id), player.id))
++        return snapshot_response(request, session, session.get(RivalryGroup, previous.group_id), player.id)
+     return {"state": "not_joined", "test_population": test_population, "week": week, "year": year, "ends_at": end, "server_now": now(),
+             "eligible_track_count": len(session.scalars(eligible_query(active, vehicle_id).limit(TRACK_COUNT)).all()),
+             "eligible_track_count_capped": True, "required_track_count": TRACK_COUNT}
+@@ -469,7 +463,7 @@
+ @router.get("/rivalry/{group_id}")
+ def view(group_id: str, request: Request, session: BoardDB, player: Auth):
+     group, _ = require_member(session, group_id, player.id, request)
+-    return conditional_snapshot(request, snapshot(session, group, player.id))
++    return snapshot_response(request, session, group, player.id)
+ 
+ 
+ @router.post("/rivalry/{group_id}/tickets", status_code=201)
+@@ -524,7 +518,7 @@
+             session.add(best)
+         best.run_id, best.time_ticks, best.achieved_at = run.id, run.time_ticks, now()
+         session.flush()
+-    after_tracks, after_overall = standings_data(session, group)
++    after_tracks, after_overall = standings_data(session, group) if improved else (before_tracks, before_overall)
+     after = next(row for row in after_tracks[binding.slot] if row["id"] == run.player_id)
+     beaten = [row for row in before_tracks[binding.slot] if row["id"] != run.player_id and row["ticks"] is not None
+               and run.time_ticks < row["ticks"] and (prior["ticks"] is None or row["ticks"] < prior["ticks"])] if improved else []
+@@ -596,6 +590,11 @@
+     return recording_response(request, run_id, ghost_hash, owner_id, metadata=metadata, expected_run_id=expected_run_id, encoding=encoding)
+ 
+ 
++def snapshot_response(request, session, group, player_id):
++    from .rivalry_reads import response
++    return response(request, session, group, player_id, now())
++
++
+ def conditional_snapshot(request, value):
+     from fastapi.responses import JSONResponse, Response
+     stable = {key: data for key, data in value.items() if key not in ("server_now", "remaining_seconds")}
+--- a/backend/bmt_backend/completion_reads.py
++++ b/backend/bmt_backend/completion_reads.py
+@@ -57,7 +57,7 @@
+                     # Use the current result route's ownership/content/block
+                     # checks. Never expose a cached competition view here.
+                     values[run.id]["challenge_result"] = result(
+-                        run.ticket_id, request, session, session.get(Player, player_id), compact=False)
++                        run.ticket_id, request, session, session.get(Player, player_id))
+         except (HTTPException, SQLAlchemyError, RuntimeError, ValueError):
+             values[run.id].pop("challenge_result", None)
+             logger.warning("completion_challenge_unavailable")
+--- a/game/backend/cosmetic_economy.gd
++++ b/game/backend/cosmetic_economy.gd
+@@ -3,6 +3,7 @@
+ signal changed
+ const Shop = preload("res://persistence/cosmetic_catalog.gd")
+ const IO = preload("res://backend/atomic_json.gd")
++const FRESH_MS: int = 15000
+ var records: LocalRecords
+ var client: Node
+ var wallet: Dictionary = {}
+@@ -15,6 +16,8 @@
+ var _storage_ok: bool = true
+ var _epoch: int = 0
+ var _timer: Timer
++var _read_at: int = -FRESH_MS
++var _refresh_again: bool = false
+ 
+ func _ready() -> void:
+ 	_remember_legacy()
+@@ -54,6 +57,8 @@
+ 	pending = {}
+ 	busy = false
+ 	refreshing = false
++	_read_at = -FRESH_MS
++	_refresh_again = false
+ 	_storage_ok = true
+ 	status = ""
+ 	_path = records.path.get_base_dir().path_join("economy/"+scope.sha256_text()+".json")
+@@ -103,12 +108,19 @@
+ 
+ func _accept(value: Variant) -> bool:
+ 	if not Shop.valid_wallet(value): return false
+-	if wallet.is_empty() or int(value.revision) >= int(wallet.revision): wallet = value.duplicate(true)
++	if wallet.is_empty() or int(value.revision) >= int(wallet.revision):
++		wallet = value.duplicate(true)
++		_read_at = Time.get_ticks_msec()
+ 	return true
+ 
+-func refresh() -> void:
+-	sync_identity()
+-	if not authenticated() or refreshing or busy: return
++func refresh(force: bool = false) -> void:
++	sync_identity()
++	if force: _read_at = -FRESH_MS
++	if not authenticated(): return
++	if refreshing or busy:
++		if force: _refresh_again = true
++		return
++	if not force and pending.is_empty() and not wallet.is_empty() and Time.get_ticks_msec()-_read_at < FRESH_MS: return
+ 	var expected: String = scope
+ 	var epoch: int = _epoch
+ 	refreshing = true
+@@ -123,6 +135,12 @@
+ 	else: status = "Could not refresh coins. Reconnect to buy."
+ 	changed.emit()
+ 	if not pending.is_empty() and _storage_ok: await _send_purchase()
++	_resume_refresh()
++
++func _resume_refresh() -> void:
++	if not _refresh_again or refreshing or busy: return
++	_refresh_again = false
++	refresh.call_deferred(true)
+ 
+ func purchase(id: String) -> bool:
+ 	sync_identity()
+@@ -149,6 +167,7 @@
+ 	var expected: String = scope
+ 	var epoch: int = _epoch
+ 	var operation: Dictionary = pending.duplicate(true)
++	_read_at = -FRESH_MS
+ 	busy = true
+ 	status = "Completing purchase…"
+ 	changed.emit()
+@@ -166,7 +185,8 @@
+ 	else: status = "Purchase pending. We’ll retry automatically."
+ 	if not _persist(): status = "Purchase recovery could not be saved. Reconnect to check ownership."
+ 	changed.emit()
+-	if str(response.get("error","")) in ["INSUFFICIENT_COINS","COSMETIC_PRICE_CHANGED"]: refresh.call_deferred()
++	if str(response.get("error","")) in ["INSUFFICIENT_COINS","COSMETIC_PRICE_CHANGED"]: refresh.call_deferred(true)
++	_resume_refresh()
+ 	return success
+ 
+ func reward_for(ticket: String) -> Dictionary:
+@@ -180,12 +200,12 @@
+ 			if not _persist(): status = "Coins are online. Local recovery could not be saved."
+ 			changed.emit()
+ 			if not pending.is_empty() and _storage_ok and not busy: _send_purchase.call_deferred()
+-		elif completion.reward.status == "credited": refresh()
++		elif completion.reward.status == "credited": refresh(true)
+ 		return completion.reward.duplicate(true)
+ 	var response: Dictionary = await client.request_api("/economy/rewards/"+ticket,HTTPClient.METHOD_GET,{},"",true)
+ 	if _current_scope() != expected or epoch != _epoch: return {"status":"unavailable","amount":0,"rows":[]}
+ 	if response.ok:
+-		if response.data.get("status") == "credited": refresh()
++		if response.data.get("status") == "credited": refresh(true)
+ 		return response.data
+ 	if int(response.get("status",0)) in [401,403,404,410]: return {"status":"unavailable","amount":0,"rows":[]}
+ 	return {"status":"pending","amount":0,"rows":[]}
+--- a/game/backend/comparison_preloader.gd
++++ b/game/backend/comparison_preloader.gd
+@@ -1,6 +1,6 @@
+ extends RefCounted
+ ## Bounded metadata-only warming. No track compilation, races or account writes.
+-const MAX_TARGETS: int = 6
++const MAX_TARGETS: int = 2
+ const MAX_ACTIVE: int = 2
+ const MAX_FOREGROUND: int = 1
+ var cache = preload("res://backend/menu_snapshot_cache.gd").new()
+@@ -13,6 +13,11 @@
+ var _finished: Dictionary = {}
+ var _boards: Dictionary = {}
+ var _pump_scheduled: bool = false
++var _speculated: Dictionary = {}
++var _speculative_started: int = 0
++var _speculative_used: int = 0
++var _cancelled_before_start: int = 0
++var _foreground_started: int = 0
+ signal completed(key: String)
+ 
+ func configure(service: Node, path: String, scope: String) -> void:
+@@ -23,7 +28,22 @@
+ 	_pending.clear()
+ 	_finished.clear()
+ 	_boards.clear()
++	_speculated.clear()
++	_speculative_started = 0
++	_speculative_used = 0
++	_cancelled_before_start = 0
++	_foreground_started = 0
+ 	cache.configure(path,scope)
++
++func diagnostics() -> Dictionary:
++	return {"speculative_started":_speculative_started,"speculative_used":_speculative_used,
++		"cancelled_before_start":_cancelled_before_start,"foreground_started":_foreground_started}
++
++func _consumed(identity: String, value: Dictionary) -> Dictionary:
++	if value.has("packet") and _speculated.has(identity):
++		_speculated.erase(identity)
++		_speculative_used += 1
++	return value
+ 
+ static func key(version: String, vehicle: String) -> String:
+ 	return JSON.stringify([version,vehicle,VehicleCatalog.config(vehicle).snapshot(),VehicleSimulation.PHYSICS_VERSION,RaceRules.KEY,TrackCompiler.VERSION,Engine.get_version_info().string,RaceComplete.COMPARISON_BINS],"",true).sha256_text()
+@@ -46,7 +66,9 @@
+ 	var queued: Dictionary = {}
+ 	for job: Dictionary in _queue:
+ 		if job.get("foreground",false): retained.append(job); queued[job.key] = true
+-		else: _pending.erase(job.key)
++		else:
++			_pending.erase(job.key)
++			_cancelled_before_start += 1
+ 	_queue = retained
+ 	for job: Dictionary in wanted:
+ 		var stored: Dictionary = peek(job.version,job.vehicle)
+@@ -74,7 +96,7 @@
+ func fetch(version: String, vehicle: String) -> Dictionary:
+ 	var identity: String = key(version,vehicle)
+ 	var value: Dictionary = peek(version,vehicle)
+-	if value.has("packet") or value.has("comparison_error"): return value.duplicate(true)
++	if value.has("packet") or value.has("comparison_error"): return _consumed(identity,value.duplicate(true))
+ 	var generation: int = _generation
+ 	for index: int in range(_queue.size()-1,-1,-1):
+ 		if _queue[index].get("foreground",false) and _queue[index].key != identity:
+@@ -94,7 +116,7 @@
+ 	_pump()
+ 	while generation == _generation and _pending.has(identity):
+ 		await completed
+-	return peek(version,vehicle).duplicate(true) if generation == _generation else {}
++	return _consumed(identity,peek(version,vehicle).duplicate(true)) if generation == _generation else {}
+ 
+ func _pump() -> void:
+ 	if _foreground_active < MAX_FOREGROUND:
+@@ -113,6 +135,11 @@
+ 
+ func _run(job: Dictionary) -> void:
+ 	var service: Node = client
++	if job.get("foreground",false): _foreground_started += 1
++	else:
++		_speculative_started += 1
++		_speculated[job.key] = true
++		while _speculated.size() > 32: _speculated.erase(_speculated.keys()[0])
+ 	var board: Dictionary = {"done":false,"friends":[],"error":""}
+ 	_board(service,job,board)
+ 	var response: Dictionary = await service.request_api("/track-versions/"+str(job.version).uri_encode()+"/results-comparison?vehicle_id="+str(job.vehicle).uri_encode()+"&bins=%d" % RaceComplete.COMPARISON_BINS,HTTPClient.METHOD_GET,{},"",true)
+--- /dev/null
++++ b/backend/bmt_backend/rivalry_reads.py
+@@ -0,0 +1,85 @@
++"""Fresh bounded read sets; only derived presentation bytes may be reused."""
++import hashlib
++import json
++
++from fastapi import HTTPException
++from fastapi.responses import JSONResponse, Response
++from sqlalchemy import func, literal, select
++
++from .community import blocked_ids
++from .identity_models import Player
++from .rivalry_models import RivalryArchivedBest, RivalryBest, RivalryMember, RivalryTicket
++from .storage import canonical_json
++from .track_models import Run, Track, TrackVersion, digest
++
++
++def read_snapshot(session, group, player_id, timestamp):
++    """Read all mutable inputs in the caller's existing board-read transaction.
++
++    No entity, query result or permission is cached. This also avoids per-track
++    version/owner lookups. Plain values define the complete presentation key.
++    """
++    players = [{"id": pid, "name": name, "is_test_driver": synthetic,
++                "country_code": country, "appearances": appearances if deleted is None else {}}
++               for pid, name, synthetic, country, appearances, deleted in session.execute(
++                   select(Player.id, Player.display_name, Player.is_test_driver, Player.country_code,
++                          Player.vehicle_appearances, Player.deleted_at).join(RivalryMember)
++                   .where(RivalryMember.group_id == group.id, Player.disabled.is_(False)).order_by(Player.id))]
++    model = RivalryArchivedBest if group.archived else RivalryBest
++    bests = [{"slot": slot, "id": pid, "ticks": ticks, "run_id": run_id}
++             for slot, pid, ticks, run_id in session.execute(
++                 select(model.slot, model.player_id, model.time_ticks, getattr(model, "run_id", literal(None)))
++                 .where(model.group_id == group.id).order_by(model.slot, model.player_id))]
++    blocked = sorted(session.scalars(blocked_ids(session, player_id)))
++    pending = session.scalar(select(func.count()).select_from(Run)
++        .join(RivalryTicket, RivalryTicket.ticket_id == Run.ticket_id)
++        .where(RivalryTicket.group_id == group.id, Run.status.in_(("queued", "verifying"))))
++    state = "active" if timestamp < group.ends_at else "settling" if pending else "complete"
++    personal_best_slots = []
++    if state == "complete":
++        personal_best_slots = sorted(session.scalars(select(RivalryTicket.slot)
++            .join(Run, Run.ticket_id == RivalryTicket.ticket_id)
++            .where(RivalryTicket.group_id == group.id, Run.player_id == player_id, Run.status == "verified",
++                   RivalryTicket.outcome["personal_best"].as_boolean().is_(True)).distinct()))
++    versions = {vid: {"available": published and not hidden and not disabled,
++                      "owner_id": owner_id, "deleted_at": deleted, "content_hash": content_hash,
++                      "redacted_track_hash": redacted, "canonical_track_hash": canonical}
++                for vid, published, hidden, disabled, owner_id, deleted, content_hash, redacted, canonical
++                in session.execute(select(TrackVersion.id, TrackVersion.state == "published", Track.hidden,
++                    Player.disabled, Track.owner_id, Player.deleted_at, TrackVersion.content_hash,
++                    TrackVersion.redacted_track_hash, TrackVersion.manifest["track_content_hash"].as_string())
++                    .select_from(TrackVersion)
++                    .join(Track).join(Player, Player.id == Track.owner_id)
++                    .where(TrackVersion.id.in_([item["version_id"] for item in group.tracks])))}
++    return {"players": players, "bests": bests, "blocked": blocked, "pending": pending,
++            "state": state, "personal_best_slots": personal_best_slots, "versions": versions}
++
++
++def response(request, session, group, player_id, timestamp):
++    from .rivalry import snapshot
++
++    facts = read_snapshot(session, group, player_id, timestamp)
++    key = ("rivalry", player_id, digest({"facts": facts, "group": {
++        "id": group.id, "tracks": group.tracks, "week_start": group.week_start,
++        "ends_at": group.ends_at, "vehicle_id": group.vehicle_id, "skill_band": group.skill_band,
++        "world_circuit_id": group.world_circuit_id, "test_population": group.test_population,
++        "archived": group.archived}}))
++
++    def prepare():
++        value = snapshot(session, group, player_id, timestamp, facts=facts)
++        return canonical_json({k: v for k, v in value.items() if k not in ("server_now", "remaining_seconds")})
++
++    cache = getattr(request.app.state, "immutable_payloads", None)
++    try:
++        body = cache.get(key, prepare) if cache is not None else prepare()
++    except HTTPException as error:
++        if error.status_code != 503:
++            raise
++        body = prepare()  # An optional representation cache cannot deny a standings read.
++    tag = '"' + hashlib.sha256(body).hexdigest() + '"'
++    headers = {"ETag": tag, "Cache-Control": "private, no-cache, must-revalidate",
++               "Vary": "Authorization, Accept-Encoding", "X-Server-Time": str(timestamp)}
++    if request.headers.get("if-none-match") == tag:
++        return Response(status_code=304, headers=headers)
++    return JSONResponse({**json.loads(body), "server_now": timestamp,
++                         "remaining_seconds": max(0, group.ends_at - timestamp)}, headers=headers)
+--- /dev/null
++++ b/backend/tests/test_backend_reuse.py
+@@ -0,0 +1,198 @@
++"""Reuse preserves current authority and avoids repeated presentation work."""
++import pytest
++from sqlalchemy import event
++from test_discovery_v3 import indexed as _indexed_fixture
++from test_domains import domain as _domain_fixture
++from test_domains import headers, submit
++from test_rivalry import join, rivalry_ticket, seed
++
++from bmt_backend import rivalry
++from bmt_backend.community_models import PlayerBlock
++from bmt_backend.identity_models import Player
++from bmt_backend.rivalry_models import RivalryGroup, RivalryMember
++from bmt_backend.track_models import Run, RunTicket, Track, TrackVersion
++from bmt_backend.worker import process_one
++
++reuse_domain = _domain_fixture
++reuse_indexed = _indexed_fixture
++
++
++def test_reusable_previews_keep_fresh_cards_and_validate_hints(reuse_indexed):
++    d = reuse_indexed
++    body = {"query": {"sort": "name"}, "preview_cache": True, "known_previews": []}
++    first = d.client.post("/v1/discovery/v3/tracks", json=body)
++    assert first.status_code == 200, first.text
++    cold = first.json()
++    assert cold["items"] and all("points" in row and "preview_hash" in row for row in cold["items"])
++    with d.app.state.session_factory() as session:
++        version = session.get(TrackVersion, cold["items"][0]["version_id"])
++        version.rating_count += 1
++        session.commit()
++    request = {"cursor": cold["page_cursor"], "preview_cache": True,
++               "known_previews": list({row["preview_hash"] for row in cold["items"]})}
++    second = d.client.post("/v1/discovery/v3/tracks", json=request)
++    assert second.status_code == 200, second.text
++    warm = second.json()
++    assert all("points" not in row for row in warm["items"])
++    assert warm["items"][0]["rating_count"] == cold["items"][0]["rating_count"] + 1
++    request["known_previews"] = []
++    fallback = d.client.post("/v1/discovery/v3/tracks", json=request)
++    assert fallback.status_code == 200 and all("points" in row for row in fallback.json()["items"])
++    request["known_previews"] = ["a" * 64] * 33
++    assert d.client.post("/v1/discovery/v3/tracks", json=request).status_code == 422
++
++
++def enrolled(d):
++    seed(d, 6)
++    group = join(d, "Alice")["group_id"]
++    join(d, "Bob")
++    return group, f"/v1/rivalry/{group}"
++
++
++def test_unchanged_snapshot_does_not_rebuild_and_uses_bounded_reads(reuse_domain, monkeypatch):
++    d = reuse_domain
++    _group, path = enrolled(d)
++    group_path = path
++    path = "/v1/rivalry/current?vehicle_id=compact"
++    first = d.client.get(path, headers=headers(d, "Alice"))
++    assert first.status_code == 200
++    queries = []
++    def record(*args):
++        queries.append(args[2])
++    def rebuilding(*args, **kwargs):
++        raise AssertionError("Unchanged snapshot rebuilt standings")
++    original = rivalry.standings_data
++    monkeypatch.setattr(rivalry, "standings_data", rebuilding)
++    event.listen(d.app.state.engine, "before_cursor_execute", record)
++    try:
++        same = d.client.get(path, headers={**headers(d, "Alice"), "If-None-Match": first.headers["etag"]})
++    finally:
++        event.remove(d.app.state.engine, "before_cursor_execute", record)
++    assert same.status_code == 304 and same.content == b""
++    reads = [query for query in queries if query.lstrip().upper().startswith("SELECT")]
++    assert len(reads) <= 8, len(reads)
++    assert "must-revalidate" in same.headers["cache-control"]
++    monkeypatch.setattr(rivalry, "standings_data", original)
++    assert d.client.get(group_path, headers=headers(d, "Carol")).status_code == 404
++    assert d.client.get(group_path, headers={**headers(d, "Bob"), "If-None-Match": first.headers["etag"]}).status_code == 200
++
++
++@pytest.mark.parametrize("change", ["name", "country", "appearance", "block", "hidden", "disabled", "redacted", "archive", "member"])
++def test_mutable_snapshot_inputs_invalidate_cached_bytes(reuse_domain, change):
++    d = reuse_domain
++    group_id, path = enrolled(d)
++    first = d.client.get(path, headers=headers(d, "Alice"))
++    assert first.status_code == 200
++    with d.factory() as session:
++        group = session.get(RivalryGroup, group_id)
++        bob = session.get(Player, d.players["Bob"])
++        if change == "name":
++            bob.display_name = "Changed rival"
++        elif change == "country":
++            bob.country_code = "FI"
++        elif change == "appearance":
++            bob.vehicle_appearances = {"compact": {"fixture": "changed"}}
++        elif change == "block":
++            session.add(PlayerBlock(player_id=d.players["Alice"], blocked_id=bob.id))
++        elif change in ("hidden", "disabled", "redacted"):
++            version = session.get(TrackVersion, group.tracks[0]["version_id"])
++            track = session.get(Track, version.track_id)
++            owner = session.get(Player, track.owner_id)
++            if change == "hidden":
++                track.hidden = True
++            elif change == "disabled":
++                owner.disabled = True
++            else:
++                owner.deleted_at = 123
++                version.content_hash = "a" * 64
++                version.redacted_track_hash = "b" * 64
++        elif change == "archive":
++            group.archived = True
++        elif change == "member":
++            session.delete(session.get(RivalryMember, (group_id, bob.id)))
++        session.commit()
++    changed = d.client.get(path, headers={**headers(d, "Alice"), "If-None-Match": first.headers["etag"]})
++    assert changed.status_code == 200, (change, changed.text)
++    assert changed.headers["etag"] != first.headers["etag"]
++    value = changed.json()
++    if change in ("hidden", "disabled", "archive"):
++        assert not value["tracks"][0]["available"]
++    if change == "redacted":
++        entry = value["tracks"][0]["entry"]
++        assert entry["creator"] == "Removed account" and entry["content_hash"] == "a" * 64
++    if change == "block":
++        assert next(row for row in value["standings"] if row["id"] == d.players["Bob"])["name"] == "Blocked player"
++
++
++def test_week_boundary_pending_and_finished_personal_bests_invalidate(reuse_domain, monkeypatch):
++    d = reuse_domain
++    group_id, path = enrolled(d)
++    stamp = 1900000000
++    monkeypatch.setattr(rivalry, "now", lambda: stamp)
++    with d.factory() as session:
++        session.get(RivalryGroup, group_id).ends_at = stamp + 1
++        session.commit()
++    first = d.client.get(path, headers=headers(d, "Alice"))
++    assert first.json()["state"] == "active"
++    monkeypatch.setattr(rivalry, "now", lambda: stamp + 2)
++    complete = d.client.get(path, headers={**headers(d, "Alice"), "If-None-Match": first.headers["etag"]})
++    assert complete.status_code == 200 and complete.json()["state"] == "complete"
++    # The clock changes without changing a row. Complete snapshots must not stay active.
++    with d.factory() as session:
++        group = session.get(RivalryGroup, group_id)
++        from bmt_backend.rivalry_models import RivalryTicket
++        from bmt_backend.runs import board_manifest
++        from bmt_backend.track_models import Board
++        board_id = group.tracks[0]["board_id"]
++        if session.get(Board, board_id) is None:
++            version = session.get(TrackVersion, group.tracks[0]["version_id"])
++            session.add(Board(id=board_id, version_id=version.id, vehicle_id="compact", manifest=board_manifest(version, "compact")))
++        session.flush()
++        ticket = RunTicket(player_id=d.players["Alice"], board_id=board_id, expires_at=stamp+100)
++        session.add(ticket); session.flush()
++        session.add(RivalryTicket(ticket_id=ticket.id, group_id=group_id, slot=0, outcome={"personal_best": True}))
++        run = Run(ticket_id=ticket.id, player_id=d.players["Alice"], board_id=board_id, replay_hash="a"*64,
++                  status="queued", time_ticks=100, finished_at=stamp)
++        session.add(run); session.commit(); run_id = run.id
++    settling = d.client.get(path, headers={**headers(d, "Alice"), "If-None-Match": complete.headers["etag"]})
++    assert settling.status_code == 200 and settling.json()["state"] == "settling"
++    with d.factory() as session:
++        session.get(Run, run_id).status = "verified"
++        session.commit()
++    final = d.client.get(path, headers={**headers(d, "Alice"), "If-None-Match": settling.headers["etag"]})
++    assert final.status_code == 200 and final.json()["state"] == "complete"
++    assert final.json()["personal_best_slots"] == [0]
++
++
++def test_accepted_scores_replace_a_cached_standings_snapshot(reuse_domain):
++    d = reuse_domain
++    group, path = enrolled(d)
++    first = d.client.get(path, headers=headers(d, "Alice"))
++    ticket = rivalry_ticket(d, group, "Bob")
++    submit(d, ticket, "Bob", 30)
++    assert process_one(d.app)
++    changed = d.client.get(path, headers={**headers(d, "Alice"), "If-None-Match": first.headers["etag"]})
++    assert changed.status_code == 200
++    bob = next(row for row in changed.json()["standings"] if row["id"] == d.players["Bob"])
++    assert bob["completed"] == 1 and bob["points"] == 30
++
++
++def test_completion_returns_one_wallet_for_a_batch_and_preserves_ownership(reuse_domain):
++    from test_challenges import normal_run, setup
++    d = reuse_domain
++    version = setup(d)
++    run_id = normal_run(d, version)
++    path = "/v1/runs/" + run_id
++    ordinary = d.client.get(path, headers=headers(d, "Alice"))
++    assert "completion" not in ordinary.json()
++    enriched = d.client.get(path + "?completion=true", headers=headers(d, "Alice")).json()
++    assert enriched["completion"]["version"] == 1
++    assert enriched["completion"]["reward"]["status"] == "credited"
++    assert enriched["completion"]["wallet"]["balance"] >= enriched["completion"]["reward"]["amount"]
++    batch = d.client.get("/v1/runs/status", params={"ids": run_id, "completion": "true"}, headers=headers(d, "Alice")).json()
++    assert "completion_wallet" in batch and "wallet" not in batch["items"][0]["completion"]
++    other = d.client.get(path + "?completion=true", headers=headers(d, "Bob"))
++    assert other.status_code == 404
++    ticket_id = enriched["ticket_id"]
++    recovery = d.client.get(f"/v1/run-tickets/{ticket_id}/submission?completion=true", headers=headers(d, "Alice"))
++    assert recovery.json()["run"]["completion"]["reward"] == enriched["completion"]["reward"]
+--- /dev/null
++++ b/game/tests/test_backend_reuse.gd
+@@ -0,0 +1,154 @@
++extends SceneTree
++const Economy = preload("res://backend/cosmetic_economy.gd")
++const Preloader = preload("res://backend/comparison_preloader.gd")
++const Shop = preload("res://persistence/cosmetic_catalog.gd")
++var checks: int = 0
++var failures: int = 0
++var foreground: Dictionary = {}
++var foreground_done: bool = false
++
++class WalletClient extends Node:
++	signal identity_changed
++	var player: Dictionary = {"id":"reuse-alice"}
++	var state: Dictionary = {"schema":1,"revision":0,"balance":2000,"owned":[],"prices":{}}
++	var completion: Dictionary = {}
++	var receipt: Dictionary = {"status":"credited","amount":50,"rows":[{"title":"Finish","icon":"coin","amount":50,"eligible":true,"status":"Credited"}]}
++	var calls: Array[String] = []
++	var receipts: Dictionary = {}
++	var hold: bool = false
++	var lose_purchase: bool = false
++	var charges: int = 0
++	func signed_in() -> bool: return true
++	func base_url() -> String: return "http://reuse-fixture.invalid"
++	func new_operation_key() -> String: return "reuse-operation-"+str(calls.size())
++	func recent_completion(ticket: String) -> Dictionary: return completion if ticket == "bundled" else {}
++	func request_api(path: String, _method: int = 0, body: Dictionary = {}, key: String = "", _auth: bool = false) -> Dictionary:
++		calls.append(path)
++		state.prices = preload("res://persistence/cosmetic_catalog.gd").items()
++		var data: Dictionary = state.duplicate(true)
++		if path.begins_with("/economy/rewards/"): data = receipt.duplicate(true)
++		if path == "/economy/purchases":
++			if receipts.has(key): data = receipts[key].duplicate(true)
++			else:
++				state.balance -= int(state.prices[body.item_id])
++				state.revision += 1
++				state.owned.append(body.item_id)
++				charges += 1
++				data = {"item_id":body.item_id,"wallet":state.duplicate(true)}
++				receipts[key] = data.duplicate(true)
++				if lose_purchase:
++					lose_purchase = false
++					return {"ok":false,"status":0,"data":{},"error":"NETWORK_ERROR"}
++		while hold: await get_tree().process_frame
++		return {"ok":true,"status":200,"data":data,"error":""}
++
++class ComparisonClient extends Node:
++	var packet: Dictionary = {}
++	var hold: bool = true
++	var paths: Array[String] = []
++	func signed_in() -> bool: return true
++	func request_api(path: String, _method: int = 0, _body: Dictionary = {}, _key: String = "", _auth: bool = false) -> Dictionary:
++		paths.append(path)
++		while hold: await get_tree().process_frame
++		return {"ok":true,"data":packet.duplicate(true)}
++	func request_public(path: String, _owner: int) -> Dictionary:
++		paths.append(path)
++		while hold: await get_tree().process_frame
++		return {"ok":true,"data":{"items":[]}}
++
++func _initialize() -> void: run.call_deferred()
++func check(value: bool, label: String) -> void:
++	checks += 1
++	if not value:
++		failures += 1
++		print("FAIL: "+label)
++
++func settle() -> void:
++	for frame: int in range(8): await process_frame
++
++func fetch_selected(loader: RefCounted) -> void:
++	foreground = await loader.fetch("fixture-5","compact")
++	foreground_done = true
++
++func run() -> void:
++	var directory: String = "user://backend-reuse-"+TrackLibrary.unique_id()
++	DirAccess.make_dir_recursive_absolute(directory)
++	var records := LocalRecords.new(directory.path_join("records.json"))
++	var client := WalletClient.new()
++	root.add_child(client)
++	var economy: Node = Economy.new()
++	economy.records = records
++	economy.client = client
++	root.add_child(economy)
++	await economy.refresh()
++	check(client.calls.size() == 1 and economy.balance() == 2000,"first wallet access revalidates persisted state")
++	for repeat: int in range(10): await economy.refresh()
++	check(client.calls.size() == 1,"ten quick menu refreshes reuse the current wallet")
++	economy._read_at = -Economy.FRESH_MS
++	await economy.refresh()
++	check(client.calls.size() == 2,"wallet freshness expires without advancing the system clock")
++	client.state.balance += 50
++	client.state.revision += 1
++	client.completion = {"reward":client.receipt.duplicate(true),"wallet":client.state.duplicate(true)}
++	var before: int = client.calls.size()
++	var reward: Dictionary = await economy.reward_for("bundled")
++	check(reward.amount == 50 and economy.balance() == 2050 and client.calls.size() == before,"completion receipt replaces both reward and wallet follow-ups")
++	client.state.balance += 50
++	client.state.revision += 1
++	await economy.reward_for("fallback")
++	await settle()
++	check(economy.balance() == 2100 and client.calls.size() == before+2,"legacy credited rewards force refresh even inside freshness window")
++	before = client.calls.size()
++	check(await economy.purchase("livery/apex_twin"),"server-authorized purchase succeeds")
++	await economy.refresh()
++	check(client.calls.size() == before+1 and economy.balance() == 1600,"purchase receipt supplies a fresh authoritative wallet")
++	client.lose_purchase = true
++	check(not (await economy.purchase("livery/endurance")) and not economy.pending.is_empty(),"lost acknowledgement retains its purchase operation")
++	var saved_key: String = economy.pending.key
++	economy._read_at = Time.get_ticks_msec()
++	await economy.refresh()
++	check(economy.pending.is_empty() and client.receipts.has(saved_key) and client.charges == 2,"pending recovery bypasses freshness and never charges twice")
++	client.hold = true
++	economy.refresh(true)
++	await process_frame
++	client.state.balance += 75
++	client.state.revision += 1
++	economy.refresh(true)
++	client.hold = false
++	await settle()
++	check(economy.balance() == client.state.balance and not economy._refresh_again,"forced refresh during an older read schedules a current follow-up")
++	client.hold = true
++	economy.refresh(true)
++	await process_frame
++	client.player = {"id":"reuse-bob"}
++	client.identity_changed.emit()
++	client.hold = false
++	await settle()
++	check(economy.wallet.is_empty() and economy.pending.is_empty(),"late wallet responses cannot populate another account")
++	economy.queue_free();client.queue_free()
++	await process_frame
++	var service := ComparisonClient.new()
++	service.packet = JSON.parse_string(FileAccess.get_file_as_string("res://../docs/evidence/instant-comparisons-2026-10-10/slippery-compact-packet.json")).packet
++	root.add_child(service)
++	var loader := Preloader.new()
++	loader.configure(service,"","reuse/account-a")
++	var entries: Array = []
++	for index: int in range(6): entries.append({"version_id":"fixture-%d" % index})
++	loader.prime(entries,"compact")
++	loader.prime(entries,"compact")
++	check(Preloader.MAX_TARGETS == 2 and service.paths.size() == 4,"six cold candidates cause only two speculative comparisons and leaderboards")
++	check(loader.diagnostics().speculative_started == 2,"speculative requests are counted once")
++	fetch_selected(loader)
++	check(loader._foreground_active == 1 and service.paths.size() == 6,"a selected track bypasses the held background allowance")
++	service.hold = false
++	await settle()
++	check(foreground_done and foreground.has("packet"),"foreground still receives the complete real comparison packet")
++	await loader.fetch("fixture-0","compact")
++	await loader.fetch("fixture-0","compact")
++	check(loader.diagnostics().speculative_used == 1,"using a prefetched comparison is counted once")
++	loader.configure(service,"","reuse/account-b")
++	check(loader.diagnostics().speculative_started == 0 and loader.peek("fixture-0","compact").is_empty(),"account changes clear cache and local diagnostics")
++	service.queue_free()
++	await process_frame
++	print("BACKEND_REUSE checks=%d failures=%d" % [checks,failures])
++	quit(1 if failures else 0)
+--- /dev/null
++++ b/game/tests/test_backend_reuse.gd.uid
+@@ -0,0 +1 @@
++uid://bttet8lydfmsc
+--- /dev/null
++++ b/game/tests/test_completion_receipts_http.gd
+@@ -0,0 +1,43 @@
++extends SceneTree
++const Client = preload("res://backend/backend_client.gd")
++const Economy = preload("res://backend/cosmetic_economy.gd")
++var checks: int = 0
++var failures: int = 0
++func _initialize() -> void: run.call_deferred()
++func check(value: bool, label: String) -> void:
++	checks += 1
++	if not value:
++		failures += 1
++		print("FAIL: "+label)
++func run() -> void:
++	var client: Node = Client.new()
++	root.add_child(client)
++	check(client.configure(OS.get_environment("BMT_API_URL")) == OK,"configure isolated HTTP fixture")
++	var boot: Dictionary = await client.request_api("/bootstrap")
++	check(boot.ok and int(client._capabilities.get("run_completion_version",0)) == 1,"negotiate completion receipts")
++	check(int(client._capabilities.get("discovery_preview_version",0)) == 1,"negotiate preview reuse")
++	var login: Dictionary = await client.developer_login(OS.get_environment("BMT_DEV_AUTH_KEY"))
++	check(login.ok,"authenticate invented account")
++	var run_id: String = OS.get_environment("BMT_COMPLETION_RUN")
++	var ticket: String = OS.get_environment("BMT_COMPLETION_TICKET")
++	var response: Dictionary = await client.request_api(client.run_read_path("/runs/"+run_id),HTTPClient.METHOD_GET,{},"",true)
++	check(response.ok and response.data.status == "verified","actual run response validates")
++	check(client.recent_completion(ticket).get("wallet",{}).get("balance",0) == 1234,"client retains the exact completion wallet")
++	var directory: String = "user://completion-http-"+TrackLibrary.unique_id()
++	DirAccess.make_dir_recursive_absolute(directory)
++	var economy: Node = Economy.new()
++	economy.client = client
++	economy.records = LocalRecords.new(directory.path_join("records.json"))
++	root.add_child(economy)
++	var reward: Dictionary = await economy.reward_for(ticket)
++	check(reward.get("amount",0) == 50 and economy.balance() == 1234,"economy consumes actual HTTP receipt without follow-up reads")
++	var batch: Dictionary = await client.request_api(client.run_read_path("/runs/status?ids="+run_id),HTTPClient.METHOD_GET,{},"",true)
++	check(batch.ok and batch.data.get("completion_wallet",{}).get("balance",0) == 1234,"batch response contains one account wallet")
++	check(client.recent_completion(ticket).get("reward",{}).get("amount",0) == 50,"batch receipt is retained per ticket")
++	client._race_status_cache.clear()
++	var waited: Dictionary = await client.wait_for_run(run_id,ticket)
++	check(waited.ok and client.recent_completion(ticket).get("wallet",{}).get("balance",0) == 1234,"wait response preserves receipts")
++	economy.queue_free();client.queue_free()
++	await process_frame
++	print("COMPLETION_HTTP checks=%d failures=%d" % [checks,failures])
++	quit(1 if failures else 0)
+--- /dev/null
++++ b/game/tests/test_completion_receipts_http.gd.uid
+@@ -0,0 +1 @@
++uid://boxb12m75yk22

@@ -1,0 +1,19 @@
+# Menu, loading and shortcut branding — 2026-10-25
+
+Requirements: MLB01 owner logo at menu top left; MLB02 same logo on loading screens; MLB03 owner icon for game shortcuts.
+
+Changed `game/ui/menu_brand.gd` to display the owner-supplied transparent `game/assets/menu/logo.png`, preserving proportions and the existing 196 × 64 layout footprint. The atlas trims only transparent outer pixels. Existing startup/account uses of MenuBrand share the supplied logo. `game/ui/race_loading.gd` adds the logo above the existing track information. `game/project.godot` selects the supplied `game/assets/menu/icon.png` and a 640 × 225 splash derivative (`boot_logo.png`); `game/export_presets.cfg` selects the supplied icon for Android standard and adaptive launcher layers. Original supplied images remain unchanged. Import sidecars and the native capture script are included. Concurrent localization/export settings remain preserved.
+
+Actual commands (PowerShell, repository root):
+
+- `powershell -ExecutionPolicy Bypass -File scripts/dev.ps1 Import`: sandbox attempt failed with certificate/log access errors; authorized local rerun completed, exit 0.
+- `powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1 TestScript -ScriptPath res://tests/capture_owner_brand.gd -Graphical -RenderingMethod gl_compatibility`: exit 0; native menu/loading captures at 1280 × 720 and 960 × 540, visually inspected. Script uses disposable local records and disables the remote endpoint. Raw-image loading warning applies only to this export-excluded asset-preparation script.
+- `powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1 TestScript -ScriptPath res://tests/test_race_loading.gd`: 207 checks, zero failures, exit 0.
+- `powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1 TestMenuLoading`: exit 1, five track selection/cache assertions fail, followed by missing TrackBrowser `_resolve_thread` property at line 79. This suite is not green; no assertions were modified and no baseline equivalence is claimed.
+- `git diff --check -- game/ui/menu_brand.gd game/ui/race_loading.gd game/project.godot game/export_presets.cfg`: exit 0 (line-ending warning only).
+
+Evidence: [menu](evidence/menu-logo-2026-10-25/menu-960x540.png), [loading](evidence/menu-logo-2026-10-25/loading-960x540.png); larger captures in the same directory. The empty track list is a disposable-records fixture, not a change to owner records.
+
+Acceptance remaining: owner appearance review, actual boot splash observation and launcher mask/shortcut appearance after a rebuilt package. No device attachment check or physical-device test was performed. No APK/export, installation, deployment, owner-process restart or real authentication was performed. Existing installed shortcut icons require a rebuilt/reinstalled package to update.
+
+Owner padding follow-up (MLB04): `game/core/app.gd` sets the top-menu logo to 84% within its unchanged layout slot. `MenuBrand.logo_scale` adds transparent atlas margins, keeping the artwork centered and proportional; loading/account logos retain their previous size. Re-ran the native capture command above: exit 0, refreshed menu/loading evidence at both window sizes; menu image visually inspected. Scoped `git diff --check` passed. No device test performed.

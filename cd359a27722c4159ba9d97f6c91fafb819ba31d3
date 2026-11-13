@@ -1,0 +1,1626 @@
+diff --git a/AGENTS.md b/AGENTS.md
+--- a/AGENTS.md
++++ b/AGENTS.md
+@@ -1,3 +1,8 @@
++<!-- DAILY-ELIMINATION-20261031 -->
++## Track of the Day flying-lap elimination (2026-10-31)
++DE01-DE04/R01: One unscored opening lap then nine independently judged flying laps, top75/60/50/40/30/20/10/5/1%. All-time compatible lap PB quantiles, frozen per attempt; ties pass, first miss ends at the line. Dedicated local results and retry; ordinary five-lap scores remain separate. Backend18pass, native rules/results107/0 and daily page77/0; final App/other checks, captures, scoped checkpoint and limitations: [docs/DAILY_ELIMINATION_2026_10_31.md](docs/DAILY_ELIMINATION_2026_10_31.md). Client/backend rollout, reload and owner acceptance remain. No device test, live/save mutation, deployment, owner restart or main-index write.
++<!-- /DAILY-ELIMINATION-20261031 -->
++
+ <!-- AUTOMATED-GODOT-CRASH-DIALOGS-20261030 -->
+ ## Background Godot crash dialogs
+ Windows has recorded intermittent native crashes in unattended Godot tests, sometimes displaying a dialog over the owner's game. For Codex-launched, noninteractive Godot commands and test runners, use `python scripts/run_no_crash_dialog.py -- <command> <arguments>`; this scopes Windows crash-dialog suppression to the launched process tree and retains failure exit codes. `scripts/dev.ps1` also protects its noninteractive Godot test launches, but its direct version check and other direct launches need the wrapper. Do not apply this to the owner's interactive editor or game. Suppression does not fix a crash and can prevent Windows Error Reporting dumps; investigate and report failures rather than treating them as passes. Already running sessions are unaffected.
+diff --git a/DEVELOPMENT_STATUS.md b/DEVELOPMENT_STATUS.md
+--- a/DEVELOPMENT_STATUS.md
++++ b/DEVELOPMENT_STATUS.md
+@@ -1,3 +1,8 @@
++<!-- DAILY-ELIMINATION-20261031 -->
++## Track of the Day flying-lap elimination (2026-10-31)
++DE01-DE04/R01: One unscored opening lap then nine independently judged flying laps, top75/60/50/40/30/20/10/5/1%. All-time compatible lap PB quantiles, frozen per attempt; ties pass, first miss ends at the line. Dedicated local results and retry; ordinary five-lap scores remain separate. Backend18pass, native rules/results107/0 and daily page77/0; final App/other checks, captures, scoped checkpoint and limitations: [docs/DAILY_ELIMINATION_2026_10_31.md](docs/DAILY_ELIMINATION_2026_10_31.md). Client/backend rollout, reload and owner acceptance remain. No device test, live/save mutation, deployment, owner restart or main-index write.
++<!-- /DAILY-ELIMINATION-20261031 -->
++
+ <!-- LOADING-OPTIMISATION-20261031 -->
+ ## Repeat race loading improved (2026-10-31)
+ LTO01–LTO03/R01: Exact bounded road-support reuse and discarded spline work removal. Actual-App Star repeat loading averages 1.992s with support-cache eviction versus 1.106s with reuse; 92 component and 567 race-preparation checks pass. Existing road-height 16 failures reproduce with old support. Cold shaders and Android acceptance remain. [Evidence, commands and checked task patch](docs/LOADING_OPTIMISATION_2026_10_31.md).
+diff --git a/backend/bmt_backend/daily_elimination.py b/backend/bmt_backend/daily_elimination.py
+new file mode 100644
+--- /dev/null
++++ b/backend/bmt_backend/daily_elimination.py
+@@ -0,0 +1,17 @@
++"""Exact lap percentiles from the same compatible, deduplicated comparison field."""
++from bisect import bisect_left
++
++PERCENTILES = (75, 60, 50, 40, 30, 20, 10, 5, 1)
++POLICY = "daily-flying-elimination-v1"
++
++
++def cutoffs(population):
++    """Nearest-rank quantiles, fastest first; ties at the boundary qualify."""
++    count = population.cumulative[-1]
++    if not count:
++        return []
++    return [
++        {"percentile": percent,
++         "lap_ticks": population.ticks[bisect_left(population.cumulative, (count*percent+99)//100)-1]}
++        for percent in PERCENTILES
++    ]
+diff --git a/backend/bmt_backend/daily_standings.py b/backend/bmt_backend/daily_standings.py
+--- a/backend/bmt_backend/daily_standings.py
++++ b/backend/bmt_backend/daily_standings.py
+@@ -1,5 +1,5 @@
+ """Daily verified results; no all-time PB or raw-run aggregation on reads."""
+-from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
++from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query, Request, Response
+ from sqlalchemy import func, select, tuple_
+ 
+ from .cursors import decode_cursor, encode_cursor
+@@ -14,6 +14,46 @@
+ 
+ router = APIRouter(tags=["track of the day"])
+ DAY = 86400
++
++
++@router.get("/v1/track-of-the-day/limits")
++def elimination_limits(request: Request, response: Response, background: BackgroundTasks, session: BoardDB,
++                       day: int = Query(..., ge=0), version_id: str = Query(..., min_length=36, max_length=36),
++                       vehicle_id: str = Query("compact", max_length=80), credentials=Depends(bearer)):
++    from .daily_elimination import POLICY, cutoffs
++    from .histogram_http import schedule_demand
++    from .histogram_snapshots import load_snapshot
++
++    player = current_player(request, credentials, session) if credentials else None
++    response.headers["Cache-Control"] = "private, no-store"
++    stamp = now()
++    chosen = session.get(TrackOfDay, stamp // DAY)
++    if chosen is None:
++        raise HTTPException(503, "TRACK_OF_DAY_PREPARING")
++    if day != chosen.day or version_id != chosen.version_id:
++        raise HTTPException(409, "TRACK_OF_DAY_CHANGED")
++    if not hydrate(session, request, [{"version_id": version_id}], player):
++        raise HTTPException(404, "TRACK_OF_DAY_UNAVAILABLE")
++    pinned = board_manifest(session.get(TrackVersion, version_id), vehicle_id)
++    include_artificial = request.app.state.settings.test_drivers_enabled
++    snapshot = load_snapshot(session, version_id, vehicle_id, include_artificial)
++    expected_board = digest({"version_id": version_id, **pinned, "comparison_population": "all"})
++    if snapshot is not None and (snapshot[2][1].stored_grid or {}).get("board_id") != expected_board:
++        snapshot = None
++    schedule_demand(request, background, version_id, vehicle_id, include_artificial, unavailable=snapshot is None)
++    if snapshot is None:
++        # Return normally so the bounded refresh-interest task is executed.
++        response.status_code = 503
++        response.headers["Retry-After"] = "5"
++        return {"detail": "LAP_LIMITS_PREPARING"}
++    generation, _, (_, laps) = snapshot
++    limits = cutoffs(laps)
++    if not limits:
++        response.status_code = 409
++        return {"detail": "NO_FLYING_LAP_TIMES"}
++    return {"policy": POLICY, "day": chosen.day, "version_id": version_id, "vehicle_id": vehicle_id,
++            "ends_at": (chosen.day+1)*DAY, "server_now": stamp, "tick_rate": 120,
++            "generation": generation, "manifest": pinned, "population": laps.cumulative[-1], "cutoffs": limits}
+ 
+ 
+ def eligible_day(session, ticket, board, submitted_at):
+diff --git a/backend/tests/test_daily_elimination.py b/backend/tests/test_daily_elimination.py
+new file mode 100644
+--- /dev/null
++++ b/backend/tests/test_daily_elimination.py
+@@ -0,0 +1,51 @@
++from test_daily_standings import auth, auth_app, feature  # noqa: F401
++from test_daily_standings import daily as daily_fixture
++
++from bmt_backend.daily_elimination import PERCENTILES, cutoffs
++from bmt_backend.histogram_population import HistogramPopulation
++from bmt_backend.runs import board_manifest
++from bmt_backend.track_models import digest
++
++daily = daily_fixture
++
++
++def test_nearest_rank_lap_cutoffs_and_ties():
++    population = HistogramPopulation.from_rows([(str(i), i*120) for i in range(1, 101)])
++    assert cutoffs(population) == [{"percentile": p, "lap_ticks": p*120} for p in PERCENTILES]
++    assert cutoffs(HistogramPopulation.from_rows([])) == []
++    assert {x["lap_ticks"] for x in cutoffs(HistogramPopulation.from_rows([("a", 1200)]))} == {1200}
++    tied = HistogramPopulation.from_rows([("a", 1200), ("b", 1200), ("c", 2400)])
++    assert [x["lap_ticks"] for x in cutoffs(tied)] == [2400] + [1200]*8
++
++
++def test_limits_use_only_flying_laps_and_fence_daily_scope(daily, monkeypatch):
++    d = daily
++    feature(d)
++    calls = []
++    races = HistogramPopulation.from_rows([("a", 99999)])
++    bid = digest({"version_id": d.version.id, **board_manifest(d.version, "compact"), "comparison_population": "all"})
++    laps = HistogramPopulation.from_rows([(str(i), i*120) for i in range(1, 101)], {"board_id": bid})
++
++    def snapshot(session, version, vehicle, artificial):
++        calls.append((version, vehicle, artificial))
++        return "generation-1", {}, (races, laps)
++
++    monkeypatch.setattr("bmt_backend.histogram_snapshots.load_snapshot", snapshot)
++    params = {"day": d.day, "version_id": d.version.id, "vehicle_id": "compact"}
++    response = d.client.get("/v1/track-of-the-day/limits", params=params)
++    assert response.status_code == 200, response.text
++    data = response.json()
++    assert data["cutoffs"] == [{"percentile": p, "lap_ticks": p*120} for p in PERCENTILES]
++    assert data["manifest"]["vehicle_id"] == "compact"
++    assert data["population"] == 100 and data["generation"] == "generation-1"
++    assert response.headers["cache-control"] == "private, no-store"
++    signed = d.client.get("/v1/track-of-the-day/limits", params=params, headers=auth(d))
++    assert signed.json() == data
++    assert d.client.get("/v1/track-of-the-day/limits", params={**params, "day": d.day-1}).status_code == 409
++    assert d.client.get("/v1/track-of-the-day/limits", params={**params, "vehicle_id": "unknown"}).status_code == 422
++    assert len(calls) == 2
++    monkeypatch.setattr("bmt_backend.histogram_snapshots.load_snapshot", lambda *args: None)
++    assert d.client.get("/v1/track-of-the-day/limits", params=params).status_code == 503
++    monkeypatch.setattr("bmt_backend.histogram_snapshots.load_snapshot",
++                        lambda *args: ("empty", {}, (races, HistogramPopulation.from_rows([], {"board_id": bid}))))
++    assert d.client.get("/v1/track-of-the-day/limits", params=params).json()["detail"] == "NO_FLYING_LAP_TIMES"
+diff --git a/docs/DAILY_ELIMINATION_2026_10_31.md b/docs/DAILY_ELIMINATION_2026_10_31.md
+new file mode 100644
+--- /dev/null
++++ b/docs/DAILY_ELIMINATION_2026_10_31.md
+@@ -0,0 +1,55 @@
++# Track of the Day flying-lap elimination
++
++Requirements: **DE01** nine sequential cutoffs (75, 60, 50, 40, 30, 20, 10, 5, 1%); **DE02** exclude the opening lap and judge each subsequent lap independently; **DE03** use all recorded compatible best flying laps for the selected track/car (owner confirmed); **DE04** display the current target, elimination/completion and retry; **R01** retain ordinary racing and existing records.
++
++The daily event now runs one opening lap followed by nine flying laps. The first missed cutoff ends the attempt at the finish line; passing the ninth flying lap completes the challenge. Equality qualifies. A faster earlier lap cannot rescue a slower later lap. An authorised rewind restores the applicable stage from the restored lap history. Retry resets all stages and fetches fresh limits; limits remain frozen during an attempt.
++
++`GET /v1/track-of-the-day/limits` reads the existing durable best-flying-lap population, with one best per driver and the existing compatible comparison scope. It does not aggregate race totals or estimate values from histogram bins. Each cutoff is the ascending nearest-rank quantile: rank `ceil(population * percentage / 100)`, with all ties at that time qualifying. Empty or unavailable populations do not produce made-up limits. Day/version/car, snapshot board identity and the client engine/track/physics/handling contract are checked before starting. Public reads and signed-in moderation checks follow the existing daily standings boundary.
++
++The main timing display shows the percentile and **lap limit**, above the current lap clock. The opening lap has no target. The result table contains flying laps only. The daily menu describes the opening lap and nine scored laps. New messages are supplied in all twelve offered languages.
++
++## Score compatibility
++
++Elimination attempts have their own **local results**, and do not submit variable-length or ten-lap totals to the existing five-lap race service. They do not overwrite ordinary PBs, achievements or ghosts, and do not receive verified race rewards. The existing daily standings continue to show verified ordinary five-lap races on that track. This task does not implement a new elimination leaderboard or a server-authoritative survival/reward contract. The cutoff service needs to be deployed alongside the client before this mode can start against a live backend; no deployment was performed.
++
++## Changed files
++
++- Runtime: `game/race/daily_elimination.gd`, `game/core/game.gd`, `game/core/app.gd`, `game/ui/playground_hud.gd`, `game/ui/track_of_day_page.gd`, `game/ui/daily_elimination_results.gd`.
++- Backend: `backend/bmt_backend/daily_elimination.py`, `backend/bmt_backend/daily_standings.py`. No schema migration.
++- Tests: `game/tests/test_daily_elimination.gd`, `game/tests/test_daily_elimination_app.gd`, `backend/tests/test_daily_elimination.py`.
++- Language source: `scripts/translations/daily_elimination.tsv`; scoped additions to the twelve `game/localization/*.po` catalogues. New GDScript files have UID companions.
++- Evidence runner and scoped checkpoint: `docs/evidence/daily-elimination-2026-10-31/`.
++
++## Actual validation
++
++Commands run from the repository root unless a working directory is specified:
++
++```powershell
++python docs/evidence/daily-elimination-2026-10-31/run_native.py test_daily_elimination --graphical
++python docs/evidence/daily-elimination-2026-10-31/run_native.py test_daily_elimination
++python docs/evidence/daily-elimination-2026-10-31/run_native.py test_daily_elimination_app --graphical
++python docs/evidence/daily-elimination-2026-10-31/run_native.py test_track_of_day_presentation --graphical
++.tools/backend-secure-venv/Scripts/python.exe -m ruff check backend/bmt_backend/daily_elimination.py backend/bmt_backend/daily_standings.py backend/tests/test_daily_elimination.py
++```
++
++From `backend`:
++
++```powershell
++../.tools/backend-secure-venv/Scripts/python.exe -m pytest tests/test_daily_elimination.py tests/test_daily_standings.py tests/test_track_of_day.py -k 'not postgres' -q --disable-warnings --tb=short --basetemp=../build/daily-elimination-pytest-final
++```
++
++- Backend: **18 passed, 17 deselected**. Tests cover exact quantiles, ties, tiny/empty fields, lap-vs-race separation, authenticated/public responses, day and car fencing, and retained daily selection/standings behavior. Scoped Ruff passes.
++- Native Compatibility rules/results: **107 checks, 0 failures**, including all nine cutoff boundaries, opening-lap exclusion, retry, rewind, old-fast-lap isolation, incompatible manifest rejection, actual Game initialization/restart, and result columns in twelve languages at narrow width.
++- Actual App: **16 checks, 0 failures**. Finish-line crossing enters elimination and the finish transition; completion displays a single result panel; retry refreshes limits and clears progress; exit returns to Daily; missing limits cannot start a race. The main HUD displays the cutoff instead of the race total.
++- Existing daily-page native regression: **77 checks, 0 failures**, including keyboard/touch behavior, rollover and translated action fitting. New copy is visible in the page captures.
++- Final headless rules/results: **101 checks, 0 failures**; **132 scoped catalogue checks** pass. Checkpoint results are recorded in `report.json`.
++
++The native runner sets isolated APPDATA/LOCALAPPDATA and an empty backend origin, uses the pinned Godot 4.7.2 executable, and wraps every noninteractive engine launch with `scripts/run_no_crash_dialog.py`. Synthetic cutoff responses are explicit fixtures. App gameplay and UI tests use actual runtime scenes; they are not a live-account or device test.
++
++## Findings and acceptance limits
++
++Initial attempts included a pytest import failure from the wrong working directory; a runner argument parsed as a script name; six viewport-fit failures caused by the test retaining the project's 1280px stretch canvas; a Japanese daily-action overflow fixed by shorter copy and panel spacing; and test fixture import lint findings, subsequently fixed. A PowerShell-to-Python Unicode cleanup attempt failed before catalogue writes; the corrected cleanup reads UTF-8 source keys from disk. These were not treated as passing runs. The isolated Windows engine emits a root certificate-store warning; no tests contact an external service. Graphical App fixtures logged frame hitches up to 453.007ms. No phone performance or cold-load claim is made.
++
++Screenshots include the daily menu at several sizes, standalone elimination/completion tables, and actual App opening-lap/target/elimination states. The final source patch is made relative to task-start snapshots, with normalized-text forward/reverse application checks and exact final file hashes. It excludes pre-existing changes and leaves the main Git index untouched.
++
++Reload/rebuild, coordinated backend rollout and owner gameplay acceptance remain. **No Android/device test, APK, live service mutation, owner-save mutation, owner-process restart, deployment, staging, commit or merge was performed.**
+diff --git a/docs/PHASE_0_PLAN.md b/docs/PHASE_0_PLAN.md
+--- a/docs/PHASE_0_PLAN.md
++++ b/docs/PHASE_0_PLAN.md
+@@ -1,3 +1,8 @@
++<!-- DAILY-ELIMINATION-20261031 -->
++## Track of the Day flying-lap elimination (2026-10-31)
++DE01-DE04/R01: One unscored opening lap then nine independently judged flying laps, top75/60/50/40/30/20/10/5/1%. All-time compatible lap PB quantiles, frozen per attempt; ties pass, first miss ends at the line. Dedicated local results and retry; ordinary five-lap scores remain separate. Backend18pass, native rules/results107/0 and daily page77/0; final App/other checks, captures, scoped checkpoint and limitations: [DAILY_ELIMINATION_2026_10_31.md](DAILY_ELIMINATION_2026_10_31.md). Client/backend rollout, reload and owner acceptance remain. No device test, live/save mutation, deployment, owner restart or main-index write.
++<!-- /DAILY-ELIMINATION-20261031 -->
++
+ <!-- LOADING-OPTIMISATION-20261031 -->
+ ## Repeat race loading improved (2026-10-31)
+ LTO01–LTO03/R01 complete locally: Exact support buffers reuse within bounded memory; desktop Star repeat loads average 1.992s control versus 1.106s cached. Focused data, race cancellation and App pressure checks pass; cold shaders, reload and Android acceptance remain. [Results and limitations](LOADING_OPTIMISATION_2026_10_31.md).
+diff --git a/docs/evidence/daily-elimination-2026-10-31/checkpoint.py b/docs/evidence/daily-elimination-2026-10-31/checkpoint.py
+new file mode 100644
+--- /dev/null
++++ b/docs/evidence/daily-elimination-2026-10-31/checkpoint.py
+@@ -0,0 +1,73 @@
++"""Task-start source checkpoint; only an owned temporary repository is mutated."""
++import difflib
++import hashlib
++import json
++from pathlib import Path
++import subprocess
++import uuid
++
++root = Path(__file__).resolve().parents[3]
++evidence = Path(__file__).resolve().parent
++existing = [str(path.relative_to(evidence / "before")).replace("\\", "/")
++            for path in (evidence / "before").rglob("*") if path.is_file()]
++added = [
++    "game/race/daily_elimination.gd", "game/ui/daily_elimination_results.gd",
++    "game/tests/test_daily_elimination.gd", "game/tests/test_daily_elimination_app.gd",
++    "backend/bmt_backend/daily_elimination.py", "backend/tests/test_daily_elimination.py",
++    "scripts/translations/daily_elimination.tsv", "docs/DAILY_ELIMINATION_2026_10_31.md",
++    "docs/evidence/daily-elimination-2026-10-31/run_native.py",
++    "docs/evidence/daily-elimination-2026-10-31/checkpoint.py",
++]
++added += [name + ".uid" for name in added if name.endswith(".gd")]
++paths = sorted(set(existing + added))
++before, after, patches, entries = {}, {}, [], []
++for name in paths:
++    old = evidence / "before" / name
++    new = root / name
++    before[name] = old.read_text(encoding="utf-8") if old.exists() else None
++    after[name] = new.read_text(encoding="utf-8")
++    if before[name] == after[name]:
++        continue
++    patches.append("diff --git a/" + name + " b/" + name + "\n")
++    if not old.exists():
++        patches.append("new file mode 100644\n")
++    patches.extend(difflib.unified_diff((before[name] or "").splitlines(keepends=True),
++        after[name].splitlines(keepends=True), fromfile="a/"+name if old.exists() else "/dev/null",
++        tofile="b/"+name))
++    entries.append({"path":name,"sha256":hashlib.sha256(new.read_bytes()).hexdigest(),
++                    "before_sha256":hashlib.sha256(old.read_bytes()).hexdigest() if old.exists() else None})
++patch = evidence / "task.patch"
++patch.write_text("".join(patches),encoding="utf-8",newline="\n")
++workspace = root / "build" / ("daily-elimination-checkpoint-"+uuid.uuid4().hex[:10])
++workspace.mkdir(parents=True)
++assert workspace.resolve().is_relative_to((root / "build").resolve())
++def run(*args):
++    result = subprocess.run(["git", "-c", "core.autocrlf=false", *args], cwd=workspace,
++                            capture_output=True,text=True)
++    if result.returncode:
++        raise RuntimeError(result.stdout+result.stderr)
++run("init", "--quiet")
++for name, content in before.items():
++    if content is not None:
++        file = workspace / name
++        file.parent.mkdir(parents=True,exist_ok=True)
++        file.write_text(content,encoding="utf-8",newline="\n")
++run("apply", "--check", str(patch))
++run("apply", str(patch))
++assert all((workspace/name).read_text(encoding="utf-8") == content for name, content in after.items())
++run("apply", "--reverse", "--check", str(patch))
++run("apply", "--reverse", str(patch))
++assert all(not (workspace/name).exists() if content is None else
++           (workspace/name).read_text(encoding="utf-8") == content for name, content in before.items())
++report = {"requirements":["DE01","DE02","DE03","DE04","R01"],"source_files":entries,
++          "checkpoint":{"forward_check":True,"forward_content":True,"reverse_check":True,
++                        "reverse_content":True,"comparison":"normalized UTF-8 text","main_index_changed":False},
++          "validation":{"backend":{"passed":18,"deselected":17},"rules_native":{"checks":107,"failures":0},
++                        "rules_headless":{"checks":101,"failures":0},"app_native":{"checks":16,"failures":0},
++                        "daily_page_native":{"checks":77,"failures":0},"catalogue_checks":132,"ruff":"pass"},
++          "limits":["Local elimination results; existing verified five-lap standings/rewards remain separate",
++                    "No deployment; matching backend/client rollout required", "No Android or device test",
++                    "Root certificate-store warning in isolated native runs", "Native fixture frame hitches up to 453.007ms"],
++          "screenshots":sorted(str(p.relative_to(evidence)).replace("\\","/") for p in evidence.rglob("*.png"))}
++(evidence / "report.json").write_text(json.dumps(report,indent=2)+"\n",encoding="utf-8")
++print(f"{len(entries)} files: forward/reverse application and normalized content checks pass")
+diff --git a/docs/evidence/daily-elimination-2026-10-31/run_native.py b/docs/evidence/daily-elimination-2026-10-31/run_native.py
+new file mode 100644
+--- /dev/null
++++ b/docs/evidence/daily-elimination-2026-10-31/run_native.py
+@@ -0,0 +1,27 @@
++"""Isolated automated Godot runs; never reads the owner's saves or contacts a service."""
++import os
++from pathlib import Path
++import subprocess
++import sys
++
++root = Path(__file__).resolve().parents[3]
++out = Path(__file__).resolve().parent
++script = next((arg for arg in sys.argv[1:] if not arg.startswith("--")), "test_daily_elimination")
++profile = root / ("build/daily-elimination-profile-"+script)
++profile.mkdir(parents=True, exist_ok=True)
++env = os.environ.copy()
++env.update(APPDATA=str(profile), LOCALAPPDATA=str(profile), BMT_API_URL="",
++           BMT_DAILY_PAGE_OUTPUT=str(out / "page"))
++graphical = "--graphical" in sys.argv
++command = [sys.executable, str(root / "scripts/run_no_crash_dialog.py"), "--",
++           r"C:\apps\Godot 4.7.2\Godot_v4.7.2-stable_win64_console.exe",
++           "--path", str(root / "game"), "--rendering-method", "gl_compatibility",
++           "--audio-driver", "Dummy", "--script", "res://tests/"+script+".gd"]
++if not graphical:
++    command.append("--headless")
++result = subprocess.run(command, cwd=root, env=env, capture_output=True, text=True, encoding="utf-8",
++                        errors="replace", timeout=240)
++output = result.stdout+result.stderr
++(out / (script+("-native" if graphical else "-headless")+"-"+str(os.getpid())+".log")).write_text(output, encoding="utf-8")
++print(output)
++raise SystemExit(result.returncode)
+diff --git a/game/core/app.gd b/game/core/app.gd
+--- a/game/core/app.gd
++++ b/game/core/app.gd
+@@ -1106,12 +1106,68 @@
+ 	page.vehicle_selected.connect(_select_vehicle)
+ 	page.race_requested.connect(func(entry: Dictionary) -> void:
+ 		selected_track = cloud.presentation_track(entry)
+-		_start_race(selected_track,false))
++		_start_race(selected_track,false,false,{},null,{"day":int(entry.daily_day),"version_id":str(entry.version_id)}))
+ 	parent.add_child(page)
+ 	_keep_race_mode_rail_fixed(page)
+ 
+ func _daily_cache_scope() -> String:
+ 	return online.client.base_url()+"/"+(str(online.client.player.get("id","")) if online.client.signed_in() else "guest")
++
++func _load_daily_limits(track: NativeTrack, vehicle: String, request: Dictionary) -> RefCounted:
++	var path: String = "/track-of-the-day/limits?day=%d&version_id=%s&vehicle_id=%s" % [int(request.get("day",-1)),str(request.get("version_id","")).uri_encode(),vehicle.uri_encode()]
++	var response: Dictionary = await online.client.request_api(path,HTTPClient.METHOD_GET,{},"",true) if online.client.signed_in() else await online.client.request_public(path,get_instance_id())
++	if not response.get("ok",false): return null
++	var data: Dictionary = response.get("data",{})
++	if int(data.get("day",-1)) != int(request.get("day",-2)) or int(data.get("ends_at",0)) <= int(data.get("server_now",0)): return null
++	var manifest: Dictionary = data.get("manifest",{})
++	var config: HandlingConfig = VehicleCatalog.config(vehicle)
++	var engine: Dictionary = Engine.get_version_info()
++	var engine_version: String = "%s.%s.%s.%s.%s.%s" % [engine.major,engine.minor,engine.patch,engine.status,engine.build,str(engine.hash).left(9)]
++	if str(manifest.get("engine_version","")) != engine_version or int(manifest.get("tick_rate",0)) != VehicleSimulation.TICK_RATE or str(manifest.get("vehicle_id","")) != vehicle or str(manifest.get("track_schema","")) != TrackDocument.SCHEMA: return null
++	if str(manifest.get("track_content_hash","")) != track.content_hash or str(manifest.get("compiler_version","")) != TrackCompiler.VERSION or str(manifest.get("rules_key","")) != RaceRules.KEY: return null
++	if not preload("res://backend/race_compatibility.gd").physics_matches(str(manifest.get("physics_version","")),vehicle) or str(manifest.get("config_hash","")) != JSON.stringify(config.snapshot(),"",true).sha256_text(): return null
++	var rules := preload("res://race/daily_elimination.gd").new()
++	return rules if rules.configure(data,str(track.metadata.get("cloud_version","")),vehicle) else null
++
++func _daily_results() -> void:
++	if game.has_node("DailyResults"): return
++	_telemetry_race_finished = true
++	if client_quality != null: client_quality.finish_race("finished")
++	if product_telemetry != null: product_telemetry.set_transport_allowed(true)
++	game.hud.hide()
++	var layer := CanvasLayer.new()
++	layer.name = "DailyResults"
++	layer.layer = 20
++	game.add_child(layer)
++	var panel := preload("res://ui/daily_elimination_results.gd").new()
++	panel.rules = game.daily_elimination
++	panel.session = game.track_session
++	panel.retry_requested.connect(_retry_race)
++	panel.return_requested.connect(_leave_race)
++	layer.add_child(panel)
++
++func _retry_daily_race() -> void:
++	if cloud_starting or not game.preparation_complete: return
++	var active: Node = game
++	var scope: String = _daily_cache_scope()
++	var vehicle: String = str(active.vehicle_id)
++	cloud_starting = true
++	var rules: RefCounted = await _load_daily_limits(active.native_track,vehicle,active.get_meta("daily_request",{}))
++	if not is_instance_valid(active) or game != active: return
++	cloud_starting = false
++	if scope != _daily_cache_scope(): return
++	if rules == null:
++		_notice("Lap limits are unavailable. Return to Track of the Day and try again.")
++		return
++	var results: Node = game.get_node_or_null("DailyResults")
++	if results != null:
++		game.remove_child(results)
++		results.queue_free()
++	game.daily_elimination = rules
++	game.hud.show()
++	_result_game_id = 0
++	_telemetry_begin_attempt(game.native_track)
++	game.restart()
+ 
+ func _keep_race_mode_rail_fixed(page: Control) -> void:
+ 	if not is_instance_valid(race_mode_transition_rail) or not menu_body.is_ancestor_of(page): return
+@@ -4527,7 +4583,7 @@
+ 	race_loading.queue_free()
+ 	race_loading = null
+ 
+-func _prepare_metadata_race(track: NativeTrack, from_editor: bool, offline_only: bool, issued: Dictionary) -> void:
++func _prepare_metadata_race(track: NativeTrack, from_editor: bool, offline_only: bool, issued: Dictionary, daily_request: Dictionary = {}) -> void:
+ 	var scope: String = lifecycle.scope()
+ 	var navigation: int = _navigation_generation
+ 	var starting_screen: String = screen
+@@ -4542,7 +4598,7 @@
+ 	if not await _await_selected_preparation(track,overlay_id,scope,navigation,starting_screen,vehicle,selection): return
+ 	if not track.metadata.get("metadata_only",false):
+ 		cloud_starting = false
+-		await _start_race(track,from_editor,offline_only,issued,overlay)
++		await _start_race(track,from_editor,offline_only,issued,overlay,daily_request)
+ 		return
+ 	overlay.stage("Downloading track...")
+ 	var downloaded: Dictionary = await cloud.download_document(entry)
+@@ -4565,12 +4621,12 @@
+ 	cloud.remember_compiled_entry(entry,track)
+ 	track_catalog.remember_track(entry,track)
+ 	cloud_starting = false
+-	await _start_race(track,from_editor,offline_only,issued,overlay)
++	await _start_race(track,from_editor,offline_only,issued,overlay,daily_request)
+ 
+ func _start_race_road_job(track: NativeTrack) -> RefCounted:
+ 	return preload("res://editor/road_preparation_job.gd").start(track,get_tree())
+ 
+-func _start_race(track: NativeTrack, from_editor: bool, offline_only: bool = false, rivalry_issued: Dictionary = {}, prepared_loading: RaceLoading = null) -> void:
++func _start_race(track: NativeTrack, from_editor: bool, offline_only: bool = false, rivalry_issued: Dictionary = {}, prepared_loading: RaceLoading = null, daily_request: Dictionary = {}) -> void:
+ 	if cloud_starting or (is_instance_valid(race_loading) and race_loading != prepared_loading): return
+ 	if track == null:
+ 		_notice("Choose a track before starting a race.")
+@@ -4580,7 +4636,7 @@
+ 		_notice("This player is blocked. Manage blocked players in Settings > Privacy > Community safety.")
+ 		return
+ 	if track.metadata.get("metadata_only",false):
+-		await _prepare_metadata_race(track,from_editor,offline_only,rivalry_issued)
++		await _prepare_metadata_race(track,from_editor,offline_only,rivalry_issued,daily_request)
+ 		return
+ 	if not from_editor and not track.metadata.has("cloud_version") and cloud != null and not tutorial_lesson:
+ 		_notice("Choose a published backend track from Race.")
+@@ -4598,9 +4654,19 @@
+ 	if not _race_loading_matches(loading_id): return
+ 	if _race_preparation_changed(loading_id,original_scope,navigation_generation,starting_screen,selected_vehicle,starting_selection): return
+ 	if not await _await_selected_preparation(track,loading_id,original_scope,navigation_generation,starting_screen,selected_vehicle,starting_selection): return
++	var daily_rules: RefCounted
++	if not daily_request.is_empty():
++		loading.stage("Loading lap limits?")
++		daily_rules = await _load_daily_limits(track,selected_vehicle,daily_request)
++		if _race_preparation_changed(loading_id,original_scope,navigation_generation,starting_screen,selected_vehicle,starting_selection): return
++		if daily_rules == null:
++			cloud_starting = false
++			_close_race_loading(loading_id)
++			_notice("Lap limits are unavailable for this car. Try again shortly.")
++			return
+ 	cloud_ticket = {}
+ 	var road_overlap: RefCounted
+-	if not offline_only and not from_editor and track.metadata.has("cloud_version") and online.client.signed_in():
++	if daily_rules == null and not offline_only and not from_editor and track.metadata.has("cloud_version") and online.client.signed_in():
+ 		loading.stage("Connecting race…")
+ 		# Once the exact track is compiled, its presentation arrays can be built
+ 		# while an ordinary ticket request is in flight. Keep ticket issuance at
+@@ -4689,6 +4755,8 @@
+ 	_race_menu_visible(false)
+ 	game = GAME_SCENE.instantiate()
+ 	game.profile_enabled = race_profile_enabled
++	game.daily_elimination = daily_rules
++	game.set_meta("daily_request",daily_request.duplicate(true))
+ 	game.set("vehicle_id",attempt_vehicle)
+ 	game.process_mode = Node.PROCESS_MODE_DISABLED
+ 	game.cooperative_preparation = true
+@@ -4708,7 +4776,7 @@
+ 	game.set("editor_test", from_editor)
+ 	# Competitive tickets can consume limited attempts; keep those races on the
+ 	# handling contract they were issued for. Tutorial driving also stays fixed.
+-	game.set("handling_test_enabled", not (rivalry_racing or challenge_racing or tutorial_lesson))
++	game.set("handling_test_enabled", not (rivalry_racing or challenge_racing or tutorial_lesson or daily_rules != null))
+ 	_prepare_race_rating(track)
+ 	game.connect("exit_requested", _leave_race)
+ 	game.connect("edit_here_requested", _edit_here)
+@@ -4967,6 +5035,9 @@
+ 
+ func _results() -> void:
+ 	if not is_instance_valid(game) or not game.preparation_complete: return
++	if game.daily_elimination != null:
++		_daily_results()
++		return
+ 	var result_records: LocalRecords = game.get("preference_records")
+ 	var session: TrackSession = game.get("track_session")
+ 	var track: NativeTrack = game.get("native_track")
+@@ -5285,6 +5356,9 @@
+ 	return false
+ 
+ func _retry_race(offline_only: bool = false) -> void:
++	if is_instance_valid(game) and game.daily_elimination != null:
++		_retry_daily_race()
++		return
+ 	if race_ad_breaks != null and race_ad_breaks.blocking: return
+ 	if cloud_starting or not is_instance_valid(game) or not game.preparation_complete: return
+ 	if product_telemetry != null: product_telemetry.set_transport_allowed(false)
+diff --git a/game/core/game.gd b/game/core/game.gd
+--- a/game/core/game.gd
++++ b/game/core/game.gd
+@@ -117,6 +117,7 @@
+ var native_track: NativeTrack
+ var lap_telemetry := LapTelemetry.new()
+ var track_session: TrackSession
++var daily_elimination: RefCounted
+ var track_ground: Node3D
+ var track_debug: TrackDebug
+ var ai_enabled: bool = false
+@@ -473,6 +474,7 @@
+ 		_advance_practice_validation(previous_position,sim.state.position,sim.state.route_index,layer_before_step)
+ 	if native_track != null and not editor_test:
+ 		track_session.advance(native_track, previous_position, sim.state.position, sim.state.route_index,sim.state.track_elevated,layer_before_step)
++		if daily_elimination != null: daily_elimination.observe(track_session)
+ 		if production_mode: race_proof.capture(sim.state,track_session)
+ 		if profile_enabled:
+ 			profile_rules_us += Time.get_ticks_usec() - profile_start
+@@ -712,6 +714,7 @@
+ 		elif production_mode:
+ 			hud.title.text = str(native_track.metadata.get("title", native_track.metadata.get("name", native_track.identity.replace("_"," ").to_upper())))
+ 			hud.show_session(track_session)
++			if daily_elimination != null: hud.show_daily_session(track_session,daily_elimination)
+ 			checkpoint_marker.present(track_session,native_track,bridge_presentation)
+ 			hud.checkpoint_notice.present(checkpoint_marker,camera,camera.unproject_position(car.global_position) if checkpoint_marker.visible else Vector2.INF)
+ 			hud.message_label.text = "PAUSED  /  Resume to continue" if paused and not track_session.finished else ("Practice run" if attempt_practice else "")
+@@ -765,6 +768,9 @@
+ 		var distance_to_line: float = (sim.state.position - native_track.finish_center).dot(native_track.finish_forward)
+ 		sim.state.position -= native_track.finish_forward * maxf(0.0, distance_to_line + 3.0)
+ 	track_session = TrackSession.new()
++	if daily_elimination != null:
++		daily_elimination.reset()
++		track_session.target_laps = preload("res://race/daily_elimination.gd").LAPS
+ 	if vehicle_audio != null: vehicle_audio.reset()
+ 	_save_condition()
+ 	car_weathering.last_tick = -1
+diff --git a/game/localization/de.po b/game/localization/de.po
+--- a/game/localization/de.po
++++ b/game/localization/de.po
+@@ -11244,3 +11244,43 @@
+ 
+ msgid "Kits available for the Rally and Go-kart"
+ msgstr "Kits für Rally und Go-Kart verfügbar"
++
++#: daily-elimination-2026-10-31
++msgid "1 opening lap + 9 flying laps"
++msgstr "1 Startrunde + 9 fliegende Runden"
++
++#: daily-elimination-2026-10-31
++msgid "Beat the lap limit to survive."
++msgstr "Unterbiete das Rundenlimit, um im Rennen zu bleiben."
++
++#: daily-elimination-2026-10-31
++msgid "Top 1% — challenge complete"
++msgstr "Top 1% — Herausforderung geschafft"
++
++#: daily-elimination-2026-10-31
++msgid "Eliminated"
++msgstr "Ausgeschieden"
++
++#: daily-elimination-2026-10-31
++msgid "Stages passed: %d / 9"
++msgstr "Stufen geschafft: %d / 9"
++
++#: daily-elimination-2026-10-31
++msgid "Limit"
++msgstr "Limit"
++
++#: daily-elimination-2026-10-31
++msgid "Loading lap limits…"
++msgstr "Rundenlimits werden geladen…"
++
++#: daily-elimination-2026-10-31
++msgid "Lap limits are unavailable for this car. Try again shortly."
++msgstr "Für dieses Auto sind keine Rundenlimits verfügbar. Versuche es gleich erneut."
++
++#: daily-elimination-2026-10-31
++msgid "Lap limits are unavailable. Return to Track of the Day and try again."
++msgstr "Rundenlimits sind nicht verfügbar. Kehre zur Strecke des Tages zurück und versuche es erneut."
++
++#: game/ui/playground_hud.gd
++msgid "Opening lap"
++msgstr "Startrunde"
+diff --git a/game/localization/en.po b/game/localization/en.po
+--- a/game/localization/en.po
++++ b/game/localization/en.po
+@@ -11358,3 +11358,43 @@
+ 
+ msgid "Kits available for the Rally and Go-kart"
+ msgstr "Kits available for the Rally and Go-kart"
++
++#: daily-elimination-2026-10-31
++msgid "1 opening lap + 9 flying laps"
++msgstr "1 opening lap + 9 flying laps"
++
++#: daily-elimination-2026-10-31
++msgid "Beat the lap limit to survive."
++msgstr "Beat the lap limit to survive."
++
++#: daily-elimination-2026-10-31
++msgid "Top 1% — challenge complete"
++msgstr "Top 1% — challenge complete"
++
++#: daily-elimination-2026-10-31
++msgid "Eliminated"
++msgstr "Eliminated"
++
++#: daily-elimination-2026-10-31
++msgid "Stages passed: %d / 9"
++msgstr "Stages passed: %d / 9"
++
++#: daily-elimination-2026-10-31
++msgid "Limit"
++msgstr "Limit"
++
++#: daily-elimination-2026-10-31
++msgid "Loading lap limits…"
++msgstr "Loading lap limits…"
++
++#: daily-elimination-2026-10-31
++msgid "Lap limits are unavailable for this car. Try again shortly."
++msgstr "Lap limits are unavailable for this car. Try again shortly."
++
++#: daily-elimination-2026-10-31
++msgid "Lap limits are unavailable. Return to Track of the Day and try again."
++msgstr "Lap limits are unavailable. Return to Track of the Day and try again."
++
++#: game/ui/playground_hud.gd
++msgid "Opening lap"
++msgstr "Opening lap"
+diff --git a/game/localization/es.po b/game/localization/es.po
+--- a/game/localization/es.po
++++ b/game/localization/es.po
+@@ -11244,3 +11244,43 @@
+ 
+ msgid "Kits available for the Rally and Go-kart"
+ msgstr "Kits disponibles para el Rally y el kart"
++
++#: daily-elimination-2026-10-31
++msgid "1 opening lap + 9 flying laps"
++msgstr "1 vuelta inicial + 9 vueltas lanzadas"
++
++#: daily-elimination-2026-10-31
++msgid "Beat the lap limit to survive."
++msgstr "Supera el límite de vuelta para seguir."
++
++#: daily-elimination-2026-10-31
++msgid "Top 1% — challenge complete"
++msgstr "Top 1% — desafío completado"
++
++#: daily-elimination-2026-10-31
++msgid "Eliminated"
++msgstr "Eliminado"
++
++#: daily-elimination-2026-10-31
++msgid "Stages passed: %d / 9"
++msgstr "Etapas superadas: %d / 9"
++
++#: daily-elimination-2026-10-31
++msgid "Limit"
++msgstr "Límite"
++
++#: daily-elimination-2026-10-31
++msgid "Loading lap limits…"
++msgstr "Cargando límites de vuelta…"
++
++#: daily-elimination-2026-10-31
++msgid "Lap limits are unavailable for this car. Try again shortly."
++msgstr "Los límites no están disponibles para este coche. Inténtalo pronto."
++
++#: daily-elimination-2026-10-31
++msgid "Lap limits are unavailable. Return to Track of the Day and try again."
++msgstr "Los límites no están disponibles. Vuelve al circuito del día e inténtalo de nuevo."
++
++#: game/ui/playground_hud.gd
++msgid "Opening lap"
++msgstr "Vuelta inicial"
+diff --git a/game/localization/fi.po b/game/localization/fi.po
+--- a/game/localization/fi.po
++++ b/game/localization/fi.po
+@@ -11244,3 +11244,43 @@
+ 
+ msgid "Kits available for the Rally and Go-kart"
+ msgstr "Sarjoja saatavilla Rallyiin ja kartingiin"
++
++#: daily-elimination-2026-10-31
++msgid "1 opening lap + 9 flying laps"
++msgstr "1 lähtökierros + 9 lentävää kierrosta"
++
++#: daily-elimination-2026-10-31
++msgid "Beat the lap limit to survive."
++msgstr "Alita kierrosraja pysyäksesi mukana."
++
++#: daily-elimination-2026-10-31
++msgid "Top 1% — challenge complete"
++msgstr "Paras 1% — haaste suoritettu"
++
++#: daily-elimination-2026-10-31
++msgid "Eliminated"
++msgstr "Pudonnut"
++
++#: daily-elimination-2026-10-31
++msgid "Stages passed: %d / 9"
++msgstr "Läpäistyt vaiheet: %d / 9"
++
++#: daily-elimination-2026-10-31
++msgid "Limit"
++msgstr "Raja"
++
++#: daily-elimination-2026-10-31
++msgid "Loading lap limits…"
++msgstr "Ladataan kierrosrajoja…"
++
++#: daily-elimination-2026-10-31
++msgid "Lap limits are unavailable for this car. Try again shortly."
++msgstr "Tämän auton kierrosrajat eivät ole saatavilla. Yritä pian uudelleen."
++
++#: daily-elimination-2026-10-31
++msgid "Lap limits are unavailable. Return to Track of the Day and try again."
++msgstr "Kierrosrajat eivät ole saatavilla. Palaa päivän radalle ja yritä uudelleen."
++
++#: game/ui/playground_hud.gd
++msgid "Opening lap"
++msgstr "Lähtökierros"
+diff --git a/game/localization/fr.po b/game/localization/fr.po
+--- a/game/localization/fr.po
++++ b/game/localization/fr.po
+@@ -11244,3 +11244,43 @@
+ 
+ msgid "Kits available for the Rally and Go-kart"
+ msgstr "Kits disponibles pour la Rally et le kart"
++
++#: daily-elimination-2026-10-31
++msgid "1 opening lap + 9 flying laps"
++msgstr "1 tour de lancement + 9 tours lancés"
++
++#: daily-elimination-2026-10-31
++msgid "Beat the lap limit to survive."
++msgstr "Respectez le temps limite pour rester en course."
++
++#: daily-elimination-2026-10-31
++msgid "Top 1% — challenge complete"
++msgstr "Top 1% — défi réussi"
++
++#: daily-elimination-2026-10-31
++msgid "Eliminated"
++msgstr "Éliminé"
++
++#: daily-elimination-2026-10-31
++msgid "Stages passed: %d / 9"
++msgstr "Étapes réussies : %d / 9"
++
++#: daily-elimination-2026-10-31
++msgid "Limit"
++msgstr "Limite"
++
++#: daily-elimination-2026-10-31
++msgid "Loading lap limits…"
++msgstr "Chargement des limites…"
++
++#: daily-elimination-2026-10-31
++msgid "Lap limits are unavailable for this car. Try again shortly."
++msgstr "Les limites sont indisponibles pour cette voiture. Réessayez dans un instant."
++
++#: daily-elimination-2026-10-31
++msgid "Lap limits are unavailable. Return to Track of the Day and try again."
++msgstr "Les limites sont indisponibles. Revenez au circuit du jour et réessayez."
++
++#: game/ui/playground_hud.gd
++msgid "Opening lap"
++msgstr "Tour de lancement"
+diff --git a/game/localization/it.po b/game/localization/it.po
+--- a/game/localization/it.po
++++ b/game/localization/it.po
+@@ -11244,3 +11244,43 @@
+ 
+ msgid "Kits available for the Rally and Go-kart"
+ msgstr "Kit disponibili per Rally e kart"
++
++#: daily-elimination-2026-10-31
++msgid "1 opening lap + 9 flying laps"
++msgstr "1 giro iniziale + 9 giri lanciati"
++
++#: daily-elimination-2026-10-31
++msgid "Beat the lap limit to survive."
++msgstr "Rispetta il limite del giro per continuare."
++
++#: daily-elimination-2026-10-31
++msgid "Top 1% — challenge complete"
++msgstr "Top 1% — sfida completata"
++
++#: daily-elimination-2026-10-31
++msgid "Eliminated"
++msgstr "Eliminato"
++
++#: daily-elimination-2026-10-31
++msgid "Stages passed: %d / 9"
++msgstr "Fasi superate: %d / 9"
++
++#: daily-elimination-2026-10-31
++msgid "Limit"
++msgstr "Limite"
++
++#: daily-elimination-2026-10-31
++msgid "Loading lap limits…"
++msgstr "Caricamento limiti dei giri…"
++
++#: daily-elimination-2026-10-31
++msgid "Lap limits are unavailable for this car. Try again shortly."
++msgstr "I limiti non sono disponibili per questa auto. Riprova tra poco."
++
++#: daily-elimination-2026-10-31
++msgid "Lap limits are unavailable. Return to Track of the Day and try again."
++msgstr "I limiti non sono disponibili. Torna al circuito del giorno e riprova."
++
++#: game/ui/playground_hud.gd
++msgid "Opening lap"
++msgstr "Giro iniziale"
+diff --git a/game/localization/ja.po b/game/localization/ja.po
+--- a/game/localization/ja.po
++++ b/game/localization/ja.po
+@@ -11213,3 +11213,43 @@
+ 
+ msgid "Kits available for the Rally and Go-kart"
+ msgstr "Rallyとカート用キットをご用意"
++
++#: daily-elimination-2026-10-31
++msgid "1 opening lap + 9 flying laps"
++msgstr "スタート周回＋計測9周"
++
++#: daily-elimination-2026-10-31
++msgid "Beat the lap limit to survive."
++msgstr "制限タイムをクリアして勝ち残ろう。"
++
++#: daily-elimination-2026-10-31
++msgid "Top 1% — challenge complete"
++msgstr "上位1% — チャレンジ達成"
++
++#: daily-elimination-2026-10-31
++msgid "Eliminated"
++msgstr "脱落"
++
++#: daily-elimination-2026-10-31
++msgid "Stages passed: %d / 9"
++msgstr "クリア：%d / 9"
++
++#: daily-elimination-2026-10-31
++msgid "Limit"
++msgstr "制限"
++
++#: daily-elimination-2026-10-31
++msgid "Loading lap limits…"
++msgstr "制限タイムを読み込み中…"
++
++#: daily-elimination-2026-10-31
++msgid "Lap limits are unavailable for this car. Try again shortly."
++msgstr "この車の制限タイムは現在利用できません。しばらくしてからお試しください。"
++
++#: daily-elimination-2026-10-31
++msgid "Lap limits are unavailable. Return to Track of the Day and try again."
++msgstr "制限タイムを利用できません。本日のコースに戻ってお試しください。"
++
++#: game/ui/playground_hud.gd
++msgid "Opening lap"
++msgstr "スタート周回"
+diff --git a/game/localization/ko.po b/game/localization/ko.po
+--- a/game/localization/ko.po
++++ b/game/localization/ko.po
+@@ -11213,3 +11213,43 @@
+ 
+ msgid "Kits available for the Rally and Go-kart"
+ msgstr "Rally와 카트용 키트 이용 가능"
++
++#: daily-elimination-2026-10-31
++msgid "1 opening lap + 9 flying laps"
++msgstr "시작 1바퀴 + 플라잉 랩 9바퀴"
++
++#: daily-elimination-2026-10-31
++msgid "Beat the lap limit to survive."
++msgstr "랩 제한 시간을 통과해 살아남으세요."
++
++#: daily-elimination-2026-10-31
++msgid "Top 1% — challenge complete"
++msgstr "상위 1% — 도전 완료"
++
++#: daily-elimination-2026-10-31
++msgid "Eliminated"
++msgstr "탈락"
++
++#: daily-elimination-2026-10-31
++msgid "Stages passed: %d / 9"
++msgstr "통과 단계: %d / 9"
++
++#: daily-elimination-2026-10-31
++msgid "Limit"
++msgstr "제한"
++
++#: daily-elimination-2026-10-31
++msgid "Loading lap limits…"
++msgstr "랩 제한 시간 로딩 중…"
++
++#: daily-elimination-2026-10-31
++msgid "Lap limits are unavailable for this car. Try again shortly."
++msgstr "이 차량의 랩 제한 시간을 사용할 수 없습니다. 잠시 후 다시 시도하세요."
++
++#: daily-elimination-2026-10-31
++msgid "Lap limits are unavailable. Return to Track of the Day and try again."
++msgstr "랩 제한 시간을 사용할 수 없습니다. 오늘의 트랙으로 돌아가 다시 시도하세요."
++
++#: game/ui/playground_hud.gd
++msgid "Opening lap"
++msgstr "시작 랩"
+diff --git a/game/localization/nb.po b/game/localization/nb.po
+--- a/game/localization/nb.po
++++ b/game/localization/nb.po
+@@ -11244,3 +11244,43 @@
+ 
+ msgid "Kits available for the Rally and Go-kart"
+ msgstr "Sett tilgjengelige for Rally og gokart"
++
++#: daily-elimination-2026-10-31
++msgid "1 opening lap + 9 flying laps"
++msgstr "1 startrunde + 9 flygende runder"
++
++#: daily-elimination-2026-10-31
++msgid "Beat the lap limit to survive."
++msgstr "Klar rundegrensen for å fortsette."
++
++#: daily-elimination-2026-10-31
++msgid "Top 1% — challenge complete"
++msgstr "Topp 1% — utfordring fullført"
++
++#: daily-elimination-2026-10-31
++msgid "Eliminated"
++msgstr "Utslått"
++
++#: daily-elimination-2026-10-31
++msgid "Stages passed: %d / 9"
++msgstr "Fullførte trinn: %d / 9"
++
++#: daily-elimination-2026-10-31
++msgid "Limit"
++msgstr "Grense"
++
++#: daily-elimination-2026-10-31
++msgid "Loading lap limits…"
++msgstr "Laster rundegrenser…"
++
++#: daily-elimination-2026-10-31
++msgid "Lap limits are unavailable for this car. Try again shortly."
++msgstr "Rundegrenser er ikke tilgjengelige for denne bilen. Prøv igjen snart."
++
++#: daily-elimination-2026-10-31
++msgid "Lap limits are unavailable. Return to Track of the Day and try again."
++msgstr "Rundegrenser er ikke tilgjengelige. Gå tilbake til dagens bane og prøv igjen."
++
++#: game/ui/playground_hud.gd
++msgid "Opening lap"
++msgstr "Startrunde"
+diff --git a/game/localization/nl.po b/game/localization/nl.po
+--- a/game/localization/nl.po
++++ b/game/localization/nl.po
+@@ -11244,3 +11244,43 @@
+ 
+ msgid "Kits available for the Rally and Go-kart"
+ msgstr "Kits beschikbaar voor de Rally en de kart"
++
++#: daily-elimination-2026-10-31
++msgid "1 opening lap + 9 flying laps"
++msgstr "1 openingsronde + 9 vliegende ronden"
++
++#: daily-elimination-2026-10-31
++msgid "Beat the lap limit to survive."
++msgstr "Haal de rondelimiet om door te gaan."
++
++#: daily-elimination-2026-10-31
++msgid "Top 1% — challenge complete"
++msgstr "Top 1% — uitdaging voltooid"
++
++#: daily-elimination-2026-10-31
++msgid "Eliminated"
++msgstr "Uitgeschakeld"
++
++#: daily-elimination-2026-10-31
++msgid "Stages passed: %d / 9"
++msgstr "Fasen gehaald: %d / 9"
++
++#: daily-elimination-2026-10-31
++msgid "Limit"
++msgstr "Limiet"
++
++#: daily-elimination-2026-10-31
++msgid "Loading lap limits…"
++msgstr "Rondelimieten laden…"
++
++#: daily-elimination-2026-10-31
++msgid "Lap limits are unavailable for this car. Try again shortly."
++msgstr "Rondelimieten zijn niet beschikbaar voor deze auto. Probeer het zo opnieuw."
++
++#: daily-elimination-2026-10-31
++msgid "Lap limits are unavailable. Return to Track of the Day and try again."
++msgstr "Rondelimieten zijn niet beschikbaar. Ga terug naar het circuit van de dag en probeer opnieuw."
++
++#: game/ui/playground_hud.gd
++msgid "Opening lap"
++msgstr "Openingsronde"
+diff --git a/game/localization/pt_BR.po b/game/localization/pt_BR.po
+--- a/game/localization/pt_BR.po
++++ b/game/localization/pt_BR.po
+@@ -11244,3 +11244,43 @@
+ 
+ msgid "Kits available for the Rally and Go-kart"
+ msgstr "Kits disponíveis para o Rally e o kart"
++
++#: daily-elimination-2026-10-31
++msgid "1 opening lap + 9 flying laps"
++msgstr "1 volta inicial + 9 voltas lançadas"
++
++#: daily-elimination-2026-10-31
++msgid "Beat the lap limit to survive."
++msgstr "Bata o limite da volta para continuar."
++
++#: daily-elimination-2026-10-31
++msgid "Top 1% — challenge complete"
++msgstr "Top 1% — desafio concluído"
++
++#: daily-elimination-2026-10-31
++msgid "Eliminated"
++msgstr "Eliminado"
++
++#: daily-elimination-2026-10-31
++msgid "Stages passed: %d / 9"
++msgstr "Etapas concluídas: %d / 9"
++
++#: daily-elimination-2026-10-31
++msgid "Limit"
++msgstr "Limite"
++
++#: daily-elimination-2026-10-31
++msgid "Loading lap limits…"
++msgstr "Carregando limites de volta…"
++
++#: daily-elimination-2026-10-31
++msgid "Lap limits are unavailable for this car. Try again shortly."
++msgstr "Os limites não estão disponíveis para este carro. Tente novamente em breve."
++
++#: daily-elimination-2026-10-31
++msgid "Lap limits are unavailable. Return to Track of the Day and try again."
++msgstr "Os limites não estão disponíveis. Volte à pista do dia e tente novamente."
++
++#: game/ui/playground_hud.gd
++msgid "Opening lap"
++msgstr "Volta inicial"
+diff --git a/game/localization/sv.po b/game/localization/sv.po
+--- a/game/localization/sv.po
++++ b/game/localization/sv.po
+@@ -11244,3 +11244,43 @@
+ 
+ msgid "Kits available for the Rally and Go-kart"
+ msgstr "Paket finns för Rally och gokart"
++
++#: daily-elimination-2026-10-31
++msgid "1 opening lap + 9 flying laps"
++msgstr "1 startvarv + 9 flygande varv"
++
++#: daily-elimination-2026-10-31
++msgid "Beat the lap limit to survive."
++msgstr "Klara varvgränsen för att fortsätta."
++
++#: daily-elimination-2026-10-31
++msgid "Top 1% — challenge complete"
++msgstr "Topp 1% — utmaning klar"
++
++#: daily-elimination-2026-10-31
++msgid "Eliminated"
++msgstr "Utslagen"
++
++#: daily-elimination-2026-10-31
++msgid "Stages passed: %d / 9"
++msgstr "Klarade steg: %d / 9"
++
++#: daily-elimination-2026-10-31
++msgid "Limit"
++msgstr "Gräns"
++
++#: daily-elimination-2026-10-31
++msgid "Loading lap limits…"
++msgstr "Läser in varvgränser…"
++
++#: daily-elimination-2026-10-31
++msgid "Lap limits are unavailable for this car. Try again shortly."
++msgstr "Varvgränser saknas för den här bilen. Försök snart igen."
++
++#: daily-elimination-2026-10-31
++msgid "Lap limits are unavailable. Return to Track of the Day and try again."
++msgstr "Varvgränser saknas. Gå tillbaka till dagens bana och försök igen."
++
++#: game/ui/playground_hud.gd
++msgid "Opening lap"
++msgstr "Startvarv"
+diff --git a/game/race/daily_elimination.gd b/game/race/daily_elimination.gd
+new file mode 100644
+--- /dev/null
++++ b/game/race/daily_elimination.gd
+@@ -0,0 +1,56 @@
++extends RefCounted
++## One untimed opening lap, then one independently judged lap per cutoff.
++const PERCENTILES: Array[int] = [75,60,50,40,30,20,10,5,1]
++const LAPS: int = 10
++var limits: Array[float] = []
++var checked_laps: int = 0
++var passed: int = 0
++var eliminated: bool = false
++var complete: bool = false
++
++func configure(data: Dictionary, version: String, vehicle: String) -> bool:
++	limits.clear()
++	reset()
++	if data.get("policy") != "daily-flying-elimination-v1" or str(data.get("version_id","")) != version or str(data.get("vehicle_id","")) != vehicle: return false
++	if int(data.get("tick_rate",0)) != 120 or int(data.get("population",0)) <= 0: return false
++	var rows: Variant = data.get("cutoffs",[])
++	if not rows is Array or rows.size() != PERCENTILES.size(): return false
++	var previous: float = INF
++	var prepared: Array[float] = []
++	for index: int in range(rows.size()):
++		if not rows[index] is Dictionary: return false
++		var row: Dictionary = rows[index]
++		var ticks: float = float(row.get("lap_ticks",0))
++		if int(row.get("percentile",0)) != PERCENTILES[index] or not is_finite(ticks) or ticks <= 0 or ticks > 216000 or ticks != floor(ticks) or ticks > previous: return false
++		prepared.append(ticks/120.0)
++		previous = ticks
++	limits = prepared
++	return true
++
++func reset() -> void:
++	checked_laps = 0
++	passed = 0
++	eliminated = false
++	complete = false
++
++func observe(session: TrackSession) -> void:
++	# Rebuild after an authorised rewind, using the restored completed laps.
++	if session.lap_times.size() < checked_laps: reset()
++	if eliminated or complete or limits.size() != PERCENTILES.size(): return
++	while checked_laps < session.lap_times.size():
++		var index: int = checked_laps
++		checked_laps += 1
++		if index == 0: continue
++		if session.lap_times[index] > limits[index-1] + 0.000000001:
++			eliminated = true
++			session.finished = true
++			return
++		passed += 1
++		if passed == PERCENTILES.size():
++			complete = true
++			session.finished = true
++			return
++
++static func time_text(seconds: float) -> String:
++	var ms: int = roundi(seconds*1000.0)
++	return "%d:%02d.%03d" % [ms/60000,(ms/1000)%60,ms%1000]
+diff --git a/game/race/daily_elimination.gd.uid b/game/race/daily_elimination.gd.uid
+new file mode 100644
+--- /dev/null
++++ b/game/race/daily_elimination.gd.uid
+@@ -0,0 +1 @@
++uid://dad9c0f3797b
+diff --git a/game/tests/test_daily_elimination.gd b/game/tests/test_daily_elimination.gd
+new file mode 100644
+--- /dev/null
++++ b/game/tests/test_daily_elimination.gd
+@@ -0,0 +1,174 @@
++extends SceneTree
++const Rules = preload("res://race/daily_elimination.gd")
++var checks: int = 0
++var failures: int = 0
++
++class LimitsClient extends "res://backend/backend_client.gd":
++	var response: Dictionary
++	var requested_path: String = ""
++	func signed_in() -> bool: return false
++	func request_public(path: String, _owner: int) -> Dictionary:
++		requested_path = path
++		return response.duplicate(true)
++
++func _initialize() -> void: run.call_deferred()
++func check(ok: bool, description: String) -> void:
++	checks += 1
++	if not ok:
++		failures += 1
++		push_error(description)
++
++func data() -> Dictionary:
++	var result: Dictionary = {"policy":"daily-flying-elimination-v1","version_id":"track","vehicle_id":"compact","tick_rate":120,"population":100,"cutoffs":[]}
++	for i: int in range(9): result.cutoffs.append({"percentile":Rules.PERCENTILES[i],"lap_ticks":(30-i)*120})
++	return result
++
++func lap(session: TrackSession, rules: RefCounted, seconds: float) -> void:
++	session.lap_times.append(seconds)
++	session.completed_laps += 1
++	session.lap_start_time += seconds
++	session.elapsed_ticks = roundi(session.lap_start_time*120)
++	rules.observe(session)
++
++func run() -> void:
++	create_timer(120).timeout.connect(func() -> void: push_error("Daily elimination deadline"); quit(1))
++	root.content_scale_size = Vector2i.ZERO
++	root.size = Vector2i(960,540)
++	root.theme = MenuStyle.theme()
++	for missed: int in range(9):
++		var rules := Rules.new()
++		check(rules.configure(data(),"track","compact"),"valid descending lap limits")
++		var session := TrackSession.new(120,10)
++		lap(session,rules,999.0)
++		check(not session.finished and rules.passed == 0,"arbitrarily slow opening lap never eliminates")
++		for stage: int in range(missed): lap(session,rules,30.0-stage)
++		check(not session.finished and rules.passed == missed,"boundary ties pass all preceding stages")
++		lap(session,rules,30.0-missed+1.0/120.0)
++		check(rules.eliminated and session.finished and rules.passed == missed,"one tick over cutoff eliminates at stage %d" % missed)
++		rules.observe(session)
++		check(rules.passed == missed,"terminal evaluation is idempotent")
++	var rules := Rules.new()
++	rules.configure(data(),"track","compact")
++	var session := TrackSession.new(120,10)
++	lap(session,rules,0.01)
++	for index: int in range(9): lap(session,rules,30.0-index)
++	check(rules.complete and not rules.eliminated and rules.passed == 9 and session.finished,"nine flying laps complete top one percent")
++	var retry := TrackSession.new(120,10)
++	rules.reset()
++	check(not rules.complete and not rules.eliminated and rules.passed == 0 and rules.limits.size() == 9,"retry clears progress and retains frozen limits")
++	lap(retry,rules,30)
++	lap(retry,rules,1)
++	lap(retry,rules,30)
++	check(rules.eliminated and rules.passed == 1,"earlier fast lap cannot qualify a later slow lap")
++	var rewound := Rules.new()
++	rewound.configure(data(),"track","compact")
++	var restored := TrackSession.new(120,10)
++	lap(restored,rewound,50)
++	lap(restored,rewound,25)
++	restored.lap_times.resize(1)
++	restored.completed_laps = 1
++	rewound.observe(restored)
++	check(rewound.passed == 0 and not rewound.eliminated,"rewinding across the line restores the previous cutoff")
++	lap(restored,rewound,31)
++	check(rewound.eliminated and rewound.passed == 0,"rewound stage still requires its own valid lap")
++	for mutation: String in ["vehicle","version","empty","unordered","wrong_percent","nan","tick_rate"]:
++		var value: Dictionary = data()
++		match mutation:
++			"vehicle": value.vehicle_id = "electric"
++			"version": value.version_id = "other"
++			"empty": value.cutoffs = []
++			"unordered": value.cutoffs[4].lap_ticks = 9000
++			"wrong_percent": value.cutoffs[0].percentile = 80
++			"nan": value.cutoffs[0].lap_ticks = NAN
++			"tick_rate": value.tick_rate = 60
++		check(not Rules.new().configure(value,"track","compact"),"reject invalid limits: "+mutation)
++	check(TrackSession.new().target_laps == 5,"ordinary race remains five laps")
++	await request_contract()
++	await native_game()
++	await render_results(retry,rules,"eliminated")
++	var won := Rules.new()
++	won.configure(data(),"track","compact")
++	var winning := TrackSession.new(120,10)
++	lap(winning,won,100)
++	for index: int in range(9): lap(winning,won,30-index)
++	await render_results(winning,won,"complete")
++	print("DAILY_ELIMINATION: %d checks, %d failures" % [checks,failures])
++	quit(1 if failures else 0)
++
++func request_contract() -> void:
++	var app: Node = load("res://core/app.gd").new()
++	app.online = preload("res://backend/account_controller.gd").new()
++	app.online.client.free()
++	var client := LimitsClient.new()
++	app.online.client = client
++	var track := NativeTrack.new()
++	track.content_hash = "track-hash"
++	track.metadata.cloud_version = "track"
++	var payload: Dictionary = data()
++	payload.day = 123
++	payload.ends_at = 124*86400
++	payload.server_now = 123*86400+60
++	var engine: Dictionary = Engine.get_version_info()
++	payload.manifest = {"engine_version":"%s.%s.%s.%s.%s.%s" % [engine.major,engine.minor,engine.patch,engine.status,engine.build,str(engine.hash).left(9)],"tick_rate":120,"vehicle_id":"compact","track_schema":TrackDocument.SCHEMA,"track_content_hash":track.content_hash,"compiler_version":TrackCompiler.VERSION,"rules_key":RaceRules.KEY,"physics_version":VehicleSimulation.PHYSICS_VERSION,"config_hash":JSON.stringify(VehicleCatalog.config("compact").snapshot(),"",true).sha256_text()}
++	client.response = {"ok":true,"data":payload}
++	var request: Dictionary = {"day":123,"version_id":"track"}
++	check(await app._load_daily_limits(track,"compact",request) != null,"actual App accepts exact compatible server lap limits")
++	check(client.requested_path == "/track-of-the-day/limits?day=123&version_id=track&vehicle_id=compact","limits request pins day, track and car")
++	for field: String in ["engine_version","config_hash","compiler_version","rules_key","track_content_hash","physics_version","vehicle_id"]:
++		client.response.data = payload.duplicate(true)
++		client.response.data.manifest[field] = "wrong"
++		check(await app._load_daily_limits(track,"compact",request) == null,"reject incompatible limit manifest: "+field)
++	client.response.data = payload.duplicate(true)
++	client.response.data.day = 124
++	check(await app._load_daily_limits(track,"compact",request) == null,"reject rollover response")
++	client.free()
++	app.online.free()
++	app.free()
++
++func native_game() -> void:
++	var game: Node = load("res://core/game.tscn").instantiate()
++	game.initial_track = NativeTrack.read("res://resources/tracks/ellipse.json")
++	game.production_mode = true
++	game.handling_test_enabled = false
++	game.daily_elimination = Rules.new()
++	game.daily_elimination.configure(data(),"track","compact")
++	root.add_child(game)
++	while not game.preparation_complete: await process_frame
++	game.set_physics_process(false)
++	game.set_process(false)
++	check(game.track_session.target_laps == 10,"actual game restart installs daily ten lap session")
++	lap(game.track_session,game.daily_elimination,100)
++	lap(game.track_session,game.daily_elimination,31)
++	check(game.track_session.finished and game.daily_elimination.eliminated,"actual game owns elimination state")
++	game.restart()
++	check(game.track_session.target_laps == 10 and game.track_session.lap_times.is_empty() and not game.daily_elimination.eliminated,"actual game retry resets session and elimination")
++	game.queue_free()
++	await process_frame
++
++func render_results(session: TrackSession, rules: RefCounted, title: String) -> void:
++	var panel := preload("res://ui/daily_elimination_results.gd").new()
++	panel.rules = rules
++	panel.session = session
++	root.add_child(panel)
++	for size: Vector2i in [Vector2i(960,540),Vector2i(844,390),Vector2i(390,844)]:
++		root.size = size
++		for frame: int in range(4): await process_frame
++		check(panel.size.x <= size.x,"result fits viewport "+str(size))
++		if DisplayServer.get_name() != "headless":
++			await RenderingServer.frame_post_draw
++			var output: String = ProjectSettings.globalize_path("res://../docs/evidence/daily-elimination-2026-10-31")
++			check(root.get_texture().get_image().save_png(output.path_join(title+"-%dx%d.png" % [size.x,size.y])) == OK,"result capture")
++	panel.queue_free()
++	await process_frame
++	for locale: String in ["en","fr","es","de","pt_BR","ja","ko","nl","it","fi","sv","nb"]:
++		TranslationServer.set_locale(locale)
++		var localized := preload("res://ui/daily_elimination_results.gd").new()
++		localized.rules = rules
++		localized.session = session
++		root.add_child(localized)
++		for frame: int in range(3): await process_frame
++		var grid: Control = localized.find_child("DailyLapGrid",true,false)
++		check(grid.get_global_rect().end.x <= root.get_visible_rect().size.x,"localized result columns fit: "+locale)
++		localized.queue_free()
++		await process_frame
++	TranslationServer.set_locale("en")
+diff --git a/game/tests/test_daily_elimination.gd.uid b/game/tests/test_daily_elimination.gd.uid
+new file mode 100644
+--- /dev/null
++++ b/game/tests/test_daily_elimination.gd.uid
+@@ -0,0 +1 @@
++uid://d3e65e5be6e0
+diff --git a/game/tests/test_daily_elimination_app.gd b/game/tests/test_daily_elimination_app.gd
+new file mode 100644
+--- /dev/null
++++ b/game/tests/test_daily_elimination_app.gd
+@@ -0,0 +1,99 @@
++extends SceneTree
++const Rules = preload("res://race/daily_elimination.gd")
++var checks: int = 0
++var failures: int = 0
++
++class DailyApp extends "res://core/app.gd":
++	var limits_available: bool = true
++	var limit_requests: int = 0
++	func _load_daily_limits(track: NativeTrack, vehicle: String, request: Dictionary) -> RefCounted:
++		limit_requests += 1
++		if not limits_available: return null
++		var data: Dictionary = {"policy":"daily-flying-elimination-v1","version_id":str(request.version_id),"vehicle_id":vehicle,"tick_rate":120,"population":100,"cutoffs":[]}
++		for i: int in range(9): data.cutoffs.append({"percentile":Rules.PERCENTILES[i],"lap_ticks":(30-i)*120})
++		var rules := Rules.new()
++		return rules if rules.configure(data,str(track.metadata.cloud_version),vehicle) else null
++
++func _initialize() -> void: run.call_deferred()
++func check(ok: bool, message: String) -> void:
++	checks += 1
++	if not ok:
++		failures += 1
++		push_error(message)
++
++func run() -> void:
++	create_timer(180).timeout.connect(func() -> void: push_error("Daily App deadline"); quit(1))
++	OS.set_environment("BMT_API_URL","")
++	var directory: String = "user://daily_elimination_app"
++	DirAccess.make_dir_recursive_absolute(directory)
++	var app := DailyApp.new()
++	app.library = TrackLibrary.new(directory.path_join("tracks"))
++	app.records = LocalRecords.new(directory.path_join("records.json"))
++	app.cloud_root_override = directory.path_join("cloud")
++	root.add_child(app)
++	while not app.startup_complete: await process_frame
++	app.race_area_mode = "daily"
++	app._show_screen("daily")
++	var track: NativeTrack = NativeTrack.read("res://resources/tracks/ellipse.json")
++	track.metadata.cloud_version = "daily-test"
++	app.selected_track = track
++	var records_before: Dictionary = app.records.records.duplicate(true)
++	await app._start_race(track,false,false,{},null,{"day":20757,"version_id":"daily-test"})
++	check(app.game != null,"actual App enters the daily race")
++	if app.game == null:
++		app.queue_free()
++		quit(1)
++		return
++	var game: Node = app.game
++	game.set_physics_process(false)
++	check(game.track_session.target_laps == 10 and game.daily_elimination != null,"daily rules reach prepared Game")
++	check(not game.handling_test_enabled and app.cloud_ticket.is_empty(),"daily race cannot use experimental handling or an ordinary five lap ticket")
++	game._process(0.0)
++	await capture("app-opening")
++	# Use the real Game physics boundary, with the preceding ordered gates already passed.
++	game.countdown_ticks = 0
++	game.race_cues.reset()
++	var session: TrackSession = game.track_session
++	session.lap_times.assign([100.0])
++	session.lap_start_time = 100
++	session.completed_laps = 1
++	session.elapsed_ticks = 131*120
++	session.next_checkpoint = session.checkpoint_count()
++	session.finish_armed = true
++	game.sim.state.tick = session.elapsed_ticks
++	game.sim.state.position = track.finish_center-track.finish_forward*0.02
++	game.sim.state.velocity = track.finish_forward*10.0
++	game.sim.state.heading = atan2(track.finish_forward.x,track.finish_forward.y)
++	game.sim.state.route_index = track.nearest_route(game.sim.state.position)
++	game._process(0.0)
++	check(game.hud.clock_caption.text == "Top 75%" and game.hud.race_timer.text == "0:30.000","main HUD displays the lap cutoff instead of total race time")
++	await capture("app-first-cutoff")
++	game._physics_process(1.0/120.0)
++	check(session.completed_laps == 2 and game.daily_elimination.eliminated,"real finish crossing eliminates on a slow flying lap")
++	check(game.finish_sim != null,"elimination enters the existing finish transition")
++	game._complete_finish()
++	check(game.has_node("DailyResults") and not game.hud.visible,"App completion displays daily results")
++	await capture("app-eliminated")
++	app._results()
++	check(game.get_node("DailyResults").get_child_count() == 1,"duplicate completion has one result panel")
++	check(app.records.records == records_before and app.cloud_ticket.is_empty(),"eliminated total never replaces ordinary records or enters uploads")
++	await app._retry_daily_race()
++	check(app.limit_requests == 2 and not game.has_node("DailyResults") and game.hud.visible,"retry refreshes limits and restores racing HUD")
++	check(game.track_session.lap_times.is_empty() and not game.daily_elimination.eliminated and game.track_session.target_laps == 10,"retry resets opening lap and every stage")
++	app._leave_race()
++	check(app.game == null and app.screen == "daily","exit returns to Track of the Day")
++	app.limits_available = false
++	app.selected_track = track
++	await app._start_race(track,false,false,{},null,{"day":20757,"version_id":"daily-test"})
++	check(app.game == null and not app.cloud_starting,"missing cutoffs cannot start a race or strand the start lock")
++	app.queue_free()
++	await process_frame
++	print("DAILY_ELIMINATION_APP: %d checks, %d failures" % [checks,failures])
++	quit(1 if failures else 0)
++
++func capture(label: String) -> void:
++	if DisplayServer.get_name() == "headless": return
++	for frame: int in range(3): await process_frame
++	await RenderingServer.frame_post_draw
++	var path: String = ProjectSettings.globalize_path("res://../docs/evidence/daily-elimination-2026-10-31/"+label+".png")
++	check(root.get_texture().get_image().save_png(path) == OK,"capture "+label)
+diff --git a/game/tests/test_daily_elimination_app.gd.uid b/game/tests/test_daily_elimination_app.gd.uid
+new file mode 100644
+--- /dev/null
++++ b/game/tests/test_daily_elimination_app.gd.uid
+@@ -0,0 +1 @@
++uid://d92ffb1cfea2
+diff --git a/game/ui/daily_elimination_results.gd b/game/ui/daily_elimination_results.gd
+new file mode 100644
+--- /dev/null
++++ b/game/ui/daily_elimination_results.gd
+@@ -0,0 +1,46 @@
++extends Control
++signal retry_requested
++signal return_requested
++var rules: RefCounted
++var session: TrackSession
++
++func _ready() -> void:
++	MenuStyle.fill(self)
++	var shade := ColorRect.new()
++	shade.color = Color("08121bef")
++	MenuStyle.fill(shade)
++	add_child(shade)
++	var margin := MarginContainer.new()
++	MenuStyle.fill(margin)
++	for side: String in ["left","right","top","bottom"]: margin.add_theme_constant_override("margin_"+side,16)
++	add_child(margin)
++	var scroll := ScrollContainer.new()
++	scroll.horizontal_scroll_mode = ScrollContainer.SCROLL_MODE_DISABLED
++	margin.add_child(scroll)
++	var column := VBoxContainer.new()
++	column.size_flags_horizontal = Control.SIZE_EXPAND_FILL
++	column.add_theme_constant_override("separation",12)
++	scroll.add_child(column)
++	column.add_child(MenuStyle.label("Track of the Day",24,true))
++	var title: Label = MenuStyle.label("Eliminated" if rules.eliminated else "Top 1% — challenge complete",36)
++	title.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
++	column.add_child(title)
++	column.add_child(MenuStyle.label(tr("Stages passed: %d / 9") % rules.passed,24))
++	var grid := GridContainer.new()
++	grid.name = "DailyLapGrid"
++	grid.columns = 3
++	grid.add_theme_constant_override("h_separation",12)
++	column.add_child(grid)
++	for heading: String in ["Flying lap","Lap time","Limit"]: grid.add_child(MenuStyle.label(heading,16,true))
++	for index: int in range(1,session.lap_times.size()):
++		var percentile: int = rules.PERCENTILES[index-1]
++		grid.add_child(MenuStyle.label(tr("Top %d%%") % percentile,20))
++		var time: Label = MenuStyle.label(rules.time_text(session.lap_times[index]),20)
++		time.modulate = Color("ff8b78") if rules.eliminated and index == session.lap_times.size()-1 else Color("abdfad")
++		grid.add_child(time)
++		grid.add_child(MenuStyle.label(rules.time_text(rules.limits[index-1]),20,true))
++	var actions := HBoxContainer.new()
++	actions.add_theme_constant_override("separation",16)
++	column.add_child(actions)
++	actions.add_child(MenuStyle.button("Race again",func() -> void: retry_requested.emit(),true))
++	actions.add_child(MenuStyle.button("Back",func() -> void: return_requested.emit()))
+diff --git a/game/ui/daily_elimination_results.gd.uid b/game/ui/daily_elimination_results.gd.uid
+new file mode 100644
+--- /dev/null
++++ b/game/ui/daily_elimination_results.gd.uid
+@@ -0,0 +1 @@
++uid://d285703c7b63
+diff --git a/game/ui/playground_hud.gd b/game/ui/playground_hud.gd
+--- a/game/ui/playground_hud.gd
++++ b/game/ui/playground_hud.gd
+@@ -34,6 +34,7 @@
+ var lap_timer: Label
+ var lap_total: Label
+ var race_timer: Label
++var clock_caption: Label
+ var shortcut_notice_label: Label
+ var checkpoint_notice: CheckpointNotice
+ var rewind_button: RewindHUDButton
+@@ -145,7 +146,7 @@
+ 	var clock_info := VBoxContainer.new()
+ 	clock_info.add_theme_constant_override("separation", 0)
+ 	timing.add_child(clock_info)
+-	var clock_caption := _label("RACE", 16)
++	clock_caption = _label("RACE", 16)
+ 	clock_caption.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+ 	clock_caption.size_flags_horizontal = Control.SIZE_SHRINK_CENTER
+ 	clock_info.add_child(clock_caption)
+@@ -446,6 +447,16 @@
+ 		lap_timer.text = _time_text(current)
+ 
+ 
++func show_daily_session(session: TrackSession, rules: RefCounted) -> void:
++	# The daily target occupies the existing race-total slot; the lap clock stays live.
++	if session.completed_laps == 0:
++		clock_caption.text = tr("Opening lap")
++		race_timer.text = "—"
++	else:
++		var index: int = mini(rules.passed,rules.PERCENTILES.size()-1)
++		clock_caption.text = tr("Top %d%%") % rules.PERCENTILES[index]
++		race_timer.text = rules.time_text(rules.limits[index])
++
+ func _time_text(seconds: float) -> String:
+ 	# Integer centiseconds avoid a rounded 00:60.00 at minute boundaries.
+ 	var centiseconds: int = floori(seconds * 100.0 + 0.00001)
+diff --git a/game/ui/track_of_day_page.gd b/game/ui/track_of_day_page.gd
+--- a/game/ui/track_of_day_page.gd
++++ b/game/ui/track_of_day_page.gd
+@@ -152,15 +152,21 @@
+ 	_race_panel.add_theme_stylebox_override("panel",_panel_style(24))
+ 	_stage.add_child(_race_panel)
+ 	var column := VBoxContainer.new()
+-	column.add_theme_constant_override("separation",18)
++	column.add_theme_constant_override("separation",12)
+ 	_race_panel.add_child(column)
+ 	_race_heading = MenuStyle.label("Race",30)
+ 	_race_heading.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+ 	column.add_child(_race_heading)
+ 	var format_row := HBoxContainer.new()
+ 	format_row.add_child(_icon("flag",22,MenuStyle.MUTED))
+-	format_row.add_child(MenuStyle.label("5 laps",20,true))
++	var format_label: Label = MenuStyle.label("1 opening lap + 9 flying laps",20,true)
++	format_label.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
++	format_label.size_flags_horizontal = Control.SIZE_EXPAND_FILL
++	format_row.add_child(format_label)
+ 	column.add_child(format_row)
++	var rules: Label = MenuStyle.label("Beat the lap limit to survive.",16,true)
++	rules.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
++	column.add_child(rules)
+ 	_rating_row = HBoxContainer.new()
+ 	_rating_row.add_child(_icon("star_filled",20,MenuStyle.ACCENT))
+ 	_rating = MenuStyle.label("",18)
+@@ -372,7 +378,9 @@
+ 	var version: String = str(entry.version_id)
+ 	await refresh()
+ 	if not entry.is_empty() and str(entry.version_id) == version:
+-		race_requested.emit(entry.duplicate(true))
++		var requested: Dictionary = entry.duplicate(true)
++		requested["daily_day"] = _server_now/86400
++		race_requested.emit(requested)
+ 
+ func _open_standings() -> void:
+ 	if _busy or entry.is_empty() or _ends_at <= _server_now: return
+diff --git a/scripts/translations/daily_elimination.tsv b/scripts/translations/daily_elimination.tsv
+new file mode 100644
+--- /dev/null
++++ b/scripts/translations/daily_elimination.tsv
+@@ -0,0 +1,11 @@
++1 opening lap + 9 flying laps|1 tour de lancement + 9 tours lancés|1 vuelta inicial + 9 vueltas lanzadas|1 Startrunde + 9 fliegende Runden|1 volta inicial + 9 voltas lançadas|スタート周回＋計測9周|시작 1바퀴 + 플라잉 랩 9바퀴|1 openingsronde + 9 vliegende ronden|1 giro iniziale + 9 giri lanciati|1 lähtökierros + 9 lentävää kierrosta|1 startvarv + 9 flygande varv|1 startrunde + 9 flygende runder
++Beat the lap limit to survive.|Respectez le temps limite pour rester en course.|Supera el límite de vuelta para seguir.|Unterbiete das Rundenlimit, um im Rennen zu bleiben.|Bata o limite da volta para continuar.|制限タイムをクリアして勝ち残ろう。|랩 제한 시간을 통과해 살아남으세요.|Haal de rondelimiet om door te gaan.|Rispetta il limite del giro per continuare.|Alita kierrosraja pysyäksesi mukana.|Klara varvgränsen för att fortsätta.|Klar rundegrensen for å fortsette.
++Top 1% — challenge complete|Top 1% — défi réussi|Top 1% — desafío completado|Top 1% — Herausforderung geschafft|Top 1% — desafio concluído|上位1% — チャレンジ達成|상위 1% — 도전 완료|Top 1% — uitdaging voltooid|Top 1% — sfida completata|Paras 1% — haaste suoritettu|Topp 1% — utmaning klar|Topp 1% — utfordring fullført
++Eliminated|Éliminé|Eliminado|Ausgeschieden|Eliminado|脱落|탈락|Uitgeschakeld|Eliminato|Pudonnut|Utslagen|Utslått
++Stages passed: %d / 9|Étapes réussies : %d / 9|Etapas superadas: %d / 9|Stufen geschafft: %d / 9|Etapas concluídas: %d / 9|クリア：%d / 9|통과 단계: %d / 9|Fasen gehaald: %d / 9|Fasi superate: %d / 9|Läpäistyt vaiheet: %d / 9|Klarade steg: %d / 9|Fullførte trinn: %d / 9
++Flying lap|Tour lancé|Vuelta lanzada|Fliegende Runde|Volta lançada|計測周回|플라잉 랩|Vliegende ronde|Giro lanciato|Lentävä kierros|Flygande varv|Flygende runde
++Limit|Limite|Límite|Limit|Limite|制限|제한|Limiet|Limite|Raja|Gräns|Grense
++Loading lap limits…|Chargement des limites…|Cargando límites de vuelta…|Rundenlimits werden geladen…|Carregando limites de volta…|制限タイムを読み込み中…|랩 제한 시간 로딩 중…|Rondelimieten laden…|Caricamento limiti dei giri…|Ladataan kierrosrajoja…|Läser in varvgränser…|Laster rundegrenser…
++Lap limits are unavailable for this car. Try again shortly.|Les limites sont indisponibles pour cette voiture. Réessayez dans un instant.|Los límites no están disponibles para este coche. Inténtalo pronto.|Für dieses Auto sind keine Rundenlimits verfügbar. Versuche es gleich erneut.|Os limites não estão disponíveis para este carro. Tente novamente em breve.|この車の制限タイムは現在利用できません。しばらくしてからお試しください。|이 차량의 랩 제한 시간을 사용할 수 없습니다. 잠시 후 다시 시도하세요.|Rondelimieten zijn niet beschikbaar voor deze auto. Probeer het zo opnieuw.|I limiti non sono disponibili per questa auto. Riprova tra poco.|Tämän auton kierrosrajat eivät ole saatavilla. Yritä pian uudelleen.|Varvgränser saknas för den här bilen. Försök snart igen.|Rundegrenser er ikke tilgjengelige for denne bilen. Prøv igjen snart.
++Lap limits are unavailable. Return to Track of the Day and try again.|Les limites sont indisponibles. Revenez au circuit du jour et réessayez.|Los límites no están disponibles. Vuelve al circuito del día e inténtalo de nuevo.|Rundenlimits sind nicht verfügbar. Kehre zur Strecke des Tages zurück und versuche es erneut.|Os limites não estão disponíveis. Volte à pista do dia e tente novamente.|制限タイムを利用できません。本日のコースに戻ってお試しください。|랩 제한 시간을 사용할 수 없습니다. 오늘의 트랙으로 돌아가 다시 시도하세요.|Rondelimieten zijn niet beschikbaar. Ga terug naar het circuit van de dag en probeer opnieuw.|I limiti non sono disponibili. Torna al circuito del giorno e riprova.|Kierrosrajat eivät ole saatavilla. Palaa päivän radalle ja yritä uudelleen.|Varvgränser saknas. Gå tillbaka till dagens bana och försök igen.|Rundegrenser er ikke tilgjengelige. Gå tilbake til dagens bane og prøv igjen.
++Opening lap|Tour de lancement|Vuelta inicial|Startrunde|Volta inicial|スタート周回|시작 랩|Openingsronde|Giro iniziale|Lähtökierros|Startvarv|Startrunde

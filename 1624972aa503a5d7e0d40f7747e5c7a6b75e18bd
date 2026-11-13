@@ -1,0 +1,133 @@
+extends SceneTree
+## Measures the original review track's actual Edit here input and frame gaps.
+var app: Node
+var started: int
+var timings: Dictionary = {}
+var out: String
+var stages: Dictionary = {}
+var tracking: bool = false
+var last_tick: int = 0
+var last_stage: String = ""
+class ProfileApp extends "res://core/app.gd":
+	var forced_extra: bool = false
+	var covered_draws: int = 0
+	var forced_extra_us: int = 0
+	func _present_race_loading() -> bool:
+		var result: bool = await super._present_race_loading()
+		covered_draws += 1
+		if result and "--force-extra-covered-draw" in OS.get_cmdline_user_args() and not forced_extra and is_instance_valid(game) and game.preparation_complete and is_instance_valid(game.car_weathering) and game.car_weathering._render_warming:
+			var expected: int = 0
+			for node: Node in game.sand_dust.get_children():
+				if node is GPUParticles3D and node.is_visible_in_tree(): expected += 1
+			var actual: int = 0
+			for node: Node in game.get_node("World").find_children("Covered*","GPUParticles3D",true,false):
+				if node.is_visible_in_tree(): actual += 1
+			if expected > 0 and actual == expected:
+				forced_extra = true
+				var began: int = Time.get_ticks_usec()
+				result = await super._present_race_loading()
+				forced_extra_us = Time.get_ticks_usec()-began
+				covered_draws += 1
+		return result
+
+func _initialize() -> void: run.call_deferred()
+
+func _process(_delta: float) -> bool:
+	if not tracking: return false
+	var now: int = Time.get_ticks_usec()
+	if last_tick > 0: stages[last_stage] = int(stages.get(last_stage,0)) + now-last_tick
+	last_tick = now
+	last_stage = "pre-game"
+	if is_instance_valid(app.game):
+		if not app.game.preparation_complete:
+			last_stage = "game-construction"
+		elif is_instance_valid(app.race_loading):
+			last_stage = "graphics-warmup"
+		else: last_stage = "ready"
+	return false
+
+func stamp(label: String) -> void:
+	timings[label] = (Time.get_ticks_usec()-started)/1000.0
+	print("PRACTICE_RETURN_PROFILE ",label," ",timings[label])
+
+func frames(count: int) -> void:
+	for i: int in range(count): await process_frame
+
+func run() -> void:
+	OS.set_environment("BMT_API_URL","")
+	OS.set_environment("BMT_DEV_AUTH_KEY","")
+	root.size = Vector2i(1280,720)
+	root.content_scale_size = root.size
+	var suffix: String = "-drive" if "--drive" in OS.get_cmdline_user_args() else ""
+	if "--force-extra-covered-draw" in OS.get_cmdline_user_args(): suffix += "-extra-draw"
+	for argument: String in OS.get_cmdline_user_args():
+		if argument.begins_with("--run-label="): suffix += "-"+argument.trim_prefix("--run-label=")
+	out = ProjectSettings.globalize_path("res://../tmp/editor-practice-return-profile"+suffix)
+	DirAccess.make_dir_recursive_absolute(out)
+	app = load("res://core/app.tscn").instantiate()
+	app.set_script(ProfileApp)
+	app.race_profile_enabled = true
+	app.library = TrackLibrary.new(out.path_join("storage/tracks"))
+	app.records = LocalRecords.new(out.path_join("storage/records.json"))
+	app.cloud_root_override = out.path_join("storage/cloud")
+	root.add_child(app)
+	while not app.startup_complete: await process_frame
+	var source: String = ProjectSettings.globalize_path("res://../docs/evidence/editor-usability-session-2026-10-28/dust_bowl_usability.json")
+	app.document = JSON.parse_string(FileAccess.get_file_as_string(source))
+	app._show_screen("create")
+	var deadline: int = Time.get_ticks_msec()+90000
+	while (app.editor_commits.unsettled() or app.editor_preview_thread != null or app.editor_world._building or app.canvas.preparing) and Time.get_ticks_msec()<deadline: await process_frame
+	if app.editor_preview_thread != null or app.editor_world._building or app.canvas.preparing:
+		print("FAIL: initial editor did not settle"); quit(1); return
+	started = Time.get_ticks_usec()
+	tracking = true
+	app._test_document()
+	while (not is_instance_valid(app.game) or is_instance_valid(app.race_loading)) and Time.get_ticks_msec()<deadline+90000: await process_frame
+	if not is_instance_valid(app.game) or is_instance_valid(app.race_loading):
+		print("FAIL: practice did not start"); quit(1); return
+	stamp("practice_ready")
+	tracking = false
+	print("PRACTICE_STAGES ",JSON.stringify(stages))
+	print("PRACTICE_GAME_COSTS ",JSON.stringify(app.game.preparation_costs))
+	print("PRACTICE_COVERED_DRAWS ",app.covered_draws," FORCED_EXTRA ",app.forced_extra," FORCED_EXTRA_US ",app.forced_extra_us," EFFECT_COUNTS ",app.game.effect_preparation_counts)
+	print("PRACTICE_RENDER_GROUPS ",app.game.world_render_preparation.frame_groups," MAX_DRAW_US ",app.game.world_render_preparation.draw_us_max," COVERED_MS ",app.game.bridge_preparation_ms)
+	await frames(8)
+	if "--drive" in OS.get_cmdline_user_args():
+		for row: Array in [[KEY_W,0.7],[KEY_S,0.4]]:
+			var key := InputEventKey.new()
+			key.keycode = row[0]; key.physical_keycode = row[0]; key.pressed = true
+			Input.parse_input_event(key)
+			await create_timer(float(row[1])).timeout
+			key.pressed = false
+			Input.parse_input_event(key)
+		await frames(3)
+		print("PRACTICE_CAR_POSITION ",app.game.sim.state.position)
+	var editor: Node = app.root_ui
+	var editor_visual: Node = app.editor_world.visual
+	var old_game: Node = app.game
+	started = Time.get_ticks_usec()
+	old_game.tree_exiting.connect(func() -> void: stamp("game_tree_exiting"))
+	old_game.tree_exited.connect(func() -> void: stamp("game_tree_exited"))
+	var button: Control = root.find_child("EditHere",true,false)
+	if button == null:
+		print("FAIL: Edit here missing"); quit(1); return
+	var point: Vector2 = button.get_global_rect().get_center()
+	var input := InputEventMouseButton.new()
+	input.position = point; input.global_position = point; input.button_index = MOUSE_BUTTON_LEFT; input.pressed = true
+	root.push_input(input,true)
+	stamp("mouse_down_handler")
+	await process_frame
+	stamp("after_down_frame")
+	input.pressed = false
+	root.push_input(input,true)
+	stamp("mouse_up_handler")
+	for i: int in range(10):
+		await process_frame
+		stamp("frame_%d" % i)
+	var ok: bool = not is_instance_valid(app.game) and app.root_ui == editor and app.editor_world.visual == editor_visual and app.document.id == "track_f0a1d999848dc6f3b8184d32f9ce617b"
+	print("PRACTICE_RETURN_RESULT ",ok," ",JSON.stringify(timings))
+	var file := FileAccess.open(out.path_join("result.json"),FileAccess.WRITE)
+	file.store_string(JSON.stringify({"ok":ok,"timings":timings,"stages_us":stages,"covered_draws":app.covered_draws,"forced_extra":app.forced_extra,"forced_extra_us":app.forced_extra_us},"\t")); file.close()
+	app.queue_free()
+	await frames(5)
+	quit(0 if ok else 1)

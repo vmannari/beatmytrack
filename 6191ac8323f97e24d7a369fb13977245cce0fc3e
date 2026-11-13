@@ -1,0 +1,352 @@
+diff --git a/game/tests/test_bridge_dust.gd b/game/tests/test_bridge_dust.gd
+index 28dbb6746..32cc4a9b5 100644
+--- a/game/tests/test_bridge_dust.gd
++++ b/game/tests/test_bridge_dust.gd
+@@ -20,6 +20,9 @@ func bind_mask(upper: bool) -> void:
+ 			var value: Variant = actual.get_shader_parameter(uniform.name)
+ 			if value!=null: mask.set_shader_parameter(uniform.name,value)
+ 	mask.set_shader_parameter("dust_upper_layer",upper)
++	# These analytic geometry probes use canonical bridge coordinates. Actual
++	# deformed scenery/emission is covered by test_desert_bridge_dust.gd.
++	mask.set_shader_parameter("dust_bridge_height_offset",0.0)
+ 
+ func pixel(point: Vector3, visible: bool, label: String) -> void:
+ 	mask.set_shader_parameter("sample_world",point)
+@@ -158,6 +161,18 @@ void fragment() { ALBEDO = vec3(1.0); ALPHA = surface_sample ? dust_bridge_surfa
+ 	dust.sample(state,DriveFrame.new(),track)
+ 	bind_mask(false)
+ 	await pixel(VisualGeometry.world(state.position)+Vector3.UP*4.5,true,"a track without bridges keeps original cloud visibility")
++	var relieved: NativeTrack = TrackCompiler.compile(JSON.parse_string(FileAccess.get_file_as_string("res://tests/fixtures/dust_cloud.json")))
++	var presentation := BridgePresentation.new(relieved)
++	dust._bind_bridges(relieved,presentation)
++	check(dust.cloud_emitters().all(func(e: GPUParticles3D) -> bool: return is_equal_approx(e.draw_pass_1.surface_get_material(0).get_shader_parameter("dust_bridge_height_offset"),-preload("res://track/desert_road_relief.gd").DEPTH)),"every cloud bank receives the active desert relief")
++	var empty_presentation := BridgePresentation.new(relieved)
++	empty_presentation.visual_relief.field.clear()
++	dust._bind_bridges(relieved,empty_presentation)
++	check(is_zero_approx(original.get_shader_parameter("dust_bridge_height_offset")),"empty relief field retains original bridge coordinates")
++	dust._bind_bridges(relieved,presentation)
++	check(is_equal_approx(original.get_shader_parameter("dust_bridge_height_offset"),-preload("res://track/desert_road_relief.gd").DEPTH),"same-track presentation change restores relief")
++	dust._bind_bridges(track)
++	check(dust.cloud_emitters().all(func(e: GPUParticles3D) -> bool: return is_zero_approx(e.draw_pass_1.surface_get_material(0).get_shader_parameter("dust_bridge_height_offset"))),"leaving desert clears the relief on every cloud bank")
+ 	# Witness actual particle CUSTOM data after lofting and moving its emitter.
+ 	quad.visible = false
+ 	camera.projection = Camera3D.PROJECTION_ORTHOGONAL
+diff --git a/game/vehicle/dust_bridge_clip.gdshaderinc b/game/vehicle/dust_bridge_clip.gdshaderinc
+index c5f4604dc..2966e2144 100644
+--- a/game/vehicle/dust_bridge_clip.gdshaderinc
++++ b/game/vehicle/dust_bridge_clip.gdshaderinc
+@@ -4,6 +4,8 @@ uniform vec4 dust_bridge_axes[16]; // World XZ origin and longitudinal unit vect
+ uniform vec4 dust_bridge_sizes[16]; // Length, half width, height, ramp length.
+ uniform vec4 dust_bridge_roof = vec4(2.2,0.42,0.65,0.0); // Clearance, thickness, sandstone arch drop, desert.
+ uniform bool dust_upper_layer = false;
++// Cosmetic road relief moves the bridge and its emitted clouds together.
++uniform float dust_bridge_height_offset = 0.0;
+ 
+ float dust_bridge_deck(float along, vec4 size) {
+ 	return size.z*min(smoothstep(0.0,size.w,along),1.0-smoothstep(size.x-size.w,size.x,along));
+@@ -12,6 +14,8 @@ float dust_bridge_deck(float along, vec4 size) {
+ // Clip the projected roof directly as well as the puff's world-space volume.
+ // This does not depend on mobile MSAA depth-texture resolve at bridge edges.
+ float dust_bridge_projected_visibility(vec3 world, vec3 camera_ray, float birth_height) {
++	world.y -= dust_bridge_height_offset;
++	birth_height -= dust_bridge_height_offset;
+ 	vec3 slope = camera_ray/max(camera_ray.y,0.01);
+ 	for (int i = 0; i < dust_bridge_count; i++) {
+ 		vec4 axes = dust_bridge_axes[i];
+@@ -46,6 +50,8 @@ float dust_bridge_projected_visibility(vec3 world, vec3 camera_ray, float birth_
+ }
+ 
+ float dust_bridge_visibility_at_height(vec3 world, float birth_height) {
++	world.y -= dust_bridge_height_offset;
++	birth_height -= dust_bridge_height_offset;
+ 	float visible = 1.0;
+ 	for (int i = 0; i < dust_bridge_count; i++) {
+ 		vec4 axes = dust_bridge_axes[i];
+@@ -84,6 +90,8 @@ float dust_bridge_visibility(vec3 world) {
+ // still below it. Ground-bank particles retain their original sealed layer.
+ float dust_bridge_surface_visibility(vec3 opaque_world, float particle_height) {
+ 	if (!dust_upper_layer) { return dust_bridge_visibility(opaque_world); }
++	opaque_world.y -= dust_bridge_height_offset;
++	particle_height -= dust_bridge_height_offset;
+ 	float visible = 1.0;
+ 	for (int i = 0; i < dust_bridge_count; i++) {
+ 		vec4 axes = dust_bridge_axes[i];
+diff --git a/game/vehicle/sand_dust.gd b/game/vehicle/sand_dust.gd
+index 9448c0801..108227c9e 100644
+--- a/game/vehicle/sand_dust.gd
++++ b/game/vehicle/sand_dust.gd
+@@ -8,7 +8,7 @@ static var _snow_cloud_shader: WeakRef
+ const PREPARED_EMITTER_BYTES: int = 2 * 1024 * 1024
+ ## Presentation-only, wheel-driven sand spray and lingering dust. Particle state
+ ## never feeds back into the fixed-step vehicle simulation.
+-const PRESENTATION_VERSION: String = "desert-dust-22"
++const PRESENTATION_VERSION: String = "desert-dust-23"
+ const GRASS_PRESENTATION_VERSION: String = "grass-clippings-2"
+ 
+ const SAND_SURFACE: int = 2
+@@ -47,6 +47,8 @@ var _deck_cloud_sources: Dictionary = {}
+ var _bridge_count: int = 0
+ var _bridge_theme: String = ""
+ var _bridge_track: NativeTrack
++var _bridge_presentation: BridgePresentation
++var _bridge_height_offset: float = 0.0
+ var _bridge_axes := PackedVector4Array()
+ var _bridge_sizes := PackedVector4Array()
+ var _bridge_roof := Vector4(CreatorBridges.UNDERPASS_CLEARANCE,0.42,0.65,0.0)
+@@ -216,7 +218,7 @@ func clear() -> void:
+ 
+ func sample(state: VehicleState, frame: DriveFrame, track: NativeTrack, bridge: BridgePresentation = null) -> void:
+ 	if track != null:
+-		_bind_bridges(track)
++		_bind_bridges(track,bridge)
+ 		_set_desert_profile(str(track.metadata.get("theme","pine")) == "desert")
+ 	var winter: bool = track != null and track.metadata.get("theme","pine") == "winter"
+ 	if track == null or state.jump_height > 0.0 or state.roll_ticks > 0 or state.velocity.length() < (0.06 if winter else 0.8):
+@@ -879,11 +881,15 @@ func _snow_surface_height(at: Vector2, contact_height: float) -> float:
+ 		height = maxf(height,float(_bank_visual_heights.get(key+offset,contact_height)))
+ 	return height
+ 
+-func _bind_bridges(track: NativeTrack) -> void:
++func _bind_bridges(track: NativeTrack, bridge: BridgePresentation = null) -> void:
+ 	var theme: String = str(track.metadata.get("theme",""))
+-	if _bridge_track==track and _bridge_theme==theme: return
++	if _bridge_track==track and _bridge_theme==theme and _bridge_presentation==bridge: return
+ 	assert(track.creator_bridges.size()<=16,"Bridge dust requires the validated sixteen-span contract")
+ 	_bridge_track = track
++	_bridge_presentation = bridge
++	_bridge_height_offset = 0.0
++	if bridge != null and bridge.visual_relief != null and not bridge.visual_relief.field.is_empty():
++		_bridge_height_offset = -preload("res://track/desert_road_relief.gd").DEPTH
+ 	_bridge_theme = theme
+ 	_bridge_count = track.creator_bridges.size()
+ 	_bridge_axes.resize(16)
+@@ -904,6 +910,7 @@ func _bind_cloud_bridge_material(emitter: GPUParticles3D) -> void:
+ 		material.set_shader_parameter("dust_bridge_axes",_bridge_axes)
+ 		material.set_shader_parameter("dust_bridge_sizes",_bridge_sizes)
+ 	material.set_shader_parameter("dust_bridge_roof",_bridge_roof)
++	material.set_shader_parameter("dust_bridge_height_offset",_bridge_height_offset)
+ 
+ func _ensure_deck_clouds() -> void:
+ 	if not deck_dust_emitters.is_empty(): return
+diff --git a/game/tests/test_desert_bridge_dust.gd b/game/tests/test_desert_bridge_dust.gd
+new file mode 100644
+--- /dev/null
++++ b/game/tests/test_desert_bridge_dust.gd
+@@ -0,0 +1,110 @@
++extends SceneTree
++## Actual relieved bridge, emitted GPU clouds and the production cloud material.
++var checks: int = 0
++var failures: int = 0
++var output: String = "res://../docs/evidence/desert-bridge-dust-2026-11-03/final"
++var game: Node
++
++func _initialize() -> void: run.call_deferred()
++
++func check(ok: bool, label: String) -> void:
++	checks += 1
++	if not ok: failures += 1; push_error(label)
++
++func capture() -> Image:
++	for frame: int in range(4): await process_frame
++	await RenderingServer.frame_post_draw
++	return root.get_texture().get_image()
++
++func changed_pixels(a: Image, b: Image, camera: Camera3D, center: Vector3) -> int:
++	var pixel: Vector2 = camera.unproject_position(center)
++	var changed: int = 0
++	for y: int in range(roundi(pixel.y)-24,roundi(pixel.y)+25):
++		for x: int in range(roundi(pixel.x)-45,roundi(pixel.x)+46):
++			var ca: Color = a.get_pixel(x,y); var cb: Color = b.get_pixel(x,y)
++			if maxf(absf(ca.r-cb.r),maxf(absf(ca.g-cb.g),absf(ca.b-cb.b))) > 0.02: changed += 1
++	return changed
++
++func run() -> void:
++	for argument: String in OS.get_cmdline_user_args():
++		if argument.begins_with("--output="): output = argument.trim_prefix("--output=")
++	root.size = Vector2i(1280,900)
++	DirAccess.make_dir_recursive_absolute(ProjectSettings.globalize_path(output))
++	var track: NativeTrack = TrackCompiler.compile(JSON.parse_string(FileAccess.get_file_as_string("res://tests/fixtures/dust_cloud.json")))
++	var canonical: PackedByteArray = var_to_bytes([track.cells,track.deck_cells,track.route,track.metadata])
++	game = load("res://core/game.tscn").instantiate()
++	game.initial_track = track; game.production_mode = true
++	root.add_child(game)
++	game.set_physics_process(false); game.set_process(false)
++	game.paused = false; game.countdown_ticks = 0; game.race_cues.reset()
++	game.hud.hide()
++	var effects: Node3D = game.sand_dust
++	if "--before" in OS.get_cmdline_user_args():
++		var legacy := GDScript.new()
++		legacy.source_code = FileAccess.get_file_as_string("res://../docs/evidence/desert-bridge-dust-2026-11-03/before/sand_dust.gd").replace("class_name SandDust", "").replace("res://vehicle/dust_bridge_clip.gdshaderinc", "res://../docs/evidence/desert-bridge-dust-2026-11-03/before/dust_bridge_clip.gdshaderinc")
++		check(legacy.reload() == OK,"task-start dust script loads")
++		game.sand_dust.visible = false
++		effects = legacy.new(); game.add_child(effects)
++	var span: Dictionary = track.creator_bridges[0]
++	var origin := Vector2(span.position[0],span.position[1])
++	var angle: float = deg_to_rad(float(span.heading))
++	var center: Vector2 = origin+Vector2(float(span.length)*0.5,0).rotated(angle)
++	var state := VehicleState.new()
++	state.position = center; state.track_elevated = true; state.velocity = Vector2(12,0).rotated(angle)
++	state.heading = PI*0.5-angle
++	var snapshot: Array = state.snapshot()
++	game.camera.speed_zoom_enabled = false
++	game.camera.follow(center,Vector2.ZERO,state.heading,0.0,true)
++	# Exercise normal preparation followed by live sampling of the same track.
++	effects.prepare_track(track)
++	effects.sample(state,DriveFrame.new(),track,game.bridge_presentation)
++	var birth: float = effects.deck_dust_emitters[0].position.y
++	var relief: float = game.bridge_presentation.visual_offset(center)
++	check(is_equal_approx(relief,-preload("res://track/desert_road_relief.gd").DEPTH),"compiled bridge has the real desert road depression")
++	check(absf(birth-(CreatorBridges.HEIGHT+relief+0.025)) < 0.001,"wheel cloud is born on the visible bridge")
++	check(effects.deck_dust_emitters.all(func(e: GPUParticles3D) -> bool: return e.emitting),"all four deck wheel clouds emit")
++	check(effects.dust_emitters.all(func(e: GPUParticles3D) -> bool: return not e.emitting),"ground bank stays dormant above the bridge")
++	await create_timer(2.0).timeout
++	for emitter: GPUParticles3D in effects.get_children(): emitter.speed_scale = 0.0
++	var emitted: Image = await capture()
++	emitted.save_png(output.path_join("emitted-deck.png"))
++	effects.visible = false
++	var clean: Image = await capture()
++	clean.save_png(output.path_join("clean-deck.png"))
++	var road: Vector3 = VisualGeometry.world(center)+Vector3.UP*(CreatorBridges.HEIGHT+relief+0.025)
++	var count: int = changed_pixels(emitted,clean,game.camera,road)
++	print("EMITTED_DECK_CHANGED_PIXELS: ",count)
++	check(count > 200,"actual emitted dust visibly covers the relieved bridge")
++	# A newly born particle must also be visible before it lofts. Use the exact
++	# production draw shader with controlled birth data, not a substitute mask.
++	var source: ShaderMaterial = effects.deck_dust_emitters[0].draw_pass_1.surface_get_material(0)
++	var material: ShaderMaterial = source.duplicate()
++	var shader := Shader.new()
++	shader.code = source.shader.code.replace("varying vec2 cloud_uv;","uniform float test_birth_height;\nvarying vec2 cloud_uv;").replace("dust_center_height = dust_birth_height_available ? INSTANCE_CUSTOM.z : MODEL_MATRIX[3].y;","dust_center_height = test_birth_height;")
++	material.shader = shader
++	for uniform: Dictionary in source.shader.get_shader_uniform_list():
++		var value: Variant = source.get_shader_parameter(uniform.name)
++		if value != null: material.set_shader_parameter(uniform.name,value)
++	material.set_shader_parameter("test_birth_height",birth)
++	var card := MeshInstance3D.new()
++	card.mesh = effects.deck_dust_emitters[0].draw_pass_1.duplicate()
++	card.material_override = material; card.position = road+Vector3.UP*0.30
++	game.add_child(card)
++	var newborn: Image = await capture()
++	newborn.save_png(output.path_join("newborn-deck.png"))
++	count = changed_pixels(newborn,clean,game.camera,road)
++	print("NEWBORN_DECK_CHANGED_PIXELS: ",count)
++	check(count > 200,"newly born deck dust is visible before rising past the old bridge height")
++	card.hide()
++	# Low ramp clouds may not project over a taller roof, even after lofting.
++	material.set_shader_parameter("test_birth_height",0.7+relief)
++	card.show()
++	var blocked: Image = await capture()
++	blocked.save_png(output.path_join("blocked-low-ramp.png"))
++	check(changed_pixels(blocked,clean,game.camera,road) == 0,"low ramp birth remains blocked by the higher deck")
++	check(snapshot == state.snapshot(),"sampling retains canonical vehicle state")
++	check(canonical == var_to_bytes([track.cells,track.deck_cells,track.route,track.metadata]),"presentation retains canonical track data")
++	game.free()
++	await process_frame
++	print("DESERT_BRIDGE_DUST: %d checks, %d failures" % [checks,failures])
++	quit(1 if failures else 0)
+diff --git a/scripts/run_desert_bridge_dust.py b/scripts/run_desert_bridge_dust.py
+new file mode 100644
+--- /dev/null
++++ b/scripts/run_desert_bridge_dust.py
+@@ -0,0 +1,50 @@
++"""Isolated offline native checks for desert bridge dust; never uses owner saves."""
++from pathlib import Path
++import os
++import subprocess
++import sys
++
++ROOT = Path(__file__).resolve().parents[1]
++EVIDENCE = ROOT / "docs/evidence/desert-bridge-dust-2026-11-03"
++
++
++def main():
++    name, script, *arguments = sys.argv[1:]
++    profile = ROOT / "build/desert-bridge-dust" / name
++    env = os.environ.copy()
++    for variable in ("APPDATA", "LOCALAPPDATA"):
++        directory = profile / variable.lower()
++        directory.mkdir(parents=True, exist_ok=True)
++        env[variable] = str(directory)
++    env["BMT_API_URL"] = ""
++    EVIDENCE.mkdir(parents=True, exist_ok=True)
++    command = [sys.executable, "scripts/run_no_crash_dialog.py", "--",
++               r"C:\apps\Godot 4.7.2\Godot_v4.7.2-stable_win64_console.exe",
++               "--path", "game", "--audio-driver", "Dummy", "--script", script,
++               *arguments]
++    with (EVIDENCE / (name + ".log")).open("w", encoding="utf-8") as log:
++        log.write(subprocess.list2cmdline(command) + "\n")
++        log.flush()
++        process = subprocess.Popen(command, cwd=ROOT, env=env, stdout=log,
++                                   stderr=subprocess.STDOUT)
++        try:
++            status = process.wait(timeout=240)
++        except subprocess.TimeoutExpired:
++            subprocess.run(["taskkill.exe", "/PID", str(process.pid), "/T", "/F"],
++                           stdout=log, stderr=subprocess.STDOUT, check=False)
++            status = 124
++            log.write("\nTIMEOUT: not a pass\n")
++        log.write(f"\nEXIT_STATUS {status}\n")
++    contents = (EVIDENCE / (name + ".log")).read_text(encoding="utf-8")
++    errors = [line for line in contents.splitlines() if
++              ("ERROR:" in line and "Failed to read the root certificate store" not in line)]
++    if status == 0 and errors:
++        status = 1
++        with (EVIDENCE / (name + ".log")).open("a", encoding="utf-8") as log:
++            log.write("RUNNER_REJECTED_ENGINE_ERRORS\n")
++    print(contents[-6000:])
++    return status
++
++
++if __name__ == "__main__":
++    sys.exit(main())
+diff --git a/docs/DESERT_BRIDGE_DUST_2026_11_03.md b/docs/DESERT_BRIDGE_DUST_2026_11_03.md
+new file mode 100644
+--- /dev/null
++++ b/docs/DESERT_BRIDGE_DUST_2026_11_03.md
+@@ -0,0 +1,47 @@
++# Desert bridge dust correction — 2026-11-03
++
++DBD01: Dust must appear on the visible desert bridge. DBD02: Ground and low-ramp clouds must remain blocked by higher decks. DBD03: Keep canonical driving, particle appearance, budgets and lifetime unchanged.
++
++The desert road relief lowers bridge meshes and wheel emission positions by 0.30 m. The cloud shader still compared their world/birth heights with the original bridge. Its upper-bank classification therefore treated legitimate deck dust as below the roof. The original GPU test only probed canonical bridge heights and missed the integrated relief.
++
++`game/vehicle/sand_dust.gd` now binds the active `BridgePresentation` relief offset, caches the presentation identity alongside the track, and resets the offset for absent/empty relief. `game/vehicle/dust_bridge_clip.gdshaderinc` converts the fragment, opaque surface and immutable birth heights into the same bridge coordinates for all three guards. The default offset remains zero, including existing trail users of this include. Presentation version advances to desert-dust-23. No canonical or particle-motion source changes.
++
++`game/tests/test_desert_bridge_dust.gd` exercises the actual compiled Dust Cloud bridge, production GPU emission and newly born cloud material at the relieved road height. It retains low-ramp blocking and exact vehicle/track data checks. `game/tests/test_bridge_dust.gd` explicitly keeps its original analytic probes in canonical coordinates and adds relief binding, empty-field, same-track presentation-switch and leaving-desert assertions. No existing assertion or threshold was removed. `scripts/run_desert_bridge_dust.py` supplies isolated APPDATA/LOCALAPPDATA, offline API configuration, Dummy audio, scoped crash-dialog suppression and a 240 s owned-process timeout.
++
++## Actual results
++
++Pinned Godot 4.7.2.stable.official.ed1daf0bf; Windows RTX 3090. Mobile below means the desktop Vulkan Mobile renderer.
++
++| Check | Compatibility | Mobile |
++|---|---:|---:|
++| Task-start source, integrated regression | 10 checks / 2 failures | Not run |
++| Corrected integrated regression | 9 / 0 | 9 / 0 |
++| Bridge masks, birth-height GPU witness and lifecycle | 125 / 0 | 125 / 0 |
++| Existing roof occlusion, including disabled depth helpers | 241 samples / 0 | 241 samples / 0 |
++
++The extra task-start check validates loading the archived script. Original emitted/newborn bridge dust changes **0 / 0 pixels** within the fixed 4,459-pixel road probe. Corrected actual emitted clouds change **4,459 pixels** on both renderers; controlled newborn clouds change **2,358 / 2,530**. Low-ramp birth clouds change zero pixels over the higher road. The existing prepared-resource test also passes **162 / 0 headless**. Earlier original mask tests pass 121 / 0 before and after, demonstrating why an integrated relief regression was needed.
++
++Native before/after images were visually inspected: [original](evidence/desert-bridge-dust-2026-11-03/before-compatibility/emitted-deck.png), [corrected Compatibility](evidence/desert-bridge-dust-2026-11-03/final-compatibility/emitted-deck.png), [corrected Mobile](evidence/desert-bridge-dust-2026-11-03/final-mobile/emitted-deck.png). Each integrated capture directory also includes clean road, controlled newborn cloud and blocked low-ramp controls. Roof directories retain the existing guard stress views.
++
++## Commands run
++
++All paths below use `python scripts/run_desert_bridge_dust.py NAME SCRIPT OPTIONS`; complete commands, engine output and exit statuses are in the corresponding evidence logs.
++
++```powershell
++python scripts/run_desert_bridge_dust.py before-compatibility res://tests/test_desert_bridge_dust.gd --rendering-method gl_compatibility -- --before --output=res://../docs/evidence/desert-bridge-dust-2026-11-03/before-compatibility
++python scripts/run_desert_bridge_dust.py final-compatibility res://tests/test_desert_bridge_dust.gd --rendering-method gl_compatibility -- --output=res://../docs/evidence/desert-bridge-dust-2026-11-03/final-compatibility
++python scripts/run_desert_bridge_dust.py final-mobile res://tests/test_desert_bridge_dust.gd --rendering-method mobile -- --output=res://../docs/evidence/desert-bridge-dust-2026-11-03/final-mobile
++python scripts/run_desert_bridge_dust.py masks-compatibility-final res://tests/test_bridge_dust.gd --rendering-method gl_compatibility
++python scripts/run_desert_bridge_dust.py masks-mobile-final res://tests/test_bridge_dust.gd --rendering-method mobile
++python scripts/run_desert_bridge_dust.py roof-compatibility res://tests/test_dust_roof_occlusion.gd --rendering-method gl_compatibility -- --output=res://../docs/evidence/desert-bridge-dust-2026-11-03/roof-compatibility
++python scripts/run_desert_bridge_dust.py roof-mobile res://tests/test_dust_roof_occlusion.gd --rendering-method mobile -- --output=res://../docs/evidence/desert-bridge-dust-2026-11-03/roof-mobile
++python scripts/run_desert_bridge_dust.py prepared-resources res://tests/test_prepared_race_resources.gd --headless
++```
++
++Initial direct-wrapper attempts are retained separately as `before-console.log`, `before-native.log`, `final-console.log`, `final-native.log`, and `bridge-before.log`. They encountered sandbox-denied user/cache log writes; the initial archived-script fixture also attempted to assign an unrelated dynamic script to a typed SandDust property and was interrupted. The corrected fixture holds its archived emitter in a separate Node3D variable. These attempts are not clean passes. An attempted process query was denied; no unrelated process was stopped. Final isolated tests exit normally. All native runs retain the environment's root-certificate-store error; there are no other errors in final isolated passing logs. Hitch diagnostics are recorded, not performance measurements.
++
++## Checkpoint and limits
++
++[Task-only patch](evidence/desert-bridge-dust-2026-11-03/task.patch) contains the two runtime files, two tests, isolated runner and this report. Its forward/reverse checks and exact normalized source round-trip are recorded in [checkpoint-check.json](evidence/desert-bridge-dust-2026-11-03/checkpoint-check.json). Original runtime sources are archived in `before/`. Concurrent settings, vehicle, backend and other work is preserved; no main-index write or commit was made.
++
++Reload the game to pick up the corrected shader. Owner appearance acceptance and physical-device performance remain. No phone query/test, APK, owner-save or owner-process change, backend/live access, deployment or physics change was performed. The integrated visibility witness uses a stationary wheel cloud on the real deck; it does not establish a full driving lap or phone performance result.
